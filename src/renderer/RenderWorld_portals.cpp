@@ -220,7 +220,7 @@ void idRenderWorldLocal::FloodViewThroughArea_r( const idVec3 origin, int areaNu
 		}
 
 		// see if it is fogged out
-		if ( PortalIsFoggedOut( p ) ) {
+		if ( PortalIsFoggedOut( p ) || ( r_portalsDistanceCull.GetBool() && d > p->cullFar ) ) {
 			continue;
 		}
 

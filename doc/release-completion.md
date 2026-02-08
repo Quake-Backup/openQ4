@@ -53,6 +53,10 @@ Process:
 - [x] BSE debris parity advanced: debris particles now spawn client moveable entities (`entityDef`) through `game->SpawnClientMoveable` and stop CPU-side particle rendering.
 - [x] BSE shader-parm safety defaults hardened: client effects now initialize RGBA/brightness/timeoffset in `rvClientEffect::Init`, with zeroed-parm fallback in `rvBSE::UpdateFromOwner`.
 - [x] BSE template runtime contract completed by implementing missing declared helpers (`rvParticleTemplate::Compare`, `GetTraceModel`, `GetTrailCount`, `ShutdownStatic`).
+- [x] BSE unlocked-bounce matrix reprojection parity improved: post-impact velocity/position persistence now uses inverse `current->init` axis mapping with origin-delta compensation, avoiding frame-space double transforms in moving/rotating emitter paths.
+- [x] BSE owner-kinematics parity improved: `rvBSE::UpdateFromOwner` now preserves last valid owner velocity across same-timestamp updates instead of zeroing `mCurrentVelocity` on tiny frame deltas.
+- [x] BSE oriented-particle matrix parity improved: oriented quad corner ordering/signs now match decompiled transform basis usage, removing mirrored orientation in rotated oriented-particle paths.
+- [x] Startup command parsing hardening completed: oversized `+wait` stress launches no longer crash during early `StartupVariable` cvar processing (command-line overflow/drop handling and `idCmdArgs::AppendArg` bounds checks tightened).
 
 ## Carry Forward
 

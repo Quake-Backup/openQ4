@@ -326,6 +326,9 @@ void idRenderWorldLocal::ParseInterAreaPortals( idLexer *src ) {
 		int		numPoints, a1, a2;
 		idWinding	*w;
 		portal_t	*p;
+		float		cullNear = 262144.0f;
+		float		cullFar = 262144.0f;
+		idImage* portalImage = NULL;
 
 		numPoints = src->ParseInt();
 		a1 = src->ParseInt();
@@ -340,12 +343,27 @@ void idRenderWorldLocal::ParseInterAreaPortals( idLexer *src ) {
 			(*w)[j][4] = 0;
 		}
 
+		// Quake 4 optional portal fade tuple:
+		// ( fadeImage distanceNear distanceFar )
+		if ( src->PeekTokenString( "(" ) ) {
+			idToken imageToken;
+			src->ExpectTokenString( "(" );
+			src->ExpectAnyToken( &imageToken );
+			portalImage = globalImages->ImageFromFile( imageToken.c_str(), TF_DEFAULT, TR_REPEAT, TD_DEFAULT );
+			cullNear = src->ParseFloat();
+			cullFar = src->ParseFloat();
+			src->ExpectTokenString( ")" );
+		}
+
 		// add the portal to a1
 		p = (portal_t *)R_ClearedStaticAlloc( sizeof( *p ) );
 		p->intoArea = a2;
 		p->doublePortal = &doublePortals[i];
 		p->w = w;
 		p->w->GetPlane( p->plane );
+		p->image = portalImage;
+		p->cullNear = cullNear;
+		p->cullFar = cullFar;
 
 		p->next = portalAreas[a1].portals;
 		portalAreas[a1].portals = p;
@@ -358,6 +376,9 @@ void idRenderWorldLocal::ParseInterAreaPortals( idLexer *src ) {
 		p->doublePortal = &doublePortals[i];
 		p->w = w->Reverse();
 		p->w->GetPlane( p->plane );
+		p->image = portalImage;
+		p->cullNear = cullNear;
+		p->cullFar = cullFar;
 
 		p->next = portalAreas[a2].portals;
 		portalAreas[a2].portals = p;

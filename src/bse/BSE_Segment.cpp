@@ -726,7 +726,7 @@ void rvSegment::AllocateSurface(rvBSE* effect, idRenderModel* model) {
 }
 
 void rvSegment::CreateDecal(rvBSE* effect, float time) {
-	if (!effect || !session || !session->rw) {
+	if (!effect || !session || !session->rw || !bse_render.GetBool()) {
 		return;
 	}
 
@@ -739,6 +739,15 @@ void rvSegment::CreateDecal(rvBSE* effect, float time) {
 	if (!pt || !pt->GetMaterial()) {
 		return;
 	}
+
+	// Keep stock decal projection winding texcoords so renderer-side
+	// texture-axis generation remains valid.
+	static const idVec3 decalWinding[4] = {
+		idVec3(1.0f, 1.0f, 0.0f),
+		idVec3(-1.0f, 1.0f, 0.0f),
+		idVec3(-1.0f, -1.0f, 0.0f),
+		idVec3(1.0f, -1.0f, 0.0f)
+	};
 
 	float sizeParms[3] = { 32.0f, 32.0f, 8.0f };
 	if (pt->mpSpawnSize) {
@@ -758,36 +767,61 @@ void rvSegment::CreateDecal(rvBSE* effect, float time) {
 	idVec3 origin = effect->GetCurrentOrigin();
 	idMat3 axis = effect->GetCurrentAxis();
 
-	idVec3 normal = axis[0];
-	idVec3 right = axis[1];
-	idVec3 up = axis[2];
+	const int decalAxis = idMath::ClampInt(0, 2, st->mDecalAxis);
+	idVec3 normal = axis[decalAxis];
+	if (normal.LengthSqr() <= 1e-8f) {
+		return;
+	}
+	normal.NormalizeFast();
 
-	if (rotateRad != 0.0f) {
-		const float s = idMath::Sin(rotateRad);
-		const float c = idMath::Cos(rotateRad);
-		const idVec3 rotatedRight = right * c - up * s;
-		const idVec3 rotatedUp = right * s + up * c;
-		right = rotatedRight;
-		up = rotatedUp;
+	idVec3 baseRight;
+	idVec3 baseUp;
+	const int tangentAxis0 = (decalAxis + 1) % 3;
+	const int tangentAxis1 = (decalAxis + 2) % 3;
+	baseRight = axis[tangentAxis0];
+	baseRight -= normal * (baseRight * normal);
+	if (baseRight.LengthSqr() <= 1e-8f) {
+		normal.NormalVectors(baseRight, baseUp);
+	}
+	else {
+		baseRight.NormalizeFast();
+		baseUp = normal.Cross(baseRight);
+		baseUp.NormalizeFast();
+
+		// Keep decal winding orientation aligned with the effect axis when possible.
+		if ((baseUp * axis[tangentAxis1]) < 0.0f) {
+			baseRight = -baseRight;
+			baseUp = -baseUp;
+		}
 	}
 
-	const idVec3 halfRight = right * (sizeParms[0] * 0.5f);
-	const idVec3 halfUp = up * (sizeParms[1] * 0.5f);
+	// Match world decal projector tangent orientation so BSE decals
+	// stay stable under arbitrary owner/effect matrix basis.
+	float s = 0.0f;
+	float c = 1.0f;
+	idMath::SinCos(rotateRad, s, c);
+	const idVec3 right = baseRight * c + baseUp * -s;
+	const idVec3 up = baseRight * -s + baseUp * -c;
 
+	const float halfWidth = sizeParms[0] * 0.5f;
+	const float halfHeight = sizeParms[1] * 0.5f;
+	const float depth = sizeParms[2];
+
+	const idVec3 windingOrigin = origin + normal * depth;
 	idFixedWinding winding;
 	winding.Clear();
-	winding += origin + halfRight + halfUp;
-	winding += origin - halfRight + halfUp;
-	winding += origin - halfRight - halfUp;
-	winding += origin + halfRight - halfUp;
+	winding += idVec5(windingOrigin + (right * decalWinding[0].x) * halfWidth + (up * decalWinding[0].y) * halfHeight, idVec2(1.0f, 1.0f));
+	winding += idVec5(windingOrigin + (right * decalWinding[1].x) * halfWidth + (up * decalWinding[1].y) * halfHeight, idVec2(0.0f, 1.0f));
+	winding += idVec5(windingOrigin + (right * decalWinding[2].x) * halfWidth + (up * decalWinding[2].y) * halfHeight, idVec2(0.0f, 0.0f));
+	winding += idVec5(windingOrigin + (right * decalWinding[3].x) * halfWidth + (up * decalWinding[3].y) * halfHeight, idVec2(1.0f, 0.0f));
 
-	const idVec3 projectionOrigin = origin - normal * (sizeParms[2] * 0.5f);
+	const idVec3 projectionOrigin = origin - normal * depth;
 	const int startTimeMs = static_cast<int>(time * 1000.0f);
 	session->rw->ProjectDecalOntoWorld(
 		winding,
 		projectionOrigin,
-		false,
-		sizeParms[2],
+		true,
+		depth * 0.5f,
 		pt->GetMaterial(),
 		startTimeMs);
 }

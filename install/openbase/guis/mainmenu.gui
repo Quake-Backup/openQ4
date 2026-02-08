@@ -19102,6 +19102,7 @@ windowDef Desktop
 			set "pop_b_createAdv_11::visible" "1" ;
 			set "pop_b_createAdv_12::visible" "1" ;
 			set "pop_b_createAdv_13::visible" "1" ;
+			set "si_pure" "0" ;
 			if ( "gui::currentGametype" == 1 ) { // Do not allow buying in Tourney (Tourney = 1)
 				set "pop_b_createAdv_14::visible" "0" ;
 				set "pop_createAdv_b14::matcolor" "$desktop::grey1_4" ;
@@ -19120,7 +19121,7 @@ windowDef Desktop
 			set "pop_createAdv_mods_val::noevents" "0" ;
 			set "pop_createAdv_mapcycle_val::noevents" "0" ;
 			set "pop_createAdv_weapstay_val::noevents" "0" ;
-			set "pop_createAdv_pure_val::noevents" "0" ;
+			set "pop_createAdv_pure_val::noevents" "1" ;
 			set "pop_createAdv_rate_val::noevents" "0" ;
 			set "pop_createAdv_ready_val::noevents" "0" ;
 			set "pop_createAdv_allowSpec_val::noevents" "0" ;

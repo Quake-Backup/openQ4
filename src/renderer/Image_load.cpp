@@ -692,6 +692,9 @@ void idImage::Print() const {
 		case TR_REPEAT:
 			common->Printf( "rept " );
 			break;
+		case TR_MIRRORED_REPEAT:
+			common->Printf( "mrrr " );
+			break;
 		case TR_CLAMP_TO_ZERO:
 			common->Printf( "zero " );
 			break;

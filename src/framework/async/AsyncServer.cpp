@@ -310,6 +310,14 @@ void idAsyncServer::ExecuteMapChange( void ) {
 
 	serverTime = 0;
 
+	// OpenQ4 dev/staging runs from directory overrides (fs_devpath). Keep
+	// multiplayer server startup non-pure to avoid pure-lockdown failures.
+	if ( sessLocal.mapSpawnData.serverInfo.GetInt( "si_pure" ) ) {
+		sessLocal.mapSpawnData.serverInfo.SetInt( "si_pure", 0 );
+		cvarSystem->SetCVarBool( "si_pure", false );
+		common->Printf( "OpenQ4: forcing si_pure 0 for local server startup\n" );
+	}
+
 	// initialize game id and time
 	gameInitId ^= Sys_Milliseconds();	// NOTE: make sure the gameInitId is always a positive number because negative numbers have special meaning
 	gameFrame = 0;

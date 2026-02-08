@@ -125,6 +125,23 @@ ID_INLINE void BuildPerpBasis(const idVec3& forward, idVec3& right, idVec3& up) 
 	}
 }
 
+ID_INLINE idMat3 BuildInitToCurrentAxis(const rvBSE* effect, const idMat3& initAxis) {
+	if (!effect) {
+		return initAxis;
+	}
+	// Vanilla converts unlocked particle axes with matrix-divide semantics.
+	return initAxis / effect->GetCurrentAxis();
+}
+
+ID_INLINE idMat3 BuildCurrentToInitAxis(const rvBSE* effect, const idMat3& initAxis) {
+	if (!effect) {
+		return initAxis;
+	}
+	// Inverse mapping of BuildInitToCurrentAxis, used when persisting
+	// current-frame results back into the particle's original init frame.
+	return effect->GetCurrentAxis() / initAxis;
+}
+
 ID_INLINE void BSETraceRenderDrop(const char* typeName, const rvParticle* particle, float time, const char* reason, float value0 = 0.0f, float value1 = 0.0f) {
 	static int bseRenderDropTraceCount = 0;
 	if (!particle || bse_frameCounters.GetInteger() < 2 || bseRenderDropTraceCount >= 256) {
@@ -384,16 +401,19 @@ void rvParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birthTime,
 	HandleEndOrigin(effect, pt, &normal, &centre);
 
 	SetLocked(st->GetLocked());
-	if (initOffset != vec3_origin) {
-		mInitPos += initOffset;
-	}
+	// Legacy particle flag bit 0x80000 is set for trail-child segments in
+	// segment-template finish and controls use of parent-supplied init transform.
+	const bool transformParent = (pt->GetFlags() & PTFLAG_LINKED) != 0;
 	if (GetLocked()) {
 		mInitEffectPos = vec3_origin;
 		mInitAxis = initAxis;
 	}
 	else {
 		mInitEffectPos = effect->GetCurrentOrigin();
-		mInitAxis = effect->GetCurrentAxis() * initAxis;
+		mInitAxis = effect->GetCurrentAxis();
+		// Match vanilla spawn timing: compensate for owner interpolation so
+		// particles start in the frame-accurate local position at birthTime.
+		mInitPos -= mInitAxis * effect->GetInterpolatedOffset(birthTime);
 	}
 	if (pt->mpSpawnOffset && pt->mpSpawnOffset->mSpawnType != SPF_NONE_0) {
 		SetHasOffset(true);
@@ -417,6 +437,9 @@ void rvParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birthTime,
 		pt->mpSpawnVelocity->Spawn(mVelocity.ToFloatPtr(), *pt->mpSpawnVelocity, &normal, &centre);
 		if (IsScalarDomain(pt->mpSpawnVelocity)) {
 			mVelocity = direction * mVelocity.x;
+		}
+		if (transformParent) {
+			mVelocity = initAxis * mVelocity;
 		}
 	}
 	else {
@@ -444,6 +467,9 @@ void rvParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birthTime,
 
 	if (pt->GetParentVelocity()) {
 		mVelocity += effect->GetCurrentVelocity();
+	}
+	if (transformParent) {
+		mInitPos += initOffset;
 	}
 
 	const float duration = idMath::ClampFloat(BSE_TIME_EPSILON, BSE_MAX_DURATION, pt->GetDuration());
@@ -640,12 +666,15 @@ bool rvParticle::GetEvaluationTime(float time, float& evalTime, bool infinite) {
 }
 
 void rvParticle::EvaluateVelocity(const rvBSE* effect, idVec3& velocity, float time) {
-	const float t = Max(0.0f, time - mStartTime);
+	// Vanilla updates particle kinematics in segments anchored to mMotionStartTime.
+	const float t = Max(0.0f, time - mMotionStartTime);
 	const float damp = Max(0.0f, 1.0f - mFriction * t);
 	idVec3 localVelocity = (mVelocity + mAcceleration * t) * damp;
 	if (effect && !GetLocked()) {
-		const idVec3 worldVelocity = mInitAxis * localVelocity;
-		velocity = effect->GetCurrentAxisTransposed() * worldVelocity;
+		// Keep unlocked velocity conversion in matrix-divide space (init/current),
+		// matching vanilla transform semantics used by length/model/electricity paths.
+		const idMat3 initToCurrent = BuildInitToCurrentAxis(effect, mInitAxis);
+		velocity = initToCurrent * localVelocity;
 	}
 	else {
 		velocity = localVelocity;
@@ -653,7 +682,8 @@ void rvParticle::EvaluateVelocity(const rvBSE* effect, idVec3& velocity, float t
 }
 
 void rvParticle::EvaluatePosition(const rvBSE* effect, rvParticleTemplate* pt, idVec3& pos, float time) {
-	const float t = Max(0.0f, time - mStartTime);
+	// Vanilla updates particle kinematics in segments anchored to mMotionStartTime.
+	const float t = Max(0.0f, time - mMotionStartTime);
 	const float damp = Max(0.0f, 1.0f - mFriction * t);
 	pos = mInitPos + (mVelocity * t + mAcceleration * (0.5f * t * t)) * damp;
 
@@ -665,8 +695,13 @@ void rvParticle::EvaluatePosition(const rvBSE* effect, rvParticleTemplate* pt, i
 	}
 
 	if (effect && !GetLocked()) {
-		const idVec3 worldPos = mInitEffectPos + mInitAxis * pos;
-		pos = effect->GetCurrentAxisTransposed() * (worldPos - effect->GetCurrentOrigin());
+		// Avoid world-space add/subtract rebasing here; convert directly with
+		// matrix-divide semantics plus explicit origin delta, as in vanilla.
+		const idMat3 initToCurrent = BuildInitToCurrentAxis(effect, mInitAxis);
+		pos = initToCurrent * pos;
+
+		const idVec3 delta = mInitEffectPos - effect->GetCurrentOrigin();
+		pos += effect->GetCurrentAxisTransposed() * delta;
 	}
 
 	mPosition = pos;
@@ -750,27 +785,46 @@ void rvParticle::Bounce(rvBSE* effect, rvParticleTemplate* pt, idVec3 endPos, id
 		return;
 	}
 
-	const float sampleTime = Max(0.0f, time - mMotionStartTime);
-	idVec3 oldVelocity;
-	EvaluateVelocity(effect, oldVelocity, mStartTime + sampleTime);
+	const idMat3 currentAxis = effect->GetCurrentAxis();
+	const idMat3 currentAxisTransposed = effect->GetCurrentAxisTransposed();
 
-	idVec3 worldVelocity = effect->GetCurrentAxis() * oldVelocity;
+	idVec3 oldVelocity;
+	EvaluateVelocity(effect, oldVelocity, time);
+
+	idVec3 worldVelocity = currentAxis * oldVelocity;
 	const float proj = worldVelocity * normal;
 	worldVelocity -= (proj + proj) * normal;
 	worldVelocity *= pt->mBounce;
 
 	const float speedSqr = worldVelocity.LengthSqr();
-	if (speedSqr < BSE_BOUNCE_LIMIT * 0.01f) {
-		SetStationary(true);
-		worldVelocity.Zero();
+	if (speedSqr < BSE_BOUNCE_LIMIT) {
+		// Match vanilla settle behavior: only stick when the impact normal is
+		// sufficiently opposite gravity direction (roughly "floor" contacts).
+		const float gravityDot = normal * effect->GetGravityDir();
+		if (gravityDot < -idMath::SQRT_1OVER2) {
+			SetStationary(true);
+			worldVelocity.Zero();
+		}
 	}
 
-	mInitEffectPos = effect->GetCurrentOrigin();
-	mInitAxis = effect->GetCurrentAxis();
-	mVelocity = effect->GetCurrentAxisTransposed() * worldVelocity;
+	const idVec3 currentLocalVelocity = currentAxisTransposed * worldVelocity;
+	const idVec3 currentLocalPos = currentAxisTransposed * (endPos - effect->GetCurrentOrigin());
+
+	if (GetLocked()) {
+		mVelocity = currentLocalVelocity;
+		mInitPos = currentLocalPos;
+	}
+	else {
+		// Preserve the original unlocked init frame and persist bounce results
+		// via the exact inverse of EvaluatePosition/EvaluateVelocity's
+		// init->current mapping.
+		const idMat3 currentToInit = BuildCurrentToInitAxis(effect, mInitAxis);
+		const idVec3 originDelta = mInitEffectPos - effect->GetCurrentOrigin();
+		const idVec3 currentOriginOffset = currentAxisTransposed * originDelta;
+		mVelocity = currentToInit * currentLocalVelocity;
+		mInitPos = currentToInit * (currentLocalPos - currentOriginOffset);
+	}
 	mMotionStartTime = time;
-	mInitPos = effect->GetCurrentAxisTransposed() * (endPos - effect->GetCurrentOrigin());
-	mInitPos += normal * BSE_TRACE_OFFSET;
 }
 
 void rvParticle::CheckTimeoutEffect(rvBSE* effect, rvSegmentTemplate* st, float time) {
@@ -957,14 +1011,15 @@ void rvParticle::RenderMotion(rvBSE* effect, rvParticleTemplate* pt, srfTriangle
 	idVec3 position;
 	EvaluatePosition(effect, pt, position, time);
 
-	idVec3 motionDir = (position - mInitPos).Cross(mVelocity);
+	const idMat3 ownerAxisTranspose = owner->axis.Transpose();
+	const idVec3 localView = ownerAxisTranspose * (effect->GetViewOrg() - owner->origin);
+	const idVec3 toView = localView - mInitPos;
+	idVec3 motionDir = mVelocity.Cross(toView);
 	if (motionDir.LengthSqr() <= 1e-6f) {
-		motionDir = idVec3(0.0f, 0.0f, 1.0f).Cross(position - mInitPos);
+		// Vanilla fallback uses world up in owner-local space when velocity and view vectors align.
+		motionDir = idVec3(0.0f, 1.0f, 0.0f).Cross(toView);
 	}
-	if (motionDir.LengthSqr() <= 1e-6f) {
-		motionDir = effect->GetViewAxis()[2];
-	}
-	else {
+	if (motionDir.LengthSqr() > 1e-6f) {
 		motionDir.NormalizeFast();
 	}
 	const idVec3 halfWidth = motionDir * (idMath::Fabs(width) * 0.5f * Max(0.001f, trailScale));
@@ -1132,7 +1187,8 @@ bool rvLineParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, const i
 	idVec3 length(0.0f, 0.0f, 1.0f);
 	EvaluateLength(pt->mpLengthEnvelope, evalTime, oneOverDuration, length);
 	if (!GetLocked()) {
-		length = mInitAxis * length;
+		const idMat3 initToCurrent = BuildInitToCurrentAxis(effect, mInitAxis);
+		length = initToCurrent * length;
 	}
 	if (GetGeneratedLine()) {
 		idVec3 velocity;
@@ -1151,11 +1207,9 @@ bool rvLineParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, const i
 	}
 
 	const idVec3 end = pos + length;
-	idVec3 side = view[0].Cross(length);
-	if (side.LengthSqr() < 1e-6f) {
-		side = view[2];
-	}
-	else {
+	const idVec3 toView = view[0] - (pos + length * 0.5f);
+	idVec3 side = length.Cross(toView);
+	if (side.LengthSqr() > 1e-6f) {
 		side.NormalizeFast();
 	}
 	side *= width;
@@ -1244,17 +1298,25 @@ bool rvOrientedParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, con
 
 	idMat3 transform;
 	rvAngles(rotation[0], rotation[1], rotation[2]).ToMat3(transform);
-	const idVec3 right = transform[0] * (idMath::Fabs(size[0]) * 0.5f);
-	const idVec3 up = transform[1] * (idMath::Fabs(size[1]) * 0.5f);
+	const idVec3 right = transform[1] * size[0];
+	const idVec3 up = transform[2] * size[1];
 
 	dword rgba = HandleTint(effect, tint, 1.0f);
-	AppendQuad(
-		tri,
-		position - right - up,
-		position + right - up,
-		position + right + up,
-		position - right + up,
-		rgba);
+	const int base = tri->numVerts;
+	SetDrawVert(tri->verts[base + 0], position - right, 0.0f, 0.0f, rgba);
+	SetDrawVert(tri->verts[base + 1], position - up, 1.0f, 0.0f, rgba);
+	SetDrawVert(tri->verts[base + 2], position + right, 1.0f, 1.0f, rgba);
+	SetDrawVert(tri->verts[base + 3], position + up, 0.0f, 1.0f, rgba);
+
+	const int indexBase = tri->numIndexes;
+	tri->indexes[indexBase + 0] = base + 0;
+	tri->indexes[indexBase + 1] = base + 1;
+	tri->indexes[indexBase + 2] = base + 2;
+	tri->indexes[indexBase + 3] = base + 0;
+	tri->indexes[indexBase + 4] = base + 2;
+	tri->indexes[indexBase + 5] = base + 3;
+	tri->numVerts += 4;
+	tri->numIndexes += 6;
 	return true;
 }
 
@@ -1299,17 +1361,21 @@ bool rvModelParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, const 
 
 	idMat3 rotationMat;
 	rvAngles(rotation[0], rotation[1], rotation[2]).ToMat3(rotationMat);
-	idMat3 transform = mInitAxis * rotationMat;
+	idMat3 transform = rotationMat;
+	if (!GetLocked()) {
+		const idMat3 initToCurrent = BuildInitToCurrentAxis(effect, mInitAxis);
+		transform = transform * initToCurrent;
+	}
 
 	for (int i = 0; i < src->numVerts; ++i) {
 		idDrawVert& dst = tri->verts[baseVert + i];
 		dst = src->verts[i];
 
-		idVec3 p = src->verts[i].xyz;
+		idVec3 p = transform * src->verts[i].xyz;
 		p.x *= size[0];
 		p.y *= size[1];
 		p.z *= size[2];
-		dst.xyz = position + transform * p;
+		dst.xyz = position + p;
 
 		dst.normal = transform * dst.normal;
 		dst.tangents[0] = transform * dst.tangents[0];
@@ -1523,7 +1589,8 @@ bool rvElectricityParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, 
 	EvaluatePosition(effect, pt, position, time);
 
 	if (!GetLocked()) {
-		length = mInitAxis * length;
+		const idMat3 initToCurrent = BuildInitToCurrentAxis(effect, mInitAxis);
+		length = initToCurrent * length;
 	}
 
 	if (GetGeneratedLine()) {

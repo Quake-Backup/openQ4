@@ -836,21 +836,43 @@ idCommonLocal::ParseCommandLine
 ==================
 */
 void idCommonLocal::ParseCommandLine( int argc, const char **argv ) {
-	int i, current_count;
+	int i;
+	bool droppedCommands;
+	bool droppingCurrentCommand;
 
 	com_numConsoleLines = 0;
-	current_count = 0;
+	droppedCommands = false;
+	droppingCurrentCommand = false;
 	// API says no program path
 	for ( i = 0; i < argc; i++ ) {
 		if ( argv[ i ][ 0 ] == '+' ) {
+			droppingCurrentCommand = false;
+			if ( com_numConsoleLines >= MAX_CONSOLE_LINES ) {
+				droppedCommands = true;
+				droppingCurrentCommand = true;
+				continue;
+			}
+			com_consoleLines[ com_numConsoleLines ].Clear();
+			com_consoleLines[ com_numConsoleLines ].AppendArg( argv[ i ] + 1 );
 			com_numConsoleLines++;
-			com_consoleLines[ com_numConsoleLines-1 ].AppendArg( argv[ i ] + 1 );
 		} else {
+			if ( droppingCurrentCommand ) {
+				continue;
+			}
 			if ( !com_numConsoleLines ) {
+				if ( com_numConsoleLines >= MAX_CONSOLE_LINES ) {
+					droppedCommands = true;
+					continue;
+				}
 				com_numConsoleLines++;
+				com_consoleLines[ com_numConsoleLines - 1 ].Clear();
 			}
 			com_consoleLines[ com_numConsoleLines-1 ].AppendArg( argv[ i ] );
 		}
+	}
+
+	if ( droppedCommands ) {
+		Printf( "^3WARNING: command line contains more than %d startup commands; extra commands were ignored\n", MAX_CONSOLE_LINES );
 	}
 }
 
@@ -940,15 +962,26 @@ void idCommonLocal::StartupVariable( const char *match, bool once ) {
 
 	i = 0;
 	while (	i < com_numConsoleLines ) {
-		if ( strcmp( com_consoleLines[ i ].Argv( 0 ), "set" ) ) {
+		const int lineArgc = com_consoleLines[ i ].Argc();
+		if ( lineArgc < 2 ) {
+			i++;
+			continue;
+		}
+
+		if ( idStr::Cmp( com_consoleLines[ i ].Argv( 0 ), "set" ) ) {
 			i++;
 			continue;
 		}
 
 		s = com_consoleLines[ i ].Argv(1);
+		if ( !s || !s[0] ) {
+			i++;
+			continue;
+		}
 
 		if ( !match || !idStr::Icmp( s, match ) ) {
-			cvarSystem->SetCVarString( s, com_consoleLines[ i ].Argv( 2 ) );
+			const char *value = ( lineArgc >= 3 ) ? com_consoleLines[ i ].Argv( 2 ) : "";
+			cvarSystem->SetCVarString( s, value );
 			if ( once ) {
 				// kill the line
 				int j = i + 1;

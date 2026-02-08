@@ -272,8 +272,8 @@ void rvBSE::UpdateAttenuation()
 	const float originDistance = (mCurrentOrigin - viewOrigin).LengthFast();
 	mOriginDistanceToCamera = idMath::ClampFloat(1.0f, 131072.0f, originDistance);
 
-	// Transform the camera into effect local space and measure against local bounds.
-	const idVec3 localView = mCurrentAxisTransposed * (viewOrigin - mCurrentOrigin);
+	// Match vanilla BSE attenuation space conversion (uses current axis here).
+	const idVec3 localView = mCurrentAxis * (viewOrigin - mCurrentOrigin);
 	const float shortest = mCurrentLocalBounds.ShortestDistance(localView);
 	mShortestDistanceToCamera = idMath::ClampFloat(1.0f, 131072.0f, shortest);
 }
@@ -684,9 +684,8 @@ void __thiscall rvBSE::UpdateFromOwner(renderEffect_s* parms, float time, bool i
 	if (dt > 0.002f) {
 		mCurrentVelocity = (mCurrentOrigin - mLastOrigin) * (1.0f / dt);
 	}
-	else {
-		mCurrentVelocity.Zero();
-	}
+	// Vanilla keeps the last valid owner velocity when multiple updates land
+	// on the same timestamp; avoid zeroing in that case.
 
 	mGravity = parms->gravity;
 	mGravityDir = mGravity;

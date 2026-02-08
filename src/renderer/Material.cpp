@@ -77,6 +77,8 @@ idMaterial::CommonInit
 void idMaterial::CommonInit() {
 	desc = "<none>";
 	renderBump = "";
+	portalDistanceNear = 262144.0f;
+	portalDistanceFar = 262144.0f;
 	contentFlags = CONTENTS_SOLID;
 	surfaceFlags = SURFTYPE_NONE;
 	materialFlags = 0;
@@ -113,6 +115,13 @@ void idMaterial::CommonInit() {
 	portalSky = false;
 // jmarshall - quake 4
 	materialType = nullptr;
+	materialTypeArray = nullptr;
+	materialTypeArrayName.Clear();
+	MTAWidth = 0;
+	MTAHeight = 0;
+	useCount = 0;
+	globalUseCount = 0;
+	portalImage = nullptr;
 // jmarshall end
 
 	decalInfo.stayTime = 10000;
@@ -261,6 +270,7 @@ static infoParm_t	infoParms[] = {
 	{"collision",	0,	SURF_COLLISION,	0 },
 	{"noimpact",	0,	SURF_NOIMPACT,	0 },		// don't make impact explosions or marks
 	{"nodamage",	0,	SURF_NODAMAGE,	0 },		// no falling damage when hitting
+	{"bounce",		0,	SURF_BOUNCE,	0 },		// projectiles bounce off this surface
 	{"ladder",		0,	SURF_LADDER,	0 },		// climbable
 	{"nosteps",		0,	SURF_NOSTEPS,	0 },		// no footsteps
 
@@ -1024,6 +1034,10 @@ void idMaterial::ParseFragmentMap( idLexer &src, newShaderStage_t *newStage ) {
 			trp = TR_CLAMP_TO_ZERO_ALPHA;
 			continue;
 		}
+		if ( !token.Icmp( "mirroredrepeat" ) ) {
+			trp = TR_MIRRORED_REPEAT;
+			continue;
+		}
 		if ( !token.Icmp( "forceHighQuality" ) ) {
 			//td = TD_HIGH_QUALITY;
 			continue;
@@ -1298,6 +1312,10 @@ void idMaterial::ParseStage( idLexer &src, const textureRepeat_t trpDefault ) {
 		}
 		if ( !token.Icmp( "alphazeroclamp" ) ) {
 			trp = TR_CLAMP_TO_ZERO_ALPHA;
+			continue;
+		}
+		if ( !token.Icmp( "mirroredrepeat" ) ) {
+			trp = TR_MIRRORED_REPEAT;
 			continue;
 		}
 		if ( !token.Icmp( "uncompressed" ) || !token.Icmp( "highquality" ) ) {
@@ -1948,6 +1966,23 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 			continue;
 		}
 // jmarshall end
+		else if ( !token.Icmp( "portalDistanceNear" ) ) {
+			portalDistanceNear = src.ParseFloat();
+			continue;
+		}
+		else if ( !token.Icmp( "portalDistanceFar" ) ) {
+			portalDistanceFar = src.ParseFloat();
+			continue;
+		}
+		else if ( !token.Icmp( "portalImage" ) ) {
+			if ( !src.ReadTokenOnLine( &token ) ) {
+				src.Warning( "missing parameter for 'portalImage' in '%s'", GetName() );
+				continue;
+			}
+			portalImage = globalImages->ImageFromFile( token.c_str(), TF_DEFAULT, TR_REPEAT, TD_DEFAULT );
+			src.SkipRestOfLine();
+			continue;
+		}
 		else if ( !token.Icmp( "portalSky" ) ) {
 			portalSky = true;
 			continue;
@@ -1995,6 +2030,11 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 		// global clamp
 		else if ( !token.Icmp( "alphazeroclamp" ) ) {
 			trpDefault = TR_CLAMP_TO_ZERO;
+			continue;
+		}
+		// global mirrored repeat
+		else if ( !token.Icmp( "mirroredrepeat" ) ) {
+			trpDefault = TR_MIRRORED_REPEAT;
 			continue;
 		}
 		// forceOpaque is used for skies-behind-windows
@@ -2477,6 +2517,11 @@ bool idMaterial::Parse( const char *text, const int textLength ) {
 		}
 	}
 
+	// Match Quake 4: distance-cull portal settings implicitly use a black fade image.
+	if ( ( portalDistanceNear < 262144.0f || portalDistanceFar < 262144.0f ) && !portalImage ) {
+		portalImage = globalImages->blackImage;
+	}
+
 	// add a tiny offset to the sort orders, so that different materials
 	// that have the same sort value will at least sort consistantly, instead
 	// of flickering back and forth
@@ -2584,6 +2629,10 @@ void idMaterial::AddReference() {
 		if ( s->texture.image ) {
 			s->texture.image->AddReference();
 		}
+	}
+
+	if ( portalImage ) {
+		portalImage->AddReference();
 	}
 }
 
@@ -2935,5 +2984,9 @@ void idMaterial::ReloadImages( bool force ) const
 		} else if ( stages[i].texture.image ) {
 			stages[i].texture.image->Reload( force );
 		}
+	}
+
+	if ( portalImage ) {
+		portalImage->Reload( force );
 	}
 }

@@ -82,9 +82,9 @@ idCVar si_teamDamage(				"si_teamDamage",			"0",			CVAR_GAME | CVAR_SERVERINFO |
 idCVar si_warmup(					"si_warmup",				"1",			CVAR_GAME | CVAR_SERVERINFO | PC_CVAR_ARCHIVE | CVAR_BOOL, "do pre-game warmup" );
 idCVar si_usePass(					"si_usePass",				"0",			CVAR_GAME | CVAR_SERVERINFO | PC_CVAR_ARCHIVE | CVAR_BOOL, "enable client password checking" );
 #ifdef _MPBETA
-	idCVar si_pure(					"si_pure",					"1",			CVAR_GAME | CVAR_SERVERINFO | CVAR_BOOL | CVAR_ROM, "server is pure and does not allow modified data" );
+	idCVar si_pure(					"si_pure",					"0",			CVAR_GAME | CVAR_SERVERINFO | CVAR_BOOL | CVAR_ROM, "server is pure and does not allow modified data" );
 #else
-	idCVar si_pure(					"si_pure",					"1",			CVAR_GAME | CVAR_SERVERINFO | CVAR_BOOL, "server is pure and does not allow modified data" );
+	idCVar si_pure(					"si_pure",					"0",			CVAR_GAME | CVAR_SERVERINFO | CVAR_BOOL, "server is pure and does not allow modified data" );
 #endif // _MPBETA
 idCVar si_spectators(				"si_spectators",			"1",			CVAR_GAME | CVAR_SERVERINFO | PC_CVAR_ARCHIVE | CVAR_BOOL, "allow spectators or require all clients to play" );
 idCVar si_shuffle(					"si_shuffle",				"0",			CVAR_GAME | CVAR_SERVERINFO | PC_CVAR_ARCHIVE | CVAR_BOOL, "shuffle teams after each round" );

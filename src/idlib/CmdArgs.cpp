@@ -147,15 +147,35 @@ idCmdArgs::AppendArg
 ============
 */
 void idCmdArgs::AppendArg( const char *text ) {
-	if ( !argc ) {
-		argc = 1;
+	if ( !text ) {
+		text = "";
+	}
+
+	// Harden against malformed command-line input paths that might feed
+	// pathological token counts into a single command.
+	if ( argc < 0 || argc > MAX_COMMAND_ARGS ) {
+		argc = 0;
+	}
+
+	if ( argc == 0 ) {
 		argv[ 0 ] = tokenized;
 		idStr::Copynz( tokenized, text, sizeof( tokenized ) );
-	} else {
-		argv[ argc ] = argv[ argc-1 ] + strlen( argv[ argc-1 ] ) + 1;
-		idStr::Copynz( argv[ argc ], text, sizeof( tokenized ) - ( argv[ argc ] - tokenized ) );
-		argc++;
+		argc = 1;
+		return;
 	}
+
+	if ( argc >= MAX_COMMAND_ARGS ) {
+		return;
+	}
+
+	char *next = argv[ argc - 1 ] + strlen( argv[ argc - 1 ] ) + 1;
+	if ( next < tokenized || next >= tokenized + sizeof( tokenized ) ) {
+		return;
+	}
+
+	argv[ argc ] = next;
+	idStr::Copynz( argv[ argc ], text, sizeof( tokenized ) - ( argv[ argc ] - tokenized ) );
+	argc++;
 }
 
 /*

@@ -905,6 +905,9 @@ static void FindInterAreaPortals_r( node_t *node ) {
 			iap->area1 = p->nodes[0]->area;
 		}
 		iap->side = side;
+		iap->cullNear = side->material->GetPortalNear();
+		iap->cullFar = side->material->GetPortalFar();
+		iap->portalImage = side->material->GetPortalImage();
 
 	}
 }

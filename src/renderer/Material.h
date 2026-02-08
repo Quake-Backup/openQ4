@@ -50,6 +50,7 @@ typedef enum {
 
 typedef enum {
 	TR_REPEAT,
+	TR_MIRRORED_REPEAT,
 	TR_CLAMP,
 	TR_CLAMP_TO_BORDER,		// this should replace TR_CLAMP_TO_ZERO and TR_CLAMP_TO_ZERO_ALPHA,
 							// but I don't want to risk changing it right now
@@ -576,6 +577,9 @@ public:
 	int					Spectrum(void) const { return spectrum; }
 
 	float				GetPolygonOffset(void) const { return polygonOffset; }
+	float				GetPortalNear(void) const { return portalDistanceNear; }
+	float				GetPortalFar(void) const { return portalDistanceFar; }
+	const idImage *		GetPortalImage(void) const { return portalImage; }
 
 	float				GetSurfaceArea(void) const { return surfaceArea; }
 	void				AddToSurfaceArea(float area) { surfaceArea += area; }

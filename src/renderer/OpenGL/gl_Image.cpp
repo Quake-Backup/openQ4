@@ -239,6 +239,10 @@ void idImage::SetTexParameters() {
 			glTexParameterf( target, GL_TEXTURE_WRAP_S, GL_REPEAT );
 			glTexParameterf( target, GL_TEXTURE_WRAP_T, GL_REPEAT );
 			break;
+		case TR_MIRRORED_REPEAT:
+			glTexParameterf( target, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT );
+			glTexParameterf( target, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT );
+			break;
 		case TR_CLAMP_TO_ZERO: {
 			float color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 			glTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, color );

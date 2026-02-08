@@ -930,6 +930,7 @@ extern idCVar r_useTwoSidedStencil;		// 1 = do stencil shadows in one pass with 
 extern idCVar r_useInfiniteFarZ;		// 1 = use the no-far-clip-plane trick
 extern idCVar r_useScissor;				// 1 = scissor clip as portals and lights are processed
 extern idCVar r_usePortals;				// 1 = use portals to perform area culling, otherwise draw everything
+extern idCVar r_portalsDistanceCull;	// 1 = enable distance-cull checks from portal fade data
 extern idCVar r_useStateCaching;		// avoid redundant state changes in GL_*() calls
 extern idCVar r_useCombinerDisplayLists;// if 1, put all nvidia register combiner programming in display lists
 extern idCVar r_useVertexBuffers;		// if 0, don't use ARB_vertex_buffer_object for vertexes

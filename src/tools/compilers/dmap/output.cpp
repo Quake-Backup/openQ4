@@ -584,7 +584,7 @@ static void WriteOutputPortals( uEntity_t *e ) {
 
 	procFile->WriteFloatString( "interAreaPortals { /* numAreas = */ %i /* numIAP = */ %i\n\n", 
 		e->numAreas, numInterAreaPortals );
-	procFile->WriteFloatString( "/* interAreaPortal format is: numPoints positiveSideArea negativeSideArea ( point) ... */\n" );
+	procFile->WriteFloatString( "/* interAreaPortal format is: numPoints positiveSideArea negativeSideArea ( point ) ... ( point ) [( fadeImage distanceNear distanceFar )] */\n" );
 	for ( i = 0 ; i < numInterAreaPortals ; i++ ) {
 		iap = &interAreaPortals[i];
 		w = iap->side->winding;
@@ -592,6 +592,13 @@ static void WriteOutputPortals( uEntity_t *e ) {
 		for ( j = 0 ; j < w->GetNumPoints() ; j++ ) {
 			Write1DMatrix( procFile, 3, (*w)[j].ToFloatPtr() );
 		}
+
+		if ( iap->portalImage ) {
+			procFile->WriteFloatString( "( \"%s\" %.2f %.2f )", iap->portalImage->GetName(), iap->cullNear, iap->cullFar );
+		} else if ( iap->cullNear < 262144.0f || iap->cullFar < 262144.0f ) {
+			procFile->WriteFloatString( "( \"_black\" %.2f %.2f )", iap->cullNear, iap->cullFar );
+		}
+
 		procFile->WriteFloatString("\n" );
 	}
 
