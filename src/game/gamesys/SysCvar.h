@@ -302,6 +302,9 @@ extern idCVar	g_brassTime;
 extern idCVar	g_gun_x;
 extern idCVar	g_gun_y;
 extern idCVar	g_gun_z;
+extern idCVar	g_weaponFovEffect;
+extern idCVar	g_gunViewFov;
+extern idCVar	g_gunViewPosAdjust;
 // RAVEN BEGIN
 // bdube: cvar for messing with foreshortening
 extern idCVar	g_gun_pitch;

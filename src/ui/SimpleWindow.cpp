@@ -197,12 +197,14 @@ void idSimpleWindow::CalcClientRect(float xofs, float yofs) {
 	drawRect.x += xofs;
 	drawRect.y += yofs;
 
-	if ( dc != NULL ) {
+	const bool applyScreenAlignX = ( mParent == NULL ) || ( ( mParent->GetFlags() & WIN_DESKTOP ) != 0 ) || ( mParent->GetScreenAlignX() == idWindow::SCREEN_ALIGN_X_MIDDLE );
+	const bool applyScreenAlignY = ( mParent == NULL ) || ( ( mParent->GetFlags() & WIN_DESKTOP ) != 0 ) || ( mParent->GetScreenAlignY() == idWindow::SCREEN_ALIGN_Y_MIDDLE );
+	if ( dc != NULL && ( applyScreenAlignX || applyScreenAlignY ) ) {
 		float xExpand = 0.0f;
 		float yExpand = 0.0f;
 		dc->GetVirtualScreenExpansion( forceAspectWidth, forceAspectHeight, xExpand, yExpand );
 
-		if ( xExpand > 0.0f ) {
+		if ( xExpand > 0.0f && applyScreenAlignX ) {
 			if ( screenAlignX == idWindow::SCREEN_ALIGN_X_LEFT ) {
 				drawRect.x -= xExpand;
 			} else if ( screenAlignX == idWindow::SCREEN_ALIGN_X_RIGHT ) {
@@ -210,7 +212,7 @@ void idSimpleWindow::CalcClientRect(float xofs, float yofs) {
 			}
 		}
 
-		if ( yExpand > 0.0f ) {
+		if ( yExpand > 0.0f && applyScreenAlignY ) {
 			if ( screenAlignY == idWindow::SCREEN_ALIGN_Y_TOP ) {
 				drawRect.y -= yExpand;
 			} else if ( screenAlignY == idWindow::SCREEN_ALIGN_Y_BOTTOM ) {

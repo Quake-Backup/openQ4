@@ -244,6 +244,8 @@ public:
 	void SetFlag(unsigned int f);
 	void ClearFlag(unsigned int f);
 	unsigned GetFlags() {return flags;};
+	unsigned char GetScreenAlignX() const { return screenAlignX; }
+	unsigned char GetScreenAlignY() const { return screenAlignY; }
 	void Move(float x, float y);
 	void BringToTop(idWindow *w);
 	void Adjust(float xd, float yd);

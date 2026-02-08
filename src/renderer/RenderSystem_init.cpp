@@ -51,10 +51,11 @@ idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVA
 idCVar r_mode( "r_mode", "3", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "video mode number" );
 idCVar r_displayRefresh( "r_displayRefresh", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_NOCHEAT, "optional display refresh rate option for vid mode", 0.0f, 200.0f );
 idCVar r_fullscreen( "r_fullscreen", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "0 = windowed, 1 = full screen" );
+idCVar r_fullscreenDesktop( "r_fullscreenDesktop", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "1 = native desktop fullscreen, 0 = exclusive mode using r_mode/r_customWidth/r_customHeight" );
 idCVar r_borderless( "r_borderless", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "1 = borderless window mode when r_fullscreen is 0" );
 idCVar r_windowWidth( "r_windowWidth", "1280", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "windowed mode width" );
 idCVar r_windowHeight( "r_windowHeight", "720", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "windowed mode height" );
-idCVar r_aspectRatio( "r_aspectRatio", "-1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "aspect ratio: -1 = auto, 0 = 4:3, 1 = 16:9, 2 = 16:10" );
+idCVar r_aspectRatio( "r_aspectRatio", "-1", CVAR_RENDERER | CVAR_INTEGER, "deprecated: aspect ratio is now always automatic" );
 idCVar r_customWidth( "r_customWidth", "720", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "custom screen width. set r_mode to -1 to activate" );
 idCVar r_customHeight( "r_customHeight", "486", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "custom screen height. set r_mode to -1 to activate" );
 idCVar r_singleTriangle( "r_singleTriangle", "0", CVAR_RENDERER | CVAR_BOOL, "only draw a single triangle per primitive" );
@@ -423,8 +424,17 @@ typedef struct vidmode_s {
 } vidmode_t;
 
 vidmode_t r_vidModes[] = {
-    { "Mode  0: 1280x720",		1280,   720 },
-    { "Mode  1: 1920x1080",		1920,	1080 }    
+	{ "Mode  0: 1280x720 (16:9)",		1280,	720 },
+	{ "Mode  1: 1366x768 (16:9)",		1366,	768 },
+	{ "Mode  2: 1600x900 (16:9)",		1600,	900 },
+	{ "Mode  3: 1920x1080 (16:9)",		1920,	1080 },
+	{ "Mode  4: 1920x1200 (16:10)",		1920,	1200 },
+	{ "Mode  5: 2560x1080 (21:9)",		2560,	1080 },
+	{ "Mode  6: 2560x1440 (16:9)",		2560,	1440 },
+	{ "Mode  7: 3440x1440 (21:9)",		3440,	1440 },
+	{ "Mode  8: 3840x2160 (16:9)",		3840,	2160 },
+	{ "Mode  9: 5120x1440 (32:9)",		5120,	1440 },
+	{ "Mode 10: 5120x2880 (16:9)",		5120,	2880 }
 };
 static int	s_numVidModes = ( sizeof( r_vidModes ) / sizeof( r_vidModes[0] ) );
 
@@ -434,17 +444,38 @@ bool R_GetModeInfo( int *width, int *height, int mode ) {
 static bool R_GetModeInfo( int *width, int *height, int mode ) {
 #endif
 	vidmode_t	*vm;
+	const int originalMode = mode;
 
-    if ( mode < -1 ) {
-        return false;
+	if ( mode < -1 ) {
+		common->Printf( "^3R_GetModeInfo: r_mode %d is invalid, using custom mode (-1)\n", mode );
+		mode = -1;
 	}
 	if ( mode >= s_numVidModes ) {
+		common->Printf( "^3R_GetModeInfo: r_mode %d out of range, using mode 0 (%dx%d)\n",
+			mode, r_vidModes[0].width, r_vidModes[0].height );
 		mode = 0;
 	}
 
+	if ( mode != originalMode && r_mode.GetInteger() == originalMode ) {
+		r_mode.SetInteger( mode );
+		r_mode.ClearModified();
+	}
+
 	if ( mode == -1 ) {
-		*width = r_customWidth.GetInteger();
-		*height = r_customHeight.GetInteger();
+		const int clampedWidth = idMath::ClampInt( 320, 16384, r_customWidth.GetInteger() );
+		const int clampedHeight = idMath::ClampInt( 240, 16384, r_customHeight.GetInteger() );
+
+		if ( r_customWidth.GetInteger() != clampedWidth ) {
+			r_customWidth.SetInteger( clampedWidth );
+			r_customWidth.ClearModified();
+		}
+		if ( r_customHeight.GetInteger() != clampedHeight ) {
+			r_customHeight.SetInteger( clampedHeight );
+			r_customHeight.ClearModified();
+		}
+
+		*width = clampedWidth;
+		*height = clampedHeight;
 		return true;
 	}
 
@@ -464,11 +495,61 @@ static void R_GetWindowedModeInfo( int *width, int *height ) {
 	const int clampedWidth = idMath::ClampInt( 320, 16384, r_windowWidth.GetInteger() );
 	const int clampedHeight = idMath::ClampInt( 240, 16384, r_windowHeight.GetInteger() );
 
+	if ( r_windowWidth.GetInteger() != clampedWidth ) {
+		r_windowWidth.SetInteger( clampedWidth );
+		r_windowWidth.ClearModified();
+	}
+	if ( r_windowHeight.GetInteger() != clampedHeight ) {
+		r_windowHeight.SetInteger( clampedHeight );
+		r_windowHeight.ClearModified();
+	}
+
 	if ( width ) {
 		*width = clampedWidth;
 	}
 	if ( height ) {
 		*height = clampedHeight;
+	}
+}
+
+static void R_NormalizeDisplayCvars( void ) {
+	const int originalMode = r_mode.GetInteger();
+	int normalizedMode = originalMode;
+
+	if ( normalizedMode < -1 ) {
+		common->Printf( "^3R_GetModeInfo: r_mode %d is invalid, using custom mode (-1)\n", normalizedMode );
+		normalizedMode = -1;
+	} else if ( normalizedMode >= s_numVidModes ) {
+		common->Printf( "^3R_GetModeInfo: r_mode %d out of range, using mode 0 (%dx%d)\n",
+			normalizedMode, r_vidModes[0].width, r_vidModes[0].height );
+		normalizedMode = 0;
+	}
+
+	if ( normalizedMode != originalMode ) {
+		r_mode.SetInteger( normalizedMode );
+		r_mode.ClearModified();
+	}
+
+	const int clampedWindowWidth = idMath::ClampInt( 320, 16384, r_windowWidth.GetInteger() );
+	const int clampedWindowHeight = idMath::ClampInt( 240, 16384, r_windowHeight.GetInteger() );
+	if ( r_windowWidth.GetInteger() != clampedWindowWidth ) {
+		r_windowWidth.SetInteger( clampedWindowWidth );
+		r_windowWidth.ClearModified();
+	}
+	if ( r_windowHeight.GetInteger() != clampedWindowHeight ) {
+		r_windowHeight.SetInteger( clampedWindowHeight );
+		r_windowHeight.ClearModified();
+	}
+
+	const int clampedCustomWidth = idMath::ClampInt( 320, 16384, r_customWidth.GetInteger() );
+	const int clampedCustomHeight = idMath::ClampInt( 240, 16384, r_customHeight.GetInteger() );
+	if ( r_customWidth.GetInteger() != clampedCustomWidth ) {
+		r_customWidth.SetInteger( clampedCustomWidth );
+		r_customWidth.ClearModified();
+	}
+	if ( r_customHeight.GetInteger() != clampedCustomHeight ) {
+		r_customHeight.SetInteger( clampedCustomHeight );
+		r_customHeight.ClearModified();
 	}
 }
 
@@ -504,6 +585,8 @@ void R_InitOpenGL( void ) {
 	tr.viewportOffset[0] = 0;
 	tr.viewportOffset[1] = 0;
 
+	R_NormalizeDisplayCvars();
+
 	//
 	// initialize OS specific portions of the renderSystem
 	//
@@ -533,7 +616,7 @@ void R_InitOpenGL( void ) {
 
 		// if we failed, set everything back to "safe mode"
 		// and try again
-		r_mode.SetInteger( 3 );
+		r_mode.SetInteger( 0 );
 		r_fullscreen.SetInteger( 1 );
 		r_borderless.SetInteger( 0 );
 		r_displayRefresh.SetInteger( 0 );
@@ -690,10 +773,16 @@ R_ListModes_f
 static void R_ListModes_f( const idCmdArgs &args ) {
 	int i;
 
+	(void)args;
+
 	common->Printf( "\n" );
 	for ( i = 0; i < s_numVidModes; i++ ) {
 		common->Printf( "%s\n", r_vidModes[i].description );
 	}
+	common->Printf( "Mode -1: custom fullscreen using r_customWidth / r_customHeight\n" );
+	common->Printf( "Windowed sizing uses r_windowWidth / r_windowHeight when r_fullscreen is 0\n" );
+	common->Printf( "r_mode/r_custom* only affect fullscreen when r_fullscreenDesktop is 0 (exclusive mode)\n" );
+	common->Printf( "On SDL3 backends, use listDisplayModes to inspect native monitor modes.\n" );
 	common->Printf( "\n" );
 }
 
@@ -1578,6 +1667,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	if ( !r_fullscreen.GetBool() && r_borderless.GetBool() ) {
 		modeString = "borderless";
 	}
+	const char *fullscreenPolicy = r_fullscreenDesktop.GetBool() ? "desktop" : "exclusive";
 
 	common->Printf( "\nGL_VENDOR: %s\n", glConfig.vendor_string );
 	common->Printf( "GL_RENDERER: %s\n", glConfig.renderer_string );
@@ -1591,7 +1681,11 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	common->Printf( "GL_MAX_TEXTURE_COORDS_ARB: %d\n", glConfig.maxTextureCoords );
 	common->Printf( "GL_MAX_TEXTURE_IMAGE_UNITS_ARB: %d\n", glConfig.maxTextureImageUnits );
 	common->Printf( "\nPIXELFORMAT: color(%d-bits) Z(%d-bit) stencil(%d-bits)\n", glConfig.colorBits, glConfig.depthBits, glConfig.stencilBits );
-	common->Printf( "MODE: %d, %d x %d %s hz:", r_mode.GetInteger(), glConfig.vidWidth, glConfig.vidHeight, modeString );
+	common->Printf( "MODE: %d, %d x %d %s", r_mode.GetInteger(), glConfig.vidWidth, glConfig.vidHeight, modeString );
+	if ( r_fullscreen.GetBool() ) {
+		common->Printf( " policy=%s", fullscreenPolicy );
+	}
+	common->Printf( " hz:" );
 
 	if ( glConfig.displayFrequency ) {
 		common->Printf( "%d\n", glConfig.displayFrequency );
@@ -1652,6 +1746,35 @@ extern	PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
 R_VidRestart_f
 =================
 */
+static void R_PerformFullVidRestart( bool forceWindow ) {
+	// Input is tied to the native window/context lifecycle.
+	Sys_ShutdownInput();
+
+	// Force image/object handles to rebuild against the new context.
+	globalImages->PurgeAllImages();
+	GLimp_Shutdown();
+	glConfig.isInitialized = false;
+
+	const bool latchedFullscreen = cvarSystem->GetCVarBool( "r_fullscreen" );
+	if ( forceWindow ) {
+		cvarSystem->SetCVarBool( "r_fullscreen", false );
+	}
+
+	R_InitOpenGL();
+	cvarSystem->SetCVarBool( "r_fullscreen", latchedFullscreen );
+
+	globalImages->ReloadImages( true );
+}
+
+static GLenum R_ClearPendingGLErrors( void ) {
+	GLenum err = GL_NO_ERROR;
+	GLenum lastErr = GL_NO_ERROR;
+	while ( ( err = glGetError() ) != GL_NO_ERROR ) {
+		lastErr = err;
+	}
+	return lastErr;
+}
+
 void R_VidRestart_f( const idCmdArgs &args ) {
 	int	err;
 
@@ -1673,6 +1796,8 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 		}
 	}
 
+	R_NormalizeDisplayCvars();
+
 	// this could take a while, so give them the cursor back ASAP
 	Sys_GrabMouseCursor( false );
 
@@ -1689,27 +1814,8 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 	// free the vertex caches so they will be regenerated again
 	vertexCache.PurgeAll();
 
-	// sound and input are tied to the window we are about to destroy
-
 	if ( full ) {
-		// free all of our texture numbers
-		soundSystem->Shutdown();
-		Sys_ShutdownInput();
-		globalImages->PurgeAllImages();
-		// free the context and close the window
-		GLimp_Shutdown();
-		glConfig.isInitialized = false;
-
-		// create the new context and vertex cache
-		bool latch = cvarSystem->GetCVarBool( "r_fullscreen" );
-		if ( forceWindow ) {
-			cvarSystem->SetCVarBool( "r_fullscreen", false );
-		}
-		R_InitOpenGL();
-		cvarSystem->SetCVarBool( "r_fullscreen", latch );
-
-		// regenerate all images
-		globalImages->ReloadImages(true);
+		R_PerformFullVidRestart( forceWindow );
 	} else {
 		glimpParms_t	parms;
 		parms.fullScreen = ( forceWindow ) ? false : r_fullscreen.GetBool();
@@ -1722,7 +1828,12 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 		parms.displayHz = r_displayRefresh.GetInteger();
 		parms.multiSamples = r_multiSamples.GetInteger();
 		parms.stereo = false;
-		GLimp_SetScreenParms( parms );
+		if ( !GLimp_SetScreenParms( parms ) ) {
+			common->Printf( "^3vid_restart partial failed, retrying full restart\n" );
+			R_PerformFullVidRestart( forceWindow );
+		} else {
+			(void)R_ClearPendingGLErrors();
+		}
 	}
 
 
@@ -1735,9 +1846,14 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 	R_RegenerateWorld_f( idCmdArgs() );
 
 	// check for problems
+	GLimp_ActivateContext();
 	err = glGetError();
 	if ( err != GL_NO_ERROR ) {
 		common->Printf( "glGetError() = 0x%x\n", err );
+	}
+
+	if ( session != NULL ) {
+		session->SetPlayingSoundWorld();
 	}
 
 	// start sound playing again

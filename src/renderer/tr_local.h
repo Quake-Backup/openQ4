@@ -856,6 +856,7 @@ extern idCVar r_glDriver;				// "opengl32", etc
 extern idCVar r_mode;					// video mode number
 extern idCVar r_displayRefresh;			// optional display refresh rate option for vid mode
 extern idCVar r_fullscreen;				// 0 = windowed, 1 = full screen
+extern idCVar r_fullscreenDesktop;		// 1 = desktop-native fullscreen, 0 = exclusive fullscreen mode
 extern idCVar r_borderless;				// 1 = borderless window when r_fullscreen is 0
 extern idCVar r_windowWidth;				// windowed mode width
 extern idCVar r_windowHeight;				// windowed mode height

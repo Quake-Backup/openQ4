@@ -171,6 +171,17 @@ static float s_menuWarpWindowY = 0.0f;
 static bool s_menuMouseInsideWindow = true;
 static bool s_windowAspectSnapActive = false;
 static float s_windowAspectSnapRatio = 0.0f;
+static bool s_screenParmTransitionActive = false;
+
+typedef struct {
+	int x;
+	int y;
+	int width;
+	int height;
+	bool valid;
+} sdl3WindowedPlacement_t;
+
+static sdl3WindowedPlacement_t s_windowedPlacement = { 0, 0, 0, 0, false };
 
 void* GLimp_ExtensionPointer(const char* name);
 
@@ -1155,6 +1166,91 @@ static sdl3DisplaySelection_t SDL3_ResolveTargetDisplay(bool warnOnInvalidScreen
 	return selection;
 }
 
+static bool SDL3_GetDisplayWindowedPlacementBounds(SDL_DisplayID display, SDL_Rect &bounds) {
+	if (display != 0 && SDL_GetDisplayUsableBounds(display, &bounds)) {
+		return true;
+	}
+	if (display != 0 && SDL_GetDisplayBounds(display, &bounds)) {
+		return true;
+	}
+	return false;
+}
+
+static bool SDL3_RectsOverlap(const SDL_Rect &a, const SDL_Rect &b) {
+	const int overlapLeft = (a.x > b.x) ? a.x : b.x;
+	const int overlapTop = (a.y > b.y) ? a.y : b.y;
+	const int overlapRight = ((a.x + a.w) < (b.x + b.w)) ? (a.x + a.w) : (b.x + b.w);
+	const int overlapBottom = ((a.y + a.h) < (b.y + b.h)) ? (a.y + a.h) : (b.y + b.h);
+	return overlapRight > overlapLeft && overlapBottom > overlapTop;
+}
+
+static bool SDL3_WindowRectIntersectsAnyDisplay(int x, int y, int width, int height) {
+	if (width <= 0 || height <= 0) {
+		return false;
+	}
+
+	SDL_Rect windowRect;
+	windowRect.x = x;
+	windowRect.y = y;
+	windowRect.w = width;
+	windowRect.h = height;
+
+	int displayCount = 0;
+	SDL_DisplayID *displays = SDL_GetDisplays(&displayCount);
+	if (displays == NULL || displayCount <= 0) {
+		if (displays != NULL) {
+			SDL_free(displays);
+		}
+		return false;
+	}
+
+	bool intersects = false;
+	for (int i = 0; i < displayCount; ++i) {
+		SDL_Rect displayBounds;
+		if (SDL_GetDisplayBounds(displays[i], &displayBounds) && SDL3_RectsOverlap(windowRect, displayBounds)) {
+			intersects = true;
+			break;
+		}
+	}
+
+	SDL_free(displays);
+	return intersects;
+}
+
+static int SDL3_ClampWindowDimension(int value, int minValue, int maxValue) {
+	if (maxValue <= 0) {
+		return minValue;
+	}
+	const int effectiveMin = (minValue > maxValue) ? maxValue : minValue;
+	return idMath::ClampInt(effectiveMin, maxValue, value);
+}
+
+static void SDL3_ConstrainWindowRectToBounds(int &x, int &y, int &width, int &height, const SDL_Rect &bounds, bool recenterIfOutside) {
+	width = SDL3_ClampWindowDimension(width, 320, bounds.w);
+	height = SDL3_ClampWindowDimension(height, 240, bounds.h);
+
+	const int maxX = bounds.x + bounds.w - width;
+	const int maxY = bounds.y + bounds.h - height;
+
+	if (maxX < bounds.x) {
+		x = bounds.x;
+	} else {
+		if (recenterIfOutside && (x < bounds.x || x > maxX)) {
+			x = bounds.x + ((bounds.w - width) / 2);
+		}
+		x = idMath::ClampInt(bounds.x, maxX, x);
+	}
+
+	if (maxY < bounds.y) {
+		y = bounds.y;
+	} else {
+		if (recenterIfOutside && (y < bounds.y || y > maxY)) {
+			y = bounds.y + ((bounds.h - height) / 2);
+		}
+		y = idMath::ClampInt(bounds.y, maxY, y);
+	}
+}
+
 static void SDL3_GetWindowPositionOnDisplay(SDL_DisplayID display, int width, int height, int &targetX, int &targetY) {
 	targetX = win32.win_xpos.GetInteger();
 	targetY = win32.win_ypos.GetInteger();
@@ -1200,6 +1296,61 @@ static void SDL3_ListDisplays_f(const idCmdArgs &args) {
 		r_screen.GetInteger(),
 		selectedDisplay.index,
 		name);
+}
+
+static void SDL3_ListDisplayModes_f(const idCmdArgs &args) {
+	sdl3DisplaySelection_t selectedDisplay = SDL3_ResolveTargetDisplay(true);
+
+	if (args.Argc() > 1 && idStr::IsNumeric(args.Argv(1))) {
+		const int requestedIndex = atoi(args.Argv(1));
+		int displayCount = 0;
+		SDL_DisplayID *displays = SDL_GetDisplays(&displayCount);
+		if (displays != NULL && requestedIndex >= 0 && requestedIndex < displayCount) {
+			selectedDisplay.id = displays[requestedIndex];
+			selectedDisplay.index = requestedIndex;
+		}
+		if (displays != NULL) {
+			SDL_free(displays);
+		}
+	}
+
+	SDL_DisplayID display = selectedDisplay.id;
+	if (display == 0) {
+		display = SDL_GetPrimaryDisplay();
+		selectedDisplay.index = -1;
+	}
+
+	if (display == 0) {
+		common->Printf("SDL3: no valid display found for mode listing.\n");
+		return;
+	}
+
+	const char *name = SDL_GetDisplayName(display);
+	if (name == NULL || name[0] == '\0') {
+		name = "<unnamed>";
+	}
+
+	int modeCount = 0;
+	SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display, &modeCount);
+	if (modes == NULL || modeCount <= 0) {
+		common->Printf("SDL3: no fullscreen modes reported for display %d (%s): %s\n",
+			selectedDisplay.index, name, SDL_GetError());
+		if (modes != NULL) {
+			SDL_free(modes);
+		}
+		return;
+	}
+
+	common->Printf("SDL3: fullscreen modes for display %d (%s):\n", selectedDisplay.index, name);
+	for (int i = 0; i < modeCount; ++i) {
+		const SDL_DisplayMode *mode = modes[i];
+		if (mode == NULL || mode->w <= 0 || mode->h <= 0) {
+			continue;
+		}
+		common->Printf("  [%d] %dx%d @ %.2f Hz\n", i, mode->w, mode->h, mode->refresh_rate);
+	}
+
+	SDL_free(modes);
 }
 
 static float SDL3_FindNearestCommonAspectRatio(int width, int height) {
@@ -1355,6 +1506,32 @@ static void SDL3_UpdatePrimaryDisplayViewport(int windowX, int windowY, int wind
 	glConfig.uiViewportHeight = viewportHeight;
 }
 
+static void SDL3_RecordWindowedPlacement(int x, int y, int width, int height) {
+	if (width <= 0 || height <= 0) {
+		return;
+	}
+
+	s_windowedPlacement.x = x;
+	s_windowedPlacement.y = y;
+	s_windowedPlacement.width = width;
+	s_windowedPlacement.height = height;
+	s_windowedPlacement.valid = true;
+}
+
+static void SDL3_SnapshotCurrentWindowedPlacement(void) {
+	if (!s_sdlWindow || win32.cdsFullscreen || r_borderless.GetBool()) {
+		return;
+	}
+
+	int x = 0;
+	int y = 0;
+	int width = 0;
+	int height = 0;
+	if (SDL_GetWindowPosition(s_sdlWindow, &x, &y) && SDL_GetWindowSize(s_sdlWindow, &width, &height)) {
+		SDL3_RecordWindowedPlacement(x, y, width, height);
+	}
+}
+
 static void SDL3_RefreshWindowPlacement(void) {
 	if (!s_sdlWindow) {
 		return;
@@ -1366,21 +1543,29 @@ static void SDL3_RefreshWindowPlacement(void) {
 	int height = 0;
 	int pixelWidth = 0;
 	int pixelHeight = 0;
+	const bool canPersistWindowedPlacement = !win32.cdsFullscreen && !s_screenParmTransitionActive;
+	const bool isWindowedResizable = !r_borderless.GetBool();
 
-	if (SDL_GetWindowPosition(s_sdlWindow, &x, &y) && !win32.cdsFullscreen) {
+	const bool haveWindowPosition = SDL_GetWindowPosition(s_sdlWindow, &x, &y);
+	if (haveWindowPosition && canPersistWindowedPlacement) {
 		win32.win_xpos.SetInteger(x);
 		win32.win_ypos.SetInteger(y);
 		win32.win_xpos.ClearModified();
 		win32.win_ypos.ClearModified();
 	}
 
-	if (SDL_GetWindowSize(s_sdlWindow, &width, &height) && !win32.cdsFullscreen) {
-		if (!r_borderless.GetBool() && width > 0 && height > 0) {
+	const bool haveWindowSize = SDL_GetWindowSize(s_sdlWindow, &width, &height);
+	if (haveWindowSize && canPersistWindowedPlacement) {
+		if (isWindowedResizable && width > 0 && height > 0) {
 			r_windowWidth.SetInteger(width);
 			r_windowHeight.SetInteger(height);
 			r_windowWidth.ClearModified();
 			r_windowHeight.ClearModified();
 		}
+	}
+
+	if (canPersistWindowedPlacement && isWindowedResizable && haveWindowPosition && haveWindowSize) {
+		SDL3_RecordWindowedPlacement(x, y, width, height);
 	}
 
 	if (!SDL_GetWindowSizeInPixels(s_sdlWindow, &pixelWidth, &pixelHeight)) {
@@ -1396,10 +1581,38 @@ static void SDL3_RefreshWindowPlacement(void) {
 	SDL3_UpdatePrimaryDisplayViewport(x, y, width, height, pixelWidth, pixelHeight);
 }
 
+static bool SDL3_LeaveFullscreenAndRestoreDesktopMode(void) {
+	if (!s_sdlWindow) {
+		return true;
+	}
+
+	const SDL_WindowFlags flags = SDL_GetWindowFlags(s_sdlWindow);
+	if ((flags & SDL_WINDOW_FULLSCREEN) == 0) {
+		return true;
+	}
+
+	if (!SDL_SetWindowFullscreenMode(s_sdlWindow, NULL)) {
+		common->Printf("SDL3: failed to set desktop fullscreen mode before exit: %s\n", SDL_GetError());
+	}
+
+	if (!SDL_SetWindowFullscreen(s_sdlWindow, false)) {
+		common->Printf("SDL3: failed to leave fullscreen: %s\n", SDL_GetError());
+		return false;
+	}
+
+	if (!SDL_SyncWindow(s_sdlWindow)) {
+		common->Printf("SDL3: failed to synchronize window after leaving fullscreen: %s\n", SDL_GetError());
+	}
+
+	return true;
+}
+
 static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 	if (!s_sdlWindow) {
 		return false;
 	}
+
+	s_screenParmTransitionActive = true;
 
 	SDL3_DisableWindowAspectSnap();
 
@@ -1411,34 +1624,64 @@ static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 	}
 
 	if (parms.fullScreen) {
+		SDL3_SnapshotCurrentWindowedPlacement();
+
 		if (!SDL_SetWindowBordered(s_sdlWindow, true)) {
 			common->Printf("SDL3: failed to restore window borders: %s\n", SDL_GetError());
 		}
 
+		const bool useDesktopFullscreen = r_fullscreenDesktop.GetBool();
 		int targetX = 0;
 		int targetY = 0;
-		SDL3_GetWindowPositionOnDisplay(display, parms.width, parms.height, targetX, targetY);
-		(void)SDL_SetWindowPosition(s_sdlWindow, targetX, targetY);
 
-		SDL_DisplayMode mode;
-		memset(&mode, 0, sizeof(mode));
-		mode.displayID = display;
-		mode.w = parms.width;
-		mode.h = parms.height;
-		mode.refresh_rate = parms.displayHz > 0 ? static_cast<float>(parms.displayHz) : 0.0f;
+		if (useDesktopFullscreen) {
+			SDL_Rect bounds;
+			if (display != 0 && SDL_GetDisplayBounds(display, &bounds)) {
+				targetX = bounds.x;
+				targetY = bounds.y;
+			} else {
+				SDL3_GetWindowPositionOnDisplay(display, parms.width, parms.height, targetX, targetY);
+			}
+			(void)SDL_SetWindowPosition(s_sdlWindow, targetX, targetY);
 
-		if (!SDL_SetWindowFullscreenMode(s_sdlWindow, &mode)) {
-			common->Printf("SDL3: failed to set fullscreen mode: %s\n", SDL_GetError());
-			(void)SDL_SetWindowFullscreenMode(s_sdlWindow, NULL);
+			if (!SDL_SetWindowFullscreenMode(s_sdlWindow, NULL)) {
+				common->Printf("SDL3: failed to select desktop fullscreen mode: %s\n", SDL_GetError());
+			}
+		} else {
+			SDL_DisplayMode mode;
+			memset(&mode, 0, sizeof(mode));
+			const float requestedRefresh = parms.displayHz > 0 ? static_cast<float>(parms.displayHz) : 0.0f;
+			const bool hasClosestMode = display != 0 &&
+				SDL_GetClosestFullscreenDisplayMode(display, parms.width, parms.height, requestedRefresh, false, &mode);
+
+			if (hasClosestMode && mode.displayID == 0) {
+				mode.displayID = display;
+			}
+
+			const int modeWidth = hasClosestMode ? mode.w : parms.width;
+			const int modeHeight = hasClosestMode ? mode.h : parms.height;
+			SDL3_GetWindowPositionOnDisplay(display, modeWidth, modeHeight, targetX, targetY);
+			(void)SDL_SetWindowPosition(s_sdlWindow, targetX, targetY);
+
+			if (hasClosestMode && !SDL_SetWindowFullscreenMode(s_sdlWindow, &mode)) {
+				common->Printf("SDL3: failed to set fullscreen mode %dx%d@%.2f: %s\n",
+					mode.w, mode.h, mode.refresh_rate, SDL_GetError());
+				(void)SDL_SetWindowFullscreenMode(s_sdlWindow, NULL);
+			} else if (!hasClosestMode) {
+				common->Printf("SDL3: no fullscreen mode matched %dx%d @ %.2f Hz on display %d; using desktop mode.\n",
+					parms.width, parms.height, requestedRefresh, selectedDisplay.index);
+				(void)SDL_SetWindowFullscreenMode(s_sdlWindow, NULL);
+			}
 		}
 
 		if (!SDL_SetWindowFullscreen(s_sdlWindow, true)) {
 			common->Printf("SDL3: failed to enter fullscreen: %s\n", SDL_GetError());
+			s_screenParmTransitionActive = false;
 			return false;
 		}
 	} else {
-		if (!SDL_SetWindowFullscreen(s_sdlWindow, false)) {
-			common->Printf("SDL3: failed to leave fullscreen: %s\n", SDL_GetError());
+		if (!SDL3_LeaveFullscreenAndRestoreDesktopMode()) {
+			s_screenParmTransitionActive = false;
 			return false;
 		}
 		(void)SDL_SetWindowFullscreenMode(s_sdlWindow, NULL);
@@ -1462,13 +1705,41 @@ static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 				}
 			}
 		} else {
-			if (!SDL_SetWindowSize(s_sdlWindow, parms.width, parms.height)) {
+			int restoredWidth = parms.width;
+			int restoredHeight = parms.height;
+			int restoredX = win32.win_xpos.GetInteger();
+			int restoredY = win32.win_ypos.GetInteger();
+
+			if (s_windowedPlacement.valid) {
+				restoredWidth = s_windowedPlacement.width;
+				restoredHeight = s_windowedPlacement.height;
+				restoredX = s_windowedPlacement.x;
+				restoredY = s_windowedPlacement.y;
+			}
+
+			const bool needsRecoveryPlacement = !SDL3_WindowRectIntersectsAnyDisplay(restoredX, restoredY, restoredWidth, restoredHeight);
+			bool constrainedToDisplay = false;
+			if (display != 0) {
+				SDL_Rect bounds;
+				if (SDL3_GetDisplayWindowedPlacementBounds(display, bounds)) {
+					const bool recenterIfOutside = (r_screen.GetInteger() >= 0) || needsRecoveryPlacement;
+					SDL3_ConstrainWindowRectToBounds(restoredX, restoredY, restoredWidth, restoredHeight, bounds, recenterIfOutside);
+					constrainedToDisplay = true;
+				}
+			}
+
+			if (!constrainedToDisplay) {
+				restoredWidth = idMath::ClampInt(320, 16384, restoredWidth);
+				restoredHeight = idMath::ClampInt(240, 16384, restoredHeight);
+			}
+
+			if (!SDL_SetWindowSize(s_sdlWindow, restoredWidth, restoredHeight)) {
 				common->Printf("SDL3: failed to resize window: %s\n", SDL_GetError());
 			}
 
-			int targetX = 0;
-			int targetY = 0;
-			SDL3_GetWindowPositionOnDisplay(display, parms.width, parms.height, targetX, targetY);
+			int targetX = restoredX;
+			int targetY = restoredY;
+
 			if (!SDL_SetWindowPosition(s_sdlWindow, targetX, targetY)) {
 				common->Printf("SDL3: failed to move window: %s\n", SDL_GetError());
 			}
@@ -1477,6 +1748,7 @@ static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 
 	win32.cdsFullscreen = parms.fullScreen;
 	glConfig.isFullscreen = parms.fullScreen;
+	s_screenParmTransitionActive = false;
 	SDL3_RefreshWindowPlacement();
 
 	return true;
@@ -1572,12 +1844,7 @@ static void SDL3_HandleWindowEvent(const SDL_WindowEvent &event, int eventTime) 
 			break;
 
 		case SDL_EVENT_WINDOW_MOVED:
-			if (!win32.cdsFullscreen) {
-				win32.win_xpos.SetInteger(event.data1);
-				win32.win_ypos.SetInteger(event.data2);
-				win32.win_xpos.ClearModified();
-				win32.win_ypos.ClearModified();
-			}
+			SDL3_RefreshWindowPlacement();
 			SDL3_InvalidateMenuMouseRouting();
 			break;
 
@@ -1663,7 +1930,7 @@ bool Sys_SDL_PumpEvents(void) {
 
 				if (down && !event.key.repeat && key == K_ENTER && (event.key.mod & SDL_KMOD_ALT) != 0) {
 					cvarSystem->SetCVarBool("r_fullscreen", !renderSystem->IsFullScreen());
-					cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart\n");
+					cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart partial\n");
 					break;
 				}
 
@@ -2276,6 +2543,7 @@ bool GLimp_Init(glimpParms_t parms) {
 
 	if (!s_sdlDisplayCommandRegistered) {
 		cmdSystem->AddCommand("listDisplays", SDL3_ListDisplays_f, CMD_FL_SYSTEM, "lists SDL3 displays and monitor indices");
+		cmdSystem->AddCommand("listDisplayModes", SDL3_ListDisplayModes_f, CMD_FL_SYSTEM, "lists SDL3 fullscreen display modes (optional display index)");
 		s_sdlDisplayCommandRegistered = true;
 	}
 
@@ -2313,7 +2581,23 @@ bool GLimp_Init(glimpParms_t parms) {
 	}
 
 	if (!parms.fullScreen) {
-		(void)SDL_SetWindowPosition(s_sdlWindow, win32.win_xpos.GetInteger(), win32.win_ypos.GetInteger());
+		int targetX = win32.win_xpos.GetInteger();
+		int targetY = win32.win_ypos.GetInteger();
+		int targetWidth = parms.width;
+		int targetHeight = parms.height;
+
+		const sdl3DisplaySelection_t selectedDisplay = SDL3_ResolveTargetDisplay(false);
+		if (selectedDisplay.id != 0) {
+			SDL_Rect bounds;
+			if (SDL3_GetDisplayWindowedPlacementBounds(selectedDisplay.id, bounds)) {
+				const bool needsRecoveryPlacement = !SDL3_WindowRectIntersectsAnyDisplay(targetX, targetY, targetWidth, targetHeight);
+				const bool recenterIfOutside = (r_screen.GetInteger() >= 0) || needsRecoveryPlacement;
+				SDL3_ConstrainWindowRectToBounds(targetX, targetY, targetWidth, targetHeight, bounds, recenterIfOutside);
+			}
+		}
+
+		(void)SDL_SetWindowSize(s_sdlWindow, targetWidth, targetHeight);
+		(void)SDL_SetWindowPosition(s_sdlWindow, targetX, targetY);
 	}
 
 	s_sdlContext = SDL_GL_CreateContext(s_sdlWindow);
@@ -2356,7 +2640,19 @@ bool GLimp_Init(glimpParms_t parms) {
 }
 
 bool GLimp_SetScreenParms(glimpParms_t parms) {
-	return SDL3_ApplyScreenParms(parms);
+	if (!SDL3_ApplyScreenParms(parms)) {
+		return false;
+	}
+
+	if (s_sdlWindow && s_sdlContext && !SDL_GL_MakeCurrent(s_sdlWindow, s_sdlContext)) {
+		common->Printf("SDL3: failed to reactivate GL context after screen parm change: %s\n", SDL_GetError());
+		win32.wglErrors++;
+		return false;
+	}
+
+	SDL3_UpdateNativeWindowHandles();
+
+	return true;
 }
 
 void GLimp_Shutdown(void) {
@@ -2365,6 +2661,7 @@ void GLimp_Shutdown(void) {
 	SDL3_DisableWindowAspectSnap();
 	IN_DeactivateMouse();
 	SDL3_ShutdownControllerSubsystems();
+	(void)SDL3_LeaveFullscreenAndRestoreDesktopMode();
 	if (s_sdlWindow && s_sdlTextInputActive) {
 		(void)SDL_StopTextInput(s_sdlWindow);
 		s_sdlTextInputActive = false;

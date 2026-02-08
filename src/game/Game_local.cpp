@@ -3918,38 +3918,12 @@ void idGameLocal::CalcFov( float base_fov, float &fov_x, float &fov_y ) const {
 		Printf(sys->FPU_GetState());
 		Error("idGameLocal::CalcFov: bad result");
 	}
-	int aspectChoice = cvarSystem->GetCVarInteger("r_aspectRatio");
-	switch (aspectChoice) {
-	case 0:
-		// 4:3
-		ratio_x = 4.0f;
-		ratio_y = 3.0f;
-		break;
-
-	case 1:
-		// 16:9
-		ratio_x = 16.0f;
-		ratio_y = 9.0f;
-		break;
-
-	case 2:
-		// 16:10
-		ratio_x = 16.0f;
-		ratio_y = 10.0f;
-		break;
-
-	case -1:
-	default:
-		// Auto: use the current render size so FOV updates with aspect changes.
-		{
-			const int screenWidth = renderSystem->GetScreenWidth();
-			const int screenHeight = renderSystem->GetScreenHeight();
-			if (screenWidth > 0 && screenHeight > 0) {
-				ratio_x = static_cast<float>(screenWidth);
-				ratio_y = static_cast<float>(screenHeight);
-			}
-		}
-		break;
+	// Aspect ratio is always automatic and follows the current render size.
+	const int screenWidth = renderSystem->GetScreenWidth();
+	const int screenHeight = renderSystem->GetScreenHeight();
+	if ( screenWidth > 0 && screenHeight > 0 ) {
+		ratio_x = static_cast<float>( screenWidth );
+		ratio_y = static_cast<float>( screenHeight );
 	}
 
 	y = ratio_y / tan(fov_y / 360.0f * idMath::PI);

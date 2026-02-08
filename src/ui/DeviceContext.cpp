@@ -783,8 +783,10 @@ void idDeviceContext::CalcVirtualScaleOffset( float width, float height, float &
 	}
 
 	if ( aspectCorrect ) {
-		// Preserve GUI aspect ratio by fitting into the current draw region and centering.
-		const float uniformPhysicalScale = Min( windowWidth / width, windowHeight / height );
+		// Preserve GUI aspect ratio by fitting to height on wide screens and to width on narrow screens.
+		const float targetAspect = width / height;
+		const float windowAspect = windowWidth / windowHeight;
+		const float uniformPhysicalScale = ( windowAspect >= targetAspect ) ? ( windowHeight / height ) : ( windowWidth / width );
 		const float drawWidth = width * uniformPhysicalScale;
 		const float drawHeight = height * uniformPhysicalScale;
 
@@ -802,14 +804,33 @@ void idDeviceContext::CalcVirtualScaleOffset( float width, float height, float &
 }
 
 void idDeviceContext::GetVirtualScreenExpansion( float width, float height, float &xExpand, float &yExpand ) const {
-	float scaleX = 0.0f;
-	float scaleY = 0.0f;
-	float offsetX = 0.0f;
-	float offsetY = 0.0f;
+	xExpand = 0.0f;
+	yExpand = 0.0f;
 
-	CalcVirtualScaleOffset( width, height, scaleX, scaleY, offsetX, offsetY );
-	xExpand = ( scaleX > 0.0f ) ? ( offsetX / scaleX ) : 0.0f;
-	yExpand = ( scaleY > 0.0f ) ? ( offsetY / scaleY ) : 0.0f;
+	if ( !aspectCorrect || width <= 0.0f || height <= 0.0f ) {
+		return;
+	}
+
+	float windowWidth = static_cast<float>( glConfig.uiViewportWidth );
+	float windowHeight = static_cast<float>( glConfig.uiViewportHeight );
+	if ( windowWidth <= 0.0f || windowHeight <= 0.0f ) {
+		windowWidth = static_cast<float>( glConfig.vidWidth );
+		windowHeight = static_cast<float>( glConfig.vidHeight );
+	}
+
+	if ( windowWidth <= 0.0f || windowHeight <= 0.0f ) {
+		return;
+	}
+
+	const float targetAspect = width / height;
+	const float windowAspect = windowWidth / windowHeight;
+	const float aspectEpsilon = 0.0001f;
+
+	if ( windowAspect > targetAspect + aspectEpsilon ) {
+		xExpand = ( width * ( windowAspect / targetAspect - 1.0f ) ) * 0.5f;
+	} else if ( windowAspect + aspectEpsilon < targetAspect ) {
+		yExpand = ( height * ( targetAspect / windowAspect - 1.0f ) ) * 0.5f;
+	}
 }
 
 void idDeviceContext::SetSize(float width, float height) {
