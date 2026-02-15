@@ -278,6 +278,26 @@ void idProjectile::Create( idEntity* _owner, const idVec3 &start, const idVec3 &
 		renderLight.noShadows = cvarSystem->GetCVarInteger("com_machineSpec") < 3;
 // RAVEN END
 	}
+	else if ( gameLocal.isMultiplayer ) {
+		const char *className = spawnArgs.GetString( "classname", "" );
+		if ( !idStr::Icmpn( className, "projectile_rocket", 17 ) ) {
+			// MP rocket trail effects don't carry a light segment in stock assets.
+			// Add an explicit projectile light so rockets still illuminate nearby geometry.
+			renderLight.shader = declManager->FindMaterial( "lights/fire2", false );
+			if ( renderLight.shader ) {
+				renderLight.pointLight = true;
+				renderLight.lightRadius[0] = 200.0f;
+				renderLight.lightRadius[1] = 200.0f;
+				renderLight.lightRadius[2] = 200.0f;
+				renderLight.shaderParms[0] = 0.905882f;
+				renderLight.shaderParms[1] = 0.517647f;
+				renderLight.shaderParms[2] = 0.160784f;
+				renderLight.shaderParms[3] = 1.0f;
+				renderLight.detailLevel = DEFAULT_LIGHT_DETAIL_LEVEL;
+				renderLight.noShadows = true;
+			}
+		}
+	}
 
 	spawnArgs.GetVector( "light_offset", "0 0 0", lightOffset );
 

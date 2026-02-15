@@ -1185,12 +1185,6 @@ void idInteraction::AddActiveInteraction( void ) {
 					entityDef->parms.suppressShadowInLightID == lightDef->parms.lightId ) {
 					continue;
 				}
-				if ( entityDef->parms.suppressSurfaceInViewID &&
-					entityDef->parms.suppressSurfaceInViewID == tr.viewDef->renderView.viewID ) {
-					// Surfaces intentionally hidden in this view (typically local first-person body/weapon models)
-					// should not contribute shadow volumes for that same view.
-					continue;
-				}
 			}
 
 			// cull static shadows that have a non-empty bounds
