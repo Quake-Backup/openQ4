@@ -1827,6 +1827,7 @@ R_VidRestart_f
 */
 static void R_PerformFullVidRestart( bool forceWindow ) {
 	backEnd.renderTexture = NULL;
+	tr.activeRenderTexture = NULL;
 	idRenderTexture::BindNull();
 	tr.ProcessPendingRenderTextureDeletes();
 
@@ -1846,6 +1847,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_InitOpenGL();
 	cvarSystem->SetCVarBool( "r_fullscreen", latchedFullscreen );
 	backEnd.renderTexture = NULL;
+	tr.activeRenderTexture = NULL;
 
 	globalImages->ReloadImages( true );
 }
@@ -2103,6 +2105,8 @@ void idRenderSystemLocal::Clear( void ) {
 	guiModel = NULL;
 	demoGuiModel = NULL;
 	pendingRenderTextureDeletes.Clear();
+	useUIViewportFor2D = true;
+	activeRenderTexture = NULL;
 	memset( gammaTable, 0, sizeof( gammaTable ) );
 	takingScreenshot = false;
 }
@@ -2278,6 +2282,8 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	GLimp_Shutdown();
 	glConfig.isInitialized = false;
 	backEnd.renderTexture = NULL;
+	activeRenderTexture = NULL;
+	useUIViewportFor2D = true;
 }
 
 /*

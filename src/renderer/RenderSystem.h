@@ -402,6 +402,10 @@ public:
 	// Clears the current render target
 	virtual void			ClearRenderTarget(bool clearColor, bool clearDepth, float depthValue, float red, float green, float blue) = 0;
 
+	// Controls whether fullscreen 2D submissions target the UI viewport sub-rect.
+	virtual void			SetUseUIViewportFor2D( bool enable ) = 0;
+	virtual bool			GetUseUIViewportFor2D( void ) const = 0;
+
 	// Fills in the image dinem for the given image.
 	virtual void			GetImageSize(idImage* image, int& imageWidth, int& imageHeight) = 0;
 // jmarshall end

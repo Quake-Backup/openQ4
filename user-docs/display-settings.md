@@ -152,7 +152,7 @@ seta ui_aspectCorrection 0
 ```cfg
 seta cl_gunfov 90
 seta cl_gunfov_adjust 1
-seta cl_gun_z -1
+seta cl_gun_z -1.15
 ```
 
 ### View Weapon: Match World FOV, Personal Position Offset

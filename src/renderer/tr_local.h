@@ -775,6 +775,8 @@ public:
 	virtual void			BindRenderTexture(idRenderTexture* renderTexture, idRenderTexture* feedbackRenderTexture);
 	virtual void			ResolveMSAA(idRenderTexture* msaaRenderTexture, idRenderTexture* destRenderTexture, bool resolveDepth = false);
 	virtual void			ClearRenderTarget(bool clearColor, bool clearDepth, float depthValue, float red, float green, float blue);
+	virtual void			SetUseUIViewportFor2D( bool enable );
+	virtual bool			GetUseUIViewportFor2D( void ) const;
 	virtual void			GetImageSize(idImage* image, int& imageWidth, int& imageHeight);
 public:
 	// internal functions
@@ -848,6 +850,8 @@ public:
 	class idGuiModel *		guiModel;
 	class idGuiModel *		demoGuiModel;
 	idList<idRenderTexture*> pendingRenderTextureDeletes;
+	bool					useUIViewportFor2D;
+	idRenderTexture *		activeRenderTexture;
 
 	unsigned short			gammaTable[256];	// brightness / gamma modify this
 };

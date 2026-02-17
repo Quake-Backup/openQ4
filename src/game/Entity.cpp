@@ -3106,18 +3106,68 @@ void idEntity::InitDefaultPhysics( const idVec3 &origin, const idMat3 &axis ) {
 
 		// check if the visual model can be used as collision model
 		if ( !clipModel ) {
+			idStr collisionCandidates[ 3 ];
+			int numCollisionCandidates = 0;
+			const char *entityName;
+
 			temp = spawnArgs.GetString( "model" );
 			if ( ( temp != NULL ) && ( *temp != 0 ) ) {
 // RAVEN BEGIN
-// jscott:slash problems
-				idStr canonical = temp;
-				canonical.BackSlashesToSlashes();
+// jscott: slash problems
+				collisionCandidates[ numCollisionCandidates ] = temp;
+				collisionCandidates[ numCollisionCandidates ].BackSlashesToSlashes();
+				numCollisionCandidates++;
+// RAVEN END
+			}
+
+			if ( renderEntity.hModel != NULL && numCollisionCandidates < 3 ) {
+				const char *renderModelName = renderEntity.hModel->Name();
+				if ( renderModelName != NULL && renderModelName[ 0 ] != '\0' ) {
+					idStr canonical = renderModelName;
+					canonical.BackSlashesToSlashes();
+					bool alreadyQueued = false;
+					for ( int i = 0; i < numCollisionCandidates; i++ ) {
+						if ( !collisionCandidates[ i ].Icmp( canonical ) ) {
+							alreadyQueued = true;
+							break;
+						}
+					}
+					if ( !alreadyQueued ) {
+						collisionCandidates[ numCollisionCandidates ] = canonical;
+						numCollisionCandidates++;
+					}
+				}
+			}
+
+			spawnArgs.GetString( "name", "", &entityName );
+			if ( entityName[ 0 ] != '\0' && numCollisionCandidates < 3 ) {
+				bool alreadyQueued = false;
+				for ( int i = 0; i < numCollisionCandidates; i++ ) {
+					if ( !collisionCandidates[ i ].Icmp( entityName ) ) {
+						alreadyQueued = true;
+						break;
+					}
+				}
+				if ( !alreadyQueued ) {
+					collisionCandidates[ numCollisionCandidates ] = entityName;
+					numCollisionCandidates++;
+				}
+			}
+
+			if ( numCollisionCandidates > 0 ) {
 // RAVEN BEGIN
 // mwhitlock: Dynamic memory consolidation
 				RV_PUSH_HEAP_MEM(this);
 // RAVEN END
 				clipModel = new idClipModel();
-				if ( !clipModel->LoadModel( canonical ) ) {
+				bool loaded = false;
+				for ( int i = 0; i < numCollisionCandidates; i++ ) {
+					if ( clipModel->LoadModel( collisionCandidates[ i ] ) ) {
+						loaded = true;
+						break;
+					}
+				}
+				if ( !loaded ) {
 					delete clipModel;
 					clipModel = NULL;
 				}

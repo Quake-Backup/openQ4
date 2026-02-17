@@ -183,6 +183,9 @@ idGameLocal::RenderScene
 ====================
 */
 void idGameLocal::RenderScene(const renderView_t *view, idRenderWorld *renderWorld, idCamera* portalSky) {
+	const bool previousUIViewportMode = renderSystem->GetUseUIViewportFor2D();
+	renderSystem->SetUseUIViewportFor2D( false );
+
 	const int currentVideoRestartCount = renderSystem->GetVideoRestartCount();
 	if ( gameRender.videoRestartCount != currentVideoRestartCount ) {
 		common->Printf( "Reinitializing game render targets after vid_restart (%d -> %d)\n",
@@ -201,6 +204,7 @@ void idGameLocal::RenderScene(const renderView_t *view, idRenderWorld *renderWor
 			gameRenderWorld->RenderScene(&portalSkyView);
 		}
 		renderWorld->RenderScene(view);
+		renderSystem->SetUseUIViewportFor2D( previousUIViewportMode );
 		return;
 	}
 	// Minimum render is used for screen captures(such as envcapture) calls, caller is responsible for all rendertarget setup.
@@ -297,4 +301,5 @@ void idGameLocal::RenderScene(const renderView_t *view, idRenderWorld *renderWor
 
 	// Copy everything to _currentRender
 	renderSystem->CaptureRenderToImage("_currentRender");
+	renderSystem->SetUseUIViewportFor2D( previousUIViewportMode );
 }

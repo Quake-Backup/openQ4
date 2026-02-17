@@ -1316,6 +1316,9 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			continue;
 		}
 
+		const bool hasBakedDecalStageColor =
+			( surf->decalColorCache != NULL && stage >= 0 && stage < surf->decalColorStageCount && surf->decalColorStride > 0 );
+
 		// select the vertex color source
 		if ( pStage->vertexColor == SVC_IGNORE ) {
 			glColor4fv( color );
@@ -1334,8 +1337,9 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			}
 
 			// for vertex color and modulated color, we need to enable a second
-			// texture stage
-			if ( color[0] != 1 || color[1] != 1 || color[2] != 1 || color[3] != 1 ) {
+			// texture stage. Skip this when decal stages already baked stage
+			// color into per-vertex data; applying both paths darkens decals.
+			if ( !hasBakedDecalStageColor && ( color[0] != 1 || color[1] != 1 || color[2] != 1 || color[3] != 1 ) ) {
 				GL_SelectTexture( 1 );
 
 				globalImages->whiteImage->Bind();

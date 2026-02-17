@@ -318,6 +318,25 @@ void idRenderSystemLocal::DrawStretchPic( float x, float y, float w, float h, fl
 	guiModel->DrawStretchPic( x, y, w, h, s1, t1, s2, t2, material );
 }
 
+void idRenderSystemLocal::SetUseUIViewportFor2D( bool enable ) {
+	if ( useUIViewportFor2D == enable ) {
+		return;
+	}
+
+	// Viewport selection for 2D is applied when guiModel is emitted.
+	// Flush pending 2D so already-queued surfaces keep the previous mode.
+	if ( glConfig.isInitialized && guiModel != NULL ) {
+		guiModel->EmitFullScreen();
+		guiModel->Clear();
+	}
+
+	useUIViewportFor2D = enable;
+}
+
+bool idRenderSystemLocal::GetUseUIViewportFor2D( void ) const {
+	return useUIViewportFor2D;
+}
+
 /*
 =============
 DrawStretchTri
@@ -560,6 +579,8 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	SetBackEndRenderer();
 
 	guiModel->Clear();
+	useUIViewportFor2D = true;
+	activeRenderTexture = NULL;
 
 	// for the larger-than-window tiled rendering screenshots
 	if ( tiledViewport[0] ) {
@@ -1043,6 +1064,7 @@ void idRenderSystemLocal::BindRenderTexture(idRenderTexture* renderTexture, idRe
 
 	cmd->renderTexture = renderTexture;
 	cmd->feedbackRenderTexture = feedbackRenderTexture;
+	activeRenderTexture = renderTexture;
 }
 
 /*
@@ -1178,6 +1200,9 @@ void idRenderSystemLocal::DestroyRenderTexture( idRenderTexture* renderTexture )
 
 	if ( backEnd.renderTexture == renderTexture ) {
 		backEnd.renderTexture = NULL;
+	}
+	if ( activeRenderTexture == renderTexture ) {
+		activeRenderTexture = NULL;
 	}
 
 	pendingRenderTextureDeletes.Append( renderTexture );

@@ -239,8 +239,13 @@ void idGuiModel::EmitFullScreen( void ) {
 		viewDef->renderView.width = SCREEN_WIDTH;
 		viewDef->renderView.height = SCREEN_HEIGHT;
 
-		if ( tr.currentRenderCrop == 0 ) {
-			// Constrain fullscreen 2D to the configured UI viewport.
+		const bool useUIViewport =
+			( tr.currentRenderCrop == 0 ) &&
+			tr.useUIViewportFor2D &&
+			( tr.activeRenderTexture == NULL );
+
+		if ( useUIViewport ) {
+			// Constrain fullscreen 2D UI to the configured UI viewport.
 			const int viewportX = glConfig.uiViewportX;
 			const int viewportY = glConfig.uiViewportY;
 			const int viewportWidth = glConfig.uiViewportWidth;
@@ -251,6 +256,16 @@ void idGuiModel::EmitFullScreen( void ) {
 			viewDef->viewport.x2 = viewportX + viewportWidth - 1;
 			viewDef->viewport.y1 = bottomY;
 			viewDef->viewport.y2 = bottomY + viewportHeight - 1;
+		} else if ( tr.currentRenderCrop == 0 && tr.activeRenderTexture != NULL ) {
+			// Fullscreen 2D while rendering into an offscreen target should use
+			// the target's full extents, not the UI viewport sub-rect.
+			const int targetWidth = ( tr.activeRenderTexture->GetWidth() > 0 ) ? tr.activeRenderTexture->GetWidth() : 1;
+			const int targetHeight = ( tr.activeRenderTexture->GetHeight() > 0 ) ? tr.activeRenderTexture->GetHeight() : 1;
+
+			viewDef->viewport.x1 = 0;
+			viewDef->viewport.y1 = 0;
+			viewDef->viewport.x2 = targetWidth - 1;
+			viewDef->viewport.y2 = targetHeight - 1;
 		} else {
 			// Preserve render-crop behavior used by screenshot/demo capture paths.
 			tr.RenderViewToViewport( &viewDef->renderView, &viewDef->viewport );

@@ -336,7 +336,7 @@ void idRenderModelDecal::CreateDecal( const idRenderModel *model, const decalPro
 
 			// skip back facing triangles
 			if ( stri->facePlanes && stri->facePlanesCalculated &&
-					stri->facePlanes[triNum].Normal() * localInfo.boundingPlanes[NUM_DECAL_BOUNDING_PLANES - 2].Normal() < localInfo.maxAngle ) {
+					idMath::Fabs( stri->facePlanes[triNum].Normal() * localInfo.boundingPlanes[NUM_DECAL_BOUNDING_PLANES - 2].Normal() ) < localInfo.maxAngle ) {
 				continue;
 			}
 
