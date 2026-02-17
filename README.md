@@ -10,7 +10,7 @@
 
 **A modern, full binary replacement for Quake 4**
 
-[Features](#features) • [Quick Start](#quick-start) • [Building](#building-from-source) • [Documentation](#documentation) • [Credits](#credits)
+[Features](#features) • [Quick Start](#quick-start) • [Building](#building-from-source) • [Documentation](#documentation) • [TODO](TODO.md) • [Credits](#credits)
 
 </div>
 
@@ -33,6 +33,11 @@ To play OpenQ4, you need:
 - A modern 64-bit operating system
 
 > **Note:** OpenQ4 does NOT include game assets. You must own Quake 4 to play. The engine will automatically detect your Quake 4 installation from Steam or GOG. OpenQ4 is not compatible with legacy Quake 4 game mods.
+
+<p align="center">
+  <img src="assets/img/shot1.png" alt="OpenQ4 gameplay screenshot showing in-engine combat" width="92%">
+</p>
+<p align="center"><sub>OpenQ4 running with stock Quake 4 assets.</sub></p>
 
 ---
 
@@ -57,6 +62,12 @@ To play OpenQ4, you need:
 - **Meson Build System**: Fast, reliable builds with dependency management
 - **Crash Diagnostics**: Automatic crash dumps and logs for debugging
 - **OpenGL Rendering**: Enhanced rendering with [GLEW](http://glew.sourceforge.net/) 2.3.1
+
+<p align="center">
+  <img src="assets/img/shot2.png" alt="OpenQ4 gameplay screenshot showing dynamic combat scene" width="49%">
+  <img src="assets/img/shot3.png" alt="OpenQ4 gameplay screenshot showing environment detail and lighting" width="49%">
+</p>
+<p align="center"><sub>Modernized engine behavior while preserving classic Quake 4 gameplay.</sub></p>
 
 ---
 
@@ -224,6 +235,7 @@ OpenQ4 maintains complete freedom to evolve independently while preserving compa
 - [Display Settings](user-docs/display-settings.md) - Multi-monitor and display configuration
 - [Input Key Matrix](doc/input-key-matrix.md) - Keyboard and controller input reference
 - [Release Completion](doc/release-completion.md) - Release checklist and changelog
+- [Project TODO](TODO.md) - Known issues and upcoming features
 
 ---
 
@@ -303,6 +315,11 @@ OpenQ4 automatically validates your Quake 4 installation to ensure you have legi
 - `fs_cdpath` - Locked runtime overlay path (current working directory; use `install/` as launch dir for testing)
 
 </details>
+
+<p align="center">
+  <img src="assets/img/shot4.png" alt="OpenQ4 gameplay screenshot showing atmospheric environment" width="92%">
+</p>
+<p align="center"><sub>Built for modern systems without changing the original game feel.</sub></p>
 
 ---
 
