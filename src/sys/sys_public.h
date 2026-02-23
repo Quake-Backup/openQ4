@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __SYS_PUBLIC__
 #define __SYS_PUBLIC__
 
+#include <stdint.h>
+
 /*
 ===============================================================================
 
@@ -73,6 +75,12 @@ If you have questions concerning this license or the applicable additional terms
 #elif defined(__i386__)
 	#define	CPUSTRING					"x86"
 	#define CPU_EASYARGS				1
+#elif defined(__x86_64__)
+	#define	CPUSTRING					"x64"
+	#define CPU_EASYARGS				1
+#elif defined(__aarch64__) || defined(__arm64__)
+	#define	CPUSTRING					"arm64"
+	#define CPU_EASYARGS				1
 #endif
 
 #define ALIGN16( x )					x __attribute__ ((aligned (16)))
@@ -85,7 +93,7 @@ If you have questions concerning this license or the applicable additional terms
 #endif
 
 #define _alloca							alloca
-#define _alloca16( x )					((void *)((((int)alloca( (x)+15 )) + 15) & ~15))
+#define _alloca16( x )					((void *)((((intptr_t)alloca( (x)+15 )) + 15) & ~15))
 
 #define PATHSEPERATOR_STR				"/"
 #define PATHSEPERATOR_CHAR				'/'
@@ -94,6 +102,7 @@ If you have questions concerning this license or the applicable additional terms
 #define ASSERT							assert
 
 #define ID_INLINE						inline
+#define ID_INLINE_EXTERN				inline
 #define ID_STATIC_TEMPLATE
 
 #define assertmem( x, y )
@@ -111,12 +120,23 @@ If you have questions concerning this license or the applicable additional terms
 	#define CPU_EASYARGS				1
 #elif defined(__ppc__)
 	#define	BUILD_STRING				"linux-ppc"
+	#define BUILD_OS_ID					2
 	#define CPUSTRING					"ppc"
 	#define CPU_EASYARGS				0
+#elif defined(__x86_64__)
+	#define	BUILD_STRING				"linux-x64"
+	#define BUILD_OS_ID					2
+	#define CPUSTRING					"x64"
+	#define CPU_EASYARGS				1
+#elif defined(__aarch64__) || defined(__arm64__)
+	#define	BUILD_STRING				"linux-arm64"
+	#define BUILD_OS_ID					2
+	#define CPUSTRING					"arm64"
+	#define CPU_EASYARGS				1
 #endif
 
 #define _alloca							alloca
-#define _alloca16( x )					((void *)((((int)alloca( (x)+15 )) + 15) & ~15))
+#define _alloca16( x )					((void *)((((intptr_t)alloca( (x)+15 )) + 15) & ~15))
 
 #define ALIGN16( x )					x
 #define PACKED							__attribute__((packed))
@@ -128,6 +148,7 @@ If you have questions concerning this license or the applicable additional terms
 #define ASSERT							assert
 
 #define ID_INLINE						inline
+#define ID_INLINE_EXTERN				inline
 #define ID_STATIC_TEMPLATE
 
 #define assertmem( x, y )

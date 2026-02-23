@@ -10,6 +10,7 @@ glew_lib = static_library(
   'glew',
   files('src/glew.c'),
   include_directories: glew_inc,
+  c_args: ['-DGLEW_NO_GLU'],
 )
 
 glew_dep = declare_dependency(

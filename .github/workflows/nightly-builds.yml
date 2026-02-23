@@ -64,7 +64,6 @@ jobs:
     name: ${{ matrix.label }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.platform != 'windows' }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,19 +73,16 @@ jobs:
             label: Windows
             archive_format: zip
             archive_ext: .zip
-            require_binaries: true
           - os: ubuntu-latest
             platform: linux
             label: Linux
             archive_format: tar.xz
             archive_ext: .tar.xz
-            require_binaries: false
           - os: macos-latest
             platform: macos
             label: macOS
             archive_format: tar.gz
             archive_ext: .tar.gz
-            require_binaries: false
 
     steps:
       - name: Checkout
@@ -110,6 +106,26 @@ jobs:
           echo "Nightly version: ${{ needs.metadata.outputs.version }}"
           echo "Nightly version tag: ${{ needs.metadata.outputs.version_tag }}"
 
+      - name: Install Linux native dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglew-dev \
+            libopenal-dev \
+            libx11-dev \
+            libxext-dev \
+            libxxf86vm-dev
+
+      - name: Install macOS native dependencies
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install glew
+
       - name: Build and install (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -126,34 +142,31 @@ jobs:
           powershell -ExecutionPolicy Bypass -File tools/build/meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build and install (Linux/macOS, best effort)
+      - name: Build and install (Linux/macOS)
         if: matrix.platform != 'windows'
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           export OPENQ4_SKIP_GAMELIBS_SYNC=1
 
-          bash tools/build/meson_setup.sh setup --wipe builddir . --backend ninja --buildtype=release --wrap-mode=forcefallback
-          if [ $? -eq 0 ]; then
-            bash tools/build/meson_setup.sh compile -C builddir
-            if [ $? -eq 0 ]; then
-              bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subprojects
-            fi
-          else
-            echo "Non-Windows host build is best-effort on ${RUNNER_OS}; falling back to source payload packaging if needed."
-          fi
-          exit 0
+          bash tools/build/meson_setup.sh setup --wipe builddir . --backend ninja --buildtype=release --wrap-mode=default -Dbuild_libbse=false -Dplatform_backend=native
+          bash tools/build/meson_setup.sh compile -C builddir
+          bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subprojects
 
-      - name: Ensure staged openq4 payload
+      - name: Validate staged payload
         shell: bash
         run: |
           set -euo pipefail
 
+          if [ ! -d ".install/openq4" ]; then
+            echo "Staged openq4 payload directory is missing."
+            exit 1
+          fi
+
           has_payload_files="$(find ".install/openq4" -type f -print -quit 2>/dev/null || true)"
-          if [ ! -d ".install/openq4" ] || [ -z "${has_payload_files}" ]; then
-            mkdir -p ".install/openq4"
-            cp -a "openq4/." ".install/openq4/"
-            echo "Staged source openq4 payload because install output was unavailable on ${RUNNER_OS}."
+          if [ -z "${has_payload_files}" ]; then
+            echo "Staged openq4 payload directory has no files."
+            exit 1
           fi
 
       - name: Prepare package
@@ -162,19 +175,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          extra_args=()
-          if [ "${{ matrix.require_binaries }}" != "true" ]; then
-            extra_args+=(--allow-missing-binaries)
-          fi
-
           python tools/build/package_nightly.py \
             --platform "${{ matrix.platform }}" \
             --version "${{ needs.metadata.outputs.version }}" \
             --version-tag "${{ needs.metadata.outputs.version_tag }}" \
             --archive-format "${{ matrix.archive_format }}" \
             --source-root "${GITHUB_WORKSPACE}" \
-            --output-dir "${RUNNER_TEMP}" \
-            "${extra_args[@]}"
+            --output-dir "${RUNNER_TEMP}"
 
           archive_path="${RUNNER_TEMP}/openq4-${{ needs.metadata.outputs.version_tag }}-${{ matrix.platform }}${{ matrix.archive_ext }}"
           if [ ! -f "${archive_path}" ]; then

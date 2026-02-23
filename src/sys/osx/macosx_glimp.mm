@@ -21,7 +21,6 @@ along with Doom 3 Source Code.  If not, see <http://www.gnu.org/licenses/>.
 
 In addition, the Doom 3 Source Code is also subject to certain additional terms. You should have received a copy of these additional terms immediately following the terms and conditions of the GNU General Public License which accompanied the Doom 3 Source Code.  If not, please request a copy in writing from id Software at the address below.
 
-If you have questions concerning this license or the applicable additional terms, you may contact in writing id Software LLC, c/o ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 ===========================================================================
 */
@@ -63,7 +62,6 @@ static bool isHidden = false;
 @implementation NSOpenGLContext (CGLContextAccess)
 - (CGLContextObj) cglContext;
 {
-	return _contextAuxiliary;
 }
 @end
 
@@ -75,9 +73,9 @@ CheckErrors
 void CheckErrors( void ) {		
 	GLenum   err;
 
-	err = qglGetError();
+	err = glGetError();
 	if ( err != GL_NO_ERROR ) {
-		common->Error( "glGetError: %s\n", qglGetString( err ) );
+		common->Error( "glGetError: %s\n", glGetString( err ) );
 	}
 }
 
@@ -99,7 +97,11 @@ void QGLCheckError( const char *message ) {
 			if (errorCount == 0) {
 				common->Warning("BREAK ON QGLErrorBreak to stop at the GL errors\n");
 			}
-			common->Warning("OpenGL Error(%s): 0x%04x -- %s\n", message, (int)error,  gluErrorString(error));
+			#if defined(GLEW_NO_GLU)
+				common->Warning("OpenGL Error(%s): 0x%04x\n", message, (int)error);
+			#else
+				common->Warning("OpenGL Error(%s): 0x%04x -- %s\n", message, (int)error, gluErrorString(error));
+			#endif
 			QGLErrorBreak();
 		}
 		errorCount++;
@@ -114,7 +116,6 @@ void QGLCheckError( const char *message ) {
 bool GLimp_SetMode(  glimpParms_t parms ) {
 	if ( !CreateGameWindow( parms ) ) {
 		common->Printf( "GLimp_SetMode: window could not be created!\n" );
-		return false;
 	}
 
 	glConfig.vidWidth = parms.width;
@@ -122,19 +123,18 @@ bool GLimp_SetMode(  glimpParms_t parms ) {
 	glConfig.isFullscreen = parms.fullScreen;
     
 	// draw something to show that GL is alive	
-	qglClearColor( 0.5, 0.5, 0.7, 0 );
-	qglClear( GL_COLOR_BUFFER_BIT );
+	glClearColor( 0.5, 0.5, 0.7, 0 );
+	glClear( GL_COLOR_BUFFER_BIT );
 	GLimp_SwapBuffers();
         
-	qglClearColor( 0.5, 0.5, 0.7, 0 );
-	qglClear( GL_COLOR_BUFFER_BIT );
+	glClearColor( 0.5, 0.5, 0.7, 0 );
+	glClear( GL_COLOR_BUFFER_BIT );
 	GLimp_SwapBuffers();
 
 	Sys_UnfadeScreen( Sys_DisplayToUse(), NULL );
     
 	CheckErrors();
 
-	return true;
 }
 
 /*
@@ -194,7 +194,6 @@ static NSOpenGLPixelFormatAttribute *GetPixelAttributes( unsigned int multisampl
 	if ( !cvarSystem->GetCVarBool( "r_fullscreen" ) ) {
 		desktopColorDepth = [[glw_state.desktopMode objectForKey: (id)kCGDisplayBitsPerPixel] intValue];
 		if ( desktopColorDepth != 32 ) {
-			common->Warning( "Desktop display colors should be 32 bits for window rendering" );
 		}
 	}
 	ADD_ATTR(colorDepth);
@@ -224,7 +223,6 @@ static NSOpenGLPixelFormatAttribute *GetPixelAttributes( unsigned int multisampl
 	// Terminate the list
 	ADD_ATTR(0);
     
-	return pixelAttributes;
 }
 
 void Sys_UpdateWindowMouseInputRect(void) {		
@@ -288,7 +286,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		glw_state.gameMode = Sys_GetMatchingDisplayMode(parms);
 		if (!glw_state.gameMode) {
 			common->Printf(  "Unable to find requested display mode.\n");
-			return false;
 		}
 
 		// Fade all screens to black
@@ -298,7 +295,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		if ( err != CGDisplayNoErr ) {
 			CGDisplayRestoreColorSyncSettings();
 			common->Printf(  " Unable to capture displays err = %d\n", err );
-			return false;
 		}
 
 		err = CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.gameMode);
@@ -306,7 +302,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 			CGDisplayRestoreColorSyncSettings();
 			ReleaseAllDisplays();
 			common->Printf(  " Unable to set display mode, err = %d\n", err );
-			return false;
 		}
 	} else {
 		glw_state.gameMode = glw_state.desktopMode;
@@ -330,7 +325,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.desktopMode);
 		ReleaseAllDisplays();
 		common->Printf(  " No pixel format found\n");
-		return false;
 	}
 
 	// Create a context with the desired pixel attributes
@@ -340,7 +334,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.desktopMode);
 		ReleaseAllDisplays();
 		common->Printf(  "... +[NSOpenGLContext createWithFormat:share:] failed.\n" );
-		return false;
 	}
 #ifdef __ppc__
 	long system_version = 0;
@@ -377,7 +370,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 
 		[glw_state.window orderFront: nil];
 
-		// Always get mouse moved events (if mouse support is turned off (rare)
 		// the event system will filter them out.
 		[glw_state.window setAcceptsMouseMovedEvents: YES];
         
@@ -397,7 +389,6 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 			CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.desktopMode);
 			ReleaseAllDisplays();
 			common->Printf("CGLSetFullScreen -> %d (%s)\n", err, CGLErrorString(err));
-			return false;
 		}
 
 		Sys_SetMouseInputRect( CGDisplayBounds( glw_state.display ) );
@@ -417,15 +408,13 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
     
 	common->Printf(  "ok\n" );
 
-	return true;
 }
 
 // This can be used to temporarily disassociate the GL context from the screen so that CoreGraphics can be used to draw to the screen.
 void Sys_PauseGL () {
 	if (!glw_state.glPauseCount) {
-		qglFinish (); // must do this to ensure the queue is complete
+		glFinish (); // must do this to ensure the queue is complete
         
-		// Have to call both to actually deallocate kernel resources and free the NSSurface
 		CGLClearDrawable(OSX_GetCGLContext());
 		[OSX_GetNSGLContext() clearDrawable];
 	}
@@ -454,7 +443,6 @@ void Sys_ResumeGL () {
 ===================
 GLimp_Init
 
-Don't return unless OpenGL has been properly initialized
 ===================
 */
 
@@ -477,17 +465,15 @@ bool GLimp_Init( glimpParms_t parms ) {
 	}
     
 	if ( !GLimp_SetMode( parms ) ) {
-		common->Warning(  "Could not initialize OpenGL\n" );
-		return false;
 	}
 
 	common->Printf(  "------------------\n" );
 
 	// get our config strings
-	glConfig.vendor_string = (const char *)qglGetString( GL_VENDOR );
-	glConfig.renderer_string = (const char *)qglGetString( GL_RENDERER );
-	glConfig.version_string = (const char *)qglGetString( GL_VERSION );
-	glConfig.extensions_string = (const char *)qglGetString( GL_EXTENSIONS );
+	glConfig.vendor_string = (const char *)glGetString( GL_VENDOR );
+	glConfig.renderer_string = (const char *)glGetString( GL_RENDERER );
+	glConfig.version_string = (const char *)glGetString( GL_VERSION );
+	glConfig.extensions_string = (const char *)glGetString( GL_EXTENSIONS );
 
 	//
 	// chipset specific configuration
@@ -506,7 +492,6 @@ bool GLimp_Init( glimpParms_t parms ) {
 		OSX_GLContextClearCurrent();
 #endif
 	*/
-	return true;
 }
 
 
@@ -532,7 +517,6 @@ void GLimp_SwapBuffers( void ) {
 	}
 
 	/*    
-	// Enable turning off GL at any point for performance testing
 	if (OSX_GLContextIsCurrent() != r_enablerender->integer) {
 		if (r_enablerender->integer) {
 			common->Printf("--- Enabling Renderer ---\n");
@@ -581,7 +565,6 @@ void GLimp_Shutdown( void ) {
 #ifndef USE_CGLMACROS
 		OSX_GLContextClearCurrent();
 #endif
-		// Have to call both to actually deallocate kernel resources and free the NSSurface
 		CGLClearDrawable(OSX_GetCGLContext());
 		[OSX_GetNSGLContext() clearDrawable];
         
@@ -660,7 +643,6 @@ void GLimp_SetGamma(unsigned short red[256],
     
 	err = CGSetDisplayTransferByTable(glw_state.display, 256, redGamma, greenGamma, blueGamma);
 	if (err != CGDisplayNoErr) {
-		common->Printf("GLimp_SetGamma: CGSetDisplayTransferByByteTable returned %d.\n", err);
 	}
     
 	// Store the gamma table that we ended up using so we can reapply it later when unhiding or to work around the bug where if you leave the game sitting and the monitor sleeps, when it wakes, the gamma isn't reset.
@@ -671,7 +653,7 @@ void GLimp_SetGamma(unsigned short red[256],
 /*****************************************************************************/
 
 #pragma mark -
-#pragma mark ¥ ATI_fragment_shader
+#pragma mark ? ATI_fragment_shader
 
 static GLuint sGeneratingProgram = 0;
 static int sCurrentPass;
@@ -683,22 +665,20 @@ static int sConst[8];
 static GLfloat sConstVal[8][4];
 
 static void _endPass (void) {
-	if (!sOpUsed) return;
 	sOpUsed = 0;
 	sCurrentPass ++;
 }
 
 GLuint glGenFragmentShadersATI (GLuint ID) {
-	qglGenProgramsARB(1, &ID);
-	return ID;
+	glGenProgramsARB(1, &ID);
 }
 
 void glBindFragmentShaderATI (GLuint ID) {
-	qglBindProgramARB(GL_TEXT_FRAGMENT_SHADER_ATI, ID);
+	glBindProgramARB(GL_TEXT_FRAGMENT_SHADER_ATI, ID);
 }
 
 void glDeleteFragmentShaderATI (GLuint ID) {
-//	qglDeleteProgramsARB(1, &ID);
+//	glDeleteProgramsARB(1, &ID);
 }
 
 void glBeginFragmentShaderATI (void) {
@@ -758,11 +738,10 @@ void glEndFragmentShaderATI (void) {
 		strcat(fragString, "EndPass;\n");
 	}
 
-	qglProgramStringARB(GL_TEXT_FRAGMENT_SHADER_ATI, GL_PROGRAM_FORMAT_ASCII_ARB, strlen(fragString), fragString);
-	qglGetIntegerv( GL_PROGRAM_ERROR_POSITION_ARB, &errPos );
+	glProgramStringARB(GL_TEXT_FRAGMENT_SHADER_ATI, GL_PROGRAM_FORMAT_ASCII_ARB, strlen(fragString), fragString);
+	glGetIntegerv( GL_PROGRAM_ERROR_POSITION_ARB, &errPos );
 	if(errPos != -1) {
 		const GLubyte *errString = glGetString(GL_PROGRAM_ERROR_STRING_ARB);
-		common->Warning("WARNING: glError at %d:%s when compiling atiFragmentShader %s", errPos, errString, fragString);
 	}
 }
 
@@ -783,14 +762,13 @@ void glSetFragmentShaderConstantATI (GLuint num, const GLfloat *val) {
 		// So, we cache those values and only set the constants if they are different.
 		if (memcmp (val, sConstVal[constNum], sizeof(GLfloat)*8*4) != 0)
 		{
-			qglProgramEnvParameter4fvARB (GL_TEXT_FRAGMENT_SHADER_ATI, num-GL_CON_0_ATI, val);
+			glProgramEnvParameter4fvARB (GL_TEXT_FRAGMENT_SHADER_ATI, num-GL_CON_0_ATI, val);
 			memcpy (sConstVal[constNum], val, sizeof(GLfloat)*8*4);
 		}
 	}
 }
 
 char *makeArgStr(GLuint arg) {
-	// Since we return "str", it needs to be static to ensure that it retains
 	// its value outside this routine. 
 	static char str[128];
 	
@@ -815,9 +793,7 @@ char *makeArgStr(GLuint arg) {
 	} else if (arg == GL_ONE) {
 		strcpy(str, "1");
 	} else {
-		common->Warning("makeArgStr: bad arg value\n");
 	}
-	return str;
 }
 
 void glPassTexCoordATI (GLuint dst, GLuint coord, GLenum swizzle) {
@@ -838,7 +814,6 @@ void glPassTexCoordATI (GLuint dst, GLuint coord, GLenum swizzle) {
 			sprintf(str, "    PassTexCoord r%d, %s.stq_dq;\n", dst - GL_REG_0_ATI, makeArgStr(coord));
 			break;
 		default:
-			common->Warning("glPassTexCoordATI invalid swizzle;");
 			break;
 	}
 	strcat(sPassString[sCurrentPass], str);
@@ -862,14 +837,12 @@ void glSampleMapATI (GLuint dst, GLuint interp, GLenum swizzle) {
 			sprintf(str, "    SampleMap r%d, %s.stq_dq;\n", dst - GL_REG_0_ATI, makeArgStr(interp));
 			break;
 		default:
-			common->Warning("glSampleMapATI invalid swizzle;");
 			break;
 	}
 	strcat(sPassString[sCurrentPass], str);
 }
 
 char *makeMaskStr(GLuint mask) {
-	// Since we return "str", it needs to be static to ensure that it retains
 	// its value outside this routine. 
 	static char str[128];
 	
@@ -908,11 +881,9 @@ char *makeMaskStr(GLuint mask) {
 			break;
 	}
 		
-	return str;
 }
 
 char *makeDstModStr(GLuint mod) {
-	// Since we return "str", it needs to be static to ensure that it retains
 	// its value outside this routine. 
 	static char str[128];
 	
@@ -920,7 +891,6 @@ char *makeDstModStr(GLuint mod) {
 	
 	if( mod == GL_NONE) {
 		str[0] = '\0';
-		return str;
 	}
 	if( mod & GL_2X_BIT_ATI) {
 		strcat(str, ".2x");
@@ -950,11 +920,9 @@ char *makeDstModStr(GLuint mod) {
 		strcat(str, ".eighth");
 	}
 
-	return str;
 }	
 
 char *makeArgModStr(GLuint mod) {
-	// Since we return "str", it needs to be static to ensure that it retains
 	// its value outside this routine. 
 	static char str[128];
 	
@@ -962,7 +930,6 @@ char *makeArgModStr(GLuint mod) {
 	
 	if( mod == GL_NONE) {
 		str[0] = '\0';
-		return str;
 	}
 	if( mod & GL_NEGATE_BIT_ATI) {
 		strcat(str, ".neg");
@@ -980,7 +947,6 @@ char *makeArgModStr(GLuint mod) {
 		strcat(str, ".comp");
 	}
 		
-	return str;
 }
 
 void glColorFragmentOp1ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod, GLuint arg1, GLuint arg1Rep, GLuint arg1Mod) {
@@ -994,7 +960,6 @@ void glColorFragmentOp1ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod
 			sprintf(str, "    MOV r%d", dst - GL_REG_0_ATI);
 			break;
 		default:
-			common->Warning("glColorFragmentOp1ATI invalid op;\n");
 			break;
 	}
 	if(dstMask != GL_NONE)  {
@@ -1032,7 +997,6 @@ void glColorFragmentOp2ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod
 		// Unary operators - fall back to Op1 routine.
 		case GL_MOV_ATI:
 			glColorFragmentOp1ATI(op, dst, dstMask, dstMod, arg1, arg1Rep, arg1Mod);
-			return;
 
 		// Binary operators
 		case GL_ADD_ATI:
@@ -1051,7 +1015,6 @@ void glColorFragmentOp2ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod
 			sprintf(str, "    DOT4 r%d", dst - GL_REG_0_ATI);
 			break;
 		default:
-			common->Warning("glColorFragmentOp2ATI invalid op;");
 			break;
 	}
 	if(dstMask != GL_NONE)  {
@@ -1093,7 +1056,6 @@ void glColorFragmentOp3ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod
 		// Unary operators - fall back to Op1 routine.
 		case GL_MOV_ATI:
 			glColorFragmentOp1ATI(op, dst, dstMask, dstMod, arg1, arg1Rep, arg1Mod);
-			return;
 
 		// Binary operators - fall back to Op2 routine.
 		case GL_ADD_ATI:
@@ -1104,7 +1066,6 @@ void glColorFragmentOp3ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod
 			glColorFragmentOp2ATI(op, dst, dstMask, dstMod, arg1, arg1Rep, arg1Mod, arg2, arg2Rep, arg2Mod);
 			break;
 
-		// Ternary operators
 		case GL_MAD_ATI:
 			sprintf(str, "    MAD r%d", dst - GL_REG_0_ATI);
 			break;
@@ -1121,7 +1082,6 @@ void glColorFragmentOp3ATI (GLenum op, GLuint dst, GLuint dstMask, GLuint dstMod
 			sprintf(str, "    DOT2ADD r%d", dst - GL_REG_0_ATI);
 			break;
 		default:
-			common->Warning("glColorFragmentOp3ATI invalid op;");
 			break;
 	}
 
@@ -1185,46 +1145,32 @@ GLExtension_t GLimp_ExtensionPointer(const char *name) {
 
 	// special case for ATI_fragment_shader calls to map to ATI_text_fragment_shader routines
 	if (!strcmp(name, "glGenFragmentShadersATI")) {
-		return (GLExtension_t)glGenFragmentShadersATI;
 	}
 	if (!strcmp(name, "glBindFragmentShaderATI")) {
-		return (GLExtension_t)glBindFragmentShaderATI;
 	}
 	if (!strcmp(name, "glDeleteFragmentShaderATI")) {
-		return (GLExtension_t)glDeleteFragmentShaderATI;
 	}
 	if (!strcmp(name, "glBeginFragmentShaderATI")) {
-		return (GLExtension_t)glBeginFragmentShaderATI;
 	}
 	if (!strcmp(name, "glEndFragmentShaderATI")) {
-		return (GLExtension_t)glEndFragmentShaderATI;
 	}
 	if (!strcmp(name, "glPassTexCoordATI")) {
-		return (GLExtension_t)glPassTexCoordATI;
 	}
 	if (!strcmp(name, "glSampleMapATI")) {
-		return (GLExtension_t)glSampleMapATI;
 	}
 	if (!strcmp(name, "glColorFragmentOp1ATI")) {
-		return (GLExtension_t)glColorFragmentOp1ATI;
 	}
 	if (!strcmp(name, "glColorFragmentOp2ATI")) {
-		return (GLExtension_t)glColorFragmentOp2ATI;
 	}
 	if (!strcmp(name, "glColorFragmentOp3ATI")) {
-		return (GLExtension_t)glColorFragmentOp3ATI;
 	}
 	if (!strcmp(name, "glAlphaFragmentOp1ATI")) {
-		return (GLExtension_t)glAlphaFragmentOp1ATI;
 	}
 	if (!strcmp(name, "glAlphaFragmentOp2ATI")) {
-		return (GLExtension_t)glAlphaFragmentOp2ATI;
 	}
 	if (!strcmp(name, "glAlphaFragmentOp3ATI")) {
-		return (GLExtension_t)glAlphaFragmentOp3ATI;
 	}
 	if (!strcmp(name, "glSetFragmentShaderConstantATI")) {
-		return (GLExtension_t)glSetFragmentShaderConstantATI;
 	}
 
 	// Prepend a '_' for the Unix C symbol mangling convention
@@ -1233,20 +1179,16 @@ GLExtension_t GLimp_ExtensionPointer(const char *name) {
 	symbolName[0] = '_';
 
 	if ( !NSIsSymbolNameDefined( symbolName ) ) {
-		return NULL;
 	}
 
 	symbol = NSLookupAndBindSymbol(symbolName);
 	if ( !symbol ) {
 		// shouldn't happen ...
-		return NULL;
 	}
 
-	return (GLExtension_t)(NSAddressOfSymbol(symbol));
 }
 
 void * wglGetProcAddress(const char *name) {
-	return (void *)GLimp_ExtensionPointer( name );
 }
 
 
@@ -1257,7 +1199,6 @@ void GLW_InitExtensions( void ) { }
 
 #define MAX_RENDERER_INFO_COUNT 128
 
-// Returns zero if there are no hardware renderers.  Otherwise, returns the max memory across all renderers (on the presumption that the screen that we'll use has the most memory).
 unsigned long Sys_QueryVideoMemory() {
 	CGLError err;
 	CGLRendererInfoObj rendererInfo, rendererInfos[MAX_RENDERER_INFO_COUNT];
@@ -1271,7 +1212,6 @@ unsigned long Sys_QueryVideoMemory() {
 	err = CGLQueryRendererInfo(CGDisplayIDToOpenGLDisplayMask(Sys_DisplayToUse()), rendererInfos, &rendererInfoCount);
 	if (err) {
 		common->Printf("CGLQueryRendererInfo -> %d\n", err);
-		return vram;
 	}
     
 	//common->Printf("rendererInfoCount = %d\n", rendererInfoCount);
@@ -1330,7 +1270,6 @@ unsigned long Sys_QueryVideoMemory() {
 #endif
 	}
 
-	return maxVRAM;
 }
 
 
@@ -1338,12 +1277,10 @@ unsigned long Sys_QueryVideoMemory() {
 bool Sys_Hide() {
 	if ( isHidden ) {
 		// Eh?
-		return false;
 	}
     
 	if ( !r_fullscreen.GetBool() ) {
 		// We only support hiding in fullscreen mode right now
-		return false;
 	}
     
 	isHidden = true;
@@ -1353,7 +1290,6 @@ bool Sys_Hide() {
 	Sys_FadeScreen(Sys_DisplayToUse());
 
 	// Disassociate the GL context from the screen
-	// Have to call both to actually deallocate kernel resources and free the NSSurface
 	CGLClearDrawable(OSX_GetCGLContext());
 	[OSX_GetNSGLContext() clearDrawable];
     
@@ -1376,7 +1312,6 @@ bool Sys_Hide() {
 	// Hide the application so that when the user clicks on our app icon, we'll get an unhide notification
 	[NSApp hide: nil];
     
-	return true;
 }
 
 CGDisplayErr Sys_CaptureActiveDisplays(void) {
@@ -1387,9 +1322,7 @@ CGDisplayErr Sys_CaptureActiveDisplays(void) {
 		table = &glw_state.originalDisplayGammaTables[displayIndex];
 		err = CGDisplayCapture(table->display);
 		if (err != CGDisplayNoErr)
-	    return err;
 	}
-	return CGDisplayNoErr;
 }
 
 bool Sys_Unhide() {
@@ -1398,7 +1331,6 @@ bool Sys_Unhide() {
     
 	if ( !isHidden) {
 		// Eh?
-		return false;
 	}
         
 	Sys_FadeScreens();
@@ -1408,7 +1340,6 @@ bool Sys_Unhide() {
 	if (err != CGDisplayNoErr) {
 		Sys_UnfadeScreens();
 		common->Printf(  "Unhide failed -- cannot capture the display again.\n" );
-		return false;
 	}
     
 	// Restore the game mode
@@ -1417,7 +1348,6 @@ bool Sys_Unhide() {
 		ReleaseAllDisplays();
 		Sys_UnfadeScreens();
 		common->Printf(  "Unhide failed -- Unable to set display mode\n" );
-		return false;
 	}
 
 	// Reassociate the GL context and the screen
@@ -1426,7 +1356,6 @@ bool Sys_Unhide() {
 		ReleaseAllDisplays();
 		Sys_UnfadeScreens();
 		common->Printf(  "Unhide failed: CGLSetFullScreen -> %d (%s)\n", err, CGLErrorString(glErr));
-		return false;
 	}
 
 	// Restore the current context
@@ -1439,15 +1368,12 @@ bool Sys_Unhide() {
 	Sys_InitInput();
     
 	isHidden = false;
-	return true;
 }
 
 bool GLimp_SpawnRenderThread( void (*function)( void ) ) {
-	return false;
 }
 
 void *GLimp_RendererSleep(void) {
-	return NULL;
 }
 
 void GLimp_FrontEndSleep(void) { }
@@ -1455,7 +1381,6 @@ void GLimp_FrontEndSleep(void) { }
 void GLimp_WakeRenderer( void *data ) { }
 
 void *GLimp_BackEndSleep( void ) {
-	return NULL;
 }
 
 void GLimp_WakeBackEnd( void *data ) {
@@ -1493,13 +1418,12 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
     
 	displayModes = (NSArray *)CGDisplayAvailableModes(glw_state.display);
 	if (!displayModes) {
-		common->Error( "CGDisplayAvailableModes returned NULL -- 0x%0x is an invalid display", glw_state.display);
 	}
     
 	modeCount = [displayModes count];
 	if (verbose) {
 		common->Printf( "%d modes avaliable\n", modeCount);
-		common->Printf( "Current mode is %s\n", [[(id)CGDisplayCurrentMode(glw_state.display) description] cString]);
+		common->Printf( "Current mode is %s\n", [[(id)CGDisplayCurrentMode(glw_state.display) description] UTF8String]);
 	}
     
 	// Default to the current desktop mode
@@ -1511,7 +1435,7 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
         
 		mode = [displayModes objectAtIndex: modeIndex];
 		if (verbose) {
-			common->Printf( " mode %d -- %s\n", modeIndex, [[mode description] cString]);
+			common->Printf( " mode %d -- %s\n", modeIndex, [[mode description] UTF8String]);
 		}
 
 		// Make sure we get the right size
@@ -1568,10 +1492,8 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
 
 	if (bestModeIndex == 0xFFFFFFFF) {
 		common->Printf( "No suitable display mode available.\n");
-		return nil;
 	}
     
-	return [displayModes objectAtIndex: bestModeIndex];
 }
 
 
@@ -1596,7 +1518,6 @@ void Sys_GetGammaTable(glwgamma_t *table) {
 	err = CGGetDisplayTransferByTable(table->display, tableSize, table->red, table->green, table->blue,
 																		&table->tableSize);
 	if (err != CGDisplayNoErr) {
-		common->Printf("GLimp_Init: CGGetDisplayTransferByTable returned %d.\n", err);
 		table->tableSize = 0;
 	}
 }
@@ -1611,7 +1532,6 @@ void Sys_StoreGammaTables() {
 
 	err = CGGetActiveDisplayList(MAX_DISPLAYS, displays, &glw_state.displayCount);
 	if (err != CGDisplayNoErr)
-		Sys_Error("Cannot get display list -- CGGetActiveDisplayList returned %d.\n", err);
     
 	glw_state.originalDisplayGammaTables = (glwgamma_t *)calloc(glw_state.displayCount, sizeof(*glw_state.originalDisplayGammaTables));
 	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
@@ -1631,11 +1551,9 @@ void Sys_SetScreenFade(glwgamma_t *table, float fraction) {
 	CGTableCount gammaIndex;
     
 	//    if (!glConfig.deviceSupportsGamma)
-	//        return;
 
 	if (!(tableSize = table->tableSize))
 		// we couldn't get the table for this display for some reason
-		return;
     
 	//    common->Printf("0x%08x %f\n", table->display, fraction);
     
@@ -1672,7 +1590,6 @@ void Sys_FadeScreens() {
 	float time;
     
 	//   if (!glConfig.deviceSupportsGamma)
-	//        return;
 
 	common->Printf("Fading all displays\n");
     
@@ -1698,10 +1615,8 @@ void Sys_FadeScreen(CGDirectDisplayID display) {
 
 	common->Printf( "FIXME: Sys_FadeScreen\n" );
     
-	return;
     
 	//    if (!glConfig.deviceSupportsGamma)
-	//        return;
 
 	common->Printf("Fading display 0x%08x\n", display);
 
@@ -1722,7 +1637,6 @@ void Sys_FadeScreen(CGDirectDisplayID display) {
 
 				Sys_SetScreenFade(table, 1.0 - time / FADE_DURATION);
 			}
-			return;
 		}
 	}
 
@@ -1738,10 +1652,8 @@ void Sys_UnfadeScreens() {
 
 	common->Printf( "FIXME: Sys_UnfadeScreens\n" );
     
-	return;
     
 	//    if (!glConfig.deviceSupportsGamma)
-	//        return;
         
 	common->Printf("Unfading all displays\n");
 
@@ -1766,9 +1678,7 @@ void Sys_UnfadeScreen(CGDirectDisplayID display, glwgamma_t *table) {
 	
 	common->Printf( "FIXME: Sys_UnfadeScreen\n" );
 
-	return;
 	//    if (!glConfig.deviceSupportsGamma)
-	//        return;
     
 	common->Printf("Unfading display 0x%08x\n", display);
 
@@ -1805,7 +1715,6 @@ void Sys_UnfadeScreen(CGDirectDisplayID display, glwgamma_t *table) {
 				time = FADE_DURATION;
 			Sys_SetScreenFade(table, time / FADE_DURATION);
 		}
-		return;
 	}
     
 	common->Printf("Unable to find display to unfade it\n");
@@ -1823,13 +1732,11 @@ CGDirectDisplayID Sys_DisplayToUse(void) {
 	int							displayIndex;
     
 	if ( gotDisplay ) {
-		return displayToUse;
 	}
 	gotDisplay = YES;    
     
 	err = CGGetActiveDisplayList( MAX_DISPLAYS, displays, &displayCount );
 	if ( err != CGDisplayNoErr ) {
-		common->Error("Cannot get display list -- CGGetActiveDisplayList returned %d.\n", err );
 	}
 
 	// -1, the default, means to use the main screen
@@ -1837,14 +1744,12 @@ CGDirectDisplayID Sys_DisplayToUse(void) {
         
 	if ( displayIndex < 0 || displayIndex >= displayCount ) {
 		// This is documented (in CGDirectDisplay.h) to be the main display.  We want to
-		// return this instead of kCGDirectMainDisplay since this will allow us to compare
 		// display IDs.
 		displayToUse = displays[ 0 ];
 	} else {
 		displayToUse = displays[ displayIndex ];
 	}
 
-	return displayToUse;
 }
 
 /*
@@ -1853,7 +1758,6 @@ GLimp_SetScreenParms
 ===================
 */
 bool GLimp_SetScreenParms( glimpParms_t parms ) {
-	return true;
 }
 
 /*

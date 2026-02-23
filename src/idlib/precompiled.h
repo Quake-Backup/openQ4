@@ -126,6 +126,99 @@ class ThreadedAlloc;		// class that is only used to expand the AutoCrit template
 
 #endif // _WINDOWS
 
+#ifdef __linux__
+
+// for offsetof
+#include <stddef.h>
+// FLT_MAX and such
+#include <limits.h>
+#include <float.h>
+
+	#define __WITH_PB__
+	#undef WIN32
+	#undef _XBOX
+	#undef _CONSOLE
+	#define _OPENGL
+	#define _LITTLE_ENDIAN
+	#define _CASE_SENSITIVE_FILESYSTEM
+	#define _USE_OPENAL
+
+	#define NEWLINE				"\n"
+
+	#define _GLVAS_SUPPPORT
+
+	class AlignmentChecker
+	{
+	public:
+		static void UpdateCount(void const * const ptr) {}
+		static void ClearCount() {}
+		static void Print() {}
+	};
+
+	#define RESTRICT
+	#define TIME_THIS_SCOPE(x)
+
+	// Enables the batching of vertex cache request in SMP mode.
+	// Note (TTimo): is tied to ENABLE_INTEL_SMP
+	#ifdef ENABLE_INTEL_SMP
+	#define ENABLE_INTEL_VERTEXCACHE_OPT
+	#endif
+
+#endif
+
+#ifdef MACOS_X
+
+// for offsetof
+#include <stddef.h>
+#include <limits.h>
+#include <float.h>				// for FLT_MIN
+
+	// SMP support for running the backend on a 2nd thread
+	#ifndef ENABLE_INTEL_SMP
+	#define ENABLE_INTEL_SMP
+	#endif
+	// Enables the batching of vertex cache request in SMP mode.
+	// Note (TTimo): is tied to ENABLE_INTEL_SMP
+	#define ENABLE_INTEL_VERTEXCACHE_OPT
+
+	#define __WITH_PB__
+	#undef WIN32
+	#undef _XBOX
+	#undef _CONSOLE
+	#define _OPENGL
+	#ifdef __ppc__
+	#undef _LITTLE_ENDIAN
+	#else
+	#define _LITTLE_ENDIAN
+	#endif
+	#define _CASE_SENSITIVE_FILESYSTEM
+	#define _USE_OPENAL
+	#define ID_INLINE inline
+	#define NEWLINE				"\n"
+
+	#define _GLVAS_SUPPPORT
+
+	class AlignmentChecker
+	{
+	public:
+		static void UpdateCount(void const * const ptr) {}
+		static void ClearCount() {}
+		static void Print() {}
+	};
+
+	#define RESTRICT
+	#define TIME_THIS_SCOPE(x)
+
+#endif
+
+#ifndef RESTRICT
+	#define RESTRICT
+#endif
+
+#ifndef TIME_THIS_SCOPE
+	#define TIME_THIS_SCOPE(x)
+#endif
+
 #ifndef BIT
 #define BIT( num )				BITT< num >::VALUE
 #endif
