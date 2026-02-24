@@ -1146,7 +1146,7 @@ void glAlphaFragmentOp3ATI (GLenum op, GLuint dst, GLuint dstMod, GLuint arg1, G
 #endif
 #pragma mark -
 
-GLExtension_t GLimp_ExtensionPointer(const char *name) {
+void *GLimp_ExtensionPointer(const char *name) {
 	NSSymbol symbol;
 	char *symbolName;
 
@@ -1186,16 +1186,20 @@ GLExtension_t GLimp_ExtensionPointer(const char *name) {
 	symbolName[0] = '_';
 
 	if ( !NSIsSymbolNameDefined( symbolName ) ) {
+		return NULL;
 	}
 
 	symbol = NSLookupAndBindSymbol(symbolName);
 	if ( !symbol ) {
 		// shouldn't happen ...
+		return NULL;
 	}
 
+	return NSAddressOfSymbol(symbol);
 }
 
 void * wglGetProcAddress(const char *name) {
+	return GLimp_ExtensionPointer(name);
 }
 
 
@@ -1208,75 +1212,44 @@ void GLW_InitExtensions( void ) { }
 
 unsigned long Sys_QueryVideoMemory() {
 	CGLError err;
-	CGLRendererInfoObj rendererInfo, rendererInfos[MAX_RENDERER_INFO_COUNT];
-	long rendererInfoIndex, rendererInfoCount = MAX_RENDERER_INFO_COUNT;
-	long rendererIndex, rendererCount;
-	long maxVRAM = 0, vram = 0;
-	long accelerated;
-	long rendererID;
-	long totalRenderers = 0;
-    
-	err = CGLQueryRendererInfo(CGDisplayIDToOpenGLDisplayMask(Sys_DisplayToUse()), rendererInfos, &rendererInfoCount);
+	CGLRendererInfoObj rendererInfo = NULL;
+	GLint rendererCount = 0;
+	GLint rendererIndex = 0;
+	GLint maxVRAM = 0;
+	GLint vram = 0;
+	GLint accelerated = 0;
+     
+	err = CGLQueryRendererInfo(CGDisplayIDToOpenGLDisplayMask(Sys_DisplayToUse()), &rendererInfo, &rendererCount);
 	if (err) {
 		common->Printf("CGLQueryRendererInfo -> %d\n", err);
+		return 0;
 	}
-    
-	//common->Printf("rendererInfoCount = %d\n", rendererInfoCount);
-	for (rendererInfoIndex = 0; rendererInfoIndex < rendererInfoCount && totalRenderers < rendererInfoCount; rendererInfoIndex++) {
-		rendererInfo = rendererInfos[rendererInfoIndex];
-		//common->Printf("rendererInfo: 0x%08x\n", rendererInfo);
-        
-
-		err = CGLDescribeRenderer(rendererInfo, 0, kCGLRPRendererCount, &rendererCount);
-		if (err) {
-			common->Printf("CGLDescribeRenderer(kCGLRPRendererID) -> %d\n", err);
+     
+	for (rendererIndex = 0; rendererIndex < rendererCount; rendererIndex++) {
+		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPAccelerated, &accelerated);
+		if (err || !accelerated) {
 			continue;
 		}
-		//common->Printf("  rendererCount: %d\n", rendererCount);
 
-		for (rendererIndex = 0; rendererIndex < rendererCount; rendererIndex++) {
-			totalRenderers++;
-			//common->Printf("  rendererIndex: %d\n", rendererIndex);
-            
-			rendererID = 0xffffffff;
-			err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPRendererID, &rendererID);
-			if (err) {
-				common->Printf("CGLDescribeRenderer(kCGLRPRendererID) -> %d\n", err);
-				continue;
-			}
-			//common->Printf("    rendererID: 0x%08x\n", rendererID);
-            
-			accelerated = 0;
-			err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPAccelerated, &accelerated);
-			if (err) {
-				common->Printf("CGLDescribeRenderer(kCGLRPAccelerated) -> %d\n", err);
-				continue;
-			}
-			//common->Printf("    accelerated: %d\n", accelerated);
-			if (!accelerated)
-				continue;
-            
-			vram = 0;
-			err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemory, &vram);
-			if (err) {
-				common->Printf("CGLDescribeRenderer -> %d\n", err);
-				continue;
-			}
-			//common->Printf("    vram: 0x%08x\n", vram);
-            
-			// presumably we'll be running on the best card, so we'll take the max of the vrams
-			if (vram > maxVRAM)
-				maxVRAM = vram;
+#if defined(kCGLRPVideoMemoryMegabytes)
+		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemoryMegabytes, &vram);
+		if (!err) {
+			vram *= 1024 * 1024;
 		}
-        
-#if 0
-		err = CGLDestroyRendererInfo(rendererInfo);
-		if (err) {
-			common->Printf("CGLDestroyRendererInfo -> %d\n", err);
-		}
+#else
+		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemory, &vram);
 #endif
+		if (err) {
+			common->Printf("CGLDescribeRenderer -> %d\n", err);
+			continue;
+		}
+		if (vram > maxVRAM) {
+			maxVRAM = vram;
+		}
 	}
 
+	(void)CGLDestroyRendererInfo(rendererInfo);
+	return (unsigned long)maxVRAM;
 }
 
 
@@ -1328,8 +1301,11 @@ CGDisplayErr Sys_CaptureActiveDisplays(void) {
 		const glwgamma_t *table;
 		table = &glw_state.originalDisplayGammaTables[displayIndex];
 		err = CGDisplayCapture(table->display);
-		if (err != CGDisplayNoErr)
+		if (err != CGDisplayNoErr) {
+			return err;
+		}
 	}
+	return CGDisplayNoErr;
 }
 
 bool Sys_Unhide() {
