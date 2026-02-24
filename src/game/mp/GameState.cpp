@@ -4,7 +4,7 @@
 // Copyright 2002-2005 Raven Software
 //----------------------------------------------------------------
 
-#include "../Game_local.h"
+#include "../game_local.h"
 #include "GameState.h"
 
 /*
