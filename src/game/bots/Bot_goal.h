@@ -210,7 +210,7 @@ struct bot_goalstate_t
 
 		if( itemweightindex != NULL )
 		{
-			delete itemweightindex;
+			delete[] itemweightindex;
 		}
 		itemweightindex = NULL;
 		client = -1;
@@ -228,7 +228,7 @@ struct bot_goalstate_t
 	{
 		if( itemweightindex != NULL )
 		{
-			delete itemweightindex;
+			delete[] itemweightindex;
 		}
 
 		itemweightindex = NULL;

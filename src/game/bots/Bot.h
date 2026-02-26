@@ -751,7 +751,7 @@ struct bot_state_t
 		lasthealth = 0;
 		ltg_time = 0;
 		weaponchange_time = 0;
-		enemy = 0;
+		enemy = -1;
 		enemyvisible_time = 0;
 		enemysuicide = 0;
 		enemysight_time = 0;
@@ -768,6 +768,7 @@ struct bot_state_t
 		firethrottleshoot_time = 0;
 		chase_time = 0;
 		thinktime = 0;
+		aggressiveAttackTime = 0.0f;
 		useRandomPosition = false;
 		aimtarget.Zero();
 		lastenemyorigin.Zero();

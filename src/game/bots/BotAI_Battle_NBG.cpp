@@ -70,6 +70,8 @@ stateResult_t rvmBot::state_BattleNBG(const stateParms_t& parms)
 		bs.enemyvisible_time = Bot_Time();
 		//VectorCopy(entinfo->GetOrigin(), target);
 		target = entinfo->GetOrigin();
+		bs.last_enemy_visible_position = target;
+		bs.chase_time = Bot_Time();
 		// if not a player enemy
 		if( bs.enemy >= MAX_CLIENTS )
 		{

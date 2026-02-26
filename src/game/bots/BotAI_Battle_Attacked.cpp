@@ -39,6 +39,7 @@ stateResult_t rvmBot::state_Attacked(const stateParms_t& parms) {
 	}
 
 	bs.currentGoal.origin = bs.lastenemyorigin;
+	bs.chase_time = Bot_Time();
 
 	//aim at the enemy
 	BotAimAtEnemy(&bs);

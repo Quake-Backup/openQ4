@@ -3846,6 +3846,10 @@ TIME_THIS_SCOPE("idGameLocal::RunFrame - gameDebug.BeginFrame()");
 
 		// do multiplayer related stuff
 		if ( isMultiplayer ) {
+			// Keep bot level-item/entity links current for item goals in DM/MP modes.
+			if ( isServer && botItemTable && registeredBots.Num() > 0 ) {
+				botGoalManager.UpdateEntityItems();
+			}
 			mpGame.Run();
 		}
 
@@ -9233,13 +9237,15 @@ void idGameLocal::Trace(trace_t& results, const idVec3& start, const idVec3& end
 	idMat3 axis;
 	axis.Identity();
 
+	const int mask = contentMask == 0 ? CONTENTS_SOLID : contentMask;
+
 	if (passEntity == -1)
 	{
-		clip[0]->Translation(results, start, end, NULL, axis, CONTENTS_SOLID, NULL);
+		clip[0]->Translation(results, start, end, NULL, axis, mask, NULL);
 	}
 	else
 	{
-		clip[0]->Translation(results, start, end, NULL, axis, CONTENTS_SOLID, entities[passEntity]);
+		clip[0]->Translation(results, start, end, NULL, axis, mask, entities[passEntity]);
 	}
 }
 
@@ -9256,7 +9262,7 @@ int idGameLocal::TravelTimeToGoal( const idVec3& origin, const idVec3& goal )
 	if( aas == NULL )
 	{
 		gameLocal.Error( "idGameLocal::TraveTimeToGoal: No AAS loaded...\n" );
-		return NULL;
+		return 0;
 	}
 	//int originArea = aas->PointAreaNum(origin);
 	//idVec3 _goal = goal;
@@ -9270,7 +9276,7 @@ int idGameLocal::TravelTimeToGoal( const idVec3& origin, const idVec3& goal )
 	idReachability* reach;
 	if( !aas->RouteToGoalArea( curAreaNum, org, goalArea, TFL_WALK | TFL_AIR, travelTime, &reach ) )
 	{
-		return NULL;
+		return 0;
 	}
 
 	//int goalArea = aas->PointAreaNum(goal);

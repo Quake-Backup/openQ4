@@ -535,12 +535,20 @@ int rvmBot::BotFindEnemy( bot_state_t* bs, int curenemy )
 	{
 		//BotEntityInfo(curenemy, &curenemyinfo);
 		curenemyinfo = gameLocal.entities[curenemy]->Cast<idPlayer>();
+		if( curenemyinfo == NULL || EntityIsDead( curenemyinfo ) )
+		{
+			curenemy = -1;
+			cursquaredist = 0;
+		}
+		else
+		{
 		// jmarshall - add flag support.
 		//if (EntityCarriesFlag(&curenemyinfo)) return qfalse;
 		// jmarshall end
 		//VectorSubtract(curenemyinfo->r.currentOrigin, bs->origin, dir);
 		dir = curenemyinfo->GetPhysics()->GetOrigin() - bs->origin;
 		cursquaredist = dir.LengthSqr();// VectorLengthSquared(dir);
+		}
 	}
 	else
 	{
@@ -669,6 +677,9 @@ int rvmBot::BotFindEnemy( bot_state_t* bs, int curenemy )
 		}
 		//found an enemy
 		bs->enemy = i;//entinfo.number;
+		bs->lastenemyorigin = entinfo->GetPhysics()->GetOrigin();
+		bs->last_enemy_visible_position = bs->lastenemyorigin;
+		bs->chase_time = Bot_Time();
 		if( curenemy >= 0 )
 		{
 			bs->enemysight_time = Bot_Time() - 2;
@@ -851,6 +862,9 @@ void rvmBot::BotAimAtEnemy( bot_state_t* bs )
 	//if the enemy is visible
 	if( enemyvisible )
 	{
+		bs->lastenemyorigin = entinfo->GetOrigin();
+		bs->last_enemy_visible_position = entinfo->GetOrigin();
+		bs->chase_time = Bot_Time();
 		//
 		VectorCopy( entinfo->GetOrigin(), bestorigin );
 		bestorigin[2] += 8;
@@ -885,7 +899,7 @@ void rvmBot::BotAimAtEnemy( bot_state_t* bs )
 					//aas_clientmove_t move;
 					idVec3 origin;
 					idVec3 last_enemy_visible_position;
-					VectorCopy( last_enemy_visible_position, bs->last_enemy_visible_position );
+					VectorCopy( bs->last_enemy_visible_position, last_enemy_visible_position );
 					last_enemy_visible_position[2] += 20.0f;
 
 					//
@@ -920,7 +934,7 @@ void rvmBot::BotAimAtEnemy( bot_state_t* bs )
 				{
 					// jmarshall - fix linear prediction.
 					idVec3 last_enemy_visible_position;
-					VectorCopy( last_enemy_visible_position, bs->last_enemy_visible_position );
+					VectorCopy( bs->last_enemy_visible_position, last_enemy_visible_position );
 					last_enemy_visible_position[2] += 20.0f;
 
 					//VectorSubtract(entinfo->GetOrigin(), bs->origin, dir);
@@ -1139,10 +1153,32 @@ rvmBot::BotGetRandomPointNearPosition
 void rvmBot::BotGetRandomPointNearPosition( idVec3 point, idVec3& randomPoint, float radius )
 {
 	idAAS* aas = gameLocal.GetBotAAS();
+	if( aas == NULL )
+	{
+		randomPoint = point;
+		return;
+	}
+
 	idAASFile* file = aas->GetAASFile();
+	if( file == NULL )
+	{
+		randomPoint = point;
+		return;
+	}
 
 	int areaNum = aas->PointAreaNum(point);
+	if( areaNum <= 0 )
+	{
+		randomPoint = point;
+		return;
+	}
+
 	const aasArea_t& area = file->GetArea(areaNum);
+	if( area.numFaces <= 0 )
+	{
+		randomPoint = point;
+		return;
+	}
 	
 	// justin: I'm changing this from the method I used in the legacy engine to a method that doesn't require me
 	// to change the AAS format
@@ -1151,13 +1187,18 @@ void rvmBot::BotGetRandomPointNearPosition( idVec3 point, idVec3& randomPoint, f
 
 	int firstFace = area.firstFace;
 	int numFaces = area.numFaces;
-	int faceId = rvRandom::irand(firstFace, numFaces);
+	int faceId = rvRandom::irand( firstFace, firstFace + numFaces - 1 );
 
 	const aasIndex_t index = abs(file->GetFaceIndex(faceId));
 	const aasFace_t& face = file->GetFace(index);
+	if( face.numEdges <= 0 )
+	{
+		randomPoint = point;
+		return;
+	}
 
 	int firstEdge = face.firstEdge;
-	int i = rvRandom::irand(0, face.numEdges);
+	int i = rvRandom::irand( 0, face.numEdges - 1 );
 
 	const aasEdge_t &edge = file->GetEdge(abs(file->GetEdgeIndex(firstEdge + i)));
 

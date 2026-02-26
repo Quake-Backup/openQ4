@@ -76,6 +76,8 @@ stateResult_t rvmBot::state_Retreat(const stateParms_t& parms)
 		bs.enemyvisible_time = Bot_Time();
 		target = entinfo->GetOrigin();
 		bs.lastenemyorigin = target;
+		bs.last_enemy_visible_position = target;
+		bs.chase_time = Bot_Time();
 	}
 
 	//if the enemy is NOT visible for 4 seconds

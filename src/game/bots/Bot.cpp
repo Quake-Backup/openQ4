@@ -55,11 +55,18 @@ rvmBot::SetEnemy
 */
 void rvmBot::SetEnemy( idPlayer* player, idVec3 origin)
 {
+	if( player == NULL || player == this )
+	{
+		return;
+	}
+
 	if(bs.enemy == -1)
 	{
 		bs.enemy = player->entityNumber;
 		bs.aggressiveAttackTime = gameLocal.SysScriptTime() + 2.0f;
 		bs.lastenemyorigin = origin;
+		bs.last_enemy_visible_position = origin;
+		bs.chase_time = Bot_Time();
 		//bs.action = &botAIBattleRetreat;
 		stateThread.SetState("state_Attacked");
 	}
@@ -265,8 +272,6 @@ void rvmBot::ServerThink( void )
 
 	stateThread.Execute();
 
-	BotInputFrame();
-
 	// If we are moving along a set of waypoints, let's move along.
 	aasPath_t path;
 	//int myArea = aas->PointAreaNum(GetOrigin());
@@ -305,6 +310,8 @@ void rvmBot::ServerThink( void )
 	bs.useRandomPosition = false;
 	bs.attackerEntity = NULL; // Has to be consumed immedaitly.
 	bs.botinput.weapon = bs.weaponnum;
+
+	BotInputFrame();
 }
 
 /*
@@ -316,7 +323,7 @@ void rvmBot::Damage( idEntity* inflictor, idEntity* attacker, const idVec3& dir,
 {
 	idPlayer::Damage( inflictor, attacker, dir, damageDefName, damageScale, location );
 
-	idPlayer* player = attacker->Cast<idPlayer>();
+	idPlayer* player = attacker ? attacker->Cast<idPlayer>() : NULL;
 	if (health <= 0)
 	{		
 		if (player)
@@ -330,7 +337,10 @@ void rvmBot::Damage( idEntity* inflictor, idEntity* attacker, const idVec3& dir,
 	}
 
 	//bs.attackerEntity = attacker;
-	SetEnemy(player, attacker->GetOrigin());
+	if( player )
+	{
+		SetEnemy( player, attacker->GetOrigin() );
+	}
 }
 
 /*

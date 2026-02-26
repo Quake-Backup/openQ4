@@ -12,7 +12,6 @@ rvmBot::state_BattleFight
 */
 stateResult_t rvmBot::state_BattleFight(const stateParms_t& parms)
 {
-	int areanum;
 	idVec3 target;
 	idPlayer* entinfo;
 
@@ -82,6 +81,9 @@ stateResult_t rvmBot::state_BattleFight(const stateParms_t& parms)
 	//}
 	//
 	target = entinfo->GetOrigin();
+	bs.lastenemyorigin = target;
+	bs.last_enemy_visible_position = target;
+	bs.chase_time = Bot_Time();
 
 	//update the reachability area and origin if possible
 	//areanum = BotPointAreaNum(target);

@@ -266,7 +266,7 @@ int* idBotGoalManager::ItemWeightIndex( weightconfig_t* iwc, itemconfig_t* ic )
 	int* index, i;
 
 	//initialize item weight index
-	index = new int[( sizeof( int ) * ic->numiteminfo )]; // jmarshall: Get this off of the heap!
+	index = new int[ic->numiteminfo];
 
 	for( i = 0; i < ic->numiteminfo; i++ )
 	{
@@ -858,7 +858,7 @@ int idBotGoalManager::BotGetLevelItemGoal( int index, char* name, bot_goal_t* go
 		{
 //			goal->areanum = li->goalareanum;
 			goal->origin = li->goalorigin;
-			goal->entitynum = li->item->entityNumber;
+			goal->entitynum = li->item ? li->item->entityNumber : 0;
 			goal->mins = itemconfig->iteminfo[li->iteminfo].mins;
 			goal->maxs = itemconfig->iteminfo[li->iteminfo].maxs;
 			goal->number = li->number;
@@ -1517,7 +1517,7 @@ int idBotGoalManager::BotChooseLTGItem( int goalstate, idVec3 origin, int* inven
 	VectorCopy( iteminfo->mins, goal.mins );
 	VectorCopy( iteminfo->maxs, goal.maxs );
 //	goal.areanum = bestitem->goalareanum;
-	goal.entitynum = bestitem->item->entityNumber;
+	goal.entitynum = bestitem->item ? bestitem->item->entityNumber : 0;
 	goal.number = bestitem->number;
 	goal.flags = GFL_ITEM;
 	if( bestitem->timeout )
@@ -1730,7 +1730,7 @@ int idBotGoalManager::BotChooseNBGItem( int goalstate, idVec3 origin, int* inven
 	VectorCopy( iteminfo->mins, goal.mins );
 	VectorCopy( iteminfo->maxs, goal.maxs );
 //	goal.areanum = bestitem->goalareanum;
-	goal.entitynum = bestitem->item->entityNumber;
+	goal.entitynum = bestitem->item ? bestitem->item->entityNumber : 0;
 	goal.number = bestitem->number;
 	goal.flags = GFL_ITEM;
 	if( bestitem->timeout )
@@ -1903,6 +1903,11 @@ int idBotGoalManager::BotLoadItemWeights( int goalstate, char* filename )
 	}
 
 	//create the item weight index
+	if( gs->itemweightindex )
+	{
+		delete[] gs->itemweightindex;
+		gs->itemweightindex = NULL;
+	}
 	gs->itemweightindex = ItemWeightIndex( gs->itemweightconfig, itemconfig );
 
 	//everything went ok
@@ -1926,11 +1931,13 @@ void idBotGoalManager::BotFreeItemWeights( int goalstate )
 	if( gs->itemweightconfig )
 	{
 		botFuzzyWeightManager.FreeWeightConfig( gs->itemweightconfig );
+		gs->itemweightconfig = NULL;
 	}
-	// jmarshall - eval
-	//if (gs->itemweightindex)
-	//	FreeMemory(gs->itemweightindex);
-	// jmarshall end
+	if( gs->itemweightindex )
+	{
+		delete[] gs->itemweightindex;
+		gs->itemweightindex = NULL;
+	}
 }
 
 /*
