@@ -49,6 +49,35 @@ static idStr	basepath;
 static idStr	savepath;
 
 /*
+==========================
+Sys_ReportWaylandRuntime
+==========================
+*/
+static void Sys_ReportWaylandRuntime( void ) {
+	const char *waylandDisplay = getenv( "WAYLAND_DISPLAY" );
+	const char *x11Display = getenv( "DISPLAY" );
+
+	if ( waylandDisplay == NULL || waylandDisplay[0] == '\0' ) {
+		return;
+	}
+
+	if ( x11Display == NULL || x11Display[0] == '\0' ) {
+		common->Printf(
+			"Wayland session detected (%s) without X11 DISPLAY. "
+			"OpenQ4 currently requires X11/GLX on Linux; launch from an XWayland-enabled session.\n",
+			waylandDisplay
+		);
+		return;
+	}
+
+	common->Printf(
+		"Wayland session detected (%s). OpenQ4 is using X11 via XWayland (DISPLAY=%s).\n",
+		waylandDisplay,
+		x11Display
+	);
+}
+
+/*
 ===========
 Sys_InitScanTable
 ===========
@@ -559,6 +588,7 @@ int main(int argc, const char **argv) {
 #endif
 	
 	Posix_EarlyInit( );
+	Sys_ReportWaylandRuntime();
 
 	if ( argc > 1 ) {
 		common->Init( argc-1, &argv[1], NULL );

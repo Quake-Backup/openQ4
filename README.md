@@ -104,6 +104,9 @@ Current known compatibility regressions and follow-up work are tracked in [TODO.
 - **macOS**: Xcode 16+ (Clang 17+)
 - **Build Tools**: [Meson](https://mesonbuild.com/) and [Ninja](https://ninja-build.org/)
 
+> [!NOTE]
+> Linux runtime currently uses an X11/GLX platform path. On Wayland desktops, run OpenQ4 through XWayland (`DISPLAY` must be available).
+
 ### Installation
 
 1. **Clone the repository**
@@ -299,6 +302,7 @@ OpenQ4 maintains complete freedom to evolve independently while preserving compa
 ## Documentation
 
 - [Platform Support](docs-dev/platform-support.md) - Cross-platform roadmap and status
+- [SDL3 Linux/macOS Migration](docs-dev/sdl3-linux-macos-migration.md) - Staged backend convergence plan for non-Windows platforms
 - [Display Settings](docs-user/display-settings.md) - Multi-monitor and display configuration
 - [Multiplayer Networking](docs-user/multiplayer-networking.md) - MP lag compensation and prediction cvars
 - [Input Key Matrix](docs-dev/input-key-matrix.md) - Keyboard and controller input reference

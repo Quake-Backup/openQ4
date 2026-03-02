@@ -33,23 +33,27 @@ if host_cpu_family != 'x86_64'
   )
 endif
 
-platform_backend_option = get_option('platform_backend')
-platform_backend = platform_backend_option
-if host_system == 'windows' and platform_backend_option == 'native'
+platform_backend_requested = get_option('platform_backend')
+platform_backend = platform_backend_requested
+if host_system == 'windows' and platform_backend_requested == 'native'
   error('platform_backend=native is only valid on non-Windows hosts.')
 endif
 
 if host_system != 'windows'
-  if platform_backend_option != 'native'
-    warning(
-      'Non-Windows hosts force the native platform source set; overriding platform_backend='
-      + platform_backend_option + '.'
+  if platform_backend_requested == 'legacy_win32'
+    error('platform_backend=legacy_win32 is only valid on Windows hosts.')
+  endif
+
+  if platform_backend_requested == 'sdl3'
+    message(
+      'platform_backend=sdl3 on non-Windows currently runs in staging mode and maps to native platform sources. '
+      + 'Use this to keep command lines/CI aligned while SDL3 migration is in progress.'
     )
   endif
   platform_backend = 'native'
 endif
 
-use_sdl3_backend = host_system == 'windows' and platform_backend_option == 'sdl3'
+use_sdl3_backend = host_system == 'windows' and platform_backend_requested == 'sdl3'
 if host_system == 'windows' and not use_sdl3_backend
   warning(
     'legacy_win32 backend is transitional. '
@@ -487,6 +491,21 @@ install_data(
   rename: 'OpenQ4.icns',
 )
 
+if host_system == 'linux'
+  linux_desktop_conf = configuration_data()
+  linux_desktop_conf.set('OPENQ4_CLIENT_BINARY', engine_client_binary_name)
+  linux_desktop_conf.set('OPENQ4_PROJECT_VERSION', meson.project_version())
+  linux_desktop_entry = configure_file(
+    input: 'assets/linux/openq4.desktop.in',
+    output: 'openq4.desktop',
+    configuration: linux_desktop_conf,
+  )
+  install_data(
+    linux_desktop_entry,
+    install_dir: install_root_dir / 'share' / 'applications',
+  )
+endif
+
 if fs_mod.is_file('assets/icons/quake4.svg')
   install_data(
     'assets/icons/quake4.svg',
@@ -515,6 +534,7 @@ summary(
     'MSVC version': cpp.version(),
     'MSVC 2026 baseline enforced': get_option('enforce_msvc_2026'),
     'C++ standard': get_option('cpp_std'),
+    'Platform backend requested': platform_backend_requested,
     'Platform backend': platform_backend,
     'Build engine': build_engine,
     'engine client binary': engine_client_binary_name,

@@ -72,18 +72,21 @@ jobs:
             platform: windows
             label: Windows
             binary_arch: x64
+            platform_backend: sdl3
             archive_format: zip
             archive_ext: .zip
           - os: ubuntu-latest
             platform: linux
             label: Linux
             binary_arch: x64
+            platform_backend: sdl3
             archive_format: tar.xz
             archive_ext: .tar.xz
           - os: macos-latest
             platform: macos
             label: macOS
             binary_arch: arm64
+            platform_backend: sdl3
             archive_format: tar.gz
             archive_ext: .tar.gz
 
@@ -136,7 +139,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:OPENQ4_SKIP_GAMELIBS_SYNC = "1"
 
-          powershell -ExecutionPolicy Bypass -File tools/build/meson_setup.ps1 setup --wipe builddir . --backend ninja --buildtype=release --wrap-mode=forcefallback -Dbuild_libbse=false
+          powershell -ExecutionPolicy Bypass -File tools/build/meson_setup.ps1 setup --wipe builddir . --backend ninja --buildtype=release --wrap-mode=forcefallback -Dbuild_libbse=false -Dplatform_backend=${{ matrix.platform_backend }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           powershell -ExecutionPolicy Bypass -File tools/build/meson_setup.ps1 compile -C builddir
@@ -152,7 +155,7 @@ jobs:
           set -euo pipefail
           export OPENQ4_SKIP_GAMELIBS_SYNC=1
 
-          bash tools/build/meson_setup.sh setup --wipe builddir . --backend ninja --buildtype=release --wrap-mode=default -Dbuild_libbse=false -Dplatform_backend=native
+          bash tools/build/meson_setup.sh setup --wipe builddir . --backend ninja --buildtype=release --wrap-mode=default -Dbuild_libbse=false -Dplatform_backend=${{ matrix.platform_backend }}
           bash tools/build/meson_setup.sh compile -C builddir
           bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subprojects
 
@@ -172,6 +175,17 @@ jobs:
             exit 1
           fi
 
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            if [ ! -f ".install/share/applications/openq4.desktop" ]; then
+              echo "Missing Linux desktop entry in staged payload."
+              exit 1
+            fi
+            if [ ! -f ".install/share/icons/hicolor/256x256/apps/openq4.png" ]; then
+              echo "Missing Linux 256x256 icon in staged payload."
+              exit 1
+            fi
+          fi
+
       - name: Prepare package
         id: package
         shell: bash
@@ -188,11 +202,40 @@ jobs:
             --output-dir "${RUNNER_TEMP}"
 
           archive_path="${RUNNER_TEMP}/openq4-${{ needs.metadata.outputs.version_tag }}-${{ matrix.platform }}${{ matrix.archive_ext }}"
+          package_dir="${RUNNER_TEMP}/openq4-${{ needs.metadata.outputs.version_tag }}-${{ matrix.platform }}"
           if [ ! -f "${archive_path}" ]; then
             echo "Expected package archive not found: ${archive_path}"
             exit 1
           fi
+          if [ ! -d "${package_dir}" ]; then
+            echo "Expected package directory not found: ${package_dir}"
+            exit 1
+          fi
           echo "archive_path=${archive_path}" >> "$GITHUB_OUTPUT"
+          echo "package_dir=${package_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate macOS app bundle
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_root="${{ steps.package.outputs.package_dir }}/OpenQ4.app"
+          app_plist="${app_root}/Contents/Info.plist"
+          app_exec="${app_root}/Contents/MacOS/OpenQ4"
+          app_icon="${app_root}/Contents/Resources/OpenQ4.icns"
+
+          if [ ! -f "${app_plist}" ]; then
+            echo "Missing macOS app Info.plist: ${app_plist}"
+            exit 1
+          fi
+          if [ ! -x "${app_exec}" ]; then
+            echo "Missing or non-executable macOS app launcher: ${app_exec}"
+            exit 1
+          fi
+          if [ ! -f "${app_icon}" ]; then
+            echo "Missing macOS app icon: ${app_icon}"
+            exit 1
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

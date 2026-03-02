@@ -20,6 +20,7 @@ This document defines the long-term platform direction for OpenQ4 and how SDL3 +
 - Platform backend direction: SDL3-first (legacy Win32 backend is transitional only).
 - Language baseline target: C++23 semantics (`vc++latest` on current MSVC Meson front-end).
 - Toolchain baseline direction: MSVC 19.46+ (Visual Studio 2026 generation), with compatibility fallback permitted during migration.
+- Linux runtime stack today is X11/GLX. Wayland sessions currently rely on XWayland.
 
 ## SDL3 Direction
 
@@ -45,6 +46,12 @@ This document defines the long-term platform direction for OpenQ4 and how SDL3 +
 2. Incrementally wire Linux build/source selection and validation into Meson.
 3. Incrementally wire macOS build/source selection and validation into Meson.
 4. Promote Linux and macOS to first-class once they pass consistent compile/link/runtime validation loops.
+
+## SDL3 Migration Staging (Linux/macOS)
+
+- `-Dplatform_backend=sdl3` is accepted on non-Windows as a staging selector for CI and command-line alignment.
+- Non-Windows currently maps `platform_backend=sdl3` to native platform sources while SDL3 backend migration work is implemented.
+- This keeps one backend vocabulary across platforms without regressing current Linux/macOS runtime behavior.
 
 ## Definition Of Done For First-Class Platform Support
 

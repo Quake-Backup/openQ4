@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import tarfile
@@ -235,6 +236,90 @@ def create_release_archive(
             archive.add(path, arcname=arcname, recursive=False)
 
 
+def copy_optional_share_tree(install_dir: Path, package_root: Path) -> bool:
+    share_source = install_dir / "share"
+    if not share_source.is_dir():
+        return False
+
+    share_dest = package_root / "share"
+    shutil.copytree(share_source, share_dest, dirs_exist_ok=True)
+    return True
+
+
+def create_macos_app_bundle(
+    package_root: Path, install_dir: Path, arch: str, version: str
+) -> Path:
+    app_root = package_root / "OpenQ4.app"
+    app_contents = app_root / "Contents"
+    app_macos = app_contents / "MacOS"
+    app_resources = app_contents / "Resources"
+
+    app_macos.mkdir(parents=True, exist_ok=True)
+    app_resources.mkdir(parents=True, exist_ok=True)
+
+    launcher = app_macos / "OpenQ4"
+    launcher.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
+                'APP_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)"',
+                f'exec "$APP_ROOT/{PRODUCT_NAME}-client_{arch}" "$@"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(launcher, 0o755)
+
+    icns_candidates = [
+        install_dir / "OpenQ4.icns",
+        install_dir / "quake4.icns",
+    ]
+    for icns_source in icns_candidates:
+        if icns_source.is_file():
+            shutil.copy2(icns_source, app_resources / "OpenQ4.icns")
+            break
+
+    info_plist = app_contents / "Info.plist"
+    info_plist.write_text(
+        "\n".join(
+            [
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+                "<plist version=\"1.0\">",
+                "<dict>",
+                "<key>CFBundleDevelopmentRegion</key>",
+                "<string>English</string>",
+                "<key>CFBundleExecutable</key>",
+                "<string>OpenQ4</string>",
+                "<key>CFBundleIconFile</key>",
+                "<string>OpenQ4.icns</string>",
+                "<key>CFBundleIdentifier</key>",
+                "<string>com.darkmatter.openq4</string>",
+                "<key>CFBundleInfoDictionaryVersion</key>",
+                "<string>6.0</string>",
+                "<key>CFBundleName</key>",
+                "<string>OpenQ4</string>",
+                "<key>CFBundlePackageType</key>",
+                "<string>APPL</string>",
+                "<key>CFBundleShortVersionString</key>",
+                f"<string>{version}</string>",
+                "<key>CFBundleVersion</key>",
+                f"<string>{version}</string>",
+                "<key>LSMinimumSystemVersion</key>",
+                "<string>12.0</string>",
+                "</dict>",
+                "</plist>",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    return app_root
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
@@ -303,6 +388,17 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
+    copied_share = copy_optional_share_tree(install_dir, package_root)
+
+    macos_app_bundle = None
+    if args.platform == "macos":
+        macos_app_bundle = create_macos_app_bundle(
+            package_root,
+            install_dir,
+            args.arch,
+            args.version,
+        )
+
     archive_path = output_dir / f"{package_stem}{archive_suffix}"
     create_release_archive(package_root, archive_path, archive_format)
 
@@ -311,6 +407,10 @@ def main(argv: list[str]) -> int:
     print(f"Release archive: {archive_path}")
     print(f"Archive format: {archive_format}")
     print(f"OpenQ4 pk4: {openq4_pk4_path} ({added_files} files)")
+    if copied_share:
+        print(f"Share payload: {package_root / 'share'}")
+    if macos_app_bundle is not None:
+        print(f"macOS app bundle: {macos_app_bundle}")
     if missing_required:
         print("Missing required runtime binaries:")
         for filename in missing_required:
