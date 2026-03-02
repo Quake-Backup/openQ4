@@ -22,21 +22,11 @@
 	<files>
 	  base
 	  d3xp
-	  pb
 	  M4_LDD
 	  version.info
 	  openurl.sh
 	  doom3.png
 	  CHANGES
-	</files>
-  </option>
-  <option install="true">
-	PunkBuster client/server files
-	<eula>
-	  pb/PB_EULA.txt
-	</eula>
-	<files>
-	  pb/
 	</files>
   </option>
 </install>

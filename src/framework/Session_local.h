@@ -127,7 +127,6 @@ public:
 	virtual bool		CheckKey( const char *key, bool netConnect, bool offline_valid[ 2 ] );
 	virtual bool		CDKeysAreValid( bool strict );
 	virtual void		ClearCDKey( bool valid[ 2 ] );
-	virtual void		SetCDKeyGuiVars( void );
 	virtual bool		WaitingForGameAuth( void );
 	virtual void		CDKeysAuthReply( bool valid, const char *auth_msg );
 
@@ -341,7 +340,6 @@ public:
 	void				SetMainMenuGuiVars( void );
 	void				SetModsMenuGuiVars( void );
 	void				SetMainMenuSkin( void );
-	void				SetPbMenuGuiVars( void );
 	
 private:
 	bool				BoxDialogSanityCheck( void );
@@ -351,7 +349,7 @@ private:
 		CDKEY_UNKNOWN,	// need to perform checks on the key
 		CDKEY_INVALID,	// that key is wrong
 		CDKEY_OK,		// valid
-		CDKEY_CHECKING, // sent a check request ( gameAuth only )
+		CDKEY_CHECKING, // legacy state retained for compatibility
 		CDKEY_NA		// does not apply, xp key when xp is not present
 	} cdKeyState_t;
 

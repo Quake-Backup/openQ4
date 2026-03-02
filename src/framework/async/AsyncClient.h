@@ -109,8 +109,7 @@ public:
 	void				SendReliableGameMessage( const idBitMsg &msg );
 
 	void				SendVersionCheck( bool fromMenu = false );
-	// pass NULL for the keys you don't care to auth for
-	// returns false if internet link doesn't appear to be available
+	// Legacy no-op in OpenQ4 (CD key auth removed).
 	bool				SendAuthCheck( const char *cdkey, const char *xpkey );
 
 	void				PacifierUpdate( void );

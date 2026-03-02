@@ -1558,23 +1558,13 @@ void idAsyncServer::ProcessChallengeMessage( const netadr_t from, const idBitMsg
 	serverPort.SendPacket( from, outMsg.GetData(), outMsg.GetSize() );
 
 	if ( Sys_IsLANAddress( from ) ) {
-		// no CD Key check for LAN clients
 		challenges[i].authState = CDK_OK;
 	} else {
 		if ( idAsyncNetwork::LANServer.GetBool() ) {
 			common->Printf( "net_LANServer is enabled. Client %s is not a LAN address, will be rejected\n", Sys_NetAdrToString( from ) );
 			challenges[ i ].authState = CDK_ONLYLAN;
 		} else {
-			// emit a cd key confirmation request
-			outMsg.BeginWriting();
-			outMsg.WriteShort( CONNECTIONLESS_MESSAGE_ID );
-			outMsg.WriteString( "srvAuth" );
-			outMsg.WriteLong( ASYNC_PROTOCOL_VERSION );
-			outMsg.WriteNetadr( from );
-			outMsg.WriteLong( -1 ); // this identifies "challenge" auth vs "connect" auth
-			// protocol 1.37 addition
-			outMsg.WriteByte( fileSystem->RunningD3XP() );
-			serverPort.SendPacket( idAsyncNetwork::GetMasterAddress(), outMsg.GetData(), outMsg.GetSize() );
+			challenges[ i ].authState = CDK_OK;
 		}
 	}
 }
@@ -1741,54 +1731,8 @@ void idAsyncServer::ProcessConnectMessage( const netadr_t from, const idBitMsg &
 			common->DPrintf( "%s: not a lan client\n", Sys_NetAdrToString( from ) );
 			PrintOOB( from, SERVER_PRINT_MISC, "#str_04843" );
 			return;
-		case CDK_WAIT:
-			if ( challenges[ ichallenge ].authReply == AUTH_NONE && Min( serverTime - lastAuthTime, serverTime - challenges[ ichallenge ].time ) > AUTHORIZE_TIMEOUT ) {
-				common->DPrintf( "%s: Authorize server timed out\n", Sys_NetAdrToString( from ) );
-				break; // will continue with the connecting process
-			}
-			const char *msg, *l_msg;
-			if ( challenges[ ichallenge ].authReplyMsg != AUTH_REPLY_PRINT ) {
-				msg = authReplyMsg[ challenges[ ichallenge ].authReplyMsg ];
-			} else {
-				msg = challenges[ ichallenge ].authReplyPrint.c_str();
-			}
-			l_msg = common->GetLanguageDict()->GetString( msg );
-			
-			common->DPrintf( "%s: %s\n", Sys_NetAdrToString( from ), l_msg );
-
-			if ( challenges[ ichallenge ].authReplyMsg == AUTH_REPLY_UNKNOWN || challenges[ ichallenge ].authReplyMsg == AUTH_REPLY_WAITING ) {
-				// the client may be trying to connect to us in LAN mode, and the server disagrees
-				// let the client know so it would switch to authed connection
-				idBitMsg outMsg;
-				byte msgBuf[ MAX_MESSAGE_SIZE ];
-				outMsg.Init( msgBuf, sizeof( msgBuf ) );
-				outMsg.WriteShort( CONNECTIONLESS_MESSAGE_ID );
-				outMsg.WriteString( "authrequired" );
-				serverPort.SendPacket( from, outMsg.GetData(), outMsg.GetSize() );
-			}
-		
-			PrintOOB( from, SERVER_PRINT_MISC, msg );
-		
-			// update the guid in the challenges
-			idStr::snPrintf( challenges[ ichallenge ].guid, sizeof( challenges[ ichallenge ].guid ), guid );
-
-			// once auth replied denied, stop sending further requests
-			if ( challenges[ ichallenge ].authReply != AUTH_DENY ) {
-				// emit a cd key confirmation request
-				outMsg.Init( msgBuf, sizeof( msgBuf ) );
-				outMsg.WriteShort( CONNECTIONLESS_MESSAGE_ID );
-				outMsg.WriteString( "srvAuth" );
-				outMsg.WriteLong( ASYNC_PROTOCOL_VERSION );
-				outMsg.WriteNetadr( from );
-				outMsg.WriteLong( clientId );
-				outMsg.WriteString( guid );	
-				// protocol 1.37 addition
-				outMsg.WriteByte( fileSystem->RunningD3XP() );
-				serverPort.SendPacket( idAsyncNetwork::GetMasterAddress(), outMsg.GetData(), outMsg.GetSize() );
-			}
-			return;
 		default:
-			assert( challenges[ ichallenge ].authState == CDK_OK || challenges[ ichallenge ].authState == CDK_PUREOK );
+			break;
 	}
 
 	numClients = 0;

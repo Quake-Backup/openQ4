@@ -127,11 +127,6 @@ class idSetup( scons_utils.idSetupBase ):
 			self.SimpleCommand( 'cp ' + ded_path + ' ' + base_dirname + '/bin/Linux/x86' )
 		for i in ldd_deps:
 			self.SimpleCommand( 'cp ' + i + ' ' + base_dirname + '/' + os.path.basename( i ) )
-		# punkbuster
-		if ( not demo_build ):
-			self.SimpleCommand( 'cp -R punkbuster/setup/pb ' + base_dirname )
-			self.SimpleCommand( 'cp -Rf punkbuster/setup/linux/pb ' + base_dirname )
-			self.SimpleCommand( 'cp sys/linux/setup/media/PB_EULA.txt ' + base_dirname + '/pb' )
 		# put a version tag, xqf request
 		f = open( base_dirname + '/version.info', 'w' )
 		f.write( main_version + '\n' )

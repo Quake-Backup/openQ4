@@ -150,6 +150,323 @@ static void CommitStartServerMapSelection( idUserInterface *gui ) {
 	}
 }
 
+/*
+=================
+Main-menu MP model helpers
+=================
+*/
+static const char *mainMenuMPTeamNames[] = {
+	"marine",
+	"strogg"
+};
+
+static bool MainMenuIsTeamGame( void ) {
+	const char *gameType = cvarSystem->GetCVarString( "si_gameType" );
+	return !idStr::Icmp( gameType, "Team DM" ) ||
+		!idStr::Icmp( gameType, "CTF" ) ||
+		!idStr::Icmp( gameType, "Arena CTF" ) ||
+		!idStr::Icmp( gameType, "DeadZone" );
+}
+
+static int MainMenuResolveModelTeam( void ) {
+	if ( !MainMenuIsTeamGame() ) {
+		return -1;
+	}
+
+	const char *uiTeam = cvarSystem->GetCVarString( "ui_team" );
+	if ( !idStr::Icmp( uiTeam, "Marine" ) ) {
+		return 0;
+	}
+	if ( !idStr::Icmp( uiTeam, "Strogg" ) ) {
+		return 1;
+	}
+
+	return -1;
+}
+
+static idStr MainMenuModelCVarName( const int menuModelTeam ) {
+	if ( menuModelTeam >= 0 && menuModelTeam < 2 ) {
+		return va( "ui_model_%s", mainMenuMPTeamNames[ menuModelTeam ] );
+	}
+	return "ui_model";
+}
+
+static bool MainMenuExtractPlayerModelInfo( const char *declName, idStr &modelOut, idStr &uiHeadOut, idStr &skinOut, idStr &descriptionOut, idStr &teamOut ) {
+	modelOut.Clear();
+	uiHeadOut.Clear();
+	skinOut.Clear();
+	descriptionOut.Clear();
+	teamOut.Clear();
+
+	if ( !declName || !declName[0] ) {
+		return false;
+	}
+
+	const rvDeclPlayerModel *playerModel = static_cast<const rvDeclPlayerModel *>( declManager->FindType( DECL_PLAYER_MODEL, declName, false ) );
+	if ( playerModel ) {
+		modelOut = playerModel->model;
+		uiHeadOut = playerModel->uiHead;
+		skinOut = playerModel->skin;
+		descriptionOut = playerModel->description;
+		teamOut = playerModel->team;
+		return true;
+	}
+
+	// Fallback for content variants that still define these as entityDef blocks.
+	const idDeclEntityDef *entityModel = static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, declName, false ) );
+	if ( !entityModel ) {
+		return false;
+	}
+
+	modelOut = entityModel->dict.GetString( "model" );
+	uiHeadOut = entityModel->dict.GetString( "def_head_ui" );
+	if ( !uiHeadOut.Length() ) {
+		uiHeadOut = entityModel->dict.GetString( "def_head" );
+	}
+	skinOut = entityModel->dict.GetString( "skin" );
+	descriptionOut = entityModel->dict.GetString( "description" );
+	teamOut = entityModel->dict.GetString( "team" );
+	return modelOut.Length() > 0 || uiHeadOut.Length() > 0 || skinOut.Length() > 0;
+}
+
+static bool MainMenuModelAllowedForTeam( const idStr &modelTeam, const bool isTeamGame, const int menuModelTeam ) {
+	if ( !isTeamGame || menuModelTeam < 0 || menuModelTeam >= 2 ) {
+		return true;
+	}
+	if ( !modelTeam.Length() ) {
+		return true;
+	}
+
+	return idStr::Icmp( modelTeam.c_str(), mainMenuMPTeamNames[ menuModelTeam ] ) == 0;
+}
+
+static void MainMenuApplyPlayerModelPreview( idUserInterface *gui, const idStr &modelName, const idStr &headName, const idStr &skinName ) {
+	if ( !gui ) {
+		return;
+	}
+
+	gui->SetStateString( "player_model_name", modelName.c_str() );
+	gui->SetStateString( "player_head_model_name", headName.c_str() );
+	gui->SetStateString( "player_skin_name", skinName.c_str() );
+	gui->SetStateString( "player_head_skin_name", "" );
+
+	if ( headName.Length() ) {
+		const idDeclEntityDef *head = static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, headName.c_str(), false ) );
+		if ( head && head->dict.GetString( "skin" ) ) {
+			gui->SetStateString( "player_head_skin_name", head->dict.GetString( "skin" ) );
+		}
+	}
+
+	gui->SetStateBool( "need_update", true );
+}
+
+static bool MainMenuFirstModelFromList( const idStr &buildValues, const bool isTeamGame, const int menuModelTeam, idStr &modelDeclOut, idStr &modelOut, idStr &headOut, idStr &skinOut ) {
+	idStr remaining = buildValues;
+
+	while ( remaining.Length() ) {
+		idStr token = remaining;
+		const int split = remaining.Find( ";" );
+		if ( split >= 0 ) {
+			token = remaining.Left( split );
+			remaining = remaining.Right( remaining.Length() - split - 1 );
+		} else {
+			remaining.Clear();
+		}
+
+		token.StripLeading( ' ' );
+		token.StripTrailing( ' ' );
+		if ( !token.Length() ) {
+			continue;
+		}
+
+		idStr description;
+		idStr team;
+		if ( !MainMenuExtractPlayerModelInfo( token.c_str(), modelOut, headOut, skinOut, description, team ) ) {
+			continue;
+		}
+		if ( !MainMenuModelAllowedForTeam( team, isTeamGame, menuModelTeam ) ) {
+			continue;
+		}
+
+		modelDeclOut = token;
+		return true;
+	}
+
+	return false;
+}
+
+static bool MainMenuModelDeclInList( const idStr &buildValues, const char *declName ) {
+	if ( !declName || !declName[0] ) {
+		return false;
+	}
+
+	idStr remaining = buildValues;
+	while ( remaining.Length() ) {
+		idStr token = remaining;
+		const int split = remaining.Find( ";" );
+		if ( split >= 0 ) {
+			token = remaining.Left( split );
+			remaining = remaining.Right( remaining.Length() - split - 1 );
+		} else {
+			remaining.Clear();
+		}
+
+		token.StripLeading( ' ' );
+		token.StripTrailing( ' ' );
+		if ( !token.Length() ) {
+			continue;
+		}
+
+		if ( idStr::Icmp( token.c_str(), declName ) == 0 ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void MainMenuAppendModelChoice( idStr &buildValues, idStr &buildNames, const char *declName, const char *displayName ) {
+	if ( buildValues.Length() ) {
+		buildValues += ";";
+		buildNames += ";";
+	}
+
+	buildValues += declName;
+	buildNames += ( displayName && displayName[0] ) ? displayName : declName;
+}
+
+static void MainMenuBuildModelListFromDef( const idDeclEntityDef *def, const bool isTeamGame, const int menuModelTeam, idStr &buildValues, idStr &buildNames ) {
+	if ( !def ) {
+		return;
+	}
+
+	const idKeyValue *kv = def->dict.MatchPrefix( "def_model", NULL );
+	while ( kv ) {
+		const char *declName = kv->GetValue().c_str();
+		if ( !declName || !declName[0] || MainMenuModelDeclInList( buildValues, declName ) ) {
+			kv = def->dict.MatchPrefix( "def_model", kv );
+			continue;
+		}
+
+		idStr modelName;
+		idStr headName;
+		idStr skinName;
+		idStr description;
+		idStr team;
+		if ( !MainMenuExtractPlayerModelInfo( declName, modelName, headName, skinName, description, team ) ||
+			!MainMenuModelAllowedForTeam( team, isTeamGame, menuModelTeam ) ) {
+			kv = def->dict.MatchPrefix( "def_model", kv );
+			continue;
+		}
+
+		const char *localizedName = description.Length() ? common->GetLocalizedString( description.c_str() ) : "";
+		MainMenuAppendModelChoice( buildValues, buildNames, declName, localizedName );
+
+		kv = def->dict.MatchPrefix( "def_model", kv );
+	}
+}
+
+static void SetMainMenuMPModelVars( idUserInterface *gui ) {
+	if ( !gui ) {
+		return;
+	}
+
+	const bool isTeamGame = MainMenuIsTeamGame();
+	const int menuModelTeam = MainMenuResolveModelTeam();
+
+	const idDeclEntityDef *menuDef = static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, "player_marine_mp_ui", false ) );
+	const idDeclEntityDef *fallbackDef = static_cast<const idDeclEntityDef *>( declManager->FindType( DECL_ENTITYDEF, "player_marine_mp", false ) );
+	const idDeclEntityDef *def = menuDef ? menuDef : fallbackDef;
+
+	idStr buildValues;
+	idStr buildNames;
+	MainMenuBuildModelListFromDef( menuDef, isTeamGame, menuModelTeam, buildValues, buildNames );
+	MainMenuBuildModelListFromDef( fallbackDef, isTeamGame, menuModelTeam, buildValues, buildNames );
+
+	// Append any additional playerModel decls that are not listed in def_model*.
+	const int numModels = declManager->GetNumDecls( DECL_PLAYER_MODEL );
+	for ( int i = 0; i < numModels; i++ ) {
+		const rvDeclPlayerModel *playerModel = static_cast<const rvDeclPlayerModel *>( declManager->DeclByIndex( DECL_PLAYER_MODEL, i, true ) );
+		if ( !playerModel ) {
+			continue;
+		}
+
+		const char *declName = playerModel->GetName();
+		if ( !declName || !declName[0] || MainMenuModelDeclInList( buildValues, declName ) ) {
+			continue;
+		}
+
+		idStr modelName;
+		idStr headName;
+		idStr skinName;
+		idStr description;
+		idStr team;
+		if ( !MainMenuExtractPlayerModelInfo( declName, modelName, headName, skinName, description, team ) ||
+			!MainMenuModelAllowedForTeam( team, isTeamGame, menuModelTeam ) ) {
+			continue;
+		}
+
+		const char *localizedName = description.Length() ? common->GetLocalizedString( description.c_str() ) : "";
+		MainMenuAppendModelChoice( buildValues, buildNames, declName, localizedName );
+	}
+
+	gui->SetStateString( "model_values", buildValues.c_str() );
+	gui->SetStateString( "model_names", buildNames.c_str() );
+	gui->SetStateBool( "player_model_updated", true );
+
+	const idStr modelCVar = MainMenuModelCVarName( menuModelTeam );
+	const char *selectedModelDecl = cvarSystem->GetCVarString( modelCVar.c_str() );
+	if ( ( !selectedModelDecl || !selectedModelDecl[0] ) && def ) {
+		if ( menuModelTeam >= 0 && menuModelTeam < 2 ) {
+			selectedModelDecl = def->dict.GetString( va( "def_default_model_%s", mainMenuMPTeamNames[ menuModelTeam ] ) );
+		} else {
+			selectedModelDecl = def->dict.GetString( "def_default_model" );
+		}
+	}
+
+	idStr selectedDecl = selectedModelDecl ? selectedModelDecl : "";
+	idStr selectedModelName;
+	idStr selectedHeadName;
+	idStr selectedSkinName;
+	idStr selectedDescription;
+	idStr selectedTeam;
+	const bool selectedValid = selectedDecl.Length() &&
+		MainMenuExtractPlayerModelInfo( selectedDecl.c_str(), selectedModelName, selectedHeadName, selectedSkinName, selectedDescription, selectedTeam ) &&
+		MainMenuModelAllowedForTeam( selectedTeam, isTeamGame, menuModelTeam );
+
+	if ( !selectedValid ) {
+		if ( MainMenuFirstModelFromList( buildValues, isTeamGame, menuModelTeam, selectedDecl, selectedModelName, selectedHeadName, selectedSkinName ) ) {
+			cvarSystem->SetCVarString( modelCVar.c_str(), selectedDecl.c_str() );
+		}
+	}
+
+	if ( !selectedModelName.Length() && def ) {
+		selectedModelName = def->dict.GetString( "model" );
+		selectedHeadName = def->dict.GetString( "def_head_ui" );
+		if ( !selectedHeadName.Length() ) {
+			selectedHeadName = def->dict.GetString( "def_head" );
+		}
+		selectedSkinName = def->dict.GetString( "skin" );
+	}
+
+	if ( selectedModelName.Length() || selectedHeadName.Length() || selectedSkinName.Length() ) {
+		MainMenuApplyPlayerModelPreview( gui, selectedModelName, selectedHeadName, selectedSkinName );
+	}
+
+	// Stage editable user fields while this menu is active.
+	cvarSystem->SetCVarString( "gui_ui_name", cvarSystem->GetCVarString( "ui_name" ) );
+	cvarSystem->SetCVarString( "gui_ui_clan", cvarSystem->GetCVarString( "ui_clan" ) );
+}
+
+static void CommitMainMenuMPSettings( void ) {
+	if ( idStr::Cmp( cvarSystem->GetCVarString( "gui_ui_name" ), cvarSystem->GetCVarString( "ui_name" ) ) ) {
+		cvarSystem->SetCVarString( "ui_name", cvarSystem->GetCVarString( "gui_ui_name" ) );
+	}
+	if ( idStr::Cmp( cvarSystem->GetCVarString( "gui_ui_clan" ), cvarSystem->GetCVarString( "ui_clan" ) ) ) {
+		cvarSystem->SetCVarString( "ui_clan", cvarSystem->GetCVarString( "gui_ui_clan" ) );
+	}
+}
+
 // implements the setup for, and commands from, the main menu
 
 /*
@@ -398,14 +715,6 @@ void idSessionLocal::SetMainMenuSkin( void ) {
 
 /*
 ===============
-idSessionLocal::SetPbMenuGuiVars
-===============
-*/
-void idSessionLocal::SetPbMenuGuiVars( void ) {
-}
-
-/*
-===============
 idSessionLocal::SetMainMenuGuiVars
 ===============
 */
@@ -427,7 +736,6 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	guiMainMenu->SetStateString( "inGame", inGameState );
 	guiMainMenu->SetStateString( "ingame", inGameState );
 
-	SetCDKeyGuiVars( );
 #ifdef ID_DEMO_BUILD
 	guiMainMenu->SetStateString( "nightmare", "0" );
 #else
@@ -447,7 +755,7 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	guiMainMenu->SetStateString( "driver_prompt", "0" );
 #endif
 
-	SetPbMenuGuiVars();
+	SetMainMenuMPModelVars( guiMainMenu );
 }
 
 /*
@@ -1178,12 +1486,6 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 			continue;
 		}
 
-		if ( !idStr::Icmp( cmd, "SetCDKey" ) ) {
-			// we can't do this from inside the HandleMainMenuCommands code, otherwise the message box stuff gets confused
-			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "promptKey\n" );
-			continue;
-		}
-
 		if ( !idStr::Icmp( cmd, "CheckUpdate" ) ) {
 			idAsyncNetwork::client.SendVersionCheck();
 			continue;
@@ -1194,26 +1496,26 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 			continue;
 		}
 
-		if ( !idStr::Icmp( cmd, "checkKeys" ) ) {
-#if ID_ENFORCE_KEY
-			// not a strict check so you silently auth in the background without bugging the user
-			if ( !session->CDKeysAreValid( false ) ) {
-				cmdSystem->BufferCommandText( CMD_EXEC_NOW, "promptKey force" );
-				cmdSystem->ExecuteCommandBuffer();
-			}			
-#endif
+		if ( !idStr::Icmp( cmd, "update_model" ) ) {
+			idUserInterface *targetGui = guiActive ? guiActive : guiMainMenu;
+			SetMainMenuMPModelVars( targetGui );
+			if ( targetGui ) {
+				targetGui->StateChanged( com_frameTime );
+			}
 			continue;
 		}
 
-		// triggered from mainmenu or mpmain
-		if ( !idStr::Icmp( cmd, "punkbuster" ) ) {
-			idStr vcmd;
-			if ( args.Argc() - icmd >= 1 ) {
-				vcmd = args.Argv( icmd++ );
+		if ( !idStr::Icmp( cmd, "initMPSettings" ) ) {
+			idUserInterface *targetGui = guiActive ? guiActive : guiMainMenu;
+			SetMainMenuMPModelVars( targetGui );
+			if ( targetGui ) {
+				targetGui->StateChanged( com_frameTime );
 			}
-			// filtering PB based on enabled/disabled
-			idAsyncNetwork::client.serverList.ApplyFilter( );
-			SetPbMenuGuiVars();
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "exitMPSettings" ) ) {
+			CommitMainMenuMPSettings();
 			continue;
 		}
 	}
@@ -1481,32 +1783,6 @@ const char* idSessionLocal::MessageBox( msgBoxType_t type, const char *message, 
 			guiMsg->SetStateString( "visible_entry", "1" );			
 			guiMsg->HandleNamedEvent( "Prompt" );
 			break;
-		case MSG_CDKEY:
-			guiMsg->SetStateString( "left", common->GetLanguageDict()->GetString( "#str_104339" ) );
-			guiMsg->SetStateString( "right", common->GetLanguageDict()->GetString( "#str_104340" ) );
-			guiMsg->SetStateString( "visible_msgbox", "0" );
-			guiMsg->SetStateString( "visible_cdkey", "1" );
-			guiMsg->SetStateString( "visible_hasxp", fileSystem->HasD3XP() ? "1" : "0" );
-			// the current cdkey / xpkey values may have bad/random data in them
-			// it's best to avoid printing them completely, unless the key is good
-			if ( cdkey_state == CDKEY_OK ) {
-				guiMsg->SetStateString( "str_cdkey", cdkey );
-				guiMsg->SetStateString( "visible_cdchk", "0" );
-			} else {
-				guiMsg->SetStateString( "str_cdkey", "" );
-				guiMsg->SetStateString( "visible_cdchk", "1" );
-			}
-			guiMsg->SetStateString( "str_cdchk", "" );
-			if ( xpkey_state == CDKEY_OK ) {
-				guiMsg->SetStateString( "str_xpkey", xpkey );
-				guiMsg->SetStateString( "visible_xpchk", "0" );
-			} else {
-				guiMsg->SetStateString( "str_xpkey", "" );
-				guiMsg->SetStateString( "visible_xpchk", "1" );
-			}
-			guiMsg->SetStateString( "str_xpchk", "" );
-			guiMsg->HandleNamedEvent( "CDKey" );
-			break;
 		case MSG_WAIT:
 			break;
 		default:
@@ -1536,20 +1812,6 @@ const char* idSessionLocal::MessageBox( msgBoxType_t type, const char *message, 
 		if ( type == MSG_PROMPT ) {
 			if ( msgRetIndex == 0 ) {
 				guiMsg->State().GetString( "str_entry", "", msgFireBack[ 0 ] );
-				return msgFireBack[ 0 ].c_str();
-			} else {
-				return NULL;
-			}
-		} else if ( type == MSG_CDKEY ) {
-			if ( msgRetIndex == 0 ) {
-				// the visible_ values distinguish looking at a valid key, or editing it
-				sprintf( msgFireBack[ 0 ], "%1s;%16s;%2s;%1s;%16s;%2s",
-						 guiMsg->State().GetString( "visible_cdchk" ),
-						 guiMsg->State().GetString( "str_cdkey" ),
-						 guiMsg->State().GetString( "str_cdchk" ),
-						 guiMsg->State().GetString( "visible_xpchk" ),						 
-						 guiMsg->State().GetString( "str_xpkey" ),
-						 guiMsg->State().GetString( "str_xpchk" ) );
 				return msgFireBack[ 0 ].c_str();
 			} else {
 				return NULL;
@@ -1814,15 +2076,3 @@ void idSessionLocal::HandleNoteCommands( const char *menuCommand ) {
 	}
 }
 
-/*
-===============
-idSessionLocal::SetCDKeyGuiVars
-===============
-*/
-void idSessionLocal::SetCDKeyGuiVars( void ) {
-	if ( !guiMainMenu ) {
-		return;
-	}
-	guiMainMenu->SetStateString( "str_d3key_state", common->GetLanguageDict()->GetString( va( "#str_071%d", 86 + cdkey_state ) ) );
-	guiMainMenu->SetStateString( "str_xpkey_state", common->GetLanguageDict()->GetString( va( "#str_071%d", 86 + xpkey_state ) ) );
-}

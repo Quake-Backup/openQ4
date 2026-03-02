@@ -899,7 +899,7 @@ static pascal OSStatus RegCodeHandler( EventHandlerCallRef inHandler, EventRef i
 			}
 			if ( fValid ) {
 				strcpy( regCodeInfo->prefRegCode1, doomKey );
-				session->SetCDKey( doomKey );
+				// Legacy CD key path removed in OpenQ4.
 			}
 			else {
 				unsigned char theError[512]; 

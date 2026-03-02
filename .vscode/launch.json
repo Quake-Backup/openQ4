@@ -2,6 +2,22 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Launch OpenQ4 (Meson Debug)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\.install\\OpenQ4-client_x64.exe",
+      "args": [
+        "+set",
+        "developer",
+        "1",
+        "+set",
+        "fs_game",
+        "openq4"
+      ],
+      "cwd": "${workspaceFolder}\\.install",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "Launch OpenQ4 MP (Meson Debug)",
       "type": "cppvsdbg",
       "request": "launch",

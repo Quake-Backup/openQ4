@@ -25,7 +25,6 @@ windowDef Desktop
   	defineicon	"fve"	"gfx/guis/mainmenu/icon_favorite.tga"
   	defineicon	"pse"	"gfx/guis/mainmenu/icon_locked.tga"
   	defineicon	"dse"	"gfx/guis/mainmenu/icon_dedserver.tga"
-  	defineicon	"pbe"	"gfx/guis/mainmenu/icon_pb.tga"	
 	defineicon	"rpe"	"gfx/guis/mainmenu/icon_repeater.tga"
   	defineicon	"arr"	"gfx/guis/mainmenu/icon_arrow.tga"
 	float	"active"	0
@@ -88,7 +87,7 @@ windowDef Desktop
 		// 0 = no sorting
 		// 1 = friends
 		// 2 = locked
-		// 3 = dedicated/punkbuster
+		// 3 = dedicated server
 		// 4 = server
 		// 5 = ping
 		// 6 = players
@@ -630,9 +629,9 @@ windowDef Desktop
 
 		onTime 10 {
 			if ("desktop::music" == 0) {
-				set	"cmd"	"music main_menu checkKeys" ;
+				set	"cmd"	"music main_menu" ;
 			} else {
-				set	"cmd"	"music main_menu_gameplay checkKeys" ;
+				set	"cmd"	"music main_menu_gameplay" ;
 			}
 		}
 
@@ -3424,16 +3423,9 @@ windowDef Desktop
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
-			windowDef mp_create_b11
-			{
-				rect	228,313,377,25
-				visible	1
-				background	"gfx/guis/mainmenu/b3_light"
-				matcolor	0.545,0.588,0.294,0.4
-			}
 			windowDef mp_create_b12
 			{
-				rect	228,337,377,25
+				rect	228,313,377,25
 				visible	1
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
@@ -3681,7 +3673,7 @@ windowDef Desktop
 			}			
 			windowDef mp_create_opt12_trn
 			{
-				rect	256,339,149,18
+				rect	256,315,149,18
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"#str_200214"
@@ -3690,7 +3682,7 @@ windowDef Desktop
 			}
 			editDef mp_create_val12_trn
 			{
-				rect	408,339,185,18
+				rect	408,315,185,18
 				visible	0
 				textscale	0.24
 				cvar	si_tourneylimit
@@ -3826,35 +3818,9 @@ windowDef Desktop
 				}
 
 			}
-			windowDef mp_create_opt11
-			{
-				rect	256,315,149,18
-				visible	1
-				forecolor	1,1,1,0.8
-				text	"#str_200247"
-				textscale	0.24
-				font	"fonts/lowpixel"
-			}
-			choiceDef mp_create_val11
-			{
-				rect	408,315,185,18
-				visible	1
-				forecolor	1,0.745,0.137,0.8
-				choices	"#str_200246"
-				textscale	0.24
-				font	"fonts/lowpixel"
-				choiceType	0
-
-				onAction {
-					set "cmd" "play main_menu_selection" ;
-					set "cmd"	"punkbusterServerToggle" ;
-					set "cmd"	"initCreateServerSettings" ;
-				}
-
-			}
 			windowDef mp_create_opt12
 			{
-				rect	256,339,149,18
+				rect	256,315,149,18
 				visible	1
 				forecolor	1,1,1,0.8
 				text	"#str_200058"
@@ -3863,7 +3829,7 @@ windowDef Desktop
 			}
 			choiceDef mp_create_val12
 			{
-				rect	408,339,185,18
+				rect	408,315,185,18
 				visible	1
 				forecolor	1,0.745,0.137,0.8
 				choices	"#str_200059"
@@ -4740,21 +4706,17 @@ windowDef Desktop
 			onNamedEvent mpSet_noevents {
 				set "mp_set_name_val::noevents" "1" ;
 				set "mp_set_clan_val::noevents" "1" ;
-				set "mp_set_model_dm_list::noevents" "1" ;
-				set "mp_set_model_strogg_list::noevents" "1" ;
-				set "mp_set_model_marine_list::noevents" "1" ;
-				set "mp_set_datarate_val::noevents" "1" ;
-				set "mp_set_punkbuster_val::noevents" "1" ;
+				set "set_model_dm_list::noevents" "1" ;
+				set "set_model_strogg_list::noevents" "1" ;
+				set "set_model_marine_list::noevents" "1" ;
 			}
 
 			onNamedEvent mpSet_events {
 				set "mp_set_name_val::noevents" "0" ;
 				set "mp_set_clan_val::noevents" "0" ;
-				set "mp_set_model_dm_list::noevents" "0" ;
-				set "mp_set_model_strogg_list::noevents" "0" ;
-				set "mp_set_model_marine_list::noevents" "0" ;
-				set "mp_set_datarate_val::noevents" "0" ;
-				set "mp_set_punkbuster_val::noevents" "0" ;
+				set "set_model_dm_list::noevents" "0" ;
+				set "set_model_strogg_list::noevents" "0" ;
+				set "set_model_marine_list::noevents" "0" ;
 			}
 
 			windowDef t_mp_set_title
@@ -4794,27 +4756,6 @@ windowDef Desktop
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
-			windowDef mp_set_b5
-			{
-				rect	36,264,377,25
-				visible	1
-				background	"gfx/guis/mainmenu/b3_light"
-				matcolor	0.545,0.588,0.294,0.4
-			}
-			windowDef mp_set_b6
-			{
-				rect	36,288,377,25
-				visible	1
-				background	"gfx/guis/mainmenu/b3_light"
-				matcolor	0.545,0.588,0.294,0.4
-			}
-			windowDef mp_set_b7
-			{
-				rect	36,312,377,25
-				visible	1
-				background	"gfx/guis/mainmenu/b3_light"
-				matcolor	0.545,0.588,0.294,0.4
-			}
 			editDef mp_set_name_val
 			{
 				rect	210,171,190,18
@@ -4838,7 +4779,7 @@ windowDef Desktop
 			{
 				visible	1
 				forecolor	1,0.745,0.137,0.8
-				cvar	ui_clan
+				cvar	gui_ui_clan
 				maxchars	12
 				textscale	0.24
 				font	"fonts/lowpixel"
@@ -4913,44 +4854,6 @@ windowDef Desktop
 				}
 
 			}
-			choiceDef mp_set_datarate_val
-			{
-				rect	210,267,190,18
-				visible	1
-				forecolor	1,0.745,0.137,0.8
-				textscale	0.24
-				font	"fonts/lowpixel"
-				values	"16000;25600;10000"
-				cvar	"net_clientMaxRate"
-				choices	"#str_200077"
-				choiceType	1
-
-				onAction {
-					set "cmd" "play main_menu_selection" ;
-				}
-
-			}
-			choiceDef mp_set_punkbuster_val
-			{
-				rect	210,291,190,18
-				visible	1
-				forecolor	1,0.745,0.137,0.8
-				textscale	0.24
-				font	"fonts/lowpixel"
-				choices	"#str_200246"
-				choiceType	0
-
-				onAction {
-					set "cmd" "play main_menu_selection" ;
-					set "cmd"	"punkbusterToggle" ;
-					set "cmd" "play main_menu_selection" ;
-				}
-
-				onActionRelease {
-					set "desktop::vidwarn" "1" ;
-				}
-
-			}
 			windowDef mp_set_name
 			{
 				rect	67,171,143,18
@@ -4975,33 +4878,6 @@ windowDef Desktop
 				visible	1
 				forecolor	1,1,1,0.8
 				text	"#str_200080"
-				textscale	0.24
-				font	"fonts/lowpixel"
-			}
-			windowDef mp_set_datarate
-			{
-				rect	67,267,143,18
-				visible	1
-				forecolor	1,1,1,0.8
-				text	"#str_200081"
-				textscale	0.24
-				font	"fonts/lowpixel"
-			}
-			windowDef mp_set_punkbuster
-			{
-				rect	67,291,143,18
-				visible	1
-				forecolor	1,1,1,0.8
-				text	"#str_200247"
-				textscale	0.24
-				font	"fonts/lowpixel"
-			}
-			windowDef mp_set_cdkey
-			{
-				rect	67,314,143,18
-				visible	1
-				forecolor	1,1,1,0.8
-				text	"#str_200082"
 				textscale	0.24
 				font	"fonts/lowpixel"
 			}
@@ -18849,14 +18725,11 @@ windowDef Desktop
 			set "mp_b_back::visible" "0" ;
 		}
 
-		onNamedEvent showMpSet {
-			set "mp_b_set_1::visible" "1" ;
-			set "mp_b_set_2::visible" "1" ;
-			set "mp_b_set_3::visible" "1" ;
-			set "mp_b_set_5::visible" "1" ;
-			set "mp_b_set_6::visible" "1" ;
-			set "mp_b_set_7::visible" "1" ;
-			set "mp_b_set_back::visible" "1" ;
+			onNamedEvent showMpSet {
+				set "mp_b_set_1::visible" "1" ;
+				set "mp_b_set_2::visible" "1" ;
+				set "mp_b_set_3::visible" "1" ;
+				set "mp_b_set_back::visible" "1" ;
 			set "mp_b_set_railcolor1::visible" "1" ;
 			set "mp_b_set_railcolor2::visible" "1" ;
 			set "mp_b_set_railcolor3::visible" "1" ;
@@ -18868,14 +18741,11 @@ windowDef Desktop
 			namedevent "p_mp_settings::mpSet_events" ;
 		}
 
-		onNamedEvent hideMpSet {
-			set "mp_b_set_1::visible" "0" ;
-			set "mp_b_set_2::visible" "0" ;
-			set "mp_b_set_3::visible" "0" ;
-			set "mp_b_set_5::visible" "0" ;
-			set "mp_b_set_6::visible" "0" ;
-			set "mp_b_set_7::visible" "0" ;
-			set "mp_b_set_back::visible" "0" ;
+			onNamedEvent hideMpSet {
+				set "mp_b_set_1::visible" "0" ;
+				set "mp_b_set_2::visible" "0" ;
+				set "mp_b_set_3::visible" "0" ;
+				set "mp_b_set_back::visible" "0" ;
 			set "mp_b_set_railcolor1::visible" "0" ;
 			set "mp_b_set_railcolor2::visible" "0" ;
 			set "mp_b_set_railcolor3::visible" "0" ;
@@ -18999,7 +18869,6 @@ windowDef Desktop
 			set "mp_b_create_8::visible" "1" ;
 			set "mp_b_create_9::visible" "1" ;
 			set "mp_b_create_10::visible" "1" ;
-			set "mp_b_create_11::visible" "1" ;
 			set "mp_b_create_12::visible" "1" ;	
 			set "mp_b_create_13::visible" "1" ;
 			set "mp_create_val1::noevents" "0" ;
@@ -19012,7 +18881,6 @@ windowDef Desktop
 			set "mp_create_val8::noevents" "0" ;
 			set "mp_create_val9::noevents" "0" ;
 			set "mp_create_val10::noevents" "0" ;
-			set "mp_create_val11::noevents" "0" ;
 			set "mp_create_val12::noevents" "0" ;
 			set "mp_create_maplist::noevents" "0" ;	
 			namedevent "p_mp_create::gametypeChange" ;
@@ -19033,7 +18901,6 @@ windowDef Desktop
 			set "mp_b_create_8::visible" "0" ;
 			set "mp_b_create_9::visible" "0" ;
 			set "mp_b_create_10::visible" "0" ;
-			set "mp_b_create_11::visible" "0" ;
 			set "mp_b_create_12::visible" "0" ;	
 			set "mp_create_val1::noevents" "1" ;
 			set "mp_create_val2::noevents" "1" ;
@@ -19045,7 +18912,6 @@ windowDef Desktop
 			set "mp_create_val8::noevents" "1" ;
 			set "mp_create_val9::noevents" "1" ;
 			set "mp_create_val10::noevents" "1" ;
-			set "mp_create_val11::noevents" "1" ;
 			set "mp_create_val12::noevents" "1" ;
 			set "mp_create_maplist::noevents" "1" ;
 		}
@@ -21461,7 +21327,6 @@ windowDef Desktop
 				set "mp_create_b8::matcolor_w" "0.4" ;
 				set "mp_create_b9::matcolor_w" "0.4" ;
 				set "mp_create_b10::matcolor_w" "0.4" ;
-				set "mp_create_b11::matcolor_w" "0.4" ;
 				set "mp_create_advbtn::matcolor_w" "0.4" ;
 				set "mp_create_adv::forecolor" "$desktop::white_8" ; 
 				set "mp_create_adv_corner::matcolor" "$desktop::corner" ; 
@@ -22543,31 +22408,9 @@ windowDef Desktop
 			}
 
 		}
-		windowDef mp_b_create_11
-		{
-			rect	245,315,351,20
-			visible	0
-
-			onMouseEnter {
-				if ("desktop::active" == 0) {
-					stoptransitions "mp_b_create_11" ;
-					
-					set "mp_create_b11::matcolor_w" "1" ;
-					
-					set "cmd" "play main_menu_mouseover" ;	
-				}
-			}
-
-			onMouseExit {
-				if ("desktop::active" == 0) {
-					transition "mp_create_b11::matcolor_w" "1" "0.4" "300" ;
-				}
-			}
-
-		}
 		windowDef mp_b_create_12
 		{
-			rect	245,339,351,20
+			rect	245,315,351,20
 			visible	0
 
 			onMouseEnter {
@@ -22810,72 +22653,6 @@ windowDef Desktop
 				if ("desktop::active" == 0) {
 					transition "mp_set_b3::matcolor_w" "1" "0.4" "300" ;
 				}
-			}
-
-		}
-		windowDef mp_b_set_5
-		{
-			rect	53,266,361,20
-			visible	0
-
-			onMouseEnter {
-				if ("desktop::active" == 0) {
-					stoptransitions "mp_b_set_5" ;
-					
-					set "mp_set_b5::matcolor_w" "1" ;
-					
-					set "cmd" "play main_menu_mouseover" ;	
-				}
-			}
-
-			onMouseExit {
-				if ("desktop::active" == 0) {
-					transition "mp_set_b5::matcolor_w" "1" "0.4" "300" ;
-				}
-			}
-
-		}
-		windowDef mp_b_set_6
-		{
-			rect	53,290,361,20
-			visible	0
-
-			onMouseEnter {
-				if ("desktop::active" == 0) {
-					stoptransitions "mp_b_set_6" ;
-					set "mp_set_b6::matcolor_w" "1" ;
-					set "cmd" "play main_menu_mouseover" ;
-				}
-			}
-
-			onMouseExit {
-				if ("desktop::active" == 0) {
-					transition "mp_set_b6::matcolor_w" "1" "0.4" "300" ;
-				}
-			}
-
-		}
-		windowDef mp_b_set_7
-		{
-			rect	53,314,361,20
-			visible	0
-
-			onMouseEnter {
-				if ("desktop::active" == 0) {
-					stoptransitions "mp_b_set_7" ;
-					set "mp_set_b7::matcolor_w" "1" ;
-					set "cmd" "play main_menu_mouseover" ;
-				}
-			}
-
-			onMouseExit {
-				if ("desktop::active" == 0) {
-					transition "mp_set_b7::matcolor_w" "1" "0.4" "300" ;
-				}
-			}
-
-			onAction {
-				consoleCMD "promptKey"
 			}
 
 		}

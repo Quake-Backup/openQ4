@@ -42,7 +42,7 @@ class idSDK( scons_utils.idSetupBase ):
 				   'framework/EditField.h', 'framework/EventLoop.h', 'framework/KeyInput.h', 'framework/Session.h',
 				   'framework/async/AsyncClient.h', 'framework/async/AsyncNetwork.h', 'framework/async/AsyncServer.h',
 				   'framework/async/MsgChannel.h', 'framework/async/ServerScan.h',
-				   'mssdk', 'punkbuster', 'sys/osx',
+				   'mssdk', 'sys/osx',
 				   'tools/comafx/StdAfx.h', 'tools/compilers/compiler_public.h', 'tools/edit_public.h' ]
 		for i in delete:
 			target = os.path.join( sdk_srcdir, i )
