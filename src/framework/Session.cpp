@@ -249,7 +249,7 @@ static void Session_DrawFallbackLoadingScreen() {
 		splashH = correctedH;
 	}
 
-	renderSystem->SetColor( colorBlack );
+	renderSystem->SetColor( idVec4( 24.0f / 255.0f, 26.0f / 255.0f, 8.0f / 255.0f, 1.0f ) );
 	renderSystem->DrawStretchPic( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
 
 	const idMaterial *splashMaterial = declManager->FindMaterial( "gfx/splashScreen", false );
@@ -1703,9 +1703,19 @@ void idSessionLocal::LoadLoadingGui( const char *mapName ) {
 		const char *loadImage = mapDef->dict.GetString( "loadimage", "" );
 		if ( loadImage[0] ) {
 			loadingBackground = loadImage;
+		} else {
+			// Match MP levelshot fallback behavior (including addon extraction).
+			char screenshot[ MAX_STRING_CHARS ];
+			fileSystem->FindMapScreenshot( spawnMapPath, screenshot, MAX_STRING_CHARS );
+			loadingBackground = screenshot;
 		}
 
 		loadGuiOverride = mapDef->dict.GetString( "loadgui", "" );
+	} else {
+		// Keep non-mapDef paths consistent with MP levelshot handling.
+		char screenshot[ MAX_STRING_CHARS ];
+		fileSystem->FindMapScreenshot( spawnMapPath, screenshot, MAX_STRING_CHARS );
+		loadingBackground = screenshot;
 	}
 
 	Session_ResolveWideLoadingBackground( loadingBackground, loadingBackgroundWide );

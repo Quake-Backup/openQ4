@@ -2610,7 +2610,7 @@ void idCommonLocal::PrintLoadingMessage( const char *msg ) {
 		splashH = correctedH;
 	}
 
-	renderSystem->SetColor( idVec4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+	renderSystem->SetColor( idVec4( 24.0f / 255.0f, 26.0f / 255.0f, 8.0f / 255.0f, 1.0f ) );
 	renderSystem->DrawStretchPic( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 1, 1, declManager->FindMaterial( "_white" ) );
 	renderSystem->SetColor( idVec4( 1.0f, 1.0f, 1.0f, 1.0f ) );
 	renderSystem->DrawStretchPic( splashX, splashY, splashW, splashH, 0, 0, 1, 1, declManager->FindMaterial( "gfx/splashScreen" ) );

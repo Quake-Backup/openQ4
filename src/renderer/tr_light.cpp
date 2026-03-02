@@ -1447,8 +1447,8 @@ static void R_AddAmbientDrawsurfs( viewEntity_t *vEntity ) {
 
 			// powerup shells/overlays render as a second pass on top of the base surface.
 			const idMaterial *overlayShader = def->parms.overlayShader;
-			// GUI surfaces often rely on transparent corners/cutouts; avoid shell overlay bleeding into them.
-			if ( overlayShader != NULL && !shader->HasGui() ) {
+			// Respect material overlay policy so translucent / gui-like surfaces don't get shell bleed.
+			if ( overlayShader != NULL && !shader->HasGui() && shader->AllowOverlays() ) {
 				R_GlobalShaderOverride( &overlayShader );
 				if ( overlayShader != NULL && overlayShader->IsDrawn() ) {
 					R_AddDrawSurf( tri, vEntity, &vEntity->entityDef->parms, overlayShader, vEntity->scissorRect );

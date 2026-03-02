@@ -5589,66 +5589,29 @@ idMultiplayerGame::AddChatLine
 void idMultiplayerGame::AddChatLine( const char *fmt, ... ) {
 	idStr temp;
 	va_list argptr;
+	const char* chatSound = "snd_chat";
 
-// jmarshall - chat lines
-	/*
-// mekberg: chat changes.
-	wrapInfo_t wrapInfo;
-	idStr wrap1;
-	idStr wrap2;
-	
 	va_start( argptr, fmt );
 	vsprintf( temp, fmt, argptr );
 	va_end( argptr );
-	
-	temp.StripTrailingOnce("\n");
-	
-	// this isn't a good way to color informational lines....
-	if( temp.Find( ":" ) > 0 && temp.Find( ":" ) < temp.Length() - 1 ) {
-		gameLocal.Printf( "%s^0^2%s\n", temp.Left( temp.Find( ":" ) + 1 ).c_str(), temp.Right( temp.Length() - temp.Find( ":" ) - 1).c_str() );
-	} else {
-		gameLocal.Printf( "%s\n", temp.c_str() );
-	}
-	
-	// bdube: new chat interraction with hud
+
+	temp.StripTrailingOnce( "\n" );
+	gameLocal.Printf( "%s\n", temp.c_str() );
+
+	// Push the chat line to the MP HUD chat history widget.
 	if ( gameLocal.GetLocalPlayer() != NULL && gameLocal.GetLocalPlayer()->mphud ) {
-			wrap1 = temp;
-			wrap2 = temp;
-		do {
-			memset( &wrapInfo, -1, sizeof ( wrapInfo_t ) );
-			gameLocal.GetLocalPlayer( )->mphud->GetMaxTextIndex( "history1", wrap1.c_str( ), wrapInfo );
-
-			// If we have a whitespace near the end. Otherwise the user could enter a giant word.
-			if ( wrapInfo.lastWhitespace != -1 &&  float( wrapInfo.lastWhitespace ) / float( wrapInfo.maxIndex ) > .75 ) {
-				wrap2 = wrap1.Left( wrapInfo.lastWhitespace++ );
-
-			// Just text wrap, no word wrap.
-			} else if ( wrapInfo.maxIndex != -1 ) {					
-				wrap2 = wrap1.Left( wrapInfo.maxIndex );
-
-			// We fit in less than a line.
-			} else {
-				wrap2 = wrap1;
-			}
-
-			// Recalc the base string.
-			wrap1 = wrap1.Right( wrap1.Length( ) - wrap2.Length( ) );
-
-			// Push to gui.
-			gameLocal.GetLocalPlayer( )->mphud->SetStateString( "chattext", wrap2.c_str( ) );
-			gameLocal.GetLocalPlayer( )->mphud->HandleNamedEvent( "addchatline" );
-		} while ( wrapInfo.maxIndex != -1 );
+		gameLocal.GetLocalPlayer()->mphud->SetStateString( "chattext", temp.c_str() );
+		gameLocal.GetLocalPlayer()->mphud->HandleNamedEvent( "addchatline" );
 	}
 
-	if( chatHistory.Length() + temp.Length() > CHAT_HISTORY_SIZE ) {
+	if ( chatHistory.Length() + temp.Length() > CHAT_HISTORY_SIZE ) {
 		int removeLength = chatHistory.Find( '\n' );
-		if( removeLength == -1 ) {
-			// nuke the whole string
+		if ( removeLength == -1 ) {
 			chatHistory.Empty();
 		} else {
-			while( (chatHistory.Length() - removeLength) + temp.Length() > CHAT_HISTORY_SIZE ) {
+			while ( ( chatHistory.Length() - removeLength ) + temp.Length() > CHAT_HISTORY_SIZE ) {
 				removeLength = chatHistory.Find( '\n', removeLength + 1 );
- 				if( removeLength == -1 ) {
+				if ( removeLength == -1 ) {
 					chatHistory.Empty();
 					break;
 				}
@@ -5660,29 +5623,25 @@ void idMultiplayerGame::AddChatLine( const char *fmt, ... ) {
 	chatHistory.Append( temp );
 	chatHistory.Append( '\n' );
 
-	if( mainGui ) {
+	if ( mainGui ) {
 		mainGui->SetStateString( "chat", chatHistory.c_str() );
 	}
-	if( statSummary ) {
+	if ( statSummary ) {
 		statSummary->SetStateString( "chat", chatHistory.c_str() );
 	}
-	
-	// play chat sound
-	char* chatSound = "snd_chat";
-	if( gameLocal.GetLocalPlayer() ) {
-		// not a great way to detect teams
-		if( gameLocal.IsTeamGame() ) {
+
+	if ( gameLocal.GetLocalPlayer() ) {
+		// Infer team chat from the formatted team suffix in the speaker segment.
+		if ( gameLocal.IsTeamGame() ) {
 			int i = temp.Find( gameLocal.GetLocalPlayer()->team ? "Strogg" : "Marine", false );
 			int firstColon = temp.Find( ":" );
-			if( firstColon >= 0 && i < firstColon && i >= 1 && temp[ i - 6 ] == '(' ) {
+			if ( firstColon >= 0 && i < firstColon && i >= 1 && temp[ i - 6 ] == '(' ) {
 				chatSound = "snd_teamchat";
 			}
 		}
 
 		gameLocal.GetLocalPlayer()->StartSound( chatSound, SND_CHANNEL_ANY, 0, false, NULL );
 	}
-	*/
-// jmarshall end
 }
 
 void idMultiplayerGame::DrawStatSummary( void ) {	

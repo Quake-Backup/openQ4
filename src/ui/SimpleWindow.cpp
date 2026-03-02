@@ -34,6 +34,36 @@ If you have questions concerning this license or the applicable additional terms
 #include "UserInterfaceLocal.h"
 #include "SimpleWindow.h"
 
+namespace {
+static bool ShouldDrawSplashUnderlay( const idMaterial *background, const idRectangle &drawRect ) {
+	if ( background == NULL ) {
+		return false;
+	}
+
+	const float epsilon = 0.01f;
+	if ( idMath::Fabs( drawRect.x ) > epsilon || idMath::Fabs( drawRect.y ) > epsilon ||
+		 idMath::Fabs( drawRect.w - 640.0f ) > epsilon || idMath::Fabs( drawRect.h - 480.0f ) > epsilon ) {
+		return false;
+	}
+
+	const char *materialName = background->GetName();
+	if ( materialName == NULL || materialName[0] == '\0' ) {
+		return false;
+	}
+
+	return idStr::Icmp( materialName, "gfx/guis/mainmenu/splash" ) == 0 ||
+		idStr::Icmp( materialName, "gfx/guis/mainmenu/splash.dds" ) == 0 ||
+		idStr::Icmp( materialName, "gfx/splashScreen" ) == 0 ||
+		idStr::Icmp( materialName, "gfx/guis/loadscreens/generic" ) == 0 ||
+		idStr::Icmp( materialName, "gfx/guis/loadscreens/generic.dds" ) == 0;
+}
+
+static void DrawSplashUnderlay( idDeviceContext *dc ) {
+	const idVec4 underlayColor( 24.0f / 255.0f, 26.0f / 255.0f, 8.0f / 255.0f, 1.0f );
+	dc->DrawFilledRect( 0.0f, 0.0f, 640.0f, 480.0f, underlayColor );
+}
+}
+
 
 idSimpleWindow::idSimpleWindow(idWindow *win) {
 	gui = win->GetGui();
@@ -164,6 +194,10 @@ void idSimpleWindow::DrawBackground(const idRectangle &drawRect) {
 
 	if (background) {
 		if (matColor.w() > 0) {
+			if ( ShouldDrawSplashUnderlay( background, drawRect ) ) {
+				DrawSplashUnderlay( dc );
+			}
+
 			if ( flags & WIN_MATCANVASFILL ) {
 				const float imageWidth = background->GetImageWidth();
 				const float imageHeight = background->GetImageHeight();

@@ -1426,7 +1426,7 @@ windowDef Desktop
 	windowDef p_tourntop
 	{
 		rect	0,0,640,480
-		screenalignx	middle
+		screenalignx	left
 		screenaligny	top
 		visible	1
 		windowDef tourn_topbar
@@ -3083,6 +3083,8 @@ windowDef Desktop
 		windowDef p_ctf_2
 		{
 			rect	0,0,640,480
+			screenalignx	left
+			screenaligny	top
 			visible	0
 			backcolor 0,0,0,0
 			windowDef ctf_clan1_flag
@@ -3169,6 +3171,8 @@ windowDef Desktop
 		windowDef p_onectf
 		{
 			rect	0,0,640,480
+			screenalignx	left
+			screenaligny	top
 			visible	0
 			windowDef ctfone_arc
 			{
@@ -3255,6 +3259,8 @@ windowDef Desktop
 		windowDef p_tourney
 		{
 			rect	0,0,640,480
+			screenalignx	left
+			screenaligny	top
 			visible	1
 			windowDef tourn_roundarr1
 			{
@@ -3873,6 +3879,7 @@ windowDef Desktop
 			rect	0,0,549,18
 			forecolor	1,1,.552,1
 			textscale	0.25
+			textalign	0
 			font	"fonts/lowpixel"
 			visible	0
 			textstyle	1
@@ -3882,6 +3889,7 @@ windowDef Desktop
 			rect	0,0,549,18
 			forecolor	1,1,.552,1
 			textscale	0.25
+			textalign	0
 			font	"fonts/lowpixel"
 			visible	0
 			textstyle	1
@@ -3891,6 +3899,7 @@ windowDef Desktop
 			rect	0,15,549,18
 			forecolor	1,1,.552,1
 			textscale	0.25
+			textalign	0
 			font	"fonts/lowpixel"
 			visible	0
 			textstyle	1
@@ -3900,6 +3909,7 @@ windowDef Desktop
 			rect	0,30,549,18
 			forecolor	1,1,.552,1
 			textscale	0.25
+			textalign	0
 			font	"fonts/lowpixel"
 			visible	0
 			textstyle	1
@@ -3909,6 +3919,7 @@ windowDef Desktop
 			rect	0,45,549,18
 			forecolor	1,1,.552,1
 			textscale	0.25
+			textalign	0
 			font	"fonts/lowpixel"
 			visible	0
 			textstyle	1
