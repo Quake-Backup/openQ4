@@ -12,10 +12,7 @@
         "1",
         "+set",
         "fs_game",
-        "openq4",
-        "+wait"
-        "200",
-        "+quit"
+        "openq4"
       ],
       "cwd": "${workspaceFolder}\\.install",
       "console": "integratedTerminal"

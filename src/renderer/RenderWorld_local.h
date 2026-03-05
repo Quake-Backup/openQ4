@@ -77,18 +77,6 @@ typedef struct {
 										// this is the area number, else CHILDREN_HAVE_MULTIPLE_AREAS
 } areaNode_t;
 
-typedef struct {
-	int			areaNum;
-	idVec3		origin;
-	idVec3		irradiance;
-} indirectProbe_t;
-
-typedef struct {
-	int			areaNum;
-	idVec3		origin;
-	idVec3		irradiance;
-} indirectLightGridPoint_t;
-
 
 class idRenderWorldLocal : public idRenderWorld {
 public:
@@ -167,10 +155,6 @@ public:
 	virtual void			RemoveAllModelReferences(idRenderModel* model) { }
 
 	virtual bool			HasSkybox(int areaNum) { return true; }
-	virtual void			BakeEnvironmentProbes( bool forceRebuild = false );
-	virtual void			BakeLightGrids( bool forceRebuild = false );
-	virtual void			ReloadIndirectLightCache( void );
-	virtual bool			GetIndirectAmbientSample( const idVec3 &origin, int areaNum, idVec3 &outAmbient ) const;
 
 	//-----------------------
 
@@ -209,12 +193,6 @@ public:
 	idInteraction **		interactionTable;
 	int						interactionTableWidth;		// entityDefs
 	int						interactionTableHeight;		// lightDefs
-
-	idList<idBounds>		indirectAreaBounds;
-	idList<idVec3>			indirectAreaFallback;
-	idList<indirectProbe_t> indirectProbes;
-	idList<indirectLightGridPoint_t> indirectLightGrid;
-	bool					indirectCacheLoaded;
 
 
 	bool					generateAllInteractionsCalled;
@@ -298,12 +276,6 @@ public:
 	float					DrawTextLength( const char *text, float scale, int len = 0 );
 
 	void					FreeInteractions();
-	void					ClearIndirectLightingData();
-	void					BuildIndirectAreaBounds();
-	idVec3					EstimateIndirectIrradianceAtPoint( const idVec3 &origin, int areaNum ) const;
-	bool					LoadIndirectLightCacheFromSavePath();
-	bool					SaveIndirectLightCacheToSavePath() const;
-	idStr					GetIndirectLightCachePath() const;
 
 	void					PushVolumeIntoTree_r( idRenderEntityLocal *def, idRenderLightLocal *light, const idSphere *sphere, int numPoints, const idVec3 (*points), int nodeNum );
 
