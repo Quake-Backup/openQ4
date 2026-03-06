@@ -1523,7 +1523,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "r_postAA", 1, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 125, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_forceAmbientOn", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
 	} else if ( com_machineSpec.GetInteger() == 2 ) {
 		cvarSystem->SetCVarString( "image_filter", "GL_LINEAR_MIPMAP_LINEAR", CVAR_ARCHIVE );
@@ -1549,7 +1548,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "r_postAA", 1, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 100, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_forceAmbientOn", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
 	} else if ( com_machineSpec.GetInteger() == 1 ) {
 		cvarSystem->SetCVarString( "image_filter", "GL_LINEAR_MIPMAP_LINEAR", CVAR_ARCHIVE );
@@ -1572,7 +1570,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "r_postAA", 1, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 100, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_forceAmbientOn", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
 	} else {
 		cvarSystem->SetCVarString( "image_filter", "GL_LINEAR_MIPMAP_LINEAR", CVAR_ARCHIVE );
@@ -1597,7 +1594,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "r_postAA", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 85, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_forceAmbientOn", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
 	}
 

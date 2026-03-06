@@ -82,6 +82,18 @@ windowDef Desktop
 		set "set_sys_screensize_val_2::visible" "0" ;		
 	}
 
+	onNamedEvent forceAspect1 {
+		set "set_sys_screensize_val_0::visible" "0" ;
+		set "set_sys_screensize_val_1::visible" "1" ;
+		set "set_sys_screensize_val_2::visible" "0" ;
+	}
+
+	onNamedEvent forceAspect2 {
+		set "set_sys_screensize_val_0::visible" "0" ;
+		set "set_sys_screensize_val_1::visible" "0" ;
+		set "set_sys_screensize_val_2::visible" "1" ;
+	}
+
 	onNamedEvent ingame {
 		// gui::ingame
 		// 0 = not in a game
@@ -6914,7 +6926,7 @@ windowDef Desktop
 					forecolor	1,0.745,0.137,0.8
 					choices	"gui::aspect_choices"
 					values	"gui::aspect_values"
-					cvar	r_aspectRatio
+					gui	r_aspectRatio
 					choiceType	1
 					textscale	0.24
 					font	"fonts/lowpixel"
@@ -6928,19 +6940,16 @@ windowDef Desktop
 						set "desktop::vidwarn" "1" ;
 						
 						if ("gui::r_aspectRatio" == 0) {
-							set "cmd" "fixup_mode 0" ;	
 							set "set_sys_screensize_val_0::visible" "1" ;
 							set "set_sys_screensize_val_1::visible" "0" ;
 							set "set_sys_screensize_val_2::visible" "0" ;		
 							
 						} else if ("gui::r_aspectRatio" == 1) {
-							set "cmd" "fixup_mode 1" ;
 							set "set_sys_screensize_val_0::visible" "0" ;
 							set "set_sys_screensize_val_1::visible" "1" ;
 							set "set_sys_screensize_val_2::visible" "0" ;
 							
 						} else if ("gui::r_aspectRatio" == 2) {
-							set "cmd" "fixup_mode 2" ;
 							set "set_sys_screensize_val_0::visible" "0" ;
 							set "set_sys_screensize_val_1::visible" "0" ;
 							set "set_sys_screensize_val_2::visible" "1" ;

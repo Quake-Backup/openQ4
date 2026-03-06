@@ -110,6 +110,138 @@ static void BuildMainMenuDisplayChoices( idStr &choiceNames, idStr &choiceValues
 #endif
 }
 
+typedef struct mainMenuVidMode_s {
+	int	mode;
+	int	width;
+	int	height;
+} mainMenuVidMode_t;
+
+static const mainMenuVidMode_t mainMenuVidModes[] = {
+	{ 0, 1280, 720 },
+	{ 1, 1366, 768 },
+	{ 2, 1600, 900 },
+	{ 3, 1920, 1080 },
+	{ 4, 1920, 1200 },
+	{ 5, 2560, 1080 },
+	{ 6, 2560, 1440 },
+	{ 7, 3440, 1440 },
+	{ 8, 3840, 2160 },
+	{ 9, 5120, 1440 },
+	{ 10, 5120, 2880 }
+};
+
+enum {
+	MAINMENU_ASPECT_OTHER = 0,
+	MAINMENU_ASPECT_16_9 = 1,
+	MAINMENU_ASPECT_16_10 = 2
+};
+
+static int ClassifyMainMenuAspectGroup( int width, int height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return MAINMENU_ASPECT_OTHER;
+	}
+
+	const float aspect = static_cast<float>( width ) / static_cast<float>( height );
+	if ( idMath::Fabs( aspect - ( 16.0f / 10.0f ) ) < 0.02f ) {
+		return MAINMENU_ASPECT_16_10;
+	}
+	if ( idMath::Fabs( aspect - ( 16.0f / 9.0f ) ) < 0.02f ) {
+		return MAINMENU_ASPECT_16_9;
+	}
+
+	return MAINMENU_ASPECT_OTHER;
+}
+
+static int GetMainMenuAspectGroupForMode( int mode ) {
+	if ( mode == -1 ) {
+		return ClassifyMainMenuAspectGroup(
+			cvarSystem->GetCVarInteger( "r_customWidth" ),
+			cvarSystem->GetCVarInteger( "r_customHeight" ) );
+	}
+
+	for ( int i = 0; i < static_cast<int>( sizeof( mainMenuVidModes ) / sizeof( mainMenuVidModes[0] ) ); ++i ) {
+		if ( mainMenuVidModes[i].mode == mode ) {
+			return ClassifyMainMenuAspectGroup( mainMenuVidModes[i].width, mainMenuVidModes[i].height );
+		}
+	}
+
+	return MAINMENU_ASPECT_OTHER;
+}
+
+static void AppendMainMenuChoice( idStr &choiceNames, idStr &choiceValues, const char *label, int value ) {
+	if ( choiceNames.Length() > 0 ) {
+		choiceNames += ";";
+		choiceValues += ";";
+	}
+
+	choiceNames += label;
+	choiceValues += va( "%d", value );
+}
+
+static void BuildMainMenuResolutionChoices( int aspectGroup, idStr &choiceNames, idStr &choiceValues ) {
+	choiceNames.Clear();
+	choiceValues.Clear();
+
+	const int customWidth = cvarSystem->GetCVarInteger( "r_customWidth" );
+	const int customHeight = cvarSystem->GetCVarInteger( "r_customHeight" );
+	if ( customWidth > 0 && customHeight > 0 && ClassifyMainMenuAspectGroup( customWidth, customHeight ) == aspectGroup ) {
+		AppendMainMenuChoice( choiceNames, choiceValues, va( "%dx%d", customWidth, customHeight ), -1 );
+	}
+
+	for ( int i = 0; i < static_cast<int>( sizeof( mainMenuVidModes ) / sizeof( mainMenuVidModes[0] ) ); ++i ) {
+		if ( ClassifyMainMenuAspectGroup( mainMenuVidModes[i].width, mainMenuVidModes[i].height ) != aspectGroup ) {
+			continue;
+		}
+
+		AppendMainMenuChoice( choiceNames, choiceValues,
+			va( "%dx%d", mainMenuVidModes[i].width, mainMenuVidModes[i].height ),
+			mainMenuVidModes[i].mode );
+	}
+}
+
+static void SetMainMenuVideoGuiVars( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	gui->SetStateString( "aspect_choices", "Other;16:9;16:10" );
+	gui->SetStateString( "aspect_values", "0;1;2" );
+	gui->SetStateInt( "r_aspectRatio", GetMainMenuAspectGroupForMode( cvarSystem->GetCVarInteger( "r_mode" ) ) );
+
+	idStr choiceNames;
+	idStr choiceValues;
+
+	BuildMainMenuResolutionChoices( MAINMENU_ASPECT_OTHER, choiceNames, choiceValues );
+	gui->SetStateString( "4_3_choices", choiceNames.c_str() );
+	gui->SetStateString( "4_3_values", choiceValues.c_str() );
+
+	BuildMainMenuResolutionChoices( MAINMENU_ASPECT_16_9, choiceNames, choiceValues );
+	gui->SetStateString( "16_9_choices", choiceNames.c_str() );
+	gui->SetStateString( "16_9_values", choiceValues.c_str() );
+
+	BuildMainMenuResolutionChoices( MAINMENU_ASPECT_16_10, choiceNames, choiceValues );
+	gui->SetStateString( "16_10_choices", choiceNames.c_str() );
+	gui->SetStateString( "16_10_values", choiceValues.c_str() );
+}
+
+static void SyncMainMenuAspectVisibility( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	switch ( gui->State().GetInt( "r_aspectRatio" ) ) {
+	case MAINMENU_ASPECT_16_9:
+		gui->HandleNamedEvent( "forceAspect1" );
+		break;
+	case MAINMENU_ASPECT_16_10:
+		gui->HandleNamedEvent( "forceAspect2" );
+		break;
+	default:
+		gui->HandleNamedEvent( "forceAspect0" );
+		break;
+	}
+}
+
 /*
 =================
 MapSupportsStartServerGameType
@@ -831,6 +963,8 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	BuildMainMenuDisplayChoices( displayNames, displayValues );
 	guiMainMenu->SetStateString( "display_names", displayNames.c_str() );
 	guiMainMenu->SetStateString( "display_values", displayValues.c_str() );
+	SetMainMenuVideoGuiVars( guiMainMenu );
+	SyncMainMenuAspectVisibility( guiMainMenu );
 	guiMainMenu->SetStateInt( "gui_set_sys_scroll", 0 );
 	guiMainMenu->SetStateInt( "gui_set_audio_scroll", 0 );
 	guiMainMenu->SetStateInt( "gui_set_game_scroll", 0 );
@@ -1527,8 +1661,10 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 
 			if ( oldSpec != com_machineSpec.GetInteger() ) {
 				guiActive->SetStateInt( "com_machineSpec", com_machineSpec.GetInteger() );
-				guiActive->StateChanged( com_frameTime );
 				cmdSystem->BufferCommandText( CMD_EXEC_NOW, "execMachineSpec\n" );
+				SetMainMenuVideoGuiVars( guiActive );
+				SyncMainMenuAspectVisibility( guiActive );
+				guiActive->StateChanged( com_frameTime );
 			}
 
 			if ( idStr::Icmp( vcmd, "restart" )  == 0) {

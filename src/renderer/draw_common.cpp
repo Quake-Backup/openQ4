@@ -1127,6 +1127,10 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 		// see if we are a new-style stage
 		newShaderStage_t *newStage = pStage->newStage;
 		if ( newStage ) {
+			if ( r_skipNewAmbient.GetBool() ) {
+				continue;
+			}
+
 			//--------------------------
 			//
 			// new style stages
@@ -1220,9 +1224,6 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			if ( tr.backEndRenderer != BE_ARB2 ) {
 				continue;
 			}
-			//if ( r_skipNewAmbient.GetBool() ) {
-			//	continue;
-			//}
 			RB_SetStageVertexColorPointer( surf, stage, ac );
 			glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[0].ToFloatPtr() );
 			glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[1].ToFloatPtr() );
@@ -2101,6 +2102,58 @@ void RB_STD_LightScale( void ) {
 	GL_Cull( CT_FRONT_SIDED );
 }
 
+/*
+==================
+RB_STD_ForceAmbient
+
+Lift the final scene toward a minimum brightness floor.
+==================
+*/
+static void RB_STD_ForceAmbient( void ) {
+	const float ambient = idMath::ClampFloat( 0.0f, 1.0f, r_forceAmbient.GetFloat() );
+	if ( ambient <= 0.0f || !backEnd.viewDef->viewEntitys ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_STD_ForceAmbient ----------\n" );
+
+	// the scissor may be smaller than the viewport for subviews
+	if ( r_useScissor.GetBool() ) {
+		glScissor( backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+			backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+			backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+			backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
+		backEnd.currentScissor = backEnd.viewDef->scissor;
+	}
+
+	glLoadIdentity();
+	glMatrixMode( GL_PROJECTION );
+	glPushMatrix();
+	glLoadIdentity();
+	glOrtho( 0, 1, 0, 1, -1, 1 );
+
+	// This blend computes: dst = dst + ambient * ( 1 - dst ).
+	GL_State( GLS_SRCBLEND_ONE_MINUS_DST_COLOR | GLS_DSTBLEND_ONE );
+	GL_Cull( CT_TWO_SIDED );
+	globalImages->BindNull();
+	glDisable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	glColor3f( ambient, ambient, ambient );
+
+	glBegin( GL_QUADS );
+	glVertex2f( 0, 0 );
+	glVertex2f( 0, 1 );
+	glVertex2f( 1, 1 );
+	glVertex2f( 1, 0 );
+	glEnd();
+
+	glColor3f( 1.0f, 1.0f, 1.0f );
+	glPopMatrix();
+	glEnable( GL_DEPTH_TEST );
+	glMatrixMode( GL_MODELVIEW );
+	GL_Cull( CT_FRONT_SIDED );
+}
+
 //=========================================================================================
 
 /*
@@ -2147,6 +2200,9 @@ void	RB_STD_DrawView( void ) {
 
 	// now draw any non-light dependent shading passes
 	int	processed = RB_STD_DrawShaderPasses( drawSurfs, numDrawSurfs );
+
+	// Apply a configurable brightness floor after ambient/material passes.
+	RB_STD_ForceAmbient();
 
 	// fob and blend lights
 	RB_STD_FogAllLights();
