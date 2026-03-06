@@ -19,13 +19,13 @@ This file describes project goals, rules, and upstream credits for anyone workin
 - Modernize the engine and game code while keeping stock-asset compatibility as a guiding constraint.
 - Package both SP/MP under one unified game directory (`openq4/`) with `game_sp` + `game_mp`.
 - Establish a cross-platform foundation targeting modern systems (Windows, Linux, macOS; x64 first) through SDL3 and Meson.
-- Keep Quake4SDK-derived game-library source ownership in `OpenQ4-GameLibs`, with OpenQ4 consuming synchronized mirrors for local engine/game builds.
+- Keep Quake4SDK-derived game-library source ownership in `OpenQ4-GameLibs`, with OpenQ4 consuming those sources directly at build time.
 - Keep closed-source BSE implementation ownership in `OpenQ4-BSE`, with OpenQ4 consuming sources directly from that companion repo at build time.
 
 **Rules**
 - Do not target compatibility with the proprietary Quake 4 game DLLs; OpenQ4 ships its own game modules and keeps full freedom to evolve the project.
 - Treat `E:\Repositories\OpenQ4-GameLibs` as part of the same development workspace for planning, edits, and validation.
-- For SDK/game-library work, make canonical source edits in `OpenQ4-GameLibs` first; OpenQ4 `src/game` is synchronized from that repo via `tools/build/sync_gamelibs.ps1`.
+- For SDK/game-library work, make canonical source edits in `OpenQ4-GameLibs` first; OpenQ4 loads game sources from that companion repo and should not mirror them under `src/game`.
 - Treat `E:\Repositories\OpenQ4-BSE` as the canonical BSE source location.
 - For BSE work, make canonical edits in `OpenQ4-BSE` first; OpenQ4 builds BSE directly from that repo and does not mirror BSE implementation sources in-tree.
 - OpenQ4 may only contain BSE API wiring (`src/bse_api/`); do not add closed-source BSE implementation code to this repository.
@@ -41,7 +41,7 @@ This file describes project goals, rules, and upstream credits for anyone workin
 - Do not rely on `.install/` as a linker artifact store; keep compiler/linker intermediates and development-only outputs in `builddir/`.
 - MSVC import libraries (`*.lib`) are not runtime requirements for OpenQ4 execution; prefer keeping them in `builddir/` (or other developer artifact output), not in release-style `.install/` packages.
 - Use `meson install -C builddir --no-rebuild --skip-subprojects` (via `tools/build/meson_setup.ps1`) when staging `.install/` to avoid third-party subproject installs outside the package tree.
-- `tools/build/meson_setup.ps1` now coordinates companion repo workflows: it syncs game sources from `../OpenQ4-GameLibs`, and can trigger SDK/game-library builds there during `compile` when `OPENQ4_BUILD_GAMELIBS=1`.
+- `tools/build/meson_setup.ps1` can trigger SDK/game-library builds in `../OpenQ4-GameLibs` during `compile` when `OPENQ4_BUILD_GAMELIBS=1`; OpenQ4 no longer syncs a local `src/game` mirror.
 - On Windows, do not invoke raw `meson ...` from an arbitrary shell; use `tools/build/meson_setup.ps1 ...` (or run `tools/build/openq4_devcmd.cmd` first) so `cl.exe`/MSVC tools are always available.
 - Prefer platform abstractions through SDL3 and avoid introducing new platform-specific dependencies in shared engine code when an SDL3 path exists.
 - Keep Meson as the primary build entry point and keep dependency management through Meson subprojects.

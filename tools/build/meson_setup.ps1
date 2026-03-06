@@ -162,26 +162,8 @@ if ($effectiveArgs.Count -eq 0) {
 
 $commandName = $effectiveArgs[0].ToLowerInvariant()
 $gameLibsRepo = if ([string]::IsNullOrWhiteSpace($env:OPENQ4_GAMELIBS_REPO)) { "" } else { $env:OPENQ4_GAMELIBS_REPO }
-$syncGameLibsScript = Join-Path $scriptDir "sync_gamelibs.ps1"
 $buildGameLibsScript = Join-Path $scriptDir "build_gamelibs.ps1"
 $syncIconsScript = Join-Path $scriptDir "sync_icons.py"
-
-if (@("setup", "compile", "install").Contains($commandName) -and $env:OPENQ4_SKIP_GAMELIBS_SYNC -ne "1") {
-    if (-not (Test-Path $syncGameLibsScript)) {
-        throw "GameLibs sync script not found: '$syncGameLibsScript'."
-    }
-
-    $syncArgs = @()
-    if (-not [string]::IsNullOrWhiteSpace($gameLibsRepo)) {
-        $syncArgs += @("-GameLibsRepo", $gameLibsRepo)
-    }
-
-    & $syncGameLibsScript @syncArgs
-    $syncExit = [int]$LASTEXITCODE
-    if ($syncExit -ne 0) {
-        exit $syncExit
-    }
-}
 
 $buildGameLibs = $env:OPENQ4_BUILD_GAMELIBS -eq "1"
 if ($commandName -eq "compile" -and $buildGameLibs -and $env:OPENQ4_SKIP_GAMELIBS_BUILD -ne "1") {

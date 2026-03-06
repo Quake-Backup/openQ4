@@ -74,14 +74,66 @@ build_game_sp = get_option('build_game_sp')
 build_game_mp = get_option('build_game_mp')
 build_libbse = build_engine and get_option('build_libbse')
 needs_bse_sources = build_libbse
+needs_game_headers = build_engine or build_games
 install_root_dir = meson.project_source_root() / '.install'
 install_openq4_dir = install_root_dir / 'openq4'
+game_libs_repo_root = ''
+game_libs_source_root = ''
+game_libs_repo_summary = 'not required'
+game_stage_root = ''
+game_stage_game_root = ''
+game_stage_game_include_rel = '.tmp/gamelibs_stage/src/game'
 bse_repo_root = ''
 bse_source_root = ''
 bse_repo_summary = 'not required'
+game_module_defs_file = ''
 
 if not build_engine and not build_games
   error('At least one build target must be enabled. Use -Dbuild_engine=true and/or -Dbuild_games=true.')
+endif
+
+if needs_game_headers
+  game_libs_repo_discovery = run_command(
+    py,
+    '-c',
+    'import os, pathlib, sys; root = pathlib.Path(sys.argv[1]); raw = os.environ.get("OPENQ4_GAMELIBS_REPO", "").strip(); repo = pathlib.Path(raw) if raw else (root / ".." / "OpenQ4-GameLibs"); print(repo.resolve().as_posix())',
+    meson.project_source_root(),
+    check: true,
+  )
+  game_libs_repo_root = game_libs_repo_discovery.stdout().strip()
+  if game_libs_repo_root == ''
+    error('Failed to resolve the OpenQ4-GameLibs repository path. Set OPENQ4_GAMELIBS_REPO or place it at ../OpenQ4-GameLibs.')
+  endif
+
+  game_libs_source_root = game_libs_repo_root / 'src'
+  if not fs_mod.is_dir(game_libs_source_root / 'game')
+    error('OpenQ4-GameLibs source directory not found: ' + game_libs_source_root / 'game')
+  endif
+
+  game_stage_result = run_command(
+    py,
+    meson.project_source_root() / 'tools' / 'build' / 'stage_gamelibs.py',
+    meson.project_source_root(),
+    game_libs_repo_root,
+    meson.project_source_root() / '.tmp' / 'gamelibs_stage',
+    check: true,
+  )
+  game_stage_root = game_stage_result.stdout().strip()
+  if game_stage_root == ''
+    error('Failed to stage game sources from OpenQ4-GameLibs.')
+  endif
+
+  game_stage_game_root = game_stage_root / 'src' / 'game'
+  if not fs_mod.is_dir(game_stage_game_root)
+    error('Staged game source directory not found: ' + game_stage_game_root)
+  endif
+
+  game_module_defs_file = game_stage_game_root / 'Game.def'
+  if host_system == 'windows' and not fs_mod.is_file(game_module_defs_file)
+    error('Staged Game.def not found: ' + game_module_defs_file)
+  endif
+
+  game_libs_repo_summary = game_libs_repo_root
 endif
 
 if needs_bse_sources
@@ -131,7 +183,7 @@ if build_games
   game_source_discovery = run_command(
     py,
     meson.project_source_root() / 'tools' / 'build' / 'list_sources.py',
-    meson.project_source_root(),
+    game_stage_root,
     'src/game',
     'src/game/Callbacks.cpp',
     'src/game/gamesys/Callbacks.cpp',
@@ -141,7 +193,13 @@ if build_games
   if game_source_paths.length() == 0
     error('tools/build/list_sources.py returned no game source files.')
   endif
-  game_sources = files(game_source_paths)
+
+  game_absolute_paths = []
+  foreach rel_path : game_source_paths
+    game_absolute_paths += [game_stage_root / rel_path]
+  endforeach
+
+  game_sources = files(game_absolute_paths)
 endif
 
 if build_libbse
@@ -344,11 +402,36 @@ pch_headers = []
 if get_option('use_pch')
   pch_headers = ['src/idlib/precompiled.h']
 endif
-game_pch_headers = ['src/idlib/precompiled.h']
+game_idlib_pch_headers = ['src/idlib/precompiled.h']
+game_module_pch_headers = ['../src/idlib/precompiled.h']
 
 src_include_dir = include_directories('src')
+src_idlib_include_dir = include_directories('src/idlib')
+src_renderer_include_dir = include_directories('src/renderer')
+src_ui_include_dir = include_directories('src/ui')
+src_sys_include_dir = include_directories('src/sys')
+src_bse_api_include_dir = include_directories('src/bse_api')
+src_maya_import_include_dir = include_directories('src/MayaImport')
+game_include_dirs = [
+  src_include_dir,
+  src_idlib_include_dir,
+  src_renderer_include_dir,
+  src_ui_include_dir,
+  src_sys_include_dir,
+  src_bse_api_include_dir,
+  src_maya_import_include_dir,
+]
 engine_include_dirs = [src_include_dir]
+game_idlib_include_dirs = [src_include_dir]
 bse_module_include_dirs = [src_include_dir]
+
+if needs_game_headers
+  staged_game_include_dir = include_directories(game_stage_game_include_rel)
+  engine_include_dirs += [staged_game_include_dir]
+  game_idlib_include_dirs += [staged_game_include_dir]
+  game_include_dirs += [staged_game_include_dir]
+  bse_module_include_dirs += [staged_game_include_dir]
+endif
 
 if needs_bse_sources
   bse_source_include_dir = include_directories(bse_source_root)
@@ -451,10 +534,10 @@ if build_engine or build_games
   game_idlib_library = static_library(
     'openq4_game_idlib',
     game_idlib_sources,
-    include_directories: src_include_dir,
+    include_directories: game_idlib_include_dirs,
     cpp_args: game_common_cpp_args,
     c_args: game_common_c_args,
-    cpp_pch: game_pch_headers,
+    cpp_pch: game_idlib_pch_headers,
     install: false,
   )
 endif
@@ -467,7 +550,7 @@ if build_libbse
     link_with: game_idlib_library,
     cpp_args: bse_common_cpp_args,
     c_args: bse_common_c_args,
-    cpp_pch: game_pch_headers,
+    cpp_pch: game_idlib_pch_headers,
     link_args: game_module_link_args,
     name_prefix: '',
     install: true,
@@ -543,6 +626,7 @@ summary(
     'BSE binary': bse_binary_name,
     'BSE source repo': bse_repo_summary,
     'Build games': build_games,
+    'GameLibs source repo': game_libs_repo_summary,
     'Build game_sp': build_games and build_game_sp,
     'Build game_mp': build_games and build_game_mp,
     'game_sp binary': game_sp_binary_name,

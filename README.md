@@ -421,14 +421,13 @@ Debug builds (`buildtype=debug`) include automatic crash handling:
 ### Companion Repository
 The game library source code is maintained separately in [OpenQ4-GameLibs](https://github.com/themuffinator/OpenQ4-GameLibs):
 - Expected location: `../OpenQ4-GameLibs`
-- Automatic sync on Windows via `tools/build/meson_setup.ps1`; on Linux/macOS, clone or sync manually before configuring
+- OpenQ4 consumes this source directly at configure/build time (no in-repo `src/game` mirror)
 - Optional game library builds with `OPENQ4_BUILD_GAMELIBS=1`
 
 ### Build Automation
 - Missing or stale build directories are auto-regenerated (Windows wrapper)
 - Visual Studio environment auto-detected and loaded (Windows only)
 - On Linux/macOS, use `meson` commands directly (no wrapper required)
-- Use `OPENQ4_SKIP_GAMELIBS_SYNC=1` to skip game library sync
 - Use `OPENQ4_GAMELIBS_REPO=<path>` to override repository location
 
 ---
