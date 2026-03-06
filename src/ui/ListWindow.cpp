@@ -561,8 +561,11 @@ void idListWindow::Draw(int time, float x, float y) {
 	for (int i = top; i < count; i++) {
 		idRectangle rowRect = rect;
 		rowRect.h = lineHeight;
+		idRectangle hoverRect = rect;
+		hoverRect.y += 1.0f;
+		hoverRect.h = lineHeight - 1.0f;
 		const bool selected = IsSelected( i );
-		const bool rowHovered = listContainsCursor && Contains( rowRect, gui->CursorX(), gui->CursorY() );
+		const bool rowHovered = listContainsCursor && Contains( hoverRect, gui->CursorX(), gui->CursorY() );
 		if ( rowHovered ) {
 			gui->SetStateInt( va( "%s_hover", listName.c_str() ), i );
 		}
@@ -595,8 +598,8 @@ void idListWindow::Draw(int time, float x, float y) {
 			color = foreColor;
 		}
 
-		rect.y++;
-		rect.h = lineHeight + pixelOffset;
+		rect.y += 1.0f;
+		rect.h = lineHeight - 1.0f;
 
 		if ( tabInfo.Num() > 0 ) {
 			int start = 0;
@@ -604,12 +607,14 @@ void idListWindow::Draw(int time, float x, float y) {
 			int stop = listItems[i].Find('\t', 0);
 			if ( stop < 0 ) {
 				stop = listItems[i].Length();
-				// Some legacy listDefs reserve the first tab as a narrow spacer column.
-				// If there are no tabs in the source text, render into the first usable column.
+				// Legacy listDefs may reserve a tiny first column as a spacer.
+				// When the source item has no tabs, draw into the first usable text column.
 				if ( tabInfo.Num() > 1 && tabInfo[0].w <= tabBorder ) {
 					tab = 1;
 				}
 			}
+			rect.h = lineHeight + pixelOffset;
+			rect.y -= 1.0f;
 			while ( start < listItems[i].Length() ) {
 				if ( tab >= tabInfo.Num() ) {
 					common->Warning( "idListWindow::Draw: gui '%s' window '%s' tabInfo.Num() exceeded", gui->GetSourceFile(), name.c_str() );
@@ -623,7 +628,16 @@ void idListWindow::Draw(int time, float x, float y) {
 
 				if ( tabInfo[tab].type == TAB_TYPE_TEXT ) {
 					const float tabScale = ( tabInfo[tab].textScale > 0.0f ) ? tabInfo[tab].textScale : scale;
-					dc->DrawText(work, tabScale, tabInfo[tab].align, color, rect, false, -1);
+					idRectangle textRect = rect;
+					const float textHeight = dc->MaxCharHeight( tabScale );
+					if ( tabInfo[tab].valign == 0 ) {
+						textRect.y += ( lineHeight - textHeight ) * 0.5f + 1.0f;
+					} else if ( tabInfo[tab].valign == 1 ) {
+						textRect.y += pixelOffset;
+					} else if ( tabInfo[tab].valign == 2 ) {
+						textRect.y += lineHeight - textHeight;
+					}
+					dc->DrawText(work, tabScale, tabInfo[tab].align, color, textRect, false, -1);
 				} else if (tabInfo[tab].type == TAB_TYPE_ICON) {
 					
 					const idMaterial	**hashMat;
@@ -675,9 +689,13 @@ void idListWindow::Draw(int time, float x, float y) {
 			rect.x = textRect.x;
 			rect.w = width;
 		} else {
-			dc->DrawText(listItems[i], scale, 0, color, rect, false, -1);
+			rect.h = lineHeight + pixelOffset;
+			rect.y -= 1.0f;
+			idRectangle textRect = rect;
+			const float textHeight = dc->MaxCharHeight( scale );
+			textRect.y += ( lineHeight - textHeight ) * 0.5f + 1.0f;
+			dc->DrawText(listItems[i], scale, 0, color, textRect, false, -1);
 		}
-		rect.y--;
 		rect.y += lineHeight;
 		if ( rect.y > bottom ) {
 			break;

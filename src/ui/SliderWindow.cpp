@@ -253,7 +253,7 @@ void idSliderWindow::Draw(int time, float x, float y) {
 	}
 
 	dc->DrawMaterial(thumbRect.x, thumbRect.y, thumbRect.w, thumbRect.h, thumbMat, color);
-	if ( flags & WIN_FOCUS ) {
+	if ( !scrollbar && ( flags & WIN_FOCUS ) ) {
 		dc->DrawRect(thumbRect.x+1.0f, thumbRect.y+1.0f, thumbRect.w-2.0f, thumbRect.h-2.0f, 1.0f, color);
 	}
 }

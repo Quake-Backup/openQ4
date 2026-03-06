@@ -117,9 +117,9 @@
 // RAVEN END
 
 // Savegame Version
-// Update when you can no longer maintain compatibility with previous savegames.
-// For testing, we're using the build number to ensure no one ever tries to load a stale savegame
-#define SAVEGAME_VERSION				1
+// Match Quake 4's engine-side savegame header version. Older OpenQ4 builds wrote 1.
+#define SAVEGAME_VERSION				0
+#define LEGACY_OPENQ4_SAVEGAME_VERSION	1
 
 // editor info
 #define EDITOR_WINDOWTEXT				"QuakeEdit"

@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "Session_local.h"
+#include "../ui/ListGUILocal.h"
 #include "../sound/snd_local.h"
 
 #if defined( _WIN32 )
@@ -196,26 +197,15 @@ static void CommitStartServerMapSelection( idUserInterface *gui ) {
 		return;
 	}
 
-	int uiMapSelection = gui->State().GetInt( "mapList_sel_0" );
-	const int uiMapHover = gui->State().GetInt( "mapList_hover", "-1" );
-	if ( uiMapHover >= 0 ) {
-		const char *hoverMapId = gui->State().GetString( va( "mapList_item_%d_id", uiMapHover ), "" );
-		if ( hoverMapId[ 0 ] ) {
-			uiMapSelection = uiMapHover;
-			gui->SetStateInt( "mapList_sel_0", uiMapSelection );
-		}
+	if ( sessLocal.guiMainMenu_MapList == NULL ) {
+		return;
 	}
 
-	if ( uiMapSelection < 0 ) {
-		const char *firstMapId = gui->State().GetString( "mapList_item_0_id", "" );
-		if ( firstMapId[ 0 ] == '\0' ) {
-			return;
-		}
-		uiMapSelection = 0;
-		gui->SetStateInt( "mapList_sel_0", uiMapSelection );
+	int mapNum = sessLocal.guiMainMenu_MapList->GetSelection( NULL, 0 );
+	if ( mapNum < 0 && sessLocal.guiMainMenu_MapList->Num() > 0 ) {
+		sessLocal.guiMainMenu_MapList->SetSelection( 0 );
+		mapNum = sessLocal.guiMainMenu_MapList->GetSelection( NULL, 0 );
 	}
-
-	const int mapNum = gui->State().GetInt( va( "mapList_item_%d_id", uiMapSelection ), "-1" );
 	if ( mapNum < 0 ) {
 		return;
 	}
@@ -707,9 +697,15 @@ void idSessionLocal::SetSaveGameGuiVars( void ) {
 	loadGameList.Clear();
 	fileList.Clear();
 	fileTimes.Clear();
-// jmarshall - crash fix
-	return;
-// jmarshall end
+
+	if ( !guiActive ) {
+		return;
+	}
+
+	guiActive->SetStateString( "saveGameName", "" );
+	guiActive->SetStateString( "saveGameDescription", "" );
+	guiActive->SetStateString( "saveGameDate", "" );
+	guiActive->SetStateString( "saveGameTime", "" );
 
 	GetSaveGameList( fileList, fileTimes );
 
@@ -721,22 +717,20 @@ void idSessionLocal::SetSaveGameGuiVars( void ) {
 		if ( src.LoadFile( va("savegames/%s.txt", loadGameList[i].c_str()) ) ) {
 			idToken tok;
 			src.ReadToken( &tok );
+			src.ReadToken( &tok );
 			name = tok;
 		} else {
 			name = loadGameList[i];
 		}
 
-		name += "\t";
-
-		idStr date = Sys_TimeStampToStr( fileTimes[i].timeStamp );
-		name += date;
-
 		guiActive->SetStateString( va("loadgame_item_%i", i), name);
 	}
 	guiActive->DeleteStateVar( va("loadgame_item_%i", fileList.Num()) );
+	guiActive->SetStateInt( "loadgame_listdef_count", fileList.Num() );
 
 	guiActive->SetStateString( "loadgame_sel_0", "-1" );
-	guiActive->SetStateString( "loadgame_shot", "guis/assets/blankLevelShot" );
+	guiActive->SetStateString( "loadgame_shot", "gfx/guis/loadscreens/generic" );
+	declManager->FindMaterial( "gfx/guis/loadscreens/generic" )->SetSort( SS_GUI );
 
 }
 
@@ -966,6 +960,7 @@ bool idSessionLocal::HandleSaveGameMenuCommand( idCmdArgs &args, int &icmd ) {
 			material = declManager->FindMaterial( screenshot );
 			if ( material ) {
 				material->ReloadImages( false );
+				material->SetSort( SS_GUI );
 			}
 			guiActive->SetStateString( "loadgame_shot",  screenshot );
 
@@ -1079,6 +1074,7 @@ void idSessionLocal::UpdateMPLevelShot( void ) {
 	char screenshot[ MAX_STRING_CHARS ];
 	fileSystem->FindMapScreenshot( cvarSystem->GetCVarString( "si_map" ), screenshot, MAX_STRING_CHARS );
 	guiMainMenu->SetStateString( "current_levelshot", screenshot );
+	declManager->FindMaterial( screenshot )->SetSort( SS_GUI );
 }
 
 /*
@@ -1214,10 +1210,14 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 			}
 
 			int i, num;
+			idListGUILocal *const mainMenuMapList = static_cast<idListGUILocal *>( guiMainMenu_MapList );
 			int numMapsAdded = 0;
 			int selectedIndex = -1;
 			idStr si_map = cvarSystem->GetCVarString( "si_map" );
 			const idDict *dict = NULL;
+
+			mainMenuMapList->SetStateChanges( false );
+			mainMenuMapList->Clear();
 
 			num = fileSystem->GetNumMaps();
 			for ( i = 0; i < num; i++ ) {
@@ -1231,9 +1231,7 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 					mapName = dict->GetString( "path" );
 				}
 				mapName = common->GetLanguageDict()->GetString( mapName );
-				const idStr displayName = va( "\t%s", mapName );
-				guiMainMenu->SetStateString( va( "mapList_item_%d", numMapsAdded ), displayName );
-				guiMainMenu->SetStateInt( va( "mapList_item_%d_id", numMapsAdded ), i );
+				mainMenuMapList->Add( i, mapName );
 				if ( !si_map.Icmp( dict->GetString( "path" ) ) ) {
 					selectedIndex = numMapsAdded;
 				}
@@ -1253,9 +1251,7 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 						mapName = dict->GetString( "path" );
 					}
 					mapName = common->GetLanguageDict()->GetString( mapName );
-					const idStr displayName = va( "\t%s", mapName );
-					guiMainMenu->SetStateString( va( "mapList_item_%d", numMapsAdded ), displayName );
-					guiMainMenu->SetStateInt( va( "mapList_item_%d_id", numMapsAdded ), i );
+					mainMenuMapList->Add( i, mapName );
 					if ( !si_map.Icmp( dict->GetString( "path" ) ) ) {
 						selectedIndex = numMapsAdded;
 					}
@@ -1263,18 +1259,17 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 				}
 			}
 
-			guiMainMenu->DeleteStateVar( va( "mapList_item_%d", numMapsAdded ) );
-			guiMainMenu->DeleteStateVar( va( "mapList_item_%d_id", numMapsAdded ) );
-
 			if ( numMapsAdded > 0 ) {
 				if ( selectedIndex < 0 ) {
 					selectedIndex = 0;
 				}
-				guiMainMenu->SetStateInt( "mapList_sel_0", selectedIndex );
-				int mapNum = guiMainMenu->State().GetInt( va( "mapList_item_%d_id", selectedIndex ) );
+				mainMenuMapList->SetSelection( selectedIndex );
+				mainMenuMapList->SetStateChanges( true );
+				int mapNum = mainMenuMapList->GetSelection( NULL, 0 );
 				dict = fileSystem->GetMapDecl( mapNum );
 			} else {
 				guiMainMenu->SetStateInt( "mapList_sel_0", -1 );
+				mainMenuMapList->SetStateChanges( true );
 				dict = NULL;
 			}
 			cvarSystem->SetCVarString( "si_map", ( dict ? dict->GetString( "path" ) : "" ) );
@@ -1724,6 +1719,13 @@ void idSessionLocal::DispatchCommand( idUserInterface *gui, const char *menuComm
 			guiActive = NULL;
 		} else if ( idStr::Icmp( cmd, "main" ) == 0 ) {
 			StartMenu();
+		} else if ( idStr::Icmpn( cmd, "main ", 5 ) == 0 ) {
+			StartMenu();
+			idStr mainMenuEvent = cmd + 5;
+			mainMenuEvent.StripLeading( ' ' );
+			if ( mainMenuEvent.Length() > 0 ) {
+				guiMainMenu->HandleNamedEvent( mainMenuEvent.c_str() );
+			}
 		} else if ( strstr( cmd, "sound " ) == cmd ) {
 			// pipe the GUI sound commands not handled by the game to the main menu code
 			HandleMainMenuCommands( cmd );

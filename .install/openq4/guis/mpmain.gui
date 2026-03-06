@@ -5261,7 +5261,7 @@ windowDef Desktop
 				set "p_main::visible" "0" ;
 				
 				if ( "desktop::dest" == 8) {
-					set "cmd" "mainmenu test" ;
+					set "cmd" "mainmenu" ;
 				} else if ( "desktop::dest" == 9) {
 					set "cmd" "mainmenu fromMp_toControls" ;
 				} else if ( "desktop::dest" == 10) {
