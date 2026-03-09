@@ -353,6 +353,275 @@ static bool RB_ResolveGLSLProgram( newShaderStage_t *stage ) {
 	return true;
 }
 
+static bool RB_IsMainScenePostProcessView( void ) {
+	if ( !backEnd.viewDef || backEnd.viewDef->isSubview ) {
+		return false;
+	}
+
+	// Fullscreen 2D GUI/menu passes are emitted as standalone views without
+	// view entities. Skip scene post-process passes on those views so menu
+	// assets stay unfiltered while in-world GUIs remain part of 3D views.
+	return backEnd.viewDef->viewEntitys != NULL;
+}
+
+static void RB_BeginFullscreenPostProcessPass( int scissorX, int scissorY, int scissorWidth, int scissorHeight ) {
+	if ( r_useScissor.GetBool() ) {
+		glScissor( scissorX, scissorY, scissorWidth, scissorHeight );
+	}
+
+	glMatrixMode( GL_MODELVIEW );
+	glLoadIdentity();
+	glMatrixMode( GL_PROJECTION );
+	glPushMatrix();
+	glLoadIdentity();
+	glOrtho( 0, 1, 0, 1, -1, 1 );
+
+	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	GL_Cull( CT_TWO_SIDED );
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	glDisable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+}
+
+static void RB_DrawFullscreenPostProcessQuad( int viewportWidth, int viewportHeight, int textureWidth, int textureHeight ) {
+	const float maxS = static_cast<float>( viewportWidth ) / static_cast<float>( textureWidth );
+	const float maxT = static_cast<float>( viewportHeight ) / static_cast<float>( textureHeight );
+
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBegin( GL_QUADS );
+	glTexCoord2f( 0.0f, 0.0f );
+	glVertex2f( 0.0f, 0.0f );
+	glTexCoord2f( 0.0f, maxT );
+	glVertex2f( 0.0f, 1.0f );
+	glTexCoord2f( maxS, maxT );
+	glVertex2f( 1.0f, 1.0f );
+	glTexCoord2f( maxS, 0.0f );
+	glVertex2f( 1.0f, 0.0f );
+	glEnd();
+}
+
+static void RB_EndFullscreenPostProcessPass( void ) {
+	glMatrixMode( GL_PROJECTION );
+	glPopMatrix();
+	glEnable( GL_DEPTH_TEST );
+	glEnable( GL_STENCIL_TEST );
+	glMatrixMode( GL_MODELVIEW );
+	GL_Cull( CT_FRONT_SIDED );
+}
+
+struct rbBuiltinUniformDef_t {
+	const char *name;
+	int components;
+};
+
+enum rbSSAOUniformIndex_t {
+	RB_SSAO_UNIFORM_INV_TEX_SIZE = 0,
+	RB_SSAO_UNIFORM_PROJECTION_INFO,
+	RB_SSAO_UNIFORM_DEPTH_PROJECTION,
+	RB_SSAO_UNIFORM_PROJECTION_SCALE,
+	RB_SSAO_UNIFORM_RADIUS,
+	RB_SSAO_UNIFORM_BIAS,
+	RB_SSAO_UNIFORM_INTENSITY,
+	RB_SSAO_UNIFORM_POWER,
+	RB_SSAO_UNIFORM_MAX_DISTANCE,
+	RB_SSAO_UNIFORM_SAMPLE_COUNT,
+	RB_SSAO_UNIFORM_DEBUG_VIEW,
+	RB_SSAO_UNIFORM_COUNT
+};
+
+static newShaderStage_t rbSSAOStage;
+static bool rbSSAOStageInitialized = false;
+
+static void RB_InitSSAOStage( void ) {
+	if ( rbSSAOStageInitialized ) {
+		return;
+	}
+
+	memset( &rbSSAOStage, 0, sizeof( rbSSAOStage ) );
+	rbSSAOStage.glslProgram = true;
+	idStr::Copynz( rbSSAOStage.glslProgramName, "openprey_ssao.fs", sizeof( rbSSAOStage.glslProgramName ) );
+
+	static const rbBuiltinUniformDef_t uniforms[RB_SSAO_UNIFORM_COUNT] = {
+		{ "invTexSize", 2 },
+		{ "projectionInfo", 4 },
+		{ "depthProjection", 2 },
+		{ "projectionScale", 1 },
+		{ "ssaoRadius", 1 },
+		{ "ssaoBias", 1 },
+		{ "ssaoIntensity", 1 },
+		{ "ssaoPower", 1 },
+		{ "ssaoMaxDistance", 1 },
+		{ "ssaoSampleCount", 1 },
+		{ "ssaoDebugView", 1 }
+	};
+
+	rbSSAOStage.numShaderParms = RB_SSAO_UNIFORM_COUNT;
+	for ( int i = 0; i < RB_SSAO_UNIFORM_COUNT; i++ ) {
+		idStr::Copynz( rbSSAOStage.shaderParmNames[i], uniforms[i].name, sizeof( rbSSAOStage.shaderParmNames[i] ) );
+		rbSSAOStage.shaderParmNumRegisters[i] = uniforms[i].components;
+	}
+
+	rbSSAOStage.numShaderTextures = 2;
+	idStr::Copynz( rbSSAOStage.shaderTextureNames[0], "Scene", sizeof( rbSSAOStage.shaderTextureNames[0] ) );
+	idStr::Copynz( rbSSAOStage.shaderTextureNames[1], "DepthBuffer", sizeof( rbSSAOStage.shaderTextureNames[1] ) );
+
+	rbSSAOStageInitialized = true;
+}
+
+static void RB_STD_SSAO( void ) {
+	if ( r_skipPostProcess.GetBool() || !r_ssao.GetBool() ) {
+		return;
+	}
+
+	if ( !glConfig.GLSLProgramAvailable ) {
+		return;
+	}
+
+	if ( !RB_IsMainScenePostProcessView() ) {
+		return;
+	}
+
+	const GLfloat radius = r_ssaoRadius.GetFloat();
+	const GLfloat intensity = r_ssaoIntensity.GetFloat();
+	if ( radius <= 0.0f || intensity <= 0.0f ) {
+		return;
+	}
+
+	RB_InitSSAOStage();
+	if ( !RB_ResolveGLSLProgram( &rbSSAOStage ) ) {
+		return;
+	}
+
+	const int viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+	const int viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return;
+	}
+
+	idImage *sceneImage = globalImages->currentRenderImage;
+	idImage *depthImage = globalImages->currentDepthImage;
+	if ( sceneImage == NULL || depthImage == NULL ) {
+		return;
+	}
+
+	const GLfloat projX = backEnd.viewDef->projectionMatrix[0];
+	const GLfloat projY = backEnd.viewDef->projectionMatrix[5];
+	if ( idMath::Fabs( projX ) <= 0.00001f || idMath::Fabs( projY ) <= 0.00001f ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_STD_SSAO ----------\n" );
+
+	sceneImage->CopyFramebuffer(
+		backEnd.viewDef->viewport.x1,
+		backEnd.viewDef->viewport.y1,
+		viewportWidth,
+		viewportHeight );
+	depthImage->CopyDepthbuffer(
+		backEnd.viewDef->viewport.x1,
+		backEnd.viewDef->viewport.y1,
+		viewportWidth,
+		viewportHeight );
+
+	const int textureWidth = sceneImage->GetOpts().width;
+	const int textureHeight = sceneImage->GetOpts().height;
+	const int depthTextureWidth = depthImage->GetOpts().width;
+	const int depthTextureHeight = depthImage->GetOpts().height;
+	if ( textureWidth <= 0 || textureHeight <= 0 || depthTextureWidth <= 0 || depthTextureHeight <= 0 ) {
+		return;
+	}
+
+	backEnd.currentScissor = backEnd.viewDef->scissor;
+
+	RB_BeginFullscreenPostProcessPass(
+		backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+		backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+		backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
+
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+	GL_SelectTexture( 1 );
+	depthImage->Bind();
+	GL_SelectTexture( 0 );
+
+	glUseProgramObjectARB( (GLhandleARB)rbSSAOStage.glslProgramObject );
+
+	const int sceneLocation = rbSSAOStage.shaderTextureLocations[0];
+	if ( sceneLocation >= 0 ) {
+		glUniform1iARB( sceneLocation, 0 );
+	}
+
+	const int depthLocation = rbSSAOStage.shaderTextureLocations[1];
+	if ( depthLocation >= 0 ) {
+		glUniform1iARB( depthLocation, 1 );
+	}
+
+	const GLfloat invTexSize[2] = {
+		1.0f / static_cast<GLfloat>( depthTextureWidth ),
+		1.0f / static_cast<GLfloat>( depthTextureHeight )
+	};
+	const GLfloat projectionInfo[4] = {
+		1.0f / projX,
+		1.0f / projY,
+		backEnd.viewDef->projectionMatrix[8],
+		backEnd.viewDef->projectionMatrix[9]
+	};
+	const GLfloat depthProjection[2] = {
+		backEnd.viewDef->projectionMatrix[10],
+		backEnd.viewDef->projectionMatrix[14]
+	};
+	const GLfloat projectionScale = 0.5f * static_cast<GLfloat>( depthTextureHeight ) * idMath::Fabs( projY );
+	const GLfloat bias = r_ssaoBias.GetFloat();
+	const GLfloat power = r_ssaoPower.GetFloat();
+	const GLfloat maxDistance = r_ssaoMaxDistance.GetFloat();
+	const GLfloat sampleCount = static_cast<GLfloat>( idMath::ClampInt( 4, 32, r_ssaoSamples.GetInteger() ) );
+	const GLfloat debugView = r_ssaoDebug.GetBool() ? 1.0f : 0.0f;
+
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_INV_TEX_SIZE] >= 0 ) {
+		glUniform2fvARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_PROJECTION_INFO] >= 0 ) {
+		glUniform4fvARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_PROJECTION_INFO], 1, projectionInfo );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_DEPTH_PROJECTION] >= 0 ) {
+		glUniform2fvARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_DEPTH_PROJECTION], 1, depthProjection );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_PROJECTION_SCALE] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_PROJECTION_SCALE], projectionScale );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_RADIUS] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_RADIUS], radius );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_BIAS] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_BIAS], bias );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_INTENSITY] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_INTENSITY], intensity );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_POWER] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_POWER], power );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_MAX_DISTANCE] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_MAX_DISTANCE], maxDistance );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_SAMPLE_COUNT] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_SAMPLE_COUNT], sampleCount );
+	}
+	if ( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_DEBUG_VIEW] >= 0 ) {
+		glUniform1fARB( rbSSAOStage.shaderParmLocations[RB_SSAO_UNIFORM_DEBUG_VIEW], debugView );
+	}
+
+	RB_DrawFullscreenPostProcessQuad( viewportWidth, viewportHeight, textureWidth, textureHeight );
+
+	glUseProgramObjectARB( 0 );
+	GL_SelectTexture( 1 );
+	globalImages->BindNull();
+	GL_SelectTexture( 0 );
+	RB_EndFullscreenPostProcessPass();
+}
+
 enum rbBloomUniformIndex_t {
 	RB_BLOOM_UNIFORM_INV_TEX_SIZE = 0,
 	RB_BLOOM_UNIFORM_THRESHOLD,
@@ -362,6 +631,11 @@ enum rbBloomUniformIndex_t {
 	RB_BLOOM_UNIFORM_BLOOM_ENABLED,
 	RB_BLOOM_UNIFORM_TONEMAP_ENABLED,
 	RB_BLOOM_UNIFORM_HDR_EXPOSURE,
+	RB_BLOOM_UNIFORM_HDR_WHITE_POINT,
+	RB_BLOOM_UNIFORM_HDR_LIFT,
+	RB_BLOOM_UNIFORM_HDR_POST_GAMMA,
+	RB_BLOOM_UNIFORM_HDR_GAIN,
+	RB_BLOOM_UNIFORM_HDR_VIBRANCE,
 	RB_BLOOM_UNIFORM_HDR_SATURATION,
 	RB_BLOOM_UNIFORM_HDR_CONTRAST,
 	RB_BLOOM_UNIFORM_COUNT
@@ -379,12 +653,7 @@ static void RB_InitBloomStage( void ) {
 	rbBloomStage.glslProgram = true;
 	idStr::Copynz( rbBloomStage.glslProgramName, "openprey_bloom.fs", sizeof( rbBloomStage.glslProgramName ) );
 
-	struct bloomUniformDef_t {
-		const char *name;
-		int components;
-	};
-
-	static const bloomUniformDef_t uniforms[RB_BLOOM_UNIFORM_COUNT] = {
+	static const rbBuiltinUniformDef_t uniforms[RB_BLOOM_UNIFORM_COUNT] = {
 		{ "invTexSize", 2 },
 		{ "bloomThreshold", 1 },
 		{ "bloomSoftKnee", 1 },
@@ -393,6 +662,11 @@ static void RB_InitBloomStage( void ) {
 		{ "bloomEnabled", 1 },
 		{ "toneMapEnabled", 1 },
 		{ "hdrExposure", 1 },
+		{ "hdrWhitePoint", 1 },
+		{ "hdrLift", 1 },
+		{ "hdrPostGamma", 1 },
+		{ "hdrGain", 1 },
+		{ "hdrVibrance", 1 },
 		{ "hdrSaturation", 1 },
 		{ "hdrContrast", 1 }
 	};
@@ -416,9 +690,17 @@ static void RB_STD_Bloom( void ) {
 
 	const bool bloomEnabled = r_bloom.GetBool() && !r_skipGlowOverlay.GetBool();
 	const bool toneMapEnabled = r_hdrToneMap.GetBool();
+	const float hdrLift = r_hdrLift.GetFloat();
+	const float hdrPostGamma = r_hdrPostGamma.GetFloat();
+	const float hdrGain = r_hdrGain.GetFloat();
+	const float hdrVibrance = r_hdrVibrance.GetFloat();
 	const float hdrSaturation = r_hdrSaturation.GetFloat();
 	const float hdrContrast = r_hdrContrast.GetFloat();
 	const bool colorAdjustEnabled =
+		idMath::Fabs( hdrLift ) > 0.001f ||
+		idMath::Fabs( hdrPostGamma - 1.0f ) > 0.001f ||
+		idMath::Fabs( hdrGain - 1.0f ) > 0.001f ||
+		idMath::Fabs( hdrVibrance ) > 0.001f ||
 		idMath::Fabs( hdrSaturation - 1.0f ) > 0.001f ||
 		idMath::Fabs( hdrContrast - 1.0f ) > 0.001f;
 
@@ -430,7 +712,7 @@ static void RB_STD_Bloom( void ) {
 		return;
 	}
 
-	if ( !backEnd.viewDef || backEnd.viewDef->isSubview ) {
+	if ( !RB_IsMainScenePostProcessView() ) {
 		return;
 	}
 
@@ -450,12 +732,6 @@ static void RB_STD_Bloom( void ) {
 		return;
 	}
 
-	const int textureWidth = sceneImage->GetOpts().width;
-	const int textureHeight = sceneImage->GetOpts().height;
-	if ( textureWidth <= 0 || textureHeight <= 0 ) {
-		return;
-	}
-
 	RB_LogComment( "---------- RB_STD_Bloom ----------\n" );
 
 	sceneImage->CopyFramebuffer(
@@ -464,27 +740,19 @@ static void RB_STD_Bloom( void ) {
 		viewportWidth,
 		viewportHeight );
 
-	if ( r_useScissor.GetBool() ) {
-		glScissor(
-			backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
-			backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
-			backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
-			backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
-		backEnd.currentScissor = backEnd.viewDef->scissor;
+	const int textureWidth = sceneImage->GetOpts().width;
+	const int textureHeight = sceneImage->GetOpts().height;
+	if ( textureWidth <= 0 || textureHeight <= 0 ) {
+		return;
 	}
 
-	glLoadIdentity();
-	glMatrixMode( GL_PROJECTION );
-	glPushMatrix();
-	glLoadIdentity();
-	glOrtho( 0, 1, 0, 1, -1, 1 );
+	backEnd.currentScissor = backEnd.viewDef->scissor;
 
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
-	GL_Cull( CT_TWO_SIDED );
-	globalImages->BindNull();
-	glDisable( GL_DEPTH_TEST );
-	glDisable( GL_STENCIL_TEST );
-
+	RB_BeginFullscreenPostProcessPass(
+		backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+		backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+		backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
 	GL_SelectTexture( 0 );
 	sceneImage->Bind();
 
@@ -506,6 +774,7 @@ static void RB_STD_Bloom( void ) {
 	const GLfloat bloomToggle = bloomEnabled ? 1.0f : 0.0f;
 	const GLfloat toneMapToggle = toneMapEnabled ? 1.0f : 0.0f;
 	const GLfloat hdrExposure = r_hdrExposure.GetFloat();
+	const GLfloat hdrWhitePoint = r_hdrWhitePoint.GetFloat();
 
 	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_INV_TEX_SIZE] >= 0 ) {
 		glUniform2fvARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
@@ -531,6 +800,21 @@ static void RB_STD_Bloom( void ) {
 	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_EXPOSURE] >= 0 ) {
 		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_EXPOSURE], hdrExposure );
 	}
+	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_WHITE_POINT] >= 0 ) {
+		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_WHITE_POINT], hdrWhitePoint );
+	}
+	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_LIFT] >= 0 ) {
+		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_LIFT], hdrLift );
+	}
+	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_POST_GAMMA] >= 0 ) {
+		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_POST_GAMMA], hdrPostGamma );
+	}
+	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_GAIN] >= 0 ) {
+		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_GAIN], hdrGain );
+	}
+	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_VIBRANCE] >= 0 ) {
+		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_VIBRANCE], hdrVibrance );
+	}
 	if ( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_SATURATION] >= 0 ) {
 		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_SATURATION], hdrSaturation );
 	}
@@ -538,28 +822,147 @@ static void RB_STD_Bloom( void ) {
 		glUniform1fARB( rbBloomStage.shaderParmLocations[RB_BLOOM_UNIFORM_HDR_CONTRAST], hdrContrast );
 	}
 
-	const float maxS = static_cast<float>( viewportWidth ) / static_cast<float>( textureWidth );
-	const float maxT = static_cast<float>( viewportHeight ) / static_cast<float>( textureHeight );
-
-	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
-	glBegin( GL_QUADS );
-	glTexCoord2f( 0.0f, 0.0f );
-	glVertex2f( 0.0f, 0.0f );
-	glTexCoord2f( 0.0f, maxT );
-	glVertex2f( 0.0f, 1.0f );
-	glTexCoord2f( maxS, maxT );
-	glVertex2f( 1.0f, 1.0f );
-	glTexCoord2f( maxS, 0.0f );
-	glVertex2f( 1.0f, 0.0f );
-	glEnd();
-
+	RB_DrawFullscreenPostProcessQuad( viewportWidth, viewportHeight, textureWidth, textureHeight );
 	glUseProgramObjectARB( 0 );
+	RB_EndFullscreenPostProcessPass();
+}
 
-	glPopMatrix();
-	glEnable( GL_DEPTH_TEST );
-	glEnable( GL_STENCIL_TEST );
-	glMatrixMode( GL_MODELVIEW );
-	GL_Cull( CT_FRONT_SIDED );
+enum rbCRTUniformIndex_t {
+	RB_CRT_UNIFORM_INV_TEX_SIZE = 0,
+	RB_CRT_UNIFORM_AMOUNT,
+	RB_CRT_UNIFORM_SCANLINE_STRENGTH,
+	RB_CRT_UNIFORM_MASK_STRENGTH,
+	RB_CRT_UNIFORM_CURVATURE,
+	RB_CRT_UNIFORM_CHROMATIC_ABERRATION,
+	RB_CRT_UNIFORM_TIME_SECONDS,
+	RB_CRT_UNIFORM_COUNT
+};
+
+static newShaderStage_t rbCRTStage;
+static bool rbCRTStageInitialized = false;
+
+static void RB_InitCRTStage( void ) {
+	if ( rbCRTStageInitialized ) {
+		return;
+	}
+
+	memset( &rbCRTStage, 0, sizeof( rbCRTStage ) );
+	rbCRTStage.glslProgram = true;
+	idStr::Copynz( rbCRTStage.glslProgramName, "openprey_crt.fs", sizeof( rbCRTStage.glslProgramName ) );
+
+	static const rbBuiltinUniformDef_t uniforms[RB_CRT_UNIFORM_COUNT] = {
+		{ "invTexSize", 2 },
+		{ "crtAmount", 1 },
+		{ "scanlineStrength", 1 },
+		{ "maskStrength", 1 },
+		{ "curvature", 1 },
+		{ "chromaticAberration", 1 },
+		{ "timeSeconds", 1 }
+	};
+
+	rbCRTStage.numShaderParms = RB_CRT_UNIFORM_COUNT;
+	for ( int i = 0; i < RB_CRT_UNIFORM_COUNT; i++ ) {
+		idStr::Copynz( rbCRTStage.shaderParmNames[i], uniforms[i].name, sizeof( rbCRTStage.shaderParmNames[i] ) );
+		rbCRTStage.shaderParmNumRegisters[i] = uniforms[i].components;
+	}
+
+	rbCRTStage.numShaderTextures = 1;
+	idStr::Copynz( rbCRTStage.shaderTextureNames[0], "Scene", sizeof( rbCRTStage.shaderTextureNames[0] ) );
+
+	rbCRTStageInitialized = true;
+}
+
+void RB_ApplyCRTToBackBuffer( void ) {
+	if ( r_skipPostProcess.GetBool() || !r_crt.GetBool() ) {
+		return;
+	}
+
+	const GLfloat amount = idMath::ClampFloat( 0.0f, 1.0f, r_crtAmount.GetFloat() );
+	if ( amount <= 0.001f ) {
+		return;
+	}
+
+	if ( !glConfig.GLSLProgramAvailable ) {
+		return;
+	}
+
+	RB_InitCRTStage();
+	if ( !RB_ResolveGLSLProgram( &rbCRTStage ) ) {
+		return;
+	}
+
+	const int viewportWidth = glConfig.vidWidth;
+	const int viewportHeight = glConfig.vidHeight;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return;
+	}
+
+	idImage *sceneImage = globalImages->currentRenderImage;
+	if ( sceneImage == NULL ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_ApplyCRTToBackBuffer ----------\n" );
+
+	idRenderTexture::BindNull();
+	backEnd.renderTexture = NULL;
+	glDrawBuffer( GL_BACK );
+	glReadBuffer( GL_BACK );
+
+	sceneImage->CopyFramebuffer( 0, 0, viewportWidth, viewportHeight );
+
+	const int textureWidth = sceneImage->GetOpts().width;
+	const int textureHeight = sceneImage->GetOpts().height;
+	if ( textureWidth <= 0 || textureHeight <= 0 ) {
+		return;
+	}
+
+	RB_BeginFullscreenPostProcessPass( 0, 0, viewportWidth, viewportHeight );
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+
+	glUseProgramObjectARB( (GLhandleARB)rbCRTStage.glslProgramObject );
+
+	const int sceneLocation = rbCRTStage.shaderTextureLocations[0];
+	if ( sceneLocation >= 0 ) {
+		glUniform1iARB( sceneLocation, 0 );
+	}
+
+	const GLfloat invTexSize[2] = {
+		1.0f / static_cast<GLfloat>( textureWidth ),
+		1.0f / static_cast<GLfloat>( textureHeight )
+	};
+	const GLfloat scanlineStrength = idMath::ClampFloat( 0.0f, 1.0f, r_crtScanlineStrength.GetFloat() );
+	const GLfloat maskStrength = idMath::ClampFloat( 0.0f, 1.0f, r_crtMaskStrength.GetFloat() );
+	const GLfloat curvature = idMath::ClampFloat( 0.0f, 0.25f, r_crtCurvature.GetFloat() );
+	const GLfloat chromaticAberration = idMath::ClampFloat( 0.0f, 8.0f, r_crtChromatic.GetFloat() );
+	const GLfloat timeSeconds = static_cast<GLfloat>( backEnd.frameCount ) * ( 1.0f / 60.0f );
+
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_INV_TEX_SIZE] >= 0 ) {
+		glUniform2fvARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
+	}
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_AMOUNT] >= 0 ) {
+		glUniform1fARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_AMOUNT], amount );
+	}
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_SCANLINE_STRENGTH] >= 0 ) {
+		glUniform1fARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_SCANLINE_STRENGTH], scanlineStrength );
+	}
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_MASK_STRENGTH] >= 0 ) {
+		glUniform1fARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_MASK_STRENGTH], maskStrength );
+	}
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_CURVATURE] >= 0 ) {
+		glUniform1fARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_CURVATURE], curvature );
+	}
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_CHROMATIC_ABERRATION] >= 0 ) {
+		glUniform1fARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_CHROMATIC_ABERRATION], chromaticAberration );
+	}
+	if ( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_TIME_SECONDS] >= 0 ) {
+		glUniform1fARB( rbCRTStage.shaderParmLocations[RB_CRT_UNIFORM_TIME_SECONDS], timeSeconds );
+	}
+
+	RB_DrawFullscreenPostProcessQuad( viewportWidth, viewportHeight, textureWidth, textureHeight );
+	glUseProgramObjectARB( 0 );
+	RB_EndFullscreenPostProcessPass();
 }
 
 /*
@@ -2415,6 +2818,9 @@ void	RB_STD_DrawView( void ) {
 
 	// fob and blend lights
 	RB_STD_FogAllLights();
+
+	// Apply SSAO before bloom and tonemapping so indirect shadowing modulates the lit scene.
+	RB_STD_SSAO();
 
 	// Apply scene bloom before authored post-process overlays that sample _currentRender.
 	RB_STD_Bloom();

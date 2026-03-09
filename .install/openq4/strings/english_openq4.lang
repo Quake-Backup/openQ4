@@ -10,4 +10,7 @@
 	"#str_41085"	"AUTO DETECT"
 	"#str_41086"	"DETECTED"
 	"#str_41087"	"ADVANCED"
+	"#str_41088"	"SSAO"
+	"#str_41089"	"HDR EXPOSURE"
+	"#str_41090"	"CRT MONITOR"
 }

@@ -7217,7 +7217,7 @@ windowDef Desktop
 					rect	259,304,172,18
 					visible	1
 					forecolor	1,1,1,0.8
-					text	"#str_41083"
+					text	"#str_41088"
 					textscale	0.24
 					font	"fonts/lowpixel"
 				}
@@ -7235,19 +7235,19 @@ windowDef Desktop
 					forecolor	1,0.745,0.137,0.8
 					matcolor	1,0.745,0.137,0.8
 					low	0
-					high	2
-					step	0.05
+					high	1
+					step	1
 					thumbShader	"gfx/guis/mainmenu/slider_bar"
-					cvar	"r_bloomIntensity"
+					cvar	"r_ssao"
 					visible	1
 				}
 				editDef set_sys_bloomIntensity_value
 				{
 					rect	550,304,100,18
 					visible	1
-					cvar	r_bloomIntensity
+					cvar	r_ssao
 					textscale	0.24
-					maxchars	4
+					maxchars	1
 					forecolor	1,0.745,0.137,0.8
 					font	"fonts/lowpixel"
 
@@ -7292,7 +7292,7 @@ windowDef Desktop
 				}
 				windowDef set_sys_audio
 				{
-					rect	259,356,326,13
+					rect	259,404,326,13
 					visible	1
 					forecolor	1,1,1,0.4
 					text	"#str_200151"
@@ -7301,21 +7301,21 @@ windowDef Desktop
 				}
 				windowDef set_sys_b6
 				{
-					rect	228,370,377,25
+					rect	228,418,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_b9
 				{
-					rect	228,404,377,25
+					rect	228,452,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_vol
 				{
-					rect	259,372,172,18
+					rect	259,420,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_201029"
@@ -7324,7 +7324,7 @@ windowDef Desktop
 				}
 				windowDef set_sys_vol_bg
 				{
-					rect	472,376,128,16
+					rect	472,424,128,16
 					background	"gfx/guis/mainmenu/slider_bg"
 					matcolor	1,0.745,0.137,0.8
 					noevents	1
@@ -7332,7 +7332,7 @@ windowDef Desktop
 				}
 				sliderDef set_sys_vol_slider
 				{
-					rect	472,377,71,8
+					rect	472,425,71,8
 					forecolor	1,0.745,0.137,0.8
 					matcolor	1,0.745,0.137,0.8
 					low	0
@@ -7349,7 +7349,7 @@ windowDef Desktop
 				}	
 				editDef set_sys_vol_value
 				{
-					rect	550,372,100,18
+					rect	550,420,100,18
 					visible	1
 					cvar	s_volume
 					textscale	0.24
@@ -7367,14 +7367,14 @@ windowDef Desktop
 				}
 				windowDef set_sys_b9_corner
 				{
-					rect	251,410,12,12
+					rect	251,458,12,12
 					visible	1
 					background	"gfx/guis/mainmenu/corner"
 					matcolor	0.564,0.603,0.286,0.4
 				}
 				windowDef set_sys_t_b9
 				{
-					rect	262,404,328,18
+					rect	262,452,328,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_201004"
@@ -7384,23 +7384,23 @@ windowDef Desktop
 				windowDef set_sys_b7
 				{
 					rect	228,346,377,25
-					visible	0
+					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_b8
 				{
 					rect	228,370,377,25
-					visible	0
+					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_vol2
 				{
 					rect	259,349,172,18
-					visible	0
+					visible	1
 					forecolor	1,1,1,0.8
-					text	"#str_201001"
+					text	"#str_41089"
 					textscale	0.24
 					font	"fonts/lowpixel"
 				}
@@ -7410,19 +7410,19 @@ windowDef Desktop
 					background	"gfx/guis/mainmenu/slider_bg"
 					matcolor	1,0.745,0.137,0.8
 					noevents	1
-					visible	0
+					visible	1
 				}
 				sliderDef set_sys_vol2_slider
 				{
 					rect	472,354,71,8
 					forecolor	1,0.745,0.137,0.8
 					matcolor	1,0.745,0.137,0.8
-					low	0
-					high	1
+					low	0.1
+					high	8
 					step	0.05
 					thumbShader	"gfx/guis/mainmenu/slider_bar"
-					cvar	s_speakerFraction
-					visible	0
+					cvar	r_hdrExposure
+					visible	1
 
 					onAction {
 						set "cmd" "play main_menu_selection" ;
@@ -7442,9 +7442,9 @@ windowDef Desktop
 				windowDef set_sys_vol3
 				{
 					rect	259,373,172,18
-					visible	0
+					visible	1
 					forecolor	1,1,1,0.8
-					text	"#str_201006"
+					text	"#str_41090"
 					textscale	0.24
 					font	"fonts/lowpixel"
 				}
@@ -7454,7 +7454,7 @@ windowDef Desktop
 					background	"gfx/guis/mainmenu/slider_bg"
 					matcolor	1,0.745,0.137,0.8
 					noevents	1
-					visible	0
+					visible	1
 				}
 				sliderDef set_sys_vol3_slider
 				{
@@ -7463,10 +7463,10 @@ windowDef Desktop
 					matcolor	1,0.745,0.137,0.8
 					low	0
 					high	1
-					step	0.05
+					step	1
 					thumbShader	"gfx/guis/mainmenu/slider_bar"
-					cvar	s_musicVolume
-					visible	0
+					cvar	r_crt
+					visible	1
 
 					onAction {
 						set "cmd" "play main_menu_selection" ;
@@ -21442,7 +21442,7 @@ windowDef Desktop
 		}
 		windowDef set_b_system_6
 		{
-			rect	245,372,361,20
+			rect	245,420,361,20
 			visible	0
 
 			onMouseEnter {
@@ -21464,7 +21464,7 @@ windowDef Desktop
 		}
 		windowDef set_b_system_9
 		{
-			rect	245,406,361,20
+			rect	245,454,361,20
 			visible	0
 
 			onMouseEnter {
