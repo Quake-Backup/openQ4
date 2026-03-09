@@ -608,6 +608,10 @@ void idRenderWorldLocal::AddAreaEntityRefs( int areaNum, const portalStack_t *ps
 		// remove decals that are completely faded away
 		R_FreeEntityDefFadedDecals( entity, tr.viewDef->renderView.time );
 
+		if ( R_ShouldSuppressViewModelForLevelshot( tr.viewDef->renderView.viewID, entity->parms.allowSurfaceInViewID, entity->parms.weaponDepthHackInViewID ) ) {
+			continue;
+		}
+
 		// check for completely suppressing the model
 		if ( !r_skipSuppress.GetBool() ) {
 			if ( entity->parms.suppressSurfaceInViewID

@@ -690,20 +690,58 @@ windowDef Desktop
 			background	"gfx/guis/mainmenu/bg_darkgrad"
 			matcolor	0,0,0,1
 		}
-		windowDef screen
-		{
-			rect	0,24,640,480
-			visible	1
-			background	"gfx/guis/mainmenu/screen"
-			matcolor	0.7,0.7,0.7,1
-		}
-		windowDef screen2
-		{
-			rect	0,294,640,349
-			visible	1
-			background	"gfx/guis/mainmenu/screen"
-			matcolor	0,0,0,1
-		}
+		windowDef screen
+		{
+			rect	0,24,640,480
+			visible	1
+			noclip	1
+			background	"gfx/guis/mainmenu/screen"
+			matcolor	0.7,0.7,0.7,1
+			windowDef screen_tile_left
+			{
+				rect	-4096,0,4096,480
+				visible	1
+				background	"gfx/guis/mainmenu/screen"
+				matscalex	6.4
+				matcolor	0.7,0.7,0.7,1
+				noevents	1
+			}
+			windowDef screen_tile_right
+			{
+				rect	640,0,4096,480
+				visible	1
+				background	"gfx/guis/mainmenu/screen"
+				matscalex	6.4
+				matcolor	0.7,0.7,0.7,1
+				noevents	1
+			}
+		}
+		windowDef screen2
+		{
+			rect	0,294,640,349
+			visible	1
+			noclip	1
+			background	"gfx/guis/mainmenu/screen"
+			matcolor	0,0,0,1
+			windowDef screen2_tile_left
+			{
+				rect	-4096,0,4096,349
+				visible	1
+				background	"gfx/guis/mainmenu/screen"
+				matscalex	6.4
+				matcolor	0,0,0,1
+				noevents	1
+			}
+			windowDef screen2_tile_right
+			{
+				rect	640,0,4096,349
+				visible	1
+				background	"gfx/guis/mainmenu/screen"
+				matscalex	6.4
+				matcolor	0,0,0,1
+				noevents	1
+			}
+		}
 		windowDef grad2
 		{
 			rect	-11,0,683,480
@@ -771,20 +809,58 @@ windowDef Desktop
 			background	"gfx/guis/mainmenu/bg_grid"
 			matcolor	1,1,1,0.04
 		}
-		windowDef topbar
-		{
-			rect	-400,0,1045,129
-			visible	1
-			background	"gfx/guis/mainmenu/topbar"
-			matcolor	1,1,1,1
-		}
-		windowDef btmbar
-		{
-			rect	-399,351,1045,129
-			visible	1
-			background	"gfx/guis/mainmenu/btmbar"
-			matcolor	1,1,1,1
-		}
+		windowDef topbar
+		{
+			rect	-400,0,1045,129
+			visible	1
+			noclip	1
+			background	"gfx/guis/mainmenu/topbar"
+			matcolor	1,1,1,1
+			windowDef topbar_tile_left
+			{
+				rect	-4096,0,4097,129
+				visible	1
+				background	"gfx/guis/mainmenu/topbar_tile_left"
+				matscalex	128
+				matcolor	1,1,1,1
+				noevents	1
+			}
+			windowDef topbar_tile_right
+			{
+				rect	1044,0,4097,129
+				visible	1
+				background	"gfx/guis/mainmenu/topbar_tile_right"
+				matscalex	128
+				matcolor	1,1,1,1
+				noevents	1
+			}
+		}
+		windowDef btmbar
+		{
+			rect	-399,351,1045,129
+			visible	1
+			noclip	1
+			background	"gfx/guis/mainmenu/btmbar"
+			matcolor	1,1,1,1
+			windowDef btmbar_tile_left
+			{
+				rect	-4096,0,4097,129
+				visible	1
+				background	"gfx/guis/mainmenu/btmbar_tile_left"
+				matscalex	128
+				matcolor	1,1,1,1
+				noevents	1
+			}
+			windowDef btmbar_tile_right
+			{
+				rect	1044,0,4097,129
+				visible	1
+				background	"gfx/guis/mainmenu/btmbar_tile_right"
+				matscalex	128
+				matcolor	1,1,1,1
+				noevents	1
+			}
+		}
 		windowDef d_topbar
 		{
 			rect	-77,-63,1045,129

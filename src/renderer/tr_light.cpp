@@ -908,6 +908,12 @@ void R_AddLightSurfaces( void ) {
 		}
 
 		// see if we are suppressing the light in this view
+		if ( R_ShouldSuppressViewLightForLevelshot( tr.viewDef->renderView.viewID, light->parms.allowLightInViewID ) ) {
+			*ptr = vLight->next;
+			light->viewCount = -1;
+			continue;
+		}
+
 		if ( !r_skipSuppress.GetBool() ) {
 			if ( light->parms.suppressLightInViewID
 			&& light->parms.suppressLightInViewID == tr.viewDef->renderView.viewID ) {
@@ -1568,6 +1574,11 @@ void R_AddEffectSurfaces(void) {
 				++dropNotConnected;
 				continue;
 			}
+		}
+
+		if ( R_ShouldSuppressViewModelForLevelshot( tr.viewDef->renderView.viewID, def->parms.allowSurfaceInViewID, def->parms.weaponDepthHackInViewID ) ) {
+			++dropViewSuppress;
+			continue;
 		}
 
 		if (!r_skipSuppress.GetBool()) {

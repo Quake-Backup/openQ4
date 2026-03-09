@@ -1404,23 +1404,43 @@ static void R_CaptureTiledPixelsRGBA( int width, int height, int blends, renderV
 	R_StaticFree( rgbBuffer );
 }
 
-static void R_ExtractTileRGBA( const byte *src, int srcWidth, int srcX, int srcY, int tileSize, byte *dst ) {
-	for ( int y = 0; y < tileSize; y++ ) {
+static void R_ExtractRectRGBA( const byte *src, int srcWidth, int srcX, int srcY, int rectWidth, int rectHeight, byte *dst ) {
+	for ( int y = 0; y < rectHeight; y++ ) {
 		const byte *srcRow = src + ( ( srcY + y ) * srcWidth + srcX ) * 4;
-		byte *dstRow = dst + y * tileSize * 4;
-		memcpy( dstRow, srcRow, tileSize * 4 );
+		byte *dstRow = dst + y * rectWidth * 4;
+		memcpy( dstRow, srcRow, rectWidth * 4 );
 	}
+}
+
+static bool R_ResampleLevelShotTileRGBA( const byte *src, int srcWidth, int srcHeight, int tileSize, byte *dst ) {
+	byte *resampled = R_ResampleTexture( src, srcWidth, srcHeight, tileSize, tileSize );
+	if ( resampled == NULL ) {
+		return false;
+	}
+
+	memcpy( dst, resampled, tileSize * tileSize * 4 );
+	R_StaticFree( resampled );
+	return true;
 }
 
 static float R_LevelShotExpandedFov( float baseFov, float scale ) {
 	return RAD2DEG( 2.0f * idMath::ATan( idMath::Tan( DEG2RAD( baseFov * 0.5f ) ) * scale ) );
 }
 
-static void R_NormalizeLevelShotBaseName( const char *requestedBase, idStr &baseName ) {
-	baseName = requestedBase;
-	baseName.BackSlashesToSlashes();
-	baseName.StripFileExtension();
+static void R_LevelShotNormalizeFovToAspect( const renderView_t &sourceView, float currentAspect, float targetAspect, float &fovX, float &fovY ) {
+	const float aspectEpsilon = 0.0001f;
 
+	fovX = sourceView.fov_x;
+	fovY = sourceView.fov_y;
+
+	if ( currentAspect > targetAspect + aspectEpsilon ) {
+		fovX = RAD2DEG( 2.0f * idMath::ATan( idMath::Tan( DEG2RAD( sourceView.fov_y * 0.5f ) ) * targetAspect ) );
+	} else if ( currentAspect + aspectEpsilon < targetAspect ) {
+		fovY = RAD2DEG( 2.0f * idMath::ATan( idMath::Tan( DEG2RAD( sourceView.fov_x * 0.5f ) ) / targetAspect ) );
+	}
+}
+
+static void R_NormalizeLevelShotBaseName( idStr &baseName ) {
 	if ( baseName.Length() <= 0 ) {
 		idStr mapName = cvarSystem->GetCVarString( "si_map" );
 		mapName.StripPath();
@@ -1456,49 +1476,38 @@ static void R_WriteLevelShotTile( const idStr &baseName, const char *suffix, con
 void R_LevelShot_f( const idCmdArgs &args ) {
 	idStr baseName;
 	int size = 512;
-	int blends = 1;
-	const int maxBlends = 256;
 
-	switch ( args.Argc() ) {
-	case 1:
-		R_NormalizeLevelShotBaseName( "", baseName );
-		break;
-	case 2:
-		R_NormalizeLevelShotBaseName( args.Argv( 1 ), baseName );
-		break;
-	case 3:
-		R_NormalizeLevelShotBaseName( args.Argv( 1 ), baseName );
-		size = atoi( args.Argv( 2 ) );
-		break;
-	case 4:
-		R_NormalizeLevelShotBaseName( args.Argv( 1 ), baseName );
-		size = atoi( args.Argv( 2 ) );
-		blends = atoi( args.Argv( 3 ) );
-		break;
-	default:
-		common->Printf( "usage: levelshot\n       levelshot <basename>\n       levelshot <basename> <size>\n       levelshot <basename> <size> <blends>\n" );
+	if ( args.Argc() > 2 ) {
+		common->Printf( "usage: levelshot\n       levelshot <size>\n" );
 		return;
 	}
+	if ( args.Argc() == 2 ) {
+		size = atoi( args.Argv( 1 ) );
+	}
 
+	R_NormalizeLevelShotBaseName( baseName );
 	if ( size < 1 ) {
 		size = 1;
 	}
-	if ( blends < 1 ) {
-		blends = 1;
-	}
-	if ( blends > maxBlends ) {
-		blends = maxBlends;
-	}
+	const int blends = 1;
 
 	if ( !tr.primaryView || !tr.primaryWorld ) {
 		common->Printf( "No primary view.\n" );
 		return;
 	}
 
-	const int wideWidth = size * 3;
-	const int tallHeight = size * 3;
+	const int rawTileHeight = size;
+	const float tileAspect = static_cast<float>( SCREEN_WIDTH ) / static_cast<float>( SCREEN_HEIGHT );
+	const int rawTileWidth = Max( 1, idMath::Ftoi( rawTileHeight * tileAspect + 0.5f ) );
+	const int wideWidth = rawTileWidth * 3;
+	const int tallHeight = rawTileHeight * 3;
 
 	renderView_t baseRef = tr.primaryView->renderView;
+	float currentAspect = tileAspect;
+	if ( glConfig.vidWidth > 0 && glConfig.vidHeight > 0 ) {
+		currentAspect = static_cast<float>( glConfig.vidWidth ) / static_cast<float>( glConfig.vidHeight );
+	}
+	R_LevelShotNormalizeFovToAspect( tr.primaryView->renderView, currentAspect, tileAspect, baseRef.fov_x, baseRef.fov_y );
 	baseRef.x = 0;
 	baseRef.y = 0;
 	baseRef.width = SCREEN_WIDTH;
@@ -1509,8 +1518,13 @@ void R_LevelShot_f( const idCmdArgs &args ) {
 	wideRef.fov_x = R_LevelShotExpandedFov( baseRef.fov_x, 3.0f );
 	tallRef.fov_y = R_LevelShotExpandedFov( baseRef.fov_y, 3.0f );
 
-	idTempArray<byte> wideStrip( wideWidth * size * 4 );
-	idTempArray<byte> tallStrip( size * tallHeight * 4 );
+	idTempArray<byte> wideStrip( wideWidth * rawTileHeight * 4 );
+	idTempArray<byte> tallStrip( rawTileWidth * tallHeight * 4 );
+	idTempArray<byte> centerRawTile( rawTileWidth * rawTileHeight * 4 );
+	idTempArray<byte> leftRawTile( rawTileWidth * rawTileHeight * 4 );
+	idTempArray<byte> rightRawTile( rawTileWidth * rawTileHeight * 4 );
+	idTempArray<byte> topRawTile( rawTileWidth * rawTileHeight * 4 );
+	idTempArray<byte> bottomRawTile( rawTileWidth * rawTileHeight * 4 );
 	idTempArray<byte> centerTile( size * size * 4 );
 	idTempArray<byte> leftTile( size * size * 4 );
 	idTempArray<byte> rightTile( size * size * 4 );
@@ -1519,14 +1533,29 @@ void R_LevelShot_f( const idCmdArgs &args ) {
 
 	console->Close();
 
-	R_CaptureTiledPixelsRGBA( wideWidth, size, blends, &wideRef, wideStrip.Ptr() );
-	R_CaptureTiledPixelsRGBA( size, tallHeight, blends, &tallRef, tallStrip.Ptr() );
+	const bool previousSuppressLevelshotViewModels = tr.suppressLevelshotViewModels;
+	tr.suppressLevelshotViewModels = true;
 
-	R_ExtractTileRGBA( wideStrip.Ptr(), wideWidth, 0, 0, size, leftTile.Ptr() );
-	R_ExtractTileRGBA( wideStrip.Ptr(), wideWidth, size, 0, size, centerTile.Ptr() );
-	R_ExtractTileRGBA( wideStrip.Ptr(), wideWidth, size * 2, 0, size, rightTile.Ptr() );
-	R_ExtractTileRGBA( tallStrip.Ptr(), size, 0, 0, size, topTile.Ptr() );
-	R_ExtractTileRGBA( tallStrip.Ptr(), size, 0, size * 2, size, bottomTile.Ptr() );
+	R_CaptureTiledPixelsRGBA( wideWidth, rawTileHeight, blends, &wideRef, wideStrip.Ptr() );
+	R_CaptureTiledPixelsRGBA( rawTileWidth, tallHeight, blends, &tallRef, tallStrip.Ptr() );
+
+	tr.suppressLevelshotViewModels = previousSuppressLevelshotViewModels;
+
+	R_ExtractRectRGBA( wideStrip.Ptr(), wideWidth, 0, 0, rawTileWidth, rawTileHeight, leftRawTile.Ptr() );
+	R_ExtractRectRGBA( wideStrip.Ptr(), wideWidth, rawTileWidth, 0, rawTileWidth, rawTileHeight, centerRawTile.Ptr() );
+	R_ExtractRectRGBA( wideStrip.Ptr(), wideWidth, rawTileWidth * 2, 0, rawTileWidth, rawTileHeight, rightRawTile.Ptr() );
+	R_ExtractRectRGBA( tallStrip.Ptr(), rawTileWidth, 0, 0, rawTileWidth, rawTileHeight, topRawTile.Ptr() );
+	R_ExtractRectRGBA( tallStrip.Ptr(), rawTileWidth, 0, rawTileHeight * 2, rawTileWidth, rawTileHeight, bottomRawTile.Ptr() );
+
+	if ( !R_ResampleLevelShotTileRGBA( leftRawTile.Ptr(), rawTileWidth, rawTileHeight, size, leftTile.Ptr() ) ||
+		!R_ResampleLevelShotTileRGBA( centerRawTile.Ptr(), rawTileWidth, rawTileHeight, size, centerTile.Ptr() ) ||
+		!R_ResampleLevelShotTileRGBA( rightRawTile.Ptr(), rawTileWidth, rawTileHeight, size, rightTile.Ptr() ) ||
+		!R_ResampleLevelShotTileRGBA( topRawTile.Ptr(), rawTileWidth, rawTileHeight, size, topTile.Ptr() ) ||
+		!R_ResampleLevelShotTileRGBA( bottomRawTile.Ptr(), rawTileWidth, rawTileHeight, size, bottomTile.Ptr() ) ) {
+		tr.suppressLevelshotViewModels = previousSuppressLevelshotViewModels;
+		common->Warning( "levelshot: failed to resample one or more tiles" );
+		return;
+	}
 
 	R_WriteLevelShotTile( baseName, "", centerTile.Ptr(), size );
 	R_WriteLevelShotTile( baseName, "_left", leftTile.Ptr(), size );
@@ -1534,7 +1563,8 @@ void R_LevelShot_f( const idCmdArgs &args ) {
 	R_WriteLevelShotTile( baseName, "_top", topTile.Ptr(), size );
 	R_WriteLevelShotTile( baseName, "_bottom", bottomTile.Ptr(), size );
 
-	common->Printf( "Wrote %s(.tga/.dds) and _left/_right/_top/_bottom tiles\n", baseName.c_str() );
+	common->Printf( "Wrote %s(.tga/.dds) and _left/_right/_top/_bottom tiles from %dx%d 4:3 source captures\n",
+		baseName.c_str(), rawTileWidth, rawTileHeight );
 }
 
 /*
@@ -2346,6 +2376,7 @@ void idRenderSystemLocal::Clear( void ) {
 	pendingRenderTextureDeletes.Clear();
 	useUIViewportFor2D = true;
 	activeRenderTexture = NULL;
+	suppressLevelshotViewModels = false;
 	memset( gammaTable, 0, sizeof( gammaTable ) );
 	takingScreenshot = false;
 }

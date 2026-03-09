@@ -851,6 +851,7 @@ public:
 	idList<idRenderTexture*> pendingRenderTextureDeletes;
 	bool					useUIViewportFor2D;
 	idRenderTexture *		activeRenderTexture;
+	bool					suppressLevelshotViewModels;
 
 	unsigned short			gammaTable[256];	// brightness / gamma modify this
 };
@@ -858,6 +859,20 @@ public:
 extern backEndState_t		backEnd;
 extern idRenderSystemLocal	tr;
 extern glconfig_t			glConfig;		// outside of TR since it shouldn't be cleared during ref re-init
+
+static ID_INLINE bool R_ShouldSuppressViewModelForLevelshot( int viewID, int allowSurfaceInViewID, int weaponDepthHackInViewID ) {
+	return tr.suppressLevelshotViewModels
+		&& viewID != 0
+		&& ( ( allowSurfaceInViewID != 0 && allowSurfaceInViewID == viewID )
+			|| ( weaponDepthHackInViewID != 0 && weaponDepthHackInViewID == viewID ) );
+}
+
+static ID_INLINE bool R_ShouldSuppressViewLightForLevelshot( int viewID, int allowLightInViewID ) {
+	return tr.suppressLevelshotViewModels
+		&& viewID != 0
+		&& allowLightInViewID != 0
+		&& allowLightInViewID == viewID;
+}
 
 
 //

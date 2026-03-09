@@ -53,6 +53,7 @@ idCVar	idSessionLocal::com_aviDemoTics( "com_aviDemoTics", "2", CVAR_SYSTEM | CV
 idCVar	idSessionLocal::com_wipeSeconds( "com_wipeSeconds", "1", CVAR_SYSTEM, "" );
 idCVar	idSessionLocal::com_guid( "com_guid", "", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_ROM, "" );
 idCVar	com_skipLoadingContinue( "com_skipLoadingContinue", "0", CVAR_SYSTEM | CVAR_BOOL, "skip the single-player loading-screen continue gate (testing)" );
+idCVar	com_showLevelshotBounds( "com_showLevelshotBounds", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "draw a centered 4:3 frame guide for levelshot composition" );
 idCVar	s_muteUnfocused( "s_muteUnfocused", "1", CVAR_ARCHIVE | CVAR_BOOL, "mute all audio when the application is out of focus" );
 
 #if defined( _WIN32 )
@@ -434,6 +435,8 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 	}
 
 	const int centerDisplayHeight = centerHeight;
+	// Levelshots are authored as square textures, but the stock loading GUI stretches them
+	// into the 640x480 virtual canvas before the canvas is uniformly scaled to the window.
 	const int centerDisplayWidth = Max( 1, idMath::Ftoi( centerDisplayHeight * ( static_cast<float>( SCREEN_WIDTH ) / static_cast<float>( SCREEN_HEIGHT ) ) + 0.5f ) );
 
 	int outputWidth = centerDisplayWidth;
@@ -666,6 +669,47 @@ static void Session_DrawFallbackLoadingScreen() {
 	}
 
 	renderSystem->SetColor( colorWhite );
+}
+
+static void Session_DrawLevelshotBounds() {
+	if ( !com_showLevelshotBounds.GetBool() ) {
+		return;
+	}
+
+	const float screenW = static_cast<float>( renderSystem->GetScreenWidth() );
+	const float screenH = static_cast<float>( renderSystem->GetScreenHeight() );
+	if ( screenW <= 0.0f || screenH <= 0.0f ) {
+		return;
+	}
+
+	float guideX = 0.0f;
+	float guideY = 0.0f;
+	float guideW = screenW;
+	float guideH = screenH;
+
+	const float targetAspect = static_cast<float>( SCREEN_WIDTH ) / static_cast<float>( SCREEN_HEIGHT );
+	const float screenAspect = screenW / screenH;
+	if ( screenAspect > targetAspect ) {
+		guideW = screenH * targetAspect;
+		guideX = ( screenW - guideW ) * 0.5f;
+	} else if ( screenAspect < targetAspect ) {
+		guideH = screenW / targetAspect;
+		guideY = ( screenH - guideH ) * 0.5f;
+	}
+
+	const float minDimension = ( screenW < screenH ) ? screenW : screenH;
+	const float lineThickness = Max( 1.0f, minDimension / 540.0f );
+	const idMaterial *white = declManager->FindMaterial( "_white" );
+	const bool previousUIViewportMode = renderSystem->GetUseUIViewportFor2D();
+
+	renderSystem->SetUseUIViewportFor2D( false );
+	renderSystem->SetColor4( 1.0f, 0.65f, 0.0f, 0.9f );
+	renderSystem->DrawStretchPic( guideX, guideY, guideW, lineThickness, 0.0f, 0.0f, 1.0f, 1.0f, white );
+	renderSystem->DrawStretchPic( guideX, guideY + guideH - lineThickness, guideW, lineThickness, 0.0f, 0.0f, 1.0f, 1.0f, white );
+	renderSystem->DrawStretchPic( guideX, guideY, lineThickness, guideH, 0.0f, 0.0f, 1.0f, 1.0f, white );
+	renderSystem->DrawStretchPic( guideX + guideW - lineThickness, guideY, lineThickness, guideH, 0.0f, 0.0f, 1.0f, 1.0f, white );
+	renderSystem->SetColor( colorWhite );
+	renderSystem->SetUseUIViewportFor2D( previousUIViewportMode );
 }
 
 static const char *Session_GetLongMPGameTypeName( const char *gametype ) {
@@ -2159,7 +2203,9 @@ void idSessionLocal::LoadLoadingGui( const char *mapName ) {
 		guiLoading->SetStateFloat( "map_loading", 0.0f );
 		guiLoading->SetStateString( "loading_bkgnd", loadingBackground.c_str() );
 		guiLoading->SetStateInt( "loading_bkgnd_canvasfill", loadingBackgroundCanvasFill ? 1 : 0 );
-		guiLoading->SetStateInt( "loading_bkgnd_wide", loadingBackgroundWide ? 1 : 0 );
+		// Preserve compatibility with GUIs that still key off the old "wide" state to select
+		// the full-canvas branch used by wide and dynamically expanded levelshots.
+		guiLoading->SetStateInt( "loading_bkgnd_wide", loadingBackgroundCanvasFill ? 1 : 0 );
 		guiLoading->SetStateString( "loading_levelname", loadingLevelName );
 		guiLoading->SetStateString( "loading_objectives", loadingObjectives );
 		guiLoading->SetStateString( "loading_author", loadingAuthor );
@@ -3444,6 +3490,10 @@ void idSessionLocal::Draw() {
 	}
 	fullConsole = false;
 #endif
+
+	if ( mapSpawned && !insideExecuteMapChange && !guiActive && !readDemo ) {
+		Session_DrawLevelshotBounds();
+	}
 
 	// draw the wipe material on top of this if it hasn't completed yet
 	DrawWipeModel();

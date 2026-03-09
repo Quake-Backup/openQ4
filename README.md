@@ -445,9 +445,11 @@ The game library source code is maintained separately in [OpenQ4-GameLibs](https
 - Use `OPENQ4_GAMELIBS_REPO=<path>` to override repository location
 
 ### Levelshot Capture
-- Use `levelshot [basename] [size] [blends]` in-game to capture a loading-screen tile set.
-- The command writes `basename`, `basename_left`, `basename_right`, `basename_top`, and `basename_bottom` as both `.tga` and `.dds`.
-- If `basename` is omitted, OpenQ4 uses the current map name under `gfx/guis/loadscreens/`; `size` defaults to `512`.
+- Use `levelshot [size]` in-game to capture a loading-screen tile set.
+- Each tile is captured from a raw 4:3 source view, then resampled to square output so the loading GUI's 4:3 stretch remains tile-accurate.
+- The command writes the current map's loadscreen plus `_left`, `_right`, `_top`, and `_bottom` variants as both `.tga` and `.dds`, without the view weapon.
+- OpenQ4 always uses the current map name under `gfx/guis/loadscreens/`; `size` defaults to `512`.
+- Set `com_showLevelshotBounds 1` to draw a live centered 4:3 framing guide while composing shots; the guide is not included in `levelshot` output.
 
 ---
 
