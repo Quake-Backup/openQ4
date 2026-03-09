@@ -5,28 +5,31 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 default_builddir="${repo_root}/builddir"
 declare -a MESON_CMD=()
-
-resolve_python() {
-    if command -v python3 >/dev/null 2>&1; then
-        command -v python3
-        return 0
-    fi
-
-    if command -v python >/dev/null 2>&1; then
-        command -v python
-        return 0
-    fi
-
-    return 1
-}
+PYTHON_CMD=""
 
 resolve_meson_cmd() {
+    local candidate=""
     local python_cmd=""
-    python_cmd="$(resolve_python || true)"
 
-    if [[ -n "${python_cmd}" ]] && "${python_cmd}" -c 'import mesonbuild.mesonmain' >/dev/null 2>&1; then
-        MESON_CMD=("${python_cmd}" -m mesonbuild.mesonmain)
-        return
+    for candidate in python python3; do
+        if ! python_cmd="$(command -v "${candidate}" 2>/dev/null)"; then
+            continue
+        fi
+
+        if [[ -z "${PYTHON_CMD}" ]]; then
+            PYTHON_CMD="${python_cmd}"
+        fi
+
+        if "${python_cmd}" -c 'import mesonbuild.mesonmain' >/dev/null 2>&1; then
+            PYTHON_CMD="${python_cmd}"
+            MESON_CMD=("${python_cmd}" -m mesonbuild.mesonmain)
+            return
+        fi
+    done
+
+    if [[ -z "${PYTHON_CMD}" ]]; then
+        echo "Python was not found. Install Python or ensure it is available on PATH." >&2
+        exit 1
     fi
 
     if command -v meson >/dev/null 2>&1; then
@@ -72,7 +75,7 @@ get_compile_build_dir() {
         ((i += 1))
     done
 
-    python - "$build_dir" "$has_explicit" <<'PY'
+    "${PYTHON_CMD}" - "$build_dir" "$has_explicit" <<'PY'
 import os
 import sys
 
@@ -90,7 +93,7 @@ get_meson_build_option_value() {
         return 1
     fi
 
-    python - "$intro_options_path" "$option_name" <<'PY'
+    "${PYTHON_CMD}" - "$intro_options_path" "$option_name" <<'PY'
 import json
 import sys
 
