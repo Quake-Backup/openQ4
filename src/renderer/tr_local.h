@@ -338,6 +338,8 @@ typedef struct viewLight_s {
 	const struct drawSurf_s	*localInteractions;			// don't get local shadows
 	const struct drawSurf_s	*localShadows;				// don't shadow local Surfaces
 	const struct drawSurf_s	*globalInteractions;		// get shadows from everything
+	const struct drawSurf_s	*localShadowMapCasters;		// ambient caster geometry that should not shadow local receivers
+	const struct drawSurf_s	*globalShadowMapCasters;	// ambient caster geometry that can shadow all receivers
 	const struct drawSurf_s	*translucentInteractions;	// get shadows from everything
 } viewLight_t;
 
@@ -1089,6 +1091,7 @@ extern idCVar r_shadowMapBias;			// receiver depth bias used by projected shadow
 extern idCVar r_shadowMapPointBias;		// receiver depth bias used by point-light shadow maps
 extern idCVar r_shadowMapFilterRadius;	// projected-light PCF radius in texels used by simple shadow maps
 extern idCVar r_shadowMapPointFilterRadius;	// point-light PCF radius in texels used by simple shadow maps
+extern idCVar r_shadowMapProjectionPad;	// normalized padding applied around projected-light shadow-map coverage
 extern idCVar r_shadowMapPointFarScale;	// range padding multiplier used by point-light shadow maps
 extern idCVar r_shadowMapPolygonFactor;	// slope-scale bias used when rendering simple shadow maps
 extern idCVar r_shadowMapPolygonOffset;	// constant bias used when rendering simple shadow maps

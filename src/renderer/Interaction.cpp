@@ -1169,23 +1169,74 @@ void idInteraction::AddActiveInteraction( void ) {
 			}
 		}
 
+		bool shadowSuppressed = false;
+		if ( !r_skipSuppress.GetBool() ) {
+			if ( entityDef->parms.suppressShadowInViewID &&
+				entityDef->parms.suppressShadowInViewID == tr.viewDef->renderView.viewID ) {
+				shadowSuppressed = true;
+			}
+			if ( entityDef->parms.suppressShadowInLightID &&
+				entityDef->parms.suppressShadowInLightID == lightDef->parms.lightId ) {
+				shadowSuppressed = true;
+			}
+		}
+		if ( shadowSuppressed ) {
+			continue;
+		}
+
+		if ( sint->shader == NULL || sint->ambientTris == NULL ) {
+			continue;
+		}
+
+		const bool isViewOnlyEntity =
+			( entityDef->parms.allowSurfaceInViewID != 0 &&
+				entityDef->parms.allowSurfaceInViewID == tr.viewDef->renderView.viewID ) ||
+			( entityDef->parms.weaponDepthHackInViewID != 0 &&
+				entityDef->parms.weaponDepthHackInViewID == tr.viewDef->renderView.viewID );
+		const bool noSelfShadow =
+			entityDef->parms.noSelfShadow ||
+			sint->shader->TestMaterialFlag( MF_NOSELFSHADOW );
+		const bool allowShadowMapCaster =
+			!entityDef->parms.noShadow &&
+			!isViewOnlyEntity &&
+			vEntity->modelDepthHack == 0.0f &&
+			sint->ambientTris != NULL &&
+			sint->shader->Coverage() != MC_TRANSLUCENT &&
+			sint->shader->SurfaceCastsShadow();
+
+		if ( allowShadowMapCaster ) {
+			srfTriangles_t *casterTris = sint->ambientTris;
+			bool haveCasterGeometry = true;
+
+			if ( !casterTris->ambientCache ) {
+				haveCasterGeometry = R_CreateAmbientCache( casterTris, false );
+			}
+
+			if ( haveCasterGeometry ) {
+				vertexCache.Touch( casterTris->ambientCache );
+
+				if ( !casterTris->indexCache && r_useIndexBuffers.GetBool() ) {
+					vertexCache.Alloc( casterTris->indexes, casterTris->numIndexes * sizeof( casterTris->indexes[0] ), &casterTris->indexCache, true );
+				}
+				if ( casterTris->indexCache ) {
+					vertexCache.Touch( casterTris->indexCache );
+				}
+
+				if ( noSelfShadow ) {
+					R_LinkLightSurf( &vLight->localShadowMapCasters,
+						casterTris, vEntity, lightDef, NULL, shadowScissor, false );
+				} else {
+					R_LinkLightSurf( &vLight->globalShadowMapCasters,
+						casterTris, vEntity, lightDef, NULL, shadowScissor, false );
+				}
+			}
+		}
+
 		srfTriangles_t *shadowTris = sint->shadowTris;
 
 		// the shadows will always have to be added, unless we can tell they
 		// are from a surface in an unconnected area
 		if ( shadowTris ) {
-			
-			// check for view specific shadow suppression (player shadows, etc)
-			if ( !r_skipSuppress.GetBool() ) {
-				if ( entityDef->parms.suppressShadowInViewID &&
-					entityDef->parms.suppressShadowInViewID == tr.viewDef->renderView.viewID ) {
-					continue;
-				}
-				if ( entityDef->parms.suppressShadowInLightID &&
-					entityDef->parms.suppressShadowInLightID == lightDef->parms.lightId ) {
-					continue;
-				}
-			}
 
 			// cull static shadows that have a non-empty bounds
 			// dynamic shadows that use the turboshadow code will not have valid
@@ -1231,7 +1282,7 @@ void idInteraction::AddActiveInteraction( void ) {
 			// see if we can avoid using the shadow volume caps
 			bool inside = R_PotentiallyInsideInfiniteShadow( sint->ambientTris, localViewOrigin, localLightOrigin );
 
-			if ( sint->shader->TestMaterialFlag( MF_NOSELFSHADOW ) ) {
+			if ( noSelfShadow ) {
 				R_LinkLightSurf( &vLight->localShadows,
 					shadowTris, vEntity, lightDef, NULL, shadowScissor, inside );
 			} else {

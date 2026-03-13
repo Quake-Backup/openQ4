@@ -1079,21 +1079,24 @@ static void RB_ShadowMapLightReport( const viewLight_t *vLight, shadowMapLightSu
 		RB_ShadowMapSupportReasonName( reason ) );
 }
 
-static void RB_ShadowMapPassReport( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, shadowMapPassResult_t result, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *shadowSurfs, const drawSurf_t *interactions ) {
+static void RB_ShadowMapPassReport( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, shadowMapPassResult_t result, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
 	if ( idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) < 2 || !g_shadowMapReportThisFrame ) {
 		return;
 	}
 
 	const char *shaderName = ( vLight != NULL && vLight->lightShader != NULL ) ? vLight->lightShader->GetName() : "<null>";
 	common->Printf(
-		"SM pass %s '%s' type=%s result=%s casters(primary=%d secondary=%d) shadowSurfs=%d receivers=%d\n",
+		"SM pass %s '%s' type=%s result=%s casters(a=%d b=%d c=%d d=%d) shadowSurfs(primary=%d secondary=%d) receivers=%d\n",
 		RB_ShadowMapPassName( passKind ),
 		shaderName,
 		pointLight ? "point" : "projected",
 		RB_ShadowMapPassResultName( result ),
 		RB_CountDrawSurfChain( primaryCasters ),
 		RB_CountDrawSurfChain( secondaryCasters ),
-		RB_CountDrawSurfChain( shadowSurfs ),
+		RB_CountDrawSurfChain( tertiaryCasters ),
+		RB_CountDrawSurfChain( quaternaryCasters ),
+		RB_CountDrawSurfChain( primaryShadowSurfs ),
+		RB_CountDrawSurfChain( secondaryShadowSurfs ),
 		RB_CountDrawSurfChain( interactions ) );
 }
 
@@ -1112,12 +1115,24 @@ static void RB_ShadowMapDrawCasterChain( const drawSurf_t *surf ) {
 			continue;
 		}
 
-		vertCache_s *ambientCache = casterGeo->ambientCache;
+		srfTriangles_t *ambientGeo = const_cast<srfTriangles_t *>( casterGeo );
+		if ( ambientGeo->ambientCache == NULL && ambientGeo->verts != NULL ) {
+			if ( !R_CreateAmbientCache( ambientGeo, false ) ) {
+				continue;
+			}
+		}
+
+		vertCache_s *ambientCache = ambientGeo->ambientCache;
 		if ( ambientCache == NULL ) {
 			ambientCache = surf->geo->ambientCache;
 		}
 		if ( ambientCache == NULL ) {
 			continue;
+		}
+
+		vertexCache.Touch( ambientCache );
+		if ( ambientGeo->indexCache ) {
+			vertexCache.Touch( ambientGeo->indexCache );
 		}
 
 		if ( surf->space != backEnd.currentSpace ) {
@@ -1230,12 +1245,24 @@ static void RB_PointShadowMapDrawCasterChain( const drawSurf_t *surf, const floa
 			continue;
 		}
 
-		vertCache_s *ambientCache = casterGeo->ambientCache;
+		srfTriangles_t *ambientGeo = const_cast<srfTriangles_t *>( casterGeo );
+		if ( ambientGeo->ambientCache == NULL && ambientGeo->verts != NULL ) {
+			if ( !R_CreateAmbientCache( ambientGeo, false ) ) {
+				continue;
+			}
+		}
+
+		vertCache_s *ambientCache = ambientGeo->ambientCache;
 		if ( ambientCache == NULL ) {
 			ambientCache = surf->geo->ambientCache;
 		}
 		if ( ambientCache == NULL ) {
 			continue;
+		}
+
+		vertexCache.Touch( ambientCache );
+		if ( ambientGeo->indexCache ) {
+			vertexCache.Touch( ambientGeo->indexCache );
 		}
 
 		if ( surf->space != backEnd.currentSpace ) {
@@ -1260,7 +1287,7 @@ static void RB_PointShadowMapDrawCasterChain( const drawSurf_t *surf, const floa
 	}
 }
 
-static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters ) {
+static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters ) {
 	if ( !RB_ShadowMapEnsureResources() ) {
 		return false;
 	}
@@ -1304,6 +1331,8 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	backEnd.currentSpace = NULL;
 	RB_ShadowMapDrawCasterChain( primaryCasters );
 	RB_ShadowMapDrawCasterChain( secondaryCasters );
+	RB_ShadowMapDrawCasterChain( tertiaryCasters );
+	RB_ShadowMapDrawCasterChain( quaternaryCasters );
 
 	glDisable( GL_POLYGON_OFFSET_FILL );
 
@@ -1346,7 +1375,7 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	return true;
 }
 
-static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters ) {
+static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters ) {
 	if ( !RB_PointShadowMapEnsureResources() ) {
 		return false;
 	}
@@ -1405,6 +1434,8 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 		backEnd.currentSpace = NULL;
 		RB_PointShadowMapDrawCasterChain( primaryCasters, lightModelViewMatrix );
 		RB_PointShadowMapDrawCasterChain( secondaryCasters, lightModelViewMatrix );
+		RB_PointShadowMapDrawCasterChain( tertiaryCasters, lightModelViewMatrix );
+		RB_PointShadowMapDrawCasterChain( quaternaryCasters, lightModelViewMatrix );
 	}
 
 	glDisable( GL_POLYGON_OFFSET_FILL );
@@ -1826,12 +1857,12 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	return true;
 }
 
-static void RB_ShadowMapStencilFallback( const drawSurf_t *shadowSurfs, const drawSurf_t *interactions ) {
+static void RB_ShadowMapStencilFallback( const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
 	if ( interactions == NULL ) {
 		return;
 	}
 
-	if ( shadowSurfs != NULL ) {
+	if ( primaryShadowSurfs != NULL || secondaryShadowSurfs != NULL ) {
 		backEnd.currentScissor = backEnd.vLight->scissorRect;
 		if ( r_useScissor.GetBool() ) {
 			glScissor( backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
@@ -1844,11 +1875,13 @@ static void RB_ShadowMapStencilFallback( const drawSurf_t *shadowSurfs, const dr
 		if ( r_useShadowVertexProgram.GetBool() ) {
 			glEnable( GL_VERTEX_PROGRAM_ARB );
 			glBindProgramARB( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW );
-			RB_StencilShadowPass( shadowSurfs );
+			RB_StencilShadowPass( primaryShadowSurfs );
+			RB_StencilShadowPass( secondaryShadowSurfs );
 			RB_ARB2_CreateDrawInteractions( interactions );
 			glDisable( GL_VERTEX_PROGRAM_ARB );
 		} else {
-			RB_StencilShadowPass( shadowSurfs );
+			RB_StencilShadowPass( primaryShadowSurfs );
+			RB_StencilShadowPass( secondaryShadowSurfs );
 			RB_ARB2_CreateDrawInteractions( interactions );
 		}
 	} else {
@@ -1857,24 +1890,24 @@ static void RB_ShadowMapStencilFallback( const drawSurf_t *shadowSurfs, const dr
 	}
 }
 
-static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *shadowSurfs, const drawSurf_t *interactions ) {
+static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
 	if ( interactions == NULL ) {
 		return;
 	}
 
-	if ( shadowSurfs == NULL ) {
+	if ( primaryShadowSurfs == NULL && secondaryShadowSurfs == NULL && primaryCasters == NULL && secondaryCasters == NULL && tertiaryCasters == NULL && quaternaryCasters == NULL ) {
 		if ( passKind == SHADOWMAP_PASS_LOCAL ) {
 			g_shadowMapStats.unshadowedLocalPasses++;
 		} else {
 			g_shadowMapStats.unshadowedGlobalPasses++;
 		}
-		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_NO_SHADOW_SURFS, primaryCasters, secondaryCasters, shadowSurfs, interactions );
+		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_NO_SHADOW_SURFS, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		glStencilFunc( GL_ALWAYS, 128, 255 );
 		RB_ARB2_CreateDrawInteractions( interactions );
 		return;
 	}
 
-	const bool renderOk = pointLight ? RB_RenderPointShadowMap( primaryCasters, secondaryCasters ) : RB_RenderShadowMap( primaryCasters, secondaryCasters );
+	const bool renderOk = pointLight ? RB_RenderPointShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters ) : RB_RenderShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters );
 	const bool maskOk = renderOk && ( pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions ) );
 	shadowMapPassResult_t passResult = SHADOWMAP_PASS_RESULT_MAPPED;
 	if ( !renderOk ) {
@@ -1890,7 +1923,7 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		} else {
 			g_shadowMapStats.mappedGlobalPasses++;
 		}
-		RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, shadowSurfs, interactions );
+		RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ARB2_CreateDrawInteractions( interactions );
 		return;
 	}
@@ -1910,8 +1943,8 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			g_shadowMapStats.maskFailGlobalPasses++;
 		}
 	}
-	RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, shadowSurfs, interactions );
-	RB_ShadowMapStencilFallback( shadowSurfs, interactions );
+	RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+	RB_ShadowMapStencilFallback( primaryShadowSurfs, secondaryShadowSurfs, interactions );
 }
 
 /*
@@ -2161,11 +2194,11 @@ void RB_ARB2_DrawInteractions( void ) {
 			glStencilFunc( GL_ALWAYS, 128, 255 );
 
 			if ( vLight->pointLight ) {
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, vLight->globalInteractions, NULL, vLight->globalShadows, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalInteractions, vLight->localInteractions, vLight->localShadows, vLight->globalInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, vLight->globalShadows, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadows, vLight->localShadows, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
 			} else {
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, false, vLight->globalInteractions, NULL, vLight->globalShadows, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalInteractions, vLight->localInteractions, vLight->localShadows, vLight->globalInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, vLight->globalShadows, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadows, vLight->localShadows, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
 			}
 
 			if ( !r_skipTranslucent.GetBool() ) {
