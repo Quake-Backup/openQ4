@@ -608,6 +608,31 @@ static idVec4 RB_ShadowMapBuildAtlasRect( const int cascadeIndex, const int atla
 		( tileY + 1 ) * invAtlasDiv );
 }
 
+/*
+=============
+RB_ShadowMapReportProjectedSplits
+=============
+*/
+static void RB_ShadowMapReportProjectedSplits( const viewLight_t *vLight, const float zNear, const float maxDistance, const int cascadeCount ) {
+	if ( idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) < 2 || !g_shadowMapReportThisFrame || vLight == NULL ) {
+		return;
+	}
+
+	const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : "<null>";
+	common->Printf( "SM csm '%s' zNear=%.2f max=%.2f cascades=%d splits", shaderName, zNear, maxDistance, cascadeCount );
+	for ( int splitIndex = 0; splitIndex < cascadeCount - 1; splitIndex++ ) {
+		common->Printf( " [%d]=%.2f", splitIndex, g_projectedShadowMapState.splitDepths[splitIndex] );
+	}
+	common->Printf( "\n" );
+}
+
+/*
+=============
+RB_ShadowMapBuildProjectedState
+
+Builds projected-light shadow-map state, including interior cascade split planes and per-cascade clip volumes.
+=============
+*/
 static void RB_ShadowMapBuildProjectedState( const viewLight_t *vLight, const idPlane baseClipPlanes[4], const int tileSize ) {
 	RB_ShadowMapResetProjectedState();
 
@@ -637,15 +662,17 @@ static void RB_ShadowMapBuildProjectedState( const viewLight_t *vLight, const id
 	const float ratio = maxDistance / zNear;
 
 	for ( int splitIndex = 0; splitIndex < cascadeCount - 1; splitIndex++ ) {
-		const float p = float( splitIndex + 1 ) / float( cascadeCount - 1 );
+		const float p = float( splitIndex + 1 ) / float( cascadeCount );
 		const float uniformSplit = zNear + range * p;
 		const float logSplit = zNear * pow( ratio, p );
 		g_projectedShadowMapState.splitDepths[splitIndex] = uniformSplit + ( logSplit - uniformSplit ) * lambda;
 	}
 
 	float sliceNear = zNear;
-	for ( int cascadeIndex = 0; cascadeIndex < cascadeCount - 1; cascadeIndex++ ) {
-		const float sliceFar = Max( g_projectedShadowMapState.splitDepths[cascadeIndex], sliceNear + 1.0f );
+	for ( int cascadeIndex = 0; cascadeIndex < cascadeCount; cascadeIndex++ ) {
+		const bool finalCascade = cascadeIndex == cascadeCount - 1;
+		const float targetFar = finalCascade ? maxDistance : g_projectedShadowMapState.splitDepths[cascadeIndex];
+		const float sliceFar = Max( targetFar, sliceNear + 1.0f );
 		idVec3 ndcMins;
 		idVec3 ndcMaxs;
 		if ( RB_ShadowMapBuildCascadeBounds( baseClipPlanes, viewDef, sliceNear, sliceFar, tileSize, ndcMins, ndcMaxs ) ) {
@@ -653,6 +680,8 @@ static void RB_ShadowMapBuildProjectedState( const viewLight_t *vLight, const id
 		}
 		sliceNear = sliceFar;
 	}
+
+	RB_ShadowMapReportProjectedSplits( vLight, zNear, maxDistance, cascadeCount );
 }
 
 static void RB_ShadowMapFreeProgram( void ) {
