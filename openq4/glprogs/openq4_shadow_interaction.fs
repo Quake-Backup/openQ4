@@ -120,13 +120,14 @@ float SampleCascadeByIndex( int index ) {
 }
 
 int SelectCascade( float viewDepth ) {
-	if ( uShadowCascadeCount <= 1 || viewDepth < uShadowSplitDepths[0] ) {
+	int interiorSplitCount = max( uShadowCascadeCount - 1, 0 );
+	if ( interiorSplitCount <= 0 || viewDepth < uShadowSplitDepths[0] ) {
 		return 0;
 	}
-	if ( uShadowCascadeCount <= 2 || viewDepth < uShadowSplitDepths[1] ) {
+	if ( interiorSplitCount <= 1 || viewDepth < uShadowSplitDepths[1] ) {
 		return 1;
 	}
-	if ( uShadowCascadeCount <= 3 || viewDepth < uShadowSplitDepths[2] ) {
+	if ( interiorSplitCount <= 2 || viewDepth < uShadowSplitDepths[2] ) {
 		return 2;
 	}
 	return 3;
@@ -135,8 +136,9 @@ int SelectCascade( float viewDepth ) {
 float SampleShadow() {
 	int cascadeIndex = SelectCascade( vViewDepth );
 	float shadow = SampleCascadeByIndex( cascadeIndex );
+	int lastInteriorIndex = uShadowCascadeCount - 2;
 
-	if ( cascadeIndex >= uShadowCascadeCount - 1 || uShadowCascadeBlend <= 0.0 ) {
+	if ( cascadeIndex > lastInteriorIndex || uShadowCascadeBlend <= 0.0 ) {
 		return shadow;
 	}
 
