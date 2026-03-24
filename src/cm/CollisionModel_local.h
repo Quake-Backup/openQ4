@@ -418,6 +418,7 @@ private:			// CollisionMap_trace.cpp
 private:			// CollisionMap_load.cpp
 	void			Clear( void );
 	void			FreeTrmModelStructure( void );
+	void			DestroyModel( idCollisionModelLocal *model );
 					// model deallocation
 	void			RemovePolygonReferences_r( cm_node_t *node, cm_polygon_t *p );
 	void			RemoveBrushReferences_r( cm_node_t *node, cm_brush_t *b );

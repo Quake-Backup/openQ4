@@ -550,17 +550,14 @@ void idCollisionModelManagerLocal::FreeTree_r( idCollisionModelLocal *model, cm_
 idCollisionModelManagerLocal::FreeModel
 ================
 */
-void idCollisionModelManagerLocal::FreeModel( idCollisionModel *_model ) {
+void idCollisionModelManagerLocal::DestroyModel( idCollisionModelLocal *model ) {
 	cm_polygonRefBlock_t *polygonRefBlock, *nextPolygonRefBlock;
 	cm_brushRefBlock_t *brushRefBlock, *nextBrushRefBlock;
 	cm_nodeBlock_t *nodeBlock, *nextNodeBlock;
 
-	idCollisionModelLocal* model = (idCollisionModelLocal*)_model;
-// jmarshall - quake 4 crash fix - trm models are shared.
-	if (model->isTrmModel) {
+	if ( model == NULL ) {
 		return;
 	}
-// jmarshall end
 
 	// free the tree structure
 	if ( model->node ) {
@@ -594,6 +591,21 @@ void idCollisionModelManagerLocal::FreeModel( idCollisionModel *_model ) {
 	delete model;
 }
 
+void idCollisionModelManagerLocal::FreeModel( idCollisionModel *_model ) {
+	int i;
+
+	idCollisionModelLocal* model = (idCollisionModelLocal*)_model;
+	if ( model == NULL ) {
+		return;
+	}
+	for ( i = 0; i < numModels; i++ ) {
+		if ( models != NULL && models[i] == model ) {
+			return;
+		}
+	}
+	DestroyModel( model );
+}
+
 /*
 ================
 idCollisionModelManagerLocal::FreeMap
@@ -611,7 +623,7 @@ void idCollisionModelManagerLocal::FreeMap(const char* mapName) {
 		if ( !models[i] ) {
 			continue;
 		}
-		FreeModel( models[i] );
+		DestroyModel( models[i] );
 	}
 
 	FreeTrmModelStructure();
@@ -629,21 +641,9 @@ idCollisionModelManagerLocal::FreeTrmModelStructure
 ================
 */
 void idCollisionModelManagerLocal::FreeTrmModelStructure( void ) {
-	int i;
-
-	assert( models );
-	if ( !models[MAX_SUBMODELS] ) {
-		return;
+	if ( models != NULL ) {
+		models[MAX_SUBMODELS] = NULL;
 	}
-
-	for ( i = 0; i < MAX_TRACEMODEL_POLYS; i++ ) {
-		FreePolygon( models[MAX_SUBMODELS], trmPolygons[i]->p );
-	}
-	FreeBrush( models[MAX_SUBMODELS], trmBrushes[0]->b );
-
-	models[MAX_SUBMODELS]->node->polygons = NULL;
-	models[MAX_SUBMODELS]->node->brushes = NULL;
-	FreeModel( models[MAX_SUBMODELS] );
 }
 
 
@@ -754,6 +754,7 @@ idCollisionModelLocal *idCollisionModelManagerLocal::AllocModel( void ) {
 	model->numPolygonRefs = model->numInternalEdges =
 	model->numSharpEdges = model->numRemovedPolys =
 	model->numMergedPolys = model->usedMemory = 0;
+	model->isTrmModel = false;
 
 	return model;
 }
@@ -926,61 +927,21 @@ idCollisionModelManagerLocal::SetupTrmModelStructure
 ================
 */
 void idCollisionModelManagerLocal::SetupTrmModelStructure( void ) {
-	int i;
-	cm_node_t *node;
-	idCollisionModelLocal *model;
-
-	// setup model
-	model = AllocModel();
-// jmarshall
-	model->isTrmModel = true;
-// jmarshall end
-	assert( models );
-	models[MAX_SUBMODELS] = model;
-	// create node to hold the collision data
-	node = (cm_node_t *) AllocNode( model, 1 );
-	node->planeType = -1;
-	model->node = node;
-	// allocate vertex and edge arrays
-	model->numVertices = 0;
-	model->maxVertices = MAX_TRACEMODEL_VERTS;
-	model->vertices = (cm_vertex_t *) Mem_ClearedAlloc( model->maxVertices * sizeof(cm_vertex_t) );
-	model->numEdges = 0;
-	model->maxEdges = MAX_TRACEMODEL_EDGES+1;
-	model->edges = (cm_edge_t *) Mem_ClearedAlloc( model->maxEdges * sizeof(cm_edge_t) );
 	// create a material for the trace model polygons
-	trmMaterial = declManager->FindMaterial( "_tracemodel", false );
+	if ( trmMaterial == NULL ) {
+		trmMaterial = declManager->FindMaterial( "_tracemodel", false );
+	}
 	if ( !trmMaterial ) {
 		common->FatalError( "_tracemodel material not found" );
 	}
-
-	// allocate polygons
-	for ( i = 0; i < MAX_TRACEMODEL_POLYS; i++ ) {
-		trmPolygons[i] = AllocPolygonReference( model, MAX_TRACEMODEL_POLYS );
-		trmPolygons[i]->p = AllocPolygon( model, MAX_TRACEMODEL_POLYEDGES );
-		trmPolygons[i]->p->bounds.Clear();
-		trmPolygons[i]->p->plane.Zero();
-		trmPolygons[i]->p->checkcount = 0;
-		trmPolygons[i]->p->contents = -1;		// all contents
-		trmPolygons[i]->p->material = trmMaterial;
-		trmPolygons[i]->p->numEdges = 0;
-	}
-	// allocate brush for position test
-	trmBrushes[0] = AllocBrushReference( model, 1 );
-	trmBrushes[0]->b = AllocBrush( model, MAX_TRACEMODEL_POLYS );
-	trmBrushes[0]->b->primitiveNum = 0;
-	trmBrushes[0]->b->bounds.Clear();
-	trmBrushes[0]->b->checkcount = 0;
-	trmBrushes[0]->b->contents = -1;		// all contents
-	trmBrushes[0]->b->numPlanes = 0;
 }
 
 /*
 ================
 idCollisionModelManagerLocal::ModelFromTrm
 
-Trace models (item boxes, etc) are converted to collision models on the fly, using the last model slot
-as a reusable temporary buffer
+Trace models (item boxes, ragdoll bodies, etc) are converted to standalone collision models on the fly.
+Retail Quake 4 keeps these models stable for the lifetime of the corresponding clip-model cache entry.
 ================
 */
 idCollisionModel *idCollisionModelManagerLocal::ModelFromTrm(const char* mapName, const char* modelName, const idTraceModel &trm, const idMaterial *material ) {
@@ -988,24 +949,37 @@ idCollisionModel *idCollisionModelManagerLocal::ModelFromTrm(const char* mapName
 	cm_vertex_t *vertex;
 	cm_edge_t *edge;
 	cm_polygon_t *poly;
+	cm_brush_t *brush;
+	cm_node_t *node;
 	idCollisionModelLocal *model;
 	const traceModelVert_t *trmVert;
 	const traceModelEdge_t *trmEdge;
 	const traceModelPoly_t *trmPoly;
 
-	assert( models );
-
 	if ( material == NULL ) {
+		if ( trmMaterial == NULL ) {
+			SetupTrmModelStructure();
+		}
 		material = trmMaterial;
 	}
 
-	model = models[MAX_SUBMODELS];
-	model->node->brushes = NULL;
-	model->node->polygons = NULL;
+	model = AllocModel();
+	model->name = modelName;
+	model->isTrmModel = true;
+
+	node = (cm_node_t *) AllocNode( model, 1 );
+	node->planeType = -1;
+	model->node = node;
 	// if not a valid trace model
 	if ( trm.type == TRM_INVALID || !trm.numPolys ) {
 		return model;
 	}
+
+	model->maxVertices = trm.numVerts;
+	model->vertices = (cm_vertex_t *) Mem_ClearedAlloc( model->maxVertices * sizeof( cm_vertex_t ) );
+	model->maxEdges = trm.numEdges + 1;
+	model->edges = (cm_edge_t *) Mem_ClearedAlloc( model->maxEdges * sizeof( cm_edge_t ) );
+
 	// vertices
 	model->numVertices = trm.numVerts;
 	vertex = model->vertices;
@@ -1026,10 +1000,14 @@ idCollisionModel *idCollisionModelManagerLocal::ModelFromTrm(const char* mapName
 		edge->sideSet = 0;
 	}
 	// polygons
-	model->numPolygons = trm.numPolys;
 	trmPoly = trm.polys;
 	for ( i = 0; i < trm.numPolys; i++, trmPoly++ ) {
-		poly = trmPolygons[i]->p;
+		poly = AllocPolygon( model, trmPoly->numEdges );
+		poly->bounds.Clear();
+		poly->plane.Zero();
+		poly->checkcount = 0;
+		poly->contents = -1;		// all contents
+		poly->material = material;
 		poly->numEdges = trmPoly->numEdges;
 		for ( j = 0; j < trmPoly->numEdges; j++ ) {
 			poly->edges[j] = trmPoly->edges[j];
@@ -1037,22 +1015,24 @@ idCollisionModel *idCollisionModelManagerLocal::ModelFromTrm(const char* mapName
 		poly->plane.SetNormal( trmPoly->normal );
 		poly->plane.SetDist( trmPoly->dist );
 		poly->bounds = trmPoly->bounds;
-		poly->material = material;
-		// link polygon at node
-		trmPolygons[i]->next = model->node->polygons;
-		model->node->polygons = trmPolygons[i];
+		AddPolygonToNode( model, model->node, poly );
 	}
 	// if the trace model is convex
 	if ( trm.isConvex ) {
 		// setup brush for position test
-		trmBrushes[0]->b->numPlanes = trm.numPolys;
+		brush = AllocBrush( model, trm.numPolys );
+		brush->primitiveNum = 0;
+		brush->bounds.Clear();
+		brush->checkcount = 0;
+		brush->contents = -1;		// all contents
+		brush->material = material;
+		brush->numPlanes = trm.numPolys;
 		for ( i = 0; i < trm.numPolys; i++ ) {
-			trmBrushes[0]->b->planes[i] = trmPolygons[i]->p->plane;
+			brush->planes[i].SetNormal( trm.polys[i].normal );
+			brush->planes[i].SetDist( trm.polys[i].dist );
 		}
-		trmBrushes[0]->b->bounds = trm.bounds;
-		// link brush at node
-		trmBrushes[0]->next = model->node->brushes;
-		model->node->brushes = trmBrushes[0];
+		brush->bounds = trm.bounds;
+		AddBrushToNode( model, model->node, brush );
 	}
 	// model bounds
 	model->bounds = trm.bounds;

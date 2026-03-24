@@ -1593,6 +1593,28 @@ static void R_WriteLevelShotTile( const idStr &baseName, const char *suffix, con
 	R_WriteDDS( ddsName.c_str(), rgba, tileSize, tileSize );
 }
 
+static void R_WriteLevelShotPose( const idStr &baseName, const renderView_t &view ) {
+	idStr txtName = baseName;
+	float pose[6];
+	idAngles angles;
+
+	txtName.SetFileExtension( ".txt" );
+	idFile *poseFile = fileSystem->OpenFileWrite( txtName );
+	if ( poseFile == NULL ) {
+		return;
+	}
+
+	angles = view.viewaxis.ToAngles();
+	pose[0] = view.vieworg.x;
+	pose[1] = view.vieworg.y;
+	pose[2] = view.vieworg.z;
+	pose[3] = angles.pitch;
+	pose[4] = angles.yaw;
+	pose[5] = angles.roll;
+	poseFile->WriteFloatString( "%.6f %.6f %.6f %.6f %.6f %.6f\n", pose[0], pose[1], pose[2], pose[3], pose[4], pose[5] );
+	fileSystem->CloseFile( poseFile );
+}
+
 void R_LevelShot_f( const idCmdArgs &args ) {
 	idStr baseName;
 	int size = 512;
@@ -1682,6 +1704,7 @@ void R_LevelShot_f( const idCmdArgs &args ) {
 	R_WriteLevelShotTile( baseName, "_right", rightTile.Ptr(), size );
 	R_WriteLevelShotTile( baseName, "_top", topTile.Ptr(), size );
 	R_WriteLevelShotTile( baseName, "_bottom", bottomTile.Ptr(), size );
+	R_WriteLevelShotPose( baseName, baseRef );
 
 	common->Printf( "Wrote %s(.tga/.dds) and _left/_right/_top/_bottom tiles from %dx%d 4:3 source captures\n",
 		baseName.c_str(), rawTileWidth, rawTileHeight );
