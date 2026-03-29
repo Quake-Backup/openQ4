@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenQ4 – Release Notes</title>
+  <style>
+    :root {
+      --bg:        #0d0d0f;
+      --surface:   #141418;
+      --border:    #2a2a32;
+      --accent:    #d14800;
+      --accent2:   #e87030;
+      --text:      #e8e6e0;
+      --muted:     #8a8880;
+      --code-bg:   #1a1a1f;
+      --link:      #e07840;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    .header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    .header img.banner {
+      max-width: 100%;
+      border-radius: 6px;
+      margin-bottom: 1.25rem;
+    }
+    .tagline {
+      font-size: 1.05rem;
+      color: var(--muted);
+      margin-bottom: 1.25rem;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .badges img { height: 20px; }
+
+    .store-links {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .store-links img { height: 32px; }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.6rem 1.2rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .nav-links a { color: var(--link); }
+
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 2rem 0;
+    }
+
+    /* ── Headings ────────────────────────────────────────────── */
+    h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--accent2);
+      margin: 2rem 0 0.75rem;
+      padding-bottom: 0.35rem;
+      border-bottom: 1px solid var(--border);
+    }
+    h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 1.4rem 0 0.5rem;
+    }
+
+    /* ── Notice box ──────────────────────────────────────────── */
+    .note {
+      background: var(--surface);
+      border-left: 3px solid var(--accent);
+      border-radius: 4px;
+      padding: 0.75rem 1rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin: 1rem 0;
+    }
+    .note strong { color: var(--text); }
+
+    /* ── Feature grid ────────────────────────────────────────── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.1rem;
+    }
+    .feature-card .icon { font-size: 1.4rem; margin-bottom: 0.4rem; }
+    .feature-card h4 {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--accent2);
+      margin-bottom: 0.3rem;
+    }
+    .feature-card p {
+      font-size: 0.86rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* ── Steps ───────────────────────────────────────────────── */
+    ol.steps { counter-reset: step; list-style: none; padding: 0; }
+    ol.steps li {
+      counter-increment: step;
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.1rem;
+      align-items: flex-start;
+    }
+    ol.steps li::before {
+      content: counter(step);
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 700;
+      min-width: 1.7rem;
+      height: 1.7rem;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 0.1rem;
+    }
+    ol.steps li div { flex: 1; }
+    ol.steps li strong { color: var(--text); display: block; margin-bottom: 0.15rem; }
+    ol.steps li p { font-size: 0.9rem; color: var(--muted); margin: 0; }
+
+    /* ── Code ────────────────────────────────────────────────── */
+    code {
+      background: var(--code-bg);
+      color: #c8bfa8;
+      padding: 0.1em 0.35em;
+      border-radius: 3px;
+      font-size: 0.88em;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+      font-size: 0.87rem;
+      line-height: 1.55;
+      color: #c8bfa8;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      margin: 0.75rem 0;
+    }
+
+    /* ── Compat table ────────────────────────────────────────── */
+    .compat-list { list-style: none; padding: 0; }
+    .compat-list li {
+      display: flex;
+      gap: 0.6rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.92rem;
+    }
+    .compat-list li:last-child { border-bottom: none; }
+    .compat-list li .status { flex-shrink: 0; width: 1.4rem; text-align: center; }
+
+    /* ── Footer ──────────────────────────────────────────────── */
+    .footer {
+      text-align: center;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+    }
+    .footer a { color: var(--muted); }
+
+    /* ── Screenshots ─────────────────────────────────────────── */
+    .screenshots {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      margin: 1rem 0;
+    }
+    .screenshots img {
+      width: 100%;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+    }
+    .screenshot-full img {
+      width: 100%;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      margin: 0.75rem 0 0.25rem;
+    }
+    .screenshot-caption {
+      text-align: center;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────── -->
+<div class="header">
+  <img class="banner" src="img/banner.png" alt="OpenQ4">
+
+  <p class="tagline">Modern systems support, quality-of-life improvements, rendering upgrades, and new features for Quake 4</p>
+
+  <div class="badges">
+    <img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3">
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform">
+    <img src="https://img.shields.io/badge/arch-x64-orange.svg" alt="Architecture: x64">
+  </div>
+
+  <div class="store-links">
+    <a href="https://store.steampowered.com/app/2210/Quake_4/" target="_blank" rel="noopener noreferrer" aria-label="Buy Quake 4 on Steam">
+      <img src="https://img.shields.io/badge/Steam-Buy_Now-1b2838?logo=steam&logoColor=white&style=for-the-badge" alt="Buy on Steam">
+    </a>
+    <a href="https://www.gog.com/game/quake_iv" target="_blank" rel="noopener noreferrer" aria-label="Buy Quake 4 on GOG">
+      <img src="https://img.shields.io/badge/GOG-Buy_Now-86328a?logo=gog.com&logoColor=white&style=for-the-badge" alt="Buy on GOG">
+    </a>
+  </div>
+
+  <div class="nav-links">
+    <a href="#installation">Installation</a>
+    <a href="#features">Features</a>
+    <a href="#compatibility">Compatibility</a>
+    <a href="https://github.com/themuffinator/OpenQ4">GitHub</a>
+    <a href="https://github.com/themuffinator/OpenQ4/issues">Issues</a>
+  </div>
+</div>
+
+<hr>
+
+<!-- ── About ───────────────────────────────────────────────────── -->
+<h2>About</h2>
+<p><strong>OpenQ4</strong> is a complete open-source replacement for the Quake 4 engine and game binaries. Its goal is to bring modern systems support, quality-of-life improvements, visual enhancements, and new features to Quake 4 — while keeping full compatibility with the original game assets and preserving the classic gameplay feel.</p>
+
+<div class="note">
+  <strong>OpenQ4 does not include game assets.</strong> You must own a legitimate copy of Quake 4 to play. The engine automatically detects your installation from Steam or GOG. OpenQ4 is not compatible with legacy Quake 4 game mods.
+</div>
+
+<div class="screenshot-full">
+  <img src="img/shot1.png" alt="OpenQ4 running with stock Quake 4 assets">
+  <p class="screenshot-caption">OpenQ4 running with stock Quake 4 assets.</p>
+</div>
+
+<hr>
+
+<!-- ── Installation ────────────────────────────────────────────── -->
+<h2 id="installation">Installation</h2>
+
+<h3>What You Need</h3>
+<ul style="margin: 0.5rem 0 1rem 1.4rem; color: var(--muted); font-size: 0.95rem;">
+  <li>A <strong style="color:var(--text)">legitimate copy of Quake 4</strong> — <a href="https://store.steampowered.com/app/2210/Quake_4/">Steam</a> or <a href="https://www.gog.com/game/quake_iv">GOG</a></li>
+  <li>The <strong style="color:var(--text)">latest OpenQ4 release</strong> from the <a href="https://github.com/themuffinator/OpenQ4/releases">Releases page</a></li>
+  <li>A modern <strong style="color:var(--text)">64-bit operating system</strong> (Windows, Linux, or macOS)</li>
+</ul>
+
+<ol class="steps">
+  <li>
+    <div>
+      <strong>Install Quake 4</strong>
+      <p>Purchase and install Quake 4 via Steam or GOG if you haven't already.</p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <strong>Download OpenQ4</strong>
+      <p>Grab the latest release archive for your platform from the <a href="https://github.com/themuffinator/OpenQ4/releases">Releases page</a>.</p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <strong>Extract the archive</strong>
+      <p>Unzip the archive to a folder of your choice.</p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <strong>Run OpenQ4</strong>
+      <p>Launch <code>OpenQ4-client_x64.exe</code> (Windows) or <code>OpenQ4-client_x64</code> (Linux/macOS). The engine will auto-detect your Quake 4 installation.</p>
+    </div>
+  </li>
+</ol>
+
+<div class="note">
+  <strong>Windows:</strong> The package is self-contained — no separate Visual C++ Redistributable or OpenAL install required.<br>
+  <strong>Linux:</strong> The runtime currently uses X11/GLX. On Wayland, run OpenQ4 through XWayland (<code>DISPLAY</code> must be set).
+</div>
+
+<h3>Manual Path (if not auto-detected)</h3>
+<pre>OpenQ4-client_x64 +set fs_basepath "/path/to/Quake 4"</pre>
+
+<hr>
+
+<!-- ── Features ────────────────────────────────────────────────── -->
+<h2 id="features">Features</h2>
+
+<div class="screenshots">
+  <img src="img/shot2.png" alt="OpenQ4 dynamic combat scene">
+  <img src="img/shot3.png" alt="OpenQ4 environment lighting detail">
+</div>
+<p class="screenshot-caption">Modern rendering upgrades running with original Quake 4 assets.</p>
+
+<h3>Visual Enhancements</h3>
+<div class="feature-grid">
+  <div class="feature-card">
+    <div class="icon">🎨</div>
+    <h4>HDR Pipeline</h4>
+    <p>FP16 scene and post-process targets with filmic tone mapping and full color controls — exposure, contrast, saturation, vibrance.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">✨</div>
+    <h4>Bloom</h4>
+    <p>Tunable separable half-resolution bloom for stronger highlights with lower full-screen cost.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🌑</div>
+    <h4>Shadow Mapping <small style="color:var(--muted)">(experimental)</small></h4>
+    <p>Projected and point-light shadow maps, cascaded shadow maps (CSM), alpha-tested transparency shadows, and optional translucent shadow accumulation.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🌫️</div>
+    <h4>SSAO</h4>
+    <p>Screen-space ambient occlusion for added depth and contact shadowing in the final frame.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">📺</div>
+    <h4>CRT Emulation</h4>
+    <p>Optional post-process with scanlines, phosphor mask, screen curvature, and chromatic aberration controls.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🔲</div>
+    <h4>Modern AA &amp; Upscaling</h4>
+    <p>MSAA and SMAA 1x (medium preset), plus high-quality resolution-scaling paths and supersampling presets.</p>
+  </div>
+</div>
+
+<h3>Display and Controls</h3>
+<div class="feature-grid">
+  <div class="feature-card">
+    <div class="icon">🎮</div>
+    <h4>Controller Support</h4>
+    <p>Full gamepad/joystick support with hotplug, dual-stick analog movement and look, and complete button mapping.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🖥️</div>
+    <h4>Multi-Monitor Support</h4>
+    <p>Target specific displays, auto-detect the active monitor, and keep UI behavior sane across modern desktop setups.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">📐</div>
+    <h4>Auto Aspect Ratio</h4>
+    <p>UI, FOV, zoom, and view-weapon framing adapt from live render size — no manual aspect-ratio toggles needed.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🪟</div>
+    <h4>Modern Display Modes</h4>
+    <p>Fullscreen, borderless windowed, exclusive fullscreen, and desktop-native fullscreen paths.</p>
+  </div>
+</div>
+
+<h3>Engine and Platform</h3>
+<div class="feature-grid">
+  <div class="feature-card">
+    <div class="icon">🎯</div>
+    <h4>Full Game Support</h4>
+    <p>Complete single-player campaign and multiplayer modes in one unified engine stack under a single <code>openq4/</code> directory.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">📦</div>
+    <h4>Stock Asset Compatibility</h4>
+    <p>Runs against official Quake 4 PK4s — no replacement content shipped. Auto-validates PK4 checksums at startup.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🔊</div>
+    <h4>Audio</h4>
+    <p>WAV and Ogg Vorbis support via OpenAL Soft for high-quality 3D audio.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🛡️</div>
+    <h4>Crash Diagnostics</h4>
+    <p>Automatic crash dumps and structured logs for easier debugging and issue reporting.</p>
+  </div>
+</div>
+
+<hr>
+
+<!-- ── Compatibility ────────────────────────────────────────────── -->
+<h2 id="compatibility">Compatibility Status</h2>
+<p style="font-size:0.9rem;color:var(--muted);margin-bottom:0.75rem;">Reflects compatibility with official Quake 4 assets (<code>q4base</code> PK4s).</p>
+
+<ul class="compat-list">
+  <li><span class="status">✅</span><span><strong>BSE Reconstruction</strong> — Core BSE runtime rebuilt and integrated so stock effects execute through the OpenQ4 pipeline</span></li>
+  <li><span class="status">✅</span><span><strong>Sound Shaders</strong> — Effect-driven sound shader paths restored</span></li>
+  <li><span class="status">✅</span><span><strong>Screen Effects</strong> — BSE-driven screen/camera effects operational</span></li>
+  <li><span class="status">✅</span><span><strong>Material Shaders</strong> — Material compatibility restored, removing reliance on custom overrides</span></li>
+  <li><span class="status">✅</span><span><strong>Modern Display Handling</strong> — Aspect-ratio, multi-monitor, and fullscreen paths integrated</span></li>
+  <li><span class="status">✅</span><span><strong>Script Stability</strong> — x64 pointer-temp write guards prevent interpreter corruption in trigger/door event chains</span></li>
+  <li><span class="status">❌</span><span><strong>Ongoing Sweep</strong> — Map-by-map gameplay validation continues to catch residual regressions</span></li>
+</ul>
+
+<hr>
+
+<!-- ── Footer ──────────────────────────────────────────────────── -->
+<div class="footer">
+  <p>
+    <a href="https://github.com/themuffinator/OpenQ4">OpenQ4</a> is licensed under
+    <a href="https://www.gnu.org/licenses/gpl-3.0">GPLv3</a>.
+    Not affiliated with id Software, Raven Software, Bethesda, or ZeniMax Media.
+    Quake 4 is a trademark of ZeniMax Media Inc.
+  </p>
+  <p style="margin-top:0.5rem">
+    Copyright &copy; 2026 The OpenQ4 Project &nbsp;|&nbsp;
+    <a href="https://github.com/themuffinator/OpenQ4">GitHub</a> &nbsp;|&nbsp;
+    <a href="https://www.darkmatter-quake.com">Website</a>
+  </p>
+</div>
+
+</body>
+</html>
