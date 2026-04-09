@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/../.." && pwd)"
 default_builddir="${repo_root}/builddir"
+sync_icons_script="${script_dir}/sync_icons.py"
 declare -a MESON_CMD=()
 PYTHON_CMD=""
 declare -a READ_ARRAY_RESULT=()
@@ -246,6 +247,15 @@ command_name="${effective_args[0]:-}"
 if [[ -z "${command_name}" ]]; then
     echo "No Meson arguments were provided to meson_setup.sh." >&2
     exit 1
+fi
+
+if [[ ( "${command_name}" == "setup" || "${command_name}" == "compile" || "${command_name}" == "install" ) && "${OPENQ4_SKIP_ICON_SYNC:-0}" != "1" ]]; then
+    if [[ ! -f "${sync_icons_script}" ]]; then
+        echo "Icon sync script not found: '${sync_icons_script}'." >&2
+        exit 1
+    fi
+
+    "${PYTHON_CMD}" "${sync_icons_script}" --source-root "${repo_root}"
 fi
 
 if [[ "${command_name}" == "setup" ]]; then
