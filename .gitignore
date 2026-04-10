@@ -48,7 +48,7 @@
 /subprojects/SDL3-*/
 /.install/crashes/
 /.install/share/
-/.install/openq4/*.cfg
+/.install/baseoq4/*.cfg
 __pycache__/
 *.pyc
 _tmp_*

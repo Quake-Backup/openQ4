@@ -21,7 +21,7 @@
 
 **OpenQ4** is a complete open-source replacement for the Quake 4 engine and game binaries. The project keeps official Quake 4 asset compatibility as its guiding constraint while modernizing rendering, display handling, input, packaging, and the build pipeline for current hardware and operating systems.
 
-Single-player and multiplayer live under one `openq4/` directory with `game-sp` and `game-mp`. SDK-derived game code is maintained in the companion [OpenQ4-GameLibs](https://github.com/themuffinator/OpenQ4-GameLibs) repository, while BSE is treated as first-party source under `src/bse/` and linked directly into the client executable.
+Single-player and multiplayer live under one `baseoq4/` directory with `game-sp` and `game-mp`. SDK-derived game code is maintained in the companion [OpenQ4-GameLibs](https://github.com/themuffinator/OpenQ4-GameLibs) repository, while BSE is treated as first-party source under `src/bse/` and linked directly into the client executable.
 
 > [!NOTE]
 > OpenQ4 does not include Quake 4 assets. You need a legitimate copy of Quake 4 from Steam or GOG to play.
@@ -41,7 +41,7 @@ Single-player and multiplayer live under one `openq4/` directory with `game-sp` 
 ### Engine and compatibility
 
 - Complete engine and game-code replacement for Quake 4
-- Unified `openq4/` game directory for both single-player and multiplayer
+- Unified `baseoq4/` game directory for both single-player and multiplayer
 - Startup auto-discovery for Steam and GOG installs
 - Official `q4base` PK4 validation enabled by default
 - In-tree BSE runtime integrated into `OpenQ4-client_<arch>`
@@ -106,7 +106,7 @@ OpenQ4 is developed against the shipped Quake 4 assets, not replacement repo-sid
 
 Project scope is intentionally explicit:
 
-- `openq4/` remains the single game directory for SP and MP
+- `baseoq4/` remains the single game directory for SP and MP
 - BSE stays integrated in-tree under `src/bse/`
 - Dedicated server builds keep the disabled BSE manager path unless that changes by design
 - Canonical SDK/game-library edits belong in `../OpenQ4-GameLibs`, not a mirrored `src/game` tree

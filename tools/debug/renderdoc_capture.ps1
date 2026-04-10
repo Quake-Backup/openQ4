@@ -27,7 +27,7 @@ $workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "..\.."))
 $installDir = Join-Path $workspaceRoot ".install"
 $savePath = Join-Path $workspaceRoot ".home"
 $exePath = Join-Path $installDir "OpenQ4-client_x64.exe"
-$captureTemplate = Join-Path $workspaceRoot ".home\openq4\renderdoc\openq4"
+$captureTemplate = Join-Path $workspaceRoot ".home\baseoq4\renderdoc\openq4"
 $captureDir = Split-Path -Parent $captureTemplate
 $renderDocDoc = Join-Path $workspaceRoot "docs-dev\renderdoc-workflow.md"
 
@@ -84,7 +84,7 @@ $gameArgs = @(
     "+set", "fs_basepath", $BasePath,
     "+set", "fs_savepath", $savePath,
     "+set", "fs_devpath", $installDir,
-    "+set", "fs_game", "openq4"
+    "+set", "fs_game", "baseoq4"
 )
 
 if ($Mode -eq "SP") {
@@ -135,7 +135,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $logCandidates = @(
-    (Join-Path $workspaceRoot ".home\openq4\logs\openq4.log"),
+    (Join-Path $workspaceRoot ".home\baseoq4\logs\openq4.log"),
     (Join-Path $workspaceRoot ".home\q4base\logs\openq4.log")
 )
 $rendererCompatibilityFailure = $false

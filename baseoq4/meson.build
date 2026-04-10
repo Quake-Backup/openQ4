@@ -12,7 +12,7 @@ if build_games and build_game_sp
       vs_module_defs: game_module_defs_file,
       name_prefix: '',
       install: true,
-      install_dir: install_openq4_dir,
+      install_dir: install_game_dir,
     )
   else
     shared_module(
@@ -26,7 +26,7 @@ if build_games and build_game_sp
       link_args: game_module_link_args,
       name_prefix: '',
       install: true,
-      install_dir: install_openq4_dir,
+      install_dir: install_game_dir,
     )
   endif
 endif
@@ -45,7 +45,7 @@ if build_games and build_game_mp
       vs_module_defs: game_module_defs_file,
       name_prefix: '',
       install: true,
-      install_dir: install_openq4_dir,
+      install_dir: install_game_dir,
     )
   else
     shared_module(
@@ -59,7 +59,7 @@ if build_games and build_game_mp
       link_args: game_module_link_args,
       name_prefix: '',
       install: true,
-      install_dir: install_openq4_dir,
+      install_dir: install_game_dir,
     )
   endif
 endif
@@ -67,30 +67,30 @@ endif
 install_data(
   'openq4_defaults.cfg',
   'openq4_profile_steamdeck.cfg',
-  install_dir: install_openq4_dir,
+  install_dir: install_game_dir,
 )
 
 install_subdir(
   'materials',
-  install_dir: install_openq4_dir,
+  install_dir: install_game_dir,
 )
 
 install_subdir(
   'glprogs',
-  install_dir: install_openq4_dir,
+  install_dir: install_game_dir,
 )
 
 install_subdir(
   'guis',
-  install_dir: install_openq4_dir,
+  install_dir: install_game_dir,
 )
 
 install_subdir(
   'gfx',
-  install_dir: install_openq4_dir,
+  install_dir: install_game_dir,
 )
 
 install_subdir(
   'strings',
-  install_dir: install_openq4_dir,
+  install_dir: install_game_dir,
 )

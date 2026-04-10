@@ -39,8 +39,8 @@ def mirror_support_dir(source_dir: Path, dest_dir: Path) -> None:
         shutil.copytree(source_dir, dest_dir)
 
 
-def mirror_openq4_support_dirs(openq4_root: Path, stage_root: Path) -> None:
-    source_root = openq4_root / "src"
+def mirror_project_support_dirs(project_root: Path, stage_root: Path) -> None:
+    source_root = project_root / "src"
     stage_src_root = stage_root / "src"
 
     for dir_name in OPENQ4_SUPPORT_DIRS:
@@ -50,12 +50,12 @@ def mirror_openq4_support_dirs(openq4_root: Path, stage_root: Path) -> None:
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         print(
-            "usage: stage_gamelibs.py <openq4-root> <gamelibs-root> <stage-root>",
+            "usage: stage_gamelibs.py <project-root> <gamelibs-root> <stage-root>",
             file=sys.stderr,
         )
         return 2
 
-    openq4_root = Path(argv[1]).resolve()
+    project_root = Path(argv[1]).resolve()
     gamelibs_root = Path(argv[2]).resolve()
     stage_root = Path(argv[3]).resolve()
 
@@ -64,13 +64,13 @@ def main(argv: list[str]) -> int:
         print(f"error: game source directory not found: {source_game_dir}", file=sys.stderr)
         return 1
 
-    if not openq4_root.is_dir():
-        print(f"error: OpenQ4 root not found: {openq4_root}", file=sys.stderr)
+    if not project_root.is_dir():
+        print(f"error: OpenQ4 root not found: {project_root}", file=sys.stderr)
         return 1
 
     dest_game_dir = stage_root / "src" / "game"
     copy_game_sources(source_game_dir, dest_game_dir)
-    mirror_openq4_support_dirs(openq4_root, stage_root)
+    mirror_project_support_dirs(project_root, stage_root)
 
     print(stage_root.as_posix())
     return 0

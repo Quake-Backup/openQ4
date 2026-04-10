@@ -97,7 +97,7 @@
         "${workspaceFolder}\\.install",
         "+set",
         "fs_game",
-        "openq4",
+        "baseoq4",
         "+set",
         "net_serverDedicated",
         "0",

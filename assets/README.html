@@ -363,7 +363,7 @@
     <section class="panel">
       <h2>Overview</h2>
       <p><strong>OpenQ4</strong> keeps official Quake 4 asset compatibility as its guiding constraint while modernizing rendering, display handling, input, packaging, and the build pipeline for current hardware and operating systems.</p>
-      <p>Single-player and multiplayer live under one <code>openq4/</code> directory with <code>game-sp</code> and <code>game-mp</code>. SDK-derived game code is maintained in the companion <a href="https://github.com/themuffinator/OpenQ4-GameLibs">OpenQ4-GameLibs</a> repository, while BSE is treated as first-party source under <code>src/bse/</code> and linked directly into the client executable.</p>
+      <p>Single-player and multiplayer live under one <code>baseoq4/</code> directory with <code>game-sp</code> and <code>game-mp</code>. SDK-derived game code is maintained in the companion <a href="https://github.com/themuffinator/OpenQ4-GameLibs">OpenQ4-GameLibs</a> repository, while BSE is treated as first-party source under <code>src/bse/</code> and linked directly into the client executable.</p>
 
       <div class="note">
         <strong>Asset requirement:</strong> OpenQ4 does not include Quake 4 assets. You need a legitimate copy of Quake 4 from Steam or GOG to play.
@@ -386,7 +386,7 @@
           <h3>Stock content first</h3>
           <ul>
             <li>Complete engine and game-code replacement for Quake 4</li>
-            <li>Unified <code>openq4/</code> game directory for SP and MP</li>
+            <li>Unified <code>baseoq4/</code> game directory for SP and MP</li>
             <li>Steam and GOG auto-discovery at startup</li>
             <li>Official <code>q4base</code> PK4 validation enabled by default</li>
             <li>In-tree BSE runtime integrated into <code>OpenQ4-client_&lt;arch&gt;</code></li>
@@ -494,7 +494,7 @@
           <span class="eyebrow">Project rules</span>
           <h3>Intentional boundaries</h3>
           <ul>
-            <li><code>openq4/</code> remains the single game directory for SP and MP</li>
+            <li><code>baseoq4/</code> remains the single game directory for SP and MP</li>
             <li>BSE stays integrated in-tree under <code>src/bse/</code></li>
             <li>Dedicated server builds keep the disabled BSE manager path unless that changes by design</li>
             <li>Canonical SDK/game-library edits belong in <code>../OpenQ4-GameLibs</code>, not a mirrored <code>src/game</code> tree</li>

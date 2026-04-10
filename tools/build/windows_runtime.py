@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 PRODUCT_NAME = "OpenQ4"
+GAME_DIR_NAME = "baseoq4"
 OPENAL_RUNTIME_RELATIVE = Path("src/external/openal-soft/bin/win64/OpenAL32.dll")
 WINDOWS_ROOT_RUNTIME_PATTERNS = (
     "OpenAL32.dll",
@@ -132,12 +133,12 @@ def scan_runtime_imports(binary_path: Path) -> set[str]:
 
 
 
-def collect_openq4_windows_binaries(root_dir: Path) -> list[Path]:
+def collect_runtime_binaries(root_dir: Path) -> list[Path]:
     patterns = (
         f"{PRODUCT_NAME}-client_*.exe",
         f"{PRODUCT_NAME}-ded_*.exe",
-        "openq4/game-sp_*.dll",
-        "openq4/game-mp_*.dll",
+        f"{GAME_DIR_NAME}/game-sp_*.dll",
+        f"{GAME_DIR_NAME}/game-mp_*.dll",
     )
     binaries: list[Path] = []
     for pattern in patterns:
@@ -150,7 +151,7 @@ def infer_runtime_flavor(root_dir: Path) -> str:
     has_release = False
     has_debug = False
 
-    for binary_path in collect_openq4_windows_binaries(root_dir):
+    for binary_path in collect_runtime_binaries(root_dir):
         imports = scan_runtime_imports(binary_path)
         if any(token.decode("ascii") in imports for token in RELEASE_IMPORT_TOKENS):
             has_release = True
@@ -174,8 +175,8 @@ def detect_binary_arch(root_dir: Path) -> str:
     patterns = (
         f"{PRODUCT_NAME}-client_*.exe",
         f"{PRODUCT_NAME}-ded_*.exe",
-        "openq4/game-sp_*.dll",
-        "openq4/game-mp_*.dll",
+        f"{GAME_DIR_NAME}/game-sp_*.dll",
+        f"{GAME_DIR_NAME}/game-mp_*.dll",
     )
     for pattern in patterns:
         for path in sorted(root_dir.glob(pattern)):
@@ -205,7 +206,7 @@ def clear_staged_runtime_files(root_dir: Path) -> None:
 
 def ensure_no_msvc_runtime_imports(root_dir: Path) -> dict[str, list[str]]:
     violations: dict[str, list[str]] = {}
-    for binary_path in collect_openq4_windows_binaries(root_dir):
+    for binary_path in collect_runtime_binaries(root_dir):
         imports = sorted(scan_runtime_imports(binary_path))
         if imports:
             violations[str(binary_path)] = imports
@@ -228,7 +229,7 @@ def stage_runtime_payloads(
     build_root = build_root.resolve()
     source_root = source_root.resolve()
 
-    binaries = collect_openq4_windows_binaries(build_root)
+    binaries = collect_runtime_binaries(build_root)
     if not binaries:
         return {
             "arch": None,

@@ -464,12 +464,12 @@ function Remove-NonRuntimeInstallArtifacts {
         }
     }
 
-    $installOpenQ4Dir = Join-Path $InstallRoot "openq4"
-    if (-not (Test-Path $installOpenQ4Dir)) {
+    $installGameDir = Join-Path $InstallRoot "baseoq4"
+    if (-not (Test-Path $installGameDir)) {
         return
     }
 
-    $openQ4Patterns = @(
+    $gameDirPatterns = @(
         "*.pdb",
         "*.lib",
         "*.exp",
@@ -481,8 +481,8 @@ function Remove-NonRuntimeInstallArtifacts {
         "game-mp_x86.dll"
     )
 
-    foreach ($pattern in $openQ4Patterns) {
-        $matches = @(Get-ChildItem -Path $installOpenQ4Dir -Filter $pattern -File -ErrorAction SilentlyContinue)
+    foreach ($pattern in $gameDirPatterns) {
+        $matches = @(Get-ChildItem -Path $installGameDir -Filter $pattern -File -ErrorAction SilentlyContinue)
         foreach ($match in $matches) {
             Write-Host "Removing non-runtime staged artifact '$($match.FullName)'"
             Remove-Item -LiteralPath $match.FullName -Force

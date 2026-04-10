@@ -56,7 +56,7 @@ def main() -> int:
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=repo_root / ".install" / "openq4" / "gfx" / "guis" / "hud" / "reticles" / "expanded",
+        default=repo_root / ".install" / "baseoq4" / "gfx" / "guis" / "hud" / "reticles" / "expanded",
         help="directory containing the expanded 3x3 source images",
     )
     parser.add_argument(
@@ -69,8 +69,8 @@ def main() -> int:
     args = parser.parse_args()
 
     output_dirs = args.output_dir or [
-        repo_root / "openq4" / "gfx" / "guis" / "hud" / "reticles",
-        repo_root / ".install" / "openq4" / "gfx" / "guis" / "hud" / "reticles",
+        repo_root / "baseoq4" / "gfx" / "guis" / "hud" / "reticles",
+        repo_root / ".install" / "baseoq4" / "gfx" / "guis" / "hud" / "reticles",
     ]
 
     for output_dir in output_dirs:

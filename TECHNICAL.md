@@ -52,7 +52,7 @@ OpenQ4/
 ├── OpenQ4-client_x64      # Main executable (.exe on Windows)
 ├── OpenQ4-ded_x64         # Dedicated server (.exe on Windows)
 ├── OpenQ4-steamdeck       # Linux Steam Deck launcher
-└── openq4/                # Unified game directory
+└── baseoq4/               # Unified game directory
     ├── game-sp_x64        # Single-player module (.dll / .so / .dylib)
     └── game-mp_x64        # Multiplayer module (.dll / .so / .dylib)
 ```
@@ -60,6 +60,8 @@ OpenQ4/
 - **Single-player**: loads `game-sp_<arch>`
 - **Multiplayer**: loads `game-mp_<arch>`
 - **BSE runtime**: linked directly into `OpenQ4-client_<arch>`; dedicated server builds keep a disabled/stub path
+- **Source-owned runtime content**: author repo-managed overrides in `baseoq4/`
+- **Generated staging output**: treat `.install/baseoq4/` as build output, not an editing target
 - No separate mod folders or manual mode switching required
 
 ---

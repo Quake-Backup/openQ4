@@ -191,8 +191,8 @@ bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subproje
 |------|-------------|
 | `OpenQ4-client_x64[.exe]` | Main engine executable |
 | `OpenQ4-ded_x64[.exe]` | Dedicated server |
-| `openq4/game-sp_x64[.dll/.so/.dylib]` | Single-player game module |
-| `openq4/game-mp_x64[.dll/.so/.dylib]` | Multiplayer game module |
+| `baseoq4/game-sp_x64[.dll/.so/.dylib]` | Single-player game module |
+| `baseoq4/game-mp_x64[.dll/.so/.dylib]` | Multiplayer game module |
 
 - BSE (Basic Set of Effects) is linked directly into `OpenQ4-client_x64`; the dedicated server keeps a disabled/stub path.
 - On Windows, the wrapper also stages `OpenAL32.dll` and the MSVC/UCRT runtime DLLs next to the executables so the tree is runnable without extra redistributables.
@@ -208,7 +208,7 @@ After running the install step, `.install/` is a self-contained distributable pa
 ├── OpenQ4-steamdeck            # (Linux) Steam Deck launcher
 ├── OpenAL32.dll                # (Windows) runtime dependency
 ├── share/applications/         # (Linux) desktop entries
-└── openq4/
+└── baseoq4/
     ├── game-sp_x64[.dll/.so/.dylib]   # Single-player module
     ├── game-mp_x64[.dll/.so/.dylib]   # Multiplayer module
     ├── openq4_defaults.cfg            # OpenQ4-owned default binds

@@ -23,6 +23,7 @@ from windows_runtime import (
 
 
 PRODUCT_NAME = "OpenQ4"
+GAME_DIR_NAME = "baseoq4"
 SUPPORTED_ARCHES = ("x64", "x86", "arm64")
 
 PLATFORM_EXECUTABLE_EXT = {
@@ -226,8 +227,6 @@ def copy_required_windows_runtime(
 ) -> list[str]:
     missing_required: list[str] = []
     runtime_files = list_staged_runtime_files(install_dir)
-    runtime_by_name = {path.name.lower(): path for path in runtime_files}
-    copied_names: set[str] = set()
 
     runtime_flavor = infer_runtime_flavor(install_dir)
     if runtime_flavor != RuntimeFlavor.NONE:
@@ -237,9 +236,6 @@ def copy_required_windows_runtime(
         )
 
     for source in runtime_files:
-        source_name_lower = source.name.lower()
-        if source_name_lower in copied_names:
-            continue
         shutil.copy2(source, package_root / source.name)
 
     return missing_required
@@ -248,37 +244,37 @@ def copy_required_windows_runtime(
 def copy_required_game_binaries(
     platform: str,
     arch: str,
-    install_openq4_dir: Path,
-    package_openq4_dir: Path,
+    install_game_dir: Path,
+    package_game_dir: Path,
     allow_missing_binaries: bool,
 ) -> list[str]:
     missing_required: list[str] = []
 
     for filename in get_required_game_module_binaries(platform, arch):
-        source = install_openq4_dir / filename
+        source = install_game_dir / filename
         if not source.is_file():
             if allow_missing_binaries:
                 missing_required.append(filename)
                 continue
             raise FileNotFoundError(f"required game module not found: {source}")
-        shutil.copy2(source, package_openq4_dir / filename)
+        shutil.copy2(source, package_game_dir / filename)
 
     return missing_required
 
 
-def create_openq4_pk4(
-    install_openq4_dir: Path, destination_pk4: Path
+def create_game_pk4(
+    install_game_dir: Path, destination_pk4: Path
 ) -> tuple[int, list[str], list[str]]:
     added_files = 0
     skipped_samples: list[str] = []
     added_paths: set[str] = set()
 
     with ZipFile(destination_pk4, "w", compression=ZIP_DEFLATED, compresslevel=9) as pk4:
-        for path in sorted(install_openq4_dir.rglob("*")):
+        for path in sorted(install_game_dir.rglob("*")):
             if not path.is_file():
                 continue
 
-            rel = path.relative_to(install_openq4_dir)
+            rel = path.relative_to(install_game_dir)
             rel_parts_lower = {part.lower() for part in rel.parts}
 
             if rel_parts_lower & OPENQ4_EXCLUDED_DIRS:
@@ -461,9 +457,9 @@ def main(argv: list[str]) -> int:
         print(f"error: README.md not found at {readme_path}", file=sys.stderr)
         return 1
 
-    install_openq4_dir = install_dir / "openq4"
-    if not install_openq4_dir.is_dir():
-        print(f"error: openq4 directory not found: {install_openq4_dir}", file=sys.stderr)
+    install_game_dir = install_dir / GAME_DIR_NAME
+    if not install_game_dir.is_dir():
+        print(f"error: {GAME_DIR_NAME} directory not found: {install_game_dir}", file=sys.stderr)
         return 1
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -490,31 +486,30 @@ def main(argv: list[str]) -> int:
         args.allow_missing_binaries,
     )
 
-    openq4_package_dir = package_root / "openq4"
-    openq4_package_dir.mkdir(parents=True, exist_ok=True)
+    package_game_dir = package_root / GAME_DIR_NAME
+    package_game_dir.mkdir(parents=True, exist_ok=True)
     missing_game_modules = copy_required_game_binaries(
         args.platform,
         args.arch,
-        install_openq4_dir,
-        openq4_package_dir,
+        install_game_dir,
+        package_game_dir,
         args.allow_missing_binaries,
     )
 
-    openq4_pk4_name = "pak0.pk4"
-    openq4_pk4_path = openq4_package_dir / openq4_pk4_name
+    game_pk4_path = package_game_dir / "pak0.pk4"
 
-    added_files, skipped_samples, missing_required_pk4_files = create_openq4_pk4(
-        install_openq4_dir, openq4_pk4_path
+    added_files, skipped_samples, missing_required_pk4_files = create_game_pk4(
+        install_game_dir, game_pk4_path
     )
     if added_files == 0:
         print(
-            "error: openq4 pk4 packaging found no eligible files after filtering",
+            f"error: {GAME_DIR_NAME} pk4 packaging found no eligible files after filtering",
             file=sys.stderr,
         )
         return 1
     if missing_required_pk4_files:
         print(
-            "error: openq4 pk4 packaging is missing required runtime files:",
+            f"error: {GAME_DIR_NAME} pk4 packaging is missing required runtime files:",
             file=sys.stderr,
         )
         for rel in missing_required_pk4_files:
@@ -544,7 +539,7 @@ def main(argv: list[str]) -> int:
     print(f"Release archive: {archive_path}")
     print(f"Archive format: {archive_format}")
     print(f"Version manifest: {package_root / 'VERSION.txt'}")
-    print(f"OpenQ4 pk4: {openq4_pk4_path} ({added_files} files)")
+    print(f"OpenQ4 pk4: {game_pk4_path} ({added_files} files)")
     if copied_share:
         print(f"Share payload: {package_root / 'share'}")
     if copied_linux_launchers:

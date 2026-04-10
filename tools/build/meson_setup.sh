@@ -226,10 +226,10 @@ remove_non_runtime_install_artifacts() {
         rm -rf -- "${crashes_dir}"
     fi
 
-    local install_openq4_dir="${install_root}/openq4"
-    [[ -d "${install_openq4_dir}" ]] || return
+    local install_game_dir="${install_root}/baseoq4"
+    [[ -d "${install_game_dir}" ]] || return
 
-    find "${install_openq4_dir}" -maxdepth 1 -type f \
+    find "${install_game_dir}" -maxdepth 1 -type f \
         \( -name '*.pdb' -o -name '*.lib' -o -name '*.exp' -o -name '*.ilk' -o -name '*.map' \) \
         -print | while IFS= read -r match; do
             [[ -n "${match}" ]] || continue

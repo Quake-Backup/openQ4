@@ -25,14 +25,14 @@ Key findings:
 
 ### Shaders (bloom + “HDR” tonemap + grade)
 
-- `openq4/glprogs/bloom_extract.fs`  
+- `baseoq4/glprogs/bloom_extract.fs`  
   Downsampled prefilter + soft-knee threshold extraction.
-- `openq4/glprogs/bloom_blur.fs`  
+- `baseoq4/glprogs/bloom_blur.fs`  
   7-sample separable blur pass (horizontal/vertical via a uniform direction).
-- `openq4/glprogs/bloom.fs`  
+- `baseoq4/glprogs/bloom.fs`  
   Composite bloom + filmic tone map + color adjustments.
 
-Note: The repo also contains `.install/openq4/glprogs/...` duplicates; these can cause “edited the wrong file” workflow errors if your build/package step sources the `.install` tree for shipping.
+Note: The repo also contains `.install/baseoq4/glprogs/...` duplicates; these can cause “edited the wrong file” workflow errors if your build/package step sources the `.install` tree for shipping.
 
 ## Detailed code review and technical critique
 

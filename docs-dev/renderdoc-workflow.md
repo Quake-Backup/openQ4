@@ -7,7 +7,7 @@ This document covers the OpenQ4 RenderDoc status and the March 2026 black-viewpo
 - The black viewport reports were not caused by missing SMAA assets in the release package.
 - The older two-pass SMAA placeholder path had an undefined OpenGL feedback loop in the neighborhood-blend pass:
   - `OpenQ4-GameLibs/src/game/Game_render.cpp` already copied the resolved scene into `_currentRender` before the SMAA passes.
-  - [`openq4/materials/postprocess_openq4.mtr`](../openq4/materials/postprocess_openq4.mtr) previously drew `postprocess/smaa_blend` into `_postProcessAlbedo0` while also sampling `_postProcessAlbedo0`.
+  - [`baseoq4/materials/postprocess_openq4.mtr`](../baseoq4/materials/postprocess_openq4.mtr) previously drew `postprocess/smaa_blend` into `_postProcessAlbedo0` while also sampling `_postProcessAlbedo0`.
 - Some drivers preserved the previous texture contents and appeared to work. Others returned black or undefined data. That is why the issue only reproduced for some users and clustered around `r_postAA 1`.
 - Current builds no longer use that path. `r_postAA 1` now runs a three-pass GLSL SMAA 1x implementation: edge detection, blending-weight calculation, and neighborhood blending.
 
@@ -44,7 +44,7 @@ or:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\debug\renderdoc_capture.ps1 -Mode MP -Map mp/q4dm2 -AllowUnsupported
 ```
 
-The wrapper still launches `renderdoccmd capture`, starts OpenQ4 from `.install/`, waits for the map to settle, then calls `renderDocCapture`. Captures are written under `fs_savepath/openq4/renderdoc/`.
+The wrapper still launches `renderdoccmd capture`, starts OpenQ4 from `.install/`, waits for the map to settle, then calls `renderDocCapture`. Captures are written under `fs_savepath/baseoq4/renderdoc/`.
 
 On the current renderer, the launch is still expected to fail before first frame with the explicit RenderDoc compatibility error above. If no `.rdc` file is produced, the wrapper reports that limitation instead of silently succeeding.
 

@@ -142,7 +142,7 @@ build_game_sp = get_option('build_game_sp')
 build_game_mp = get_option('build_game_mp')
 needs_game_headers = build_engine or build_games
 install_root_dir = meson.project_source_root() / '.install'
-install_openq4_dir = install_root_dir / 'openq4'
+install_game_dir = install_root_dir / 'baseoq4'
 game_libs_repo_root = ''
 game_libs_source_root = ''
 game_libs_repo_summary = 'not required'
@@ -594,7 +594,7 @@ if build_engine or build_games
 endif
 
 if build_engine or (build_games and (build_game_sp or build_game_mp))
-  subdir('openq4')
+  subdir('baseoq4')
 endif
 
 if host_system == 'windows' and host_cpu_family == 'x86_64'

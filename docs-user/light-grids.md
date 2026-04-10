@@ -405,7 +405,7 @@ If you want a separate bake log:
 OpenQ4-client_x64.exe +set logFileName logs/openq4_lightgrids.log +bakeLightGrids all -quit
 ```
 
-On a standard local setup, logs are written under `fs_savepath/openq4/logs/`.
+On a standard local setup, logs are written under `fs_savepath/baseoq4/logs/`.
 
 ## Related Documentation
 

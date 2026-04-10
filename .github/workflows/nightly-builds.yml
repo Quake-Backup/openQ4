@@ -196,14 +196,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ ! -d ".install/openq4" ]; then
-            echo "Staged openq4 payload directory is missing."
+          if [ ! -d ".install/baseoq4" ]; then
+            echo "Staged baseoq4 payload directory is missing."
             exit 1
           fi
 
-          has_payload_files="$(find ".install/openq4" -type f -print -quit 2>/dev/null || true)"
+          has_payload_files="$(find ".install/baseoq4" -type f -print -quit 2>/dev/null || true)"
           if [ -z "${has_payload_files}" ]; then
-            echo "Staged openq4 payload directory has no files."
+            echo "Staged baseoq4 payload directory has no files."
             exit 1
           fi
 
