@@ -828,7 +828,10 @@ static idStr Session_GetMPLoadLimitString( const idDict &serverInfo ) {
 }
 
 static bool Session_IsLoadingContinueKey( int key ) {
-	if ( key == K_MOUSE1 || key == K_MOUSE2 || key == K_ESCAPE || key == K_ENTER || key == K_KP_ENTER || key == K_SPACE ) {
+	if ( key == K_ESCAPE || key == K_ENTER || key == K_KP_ENTER || key == K_SPACE ) {
+		return true;
+	}
+	if ( key >= K_MOUSE1 && key <= K_MOUSE8 ) {
 		return true;
 	}
 	if ( key >= K_JOY1 && key <= K_JOY32 ) {

@@ -1,0 +1,11 @@
+// Override the stock intro load screen so it can use the shared expanded-background path.
+mapDef game/airdefense1 {
+	"name"		"#str_107613"
+	"size0"		"484219104"
+	"size1"		"484219104"
+	"size2"		"484257236"
+	"size3"		"1220386185"
+	"loadgui"		"guis/loading/intro.gui"
+	"loadimage"		"gfx/guis/loadscreens/e3_load"
+	"savethumb"		"gfx/guis/mainmenu/save_airdefense"
+}

@@ -6312,6 +6312,20 @@ windowDef Desktop
 						}
 
 					}
+					bindDef set_ctrls_attk_weaponwheel_key
+					{
+						rect	452,407,149,18
+						visible	1
+						forecolor	1,0.745,0.137,0.8
+						bind	_weaponWheel
+						textscale	0.24
+						font	"fonts/lowpixel"
+
+						onAction {
+							set "cmd" "play main_menu_selection" ;
+						}
+
+					}
 					windowDef set_ctrls_attk_attack
 					{
 						rect	260,119,189,18
@@ -6417,6 +6431,15 @@ windowDef Desktop
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200125"
+						textscale	0.24
+						font	"fonts/lowpixel"
+					}
+					windowDef set_ctrls_attk_weaponwheel
+					{
+						rect	260,407,189,18
+						visible	1
+						forecolor	1,1,1,0.8
+						text	"#str_229920"
 						textscale	0.24
 						font	"fonts/lowpixel"
 					}
@@ -19595,6 +19618,7 @@ windowDef Desktop
 			set "set_ctrls_attk_objectives_key::noevents" "0" ;
 			set "set_ctrls_attk_flashlight_key::noevents" "0" ;
 			set "set_ctrls_attk_screenshot_key::noevents" "0" ;
+			set "set_ctrls_attk_weaponwheel_key::noevents" "0" ;
 			set "set_ctrls_other_quicksave_key::noevents" "0" ;
 			set "set_ctrls_other_quickload_key::noevents" "0" ;
 			set "set_ctrls_other_chat_key::noevents" "0" ;
@@ -19658,6 +19682,7 @@ windowDef Desktop
 			set "set_ctrls_attk_objectives_key::noevents" "1" ;
 			set "set_ctrls_attk_flashlight_key::noevents" "1" ;
 			set "set_ctrls_attk_screenshot_key::noevents" "1" ;
+			set "set_ctrls_attk_weaponwheel_key::noevents" "1" ;
 			set "set_ctrls_other_quicksave_key::noevents" "1" ;
 			set "set_ctrls_other_quickload_key::noevents" "1" ;
 			set "set_ctrls_other_chat_key::noevents" "1" ;
@@ -22127,9 +22152,6 @@ windowDef Desktop
 				set "set_b_controls_4::visible" "1" ;
 				
 				namedevent "p_btns::showSetControls" ;
-				
-				set "set_b_controls_move_13::visible" "0" ;
-				transition "set_ctrl_b13::matcolor_w" "0.6" "0.2" "250" ;
 				
 				if ( "gui::curr_lang" == 1 || "gui::curr_lang" == 2 ) {
 					set "set_ctrl_t_b1::textscale" "0.20" ;

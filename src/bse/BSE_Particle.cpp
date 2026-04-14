@@ -1288,19 +1288,19 @@ bool rvSpriteParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, const
 
 	float s, c;
 	idMath::SinCos(rotation, s, c);
-	idVec3 left = view[1] * c - view[2] * s;
+	idVec3 right = view[1] * c - view[2] * s;
 	idVec3 up = view[1] * s + view[2] * c;
-	left *= idMath::Fabs(size[0]);
-	up *= idMath::Fabs(size[1]);
+	right *= idMath::Fabs(size[0]) * 0.5f;
+	up *= idMath::Fabs(size[1]) * 0.5f;
 
 	dword rgba = HandleTint(effect, color, 1.0f);
 	const int baseVert = tri->numVerts;
 	AppendQuad(
 		tri,
-		pos - left,
-		pos - up,
-		pos + left,
-		pos + up,
+		pos - right - up,
+		pos + right - up,
+		pos + right + up,
+		pos - right + up,
 		rgba);
 	tri->verts[baseVert + 0].normal = pos;
 	tri->verts[baseVert + 1].normal = pos;
@@ -1463,34 +1463,17 @@ bool rvOrientedParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, con
 	EvaluateSize(pt->mpSizeEnvelope, evalTime, oneOverDuration, size);
 	EvaluateRotation(pt->mpRotateEnvelope, evalTime, oneOverDuration, rotation);
 
-	if (BSE_GetFrameCounterMode() >= 2) {
-		static int orientedRenderTraceCount = 0;
-		if (orientedRenderTraceCount < 64) {
-			common->Printf(
-				"BSE oriented render %d: eval=%.4f size=(%.3f %.3f) rot=(%.3f %.3f %.3f) tint=(%.3f %.3f %.3f %.3f) pos=(%.2f %.2f %.2f) locked=%d material='%s'\n",
-				orientedRenderTraceCount,
-				evalTime,
-				size[0], size[1],
-				rotation[0], rotation[1], rotation[2],
-				tint[0], tint[1], tint[2], tint[3],
-				position.x, position.y, position.z,
-				GetLocked() ? 1 : 0,
-				(pt->GetMaterial() != NULL) ? pt->GetMaterial()->GetName() : "<null>");
-			++orientedRenderTraceCount;
-		}
-	}
-
 	idMat3 transform;
 	rvAngles(rotation[0], rotation[1], rotation[2]).ToMat3(transform);
-	const idVec3 right = transform[1] * size[0];
-	const idVec3 up = transform[2] * size[1];
+	const idVec3 right = transform[1] * (size[0] * 0.5f);
+	const idVec3 up = transform[2] * (size[1] * 0.5f);
 
 	dword rgba = HandleTint(effect, tint, 1.0f);
 	const int base = tri->numVerts;
-	SetDrawVert(tri->verts[base + 0], position + right, 0.0f, 0.0f, rgba);
-	SetDrawVert(tri->verts[base + 1], position - up, 1.0f, 0.0f, rgba);
-	SetDrawVert(tri->verts[base + 2], position - right, 1.0f, 1.0f, rgba);
-	SetDrawVert(tri->verts[base + 3], position + up, 0.0f, 1.0f, rgba);
+	SetDrawVert(tri->verts[base + 0], position - right - up, 0.0f, 0.0f, rgba);
+	SetDrawVert(tri->verts[base + 1], position + right - up, 1.0f, 0.0f, rgba);
+	SetDrawVert(tri->verts[base + 2], position + right + up, 1.0f, 1.0f, rgba);
+	SetDrawVert(tri->verts[base + 3], position - right + up, 0.0f, 1.0f, rgba);
 	tri->verts[base + 0].normal = position;
 	tri->verts[base + 1].normal = position;
 	tri->verts[base + 2].normal = position;
