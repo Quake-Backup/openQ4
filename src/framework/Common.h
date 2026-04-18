@@ -149,6 +149,8 @@ struct MemInfo_t {
 	int				soundAssetsTotal;
 };
 
+class rvISourceControl;
+
 class idCommon {
 public:
 	virtual						~idCommon(void) {}
@@ -183,8 +185,29 @@ public:
 	// set once to clear the cvar from +set for early init code
 	virtual void				StartupVariable(const char* match, bool once) = 0;
 
+	virtual int					GetUserCmdHz(void) const = 0;
+	virtual int					GetUserCmdMSec(void) const = 0;
+	virtual int					GetUserCmdTime(int ticNumber) const = 0;
+	virtual int					GetUserCmdDeltaMsec(int ticNumber) const = 0;
+
+	// Returns com_frameTime - which is 0 if a command is added to the command line.
+	virtual int					GetFrameTime(void) const = 0;
+
+	// Returns whether the current game frame should present a renderable state.
+	virtual bool				IsRenderableGameFrame(void) const = 0;
+	virtual void				SetRenderableGameFrame(bool in) = 0;
+
+	// Returns the last message from common->Error.
+	virtual const char*			GetErrorMessage(void) const = 0;
+
 	// Initializes a tool with the given dictionary.
 	virtual void				InitTool(const toolFlag_t tool, const idDict* dict) = 0;
+
+	// Returns true if an editor currently has focus.
+	virtual bool				IsToolActive(void) const = 0;
+
+	// Returns an interface to source control when tool integrations provide one.
+	virtual rvISourceControl*	GetSourceControl(void) = 0;
 
 	// Activates or deactivates a tool.
 	virtual void				ActivateTool(bool active) = 0;
@@ -251,9 +274,6 @@ public:
 
 	const char* GetLocalizedString(const char* key, int langIndex) { return GetLanguageDict()->GetString(key); }
 	const char* GetLocalizedString(const char* key) { return GetLanguageDict()->GetString(key); }
-
-	int GetUserCmdMSec(void) { return 16; }
-	int GetUserCmdHz(void) { return 60; }
 };
 
 extern idCommon* common;
