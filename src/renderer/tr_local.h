@@ -777,6 +777,7 @@ public:
 	virtual void			DrawBigStringExt( int x, int y, const char *string, const idVec4 &setColor, bool forceColor, const idMaterial *material );
 	virtual void			WriteDemoPics();
 	virtual void			DrawDemoPics();
+	virtual void			SetFrameShaderTime( int timeMsec );
 	virtual void			BeginFrame( int windowWidth, int windowHeight );
 	virtual void			SetSpecialEffect( ESpecialEffectType Which, bool Enabled );
 	virtual void			SetSpecialEffectParm( ESpecialEffectType Which, int Parm, float Value );
@@ -832,6 +833,7 @@ public:
 	int						staticAllocCount;	// running total of bytes allocated
 
 	float					frameShaderTime;	// shader time for all non-world 2D rendering
+	int						frameShaderTimeMsec;	// integer companion for GUI/cinematic/material timing
 
 	int						viewportOffset[2];	// for doing larger-than-window tiled renderings
 	int						tiledViewport[2];

@@ -876,7 +876,7 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 //	primaryWorld = NULL;
 
 	// set the time for shader effects in 2D rendering
-	frameShaderTime = eventLoop->Milliseconds() * 0.001;
+	SetFrameShaderTime( eventLoop->Milliseconds() );
 
 	//
 	// draw buffer stuff
@@ -900,6 +900,11 @@ void idRenderSystemLocal::WriteDemoPics() {
 
 void idRenderSystemLocal::DrawDemoPics() {
 	demoGuiModel->EmitFullScreen();
+}
+
+void idRenderSystemLocal::SetFrameShaderTime( int timeMsec ) {
+	frameShaderTimeMsec = timeMsec;
+	frameShaderTime = static_cast<float>( timeMsec ) * 0.001f;
 }
 
 /*

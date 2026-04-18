@@ -2554,6 +2554,7 @@ void idRenderSystemLocal::Clear( void ) {
 	videoRestartCount = 0;
 	staticAllocCount = 0;
 	frameShaderTime = 0.0f;
+	frameShaderTimeMsec = 0;
 	viewportOffset[0] = 0;
 	viewportOffset[1] = 0;
 	tiledViewport[0] = 0;

@@ -832,7 +832,7 @@ void idRenderWorldLocal::RenderScene( const renderView_t *renderView ) {
 
 	// use this time for any subsequent 2D rendering, so damage blobs/etc 
 	// can use level time
-	tr.frameShaderTime = parms->floatTime;
+	tr.SetFrameShaderTime( parms->renderView.time );
 
 	// see if the view needs to reverse the culling sense in mirrors
 	// or environment cube sides

@@ -4884,7 +4884,7 @@ void idSessionLocal::Frame() {
 	const int previousLatchedTicNumber = latchedTicNumber;
 
 	// Phase 2 decouples presentation from simulation: only demos / fixed-rate capture
-	// still wait for a new tic before the foreground frame proceeds.
+	// still wait for exact async tics before the foreground frame proceeds.
 	int	minTic = previousLatchedTicNumber + 1;
 	if ( com_minTics.GetInteger() > 1 ) {
 		minTic = lastGameTic + com_minTics.GetInteger();
@@ -4905,11 +4905,16 @@ void idSessionLocal::Frame() {
 	// fixedTic lets us run a forced number of usercmd each frame without timing
 	if ( com_fixedTic.GetInteger() ) {
 		minTic = previousLatchedTicNumber;
+	} else if ( aviCaptureMode ) {
+		// Fixed-rate capture should only advance once the next capture-sized block of
+		// async tics is ready; otherwise repeated-state presentation frames can
+		// incorrectly rerun capture work faster than the requested cadence.
+		minTic = lastGameTic + com_aviDemoTics.GetInteger();
 	}
 
 	int requestedWaitMsec = 0;
 	int actualWaitMsec = 0;
-	const bool shouldWaitForGameTic = readDemo || writeDemo;
+	const bool shouldWaitForGameTic = readDemo || writeDemo || aviCaptureMode;
 	const int latchedTicBeforeWait = previousLatchedTicNumber;
 
 	if ( shouldWaitForGameTic && minTic > latchedTicBeforeWait ) {

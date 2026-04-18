@@ -355,6 +355,8 @@ Manual validation still needed before Phase 3 sign-off:
 
 Once decoupled presentation and interpolation are working, audit systems that can break at high presentation rates.
 
+Status: `In progress` as of `2026-04-17`.
+
 Systems to verify:
 
 - demo record / playback timing
@@ -373,6 +375,19 @@ Special attention:
 - `src/framework/Session.cpp`
 - `src/renderer/tr_light.cpp`
 - any render path using `renderView.time`
+
+Current progress:
+
+- Moved live SP/MP player `renderView.time` stamping onto presentation time for normal gameplay while keeping demo playback and timedemo paths on `gameLocal.time`, so render-view-time-driven materials and HUD/camera consumers can animate between simulation tics without destabilizing deterministic capture/playback modes.
+- Moved SP/MP entity-owned `GetRenderView()` timing onto the same live presentation-time source outside demos and timedemos, covering remote-camera feeds, portal-style subviews, and other entity render views that were still hard-stamped to the last authoritative game tic.
+- Corrected that presentation-time source to stay in the same game-time domain as effect start times and other simulation-timestamped consumers, fixing a regression where raw wall-clock `renderView.time` values caused BSE effect lifetime checks to treat many effects as already expired.
+- Relaxed the SP/MP `idCameraAnim::Start()` same-frame render-view refresh check from equality to `>= gameLocal.time`, so camera handoff paths still force a redraw when the already-built local player view is presentation-stamped later than the current simulation tic.
+- Added an explicit renderer-side non-world 2D shader-time stamp and routed fullscreen GUI/material timing through it, so menu/loading/test-GUI passes no longer inherit a stale `tr.primaryRenderView.time` when they redraw outside the main 3D scene path.
+- Fixed `idMaterial::UpdateCinematic()` to honor the caller-provided time instead of silently sampling cinematics from `tr.primaryRenderView.time`, closing a high-refresh compatibility gap for GUI/video-backed materials.
+- Revalidated the staged timed modal GUI harness on the menu path with `r_swapInterval 0` and `com_maxfps 240`; the timed message-box snapshot reports `present=4.27 ms (234.1 Hz)`, confirming the focused Phase 4 UI timing cleanup still sustains repeated-state high-refresh presentation.
+- Restored fixed-rate AVI capture to the exact-tic wait path in `idSessionLocal::Frame()`, so `aviGame` / other `aviCaptureMode` flows no longer rerun capture work on repeated-state presentation frames at the uncapped render rate.
+- Revalidated a staged `aviGame` pass on `game/storage2` with `r_swapInterval 0`, `com_maxfps 240`, and the default `com_aviDemoTics 2`; the captured run reports `bound=simulation`, `ticDelta/frame=2.00`, `gameTics/frame=2.00`, and `present=32.38 ms (30.9 Hz)`, confirming the fixed-rate capture path now advances on the intended two-tic cadence instead of free-running at presentation speed.
+- Suppressed mover-backed stair-bob smoothing in the SP/MP `idPlayer::BobCycle()` paths whenever the current support resolves to a mover assembly, preventing bound clip helpers and parent elevator bodies from generating fake step-up/step-down camera jolts while walking on the opening `game/storage2` lift at high presentation rates without changing gameplay collision or mover push behavior.
 
 Exit criteria:
 

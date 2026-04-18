@@ -323,6 +323,9 @@ public:
 	// draw the 2D pics that were saved out with the current demo frame
 	virtual void			DrawDemoPics() = 0;
 
+	// Sets the shader time used by non-world 2D rendering for the current frame.
+	virtual void			SetFrameShaderTime( int timeMsec ) = 0;
+
 	// FIXME: add an interface for arbitrary point/texcoord drawing
 
 

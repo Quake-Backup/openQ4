@@ -292,7 +292,7 @@ void idGuiModel::EmitFullScreen( void ) {
 		viewDef->scissor.y2 = tr.viewDef->scissor.y2;
 	}
 
-	viewDef->renderView.time = tr.primaryRenderView.time;
+	viewDef->renderView.time = tr.frameShaderTimeMsec;
 	memcpy( viewDef->renderView.shaderParms, tr.primaryRenderView.shaderParms, sizeof( viewDef->renderView.shaderParms ) );
 	viewDef->floatTime = tr.frameShaderTime;
 
