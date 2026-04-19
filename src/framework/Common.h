@@ -170,7 +170,6 @@ struct openq4AsyncTimingStats_t {
 
 void				OpenQ4_GetAsyncTimingStats( openq4AsyncTimingStats_t &stats, int maxSamples = 60 );
 void				OpenQ4_BeginPresentationFrame( void );
-
 class idCommon {
 public:
 	virtual						~idCommon(void) {}

@@ -319,6 +319,8 @@ public:
 	virtual void				StartupVariable( const char *match, bool once );
 	virtual int					GetUserCmdHz( void ) const;
 	virtual int					GetUserCmdMSec( void ) const;
+	virtual int					GetUserCmdTime( int ticNumber ) const;
+	virtual int					GetUserCmdDeltaMsec( int ticNumber ) const;
 	virtual int					GetFrameTime( void ) const;
 	virtual bool				IsRenderableGameFrame( void ) const;
 	virtual void				SetRenderableGameFrame( bool in );
@@ -1324,6 +1326,24 @@ idCommonLocal::GetUserCmdMSec
 */
 int idCommonLocal::GetUserCmdMSec( void ) const {
 	return USERCMD_MSEC;
+}
+
+/*
+==================
+idCommonLocal::GetUserCmdTime
+==================
+*/
+int idCommonLocal::GetUserCmdTime( int ticNumber ) const {
+	return idCommon::GetUserCmdTime( ticNumber );
+}
+
+/*
+==================
+idCommonLocal::GetUserCmdDeltaMsec
+==================
+*/
+int idCommonLocal::GetUserCmdDeltaMsec( int ticNumber ) const {
+	return idCommon::GetUserCmdDeltaMsec( ticNumber );
 }
 
 /*
