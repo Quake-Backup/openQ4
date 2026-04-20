@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __COMMON_H__
 #define __COMMON_H__
 
+#include "UsercmdGen.h"
+
 /*
 ==============================================================
 
@@ -106,6 +108,8 @@ extern idCVar		com_developer;
 extern idCVar		con_allowConsole;
 extern idCVar		com_speeds;
 extern idCVar		com_showFPS;
+extern idCVar		com_maxfps;
+extern idCVar		com_showFramePacing;
 extern idCVar		com_showMemoryUsage;
 extern idCVar		com_showAsyncStats;
 extern idCVar		com_showSoundDecoders;
@@ -118,7 +122,8 @@ extern int			time_gameDraw;			// game present time
 extern int			time_frontend;			// renderer frontend time
 extern int			time_backend;			// renderer backend time
 
-extern int			com_frameTime;			// time for the current frame in milliseconds
+extern int			com_frameTime;			// simulation time for the current frame in milliseconds
+extern int			com_frameRealTime;		// presentation time for the current frame in milliseconds
 extern volatile int	com_ticNumber;			// 60 hz tics, incremented by async function
 extern int			com_editors;			// current active editor(s)
 extern bool			com_editorActive;		// true if an editor has focus
@@ -149,6 +154,22 @@ struct MemInfo_t {
 	int				soundAssetsTotal;
 };
 
+class rvISourceControl;
+
+struct openq4AsyncTimingStats_t {
+	bool			valid;
+	int				sampleCount;
+	int				lastDeltaMsec;
+	int				minDeltaMsec;
+	int				maxDeltaMsec;
+	float			avgDeltaMsec;
+	float			avgHz;
+	float			avgTimeConsumedMsec;
+	float			avgJitterMsec;
+};
+
+void				OpenQ4_GetAsyncTimingStats( openq4AsyncTimingStats_t &stats, int maxSamples = 60 );
+void				OpenQ4_BeginPresentationFrame( void );
 class idCommon {
 public:
 	virtual						~idCommon(void) {}
@@ -183,8 +204,36 @@ public:
 	// set once to clear the cvar from +set for early init code
 	virtual void				StartupVariable(const char* match, bool once) = 0;
 
+	virtual int					GetUserCmdHz(void) const = 0;
+	virtual int					GetUserCmdMSec(void) const = 0;
+	virtual int					GetUserCmdTime(int ticNumber) const {
+		if ( ticNumber <= 0 ) {
+			return 0;
+		}
+		return static_cast<int>( ( static_cast<long long>( ticNumber ) * GetUserCmdMsecNumerator() ) / GetUserCmdMsecDenominator() );
+	}
+	virtual int					GetUserCmdDeltaMsec(int ticNumber) const {
+		return GetUserCmdTime( ticNumber ) - GetUserCmdTime( ticNumber - 1 );
+	}
+
+	// Returns com_frameTime - which is 0 if a command is added to the command line.
+	virtual int					GetFrameTime(void) const = 0;
+
+	// Returns whether the current game frame should present a renderable state.
+	virtual bool				IsRenderableGameFrame(void) const = 0;
+	virtual void				SetRenderableGameFrame(bool in) = 0;
+
+	// Returns the last message from common->Error.
+	virtual const char*			GetErrorMessage(void) const = 0;
+
 	// Initializes a tool with the given dictionary.
 	virtual void				InitTool(const toolFlag_t tool, const idDict* dict) = 0;
+
+	// Returns true if an editor currently has focus.
+	virtual bool				IsToolActive(void) const = 0;
+
+	// Returns an interface to source control when tool integrations provide one.
+	virtual rvISourceControl*	GetSourceControl(void) = 0;
 
 	// Activates or deactivates a tool.
 	virtual void				ActivateTool(bool active) = 0;
@@ -209,6 +258,9 @@ public:
 
 	// Same as Printf, with a more usable API - Printf pipes to this.
 	virtual void				VPrintf(const char* fmt, va_list arg) = 0;
+
+	// Prints the current frame-pacing diagnostics summary immediately.
+	virtual void				PrintFramePacingSnapshot( const char *reason = NULL ) = 0;
 
 	// Prints message that only shows up if the "developer" cvar is set,
 	// and NEVER forces a screen update, which could cause reentrancy problems.
@@ -252,8 +304,31 @@ public:
 	const char* GetLocalizedString(const char* key, int langIndex) { return GetLanguageDict()->GetString(key); }
 	const char* GetLocalizedString(const char* key) { return GetLanguageDict()->GetString(key); }
 
-	int GetUserCmdMSec(void) { return 16; }
-	int GetUserCmdHz(void) { return 60; }
+	int GetUserCmdMsecNumerator(void) const { return 1000; }
+	int GetUserCmdMsecDenominator(void) const { return GetUserCmdHz(); }
+	float GetUserCmdMsecFloat(void) const { return static_cast<float>( GetUserCmdMsecNumerator() ) / static_cast<float>( GetUserCmdMsecDenominator() ); }
+	float GetUserCmdSec(void) const { return 1.0f / static_cast<float>( GetUserCmdHz() ); }
+	int GetPresentationTime(void) const {
+		return ( com_frameRealTime > 0 ) ? com_frameRealTime : com_frameTime;
+	}
+	int GetUserCmdTicsForMsecFloor(int msec) const {
+		if ( msec <= 0 ) {
+			return 0;
+		}
+		return static_cast<int>( ( static_cast<long long>( msec ) * GetUserCmdMsecDenominator() ) / GetUserCmdMsecNumerator() );
+	}
+	int GetUserCmdTicsForMsecCeil(int msec) const {
+		if ( msec <= 0 ) {
+			return 0;
+		}
+		return static_cast<int>( ( static_cast<long long>( msec ) * GetUserCmdMsecDenominator() + GetUserCmdMsecNumerator() - 1 ) / GetUserCmdMsecNumerator() );
+	}
+	int GetUserCmdMsecForTics(int ticCount) const {
+		return GetUserCmdTime( ticCount );
+	}
+	int GetUserCmdTimeAfterMsec(int msec, int ticCount) const {
+		return GetUserCmdTime( GetUserCmdTicsForMsecCeil( msec ) + ticCount );
+	}
 };
 
 extern idCommon* common;

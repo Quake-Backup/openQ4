@@ -52,9 +52,11 @@ public:
 	virtual	bool				Shutdown( void ) = 0;
 
 	virtual	bool				PlayEffect( class rvRenderEffectLocal *def, float time ) = 0;
-	virtual	bool				ServiceEffect( class rvRenderEffectLocal *def, float time ) = 0;
+	virtual	bool				ServiceEffect( class rvRenderEffectLocal *def, float ownerTime, float presentationTime ) = 0;
 	virtual idRenderModel*		RenderEffect( class rvRenderEffectLocal *def, const struct viewDef_s *view ) = 0;
 	virtual	void				StopEffect( rvRenderEffectLocal *def ) = 0;
+	virtual bool				IsEffectStopped( const rvRenderEffectLocal *def ) const = 0;
+	virtual void				SetEffectStopped( rvRenderEffectLocal *def, bool stopped ) = 0;
 	virtual	void				FreeEffect( rvRenderEffectLocal *def ) = 0;
 	virtual	float				EffectDuration( const rvRenderEffectLocal *def ) = 0;
 

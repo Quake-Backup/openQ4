@@ -395,6 +395,7 @@ void idUserInterfaceLocal::Redraw( int _time, bool useAspectCorrection ) {
 	}
 	if ( !loading && desktop ) {
 		time = _time;
+		renderSystem->SetFrameShaderTime( _time );
 		if ( !initialized ) {
 			initialized = true;
 			desktop->Init();

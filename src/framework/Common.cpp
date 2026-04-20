@@ -32,9 +32,13 @@ If you have questions concerning this license or the applicable additional terms
 //#include "../renderer/Image.h"
 #include "../bse/BSE_API.h"
 #include "RenderDoc.h"
+#include <SDL3/SDL.h>
 
 #define	MAX_PRINT_MSG_SIZE	4096
 #define MAX_WARNING_LIST	256
+
+void OpenQ4_PrintFramePacingSnapshot( const char *reason );
+void OpenQ4_RecordMultiplayerFramePacing( int frameStartMsec );
 
 typedef enum {
 	ERP_NONE,
@@ -80,6 +84,8 @@ idCVar com_developer( "developer", "0", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "dev
 idCVar con_allowConsole( "con_allowConsole", "1", CVAR_BOOL | CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_NOCHEAT, "allow toggling the console with the tilde key; set to 0 to require Ctrl+Alt+Tilde" );
 idCVar com_speeds( "com_speeds", "0", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "show engine timings" );
 idCVar com_showFPS( "com_showFPS", "0", CVAR_BOOL|CVAR_SYSTEM|CVAR_ARCHIVE|CVAR_NOCHEAT, "show frames rendered per second" );
+idCVar com_maxfps( "com_maxfps", "60", CVAR_INTEGER | CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_NOCHEAT, "presentation frame cap, 0 = uncapped", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
+idCVar com_showFramePacing( "com_showFramePacing", "0", CVAR_INTEGER | CVAR_SYSTEM | CVAR_NOCHEAT, "show frame pacing diagnostics: 1 = HUD overlay, 2 = overlay plus console logging", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar com_showMemoryUsage( "com_showMemoryUsage", "0", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "show total and per frame memory usage" );
 idCVar com_showAsyncStats( "com_showAsyncStats", "0", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "show async network stats" );
 idCVar com_showSoundDecoders( "com_showSoundDecoders", "0", CVAR_BOOL|CVAR_SYSTEM|CVAR_NOCHEAT, "show sound decoders" );
@@ -116,13 +122,107 @@ static void Common_MigrateLegacyConsoleAllowCVar( void ) {
 	con_allowConsole.SetString( legacyAllowConsole->GetString() );
 }
 
+static int commonLastPresentationCap = -1;
+static double commonNextPresentationFrameClock = 0.0;
+static bool commonNextPresentationFrameValid = false;
+
+static void Common_ResetPresentationThrottle( void ) {
+	commonNextPresentationFrameClock = 0.0;
+	commonNextPresentationFrameValid = false;
+}
+
+static double Common_GetPresentationClockNow( void ) {
+	return static_cast<double>( SDL_GetPerformanceCounter() );
+}
+
+static double Common_GetPresentationClockUnitsPerSecond( void ) {
+	return static_cast<double>( SDL_GetPerformanceFrequency() );
+}
+
+static int Common_GetRequestedPresentationCap( void ) {
+	int cap = Max( 0, com_maxfps.GetInteger() );
+
+#if defined( _WIN32 )
+	// Hidden/minimized windows should not spin uncapped when presentation is decoupled.
+	if ( !Sys_IsWindowVisible() && ( cap == 0 || cap > 60 ) ) {
+		cap = 60;
+	}
+#endif
+
+	return cap;
+}
+
+static void Common_ThrottlePresentationFrame( void ) {
+	const int cap = Common_GetRequestedPresentationCap();
+
+	if ( cap <= 0 ) {
+		commonLastPresentationCap = cap;
+		Common_ResetPresentationThrottle();
+		return;
+	}
+
+	const double clockUnitsPerSecond = Common_GetPresentationClockUnitsPerSecond();
+	if ( clockUnitsPerSecond <= 0.0 ) {
+		commonLastPresentationCap = cap;
+		Common_ResetPresentationThrottle();
+		return;
+	}
+
+	const double nowClock = Common_GetPresentationClockNow();
+	const double frameClockUnits = clockUnitsPerSecond / static_cast<double>( cap );
+	const double frameMsec = 1000.0 / static_cast<double>( cap );
+	if ( cap != commonLastPresentationCap || !commonNextPresentationFrameValid ) {
+		commonLastPresentationCap = cap;
+		commonNextPresentationFrameClock = nowClock + frameClockUnits;
+		commonNextPresentationFrameValid = true;
+		return;
+	}
+
+	// A long hitch or debugger break should restart pacing from "now" instead of sleeping forever.
+	if ( nowClock > commonNextPresentationFrameClock + frameClockUnits * 4.0
+		|| nowClock + frameClockUnits * 4.0 < commonNextPresentationFrameClock ) {
+		commonNextPresentationFrameClock = nowClock;
+	}
+
+	// Sleep away the bulk of the frame period, then use the high-resolution counter
+	// for the last slice so low frame caps don't pick up an extra scheduler quantum.
+	const double sleepSlackMsec = idMath::ClampFloat( 0.5f, 1.5f, static_cast<float>( frameMsec * 0.125f ) );
+	while ( true ) {
+		const double remainingClockUnits = commonNextPresentationFrameClock - Common_GetPresentationClockNow();
+		if ( remainingClockUnits <= 0.0 ) {
+			break;
+		}
+
+		const double remainingMsec = ( remainingClockUnits * 1000.0 ) / clockUnitsPerSecond;
+		if ( remainingMsec <= sleepSlackMsec ) {
+			continue;
+		}
+
+		const int sleepMsec = Max( 1, static_cast<int>( idMath::Floor( remainingMsec - sleepSlackMsec ) ) );
+		Sys_Sleep( sleepMsec );
+	}
+
+	commonNextPresentationFrameClock += frameClockUnits;
+}
+
+void OpenQ4_BeginPresentationFrame( void ) {
+	if ( idAsyncNetwork::serverDedicated.GetInteger() == 1 ) {
+		Common_ResetPresentationThrottle();
+	} else {
+		Common_ThrottlePresentationFrame();
+	}
+
+	com_frameRealTime = Sys_Milliseconds();
+}
+
 // com_speeds times
 int				time_gameFrame;
 int				time_gameDraw;
 int				time_frontend;			// renderSystem frontend time
 int				time_backend;			// renderSystem backend time
 
-int				com_frameTime;			// time for the current frame in milliseconds
+int				com_frameTime;			// simulation time for the current frame in milliseconds
+int				com_frameRealTime;		// presentation time for the current frame in milliseconds
 int				com_frameNumber;		// variable frame number
 volatile int	com_ticNumber;			// 60 hz tics
 int				com_editors;			// currently opened editor(s)
@@ -153,9 +253,11 @@ public:
 	}
 
 	virtual bool				PlayEffect( class rvRenderEffectLocal *def, float time ) { return false; }
-	virtual bool				ServiceEffect( class rvRenderEffectLocal *def, float time ) { return false; }
+	virtual bool				ServiceEffect( class rvRenderEffectLocal *def, float ownerTime, float presentationTime ) { return false; }
 	virtual idRenderModel *		RenderEffect( class rvRenderEffectLocal *def, const struct viewDef_s *view ) { return NULL; }
 	virtual void				StopEffect( rvRenderEffectLocal *def ) { }
+	virtual bool				IsEffectStopped( const rvRenderEffectLocal *def ) const { return false; }
+	virtual void				SetEffectStopped( rvRenderEffectLocal *def, bool stopped ) { }
 	virtual void				FreeEffect( rvRenderEffectLocal *def ) { }
 	virtual float				EffectDuration( const rvRenderEffectLocal *def ) { return 0.0f; }
 
@@ -215,7 +317,17 @@ public:
 	virtual void				GUIFrame( bool execCmd, bool network );
 	virtual void				Async( void );
 	virtual void				StartupVariable( const char *match, bool once );
+	virtual int					GetUserCmdHz( void ) const;
+	virtual int					GetUserCmdMSec( void ) const;
+	virtual int					GetUserCmdTime( int ticNumber ) const;
+	virtual int					GetUserCmdDeltaMsec( int ticNumber ) const;
+	virtual int					GetFrameTime( void ) const;
+	virtual bool				IsRenderableGameFrame( void ) const;
+	virtual void				SetRenderableGameFrame( bool in );
+	virtual const char *		GetErrorMessage( void ) const;
 	virtual void				InitTool( const toolFlag_t tool, const idDict *dict );
+	virtual bool				IsToolActive( void ) const;
+	virtual rvISourceControl *	GetSourceControl( void );
 	virtual void				ActivateTool( bool active );
 	virtual void				WriteConfigToFile( const char *filename );
 	virtual void				WriteFlaggedCVarsToFile( const char *filename, int flags, const char *setCmd );
@@ -224,6 +336,7 @@ public:
 	virtual void				SetRefreshOnPrint( bool set );
 	virtual void				Printf( const char *fmt, ... ) id_attribute((format(printf,2,3)));
 	virtual void				VPrintf( const char *fmt, va_list arg );
+	virtual void				PrintFramePacingSnapshot( const char *reason );
 	virtual void				DPrintf( const char *fmt, ... ) id_attribute((format(printf,2,3)));
 	virtual void				Warning( const char *fmt, ... ) id_attribute((format(printf,2,3)));
 	virtual void				DWarning( const char *fmt, ...) id_attribute((format(printf,2,3)));
@@ -296,6 +409,7 @@ static idStr Common_BuildPlatformProfileConfigName( const char *profileName ) {
 	void						FilterLangList( idStrList* list, idStr lang );
 
 	bool						com_fullyInitialized;
+	bool						com_renderableGameFrame;
 	bool						com_refreshOnPrint;		// update the screen every print for dmap
 	int							com_errorEntered;		// 0, ERP_DROP, etc
 	bool						com_shuttingDown;
@@ -332,6 +446,7 @@ idCommonLocal::idCommonLocal
 */
 idCommonLocal::idCommonLocal( void ) {
 	com_fullyInitialized = false;
+	com_renderableGameFrame = true;
 	com_refreshOnPrint = false;
 	com_errorEntered = 0;
 	com_shuttingDown = false;
@@ -593,6 +708,15 @@ void idCommonLocal::Printf( const char *fmt, ... ) {
 	va_start( argptr, fmt );
 	VPrintf( fmt, argptr );
 	va_end( argptr );
+}
+
+/*
+==================
+idCommonLocal::PrintFramePacingSnapshot
+==================
+*/
+void idCommonLocal::PrintFramePacingSnapshot( const char *reason ) {
+	OpenQ4_PrintFramePacingSnapshot( reason );
 }
 
 /*
@@ -1184,6 +1308,96 @@ Activates or Deactivates a tool
 void idCommonLocal::ActivateTool( bool active ) {
 	com_editorActive = active;
 	Sys_GrabMouseCursor( !active );
+}
+
+/*
+==================
+idCommonLocal::GetUserCmdHz
+==================
+*/
+int idCommonLocal::GetUserCmdHz( void ) const {
+	return USERCMD_HZ;
+}
+
+/*
+==================
+idCommonLocal::GetUserCmdMSec
+==================
+*/
+int idCommonLocal::GetUserCmdMSec( void ) const {
+	return USERCMD_MSEC;
+}
+
+/*
+==================
+idCommonLocal::GetUserCmdTime
+==================
+*/
+int idCommonLocal::GetUserCmdTime( int ticNumber ) const {
+	return idCommon::GetUserCmdTime( ticNumber );
+}
+
+/*
+==================
+idCommonLocal::GetUserCmdDeltaMsec
+==================
+*/
+int idCommonLocal::GetUserCmdDeltaMsec( int ticNumber ) const {
+	return idCommon::GetUserCmdDeltaMsec( ticNumber );
+}
+
+/*
+==================
+idCommonLocal::GetFrameTime
+==================
+*/
+int idCommonLocal::GetFrameTime( void ) const {
+	return com_frameTime;
+}
+
+/*
+==================
+idCommonLocal::IsRenderableGameFrame
+==================
+*/
+bool idCommonLocal::IsRenderableGameFrame( void ) const {
+	return com_renderableGameFrame;
+}
+
+/*
+==================
+idCommonLocal::SetRenderableGameFrame
+==================
+*/
+void idCommonLocal::SetRenderableGameFrame( bool in ) {
+	com_renderableGameFrame = in;
+}
+
+/*
+==================
+idCommonLocal::GetErrorMessage
+==================
+*/
+const char *idCommonLocal::GetErrorMessage( void ) const {
+	return errorMessage;
+}
+
+/*
+==================
+idCommonLocal::IsToolActive
+==================
+*/
+bool idCommonLocal::IsToolActive( void ) const {
+	return com_editorActive;
+}
+
+/*
+==================
+idCommonLocal::GetSourceControl
+==================
+*/
+rvISourceControl *idCommonLocal::GetSourceControl( void ) {
+	return NULL;
 }
 
 /*
@@ -2725,6 +2939,8 @@ idCommonLocal::Frame
 */
 void idCommonLocal::Frame( void ) {
 	try {
+		OpenQ4_BeginPresentationFrame();
+		const int frameStartMsec = com_frameRealTime;
 
 		// pump all the events
 		Sys_GenerateEvents();
@@ -2739,7 +2955,7 @@ void idCommonLocal::Frame( void ) {
 
 		eventLoop->RunEventLoop();
 
-		com_frameTime = com_ticNumber * GetUserCmdMSec();
+		com_frameTime = GetUserCmdTime( com_ticNumber );
 
 		idAsyncNetwork::RunFrame();
 
@@ -2748,6 +2964,7 @@ void idCommonLocal::Frame( void ) {
 			// Keep netplay flow the same as stock, but ensure audio mixes each frame.
 			soundSystem->Render();
 			session->GuiFrameEvents();
+			OpenQ4_RecordMultiplayerFramePacing( frameStartMsec );
 			session->UpdateScreen( false );
 		}
 	} else {
@@ -2791,9 +3008,10 @@ idCommonLocal::GUIFrame
 =================
 */
 void idCommonLocal::GUIFrame( bool execCmd, bool network ) {
+	OpenQ4_BeginPresentationFrame();
 	Sys_GenerateEvents();
 	eventLoop->RunEventLoop( execCmd );	// and execute any commands
-	com_frameTime = com_ticNumber * GetUserCmdMSec();
+	com_frameTime = GetUserCmdTime( com_ticNumber );
 	if ( network ) {
 		idAsyncNetwork::RunFrame();
 	}
@@ -2821,7 +3039,7 @@ be VERY VERY careful about what it calls.
 
 typedef struct {
 	int				milliseconds;			// should always be incremeting by 60hz
-	int				deltaMsec;				// should always be 16
+	int				deltaMsec;				// should always be one exact 60 Hz tic
 	int				timeConsumed;			// msec spent in Com_AsyncThread()
 	int				clientPacketsReceived;
 	int				serverPacketsReceived;
@@ -2831,7 +3049,69 @@ typedef struct {
 static const int MAX_ASYNC_STATS = 1024;
 asyncStats_t	com_asyncStats[MAX_ASYNC_STATS];		// indexed by com_ticNumber
 int prevAsyncMsec;
-int	lastTicMsec;
+double	lastTicMsec;
+bool	lastTicMsecValid;
+
+void OpenQ4_GetAsyncTimingStats( openq4AsyncTimingStats_t &stats, int maxSamples ) {
+	memset( &stats, 0, sizeof( stats ) );
+
+	if ( maxSamples <= 0 ) {
+		return;
+	}
+
+	Sys_EnterCriticalSection();
+
+	const int latestTic = com_ticNumber - 1;
+	if ( latestTic < 0 ) {
+		Sys_LeaveCriticalSection();
+		return;
+	}
+
+	const int maxAvailableSamples = Min( latestTic + 1, MAX_ASYNC_STATS );
+	const int requestedSamples = Min( maxSamples, maxAvailableSamples );
+	if ( requestedSamples <= 0 ) {
+		Sys_LeaveCriticalSection();
+		return;
+	}
+
+	const float targetDeltaMsec = 1000.0f / static_cast<float>( USERCMD_HZ );
+	float deltaSum = 0.0f;
+	float timeConsumedSum = 0.0f;
+	float jitterSum = 0.0f;
+
+	for ( int i = 0; i < requestedSamples; ++i ) {
+		const asyncStats_t &sample = com_asyncStats[( latestTic - i ) & ( MAX_ASYNC_STATS - 1 )];
+		if ( sample.milliseconds <= 0 ) {
+			break;
+		}
+
+		if ( stats.sampleCount == 0 ) {
+			stats.lastDeltaMsec = sample.deltaMsec;
+			stats.minDeltaMsec = sample.deltaMsec;
+			stats.maxDeltaMsec = sample.deltaMsec;
+		} else {
+			stats.minDeltaMsec = Min( stats.minDeltaMsec, sample.deltaMsec );
+			stats.maxDeltaMsec = Max( stats.maxDeltaMsec, sample.deltaMsec );
+		}
+
+		++stats.sampleCount;
+		deltaSum += static_cast<float>( sample.deltaMsec );
+		timeConsumedSum += static_cast<float>( sample.timeConsumed );
+		jitterSum += idMath::Fabs( static_cast<float>( sample.deltaMsec ) - targetDeltaMsec );
+	}
+
+	Sys_LeaveCriticalSection();
+
+	if ( stats.sampleCount <= 0 ) {
+		return;
+	}
+
+	stats.valid = true;
+	stats.avgDeltaMsec = deltaSum / static_cast<float>( stats.sampleCount );
+	stats.avgHz = stats.avgDeltaMsec > 0.0f ? 1000.0f / stats.avgDeltaMsec : 0.0f;
+	stats.avgTimeConsumedMsec = timeConsumedSum / static_cast<float>( stats.sampleCount );
+	stats.avgJitterMsec = jitterSum / static_cast<float>( stats.sampleCount );
+}
 
 static bool OpenQ4_ShouldUseSmoothSingleplayerSlowTime( void ) {
 	if ( cvarSystem == NULL || idAsyncNetwork::IsActive() ) {
@@ -2890,8 +3170,9 @@ void idCommonLocal::Async( void ) {
 	}
 
 	int	msec = Sys_Milliseconds();
-	if ( !lastTicMsec ) {
-		lastTicMsec = msec - GetUserCmdMSec();
+	if ( !lastTicMsecValid ) {
+		lastTicMsec = static_cast<double>( msec ) - GetUserCmdMsecFloat();
+		lastTicMsecValid = true;
 	}
 
 	if ( !com_preciseTic.GetBool() ) {
@@ -2900,26 +3181,27 @@ void idCommonLocal::Async( void ) {
 		return;
 	}
 
-	int ticMsec = GetUserCmdMSec();
+	double ticMsec = GetUserCmdMsecFloat();
 
 	// the number of msec per tic can be varies with the timescale cvar
 	float timescale = com_timescale.GetFloat();
 	const bool smoothSlowTime = OpenQ4_ShouldUseSmoothSingleplayerSlowTime();
 	if ( !smoothSlowTime && timescale != 1.0f ) {
 		ticMsec /= timescale;
-		if ( ticMsec < 1 ) {
-			ticMsec = 1;
+		if ( ticMsec < 1.0 ) {
+			ticMsec = 1.0;
 		}
 	}
 
 	// don't skip too many
 	if ( smoothSlowTime || timescale == 1.0f ) {
-		if ( lastTicMsec + 10 * GetUserCmdMSec() < msec ) {
-			lastTicMsec = msec - 10* GetUserCmdMSec();
+		const double clampedCatchupMsec = 10.0 * GetUserCmdMsecFloat();
+		if ( lastTicMsec + clampedCatchupMsec < static_cast<double>( msec ) ) {
+			lastTicMsec = static_cast<double>( msec ) - clampedCatchupMsec;
 		}
 	}
 
-	while ( lastTicMsec + ticMsec <= msec ) {
+	while ( lastTicMsec + ticMsec <= static_cast<double>( msec ) ) {
 		SingleAsyncTic();
 		lastTicMsec += ticMsec;
 	}

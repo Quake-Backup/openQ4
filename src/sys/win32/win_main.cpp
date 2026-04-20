@@ -80,6 +80,35 @@ Win32Vars_t	win32;
 
 static char		sys_cmdline[MAX_STRING_CHARS];
 
+static double Sys_GetApproximateProcessorFrequencyHz( void ) {
+	HKEY hKey;
+	DWORD procSpeedMHz = 0;
+	DWORD buflen = sizeof( procSpeedMHz );
+	LSTATUS ret;
+
+	if ( RegOpenKeyEx( HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey ) != ERROR_SUCCESS ) {
+		return 0.0;
+	}
+
+	ret = RegQueryValueEx( hKey, "~MHz", NULL, NULL, reinterpret_cast<LPBYTE>( &procSpeedMHz ), &buflen );
+	if ( ret != ERROR_SUCCESS ) {
+		buflen = sizeof( procSpeedMHz );
+		ret = RegQueryValueEx( hKey, "~Mhz", NULL, NULL, reinterpret_cast<LPBYTE>( &procSpeedMHz ), &buflen );
+	}
+	if ( ret != ERROR_SUCCESS ) {
+		buflen = sizeof( procSpeedMHz );
+		ret = RegQueryValueEx( hKey, "~mhz", NULL, NULL, reinterpret_cast<LPBYTE>( &procSpeedMHz ), &buflen );
+	}
+
+	RegCloseKey( hKey );
+
+	if ( ret != ERROR_SUCCESS || procSpeedMHz == 0 ) {
+		return 0.0;
+	}
+
+	return static_cast<double>( procSpeedMHz ) * 1000000.0;
+}
+
 bool Sys_HandlePrintScreenHotkey( bool pressed ) {
 	if ( !win32.win_printScreenToSystemTool.GetBool() ) {
 		return false;
@@ -1153,7 +1182,7 @@ static void Sys_AsyncThread(void* parm) {
 
 	while (1) {
 #ifdef WIN32	
-		// this will trigger 60 times a second
+		// Wake frequently enough that common->Async can service the exact 60 Hz schedule.
 		int r = WaitForSingleObject(hTimer, 100);
 		if (r != WAIT_OBJECT_0) {
 			OutputDebugString("idPacketServer::PacketServerInterrupt: bad wait return");
@@ -1184,7 +1213,7 @@ Start the thread that will call idCommon::Async()
 ==============
 */
 void Sys_StartAsyncThread(void) {
-	// create an auto-reset event that happens 60 times a second
+	// Wake at a fine enough cadence that common->Async can hit the exact 60 Hz schedule.
 	hTimer = CreateWaitableTimer(NULL, false, NULL);
 	if (!hTimer) {
 		common->Error("idPacketServer::Spawn: CreateWaitableTimer failed");
@@ -1192,7 +1221,7 @@ void Sys_StartAsyncThread(void) {
 
 	LARGE_INTEGER	t;
 	t.HighPart = t.LowPart = 0;
-	SetWaitableTimer(hTimer, &t, USERCMD_MSEC, NULL, NULL, TRUE);
+	SetWaitableTimer(hTimer, &t, 1, NULL, NULL, TRUE);
 
 	Sys_CreateThread((xthread_t)Sys_AsyncThread, NULL, THREAD_ABOVE_NORMAL, threadInfo, "Async", g_threads, &g_thread_count);
 
@@ -1327,8 +1356,11 @@ void Sys_Init(void) {
 	//
 	if (!idStr::Icmp(win32.sys_cpustring.GetString(), "detect")) {
 		idStr string;
+		const double processorFrequencyHz = Sys_GetApproximateProcessorFrequencyHz();
 
-		common->Printf("%1.0f MHz ", Sys_ClockTicksPerSecond() / 1000000.0f);
+		if ( processorFrequencyHz > 0.0 ) {
+			common->Printf("%1.0f MHz ", processorFrequencyHz / 1000000.0f);
+		}
 
 		win32.cpuid = Sys_GetCPUId();
 
