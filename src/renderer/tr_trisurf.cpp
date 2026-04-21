@@ -123,6 +123,7 @@ static int			numSilEdges;
 static silEdge_t *	silEdges;
 static idHashIndex	silEdgeHash( SILEDGE_HASH_SIZE, MAX_SIL_EDGES );
 static int			numPlanes;
+static int			triSurfReferenceId;
 
 static idBlockAlloc<srfTriangles_t, 1<<8, 0>				srfTrianglesAllocator;
 
@@ -406,12 +407,23 @@ void R_ReallyFreeStaticTriSurf( srfTriangles_t *tri ) {
 		return;
 	}
 
+	if ( tri->topAmbientSurface != NULL
+		&& tri->verts == tri->topAmbientSurface->verts
+		&& tri->topAmbientSurface->referenceCount > 0 ) {
+		--tri->topAmbientSurface->referenceCount;
+		tri->topAmbientSurface = NULL;
+	}
+
 	R_FreeStaticTriSurfVertexCaches( tri );
 
 	if ( tri->verts != NULL ) {
 		// R_CreateLightTris points tri->verts at the verts of the ambient surface
 		if ( tri->ambientSurface == NULL || tri->verts != tri->ambientSurface->verts ) {
-			triVertexAllocator.Free( tri->verts );
+			if ( tri->referenceCount != 0 ) {
+				tri->verts = NULL;
+			} else {
+				triVertexAllocator.Free( tri->verts );
+			}
 		}
 	}
 
@@ -513,6 +525,21 @@ void R_FreeDeferredTriSurfs( frameData_t *frame ) {
 
 	if ( !frame ) {
 		return;
+	}
+
+	for ( tri = frame->firstDeferredFreeTriSurf; tri; tri = next ) {
+		next = tri->nextDeferredFree;
+
+		if ( tri->ambientSurface == NULL ) {
+			continue;
+		}
+
+		if ( tri->topAmbientSurface != NULL
+			&& tri->verts == tri->topAmbientSurface->verts
+			&& tri->topAmbientSurface->referenceCount > 0 ) {
+			--tri->topAmbientSurface->referenceCount;
+			tri->topAmbientSurface = NULL;
+		}
 	}
 
 	for ( tri = frame->firstDeferredFreeTriSurf; tri; tri = next ) {
@@ -722,6 +749,11 @@ R_ReferenceStaticTriSurfVerts
 void R_ReferenceStaticTriSurfVerts( srfTriangles_t *tri, const srfTriangles_t *reference ) {
 	tri->verts = reference->verts;
 	tri->numAllocedVerts = reference->numAllocedVerts;
+	tri->topAmbientSurface = ( reference->topAmbientSurface != NULL )
+		? reference->topAmbientSurface
+		: const_cast<srfTriangles_t *>( reference );
+	++tri->topAmbientSurface->referenceCount;
+	tri->myID = ++triSurfReferenceId;
 }
 
 /*

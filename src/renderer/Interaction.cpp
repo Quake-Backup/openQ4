@@ -557,6 +557,65 @@ static srfTriangles_t *R_CreateLightTris( const idRenderEntityLocal *ent,
 }
 
 /*
+===================
+R_EnsureInteractionShadowCache
+
+Classic shadow interactions need either a private projected-vertex cache or a
+reference to the ambient surface's shared vertex-program shadow cache.
+Packed MD5R prim-batch shadows manage their own geometry stream, so they don't
+go through the classic cache upload path here.
+===================
+*/
+static bool R_EnsureInteractionShadowCache( surfaceInteraction_t *sint ) {
+	srfTriangles_t *shadowTris = sint->shadowTris;
+
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( shadowTris == NULL || shadowTris->primBatchMesh != NULL ) {
+		return shadowTris != NULL;
+	}
+#else
+	if ( shadowTris == NULL ) {
+		return false;
+	}
+#endif
+
+	// Vertex-program turbo shadows borrow the ambient surface's paired
+	// front/back cache. Classic shadow volumes with explicit projected verts own
+	// a private cache instead.
+	if ( !shadowTris->shadowVertexes ) {
+		shadowTris->shadowCache = sint->ambientTris->shadowCache;
+	}
+
+	if ( !shadowTris->shadowCache ) {
+		if ( shadowTris->shadowVertexes ) {
+			R_CreatePrivateShadowCache( shadowTris );
+		} else {
+			R_CreateVertexProgramShadowCache( sint->ambientTris );
+			shadowTris->shadowCache = sint->ambientTris->shadowCache;
+		}
+
+		if ( !shadowTris->shadowCache ) {
+			return false;
+		}
+	}
+
+	vertexCache.Touch( shadowTris->shadowCache );
+
+	if ( !shadowTris->indexCache && r_useIndexBuffers.GetBool() && shadowTris->numIndexes > 0 ) {
+		vertexCache.Alloc(
+			shadowTris->indexes,
+			shadowTris->numIndexes * sizeof( shadowTris->indexes[0] ),
+			&shadowTris->indexCache,
+			true );
+	}
+	if ( shadowTris->indexCache ) {
+		vertexCache.Touch( shadowTris->indexCache );
+	}
+
+	return true;
+}
+
+/*
 ===============
 idInteraction::idInteraction
 ===============
@@ -1245,38 +1304,53 @@ void idInteraction::AddActiveInteraction( void ) {
 				if ( lightDef->parms.globalLight || R_ShouldDisableEntityCullingForLevelshot() || !R_CullLocalBox( lightTris->bounds, vEntity->modelMatrix, 5, tr.viewDef->frustum ) ) {
 
 					// make sure the original surface has its ambient cache created
-					srfTriangles_t *tri = sint->ambientTris;
-					if ( !tri->ambientCache ) {
-						if ( !R_CreateAmbientCache( tri, sint->shader->ReceivesLighting() ) ) {
-							// skip if we were out of vertex memory
-							continue;
+					srfTriangles_t *ambientTris = sint->ambientTris;
+					bool canAddLightSurf = true;
+
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+					if ( ambientTris->primBatchMesh == NULL ) {
+#endif
+						if ( !ambientTris->ambientCache ) {
+							if ( !R_CreateAmbientCache( ambientTris, sint->shader->ReceivesLighting() ) ) {
+								canAddLightSurf = false;
+							}
 						}
-					}
 
-					// reference the original surface's ambient cache
-					lightTris->ambientCache = tri->ambientCache;
+						if ( canAddLightSurf ) {
+							lightTris->ambientCache = ambientTris->ambientCache;
+							vertexCache.Touch( ambientTris->ambientCache );
 
-					// touch the ambient surface so it won't get purged
-					vertexCache.Touch( lightTris->ambientCache );
-
-					// regenerate the lighting cache (for non-vertex program cards) if it has been purged
-					if ( !lightTris->lightingCache ) {
-						if ( !R_CreateLightingCache( entityDef, lightDef, lightTris ) ) {
-							// skip if we are out of vertex memory
-							continue;
+							// regenerate the lighting cache (for non-vertex program cards) if it has been purged
+							if ( !lightTris->lightingCache && !R_CreateLightingCache( entityDef, lightDef, lightTris ) ) {
+								canAddLightSurf = false;
+							}
 						}
-					}
-					// touch the light surface so it won't get purged
-					// (vertex program cards won't have a light cache at all)
-					if ( lightTris->lightingCache ) {
-						vertexCache.Touch( lightTris->lightingCache );
-					}
 
-					if ( !lightTris->indexCache && r_useIndexBuffers.GetBool() && lightTris->numIndexes > 0 ) {
-						vertexCache.Alloc( lightTris->indexes, lightTris->numIndexes * sizeof( lightTris->indexes[0] ), &lightTris->indexCache, true );
+						if ( canAddLightSurf ) {
+							// touch the light surface so it won't get purged
+							// (vertex program cards won't have a light cache at all)
+							if ( lightTris->lightingCache ) {
+								vertexCache.Touch( lightTris->lightingCache );
+							}
+
+							if ( !lightTris->indexCache && r_useIndexBuffers.GetBool() && lightTris->numIndexes > 0 ) {
+								vertexCache.Alloc(
+									lightTris->indexes,
+									lightTris->numIndexes * sizeof( lightTris->indexes[0] ),
+									&lightTris->indexCache,
+									true );
+							}
+							if ( lightTris->indexCache ) {
+								vertexCache.Touch( lightTris->indexCache );
+							}
+						}
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 					}
-					if ( lightTris->indexCache ) {
-						vertexCache.Touch( lightTris->indexCache );
+#endif
+
+					if ( !canAddLightSurf ) {
+						// skip if we were out of vertex memory
+						continue;
 					}
 
 					// add the surface to the light list
@@ -1436,38 +1510,8 @@ void idInteraction::AddActiveInteraction( void ) {
 				}
 			}
 
-			// copy the shadow vertexes to the vertex cache if they have been purged
-
-			// if we are using shared shadowVertexes and letting a vertex program fix them up,
-			// get the shadowCache from the parent ambient surface
-			if ( !shadowTris->shadowVertexes ) {
-				// the data may have been purged, so get the latest from the "home position"
-				shadowTris->shadowCache = sint->ambientTris->shadowCache;
-			}
-
-			// if we have been purged, re-upload the shadowVertexes
-			if ( !shadowTris->shadowCache ) {
-				if ( shadowTris->shadowVertexes ) {
-					// each interaction has unique vertexes
-					R_CreatePrivateShadowCache( shadowTris );
-				} else {
-					R_CreateVertexProgramShadowCache( sint->ambientTris );
-					shadowTris->shadowCache = sint->ambientTris->shadowCache;
-				}
-				// if we are out of vertex cache space, skip the interaction
-				if ( !shadowTris->shadowCache ) {
-					continue;
-				}
-			}
-
-			// touch the shadow surface so it won't get purged
-			vertexCache.Touch( shadowTris->shadowCache );
-
-			if ( !shadowTris->indexCache && r_useIndexBuffers.GetBool() && shadowTris->numIndexes > 0 ) {
-				vertexCache.Alloc( shadowTris->indexes, shadowTris->numIndexes * sizeof( shadowTris->indexes[0] ), &shadowTris->indexCache, true );
-			}
-			if ( shadowTris->indexCache ) {
-				vertexCache.Touch( shadowTris->indexCache );
+			if ( !R_EnsureInteractionShadowCache( sint ) ) {
+				continue;
 			}
 
 			// see if we can avoid using the shadow volume caps
