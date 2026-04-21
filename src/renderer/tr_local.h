@@ -136,6 +136,7 @@ typedef struct drawSurf_s {
 	const struct portalArea_s *area;	// portal area used for light-grid lookup, if available
 	int						dsFlags;			// DSF_VIEW_INSIDE_SHADOW, etc
 	struct vertCache_s		*dynamicTexCoords;	// float * in vertex cache memory
+	float					*texGenTransformAndViewOrg;	// packed MD5R texgen rows + local view origin
 	struct vertCache_s		*decalColorCache;	// optional per-stage color blocks for decals
 	int						decalColorStride;	// bytes between stage color blocks (numVerts * 4)
 	int						decalColorStageCount;

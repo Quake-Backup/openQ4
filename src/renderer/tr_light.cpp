@@ -62,6 +62,36 @@ static void R_CreateVertexProgramShadowCacheFromSilTraceVerts( shadowCache_t *te
 		temp[i * 2 + 1].xyz[3] = 0.0f;
 	}
 }
+
+static float *R_AllocTexGenTransformAndViewOrg( drawSurf_t *surf ) {
+	if ( surf->texGenTransformAndViewOrg == NULL ) {
+		surf->texGenTransformAndViewOrg = (float *)R_FrameAlloc( 16 * sizeof( float ) );
+	}
+	return surf->texGenTransformAndViewOrg;
+}
+
+static void R_SetPackedTexGenTransformAndViewOrg( drawSurf_t *surf, const float *transform, const idVec3 &localViewOrigin ) {
+	float *packedTransform = R_AllocTexGenTransformAndViewOrg( surf );
+
+	// Retail Quake 4 packs the three texgen rows plus the local view origin so
+	// the MD5R ARB2 path can bind them as vertex-program parameters directly.
+	packedTransform[0] = transform[0];
+	packedTransform[1] = transform[4];
+	packedTransform[2] = transform[8];
+	packedTransform[3] = transform[12];
+	packedTransform[4] = transform[1];
+	packedTransform[5] = transform[5];
+	packedTransform[6] = transform[9];
+	packedTransform[7] = transform[13];
+	packedTransform[8] = transform[2];
+	packedTransform[9] = transform[6];
+	packedTransform[10] = transform[10];
+	packedTransform[11] = transform[14];
+	packedTransform[12] = localViewOrigin[0];
+	packedTransform[13] = localViewOrigin[1];
+	packedTransform[14] = localViewOrigin[2];
+	packedTransform[15] = 1.0f;
+}
 #endif
 
 
@@ -244,6 +274,23 @@ void R_SkyboxTexGen( drawSurf_t *surf, const idVec3 &viewOrg ) {
 
 	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrg, localViewOrigin );
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( surf->geo->primBatchMesh != NULL ) {
+		static const float identityTransform[16] = {
+			1.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 1.0f
+		};
+
+		surf->dynamicTexCoords = NULL;
+		R_SetPackedTexGenTransformAndViewOrg( surf, identityTransform, localViewOrigin );
+		return;
+	}
+#endif
+
+	surf->texGenTransformAndViewOrg = NULL;
+
 	int numVerts = surf->geo->numVerts;
 	if ( numVerts <= 0 ) {
 		surf->dynamicTexCoords = NULL;
@@ -325,6 +372,16 @@ void R_WobbleskyTexGen( drawSurf_t *surf, const idVec3 &viewOrg ) {
 	transform[12] = transform[13] = transform[14] = 0.0f;
 
 	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrg, localViewOrigin );
+
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( surf->geo->primBatchMesh != NULL ) {
+		surf->dynamicTexCoords = NULL;
+		R_SetPackedTexGenTransformAndViewOrg( surf, transform, localViewOrigin );
+		return;
+	}
+#endif
+
+	surf->texGenTransformAndViewOrg = NULL;
 
 	int numVerts = surf->geo->numVerts;
 	if ( numVerts <= 0 ) {
@@ -735,6 +792,11 @@ void R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const 
 	drawSurf->scissorRect = scissor;
 	drawSurf->area = NULL;
 	drawSurf->dsFlags = 0;
+	drawSurf->dynamicTexCoords = NULL;
+	drawSurf->texGenTransformAndViewOrg = NULL;
+	drawSurf->decalColorCache = NULL;
+	drawSurf->decalColorStride = 0;
+	drawSurf->decalColorStageCount = 0;
 	if ( viewInsideShadow ) {
 		drawSurf->dsFlags |= DSF_VIEW_INSIDE_SHADOW;
 	}
@@ -1382,6 +1444,7 @@ void R_AddDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space, const 
 	drawSurf->area = NULL;
 	drawSurf->dsFlags = 0;
 	drawSurf->dynamicTexCoords = NULL;
+	drawSurf->texGenTransformAndViewOrg = NULL;
 	drawSurf->decalColorCache = NULL;
 	drawSurf->decalColorStride = 0;
 	drawSurf->decalColorStageCount = 0;

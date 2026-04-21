@@ -55,6 +55,7 @@ static void R_LinkShadowMapCasterSurf( const drawSurf_t **link, const srfTriangl
 	drawSurf->scissorRect = scissor;
 	drawSurf->dsFlags = 0;
 	drawSurf->dynamicTexCoords = NULL;
+	drawSurf->texGenTransformAndViewOrg = NULL;
 	drawSurf->decalColorCache = NULL;
 	drawSurf->decalColorStride = 0;
 	drawSurf->decalColorStageCount = 0;
