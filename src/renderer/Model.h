@@ -30,6 +30,9 @@ class rvMesh;
 #define MD5_ANIM_EXT			"md5anim"
 #define MD5_CAMERA_EXT			"md5camera"
 #define MD5_VERSION				10
+#define MD5R_MODEL_EXT			"md5r"
+#define MD5R_VERSION_STRING		"MD5RVersion"
+#define MD5R_VERSION			1
 
 // using shorts for triangle indexes can save a significant amount of traffic, but
 // to support the large models that renderBump loads, they need to be 32 bits

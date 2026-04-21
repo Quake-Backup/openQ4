@@ -101,14 +101,17 @@ static void R_ModelManager_BuildMD5RName( idStr &md5rName, const idStr &canonica
 
 /*
 =================
-R_ModelManager_HasPrebuiltMD5R
+R_ModelManager_FindLoadablePrebuiltMD5R
 
 Retail prefers a compiled .md5rc companion when present, then falls back to
-the plain .md5r file. OpenQ4 keeps the same probe order even though the packed
-model loader has not landed yet.
+the plain .md5r file. OpenQ4 keeps the same probe order, but for now can only
+instantiate the text .md5r variant.
 =================
 */
-static bool R_ModelManager_HasPrebuiltMD5R( const idStr &md5rName ) {
+static bool R_ModelManager_FindLoadablePrebuiltMD5R( const idStr &md5rName, idStr &loadableName, bool &hasCompiledCompanion ) {
+	loadableName.Clear();
+	hasCompiledCompanion = false;
+
 	if ( r_forceConvertMD5R.GetBool() ) {
 		return false;
 	}
@@ -118,11 +121,12 @@ static bool R_ModelManager_HasPrebuiltMD5R( const idStr &md5rName ) {
 
 	if ( idFile *compiledFile = fileSystem->OpenFileRead( compiledName ) ) {
 		fileSystem->CloseFile( compiledFile );
-		return true;
+		hasCompiledCompanion = true;
 	}
 
 	if ( idFile *sourceFile = fileSystem->OpenFileRead( md5rName ) ) {
 		fileSystem->CloseFile( sourceFile );
+		loadableName = md5rName;
 		return true;
 	}
 
@@ -361,6 +365,8 @@ idRenderModel *idRenderModelManagerLocal::GetModel( const char *modelName, bool 
 	idStr		canonical;
 	idStr		extension;
 	idStr		md5rName;
+	idStr		loadableMD5RName;
+	bool		hasCompiledMD5RCompanion = false;
 
 	if ( !modelName || !modelName[0] ) {
 		return NULL;
@@ -418,15 +424,30 @@ idRenderModel *idRenderModelManagerLocal::GetModel( const char *modelName, bool 
 			}
 		}
 
-		if ( R_ModelManager_HasPrebuiltMD5R( md5rName ) ) {
+		if ( R_ModelManager_FindLoadablePrebuiltMD5R( md5rName, loadableMD5RName, hasCompiledMD5RCompanion ) ) {
+			if ( hasCompiledMD5RCompanion ) {
+				idStr compiledName = md5rName;
+				compiledName += "c";
+				common->DPrintf(
+					"Found compiled MD5R companion '%s' for '%s', but binary MD5RC loading is not implemented yet; loading text companion '%s' instead.\n",
+					compiledName.c_str(),
+					canonical.c_str(),
+					loadableMD5RName.c_str() );
+			}
+		} else if ( hasCompiledMD5RCompanion ) {
+			idStr compiledName = md5rName;
+			compiledName += "c";
 			common->DPrintf(
-				"Found prebuilt MD5R companion '%s' for '%s', but this build does not include rvRenderModelMD5R loading; loading the source asset instead.\n",
-				md5rName.c_str(),
+				"Found compiled MD5R companion '%s' for '%s', but binary MD5RC loading is not implemented in this build yet; loading the source asset instead.\n",
+				compiledName.c_str(),
 				canonical.c_str() );
 		}
 	}
 
-	if ( ( extension.Icmp( "ase" ) == 0 ) || ( extension.Icmp( "lwo" ) == 0 ) || ( extension.Icmp( "flt" ) == 0 ) ) {
+	if ( loadableMD5RName.Length() != 0 ) {
+		model = new rvRenderModelMD5R;
+		model->InitFromFile( loadableMD5RName.c_str() );
+	} else if ( ( extension.Icmp( "ase" ) == 0 ) || ( extension.Icmp( "lwo" ) == 0 ) || ( extension.Icmp( "flt" ) == 0 ) ) {
 		idRenderModelStatic *staticModel = new idRenderModelStatic;
 		staticModel->InitFromFile( modelName );
 		model = R_ModelManager_MaybeConvertStaticToMD5R( staticModel );
@@ -437,6 +458,9 @@ idRenderModel *idRenderModelManagerLocal::GetModel( const char *modelName, bool 
 		idRenderModelMD5 *md5Model = new idRenderModelMD5;
 		md5Model->InitFromFile( modelName );
 		model = R_ModelManager_MaybeConvertMD5ToMD5R( md5Model );
+	} else if ( extension.Icmp( MD5R_MODEL_EXT ) == 0 ) {
+		model = new rvRenderModelMD5R;
+		model->InitFromFile( modelName );
 	} else if ( extension.Icmp( "md3" ) == 0 ) {
 		model = new idRenderModelMD3;
 		model->InitFromFile( modelName );

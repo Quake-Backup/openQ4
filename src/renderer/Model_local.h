@@ -208,6 +208,195 @@ private:
 	void						ParseJoint( idLexer &parser, idMD5Joint *joint, idJointQuat *defaultPose );
 };
 
+typedef enum {
+	MD5R_SOURCE_FILE,
+	MD5R_SOURCE_MD5,
+	MD5R_SOURCE_LWO_ASE_FLT,
+	MD5R_SOURCE_PROC
+} rvMD5RSource_t;
+
+struct rvMD5RGeometrySpec {
+								rvMD5RGeometrySpec() :
+									vertexStart( 0 ),
+									vertexCount( 0 ),
+									indexStart( 0 ),
+									primitiveCount( 0 ) {
+								}
+
+	int							vertexStart;
+	int							vertexCount;
+	int							indexStart;
+	int							primitiveCount;
+};
+
+struct rvMD5RPrimBatch {
+								rvMD5RPrimBatch() :
+									numTransforms( 1 ),
+									numShadowPrimitivesNoCaps( 0 ),
+									shadowCapPlaneBits( 0 ),
+									silEdgeStart( 0 ),
+									silEdgeCount( 0 ),
+									hasSilTraceGeoSpec( false ),
+									hasDrawGeoSpec( false ),
+									hasShadowGeoSpec( false ) {
+								}
+
+	int							numTransforms;
+	idList<int>					transformPalette;
+	rvMD5RGeometrySpec			silTraceGeoSpec;
+	rvMD5RGeometrySpec			drawGeoSpec;
+	rvMD5RGeometrySpec			shadowVolGeoSpec;
+	int							numShadowPrimitivesNoCaps;
+	int							shadowCapPlaneBits;
+	int							silEdgeStart;
+	int							silEdgeCount;
+	bool						hasSilTraceGeoSpec;
+	bool						hasDrawGeoSpec;
+	bool						hasShadowGeoSpec;
+};
+
+struct rvMD5RLevelOfDetail {
+								rvMD5RLevelOfDetail() :
+									rangeEnd( 0.0f ),
+									rangeEndSquared( 0.0f ) {
+								}
+
+	float						rangeEnd;
+	float						rangeEndSquared;
+	idList<int>					meshIndexes;
+};
+
+struct rvMD5RMesh {
+								rvMD5RMesh() :
+									material( NULL ),
+									levelOfDetail( -1 ),
+									surfaceNum( -1 ),
+									meshIdentifier( 0 ),
+									silTraceVertexBuffer( -1 ),
+									silTraceIndexBuffer( -1 ),
+									drawVertexBuffer( -1 ),
+									drawIndexBuffer( -1 ),
+									shadowVolVertexBuffer( -1 ),
+									shadowVolIndexBuffer( -1 ),
+									numSilTraceVertices( 0 ),
+									numSilTraceIndices( 0 ),
+									numSilTracePrimitives( 0 ),
+									numSilEdges( 0 ),
+									numDrawVertices( 0 ),
+									numDrawIndices( 0 ),
+									numDrawPrimitives( 0 ),
+									numTransforms( 0 ) {
+									bounds.Clear();
+								}
+
+	const idMaterial *			material;
+	idStr						materialName;
+	idBounds					bounds;
+	int							levelOfDetail;
+	int							surfaceNum;
+	int							meshIdentifier;
+	int							silTraceVertexBuffer;
+	int							silTraceIndexBuffer;
+	int							drawVertexBuffer;
+	int							drawIndexBuffer;
+	int							shadowVolVertexBuffer;
+	int							shadowVolIndexBuffer;
+	int							numSilTraceVertices;
+	int							numSilTraceIndices;
+	int							numSilTracePrimitives;
+	int							numSilEdges;
+	int							numDrawVertices;
+	int							numDrawIndices;
+	int							numDrawPrimitives;
+	int							numTransforms;
+	idList<rvMD5RPrimBatch>		primBatches;
+};
+
+struct rvMD5RVertexBufferDesc {
+								rvMD5RVertexBufferDesc() :
+									numVertices( 0 ),
+									systemMemory( false ),
+									videoMemory( false ),
+									soA( false ),
+									hasVertexFormat( false ),
+									hasLoadVertexFormat( false ) {
+								}
+
+	int							numVertices;
+	bool						systemMemory;
+	bool						videoMemory;
+	bool						soA;
+	bool						hasVertexFormat;
+	bool						hasLoadVertexFormat;
+};
+
+struct rvMD5RIndexBufferDesc {
+								rvMD5RIndexBufferDesc() :
+									numIndices( 0 ),
+									bitDepth( 32 ),
+									systemMemory( false ),
+									videoMemory( false ) {
+								}
+
+	int							numIndices;
+	int							bitDepth;
+	bool						systemMemory;
+	bool						videoMemory;
+};
+
+class rvRenderModelMD5R : public idRenderModelStatic {
+public:
+								rvRenderModelMD5R();
+	virtual						~rvRenderModelMD5R();
+
+	virtual void				InitFromFile( const char *fileName );
+	virtual void				LoadModel();
+	virtual void				PurgeModel();
+	virtual dynamicModel_t		IsDynamicModel() const;
+	virtual idBounds			Bounds( const struct renderEntity_s *ent ) const;
+	virtual int					NumJoints( void ) const;
+	virtual const idMD5Joint *	GetJoints( void ) const;
+	virtual const idJointQuat *	GetDefaultPose( void ) const;
+	virtual const idJointMat *	GetSkinSpaceToLocalMats( void ) const;
+	virtual int					Memory() const;
+
+	static void					WriteAll( bool compressed );
+
+private:
+	void						ParseVertexBuffers( Lexer &parser );
+	void						ParseVertexBuffer( Lexer &parser, rvMD5RVertexBufferDesc &vertexBuffer );
+	void						ParseIndexBuffers( Lexer &parser );
+	void						ParseIndexBuffer( Lexer &parser, rvMD5RIndexBufferDesc &indexBuffer );
+	void						ParseSilhouetteEdges( Lexer &parser );
+	void						ParseLevelOfDetail( Lexer &parser );
+	void						ParseMeshes( Lexer &parser );
+	void						ParseMesh( Lexer &parser, int meshIndex );
+	void						ParsePrimBatch( Lexer &parser, rvMD5RPrimBatch &primBatch );
+	void						ParseJoints( Lexer &parser );
+	void						ParseJoint( Lexer &parser, int jointIndex, idJointQuat &worldPose );
+	void						BuildLevelsOfDetail();
+	static void					RemoveFromList( rvRenderModelMD5R &model );
+
+	idList<rvMD5RVertexBufferDesc>	vertexBuffers;
+	idList<rvMD5RIndexBufferDesc>	indexBuffers;
+	idList<silEdge_t>			silEdges;
+	idList<rvMD5RLevelOfDetail>	lods;
+	idList<int>					allLODMeshes;
+	idList<rvMD5RMesh>			meshes;
+	idList<idMD5Joint>			joints;
+	idList<idJointQuat>			defaultPose;
+	idList<idJointMat>			skinSpaceToLocalMats;
+	idStr						commandLine;
+	int							md5rVersion;
+	bool						metadataOnly;
+	bool						geometrySectionsSkipped;
+	bool						hasSky;
+	rvMD5RSource_t				source;
+	rvRenderModelMD5R *			next;
+
+	static rvRenderModelMD5R *	modelList;
+};
+
 /*
 ===============================================================================
 
