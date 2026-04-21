@@ -1088,6 +1088,9 @@ extern idCVar r_forceConvertMD5R;	// 1 = force source-model / source-proc loadin
 extern idCVar r_convertMD5toMD5R;	// 1 = convert authored MD5 meshes to packed MD5R form when supported
 extern idCVar r_convertStaticToMD5R;	// 1 = convert static renderer models to packed MD5R form when supported
 extern idCVar r_convertProcToMD5R;	// 1 = convert classic proc worlds to packed MD5R proc data when supported
+bool					R_IsMD5RRuntimeAvailable( void );
+bool					R_IsMD5RWriteAvailable( void );
+void					R_DisableUnavailableMD5RCVar( idCVar &cvar, const char *capabilityName );
 extern idCVar r_lod_animations_distance;	// distance gate for animation-update LOD
 extern idCVar r_lod_animations_wait;	// delay before reusing the last animated pose when LODing
 extern idCVar r_lod_animations_coverage;	// screen-coverage threshold for animation-update LOD

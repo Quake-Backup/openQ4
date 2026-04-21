@@ -35,6 +35,51 @@ If you have questions concerning this license or the applicable additional terms
 idRenderSystemLocal	tr;
 idRenderSystem	*renderSystem = &tr;
 
+/*
+=========================
+R_IsMD5RRuntimeAvailable
+=========================
+*/
+bool R_IsMD5RRuntimeAvailable( void ) {
+#if defined( _MD5R_SUPPORT )
+	return true;
+#else
+	return false;
+#endif
+}
+
+/*
+=======================
+R_IsMD5RWriteAvailable
+=======================
+*/
+bool R_IsMD5RWriteAvailable( void ) {
+#if defined( _MD5R_SUPPORT ) && defined( _MD5R_WRITE_SUPPORT )
+	return true;
+#else
+	return false;
+#endif
+}
+
+/*
+===============================
+R_DisableUnavailableMD5RCVar
+===============================
+*/
+void R_DisableUnavailableMD5RCVar( idCVar &cvar, const char *capabilityName ) {
+	if ( !cvar.GetBool() || R_IsMD5RRuntimeAvailable() ) {
+		return;
+	}
+
+	common->Warning(
+		"%s requires %s, but this build was compiled without it; forcing %s back to 0",
+		cvar.GetName(),
+		capabilityName,
+		cvar.GetName() );
+	cvar.SetBool( false );
+	cvar.ClearModified();
+}
+
 #ifdef Q4SDK_MD5R
 /*
 ===============================
@@ -42,6 +87,11 @@ idRenderSystemLocal::ExportMD5R
 ===============================
 */
 void idRenderSystemLocal::ExportMD5R( bool compressed ) {
+	if ( !R_IsMD5RWriteAvailable() ) {
+		common->Warning( "idRenderSystemLocal::ExportMD5R: packed MD5R export support is not compiled into this build" );
+		return;
+	}
+
 	common->Warning( "idRenderSystemLocal::ExportMD5R: MD5R export is not implemented in OpenQ4 yet" );
 }
 
@@ -51,7 +101,7 @@ idRenderSystemLocal::CopyPrimBatchTriangles
 ===========================================
 */
 void idRenderSystemLocal::CopyPrimBatchTriangles( idDrawVert *destDrawVerts, glIndex_t *destIndices, void *primBatchMesh, void *silTraceVerts ) {
-	common->Error( "idRenderSystemLocal::CopyPrimBatchTriangles: MD5R prim-batch extraction is not implemented in OpenQ4 yet" );
+	common->Error( "idRenderSystemLocal::CopyPrimBatchTriangles: packed MD5R prim-batch extraction is not available in this build" );
 }
 #else
 #if defined( _MD5R_WRITE_SUPPORT ) && defined( _MD5R_SUPPORT )
@@ -61,6 +111,11 @@ idRenderSystemLocal::ExportMD5R
 ===============================
 */
 void idRenderSystemLocal::ExportMD5R( bool compressed ) {
+	if ( !R_IsMD5RWriteAvailable() ) {
+		common->Warning( "idRenderSystemLocal::ExportMD5R: packed MD5R export support is not compiled into this build" );
+		return;
+	}
+
 	common->Warning( "idRenderSystemLocal::ExportMD5R: MD5R export is not implemented in OpenQ4 yet" );
 }
 #endif
@@ -72,7 +127,7 @@ idRenderSystemLocal::CopyPrimBatchTriangles
 ===========================================
 */
 void idRenderSystemLocal::CopyPrimBatchTriangles( idDrawVert *destDrawVerts, glIndex_t *destIndices, rvMesh *primBatchMesh, const rvSilTraceVertT *silTraceVerts ) {
-	common->Error( "idRenderSystemLocal::CopyPrimBatchTriangles: MD5R prim-batch extraction is not implemented in OpenQ4 yet" );
+	common->Error( "idRenderSystemLocal::CopyPrimBatchTriangles: packed MD5R prim-batch extraction is not available in this build" );
 }
 #endif
 #endif

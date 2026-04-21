@@ -236,11 +236,11 @@ public:
 	//-----------------------
 	// RenderWorld_load.cpp
 
-	idRenderModel *			ParseModel( idLexer *src );
-	idRenderModel *			ParseShadowModel( idLexer *src );
+	idRenderModel *			ParseModel( Lexer *src );
+	idRenderModel *			ParseShadowModel( Lexer *src );
 	void					SetupAreaRefs();
-	void					ParseInterAreaPortals( idLexer *src );
-	void					ParseNodes( idLexer *src );
+	void					ParseInterAreaPortals( Lexer *src );
+	void					ParseNodes( Lexer *src );
 	int						CommonChildrenArea_r( areaNode_t *node );
 	void					FreeWorld();
 	void					ClearWorld();

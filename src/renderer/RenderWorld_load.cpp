@@ -116,7 +116,7 @@ void idRenderWorldLocal::TouchWorldModels( void ) {
 idRenderWorldLocal::ParseModel
 ================
 */
-idRenderModel *idRenderWorldLocal::ParseModel( idLexer *src ) {
+idRenderModel *idRenderWorldLocal::ParseModel( Lexer *src ) {
 	idRenderModel	*model;
 	idToken			token;
 	int				i, j;
@@ -216,7 +216,7 @@ idRenderModel *idRenderWorldLocal::ParseModel( idLexer *src ) {
 idRenderWorldLocal::ParseShadowModel
 ================
 */
-idRenderModel *idRenderWorldLocal::ParseShadowModel( idLexer *src ) {
+idRenderModel *idRenderWorldLocal::ParseShadowModel( Lexer *src ) {
 	idRenderModel	*model;
 	idToken			token;
 	int				j;
@@ -300,7 +300,7 @@ void idRenderWorldLocal::SetupAreaRefs() {
 idRenderWorldLocal::ParseInterAreaPortals
 ================
 */
-void idRenderWorldLocal::ParseInterAreaPortals( idLexer *src ) {
+void idRenderWorldLocal::ParseInterAreaPortals( Lexer *src ) {
 	int i, j;
 
 	src->ExpectTokenString( "{" );
@@ -397,7 +397,7 @@ void idRenderWorldLocal::ParseInterAreaPortals( idLexer *src ) {
 idRenderWorldLocal::ParseNodes
 ================
 */
-void idRenderWorldLocal::ParseNodes( idLexer *src ) {
+void idRenderWorldLocal::ParseNodes( Lexer *src ) {
 	int			i;
 
 	src->ExpectTokenString( "{" );
@@ -533,11 +533,47 @@ void idRenderWorldLocal::FreeDefs() {
 
 /*
 =================
+R_RenderWorld_ReadBinaryAwareTimestamp
+
+Retail Quake 4 timestamps and opens .proc / MD5RProc files through the binary-
+aware lexer path. Mirror that here so companion .c files participate in reload
+checks and discovery the same way they do in the shipping game.
+=================
+*/
+static ID_TIME_T R_RenderWorld_ReadBinaryAwareTimestamp( const idStr &filename, idStr *resolvedFilename = NULL ) {
+	if ( resolvedFilename != NULL ) {
+		resolvedFilename->Clear();
+	}
+
+	if ( cvarSystem->GetCVarBool( "com_binaryRead" ) ) {
+		idStr compiledFilename = filename;
+		compiledFilename += Lexer::sCompiledFileSuffix;
+
+		ID_TIME_T compiledTimeStamp;
+		fileSystem->ReadFile( compiledFilename, NULL, &compiledTimeStamp );
+		if ( compiledTimeStamp != FILE_NOT_FOUND_TIMESTAMP ) {
+			if ( resolvedFilename != NULL ) {
+				*resolvedFilename = compiledFilename;
+			}
+			return compiledTimeStamp;
+		}
+	}
+
+	ID_TIME_T sourceTimeStamp;
+	fileSystem->ReadFile( filename, NULL, &sourceTimeStamp );
+	if ( resolvedFilename != NULL && sourceTimeStamp != FILE_NOT_FOUND_TIMESTAMP ) {
+		*resolvedFilename = filename;
+	}
+
+	return sourceTimeStamp;
+}
+
+/*
+================
 R_RenderWorld_HasMD5RProcCompanion
 
-Retail probes for a prebuilt MD5RProc world before falling back to the classic
-.proc file. OpenQ4 keeps the same discovery step so the native MD5RProc loader
-can slot in later without changing map-init control flow again.
+Retail prefers a compiled MD5RProc companion when binary reads are enabled, then
+falls back to the text MD5RProc file before using the classic .proc world.
 =================
 */
 static bool R_RenderWorld_HasMD5RProcCompanion( const char *mapName, idStr &md5rProcFilename ) {
@@ -549,9 +585,13 @@ static bool R_RenderWorld_HasMD5RProcCompanion( const char *mapName, idStr &md5r
 	md5rProcFilename = mapName;
 	md5rProcFilename.SetFileExtension( MD5R_PROC_FILE_EXT );
 
-	ID_TIME_T md5rProcTimeStamp;
-	fileSystem->ReadFile( md5rProcFilename, NULL, &md5rProcTimeStamp );
-	return md5rProcTimeStamp != FILE_NOT_FOUND_TIMESTAMP;
+	const ID_TIME_T md5rProcTimeStamp = R_RenderWorld_ReadBinaryAwareTimestamp( md5rProcFilename, &md5rProcFilename );
+	if ( md5rProcTimeStamp == FILE_NOT_FOUND_TIMESTAMP ) {
+		md5rProcFilename.Clear();
+		return false;
+	}
+
+	return true;
 }
 
 /*
@@ -563,7 +603,7 @@ is still useful for displaying a bare model
 =================
 */
 bool idRenderWorldLocal::InitFromMap( const char *name ) {
-	idLexer *		src;
+	Lexer *			src;
 	idToken			token;
 	idStr			filename;
 	idStr			md5rProcFilename;
@@ -582,21 +622,20 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 	filename = name;
 	filename.SetFileExtension( PROC_FILE_EXT );
 
+	R_DisableUnavailableMD5RCVar( r_convertProcToMD5R, "the MD5R proc-world runtime" );
+
 	const bool hasMD5RProcCompanion = R_RenderWorld_HasMD5RProcCompanion( name, md5rProcFilename );
 	if ( hasMD5RProcCompanion ) {
 		common->DPrintf(
-			"Found MD5RProc companion '%s' for map '%s', but MD5RProc loading is not available yet; loading classic proc world '%s' instead.\n",
+			"Found MD5RProc companion '%s' for map '%s', but this build does not include MD5RProc loading; loading classic proc world '%s' instead.\n",
 			md5rProcFilename.c_str(),
 			name,
 			filename.c_str() );
-	} else if ( r_convertProcToMD5R.GetBool() ) {
-		common->DPrintf( "r_convertProcToMD5R is not active yet; loading classic proc world '%s'\n", filename.c_str() );
 	}
 
 	// if we are reloading the same map, check the timestamp
 	// and try to skip all the work
-	ID_TIME_T currentTimeStamp;
-	fileSystem->ReadFile( filename, NULL, &currentTimeStamp );
+	const ID_TIME_T currentTimeStamp = R_RenderWorld_ReadBinaryAwareTimestamp( filename );
 
 	if ( name == mapName ) {
 		if ( currentTimeStamp != FILE_NOT_FOUND_TIMESTAMP && currentTimeStamp == mapTimeStamp ) {
@@ -613,11 +652,12 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 
 	FreeWorld();
 
-	src = new idLexer( filename, LEXFL_NOSTRINGCONCAT | LEXFL_NODOLLARPRECOMPILE );
+	src = LexerFactory::MakeLexer( filename.c_str(), LEXFL_NOSTRINGCONCAT | LEXFL_NODOLLARPRECOMPILE, false );
 	if ( !src->IsLoaded() ) {
+		delete src;
 		if ( hasMD5RProcCompanion ) {
 			common->Printf(
-				"idRenderWorldLocal::InitFromMap: classic proc '%s' not found, and MD5RProc companion '%s' can't be loaded yet\n",
+				"idRenderWorldLocal::InitFromMap: classic proc '%s' not found, and MD5RProc companion '%s' can't be loaded in this build\n",
 				filename.c_str(),
 				md5rProcFilename.c_str() );
 		} else {

@@ -143,9 +143,14 @@ static idRenderModel *R_ModelManager_MaybeConvertMD5ToMD5R( idRenderModelMD5 *so
 		return NULL;
 	}
 
-	if ( !r_convertMD5toMD5R.GetBool()
-		|| sourceModel->IsDefaultModel()
+	if ( sourceModel->IsDefaultModel()
 		|| idAsyncNetwork::serverDedicated.GetInteger() != 0 ) {
+		return sourceModel;
+	}
+
+	R_DisableUnavailableMD5RCVar( r_convertMD5toMD5R, "the rvRenderModelMD5R runtime" );
+
+	if ( !r_convertMD5toMD5R.GetBool() ) {
 		return sourceModel;
 	}
 
@@ -165,7 +170,13 @@ static idRenderModel *R_ModelManager_MaybeConvertStaticToMD5R( idRenderModelStat
 		return NULL;
 	}
 
-	if ( !r_convertStaticToMD5R.GetBool() || sourceModel->IsDefaultModel() ) {
+	if ( sourceModel->IsDefaultModel() ) {
+		return sourceModel;
+	}
+
+	R_DisableUnavailableMD5RCVar( r_convertStaticToMD5R, "the rvRenderModelMD5R runtime" );
+
+	if ( !r_convertStaticToMD5R.GetBool() ) {
 		return sourceModel;
 	}
 
@@ -409,7 +420,7 @@ idRenderModel *idRenderModelManagerLocal::GetModel( const char *modelName, bool 
 
 		if ( R_ModelManager_HasPrebuiltMD5R( md5rName ) ) {
 			common->DPrintf(
-				"Found prebuilt MD5R companion '%s' for '%s', but rvRenderModelMD5R loading is not available yet; loading the source asset instead.\n",
+				"Found prebuilt MD5R companion '%s' for '%s', but this build does not include rvRenderModelMD5R loading; loading the source asset instead.\n",
 				md5rName.c_str(),
 				canonical.c_str() );
 		}

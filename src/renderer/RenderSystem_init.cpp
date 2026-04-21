@@ -188,9 +188,9 @@ idCVar r_useNewSkinning( "r_useNewSkinning", "1", CVAR_RENDERER | CVAR_BOOL, "us
 idCVar r_useFastSkinning( "r_useFastSkinning", "0", CVAR_RENDERER | CVAR_BOOL, "approximate MD5 tangent skinning with the dominant joint only" );
 idCVar r_deriveBiTangents( "r_deriveBiTangents", "0", CVAR_RENDERER | CVAR_BOOL, "derive bitangents from skinned normals and tangents" );
 idCVar r_forceConvertMD5R( "r_forceConvertMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "prefer source md5/proc assets over any future prebuilt MD5R companions" );
-idCVar r_convertMD5toMD5R( "r_convertMD5toMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "convert loaded MD5 meshes to packed MD5R form when the backend is available" );
-idCVar r_convertStaticToMD5R( "r_convertStaticToMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "convert loaded static render models to packed MD5R form when the backend is available" );
-idCVar r_convertProcToMD5R( "r_convertProcToMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "convert loaded classic proc worlds to packed MD5R form when the backend is available" );
+idCVar r_convertMD5toMD5R( "r_convertMD5toMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "convert loaded MD5 meshes to packed MD5R form when the build includes rvRenderModelMD5R support" );
+idCVar r_convertStaticToMD5R( "r_convertStaticToMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "convert loaded static render models to packed MD5R form when the build includes rvRenderModelMD5R support" );
+idCVar r_convertProcToMD5R( "r_convertProcToMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "convert loaded classic proc worlds to packed MD5R form when the build includes MD5R proc support" );
 idCVar r_lod_animations_distance( "r_lod_animations_distance", "0", CVAR_RENDERER | CVAR_FLOAT, "distance threshold for MD5 animation-update LOD", 0.0f, 1000000.0f );
 idCVar r_lod_animations_wait( "r_lod_animations_wait", "0.25", CVAR_RENDERER | CVAR_FLOAT, "time before a low-coverage MD5 surface is forced to refresh", 0.0f, 10.0f );
 idCVar r_lod_animations_coverage( "r_lod_animations_coverage", "0.01", CVAR_RENDERER | CVAR_FLOAT, "screen-coverage threshold for MD5 animation-update LOD", 0.0f, 1.0f );
