@@ -197,6 +197,7 @@ public:
 
 	idStr					mapName;				// ie: maps/tim_dm2.proc, written to demoFile
 	ID_TIME_T					mapTimeStamp;			// for fast reloads of the same level
+	unsigned int			mapFileCRC;				// retail PROC / MD5RProc header CRC token
 
 	areaNode_t *			areaNodes;
 	int						numAreaNodes;

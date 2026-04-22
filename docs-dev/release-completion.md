@@ -111,6 +111,7 @@ Process:
 - [x] Collision-model cache-write parity improved again: runtime-generated `.cm` caches now follow retail Quake 4's `fs_devpath` destination instead of being diverted to `fs_savepath`, keeping generated CM outputs on the normal authored/dev override path alongside the existing map-entity export behavior.
 - [x] Collision-model render-source parity improved again: `LoadRenderModel()` now matches retail Quake 4's authored-CM source-model whitelist by admitting only `.ase`, `.lwo`, and `.obj` when generating collision data from render models, dropping the extra `.mdr` / `.dae` CM-generation path that was broader than retail.
 - [x] Single-player clip-query parity improved again: `idGameLocal::ClipModelsTouchingBounds()` no longer falls back from non-zero clip worlds into world `0` for trigger queries, so the SP bounds-query path now matches multiplayer and retail behavior instead of keeping the temporary OpenQ4 multi-instance trigger override.
+- [x] MD5R parity improved again: SoA `Pos3Swizzled` vertex buffers now decode into usable packed geometry instead of falling back to metadata-only loads, `MD5RProc` companions now preserve and round-trip the real retail map CRC token instead of a stub value, and retained MD5R vertex exports now keep specular-color / point-size fields instead of discarding them.
 
 ## Carry Forward
 

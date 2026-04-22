@@ -32,8 +32,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 #include "Model_local.h"
 
-static const unsigned int R_RenderWorld_FakeMD5RProcCRC = 1105723392u;
-
 class idRenderWorldMD5RProcData {
 public:
 	idList<rvMD5RVertexBufferDesc>	vertexBuffers;
@@ -476,6 +474,7 @@ static bool R_RenderWorld_ParseSupportedMD5RProc( idRenderWorldLocal &world, Lex
 		common->Warning( "idRenderWorldLocal::InitFromMap: '%s' has no MD5RProc CRC token", fileName );
 		return false;
 	}
+	world.mapFileCRC = token.GetUnsignedLongValue();
 
 	idRenderWorldMD5RProcData &md5rProcData = R_RenderWorld_EnsureMD5RProcData( world );
 	md5rProcData.Clear();
@@ -631,6 +630,7 @@ void idRenderWorldLocal::FreeWorld() {
 	areaNumRefAllocator.Shutdown();
 
 	mapName = "<FREED>";
+	mapFileCRC = 0u;
 }
 
 /*
@@ -1021,8 +1021,8 @@ idRenderWorldLocal::WriteMD5R
 
 Retail Quake 4 writes fully packed MD5RProc worlds from here. OpenQ4 now does
 the same when the world was loaded from an MD5RProc companion and still has the
-shared packed buffer state resident. Classic .proc worlds still fall back to
-the interim classic export path until the actual conversion path is finished.
+shared packed buffer state resident, or when a classic proc world has already
+been converted into resident MD5R proc data during this session.
 ===========================
 */
 bool idRenderWorldLocal::WriteMD5R( bool compressed ) {
@@ -1054,7 +1054,7 @@ bool idRenderWorldLocal::WriteMD5R( bool compressed ) {
 
 	common->Printf( "writing %s\n", exportFilename.c_str() );
 	outFile->WriteFloatString( "%s %d\n", MD5R_PROC_FILE_ID, MD5R_PROC_FILEVERSION );
-	outFile->WriteFloatString( "%u\n\n", R_RenderWorld_FakeMD5RProcCRC );
+	outFile->WriteFloatString( "%u\n\n", mapFileCRC );
 
 	const idRenderWorldMD5RProcData *md5rProcData = this->md5rProcData;
 	if ( md5rProcData != NULL && md5rProcData->HasPackedWorldData() && md5rProcData->models.Num() > 0 ) {
@@ -1244,6 +1244,7 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 	if ( !name || !name[0] ) {
 		FreeWorld();
 		mapName.Clear();
+		mapFileCRC = 0u;
 		ClearWorld();
 		return true;
 	}
@@ -1352,8 +1353,10 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 		return false;
 	}
 
-	// Map CRC, we aren't going to use it.
-	src->ReadToken(&token);
+	mapFileCRC = 0u;
+	if ( src->ReadToken( &token ) ) {
+		mapFileCRC = token.GetUnsignedLongValue();
+	}
 // jmarshall end
 
 	// parse the file

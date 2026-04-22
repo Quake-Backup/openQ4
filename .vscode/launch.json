@@ -3045,7 +3045,7 @@
                                             "1",
                                             "+set",
                                             "g_autoSkipCinematics",
-                                            "1",
+                                            "0",
                                             "+set",
                                             "r_fullscreen",
                                             "0",

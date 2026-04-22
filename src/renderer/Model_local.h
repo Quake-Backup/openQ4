@@ -405,6 +405,8 @@ struct rvMD5RVertexBufferDesc {
 	idList<idVec3>				binormals;
 	idList<idVec4>				texCoords[7];
 	idList<dword>				diffuseColors;
+	idList<dword>				specularColors;
+	idList<float>				pointSizes;
 };
 
 struct rvMD5RIndexBufferDesc {

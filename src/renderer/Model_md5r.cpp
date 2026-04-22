@@ -282,6 +282,12 @@ static void R_MD5R_InitVertexBufferDesc( rvMD5RVertexBufferDesc &vertexBuffer, c
 	if ( vertexFormat.hasDiffuseColor ) {
 		vertexBuffer.diffuseColors.SetNum( numVertices );
 	}
+	if ( vertexFormat.hasSpecularColor ) {
+		vertexBuffer.specularColors.SetNum( numVertices );
+	}
+	if ( vertexFormat.hasPointSize ) {
+		vertexBuffer.pointSizes.SetNum( numVertices );
+	}
 
 	for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
 		if ( vertexFormat.hasTexCoord[ texCoordSet ] ) {
@@ -488,6 +494,46 @@ static void R_MD5R_SetPosition( idVec4 &value, Lexer &parser, int tokenType, int
 
 /*
 ===========================
+R_MD5R_SetSwizzledPositions
+===========================
+*/
+static void R_MD5R_SetSwizzledPositions( idList<idVec4> &positions, Lexer &parser, int tokenType ) {
+	const int numVertices = positions.Num();
+	const int alignedVertexCount = ( numVertices + 3 ) & ~3;
+
+	for ( int vertexBase = 0; vertexBase < alignedVertexCount; vertexBase += 4 ) {
+		float swizzledX[ 4 ];
+		float swizzledY[ 4 ];
+		float swizzledZ[ 4 ];
+
+		for ( int lane = 0; lane < 4; ++lane ) {
+			swizzledX[ lane ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
+		}
+		for ( int lane = 0; lane < 4; ++lane ) {
+			swizzledY[ lane ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
+		}
+		for ( int lane = 0; lane < 4; ++lane ) {
+			swizzledZ[ lane ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
+		}
+
+		for ( int lane = 0; lane < 4; ++lane ) {
+			const int vertexIndex = vertexBase + lane;
+			if ( vertexIndex >= numVertices ) {
+				break;
+			}
+
+			idVec4 &position = positions[ vertexIndex ];
+			position.Zero();
+			position.x = swizzledX[ lane ];
+			position.y = swizzledY[ lane ];
+			position.z = swizzledZ[ lane ];
+			position.w = 1.0f;
+		}
+	}
+}
+
+/*
+===========================
 R_MD5R_SetVec3
 ===========================
 */
@@ -583,11 +629,11 @@ static void R_MD5R_ParseInterleavedVertexData( Lexer &parser, rvMD5RVertexBuffer
 		}
 
 		if ( format.hasSpecularColor ) {
-			R_MD5R_SkipNumericValues( parser, format.specularColorTokenType, 1 );
+			vertexBuffer.specularColors[ vertexIndex ] = static_cast<dword>( R_MD5R_ParseNumericAsInt( parser, format.specularColorTokenType ) );
 		}
 
 		if ( format.hasPointSize ) {
-			R_MD5R_SkipNumericValues( parser, format.pointSizeTokenType, 1 );
+			vertexBuffer.pointSizes[ vertexIndex ] = R_MD5R_ParseNumericAsFloat( parser, format.pointSizeTokenType );
 		}
 
 		for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
@@ -617,8 +663,12 @@ static void R_MD5R_ParseSoAVertexData( Lexer &parser, rvMD5RVertexBufferDesc &ve
 	const rvMD5RVertexFormatDesc &format = vertexBuffer.loadVertexFormat;
 
 	if ( format.hasPosition ) {
-		for ( int vertexIndex = 0; vertexIndex < vertexBuffer.numVertices; ++vertexIndex ) {
-			R_MD5R_SetPosition( vertexBuffer.positions[ vertexIndex ], parser, format.positionTokenType, format.positionDim );
+		if ( format.positionSwizzled ) {
+			R_MD5R_SetSwizzledPositions( vertexBuffer.positions, parser, format.positionTokenType );
+		} else {
+			for ( int vertexIndex = 0; vertexIndex < vertexBuffer.numVertices; ++vertexIndex ) {
+				R_MD5R_SetPosition( vertexBuffer.positions[ vertexIndex ], parser, format.positionTokenType, format.positionDim );
+			}
 		}
 	}
 
@@ -664,11 +714,15 @@ static void R_MD5R_ParseSoAVertexData( Lexer &parser, rvMD5RVertexBufferDesc &ve
 	}
 
 	if ( format.hasSpecularColor ) {
-		R_MD5R_SkipNumericValues( parser, format.specularColorTokenType, vertexBuffer.numVertices );
+		for ( int vertexIndex = 0; vertexIndex < vertexBuffer.numVertices; ++vertexIndex ) {
+			vertexBuffer.specularColors[ vertexIndex ] = static_cast<dword>( R_MD5R_ParseNumericAsInt( parser, format.specularColorTokenType ) );
+		}
 	}
 
 	if ( format.hasPointSize ) {
-		R_MD5R_SkipNumericValues( parser, format.pointSizeTokenType, vertexBuffer.numVertices );
+		for ( int vertexIndex = 0; vertexIndex < vertexBuffer.numVertices; ++vertexIndex ) {
+			vertexBuffer.pointSizes[ vertexIndex ] = R_MD5R_ParseNumericAsFloat( parser, format.pointSizeTokenType );
+		}
 	}
 
 	for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
@@ -1600,30 +1654,19 @@ void rvRenderModelMD5R::ParseVertexBuffer( Lexer &parser, rvMD5RVertexBufferDesc
 	if ( vertexBuffer.loadVertexFormat.hasDiffuseColor ) {
 		vertexBuffer.diffuseColors.SetNum( vertexBuffer.numVertices );
 	}
+	if ( vertexBuffer.loadVertexFormat.hasSpecularColor ) {
+		vertexBuffer.specularColors.SetNum( vertexBuffer.numVertices );
+	}
+	if ( vertexBuffer.loadVertexFormat.hasPointSize ) {
+		vertexBuffer.pointSizes.SetNum( vertexBuffer.numVertices );
+	}
 	for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
 		if ( vertexBuffer.loadVertexFormat.hasTexCoord[ texCoordSet ] ) {
 			vertexBuffer.texCoords[ texCoordSet ].SetNum( vertexBuffer.numVertices );
 		}
 	}
 
-	if ( vertexBuffer.soA && vertexBuffer.loadVertexFormat.positionSwizzled ) {
-		common->Warning(
-			"rvRenderModelMD5R::ParseVertexBuffer: '%s' uses SoA swizzled MD5R positions, which are not decoded yet; static surface generation will be skipped for this buffer",
-			parser.GetFileName() );
-		vertexBuffer.positions.Clear();
-		vertexBuffer.blendIndices.Clear();
-		vertexBuffer.blendWeights.Clear();
-		vertexBuffer.normals.Clear();
-		vertexBuffer.tangents.Clear();
-		vertexBuffer.binormals.Clear();
-		vertexBuffer.diffuseColors.Clear();
-		for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
-			vertexBuffer.texCoords[ texCoordSet ].Clear();
-		}
-		if ( !parser.SkipBracedSection( false ) ) {
-			parser.Error( "Malformed Vertex data block" );
-		}
-	} else if ( vertexBuffer.soA ) {
+	if ( vertexBuffer.soA ) {
 		R_MD5R_ParseSoAVertexData( parser, vertexBuffer );
 		parser.ExpectTokenString( "}" );
 	} else {
@@ -3656,6 +3699,8 @@ int rvRenderModelMD5R::Memory() const {
 			total += vertexBuffers[ i ].tangents.MemoryUsed();
 			total += vertexBuffers[ i ].binormals.MemoryUsed();
 			total += vertexBuffers[ i ].diffuseColors.MemoryUsed();
+			total += vertexBuffers[ i ].specularColors.MemoryUsed();
+			total += vertexBuffers[ i ].pointSizes.MemoryUsed();
 			for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
 				total += vertexBuffers[ i ].texCoords[ texCoordSet ].MemoryUsed();
 			}
@@ -3728,16 +3773,6 @@ bool rvRenderModelMD5R::CanWriteModelData( idStr &reason ) const {
 		const rvMD5RVertexBufferDesc &vertexBuffer = vertexBuffers[ vertexBufferIndex ];
 		const rvMD5RVertexFormatDesc &format = vertexBuffer.loadVertexFormat;
 
-		if ( format.hasSpecularColor ) {
-			reason = va( "vertex buffer %d uses specular-color data that OpenQ4 does not retain for MD5R export", vertexBufferIndex );
-			return false;
-		}
-
-		if ( format.hasPointSize ) {
-			reason = va( "vertex buffer %d uses point-size data that OpenQ4 does not retain for MD5R export", vertexBufferIndex );
-			return false;
-		}
-
 		if ( format.hasPosition && vertexBuffer.positions.Num() != vertexBuffer.numVertices ) {
 			reason = va( "vertex buffer %d position data was not fully decoded", vertexBufferIndex );
 			return false;
@@ -3770,6 +3805,16 @@ bool rvRenderModelMD5R::CanWriteModelData( idStr &reason ) const {
 
 		if ( format.hasDiffuseColor && vertexBuffer.diffuseColors.Num() != vertexBuffer.numVertices ) {
 			reason = va( "vertex buffer %d diffuse-color data was not fully decoded", vertexBufferIndex );
+			return false;
+		}
+
+		if ( format.hasSpecularColor && vertexBuffer.specularColors.Num() != vertexBuffer.numVertices ) {
+			reason = va( "vertex buffer %d specular-color data was not fully decoded", vertexBufferIndex );
+			return false;
+		}
+
+		if ( format.hasPointSize && vertexBuffer.pointSizes.Num() != vertexBuffer.numVertices ) {
+			reason = va( "vertex buffer %d point-size data was not fully decoded", vertexBufferIndex );
 			return false;
 		}
 
@@ -3885,7 +3930,12 @@ rvRenderModelMD5R::WriteVertexBuffer
 ========================
 */
 void rvRenderModelMD5R::WriteVertexBuffer( idFile &outFile, const rvMD5RVertexBufferDesc &vertexBuffer, const char *prepend ) {
-	const rvMD5RVertexFormatDesc &format = vertexBuffer.loadVertexFormat;
+	rvMD5RVertexFormatDesc format = vertexBuffer.loadVertexFormat;
+	if ( format.hasPosition && format.positionSwizzled ) {
+		format.positionSwizzled = false;
+		format.positionDim = 3;
+	}
+
 	idStr innerIndent = prepend;
 	idStr vertexIndent;
 
@@ -3952,6 +4002,14 @@ void rvRenderModelMD5R::WriteVertexBuffer( idFile &outFile, const rvMD5RVertexBu
 
 		if ( format.hasDiffuseColor ) {
 			outFile.WriteFloatString( "%d ", static_cast<int>( vertexBuffer.diffuseColors[ vertexIndex ] ) );
+		}
+
+		if ( format.hasSpecularColor ) {
+			outFile.WriteFloatString( "%d ", static_cast<int>( vertexBuffer.specularColors[ vertexIndex ] ) );
+		}
+
+		if ( format.hasPointSize ) {
+			outFile.WriteFloatString( "%f ", vertexBuffer.pointSizes[ vertexIndex ] );
 		}
 
 		for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
