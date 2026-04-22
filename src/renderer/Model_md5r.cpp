@@ -1014,8 +1014,7 @@ bool rvRenderModelMD5R::InitFromMD5Model( const idRenderModelMD5 &sourceModel ) 
 
 	if ( sourceModel.IsDefaultModel()
 		|| sourceModel.meshes.Num() <= 0
-		|| sourceModel.joints.Num() <= 0
-		|| sourceModel.joints.Num() > 255 ) {
+		|| sourceModel.joints.Num() <= 0 ) {
 		return false;
 	}
 
@@ -1071,6 +1070,14 @@ bool rvRenderModelMD5R::InitFromMD5Model( const idRenderModelMD5 &sourceModel ) 
 		sourceBlendIndices.SetNum( numSourceVerts );
 		sourceBlendWeights.SetNum( numSourceVerts );
 
+		idList<int> jointPaletteLookup;
+		jointPaletteLookup.SetNum( joints.Num() );
+		for ( int jointIndex = 0; jointIndex < jointPaletteLookup.Num(); ++jointIndex ) {
+			jointPaletteLookup[ jointIndex ] = -1;
+		}
+
+		rvMD5RPrimBatch primBatch;
+
 		int weightCursor = 0;
 		for ( int sourceVertexIndex = 0; sourceVertexIndex < numSourceVerts; ++sourceVertexIndex ) {
 			idVec4 vertexBlendWeights;
@@ -1081,11 +1088,22 @@ bool rvRenderModelMD5R::InitFromMD5Model( const idRenderModelMD5 &sourceModel ) 
 			while ( weightCursor < sourceMesh.numWeights ) {
 				const int jointOffset = sourceMesh.weightIndex[ weightCursor * 2 + 0 ];
 				const int jointIndex = jointOffset / static_cast<int>( sizeof( idJointMat ) );
-				if ( influenceCount >= 4 || jointIndex < 0 || jointIndex > 255 ) {
+				if ( influenceCount >= 4 || jointIndex < 0 || jointIndex >= joints.Num() ) {
 					return false;
 				}
 
-				vertexBlendIndices[ influenceCount ] = jointIndex;
+				int localJointIndex = jointPaletteLookup[ jointIndex ];
+				if ( localJointIndex < 0 ) {
+					if ( primBatch.transformPalette.Num() >= 256 ) {
+						return false;
+					}
+
+					localJointIndex = primBatch.transformPalette.Num();
+					primBatch.transformPalette.Append( jointIndex );
+					jointPaletteLookup[ jointIndex ] = localJointIndex;
+				}
+
+				vertexBlendIndices[ influenceCount ] = localJointIndex;
 				vertexBlendWeights[ influenceCount ] = sourceMesh.scaledWeights[ weightCursor ].w;
 
 				const bool lastWeightForVertex = ( sourceMesh.weightIndex[ weightCursor * 2 + 1 ] != 0 );
@@ -1154,11 +1172,10 @@ bool rvRenderModelMD5R::InitFromMD5Model( const idRenderModelMD5 &sourceModel ) 
 		R_MD5R_CopyIndexes( indexBuffer, sourceMesh.deformInfo->indexes, sourceMesh.deformInfo->numIndexes );
 		indexBuffers.Append( indexBuffer );
 
-		rvMD5RPrimBatch primBatch;
-		primBatch.numTransforms = joints.Num();
-		primBatch.transformPalette.SetNum( joints.Num() );
-		for ( int jointIndex = 0; jointIndex < joints.Num(); ++jointIndex ) {
-			primBatch.transformPalette[ jointIndex ] = jointIndex;
+		primBatch.numTransforms = primBatch.transformPalette.Num();
+		if ( primBatch.numTransforms <= 0 ) {
+			R_FreeStaticTriSurf( tempSurface.geometry );
+			return false;
 		}
 		primBatch.silTraceGeoSpec.vertexStart = 0;
 		primBatch.silTraceGeoSpec.vertexCount = tri->numVerts;
