@@ -74,6 +74,33 @@ void RB_DrawElementsImmediate( const srfTriangles_t *tri ) {
 	glEnd();
 }
 
+static bool RB_EnsurePackedRenderTriangleCaches( const srfTriangles_t *tri, bool needsLighting, bool createIndexCache ) {
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( tri == NULL || tri->primBatchMesh == NULL ) {
+		return true;
+	}
+
+	srfTriangles_t *mutableTri = const_cast<srfTriangles_t *>( tri );
+	const bool needsIndexCache = createIndexCache && r_useIndexBuffers.GetBool() && tri->numIndexes > 0;
+	if ( mutableTri->ambientCache == NULL || ( needsIndexCache && mutableTri->indexCache == NULL ) ) {
+		if ( !R_CreatePackedSurfaceFrameCaches( mutableTri, needsLighting, createIndexCache ) ) {
+			return false;
+		}
+	}
+
+	R_TouchVertexCache( mutableTri->ambientCache );
+	if ( mutableTri->indexCache != NULL ) {
+		R_TouchVertexCache( mutableTri->indexCache );
+	}
+#else
+	(void)tri;
+	(void)needsLighting;
+	(void)createIndexCache;
+#endif
+
+	return true;
+}
+
 
 /*
 ================
@@ -81,6 +108,11 @@ RB_DrawElementsWithCounters
 ================
 */
 void RB_DrawElementsWithCounters( const srfTriangles_t *tri ) {
+	if ( tri->primBatchMesh != NULL && tr.backEndRenderer == BE_ARB2 ) {
+		if ( RB_ARB2_DrawPreparedPackedMD5RStageBatches( tri ) ) {
+			return;
+		}
+	}
 
 	backEnd.pc.c_drawElements++;
 	backEnd.pc.c_drawIndexes += tri->numIndexes;
@@ -157,6 +189,10 @@ Sets texcoord and vertex pointers
 ===============
 */
 void RB_RenderTriangleSurface( const srfTriangles_t *tri ) {
+	if ( !RB_EnsurePackedRenderTriangleCaches( tri, false, true ) ) {
+		return;
+	}
+
 	if ( !tri->ambientCache ) {
 		RB_DrawElementsImmediate( tri );
 		return;
@@ -177,6 +213,13 @@ RB_T_RenderTriangleSurface
 ===============
 */
 void RB_T_RenderTriangleSurface( const drawSurf_t *surf ) {
+	if ( !RB_EnsurePackedRenderTriangleCaches(
+		surf->geo,
+		( surf->material != NULL ) ? surf->material->ReceivesLighting() : false,
+		true ) ) {
+		return;
+	}
+
 	RB_RenderTriangleSurface( surf->geo );
 }
 

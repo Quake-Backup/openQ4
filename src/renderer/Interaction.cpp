@@ -31,6 +31,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+bool R_MD5R_CreateLightTris( const srfTriangles_t &sourceTri, srfTriangles_t *destTri, int &c_backfaced, int &c_distance, const byte *facing, const byte *cullBits, bool includeBackFaces );
+#endif
+
 /*
 ===========================================================================
 
@@ -498,11 +502,47 @@ static srfTriangles_t *R_CreateLightTris( const idRenderEntityLocal *ent,
 	newTri->numVerts = tri->numVerts;
 	R_ReferenceStaticTriSurfVerts( newTri, tri );
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( tri->primBatchMesh != NULL ) {
+		// Keep packed interaction surfaces tied to the source MD5R mesh and
+		// sil-trace/transform state so the ARB2 interaction path can follow
+		// retail's per-prim-batch light-tri submission when available.
+		newTri->primBatchMesh = tri->primBatchMesh;
+		newTri->silTraceVerts = tri->silTraceVerts;
+		newTri->silEdges = tri->silEdges;
+		newTri->numSilEdges = tri->numSilEdges;
+		newTri->skinToModelTransforms = tri->skinToModelTransforms;
+		newTri->skinToModelTransformsAlloc = NULL;
+		newTri->numSkinToModelTransforms = tri->numSkinToModelTransforms;
+	}
+#endif
+
 	// calculate cull information
 	if ( !includeBackFaces ) {
 		R_CalcInteractionFacing( ent, tri, light, cullInfo );
 	}
 	R_CalcInteractionCullBits( ent, tri, light, cullInfo );
+
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( tri->primBatchMesh != NULL ) {
+		const byte *facing = includeBackFaces ? NULL : cullInfo.facing;
+		const byte *cullBits = ( cullInfo.cullBits == LIGHT_CULL_ALL_FRONT ) ? NULL : cullInfo.cullBits;
+		if ( R_MD5R_CreateLightTris( *tri, newTri, c_backfaced, c_distance, facing, cullBits, includeBackFaces ) ) {
+			if ( newTri->numIndexes == 0 ) {
+				R_ReallyFreeStaticTriSurf( newTri );
+				return NULL;
+			}
+			return newTri;
+		}
+
+		// If the retail packed builder rejects a surface, fall back to the
+		// long-standing flat interaction build instead of dropping the light.
+		if ( newTri->indexes != NULL ) {
+			R_ResizeStaticTriSurfIndexes( newTri, 0 );
+			newTri->numIndexes = 0;
+		}
+	}
+#endif
 
 	// if the surface is completely inside the light frustum
 	if ( cullInfo.cullBits == LIGHT_CULL_ALL_FRONT ) {

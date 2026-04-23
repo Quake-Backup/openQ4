@@ -279,8 +279,10 @@ struct rvMD5RIndexBufferDesc;
 
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 bool							R_MD5R_CreateDecalTriangles( idRenderModelDecal *decalModel, const srfTriangles_t &sourceTri, const decalProjectionInfo_s &localInfo );
+bool							R_MD5R_CreateLightTris( const srfTriangles_t &sourceTri, srfTriangles_t *destTri, int &c_backfaced, int &c_distance, const byte *facing, const byte *cullBits, bool includeBackFaces );
 const rvMD5RMesh *				R_MD5R_GetMeshForTri( const srfTriangles_t *tri );
 const rvMD5RVertexBufferDesc *	R_MD5R_GetDrawVertexBufferForTri( const srfTriangles_t *tri );
+const rvMD5RIndexBufferDesc *	R_MD5R_GetSilTraceIndexBufferForTri( const srfTriangles_t *tri );
 const rvMD5RIndexBufferDesc *	R_MD5R_GetDrawIndexBufferForTri( const srfTriangles_t *tri );
 #endif
 
@@ -524,6 +526,7 @@ private:
 	friend bool					R_MD5R_CreateDecalTriangles( idRenderModelDecal *decalModel, const srfTriangles_t &sourceTri, const decalProjectionInfo_s &localInfo );
 	friend const rvMD5RMesh *	R_MD5R_GetMeshForTri( const srfTriangles_t *tri );
 	friend const rvMD5RVertexBufferDesc *	R_MD5R_GetDrawVertexBufferForTri( const srfTriangles_t *tri );
+	friend const rvMD5RIndexBufferDesc *	R_MD5R_GetSilTraceIndexBufferForTri( const srfTriangles_t *tri );
 	friend const rvMD5RIndexBufferDesc *	R_MD5R_GetDrawIndexBufferForTri( const srfTriangles_t *tri );
 #endif
 	static void					RemoveFromList( rvRenderModelMD5R &model );

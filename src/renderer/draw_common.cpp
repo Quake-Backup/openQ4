@@ -3233,6 +3233,34 @@ static bool RB_RVSpecialPrepareSolidStageTexturing( const drawSurf_t *surf, idDr
 	return true;
 }
 
+static bool RB_EnsurePackedClassicDrawCaches( const drawSurf_t *surf, bool needsLighting, bool createIndexCache ) {
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	const srfTriangles_t *tri = ( surf != NULL ) ? surf->geo : NULL;
+	if ( tri == NULL || tri->primBatchMesh == NULL ) {
+		return true;
+	}
+
+	srfTriangles_t *mutableTri = const_cast<srfTriangles_t *>( tri );
+	const bool needsIndexCache = createIndexCache && r_useIndexBuffers.GetBool() && tri->numIndexes > 0;
+	if ( mutableTri->ambientCache == NULL || ( needsIndexCache && mutableTri->indexCache == NULL ) ) {
+		if ( !R_CreatePackedSurfaceFrameCaches( mutableTri, needsLighting, createIndexCache ) ) {
+			return false;
+		}
+	}
+
+	R_TouchVertexCache( mutableTri->ambientCache );
+	if ( mutableTri->indexCache != NULL ) {
+		R_TouchVertexCache( mutableTri->indexCache );
+	}
+#else
+	(void)surf;
+	(void)needsLighting;
+	(void)createIndexCache;
+#endif
+
+	return true;
+}
+
 /*
 =============================================================================================
 
@@ -3255,6 +3283,9 @@ static void RB_T_CaptureRVSpecialDepth( const drawSurf_t *surf ) {
 	float color[4];
 
 	if ( !shader->IsDrawn() || !tri->numIndexes || shader->Coverage() == MC_TRANSLUCENT ) {
+		return;
+	}
+	if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true ) ) {
 		return;
 	}
 	if ( !tri->ambientCache ) {
@@ -3780,6 +3811,10 @@ void RB_T_FillDepthBuffer( const drawSurf_t *surf ) {
 		return;
 	}
 
+	if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true ) ) {
+		return;
+	}
+
 	if ( !tri->ambientCache ) {
 		common->Printf( "RB_T_FillDepthBuffer: !tri->ambientCache\n" );
 		return;
@@ -4143,6 +4178,10 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 		return;
 	}
 
+	if ( !RB_EnsurePackedClassicDrawCaches( surf, shader->ReceivesLighting(), true ) ) {
+		return;
+	}
+
 	if ( !tri->ambientCache ) {
 		common->Printf( "RB_T_RenderShaderPasses: !tri->ambientCache\n" );
 		return;
@@ -4335,20 +4374,28 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			if ( tr.backEndRenderer != BE_ARB2 ) {
 				continue;
 			}
-			RB_SetStageVertexColorPointer( surf, stage, ac );
-			glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[0].ToFloatPtr() );
-			glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[1].ToFloatPtr() );
-			glNormalPointer( GL_FLOAT, sizeof( idDrawVert ), ac->normal.ToFloatPtr() );
 
-			glEnableClientState( GL_COLOR_ARRAY );
-			glEnableVertexAttribArrayARB( 9 );
-			glEnableVertexAttribArrayARB( 10 );
-			glEnableClientState( GL_NORMAL_ARRAY );
+			bool usingPackedMaterialStage = false;
+			if ( tri->primBatchMesh != NULL && newStage->md5rVertexProgram != 0 ) {
+				usingPackedMaterialStage = RB_ARB2_PreparePackedMD5RProgramStageDraw( surf );
+			}
+
+			if ( !usingPackedMaterialStage ) {
+				RB_SetStageVertexColorPointer( surf, stage, ac );
+				glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[0].ToFloatPtr() );
+				glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[1].ToFloatPtr() );
+				glNormalPointer( GL_FLOAT, sizeof( idDrawVert ), ac->normal.ToFloatPtr() );
+
+				glEnableClientState( GL_COLOR_ARRAY );
+				glEnableVertexAttribArrayARB( 9 );
+				glEnableVertexAttribArrayARB( 10 );
+				glEnableClientState( GL_NORMAL_ARRAY );
+			}
 
 			GL_State( pStage->drawStateBits );
 
 			int stageVertexProgram = newStage->vertexProgram;
-			if ( tri->primBatchMesh != NULL && newStage->md5rVertexProgram != 0 ) {
+			if ( usingPackedMaterialStage ) {
 				stageVertexProgram = newStage->md5rVertexProgram;
 			}
 
@@ -4356,14 +4403,18 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			bool fragmentProgramEnabled = false;
 			if ( stageVertexProgram != 0 ) {
 				if ( !R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, stageVertexProgram, "material stage vertex program", false ) ) {
-					glDisableClientState( GL_COLOR_ARRAY );
-					glDisableVertexAttribArrayARB( 9 );
-					glDisableVertexAttribArrayARB( 10 );
-					glDisableClientState( GL_NORMAL_ARRAY );
+					if ( usingPackedMaterialStage ) {
+						RB_ARB2_ClearPreparedPackedMD5RDraw();
+					} else {
+						glDisableClientState( GL_COLOR_ARRAY );
+						glDisableVertexAttribArrayARB( 9 );
+						glDisableVertexAttribArrayARB( 10 );
+						glDisableClientState( GL_NORMAL_ARRAY );
+					}
 					continue;
 				}
 				glEnable( GL_VERTEX_PROGRAM_ARB );
-				if ( tri->primBatchMesh != NULL && stageVertexProgram == newStage->md5rVertexProgram ) {
+				if ( usingPackedMaterialStage ) {
 					RB_ARB2_LoadMD5RLocalViewOrigin( surf );
 					RB_ARB2_LoadMD5RMVPMatrix( surf );
 					RB_ARB2_LoadMD5RProjectionMatrix();
@@ -4386,10 +4437,14 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 						glDisable( GL_VERTEX_PROGRAM_ARB );
 						glBindProgramARB( GL_VERTEX_PROGRAM_ARB, 0 );
 					}
-					glDisableClientState( GL_COLOR_ARRAY );
-					glDisableVertexAttribArrayARB( 9 );
-					glDisableVertexAttribArrayARB( 10 );
-					glDisableClientState( GL_NORMAL_ARRAY );
+					if ( usingPackedMaterialStage ) {
+						RB_ARB2_ClearPreparedPackedMD5RDraw();
+					} else {
+						glDisableClientState( GL_COLOR_ARRAY );
+						glDisableVertexAttribArrayARB( 9 );
+						glDisableVertexAttribArrayARB( 10 );
+						glDisableClientState( GL_NORMAL_ARRAY );
+					}
 					continue;
 				}
 				glEnable( GL_FRAGMENT_PROGRAM_ARB );
@@ -4397,10 +4452,14 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			}
 
 			if ( !vertexProgramEnabled && !fragmentProgramEnabled ) {
-				glDisableClientState( GL_COLOR_ARRAY );
-				glDisableVertexAttribArrayARB( 9 );
-				glDisableVertexAttribArrayARB( 10 );
-				glDisableClientState( GL_NORMAL_ARRAY );
+				if ( usingPackedMaterialStage ) {
+					RB_ARB2_ClearPreparedPackedMD5RDraw();
+				} else {
+					glDisableClientState( GL_COLOR_ARRAY );
+					glDisableVertexAttribArrayARB( 9 );
+					glDisableVertexAttribArrayARB( 10 );
+					glDisableClientState( GL_NORMAL_ARRAY );
+				}
 				continue;
 			}
 
@@ -4453,10 +4512,14 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			// Fixme: Hack to get around an apparent bug in ATI drivers.  Should remove as soon as it gets fixed.
 			glBindProgramARB( GL_VERTEX_PROGRAM_ARB, 0 );
 
-			glDisableClientState( GL_COLOR_ARRAY );
-			glDisableVertexAttribArrayARB( 9 );
-			glDisableVertexAttribArrayARB( 10 );
-			glDisableClientState( GL_NORMAL_ARRAY );
+			if ( usingPackedMaterialStage ) {
+				RB_ARB2_ClearPreparedPackedMD5RDraw();
+			} else {
+				glDisableClientState( GL_COLOR_ARRAY );
+				glDisableVertexAttribArrayARB( 9 );
+				glDisableVertexAttribArrayARB( 10 );
+				glDisableClientState( GL_NORMAL_ARRAY );
+			}
 			continue;
 		}
 
@@ -4893,6 +4956,9 @@ static void RB_T_BlendLight( const drawSurf_t *surf ) {
 	const srfTriangles_t *tri;
 
 	tri = surf->geo;
+	if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true ) ) {
+		return;
+	}
 
 	if ( backEnd.currentSpace != surf->space ) {
 		idPlane	lightProject[4];
@@ -5468,6 +5534,10 @@ static void RB_STD_DrawLightGridSurface( const drawSurf_t *surf, const LightGrid
 	if ( tri == NULL || shader == NULL || regs == NULL ) {
 		return;
 	}
+	if ( !RB_EnsurePackedClassicDrawCaches( surf, shader->ReceivesLighting(), true ) ) {
+		return;
+	}
+
 	if ( tri->numIndexes <= 0 || tri->ambientCache == NULL ) {
 		return;
 	}

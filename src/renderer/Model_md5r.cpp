@@ -1244,6 +1244,26 @@ const rvMD5RVertexBufferDesc *R_MD5R_GetDrawVertexBufferForTri( const srfTriangl
 
 /*
 ===========================
+R_MD5R_GetSilTraceIndexBufferForTri
+===========================
+*/
+const rvMD5RIndexBufferDesc *R_MD5R_GetSilTraceIndexBufferForTri( const srfTriangles_t *tri ) {
+	const rvMD5RMesh *mesh = R_MD5R_GetMeshForTri( tri );
+	if ( mesh == NULL || mesh->silTraceIndexBuffer < 0 ) {
+		return NULL;
+	}
+
+	const rvRenderModelMD5R *renderModel = mesh->renderModel;
+	const idList<rvMD5RIndexBufferDesc> &indexBuffers = renderModel->GetIndexBuffers();
+	if ( mesh->silTraceIndexBuffer >= indexBuffers.Num() ) {
+		return NULL;
+	}
+
+	return &indexBuffers[ mesh->silTraceIndexBuffer ];
+}
+
+/*
+===========================
 R_MD5R_GetDrawIndexBufferForTri
 ===========================
 */
@@ -1260,6 +1280,161 @@ const rvMD5RIndexBufferDesc *R_MD5R_GetDrawIndexBufferForTri( const srfTriangles
 	}
 
 	return &indexBuffers[ mesh->drawIndexBuffer ];
+}
+
+/*
+========================
+R_MD5R_CreateLightTris
+========================
+*/
+bool R_MD5R_CreateLightTris(
+	const srfTriangles_t &sourceTri,
+	srfTriangles_t *destTri,
+	int &c_backfaced,
+	int &c_distance,
+	const byte *facing,
+	const byte *cullBits,
+	bool includeBackFaces ) {
+	const rvMD5RMesh *mesh = R_MD5R_GetMeshForTri( &sourceTri );
+	if ( mesh == NULL || destTri == NULL || sourceTri.silTraceVerts == NULL || mesh->primBatches.Num() <= 0 ) {
+		return false;
+	}
+
+	const rvMD5RIndexBufferDesc *silTraceIndexBuffer = R_MD5R_GetSilTraceIndexBufferForTri( &sourceTri );
+	const rvMD5RIndexBufferDesc *drawIndexBuffer = R_MD5R_GetDrawIndexBufferForTri( &sourceTri );
+	if ( silTraceIndexBuffer == NULL || drawIndexBuffer == NULL ) {
+		return false;
+	}
+
+	if ( silTraceIndexBuffer->numIndices <= 0
+		|| drawIndexBuffer->numIndices <= 0
+		|| silTraceIndexBuffer->indices.Num() != silTraceIndexBuffer->numIndices
+		|| drawIndexBuffer->indices.Num() != drawIndexBuffer->numIndices ) {
+		return false;
+	}
+
+	for ( int primBatchIndex = 0; primBatchIndex < mesh->primBatches.Num(); ++primBatchIndex ) {
+		const rvMD5RPrimBatch &primBatch = mesh->primBatches[ primBatchIndex ];
+		if ( !primBatch.hasSilTraceGeoSpec || !primBatch.hasDrawGeoSpec ) {
+			return false;
+		}
+
+		const int batchSilTraceIndexCount = primBatch.silTraceGeoSpec.primitiveCount * 3;
+		const int batchDrawIndexCount = primBatch.drawGeoSpec.primitiveCount * 3;
+		if ( primBatch.silTraceGeoSpec.vertexCount < 0
+			|| primBatch.drawGeoSpec.vertexCount < 0
+			|| batchSilTraceIndexCount < 0
+			|| batchDrawIndexCount < 0
+			|| primBatch.silTraceGeoSpec.vertexStart < 0
+			|| primBatch.drawGeoSpec.vertexStart < 0
+			|| primBatch.silTraceGeoSpec.indexStart < 0
+			|| primBatch.drawGeoSpec.indexStart < 0
+			|| primBatch.silTraceGeoSpec.indexStart + batchSilTraceIndexCount > silTraceIndexBuffer->numIndices
+			|| primBatch.drawGeoSpec.indexStart + batchDrawIndexCount > drawIndexBuffer->numIndices ) {
+			return false;
+		}
+	}
+
+	if ( !includeBackFaces && facing == NULL ) {
+		return false;
+	}
+
+	const int numPrimBatches = mesh->primBatches.Num();
+	const int maxIndexCount = Max( mesh->numSilTraceIndices, mesh->numDrawIndices );
+	R_AllocStaticTriSurfIndexes( destTri, maxIndexCount + numPrimBatches );
+	destTri->bounds.Clear();
+
+	glIndex_t *batchHeader = destTri->indexes;
+	glIndex_t *batchIndices = destTri->indexes + numPrimBatches;
+	const rvSilTraceVertT *batchSilTraceVerts = reinterpret_cast<const rvSilTraceVertT *>( sourceTri.silTraceVerts );
+	int totalIndexCount = 0;
+
+	for ( int primBatchIndex = 0; primBatchIndex < numPrimBatches; ++primBatchIndex ) {
+		const rvMD5RPrimBatch &primBatch = mesh->primBatches[ primBatchIndex ];
+		const int batchTriangleCount = primBatch.silTraceGeoSpec.primitiveCount;
+		const int batchSilTraceIndexCount = batchTriangleCount * 3;
+		const int batchDrawIndexCount = primBatch.drawGeoSpec.primitiveCount * 3;
+		const glIndex_t *batchSilTraceSource = silTraceIndexBuffer->indices.Ptr() + primBatch.silTraceGeoSpec.indexStart;
+		const glIndex_t *batchDrawSource = drawIndexBuffer->indices.Ptr() + primBatch.drawGeoSpec.indexStart;
+		glIndex_t *destSilTraceIndices = (glIndex_t *)_alloca16( Max( batchSilTraceIndexCount, 1 ) * sizeof( destSilTraceIndices[0] ) );
+		int emittedIndexCount = 0;
+
+		if ( batchSilTraceIndexCount != batchDrawIndexCount ) {
+			R_ResizeStaticTriSurfIndexes( destTri, 0 );
+			destTri->numIndexes = 0;
+			return false;
+		}
+
+		for ( int triNum = 0; triNum < batchTriangleCount; ++triNum ) {
+			if ( !includeBackFaces && !facing[ triNum ] ) {
+				++c_backfaced;
+				continue;
+			}
+
+			const int silTraceIndex0 = batchSilTraceSource[ triNum * 3 + 0 ];
+			const int silTraceIndex1 = batchSilTraceSource[ triNum * 3 + 1 ];
+			const int silTraceIndex2 = batchSilTraceSource[ triNum * 3 + 2 ];
+			if ( silTraceIndex0 < 0 || silTraceIndex1 < 0 || silTraceIndex2 < 0
+				|| silTraceIndex0 >= primBatch.silTraceGeoSpec.vertexCount
+				|| silTraceIndex1 >= primBatch.silTraceGeoSpec.vertexCount
+				|| silTraceIndex2 >= primBatch.silTraceGeoSpec.vertexCount ) {
+				R_ResizeStaticTriSurfIndexes( destTri, 0 );
+				destTri->numIndexes = 0;
+				return false;
+			}
+
+			if ( cullBits != NULL && ( cullBits[ silTraceIndex0 ] & cullBits[ silTraceIndex1 ] & cullBits[ silTraceIndex2 ] ) != 0 ) {
+				++c_distance;
+				continue;
+			}
+
+			const int drawIndex0 = batchDrawSource[ triNum * 3 + 0 ];
+			const int drawIndex1 = batchDrawSource[ triNum * 3 + 1 ];
+			const int drawIndex2 = batchDrawSource[ triNum * 3 + 2 ];
+			if ( drawIndex0 < 0 || drawIndex1 < 0 || drawIndex2 < 0
+				|| drawIndex0 >= primBatch.drawGeoSpec.vertexCount
+				|| drawIndex1 >= primBatch.drawGeoSpec.vertexCount
+				|| drawIndex2 >= primBatch.drawGeoSpec.vertexCount ) {
+				R_ResizeStaticTriSurfIndexes( destTri, 0 );
+				destTri->numIndexes = 0;
+				return false;
+			}
+
+			destSilTraceIndices[ emittedIndexCount + 0 ] = silTraceIndex0;
+			destSilTraceIndices[ emittedIndexCount + 1 ] = silTraceIndex1;
+			destSilTraceIndices[ emittedIndexCount + 2 ] = silTraceIndex2;
+			batchIndices[ emittedIndexCount + 0 ] = drawIndex0 + primBatch.drawGeoSpec.vertexStart;
+			batchIndices[ emittedIndexCount + 1 ] = drawIndex1 + primBatch.drawGeoSpec.vertexStart;
+			batchIndices[ emittedIndexCount + 2 ] = drawIndex2 + primBatch.drawGeoSpec.vertexStart;
+			emittedIndexCount += 3;
+		}
+
+		batchHeader[ primBatchIndex ] = emittedIndexCount;
+		if ( emittedIndexCount > 0 ) {
+			idBounds batchBounds;
+			batchBounds.Clear();
+			SIMDProcessor->MinMax( batchBounds[0], batchBounds[1], batchSilTraceVerts, destSilTraceIndices, emittedIndexCount );
+			destTri->bounds.AddBounds( batchBounds );
+		}
+
+		totalIndexCount += emittedIndexCount;
+		batchIndices += emittedIndexCount;
+		if ( !includeBackFaces ) {
+			facing += batchTriangleCount;
+		}
+		if ( cullBits != NULL ) {
+			cullBits += primBatch.silTraceGeoSpec.vertexCount;
+		}
+		batchSilTraceVerts += primBatch.silTraceGeoSpec.vertexCount;
+	}
+
+	if ( totalIndexCount > 0 ) {
+		R_ResizeStaticTriSurfIndexes( destTri, totalIndexCount + numPrimBatches );
+	} else {
+		R_ResizeStaticTriSurfIndexes( destTri, 0 );
+	}
+	destTri->numIndexes = totalIndexCount;
+	return true;
 }
 
 /*
