@@ -1571,76 +1571,117 @@ int rvElectricityParticle::GetBoltCount(float length) {
 	return idMath::ClampInt(3, static_cast<int>(BSE_ELEC_MAX_BOLTS), bolts);
 }
 
+static const idDeclTable* ResolveElectricityJitterTable(const idStr& tableName, const idDeclTable* fallbackTable) {
+	const idDeclTable* table = NULL;
+
+	if (!tableName.IsEmpty()) {
+		table = declManager->FindTable(tableName, false);
+		if (table != NULL && table->IsImplicit()) {
+			table = NULL;
+		}
+	}
+
+	if (table == NULL) {
+		table = fallbackTable;
+		if (table != NULL && table->IsImplicit()) {
+			table = NULL;
+		}
+	}
+
+	if (table == NULL) {
+		table = declManager->FindTable("halfsintable", false);
+	}
+
+	return table;
+}
+
 void rvElectricityParticle::RenderBranch(const rvBSE* effect, struct SElecWork* work, idVec3 start, idVec3 end, const idDeclTable* jitterTable) {
 	if (!effect || !work || !work->tri || !work->coords) {
 		return;
 	}
 
-	idVec3 forward = end - start;
-	const float length = forward.Normalize();
-	if (length < 1e-6f) {
-		work->coordCount = 0;
-		return;
+	const idDeclTable* resolvedJitterTable = jitterTable ? jitterTable : mJitterTable;
+
+	const float forwardLenSqr = work->forward.LengthSqr();
+	if (forwardLenSqr > 1e-8f) {
+		work->forward *= idMath::InvSqrt(forwardLenSqr);
 	}
 
 	idVec3 left;
-	if (idMath::Fabs(forward.x) < 0.99f) {
-		left = idVec3(0.0f, 0.0f, 1.0f).Cross(forward);
-	}
-	else {
-		left = idVec3(0.0f, 1.0f, 0.0f).Cross(forward);
-	}
-	if (left.LengthSqr() > 1e-8f) {
-		left.NormalizeFast();
-	}
-	else {
+	const float planarLenSqr = work->forward.x * work->forward.x + work->forward.y * work->forward.y;
+	if (planarLenSqr <= 1e-8f) {
 		left.Set(1.0f, 0.0f, 0.0f);
 	}
-	idVec3 up = forward.Cross(left);
+	else {
+		const float invPlanarLen = idMath::InvSqrt(planarLenSqr);
+		left.Set(-work->forward.y * invPlanarLen, work->forward.x * invPlanarLen, 0.0f);
+	}
+	const idVec3 down = left.Cross(work->forward);
 
 	const int segmentVertStart = work->tri->numVerts;
-	int outCount = 0;
-	float fraction = 0.0f;
+	float fraction = work->step;
+	idVec3 old = start;
 	idVec3 current = start;
-	work->coords[outCount++] = current;
+	idVec3 accumulatedOffset(vec3_origin);
+	int pointCount = 0;
+	bool evaluate = true;
 
-	while (fraction < 1.0f - work->step * 0.5f && outCount < 254) {
+	while (true) {
+		if (pointCount >= 255) {
+			break;
+		}
+		work->coords[pointCount++] = old;
+
+		if (1.0f - work->step * 0.5f <= fraction) {
+			fraction = 1.0f;
+			evaluate = false;
+		}
+
+		accumulatedOffset += work->forward * rvRandom::flrand(-mJitterSize.x, mJitterSize.x);
+		accumulatedOffset += left * rvRandom::flrand(-mJitterSize.y, mJitterSize.y);
+		accumulatedOffset += down * rvRandom::flrand(-mJitterSize.z, mJitterSize.z);
+
+		const float noise = resolvedJitterTable ? resolvedJitterTable->TableLookup(fraction) : 0.0f;
+		current = start + (end - start) * fraction + accumulatedOffset * noise;
+
+		work->fraction = fraction - work->step;
+		ApplyShape(effect, work, old, current, 2, 0.0f, 1.0f);
+
+		old = current;
 		fraction += work->step;
-		const float noise = jitterTable ? jitterTable->TableLookup(fraction) : 0.0f;
-
-		idVec3 jitter(
-			rvRandom::flrand(-mJitterSize.x, mJitterSize.x),
-			rvRandom::flrand(-mJitterSize.y, mJitterSize.y),
-			rvRandom::flrand(-mJitterSize.z, mJitterSize.z));
-
-		const idVec3 offset = forward * jitter.x + left * jitter.y + up * jitter.z;
-		current = start + forward * (length * fraction) + offset * noise;
-		work->coords[outCount++] = current;
-	}
-
-	work->coords[outCount++] = end;
-	work->coordCount = outCount;
-
-	float vCoord = 0.0f;
-	for (int i = 0; i < outCount - 1; ++i) {
-		if (!RenderLineSegment(effect, work, work->coords[i], vCoord)) {
+		if (!evaluate) {
 			break;
 		}
-		vCoord += work->step;
 	}
 
-	for (int base = segmentVertStart; base + 3 < work->tri->numVerts; base += 2) {
-		if (!HasTriCapacity(work->tri, 0, 6)) {
-			break;
+	if (segmentVertStart != work->tri->numVerts) {
+		if (pointCount < 256) {
+			work->coords[pointCount] = current;
+			work->coordCount = pointCount + 1;
 		}
-		const int indexBase = work->tri->numIndexes;
-		work->tri->indexes[indexBase + 0] = base;
-		work->tri->indexes[indexBase + 1] = base + 1;
-		work->tri->indexes[indexBase + 2] = base + 2;
-		work->tri->indexes[indexBase + 3] = base;
-		work->tri->indexes[indexBase + 4] = base + 2;
-		work->tri->indexes[indexBase + 5] = base + 3;
-		work->tri->numIndexes += 6;
+		else {
+			work->coordCount = pointCount;
+		}
+
+		RenderLineSegment(effect, work, current, 1.0f);
+
+		for (int base = segmentVertStart; base < work->tri->numVerts - 2; base += 2) {
+			if (!HasTriCapacity(work->tri, 0, 6)) {
+				break;
+			}
+
+			const int indexBase = work->tri->numIndexes;
+			work->tri->indexes[indexBase + 0] = base;
+			work->tri->indexes[indexBase + 1] = base + 1;
+			work->tri->indexes[indexBase + 2] = base + 2;
+			work->tri->indexes[indexBase + 3] = base;
+			work->tri->indexes[indexBase + 4] = base + 2;
+			work->tri->indexes[indexBase + 5] = base + 3;
+			work->tri->numIndexes += 6;
+		}
+	}
+	else {
+		work->coordCount = 0;
 	}
 }
 
@@ -1654,11 +1695,8 @@ bool rvElectricityParticle::RenderLineSegment(const rvBSE* effect, struct SElecW
 
 	idVec3 offset = work->length.Cross(work->viewPos);
 	const float len2 = offset.LengthSqr();
-	if (len2 > 1e-8f) {
+	if (len2 != 0.0f) {
 		offset *= idMath::InvSqrt(len2);
-	}
-	else {
-		offset.Set(0.0f, 0.0f, 1.0f);
 	}
 	offset *= work->size;
 
@@ -1676,56 +1714,56 @@ void rvElectricityParticle::ApplyShape(const rvBSE* effect, struct SElecWork* wo
 		return;
 	}
 
-	if (count <= 0) {
-		RenderLineSegment(effect, work, start, startFraction);
-		return;
+	while (count >= 1) {
+		const float bendA = rvRandom::flrand(0.05f, 0.09f);
+		const float bendB = rvRandom::flrand(0.05f, 0.09f);
+		const float shape = rvRandom::flrand(0.56f, 0.76f);
+
+		idVec3 forward = end - start;
+		const float length = forward.LengthFast() * 0.7f;
+		if (length <= 1e-6f) {
+			break;
+		}
+		forward.NormalizeFast();
+
+		idVec3 left;
+		const float planarLenSqr = forward.x * forward.x + forward.y * forward.y;
+		if (planarLenSqr <= 1e-8f) {
+			left.Set(1.0f, 0.0f, 0.0f);
+		}
+		else {
+			const float invPlanarLen = idMath::InvSqrt(planarLenSqr);
+			left.Set(-forward.y * invPlanarLen, forward.x * invPlanarLen, 0.0f);
+		}
+		const idVec3 down = left.Cross(forward);
+
+		const float leftOffset1 = rvRandom::flrand(-bendB - 0.02f, 0.02f - bendB) * length;
+		const idVec3 point1 =
+			start * shape +
+			end * (1.0f - shape) +
+			left * leftOffset1 +
+			down * rvRandom::flrand(0.23f, 0.43f) * length;
+
+		const float t2 = rvRandom::flrand(0.23f, 0.43f);
+		const float leftOffset2 = rvRandom::flrand(-bendA - 0.02f, 0.02f - bendA) * length;
+		const idVec3 point2 =
+			start * t2 +
+			end * (1.0f - t2) +
+			left * leftOffset2 +
+			down * rvRandom::flrand(-0.02f, 0.02f) * length;
+
+		const float mid0 = startFraction * 0.6666667f + endFraction * 0.3333333f;
+		const float mid1 = startFraction * 0.3333333f + endFraction * 0.6666667f;
+
+		ApplyShape(effect, work, start, point1, count - 1, startFraction, mid0);
+		ApplyShape(effect, work, point1, point2, count - 1, mid0, mid1);
+
+		--count;
+		start = point2;
+		startFraction = mid1;
 	}
 
-	const float randA = rvRandom::flrand(0.05f, 0.09f);
-	const float randB = rvRandom::flrand(0.05f, 0.09f);
-	const float shape = rvRandom::flrand(0.56f, 0.76f);
-
-	const idVec3 dir = end - start;
-	const float length = dir.LengthFast() * 0.7f;
-	if (length <= 1e-6f) {
-		RenderLineSegment(effect, work, start, startFraction);
-		return;
-	}
-
-	idVec3 forward = dir;
-	forward.NormalizeFast();
-
-	idVec3 left = forward.Cross(idVec3(0.0f, 0.0f, 1.0f));
-	if (left.LengthSqr() < 1e-6f) {
-		left.Set(1.0f, 0.0f, 0.0f);
-	}
-	else {
-		left.NormalizeFast();
-	}
-	const idVec3 down = forward.Cross(left);
-
-	const float len1 = rvRandom::flrand(-randA - 0.02f, 0.02f - randA) * length;
-	const float len2 = rvRandom::flrand(-randB - 0.02f, 0.02f - randB) * length;
-
-	const idVec3 point1 =
-		start * shape +
-		end * (1.0f - shape) +
-		left * len1 +
-		down * rvRandom::flrand(0.23f, 0.43f) * length;
-
-	const float t2 = rvRandom::flrand(0.23f, 0.43f);
-	const idVec3 point2 =
-		start * t2 +
-		end * (1.0f - t2) +
-		left * len2 +
-		down * rvRandom::flrand(-0.02f, 0.02f) * length;
-
-	const float mid0 = startFraction * 0.6666667f + endFraction * 0.3333333f;
-	const float mid1 = startFraction * 0.3333333f + endFraction * 0.6666667f;
-
-	ApplyShape(effect, work, start, point1, count - 1, startFraction, mid0);
-	ApplyShape(effect, work, point1, point2, count - 1, mid0, mid1);
-	ApplyShape(effect, work, point2, end, count - 1, mid1, endFraction);
+	RenderLineSegment(effect, work, start, startFraction);
 }
 
 int rvElectricityParticle::Update(rvParticleTemplate* pt, float time) {
@@ -1774,12 +1812,16 @@ bool rvElectricityParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, 
 	}
 
 	if (GetGeneratedLine()) {
+		const float generatedLength = length.LengthFast();
 		idVec3 velocity;
 		EvaluateVelocity(effect, velocity, time);
-		if (velocity.LengthSqr() > 1e-8f) {
+		if (velocity.LengthSqr() != 0.0f) {
 			velocity.NormalizeFast();
-			length = velocity * length.LengthFast();
 		}
+		else {
+			velocity.Zero();
+		}
+		length = velocity * generatedLength;
 	}
 
 	const float mainLength = length.LengthFast();
@@ -1789,12 +1831,11 @@ bool rvElectricityParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, 
 
 	if (mLastJitter + mJitterRate <= time) {
 		mLastJitter = time;
-		mSeed = rvRandom::Init();
+		mSeed = static_cast<unsigned long>(rvRandom::Init());
 	}
 
-	if (mSeed != 0) {
-		rvRandom::Init(static_cast<unsigned long>(mSeed));
-	}
+	const unsigned long previousSeed = rvRandom::GetSeed();
+	rvRandom::Init(mSeed);
 
 	const int boltCount = Max(1, (mNumBolts > 0) ? mNumBolts : GetBoltCount(mainLength));
 	mNumBolts = boltCount;
@@ -1817,16 +1858,9 @@ bool rvElectricityParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, 
 	}
 
 	const idVec3 endPos = position + length;
-	const idDeclTable* jitterTable = NULL;
-	if (pt->mElecInfo != NULL && !pt->mElecInfo->mJitterTableName.IsEmpty()) {
-		jitterTable = declManager->FindTable(pt->mElecInfo->mJitterTableName, false);
-	}
-	if (!jitterTable) {
-		jitterTable = mJitterTable;
-	}
-	if (!jitterTable) {
-		jitterTable = declManager->FindTable("halfsintable", false);
-	}
+	const idDeclTable* jitterTable = (pt->mElecInfo != NULL)
+		? ResolveElectricityJitterTable(pt->mElecInfo->mJitterTableName, mJitterTable)
+		: ResolveElectricityJitterTable(idStr(), mJitterTable);
 	mJitterTable = jitterTable;
 	RenderBranch(effect, &work, position, endPos, jitterTable);
 
@@ -1861,6 +1895,7 @@ bool rvElectricityParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, 
 		RenderBranch(effect, &work, forkBases[i], forkEnd, jitterTable);
 	}
 
+	rvRandom::Init(previousSeed);
 	return true;
 }
 
@@ -1881,23 +1916,14 @@ void rvElectricityParticle::SetupElectricity(rvParticleTemplate* pt) {
 	const rvElectricityInfo* info = pt->mElecInfo;
 	mNumBolts = 0;
 	mNumForks = info->mNumForks;
-	mSeed = rvRandom::irand(1, 0x7FFFFFFF);
+	mSeed = static_cast<unsigned long>(rvRandom::Init());
 	mForkSizeMins = info->mForkSizeMins;
 	mForkSizeMaxs = info->mForkSizeMaxs;
 	mJitterSize = info->mJitterSize;
 	mLastJitter = 0.0f;
 	mJitterRate = info->mJitterRate;
 
-	mJitterTable = NULL;
-	if (!info->mJitterTableName.IsEmpty()) {
-		mJitterTable = declManager->FindTable(info->mJitterTableName, false);
-	}
-	if (!mJitterTable) {
-		mJitterTable = info->mJitterTable;
-	}
-	if (!mJitterTable) {
-		mJitterTable = declManager->FindTable("halfsintable", false);
-	}
+	mJitterTable = ResolveElectricityJitterTable(info->mJitterTableName, info->mJitterTable);
 }
 
 bool rvLightParticle::InitLight(rvBSE* effect, rvSegmentTemplate* st, float time) {

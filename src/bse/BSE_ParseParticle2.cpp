@@ -1379,8 +1379,14 @@ bool rvParticleTemplate::Parse(rvDeclEffect* effect, idParser* src) {
 			if (!src->ReadToken(&token)) {
 				return false;
 			}
-			mElecInfo->mJitterTableName = token;
-			mElecInfo->mJitterTable = declManager->FindTable(token, false);
+			const idDeclTable* table = declManager->FindTable(token, false);
+			if (table != NULL && !table->IsImplicit()) {
+				mElecInfo->mJitterTableName = token;
+				mElecInfo->mJitterTable = table;
+			}
+			else {
+				mElecInfo->mJitterTableName = "";
+			}
 		}
 		else if (token == "gravity") {
 			mGravity.x = src->ParseFloat();

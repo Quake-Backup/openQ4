@@ -634,6 +634,15 @@ static void R_FlareDeform( drawSurf_t *surf ) {
 	int		j;
 
 	tri = surf->geo;
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	srfTriangles_t	tempTri;
+	if ( tri->primBatchMesh != NULL ) {
+		idDrawVert *tempVerts = (idDrawVert *)_alloca16( tri->numVerts * sizeof( idDrawVert ) );
+		glIndex_t *tempIndexes = (glIndex_t *)_alloca16( tri->numIndexes * sizeof( tempIndexes[0] ) );
+		R_MaterializePrimBatchTriangles( tri, &tempTri, tempVerts, tempIndexes );
+		tri = &tempTri;
+	}
+#endif
 
 	if ( tri->numVerts != 4 || tri->numIndexes != 6 ) {
 		//FIXME: temp hack for flares on tripleted models
@@ -649,9 +658,14 @@ static void R_FlareDeform( drawSurf_t *surf ) {
 	newTri->indexes = (glIndex_t *)R_FrameAlloc( newTri->numIndexes * sizeof( newTri->indexes[0] ) );
 	
 	idDrawVert *ac = (idDrawVert *)_alloca16( newTri->numVerts * sizeof( idDrawVert ) );
+	memset( ac, 0, sizeof( idDrawVert ) * newTri->numVerts );
 
 	// find the plane
-	plane.FromPoints( tri->verts[tri->indexes[0]].xyz, tri->verts[tri->indexes[1]].xyz, tri->verts[tri->indexes[2]].xyz );
+	if ( !plane.FromPoints( tri->verts[tri->indexes[0]].xyz, tri->verts[tri->indexes[1]].xyz, tri->verts[tri->indexes[2]].xyz ) ) {
+		newTri->numIndexes = 0;
+		surf->geo = newTri;
+		return;
+	}
 
 	// if viewer is behind the plane, draw nothing
 	R_GlobalPointToLocal( surf->space->modelMatrix, tr.viewDef->renderView.vieworg, localViewer );

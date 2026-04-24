@@ -1737,6 +1737,31 @@ void R_AddDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space, const 
 }
 
 /*
+============================
+R_ShouldUseExpandedDeformScissor
+
+Retail flare/sprite-style deforms can expand far beyond the authored source
+quad, so clipping them to the entity's projected reference bounds boxes the
+effect back into a visibly wrong rectangle.
+============================
+*/
+static bool R_ShouldUseExpandedDeformScissor( const idMaterial *shader ) {
+	if ( shader == NULL ) {
+		return false;
+	}
+
+	switch ( shader->Deform() ) {
+		case DFRM_SPRITE:
+		case DFRM_RECTSPRITE:
+		case DFRM_TUBE:
+		case DFRM_FLARE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/*
 ===============
 R_AddAmbientDrawsurfs
 
@@ -1819,6 +1844,7 @@ static void R_AddAmbientDrawsurfs( viewEntity_t *vEntity ) {
 		if ( R_ShouldDisableEntityCullingForLevelshot() || !R_CullLocalBox( tri->bounds, vEntity->modelMatrix, 5, tr.viewDef->frustum ) ) {
 
 			def->visibleCount = tr.viewCount;
+			const idScreenRect &surfaceScissor = R_ShouldUseExpandedDeformScissor( shader ) ? tr.viewDef->scissor : vEntity->scissorRect;
 
 			const bool packedSurface = ( tri->primBatchMesh != NULL );
 			if ( !packedSurface && tri->verts == NULL ) {
@@ -1846,7 +1872,7 @@ static void R_AddAmbientDrawsurfs( viewEntity_t *vEntity ) {
 			}
 
 			// add the surface for drawing
-			R_AddDrawSurf( tri, vEntity, &vEntity->entityDef->parms, shader, vEntity->scissorRect );
+			R_AddDrawSurf( tri, vEntity, &vEntity->entityDef->parms, shader, surfaceScissor );
 
 			// powerup shells/overlays render as a second pass on top of the base surface.
 			const idMaterial *overlayShader = def->parms.overlayShader;
@@ -1854,7 +1880,7 @@ static void R_AddAmbientDrawsurfs( viewEntity_t *vEntity ) {
 			if ( overlayShader != NULL && !shader->HasGui() && shader->AllowOverlays() ) {
 				R_GlobalShaderOverride( &overlayShader );
 				if ( overlayShader != NULL && overlayShader->IsDrawn() ) {
-					R_AddDrawSurf( tri, vEntity, &vEntity->entityDef->parms, overlayShader, vEntity->scissorRect );
+					R_AddDrawSurf( tri, vEntity, &vEntity->entityDef->parms, overlayShader, surfaceScissor );
 				}
 			}
 

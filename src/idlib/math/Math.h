@@ -1079,6 +1079,7 @@ public:
 
 	// Init the seed to a unique number
 	static	void			Init( unsigned long seed ) { mSeed = seed; }
+	static	unsigned long	GetSeed( void ) { return mSeed; }
 
 	// Returns a float min <= x < max (exclusive; will get max - 0.00001; but never max)
 	static	float			flrand( float min, float max );
