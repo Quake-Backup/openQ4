@@ -264,7 +264,7 @@ void idImage::GenerateImage( const byte *pic, int width, int height, textureFilt
 	}
 
 	idBinaryImage im( GetName() );
-	im.Load2DFromMemory( width, height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips );
+	im.Load2DFromMemory( width, height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips, ( flags & IMAGEFLAG_FILTER_NEUTRAL_ALPHA ) != 0 );
 
 	AllocImage();
 
@@ -501,7 +501,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			opts.height = height;
 			opts.numLevels = 0;
 			DeriveOpts();
-			im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips );
+			im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips, ( flags & IMAGEFLAG_FILTER_NEUTRAL_ALPHA ) != 0 );
 
 			Mem_Free( pic );
 		}

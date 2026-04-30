@@ -358,6 +358,24 @@ byte * R_MipMapWithGamma( const byte *in, int width, int height ) {
 
 /*
 ================
+R_ApplyFilterNeutralAlpha
+
+Filter decals multiply the framebuffer, so white is the no-op color. Some
+Quake 4 decal textures carry visible coverage in alpha even though the fixed
+filter blend ignores source alpha, so fold that coverage into RGB for upload.
+================
+*/
+void R_ApplyFilterNeutralAlpha( byte *data, int pixelCount ) {
+	for ( int i = 0; i < pixelCount; i++, data += 4 ) {
+		const int alpha = data[3];
+		for ( int c = 0; c < 3; c++ ) {
+			data[c] = 255 - ( ( 255 - data[c] ) * alpha + 127 ) / 255;
+		}
+	}
+}
+
+/*
+================
 R_MipMap
 
 Returns a new copy of the texture, quartered in size and filtered.

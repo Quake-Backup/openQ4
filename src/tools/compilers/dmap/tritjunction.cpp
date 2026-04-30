@@ -250,8 +250,8 @@ void HashTriangles( optimizeGroup_t *groupList ) {
 
 	// add all the points to the hash buckets
 	for ( group = groupList ; group ; group = group->nextGroup ) {
-		// don't create tjunctions against discrete surfaces (blood decals, etc)
-		if ( group->material != NULL && group->material->IsDiscrete() ) {
+		// don't create tjunctions against discrete/no-t-fix surfaces (blood decals, etc)
+		if ( group->material != NULL && ( group->material->IsDiscrete() || group->material->NoTFix() ) ) {
 			continue;
 		}
 		for ( a = group->triList ; a ; a = a->next ) {

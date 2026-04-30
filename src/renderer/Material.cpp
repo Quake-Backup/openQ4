@@ -151,6 +151,12 @@ static unsigned int R_ApplyMaterialNoMipFlags( unsigned int flags ) {
 	return flags;
 }
 
+static bool R_IsFilterBlendStage( const shaderStage_t &stage ) {
+	const int blendBits = stage.drawStateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS );
+	return blendBits == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) ||
+		blendBits == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR );
+}
+
 static bool R_IsSceneCaptureImage( const idImage *image ) {
 	if ( image == NULL ) {
 		return false;
@@ -2334,6 +2340,12 @@ void idMaterial::ParseStage( idLexer &src, const textureRepeat_t trpDefault ) {
 
 	// now load the image with all the parms we parsed
 	if ( imageName[0] ) {
+		if ( ss->lighting == SL_AMBIENT
+			&& R_IsFilterBlendStage( *ss )
+			&& TestMaterialFlag( MF_POLYGONOFFSET )
+			&& ( td == TD_DEFAULT || td == TD_HIGH_QUALITY ) ) {
+			imageFlags |= IMAGEFLAG_FILTER_NEUTRAL_ALPHA;
+		}
 		ts->image = R_LoadMaterialImage( imageName, tf, trp, td, cubeMap, allowPicmip, imageFlags );
 		if ( !ts->image ) {
 			ts->image = globalImages->defaultImage;
@@ -2615,7 +2627,7 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 		}
 // jmarshall - possible legacy optimisations that aren't needed for current hardware.
 		else if (!token.Icmp("notfix")) {
-			// Unknown what this is used for.
+			surfaceFlags |= SURF_NO_T_FIX;
 			continue;
 		}
 		else if (!token.Icmp("sightClip")) {
@@ -2888,8 +2900,8 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 			SetMaterialFlag( MF_POLYGONOFFSET );
 			polygonOffset = 1;
 
-			// discrete
-			surfaceFlags |= SURF_DISCRETE;
+			// notfix
+			surfaceFlags |= SURF_NO_T_FIX;
 			contentFlags &= ~CONTENTS_SOLID;
 
 			// sort decal

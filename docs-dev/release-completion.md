@@ -10,6 +10,7 @@ Process:
 
 ## Ready For Changelog
 
+- [x] Filter-style decal mips now fold coverage alpha into the neutral multiply color per generated level, so stock terrain stains such as `game/airdefense1` no longer reveal their decal bounds when the flashlight crosses them.
 - [x] Retail BSE trail-material parity is restored for shared bullet-impact effects: particle templates now retain the authored/default trail-material name, motion trails resolve that material at finish time instead of relying on an early static pointer, and the stock machinegun/shotgun impact spark trails once again use Quake 4's `gfx/effects/particles_shapes/motionblur` trail instead of falling back to the engine default texture.
 - [x] Ragdoll startup now follows Quake 4's retail articulated-figure path again: stock corpses no longer pick up OpenQ4-only AF handoff velocity/depenetration heuristics or extra per-body angular-velocity injection during pose transfer, and the AF contact solver is back on retail's tighter contact budget and per-pair planar-contact cap for SP/MP ragdolls.
 - [x] Animated MD5 reference bounds now use exact posed mesh extents when available, eliminating the fixed-screen-square scissor clipping that could chop up player heads/bodies and attached weapons in stock scenes such as the normal `game/airdefense2` launch path.

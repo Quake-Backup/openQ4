@@ -589,6 +589,10 @@ public:
 	// into each other.
 	bool				NoFragment(void) const { return (surfaceFlags & SURF_NOFRAGMENT) != 0; }
 
+	// Raven decals can be merged for batching, but should not participate in
+	// T-junction fixing because that can split visible decal edges.
+	bool				NoTFix(void) const { return (surfaceFlags & SURF_NO_T_FIX) != 0; }
+
 	//------------------------------------------------------------------
 	// light shader specific functions, only called for light entities
 

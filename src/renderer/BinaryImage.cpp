@@ -47,7 +47,7 @@ idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_B
 idBinaryImage::Load2DFromMemory
 ========================
 */
-void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips ) {
+void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips, bool filterNeutralAlpha ) {
 	fileData.textureType = TT_2D;
 	fileData.format = textureFormat;
 	fileData.colorFormat = colorFormat;
@@ -84,10 +84,17 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 	images.SetNum( numLevels );
 	for ( int level = 0; level < images.Num(); level++ ) {
 		idBinaryImageData &img = images[ level ];
+		byte *uploadPic = pic;
+
+		if ( filterNeutralAlpha ) {
+			uploadPic = (byte *)Mem_Alloc( scaledWidth * scaledHeight * 4, TAG_TEMP );
+			memcpy( uploadPic, pic, scaledWidth * scaledHeight * 4 );
+			R_ApplyFilterNeutralAlpha( uploadPic, scaledWidth * scaledHeight );
+		}
 
 		// Images that are going to be DXT compressed and aren't multiples of 4 need to be 
 		// padded out before compressing.
-		byte * dxtPic = pic;
+		byte * dxtPic = uploadPic;
 		int	dxtWidth = 0;
 		int	dxtHeight = 0;
 		if ( textureFormat == FMT_DXT5 || textureFormat == FMT_DXT1 ) {
@@ -96,10 +103,10 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 				dxtHeight = ( scaledHeight + 3 ) & ~3;
 				dxtPic = (byte *)Mem_ClearedAlloc( dxtWidth*4*dxtHeight );
 				for ( int i = 0; i < scaledHeight; i++ ) {
-					memcpy( dxtPic + i*dxtWidth*4, pic + i*scaledWidth*4, scaledWidth*4 );
+					memcpy( dxtPic + i*dxtWidth*4, uploadPic + i*scaledWidth*4, scaledWidth*4 );
 				}
 			} else {
-				dxtPic = pic;
+				dxtPic = uploadPic;
 				dxtWidth = scaledWidth;
 				dxtHeight = scaledHeight;
 			}
@@ -146,25 +153,25 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 			// LUM8 and INT8 just read the red channel
 			img.Alloc( scaledWidth * scaledHeight );
 			for ( int i = 0; i < img.dataSize; i++ ) {
-				img.data[ i ] = pic[ i * 4 ];
+				img.data[ i ] = uploadPic[ i * 4 ];
 			}
 		} else if ( textureFormat == FMT_ALPHA ) {
 			// ALPHA reads the alpha channel
 			img.Alloc( scaledWidth * scaledHeight );
 			for ( int i = 0; i < img.dataSize; i++ ) {
-				img.data[ i ] = pic[ i * 4 + 3 ];
+				img.data[ i ] = uploadPic[ i * 4 + 3 ];
 			}
 		} else if ( textureFormat == FMT_L8A8 ) {
 			// L8A8 reads the alpha and red channels
 			img.Alloc( scaledWidth * scaledHeight * 2 );
 			for ( int i = 0; i < img.dataSize / 2; i++ ) {
-				img.data[ i * 2 + 0 ] = pic[ i * 4 + 0 ];
-				img.data[ i * 2 + 1 ] = pic[ i * 4 + 3 ];
+				img.data[ i * 2 + 0 ] = uploadPic[ i * 4 + 0 ];
+				img.data[ i * 2 + 1 ] = uploadPic[ i * 4 + 3 ];
 			}
 		} else if ( textureFormat == FMT_RGB565 ) {
 			img.Alloc( scaledWidth * scaledHeight * 2 );
 			for ( int i = 0; i < img.dataSize / 2; i++ ) {
-				unsigned short color = ( ( pic[ i * 4 + 0 ] >> 3 ) << 11 ) | ( ( pic[ i * 4 + 1 ] >> 2 ) << 5 ) | ( pic[ i * 4 + 2 ] >> 3 );
+				unsigned short color = ( ( uploadPic[ i * 4 + 0 ] >> 3 ) << 11 ) | ( ( uploadPic[ i * 4 + 1 ] >> 2 ) << 5 ) | ( uploadPic[ i * 4 + 2 ] >> 3 );
 				img.data[ i * 2 + 0 ] = ( color >> 8 ) & 0xFF;
 				img.data[ i * 2 + 1 ] = color & 0xFF;
 			}
@@ -172,14 +179,18 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 			fileData.format = textureFormat = FMT_RGBA8;
 			img.Alloc( scaledWidth * scaledHeight * 4 );
 			for ( int i = 0; i < img.dataSize; i++ ) {
-				img.data[ i ] = pic[ i ];
+				img.data[ i ] = uploadPic[ i ];
 			}
 		}
 
 		// if we had to pad to quads, free the padded version
-		if ( pic != dxtPic ) {
+		if ( uploadPic != dxtPic ) {
 			Mem_Free( dxtPic );
 			dxtPic = NULL;
+		}
+		if ( uploadPic != pic ) {
+			Mem_Free( uploadPic );
+			uploadPic = NULL;
 		}
 
 		// downsample for the next level

@@ -45,7 +45,7 @@ public:
 	const char *		GetName() const { return imgName.c_str(); }
 	void				SetName( const char *_name ) { imgName = _name; }
 
-	void				Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips );
+	void				Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips, bool filterNeutralAlpha = false );
 	void				LoadCubeFromMemory( int width, const byte * pics[6], int numLevels, textureFormat_t & textureFormat, bool gammaMips );
 
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );

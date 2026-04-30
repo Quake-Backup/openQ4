@@ -69,6 +69,7 @@ typedef enum {
 } cubeFiles_t;
 
 static const unsigned int IMAGEFLAG_NOMIPS = BIT( 0 );
+static const unsigned int IMAGEFLAG_FILTER_NEUTRAL_ALPHA = BIT( 1 );
 
 #include "ImageOpts.h"
 #include "BinaryImage.h"
@@ -367,6 +368,7 @@ FIXME: make an "imageBlock" type to hold byte*,width,height?
 byte* R_Dropsample(const byte* in, int inwidth, int inheight, int outwidth, int outheight);
 byte* R_ResampleTexture(const byte* in, int inwidth, int inheight, int outwidth, int outheight);
 byte* R_MipMapWithAlphaSpecularity(const byte* in, int width, int height);
+void R_ApplyFilterNeutralAlpha(byte* data, int pixelCount);
 byte* R_MipMapWithGamma(const byte* in, int width, int height);
 byte* R_MipMap(const byte* in, int width, int height);
 
