@@ -192,6 +192,12 @@ void idVertexCache::Init() {
 	}
 	Mem_Free( junk );
 
+	if ( R_RendererUpload_DynamicFrameBridgeAvailable() ) {
+		common->Printf(
+			"vertex cache: frame-temp uploads routed through renderer upload stream (%dKB per frame buffer)\n",
+			R_RendererUpload_FrameCapacity() / 1024 );
+	}
+
 	EndFrame();
 }
 
@@ -380,6 +386,39 @@ vertCache_t	*idVertexCache::AllocFrameTemp( void *data, int size ) {
 	}
 	if ( size == 0 ) {
 		return NULL;
+	}
+
+	rendererUploadAllocation_t uploadAllocation;
+	if ( R_RendererUpload_AllocFrameTemp( data, size, 16, uploadAllocation ) ) {
+		if ( freeDynamicHeaders.next == &freeDynamicHeaders ) {
+			for ( int i = 0; i < EXPAND_HEADERS; i++ ) {
+				block = headerAllocator.Alloc();
+				block->next = freeDynamicHeaders.next;
+				block->prev = &freeDynamicHeaders;
+				block->next->prev = block;
+				block->prev->next = block;
+			}
+		}
+
+		block = freeDynamicHeaders.next;
+		block->next->prev = block->prev;
+		block->prev->next = block->next;
+		block->next = dynamicHeaders.next;
+		block->prev = &dynamicHeaders;
+		block->next->prev = block;
+		block->prev->next = block;
+
+		block->size = size;
+		block->tag = TAG_TEMP;
+		block->indexBuffer = false;
+		block->offset = uploadAllocation.offset;
+		block->virtMem = NULL;
+		block->vbo = uploadAllocation.vbo;
+		dynamicAllocThisFrame += block->size;
+		dynamicCountThisFrame++;
+		block->user = NULL;
+		block->frameUsed = 0;
+		return block;
 	}
 
 	if ( dynamicAllocThisFrame + size > frameBytes ) {

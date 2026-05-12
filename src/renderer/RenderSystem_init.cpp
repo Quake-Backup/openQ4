@@ -259,6 +259,8 @@ idCVar r_actualRenderer( "r_actualRenderer", "UNINITIALIZED", CVAR_RENDERER | CV
 idCVar r_glTier( "r_glTier", "auto", CVAR_RENDERER | CVAR_ARCHIVE, "OpenGL renderer tier: auto, legacy, gl33, gl41, gl43, gl45, gl46", r_glTierArgs, idCmdSystem::ArgCompletion_String<r_glTierArgs> );
 idCVar r_glDebugContext( "r_glDebugContext", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request a debug OpenGL context when the platform backend supports it" );
 idCVar r_rendererMetrics( "r_rendererMetrics", "0", CVAR_RENDERER | CVAR_INTEGER, "renderer metrics: 0 = off, 1 = periodic summary, 2 = per-frame/pass detail", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+idCVar r_rendererUploadMegs( "r_rendererUploadMegs", "16", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream size in megabytes per frame buffer", 1, 128, idCmdSystem::ArgCompletion_Integer<1,128> );
+idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow persistent-mapped dynamic renderer uploads when supported" );
 idCVar r_useSimpleInteraction( "r_useSimpleInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use Quake 4's simpler ARB interaction shader pair as an explicit compatibility fallback; may reduce material lighting quality" );
 idCVar r_interactionColorMode( "r_interactionColorMode", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "interaction vertex-color mode: 0 = auto, 1 = packed env16.xy, 2 = vector env16/env17", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_shaderReport( "r_shaderReport", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shader diagnostics: 0 = off, 1 = startup/vid_restart summary, 2 = also warn on invalid program use", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
@@ -461,6 +463,13 @@ static void R_RendererTierSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererTierSelect_RunSelfTest() ) {
 		common->Warning( "Renderer tier selector self-test failed" );
+	}
+}
+
+static void R_RendererUploadSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererUpload_RunSelfTest() ) {
+		common->Warning( "Renderer upload self-test failed" );
 	}
 }
 
@@ -2394,6 +2403,17 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		RendererCaps_FormatSummary( glConfig.backendCaps, capsSummary, sizeof( capsSummary ) );
 		common->Printf( "Renderer caps: %s\n", capsSummary );
 	}
+	{
+		const rendererUploadStats_t &uploadStats = R_RendererUpload_Stats();
+		common->Printf(
+			"Renderer upload stream: %s, buffers=%d, ring=%dKB, persistent=%d, mapRangeFallback=%d, legacyBridge=%d\n",
+			uploadStats.dynamicFrameBridge ? "enabled" : "disabled",
+			uploadStats.ringBufferCount,
+			uploadStats.ringSizeBytes / 1024,
+			uploadStats.persistentMapped ? 1 : 0,
+			uploadStats.mapRangeFallback ? 1 : 0,
+			uploadStats.legacyBridge ? 1 : 0 );
+	}
 
 	if ( glConfig.allowARB2Path ) {
 		common->Printf( "ARB2 path ENABLED%s\n", active[tr.backEndRenderer == BE_ARB2] );
@@ -2678,6 +2698,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "benchmark", R_Benchmark_f, CMD_FL_RENDERER, "benchmark" );
 	cmdSystem->AddCommand( "gfxInfo", GfxInfo_f, CMD_FL_RENDERER, "show graphics info" );
 	cmdSystem->AddCommand( "rendererTierSelfTest", R_RendererTierSelfTest_f, CMD_FL_RENDERER, "run renderer tier-selection self tests" );
+	cmdSystem->AddCommand( "rendererUploadSelfTest", R_RendererUploadSelfTest_f, CMD_FL_RENDERER, "run renderer upload stream self tests" );
 	cmdSystem->AddCommand( "modulateLights", R_ModulateLights_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "modifies shader parms on all lights" );
 	cmdSystem->AddCommand( "testImage", R_TestImage_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "displays the given image centered on screen", idCmdSystem::ArgCompletion_ImageName );
 	cmdSystem->AddCommand( "testVideo", R_TestVideo_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "displays the given cinematic", idCmdSystem::ArgCompletion_VideoName );

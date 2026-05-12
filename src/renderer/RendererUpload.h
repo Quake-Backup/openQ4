@@ -7,11 +7,28 @@
 typedef struct rendererUploadStats_s {
 	int		frameUploadBytes;
 	int		frameStalls;
+	int		frameAllocations;
+	int		frameRingUsedBytes;
+	int		frameRingHighWaterBytes;
+	int		frameOverflowBytes;
+	int		framePersistentWrites;
+	int		frameMapRangeWrites;
+	int		frameSubDataWrites;
 	int		ringSizeBytes;
+	int		ringBufferCount;
 	bool	persistentMapped;
 	bool	mapRangeFallback;
 	bool	legacyBridge;
+	bool	dynamicFrameBridge;
 } rendererUploadStats_t;
+
+typedef struct rendererUploadAllocation_s {
+	unsigned int	vbo;
+	int				offset;
+	int				size;
+	bool			persistentMapped;
+	bool			mapRange;
+} rendererUploadAllocation_t;
 
 class idBufferAllocator {
 public:
@@ -31,14 +48,19 @@ public:
 	idRingBuffer();
 	void Init( int bytes, bool persistent );
 	void Shutdown( void );
+	void BeginFrame( void );
 	int Allocate( int bytes, int alignment, bool &wrapped );
 	void EndFrame( void );
 	int Capacity( void ) const;
 	int Used( void ) const;
+	int HighWater( void ) const;
+	int OverflowBytes( void ) const;
 
 private:
 	int		capacityBytes;
 	int		head;
+	int		highWater;
+	int		overflowBytes;
 	bool	persistentMapped;
 };
 
@@ -60,25 +82,56 @@ public:
 	idUploadManager();
 	void Init( const renderBackendCaps_t &caps );
 	void Shutdown( void );
-	void BeginFrame( void );
+	void BeginFrame( int frameCount );
 	void EndFrame( void );
+	bool AllocFrameTemp( void *data, int bytes, int alignment, rendererUploadAllocation_t &allocation );
 	void RecordLegacyUpload( int bytes );
 	void RecordLegacyStall( void );
 	const rendererUploadStats_t &Stats( void ) const;
+	bool DynamicFrameBridgeAvailable( void ) const;
+	int FrameCapacity( void ) const;
 
 private:
+	enum uploadPath_t {
+		UPLOAD_PATH_DISABLED = 0,
+		UPLOAD_PATH_SUBDATA,
+		UPLOAD_PATH_MAP_RANGE,
+		UPLOAD_PATH_PERSISTENT
+	};
+
+	struct frameBuffer_t {
+		unsigned int	vbo;
+		byte			*mapped;
+		GLsync			fence;
+	};
+
+	bool CreateFrameBuffers( uploadPath_t requestedPath );
+	void ShutdownFrameBuffers( void );
+	void RetireFrameFence( frameBuffer_t &frame );
+	void FenceCurrentFrame( void );
+	const char *PathName( void ) const;
+
 	idBufferAllocator	allocator;
 	idRingBuffer			ring;
 	idLegacyStreamBuffer	legacy;
 	rendererUploadStats_t	stats;
+	frameBuffer_t			frameBuffers[3];
+	uploadPath_t			path;
+	int						currentFrameBuffer;
+	bool					initialized;
+	bool					hasSync;
 };
 
 void R_RendererUpload_Init( const renderBackendCaps_t &caps );
 void R_RendererUpload_Shutdown( void );
-void R_RendererUpload_BeginFrame( void );
+void R_RendererUpload_BeginFrame( int frameCount );
 void R_RendererUpload_EndFrame( void );
+bool R_RendererUpload_AllocFrameTemp( void *data, int bytes, int alignment, rendererUploadAllocation_t &allocation );
 void R_RendererUpload_RecordLegacyUpload( int bytes );
 void R_RendererUpload_RecordLegacyStall( void );
 const rendererUploadStats_t &R_RendererUpload_Stats( void );
+bool R_RendererUpload_DynamicFrameBridgeAvailable( void );
+int R_RendererUpload_FrameCapacity( void );
+bool RendererUpload_RunSelfTest( void );
 
 #endif /* !__RENDERER_UPLOAD_H__ */

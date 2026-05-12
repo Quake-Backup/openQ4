@@ -49,6 +49,21 @@ The new capability probe records exact version/profile data and feature flags fo
 
 Extension parsing is token-safe and uses `glGetStringi` when available, with legacy string parsing only as fallback.
 
+## Upload Bridge
+
+Frame-temporary vertex-cache uploads now route through the renderer upload stream before falling back to the original legacy temp buffers. This keeps the public `idVertexCache` API unchanged while moving dynamic GUI, deform, packed-surface, and interaction-prep uploads onto the new renderer-owned path.
+
+The stream is feature-gated:
+
+- GL 4.4+/`ARB_buffer_storage` uses persistent mapped buffers when `r_rendererUploadPersistent 1`.
+- GL 3.x+/`ARB_map_buffer_range` uses map-range streaming.
+- Older VBO-capable paths use orphaned `glBufferSubData` streaming.
+- If the upload stream is unavailable or overflows, the old vertex-cache fallback remains active for compatibility.
+
+`r_rendererUploadMegs` controls the per-frame upload-stream size. The stream keeps multiple frame buffers and uses GL sync objects when available before reusing one. `gfxInfo` reports whether the dynamic upload bridge is enabled, which path it selected, the ring size, and whether persistent mapping is active.
+
+Use `rendererUploadSelfTest` to run the pure ring/allocation tests in a live build.
+
 ## Metrics
 
 `r_rendererMetrics` controls renderer telemetry:
@@ -57,7 +72,7 @@ Extension parsing is token-safe and uses `glGetStringi` when available, with leg
 - `1`: periodic frame summary
 - `2`: per-frame command and legacy graph detail
 
-The first metrics layer records front-end time, submit time, back-end time, view/entity/light counts, draw/surface/vertex/index counts, upload bytes, buffer stalls, and selected renderer tier. GPU pass timings are reserved for the next timer-query milestone and currently report as `not-sampled`.
+The first metrics layer records front-end time, submit time, back-end time, view/entity/light counts, draw/surface/vertex/index counts, upload bytes, buffer stalls, upload-stream high-water/overflow data, and selected renderer tier. GPU pass timings are reserved for the next timer-query milestone and currently report as `not-sampled`.
 
 ## Compatibility Bridge
 
@@ -66,6 +81,6 @@ The active renderer remains ARB2 unless future work adds a modern executor. The 
 - `RendererBootstrap` owns selected tier/features and marks the ARB2 bridge.
 - `RenderGraph` currently wraps the existing command stream as legacy graph nodes.
 - `ScenePacket`, `DrawPacket`, `PassPacket`, and `MaterialResourceRecord` define the backend-neutral packet contract for future extraction.
-- `RendererUpload` records legacy vertex-cache uploads and exposes the allocator/ring/upload-manager skeleton for persistent mapped rings later.
+- `RendererUpload` owns the feature-gated dynamic frame-temp stream and keeps the old vertex-cache path as a fallback.
 
-Use `gfxInfo` to inspect the selected tier, context profile, feature flags, and capability summary. Use `rendererTierSelfTest` to run the table-driven tier-selector tests in a live build.
+Use `gfxInfo` to inspect the selected tier, context profile, feature flags, capability summary, and upload stream. Use `rendererTierSelfTest` and `rendererUploadSelfTest` to run the table-driven selector/allocation tests in a live build.

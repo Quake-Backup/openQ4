@@ -3,6 +3,7 @@
 
 #include "tr_local.h"
 #include "RendererMetrics.h"
+#include "RendererUpload.h"
 
 typedef struct rendererMetricsFrame_s {
 	int		frameCount;
@@ -78,9 +79,10 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	rg_rendererMetrics.indexes = indexes;
 
 	const int detail = r_rendererMetrics.GetInteger();
+	const rendererUploadStats_t &uploadStats = R_RendererUpload_Stats();
 	if ( detail >= 2 ) {
 		common->Printf(
-			"rendererMetrics frame=%d tier=%s fe=%dms submit=%dms be=%dms gpu=not-sampled views=%d ents=%d lights=%d draws=%d surf=%d verts=%d idx=%d uploads=%d stalls=%d cmds(3d=%d 2d=%d rt=%d copy=%d swap=%d)\n",
+			"rendererMetrics frame=%d tier=%s fe=%dms submit=%dms be=%dms gpu=not-sampled views=%d ents=%d lights=%d draws=%d surf=%d verts=%d idx=%d uploads=%d stalls=%d ring=%d/%dKB allocs=%d overflow=%d writes(p=%d map=%d sub=%d) cmds(3d=%d 2d=%d rt=%d copy=%d swap=%d)\n",
 			rg_rendererMetrics.frameCount,
 			RendererTier_Name( glConfig.rendererTier ),
 			rg_rendererMetrics.frontEndMsec,
@@ -95,6 +97,13 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.indexes,
 			rg_rendererMetrics.uploadBytes,
 			rg_rendererMetrics.bufferStalls,
+			uploadStats.frameRingHighWaterBytes / 1024,
+			uploadStats.ringSizeBytes / 1024,
+			uploadStats.frameAllocations,
+			uploadStats.frameOverflowBytes / 1024,
+			uploadStats.framePersistentWrites,
+			uploadStats.frameMapRangeWrites,
+			uploadStats.frameSubDataWrites,
 			rg_rendererMetrics.draw3d,
 			rg_rendererMetrics.draw2d,
 			rg_rendererMetrics.renderTargetOps,
@@ -106,7 +115,7 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	if ( rg_rendererMetricsLastSummaryFrame < 0 || rg_rendererMetrics.frameCount - rg_rendererMetricsLastSummaryFrame >= 60 ) {
 		rg_rendererMetricsLastSummaryFrame = rg_rendererMetrics.frameCount;
 		common->Printf(
-			"rendererMetrics summary tier=%s fe=%dms submit=%dms be=%dms gpu=not-sampled views=%d ents=%d lights=%d draws=%d uploads=%dKB stalls=%d\n",
+			"rendererMetrics summary tier=%s fe=%dms submit=%dms be=%dms gpu=not-sampled views=%d ents=%d lights=%d draws=%d uploads=%dKB stalls=%d ring=%d/%dKB overflow=%dKB\n",
 			RendererTier_Name( glConfig.rendererTier ),
 			rg_rendererMetrics.frontEndMsec,
 			rg_rendererMetrics.submitMsec,
@@ -116,6 +125,9 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.viewLights,
 			rg_rendererMetrics.drawElements,
 			rg_rendererMetrics.uploadBytes / 1024,
-			rg_rendererMetrics.bufferStalls );
+			rg_rendererMetrics.bufferStalls,
+			uploadStats.frameRingHighWaterBytes / 1024,
+			uploadStats.ringSizeBytes / 1024,
+			uploadStats.frameOverflowBytes / 1024 );
 	}
 }

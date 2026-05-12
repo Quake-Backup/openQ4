@@ -1071,7 +1071,7 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	// this is the ONLY place this is modified
 	frameCount++;
 	R_RendererMetrics_BeginFrame( frameCount );
-	R_RendererUpload_BeginFrame();
+	R_RendererUpload_BeginFrame( frameCount );
 
 	// just in case we did a common->Error while this
 	// was set
