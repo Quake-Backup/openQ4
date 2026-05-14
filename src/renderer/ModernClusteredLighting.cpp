@@ -8,17 +8,22 @@
 #include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 
-const int MODERN_CLUSTER_MAX_GRIDS = 8;
-const int MODERN_CLUSTER_MAX_LIGHTS = 128;
-const int MODERN_CLUSTER_MAX_TILES_X = 8;
-const int MODERN_CLUSTER_MAX_TILES_Y = 6;
-const int MODERN_CLUSTER_MAX_SLICES_Z = 16;
-const int MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER = 4;
-const int MODERN_CLUSTER_MAX_CLUSTERS = MODERN_CLUSTER_MAX_TILES_X * MODERN_CLUSTER_MAX_TILES_Y * MODERN_CLUSTER_MAX_SLICES_Z;
-const int MODERN_CLUSTER_INDEX_GROUPS_PER_CLUSTER = ( MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER + 3 ) / 4;
+const int MODERN_CLUSTER_MAX_GRIDS = 16;
+const int MODERN_CLUSTER_MAX_LIGHTS_UBO = 256;
+const int MODERN_CLUSTER_MAX_LIGHTS_SSBO = 1024;
+const int MODERN_CLUSTER_MAX_TILES_X = 16;
+const int MODERN_CLUSTER_MAX_TILES_Y = 9;
+const int MODERN_CLUSTER_MAX_SLICES_Z = 24;
+const int MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER = 32;
+const int MODERN_CLUSTER_MAX_INDEX_RECORDS_UBO = 1024;
+const int MODERN_CLUSTER_MAX_INDEX_RECORDS_SSBO = 32768;
+const int MODERN_CLUSTER_MAX_SPILL_REFERENCES = 65536;
+const int MODERN_CLUSTER_MAX_CLUSTERS = 8192;
 const int MODERN_CLUSTER_UBO_BINDING_PARAMS = 3;
 const int MODERN_CLUSTER_UBO_BINDING_LIGHTS = 4;
 const int MODERN_CLUSTER_UBO_BINDING_INDICES = 5;
+const int MODERN_CLUSTER_SSBO_BINDING_LIGHTS = 6;
+const int MODERN_CLUSTER_SSBO_BINDING_INDICES = 7;
 
 enum modernClusterLightType_t {
 	MODERN_CLUSTER_LIGHT_POINT = 0,
@@ -37,6 +42,8 @@ typedef struct modernClusterGridRecord_s {
 	int					sliceCountZ;
 	int					clusterOffset;
 	int					clusterCount;
+	int					maxLightsPerCluster;
+	int					indexGroupsPerCluster;
 	int					firstLight;
 	int					lightCount;
 	int					width;
@@ -65,7 +72,11 @@ typedef struct modernClusterLightRecord_s {
 typedef struct modernClusterRecord_s {
 	unsigned short		lightIndices[MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER];
 	unsigned char		lightCount;
+	unsigned char		uploadedLightCount;
+	unsigned short		spillLightCount;
+	int					firstSpillLight;
 	bool				overflow;
+	bool				spilled;
 } modernClusterRecord_t;
 
 typedef struct modernClusterGridGpuParams_s {
@@ -94,12 +105,16 @@ typedef struct modernClusterDebugPixel_s {
 } modernClusterDebugPixel_t;
 
 typedef struct modernClusterFrameData_s {
-	modernClusterGridRecord_t grids[MODERN_CLUSTER_MAX_GRIDS];
-	modernClusterLightRecord_t lights[MODERN_CLUSTER_MAX_LIGHTS];
-	modernClusterRecord_t clusters[MODERN_CLUSTER_MAX_CLUSTERS];
+	idList<modernClusterGridRecord_t> grids;
+	idList<modernClusterLightRecord_t> lights;
+	idList<modernClusterRecord_t> clusters;
+	idList<unsigned short> spillLightIndices;
 	int					gridCount;
 	int					lightCount;
 	int					clusterCount;
+	int					lightCapacity;
+	int					indexRecordCapacity;
+	bool				shaderStoragePath;
 } modernClusterFrameData_t;
 
 static rendererClusteredLightingStats_t rg_clusteredLightingStats;
@@ -109,6 +124,8 @@ static renderFeatureSet_t rg_clusteredLightingFeatures;
 static GLuint rg_clusteredLightingParamsUBO = 0;
 static GLuint rg_clusteredLightingLightsUBO = 0;
 static GLuint rg_clusteredLightingIndicesUBO = 0;
+static GLuint rg_clusteredLightingLightsSSBO = 0;
+static GLuint rg_clusteredLightingIndicesSSBO = 0;
 static GLuint rg_clusteredLightingDebugTexture = 0;
 static GLuint rg_clusteredLightingDebugProgram = 0;
 static GLuint rg_clusteredLightingDebugVAO = 0;
@@ -118,6 +135,7 @@ static int rg_clusteredLightingDebugTextureWidth = 0;
 static int rg_clusteredLightingDebugTextureHeight = 0;
 static bool rg_clusteredLightingInitialized = false;
 static bool rg_clusteredLightingAvailable = false;
+static bool rg_clusteredLightingShaderStorageAvailable = false;
 
 static void R_ModernClusteredLighting_SetStatus( rendererClusteredLightingStats_t &stats, const char *status ) {
 	idStr::Copynz( stats.status, status ? status : "unknown", sizeof( stats.status ) );
@@ -136,6 +154,34 @@ static bool R_ModernClusteredLighting_FormatDebugString( char *dest, int destSiz
 	const int result = idStr::vsnPrintf( dest, destSize, fmt, argptr );
 	va_end( argptr );
 	return result >= 0;
+}
+
+static bool R_ModernClusteredLighting_UseShaderStoragePath( void ) {
+	return rg_clusteredLightingShaderStorageAvailable
+		&& rg_clusteredLightingLightsSSBO != 0
+		&& rg_clusteredLightingIndicesSSBO != 0
+		&& glBindBufferBase != NULL;
+}
+
+static int R_ModernClusteredLighting_LightCapacity( void ) {
+	return R_ModernClusteredLighting_UseShaderStoragePath() ? MODERN_CLUSTER_MAX_LIGHTS_SSBO : MODERN_CLUSTER_MAX_LIGHTS_UBO;
+}
+
+static int R_ModernClusteredLighting_IndexRecordCapacity( void ) {
+	return R_ModernClusteredLighting_UseShaderStoragePath() ? MODERN_CLUSTER_MAX_INDEX_RECORDS_SSBO : MODERN_CLUSTER_MAX_INDEX_RECORDS_UBO;
+}
+
+static void R_ModernClusteredLighting_ResetFrameData( void ) {
+	rg_clusteredLightingFrame.grids.SetNum( 0, false );
+	rg_clusteredLightingFrame.lights.SetNum( 0, false );
+	rg_clusteredLightingFrame.clusters.SetNum( 0, false );
+	rg_clusteredLightingFrame.spillLightIndices.SetNum( 0, false );
+	rg_clusteredLightingFrame.gridCount = 0;
+	rg_clusteredLightingFrame.lightCount = 0;
+	rg_clusteredLightingFrame.clusterCount = 0;
+	rg_clusteredLightingFrame.shaderStoragePath = R_ModernClusteredLighting_UseShaderStoragePath();
+	rg_clusteredLightingFrame.lightCapacity = R_ModernClusteredLighting_LightCapacity();
+	rg_clusteredLightingFrame.indexRecordCapacity = R_ModernClusteredLighting_IndexRecordCapacity();
 }
 
 static const char *R_ModernClusteredLighting_TypeName( modernClusterLightType_t type ) {
@@ -291,21 +337,68 @@ static void R_ModernClusteredLighting_CountLightType( modernClusterLightType_t t
 	}
 }
 
-static void R_ModernClusteredLighting_InitGrid( modernClusterGridRecord_t &grid, const viewDef_t *viewDef, int sceneIndex, int clusterOffset ) {
+static int R_ModernClusteredLighting_CountViewLights( const viewDef_t *viewDef ) {
+	int count = 0;
+	if ( viewDef == NULL ) {
+		return count;
+	}
+	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+		count++;
+	}
+	return count;
+}
+
+static void R_ModernClusteredLighting_ClampGridToIndexBudget( int &tilesX, int &tilesY, int &slicesZ, int targetIndexGroups, int indexRecordCapacity ) {
+	targetIndexGroups = Max( 1, targetIndexGroups );
+	indexRecordCapacity = Max( 1, indexRecordCapacity );
+	while ( tilesX * tilesY * slicesZ * targetIndexGroups > indexRecordCapacity && ( tilesX > 1 || tilesY > 1 || slicesZ > 1 ) ) {
+		if ( slicesZ >= tilesX && slicesZ >= tilesY && slicesZ > 1 ) {
+			slicesZ--;
+		} else if ( tilesX >= tilesY && tilesX > 1 ) {
+			tilesX--;
+		} else if ( tilesY > 1 ) {
+			tilesY--;
+		} else if ( slicesZ > 1 ) {
+			slicesZ--;
+		}
+	}
+}
+
+static int R_ModernClusteredLighting_TargetLightsPerCluster( int estimatedLights, const rendererBenchmarkBudget_t &budget ) {
+	int target = 8;
+	if ( estimatedLights > budget.lightBatchTarget ) {
+		target = 16;
+	} else if ( estimatedLights > Max( 8, budget.lightBatchTarget / 2 ) ) {
+		target = 12;
+	}
+	if ( rg_clusteredLightingFeatures.gpuDriven ) {
+		target = Max( target, 16 );
+	}
+	if ( rg_clusteredLightingFeatures.lowOverhead ) {
+		target = Max( target, 24 );
+	}
+	return idMath::ClampInt( 4, MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER, target );
+}
+
+static void R_ModernClusteredLighting_InitGrid( modernClusterGridRecord_t &grid, const viewDef_t *viewDef, int sceneIndex, int clusterOffset, int estimatedLights, const rendererBenchmarkBudget_t &budget ) {
 	memset( &grid, 0, sizeof( grid ) );
 	grid.viewDef = viewDef;
 	grid.sceneIndex = sceneIndex;
 	grid.width = R_ModernClusteredLighting_ViewWidth( viewDef );
 	grid.height = R_ModernClusteredLighting_ViewHeight( viewDef );
-	int targetTilesX = MODERN_CLUSTER_MAX_TILES_X;
-	int targetTilesY = MODERN_CLUSTER_MAX_TILES_Y;
-	int targetSlicesZ = MODERN_CLUSTER_MAX_SLICES_Z;
+	int targetTilesX = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_X, budget.clusterTilesX );
+	int targetTilesY = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_Y, budget.clusterTilesY );
+	int targetSlicesZ = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_SLICES_Z, budget.clusterSlicesZ );
 	if ( RendererBenchmarks_AdaptiveClusterGridEnabled() ) {
-		const rendererBenchmarkBudget_t &budget = RendererBenchmarks_CurrentBudget();
-		targetTilesX = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_X, budget.clusterTilesX );
-		targetTilesY = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_Y, budget.clusterTilesY );
-		targetSlicesZ = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_SLICES_Z, budget.clusterSlicesZ );
+		targetTilesX = idMath::ClampInt( targetTilesX, MODERN_CLUSTER_MAX_TILES_X, Max( targetTilesX, R_ModernClusteredLighting_CeilDiv( grid.width, 160 ) ) );
+		targetTilesY = idMath::ClampInt( targetTilesY, MODERN_CLUSTER_MAX_TILES_Y, Max( targetTilesY, R_ModernClusteredLighting_CeilDiv( grid.height, 160 ) ) );
+		if ( estimatedLights > budget.lightBatchTarget ) {
+			targetSlicesZ = idMath::ClampInt( targetSlicesZ, MODERN_CLUSTER_MAX_SLICES_Z, targetSlicesZ + 4 );
+		}
 	}
+	const int requestedLightsPerCluster = R_ModernClusteredLighting_TargetLightsPerCluster( estimatedLights, budget );
+	const int requestedIndexGroups = R_ModernClusteredLighting_CeilDiv( requestedLightsPerCluster, 4 );
+	R_ModernClusteredLighting_ClampGridToIndexBudget( targetTilesX, targetTilesY, targetSlicesZ, requestedIndexGroups, rg_clusteredLightingFrame.indexRecordCapacity );
 	const int targetTileWidth = Max( 1, grid.width / targetTilesX );
 	const int targetTileHeight = Max( 1, grid.height / targetTilesY );
 	grid.tileCountX = idMath::ClampInt( 1, targetTilesX, R_ModernClusteredLighting_CeilDiv( grid.width, targetTileWidth ) );
@@ -313,6 +406,10 @@ static void R_ModernClusteredLighting_InitGrid( modernClusterGridRecord_t &grid,
 	grid.sliceCountZ = targetSlicesZ;
 	grid.clusterOffset = clusterOffset;
 	grid.clusterCount = grid.tileCountX * grid.tileCountY * grid.sliceCountZ;
+	const int availableIndexGroups = Max( 1, rg_clusteredLightingFrame.indexRecordCapacity / Max( 1, grid.clusterCount ) );
+	const int selectedIndexGroups = idMath::ClampInt( 1, R_ModernClusteredLighting_CeilDiv( MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER, 4 ), Min( requestedIndexGroups, availableIndexGroups ) );
+	grid.maxLightsPerCluster = idMath::ClampInt( 4, MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER, Min( requestedLightsPerCluster, selectedIndexGroups * 4 ) );
+	grid.indexGroupsPerCluster = R_ModernClusteredLighting_CeilDiv( grid.maxLightsPerCluster, 4 );
 	grid.firstLight = rg_clusteredLightingFrame.lightCount;
 	grid.lightCount = 0;
 	grid.nearZ = viewDef != NULL && viewDef->renderView.cramZNear ? 0.25f : Max( 0.01f, r_znear.GetFloat() );
@@ -324,14 +421,30 @@ static int R_ModernClusteredLighting_ClusterIndex( const modernClusterGridRecord
 	return grid.clusterOffset + ( sliceZ * grid.tileCountY + tileY ) * grid.tileCountX + tileX;
 }
 
-static void R_ModernClusteredLighting_AddClusterReference( modernClusterRecord_t &cluster, int lightIndex, rendererClusteredLightingStats_t &stats ) {
-	if ( cluster.lightCount < MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER ) {
+static void R_ModernClusteredLighting_AddClusterReference( modernClusterRecord_t &cluster, const modernClusterGridRecord_t &grid, int lightIndex, rendererClusteredLightingStats_t &stats ) {
+	if ( cluster.lightCount < grid.maxLightsPerCluster && cluster.lightCount < MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER ) {
 		cluster.lightIndices[cluster.lightCount++] = static_cast<unsigned short>( lightIndex );
+		cluster.uploadedLightCount = cluster.lightCount;
 		stats.lightReferences++;
+		stats.uploadedReferences++;
 		stats.maxLightsInCluster = Max( stats.maxLightsInCluster, static_cast<int>( cluster.lightCount ) );
 		return;
 	}
-	cluster.overflow = true;
+	if ( rg_clusteredLightingFrame.spillLightIndices.Num() < MODERN_CLUSTER_MAX_SPILL_REFERENCES ) {
+		if ( cluster.firstSpillLight < 0 ) {
+			cluster.firstSpillLight = rg_clusteredLightingFrame.spillLightIndices.Num();
+			cluster.spilled = true;
+			stats.spillClusters++;
+		}
+		rg_clusteredLightingFrame.spillLightIndices.Append( static_cast<unsigned short>( lightIndex ) );
+		cluster.spillLightCount++;
+		stats.spillReferences++;
+		return;
+	}
+	if ( !cluster.overflow ) {
+		cluster.overflow = true;
+		stats.overflowClusters++;
+	}
 	stats.overflow = true;
 	stats.overflowReferences++;
 }
@@ -348,8 +461,8 @@ static void R_ModernClusteredLighting_BinLight( const modernClusterGridRecord_t 
 		for ( int y = tileMinY; y <= tileMaxY; ++y ) {
 			for ( int x = tileMinX; x <= tileMaxX; ++x ) {
 				const int clusterIndex = R_ModernClusteredLighting_ClusterIndex( grid, x, y, z );
-				if ( clusterIndex >= 0 && clusterIndex < MODERN_CLUSTER_MAX_CLUSTERS ) {
-					R_ModernClusteredLighting_AddClusterReference( rg_clusteredLightingFrame.clusters[clusterIndex], lightIndex, stats );
+				if ( clusterIndex >= 0 && clusterIndex < rg_clusteredLightingFrame.clusterCount ) {
+					R_ModernClusteredLighting_AddClusterReference( rg_clusteredLightingFrame.clusters[clusterIndex], grid, lightIndex, stats );
 				}
 			}
 		}
@@ -374,12 +487,13 @@ static bool R_ModernClusteredLighting_AddLight( modernClusterGridRecord_t &grid,
 		stats.clippedLights++;
 		return false;
 	}
-	if ( rg_clusteredLightingFrame.lightCount >= MODERN_CLUSTER_MAX_LIGHTS ) {
+	if ( rg_clusteredLightingFrame.lightCount >= rg_clusteredLightingFrame.lightCapacity ) {
 		stats.overflow = true;
 		stats.overflowLights++;
 		return false;
 	}
 
+	rg_clusteredLightingFrame.lights.SetNum( rg_clusteredLightingFrame.lightCount + 1, false );
 	modernClusterLightRecord_t &record = rg_clusteredLightingFrame.lights[rg_clusteredLightingFrame.lightCount];
 	memset( &record, 0, sizeof( record ) );
 	record.type = R_ModernClusteredLighting_ClassifyLight( vLight );
@@ -425,11 +539,16 @@ static bool R_ModernClusteredLighting_AddLight( modernClusterGridRecord_t &grid,
 
 static void R_ModernClusteredLighting_FinalizeClusterStats( rendererClusteredLightingStats_t &stats ) {
 	stats.clusterCount = rg_clusteredLightingFrame.clusterCount;
-	stats.maxLightsPerCluster = MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER;
+	stats.activeClusters = 0;
+	stats.overflowClusters = 0;
+	stats.spillClusters = 0;
 	for ( int i = 0; i < rg_clusteredLightingFrame.clusterCount; ++i ) {
 		const modernClusterRecord_t &cluster = rg_clusteredLightingFrame.clusters[i];
 		if ( cluster.lightCount > 0 ) {
 			stats.activeClusters++;
+		}
+		if ( cluster.spilled ) {
+			stats.spillClusters++;
 		}
 		if ( cluster.overflow ) {
 			stats.overflowClusters++;
@@ -439,7 +558,7 @@ static void R_ModernClusteredLighting_FinalizeClusterStats( rendererClusteredLig
 }
 
 static void R_ModernClusteredLighting_BuildFrame( const idScenePacketFrame &packetFrame, bool requested, rendererClusteredLightingStats_t &stats ) {
-	memset( &rg_clusteredLightingFrame, 0, sizeof( rg_clusteredLightingFrame ) );
+	R_ModernClusteredLighting_ResetFrameData();
 	memset( &stats, 0, sizeof( stats ) );
 	stats.available = rg_clusteredLightingAvailable;
 	stats.initialized = rg_clusteredLightingInitialized;
@@ -447,7 +566,9 @@ static void R_ModernClusteredLighting_BuildFrame( const idScenePacketFrame &pack
 	stats.debugMode = r_rendererClusterDebug.GetInteger();
 	stats.debugOverlayReady = rg_clusteredLightingDebugProgram != 0 && rg_clusteredLightingDebugVAO != 0;
 	stats.debugTextureReady = rg_clusteredLightingDebugTexture != 0;
-	stats.maxLightsPerCluster = MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER;
+	stats.shaderStorageReady = R_ModernClusteredLighting_UseShaderStoragePath();
+	stats.lightCapacity = rg_clusteredLightingFrame.lightCapacity;
+	stats.indexRecordCapacity = rg_clusteredLightingFrame.indexRecordCapacity;
 	stats.sceneCount = packetFrame.NumScenes();
 	R_ModernClusteredLighting_SetStatus( stats, requested ? "unavailable" : "off" );
 
@@ -463,6 +584,7 @@ static void R_ModernClusteredLighting_BuildFrame( const idScenePacketFrame &pack
 	}
 
 	const int startMsec = Sys_Milliseconds();
+	const rendererBenchmarkBudget_t &budget = RendererBenchmarks_CurrentBudget();
 	for ( int sceneIndex = 0; sceneIndex < packetFrame.NumScenes(); ++sceneIndex ) {
 		const scenePacket_t &scene = packetFrame.Scene( sceneIndex );
 		if ( scene.viewDef == NULL ) {
@@ -476,15 +598,25 @@ static void R_ModernClusteredLighting_BuildFrame( const idScenePacketFrame &pack
 			stats.overflow = true;
 			break;
 		}
+		const int estimatedLights = R_ModernClusteredLighting_CountViewLights( scene.viewDef );
+		rg_clusteredLightingFrame.grids.SetNum( rg_clusteredLightingFrame.gridCount + 1, false );
 		modernClusterGridRecord_t &grid = rg_clusteredLightingFrame.grids[rg_clusteredLightingFrame.gridCount];
-		R_ModernClusteredLighting_InitGrid( grid, scene.viewDef, sceneIndex, rg_clusteredLightingFrame.clusterCount );
+		R_ModernClusteredLighting_InitGrid( grid, scene.viewDef, sceneIndex, rg_clusteredLightingFrame.clusterCount, estimatedLights, budget );
 		if ( rg_clusteredLightingFrame.clusterCount + grid.clusterCount > MODERN_CLUSTER_MAX_CLUSTERS ) {
 			stats.overflow = true;
 			break;
 		}
+		rg_clusteredLightingFrame.clusters.SetNum( rg_clusteredLightingFrame.clusterCount + grid.clusterCount, false );
+		for ( int i = 0; i < grid.clusterCount; ++i ) {
+			modernClusterRecord_t &cluster = rg_clusteredLightingFrame.clusters[rg_clusteredLightingFrame.clusterCount + i];
+			memset( &cluster, 0, sizeof( cluster ) );
+			cluster.firstSpillLight = -1;
+		}
 		rg_clusteredLightingFrame.gridCount++;
 		rg_clusteredLightingFrame.clusterCount += grid.clusterCount;
 		stats.gridCount++;
+		stats.maxLightsPerCluster = Max( stats.maxLightsPerCluster, grid.maxLightsPerCluster );
+		stats.indexGroupsPerCluster = Max( stats.indexGroupsPerCluster, grid.indexGroupsPerCluster );
 		if ( stats.gridCount == 1 ) {
 			stats.tileCountX = grid.tileCountX;
 			stats.tileCountY = grid.tileCountY;
@@ -504,7 +636,7 @@ static void R_ModernClusteredLighting_BuildFrame( const idScenePacketFrame &pack
 	}
 	stats.buildMsec = Sys_Milliseconds() - startMsec;
 	R_ModernClusteredLighting_FinalizeClusterStats( stats );
-	R_ModernClusteredLighting_SetStatus( stats, stats.overflow ? "prepared-overflow" : "prepared" );
+	R_ModernClusteredLighting_SetStatus( stats, stats.overflow ? "prepared-overflow" : ( stats.spillReferences > 0 ? "prepared-spill" : "prepared" ) );
 }
 
 static GLuint R_ModernClusteredLighting_CompileShaderStage( GLenum stage, const char *source, const char *label ) {
@@ -632,20 +764,33 @@ static bool R_ModernClusteredLighting_EnsureDebugTexture( int width, int height 
 
 static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingStats_t &stats ) {
 	stats.paramsUBOBytes = sizeof( modernClusterGridGpuParams_t );
-	stats.lightsUBOBytes = sizeof( modernClusterLightGpuRecord_t ) * MODERN_CLUSTER_MAX_LIGHTS;
-	stats.indicesUBOBytes = sizeof( modernClusterIndexGpuRecord_t ) * MODERN_CLUSTER_MAX_CLUSTERS * MODERN_CLUSTER_INDEX_GROUPS_PER_CLUSTER;
-	if ( !stats.requested || !stats.frameValid || rg_clusteredLightingParamsUBO == 0 || rg_clusteredLightingLightsUBO == 0 || rg_clusteredLightingIndicesUBO == 0 || glBufferSubData == NULL || glBindBufferBase == NULL ) {
+	const bool useShaderStorage = R_ModernClusteredLighting_UseShaderStoragePath();
+	const int lightCapacity = useShaderStorage ? MODERN_CLUSTER_MAX_LIGHTS_SSBO : MODERN_CLUSTER_MAX_LIGHTS_UBO;
+	const int indexRecordCapacity = useShaderStorage ? MODERN_CLUSTER_MAX_INDEX_RECORDS_SSBO : MODERN_CLUSTER_MAX_INDEX_RECORDS_UBO;
+	stats.lightsUBOBytes = sizeof( modernClusterLightGpuRecord_t ) * lightCapacity;
+	stats.indicesUBOBytes = sizeof( modernClusterIndexGpuRecord_t ) * indexRecordCapacity;
+	stats.shaderStorageReady = useShaderStorage;
+	if ( !stats.requested || !stats.frameValid || rg_clusteredLightingParamsUBO == 0 || glBufferSubData == NULL || glBindBufferBase == NULL ) {
+		return false;
+	}
+	if ( useShaderStorage ) {
+		if ( rg_clusteredLightingLightsSSBO == 0 || rg_clusteredLightingIndicesSSBO == 0 ) {
+			return false;
+		}
+	} else if ( rg_clusteredLightingLightsUBO == 0 || rg_clusteredLightingIndicesUBO == 0 ) {
 		return false;
 	}
 
 	modernClusterGridGpuParams_t params;
 	memset( &params, 0, sizeof( params ) );
+	const modernClusterGridRecord_t *uploadGrid = rg_clusteredLightingFrame.gridCount > 0 ? &rg_clusteredLightingFrame.grids[0] : NULL;
+	int uploadedIndexRecords = 0;
 	if ( rg_clusteredLightingFrame.gridCount > 0 ) {
-		const modernClusterGridRecord_t &grid = rg_clusteredLightingFrame.grids[0];
+		const modernClusterGridRecord_t &grid = *uploadGrid;
 		params.grid[0] = static_cast<float>( grid.tileCountX );
 		params.grid[1] = static_cast<float>( grid.tileCountY );
 		params.grid[2] = static_cast<float>( grid.sliceCountZ );
-		params.grid[3] = static_cast<float>( MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER );
+		params.grid[3] = static_cast<float>( grid.maxLightsPerCluster );
 		params.depth[0] = grid.nearZ;
 		params.depth[1] = grid.farZ;
 		params.depth[2] = grid.farZ > grid.nearZ ? 1.0f / ( grid.farZ - grid.nearZ ) : 1.0f;
@@ -654,15 +799,22 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 		params.viewport[1] = static_cast<float>( grid.height );
 		params.viewport[2] = grid.height > 0 ? static_cast<float>( grid.width ) / static_cast<float>( grid.height ) : 1.0f;
 		params.viewport[3] = 1.0f;
+		const int uploadClusters = Min( grid.clusterCount, indexRecordCapacity / Max( 1, grid.indexGroupsPerCluster ) );
+		uploadedIndexRecords = uploadClusters * grid.indexGroupsPerCluster;
+		stats.uploadedClusters = uploadClusters;
 	}
-	params.counts[0] = static_cast<float>( stats.lightCount );
-	params.counts[1] = static_cast<float>( stats.clusterCount );
+	const int uploadedLights = Min( rg_clusteredLightingFrame.lightCount, lightCapacity );
+	stats.uploadedLights = uploadedLights;
+	params.counts[0] = static_cast<float>( uploadedLights );
+	params.counts[1] = static_cast<float>( stats.uploadedClusters );
 	params.counts[2] = static_cast<float>( stats.activeClusters );
-	params.counts[3] = static_cast<float>( stats.overflowClusters );
+	params.counts[3] = static_cast<float>( stats.overflowClusters + stats.spillClusters );
 
-	modernClusterLightGpuRecord_t lightRecords[MODERN_CLUSTER_MAX_LIGHTS];
-	memset( lightRecords, 0, sizeof( lightRecords ) );
-	for ( int i = 0; i < rg_clusteredLightingFrame.lightCount; ++i ) {
+	idList<modernClusterLightGpuRecord_t> lightRecords;
+	const int lightUploadRecords = useShaderStorage ? Max( uploadedLights, 1 ) : lightCapacity;
+	lightRecords.SetNum( lightUploadRecords, false );
+	memset( lightRecords.Ptr(), 0, sizeof( modernClusterLightGpuRecord_t ) * lightUploadRecords );
+	for ( int i = 0; i < uploadedLights; ++i ) {
 		const modernClusterLightRecord_t &src = rg_clusteredLightingFrame.lights[i];
 		modernClusterLightGpuRecord_t &dst = lightRecords[i];
 		dst.positionRadius[0] = src.cameraOrigin.x;
@@ -683,35 +835,55 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 		dst.flags[3] = static_cast<float>( src.sceneIndex );
 	}
 
-	modernClusterIndexGpuRecord_t indexRecords[MODERN_CLUSTER_MAX_CLUSTERS * MODERN_CLUSTER_INDEX_GROUPS_PER_CLUSTER];
-	for ( int i = 0; i < static_cast<int>( sizeof( indexRecords ) / sizeof( indexRecords[0] ) ); ++i ) {
+	idList<modernClusterIndexGpuRecord_t> indexRecords;
+	const int indexUploadRecords = useShaderStorage ? Max( uploadedIndexRecords, 1 ) : indexRecordCapacity;
+	indexRecords.SetNum( indexUploadRecords, false );
+	for ( int i = 0; i < indexUploadRecords; ++i ) {
 		indexRecords[i].indices[0] = 0xffffffffu;
 		indexRecords[i].indices[1] = 0xffffffffu;
 		indexRecords[i].indices[2] = 0xffffffffu;
 		indexRecords[i].indices[3] = 0xffffffffu;
 	}
-	for ( int clusterIndex = 0; clusterIndex < rg_clusteredLightingFrame.clusterCount; ++clusterIndex ) {
-		const modernClusterRecord_t &cluster = rg_clusteredLightingFrame.clusters[clusterIndex];
-		for ( int i = 0; i < cluster.lightCount; ++i ) {
-			const int groupIndex = clusterIndex * MODERN_CLUSTER_INDEX_GROUPS_PER_CLUSTER + i / 4;
-			indexRecords[groupIndex].indices[i & 3] = cluster.lightIndices[i];
+	stats.uploadedReferences = 0;
+	if ( uploadGrid != NULL ) {
+		const modernClusterGridRecord_t &grid = *uploadGrid;
+		for ( int clusterIndex = 0; clusterIndex < stats.uploadedClusters; ++clusterIndex ) {
+			const modernClusterRecord_t &cluster = rg_clusteredLightingFrame.clusters[grid.clusterOffset + clusterIndex];
+			const int uploadedClusterLights = Min( static_cast<int>( cluster.lightCount ), grid.maxLightsPerCluster );
+			for ( int i = 0; i < uploadedClusterLights; ++i ) {
+				const int groupIndex = clusterIndex * grid.indexGroupsPerCluster + i / 4;
+				if ( groupIndex >= 0 && groupIndex < indexUploadRecords ) {
+					indexRecords[groupIndex].indices[i & 3] = cluster.lightIndices[i];
+					stats.uploadedReferences++;
+				}
+			}
 		}
 	}
 
 	R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, rg_clusteredLightingParamsUBO );
 	glBufferSubData( GL_UNIFORM_BUFFER, 0, sizeof( params ), &params );
-	R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, rg_clusteredLightingLightsUBO );
-	glBufferSubData( GL_UNIFORM_BUFFER, 0, sizeof( lightRecords ), lightRecords );
-	R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, rg_clusteredLightingIndicesUBO );
-	glBufferSubData( GL_UNIFORM_BUFFER, 0, sizeof( indexRecords ), indexRecords );
-	R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, 0 );
 	R_GLStateCache().BindBufferBase( GL_UNIFORM_BUFFER, MODERN_CLUSTER_UBO_BINDING_PARAMS, rg_clusteredLightingParamsUBO );
-	R_GLStateCache().BindBufferBase( GL_UNIFORM_BUFFER, MODERN_CLUSTER_UBO_BINDING_LIGHTS, rg_clusteredLightingLightsUBO );
-	R_GLStateCache().BindBufferBase( GL_UNIFORM_BUFFER, MODERN_CLUSTER_UBO_BINDING_INDICES, rg_clusteredLightingIndicesUBO );
+	if ( useShaderStorage ) {
+		R_GLStateCache().BindBuffer( GL_SHADER_STORAGE_BUFFER, rg_clusteredLightingLightsSSBO );
+		glBufferSubData( GL_SHADER_STORAGE_BUFFER, 0, sizeof( modernClusterLightGpuRecord_t ) * lightUploadRecords, lightRecords.Ptr() );
+		R_GLStateCache().BindBuffer( GL_SHADER_STORAGE_BUFFER, rg_clusteredLightingIndicesSSBO );
+		glBufferSubData( GL_SHADER_STORAGE_BUFFER, 0, sizeof( modernClusterIndexGpuRecord_t ) * indexUploadRecords, indexRecords.Ptr() );
+		R_GLStateCache().BindBuffer( GL_SHADER_STORAGE_BUFFER, 0 );
+		R_GLStateCache().BindBufferBase( GL_SHADER_STORAGE_BUFFER, MODERN_CLUSTER_SSBO_BINDING_LIGHTS, rg_clusteredLightingLightsSSBO );
+		R_GLStateCache().BindBufferBase( GL_SHADER_STORAGE_BUFFER, MODERN_CLUSTER_SSBO_BINDING_INDICES, rg_clusteredLightingIndicesSSBO );
+	} else {
+		R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, rg_clusteredLightingLightsUBO );
+		glBufferSubData( GL_UNIFORM_BUFFER, 0, sizeof( modernClusterLightGpuRecord_t ) * lightUploadRecords, lightRecords.Ptr() );
+		R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, rg_clusteredLightingIndicesUBO );
+		glBufferSubData( GL_UNIFORM_BUFFER, 0, sizeof( modernClusterIndexGpuRecord_t ) * indexUploadRecords, indexRecords.Ptr() );
+		R_GLStateCache().BindBuffer( GL_UNIFORM_BUFFER, 0 );
+		R_GLStateCache().BindBufferBase( GL_UNIFORM_BUFFER, MODERN_CLUSTER_UBO_BINDING_LIGHTS, rg_clusteredLightingLightsUBO );
+		R_GLStateCache().BindBufferBase( GL_UNIFORM_BUFFER, MODERN_CLUSTER_UBO_BINDING_INDICES, rg_clusteredLightingIndicesUBO );
+	}
 
 	stats.bufferUploads += 3;
 	stats.buffersReady = true;
-	stats.uboFallbackReady = true;
+	stats.uboFallbackReady = !useShaderStorage;
 	return true;
 }
 
@@ -748,8 +920,9 @@ static bool R_ModernClusteredLighting_UpdateDebugTexture( rendererClusteredLight
 	if ( width <= 0 || height <= 0 || !R_ModernClusteredLighting_EnsureDebugTexture( width, height ) ) {
 		return false;
 	}
-	modernClusterDebugPixel_t pixels[MODERN_CLUSTER_MAX_TILES_X * MODERN_CLUSTER_MAX_SLICES_Z * MODERN_CLUSTER_MAX_TILES_Y];
-	memset( pixels, 0, sizeof( pixels ) );
+	idList<modernClusterDebugPixel_t> pixels;
+	pixels.SetNum( width * height, false );
+	memset( pixels.Ptr(), 0, sizeof( modernClusterDebugPixel_t ) * width * height );
 	const int debugMode = idMath::ClampInt( RENDERER_CLUSTER_DEBUG_OCCUPANCY, RENDERER_CLUSTER_DEBUG_OVERFLOW, r_rendererClusterDebug.GetInteger() );
 	for ( int z = 0; z < grid.sliceCountZ; ++z ) {
 		for ( int y = 0; y < grid.tileCountY; ++y ) {
@@ -761,7 +934,7 @@ static bool R_ModernClusteredLighting_UpdateDebugTexture( rendererClusteredLight
 		}
 	}
 	R_GLStateCache().BindTexture( 0, GL_TEXTURE_2D, rg_clusteredLightingDebugTexture );
-	glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels );
+	glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.Ptr() );
 	R_GLStateCache().BindTexture( 0, GL_TEXTURE_2D, 0 );
 	stats.debugTextureReady = true;
 	return true;
@@ -771,6 +944,7 @@ void R_ModernClusteredLighting_Init( const renderBackendCaps_t &caps, const rend
 	rg_clusteredLightingCaps = caps;
 	rg_clusteredLightingFeatures = features;
 	rg_clusteredLightingAvailable = features.modernBaseline && caps.hasUBO && caps.hasVAO && glBindBufferBase != NULL;
+	rg_clusteredLightingShaderStorageAvailable = rg_clusteredLightingAvailable && features.gpuDriven && caps.hasSSBO;
 	if ( !rg_clusteredLightingAvailable ) {
 		memset( &rg_clusteredLightingStats, 0, sizeof( rg_clusteredLightingStats ) );
 		R_ModernClusteredLighting_SetStatus( rg_clusteredLightingStats, "unavailable" );
@@ -778,14 +952,24 @@ void R_ModernClusteredLighting_Init( const renderBackendCaps_t &caps, const rend
 	}
 
 	const int paramsBytes = sizeof( modernClusterGridGpuParams_t );
-	const int lightBytes = sizeof( modernClusterLightGpuRecord_t ) * MODERN_CLUSTER_MAX_LIGHTS;
-	const int indexBytes = sizeof( modernClusterIndexGpuRecord_t ) * MODERN_CLUSTER_MAX_CLUSTERS * MODERN_CLUSTER_INDEX_GROUPS_PER_CLUSTER;
+	const int lightBytes = sizeof( modernClusterLightGpuRecord_t ) * MODERN_CLUSTER_MAX_LIGHTS_UBO;
+	const int indexBytes = sizeof( modernClusterIndexGpuRecord_t ) * MODERN_CLUSTER_MAX_INDEX_RECORDS_UBO;
 	if ( !R_ModernClusteredLighting_CreateBuffer( GL_UNIFORM_BUFFER, paramsBytes, rg_clusteredLightingParamsUBO, "Modern clustered lighting grid params UBO" ) ||
 		!R_ModernClusteredLighting_CreateBuffer( GL_UNIFORM_BUFFER, lightBytes, rg_clusteredLightingLightsUBO, "Modern clustered lighting light records UBO" ) ||
 		!R_ModernClusteredLighting_CreateBuffer( GL_UNIFORM_BUFFER, indexBytes, rg_clusteredLightingIndicesUBO, "Modern clustered lighting indices UBO" ) ) {
 		R_ModernClusteredLighting_Shutdown();
 		R_ModernClusteredLighting_SetStatus( rg_clusteredLightingStats, "buffer-init-failed" );
 		return;
+	}
+	if ( rg_clusteredLightingShaderStorageAvailable ) {
+		const int ssboLightBytes = sizeof( modernClusterLightGpuRecord_t ) * MODERN_CLUSTER_MAX_LIGHTS_SSBO;
+		const int ssboIndexBytes = sizeof( modernClusterIndexGpuRecord_t ) * MODERN_CLUSTER_MAX_INDEX_RECORDS_SSBO;
+		if ( !R_ModernClusteredLighting_CreateBuffer( GL_SHADER_STORAGE_BUFFER, ssboLightBytes, rg_clusteredLightingLightsSSBO, "Modern clustered lighting light records SSBO" ) ||
+			!R_ModernClusteredLighting_CreateBuffer( GL_SHADER_STORAGE_BUFFER, ssboIndexBytes, rg_clusteredLightingIndicesSSBO, "Modern clustered lighting indices SSBO" ) ) {
+			R_ModernClusteredLighting_Shutdown();
+			R_ModernClusteredLighting_SetStatus( rg_clusteredLightingStats, "ssbo-init-failed" );
+			return;
+		}
 	}
 	if ( glGenVertexArrays != NULL ) {
 		glGenVertexArrays( 1, &rg_clusteredLightingDebugVAO );
@@ -802,16 +986,19 @@ void R_ModernClusteredLighting_Init( const renderBackendCaps_t &caps, const rend
 	rg_clusteredLightingStats.available = true;
 	rg_clusteredLightingStats.initialized = true;
 	rg_clusteredLightingStats.buffersReady = true;
-	rg_clusteredLightingStats.uboFallbackReady = true;
+	rg_clusteredLightingStats.shaderStorageReady = R_ModernClusteredLighting_UseShaderStoragePath();
+	rg_clusteredLightingStats.uboFallbackReady = !rg_clusteredLightingStats.shaderStorageReady;
+	rg_clusteredLightingStats.lightCapacity = R_ModernClusteredLighting_LightCapacity();
+	rg_clusteredLightingStats.indexRecordCapacity = R_ModernClusteredLighting_IndexRecordCapacity();
 	rg_clusteredLightingStats.debugOverlayReady = rg_clusteredLightingDebugProgram != 0 && rg_clusteredLightingDebugVAO != 0;
 	rg_clusteredLightingStats.paramsUBOBytes = paramsBytes;
-	rg_clusteredLightingStats.lightsUBOBytes = lightBytes;
-	rg_clusteredLightingStats.indicesUBOBytes = indexBytes;
+	rg_clusteredLightingStats.lightsUBOBytes = sizeof( modernClusterLightGpuRecord_t ) * rg_clusteredLightingStats.lightCapacity;
+	rg_clusteredLightingStats.indicesUBOBytes = sizeof( modernClusterIndexGpuRecord_t ) * rg_clusteredLightingStats.indexRecordCapacity;
 	R_ModernClusteredLighting_SetStatus( rg_clusteredLightingStats, "initialized" );
 }
 
 void R_ModernClusteredLighting_Shutdown( void ) {
-	GLuint buffers[3];
+	GLuint buffers[5];
 	int numBuffers = 0;
 	if ( rg_clusteredLightingParamsUBO != 0 ) {
 		buffers[numBuffers++] = rg_clusteredLightingParamsUBO;
@@ -821,6 +1008,12 @@ void R_ModernClusteredLighting_Shutdown( void ) {
 	}
 	if ( rg_clusteredLightingIndicesUBO != 0 ) {
 		buffers[numBuffers++] = rg_clusteredLightingIndicesUBO;
+	}
+	if ( rg_clusteredLightingLightsSSBO != 0 ) {
+		buffers[numBuffers++] = rg_clusteredLightingLightsSSBO;
+	}
+	if ( rg_clusteredLightingIndicesSSBO != 0 ) {
+		buffers[numBuffers++] = rg_clusteredLightingIndicesSSBO;
 	}
 	if ( numBuffers > 0 && glDeleteBuffers != NULL ) {
 		glDeleteBuffers( numBuffers, buffers );
@@ -837,6 +1030,8 @@ void R_ModernClusteredLighting_Shutdown( void ) {
 	rg_clusteredLightingParamsUBO = 0;
 	rg_clusteredLightingLightsUBO = 0;
 	rg_clusteredLightingIndicesUBO = 0;
+	rg_clusteredLightingLightsSSBO = 0;
+	rg_clusteredLightingIndicesSSBO = 0;
 	rg_clusteredLightingDebugTexture = 0;
 	rg_clusteredLightingDebugProgram = 0;
 	rg_clusteredLightingDebugVAO = 0;
@@ -844,6 +1039,8 @@ void R_ModernClusteredLighting_Shutdown( void ) {
 	rg_clusteredLightingDebugTextureHeight = 0;
 	rg_clusteredLightingInitialized = false;
 	rg_clusteredLightingAvailable = false;
+	rg_clusteredLightingShaderStorageAvailable = false;
+	R_ModernClusteredLighting_ResetFrameData();
 	memset( &rg_clusteredLightingStats, 0, sizeof( rg_clusteredLightingStats ) );
 	R_ModernClusteredLighting_SetStatus( rg_clusteredLightingStats, "off" );
 }
@@ -855,7 +1052,7 @@ void R_ModernClusteredLighting_PrepareFrame( const idScenePacketFrame &packetFra
 	R_RendererMetrics_RecordClusteredLighting( rg_clusteredLightingStats );
 	if ( r_rendererMetrics.GetInteger() >= 2 && rg_clusteredLightingStats.requested ) {
 		common->Printf(
-			"clusteredLighting status=%s requested=%d valid=%d grids=%d scenes=%d lights=%d point=%d projected=%d fog=%d ambient=%d special=%d clusters=%d active=%d refs=%d overflow=%d/%d overflowRefs=%d maxCluster=%d grid=%dx%dx%d z=%d..%d ubo=%d buffers=%d bytes(params=%d lights=%d indices=%d) debug=%d/%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
+			"clusteredLighting status=%s requested=%d valid=%d grids=%d scenes=%d lights=%d point=%d projected=%d fog=%d ambient=%d special=%d clusters=%d active=%d refs=%d uploaded(l=%d c=%d r=%d) spill=%d/%d overflow=%d/%d overflowRefs=%d maxCluster=%d/%d groups=%d grid=%dx%dx%d z=%d..%d ubo=%d ssbo=%d buffers=%d caps(l=%d idx=%d) bytes(params=%d lights=%d indices=%d) debug=%d/%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
 			rg_clusteredLightingStats.status,
 			rg_clusteredLightingStats.requested ? 1 : 0,
 			rg_clusteredLightingStats.frameValid ? 1 : 0,
@@ -870,17 +1067,27 @@ void R_ModernClusteredLighting_PrepareFrame( const idScenePacketFrame &packetFra
 			rg_clusteredLightingStats.clusterCount,
 			rg_clusteredLightingStats.activeClusters,
 			rg_clusteredLightingStats.lightReferences,
+			rg_clusteredLightingStats.uploadedLights,
+			rg_clusteredLightingStats.uploadedClusters,
+			rg_clusteredLightingStats.uploadedReferences,
+			rg_clusteredLightingStats.spillClusters,
+			rg_clusteredLightingStats.spillReferences,
 			rg_clusteredLightingStats.overflow ? 1 : 0,
 			rg_clusteredLightingStats.overflowClusters,
 			rg_clusteredLightingStats.overflowReferences,
 			rg_clusteredLightingStats.maxLightsInCluster,
+			rg_clusteredLightingStats.maxLightsPerCluster,
+			rg_clusteredLightingStats.indexGroupsPerCluster,
 			rg_clusteredLightingStats.tileCountX,
 			rg_clusteredLightingStats.tileCountY,
 			rg_clusteredLightingStats.sliceCountZ,
 			rg_clusteredLightingStats.nearZ,
 			rg_clusteredLightingStats.farZ,
 			rg_clusteredLightingStats.uboFallbackReady ? 1 : 0,
+			rg_clusteredLightingStats.shaderStorageReady ? 1 : 0,
 			rg_clusteredLightingStats.buffersReady ? 1 : 0,
+			rg_clusteredLightingStats.lightCapacity,
+			rg_clusteredLightingStats.indexRecordCapacity,
 			rg_clusteredLightingStats.paramsUBOBytes,
 			rg_clusteredLightingStats.lightsUBOBytes,
 			rg_clusteredLightingStats.indicesUBOBytes,
@@ -932,7 +1139,7 @@ void R_ModernClusteredLighting_DrawDebugOverlay( void ) {
 
 void R_ModernClusteredLighting_PrintGfxInfo( void ) {
 	common->Printf(
-		"Modern clustered lighting: %s, requested=%d, cvarDebug=%d, grids=%d scenes=%d lights=%d(point=%d projected=%d fog=%d ambient=%d special=%d) clusters=%d active=%d refs=%d overflow=%d/%d overflowRefs=%d maxCluster=%d grid=%dx%dx%d z=%d..%d ubo=%d buffers=%d bytes(params=%d lights=%d indices=%d) overlay=%d/%d texture=%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
+		"Modern clustered lighting: %s, requested=%d, cvarDebug=%d, grids=%d scenes=%d lights=%d(point=%d projected=%d fog=%d ambient=%d special=%d) clusters=%d active=%d refs=%d uploaded(l=%d c=%d r=%d) spill=%d/%d overflow=%d/%d overflowRefs=%d maxCluster=%d/%d groups=%d grid=%dx%dx%d z=%d..%d ubo=%d ssbo=%d buffers=%d caps(l=%d idx=%d) bytes(params=%d lights=%d indices=%d) overlay=%d/%d texture=%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
 		rg_clusteredLightingStats.available ? "available" : "unavailable",
 		rg_clusteredLightingStats.requested ? 1 : 0,
 		r_rendererClusterDebug.GetInteger(),
@@ -947,17 +1154,27 @@ void R_ModernClusteredLighting_PrintGfxInfo( void ) {
 		rg_clusteredLightingStats.clusterCount,
 		rg_clusteredLightingStats.activeClusters,
 		rg_clusteredLightingStats.lightReferences,
+		rg_clusteredLightingStats.uploadedLights,
+		rg_clusteredLightingStats.uploadedClusters,
+		rg_clusteredLightingStats.uploadedReferences,
+		rg_clusteredLightingStats.spillClusters,
+		rg_clusteredLightingStats.spillReferences,
 		rg_clusteredLightingStats.overflow ? 1 : 0,
 		rg_clusteredLightingStats.overflowClusters,
 		rg_clusteredLightingStats.overflowReferences,
 		rg_clusteredLightingStats.maxLightsInCluster,
+		rg_clusteredLightingStats.maxLightsPerCluster,
+		rg_clusteredLightingStats.indexGroupsPerCluster,
 		rg_clusteredLightingStats.tileCountX,
 		rg_clusteredLightingStats.tileCountY,
 		rg_clusteredLightingStats.sliceCountZ,
 		rg_clusteredLightingStats.nearZ,
 		rg_clusteredLightingStats.farZ,
 		rg_clusteredLightingStats.uboFallbackReady ? 1 : 0,
+		rg_clusteredLightingStats.shaderStorageReady ? 1 : 0,
 		rg_clusteredLightingStats.buffersReady ? 1 : 0,
+		rg_clusteredLightingStats.lightCapacity,
+		rg_clusteredLightingStats.indexRecordCapacity,
 		rg_clusteredLightingStats.paramsUBOBytes,
 		rg_clusteredLightingStats.lightsUBOBytes,
 		rg_clusteredLightingStats.indicesUBOBytes,
@@ -974,7 +1191,7 @@ const rendererClusteredLightingStats_t &R_ModernClusteredLighting_Stats( void ) 
 	return rg_clusteredLightingStats;
 }
 
-static void R_ModernClusteredLighting_SetupSelfTestView( viewDef_t &view, viewLight_t lights[6], idRenderLightLocal lightDefs[6] ) {
+static void R_ModernClusteredLighting_SetupSelfTestView( viewDef_t &view, viewLight_t *lights, idRenderLightLocal *lightDefs, int lightCount ) {
 	memset( &view, 0, sizeof( view ) );
 	view.renderView.width = 1280;
 	view.renderView.height = 720;
@@ -990,7 +1207,7 @@ static void R_ModernClusteredLighting_SetupSelfTestView( viewDef_t &view, viewLi
 	view.scissor.y1 = 0;
 	view.scissor.x2 = 1279;
 	view.scissor.y2 = 719;
-	for ( int i = 0; i < 6; ++i ) {
+	for ( int i = 0; i < lightCount; ++i ) {
 		memset( &lights[i], 0, sizeof( lights[i] ) );
 		lightDefs[i].index = i;
 		lightDefs[i].areaNum = -1;
@@ -1000,7 +1217,7 @@ static void R_ModernClusteredLighting_SetupSelfTestView( viewDef_t &view, viewLi
 		lightDefs[i].parms.shaderParms[SHADERPARM_GREEN] = 0.75f;
 		lightDefs[i].parms.shaderParms[SHADERPARM_BLUE] = 0.5f;
 		lights[i].lightDef = &lightDefs[i];
-		lights[i].next = i < 5 ? &lights[i + 1] : NULL;
+		lights[i].next = i + 1 < lightCount ? &lights[i + 1] : NULL;
 		lights[i].scissorRect.x1 = 120;
 		lights[i].scissorRect.y1 = 120;
 		lights[i].scissorRect.x2 = 360;
@@ -1012,7 +1229,7 @@ static void R_ModernClusteredLighting_SetupSelfTestView( viewDef_t &view, viewLi
 		lights[i].viewInsideLight = i == 0;
 		lights[i].viewSeesGlobalLightOrigin = true;
 	}
-	view.viewLights = &lights[0];
+	view.viewLights = lightCount > 0 ? &lights[0] : NULL;
 }
 
 bool RendererClusterGrid_RunSelfTest( void ) {
@@ -1024,7 +1241,7 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 	viewDef_t view;
 	viewLight_t lights[6];
 	idRenderLightLocal lightDefs[6];
-	R_ModernClusteredLighting_SetupSelfTestView( view, lights, lightDefs );
+	R_ModernClusteredLighting_SetupSelfTestView( view, lights, lightDefs, 6 );
 
 	idScenePacketFrame packetFrame;
 	packetFrame.Clear();
@@ -1036,9 +1253,9 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 
 	rendererClusteredLightingStats_t stats;
 	R_ModernClusteredLighting_BuildFrame( packetFrame, true, stats );
-	if ( !stats.frameValid || stats.gridCount != 1 || stats.lightCount != 6 || stats.pointLights != 3 || stats.projectedLights != 3 || stats.clusterCount <= 0 || stats.activeClusters <= 0 || stats.maxLightsInCluster != MODERN_CLUSTER_MAX_LIGHTS_PER_CLUSTER || stats.overflowClusters <= 0 || stats.overflowReferences <= 0 ) {
+	if ( !stats.frameValid || stats.gridCount != 1 || stats.lightCount != 6 || stats.pointLights != 3 || stats.projectedLights != 3 || stats.clusterCount <= 0 || stats.activeClusters <= 0 || stats.maxLightsInCluster < 6 || stats.overflowClusters != 0 || stats.overflowReferences != 0 || stats.maxLightsPerCluster < 8 || stats.indexGroupsPerCluster < 2 ) {
 		common->Printf(
-			"RendererClusterGrid self-test failed: grid=%d valid=%d lights=%d point=%d projected=%d clusters=%d active=%d maxCluster=%d overflow=%d refs=%d\n",
+			"RendererClusterGrid self-test failed: grid=%d valid=%d lights=%d point=%d projected=%d clusters=%d active=%d maxCluster=%d cap=%d groups=%d overflow=%d refs=%d\n",
 			stats.gridCount,
 			stats.frameValid ? 1 : 0,
 			stats.lightCount,
@@ -1047,6 +1264,8 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 			stats.clusterCount,
 			stats.activeClusters,
 			stats.maxLightsInCluster,
+			stats.maxLightsPerCluster,
+			stats.indexGroupsPerCluster,
 			stats.overflowClusters,
 			stats.overflowReferences );
 		return false;
@@ -1063,14 +1282,42 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 			common->Printf( "RendererClusterGrid self-test failed: UBO fallback upload unavailable\n" );
 			return false;
 		}
+		if ( !stats.buffersReady || stats.uploadedLights != 6 || stats.uploadedClusters <= 0 || stats.uploadedReferences <= 0 ) {
+			common->Printf( "RendererClusterGrid self-test failed: upload stats invalid (buffers=%d lights=%d clusters=%d refs=%d)\n", stats.buffersReady ? 1 : 0, stats.uploadedLights, stats.uploadedClusters, stats.uploadedReferences );
+			return false;
+		}
 		if ( r_rendererClusterDebug.GetInteger() > 0 && !R_ModernClusteredLighting_UpdateDebugTexture( stats ) ) {
 			common->Printf( "RendererClusterGrid self-test failed: debug texture update unavailable\n" );
 			return false;
 		}
 	}
 
+	viewLight_t stressLights[40];
+	idRenderLightLocal stressDefs[40];
+	R_ModernClusteredLighting_SetupSelfTestView( view, stressLights, stressDefs, 40 );
+	packetFrame.Clear();
+	if ( !packetFrame.AddScene( &view, true ) ) {
+		common->Printf( "RendererClusterGrid self-test failed: could not add stress scene\n" );
+		return false;
+	}
+	packetFrame.FinishScene();
+	rendererClusteredLightingStats_t stressStats;
+	R_ModernClusteredLighting_BuildFrame( packetFrame, true, stressStats );
+	if ( !stressStats.frameValid || stressStats.lightCount != 40 || stressStats.spillReferences <= 0 || stressStats.overflowReferences != 0 ) {
+		common->Printf(
+			"RendererClusterGrid self-test failed: spill path invalid (valid=%d lights=%d spill=%d/%d overflow=%d/%d cap=%d)\n",
+			stressStats.frameValid ? 1 : 0,
+			stressStats.lightCount,
+			stressStats.spillClusters,
+			stressStats.spillReferences,
+			stressStats.overflowClusters,
+			stressStats.overflowReferences,
+			stressStats.maxLightsPerCluster );
+		return false;
+	}
+
 	common->Printf(
-		"RendererClusterGrid self-test passed (grid=%dx%dx%d lights=%d point=%d projected=%d clusters=%d active=%d refs=%d overflow=%d/%d maxCluster=%d ubo=%d overlay=%d)\n",
+		"RendererClusterGrid self-test passed (grid=%dx%dx%d lights=%d point=%d projected=%d clusters=%d active=%d refs=%d uploaded=%d/%d spill=%d/%d overflow=%d/%d maxCluster=%d/%d groups=%d ubo=%d ssbo=%d overlay=%d)\n",
 		stats.tileCountX,
 		stats.tileCountY,
 		stats.sliceCountZ,
@@ -1080,10 +1327,17 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 		stats.clusterCount,
 		stats.activeClusters,
 		stats.lightReferences,
+		stats.uploadedLights,
+		stats.uploadedReferences,
+		stressStats.spillClusters,
+		stressStats.spillReferences,
 		stats.overflowClusters,
 		stats.overflowReferences,
 		stats.maxLightsInCluster,
+		stats.maxLightsPerCluster,
+		stats.indexGroupsPerCluster,
 		stats.uboFallbackReady ? 1 : 0,
+		stats.shaderStorageReady ? 1 : 0,
 		rg_clusteredLightingDebugProgram != 0 ? 1 : 0 );
 	return true;
 }

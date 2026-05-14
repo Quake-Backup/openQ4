@@ -2631,7 +2631,7 @@ static void R_ModernGLExecutor_SubmitDeferredResolve( modernGLExecutorStats_t &s
 	}
 
 	const rendererClusteredLightingStats_t &clusterStats = R_ModernClusteredLighting_Stats();
-	stats.deferredResolveClusterReady = clusterStats.requested && clusterStats.frameValid && clusterStats.uboFallbackReady;
+	stats.deferredResolveClusterReady = clusterStats.requested && clusterStats.frameValid && clusterStats.buffersReady;
 	stats.deferredResolveActiveLights = clusterStats.lightCount;
 	stats.deferredResolvePointLights = clusterStats.pointLights;
 	stats.deferredResolveProjectedLights = clusterStats.projectedLights;
@@ -2859,7 +2859,7 @@ static void R_ModernGLExecutor_SubmitForwardPlus( modernGLExecutorStats_t &stats
 	}
 
 	const rendererClusteredLightingStats_t &clusterStats = R_ModernClusteredLighting_Stats();
-	stats.forwardPlusClusterReady = clusterStats.requested && clusterStats.frameValid && clusterStats.uboFallbackReady;
+	stats.forwardPlusClusterReady = clusterStats.requested && clusterStats.frameValid && clusterStats.buffersReady;
 	stats.forwardPlusActiveLights = clusterStats.lightCount;
 	stats.forwardPlusPointLights = clusterStats.pointLights;
 	stats.forwardPlusProjectedLights = clusterStats.projectedLights;
@@ -4529,6 +4529,54 @@ static bool R_ModernGLExecutor_DrawVertLayoutSelfTest( void ) {
 	return true;
 }
 
+static bool R_ModernGLExecutor_InitSelfTestTriangleGeometry( srfTriangles_t &geometry, vertCache_t &ambientCache, vertCache_t &indexCache, const char *selfTestName ) {
+	memset( &geometry, 0, sizeof( geometry ) );
+	geometry.numVerts = 3;
+	geometry.numIndexes = 6;
+
+	idDrawVert verts[3];
+	for ( int i = 0; i < 3; ++i ) {
+		verts[i].Clear();
+		verts[i].SetNormal( 0.0f, 0.0f, 1.0f );
+		verts[i].SetTangent( 1.0f, 0.0f, 0.0f );
+		verts[i].SetBiTangent( 0.0f, 1.0f, 0.0f );
+		verts[i].SetColor( 0xffffffffu );
+	}
+	verts[0].xyz.Set( -0.65f, -0.55f, 0.0f );
+	verts[1].xyz.Set( 0.65f, -0.55f, 0.0f );
+	verts[2].xyz.Set( 0.0f, 0.65f, 0.0f );
+	verts[0].st.Set( 0.0f, 0.0f );
+	verts[1].st.Set( 1.0f, 0.0f );
+	verts[2].st.Set( 0.5f, 1.0f );
+
+	glIndex_t indexes[6] = { 0, 1, 2, 0, 2, 1 };
+	rendererUploadAllocation_t ambientUpload;
+	rendererUploadAllocation_t indexUpload;
+	if ( !R_RendererUpload_AllocFrameTemp( verts, sizeof( verts ), 16, ambientUpload )
+		|| !R_RendererUpload_AllocFrameTemp( indexes, sizeof( indexes ), 4, indexUpload ) ) {
+		common->Printf( "%s self-test failed: could not allocate self-test geometry uploads\n", selfTestName ? selfTestName : "Renderer" );
+		return false;
+	}
+
+	memset( &ambientCache, 0, sizeof( ambientCache ) );
+	ambientCache.vbo = ambientUpload.vbo;
+	ambientCache.offset = ambientUpload.offset;
+	ambientCache.size = ambientUpload.size;
+	ambientCache.indexBuffer = false;
+	ambientCache.tag = TAG_USED;
+
+	memset( &indexCache, 0, sizeof( indexCache ) );
+	indexCache.vbo = indexUpload.vbo;
+	indexCache.offset = indexUpload.offset;
+	indexCache.size = indexUpload.size;
+	indexCache.indexBuffer = true;
+	indexCache.tag = TAG_USED;
+
+	geometry.ambientCache = &ambientCache;
+	geometry.indexCache = &indexCache;
+	return true;
+}
+
 bool RendererModernGLExecutor_RunSelfTest( void ) {
 	if ( !R_ModernGLExecutor_DrawVertLayoutSelfTest() ) {
 		return false;
@@ -4537,25 +4585,11 @@ bool RendererModernGLExecutor_RunSelfTest( void ) {
 	drawSurf_t drawSurfs[2];
 	memset( drawSurfs, 0, sizeof( drawSurfs ) );
 	srfTriangles_t geometry;
-	memset( &geometry, 0, sizeof( geometry ) );
-	geometry.numVerts = 3;
-	geometry.numIndexes = 6;
 	vertCache_t ambientCache;
-	memset( &ambientCache, 0, sizeof( ambientCache ) );
-	ambientCache.vbo = 101;
-	ambientCache.offset = 64;
-	ambientCache.size = geometry.numVerts * static_cast<int>( sizeof( idDrawVert ) );
-	ambientCache.indexBuffer = false;
-	ambientCache.tag = TAG_USED;
 	vertCache_t indexCache;
-	memset( &indexCache, 0, sizeof( indexCache ) );
-	indexCache.vbo = 202;
-	indexCache.offset = 128;
-	indexCache.size = geometry.numIndexes * static_cast<int>( sizeof( glIndex_t ) );
-	indexCache.indexBuffer = true;
-	indexCache.tag = TAG_USED;
-	geometry.ambientCache = &ambientCache;
-	geometry.indexCache = &indexCache;
+	if ( !R_ModernGLExecutor_InitSelfTestTriangleGeometry( geometry, ambientCache, indexCache, "RendererModernGLExecutor" ) ) {
+		return false;
+	}
 	for ( int i = 0; i < 2; ++i ) {
 		drawSurfs[i].geo = &geometry;
 		if ( tr.defaultMaterial != NULL ) {
@@ -4912,25 +4946,11 @@ static bool R_ModernGLExecutor_BuildVisiblePathSelfTestFrame( idScenePacketFrame
 	drawSurf_t drawSurfs[2];
 	memset( drawSurfs, 0, sizeof( drawSurfs ) );
 	srfTriangles_t geometry;
-	memset( &geometry, 0, sizeof( geometry ) );
-	geometry.numVerts = 3;
-	geometry.numIndexes = 6;
 	vertCache_t ambientCache;
-	memset( &ambientCache, 0, sizeof( ambientCache ) );
-	ambientCache.vbo = 101;
-	ambientCache.offset = 64;
-	ambientCache.size = geometry.numVerts * static_cast<int>( sizeof( idDrawVert ) );
-	ambientCache.indexBuffer = false;
-	ambientCache.tag = TAG_USED;
 	vertCache_t indexCache;
-	memset( &indexCache, 0, sizeof( indexCache ) );
-	indexCache.vbo = 202;
-	indexCache.offset = 128;
-	indexCache.size = geometry.numIndexes * static_cast<int>( sizeof( glIndex_t ) );
-	indexCache.indexBuffer = true;
-	indexCache.tag = TAG_USED;
-	geometry.ambientCache = &ambientCache;
-	geometry.indexCache = &indexCache;
+	if ( !R_ModernGLExecutor_InitSelfTestTriangleGeometry( geometry, ambientCache, indexCache, "RendererVisiblePath" ) ) {
+		return false;
+	}
 	for ( int i = 0; i < 2; ++i ) {
 		drawSurfs[i].geo = &geometry;
 		if ( tr.defaultMaterial != NULL ) {
@@ -5069,25 +5089,11 @@ static bool R_ModernGLExecutor_BuildGBufferSelfTestFrame( idScenePacketFrame &pa
 	drawSurf_t drawSurfs[2];
 	memset( drawSurfs, 0, sizeof( drawSurfs ) );
 	srfTriangles_t geometry;
-	memset( &geometry, 0, sizeof( geometry ) );
-	geometry.numVerts = 3;
-	geometry.numIndexes = 6;
 	vertCache_t ambientCache;
-	memset( &ambientCache, 0, sizeof( ambientCache ) );
-	ambientCache.vbo = 101;
-	ambientCache.offset = 64;
-	ambientCache.size = geometry.numVerts * static_cast<int>( sizeof( idDrawVert ) );
-	ambientCache.indexBuffer = false;
-	ambientCache.tag = TAG_USED;
 	vertCache_t indexCache;
-	memset( &indexCache, 0, sizeof( indexCache ) );
-	indexCache.vbo = 202;
-	indexCache.offset = 128;
-	indexCache.size = geometry.numIndexes * static_cast<int>( sizeof( glIndex_t ) );
-	indexCache.indexBuffer = true;
-	indexCache.tag = TAG_USED;
-	geometry.ambientCache = &ambientCache;
-	geometry.indexCache = &indexCache;
+	if ( !R_ModernGLExecutor_InitSelfTestTriangleGeometry( geometry, ambientCache, indexCache, "RendererGBuffer" ) ) {
+		return false;
+	}
 	for ( int i = 0; i < 2; ++i ) {
 		drawSurfs[i].geo = &geometry;
 		if ( tr.defaultMaterial != NULL ) {
@@ -5427,25 +5433,11 @@ bool RendererForwardPlus_RunSelfTest( void ) {
 	drawSurf_t drawSurfs[3];
 	memset( drawSurfs, 0, sizeof( drawSurfs ) );
 	srfTriangles_t geometry;
-	memset( &geometry, 0, sizeof( geometry ) );
-	geometry.numVerts = 3;
-	geometry.numIndexes = 6;
 	vertCache_t ambientCache;
-	memset( &ambientCache, 0, sizeof( ambientCache ) );
-	ambientCache.vbo = 101;
-	ambientCache.offset = 64;
-	ambientCache.size = geometry.numVerts * static_cast<int>( sizeof( idDrawVert ) );
-	ambientCache.indexBuffer = false;
-	ambientCache.tag = TAG_USED;
 	vertCache_t indexCache;
-	memset( &indexCache, 0, sizeof( indexCache ) );
-	indexCache.vbo = 202;
-	indexCache.offset = 128;
-	indexCache.size = geometry.numIndexes * static_cast<int>( sizeof( glIndex_t ) );
-	indexCache.indexBuffer = true;
-	indexCache.tag = TAG_USED;
-	geometry.ambientCache = &ambientCache;
-	geometry.indexCache = &indexCache;
+	if ( !R_ModernGLExecutor_InitSelfTestTriangleGeometry( geometry, ambientCache, indexCache, "RendererForwardPlus" ) ) {
+		return false;
+	}
 	for ( int i = 0; i < 3; ++i ) {
 		drawSurfs[i].geo = &geometry;
 		if ( tr.defaultMaterial != NULL ) {
@@ -5457,6 +5449,10 @@ bool RendererForwardPlus_RunSelfTest( void ) {
 	drawSurf_t *drawSurfPtrs[3] = { &drawSurfs[0], &drawSurfs[1], &drawSurfs[2] };
 	viewEntity_t viewEntity;
 	memset( &viewEntity, 0, sizeof( viewEntity ) );
+	for ( int i = 0; i < 16; ++i ) {
+		viewEntity.modelMatrix[i] = ( i % 5 ) == 0 ? 1.0f : 0.0f;
+		viewEntity.modelViewMatrix[i] = viewEntity.modelMatrix[i];
+	}
 	drawSurfs[0].space = &viewEntity;
 	drawSurfs[1].space = &viewEntity;
 	drawSurfs[2].space = &viewEntity;
@@ -5504,6 +5500,9 @@ bool RendererForwardPlus_RunSelfTest( void ) {
 	worldView.scissor.y1 = 0;
 	worldView.scissor.x2 = 639;
 	worldView.scissor.y2 = 479;
+	for ( int i = 0; i < 16; ++i ) {
+		worldView.projectionMatrix[i] = ( i % 5 ) == 0 ? 1.0f : 0.0f;
+	}
 
 	idScenePacketFrame packetFrame;
 	if ( !packetFrame.AddScene( &worldView, true ) || !packetFrame.AddPass( RENDER_PASS_DEPTH, true ) ) {

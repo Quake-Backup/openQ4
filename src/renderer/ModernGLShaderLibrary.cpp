@@ -37,13 +37,13 @@ static const modernGLShaderProgramDescriptor_t rg_modernGLShaderProgramDescripto
 	{ MODERN_GL_SHADER_SHADOW_DEPTH, RENDER_PASS_SHADOW_MAP, RENDER_MATERIAL_SHADOW_ONLY, 0, 1, 0, 0, 0, 0, 0, 0, false, false, false, false, "shadowDepth" },
 	{ MODERN_GL_SHADER_FLAT_MATERIAL, RENDER_PASS_ARB2_INTERACTION, RENDER_MATERIAL_OPAQUE, 1, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, "flatMaterial" },
 	{ MODERN_GL_SHADER_LIGHT_GRID, RENDER_PASS_LIGHT_GRID, RENDER_MATERIAL_OPAQUE, 2, 0, 0, 0, 0, 1, 0, 0, false, true, false, false, "lightGrid" },
-	{ MODERN_GL_SHADER_FOG_BLEND, RENDER_PASS_FOG_BLEND, RENDER_MATERIAL_TRANSLUCENT, 3, 0, 1, 0, 0, 0, 1, 0, true, true, false, false, "fogBlend" },
+	{ MODERN_GL_SHADER_FOG_BLEND, RENDER_PASS_FOG_BLEND, RENDER_MATERIAL_TRANSLUCENT, 3, 0, 1, 0, 0, 0, 1, 0, true, true, true, false, "fogBlend" },
 	{ MODERN_GL_SHADER_GBUFFER_OPAQUE, RENDER_PASS_AMBIENT, RENDER_MATERIAL_OPAQUE, 4, 0, 0, 0, 0, 0, 0, 0, true, true, false, false, "gbufferOpaque" },
 	{ MODERN_GL_SHADER_GBUFFER_ALPHA_TEST, RENDER_PASS_AMBIENT, RENDER_MATERIAL_PERFORATED, 4, 0, 1, 0, 0, 0, 0, 0, true, true, false, false, "gbufferAlphaTest" },
 	{ MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE, RENDER_PASS_ARB2_INTERACTION, RENDER_MATERIAL_OPAQUE, 5, 2, 0, 0, 0, 1, 0, 0, true, true, true, false, "deferredLightResolve" },
 	{ MODERN_GL_SHADER_CLUSTERED_FORWARD_OPAQUE, RENDER_PASS_ARB2_INTERACTION, RENDER_MATERIAL_OPAQUE, 6, 2, 0, 0, 0, 1, 0, 0, true, true, true, false, "clusteredForwardOpaque" },
 	{ MODERN_GL_SHADER_CLUSTERED_FORWARD_ALPHA_TEST, RENDER_PASS_ARB2_INTERACTION, RENDER_MATERIAL_PERFORATED, 6, 2, 1, 0, 0, 1, 0, 0, true, true, true, false, "clusteredForwardAlphaTest" },
-	{ MODERN_GL_SHADER_TRANSPARENT_FORWARD, RENDER_PASS_FOG_BLEND, RENDER_MATERIAL_TRANSLUCENT, 7, 0, 2, 0, 0, 0, 1, 0, true, true, false, false, "transparentForward" },
+	{ MODERN_GL_SHADER_TRANSPARENT_FORWARD, RENDER_PASS_FOG_BLEND, RENDER_MATERIAL_TRANSLUCENT, 7, 0, 2, 0, 0, 0, 1, 0, true, true, true, false, "transparentForward" },
 	{ MODERN_GL_SHADER_GUI, RENDER_PASS_GUI, RENDER_MATERIAL_GUI, 0, 0, 2, 0, 0, 0, 0, 0, true, false, false, false, "gui" },
 	{ MODERN_GL_SHADER_POST_COPY, RENDER_PASS_AUTHORED_POST, RENDER_MATERIAL_POST_PROCESS, 0, 0, 2, 0, 0, 0, 0, 0, true, true, false, false, "postCopy" },
 	{ MODERN_GL_SHADER_DEBUG_VISUALIZATION, RENDER_PASS_AUTHORED_POST, RENDER_MATERIAL_POST_PROCESS, 0, 0, 0, 0, 0, 0, 0, 1, false, true, false, true, "debugVisualization" }
@@ -281,6 +281,63 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    return clamp(dot(ModernMaterialNormal(), lightDir) * 0.5 + 0.5, 0.18, 1.0);\n"
 		"}\n";
 
+	const char *clusterHeader =
+		"#define MODERN_CLUSTER_UBO_MAX_LIGHTS 256\n"
+		"#define MODERN_CLUSTER_UBO_MAX_INDEX_RECORDS 1024\n"
+		"struct ModernClusterLightRecord {\n"
+		"    vec4 positionRadius;\n"
+		"    vec4 colorType;\n"
+		"    vec4 scissorDepth;\n"
+		"    vec4 flags;\n"
+		"};\n"
+		"layout(std140) uniform ModernClusterGridParams {\n"
+		"    vec4 grid;\n"
+		"    vec4 depth;\n"
+		"    vec4 viewport;\n"
+		"    vec4 counts;\n"
+		"} uClusterGrid;\n"
+		"#if MODERN_HAS_SHADER_STORAGE\n"
+		"layout(std430, binding = 6) readonly buffer ModernLightRecords {\n"
+		"    ModernClusterLightRecord lights[];\n"
+		"} uClusterLightsSSBO;\n"
+		"layout(std430, binding = 7) readonly buffer ModernClusterIndexRecordsSSBO {\n"
+		"    uvec4 indices[];\n"
+		"} uClusterIndicesSSBO;\n"
+		"#else\n"
+		"layout(std140) uniform ModernClusterLightRecords {\n"
+		"    ModernClusterLightRecord lights[MODERN_CLUSTER_UBO_MAX_LIGHTS];\n"
+		"} uClusterLights;\n"
+		"layout(std140) uniform ModernClusterIndexRecords {\n"
+		"    uvec4 indices[MODERN_CLUSTER_UBO_MAX_INDEX_RECORDS];\n"
+		"} uClusterIndices;\n"
+		"#endif\n"
+		"ModernClusterLightRecord ModernClusterEmptyLight() {\n"
+		"    ModernClusterLightRecord light;\n"
+		"    light.positionRadius = vec4(0.0);\n"
+		"    light.colorType = vec4(0.0);\n"
+		"    light.scissorDepth = vec4(0.0);\n"
+		"    light.flags = vec4(0.0);\n"
+		"    return light;\n"
+		"}\n"
+		"ModernClusterLightRecord ModernClusterFetchLight(uint lightIndex) {\n"
+		"#if MODERN_HAS_SHADER_STORAGE\n"
+		"    if (lightIndex >= uint(uClusterLightsSSBO.lights.length())) { return ModernClusterEmptyLight(); }\n"
+		"    return uClusterLightsSSBO.lights[int(lightIndex)];\n"
+		"#else\n"
+		"    if (lightIndex >= uint(MODERN_CLUSTER_UBO_MAX_LIGHTS)) { return ModernClusterEmptyLight(); }\n"
+		"    return uClusterLights.lights[int(lightIndex)];\n"
+		"#endif\n"
+		"}\n"
+		"uvec4 ModernClusterFetchIndex(int indexRecord) {\n"
+		"#if MODERN_HAS_SHADER_STORAGE\n"
+		"    if (indexRecord < 0 || indexRecord >= uClusterIndicesSSBO.indices.length()) { return uvec4(0xffffffffu); }\n"
+		"    return uClusterIndicesSSBO.indices[indexRecord];\n"
+		"#else\n"
+		"    if (indexRecord < 0 || indexRecord >= MODERN_CLUSTER_UBO_MAX_INDEX_RECORDS) { return uvec4(0xffffffffu); }\n"
+		"    return uClusterIndices.indices[indexRecord];\n"
+		"#endif\n"
+		"}\n";
+
 	if ( kind == MODERN_GL_SHADER_GBUFFER_OPAQUE ) {
 		idStr::snPrintf(
 			buffer,
@@ -384,6 +441,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			buffer,
 			bufferSize,
 			"#version %d\n"
+			"#define MODERN_HAS_SHADER_STORAGE %d\n"
 			"in vec2 vTexCoord;\n"
 			"layout(location = 0) out vec4 out_Color;\n"
 			"uniform vec4 uDebugColor;\n"
@@ -393,24 +451,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"uniform sampler2D uGBufferMaterial;\n"
 			"uniform sampler2D uGBufferEmissive;\n"
 			"uniform sampler2D uSceneDepth;\n"
-			"struct ModernClusterLightRecord {\n"
-			"    vec4 positionRadius;\n"
-			"    vec4 colorType;\n"
-			"    vec4 scissorDepth;\n"
-			"    vec4 flags;\n"
-			"};\n"
-			"layout(std140) uniform ModernClusterGridParams {\n"
-			"    vec4 grid;\n"
-			"    vec4 depth;\n"
-			"    vec4 viewport;\n"
-			"    vec4 counts;\n"
-			"} uClusterGrid;\n"
-			"layout(std140) uniform ModernClusterLightRecords {\n"
-			"    ModernClusterLightRecord lights[128];\n"
-			"} uClusterLights;\n"
-			"layout(std140) uniform ModernClusterIndexRecords {\n"
-			"    uvec4 indices[768];\n"
-			"} uClusterIndices;\n"
+			"%s"
 			"void main() {\n"
 			"    vec4 albedo = texture(uMainTexture, vTexCoord);\n"
 			"    vec3 normal = normalize(texture(uGBufferNormal, vTexCoord).xyz * 2.0 - 1.0);\n"
@@ -423,15 +464,16 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"    int tileY = clamp(int(floor((1.0 - vTexCoord.y) * float(grid.y))), 0, grid.y - 1);\n"
 			"    int sliceZ = clamp(int(floor(rawDepth * float(grid.z))), 0, grid.z - 1);\n"
 			"    int clusterIndex = (sliceZ * grid.y + tileY) * grid.x + tileX;\n"
-			"    uvec4 lightIndices = uClusterIndices.indices[clusterIndex];\n"
+			"    int indexGroups = max((maxLights + 3) / 4, 1);\n"
 			"    vec3 lightAccum = vec3(0.0);\n"
 			"    int contributingLights = 0;\n"
 			"    int scannedLights = 0;\n"
-			"    for (int i = 0; i < 4; ++i) {\n"
+			"    for (int i = 0; i < maxLights; ++i) {\n"
 			"        if (i >= maxLights) { break; }\n"
-			"        uint lightIndex = lightIndices[i];\n"
+			"        uvec4 lightIndices = ModernClusterFetchIndex(clusterIndex * indexGroups + (i >> 2));\n"
+			"        uint lightIndex = lightIndices[i & 3];\n"
 			"        if (lightIndex == 0xffffffffu || lightIndex >= uint(max(uClusterGrid.counts.x, 0.0))) { continue; }\n"
-			"        ModernClusterLightRecord light = uClusterLights.lights[int(lightIndex)];\n"
+			"        ModernClusterLightRecord light = ModernClusterFetchLight(lightIndex);\n"
 			"        int type = int(floor(light.colorType.w + 0.5));\n"
 			"        bool supported = type == 0 || type == 1;\n"
 			"        vec2 pixel = gl_FragCoord.xy;\n"
@@ -462,7 +504,9 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        out_Color = vec4(clamp(lit, vec3(0.0), vec3(1.0)), albedo.a);\n"
 			"    }\n"
 			"}\n",
-			glslVersion );
+			glslVersion,
+			hasShaderStorage,
+			clusterHeader );
 		return;
 	}
 
@@ -473,27 +517,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"#version %d\n"
 			"#define MODERN_HAS_SHADER_STORAGE %d\n"
 			"%s"
-			"#if MODERN_HAS_SHADER_STORAGE\n"
-			"layout(std430, binding = 1) readonly buffer ModernLightRecords { vec4 lightRecords[]; };\n"
-			"#endif\n"
-			"struct ModernClusterLightRecord {\n"
-			"    vec4 positionRadius;\n"
-			"    vec4 colorType;\n"
-			"    vec4 scissorDepth;\n"
-			"    vec4 flags;\n"
-			"};\n"
-			"layout(std140) uniform ModernClusterGridParams {\n"
-			"    vec4 grid;\n"
-			"    vec4 depth;\n"
-			"    vec4 viewport;\n"
-			"    vec4 counts;\n"
-			"} uClusterGrid;\n"
-			"layout(std140) uniform ModernClusterLightRecords {\n"
-			"    ModernClusterLightRecord lights[128];\n"
-			"} uClusterLights;\n"
-			"layout(std140) uniform ModernClusterIndexRecords {\n"
-			"    uvec4 indices[768];\n"
-			"} uClusterIndices;\n"
+			"%s"
 			"void main() {\n"
 			"    vec4 texel = texture(uMainTexture, vTexCoord);\n"
 			"    if (%d != 0 && texel.a < max(uLocalParams.x, 0.001)) { discard; }\n"
@@ -508,14 +532,15 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"    int tileY = clamp(int(floor((1.0 - normalizedPixel.y) * float(grid.y))), 0, grid.y - 1);\n"
 			"    int sliceZ = clamp(int(floor(gl_FragCoord.z * float(grid.z))), 0, grid.z - 1);\n"
 			"    int clusterIndex = (sliceZ * grid.y + tileY) * grid.x + tileX;\n"
-			"    uvec4 lightIndices = uClusterIndices.indices[clusterIndex];\n"
+			"    int indexGroups = max((maxLights + 3) / 4, 1);\n"
 			"    vec3 lightAccum = vec3(0.0);\n"
 			"    int scannedLights = 0;\n"
-			"    for (int i = 0; i < 4; ++i) {\n"
+			"    for (int i = 0; i < maxLights; ++i) {\n"
 			"        if (i >= maxLights) { break; }\n"
-			"        uint lightIndex = lightIndices[i];\n"
+			"        uvec4 lightIndices = ModernClusterFetchIndex(clusterIndex * indexGroups + (i >> 2));\n"
+			"        uint lightIndex = lightIndices[i & 3];\n"
 			"        if (lightIndex == 0xffffffffu || lightIndex >= uint(max(uClusterGrid.counts.x, 0.0))) { continue; }\n"
-			"        ModernClusterLightRecord light = uClusterLights.lights[int(lightIndex)];\n"
+			"        ModernClusterLightRecord light = ModernClusterFetchLight(lightIndex);\n"
 			"        int type = int(floor(light.colorType.w + 0.5));\n"
 			"        bool supported = type == 0 || type == 1;\n"
 			"        float inX = step(light.scissorDepth.x, gl_FragCoord.x) * step(gl_FragCoord.x, light.scissorDepth.z);\n"
@@ -531,6 +556,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			glslVersion,
 			hasShaderStorage,
 			sharedHeader,
+			clusterHeader,
 			kind == MODERN_GL_SHADER_CLUSTERED_FORWARD_ALPHA_TEST ? 1 : 0 );
 		return;
 	}
@@ -540,25 +566,9 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			buffer,
 			bufferSize,
 			"#version %d\n"
+			"#define MODERN_HAS_SHADER_STORAGE %d\n"
 			"%s"
-			"struct ModernClusterLightRecord {\n"
-			"    vec4 positionRadius;\n"
-			"    vec4 colorType;\n"
-			"    vec4 scissorDepth;\n"
-			"    vec4 flags;\n"
-			"};\n"
-			"layout(std140) uniform ModernClusterGridParams {\n"
-			"    vec4 grid;\n"
-			"    vec4 depth;\n"
-			"    vec4 viewport;\n"
-			"    vec4 counts;\n"
-			"} uClusterGrid;\n"
-			"layout(std140) uniform ModernClusterLightRecords {\n"
-			"    ModernClusterLightRecord lights[128];\n"
-			"} uClusterLights;\n"
-			"layout(std140) uniform ModernClusterIndexRecords {\n"
-			"    uvec4 indices[768];\n"
-			"} uClusterIndices;\n"
+			"%s"
 			"void main() {\n"
 			"    vec4 texel = texture(uMainTexture, vTexCoord);\n"
 			"    float blendAmount = clamp(uLocalParams.x, 0.0, 1.0);\n"
@@ -575,20 +585,23 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"    int tileY = clamp(int(floor((1.0 - normalizedPixel.y) * float(grid.y))), 0, grid.y - 1);\n"
 			"    int sliceZ = clamp(int(floor(gl_FragCoord.z * float(grid.z))), 0, grid.z - 1);\n"
 			"    int clusterIndex = (sliceZ * grid.y + tileY) * grid.x + tileX;\n"
-			"    uvec4 lightIndices = uClusterIndices.indices[clusterIndex];\n"
+			"    int indexGroups = max((maxLights + 3) / 4, 1);\n"
 			"    vec3 lightAccum = vec3(0.0);\n"
-			"    for (int i = 0; i < 4; ++i) {\n"
+			"    for (int i = 0; i < maxLights; ++i) {\n"
 			"        if (i >= maxLights) { break; }\n"
-			"        uint lightIndex = lightIndices[i];\n"
+			"        uvec4 lightIndices = ModernClusterFetchIndex(clusterIndex * indexGroups + (i >> 2));\n"
+			"        uint lightIndex = lightIndices[i & 3];\n"
 			"        if (lightIndex == 0xffffffffu || lightIndex >= uint(max(uClusterGrid.counts.x, 0.0))) { continue; }\n"
-			"        ModernClusterLightRecord light = uClusterLights.lights[int(lightIndex)];\n"
+			"        ModernClusterLightRecord light = ModernClusterFetchLight(lightIndex);\n"
 			"        int type = int(floor(light.colorType.w + 0.5));\n"
 			"        if (type == 0 || type == 1) { lightAccum += light.colorType.rgb * (0.16 + specular * 0.08) * normalScale; }\n"
 			"    }\n"
 			"    out_Color = vec4(clamp(mix(baseColor, blendColor, blendAmount) + lightAccum + emissive, vec3(0.0), vec3(1.0)), texel.a * uDebugColor.a);\n"
 			"}\n",
 			glslVersion,
-			sharedHeader );
+			hasShaderStorage,
+			sharedHeader,
+			clusterHeader );
 		return;
 	}
 

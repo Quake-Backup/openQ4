@@ -192,15 +192,15 @@ Phase 5 implementation notes:
 
 Goal: replace the fixed tiny cluster prototype with a production clustered-light system.
 
-- [ ] Replace the fixed `8x6x16` and `4 lights per cluster` limits with tier-specific dynamic allocation.
-- [ ] GL 3.3 path: use CPU binning with cache-friendly jobs and upload to texture buffers or chunked UBOs that respect UBO size limits.
+- [x] Replace the fixed `8x6x16` and `4 lights per cluster` limits with tier-specific dynamic allocation.
+- [x] GL 3.3 path: use CPU binning and upload through UBOs sized to respect conservative uniform-block limits; cache-friendly job fan-out remains a later CPU scaling pass.
 - [ ] GL 4.1 path: keep the GL 3.3 algorithm with better buffer/update APIs where available, no compute dependency.
 - [ ] GL 4.3+ path: use SSBOs, compute binning, prefix sums or append buffers, and indirect-friendly visible light lists.
 - [ ] GL 4.5+ path: persistent-mapped updates, DSA, multi-bind, and zero-stall fence retirement.
-- [ ] Add overflow spill lists instead of hard failure; overflow must degrade quality predictably and report exact pressure.
+- [x] Add overflow spill lists instead of hard failure; overflow must degrade quality predictably and report exact pressure.
 - [ ] Bin per view/subview and respect scissor/portal/PVS visibility. Do not use one main-view cluster grid for all subviews.
 - [ ] Integrate projected lights, point lights, fog/blend lights, ambient lights, shadow eligibility, shadow-map descriptor handles, stencil fallback state, and light-grid contributions with real material passes.
-- [ ] Add budget controls by preset, but make adaptive cluster sizing respond to measured light density and resolution rather than static presets only.
+- [x] Add budget controls by preset, but make adaptive cluster sizing respond to measured light density and resolution rather than static presets only.
 - [ ] Feed shadow priority into clustering and light lists: visible influence, scissor area, distance, caster count, update frequency, and shadow-map pixel cost should determine which lights get mapped at a given quality budget.
 
 Acceptance:
@@ -208,6 +208,15 @@ Acceptance:
 - [ ] No ordinary SP/MP validation scene hits cluster overflow at baseline settings.
 - [ ] Stress scenes report bounded overflow degradation without warnings or catastrophic FPS loss.
 - [ ] GL 3.3 CPU binning and GL 4.3 compute binning produce matching light and shadow-eligibility lists in validation.
+
+Phase 6 implementation notes:
+
+- `ModernClusteredLighting` now builds dynamic per-scene cluster grids from benchmark budgets and measured viewport/light pressure instead of the old fixed `8x6x16`/four-light prototype. The default baseline path now uses the budgeted `6x4x12` grid and raises/reduces dimensions under `r_rendererAdaptiveClusterGrid` while fitting the selected upload path.
+- Cluster references now have a tiered capacity model: GL 3.3/4.1 use UBO-safe light/index buffers with a larger per-cluster budget, while GL 4.3+ uploads CPU-binned light and cluster-index records through SSBOs for larger visible light lists. Deferred and forward+ GLSL now fetch packed cluster indices through UBO or SSBO helpers from the same shader source.
+- Dense clusters no longer become immediate hard overflows. References beyond the shader-visible per-cluster budget are counted in spill lists with exact spill-cluster/reference metrics, and only spill-list exhaustion becomes a hard overflow.
+- Clustered shader helpers now bound-check both UBO and SSBO fetch paths. Out-of-range light or index reads collapse to empty records instead of depending on driver behavior under clipped/scissor edge cases.
+- `rendererClusterGridSelfTest` now validates the no-overflow six-light baseline case, upload accounting, GL 3.3 UBO fallback behavior, GL 4.3+ SSBO behavior, monotonic depth slicing, and a dense-light spill case that reports spill pressure without hard overflow. `rendererForwardPlusSelfTest` now uses upload-manager-backed vertex/index buffers and explicit identity transforms instead of placeholder cache handles.
+- Validation passed for `tools/build/meson_setup.ps1 compile -C builddir`, `tools/build/meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects`, the GL 4.5/SSBO run of `rendererShaderLibrarySelfTest`, `rendererClusterGridSelfTest`, and `rendererForwardPlusSelfTest`, a separate GL 4.5 `r_rendererModernDeferred 1` run of `rendererDeferredResolveSelfTest`, and a forced `r_glTier gl33` run of `rendererShaderLibrarySelfTest` plus `rendererClusterGridSelfTest`. The Phase 6 validation logs contained no renderer `idStr::snPrintf` overflow, shader compile, or program link failures. Compute binning, shadow descriptor prioritization, and full per-subview shader consumption remain Phase 6/7 follow-up work.
 
 ## Phase 7: Shadow Mapping Productionization And Renderer Integration
 

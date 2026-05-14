@@ -24,6 +24,7 @@ typedef struct rendererClusteredLightingStats_s {
 	bool	uboFallbackReady;
 	bool	debugOverlayReady;
 	bool	debugTextureReady;
+	bool	shaderStorageReady;
 	bool	overflow;
 	int		gridCount;
 	int		sceneCount;
@@ -41,9 +42,17 @@ typedef struct rendererClusteredLightingStats_s {
 	int		activeClusters;
 	int		overflowClusters;
 	int		lightReferences;
+	int		uploadedLights;
+	int		uploadedClusters;
+	int		uploadedReferences;
+	int		spillClusters;
+	int		spillReferences;
 	int		overflowReferences;
 	int		maxLightsInCluster;
 	int		maxLightsPerCluster;
+	int		indexGroupsPerCluster;
+	int		lightCapacity;
+	int		indexRecordCapacity;
 	int		tileCountX;
 	int		tileCountY;
 	int		sliceCountZ;
