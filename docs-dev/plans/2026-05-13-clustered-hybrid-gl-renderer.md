@@ -419,15 +419,26 @@ Goal: combine deferred-lite and forward+ into the first complete modern visible 
 
 Goal: convert validation SSBO/compute/indirect resources into real work.
 
-- [ ] Define SSBO layouts for scene instances, geometry, material records, light records, cluster records, visibility results, and indirect commands.
-- [ ] Add CPU reference implementations for each GPU compute result.
-- [ ] Add compute culling for instances/clusters against frustum, portal/scissor input, and optional occlusion input.
-- [ ] Add compute clustered light binning.
-- [ ] Add compute indirect command generation for compatible draws.
-- [ ] Add multi-draw indirect execution for generated command ranges.
-- [ ] Add validation mode that compares GPU results against CPU reference on sampled frames.
-- [ ] Add metrics for dispatches, generated commands, culled instances, GPU/CPU mismatches, and indirect submit cost.
-- [ ] Acceptance: forced `r_glTier gl43` can execute real GPU culling/binning/indirect submission for eligible passes with CPU-reference validation available.
+- [x] Define SSBO layouts for scene instances, geometry, material records, light records, cluster records, visibility results, and indirect commands.
+- [x] Add CPU reference implementations for each GPU compute result.
+- [x] Add compute culling for instances/clusters against frustum, portal/scissor input, and optional occlusion input.
+- [x] Add compute clustered light binning.
+- [x] Add compute indirect command generation for compatible draws.
+- [x] Add multi-draw indirect execution for generated command ranges.
+- [x] Add validation mode that compares GPU results against CPU reference on sampled frames.
+- [x] Add metrics for dispatches, generated commands, culled instances, GPU/CPU mismatches, and indirect submit cost.
+- [x] Acceptance: forced `r_glTier gl43` can execute real GPU culling/binning/indirect submission for eligible passes with CPU-reference validation available.
+
+## Phase 12 Exit
+
+- Completed: The GL 4.3 GPU-driven path now turns the previous SSBO/compute/indirect resource proof into real work. The modern executor uploads submit-scene records into a std430 SSBO, clears validation counters and indirect command storage, dispatches a compute shader that classifies visible/scissor-culled commands, validates the clustered-bin source count from the clustered-light frame, compacts compatible indexed draws into `DrawElementsIndirectCommand` records, and can execute the generated range through masked `glMultiDrawElementsIndirect`.
+- Cvars added/changed: Added `r_rendererGpuValidation`, default off, to request CPU/GPU validation readback on sampled frames. The cvar is reported in `gfxInfo`, and the GPU-driven path also forces validation for `rendererGpuDrivenSelfTest`.
+- Metrics added/changed: `gfxInfo`, the modern executor detail line, and `r_rendererMetrics 2` now report GPU-driven request/execution/resource state, validation/readback state, source/eligible/generated command counts, culled and visible instance counts, CPU-vs-GPU generated/culled/visible counters, cluster-bin validation counts, mismatch/readback counts, indirect execution, multi-draw batches, indirect draw calls, fallback counts, dispatches, and the `gpuDrivenIndirect` GPU timer slot.
+- Self-tests added/changed: Added `rendererGpuDrivenSelfTest`; the safe validation matrix runs it as `renderer-gpu-driven-selftest` with `r_glTier gl43`, `r_rendererModernExecutor 1`, and `r_rendererGpuValidation 1`.
+- Fallback behavior: ARB2 remains the visible renderer. GPU-driven multi-draw indirect submission is masked and diagnostic unless validation or modern diagnostic submission is explicitly requested. The compacted indirect batch intentionally chooses one compatible program/VBO/IBO/index/vertex-layout signature and leaves incompatible draws on the existing direct/legacy paths, with fallback counts.
+- Validation run: `tools\build\meson_setup.ps1 compile -C builddir`; `tools\build\meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects`; `python tools\tests\renderer_validation_matrix.py` passed 19/19 automated safe cases, including the new `renderer-gpu-driven-selftest`, and wrote `.tmp\renderer-validation\20260514-132125\renderer_validation_report.md`.
+- Known limitations: This is the first executable GPU-driven bridge, not the final renderer scheduler. Clustered-light bin validation uses the CPU clustered-light frame as the source of truth and verifies the count through compute; full GPU light-record binning, occlusion input, and broad multi-signature indirect scheduling remain later performance/parity work.
+- Next phase prerequisites: Phase 13 can build on real SSBO updates, compute dispatches, validation readbacks, compacted indirect command generation, masked MDI execution, and detailed cost/mismatch metrics when promoting the GL 4.5 low-overhead path.
 
 ## Phase 13: GL 4.5 Low-Overhead Path
 
@@ -545,7 +556,7 @@ These names are suggestions, not mandates. Existing local patterns should win wh
 - [x] `r_rendererClusterDebug`: cluster debug overlay mode.
 - [ ] `r_rendererGraphDebug`: render graph dump/debug mode.
 - [ ] `r_rendererMaterialDebug`: material/resource table debug mode.
-- [ ] `r_rendererGpuValidation`: CPU/GPU validation sampling for GL 4.3+ compute paths.
+- [x] `r_rendererGpuValidation`: CPU/GPU validation sampling for GL 4.3+ compute paths.
 - [ ] `r_rendererBindless`: optional bindless path, default off.
 
 Every cvar must print enough context in `gfxInfo` or metrics to explain whether it is active, unavailable, or falling back.
@@ -580,7 +591,7 @@ Required self-tests should grow to include:
 - [x] `rendererDeferredResolveSelfTest`
 - [x] `rendererForwardPlusSelfTest`
 - [x] `rendererModernVisibleSelfTest`
-- [ ] `rendererGpuDrivenSelfTest`
+- [x] `rendererGpuDrivenSelfTest`
 - [x] `rendererVisiblePathSelfTest`
 
 ## Phase Exit Template

@@ -216,6 +216,32 @@ typedef struct rendererMetricsFrame_s {
 	int		modernVisibleSubviewLegacyPasses;
 	int		modernVisiblePresentPasses;
 	int		modernVisibleClearOps;
+	bool	gpuDrivenRequested;
+	bool	gpuDrivenExecuted;
+	bool	gpuDrivenResourcesReady;
+	bool	gpuDrivenValidationRequested;
+	bool	gpuDrivenValidationReadbackReady;
+	bool	gpuDrivenIndirectExecuted;
+	bool	gpuDrivenMultiDrawReady;
+	int		gpuDrivenSourceCommands;
+	int		gpuDrivenEligibleCommands;
+	int		gpuDrivenGeneratedCommands;
+	int		gpuDrivenCulledCommands;
+	int		gpuDrivenVisibleInstances;
+	int		gpuDrivenCpuGeneratedCommands;
+	int		gpuDrivenCpuCulledCommands;
+	int		gpuDrivenCpuVisibleInstances;
+	int		gpuDrivenGpuGeneratedCommands;
+	int		gpuDrivenGpuCulledCommands;
+	int		gpuDrivenGpuVisibleInstances;
+	int		gpuDrivenCpuClusterBins;
+	int		gpuDrivenGpuClusterBins;
+	int		gpuDrivenValidationReadbacks;
+	int		gpuDrivenValidationMismatches;
+	int		gpuDrivenIndirectDrawCalls;
+	int		gpuDrivenMultiDrawBatches;
+	int		gpuDrivenIndirectFallbacks;
+	int		gpuDrivenComputeDispatches;
 	rendererClusteredLightingStats_t clusteredLighting;
 	glStateCacheStats_t glStateCache;
 	bool	gpuTimersValid;
@@ -446,6 +472,35 @@ typedef struct rendererModernVisibleLatest_s {
 	int		clearOps;
 } rendererModernVisibleLatest_t;
 
+typedef struct rendererGpuDrivenLatest_s {
+	bool	requested;
+	bool	executed;
+	bool	resourcesReady;
+	bool	validationRequested;
+	bool	validationReadbackReady;
+	bool	indirectExecuted;
+	bool	multiDrawReady;
+	int		sourceCommands;
+	int		eligibleCommands;
+	int		generatedCommands;
+	int		culledCommands;
+	int		visibleInstances;
+	int		cpuGeneratedCommands;
+	int		cpuCulledCommands;
+	int		cpuVisibleInstances;
+	int		gpuGeneratedCommands;
+	int		gpuCulledCommands;
+	int		gpuVisibleInstances;
+	int		cpuClusterBins;
+	int		gpuClusterBins;
+	int		validationReadbacks;
+	int		validationMismatches;
+	int		indirectDrawCalls;
+	int		multiDrawBatches;
+	int		indirectFallbacks;
+	int		computeDispatches;
+} rendererGpuDrivenLatest_t;
+
 typedef struct rendererGLStateCacheLatest_s {
 	glStateCacheStats_t stats;
 } rendererGLStateCacheLatest_t;
@@ -462,6 +517,7 @@ static rendererModernExecutorLatest_t rg_modernExecutorLatest;
 static rendererDeferredResolveLatest_t rg_deferredResolveLatest;
 static rendererForwardPlusLatest_t rg_forwardPlusLatest;
 static rendererModernVisibleLatest_t rg_modernVisibleLatest;
+static rendererGpuDrivenLatest_t rg_gpuDrivenLatest;
 static rendererClusteredLightingStats_t rg_clusteredLightingLatest;
 static rendererGLStateCacheLatest_t rg_glStateCacheLatest;
 static int rg_gpuTimerFrameCursor = 0;
@@ -492,6 +548,8 @@ static const char *R_RendererMetrics_GpuTimerSlotName( rendererGpuTimerSlot_t sl
 		return "modernForward";
 	case RENDERER_GPU_TIMER_MODERN_COMPOSITE:
 		return "modernComposite";
+	case RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT:
+		return "gpuDrivenIndirect";
 	default:
 		return "unknown";
 	}
@@ -798,6 +856,32 @@ void R_RendererMetrics_BeginFrame( int frameCount ) {
 	rg_rendererMetrics.modernVisibleSubviewLegacyPasses = rg_modernVisibleLatest.subviewLegacyPasses;
 	rg_rendererMetrics.modernVisiblePresentPasses = rg_modernVisibleLatest.presentPasses;
 	rg_rendererMetrics.modernVisibleClearOps = rg_modernVisibleLatest.clearOps;
+	rg_rendererMetrics.gpuDrivenRequested = rg_gpuDrivenLatest.requested;
+	rg_rendererMetrics.gpuDrivenExecuted = rg_gpuDrivenLatest.executed;
+	rg_rendererMetrics.gpuDrivenResourcesReady = rg_gpuDrivenLatest.resourcesReady;
+	rg_rendererMetrics.gpuDrivenValidationRequested = rg_gpuDrivenLatest.validationRequested;
+	rg_rendererMetrics.gpuDrivenValidationReadbackReady = rg_gpuDrivenLatest.validationReadbackReady;
+	rg_rendererMetrics.gpuDrivenIndirectExecuted = rg_gpuDrivenLatest.indirectExecuted;
+	rg_rendererMetrics.gpuDrivenMultiDrawReady = rg_gpuDrivenLatest.multiDrawReady;
+	rg_rendererMetrics.gpuDrivenSourceCommands = rg_gpuDrivenLatest.sourceCommands;
+	rg_rendererMetrics.gpuDrivenEligibleCommands = rg_gpuDrivenLatest.eligibleCommands;
+	rg_rendererMetrics.gpuDrivenGeneratedCommands = rg_gpuDrivenLatest.generatedCommands;
+	rg_rendererMetrics.gpuDrivenCulledCommands = rg_gpuDrivenLatest.culledCommands;
+	rg_rendererMetrics.gpuDrivenVisibleInstances = rg_gpuDrivenLatest.visibleInstances;
+	rg_rendererMetrics.gpuDrivenCpuGeneratedCommands = rg_gpuDrivenLatest.cpuGeneratedCommands;
+	rg_rendererMetrics.gpuDrivenCpuCulledCommands = rg_gpuDrivenLatest.cpuCulledCommands;
+	rg_rendererMetrics.gpuDrivenCpuVisibleInstances = rg_gpuDrivenLatest.cpuVisibleInstances;
+	rg_rendererMetrics.gpuDrivenGpuGeneratedCommands = rg_gpuDrivenLatest.gpuGeneratedCommands;
+	rg_rendererMetrics.gpuDrivenGpuCulledCommands = rg_gpuDrivenLatest.gpuCulledCommands;
+	rg_rendererMetrics.gpuDrivenGpuVisibleInstances = rg_gpuDrivenLatest.gpuVisibleInstances;
+	rg_rendererMetrics.gpuDrivenCpuClusterBins = rg_gpuDrivenLatest.cpuClusterBins;
+	rg_rendererMetrics.gpuDrivenGpuClusterBins = rg_gpuDrivenLatest.gpuClusterBins;
+	rg_rendererMetrics.gpuDrivenValidationReadbacks = rg_gpuDrivenLatest.validationReadbacks;
+	rg_rendererMetrics.gpuDrivenValidationMismatches = rg_gpuDrivenLatest.validationMismatches;
+	rg_rendererMetrics.gpuDrivenIndirectDrawCalls = rg_gpuDrivenLatest.indirectDrawCalls;
+	rg_rendererMetrics.gpuDrivenMultiDrawBatches = rg_gpuDrivenLatest.multiDrawBatches;
+	rg_rendererMetrics.gpuDrivenIndirectFallbacks = rg_gpuDrivenLatest.indirectFallbacks;
+	rg_rendererMetrics.gpuDrivenComputeDispatches = rg_gpuDrivenLatest.computeDispatches;
 	rg_rendererMetrics.clusteredLighting = rg_clusteredLightingLatest;
 	rg_rendererMetrics.glStateCache = rg_glStateCacheLatest.stats;
 }
@@ -1098,6 +1182,61 @@ void R_RendererMetrics_RecordModernVisible( bool requested, bool executed, bool 
 	rg_rendererMetrics.modernVisibleSubviewLegacyPasses = subviewLegacyPasses;
 	rg_rendererMetrics.modernVisiblePresentPasses = presentPasses;
 	rg_rendererMetrics.modernVisibleClearOps = clearOps;
+}
+
+void R_RendererMetrics_RecordGpuDriven( bool requested, bool executed, bool resourcesReady, bool validationRequested, bool validationReadbackReady, bool indirectExecuted, bool multiDrawReady, int sourceCommands, int eligibleCommands, int generatedCommands, int culledCommands, int visibleInstances, int cpuGeneratedCommands, int cpuCulledCommands, int cpuVisibleInstances, int gpuGeneratedCommands, int gpuCulledCommands, int gpuVisibleInstances, int cpuClusterBins, int gpuClusterBins, int validationReadbacks, int validationMismatches, int indirectDrawCalls, int multiDrawBatches, int indirectFallbacks, int computeDispatches ) {
+	rg_gpuDrivenLatest.requested = requested;
+	rg_gpuDrivenLatest.executed = executed;
+	rg_gpuDrivenLatest.resourcesReady = resourcesReady;
+	rg_gpuDrivenLatest.validationRequested = validationRequested;
+	rg_gpuDrivenLatest.validationReadbackReady = validationReadbackReady;
+	rg_gpuDrivenLatest.indirectExecuted = indirectExecuted;
+	rg_gpuDrivenLatest.multiDrawReady = multiDrawReady;
+	rg_gpuDrivenLatest.sourceCommands = sourceCommands;
+	rg_gpuDrivenLatest.eligibleCommands = eligibleCommands;
+	rg_gpuDrivenLatest.generatedCommands = generatedCommands;
+	rg_gpuDrivenLatest.culledCommands = culledCommands;
+	rg_gpuDrivenLatest.visibleInstances = visibleInstances;
+	rg_gpuDrivenLatest.cpuGeneratedCommands = cpuGeneratedCommands;
+	rg_gpuDrivenLatest.cpuCulledCommands = cpuCulledCommands;
+	rg_gpuDrivenLatest.cpuVisibleInstances = cpuVisibleInstances;
+	rg_gpuDrivenLatest.gpuGeneratedCommands = gpuGeneratedCommands;
+	rg_gpuDrivenLatest.gpuCulledCommands = gpuCulledCommands;
+	rg_gpuDrivenLatest.gpuVisibleInstances = gpuVisibleInstances;
+	rg_gpuDrivenLatest.cpuClusterBins = cpuClusterBins;
+	rg_gpuDrivenLatest.gpuClusterBins = gpuClusterBins;
+	rg_gpuDrivenLatest.validationReadbacks = validationReadbacks;
+	rg_gpuDrivenLatest.validationMismatches = validationMismatches;
+	rg_gpuDrivenLatest.indirectDrawCalls = indirectDrawCalls;
+	rg_gpuDrivenLatest.multiDrawBatches = multiDrawBatches;
+	rg_gpuDrivenLatest.indirectFallbacks = indirectFallbacks;
+	rg_gpuDrivenLatest.computeDispatches = computeDispatches;
+	rg_rendererMetrics.gpuDrivenRequested = requested;
+	rg_rendererMetrics.gpuDrivenExecuted = executed;
+	rg_rendererMetrics.gpuDrivenResourcesReady = resourcesReady;
+	rg_rendererMetrics.gpuDrivenValidationRequested = validationRequested;
+	rg_rendererMetrics.gpuDrivenValidationReadbackReady = validationReadbackReady;
+	rg_rendererMetrics.gpuDrivenIndirectExecuted = indirectExecuted;
+	rg_rendererMetrics.gpuDrivenMultiDrawReady = multiDrawReady;
+	rg_rendererMetrics.gpuDrivenSourceCommands = sourceCommands;
+	rg_rendererMetrics.gpuDrivenEligibleCommands = eligibleCommands;
+	rg_rendererMetrics.gpuDrivenGeneratedCommands = generatedCommands;
+	rg_rendererMetrics.gpuDrivenCulledCommands = culledCommands;
+	rg_rendererMetrics.gpuDrivenVisibleInstances = visibleInstances;
+	rg_rendererMetrics.gpuDrivenCpuGeneratedCommands = cpuGeneratedCommands;
+	rg_rendererMetrics.gpuDrivenCpuCulledCommands = cpuCulledCommands;
+	rg_rendererMetrics.gpuDrivenCpuVisibleInstances = cpuVisibleInstances;
+	rg_rendererMetrics.gpuDrivenGpuGeneratedCommands = gpuGeneratedCommands;
+	rg_rendererMetrics.gpuDrivenGpuCulledCommands = gpuCulledCommands;
+	rg_rendererMetrics.gpuDrivenGpuVisibleInstances = gpuVisibleInstances;
+	rg_rendererMetrics.gpuDrivenCpuClusterBins = cpuClusterBins;
+	rg_rendererMetrics.gpuDrivenGpuClusterBins = gpuClusterBins;
+	rg_rendererMetrics.gpuDrivenValidationReadbacks = validationReadbacks;
+	rg_rendererMetrics.gpuDrivenValidationMismatches = validationMismatches;
+	rg_rendererMetrics.gpuDrivenIndirectDrawCalls = indirectDrawCalls;
+	rg_rendererMetrics.gpuDrivenMultiDrawBatches = multiDrawBatches;
+	rg_rendererMetrics.gpuDrivenIndirectFallbacks = indirectFallbacks;
+	rg_rendererMetrics.gpuDrivenComputeDispatches = computeDispatches;
 }
 
 void R_RendererMetrics_RecordGLStateCache( const glStateCacheStats_t &stats ) {
@@ -1470,6 +1609,36 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.modernVisibleClearOps,
 			rg_rendererMetrics.gpuTimerMsec[RENDERER_GPU_TIMER_MODERN_COMPOSITE],
 			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_MODERN_COMPOSITE] );
+		common->Printf(
+			"rendererMetrics gpuDriven(req=%d exec=%d res=%d validation=%d readback=%d indirect=%d multiDraw=%d source=%d eligible=%d generated=%d culled=%d visible=%d cpu=%d/%d/%d gpu=%d/%d/%d clusters=%d/%d readbacks=%d mismatches=%d indirectCalls=%d batches=%d fallback=%d dispatches=%d gpu=%d/%d)\n",
+			rg_rendererMetrics.gpuDrivenRequested ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenExecuted ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenResourcesReady ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenValidationRequested ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenValidationReadbackReady ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenIndirectExecuted ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenMultiDrawReady ? 1 : 0,
+			rg_rendererMetrics.gpuDrivenSourceCommands,
+			rg_rendererMetrics.gpuDrivenEligibleCommands,
+			rg_rendererMetrics.gpuDrivenGeneratedCommands,
+			rg_rendererMetrics.gpuDrivenCulledCommands,
+			rg_rendererMetrics.gpuDrivenVisibleInstances,
+			rg_rendererMetrics.gpuDrivenCpuGeneratedCommands,
+			rg_rendererMetrics.gpuDrivenCpuCulledCommands,
+			rg_rendererMetrics.gpuDrivenCpuVisibleInstances,
+			rg_rendererMetrics.gpuDrivenGpuGeneratedCommands,
+			rg_rendererMetrics.gpuDrivenGpuCulledCommands,
+			rg_rendererMetrics.gpuDrivenGpuVisibleInstances,
+			rg_rendererMetrics.gpuDrivenCpuClusterBins,
+			rg_rendererMetrics.gpuDrivenGpuClusterBins,
+			rg_rendererMetrics.gpuDrivenValidationReadbacks,
+			rg_rendererMetrics.gpuDrivenValidationMismatches,
+			rg_rendererMetrics.gpuDrivenIndirectDrawCalls,
+			rg_rendererMetrics.gpuDrivenMultiDrawBatches,
+			rg_rendererMetrics.gpuDrivenIndirectFallbacks,
+			rg_rendererMetrics.gpuDrivenComputeDispatches,
+			rg_rendererMetrics.gpuTimerMsec[RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT],
+			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT] );
 		return;
 	}
 

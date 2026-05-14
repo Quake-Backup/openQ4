@@ -20,6 +20,7 @@ enum rendererGpuTimerSlot_t {
 	RENDERER_GPU_TIMER_MODERN_DEFERRED,
 	RENDERER_GPU_TIMER_MODERN_FORWARD,
 	RENDERER_GPU_TIMER_MODERN_COMPOSITE,
+	RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT,
 	RENDERER_GPU_TIMER_COUNT
 };
 
@@ -41,6 +42,7 @@ void R_RendererMetrics_RecordModernExecutor( rendererModernExecutorMetricsMode_t
 void R_RendererMetrics_RecordDeferredResolve( bool requested, bool executed, bool resourcesReady, bool outputReady, bool programReady, bool clusterReady, bool debugOverlayReady, int resolvedPixels, int activeLights, int pointLights, int projectedLights, int lightGridContributions, int clusterReads, int resourceFallbacks, int unsupportedLightFallbacks, int fogFallbackLights, int specialFallbackLights, int overflowClusters, int clearOps, int debugMode, int debugOverlayDraws );
 void R_RendererMetrics_RecordForwardPlus( bool requested, bool executed, bool resourcesReady, bool sceneColorReady, bool sceneDepthReady, bool programReady, bool clusterReady, int draws, int opaqueDraws, int alphaTestDraws, int transparentDraws, int viewModelDraws, int fogBlendDraws, int sortedBatches, int fallbackDraws, int resourceFallbackDraws, int materialFallbackDraws, int geometryFallbackDraws, int textureFallbackDraws, int unsupportedBlendFallbackDraws, int specialEffectFallbacks, int sortFallbackDraws, int overdrawEstimate, int clusterReads, int activeLights, int pointLights, int projectedLights, int lightGridContributions, int clearOps );
 void R_RendererMetrics_RecordModernVisible( bool requested, bool executed, bool resourcesReady, bool programReady, bool sourceReady, bool backBufferReady, bool blockedByLegacy, int compositions, int pixels, int modernPasses, int legacyPasses, int disabledPasses, int fallbackPasses, int ownerFallbacks, int resourceFallbacks, int guiLegacyPasses, int postLegacyPasses, int specialLegacyPasses, int subviewLegacyPasses, int presentPasses, int clearOps );
+void R_RendererMetrics_RecordGpuDriven( bool requested, bool executed, bool resourcesReady, bool validationRequested, bool validationReadbackReady, bool indirectExecuted, bool multiDrawReady, int sourceCommands, int eligibleCommands, int generatedCommands, int culledCommands, int visibleInstances, int cpuGeneratedCommands, int cpuCulledCommands, int cpuVisibleInstances, int gpuGeneratedCommands, int gpuCulledCommands, int gpuVisibleInstances, int cpuClusterBins, int gpuClusterBins, int validationReadbacks, int validationMismatches, int indirectDrawCalls, int multiDrawBatches, int indirectFallbacks, int computeDispatches );
 void R_RendererMetrics_RecordClusteredLighting( const rendererClusteredLightingStats_t &stats );
 void R_RendererMetrics_RecordGLStateCache( const glStateCacheStats_t &stats );
 void R_RendererMetrics_AddUploadBytes( int bytes );
