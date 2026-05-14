@@ -30,6 +30,8 @@ const char *ModernGLDrawPlanPipeline_Name( modernGLDrawPlanPipeline_t pipeline )
 		return "lightGrid";
 	case MODERN_GL_DRAW_PLAN_PIPELINE_FOG_BLEND:
 		return "fogBlend";
+	case MODERN_GL_DRAW_PLAN_PIPELINE_GUI:
+		return "gui";
 	case MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_OPAQUE:
 		return "forwardPlusOpaque";
 	case MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_ALPHA_TEST:
@@ -70,6 +72,10 @@ static bool R_ModernGLDrawPlan_CategoryPipeline( renderPassCategory_t category, 
 		pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_FOG_BLEND;
 		shaderKind = MODERN_GL_SHADER_FOG_BLEND;
 		return true;
+	case RENDER_PASS_GUI:
+		pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_GUI;
+		shaderKind = MODERN_GL_SHADER_GUI;
+		return true;
 	default:
 		pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_NONE;
 		shaderKind = MODERN_GL_SHADER_DEPTH;
@@ -96,6 +102,7 @@ static bool R_ModernGLDrawPlan_IsMaterialPipeline( modernGLDrawPlanPipeline_t pi
 		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GBUFFER
 		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_LIGHT_GRID
 		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FOG_BLEND
+		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GUI
 		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_OPAQUE
 		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_ALPHA_TEST
 		|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_TRANSPARENT;

@@ -67,6 +67,11 @@ typedef struct modernGLExecutorStats_s {
 	bool	modernVisibleSourceReady;
 	bool	modernVisibleBackBufferReady;
 	bool	modernVisibleBlockedByLegacy;
+	bool	modernVisibleCompatibilityReady;
+	bool	modernVisibleGuiProgramReady;
+	bool	modernVisibleGuiExecuted;
+	bool	modernVisibleRenderDemoDeterministic;
+	bool	modernVisibleCinematicTimingReady;
 	int		graphPasses;
 	int		preparedPasses;
 	int		fallbackPasses;
@@ -225,6 +230,28 @@ typedef struct modernGLExecutorStats_s {
 	int		modernVisibleSubviewLegacyPasses;
 	int		modernVisiblePresentPasses;
 	int		modernVisibleClearOps;
+	int		modernVisibleCompatibilityPasses;
+	int		modernVisibleCompatibilityModernPasses;
+	int		modernVisibleCompatibilityLegacyPasses;
+	int		modernVisibleLightGridModernPasses;
+	int		modernVisibleGuiModernPasses;
+	int		modernVisibleGuiDraws;
+	int		modernVisibleGuiReadyDraws;
+	int		modernVisibleGuiFallbackDraws;
+	int		modernVisiblePostGraphPasses;
+	int		modernVisiblePostFallbackPasses;
+	int		modernVisibleSubviewGraphPasses;
+	int		modernVisibleSubviewFallbackPasses;
+	int		modernVisibleRemoteCameraFallbackPasses;
+	int		modernVisibleRenderDemoFallbackPasses;
+	int		modernVisibleBSEFallbackPasses;
+	int		modernVisibleBSEParticleFallbacks;
+	int		modernVisibleBSETrailFallbacks;
+	int		modernVisibleBSEBeamFallbacks;
+	int		modernVisibleBSEDecalFallbacks;
+	int		modernVisibleBSEMaterialFallbacks;
+	int		modernVisibleCopyRenderFallbackPasses;
+	int		modernVisibleCinematicCompatibilityPasses;
 	char	status[96];
 } modernGLExecutorStats_t;
 
@@ -245,5 +272,6 @@ bool RendererDeferredResolve_RunSelfTest( void );
 bool RendererForwardPlus_RunSelfTest( void );
 bool RendererModernVisible_RunSelfTest( void );
 bool RendererLowOverhead_RunSelfTest( void );
+bool RendererModernCompatibility_RunSelfTest( void );
 
 #endif /* !__MODERN_GL_EXECUTOR_H__ */

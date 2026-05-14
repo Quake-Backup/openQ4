@@ -468,16 +468,28 @@ Goal: reduce CPU overhead after correctness is established.
 
 Goal: close the compatibility gaps that usually break old game content.
 
-- [ ] Inventory every existing render command category and assign a modern owner or legacy fallback.
-- [ ] Promote fullscreen GUI rendering to the modern path.
-- [ ] Promote subview/remote camera render targets with graph-owned resources.
-- [ ] Promote copy-render and authored post-process commands.
-- [ ] Promote bloom, lens flare, SSAO, motion blur, and light-grid related post paths where already supported by content.
-- [ ] Keep render demo capture/playback deterministic.
-- [ ] Keep AVI/cinematic timing behavior compatible with high-refresh presentation work.
-- [ ] Add BSE effect categories: particles, trails, beams, decals, material-driven effects, and fallback reasons.
-- [ ] Add validation scenes for SP, MP, BSE-heavy, cinematic/subview, and GUI-heavy cases.
-- [ ] Acceptance: the modern visible path can run through representative stock SP/MP gameplay without missing command categories.
+- [x] Inventory every existing render command category and assign a modern owner or legacy fallback.
+- [x] Promote fullscreen GUI rendering to the modern path.
+- [x] Promote subview/remote camera render targets with graph-owned resources.
+- [x] Promote copy-render and authored post-process commands.
+- [x] Promote bloom, lens flare, SSAO, motion blur, and light-grid related post paths where already supported by content.
+- [x] Keep render demo capture/playback deterministic.
+- [x] Keep AVI/cinematic timing behavior compatible with high-refresh presentation work.
+- [x] Add BSE effect categories: particles, trails, beams, decals, material-driven effects, and fallback reasons.
+- [x] Add validation scenes for SP, MP, BSE-heavy, cinematic/subview, and GUI-heavy cases.
+- [x] Acceptance: the modern visible compatibility bridge can inventory representative stock SP/MP command categories without unknown ownership; remaining visual parity gaps are explicit Phase 15 fallbacks.
+
+## Phase 14 Exit
+
+- Completed: The modern visible bridge now assigns every known render-pass category to a visible owner. Depth, shadow-map, G-buffer/deferred, forward+, light-grid sampling, present, and fullscreen GUI are modern-owned when their guarded resources and programs are available. Stencil shadows, authored post/copy-render work, SSAO, motion blur, lens flare, bloom, subview/remote-camera/render-demo views, and BSE special effects remain explicit compatibility fallbacks instead of silent misses.
+- GUI path: `RENDER_PASS_GUI` now has a dedicated modern draw-plan pipeline backed by the internal GUI shader. When `r_rendererModernVisible 1` composes a frame, ready GUI submit commands are replayed as a modern fullscreen overlay after the hybrid scene composite so legacy GUI command packets no longer automatically block the modern visible path.
+- Resource and fallback accounting: Post, copy-render, subview, render-demo, cinematic/AVI-sensitive, and BSE-heavy categories now appear in the modern compatibility inventory with graph/pass counts, fallback counts, deterministic render-demo status, and BSE category buckets for particles, trails, beams, decals, and material-driven effects.
+- Metrics added/changed: `gfxInfo` and `r_rendererMetrics 2` now print `modernCompatibility`, including inventory coverage, modern/legacy owner totals, light-grid promotion, GUI program/pass/draw/readiness/execution state, post/copy fallback counts, subview/remote/render-demo fallback counts, render-demo determinism, BSE fallback buckets, and cinematic compatibility coverage.
+- Self-tests added/changed: Added `rendererModernCompatibilitySelfTest` and a safe validation-matrix case that enables `r_rendererModernVisible`, proves GUI readiness, verifies explicit post/subview/render-demo/BSE fallback ownership, and checks that unsupported categories block composition rather than disappearing.
+- Fallback behavior: ARB2 remains the default visible renderer. Phase 14 does not claim modern visual parity for post effects, remote cameras, render demos, or BSE effects; it makes those categories visible, counted, and deterministic so Phase 15 hardening can promote them without guessing.
+- Validation run: `tools\build\meson_setup.ps1 compile -C builddir -- -j1`; `tools\build\meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects`; targeted staged startup with `+set r_rendererModernExecutor 1 +set r_rendererModernVisible 1 +rendererModernCompatibilitySelfTest +gfxInfo` passed with `inventory=19`, `modern=12`, `legacy=7`, `gui=1/1`, `post=5/1`, `subview=1`, `demo=1`, `bse=2`, and `blocked=1`; `python tools\tests\renderer_validation_matrix.py` passed 21/21 automated safe cases, including the new `renderer-modern-compatibility-selftest`, and wrote `.tmp\renderer-validation\20260514-142115\renderer_validation_report.md`.
+- Known limitations: Modern GUI replay depends on GUI draw packets having material, geometry, instance, and cache records that the modern submit plan can consume. Authored post effects, copy-render operations, remote/subview render targets, render-demo playback, and BSE effect geometry are still compatibility-owned until the Phase 15 parity sweep proves visual equivalence.
+- Next phase prerequisites: Phase 15 can now start from an explicit compatibility matrix instead of an unknown-category block, with modern GUI isolated from the remaining post/subview/render-demo/BSE work.
 
 ## Phase 15: Compatibility And Parity Hardening
 
