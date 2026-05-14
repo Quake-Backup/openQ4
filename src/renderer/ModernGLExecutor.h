@@ -28,6 +28,9 @@ typedef struct modernGLExecutorStats_s {
 	bool	gpuDrivenIndirectMultiDrawReady;
 	bool	tierUsesDSA;
 	bool	tierUsesMultiBind;
+	bool	lowOverheadSamplerReady;
+	bool	lowOverheadBindlessRequested;
+	bool	lowOverheadBindlessAvailable;
 	bool	legacyFallback;
 	bool	drawPlanReady;
 	bool	drawPlanOverflow;
@@ -103,7 +106,14 @@ typedef struct modernGLExecutorStats_s {
 	int		gpuDrivenCpuClusterBins;
 	int		gpuDrivenGpuClusterBins;
 	int		lowOverheadDSAUpdates;
+	int		lowOverheadFramebufferDSAUpdates;
+	int		lowOverheadSamplerDSACreations;
+	int		lowOverheadSamplerDSAUpdates;
 	int		lowOverheadMultiBindBatches;
+	int		lowOverheadTextureMultiBindBatches;
+	int		lowOverheadSamplerMultiBindBatches;
+	int		lowOverheadClassicTextureBinds;
+	int		lowOverheadCompactedBatches;
 	int		drawPlanDraws;
 	int		drawPlanDepthDraws;
 	int		drawPlanMaterialDraws;
@@ -234,5 +244,6 @@ bool RendererGBuffer_RunSelfTest( void );
 bool RendererDeferredResolve_RunSelfTest( void );
 bool RendererForwardPlus_RunSelfTest( void );
 bool RendererModernVisible_RunSelfTest( void );
+bool RendererLowOverhead_RunSelfTest( void );
 
 #endif /* !__MODERN_GL_EXECUTOR_H__ */

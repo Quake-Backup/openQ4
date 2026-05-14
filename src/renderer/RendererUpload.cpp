@@ -231,7 +231,8 @@ idUploadManager::idUploadManager() {
 void idUploadManager::Init( const renderBackendCaps_t &caps ) {
 	Shutdown();
 
-	const bool usePersistent = caps.hasBufferStorage && caps.hasMapBufferRange && r_rendererUploadPersistent.GetBool() && glBufferStorage != NULL && glMapBufferRange != NULL;
+	const bool lowOverheadPersistentDefault = glConfig.renderFeatures.persistentMappedUploads && r_rendererUploadPersistent.GetBool();
+	const bool usePersistent = lowOverheadPersistentDefault && caps.hasBufferStorage && caps.hasMapBufferRange && glBufferStorage != NULL && glMapBufferRange != NULL;
 	const bool useMapRange = caps.hasMapBufferRange && glMapBufferRange != NULL;
 	const int ringMegs = idMath::ClampInt( RENDERER_UPLOAD_MIN_MEGS, RENDERER_UPLOAD_MAX_MEGS, r_rendererUploadMegs.GetInteger() );
 	const int ringBytes = ringMegs * 1024 * 1024;
@@ -255,11 +256,13 @@ void idUploadManager::Init( const renderBackendCaps_t &caps ) {
 	stats.ringSizeBytes = ringBytes;
 	stats.ringBufferCount = RENDERER_UPLOAD_FRAME_BUFFERS;
 	stats.persistentMapped = requestedPath == UPLOAD_PATH_PERSISTENT;
+	stats.lowOverheadPersistentDefault = lowOverheadPersistentDefault;
 	stats.mapRangeFallback = requestedPath == UPLOAD_PATH_MAP_RANGE;
 	stats.legacyBridge = true;
 	stats.dynamicFrameBridge = false;
 	stats.staticBufferAllocator = requestedPath != UPLOAD_PATH_DISABLED;
 	hasSync = caps.hasSync && glFenceSync != NULL && glClientWaitSync != NULL && glDeleteSync != NULL;
+	stats.fenceSyncAvailable = hasSync;
 
 	if ( requestedPath != UPLOAD_PATH_DISABLED ) {
 		if ( !CreateFrameBuffers( requestedPath ) && requestedPath == UPLOAD_PATH_PERSISTENT ) {
@@ -279,7 +282,7 @@ void idUploadManager::Init( const renderBackendCaps_t &caps ) {
 
 	common->Printf(
 		"Renderer upload manager: %s legacy bridge, frameStream=%s, staticAllocator=%s, buffers=%d, ring=%dKB, sync=%s\n",
-		path == UPLOAD_PATH_PERSISTENT ? "persistent-mapped capable" : "streaming",
+		path == UPLOAD_PATH_PERSISTENT ? "GL45 persistent-mapped capable" : "streaming",
 		PathName(),
 		stats.staticBufferAllocator ? "yes" : "no",
 		RENDERER_UPLOAD_FRAME_BUFFERS,
@@ -310,6 +313,9 @@ void idUploadManager::BeginFrame( int frameCount ) {
 	stats.framePersistentWrites = 0;
 	stats.frameMapRangeWrites = 0;
 	stats.frameSubDataWrites = 0;
+	stats.frameFencesSubmitted = 0;
+	stats.frameFencesRetired = 0;
+	stats.frameFenceWaits = 0;
 	allocator.BeginFrame();
 	UpdateAllocatorStats();
 	ring.BeginFrame();
@@ -509,11 +515,13 @@ void idUploadManager::RetireFrameFence( frameBuffer_t &frame ) {
 	const GLenum quickWait = glClientWaitSync( frame.fence, 0, 0 );
 	if ( quickWait == GL_TIMEOUT_EXPIRED ) {
 		stats.frameStalls++;
+		stats.frameFenceWaits++;
 		R_RendererMetrics_AddBufferStall();
 		glClientWaitSync( frame.fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
 	}
 	glDeleteSync( frame.fence );
 	frame.fence = NULL;
+	stats.frameFencesRetired++;
 }
 
 void idUploadManager::FenceCurrentFrame( void ) {
@@ -525,6 +533,9 @@ void idUploadManager::FenceCurrentFrame( void ) {
 		return;
 	}
 	frame.fence = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+	if ( frame.fence != NULL ) {
+		stats.frameFencesSubmitted++;
+	}
 }
 
 void idUploadManager::UpdateAllocatorStats( void ) {
@@ -667,6 +678,13 @@ bool RendererUpload_RunSelfTest( void ) {
 		}
 	}
 
-	common->Printf( "RendererUpload self-test passed (ring, allocator, static buffers)\n" );
+	common->Printf(
+		"RendererUpload self-test passed (ring, allocator, static buffers, persistent=%d lowOverheadDefault=%d fences=%d/%d waits=%d sync=%d)\n",
+		R_RendererUpload_Stats().persistentMapped ? 1 : 0,
+		R_RendererUpload_Stats().lowOverheadPersistentDefault ? 1 : 0,
+		R_RendererUpload_Stats().frameFencesSubmitted,
+		R_RendererUpload_Stats().frameFencesRetired,
+		R_RendererUpload_Stats().frameFenceWaits,
+		R_RendererUpload_Stats().fenceSyncAvailable ? 1 : 0 );
 	return true;
 }

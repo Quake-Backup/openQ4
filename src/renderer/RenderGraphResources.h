@@ -74,6 +74,7 @@ typedef struct renderGraphResourceManagerStats_s {
 	bool					available;
 	bool					supported;
 	bool					prepared;
+	bool					lowOverheadReady;
 	int						width;
 	int						height;
 	int						graphPasses;
@@ -89,6 +90,11 @@ typedef struct renderGraphResourceManagerStats_s {
 	int						reusedPhysicalAllocations;
 	int						aliasReusedPhysicalAllocations;
 	int						releasedPhysicalAllocations;
+	int						dsaTextureAllocations;
+	int						dsaTextureParameterUpdates;
+	int						dsaFramebufferAllocations;
+	int						classicTextureAllocations;
+	int						classicFramebufferAllocations;
 	int						framebufferCount;
 	int						completeFramebuffers;
 	int						incompleteFramebuffers;

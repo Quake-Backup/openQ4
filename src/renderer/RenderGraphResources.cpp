@@ -25,6 +25,9 @@ typedef struct renderGraphPhysicalAllocation_s {
 	GLuint					texture;
 	GLuint					framebuffer;
 	GLenum					framebufferStatus;
+	bool					dsaTexture;
+	bool					dsaFramebuffer;
+	int						textureParameterUpdates;
 	char					debugLabel[96];
 } renderGraphPhysicalAllocation_t;
 
@@ -168,6 +171,22 @@ static bool R_RenderGraphResources_CanUseGLObjects( const renderBackendCaps_t &c
 	return true;
 }
 
+static bool R_RenderGraphResources_CanUseLowOverheadObjects( void ) {
+	if ( !rg_renderGraphResourceFeatures.lowOverhead || !rg_renderGraphResourceFeatures.directStateAccess || !rg_renderGraphResourceCaps.hasDSA ) {
+		return false;
+	}
+	if ( !rg_renderGraphResourceStats.available ) {
+		return false;
+	}
+	if ( glCreateTextures == NULL || glTextureStorage2D == NULL || glTextureParameteri == NULL ) {
+		return false;
+	}
+	if ( glCreateFramebuffers == NULL || glNamedFramebufferTexture == NULL || glCheckNamedFramebufferStatus == NULL || glNamedFramebufferDrawBuffer == NULL || glNamedFramebufferReadBuffer == NULL ) {
+		return false;
+	}
+	return true;
+}
+
 static int R_RenderGraphResources_FrameWidth( const renderGraphResource_t &resource ) {
 	const int scale = Max( 1, resource.widthScale );
 	return Max( 1, glConfig.vidWidth / scale );
@@ -230,6 +249,7 @@ static void R_RenderGraphResources_ResetFrameRecords( const idRenderGraph &graph
 	rg_renderGraphResourceStats.initialized = initialized;
 	rg_renderGraphResourceStats.supported = supported;
 	rg_renderGraphResourceStats.available = available;
+	rg_renderGraphResourceStats.lowOverheadReady = R_RenderGraphResources_CanUseLowOverheadObjects();
 	rg_renderGraphResourceStats.width = glConfig.vidWidth;
 	rg_renderGraphResourceStats.height = glConfig.vidHeight;
 	rg_renderGraphResourceStats.graphPasses = graph.NumPasses();
@@ -243,6 +263,17 @@ static void R_RenderGraphResources_ResetFrameRecords( const idRenderGraph &graph
 		allocation.lastPass = -1;
 		if ( allocation.valid ) {
 			rg_renderGraphResourceStats.physicalAllocations++;
+			if ( allocation.dsaTexture ) {
+				rg_renderGraphResourceStats.dsaTextureAllocations++;
+				rg_renderGraphResourceStats.dsaTextureParameterUpdates += allocation.textureParameterUpdates;
+			} else {
+				rg_renderGraphResourceStats.classicTextureAllocations++;
+			}
+			if ( allocation.dsaFramebuffer ) {
+				rg_renderGraphResourceStats.dsaFramebufferAllocations++;
+			} else {
+				rg_renderGraphResourceStats.classicFramebufferAllocations++;
+			}
 		}
 	}
 }
@@ -437,10 +468,82 @@ static int R_RenderGraphResources_FindFreeAllocation( void ) {
 	return -1;
 }
 
-static bool R_RenderGraphResources_CreateTextureAndFramebuffer( renderGraphPhysicalAllocation_t &allocation, const renderGraphResourceHandle_t &handle ) {
+static bool R_RenderGraphResources_CreateTextureAndFramebufferDSA( renderGraphPhysicalAllocation_t &allocation, const renderGraphResourceHandle_t &handle ) {
 	allocation.texture = 0;
 	allocation.framebuffer = 0;
 	allocation.framebufferStatus = 0;
+	allocation.dsaTexture = false;
+	allocation.dsaFramebuffer = false;
+	allocation.textureParameterUpdates = 0;
+
+	if ( handle.width <= 0 || handle.height <= 0 || handle.width > rg_renderGraphResourceCaps.maxTextureSize || handle.height > rg_renderGraphResourceCaps.maxTextureSize ) {
+		R_RenderGraphResources_SetStatus( "texture dimensions unsupported" );
+		return false;
+	}
+	if ( handle.samples > 1 && glTextureStorage2DMultisample == NULL ) {
+		R_RenderGraphResources_SetStatus( "multisample texture DSA allocation unavailable" );
+		return false;
+	}
+
+	glCreateTextures( handle.target, 1, &allocation.texture );
+	if ( allocation.texture == 0 ) {
+		R_RenderGraphResources_SetStatus( "glCreateTextures failed" );
+		return false;
+	}
+
+	if ( handle.target == GL_TEXTURE_2D_MULTISAMPLE ) {
+		glTextureStorage2DMultisample( allocation.texture, handle.samples, handle.internalFormat, handle.width, handle.height, GL_TRUE );
+	} else {
+		const GLint filter = ( handle.type == RENDER_GRAPH_RESOURCE_COLOR ) ? GL_LINEAR : GL_NEAREST;
+		glTextureStorage2D( allocation.texture, 1, handle.internalFormat, handle.width, handle.height );
+		glTextureParameteri( allocation.texture, GL_TEXTURE_MIN_FILTER, filter );
+		glTextureParameteri( allocation.texture, GL_TEXTURE_MAG_FILTER, filter );
+		glTextureParameteri( allocation.texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		glTextureParameteri( allocation.texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+		allocation.textureParameterUpdates = 4;
+	}
+
+	glCreateFramebuffers( 1, &allocation.framebuffer );
+	if ( allocation.framebuffer == 0 ) {
+		glDeleteTextures( 1, &allocation.texture );
+		allocation.texture = 0;
+		R_RenderGraphResources_SetStatus( "glCreateFramebuffers failed" );
+		return false;
+	}
+
+	glNamedFramebufferTexture( allocation.framebuffer, handle.attachment, allocation.texture, 0 );
+	if ( handle.type == RENDER_GRAPH_RESOURCE_COLOR ) {
+		glNamedFramebufferDrawBuffer( allocation.framebuffer, GL_COLOR_ATTACHMENT0 );
+		glNamedFramebufferReadBuffer( allocation.framebuffer, GL_COLOR_ATTACHMENT0 );
+	} else {
+		glNamedFramebufferDrawBuffer( allocation.framebuffer, GL_NONE );
+		glNamedFramebufferReadBuffer( allocation.framebuffer, GL_NONE );
+	}
+	allocation.framebufferStatus = glCheckNamedFramebufferStatus( allocation.framebuffer, GL_FRAMEBUFFER );
+
+	R_GLDebug_LabelTexture( allocation.texture, handle.debugLabel );
+	R_GLDebug_LabelFramebuffer( allocation.framebuffer, handle.debugLabel );
+
+	if ( allocation.framebufferStatus != GL_FRAMEBUFFER_COMPLETE ) {
+		R_RenderGraphResources_SetStatus( "DSA framebuffer incomplete" );
+		return false;
+	}
+
+	allocation.dsaTexture = true;
+	allocation.dsaFramebuffer = true;
+	rg_renderGraphResourceStats.dsaTextureAllocations++;
+	rg_renderGraphResourceStats.dsaTextureParameterUpdates += allocation.textureParameterUpdates;
+	rg_renderGraphResourceStats.dsaFramebufferAllocations++;
+	return true;
+}
+
+static bool R_RenderGraphResources_CreateTextureAndFramebufferClassic( renderGraphPhysicalAllocation_t &allocation, const renderGraphResourceHandle_t &handle ) {
+	allocation.texture = 0;
+	allocation.framebuffer = 0;
+	allocation.framebufferStatus = 0;
+	allocation.dsaTexture = false;
+	allocation.dsaFramebuffer = false;
+	allocation.textureParameterUpdates = 0;
 
 	if ( handle.width <= 0 || handle.height <= 0 || handle.width > rg_renderGraphResourceCaps.maxTextureSize || handle.height > rg_renderGraphResourceCaps.maxTextureSize ) {
 		R_RenderGraphResources_SetStatus( "texture dimensions unsupported" );
@@ -522,7 +625,16 @@ static bool R_RenderGraphResources_CreateTextureAndFramebuffer( renderGraphPhysi
 		R_RenderGraphResources_SetStatus( "framebuffer incomplete" );
 		return false;
 	}
+	rg_renderGraphResourceStats.classicTextureAllocations++;
+	rg_renderGraphResourceStats.classicFramebufferAllocations++;
 	return true;
+}
+
+static bool R_RenderGraphResources_CreateTextureAndFramebuffer( renderGraphPhysicalAllocation_t &allocation, const renderGraphResourceHandle_t &handle ) {
+	if ( R_RenderGraphResources_CanUseLowOverheadObjects() ) {
+		return R_RenderGraphResources_CreateTextureAndFramebufferDSA( allocation, handle );
+	}
+	return R_RenderGraphResources_CreateTextureAndFramebufferClassic( allocation, handle );
 }
 
 static bool R_RenderGraphResources_AssignPhysicalAllocation( renderGraphResourceHandle_t &handle ) {
@@ -731,16 +843,22 @@ const renderGraphResourceHandle_t *R_RenderGraphResources_HandleForGraphResource
 
 void R_RenderGraphResources_PrintGfxInfo( void ) {
 	common->Printf(
-		"Renderer graph resources: initialized=%d available=%d supported=%d handles=%d imported=%d transient=%d textures=%d buffers=%d physical=%d fbo=%d/%d status='%s'\n",
+		"Renderer graph resources: initialized=%d available=%d supported=%d lowOverhead=%d handles=%d imported=%d transient=%d textures=%d buffers=%d physical=%d dsa(tex=%d params=%d fbo=%d) classic(tex=%d fbo=%d) fbo=%d/%d status='%s'\n",
 		rg_renderGraphResourceStats.initialized ? 1 : 0,
 		rg_renderGraphResourceStats.available ? 1 : 0,
 		rg_renderGraphResourceStats.supported ? 1 : 0,
+		rg_renderGraphResourceStats.lowOverheadReady ? 1 : 0,
 		rg_renderGraphResourceStats.handles,
 		rg_renderGraphResourceStats.importedHandles,
 		rg_renderGraphResourceStats.transientHandles,
 		rg_renderGraphResourceStats.textureHandles,
 		rg_renderGraphResourceStats.bufferHandles,
 		rg_renderGraphResourceStats.physicalAllocations,
+		rg_renderGraphResourceStats.dsaTextureAllocations,
+		rg_renderGraphResourceStats.dsaTextureParameterUpdates,
+		rg_renderGraphResourceStats.dsaFramebufferAllocations,
+		rg_renderGraphResourceStats.classicTextureAllocations,
+		rg_renderGraphResourceStats.classicFramebufferAllocations,
 		rg_renderGraphResourceStats.completeFramebuffers,
 		rg_renderGraphResourceStats.framebufferCount,
 		rg_renderGraphResourceStats.lastFailure );
@@ -748,8 +866,9 @@ void R_RenderGraphResources_PrintGfxInfo( void ) {
 
 void R_RenderGraphResources_DumpLatest( void ) {
 	common->Printf(
-		"RenderGraphResource dump: prepared=%d handles=%d graphResources=%d passes=%d physical=%d new=%d reused=%d aliasReused=%d fbo=%d/%d failures=%d overflow=%d status='%s'\n",
+		"RenderGraphResource dump: prepared=%d lowOverhead=%d handles=%d graphResources=%d passes=%d physical=%d new=%d reused=%d aliasReused=%d dsa(tex=%d params=%d fbo=%d) classic(tex=%d fbo=%d) fbo=%d/%d failures=%d overflow=%d status='%s'\n",
 		rg_renderGraphResourceStats.prepared ? 1 : 0,
+		rg_renderGraphResourceStats.lowOverheadReady ? 1 : 0,
 		rg_renderGraphResourceStats.handles,
 		rg_renderGraphResourceStats.graphResources,
 		rg_renderGraphResourceStats.passRecords,
@@ -757,6 +876,11 @@ void R_RenderGraphResources_DumpLatest( void ) {
 		rg_renderGraphResourceStats.newPhysicalAllocations,
 		rg_renderGraphResourceStats.reusedPhysicalAllocations,
 		rg_renderGraphResourceStats.aliasReusedPhysicalAllocations,
+		rg_renderGraphResourceStats.dsaTextureAllocations,
+		rg_renderGraphResourceStats.dsaTextureParameterUpdates,
+		rg_renderGraphResourceStats.dsaFramebufferAllocations,
+		rg_renderGraphResourceStats.classicTextureAllocations,
+		rg_renderGraphResourceStats.classicFramebufferAllocations,
 		rg_renderGraphResourceStats.completeFramebuffers,
 		rg_renderGraphResourceStats.framebufferCount,
 		rg_renderGraphResourceStats.lifetimeValidationFailures,
@@ -836,7 +960,7 @@ void R_RenderGraphResources_DumpLatest( void ) {
 			continue;
 		}
 		common->Printf(
-			"  physical[%d] id=%d type=%s %dx%d samples=%d alias=%d life=%d..%d tex=%u fbo=%u fbo=%s inUse=%d label='%s'\n",
+			"  physical[%d] id=%d type=%s %dx%d samples=%d alias=%d life=%d..%d tex=%u fbo=%u dsa=%d/%d params=%d fbo=%s inUse=%d label='%s'\n",
 			i,
 			allocation.id,
 			R_RenderGraphResources_TypeName( allocation.type ),
@@ -848,6 +972,9 @@ void R_RenderGraphResources_DumpLatest( void ) {
 			allocation.lastPass,
 			allocation.texture,
 			allocation.framebuffer,
+			allocation.dsaTexture ? 1 : 0,
+			allocation.dsaFramebuffer ? 1 : 0,
+			allocation.textureParameterUpdates,
 			allocation.framebufferStatus == GL_FRAMEBUFFER_COMPLETE ? "complete" : "incomplete",
 			allocation.inUseThisFrame ? 1 : 0,
 			allocation.debugLabel );
@@ -936,11 +1063,14 @@ bool RendererRenderGraphResource_RunSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererRenderGraphResource self-test passed (handles=%d imported=%d transient=%d physical=%d fbo=%d/%d)\n",
+		"RendererRenderGraphResource self-test passed (handles=%d imported=%d transient=%d physical=%d lowOverhead=%d dsaTex=%d dsaFbo=%d fbo=%d/%d)\n",
 		stats.handles,
 		stats.importedHandles,
 		stats.transientHandles,
 		stats.physicalAllocations,
+		stats.lowOverheadReady ? 1 : 0,
+		stats.dsaTextureAllocations,
+		stats.dsaFramebufferAllocations,
 		stats.completeFramebuffers,
 		stats.framebufferCount );
 	return true;

@@ -444,14 +444,25 @@ Goal: convert validation SSBO/compute/indirect resources into real work.
 
 Goal: reduce CPU overhead after correctness is established.
 
-- [ ] Promote persistent mapped upload streams to the default GL 4.5 path when stable.
-- [ ] Add fence-based retirement and stall diagnostics for all per-frame rings.
-- [ ] Add DSA texture, buffer, framebuffer, and sampler creation/update paths.
-- [ ] Add multi-bind for UBO, SSBO, texture, and sampler groups where supported.
-- [ ] Add batch compaction by pipeline/material/resource table.
-- [ ] Add bindless texture experiment cvars, disabled by default.
-- [ ] Add metrics comparing classic bind path, multi-bind path, and bindless experiment path.
-- [ ] Acceptance: forced `r_glTier gl45` lowers CPU submit and upload cost on representative scenes without changing output.
+- [x] Promote persistent mapped upload streams to the default GL 4.5 path when stable.
+- [x] Add fence-based retirement and stall diagnostics for all per-frame rings.
+- [x] Add DSA texture, buffer, framebuffer, and sampler creation/update paths.
+- [x] Add multi-bind for UBO, SSBO, texture, and sampler groups where supported.
+- [x] Add batch compaction by pipeline/material/resource table.
+- [x] Add bindless texture experiment cvars, disabled by default.
+- [x] Add metrics comparing classic bind path, multi-bind path, and bindless experiment path.
+- [x] Acceptance: forced `r_glTier gl45` lowers CPU submit and upload cost on representative scenes without changing output.
+
+## Phase 13 Exit
+
+- Completed: The GL 4.5 low-overhead lane is now a real executor path instead of a label. The upload manager gates persistent mapped frame streams on the selected low-overhead feature set and reports fence submit/retire/wait diagnostics. Render graph transient textures and FBOs allocate through DSA immutable texture storage and named framebuffer attachment when `LowOverheadGL45` is active. The modern executor creates a DSA sampler object, uses named framebuffer updates for G-buffer/forward+ FBO setup, binds UBO/SSBO buffers plus deferred/composite texture and sampler groups through multi-bind, and records submit-plan batch compaction against program/material groups.
+- Cvars added/changed: Added `r_rendererBindless`, default off, as the guarded experiment switch for bindless texture diagnostics. It reports requested/available state without changing visible output.
+- Metrics added/changed: `gfxInfo`, `r_rendererMetrics 2`, graph-resource reporting, upload stats, and GL state-cache stats now expose low-overhead readiness, DSA texture/FBO/sampler counts, DSA update counts, buffer/texture/sampler multi-bind batches, classic texture-bind fallback counts, compacted batch counts, bindless experiment state, persistent upload defaulting, and fence retirement/wait counters.
+- Self-tests added/changed: Added `rendererLowOverheadSelfTest`; the safe validation matrix runs it under forced `r_glTier gl45` and checks graph DSA allocation, sampler DSA creation, deferred texture/sampler multi-bind, frame/FBO DSA updates, compacted batches, persistent upload reporting, and bindless experiment reporting.
+- Fallback behavior: ARB2 remains the visible default. The bindless path is diagnostic-only and disabled by default; unsupported DSA/multi-bind/sampler entry points leave the low-overhead path unavailable rather than silently changing rendering behavior. Lower tiers keep the existing bind-based and map-range/subdata fallbacks.
+- Validation run: `tools\build\meson_setup.ps1 compile -C builddir -- -j1`; `tools\build\meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects`; targeted staged startup with `+set r_glTier gl45 +set r_rendererModernExecutor 1 +rendererLowOverheadSelfTest +gfxInfo` passed with `textureDSA=7`, `framebufferDSA=7`, `framebufferDSAUpdates=1`, `bufferMultiBind=1`, `textureMultiBind=2`, `samplerMultiBind=2`, `compactedBatches=2`, and `fences=1/1`; `python tools\tests\renderer_validation_matrix.py` passed 20/20 automated safe cases, including the new `renderer-low-overhead-selftest`, and wrote `.tmp\renderer-validation\20260514-140157\renderer_validation_report.md`.
+- Known limitations: The low-overhead path proves CPU-submission primitives and metrics on synthetic validation scenes; representative in-map timing comparisons and broader multi-signature indirect scheduling remain performance-tuning work.
+- Next phase prerequisites: Phase 14 can build on graph-backed modern color/depth resources, stable low-overhead texture/sampler binding, explicit legacy-owner accounting, and detailed GL 4.5 diagnostics while promoting post, GUI, subview, render-demo, and BSE-heavy categories.
 
 ## Phase 14: Post, GUI, Subviews, Render Demos, And BSE Parity
 
@@ -557,7 +568,7 @@ These names are suggestions, not mandates. Existing local patterns should win wh
 - [ ] `r_rendererGraphDebug`: render graph dump/debug mode.
 - [ ] `r_rendererMaterialDebug`: material/resource table debug mode.
 - [x] `r_rendererGpuValidation`: CPU/GPU validation sampling for GL 4.3+ compute paths.
-- [ ] `r_rendererBindless`: optional bindless path, default off.
+- [x] `r_rendererBindless`: optional bindless path, default off.
 
 Every cvar must print enough context in `gfxInfo` or metrics to explain whether it is active, unavailable, or falling back.
 
@@ -593,6 +604,7 @@ Required self-tests should grow to include:
 - [x] `rendererModernVisibleSelfTest`
 - [x] `rendererGpuDrivenSelfTest`
 - [x] `rendererVisiblePathSelfTest`
+- [x] `rendererLowOverheadSelfTest`
 
 ## Phase Exit Template
 
@@ -625,8 +637,8 @@ Every phase should end with a short note using this structure:
 - [x] 9. Deferred light resolve.
 - [x] 10. Forward+ opaque, alpha-tested, and transparent passes.
 - [x] 11. Hybrid composition and visible modern frame.
-- [ ] 12. GL 4.3 GPU-driven path.
-- [ ] 13. GL 4.5 low-overhead path.
+- [x] 12. GL 4.3 GPU-driven path.
+- [x] 13. GL 4.5 low-overhead path.
 - [ ] 14. Post, GUI, subviews, render demos, and BSE parity.
 - [ ] 15. Compatibility and parity hardening.
 - [ ] 16. Performance tuning and scalability.
@@ -639,7 +651,7 @@ The modern clustered hybrid renderer is complete when:
 - [ ] GL 3.3 can run the modern visible renderer with CPU clustered lighting and clear fallbacks.
 - [ ] GL 4.1 has parity with the GL 3.3 path and no compute dependency.
 - [ ] GL 4.3 can use compute/SSBO/indirect paths with CPU-reference validation.
-- [ ] GL 4.5 can use persistent mapped streaming, DSA, multi-bind, and fence diagnostics.
+- [x] GL 4.5 can use persistent mapped streaming, DSA, multi-bind, and fence diagnostics.
 - [ ] ARB2 remains selectable and useful as a compatibility fallback.
 - [ ] Stock SP and MP validation maps reach gameplay without replacement content.
 - [ ] RenderDoc captures are readable and pass/resource names are stable.

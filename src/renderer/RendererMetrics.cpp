@@ -242,6 +242,22 @@ typedef struct rendererMetricsFrame_s {
 	int		gpuDrivenMultiDrawBatches;
 	int		gpuDrivenIndirectFallbacks;
 	int		gpuDrivenComputeDispatches;
+	bool	lowOverheadRequested;
+	bool	lowOverheadReady;
+	bool	lowOverheadUsesDSA;
+	bool	lowOverheadUsesMultiBind;
+	bool	lowOverheadBindlessRequested;
+	bool	lowOverheadBindlessAvailable;
+	bool	lowOverheadSamplerReady;
+	int		lowOverheadDSAUpdates;
+	int		lowOverheadFramebufferDSAUpdates;
+	int		lowOverheadSamplerDSACreations;
+	int		lowOverheadSamplerDSAUpdates;
+	int		lowOverheadBufferMultiBindBatches;
+	int		lowOverheadTextureMultiBindBatches;
+	int		lowOverheadSamplerMultiBindBatches;
+	int		lowOverheadClassicTextureBinds;
+	int		lowOverheadCompactedBatches;
 	rendererClusteredLightingStats_t clusteredLighting;
 	glStateCacheStats_t glStateCache;
 	bool	gpuTimersValid;
@@ -501,6 +517,25 @@ typedef struct rendererGpuDrivenLatest_s {
 	int		computeDispatches;
 } rendererGpuDrivenLatest_t;
 
+typedef struct rendererLowOverheadLatest_s {
+	bool	requested;
+	bool	ready;
+	bool	usesDSA;
+	bool	usesMultiBind;
+	bool	bindlessRequested;
+	bool	bindlessAvailable;
+	bool	samplerReady;
+	int		dsaUpdates;
+	int		framebufferDSAUpdates;
+	int		samplerDSACreations;
+	int		samplerDSAUpdates;
+	int		bufferMultiBindBatches;
+	int		textureMultiBindBatches;
+	int		samplerMultiBindBatches;
+	int		classicTextureBinds;
+	int		compactedBatches;
+} rendererLowOverheadLatest_t;
+
 typedef struct rendererGLStateCacheLatest_s {
 	glStateCacheStats_t stats;
 } rendererGLStateCacheLatest_t;
@@ -518,6 +553,7 @@ static rendererDeferredResolveLatest_t rg_deferredResolveLatest;
 static rendererForwardPlusLatest_t rg_forwardPlusLatest;
 static rendererModernVisibleLatest_t rg_modernVisibleLatest;
 static rendererGpuDrivenLatest_t rg_gpuDrivenLatest;
+static rendererLowOverheadLatest_t rg_lowOverheadLatest;
 static rendererClusteredLightingStats_t rg_clusteredLightingLatest;
 static rendererGLStateCacheLatest_t rg_glStateCacheLatest;
 static int rg_gpuTimerFrameCursor = 0;
@@ -882,6 +918,22 @@ void R_RendererMetrics_BeginFrame( int frameCount ) {
 	rg_rendererMetrics.gpuDrivenMultiDrawBatches = rg_gpuDrivenLatest.multiDrawBatches;
 	rg_rendererMetrics.gpuDrivenIndirectFallbacks = rg_gpuDrivenLatest.indirectFallbacks;
 	rg_rendererMetrics.gpuDrivenComputeDispatches = rg_gpuDrivenLatest.computeDispatches;
+	rg_rendererMetrics.lowOverheadRequested = rg_lowOverheadLatest.requested;
+	rg_rendererMetrics.lowOverheadReady = rg_lowOverheadLatest.ready;
+	rg_rendererMetrics.lowOverheadUsesDSA = rg_lowOverheadLatest.usesDSA;
+	rg_rendererMetrics.lowOverheadUsesMultiBind = rg_lowOverheadLatest.usesMultiBind;
+	rg_rendererMetrics.lowOverheadBindlessRequested = rg_lowOverheadLatest.bindlessRequested;
+	rg_rendererMetrics.lowOverheadBindlessAvailable = rg_lowOverheadLatest.bindlessAvailable;
+	rg_rendererMetrics.lowOverheadSamplerReady = rg_lowOverheadLatest.samplerReady;
+	rg_rendererMetrics.lowOverheadDSAUpdates = rg_lowOverheadLatest.dsaUpdates;
+	rg_rendererMetrics.lowOverheadFramebufferDSAUpdates = rg_lowOverheadLatest.framebufferDSAUpdates;
+	rg_rendererMetrics.lowOverheadSamplerDSACreations = rg_lowOverheadLatest.samplerDSACreations;
+	rg_rendererMetrics.lowOverheadSamplerDSAUpdates = rg_lowOverheadLatest.samplerDSAUpdates;
+	rg_rendererMetrics.lowOverheadBufferMultiBindBatches = rg_lowOverheadLatest.bufferMultiBindBatches;
+	rg_rendererMetrics.lowOverheadTextureMultiBindBatches = rg_lowOverheadLatest.textureMultiBindBatches;
+	rg_rendererMetrics.lowOverheadSamplerMultiBindBatches = rg_lowOverheadLatest.samplerMultiBindBatches;
+	rg_rendererMetrics.lowOverheadClassicTextureBinds = rg_lowOverheadLatest.classicTextureBinds;
+	rg_rendererMetrics.lowOverheadCompactedBatches = rg_lowOverheadLatest.compactedBatches;
 	rg_rendererMetrics.clusteredLighting = rg_clusteredLightingLatest;
 	rg_rendererMetrics.glStateCache = rg_glStateCacheLatest.stats;
 }
@@ -1237,6 +1289,41 @@ void R_RendererMetrics_RecordGpuDriven( bool requested, bool executed, bool reso
 	rg_rendererMetrics.gpuDrivenMultiDrawBatches = multiDrawBatches;
 	rg_rendererMetrics.gpuDrivenIndirectFallbacks = indirectFallbacks;
 	rg_rendererMetrics.gpuDrivenComputeDispatches = computeDispatches;
+}
+
+void R_RendererMetrics_RecordLowOverhead( bool requested, bool ready, bool usesDSA, bool usesMultiBind, bool bindlessRequested, bool bindlessAvailable, bool samplerReady, int dsaUpdates, int framebufferDSAUpdates, int samplerDSACreations, int samplerDSAUpdates, int bufferMultiBindBatches, int textureMultiBindBatches, int samplerMultiBindBatches, int classicTextureBinds, int compactedBatches ) {
+	rg_lowOverheadLatest.requested = requested;
+	rg_lowOverheadLatest.ready = ready;
+	rg_lowOverheadLatest.usesDSA = usesDSA;
+	rg_lowOverheadLatest.usesMultiBind = usesMultiBind;
+	rg_lowOverheadLatest.bindlessRequested = bindlessRequested;
+	rg_lowOverheadLatest.bindlessAvailable = bindlessAvailable;
+	rg_lowOverheadLatest.samplerReady = samplerReady;
+	rg_lowOverheadLatest.dsaUpdates = dsaUpdates;
+	rg_lowOverheadLatest.framebufferDSAUpdates = framebufferDSAUpdates;
+	rg_lowOverheadLatest.samplerDSACreations = samplerDSACreations;
+	rg_lowOverheadLatest.samplerDSAUpdates = samplerDSAUpdates;
+	rg_lowOverheadLatest.bufferMultiBindBatches = bufferMultiBindBatches;
+	rg_lowOverheadLatest.textureMultiBindBatches = textureMultiBindBatches;
+	rg_lowOverheadLatest.samplerMultiBindBatches = samplerMultiBindBatches;
+	rg_lowOverheadLatest.classicTextureBinds = classicTextureBinds;
+	rg_lowOverheadLatest.compactedBatches = compactedBatches;
+	rg_rendererMetrics.lowOverheadRequested = requested;
+	rg_rendererMetrics.lowOverheadReady = ready;
+	rg_rendererMetrics.lowOverheadUsesDSA = usesDSA;
+	rg_rendererMetrics.lowOverheadUsesMultiBind = usesMultiBind;
+	rg_rendererMetrics.lowOverheadBindlessRequested = bindlessRequested;
+	rg_rendererMetrics.lowOverheadBindlessAvailable = bindlessAvailable;
+	rg_rendererMetrics.lowOverheadSamplerReady = samplerReady;
+	rg_rendererMetrics.lowOverheadDSAUpdates = dsaUpdates;
+	rg_rendererMetrics.lowOverheadFramebufferDSAUpdates = framebufferDSAUpdates;
+	rg_rendererMetrics.lowOverheadSamplerDSACreations = samplerDSACreations;
+	rg_rendererMetrics.lowOverheadSamplerDSAUpdates = samplerDSAUpdates;
+	rg_rendererMetrics.lowOverheadBufferMultiBindBatches = bufferMultiBindBatches;
+	rg_rendererMetrics.lowOverheadTextureMultiBindBatches = textureMultiBindBatches;
+	rg_rendererMetrics.lowOverheadSamplerMultiBindBatches = samplerMultiBindBatches;
+	rg_rendererMetrics.lowOverheadClassicTextureBinds = classicTextureBinds;
+	rg_rendererMetrics.lowOverheadCompactedBatches = compactedBatches;
 }
 
 void R_RendererMetrics_RecordGLStateCache( const glStateCacheStats_t &stats ) {
@@ -1639,6 +1726,35 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.gpuDrivenComputeDispatches,
 			rg_rendererMetrics.gpuTimerMsec[RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT],
 			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT] );
+		common->Printf(
+			"rendererMetrics lowOverhead(req=%d ready=%d dsa=%d multiBind=%d bindless=%d/%d sampler=%d dsaUpdates=%d framebufferDSA=%d samplerDSA=%d/%d bufferMultiBind=%d textureMultiBind=%d samplerMultiBind=%d classicTextureBinds=%d compactedBatches=%d graphDSA(tex=%d params=%d fbo=%d) graphClassic(tex=%d fbo=%d) upload(persistent=%d default=%d fences=%d/%d waits=%d sync=%d))\n",
+			rg_rendererMetrics.lowOverheadRequested ? 1 : 0,
+			rg_rendererMetrics.lowOverheadReady ? 1 : 0,
+			rg_rendererMetrics.lowOverheadUsesDSA ? 1 : 0,
+			rg_rendererMetrics.lowOverheadUsesMultiBind ? 1 : 0,
+			rg_rendererMetrics.lowOverheadBindlessRequested ? 1 : 0,
+			rg_rendererMetrics.lowOverheadBindlessAvailable ? 1 : 0,
+			rg_rendererMetrics.lowOverheadSamplerReady ? 1 : 0,
+			rg_rendererMetrics.lowOverheadDSAUpdates,
+			rg_rendererMetrics.lowOverheadFramebufferDSAUpdates,
+			rg_rendererMetrics.lowOverheadSamplerDSACreations,
+			rg_rendererMetrics.lowOverheadSamplerDSAUpdates,
+			rg_rendererMetrics.lowOverheadBufferMultiBindBatches,
+			rg_rendererMetrics.lowOverheadTextureMultiBindBatches,
+			rg_rendererMetrics.lowOverheadSamplerMultiBindBatches,
+			rg_rendererMetrics.lowOverheadClassicTextureBinds,
+			rg_rendererMetrics.lowOverheadCompactedBatches,
+			rg_rendererMetrics.renderGraphResourceManager.dsaTextureAllocations,
+			rg_rendererMetrics.renderGraphResourceManager.dsaTextureParameterUpdates,
+			rg_rendererMetrics.renderGraphResourceManager.dsaFramebufferAllocations,
+			rg_rendererMetrics.renderGraphResourceManager.classicTextureAllocations,
+			rg_rendererMetrics.renderGraphResourceManager.classicFramebufferAllocations,
+			uploadStats.persistentMapped ? 1 : 0,
+			uploadStats.lowOverheadPersistentDefault ? 1 : 0,
+			uploadStats.frameFencesSubmitted,
+			uploadStats.frameFencesRetired,
+			uploadStats.frameFenceWaits,
+			uploadStats.fenceSyncAvailable ? 1 : 0 );
 		return;
 	}
 

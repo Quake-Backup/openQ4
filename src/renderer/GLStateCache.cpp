@@ -361,6 +361,98 @@ bool idGLStateCache::BindSampler( int unit, GLuint sampler ) {
 	return true;
 }
 
+bool idGLStateCache::BindTextures( GLuint first, GLsizei count, const GLuint *textureNames ) {
+	if ( count <= 0 || textureNames == NULL || first >= static_cast<GLuint>( TextureUnitCount() ) ) {
+		return false;
+	}
+	const GLsizei clampedCount = Min( count, static_cast<GLsizei>( TextureUnitCount() - first ) );
+	if ( clampedCount <= 0 ) {
+		return false;
+	}
+	if ( glBindTextures == NULL ) {
+		bool issued = false;
+		for ( GLsizei i = 0; i < clampedCount; ++i ) {
+			issued = BindTexture( static_cast<int>( first + i ), GL_TEXTURE_2D, textureNames[i] ) || issued;
+		}
+		return issued;
+	}
+
+	const int texture2DSlot = TextureTargetSlot( GL_TEXTURE_2D );
+	bool allCached = texture2DSlot >= 0;
+	for ( GLsizei i = 0; i < clampedCount && allCached; ++i ) {
+		const int unit = static_cast<int>( first + i );
+		if ( !textures[unit][texture2DSlot].valid || textures[unit][texture2DSlot].value != textureNames[i] ) {
+			allCached = false;
+		}
+	}
+	if ( allCached ) {
+		stats.hits += clampedCount;
+		return false;
+	}
+
+	glBindTextures( first, clampedCount, textureNames );
+	stats.textureMultiBindBatches++;
+	for ( GLsizei i = 0; i < clampedCount; ++i ) {
+		const int unit = static_cast<int>( first + i );
+		bool unitChanged = texture2DSlot < 0 || !textures[unit][texture2DSlot].valid || textures[unit][texture2DSlot].value != textureNames[i];
+		memset( textures[unit], 0, sizeof( textures[unit] ) );
+		if ( texture2DSlot >= 0 ) {
+			textures[unit][texture2DSlot].valid = true;
+			textures[unit][texture2DSlot].value = textureNames[i];
+		}
+		if ( unitChanged ) {
+			RecordMiss( stats.textureMisses );
+		} else {
+			stats.hits++;
+		}
+	}
+	return true;
+}
+
+bool idGLStateCache::BindSamplers( GLuint first, GLsizei count, const GLuint *samplerNames ) {
+	if ( count <= 0 || samplerNames == NULL || first >= static_cast<GLuint>( TextureUnitCount() ) ) {
+		return false;
+	}
+	const GLsizei clampedCount = Min( count, static_cast<GLsizei>( TextureUnitCount() - first ) );
+	if ( clampedCount <= 0 ) {
+		return false;
+	}
+	if ( glBindSamplers == NULL ) {
+		bool issued = false;
+		for ( GLsizei i = 0; i < clampedCount; ++i ) {
+			issued = BindSampler( static_cast<int>( first + i ), samplerNames[i] ) || issued;
+		}
+		return issued;
+	}
+
+	bool allCached = true;
+	for ( GLsizei i = 0; i < clampedCount; ++i ) {
+		const int unit = static_cast<int>( first + i );
+		if ( !samplers[unit].valid || samplers[unit].value != samplerNames[i] ) {
+			allCached = false;
+			break;
+		}
+	}
+	if ( allCached ) {
+		stats.hits += clampedCount;
+		return false;
+	}
+
+	glBindSamplers( first, clampedCount, samplerNames );
+	stats.samplerMultiBindBatches++;
+	for ( GLsizei i = 0; i < clampedCount; ++i ) {
+		const int unit = static_cast<int>( first + i );
+		if ( !samplers[unit].valid || samplers[unit].value != samplerNames[i] ) {
+			RecordMiss( stats.samplerMisses );
+		} else {
+			stats.hits++;
+		}
+		samplers[unit].valid = true;
+		samplers[unit].value = samplerNames[i];
+	}
+	return true;
+}
+
 bool idGLStateCache::BindFramebuffer( GLenum target, GLuint newFramebuffer ) {
 	if ( glBindFramebuffer == NULL ) {
 		return false;
@@ -634,7 +726,7 @@ const glStateCacheStats_t &R_GLStateCache_Stats( void ) {
 void R_GLStateCache_PrintGfxInfo( void ) {
 	const glStateCacheStats_t &stats = R_GLStateCache_Stats();
 	common->Printf(
-		"Modern GL state cache: init=%d debugGroups=%d labels=%d units=%d uboBindings=%d ssboBindings=%d hits=%d misses=%d invalidations=%d legacyResets=%d last='%s'\n",
+		"Modern GL state cache: init=%d debugGroups=%d labels=%d units=%d uboBindings=%d ssboBindings=%d hits=%d misses=%d textureMultiBind=%d samplerMultiBind=%d invalidations=%d legacyResets=%d last='%s'\n",
 		stats.initialized ? 1 : 0,
 		stats.debugGroupsAvailable ? 1 : 0,
 		stats.objectLabelsAvailable ? 1 : 0,
@@ -643,6 +735,8 @@ void R_GLStateCache_PrintGfxInfo( void ) {
 		stats.shaderStorageBufferBindings,
 		stats.hits,
 		stats.misses,
+		stats.textureMultiBindBatches,
+		stats.samplerMultiBindBatches,
 		stats.forcedInvalidations,
 		stats.legacyHandoffResets,
 		stats.lastInvalidationReason );
@@ -709,6 +803,16 @@ bool RendererGLStateCache_RunSelfTest( void ) {
 		cache.BindSampler( 0, 0 );
 		cache.BindSampler( 0, 0 );
 	}
+	if ( glBindTextures != NULL ) {
+		GLuint textureNames[2] = { 0, 0 };
+		cache.BindTextures( 0, 2, textureNames );
+		cache.BindTextures( 0, 2, textureNames );
+	}
+	if ( glBindSamplers != NULL ) {
+		GLuint samplerNames[2] = { 0, 0 };
+		cache.BindSamplers( 0, 2, samplerNames );
+		cache.BindSamplers( 0, 2, samplerNames );
+	}
 	if ( glBindFramebuffer != NULL ) {
 		cache.BindFramebuffer( GL_FRAMEBUFFER, 0 );
 		cache.BindFramebuffer( GL_FRAMEBUFFER, 0 );
@@ -731,9 +835,11 @@ bool RendererGLStateCache_RunSelfTest( void ) {
 	cache.InvalidateAll( "self-test complete" );
 	GL_ClearStateDelta();
 	common->Printf(
-		"RendererGLStateCache self-test passed (hits=%d misses=%d invalidations=%d legacyResets=%d)\n",
+		"RendererGLStateCache self-test passed (hits=%d misses=%d textureMultiBind=%d samplerMultiBind=%d invalidations=%d legacyResets=%d)\n",
 		afterLegacy.hits,
 		afterLegacy.misses,
+		beforeLegacy.textureMultiBindBatches,
+		beforeLegacy.samplerMultiBindBatches,
 		afterLegacy.forcedInvalidations,
 		afterLegacy.legacyHandoffResets );
 	return true;

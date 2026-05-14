@@ -119,6 +119,9 @@ static GLuint rg_modernGLExecutorValidationSSBO = 0;
 static GLuint rg_modernGLExecutorComputeProgram = 0;
 static GLuint rg_modernGLExecutorDepthOverlayProgram = 0;
 static GLuint rg_modernGLExecutorGBufferFBO = 0;
+static GLuint rg_modernGLExecutorLowOverheadSampler = 0;
+static int rg_modernGLExecutorLowOverheadSamplerDSACreations = 0;
+static int rg_modernGLExecutorLowOverheadSamplerDSAUpdates = 0;
 static GLuint rg_modernGLExecutorGBufferOverlayProgram = 0;
 static GLuint rg_modernGLExecutorDeferredOverlayProgram = 0;
 static GLuint rg_modernGLExecutorVisibleCompositeProgram = 0;
@@ -180,6 +183,7 @@ static void R_ModernGLExecutor_CopySubmitPlanStats( modernGLExecutorStats_t &sta
 	stats.submitPlanMaterialBatches = submitPlanStats.materialBatches;
 	stats.submitPlanUniformUpdates = submitPlanStats.uniformUpdates;
 	stats.submitPlanFrameUBOBinds = submitPlanStats.frameUBOBinds;
+	stats.lowOverheadCompactedBatches = stats.tierUsesMultiBind ? ( submitPlanStats.programBatches + submitPlanStats.materialBatches ) : 0;
 	if ( submitPlanStats.highestGLSLVersion > stats.highestGLSLVersion ) {
 		stats.highestGLSLVersion = submitPlanStats.highestGLSLVersion;
 	}
@@ -214,7 +218,38 @@ static bool R_ModernGLExecutor_CanUseLowOverhead( const renderBackendCaps_t &cap
 	return glCreateBuffers != NULL
 		&& glNamedBufferData != NULL
 		&& glNamedBufferSubData != NULL
-		&& glBindBuffersBase != NULL;
+		&& glBindBuffersBase != NULL
+		&& glBindTextures != NULL
+		&& glBindSamplers != NULL
+		&& glCreateSamplers != NULL
+		&& glSamplerParameteri != NULL
+		&& glCreateFramebuffers != NULL
+		&& glNamedFramebufferTexture != NULL
+		&& glNamedFramebufferDrawBuffers != NULL
+		&& glNamedFramebufferDrawBuffer != NULL
+		&& glNamedFramebufferReadBuffer != NULL
+		&& glCheckNamedFramebufferStatus != NULL;
+}
+
+static bool R_ModernGLExecutor_CreateLowOverheadSampler( void ) {
+	rg_modernGLExecutorLowOverheadSampler = 0;
+	rg_modernGLExecutorLowOverheadSamplerDSACreations = 0;
+	rg_modernGLExecutorLowOverheadSamplerDSAUpdates = 0;
+	if ( !rg_modernGLExecutorLowOverheadReady || glCreateSamplers == NULL || glSamplerParameteri == NULL ) {
+		return false;
+	}
+	glCreateSamplers( 1, &rg_modernGLExecutorLowOverheadSampler );
+	if ( rg_modernGLExecutorLowOverheadSampler == 0 ) {
+		return false;
+	}
+	glSamplerParameteri( rg_modernGLExecutorLowOverheadSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+	glSamplerParameteri( rg_modernGLExecutorLowOverheadSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+	glSamplerParameteri( rg_modernGLExecutorLowOverheadSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+	glSamplerParameteri( rg_modernGLExecutorLowOverheadSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+	rg_modernGLExecutorLowOverheadSamplerDSACreations = 1;
+	rg_modernGLExecutorLowOverheadSamplerDSAUpdates = 4;
+	R_GLDebug_LabelSampler( rg_modernGLExecutorLowOverheadSampler, "ModernGLExecutor low-overhead sampler" );
+	return true;
 }
 
 static bool R_ModernGLExecutor_CanCreateGpuDrivenObjects( const renderBackendCaps_t &caps, const renderFeatureSet_t &features ) {
@@ -778,6 +813,11 @@ static void R_ModernGLExecutor_ResetStats( modernGLExecutorStats_t &stats, bool 
 	stats.forwardPlusRequested = stats.modernVisibleRequested || r_rendererForwardPlus.GetBool();
 	stats.tierUsesDSA = rg_modernGLExecutorLowOverheadReady && rg_modernGLExecutorFeatures.directStateAccess;
 	stats.tierUsesMultiBind = rg_modernGLExecutorLowOverheadReady && rg_modernGLExecutorFeatures.multiBind;
+	stats.lowOverheadSamplerReady = rg_modernGLExecutorLowOverheadSampler != 0;
+	stats.lowOverheadSamplerDSACreations = rg_modernGLExecutorLowOverheadSamplerDSACreations;
+	stats.lowOverheadSamplerDSAUpdates = rg_modernGLExecutorLowOverheadSamplerDSAUpdates;
+	stats.lowOverheadBindlessRequested = r_rendererBindless.GetBool();
+	stats.lowOverheadBindlessAvailable = rg_modernGLExecutorFeatures.bindlessTextures && rg_modernGLExecutorCaps.hasBindlessTexture;
 	stats.shaderProgramCount = shaderStats.programCount;
 	stats.shaderFailureCount = shaderStats.failedProgramCount;
 	stats.highestGLSLVersion = shaderStats.highestGLSLVersion;
@@ -886,6 +926,11 @@ static void R_ModernGLExecutor_AnalyzeFrame(
 	}
 	stats.tierUsesDSA = rg_modernGLExecutorLowOverheadReady && rg_modernGLExecutorFeatures.directStateAccess;
 	stats.tierUsesMultiBind = rg_modernGLExecutorLowOverheadReady && rg_modernGLExecutorFeatures.multiBind;
+	stats.lowOverheadSamplerReady = rg_modernGLExecutorLowOverheadSampler != 0;
+	stats.lowOverheadSamplerDSACreations = rg_modernGLExecutorLowOverheadSamplerDSACreations;
+	stats.lowOverheadSamplerDSAUpdates = rg_modernGLExecutorLowOverheadSamplerDSAUpdates;
+	stats.lowOverheadBindlessRequested = r_rendererBindless.GetBool();
+	stats.lowOverheadBindlessAvailable = rg_modernGLExecutorFeatures.bindlessTextures && rg_modernGLExecutorCaps.hasBindlessTexture;
 	stats.shaderProgramCount = shaderStats.programCount;
 	stats.shaderFailureCount = shaderStats.failedProgramCount;
 	stats.highestGLSLVersion = shaderStats.highestGLSLVersion;
@@ -1803,21 +1848,42 @@ static int R_ModernGLExecutor_GBufferBytesPerPixel( const renderGraphResourceHan
 }
 
 static bool R_ModernGLExecutor_PrepareGBufferFBO( const renderGraphResourceHandle_t *const colorHandles[MODERN_GL_GBUFFER_ATTACHMENT_COUNT], const renderGraphResourceHandle_t &depthHandle, modernGLExecutorStats_t &stats ) {
-	if ( rg_modernGLExecutorGBufferFBO == 0 || glFramebufferTexture2D == NULL || glCheckFramebufferStatus == NULL || glDrawBuffers == NULL ) {
+	if ( rg_modernGLExecutorGBufferFBO == 0 || glCheckFramebufferStatus == NULL || glDrawBuffers == NULL ) {
 		return false;
 	}
 	if ( !rg_modernGLExecutorCaps.hasMRT || rg_modernGLExecutorCaps.maxDrawBuffers < MODERN_GL_GBUFFER_ATTACHMENT_COUNT || rg_modernGLExecutorCaps.maxColorAttachments < MODERN_GL_GBUFFER_ATTACHMENT_COUNT ) {
 		return false;
 	}
 
-	R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorGBufferFBO );
 	for ( int i = 0; i < MODERN_GL_GBUFFER_ATTACHMENT_COUNT; ++i ) {
 		if ( colorHandles[i] == NULL || colorHandles[i]->texture == 0 ) {
 			return false;
 		}
-		glFramebufferTexture2D( GL_FRAMEBUFFER, rg_modernGLGBufferColorAttachments[i], GL_TEXTURE_2D, colorHandles[i]->texture, 0 );
 	}
 	const GLenum depthAttachment = depthHandle.type == RENDER_GRAPH_RESOURCE_DEPTH_STENCIL ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
+	if ( stats.tierUsesDSA && glNamedFramebufferTexture != NULL && glNamedFramebufferDrawBuffers != NULL && glNamedFramebufferReadBuffer != NULL && glCheckNamedFramebufferStatus != NULL ) {
+		for ( int i = 0; i < MODERN_GL_GBUFFER_ATTACHMENT_COUNT; ++i ) {
+			glNamedFramebufferTexture( rg_modernGLExecutorGBufferFBO, rg_modernGLGBufferColorAttachments[i], colorHandles[i]->texture, 0 );
+		}
+		glNamedFramebufferTexture( rg_modernGLExecutorGBufferFBO, depthAttachment, depthHandle.texture, 0 );
+		glNamedFramebufferDrawBuffers( rg_modernGLExecutorGBufferFBO, MODERN_GL_GBUFFER_ATTACHMENT_COUNT, rg_modernGLGBufferColorAttachments );
+		glNamedFramebufferReadBuffer( rg_modernGLExecutorGBufferFBO, GL_COLOR_ATTACHMENT0 );
+		const GLenum status = glCheckNamedFramebufferStatus( rg_modernGLExecutorGBufferFBO, GL_FRAMEBUFFER );
+		stats.lowOverheadFramebufferDSAUpdates++;
+		stats.opaqueGBufferMRTReady = status == GL_FRAMEBUFFER_COMPLETE;
+		if ( stats.opaqueGBufferMRTReady ) {
+			R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorGBufferFBO );
+		}
+		return stats.opaqueGBufferMRTReady;
+	}
+
+	if ( glFramebufferTexture2D == NULL ) {
+		return false;
+	}
+	R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorGBufferFBO );
+	for ( int i = 0; i < MODERN_GL_GBUFFER_ATTACHMENT_COUNT; ++i ) {
+		glFramebufferTexture2D( GL_FRAMEBUFFER, rg_modernGLGBufferColorAttachments[i], GL_TEXTURE_2D, colorHandles[i]->texture, 0 );
+	}
 	glFramebufferTexture2D( GL_FRAMEBUFFER, depthAttachment, depthHandle.target, depthHandle.texture, 0 );
 	glDrawBuffers( MODERN_GL_GBUFFER_ATTACHMENT_COUNT, rg_modernGLGBufferColorAttachments );
 	glReadBuffer( GL_COLOR_ATTACHMENT0 );
@@ -1983,20 +2049,75 @@ static void R_ModernGLExecutor_SetSamplerUniform( GLuint program, const char *na
 	}
 }
 
-static void R_ModernGLExecutor_BindDeferredResolveTextures( const renderGraphResourceHandle_t *const handles[MODERN_GL_DEFERRED_TEXTURE_COUNT] ) {
-	for ( int i = 0; i < MODERN_GL_DEFERRED_TEXTURE_COUNT; ++i ) {
-		if ( handles[i] != NULL && handles[i]->texture != 0 ) {
-			R_GLStateCache().ActiveTextureUnit( i );
-			R_GLStateCache().BindTexture( i, GL_TEXTURE_2D, handles[i]->texture );
+static void R_ModernGLExecutor_BindTextureGroup( GLuint first, GLsizei count, const GLuint *textures, modernGLExecutorStats_t &stats ) {
+	if ( count <= 0 || textures == NULL ) {
+		return;
+	}
+	if ( stats.tierUsesMultiBind && glBindTextures != NULL ) {
+		if ( R_GLStateCache().BindTextures( first, count, textures ) ) {
+			stats.lowOverheadTextureMultiBindBatches++;
+		}
+		if ( rg_modernGLExecutorLowOverheadSampler != 0 && glBindSamplers != NULL ) {
+			GLuint samplers[MODERN_GL_DEFERRED_TEXTURE_COUNT];
+			const GLsizei samplerCount = Min( count, static_cast<GLsizei>( MODERN_GL_DEFERRED_TEXTURE_COUNT ) );
+			for ( GLsizei i = 0; i < samplerCount; ++i ) {
+				samplers[i] = rg_modernGLExecutorLowOverheadSampler;
+			}
+			if ( R_GLStateCache().BindSamplers( first, samplerCount, samplers ) ) {
+				stats.lowOverheadSamplerMultiBindBatches++;
+			}
+		}
+		return;
+	}
+
+	for ( GLsizei i = 0; i < count; ++i ) {
+		R_GLStateCache().ActiveTextureUnit( static_cast<int>( first + i ) );
+		if ( R_GLStateCache().BindTexture( static_cast<int>( first + i ), GL_TEXTURE_2D, textures[i] ) ) {
+			stats.lowOverheadClassicTextureBinds++;
+		}
+		if ( rg_modernGLExecutorLowOverheadSampler != 0 && glBindSampler != NULL ) {
+			R_GLStateCache().BindSampler( static_cast<int>( first + i ), rg_modernGLExecutorLowOverheadSampler );
 		}
 	}
 }
 
-static void R_ModernGLExecutor_UnbindDeferredResolveTextures( void ) {
-	for ( int i = 0; i < MODERN_GL_DEFERRED_TEXTURE_COUNT; ++i ) {
-		R_GLStateCache().BindTexture( i, GL_TEXTURE_2D, 0 );
+static void R_ModernGLExecutor_UnbindTextureGroup( GLuint first, GLsizei count, modernGLExecutorStats_t &stats ) {
+	if ( count <= 0 ) {
+		return;
+	}
+	GLuint textures[MODERN_GL_DEFERRED_TEXTURE_COUNT];
+	GLuint samplers[MODERN_GL_DEFERRED_TEXTURE_COUNT];
+	const GLsizei clampedCount = Min( count, static_cast<GLsizei>( MODERN_GL_DEFERRED_TEXTURE_COUNT ) );
+	for ( GLsizei i = 0; i < clampedCount; ++i ) {
+		textures[i] = 0;
+		samplers[i] = 0;
+	}
+	if ( stats.tierUsesMultiBind && glBindTextures != NULL ) {
+		if ( R_GLStateCache().BindTextures( first, clampedCount, textures ) ) {
+			stats.lowOverheadTextureMultiBindBatches++;
+		}
+		if ( glBindSamplers != NULL && R_GLStateCache().BindSamplers( first, clampedCount, samplers ) ) {
+			stats.lowOverheadSamplerMultiBindBatches++;
+		}
+	} else {
+		for ( GLsizei i = 0; i < clampedCount; ++i ) {
+			if ( R_GLStateCache().BindTexture( static_cast<int>( first + i ), GL_TEXTURE_2D, 0 ) ) {
+				stats.lowOverheadClassicTextureBinds++;
+			}
+			if ( glBindSampler != NULL ) {
+				R_GLStateCache().BindSampler( static_cast<int>( first + i ), 0 );
+			}
+		}
 	}
 	R_GLStateCache().ActiveTextureUnit( 0 );
+}
+
+static void R_ModernGLExecutor_BindDeferredResolveTextures( const renderGraphResourceHandle_t *const handles[MODERN_GL_DEFERRED_TEXTURE_COUNT], modernGLExecutorStats_t &stats ) {
+	GLuint textures[MODERN_GL_DEFERRED_TEXTURE_COUNT];
+	for ( int i = 0; i < MODERN_GL_DEFERRED_TEXTURE_COUNT; ++i ) {
+		textures[i] = ( handles[i] != NULL ) ? handles[i]->texture : 0;
+	}
+	R_ModernGLExecutor_BindTextureGroup( 0, MODERN_GL_DEFERRED_TEXTURE_COUNT, textures, stats );
 }
 
 static void R_ModernGLExecutor_SubmitDeferredResolve( modernGLExecutorStats_t &stats ) {
@@ -2102,12 +2223,12 @@ static void R_ModernGLExecutor_SubmitDeferredResolve( modernGLExecutorStats_t &s
 		for ( int i = 0; i < MODERN_GL_DEFERRED_TEXTURE_COUNT; ++i ) {
 			R_ModernGLExecutor_SetSamplerUniform( program->program, rg_modernGLDeferredTextureUniforms[i], i );
 		}
-		R_ModernGLExecutor_BindDeferredResolveTextures( textureHandles );
+		R_ModernGLExecutor_BindDeferredResolveTextures( textureHandles, stats );
 		glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
 	}
 	R_RendererMetrics_EndGpuTimer();
 
-	R_ModernGLExecutor_UnbindDeferredResolveTextures();
+	R_ModernGLExecutor_UnbindTextureGroup( 0, MODERN_GL_DEFERRED_TEXTURE_COUNT, stats );
 	R_ModernGLExecutor_RestoreAfterSubmit();
 	stats.deferredResolveExecuted = true;
 	if ( stats.deferredResolveExecuted ) {
@@ -2189,11 +2310,26 @@ static bool R_ModernGLExecutor_ForwardPlusMaterialSupported( const modernGLSubmi
 }
 
 static bool R_ModernGLExecutor_PrepareForwardPlusFBO( const renderGraphResourceHandle_t &sceneColor, const renderGraphResourceHandle_t &sceneDepth, modernGLExecutorStats_t &stats ) {
-	if ( sceneColor.framebuffer == 0 || sceneColor.texture == 0 || sceneDepth.texture == 0 || glFramebufferTexture2D == NULL || glCheckFramebufferStatus == NULL ) {
+	if ( sceneColor.framebuffer == 0 || sceneColor.texture == 0 || sceneDepth.texture == 0 || glCheckFramebufferStatus == NULL ) {
+		return false;
+	}
+	const GLenum depthAttachment = sceneDepth.type == RENDER_GRAPH_RESOURCE_DEPTH_STENCIL ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
+	if ( stats.tierUsesDSA && glNamedFramebufferTexture != NULL && glNamedFramebufferDrawBuffer != NULL && glNamedFramebufferReadBuffer != NULL && glCheckNamedFramebufferStatus != NULL ) {
+		glNamedFramebufferTexture( sceneColor.framebuffer, depthAttachment, sceneDepth.texture, 0 );
+		glNamedFramebufferDrawBuffer( sceneColor.framebuffer, GL_COLOR_ATTACHMENT0 );
+		glNamedFramebufferReadBuffer( sceneColor.framebuffer, GL_COLOR_ATTACHMENT0 );
+		const GLenum status = glCheckNamedFramebufferStatus( sceneColor.framebuffer, GL_FRAMEBUFFER );
+		stats.lowOverheadFramebufferDSAUpdates++;
+		stats.forwardPlusResourcesReady = status == GL_FRAMEBUFFER_COMPLETE;
+		if ( stats.forwardPlusResourcesReady ) {
+			R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, sceneColor.framebuffer );
+		}
+		return stats.forwardPlusResourcesReady;
+	}
+	if ( glFramebufferTexture2D == NULL ) {
 		return false;
 	}
 	R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, sceneColor.framebuffer );
-	const GLenum depthAttachment = sceneDepth.type == RENDER_GRAPH_RESOURCE_DEPTH_STENCIL ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
 	glFramebufferTexture2D( GL_FRAMEBUFFER, depthAttachment, sceneDepth.target, sceneDepth.texture, 0 );
 	glDrawBuffer( GL_COLOR_ATTACHMENT0 );
 	glReadBuffer( GL_COLOR_ATTACHMENT0 );
@@ -2540,6 +2676,23 @@ static void R_ModernGLExecutor_RecordMetrics( const modernGLExecutorStats_t &sta
 		stats.gpuDrivenMultiDrawBatches,
 		stats.gpuDrivenIndirectFallbacks,
 		stats.gpuDrivenComputeDispatches );
+	R_RendererMetrics_RecordLowOverhead(
+		rg_modernGLExecutorFeatures.lowOverhead,
+		stats.lowOverheadReady,
+		stats.tierUsesDSA,
+		stats.tierUsesMultiBind,
+		stats.lowOverheadBindlessRequested,
+		stats.lowOverheadBindlessAvailable,
+		stats.lowOverheadSamplerReady,
+		stats.lowOverheadDSAUpdates,
+		stats.lowOverheadFramebufferDSAUpdates,
+		stats.lowOverheadSamplerDSACreations,
+		stats.lowOverheadSamplerDSAUpdates,
+		stats.lowOverheadMultiBindBatches,
+		stats.lowOverheadTextureMultiBindBatches,
+		stats.lowOverheadSamplerMultiBindBatches,
+		stats.lowOverheadClassicTextureBinds,
+		stats.lowOverheadCompactedBatches );
 }
 
 void R_ModernGLExecutor_Init( const renderBackendCaps_t &caps, const renderFeatureSet_t &features ) {
@@ -2583,6 +2736,10 @@ void R_ModernGLExecutor_Init( const renderBackendCaps_t &caps, const renderFeatu
 	}
 	glBindVertexArray( 0 );
 
+	if ( rg_modernGLExecutorLowOverheadReady && !R_ModernGLExecutor_CreateLowOverheadSampler() ) {
+		rg_modernGLExecutorLowOverheadReady = false;
+	}
+
 	rg_modernGLExecutorGpuDrivenReady = R_ModernGLExecutor_InitGpuDrivenObjects( caps, features );
 	if ( features.gpuDriven && !rg_modernGLExecutorGpuDrivenReady ) {
 		common->Printf( "Modern GL executor: GL43 GPU-driven resources unavailable, keeping GL3 submit bridge active\n" );
@@ -2610,7 +2767,12 @@ void R_ModernGLExecutor_Init( const renderBackendCaps_t &caps, const renderFeatu
 	} else {
 		common->Printf( "Modern GL executor: visible composite program unavailable, modern visible cvar will fail closed\n" );
 	}
-	if ( glGenFramebuffers != NULL ) {
+	if ( rg_modernGLExecutorLowOverheadReady && glCreateFramebuffers != NULL ) {
+		glCreateFramebuffers( 1, &rg_modernGLExecutorGBufferFBO );
+		if ( rg_modernGLExecutorGBufferFBO != 0 ) {
+			R_GLDebug_LabelFramebuffer( rg_modernGLExecutorGBufferFBO, "ModernGLExecutor G-buffer MRT" );
+		}
+	} else if ( glGenFramebuffers != NULL ) {
 		glGenFramebuffers( 1, &rg_modernGLExecutorGBufferFBO );
 		if ( rg_modernGLExecutorGBufferFBO != 0 ) {
 			R_GLDebug_LabelFramebuffer( rg_modernGLExecutorGBufferFBO, "ModernGLExecutor G-buffer MRT" );
@@ -2644,11 +2806,17 @@ void R_ModernGLExecutor_Shutdown( void ) {
 	if ( rg_modernGLExecutorGBufferFBO != 0 && glDeleteFramebuffers != NULL ) {
 		glDeleteFramebuffers( 1, &rg_modernGLExecutorGBufferFBO );
 	}
+	if ( rg_modernGLExecutorLowOverheadSampler != 0 && glDeleteSamplers != NULL ) {
+		glDeleteSamplers( 1, &rg_modernGLExecutorLowOverheadSampler );
+	}
 	R_ModernGLShaderLibrary_Shutdown();
 
 	rg_modernGLExecutorVAO = 0;
 	rg_modernGLExecutorFrameUBO = 0;
 	rg_modernGLExecutorGBufferFBO = 0;
+	rg_modernGLExecutorLowOverheadSampler = 0;
+	rg_modernGLExecutorLowOverheadSamplerDSACreations = 0;
+	rg_modernGLExecutorLowOverheadSamplerDSAUpdates = 0;
 	rg_modernGLExecutorInitialized = false;
 	rg_modernGLExecutorAvailable = false;
 	rg_modernGLExecutorLowOverheadReady = false;
@@ -2830,6 +2998,24 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.lowOverheadDSAUpdates,
 			rg_modernGLExecutorStats.lowOverheadMultiBindBatches );
 		common->Printf(
+			"modernLowOverhead req=%d ready=%d dsa=%d multiBind=%d bindless=%d/%d sampler=%d samplerDSA=%d/%d dsaUpdates=%d framebufferDSA=%d bufferMultiBind=%d textureMultiBind=%d samplerMultiBind=%d classicTextureBinds=%d compactedBatches=%d\n",
+			rg_modernGLExecutorFeatures.lowOverhead ? 1 : 0,
+			rg_modernGLExecutorStats.lowOverheadReady ? 1 : 0,
+			rg_modernGLExecutorStats.tierUsesDSA ? 1 : 0,
+			rg_modernGLExecutorStats.tierUsesMultiBind ? 1 : 0,
+			rg_modernGLExecutorStats.lowOverheadBindlessRequested ? 1 : 0,
+			rg_modernGLExecutorStats.lowOverheadBindlessAvailable ? 1 : 0,
+			rg_modernGLExecutorStats.lowOverheadSamplerReady ? 1 : 0,
+			rg_modernGLExecutorStats.lowOverheadSamplerDSACreations,
+			rg_modernGLExecutorStats.lowOverheadSamplerDSAUpdates,
+			rg_modernGLExecutorStats.lowOverheadDSAUpdates,
+			rg_modernGLExecutorStats.lowOverheadFramebufferDSAUpdates,
+			rg_modernGLExecutorStats.lowOverheadMultiBindBatches,
+			rg_modernGLExecutorStats.lowOverheadTextureMultiBindBatches,
+			rg_modernGLExecutorStats.lowOverheadSamplerMultiBindBatches,
+			rg_modernGLExecutorStats.lowOverheadClassicTextureBinds,
+			rg_modernGLExecutorStats.lowOverheadCompactedBatches );
+		common->Printf(
 			"modernForwardPlus req=%d exec=%d res=%d scene=%d depth=%d program=%d cluster=%d draws=%d opaque=%d alpha=%d transparent=%d viewmodel=%d fog=%d batches=%d fallback=%d resource=%d material=%d geometry=%d texture=%d blend=%d effects=%d sort=%d overdraw=%d reads=%d lights=%d point=%d projected=%d lightGrid=%d clear=%d\n",
 			rg_modernGLExecutorStats.forwardPlusRequested ? 1 : 0,
 			rg_modernGLExecutorStats.forwardPlusExecuted ? 1 : 0,
@@ -2943,10 +3129,8 @@ void R_ModernGLExecutor_ComposeVisibleFrame( void ) {
 		stats.modernVisibleClearOps++;
 
 		R_GLStateCache().UseProgram( rg_modernGLExecutorVisibleCompositeProgram );
-		R_GLStateCache().ActiveTextureUnit( 0 );
-		R_GLStateCache().BindTexture( 0, GL_TEXTURE_2D, deferredLight->texture );
-		R_GLStateCache().ActiveTextureUnit( 1 );
-		R_GLStateCache().BindTexture( 1, GL_TEXTURE_2D, sceneColor->texture );
+		GLuint compositeTextures[2] = { deferredLight->texture, sceneColor->texture };
+		R_ModernGLExecutor_BindTextureGroup( 0, 2, compositeTextures, stats );
 		if ( rg_modernGLExecutorVisibleCompositeDeferredLocation >= 0 ) {
 			glUniform1i( rg_modernGLExecutorVisibleCompositeDeferredLocation, 0 );
 		}
@@ -2966,9 +3150,7 @@ void R_ModernGLExecutor_ComposeVisibleFrame( void ) {
 	R_ModernGLExecutor_SetStatus( stats, "modern-visible-composited" );
 	R_ModernGLExecutor_RecordMetrics( stats );
 
-	R_GLStateCache().BindTexture( 1, GL_TEXTURE_2D, 0 );
-	R_GLStateCache().BindTexture( 0, GL_TEXTURE_2D, 0 );
-	R_GLStateCache().ActiveTextureUnit( 0 );
+	R_ModernGLExecutor_UnbindTextureGroup( 0, 2, stats );
 	R_GLStateCache().UseProgram( 0 );
 	R_GLStateCache().BindVertexArray( 0 );
 	R_GLStateCache().SetDepthMask( GL_TRUE );
@@ -3236,6 +3418,24 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.lowOverheadDSAUpdates,
 		rg_modernGLExecutorStats.lowOverheadMultiBindBatches,
 		rg_modernGLExecutorStats.legacyFallback ? 1 : 0 );
+	common->Printf(
+		"Modern GL low-overhead: requested=%d ready=%d dsa=%d multiBind=%d bindless=%d/%d sampler=%d samplerDSA=%d/%d dsaUpdates=%d framebufferDSA=%d bufferMultiBind=%d textureMultiBind=%d samplerMultiBind=%d classicTextureBinds=%d compactedBatches=%d\n",
+		rg_modernGLExecutorFeatures.lowOverhead ? 1 : 0,
+		rg_modernGLExecutorStats.lowOverheadReady ? 1 : 0,
+		rg_modernGLExecutorStats.tierUsesDSA ? 1 : 0,
+		rg_modernGLExecutorStats.tierUsesMultiBind ? 1 : 0,
+		rg_modernGLExecutorStats.lowOverheadBindlessRequested ? 1 : 0,
+		rg_modernGLExecutorStats.lowOverheadBindlessAvailable ? 1 : 0,
+		rg_modernGLExecutorStats.lowOverheadSamplerReady ? 1 : 0,
+		rg_modernGLExecutorStats.lowOverheadSamplerDSACreations,
+		rg_modernGLExecutorStats.lowOverheadSamplerDSAUpdates,
+		rg_modernGLExecutorStats.lowOverheadDSAUpdates,
+		rg_modernGLExecutorStats.lowOverheadFramebufferDSAUpdates,
+		rg_modernGLExecutorStats.lowOverheadMultiBindBatches,
+		rg_modernGLExecutorStats.lowOverheadTextureMultiBindBatches,
+		rg_modernGLExecutorStats.lowOverheadSamplerMultiBindBatches,
+		rg_modernGLExecutorStats.lowOverheadClassicTextureBinds,
+		rg_modernGLExecutorStats.lowOverheadCompactedBatches );
 	common->Printf(
 		"Modern forward+: cvar=%d, req=%d exec=%d resources=%d sceneColor=%d sceneDepth=%d program=%d cluster=%d draws=%d opaque=%d alpha=%d transparent=%d viewmodel=%d fog=%d batches=%d fallback=%d resource=%d material=%d geometry=%d texture=%d blend=%d effects=%d sort=%d overdraw=%d reads=%d lights=%d point=%d projected=%d lightGrid=%d clears=%d\n",
 		r_rendererForwardPlus.GetBool() ? 1 : 0,
@@ -4584,5 +4784,238 @@ bool RendererModernVisible_RunSelfTest( void ) {
 		stats.forwardPlusExecuted ? 1 : 0,
 		stats.modernVisiblePresentPasses,
 		stats.modernVisibleClearOps );
+	return true;
+}
+
+bool RendererLowOverhead_RunSelfTest( void ) {
+	if ( !rg_modernGLExecutorFeatures.lowOverhead ) {
+		common->Printf( "RendererLowOverhead self-test passed (skipped=1 tier lacks GL45 low-overhead features)\n" );
+		return true;
+	}
+	if ( !rg_modernGLExecutorAvailable || !rg_modernGLExecutorInitialized || !rg_modernGLExecutorLowOverheadReady || rg_modernGLExecutorVAO == 0 || rg_modernGLExecutorFrameUBO == 0 ) {
+		common->Printf( "RendererLowOverhead self-test failed: GL45 low-overhead executor resources unavailable\n" );
+		return false;
+	}
+	if ( rg_modernGLExecutorLowOverheadSampler == 0 ) {
+		common->Printf( "RendererLowOverhead self-test failed: DSA sampler unavailable\n" );
+		return false;
+	}
+	if ( tr.defaultMaterial == NULL ) {
+		common->Printf( "RendererLowOverhead self-test failed: default material unavailable\n" );
+		return false;
+	}
+
+	struct rendererLowOverheadCVarRestore_t {
+		idCVar &cvar;
+		bool oldValue;
+
+		rendererLowOverheadCVarRestore_t( idCVar &value ) : cvar( value ), oldValue( value.GetBool() ) {}
+		~rendererLowOverheadCVarRestore_t() { cvar.SetBool( oldValue ); }
+	};
+	rendererLowOverheadCVarRestore_t restoreOpaque( r_rendererModernOpaque );
+	rendererLowOverheadCVarRestore_t restoreDeferred( r_rendererModernDeferred );
+	r_rendererModernOpaque.SetBool( true );
+	r_rendererModernDeferred.SetBool( true );
+
+	drawSurf_t drawSurfs[2];
+	memset( drawSurfs, 0, sizeof( drawSurfs ) );
+	srfTriangles_t geometry;
+	memset( &geometry, 0, sizeof( geometry ) );
+	geometry.numVerts = 3;
+	geometry.numIndexes = 6;
+	vertCache_t ambientCache;
+	memset( &ambientCache, 0, sizeof( ambientCache ) );
+	ambientCache.vbo = 101;
+	ambientCache.offset = 64;
+	ambientCache.size = geometry.numVerts * static_cast<int>( sizeof( idDrawVert ) );
+	ambientCache.indexBuffer = false;
+	ambientCache.tag = TAG_USED;
+	vertCache_t indexCache;
+	memset( &indexCache, 0, sizeof( indexCache ) );
+	indexCache.vbo = 202;
+	indexCache.offset = 128;
+	indexCache.size = geometry.numIndexes * static_cast<int>( sizeof( glIndex_t ) );
+	indexCache.indexBuffer = true;
+	indexCache.tag = TAG_USED;
+	geometry.ambientCache = &ambientCache;
+	geometry.indexCache = &indexCache;
+	for ( int i = 0; i < 2; ++i ) {
+		drawSurfs[i].geo = &geometry;
+		drawSurfs[i].material = tr.defaultMaterial;
+		drawSurfs[i].sort = tr.defaultMaterial->GetSort();
+	}
+
+	drawSurf_t *drawSurfPtrs[2] = { &drawSurfs[0], &drawSurfs[1] };
+	viewEntity_t viewEntity;
+	memset( &viewEntity, 0, sizeof( viewEntity ) );
+	drawSurfs[0].space = &viewEntity;
+	drawSurfs[1].space = &viewEntity;
+	viewLight_t lights[2];
+	memset( lights, 0, sizeof( lights ) );
+	idRenderLightLocal lightDefs[2];
+	memset( lightDefs, 0, sizeof( lightDefs ) );
+	for ( int i = 0; i < 2; ++i ) {
+		lightDefs[i].index = i;
+		lightDefs[i].areaNum = -1;
+		lightDefs[i].parms.origin.Set( 96.0f + 64.0f * i, 0.0f, 0.0f );
+		lightDefs[i].parms.lightRadius.Set( 256.0f, 256.0f, 256.0f );
+		lightDefs[i].parms.shaderParms[SHADERPARM_RED] = i == 0 ? 1.0f : 0.35f;
+		lightDefs[i].parms.shaderParms[SHADERPARM_GREEN] = i == 0 ? 0.65f : 0.85f;
+		lightDefs[i].parms.shaderParms[SHADERPARM_BLUE] = i == 0 ? 0.45f : 1.0f;
+		lights[i].lightDef = &lightDefs[i];
+		lights[i].next = i == 0 ? &lights[1] : NULL;
+		lights[i].scissorRect.x1 = 0;
+		lights[i].scissorRect.y1 = 0;
+		lights[i].scissorRect.x2 = 639;
+		lights[i].scissorRect.y2 = 479;
+		lights[i].globalLightOrigin = lightDefs[i].parms.origin;
+		lights[i].lightRadius = lightDefs[i].parms.lightRadius;
+		lights[i].pointLight = i == 0;
+		lights[i].viewSeesGlobalLightOrigin = true;
+	}
+
+	viewDef_t worldView;
+	memset( &worldView, 0, sizeof( worldView ) );
+	worldView.viewEntitys = &viewEntity;
+	worldView.drawSurfs = drawSurfPtrs;
+	worldView.numDrawSurfs = 2;
+	worldView.viewLights = &lights[0];
+	worldView.renderView.width = 640;
+	worldView.renderView.height = 480;
+	worldView.renderView.fov_x = 90.0f;
+	worldView.renderView.fov_y = 70.0f;
+	worldView.renderView.viewaxis = mat3_identity;
+	worldView.viewport.x1 = 0;
+	worldView.viewport.y1 = 0;
+	worldView.viewport.x2 = 639;
+	worldView.viewport.y2 = 479;
+	worldView.scissor.x1 = 0;
+	worldView.scissor.y1 = 0;
+	worldView.scissor.x2 = 639;
+	worldView.scissor.y2 = 479;
+
+	idScenePacketFrame packetFrame;
+	if ( !packetFrame.AddScene( &worldView, true ) || !packetFrame.AddPass( RENDER_PASS_AMBIENT, true ) ) {
+		common->Printf( "RendererLowOverhead self-test failed: could not build ambient packet scene\n" );
+		return false;
+	}
+	for ( int i = 0; i < 2; ++i ) {
+		if ( !packetFrame.AddDrawPacket( &drawSurfs[i], RENDER_PASS_AMBIENT, i ) ) {
+			common->Printf( "RendererLowOverhead self-test failed: could not add ambient draw packet\n" );
+			return false;
+		}
+	}
+	packetFrame.FinishScene();
+
+	idRenderGraph graph;
+	R_RenderGraph_BuildFromScenePackets( packetFrame, graph );
+	if ( graph.FindResource( "gbufferAlbedo" ) < 0 || graph.FindResource( "sceneDepth" ) < 0 || graph.FindResource( "deferredLight" ) < 0 || graph.FindResource( "clusterGrid" ) < 0 ) {
+		common->Printf( "RendererLowOverhead self-test failed: graph resources missing\n" );
+		return false;
+	}
+
+	R_MaterialResourceTable_PrepareFrame( packetFrame );
+	R_RenderGraphResources_PrepareFrame( graph );
+	const renderGraphResourceManagerStats_t &graphStats = R_RenderGraphResources_Stats();
+	if ( !graphStats.lowOverheadReady || graphStats.dsaTextureAllocations <= 0 || graphStats.dsaFramebufferAllocations <= 0 ) {
+		common->Printf(
+			"RendererLowOverhead self-test failed: graph DSA path unavailable (ready=%d tex=%d fbo=%d classic=%d/%d status='%s')\n",
+			graphStats.lowOverheadReady ? 1 : 0,
+			graphStats.dsaTextureAllocations,
+			graphStats.dsaFramebufferAllocations,
+			graphStats.classicTextureAllocations,
+			graphStats.classicFramebufferAllocations,
+			graphStats.lastFailure );
+		return false;
+	}
+	R_ModernClusteredLighting_PrepareFrame( packetFrame, true );
+
+	modernGLExecutorStats_t stats;
+	R_ModernGLExecutor_AnalyzeFrame(
+		packetFrame,
+		graph,
+		true,
+		rg_modernGLExecutorAvailable,
+		rg_modernGLExecutorInitialized,
+		rg_modernGLExecutorVAO != 0,
+		rg_modernGLExecutorFrameUBO != 0,
+		stats );
+	stats.opaqueGBufferRequested = true;
+	stats.deferredResolveRequested = true;
+	rg_modernGLDrawPlan.Build( packetFrame, graph );
+	R_ModernGLExecutor_CopyDrawPlanStats( stats, rg_modernGLDrawPlan.Stats() );
+	rg_modernGLSubmitPlan.Build( rg_modernGLDrawPlan );
+	R_ModernGLExecutor_CopySubmitPlanStats( stats, rg_modernGLSubmitPlan.Stats() );
+	R_ModernGLExecutor_UpdateFrameUBO( stats );
+	const renderGraphResourceHandle_t *gBufferHandles[MODERN_GL_GBUFFER_ATTACHMENT_COUNT];
+	memset( gBufferHandles, 0, sizeof( gBufferHandles ) );
+	stats.opaqueGBufferResourcesReady = true;
+	stats.opaqueGBufferAttachmentCount = MODERN_GL_GBUFFER_ATTACHMENT_COUNT;
+	stats.opaqueGBufferBytesPerPixel = 0;
+	for ( int i = 0; i < MODERN_GL_GBUFFER_ATTACHMENT_COUNT; ++i ) {
+		if ( !R_ModernGLExecutor_GBufferResourceReady( rg_modernGLGBufferAttachmentNames[i], gBufferHandles[i] ) ) {
+			stats.opaqueGBufferResourcesReady = false;
+		} else {
+			stats.opaqueGBufferBytesPerPixel += R_ModernGLExecutor_GBufferBytesPerPixel( *gBufferHandles[i] );
+		}
+	}
+	const renderGraphResourceHandle_t *sceneDepth = NULL;
+	const bool depthReady = R_ModernGLExecutor_DepthResourceReady( "sceneDepth", sceneDepth );
+	if ( !stats.opaqueGBufferResourcesReady || !depthReady || sceneDepth == NULL || !R_ModernGLExecutor_PrepareGBufferFBO( gBufferHandles, *sceneDepth, stats ) ) {
+		common->Printf(
+			"RendererLowOverhead self-test failed: G-buffer DSA preparation mismatch (res=%d depth=%d fboDSA=%d mrt=%d)\n",
+			stats.opaqueGBufferResourcesReady ? 1 : 0,
+			depthReady ? 1 : 0,
+			stats.lowOverheadFramebufferDSAUpdates,
+			stats.opaqueGBufferMRTReady ? 1 : 0 );
+		return false;
+	}
+	R_ModernGLExecutor_SubmitDeferredResolve( stats );
+	R_ModernGLExecutor_RecordMetrics( stats );
+
+	if ( !stats.lowOverheadReady || !stats.tierUsesDSA || !stats.tierUsesMultiBind || !stats.lowOverheadSamplerReady ) {
+		common->Printf( "RendererLowOverhead self-test failed: low-overhead capability flags mismatch\n" );
+		return false;
+	}
+	if ( !stats.deferredResolveExecuted || !stats.deferredResolveResourcesReady || !stats.deferredResolveClusterReady ) {
+		common->Printf(
+			"RendererLowOverhead self-test failed: deferred low-overhead execution mismatch (exec=%d res=%d cluster=%d fallback=%d)\n",
+			stats.deferredResolveExecuted ? 1 : 0,
+			stats.deferredResolveResourcesReady ? 1 : 0,
+			stats.deferredResolveClusterReady ? 1 : 0,
+			stats.deferredResolveResourceFallbacks );
+		return false;
+	}
+	if ( stats.lowOverheadDSAUpdates <= 0 || stats.lowOverheadFramebufferDSAUpdates <= 0 || stats.lowOverheadMultiBindBatches <= 0 || stats.lowOverheadTextureMultiBindBatches <= 0 || stats.lowOverheadSamplerMultiBindBatches <= 0 || stats.lowOverheadCompactedBatches <= 0 ) {
+		common->Printf(
+			"RendererLowOverhead self-test failed: low-overhead operations were not exercised (dsa=%d fboDSA=%d bufferBind=%d textureBind=%d samplerBind=%d compact=%d)\n",
+			stats.lowOverheadDSAUpdates,
+			stats.lowOverheadFramebufferDSAUpdates,
+			stats.lowOverheadMultiBindBatches,
+			stats.lowOverheadTextureMultiBindBatches,
+			stats.lowOverheadSamplerMultiBindBatches,
+			stats.lowOverheadCompactedBatches );
+		return false;
+	}
+
+	const rendererUploadStats_t &uploadStats = R_RendererUpload_Stats();
+	common->Printf(
+		"RendererLowOverhead self-test passed (dsa=1 multiBind=1 sampler=%d textureDSA=%d framebufferDSA=%d dsaUpdates=%d framebufferDSAUpdates=%d bufferMultiBind=%d textureMultiBind=%d samplerMultiBind=%d classicTextureBinds=%d bindless=%d/%d compactedBatches=%d persistent=%d fences=%d/%d waits=%d)\n",
+		stats.lowOverheadSamplerReady ? 1 : 0,
+		graphStats.dsaTextureAllocations,
+		graphStats.dsaFramebufferAllocations,
+		stats.lowOverheadDSAUpdates,
+		stats.lowOverheadFramebufferDSAUpdates,
+		stats.lowOverheadMultiBindBatches,
+		stats.lowOverheadTextureMultiBindBatches,
+		stats.lowOverheadSamplerMultiBindBatches,
+		stats.lowOverheadClassicTextureBinds,
+		stats.lowOverheadBindlessRequested ? 1 : 0,
+		stats.lowOverheadBindlessAvailable ? 1 : 0,
+		stats.lowOverheadCompactedBatches,
+		uploadStats.persistentMapped ? 1 : 0,
+		uploadStats.frameFencesSubmitted,
+		uploadStats.frameFencesRetired,
+		uploadStats.frameFenceWaits );
 	return true;
 }

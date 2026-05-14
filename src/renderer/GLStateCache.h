@@ -26,6 +26,8 @@ typedef struct glStateCacheStats_s {
 	int		bufferMisses;
 	int		textureMisses;
 	int		samplerMisses;
+	int		textureMultiBindBatches;
+	int		samplerMultiBindBatches;
 	int		framebufferMisses;
 	int		blendMisses;
 	int		depthMisses;
@@ -55,6 +57,8 @@ public:
 	bool ActiveTextureUnit( int unit );
 	bool BindTexture( int unit, GLenum target, GLuint texture );
 	bool BindSampler( int unit, GLuint sampler );
+	bool BindTextures( GLuint first, GLsizei count, const GLuint *textureNames );
+	bool BindSamplers( GLuint first, GLsizei count, const GLuint *samplerNames );
 	bool BindFramebuffer( GLenum target, GLuint framebuffer );
 
 	bool SetBlendEnabled( bool enabled );

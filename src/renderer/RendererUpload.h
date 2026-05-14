@@ -16,15 +16,20 @@ typedef struct rendererUploadStats_s {
 	int		framePersistentWrites;
 	int		frameMapRangeWrites;
 	int		frameSubDataWrites;
+	int		frameFencesSubmitted;
+	int		frameFencesRetired;
+	int		frameFenceWaits;
 	int		staticBuffersLive;
 	int		staticBytesLive;
 	int		ringSizeBytes;
 	int		ringBufferCount;
 	bool	persistentMapped;
+	bool	lowOverheadPersistentDefault;
 	bool	mapRangeFallback;
 	bool	legacyBridge;
 	bool	dynamicFrameBridge;
 	bool	staticBufferAllocator;
+	bool	fenceSyncAvailable;
 } rendererUploadStats_t;
 
 typedef struct rendererUploadAllocation_s {

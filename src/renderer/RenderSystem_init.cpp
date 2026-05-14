@@ -277,6 +277,7 @@ idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDE
 idCVar r_rendererModernExecutor( "r_rendererModernExecutor", "0", CVAR_RENDERER | CVAR_BOOL, "prepare the opt-in modern GL executor frame contract while legacy ARB2 still executes" );
 idCVar r_rendererModernSubmit( "r_rendererModernSubmit", "0", CVAR_RENDERER | CVAR_BOOL, "execute opt-in modern GL draw submission before legacy ARB2 fallback; diagnostic until visible pass replacement lands" );
 idCVar r_rendererGpuValidation( "r_rendererGpuValidation", "0", CVAR_RENDERER | CVAR_BOOL, "compare GL 4.3 GPU-driven compute results against CPU reference data on sampled frames" );
+idCVar r_rendererBindless( "r_rendererBindless", "0", CVAR_RENDERER | CVAR_BOOL, "enable experimental GL 4.5 bindless texture diagnostics without changing visible output" );
 idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | CVAR_BOOL, "execute the opt-in modern hybrid visible-frame composition when all required pass owners are modern-safe" );
 idCVar r_rendererShaderReload( "r_rendererShaderReload", "0", CVAR_RENDERER | CVAR_BOOL, "allow runtime reload of the internal modern GL shader library" );
 idCVar r_rendererModernVisibleDepth( "r_rendererModernVisibleDepth", "0", CVAR_RENDERER | CVAR_BOOL, "execute graph-backed modern depth and compatible shadow-depth passes while ARB2 remains the visible color path" );
@@ -618,6 +619,13 @@ static void R_RendererModernVisibleSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererModernVisible_RunSelfTest() ) {
 		common->Warning( "Renderer modern visible-frame self-test failed" );
+	}
+}
+
+static void R_RendererLowOverheadSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererLowOverhead_RunSelfTest() ) {
+		common->Warning( "Renderer GL45 low-overhead self-test failed" );
 	}
 }
 
@@ -2576,7 +2584,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		glConfig.backendCaps.debugContext ? 1 : 0,
 		glConfig.backendCaps.forwardCompatibleContext ? 1 : 0 );
 	common->Printf(
-		"Renderer features: modern=%d gl41=%d gpuDriven=%d lowOverhead=%d persistentUploads=%d DSA=%d multiBind=%d renderGraph=%d scenePackets=%d legacyBridge=%d\n",
+		"Renderer features: modern=%d gl41=%d gpuDriven=%d lowOverhead=%d persistentUploads=%d DSA=%d multiBind=%d bindless=%d bindlessExperiment=%d renderGraph=%d scenePackets=%d legacyBridge=%d\n",
 		glConfig.renderFeatures.modernBaseline ? 1 : 0,
 		glConfig.renderFeatures.modernGL41 ? 1 : 0,
 		glConfig.renderFeatures.gpuDriven ? 1 : 0,
@@ -2584,6 +2592,8 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		glConfig.renderFeatures.persistentMappedUploads ? 1 : 0,
 		glConfig.renderFeatures.directStateAccess ? 1 : 0,
 		glConfig.renderFeatures.multiBind ? 1 : 0,
+		glConfig.renderFeatures.bindlessTextures ? 1 : 0,
+		r_rendererBindless.GetBool() ? 1 : 0,
 		glConfig.renderFeatures.renderGraph ? 1 : 0,
 		glConfig.renderFeatures.scenePackets ? 1 : 0,
 		glConfig.renderFeatures.legacyARB2Bridge ? 1 : 0 );
@@ -2935,6 +2945,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererDeferredResolveSelfTest", R_RendererDeferredResolveSelfTest_f, CMD_FL_RENDERER, "run renderer deferred light resolve self tests" );
 	cmdSystem->AddCommand( "rendererForwardPlusSelfTest", R_RendererForwardPlusSelfTest_f, CMD_FL_RENDERER, "run renderer clustered forward+ self tests" );
 	cmdSystem->AddCommand( "rendererModernVisibleSelfTest", R_RendererModernVisibleSelfTest_f, CMD_FL_RENDERER, "run renderer modern visible-frame composition self tests" );
+	cmdSystem->AddCommand( "rendererLowOverheadSelfTest", R_RendererLowOverheadSelfTest_f, CMD_FL_RENDERER, "run renderer GL45 low-overhead self tests" );
 	cmdSystem->AddCommand( "rendererShaderLibrarySelfTest", R_RendererModernGLShaderLibrarySelfTest_f, CMD_FL_RENDERER, "run renderer modern GL shader-library self tests" );
 	cmdSystem->AddCommand( "rendererModernGLShaderLibrarySelfTest", R_RendererModernGLShaderLibrarySelfTest_f, CMD_FL_RENDERER, "run renderer modern GL shader-library self tests" );
 	cmdSystem->AddCommand( "rendererShaderLibraryReload", R_RendererShaderLibraryReload_f, CMD_FL_RENDERER, "reload the internal modern GL shader library when r_rendererShaderReload is enabled" );
