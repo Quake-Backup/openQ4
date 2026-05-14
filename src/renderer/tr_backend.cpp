@@ -686,6 +686,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 
 	R_GLStateCache_BeginFrame();
 
+	const int packetBuildStart = Sys_Milliseconds();
 	idScenePacketFrame backendScenePackets;
 	const idScenePacketFrame *scenePackets = NULL;
 	if ( R_ScenePackets_FrontEndFrameAvailable() ) {
@@ -694,9 +695,13 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		R_ScenePackets_BuildLegacyCommandStream( cmds, backendScenePackets );
 		scenePackets = &backendScenePackets;
 	}
+	R_RendererMetrics_AddPacketBuildMsec( Sys_Milliseconds() - packetBuildStart );
 	R_ScenePackets_LogIfVerbose( *scenePackets );
+
+	const int graphBuildStart = Sys_Milliseconds();
 	idRenderGraph legacyGraph;
 	R_RenderGraph_BuildFromScenePackets( *scenePackets, legacyGraph );
+	R_RendererMetrics_AddGraphBuildMsec( Sys_Milliseconds() - graphBuildStart );
 	R_RenderGraph_LogIfVerbose( legacyGraph );
 	{
 		const scenePacketFrameStats_t &packetStats = scenePackets->Stats();
@@ -785,15 +790,20 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			R_RendererMetrics_EndGpuTimer();
 			c_setBuffers++;
 			break;
-		case RC_SWAP_BUFFERS:
+		case RC_SWAP_BUFFERS: {
 			R_ModernGLExecutor_ComposeVisibleFrame();
 			R_ModernGLExecutor_DrawDepthDebugOverlay();
 			R_ModernGLExecutor_DrawGBufferDebugOverlay();
 			R_ModernGLExecutor_DrawDeferredDebugOverlay();
 			R_ModernClusteredLighting_DrawDebugOverlay();
+			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_SWAP_BUFFERS );
+			const int presentStart = Sys_Milliseconds();
 			RB_SwapBuffers( cmds );
+			R_RendererMetrics_AddPresentMsec( Sys_Milliseconds() - presentStart );
+			R_RendererMetrics_EndGpuTimer();
 			c_swapBuffers++;
 			break;
+		}
 		case RC_COPY_RENDER:
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_COPY_RENDER );
 			RB_CopyRender( cmds );

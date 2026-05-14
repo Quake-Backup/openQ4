@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "tr_local.h"
+#include "RendererMetrics.h"
 #include "ScenePackets.h"
 #ifdef __ppc__
 #include <vecLib/vecLib.h>
@@ -1184,7 +1185,9 @@ void R_RenderView( viewDef_t *parms ) {
 
 	// identify all the visible portalAreas, and the entityDefs and
 	// lightDefs that are in them and pass culling.
+	const int visibilityStart = Sys_Milliseconds();
 	static_cast<idRenderWorldLocal *>(parms->renderWorld)->FindViewLightsAndEntities();
+	R_RendererMetrics_AddVisibilityMsec( Sys_Milliseconds() - visibilityStart );
 
 	// constrain the view frustum to the view lights and entities
 	R_ConstrainViewFrustum();
@@ -1223,7 +1226,9 @@ void R_RenderView( viewDef_t *parms ) {
 
 	// Emit backend-neutral packets from the completed RenderWorld view before
 	// the legacy command is queued for ARB2 compatibility.
+	const int packetBuildStart = Sys_Milliseconds();
 	R_ScenePackets_AddRenderView( parms );
+	R_RendererMetrics_AddPacketBuildMsec( Sys_Milliseconds() - packetBuildStart );
 	R_AddDrawViewCmd( parms );
 
 	// restore view in case we are a subview

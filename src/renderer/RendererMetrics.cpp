@@ -2,6 +2,7 @@
 //
 
 #include "tr_local.h"
+#include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
 
@@ -10,8 +11,11 @@ typedef struct rendererMetricsFrame_s {
 	int		frontEndMsec;
 	int		sceneExtractionMsec;
 	int		visibilityMsec;
+	int		packetBuildMsec;
+	int		graphBuildMsec;
 	int		submitMsec;
 	int		backEndMsec;
+	int		presentMsec;
 	int		gpuMsec;
 	int		draw3d;
 	int		draw2d;
@@ -942,6 +946,30 @@ void R_RendererMetrics_RecordSubmitMsec( int submitMsec ) {
 	rg_rendererMetrics.submitMsec += submitMsec;
 }
 
+void R_RendererMetrics_AddVisibilityMsec( int msec ) {
+	if ( msec > 0 ) {
+		rg_rendererMetrics.visibilityMsec += msec;
+	}
+}
+
+void R_RendererMetrics_AddPacketBuildMsec( int msec ) {
+	if ( msec > 0 ) {
+		rg_rendererMetrics.packetBuildMsec += msec;
+	}
+}
+
+void R_RendererMetrics_AddGraphBuildMsec( int msec ) {
+	if ( msec > 0 ) {
+		rg_rendererMetrics.graphBuildMsec += msec;
+	}
+}
+
+void R_RendererMetrics_AddPresentMsec( int msec ) {
+	if ( msec > 0 ) {
+		rg_rendererMetrics.presentMsec += msec;
+	}
+}
+
 void R_RendererMetrics_RecordBackendCommands( int draw3d, int draw2d, int setBuffers, int swapBuffers, int copyRenders, int specialEffects, int renderTargetOps ) {
 	rg_rendererMetrics.draw3d += draw3d;
 	rg_rendererMetrics.draw2d += draw2d;
@@ -1346,6 +1374,55 @@ void R_RendererMetrics_AddBufferStall( void ) {
 	rg_rendererMetrics.bufferStalls++;
 }
 
+static void R_RendererMetrics_RecordBenchmarkCapture( void ) {
+	rendererBenchmarkFrameSample_t sample;
+	memset( &sample, 0, sizeof( sample ) );
+
+	sample.frameMsec = rg_rendererMetrics.frontEndMsec + rg_rendererMetrics.submitMsec;
+	if ( sample.frameMsec <= 0 ) {
+		sample.frameMsec = rg_rendererMetrics.frontEndMsec + rg_rendererMetrics.backEndMsec;
+	}
+	sample.frontEndMsec = rg_rendererMetrics.frontEndMsec;
+	sample.visibilityMsec = rg_rendererMetrics.visibilityMsec;
+	sample.packetBuildMsec = rg_rendererMetrics.packetBuildMsec;
+	sample.graphBuildMsec = rg_rendererMetrics.graphBuildMsec;
+	sample.submitMsec = rg_rendererMetrics.submitMsec;
+	sample.backEndMsec = rg_rendererMetrics.backEndMsec;
+	sample.presentMsec = rg_rendererMetrics.presentMsec;
+	sample.gpuMsec = Max( 0, R_RendererMetrics_TotalGpuMsec( rg_rendererMetrics ) );
+	for ( int i = 0; i < RENDERER_GPU_TIMER_COUNT; ++i ) {
+		sample.gpuPassMsec[i] = rg_rendererMetrics.gpuTimerMsec[i];
+		sample.gpuPassSamples[i] = rg_rendererMetrics.gpuTimerSamples[i];
+	}
+	sample.uploadBytes = rg_rendererMetrics.uploadBytes;
+	sample.drawElements = rg_rendererMetrics.drawElements;
+	sample.surfaces = rg_rendererMetrics.surfaces;
+	sample.vertexes = rg_rendererMetrics.vertexes;
+	sample.indexes = rg_rendererMetrics.indexes;
+	sample.visibleEntities = rg_rendererMetrics.visibleEntities;
+	sample.viewLights = rg_rendererMetrics.viewLights;
+	sample.scenePackets = rg_rendererMetrics.scenePackets;
+	sample.passPackets = rg_rendererMetrics.passPackets;
+	sample.drawPackets = rg_rendererMetrics.drawPackets;
+	sample.renderGraphPasses = rg_rendererMetrics.renderGraphPasses;
+	sample.renderGraphResources = rg_rendererMetrics.renderGraphResources;
+	sample.clusterCount = rg_rendererMetrics.clusteredLighting.clusterCount;
+	sample.clusterActiveCount = rg_rendererMetrics.clusteredLighting.activeClusters;
+	sample.clusterLightCount = rg_rendererMetrics.clusteredLighting.lightCount;
+	sample.clusterReferenceCount = rg_rendererMetrics.clusteredLighting.lightReferences;
+	sample.clusterOverflowCount = rg_rendererMetrics.clusteredLighting.overflowClusters;
+	sample.drawPlanFallbacks = rg_rendererMetrics.modernExecutorDrawPlanFallbackDraws;
+	sample.submitPlanFallbacks = rg_rendererMetrics.modernExecutorSubmitPlanFallbackDraws;
+	sample.opaqueGBufferFallbacks = rg_rendererMetrics.modernExecutorOpaqueGBufferFallbackDraws;
+	sample.deferredFallbacks = rg_rendererMetrics.modernDeferredResourceFallbacks + rg_rendererMetrics.modernDeferredUnsupportedLightFallbacks + rg_rendererMetrics.modernDeferredFogFallbackLights + rg_rendererMetrics.modernDeferredSpecialFallbackLights;
+	sample.forwardFallbacks = rg_rendererMetrics.modernForwardFallbackDraws;
+	sample.visibleFallbacks = rg_rendererMetrics.modernVisibleFallbackPasses;
+	sample.visibleOwnerFallbacks = rg_rendererMetrics.modernVisibleOwnerFallbacks;
+	sample.visibleResourceFallbacks = rg_rendererMetrics.modernVisibleResourceFallbacks;
+
+	RendererBenchmarks_RecordFrame( sample );
+}
+
 void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCount, int visibleEntities, int viewLights, int drawElements, int surfaces, int vertexes, int indexes ) {
 	if ( r_rendererMetrics.GetInteger() <= 0 ) {
 		return;
@@ -1360,6 +1437,7 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	rg_rendererMetrics.surfaces = surfaces;
 	rg_rendererMetrics.vertexes = vertexes;
 	rg_rendererMetrics.indexes = indexes;
+	R_RendererMetrics_RecordBenchmarkCapture();
 
 	const int detail = r_rendererMetrics.GetInteger();
 	const rendererUploadStats_t &uploadStats = R_RendererUpload_Stats();
@@ -1367,12 +1445,16 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	R_RendererMetrics_FormatGpuMsec( rg_rendererMetrics, gpuText, sizeof( gpuText ) );
 	if ( detail >= 2 ) {
 		common->Printf(
-			"rendererMetrics frame=%d tier=%s fe=%dms submit=%dms be=%dms gpu=%s views=%d ents=%d lights=%d draws=%d surf=%d verts=%d idx=%d uploads=%d stalls=%d ring=%d/%dKB allocs=%d overflow=%d static=%dKB/%d live=%d/%dKB writes(p=%d map=%d sub=%d) packets(source=%s scene=%d pass=%d draw=%d clipped=%d cmd=%d views=%d overflow=%d cause=%s sortFailures=%d categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d)) resources(materials=%d geometryRecords=%d instances=%d withMaterial=%d materialRefs=%d geometryRefs=%d instanceRefs=%d geometry=%d regs=%d ibo=%d vbo=%d) graph(pass=%d packets=%d scenes=%d draw=%d cmd=%d res=%d imported=%d transient=%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d overflow=%d) graphGL(prepared=%d available=%d handles=%d imported=%d transient=%d textures=%d buffers=%d physical=%d new=%d reuse=%d aliasReuse=%d fbo=%d/%d skipped(imported=%d buffer=%d) lifetimeFailures=%d overflow=%d status='%s') materialTable(prepared=%d available=%d records=%d source=%d draws=%d textures=%d classic=%d arrays=%d views=%d bindless=%d/%d classes(o=%d p=%d t=%d gui=%d post=%d) fallback=%d missing=%d unsupported=%d reasons(matl=%d nodraw=%d image=%d custom=%d dynamic=%d texgen=%d current=%d slots=%d) status='%s') modernExec(mode=%s vao=%d ubo=%d shaderLib=%d shaders=%d shaderFails=%d passes=%d/%d fallback=%d draws=%d material=%d resources=%d geometry=%d plan=%d planDraws=%d depth=%d materialFamily=%d planFallback=%d batches=%d switches=%d materialSwitches=%d planOverflow=%d submit=%d submitDraws=%d submitDepth=%d submitMaterial=%d submitFallback=%d missing(vbo=%d ibo=%d) indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches(program=%d vbo=%d ibo=%d scissor=%d material=%d) uniforms=%d frameUBO=%d submitOverflow=%d visibleDepth(req=%d exec=%d res=%d/%d draws=%d shadow=%d fallback=%d/%d stencil=%d mismatch=%d overlay=%d/%d) gbuffer(req=%d exec=%d res=%d mrt=%d draws=%d fallback=%d att=%d bpp=%d bw=%dKB overlay=%d/%d) deferred(req=%d exec=%d res=%d out=%d program=%d cluster=%d pixels=%d lights=%d p=%d proj=%d lightGrid=%d reads=%d fallback=%d unsupported=%d fog=%d special=%d overflow=%d clear=%d debug=%d overlay=%d/%d) cluster(req=%d valid=%d grids=%d lights=%d p=%d proj=%d fog=%d ambient=%d special=%d clusters=%d active=%d refs=%d overflow=%d/%d overflowRefs=%d max=%d grid=%dx%dx%d build=%dms ubo=%d bytes=%dKB overlay=%d/%d)) stateCache(hits=%d misses=%d invalidations=%d legacyResets=%d labels=%d groups=%d prog=%d vao=%d buf=%d tex=%d sampler=%d fbo=%d blend=%d depth=%d stencil=%d raster=%d viewport=%d scissor=%d color=%d last='%s') gpuPass(3d=%d/%d 2d=%d/%d rt=%d/%d copy=%d/%d special=%d/%d setbuf=%d/%d deferred=%d/%d dropped=%d) cmds(3d=%d 2d=%d rt=%d copy=%d swap=%d)\n",
+			"rendererMetrics frame=%d tier=%s fe=%dms visibility=%dms packet=%dms graph=%dms submit=%dms be=%dms present=%dms gpu=%s views=%d ents=%d lights=%d draws=%d surf=%d verts=%d idx=%d uploads=%d stalls=%d ring=%d/%dKB allocs=%d overflow=%d static=%dKB/%d live=%d/%dKB writes(p=%d map=%d sub=%d) packets(source=%s scene=%d pass=%d draw=%d clipped=%d cmd=%d views=%d overflow=%d cause=%s sortFailures=%d categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d)) resources(materials=%d geometryRecords=%d instances=%d withMaterial=%d materialRefs=%d geometryRefs=%d instanceRefs=%d geometry=%d regs=%d ibo=%d vbo=%d) graph(pass=%d packets=%d scenes=%d draw=%d cmd=%d res=%d imported=%d transient=%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d overflow=%d) graphGL(prepared=%d available=%d handles=%d imported=%d transient=%d textures=%d buffers=%d physical=%d new=%d reuse=%d aliasReuse=%d fbo=%d/%d skipped(imported=%d buffer=%d) lifetimeFailures=%d overflow=%d status='%s') materialTable(prepared=%d available=%d records=%d source=%d draws=%d textures=%d classic=%d arrays=%d views=%d bindless=%d/%d classes(o=%d p=%d t=%d gui=%d post=%d) fallback=%d missing=%d unsupported=%d reasons(matl=%d nodraw=%d image=%d custom=%d dynamic=%d texgen=%d current=%d slots=%d) status='%s') modernExec(mode=%s vao=%d ubo=%d shaderLib=%d shaders=%d shaderFails=%d passes=%d/%d fallback=%d draws=%d material=%d resources=%d geometry=%d plan=%d planDraws=%d depth=%d materialFamily=%d planFallback=%d batches=%d switches=%d materialSwitches=%d planOverflow=%d submit=%d submitDraws=%d submitDepth=%d submitMaterial=%d submitFallback=%d missing(vbo=%d ibo=%d) indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches(program=%d vbo=%d ibo=%d scissor=%d material=%d) uniforms=%d frameUBO=%d submitOverflow=%d visibleDepth(req=%d exec=%d res=%d/%d draws=%d shadow=%d fallback=%d/%d stencil=%d mismatch=%d overlay=%d/%d) gbuffer(req=%d exec=%d res=%d mrt=%d draws=%d fallback=%d att=%d bpp=%d bw=%dKB overlay=%d/%d) deferred(req=%d exec=%d res=%d out=%d program=%d cluster=%d pixels=%d lights=%d p=%d proj=%d lightGrid=%d reads=%d fallback=%d unsupported=%d fog=%d special=%d overflow=%d clear=%d debug=%d overlay=%d/%d) cluster(req=%d valid=%d grids=%d lights=%d p=%d proj=%d fog=%d ambient=%d special=%d clusters=%d active=%d refs=%d overflow=%d/%d overflowRefs=%d max=%d grid=%dx%dx%d build=%dms ubo=%d bytes=%dKB overlay=%d/%d)) stateCache(hits=%d misses=%d invalidations=%d legacyResets=%d labels=%d groups=%d prog=%d vao=%d buf=%d tex=%d sampler=%d fbo=%d blend=%d depth=%d stencil=%d raster=%d viewport=%d scissor=%d color=%d last='%s') gpuPass(3d=%d/%d 2d=%d/%d rt=%d/%d copy=%d/%d special=%d/%d setbuf=%d/%d swap=%d/%d deferred=%d/%d dropped=%d) cmds(3d=%d 2d=%d rt=%d copy=%d swap=%d)\n",
 			rg_rendererMetrics.frameCount,
 			RendererTier_Name( glConfig.rendererTier ),
 			rg_rendererMetrics.frontEndMsec,
+			rg_rendererMetrics.visibilityMsec,
+			rg_rendererMetrics.packetBuildMsec,
+			rg_rendererMetrics.graphBuildMsec,
 			rg_rendererMetrics.submitMsec,
 			rg_rendererMetrics.backEndMsec,
+			rg_rendererMetrics.presentMsec,
 			gpuText,
 			rg_rendererMetrics.views,
 			rg_rendererMetrics.visibleEntities,
@@ -1630,6 +1712,8 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_SPECIAL_EFFECTS],
 			rg_rendererMetrics.gpuTimerMsec[RENDERER_GPU_TIMER_SET_BUFFER],
 			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_SET_BUFFER],
+			rg_rendererMetrics.gpuTimerMsec[RENDERER_GPU_TIMER_SWAP_BUFFERS],
+			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_SWAP_BUFFERS],
 			rg_rendererMetrics.gpuTimerMsec[RENDERER_GPU_TIMER_MODERN_DEFERRED],
 			rg_rendererMetrics.gpuTimerSamples[RENDERER_GPU_TIMER_MODERN_DEFERRED],
 			rg_rendererMetrics.gpuTimerDroppedQueries,
@@ -1755,17 +1839,22 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			uploadStats.frameFencesRetired,
 			uploadStats.frameFenceWaits,
 			uploadStats.fenceSyncAvailable ? 1 : 0 );
+		RendererBenchmarks_PrintLatestCapture();
 		return;
 	}
 
 	if ( rg_rendererMetricsLastSummaryFrame < 0 || rg_rendererMetrics.frameCount - rg_rendererMetricsLastSummaryFrame >= 60 ) {
 		rg_rendererMetricsLastSummaryFrame = rg_rendererMetrics.frameCount;
 		common->Printf(
-			"rendererMetrics summary tier=%s fe=%dms submit=%dms be=%dms gpu=%s views=%d ents=%d lights=%d draws=%d uploads=%dKB stalls=%d ring=%d/%dKB overflow=%dKB static=%dKB/%d live=%d/%dKB packets=%s:%d/%d/%d clipped=%d packetOverflow=%d cause=%s materials=%d geometryRecords=%d instances=%d resources=%d geometryRefs=%d instanceRefs=%d geometry=%d sort=%d graph=%d/%d/%d res=%d/%d/%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d graphOverflow=%d graphGL=%d/%d handles=%d fbo=%d/%d materialTable=%d/%d records=%d tex=%d fallback=%d missing=%d modernExec=%s shaders=%d shaderFails=%d prep=%d/%d fallback=%d draws=%d resources=%d geometry=%d plan=%d/%d depth=%d materialFamily=%d batches=%d switches=%d submit=%d/%d submitFallback=%d missingVBO=%d missingIBO=%d indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches=%d/%d/%d visibleDepth=%d/%d fallback=%d mismatch=%d overlay=%d gbuffer=%d/%d fallback=%d mrt=%d bw=%dKB overlay=%d deferred=%d/%d pixels=%d lights=%d reads=%d fallback=%d overlay=%d cluster=%d/%d lights=%d refs=%d overflow=%d/%d build=%dms ubo=%d stateCache=%d/%d invalid=%d legacyReset=%d\n",
+			"rendererMetrics summary tier=%s fe=%dms visibility=%dms packet=%dms graph=%dms submit=%dms be=%dms present=%dms gpu=%s views=%d ents=%d lights=%d draws=%d uploads=%dKB stalls=%d ring=%d/%dKB overflow=%dKB static=%dKB/%d live=%d/%dKB packets=%s:%d/%d/%d clipped=%d packetOverflow=%d cause=%s materials=%d geometryRecords=%d instances=%d resources=%d geometryRefs=%d instanceRefs=%d geometry=%d sort=%d graph=%d/%d/%d res=%d/%d/%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d graphOverflow=%d graphGL=%d/%d handles=%d fbo=%d/%d materialTable=%d/%d records=%d tex=%d fallback=%d missing=%d modernExec=%s shaders=%d shaderFails=%d prep=%d/%d fallback=%d draws=%d resources=%d geometry=%d plan=%d/%d depth=%d materialFamily=%d batches=%d switches=%d submit=%d/%d submitFallback=%d missingVBO=%d missingIBO=%d indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches=%d/%d/%d visibleDepth=%d/%d fallback=%d mismatch=%d overlay=%d gbuffer=%d/%d fallback=%d mrt=%d bw=%dKB overlay=%d deferred=%d/%d pixels=%d lights=%d reads=%d fallback=%d overlay=%d cluster=%d/%d lights=%d refs=%d overflow=%d/%d build=%dms ubo=%d stateCache=%d/%d invalid=%d legacyReset=%d\n",
 			RendererTier_Name( glConfig.rendererTier ),
 			rg_rendererMetrics.frontEndMsec,
+			rg_rendererMetrics.visibilityMsec,
+			rg_rendererMetrics.packetBuildMsec,
+			rg_rendererMetrics.graphBuildMsec,
 			rg_rendererMetrics.submitMsec,
 			rg_rendererMetrics.backEndMsec,
+			rg_rendererMetrics.presentMsec,
 			gpuText,
 			rg_rendererMetrics.views,
 			rg_rendererMetrics.visibleEntities,
@@ -1879,6 +1968,7 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.glStateCache.misses,
 			rg_rendererMetrics.glStateCache.forcedInvalidations,
 			rg_rendererMetrics.glStateCache.legacyHandoffResets );
+		RendererBenchmarks_PrintLatestCapture();
 	}
 }
 

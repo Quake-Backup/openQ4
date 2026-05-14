@@ -1061,6 +1061,11 @@ extern idCVar r_glTier;					// auto, legacy, gl33, gl41, gl43, gl45, gl46
 extern idCVar r_glDebugContext;			// request a debug GL context when the platform backend supports it
 extern idCVar r_rendererMetrics;			// 0 off, 1 summary, 2 verbose per-frame/pass metrics
 extern idCVar r_rendererGpuTimers;		// sample GL timer queries when renderer metrics are enabled
+extern idCVar r_rendererBenchmarkPreset;	// benchmark budget preset
+extern idCVar r_rendererPerfThresholdP95;	// custom P95 benchmark threshold in milliseconds
+extern idCVar r_rendererPerfThresholdP99;	// custom P99 benchmark threshold in milliseconds
+extern idCVar r_rendererAdaptiveClusterGrid;	// use preset-driven cluster-grid dimensions
+extern idCVar r_rendererDynamicResolution;	// allow benchmark screen-percentage experiments
 extern idCVar r_rendererUploadMegs;		// dynamic upload stream size in megabytes per frame buffer
 extern idCVar r_rendererUploadPersistent;	// allow persistent-mapped dynamic upload stream
 extern idCVar r_rendererModernExecutor;	// opt-in modern GL executor prepare path

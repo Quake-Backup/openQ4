@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "DXT/DXTCodec.h"
 #include "RendererBootstrap.h"
 #include "GLStateCache.h"
+#include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
 #include "RenderGraph.h"
@@ -134,6 +135,7 @@ static void GfxInfo_f( void );
 
 const char *r_rendererArgs[] = { "best", "arb", "arb2", "Cg", "exp", "nv10", "nv20", "r200", NULL };
 const char *r_glTierArgs[] = { "auto", "legacy", "gl33", "gl41", "gl43", "gl45", "gl46", NULL };
+const char *r_rendererBenchmarkPresetArgs[] = { "low", "baseline", "modern", "high-end", NULL };
 
 idCVar r_inhibitFragmentProgram( "r_inhibitFragmentProgram", "0", CVAR_RENDERER | CVAR_BOOL, "ignore the fragment program extension" );
 idCVar r_glDriver( "r_glDriver", "", CVAR_RENDERER, "\"opengl32\", etc." );
@@ -272,6 +274,11 @@ idCVar r_glTier( "r_glTier", "auto", CVAR_RENDERER | CVAR_ARCHIVE, "OpenGL rende
 idCVar r_glDebugContext( "r_glDebugContext", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request a debug OpenGL context when the platform backend supports it" );
 idCVar r_rendererMetrics( "r_rendererMetrics", "0", CVAR_RENDERER | CVAR_INTEGER, "renderer metrics: 0 = off, 1 = periodic summary, 2 = per-frame/pass detail", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_rendererGpuTimers( "r_rendererGpuTimers", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "sample GL timer queries when r_rendererMetrics is enabled and supported" );
+idCVar r_rendererBenchmarkPreset( "r_rendererBenchmarkPreset", "baseline", CVAR_RENDERER | CVAR_ARCHIVE, "renderer benchmark budget preset: low, baseline, modern, high-end", r_rendererBenchmarkPresetArgs, idCmdSystem::ArgCompletion_String<r_rendererBenchmarkPresetArgs> );
+idCVar r_rendererPerfThresholdP95( "r_rendererPerfThresholdP95", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P95 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
+idCVar r_rendererPerfThresholdP99( "r_rendererPerfThresholdP99", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P99 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
+idCVar r_rendererAdaptiveClusterGrid( "r_rendererAdaptiveClusterGrid", "0", CVAR_RENDERER | CVAR_BOOL, "use benchmark preset cluster-grid dimensions for the modern clustered-light experiment" );
+idCVar r_rendererDynamicResolution( "r_rendererDynamicResolution", "0", CVAR_RENDERER | CVAR_BOOL, "allow benchmark presets to recommend dynamic screen-percentage experiments; disabled by default" );
 idCVar r_rendererUploadMegs( "r_rendererUploadMegs", "16", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream size in megabytes per frame buffer", 1, 128, idCmdSystem::ArgCompletion_Integer<1,128> );
 idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow persistent-mapped dynamic renderer uploads when supported" );
 idCVar r_rendererModernExecutor( "r_rendererModernExecutor", "0", CVAR_RENDERER | CVAR_BOOL, "prepare the opt-in modern GL executor frame contract while legacy ARB2 still executes" );
@@ -505,6 +512,18 @@ static void R_RendererCompatibilityGatesSelfTest_f( const idCmdArgs &args ) {
 	if ( !RendererCompatibilityGates_RunSelfTest() ) {
 		common->Warning( "Renderer compatibility gates self-test failed" );
 	}
+}
+
+static void R_RendererBenchmarkSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererBenchmark_RunSelfTest() ) {
+		common->Warning( "Renderer benchmark self-test failed" );
+	}
+}
+
+static void R_RendererBenchmarkCapture_f( const idCmdArgs &args ) {
+	(void)args;
+	RendererBenchmarks_PrintLatestCapture();
 }
 
 static void R_RendererUploadSelfTest_f( const idCmdArgs &args ) {
@@ -1535,30 +1554,79 @@ void R_ReportImageDuplication_f( const idCmdArgs &args ) {
 R_RenderingFPS
 ================
 */
-static float R_RenderingFPS( const renderView_t *renderView ) {
+typedef struct renderingFPSResult_s {
+	float	fps;
+	float	averageMsec;
+	int		frameCount;
+	int		p50Msec;
+	int		p95Msec;
+	int		p99Msec;
+	int		maxMsec;
+} renderingFPSResult_t;
+
+static void R_SortBenchmarkFrameTimes( int *values, int count ) {
+	for ( int i = 1; i < count; ++i ) {
+		const int key = values[i];
+		int j = i - 1;
+		while ( j >= 0 && values[j] > key ) {
+			values[j + 1] = values[j];
+			j--;
+		}
+		values[j + 1] = key;
+	}
+}
+
+static int R_BenchmarkPercentileIndex( int count, int percentile ) {
+	if ( count <= 0 ) {
+		return 0;
+	}
+	const int rank = ( count * percentile + 99 ) / 100;
+	return idMath::ClampInt( 0, count - 1, rank - 1 );
+}
+
+static renderingFPSResult_t R_RenderingFPS( const renderView_t *renderView ) {
+	renderingFPSResult_t result;
+	memset( &result, 0, sizeof( result ) );
 	glFinish();
 
 	int		start = Sys_Milliseconds();
 	static const int SAMPLE_MSEC = 1000;
+	static const int MAX_FRAME_SAMPLES = 512;
+	int		frameTimes[MAX_FRAME_SAMPLES];
+	int		frameSampleCount = 0;
 	int		end;
 	int		count = 0;
 
 	while( 1 ) {
 		// render
+		const int frameStart = Sys_Milliseconds();
 		renderSystem->BeginFrame( glConfig.vidWidth, glConfig.vidHeight );
 		tr.primaryWorld->RenderScene( renderView );
 		renderSystem->EndFrame( NULL, NULL );
 		glFinish();
+		const int frameEnd = Sys_Milliseconds();
+		if ( frameSampleCount < MAX_FRAME_SAMPLES ) {
+			frameTimes[frameSampleCount++] = Max( 0, frameEnd - frameStart );
+		}
 		count++;
-		end = Sys_Milliseconds();
+		end = frameEnd;
 		if ( end - start > SAMPLE_MSEC ) {
 			break;
 		}
 	}
 
-	float fps = count * 1000.0 / ( end - start );
+	result.frameCount = count;
+	result.fps = count * 1000.0f / Max( 1, end - start );
+	result.averageMsec = 1000.0f / Max( 0.001f, result.fps );
+	if ( frameSampleCount > 0 ) {
+		R_SortBenchmarkFrameTimes( frameTimes, frameSampleCount );
+		result.p50Msec = frameTimes[R_BenchmarkPercentileIndex( frameSampleCount, 50 )];
+		result.p95Msec = frameTimes[R_BenchmarkPercentileIndex( frameSampleCount, 95 )];
+		result.p99Msec = frameTimes[R_BenchmarkPercentileIndex( frameSampleCount, 99 )];
+		result.maxMsec = frameTimes[frameSampleCount - 1];
+	}
 
-	return fps;
+	return result;
 }
 
 /*
@@ -1567,7 +1635,7 @@ R_Benchmark_f
 ================
 */
 void R_Benchmark_f( const idCmdArgs &args ) {
-	float	fps, msec;
+	renderingFPSResult_t result;
 	renderView_t	view;
 
 	if ( !tr.primaryView ) {
@@ -1578,25 +1646,47 @@ void R_Benchmark_f( const idCmdArgs &args ) {
 
 	for ( int size = 100 ; size >= 10 ; size -= 10 ) {
 		r_screenFraction.SetInteger( size );
-		fps = R_RenderingFPS( &view );
+		result = R_RenderingFPS( &view );
 		int	kpix = glConfig.vidWidth * glConfig.vidHeight * ( size * 0.01 ) * ( size * 0.01 ) * 0.001;
-		msec = 1000.0 / fps;
-		common->Printf( "kpix: %4i  msec:%5.1f fps:%5.1f\n", kpix, msec, fps );
+		common->Printf(
+			"kpix: %4i  avg:%5.1fms p50:%3ims p95:%3ims p99:%3ims max:%3ims fps:%5.1f frames:%i\n",
+			kpix,
+			result.averageMsec,
+			result.p50Msec,
+			result.p95Msec,
+			result.p99Msec,
+			result.maxMsec,
+			result.fps,
+			result.frameCount );
 	}
 
 	// enable r_singleTriangle 1 while r_screenFraction is still at 10
 	r_singleTriangle.SetBool( 1 );
-	fps = R_RenderingFPS( &view );
-	msec = 1000.0 / fps;
-	common->Printf( "single tri  msec:%5.1f fps:%5.1f\n", msec, fps );
+	result = R_RenderingFPS( &view );
+	common->Printf(
+		"single tri  avg:%5.1fms p50:%3ims p95:%3ims p99:%3ims max:%3ims fps:%5.1f frames:%i\n",
+		result.averageMsec,
+		result.p50Msec,
+		result.p95Msec,
+		result.p99Msec,
+		result.maxMsec,
+		result.fps,
+		result.frameCount );
 	r_singleTriangle.SetBool( 0 );
 	r_screenFraction.SetInteger( 100 );
 
 	// enable r_skipRenderContext 1
 	r_skipRenderContext.SetBool( true );
-	fps = R_RenderingFPS( &view );
-	msec = 1000.0 / fps;
-	common->Printf( "no context  msec:%5.1f fps:%5.1f\n", msec, fps );
+	result = R_RenderingFPS( &view );
+	common->Printf(
+		"no context  avg:%5.1fms p50:%3ims p95:%3ims p99:%3ims max:%3ims fps:%5.1f frames:%i\n",
+		result.averageMsec,
+		result.p50Msec,
+		result.p95Msec,
+		result.p99Msec,
+		result.maxMsec,
+		result.fps,
+		result.frameCount );
 	r_skipRenderContext.SetBool( false );
 }
 
@@ -2624,6 +2714,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		common->Printf( "Renderer caps: %s\n", capsSummary );
 	}
 	RendererCompatibilityGates_PrintGfxInfo();
+	RendererBenchmarks_PrintGfxInfo();
 	common->Printf(
 		"Renderer GPU timers: %s, cvar=%d, timerQuery=%d\n",
 		R_RendererMetrics_GpuTimersAvailable() ? "available" : "unavailable",
@@ -2950,6 +3041,8 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererTierSelfTest", R_RendererTierSelfTest_f, CMD_FL_RENDERER, "run renderer tier-selection self tests" );
 	cmdSystem->AddCommand( "rendererContextLadderSelfTest", R_RendererContextLadderSelfTest_f, CMD_FL_RENDERER, "run renderer context ladder self tests" );
 	cmdSystem->AddCommand( "rendererCompatibilityGatesSelfTest", R_RendererCompatibilityGatesSelfTest_f, CMD_FL_RENDERER, "run renderer driver-quirk and fallback-gate self tests" );
+	cmdSystem->AddCommand( "rendererBenchmarkSelfTest", R_RendererBenchmarkSelfTest_f, CMD_FL_RENDERER, "run renderer benchmark capture and percentile self tests" );
+	cmdSystem->AddCommand( "rendererBenchmarkCapture", R_RendererBenchmarkCapture_f, CMD_FL_RENDERER, "print the latest renderer benchmark capture summary" );
 	cmdSystem->AddCommand( "rendererUploadSelfTest", R_RendererUploadSelfTest_f, CMD_FL_RENDERER, "run renderer upload stream self tests" );
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );

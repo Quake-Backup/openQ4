@@ -1139,7 +1139,22 @@ void idRenderSystemLocal::EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	guiModel->EmitFullScreen();
 	guiModel->Clear();
 
-	// save out timing information
+	// check for dynamic changes that require some initialization
+	R_CheckCvars();
+
+    // check for errors
+	GL_CheckErrors();
+
+	// add the swapbuffers command
+	cmd = (emptyCommand_t *)R_GetCommandBuffer( sizeof( *cmd ) );
+	cmd->commandId = RC_SWAP_BUFFERS;
+	R_ScenePackets_AddPresent();
+
+	// start the back end up again with the new command list
+	R_IssueRenderCommands();
+	ProcessPendingRenderTextureDeletes();
+
+	// save out timing information after the backend has consumed the frame.
 	if ( frontEndMsec ) {
 		*frontEndMsec = pc.frontEndMsec;
 	}
@@ -1160,21 +1175,6 @@ void idRenderSystemLocal::EndFrame( int *frontEndMsec, int *backEndMsec ) {
 
 	// print any other statistics and clear all of them
 	R_PerformanceCounters();
-
-	// check for dynamic changes that require some initialization
-	R_CheckCvars();
-
-    // check for errors
-	GL_CheckErrors();
-
-	// add the swapbuffers command
-	cmd = (emptyCommand_t *)R_GetCommandBuffer( sizeof( *cmd ) );
-	cmd->commandId = RC_SWAP_BUFFERS;
-	R_ScenePackets_AddPresent();
-
-	// start the back end up again with the new command list
-	R_IssueRenderCommands();
-	ProcessPendingRenderTextureDeletes();
 
 	// use the other buffers next frame, because another CPU
 	// may still be rendering into the current buffers

@@ -33,6 +33,10 @@ enum rendererModernExecutorMetricsMode_t {
 
 void R_RendererMetrics_BeginFrame( int frameCount );
 void R_RendererMetrics_RecordSubmitMsec( int submitMsec );
+void R_RendererMetrics_AddVisibilityMsec( int msec );
+void R_RendererMetrics_AddPacketBuildMsec( int msec );
+void R_RendererMetrics_AddGraphBuildMsec( int msec );
+void R_RendererMetrics_AddPresentMsec( int msec );
 void R_RendererMetrics_RecordBackendCommands( int draw3d, int draw2d, int setBuffers, int swapBuffers, int copyRenders, int specialEffects, int renderTargetOps );
 void R_RendererMetrics_RecordScenePackets( const scenePacketFrameStats_t &stats );
 void R_RendererMetrics_RecordRenderGraph( int graphPasses, int passPackets, int scenePackets, int drawPackets, int commandPackets, int resources, int importedResources, int transientResources, int aliasableTransientResources, int resourceAccesses, int readAccesses, int writeAccesses, int clearOps, int resolveOps, int invalidateOps, int presentOps, bool overflow );

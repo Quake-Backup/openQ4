@@ -155,6 +155,33 @@ LONG_RUN_VALIDATION_MATRIX = [
     },
 ]
 
+PERF_REGRESSION_THRESHOLDS = [
+    {
+        "preset": "low",
+        "p95Ms": 33,
+        "p99Ms": 50,
+        "budget": "75% screen-percentage experiment, 4x3x8 cluster-grid budget, 512 shadow-map budget, post quality 0",
+    },
+    {
+        "preset": "baseline",
+        "p95Ms": 20,
+        "p99Ms": 28,
+        "budget": "fixed 100% screen, 6x4x12 cluster-grid budget, 1024 shadow-map budget, post quality 1",
+    },
+    {
+        "preset": "modern",
+        "p95Ms": 16,
+        "p99Ms": 24,
+        "budget": "fixed 100% screen, 8x6x16 cluster-grid budget, 1024 shadow-map budget, post quality 2",
+    },
+    {
+        "preset": "high-end",
+        "p95Ms": 12,
+        "p99Ms": 18,
+        "budget": "fixed 100% screen, 8x6x16 cluster-grid budget, 2048 shadow-map budget, post quality 3",
+    },
+]
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -524,6 +551,27 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
             ],
         },
         {
+            "id": "renderer-benchmark-selftest",
+            "category": "selftest",
+            "description": "Phase 16 benchmark capture format, frame-time percentile, preset budget, and regression-threshold coverage.",
+            "args": [
+                "+set",
+                "r_rendererMetrics",
+                "2",
+                "+rendererBenchmarkSelfTest",
+                "+rendererBenchmarkCapture",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["RendererBenchmark self-test passed"],
+                ["rendererBenchmark capture("],
+                ["Renderer benchmark:"],
+                ["Performance regression thresholds:"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
             "id": "renderer-gpu-driven-selftest",
             "category": "selftest",
             "description": "GL 4.3 GPU-driven compute culling, compacted indirect command generation, CPU-reference validation, and masked multi-draw-indirect execution.",
@@ -802,6 +850,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "deterministicCaptureMatrix": DETERMINISTIC_CAPTURE_MATRIX,
         "renderDocTierMatrix": RENDERDOC_TIER_MATRIX,
         "longRunValidationMatrix": LONG_RUN_VALIDATION_MATRIX,
+        "perfRegressionThresholds": PERF_REGRESSION_THRESHOLDS,
     }
     report_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -875,6 +924,16 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
     for item in LONG_RUN_VALIDATION_MATRIX:
         lines.append(f"| `{item['id']}` | {item['mode']} | {item['purpose']} |")
 
+    lines += [
+        "",
+        "## Performance Regression Thresholds",
+        "",
+        "| Preset | P95 Budget | P99 Budget | Budget Shape |",
+        "|---|---:|---:|---|",
+    ]
+    for item in PERF_REGRESSION_THRESHOLDS:
+        lines.append(f"| `{item['preset']}` | {item['p95Ms']} ms | {item['p99Ms']} ms | {item['budget']} |")
+
     report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return report_json, report_md
 
@@ -912,6 +971,9 @@ def main(argv: list[str]) -> int:
         print("\nLong-run cases:")
         for case in LONG_RUN_VALIDATION_MATRIX:
             print(f"  {case['id']}: {case['mode']} - {case['purpose']}")
+        print("\nPerformance regression thresholds:")
+        for item in PERF_REGRESSION_THRESHOLDS:
+            print(f"  {item['preset']}: P95 <= {item['p95Ms']} ms, P99 <= {item['p99Ms']} ms - {item['budget']}")
         return 0
 
     executable = find_client_executable(root)

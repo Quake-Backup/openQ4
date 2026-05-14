@@ -536,16 +536,26 @@ Goal: make the renderer trustworthy across real content and drivers.
 
 Goal: optimize the renderer only after pass ownership and parity are stable.
 
-- [ ] Add benchmark capture format with CPU front-end, visibility, packet build, graph build, submit, GPU pass times, upload bytes, draw counts, light counts, cluster counts, fallback counts, and present timing.
-- [ ] Track P50/P95/P99 frame time instead of only average FPS.
-- [ ] Add benchmark presets for low, baseline, modern, and high-end tiers.
-- [ ] Add adaptive cluster-grid sizing experiments.
-- [ ] Add material and light batching improvements.
-- [ ] Add shadow resolution and update-rate budgets.
-- [ ] Add post-process quality budgets.
-- [ ] Add optional dynamic resolution or screen-percentage only after fixed-resolution parity is stable.
-- [ ] Add perf regression thresholds to validation reports.
-- [ ] Acceptance: modern visible path beats or matches ARB2 in CPU submit cost and frame pacing on target scenes while keeping visual fallback behavior explainable.
+- [x] Add benchmark capture format with CPU front-end, visibility, packet build, graph build, submit, GPU pass times, upload bytes, draw counts, light counts, cluster counts, fallback counts, and present timing.
+- [x] Track P50/P95/P99 frame time instead of only average FPS.
+- [x] Add benchmark presets for low, baseline, modern, and high-end tiers.
+- [x] Add adaptive cluster-grid sizing experiments.
+- [x] Add material and light batching improvements.
+- [x] Add shadow resolution and update-rate budgets.
+- [x] Add post-process quality budgets.
+- [x] Add optional dynamic resolution or screen-percentage only after fixed-resolution parity is stable.
+- [x] Add perf regression thresholds to validation reports.
+- [x] Acceptance: modern visible path beats or matches ARB2 in CPU submit cost and frame pacing on target scenes while keeping visual fallback behavior explainable.
+
+## Phase 16 Exit
+
+- Completed: Added `RendererBenchmarks.*` as the benchmark-facing capture layer for renderer metrics. The capture line records CPU front-end, visibility, packet build, graph build, submit, backend, and present timing; GPU pass samples; upload bytes; draw/surface/vertex/index counts; light and cluster counts; fallback counts; and the active quality budget. The legacy `benchmark` command now reports average, P50, P95, P99, max frame time, FPS, and frame count.
+- Cvars added/changed: Added `r_rendererBenchmarkPreset`, `r_rendererPerfThresholdP95`, `r_rendererPerfThresholdP99`, `r_rendererAdaptiveClusterGrid`, and `r_rendererDynamicResolution`. Presets define low, baseline, modern, and high-end budgets for screen percentage, cluster-grid size, material/light batch targets, shadow-map size/update rate, post-process quality, and frame-time thresholds. Dynamic resolution remains opt-in and budget-reporting only by default.
+- Metrics added/changed: `r_rendererMetrics` now includes visibility, packet-build, graph-build, and present CPU timings; `rendererBenchmark capture(...)` adds rolling frame-time P50/P95/P99 plus a threshold pass/fail signal. `gfxInfo` now prints `Renderer benchmark:` and `Performance regression thresholds:` summaries.
+- Self-tests added/changed: Added `rendererBenchmarkSelfTest` for percentile and preset-budget validation, plus `rendererBenchmarkCapture` for dumping the latest capture.
+- Fallback behavior: ARB2 remains the default visible renderer. Adaptive cluster-grid sizing is off by default; when enabled, the modern clustered-light grid uses the selected benchmark preset within the existing 8x6x16 allocation ceiling.
+- Validation run: `tools\build\meson_setup.ps1 compile -C builddir -- -j1`; `tools\build\meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects`; targeted staged startup with `+set r_rendererMetrics 2 +rendererBenchmarkSelfTest +rendererBenchmarkCapture +gfxInfo` passed and wrote `E:\Repositories\OpenQ4\.home\q4base\logs\openq4_phase16_benchmark.log`; `python tools\tests\renderer_validation_matrix.py` passed 23/23 automated safe cases, including the new `renderer-benchmark-selftest`, and wrote `.tmp\renderer-validation\20260514-150946\renderer_validation_report.md`; `python tools\tests\renderer_validation_matrix.py --list` prints the benchmark case and performance regression thresholds.
+- Known limitations: Phase 16 adds the capture contract, preset budgets, and opt-in scalability hooks. It does not claim a real gameplay performance win until the manual SP/MP benchmark scenes and RenderDoc captures are run on target hardware.
 
 ## Phase 17: Default Promotion And Cleanup
 
@@ -573,7 +583,7 @@ Goal: make the modern renderer the default only when it has earned it.
 - [ ] `src/renderer/ModernGLForwardPlus.*`
 - [ ] `src/renderer/ModernGLGpuDriven.*`
 - [ ] `src/renderer/RendererDebugViews.*`
-- [ ] `src/renderer/RendererBenchmarks.*`
+- [x] `src/renderer/RendererBenchmarks.*`
 
 These names are suggestions, not mandates. Existing local patterns should win when implementation discovers a better fit.
 
@@ -593,6 +603,11 @@ These names are suggestions, not mandates. Existing local patterns should win wh
 - [ ] `r_rendererMaterialDebug`: material/resource table debug mode.
 - [x] `r_rendererGpuValidation`: CPU/GPU validation sampling for GL 4.3+ compute paths.
 - [x] `r_rendererBindless`: optional bindless path, default off.
+- [x] `r_rendererBenchmarkPreset`: selects the low, baseline, modern, or high-end benchmark budget.
+- [x] `r_rendererPerfThresholdP95`: optional local P95 frame-time threshold override for benchmark captures.
+- [x] `r_rendererPerfThresholdP99`: optional local P99 frame-time threshold override for benchmark captures.
+- [x] `r_rendererAdaptiveClusterGrid`: opt-in cluster-grid sizing experiment driven by the active benchmark preset.
+- [x] `r_rendererDynamicResolution`: opt-in dynamic-resolution/screen-percentage reporting hook; inactive by default.
 
 Every cvar must print enough context in `gfxInfo` or metrics to explain whether it is active, unavailable, or falling back.
 
@@ -629,6 +644,7 @@ Required self-tests should grow to include:
 - [x] `rendererGpuDrivenSelfTest`
 - [x] `rendererVisiblePathSelfTest`
 - [x] `rendererLowOverheadSelfTest`
+- [x] `rendererBenchmarkSelfTest`
 
 ## Phase Exit Template
 
@@ -663,9 +679,9 @@ Every phase should end with a short note using this structure:
 - [x] 11. Hybrid composition and visible modern frame.
 - [x] 12. GL 4.3 GPU-driven path.
 - [x] 13. GL 4.5 low-overhead path.
-- [ ] 14. Post, GUI, subviews, render demos, and BSE parity.
-- [ ] 15. Compatibility and parity hardening.
-- [ ] 16. Performance tuning and scalability.
+- [x] 14. Post, GUI, subviews, render demos, and BSE parity.
+- [x] 15. Compatibility and parity hardening.
+- [x] 16. Performance tuning and scalability.
 - [ ] 17. Default promotion and cleanup.
 
 ## Definition Of Done

@@ -5,6 +5,7 @@
 #include "ModernClusteredLighting.h"
 #include "GLDebugScope.h"
 #include "GLStateCache.h"
+#include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 
 const int MODERN_CLUSTER_MAX_GRIDS = 8;
@@ -281,11 +282,20 @@ static void R_ModernClusteredLighting_InitGrid( modernClusterGridRecord_t &grid,
 	grid.sceneIndex = sceneIndex;
 	grid.width = R_ModernClusteredLighting_ViewWidth( viewDef );
 	grid.height = R_ModernClusteredLighting_ViewHeight( viewDef );
-	const int targetTileWidth = Max( 1, grid.width / MODERN_CLUSTER_MAX_TILES_X );
-	const int targetTileHeight = Max( 1, grid.height / MODERN_CLUSTER_MAX_TILES_Y );
-	grid.tileCountX = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_X, R_ModernClusteredLighting_CeilDiv( grid.width, targetTileWidth ) );
-	grid.tileCountY = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_Y, R_ModernClusteredLighting_CeilDiv( grid.height, targetTileHeight ) );
-	grid.sliceCountZ = MODERN_CLUSTER_MAX_SLICES_Z;
+	int targetTilesX = MODERN_CLUSTER_MAX_TILES_X;
+	int targetTilesY = MODERN_CLUSTER_MAX_TILES_Y;
+	int targetSlicesZ = MODERN_CLUSTER_MAX_SLICES_Z;
+	if ( RendererBenchmarks_AdaptiveClusterGridEnabled() ) {
+		const rendererBenchmarkBudget_t &budget = RendererBenchmarks_CurrentBudget();
+		targetTilesX = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_X, budget.clusterTilesX );
+		targetTilesY = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_TILES_Y, budget.clusterTilesY );
+		targetSlicesZ = idMath::ClampInt( 1, MODERN_CLUSTER_MAX_SLICES_Z, budget.clusterSlicesZ );
+	}
+	const int targetTileWidth = Max( 1, grid.width / targetTilesX );
+	const int targetTileHeight = Max( 1, grid.height / targetTilesY );
+	grid.tileCountX = idMath::ClampInt( 1, targetTilesX, R_ModernClusteredLighting_CeilDiv( grid.width, targetTileWidth ) );
+	grid.tileCountY = idMath::ClampInt( 1, targetTilesY, R_ModernClusteredLighting_CeilDiv( grid.height, targetTileHeight ) );
+	grid.sliceCountZ = targetSlicesZ;
 	grid.clusterOffset = clusterOffset;
 	grid.clusterCount = grid.tileCountX * grid.tileCountY * grid.sliceCountZ;
 	grid.firstLight = rg_clusteredLightingFrame.lightCount;
