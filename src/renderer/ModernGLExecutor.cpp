@@ -3276,6 +3276,10 @@ static void R_ModernGLExecutor_SubmitDeferredResolve( modernGLExecutorStats_t &s
 		stats.deferredResolveResourceFallbacks++;
 		return;
 	}
+	if ( stats.deferredResolveUnsupportedLightFallbacks > 0 ) {
+		stats.deferredResolveResourceFallbacks++;
+		return;
+	}
 
 	const renderGraphResourceHandle_t *albedo = NULL;
 	const renderGraphResourceHandle_t *normal = NULL;
@@ -3504,6 +3508,10 @@ static void R_ModernGLExecutor_SubmitForwardPlus( modernGLExecutorStats_t &stats
 	stats.forwardPlusShadowSkippedLights = clusterStats.shadowSkippedLights;
 	stats.forwardPlusShadowDescriptors = clusterStats.shadowDescriptorCount;
 	if ( !stats.forwardPlusClusterReady ) {
+		stats.forwardPlusResourceFallbackDraws++;
+		return;
+	}
+	if ( stats.forwardPlusShadowFallbackLights > 0 ) {
 		stats.forwardPlusResourceFallbackDraws++;
 		return;
 	}

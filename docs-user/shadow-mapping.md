@@ -223,6 +223,10 @@ Practical advice:
 - `4`: Projected depth
 - `5`: Projected W
 - `6`: Invalid mask
+- `7`: Bias off
+- `8`: PCF off
+- `9`: Caster polygon offset off
+- `10`: Receiver-plane/normal bias off
 
 Useful workflow:
 1. Enable `r_useShadowMap 1`.

@@ -82,6 +82,7 @@ typedef struct rendererClusteredLightingStats_s {
 	int		shadowFallbackLights;
 	int		shadowSkippedLights;
 	int		shadowDescriptorCount;
+	int		shadowReceiverBlockedLights;
 	int		culledLights;
 	int		clippedLights;
 	int		overflowLights;

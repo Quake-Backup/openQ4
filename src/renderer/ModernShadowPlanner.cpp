@@ -75,6 +75,8 @@ const char *ModernShadowFallbackReason_Name( modernShadowFallbackReason_t reason
 		return "budget";
 	case MODERN_SHADOW_FALLBACK_RESOURCE_UNAVAILABLE:
 		return "resource-unavailable";
+	case MODERN_SHADOW_FALLBACK_RECEIVER_SAMPLING_UNAVAILABLE:
+		return "receiver-sampling-unavailable";
 	default:
 		return "unknown";
 	}
@@ -140,6 +142,104 @@ static bool R_ModernShadowPlanner_TranslucentMomentsAvailable( void ) {
 		&& glConfig.maxTextureImageUnits >= 9
 		&& glConfig.maxDrawBuffers >= 3
 		&& glConfig.maxColorAttachments >= 3;
+}
+
+static bool R_ModernShadowPlanner_ModernReceiverSamplingAvailable( void ) {
+	// The ARB2 receiver path has production shadow sampling. Modern clustered
+	// receivers must stay fail-closed until a real descriptor buffer and atlas
+	// sampler are bound by deferred/forward+ shaders.
+	return false;
+}
+
+static int R_ModernShadowPlanner_TotalCasterCount( const modernShadowLightDescriptor_t &descriptor ) {
+	return descriptor.localCasterCount + descriptor.globalCasterCount + descriptor.translucentCasterCount;
+}
+
+static int R_ModernShadowPlanner_TotalReceiverCount( const modernShadowLightDescriptor_t &descriptor ) {
+	return descriptor.localReceiverCount + descriptor.globalReceiverCount + descriptor.translucentReceiverCount;
+}
+
+static void R_ModernShadowPlanner_SetIdentityMatrix( float matrix[16] ) {
+	for ( int i = 0; i < 16; ++i ) {
+		matrix[i] = ( i % 5 ) == 0 ? 1.0f : 0.0f;
+	}
+}
+
+static void R_ModernShadowPlanner_CopyPlaneToMatrixRow( float matrix[16], int row, const idPlane &plane ) {
+	if ( row < 0 || row >= 4 ) {
+		return;
+	}
+	matrix[row * 4 + 0] = plane[0];
+	matrix[row * 4 + 1] = plane[1];
+	matrix[row * 4 + 2] = plane[2];
+	matrix[row * 4 + 3] = plane[3];
+}
+
+static void R_ModernShadowPlanner_InitCascadeSplits( modernShadowLightDescriptor_t &descriptor ) {
+	for ( int i = 0; i < MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES; ++i ) {
+		descriptor.cascadeSplitDepths[i] = 0.0f;
+	}
+	if ( descriptor.mapType != MODERN_SHADOW_MAP_CASCADE ) {
+		return;
+	}
+
+	const int splitCount = idMath::ClampInt( 1, MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES, descriptor.cascadeCount );
+	const float nearDepth = Max( 0.01f, r_znear.GetFloat() );
+	const float farDepth = Max( nearDepth + 1.0f, r_shadowMapCascadeDistance.GetFloat() );
+	const float lambda = idMath::ClampFloat( 0.0f, 1.0f, r_shadowMapCascadeLambda.GetFloat() );
+	for ( int i = 0; i < splitCount; ++i ) {
+		const float p = static_cast<float>( i + 1 ) / static_cast<float>( splitCount );
+		const float uniformSplit = nearDepth + ( farDepth - nearDepth ) * p;
+		const float logSplit = nearDepth * idMath::Pow( farDepth / nearDepth, p );
+		descriptor.cascadeSplitDepths[i] = uniformSplit + ( logSplit - uniformSplit ) * lambda;
+	}
+	for ( int i = splitCount; i < MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES; ++i ) {
+		descriptor.cascadeSplitDepths[i] = descriptor.cascadeSplitDepths[splitCount - 1];
+	}
+}
+
+static void R_ModernShadowPlanner_InitDescriptorContract( modernShadowLightDescriptor_t &descriptor, const viewLight_t *vLight ) {
+	for ( int i = 0; i < MODERN_SHADOW_DESCRIPTOR_MAX_TILES; ++i ) {
+		descriptor.tileAtlasRect[i][0] = 0.0f;
+		descriptor.tileAtlasRect[i][1] = 0.0f;
+		descriptor.tileAtlasRect[i][2] = 0.0f;
+		descriptor.tileAtlasRect[i][3] = 0.0f;
+	}
+	R_ModernShadowPlanner_SetIdentityMatrix( descriptor.shadowMatrix );
+	if ( vLight != NULL ) {
+		R_ModernShadowPlanner_CopyPlaneToMatrixRow( descriptor.shadowMatrix, 0, vLight->lightProject[0] );
+		R_ModernShadowPlanner_CopyPlaneToMatrixRow( descriptor.shadowMatrix, 1, vLight->lightProject[1] );
+		R_ModernShadowPlanner_CopyPlaneToMatrixRow( descriptor.shadowMatrix, 2, vLight->lightProject[2] );
+		R_ModernShadowPlanner_CopyPlaneToMatrixRow( descriptor.shadowMatrix, 3, vLight->lightProject[3] );
+		descriptor.receiverScissor[0] = vLight->scissorRect.x1;
+		descriptor.receiverScissor[1] = vLight->scissorRect.y1;
+		descriptor.receiverScissor[2] = vLight->scissorRect.x2;
+		descriptor.receiverScissor[3] = vLight->scissorRect.y2;
+	} else {
+		descriptor.receiverScissor[0] = 0;
+		descriptor.receiverScissor[1] = 0;
+		descriptor.receiverScissor[2] = 0;
+		descriptor.receiverScissor[3] = 0;
+	}
+	descriptor.faceIndex = descriptor.pointLight ? 0 : -1;
+	descriptor.cascadeIndex = descriptor.mapType == MODERN_SHADOW_MAP_CASCADE ? 0 : -1;
+	descriptor.depthFormat = descriptor.pointLight ? MODERN_SHADOW_DEPTH_FORMAT_PACKED_RGBA8 : MODERN_SHADOW_DEPTH_FORMAT_D24;
+	descriptor.compareMode = descriptor.pointLight ? MODERN_SHADOW_COMPARE_MANUAL_PACKED_DEPTH : MODERN_SHADOW_COMPARE_MANUAL_DEPTH;
+	descriptor.biasModel = descriptor.pointLight ? MODERN_SHADOW_BIAS_POINT_VECTOR : ( descriptor.mapType == MODERN_SHADOW_MAP_CASCADE ? MODERN_SHADOW_BIAS_CASCADE_SCALED : MODERN_SHADOW_BIAS_CONSTANT_NORMAL );
+	descriptor.pcfKernel = static_cast<int>( idMath::Ceil( descriptor.pointLight ? r_shadowMapPointFilterRadius.GetFloat() : r_shadowMapFilterRadius.GetFloat() ) );
+	descriptor.updateFrame = tr.frameCount;
+	descriptor.casterCount = R_ModernShadowPlanner_TotalCasterCount( descriptor );
+	descriptor.receiverCount = R_ModernShadowPlanner_TotalReceiverCount( descriptor );
+	descriptor.bias[0] = descriptor.pointLight ? r_shadowMapPointBias.GetFloat() : r_shadowMapBias.GetFloat();
+	descriptor.bias[1] = descriptor.pointLight ? r_shadowMapPointNormalBias.GetFloat() : r_shadowMapNormalBias.GetFloat();
+	descriptor.bias[2] = r_shadowMapPolygonFactor.GetFloat();
+	descriptor.bias[3] = r_shadowMapPolygonOffset.GetFloat();
+	descriptor.casterPassReady = descriptor.casterCount > 0;
+	descriptor.cutoutCasterReady = r_shadowMapHashedAlpha.GetBool();
+	descriptor.receiverGuardReady = true;
+	descriptor.modernReceiverSamplingReady = R_ModernShadowPlanner_ModernReceiverSamplingAvailable();
+	descriptor.stableCascadeReady = descriptor.mapType != MODERN_SHADOW_MAP_CASCADE || r_shadowMapCascadeStabilize.GetBool();
+	R_ModernShadowPlanner_InitCascadeSplits( descriptor );
 }
 
 static modernShadowFallbackReason_t R_ModernShadowPlanner_SupportReason( const viewLight_t *vLight ) {
@@ -220,6 +320,7 @@ static void R_ModernShadowPlanner_InitDescriptor( modernShadowLightDescriptor_t 
 		descriptor.tileCount = descriptor.cascadeCount;
 	}
 	descriptor.estimatedPixels = descriptor.resolution * descriptor.resolution * Max( 1, descriptor.tileCount );
+	R_ModernShadowPlanner_InitDescriptorContract( descriptor, vLight );
 	const int scissorArea = vLight != NULL ? R_ModernShadowPlanner_ScissorArea( vLight->scissorRect ) : 0;
 	descriptor.priority =
 		scissorArea / 32
@@ -256,11 +357,42 @@ static int R_ModernShadowPlanner_FindBestCandidate( const bool *selected ) {
 	return best;
 }
 
+static void R_ModernShadowPlanner_AssignAtlasTiles( modernShadowLightDescriptor_t &descriptor, int firstTile, int tilesPerRow ) {
+	tilesPerRow = Max( 1, tilesPerRow );
+	const float slotScale = 1.0f / static_cast<float>( tilesPerRow );
+	float minX = 1.0f;
+	float minY = 1.0f;
+	float maxX = 0.0f;
+	float maxY = 0.0f;
+	for ( int tileIndex = 0; tileIndex < Max( 1, descriptor.tileCount ) && tileIndex < MODERN_SHADOW_DESCRIPTOR_MAX_TILES; ++tileIndex ) {
+		const int atlasSlot = firstTile + tileIndex;
+		const float x = static_cast<float>( atlasSlot % tilesPerRow ) * slotScale;
+		const float y = static_cast<float>( atlasSlot / tilesPerRow ) * slotScale;
+		descriptor.tileAtlasRect[tileIndex][0] = x;
+		descriptor.tileAtlasRect[tileIndex][1] = y;
+		descriptor.tileAtlasRect[tileIndex][2] = slotScale;
+		descriptor.tileAtlasRect[tileIndex][3] = slotScale;
+		minX = Min( minX, x );
+		minY = Min( minY, y );
+		maxX = Max( maxX, x + slotScale );
+		maxY = Max( maxY, y + slotScale );
+	}
+	descriptor.atlasRect[0] = minX;
+	descriptor.atlasRect[1] = minY;
+	descriptor.atlasRect[2] = Max( 0.0f, maxX - minX );
+	descriptor.atlasRect[3] = Max( 0.0f, maxY - minY );
+	descriptor.atlasTileReady = true;
+}
+
 static void R_ModernShadowPlanner_SelectMappedLights( modernShadowPlannerStats_t &stats ) {
 	bool selected[MODERN_SHADOW_PLAN_MAX_LIGHTS];
 	memset( selected, 0, sizeof( selected ) );
 	int mappedLights = 0;
+	int mappedTiles = 0;
 	int usedPixels = 0;
+	const int tilePixels = Max( 1, stats.shadowMapSize ) * Max( 1, stats.shadowMapSize );
+	stats.maxAtlasTiles = Max( 1, stats.budgetedPixels / Max( 1, tilePixels ) );
+	const int atlasSlotsPerRow = Max( 1, static_cast<int>( idMath::Ceil( idMath::Sqrt( static_cast<float>( stats.maxAtlasTiles ) ) ) ) );
 	for ( ;; ) {
 		const int candidateIndex = R_ModernShadowPlanner_FindBestCandidate( selected );
 		if ( candidateIndex < 0 ) {
@@ -268,18 +400,14 @@ static void R_ModernShadowPlanner_SelectMappedLights( modernShadowPlannerStats_t
 		}
 		selected[candidateIndex] = true;
 		modernShadowLightDescriptor_t &candidate = rg_modernShadowPlannerDescriptors[candidateIndex];
-		if ( mappedLights < stats.maxMappedLights && usedPixels + candidate.estimatedPixels <= stats.budgetedPixels ) {
+		const int candidateTiles = Max( 1, candidate.tileCount );
+		if ( mappedLights < stats.maxMappedLights && mappedTiles + candidateTiles <= stats.maxAtlasTiles && usedPixels + candidate.estimatedPixels <= stats.budgetedPixels ) {
 			candidate.policy = MODERN_SHADOW_POLICY_MAPPED;
 			candidate.fallbackReason = MODERN_SHADOW_FALLBACK_NONE;
 			candidate.stencilFallback = false;
-			const int atlasSlotsPerRow = Max( 1, static_cast<int>( idMath::Ceil( idMath::Sqrt( static_cast<float>( stats.maxMappedLights ) ) ) ) );
-			const float slotScale = 1.0f / static_cast<float>( atlasSlotsPerRow );
-			const int atlasSlot = mappedLights % Max( 1, atlasSlotsPerRow * atlasSlotsPerRow );
-			candidate.atlasRect[0] = static_cast<float>( atlasSlot % atlasSlotsPerRow ) * slotScale;
-			candidate.atlasRect[1] = static_cast<float>( atlasSlot / atlasSlotsPerRow ) * slotScale;
-			candidate.atlasRect[2] = slotScale;
-			candidate.atlasRect[3] = slotScale;
+			R_ModernShadowPlanner_AssignAtlasTiles( candidate, mappedTiles, atlasSlotsPerRow );
 			mappedLights++;
+			mappedTiles += candidateTiles;
 			usedPixels += candidate.estimatedPixels;
 			continue;
 		}
@@ -288,6 +416,7 @@ static void R_ModernShadowPlanner_SelectMappedLights( modernShadowPlannerStats_t
 		candidate.stencilFallback = candidate.policy == MODERN_SHADOW_POLICY_STENCIL_FALLBACK;
 		stats.budgetThrottledLights++;
 	}
+	stats.atlasTiles = mappedTiles;
 }
 
 static void R_ModernShadowPlanner_CountDescriptor( const modernShadowLightDescriptor_t &descriptor, modernShadowPlannerStats_t &stats ) {
@@ -310,6 +439,12 @@ static void R_ModernShadowPlanner_CountDescriptor( const modernShadowLightDescri
 	stats.localReceiverCount += descriptor.localReceiverCount;
 	stats.globalReceiverCount += descriptor.globalReceiverCount;
 	stats.translucentReceiverCount += descriptor.translucentReceiverCount;
+	if ( descriptor.cutoutCasterReady && R_ModernShadowPlanner_TotalCasterCount( descriptor ) > 0 ) {
+		stats.cutoutCasterLights++;
+	}
+	if ( descriptor.receiverGuardReady && R_ModernShadowPlanner_TotalReceiverCount( descriptor ) > 0 ) {
+		stats.receiverGuardedLights++;
+	}
 	if ( descriptor.pointLight ) {
 		stats.pointLights++;
 	} else {
@@ -326,6 +461,9 @@ static void R_ModernShadowPlanner_CountDescriptor( const modernShadowLightDescri
 		stats.mappedLights++;
 		stats.mappedPasses += Max( 1, descriptor.tileCount );
 		stats.estimatedPixels += descriptor.estimatedPixels;
+		if ( !descriptor.modernReceiverSamplingReady ) {
+			stats.receiverSamplingBlockedLights++;
+		}
 	} else if ( descriptor.policy == MODERN_SHADOW_POLICY_STENCIL_FALLBACK ) {
 		stats.fallbackLights++;
 		stats.fallbackPasses += Max( 1, descriptor.tileCount );
@@ -399,12 +537,14 @@ void R_ModernShadowPlanner_PrepareFrame( const idScenePacketFrame &packetFrame, 
 	rg_modernShadowPlannerStats.reportRequested = r_shadowMapReport.GetInteger() > 0;
 	rg_modernShadowPlannerStats.visibilityCasterCullingReady = r_rendererOcclusion.GetBool();
 	rg_modernShadowPlannerStats.visibilityNoQueryStall = true;
+	rg_modernShadowPlannerStats.modernReceiverSamplingReady = R_ModernShadowPlanner_ModernReceiverSamplingAvailable();
 	rg_modernShadowPlannerStats.sceneCount = packetFrame.NumScenes();
 	rg_modernShadowPlannerStats.shadowMapSize = R_ModernShadowPlanner_BudgetedShadowMapSize();
 	const rendererBenchmarkBudget_t &budget = RendererBenchmarks_CurrentBudget();
 	rg_modernShadowPlannerStats.maxMappedLights = R_ModernShadowPlanner_MaxMappedLights( budget );
 	rg_modernShadowPlannerStats.budgetedPixels = R_ModernShadowPlanner_MaxShadowPixels( rg_modernShadowPlannerStats.shadowMapSize, rg_modernShadowPlannerStats.maxMappedLights );
 	rg_modernShadowPlannerStats.updateModulo = Max( 1, budget.shadowUpdateRate );
+	rg_modernShadowPlannerStats.maxAtlasTiles = Max( 1, rg_modernShadowPlannerStats.budgetedPixels / Max( 1, rg_modernShadowPlannerStats.shadowMapSize * rg_modernShadowPlannerStats.shadowMapSize ) );
 	R_ModernShadowPlanner_SetStatus( rg_modernShadowPlannerStats, requested ? "unavailable" : "off" );
 	if ( !requested ) {
 		return;
@@ -446,7 +586,7 @@ void R_ModernShadowPlanner_PrepareFrame( const idScenePacketFrame &packetFrame, 
 
 	if ( ( r_rendererMetrics.GetInteger() >= 2 || rg_modernShadowPlannerStats.reportRequested ) && requested ) {
 		common->Printf(
-			"modernShadowPlan status=%s requested=%d valid=%d scenes=%d lights=%d descriptors=%d mapped=%d fallback=%d skipped=%d types(projected=%d point=%d parallel=%d csm=%d cascades=%d) casters(local=%d global=%d translucent=%d visibility=%d/%d saved=%d receiverCull=%d noQueryStall=%d) receivers(local=%d global=%d translucent=%d) budget(lights=%d pixels=%d size=%d update=%d used=%d throttled=%d) cvars(shadows=%d shadowMap=%d csm=%d translucent=%d/%d debug=%d report=%d) fallbacks(texture=%d cubemap=%d noReceivers=%d) build=%dms\n",
+			"modernShadowPlan status=%s requested=%d valid=%d scenes=%d lights=%d descriptors=%d mapped=%d fallback=%d skipped=%d types(projected=%d point=%d parallel=%d csm=%d cascades=%d) casters(local=%d global=%d translucent=%d visibility=%d/%d saved=%d receiverCull=%d noQueryStall=%d) receivers(local=%d global=%d translucent=%d guarded=%d sampling=%d blocked=%d cutout=%d) budget(lights=%d atlasTiles=%d/%d pixels=%d size=%d update=%d used=%d throttled=%d) cvars(shadows=%d shadowMap=%d csm=%d translucent=%d/%d debug=%d report=%d) fallbacks(texture=%d cubemap=%d noReceivers=%d) build=%dms\n",
 			rg_modernShadowPlannerStats.status,
 			rg_modernShadowPlannerStats.requested ? 1 : 0,
 			rg_modernShadowPlannerStats.frameValid ? 1 : 0,
@@ -472,7 +612,13 @@ void R_ModernShadowPlanner_PrepareFrame( const idScenePacketFrame &packetFrame, 
 			rg_modernShadowPlannerStats.localReceiverCount,
 			rg_modernShadowPlannerStats.globalReceiverCount,
 			rg_modernShadowPlannerStats.translucentReceiverCount,
+			rg_modernShadowPlannerStats.receiverGuardedLights,
+			rg_modernShadowPlannerStats.modernReceiverSamplingReady ? 1 : 0,
+			rg_modernShadowPlannerStats.receiverSamplingBlockedLights,
+			rg_modernShadowPlannerStats.cutoutCasterLights,
 			rg_modernShadowPlannerStats.maxMappedLights,
+			rg_modernShadowPlannerStats.atlasTiles,
+			rg_modernShadowPlannerStats.maxAtlasTiles,
 			rg_modernShadowPlannerStats.budgetedPixels,
 			rg_modernShadowPlannerStats.shadowMapSize,
 			rg_modernShadowPlannerStats.updateModulo,
@@ -521,7 +667,7 @@ int R_ModernShadowPlanner_NumDescriptors( void ) {
 
 void R_ModernShadowPlanner_PrintGfxInfo( void ) {
 	common->Printf(
-		"Modern shadow plan: %s, requested=%d valid=%d scenes=%d lights=%d descriptors=%d mapped=%d fallback=%d skipped=%d projected=%d point=%d csm=%d/%d casters(local=%d global=%d translucent=%d visibility=%d/%d saved=%d receiverCull=%d noQueryStall=%d) receivers(local=%d global=%d translucent=%d) budget(lights=%d pixels=%d size=%d update=%d used=%d throttled=%d) cvars(shadows=%d shadowMap=%d csm=%d translucent=%d/%d debug=%d report=%d) build=%dms\n",
+		"Modern shadow plan: %s, requested=%d valid=%d scenes=%d lights=%d descriptors=%d mapped=%d fallback=%d skipped=%d projected=%d point=%d csm=%d/%d casters(local=%d global=%d translucent=%d visibility=%d/%d saved=%d receiverCull=%d noQueryStall=%d) receivers(local=%d global=%d translucent=%d guarded=%d sampling=%d blocked=%d cutout=%d) budget(lights=%d atlasTiles=%d/%d pixels=%d size=%d update=%d used=%d throttled=%d) cvars(shadows=%d shadowMap=%d csm=%d translucent=%d/%d debug=%d report=%d) build=%dms\n",
 		rg_modernShadowPlannerStats.available ? "available" : "unavailable",
 		rg_modernShadowPlannerStats.requested ? 1 : 0,
 		rg_modernShadowPlannerStats.frameValid ? 1 : 0,
@@ -546,7 +692,13 @@ void R_ModernShadowPlanner_PrintGfxInfo( void ) {
 		rg_modernShadowPlannerStats.localReceiverCount,
 		rg_modernShadowPlannerStats.globalReceiverCount,
 		rg_modernShadowPlannerStats.translucentReceiverCount,
+		rg_modernShadowPlannerStats.receiverGuardedLights,
+		rg_modernShadowPlannerStats.modernReceiverSamplingReady ? 1 : 0,
+		rg_modernShadowPlannerStats.receiverSamplingBlockedLights,
+		rg_modernShadowPlannerStats.cutoutCasterLights,
 		rg_modernShadowPlannerStats.maxMappedLights,
+		rg_modernShadowPlannerStats.atlasTiles,
+		rg_modernShadowPlannerStats.maxAtlasTiles,
 		rg_modernShadowPlannerStats.budgetedPixels,
 		rg_modernShadowPlannerStats.shadowMapSize,
 		rg_modernShadowPlannerStats.updateModulo,
@@ -650,9 +802,9 @@ bool RendererShadowPlanner_RunSelfTest( void ) {
 
 	R_ModernShadowPlanner_PrepareFrame( packetFrame, true );
 	const modernShadowPlannerStats_t &stats = R_ModernShadowPlanner_Stats();
-	if ( !stats.frameValid || stats.viewLightCount != 6 || stats.descriptorCount != 6 || stats.mappedLights <= 0 || stats.skippedLights < 2 || stats.cascadeLights <= 0 || stats.cascadeCount < 3 || stats.shadowMapSize <= 0 || stats.maxMappedLights <= 0 ) {
+	if ( !stats.frameValid || stats.viewLightCount != 6 || stats.descriptorCount != 6 || stats.mappedLights <= 0 || stats.skippedLights < 2 || stats.cascadeLights <= 0 || stats.cascadeCount < 3 || stats.shadowMapSize <= 0 || stats.maxMappedLights <= 0 || stats.atlasTiles <= 0 || stats.receiverGuardedLights <= 0 || stats.receiverSamplingBlockedLights <= 0 ) {
 		common->Printf(
-			"RendererShadowPlanner self-test failed: valid=%d lights=%d desc=%d mapped=%d fallback=%d skipped=%d csm=%d/%d size=%d budget=%d status=%s\n",
+			"RendererShadowPlanner self-test failed: valid=%d lights=%d desc=%d mapped=%d fallback=%d skipped=%d csm=%d/%d size=%d budget=%d atlas=%d/%d guarded=%d blocked=%d status=%s\n",
 			stats.frameValid ? 1 : 0,
 			stats.viewLightCount,
 			stats.descriptorCount,
@@ -663,17 +815,21 @@ bool RendererShadowPlanner_RunSelfTest( void ) {
 			stats.cascadeCount,
 			stats.shadowMapSize,
 			stats.maxMappedLights,
+			stats.atlasTiles,
+			stats.maxAtlasTiles,
+			stats.receiverGuardedLights,
+			stats.receiverSamplingBlockedLights,
 			stats.status );
 		return false;
 	}
 	const modernShadowLightDescriptor_t *firstDescriptor = R_ModernShadowPlanner_DescriptorForLight( &lights[0] );
-	if ( firstDescriptor == NULL || firstDescriptor->descriptorIndex < 0 || firstDescriptor->policy != MODERN_SHADOW_POLICY_MAPPED ) {
+	if ( firstDescriptor == NULL || firstDescriptor->descriptorIndex < 0 || firstDescriptor->policy != MODERN_SHADOW_POLICY_MAPPED || !firstDescriptor->atlasTileReady || !firstDescriptor->receiverGuardReady || firstDescriptor->casterCount <= 0 || firstDescriptor->receiverCount <= 0 || firstDescriptor->pcfKernel < 0 ) {
 		common->Printf( "RendererShadowPlanner self-test failed: descriptor lookup mismatch\n" );
 		return false;
 	}
 
 	common->Printf(
-		"RendererShadowPlanner self-test passed (lights=%d descriptors=%d mapped=%d fallback=%d skipped=%d csm=%d/%d size=%d budget=%d pixels=%d status=%s)\n",
+		"RendererShadowPlanner self-test passed (lights=%d descriptors=%d mapped=%d fallback=%d skipped=%d csm=%d/%d size=%d budget=%d atlas=%d/%d pixels=%d guarded=%d blocked=%d status=%s)\n",
 		stats.viewLightCount,
 		stats.descriptorCount,
 		stats.mappedLights,
@@ -683,7 +839,11 @@ bool RendererShadowPlanner_RunSelfTest( void ) {
 		stats.cascadeCount,
 		stats.shadowMapSize,
 		stats.maxMappedLights,
+		stats.atlasTiles,
+		stats.maxAtlasTiles,
 		stats.estimatedPixels,
+		stats.receiverGuardedLights,
+		stats.receiverSamplingBlockedLights,
 		stats.status );
 	return true;
 }

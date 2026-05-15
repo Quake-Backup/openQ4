@@ -1797,6 +1797,7 @@ typedef struct {
 	GLint			shadowBias;
 	GLint			shadowNormalBias;
 	GLint			shadowFilterRadius;
+	GLint			shadowDebugMode;
 	GLint			pointShadowTexelScale;
 	GLint			translucentShadowEnabled;
 	GLint			translucentShadowDensity;
@@ -2136,9 +2137,29 @@ static const char *RB_ShadowMapDebugModeName( shadowMapDebugMode_t mode ) {
 		return "projected-w";
 	case SHADOWMAP_DEBUGMODE_INVALID_MASK:
 		return "invalid-mask";
+	case SHADOWMAP_DEBUGMODE_BIAS_OFF:
+		return "bias-off";
+	case SHADOWMAP_DEBUGMODE_PCF_OFF:
+		return "pcf-off";
+	case SHADOWMAP_DEBUGMODE_CASTER_OFFSET_OFF:
+		return "caster-offset-off";
+	case SHADOWMAP_DEBUGMODE_RECEIVER_PLANE_BIAS_OFF:
+		return "receiver-plane-bias-off";
 	default:
 		return "unknown";
 	}
+}
+
+static bool RB_ShadowMapDebugModeIs( shadowMapDebugMode_t mode ) {
+	return RB_ShadowMapDebugMode() == mode;
+}
+
+static float RB_ShadowMapPolygonFactor( void ) {
+	return RB_ShadowMapDebugModeIs( SHADOWMAP_DEBUGMODE_CASTER_OFFSET_OFF ) ? 0.0f : r_shadowMapPolygonFactor.GetFloat();
+}
+
+static float RB_ShadowMapPolygonOffset( void ) {
+	return RB_ShadowMapDebugModeIs( SHADOWMAP_DEBUGMODE_CASTER_OFFSET_OFF ) ? 0.0f : r_shadowMapPolygonOffset.GetFloat();
 }
 
 static int RB_CountDrawSurfChain( const drawSurf_t *surf ) {
@@ -3340,6 +3361,7 @@ static const char *programBaseName = "glprogs/shadow_point_interaction";
 	g_pointShadowMapProgram.shadowBias = glGetUniformLocationARB( programObject, "uShadowBias" );
 	g_pointShadowMapProgram.shadowNormalBias = glGetUniformLocationARB( programObject, "uShadowNormalBias" );
 	g_pointShadowMapProgram.shadowFilterRadius = glGetUniformLocationARB( programObject, "uShadowFilterRadius" );
+	g_pointShadowMapProgram.shadowDebugMode = glGetUniformLocationARB( programObject, "uShadowDebugMode" );
 	g_pointShadowMapProgram.pointShadowTexelScale = glGetUniformLocationARB( programObject, "uPointShadowTexelScale" );
 	g_pointShadowMapProgram.translucentShadowEnabled = glGetUniformLocationARB( programObject, "uTranslucentShadowEnabled" );
 	g_pointShadowMapProgram.translucentShadowDensity = glGetUniformLocationARB( programObject, "uTranslucentShadowDensity" );
@@ -4168,7 +4190,7 @@ static bool RB_ShadowMapResolveCasterDrawData( const drawSurf_t *surf, srfTriang
 
 static void RB_ShadowMapRestorePolygonOffset( void ) {
 	glEnable( GL_POLYGON_OFFSET_FILL );
-	glPolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
+	glPolygonOffset( RB_ShadowMapPolygonFactor(), RB_ShadowMapPolygonOffset() );
 }
 
 static void RB_ShadowMapModelMatrixRows( const float modelMatrix[16], float row0[4], float row1[4], float row2[4] );
@@ -5203,7 +5225,7 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	glEnable( GL_CULL_FACE );
 	glCullFace( GL_BACK );
 	glEnable( GL_POLYGON_OFFSET_FILL );
-	glPolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
+	glPolygonOffset( RB_ShadowMapPolygonFactor(), RB_ShadowMapPolygonOffset() );
 	const bool useHashedAlpha = RB_ShadowMapHashedAlphaEnabled() && RB_ShadowMapLoadCasterProgram();
 
 	for ( int cascadeIndex = 0; cascadeIndex < g_projectedShadowMapState.cascadeCount; cascadeIndex++ ) {
@@ -5327,7 +5349,7 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 	glEnable( GL_CULL_FACE );
 	glCullFace( GL_BACK );
 	glEnable( GL_POLYGON_OFFSET_FILL );
-	glPolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
+	glPolygonOffset( RB_ShadowMapPolygonFactor(), RB_ShadowMapPolygonOffset() );
 	glClearColor( 1.0f, 1.0f, 1.0f, 1.0f );
 
 	glMatrixMode( GL_PROJECTION );
@@ -5435,7 +5457,7 @@ static bool RB_RenderTranslucentShadowMap( const drawSurf_t *primaryCasters, con
 	glEnable( GL_CULL_FACE );
 	glCullFace( GL_BACK );
 	glEnable( GL_POLYGON_OFFSET_FILL );
-	glPolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
+	glPolygonOffset( RB_ShadowMapPolygonFactor(), RB_ShadowMapPolygonOffset() );
 	glClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
 
 	for ( int cascadeIndex = 0; cascadeIndex < g_projectedShadowMapState.cascadeCount; cascadeIndex++ ) {
@@ -5567,7 +5589,7 @@ static bool RB_RenderPointTranslucentShadowMap( const drawSurf_t *primaryCasters
 	glEnable( GL_CULL_FACE );
 	glCullFace( GL_BACK );
 	glEnable( GL_POLYGON_OFFSET_FILL );
-	glPolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
+	glPolygonOffset( RB_ShadowMapPolygonFactor(), RB_ShadowMapPolygonOffset() );
 	glClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
 
 	glMatrixMode( GL_PROJECTION );
@@ -6515,6 +6537,9 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	}
 	if ( g_pointShadowMapProgram.shadowFilterRadius >= 0 ) {
 		glUniform1fARB( g_pointShadowMapProgram.shadowFilterRadius, r_shadowMapPointFilterRadius.GetFloat() );
+	}
+	if ( g_pointShadowMapProgram.shadowDebugMode >= 0 ) {
+		glUniform1fARB( g_pointShadowMapProgram.shadowDebugMode, (float)RB_ShadowMapDebugMode() );
 	}
 	if ( g_pointShadowMapProgram.globalLightOrigin >= 0 ) {
 		const float globalLightOrigin[4] = {

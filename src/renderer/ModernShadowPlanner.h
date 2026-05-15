@@ -35,8 +35,33 @@ enum modernShadowFallbackReason_t {
 	MODERN_SHADOW_FALLBACK_CUBEMAP_UNAVAILABLE,
 	MODERN_SHADOW_FALLBACK_BUDGET,
 	MODERN_SHADOW_FALLBACK_RESOURCE_UNAVAILABLE,
+	MODERN_SHADOW_FALLBACK_RECEIVER_SAMPLING_UNAVAILABLE,
 	MODERN_SHADOW_FALLBACK_COUNT
 };
+
+enum modernShadowDepthFormat_t {
+	MODERN_SHADOW_DEPTH_FORMAT_NONE = 0,
+	MODERN_SHADOW_DEPTH_FORMAT_D24,
+	MODERN_SHADOW_DEPTH_FORMAT_D32F,
+	MODERN_SHADOW_DEPTH_FORMAT_PACKED_RGBA8
+};
+
+enum modernShadowCompareMode_t {
+	MODERN_SHADOW_COMPARE_NONE = 0,
+	MODERN_SHADOW_COMPARE_MANUAL_DEPTH,
+	MODERN_SHADOW_COMPARE_MANUAL_PACKED_DEPTH,
+	MODERN_SHADOW_COMPARE_HARDWARE
+};
+
+enum modernShadowBiasModel_t {
+	MODERN_SHADOW_BIAS_NONE = 0,
+	MODERN_SHADOW_BIAS_CONSTANT_NORMAL,
+	MODERN_SHADOW_BIAS_CASCADE_SCALED,
+	MODERN_SHADOW_BIAS_POINT_VECTOR
+};
+
+static const int MODERN_SHADOW_DESCRIPTOR_MAX_TILES = 6;
+static const int MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES = 4;
 
 typedef struct modernShadowLightDescriptor_s {
 	const viewLight_t *	viewLight;
@@ -59,10 +84,30 @@ typedef struct modernShadowLightDescriptor_s {
 	int					translucentCasterCount;
 	int					translucentReceiverCount;
 	float				atlasRect[4];
+	float				tileAtlasRect[MODERN_SHADOW_DESCRIPTOR_MAX_TILES][4];
+	float				shadowMatrix[16];
+	float				cascadeSplitDepths[MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float				bias[4];
+	int					faceIndex;
+	int					cascadeIndex;
+	int					depthFormat;
+	int					compareMode;
+	int					biasModel;
+	int					pcfKernel;
+	int					updateFrame;
+	int					casterCount;
+	int					receiverCount;
+	int					receiverScissor[4];
 	bool				pointLight;
 	bool				parallel;
 	bool				translucentMoments;
 	bool				stencilFallback;
+	bool				atlasTileReady;
+	bool				casterPassReady;
+	bool				cutoutCasterReady;
+	bool				receiverGuardReady;
+	bool				modernReceiverSamplingReady;
+	bool				stableCascadeReady;
 } modernShadowLightDescriptor_t;
 
 typedef struct modernShadowPlannerStats_s {
@@ -79,6 +124,7 @@ typedef struct modernShadowPlannerStats_s {
 	bool				reportRequested;
 	bool				visibilityCasterCullingReady;
 	bool				visibilityNoQueryStall;
+	bool				modernReceiverSamplingReady;
 	bool				overflow;
 	int					sceneCount;
 	int					viewLightCount;
@@ -106,6 +152,11 @@ typedef struct modernShadowPlannerStats_s {
 	int					maxMappedLights;
 	int					shadowMapSize;
 	int					updateModulo;
+	int					atlasTiles;
+	int					maxAtlasTiles;
+	int					cutoutCasterLights;
+	int					receiverGuardedLights;
+	int					receiverSamplingBlockedLights;
 	int					budgetThrottledLights;
 	int					textureLimitFallbacks;
 	int					cubemapFallbacks;

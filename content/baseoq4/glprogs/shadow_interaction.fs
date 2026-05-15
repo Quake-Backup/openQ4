@@ -52,11 +52,27 @@ const float kShadowDebugProjectedUV = 3.0;
 const float kShadowDebugProjectedDepth = 4.0;
 const float kShadowDebugProjectedW = 5.0;
 const float kShadowDebugInvalidMask = 6.0;
+const float kShadowDebugBiasOff = 7.0;
+const float kShadowDebugPCFOff = 8.0;
+const float kShadowDebugCasterOffsetOff = 9.0;
+const float kShadowDebugReceiverPlaneBiasOff = 10.0;
 const float kTranslucentMomentMinVariance = 1.0e-5;
 
 float gShadowDebugState = 0.0;
 
 bool ProjectShadowCoord( vec4 shadowCoord, out vec2 localUv, out float depth );
+
+bool ShadowDebugModeIs( float mode ) {
+	return abs( uShadowDebugMode - mode ) < 0.5;
+}
+
+float EffectiveShadowFilterRadius() {
+	return ShadowDebugModeIs( kShadowDebugPCFOff ) ? 0.0 : uShadowFilterRadius;
+}
+
+bool ShadowVisualDebugMode() {
+	return uShadowDebugMode > 0.5 && uShadowDebugMode < kShadowDebugBiasOff - 0.5;
+}
 
 bool ShadowCoordComponentInvalid( float value ) {
 	return value != value || abs( value ) > kShadowCoordMaxMagnitude;
@@ -125,16 +141,17 @@ float ResolveTranslucentShadowMoments( vec4 moments, float depth ) {
 }
 
 vec2 ShadowAtlasGuardBand() {
-	float guardRadius = max( 0.5, uShadowFilterRadius + 0.75 );
+	float guardRadius = max( 0.5, EffectiveShadowFilterRadius() + 0.75 );
 	return uShadowTexelSize * guardRadius;
 }
 
 vec4 SampleFilteredMoments( sampler2D momentMap, vec2 uv, vec2 clampMin, vec2 clampMax ) {
-	if ( uShadowFilterRadius <= 0.0 ) {
+	float filterRadius = EffectiveShadowFilterRadius();
+	if ( filterRadius <= 0.0 ) {
 		return texture2D( momentMap, uv );
 	}
 
-	vec2 tap = uShadowTexelSize * max( uShadowFilterRadius, 0.5 );
+	vec2 tap = uShadowTexelSize * max( filterRadius, 0.5 );
 	vec4 moments = texture2D( momentMap, uv );
 	moments += texture2D( momentMap, clamp( uv + vec2( -0.5, -0.5 ) * tap, clampMin, clampMax ) );
 	moments += texture2D( momentMap, clamp( uv + vec2( 0.5, -0.5 ) * tap, clampMin, clampMax ) );
@@ -157,10 +174,14 @@ float CascadeBiasScale( int cascadeIndex ) {
 }
 
 float ShadowReceiverBias( int cascadeIndex ) {
+	if ( ShadowDebugModeIs( kShadowDebugBiasOff ) ) {
+		return 0.0;
+	}
 	float lightCos = clamp( vShadowLightCos, 0.0, 1.0 );
 	float slopeBias = sqrt( max( 1.0 - lightCos * lightCos, 0.0 ) );
 	float cascadeScale = CascadeBiasScale( cascadeIndex );
-	return ( uShadowBias + uShadowNormalBias * slopeBias ) * cascadeScale;
+	float normalBias = ShadowDebugModeIs( kShadowDebugReceiverPlaneBiasOff ) ? 0.0 : uShadowNormalBias;
+	return ( uShadowBias + normalBias * slopeBias ) * cascadeScale;
 }
 
 float SampleShadowCompare( vec2 uv, float depth, int cascadeIndex ) {
@@ -201,11 +222,12 @@ vec4 SampleShadowCascade( vec4 shadowCoord, vec4 atlasRect, int cascadeIndex ) {
 	clampMin = min( clampMin, clampMax );
 	uv = clamp( uv, clampMin, clampMax );
 
-	if ( uShadowFilterRadius <= 0.0 ) {
+	float filterRadius = EffectiveShadowFilterRadius();
+	if ( filterRadius <= 0.0 ) {
 		return vec4( SampleShadowCompare( uv, depth, cascadeIndex ), localUv.x, localUv.y, depth );
 	}
 
-	vec2 tap = uShadowTexelSize * uShadowFilterRadius;
+	vec2 tap = uShadowTexelSize * filterRadius;
 	float shadow = 0.0;
 	shadow += SampleShadowCompare( uv, depth, cascadeIndex );
 	shadow += SampleShadowCompare( clamp( uv + vec2( -0.326212, -0.405805 ) * tap, clampMin, clampMax ), depth, cascadeIndex );
@@ -509,7 +531,7 @@ void main() {
 	vec3 specular = specularSample * uSpecularColor.rgb * specularTerm;
 
 	vec3 color = ( diffuse + specular ) * light * vVertexColor;
-	if ( uShadowDebugMode > 0.5 ) {
+	if ( ShadowVisualDebugMode() ) {
 		gl_FragColor = ShadowDebugOutput( shadowInfo );
 		return;
 	}

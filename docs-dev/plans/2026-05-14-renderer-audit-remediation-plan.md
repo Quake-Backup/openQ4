@@ -185,6 +185,13 @@ Acceptance:
 - CSM is stable under camera motion and falls back per light on invalid projection.
 - RenderDoc shows valid named shadow resources and receiver sampling state.
 
+Round 3 Phase 5 status:
+
+- Extended the modern shadow descriptor contract with per-light matrix rows, tile atlas rects, cascade split depths, depth/compare/bias metadata, PCF kernel, update frame, caster/receiver totals, receiver scissor, and readiness flags for atlas tiles, caster passes, cutout casters, receiver guards, stable cascades, and modern receiver sampling.
+- Shadow atlas budgeting now accounts for physical tiles instead of one slot per light. Projected lights, point lights, and CSM cascades consume the number of atlas tiles they actually need, so selection pressure matches the planned render cost.
+- Clustered deferred and forward+ now fail closed when the shadow plan maps a light but the modern receiver sampler is not production-ready. Those lights are surfaced as per-light stencil fallbacks with `receiver-sampling-unavailable`, preventing unshadowed modern lighting and preventing double-shadow ownership handoff.
+- ARB2 shadow-map diagnostics gained hard validation modes for bias off, PCF off, caster polygon offset off, and receiver-plane/normal-bias off, while the existing projected receiver shader keeps invalid `w`, NaN/Inf, out-of-range depth, and out-of-atlas coordinates guarded.
+
 ### Phase 6: Advanced Conservative Frustum And Occlusion Culling
 
 Goal: save CPU and GPU work without visible popping or quality loss.

@@ -403,7 +403,13 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 	record.shadowFallbackReason = shadow->fallbackReason;
 	stats.shadowDescriptorCount = Max( stats.shadowDescriptorCount, shadow->descriptorIndex + 1 );
 
-	if ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED ) {
+	if ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED && !shadow->modernReceiverSamplingReady ) {
+		record.shadowPolicy = MODERN_SHADOW_POLICY_STENCIL_FALLBACK;
+		record.shadowFallbackReason = MODERN_SHADOW_FALLBACK_RECEIVER_SAMPLING_UNAVAILABLE;
+		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_FALLBACK;
+		stats.shadowFallbackLights++;
+		stats.shadowReceiverBlockedLights++;
+	} else if ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED ) {
 		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_MAPPED;
 		stats.shadowMappedLights++;
 	} else if ( shadow->policy == MODERN_SHADOW_POLICY_STENCIL_FALLBACK ) {
@@ -1272,7 +1278,7 @@ void R_ModernClusteredLighting_PrepareFrame( const idScenePacketFrame &packetFra
 	R_RendererMetrics_RecordClusteredLighting( rg_clusteredLightingStats );
 	if ( r_rendererMetrics.GetInteger() >= 2 && rg_clusteredLightingStats.requested ) {
 		common->Printf(
-			"clusteredLighting status=%s requested=%d valid=%d grids=%d scenes=%d lights=%d point=%d projected=%d fog=%d ambient=%d blend=%d special=%d shadow(mapped=%d fallback=%d skipped=%d descriptors=%d) clusters=%d active=%d refs=%d uploaded(l=%d c=%d r=%d idx=%d) spill=%d/%d unsampled=%d lossy=%d/%d lossless=%d overflow=%d/%d overflowRefs=%d maxCluster=%d/%d groups=%d grid=%dx%dx%d z=%d..%d ubo=%d ssbo=%d buffers=%d caps(l=%d idx=%d) bytes(params=%d lights=%d indices=%d) switches=%d bindFail=%d debug=%d/%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
+			"clusteredLighting status=%s requested=%d valid=%d grids=%d scenes=%d lights=%d point=%d projected=%d fog=%d ambient=%d blend=%d special=%d shadow(mapped=%d fallback=%d skipped=%d descriptors=%d receiverBlocked=%d) clusters=%d active=%d refs=%d uploaded(l=%d c=%d r=%d idx=%d) spill=%d/%d unsampled=%d lossy=%d/%d lossless=%d overflow=%d/%d overflowRefs=%d maxCluster=%d/%d groups=%d grid=%dx%dx%d z=%d..%d ubo=%d ssbo=%d buffers=%d caps(l=%d idx=%d) bytes(params=%d lights=%d indices=%d) switches=%d bindFail=%d debug=%d/%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
 			rg_clusteredLightingStats.status,
 			rg_clusteredLightingStats.requested ? 1 : 0,
 			rg_clusteredLightingStats.frameValid ? 1 : 0,
@@ -1289,6 +1295,7 @@ void R_ModernClusteredLighting_PrepareFrame( const idScenePacketFrame &packetFra
 			rg_clusteredLightingStats.shadowFallbackLights,
 			rg_clusteredLightingStats.shadowSkippedLights,
 			rg_clusteredLightingStats.shadowDescriptorCount,
+			rg_clusteredLightingStats.shadowReceiverBlockedLights,
 			rg_clusteredLightingStats.clusterCount,
 			rg_clusteredLightingStats.activeClusters,
 			rg_clusteredLightingStats.lightReferences,
@@ -1371,7 +1378,7 @@ void R_ModernClusteredLighting_DrawDebugOverlay( void ) {
 
 void R_ModernClusteredLighting_PrintGfxInfo( void ) {
 	common->Printf(
-		"Modern clustered lighting: %s, requested=%d, cvarDebug=%d, grids=%d scenes=%d lights=%d(point=%d projected=%d fog=%d ambient=%d blend=%d special=%d shadowMapped=%d shadowFallback=%d shadowSkipped=%d shadowDescriptors=%d) clusters=%d active=%d refs=%d uploaded(l=%d c=%d r=%d idx=%d) spill=%d/%d unsampled=%d lossy=%d/%d lossless=%d overflow=%d/%d overflowRefs=%d maxCluster=%d/%d groups=%d grid=%dx%dx%d z=%d..%d ubo=%d ssbo=%d buffers=%d caps(l=%d idx=%d) bytes(params=%d lights=%d indices=%d) switches=%d bindFail=%d overlay=%d/%d texture=%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
+		"Modern clustered lighting: %s, requested=%d, cvarDebug=%d, grids=%d scenes=%d lights=%d(point=%d projected=%d fog=%d ambient=%d blend=%d special=%d shadowMapped=%d shadowFallback=%d shadowSkipped=%d shadowDescriptors=%d receiverBlocked=%d) clusters=%d active=%d refs=%d uploaded(l=%d c=%d r=%d idx=%d) spill=%d/%d unsampled=%d lossy=%d/%d lossless=%d overflow=%d/%d overflowRefs=%d maxCluster=%d/%d groups=%d grid=%dx%dx%d z=%d..%d ubo=%d ssbo=%d buffers=%d caps(l=%d idx=%d) bytes(params=%d lights=%d indices=%d) switches=%d bindFail=%d overlay=%d/%d texture=%d debugTrunc=%d source='%s' build=%dms uploads=%d\n",
 		rg_clusteredLightingStats.available ? "available" : "unavailable",
 		rg_clusteredLightingStats.requested ? 1 : 0,
 		r_rendererClusterDebug.GetInteger(),
@@ -1388,6 +1395,7 @@ void R_ModernClusteredLighting_PrintGfxInfo( void ) {
 		rg_clusteredLightingStats.shadowFallbackLights,
 		rg_clusteredLightingStats.shadowSkippedLights,
 		rg_clusteredLightingStats.shadowDescriptorCount,
+		rg_clusteredLightingStats.shadowReceiverBlockedLights,
 		rg_clusteredLightingStats.clusterCount,
 		rg_clusteredLightingStats.activeClusters,
 		rg_clusteredLightingStats.lightReferences,
