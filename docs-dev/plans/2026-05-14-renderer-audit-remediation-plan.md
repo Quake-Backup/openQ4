@@ -93,6 +93,14 @@ Acceptance:
 - A modern visible frame with any unresolved lighting/shadow fallback keeps legacy lighting visible.
 - ARB2 rollback after a modern frame has no stale FBO, texture, sampler, depth, stencil, blend, cull, or viewport state.
 
+Round 3 Phase 2 status:
+
+- Completed an early modern-visible ownership-readiness scan before expensive visible pass planning. Packet material/geometry fallbacks, interaction lighting, fog/blend, light-grid contribution, and shadow receiver ownership now block visible replacement instead of allowing a modern pass to suppress legacy work.
+- ARB2 interaction, fog/blend, light-grid, mapped-shadow, and stencil-shadow ownership now fail closed until their modern parity is proven. Diagnostic sidecar execution remains possible, but legacy lighting/shadow contribution stays visible when a replacement is incomplete.
+- Added first-blocker ownership diagnostics with view/pass/material-or-light id/resource/reason strings, plus `droppedByModern` accounting alongside the existing duplicate-with-legacy accounting.
+- Updated pass-ownership and compatibility self-tests to require fail-closed lighting/shadow ownership and zero dropped-modern hazards.
+- Validation: `tools/build/meson_setup.ps1 compile -C builddir`, `tools/build/meson_setup.ps1 install -C builddir --no-rebuild --skip-subprojects`, and `python tools/tests/renderer_validation_matrix.py --tiers auto --timeout 90 --output-dir .tmp/renderer-validation/phase2-pass-ownership-rerun` all pass.
+
 ### Phase 3: Material And Geometry Parity
 
 Goal: make promoted material output trustworthy before optimizing it.

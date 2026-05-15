@@ -79,6 +79,9 @@ typedef struct modernGLExecutorStats_s {
 	bool	modernVisibleGuiExecuted;
 	bool	modernVisibleRenderDemoDeterministic;
 	bool	modernVisibleCinematicTimingReady;
+	bool	modernVisibleLightingReady;
+	bool	modernVisibleLightGridReady;
+	bool	modernVisibleShadowOwnershipReady;
 	int		frameMode;
 	int		visibleDepthWouldExecute;
 	int		visibleDepthSkippedBlocked;
@@ -105,6 +108,7 @@ typedef struct modernGLExecutorStats_s {
 	int		passOwnerLegacySkipsArmed;
 	int		passOwnerLegacySkipsIssued;
 	int		passOwnerDuplicateHazards;
+	int		passOwnerDroppedByModern;
 	int		passOwnerFailClosedRestores;
 	int		passOwnerShadowModernPasses;
 	int		passOwnerShadowLegacyPasses;
@@ -306,6 +310,12 @@ typedef struct modernGLExecutorStats_s {
 	int		modernVisibleFallbackPasses;
 	int		modernVisibleOwnerFallbacks;
 	int		modernVisibleResourceFallbacks;
+	int		modernVisibleMaterialFallbackDraws;
+	int		modernVisibleGeometryFallbackDraws;
+	int		modernVisibleLightingFallbackPasses;
+	int		modernVisibleLightGridFallbackPasses;
+	int		modernVisibleShadowOwnershipFallbackPasses;
+	int		modernVisibleDroppedByModern;
 	int		modernVisibleGuiLegacyPasses;
 	int		modernVisiblePostLegacyPasses;
 	int		modernVisibleSpecialLegacyPasses;
@@ -338,6 +348,7 @@ typedef struct modernGLExecutorStats_s {
 	int		modernVisibleBSEMaterialFallbacks;
 	int		modernVisibleCopyRenderFallbackPasses;
 	int		modernVisibleCinematicCompatibilityPasses;
+	char	modernVisibleOwnershipBlocker[160];
 	char	status[96];
 } modernGLExecutorStats_t;
 

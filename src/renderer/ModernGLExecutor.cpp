@@ -139,6 +139,7 @@ typedef struct modernGLPassOwnershipSlot_s {
 	bool					legacyMayRun;
 	bool					skipLegacy;
 	bool					duplicateHazard;
+	bool					dropHazard;
 	int						legacySkipCount;
 	char					reason[64];
 } modernGLPassOwnershipSlot_t;
@@ -258,6 +259,13 @@ static void R_ModernGLExecutor_ResetPassOwnershipTable( const char *reason ) {
 		slot.legacyMayRun = R_ModernGLExecutor_PassHasLegacyWork( slot.category );
 		idStr::Copynz( slot.reason, reason != NULL ? reason : "legacy-default", sizeof( slot.reason ) );
 	}
+}
+
+static void R_ModernGLExecutor_FormatString( char *dest, int destSize, const char *fmt, ... ) {
+	va_list argptr;
+	va_start( argptr, fmt );
+	idStr::vsnPrintf( dest, destSize, fmt, argptr );
+	va_end( argptr );
 }
 
 const int MODERN_GL_DEFERRED_TEXTURE_COUNT = 5;
@@ -1002,6 +1010,9 @@ static void R_ModernGLExecutor_ResetStats( modernGLExecutorStats_t &stats, bool 
 	stats.modernVisibleGuiProgramReady = shaderStats.guiProgramReady;
 	stats.modernVisibleRenderDemoDeterministic = true;
 	stats.modernVisibleCinematicTimingReady = true;
+	stats.modernVisibleLightingReady = true;
+	stats.modernVisibleLightGridReady = true;
+	stats.modernVisibleShadowOwnershipReady = true;
 	stats.visibleDepthRequested = stats.modernVisibleRequested || r_rendererModernVisibleDepth.GetBool() || r_rendererModernDepthDebug.GetInteger() > 0 || R_ModernGLExecutor_ShadowMapSidecarRequested();
 	stats.visibleDepthDebugOverlayReady = rg_modernGLExecutorDepthOverlayProgram != 0;
 	stats.opaqueGBufferRequested = stats.modernVisibleRequested || r_rendererModernOpaque.GetBool() || r_rendererModernGBufferDebug.GetInteger() > 0 || r_rendererModernDeferred.GetBool() || r_rendererModernDeferredDebug.GetInteger() > 0;
@@ -1034,7 +1045,12 @@ static void R_ModernGLExecutor_RecomputeModernVisibleFallbacks( modernGLExecutor
 		blockingLegacyPasses
 		+ stats.modernVisibleGuiLegacyPasses
 		+ stats.modernVisibleSpecialLegacyPasses
-		+ stats.modernVisibleSubviewLegacyPasses;
+		+ stats.modernVisibleSubviewLegacyPasses
+		+ stats.modernVisibleMaterialFallbackDraws
+		+ stats.modernVisibleGeometryFallbackDraws
+		+ stats.modernVisibleLightingFallbackPasses
+		+ stats.modernVisibleLightGridFallbackPasses
+		+ stats.modernVisibleShadowOwnershipFallbackPasses;
 	stats.modernVisibleBlockedByLegacy = stats.modernVisibleOwnerFallbacks > 0;
 	stats.modernVisibleFallbackPasses = stats.modernVisibleOwnerFallbacks + stats.modernVisibleDisabledPasses;
 	stats.modernVisibleCompatibilityReady = true;
@@ -1163,6 +1179,171 @@ static int R_ModernGLExecutor_ModernVisibleFallbacksWithoutGui( const modernGLEx
 	return Max( 0, stats.modernVisibleOwnerFallbacks - stats.modernVisibleGuiLegacyPasses );
 }
 
+static void R_ModernGLExecutor_SetOwnershipBlocker(
+	modernGLExecutorStats_t &stats,
+	const char *domain,
+	int viewIndex,
+	renderPassCategory_t pass,
+	int id,
+	const char *resource,
+	const char *reason ) {
+	if ( stats.modernVisibleOwnershipBlocker[0] != '\0' ) {
+		return;
+	}
+	R_ModernGLExecutor_FormatString(
+		stats.modernVisibleOwnershipBlocker,
+		sizeof( stats.modernVisibleOwnershipBlocker ),
+		"view=%d pass=%s %s=%d resource=%s reason=%s",
+		viewIndex,
+		R_ModernGLExecutor_PassName( pass ),
+		domain != NULL ? domain : "id",
+		id,
+		resource != NULL ? resource : "unknown",
+		reason != NULL ? reason : "unknown" );
+}
+
+static int R_ModernGLExecutor_ViewIndexForViewDef( const idScenePacketFrame &packetFrame, const viewDef_t *viewDef ) {
+	for ( int i = 0; i < packetFrame.NumScenes(); ++i ) {
+		if ( packetFrame.Scene( i ).viewDef == viewDef ) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int R_ModernGLExecutor_CountPassDraws( const idScenePacketFrame &packetFrame, renderPassCategory_t category ) {
+	int count = 0;
+	for ( int i = 0; i < packetFrame.NumDrawPackets(); ++i ) {
+		if ( packetFrame.DrawPacket( i ).passCategory == category ) {
+			count++;
+		}
+	}
+	return count;
+}
+
+static int R_ModernGLExecutor_FirstContributingLightIndex( const idScenePacketFrame &packetFrame, renderPassCategory_t category, int &viewIndex ) {
+	viewIndex = -1;
+	for ( int sceneIndex = 0; sceneIndex < packetFrame.NumScenes(); ++sceneIndex ) {
+		const viewDef_t *viewDef = packetFrame.Scene( sceneIndex ).viewDef;
+		if ( viewDef == NULL ) {
+			continue;
+		}
+		for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+			if ( vLight->lightShader == NULL ) {
+				continue;
+			}
+			const bool fogOrBlend = vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight();
+			if ( category == RENDER_PASS_ARB2_INTERACTION && fogOrBlend ) {
+				continue;
+			}
+			if ( category == RENDER_PASS_FOG_BLEND && !fogOrBlend ) {
+				continue;
+			}
+			if ( vLight->localInteractions == NULL && vLight->globalInteractions == NULL && vLight->translucentInteractions == NULL ) {
+				continue;
+			}
+			viewIndex = sceneIndex;
+			return vLight->lightDef != NULL ? vLight->lightDef->index : -1;
+		}
+	}
+	return -1;
+}
+
+static void R_ModernGLExecutor_RecordPacketFallbackBlockers( const idScenePacketFrame &packetFrame, modernGLExecutorStats_t &stats ) {
+	for ( int i = 0; i < packetFrame.NumDrawPackets(); ++i ) {
+		const drawPacket_t &draw = packetFrame.DrawPacket( i );
+		const bool materialPass =
+			draw.passCategory == RENDER_PASS_DEPTH ||
+			draw.passCategory == RENDER_PASS_AMBIENT ||
+			draw.passCategory == RENDER_PASS_ARB2_INTERACTION ||
+			draw.passCategory == RENDER_PASS_LIGHT_GRID ||
+			draw.passCategory == RENDER_PASS_FOG_BLEND ||
+			draw.passCategory == RENDER_PASS_SHADOW_MAP ||
+			draw.passCategory == RENDER_PASS_STENCIL_SHADOW ||
+			draw.passCategory == RENDER_PASS_GUI;
+		if ( !materialPass ) {
+			continue;
+		}
+
+		const int viewIndex = R_ModernGLExecutor_ViewIndexForViewDef( packetFrame, draw.viewDef );
+		if ( draw.geometryRecord == NULL || draw.instanceRecord == NULL || !draw.hasGeometry || draw.indexCount <= 0 ) {
+			stats.modernVisibleGeometryFallbackDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", viewIndex, draw.passCategory, i, "geometry", "missing-modern-geometry" );
+			continue;
+		}
+
+		const materialResourceTableRecord_t *materialRecord = NULL;
+		if ( draw.materialRecord != NULL ) {
+			materialRecord = R_MaterialResourceTable_FindRecordForMaterial( draw.materialRecord->material );
+		}
+		if ( materialRecord == NULL ) {
+			stats.modernVisibleMaterialFallbackDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", viewIndex, draw.passCategory, i, "material", "missing-material-record" );
+			continue;
+		}
+		if ( materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
+			stats.modernVisibleMaterialFallbackDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker( stats, "material", viewIndex, draw.passCategory, materialRecord->materialId, materialRecord->materialName, MaterialResourceFallbackReason_Name( materialRecord->fallbackReason ) );
+		}
+	}
+}
+
+static void R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( const idScenePacketFrame &packetFrame, const idRenderGraph &graph, modernGLExecutorStats_t &stats ) {
+	if ( !stats.modernVisibleRequested ) {
+		return;
+	}
+
+	stats.modernVisibleLightingReady = true;
+	stats.modernVisibleLightGridReady = true;
+	stats.modernVisibleShadowOwnershipReady = true;
+	stats.modernVisibleMaterialFallbackDraws = 0;
+	stats.modernVisibleGeometryFallbackDraws = 0;
+	stats.modernVisibleLightingFallbackPasses = 0;
+	stats.modernVisibleLightGridFallbackPasses = 0;
+	stats.modernVisibleShadowOwnershipFallbackPasses = 0;
+	stats.modernVisibleOwnershipBlocker[0] = '\0';
+
+	R_ModernGLExecutor_RecordPacketFallbackBlockers( packetFrame, stats );
+
+	const int interactionDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_ARB2_INTERACTION );
+	if ( interactionDraws > 0 ) {
+		int viewIndex = -1;
+		const int lightIndex = R_ModernGLExecutor_FirstContributingLightIndex( packetFrame, RENDER_PASS_ARB2_INTERACTION, viewIndex );
+		stats.modernVisibleLightingReady = false;
+		stats.modernVisibleLightingFallbackPasses++;
+		R_ModernGLExecutor_SetOwnershipBlocker( stats, "light", viewIndex, RENDER_PASS_ARB2_INTERACTION, lightIndex, "modernLightDescriptor", "lighting-parity-incomplete" );
+	}
+
+	const int fogBlendDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_FOG_BLEND );
+	if ( fogBlendDraws > 0 ) {
+		int viewIndex = -1;
+		const int lightIndex = R_ModernGLExecutor_FirstContributingLightIndex( packetFrame, RENDER_PASS_FOG_BLEND, viewIndex );
+		stats.modernVisibleLightingReady = false;
+		stats.modernVisibleLightingFallbackPasses++;
+		R_ModernGLExecutor_SetOwnershipBlocker( stats, "light", viewIndex, RENDER_PASS_FOG_BLEND, lightIndex, "fogBlendEvaluation", "fog-blend-parity-incomplete" );
+	}
+
+	const int lightGridDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_LIGHT_GRID );
+	if ( lightGridDraws > 0 ) {
+		stats.modernVisibleLightGridReady = false;
+		stats.modernVisibleLightGridFallbackPasses++;
+		R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", 0, RENDER_PASS_LIGHT_GRID, lightGridDraws, "lightGridContribution", "light-grid-parity-incomplete" );
+	}
+
+	const int shadowMapDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_SHADOW_MAP );
+	const int stencilShadowDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_STENCIL_SHADOW );
+	if ( shadowMapDraws > 0 || stencilShadowDraws > 0 ) {
+		stats.modernVisibleShadowOwnershipReady = false;
+		stats.modernVisibleShadowOwnershipFallbackPasses += ( shadowMapDraws > 0 ? 1 : 0 ) + ( stencilShadowDraws > 0 ? 1 : 0 );
+		R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", 0, shadowMapDraws > 0 ? RENDER_PASS_SHADOW_MAP : RENDER_PASS_STENCIL_SHADOW, shadowMapDraws > 0 ? shadowMapDraws : stencilShadowDraws, "shadowReceiverSampling", "shadow-ownership-parity-incomplete" );
+	}
+
+	if ( graph.FindPass( RENDER_PASS_ARB2_INTERACTION ) >= 0 && !stats.modernVisibleLightingReady ) {
+		stats.modernVisibleBlockedByLegacy = true;
+	}
+	R_ModernGLExecutor_RecomputeModernVisibleFallbacks( stats );
+}
+
 static void R_ModernGLExecutor_SetEffectivePassRequests(
 	modernGLExecutorStats_t &stats,
 	bool visibleDepthRequested,
@@ -1268,6 +1449,9 @@ static void R_ModernGLExecutor_AnalyzeFrame(
 	stats.modernVisibleGuiProgramReady = shaderStats.guiProgramReady;
 	stats.modernVisibleRenderDemoDeterministic = true;
 	stats.modernVisibleCinematicTimingReady = true;
+	stats.modernVisibleLightingReady = true;
+	stats.modernVisibleLightGridReady = true;
+	stats.modernVisibleShadowOwnershipReady = true;
 	stats.visibleDepthRequested = stats.modernVisibleRequested || r_rendererModernVisibleDepth.GetBool() || r_rendererModernDepthDebug.GetInteger() > 0 || R_ModernGLExecutor_ShadowMapSidecarRequested();
 	stats.visibleDepthDebugOverlayReady = rg_modernGLExecutorDepthOverlayProgram != 0;
 	stats.opaqueGBufferRequested = stats.modernVisibleRequested || r_rendererModernOpaque.GetBool() || r_rendererModernGBufferDebug.GetInteger() > 0 || r_rendererModernDeferred.GetBool() || r_rendererModernDeferredDebug.GetInteger() > 0;
@@ -3342,6 +3526,7 @@ static void R_ModernGLExecutor_UpdatePassOwnershipCounts( modernGLExecutorStats_
 	stats.passOwnerLegacySkipsArmed = 0;
 	stats.passOwnerLegacySkipsIssued = 0;
 	stats.passOwnerDuplicateHazards = 0;
+	stats.passOwnerDroppedByModern = 0;
 	stats.passOwnerFailClosedRestores = rg_modernGLPassOwnership.failClosedRestores;
 	stats.passOwnerShadowModernPasses = 0;
 	stats.passOwnerShadowLegacyPasses = 0;
@@ -3360,6 +3545,9 @@ static void R_ModernGLExecutor_UpdatePassOwnershipCounts( modernGLExecutorStats_
 		}
 		if ( slot.duplicateHazard ) {
 			stats.passOwnerDuplicateHazards++;
+		}
+		if ( slot.dropHazard ) {
+			stats.passOwnerDroppedByModern++;
 		}
 		switch ( slot.state ) {
 		case MODERN_GL_PASS_OWNER_MODERN:
@@ -3394,6 +3582,7 @@ static void R_ModernGLExecutor_UpdatePassOwnershipCounts( modernGLExecutorStats_
 			stats.passOwnerPostLegacyPasses++;
 		}
 	}
+	stats.modernVisibleDroppedByModern = stats.passOwnerDroppedByModern;
 }
 
 static void R_ModernGLExecutor_SetPassOwnership(
@@ -3412,6 +3601,7 @@ static void R_ModernGLExecutor_SetPassOwnership(
 	slot.skipLegacy = skipLegacy && R_ModernGLExecutor_PassHasLegacyWork( category ) && state == MODERN_GL_PASS_OWNER_MODERN;
 	slot.legacyMayRun = R_ModernGLExecutor_PassHasLegacyWork( category ) && !slot.skipLegacy && state != MODERN_GL_PASS_OWNER_DISABLED;
 	slot.duplicateHazard = modernExecuted && slot.legacyMayRun && state == MODERN_GL_PASS_OWNER_MODERN;
+	slot.dropHazard = slot.skipLegacy && !modernExecuted && category != RENDER_PASS_GUI;
 	idStr::Copynz( slot.reason, reason != NULL ? reason : R_ModernGLExecutor_PassOwnerStateName( state ), sizeof( slot.reason ) );
 }
 
@@ -3430,14 +3620,18 @@ static bool R_ModernGLExecutor_ModernVisiblePrecomposeReady( modernGLExecutorSta
 	stats.modernVisibleShadowSkippedLights = shadowStats.skippedLights;
 	stats.modernVisibleShadowDescriptors = shadowStats.descriptorCount;
 	stats.modernVisibleShadowReady =
-		!r_shadows.GetBool()
+		stats.modernVisibleShadowOwnershipReady &&
+		( !r_shadows.GetBool()
 		|| !shadowStats.requested
 		|| ( shadowStats.frameValid
 			&& shadowStats.fallbackLights == 0
+			&& shadowStats.skippedLights == 0
 			&& stats.deferredResolveShadowFallbackLights == 0
+			&& stats.deferredResolveShadowSkippedLights == 0
 			&& stats.forwardPlusShadowFallbackLights == 0
+			&& stats.forwardPlusShadowSkippedLights == 0
 			&& stats.visibleShadowFallbackDraws == 0
-			&& stats.visibleStencilShadowFallbackDraws == 0 );
+			&& stats.visibleStencilShadowFallbackDraws == 0 ) );
 	stats.modernVisibleSourceReady = deferredReady && forwardReady;
 	stats.modernVisibleBackBufferReady = backBuffer != NULL && backBuffer->presentable;
 	stats.modernVisibleHybridTargetReady = hybridReady;
@@ -3451,6 +3645,11 @@ static bool R_ModernGLExecutor_ModernVisiblePrecomposeReady( modernGLExecutorSta
 		stats.initialized &&
 		stats.modernVisibleProgramReady &&
 		!stats.modernVisibleBlockedByLegacy &&
+		stats.modernVisibleLightingReady &&
+		stats.modernVisibleLightGridReady &&
+		stats.modernVisibleShadowOwnershipReady &&
+		stats.modernVisibleMaterialFallbackDraws == 0 &&
+		stats.modernVisibleGeometryFallbackDraws == 0 &&
 		stats.modernVisibleShadowReady &&
 		guiReady &&
 		stats.modernVisibleResourcesReady &&
@@ -3530,18 +3729,29 @@ static void R_ModernGLExecutor_FinalizePassOwnership( const idRenderGraph &graph
 			stats.deferredResolveUnsupportedLightFallbacks == 0 &&
 			stats.deferredResolveFogFallbackLights == 0 &&
 			stats.deferredResolveSpecialFallbackLights == 0 &&
-			stats.deferredResolveShadowFallbackLights == 0;
+			stats.deferredResolveShadowFallbackLights == 0 &&
+			stats.deferredResolveShadowSkippedLights == 0;
 		const bool forwardModern =
 			stats.forwardPlusExecuted &&
 			stats.forwardPlusResourcesReady &&
 			stats.forwardPlusFallbackDraws == 0 &&
 			stats.forwardPlusSpecialEffectFallbacks == 0 &&
-			stats.forwardPlusShadowFallbackLights == 0;
+			stats.forwardPlusShadowFallbackLights == 0 &&
+			stats.forwardPlusShadowSkippedLights == 0;
+		const bool lightingModern =
+			stats.modernVisibleLightingReady &&
+			forwardModern;
+		const bool lightGridModern =
+			stats.modernVisibleLightGridReady &&
+			( deferredModern || forwardModern );
+		const bool shadowOwnershipModern =
+			stats.modernVisibleShadowOwnershipReady &&
+			stats.modernVisibleShadowReady;
 
 		if ( depthModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_DEPTH ) ) {
 			R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_DEPTH, MODERN_GL_PASS_OWNER_MODERN, true, true, "modern-depth-complete" );
 		}
-		if ( shadowMapModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_SHADOW_MAP ) ) {
+		if ( shadowOwnershipModern && shadowMapModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_SHADOW_MAP ) ) {
 			R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_SHADOW_MAP, MODERN_GL_PASS_OWNER_MODERN, true, true, "modern-shadow-map-complete" );
 			if ( R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_STENCIL_SHADOW ) ) {
 				R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_STENCIL_SHADOW, MODERN_GL_PASS_OWNER_MODERN, true, true, "modern-shadow-map-replaces-stencil" );
@@ -3557,14 +3767,14 @@ static void R_ModernGLExecutor_FinalizePassOwnership( const idRenderGraph &graph
 		}
 		if ( forwardModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_FORWARD_PLUS ) ) {
 			R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_FORWARD_PLUS, MODERN_GL_PASS_OWNER_MODERN, true, false, "modern-forward-plus-complete" );
-			if ( R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_ARB2_INTERACTION ) ) {
+			if ( lightingModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_ARB2_INTERACTION ) ) {
 				R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_ARB2_INTERACTION, MODERN_GL_PASS_OWNER_MODERN, true, true, "modern-lighting-complete" );
 			}
-			if ( R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_FOG_BLEND ) ) {
+			if ( lightingModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_FOG_BLEND ) ) {
 				R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_FOG_BLEND, MODERN_GL_PASS_OWNER_MODERN, true, true, "modern-forward-fog-complete" );
 			}
 		}
-		if ( ( deferredModern || forwardModern ) && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_LIGHT_GRID ) ) {
+		if ( lightGridModern && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_LIGHT_GRID ) ) {
 			R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_LIGHT_GRID, MODERN_GL_PASS_OWNER_MODERN, true, true, "modern-light-grid-consumed" );
 		}
 		if ( stats.modernVisibleGuiReadyDraws == stats.modernVisibleGuiDraws && R_ModernGLExecutor_PassExistsInGraph( graph, RENDER_PASS_GUI ) ) {
@@ -3605,6 +3815,7 @@ static void R_ModernGLExecutor_FailClosedPassOwnership( modernGLExecutorStats_t 
 		slot.skipLegacy = false;
 		slot.legacyMayRun = R_ModernGLExecutor_PassHasLegacyWork( slot.category );
 		slot.duplicateHazard = false;
+		slot.dropHazard = false;
 		idStr::Copynz( slot.reason, rg_modernGLPassOwnership.failClosedReason, sizeof( slot.reason ) );
 	}
 	stats.modernVisibleHandoffReady = false;
@@ -4019,6 +4230,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.visibilityPortalVisibleAreas++;
 		}
 	}
+	R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( packetFrame, graph, rg_modernGLExecutorStats );
 
 	const bool visibleReplacementCandidate =
 		modernVisibleRequested &&
@@ -4053,6 +4265,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 		rg_modernGLSubmitPlan.Clear();
 	}
 	R_ModernGLExecutor_FinalizeModernVisibleCompatibility( packetFrame, rg_modernGLSubmitPlan, rg_modernGLExecutorStats );
+	R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( packetFrame, graph, rg_modernGLExecutorStats );
 
 	const bool visibleReplacementCanConsume =
 		modernVisibleRequested &&
@@ -4296,7 +4509,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.forwardPlusLightGridContributions,
 			rg_modernGLExecutorStats.forwardPlusClearOps );
 		common->Printf(
-			"modernVisible req=%d exec=%d res=%d program=%d source=%d hybrid=%d backBuffer=%d shadow=%d hdr=%d postHandoff=%d blocked=%d composed=%d copies=%d postComposed=%d depthCopies=%d pixels=%d modern=%d legacy=%d disabled=%d fallback=%d ownerFallback=%d resourceFallback=%d gui=%d post=%d special=%d subview=%d present=%d clear=%d\n",
+			"modernVisible req=%d exec=%d res=%d program=%d source=%d hybrid=%d backBuffer=%d lighting=%d lightGrid=%d shadow=%d shadowOwner=%d hdr=%d postHandoff=%d blocked=%d droppedByModern=%d composed=%d copies=%d postComposed=%d depthCopies=%d pixels=%d modern=%d legacy=%d disabled=%d fallback=%d ownerFallback=%d resourceFallback=%d materialFallback=%d geometryFallback=%d lightingFallback=%d lightGridFallback=%d shadowFallback=%d gui=%d post=%d special=%d subview=%d present=%d clear=%d blocker='%s'\n",
 			rg_modernGLExecutorStats.modernVisibleRequested ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleExecuted ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleResourcesReady ? 1 : 0,
@@ -4304,10 +4517,14 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.modernVisibleSourceReady ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleHybridTargetReady ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleBackBufferReady ? 1 : 0,
+			rg_modernGLExecutorStats.modernVisibleLightingReady ? 1 : 0,
+			rg_modernGLExecutorStats.modernVisibleLightGridReady ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleShadowReady ? 1 : 0,
+			rg_modernGLExecutorStats.modernVisibleShadowOwnershipReady ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleHDRTargetReady ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisiblePostProcessHandoff ? 1 : 0,
 			rg_modernGLExecutorStats.modernVisibleBlockedByLegacy ? 1 : 0,
+			rg_modernGLExecutorStats.modernVisibleDroppedByModern,
 			rg_modernGLExecutorStats.modernVisibleCompositions,
 			rg_modernGLExecutorStats.modernVisibleCompositeCopies,
 			rg_modernGLExecutorStats.modernVisiblePostProcessCompositions,
@@ -4319,12 +4536,18 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.modernVisibleFallbackPasses,
 			rg_modernGLExecutorStats.modernVisibleOwnerFallbacks,
 			rg_modernGLExecutorStats.modernVisibleResourceFallbacks,
+			rg_modernGLExecutorStats.modernVisibleMaterialFallbackDraws,
+			rg_modernGLExecutorStats.modernVisibleGeometryFallbackDraws,
+			rg_modernGLExecutorStats.modernVisibleLightingFallbackPasses,
+			rg_modernGLExecutorStats.modernVisibleLightGridFallbackPasses,
+			rg_modernGLExecutorStats.modernVisibleShadowOwnershipFallbackPasses,
 			rg_modernGLExecutorStats.modernVisibleGuiLegacyPasses,
 			rg_modernGLExecutorStats.modernVisiblePostLegacyPasses,
 			rg_modernGLExecutorStats.modernVisibleSpecialLegacyPasses,
 			rg_modernGLExecutorStats.modernVisibleSubviewLegacyPasses,
 			rg_modernGLExecutorStats.modernVisiblePresentPasses,
-			rg_modernGLExecutorStats.modernVisibleClearOps );
+			rg_modernGLExecutorStats.modernVisibleClearOps,
+			rg_modernGLExecutorStats.modernVisibleOwnershipBlocker );
 		common->Printf(
 			"modernPassGate mode=%s canReplace=%d depth(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d) gbuffer(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d) deferred(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d) forward(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d)\n",
 			R_ModernGLExecutor_FrameModeName( rg_modernGLExecutorStats.frameMode ),
@@ -4350,7 +4573,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.forwardPlusSkippedNoConsumer,
 			rg_modernGLExecutorStats.forwardPlusDuplicatedWithLegacy );
 		common->Printf(
-			"modernPassOwnership ready=%d table=%d legacy=%d modern=%d mixed=%d blocked=%d disabled=%d skipArmed=%d skipIssued=%d duplicateHazards=%d failClosed=%d shadow(modern=%d legacy=%d) guiModern=%d postLegacy=%d reason=%s\n",
+			"modernPassOwnership ready=%d table=%d legacy=%d modern=%d mixed=%d blocked=%d disabled=%d skipArmed=%d skipIssued=%d duplicateHazards=%d droppedByModern=%d failClosed=%d shadow(modern=%d legacy=%d) guiModern=%d postLegacy=%d reason=%s\n",
 			rg_modernGLExecutorStats.modernVisibleHandoffReady ? 1 : 0,
 			rg_modernGLExecutorStats.passOwnerTablePasses,
 			rg_modernGLExecutorStats.passOwnerLegacyPasses,
@@ -4361,6 +4584,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.passOwnerLegacySkipsArmed,
 			rg_modernGLExecutorStats.passOwnerLegacySkipsIssued,
 			rg_modernGLExecutorStats.passOwnerDuplicateHazards,
+			rg_modernGLExecutorStats.passOwnerDroppedByModern,
 			rg_modernGLExecutorStats.passOwnerFailClosedRestores,
 			rg_modernGLExecutorStats.passOwnerShadowModernPasses,
 			rg_modernGLExecutorStats.passOwnerShadowLegacyPasses,
@@ -4497,7 +4721,7 @@ static bool R_ModernGLExecutor_VisibleCompositionReady(
 		return false;
 	}
 	if ( stats.modernVisibleBlockedByLegacy ) {
-		R_ModernGLExecutor_FailClosedPassOwnership( stats, "modern-visible-legacy-blocked" );
+		R_ModernGLExecutor_FailClosedPassOwnership( stats, stats.modernVisibleOwnershipBlocker[0] != '\0' ? stats.modernVisibleOwnershipBlocker : "modern-visible-legacy-blocked" );
 		stats.modernVisibleFallbackPasses++;
 		R_ModernGLExecutor_SetStatus( stats, "modern-visible-legacy-blocked" );
 		R_ModernGLExecutor_RecordMetrics( stats );
@@ -5099,7 +5323,7 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.forwardPlusLightGridContributions,
 		rg_modernGLExecutorStats.forwardPlusClearOps );
 	common->Printf(
-		"Modern visible frame: cvar=%d, req=%d exec=%d resources=%d program=%d source=%d hybrid=%d backBuffer=%d shadowReady=%d shadow(mapped=%d fallback=%d skipped=%d descriptors=%d) hdr=%d postHandoff=%d blocked=%d composed=%d copies=%d postComposed=%d depthCopies=%d pixels=%d modern=%d legacy=%d disabled=%d fallback=%d ownerFallback=%d resourceFallback=%d gui=%d post=%d special=%d subview=%d present=%d clears=%d\n",
+		"Modern visible frame: cvar=%d, req=%d exec=%d resources=%d program=%d source=%d hybrid=%d backBuffer=%d lighting=%d lightGrid=%d shadowReady=%d shadowOwner=%d shadow(mapped=%d fallback=%d skipped=%d descriptors=%d) hdr=%d postHandoff=%d blocked=%d droppedByModern=%d composed=%d copies=%d postComposed=%d depthCopies=%d pixels=%d modern=%d legacy=%d disabled=%d fallback=%d ownerFallback=%d resourceFallback=%d materialFallback=%d geometryFallback=%d lightingFallback=%d lightGridFallback=%d shadowFallback=%d gui=%d post=%d special=%d subview=%d present=%d clears=%d blocker='%s'\n",
 		r_rendererModernVisible.GetBool() ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleRequested ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleExecuted ? 1 : 0,
@@ -5108,7 +5332,10 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.modernVisibleSourceReady ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleHybridTargetReady ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleBackBufferReady ? 1 : 0,
+		rg_modernGLExecutorStats.modernVisibleLightingReady ? 1 : 0,
+		rg_modernGLExecutorStats.modernVisibleLightGridReady ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleShadowReady ? 1 : 0,
+		rg_modernGLExecutorStats.modernVisibleShadowOwnershipReady ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleShadowMappedLights,
 		rg_modernGLExecutorStats.modernVisibleShadowFallbackLights,
 		rg_modernGLExecutorStats.modernVisibleShadowSkippedLights,
@@ -5116,6 +5343,7 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.modernVisibleHDRTargetReady ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisiblePostProcessHandoff ? 1 : 0,
 		rg_modernGLExecutorStats.modernVisibleBlockedByLegacy ? 1 : 0,
+		rg_modernGLExecutorStats.modernVisibleDroppedByModern,
 		rg_modernGLExecutorStats.modernVisibleCompositions,
 		rg_modernGLExecutorStats.modernVisibleCompositeCopies,
 		rg_modernGLExecutorStats.modernVisiblePostProcessCompositions,
@@ -5127,12 +5355,18 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.modernVisibleFallbackPasses,
 		rg_modernGLExecutorStats.modernVisibleOwnerFallbacks,
 		rg_modernGLExecutorStats.modernVisibleResourceFallbacks,
+		rg_modernGLExecutorStats.modernVisibleMaterialFallbackDraws,
+		rg_modernGLExecutorStats.modernVisibleGeometryFallbackDraws,
+		rg_modernGLExecutorStats.modernVisibleLightingFallbackPasses,
+		rg_modernGLExecutorStats.modernVisibleLightGridFallbackPasses,
+		rg_modernGLExecutorStats.modernVisibleShadowOwnershipFallbackPasses,
 		rg_modernGLExecutorStats.modernVisibleGuiLegacyPasses,
 		rg_modernGLExecutorStats.modernVisiblePostLegacyPasses,
 		rg_modernGLExecutorStats.modernVisibleSpecialLegacyPasses,
 		rg_modernGLExecutorStats.modernVisibleSubviewLegacyPasses,
 		rg_modernGLExecutorStats.modernVisiblePresentPasses,
-		rg_modernGLExecutorStats.modernVisibleClearOps );
+		rg_modernGLExecutorStats.modernVisibleClearOps,
+		rg_modernGLExecutorStats.modernVisibleOwnershipBlocker );
 	common->Printf(
 		"Modern compatibility: ready=%d inventory=%d modern=%d legacy=%d lightGrid=%d gui(program=%d pass=%d draws=%d ready=%d exec=%d fallback=%d) post(graph=%d fallback=%d copy=%d) subview(graph=%d fallback=%d remote=%d demo=%d deterministic=%d) bse(fallback=%d particle=%d trail=%d beam=%d decal=%d material=%d) cinematic=%d\n",
 		rg_modernGLExecutorStats.modernVisibleCompatibilityReady ? 1 : 0,
@@ -6440,6 +6674,15 @@ bool RendererModernVisible_RunSelfTest( void ) {
 		return false;
 	}
 
+	struct rendererModernVisibleBoolCVarRestore_t {
+		idCVar &cvar;
+		bool oldValue;
+		rendererModernVisibleBoolCVarRestore_t( idCVar &value ) : cvar( value ), oldValue( value.GetBool() ) {}
+		~rendererModernVisibleBoolCVarRestore_t() { cvar.SetBool( oldValue ); }
+	};
+	rendererModernVisibleBoolCVarRestore_t restoreShadows( r_shadows );
+	r_shadows.SetBool( false );
+
 	drawSurf_t drawSurfs[3];
 	memset( drawSurfs, 0, sizeof( drawSurfs ) );
 	srfTriangles_t geometry;
@@ -6528,20 +6771,6 @@ bool RendererModernVisible_RunSelfTest( void ) {
 			return false;
 		}
 	}
-	if ( !packetFrame.AddPass( RENDER_PASS_ARB2_INTERACTION, true ) ) {
-		common->Printf( "RendererModernVisible self-test failed: could not add interaction pass\n" );
-		return false;
-	}
-	for ( int i = 0; i < 2; ++i ) {
-		if ( !packetFrame.AddDrawPacket( &drawSurfs[i], RENDER_PASS_ARB2_INTERACTION, i ) ) {
-			common->Printf( "RendererModernVisible self-test failed: could not add interaction draw packet\n" );
-			return false;
-		}
-	}
-	if ( !packetFrame.AddPass( RENDER_PASS_FOG_BLEND, true ) || !packetFrame.AddDrawPacket( &drawSurfs[2], RENDER_PASS_FOG_BLEND, 2 ) ) {
-		common->Printf( "RendererModernVisible self-test failed: could not add transparent draw packet\n" );
-		return false;
-	}
 	packetFrame.FinishScene();
 	packetFrame.AddCommandPacket( SCENE_PACKET_CATEGORY_UNKNOWN );
 	if ( !packetFrame.AddScene( NULL, true ) || !packetFrame.AddPass( RENDER_PASS_PRESENT, true, true ) ) {
@@ -6576,6 +6805,7 @@ bool RendererModernVisible_RunSelfTest( void ) {
 	rg_modernGLSubmitPlan.Build( rg_modernGLDrawPlan );
 	R_ModernGLExecutor_CopySubmitPlanStats( rg_modernGLExecutorStats, rg_modernGLSubmitPlan.Stats() );
 	R_ModernGLExecutor_FinalizeModernVisibleCompatibility( packetFrame, rg_modernGLSubmitPlan, rg_modernGLExecutorStats );
+	R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( packetFrame, graph, rg_modernGLExecutorStats );
 	rg_modernGLExecutorStats.modernVisibleCanReplaceFrame =
 		rg_modernGLExecutorStats.modernVisibleRequested &&
 		rg_modernGLExecutorStats.modernVisibleProgramReady &&
@@ -6674,42 +6904,41 @@ bool RendererPassOwnership_RunSelfTest( void ) {
 	idStr::Copynz( rg_modernGLPassOwnership.failClosedReason, "selftest-handoff-ready", sizeof( rg_modernGLPassOwnership.failClosedReason ) );
 
 	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_DEPTH, MODERN_GL_PASS_OWNER_MODERN, true, true, "selftest-modern-depth" );
-	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_SHADOW_MAP, MODERN_GL_PASS_OWNER_MODERN, true, true, "selftest-modern-shadow-map" );
-	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_STENCIL_SHADOW, MODERN_GL_PASS_OWNER_MODERN, true, true, "selftest-shadow-map-replaces-stencil" );
+	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_SHADOW_MAP, MODERN_GL_PASS_OWNER_BLOCKED, true, false, "selftest-shadow-receiver-parity-blocked" );
+	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_STENCIL_SHADOW, MODERN_GL_PASS_OWNER_BLOCKED, false, false, "selftest-stencil-fallback-visible" );
 	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_AMBIENT, MODERN_GL_PASS_OWNER_MIXED, true, false, "selftest-diagnostic-gbuffer" );
 	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_DEFERRED_RESOLVE, MODERN_GL_PASS_OWNER_MODERN, true, false, "selftest-modern-deferred" );
 	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_FORWARD_PLUS, MODERN_GL_PASS_OWNER_MODERN, true, false, "selftest-modern-forward" );
-	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_ARB2_INTERACTION, MODERN_GL_PASS_OWNER_MODERN, true, true, "selftest-modern-lighting" );
+	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_ARB2_INTERACTION, MODERN_GL_PASS_OWNER_BLOCKED, true, false, "selftest-lighting-parity-blocked" );
 	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_GUI, MODERN_GL_PASS_OWNER_LEGACY, false, false, "selftest-legacy-gui" );
 	R_ModernGLExecutor_SetPassOwnership( RENDER_PASS_AUTHORED_POST, MODERN_GL_PASS_OWNER_LEGACY, false, false, "selftest-legacy-post" );
 	R_ModernGLExecutor_UpdatePassOwnershipCounts( stats );
 
 	if ( !R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_DEPTH )
-		|| !R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SHADOW_MAP )
-		|| !R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_STENCIL_SHADOW )
-		|| !R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_ARB2_INTERACTION )
+		|| R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SHADOW_MAP )
+		|| R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_STENCIL_SHADOW )
+		|| R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_ARB2_INTERACTION )
 		|| R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_AMBIENT )
 		|| R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI )
-		|| stats.passOwnerDuplicateHazards != 0 ) {
+		|| stats.passOwnerDuplicateHazards != 0
+		|| stats.passOwnerDroppedByModern != 0 ) {
 		common->Printf(
-			"RendererPassOwnership self-test failed: ownership mismatch (skipDepth=%d skipShadow=%d skipStencil=%d skipLight=%d skipAmbient=%d skipGui=%d hazards=%d)\n",
+			"RendererPassOwnership self-test failed: ownership mismatch (skipDepth=%d skipShadow=%d skipStencil=%d skipLight=%d skipAmbient=%d skipGui=%d hazards=%d dropped=%d)\n",
 			R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_DEPTH ) ? 1 : 0,
 			R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SHADOW_MAP ) ? 1 : 0,
 			R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_STENCIL_SHADOW ) ? 1 : 0,
 			R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_ARB2_INTERACTION ) ? 1 : 0,
 			R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_AMBIENT ) ? 1 : 0,
 			R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ? 1 : 0,
-			stats.passOwnerDuplicateHazards );
+			stats.passOwnerDuplicateHazards,
+			stats.passOwnerDroppedByModern );
 		R_ModernGLExecutor_ResetPassOwnershipTable( "pass-ownership-selftest-failed" );
 		return false;
 	}
 
 	R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_DEPTH );
-	R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_SHADOW_MAP );
-	R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_STENCIL_SHADOW );
-	R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_ARB2_INTERACTION );
 	R_ModernGLExecutor_UpdatePassOwnershipCounts( stats );
-	if ( stats.passOwnerLegacySkipsIssued < 4 ) {
+	if ( stats.passOwnerLegacySkipsIssued != 1 ) {
 		common->Printf( "RendererPassOwnership self-test failed: skip accounting mismatch (%d)\n", stats.passOwnerLegacySkipsIssued );
 		R_ModernGLExecutor_ResetPassOwnershipTable( "pass-ownership-selftest-failed" );
 		return false;
@@ -6905,6 +7134,7 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 	rg_modernGLSubmitPlan.Build( rg_modernGLDrawPlan );
 	R_ModernGLExecutor_CopySubmitPlanStats( rg_modernGLExecutorStats, rg_modernGLSubmitPlan.Stats() );
 	R_ModernGLExecutor_FinalizeModernVisibleCompatibility( packetFrame, rg_modernGLSubmitPlan, rg_modernGLExecutorStats );
+	R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( packetFrame, graph, rg_modernGLExecutorStats );
 
 	const modernGLExecutorStats_t &stats = rg_modernGLExecutorStats;
 	if ( !stats.modernVisibleCompatibilityReady || stats.modernVisibleCompatibilityPasses < 17 || stats.modernVisiblePresentPasses <= 0 ) {
@@ -6953,12 +7183,28 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 			stats.modernVisibleBSEMaterialFallbacks );
 		return false;
 	}
-	if ( !stats.modernVisibleBlockedByLegacy || stats.modernVisibleOwnerFallbacks <= 0 || stats.modernVisibleLightGridModernPasses <= 0 ) {
+	if ( !stats.modernVisibleBlockedByLegacy
+		|| stats.modernVisibleOwnerFallbacks <= 0
+		|| stats.modernVisibleLightGridModernPasses <= 0
+		|| stats.modernVisibleLightingReady
+		|| stats.modernVisibleLightGridReady
+		|| stats.modernVisibleShadowOwnershipReady
+		|| stats.modernVisibleLightingFallbackPasses <= 0
+		|| stats.modernVisibleLightGridFallbackPasses <= 0
+		|| stats.modernVisibleShadowOwnershipFallbackPasses <= 0
+		|| stats.modernVisibleOwnershipBlocker[0] == '\0' ) {
 		common->Printf(
-			"RendererModernCompatibility self-test failed: fallback policy mismatch (blocked=%d ownerFallback=%d lightGrid=%d)\n",
+			"RendererModernCompatibility self-test failed: fallback policy mismatch (blocked=%d ownerFallback=%d lightGrid=%d ready(light=%d grid=%d shadow=%d) fallback(light=%d grid=%d shadow=%d) blocker='%s')\n",
 			stats.modernVisibleBlockedByLegacy ? 1 : 0,
 			stats.modernVisibleOwnerFallbacks,
-			stats.modernVisibleLightGridModernPasses );
+			stats.modernVisibleLightGridModernPasses,
+			stats.modernVisibleLightingReady ? 1 : 0,
+			stats.modernVisibleLightGridReady ? 1 : 0,
+			stats.modernVisibleShadowOwnershipReady ? 1 : 0,
+			stats.modernVisibleLightingFallbackPasses,
+			stats.modernVisibleLightGridFallbackPasses,
+			stats.modernVisibleShadowOwnershipFallbackPasses,
+			stats.modernVisibleOwnershipBlocker );
 		return false;
 	}
 
@@ -6988,7 +7234,7 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererModernCompatibility self-test passed (inventory=%d modern=%d legacy=%d gui=%d/%d post=%d/%d subview=%d demo=%d bse=%d ownerFallback=%d blocked=%d skipBlocked=%d/%d/%d/%d)\n",
+		"RendererModernCompatibility self-test passed (inventory=%d modern=%d legacy=%d gui=%d/%d post=%d/%d subview=%d demo=%d bse=%d ownerFallback=%d blocked=%d lightReady=%d gridReady=%d shadowReady=%d skipBlocked=%d/%d/%d/%d blocker='%s')\n",
 		stats.modernVisibleCompatibilityPasses,
 		stats.modernVisibleCompatibilityModernPasses,
 		stats.modernVisibleCompatibilityLegacyPasses,
@@ -7001,10 +7247,14 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 		stats.modernVisibleBSEFallbackPasses,
 		stats.modernVisibleOwnerFallbacks,
 		stats.modernVisibleBlockedByLegacy ? 1 : 0,
+		stats.modernVisibleLightingReady ? 1 : 0,
+		stats.modernVisibleLightGridReady ? 1 : 0,
+		stats.modernVisibleShadowOwnershipReady ? 1 : 0,
 		gateStats.visibleDepthSkippedBlocked,
 		gateStats.opaqueGBufferSkippedBlocked,
 		gateStats.deferredResolveSkippedBlocked,
-		gateStats.forwardPlusSkippedBlocked );
+		gateStats.forwardPlusSkippedBlocked,
+		stats.modernVisibleOwnershipBlocker );
 	return true;
 }
 
