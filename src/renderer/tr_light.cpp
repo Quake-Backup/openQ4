@@ -2452,6 +2452,10 @@ void R_RemoveUnecessaryViewLights( void ) {
 		if ( !vLight->localInteractions && !vLight->globalInteractions && !vLight->translucentInteractions ) {
 			vLight->localShadows = NULL;
 			vLight->globalShadows = NULL;
+			vLight->localShadowMapCasters = NULL;
+			vLight->globalShadowMapCasters = NULL;
+			vLight->localTranslucentShadowMapCasters = NULL;
+			vLight->globalTranslucentShadowMapCasters = NULL;
 		}
 	}
 

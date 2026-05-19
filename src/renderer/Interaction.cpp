@@ -45,6 +45,10 @@ idInteraction implementation
 
 // FIXME: use private allocator for srfCullInfo_t
 
+static const double SHADOW_LOD_RANDOM_UNIT = 0.000030518509;
+static const double SHADOW_LOD_MAX_FRAME_DELAY = 1000.0;
+static const int SHADOW_LOD_RETAIL_RAND_MASK = 0x7fff;
+
 static bool R_SurfaceShaderCreatesLightTris( const idMaterial *surfaceShader, const idMaterial *lightShader ) {
 	// Retail Quake 4 uses `noFog` / ReceivesFog() for fog and blend lights
 	// instead of the normal lighting-stage contract.
@@ -73,12 +77,34 @@ static bool R_ShouldCreateInteractionShadow( idRenderEntityLocal *entityDef ) {
 		|| viewEntity->screenCoverage >= r_lod_shadows_percent.GetFloat()
 		|| viewEntity->distanceToCamera < entityDef->parms.shadowLODDistance ) {
 		if ( entityDef->LODModificationFrame < idLib::frameNumber ) {
-			entityDef->LODModificationFrame = idLib::frameNumber + static_cast<int>( ( rand() / static_cast<float>( RAND_MAX ) ) * 1000.0f );
+			const int retailRand = rand() & SHADOW_LOD_RETAIL_RAND_MASK;
+			entityDef->LODModificationFrame = idLib::frameNumber + static_cast<int>( static_cast<double>( retailRand ) * SHADOW_LOD_RANDOM_UNIT * SHADOW_LOD_MAX_FRAME_DELAY );
 		}
 		return true;
 	}
 
 	return false;
+}
+
+static bool R_CachedInteractionShadowLODAdmitted( surfaceInteraction_t *sint, idRenderEntityLocal *entityDef ) {
+	if ( sint == NULL ) {
+		return R_ShouldCreateInteractionShadow( entityDef );
+	}
+	if ( !sint->shadowLODDecisionValid ) {
+		sint->shadowLODAdmitted = R_ShouldCreateInteractionShadow( entityDef );
+		sint->shadowLODDecisionValid = true;
+	}
+	return sint->shadowLODAdmitted;
+}
+
+static bool R_TranslucentShadowMapMomentsSupportedForLight( const idRenderLightLocal *lightDef ) {
+	return r_shadowMapTranslucentMoments.GetBool() &&
+		glConfig.GLSLProgramAvailable &&
+		glConfig.maxTextureUnits >= 9 &&
+		glConfig.maxTextureImageUnits >= 9 &&
+		glConfig.maxDrawBuffers >= 3 &&
+		glConfig.maxColorAttachments >= 3 &&
+		( lightDef == NULL || !lightDef->parms.pointLight || glConfig.cubeMapAvailable );
 }
 
 static void R_LinkShadowMapCasterSurf( const drawSurf_t **link, const srfTriangles_t *tri, const viewEntity_t *space,
@@ -1190,6 +1216,11 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 	surfaces = (surfaceInteraction_t *)R_ClearedStaticAlloc( sizeof( *surfaces ) * numSurfaces );
 
 	interactionGenerated = false;
+	const bool interactionHasShadows = HasShadows();
+	const bool shadowMapsEnabledForInteraction = interactionHasShadows && r_shadows.GetBool() && r_useShadowMap.GetBool();
+	const bool translucentShadowMapsEnabledForInteraction =
+		shadowMapsEnabledForInteraction &&
+		R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
 
 	// check each surface in the model
 	for ( int c = 0 ; c < model->NumSurfaces() ; c++ ) {
@@ -1247,25 +1278,55 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 			shader->ReceivesLighting() &&
 			!shader->HasGui() &&
 			!shader->HasSubview();
+		const bool surfaceCanCastInteractionShadow =
+			interactionHasShadows &&
+			( shader->SurfaceCastsShadow() || allowTranslucentStencilShadowCaster );
+		const bool surfaceCanCastDedicatedShadowMap =
+			shadowMapsEnabledForInteraction &&
+			shader->Coverage() != MC_TRANSLUCENT &&
+			shader->SurfaceCastsShadow() &&
+			!shader->HasGui() &&
+			!shader->HasSubview();
+		const bool surfaceCanCastTranslucentShadowMap =
+			translucentShadowMapsEnabledForInteraction &&
+			shader->Coverage() == MC_TRANSLUCENT &&
+			!shader->HasGui() &&
+			!shader->HasSubview();
+		const bool surfaceCanCastStencilShadowVolume =
+			surfaceCanCastInteractionShadow &&
+			tri->silEdges != NULL;
+		const bool surfaceNeedsShadowLODDecision =
+			surfaceCanCastStencilShadowVolume ||
+			surfaceCanCastDedicatedShadowMap ||
+			surfaceCanCastTranslucentShadowMap;
+		const bool shadowLODAdmitted =
+			surfaceNeedsShadowLODDecision &&
+			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
 
-		if ( HasShadows() && tri->silEdges != NULL && ( shader->SurfaceCastsShadow() || allowTranslucentStencilShadowCaster ) ) {
+		if ( ( surfaceCanCastDedicatedShadowMap || surfaceCanCastTranslucentShadowMap ) && shadowLODAdmitted ) {
+			// Dedicated shadow maps can consume ambient triangles even when the
+			// retail stencil-volume path has no silhouette volume to submit.
+			// Translucent moment casters are OpenQ4-specific, but they are still
+			// shadow output and need the same entity-level retail LOD admission.
+			interactionGenerated = true;
+		}
+
+		if ( surfaceCanCastStencilShadowVolume && shadowLODAdmitted ) {
 
 			// if the light has an optimized shadow volume, don't create shadows for any models that are part of the base areas
 			if ( lightDef->parms.prelightModel == NULL || !model->IsStaticWorldModel() || !r_useOptimizedShadows.GetBool() ) {
 
-				if ( R_ShouldCreateInteractionShadow( entityDef ) ) {
-					// this is the only place during gameplay (outside the utilities) that R_CreateShadowVolume() is called
-					sint->shadowTris = R_CreateShadowVolume( entityDef, tri, lightDef, shadowGen, sint->cullInfo );
-					if ( sint->shadowTris ) {
-						if ( shader->Coverage() != MC_OPAQUE || ( !r_skipSuppress.GetBool() && entityDef->parms.suppressSurfaceInViewID ) ) {
-							// if any surface is a shadow-casting perforated or translucent surface, or the
-							// base surface is suppressed in the view (world weapon shadows) we can't use
-							// the external shadow optimizations because we can see through some of the faces.
-							sint->shadowTris->numShadowIndexesNoCaps = sint->shadowTris->numIndexes;
-							sint->shadowTris->numShadowIndexesNoFrontCaps = sint->shadowTris->numIndexes;
-						}
-						interactionGenerated = true;
+				// this is the only place during gameplay (outside the utilities) that R_CreateShadowVolume() is called
+				sint->shadowTris = R_CreateShadowVolume( entityDef, tri, lightDef, shadowGen, sint->cullInfo );
+				if ( sint->shadowTris ) {
+					if ( shader->Coverage() != MC_OPAQUE || ( !r_skipSuppress.GetBool() && entityDef->parms.suppressSurfaceInViewID ) ) {
+						// if any surface is a shadow-casting perforated or translucent surface, or the
+						// base surface is suppressed in the view (world weapon shadows) we can't use
+						// the external shadow optimizations because we can see through some of the faces.
+						sint->shadowTris->numShadowIndexesNoCaps = sint->shadowTris->numIndexes;
+						sint->shadowTris->numShadowIndexesNoFrontCaps = sint->shadowTris->numIndexes;
 					}
+					interactionGenerated = true;
 				}
 			}
 		}
@@ -1591,17 +1652,11 @@ void idInteraction::AddActiveInteraction( void ) {
 		// interaction material. Retail does not let global shader overrides change
 		// whether a surface casts or locally routes its shadows.
 		const bool materialNoSelfShadow = shadowShader->TestMaterialFlag( MF_NOSELFSHADOW );
-		const bool shadowMapNoSelfShadow = entityDef->parms.noSelfShadow || materialNoSelfShadow;
+		const bool shadowMapNoSelfShadow = materialNoSelfShadow;
 		const bool shadowMapsEnabled = r_shadows.GetBool() && r_useShadowMap.GetBool();
 		const bool translucentShadowMapSupported =
 			shadowMapsEnabled &&
-			r_shadowMapTranslucentMoments.GetBool() &&
-			glConfig.GLSLProgramAvailable &&
-			glConfig.maxTextureUnits >= 9 &&
-			glConfig.maxTextureImageUnits >= 9 &&
-			glConfig.maxDrawBuffers >= 3 &&
-			glConfig.maxColorAttachments >= 3 &&
-			( !vLight->pointLight || glConfig.cubeMapAvailable );
+			R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
 		const bool skipPointLightEmitterCaster =
 			vLight->pointLight &&
 			R_ShouldSkipPointLightEmitterCaster( shadowShader, sint->ambientTris, localLightOrigin, lightDef->parms.lightRadius );
@@ -1618,7 +1673,8 @@ void idInteraction::AddActiveInteraction( void ) {
 			shadowShader->Coverage() != MC_TRANSLUCENT &&
 			shadowShader->SurfaceCastsShadow() &&
 			!shadowShader->HasGui() &&
-			!shadowShader->HasSubview();
+			!shadowShader->HasSubview() &&
+			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
 		const bool allowTranslucentShadowMapCaster =
 			translucentShadowMapSupported &&
 			!entityDef->parms.noShadow &&
@@ -1627,7 +1683,8 @@ void idInteraction::AddActiveInteraction( void ) {
 			sint->ambientTris != NULL &&
 			shadowShader->Coverage() == MC_TRANSLUCENT &&
 			!shadowShader->HasGui() &&
-			!shadowShader->HasSubview();
+			!shadowShader->HasSubview() &&
+			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
 
 		if ( allowShadowMapCaster ) {
 			srfTriangles_t *casterTris = sint->ambientTris;

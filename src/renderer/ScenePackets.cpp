@@ -1198,10 +1198,8 @@ static int R_ScenePackets_CountShadowMapCandidates( const viewDef_t *viewDef ) {
 		count += R_ScenePackets_CountDrawSurfChain( vLight->localShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
 		count += R_ScenePackets_CountDrawSurfChain( vLight->globalTranslucentShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
 		count += R_ScenePackets_CountDrawSurfChain( vLight->localTranslucentShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
-		if ( vLight->globalShadowMapCasters == NULL && vLight->localShadowMapCasters == NULL ) {
-			count += R_ScenePackets_CountDrawSurfChain( vLight->globalShadows, R_ScenePackets_DrawSurfShadowEligible );
-			count += R_ScenePackets_CountDrawSurfChain( vLight->localShadows, R_ScenePackets_DrawSurfShadowEligible );
-		}
+		count += R_ScenePackets_CountDrawSurfChain( vLight->globalShadows, R_ScenePackets_DrawSurfShadowEligible );
+		count += R_ScenePackets_CountDrawSurfChain( vLight->localShadows, R_ScenePackets_DrawSurfShadowEligible );
 	}
 	return count;
 }
@@ -1269,13 +1267,11 @@ static void R_ScenePackets_AddShadowMapPass( idScenePacketFrame &packetFrame, co
 		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
 			return;
 		}
-		if ( vLight->globalShadowMapCasters == NULL && vLight->localShadowMapCasters == NULL ) {
-			if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
-				return;
-			}
-			if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
-				return;
-			}
+		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+			return;
+		}
+		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+			return;
 		}
 	}
 }

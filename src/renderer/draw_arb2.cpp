@@ -4597,7 +4597,9 @@ static void RB_ShadowMapDrawPerforatedCasterHashed( const drawSurf_t *surf, cons
 	}
 }
 
-static void RB_ShadowMapDrawCasterChain( const drawSurf_t *surf, const bool useHashedAlpha ) {
+static int RB_ShadowMapDrawCasterChain( const drawSurf_t *surf, const bool useHashedAlpha ) {
+	int drawnCasters = 0;
+
 	for ( ; surf != NULL; surf = surf->nextOnLight ) {
 		srfTriangles_t *casterGeo = NULL;
 		vertCache_s *ambientCache = NULL;
@@ -4627,11 +4629,15 @@ static void RB_ShadowMapDrawCasterChain( const drawSurf_t *surf, const bool useH
 			} else {
 				RB_ShadowMapDrawPerforatedCasterClassic( surf, casterGeo, ac );
 			}
+			drawnCasters++;
 			continue;
 		}
 
 		RB_DrawElementsWithCounters( casterGeo );
+		drawnCasters++;
 	}
+
+	return drawnCasters;
 }
 
 static void RB_ShadowMapDrawTranslucentCasterChain( const drawSurf_t *surf ) {
@@ -5007,7 +5013,9 @@ static void RB_PointShadowMapDrawPerforatedCaster( const drawSurf_t *surf, const
 	}
 }
 
-static void RB_PointShadowMapDrawCasterChain( const drawSurf_t *surf, const float lightModelViewMatrix[16] ) {
+static int RB_PointShadowMapDrawCasterChain( const drawSurf_t *surf, const float lightModelViewMatrix[16] ) {
+	int drawnCasters = 0;
+
 	for ( ; surf != NULL; surf = surf->nextOnLight ) {
 		srfTriangles_t *casterGeo = NULL;
 		vertCache_s *ambientCache = NULL;
@@ -5048,11 +5056,15 @@ static void RB_PointShadowMapDrawCasterChain( const drawSurf_t *surf, const floa
 			} else {
 				RB_DrawElementsWithCounters( casterGeo );
 			}
+			drawnCasters++;
 			continue;
 		}
 
 		RB_DrawElementsWithCounters( casterGeo );
+		drawnCasters++;
 	}
+
+	return drawnCasters;
 }
 
 static void RB_PointShadowMapDrawTranslucentCasterChain( const drawSurf_t *surf, const float lightModelViewMatrix[16] ) {
@@ -5202,6 +5214,12 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 		return false;
 	}
 
+	const bool haveOpaqueCasterChain =
+		primaryCasters != NULL ||
+		secondaryCasters != NULL ||
+		tertiaryCasters != NULL ||
+		quaternaryCasters != NULL;
+	int drawnCasterCount = 0;
 	const GLboolean blendWasEnabled = glIsEnabled( GL_BLEND );
 	const GLboolean scissorWasEnabled = glIsEnabled( GL_SCISSOR_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
@@ -5247,10 +5265,10 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 		glMatrixMode( GL_MODELVIEW );
 
 		backEnd.currentSpace = NULL;
-		RB_ShadowMapDrawCasterChain( primaryCasters, useHashedAlpha );
-		RB_ShadowMapDrawCasterChain( secondaryCasters, useHashedAlpha );
-		RB_ShadowMapDrawCasterChain( tertiaryCasters, useHashedAlpha );
-		RB_ShadowMapDrawCasterChain( quaternaryCasters, useHashedAlpha );
+		drawnCasterCount += RB_ShadowMapDrawCasterChain( primaryCasters, useHashedAlpha );
+		drawnCasterCount += RB_ShadowMapDrawCasterChain( secondaryCasters, useHashedAlpha );
+		drawnCasterCount += RB_ShadowMapDrawCasterChain( tertiaryCasters, useHashedAlpha );
+		drawnCasterCount += RB_ShadowMapDrawCasterChain( quaternaryCasters, useHashedAlpha );
 	}
 
 	glDisable( GL_POLYGON_OFFSET_FILL );
@@ -5296,7 +5314,11 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	GL_ClearStateDelta();
 	GL_SelectTexture( 0 );
 
-	return true;
+	// Legacy stencil/prelight shadow chains are valid fallback inputs, but they
+	// may not resolve to ambient geometry that the shadow-map caster path can
+	// draw. Treat an all-skipped opaque caster set as a render miss so the pass
+	// falls back to the retail stencil path instead of sampling an empty map.
+	return !haveOpaqueCasterChain || drawnCasterCount > 0;
 }
 
 static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters ) {
@@ -5304,6 +5326,12 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 		return false;
 	}
 
+	const bool haveOpaqueCasterChain =
+		primaryCasters != NULL ||
+		secondaryCasters != NULL ||
+		tertiaryCasters != NULL ||
+		quaternaryCasters != NULL;
+	int drawnCasterCount = 0;
 	const GLboolean blendWasEnabled = glIsEnabled( GL_BLEND );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 
@@ -5370,10 +5398,10 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
 
 		backEnd.currentSpace = NULL;
-		RB_PointShadowMapDrawCasterChain( primaryCasters, lightModelViewMatrix );
-		RB_PointShadowMapDrawCasterChain( secondaryCasters, lightModelViewMatrix );
-		RB_PointShadowMapDrawCasterChain( tertiaryCasters, lightModelViewMatrix );
-		RB_PointShadowMapDrawCasterChain( quaternaryCasters, lightModelViewMatrix );
+		drawnCasterCount += RB_PointShadowMapDrawCasterChain( primaryCasters, lightModelViewMatrix );
+		drawnCasterCount += RB_PointShadowMapDrawCasterChain( secondaryCasters, lightModelViewMatrix );
+		drawnCasterCount += RB_PointShadowMapDrawCasterChain( tertiaryCasters, lightModelViewMatrix );
+		drawnCasterCount += RB_PointShadowMapDrawCasterChain( quaternaryCasters, lightModelViewMatrix );
 	}
 
 	glDisable( GL_POLYGON_OFFSET_FILL );
@@ -5415,7 +5443,9 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 	GL_ClearStateDelta();
 	GL_SelectTexture( 0 );
 
-	return true;
+	// See the projected-light path above: mapped point lights must not treat an
+	// all-skipped legacy caster chain as a successful, empty shadow map.
+	return !haveOpaqueCasterChain || drawnCasterCount > 0;
 }
 
 static bool RB_RenderTranslucentShadowMap( const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters ) {
@@ -7443,19 +7473,13 @@ void RB_ARB2_DrawInteractions( void ) {
 			glStencilFunc( GL_ALWAYS, 128, 255 );
 
 			if ( vLight->pointLight ) {
-				const drawSurf_t *pointLocalPrimaryCasters = vLight->globalShadowMapCasters;
-				const drawSurf_t *pointLocalSecondaryCasters = ( pointLocalPrimaryCasters == NULL ) ? vLight->globalShadows : NULL;
-				const bool pointHaveDedicatedGlobalCasters = ( vLight->globalShadowMapCasters != NULL || vLight->localShadowMapCasters != NULL );
-				const drawSurf_t *pointGlobalPrimaryCasters = vLight->globalShadowMapCasters;
-				const drawSurf_t *pointGlobalSecondaryCasters = vLight->localShadowMapCasters;
-				const drawSurf_t *pointGlobalTertiaryCasters = pointHaveDedicatedGlobalCasters ? NULL : vLight->globalShadows;
-				const drawSurf_t *pointGlobalQuaternaryCasters = pointHaveDedicatedGlobalCasters ? NULL : vLight->localShadows;
-
-				// Prefer the dedicated ambient-geometry shadow-map caster lists. The legacy
-				// shadow volume chains are a recovery path only when no dedicated point-light
-				// caster geometry survived interaction building.
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, pointLocalPrimaryCasters, pointLocalSecondaryCasters, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, pointGlobalPrimaryCasters, pointGlobalSecondaryCasters, pointGlobalTertiaryCasters, pointGlobalQuaternaryCasters, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+				// Point-light shadow maps use the same ownership split as the retail
+				// stencil path: local receivers see global casters, while global
+				// receivers see both global and noSelfShadow/local casters. Dedicated
+				// ambient-geometry casters are preferred, but legacy shadow lists must
+				// remain in the caster set for mixed static/prelight and fallback cases.
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, vLight->globalShadows, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadows, vLight->localShadows, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
 			} else {
 				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, vLight->globalShadows, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
 				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadows, vLight->localShadows, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
