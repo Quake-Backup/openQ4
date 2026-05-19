@@ -262,6 +262,7 @@ Process:
 - [x] POSIX startup now enforces the same single-instance guard as Windows by holding a per-user advisory launch lock, while `sys_allowMultipleInstances 1` keeps multi-instance testing available when explicitly needed.
 - [x] Retail flare/material deform parity improved again: ambient submission no longer clips `deform flare` / sprite-style materials to tiny authored entity scissors, so stock map-authored effects such as `game/storage1`'s moving `beamBlastFlare` render as expanded flare geometry instead of a boxed white square; the flare deform path also restores retail prim-batch handling and cleared-temp-vertex setup.
 - [x] Retail decl folder registration parity improved: recursive decl folder scans now register each child folder as its own folder/default-type pair before loading files, and `DECL_MODELEXPORT` ownership is back on the game-library `model`/`export`/`camera` registration path instead of the framework pre-claiming the parser-only export slot.
+- [x] Direct no-post scene rendering now clears the backbuffer before drawing the world, preventing full-screen GUI/material overlays such as stock vehicle screen dirt from persisting after the GUI that drew them has stopped rendering.
 
 ## Carry Forward
 
