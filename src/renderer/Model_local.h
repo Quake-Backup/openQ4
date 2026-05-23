@@ -80,6 +80,7 @@ public:
 	virtual const char *		GetJointName( jointHandle_t handle ) const;
 	virtual const idJointQuat *	GetDefaultPose( void ) const;
 	virtual int					NearestJoint( int surfaceNum, int a, int b, int c ) const;
+	virtual bool				HasCollisionSurface( const struct renderEntity_s *ent ) const;
 	virtual idBounds			Bounds( const struct renderEntity_s *ent ) const;
 	virtual void				ReadFromDemoFile( class idDemoFile *f );
 	virtual void				WriteToDemoFile( class idDemoFile *f );

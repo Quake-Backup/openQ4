@@ -32,6 +32,7 @@ typedef struct modernGLSubmitCommand_s {
 	int							textureIndicesLocation;
 	int							textureTableModeLocation;
 	int							materialFlagsLocation;
+	int							materialEnhancementLocation;
 	int							drawRecordModeLocation;
 	int							vertexStride;
 	int							indexType;

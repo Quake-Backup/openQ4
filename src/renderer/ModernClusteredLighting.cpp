@@ -426,15 +426,18 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 	record.shadowFallbackReason = shadow->fallbackReason;
 	stats.shadowDescriptorCount = Max( stats.shadowDescriptorCount, shadow->descriptorIndex + 1 );
 
+	bool mappedShadowForModernReceiver = false;
 	if ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED && !shadow->modernReceiverSamplingReady ) {
-		record.shadowPolicy = MODERN_SHADOW_POLICY_STENCIL_FALLBACK;
+		// Keep the modern light contribution renderable until deferred/forward+
+		// can sample the shadow atlas; full visible ownership is gated elsewhere.
+		record.shadowDescriptorIndex = -1;
+		record.shadowPolicy = MODERN_SHADOW_POLICY_NONE;
 		record.shadowFallbackReason = MODERN_SHADOW_FALLBACK_RECEIVER_SAMPLING_UNAVAILABLE;
-		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_FALLBACK;
-		stats.shadowFallbackLights++;
 		stats.shadowReceiverBlockedLights++;
 	} else if ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED ) {
 		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_MAPPED;
 		stats.shadowMappedLights++;
+		mappedShadowForModernReceiver = true;
 	} else if ( shadow->policy == MODERN_SHADOW_POLICY_STENCIL_FALLBACK ) {
 		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_FALLBACK;
 		stats.shadowFallbackLights++;
@@ -442,9 +445,9 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 		stats.shadowSkippedLights++;
 	}
 
-	if ( shadow->mapType == MODERN_SHADOW_MAP_CASCADE ) {
+	if ( mappedShadowForModernReceiver && shadow->mapType == MODERN_SHADOW_MAP_CASCADE ) {
 		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_CASCADE;
-	} else if ( shadow->mapType == MODERN_SHADOW_MAP_POINT ) {
+	} else if ( mappedShadowForModernReceiver && shadow->mapType == MODERN_SHADOW_MAP_POINT ) {
 		record.flags |= MODERN_CLUSTER_LIGHT_FLAG_SHADOW_POINT;
 	}
 }
@@ -2010,6 +2013,7 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 		common->Printf( "RendererClusterGrid self-test failed: depth slices not monotonic (%d %d %d)\n", sliceA, sliceB, sliceC );
 		return false;
 	}
+
 	if ( rg_clusteredLightingAvailable && rg_clusteredLightingInitialized ) {
 		if ( !R_ModernClusteredLighting_UploadBuffers( stats ) ) {
 			common->Printf( "RendererClusterGrid self-test failed: clustered CSR upload unavailable\n" );
@@ -2027,6 +2031,76 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 		stats = rg_clusteredLightingStats;
 		if ( r_rendererClusterDebug.GetInteger() > 0 && !R_ModernClusteredLighting_UpdateDebugTexture( stats ) ) {
 			common->Printf( "RendererClusterGrid self-test failed: debug texture update unavailable\n" );
+			return false;
+		}
+	}
+
+	{
+		struct rendererClusterShadowBoolCVarRestore_t {
+			idCVar &cvar;
+			bool oldValue;
+			rendererClusterShadowBoolCVarRestore_t( idCVar &value ) : cvar( value ), oldValue( value.GetBool() ) {}
+			~rendererClusterShadowBoolCVarRestore_t() { cvar.SetBool( oldValue ); }
+		};
+		rendererClusterShadowBoolCVarRestore_t restoreShadows( r_shadows );
+		rendererClusterShadowBoolCVarRestore_t restoreShadowMap( r_useShadowMap );
+		rendererClusterShadowBoolCVarRestore_t restoreCSM( r_shadowMapCSM );
+		r_shadows.SetBool( true );
+		r_useShadowMap.SetBool( true );
+		r_shadowMapCSM.SetBool( false );
+
+		viewDef_t shadowView;
+		viewLight_t shadowLights[2];
+		idRenderLightLocal shadowLightDefs[2];
+		R_ModernClusteredLighting_SetupSelfTestView( shadowView, shadowLights, shadowLightDefs, 2 );
+		const idMaterial *projectedLightShader = declManager != NULL ? declManager->FindMaterial( "lights/defaultProjectedLight" ) : tr.defaultMaterial;
+		if ( projectedLightShader == NULL ) {
+			projectedLightShader = tr.defaultMaterial;
+		}
+		drawSurf_t casterSurfs[2];
+		drawSurf_t receiverSurfs[2];
+		memset( casterSurfs, 0, sizeof( casterSurfs ) );
+		memset( receiverSurfs, 0, sizeof( receiverSurfs ) );
+		casterSurfs[0].nextOnLight = &casterSurfs[1];
+		receiverSurfs[0].nextOnLight = &receiverSurfs[1];
+		for ( int i = 0; i < 2; ++i ) {
+			shadowLights[i].pointLight = false;
+			shadowLights[i].lightShader = projectedLightShader;
+			shadowLightDefs[i].lightShader = projectedLightShader;
+			shadowLights[i].globalShadowMapCasters = &casterSurfs[0];
+			shadowLights[i].localShadowMapCasters = &casterSurfs[1];
+			shadowLights[i].globalInteractions = &receiverSurfs[0];
+			shadowLights[i].localInteractions = &receiverSurfs[1];
+		}
+		packetFrame.Clear();
+		if ( !packetFrame.AddScene( &shadowView, true ) ) {
+			common->Printf( "RendererClusterGrid self-test failed: could not add shadow handoff scene\n" );
+			return false;
+		}
+		packetFrame.FinishScene();
+		R_ModernShadowPlanner_PrepareFrame( packetFrame, true );
+		const modernShadowPlannerStats_t &shadowStats = R_ModernShadowPlanner_Stats();
+		rendererClusteredLightingStats_t shadowClusterStats;
+		R_ModernClusteredLighting_BuildFrame( packetFrame, true, shadowClusterStats );
+		const modernClusterLightRecord_t *shadowRecord = rg_clusteredLightingFrame.lightCount > 0 ? &rg_clusteredLightingFrame.lights[0] : NULL;
+		if ( shadowStats.available
+			&& ( shadowStats.receiverSamplingBlockedLights <= 0
+				|| shadowClusterStats.shadowReceiverBlockedLights <= 0
+				|| shadowClusterStats.shadowFallbackLights != 0
+				|| shadowClusterStats.shadowMappedLights != 0
+				|| shadowRecord == NULL
+				|| shadowRecord->shadowPolicy != MODERN_SHADOW_POLICY_NONE
+				|| shadowRecord->shadowFallbackReason != MODERN_SHADOW_FALLBACK_RECEIVER_SAMPLING_UNAVAILABLE
+				|| ( shadowRecord->flags & ( MODERN_CLUSTER_LIGHT_FLAG_SHADOW_MAPPED | MODERN_CLUSTER_LIGHT_FLAG_SHADOW_FALLBACK | MODERN_CLUSTER_LIGHT_FLAG_SHADOW_CASCADE | MODERN_CLUSTER_LIGHT_FLAG_SHADOW_POINT ) ) != 0 ) ) {
+			common->Printf(
+				"RendererClusterGrid self-test failed: shadow receiver handoff invalid (plannerBlocked=%d clusterBlocked=%d mapped=%d fallback=%d policy=%d reason=%d flags=0x%x)\n",
+				shadowStats.receiverSamplingBlockedLights,
+				shadowClusterStats.shadowReceiverBlockedLights,
+				shadowClusterStats.shadowMappedLights,
+				shadowClusterStats.shadowFallbackLights,
+				shadowRecord != NULL ? static_cast<int>( shadowRecord->shadowPolicy ) : -1,
+				shadowRecord != NULL ? static_cast<int>( shadowRecord->shadowFallbackReason ) : -1,
+				shadowRecord != NULL ? shadowRecord->flags : 0 );
 			return false;
 		}
 	}

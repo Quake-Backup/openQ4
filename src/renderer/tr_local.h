@@ -197,6 +197,17 @@ public:
 	virtual int				GetIndex() = 0;
 };
 
+ID_INLINE bool R_IsInvalidPrelightModelPointer( const idRenderModel *model ) {
+	return ( (uintptr_t)model ) == ~(uintptr_t)0;
+}
+
+ID_INLINE idRenderModel *R_SanitizePrelightModelPointer( idRenderModel *model ) {
+	return R_IsInvalidPrelightModelPointer( model ) ? NULL : model;
+}
+
+ID_INLINE bool R_LightHasRealPrelightModel( const renderLight_t &parms ) {
+	return R_SanitizePrelightModelPointer( parms.prelightModel ) != NULL;
+}
 
 // idRenderEntity should become the new public interface replacing the qhandle_t to entity defs in the idRenderWorld interface
 class idRenderEntity {

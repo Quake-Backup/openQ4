@@ -26,7 +26,7 @@ enum modernGLShaderProgramKind_t {
 };
 
 const int MODERN_GL_SHADER_MAX_PROGRAMS = 64;
-const int MODERN_GL_SHADER_MAX_REFLECTION_RECORDS = 8;
+const int MODERN_GL_SHADER_MAX_REFLECTION_RECORDS = 12;
 
 enum modernGLShaderResourceType_t {
 	MODERN_GL_SHADER_RESOURCE_UNIFORM = 0,
@@ -62,6 +62,7 @@ typedef struct modernGLShaderReflection_s {
 	int		textureTableModeLocation;
 	int		materialTextureTableLocation;
 	int		materialFlagsLocation;
+	int		materialEnhancementLocation;
 	int		drawRecordModeLocation;
 	int		positionAttribute;
 	int		colorAttribute;
@@ -91,6 +92,7 @@ typedef struct modernGLShaderReflection_s {
 	bool	usesMaterialTextures;
 	bool	usesMaterialTextureTable;
 	bool	usesMaterialFlags;
+	bool	usesMaterialEnhancement;
 	bool	usesDrawRecords;
 	bool	usesTexCoord;
 	bool	usesDrawVertColor;
@@ -120,6 +122,7 @@ typedef struct modernGLShaderProgramInfo_s {
 	int							textureTableModeLocation;
 	int							materialTextureTableLocation;
 	int							materialFlagsLocation;
+	int							materialEnhancementLocation;
 	int							drawRecordModeLocation;
 	bool						linked;
 	char						name[64];

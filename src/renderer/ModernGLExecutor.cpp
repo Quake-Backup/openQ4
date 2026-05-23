@@ -45,6 +45,7 @@ typedef struct modernGLDrawRecord_s {
 	float	debugColor[4];
 	float	localParams[4];
 	float	materialFlags[4];
+	float	materialEnhancement[4];
 	GLuint	ids[4];
 } modernGLDrawRecord_t;
 
@@ -2503,6 +2504,7 @@ static const materialResourceTextureBinding_t *R_ModernGLExecutor_FindTextureBin
 static float R_ModernGLExecutor_ShaderRegisterValue( const modernGLSubmitCommand_t &command, int registerIndex, float fallbackValue );
 static bool R_ModernGLExecutor_CommandMaterialColor( const modernGLSubmitCommand_t &command, float color[4] );
 static void R_ModernGLExecutor_MaterialFlagsForCommand( const modernGLSubmitCommand_t &command, float flags[4] );
+static void R_ModernGLExecutor_MaterialEnhancementForCommand( const modernGLSubmitCommand_t &command, float enhancement[4] );
 static void R_ModernGLExecutor_BindTextureGroup( GLuint first, GLsizei count, const GLuint *textures, modernGLExecutorStats_t &stats );
 
 static void R_ModernGLExecutor_DebugColorForCommand( const modernGLSubmitCommand_t &command, float color[4] ) {
@@ -3030,6 +3032,7 @@ static void R_ModernGLExecutor_BuildDrawRecord( const modernGLSubmitCommand_t &c
 	R_ModernGLExecutor_DebugColorForCommand( command, record.debugColor );
 	R_ModernGLExecutor_LocalParamsForCommand( command, record.localParams );
 	R_ModernGLExecutor_MaterialFlagsForCommand( command, record.materialFlags );
+	R_ModernGLExecutor_MaterialEnhancementForCommand( command, record.materialEnhancement );
 	record.ids[0] = command.materialTableIndex >= 0 ? static_cast<GLuint>( command.materialTableIndex ) : 0xffffffffu;
 	record.ids[1] = command.materialRecordIndex >= 0 ? static_cast<GLuint>( command.materialRecordIndex ) : 0xffffffffu;
 	record.ids[2] = static_cast<GLuint>( command.shaderKind );
@@ -3657,6 +3660,19 @@ static void R_ModernGLExecutor_MaterialFlagsForCommand( const modernGLSubmitComm
 	flags[3] = 0.0f;
 }
 
+static bool R_ModernGLExecutor_EnhancedMaterialShadingActive( void ) {
+	return glConfig.GLSLProgramAvailable && r_enhancedMaterials.GetBool();
+}
+
+static void R_ModernGLExecutor_MaterialEnhancementForCommand( const modernGLSubmitCommand_t &command, float enhancement[4] ) {
+	(void)command;
+	const bool active = R_ModernGLExecutor_EnhancedMaterialShadingActive();
+	enhancement[0] = active ? 1.0f : 0.0f;
+	enhancement[1] = active ? idMath::ClampFloat( 0.5f, 2.0f, r_enhancedMaterialNormalScale.GetFloat() ) : 1.0f;
+	enhancement[2] = active ? Max( 0.0f, r_enhancedMaterialSpecularBoost.GetFloat() ) : 1.0f;
+	enhancement[3] = active ? idMath::ClampFloat( 0.0f, 1.0f, r_enhancedMaterialFresnel.GetFloat() ) : 0.0f;
+}
+
 static void R_ModernGLExecutor_SetMaterialFlags( const modernGLSubmitCommand_t &command ) {
 	if ( command.materialFlagsLocation < 0 ) {
 		return;
@@ -3664,6 +3680,15 @@ static void R_ModernGLExecutor_SetMaterialFlags( const modernGLSubmitCommand_t &
 	float flags[4];
 	R_ModernGLExecutor_MaterialFlagsForCommand( command, flags );
 	glUniform4f( command.materialFlagsLocation, flags[0], flags[1], flags[2], flags[3] );
+}
+
+static void R_ModernGLExecutor_SetMaterialEnhancement( const modernGLSubmitCommand_t &command ) {
+	if ( command.materialEnhancementLocation < 0 ) {
+		return;
+	}
+	float enhancement[4];
+	R_ModernGLExecutor_MaterialEnhancementForCommand( command, enhancement );
+	glUniform4f( command.materialEnhancementLocation, enhancement[0], enhancement[1], enhancement[2], enhancement[3] );
 }
 
 static void R_ModernGLExecutor_BindMaterialTextures( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats ) {
@@ -3805,6 +3830,7 @@ static bool R_ModernGLExecutor_SubmitCommand( const modernGLSubmitCommand_t &com
 	R_ModernGLExecutor_SetDebugColor( command );
 	R_ModernGLExecutor_SetLocalParams( command );
 	R_ModernGLExecutor_SetMaterialFlags( command );
+	R_ModernGLExecutor_SetMaterialEnhancement( command );
 	R_ModernGLExecutor_BindMaterialTextures( command, stats );
 
 	R_ModernGLExecutor_ApplyCommandDepthRange( command );
@@ -5374,6 +5400,24 @@ static void R_ModernGLExecutor_SetPassOwnership(
 	idStr::Copynz( slot.reason, reason != NULL ? reason : R_ModernGLExecutor_PassOwnerStateName( state ), sizeof( slot.reason ) );
 }
 
+static bool R_ModernGLExecutor_ModernVisibleShadowReceiversReady( const modernShadowPlannerStats_t &shadowStats, const modernGLExecutorStats_t &stats ) {
+	if ( !r_shadows.GetBool() || !shadowStats.requested ) {
+		return true;
+	}
+	if ( !shadowStats.frameValid ) {
+		return false;
+	}
+	// Intentional skips such as ambient/no-receiver lights are diagnostics, not
+	// shadowing gaps. Mapped receivers without modern sampling remain blockers.
+	if ( shadowStats.fallbackLights > 0 || shadowStats.receiverSamplingBlockedLights > 0 ) {
+		return false;
+	}
+	return stats.deferredResolveShadowFallbackLights == 0 &&
+		stats.forwardPlusShadowFallbackLights == 0 &&
+		stats.visibleShadowFallbackDraws == 0 &&
+		stats.visibleStencilShadowFallbackDraws == 0;
+}
+
 static bool R_ModernGLExecutor_ModernVisiblePrecomposeReady( modernGLExecutorStats_t &stats ) {
 	const renderGraphResourceHandle_t *deferredLight = NULL;
 	const renderGraphResourceHandle_t *sceneColor = NULL;
@@ -5390,17 +5434,7 @@ static bool R_ModernGLExecutor_ModernVisiblePrecomposeReady( modernGLExecutorSta
 	stats.modernVisibleShadowDescriptors = shadowStats.descriptorCount;
 	stats.modernVisibleShadowReady =
 		stats.modernVisibleShadowOwnershipReady &&
-		( !r_shadows.GetBool()
-		|| !shadowStats.requested
-		|| ( shadowStats.frameValid
-			&& shadowStats.fallbackLights == 0
-			&& shadowStats.skippedLights == 0
-			&& stats.deferredResolveShadowFallbackLights == 0
-			&& stats.deferredResolveShadowSkippedLights == 0
-			&& stats.forwardPlusShadowFallbackLights == 0
-			&& stats.forwardPlusShadowSkippedLights == 0
-			&& stats.visibleShadowFallbackDraws == 0
-			&& stats.visibleStencilShadowFallbackDraws == 0 ) );
+		R_ModernGLExecutor_ModernVisibleShadowReceiversReady( shadowStats, stats );
 	stats.modernVisibleSourceReady = deferredReady || forwardReady;
 	stats.modernVisibleBackBufferReady = backBuffer != NULL && backBuffer->presentable;
 	stats.modernVisibleHybridTargetReady = hybridReady;
@@ -5497,15 +5531,13 @@ static void R_ModernGLExecutor_FinalizePassOwnership( const idRenderGraph &graph
 			stats.deferredResolveUnsupportedLightFallbacks == 0 &&
 			stats.deferredResolveFogFallbackLights == 0 &&
 			stats.deferredResolveSpecialFallbackLights == 0 &&
-			stats.deferredResolveShadowFallbackLights == 0 &&
-			stats.deferredResolveShadowSkippedLights == 0;
+			stats.deferredResolveShadowFallbackLights == 0;
 		const bool forwardModern =
 			stats.forwardPlusExecuted &&
 			stats.forwardPlusResourcesReady &&
 			stats.forwardPlusFallbackDraws == 0 &&
 			stats.forwardPlusSpecialEffectFallbacks == 0 &&
-			stats.forwardPlusShadowFallbackLights == 0 &&
-			stats.forwardPlusShadowSkippedLights == 0;
+			stats.forwardPlusShadowFallbackLights == 0;
 		const bool lightingModern =
 			stats.modernVisibleLightingReady &&
 			( deferredModern || forwardModern );
@@ -8361,14 +8393,14 @@ static bool R_ModernGLExecutor_BuildGBufferSelfTestFrame( idScenePacketFrame &pa
 
 static bool R_ModernGLExecutor_ValidateGBufferPacking( void ) {
 	const float packedNormal[4] = { 0.5f, 0.5f, 1.0f, 1.0f };
-	const float packedMaterial[4] = { 0.1f, 0.5f, 0.25f, 1.0f };
+	const float packedMaterial[4] = { 0.1f, 0.5f, 0.25f, 0.0f };
 	return idMath::Fabs( packedNormal[0] - 0.5f ) < 0.001f
 		&& idMath::Fabs( packedNormal[1] - 0.5f ) < 0.001f
 		&& idMath::Fabs( packedNormal[2] - 1.0f ) < 0.001f
 		&& packedMaterial[0] >= 0.0f && packedMaterial[0] <= 1.0f
 		&& packedMaterial[1] >= 0.0f && packedMaterial[1] <= 1.0f
 		&& packedMaterial[2] >= 0.0f && packedMaterial[2] <= 1.0f
-		&& packedMaterial[3] == 1.0f;
+		&& packedMaterial[3] >= 0.0f && packedMaterial[3] <= 1.0f;
 }
 
 bool RendererGBuffer_RunSelfTest( void ) {
@@ -8394,9 +8426,9 @@ bool RendererGBuffer_RunSelfTest( void ) {
 		return false;
 	}
 	if ( !opaqueProgram->reflection.usesMainTexture || opaqueProgram->mainTextureLocation < 0
-		|| !opaqueProgram->reflection.usesMaterialTextures || opaqueProgram->normalTextureLocation < 0 || opaqueProgram->specularTextureLocation < 0 || opaqueProgram->emissiveTextureLocation < 0 || opaqueProgram->materialFlagsLocation < 0
+		|| !opaqueProgram->reflection.usesMaterialTextures || opaqueProgram->normalTextureLocation < 0 || opaqueProgram->specularTextureLocation < 0 || opaqueProgram->emissiveTextureLocation < 0 || opaqueProgram->materialFlagsLocation < 0 || opaqueProgram->materialEnhancementLocation < 0
 		|| !alphaProgram->reflection.usesMainTexture || alphaProgram->mainTextureLocation < 0
-		|| !alphaProgram->reflection.usesMaterialTextures || alphaProgram->normalTextureLocation < 0 || alphaProgram->specularTextureLocation < 0 || alphaProgram->emissiveTextureLocation < 0 || alphaProgram->materialFlagsLocation < 0 ) {
+		|| !alphaProgram->reflection.usesMaterialTextures || alphaProgram->normalTextureLocation < 0 || alphaProgram->specularTextureLocation < 0 || alphaProgram->emissiveTextureLocation < 0 || alphaProgram->materialFlagsLocation < 0 || alphaProgram->materialEnhancementLocation < 0 ) {
 		common->Printf( "RendererGBuffer self-test failed: G-buffer texture reflection unavailable\n" );
 		return false;
 	}

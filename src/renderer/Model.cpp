@@ -60,6 +60,29 @@ bool idRenderModel::HasCollisionSurface( const struct renderEntity_s *ent ) cons
 
 /*
 ================
+idRenderModelStatic::HasCollisionSurface
+================
+*/
+bool idRenderModelStatic::HasCollisionSurface( const struct renderEntity_s *ent ) const {
+	for ( int i = 0; i < surfaces.Num(); ++i ) {
+		const modelSurface_t *surf = &surfaces[i];
+		if ( surf->id == -1 || surf->shader == NULL ) {
+			continue;
+		}
+
+		const idMaterial *shader = ent != NULL
+			? R_RemapShaderBySkin( surf->shader, ent->customSkin, ent->customShader )
+			: surf->shader;
+		if ( shader != NULL && shader->IsDedicatedCollisionSurface() ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+================
 idRenderModel::InstantiateDynamicModel
 ================
 */

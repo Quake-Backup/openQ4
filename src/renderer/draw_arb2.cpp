@@ -2024,6 +2024,7 @@ static shadowMapDebugOverlayState_t	g_shadowMapDebugOverlayState;
 typedef enum {
 	SHADOWMAP_PASS_RESULT_MAPPED = 0,
 	SHADOWMAP_PASS_RESULT_NO_SHADOW_SURFS,
+	SHADOWMAP_PASS_RESULT_STENCIL_ONLY,
 	SHADOWMAP_PASS_RESULT_RENDER_FAIL,
 	SHADOWMAP_PASS_RESULT_MASK_FAIL
 } shadowMapPassResult_t;
@@ -2071,6 +2072,8 @@ static const char *RB_ShadowMapPassResultName( shadowMapPassResult_t result ) {
 		return "mapped";
 	case SHADOWMAP_PASS_RESULT_NO_SHADOW_SURFS:
 		return "no-shadow-surfs";
+	case SHADOWMAP_PASS_RESULT_STENCIL_ONLY:
+		return "stencil-only";
 	case SHADOWMAP_PASS_RESULT_RENDER_FAIL:
 		return "render-fail";
 	case SHADOWMAP_PASS_RESULT_MASK_FAIL:
@@ -7090,9 +7093,11 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 
 	const drawSurf_t *translucentPrimaryCasters = vLight->globalTranslucentShadowMapCasters;
 	const drawSurf_t *translucentSecondaryCasters = ( passKind == SHADOWMAP_PASS_GLOBAL ) ? vLight->localTranslucentShadowMapCasters : NULL;
+	const bool haveOpaqueCasters = primaryCasters != NULL || secondaryCasters != NULL || tertiaryCasters != NULL || quaternaryCasters != NULL;
 	const bool haveTranslucentCasters = translucentPrimaryCasters != NULL || translucentSecondaryCasters != NULL;
+	const bool haveStencilShadowSurfs = primaryShadowSurfs != NULL || secondaryShadowSurfs != NULL;
 
-	if ( primaryShadowSurfs == NULL && secondaryShadowSurfs == NULL && primaryCasters == NULL && secondaryCasters == NULL && tertiaryCasters == NULL && quaternaryCasters == NULL && !haveTranslucentCasters ) {
+	if ( !haveOpaqueCasters && !haveStencilShadowSurfs && !haveTranslucentCasters ) {
 		if ( passKind == SHADOWMAP_PASS_LOCAL ) {
 			g_shadowMapStats.unshadowedLocalPasses++;
 		} else {
@@ -7104,7 +7109,13 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		return;
 	}
 
-	const bool renderOk = pointLight ? RB_RenderPointShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters ) : RB_RenderShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters );
+	bool renderOk = false;
+	shadowMapPassResult_t passResult = SHADOWMAP_PASS_RESULT_MAPPED;
+	if ( haveOpaqueCasters || haveTranslucentCasters ) {
+		renderOk = pointLight ? RB_RenderPointShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters ) : RB_RenderShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters );
+	} else {
+		passResult = SHADOWMAP_PASS_RESULT_STENCIL_ONLY;
+	}
 	if ( renderOk && haveTranslucentCasters && RB_TranslucentShadowMomentsRequested() ) {
 		if ( pointLight ) {
 			RB_RenderPointTranslucentShadowMap( translucentPrimaryCasters, translucentSecondaryCasters );
@@ -7115,8 +7126,9 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 	const bool customGLSLLighting = RB_DrawSurfChainHasCustomGLSLLighting( interactions );
 	const bool stockGLSLInteractionsSafe = RB_DrawSurfChainEligibleForStockGLSLInteractions( interactions );
 	const bool maskOk = renderOk && !customGLSLLighting && stockGLSLInteractionsSafe && ( pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions ) );
-	shadowMapPassResult_t passResult = SHADOWMAP_PASS_RESULT_MAPPED;
-	if ( !renderOk ) {
+	if ( passResult == SHADOWMAP_PASS_RESULT_STENCIL_ONLY ) {
+		// Keep the retail stencil route when only legacy shadow volumes exist.
+	} else if ( !renderOk ) {
 		passResult = SHADOWMAP_PASS_RESULT_RENDER_FAIL;
 	} else if ( !maskOk ) {
 		passResult = SHADOWMAP_PASS_RESULT_MASK_FAIL;
@@ -7475,14 +7487,15 @@ void RB_ARB2_DrawInteractions( void ) {
 			if ( vLight->pointLight ) {
 				// Point-light shadow maps use the same ownership split as the retail
 				// stencil path: local receivers see global casters, while global
-				// receivers see both global and noSelfShadow/local casters. Dedicated
-				// ambient-geometry casters are preferred, but legacy shadow lists must
-				// remain in the caster set for mixed static/prelight and fallback cases.
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, vLight->globalShadows, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadows, vLight->localShadows, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+				// receivers see both global and noSelfShadow/local casters. The
+				// shadow-map pass must only draw dedicated ambient-geometry casters:
+				// legacy stencil shadow chains resolve back to the same ambient
+				// surfaces and can double-submit overlapping collision/helper meshes.
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, NULL, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, NULL, NULL, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
 			} else {
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, vLight->globalShadows, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadows, vLight->localShadows, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, NULL, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, NULL, NULL, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
 			}
 
 			if ( !r_skipTranslucent.GetBool() ) {

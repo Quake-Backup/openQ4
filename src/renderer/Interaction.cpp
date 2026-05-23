@@ -1278,11 +1278,14 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 			shader->ReceivesLighting() &&
 			!shader->HasGui() &&
 			!shader->HasSubview();
+		const bool dedicatedCollisionSurface = shader->IsDedicatedCollisionSurface();
 		const bool surfaceCanCastInteractionShadow =
 			interactionHasShadows &&
+			!dedicatedCollisionSurface &&
 			( shader->SurfaceCastsShadow() || allowTranslucentStencilShadowCaster );
 		const bool surfaceCanCastDedicatedShadowMap =
 			shadowMapsEnabledForInteraction &&
+			!dedicatedCollisionSurface &&
 			shader->Coverage() != MC_TRANSLUCENT &&
 			shader->SurfaceCastsShadow() &&
 			!shader->HasGui() &&
@@ -1314,7 +1317,7 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 		if ( surfaceCanCastStencilShadowVolume && shadowLODAdmitted ) {
 
 			// if the light has an optimized shadow volume, don't create shadows for any models that are part of the base areas
-			if ( lightDef->parms.prelightModel == NULL || !model->IsStaticWorldModel() || !r_useOptimizedShadows.GetBool() ) {
+			if ( !R_LightHasRealPrelightModel( lightDef->parms ) || !model->IsStaticWorldModel() || !r_useOptimizedShadows.GetBool() ) {
 
 				// this is the only place during gameplay (outside the utilities) that R_CreateShadowVolume() is called
 				sint->shadowTris = R_CreateShadowVolume( entityDef, tri, lightDef, shadowGen, sint->cullInfo );
@@ -1670,6 +1673,7 @@ void idInteraction::AddActiveInteraction( void ) {
 			// which creates long bogus wedge occluders. Reject only that geometric case
 			// instead of blanketing the entire textures/common_lights family.
 			!skipPointLightEmitterCaster &&
+			!shadowShader->IsDedicatedCollisionSurface() &&
 			shadowShader->Coverage() != MC_TRANSLUCENT &&
 			shadowShader->SurfaceCastsShadow() &&
 			!shadowShader->HasGui() &&

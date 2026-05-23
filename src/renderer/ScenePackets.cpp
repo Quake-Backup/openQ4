@@ -377,8 +377,9 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 		( material->HasAmbient() ? 2u : 0u ) |
 		( material->ReceivesLighting() ? 4u : 0u ) |
 		( material->ReceivesFog() ? 8u : 0u );
+	const bool materialCastsRenderShadow = !material->IsDedicatedCollisionSurface() && material->SurfaceCastsShadow();
 	record.permutation.shadowMode =
-		( material->SurfaceCastsShadow() ? 1u : 0u ) |
+		( materialCastsRenderShadow ? 1u : 0u ) |
 		( material->TestMaterialFlag( MF_NOSELFSHADOW ) ? 2u : 0u ) |
 		( material->TestMaterialFlag( MF_FORCESHADOWS ) ? 4u : 0u );
 	record.permutation.alphaMode = material->Coverage();
@@ -1081,7 +1082,21 @@ static bool R_ScenePackets_DrawSurfFogBlendEligible( const drawSurf_t *drawSurf 
 }
 
 static bool R_ScenePackets_DrawSurfShadowEligible( const drawSurf_t *drawSurf ) {
-	return R_ScenePackets_DrawSurfHasGeometry( drawSurf );
+	if ( !R_ScenePackets_DrawSurfHasGeometry( drawSurf ) ) {
+		return false;
+	}
+
+	const idMaterial *material = drawSurf->material;
+	if ( material == NULL ) {
+		return true;
+	}
+	if ( material->IsDedicatedCollisionSurface() ) {
+		return false;
+	}
+	if ( material->HasGui() || material->HasSubview() ) {
+		return false;
+	}
+	return material->Coverage() == MC_TRANSLUCENT || material->SurfaceCastsShadow();
 }
 
 static int R_ScenePackets_CountFilteredDrawSurfs( const viewDef_t *viewDef, int firstDrawSurf, scenePacketDrawSurfFilter_t filter ) {

@@ -205,6 +205,7 @@ static void R_ModernGLShaderLibrary_BuildVertexSource( int glslVersion, modernGL
 		"uniform vec4 uDebugColor;\n"
 		"uniform vec4 uLocalParams;\n"
 		"uniform vec4 uMaterialFlags;\n"
+		"uniform vec4 uMaterialEnhancement;\n"
 		"#define MODERN_HAS_DRAW_RECORDS %d\n"
 		"struct ModernDrawRecord {\n"
 		"    mat4 modelViewProjection;\n"
@@ -212,6 +213,7 @@ static void R_ModernGLShaderLibrary_BuildVertexSource( int glslVersion, modernGL
 		"    vec4 debugColor;\n"
 		"    vec4 localParams;\n"
 		"    vec4 materialFlags;\n"
+		"    vec4 materialEnhancement;\n"
 		"    uvec4 ids;\n"
 		"};\n"
 		"#if MODERN_HAS_DRAW_RECORDS\n"
@@ -223,6 +225,7 @@ static void R_ModernGLShaderLibrary_BuildVertexSource( int glslVersion, modernGL
 		"flat out vec4 vDrawDebugColor;\n"
 		"flat out vec4 vDrawLocalParams;\n"
 		"flat out vec4 vDrawMaterialFlags;\n"
+		"flat out vec4 vDrawMaterialEnhancement;\n"
 		"#endif\n"
 		"ModernDrawRecord ModernUniformDrawRecord(void) {\n"
 		"    ModernDrawRecord record;\n"
@@ -231,6 +234,7 @@ static void R_ModernGLShaderLibrary_BuildVertexSource( int glslVersion, modernGL
 		"    record.debugColor = uDebugColor;\n"
 		"    record.localParams = uLocalParams;\n"
 		"    record.materialFlags = uMaterialFlags;\n"
+		"    record.materialEnhancement = uMaterialEnhancement;\n"
 		"    record.ids = uvec4(0u);\n"
 		"    return record;\n"
 		"}\n"
@@ -260,6 +264,7 @@ static void R_ModernGLShaderLibrary_BuildVertexSource( int glslVersion, modernGL
 		"    vDrawDebugColor = drawRecord.debugColor;\n"
 		"    vDrawLocalParams = drawRecord.localParams;\n"
 		"    vDrawMaterialFlags = drawRecord.materialFlags;\n"
+		"    vDrawMaterialEnhancement = drawRecord.materialEnhancement;\n"
 		"#endif\n"
 		"    vec4 frameJitter = vec4(uFrame.reserved.xy, 0.0, 0.0);\n"
 		"    mat3 localToView = mat3(drawRecord.modelViewMatrix);\n"
@@ -356,7 +361,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		return;
 	}
 
-	char sharedHeader[8192];
+	char sharedHeader[12288];
 	idStr::snPrintf(
 		sharedHeader,
 		sizeof( sharedHeader ),
@@ -373,21 +378,41 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"flat in vec4 vDrawDebugColor;\n"
 		"flat in vec4 vDrawLocalParams;\n"
 		"flat in vec4 vDrawMaterialFlags;\n"
+		"flat in vec4 vDrawMaterialEnhancement;\n"
 		"#define uDebugColor vDrawDebugColor\n"
 		"#define uLocalParams vDrawLocalParams\n"
 		"#define uMaterialFlags vDrawMaterialFlags\n"
+		"#define uMaterialEnhancement vDrawMaterialEnhancement\n"
 		"#else\n"
 		"uniform vec4 uDebugColor;\n"
 		"uniform vec4 uLocalParams;\n"
 		"uniform vec4 uMaterialFlags;\n"
+		"uniform vec4 uMaterialEnhancement;\n"
 		"#endif\n"
 		"%s"
 		"vec3 ModernSafeNormal(vec3 normal) {\n"
 		"    float len2 = dot(normal, normal);\n"
 		"    return len2 > 0.00000001 ? normal * inversesqrt(len2) : vec3(0.0, 0.0, 1.0);\n"
 		"}\n"
+		"vec3 ModernDecodeClassicNormal(vec4 bumpSample) {\n"
+		"    return ModernSafeNormal(vec3(bumpSample.a, bumpSample.g, bumpSample.b) * 2.0 - 1.0);\n"
+		"}\n"
+		"vec3 ModernDecodeEnhancedNormal(vec4 bumpSample) {\n"
+		"    vec2 xy = vec2(bumpSample.a, bumpSample.g) * 2.0 - 1.0;\n"
+		"    xy *= max(uMaterialEnhancement.y, 0.0);\n"
+		"    float xyLengthSq = dot(xy, xy);\n"
+		"    if (xyLengthSq > 1.0) { xy *= inversesqrt(xyLengthSq); xyLengthSq = 1.0; }\n"
+		"    float encodedZ = max(bumpSample.b * 2.0 - 1.0, 0.0);\n"
+		"    float reconstructedZ = sqrt(max(1.0 - xyLengthSq, 0.0));\n"
+		"    return ModernSafeNormal(vec3(xy, mix(encodedZ, reconstructedZ, 0.75)));\n"
+		"}\n"
+		"vec3 ModernMaterialTangentNormal(void) {\n"
+		"    if (uMaterialFlags.x <= 0.5) { return vec3(0.0, 0.0, 1.0); }\n"
+		"    vec4 bumpSample = ModernSampleNormalTexture(vTexCoord);\n"
+		"    return uMaterialEnhancement.x > 0.5 ? ModernDecodeEnhancedNormal(bumpSample) : ModernDecodeClassicNormal(bumpSample);\n"
+		"}\n"
 		"vec3 ModernMaterialNormal(void) {\n"
-		"    vec3 tangentNormal = uMaterialFlags.x > 0.5 ? ModernSampleNormalTexture(vTexCoord).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);\n"
+		"    vec3 tangentNormal = ModernMaterialTangentNormal();\n"
 		"    vec3 tangent = ModernSafeNormal(vViewTangent);\n"
 		"    vec3 bitangent = ModernSafeNormal(vViewBitangent);\n"
 		"    vec3 normal = ModernSafeNormal(vViewNormal);\n"
@@ -395,7 +420,11 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"}\n"
 		"float ModernSpecularStrength(void) {\n"
 		"    vec3 specular = uMaterialFlags.y > 0.5 ? ModernSampleSpecularTexture(vTexCoord).rgb : vec3(0.04);\n"
-		"    return clamp(dot(specular, vec3(0.333333)), 0.0, 2.0);\n"
+		"    float boost = uMaterialEnhancement.x > 0.5 ? max(uMaterialEnhancement.z, 0.0) : 1.0;\n"
+		"    return clamp(dot(specular, vec3(0.333333)) * boost, 0.0, 4.0);\n"
+		"}\n"
+		"float ModernMaterialFresnel(void) {\n"
+		"    return uMaterialEnhancement.x > 0.5 ? clamp(uMaterialEnhancement.w, 0.0, 1.0) : 0.0;\n"
 		"}\n"
 		"vec3 ModernEmissiveColor(void) {\n"
 		"    return uMaterialFlags.z > 0.5 ? ModernSampleEmissiveTexture(vTexCoord).rgb : vec3(0.0);\n"
@@ -514,7 +543,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    vec2 inside = step(vec2(0.0), uv) * step(uv, vec2(1.0));\n"
 		"    return inside.x * inside.y;\n"
 		"}\n"
-		"vec3 ModernClusterEvaluateLight(ModernClusterLightRecord light, vec3 viewPosition, vec3 normal, float specular, out float attenuation) {\n"
+		"vec3 ModernClusterEvaluateLight(ModernClusterLightRecord light, vec3 viewPosition, vec3 normal, float specular, float fresnelStrength, out float attenuation) {\n"
 		"    int type = int(floor(light.colorType.w + 0.5));\n"
 		"    bool projected = type == 1;\n"
 		"    bool point = type == 0;\n"
@@ -527,7 +556,9 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    float ndotl = clamp(dot(normal, lightDir), 0.0, 1.0);\n"
 		"    vec3 viewDir = length(viewPosition) > 0.0001 ? normalize(-viewPosition) : vec3(0.0, 0.0, -1.0);\n"
 		"    vec3 halfDir = normalize(lightDir + viewDir);\n"
-		"    float spec = pow(clamp(dot(normal, halfDir), 0.0, 1.0), 24.0) * specular;\n"
+		"    float ndotv = clamp(dot(normal, viewDir), 0.0, 1.0);\n"
+		"    float fresnel = 1.0 + pow(1.0 - ndotv, 5.0) * 2.0 * clamp(fresnelStrength, 0.0, 1.0);\n"
+		"    float spec = pow(clamp(dot(normal, halfDir), 0.0, 1.0), 24.0) * specular * fresnel;\n"
 		"    float projectMask = projected ? ModernClusterProjectedMask(light, viewPosition) : 1.0;\n"
 		"    attenuation = (point || projected) ? radial * (ndotl + spec) * projectMask : 0.0;\n"
 		"    return light.colorType.rgb * attenuation;\n"
@@ -563,26 +594,50 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"flat in vec4 vDrawDebugColor;\n"
 			"flat in vec4 vDrawLocalParams;\n"
 			"flat in vec4 vDrawMaterialFlags;\n"
+			"flat in vec4 vDrawMaterialEnhancement;\n"
 			"#define uDebugColor vDrawDebugColor\n"
 			"#define uLocalParams vDrawLocalParams\n"
 			"#define uMaterialFlags vDrawMaterialFlags\n"
+			"#define uMaterialEnhancement vDrawMaterialEnhancement\n"
 			"#else\n"
 			"uniform vec4 uDebugColor;\n"
 			"uniform vec4 uLocalParams;\n"
 			"uniform vec4 uMaterialFlags;\n"
+			"uniform vec4 uMaterialEnhancement;\n"
 			"#endif\n"
 			"%s"
 			"vec3 ModernSafeNormal(vec3 normal) {\n"
 			"    float len2 = dot(normal, normal);\n"
 			"    return len2 > 0.00000001 ? normal * inversesqrt(len2) : vec3(0.0, 0.0, 1.0);\n"
 			"}\n"
+			"vec3 ModernDecodeClassicNormal(vec4 bumpSample) {\n"
+			"    return ModernSafeNormal(vec3(bumpSample.a, bumpSample.g, bumpSample.b) * 2.0 - 1.0);\n"
+			"}\n"
+			"vec3 ModernDecodeEnhancedNormal(vec4 bumpSample) {\n"
+			"    vec2 xy = vec2(bumpSample.a, bumpSample.g) * 2.0 - 1.0;\n"
+			"    xy *= max(uMaterialEnhancement.y, 0.0);\n"
+			"    float xyLengthSq = dot(xy, xy);\n"
+			"    if (xyLengthSq > 1.0) { xy *= inversesqrt(xyLengthSq); xyLengthSq = 1.0; }\n"
+			"    float encodedZ = max(bumpSample.b * 2.0 - 1.0, 0.0);\n"
+			"    float reconstructedZ = sqrt(max(1.0 - xyLengthSq, 0.0));\n"
+			"    return ModernSafeNormal(vec3(xy, mix(encodedZ, reconstructedZ, 0.75)));\n"
+			"}\n"
+			"vec3 ModernMaterialTangentNormal(void) {\n"
+			"    if (uMaterialFlags.x <= 0.5) { return vec3(0.0, 0.0, 1.0); }\n"
+			"    vec4 bumpSample = ModernSampleNormalTexture(vTexCoord);\n"
+			"    return uMaterialEnhancement.x > 0.5 ? ModernDecodeEnhancedNormal(bumpSample) : ModernDecodeClassicNormal(bumpSample);\n"
+			"}\n"
 			"vec3 ModernMaterialNormal(void) {\n"
-			"    vec3 tangentNormal = uMaterialFlags.x > 0.5 ? ModernSampleNormalTexture(vTexCoord).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);\n"
+			"    vec3 tangentNormal = ModernMaterialTangentNormal();\n"
 			"    return ModernSafeNormal(mat3(ModernSafeNormal(vViewTangent), ModernSafeNormal(vViewBitangent), ModernSafeNormal(vViewNormal)) * tangentNormal);\n"
 			"}\n"
 			"float ModernSpecularStrength(void) {\n"
 			"    vec3 specular = uMaterialFlags.y > 0.5 ? ModernSampleSpecularTexture(vTexCoord).rgb : vec3(0.04);\n"
-			"    return clamp(dot(specular, vec3(0.333333)), 0.0, 2.0);\n"
+			"    float boost = uMaterialEnhancement.x > 0.5 ? max(uMaterialEnhancement.z, 0.0) : 1.0;\n"
+			"    return clamp(dot(specular, vec3(0.333333)) * boost, 0.0, 4.0);\n"
+			"}\n"
+			"float ModernMaterialFresnel(void) {\n"
+			"    return uMaterialEnhancement.x > 0.5 ? clamp(uMaterialEnhancement.w, 0.0, 1.0) : 0.0;\n"
 			"}\n"
 			"void main() {\n"
 			"    vec4 texel = ModernSampleMainTexture(vTexCoord);\n"
@@ -592,7 +647,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"    vec3 emissive = uMaterialFlags.z > 0.5 ? ModernSampleEmissiveTexture(vTexCoord).rgb : vec3(uLocalParams.w);\n"
 			"    out_Albedo = vec4(baseColor, 1.0);\n"
 			"    out_Normal = vec4(normal * 0.5 + 0.5, vTangentSign * 0.5 + 0.5);\n"
-			"    out_Material = vec4(0.04, specular, uLocalParams.z, 1.0);\n"
+			"    out_Material = vec4(0.04, specular, uLocalParams.z, ModernMaterialFresnel());\n"
 			"    out_Emissive = vec4(emissive, 1.0);\n"
 			"}\n",
 			glslVersion,
@@ -621,26 +676,50 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"flat in vec4 vDrawDebugColor;\n"
 			"flat in vec4 vDrawLocalParams;\n"
 			"flat in vec4 vDrawMaterialFlags;\n"
+			"flat in vec4 vDrawMaterialEnhancement;\n"
 			"#define uDebugColor vDrawDebugColor\n"
 			"#define uLocalParams vDrawLocalParams\n"
 			"#define uMaterialFlags vDrawMaterialFlags\n"
+			"#define uMaterialEnhancement vDrawMaterialEnhancement\n"
 			"#else\n"
 			"uniform vec4 uDebugColor;\n"
 			"uniform vec4 uLocalParams;\n"
 			"uniform vec4 uMaterialFlags;\n"
+			"uniform vec4 uMaterialEnhancement;\n"
 			"#endif\n"
 			"%s"
 			"vec3 ModernSafeNormal(vec3 normal) {\n"
 			"    float len2 = dot(normal, normal);\n"
 			"    return len2 > 0.00000001 ? normal * inversesqrt(len2) : vec3(0.0, 0.0, 1.0);\n"
 			"}\n"
+			"vec3 ModernDecodeClassicNormal(vec4 bumpSample) {\n"
+			"    return ModernSafeNormal(vec3(bumpSample.a, bumpSample.g, bumpSample.b) * 2.0 - 1.0);\n"
+			"}\n"
+			"vec3 ModernDecodeEnhancedNormal(vec4 bumpSample) {\n"
+			"    vec2 xy = vec2(bumpSample.a, bumpSample.g) * 2.0 - 1.0;\n"
+			"    xy *= max(uMaterialEnhancement.y, 0.0);\n"
+			"    float xyLengthSq = dot(xy, xy);\n"
+			"    if (xyLengthSq > 1.0) { xy *= inversesqrt(xyLengthSq); xyLengthSq = 1.0; }\n"
+			"    float encodedZ = max(bumpSample.b * 2.0 - 1.0, 0.0);\n"
+			"    float reconstructedZ = sqrt(max(1.0 - xyLengthSq, 0.0));\n"
+			"    return ModernSafeNormal(vec3(xy, mix(encodedZ, reconstructedZ, 0.75)));\n"
+			"}\n"
+			"vec3 ModernMaterialTangentNormal(void) {\n"
+			"    if (uMaterialFlags.x <= 0.5) { return vec3(0.0, 0.0, 1.0); }\n"
+			"    vec4 bumpSample = ModernSampleNormalTexture(vTexCoord);\n"
+			"    return uMaterialEnhancement.x > 0.5 ? ModernDecodeEnhancedNormal(bumpSample) : ModernDecodeClassicNormal(bumpSample);\n"
+			"}\n"
 			"vec3 ModernMaterialNormal(void) {\n"
-			"    vec3 tangentNormal = uMaterialFlags.x > 0.5 ? ModernSampleNormalTexture(vTexCoord).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);\n"
+			"    vec3 tangentNormal = ModernMaterialTangentNormal();\n"
 			"    return ModernSafeNormal(mat3(ModernSafeNormal(vViewTangent), ModernSafeNormal(vViewBitangent), ModernSafeNormal(vViewNormal)) * tangentNormal);\n"
 			"}\n"
 			"float ModernSpecularStrength(void) {\n"
 			"    vec3 specular = uMaterialFlags.y > 0.5 ? ModernSampleSpecularTexture(vTexCoord).rgb : vec3(0.04);\n"
-			"    return clamp(dot(specular, vec3(0.333333)), 0.0, 2.0);\n"
+			"    float boost = uMaterialEnhancement.x > 0.5 ? max(uMaterialEnhancement.z, 0.0) : 1.0;\n"
+			"    return clamp(dot(specular, vec3(0.333333)) * boost, 0.0, 4.0);\n"
+			"}\n"
+			"float ModernMaterialFresnel(void) {\n"
+			"    return uMaterialEnhancement.x > 0.5 ? clamp(uMaterialEnhancement.w, 0.0, 1.0) : 0.0;\n"
 			"}\n"
 			"void main() {\n"
 			"    vec4 texel = ModernSampleMainTexture(vTexCoord);\n"
@@ -650,7 +729,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"    vec3 emissive = uMaterialFlags.z > 0.5 ? ModernSampleEmissiveTexture(vTexCoord).rgb : vec3(0.0);\n"
 			"    out_Albedo = vec4(texel.rgb * max(uDebugColor.rgb, vec3(0.0)), 1.0);\n"
 			"    out_Normal = vec4(normal * 0.5 + 0.5, vTangentSign * 0.5 + 0.5);\n"
-			"    out_Material = vec4(0.04, specular, uLocalParams.z, 1.0);\n"
+			"    out_Material = vec4(0.04, specular, uLocalParams.z, ModernMaterialFresnel());\n"
 			"    out_Emissive = vec4(emissive, 1.0);\n"
 			"}\n",
 			glslVersion,
@@ -705,7 +784,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        float inY = step(light.scissorDepth.y, pixel.y) * step(pixel.y, light.scissorDepth.w);\n"
 			"        float shadowVisibility = ModernClusterShadowVisibility(light);\n"
 			"        float attenuation = 0.0;\n"
-			"        vec3 contribution = ModernClusterEvaluateLight(light, viewPosition, normal, material.g, attenuation);\n"
+			"        vec3 contribution = ModernClusterEvaluateLight(light, viewPosition, normal, material.g, material.a, attenuation);\n"
 			"        attenuation = supported ? attenuation * inX * inY * shadowVisibility : 0.0;\n"
 			"        lightAccum += contribution * inX * inY * shadowVisibility;\n"
 			"        contributingLights += attenuation > 0.001 ? 1 : 0;\n"
@@ -772,7 +851,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        float inY = step(light.scissorDepth.y, gl_FragCoord.y) * step(gl_FragCoord.y, light.scissorDepth.w);\n"
 			"        float shadowVisibility = ModernClusterShadowVisibility(light);\n"
 			"        float attenuation = 0.0;\n"
-			"        vec3 contribution = ModernClusterEvaluateLight(light, vViewPosition, materialNormal, specular, attenuation);\n"
+			"        vec3 contribution = ModernClusterEvaluateLight(light, vViewPosition, materialNormal, specular, ModernMaterialFresnel(), attenuation);\n"
 			"        lightAccum += supported ? contribution * inX * inY * shadowVisibility : vec3(0.0);\n"
 			"        scannedLights++;\n"
 			"    }\n"
@@ -824,7 +903,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        int type = int(floor(light.colorType.w + 0.5));\n"
 			"        float shadowVisibility = ModernClusterShadowVisibility(light);\n"
 			"        float attenuation = 0.0;\n"
-			"        vec3 contribution = ModernClusterEvaluateLight(light, vViewPosition, materialNormal, specular, attenuation);\n"
+			"        vec3 contribution = ModernClusterEvaluateLight(light, vViewPosition, materialNormal, specular, ModernMaterialFresnel(), attenuation);\n"
 			"        if (type == 0 || type == 1) { lightAccum += contribution * shadowVisibility; }\n"
 			"    }\n"
 			"    out_Color = vec4(clamp(mix(baseColor, blendColor, blendAmount) + lightAccum + emissive, vec3(0.0), vec3(1.0)), texel.a * uDebugColor.a);\n"
@@ -1071,6 +1150,7 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.reflection.usesMaterialTextures = R_ModernGLShaderLibrary_KindUsesMaterialTextures( info.kind );
 	info.reflection.usesMaterialTextureTable = info.glslVersion >= 430 && info.reflection.usesMainTexture && info.kind != MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE;
 	info.reflection.usesMaterialFlags = info.reflection.usesMaterialTextures;
+	info.reflection.usesMaterialEnhancement = info.reflection.usesMaterialTextures;
 	info.reflection.usesDrawRecords = info.glslVersion >= 430 && info.kind != MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE;
 	info.reflection.usesTexCoord = info.reflection.usesMainTexture;
 	info.reflection.usesDrawVertColor = R_ModernGLShaderLibrary_KindUsesDrawVertColor( info.kind );
@@ -1092,6 +1172,7 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.reflection.textureTableModeLocation = glGetUniformLocation( info.program, "uTextureTableMode" );
 	info.reflection.materialTextureTableLocation = glGetUniformLocation( info.program, "uMaterialTextures[0]" );
 	info.reflection.materialFlagsLocation = glGetUniformLocation( info.program, "uMaterialFlags" );
+	info.reflection.materialEnhancementLocation = glGetUniformLocation( info.program, "uMaterialEnhancement" );
 	info.reflection.drawRecordModeLocation = glGetUniformLocation( info.program, "uDrawRecordMode" );
 
 	R_ModernGLShaderLibrary_AddReflectionRecord(
@@ -1264,6 +1345,20 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 			true,
 			info.reflection.materialFlagsLocation >= 0 );
 	}
+	if ( info.reflection.usesMaterialEnhancement ) {
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.uniforms,
+			info.reflection.uniformCount,
+			"uMaterialEnhancement",
+			MODERN_GL_SHADER_RESOURCE_UNIFORM,
+			-1,
+			info.reflection.materialEnhancementLocation,
+			-1,
+			1,
+			GL_FLOAT_VEC4,
+			true,
+			info.reflection.materialEnhancementLocation >= 0 );
+	}
 	if ( info.reflection.usesDrawRecords ) {
 		R_ModernGLShaderLibrary_AddReflectionRecord(
 			info.reflection.uniforms,
@@ -1421,6 +1516,7 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.textureTableModeLocation = info.reflection.textureTableModeLocation;
 	info.materialTextureTableLocation = info.reflection.materialTextureTableLocation;
 	info.materialFlagsLocation = info.reflection.materialFlagsLocation;
+	info.materialEnhancementLocation = info.reflection.materialEnhancementLocation;
 	info.drawRecordModeLocation = info.reflection.drawRecordModeLocation;
 
 	if ( info.frameBlockIndex < 0 || info.modelViewProjectionLocation < 0 ) {
@@ -1455,6 +1551,10 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	}
 	if ( info.reflection.usesMaterialFlags && info.materialFlagsLocation < 0 ) {
 		common->Warning( "Modern GL program '%s' is missing uMaterialFlags", info.name );
+		return false;
+	}
+	if ( info.reflection.usesMaterialEnhancement && info.materialEnhancementLocation < 0 ) {
+		common->Warning( "Modern GL program '%s' is missing uMaterialEnhancement", info.name );
 		return false;
 	}
 	if ( info.reflection.usesDrawRecords && info.drawRecordModeLocation < 0 ) {
@@ -1592,6 +1692,7 @@ static bool R_ModernGLShaderLibrary_CreateProgram( int glslVersion, modernGLShad
 	info.textureTableModeLocation = -1;
 	info.materialTextureTableLocation = -1;
 	info.materialFlagsLocation = -1;
+	info.materialEnhancementLocation = -1;
 	info.drawRecordModeLocation = -1;
 	idStr::snPrintf(
 		info.name,
@@ -1620,8 +1721,8 @@ static bool R_ModernGLShaderLibrary_CreateProgram( int glslVersion, modernGLShad
 		info.permutation.debugMode,
 		info.permutation.tier );
 
-	char vertexSource[8192];
-	char fragmentSource[32768];
+	char vertexSource[16384];
+	char fragmentSource[65536];
 	R_ModernGLShaderLibrary_BuildVertexSource( glslVersion, kind, vertexSource, sizeof( vertexSource ) );
 	R_ModernGLShaderLibrary_BuildFragmentSource( glslVersion, kind, fragmentSource, sizeof( fragmentSource ) );
 
@@ -1920,7 +2021,7 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 			return false;
 		}
 		if ( program->reflection.usesMaterialTextures
-			&& ( program->normalTextureLocation < 0 || program->specularTextureLocation < 0 || program->emissiveTextureLocation < 0 || program->materialFlagsLocation < 0 ) ) {
+			&& ( program->normalTextureLocation < 0 || program->specularTextureLocation < 0 || program->emissiveTextureLocation < 0 || program->materialFlagsLocation < 0 || program->materialEnhancementLocation < 0 ) ) {
 			common->Printf( "RendererModernGLShaderLibrary self-test failed: material texture reflection mismatch for %s\n", program->name );
 			return false;
 		}

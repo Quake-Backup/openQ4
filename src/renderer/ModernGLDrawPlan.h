@@ -43,6 +43,7 @@ typedef struct modernGLDrawPlanEntry_s {
 	int							textureIndicesLocation;
 	int							textureTableModeLocation;
 	int							materialFlagsLocation;
+	int							materialEnhancementLocation;
 	int							drawRecordModeLocation;
 	int							drawPacketIndex;
 	int							materialRecordIndex;

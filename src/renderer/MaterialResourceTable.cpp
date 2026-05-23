@@ -866,7 +866,9 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	record.blendMode = R_MaterialResourceTable_BlendModeForMaterial( sourceRecord.material, record.materialClass );
 	record.drawn = sourceRecord.material != NULL ? sourceRecord.material->IsDrawn() : false;
 	record.receivesLighting = sourceRecord.material != NULL ? sourceRecord.material->ReceivesLighting() : false;
-	record.castsShadow = sourceRecord.material != NULL ? sourceRecord.material->SurfaceCastsShadow() : false;
+	record.castsShadow = sourceRecord.material != NULL
+		? ( !sourceRecord.material->IsDedicatedCollisionSurface() && sourceRecord.material->SurfaceCastsShadow() )
+		: false;
 	record.cullType = sourceRecord.material != NULL ? sourceRecord.material->GetCullType() : CT_FRONT_SIDED;
 	record.shouldCreateBackSides = sourceRecord.material != NULL && sourceRecord.material->ShouldCreateBackSides();
 	record.twoSided = sourceRecord.material != NULL ? ( record.cullType == CT_TWO_SIDED || record.shouldCreateBackSides ) : false;

@@ -204,6 +204,40 @@ static bool R_MD5R_ModelHasSky( const idRenderModelStatic &model ) {
 
 /*
 ========================
+R_MD5R_StaticModelHasRenderableSurfaces
+========================
+*/
+static bool R_MD5R_StaticModelHasRenderableSurfaces( const idRenderModelStatic &model ) {
+	for ( int surfaceIndex = 0; surfaceIndex < model.surfaces.Num(); ++surfaceIndex ) {
+		const modelSurface_t &surface = model.surfaces[ surfaceIndex ];
+		if ( surface.geometry != NULL
+			&& surface.shader != NULL
+			&& ( surface.shader->GetSurfaceFlags() & SURF_COLLISION ) == 0 ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+========================
+R_MD5R_ShouldKeepStaticSurface
+========================
+*/
+static bool R_MD5R_ShouldKeepStaticSurface( const modelSurface_t &surface, bool dropCollisionHelperSurfaces ) {
+	if ( surface.geometry == NULL || surface.shader == NULL ) {
+		return false;
+	}
+	if ( dropCollisionHelperSurfaces && ( surface.shader->GetSurfaceFlags() & SURF_COLLISION ) != 0 ) {
+		return false;
+	}
+
+	return true;
+}
+
+/*
+========================
 R_MD5R_PackBlendIndices
 ========================
 */
@@ -1887,10 +1921,15 @@ bool rvRenderModelMD5R::InitFromStaticModelInternal(
 	rvMD5RVertexFormatDesc vertexFormat;
 	R_MD5R_InitStaticVertexFormat( vertexFormat );
 
+	const bool dropCollisionHelperSurfaces = R_MD5R_StaticModelHasRenderableSurfaces( sourceModel );
+	int meshIdentifier = 0;
 	for ( int surfaceIndex = 0; surfaceIndex < sourceModel.surfaces.Num(); ++surfaceIndex ) {
 		const modelSurface_t &sourceSurface = sourceModel.surfaces[ surfaceIndex ];
+		if ( !R_MD5R_ShouldKeepStaticSurface( sourceSurface, dropCollisionHelperSurfaces ) ) {
+			continue;
+		}
 		const srfTriangles_t *tri = sourceSurface.geometry;
-		if ( tri == NULL || tri->verts == NULL || tri->indexes == NULL || sourceSurface.shader == NULL ) {
+		if ( tri->verts == NULL || tri->indexes == NULL ) {
 			continue;
 		}
 		if ( tri->numVerts <= 0 || tri->numIndexes <= 0 ) {
@@ -1935,7 +1974,7 @@ bool rvRenderModelMD5R::InitFromStaticModelInternal(
 		mesh.material = sourceSurface.shader;
 		mesh.materialName = sourceSurface.shader->GetName();
 		mesh.bounds = tri->bounds;
-		mesh.meshIdentifier = surfaceIndex;
+		mesh.meshIdentifier = meshIdentifier++;
 		mesh.silTraceVertexBuffer = vertexBufferIndex;
 		mesh.silTraceIndexBuffer = indexBufferIndex;
 		mesh.drawVertexBuffer = vertexBufferIndex;
@@ -4054,9 +4093,7 @@ bool rvRenderModelMD5R::HasCollisionSurface( const renderEntity_s *ent ) const {
 			continue;
 		}
 
-		if ( ( shader->GetSurfaceFlags() & SURF_COLLISION ) != 0
-			&& !shader->IsDrawn()
-			&& !shader->SurfaceCastsShadow() ) {
+		if ( shader->IsDedicatedCollisionSurface() ) {
 			return true;
 		}
 	}

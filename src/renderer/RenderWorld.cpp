@@ -531,6 +531,10 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 
 	tr.pc.c_lightUpdates++;
 
+	renderLight_t sanitizedLight = *rlight;
+	sanitizedLight.prelightModel = R_SanitizePrelightModelPointer( sanitizedLight.prelightModel );
+	rlight = &sanitizedLight;
+
 	// create new slots if needed
 	if ( lightHandle < 0 || lightHandle > LUDICROUS_INDEX ) {
 		common->Error( "idRenderWorld::UpdateLightDef: index = %i", lightHandle );
