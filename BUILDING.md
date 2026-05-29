@@ -17,6 +17,7 @@ This guide covers everything required to compile OpenQ4 from source on Windows, 
 - [GameLibs Companion Repository](#gamelibs-companion-repository)
 - [Build Setup](#build-setup)
 - [Build Options](#build-options)
+- [Validation Scripts](#validation-scripts)
 - [Building on Windows](#building-on-windows)
 - [Building on Linux / macOS](#building-on-linux--macos)
 - [Output Files](#output-files)
@@ -106,6 +107,43 @@ Pass any of these with `-D<option>=<value>` on the `meson setup` command line:
 | `version_iteration` | *(empty)* | Dot-separated iteration counter for pre-release builds |
 | `version_base_override` | *(empty)* | Override the generated release version without editing `meson.build` |
 | `enforce_msvc_2026` | `false` | Enforce MSVC 2026+ requirement (Windows only) |
+
+---
+
+## Validation Scripts
+
+OpenQ4 includes two local validation profiles under `tools/validation/`. They share one Python runner and use the platform build wrappers so Windows validation still goes through `tools/build/meson_setup.ps1`.
+
+### Push Validation
+
+Use this before pushing local work. It runs lightweight Python checks, reconfigures/reuses `builddir/` as a debug build, and compiles the engine plus game modules.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/validation/validate_push.ps1
+```
+
+```bash
+bash tools/validation/validate_push.sh
+```
+
+### PR Validation
+
+Use this before opening or updating a pull request. It performs a clean release-style build in `.tmp/validation/pr-builddir`, stages `.install/`, and verifies the staged runtime payload contains the expected engine executables, SP/MP game modules, required `baseoq4` files, and no root-level build-only linker artifacts.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/validation/validate_pr.ps1
+```
+
+```bash
+bash tools/validation/validate_pr.sh
+```
+
+Useful options:
+
+- Add `--runtime` to run the safe renderer startup validation matrix after the staged install.
+- Add `--build-gamelibs` when you also want the Windows wrapper to build the standalone OpenQ4-GameLibs outputs during compile.
+- Use `--game-libs-repo <path>` when the companion repository is not at `../OpenQ4-GameLibs`.
+- Use `--build-dir <path>` plus `--no-clean` to validate a specific existing build tree.
 
 ---
 
