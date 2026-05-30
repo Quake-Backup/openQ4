@@ -375,15 +375,35 @@ static rendererModernLightType_t R_ModernClusteredLighting_ClassifyLight( const 
 	return RENDERER_MODERN_LIGHT_PROJECTED;
 }
 
+static const idMaterial *R_ModernClusteredLighting_ResolvedLightShader( const viewLight_t *vLight );
+
+static const idMaterial *R_ModernClusteredLighting_LightShader( const viewLight_t *vLight ) {
+	return R_ModernClusteredLighting_ResolvedLightShader( vLight );
+}
+
 static idVec3 R_ModernClusteredLighting_LightColor( const viewLight_t *vLight ) {
-	idVec3 color( 1.0f, 1.0f, 1.0f );
-	if ( vLight != NULL && vLight->lightDef != NULL ) {
-		color.x = vLight->lightDef->parms.shaderParms[SHADERPARM_RED];
-		color.y = vLight->lightDef->parms.shaderParms[SHADERPARM_GREEN];
-		color.z = vLight->lightDef->parms.shaderParms[SHADERPARM_BLUE];
+	idVec3 color( 0.0f, 0.0f, 0.0f );
+	const idMaterial *lightShader = R_ModernClusteredLighting_LightShader( vLight );
+	const float *lightRegs = vLight != NULL ? vLight->shaderRegisters : NULL;
+
+	if ( lightShader != NULL && lightRegs != NULL ) {
+		for ( int stageIndex = 0; stageIndex < lightShader->GetNumStages(); ++stageIndex ) {
+			const shaderStage_t *stage = lightShader->GetStage( stageIndex );
+			if ( stage == NULL || lightRegs[ stage->conditionRegister ] == 0.0f ) {
+				continue;
+			}
+
+			color.x += Max( 0.0f, r_lightScale.GetFloat() * lightRegs[ stage->color.registers[0] ] );
+			color.y += Max( 0.0f, r_lightScale.GetFloat() * lightRegs[ stage->color.registers[1] ] );
+			color.z += Max( 0.0f, r_lightScale.GetFloat() * lightRegs[ stage->color.registers[2] ] );
+		}
+		return color;
 	}
-	if ( color.x == 0.0f && color.y == 0.0f && color.z == 0.0f ) {
-		color.Set( 1.0f, 1.0f, 1.0f );
+
+	if ( vLight != NULL && vLight->lightDef != NULL ) {
+		color.x = Max( 0.0f, r_lightScale.GetFloat() * vLight->lightDef->parms.shaderParms[SHADERPARM_RED] );
+		color.y = Max( 0.0f, r_lightScale.GetFloat() * vLight->lightDef->parms.shaderParms[SHADERPARM_GREEN] );
+		color.z = Max( 0.0f, r_lightScale.GetFloat() * vLight->lightDef->parms.shaderParms[SHADERPARM_BLUE] );
 	}
 	return color;
 }
@@ -452,13 +472,62 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 	}
 }
 
+static const idMaterial *R_ModernClusteredLighting_ResolvedLightShader( const viewLight_t *vLight ) {
+	if ( vLight == NULL ) {
+		return NULL;
+	}
+	if ( vLight->lightShader != NULL ) {
+		return vLight->lightShader;
+	}
+	if ( vLight->lightDef != NULL ) {
+		return vLight->lightDef->lightShader;
+	}
+	return NULL;
+}
+
+static bool R_ModernClusteredLighting_UsePerStageDescriptors( const viewLight_t *vLight, const idMaterial *lightShader ) {
+	if ( vLight == NULL || lightShader == NULL || vLight->shaderRegisters == NULL ) {
+		return false;
+	}
+	if ( lightShader->IsFogLight() || lightShader->IsAmbientLight() || lightShader->IsBlendLight() ) {
+		return false;
+	}
+	if ( !vLight->pointLight && vLight->parallel ) {
+		return false;
+	}
+	return lightShader->GetNumStages() > 0;
+}
+
+static bool R_ModernClusteredLighting_StageContributionColor( const shaderStage_t *stage, const float *lightRegs, idVec3 &color ) {
+	color.Zero();
+	if ( stage == NULL || lightRegs == NULL || lightRegs[ stage->conditionRegister ] == 0.0f ) {
+		return false;
+	}
+
+	const float lightScale = r_lightScale.GetFloat();
+	color.x = Max( 0.0f, lightScale * lightRegs[ stage->color.registers[0] ] );
+	color.y = Max( 0.0f, lightScale * lightRegs[ stage->color.registers[1] ] );
+	color.z = Max( 0.0f, lightScale * lightRegs[ stage->color.registers[2] ] );
+	return color.x > 0.0f || color.y > 0.0f || color.z > 0.0f;
+}
+
 static int R_ModernClusteredLighting_CountViewLights( const viewDef_t *viewDef ) {
 	int count = 0;
 	if ( viewDef == NULL ) {
 		return count;
 	}
 	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-		count++;
+		const idMaterial *lightShader = R_ModernClusteredLighting_ResolvedLightShader( vLight );
+		if ( R_ModernClusteredLighting_UsePerStageDescriptors( vLight, lightShader ) ) {
+			for ( int stageIndex = 0; stageIndex < lightShader->GetNumStages(); ++stageIndex ) {
+				idVec3 stageColor;
+				if ( R_ModernClusteredLighting_StageContributionColor( lightShader->GetStage( stageIndex ), vLight->shaderRegisters, stageColor ) ) {
+					count++;
+				}
+			}
+		} else {
+			count++;
+		}
 	}
 	return count;
 }
@@ -586,17 +655,95 @@ static unsigned int R_ModernClusteredLighting_ImageHandle( const idImage *image 
 	return const_cast<idImage *>( image )->GetDeviceHandle();
 }
 
-static const idImage *R_ModernClusteredLighting_FirstStageImage( const idMaterial *material ) {
+static const idImage *R_ModernClusteredLighting_FirstStageImage( const viewLight_t *vLight ) {
+	const idMaterial *material = R_ModernClusteredLighting_LightShader( vLight );
 	if ( material == NULL ) {
 		return NULL;
 	}
+	const float *lightRegs = vLight != NULL ? vLight->shaderRegisters : NULL;
+	const idImage *fallbackImage = NULL;
 	for ( int stageIndex = 0; stageIndex < material->GetNumStages(); ++stageIndex ) {
 		const shaderStage_t *stage = material->GetStage( stageIndex );
-		if ( stage != NULL && stage->texture.image != NULL ) {
+		if ( stage == NULL || stage->texture.image == NULL ) {
+			continue;
+		}
+		if ( fallbackImage == NULL ) {
+			fallbackImage = stage->texture.image;
+		}
+		if ( lightRegs == NULL || lightRegs[ stage->conditionRegister ] != 0.0f ) {
 			return stage->texture.image;
 		}
 	}
-	return NULL;
+	return fallbackImage;
+}
+
+static const idImage *R_ModernClusteredLighting_ProjectionImageForStage( const viewLight_t *vLight, const shaderStage_t *lightStage ) {
+	if ( lightStage != NULL && lightStage->texture.image != NULL ) {
+		return lightStage->texture.image;
+	}
+	return R_ModernClusteredLighting_FirstStageImage( vLight );
+}
+
+static void R_ModernClusteredLighting_BakeTextureMatrixIntoTexgen( idPlane lightProject[3], const float textureMatrix[16] ) {
+	float genMatrix[16];
+	float final[16];
+
+	genMatrix[0] = lightProject[0][0];
+	genMatrix[4] = lightProject[0][1];
+	genMatrix[8] = lightProject[0][2];
+	genMatrix[12] = lightProject[0][3];
+
+	genMatrix[1] = lightProject[1][0];
+	genMatrix[5] = lightProject[1][1];
+	genMatrix[9] = lightProject[1][2];
+	genMatrix[13] = lightProject[1][3];
+
+	genMatrix[2] = 0.0f;
+	genMatrix[6] = 0.0f;
+	genMatrix[10] = 0.0f;
+	genMatrix[14] = 0.0f;
+
+	genMatrix[3] = lightProject[2][0];
+	genMatrix[7] = lightProject[2][1];
+	genMatrix[11] = lightProject[2][2];
+	genMatrix[15] = lightProject[2][3];
+
+	myGlMultMatrix( genMatrix, textureMatrix, final );
+
+	lightProject[0][0] = final[0];
+	lightProject[0][1] = final[4];
+	lightProject[0][2] = final[8];
+	lightProject[0][3] = final[12];
+
+	lightProject[1][0] = final[1];
+	lightProject[1][1] = final[5];
+	lightProject[1][2] = final[9];
+	lightProject[1][3] = final[13];
+
+	lightProject[2][0] = final[3];
+	lightProject[2][1] = final[7];
+	lightProject[2][2] = final[11];
+	lightProject[2][3] = final[15];
+}
+
+static void R_ModernClusteredLighting_LightProjectionForStage( const viewLight_t *vLight, const shaderStage_t *lightStage, idPlane lightProject[3] ) {
+	lightProject[0].Zero();
+	lightProject[1].Zero();
+	lightProject[2].Zero();
+	if ( vLight == NULL ) {
+		return;
+	}
+
+	lightProject[0] = vLight->lightProject[0];
+	lightProject[1] = vLight->lightProject[1];
+	lightProject[2] = vLight->lightProject[3];
+	if ( lightStage == NULL || !lightStage->texture.hasMatrix || vLight->shaderRegisters == NULL ) {
+		return;
+	}
+
+	float lightTextureMatrix[16];
+	RB_GetShaderTextureMatrix( vLight->shaderRegisters, &lightStage->texture, lightTextureMatrix );
+	R_ModernClusteredLighting_BakeTextureMatrixIntoTexgen( lightProject, lightTextureMatrix );
 }
 
 static void R_ModernClusteredLighting_ViewPlaneForLightProject( const viewDef_t *viewDef, const idPlane &worldPlane, float out[4] ) {
@@ -621,7 +768,7 @@ static void R_ModernClusteredLighting_CopyPlane( const float src[4], idPlane &ds
 	dst[3] = src[3];
 }
 
-static void R_ModernClusteredLighting_FillDescriptor( modernClusterLightRecord_t &record, const modernClusterGridRecord_t &grid, const viewLight_t *vLight ) {
+static void R_ModernClusteredLighting_FillDescriptor( modernClusterLightRecord_t &record, const modernClusterGridRecord_t &grid, const viewLight_t *vLight, const shaderStage_t *lightStage ) {
 	rendererModernLightDescriptor_t &descriptor = record.descriptor;
 	memset( &descriptor, 0, sizeof( descriptor ) );
 	descriptor.type = record.type;
@@ -646,7 +793,7 @@ static void R_ModernClusteredLighting_FillDescriptor( modernClusterLightRecord_t
 	descriptor.color[0] = record.color.x;
 	descriptor.color[1] = record.color.y;
 	descriptor.color[2] = record.color.z;
-	descriptor.color[3] = 1.0f;
+	descriptor.color[3] = ( lightStage != NULL && vLight != NULL && vLight->shaderRegisters != NULL ) ? Max( 0.0f, vLight->shaderRegisters[ lightStage->color.registers[3] ] ) : 1.0f;
 	descriptor.scissorDepth[0] = static_cast<float>( record.scissor.x1 );
 	descriptor.scissorDepth[1] = static_cast<float>( record.scissor.y1 );
 	descriptor.scissorDepth[2] = static_cast<float>( record.scissor.x2 );
@@ -659,15 +806,17 @@ static void R_ModernClusteredLighting_FillDescriptor( modernClusterLightRecord_t
 	descriptor.falloff[1] = record.falloffBias;
 	descriptor.falloff[2] = record.fullDepthRange ? 1.0f : 0.0f;
 	descriptor.falloff[3] = 0.0f;
-	R_ModernClusteredLighting_ViewPlaneForLightProject( grid.viewDef, vLight->lightProject[0], descriptor.projectS );
-	R_ModernClusteredLighting_ViewPlaneForLightProject( grid.viewDef, vLight->lightProject[1], descriptor.projectT );
-	R_ModernClusteredLighting_ViewPlaneForLightProject( grid.viewDef, vLight->lightProject[3], descriptor.projectQ );
+	idPlane stageLightProject[3];
+	R_ModernClusteredLighting_LightProjectionForStage( vLight, lightStage, stageLightProject );
+	R_ModernClusteredLighting_ViewPlaneForLightProject( grid.viewDef, stageLightProject[0], descriptor.projectS );
+	R_ModernClusteredLighting_ViewPlaneForLightProject( grid.viewDef, stageLightProject[1], descriptor.projectT );
+	R_ModernClusteredLighting_ViewPlaneForLightProject( grid.viewDef, stageLightProject[2], descriptor.projectQ );
 	R_ModernClusteredLighting_CopyPlane( descriptor.projectS, record.viewLightProject[0] );
 	R_ModernClusteredLighting_CopyPlane( descriptor.projectT, record.viewLightProject[1] );
 	R_ModernClusteredLighting_CopyPlane( descriptor.projectQ, record.viewLightProject[3] );
 
-	const idMaterial *lightShader = vLight->lightShader != NULL ? vLight->lightShader : ( vLight->lightDef != NULL ? vLight->lightDef->lightShader : NULL );
-	const idImage *projectionImage = R_ModernClusteredLighting_FirstStageImage( lightShader );
+	const idMaterial *lightShader = R_ModernClusteredLighting_LightShader( vLight );
+	const idImage *projectionImage = R_ModernClusteredLighting_ProjectionImageForStage( vLight, lightStage );
 	const idImage *falloffImage = vLight->falloffImage != NULL ? vLight->falloffImage : ( lightShader != NULL ? lightShader->LightFalloffImage() : NULL );
 	descriptor.projectionImageHandle = R_ModernClusteredLighting_ImageHandle( projectionImage );
 	descriptor.falloffImageHandle = R_ModernClusteredLighting_ImageHandle( falloffImage );
@@ -677,6 +826,71 @@ static void R_ModernClusteredLighting_FillDescriptor( modernClusterLightRecord_t
 	descriptor.falloffFilter = falloffImage != NULL ? falloffImage->GetFilter() : TF_DEFAULT;
 	descriptor.falloffRepeat = falloffImage != NULL ? falloffImage->GetRepeat() : TR_CLAMP;
 	idStr::Copynz( descriptor.debugName, record.debugName, sizeof( descriptor.debugName ) );
+}
+
+static bool R_ModernClusteredLighting_AppendLightRecord( modernClusterGridRecord_t &grid, const viewLight_t *vLight, const idScreenRect &scissor,
+		rendererModernLightType_t type, const shaderStage_t *lightStage, int stageIndex, const idVec3 &lightColor, rendererClusteredLightingStats_t &stats ) {
+	if ( rg_clusteredLightingFrame.lightCount >= rg_clusteredLightingFrame.lightCapacity ) {
+		stats.overflow = true;
+		stats.overflowLights++;
+		return false;
+	}
+
+	rg_clusteredLightingFrame.lights.SetNum( rg_clusteredLightingFrame.lightCount + 1, false );
+	modernClusterLightRecord_t &record = rg_clusteredLightingFrame.lights[rg_clusteredLightingFrame.lightCount];
+	memset( &record, 0, sizeof( record ) );
+	record.type = type;
+	record.sceneIndex = grid.sceneIndex;
+	record.lightDefIndex = vLight->lightDef != NULL ? vLight->lightDef->index : -1;
+	record.areaNum = vLight->lightDef != NULL ? vLight->lightDef->areaNum : -1;
+	record.worldOrigin = vLight->globalLightOrigin;
+	record.color = lightColor;
+	record.radius = R_ModernClusteredLighting_LightRadius( vLight );
+	record.scissor = scissor;
+	R_ModernClusteredLighting_CameraPoint( grid.viewDef, record.worldOrigin, record.cameraOrigin );
+	record.fullDepthRange = type == RENDERER_MODERN_LIGHT_FOG || type == RENDERER_MODERN_LIGHT_AMBIENT || type == RENDERER_MODERN_LIGHT_BLEND || type == RENDERER_MODERN_LIGHT_SPECIAL;
+	record.depthMin = record.fullDepthRange ? grid.nearZ : Max( grid.nearZ, record.cameraOrigin.z - record.radius );
+	record.depthMax = record.fullDepthRange ? grid.farZ : Min( grid.farZ, record.cameraOrigin.z + record.radius );
+	record.falloffScale = record.radius > 1.0f ? 1.0f / record.radius : 1.0f;
+	record.falloffBias = 0.0f;
+	if ( record.depthMax < grid.nearZ || record.depthMin > grid.farZ ) {
+		stats.culledLights++;
+		return false;
+	}
+	record.flags =
+		( vLight->viewInsideLight ? MODERN_CLUSTER_LIGHT_FLAG_VIEW_INSIDE : 0 ) |
+		( vLight->viewSeesGlobalLightOrigin ? MODERN_CLUSTER_LIGHT_FLAG_GLOBAL_ORIGIN_VISIBLE : 0 ) |
+		( vLight->parallel ? MODERN_CLUSTER_LIGHT_FLAG_PARALLEL : 0 ) |
+		( record.fullDepthRange ? MODERN_CLUSTER_LIGHT_FLAG_FULL_DEPTH : 0 ) |
+		( type == RENDERER_MODERN_LIGHT_BLEND ? MODERN_CLUSTER_LIGHT_FLAG_BLEND : 0 );
+	R_ModernClusteredLighting_ApplyShadowDescriptor( record, vLight, stats );
+	if ( r_rendererMetrics.GetInteger() >= 2 || r_rendererClusterDebug.GetInteger() > 0 ) {
+		const idMaterial *lightShader = R_ModernClusteredLighting_LightShader( vLight );
+		const char *shaderName = lightShader != NULL ? lightShader->GetName() : "<light>";
+		if ( stageIndex >= 0 ) {
+			if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:s%d:%s", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, stageIndex, shaderName != NULL ? shaderName : "<null>" ) ) {
+				R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster stage light debugName" );
+			}
+		} else if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:%s", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, shaderName != NULL ? shaderName : "<null>" ) ) {
+			R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light debugName" );
+		}
+	} else if ( stageIndex >= 0 ) {
+		if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:s%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, stageIndex ) ) {
+			R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster stage light shortName" );
+		}
+	} else if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex ) ) {
+		R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light shortName" );
+	}
+	R_ModernClusteredLighting_FillDescriptor( record, grid, vLight, lightStage );
+
+	grid.lightCount++;
+	stats.lightCount++;
+	R_ModernClusteredLighting_CountLightType( record.type, stats );
+	if ( record.depthMax > grid.farZ ) {
+		grid.farZ = idMath::ClampFloat( grid.nearZ + 1.0f, 32768.0f, record.depthMax );
+	}
+	++rg_clusteredLightingFrame.lightCount;
+	return true;
 }
 
 static bool R_ModernClusteredLighting_AddLight( modernClusterGridRecord_t &grid, const viewLight_t *vLight, rendererClusteredLightingStats_t &stats ) {
@@ -697,58 +911,25 @@ static bool R_ModernClusteredLighting_AddLight( modernClusterGridRecord_t &grid,
 		stats.clippedLights++;
 		return false;
 	}
-	if ( rg_clusteredLightingFrame.lightCount >= rg_clusteredLightingFrame.lightCapacity ) {
-		stats.overflow = true;
-		stats.overflowLights++;
-		return false;
-	}
 
-	rg_clusteredLightingFrame.lights.SetNum( rg_clusteredLightingFrame.lightCount + 1, false );
-	modernClusterLightRecord_t &record = rg_clusteredLightingFrame.lights[rg_clusteredLightingFrame.lightCount];
-	memset( &record, 0, sizeof( record ) );
-	record.type = R_ModernClusteredLighting_ClassifyLight( vLight );
-	record.sceneIndex = grid.sceneIndex;
-	record.lightDefIndex = vLight->lightDef != NULL ? vLight->lightDef->index : -1;
-	record.areaNum = vLight->lightDef != NULL ? vLight->lightDef->areaNum : -1;
-	record.worldOrigin = vLight->globalLightOrigin;
-	record.color = R_ModernClusteredLighting_LightColor( vLight );
-	record.radius = R_ModernClusteredLighting_LightRadius( vLight );
-	record.scissor = scissor;
-	R_ModernClusteredLighting_CameraPoint( grid.viewDef, record.worldOrigin, record.cameraOrigin );
-	record.fullDepthRange = record.type == RENDERER_MODERN_LIGHT_FOG || record.type == RENDERER_MODERN_LIGHT_AMBIENT || record.type == RENDERER_MODERN_LIGHT_BLEND || record.type == RENDERER_MODERN_LIGHT_SPECIAL;
-	record.depthMin = record.fullDepthRange ? grid.nearZ : Max( grid.nearZ, record.cameraOrigin.z - record.radius );
-	record.depthMax = record.fullDepthRange ? grid.farZ : Min( grid.farZ, record.cameraOrigin.z + record.radius );
-	record.falloffScale = record.radius > 1.0f ? 1.0f / record.radius : 1.0f;
-	record.falloffBias = 0.0f;
-	if ( record.depthMax < grid.nearZ || record.depthMin > grid.farZ ) {
-		stats.culledLights++;
-		return false;
-	}
-	record.flags =
-		( vLight->viewInsideLight ? MODERN_CLUSTER_LIGHT_FLAG_VIEW_INSIDE : 0 ) |
-		( vLight->viewSeesGlobalLightOrigin ? MODERN_CLUSTER_LIGHT_FLAG_GLOBAL_ORIGIN_VISIBLE : 0 ) |
-		( vLight->parallel ? MODERN_CLUSTER_LIGHT_FLAG_PARALLEL : 0 ) |
-		( record.fullDepthRange ? MODERN_CLUSTER_LIGHT_FLAG_FULL_DEPTH : 0 ) |
-		( record.type == RENDERER_MODERN_LIGHT_BLEND ? MODERN_CLUSTER_LIGHT_FLAG_BLEND : 0 );
-	R_ModernClusteredLighting_ApplyShadowDescriptor( record, vLight, stats );
-	if ( r_rendererMetrics.GetInteger() >= 2 || r_rendererClusterDebug.GetInteger() > 0 ) {
-		const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : ( vLight->lightDef != NULL && vLight->lightDef->lightShader != NULL ? vLight->lightDef->lightShader->GetName() : "<light>" );
-		if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d:%s", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex, shaderName != NULL ? shaderName : "<null>" ) ) {
-			R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light debugName" );
+	const rendererModernLightType_t type = R_ModernClusteredLighting_ClassifyLight( vLight );
+	const idMaterial *lightShader = R_ModernClusteredLighting_LightShader( vLight );
+	if ( R_ModernClusteredLighting_UsePerStageDescriptors( vLight, lightShader ) ) {
+		int appendedStages = 0;
+		for ( int stageIndex = 0; stageIndex < lightShader->GetNumStages(); ++stageIndex ) {
+			const shaderStage_t *lightStage = lightShader->GetStage( stageIndex );
+			idVec3 stageColor;
+			if ( !R_ModernClusteredLighting_StageContributionColor( lightStage, vLight->shaderRegisters, stageColor ) ) {
+				continue;
+			}
+			if ( R_ModernClusteredLighting_AppendLightRecord( grid, vLight, scissor, type, lightStage, stageIndex, stageColor, stats ) ) {
+				appendedStages++;
+			}
 		}
-	} else if ( !R_ModernClusteredLighting_FormatDebugString( record.debugName, sizeof( record.debugName ), "%s:%d", R_ModernClusteredLighting_TypeName( record.type ), record.lightDefIndex ) ) {
-		R_ModernClusteredLighting_RecordDebugStringTruncation( stats, "cluster light shortName" );
+		return appendedStages > 0;
 	}
-	R_ModernClusteredLighting_FillDescriptor( record, grid, vLight );
 
-	const int lightIndex = rg_clusteredLightingFrame.lightCount++;
-	grid.lightCount++;
-	stats.lightCount++;
-	R_ModernClusteredLighting_CountLightType( record.type, stats );
-	if ( record.depthMax > grid.farZ ) {
-		grid.farZ = idMath::ClampFloat( grid.nearZ + 1.0f, 32768.0f, record.depthMax );
-	}
-	return true;
+	return R_ModernClusteredLighting_AppendLightRecord( grid, vLight, scissor, type, NULL, -1, R_ModernClusteredLighting_LightColor( vLight ), stats );
 }
 
 static void R_ModernClusteredLighting_BinFrameReferences( rendererClusteredLightingStats_t &stats, bool fillReferences ) {
