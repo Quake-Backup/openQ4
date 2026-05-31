@@ -5464,7 +5464,9 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 			if ( newStage->customLighting ) {
 				continue;
 			}
-			if ( r_skipNewAmbient.GetBool() ) {
+			// This debug cvar suppresses world/material ambient programs only;
+			// fullscreen post-process GLSL stages still need to run.
+			if ( r_skipNewAmbient.GetBool() && shader->GetSort() < SS_POST_PROCESS ) {
 				continue;
 			}
 
@@ -5546,6 +5548,9 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 						glUniform1iARB( newStage->shaderTextureLocations[i], i );
 					}
 				}
+				// GL_SelectTexture also selects the client texcoord array; draw legacy
+				// fullscreen/material geometry with gl_TexCoord[0] as the active lane.
+				GL_SelectTexture( 0 );
 
 				if ( !RB_PrepareStageTexturing( pStage, surf, ac ) ) {
 					RB_FinishStageTexturing( pStage, surf, ac );

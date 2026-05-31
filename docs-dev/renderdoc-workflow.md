@@ -9,7 +9,7 @@ This document covers the OpenQ4 RenderDoc status and the March 2026 black-viewpo
   - `OpenQ4-GameLibs/src/game/Game_render.cpp` already copied the resolved scene into `_currentRender` before the SMAA passes.
   - [`content/baseoq4/materials/postprocess_openq4.mtr`](../content/baseoq4/materials/postprocess_openq4.mtr) previously drew `postprocess/smaa_blend` into `_postProcessAlbedo0` while also sampling `_postProcessAlbedo0`.
 - Some drivers preserved the previous texture contents and appeared to work. Others returned black or undefined data. That is why the issue only reproduced for some users and clustered around `r_postAA 1`.
-- Current builds no longer use that path. `r_postAA 1` now runs a three-pass GLSL SMAA 1x implementation: edge detection, blending-weight calculation, and neighborhood blending.
+- Current builds no longer use that path. `r_postAA 1` now stages the resolved scene in `_postProcessAlbedo2`, runs a three-pass GLSL SMAA 1x implementation from that stable source, then blits the result back to `_postProcessAlbedo0` for the remaining post stack.
 
 ## Current RenderDoc Limitation
 
@@ -61,7 +61,7 @@ Expected bindings on a fixed build:
 
 - `postprocess/smaa_edge`
   - Render target: `_postProcessAlbedo1`
-  - Texture slot 0: `_currentRender`
+  - Texture slot 0: `_postProcessAlbedo2`
 - `postprocess/smaa_weights`
   - Render target: `_postProcessAlbedo0`
   - Texture slot 0: `_postProcessAlbedo1`
@@ -69,8 +69,11 @@ Expected bindings on a fixed build:
   - Texture slot 2: `_smaaSearch`
 - `postprocess/smaa_blend`
   - Render target: `_postProcessAlbedo1`
-  - Texture slot 0: `_currentRender`
+  - Texture slot 0: `_postProcessAlbedo2`
   - Texture slot 1: `_postProcessAlbedo0`
+- `postprocess/copy_postprocess1`
+  - Render target: `_postProcessAlbedo0`
+  - Texture slot 0: `_postProcessAlbedo1`
 
 If the blend pass ever samples the same texture it is rendering to, the build still contains a broken feedback loop.
 

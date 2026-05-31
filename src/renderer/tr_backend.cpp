@@ -588,6 +588,7 @@ static void RB_SetRenderTexture(const void* data) {
 
 	if (cmd->renderTexture) {
 		backEnd.renderTexture = cmd->renderTexture;
+		backEnd.renderTexture->MakeCurrent();
 	}
 	else {
 		backEnd.renderTexture = nullptr;
