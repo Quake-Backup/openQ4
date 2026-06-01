@@ -39,7 +39,7 @@ idCVar s_useEAXReverb( "s_useEAXReverb", "1", CVAR_ARCHIVE | CVAR_BOOL, "use EAX
 idCVar s_openALEfxDebugMode( "s_openALEfxDebugMode", "0", CVAR_ARCHIVE | CVAR_INTEGER, "OpenAL wet/dry debug mode (0=normal, 1=wet-only, 2=dry-only)" );
 idCVar s_numberOfSpeakers( "s_numberOfSpeakers", "6", CVAR_ARCHIVE | CVAR_INTEGER, "number of speakers (2 or 6)" );
 idCVar s_warnOnMissingSamples( "s_warnOnMissingSamples", "0", CVAR_ARCHIVE | CVAR_BOOL, "warn when falling back to default sound samples" );
-idCVar s_controllerRumble( "s_controllerRumble", "1", CVAR_ARCHIVE | CVAR_BOOL, "drive controller rumble from sound shakes" );
+idCVar s_controllerRumble( "s_controllerRumble", "1", CVAR_ARCHIVE | CVAR_BOOL, "sound-side controller rumble master switch; input menu uses in_joystickRumble" );
 
 #ifdef ID_RETAIL
 	idCVar s_useCompression( "s_useCompression", "1", CVAR_BOOL, "Use compressed sound files (mp3/xma)" );
@@ -57,7 +57,8 @@ idSoundSystemLocal soundSystemLocal;
 idSoundSystem* soundSystem = &soundSystemLocal;
 
 static const int SOUND_RUMBLE_DURATION_MSEC = 120;
-static const float SOUND_RUMBLE_THRESHOLD = 0.01f;
+static const float SOUND_RUMBLE_STOP_THRESHOLD = 0.01f;
+static const float SOUND_RUMBLE_HIGH_MOTOR_SCALE = 0.75f;
 
 static void Sound_UpdateControllerRumble( float amplitude )
 {
@@ -68,13 +69,13 @@ static void Sound_UpdateControllerRumble( float amplitude )
 	}
 
 	const float strength = idMath::ClampFloat( 0.0f, 1.0f, amplitude );
-	if( strength <= SOUND_RUMBLE_THRESHOLD )
+	if( strength <= SOUND_RUMBLE_STOP_THRESHOLD )
 	{
 		Sys_SetJoystickRumble( 0.0f, 0.0f, 0 );
 		return;
 	}
 
-	Sys_SetJoystickRumble( strength, strength * 0.75f, SOUND_RUMBLE_DURATION_MSEC );
+	Sys_SetJoystickRumble( strength, strength * SOUND_RUMBLE_HIGH_MOTOR_SCALE, SOUND_RUMBLE_DURATION_MSEC );
 }
 
 /*

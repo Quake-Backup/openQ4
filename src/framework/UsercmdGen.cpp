@@ -31,6 +31,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "Session_local.h"
 
+static const float MOUSE_CPI_INCHES_PER_CM = 2.5399999618530273f;
+static const float MOUSE_CPI_VIEW_SCALE = 45.45454545454546f;
+static const int MOUSE_FILTER_SAMPLES = 32;
+
 /*
 ================
 usercmd_t::ByteSwap
@@ -390,6 +394,15 @@ private:
 	void			KeyMove( void );
 	void			JoystickMove( void );
 	void			MouseMove( void );
+	float			NormalizeMouseDeltasForCpi( float &mx, float &my, float &strafeMx, float &strafeMy ) const;
+	float			CalculateMouseSensitivity( float mx, float my, float *debugRate, float *debugPower ) const;
+	int				GetMouseFilterSamples( void );
+	void			ResetMouseFilter( void );
+	void			BeginMouseFilter( void );
+	void			EndMouseFilter( void );
+	void			UpdateMouseAccelDebugLog( void );
+	void			CloseMouseAccelDebugLog( void );
+	void			WriteMouseAccelDebugLog( float mx, float my, float rate, float power );
 	void			CmdButtons( void );
 
 	void			Mouse( void );
@@ -422,6 +435,14 @@ private:
 	bool			mouseDown;
 
 	int				mouseDx, mouseDy;	// added to by mouse events
+	idFile *		mouseAccelDebugLog;
+	float			mouseFilterYaw[MOUSE_FILTER_SAMPLES];
+	float			mouseFilterPitch[MOUSE_FILTER_SAMPLES];
+	int				mouseFilterCount;
+	int				mouseFilterIndex;
+	float			mouseFilterBaseYaw;
+	float			mouseFilterBasePitch;
+
 	int				joystickAxis[MAX_JOYSTICK_AXIS];	// set by joystick events
 
 	static idCVar	in_yawSpeed;
@@ -438,8 +459,15 @@ private:
 	static idCVar	m_strafeScale;
 	static idCVar	m_smooth;
 	static idCVar	m_strafeSmooth;
+	static idCVar	m_cpi;
+	static idCVar	m_filter;
 	static idCVar	m_maxMouseDelta;
 	static idCVar	m_showMouseRate;
+	static idCVar	cl_mouseAccel;
+	static idCVar	cl_mouseAccelDebug;
+	static idCVar	cl_mouseAccelOffset;
+	static idCVar	cl_mouseAccelPower;
+	static idCVar	cl_mouseSensCap;
 };
 
 idCVar idUsercmdGenLocal::in_yawSpeed( "in_yawspeed", "140", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "yaw change speed when holding down _left or _right button" );
@@ -457,8 +485,15 @@ idCVar idUsercmdGenLocal::m_yaw( "m_yaw", "0.022", CVAR_SYSTEM | CVAR_ARCHIVE | 
 idCVar idUsercmdGenLocal::m_strafeScale( "m_strafeScale", "6.25", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "mouse strafe movement scale" );
 idCVar idUsercmdGenLocal::m_smooth( "m_smooth", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "number of samples blended for mouse viewing", 1, 8, idCmdSystem::ArgCompletion_Integer<1,8> );
 idCVar idUsercmdGenLocal::m_strafeSmooth( "m_strafeSmooth", "4", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "number of samples blended for mouse moving", 1, 8, idCmdSystem::ArgCompletion_Integer<1,8> );
+idCVar idUsercmdGenLocal::m_cpi( "m_cpi", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "mouse counts per inch for physical sensitivity scaling; 0 uses raw legacy sensitivity", 0, 100000 );
+idCVar idUsercmdGenLocal::m_filter( "m_filter", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "number of view-angle samples to blend after mouse movement; 0 disables filtering", 0, MOUSE_FILTER_SAMPLES - 1, idCmdSystem::ArgCompletion_Integer<0,MOUSE_FILTER_SAMPLES - 1> );
 idCVar idUsercmdGenLocal::m_maxMouseDelta( "m_maxMouseDelta", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "legacy maximum mouse delta after smoothing; 0 disables clamping for high-DPI mice", 0, 65535 );
 idCVar idUsercmdGenLocal::m_showMouseRate( "m_showMouseRate", "0", CVAR_SYSTEM | CVAR_BOOL, "shows mouse movement" );
+idCVar idUsercmdGenLocal::cl_mouseAccel( "cl_mouseAccel", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "QuakeLive-style mouse acceleration; negative values reduce sensitivity as movement rate increases" );
+idCVar idUsercmdGenLocal::cl_mouseAccelDebug( "cl_mouseAccelDebug", "0", CVAR_SYSTEM | CVAR_BOOL, "writes mouse acceleration samples to logs/mouse.log" );
+idCVar idUsercmdGenLocal::cl_mouseAccelOffset( "cl_mouseAccelOffset", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "movement rate subtracted before mouse acceleration is applied" );
+idCVar idUsercmdGenLocal::cl_mouseAccelPower( "cl_mouseAccelPower", "2", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "mouse acceleration exponent; 2 matches QuakeLive", 1, 8 );
+idCVar idUsercmdGenLocal::cl_mouseSensCap( "cl_mouseSensCap", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "maximum accelerated mouse sensitivity; 0 disables the cap", 0, 100000 );
 
 static idUsercmdGenLocal localUsercmdGen;
 idUsercmdGen	*usercmdGen = &localUsercmdGen;
@@ -479,6 +514,14 @@ idUsercmdGenLocal::idUsercmdGenLocal( void ) {
 	toggled_run.Clear();
 	toggled_zoom.Clear();
 	toggled_run.on = in_alwaysRun.GetBool();
+
+	mouseAccelDebugLog = NULL;
+	memset( mouseFilterYaw, 0, sizeof( mouseFilterYaw ) );
+	memset( mouseFilterPitch, 0, sizeof( mouseFilterPitch ) );
+	mouseFilterCount = 0;
+	mouseFilterIndex = 0;
+	mouseFilterBaseYaw = 0.0f;
+	mouseFilterBasePitch = 0.0f;
 
 	ClearAngles();
 	Clear();
@@ -667,6 +710,221 @@ void idUsercmdGenLocal::KeyMove( void ) {
 
 /*
 =================
+idUsercmdGenLocal::NormalizeMouseDeltasForCpi
+=================
+*/
+float idUsercmdGenLocal::NormalizeMouseDeltasForCpi( float &mx, float &my, float &strafeMx, float &strafeMy ) const {
+	const float cpi = m_cpi.GetFloat();
+	if ( cpi <= 0.0f ) {
+		return 1.0f;
+	}
+
+	const float cpiScale = cpi / MOUSE_CPI_INCHES_PER_CM;
+	if ( cpiScale <= 0.0f ) {
+		return 1.0f;
+	}
+
+	mx /= cpiScale;
+	my /= cpiScale;
+	strafeMx /= cpiScale;
+	strafeMy /= cpiScale;
+	return MOUSE_CPI_VIEW_SCALE;
+}
+
+/*
+=================
+idUsercmdGenLocal::CalculateMouseSensitivity
+=================
+*/
+float idUsercmdGenLocal::CalculateMouseSensitivity( float mx, float my, float *debugRate, float *debugPower ) const {
+	float rate = 0.0f;
+	float power = 0.0f;
+	float mouseSensitivity = sensitivity.GetFloat();
+	const float accel = cl_mouseAccel.GetFloat();
+
+	if ( accel != 0.0f ) {
+		rate = idMath::Sqrt( mx * mx + my * my ) / Max( 1.0f, static_cast<float>( common->GetUserCmdMSec() ) );
+		if ( m_cpi.GetFloat() > 0.0f ) {
+			rate *= 1000.0f;
+		}
+		rate -= cl_mouseAccelOffset.GetFloat();
+
+		power = cl_mouseAccelPower.GetFloat() - 1.0f;
+		if ( power < 0.0f ) {
+			power = 0.0f;
+		}
+
+		if ( rate > 0.0f ) {
+			const float accelRate = idMath::Fabs( accel ) * rate;
+			const float accelSensitivity = idMath::Pow( accelRate, power );
+			if ( accel <= 0.0f ) {
+				mouseSensitivity -= accelSensitivity;
+			} else {
+				mouseSensitivity += accelSensitivity;
+			}
+			rate = accelRate;
+		}
+
+		if ( cl_mouseSensCap.GetFloat() > 0.0f && cl_mouseSensCap.GetFloat() < mouseSensitivity ) {
+			mouseSensitivity = cl_mouseSensCap.GetFloat();
+		}
+	}
+
+	if ( debugRate != NULL ) {
+		*debugRate = rate;
+	}
+	if ( debugPower != NULL ) {
+		*debugPower = power;
+	}
+
+	return mouseSensitivity;
+}
+
+/*
+=================
+idUsercmdGenLocal::GetMouseFilterSamples
+=================
+*/
+int idUsercmdGenLocal::GetMouseFilterSamples( void ) {
+	const int samples = idMath::ClampInt( 0, MOUSE_FILTER_SAMPLES - 1, m_filter.GetInteger() );
+	if ( samples != m_filter.GetInteger() ) {
+		m_filter.SetInteger( samples );
+	}
+	return samples;
+}
+
+/*
+=================
+idUsercmdGenLocal::ResetMouseFilter
+=================
+*/
+void idUsercmdGenLocal::ResetMouseFilter( void ) {
+	memset( mouseFilterYaw, 0, sizeof( mouseFilterYaw ) );
+	memset( mouseFilterPitch, 0, sizeof( mouseFilterPitch ) );
+	mouseFilterCount = 0;
+	mouseFilterIndex = 0;
+	mouseFilterBaseYaw = viewangles[YAW];
+	mouseFilterBasePitch = viewangles[PITCH];
+}
+
+/*
+=================
+idUsercmdGenLocal::BeginMouseFilter
+=================
+*/
+void idUsercmdGenLocal::BeginMouseFilter( void ) {
+	if ( GetMouseFilterSamples() <= 0 ) {
+		if ( m_filter.IsModified() ) {
+			ResetMouseFilter();
+			m_filter.ClearModified();
+		}
+		return;
+	}
+
+	if ( m_filter.IsModified() ) {
+		ResetMouseFilter();
+		m_filter.ClearModified();
+	}
+
+	viewangles[YAW] = mouseFilterBaseYaw;
+	viewangles[PITCH] = mouseFilterBasePitch;
+}
+
+/*
+=================
+idUsercmdGenLocal::EndMouseFilter
+=================
+*/
+void idUsercmdGenLocal::EndMouseFilter( void ) {
+	const int samples = GetMouseFilterSamples();
+	if ( samples <= 0 ) {
+		return;
+	}
+
+	mouseFilterYaw[mouseFilterIndex] = viewangles[YAW];
+	mouseFilterPitch[mouseFilterIndex] = viewangles[PITCH];
+
+	mouseFilterCount++;
+	if ( mouseFilterCount > samples ) {
+		mouseFilterCount = samples;
+	}
+
+	float yaw = 0.0f;
+	float pitch = 0.0f;
+	int index = mouseFilterIndex;
+	for ( int i = 0; i < mouseFilterCount; i++ ) {
+		yaw += mouseFilterYaw[index];
+		pitch += mouseFilterPitch[index];
+		index = ( index - 1 ) & ( MOUSE_FILTER_SAMPLES - 1 );
+	}
+
+	mouseFilterIndex = ( mouseFilterIndex + 1 ) & ( MOUSE_FILTER_SAMPLES - 1 );
+	mouseFilterBaseYaw = viewangles[YAW];
+	mouseFilterBasePitch = viewangles[PITCH];
+	viewangles[YAW] = yaw / static_cast<float>( mouseFilterCount );
+	viewangles[PITCH] = pitch / static_cast<float>( mouseFilterCount );
+}
+
+/*
+=================
+idUsercmdGenLocal::CloseMouseAccelDebugLog
+=================
+*/
+void idUsercmdGenLocal::CloseMouseAccelDebugLog( void ) {
+	if ( mouseAccelDebugLog == NULL ) {
+		return;
+	}
+
+	if ( fileSystem != NULL ) {
+		fileSystem->CloseFile( mouseAccelDebugLog );
+	}
+	mouseAccelDebugLog = NULL;
+}
+
+/*
+=================
+idUsercmdGenLocal::UpdateMouseAccelDebugLog
+=================
+*/
+void idUsercmdGenLocal::UpdateMouseAccelDebugLog( void ) {
+	if ( !cl_mouseAccelDebug.GetBool() ) {
+		CloseMouseAccelDebugLog();
+		return;
+	}
+
+	if ( mouseAccelDebugLog != NULL ) {
+		return;
+	}
+
+	if ( fileSystem == NULL || !fileSystem->IsInitialized() ) {
+		return;
+	}
+
+	mouseAccelDebugLog = fileSystem->OpenFileWrite( "logs/mouse.log", "fs_savepath" );
+	if ( mouseAccelDebugLog != NULL ) {
+		mouseAccelDebugLog->WriteFloatString( "mx my frame_msec rate power\n" );
+	}
+}
+
+/*
+=================
+idUsercmdGenLocal::WriteMouseAccelDebugLog
+=================
+*/
+void idUsercmdGenLocal::WriteMouseAccelDebugLog( float mx, float my, float rate, float power ) {
+	if ( mouseAccelDebugLog == NULL ) {
+		return;
+	}
+
+	mouseAccelDebugLog->WriteFloatString( "%g %g %d ", mx, my, common->GetUserCmdMSec() );
+	if ( cl_mouseAccel.GetFloat() != 0.0f ) {
+		mouseAccelDebugLog->WriteFloatString( "%g %g ", rate, power );
+	}
+	mouseAccelDebugLog->WriteFloatString( "\n" );
+}
+
+/*
+=================
 idUsercmdGenLocal::MouseMove
 =================
 */
@@ -675,6 +933,9 @@ void idUsercmdGenLocal::MouseMove( void ) {
 	static int	history[8][2];
 	static int	historyCounter;
 	int			i;
+	float		accelRate, accelPower;
+
+	UpdateMouseAccelDebugLog();
 
 	history[historyCounter&7][0] = mouseDx;
 	history[historyCounter&7][1] = mouseDy;
@@ -735,8 +996,12 @@ void idUsercmdGenLocal::MouseMove( void ) {
 		mx = my = 0;
 	}
 
-	mx *= sensitivity.GetFloat();
-	my *= sensitivity.GetFloat();
+	const float mouseAxisScale = NormalizeMouseDeltasForCpi( mx, my, strafeMx, strafeMy );
+	const float mouseSensitivity = CalculateMouseSensitivity( mx, my, &accelRate, &accelPower );
+	WriteMouseAccelDebugLog( mx, my, accelRate, accelPower );
+
+	mx *= mouseSensitivity;
+	my *= mouseSensitivity;
 
 	if ( m_showMouseRate.GetBool() ) {
 		Sys_DebugPrintf( "[%3i %3i  = %5.1f %5.1f = %5.1f %5.1f] ", mouseDx, mouseDy, mx, my, strafeMx, strafeMy );
@@ -745,9 +1010,11 @@ void idUsercmdGenLocal::MouseMove( void ) {
 	mouseDx = 0;
 	mouseDy = 0;
 
-	if ( !strafeMx && !strafeMy ) {
+	if ( !strafeMx && !strafeMy && GetMouseFilterSamples() <= 0 ) {
 		return;
 	}
+
+	BeginMouseFilter();
 
 	if ( ButtonState( UB_STRAFE ) || !( cmd.buttons & BUTTON_MLOOK ) ) {
 		// add mouse X/Y movement to cmd
@@ -762,16 +1029,18 @@ void idUsercmdGenLocal::MouseMove( void ) {
 	}
 
 	if ( !ButtonState( UB_STRAFE ) ) {
-		viewangles[YAW] -= m_yaw.GetFloat() * mx;
+		viewangles[YAW] -= m_yaw.GetFloat() * mouseAxisScale * mx;
 	} else {
 		cmd.rightmove = idMath::ClampChar( (int)(cmd.rightmove + strafeMx) );
 	}
 
 	if ( !ButtonState( UB_STRAFE ) && ( cmd.buttons & BUTTON_MLOOK ) ) {
-		viewangles[PITCH] += m_pitch.GetFloat() * my;
+		viewangles[PITCH] += m_pitch.GetFloat() * mouseAxisScale * my;
 	} else {
 		cmd.forwardmove = idMath::ClampChar( (int)(cmd.forwardmove - strafeMy) );
 	}
+
+	EndMouseFilter();
 }
 
 /*
@@ -795,9 +1064,15 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 		anglespeed = usercmdSeconds;
 	}
 
+	float joystickLookSensitivity = cvarSystem->GetCVarFloat( "in_joystickLookSensitivity" );
+	if ( joystickLookSensitivity <= 0.0f ) {
+		joystickLookSensitivity = 1.0f;
+	}
+	joystickLookSensitivity = idMath::ClampFloat( 0.1f, 4.0f, joystickLookSensitivity );
+
 	if ( hasDedicatedLookAxis || !ButtonState( UB_STRAFE ) ) {
-		viewangles[YAW] += anglespeed * in_yawSpeed.GetFloat() * lookAxisX;
-		viewangles[PITCH] += anglespeed * in_pitchSpeed.GetFloat() * lookAxisY;
+		viewangles[YAW] += anglespeed * in_yawSpeed.GetFloat() * joystickLookSensitivity * lookAxisX;
+		viewangles[PITCH] += anglespeed * in_pitchSpeed.GetFloat() * joystickLookSensitivity * lookAxisY;
 	}
 
 	if ( hasDedicatedLookAxis ) {
@@ -1015,6 +1290,7 @@ idUsercmdGenLocal::Shutdown
 ================
 */
 void idUsercmdGenLocal::Shutdown( void ) {
+	CloseMouseAccelDebugLog();
 	initialized = false;
 }
 
@@ -1043,6 +1319,7 @@ idUsercmdGenLocal::ClearAngles
 */
 void idUsercmdGenLocal::ClearAngles( void ) {
 	viewangles.Zero();
+	ResetMouseFilter();
 }
 
 /*

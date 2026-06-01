@@ -28,13 +28,15 @@ Menu behavior:
 - `JOY7` and `JOY8` both open the in-game menu.
 - `JOY3` selects the focused menu item, while `JOY4`, `JOY7`, and `JOY8` back out of menus.
 - The D-pad is reserved for menu focus movement whenever a menu is open, even though those same buttons also have gameplay bindings.
-- The left stick can also move menu focus, and holding the D-pad, left stick, or shoulder buttons repeats navigation/scrolling for longer lists.
+- The movement stick can also move menu focus, and holding the D-pad, movement stick, or shoulder buttons repeats navigation/scrolling for longer lists.
 - Rear paddles are left unbound by default for user customization.
 
-Haptics:
+Tuning and haptics:
 
 - Controller rumble is driven from Quake 4 sound shake/rumble metadata during gameplay.
 - Use `in_joystickRumble 0` to disable motor output, or tune strength with `in_joystickRumbleScale`.
+- The in-game menu exposes these controls under `Settings -> Game Options -> Controller`, alongside stick layout, radial dead-zone, look sensitivity, look curve, invert-look, and trigger-threshold tuning.
+- For the full input settings guide, see [input-settings.md](input-settings.md).
 
 ## Asset Discovery
 

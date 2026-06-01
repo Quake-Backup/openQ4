@@ -135,6 +135,11 @@ static bool s_sdlDisplaySummaryLogged = false;
 static idCVar in_joystick("in_joystick", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "enable joystick/gamepad input");
 static idCVar in_joystickDeadZone("in_joystickDeadZone", "0.18", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "joystick axis dead zone", 0.0f, 0.95f);
 static idCVar in_joystickTriggerThreshold("in_joystickTriggerThreshold", "0.35", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "trigger button press threshold", 0.0f, 1.0f);
+static idCVar in_joystickLookSensitivity("in_joystickLookSensitivity", "0.75", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller look sensitivity scale", 0.1f, 4.0f);
+static idCVar in_joystickLookCurve("in_joystickLookCurve", "1.35", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller look response curve", 1.0f, 3.0f);
+static idCVar in_joystickMoveCurve("in_joystickMoveCurve", "1.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller movement response curve", 1.0f, 3.0f);
+static idCVar in_joystickInvertLook("in_joystickInvertLook", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "invert controller look pitch");
+static idCVar in_joystickSouthpaw("in_joystickSouthpaw", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "swap controller movement and look sticks");
 static idCVar in_joystickRumble("in_joystickRumble", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "enable controller rumble/haptic feedback");
 static idCVar in_joystickRumbleScale("in_joystickRumbleScale", "1.0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "controller rumble strength scale", 0.0f, 2.0f);
 static idCVar r_screen("r_screen", "-1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "SDL3 display index to target (-1 = auto/current display)");
@@ -225,6 +230,7 @@ static Uint16 s_joystickRumbleLow = 0;
 static Uint16 s_joystickRumbleHigh = 0;
 static int s_joystickRumbleUntilTime = 0;
 static int s_joystickRumbleLastUpdateTime = 0;
+static const int SDL3_RUMBLE_DEBOUNCE_MSEC = 40;
 static const int SDL3_MAX_JOYSTICK_BUTTONS = 48;
 static bool s_joystickButtonsDown[SDL3_MAX_JOYSTICK_BUTTONS] = { false };
 static Uint8 s_joystickHatState = SDL_HAT_CENTERED;
@@ -689,6 +695,16 @@ static int SDL3_ClampJoystickValue(int value) {
 	return value;
 }
 
+static float SDL3_ClampRange(float value, float minValue, float maxValue) {
+	if (value < minValue) {
+		return minValue;
+	}
+	if (value > maxValue) {
+		return maxValue;
+	}
+	return value;
+}
+
 static Uint16 SDL3_ClampRumbleValue(float value) {
 	if (value <= 0.0f) {
 		return 0;
@@ -710,43 +726,63 @@ static float SDL3_ClampUnit(float value) {
 }
 
 static float SDL3_ClampRumbleScale(float value) {
-	if (value < 0.0f) {
-		return 0.0f;
-	}
-	if (value > 2.0f) {
-		return 2.0f;
-	}
-	return value;
+	return SDL3_ClampRange(value, 0.0f, 2.0f);
 }
 
-static int SDL3_NormalizeSignedAxis(Sint16 value, float deadZone) {
+static float SDL3_NormalizeSignedAxisFloat(Sint16 value) {
 	float normalized = static_cast<float>(value) / 32767.0f;
 	if (normalized < -1.0f) {
 		normalized = -1.0f;
 	} else if (normalized > 1.0f) {
 		normalized = 1.0f;
 	}
-
-	const float absValue = fabsf(normalized);
-	if (absValue <= deadZone) {
-		return 0;
-	}
-
-	const float adjusted = (absValue - deadZone) / (1.0f - deadZone);
-	const float signedAdjusted = (normalized < 0.0f) ? -adjusted : adjusted;
-	return SDL3_ClampJoystickValue(static_cast<int>(roundf(signedAdjusted * 127.0f)));
+	return normalized;
 }
 
-static int SDL3_NormalizeTriggerAxis(Sint16 value, float deadZone) {
+static int SDL3_AxisFloatToJoystickValue(float value) {
+	return SDL3_ClampJoystickValue(static_cast<int>(roundf(value * 127.0f)));
+}
+
+static void SDL3_NormalizeStickAxes(Sint16 rawX, Sint16 rawY, float deadZone, float curve, float scale, int &outX, int &outY) {
+	const float x = SDL3_NormalizeSignedAxisFloat(rawX);
+	const float y = SDL3_NormalizeSignedAxisFloat(rawY);
+	const float length = sqrtf(x * x + y * y);
+	const float clampedDeadZone = SDL3_ClampRange(deadZone, 0.0f, 0.95f);
+
+	if (length <= clampedDeadZone) {
+		outX = 0;
+		outY = 0;
+		return;
+	}
+
+	const float normalizedLength = (length > 1.0f) ? 1.0f : length;
+	float adjustedLength = (normalizedLength - clampedDeadZone) / (1.0f - clampedDeadZone);
+	adjustedLength = SDL3_ClampUnit(adjustedLength);
+
+	const float responseCurve = SDL3_ClampRange(curve, 1.0f, 3.0f);
+	if (responseCurve != 1.0f && adjustedLength > 0.0f) {
+		adjustedLength = powf(adjustedLength, responseCurve);
+	}
+
+	adjustedLength = SDL3_ClampUnit(adjustedLength * SDL3_ClampRange(scale, 0.1f, 4.0f));
+
+	const float unitScale = adjustedLength / length;
+	outX = SDL3_AxisFloatToJoystickValue(x * unitScale);
+	outY = SDL3_AxisFloatToJoystickValue(y * unitScale);
+}
+
+static int SDL3_NormalizeSignedAxis(Sint16 value, float deadZone) {
+	int x = 0;
+	int y = 0;
+	SDL3_NormalizeStickAxes(value, 0, deadZone, 1.0f, 1.0f, x, y);
+	return x;
+}
+
+static int SDL3_NormalizeTriggerAxis(Sint16 value) {
 	float normalized = static_cast<float>(value) / 32767.0f;
 	normalized = SDL3_ClampUnit(normalized);
 
-	if (normalized <= deadZone) {
-		return 0;
-	}
-
-	const float adjusted = (normalized - deadZone) / (1.0f - deadZone);
-	return SDL3_ClampJoystickValue(static_cast<int>(roundf(adjusted * 127.0f)));
+	return SDL3_AxisFloatToJoystickValue(normalized);
 }
 
 static const int s_joyKeys[32] = {
@@ -821,13 +857,39 @@ static void SDL3_ResetRumbleState(void) {
 	s_joystickRumbleLastUpdateTime = 0;
 }
 
-static void SDL3_StopControllerRumble(void) {
+static bool SDL3_HasRumbleTarget(void) {
+	return s_sdlGamepad != NULL || s_sdlJoystick != NULL;
+}
+
+static bool SDL3_SendControllerRumble(Uint16 low, Uint16 high, Uint32 durationMsec) {
 	if (s_sdlGamepad) {
-		(void)SDL_RumbleGamepad(s_sdlGamepad, 0, 0, 0);
-	} else if (s_sdlJoystick) {
-		(void)SDL_RumbleJoystick(s_sdlJoystick, 0, 0, 0);
+		return SDL_RumbleGamepad(s_sdlGamepad, low, high, durationMsec);
+	}
+	if (s_sdlJoystick) {
+		return SDL_RumbleJoystick(s_sdlJoystick, low, high, durationMsec);
+	}
+	return false;
+}
+
+static void SDL3_ResetExpiredRumbleState(int now) {
+	if (s_joystickRumbleActive && now >= s_joystickRumbleUntilTime) {
+		SDL3_ResetRumbleState();
+	}
+}
+
+static void SDL3_StopControllerRumble(void) {
+	if (SDL3_HasRumbleTarget()) {
+		(void)SDL3_SendControllerRumble(0, 0, 0);
 	}
 	SDL3_ResetRumbleState();
+}
+
+static bool SDL3_ShouldSkipRumbleUpdate(Uint16 low, Uint16 high, int now, int untilTime) {
+	return s_joystickRumbleActive &&
+		s_joystickRumbleLow == low &&
+		s_joystickRumbleHigh == high &&
+		now < s_joystickRumbleLastUpdateTime + SDL3_RUMBLE_DEBOUNCE_MSEC &&
+		untilTime <= s_joystickRumbleUntilTime + SDL3_RUMBLE_DEBOUNCE_MSEC;
 }
 
 static void SDL3_ClearJoystickStateUnlocked(void) {
@@ -852,8 +914,8 @@ static void SDL3_PostControllerKeyEvent(int key, bool down, int eventTime) {
 static void SDL3_UpdateTriggerButtons(int leftTrigger, int rightTrigger, int eventTime) {
 	const float threshold = SDL3_ClampUnit(in_joystickTriggerThreshold.GetFloat());
 	const int pressThreshold = static_cast<int>(roundf(threshold * 127.0f));
-	const bool leftDown = leftTrigger >= pressThreshold;
-	const bool rightDown = rightTrigger >= pressThreshold;
+	const bool leftDown = leftTrigger > 0 && leftTrigger >= pressThreshold;
+	const bool rightDown = rightTrigger > 0 && rightTrigger >= pressThreshold;
 
 	if (leftDown != s_gamepadLeftTriggerDown) {
 		s_gamepadLeftTriggerDown = leftDown;
@@ -873,12 +935,40 @@ static void SDL3_UpdateGamepadAxes(int eventTime) {
 
 	const float deadZone = SDL3_ClampUnit(in_joystickDeadZone.GetFloat());
 
-	const int moveX = SDL3_NormalizeSignedAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_LEFTX), deadZone);
-	const int moveY = -SDL3_NormalizeSignedAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_LEFTY), deadZone);
-	const int lookX = SDL3_NormalizeSignedAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_RIGHTX), deadZone);
-	const int lookY = SDL3_NormalizeSignedAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_RIGHTY), deadZone);
-	const int leftTrigger = SDL3_NormalizeTriggerAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), deadZone);
-	const int rightTrigger = SDL3_NormalizeTriggerAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), deadZone);
+	const bool southpaw = in_joystickSouthpaw.GetBool();
+	const SDL_GamepadAxis moveAxisX = southpaw ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
+	const SDL_GamepadAxis moveAxisY = southpaw ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
+	const SDL_GamepadAxis lookAxisX = southpaw ? SDL_GAMEPAD_AXIS_LEFTX : SDL_GAMEPAD_AXIS_RIGHTX;
+	const SDL_GamepadAxis lookAxisY = southpaw ? SDL_GAMEPAD_AXIS_LEFTY : SDL_GAMEPAD_AXIS_RIGHTY;
+	int moveX = 0;
+	int moveY = 0;
+	int lookX = 0;
+	int lookY = 0;
+
+	SDL3_NormalizeStickAxes(
+		SDL_GetGamepadAxis(s_sdlGamepad, moveAxisX),
+		SDL_GetGamepadAxis(s_sdlGamepad, moveAxisY),
+		deadZone,
+		in_joystickMoveCurve.GetFloat(),
+		1.0f,
+		moveX,
+		moveY);
+	SDL3_NormalizeStickAxes(
+		SDL_GetGamepadAxis(s_sdlGamepad, lookAxisX),
+		SDL_GetGamepadAxis(s_sdlGamepad, lookAxisY),
+		deadZone,
+		in_joystickLookCurve.GetFloat(),
+		1.0f,
+		lookX,
+		lookY);
+
+	moveY = -moveY;
+	if (in_joystickInvertLook.GetBool()) {
+		lookY = -lookY;
+	}
+
+	const int leftTrigger = SDL3_NormalizeTriggerAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER));
+	const int rightTrigger = SDL3_NormalizeTriggerAxis(SDL_GetGamepadAxis(s_sdlGamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
 
 	Sys_EnterCriticalSection(CRITICAL_SECTION_ONE);
 	s_joystickAxisState[AXIS_SIDE] = lookX;
@@ -903,6 +993,7 @@ static void SDL3_UpdateJoystickAxes(void) {
 	const float deadZone = SDL3_ClampUnit(in_joystickDeadZone.GetFloat());
 	const int numAxes = SDL_GetNumJoystickAxes(s_sdlJoystick);
 	const bool hasLookAxis = numAxes >= 4;
+	const bool southpaw = in_joystickSouthpaw.GetBool() && hasLookAxis;
 
 	int moveX = 0;
 	int moveY = 0;
@@ -910,17 +1001,35 @@ static void SDL3_UpdateJoystickAxes(void) {
 	int lookY = 0;
 	int up = 0;
 
-	if (numAxes > 0) {
+	if (numAxes > 1) {
+		const int moveAxisX = southpaw ? 2 : 0;
+		const int moveAxisY = southpaw ? 3 : 1;
+		SDL3_NormalizeStickAxes(
+			SDL_GetJoystickAxis(s_sdlJoystick, moveAxisX),
+			SDL_GetJoystickAxis(s_sdlJoystick, moveAxisY),
+			deadZone,
+			in_joystickMoveCurve.GetFloat(),
+			1.0f,
+			moveX,
+			moveY);
+		moveY = -moveY;
+	} else if (numAxes > 0) {
 		moveX = SDL3_NormalizeSignedAxis(SDL_GetJoystickAxis(s_sdlJoystick, 0), deadZone);
 	}
-	if (numAxes > 1) {
-		moveY = -SDL3_NormalizeSignedAxis(SDL_GetJoystickAxis(s_sdlJoystick, 1), deadZone);
-	}
-	if (numAxes > 2) {
-		lookX = SDL3_NormalizeSignedAxis(SDL_GetJoystickAxis(s_sdlJoystick, 2), deadZone);
-	}
-	if (numAxes > 3) {
-		lookY = SDL3_NormalizeSignedAxis(SDL_GetJoystickAxis(s_sdlJoystick, 3), deadZone);
+	if (hasLookAxis) {
+		const int lookAxisX = southpaw ? 0 : 2;
+		const int lookAxisY = southpaw ? 1 : 3;
+		SDL3_NormalizeStickAxes(
+			SDL_GetJoystickAxis(s_sdlJoystick, lookAxisX),
+			SDL_GetJoystickAxis(s_sdlJoystick, lookAxisY),
+			deadZone,
+			in_joystickLookCurve.GetFloat(),
+			1.0f,
+			lookX,
+			lookY);
+		if (in_joystickInvertLook.GetBool()) {
+			lookY = -lookY;
+		}
 	}
 	if (numAxes > 5) {
 		const int axis4 = SDL3_NormalizeSignedAxis(SDL_GetJoystickAxis(s_sdlJoystick, 4), deadZone);
@@ -2379,6 +2488,24 @@ bool Sys_SDL_PumpEvents(void) {
 		in_joystickRumble.ClearModified();
 		in_joystickRumbleScale.ClearModified();
 	}
+	if (in_joystickDeadZone.IsModified() || in_joystickTriggerThreshold.IsModified() ||
+			in_joystickLookSensitivity.IsModified() || in_joystickLookCurve.IsModified() ||
+			in_joystickMoveCurve.IsModified() || in_joystickInvertLook.IsModified() ||
+			in_joystickSouthpaw.IsModified()) {
+		const int eventTime = Sys_Milliseconds();
+		if (s_sdlGamepad) {
+			SDL3_UpdateGamepadAxes(eventTime);
+		} else if (s_sdlJoystick) {
+			SDL3_UpdateJoystickAxes();
+		}
+		in_joystickDeadZone.ClearModified();
+		in_joystickTriggerThreshold.ClearModified();
+		in_joystickLookSensitivity.ClearModified();
+		in_joystickLookCurve.ClearModified();
+		in_joystickMoveCurve.ClearModified();
+		in_joystickInvertLook.ClearModified();
+		in_joystickSouthpaw.ClearModified();
+	}
 
 	bool sawResizeEvent = false;
 	SDL_Event event;
@@ -3049,6 +3176,8 @@ bool Sys_GetJoystickAxisState(int axis, int &value) {
 }
 
 bool Sys_SetJoystickRumble(float lowFrequency, float highFrequency, int durationMsec) {
+	const int now = Sys_Milliseconds();
+
 	if (!in_joystick.GetBool() || !in_joystickRumble.GetBool() || durationMsec <= 0) {
 		if (s_joystickRumbleActive) {
 			SDL3_StopControllerRumble();
@@ -3056,7 +3185,7 @@ bool Sys_SetJoystickRumble(float lowFrequency, float highFrequency, int duration
 		return false;
 	}
 
-	if (!s_sdlGamepad && !s_sdlJoystick) {
+	if (!SDL3_HasRumbleTarget()) {
 		SDL3_ResetRumbleState();
 		return false;
 	}
@@ -3071,21 +3200,14 @@ bool Sys_SetJoystickRumble(float lowFrequency, float highFrequency, int duration
 		return true;
 	}
 
-	const int now = Sys_Milliseconds();
+	SDL3_ResetExpiredRumbleState(now);
+
 	const int untilTime = now + durationMsec;
-	if (s_joystickRumbleActive && s_joystickRumbleLow == low && s_joystickRumbleHigh == high &&
-			now < s_joystickRumbleLastUpdateTime + 40 && untilTime <= s_joystickRumbleUntilTime + 40) {
+	if (SDL3_ShouldSkipRumbleUpdate(low, high, now, untilTime)) {
 		return true;
 	}
 
-	bool result = false;
-	if (s_sdlGamepad) {
-		result = SDL_RumbleGamepad(s_sdlGamepad, low, high, durationMsec);
-	} else if (s_sdlJoystick) {
-		result = SDL_RumbleJoystick(s_sdlJoystick, low, high, durationMsec);
-	}
-
-	if (!result) {
+	if (!SDL3_SendControllerRumble(low, high, static_cast<Uint32>(durationMsec))) {
 		SDL3_ResetRumbleState();
 		return false;
 	}
