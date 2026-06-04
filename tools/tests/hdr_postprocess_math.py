@@ -151,6 +151,26 @@ def assert_true(condition, message):
         raise AssertionError(message)
 
 
+def cxx_function_body(source, signature):
+    start = source.find(signature)
+    assert_true(start >= 0, f"{signature} should exist")
+
+    open_brace = source.find("{", start)
+    assert_true(open_brace >= 0, f"{signature} should have a function body")
+
+    depth = 0
+    for index in range(open_brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[open_brace + 1:index]
+
+    raise AssertionError(f"{signature} should have a closed function body")
+
+
 def test_bloom_contribution_monotonic():
     previous = -1.0
     for step in range(0, 200):
@@ -277,11 +297,20 @@ def test_hdr_shader_uses_scene_referred_inputs():
 
 def test_scene_post_process_excludes_sidecar_views():
     draw_common = (Path(__file__).resolve().parents[2] / "src" / "renderer" / "draw_common.cpp").read_text(encoding="utf-8")
+    main_scene_helper = cxx_function_body(
+        draw_common,
+        "static bool RB_IsMainScenePostProcessView( const viewDef_t *viewDef )",
+    )
+    scene_target_request = cxx_function_body(
+        draw_common,
+        "static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef )",
+    )
 
-    assert_true("backEnd.viewDef->isSubview" in draw_common, "scene post should not run inside nested subviews")
-    assert_true("backEnd.viewDef->superView != NULL" in draw_common, "scene post should not run inside portal/mirror child views")
-    assert_true("backEnd.viewDef->subviewSurface != NULL" in draw_common, "scene post should not run inside render-to-texture sidecar views")
-    assert_true("backEnd.viewDef->renderView.viewID < 0" in draw_common, "scene post should not run inside render demo/cinematic sidecar views")
+    assert_true("viewDef->isSubview" in main_scene_helper, "scene post should not run inside nested subviews")
+    assert_true("viewDef->superView != NULL" in main_scene_helper, "scene post should not run inside portal/mirror child views")
+    assert_true("viewDef->subviewSurface != NULL" in main_scene_helper, "scene post should not run inside render-to-texture sidecar views")
+    assert_true("viewDef->renderView.viewID < 0" in main_scene_helper, "scene post should not run inside render demo/cinematic sidecar views")
+    assert_true("RB_IsMainScenePostProcessView( viewDef )" in scene_target_request, "scene render-target requests should use the shared main-scene guard")
 
 
 def main():
