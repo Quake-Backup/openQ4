@@ -562,8 +562,6 @@ static void GLImp_Dump_Stamp_List_f(void) {
 #endif
 
 bool GLimp_Init( glimpParms_t parms ) {
-	char *buf;
-
 	common->Printf(  "Initializing OpenGL subsystem\n" );
 	common->Printf(  "  fullscreen: %s\n", cvarSystem->GetCVarBool( "r_fullscreen" ) ? "yes" : "no" );
 
@@ -574,24 +572,20 @@ bool GLimp_Init( glimpParms_t parms ) {
 	}
     
 	if ( !GLimp_SetMode( parms ) ) {
+		return false;
 	}
 
 	common->Printf(  "------------------\n" );
 
 	// get our config strings
-	glConfig.vendor_string = (const char *)glGetString( GL_VENDOR );
-	glConfig.renderer_string = (const char *)glGetString( GL_RENDERER );
-	glConfig.version_string = (const char *)glGetString( GL_VERSION );
-	glConfig.extensions_string = (const char *)glGetString( GL_EXTENSIONS );
-
-	//
-	// chipset specific configuration
-	//
-	buf = (char *)malloc(strlen(glConfig.renderer_string) + 1);
-	strcpy( buf, glConfig.renderer_string );
-
-	//	Cvar_Set( "r_lastValidRenderer", glConfig.renderer_string );
-	free(buf);
+	const GLubyte *vendorString = glGetString( GL_VENDOR );
+	const GLubyte *rendererString = glGetString( GL_RENDERER );
+	const GLubyte *versionString = glGetString( GL_VERSION );
+	const GLubyte *extensionsString = glGetString( GL_EXTENSIONS );
+	glConfig.vendor_string = vendorString != NULL ? (const char *)vendorString : "";
+	glConfig.renderer_string = rendererString != NULL ? (const char *)rendererString : "";
+	glConfig.version_string = versionString != NULL ? (const char *)versionString : "";
+	glConfig.extensions_string = extensionsString != NULL ? (const char *)extensionsString : "";
 
 	GLW_InitExtensions();
 
@@ -601,6 +595,7 @@ bool GLimp_Init( glimpParms_t parms ) {
 		OSX_GLContextClearCurrent();
 #endif
 	*/
+	return true;
 }
 
 

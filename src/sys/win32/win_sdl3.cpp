@@ -131,6 +131,7 @@ static SDL_JoystickID s_sdlGamepadId = 0;
 static SDL_JoystickID s_sdlJoystickId = 0;
 static bool s_sdlDisplayCommandRegistered = false;
 static bool s_sdlDisplaySummaryLogged = false;
+static float s_sdlMouseWheelRemainderY = 0.0f;
 
 static idCVar in_joystick("in_joystick", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "enable joystick/gamepad input");
 static idCVar in_joystickDeadZone("in_joystickDeadZone", "0.18", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "joystick axis dead zone", 0.0f, 0.95f);
@@ -452,33 +453,6 @@ typedef struct {
 	float yOffset;
 } sdl3GuiMouseTransform_t;
 
-static void SDL3_GetGuiCursorBounds(const sdl3GuiMouseTransform_t &transform, float &minX, float &maxX, float &minY, float &maxY) {
-	minX = 0.0f;
-	maxX = transform.guiWidth;
-	minY = 0.0f;
-	maxY = transform.guiHeight;
-
-	if (transform.xScale != 0.0f) {
-		minX = (0.0f - transform.xOffset) / transform.xScale;
-		maxX = (transform.guiWidth - transform.xOffset) / transform.xScale;
-		if (minX > maxX) {
-			const float tmp = minX;
-			minX = maxX;
-			maxX = tmp;
-		}
-	}
-
-	if (transform.yScale != 0.0f) {
-		minY = (0.0f - transform.yOffset) / transform.yScale;
-		maxY = (transform.guiHeight - transform.yOffset) / transform.yScale;
-		if (minY > maxY) {
-			const float tmp = minY;
-			minY = maxY;
-			maxY = tmp;
-		}
-	}
-}
-
 static bool SDL3_BuildGuiMouseTransform(sdl3GuiMouseTransform_t &transform) {
 	if (!s_sdlWindow) {
 		return false;
@@ -570,20 +544,11 @@ static bool SDL3_MapWindowMouseToGuiCursor(float windowMouseX, float windowMouse
 
 	float pixelMouseX = windowMouseX * transform.windowToPixelX - transform.drawAreaX;
 	float pixelMouseY = windowMouseY * transform.windowToPixelY - transform.drawAreaY;
-	pixelMouseX = idMath::ClampFloat(0.0f, transform.drawAreaWidth, pixelMouseX);
-	pixelMouseY = idMath::ClampFloat(0.0f, transform.drawAreaHeight, pixelMouseY);
 	const float drawX = pixelMouseX * (transform.guiWidth / transform.drawAreaWidth);
 	const float drawY = pixelMouseY * (transform.guiHeight / transform.drawAreaHeight);
 
 	cursorX = (drawX - transform.xOffset) / transform.xScale;
 	cursorY = (drawY - transform.yOffset) / transform.yScale;
-	float minX = 0.0f;
-	float maxX = transform.guiWidth;
-	float minY = 0.0f;
-	float maxY = transform.guiHeight;
-	SDL3_GetGuiCursorBounds(transform, minX, maxX, minY, maxY);
-	cursorX = idMath::ClampFloat(minX, maxX, cursorX);
-	cursorY = idMath::ClampFloat(minY, maxY, cursorY);
 	return true;
 }
 
@@ -595,15 +560,9 @@ static bool SDL3_MapWindowMouseToConsoleCursor(float windowMouseX, float windowM
 
 	float pixelMouseX = windowMouseX * transform.windowToPixelX - transform.drawAreaX;
 	float pixelMouseY = windowMouseY * transform.windowToPixelY - transform.drawAreaY;
-	pixelMouseX = idMath::ClampFloat(0.0f, transform.drawAreaWidth, pixelMouseX);
-	pixelMouseY = idMath::ClampFloat(0.0f, transform.drawAreaHeight, pixelMouseY);
 
 	cursorX = pixelMouseX * (static_cast<float>(SCREEN_WIDTH) / transform.drawAreaWidth);
 	cursorY = pixelMouseY * (static_cast<float>(SCREEN_HEIGHT) / transform.drawAreaHeight);
-
-	if (console != NULL) {
-		console->ClampMousePosition(cursorX, cursorY);
-	}
 
 	return true;
 }
@@ -633,15 +592,10 @@ static void SDL3_SyncSystemMouseToActiveCursor(void) {
 			return;
 		}
 
-		float minX = 0.0f;
-		float maxX = transform.guiWidth;
-		float minY = 0.0f;
-		float maxY = transform.guiHeight;
-		SDL3_GetGuiCursorBounds(transform, minX, maxX, minY, maxY);
-		const float clampedCursorX = idMath::ClampFloat(minX, maxX, activeGui->CursorX());
-		const float clampedCursorY = idMath::ClampFloat(minY, maxY, activeGui->CursorY());
-		const float drawX = (clampedCursorX * transform.xScale) + transform.xOffset;
-		const float drawY = (clampedCursorY * transform.yScale) + transform.yOffset;
+		const float cursorX = activeGui->CursorX();
+		const float cursorY = activeGui->CursorY();
+		const float drawX = (cursorX * transform.xScale) + transform.xOffset;
+		const float drawY = (cursorY * transform.yScale) + transform.yOffset;
 		const float pixelMouseX = transform.drawAreaX + drawX * (transform.drawAreaWidth / transform.guiWidth);
 		const float pixelMouseY = transform.drawAreaY + drawY * (transform.drawAreaHeight / transform.guiHeight);
 		const float windowMouseX = pixelMouseX * transform.pixelToWindowX;
@@ -653,11 +607,10 @@ static void SDL3_SyncSystemMouseToActiveCursor(void) {
 		s_menuWarpWindowY = windowMouseY;
 		s_menuMouseInsideWindow = true;
 		s_haveMenuMousePosition = true;
-		s_menuMouseX = clampedCursorX;
-		s_menuMouseY = clampedCursorY;
+		s_menuMouseX = cursorX;
+		s_menuMouseY = cursorY;
 		s_menuMouseRemainderX = 0.0f;
 		s_menuMouseRemainderY = 0.0f;
-		activeGui->SetCursor(clampedCursorX, clampedCursorY);
 		return;
 	}
 
@@ -2669,7 +2622,9 @@ bool Sys_SDL_PumpEvents(void) {
 					deltaY = -deltaY;
 				}
 
+				deltaY += s_sdlMouseWheelRemainderY;
 				int wheelSteps = static_cast<int>(deltaY);
+				s_sdlMouseWheelRemainderY = deltaY - static_cast<float>(wheelSteps);
 				if (wheelSteps != 0) {
 					const int wheelKey = wheelSteps < 0 ? K_MWHEELDOWN : K_MWHEELUP;
 					const int absSteps = abs(wheelSteps);

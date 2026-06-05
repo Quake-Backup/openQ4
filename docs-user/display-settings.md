@@ -7,6 +7,7 @@ This guide covers openQ4 display/window settings for end users, including multi-
 - Press `Alt+Enter` to toggle fullscreen/windowed mode (fast path uses `vid_restart partial`).
 - Run `listDisplays` in the console to list monitor indices for `r_screen`.
 - On SDL3 builds, run `listDisplayModes [displayIndex]` to list available exclusive fullscreen modes.
+- The in-game `Settings -> System` menu exposes fullscreen policy, borderless/window sizing, custom exclusive fullscreen sizing, refresh rate, UI aspect behavior, display target, multi-screen, and resolution scale controls.
 - After changing video cvars, run `vid_restart` (or `vid_restart partial` for quick window/fullscreen transitions).
 
 ## Core Display Settings
@@ -48,6 +49,14 @@ Notes:
 - Changing `r_multiSamples` should be followed by `vid_restart`.
 - `r_postAA`, `r_msaaAlphaToCoverage`, and `r_msaaResolveDepth` can be changed at runtime, but a `vid_restart` is still safe if behavior looks stale.
 
+## Resolution Scale
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `r_screenFraction` | `100` | Main-scene resolution scale percentage (`10..200`). Values below `100` reduce scene resolution for performance; values above `100` supersample the scene before resolving it back to the native back buffer. |
+
+The Display menu exposes curated presets: `10%`, `25%`, `50%`, `75%`, `85%`, `100%`, `125%`, `150%`, and `200%`.
+
 ## Fullscreen Policy (Desktop vs Exclusive)
 
 - Default behavior is **desktop-native fullscreen** (`r_fullscreenDesktop 1`): fullscreen matches your current desktop resolution and does not change Windows display mode.
@@ -61,6 +70,7 @@ Notes:
 
 ## Windowed Sizing and Placement
 
+- `Settings -> System -> Display Sizing` exposes `r_windowWidth`, `r_windowHeight`, `r_customWidth`, `r_customHeight`, and `r_displayRefresh`. Leaving Refresh Rate on `Auto` writes `r_displayRefresh 0`.
 - When windowed (`r_fullscreen 0`, `r_borderless 0`), resizing updates `r_windowWidth`/`r_windowHeight` automatically.
 - Moving the window updates `win_xpos`/`win_ypos` automatically.
 - When switching fullscreen -> windowed, openQ4 restores the last remembered windowed size/position (it should not come back as a fullscreen-sized window).
@@ -71,6 +81,7 @@ Notes:
 ## Aspect Ratio and FOV
 
 - `r_aspectRatio` is **deprecated/ignored**. Aspect ratio and FOV behavior are derived automatically from the current render size, so the game follows any aspect ratio without manual selection.
+- The Display menu no longer exposes a manual Aspect Ratio selector; the Screen Size list is selected automatically from the current video mode bucket.
 - Weapon gameplay zoom uses the same gameplay FOV conversion path as normal view FOV, so authored weapon zoom values keep consistent framing/magnification across aspect ratios.
 - In multiplayer, zoomed first-person view suppresses view bob while scoped so reticle tracking stays stable during movement.
 - Scope GUI yaw tracking for zoom overlays follows the weapon/player view axis path, improving scope alignment while turning.
@@ -78,6 +89,8 @@ Notes:
 ## View Weapon FOV and Placement (New)
 
 These settings control first-person viewmodel rendering (the weapon on screen). They are client-side tuning controls and are not gameplay/network authority cvars.
+
+The in-game menu exposes these under `Settings -> Game Options -> View Weapon`.
 
 | Setting | Default | What it does |
 |---|---:|---|
@@ -96,6 +109,8 @@ Notes:
 ## UI Aspect Correction (New)
 
 This controls 2D UI layout behavior (menu, HUD, console, loading/initializing screens):
+
+The in-game menu exposes this as `Settings -> System -> Display Sizing -> UI Aspect`.
 
 | Setting | Default | What it does |
 |---|---:|---|

@@ -13,12 +13,12 @@ def read_repo_file(relative_path):
 
 def test_cvar_and_menu_expose_safe_supersampling_range():
     init_cpp = read_repo_file(Path("src") / "renderer" / "RenderSystem_init.cpp")
-    menu_gui = read_repo_file(Path("content") / "baseoq4" / "guis" / "mainmenu.gui")
+    system_gui = read_repo_file(Path("content") / "baseoq4" / "guis" / "menu" / "settings" / "system.gui")
 
     assert_true('"r_screenFraction", "100"' in init_cpp, "r_screenFraction should keep native resolution as the default")
     assert_true("10, 200" in init_cpp, "r_screenFraction should expose the guarded 10..200 range")
-    assert_true('"75%;85%;100%;125%;150%;200%"' in menu_gui, "video menu should expose supersampling presets")
-    assert_true('"75;85;100;125;150;200"' in menu_gui, "video menu preset values should match the displayed supersampling choices")
+    assert_true('"10%;25%;50%;75%;85%;100%;125%;150%;200%"' in system_gui, "video menu should expose performance and supersampling presets")
+    assert_true('"10;25;50;75;85;100;125;150;200"' in system_gui, "video menu preset values should match the displayed resolution scale choices")
 
 
 def test_legacy_crop_does_not_run_above_native():

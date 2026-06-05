@@ -85,7 +85,6 @@ public:
 	virtual void		SetProcFileOutOfDate( bool state );
 	virtual void		SetAASFileOutOfDate( bool state );
 	virtual	void		SetMousePosition( float x, float y );
-	virtual void		ClampMousePosition( float &x, float &y ) const;
 	virtual	void		Print( const char *text );
 	virtual	void		Draw( bool forceFullScreen );
 
@@ -122,7 +121,7 @@ private:
 	void				GetInputDrawInfo( int &prestep, int &drawLen ) const;
 	int					GetInputCursorFromMouse( void ) const;
 	bool				GetLogPositionFromMouse( int &line, int &column ) const;
-	void				ClampMouseToConsole( void );
+	void				EnsureMouseInitialized( void );
 	void				UpdateScrollbarHoverValue( float &hoverFrac, bool dragging, bool hot );
 	void				GetScrollbarFrameGeometry( float areaX, float areaW, float areaY, float areaH, float hoverFrac,
 							float &trackX, float &trackY, float &trackW, float &trackH, float *hitX = NULL, float *hitW = NULL ) const;
@@ -1441,17 +1440,6 @@ void idConsoleLocal::SetMousePosition( float x, float y ) {
 	mouseX = x;
 	mouseY = y;
 	mouseInitialized = true;
-	ClampMousePosition( mouseX, mouseY );
-}
-
-/*
-================
-idConsoleLocal::ClampMousePosition
-================
-*/
-void idConsoleLocal::ClampMousePosition( float &x, float &y ) const {
-	x = idMath::ClampFloat( 0.0f, static_cast<float>( SCREEN_WIDTH ), x );
-	y = idMath::ClampFloat( 0.0f, static_cast<float>( SCREEN_HEIGHT ), y );
 }
 
 /*
@@ -1871,10 +1859,10 @@ bool idConsoleLocal::GetLogPositionFromMouse( int &line, int &column ) const {
 
 /*
 ================
-idConsoleLocal::ClampMouseToConsole
+idConsoleLocal::EnsureMouseInitialized
 ================
 */
-void idConsoleLocal::ClampMouseToConsole( void ) {
+void idConsoleLocal::EnsureMouseInitialized( void ) {
 	float consoleX, consoleY, consoleW, consoleH;
 	GetConsoleRect( consoleX, consoleY, consoleW, consoleH );
 
@@ -1883,8 +1871,6 @@ void idConsoleLocal::ClampMouseToConsole( void ) {
 		mouseY = consoleY + ( consoleH > 1.0f ? consoleH * 0.5f : SCREEN_HEIGHT * 0.25f );
 		mouseInitialized = true;
 	}
-
-	ClampMousePosition( mouseX, mouseY );
 }
 
 /*
@@ -2041,7 +2027,7 @@ void idConsoleLocal::UpdateScrollbarHover( void ) {
 		scrollbarDragging = false;
 	}
 
-	ClampMouseToConsole();
+	EnsureMouseInitialized();
 
 	if ( GetScrollbarGeometry( scrollbarHover, trackX, trackY, trackW, trackH, thumbY, thumbH, &hitX, &hitW ) ) {
 		if ( scrollbarDragging ||
@@ -3637,7 +3623,7 @@ void idConsoleLocal::UpdateCompletionScrollbarHover( void ) {
 		completionScrollbarDragging = false;
 	}
 
-	ClampMouseToConsole();
+	EnsureMouseInitialized();
 
 	if ( GetCompletionScrollbarGeometry( completionScrollbarHover, trackX, trackY, trackW, trackH, thumbY, thumbH, &hitX, &hitW ) ) {
 		if ( completionScrollbarDragging ||
@@ -3878,10 +3864,9 @@ idConsoleLocal::MouseMoveEvent
 void idConsoleLocal::MouseMoveEvent( int dx, int dy ) {
 	int line, column;
 
-	ClampMouseToConsole();
+	EnsureMouseInitialized();
 	mouseX += dx;
 	mouseY += dy;
-	ClampMouseToConsole();
 
 	if ( scrollbarDragging ) {
 		UpdateScrollbarDrag();
@@ -3954,7 +3939,7 @@ bool idConsoleLocal::MouseKeyEvent( int key, bool down ) {
 		return false;
 	}
 
-	ClampMouseToConsole();
+	EnsureMouseInitialized();
 	dismissedCompletionPopup = false;
 	popupActive = HasActiveCompletionPopup();
 
@@ -4610,7 +4595,7 @@ void idConsoleLocal::DrawMouseCursor( void ) {
 		return;
 	}
 
-	ClampMouseToConsole();
+	EnsureMouseInitialized();
 
 	if ( mouseCursorShader != NULL ) {
 		const float cursorWidth = CON_MOUSE_CURSOR_SIZE * Con_GetConsoleXScale();

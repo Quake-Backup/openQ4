@@ -63,6 +63,9 @@ private:
 	virtual bool		ParseInternalVar(const char *name, idParser *src);
 	void				CommonInit();
 	void				InitCvar();
+	float				ClampAndSnapValue( float newValue ) const;
+	float				GetPageStep( void ) const;
+	void				CommitValue( void );
 						// true: read the updated cvar from cvar system
 						// false: write to the cvar system
 						// force == true overrides liveUpdate 0

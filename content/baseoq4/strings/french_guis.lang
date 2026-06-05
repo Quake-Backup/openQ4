@@ -1027,6 +1027,16 @@
 	"#str_201036"	"PRESENTE"
 	
 	"#str_201037"	"Avertissement : votre carte son ne prend pas en charge OpenAL."
+	// Ritual 1.3 patch GUI strings : #str_222000 - #str_222999
+	"#str_222001"	"Canon Napalm"
+	"#str_222014"	"Menu d'achat"
+	"#str_223000"	"Objets simples"
+	"#str_223002"	"Forcer lumiere ambiante"
+	"#str_223003"	"Luminosite ambiante"
+	"#str_223006"	"Forcer skins pro"
+	"#str_223007"	"Position arme"
+	"#str_223008"	"Droite;Centree;Bas droite"
+	"#str_223009"	"Ciel detaille active"
 	// OpenQ4 GUI strings : #str_229900 - #str_229999
 	"#str_229900"	"AFFICHAGE"
 	"#str_229901"	"AUDIO"

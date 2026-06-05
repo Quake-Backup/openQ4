@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include <pthread.h>
 #include <errno.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -47,6 +48,247 @@ If you have questions concerning this license or the applicable additional terms
 
 static idStr	basepath;
 static idStr	savepath;
+
+static const int MAX_PROCESS_ARGS = 32;
+static const int MAX_PROCESS_COMMAND = 4096;
+
+static bool Sys_StringHasControlCharacters( const char *text ) {
+	if ( text == NULL ) {
+		return true;
+	}
+
+	for ( const unsigned char *scan = reinterpret_cast<const unsigned char *>( text ); *scan != '\0'; ++scan ) {
+		if ( iscntrl( *scan ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool Sys_IsRegularFile( const char *path ) {
+	struct stat st;
+	return path != NULL && path[0] != '\0' && stat( path, &st ) == 0 && S_ISREG( st.st_mode );
+}
+
+static void Sys_EnsureOwnerExecutable( const char *path ) {
+	struct stat st;
+	if ( path == NULL || path[0] == '\0' || stat( path, &st ) == -1 || !S_ISREG( st.st_mode ) ) {
+		return;
+	}
+	if ( ( st.st_mode & S_IXUSR ) == 0 && chmod( path, st.st_mode | S_IXUSR ) == -1 ) {
+		Sys_Printf( "chmod +x %s failed: %s\n", path, strerror( errno ) );
+	}
+}
+
+static void Sys_WriteProcessChildText( const char *text ) {
+	if ( text == NULL ) {
+		return;
+	}
+
+	size_t length = 0;
+	while ( text[length] != '\0' ) {
+		++length;
+	}
+	if ( length > 0 ) {
+		write( STDERR_FILENO, text, length );
+	}
+}
+
+static bool Sys_ParseProcessCommandLine( const char *command, char *buffer, size_t bufferSize, char **argv, int maxArgv ) {
+	if ( command == NULL || command[0] == '\0' || buffer == NULL || bufferSize == 0 || argv == NULL || maxArgv < 2 ) {
+		return false;
+	}
+	if ( strlen( command ) >= bufferSize || Sys_StringHasControlCharacters( command ) ) {
+		return false;
+	}
+
+	const char *read = command;
+	char *write = buffer;
+	char *end = buffer + bufferSize - 1;
+	int argc = 0;
+
+	while ( *read != '\0' ) {
+		while ( *read != '\0' && isspace( static_cast<unsigned char>( *read ) ) ) {
+			++read;
+		}
+		if ( *read == '\0' ) {
+			break;
+		}
+		if ( argc >= maxArgv - 1 ) {
+			return false;
+		}
+
+		argv[argc++] = write;
+		char quote = '\0';
+		while ( *read != '\0' ) {
+			const char ch = *read;
+			if ( quote == '\0' && isspace( static_cast<unsigned char>( ch ) ) ) {
+				break;
+			}
+			if ( ch == '"' || ch == '\'' ) {
+				if ( quote == '\0' ) {
+					quote = ch;
+					++read;
+					continue;
+				}
+				if ( quote == ch ) {
+					quote = '\0';
+					++read;
+					continue;
+				}
+			}
+			if ( ch == '\\' && read[1] != '\0' ) {
+				++read;
+			}
+			if ( write >= end ) {
+				return false;
+			}
+			*write++ = *read++;
+		}
+
+		if ( quote != '\0' ) {
+			return false;
+		}
+		if ( write >= end ) {
+			return false;
+		}
+		*write++ = '\0';
+	}
+
+	argv[argc] = NULL;
+	return argc > 0 && argv[0][0] != '\0';
+}
+
+static void Sys_AppendQuotedProcessArg( idStr &command, const char *arg ) {
+	if ( command.Length() > 0 ) {
+		command += " ";
+	}
+	command += "\"";
+	for ( const char *scan = arg; scan != NULL && *scan != '\0'; ++scan ) {
+		if ( *scan == '"' || *scan == '\\' ) {
+			command += "\\";
+		}
+		char text[2] = { *scan, '\0' };
+		command += text;
+	}
+	command += "\"";
+}
+
+static idStr Sys_BuildProcessCommandLine( char *const argv[] ) {
+	idStr command;
+	for ( int i = 0; argv != NULL && argv[i] != NULL; ++i ) {
+		Sys_AppendQuotedProcessArg( command, argv[i] );
+	}
+	return command;
+}
+
+static bool Sys_ExecProcessArgs( char *const argv[], bool dofork ) {
+	if ( argv == NULL || argv[0] == NULL || argv[0][0] == '\0' ) {
+		return false;
+	}
+
+	Sys_EnsureOwnerExecutable( argv[0] );
+
+	if ( dofork ) {
+		const pid_t child = fork();
+		if ( child == -1 ) {
+			Sys_Printf( "fork failed: %s\n", strerror( errno ) );
+			return false;
+		}
+		if ( child != 0 ) {
+			return true;
+		}
+		execvp( argv[0], argv );
+		Sys_WriteProcessChildText( "OpenQ4 child exec failed: " );
+		Sys_WriteProcessChildText( argv[0] );
+		Sys_WriteProcessChildText( "\n" );
+		_exit( 127 );
+	}
+
+	Sys_Printf( "exec %s\n", argv[0] );
+	execvp( argv[0], argv );
+	Sys_Printf( "exec %s failed: %s\n", argv[0], strerror( errno ) );
+	_exit( 127 );
+}
+
+static bool Sys_QueueOrStartProcessArgs( char *const argv[], bool quit ) {
+	if ( argv == NULL || argv[0] == NULL || argv[0][0] == '\0' ) {
+		return false;
+	}
+
+	if ( quit ) {
+		const idStr command = Sys_BuildProcessCommandLine( argv );
+		common->DPrintf( "Sys_StartProcess %s (delaying until final exit)\n", command.c_str() );
+		Posix_SetExitSpawn( command.c_str() );
+		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "quit\n" );
+		return true;
+	}
+
+	return Sys_ExecProcessArgs( argv, true );
+}
+
+static bool Sys_IsSafeURL( const char *url ) {
+	if ( url == NULL || url[0] == '\0' || Sys_StringHasControlCharacters( url ) ) {
+		return false;
+	}
+	if ( !isalpha( static_cast<unsigned char>( url[0] ) ) ) {
+		return false;
+	}
+	for ( const char *scan = url + 1; *scan != '\0'; ++scan ) {
+		if ( *scan == ':' ) {
+			return true;
+		}
+		if ( !( isalnum( static_cast<unsigned char>( *scan ) ) || *scan == '+' || *scan == '-' || *scan == '.' ) ) {
+			return false;
+		}
+	}
+	return false;
+}
+
+static bool Sys_FindExecutableOnPath( const char *name, idStr &resolvedPath ) {
+	resolvedPath.Clear();
+	if ( name == NULL || name[0] == '\0' ) {
+		return false;
+	}
+
+	if ( strchr( name, '/' ) != NULL ) {
+		if ( access( name, X_OK ) == 0 ) {
+			resolvedPath = name;
+			return true;
+		}
+		return false;
+	}
+
+	const char *pathEnv = getenv( "PATH" );
+	if ( pathEnv == NULL || pathEnv[0] == '\0' ) {
+		return false;
+	}
+
+	idStr pathList = pathEnv;
+	int start = 0;
+	while ( start <= pathList.Length() ) {
+		const int separator = pathList.Find( ':', start );
+		const int length = ( separator >= 0 ) ? separator - start : pathList.Length() - start;
+		idStr directory = pathList.Mid( start, length );
+		if ( directory.Length() == 0 ) {
+			directory = ".";
+		}
+
+		idStr candidate = directory;
+		candidate.AppendPath( name );
+		if ( access( candidate.c_str(), X_OK ) == 0 ) {
+			resolvedPath = candidate;
+			return true;
+		}
+
+		if ( separator < 0 ) {
+			break;
+		}
+		start = separator + 1;
+	}
+
+	return false;
+}
 
 static void Sys_AddUniqueCpuInfoValue( idStrList &values, const idStr &value ) {
 	if ( value.Length() <= 0 ) {
@@ -579,58 +821,32 @@ int Sys_GetSystemRam( void ) {
 /*
 ==================
 Sys_DoStartProcess
-if we don't fork, this function never returns
-the no-fork lets you keep the terminal when you're about to spawn an installer
-
-if the command contains spaces, system() is used. Otherwise the more straightforward execl ( system() blows though )
+if we don't fork, this function only returns when exec fails
+the no-fork path lets shutdown hand off to an installer or URL helper
 ==================
 */
 void Sys_DoStartProcess( const char *exeName, bool dofork ) {	
-	bool use_system = false;
-	if ( strchr( exeName, ' ' ) ) {
-		use_system = true;
-	} else {
-		// set exec rights when it's about a single file to execute
-		struct stat buf;
-		if ( stat( exeName, &buf ) == -1 ) {
-			printf( "stat %s failed: %s\n", exeName, strerror( errno ) );
-		} else {
-			if ( chmod( exeName, buf.st_mode | S_IXUSR ) == -1 ) {
-				printf( "cmod +x %s failed: %s\n", exeName, strerror( errno ) );
-			}
-		}
+	if ( exeName == NULL || exeName[0] == '\0' ) {
+		Sys_Printf( "Sys_DoStartProcess: empty command\n" );
+		return;
 	}
-	if ( dofork ) {
-		switch ( fork() ) {
-		case -1:
-			// main thread
-			break;
-		case 0:
-			if ( use_system ) {
-				printf( "system %s\n", exeName );
-				system( exeName );
-				_exit( 0 );
-			} else {
-				printf( "execl %s\n", exeName );
-				execl( exeName, exeName, NULL );
-				printf( "execl failed: %s\n", strerror( errno ) );
-				_exit( -1 );
-			}
-			break;
-		}
-	} else {
-		if ( use_system ) {
-			printf( "system %s\n", exeName );
-			system( exeName );
-			sleep( 1 );	// on some systems I've seen that starting the new process and exiting this one should not be too close
-		} else {
-			printf( "execl %s\n", exeName );
-			execl( exeName, exeName, NULL );
-			printf( "execl failed: %s\n", strerror( errno ) );
-		}
-		// terminate
-		_exit( 0 );
+
+	if ( Sys_IsRegularFile( exeName ) && !Sys_StringHasControlCharacters( exeName ) ) {
+		char *argv[2];
+		argv[0] = const_cast<char *>( exeName );
+		argv[1] = NULL;
+		(void)Sys_ExecProcessArgs( argv, dofork );
+		return;
 	}
+
+	char commandBuffer[MAX_PROCESS_COMMAND];
+	char *argv[MAX_PROCESS_ARGS];
+	if ( !Sys_ParseProcessCommandLine( exeName, commandBuffer, sizeof( commandBuffer ), argv, MAX_PROCESS_ARGS ) ) {
+		Sys_Printf( "Sys_DoStartProcess: invalid command line '%s'\n", exeName );
+		return;
+	}
+
+	(void)Sys_ExecProcessArgs( argv, dofork );
 }
 
 /*
@@ -641,18 +857,22 @@ Sys_OpenURL
 void idSysLocal::OpenURL( const char *url, bool quit ) {
 	const char	*script_path;
 	idFile		*script_file;
-	char		cmdline[ 1024 ];
 
 	static bool	quit_spamguard = false;
 
 	if ( quit_spamguard ) {
-		common->DPrintf( "Sys_OpenURL: already in a doexit sequence, ignoring %s\n", url );
+		common->DPrintf( "Sys_OpenURL: already in a doexit sequence, ignoring %s\n", url ? url : "" );
 		return;
 	}
 
 	common->Printf( "Open URL: %s\n", url );
+	if ( !Sys_IsSafeURL( url ) ) {
+		common->Printf( "OpenURL '%s' rejected: expected a URL with a safe scheme\n", url ? url : "" );
+		return;
+	}
+
 	// opening an URL on *nix can mean a lot of things .. 
-	// just spawn a script instead of deciding for the user :-)
+	// prefer a user-provided script, then fall back to freedesktop helpers.
 
 	// look in the savepath first, then in the basepath
 	script_path = fileSystem->BuildOSPath( cvarSystem->GetCVarString( "fs_savepath" ), "", "openurl.sh" );
@@ -662,22 +882,56 @@ void idSysLocal::OpenURL( const char *url, bool quit ) {
 		script_file = fileSystem->OpenExplicitFileRead( script_path );
 	}
 	if ( !script_file ) {
-		common->Printf( "Can't find URL script 'openurl.sh' in either savepath or basepath\n" );
+		idStr openerPath;
+		if ( Sys_FindExecutableOnPath( "xdg-open", openerPath ) ) {
+			char *argv[3];
+			argv[0] = const_cast<char *>( openerPath.c_str() );
+			argv[1] = const_cast<char *>( url );
+			argv[2] = NULL;
+			if ( Sys_QueueOrStartProcessArgs( argv, quit ) && quit ) {
+				quit_spamguard = true;
+			}
+			return;
+		}
+		if ( Sys_FindExecutableOnPath( "gio", openerPath ) ) {
+			char *argv[4];
+			argv[0] = const_cast<char *>( openerPath.c_str() );
+			argv[1] = const_cast<char *>( "open" );
+			argv[2] = const_cast<char *>( url );
+			argv[3] = NULL;
+			if ( Sys_QueueOrStartProcessArgs( argv, quit ) && quit ) {
+				quit_spamguard = true;
+			}
+			return;
+		}
+		if ( Sys_FindExecutableOnPath( "sensible-browser", openerPath ) ) {
+			char *argv[3];
+			argv[0] = const_cast<char *>( openerPath.c_str() );
+			argv[1] = const_cast<char *>( url );
+			argv[2] = NULL;
+			if ( Sys_QueueOrStartProcessArgs( argv, quit ) && quit ) {
+				quit_spamguard = true;
+			}
+			return;
+		}
+		common->Printf( "Can't find URL script 'openurl.sh' or a freedesktop URL opener on PATH\n" );
 		common->Printf( "OpenURL '%s' failed\n", url );
 		return;
 	}
 	fileSystem->CloseFile( script_file );
+
+	common->Printf( "URL script: %s\n", script_path );
+	char *argv[3];
+	argv[0] = const_cast<char *>( script_path );
+	argv[1] = const_cast<char *>( url );
+	argv[2] = NULL;
 
 	// if we are going to quit, only accept a single URL before quitting and spawning the script
 	if ( quit ) {
 		quit_spamguard = true;
 	}
 
-	common->Printf( "URL script: %s\n", script_path );
-
-	// StartProcess is going to execute a system() call with that - hence the &
-	idStr::snPrintf( cmdline, 1024, "%s '%s' &",  script_path, url );
-	sys->StartProcess( cmdline, quit );
+	(void)Sys_QueueOrStartProcessArgs( argv, quit );
 }
 
 /*

@@ -41,9 +41,9 @@ If you have questions concerning this license or the applicable additional terms
 extern idCVar com_skipLogoVideos;
 
 idCVar	idSessionLocal::gui_configServerRate( "gui_configServerRate", "0", CVAR_GUI | CVAR_ARCHIVE | CVAR_ROM | CVAR_INTEGER, "" );
-idCVar gui_set_sys_scroll( "gui_set_sys_scroll", "0", CVAR_GUI | CVAR_INTEGER, "display menu scroll step", 0, 19 );
+idCVar gui_set_sys_scroll( "gui_set_sys_scroll", "0", CVAR_GUI | CVAR_INTEGER, "display menu scroll step", 0, 26 );
 idCVar gui_set_audio_scroll( "gui_set_audio_scroll", "0", CVAR_GUI | CVAR_INTEGER, "audio menu scroll step", 0.0f, 0.0f );
-idCVar gui_set_game_scroll( "gui_set_game_scroll", "0", CVAR_GUI | CVAR_INTEGER, "game menu scroll step", 0, 27 );
+idCVar gui_set_game_scroll( "gui_set_game_scroll", "0", CVAR_GUI | CVAR_INTEGER, "game menu scroll step", 0, 36 );
 
 static const int MENU_CONTROLLER_AXIS_THRESHOLD = 50;
 static const int MENU_CONTROLLER_REPEAT_INITIAL_MSEC = 320;
@@ -55,7 +55,35 @@ typedef struct menuControllerRepeat_s {
 	int		nextTime;
 } menuControllerRepeat_t;
 
+typedef struct mainMenuGunPositionPreset_s {
+	float	x;
+	float	y;
+	float	z;
+	bool	weaponFovEffect;
+} mainMenuGunPositionPreset_t;
+
 static menuControllerRepeat_t menuControllerRepeat = { 0, false, 0 };
+
+static const int MENU_SETTINGS_PAGE_SCROLL_STEP = 6;
+static const mainMenuGunPositionPreset_t MAINMENU_GUN_POSITION_PRESETS[] = {
+	{ 1.0f, 2.0f, -1.0f, true },
+	{ 1.0f, -5.0f, -1.0f, true },
+	{ 1.0f, 0.0f, -1.0f, true }
+};
+static const char *MAINMENU_FORCE_MODEL_MARINE = "model_player_marine_helmeted_bright";
+static const char *MAINMENU_FORCE_MODEL_STROGG = "model_player_tactical_transfer_bright";
+static const float MAINMENU_CORPSE_TIME_PRESET_VALUES[] = {
+	0.0f,
+	-1.0f,
+	5.0f,
+	10.0f,
+	15.0f,
+	30.0f,
+	60.0f
+};
+
+static bool ApplyMainMenuSettingsScrollPage( idUserInterface *gui, const char *pageName, bool requireVisiblePage );
+static void SyncMainMenuSettingsScrollPages( idUserInterface *gui );
 
 static int MenuControllerAbs( int value ) {
 	return value < 0 ? -value : value;
@@ -159,6 +187,52 @@ static void PumpControllerMenuNavigation( idSessionLocal *session ) {
 
 	session->MenuEvent( &event );
 	menuControllerRepeat.nextTime = now + MENU_CONTROLLER_REPEAT_MSEC;
+}
+
+static void ApplyMainMenuGunPositionChoice( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	const int choice = gui->State().GetInt( "g_gunXYZ" );
+	const int numChoices = sizeof( MAINMENU_GUN_POSITION_PRESETS ) / sizeof( MAINMENU_GUN_POSITION_PRESETS[0] );
+	if ( choice < 0 || choice >= numChoices ) {
+		return;
+	}
+
+	const mainMenuGunPositionPreset_t &preset = MAINMENU_GUN_POSITION_PRESETS[ choice ];
+	cvarSystem->SetCVarFloat( "g_gunX", preset.x );
+	cvarSystem->SetCVarFloat( "g_gunY", preset.y );
+	cvarSystem->SetCVarFloat( "g_gunZ", preset.z );
+	if ( cvarSystem->Find( "g_weaponFovEffect" ) != NULL ) {
+		cvarSystem->SetCVarBool( "g_weaponFovEffect", preset.weaponFovEffect );
+	}
+}
+
+static void ApplyMainMenuForceModelChoice( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	const bool enabled = gui->State().GetBool( "ui_proskins" );
+	cvarSystem->SetCVarString( "g_forceModel", enabled ? MAINMENU_FORCE_MODEL_MARINE : "" );
+	cvarSystem->SetCVarString( "g_forceMarineModel", enabled ? MAINMENU_FORCE_MODEL_MARINE : "" );
+	cvarSystem->SetCVarString( "g_forceStroggModel", enabled ? MAINMENU_FORCE_MODEL_STROGG : "" );
+}
+
+static void ApplyMainMenuCorpseTimeChoice( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	const int choice = gui->State().GetInt( "corpse_time_choice" );
+	const int numChoices = sizeof( MAINMENU_CORPSE_TIME_PRESET_VALUES ) / sizeof( MAINMENU_CORPSE_TIME_PRESET_VALUES[0] );
+	if ( choice < 0 || choice >= numChoices ) {
+		return;
+	}
+
+	const char *const targetCvar = gui->State().GetInt( "ingame" ) == 2 ? "g_corpseRemoveDelayMP" : "g_corpseRemoveDelaySP";
+	cvarSystem->SetCVarFloat( targetCvar, MAINMENU_CORPSE_TIME_PRESET_VALUES[ choice ] );
 }
 
 /*
@@ -308,10 +382,6 @@ static void SetMainMenuVideoGuiVars( idUserInterface *gui ) {
 		return;
 	}
 
-	gui->SetStateString( "aspect_choices", "Other;16:9;16:10" );
-	gui->SetStateString( "aspect_values", "0;1;2" );
-	gui->SetStateInt( "r_aspectRatio", GetMainMenuAspectGroupForMode( cvarSystem->GetCVarInteger( "r_mode" ) ) );
-
 	idStr choiceNames;
 	idStr choiceValues;
 
@@ -328,12 +398,22 @@ static void SetMainMenuVideoGuiVars( idUserInterface *gui ) {
 	gui->SetStateString( "16_10_values", choiceValues.c_str() );
 }
 
+static void SetMainMenuQualityGuiVars( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	gui->SetStateInt( "r_specularEnabled", cvarSystem->GetCVarBool( "r_skipSpecular" ) ? 0 : 1 );
+	gui->SetStateInt( "r_bumpEnabled", cvarSystem->GetCVarBool( "r_skipBump" ) ? 0 : 1 );
+	gui->SetStateInt( "r_skyEnabled", cvarSystem->GetCVarBool( "r_skipSky" ) ? 0 : 1 );
+}
+
 static void SyncMainMenuAspectVisibility( idUserInterface *gui ) {
 	if ( gui == NULL ) {
 		return;
 	}
 
-	switch ( gui->State().GetInt( "r_aspectRatio" ) ) {
+	switch ( GetMainMenuAspectGroupForMode( cvarSystem->GetCVarInteger( "r_mode" ) ) ) {
 	case MAINMENU_ASPECT_16_9:
 		gui->HandleNamedEvent( "forceAspect1" );
 		break;
@@ -1088,6 +1168,7 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 	guiMainMenu->SetStateString( "display_values", displayValues.c_str() );
 	guiMainMenu->SetStateInt( "display_count", displayCount );
 	SetMainMenuVideoGuiVars( guiMainMenu );
+	SetMainMenuQualityGuiVars( guiMainMenu );
 	SyncMainMenuAspectVisibility( guiMainMenu );
 	guiMainMenu->SetStateInt( "gui_set_sys_scroll", 0 );
 	guiMainMenu->SetStateInt( "gui_set_audio_scroll", 0 );
@@ -1697,6 +1778,9 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 		if ( !idStr::Icmp( cmd, "resetdefaults" ) ) {
 			cmdSystem->BufferCommandText( CMD_EXEC_NOW, "exec default.cfg" );
 			guiMainMenu->SetKeyBindingNames();
+			SetMainMenuVideoGuiVars( guiMainMenu );
+			SetMainMenuQualityGuiVars( guiMainMenu );
+			SyncMainMenuAspectVisibility( guiMainMenu );
 			continue;
 		}
 
@@ -1801,6 +1885,30 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 				}
 				cmdSystem->BufferCommandText( CMD_EXEC_NOW, "s_restart\n" );				
 			}
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "applyCorpseTimeChoice" ) ) {
+			ApplyMainMenuCorpseTimeChoice( guiActive ? guiActive : guiMainMenu );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "applyGunPositionChoice" ) ) {
+			ApplyMainMenuGunPositionChoice( guiActive ? guiActive : guiMainMenu );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "applyForceModelChoice" ) ) {
+			ApplyMainMenuForceModelChoice( guiActive ? guiActive : guiMainMenu );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "applySettingsScroll" ) ) {
+			idStr pageName;
+			if ( args.Argc() - icmd >= 1 ) {
+				pageName = args.Argv( icmd++ );
+			}
+			ApplyMainMenuSettingsScrollPage( guiActive ? guiActive : guiMainMenu, pageName.c_str(), false );
 			continue;
 		}
 
@@ -2052,25 +2160,285 @@ idSessionLocal::MenuEvent
 Executes any commands returned by the gui
 ==============
 */
-static bool AdjustMainMenuPageScroll( idUserInterface *gui, const char *pageVisibleState, idCVar &scrollCvar, const char *scrollStateName, int minValue, int maxValue, const char *applyEvent, int delta ) {
+static bool MainMenuWindowStateIsNonZero( idUserInterface *gui, const char *stateName ) {
 	if ( gui == NULL || gui->GetDesktop() == NULL ) {
 		return false;
 	}
 
-	idWinVar *pageVisible = gui->GetDesktop()->GetWinVarByName( pageVisibleState, true );
-	if ( pageVisible == NULL || !atoi( pageVisible->c_str() ) ) {
+	idWinVar *state = gui->GetDesktop()->GetWinVarByName( stateName, true );
+	return state != NULL && atoi( state->c_str() ) != 0;
+}
+
+static bool MainMenuWindowStateEqualsInt( idUserInterface *gui, const char *stateName, int expectedValue ) {
+	if ( gui == NULL || gui->GetDesktop() == NULL ) {
 		return false;
 	}
+
+	idWinVar *state = gui->GetDesktop()->GetWinVarByName( stateName, true );
+	return state != NULL && atoi( state->c_str() ) == expectedValue;
+}
+
+static bool MainMenuSettingsPopupIsVisible( idUserInterface *gui ) {
+	static const char *settingsPopupStates[] = {
+		"pop_p_defaults::visible",
+		"pop_p_setAdv::visible",
+		"pop_p_auto::visible",
+		"pop_p_ultrawarn::visible",
+		"pop_p_vidwarn::visible",
+		"pop_p_set_sndadv::visible"
+	};
+
+	for ( int i = 0; i < static_cast<int>( sizeof( settingsPopupStates ) / sizeof( settingsPopupStates[ 0 ] ) ); ++i ) {
+		if ( MainMenuWindowStateIsNonZero( gui, settingsPopupStates[ i ] ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+typedef struct mainMenuSettingsScrollPage_s {
+	const char *name;
+	const char *pageVisibleState;
+	const char *scrollStateName;
+	idCVar *scrollCvar;
+	const char *contentRectState;
+	const char *thumbVisibleState;
+	const char *thumbNoEventsState;
+	const char *sectionChoiceState;
+	int expectedPage;
+	int minValue;
+	int maxValue;
+	int contentX;
+	int baseY;
+	int contentHeight;
+	float stepY;
+} mainMenuSettingsScrollPage_t;
+
+static const mainMenuSettingsScrollPage_t MAINMENU_SETTINGS_SCROLL_PAGES[] = {
+	{
+		"system",
+		"p_settings_sys::visible",
+		"gui_set_sys_scroll",
+		&gui_set_sys_scroll,
+		"set_sys_content::rect",
+		"set_sys_scroll_thumb::visible",
+		"set_sys_scroll_thumb::noevents",
+		"sys_section_choice",
+		22,
+		0,
+		26,
+		-24,
+		-88,
+		914,
+		22.0f
+	},
+	{
+		"audio",
+		"p_settings_audio::visible",
+		"gui_set_audio_scroll",
+		&gui_set_audio_scroll,
+		"set_audio_content::rect",
+		"set_audio_scroll_thumb::visible",
+		"set_audio_scroll_thumb::noevents",
+		NULL,
+		36,
+		0,
+		0,
+		-24,
+		-84,
+		330,
+		0.0f
+	},
+	{
+		"game",
+		"p_settings_game::visible",
+		"gui_set_game_scroll",
+		&gui_set_game_scroll,
+		"set_game_content::rect",
+		"set_game_scroll_thumb::visible",
+		"set_game_scroll_thumb::noevents",
+		"game_section_choice",
+		21,
+		0,
+		36,
+		-24,
+		-41,
+		1188,
+		24.0f
+	}
+};
+
+static const mainMenuSettingsScrollPage_t *FindMainMenuSettingsScrollPage( const char *name ) {
+	if ( name == NULL || name[ 0 ] == '\0' ) {
+		return NULL;
+	}
+
+	for ( int i = 0; i < static_cast<int>( sizeof( MAINMENU_SETTINGS_SCROLL_PAGES ) / sizeof( MAINMENU_SETTINGS_SCROLL_PAGES[ 0 ] ) ); ++i ) {
+		if ( idStr::Icmp( MAINMENU_SETTINGS_SCROLL_PAGES[ i ].name, name ) == 0 ) {
+			return &MAINMENU_SETTINGS_SCROLL_PAGES[ i ];
+		}
+	}
+
+	return NULL;
+}
+
+static bool MainMenuSetWindowVar( idUserInterface *gui, const char *stateName, const char *value ) {
+	if ( gui == NULL || gui->GetDesktop() == NULL || stateName == NULL || value == NULL ) {
+		return false;
+	}
+
+	idWinVar *state = gui->GetDesktop()->GetWinVarByName( stateName, true );
+	if ( state == NULL ) {
+		return false;
+	}
+
+	state->Set( value );
+	state->SetEval( false );
+	return true;
+}
+
+static int MainMenuSettingsSectionChoiceForScroll( const mainMenuSettingsScrollPage_t &page, int scrollValue ) {
+	if ( idStr::Icmp( page.name, "game" ) == 0 ) {
+		if ( scrollValue < 9 ) {
+			return 0;
+		}
+		if ( scrollValue < 19 ) {
+			return 1;
+		}
+		if ( scrollValue < 28 ) {
+			return 2;
+		}
+		if ( scrollValue < 34 ) {
+			return 3;
+		}
+		if ( scrollValue < 36 ) {
+			return 4;
+		}
+		return 5;
+	}
+
+	if ( idStr::Icmp( page.name, "system" ) == 0 ) {
+		if ( scrollValue < 5 ) {
+			return 0;
+		}
+		if ( scrollValue < 9 ) {
+			return 1;
+		}
+		if ( scrollValue < 14 ) {
+			return 2;
+		}
+		if ( scrollValue < 21 ) {
+			return 3;
+		}
+		if ( scrollValue < 26 ) {
+			return 4;
+		}
+		return 5;
+	}
+
+	return 0;
+}
+
+static bool ApplyMainMenuSettingsScrollPage( idUserInterface *gui, const mainMenuSettingsScrollPage_t &page, int requestedValue, bool requireVisiblePage ) {
+	if ( gui == NULL || gui->GetDesktop() == NULL ) {
+		return false;
+	}
+
+	if ( requireVisiblePage && !MainMenuWindowStateEqualsInt( gui, "desktop::curr", page.expectedPage ) ) {
+		return false;
+	}
+
+	if ( requireVisiblePage && MainMenuSettingsPopupIsVisible( gui ) ) {
+		return false;
+	}
+
+	if ( requireVisiblePage && !MainMenuWindowStateIsNonZero( gui, page.pageVisibleState ) ) {
+		return false;
+	}
+
+	const int minValue = page.minValue;
+	const int maxValue = page.maxValue;
+	int scrollValue = requestedValue;
+	if ( scrollValue < minValue || scrollValue > maxValue ) {
+		scrollValue = gui->GetStateInt( page.scrollStateName, va( "%d", page.scrollCvar->GetInteger() ) );
+	}
+	scrollValue = idMath::ClampInt( minValue, maxValue, scrollValue );
+
+	page.scrollCvar->SetInteger( scrollValue );
+	gui->SetStateInt( page.scrollStateName, scrollValue );
+
+	const bool canScroll = maxValue > minValue;
+	MainMenuSetWindowVar( gui, page.thumbVisibleState, canScroll ? "1" : "0" );
+	MainMenuSetWindowVar( gui, page.thumbNoEventsState, canScroll ? "0" : "1" );
+
+	int contentHeight = page.contentHeight;
+	float stepY = page.stepY;
+	if ( idStr::Icmp( page.name, "system" ) == 0 && gui->GetStateInt( "display_count", "0" ) <= 1 ) {
+		contentHeight = 858;
+		stepY = 18.5f;
+	}
+
+	const int scrollOffset = idMath::Ftoi( stepY * static_cast<float>( scrollValue ) + 0.5f );
+	const int contentY = page.baseY - scrollOffset;
+	const idStr contentRect = va( "%d,%d,640,%d", page.contentX, contentY, contentHeight );
+	const bool applied = MainMenuSetWindowVar( gui, page.contentRectState, contentRect.c_str() );
+
+	if ( page.sectionChoiceState != NULL ) {
+		gui->SetStateInt( page.sectionChoiceState, MainMenuSettingsSectionChoiceForScroll( page, scrollValue ) );
+	}
+
+	gui->StateChanged( common->GetPresentationTime(), true );
+	return applied;
+}
+
+static bool ApplyMainMenuSettingsScrollPage( idUserInterface *gui, const char *pageName, bool requireVisiblePage ) {
+	const mainMenuSettingsScrollPage_t *page = FindMainMenuSettingsScrollPage( pageName );
+	if ( page == NULL ) {
+		return false;
+	}
+
+	const int minValue = page->minValue;
+	const int maxValue = page->maxValue;
+	const int requestedValue = idMath::ClampInt( minValue, maxValue, gui ? gui->GetStateInt( page->scrollStateName, va( "%d", page->scrollCvar->GetInteger() ) ) : page->scrollCvar->GetInteger() );
+	return ApplyMainMenuSettingsScrollPage( gui, *page, requestedValue, requireVisiblePage );
+}
+
+static bool AdjustMainMenuPageScroll( idUserInterface *gui, const mainMenuSettingsScrollPage_t &page, int delta, bool toStart, bool toEnd ) {
+	if ( gui == NULL || gui->GetDesktop() == NULL ) {
+		return false;
+	}
+
+	if ( !MainMenuWindowStateEqualsInt( gui, "desktop::curr", page.expectedPage ) ) {
+		return false;
+	}
+
+	if ( MainMenuSettingsPopupIsVisible( gui ) ) {
+		return false;
+	}
+
+	if ( !MainMenuWindowStateIsNonZero( gui, page.pageVisibleState ) ) {
+		return false;
+	}
+
+	const int minValue = page.minValue;
+	const int maxValue = page.maxValue;
 	if ( maxValue <= minValue ) {
 		return false;
 	}
 
-	const int current = idMath::ClampInt( minValue, maxValue, gui->GetStateInt( scrollStateName, va( "%d", scrollCvar.GetInteger() ) ) );
-	const int next = idMath::ClampInt( minValue, maxValue, current + delta );
-	if ( next != current ) {
-		scrollCvar.SetInteger( next );
-		gui->SetStateInt( scrollStateName, next );
-		gui->HandleNamedEvent( applyEvent );
+	const int current = idMath::ClampInt( minValue, maxValue, gui->GetStateInt( page.scrollStateName, va( "%d", page.scrollCvar->GetInteger() ) ) );
+	int next = current;
+	if ( toStart ) {
+		next = minValue;
+	} else if ( toEnd ) {
+		next = maxValue;
+	} else {
+		next = idMath::ClampInt( minValue, maxValue, current + delta );
+	}
+
+	if ( next != current || page.scrollCvar->GetInteger() != next ) {
+		ApplyMainMenuSettingsScrollPage( gui, page, next, true );
 	}
 
 	return true;
@@ -2078,32 +2446,54 @@ static bool AdjustMainMenuPageScroll( idUserInterface *gui, const char *pageVisi
 
 static bool HandleMainMenuSettingsScrollInput( idUserInterface *gui, int key ) {
 	int delta = 0;
+	bool toStart = false;
+	bool toEnd = false;
 	switch ( key ) {
 		case K_MWHEELUP:
-		case K_PGUP:
-		case K_JOY1:
 			delta = -1;
 			break;
 		case K_MWHEELDOWN:
-		case K_PGDN:
-		case K_JOY2:
 			delta = 1;
+			break;
+		case K_PGUP:
+		case K_KP_PGUP:
+		case K_JOY1:
+			delta = -MENU_SETTINGS_PAGE_SCROLL_STEP;
+			break;
+		case K_PGDN:
+		case K_KP_PGDN:
+		case K_JOY2:
+			delta = MENU_SETTINGS_PAGE_SCROLL_STEP;
+			break;
+		case K_HOME:
+		case K_KP_HOME:
+			toStart = true;
+			break;
+		case K_END:
+		case K_KP_END:
+			toEnd = true;
 			break;
 		default:
 			return false;
 	}
 
-	if ( AdjustMainMenuPageScroll( gui, "p_settings_sys::visible", gui_set_sys_scroll, "gui_set_sys_scroll", 0, 19, "applySetSystemScroll", delta ) ) {
-		return true;
-	}
-	if ( AdjustMainMenuPageScroll( gui, "p_settings_audio::visible", gui_set_audio_scroll, "gui_set_audio_scroll", 0, 0, "applySetAudioScroll", delta ) ) {
-		return true;
-	}
-	if ( AdjustMainMenuPageScroll( gui, "p_settings_game::visible", gui_set_game_scroll, "gui_set_game_scroll", 0, 27, "applySetGameScroll", delta ) ) {
-		return true;
+	for ( int i = 0; i < static_cast<int>( sizeof( MAINMENU_SETTINGS_SCROLL_PAGES ) / sizeof( MAINMENU_SETTINGS_SCROLL_PAGES[ 0 ] ) ); ++i ) {
+		if ( AdjustMainMenuPageScroll( gui, MAINMENU_SETTINGS_SCROLL_PAGES[ i ], delta, toStart, toEnd ) ) {
+			return true;
+		}
 	}
 
 	return false;
+}
+
+static void SyncMainMenuSettingsScrollPages( idUserInterface *gui ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	for ( int i = 0; i < static_cast<int>( sizeof( MAINMENU_SETTINGS_SCROLL_PAGES ) / sizeof( MAINMENU_SETTINGS_SCROLL_PAGES[ 0 ] ) ); ++i ) {
+		ApplyMainMenuSettingsScrollPage( gui, MAINMENU_SETTINGS_SCROLL_PAGES[ i ], idMath::INT_MIN, true );
+	}
 }
 
 void idSessionLocal::MenuEvent( const sysEvent_t *event ) {
@@ -2113,13 +2503,14 @@ void idSessionLocal::MenuEvent( const sysEvent_t *event ) {
 		return;
 	}
 
-	if ( guiActive == guiMainMenu && event->evType == SE_KEY && event->evValue2 == 1 ) {
+	if ( event->evType == SE_KEY && event->evValue2 == 1 ) {
 		if ( HandleMainMenuSettingsScrollInput( guiActive, event->evValue ) ) {
 			return;
 		}
 	}
 
 	menuCommand = guiActive->HandleEvent( event, common->GetPresentationTime() );
+	SyncMainMenuSettingsScrollPages( guiActive );
 
 	if ( !menuCommand || !menuCommand[0] ) {
 		// If the menu didn't handle the event, and it's a key down event for an F key, run the bind
@@ -2130,6 +2521,7 @@ void idSessionLocal::MenuEvent( const sysEvent_t *event ) {
 	}
 
 	DispatchCommand( guiActive, menuCommand );
+	SyncMainMenuSettingsScrollPages( guiActive );
 }
 
 /*
@@ -2180,6 +2572,7 @@ void idSessionLocal::GuiFrameEvents() {
 	if ( cmd && cmd[0] ) {
 		DispatchCommand( guiActive, cmd );
 	}
+	SyncMainMenuSettingsScrollPages( gui );
 }
 
 /*

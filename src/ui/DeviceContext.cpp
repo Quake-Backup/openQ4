@@ -1026,15 +1026,6 @@ void idDeviceContext::SetCursor(int n) {
 }
 
 void idDeviceContext::DrawCursor(float *x, float *y, float size) {
-	float minX = 0.0f;
-	float maxX = vidWidth;
-	float minY = 0.0f;
-	float maxY = vidHeight;
-	GetCursorBounds( minX, maxX, minY, maxY );
-
-	*x = idMath::ClampFloat( minX, maxX, *x );
-	*y = idMath::ClampFloat( minY, maxY, *y );
-
 	renderSystem->SetColor(colorWhite);
 	// Keep GUI cursor state in virtual coordinates; only transform local draw coords.
 	float drawX = *x;
@@ -1289,33 +1280,6 @@ void idDeviceContext::SetSize(float width, float height) {
 	vidHeight = ( height > 0.0f ) ? height : static_cast<float>( VIRTUAL_HEIGHT );
 
 	CalcVirtualScaleOffset( width, height, xScale, yScale, xOffset, yOffset );
-}
-
-void idDeviceContext::GetCursorBounds( float &minX, float &maxX, float &minY, float &maxY ) const {
-	minX = 0.0f;
-	maxX = vidWidth;
-	minY = 0.0f;
-	maxY = vidHeight;
-
-	if ( xScale != 0.0f ) {
-		minX = ( 0.0f - xOffset ) / xScale;
-		maxX = ( vidWidth - xOffset ) / xScale;
-		if ( minX > maxX ) {
-			const float tmp = minX;
-			minX = maxX;
-			maxX = tmp;
-		}
-	}
-
-	if ( yScale != 0.0f ) {
-		minY = ( 0.0f - yOffset ) / yScale;
-		maxY = ( vidHeight - yOffset ) / yScale;
-		if ( minY > maxY ) {
-			const float tmp = minY;
-			minY = maxY;
-			maxY = tmp;
-		}
-	}
 }
 
 int idDeviceContext::CharWidth( const char c, float scale, int adjust ) {

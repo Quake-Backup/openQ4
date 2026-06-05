@@ -35,6 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 #import <OpenGL/OpenGL.h>
 #import <mach/mach_time.h>
 #import <pthread.h>
+#import <limits.h>
 #import <sys/sysctl.h>
 #import <unistd.h>
 
@@ -43,6 +44,10 @@ If you have questions concerning this license or the applicable additional terms
 
 static idStr	basepath;
 static idStr	savepath;
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /*
 =================
@@ -69,7 +74,7 @@ Sys_EXEPath
 ==============
 */
 const char *Sys_EXEPath( void ) {
-	static char exePath[1024];
+	static char exePath[PATH_MAX];
 	const char *bundlePath = [[[NSBundle mainBundle] bundlePath] fileSystemRepresentation];
 	idStr::Copynz( exePath, bundlePath != NULL ? bundlePath : Posix_Cwd(), sizeof( exePath ) );
 	return exePath;

@@ -2,7 +2,7 @@
 
 This guide covers a small set of gameplay and audio cvars that are useful for testing, accessibility, and personal preference.
 
-The corpse cleanup and corpse sink controls are also available in the in-game menu at `Settings -> Game Options`.
+The auto-skip cinematics, corpse cleanup, and corpse sink controls are also available in the in-game menu at `Settings -> Game Options`.
 
 ## Quick Reference
 
@@ -17,6 +17,8 @@ The corpse cleanup and corpse sink controls are also available in the in-game me
 ## Cinematics
 
 `g_autoSkipCinematics` is intended for repeat testing runs, speed-focused replays, and development workflows where you do not want to manually skip every scripted sequence.
+
+The in-game menu exposes this as `Settings -> Game Options -> Auto Skip Cinematics`.
 
 Behavior:
 - `0`: normal behavior, cinematics play as authored.

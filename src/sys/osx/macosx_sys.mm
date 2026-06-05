@@ -42,10 +42,15 @@ If you have questions concerning this license or the applicable additional terms
 #import <sys/param.h>
 #import <sys/mount.h>
 #import <sys/wait.h>
+#import <errno.h>
+#import <string.h>
+#import <time.h>
 
 #ifdef OMNI_TIMER
 #import "macosx_timers.h"
 #endif
+
+#include "../posix/posix_public.h"
 
 #if !defined(NSPasteboardTypeString) && defined(NSStringPboardType)
 #define NSPasteboardTypeString NSStringPboardType
@@ -73,8 +78,20 @@ const char *macosx_scanForLibraryDirectory(void)
 
 //===========================================================================
 
-void Sys_Sleep( const int time ) {
-    sleep( time );
+void Sys_Sleep( const int msec ) {
+    if ( msec <= 0 ) {
+        return;
+    }
+
+    struct timespec requested;
+    requested.tv_sec = msec / 1000;
+    requested.tv_nsec = ( msec % 1000 ) * 1000000L;
+    while ( nanosleep( &requested, &requested ) == -1 ) {
+        if ( errno != EINTR ) {
+            Sys_Printf( "nanosleep: %s\n", strerror( errno ) );
+            return;
+        }
+    }
 }
 
 void EditorPrintConsole( const char *test ) {
@@ -182,6 +199,7 @@ void Sys_Error(const char *error, ...)
 void Sys_Quit(void)
 {
     Sys_Shutdown();
+    Posix_RunExitSpawn();
     [NSApp terminate:nil];
 }
 

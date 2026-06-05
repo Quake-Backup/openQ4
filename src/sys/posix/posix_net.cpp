@@ -60,6 +60,35 @@ typedef struct {
 int				num_interfaces = 0;
 net_interface	netint[MAX_INTERFACES];
 
+static unsigned int Sys_SockaddrIPv4HostOrder( const struct sockaddr *address ) {
+	const struct sockaddr_in *ipv4 = reinterpret_cast<const struct sockaddr_in *>( address );
+	return ntohl( ipv4->sin_addr.s_addr );
+}
+
+static void Sys_PrintSockaddrIPv4( const struct sockaddr *address ) {
+	const struct sockaddr_in *ipv4 = reinterpret_cast<const struct sockaddr_in *>( address );
+	const unsigned char *ip = reinterpret_cast<const unsigned char *>( &ipv4->sin_addr.s_addr );
+	common->Printf( "%u.%u.%u.%u",
+		static_cast<unsigned int>( ip[0] ),
+		static_cast<unsigned int>( ip[1] ),
+		static_cast<unsigned int>( ip[2] ),
+		static_cast<unsigned int>( ip[3] ) );
+}
+
+static int Sys_KeepSocketFdOutOfStdioRange( int socketFd ) {
+	if ( socketFd < 0 || socketFd > STDERR_FILENO ) {
+		return socketFd;
+	}
+
+	const int duplicateFd = fcntl( socketFd, F_DUPFD, STDERR_FILENO + 1 );
+	const int duplicateError = errno;
+	close( socketFd );
+	if ( duplicateFd == -1 ) {
+		common->Printf( "ERROR: socket fd duplicate failed: %s\n", strerror( duplicateError ) );
+	}
+	return duplicateFd;
+}
+
 /*
 =============
 NetadrToSockadr
@@ -72,11 +101,11 @@ static void NetadrToSockadr( const netadr_t * a, struct sockaddr_in *s ) {
 		s->sin_family = AF_INET;
 
 		s->sin_port = htons( (short)a->port );
-		*(int *) &s->sin_addr = -1;
+		s->sin_addr.s_addr = INADDR_BROADCAST;
 	} else if ( a->type == NA_IP || a->type == NA_LOOPBACK ) {
 		s->sin_family = AF_INET;
 
-		*(int *) &s->sin_addr = *(int *) &a->ip;
+		memcpy( &s->sin_addr.s_addr, a->ip, sizeof( a->ip ) );
 		s->sin_port = htons( (short)a->port );
 	}
 }
@@ -87,12 +116,11 @@ SockadrToNetadr
 =============
 */
 static void SockadrToNetadr(struct sockaddr_in *s, netadr_t * a) {
-	unsigned int ip = *(int *)&s->sin_addr;
-	*(int *)&a->ip = ip;
+	const unsigned int ip = s->sin_addr.s_addr;
+	memcpy( a->ip, &ip, sizeof( a->ip ) );
 	a->port = ntohs( s->sin_port );
 	// we store in network order, that loopback test is host order..
-	ip = ntohl( ip );
-	if ( ip == INADDR_LOOPBACK ) {
+	if ( ntohl( ip ) == INADDR_LOOPBACK ) {
 		a->type = NA_LOOPBACK;
 	} else {
 		a->type = NA_IP;
@@ -106,6 +134,9 @@ ExtractPort
 */
 static bool ExtractPort( const char *src, char *buf, int bufsize, int *port ) {
 	char *p;
+	char *end;
+	long parsedPort;
+
 	strncpy( buf, src, bufsize );
 	p = buf; p += Min( bufsize - 1, (int)strlen( src ) ); *p = '\0';
 	p = strchr( buf, ':' );
@@ -113,11 +144,12 @@ static bool ExtractPort( const char *src, char *buf, int bufsize, int *port ) {
 		return false;
 	}
 	*p = '\0';
-	*port = strtol( p+1, NULL, 10 );
-	if ( ( *port == 0 && errno == EINVAL ) ||
-		 ( ( *port == LONG_MIN || *port == LONG_MAX ) && errno == ERANGE ) ) {
+	errno = 0;
+	parsedPort = strtol( p + 1, &end, 10 );
+	if ( errno != 0 || end == p + 1 || *end != '\0' || parsedPort < 0 || parsedPort > 65535 ) {
 		return false;
 	}
+	*port = static_cast<int>( parsedPort );
 	return true;
 }
 
@@ -130,6 +162,11 @@ static bool StringToSockaddr( const char *s, struct sockaddr_in *sadr, bool doDN
 	struct hostent *h;
 	char buf[256];
 	int port;
+	bool parsedAddress = false;
+
+	if ( s == NULL || s[0] == '\0' ) {
+		return false;
+	}
 
 	memset( sadr, 0, sizeof( *sadr ) );
 	sadr->sin_family = AF_INET;
@@ -137,7 +174,9 @@ static bool StringToSockaddr( const char *s, struct sockaddr_in *sadr, bool doDN
 	sadr->sin_port = 0;
 
 	if (s[0] >= '0' && s[0] <= '9') {
-		if ( !inet_aton( s, &sadr->sin_addr ) ) {
+		if ( inet_aton( s, &sadr->sin_addr ) ) {
+			parsedAddress = true;
+		} else {
 			// check for port
 			if ( !ExtractPort( s, buf, sizeof( buf ), &port ) ) {
 				return false;
@@ -145,6 +184,7 @@ static bool StringToSockaddr( const char *s, struct sockaddr_in *sadr, bool doDN
 			if ( !inet_aton( buf, &sadr->sin_addr ) ) {
 				return false;
 			}
+			parsedAddress = true;
 			sadr->sin_port = htons( port );
 		}
 	} else if ( doDNSResolve ) {
@@ -152,15 +192,20 @@ static bool StringToSockaddr( const char *s, struct sockaddr_in *sadr, bool doDN
 		// failed or not failed, buf is expected to contain the appropriate host to resolve
 		if ( ExtractPort( s, buf, sizeof( buf ), &port ) ) {
 			sadr->sin_port = htons( port );			
-		}		
+		} else {
+			idStr::Copynz( buf, s, sizeof( buf ) );
+		}
 		if ( !( h = gethostbyname( buf ) ) ) {
 			return false;
 		}
-		*(int *) &sadr->sin_addr =
-			*(int *) h->h_addr_list[0];
+		if ( h->h_addrtype != AF_INET || h->h_length < static_cast<int>( sizeof( sadr->sin_addr ) ) || h->h_addr_list == NULL || h->h_addr_list[0] == NULL ) {
+			return false;
+		}
+		memcpy( &sadr->sin_addr, h->h_addr_list[0], sizeof( sadr->sin_addr ) );
+		parsedAddress = true;
 	}
 
-	return true;
+	return parsedAddress;
 }
 
 /*
@@ -196,6 +241,8 @@ const char *Sys_NetAdrToString( const netadr_t a ) {
 	} else if ( a.type == NA_IP ) {
 		idStr::snPrintf( s, sizeof(s), "%i.%i.%i.%i:%i",
 			a.ip[0], a.ip[1], a.ip[2], a.ip[3], a.port );
+	} else {
+		idStr::snPrintf( s, sizeof(s), "bad" );
 	}
 	return s;
 }
@@ -287,39 +334,39 @@ void Sys_InitNetworking(void)
 	}
 	
 	for( ifp = ifap; ifp; ifp = ifp->ifa_next ) {
-		if ( ifp->ifa_addr->sa_family != AF_INET )
-			continue;
-
 		if ( !( ifp->ifa_flags & IFF_UP ) )
 			continue;
 
 		if ( !ifp->ifa_addr )
 			continue;
 
+		if ( ifp->ifa_addr->sa_family != AF_INET )
+			continue;
+
 		if ( !ifp->ifa_netmask )
 			continue;
 		
-		ip = ntohl( *( unsigned long *)&ifp->ifa_addr->sa_data[2] );
-		mask = ntohl( *( unsigned long *)&ifp->ifa_netmask->sa_data[2] );
+		ip = Sys_SockaddrIPv4HostOrder( ifp->ifa_addr );
+		mask = Sys_SockaddrIPv4HostOrder( ifp->ifa_netmask );
 		
 		if ( ip == INADDR_LOOPBACK ) {
 			common->Printf( "loopback\n" );
 		} else {
-			common->Printf( "IP: %d.%d.%d.%d\n",
-							(unsigned char)ifp->ifa_addr->sa_data[2],
-							(unsigned char)ifp->ifa_addr->sa_data[3],
-							(unsigned char)ifp->ifa_addr->sa_data[4],
-							(unsigned char)ifp->ifa_addr->sa_data[5] );
-			common->Printf( "NetMask: %d.%d.%d.%d\n",
-							(unsigned char)ifp->ifa_netmask->sa_data[2],
-							(unsigned char)ifp->ifa_netmask->sa_data[3],
-							(unsigned char)ifp->ifa_netmask->sa_data[4],
-							(unsigned char)ifp->ifa_netmask->sa_data[5] );
+			common->Printf( "IP: " );
+			Sys_PrintSockaddrIPv4( ifp->ifa_addr );
+			common->Printf( "\nNetMask: " );
+			Sys_PrintSockaddrIPv4( ifp->ifa_netmask );
+			common->Printf( "\n" );
 		}
-		netint[ num_interfaces ].ip = ip;
-		netint[ num_interfaces ].mask = mask;
-		num_interfaces++;
+		if ( num_interfaces < MAX_INTERFACES ) {
+			netint[ num_interfaces ].ip = ip;
+			netint[ num_interfaces ].mask = mask;
+			num_interfaces++;
+		} else {
+			common->Printf( "Sys_InitNetworking: MAX_INTERFACES(%d) hit.\n", MAX_INTERFACES );
+		}
 	}
+	freeifaddrs( ifap );
 #else
 	int		s;
 	char	buf[ MAX_INTERFACES*sizeof( ifreq ) ];
@@ -331,9 +378,14 @@ void Sys_InitNetworking(void)
 	num_interfaces = 0;
 
 	s = socket( AF_INET, SOCK_DGRAM, 0 );
+	if ( s == -1 ) {
+		common->Printf( "Sys_InitNetworking: socket failed - %s\n", strerror( errno ) );
+		return;
+	}
 	ifc.ifc_len = MAX_INTERFACES*sizeof( ifreq );
 	ifc.ifc_buf = buf;
 	if ( ioctl( s, SIOCGIFCONF, &ifc ) < 0 ) {
+		close( s );
 		common->FatalError( "InitNetworking: SIOCGIFCONF error - %s\n", strerror( errno ) );
 		return;
 	}
@@ -348,35 +400,34 @@ void Sys_InitNetworking(void)
 			if ( ifr->ifr_addr.sa_family != AF_INET ) {
 				common->Printf( "not AF_INET\n" );
 			} else {
-				ip = ntohl( *( unsigned long *)&ifr->ifr_addr.sa_data[2] );
+				ip = Sys_SockaddrIPv4HostOrder( &ifr->ifr_addr );
 				if ( ip == INADDR_LOOPBACK ) {
 					common->Printf( "loopback\n" );
 				} else {
-					common->Printf( "%d.%d.%d.%d",
-									(unsigned char)ifr->ifr_addr.sa_data[2],
-									(unsigned char)ifr->ifr_addr.sa_data[3],
-									(unsigned char)ifr->ifr_addr.sa_data[4],
-									(unsigned char)ifr->ifr_addr.sa_data[5] );
+					Sys_PrintSockaddrIPv4( &ifr->ifr_addr );
 				}
 				if ( ioctl( s, SIOCGIFNETMASK, ifr ) < 0 ) {
 					common->Printf( " SIOCGIFNETMASK failed: %s\n", strerror( errno ) );
 				} else {
-					mask = ntohl( *( unsigned long *)&ifr->ifr_addr.sa_data[2] );
+					mask = Sys_SockaddrIPv4HostOrder( &ifr->ifr_addr );
 					if ( ip != INADDR_LOOPBACK ) {
-						common->Printf( "/%d.%d.%d.%d\n",
-										(unsigned char)ifr->ifr_addr.sa_data[2],
-										(unsigned char)ifr->ifr_addr.sa_data[3],
-										(unsigned char)ifr->ifr_addr.sa_data[4],
-										(unsigned char)ifr->ifr_addr.sa_data[5] );
+						common->Printf( "/" );
+						Sys_PrintSockaddrIPv4( &ifr->ifr_addr );
+						common->Printf( "\n" );
 					}
-					netint[ num_interfaces ].ip = ip;
-					netint[ num_interfaces ].mask = mask;
-					num_interfaces++;
+					if ( num_interfaces < MAX_INTERFACES ) {
+						netint[ num_interfaces ].ip = ip;
+						netint[ num_interfaces ].mask = mask;
+						num_interfaces++;
+					} else {
+						common->Printf( "Sys_InitNetworking: MAX_INTERFACES(%d) hit.\n", MAX_INTERFACES );
+					}
 				}
 			}
 		}
 		ifindex += sizeof( ifreq );
 	}
+	close( s );
 #endif
 }
 
@@ -396,8 +447,14 @@ static int IPSocket( const char *net_interface, int port, netadr_t *bound_to = N
 		common->Printf( "Opening IP socket: localhost:%i\n", port );
 	}
 
+	memset( &address, 0, sizeof( address ) );
+
 	if ( ( newsocket = socket( PF_INET, SOCK_DGRAM, IPPROTO_UDP ) ) == -1 ) {
 		common->Printf( "ERROR: IPSocket: socket: %s", strerror( errno ) );
+		return 0;
+	}
+	newsocket = Sys_KeepSocketFdOutOfStdioRange( newsocket );
+	if ( newsocket == -1 ) {
 		return 0;
 	}
 	// make it non-blocking
@@ -405,11 +462,13 @@ static int IPSocket( const char *net_interface, int port, netadr_t *bound_to = N
 	if ( ioctl( newsocket, FIONBIO, &on ) == -1 ) {
 		common->Printf( "ERROR: IPSocket: ioctl FIONBIO:%s\n",
 				   strerror( errno ) );
+		close( newsocket );
 		return 0;
 	}
 	// make it broadcast capable
 	if ( setsockopt( newsocket, SOL_SOCKET, SO_BROADCAST, (char *) &i, sizeof(i) ) == -1 ) {
 		common->Printf( "ERROR: IPSocket: setsockopt SO_BROADCAST:%s\n", strerror( errno ) );
+		close( newsocket );
 		return 0;
 	}
 
@@ -417,7 +476,11 @@ static int IPSocket( const char *net_interface, int port, netadr_t *bound_to = N
 		|| !idStr::Icmp( net_interface, "localhost" ) ) {
 		address.sin_addr.s_addr = INADDR_ANY;
 	} else {
-		StringToSockaddr( net_interface, &address, true );
+		if ( !StringToSockaddr( net_interface, &address, true ) ) {
+			common->Printf( "ERROR: IPSocket: bad interface address '%s'\n", net_interface );
+			close( newsocket );
+			return 0;
+		}
 	}
 
 	if ( port == PORT_ANY ) {
@@ -435,8 +498,8 @@ static int IPSocket( const char *net_interface, int port, netadr_t *bound_to = N
 	}
 
 	if ( bound_to ) {
-		unsigned int len = sizeof( address );
-		if ( (unsigned int)(getsockname( newsocket, (struct sockaddr *)&address, (socklen_t*)&len )) == -1 ) {
+		socklen_t len = sizeof( address );
+		if ( getsockname( newsocket, (struct sockaddr *)&address, &len ) == -1 ) {
 			common->Printf( "ERROR: IPSocket: getsockname: %s\n", strerror( errno ) );
 			close( newsocket );
 			return 0;
@@ -487,14 +550,18 @@ idPort::GetPacket
 bool idPort::GetPacket( netadr_t &net_from, void *data, int &size, int maxSize ) {
 	int ret;
 	struct sockaddr_in from;
-	int fromlen;
+	socklen_t fromlen;
 	
 	if ( !netSocket ) {
 		return false;
 	}
+	if ( data == NULL || maxSize <= 0 ) {
+		size = 0;
+		return false;
+	}
 	
 	fromlen = sizeof( from );
-	ret = recvfrom( netSocket, data, maxSize, 0, (struct sockaddr *) &from, (socklen_t *) &fromlen );
+	ret = recvfrom( netSocket, data, maxSize, 0, (struct sockaddr *) &from, &fromlen );
 
 	if ( ret == -1 ) {
 		if (errno == EWOULDBLOCK || errno == ECONNREFUSED) {
@@ -525,6 +592,10 @@ bool idPort::GetPacketBlocking( netadr_t &net_from, void *data, int &size, int m
 	if ( !netSocket ) {
 		return false;
 	}
+	if ( data == NULL || maxSize <= 0 ) {
+		size = 0;
+		return false;
+	}
 
 	if ( timeout < 0 ) {
 		return GetPacket( net_from, data, size, maxSize );
@@ -550,9 +621,9 @@ bool idPort::GetPacketBlocking( netadr_t &net_from, void *data, int &size, int m
 		return false;
 	}
 	struct sockaddr_in from;
-	int fromlen;
+	socklen_t fromlen;
 	fromlen = sizeof( from );
-	ret = recvfrom( netSocket, data, maxSize, 0, (struct sockaddr *)&from, (socklen_t *)&fromlen );
+	ret = recvfrom( netSocket, data, maxSize, 0, (struct sockaddr *)&from, &fromlen );
 	if ( ret == -1 ) {
 		// there should be no blocking errors once select declares things are good
 		common->DPrintf( "idPort::GetPacketBlocking: %s\n", strerror( errno ) );
@@ -579,6 +650,10 @@ void idPort::SendPacket( const netadr_t to, const void *data, int size ) {
 	}
 
 	if ( !netSocket ) {
+		return;
+	}
+	if ( size < 0 || ( data == NULL && size > 0 ) ) {
+		common->Warning( "idPort::SendPacket: invalid packet buffer - ignored" );
 		return;
 	}
 
@@ -634,7 +709,7 @@ idTCP::Init
 bool idTCP::Init( const char *host, short port ) {
 	struct sockaddr_in sadr;
 	if ( !Sys_StringToNetAdr( host, &address, true ) ) {
-		common->Printf( "Couldn't resolve server name \"%s\"\n", host );
+		common->Printf( "Couldn't resolve server name \"%s\"\n", host ? host : "" );
 		return false;
 	}
 	address.type = NA_IP;
@@ -647,11 +722,17 @@ bool idTCP::Init( const char *host, short port ) {
 
 	if (fd) {
 		common->Warning("idTCP::Init: already initialized?\n");
+		Close();
 	}
 		
 	if ((fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
 		fd = 0;
 		common->Printf("ERROR: idTCP::Init: socket: %s\n", strerror(errno));
+		return false;
+	}
+	fd = Sys_KeepSocketFdOutOfStdioRange( fd );
+	if ( fd == -1 ) {
+		fd = 0;
 		return false;
 	}
 	
@@ -702,6 +783,13 @@ int idTCP::Read(void *data, int size) {
 		common->Printf("idTCP::Read: not initialized\n");
 		return -1;
 	}
+	if ( size <= 0 ) {
+		return 0;
+	}
+	if ( data == NULL ) {
+		common->Printf("idTCP::Read: invalid buffer\n");
+		return -1;
+	}
 
 #if defined(_GNU_SOURCE)
 	// handle EINTR interrupted system call with TEMP_FAILURE_RETRY -  this is probably GNU libc specific
@@ -712,7 +800,7 @@ int idTCP::Read(void *data, int size) {
 	} while ( nbytes == -1 && errno == EINTR );
 	if ( nbytes == -1 ) {
 #endif
-		if (errno == EAGAIN) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			return 0;
 		}
 		common->Printf("ERROR: idTCP::Read: %s\n", strerror(errno));
@@ -723,6 +811,7 @@ int idTCP::Read(void *data, int size) {
 	// a successful read of 0 bytes indicates remote has closed the connection
 	if ( nbytes == 0 ) {
 		common->DPrintf( "idTCP::Read: read 0 bytes - assume connection closed\n" );
+		Close();
 		return -1;
 	}
 	
@@ -740,6 +829,13 @@ int	idTCP::Write(void *data, int size) {
 	
 	if ( !fd ) {
 		common->Printf( "idTCP::Write: not initialized\n");
+		return -1;
+	}
+	if ( size <= 0 ) {
+		return 0;
+	}
+	if ( data == NULL ) {
+		common->Printf( "idTCP::Write: invalid buffer\n" );
 		return -1;
 	}
 
@@ -760,6 +856,9 @@ int	idTCP::Write(void *data, int size) {
 	  } while ( nbytes == -1 && errno == EINTR );
 	  if ( nbytes == -1 ) {
 #endif
+		if ( errno == EAGAIN || errno == EWOULDBLOCK ) {
+			return 0;
+		}
 		common->Printf( "ERROR: idTCP::Write: %s\n", strerror( errno ) );
 		Close();
 		return -1;

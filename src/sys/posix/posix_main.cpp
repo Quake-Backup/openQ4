@@ -35,16 +35,32 @@ If you have questions concerning this license or the applicable additional terms
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/time.h>
+#include <sys/statvfs.h>
 #include <pwd.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include <termios.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <time.h>
+
+#if defined( __linux__ )
+#include <sys/sysinfo.h>
+#endif
+
+#if defined( MACOS_X )
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 #include "posix_public.h"
 
-#define					MAX_OSPATH 256
+#define					MAX_OSPATH PATH_MAX
 #define					COMMAND_HISTORY 64
 
 static int				input_hide = 0;
@@ -71,7 +87,8 @@ idCVar sys_allowMultipleInstances( "sys_allowMultipleInstances", "0", CVAR_SYSTE
 // exit - quit - error --------------------------------------------------------
 
 static int set_exit = 0;
-static char exit_spawn[ 1024 ];
+static const int POSIX_EXIT_SPAWN_SIZE = 4096;
+static char exit_spawn[ POSIX_EXIT_SPAWN_SIZE ];
 // Keep the descriptor open for the life of the process so the advisory lock stays held.
 static int posix_instanceLockFd = -1;
 
@@ -133,9 +150,7 @@ void Posix_Exit(int ret) {
 	}
 	Posix_ReleaseInstanceLock();
 	// process spawning. it's best when it happens after everything has shut down
-	if ( exit_spawn[0] ) {
-		Sys_DoStartProcess( exit_spawn, false );
-	}
+	Posix_RunExitSpawn();
 	// in case of signal, handler tries a common->Quit
 	// we use set_exit to maintain a correct exit code
 	if ( set_exit ) {
@@ -160,7 +175,22 @@ set the process to be spawned when we quit
 ===============
 */
 void Posix_SetExitSpawn( const char *exeName ) {
-	idStr::Copynz( exit_spawn, exeName, 1024 );
+	if ( exeName == NULL || exeName[0] == '\0' ) {
+		exit_spawn[0] = '\0';
+		return;
+	}
+	idStr::Copynz( exit_spawn, exeName, sizeof( exit_spawn ) );
+}
+
+void Posix_RunExitSpawn( void ) {
+	if ( exit_spawn[0] == '\0' ) {
+		return;
+	}
+
+	char spawnCommand[ POSIX_EXIT_SPAWN_SIZE ];
+	idStr::Copynz( spawnCommand, exit_spawn, sizeof( spawnCommand ) );
+	exit_spawn[0] = '\0';
+	Sys_DoStartProcess( spawnCommand, false );
 }
 
 /*
@@ -173,6 +203,11 @@ NOTE: might even want to add a small delay?
 ==================
 */
 void idSysLocal::StartProcess( const char *exeName, bool quit ) {
+	if ( exeName == NULL || exeName[0] == '\0' ) {
+		common->Printf( "Sys_StartProcess: empty command\n" );
+		return;
+	}
+
 	if ( quit ) {
 		common->DPrintf( "Sys_StartProcess %s (delaying until final exit)\n", exeName );
 		Posix_SetExitSpawn( exeName );
@@ -232,7 +267,12 @@ Sys_Mkdir
 ================
 */
 void Sys_Mkdir( const char *path ) {
-	mkdir(path, 0777);
+	if ( path == NULL || path[0] == '\0' ) {
+		return;
+	}
+	if ( mkdir( path, 0777 ) == -1 && errno != EEXIST ) {
+		common->DPrintf( "Sys_Mkdir: mkdir '%s' failed: %s\n", path, strerror( errno ) );
+	}
 }
 
 /*
@@ -244,13 +284,19 @@ int Sys_ListFiles( const char *directory, const char *extension, idStrList &list
 	struct dirent *d;
 	DIR *fdir;
 	bool dironly = false;
-	char search[MAX_OSPATH];
 	struct stat st;
 	bool debug;
 	
 	list.Clear();
 
 	debug = cvarSystem->GetCVarBool( "fs_debug" );
+
+	if ( directory == NULL || directory[0] == '\0' ) {
+		if (debug) {
+			common->Printf("Sys_ListFiles: empty directory\n");
+		}
+		return -1;
+	}
 	
 	if (!extension)
 		extension = "";
@@ -271,8 +317,9 @@ int Sys_ListFiles( const char *directory, const char *extension, idStrList &list
 	}
 	
 	while ((d = readdir(fdir)) != NULL) {
-		idStr::snPrintf(search, sizeof(search), "%s/%s", directory, d->d_name);
-		if (stat(search, &st) == -1)
+		idStr search = directory;
+		search.AppendPath( d->d_name );
+		if (stat(search.c_str(), &st) == -1)
 			continue;
 		if (!dironly) {
 			idStr look(search);
@@ -382,7 +429,10 @@ Posix_Cwd
 const char *Posix_Cwd( void ) {
 	static char cwd[MAX_OSPATH];
 
-	getcwd( cwd, sizeof( cwd ) - 1 );
+	if ( getcwd( cwd, sizeof( cwd ) - 1 ) == NULL ) {
+		idStr::Copynz( cwd, ".", sizeof( cwd ) );
+		return cwd;
+	}
 	cwd[MAX_OSPATH-1] = 0;
 
 	return cwd;
@@ -393,16 +443,95 @@ const char *Posix_Cwd( void ) {
 Sys_GetMemoryStatus
 =================
 */
+void Sys_GetCurrentMemoryStatus( sysMemoryStats_t &stats );
+
 void Sys_GetMemoryStatus( sysMemoryStats_t &stats ) {
-	common->Printf( "FIXME: Sys_GetMemoryStatus stub\n" );
+	Sys_GetCurrentMemoryStatus( stats );
+}
+
+static int Sys_BytesToClampedMegabytes( const unsigned long long bytes ) {
+	return static_cast<int>( Min( bytes >> 20, static_cast<unsigned long long>( idMath::INT_MAX ) ) );
+}
+
+static void Sys_SetMemoryStatsFromBytes(
+	sysMemoryStats_t &stats,
+	unsigned long long totalPhysical,
+	unsigned long long availPhysical,
+	unsigned long long totalPageFile,
+	unsigned long long availPageFile ) {
+	if ( totalPhysical > 0 && availPhysical > totalPhysical ) {
+		availPhysical = totalPhysical;
+	}
+	if ( totalPageFile > 0 && availPageFile > totalPageFile ) {
+		availPageFile = totalPageFile;
+	}
+
+	stats.totalPhysical = Sys_BytesToClampedMegabytes( totalPhysical );
+	stats.availPhysical = Sys_BytesToClampedMegabytes( availPhysical );
+	stats.totalPageFile = Sys_BytesToClampedMegabytes( totalPageFile );
+	stats.availPageFile = Sys_BytesToClampedMegabytes( availPageFile );
+	stats.totalVirtual = stats.totalPageFile;
+	stats.availVirtual = stats.availPageFile;
+	stats.availExtendedVirtual = 0;
+	if ( totalPhysical > 0 ) {
+		const unsigned long long availPercent = Min( ( availPhysical * 100ULL ) / totalPhysical, 100ULL );
+		stats.memoryLoad = idMath::ClampInt( 0, 100, 100 - static_cast<int>( availPercent ) );
+	}
 }
 
 void Sys_GetCurrentMemoryStatus( sysMemoryStats_t &stats ) {
-	common->Printf( "FIXME: Sys_GetCurrentMemoryStatus\n" );
+	memset( &stats, 0, sizeof( stats ) );
+
+#if defined( __linux__ )
+	struct sysinfo info;
+	if ( sysinfo( &info ) == -1 ) {
+		common->DPrintf( "Sys_GetCurrentMemoryStatus: sysinfo failed: %s\n", strerror( errno ) );
+		return;
+	}
+
+	const unsigned long long unit = info.mem_unit > 0 ? info.mem_unit : 1;
+	const unsigned long long totalPhysical = static_cast<unsigned long long>( info.totalram ) * unit;
+	const unsigned long long availPhysical = static_cast<unsigned long long>( info.freeram + info.bufferram ) * unit;
+	const unsigned long long totalSwap = static_cast<unsigned long long>( info.totalswap ) * unit;
+	const unsigned long long availSwap = static_cast<unsigned long long>( info.freeswap ) * unit;
+	const unsigned long long totalVirtual = totalPhysical + totalSwap;
+	const unsigned long long availVirtual = availPhysical + availSwap;
+
+	Sys_SetMemoryStatsFromBytes( stats, totalPhysical, availPhysical, totalVirtual, availVirtual );
+#elif defined( MACOS_X )
+	unsigned long long totalPhysical = 0;
+	size_t totalPhysicalSize = sizeof( totalPhysical );
+	if ( sysctlbyname( "hw.memsize", &totalPhysical, &totalPhysicalSize, NULL, 0 ) == -1 || totalPhysical == 0 ) {
+		common->DPrintf( "Sys_GetCurrentMemoryStatus: hw.memsize failed: %s\n", strerror( errno ) );
+		return;
+	}
+
+	mach_port_t hostPort = mach_host_self();
+	vm_size_t pageSize = 0;
+	vm_statistics64_data_t vmStats;
+	mach_msg_type_number_t vmStatsCount = HOST_VM_INFO64_COUNT;
+
+	if ( host_page_size( hostPort, &pageSize ) != KERN_SUCCESS ||
+		 host_statistics64( hostPort, HOST_VM_INFO64, reinterpret_cast<host_info64_t>( &vmStats ), &vmStatsCount ) != KERN_SUCCESS ||
+		 pageSize == 0 ) {
+		mach_port_deallocate( mach_task_self(), hostPort );
+		Sys_SetMemoryStatsFromBytes( stats, totalPhysical, 0, totalPhysical, 0 );
+		return;
+	}
+
+	const unsigned long long availablePages =
+		static_cast<unsigned long long>( vmStats.free_count ) +
+		static_cast<unsigned long long>( vmStats.inactive_count ) +
+		static_cast<unsigned long long>( vmStats.speculative_count );
+	const unsigned long long availPhysical = availablePages * static_cast<unsigned long long>( pageSize );
+
+	mach_port_deallocate( mach_task_self(), hostPort );
+	Sys_SetMemoryStatsFromBytes( stats, totalPhysical, availPhysical, totalPhysical, availPhysical );
+#endif
 }
 
 void Sys_GetExeLaunchMemoryStatus( sysMemoryStats_t &stats ) {
-	common->Printf( "FIXME: Sys_GetExeLaunchMemoryStatus\n" );
+	Sys_GetCurrentMemoryStatus( stats );
 }
 
 /*
@@ -434,9 +563,15 @@ TODO: OSX - use the native API instead? NSModule
 =================
 */
 intptr_t Sys_DLL_Load( const char *path ) {
+	if ( path == NULL || path[0] == '\0' ) {
+		Sys_Printf( "dlopen failed: empty path\n" );
+		return 0;
+	}
+	dlerror();
 	void *handle = dlopen( path, RTLD_NOW );
 	if ( !handle ) {
-		Sys_Printf( "dlopen '%s' failed: %s\n", path, dlerror() );
+		const char *error = dlerror();
+		Sys_Printf( "dlopen '%s' failed: %s\n", path, error ? error : "unknown error" );
 	}
 	return (intptr_t)handle;
 }
@@ -448,6 +583,11 @@ Sys_DLL_GetProcAddress
 */
 void* Sys_DLL_GetProcAddress( intptr_t handle, const char *sym ) {
 	const char *error;
+	if ( handle == 0 || sym == NULL || sym[0] == '\0' ) {
+		Sys_Printf( "dlsym failed: invalid handle or symbol\n" );
+		return NULL;
+	}
+	dlerror();
 	void *ret = dlsym( (void *)handle, sym );
 	if ((error = dlerror()) != NULL)  {
 		Sys_Printf( "dlsym '%s' failed: %s\n", sym, error );
@@ -461,6 +601,9 @@ Sys_DLL_Unload
 =================
 */
 void Sys_DLL_Unload( intptr_t handle ) {
+	if ( handle == 0 ) {
+		return;
+	}
 	dlclose( (void *)handle );
 }
 
@@ -492,27 +635,32 @@ const char *Sys_DefaultCDPath( void ) {
 	return Posix_Cwd();
 }
 
-long Sys_FileTimeStamp(FILE * fp) {
+ID_TIME_T Sys_FileTimeStamp(FILE * fp) {
+	if ( fp == NULL ) {
+		return -1;
+	}
 	struct stat st;
-	fstat(fileno(fp), &st);
+	if ( fstat(fileno(fp), &st) == -1 ) {
+		return -1;
+	}
 	return st.st_mtime;
 }
 
 #ifndef MACOS_X
 void Sys_Sleep(int msec) {
-	if ( msec < 20 ) {
-		static int last = 0;
-		int now = Sys_Milliseconds();
-		if ( now - last > 1000 ) {
-			Sys_Printf("WARNING: Sys_Sleep - %d < 20 msec is not portable\n", msec);
-			last = now;
-		}
-		// ignore that sleep call, keep going
+	if ( msec <= 0 ) {
 		return;
 	}
-	// use nanosleep? keep sleeping if signal interrupt?
-	if (usleep(msec * 1000) == -1)
-		Sys_Printf("usleep: %s\n", strerror(errno));
+
+	struct timespec requested;
+	requested.tv_sec = msec / 1000;
+	requested.tv_nsec = ( msec % 1000 ) * 1000000L;
+	while ( nanosleep( &requested, &requested ) == -1 ) {
+		if ( errno != EINTR ) {
+			Sys_Printf( "nanosleep: %s\n", strerror( errno ) );
+			return;
+		}
+	}
 }
 #endif
 
@@ -584,8 +732,43 @@ return in MegaBytes
 ===========
 */
 int Sys_GetDriveFreeSpace( const char *path ) {
-	common->DPrintf( "TODO: Sys_GetDriveFreeSpace\n" );
-	return 1000 * 1024;
+	char probePath[PATH_MAX];
+	struct statvfs fsStats;
+
+	if ( path == NULL || path[0] == '\0' ) {
+		path = Posix_Cwd();
+	}
+
+	idStr::Copynz( probePath, path, sizeof( probePath ) );
+	while ( probePath[0] != '\0' ) {
+		if ( statvfs( probePath, &fsStats ) == 0 ) {
+			const unsigned long long blockSize = fsStats.f_frsize != 0 ? fsStats.f_frsize : fsStats.f_bsize;
+			const unsigned long long freeBytes = static_cast<unsigned long long>( fsStats.f_bavail ) * blockSize;
+			return Sys_BytesToClampedMegabytes( freeBytes );
+		}
+
+		size_t length = strlen( probePath );
+		while ( length > 1 && probePath[length - 1] == '/' ) {
+			probePath[--length] = '\0';
+		}
+		char *lastSlash = strrchr( probePath, '/' );
+		if ( lastSlash == NULL ) {
+			break;
+		}
+		if ( lastSlash == probePath ) {
+			probePath[1] = '\0';
+			if ( statvfs( probePath, &fsStats ) == 0 ) {
+				const unsigned long long blockSize = fsStats.f_frsize != 0 ? fsStats.f_frsize : fsStats.f_bsize;
+				const unsigned long long freeBytes = static_cast<unsigned long long>( fsStats.f_bavail ) * blockSize;
+				return Sys_BytesToClampedMegabytes( freeBytes );
+			}
+			break;
+		}
+		*lastSlash = '\0';
+	}
+
+	common->DPrintf( "Sys_GetDriveFreeSpace: statvfs failed for '%s': %s\n", path, strerror( errno ) );
+	return 26;
 }
 
 /*

@@ -11,8 +11,9 @@ This document defines the implementation plan for migrating non-Windows platform
 ## Current State
 
 - Windows can build/run with `platform_backend=sdl3`.
-- Linux/macOS runtime paths are currently native (`src/sys/linux`, `src/sys/osx`) and rely on X11/GLX (Linux) and Cocoa/OpenGL glue (macOS).
-- Non-Windows `platform_backend=sdl3` is currently a staging alias that maps to native platform sources.
+- Linux defaults to `platform_backend=sdl3` and uses the SDL3 window, input, display, and OpenGL context path. The native X11/GLX backend remains available with `-Dplatform_backend=native` as a fallback.
+- macOS still maps `platform_backend=sdl3` to native platform sources until its SDL3 runtime path is implemented; the native path now has validated URL opening, shell-free process handoff, millisecond sleep timing, platform-backed memory reporting, and cleaner GL startup failure handling.
+- Linux SDL3 still carries small platform-specific glue for executable discovery, POSIX lifecycle, X11/XNVCtrl video-memory probing, and Steam Deck/XWayland launch behavior.
 
 ## Migration Phases
 
@@ -21,12 +22,12 @@ This document defines the implementation plan for migrating non-Windows platform
 - Allow non-Windows `platform_backend=sdl3` as a staging mode in CI and local builds.
 - Keep effective non-Windows source selection native until SDL3 paths are implemented.
 
-2. Shared SDL3 Shell Introduction
+2. Shared SDL3 Shell Introduction (completed for Windows/Linux)
 - Add shared non-Windows SDL3 window/input lifecycle skeleton under `src/sys/`.
 - Keep renderer context setup delegated to existing native code initially.
 - Gate behind opt-in build/runtime cvars to allow side-by-side validation.
 
-3. Linux SDL3 Runtime Bring-Up
+3. Linux SDL3 Runtime Bring-Up (default path)
 - Replace Linux native window/event pump path with SDL3 equivalents.
 - Validate fullscreen/windowed transitions, input capture, and multi-monitor behavior.
 - Validate XWayland and native Wayland behavior explicitly in logs and docs.
@@ -37,7 +38,7 @@ This document defines the implementation plan for migrating non-Windows platform
 - Ensure app-bundle execution path behaves correctly.
 
 5. Promotion To First-Class
-- Promote Linux/macOS SDL3 path to default once compile/link/runtime checks pass consistently.
+- Promote the remaining SDL3 paths to default once compile/link/runtime checks pass consistently.
 - Keep native backends available for rollback until at least one release cycle is stable.
 
 ## Validation Requirements Per Phase

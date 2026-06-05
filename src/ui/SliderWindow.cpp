@@ -124,6 +124,7 @@ idWinVar *idSliderWindow::GetWinVarByName(const char *_name, bool fixup, drawWin
 }
 
 const char *idSliderWindow::HandleEvent(const sysEvent_t *event, bool *updateVisuals) {
+	cmd = "";
 
 	if (!(event->evType == SE_KEY && event->evValue2)) {
 		return "";
@@ -133,29 +134,81 @@ const char *idSliderWindow::HandleEvent(const sysEvent_t *event, bool *updateVis
 
 	if ( event->evValue2 && key == K_MOUSE1 ) {
 		SetCapture(this);
-		RouteMouseCoords(0.0f, 0.0f);
-		return "";
+		return RouteMouseCoords(0.0f, 0.0f);
 	} 
 
-	if ( scrollbar && key == K_MWHEELUP ) {
-		value = value - stepSize;
-	} else if ( scrollbar && key == K_MWHEELDOWN ) {
-		value = value + stepSize;
+	UpdateCvar( true );
+	value = ClampAndSnapValue( value );
+
+	bool handled = true;
+	const float verticalUpStep = verticalFlip ? stepSize : -stepSize;
+	const float verticalDownStep = verticalFlip ? -stepSize : stepSize;
+	switch ( key ) {
+		case K_MWHEELUP:
+			if ( scrollbar ) {
+				value = value + ( vertical ? verticalUpStep : -stepSize );
+			} else {
+				handled = false;
+			}
+			break;
+		case K_MWHEELDOWN:
+			if ( scrollbar ) {
+				value = value + ( vertical ? verticalDownStep : stepSize );
+			} else {
+				handled = false;
+			}
+			break;
+		case K_RIGHTARROW:
+		case K_KP_RIGHTARROW:
+			value = value + stepSize;
+			break;
+		case K_LEFTARROW:
+		case K_KP_LEFTARROW:
+			value = value - stepSize;
+			break;
+		case K_UPARROW:
+		case K_KP_UPARROW:
+			value = value + ( vertical ? verticalUpStep : -stepSize );
+			break;
+		case K_DOWNARROW:
+		case K_KP_DOWNARROW:
+			value = value + ( vertical ? verticalDownStep : stepSize );
+			break;
+		case K_PGUP:
+		case K_KP_PGUP:
+			value = value + ( vertical ? ( verticalFlip ? GetPageStep() : -GetPageStep() ) : -GetPageStep() );
+			break;
+		case K_PGDN:
+		case K_KP_PGDN:
+			value = value + ( vertical ? ( verticalFlip ? -GetPageStep() : GetPageStep() ) : GetPageStep() );
+			break;
+		case K_HOME:
+		case K_KP_HOME:
+			value = low;
+			break;
+		case K_END:
+		case K_KP_END:
+			value = high;
+			break;
+		case K_MOUSE2: {
+			const float pageStep = GetPageStep();
+			if ( vertical ) {
+				const bool belowThumb = gui->CursorY() > thumbRect.y + thumbRect.h * 0.5f;
+				value = value + ( belowThumb ? ( verticalFlip ? -pageStep : pageStep ) : ( verticalFlip ? pageStep : -pageStep ) );
+			} else {
+				const bool rightOfThumb = gui->CursorX() > thumbRect.x + thumbRect.w * 0.5f;
+				value = value + ( rightOfThumb ? pageStep : -pageStep );
+			}
+			break;
+		}
+		default:
+			handled = false;
+			break;
 	}
 
-	if ( key == K_RIGHTARROW || key == K_KP_RIGHTARROW || ( key == K_MOUSE2 && gui->CursorY() > thumbRect.y ) )  {
-		value = value + stepSize;
-	}
-
-	if ( key == K_LEFTARROW || key == K_KP_LEFTARROW || ( key == K_MOUSE2 && gui->CursorY() < thumbRect.y ) ) {
-		value = value - stepSize;
-	}
-
-	if (buddyWin) {
-		buddyWin->HandleBuddyUpdate(this);
-	} else {
-		gui->SetStateFloat( cvarStr, value );
-		UpdateCvar( false );
+	if ( handled ) {
+		CommitValue();
+		return cmd;
 	}
 
 	return "";
@@ -199,10 +252,11 @@ void idSliderWindow::SetRange(float _low, float _high, float _step) {
 	low = _low;
 	high = _high;
 	stepSize = _step;
+	value = ClampAndSnapValue( value );
 }
 
 void idSliderWindow::SetValue(float _value) {
-	value = _value;
+	value = ClampAndSnapValue( _value );
 }
 
 void idSliderWindow::Draw(int time, float x, float y) {
@@ -218,11 +272,7 @@ void idSliderWindow::Draw(int time, float x, float y) {
 	}
 
 	UpdateCvar( true );
-	if ( value > high ) {
-		value = high;
-	} else if ( value < low ) {
-		value = low;
-	}
+	value = ClampAndSnapValue( value );
 
 	float range = high - low;
 
@@ -288,21 +338,29 @@ void idSliderWindow::DrawBackground(const idRectangle &_drawRect) {
 }
 
 const char *idSliderWindow::RouteMouseCoords(float xd, float yd) {
-	float pct;
+	cmd = "";
 
 	if (!(flags & WIN_CAPTURE)) {
 		return "";
 	}
 
+	if ( high <= low ) {
+		value = low;
+		CommitValue();
+		return cmd;
+	}
+
+	float pct;
 	idRectangle r = drawRect;
 	r.x = actualX;
 	r.y = actualY;
-	r.x += thumbWidth / 2.0;
-	r.w -= thumbWidth;
+
 	if (vertical) {
 		r.y += thumbHeight / 2;
 		r.h -= thumbHeight;
-		if (gui->CursorY() >= r.y && gui->CursorY() <= r.Bottom()) {
+		if ( r.h <= 0.0f ) {
+			value = low;
+		} else if (gui->CursorY() >= r.y && gui->CursorY() <= r.Bottom()) {
 			pct = (gui->CursorY() - r.y) / r.h;
 			if ( verticalFlip ) {
 				pct = 1.f - pct;
@@ -324,7 +382,9 @@ const char *idSliderWindow::RouteMouseCoords(float xd, float yd) {
 	} else {
 		r.x += thumbWidth / 2;
 		r.w -= thumbWidth;
-		if (gui->CursorX() >= r.x && gui->CursorX() <= r.Right()) {
+		if ( r.w <= 0.0f ) {
+			value = low;
+		} else if (gui->CursorX() >= r.x && gui->CursorX() <= r.Right()) {
 			pct = (gui->CursorX() - r.x) / r.w;
 			value = low + (high - low) * pct;
 		} else if (gui->CursorX() < r.x) {
@@ -334,14 +394,47 @@ const char *idSliderWindow::RouteMouseCoords(float xd, float yd) {
 		}
 	}
 
-	if (buddyWin) {
-		buddyWin->HandleBuddyUpdate(this);
+	CommitValue();
+
+	return cmd;
+}
+
+float idSliderWindow::ClampAndSnapValue( float newValue ) const {
+	if ( high <= low ) {
+		return low;
+	}
+
+	newValue = idMath::ClampFloat( low, high, newValue );
+	if ( stepSize > 0.0f ) {
+		const float steps = idMath::Floor( ( ( newValue - low ) / stepSize ) + 0.5f );
+		newValue = low + steps * stepSize;
+		newValue = idMath::ClampFloat( low, high, newValue );
+	}
+	return newValue;
+}
+
+float idSliderWindow::GetPageStep( void ) const {
+	const float range = high - low;
+	if ( range <= 0.0f ) {
+		return 0.0f;
+	}
+
+	const float step = stepSize > 0.0f ? stepSize : 1.0f;
+	const float pageStep = range * 0.25f;
+	return Max( step, pageStep );
+}
+
+void idSliderWindow::CommitValue( void ) {
+	value = ClampAndSnapValue( value );
+	if ( buddyWin ) {
+		buddyWin->HandleBuddyUpdate( this );
 	} else {
 		gui->SetStateFloat( cvarStr, value );
+		UpdateCvar( false );
+		if ( scrollbar ) {
+			RunScript( ON_ACTION );
+		}
 	}
-	UpdateCvar( false );
-
-	return "";
 }
 
 void idSliderWindow::MouseEnter() {
@@ -404,11 +497,14 @@ void idSliderWindow::UpdateCvar( bool read, bool force ) {
 	}
 	if ( force || liveUpdate ) {
 		value = cvar->GetFloat();
+		value = ClampAndSnapValue( value );
 		if ( value != gui->State().GetFloat( cvarStr ) ) {
 			if ( read ) {
 				gui->SetStateFloat( cvarStr, value );
 			} else {
 				value = gui->State().GetFloat( cvarStr );
+				value = ClampAndSnapValue( value );
+				gui->SetStateFloat( cvarStr, value );
 				cvar->SetFloat( value );
 			}
 		}

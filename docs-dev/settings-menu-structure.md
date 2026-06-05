@@ -5,9 +5,16 @@ This document describes the current OpenQ4 Settings menu as implemented by the m
 Source files:
 
 - `content/baseoq4/guis/mainmenu.gui`
+- `content/baseoq4/guis/menu/settings/controls.gui`
+- `content/baseoq4/guis/menu/settings/system.gui`
+- `content/baseoq4/guis/menu/settings/audio.gui`
+- `content/baseoq4/guis/menu/settings/popups.gui`
 - `content/baseoq4/guis/menu/settings/game.gui`
 - `content/baseoq4/guis/menu/settings/game_hovers.gui`
 - `src/framework/Session_menu.cpp`
+- `docs-dev/settings-menu-registry.json`
+
+`docs-dev/settings-menu-registry.json` is the machine-readable inventory for the Settings surfaces touched by the current refactor. The coverage test uses it to validate source/widget presence, localization keys, cvar, GUI-state, or bind targets, UI ranges, shipped default keys, defaults, restart warnings, and accessibility notes for the registered rows, and it now asserts that every active Game Options value widget has a registry record.
 
 ## Widget Type Key
 
@@ -16,14 +23,16 @@ Source files:
 | `windowDef` | Static label, background, container, preview, action hotspot, or hover surface depending on event handlers. |
 | `choiceDef` | Discrete picker. Uses explicit `values` when present. For common boolean `choiceType 0` rows, `#str_200059` maps to `No;Yes` and normally means `0;1`. |
 | `sliderDef` | Numeric slider. The GUI range is defined by `low`, `high`, and `step`. |
-| `editDef` | Text/numeric value field, usually paired with a slider that writes the same cvar. |
+| `editDef` | Text/numeric value field, usually paired with a slider that writes the same cvar. Decimal or integer settings use `numeric 1` where the valid range is non-negative. |
 | `bindDef` | Key/button binding capture widget. Bind widgets have no numeric range. |
 
 Several rows use `gui` instead of `cvar`. These write a GUI state variable first, then apply one or more console commands from GUI event handlers.
 
+Controls registry records use `target_type: "bind"` and validate shipped default keys from `content/baseoq4/default.cfg` plus `content/baseoq4/openq4_defaults.cfg`.
+
 ## Top-Level Settings Shell
 
-The Settings panel is `p_settings` in `mainmenu.gui`. It owns the left navigation, the active content pane, popups, and shared named events.
+The Settings panel is `p_settings` in `mainmenu.gui`. It owns the left navigation, included content panes, included Settings popups, and shared named events.
 
 | Entry | Widget | Opens or performs | Notes |
 |---|---|---|---|
@@ -32,18 +41,24 @@ The Settings panel is `p_settings` in `mainmenu.gui`. It owns the left navigatio
 | System | `windowDef set_b_system` | `p_settings_sys` | Video, display, quality, advanced rendering, and post effects. |
 | Audio | `windowDef set_b_audio` | `p_settings_audio` | Output backend/device plus volume controls. |
 | Load Defaults | `windowDef set_b_loaddefaults` | Reset-confirm popup | Sets `desktop::active` and opens `anim_pop_defaultsIn`. |
-| Video Restart | `windowDef set_b_vidrestart` | `vid_restart` | The active button block is currently commented out. Some warning state and label assets still exist. |
+| Video Restart | `windowDef set_b_vidrestart` | `vid_restart` | Hidden by default, then shown by video-warning paths for changes that require a restart. Back also routes through the warning flow when `desktop::vidwarn` is set. |
 | Back | `windowDef set_b_back` | Exits Settings | If `desktop::vidwarn` is set, Back routes through the video warning flow. |
 
 Scroll controls:
 
 | Pane | Scroll widget | Cvar | Range | Step | Notes |
 |---|---|---|---|---|---|
-| Game Options | `sliderDef set_game_scroll_thumb` | `gui_set_game_scroll` | `0..27` | `1` | Vertical scrollbar. Calls `applySetGameScroll`. |
-| System | `sliderDef set_sys_scroll_thumb` | `gui_set_sys_scroll` | `0..19` | `1` | Vertical scrollbar. Calls `applySetSystemScroll`. |
-| Audio | `sliderDef set_audio_scroll_thumb` | `gui_set_audio_scroll` | `0..0` | `1` | Disabled in practice because Audio fits without scrolling. |
+| Game Options | `choiceDef set_game_section_choice` | `game_section_choice` | General / Mouse / Controller / Crosshair / Gameplay / View Weapon | `1` | Localized section picker below the pane title and above the scroll frame. Sets live GUI state `gui::gui_set_game_scroll` to the group anchor and calls `applySettingsScroll game`; the engine clamps and applies the matching row-canvas rect. |
+| Game Options | `sliderDef set_game_scroll_thumb` | `gui_set_game_scroll` | `0..36` | `1` | Vertical scrollbar. Calls `applySettingsScroll game`; `idSliderWindow` propagates the command from thumb drag as well as key/button events. |
+| System | `choiceDef set_sys_section_choice` | `sys_section_choice` | Video / Window / Rendering / Quality / Post FX / Sizing | `1` | Localized section picker above the scroll frame. Sets live GUI state `gui::gui_set_sys_scroll` to the group anchor and calls `applySettingsScroll system`; the engine clamps and applies the matching row-canvas rect. |
+| System | `sliderDef set_sys_scroll_thumb` | `gui_set_sys_scroll` | `0..26` | `1` | Vertical scrollbar. Calls `applySettingsScroll system`; `idSliderWindow` propagates the command from thumb drag as well as key/button events. |
+| Audio | `sliderDef set_audio_scroll_thumb` | `gui_set_audio_scroll` | `0..0` | `1` | Disabled in practice because Audio fits without scrolling; the engine keeps its scroll thumb hidden and no-evented. |
+
+Mouse-wheel, Page Up/Page Down, controller shoulder, Home, and End scrolling is handled by `src/framework/Session_menu.cpp`. The same C++ scroll table owns the scroll cvars, thumb visibility/noevents, section-picker sync, and `set_*_content::rect` row-canvas positions for Game Options, System, and Audio. The handler only acts when `desktop::curr` is the matching Settings page, that page is visible, and no Settings popup parent is visible, so transient menu animation state cannot block the visible pane and modal popup transitions do not scroll the pane behind them. The GUI still keeps `applySetSystemScroll`, `applySetAudioScroll`, and `applySetGameScroll` as compatibility stubs, but they only forward to `applySettingsScroll`; they no longer contain row-canvas transition tables.
 
 Settings popups:
+
+Settings-specific popup window definitions are included from `content/baseoq4/guis/menu/settings/popups.gui`. Their animation windows and shared event wiring remain in `mainmenu.gui`.
 
 | Popup | Widget/action surface | Type | Effect |
 |---|---|---|---|
@@ -53,7 +68,7 @@ Settings popups:
 
 ## Controls
 
-The Controls pane is `p_settings_ctrls`. It has four subpanes selected by action buttons: Movement, Weapons, Attack/Look, and Other. Every row uses `bindDef`.
+The Controls pane is `p_settings_ctrls`, included from `content/baseoq4/guis/menu/settings/controls.gui`. It has four subpanes selected by action buttons: Movement, Weapons, Attack/Look, and Other. Every row uses `bindDef`.
 
 Category selectors:
 
@@ -148,9 +163,10 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Toggle Zoom | `choiceDef` | `set_game_togglezoom_value` | `in_toggleZoom` | `No;Yes` | Boolean picker. |
 | Show Decals | `choiceDef` | `set_game_showdecals_value` | `g_decals` | `No;Yes` | Boolean picker. |
 | Show Gun | `choiceDef` | `set_game_showgun_value` | `ui_showGun` | `No;Yes` | Boolean picker. |
-| Gun Position | `choiceDef` | `set_game_gunXYZ_value` | GUI state `g_gunXYZ` | `0 Right`, `1 Centered`, `2 Lower Right` | Writes `g_gunX`, `g_gunY`, `g_gunZ`, and `g_weaponFovEffect`. |
+| Gun Position | `choiceDef` | `set_game_gunXYZ_value` | GUI state `g_gunXYZ` via `applyGunPositionChoice` | `0 Right`, `1 Centered`, `2 Lower Right` | The C++ menu adapter writes the preset `g_gunX`, `g_gunY`, and `g_gunZ` values, and enables `g_weaponFovEffect` when that cvar exists. |
 | Simple Items | `choiceDef` | `set_game_simpleitems_value` | `g_simpleItems` | `No;Yes` | Boolean picker. |
-| Force Model | `choiceDef` | `set_game_forcemodel_value` | GUI state `ui_proskins` | `0 No`, `1 Yes` | Writes `g_forceModel`, `g_forceMarineModel`, and `g_forcestroggmodel`. |
+| Force Model | `choiceDef` | `set_game_forcemodel_value` | GUI state `ui_proskins` via `applyForceModelChoice` | `0 No`, `1 Yes` | The C++ menu adapter writes the pro-skin force-model cvars when enabled and clears `g_forceModel`, `g_forceMarineModel`, and `g_forceStroggModel` when disabled. |
+| Auto Skip Cinematics | `choiceDef` | `set_game_autoskipcinematics_value` | `g_autoSkipCinematics` | `No;Yes` | Archived SP/MP gameplay cvar. Affects future cinematics. |
 
 ### Mouse
 
@@ -188,20 +204,31 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Custom Crosshair | `choiceDef` | `set_game_customxhair_value` | `g_crosshairCustom` | `Weapon Default;Custom` | Enables or disables the custom preview/action row. |
 | Crosshair Preview | `windowDef` action | `set_game_previewxhair` and preview size windows | `chooseCrosshair` command | Next/previous through command args `1` and `-1` | Disabled when `g_crosshairCustom` is off. |
 | Crosshair Size | `choiceDef` | `set_game_xhairsize_value` | `g_crosshairSize` | `16 Small`, `24 Medium`, `32 Default`, `40 Large`, `48 Extra Large` | Paired with preview update events. |
-| Crosshair Color | `windowDef` swatches | `set_game_xhaircolor_xcolor0..7` plus hover action windows | `g_crosshairColor` | White, red, orange, yellow, green, cyan, blue, magenta | Swatches write RGBA values: `1 1 1 1`, `1 0 0 1`, `1 0.5 0 1`, `1 1 0 1`, `0 1 0 1`, `0 1 1 1`, `0 0 1 1`, `1 0 0.5 1`. |
+| Crosshair Color | `choiceDef` | `set_game_xhaircolor_value` | GUI state `g_crosshairColorChoice` | White, red, orange, yellow, green, cyan, blue, magenta | Focusable picker. Selection writes `g_crosshairColor` RGBA values and updates the preview. |
 
 ### Corpse, Language, Console
 
 | Label | Widget type | Value widget | Target | Values or range | Notes |
 |---|---|---|---|---|---|
 | Corpse Sink | `choiceDef` | `set_game_corpsesink_value` | `g_corpseSink` | `0 Off`, `1 Ragdoll`, `2 No Ragdoll` | Changes corpse sink behavior. |
-| Corpse Time | `choiceDef` | `set_game_corpsetime_value` | GUI state `corpse_time_choice` | `Stock`, `Never`, `5 sec`, `10 sec`, `15 sec`, `30 sec`, `60 sec`, `Custom` | Writes `g_corpseRemoveDelaySP` or `g_corpseRemoveDelayMP` depending on current mode. Custom is selected when current cvar does not match a listed value. |
+| Corpse Time | `choiceDef` | `set_game_corpsetime_value` | GUI state `corpse_time_choice` via `applyCorpseTimeChoice` | `Stock`, `Never`, `5 sec`, `10 sec`, `15 sec`, `30 sec`, `60 sec`, `Custom` | The C++ menu adapter writes `g_corpseRemoveDelaySP` or `g_corpseRemoveDelayMP` depending on current mode. Custom is selected when current cvar does not match a listed value and remains a no-op when chosen. |
 | Language | `choiceDef` | `set_game_language_value` | `sys_lang` | `english`, `spanish`, `french`, `italian` | Displayed as English, Spanish, French, Italian. |
 | Console Access | `choiceDef` | `set_game_consoleaccess_value` | `con_allowConsole` | `0 Ctrl+Alt+Tilde`, `1 Tilde` | Controls shortcut required to open the console. |
 
+### View Weapon
+
+| Label | Widget type | Value widget | Target | Values or range | Notes |
+|---|---|---|---|---|---|
+| View Weapon | `windowDef` label | `set_game_viewweapon` | N/A | N/A | Section label. |
+| Weapon FOV | `sliderDef` + `editDef` | `set_game_cl_gunfov_slider_bar`, `set_game_cl_gunfov_value` | `cl_gunfov` | `0..179`, step `1` | `0` follows the current gameplay view FOV. |
+| Weapon FOV Aspect | `choiceDef` | `set_game_cl_gunfov_adjust_value` | `cl_gunfov_adjust` | `0 Direct`, `1 Classic` | Classic keeps 4:3-style weapon framing across screen ratios. |
+| Weapon X Offset | `sliderDef` + `editDef` | `set_game_cl_gun_x_slider_bar`, `set_game_cl_gun_x_value` | `cl_gun_x` | `-5..5`, step `0.05` | Additive client-side right offset. |
+| Weapon Y Offset | `sliderDef` + `editDef` | `set_game_cl_gun_y_slider_bar`, `set_game_cl_gun_y_value` | `cl_gun_y` | `-5..5`, step `0.05` | Additive client-side forward offset. |
+| Weapon Z Offset | `sliderDef` + `editDef` | `set_game_cl_gun_z_slider_bar`, `set_game_cl_gun_z_value` | `cl_gun_z` | `-5..5`, step `0.05` | Additive client-side up offset. |
+
 ## System
 
-The System pane is `p_settings_sys` in `mainmenu.gui`. Dynamic resolution, audio-device, and display-device lists are populated by `Session_menu.cpp` when the main menu opens.
+The System pane is `p_settings_sys`, included from `content/baseoq4/guis/menu/settings/system.gui`. Dynamic resolution and display-device lists are populated by `Session_menu.cpp` when the main menu opens.
 
 The pane has two display layouts:
 
@@ -214,12 +241,11 @@ The pane has two display layouts:
 |---|---|---|---|---|---|
 | Auto Detect | `windowDef` action | `set_b_system_auto` | Auto-detect popup | N/A | Opens the existing auto-detect confirmation flow. |
 | Video Quality / Renderer | `choiceDef` | `set_sys_vidqual_val` | `r_renderer` | `best;arb;arb2;Cg;exp;nv10;nv20;r200` | Displays `BEST;ARB;ARB2;CG;EXP;NV10;NV20;R200`. Marks `desktop::vidwarn`. |
-| Screen Size | `choiceDef` | `set_sys_screensize_val_0` | `r_mode` | Runtime `gui::4_3_choices` / `gui::4_3_values` | Visible when aspect state is `Other`. Includes custom mode `-1` when `r_customWidth`/`r_customHeight` match the group. |
-| Screen Size | `choiceDef` | `set_sys_screensize_val_1` | `r_mode` | Runtime `gui::16_9_choices` / `gui::16_9_values` | Visible when aspect state is `16:9`. |
-| Screen Size | `choiceDef` | `set_sys_screensize_val_2` | `r_mode` | Runtime `gui::16_10_choices` / `gui::16_10_values` | Visible when aspect state is `16:10`. |
-| Aspect Ratio | `choiceDef` | `set_sys_aspect_val` | GUI state `r_aspectRatio` | `0 Other`, `1 16:9`, `2 16:10` | Switches which Screen Size picker is visible. |
+| Screen Size | `choiceDef` | `set_sys_screensize_val_0` | `r_mode` | Runtime `gui::4_3_choices` / `gui::4_3_values` | Visible when the current mode is classified as the Other aspect bucket. Includes custom mode `-1` when `r_customWidth`/`r_customHeight` match the group. |
+| Screen Size | `choiceDef` | `set_sys_screensize_val_1` | `r_mode` | Runtime `gui::16_9_choices` / `gui::16_9_values` | Visible when the current mode is classified as `16:9`. |
+| Screen Size | `choiceDef` | `set_sys_screensize_val_2` | `r_mode` | Runtime `gui::16_10_choices` / `gui::16_10_values` | Visible when the current mode is classified as `16:10`. |
 | Fullscreen | `choiceDef` | `set_sys_fullscreen_val` | `r_fullscreen` | `No;Yes` | Marks `desktop::vidwarn`. |
-| Gamma / Brightness | `sliderDef` + `editDef` | `set_sys_gamma_slider`, `set_sys_gamma_value` | `r_brightness` | `0.5..2.0`, step `0.1` | Edit field `maxchars 1`. |
+| Gamma / Brightness | `sliderDef` + `editDef` | `set_sys_gamma_slider`, `set_sys_gamma_value` | `r_brightness` | `0.5..2.0`, step `0.1` | Numeric edit field `maxchars 3`, allowing values such as `0.5` and `2.0`. |
 
 ### Display And Advanced Rendering
 
@@ -227,7 +253,7 @@ The pane has two display layouts:
 |---|---|---|---|---|---|
 | Display Device | `choiceDef` | `set_sys_display_device_val` | `r_screen` | Runtime `gui::display_names` / `gui::display_values` | Only visible when `gui::display_count > 1`. |
 | Multi-Screen | `choiceDef` | `set_sys_multiscreen_val` | `r_multiScreen` | `0 Primary Display Only`, `1 Span All Displays` | Only visible when more than one display is detected. |
-| Super Sample | `choiceDef` | `set_sys_supersample_val` | `r_screenFraction` | `75`, `85`, `100`, `125`, `150`, `200` | Values below `100%` keep the existing reduced-resolution choices; values above `100%` render the root scene into a larger single-sample offscreen target and resolve back to the native back buffer. |
+| Resolution Scale | `choiceDef` | `set_sys_supersample_val` | `r_screenFraction` | `10`, `25`, `50`, `75`, `85`, `100`, `125`, `150`, `200` | Values below `100%` reduce scene resolution for performance; values above `100%` render the root scene into a larger single-sample offscreen target and resolve back to the native back buffer. |
 | Anti-Aliasing | `choiceDef` | `set_sys_msaa_val` | `r_multisamples` | `0 Off`, `2 2x`, `4 4x`, `8 8x`, `16 16x` | GUI cvar spelling is lower-case `r_multisamples`; the engine cvar is `r_multiSamples` and cvar lookup is case-insensitive. |
 | Post AA | `choiceDef` | `set_sys_postaa_val` | `r_postAA` | `0 Off`, `1 SMAA 1x` | Runtime post-process AA option. |
 | VSync | `choiceDef` | `set_sys_vsync_val` | `r_swapInterval` | `No;Yes` | Boolean picker. |
@@ -239,11 +265,11 @@ The pane has two display layouts:
 | Label | Widget type | Value widget | Target | Values or range | Notes |
 |---|---|---|---|---|---|
 | Shadows | `choiceDef` | `set_sys_shadows_val` | `r_shadows` | `No;Yes` | Boolean picker. |
-| Specular | `choiceDef` | `set_sys_specular_val` | `r_skipSpecular` | Display `Yes;No`, implicit `0;1` | Because this is a skip cvar, displayed Yes means `r_skipSpecular 0`. |
-| Bump Mapping | `choiceDef` | `set_sys_bump_val` | `r_skipBump` | Display `Yes;No`, implicit `0;1` | Because this is a skip cvar, displayed Yes means `r_skipBump 0`. |
-| Sky | `choiceDef` | `set_sys_sky_val` | `r_skipSky` | Display `Yes;No`, implicit `0;1` | Because this is a skip cvar, displayed Yes means `r_skipSky 0`. |
+| Specular | `choiceDef` | `set_sys_specular_val` | GUI state `r_specularEnabled` | `No;Yes` | Positive adapter. Selecting Yes writes `r_skipSpecular 0`; selecting No writes `r_skipSpecular 1`. |
+| Bump Mapping | `choiceDef` | `set_sys_bump_val` | GUI state `r_bumpEnabled` | `No;Yes` | Positive adapter. Selecting Yes writes `r_skipBump 0`; selecting No writes `r_skipBump 1`. |
+| Sky | `choiceDef` | `set_sys_sky_val` | GUI state `r_skyEnabled` | `No;Yes` | Positive adapter. Selecting Yes writes `r_skipSky 0`; selecting No writes `r_skipSky 1`. |
 | Ambient Light | `choiceDef` | `set_sys_ambient_val` | GUI state `r_forceAmbientOn` | `No;Yes` | When enabled, sets `r_forceAmbient 0.7`; when disabled, sets `r_forceAmbient 0`. |
-| Ambient Brightness | `sliderDef` + `editDef` | `set_sys_ambientbr_val`, `set_sys_ambientbr_valnum` | `r_forceAmbient` | `0.025..1.0`, step `0.025` | Disabled/greyed when Ambient Light is off. Edit field `maxchars 1`. |
+| Ambient Brightness | `sliderDef` + `editDef` | `set_sys_ambientbr_val`, `set_sys_ambientbr_valnum` | `r_forceAmbient` | `0.0..1.0`, step `0.025` | Disabled/greyed when Ambient Light is off. Edit field `maxchars 5`. |
 
 ### Post Effects
 
@@ -256,18 +282,30 @@ The pane has two display layouts:
 | Tone Mapping | `choiceDef` | `set_sys_tonemap_val` | `r_hdrToneMap` | `No;Yes` | Boolean picker. |
 | CRT Filter | `choiceDef` | `set_sys_crt_val` | `r_crt` | `No;Yes` | Boolean picker. |
 
-## Audio
-
-The Audio pane is `p_settings_audio` in `mainmenu.gui`.
+### Display Sizing
 
 | Label | Widget type | Value widget | Target | Values or range | Notes |
 |---|---|---|---|---|---|
-| Sound Volume | `sliderDef` + `editDef` | `set_audio_vol_slider`, `set_audio_vol_value` | `s_volume` | `0..2`, step `0.1` | GUI slider range. The current engine cvar declares `0..1`, so runtime clamping may be stricter than the widget. Edit field `maxchars 1`. |
-| Sound System | `choiceDef` | `set_audio_backend_val` | `s_useOpenAL` | `0 Default`, `1 OpenAL` | Runs `sound drivar` on release. |
-| Sound Device | `choiceDef` | `set_audio_device_val` | `s_deviceName` | Runtime `gui::device_name` / `gui::device_value` | Disabled when OpenAL is off or failed to load. Runs `sound drivar` on release. |
-| EAX Reverb | `choiceDef` | `set_audio_eax_val` | `s_useEAXReverb` | `No;Yes` | Disabled when OpenAL is off or failed to load. Runs `sound eax` on release. |
-| Surround Speakers | `choiceDef` | `set_audio_speakers_val` | `s_numberOfSpeakers` | `2`, `6` | Displayed through `No;Yes`, so this is effectively stereo vs surround. Runs `sound speakers` on release. |
-| Music Volume | `sliderDef` | `set_audio_music_slider` | `s_musicVolume` | `0..1`, step `0.05` | No paired edit field in the active Audio pane. |
+| Display Sizing | `windowDef` label | `set_sys_display_tuning` | N/A | N/A | Section label below Post Effects. |
+| UI Aspect | `choiceDef` | `set_sys_ui_aspect_val` | `ui_aspectCorrection` | `No;Yes` | `Yes` keeps classic 4:3-style UI correction. |
+| Refresh Rate | `choiceDef` | `set_sys_refresh_val` | `r_displayRefresh` | `0 Auto`, `60`, `75`, `120`, `144`, `165`, `240` | Marks `desktop::vidwarn`. |
+| Window Width | `editDef` | `set_sys_window_width_val` | `r_windowWidth` | Numeric field, `maxchars 5` | Windowed width. Marks `desktop::vidwarn`. |
+| Window Height | `editDef` | `set_sys_window_height_val` | `r_windowHeight` | Numeric field, `maxchars 5` | Windowed height. Marks `desktop::vidwarn`. |
+| Custom FS Width | `editDef` | `set_sys_custom_width_val` | `r_customWidth` | Numeric field, `maxchars 5` | Exclusive custom fullscreen width when `r_mode -1`. Marks `desktop::vidwarn`. |
+| Custom FS Height | `editDef` | `set_sys_custom_height_val` | `r_customHeight` | Numeric field, `maxchars 5` | Exclusive custom fullscreen height when `r_mode -1`. Marks `desktop::vidwarn`. |
+
+## Audio
+
+The Audio pane is `p_settings_audio`, included from `content/baseoq4/guis/menu/settings/audio.gui`. It is a single-page layout grouped as Levels, Devices, and Effects.
+
+| Section | Label | Widget type | Value widget | Target | Values or range | Notes |
+|---|---|---|---|---|---|---|
+| Levels | Sound Volume | `sliderDef` + `editDef` | `set_audio_vol_slider`, `set_audio_vol_value` | `s_volume` | `0..1`, step `0.1` | Numeric edit field `maxchars 3`, matching the engine cvar range. |
+| Levels | Music Volume | `sliderDef` + `editDef` | `set_audio_music_slider`, `set_audio_music_value` | `s_musicVolume` | `0..1`, step `0.05` | Numeric edit field `maxchars 4` for exact music-volume entry. |
+| Devices | Sound System | `choiceDef` | `set_audio_backend_val` | `s_useOpenAL` | `0 Default`, `1 OpenAL` | Runs `sound drivar` on release. |
+| Devices | Sound Device | `choiceDef` | `set_audio_device_val` | `s_deviceName` | Runtime `gui::device_name` / `gui::device_value` | Disabled when OpenAL is off or failed to load. Runs `sound drivar` on release. |
+| Effects | EAX Reverb | `choiceDef` | `set_audio_eax_val` | `s_useEAXReverb` | `No;Yes` | Disabled when OpenAL is off or failed to load. Runs `sound eax` on release. |
+| Effects | Surround Speakers | `choiceDef` | `set_audio_speakers_val` | `s_numberOfSpeakers` | `2`, `6` | Displayed through `No;Yes`, so this is effectively stereo vs surround. Runs `sound speakers` on release. |
 
 ## Dynamic Lists
 
@@ -275,10 +313,9 @@ The Audio pane is `p_settings_audio` in `mainmenu.gui`.
 
 | GUI state | Used by | Source behavior |
 |---|---|---|
-| `aspect_choices`, `aspect_values` | System Aspect Ratio | Static `Other;16:9;16:10` with values `0;1;2`. |
-| `4_3_choices`, `4_3_values` | System Screen Size | Built from supported modes in the Other aspect group, plus custom mode `-1` when applicable. |
-| `16_9_choices`, `16_9_values` | System Screen Size | Built from supported 16:9 modes, plus custom mode `-1` when applicable. |
-| `16_10_choices`, `16_10_values` | System Screen Size | Built from supported 16:10 modes, plus custom mode `-1` when applicable. |
+| `4_3_choices`, `4_3_values` | System Screen Size | Built from supported modes in the Other aspect group, plus custom mode `-1` when applicable. `Session_menu.cpp` automatically selects this visible picker when the current `r_mode` belongs to this bucket. |
+| `16_9_choices`, `16_9_values` | System Screen Size | Built from supported 16:9 modes, plus custom mode `-1` when applicable. `Session_menu.cpp` automatically selects this visible picker when the current `r_mode` belongs to this bucket. |
+| `16_10_choices`, `16_10_values` | System Screen Size | Built from supported 16:10 modes, plus custom mode `-1` when applicable. `Session_menu.cpp` automatically selects this visible picker when the current `r_mode` belongs to this bucket. |
 | `display_names`, `display_values`, `display_count` | System Display Device / Multi-Screen | Built from SDL display enumeration. Multi-display rows are hidden when `display_count <= 1`. |
 | `device_name`, `device_value` | Audio Sound Device | Built from the available audio device list. |
 
@@ -290,5 +327,5 @@ The GUI file still contains several dormant settings definitions that are not re
 |---|---|---|
 | System Advanced popup | `pop_setAdv_*` widgets | Popup and rows exist, but the current `showSetSystem` event keeps `set_b_system_adv` hidden. Most options are now represented directly in the System scroll pane. |
 | Sound Advanced popup | `pop_set_sndAdv_*` widgets | Popup exists and duplicates Sound System, Sound Device, EAX, and Surround Speakers. The current Audio pane exposes those rows directly. |
-| System-embedded audio sliders | `set_sys_vol_slider`, `set_sys_vol2_slider`, `set_sys_vol3_slider` | Hidden at `-100,-100` with `visible 0`; not part of the active System pane. |
-| Video Restart button | `set_b_vidrestart` | Clickable action block is commented out. Video changes still set `desktop::vidwarn`; Back handles the warning path. |
+| System-embedded audio sliders | `set_sys_vol_slider`, `set_sys_vol2_slider`, `set_sys_vol3_slider` | Removed in the dead-code audit. The extracted Audio pane owns Sound Volume and Music Volume. |
+| Video Restart button | `set_b_vidrestart` | Hidden by default, but still has a live action block and is shown by selected video-warning paths. Back handles the warning path when the button is not shown. |

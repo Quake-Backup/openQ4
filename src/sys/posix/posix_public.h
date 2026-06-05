@@ -48,6 +48,7 @@ const char *Posix_SignalName( int signum );
 void		Posix_Exit( int ret );
 void		Posix_SetExit(int ret); // override the exit code
 void		Posix_SetExitSpawn( const char *exeName ); // set the process to be spawned when we quit
+void		Posix_RunExitSpawn( void );
 
 void		Posix_StartAsyncThread( void );
 extern xthreadInfo asyncThread;

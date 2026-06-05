@@ -1027,6 +1027,16 @@
 	"#str_201036"	"PRESENTA"
 	
 	"#str_201037"	"Attenzione: la tua scheda video non supporta OpenAL."
+	// Ritual 1.3 patch GUI strings : #str_222000 - #str_222999
+	"#str_222001"	"Cannone Napalm"
+	"#str_222014"	"Menu acquisti"
+	"#str_223000"	"Oggetti semplici"
+	"#str_223002"	"Forza luce ambientale"
+	"#str_223003"	"Luminosita ambientale"
+	"#str_223006"	"Forza skin pro"
+	"#str_223007"	"Posizione arma"
+	"#str_223008"	"Destra;Centrata;Destra bassa"
+	"#str_223009"	"Attiva cielo dettagliato"
 	// OpenQ4 GUI strings : #str_229900 - #str_229999
 	"#str_229900"	"SCHERMO"
 	"#str_229901"	"AUDIO"

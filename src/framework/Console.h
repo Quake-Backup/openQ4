@@ -67,7 +67,6 @@ public:
 	virtual void	SetAASFileOutOfDate( bool state ) = 0;
 
 	virtual void	SetMousePosition( float x, float y ) = 0;
-	virtual void	ClampMousePosition( float &x, float &y ) const = 0;
 	virtual void	Draw( bool forceFullScreen ) = 0;
 	virtual void	Print( const char *text ) = 0;
 };
