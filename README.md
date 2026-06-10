@@ -13,6 +13,10 @@
 
 **Open-source Quake 4 source-port and game-code replacement built for modern systems**
 
+  <a href="https://discord.gg/T32mFejwR4">
+    <img src="https://img.shields.io/badge/Join%20us%20on-Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join us on Discord">
+  </a>
+
 [Getting Started](#getting-started) | [Highlights](#highlights) | [Compatibility](#compatibility-and-scope) | [Building](BUILDING.md) | [Documentation](#documentation) | [Credits](#credits)
 
 </div>
