@@ -137,7 +137,9 @@ jobs:
               libegl1-mesa-dev \
               libfribidi-dev \
               libgbm-dev \
+              libgl1-mesa-dri \
               libgl1-mesa-dev \
+              libglx-mesa0 \
               libibus-1.0-dev \
               libjack-dev \
               libopenal-dev \
@@ -175,10 +177,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          env SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11 xvfb-run -a bash tools/validation/validate_pr.sh \
+          env LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11 xvfb-run -a bash tools/validation/validate_pr.sh \
             --fail-on-dirty \
             --runtime \
             --runtime-cases renderer-default-safety-selftest \
             --runtime-tiers auto \
             --runtime-basepath "" \
             --runtime-skip-official-pak-validation
+
+      - name: Publish renderer validation reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: commit-linux-arm64-renderer-validation
+          path: .tmp/renderer-validation
+          if-no-files-found: warn
+          retention-days: 14
+          include-hidden-files: true

@@ -31,10 +31,16 @@ def validate_push_workflow() -> None:
     require(source, "runtime_smoke: true", "push verification workflow")
     require(source, "startsWith(matrix.os, 'ubuntu-')", "push verification Linux dependency gate")
     require(source, "xvfb", "push verification runtime display dependency")
+    require(source, "libgl1-mesa-dri", "push verification software GL runtime dependency")
+    require(source, "libglx-mesa0", "push verification GLX runtime dependency")
     require(source, "xvfb-run -a bash tools/validation/validate_push.sh", "push verification runtime smoke")
     require(source, "--runtime-cases renderer-default-safety-selftest", "push verification runtime smoke")
     require(source, "--runtime-skip-official-pak-validation", "push verification assetless runtime smoke")
+    require(source, "LIBGL_ALWAYS_SOFTWARE=1", "push verification software GL runtime smoke")
     require(source, "SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11", "push verification runtime display override")
+    require(source, "push-${{ matrix.artifact_name }}-renderer-validation", "push verification renderer report artifact")
+    require(source, "path: .tmp/renderer-validation", "push verification renderer report artifact")
+    require(source, "include-hidden-files: true", "push verification hidden staging/report artifacts")
     require(source, "python tools/tests/linux_arm64_ci_coverage.py", "push script-smoke regression check")
 
 
@@ -44,10 +50,16 @@ def validate_commit_workflow() -> None:
     require(source, "Linux ARM64 Commit Validation", "commit validation workflow")
     require(source, "runs-on: ubuntu-24.04-arm", "commit validation workflow")
     require(source, "xvfb", "commit validation runtime display dependency")
+    require(source, "libgl1-mesa-dri", "commit validation software GL runtime dependency")
+    require(source, "libglx-mesa0", "commit validation GLX runtime dependency")
     require(source, "xvfb-run -a bash tools/validation/validate_pr.sh", "commit validation runtime smoke")
     require(source, "--runtime-cases renderer-default-safety-selftest", "commit validation runtime smoke")
     require(source, "--runtime-skip-official-pak-validation", "commit validation assetless runtime smoke")
+    require(source, "LIBGL_ALWAYS_SOFTWARE=1", "commit validation software GL runtime smoke")
     require(source, "SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11", "commit validation runtime display override")
+    require(source, "commit-linux-arm64-renderer-validation", "commit validation renderer report artifact")
+    require(source, "path: .tmp/renderer-validation", "commit validation renderer report artifact")
+    require(source, "include-hidden-files: true", "commit validation hidden report artifact")
     require(source, "python tools/tests/linux_arm64_ci_coverage.py", "commit script-smoke regression check")
 
 

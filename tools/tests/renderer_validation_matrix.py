@@ -1031,6 +1031,27 @@ def extract_summary(text: str) -> dict[str, str]:
     return summary
 
 
+def print_failure_details(result: dict[str, Any]) -> None:
+    print(f"  exitCode={result['exitCode']} timedOut={int(result['timedOut'])}")
+    if result["log"]:
+        print(f"  log: {result['log']}")
+    print(f"  stdout: {result['stdout']}")
+    print(f"  stderr: {result['stderr']}")
+    if result["missing"]:
+        print("  missing:")
+        for missing in result["missing"]:
+            print(f"    - {missing}")
+    tail_source = result["log"] or result["stdout"]
+    if tail_source:
+        tail_path = Path(tail_source)
+        if tail_path.is_file():
+            lines = tail_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if lines:
+                print("  tail:")
+                for line in lines[-25:]:
+                    print(f"    {line}")
+
+
 def run_case(
     root: Path,
     executable: Path,
@@ -1069,8 +1090,10 @@ def run_case(
     elapsed = time.time() - started
     log_path = find_log(savepath, log_name)
     log_text = ""
+    case_log_path = output_dir / f"{sanitize_case_id(case_id)}.log"
     if log_path is not None:
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        case_log_path.write_text(log_text, encoding="utf-8")
     else:
         if stdout_path.exists():
             log_text += stdout_path.read_text(encoding="utf-8", errors="replace")
@@ -1088,7 +1111,7 @@ def run_case(
         "exitCode": exit_code,
         "timedOut": timed_out,
         "elapsedSeconds": round(elapsed, 2),
-        "log": str(log_path) if log_path is not None else "",
+        "log": str(case_log_path) if log_path is not None else "",
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
         "missing": missing,
@@ -1365,6 +1388,8 @@ def main(argv: list[str]) -> int:
             args.skip_official_pak_validation,
         )
         print(f"  {result['status']} ({result['elapsedSeconds']}s)")
+        if result["status"] != "pass":
+            print_failure_details(result)
         results.append(result)
 
     metadata = {

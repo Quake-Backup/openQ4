@@ -450,6 +450,8 @@ endif
 
 shared_cpp_args = ['-DUSE_OPENAL', '-DGLEW_NO_GLU']
 shared_c_args = ['-DGLEW_NO_GLU']
+shared_objcpp_args = []
+shared_objc_args = []
 engine_link_args = []
 
 if host_system == 'windows'
@@ -501,6 +503,11 @@ else
   shared_cpp_args += ['-fpermissive']
 endif
 
+if host_system == 'darwin'
+  shared_objcpp_args = shared_cpp_args
+  shared_objc_args = shared_c_args
+endif
+
 pch_headers = []
 if get_option('use_pch')
   pch_headers = ['src/idlib/precompiled.h']
@@ -539,6 +546,8 @@ endif
 
 engine_cpp_args = shared_cpp_args + ['-D__DOOM_DLL__']
 engine_c_args = shared_c_args
+engine_objcpp_args = shared_objcpp_args + ['-D__DOOM_DLL__']
+engine_objc_args = shared_objc_args
 bse_cpp_args = shared_cpp_args
 bse_c_args = shared_c_args
 bse_library = disabler()
@@ -574,6 +583,22 @@ if build_engine
       install: true,
       install_dir: install_root_dir,
     )
+  elif host_system == 'darwin'
+    executable(
+      engine_client_binary_name,
+      openq4_engine_sources,
+      include_directories: engine_include_dirs,
+      dependencies: deps,
+      link_with: client_link_with,
+      cpp_args: engine_cpp_args,
+      c_args: engine_c_args,
+      objcpp_args: engine_objcpp_args,
+      objc_args: engine_objc_args,
+      cpp_pch: pch_headers,
+      link_args: engine_link_args,
+      install: true,
+      install_dir: install_root_dir,
+    )
   else
     executable(
       engine_client_binary_name,
@@ -592,6 +617,8 @@ if build_engine
 
   dedicated_cpp_args = engine_cpp_args + ['-DID_DEDICATED']
   dedicated_c_args = engine_c_args + ['-DID_DEDICATED']
+  dedicated_objcpp_args = engine_objcpp_args + ['-DID_DEDICATED']
+  dedicated_objc_args = engine_objc_args + ['-DID_DEDICATED']
 
   if host_system == 'windows'
     executable(
@@ -604,6 +631,22 @@ if build_engine
       c_args: dedicated_c_args,
       cpp_pch: pch_headers,
       win_subsystem: 'windows',
+      link_args: engine_link_args,
+      install: true,
+      install_dir: install_root_dir,
+    )
+  elif host_system == 'darwin'
+    executable(
+      engine_ded_binary_name,
+      openq4_engine_sources,
+      include_directories: engine_include_dirs,
+      dependencies: deps,
+      link_with: dedicated_link_with,
+      cpp_args: dedicated_cpp_args,
+      c_args: dedicated_c_args,
+      objcpp_args: dedicated_objcpp_args,
+      objc_args: dedicated_objc_args,
+      cpp_pch: pch_headers,
       link_args: engine_link_args,
       install: true,
       install_dir: install_root_dir,
