@@ -79,6 +79,15 @@ public:
 	// an indexCache, this must be called to reset GL_ELEMENT_ARRAY_BUFFER_ARB
 	void			UnbindIndex();
 
+	// redundant glBindBufferARB filtering for the legacy backend. Renderer code
+	// that binds GL_ARRAY_BUFFER_ARB / GL_ELEMENT_ARRAY_BUFFER_ARB must go
+	// through these so the shadow state stays coherent; code that binds those
+	// targets behind our back (modern executor / GL state cache) must call
+	// InvalidateBufferBindings() before the legacy backend draws again.
+	static void		BindArrayBuffer( GLuint vbo );
+	static void		BindIndexBuffer( GLuint vbo );
+	static void		InvalidateBufferBindings();
+
 	// automatically freed at the end of the next frame
 	// used for specular texture coordinates and gui drawing, which
 	// will change every frame.

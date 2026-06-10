@@ -4012,6 +4012,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		bool acceptContinueInput = false;
 		bool loadingContinueAutoAdvanced = false;
 		const int loadingContinueStartTime = common->GetPresentationTime();
+		openQ4_SetLoadingContinueInputActive( true );
 		while ( waitingForContinue ) {
 			Sys_GenerateEvents();
 
@@ -4059,6 +4060,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 				acceptContinueInput = true;
 			}
 		}
+		openQ4_SetLoadingContinueInputActive( false );
 
 		if ( logLoadingContinueGate ) {
 			const int loadingContinueElapsedMsec = Max( 0, common->GetPresentationTime() - loadingContinueStartTime );

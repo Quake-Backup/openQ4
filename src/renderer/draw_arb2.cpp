@@ -109,6 +109,63 @@ static const float RB_ARB2_MD5RVertexColorModulate[4] = { 1.0f, 0.0f, 0.0f, 0.0f
 static const float RB_ARB2_MD5RVertexColorInverseModulate[4] = { -1.0f, 1.0f, 0.0f, 0.0f };
 static const int ARB2_MD5R_INTERACTION_PARAM_BASE = ARB2_MD5R_MVP_ROW_0;
 
+// Value cache for ARB program env parameters set by the interaction loop.
+// Light projection planes, light/view origins, and stage matrices are
+// per-(light, entity) or per-stage constants that the classic loop re-sends
+// for every draw; comparing 16 bytes is far cheaper than the driver call.
+// Only the classic interaction registers (< 32) are cached; the packed MD5R
+// registers live at 75+ and always pass through. The cache is only valid
+// within one RB_ARB2_CreateDrawInteractions batch and is invalidated at
+// entry, because other passes (shadows, fog, MD5R loads) write the same
+// registers without going through these helpers.
+static const int ARB2_ENV_PARAM_CACHE_SIZE = 32;
+typedef struct {
+	float			vertexParms[ARB2_ENV_PARAM_CACHE_SIZE][4];
+	float			fragmentParms[8][4];
+	unsigned int	vertexValid;	// bitmask
+	unsigned int	fragmentValid;	// bitmask
+} arb2EnvParamCache_t;
+static arb2EnvParamCache_t g_arb2EnvParamCache;
+
+ID_INLINE static void RB_ARB2_InvalidateEnvParamCache( void ) {
+	g_arb2EnvParamCache.vertexValid = 0;
+	g_arb2EnvParamCache.fragmentValid = 0;
+}
+
+ID_INLINE static void RB_ARB2_SetVertexEnvParm( int index, const float *v ) {
+	if ( index >= 0 && index < ARB2_ENV_PARAM_CACHE_SIZE && r_useRedundantStateFiltering.GetBool() ) {
+		const unsigned int bit = 1u << index;
+		float *cached = g_arb2EnvParamCache.vertexParms[index];
+		if ( ( g_arb2EnvParamCache.vertexValid & bit )
+			&& cached[0] == v[0] && cached[1] == v[1] && cached[2] == v[2] && cached[3] == v[3] ) {
+			return;
+		}
+		cached[0] = v[0];
+		cached[1] = v[1];
+		cached[2] = v[2];
+		cached[3] = v[3];
+		g_arb2EnvParamCache.vertexValid |= bit;
+	}
+	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, index, v );
+}
+
+ID_INLINE static void RB_ARB2_SetFragmentEnvParm( int index, const float *v ) {
+	if ( index >= 0 && index < 8 && r_useRedundantStateFiltering.GetBool() ) {
+		const unsigned int bit = 1u << index;
+		float *cached = g_arb2EnvParamCache.fragmentParms[index];
+		if ( ( g_arb2EnvParamCache.fragmentValid & bit )
+			&& cached[0] == v[0] && cached[1] == v[1] && cached[2] == v[2] && cached[3] == v[3] ) {
+			return;
+		}
+		cached[0] = v[0];
+		cached[1] = v[1];
+		cached[2] = v[2];
+		cached[3] = v[3];
+		g_arb2EnvParamCache.fragmentValid |= bit;
+	}
+	glProgramEnvParameter4fvARB( GL_FRAGMENT_PROGRAM_ARB, index, v );
+}
+
 static program_t RB_ARB2_GetMD5RVertexProgram( program_t familyBase, int vertexFormatIndex ) {
 	if ( vertexFormatIndex < 0 || vertexFormatIndex >= ARB2_MD5R_VARIANTS_PER_FAMILY ) {
 		return PROG_INVALID;
@@ -220,7 +277,7 @@ static bool RB_ARB2_BindPackedMD5RInteractionVertexData( const rvMD5RVertexBuffe
 		return false;
 	}
 
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	glVertexPointer(
 		RB_ARB2_GetMD5RPositionSize( vertexBuffer ),
 		GL_FLOAT,
@@ -290,7 +347,7 @@ static bool RB_ARB2_BindPackedMD5RDrawVertexData( const rvMD5RVertexBufferDesc &
 		return false;
 	}
 
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	glVertexPointer(
 		RB_ARB2_GetMD5RPositionSize( vertexBuffer ),
 		GL_FLOAT,
@@ -370,7 +427,7 @@ static bool RB_ARB2_BindPackedMD5RStageVertexData(
 		}
 	}
 
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	glVertexPointer(
 		RB_ARB2_GetMD5RPositionSize( vertexBuffer ),
 		GL_FLOAT,
@@ -465,7 +522,7 @@ static bool RB_ARB2_BindPackedMD5RLegacyProgramVertexData( const rvMD5RVertexBuf
 		return false;
 	}
 
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	glVertexPointer(
 		RB_ARB2_GetMD5RPositionSize( vertexBuffer ),
 		GL_FLOAT,
@@ -608,7 +665,7 @@ void RB_ARB2_ClearPreparedPackedMD5RDirectDraw( void ) {
 	}
 	g_packedDirectDrawSurf = NULL;
 	g_packedDirectDrawVertexFormatIndex = -1;
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	vertexCache.UnbindIndex();
 }
 
@@ -621,7 +678,7 @@ void RB_ARB2_ClearPreparedPackedMD5RDraw( void ) {
 	glDisableVertexAttribArrayARB( 9 );
 	glDisableVertexAttribArrayARB( 10 );
 	glDisableClientState( GL_NORMAL_ARRAY );
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	vertexCache.UnbindIndex();
 }
 
@@ -1305,7 +1362,7 @@ static bool RB_ARB2_DrawPackedMD5RShadowBatches( const drawSurf_t *surf, int num
 		|| shadowIndexBuffer->numIndices <= 0
 		|| shadowIndexBuffer->indices.Num() != shadowIndexBuffer->numIndices ) ) {
 		RB_ARB2_UnbindPackedMD5RDrawVertexData( vertexFormatIndex );
-		glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+		idVertexCache::BindArrayBuffer( 0 );
 		vertexCache.UnbindIndex();
 		if ( vertexProgramWasEnabled ) {
 			glBindProgramARB( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW );
@@ -1390,7 +1447,7 @@ static bool RB_ARB2_DrawPackedMD5RShadowBatches( const drawSurf_t *surf, int num
 	}
 
 	RB_ARB2_UnbindPackedMD5RDrawVertexData( vertexFormatIndex );
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	vertexCache.UnbindIndex();
 
 	if ( vertexProgramWasEnabled ) {
@@ -1512,7 +1569,7 @@ void RB_ARB2_DisableStageTexturing( const shaderStage_t *pStage, const drawSurf_
 	glDisable( GL_FRAGMENT_PROGRAM_ARB );
 	glDisable( GL_VERTEX_PROGRAM_ARB );
 	glBindProgramARB( GL_VERTEX_PROGRAM_ARB, 0 );
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	vertexCache.UnbindIndex();
 
 	if ( pStage->texture.texgen == TG_REFLECT_CUBE && surf->material->GetBumpStage() != NULL ) {
@@ -1667,6 +1724,9 @@ GL_SelectTextureNoClient
 ====================
 */
 void GL_SelectTextureNoClient( int unit ) {
+	if ( backEnd.glState.currenttmu == unit && r_useRedundantStateFiltering.GetBool() ) {
+		return;
+	}
 	backEnd.glState.currenttmu = unit;
 	glActiveTextureARB( GL_TEXTURE0_ARB + unit );
 	RB_LogComment( "glActiveTextureARB( %i )\n", unit );
@@ -8700,23 +8760,23 @@ void	RB_ARB2_DrawInteraction( const drawInteraction_t *din ) {
 	}
 
 	// load all the vertex program parameters
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_LIGHT_ORIGIN, din->localLightOrigin.ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_VIEW_ORIGIN, din->localViewOrigin.ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_LIGHT_PROJECT_S, din->lightProjection[0].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_LIGHT_PROJECT_T, din->lightProjection[1].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_LIGHT_PROJECT_Q, din->lightProjection[2].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_LIGHT_FALLOFF_S, din->lightProjection[3].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_BUMP_MATRIX_S, din->bumpMatrix[0].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_BUMP_MATRIX_T, din->bumpMatrix[1].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_DIFFUSE_MATRIX_S, din->diffuseMatrix[0].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_DIFFUSE_MATRIX_T, din->diffuseMatrix[1].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_SPECULAR_MATRIX_S, din->specularMatrix[0].ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_SPECULAR_MATRIX_T, din->specularMatrix[1].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_LIGHT_ORIGIN, din->localLightOrigin.ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_VIEW_ORIGIN, din->localViewOrigin.ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_LIGHT_PROJECT_S, din->lightProjection[0].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_LIGHT_PROJECT_T, din->lightProjection[1].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_LIGHT_PROJECT_Q, din->lightProjection[2].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_LIGHT_FALLOFF_S, din->lightProjection[3].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_BUMP_MATRIX_S, din->bumpMatrix[0].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_BUMP_MATRIX_T, din->bumpMatrix[1].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_DIFFUSE_MATRIX_S, din->diffuseMatrix[0].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_DIFFUSE_MATRIX_T, din->diffuseMatrix[1].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_SPECULAR_MATRIX_S, din->specularMatrix[0].ToFloatPtr() );
+	RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_SPECULAR_MATRIX_T, din->specularMatrix[1].ToFloatPtr() );
 
 	// testing fragment based normal mapping
 	if ( r_testARBProgram.GetBool() ) {
-		glProgramEnvParameter4fvARB( GL_FRAGMENT_PROGRAM_ARB, 2, din->localLightOrigin.ToFloatPtr() );
-		glProgramEnvParameter4fvARB( GL_FRAGMENT_PROGRAM_ARB, 3, din->localViewOrigin.ToFloatPtr() );
+		RB_ARB2_SetFragmentEnvParm( 2, din->localLightOrigin.ToFloatPtr() );
+		RB_ARB2_SetFragmentEnvParm( 3, din->localViewOrigin.ToFloatPtr() );
 	}
 
 	static const float zero[4] = { 0, 0, 0, 0 };
@@ -8750,17 +8810,17 @@ void	RB_ARB2_DrawInteraction( const drawInteraction_t *din ) {
 		default:
 			break;
 		}
-		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, interactionParamBase + PP_COLOR_MODULATE, packedColorMode );
+		RB_ARB2_SetVertexEnvParm( interactionParamBase + PP_COLOR_MODULATE, packedColorMode );
 	} else if ( g_interactionVertexProgramColorMode == ICM_PACKED ) {
 		// Stock Quake 4 interaction.vfp packs vertex-color mode as env[16].xy.
 		const float packed[4] = { modulate, add, 0.0f, 0.0f };
-		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_COLOR_MODULATE, packed );
-		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_COLOR_ADD, zero );
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_MODULATE, packed );
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_ADD, zero );
 	} else {
 		float modulateVec[4] = { modulate, modulate, modulate, modulate };
 		float addVec[4] = { add, add, add, add };
-		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_COLOR_MODULATE, modulateVec );
-		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_COLOR_ADD, addVec );
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_MODULATE, modulateVec );
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_ADD, addVec );
 	}
 
 	// set the constant colors
@@ -8770,8 +8830,8 @@ void	RB_ARB2_DrawInteraction( const drawInteraction_t *din ) {
 		din->specularColor[2] * 2.0f,
 		din->specularColor[3] * 2.0f
 	};
-	glProgramEnvParameter4fvARB( GL_FRAGMENT_PROGRAM_ARB, 0, din->diffuseColor.ToFloatPtr() );
-	glProgramEnvParameter4fvARB( GL_FRAGMENT_PROGRAM_ARB, 1, specularColorX2 );
+	RB_ARB2_SetFragmentEnvParm( 0, din->diffuseColor.ToFloatPtr() );
+	RB_ARB2_SetFragmentEnvParm( 1, specularColorX2 );
 
 	// set the textures
 
@@ -8827,6 +8887,10 @@ void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf ) {
 	// perform setup here that will be constant for all interactions
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | backEnd.depthFunc );
 
+	// other passes write the same env registers directly, so the value cache
+	// is only trustworthy within this batch
+	RB_ARB2_InvalidateEnvParamCache();
+
 	const GLuint vertexProgram = RB_CurrentInteractionProgramIdent( GL_VERTEX_PROGRAM_ARB );
 	const GLuint fragmentProgram = RB_CurrentInteractionProgramIdent( GL_FRAGMENT_PROGRAM_ARB );
 	if ( !R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, vertexProgram, "interaction vertex program", true ) ||
@@ -8858,6 +8922,11 @@ void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf ) {
 	globalImages->specularTableImage->Bind();
 
 
+	// the classic attrib array enables and the classic interaction vertex
+	// program only need to be re-issued on the first classic surface and
+	// after a packed MD5R surface changed them, not for every surface
+	bool classicInteractionStateValid = false;
+
 	for ( ; surf ; surf=surf->nextOnLight ) {
 		g_packedInteractionSurf = NULL;
 		g_packedInteractionVertexFormatIndex = -1;
@@ -8868,6 +8937,11 @@ void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf ) {
 		const rvMD5RVertexBufferDesc *packedDrawVertexBuffer =
 			( surf->geo != NULL && surf->geo->primBatchMesh != NULL ) ? R_MD5R_GetDrawVertexBufferForTri( surf->geo ) : NULL;
 		if ( packedDrawVertexBuffer != NULL ) {
+			// the packed path (even a partially failed bind attempt) can change
+			// the bound vertex program, the attrib arrays, and the low env
+			// registers (joint palettes), so the classic fast path must re-issue
+			classicInteractionStateValid = false;
+			RB_ARB2_InvalidateEnvParamCache();
 			int packedVertexFormatIndex = -1;
 			const program_t packedVertexProgram = RB_ARB2_GetPackedMD5RInteractionVertexProgram( surf, &packedVertexFormatIndex );
 			if ( packedVertexProgram != PROG_INVALID
@@ -8882,15 +8956,19 @@ void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf ) {
 #else
 		{
 #endif
-			glDisableVertexAttribArrayARB( 1 );
-			glDisableVertexAttribArrayARB( 2 );
-			glDisableVertexAttribArrayARB( 5 );
-			glDisableVertexAttribArrayARB( 6 );
-			glDisableVertexAttribArrayARB( 7 );
-			glEnableVertexAttribArrayARB( 8 );
-			glEnableVertexAttribArrayARB( 9 );
-			glEnableVertexAttribArrayARB( 10 );
-			glEnableVertexAttribArrayARB( 11 );
+			if ( !classicInteractionStateValid || !r_useRedundantStateFiltering.GetBool() ) {
+				glDisableVertexAttribArrayARB( 1 );
+				glDisableVertexAttribArrayARB( 2 );
+				glDisableVertexAttribArrayARB( 5 );
+				glDisableVertexAttribArrayARB( 6 );
+				glDisableVertexAttribArrayARB( 7 );
+				glEnableVertexAttribArrayARB( 8 );
+				glEnableVertexAttribArrayARB( 9 );
+				glEnableVertexAttribArrayARB( 10 );
+				glEnableVertexAttribArrayARB( 11 );
+				R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, vertexProgram, "interaction vertex program", true );
+				classicInteractionStateValid = true;
+			}
 
 			// set the vertex pointers
 			idDrawVert	*ac = (idDrawVert *)vertexCache.Position( surf->geo->ambientCache );
@@ -8900,7 +8978,6 @@ void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf ) {
 			glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[0].ToFloatPtr() );
 			glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ), ac->st.ToFloatPtr() );
 			glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), ac->xyz.ToFloatPtr() );
-			R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, vertexProgram, "interaction vertex program", true );
 		}
 
 		// this may cause RB_ARB2_DrawInteraction to be exacuted multiple

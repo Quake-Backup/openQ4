@@ -192,6 +192,8 @@ struct openq4AsyncTimingStats_t {
 
 void				openQ4_GetAsyncTimingStats( openq4AsyncTimingStats_t &stats, int maxSamples = 60 );
 void				openQ4_BeginPresentationFrame( void );
+void				openQ4_SetLoadingContinueInputActive( bool active );
+bool				openQ4_AcceptingLoadingContinueInput( void );
 int					openQ4_GetActiveToolFlags( int flags );
 bool				openQ4_IsAnyToolActive( void );
 void				openQ4_ToolPrint( const char *text );

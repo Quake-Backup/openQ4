@@ -59,7 +59,11 @@ bool idBufferAllocator::AllocStaticBuffer( void *data, int bytes, bool indexBuff
 
 	const GLenum target = indexBuffer ? GL_ELEMENT_ARRAY_BUFFER_ARB : GL_ARRAY_BUFFER_ARB;
 	const GLenum usage = streamDraw ? GL_STREAM_DRAW_ARB : GL_STATIC_DRAW_ARB;
-	glBindBufferARB( target, vbo );
+	if ( indexBuffer ) {
+		idVertexCache::BindIndexBuffer( vbo );
+	} else {
+		idVertexCache::BindArrayBuffer( vbo );
+	}
 	glBufferDataARB( target, (GLsizeiptrARB)bytes, data, usage );
 	R_GLStateCache_InvalidateBufferBinding( target, "renderer upload static buffer" );
 
@@ -75,6 +79,8 @@ void idBufferAllocator::FreeStaticBuffer( unsigned int &vbo, int bytes ) {
 	}
 
 	glDeleteBuffersARB( 1, &vbo );
+	// deleting a bound buffer implicitly resets the GL binding to zero
+	idVertexCache::InvalidateBufferBindings();
 	vbo = 0;
 	if ( staticBuffersLive > 0 ) {
 		staticBuffersLive--;
@@ -336,7 +342,7 @@ void idUploadManager::BeginFrame( int frameCount ) {
 	RetireFrameFence( frame );
 
 	if ( path != UPLOAD_PATH_PERSISTENT ) {
-		glBindBufferARB( GL_ARRAY_BUFFER_ARB, frame.vbo );
+		idVertexCache::BindArrayBuffer( frame.vbo );
 		glBufferDataARB( GL_ARRAY_BUFFER_ARB, (GLsizeiptrARB)stats.ringSizeBytes, NULL, GL_STREAM_DRAW_ARB );
 		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame orphan" );
 	}
@@ -372,7 +378,7 @@ bool idUploadManager::AllocFrameTemp( void *data, int bytes, int alignment, rend
 		return false;
 	}
 
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, frame.vbo );
+	idVertexCache::BindArrayBuffer( frame.vbo );
 
 	if ( path == UPLOAD_PATH_PERSISTENT && frame.mapped != NULL ) {
 		SIMDProcessor->Memcpy( frame.mapped + offset, data, bytes );
@@ -480,7 +486,7 @@ bool idUploadManager::CreateFrameBuffers( uploadPath_t requestedPath ) {
 
 	for ( int i = 0; i < frameBufferCount; ++i ) {
 		glGenBuffersARB( 1, &frameBuffers[i].vbo );
-		glBindBufferARB( GL_ARRAY_BUFFER_ARB, frameBuffers[i].vbo );
+		idVertexCache::BindArrayBuffer( frameBuffers[i].vbo );
 
 		if ( path == UPLOAD_PATH_PERSISTENT ) {
 			glBufferStorage( GL_ARRAY_BUFFER, (GLsizeiptr)stats.ringSizeBytes, NULL, persistentFlags );
@@ -493,7 +499,7 @@ bool idUploadManager::CreateFrameBuffers( uploadPath_t requestedPath ) {
 		}
 	}
 
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::BindArrayBuffer( 0 );
 	R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload init" );
 	return true;
 }
@@ -506,7 +512,7 @@ void idUploadManager::ShutdownFrameBuffers( void ) {
 		}
 		if ( frameBuffers[i].vbo != 0 ) {
 			if ( frameBuffers[i].mapped != NULL ) {
-				glBindBufferARB( GL_ARRAY_BUFFER_ARB, frameBuffers[i].vbo );
+				idVertexCache::BindArrayBuffer( frameBuffers[i].vbo );
 				glUnmapBuffer( GL_ARRAY_BUFFER );
 				frameBuffers[i].mapped = NULL;
 			}
@@ -514,7 +520,8 @@ void idUploadManager::ShutdownFrameBuffers( void ) {
 			frameBuffers[i].vbo = 0;
 		}
 	}
-	glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
+	idVertexCache::InvalidateBufferBindings();
+	idVertexCache::BindArrayBuffer( 0 );
 	R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload shutdown" );
 }
 

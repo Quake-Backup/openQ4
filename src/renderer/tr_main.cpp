@@ -1110,36 +1110,85 @@ DRAWSURF SORTING
 
 
 /*
-=======================
-R_QsortSurfaces
-
-=======================
-*/
-static int R_QsortSurfaces( const void *a, const void *b ) {
-	const drawSurf_t	*ea, *eb;
-
-	ea = *(drawSurf_t **)a;
-	eb = *(drawSurf_t **)b;
-
-	if ( ea->sort < eb->sort ) {
-		return -1;
-	}
-	if ( ea->sort > eb->sort ) {
-		return 1;
-	}
-	return 0;
-}
-
-
-/*
 =================
 R_SortDrawSurfs
+
+Sorts the drawsurfs by sort type, then orientation, then shader.
+
+Replaces the indirect-call CRT qsort with a stable LSD radix sort on the
+IEEE-754 bit pattern of the float sort key (small lists use an insertion
+sort). This runs every view at presentation rate, so the constant factor
+matters; the radix passes also skip bytes that are constant across all keys,
+which covers the exponent bytes of typical material sort values.
 =================
 */
+typedef struct {
+	unsigned int	key;
+	drawSurf_t *	surf;
+} sortRecord_t;
+
 static void R_SortDrawSurfs( void ) {
-	// sort the drawsurfs by sort type, then orientation, then shader
-	qsort( tr.viewDef->drawSurfs, tr.viewDef->numDrawSurfs, sizeof( tr.viewDef->drawSurfs[0] ),
-		R_QsortSurfaces );
+	const int count = tr.viewDef->numDrawSurfs;
+	drawSurf_t **surfs = tr.viewDef->drawSurfs;
+
+	if ( count < 2 ) {
+		return;
+	}
+
+	// small per-view lists: insertion sort beats the radix setup cost
+	if ( count <= 64 ) {
+		for ( int i = 1; i < count; i++ ) {
+			drawSurf_t *s = surfs[i];
+			const float key = s->sort;
+			int j = i - 1;
+			while ( j >= 0 && surfs[j]->sort > key ) {
+				surfs[j + 1] = surfs[j];
+				j--;
+			}
+			surfs[j + 1] = s;
+		}
+		return;
+	}
+
+	sortRecord_t *a = (sortRecord_t *)R_FrameAlloc( count * sizeof( sortRecord_t ) );
+	sortRecord_t *b = (sortRecord_t *)R_FrameAlloc( count * sizeof( sortRecord_t ) );
+
+	// map the float keys to unsigned ints with the same ordering:
+	// flip all bits of negatives, flip only the sign bit of positives
+	for ( int i = 0; i < count; i++ ) {
+		unsigned int bits;
+		memcpy( &bits, &surfs[i]->sort, sizeof( bits ) );
+		bits ^= ( bits & 0x80000000u ) ? 0xFFFFFFFFu : 0x80000000u;
+		a[i].key = bits;
+		a[i].surf = surfs[i];
+	}
+
+	for ( int shift = 0; shift < 32; shift += 8 ) {
+		int hist[256] = { 0 };
+		for ( int i = 0; i < count; i++ ) {
+			hist[( a[i].key >> shift ) & 255]++;
+		}
+		// all keys share this byte, nothing to reorder
+		if ( hist[( a[0].key >> shift ) & 255] == count ) {
+			continue;
+		}
+		int offset = 0;
+		for ( int j = 0; j < 256; j++ ) {
+			const int bucketCount = hist[j];
+			hist[j] = offset;
+			offset += bucketCount;
+		}
+		for ( int i = 0; i < count; i++ ) {
+			b[hist[( a[i].key >> shift ) & 255]++] = a[i];
+		}
+		sortRecord_t *swap = a;
+		a = b;
+		b = swap;
+	}
+
+	for ( int i = 0; i < count; i++ ) {
+		surfs[i] = a[i].surf;
+	}
 }
 
 static int R_CountViewEntityList( const viewEntity_t *viewEntity ) {

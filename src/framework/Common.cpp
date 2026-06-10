@@ -257,6 +257,20 @@ void openQ4_BeginPresentationFrame( void ) {
 	com_frameRealTime = Sys_Milliseconds();
 }
 
+// While the single-player loading-screen continue gate is waiting for input, the
+// mouse is neither captured nor routed to a menu GUI, so the platform backends
+// would normally discard button events. This flag tells them to queue buttons
+// as key events so a click can dismiss the gate.
+static bool commonLoadingContinueInputActive = false;
+
+void openQ4_SetLoadingContinueInputActive( bool active ) {
+	commonLoadingContinueInputActive = active;
+}
+
+bool openQ4_AcceptingLoadingContinueInput( void ) {
+	return commonLoadingContinueInputActive;
+}
+
 // com_speeds times
 int				time_gameFrame;
 int				time_gameDraw;

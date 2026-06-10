@@ -2984,16 +2984,22 @@ bool Sys_SDL_PumpEvents(void) {
 			}
 
 			case SDL_EVENT_MOUSE_BUTTON_DOWN:
-			case SDL_EVENT_MOUSE_BUTTON_UP:
-				if (SDL3_IsMouseCaptured() || SDL3_ShouldRouteMenuMouse()) {
+			case SDL_EVENT_MOUSE_BUTTON_UP: {
+				const bool routedMouseInput = SDL3_IsMouseCaptured() || SDL3_ShouldRouteMenuMouse();
+				if (routedMouseInput || openQ4_AcceptingLoadingContinueInput()) {
 					const int key = SDL3_MapMouseButton(event.button.button);
 					if (key != 0) {
 						const bool down = event.button.down;
 						Sys_QueEvent(eventTime, SE_KEY, key, down, 0, NULL);
-						SDL3_QueueMouseInput(M_ACTION1 + (key - K_MOUSE1), down ? 1 : 0, eventTime);
+						if (routedMouseInput) {
+							// Don't latch poll-path button state from the loading-continue
+							// gate into the first gameplay usercmd frame.
+							SDL3_QueueMouseInput(M_ACTION1 + (key - K_MOUSE1), down ? 1 : 0, eventTime);
+						}
 					}
 				}
 				break;
+			}
 
 			case SDL_EVENT_MOUSE_WHEEL: {
 				float deltaY = event.wheel.y;

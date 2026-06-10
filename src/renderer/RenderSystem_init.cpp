@@ -285,6 +285,7 @@ idCVar r_useIndexBuffers( "r_useIndexBuffers", "0", CVAR_RENDERER | CVAR_ARCHIVE
 idCVar r_useSmp( "r_useSmp", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use SMP rendering" );
 
 idCVar r_useStateCaching( "r_useStateCaching", "1", CVAR_RENDERER | CVAR_BOOL, "avoid redundant state changes in GL_*() calls" );
+idCVar r_useRedundantStateFiltering( "r_useRedundantStateFiltering", "1", CVAR_RENDERER | CVAR_BOOL, "skip redundant legacy-backend GL calls: repeated program env parameters, vertex attrib array toggles, and vertex/index buffer rebinds" );
 idCVar r_useInfiniteFarZ( "r_useInfiniteFarZ", "1", CVAR_RENDERER | CVAR_BOOL, "use the no-far-clip-plane trick" );
 
 // Quake 4 gameplay code assumes 3.0f as the normal baseline outside cinematics.
@@ -3179,6 +3180,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "reloadGuis", R_ReloadGuis_f, CMD_FL_RENDERER, "reloads guis" );
 	cmdSystem->AddCommand( "listGuis", R_ListGuis_f, CMD_FL_RENDERER, "lists guis" );
 	cmdSystem->AddCommand( "touchGui", R_TouchGui_f, CMD_FL_RENDERER, "touches a gui" );
+	cmdSystem->AddCommand( "guiTraceProbe", R_GuiTraceProbe_f, CMD_FL_RENDERER, "diagnostic: GuiTrace every in-world gui surface and report hits" );
 	cmdSystem->AddCommand( "screenshot", R_ScreenShot_f, CMD_FL_RENDERER, "takes a screenshot" );
 	cmdSystem->AddCommand( "levelshot", R_LevelShot_f, CMD_FL_RENDERER | CMD_FL_CHEAT, "captures a 5-tile levelshot set" );
 	cmdSystem->AddCommand( "envshot", R_EnvShot_f, CMD_FL_RENDERER, "takes an environment shot" );

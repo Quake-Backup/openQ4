@@ -1245,6 +1245,7 @@ extern idCVar r_useScissor;				// 1 = scissor clip as portals and lights are pro
 extern idCVar r_usePortals;				// 1 = use portals to perform area culling, otherwise draw everything
 extern idCVar r_portalsDistanceCull;	// 1 = enable distance-cull checks from portal fade data
 extern idCVar r_useStateCaching;		// avoid redundant state changes in GL_*() calls
+extern idCVar r_useRedundantStateFiltering;	// skip redundant legacy-backend env params, attrib toggles, and buffer rebinds
 extern idCVar r_useCombinerDisplayLists;// if 1, put all nvidia register combiner programming in display lists
 extern idCVar r_useVertexBuffers;		// if 0, don't use ARB_vertex_buffer_object for vertexes
 extern idCVar r_useIndexBuffers;		// if 0, don't use ARB_vertex_buffer_object for indexes
@@ -2097,6 +2098,7 @@ TR_GUISURF
 
 void R_SurfaceToTextureAxis( const srfTriangles_t *tri, idVec3 &origin, idVec3 axis[3] );
 void R_RenderGuiSurf( idUserInterface *gui, drawSurf_t *drawSurf );
+void R_GuiTraceProbe_f( const idCmdArgs &args );
 
 /*
 =============================================================

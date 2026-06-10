@@ -401,6 +401,34 @@ const char *idUserInterfaceLocal::HandleEvent( const sysEvent_t *event, int _tim
 	if ( event->evType == SE_MOUSE ) {
 		cursorX += event->evValue;
 		cursorY += event->evValue2;
+
+		// Retail clamps the cursor to the virtual screen, and the game's
+		// in-world gui interaction depends on it: idPlayer::UpdateFocus parks
+		// the cursor with a large negative move (expecting it to stop at the
+		// corner) before every absolute reposition, so an unclamped cursor
+		// drifts thousands of units off-canvas and clicks never hit a window.
+		// Menu guis may extend past the 4:3 canvas when aspect correction is
+		// active, so honor the expanded bounds there instead of trapping the
+		// cursor at the canvas edge.
+		float minX = 0.0f;
+		float minY = 0.0f;
+		float maxX = static_cast<float>( VIRTUAL_WIDTH );
+		float maxY = static_cast<float>( VIRTUAL_HEIGHT );
+		if ( desktop != NULL ) {
+			maxX = desktop->forceAspectWidth;
+			maxY = desktop->forceAspectHeight;
+			if ( ( desktop->GetFlags() & WIN_MENUGUI ) && ui_aspectCorrection.GetBool() ) {
+				float xExpand = 0.0f;
+				float yExpand = 0.0f;
+				uiManagerLocal.dc.GetVirtualScreenExpansion( maxX, maxY, xExpand, yExpand );
+				minX -= xExpand;
+				maxX += xExpand;
+				minY -= yExpand;
+				maxY += yExpand;
+			}
+		}
+		cursorX = idMath::ClampFloat( minX, maxX, cursorX );
+		cursorY = idMath::ClampFloat( minY, maxY, cursorY );
 	}
 
 	if ( desktop ) {

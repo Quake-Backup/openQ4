@@ -764,6 +764,9 @@ void R_GLStateCache_InvalidateBufferBinding( GLenum target, const char *reason )
 
 void R_GLStateCache_LegacyHandoffReset( const char *reason ) {
 	rg_glStateCache.LegacyHandoffReset( reason );
+	// the modern pipeline may have rebound array/element buffers behind the
+	// legacy backend's redundancy filter; drop its shadow state as well
+	idVertexCache::InvalidateBufferBindings();
 }
 
 const glStateCacheStats_t &R_GLStateCache_Stats( void ) {

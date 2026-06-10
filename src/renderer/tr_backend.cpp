@@ -74,6 +74,7 @@ void RB_SetDefaultGLState( void ) {
 	//
 	memset( &backEnd.glState, 0, sizeof( backEnd.glState ) );
 	backEnd.glState.forceGlState = true;
+	idVertexCache::InvalidateBufferBindings();
 
 	glColorMask( 1, 1, 1, 1 );
 

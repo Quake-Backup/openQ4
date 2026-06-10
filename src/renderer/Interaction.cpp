@@ -1831,86 +1831,93 @@ void idInteraction::AddActiveInteraction( void ) {
 
 		const idMaterial *shadowShader = sint->shader;
 
-		const bool isViewOnlyEntity =
-			( entityDef->parms.allowSurfaceInViewID != 0 &&
-				entityDef->parms.allowSurfaceInViewID == tr.viewDef->renderView.viewID ) ||
-			( entityDef->parms.weaponDepthHackInViewID != 0 &&
-				entityDef->parms.weaponDepthHackInViewID == tr.viewDef->renderView.viewID );
 		// Shadow ownership and shadow-admission policy stay tied to the original
 		// interaction material. Retail does not let global shader overrides change
 		// whether a surface casts or locally routes its shadows.
 		const bool materialNoSelfShadow = shadowShader->TestMaterialFlag( MF_NOSELFSHADOW );
-		const bool shadowMapNoSelfShadow = materialNoSelfShadow;
-		const bool shadowMapsEnabled = r_shadows.GetBool() && r_useShadowMap.GetBool();
-		const bool translucentShadowMapSupported =
-			shadowMapsEnabled &&
-			R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
-		const bool skipPointLightEmitterCaster =
-			vLight->pointLight &&
-			R_ShouldSkipPointLightEmitterCaster( shadowShader, sint->ambientTris, localLightOrigin, lightDef->parms.lightRadius );
-		const bool sameSpectrumShadowMapCaster =
-			R_ShadowMapShaderSpectrumMatchesLight( shadowShader, lightDef );
-		const bool allowShadowMapCaster =
-			shadowMapsEnabled &&
-			!entityDef->parms.noShadow &&
-			!isViewOnlyEntity &&
-			vEntity->modelDepthHack == 0.0f &&
-			sint->ambientTris != NULL &&
-			sameSpectrumShadowMapCaster &&
-			// Thin emissive panels can sit directly on their owning point-light origin,
-			// which creates long bogus wedge occluders. Reject only that geometric case
-			// instead of blanketing the entire textures/common_lights family.
-			!skipPointLightEmitterCaster &&
-			R_ShadowMapShaderCanCastOpaque( shadowShader ) &&
-			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
-		const bool allowTranslucentShadowMapCaster =
-			translucentShadowMapSupported &&
-			!entityDef->parms.noShadow &&
-			!isViewOnlyEntity &&
-			vEntity->modelDepthHack == 0.0f &&
-			sint->ambientTris != NULL &&
-			sameSpectrumShadowMapCaster &&
-			R_ShadowMapShaderCanCastTranslucent( shadowShader ) &&
-			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
 
-		if ( r_useShadowMap.GetBool() && sint->ambientTris != NULL && !allowShadowMapCaster && !allowTranslucentShadowMapCaster ) {
-			R_RecordShadowMapRejectedCaster( vLight, R_ClassifyShadowMapCasterReject( entityDef, vEntity, sint, shadowShader, isViewOnlyEntity, translucentShadowMapSupported, skipPointLightEmitterCaster, sameSpectrumShadowMapCaster ) );
-		}
+		// the shadow-map caster policy (spectrum match, emitter-panel geometry
+		// check, LOD admission) is per-surface work that only matters when the
+		// shadow-map path is active; the default stencil-only configuration
+		// skips it entirely
+		if ( r_useShadowMap.GetBool() ) {
+			const bool isViewOnlyEntity =
+				( entityDef->parms.allowSurfaceInViewID != 0 &&
+					entityDef->parms.allowSurfaceInViewID == tr.viewDef->renderView.viewID ) ||
+				( entityDef->parms.weaponDepthHackInViewID != 0 &&
+					entityDef->parms.weaponDepthHackInViewID == tr.viewDef->renderView.viewID );
+			const bool shadowMapNoSelfShadow = materialNoSelfShadow;
+			const bool shadowMapsEnabled = r_shadows.GetBool() && r_useShadowMap.GetBool();
+			const bool translucentShadowMapSupported =
+				shadowMapsEnabled &&
+				R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
+			const bool skipPointLightEmitterCaster =
+				vLight->pointLight &&
+				R_ShouldSkipPointLightEmitterCaster( shadowShader, sint->ambientTris, localLightOrigin, lightDef->parms.lightRadius );
+			const bool sameSpectrumShadowMapCaster =
+				R_ShadowMapShaderSpectrumMatchesLight( shadowShader, lightDef );
+			const bool allowShadowMapCaster =
+				shadowMapsEnabled &&
+				!entityDef->parms.noShadow &&
+				!isViewOnlyEntity &&
+				vEntity->modelDepthHack == 0.0f &&
+				sint->ambientTris != NULL &&
+				sameSpectrumShadowMapCaster &&
+				// Thin emissive panels can sit directly on their owning point-light origin,
+				// which creates long bogus wedge occluders. Reject only that geometric case
+				// instead of blanketing the entire textures/common_lights family.
+				!skipPointLightEmitterCaster &&
+				R_ShadowMapShaderCanCastOpaque( shadowShader ) &&
+				R_CachedInteractionShadowLODAdmitted( sint, entityDef );
+			const bool allowTranslucentShadowMapCaster =
+				translucentShadowMapSupported &&
+				!entityDef->parms.noShadow &&
+				!isViewOnlyEntity &&
+				vEntity->modelDepthHack == 0.0f &&
+				sint->ambientTris != NULL &&
+				sameSpectrumShadowMapCaster &&
+				R_ShadowMapShaderCanCastTranslucent( shadowShader ) &&
+				R_CachedInteractionShadowLODAdmitted( sint, entityDef );
 
-		if ( allowShadowMapCaster ) {
-			srfTriangles_t *casterTris = sint->ambientTris;
-			const bool haveCasterGeometry = R_EnsureShadowMapCasterCaches( casterTris );
+			if ( sint->ambientTris != NULL && !allowShadowMapCaster && !allowTranslucentShadowMapCaster ) {
+				R_RecordShadowMapRejectedCaster( vLight, R_ClassifyShadowMapCasterReject( entityDef, vEntity, sint, shadowShader, isViewOnlyEntity, translucentShadowMapSupported, skipPointLightEmitterCaster, sameSpectrumShadowMapCaster ) );
+			}
 
-			if ( haveCasterGeometry ) {
-				R_TouchShadowMapCache( casterTris->ambientCache );
-				R_TouchShadowMapCache( casterTris->indexCache );
-				R_RecordShadowMapCaster( vLight, entityDef, shadowShader, false, shadowMapCasterOnly );
+			if ( allowShadowMapCaster ) {
+				srfTriangles_t *casterTris = sint->ambientTris;
+				const bool haveCasterGeometry = R_EnsureShadowMapCasterCaches( casterTris );
 
-				if ( shadowMapNoSelfShadow ) {
-					R_LinkShadowMapCasterSurf( &vLight->localShadowMapCasters,
-						casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
-				} else {
-					R_LinkShadowMapCasterSurf( &vLight->globalShadowMapCasters,
-						casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
+				if ( haveCasterGeometry ) {
+					R_TouchShadowMapCache( casterTris->ambientCache );
+					R_TouchShadowMapCache( casterTris->indexCache );
+					R_RecordShadowMapCaster( vLight, entityDef, shadowShader, false, shadowMapCasterOnly );
+
+					if ( shadowMapNoSelfShadow ) {
+						R_LinkShadowMapCasterSurf( &vLight->localShadowMapCasters,
+							casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
+					} else {
+						R_LinkShadowMapCasterSurf( &vLight->globalShadowMapCasters,
+							casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
+					}
 				}
 			}
-		}
 
-		if ( allowTranslucentShadowMapCaster ) {
-			srfTriangles_t *casterTris = sint->ambientTris;
-			const bool haveCasterGeometry = R_EnsureShadowMapCasterCaches( casterTris );
+			if ( allowTranslucentShadowMapCaster ) {
+				srfTriangles_t *casterTris = sint->ambientTris;
+				const bool haveCasterGeometry = R_EnsureShadowMapCasterCaches( casterTris );
 
-			if ( haveCasterGeometry ) {
-				R_TouchShadowMapCache( casterTris->ambientCache );
-				R_TouchShadowMapCache( casterTris->indexCache );
-				R_RecordShadowMapCaster( vLight, entityDef, shadowShader, true, shadowMapCasterOnly );
+				if ( haveCasterGeometry ) {
+					R_TouchShadowMapCache( casterTris->ambientCache );
+					R_TouchShadowMapCache( casterTris->indexCache );
+					R_RecordShadowMapCaster( vLight, entityDef, shadowShader, true, shadowMapCasterOnly );
 
-				if ( shadowMapNoSelfShadow ) {
-					R_LinkShadowMapCasterSurf( &vLight->localTranslucentShadowMapCasters,
-						casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
-				} else {
-					R_LinkShadowMapCasterSurf( &vLight->globalTranslucentShadowMapCasters,
-						casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
+					if ( shadowMapNoSelfShadow ) {
+						R_LinkShadowMapCasterSurf( &vLight->localTranslucentShadowMapCasters,
+							casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
+					} else {
+						R_LinkShadowMapCasterSurf( &vLight->globalTranslucentShadowMapCasters,
+							casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
+					}
 				}
 			}
 		}

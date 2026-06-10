@@ -1267,6 +1267,120 @@ guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 st
 }
 
 /*
+================
+R_GuiTraceProbe_f
+
+Diagnostic command: replicates the game-side in-world GUI focus chain (entity
+gui pointer, IsInteractive, GuiTrace gate, and an actual trace through the
+center of every gui surface) against the primary render world so in-world GUI
+interactivity can be validated from a scripted map load. The optional 'click'
+argument additionally drives the same park/move/click event sequence
+idPlayer::UpdateFocus and Weapon_GUI send and reports what each interactive
+gui returns; note that clicking executes the gui's onAction side effects.
+================
+*/
+void R_GuiTraceProbe_f( const idCmdArgs &args ) {
+	idRenderWorldLocal *world = tr.primaryWorld;
+	if ( world == NULL ) {
+		common->Printf( "guiTraceProbe: no primary render world\n" );
+		return;
+	}
+
+	int guiEntities = 0;
+	int guiSurfaces = 0;
+	int hits = 0;
+
+	for ( int i = 0; i < world->entityDefs.Num(); i++ ) {
+		idRenderEntityLocal *def = world->entityDefs[i];
+		if ( def == NULL ) {
+			continue;
+		}
+		const idRenderModel *model = def->parms.hModel;
+		if ( model == NULL ) {
+			continue;
+		}
+
+		bool reported = false;
+		for ( int j = 0; j < model->NumSurfaces(); j++ ) {
+			const modelSurface_t *surf = model->Surface( j );
+			if ( surf == NULL || surf->geometry == NULL ) {
+				continue;
+			}
+			const idMaterial *shader = R_RemapShaderBySkin( surf->shader, def->parms.customSkin, def->parms.customShader );
+			if ( shader == NULL || !shader->HasGui() ) {
+				continue;
+			}
+
+			const srfTriangles_t *tri = surf->geometry;
+
+			if ( !reported ) {
+				reported = true;
+				guiEntities++;
+				int guiNum = shader->GetEntityGui() - 1;
+				idUserInterface *gui = ( guiNum >= 0 && guiNum < MAX_RENDERENTITY_GUI ) ? def->parms.gui[guiNum] : NULL;
+				common->Printf( "guiTraceProbe: handle %d model '%s' dynamic=%d callback=%d gui='%s' interactive=%d\n",
+					i, model->Name(), (int)model->IsDynamicModel(), def->parms.callback != NULL,
+					gui != NULL ? gui->Name() : "NULL",
+					gui != NULL ? (int)gui->IsInteractive() : -1 );
+			}
+
+			if ( tri->verts == NULL || tri->numVerts <= 0 || tri->numIndexes < 3 ) {
+				common->Printf( "guiTraceProbe:   surf %d shader '%s': NO CPU VERTS (verts=%p numVerts=%d numIndexes=%d)\n",
+					j, shader->GetName(), tri->verts, tri->numVerts, tri->numIndexes );
+				continue;
+			}
+			guiSurfaces++;
+
+			// trace through the centroid of the first triangle along its normal
+			const idVec3 a = tri->verts[ tri->indexes[0] ].xyz;
+			const idVec3 b = tri->verts[ tri->indexes[1] ].xyz;
+			const idVec3 c = tri->verts[ tri->indexes[2] ].xyz;
+			const idVec3 center = ( a + b + c ) * ( 1.0f / 3.0f );
+			idPlane plane;
+			plane.FromPoints( a, b, c );
+			const idVec3 localStart = center + plane.Normal() * 8.0f;
+			const idVec3 localEnd = center - plane.Normal() * 8.0f;
+
+			idVec3 start, end;
+			R_LocalPointToGlobal( def->modelMatrix, localStart, start );
+			R_LocalPointToGlobal( def->modelMatrix, localEnd, end );
+
+			const guiPoint_t pt = world->GuiTrace( i, start, end );
+			if ( pt.x != -1.0f ) {
+				hits++;
+			}
+			common->Printf( "guiTraceProbe:   surf %d shader '%s' entityGui=%d -> pt=(%.3f %.3f) guiId=%d\n",
+				j, shader->GetName(), shader->GetEntityGui(), pt.x, pt.y, pt.guiId );
+
+			// optional 'click' mode: drive the same event sequence the game's
+			// focus/click path sends and report what the gui returns
+			if ( pt.x != -1.0f && idStr::Icmp( args.Argv( 1 ), "click" ) == 0 ) {
+				int guiNum = shader->GetEntityGui() - 1;
+				idUserInterface *clickGui = ( guiNum >= 0 && guiNum < MAX_RENDERENTITY_GUI ) ? def->parms.gui[guiNum] : NULL;
+				if ( clickGui != NULL && clickGui->IsInteractive() ) {
+					const int now = Sys_Milliseconds();
+					sysEvent_t ev = sys->GenerateMouseMoveEvent( -2000, -2000 );
+					const char *moveCmd1 = clickGui->HandleEvent( &ev, now );
+					ev = sys->GenerateMouseMoveEvent( pt.x * 640.0f, pt.y * 480.0f );
+					const char *moveCmd2 = clickGui->HandleEvent( &ev, now );
+					ev = sys->GenerateMouseButtonEvent( 1, true );
+					idStr downCmd = clickGui->HandleEvent( &ev, now );
+					ev = sys->GenerateMouseButtonEvent( 1, false );
+					idStr upCmd = clickGui->HandleEvent( &ev, now );
+					common->Printf( "guiTraceProbe:   CLICK cursor=(%.1f %.1f) move1='%s' move2='%s' down='%s' up='%s' interactiveAfter=%d\n",
+						clickGui->CursorX(), clickGui->CursorY(),
+						moveCmd1 ? moveCmd1 : "", moveCmd2 ? moveCmd2 : "",
+						downCmd.c_str(), upCmd.c_str(), (int)clickGui->IsInteractive() );
+				}
+			}
+		}
+	}
+
+	common->Printf( "guiTraceProbe: %d gui entities, %d traceable gui surfaces, %d trace hits\n",
+		guiEntities, guiSurfaces, hits );
+}
+
+/*
 ===================
 idRenderWorldLocal::ModelTrace
 ===================

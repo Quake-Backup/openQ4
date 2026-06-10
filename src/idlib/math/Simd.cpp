@@ -3,6 +3,7 @@
 
 
 #include "Simd_generic.h"
+#include "Simd_SSE2.h"
 
 
 idSIMDProcessor	*	processor = NULL;			// pointer to SIMD processor
@@ -41,10 +42,29 @@ void idSIMD::InitProcessor( const char *module, bool forceGeneric ) {
 	idSIMDProcessor *newProcessor;
 
 	cpuid = idLib::sys->GetProcessorId();
-// jmarshall - temp disable SIMD
-	forceGeneric = true;
-// jmarshall end
-	newProcessor = generic;
+
+	if ( forceGeneric ) {
+		newProcessor = generic;
+	} else {
+		if ( processor == NULL ) {
+#if defined( ID_SIMD_SSE2_AVAILABLE ) && ( defined( _M_X64 ) || defined( __x86_64__ ) )
+			// SSE2 is architecturally guaranteed on x86-64
+			processor = new idSIMD_SSE2;
+#elif defined( ID_SIMD_SSE2_AVAILABLE )
+			if ( ( cpuid & CPUID_SSE2 ) != 0 ) {
+				processor = new idSIMD_SSE2;
+			} else {
+				processor = generic;
+			}
+#else
+			processor = generic;
+#endif
+			if ( processor != generic ) {
+				processor->cpuid = cpuid;
+			}
+		}
+		newProcessor = processor;
+	}
 
 	if ( newProcessor != SIMDProcessor ) {
 		SIMDProcessor = newProcessor;
@@ -4163,7 +4183,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
 #endif // _WINDOWS
 
-	p_simd = processor;
+	p_simd = ( processor != NULL ) ? processor : generic;
 	p_generic = generic;
 
 	if ( idStr::Length( args.Argv( 1 ) ) != 0 ) {
@@ -4229,7 +4249,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 */
 	idLib::common->SetRefreshOnPrint( false );
 
-	if ( p_simd != processor ) {
+	if ( p_simd != processor && p_simd != generic ) {
 		delete p_simd;
 	}
 	p_simd = NULL;

@@ -41,6 +41,48 @@ idCVar idVertexCache::r_vertexBufferMegs( "r_vertexBufferMegs", "32", CVAR_INTEG
 
 idVertexCache		vertexCache;
 
+// shadow copies of the GL array/element buffer bindings so the legacy backend
+// can skip redundant glBindBufferARB calls; 0xFFFFFFFF means unknown
+static const GLuint VERTCACHE_BIND_UNKNOWN = 0xFFFFFFFFu;
+static GLuint vc_boundArrayBuffer = VERTCACHE_BIND_UNKNOWN;
+static GLuint vc_boundIndexBuffer = VERTCACHE_BIND_UNKNOWN;
+
+/*
+==============
+idVertexCache::BindArrayBuffer
+==============
+*/
+void idVertexCache::BindArrayBuffer( GLuint vbo ) {
+	if ( vbo == vc_boundArrayBuffer && r_useRedundantStateFiltering.GetBool() ) {
+		return;
+	}
+	glBindBufferARB( GL_ARRAY_BUFFER_ARB, vbo );
+	vc_boundArrayBuffer = vbo;
+}
+
+/*
+==============
+idVertexCache::BindIndexBuffer
+==============
+*/
+void idVertexCache::BindIndexBuffer( GLuint vbo ) {
+	if ( vbo == vc_boundIndexBuffer && r_useRedundantStateFiltering.GetBool() ) {
+		return;
+	}
+	glBindBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, vbo );
+	vc_boundIndexBuffer = vbo;
+}
+
+/*
+==============
+idVertexCache::InvalidateBufferBindings
+==============
+*/
+void idVertexCache::InvalidateBufferBindings() {
+	vc_boundArrayBuffer = VERTCACHE_BIND_UNKNOWN;
+	vc_boundIndexBuffer = VERTCACHE_BIND_UNKNOWN;
+}
+
 /*
 ==============
 R_ListVertexCache_f
@@ -124,9 +166,9 @@ void *idVertexCache::Position( vertCache_t *buffer ) {
 			}
 		}
 		if ( buffer->indexBuffer ) {
-			glBindBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, buffer->vbo );
+			BindIndexBuffer( buffer->vbo );
 		} else {
-			glBindBufferARB( GL_ARRAY_BUFFER_ARB, buffer->vbo );
+			BindArrayBuffer( buffer->vbo );
 		}
 		return (void *)buffer->offset;
 	}
@@ -136,7 +178,7 @@ void *idVertexCache::Position( vertCache_t *buffer ) {
 }
 
 void idVertexCache::UnbindIndex() {
-	glBindBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, 0 );
+	BindIndexBuffer( 0 );
 }
 
 
@@ -155,6 +197,7 @@ void idVertexCache::Init() {
 	}
 
 	virtualMemory = false;
+	InvalidateBufferBindings();
 
 	// use ARB_vertex_buffer_object unless explicitly disabled
 	if( r_useVertexBuffers.GetInteger() && glConfig.ARBVertexBufferObjectAvailable ) {
@@ -309,10 +352,10 @@ void idVertexCache::Alloc( void *data, int size, vertCache_t **buffer, bool inde
 				glGenBuffersARB( 1, &block->vbo );
 			}
 			if ( indexBuffer ) {
-				glBindBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, block->vbo );
+				BindIndexBuffer( block->vbo );
 				glBufferDataARB( GL_ELEMENT_ARRAY_BUFFER_ARB, (GLsizeiptrARB)size, data, GL_STATIC_DRAW_ARB );
 			} else {
-				glBindBufferARB( GL_ARRAY_BUFFER_ARB, block->vbo );
+				BindArrayBuffer( block->vbo );
 				if ( allocatingTempBuffer ) {
 					glBufferDataARB( GL_ARRAY_BUFFER_ARB, (GLsizeiptrARB)size, data, GL_STREAM_DRAW_ARB );
 				} else {
@@ -491,7 +534,11 @@ vertCache_t	*idVertexCache::AllocFrameTemp( void *data, int size, bool indexBuff
 
 	if ( block->vbo ) {
 		const GLenum target = indexBuffer ? GL_ELEMENT_ARRAY_BUFFER_ARB : GL_ARRAY_BUFFER_ARB;
-		glBindBufferARB( target, block->vbo );
+		if ( indexBuffer ) {
+			BindIndexBuffer( block->vbo );
+		} else {
+			BindArrayBuffer( block->vbo );
+		}
 		glBufferSubDataARB( target, block->offset, (GLsizeiptrARB)size, data );
 	} else {
 		SIMDProcessor->Memcpy( (byte *)block->virtMem + block->offset, data, size );
@@ -539,8 +586,8 @@ void idVertexCache::EndFrame() {
 	if( !virtualMemory ) {
 		// unbind vertex buffers so normal virtual memory will be used in case
 		// r_useVertexBuffers / r_useIndexBuffers
-		glBindBufferARB( GL_ARRAY_BUFFER_ARB, 0 );
-		glBindBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, 0 );
+		BindArrayBuffer( 0 );
+		BindIndexBuffer( 0 );
 	}
 
 
