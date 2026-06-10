@@ -470,20 +470,32 @@ void idSoundHardware_OpenAL::Init()
 	}
 	if( openalDevice == NULL )
 	{
-		common->FatalError( "idSoundHardware_OpenAL::Init: alcOpenDevice() failed\n" );
+		common->Printf( "Failed.\n" );
+		common->Warning( "idSoundHardware_OpenAL::Init: alcOpenDevice() failed; continuing without sound (s_noSound 1)." );
+		cvarSystem->SetCVarBool( "s_noSound", true );
 		return;
 	}
 
 	openalContext = alcCreateContext( openalDevice, NULL );
 	if( openalContext == NULL )
 	{
-		common->FatalError( "idSoundHardware_OpenAL::Init: alcCreateContext() failed\n" );
+		common->Printf( "Failed.\n" );
+		common->Warning( "idSoundHardware_OpenAL::Init: alcCreateContext() failed; continuing without sound (s_noSound 1)." );
+		alcCloseDevice( openalDevice );
+		openalDevice = NULL;
+		cvarSystem->SetCVarBool( "s_noSound", true );
 		return;
 	}
 
 	if( alcMakeContextCurrent( openalContext ) == 0 )
 	{
-		common->FatalError( "idSoundHardware_OpenAL::Init: alcMakeContextCurrent( %p) failed\n", openalContext );
+		common->Printf( "Failed.\n" );
+		common->Warning( "idSoundHardware_OpenAL::Init: alcMakeContextCurrent() failed; continuing without sound (s_noSound 1)." );
+		alcDestroyContext( openalContext );
+		openalContext = NULL;
+		alcCloseDevice( openalDevice );
+		openalDevice = NULL;
+		cvarSystem->SetCVarBool( "s_noSound", true );
 		return;
 	}
 
