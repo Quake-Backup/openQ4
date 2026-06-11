@@ -896,81 +896,44 @@ static void Con_DrawSmallChar( float x, float y, int ch ) {
 	Con_DrawSizedChar( x, y, localConsole.GetSmallCharWidth(), SMALLCHAR_HEIGHT, ch, localConsole.charSetShader );
 }
 
-static void Con_DrawBigChar( float x, float y, int ch ) {
-	Con_DrawSizedChar( x, y, localConsole.GetBigCharWidth(), BIGCHAR_HEIGHT, ch, localConsole.charSetShader );
+static void Con_DrawSizedStringExt( float x, float y, float charWidth, float charHeight, const char *string, const idVec4 &setColor, bool forceColor ) {
+	idVec4 color;
+	const unsigned char *s;
+	float xx;
+
+	s = reinterpret_cast<const unsigned char *>( string );
+	xx = x;
+	renderSystem->SetColor( setColor );
+
+	while ( *s ) {
+		idVec4 parsedColor;
+		bool resetToDefault = false;
+		const int colorEscapeLength = idStr::ColorEscapeLength( reinterpret_cast<const char *>( s ), &parsedColor, &resetToDefault );
+		if ( colorEscapeLength > 0 ) {
+			if ( !forceColor ) {
+				if ( resetToDefault ) {
+					renderSystem->SetColor( setColor );
+				} else {
+					color = parsedColor;
+					color[3] = setColor[3];
+					renderSystem->SetColor( color );
+				}
+			}
+			s += colorEscapeLength;
+			continue;
+		}
+
+		Con_DrawSizedChar( xx, y, charWidth, charHeight, *s, localConsole.charSetShader );
+		xx += charWidth;
+		s++;
+	}
+
+	renderSystem->SetColor( colorWhite );
 }
 
 static void Con_DrawSmallStringExt( float x, float y, const char *string, const idVec4 &setColor, bool forceColor ) {
-	idVec4 color;
-	const unsigned char *s;
-	float xx;
-
-	s = reinterpret_cast<const unsigned char *>( string );
-	xx = x;
-	renderSystem->SetColor( setColor );
-
-	while ( *s ) {
-		idVec4 parsedColor;
-		bool resetToDefault = false;
-		const int colorEscapeLength = idStr::ColorEscapeLength( reinterpret_cast<const char *>( s ), &parsedColor, &resetToDefault );
-		if ( colorEscapeLength > 0 ) {
-			if ( !forceColor ) {
-				if ( resetToDefault ) {
-					renderSystem->SetColor( setColor );
-				} else {
-					color = parsedColor;
-					color[3] = setColor[3];
-					renderSystem->SetColor( color );
-				}
-			}
-			s += colorEscapeLength;
-			continue;
-		}
-
-		Con_DrawSmallChar( xx, y, *s );
-		xx += localConsole.GetSmallCharWidth();
-		s++;
-	}
-
-	renderSystem->SetColor( colorWhite );
+	Con_DrawSizedStringExt( x, y, localConsole.GetSmallCharWidth(), SMALLCHAR_HEIGHT, string, setColor, forceColor );
 }
-
-static void Con_DrawBigStringExt( float x, float y, const char *string, const idVec4 &setColor, bool forceColor ) {
-	idVec4 color;
-	const unsigned char *s;
-	float xx;
-
-	s = reinterpret_cast<const unsigned char *>( string );
-	xx = x;
-	renderSystem->SetColor( setColor );
-
-	while ( *s ) {
-		idVec4 parsedColor;
-		bool resetToDefault = false;
-		const int colorEscapeLength = idStr::ColorEscapeLength( reinterpret_cast<const char *>( s ), &parsedColor, &resetToDefault );
-		if ( colorEscapeLength > 0 ) {
-			if ( !forceColor ) {
-				if ( resetToDefault ) {
-					renderSystem->SetColor( setColor );
-				} else {
-					color = parsedColor;
-					color[3] = setColor[3];
-					renderSystem->SetColor( color );
-				}
-			}
-			s += colorEscapeLength;
-			continue;
-		}
-
-		Con_DrawBigChar( xx, y, *s );
-		xx += localConsole.GetBigCharWidth();
-		s++;
-	}
-
-	renderSystem->SetColor( colorWhite );
-}
-
-
 
 /*
 =============================================================================
@@ -979,6 +942,16 @@ static void Con_DrawBigStringExt( float x, float y, const char *string, const id
 
 =============================================================================
 */
+
+static const float SCR_DIAGNOSTIC_TEXT_SCALE = 0.5f;
+
+static float SCR_DiagnosticTextTopPadding() {
+	return 2.0f * SCR_DIAGNOSTIC_TEXT_SCALE;
+}
+
+static float SCR_DiagnosticLineAdvance( float charHeight ) {
+	return charHeight + 4.0f * SCR_DIAGNOSTIC_TEXT_SCALE;
+}
 
 /*
 ==================
@@ -1006,9 +979,11 @@ void SCR_DrawTextRightAlign( float &y, const char *text, ... ) {
 	va_start( argptr, text );
 	int i = idStr::vsnPrintf( string, sizeof( string ), text, argptr );
 	va_end( argptr );
-	const float rightEdge = SCREEN_WIDTH - localConsole.GetSmallCharWidth() * 0.5f;
-	Con_DrawSmallStringExt( rightEdge - i * localConsole.GetSmallCharWidth(), y + 2.0f, string, colorWhite, true );
-	y += SMALLCHAR_HEIGHT + 4;
+	const float charWidth = localConsole.GetSmallCharWidth() * SCR_DIAGNOSTIC_TEXT_SCALE;
+	const float charHeight = SMALLCHAR_HEIGHT * SCR_DIAGNOSTIC_TEXT_SCALE;
+	const float rightEdge = SCREEN_WIDTH - charWidth * 0.5f;
+	Con_DrawSizedStringExt( rightEdge - i * charWidth, y + SCR_DiagnosticTextTopPadding(), charWidth, charHeight, string, colorWhite, true );
+	y += SCR_DiagnosticLineAdvance( charHeight );
 }
 
 
@@ -1032,8 +1007,10 @@ float SCR_DrawFPS( float y ) {
 	static int		fps = -1;
 
 	const double clockTicksPerSecond = Sys_ClockTicksPerSecond();
+	const float charWidth = localConsole.GetBigCharWidth() * SCR_DIAGNOSTIC_TEXT_SCALE;
+	const float charHeight = BIGCHAR_HEIGHT * SCR_DIAGNOSTIC_TEXT_SCALE;
 	if ( clockTicksPerSecond <= 0.0 ) {
-		return y + BIGCHAR_HEIGHT + 4;
+		return y + SCR_DiagnosticLineAdvance( charHeight );
 	}
 
 	// don't use serverTime, because that will be drifting to
@@ -1042,7 +1019,7 @@ float SCR_DrawFPS( float y ) {
 	if ( windowStart <= 0.0 || t < windowStart ) {
 		windowStart = t;
 		windowFrames = 0;
-		return y + BIGCHAR_HEIGHT + 4;
+		return y + SCR_DiagnosticLineAdvance( charHeight );
 	}
 
 	windowFrames++;
@@ -1056,12 +1033,12 @@ float SCR_DrawFPS( float y ) {
 
 	if ( fps >= 0 ) {
 		const char *s = va( "%ifps", fps );
-		const float w = strlen( s ) * localConsole.GetBigCharWidth();
+		const float w = strlen( s ) * charWidth;
 
-		Con_DrawBigStringExt( SCREEN_WIDTH - localConsole.GetBigCharWidth() * 0.5f - w, y + 2.0f, s, colorWhite, true );
+		Con_DrawSizedStringExt( SCREEN_WIDTH - charWidth * 0.5f - w, y + SCR_DiagnosticTextTopPadding(), charWidth, charHeight, s, colorWhite, true );
 	}
 
-	return y + BIGCHAR_HEIGHT + 4;
+	return y + SCR_DiagnosticLineAdvance( charHeight );
 }
 
 /*
