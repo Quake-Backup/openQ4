@@ -1829,6 +1829,16 @@ bool LightGrid::HasImage() const {
 	return irradianceImage != NULL && !irradianceImage->IsDefaulted();
 }
 
+bool LightGrid::IsUsable() const {
+	if ( totalGridPointCount <= 0 || !HasImage() ) {
+		return false;
+	}
+	if ( lightGridBounds[0] <= 0 || lightGridBounds[1] <= 0 || lightGridBounds[2] <= 0 ) {
+		return false;
+	}
+	return true;
+}
+
 int LightGrid::GridPointCount() const {
 	return totalGridPointCount;
 }
@@ -2017,6 +2027,33 @@ void idRenderWorldLocal::SetupLightGrid() {
 	if ( totalValidGridPoints > 0 ) {
 		common->DPrintf( "No lightgrid assets found for %s. Generated a runtime probe layout with %i valid points for baking/debugging.\n", mapName.c_str(), totalValidGridPoints );
 	}
+
+	lightGridAvailabilityFrame = -1;
+}
+
+/*
+===================
+idRenderWorldLocal::AnyLightGridAvailable
+
+Re-evaluated lazily at most once per frame so bakes/reloads pick up within a
+frame; on stock content (no baked grids) this stays false for the whole level,
+letting the front-end skip the per-drawSurf area resolve and the backend skip
+the light-grid indirect pass setup.
+===================
+*/
+bool idRenderWorldLocal::AnyLightGridAvailable() {
+	if ( lightGridAvailabilityFrame == tr.frameCount ) {
+		return anyLightGridAvailable;
+	}
+	lightGridAvailabilityFrame = tr.frameCount;
+	anyLightGridAvailable = false;
+	for ( int i = 0; i < numPortalAreas; i++ ) {
+		if ( portalAreas[i].lightGrid.IsUsable() ) {
+			anyLightGridAvailable = true;
+			break;
+		}
+	}
+	return anyLightGridAvailable;
 }
 
 void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
@@ -2062,6 +2099,10 @@ void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
 			}
 		}
 	}
+
+	// grid images (re)assigned: force AnyLightGridAvailable to re-evaluate
+	// even if tr.frameCount has not advanced (bake paths render inline)
+	lightGridAvailabilityFrame = -1;
 }
 
 bool idRenderWorldLocal::LoadLightGridFile( const char *name ) {

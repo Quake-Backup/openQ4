@@ -1752,6 +1752,19 @@ void idInteraction::AddActiveInteraction( void ) {
 							}
 
 							if ( packedAmbientSurface ) {
+								// confine the frame-temp caches to a frame-local copy of
+								// the light tris and link that instead (the BSE frame-submit
+								// pattern): temp blocks must never be stored across frames
+								// on the heap-owned sint->lightTris, because AllocFrameTemp
+								// headers (including its static-overflow fallback blocks)
+								// are recycled and a stale pointer can alias another
+								// surface's live cache when the interaction is later freed
+								srfTriangles_t *frameTris = (srfTriangles_t *)R_FrameAlloc( sizeof( *frameTris ) );
+								*frameTris = *lightTris;
+								lightTris->ambientCache = NULL;
+								lightTris->tempAmbientCache = false;
+								lightTris->indexCache = NULL;
+								lightTris = frameTris;
 								if ( r_useIndexBuffers.GetBool() && lightTris->indexes != NULL && lightTris->numIndexes > 0 ) {
 									lightTris->indexCache = vertexCache.AllocFrameTemp(
 										lightTris->indexes,

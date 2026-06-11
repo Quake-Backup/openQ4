@@ -510,17 +510,10 @@ idRenderModel* rvBSE::Render(idRenderModel* model, const struct renderEffect_s* 
 	else {
 		// Runtime particles mutate vertex/index data every frame.
 		// Invalidate vertex/index caches so new data is uploaded.
+		// FreeVertexCache releases ambient/shadow/index caches properly
+		// (a plain indexCache = NULL here would leak the block and leave
+		// block->user dangling into freed tri memory).
 		renderModel->FreeVertexCache();
-		for (int i = 0; i < renderModel->NumSurfaces(); ++i) {
-			const modelSurface_t* surf = renderModel->Surface(i);
-			if (!surf || !surf->geometry) {
-				continue;
-			}
-			srfTriangles_t* tri = surf->geometry;
-			if (tri->indexCache) {
-				tri->indexCache = NULL;
-			}
-		}
 	}
 
 	mViewAxis = view->renderView.viewaxis;

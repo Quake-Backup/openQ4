@@ -30,6 +30,7 @@ public:
 
 	using idSIMD_Generic::Dot;
 	using idSIMD_Generic::MinMax;
+	using idSIMD_Generic::DeriveTriPlanes;
 
 	virtual void VPCALL Dot( float * RESTRICT dst, const idVec3 &constant, const idPlane * RESTRICT src, const int count );
 	virtual void VPCALL Dot( float * RESTRICT dst, const idVec3 &constant, const idDrawVert * RESTRICT src, const int count );
@@ -38,6 +39,8 @@ public:
 
 	virtual void VPCALL MinMax( idVec3 &min, idVec3 &max, const idDrawVert * RESTRICT src, const int count );
 	virtual void VPCALL MinMax( idVec3 &min, idVec3 &max, const idDrawVert * RESTRICT src, const int *indexes, const int count );
+
+	virtual void VPCALL DeriveTriPlanes( idPlane * RESTRICT planes, const idDrawVert * RESTRICT verts, const int numVerts, const int * RESTRICT indexes, const int numIndexes );
 
 	virtual void VPCALL ConvertJointQuatsToJointMats( idJointMat * RESTRICT jointMats, const idJointQuat * RESTRICT jointQuats, const int numJoints );
 	virtual void VPCALL TransformJoints( idJointMat * RESTRICT jointMats, const int * RESTRICT parents, const int firstJoint, const int lastJoint );

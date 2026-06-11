@@ -22,6 +22,8 @@ typedef struct rendererUploadStats_s {
 	int		frameBufferIndex;
 	int		staticBuffersLive;
 	int		staticBytesLive;
+	int		staticBuffersPooled;
+	int		staticBytesPooled;
 	int		ringSizeBytes;
 	int		ringBufferCount;
 	bool	persistentMapped;
@@ -48,15 +50,31 @@ public:
 	void Shutdown( void );
 	void BeginFrame( void );
 	bool AllocStaticBuffer( void *data, int bytes, bool indexBuffer, bool streamDraw, unsigned int &vbo );
-	void FreeStaticBuffer( unsigned int &vbo, int bytes );
+	void FreeStaticBuffer( unsigned int &vbo, int bytes, bool indexBuffer );
 	int Capacity( void ) const;
 	bool IsPersistentMapped( void ) const;
 	int FrameStaticUploadBytes( void ) const;
 	int FrameStaticAllocations( void ) const;
 	int StaticBuffersLive( void ) const;
 	int StaticBytesLive( void ) const;
+	int StaticBuffersPooled( void ) const;
+	int StaticBytesPooled( void ) const;
 
 private:
+	bool	PoolEnabled( void ) const;
+	void	DrainPool( void );
+
+	// recycled GL buffer names: per-frame regenerated geometry (animated
+	// models, interaction tris) frees and re-creates static buffers every
+	// frame, and gen/data/delete trios are driver-side churn; recycling the
+	// name and re-specifying storage with glBufferData (orphaning) matches
+	// the original idTech4 behavior. Segregated by bind target so a name is
+	// never re-specified under a different target (legal, but a historical
+	// driver slow path); [0] = GL_ARRAY_BUFFER, [1] = GL_ELEMENT_ARRAY_BUFFER.
+	idList<unsigned int>	pooledNames[2];
+	idList<int>				pooledSizes[2];
+	int		pooledBytes;
+
 	int		capacityBytes;
 	int		frameStaticUploadBytes;
 	int		frameStaticAllocations;
@@ -108,7 +126,7 @@ public:
 	void EndFrame( void );
 	bool AllocFrameTemp( void *data, int bytes, int alignment, rendererUploadAllocation_t &allocation );
 	bool AllocStaticBuffer( void *data, int bytes, bool indexBuffer, bool streamDraw, unsigned int &vbo );
-	void FreeStaticBuffer( unsigned int &vbo, int bytes );
+	void FreeStaticBuffer( unsigned int &vbo, int bytes, bool indexBuffer );
 	void RecordLegacyUpload( int bytes );
 	void RecordLegacyStall( void );
 	const rendererUploadStats_t &Stats( void ) const;
@@ -159,7 +177,7 @@ void R_RendererUpload_BeginFrame( int frameCount );
 void R_RendererUpload_EndFrame( void );
 bool R_RendererUpload_AllocFrameTemp( void *data, int bytes, int alignment, rendererUploadAllocation_t &allocation );
 bool R_RendererUpload_AllocStaticBuffer( void *data, int bytes, bool indexBuffer, bool streamDraw, unsigned int &vbo );
-void R_RendererUpload_FreeStaticBuffer( unsigned int &vbo, int bytes );
+void R_RendererUpload_FreeStaticBuffer( unsigned int &vbo, int bytes, bool indexBuffer );
 void R_RendererUpload_RecordLegacyUpload( int bytes );
 void R_RendererUpload_RecordLegacyStall( void );
 const rendererUploadStats_t &R_RendererUpload_Stats( void );

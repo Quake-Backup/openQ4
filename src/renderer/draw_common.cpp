@@ -7030,6 +7030,13 @@ RB_T_Shadow
 the shadow volumes face INSIDE
 =====================
 */
+// decided once per stencil shadow pass in RB_StencilShadowPass: requires the
+// core GL 2.0 glStencilOpSeparate entry point (NOT the NVIDIA-only
+// GL_EXT_stencil_two_side mechanism) and wrap stencil ops, without which the
+// single-pass interleaving would not be order-equivalent to the legacy
+// two-pass sequence on saturating INCR/DECR hardware
+static bool rb_twoSidedStencilThisPass = false;
+
 static void RB_T_Shadow( const drawSurf_t *surf ) {
 	const srfTriangles_t	*tri;
 
@@ -7132,6 +7139,35 @@ static void RB_T_Shadow( const drawSurf_t *surf ) {
 		return;
 	}
 
+	if ( rb_twoSidedStencilThisPass ) {
+		// collapse each cull-flipped draw pair into one no-cull draw with
+		// per-face stencil ops; with wrap inc/dec the interleaved single-pass
+		// deltas are order-equivalent to the two-pass sequence, so the
+		// resulting stencil buffer is identical.
+		// In non-mirror views CT_FRONT_SIDED culls GL_FRONT (idTech4 winding),
+		// so the ops of the legacy CT_FRONT_SIDED draws belong to the GL_BACK
+		// face; mirror views flip the faces exactly like GL_Cull does.
+		const GLenum frontSidedFace = backEnd.viewDef->isMirror ? GL_FRONT : GL_BACK;	// rasterized by legacy CT_FRONT_SIDED draws
+		const GLenum backSidedFace = backEnd.viewDef->isMirror ? GL_BACK : GL_FRONT;	// rasterized by legacy CT_BACK_SIDED draws
+
+		GL_Cull( CT_TWO_SIDED );
+
+		// patent-free work around
+		if ( !external ) {
+			// "preload" the stencil buffer with the number of volumes
+			// that get clipped by the near or far clip plane
+			glStencilOpSeparate( frontSidedFace, GL_KEEP, tr.stencilDecr, tr.stencilDecr );
+			glStencilOpSeparate( backSidedFace, GL_KEEP, tr.stencilIncr, tr.stencilIncr );
+			RB_DrawShadowElementsWithCounters( surf, numIndexes );
+		}
+
+		// traditional depth-pass stencil shadows
+		glStencilOpSeparate( frontSidedFace, GL_KEEP, GL_KEEP, tr.stencilIncr );
+		glStencilOpSeparate( backSidedFace, GL_KEEP, GL_KEEP, tr.stencilDecr );
+		RB_DrawShadowElementsWithCounters( surf, numIndexes );
+		return;
+	}
+
 	// patent-free work around
 	if ( !external ) {
 		// "preload" the stencil buffer with the number of volumes
@@ -7209,6 +7245,11 @@ void RB_StencilShadowPass( const drawSurf_t *drawSurfs ) {
 	if ( glConfig.depthBoundsTestAvailable && r_useDepthBoundsTest.GetBool() ) {
 		glEnable( GL_DEPTH_BOUNDS_TEST_EXT );
 	}
+
+	rb_twoSidedStencilThisPass =
+		r_useTwoSidedStencil.GetBool()
+		&& glStencilOpSeparate != NULL
+		&& tr.stencilIncr == GL_INCR_WRAP_EXT;
 
 	RB_RenderDrawSurfChainWithFunction( drawSurfs, RB_T_Shadow );
 
@@ -7766,14 +7807,7 @@ struct rbLightGridPortalBlend_t {
 };
 
 static bool RB_LightGridIsUsable( const LightGrid &candidate ) {
-	if ( candidate.GridPointCount() <= 0 || !candidate.HasImage() ) {
-		return false;
-	}
-	if ( candidate.lightGridBounds[0] <= 0 || candidate.lightGridBounds[1] <= 0 || candidate.lightGridBounds[2] <= 0 ) {
-		return false;
-	}
-
-	return true;
+	return candidate.IsUsable();
 }
 
 static bool RB_SurfaceCanReceiveLightGrid( const drawSurf_t *surf ) {
@@ -8344,6 +8378,14 @@ static void RB_STD_LightGridIndirect( void ) {
 		return;
 	}
 	if ( !glConfig.GLSLProgramAvailable || backEnd.viewDef == NULL || !backEnd.viewDef->viewEntitys ) {
+		return;
+	}
+
+	// without a single usable grid in the world this pass draws nothing;
+	// skip the program bind, residency walk, and the two numDrawSurfs filter
+	// loops outright (stock content ships no baked grids).
+	idRenderWorldLocal *gridWorld = backEnd.viewDef->renderWorld;
+	if ( gridWorld == NULL || !gridWorld->AnyLightGridAvailable() ) {
 		return;
 	}
 

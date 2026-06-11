@@ -44,12 +44,18 @@ idScenePacketFrame::idScenePacketFrame() {
 }
 
 void idScenePacketFrame::Clear( void ) {
+	// The packet/record arrays are intentionally NOT wiped here: every slot is
+	// memset at allocation time (AddScene/AddPass/AddDrawPacket/FindOrAdd*) and
+	// every consumer iterates count-bounded via stats, so wiping ~1 MB of arrays
+	// per Clear() is pure waste on the default path where capture never opens.
+#ifdef _DEBUG
 	memset( scenes, 0, sizeof( scenes ) );
 	memset( passes, 0, sizeof( passes ) );
 	memset( drawPackets, 0, sizeof( drawPackets ) );
 	memset( materialRecords, 0, sizeof( materialRecords ) );
 	memset( geometryRecords, 0, sizeof( geometryRecords ) );
 	memset( instanceRecords, 0, sizeof( instanceRecords ) );
+#endif
 	memset( &stats, 0, sizeof( stats ) );
 	activeScene = -1;
 	activePass = -1;
@@ -935,6 +941,11 @@ void R_ScenePackets_BeginFrame( void ) {
 }
 
 void R_ScenePackets_EndFrame( void ) {
+	if ( !rg_frontEndScenePacketFrameOpen ) {
+		// Frame was never opened (capture off): last operation was already a
+		// Clear() from the constructor or a prior EndFrame, nothing to do.
+		return;
+	}
 	rg_frontEndScenePacketFrame.Clear();
 	rg_frontEndScenePacketFrameOpen = false;
 }

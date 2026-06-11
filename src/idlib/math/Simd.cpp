@@ -2890,6 +2890,13 @@ void TestDeriveTriPlanes( void ) {
 		indexes[i*3+0] = ( i + 0 ) % COUNT;
 		indexes[i*3+1] = ( i + 1 ) % COUNT;
 		indexes[i*3+2] = ( i + 2 ) % COUNT;
+		if ( ( i % 7 ) == 0 ) {
+			// degenerate (zero-area) triangle: exercises the RSqrt( 0 )
+			// huge-finite path that skinned meshes hit on collapsed verts;
+			// an implementation that produces inf/NaN here fails the compare
+			indexes[i*3+1] = indexes[i*3+0];
+			indexes[i*3+2] = indexes[i*3+0];
+		}
 	}
 
 	bestClocksGeneric = 0;
@@ -4231,10 +4238,10 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	TestTransformJoints();
 	TestUntransformJoints();
 	TestTransformVertsNew();
+	TestDeriveTriPlanes();
 /*	TestTracePointCull();
 	TestDecalPointCull();
 	TestOverlayPointCull();
-	TestDeriveTriPlanes();
 	TestDeriveTangents();
 	TestDeriveUnsmoothedTangents();
 	TestNormalizeTangents();

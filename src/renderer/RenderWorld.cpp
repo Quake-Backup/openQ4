@@ -137,6 +137,9 @@ idRenderWorldLocal::idRenderWorldLocal() {
 	portalAreas = NULL;
 	numPortalAreas = 0;
 
+	lightGridAvailabilityFrame = -1;
+	anyLightGridAvailable = false;
+
 	doublePortals = NULL;
 	numInterAreaPortals = 0;
 	md5rProcData = NULL;

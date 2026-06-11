@@ -1295,6 +1295,14 @@ void R_RenderView( viewDef_t *parms ) {
 		viewBuildLastMark = now;
 	}
 
+	// drawSurf->area only feeds the light-grid indirect pass and scene-packet
+	// capture; when neither can consume it this view, skip the per-surface
+	// PointInArea BSP descent in R_AddDrawSurf.
+	parms->skipDrawSurfAreaResolve =
+		parms->renderWorld == NULL
+		|| ( !static_cast<idRenderWorldLocal *>( parms->renderWorld )->AnyLightGridAvailable()
+			&& !R_ScenePackets_SidePipelineRequired() );
+
 	// identify all the visible portalAreas, and the entityDefs and
 	// lightDefs that are in them and pass culling.
 	const int visibilityStart = Sys_Milliseconds();

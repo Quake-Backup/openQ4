@@ -92,6 +92,7 @@ public:
 
 	void					Clear();
 	bool					HasImage() const;
+	bool					IsUsable() const;
 	int						GridPointCount() const;
 	int						CountValidGridPoints() const;
 	int						CountRelocatedGridPoints() const;
@@ -225,6 +226,9 @@ public:
 	int						numPortalAreas;
 	int						connectedAreaNum;		// incremented every time a door portal state changes
 
+	int						lightGridAvailabilityFrame;	// tr.frameCount the latch below was evaluated for
+	bool					anyLightGridAvailable;		// any portal area has a usable light grid
+
 	idScreenRect *			areaScreenRect;
 
 	doublePortal_t *		doublePortals;
@@ -277,6 +281,7 @@ public:
 	bool					WriteMD5R( bool compressed );
 	void					SetupLightGrid();
 	void					LoadLightGridImages( bool forceReloadLoaded = false );
+	bool					AnyLightGridAvailable();
 	bool					LoadLightGridFile( const char *name );
 	void					ParseLightGridPoints( idLexer *src );
 	void					ParseLightGridVisibility( idLexer *src );

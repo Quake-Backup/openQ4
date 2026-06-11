@@ -10,10 +10,18 @@ static const int RENDERER_UPLOAD_MIN_FRAME_BUFFERS = 3;
 static const int RENDERER_UPLOAD_MIN_MEGS = 1;
 static const int RENDERER_UPLOAD_MAX_MEGS = 128;
 
+// buffer-name pool limits: per-frame regenerated surfaces are tens to a few
+// hundred KB, so a generous per-buffer cap keeps PurgeAll's world-sized
+// buffers from pinning storage in the pool
+static const int RENDERER_UPLOAD_POOL_MAX_NAMES = 256;
+static const int RENDERER_UPLOAD_POOL_MAX_BUFFER_BYTES = 4 << 20;
+static const int RENDERER_UPLOAD_POOL_MAX_TOTAL_BYTES = 32 << 20;
+
 static idUploadManager rg_uploadManager;
 
 idBufferAllocator::idBufferAllocator()
-	: capacityBytes( 0 )
+	: pooledBytes( 0 )
+	, capacityBytes( 0 )
 	, frameStaticUploadBytes( 0 )
 	, frameStaticAllocations( 0 )
 	, staticBuffersLive( 0 )
@@ -28,9 +36,19 @@ void idBufferAllocator::Init( int bytes, bool persistent ) {
 	staticBuffersLive = 0;
 	staticBytesLive = 0;
 	persistentMapped = persistent;
+	// drop (do NOT glDelete) any leftover pooled names: a fresh Init may run
+	// under a new GL context where the old names are meaningless
+	for ( int i = 0; i < 2; i++ ) {
+		pooledNames[i].SetNum( 0, false );
+		pooledSizes[i].SetNum( 0, false );
+	}
+	pooledBytes = 0;
 }
 
 void idBufferAllocator::Shutdown( void ) {
+	// the GL context is still current here (upload shutdown precedes
+	// GLimp_Shutdown in both the vid_restart and full shutdown paths)
+	DrainPool();
 	capacityBytes = 0;
 	frameStaticUploadBytes = 0;
 	frameStaticAllocations = 0;
@@ -39,9 +57,37 @@ void idBufferAllocator::Shutdown( void ) {
 	persistentMapped = false;
 }
 
+bool idBufferAllocator::PoolEnabled( void ) const {
+	return r_rendererUploadBufferPool.GetBool();
+}
+
+void idBufferAllocator::DrainPool( void ) {
+	bool deletedAny = false;
+	for ( int i = 0; i < 2; i++ ) {
+		for ( int j = 0; j < pooledNames[i].Num(); j++ ) {
+			unsigned int vbo = pooledNames[i][j];
+			glDeleteBuffersARB( 1, &vbo );
+			deletedAny = true;
+		}
+		pooledNames[i].SetNum( 0, false );
+		pooledSizes[i].SetNum( 0, false );
+	}
+	if ( deletedAny ) {
+		// deleting bound buffers implicitly resets the GL binding to zero
+		idVertexCache::InvalidateBufferBindings();
+	}
+	pooledBytes = 0;
+}
+
 void idBufferAllocator::BeginFrame( void ) {
 	frameStaticUploadBytes = 0;
 	frameStaticAllocations = 0;
+	// eager drain when the pool cvar was switched off, so the rollback /
+	// A-B toggle takes effect immediately instead of waiting for the next
+	// static allocation (the GL context is current here)
+	if ( !PoolEnabled() && ( pooledNames[0].Num() + pooledNames[1].Num() ) > 0 ) {
+		DrainPool();
+	}
 }
 
 bool idBufferAllocator::AllocStaticBuffer( void *data, int bytes, bool indexBuffer, bool streamDraw, unsigned int &vbo ) {
@@ -50,9 +96,23 @@ bool idBufferAllocator::AllocStaticBuffer( void *data, int bytes, bool indexBuff
 	}
 
 	if ( vbo == 0 ) {
-		glGenBuffersARB( 1, &vbo );
-		if ( vbo == 0 ) {
-			return false;
+		const int pool = indexBuffer ? 1 : 0;
+		if ( !PoolEnabled() ) {
+			DrainPool();	// cvar was toggled off with names still pooled
+		}
+		const int numPooled = pooledNames[pool].Num();
+		if ( numPooled > 0 ) {
+			// recycle the name; glBufferData below re-specifies the storage
+			// (orphaning), which is safe against in-flight GPU reads
+			vbo = pooledNames[pool][numPooled - 1];
+			pooledBytes -= pooledSizes[pool][numPooled - 1];
+			pooledNames[pool].SetNum( numPooled - 1, false );
+			pooledSizes[pool].SetNum( numPooled - 1, false );
+		} else {
+			glGenBuffersARB( 1, &vbo );
+			if ( vbo == 0 ) {
+				return false;
+			}
 		}
 		staticBuffersLive++;
 	}
@@ -73,15 +133,31 @@ bool idBufferAllocator::AllocStaticBuffer( void *data, int bytes, bool indexBuff
 	return true;
 }
 
-void idBufferAllocator::FreeStaticBuffer( unsigned int &vbo, int bytes ) {
+void idBufferAllocator::FreeStaticBuffer( unsigned int &vbo, int bytes, bool indexBuffer ) {
 	if ( vbo == 0 ) {
 		return;
 	}
 
-	glDeleteBuffersARB( 1, &vbo );
-	// deleting a bound buffer implicitly resets the GL binding to zero
-	idVertexCache::InvalidateBufferBindings();
-	vbo = 0;
+	const int pool = indexBuffer ? 1 : 0;
+	if ( PoolEnabled()
+			&& bytes > 0
+			&& bytes <= RENDERER_UPLOAD_POOL_MAX_BUFFER_BYTES
+			&& pooledBytes + bytes <= RENDERER_UPLOAD_POOL_MAX_TOTAL_BYTES
+			&& pooledNames[pool].Num() < RENDERER_UPLOAD_POOL_MAX_NAMES ) {
+		// keep the name (and its orphan-ready storage) for the next alloc;
+		// no GL calls and no binding invalidation: the buffer still exists,
+		// so any binding shadow that references it remains valid
+		pooledNames[pool].Append( vbo );
+		pooledSizes[pool].Append( bytes );
+		pooledBytes += bytes;
+		vbo = 0;
+	} else {
+		glDeleteBuffersARB( 1, &vbo );
+		// deleting a bound buffer implicitly resets the GL binding to zero
+		idVertexCache::InvalidateBufferBindings();
+		vbo = 0;
+	}
+
 	if ( staticBuffersLive > 0 ) {
 		staticBuffersLive--;
 	}
@@ -115,6 +191,14 @@ int idBufferAllocator::StaticBuffersLive( void ) const {
 
 int idBufferAllocator::StaticBytesLive( void ) const {
 	return staticBytesLive;
+}
+
+int idBufferAllocator::StaticBuffersPooled( void ) const {
+	return pooledNames[0].Num() + pooledNames[1].Num();
+}
+
+int idBufferAllocator::StaticBytesPooled( void ) const {
+	return pooledBytes;
 }
 
 idRingBuffer::idRingBuffer()
@@ -432,7 +516,7 @@ bool idUploadManager::AllocStaticBuffer( void *data, int bytes, bool indexBuffer
 	return true;
 }
 
-void idUploadManager::FreeStaticBuffer( unsigned int &vbo, int bytes ) {
+void idUploadManager::FreeStaticBuffer( unsigned int &vbo, int bytes, bool indexBuffer ) {
 	if ( vbo == 0 ) {
 		return;
 	}
@@ -443,7 +527,7 @@ void idUploadManager::FreeStaticBuffer( unsigned int &vbo, int bytes ) {
 		return;
 	}
 
-	allocator.FreeStaticBuffer( vbo, bytes );
+	allocator.FreeStaticBuffer( vbo, bytes, indexBuffer );
 	UpdateAllocatorStats();
 }
 
@@ -561,6 +645,8 @@ void idUploadManager::UpdateAllocatorStats( void ) {
 	stats.frameStaticAllocations = allocator.FrameStaticAllocations();
 	stats.staticBuffersLive = allocator.StaticBuffersLive();
 	stats.staticBytesLive = allocator.StaticBytesLive();
+	stats.staticBuffersPooled = allocator.StaticBuffersPooled();
+	stats.staticBytesPooled = allocator.StaticBytesPooled();
 }
 
 const char *idUploadManager::PathName( void ) const {
@@ -601,8 +687,8 @@ bool R_RendererUpload_AllocStaticBuffer( void *data, int bytes, bool indexBuffer
 	return rg_uploadManager.AllocStaticBuffer( data, bytes, indexBuffer, streamDraw, vbo );
 }
 
-void R_RendererUpload_FreeStaticBuffer( unsigned int &vbo, int bytes ) {
-	rg_uploadManager.FreeStaticBuffer( vbo, bytes );
+void R_RendererUpload_FreeStaticBuffer( unsigned int &vbo, int bytes, bool indexBuffer ) {
+	rg_uploadManager.FreeStaticBuffer( vbo, bytes, indexBuffer );
 }
 
 void R_RendererUpload_RecordLegacyUpload( int bytes ) {
@@ -686,10 +772,10 @@ bool RendererUpload_RunSelfTest( void ) {
 		const rendererUploadStats_t &stats = R_RendererUpload_Stats();
 		if ( stats.frameStaticUploadBytes < static_cast<int>( sizeof( data ) ) || stats.frameStaticAllocations <= 0 || stats.staticBuffersLive <= 0 ) {
 			common->Printf( "RendererUpload self-test failed: static buffer stats\n" );
-			R_RendererUpload_FreeStaticBuffer( vbo, sizeof( data ) );
+			R_RendererUpload_FreeStaticBuffer( vbo, sizeof( data ), false );
 			return false;
 		}
-		R_RendererUpload_FreeStaticBuffer( vbo, sizeof( data ) );
+		R_RendererUpload_FreeStaticBuffer( vbo, sizeof( data ), false );
 		if ( vbo != 0 ) {
 			common->Printf( "RendererUpload self-test failed: static buffer free\n" );
 			return false;

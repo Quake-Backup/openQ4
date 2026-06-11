@@ -34,7 +34,7 @@ For player-facing setup instructions, see [../docs-user/input-settings.md](../do
 | Console input | Toggle key, enter/submit, tab-complete, history, paging, backspace, ctrl shortcuts | Pass | `SE_KEY` + `SE_CHAR` paths align for core behavior, and `Sys_GetConsoleKey` now follows the active SDL3 layout for the grave/console scancode. |
 | GUI edit fields | Backspace/delete, cursor movement, enter handling, ctrl-h/ctrl-a/ctrl-e style chars | Pass | Backspace regression fixed via control-char synthesis on keydown. |
 | Chat input | Text entry/editing in GUI-driven chat fields | Pass (UTF-8/control) | SDL text input is decoded to Unicode codepoints before queuing `SE_CHAR`, and control chars remain restored on keydown. |
-| Binds | Key-down bind execution in session loop (including function keys and mouse/wheel) | Pass | Printable `SE_KEY` values now come from SDL3's current-layout keycode translation while special keys keep the explicit engine mappings. |
+| Binds | Key-down bind execution in session loop (including function keys and mouse/wheel) | Pass | Printable `SE_KEY` values come from SDL3's current-layout keycode translation for ASCII plus the reserved Latin-1 keynums (`K_TILDE_N`, `K_SUPERSCRIPT_TWO`, ...); all other layout-specific keycodes fall back to physical-scancode (US-position) mapping so they can never collide with the special-key space at 127-253 (previously German `ü` mapped onto `K_PRINT_SCR`). |
 | Mouse buttons | `MOUSE1` through `MOUSE8`, wheel up/down, console/menu routing | Pass | SDL3 maps extended buttons 6-8 onto the engine's existing `K_MOUSE6..K_MOUSE8` range, and console routing treats all eight mouse keys as mouse input. |
 | Mouse motion | Captured relative motion, menu/console absolute routing, high-DPI/fractional deltas | Pass | SDL3 relative motion is requested unscaled, fractional Linux deltas are accumulated before integer engine events, and menu/console coordinates continue through the existing GUI-space transform. |
 | Poll contracts | Queue ranges, failed-return outputs, zero/no-op deltas | Pass | SDL3, POSIX/native fallback, dedicated stubs, and legacy Win32 reject invalid key/mouse actions, skip zero movement/wheel deltas, and zero output parameters when no event is returned. Usercmd generation also ignores impossible key IDs. |
@@ -47,8 +47,8 @@ For player-facing setup instructions, see [../docs-user/input-settings.md](../do
 ## Remaining Parity Gaps
 
 1. Legacy keynums still cap bindable printable keys to the engine's 8-bit key range.
-   - SDL3 layout-aware translation now restores the intended non-English bind semantics for printable Latin-1 keycodes and console-toggle lookup.
-   - Layouts whose base printable keys fall outside the legacy `< 256` keynum space still need a broader input-system expansion if they are to become bindable without fallback behavior.
+   - SDL3 layout-aware translation restores the intended non-English bind semantics for printable ASCII and the Latin-1 characters with dedicated keynum slots (`¡ ² ´ º à ç è ì ñ ò ù`), including console-toggle lookup.
+   - Other layout-specific keycodes (e.g. German umlauts, non-Latin layouts) bind through their physical US-position scancode fallback; making them bindable by character needs a broader input-system expansion beyond the legacy `< 256` keynum space.
 2. macOS SDL3 source selection now reaches the shared controller backend, but still needs compile/link/runtime validation on macOS hardware before it can be marked first-class.
 
 ## Recommended Next Steps

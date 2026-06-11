@@ -362,30 +362,49 @@ int R_TriSurfMemory( const srfTriangles_t *tri ) {
 
 /*
 ==============
+R_FreeTriSurfVertCache
+
+TAG_TEMP blocks live in the shared per-frame space and are recycled wholesale
+by idVertexCache::EndFrame; abandoning the pointer is the correct disposal
+(idVertexCache::Free fatals on them), mirroring R_TouchVertexCache's tag
+awareness. Dynamic (temp) headers are never recycled into static blocks
+(segregated free header lists), so the tag check stays reliable for stale
+pointers from the normal AllocFrameTemp paths. Caveat: AllocFrameTemp's
+static-overflow fallback returns an already-deferred-freed STATIC header,
+which IS recycled — callers must not store such blocks on heap tri surfs
+across frames (the packed light-tris path uses a frame-local tri copy for
+exactly this reason).
+==============
+*/
+static void R_FreeTriSurfVertCache( vertCache_t *&cache ) {
+	if ( cache != NULL ) {
+		if ( cache->tag != TAG_TEMP ) {
+			vertexCache.Free( cache );
+		}
+		cache = NULL;
+	}
+}
+
+/*
+==============
 R_FreeStaticTriSurfVertexCaches
 ==============
 */
 void R_FreeStaticTriSurfVertexCaches( srfTriangles_t *tri ) {
 	if ( tri->ambientSurface == NULL ) {
 		// this is a real model surface
-		vertexCache.Free( tri->ambientCache );
-		tri->ambientCache = NULL;
+		R_FreeTriSurfVertCache( tri->ambientCache );
 	} else {
 		// this is a light interaction surface that references
 		// a different ambient model surface
-		vertexCache.Free( tri->lightingCache );
-		tri->lightingCache = NULL;
+		R_FreeTriSurfVertCache( tri->lightingCache );
 	}
-	if ( tri->indexCache ) {
-		vertexCache.Free( tri->indexCache );
-		tri->indexCache = NULL;
-	}
+	R_FreeTriSurfVertCache( tri->indexCache );
 	if ( tri->shadowCache && ( tri->shadowVertexes != NULL || tri->verts != NULL ) ) {
 		// if we don't have tri->shadowVertexes, these are a reference to a
 		// shadowCache on the original surface, which a vertex program
 		// will take care of making unique for each light
-		vertexCache.Free( tri->shadowCache );
-		tri->shadowCache = NULL;
+		R_FreeTriSurfVertCache( tri->shadowCache );
 	}
 }
 

@@ -2233,14 +2233,27 @@ void idRenderModelStatic::FreeVertexCache( void ) {
 		if ( !tri ) {
 			continue;
 		}
+		// TAG_TEMP blocks live in the shared per-frame space and are recycled
+		// by the frame loop; abandoning the pointer is the correct disposal
+		// (idVertexCache::Free fatals on them)
 		if ( tri->ambientCache ) {
-			vertexCache.Free( tri->ambientCache );
+			if ( tri->ambientCache->tag != TAG_TEMP ) {
+				vertexCache.Free( tri->ambientCache );
+			}
 			tri->ambientCache = NULL;
 		}
 		// static shadows may be present
 		if ( tri->shadowCache ) {
-			vertexCache.Free( tri->shadowCache );
+			if ( tri->shadowCache->tag != TAG_TEMP ) {
+				vertexCache.Free( tri->shadowCache );
+			}
 			tri->shadowCache = NULL;
+		}
+		if ( tri->indexCache ) {
+			if ( tri->indexCache->tag != TAG_TEMP ) {
+				vertexCache.Free( tri->indexCache );
+			}
+			tri->indexCache = NULL;
 		}
 	}
 }

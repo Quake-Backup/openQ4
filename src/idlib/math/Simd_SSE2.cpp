@@ -223,6 +223,98 @@ void VPCALL idSIMD_SSE2::MinMax( idVec3 &min, idVec3 &max, const idDrawVert * RE
 
 /*
 ============
+SSE2_RSqrt
+
+	vectorizes idMath::RSqrt's 0x5f3759df bit trick + one Newton-Raphson step
+	with the exact generic operation order, so each lane is bit-identical to
+	the scalar version - including the huge-finite (not inf/NaN) result for
+	x == 0 that degenerate triangles in skinned meshes rely on
+============
+*/
+ID_INLINE static __m128 SSE2_RSqrt( __m128 x ) {
+	__m128 y = _mm_mul_ps( x, _mm_set1_ps( 0.5f ) );
+	__m128i i = _mm_sub_epi32( _mm_set1_epi32( 0x5f3759df ), _mm_srli_epi32( _mm_castps_si128( x ), 1 ) );
+	__m128 r = _mm_castsi128_ps( i );
+	r = _mm_mul_ps( r, _mm_sub_ps( _mm_set1_ps( 1.5f ), _mm_mul_ps( _mm_mul_ps( r, r ), y ) ) );
+	return r;
+}
+
+/*
+============
+idSIMD_SSE2::DeriveTriPlanes
+
+	four triangles per iteration: gathered vertex loads + transpose, 4-wide
+	cross product, bit-exact RSqrt normalization, and a transpose back to
+	four idPlane rows; sum orders match the generic version exactly
+============
+*/
+void VPCALL idSIMD_SSE2::DeriveTriPlanes( idPlane * RESTRICT planes, const idDrawVert * RESTRICT verts, const int numVerts, const int * RESTRICT indexes, const int numIndexes ) {
+	const __m128 signMask = _mm_castsi128_ps( _mm_set1_epi32( 0x80000000 ) );
+	const int numTris = numIndexes / 3;
+
+	int t = 0;
+	for ( ; t + 4 <= numTris; t += 4 ) {
+		const int * RESTRICT ix = indexes + t * 3;
+
+		// the 16 byte loads stay inside the 64 byte idDrawVert
+		__m128 a0 = _mm_loadu_ps( verts[ix[ 0]].xyz.ToFloatPtr() );
+		__m128 a1 = _mm_loadu_ps( verts[ix[ 3]].xyz.ToFloatPtr() );
+		__m128 a2 = _mm_loadu_ps( verts[ix[ 6]].xyz.ToFloatPtr() );
+		__m128 a3 = _mm_loadu_ps( verts[ix[ 9]].xyz.ToFloatPtr() );
+		_MM_TRANSPOSE4_PS( a0, a1, a2, a3 );	// a0 = ax, a1 = ay, a2 = az
+
+		__m128 b0 = _mm_loadu_ps( verts[ix[ 1]].xyz.ToFloatPtr() );
+		__m128 b1 = _mm_loadu_ps( verts[ix[ 4]].xyz.ToFloatPtr() );
+		__m128 b2 = _mm_loadu_ps( verts[ix[ 7]].xyz.ToFloatPtr() );
+		__m128 b3 = _mm_loadu_ps( verts[ix[10]].xyz.ToFloatPtr() );
+		_MM_TRANSPOSE4_PS( b0, b1, b2, b3 );
+
+		__m128 c0 = _mm_loadu_ps( verts[ix[ 2]].xyz.ToFloatPtr() );
+		__m128 c1 = _mm_loadu_ps( verts[ix[ 5]].xyz.ToFloatPtr() );
+		__m128 c2 = _mm_loadu_ps( verts[ix[ 8]].xyz.ToFloatPtr() );
+		__m128 c3 = _mm_loadu_ps( verts[ix[11]].xyz.ToFloatPtr() );
+		_MM_TRANSPOSE4_PS( c0, c1, c2, c3 );
+
+		__m128 d0x = _mm_sub_ps( b0, a0 );
+		__m128 d0y = _mm_sub_ps( b1, a1 );
+		__m128 d0z = _mm_sub_ps( b2, a2 );
+		__m128 d1x = _mm_sub_ps( c0, a0 );
+		__m128 d1y = _mm_sub_ps( c1, a1 );
+		__m128 d1z = _mm_sub_ps( c2, a2 );
+
+		__m128 nx = _mm_sub_ps( _mm_mul_ps( d1y, d0z ), _mm_mul_ps( d1z, d0y ) );
+		__m128 ny = _mm_sub_ps( _mm_mul_ps( d1z, d0x ), _mm_mul_ps( d1x, d0z ) );
+		__m128 nz = _mm_sub_ps( _mm_mul_ps( d1x, d0y ), _mm_mul_ps( d1y, d0x ) );
+
+		// generic sum order: n.x * n.x + n.y * n.y + n.z * n.z
+		__m128 f = SSE2_RSqrt( _mm_add_ps( _mm_add_ps(
+			_mm_mul_ps( nx, nx ), _mm_mul_ps( ny, ny ) ), _mm_mul_ps( nz, nz ) ) );
+
+		nx = _mm_mul_ps( nx, f );
+		ny = _mm_mul_ps( ny, f );
+		nz = _mm_mul_ps( nz, f );
+
+		// FitThroughPoint: d = -( normal * point ), idVec3 dot sum order
+		__m128 dist = _mm_xor_ps( signMask, _mm_add_ps( _mm_add_ps(
+			_mm_mul_ps( nx, a0 ), _mm_mul_ps( ny, a1 ) ), _mm_mul_ps( nz, a2 ) ) );
+
+		_MM_TRANSPOSE4_PS( nx, ny, nz, dist );
+		_mm_storeu_ps( planes[t + 0].ToFloatPtr(), nx );
+		_mm_storeu_ps( planes[t + 1].ToFloatPtr(), ny );
+		_mm_storeu_ps( planes[t + 2].ToFloatPtr(), nz );
+		_mm_storeu_ps( planes[t + 3].ToFloatPtr(), dist );
+	}
+
+	// hand any remainder to the generic loop, including a trailing partial
+	// triangle when numIndexes is not a multiple of 3 (the generic version
+	// processes it, so the tail condition must use numIndexes, not numTris)
+	if ( t * 3 < numIndexes ) {
+		idSIMD_Generic::DeriveTriPlanes( planes + t, verts, numVerts, indexes + t * 3, numIndexes - t * 3 );
+	}
+}
+
+/*
+============
 idSIMD_SSE2::ConvertJointQuatsToJointMats
 
 	scalar, but with the idMat3 round trip of the generic version removed;

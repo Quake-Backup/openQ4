@@ -1704,11 +1704,31 @@ static int SDL3_MapKeycode(SDL_Keycode keycode) {
 		return 0;
 	}
 
-	if (keycode > 0 && keycode <= 255) {
-		return static_cast<unsigned char>(keycode);
+	if (keycode > 0 && keycode < K_BACKSPACE) {
+		return static_cast<int>(keycode);
 	}
 
-	return 0;
+	// K_BACKSPACE..K_LAST_KEY is the engine's special-key space (mouse, joystick,
+	// function keys, ...). Only the Latin-1 characters with dedicated keyNum_t
+	// slots map through by character; other layout-specific keycodes fall back
+	// to the caller's physical scancode mapping so they stay bindable without
+	// colliding with special keys.
+	switch (keycode) {
+		case K_INVERTED_EXCLAMATION:
+		case K_SUPERSCRIPT_TWO:
+		case K_ACUTE_ACCENT:
+		case K_MASCULINE_ORDINATOR:
+		case K_GRAVE_A:
+		case K_CEDILLA_C:
+		case K_GRAVE_E:
+		case K_GRAVE_I:
+		case K_TILDE_N:
+		case K_GRAVE_O:
+		case K_GRAVE_U:
+			return static_cast<int>(keycode);
+		default:
+			return 0;
+	}
 }
 
 static int SDL3_MapScancode(SDL_Scancode scancode) {
@@ -3023,13 +3043,11 @@ bool Sys_SDL_PumpEvents(void) {
 			}
 
 			case SDL_EVENT_GAMEPAD_ADDED:
-				if (in_joystick.GetBool()) {
-					if (s_sdlJoystick) {
-						SDL3_CloseJoystick(eventTime);
-					}
-					if (!s_sdlGamepad) {
-						(void)SDL3_OpenGamepad(event.gdevice.which);
-					}
+				// Prefer gamepads over plain joysticks. SDL3_OpenGamepad releases any
+				// open joystick only after the gamepad opens, so a failed open keeps
+				// the current device usable.
+				if (in_joystick.GetBool() && !s_sdlGamepad) {
+					(void)SDL3_OpenGamepad(event.gdevice.which);
 				}
 				break;
 

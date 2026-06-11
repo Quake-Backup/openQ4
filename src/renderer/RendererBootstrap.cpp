@@ -320,7 +320,31 @@ void RendererBootstrap_SetModernExecutorAvailable( bool available ) {
 }
 
 bool RendererBootstrap_ShouldAutoPromoteModernVisible( void ) {
-	RendererBootstrap_UpdateDefaultPromotionState();
+	// several callers hit this per frame (scene-packet gating, draw-plan and
+	// executor checks) and the full evaluation memsets a ~440-byte state and
+	// builds idStr issue lists, so skip the recompute while the cvar inputs
+	// are unchanged. Bootstrap-state changes (tier selection, executor
+	// availability, driver quirks) refresh the live promotion state directly
+	// through RendererBootstrap_UpdateSummary, which this returns.
+	static bool lastInputsValid = false;
+	static bool lastAutoPromote = false;
+	static char lastEvidence[256];
+	static char lastRenderer[64];
+
+	const bool autoPromote = r_rendererModernAutoPromote.GetBool();
+	const char *evidence = r_rendererPromotionEvidence.GetString();
+	const char *renderer = r_renderer.GetString();
+
+	if ( !lastInputsValid
+			|| autoPromote != lastAutoPromote
+			|| idStr::Cmp( evidence, lastEvidence ) != 0
+			|| idStr::Cmp( renderer, lastRenderer ) != 0 ) {
+		RendererBootstrap_UpdateDefaultPromotionState();
+		lastAutoPromote = autoPromote;
+		idStr::Copynz( lastEvidence, evidence, sizeof( lastEvidence ) );
+		idStr::Copynz( lastRenderer, renderer, sizeof( lastRenderer ) );
+		lastInputsValid = true;
+	}
 	return rg_bootstrapState.defaultPromotion.active;
 }
 

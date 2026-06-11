@@ -454,6 +454,14 @@ typedef struct viewEntity_s {
 
 	float				modelMatrix[16];		// local coords to global coords
 	float				modelViewMatrix[16];	// local coords to eye coords
+
+	// per-view memo for non-constant material register evaluation: the
+	// ambient pass and every per-light R_LinkLightSurf evaluate identical
+	// inputs for the same (entity, material) pair within one view. Lives in
+	// cleared frame memory, so it dies with the view by construction.
+	const idMaterial *	shaderRegisterMemoMaterials[4];
+	const float *		shaderRegisterMemoRegs[4];
+	int					numShaderRegisterMemos;
 } viewEntity_t;
 
 
@@ -487,6 +495,12 @@ typedef struct viewDef_s {
 	bool				isXraySubview;
 
 	bool				isEditor;
+
+	bool				skipDrawSurfAreaResolve;
+	// drawSurf->area is only consumed by the light-grid indirect pass and
+	// scene-packet capture; when neither can use it this view, R_AddDrawSurf
+	// skips the per-surface PointInArea BSP descent. false (= resolve) for
+	// manually constructed views (e.g. 2D gui views) by cleared allocation.
 
 	int					numClipPlanes;			// mirrors will often use a single clip plane
 	idPlane				clipPlanes[MAX_CLIP_PLANES];		// in world space, the positive side
@@ -1124,6 +1138,7 @@ extern idCVar r_rendererDynamicResolution;	// allow benchmark screen-percentage 
 extern idCVar r_rendererUploadMegs;		// dynamic upload stream size in megabytes per frame buffer
 extern idCVar r_rendererUploadFrameBuffers;	// dynamic upload stream frame-buffer rotation depth
 extern idCVar r_rendererUploadPersistent;	// allow persistent-mapped dynamic upload stream
+extern idCVar r_rendererUploadBufferPool;	// recycle static GL buffer names instead of gen/data/delete churn
 extern idCVar r_rendererModernExecutor;	// opt-in modern GL executor prepare path
 extern idCVar r_rendererModernSubmit;	// opt-in modern GL draw submission before ARB2 fallback
 extern idCVar r_rendererGpuValidation;	// compare GL43 GPU-driven compute results against CPU reference data

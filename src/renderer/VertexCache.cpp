@@ -114,7 +114,7 @@ void idVertexCache::ActuallyFree( vertCache_t *block ) {
 		staticCountTotal--;
 
 		if ( block->vbo ) {
-			R_RendererUpload_FreeStaticBuffer( block->vbo, block->size );
+			R_RendererUpload_FreeStaticBuffer( block->vbo, block->size, block->indexBuffer );
 		} else if ( block->virtMem ) {
 			Mem_Free( block->virtMem );
 			block->virtMem = NULL;
@@ -272,7 +272,7 @@ void idVertexCache::Shutdown() {
 			continue;
 		}
 		if ( block->vbo ) {
-			R_RendererUpload_FreeStaticBuffer( block->vbo, block->size );
+			R_RendererUpload_FreeStaticBuffer( block->vbo, block->size, block->indexBuffer );
 		} else if ( block->virtMem ) {
 			Mem_Free( block->virtMem );
 			block->virtMem = NULL;
@@ -484,6 +484,11 @@ vertCache_t	*idVertexCache::AllocFrameTemp( void *data, int size, bool indexBuff
 		block->frameUsed = 0;
 		return block;
 	}
+
+	// keep legacy temp offsets aligned (4 for index data, 16 for vertex data);
+	// every current alloc size is already a multiple of these, so this is a
+	// guard rather than a behavior change
+	dynamicAllocThisFrame = ( dynamicAllocThisFrame + alignment - 1 ) & ~( alignment - 1 );
 
 	if ( dynamicAllocThisFrame + size > frameBytes ) {
 		// if we don't have enough room in the temp block, allocate a static block,

@@ -1104,23 +1104,9 @@ void R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const 
 		// shadows won't have a shader
 		drawSurf->shaderRegisters = NULL;
 	} else {
-		// process the shader expressions for conditionals / color / texcoords
-		const float *constRegs = shader->ConstantRegisters();
-		if ( constRegs ) {
-			// this shader has only constants for parameters
-			drawSurf->shaderRegisters = constRegs;
-		} else {
-			// FIXME: share with the ambient surface?
-			float *regs = (float *)R_FrameAlloc( shader->GetNumRegisters() * sizeof( float ) );
-			idSoundEmitter *soundEmitter = NULL;
-
-			if ( space->entityDef != NULL ) {
-				soundEmitter = R_GetShaderSoundEmitter( space->entityDef->parms.referenceSoundHandle );
-			}
-
-			drawSurf->shaderRegisters = regs;
-			shader->EvaluateRegisters( regs, space->entityDef->parms.shaderParms, tr.viewDef, soundEmitter );
-		}
+		// process the shader expressions for conditionals / color / texcoords;
+		// shared with the ambient pass through the per-view register memo
+		drawSurf->shaderRegisters = R_SetupDrawSurfShaderRegisters( space, NULL, shader );
 
 		// calculate the specular coordinates if we aren't using vertex programs
 		if ( !tr.backEndRendererHasVertexPrograms && !r_skipSpecular.GetBool()  ) {
@@ -1802,6 +1788,25 @@ const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const re
 		return constRegs;
 	}
 
+	// within one view, every evaluation for the same (entity, material) pair
+	// sees identical inputs (entity shaderParms, view time, sound emitter), so
+	// the ambient-pass result can be shared with the per-light R_LinkLightSurf
+	// evaluations (id's original "FIXME: share with the ambient surface?").
+	// Only entity-owned parms are eligible: BSE effects pass stack-local
+	// renderEntity_t copies, and referenceShader rewrites the parms.
+	viewEntity_t *memoSpace = NULL;
+	if ( r_useRedundantStateFiltering.GetBool()
+			&& space != NULL && space->entityDef != NULL
+			&& ( renderEntity == NULL || renderEntity == &space->entityDef->parms )
+			&& space->entityDef->parms.referenceShader == NULL ) {
+		memoSpace = const_cast<viewEntity_t *>( space );
+		for ( int i = 0; i < memoSpace->numShaderRegisterMemos; i++ ) {
+			if ( memoSpace->shaderRegisterMemoMaterials[i] == shader ) {
+				return memoSpace->shaderRegisterMemoRegs[i];
+			}
+		}
+	}
+
 	float *regs = (float *)R_FrameAlloc( shader->GetNumRegisters() * sizeof( float ) );
 
 	if ( renderEntity != NULL ) {
@@ -1827,6 +1832,13 @@ const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const re
 	}
 
 	shader->EvaluateRegisters( regs, shaderParms, tr.viewDef, soundEmitter );
+
+	if ( memoSpace != NULL
+			&& memoSpace->numShaderRegisterMemos < (int)( sizeof( memoSpace->shaderRegisterMemoMaterials ) / sizeof( memoSpace->shaderRegisterMemoMaterials[0] ) ) ) {
+		memoSpace->shaderRegisterMemoMaterials[memoSpace->numShaderRegisterMemos] = shader;
+		memoSpace->shaderRegisterMemoRegs[memoSpace->numShaderRegisterMemos] = regs;
+		memoSpace->numShaderRegisterMemos++;
+	}
 	return regs;
 }
 
@@ -1903,7 +1915,7 @@ void R_AddDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space, const 
 
 	// Keep shadow-caster and main draw-surf material evaluation on the same code path.
 	drawSurf->shaderRegisters = R_SetupDrawSurfShaderRegisters( space, renderEntity, shader );
-	drawSurf->area = R_ResolveDrawSurfArea( tri, space );
+	drawSurf->area = tr.viewDef->skipDrawSurfAreaResolve ? R_FallbackDrawSurfArea( space ) : R_ResolveDrawSurfArea( tri, space );
 
 	R_FinalizeDrawSurf( drawSurf );
 

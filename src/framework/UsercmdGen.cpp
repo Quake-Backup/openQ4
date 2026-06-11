@@ -1057,7 +1057,11 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 	// AXIS_ROLL is used as a backend capability flag: non-zero means dedicated look axes are available.
 	const bool hasDedicatedLookAxis = joystickAxis[AXIS_ROLL] != 0;
 	const int lookAxisX = hasDedicatedLookAxis ? joystickAxis[AXIS_SIDE] : joystickAxis[AXIS_YAW];
-	const int lookAxisY = hasDedicatedLookAxis ? joystickAxis[AXIS_FORWARD] : -joystickAxis[AXIS_PITCH];
+	int lookAxisY = hasDedicatedLookAxis ? joystickAxis[AXIS_FORWARD] : -joystickAxis[AXIS_PITCH];
+	if ( !hasDedicatedLookAxis && cvarSystem->GetCVarBool( "in_joystickInvertLook" ) ) {
+		// backends only apply invert to dedicated look axes; the shared move/look axis is inverted here
+		lookAxisY = -lookAxisY;
+	}
 	const int moveAxisX = joystickAxis[AXIS_YAW];
 	const int moveAxisY = joystickAxis[AXIS_PITCH];
 
@@ -1074,7 +1078,9 @@ void idUsercmdGenLocal::JoystickMove( void ) {
 	joystickLookSensitivity = idMath::ClampFloat( 0.1f, 4.0f, joystickLookSensitivity );
 
 	if ( hasDedicatedLookAxis || !ButtonState( UB_STRAFE ) ) {
-		viewangles[YAW] += anglespeed * in_yawSpeed.GetFloat() * joystickLookSensitivity * lookAxisX;
+		// positive axis values mean stick right/down; turning right decreases yaw and
+		// looking down increases pitch, matching the mouse and keyboard handling above
+		viewangles[YAW] -= anglespeed * in_yawSpeed.GetFloat() * joystickLookSensitivity * lookAxisX;
 		viewangles[PITCH] += anglespeed * in_pitchSpeed.GetFloat() * joystickLookSensitivity * lookAxisY;
 	}
 
