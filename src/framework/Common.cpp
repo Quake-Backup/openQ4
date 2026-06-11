@@ -3716,7 +3716,8 @@ idCommonLocal::SetMachineSpec
 =================
 */
 void idCommonLocal::SetMachineSpec( void ) {
-	const double cpuHz = Sys_ClockTicksPerSecond();
+	// Sys_ClockTicksPerSecond is the timer rate (QPC/monotonic), not CPU speed
+	const double cpuHz = Sys_GetApproximateProcessorFrequencyHz();
 	double ghz = cpuHz * 0.000000001f;
 	int vidRam = Sys_GetVideoRam();
 	int sysRam = Sys_GetSystemRam();

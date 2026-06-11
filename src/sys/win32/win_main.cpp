@@ -107,7 +107,7 @@ static bool Sys_ReadProcessorRegistryString( const char *valueName, idStr &value
 	return value.Length() > 0;
 }
 
-static double Sys_GetApproximateProcessorFrequencyHz( void ) {
+double Sys_GetApproximateProcessorFrequencyHz( void ) {
 	HKEY hKey;
 	DWORD procSpeedMHz = 0;
 	DWORD buflen = sizeof( procSpeedMHz );

@@ -1017,52 +1017,46 @@ void SCR_DrawTextRightAlign( float &y, const char *text, ... ) {
 /*
 ==================
 SCR_DrawFPS
+
+Counts drawn frames against the wall clock and refreshes the displayed
+value at a fixed interval. Quake 3 recomputed a 4-frame average every
+frame, but its millisecond timer quantized frame times so the readout
+held still; with a high resolution clock that average changes every
+frame, so the display is throttled explicitly instead.
 ==================
 */
-#define	FPS_FRAMES	4
+#define	FPS_UPDATE_INTERVAL_MS	250.0
 float SCR_DrawFPS( float y ) {
-	char		*s;
-	float		w;
-	static double	previousTimes[FPS_FRAMES];
-	static int	index;
-	int		i;
-	int		fps;
-	static	double	previous;
-	double	t;
-	double	frameTime;
-	double	total;
-	const double clockTicksPerSecond = Sys_ClockTicksPerSecond();
+	static double	windowStart;
+	static int		windowFrames;
+	static int		fps = -1;
 
-	// don't use serverTime, because that will be drifting to
-	// correct for internet lag changes, timescales, timedemos, etc
+	const double clockTicksPerSecond = Sys_ClockTicksPerSecond();
 	if ( clockTicksPerSecond <= 0.0 ) {
 		return y + BIGCHAR_HEIGHT + 4;
 	}
 
-	t = Sys_GetClockTicks();
-	if ( previous <= 0.0 || t <= previous ) {
-		previous = t;
+	// don't use serverTime, because that will be drifting to
+	// correct for internet lag changes, timescales, timedemos, etc
+	const double t = Sys_GetClockTicks();
+	if ( windowStart <= 0.0 || t < windowStart ) {
+		windowStart = t;
+		windowFrames = 0;
 		return y + BIGCHAR_HEIGHT + 4;
 	}
 
-	frameTime = ( t - previous ) * 1000.0 / clockTicksPerSecond;
-	previous = t;
+	windowFrames++;
 
-	previousTimes[index % FPS_FRAMES] = frameTime;
-	index++;
-	if ( index > FPS_FRAMES ) {
-		// average multiple frames together to smooth changes out a bit
-		total = 0.0;
-		for ( i = 0 ; i < FPS_FRAMES ; i++ ) {
-			total += previousTimes[i];
-		}
-		if ( total <= 0.0 ) {
-			total = 1.0;
-		}
-		fps = idMath::FtoiFast( ( 1000.0 * FPS_FRAMES / total ) + 0.5 );
+	const double elapsedMs = ( t - windowStart ) * 1000.0 / clockTicksPerSecond;
+	if ( elapsedMs >= FPS_UPDATE_INTERVAL_MS ) {
+		fps = idMath::FtoiFast( ( windowFrames * 1000.0 / elapsedMs ) + 0.5 );
+		windowStart = t;
+		windowFrames = 0;
+	}
 
-		s = va( "%ifps", fps );
-		w = strlen( s ) * localConsole.GetBigCharWidth();
+	if ( fps >= 0 ) {
+		const char *s = va( "%ifps", fps );
+		const float w = strlen( s ) * localConsole.GetBigCharWidth();
 
 		Con_DrawBigStringExt( SCREEN_WIDTH - localConsole.GetBigCharWidth() * 0.5f - w, y + 2.0f, s, colorWhite, true );
 	}

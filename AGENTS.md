@@ -54,6 +54,7 @@ This file describes project goals, rules, and upstream credits for anyone workin
 - For runtime validation, use mode-specific launch tasks: use the SP launch task for single-player testing and the MP launch task for multiplayer testing.
 - Do not treat main-menu startup as sufficient validation; enter in-game/map gameplay relevant to the change before concluding tests.
 - Use `.tmp/` directory in repository for any temporary files required for tasks.
+- Always consider cross-platform compatibility for any changes.
 
 **.install/ Folder Layout (Staging Target)**
 - `.install/` is the runtime package root used by local staging and `fs_cdpath` overlays.

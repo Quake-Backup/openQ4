@@ -200,6 +200,23 @@ double Sys_ClockTicksPerSecond( void ) {
 }
 
 /*
+===============
+Sys_GetApproximateProcessorFrequencyHz
+
+Display-only CPU frequency for the processor summary. Returns 0.0 when
+unavailable (e.g. Apple Silicon does not report hw.cpufrequency).
+===============
+*/
+double Sys_GetApproximateProcessorFrequencyHz( void ) {
+	uint64_t frequencyHz = 0;
+	size_t len = sizeof( frequencyHz );
+	if ( sysctlbyname( "hw.cpufrequency", &frequencyHz, &len, NULL, 0 ) == 0 && frequencyHz > 0 ) {
+		return (double)frequencyHz;
+	}
+	return 0.0;
+}
+
+/*
 ================
 Sys_GetSystemRam
 returns in megabytes

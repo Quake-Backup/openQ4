@@ -301,9 +301,12 @@ void			Sys_Sleep( int msec );
 // any game related timing information should come from event timestamps
 int				Sys_Milliseconds( void );
 
-// for accurate performance testing
+// for accurate performance testing; a monotonic wall clock, not CPU cycles
 double			Sys_GetClockTicks( void );
 double			Sys_ClockTicksPerSecond( void );
+
+// display-only CPU frequency estimate, 0.0 when unavailable
+double			Sys_GetApproximateProcessorFrequencyHz( void );
 idStr			Sys_FormatFrequency( double hertz );
 idStr			Sys_FormatMemoryMB( int megabytes );
 idStr			Sys_FormatProcessorSummary( const char *modelName, const char *architecture, int physicalCores, int logicalCores, int packages, double hertz );

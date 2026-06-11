@@ -54,6 +54,10 @@ double Sys_ClockTicksPerSecond( void ) {
 	return 1000.0;
 }
 
+double Sys_GetApproximateProcessorFrequencyHz( void ) {
+	return 0.0;
+}
+
 void	Sys_Sleep( int msec ) {
 }
 

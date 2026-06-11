@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <pthread.h>
 #include <errno.h>
 #include <ctype.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -664,7 +665,7 @@ const char *Sys_GetProcessorString( void ) {
 		int packageCount = 0;
 
 		Sys_GetLinuxProcessorInfo( processorName, logicalCount, physicalCount, packageCount );
-		processorString = Sys_FormatProcessorSummary( processorName.c_str(), CPUSTRING, physicalCount, logicalCount, packageCount, Sys_ClockTicksPerSecond() );
+		processorString = Sys_FormatProcessorSummary( processorName.c_str(), CPUSTRING, physicalCount, logicalCount, packageCount, Sys_GetApproximateProcessorFrequencyHz() );
 		initialized = true;
 	}
 
@@ -692,47 +693,18 @@ void Sys_FPE_handler( int signum, siginfo_t *info, void *context ) {
 /*
 ===============
 Sys_GetClockticks
+
+CLOCK_MONOTONIC nanoseconds. Do not use rdtsc here: the TSC ticks at the
+invariant TSC rate, not at the momentary core frequency /proc/cpuinfo
+reports, so calibrating one against the other skews every consumer
+(FPS counter, com_maxfps throttle, timers).
 ===============
 */
 double Sys_GetClockTicks( void ) {
-#if defined( __i386__ ) || defined( __x86_64__ )
-	unsigned int lo = 0;
-	unsigned int hi = 0;
-
-	__asm__ __volatile__( "rdtsc" : "=a"( lo ), "=d"( hi ) );
-	return ( (double)hi * 4294967296.0 ) + (double)lo;
-#else
 	struct timespec ts;
 	clock_gettime( CLOCK_MONOTONIC, &ts );
 	return (double)ts.tv_sec * 1000000000.0 + (double)ts.tv_nsec;
-#endif
 }
-
-/*
-===============
-MeasureClockTicks
-===============
-*/
-double MeasureClockTicks( void ) {
-	double t0, t1;
-
-	t0 = Sys_GetClockTicks( );
-	Sys_Sleep( 1000 );
-	t1 = Sys_GetClockTicks( );	
-	return t1 - t0;
-}
-
-#if defined( __i386__ ) || defined( __x86_64__ )
-static double Sys_MeasureClockTicksFallback( const char *reason ) {
-	if ( reason != NULL && reason[0] != '\0' ) {
-		common->Printf( "%s\n", reason );
-	}
-
-	const double measured = MeasureClockTicks();
-	common->Printf( "Measured CPU frequency: %s\n", Sys_FormatFrequency( measured ).c_str() );
-	return measured;
-}
-#endif
 
 /*
 ===============
@@ -740,19 +712,25 @@ Sys_ClockTicksPerSecond
 ===============
 */
 double Sys_ClockTicksPerSecond(void) {
+	return 1000000000.0;
+}
+
+/*
+===============
+Sys_GetApproximateProcessorFrequencyHz
+
+Display-only CPU frequency for the processor summary, from the first
+"cpu MHz" line of /proc/cpuinfo. Returns 0.0 when unavailable.
+===============
+*/
+double Sys_GetApproximateProcessorFrequencyHz( void ) {
 	static bool		init = false;
-	static double	ret;
-#if !defined( __i386__ ) && !defined( __x86_64__ )
-	if ( !init ) {
-		ret = 1000000000.0;
-		init = true;
-	}
-	return ret;
-#else
+	static double	ret = 0.0;
 
 	if ( init ) {
 		return ret;
 	}
+	init = true;
 
 	idStr cpuInfoText;
 	if ( Sys_ReadLinuxCpuInfo( cpuInfoText ) ) {
@@ -781,8 +759,6 @@ double Sys_ClockTicksPerSecond(void) {
 					const double cpuMhz = atof( value.c_str() );
 					if ( cpuMhz > 0.0 ) {
 						ret = cpuMhz * 1000000.0;
-						common->Printf( "/proc/cpuinfo CPU frequency: %s\n", Sys_FormatFrequency( ret ).c_str() );
-						init = true;
 						return ret;
 					}
 				}
@@ -795,10 +771,7 @@ double Sys_ClockTicksPerSecond(void) {
 		}
 	}
 
-	ret = Sys_MeasureClockTicksFallback( "failed parsing /proc/cpuinfo" );
-	init = true;
-	return ret;		
-#endif
+	return ret;
 }
 
 /*
