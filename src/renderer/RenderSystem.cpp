@@ -1419,8 +1419,8 @@ void	idRenderSystemLocal::CropRenderSize( int width, int height, bool makePowerO
 		height >>= 1;
 	}
 
-	if ( currentRenderCrop == MAX_RENDER_CROPS ) {
-		common->Error( "idRenderSystemLocal::CropRenderSize: currentRenderCrop == MAX_RENDER_CROPS" );
+	if ( currentRenderCrop >= MAX_RENDER_CROPS - 1 ) {
+		common->Error( "idRenderSystemLocal::CropRenderSize: MAX_RENDER_CROPS exceeded" );
 	}
 
 	currentRenderCrop++;

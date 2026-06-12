@@ -150,6 +150,7 @@ static void R_LinkShadowMapCasterSurf( const drawSurf_t **link, const srfTriangl
 	drawSurf->decalColorOffset = 0;
 	drawSurf->decalColorStride = 0;
 	drawSurf->decalColorStageCount = 0;
+	drawSurf->area = NULL;
 
 	drawSurf->shaderRegisters = R_SetupDrawSurfShaderRegisters( space, renderEntity, shader );
 	R_FinalizeDrawSurf( drawSurf );

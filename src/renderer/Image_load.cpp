@@ -408,6 +408,17 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 
 	idStr generatedName = GetName();
 	GetGeneratedName( generatedName, usage, cubeFiles, allowDownSize, flags );
+	if ( filter == TF_LINEAR || filter == TF_NEAREST ) {
+		// the unmipped sampler policy changes the generated mip count ( DeriveOpts ), so
+		// keep its cache file distinct from the mipped variant of the same source
+		idStr mipExt;
+		generatedName.ExtractFileExtension( mipExt );
+		generatedName.StripFileExtension();
+		generatedName += "m0";
+		if ( mipExt.Length() > 0 ) {
+			generatedName.SetFileExtension( mipExt );
+		}
+	}
 
 	idBinaryImage im( generatedName );
 	binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
@@ -470,6 +481,22 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 
 			if ( !R_LoadCubeImages( GetName(), cubeFiles, pics, &size, &sourceFileTime ) || size == 0 ) {
 				idLib::Warning( "Couldn't load cube image: %s", GetName() );
+				// create a default so it doesn't get continuously reloaded
+				opts.width = 8;
+				opts.height = 8;
+				opts.numLevels = 1;
+				DeriveOpts();
+				AllocImage();
+
+				// clear the data so it's not left uninitialized
+				idTempArray<byte> clear( opts.width * opts.height * 4 );
+				memset( clear.Ptr(), 0, clear.Size() );
+				for ( int level = 0; level < opts.numLevels; level++ ) {
+					for ( int side = 0; side < 6; side++ ) {
+						SubImageUpload( level, 0, 0, side, opts.width >> level, opts.height >> level, clear.Ptr() );
+					}
+				}
+
 				return;
 			}
 
@@ -727,6 +754,33 @@ void R_BindTextureForDirectAccess( unsigned int target, int texnum ) {
 	// and do not disturb the tracked 2D / cube bindings
 }
 
+// Lazily created scratch FBOs for the CopyFramebuffer/CopyDepthbuffer blit
+// paths. They are GL context objects: the names must be forgotten (and deleted
+// while the old context is still current) before the context is destroyed, or
+// the surviving nonzero names alias the new context's render-target FBOs and
+// the next copy blit detaches a live render target's attachment.
+static GLuint r_copyFramebufferFbo = 0;
+static GLuint r_copyDepthbufferFbo = 0;
+
+/*
+====================
+R_PurgeFramebufferCopyFBOs
+
+Called before GLimp_Shutdown (full vid_restart and final shutdown) while the
+old context is still current.
+====================
+*/
+void R_PurgeFramebufferCopyFBOs( void ) {
+	if ( r_copyFramebufferFbo != 0 ) {
+		glDeleteFramebuffers( 1, &r_copyFramebufferFbo );
+		r_copyFramebufferFbo = 0;
+	}
+	if ( r_copyDepthbufferFbo != 0 ) {
+		glDeleteFramebuffers( 1, &r_copyDepthbufferFbo );
+		r_copyDepthbufferFbo = 0;
+	}
+}
+
 /*
 ====================
 CopyFramebuffer
@@ -753,10 +807,10 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 		glGetIntegerv( GL_READ_BUFFER, &previousReadBuffer );
 		glGetIntegerv( GL_DRAW_BUFFER, &previousDrawBuffer );
 
-		static GLuint copyFbo = 0;
-		if ( copyFbo == 0 ) {
-			glGenFramebuffers( 1, &copyFbo );
+		if ( r_copyFramebufferFbo == 0 ) {
+			glGenFramebuffers( 1, &r_copyFramebufferFbo );
 		}
+		const GLuint copyFbo = r_copyFramebufferFbo;
 
 		if ( needsStorageResize ) {
 			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth, imageHeight, 0,
@@ -872,10 +926,10 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 		glGetIntegerv( GL_READ_BUFFER, &previousReadBuffer );
 		glGetIntegerv( GL_DRAW_BUFFER, &previousDrawBuffer );
 
-		static GLuint copyDepthFbo = 0;
-		if ( copyDepthFbo == 0 ) {
-			glGenFramebuffers( 1, &copyDepthFbo );
+		if ( r_copyDepthbufferFbo == 0 ) {
+			glGenFramebuffers( 1, &r_copyDepthbufferFbo );
 		}
+		const GLuint copyDepthFbo = r_copyDepthbufferFbo;
 
 		if ( needsStorageResize ) {
 			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,

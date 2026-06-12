@@ -267,8 +267,13 @@ LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam ) {
 			if (glConfig.isInitialized) {
 				RECT rect;
 				if (::GetClientRect(win32.hWnd, &rect)) {
-					glConfig.vidWidth = rect.right - rect.left;
-					glConfig.vidHeight = rect.bottom - rect.top;
+					// keep the last non-degenerate size when minimized
+					int w = rect.right - rect.left;
+					int h = rect.bottom - rect.top;
+					if (w > 0 && h > 0) {
+						glConfig.vidWidth = w;
+						glConfig.vidHeight = h;
+					}
 				}
 			}
 			break;

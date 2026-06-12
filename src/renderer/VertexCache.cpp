@@ -186,6 +186,92 @@ void idVertexCache::UnbindIndex() {
 
 /*
 ===========
+idVertexCache::ReclaimHeaderList
+
+Moves every block on the list back onto freeStaticHeaders without touching GL.
+Only valid during a re-Init after the GL context was destroyed: the buffer
+names died with the old context, so they are dropped (never glDelete'd or
+pooled) and zeroed so Alloc can't recycle a dead name into the new context.
+===========
+*/
+void idVertexCache::ReclaimHeaderList( vertCache_t *list ) {
+	while ( list->next != list ) {
+		vertCache_t *block = list->next;
+
+		if ( block->user ) {
+			// let the owner know we have purged it
+			*block->user = NULL;
+			block->user = NULL;
+		}
+		if ( block->virtMem ) {
+			Mem_Free( block->virtMem );
+			block->virtMem = NULL;
+		}
+		block->vbo = 0;
+		block->tag = TAG_FREE;
+
+		block->next->prev = block->prev;
+		block->prev->next = block->next;
+
+		block->next = freeStaticHeaders.next;
+		block->prev = &freeStaticHeaders;
+		block->next->prev = block;
+		block->prev->next = block;
+	}
+}
+
+/*
+===========
+idVertexCache::ReclaimAllHeaders
+
+Called when Init runs again after a full vid_restart. Re-pointing the list
+heads would orphan every header in headerAllocator (which never reclaims
+nodes), so instead put all blocks back onto the free lists. Headers are never
+deallocated and temp headers stay segregated on the dynamic free list, so
+stale cache pointers held by tri surfs keep their documented tag-check
+behavior (see R_FreeTriSurfVertCache).
+===========
+*/
+void idVertexCache::ReclaimAllHeaders() {
+	ReclaimHeaderList( &deferredFreeList );
+	ReclaimHeaderList( &staticHeaders );
+
+	// the fixed temp buffer headers were unlinked from the lists at the
+	// previous Init, so their next/prev are stale and must not be unlinked
+	for ( int i = 0; i < NUM_VERTEX_FRAMES; i++ ) {
+		vertCache_t *block = tempBuffers[i];
+		if ( block == NULL ) {
+			continue;
+		}
+		if ( block->virtMem ) {
+			Mem_Free( block->virtMem );
+			block->virtMem = NULL;
+		}
+		block->vbo = 0;
+		block->user = NULL;
+		block->tag = TAG_FREE;
+		block->next = freeStaticHeaders.next;
+		block->prev = &freeStaticHeaders;
+		block->next->prev = block;
+		block->prev->next = block;
+		tempBuffers[i] = NULL;
+	}
+
+	// frame temp headers go back on the dynamic free list, the same wholesale
+	// relink EndFrame does; their fields are fully rewritten when reused
+	vertCache_t *block = dynamicHeaders.next;
+	if ( block != &dynamicHeaders ) {
+		block->prev = &freeDynamicHeaders;
+		dynamicHeaders.prev->next = freeDynamicHeaders.next;
+		freeDynamicHeaders.next->prev = dynamicHeaders.prev;
+		freeDynamicHeaders.next = block;
+
+		dynamicHeaders.next = dynamicHeaders.prev = &dynamicHeaders;
+	}
+}
+
+/*
+===========
 idVertexCache::Init
 ===========
 */
@@ -209,15 +295,21 @@ void idVertexCache::Init() {
 	}
 
 	// initialize the cache memory blocks
-	freeStaticHeaders.next = freeStaticHeaders.prev = &freeStaticHeaders;
-	staticHeaders.next = staticHeaders.prev = &staticHeaders;
-	freeDynamicHeaders.next = freeDynamicHeaders.prev = &freeDynamicHeaders;
-	dynamicHeaders.next = dynamicHeaders.prev = &dynamicHeaders;
-	deferredFreeList.next = deferredFreeList.prev = &deferredFreeList;
+	if ( tempBuffers[0] == NULL ) {
+		freeStaticHeaders.next = freeStaticHeaders.prev = &freeStaticHeaders;
+		staticHeaders.next = staticHeaders.prev = &staticHeaders;
+		freeDynamicHeaders.next = freeDynamicHeaders.prev = &freeDynamicHeaders;
+		dynamicHeaders.next = dynamicHeaders.prev = &dynamicHeaders;
+		deferredFreeList.next = deferredFreeList.prev = &deferredFreeList;
+	} else {
+		// a full vid_restart re-runs Init under a fresh GL context
+		ReclaimAllHeaders();
+	}
 
 	// set up the dynamic frame memory
 	frameBytes = FRAME_MEMORY_BYTES;
 	staticAllocTotal = 0;
+	staticCountTotal = 0;
 
 	byte	*junk = (byte *)Mem_Alloc( frameBytes );
 	for ( int i = 0 ; i < NUM_VERTEX_FRAMES ; i++ ) {
@@ -488,9 +580,9 @@ vertCache_t	*idVertexCache::AllocFrameTemp( void *data, int size, bool indexBuff
 	// keep legacy temp offsets aligned (4 for index data, 16 for vertex data);
 	// every current alloc size is already a multiple of these, so this is a
 	// guard rather than a behavior change
-	dynamicAllocThisFrame = ( dynamicAllocThisFrame + alignment - 1 ) & ~( alignment - 1 );
+	legacyAllocThisFrame = ( legacyAllocThisFrame + alignment - 1 ) & ~( alignment - 1 );
 
-	if ( dynamicAllocThisFrame + size > frameBytes ) {
+	if ( legacyAllocThisFrame + size > frameBytes ) {
 		// if we don't have enough room in the temp block, allocate a static block,
 		// but immediately free it so it will get freed at the next frame
 		tempOverflow = true;
@@ -527,7 +619,8 @@ vertCache_t	*idVertexCache::AllocFrameTemp( void *data, int size, bool indexBuff
 	block->size = size;
 	block->tag = TAG_TEMP;
 	block->indexBuffer = indexBuffer;
-	block->offset = dynamicAllocThisFrame;
+	block->offset = legacyAllocThisFrame;
+	legacyAllocThisFrame += block->size;
 	dynamicAllocThisFrame += block->size;
 	dynamicCountThisFrame++;
 	block->user = NULL;
@@ -602,6 +695,7 @@ void idVertexCache::EndFrame() {
 	staticCountThisFrame = 0;
 	dynamicAllocThisFrame = 0;
 	dynamicCountThisFrame = 0;
+	legacyAllocThisFrame = 0;
 	tempOverflow = false;
 
 	// free all the deferred free headers

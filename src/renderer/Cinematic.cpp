@@ -171,7 +171,8 @@ void idCinematic::InitCinematic(void) {
 		ROQ_YY_tab[i] = (int)((i << 6) | (i >> 2));
 	}
 
-	file = (byte*)Mem_Alloc(65536);
+	// RoQInterrupt reads RoQFrameSize + 8 bytes (chunk payload plus next chunk header)
+	file = (byte*)Mem_Alloc(65536 + 8);
 	vq2 = (word*)Mem_Alloc(256 * 16 * 4 * sizeof(word));
 	vq4 = (word*)Mem_Alloc(256 * 64 * 4 * sizeof(word));
 	vq8 = (word*)Mem_Alloc(256 * 256 * 4 * sizeof(word));
@@ -268,6 +269,21 @@ idCinematicLocal::idCinematicLocal() {
 	status = FMV_EOF;
 	buf = NULL;
 	iFile = NULL;
+	numQuads = 0;
+	ROQSize = 0;
+	RoQFrameSize = 0;
+	frameRate = 0.0f;
+	startTime = 0;
+	looping = false;
+	// a failed-to-load object can still be forced back to FMV_PLAY (gui
+	// resetCinematics); zeroed RoQPlayed/roq_id keep the first RoQInterrupt on
+	// the default switch case so it parks at FMV_EOF instead of decoding garbage
+	RoQPlayed = 0;
+	roq_id = 0;
+	roq_flags = 0;
+	inMemory = false;
+	CIN_WIDTH = 0;
+	CIN_HEIGHT = 0;
 
 	qStatus[0] = (byte**)Mem_Alloc(32768 * sizeof(byte*));
 	qStatus[1] = (byte**)Mem_Alloc(32768 * sizeof(byte*));
@@ -417,7 +433,7 @@ cinData_t idCinematicLocal::ImageForTime(int thisTime) {
 	}
 
 	if (buf == NULL) {
-		while (buf == NULL) {
+		while (buf == NULL && status == FMV_PLAY) {
 			RoQInterrupt();
 		}
 	}
@@ -1287,6 +1303,16 @@ idCinematicLocal::RoQReset
 */
 void idCinematicLocal::RoQReset() {
 
+	// the initial open may have failed, or Close()/RoQShutdown released the
+	// file while the object stayed alive; reopen or stay inert
+	if (iFile == NULL) {
+		iFile = fileSystem->OpenFileRead(fileName);
+		if (iFile == NULL) {
+			status = FMV_EOF;
+			return;
+		}
+	}
+
 	iFile->Seek(0, FS_SEEK_SET);
 	iFile->Read(file, 16);
 	RoQ_init();
@@ -1432,6 +1458,16 @@ idCinematicLocal::RoQInterrupt
 void idCinematicLocal::RoQInterrupt(void) {
 	byte* framedata;
 
+	if (iFile == NULL) {
+		status = FMV_EOF;
+		return;
+	}
+	// RoQ_init parses RoQFrameSize from the header without any bounds check
+	if (RoQFrameSize > 65536) {
+		common->DPrintf("roq_size>65536\n");
+		status = FMV_EOF;
+		return;
+	}
 	iFile->Read(file, RoQFrameSize + 8);
 	if (RoQPlayed >= ROQSize) {
 		if (looping) {
@@ -1578,7 +1614,7 @@ void idCinematicLocal::RoQShutdown(void) {
 		iFile = NULL;
 	}
 
-	fileName = "";
+	// fileName is kept so RoQReset can reopen the file for replay
 }
 
 //===========================================

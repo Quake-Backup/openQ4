@@ -115,6 +115,8 @@ public:
 private:
 	void			InitMemoryBlocks( int size );
 	void			ActuallyFree( vertCache_t *block );
+	void			ReclaimHeaderList( vertCache_t *list );
+	void			ReclaimAllHeaders();
 
 	static idCVar	r_showVertexCache;
 	static idCVar	r_vertexBufferMegs;
@@ -126,6 +128,8 @@ private:
 	int				staticCountThisFrame;
 	int				dynamicAllocThisFrame;
 	int				dynamicCountThisFrame;
+	int				legacyAllocThisFrame;	// bytes used in tempBuffers[listNum]; separate from
+											// dynamicAllocThisFrame, which also counts bridged bytes
 
 	int				currentFrame;			// for purgable block tracking
 	int				listNum;				// currentFrame % NUM_VERTEX_FRAMES, determines which tempBuffers to use

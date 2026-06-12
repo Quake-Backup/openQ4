@@ -403,10 +403,11 @@ static bool GLW_InitDriver( glimpParms_t parms ) {
 	}
 
 	// the multisample path uses the wgl 
+	bool formatChosen = false;
 	if ( wglChoosePixelFormatARB && parms.multiSamples > 1 ) {
 		int		iAttributes[20];
 		FLOAT	fAttributes[] = {0, 0};
-		UINT	numFormats;
+		UINT	numFormats = 0;
 
 		// FIXME: specify all the other stuff
 		iAttributes[0] = WGL_SAMPLE_BUFFERS_ARB;
@@ -430,8 +431,14 @@ static bool GLW_InitDriver( glimpParms_t parms ) {
 		iAttributes[18] = 0;
 		iAttributes[19] = 0;
 
-		wglChoosePixelFormatARB( win32.hDC, iAttributes, fAttributes, 1, &win32.pixelformat, &numFormats );
-	} else {
+		win32.pixelformat = 0;
+		if ( wglChoosePixelFormatARB( win32.hDC, iAttributes, fAttributes, 1, &win32.pixelformat, &numFormats ) && numFormats > 0 && win32.pixelformat != 0 ) {
+			formatChosen = true;
+		} else {
+			common->Printf( "...^3wglChoosePixelFormatARB failed, ignoring multisamples^0\n" );
+		}
+	}
+	if ( !formatChosen ) {
 		// this is the "classic" choose pixel format path
 
 		// eventually we may need to have more fallbacks, but for
@@ -900,6 +907,10 @@ bool GLimp_SetScreenParms( glimpParms_t parms ) {
 		r.top = 0;
 		r.right = parms.width;
 
+		exstyle = 0;
+		stylebits = WINDOW_STYLE|WS_SYSMENU;
+		AdjustWindowRect (&r, stylebits, FALSE);
+
 		w = r.right - r.left;
 		h = r.bottom - r.top;
 
@@ -923,9 +934,6 @@ bool GLimp_SetScreenParms( glimpParms_t parms ) {
 		dm.dmPelsWidth  = win32.desktopWidth;
 		dm.dmPelsHeight = win32.desktopHeight;
 		dm.dmBitsPerPel = win32.desktopBitsPixel;
-		exstyle = 0;
-		stylebits = WINDOW_STYLE|WS_SYSMENU;
-		AdjustWindowRect (&r, stylebits, FALSE);
 		SetWindowLong( win32.hWnd, GWL_STYLE, stylebits );
 		SetWindowLong( win32.hWnd, GWL_EXSTYLE, exstyle );
 		common->Printf( "%i %i %i %i\n", x, y, w, h );

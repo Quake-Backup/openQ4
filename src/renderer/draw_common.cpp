@@ -279,7 +279,7 @@ static void RB_UpdateStockGLSLShaderConstantCache() {
 	RB_CalculateStockGaussianCoefficients( viewportWidth, viewportHeight, 1.0f );
 	RB_CalculateStockGaussianCoefficients1D( viewportWidth, 1.0f, 3.0f,
 		rbStockGaussianSampleOffsetsHorizontal, rbStockGaussianSampleWeights2 );
-	RB_CalculateStockGaussianCoefficients1D( viewportWidth, 1.0f, 3.0f,
+	RB_CalculateStockGaussianCoefficients1D( viewportHeight, 1.0f, 3.0f,
 		rbStockGaussianSampleOffsetsVertical, NULL );
 
 	for ( int i = 0; i < RB_STOCK_GAUSSIAN_SAMPLE_COUNT; i++ ) {
@@ -549,7 +549,12 @@ static void RB_FreeGLSLProgram( newShaderStage_t *stage ) {
 		return;
 	}
 
-	if ( stage->glslProgramObject != 0 && glConfig.isInitialized ) {
+	// only delete handles compiled in the current context generation; handles
+	// from a destroyed context died with it and their names may alias live
+	// objects in this one (partial restarts keep the context, so the
+	// generation matches and the delete still runs)
+	if ( stage->glslProgramObject != 0 && glConfig.isInitialized
+			&& stage->glslProgramGeneration == tr.glContextGeneration ) {
 		if ( stage->glslVertexShaderObject != 0 ) {
 			glDetachObjectARB(
 				(GLhandleARB)stage->glslProgramObject,
@@ -697,7 +702,7 @@ bool R_ValidateGLSLProgram( newShaderStage_t *stage ) {
 		return false;
 	}
 
-	if ( stage->glslProgramLoaded && stage->glslProgramGeneration == tr.videoRestartCount ) {
+	if ( stage->glslProgramLoaded && stage->glslProgramGeneration == tr.glContextGeneration ) {
 		return stage->glslProgramValid;
 	}
 
@@ -775,7 +780,7 @@ bool R_ValidateGLSLProgram( newShaderStage_t *stage ) {
 	stage->glslFragmentShaderObject = (int)fragmentShader;
 	stage->glslProgramLoaded = true;
 	stage->glslProgramValid = true;
-	stage->glslProgramGeneration = tr.videoRestartCount;
+	stage->glslProgramGeneration = tr.glContextGeneration;
 
 	for ( int i = 0; i < stage->numShaderParms; i++ ) {
 		stage->shaderParmLocations[i] = glGetUniformLocationARB( programObject, stage->shaderParmNames[i] );
@@ -1026,33 +1031,39 @@ static void RB_ScaleLocalScreenRect( idScreenRect &rect, int sourceWidth, int so
 	rect.y2 = static_cast<short>( y2 );
 }
 
-static bool RB_MarkDrawSurfScaled( idList<const drawSurf_t *> &scaledSurfs, const drawSurf_t *surf ) {
+typedef struct rbScaledSurfSet_s {
+	idList<const drawSurf_t *>	surfs;
+	idHashIndex					hash;
+} rbScaledSurfSet_t;
+
+static bool RB_MarkDrawSurfScaled( rbScaledSurfSet_t &scaledSurfs, const drawSurf_t *surf ) {
 	if ( surf == NULL ) {
 		return false;
 	}
-	for ( int i = 0; i < scaledSurfs.Num(); i++ ) {
-		if ( scaledSurfs[i] == surf ) {
+	const int key = static_cast<int>( reinterpret_cast<uintptr_t>( surf ) >> 4 );
+	for ( int i = scaledSurfs.hash.First( key ); i != -1; i = scaledSurfs.hash.Next( i ) ) {
+		if ( scaledSurfs.surfs[i] == surf ) {
 			return false;
 		}
 	}
-	scaledSurfs.Append( surf );
+	scaledSurfs.hash.Add( key, scaledSurfs.surfs.Append( surf ) );
 	return true;
 }
 
-static void RB_ScaleDrawSurfScissor( idList<const drawSurf_t *> &scaledSurfs, const drawSurf_t *surf, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+static void RB_ScaleDrawSurfScissor( rbScaledSurfSet_t &scaledSurfs, const drawSurf_t *surf, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
 	if ( !RB_MarkDrawSurfScaled( scaledSurfs, surf ) ) {
 		return;
 	}
 	RB_ScaleLocalScreenRect( const_cast<drawSurf_t *>( surf )->scissorRect, sourceWidth, sourceHeight, targetWidth, targetHeight );
 }
 
-static void RB_ScaleDrawSurfChainScissors( idList<const drawSurf_t *> &scaledSurfs, const drawSurf_t *surf, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+static void RB_ScaleDrawSurfChainScissors( rbScaledSurfSet_t &scaledSurfs, const drawSurf_t *surf, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
 	for ( const drawSurf_t *chainSurf = surf; chainSurf != NULL; chainSurf = chainSurf->nextOnLight ) {
 		RB_ScaleDrawSurfScissor( scaledSurfs, chainSurf, sourceWidth, sourceHeight, targetWidth, targetHeight );
 	}
 }
 
-static void RB_ScaleLightDrawSurfScissors( idList<const drawSurf_t *> &scaledSurfs, const viewLight_t *vLight, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+static void RB_ScaleLightDrawSurfScissors( rbScaledSurfSet_t &scaledSurfs, const viewLight_t *vLight, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
 	if ( vLight == NULL ) {
 		return;
 	}
@@ -1104,8 +1115,9 @@ static void RB_BeginSceneSupersampling( rbSceneScaleState_t &state, const viewDe
 	viewDef->viewport.x2 = static_cast<short>( targetWidth - 1 );
 	viewDef->viewport.y2 = static_cast<short>( targetHeight - 1 );
 
-	idList<const drawSurf_t *> scaledSurfs;
-	scaledSurfs.SetGranularity( 256 );
+	rbScaledSurfSet_t scaledSurfs;
+	scaledSurfs.surfs.SetGranularity( 256 );
+	scaledSurfs.hash.Clear( 4096, 4096 );
 	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
 		RB_ScaleDrawSurfScissor( scaledSurfs, viewDef->drawSurfs[i], nativeWidth, nativeHeight, targetWidth, targetHeight );
 	}
@@ -2535,7 +2547,9 @@ static void RB_STD_MotionBlur( void ) {
 	RB_LogComment( "---------- RB_STD_MotionBlur ----------\n" );
 
 	RB_CaptureCurrentRenderImage( viewportWidth, viewportHeight );
-	RB_CaptureCurrentDepthImage( viewportWidth, viewportHeight );
+	if ( !backEnd.currentDepthCopied ) {
+		RB_CaptureCurrentDepthImage( viewportWidth, viewportHeight );
+	}
 	rbMotionVectorImageValid = false;
 	if ( objectVectorsRequested ) {
 		RB_RenderMotionVectorBuffer( drawSurfs, numDrawSurfs, previousState, viewportWidth, viewportHeight );
@@ -5068,7 +5082,9 @@ static void RB_STD_LensFlare( void ) {
 		return;
 	}
 
-	RB_CaptureCurrentDepthImage( viewportWidth, viewportHeight );
+	if ( !backEnd.currentDepthCopied ) {
+		RB_CaptureCurrentDepthImage( viewportWidth, viewportHeight );
+	}
 
 	const int depthTextureWidth = depthImage->GetOpts().width;
 	const int depthTextureHeight = depthImage->GetOpts().height;
@@ -6598,6 +6614,14 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 
 				if ( !RB_PrepareStageTexturing( pStage, surf, ac ) ) {
 					RB_FinishStageTexturing( pStage, surf, ac );
+					for ( int i = 1; i < newStage->numShaderTextures; i++ ) {
+						if ( RB_ResolveGLSLShaderTextureImage( newStage, i, NULL ) != NULL ) {
+							GL_SelectTexture( i );
+							globalImages->BindNull();
+						}
+					}
+					GL_SelectTexture( 0 );
+					glUseProgramObjectARB( 0 );
 					if ( useColorArray ) {
 						glDisableClientState( GL_COLOR_ARRAY );
 					}
@@ -6877,6 +6901,15 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 		
 		if ( !RB_PrepareStageTexturing( pStage, surf, ac ) ) {
 			RB_FinishStageTexturing( pStage, surf, ac );
+			if ( pStage->vertexColor != SVC_IGNORE ) {
+				glDisableClientState( GL_COLOR_ARRAY );
+
+				GL_SelectTexture( 1 );
+				GL_TexEnv( GL_MODULATE );
+				globalImages->BindNull();
+				GL_SelectTexture( 0 );
+				GL_TexEnv( GL_MODULATE );
+			}
 			continue;
 		}
 
@@ -7037,17 +7070,27 @@ the shadow volumes face INSIDE
 // two-pass sequence on saturating INCR/DECR hardware
 static bool rb_twoSidedStencilThisPass = false;
 
+// space PP_LIGHT_ORIGIN was last uploaded for; tracked separately from
+// backEnd.currentSpace because packed MD5R shadow surfaces advance
+// currentSpace without uploading env[4], and their skinned palette rows
+// overwrite env[3..5] outright
+static const viewEntity_t *rb_shadowLightOriginSpace = NULL;
+
 static void RB_T_Shadow( const drawSurf_t *surf ) {
 	const srfTriangles_t	*tri;
 
 	// set the light position if we are using a vertex program to project the rear surfaces
-	if ( tr.backEndRendererHasVertexPrograms && r_useShadowVertexProgram.GetBool()
-		&& surf->space != backEnd.currentSpace && !R_TriHasPrimBatchMesh( surf->geo ) ) {
-		idVec4 localLight;
+	if ( tr.backEndRendererHasVertexPrograms && r_useShadowVertexProgram.GetBool() ) {
+		if ( R_TriHasPrimBatchMesh( surf->geo ) ) {
+			rb_shadowLightOriginSpace = NULL;
+		} else if ( surf->space != rb_shadowLightOriginSpace ) {
+			idVec4 localLight;
 
-		R_GlobalPointToLocal( surf->space->modelMatrix, backEnd.vLight->globalLightOrigin, localLight.ToVec3() );
-		localLight.w = 0.0f;
-		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_LIGHT_ORIGIN, localLight.ToFloatPtr() );
+			R_GlobalPointToLocal( surf->space->modelMatrix, backEnd.vLight->globalLightOrigin, localLight.ToVec3() );
+			localLight.w = 0.0f;
+			glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_LIGHT_ORIGIN, localLight.ToFloatPtr() );
+			rb_shadowLightOriginSpace = surf->space;
+		}
 	}
 
 	tri = surf->geo;
@@ -7250,6 +7293,9 @@ void RB_StencilShadowPass( const drawSurf_t *drawSurfs ) {
 		r_useTwoSidedStencil.GetBool()
 		&& glStencilOpSeparate != NULL
 		&& tr.stencilIncr == GL_INCR_WRAP_EXT;
+
+	// interaction and MD5R passes write env[4] directly between shadow passes
+	rb_shadowLightOriginSpace = NULL;
 
 	RB_RenderDrawSurfChainWithFunction( drawSurfs, RB_T_Shadow );
 

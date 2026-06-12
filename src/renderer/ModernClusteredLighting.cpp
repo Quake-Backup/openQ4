@@ -319,7 +319,8 @@ static int R_ModernClusteredLighting_DepthSliceForZ( const modernClusterGridReco
 	const float clampedZ = idMath::ClampFloat( nearZ, farZ, z );
 	const float denom = Max( 0.0001f, idMath::Log( farZ / nearZ ) );
 	const float normalized = idMath::ClampFloat( 0.0f, 1.0f, idMath::Log( clampedZ / nearZ ) / denom );
-	return idMath::ClampInt( 0, grid.sliceCountZ - 1, idMath::FtoiFast( normalized * static_cast<float>( grid.sliceCountZ ) ) );
+	// truncation floors here because normalized >= 0; must match the floor() in the GLSL binning shaders, FtoiFast rounds to nearest on some platforms
+	return idMath::ClampInt( 0, grid.sliceCountZ - 1, static_cast<int>( normalized * static_cast<float>( grid.sliceCountZ ) ) );
 }
 
 static void R_ModernClusteredLighting_CameraPoint( const viewDef_t *viewDef, const idVec3 &worldPoint, idVec3 &cameraPoint ) {
@@ -849,14 +850,16 @@ static bool R_ModernClusteredLighting_AppendLightRecord( modernClusterGridRecord
 	record.scissor = scissor;
 	R_ModernClusteredLighting_CameraPoint( grid.viewDef, record.worldOrigin, record.cameraOrigin );
 	record.fullDepthRange = type == RENDERER_MODERN_LIGHT_FOG || type == RENDERER_MODERN_LIGHT_AMBIENT || type == RENDERER_MODERN_LIGHT_BLEND || type == RENDERER_MODERN_LIGHT_SPECIAL;
-	record.depthMin = record.fullDepthRange ? grid.nearZ : Max( grid.nearZ, record.cameraOrigin.z - record.radius );
-	record.depthMax = record.fullDepthRange ? grid.farZ : Min( grid.farZ, record.cameraOrigin.z + record.radius );
-	record.falloffScale = record.radius > 1.0f ? 1.0f / record.radius : 1.0f;
-	record.falloffBias = 0.0f;
-	if ( record.depthMax < grid.nearZ || record.depthMin > grid.farZ ) {
+	// cull on the raw extent only when the light is entirely behind the near plane; lights beyond
+	// farZ must clamp into the last depth slice instead of being dropped from the clustered list
+	if ( !record.fullDepthRange && record.cameraOrigin.z + record.radius < grid.nearZ ) {
 		stats.culledLights++;
 		return false;
 	}
+	record.depthMin = record.fullDepthRange ? grid.nearZ : idMath::ClampFloat( grid.nearZ, grid.farZ, record.cameraOrigin.z - record.radius );
+	record.depthMax = record.fullDepthRange ? grid.farZ : idMath::ClampFloat( grid.nearZ, grid.farZ, record.cameraOrigin.z + record.radius );
+	record.falloffScale = record.radius > 1.0f ? 1.0f / record.radius : 1.0f;
+	record.falloffBias = 0.0f;
 	record.flags =
 		( vLight->viewInsideLight ? MODERN_CLUSTER_LIGHT_FLAG_VIEW_INSIDE : 0 ) |
 		( vLight->viewSeesGlobalLightOrigin ? MODERN_CLUSTER_LIGHT_FLAG_GLOBAL_ORIGIN_VISIBLE : 0 ) |
@@ -886,9 +889,6 @@ static bool R_ModernClusteredLighting_AppendLightRecord( modernClusterGridRecord
 	grid.lightCount++;
 	stats.lightCount++;
 	R_ModernClusteredLighting_CountLightType( record.type, stats );
-	if ( record.depthMax > grid.farZ ) {
-		grid.farZ = idMath::ClampFloat( grid.nearZ + 1.0f, 32768.0f, record.depthMax );
-	}
 	++rg_clusteredLightingFrame.lightCount;
 	return true;
 }
@@ -1151,9 +1151,6 @@ static void R_ModernClusteredLighting_BuildFrame( const idScenePacketFrame &pack
 		}
 		if ( grid.lightCount > 0 ) {
 			stats.scenesWithLights++;
-		}
-		if ( stats.gridCount == 1 ) {
-			stats.farZ = idMath::FtoiFast( grid.farZ );
 		}
 	}
 	R_ModernClusteredLighting_BinFrameReferences( stats, false );
@@ -2140,6 +2137,23 @@ bool RendererClusterGrid_RunSelfTest( void ) {
 		common->Printf( "RendererClusterGrid self-test passed (disabled)\n" );
 		return true;
 	}
+
+	// the self-test rebuilds the global frame state from stack-allocated views and lights; restore
+	// the globals on every exit path so no synthetic stats or dangling viewDef/viewLight pointers
+	// outlive the test, and invalidate the frame so stale grid binds are refused
+	struct rendererClusterSelfTestStateRestore_t {
+		rendererClusteredLightingStats_t oldStats;
+		rendererClusterSelfTestStateRestore_t( void ) : oldStats( rg_clusteredLightingStats ) {}
+		~rendererClusterSelfTestStateRestore_t() {
+			R_ModernClusteredLighting_ResetFrameData();
+			rg_clusteredLightingStats = oldStats;
+			rg_clusteredLightingStats.frameValid = false;
+			R_ModernClusteredLighting_SetStatus( rg_clusteredLightingStats, "selftest-complete" );
+			idScenePacketFrame emptyFrame;
+			emptyFrame.Clear();
+			R_ModernShadowPlanner_PrepareFrame( emptyFrame, false );
+		}
+	} restoreClusterState;
 
 	viewDef_t view;
 	viewLight_t lights[6];

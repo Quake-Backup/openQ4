@@ -1025,11 +1025,13 @@ static void R_SetupViewFrustum( void ) {
 
 		// Off-axis levelshot tiles need frustum planes that match the shifted
 		// projection. Keep this branch isolated so ordinary gameplay stays on the
-		// stock frustum setup.
+		// stock frustum setup. The horizontal pair carries the s_flipMatrix sign
+		// flip (engine left -> GL -x); the vertical axis maps to GL +y unflipped,
+		// so its planes take the opposite extents.
 		tr.viewDef->frustum[0] = xmax * forward + zNear * horizontal;
 		tr.viewDef->frustum[1] = -xmin * forward - zNear * horizontal;
-		tr.viewDef->frustum[2] = ymax * forward + zNear * vertical;
-		tr.viewDef->frustum[3] = -ymin * forward - zNear * vertical;
+		tr.viewDef->frustum[2] = -ymin * forward + zNear * vertical;
+		tr.viewDef->frustum[3] = ymax * forward - zNear * vertical;
 
 		// plane four is the front clipping plane
 		tr.viewDef->frustum[4] = /* vec3_origin - */ forward;
@@ -1295,13 +1297,13 @@ void R_RenderView( viewDef_t *parms ) {
 		viewBuildLastMark = now;
 	}
 
-	// drawSurf->area only feeds the light-grid indirect pass and scene-packet
-	// capture; when neither can consume it this view, skip the per-surface
-	// PointInArea BSP descent in R_AddDrawSurf.
+	// drawSurf->area only feeds light-grid eligibility checks (legacy indirect
+	// pass and scene-packet capture), all of which reject every surface when no
+	// usable grid exists; skip the per-surface PointInArea BSP descent in
+	// R_AddDrawSurf whenever no light grid is available.
 	parms->skipDrawSurfAreaResolve =
 		parms->renderWorld == NULL
-		|| ( !static_cast<idRenderWorldLocal *>( parms->renderWorld )->AnyLightGridAvailable()
-			&& !R_ScenePackets_SidePipelineRequired() );
+		|| !static_cast<idRenderWorldLocal *>( parms->renderWorld )->AnyLightGridAvailable();
 
 	// identify all the visible portalAreas, and the entityDefs and
 	// lightDefs that are in them and pass culling.

@@ -704,7 +704,10 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["forward=1", "forward=0"],
                 ["present=1"],
                 ["Modern visible frame:"],
-                ["shadowReady=1"],
+                # the self-test validates shadow readiness internally (shadow=1 in its
+                # pass line); the post-test status line reads executor stats that the
+                # self-test now resets on exit, so accept the clean state too
+                ["shadowReady=1", "shadowReady=0"],
                 ["shadow(mapped="],
                 ["modernVisible req=1"],
                 ["rendererMetrics modernVisible(req=1"],

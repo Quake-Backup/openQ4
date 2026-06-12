@@ -720,6 +720,19 @@ bool RendererShadowPlanner_RunSelfTest( void ) {
 		return true;
 	}
 
+	// PrepareFrame below fills the global descriptor table with viewLight
+	// pointers into this stack frame and synthetic stats; re-prepare against an
+	// empty frame on every exit path so neither outlives the test. Constructed
+	// before the cvar restores so it runs after them and records user values.
+	struct rendererShadowPlannerSelfTestStateReset_t {
+		~rendererShadowPlannerSelfTestStateReset_t() {
+			idScenePacketFrame emptyFrame;
+			emptyFrame.Clear();
+			R_ModernShadowPlanner_PrepareFrame( emptyFrame, false );
+			R_ModernShadowPlanner_SetStatus( rg_modernShadowPlannerStats, "selftest-complete" );
+		}
+	} plannerStateReset;
+
 	struct rendererShadowPlannerBoolCVarRestore_t {
 		idCVar &cvar;
 		bool oldValue;

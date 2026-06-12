@@ -1221,6 +1221,11 @@ void R_InitOpenGL( void ) {
 		common->FatalError( "R_InitOpenGL called while active" );
 	}
 
+	// every context creation starts a new handle generation; GL object handles
+	// stamped with an older generation belong to a destroyed context and must
+	// not be deleted (the names may alias live objects in this context)
+	tr.glContextGeneration++;
+
 	// in case we had an error while doing a tiled rendering
 	tr.viewportOffset[0] = 0;
 	tr.viewportOffset[1] = 0;
@@ -1451,7 +1456,12 @@ Reload the material displayed by r_showSurfaceInfo
 static void R_ReloadSurface_f( const idCmdArgs &args ) {
 	modelTrace_t mt;
 	idVec3 start, end;
-	
+
+	if ( !tr.primaryView || !tr.primaryWorld ) {
+		common->Printf( "No primary view.\n" );
+		return;
+	}
+
 	// start far enough away that we don't hit the player model
 	start = tr.primaryView->renderView.vieworg + tr.primaryView->renderView.viewaxis[0] * 16;
 	end = start + tr.primaryView->renderView.viewaxis[0] * 1000.0f;
@@ -1907,6 +1917,12 @@ If ref == NULL, session->updateScreen will be used
 void idRenderSystemLocal::TakeScreenshot( int width, int height, const char *fileName, int blends, renderView_t *ref ) {
 	byte		*buffer;
 	int			i, j, c, temp;
+
+	// cap each axis so the worst-case pix*2*3 blend accumulation buffer can't overflow int
+	if ( width < 1 || height < 1 || width > 16384 || height > 16384 ) {
+		common->Printf( "TakeScreenshot: bad dimensions %i x %i\n", width, height );
+		return;
+	}
 
 	takingScreenshot = true;
 
@@ -2379,6 +2395,11 @@ void R_ScreenShot_f( const idCmdArgs &args ) {
 		return;
 	}
 
+	if ( width < 1 || height < 1 || width > 16384 || height > 16384 ) {
+		common->Printf( "screenshot: bad dimensions %i x %i\n", width, height );
+		return;
+	}
+
 	// put the console away
 	console->Close();
 
@@ -2468,6 +2489,19 @@ void R_EnvShot_f( const idCmdArgs &args ) {
 	} else {
 		size = 256;
 		blends = 1;
+	}
+
+	if ( size < 1 || size > 16384 ) {
+		common->Printf( "envshot: bad size %i\n", size );
+		return;
+	}
+
+	// same clamp as R_ScreenShot_f: keeps the short accumulator in
+	// idRenderSystemLocal::TakeScreenshot from overflowing
+	if ( blends < 1 ) {
+		blends = 1;
+	} else if ( blends > MAX_BLENDS ) {
+		blends = MAX_BLENDS;
 	}
 
 	if ( !tr.primaryView ) {
@@ -2593,6 +2627,7 @@ void R_MakeAmbientMap_f( const idCmdArgs &args ) {
 	int			outSize;
 	byte		*buffers[6];
 	int			width, height;
+	int			faceSize = 0;
 
 	if ( args.Argc() != 2 && args.Argc() != 3 ) {
 		common->Printf( "USAGE: ambientshot <basename> [size]\n" );
@@ -2605,6 +2640,12 @@ void R_MakeAmbientMap_f( const idCmdArgs &args ) {
 		outSize = atoi( args.Argv( 2 ) );
 	} else {
 		outSize = 32;
+	}
+	// minimum of 2 because the texel direction divides by outSize-1
+	if ( outSize < 2 ) {
+		outSize = 2;
+	} else if ( outSize > 256 ) {
+		outSize = 256;
 	}
 
 	memset( &cubeAxis, 0, sizeof( cubeAxis ) );
@@ -2645,12 +2686,23 @@ void R_MakeAmbientMap_f( const idCmdArgs &args ) {
 			}
 			return;
 		}
+		if ( i == 0 ) {
+			faceSize = width;
+		}
+		// R_SampleCubeMap indexes all six faces with a single square size
+		if ( width != height || width != faceSize ) {
+			common->Printf( "%s is %ix%i, expected %ix%i.\n", fullname.c_str(), width, height, faceSize, faceSize );
+			for ( ; i >= 0 ; i-- ) {
+				Mem_Free( buffers[i] );
+			}
+			return;
+		}
 	}
 
 	// resample with hemispherical blending
 	int	samples = 1000;
 
-	byte	*outBuffer = (byte *)_alloca( outSize * outSize * 4 );
+	byte	*outBuffer = (byte *)Mem_Alloc( outSize * outSize * 4 );
 
 	for ( int map = 0 ; map < 2 ; map++ ) {
 		for ( i = 0 ; i < 6 ; i++ ) {
@@ -2706,12 +2758,14 @@ void R_MakeAmbientMap_f( const idCmdArgs &args ) {
 		}
 	}
 
+	Mem_Free( outBuffer );
+
 	for ( i = 0 ; i < 6 ; i++ ) {
 		if ( buffers[i] ) {
 			Mem_Free( buffers[i] );
 		}
 	}
-} 
+}
 
 //============================================================================
 
@@ -2980,6 +3034,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_ModernGLExecutor_Shutdown();
 	R_RendererUpload_Shutdown();
 	RendererBootstrap_Shutdown();
+	R_PurgeFramebufferCopyFBOs();
 	GLimp_Shutdown();
 	glConfig.isInitialized = false;
 
@@ -3261,6 +3316,7 @@ void idRenderSystemLocal::Clear( void ) {
 	frameCount = 0;
 	viewCount = 0;
 	videoRestartCount = 0;
+	glContextGeneration = 0;
 	staticAllocCount = 0;
 	frameShaderTime = 0.0f;
 	frameShaderTimeMsec = 0;
@@ -3501,6 +3557,7 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	R_ModernGLExecutor_Shutdown();
 	R_RendererUpload_Shutdown();
 	RendererBootstrap_Shutdown();
+	R_PurgeFramebufferCopyFBOs();
 	GLimp_Shutdown();
 	glConfig.isInitialized = false;
 	R_ClearActiveRenderTextures();

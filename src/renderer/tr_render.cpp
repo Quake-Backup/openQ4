@@ -265,20 +265,30 @@ static float RB_CalcFovForAspect( float fovX, float width, float height ) {
 
 /*
 ===============
-RB_EnterWeaponDepthHack
+R_GetDepthHackProjectionMatrix
+
+Copies the view projection and applies the depth-hack transforms
+(modelDepthHack takes precedence; the weapon hack applies the optional
+cl_gunfov override before squashing depth). Single home for this math: the
+fixed-function depth-hack loads and the packed-MD5R env-param path both
+delegate here so the variants cannot diverge.
 ===============
 */
-void RB_EnterWeaponDepthHack() {
-	glDepthRange( 0.0f, 0.5f );
+void R_GetDepthHackProjectionMatrix( const viewDef_t *viewDef, bool weaponDepthHack, float modelDepthHack, float matrix[16] ) {
+	memcpy( matrix, viewDef->projectionMatrix, sizeof( float ) * 16 );
 
-	float	matrix[16];
-
-	memcpy( matrix, backEnd.viewDef->projectionMatrix, sizeof( matrix ) );
+	if ( modelDepthHack != 0.0f ) {
+		matrix[14] -= modelDepthHack;
+		return;
+	}
+	if ( !weaponDepthHack ) {
+		return;
+	}
 
 	const float weaponFovOverride = cl_gunfov.GetFloat();
 	if ( weaponFovOverride > 0.0f ) {
-		const float viewportWidth = static_cast<float>( Max( 1, backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1 ) );
-		const float viewportHeight = static_cast<float>( Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 ) );
+		const float viewportWidth = static_cast<float>( Max( 1, viewDef->viewport.x2 - viewDef->viewport.x1 + 1 ) );
+		const float viewportHeight = static_cast<float>( Max( 1, viewDef->viewport.y2 - viewDef->viewport.y1 + 1 ) );
 
 		float weaponFovX = idMath::ClampFloat( 30.0f, 160.0f, weaponFovOverride );
 		float weaponFovY = 0.0f;
@@ -296,7 +306,19 @@ void RB_EnterWeaponDepthHack() {
 		matrix[5] = 1.0f / idMath::Tan( DEG2RAD( weaponFovY ) * 0.5f );
 	}
 
-	matrix[14] *= 0.25;
+	matrix[14] *= 0.25f;
+}
+
+/*
+===============
+RB_EnterWeaponDepthHack
+===============
+*/
+void RB_EnterWeaponDepthHack() {
+	glDepthRange( 0.0f, 0.5f );
+
+	float	matrix[16];
+	R_GetDepthHackProjectionMatrix( backEnd.viewDef, true, 0.0f, matrix );
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixf( matrix );
@@ -312,10 +334,7 @@ void RB_EnterModelDepthHack( float depth ) {
 	glDepthRange( 0.0f, 1.0f );
 
 	float	matrix[16];
-
-	memcpy( matrix, backEnd.viewDef->projectionMatrix, sizeof( matrix ) );
-
-	matrix[14] -= depth;
+	R_GetDepthHackProjectionMatrix( backEnd.viewDef, false, depth, matrix );
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixf( matrix );

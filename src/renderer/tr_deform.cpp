@@ -1126,9 +1126,11 @@ static void R_EyeballDeform( drawSurf_t *surf ) {
 		idVec3	dir = focus - origin;
 		dir.Normalize();
 
-		const idVec3 &p1 = tri->verts[tri->indexes[islands[originIsland].tris[0]+0]].xyz;
-		const idVec3 &p2 = tri->verts[tri->indexes[islands[originIsland].tris[0]+1]].xyz;
-		const idVec3 &p3 = tri->verts[tri->indexes[islands[originIsland].tris[0]+2]].xyz;
+		// tris[] holds triangle numbers, scale to an index-array offset
+		const int originIndex = islands[originIsland].tris[0] * 3;
+		const idVec3 &p1 = tri->verts[tri->indexes[originIndex+0]].xyz;
+		const idVec3 &p2 = tri->verts[tri->indexes[originIndex+1]].xyz;
+		const idVec3 &p3 = tri->verts[tri->indexes[originIndex+2]].xyz;
 
 		idVec3	v1 = p2 - p1;
 		v1.Normalize();

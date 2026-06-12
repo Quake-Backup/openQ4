@@ -39,8 +39,78 @@ bool R_ScenePackets_SidePipelineRequired( void ) {
 	return R_ScenePackets_ModernPipelineRequested() || r_rendererMetrics.GetInteger() >= 2;
 }
 
+// Side tables accelerating the FindOrAdd* record dedup scans.  They are keyed
+// on the owning frame instead of living inside idScenePacketFrame; a frame
+// claims a slot in Clear() and falls back to the linear scan if its slot was
+// stolen by another live frame.  Clear() also runs from static constructors in
+// other translation units, so the claim/release paths must only touch
+// zero-initialized POD state, never the idHashIndex objects; the deferred
+// dirty wipe keeps the hash resets on the capture path only.
+// SCENE_PACKET_LOOKUP_SLOTS must stay a power of two for the steal mask.
+static const int SCENE_PACKET_LOOKUP_SLOTS = 4;
+static const idScenePacketFrame *rg_scenePacketLookupOwner[SCENE_PACKET_LOOKUP_SLOTS];
+static bool rg_scenePacketLookupDirty[SCENE_PACKET_LOOKUP_SLOTS];
+static int rg_scenePacketLookupNextSteal;
+static idHashIndex rg_scenePacketMaterialLookup[SCENE_PACKET_LOOKUP_SLOTS];
+static idHashIndex rg_scenePacketGeometryLookup[SCENE_PACKET_LOOKUP_SLOTS];
+static idHashIndex rg_scenePacketInstanceLookup[SCENE_PACKET_LOOKUP_SLOTS];
+
+static int R_ScenePackets_PointerLookupKey( const void *pointer ) {
+	const size_t address = reinterpret_cast<size_t>( pointer );
+	return static_cast<int>( ( address >> 4 ) ^ ( address >> 14 ) );
+}
+
+static void R_ScenePackets_ClaimLookupSlot( const idScenePacketFrame *frame ) {
+	int slot = -1;
+	for ( int i = 0; i < SCENE_PACKET_LOOKUP_SLOTS; ++i ) {
+		if ( rg_scenePacketLookupOwner[i] == frame ) {
+			slot = i;
+			break;
+		}
+		if ( slot < 0 && rg_scenePacketLookupOwner[i] == NULL ) {
+			slot = i;
+		}
+	}
+	if ( slot < 0 ) {
+		slot = rg_scenePacketLookupNextSteal++ & ( SCENE_PACKET_LOOKUP_SLOTS - 1 );
+	}
+	rg_scenePacketLookupOwner[slot] = frame;
+	rg_scenePacketLookupDirty[slot] = true;
+}
+
+static int R_ScenePackets_PreparedLookupSlot( const idScenePacketFrame *frame ) {
+	for ( int i = 0; i < SCENE_PACKET_LOOKUP_SLOTS; ++i ) {
+		if ( rg_scenePacketLookupOwner[i] != frame ) {
+			continue;
+		}
+		if ( rg_scenePacketLookupDirty[i] ) {
+			rg_scenePacketMaterialLookup[i].Clear();
+			rg_scenePacketGeometryLookup[i].Clear();
+			rg_scenePacketInstanceLookup[i].Clear();
+			rg_scenePacketLookupDirty[i] = false;
+		}
+		return i;
+	}
+	return -1;
+}
+
+// transient frames (selftests, backend fallback) must hand their slot back, or
+// the table fills with dangling owners and long-lived frames get stolen from
+static void R_ScenePackets_ReleaseLookupSlot( const idScenePacketFrame *frame ) {
+	for ( int i = 0; i < SCENE_PACKET_LOOKUP_SLOTS; ++i ) {
+		if ( rg_scenePacketLookupOwner[i] == frame ) {
+			rg_scenePacketLookupOwner[i] = NULL;
+			rg_scenePacketLookupDirty[i] = true;
+		}
+	}
+}
+
 idScenePacketFrame::idScenePacketFrame() {
 	Clear();
+}
+
+idScenePacketFrame::~idScenePacketFrame() {
+	R_ScenePackets_ReleaseLookupSlot( this );
 }
 
 void idScenePacketFrame::Clear( void ) {
@@ -61,6 +131,7 @@ void idScenePacketFrame::Clear( void ) {
 	activePass = -1;
 	activePassLastSortKey = 0;
 	activePassSortKeyValid = false;
+	R_ScenePackets_ClaimLookupSlot( this );
 }
 
 void idScenePacketFrame::SetOverflow( scenePacketOverflowCause_t cause ) {
@@ -155,7 +226,9 @@ static const idImage *R_ScenePackets_FirstAmbientImage( const idMaterial *materi
 	if ( material == NULL ) {
 		return NULL;
 	}
-	const bool preferClassicDecalStage = material->GetSort() >= SS_DECAL && material->GetSort() < SS_MEDIUM;
+	// keep this band in sync with R_MaterialResourceTable_SortGroupForMaterial:
+	// SS_FAR and up classify as translucent, not decal
+	const bool preferClassicDecalStage = material->GetSort() >= SS_DECAL && material->GetSort() < SS_FAR;
 	const idImage *firstAmbientImage = NULL;
 	for ( int i = 0; i < material->GetNumStages(); ++i ) {
 		const shaderStage_t *stage = material->GetStage( i );
@@ -362,9 +435,19 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 	}
 
 	const idMaterial *material = drawSurf->material;
-	for ( int i = 0; i < stats.materialRecords; ++i ) {
-		if ( materialRecords[i].material == material ) {
-			return i;
+	const int lookupSlot = R_ScenePackets_PreparedLookupSlot( this );
+	if ( lookupSlot >= 0 ) {
+		const idHashIndex &lookup = rg_scenePacketMaterialLookup[lookupSlot];
+		for ( int i = lookup.First( R_ScenePackets_PointerLookupKey( material ) ); i >= 0; i = lookup.Next( i ) ) {
+			if ( materialRecords[i].material == material ) {
+				return i;
+			}
+		}
+	} else {
+		for ( int i = 0; i < stats.materialRecords; ++i ) {
+			if ( materialRecords[i].material == material ) {
+				return i;
+			}
 		}
 	}
 
@@ -374,6 +457,9 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 	}
 
 	const int recordIndex = stats.materialRecords++;
+	if ( lookupSlot >= 0 ) {
+		rg_scenePacketMaterialLookup[lookupSlot].Add( R_ScenePackets_PointerLookupKey( material ), recordIndex );
+	}
 	materialResourceRecord_t &record = materialRecords[recordIndex];
 	memset( &record, 0, sizeof( record ) );
 	record.material = material;
@@ -415,9 +501,19 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 	}
 
 	const srfTriangles_t *geo = drawSurf->geo;
-	for ( int i = 0; i < stats.geometryRecords; ++i ) {
-		if ( geometryRecords[i].legacyGeometry == geo ) {
-			return i;
+	const int lookupSlot = R_ScenePackets_PreparedLookupSlot( this );
+	if ( lookupSlot >= 0 ) {
+		const idHashIndex &lookup = rg_scenePacketGeometryLookup[lookupSlot];
+		for ( int i = lookup.First( R_ScenePackets_PointerLookupKey( geo ) ); i >= 0; i = lookup.Next( i ) ) {
+			if ( geometryRecords[i].legacyGeometry == geo ) {
+				return i;
+			}
+		}
+	} else {
+		for ( int i = 0; i < stats.geometryRecords; ++i ) {
+			if ( geometryRecords[i].legacyGeometry == geo ) {
+				return i;
+			}
 		}
 	}
 
@@ -427,6 +523,9 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 	}
 
 	const int recordIndex = stats.geometryRecords++;
+	if ( lookupSlot >= 0 ) {
+		rg_scenePacketGeometryLookup[lookupSlot].Add( R_ScenePackets_PointerLookupKey( geo ), recordIndex );
+	}
 	geometryResourceRecord_t &record = geometryRecords[recordIndex];
 	memset( &record, 0, sizeof( record ) );
 	record.legacyGeometry = geo;
@@ -500,9 +599,21 @@ int idScenePacketFrame::FindOrAddInstanceRecord( const drawSurf_t *drawSurf, sce
 
 	const viewEntity_t *space = drawSurf->space;
 	const float *shaderRegisters = drawSurf->shaderRegisters;
-	for ( int i = 0; i < stats.instanceRecords; ++i ) {
-		if ( instanceRecords[i].legacySpace == space && instanceRecords[i].legacyShaderRegisters == shaderRegisters ) {
-			return i;
+	const int lookupSlot = R_ScenePackets_PreparedLookupSlot( this );
+	const int lookupKey = static_cast<int>( static_cast<unsigned int>( R_ScenePackets_PointerLookupKey( space ) )
+		+ static_cast<unsigned int>( R_ScenePackets_PointerLookupKey( shaderRegisters ) ) );
+	if ( lookupSlot >= 0 ) {
+		const idHashIndex &lookup = rg_scenePacketInstanceLookup[lookupSlot];
+		for ( int i = lookup.First( lookupKey ); i >= 0; i = lookup.Next( i ) ) {
+			if ( instanceRecords[i].legacySpace == space && instanceRecords[i].legacyShaderRegisters == shaderRegisters ) {
+				return i;
+			}
+		}
+	} else {
+		for ( int i = 0; i < stats.instanceRecords; ++i ) {
+			if ( instanceRecords[i].legacySpace == space && instanceRecords[i].legacyShaderRegisters == shaderRegisters ) {
+				return i;
+			}
 		}
 	}
 
@@ -512,6 +623,9 @@ int idScenePacketFrame::FindOrAddInstanceRecord( const drawSurf_t *drawSurf, sce
 	}
 
 	const int recordIndex = stats.instanceRecords++;
+	if ( lookupSlot >= 0 ) {
+		rg_scenePacketInstanceLookup[lookupSlot].Add( lookupKey, recordIndex );
+	}
 	instanceRecord_t &record = instanceRecords[recordIndex];
 	memset( &record, 0, sizeof( record ) );
 	record.legacySpace = space;
@@ -1154,6 +1268,28 @@ static bool R_ScenePackets_AppendDrawSurfChain( idScenePacketFrame &packetFrame,
 	return true;
 }
 
+static bool R_ScenePackets_AppendDrawSurfChainLazyPass( idScenePacketFrame &packetFrame, const drawSurf_t *drawSurf, renderPassCategory_t category, bool ( *filter )( const drawSurf_t *drawSurf ), int &drawIndex, bool &passAdded ) {
+	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL; cursor = cursor->nextOnLight ) {
+		if ( filter != NULL && !filter( cursor ) ) {
+			continue;
+		}
+		// Pass existence drives executor ownership and legacy-skip decisions,
+		// so the pass is only opened once a surf actually passes the filter;
+		// AddDrawPacket would otherwise append into the previously open pass.
+		if ( !passAdded ) {
+			if ( !packetFrame.AddPass( category, true ) ) {
+				return false;
+			}
+			passAdded = true;
+		}
+		if ( !packetFrame.AddDrawPacket( cursor, category, drawIndex++ ) ) {
+			packetFrame.AddClippedDrawPackets( R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, filter ) );
+			return false;
+		}
+	}
+	return true;
+}
+
 static void R_ScenePackets_AddFilteredDrawSurfPass( idScenePacketFrame &packetFrame, const viewDef_t *viewDef, renderPassCategory_t category, scenePacketDrawSurfFilter_t filter ) {
 	if ( !packetFrame.AddPass( category, true ) ) {
 		return;
@@ -1217,42 +1353,6 @@ static bool R_ScenePackets_ViewLightIsFogOrBlend( const viewLight_t *vLight ) {
 	return true;
 }
 
-static int R_ScenePackets_CountShadowMapCandidates( const viewDef_t *viewDef ) {
-	if ( !r_useShadowMap.GetBool() || viewDef == NULL ) {
-		return 0;
-	}
-
-	int count = 0;
-	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-		if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
-			continue;
-		}
-		count += R_ScenePackets_CountDrawSurfChain( vLight->globalShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
-		count += R_ScenePackets_CountDrawSurfChain( vLight->localShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
-		count += R_ScenePackets_CountDrawSurfChain( vLight->globalTranslucentShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
-		count += R_ScenePackets_CountDrawSurfChain( vLight->localTranslucentShadowMapCasters, R_ScenePackets_DrawSurfShadowEligible );
-		count += R_ScenePackets_CountDrawSurfChain( vLight->globalShadows, R_ScenePackets_DrawSurfShadowEligible );
-		count += R_ScenePackets_CountDrawSurfChain( vLight->localShadows, R_ScenePackets_DrawSurfShadowEligible );
-	}
-	return count;
-}
-
-static int R_ScenePackets_CountStencilShadowCandidates( const viewDef_t *viewDef ) {
-	if ( viewDef == NULL ) {
-		return 0;
-	}
-
-	int count = 0;
-	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-		if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
-			continue;
-		}
-		count += R_ScenePackets_CountDrawSurfChain( vLight->globalShadows, R_ScenePackets_DrawSurfShadowEligible );
-		count += R_ScenePackets_CountDrawSurfChain( vLight->localShadows, R_ScenePackets_DrawSurfShadowEligible );
-	}
-	return count;
-}
-
 static void R_ScenePackets_AddInteractionPass( idScenePacketFrame &packetFrame, const viewDef_t *viewDef ) {
 	if ( !packetFrame.AddPass( RENDER_PASS_ARB2_INTERACTION, true ) || viewDef == NULL ) {
 		return;
@@ -1276,56 +1376,52 @@ static void R_ScenePackets_AddInteractionPass( idScenePacketFrame &packetFrame, 
 }
 
 static void R_ScenePackets_AddShadowMapPass( idScenePacketFrame &packetFrame, const viewDef_t *viewDef ) {
-	if ( R_ScenePackets_CountShadowMapCandidates( viewDef ) <= 0 ) {
-		return;
-	}
-	if ( !packetFrame.AddPass( RENDER_PASS_SHADOW_MAP, true ) ) {
+	if ( !r_useShadowMap.GetBool() || viewDef == NULL ) {
 		return;
 	}
 
+	bool passAdded = false;
 	int drawIndex = 0;
 	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
 			continue;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
 	}
 }
 
 static void R_ScenePackets_AddStencilShadowPass( idScenePacketFrame &packetFrame, const viewDef_t *viewDef ) {
-	if ( R_ScenePackets_CountStencilShadowCandidates( viewDef ) <= 0 ) {
-		return;
-	}
-	if ( !packetFrame.AddPass( RENDER_PASS_STENCIL_SHADOW, true ) ) {
+	if ( viewDef == NULL ) {
 		return;
 	}
 
+	bool passAdded = false;
 	int drawIndex = 0;
 	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
 			continue;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalShadows, RENDER_PASS_STENCIL_SHADOW, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalShadows, RENDER_PASS_STENCIL_SHADOW, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localShadows, RENDER_PASS_STENCIL_SHADOW, R_ScenePackets_DrawSurfShadowEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localShadows, RENDER_PASS_STENCIL_SHADOW, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
 	}

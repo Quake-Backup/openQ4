@@ -173,6 +173,11 @@ static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_T
 
 	buf_p = buffer;
 
+	if ( fileSize < 18 ) {
+		fileSystem->FreeFile( buffer );
+		common->Error( "LoadTGA( %s ): incomplete file\n", name );
+	}
+
 	targa_header.id_length = *buf_p++;
 	targa_header.colormap_type = *buf_p++;
 	targa_header.image_type = *buf_p++;
@@ -193,6 +198,11 @@ static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_T
 	targa_header.pixel_size = *buf_p++;
 	targa_header.attributes = *buf_p++;
 
+	if ( fileSize < 18 + targa_header.id_length ) {
+		fileSystem->FreeFile( buffer );
+		common->Error( "LoadTGA( %s ): incomplete file\n", name );
+	}
+
 	if ( targa_header.image_type != 2 && targa_header.image_type != 10 && targa_header.image_type != 3 ) {
 		common->Error( "LoadTGA( %s ): Only type 2 (RGB), 3 (gray), and 10 (RGB) TGA images supported\n", name );
 	}
@@ -203,6 +213,13 @@ static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_T
 
 	if ( ( targa_header.pixel_size != 32 && targa_header.pixel_size != 24 ) && targa_header.image_type != 3 ) {
 		common->Error( "LoadTGA( %s ): Only 32 or 24 bit images supported (no colormaps)\n", name );
+	}
+
+	// width * height * 4 can overflow a 32-bit int on crafted headers, wrapping the
+	// allocation below while the decode loops still write the full extent
+	if ( (int64)targa_header.width * targa_header.height * 4 > 0x7FFFFFFF ) {
+		fileSystem->FreeFile( buffer );
+		common->Error( "LoadTGA( %s ): dimensions too large (%i x %i)\n", name, targa_header.width, targa_header.height );
 	}
 
 	if ( targa_header.image_type == 2 || targa_header.image_type == 3 ) {
@@ -280,6 +297,7 @@ static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_T
 	}
 	else if ( targa_header.image_type == 10 ) {   // Runlength encoded RGB images
 		unsigned char red,green,blue,alphabyte,packetHeader,packetSize,j;
+		const byte	*buf_end = buffer + fileSize;
 
 		red = 0;
 		green = 0;
@@ -289,9 +307,21 @@ static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_T
 		for( row = rows - 1; row >= 0; row-- ) {
 			pixbuf = targa_rgba + row*columns*4;
 			for( column = 0; column < columns; ) {
+				if ( buf_p >= buf_end ) {
+					R_StaticFree( targa_rgba );
+					*pic = NULL;
+					fileSystem->FreeFile( buffer );
+					common->Error( "LoadTGA( %s ): incomplete file\n", name );
+				}
 				packetHeader= *buf_p++;
 				packetSize = 1 + (packetHeader & 0x7f);
 				if ( packetHeader & 0x80 ) {        // run-length packet
+					if ( buf_p + ( targa_header.pixel_size >> 3 ) > buf_end ) {
+						R_StaticFree( targa_rgba );
+						*pic = NULL;
+						fileSystem->FreeFile( buffer );
+						common->Error( "LoadTGA( %s ): incomplete file\n", name );
+					}
 					switch( targa_header.pixel_size ) {
 						case 24:
 								blue = *buf_p++;
@@ -329,6 +359,12 @@ static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_T
 					}
 				}
 				else {                            // non run-length packet
+					if ( buf_p + packetSize * ( targa_header.pixel_size >> 3 ) > buf_end ) {
+						R_StaticFree( targa_rgba );
+						*pic = NULL;
+						fileSystem->FreeFile( buffer );
+						common->Error( "LoadTGA( %s ): incomplete file\n", name );
+					}
 					for( j = 0; j < packetSize; j++ ) {
 						switch( targa_header.pixel_size ) {
 							case 24:
@@ -861,9 +897,13 @@ bool R_LoadCubeImages( const char *imgName, cubeFiles_t extensions, byte *pics[6
 
 	if ( i != 6 ) {
 		// we had an error, so free everything
+		// pics[i] is live on the size-mismatch break, NULL on the not-found break
 		if ( pics ) {
-			for ( j = 0 ; j < i ; j++ ) {
-				R_StaticFree( pics[j] );
+			for ( j = 0 ; j <= i && j < 6 ; j++ ) {
+				if ( pics[j] ) {
+					R_StaticFree( pics[j] );
+					pics[j] = NULL;
+				}
 			}
 		}
 

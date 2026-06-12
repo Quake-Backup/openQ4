@@ -294,6 +294,7 @@ typedef struct scenePacketFrameStats_s {
 class idScenePacketFrame {
 public:
 	idScenePacketFrame();
+	~idScenePacketFrame();
 	void Clear( void );
 
 	bool AddScene( const viewDef_t *viewDef, bool legacyBridge );

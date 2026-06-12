@@ -265,7 +265,7 @@ static bool RB_ARB2_BindPackedMD5RInteractionVertexData( const rvMD5RVertexBuffe
 		return false;
 	}
 
-	if ( vertexFormatIndex == 1 && vertexBuffer.binormals.Num() != vertexBuffer.numVertices ) {
+	if ( vertexFormatIndex <= 1 && vertexBuffer.binormals.Num() != vertexBuffer.numVertices ) {
 		return false;
 	}
 
@@ -1076,13 +1076,29 @@ void RB_ARB2_LoadMD5RLocalViewOrigin( const drawSurf_t *surf ) {
 	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, ARB2_MD5R_LOCAL_VIEW_ORIGIN, localViewOrigin.ToFloatPtr() );
 }
 
+// Packed MD5R programs take their projection from env params rather than
+// GL_PROJECTION, so the depth-hack squash/offset applied by
+// RB_EnterWeaponDepthHack/RB_EnterModelDepthHack (and mirrored by the modern
+// path in R_ModernGLSubmitCommand_BuildModelViewProjection) must be applied
+// here too or packed draws desync from classic-path siblings of the same entity.
+static void RB_ARB2_GetMD5RProjectionMatrix( const viewEntity_t *space, float projectionMatrix[16] ) {
+	R_GetDepthHackProjectionMatrix(
+		backEnd.viewDef,
+		space != NULL && space->weaponDepthHack,
+		space != NULL ? space->modelDepthHack : 0.0f,
+		projectionMatrix );
+}
+
 void RB_ARB2_LoadMD5RMVPMatrix( const drawSurf_t *surf ) {
 	if ( surf == NULL || surf->space == NULL || backEnd.viewDef == NULL ) {
 		return;
 	}
 
+	float projectionMatrix[16];
+	RB_ARB2_GetMD5RProjectionMatrix( surf->space, projectionMatrix );
+
 	float modelViewProjection[16];
-	myGlMultMatrix( surf->space->modelViewMatrix, backEnd.viewDef->projectionMatrix, modelViewProjection );
+	myGlMultMatrix( surf->space->modelViewMatrix, projectionMatrix, modelViewProjection );
 	RB_ARB2_LoadVertexProgramMatrixRows( ARB2_MD5R_MVP_ROW_0, modelViewProjection, 4 );
 }
 
@@ -1091,7 +1107,12 @@ void RB_ARB2_LoadMD5RProjectionMatrix( void ) {
 		return;
 	}
 
-	RB_ARB2_LoadVertexProgramMatrixRows( ARB2_MD5R_PROJECTION_ROW_0, backEnd.viewDef->projectionMatrix, 4 );
+	// the only caller (RB_STD_T_RenderShaderPasses) syncs backEnd.currentSpace
+	// to the surface being drawn before loading matrices, so the depth-hack
+	// state here matches the MVP loaded alongside these rows
+	float projectionMatrix[16];
+	RB_ARB2_GetMD5RProjectionMatrix( backEnd.currentSpace, projectionMatrix );
+	RB_ARB2_LoadVertexProgramMatrixRows( ARB2_MD5R_PROJECTION_ROW_0, projectionMatrix, 4 );
 }
 
 void RB_ARB2_LoadMD5RModelViewMatrix( const drawSurf_t *surf ) {
@@ -6496,6 +6517,7 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	int drawnCasterCount = 0;
 	const GLboolean blendWasEnabled = glIsEnabled( GL_BLEND );
 	const GLboolean scissorWasEnabled = glIsEnabled( GL_SCISSOR_TEST );
+	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 
 	idPlane baseClipPlanes[4];
@@ -6584,6 +6606,13 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	} else {
 		glDisable( GL_BLEND );
 	}
+	// The stencil shadow path relies on the depth-fill pass's one-time enable
+	// staying in effect for the whole view (RB_StencilShadowPass never enables it).
+	if ( stencilWasEnabled ) {
+		glEnable( GL_STENCIL_TEST );
+	} else {
+		glDisable( GL_STENCIL_TEST );
+	}
 	backEnd.glState.faceCulling = -1;
 	if ( savedFaceCulling >= CT_FRONT_SIDED && savedFaceCulling <= CT_TWO_SIDED ) {
 		GL_Cull( savedFaceCulling );
@@ -6614,6 +6643,7 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 		quaternaryCasters != NULL;
 	int drawnCasterCount = 0;
 	const GLboolean blendWasEnabled = glIsEnabled( GL_BLEND );
+	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 
 	const float farClip = RB_PointShadowMapLightFar( backEnd.vLight );
@@ -6730,6 +6760,12 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 	} else {
 		glDisable( GL_BLEND );
 	}
+	// Restore the view-lifetime stencil-test enable (see RB_RenderShadowMap).
+	if ( stencilWasEnabled ) {
+		glEnable( GL_STENCIL_TEST );
+	} else {
+		glDisable( GL_STENCIL_TEST );
+	}
 	backEnd.glState.faceCulling = -1;
 	if ( savedFaceCulling >= CT_FRONT_SIDED && savedFaceCulling <= CT_TWO_SIDED ) {
 		GL_Cull( savedFaceCulling );
@@ -6759,6 +6795,7 @@ static bool RB_RenderTranslucentShadowMap( const drawSurf_t *primaryCasters, con
 	const GLboolean blendWasEnabled = glIsEnabled( GL_BLEND );
 	const GLboolean depthWasEnabled = glIsEnabled( GL_DEPTH_TEST );
 	const GLboolean scissorWasEnabled = glIsEnabled( GL_SCISSOR_TEST );
+	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 	GLfloat clearColor[4];
 	glGetFloatv( GL_COLOR_CLEAR_VALUE, clearColor );
@@ -6849,6 +6886,12 @@ static bool RB_RenderTranslucentShadowMap( const drawSurf_t *primaryCasters, con
 	} else {
 		glDisable( GL_BLEND );
 	}
+	// Restore the view-lifetime stencil-test enable (see RB_RenderShadowMap).
+	if ( stencilWasEnabled ) {
+		glEnable( GL_STENCIL_TEST );
+	} else {
+		glDisable( GL_STENCIL_TEST );
+	}
 	backEnd.glState.faceCulling = -1;
 	if ( savedFaceCulling >= CT_FRONT_SIDED && savedFaceCulling <= CT_TWO_SIDED ) {
 		GL_Cull( savedFaceCulling );
@@ -6873,6 +6916,7 @@ static bool RB_RenderPointTranslucentShadowMap( const drawSurf_t *primaryCasters
 
 	const GLboolean blendWasEnabled = glIsEnabled( GL_BLEND );
 	const GLboolean depthWasEnabled = glIsEnabled( GL_DEPTH_TEST );
+	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 	const float farClip = RB_PointShadowMapLightFar( backEnd.vLight );
 	const float nearClip = idMath::ClampFloat( 0.5f, 16.0f, farClip * 0.01f );
@@ -6974,6 +7018,12 @@ static bool RB_RenderPointTranslucentShadowMap( const drawSurf_t *primaryCasters
 		glEnable( GL_BLEND );
 	} else {
 		glDisable( GL_BLEND );
+	}
+	// Restore the view-lifetime stencil-test enable (see RB_RenderShadowMap).
+	if ( stencilWasEnabled ) {
+		glEnable( GL_STENCIL_TEST );
+	} else {
+		glDisable( GL_STENCIL_TEST );
 	}
 	backEnd.glState.faceCulling = -1;
 	if ( savedFaceCulling >= CT_FRONT_SIDED && savedFaceCulling <= CT_TWO_SIDED ) {
@@ -7085,31 +7135,43 @@ static void RB_GLSLMaterial_DrawInteraction( const drawInteraction_t *din ) {
 
 static int g_shadowMapInteractionDrawCount = 0;
 static int g_pointShadowMapInteractionDrawCount = 0;
+// receiver space whose localized cascade rows are currently uploaded; reset at
+// pass setup so rows are never reused across lights (clip planes are per light)
+static const viewEntity_t *g_shadowMapInteractionLastSpace = NULL;
 
 static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 	g_shadowMapInteractionDrawCount++;
 
-	idPlane shadowClipLocal[SHADOWMAP_MAX_CASCADES][4];
-	float shadowRow0[SHADOWMAP_MAX_CASCADES * 4];
-	float shadowRow1[SHADOWMAP_MAX_CASCADES * 4];
-	float shadowRow2[SHADOWMAP_MAX_CASCADES * 4];
-	float shadowRow3[SHADOWMAP_MAX_CASCADES * 4];
-	const int cascadeCount = idMath::ClampInt( 1, SHADOWMAP_MAX_CASCADES, g_projectedShadowMapState.cascadeCount );
+	if ( din->surf->space != g_shadowMapInteractionLastSpace ) {
+		g_shadowMapInteractionLastSpace = din->surf->space;
 
-	memset( shadowRow0, 0, sizeof( shadowRow0 ) );
-	memset( shadowRow1, 0, sizeof( shadowRow1 ) );
-	memset( shadowRow2, 0, sizeof( shadowRow2 ) );
-	memset( shadowRow3, 0, sizeof( shadowRow3 ) );
+		idPlane shadowClipLocal[SHADOWMAP_MAX_CASCADES][4];
+		float shadowRow0[SHADOWMAP_MAX_CASCADES * 4];
+		float shadowRow1[SHADOWMAP_MAX_CASCADES * 4];
+		float shadowRow2[SHADOWMAP_MAX_CASCADES * 4];
+		float shadowRow3[SHADOWMAP_MAX_CASCADES * 4];
+		const int cascadeCount = idMath::ClampInt( 1, SHADOWMAP_MAX_CASCADES, g_projectedShadowMapState.cascadeCount );
 
-	for ( int cascadeIndex = 0; cascadeIndex < cascadeCount; cascadeIndex++ ) {
-		for ( int planeIndex = 0; planeIndex < 4; planeIndex++ ) {
-			R_GlobalPlaneToLocal( din->surf->space->modelMatrix, g_projectedShadowMapState.clipPlanes[cascadeIndex][planeIndex], shadowClipLocal[cascadeIndex][planeIndex] );
+		memset( shadowRow0, 0, sizeof( shadowRow0 ) );
+		memset( shadowRow1, 0, sizeof( shadowRow1 ) );
+		memset( shadowRow2, 0, sizeof( shadowRow2 ) );
+		memset( shadowRow3, 0, sizeof( shadowRow3 ) );
+
+		for ( int cascadeIndex = 0; cascadeIndex < cascadeCount; cascadeIndex++ ) {
+			for ( int planeIndex = 0; planeIndex < 4; planeIndex++ ) {
+				R_GlobalPlaneToLocal( din->surf->space->modelMatrix, g_projectedShadowMapState.clipPlanes[cascadeIndex][planeIndex], shadowClipLocal[cascadeIndex][planeIndex] );
+			}
+
+			memcpy( shadowRow0 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][0].ToFloatPtr(), 4 * sizeof( float ) );
+			memcpy( shadowRow1 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][1].ToFloatPtr(), 4 * sizeof( float ) );
+			memcpy( shadowRow2 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][2].ToFloatPtr(), 4 * sizeof( float ) );
+			memcpy( shadowRow3 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][3].ToFloatPtr(), 4 * sizeof( float ) );
 		}
 
-		memcpy( shadowRow0 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][0].ToFloatPtr(), 4 * sizeof( float ) );
-		memcpy( shadowRow1 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][1].ToFloatPtr(), 4 * sizeof( float ) );
-		memcpy( shadowRow2 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][2].ToFloatPtr(), 4 * sizeof( float ) );
-		memcpy( shadowRow3 + cascadeIndex * 4, shadowClipLocal[cascadeIndex][3].ToFloatPtr(), 4 * sizeof( float ) );
+		glUniform4fvARB( g_shadowMapProgram.shadowRow[0], cascadeCount, shadowRow0 );
+		glUniform4fvARB( g_shadowMapProgram.shadowRow[1], cascadeCount, shadowRow1 );
+		glUniform4fvARB( g_shadowMapProgram.shadowRow[2], cascadeCount, shadowRow2 );
+		glUniform4fvARB( g_shadowMapProgram.shadowRow[3], cascadeCount, shadowRow3 );
 	}
 
 	glUniform4fvARB( g_shadowMapProgram.localLightOrigin, 1, din->localLightOrigin.ToFloatPtr() );
@@ -7124,10 +7186,6 @@ static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 	glUniform4fvARB( g_shadowMapProgram.diffuseMatrixT, 1, din->diffuseMatrix[1].ToFloatPtr() );
 	glUniform4fvARB( g_shadowMapProgram.specularMatrixS, 1, din->specularMatrix[0].ToFloatPtr() );
 	glUniform4fvARB( g_shadowMapProgram.specularMatrixT, 1, din->specularMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.shadowRow[0], cascadeCount, shadowRow0 );
-	glUniform4fvARB( g_shadowMapProgram.shadowRow[1], cascadeCount, shadowRow1 );
-	glUniform4fvARB( g_shadowMapProgram.shadowRow[2], cascadeCount, shadowRow2 );
-	glUniform4fvARB( g_shadowMapProgram.shadowRow[3], cascadeCount, shadowRow3 );
 	glUniform4fvARB( g_shadowMapProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
 	glUniform4fvARB( g_shadowMapProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
 
@@ -7159,10 +7217,6 @@ static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 	din->diffuseImage->Bind();
 	GL_SelectTextureNoClient( 4 );
 	din->specularImage->Bind();
-	GL_SelectTextureNoClient( 5 );
-	g_shadowMapDepthImage->Bind();
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, RB_ShadowMapDepthCompareEnabled() ? GL_COMPARE_R_TO_TEXTURE : GL_NONE );
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
 
 	const idMaterial *surfaceMaterial = din->surf->material;
 	if ( surfaceMaterial && surfaceMaterial->TestMaterialFlag( MF_POLYGONOFFSET ) ) {
@@ -7240,25 +7294,6 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 	din->diffuseImage->Bind();
 	GL_SelectTextureNoClient( 4 );
 	din->specularImage->Bind();
-	GL_SelectTextureNoClient( 5 );
-	if ( RB_PointShadowMapDepthCompareEnabled() && g_pointShadowMapDepthImage != NULL ) {
-		g_pointShadowMapDepthImage->Bind();
-		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE );
-		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
-	} else {
-		g_pointShadowMapColorImage->Bind();
-		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_NONE );
-	}
-	for ( int i = 0; i < 3; i++ ) {
-		if ( glConfig.maxTextureUnits >= 7 + i ) {
-			GL_SelectTextureNoClient( 6 + i );
-			if ( RB_PointTranslucentShadowEnabled() ) {
-				g_pointTranslucentShadowMomentImages[i]->Bind();
-			} else {
-				globalImages->BindNull();
-			}
-		}
-	}
 
 	const idMaterial *surfaceMaterial = din->surf->material;
 	if ( surfaceMaterial && surfaceMaterial->TestMaterialFlag( MF_POLYGONOFFSET ) ) {
@@ -7316,15 +7351,12 @@ static bool RB_GLSLPrepareInteractionVertexCache( const drawSurf_t *surf, idDraw
 		return false;
 	}
 
-	if ( mutableTri->indexCache == NULL
-		&& r_useIndexBuffers.GetBool()
-		&& mutableTri->indexes != NULL
-		&& mutableTri->numIndexes > 0 ) {
-		mutableTri->indexCache = vertexCache.AllocFrameTemp(
-			mutableTri->indexes,
-			mutableTri->numIndexes * sizeof( mutableTri->indexes[0] ),
-			true );
-	}
+	// Do NOT frame-temp-allocate an indexCache here when the frontend left it
+	// NULL: surf->geo can be a heap-owned persistent tri (interaction lightTris,
+	// DM_CACHED models at rest), and AllocFrameTemp headers are recycled at
+	// EndFrame -- a stored handle dereferences a stale/freed header next frame
+	// (see tr_trisurf.cpp). The frontend index policy (R_StaticIndexCacheAllowed)
+	// already decides VBO vs client-memory indexes; NULL means client memory.
 
 	R_TouchVertexCache( mutableTri->ambientCache );
 	if ( mutableTri->indexCache != NULL ) {
@@ -7893,6 +7925,14 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 			}
 		}
 	}
+	// units 5-8 are constant for the whole receiver pass; only units 0-4 are
+	// rebound per interaction draw, so bind the shadow depth map once here
+	if ( g_shadowMapDepthImage != NULL ) {
+		GL_SelectTextureNoClient( 5 );
+		g_shadowMapDepthImage->Bind();
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, RB_ShadowMapDepthCompareEnabled() ? GL_COMPARE_R_TO_TEXTURE : GL_NONE );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
+	}
 	if ( g_shadowMapProgram.materialEnhanced >= 0 ) {
 		glUniform1fARB( g_shadowMapProgram.materialEnhanced, RB_EnhancedMaterialShadingActive() ? 1.0f : 0.0f );
 	}
@@ -7912,6 +7952,7 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 	glEnableVertexAttribArrayARB( 11 );
 	glEnableClientState( GL_COLOR_ARRAY );
 
+	g_shadowMapInteractionLastSpace = NULL;
 	const int drawCountStart = g_shadowMapInteractionDrawCount;
 	int debugSurfaceCount = 0;
 	int debugPreparedCount = 0;
@@ -8080,6 +8121,28 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 		g_pointShadowMapProgram.materialSpecularBoost,
 		g_pointShadowMapProgram.materialFresnel,
 		g_pointShadowMapProgram.materialEnhanced );
+
+	// units 5-8 are constant for the whole receiver pass; only units 0-4 are
+	// rebound per interaction draw, so bind the cube map and moments once here
+	GL_SelectTextureNoClient( 5 );
+	if ( RB_PointShadowMapDepthCompareEnabled() && g_pointShadowMapDepthImage != NULL ) {
+		g_pointShadowMapDepthImage->Bind();
+		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE );
+		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
+	} else if ( g_pointShadowMapColorImage != NULL ) {
+		g_pointShadowMapColorImage->Bind();
+		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+	}
+	for ( int i = 0; i < 3; i++ ) {
+		if ( glConfig.maxTextureUnits >= 7 + i ) {
+			GL_SelectTextureNoClient( 6 + i );
+			if ( RB_PointTranslucentShadowEnabled() ) {
+				g_pointTranslucentShadowMomentImages[i]->Bind();
+			} else {
+				globalImages->BindNull();
+			}
+		}
+	}
 
 	glStencilMask( 255 );
 	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );

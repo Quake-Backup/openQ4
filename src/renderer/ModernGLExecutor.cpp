@@ -365,9 +365,10 @@ static bool R_ModernGLExecutor_PassIsPost( renderPassCategory_t category ) {
 
 // true once a skipped frame has refreshed the dormant-pipeline bookkeeping.
 // Cleared by R_ModernGLExecutor_ResetPassOwnershipTable, which every path
-// that mutates the global executor state traverses (PrepareFrame, Shutdown,
-// and all modern selftests), so stale bookkeeping is re-published on the
-// next skipped frame after any such activity.
+// that mutates the pass-ownership table / skip latch traverses (PrepareFrame,
+// Shutdown, and the selftests that call FinalizePassOwnership), so stale
+// bookkeeping is re-published on the next skipped frame after any such
+// activity.
 static bool rg_modernGLExecutorSkipLatched = false;
 
 static void R_ModernGLExecutor_ResetPassOwnershipTable( const char *reason ) {
@@ -1785,6 +1786,22 @@ static bool R_ModernGLExecutor_DrawPacketUsesLegacyFeedbackSurface( const drawPa
 		|| material->GetSort() == SS_SUBVIEW;
 }
 
+static bool R_ModernGLExecutor_DrawPacketIsSceneView( const drawPacket_t &draw );
+
+static bool R_ModernGLExecutor_DrawPacketNeedsLegacySceneGui( const drawPacket_t &draw, const materialResourceTableRecord_t &materialRecord ) {
+	if ( draw.passCategory != RENDER_PASS_AMBIENT ) {
+		return false;
+	}
+	if ( !R_ModernGLExecutor_DrawPacketIsSceneView( draw ) ) {
+		return false;
+	}
+
+	// Entity GUI surfaces, including view-weapon ammo readouts, are emitted as
+	// normal scene geometry but still rely on the legacy GUI material contract:
+	// authored GUI ordering, vertex color modulation, and Quake 4 font atlases.
+	return materialRecord.materialClass == RENDER_MATERIAL_GUI;
+}
+
 static bool R_ModernGLExecutor_DrawPacketIsForwardPlusDecal( const drawPacket_t &draw, const materialResourceTableRecord_t &materialRecord );
 static bool R_ModernGLExecutor_DecalFallbackAllowedForForwardPlus( const materialResourceTableRecord_t &materialRecord, const drawPacket_t *draw );
 
@@ -1833,6 +1850,11 @@ static void R_ModernGLExecutor_RecordPacketFallbackBlockers( const idScenePacket
 			}
 			stats.modernVisibleMaterialFallbackDraws++;
 			R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", viewIndex, draw.passCategory, i, "material", "missing-material-record" );
+			continue;
+		}
+		if ( R_ModernGLExecutor_DrawPacketNeedsLegacySceneGui( draw, *materialRecord ) && !legacyFeedbackSurface ) {
+			stats.modernVisibleMaterialFallbackDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker( stats, "material", viewIndex, draw.passCategory, materialRecord->materialId, materialRecord->materialName, "legacy-scene-gui" );
 			continue;
 		}
 		if ( materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
@@ -3832,10 +3854,31 @@ static bool R_ModernGLExecutor_CommandUsesClusteredLighting( const modernGLSubmi
 		|| command.shaderKind == MODERN_GL_SHADER_TRANSPARENT_FORWARD;
 }
 
+// uniform-block bindings are persistent program-object state that only resets on
+// relink, so re-resolving them by name per draw is redundant driver traffic on the
+// forward+ submit loop; programs are only relinked through shader-library reload
+// (which traverses R_ModernGLExecutor_InvalidatePlans) or executor shutdown, so
+// both clear this memo to survive GL program-name reuse
+const int MODERN_GL_CLUSTER_BLOCK_BOUND_PROGRAM_CAPACITY = 16;
+static GLuint rg_modernGLClusterBlockBoundPrograms[MODERN_GL_CLUSTER_BLOCK_BOUND_PROGRAM_CAPACITY];
+static int rg_modernGLClusterBlockBoundProgramCount = 0;
+
+static void R_ModernGLExecutor_ResetClusterBlockBindingCache( void ) {
+	rg_modernGLClusterBlockBoundProgramCount = 0;
+}
+
 static void R_ModernGLExecutor_BindClusterUniformBlocks( GLuint program ) {
+	for ( int i = 0; i < rg_modernGLClusterBlockBoundProgramCount; ++i ) {
+		if ( rg_modernGLClusterBlockBoundPrograms[i] == program ) {
+			return;
+		}
+	}
 	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterGridParams", MODERN_GL_CLUSTER_UBO_BINDING_PARAMS );
 	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterLightRecords", MODERN_GL_CLUSTER_UBO_BINDING_LIGHTS );
 	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterIndexRecords", MODERN_GL_CLUSTER_UBO_BINDING_INDICES );
+	if ( rg_modernGLClusterBlockBoundProgramCount < MODERN_GL_CLUSTER_BLOCK_BOUND_PROGRAM_CAPACITY ) {
+		rg_modernGLClusterBlockBoundPrograms[rg_modernGLClusterBlockBoundProgramCount++] = program;
+	}
 }
 
 static bool R_ModernGLExecutor_SubmitCommand( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats, bool recordSubmitStats ) {
@@ -3931,6 +3974,34 @@ static void R_ModernGLExecutor_SoftRestoreForNextModernPass( modernGLExecutorSta
 	stats.modernSoftRestores++;
 }
 
+// Re-establish the once-per-frame GL enables the legacy backend assumes from
+// RB_SetDefaultGLState (the modern passes disable them through the state cache,
+// and GL_State/GL_ClearStateDelta never touch them), and resync the legacy
+// bind/cull/tmu trackers that the state-cache calls bypass so post-handoff
+// idImage::Bind/GL_Cull/GL_SelectTexture do not early-out against stale state
+// (mirrors the draw_arb2 shadow-map restore idiom).
+static void R_ModernGLExecutor_RestoreLegacyStateInvariants( void ) {
+	R_GLStateCache().SetDepthTestEnabled( true );
+	R_GLStateCache().SetScissorTestEnabled( true );
+	R_GLStateCache().SetBlendEnabled( true );
+	R_GLStateCache().SetCullFaceEnabled( true );
+	// the tracker covers fewer units than the modern passes touch; only reset the
+	// bind records, never tmu[].textureType (binds do not change the enable bits)
+	for ( int unit = 0; unit < MAX_MULTITEXTURE_UNITS; ++unit ) {
+		backEnd.glState.tmu[unit].current2DMap = -1;
+		backEnd.glState.tmu[unit].current3DMap = -1;
+		backEnd.glState.tmu[unit].currentCubeMap = -1;
+	}
+	backEnd.glState.faceCulling = -1;
+	backEnd.glState.currenttmu = -1;
+	// modern submits set the real scissor box per draw behind the legacy
+	// tracker; clear it or a post-handoff surface whose rect equals the stale
+	// tracked value skips the glScissor re-issue and draws over-clipped
+	backEnd.currentScissor.Clear();
+	GL_ClearStateDelta();
+	GL_SelectTexture( 0 );
+}
+
 static void R_ModernGLExecutor_FullRestoreForLegacyHandoff( modernGLExecutorStats_t &stats, const char *reason, bool force ) {
 	(void)reason;
 	if ( !force && !rg_modernGLExecutorModernStateDirty ) {
@@ -3960,7 +4031,11 @@ static void R_ModernGLExecutor_FullRestoreForLegacyHandoff( modernGLExecutorStat
 	R_GLStateCache().SetColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
 	R_GLStateCache().SetDepthMask( GL_TRUE );
 	glDepthRange( 0.0, 1.0 );
-	GL_ClearStateDelta();
+	R_ModernGLExecutor_RestoreLegacyStateInvariants();
+	// The GL_ARRAY_BUFFER unbind above is global state issued behind the legacy
+	// vertex-cache redundant-bind filter (VertexCache.h contract); without this the
+	// next legacy Position() on the same VBO is filtered out and draws from buffer 0.
+	idVertexCache::InvalidateBufferBindings();
 	rg_modernGLExecutorModernStateDirty = false;
 	stats.modernFullRestores++;
 }
@@ -4997,9 +5072,7 @@ static void R_ModernGLExecutor_SubmitDeferredResolve( modernGLExecutorStats_t &s
 
 		R_GLStateCache().UseProgram( program->program );
 		R_ModernGLExecutor_BindFrameUniformBufferBase( stats );
-		R_ModernGLExecutor_SetUniformBlockBinding( program->program, "ModernClusterGridParams", MODERN_GL_CLUSTER_UBO_BINDING_PARAMS );
-		R_ModernGLExecutor_SetUniformBlockBinding( program->program, "ModernClusterLightRecords", MODERN_GL_CLUSTER_UBO_BINDING_LIGHTS );
-		R_ModernGLExecutor_SetUniformBlockBinding( program->program, "ModernClusterIndexRecords", MODERN_GL_CLUSTER_UBO_BINDING_INDICES );
+		R_ModernGLExecutor_BindClusterUniformBlocks( program->program );
 		const float identity[16] = {
 			1.0f, 0.0f, 0.0f, 0.0f,
 			0.0f, 1.0f, 0.0f, 0.0f,
@@ -6311,6 +6384,7 @@ void R_ModernGLExecutor_Shutdown( void ) {
 		glDeleteSamplers( 1, &rg_modernGLExecutorLowOverheadSampler );
 	}
 	R_ModernGLShaderLibrary_Shutdown();
+	R_ModernGLExecutor_ResetClusterBlockBindingCache();
 
 	rg_modernGLExecutorVAO = 0;
 	rg_modernGLExecutorFrameUBO = 0;
@@ -6367,6 +6441,7 @@ void R_ModernGLExecutor_InvalidatePlans( void ) {
 	// for the shader-library generation they were built against
 	rg_modernGLDrawPlan.Clear();
 	rg_modernGLSubmitPlan.Clear();
+	R_ModernGLExecutor_ResetClusterBlockBindingCache();
 }
 
 void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, const idRenderGraph &graph ) {
@@ -7234,7 +7309,7 @@ static void R_ModernGLExecutor_FinishVisibleComposition( modernGLExecutorStats_t
 	R_GLStateCache().UseProgram( 0 );
 	R_GLStateCache().BindVertexArray( 0 );
 	R_GLStateCache().SetDepthMask( GL_TRUE );
-	GL_ClearStateDelta();
+	R_ModernGLExecutor_RestoreLegacyStateInvariants();
 }
 
 static bool R_ModernGLExecutor_ComposeVisibleSceneToTarget(
@@ -9370,6 +9445,19 @@ bool RendererModernVisible_RunSelfTest( void ) {
 		common->Printf( "RendererModernVisible self-test failed: graph composition resources missing\n" );
 		return false;
 	}
+
+	// the global plans built below hold pointers into this stack frame and
+	// FinalizePassOwnership arms skipLegacy slots for a frame that never
+	// existed; every exit past this point must traverse the pass-ownership
+	// reset (see the rg_modernGLExecutorSkipLatched contract), after the
+	// stats-consuming validation and printfs have run
+	struct rendererModernVisibleExecutorStateReset_t {
+		~rendererModernVisibleExecutorStateReset_t() {
+			R_ModernGLExecutor_ResetPassOwnershipTable( "modern-visible-selftest-complete" );
+			R_ModernGLExecutor_InvalidatePlans();
+			R_ModernGLExecutor_ResetStats( rg_modernGLExecutorStats, r_rendererModernExecutor.GetBool() );
+		}
+	} executorStateReset;
 
 	R_MaterialResourceTable_PrepareFrame( packetFrame );
 	R_RenderGraphResources_PrepareFrame( graph );

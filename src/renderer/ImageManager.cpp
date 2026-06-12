@@ -726,8 +726,8 @@ void R_CombineCubeImages_f( const idCmdArgs &args ) {
 		}
 
 		if ( side != 6 ) {
-			for ( int i = 0 ; i < side ; side++ ) {
-				Mem_Free( pics[side] );
+			for ( int i = 0 ; i < side ; i++ ) {
+				Mem_Free( pics[i] );
 			}
 			break;
 		}

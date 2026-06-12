@@ -192,10 +192,13 @@ void VPCALL idSIMD_SSE2::MinMax( idVec3 &min, idVec3 &max, const idDrawVert * RE
 	__m128 minAcc = _mm_set1_ps( idMath::INFINITY );
 	__m128 maxAcc = _mm_set1_ps( -idMath::INFINITY );
 
+	// new value as the first operand: MINPS/MAXPS return the second operand
+	// when either is NaN, which matches the NaN-ignoring "if ( v < min )"
+	// semantics of the generic version
 	for ( int i = 0; i < count; i++ ) {
 		__m128 v = _mm_loadu_ps( src[i].xyz.ToFloatPtr() );
-		minAcc = _mm_min_ps( minAcc, v );
-		maxAcc = _mm_max_ps( maxAcc, v );
+		minAcc = _mm_min_ps( v, minAcc );
+		maxAcc = _mm_max_ps( v, maxAcc );
 	}
 
 	SSE2_StoreVec3( min.ToFloatPtr(), minAcc );
@@ -213,8 +216,8 @@ void VPCALL idSIMD_SSE2::MinMax( idVec3 &min, idVec3 &max, const idDrawVert * RE
 
 	for ( int i = 0; i < count; i++ ) {
 		__m128 v = _mm_loadu_ps( src[indexes[i]].xyz.ToFloatPtr() );
-		minAcc = _mm_min_ps( minAcc, v );
-		maxAcc = _mm_max_ps( maxAcc, v );
+		minAcc = _mm_min_ps( v, minAcc );
+		maxAcc = _mm_max_ps( v, maxAcc );
 	}
 
 	SSE2_StoreVec3( min.ToFloatPtr(), minAcc );

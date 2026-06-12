@@ -928,6 +928,9 @@ public:
 	int						viewCount;		// incremented every view (twice a scene if subviewed)
 											// and every R_MarkFragments call
 	int						videoRestartCount; // incremented after successful vid_restart operations
+	int						glContextGeneration; // incremented only when the GL context is destroyed and recreated
+												 // (full restart); partial restarts keep the context and its
+												 // objects alive, so generation-stamped GL handles stay valid
 
 	int						staticAllocCount;	// running total of bytes allocated
 
@@ -1500,6 +1503,11 @@ bool R_CheckExtension( char *name );
 // leave the wrong texture bound
 void R_BindTextureForDirectAccess( unsigned int target, int texnum );
 
+// deletes the lazily created CopyFramebuffer/CopyDepthbuffer scratch FBOs;
+// must be called before GLimp_Shutdown while the old context is still current
+// so the names cannot alias FBOs of a recreated context after vid_restart
+void R_PurgeFramebufferCopyFBOs( void );
+
 // true when geometry owned by this entity def may allocate a STATIC index
 // VBO (r_useIndexBuffers 1 limits that to static models; per-frame
 // regenerated dynamic-model tris re-upload every frame, which costs more
@@ -1708,6 +1716,11 @@ RENDER
 void RB_EnterWeaponDepthHack();
 void RB_EnterModelDepthHack( float depth );
 void RB_LeaveDepthHack();
+
+// view projection with the model/weapon depth-hack transforms applied
+// (modelDepthHack wins; the weapon hack honors the cl_gunfov override);
+// shared so the fixed-function and packed-MD5R env-param paths cannot diverge
+void R_GetDepthHackProjectionMatrix( const viewDef_t *viewDef, bool weaponDepthHack, float modelDepthHack, float matrix[16] );
 void RB_DrawElementsImmediate( const srfTriangles_t *tri );
 void RB_RenderTriangleSurface( const srfTriangles_t *tri );
 void RB_T_RenderTriangleSurface( const drawSurf_t *surf );

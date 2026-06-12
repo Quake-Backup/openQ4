@@ -2592,6 +2592,69 @@ void TestUntransformJoints( void ) {
 
 /*
 ============
+TestMultiplyJoints
+============
+*/
+void TestMultiplyJoints( void ) {
+	int i;
+	TIME_TYPE start, end, bestClocksGeneric, bestClocksSIMD;
+	ALIGN16( idJointMat joints1[COUNT] );
+	ALIGN16( idJointMat joints2[COUNT] );
+	ALIGN16( idJointMat result1[COUNT] );
+	ALIGN16( idJointMat result2[COUNT] );
+	const char *result;
+
+	idRandom srnd( RANDOM_SEED );
+
+	for ( i = 0; i < COUNT; i++ ) {
+		idAngles angles;
+		angles[0] = srnd.CRandomFloat() * 180.0f;
+		angles[1] = srnd.CRandomFloat() * 180.0f;
+		angles[2] = srnd.CRandomFloat() * 180.0f;
+		joints1[i].SetRotation( angles.ToMat3() );
+		idVec3 v;
+		v[0] = srnd.CRandomFloat() * 2.0f;
+		v[1] = srnd.CRandomFloat() * 2.0f;
+		v[2] = srnd.CRandomFloat() * 2.0f;
+		joints1[i].SetTranslation( v );
+		angles[0] = srnd.CRandomFloat() * 180.0f;
+		angles[1] = srnd.CRandomFloat() * 180.0f;
+		angles[2] = srnd.CRandomFloat() * 180.0f;
+		joints2[i].SetRotation( angles.ToMat3() );
+		v[0] = srnd.CRandomFloat() * 2.0f;
+		v[1] = srnd.CRandomFloat() * 2.0f;
+		v[2] = srnd.CRandomFloat() * 2.0f;
+		joints2[i].SetTranslation( v );
+	}
+
+	bestClocksGeneric = 0;
+	for ( i = 0; i < NUMTESTS; i++ ) {
+		StartRecordTime( start );
+		p_generic->MultiplyJoints( result1, joints1, joints2, COUNT );
+		StopRecordTime( end );
+		GetBest( start, end, bestClocksGeneric );
+	}
+	PrintClocks( "generic->MultiplyJoints()", COUNT, bestClocksGeneric );
+
+	bestClocksSIMD = 0;
+	for ( i = 0; i < NUMTESTS; i++ ) {
+		StartRecordTime( start );
+		p_simd->MultiplyJoints( result2, joints1, joints2, COUNT );
+		StopRecordTime( end );
+		GetBest( start, end, bestClocksSIMD );
+	}
+
+	for ( i = 0; i < COUNT; i++ ) {
+		if ( !result1[i].Compare( result2[i], 1e-4f ) ) {
+			break;
+		}
+	}
+	result = ( i >= COUNT ) ? "ok" : S_COLOR_RED"X";
+	PrintClocks( va( "   simd->MultiplyJoints() %s", result ), COUNT, bestClocksSIMD, bestClocksGeneric );
+}
+
+/*
+============
 TestTransformVertsNew
 ============
 */
@@ -2728,6 +2791,73 @@ void TestTransformVertsNew( void ) {
 	}
 	result = ( i >= NUMVERTS && bounds1.Compare( bounds2, 1e-4f ) ) ? "ok" : S_COLOR_RED"X";
 	PrintClocks( va( "   simd->TransformVertsAndTangentsFast() %s", result ), NUMVERTS, bestClocksSIMD, bestClocksGeneric );
+}
+
+/*
+============
+TestTransformVerts
+============
+*/
+void TestTransformVerts( void ) {
+	int i;
+	TIME_TYPE start, end, bestClocksGeneric, bestClocksSIMD;
+	ALIGN16( idDrawVert drawVerts1[NUMVERTS] );
+	ALIGN16( idDrawVert drawVerts2[NUMVERTS] );
+	ALIGN16( idJointMat joints[NUMJOINTS] );
+	ALIGN16( idVec4 weights[NUMWEIGHTS] );
+	ALIGN16( int weightIndex[NUMWEIGHTS*2] );
+	const char *result;
+
+	idRandom srnd( RANDOM_SEED );
+
+	for ( i = 0; i < NUMJOINTS; i++ ) {
+		idAngles angles;
+		angles[0] = srnd.CRandomFloat() * 180.0f;
+		angles[1] = srnd.CRandomFloat() * 180.0f;
+		angles[2] = srnd.CRandomFloat() * 180.0f;
+		joints[i].SetRotation( angles.ToMat3() );
+		idVec3 v;
+		v[0] = srnd.CRandomFloat() * 2.0f;
+		v[1] = srnd.CRandomFloat() * 2.0f;
+		v[2] = srnd.CRandomFloat() * 2.0f;
+		joints[i].SetTranslation( v );
+	}
+
+	for ( i = 0; i < NUMWEIGHTS; i++ ) {
+		weights[i][0] = srnd.CRandomFloat() * 2.0f;
+		weights[i][1] = srnd.CRandomFloat() * 2.0f;
+		weights[i][2] = srnd.CRandomFloat() * 2.0f;
+		weights[i][3] = srnd.CRandomFloat();
+		// even entries are BYTE offsets into the joint array, odd entries are
+		// non-zero only for the last weight of a vertex
+		weightIndex[i*2+0] = idMath::ClampInt( 0, NUMJOINTS-1, i * NUMJOINTS / NUMWEIGHTS ) * JOINTMAT_SIZE;
+		weightIndex[i*2+1] = ( ( i % NUMWEIGHTSPERVERT ) == NUMWEIGHTSPERVERT - 1 );
+	}
+
+	bestClocksGeneric = 0;
+	for ( i = 0; i < NUMTESTS; i++ ) {
+		StartRecordTime( start );
+		p_generic->TransformVerts( drawVerts1, NUMVERTS, joints, weights, weightIndex, NUMWEIGHTS );
+		StopRecordTime( end );
+		GetBest( start, end, bestClocksGeneric );
+	}
+	PrintClocks( "generic->TransformVerts()", NUMVERTS, bestClocksGeneric );
+
+	bestClocksSIMD = 0;
+	for ( i = 0; i < NUMTESTS; i++ ) {
+		StartRecordTime( start );
+		p_simd->TransformVerts( drawVerts2, NUMVERTS, joints, weights, weightIndex, NUMWEIGHTS );
+		StopRecordTime( end );
+		GetBest( start, end, bestClocksSIMD );
+	}
+
+	for ( i = 0; i < NUMVERTS; i++ ) {
+		if ( !drawVerts1[i].xyz.Compare( drawVerts2[i].xyz, 1e-4f ) ) {
+			break;
+		}
+	}
+	result = ( i >= NUMVERTS ) ? "ok" : S_COLOR_RED"X";
+	PrintClocks( va( "   simd->TransformVerts() %s", result ), NUMVERTS, bestClocksSIMD, bestClocksGeneric );
 }
 
 /*
@@ -4280,6 +4410,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 
 	idLib::common->Printf("====================================\n" );
 */
+	TestDot();
 	TestCompare();
 	TestMinMax();
 	TestBlendJoints();
@@ -4287,8 +4418,11 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	TestConvertJointMatsToJointQuats();
 	TestTransformJoints();
 	TestUntransformJoints();
+	TestMultiplyJoints();
 	TestTransformVertsNew();
+	TestTransformVerts();
 	TestDeriveTriPlanes();
+	TestCreateShadowCache();
 /*	TestTracePointCull();
 	TestDecalPointCull();
 	TestOverlayPointCull();

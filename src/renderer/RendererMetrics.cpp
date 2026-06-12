@@ -805,8 +805,15 @@ static void R_RendererMetrics_PollGpuTimerFrame( rendererGpuTimerFrame_t &frame 
 }
 
 void R_RendererMetrics_BeginFrame( int frameCount ) {
+	// The memset must stay ahead of the gate so Add*/Record* writes from
+	// disabled frames cannot leak into the first enabled frame; EndFrame is the
+	// only consumer and is gated on the same cvar, so the *_Latest snapshot
+	// rebuild below is dead work while metrics are off.
 	memset( &rg_rendererMetrics, 0, sizeof( rg_rendererMetrics ) );
 	rg_rendererMetrics.frameCount = frameCount;
+	if ( r_rendererMetrics.GetInteger() <= 0 ) {
+		return;
+	}
 	rg_rendererMetrics.gpuTimersValid = rg_gpuTimerLatest.valid;
 	rg_rendererMetrics.gpuTimerDroppedQueries = rg_gpuTimerLatest.droppedQueries;
 	for ( int i = 0; i < RENDERER_GPU_TIMER_COUNT; ++i ) {

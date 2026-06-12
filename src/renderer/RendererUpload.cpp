@@ -75,6 +75,8 @@ void idBufferAllocator::DrainPool( void ) {
 	if ( deletedAny ) {
 		// deleting bound buffers implicitly resets the GL binding to zero
 		idVertexCache::InvalidateBufferBindings();
+		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload pool drain" );
+		R_GLStateCache_InvalidateBufferBinding( GL_ELEMENT_ARRAY_BUFFER, "renderer upload pool drain" );
 	}
 	pooledBytes = 0;
 }
@@ -153,8 +155,12 @@ void idBufferAllocator::FreeStaticBuffer( unsigned int &vbo, int bytes, bool ind
 		vbo = 0;
 	} else {
 		glDeleteBuffersARB( 1, &vbo );
-		// deleting a bound buffer implicitly resets the GL binding to zero
+		// deleting a bound buffer implicitly unbinds the name from EVERY
+		// target it is bound to, so invalidate both modern shadows (matches
+		// DrainPool; the legacy call already covers both legacy shadows)
 		idVertexCache::InvalidateBufferBindings();
+		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload static buffer free" );
+		R_GLStateCache_InvalidateBufferBinding( GL_ELEMENT_ARRAY_BUFFER, "renderer upload static buffer free" );
 		vbo = 0;
 	}
 
@@ -436,7 +442,12 @@ void idUploadManager::EndFrame( void ) {
 	FenceCurrentFrame();
 	stats.frameRingUsedBytes = ring.Used();
 	stats.frameRingHighWaterBytes = ring.HighWater();
-	stats.frameOverflowBytes += ring.OverflowBytes();
+	// ring overflow is already accumulated per-allocation into
+	// stats.frameOverflowBytes in AllocFrameTemp (which also counts the
+	// frame.vbo==0 bytes the ring counter misses), so adding
+	// ring.OverflowBytes() here would double-count regardless of read order;
+	// the per-allocation site must stay the canonical counter because the
+	// metrics are read before EndFrame runs
 	UpdateAllocatorStats();
 	legacy.EndFrame();
 	ring.EndFrame();
@@ -589,6 +600,9 @@ bool idUploadManager::CreateFrameBuffers( uploadPath_t requestedPath ) {
 }
 
 void idUploadManager::ShutdownFrameBuffers( void ) {
+	// the shadow may be stale at teardown (the modern executor binds the real
+	// GL_ARRAY_BUFFER behind it), so force the unmap binds below to be real
+	idVertexCache::InvalidateBufferBindings();
 	for ( int i = 0; i < RENDERER_UPLOAD_MAX_FRAME_BUFFERS; ++i ) {
 		if ( frameBuffers[i].fence != NULL && glDeleteSync != NULL ) {
 			glDeleteSync( frameBuffers[i].fence );

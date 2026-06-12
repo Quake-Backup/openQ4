@@ -45,6 +45,12 @@ backEndState_t	backEnd;
 // re-armed whenever the modern side pipeline records real stats
 static bool rg_modernStatMirrorsZeroed = false;
 
+// ~1 MB of packet/record arrays: static storage (like rg_frontEndScenePacketFrame)
+// keeps it out of the backend stack frame and its per-call __chkstk probe.
+// R_ScenePackets_BuildLegacyCommandStream Clear()s it before each use; only valid
+// while a single backend executes at a time.
+static idScenePacketFrame rg_backendScenePacketFrame;
+
 static ID_INLINE GLint R_SafeStencilClearValue() {
 	const int stencilBits = idMath::ClampInt( 1, 30, ( glConfig.stencilBits > 0 ) ? glConfig.stencilBits : 8 );
 	return 1 << ( stencilBits - 1 );
@@ -643,7 +649,15 @@ static void RB_ResolveMSAA(const void* data) {
 
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
 	glDrawBuffer(GL_COLOR_ATTACHMENT0);
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	// restore the tracked render target so backEnd.renderTexture stays in
+	// sync with the bound framebuffer
+	if (backEnd.renderTexture) {
+		backEnd.renderTexture->MakeCurrent();
+	}
+	else {
+		idRenderTexture::BindNull();
+	}
 }
 
 /*
@@ -701,16 +715,18 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	}
 
 	R_GLStateCache_BeginFrame();
+	// The legacy backend issues raw GL between the last modern pass of the previous
+	// frame and this frame's modern submits; cached state from last frame is stale.
+	R_GLStateCache_InvalidateAll( "backend frame begin" );
 
 	if ( R_ScenePackets_SidePipelineRequired() ) {
 		const int packetBuildStart = Sys_Milliseconds();
-		idScenePacketFrame backendScenePackets;
 		const idScenePacketFrame *scenePackets = NULL;
 		if ( R_ScenePackets_FrontEndFrameAvailable() ) {
 			scenePackets = &R_ScenePackets_FrontEndFrame();
 		} else {
-			R_ScenePackets_BuildLegacyCommandStream( cmds, backendScenePackets );
-			scenePackets = &backendScenePackets;
+			R_ScenePackets_BuildLegacyCommandStream( cmds, rg_backendScenePacketFrame );
+			scenePackets = &rg_backendScenePacketFrame;
 		}
 		R_RendererMetrics_AddPacketBuildMsec( Sys_Milliseconds() - packetBuildStart );
 		R_ScenePackets_LogIfVerbose( *scenePackets );
@@ -865,8 +881,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	}
 
 	// go back to the default texture so the editor doesn't mess up a bound image
-	glBindTexture( GL_TEXTURE_2D, 0 );
-	backEnd.glState.tmu[0].current2DMap = -1;
+	GL_SelectTexture( 0 );
+	R_BindTextureForDirectAccess( GL_TEXTURE_2D, 0 );
 
 	// stop rendering on this thread
 	R_RendererMetrics_EndGpuBackendFrame();

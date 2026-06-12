@@ -512,7 +512,7 @@ void RB_ShowOverdraw( void ) {
 		}
 	}
 
-	drawSurf_t **newDrawSurfs = (drawSurf_t **)R_FrameAlloc( numDrawSurfs + interactions * sizeof( newDrawSurfs[0] ) );
+	drawSurf_t **newDrawSurfs = (drawSurf_t **)R_FrameAlloc( ( numDrawSurfs + interactions ) * sizeof( newDrawSurfs[0] ) );
 
 	for ( i = 0; i < numDrawSurfs; i++ ) {
 		surf = drawSurfs[i];
@@ -2310,7 +2310,7 @@ float RB_DrawTextLength( const char *text, float scale, int len ) {
 		}
 		for ( i = 0; i < len; i++ ) {
 			charIndex = text[i] - 32;
-			if ( charIndex < 0 || charIndex > NUM_SIMPLEX_CHARS ) {
+			if ( charIndex < 0 || charIndex >= NUM_SIMPLEX_CHARS ) {
 				continue;
 			}
 			num = simplex[charIndex][0] * 2;
@@ -2381,7 +2381,7 @@ static void RB_DrawText( const char *text, const idVec3 &origin, float scale, co
 			}
 
 			charIndex = text[i] - 32;
-			if ( charIndex < 0 || charIndex > NUM_SIMPLEX_CHARS ) {
+			if ( charIndex < 0 || charIndex >= NUM_SIMPLEX_CHARS ) {
 				continue;
 			}
 			num = simplex[charIndex][0] * 2;

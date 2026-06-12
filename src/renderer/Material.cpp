@@ -355,7 +355,12 @@ void idMaterial::FreeData() {
 				stages[i].texture.cinematic = NULL;
 			}
 			if ( stages[i].newStage != NULL ) {
-				if ( stages[i].newStage->glslProgramObject != 0 ) {
+				// the handles are only valid in the GL context generation that compiled
+				// them; after a full restart they may alias live objects in the new
+				// context (partial restarts keep the context, so the generation matches)
+				if ( stages[i].newStage->glslProgramObject != 0
+						&& stages[i].newStage->glslProgramGeneration == tr.glContextGeneration
+						&& glConfig.isInitialized ) {
 					if ( stages[i].newStage->glslVertexShaderObject != 0 ) {
 						glDetachObjectARB(
 							(GLhandleARB)stages[i].newStage->glslProgramObject,
@@ -1814,6 +1819,10 @@ void idMaterial::ParseStage( idLexer &src, const textureRepeat_t trpDefault ) {
 	if ( numStages >= MAX_SHADER_STAGES ) {
 		SetMaterialFlag( MF_DEFAULTED );
 		common->Warning( "material '%s' exceeded %i stages", GetName(), MAX_SHADER_STAGES );
+		// bail before pd->parseStages[numStages] writes past the array;
+		// the caller already consumed the opening brace
+		src.SkipBracedSection( false );
+		return;
 	}
 
 	tf = TF_DEFAULT;

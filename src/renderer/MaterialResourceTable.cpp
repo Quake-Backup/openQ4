@@ -274,10 +274,10 @@ static materialResourceSortGroup_t R_MaterialResourceTable_SortGroupForMaterial(
 	if ( sort >= SS_POST_PROCESS ) {
 		return MATERIAL_RESOURCE_SORT_POST_PROCESS;
 	}
-	if ( sort >= SS_DECAL && sort < SS_MEDIUM ) {
+	if ( sort >= SS_DECAL && sort < SS_FAR ) {
 		return MATERIAL_RESOURCE_SORT_DECAL;
 	}
-	if ( sort >= SS_MEDIUM ) {
+	if ( sort >= SS_FAR ) {
 		return MATERIAL_RESOURCE_SORT_TRANSLUCENT;
 	}
 	if ( sort >= SS_OPAQUE ) {
@@ -966,7 +966,9 @@ static void R_MaterialResourceTable_ResetFrameStats( void ) {
 	const bool bindlessSupported = rg_materialResourceTable.stats.bindlessSupported;
 	const bool textureArraysSupported = rg_materialResourceTable.stats.textureArraysSupported;
 	const bool textureViewsSupported = rg_materialResourceTable.stats.textureViewsSupported;
-	memset( rg_materialResourceTable.records, 0, sizeof( rg_materialResourceTable.records ) );
+	// records are not cleared wholesale (~2.3 MB): AddRecordFromSource memsets each
+	// record before use, and every reader is bounded by stats.records or materialHash,
+	// so entries past stats.records hold stale prior-frame data
 	memset( rg_materialResourceTable.textureArrayTable, 0, sizeof( rg_materialResourceTable.textureArrayTable ) );
 	memset( rg_materialResourceTable.materialHash, 0, sizeof( rg_materialResourceTable.materialHash ) );
 	rg_materialResourceTable.textureArrayTableCount = 0;

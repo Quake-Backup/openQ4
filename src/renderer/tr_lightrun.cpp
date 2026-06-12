@@ -502,8 +502,8 @@ void R_RenderLightFrustum( const renderLight_t &renderLight, idPlane lightFrustu
 	fakeLight.parms = renderLight;
 
 	R_DeriveLightData( &fakeLight );
-	
-	R_FreeStaticTriSurf( fakeLight.frustumTris );
+
+	R_FreeLightDefFrustum( &fakeLight );
 
 	for ( int i = 0 ; i < 6 ; i++ ) {
 		lightFrustum[i] = fakeLight.frustum[i];

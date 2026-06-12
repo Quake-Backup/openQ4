@@ -66,6 +66,21 @@ typedef struct portalStack_s {
 } portalStack_t;
 
 
+// RenderPortalFades runs in the backend, after later subview floods and
+// entity updates have advanced tr.viewCount past this view's area stamps,
+// so the flooded areas are snapshotted per view at frontend time
+typedef struct portalFadeView_s {
+	const viewDef_t *	viewDef;
+	const bool *		areaVisible;	// in frame temporary memory, numPortalAreas entries
+} portalFadeView_t;
+
+const int MAX_PORTAL_FADE_VIEWS = 64;
+
+static portalFadeView_t	portalFadeViews[MAX_PORTAL_FADE_VIEWS];
+static int				numPortalFadeViews;
+static int				portalFadeViewFrameCount = -1;
+
+
 //====================================================================
 
 
@@ -160,6 +175,18 @@ idRenderWorldLocal::RenderPortalFades
 ===================
 */
 void idRenderWorldLocal::RenderPortalFades( void ) {
+	// use the visibility snapshot captured for this view at frontend time
+	const bool *areaVisible = NULL;
+	for ( int i = 0; i < numPortalFadeViews; i++ ) {
+		if ( portalFadeViews[i].viewDef == backEnd.viewDef ) {
+			areaVisible = portalFadeViews[i].areaVisible;
+			break;
+		}
+	}
+	if ( areaVisible == NULL ) {
+		return;
+	}
+
 	backEnd.currentSpace = &backEnd.viewDef->worldSpace;
 	glLoadMatrixf( backEnd.viewDef->worldSpace.modelViewMatrix );
 
@@ -175,7 +202,7 @@ void idRenderWorldLocal::RenderPortalFades( void ) {
 
 	for ( int areaIndex = 0; areaIndex < numPortalAreas; areaIndex++ ) {
 		portalArea_t *area = &portalAreas[areaIndex];
-		if ( area->viewCount != tr.viewCount ) {
+		if ( !areaVisible[areaIndex] ) {
 			continue;
 		}
 
@@ -1069,6 +1096,23 @@ void idRenderWorldLocal::FindViewLightsAndEntities( void ) {
 			AddAreaEntityRefs( i, &ps );
 		}
 	}
+
+	// snapshot the flooded areas for RenderPortalFades, which runs in the
+	// backend after later subview floods and entity updates have advanced
+	// tr.viewCount past the stamps made above
+	if ( portalFadeViewFrameCount != tr.frameCount ) {
+		portalFadeViewFrameCount = tr.frameCount;
+		numPortalFadeViews = 0;
+	}
+	if ( numPortalFadeViews < MAX_PORTAL_FADE_VIEWS && numPortalAreas > 0 ) {
+		bool *areaVisible = (bool *)R_FrameAlloc( numPortalAreas * sizeof( areaVisible[0] ) );
+		for ( int i = 0; i < numPortalAreas; i++ ) {
+			areaVisible[i] = ( portalAreas[i].viewCount == tr.viewCount );
+		}
+		portalFadeViews[numPortalFadeViews].viewDef = tr.viewDef;
+		portalFadeViews[numPortalFadeViews].areaVisible = areaVisible;
+		numPortalFadeViews++;
+	}
 }
 
 /*
@@ -1138,7 +1182,7 @@ bool	idRenderWorldLocal::AreasAreConnected( int areaNum1, int areaNum2, portalCo
 	if ( areaNum1 == -1 || areaNum2 == -1 ) {
 		return false;
 	}
-	if ( areaNum1 > numPortalAreas || areaNum2 > numPortalAreas || areaNum1 < 0 || areaNum2 < 0 ) {
+	if ( areaNum1 >= numPortalAreas || areaNum2 >= numPortalAreas || areaNum1 < 0 || areaNum2 < 0 ) {
 		common->Error( "idRenderWorldLocal::AreAreasConnected: bad parms: %i, %i", areaNum1, areaNum2 );
 	}
 

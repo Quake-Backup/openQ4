@@ -39,6 +39,10 @@ typedef struct {
 	char	mapname[256];
 } demoHeader_t;
 
+// generous sanity bound for joint counts read from demo files, keeping
+// numJoints * sizeof( idJointMat ) within the int parameter of Mem_Alloc16
+const int DEMO_MAX_ENTITY_JOINTS = 65536;
+
 namespace {
 
 void R_FreeRenderDemoDecalChain( idRenderModelDecal *decal ) {
@@ -260,6 +264,8 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		readDemo->ReadInt( header.sizeofRenderLight );
 		for ( int i = 0; i < 256; i++ )
 			readDemo->ReadChar( header.mapname[i] );
+		// a corrupt or truncated demo may not include a terminator
+		header.mapname[sizeof( header.mapname ) - 1] = '\0';
 		// the internal version value got replaced by DS_VERSION at toplevel
 		if ( header.version < 4 || header.version > OPENQ4_RENDERDEMO_CURRENT_VERSION ) {
 				common->Error( "Demo version mismatch.\n" );
@@ -424,6 +430,7 @@ void	idRenderWorldLocal::WriteLoadMap() {
 	session->writeDemo->WriteInt( DC_LOADMAP );
 
 	demoHeader_t	header;
+	memset( &header, 0, sizeof( header ) );
 	strncpy( header.mapname, mapName.c_str(), sizeof( header.mapname ) - 1 );
 	header.version = OPENQ4_RENDERDEMO_CURRENT_VERSION;
 	header.sizeofRenderEntity = sizeof( renderEntity_t );
@@ -989,6 +996,9 @@ void	idRenderWorldLocal::ReadRenderEntity() {
 		hasRemoteRenderView = false;
 	}
 	session->readDemo->ReadInt( ent.numJoints );
+	if ( ent.numJoints < 0 || ent.numJoints > DEMO_MAX_ENTITY_JOINTS ) {
+		common->Error( "ReadRenderEntity: bad numJoints %i", ent.numJoints );
+	}
 	if ( session->renderdemoVersion < OPENQ4_RENDERDEMO_POINTER_FREE_VERSION ) {
 		session->readDemo->ReadInt( (int&)ent.joints );
 	}
