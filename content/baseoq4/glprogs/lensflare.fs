@@ -4,26 +4,36 @@ uniform vec2 viewportTexScale;
 uniform vec2 lightCenterUV;
 uniform vec4 lightColor;
 uniform float lightDepth;
+uniform float depthBias;
 uniform float occlusionRadiusPixels;
 uniform vec2 flareAxis;
 uniform float elementKind;
 uniform vec4 elementParams;
 
 float SampleDepth( vec2 uv ) {
-	vec2 clampedUv = clamp( uv, vec2( 0.0, 0.0 ), viewportTexScale );
+	// Inset by half a texel so nearest filtering never fetches outside the
+	// viewport region when the depth texture is larger than the viewport.
+	vec2 maxUv = viewportTexScale - 0.5 * invDepthTexSize;
+	vec2 clampedUv = clamp( uv, vec2( 0.0, 0.0 ), maxUv );
 	return texture2D( DepthBuffer, clampedUv ).r;
 }
 
 float CompareDepth( float sceneDepth ) {
-	float bias = 0.0015 + occlusionRadiusPixels * 0.00005;
-	return smoothstep( lightDepth - bias, lightDepth + bias * 2.0, sceneDepth );
+	// depthBias is computed per light on the CPU from a world-space
+	// tolerance, so the comparison stays meaningful across the non-linear
+	// depth range.
+	return smoothstep( lightDepth - depthBias, lightDepth + depthBias * 2.0, sceneDepth );
 }
 
-float ComputeVisibility() {
-	vec2 axis = normalize( flareAxis );
+vec2 SafeNormalizedAxis( vec2 axis ) {
 	if ( dot( axis, axis ) < 0.0001 ) {
 		axis = vec2( 1.0, 0.0 );
 	}
+	return normalize( axis );
+}
+
+float ComputeVisibility() {
+	vec2 axis = SafeNormalizedAxis( flareAxis );
 	vec2 ortho = vec2( -axis.y, axis.x );
 	float radius = max( occlusionRadiusPixels, 1.0 );
 
@@ -50,10 +60,7 @@ float RingProfile( float radius, float ringRadius, float ringWidth ) {
 
 void main() {
 	vec2 p = gl_TexCoord[1].st * 2.0 - 1.0;
-	vec2 axis = normalize( flareAxis );
-	if ( dot( axis, axis ) < 0.0001 ) {
-		axis = vec2( 1.0, 0.0 );
-	}
+	vec2 axis = SafeNormalizedAxis( flareAxis );
 	vec2 ortho = vec2( -axis.y, axis.x );
 	vec2 oriented = vec2( dot( p, axis ), dot( p, ortho ) );
 	float radius = length( p );
@@ -86,5 +93,6 @@ void main() {
 		discard;
 	}
 
-	gl_FragColor = vec4( lightColor.rgb * intensity, intensity );
+	// Additive pass: keep destination alpha untouched.
+	gl_FragColor = vec4( lightColor.rgb * intensity, 0.0 );
 }

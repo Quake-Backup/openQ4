@@ -4672,6 +4672,7 @@ enum rbLensFlareUniformIndex_t {
 	RB_LENSFLARE_UNIFORM_LIGHT_CENTER_UV,
 	RB_LENSFLARE_UNIFORM_LIGHT_COLOR,
 	RB_LENSFLARE_UNIFORM_LIGHT_DEPTH,
+	RB_LENSFLARE_UNIFORM_DEPTH_BIAS,
 	RB_LENSFLARE_UNIFORM_OCCLUSION_RADIUS,
 	RB_LENSFLARE_UNIFORM_FLARE_AXIS,
 	RB_LENSFLARE_UNIFORM_ELEMENT_KIND,
@@ -4691,6 +4692,7 @@ typedef struct rbLensFlareCandidate_s {
 	float	screenU;
 	float	screenV;
 	float	lightDepth;
+	float	occlusionDepthBias;
 	float	sourceRadiusPixels;
 	float	coronaRadiusPixels;
 	idVec2	axis;
@@ -4712,6 +4714,7 @@ static void RB_InitLensFlareStage( void ) {
 		{ "lightCenterUV", 2 },
 		{ "lightColor", 4 },
 		{ "lightDepth", 1 },
+		{ "depthBias", 1 },
 		{ "occlusionRadiusPixels", 1 },
 		{ "flareAxis", 2 },
 		{ "elementKind", 1 },
@@ -4826,7 +4829,9 @@ static bool RB_EvaluateLensFlareLightColor( const viewLight_t *vLight, idVec4 &l
 	if ( vLight == NULL || vLight->lightShader == NULL || vLight->shaderRegisters == NULL ) {
 		return false;
 	}
-	if ( vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() ) {
+	// Fog and blend lights are volume effects, and ambient lights are area
+	// fills; none of them have a meaningful point source to flare from.
+	if ( vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() || vLight->lightShader->IsAmbientLight() ) {
 		return false;
 	}
 
@@ -4931,6 +4936,14 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 			continue;
 		}
 
+		// Lights essentially attached to the camera (weapon glows, muzzle
+		// lights) have unstable projections and meaningless occlusion tests.
+		idVec3 toEye = backEnd.viewDef->renderView.vieworg - vLight->globalLightOrigin;
+		const float eyeDistance = toEye.Normalize();
+		if ( eyeDistance < 24.0f ) {
+			continue;
+		}
+
 		idVec4 lightColor;
 		if ( !RB_EvaluateLensFlareLightColor( vLight, lightColor ) ) {
 			continue;
@@ -4948,32 +4961,69 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 			continue;
 		}
 
+		// Discrete flares come from compact sources. When the projected light
+		// volume approaches screen height the light reads as area glow, not a
+		// point highlight, so fade the flare out and drop it entirely once
+		// the volume dominates the view.
+		const float coverage = projectedRadius / static_cast<float>( Max( 1, viewportHeight ) );
+		const float compactness = idMath::ClampFloat( 0.0f, 1.0f, ( 1.2f - coverage ) / 0.7f );
+		if ( compactness <= 0.0f ) {
+			continue;
+		}
+
+		// Convert a world-space occlusion tolerance into an exact depth-buffer
+		// bias for this light by re-projecting the origin pulled toward the
+		// eye. A constant window-space bias is wrong under the non-linear
+		// depth distribution: it lets distant flares leak through walls and
+		// makes nearby fixture geometry occlude its own light.
+		float occlusionDepthBias = 0.0008f;
+		{
+			const float toleranceWorld = Min( Max( 8.0f, eyeDistance * 0.02f ), eyeDistance * 0.5f );
+			const idVec3 pulledPoint = vLight->globalLightOrigin + toEye * toleranceWorld;
+			float pulledX = 0.0f;
+			float pulledY = 0.0f;
+			float pulledDepth = 0.0f;
+			if ( RB_ProjectLensFlarePoint( pulledPoint, viewportWidth, viewportHeight, pulledX, pulledY, pulledDepth ) ) {
+				occlusionDepthBias = Max( 0.00002f, lightDepth - pulledDepth );
+			}
+		}
+
 		const float brightness = Max( lightColor[0], Max( lightColor[1], lightColor[2] ) );
 		const float borderDistanceX = Min( screenX, viewportWidth - screenX );
 		const float borderDistanceY = Min( screenY, viewportHeight - screenY );
 		const float borderFade = idMath::ClampFloat( 0.25f, 1.0f, Min( borderDistanceX, borderDistanceY ) / 96.0f );
+		const float intensityFade = borderFade * compactness;
 
 		rbLensFlareCandidate_t candidate;
 		memset( &candidate, 0, sizeof( candidate ) );
-		candidate.score = brightness * projectedRadius * borderFade;
+		candidate.score = brightness * projectedRadius * intensityFade;
 		candidate.screenX = screenX;
 		candidate.screenY = screenY;
+		// The captured depth occupies [0, viewport/depthTex] of the texture
+		// with the viewport bottom at v = 0, so flip within the viewport
+		// extent rather than the full texture extent.
 		candidate.screenU = idMath::ClampFloat( 0.0f, static_cast<float>( viewportWidth ) / depthTextureWidth, screenX / depthTextureWidth );
-		candidate.screenV = idMath::ClampFloat( 0.0f, static_cast<float>( viewportHeight ) / depthTextureHeight, 1.0f - ( screenY / depthTextureHeight ) );
+		candidate.screenV = idMath::ClampFloat( 0.0f, static_cast<float>( viewportHeight ) / depthTextureHeight, ( viewportHeight - screenY ) / depthTextureHeight );
 		candidate.lightDepth = lightDepth;
+		candidate.occlusionDepthBias = occlusionDepthBias;
 		candidate.sourceRadiusPixels = idMath::ClampFloat( 2.0f, 12.0f, projectedRadius * 0.18f );
-		candidate.coronaRadiusPixels = idMath::ClampFloat( 18.0f, 160.0f, projectedRadius * 0.85f + 14.0f );
+		// Sub-linear growth keeps large-volume lights from saturating the
+		// screen; the projected volume radius greatly overstates emitter size.
+		candidate.coronaRadiusPixels = idMath::ClampFloat( 14.0f, 96.0f, 10.0f + idMath::Sqrt( projectedRadius ) * 4.0f );
 		candidate.axis.Set( screenCenterX - screenX, screenCenterY - screenY );
 		if ( candidate.axis.LengthSqr() <= 0.0001f ) {
 			candidate.axis.Set( 1.0f, 0.0f );
 		} else {
 			candidate.axis.Normalize();
 		}
+		// Bound the peak channel while preserving hue; flares are a subtle
+		// overlay and bloom already lifts anything bright.
+		const float peak = Max( lightColor[0], Max( lightColor[1], lightColor[2] ) );
+		if ( peak > 1.5f ) {
+			lightColor *= 1.5f / peak;
+		}
 		candidate.color = lightColor;
-		candidate.color[0] = Min( candidate.color[0], 4.0f );
-		candidate.color[1] = Min( candidate.color[1], 4.0f );
-		candidate.color[2] = Min( candidate.color[2], 4.0f );
-		candidate.color *= borderFade;
+		candidate.color *= intensityFade;
 		candidate.color[3] = 1.0f;
 
 		RB_InsertLensFlareCandidate( candidates, candidateCount, candidate );
@@ -4982,9 +5032,9 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 	return candidateCount;
 }
 
-static bool RB_DrawLensFlareQuad( const rbLensFlareCandidate_t &candidate, int viewportWidth, int viewportHeight, int depthTextureWidth,
-		int depthTextureHeight, float centerX, float centerY, float halfWidth, float halfHeight, const idVec3 &colorScale,
-		float elementKind, const idVec4 &elementParams ) {
+static bool RB_DrawLensFlareQuad( const rbLensFlareCandidate_t &candidate, int viewportWidth, int viewportHeight,
+		float centerX, float centerY, float halfWidth, float halfHeight, const idVec3 &colorScale,
+		const idVec2 &patternAxis, float elementKind, const idVec4 &elementParams ) {
 	if ( halfWidth <= 0.0f || halfHeight <= 0.0f ) {
 		return false;
 	}
@@ -5005,7 +5055,7 @@ static bool RB_DrawLensFlareQuad( const rbLensFlareCandidate_t &candidate, int v
 		candidate.color[2] * colorScale.z,
 		1.0f
 	};
-	const GLfloat flareAxis[2] = { candidate.axis.x, candidate.axis.y };
+	const GLfloat flareAxis[2] = { patternAxis.x, patternAxis.y };
 
 	if ( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_LIGHT_CENTER_UV] >= 0 ) {
 		glUniform2fvARB( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_LIGHT_CENTER_UV], 1, lightCenterUv );
@@ -5015,6 +5065,9 @@ static bool RB_DrawLensFlareQuad( const rbLensFlareCandidate_t &candidate, int v
 	}
 	if ( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_LIGHT_DEPTH] >= 0 ) {
 		glUniform1fARB( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_LIGHT_DEPTH], candidate.lightDepth );
+	}
+	if ( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_DEPTH_BIAS] >= 0 ) {
+		glUniform1fARB( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_DEPTH_BIAS], candidate.occlusionDepthBias );
 	}
 	if ( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_OCCLUSION_RADIUS] >= 0 ) {
 		glUniform1fARB( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_OCCLUSION_RADIUS], candidate.sourceRadiusPixels );
@@ -5029,22 +5082,15 @@ static bool RB_DrawLensFlareQuad( const rbLensFlareCandidate_t &candidate, int v
 		glUniform4fvARB( rbLensFlareStage.shaderParmLocations[RB_LENSFLARE_UNIFORM_ELEMENT_PARAMS], 1, elementParams.ToFloatPtr() );
 	}
 
-	const float s1 = x1 / depthTextureWidth;
-	const float s2 = x2 / depthTextureWidth;
-	const float t1 = 1.0f - ( y1 / depthTextureHeight );
-	const float t2 = 1.0f - ( y2 / depthTextureHeight );
-
+	// The shader samples occlusion at lightCenterUV; the quad only carries
+	// its own unit-space coordinates on texture unit 1.
 	glBegin( GL_QUADS );
-	glTexCoord2f( s1, t1 );
 	glMultiTexCoord2fARB( GL_TEXTURE1, 0.0f, 0.0f );
 	glVertex2f( x1, y1 );
-	glTexCoord2f( s2, t1 );
 	glMultiTexCoord2fARB( GL_TEXTURE1, 1.0f, 0.0f );
 	glVertex2f( x2, y1 );
-	glTexCoord2f( s2, t2 );
 	glMultiTexCoord2fARB( GL_TEXTURE1, 1.0f, 1.0f );
 	glVertex2f( x2, y2 );
-	glTexCoord2f( s1, t2 );
 	glMultiTexCoord2fARB( GL_TEXTURE1, 0.0f, 1.0f );
 	glVertex2f( x1, y2 );
 	glEnd();
@@ -5132,14 +5178,14 @@ static void RB_STD_LensFlare( void ) {
 	for ( int i = 0; i < candidateCount; i++ ) {
 		const rbLensFlareCandidate_t &candidate = candidates[i];
 		const float coronaRadius = candidate.coronaRadiusPixels;
-		const idVec4 coronaParams( 4.5f, 0.58f, 0.16f, 0.85f );
-		const idVec4 haloParams( 2.2f, 0.72f, 0.14f, 0.38f );
+		const idVec4 coronaParams( 4.5f, 0.58f, 0.16f, 0.50f );
+		const idVec4 haloParams( 2.2f, 0.72f, 0.14f, 0.22f );
 		const idVec3 haloScale( 0.85f, 0.85f, 0.85f );
 
-		RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight, depthTextureWidth, depthTextureHeight,
-			candidate.screenX, candidate.screenY, coronaRadius, coronaRadius, idVec3( 1.0f, 1.0f, 1.0f ), 0.0f, coronaParams );
-		RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight, depthTextureWidth, depthTextureHeight,
-			candidate.screenX, candidate.screenY, coronaRadius * 1.55f, coronaRadius * 1.55f, haloScale, 1.0f, haloParams );
+		RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+			candidate.screenX, candidate.screenY, coronaRadius, coronaRadius, idVec3( 1.0f, 1.0f, 1.0f ), candidate.axis, 0.0f, coronaParams );
+		RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+			candidate.screenX, candidate.screenY, coronaRadius * 1.55f, coronaRadius * 1.55f, haloScale, candidate.axis, 1.0f, haloParams );
 
 		if ( lensFlareQuality >= 2 ) {
 			const idVec2 centerDelta( viewportWidth * 0.5f - candidate.screenX, viewportHeight * 0.5f - candidate.screenY );
@@ -5151,9 +5197,9 @@ static void RB_STD_LensFlare( void ) {
 				// tints here created artificial blue lighting from warm/neutral lights.
 				static const float ghostIntensityScales[3] = { 0.95f, 0.90f, 0.82f };
 				static const idVec4 ghostParams[3] = {
-					idVec4( 3.8f, 0.52f, 0.16f, 0.34f ),
-					idVec4( 4.4f, 0.48f, 0.12f, 0.27f ),
-					idVec4( 2.6f, 0.60f, 0.18f, 0.32f )
+					idVec4( 3.8f, 0.52f, 0.16f, 0.20f ),
+					idVec4( 4.4f, 0.48f, 0.12f, 0.16f ),
+					idVec4( 2.6f, 0.60f, 0.18f, 0.19f )
 				};
 
 				for ( int ghostIndex = 0; ghostIndex < 3; ghostIndex++ ) {
@@ -5165,17 +5211,20 @@ static void RB_STD_LensFlare( void ) {
 						ghostIntensityScales[ghostIndex],
 						ghostIntensityScales[ghostIndex] );
 
-					RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight, depthTextureWidth, depthTextureHeight,
-						ghostX, ghostY, ghostRadius, ghostRadius, ghostScale, 1.0f, ghostParams[ghostIndex] );
+					RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+						ghostX, ghostY, ghostRadius, ghostRadius, ghostScale, candidate.axis, 1.0f, ghostParams[ghostIndex] );
 				}
 			}
 
+			// Anamorphic streaks stay horizontal regardless of where the light
+			// sits; the pattern axis must match the wide axis of the quad or
+			// the streak gets clipped to a smudge by the thin geometry.
 			const float streakHalfWidth = coronaRadius * 4.2f;
 			const float streakHalfHeight = Max( 4.0f, coronaRadius * 0.14f );
-			const idVec4 streakParams( 1.15f, 5.5f, 4.0f, 0.24f );
+			const idVec4 streakParams( 1.15f, 5.5f, 4.0f, 0.15f );
 			const idVec3 streakScale( 0.95f, 0.95f, 0.95f );
-			RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight, depthTextureWidth, depthTextureHeight,
-				candidate.screenX, candidate.screenY, streakHalfWidth, streakHalfHeight, streakScale, 2.0f, streakParams );
+			RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+				candidate.screenX, candidate.screenY, streakHalfWidth, streakHalfHeight, streakScale, idVec2( 1.0f, 0.0f ), 2.0f, streakParams );
 		}
 	}
 
@@ -6917,7 +6966,7 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 		RB_DrawElementsWithCounters( tri );
 
 		RB_FinishStageTexturing( pStage, surf, ac );
-		
+
 		if ( pStage->vertexColor != SVC_IGNORE ) {
 			glDisableClientState( GL_COLOR_ARRAY );
 

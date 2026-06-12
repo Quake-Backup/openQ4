@@ -496,11 +496,67 @@ static bool Session_FileExistsInSearchPaths( const char *path ) {
 static void Session_NormalizeMapDeclPath( const char *mapPath, idStr &normalizedPath ) {
 	normalizedPath = ( mapPath != NULL ) ? mapPath : "";
 	normalizedPath.BackSlashesToSlashes();
+	normalizedPath.Strip( ' ' );
+	normalizedPath.Strip( '\t' );
+	normalizedPath.StripTrailingWhitespace();
+	normalizedPath.StripQuotes();
 	normalizedPath.StripFileExtension();
 
 	if ( !idStr::Icmpn( normalizedPath.c_str(), "maps/", 5 ) ) {
 		normalizedPath = normalizedPath.c_str() + 5;
 	}
+}
+
+static bool Session_IsMapFilterWhitespace( const char ch ) {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+static void Session_NormalizeEntityFilterToken( const char *entityFilter, idStr &normalizedFilter ) {
+	normalizedFilter = ( entityFilter != NULL ) ? entityFilter : "";
+	normalizedFilter.Strip( ' ' );
+	normalizedFilter.Strip( '\t' );
+	normalizedFilter.StripTrailingWhitespace();
+	normalizedFilter.StripQuotes();
+}
+
+static void Session_NormalizeMapPathAndEntityFilter( const char *mapPath, const char *entityFilter,
+	idStr &normalizedMapPath, idStr &normalizedEntityFilter ) {
+	idStr mapToken = ( mapPath != NULL ) ? mapPath : "";
+	mapToken.BackSlashesToSlashes();
+	mapToken.Strip( ' ' );
+	mapToken.Strip( '\t' );
+	mapToken.StripTrailingWhitespace();
+	mapToken.StripQuotes();
+
+	Session_NormalizeEntityFilterToken( entityFilter, normalizedEntityFilter );
+
+	int split = -1;
+	for ( int i = mapToken.Length() - 1; i >= 0; --i ) {
+		if ( Session_IsMapFilterWhitespace( mapToken[ i ] ) ) {
+			split = i;
+			break;
+		}
+	}
+
+	if ( split > 0 ) {
+		idStr mapPart = mapToken.Left( split );
+		idStr filterPart = mapToken.Right( mapToken.Length() - split - 1 );
+		idStr normalizedFilterPart;
+		mapPart.Strip( ' ' );
+		mapPart.Strip( '\t' );
+		mapPart.StripTrailingWhitespace();
+		mapPart.StripQuotes();
+		Session_NormalizeEntityFilterToken( filterPart.c_str(), normalizedFilterPart );
+
+		if ( mapPart.Length() > 0 && normalizedFilterPart.Length() > 0 ) {
+			mapToken = mapPart;
+			if ( normalizedEntityFilter.Length() == 0 ) {
+				normalizedEntityFilter = normalizedFilterPart;
+			}
+		}
+	}
+
+	Session_NormalizeMapDeclPath( mapToken.c_str(), normalizedMapPath );
 }
 
 static bool Session_GetMapDeclDictForNormalizedPath( const idStr &normalizedPath, idDict &outMapDecl ) {
@@ -539,8 +595,12 @@ static bool Session_GetMapDeclDictForNormalizedPath( const idStr &normalizedPath
 }
 
 static void Session_ApplyEntityFilterToServerInfo( idDict &serverInfo, const char *entityFilter ) {
-	if ( entityFilter != NULL && entityFilter[0] != '\0' ) {
-		serverInfo.Set( "si_entityFilter", entityFilter );
+	idStr normalizedFilter;
+	Session_NormalizeEntityFilterToken( entityFilter, normalizedFilter );
+	cvarSystem->SetCVarString( "si_entityFilter", normalizedFilter.c_str() );
+
+	if ( normalizedFilter.Length() > 0 ) {
+		serverInfo.Set( "si_entityFilter", normalizedFilter.c_str() );
 	} else {
 		serverInfo.Delete( "si_entityFilter" );
 	}
@@ -554,15 +614,16 @@ static bool Session_GetMapDeclDict( const char *mapPath, const char *entityFilte
 	outMapDecl.Clear();
 
 	idStr normalizedPath;
-	Session_NormalizeMapDeclPath( mapPath, normalizedPath );
+	idStr normalizedEntityFilter;
+	Session_NormalizeMapPathAndEntityFilter( mapPath, entityFilter, normalizedPath, normalizedEntityFilter );
 	if ( normalizedPath.IsEmpty() ) {
 		return false;
 	}
 
-	if ( entityFilter != NULL && entityFilter[0] != '\0' ) {
+	if ( normalizedEntityFilter.Length() > 0 ) {
 		idStr filteredPath = normalizedPath;
 		filteredPath += "_";
-		filteredPath += entityFilter;
+		filteredPath += normalizedEntityFilter;
 		filteredPath.Strip( ' ' );
 		filteredPath.Strip( '\t' );
 		filteredPath.StripTrailingWhitespace();
@@ -2113,14 +2174,14 @@ Restart the server on a different map
 */
 static void Session_Map_f( const idCmdArgs &args ) {
 	idStr		map, string;
+	idStr		entityFilter;
 	findFile_t	ff;
 	idCmdArgs	rl_args;
 
-	map = args.Argv(1);
+	Session_NormalizeMapPathAndEntityFilter( args.Argv( 1 ), Session_GetEntityFilterArg( args ), map, entityFilter );
 	if ( !map.Length() ) {
 		return;
 	}
-	map.StripFileExtension();
 
 	// make sure the level exists before trying to change, so that
 	// a typo at the server console won't end the game
@@ -2135,8 +2196,8 @@ static void Session_Map_f( const idCmdArgs &args ) {
 		common->Printf( "map %s is in an addon pak - reloading\n", string.c_str() );
 		rl_args.AppendArg( "map" );
 		rl_args.AppendArg( map );
-		if ( args.Argc() > 2 ) {
-			rl_args.AppendArg( args.Argv( 2 ) );
+		if ( entityFilter.Length() > 0 ) {
+			rl_args.AppendArg( entityFilter.c_str() );
 		}
 		cmdSystem->SetupReloadEngine( rl_args );
 		return;
@@ -2145,7 +2206,7 @@ static void Session_Map_f( const idCmdArgs &args ) {
 	}
 
 	const bool developerMapStart = cvarSystem->GetCVarBool( "developer" );
-	sessLocal.StartNewGame( map, developerMapStart, Session_GetEntityFilterArg( args ) );
+	sessLocal.StartNewGame( map, developerMapStart, entityFilter.c_str() );
 }
 
 /*
@@ -2156,15 +2217,14 @@ Restart the server on a different map in developer mode
 ==================
 */
 static void Session_DevMap_f( const idCmdArgs &args ) {
-	idStr map, string;
+	idStr map, string, entityFilter;
 	findFile_t	ff;
 	idCmdArgs	rl_args;	
 
-	map = args.Argv(1);
+	Session_NormalizeMapPathAndEntityFilter( args.Argv( 1 ), Session_GetEntityFilterArg( args ), map, entityFilter );
 	if ( !map.Length() ) {
 		return;
 	}
-	map.StripFileExtension();
 
 	// make sure the level exists before trying to change, so that
 	// a typo at the server console won't end the game
@@ -2179,8 +2239,8 @@ static void Session_DevMap_f( const idCmdArgs &args ) {
 		common->Printf( "map %s is in an addon pak - reloading\n", string.c_str() );
 		rl_args.AppendArg( "devmap" );
 		rl_args.AppendArg( map );
-		if ( args.Argc() > 2 ) {
-			rl_args.AppendArg( args.Argv( 2 ) );
+		if ( entityFilter.Length() > 0 ) {
+			rl_args.AppendArg( entityFilter.c_str() );
 		}
 		cmdSystem->SetupReloadEngine( rl_args );
 		return;
@@ -2196,7 +2256,7 @@ static void Session_DevMap_f( const idCmdArgs &args ) {
 	}
 
 	cvarSystem->SetCVarBool( "developer", true );
-	sessLocal.StartNewGame( map, true, Session_GetEntityFilterArg( args ) );
+	sessLocal.StartNewGame( map, true, entityFilter.c_str() );
 }
 
 /*
@@ -2205,20 +2265,23 @@ Session_TestMap_f
 ==================
 */
 static void Session_TestMap_f( const idCmdArgs &args ) {
-	idStr map, string;
+	idStr map, string, entityFilter;
 
-	map = args.Argv(1);
+	Session_NormalizeMapPathAndEntityFilter( args.Argv( 1 ), Session_GetEntityFilterArg( args ), map, entityFilter );
 	if ( !map.Length() ) {
 		return;
 	}
-	map.StripFileExtension();
 
 	cmdSystem->BufferCommandText( CMD_EXEC_NOW, "disconnect" );
 
 	sprintf( string, "dmap maps/%s.map", map.c_str() );
 	cmdSystem->BufferCommandText( CMD_EXEC_NOW, string );
 
-	sprintf( string, "devmap %s", map.c_str() );
+	if ( entityFilter.Length() > 0 ) {
+		sprintf( string, "devmap %s %s", map.c_str(), entityFilter.c_str() );
+	} else {
+		sprintf( string, "devmap %s", map.c_str() );
+	}
 	cmdSystem->BufferCommandText( CMD_EXEC_NOW, string );
 }
 
@@ -3262,6 +3325,13 @@ void idSessionLocal::StartNewGame( const char *mapName, bool devmap, const char 
 	common->Printf( "Dedicated servers cannot start singleplayer games.\n" );
 	return;
 #else
+	idStr normalizedMapName;
+	idStr normalizedEntityFilter;
+	Session_NormalizeMapPathAndEntityFilter( mapName, entityFilter, normalizedMapName, normalizedEntityFilter );
+	if ( normalizedMapName.Length() == 0 ) {
+		return;
+	}
+
 	if ( idAsyncNetwork::server.IsActive() ) {
 		common->Printf("Server running, use si_map / serverMapRestart\n");
 		return;
@@ -3277,10 +3347,10 @@ void idSessionLocal::StartNewGame( const char *mapName, bool devmap, const char 
 		cvarSystem->SetCVarString( "com_nextGameModule", "game_sp" );
 		idCmdArgs reloadArgs;
 		reloadArgs.AppendArg( "openq4_startSingleplayer" );
-		reloadArgs.AppendArg( mapName );
+		reloadArgs.AppendArg( normalizedMapName.c_str() );
 		reloadArgs.AppendArg( devmap ? "1" : "0" );
-		if ( entityFilter != NULL && entityFilter[0] != '\0' ) {
-			reloadArgs.AppendArg( entityFilter );
+		if ( normalizedEntityFilter.Length() > 0 ) {
+			reloadArgs.AppendArg( normalizedEntityFilter.c_str() );
 		}
 		cmdSystem->SetupReloadEngine( reloadArgs );
 		return;
@@ -3294,7 +3364,7 @@ void idSessionLocal::StartNewGame( const char *mapName, bool devmap, const char 
 	mapSpawnData.serverInfo.Clear();
 	mapSpawnData.serverInfo = *cvarSystem->MoveCVarsToDict( CVAR_SERVERINFO );
 	mapSpawnData.serverInfo.Set( "si_gameType", "singleplayer" );
-	Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, entityFilter );
+	Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, normalizedEntityFilter.c_str() );
 
 	// set the devmap key so any play testing items will be given at
 	// spawn time to set approximately the right weapons and ammo
@@ -3305,7 +3375,7 @@ void idSessionLocal::StartNewGame( const char *mapName, bool devmap, const char 
 	mapSpawnData.syncedCVars.Clear();
 	mapSpawnData.syncedCVars = *cvarSystem->MoveCVarsToDict( CVAR_NETWORKSYNC );
 
-	MoveToNewMap( mapName );
+	MoveToNewMap( normalizedMapName.c_str() );
 	if ( com_WriteSingleDeclFile.GetBool() ) {
 		Frame();
 		UpdateScreen( true );
@@ -3335,7 +3405,16 @@ Leaves the existing userinfo and serverinfo
 ===============
 */
 void idSessionLocal::MoveToNewMap( const char *mapName ) {
-	mapSpawnData.serverInfo.Set( "si_map", mapName );
+	idStr normalizedMapName;
+	idStr embeddedEntityFilter;
+	Session_NormalizeMapPathAndEntityFilter( mapName, "", normalizedMapName, embeddedEntityFilter );
+	if ( normalizedMapName.Length() == 0 ) {
+		return;
+	}
+	if ( embeddedEntityFilter.Length() > 0 ) {
+		Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, embeddedEntityFilter.c_str() );
+	}
+	mapSpawnData.serverInfo.Set( "si_map", normalizedMapName.c_str() );
 
 	ExecuteMapChange();
 
@@ -4574,6 +4653,12 @@ bool idSessionLocal::LoadGame( const char *saveName ) {
 	common->DPrintf( "loading a v%d savegame\n", savegameVersion );
 
 	if ( saveMap.Length() > 0 ) {
+		idStr normalizedSaveMap;
+		idStr normalizedEntityFilter;
+		Session_NormalizeMapPathAndEntityFilter( saveMap.c_str(), entityFilter.c_str(), normalizedSaveMap, normalizedEntityFilter );
+		if ( normalizedSaveMap.Length() == 0 ) {
+			normalizedSaveMap = saveMap;
+		}
 
 		// Start loading map
 		mapSpawnData.serverInfo.Clear();
@@ -4581,8 +4666,8 @@ bool idSessionLocal::LoadGame( const char *saveName ) {
 		mapSpawnData.serverInfo = *cvarSystem->MoveCVarsToDict( CVAR_SERVERINFO );
 		mapSpawnData.serverInfo.Set( "si_gameType", "singleplayer" );
 
-		mapSpawnData.serverInfo.Set( "si_map", saveMap );
-		mapSpawnData.serverInfo.Set( "si_entityFilter", entityFilter );
+		mapSpawnData.serverInfo.Set( "si_map", normalizedSaveMap );
+		Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, normalizedEntityFilter.c_str() );
 
 		mapSpawnData.syncedCVars.Clear();
 		mapSpawnData.syncedCVars = *cvarSystem->MoveCVarsToDict( CVAR_NETWORKSYNC );
@@ -5516,6 +5601,13 @@ void idSessionLocal::RunGameTic() {
 		args.TokenizeString( ret.sessionCommand, false );
 
 		if ( !idStr::Icmp( args.Argv(0), "map" ) ) {
+			idStr commandMap;
+			idStr commandEntityFilter;
+			Session_NormalizeMapPathAndEntityFilter( args.Argv( 1 ), Session_GetEntityFilterArg( args ), commandMap, commandEntityFilter );
+			if ( commandMap.Length() == 0 ) {
+				return;
+			}
+
 			// get current player states
 			for ( int i = 0 ; i < numClients ; i++ ) {
 				mapSpawnData.persistentPlayerInfo[i] = game->GetPersistentPlayerInfo( i );
@@ -5523,14 +5615,21 @@ void idSessionLocal::RunGameTic() {
 			// clear the devmap key on serverinfo, so player spawns
 			// won't get the map testing items
 			mapSpawnData.serverInfo.Delete( "devmap" );
-			Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, Session_GetEntityFilterArg( args ) );
+			Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, commandEntityFilter.c_str() );
 
 			// go to the next map
-			MoveToNewMap( args.Argv(1) );
+			MoveToNewMap( commandMap.c_str() );
 		} else if ( !idStr::Icmp( args.Argv(0), "devmap" ) ) {
+			idStr commandMap;
+			idStr commandEntityFilter;
+			Session_NormalizeMapPathAndEntityFilter( args.Argv( 1 ), Session_GetEntityFilterArg( args ), commandMap, commandEntityFilter );
+			if ( commandMap.Length() == 0 ) {
+				return;
+			}
+
 			mapSpawnData.serverInfo.Set( "devmap", "1" );
-			Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, Session_GetEntityFilterArg( args ) );
-			MoveToNewMap( args.Argv(1) );
+			Session_ApplyEntityFilterToServerInfo( mapSpawnData.serverInfo, commandEntityFilter.c_str() );
+			MoveToNewMap( commandMap.c_str() );
 		} else if ( !idStr::Icmp( args.Argv(0), "nextMap" ) ) {
 			cmdSystem->BufferCommandText( CMD_EXEC_INSERT, "nextMap" );
 		} else if ( !idStr::Icmp( args.Argv(0), "died" ) ) {

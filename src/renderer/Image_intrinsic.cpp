@@ -153,15 +153,19 @@ static void R_RGBA16FImage( idImage *image ) {
 }
 
 static void R_DepthImage( idImage *image ) {
-	byte	data[DEFAULT_SIZE][DEFAULT_SIZE][4];
+	// Allocate real depth storage directly. Routing placeholder RGBA bytes
+	// through GenerateImage rewrites the format to FMT_RGBA8 inside
+	// idBinaryImage::Load2DFromMemory (it mutates formats it cannot encode),
+	// which leaves the texture non-depth-attachable and makes every later
+	// CopyDepthbuffer into it fail with GL_INVALID_FRAMEBUFFER_OPERATION.
+	idImageOpts opts;
+	opts.textureType = TT_2D;
+	opts.format = FMT_DEPTH;
+	opts.width = DEFAULT_SIZE;
+	opts.height = DEFAULT_SIZE;
+	opts.numLevels = 1;
 
-	memset( data, 0, sizeof( data ) );
-	data[0][0][0] = 16;
-	data[0][0][1] = 32;
-	data[0][0][2] = 48;
-	data[0][0][3] = 96;
-
-	image->GenerateImage( (byte *)data, DEFAULT_SIZE, DEFAULT_SIZE, TF_NEAREST, TR_CLAMP, TD_DEPTH );
+	image->AllocImage( opts, TF_NEAREST, TR_CLAMP );
 }
 
 static void R_AlphaNotchImage( idImage *image ) {

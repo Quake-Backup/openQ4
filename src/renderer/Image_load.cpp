@@ -902,7 +902,27 @@ CopyDepthbuffer
 void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
 
-	const bool needsStorageResize = ( opts.width != imageWidth ) || ( opts.height != imageHeight );
+	// The destination must hold depth-renderable storage: it gets attached to
+	// GL_DEPTH_ATTACHMENT for the blit path and receives GL_DEPTH_COMPONENT
+	// copies otherwise. Images that were ever allocated with a color format
+	// (e.g. the legacy RGBA placeholder path) would make those operations fail
+	// silently every frame, so respecify them as real depth here.
+	const bool hasDepthStorage =
+		internalFormat == GL_DEPTH_COMPONENT
+		|| internalFormat == GL_DEPTH_COMPONENT16
+		|| internalFormat == GL_DEPTH_COMPONENT24
+		|| internalFormat == GL_DEPTH_COMPONENT32
+		|| internalFormat == GL_DEPTH_COMPONENT32F
+		|| internalFormat == GL_DEPTH24_STENCIL8
+		|| internalFormat == GL_DEPTH32F_STENCIL8;
+	if ( !hasDepthStorage ) {
+		internalFormat = GL_DEPTH_COMPONENT24;
+		dataFormat = GL_DEPTH_COMPONENT;
+		dataType = GL_FLOAT;
+		opts.format = FMT_DEPTH;
+	}
+
+	const bool needsStorageResize = !hasDepthStorage || ( opts.width != imageWidth ) || ( opts.height != imageHeight );
 	opts.width = imageWidth;
 	opts.height = imageHeight;
 
@@ -1019,16 +1039,18 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glEnable( GL_SCISSOR_TEST );
 		}
 
+		// The readback buffer always holds GL_FLOAT depth values regardless of
+		// the texture's preferred upload type.
 		if ( needsStorageResize ) {
 			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
-				dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT, dataType != 0 ? dataType : GL_FLOAT, resolvedDepthBuffer.Ptr() );
+				GL_DEPTH_COMPONENT, GL_FLOAT, resolvedDepthBuffer.Ptr() );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		} else {
 			glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, imageWidth, imageHeight,
-				dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT, dataType != 0 ? dataType : GL_FLOAT, resolvedDepthBuffer.Ptr() );
+				GL_DEPTH_COMPONENT, GL_FLOAT, resolvedDepthBuffer.Ptr() );
 		}
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );

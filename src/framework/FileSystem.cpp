@@ -3734,6 +3734,44 @@ void idFileSystemLocal::SetupGameDirectories( const char *gameName ) {
 idFileSystemLocal::NormalizeMapPath
 ================
 */
+static bool FS_IsMapFilterWhitespace( const char ch ) {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+static void FS_RemoveEmbeddedMapEntityFilter( idStr &mapName ) {
+	mapName.BackSlashesToSlashes();
+	mapName.Strip( ' ' );
+	mapName.Strip( '\t' );
+	mapName.StripTrailingWhitespace();
+	mapName.StripQuotes();
+
+	int split = -1;
+	for ( int i = mapName.Length() - 1; i >= 0; --i ) {
+		if ( FS_IsMapFilterWhitespace( mapName[ i ] ) ) {
+			split = i;
+			break;
+		}
+	}
+	if ( split <= 0 ) {
+		return;
+	}
+
+	idStr mapPart = mapName.Left( split );
+	idStr filterPart = mapName.Right( mapName.Length() - split - 1 );
+	mapPart.Strip( ' ' );
+	mapPart.Strip( '\t' );
+	mapPart.StripTrailingWhitespace();
+	mapPart.StripQuotes();
+	filterPart.Strip( ' ' );
+	filterPart.Strip( '\t' );
+	filterPart.StripTrailingWhitespace();
+	filterPart.StripQuotes();
+
+	if ( mapPart.Length() > 0 && filterPart.Length() > 0 ) {
+		mapName = mapPart;
+	}
+}
+
 bool idFileSystemLocal::NormalizeMapPath( const char *mapName, idStr &relativePath ) const {
 	relativePath.Clear();
 
@@ -3742,7 +3780,7 @@ bool idFileSystemLocal::NormalizeMapPath( const char *mapName, idStr &relativePa
 	}
 
 	relativePath = mapName;
-	relativePath.BackSlashesToSlashes();
+	FS_RemoveEmbeddedMapEntityFilter( relativePath );
 	relativePath.StripFileExtension();
 	if ( relativePath.Length() <= 0 ) {
 		return false;
