@@ -694,7 +694,7 @@
 					forecolor	1,0.745,0.137,0.8
 					choiceType	1
 					choices	"#str_41095"
-					values	"0;1"
+					values	"0;1;2;3;4"
 					cvar	"r_postAA"
 					textscale	0.24
 					font	"fonts/lowpixel"

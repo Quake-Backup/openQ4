@@ -63,16 +63,19 @@ public:
 	static void				BindNull(void);
 
 	GLuint					GetDeviceHandle(void);
+	void					SetDebugLabel( const char *label );
 
 	void					AddRenderImage(idImage *image);
 	void					InitRenderTexture(void);
 private:
 	bool					NeedsAttachmentRefresh( void ) const;
 	void					CaptureAttachmentHandles( void );
+	void					ApplyDebugLabel( void ) const;
 
 	idList<idImage *>	colorImages;
 	idImage *			depthImage;
 	GLuint				deviceHandle;
+	idStr				debugLabel;
 	idList<GLuint>		cachedColorHandles;
 	GLuint				cachedDepthHandle;
 	idList<uint64_t>	cachedColorGenerations;

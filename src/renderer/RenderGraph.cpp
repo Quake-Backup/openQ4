@@ -680,6 +680,9 @@ void R_RenderGraph_BuildLegacyFrameGraph( const emptyCommand_t *cmds, idRenderGr
 		case RC_SET_RENDERTEXTURE:
 		case RC_RESOLVE_MSAA:
 		case RC_CLEAR_RENDERTARGET:
+		case RC_SET_POSTPROCESS_SOURCE_SIZE:
+		case RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE:
+		case RC_SET_POSTPROCESS_SMAA_QUALITY:
 		case RC_COPY_RENDER:
 			R_RenderGraph_AddPassOnce( graph, RENDER_PASS_AUTHORED_POST, "legacyRenderTargetOps" );
 			break;

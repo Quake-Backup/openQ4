@@ -484,6 +484,28 @@ bool RB_BindGLSLShaderParm( glslShaderParmBinding_t binding, int location, const
 		RB_UpdateStockGLSLShaderConstantCache();
 		glUniform4fvARB( location, RB_STOCK_GAUSSIAN_SAMPLE_COUNT, rbStockGaussianSampleWeights2[0].ToFloatPtr() );
 		return true;
+	case GLSL_SHADERPARM_POSTPROCESS_INV_TEX_SIZE: {
+		const GLfloat invTexSize[2] = {
+			backEnd.postProcessTexelSize.x,
+			backEnd.postProcessTexelSize.y
+		};
+		glUniform2fvARB( location, 1, invTexSize );
+		return true;
+	}
+	case GLSL_SHADERPARM_POSTPROCESS_TEX_SIZE: {
+		const GLfloat texSize[2] = {
+			backEnd.postProcessTexelSize.z,
+			backEnd.postProcessTexelSize.w
+		};
+		glUniform2fvARB( location, 1, texSize );
+		return true;
+	}
+	case GLSL_SHADERPARM_POSTPROCESS_SOURCE_COLOR_SPACE:
+		glUniform4fvARB( location, 1, backEnd.postProcessSourceColorSpace.ToFloatPtr() );
+		return true;
+	case GLSL_SHADERPARM_POSTPROCESS_SMAA_QUALITY:
+		glUniform4fvARB( location, 1, backEnd.postProcessSMAAQuality.ToFloatPtr() );
+		return true;
 	case GLSL_SHADERPARM_REGISTERS:
 	default:
 		return false;
@@ -765,6 +787,7 @@ bool R_ValidateGLSLProgram( newShaderStage_t *stage ) {
 	GLhandleARB programObject = glCreateProgramObjectARB();
 	glAttachObjectARB( programObject, vertexShader );
 	glAttachObjectARB( programObject, fragmentShader );
+	glBindAttribLocationARB( programObject, 0, "attr_Position" );
 	glBindAttribLocationARB( programObject, 8, "attr_TexCoord0" );
 	glBindAttribLocationARB( programObject, 9, "attr_Tangent" );
 	glBindAttribLocationARB( programObject, 10, "attr_Bitangent" );
@@ -1670,6 +1693,89 @@ static void RB_DrawFullscreenPostProcessQuadUnitUV( void ) {
 	glTexCoord2f( 1.0f, 0.0f );
 	glVertex2f( 1.0f, 0.0f );
 	glEnd();
+}
+
+static bool RB_IsSMAAPostAAGLSLProgram( const newShaderStage_t *stage ) {
+	if ( stage == NULL || !stage->glslProgram ) {
+		return false;
+	}
+
+	const char *name = stage->glslProgramName;
+	return idStr::Icmp( name, "smaa_edge.fs" ) == 0 ||
+		idStr::Icmp( name, "glprogs/smaa_edge.fs" ) == 0 ||
+		idStr::Icmp( name, "smaa_weights.fs" ) == 0 ||
+		idStr::Icmp( name, "glprogs/smaa_weights.fs" ) == 0 ||
+		idStr::Icmp( name, "smaa_blend.fs" ) == 0 ||
+		idStr::Icmp( name, "glprogs/smaa_blend.fs" ) == 0;
+}
+
+static void RB_PoisonPostAAGLSLStateForValidation( void ) {
+	if ( !r_postAAStatePoisonTest.GetBool() ) {
+		return;
+	}
+
+	static bool logged = false;
+	if ( !logged ) {
+		common->Printf( "PostAA state-poison validation active: dirtying active texture/client state before SMAA fullscreen draws.\n" );
+		logged = true;
+	}
+
+	const int maxStateUnits = Max( 0, Min( MAX_MULTITEXTURE_UNITS, Min( glConfig.maxTextureUnits, glConfig.maxTextureImageUnits ) ) );
+	const int dirtyUnit = maxStateUnits > 1 ? Min( maxStateUnits - 1, 3 ) : 0;
+	GL_SelectTexture( dirtyUnit );
+}
+
+static void RB_DrawSMAAExplicitFullscreenQuad( void ) {
+	static const GLfloat positions[8] = {
+		-1.0f,  1.0f,
+		-1.0f, -1.0f,
+		 1.0f,  1.0f,
+		 1.0f, -1.0f
+	};
+	static const GLfloat texCoords[8] = {
+		0.0f, 1.0f,
+		0.0f, 0.0f,
+		1.0f, 1.0f,
+		1.0f, 0.0f
+	};
+
+	glDisableClientState( GL_VERTEX_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glDisableClientState( GL_NORMAL_ARRAY );
+	const int maxStateUnits = Max( 0, Min( MAX_MULTITEXTURE_UNITS, Min( glConfig.maxTextureUnits, glConfig.maxTextureImageUnits ) ) );
+	for ( int unit = 0; unit < maxStateUnits; unit++ ) {
+		GL_SelectTexture( unit );
+		glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	}
+
+	GLint previousArrayBuffer = 0;
+	glGetIntegerv( GL_ARRAY_BUFFER_BINDING_ARB, &previousArrayBuffer );
+	idVertexCache::BindArrayBuffer( 0 );
+
+	glVertexAttribPointerARB( 0, 2, GL_FLOAT, false, 0, positions );
+	glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, 0, texCoords );
+	glEnableVertexAttribArrayARB( 0 );
+	glEnableVertexAttribArrayARB( 8 );
+
+	const int previousCullType = backEnd.glState.faceCulling;
+	GL_Cull( CT_TWO_SIDED );
+
+	glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
+	backEnd.pc.c_drawElements++;
+	backEnd.pc.c_drawIndexes += 4;
+	backEnd.pc.c_drawVertexes += 4;
+
+	if ( previousCullType >= CT_FRONT_SIDED && previousCullType <= CT_TWO_SIDED ) {
+		GL_Cull( previousCullType );
+	}
+
+	glDisableVertexAttribArrayARB( 8 );
+	glDisableVertexAttribArrayARB( 0 );
+
+	idVertexCache::BindArrayBuffer( static_cast<GLuint>( previousArrayBuffer ) );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 }
 
 static void RB_EndFullscreenPostProcessPass( void ) {
@@ -5094,10 +5200,27 @@ static bool RB_ProjectLensFlarePoint( const idVec3 &origin, int viewportWidth, i
 	return true;
 }
 
+static bool RB_LensFlareSurfaceSourceAllowedForParms( const renderLight_t &parms ) {
+	return !parms.pointLight && !parms.parallel && !parms.globalLight;
+}
+
 static idVec3 RB_LensFlareSourceOriginForParms( const renderLight_t &parms ) {
+	idVec3 sourceOrigin = parms.origin;
+
+	if ( RB_LensFlareSurfaceSourceAllowedForParms( parms ) ) {
+		sourceOrigin += parms.axis * parms.target;
+
+		idVec3 localUp = parms.up;
+		const float localUpLength = localUp.Normalize();
+		if ( localUpLength > 0.001f ) {
+			const float surfaceLift = idMath::ClampFloat( 2.0f, 16.0f, localUpLength * 0.08f );
+			sourceOrigin += ( parms.axis * localUp ) * surfaceLift;
+		}
+	}
+
 	// Light-center offsets are for lighting/shadow direction. The visible flare
-	// should stay attached to the authored source position.
-	return parms.origin;
+	// should stay near the authored surface-light center instead.
+	return sourceOrigin;
 }
 
 static idVec3 RB_LensFlareSourceOrigin( const viewLight_t *vLight ) {
@@ -5105,6 +5228,13 @@ static idVec3 RB_LensFlareSourceOrigin( const viewLight_t *vLight ) {
 		return vec3_origin;
 	}
 	return RB_LensFlareSourceOriginForParms( vLight->lightDef->parms );
+}
+
+static bool RB_LensFlareSurfaceSourceAllowed( const viewLight_t *vLight ) {
+	if ( vLight == NULL || vLight->lightDef == NULL || vLight->pointLight ) {
+		return false;
+	}
+	return RB_LensFlareSurfaceSourceAllowedForParms( vLight->lightDef->parms );
 }
 
 static bool RB_EvaluateLensFlareLightColor( const viewLight_t *vLight, idVec4 &lightColor ) {
@@ -5219,7 +5349,7 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 			stats.rejectedLights++;
 			continue;
 		}
-		if ( vLight->lightDef->parms.parallel || vLight->lightDef->parms.globalLight ) {
+		if ( !RB_LensFlareSurfaceSourceAllowed( vLight ) ) {
 			stats.rejectedLights++;
 			continue;
 		}
@@ -5501,11 +5631,20 @@ bool RB_LensFlareRuntimeSelfTest( void ) {
 
 	renderLight_t sourceOriginTest;
 	memset( &sourceOriginTest, 0, sizeof( sourceOriginTest ) );
+	sourceOriginTest.axis.Identity();
 	sourceOriginTest.origin.Set( 16.0f, -32.0f, 64.0f );
+	sourceOriginTest.target.Set( 0.0f, 48.0f, 0.0f );
+	sourceOriginTest.up.Set( 0.0f, 0.0f, 80.0f );
 	sourceOriginTest.lightCenter.Set( 0.0f, 0.0f, 128.0f );
 	const idVec3 flareSourceOrigin = RB_LensFlareSourceOriginForParms( sourceOriginTest );
-	if ( ( flareSourceOrigin - sourceOriginTest.origin ).LengthSqr() > 0.0001f ) {
-		common->Printf( "RendererLensFlareRuntime self-test failed: flare source origin follows light_center offset\n" );
+	const idVec3 expectedFlareSourceOrigin( 16.0f, 16.0f, 70.4f );
+	if ( ( flareSourceOrigin - expectedFlareSourceOrigin ).LengthSqr() > 0.0001f ) {
+		common->Printf( "RendererLensFlareRuntime self-test failed: flare source origin is not above the projected surface center\n" );
+		ok = false;
+	}
+	sourceOriginTest.pointLight = true;
+	if ( RB_LensFlareSurfaceSourceAllowedForParms( sourceOriginTest ) ) {
+		common->Printf( "RendererLensFlareRuntime self-test failed: point lights are eligible for lens flares\n" );
 		ok = false;
 	}
 
@@ -5557,7 +5696,7 @@ bool RB_LensFlareRuntimeSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererLensFlareRuntime self-test passed (accumulation/composite contract, sourceAnchor=origin, compositeProgram=%d shaderLibrary=%d)\n",
+		"RendererLensFlareRuntime self-test passed (accumulation/composite contract, sourceAnchor=surface, pointLights=reject, compositeProgram=%d shaderLibrary=%d)\n",
 		compositeProgramChecked ? 1 : 0,
 		shaderLibraryChecked ? 1 : 0 );
 	return true;
@@ -7152,6 +7291,7 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 				if ( !R_ValidateGLSLProgram( newStage ) ) {
 					continue;
 				}
+				const bool useExplicitSMAAFullscreenQuad = RB_IsSMAAPostAAGLSLProgram( newStage );
 
 				// GLSL stages in Quake 4 decal materials often rely on gl_Color
 				// from per-vertex stage colors (for DecalLife/depth fade).
@@ -7161,7 +7301,7 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 				stageColor[2] = regs[ pStage->color.registers[2] ];
 				stageColor[3] = regs[ pStage->color.registers[3] ];
 				bool useColorArray = false;
-				if ( pStage->vertexColor == SVC_IGNORE ) {
+				if ( pStage->vertexColor == SVC_IGNORE || useExplicitSMAAFullscreenQuad ) {
 					glColor4fv( stageColor );
 				} else {
 					RB_SetStageVertexColorPointer( surf, stage, ac );
@@ -7220,27 +7360,32 @@ void RB_STD_T_RenderShaderPasses( const drawSurf_t *surf ) {
 						glUniform1iARB( newStage->shaderTextureLocations[i], i );
 					}
 				}
-				// GL_SelectTexture also selects the client texcoord array; draw legacy
-				// fullscreen/material geometry with gl_TexCoord[0] as the active lane.
-				GL_SelectTexture( 0 );
-
-				if ( !RB_PrepareStageTexturing( pStage, surf, ac ) ) {
-					RB_FinishStageTexturing( pStage, surf, ac );
-					for ( int i = 1; i < newStage->numShaderTextures; i++ ) {
-						if ( RB_ResolveGLSLShaderTextureImage( newStage, i, NULL ) != NULL ) {
-							GL_SelectTexture( i );
-							globalImages->BindNull();
-						}
-					}
+				if ( useExplicitSMAAFullscreenQuad ) {
+					RB_PoisonPostAAGLSLStateForValidation();
+					RB_DrawSMAAExplicitFullscreenQuad();
+				} else {
+					// GL_SelectTexture also selects the client texcoord array; draw legacy
+					// fullscreen/material geometry with gl_TexCoord[0] as the active lane.
 					GL_SelectTexture( 0 );
-					glUseProgramObjectARB( 0 );
-					if ( useColorArray ) {
-						glDisableClientState( GL_COLOR_ARRAY );
+
+					if ( !RB_PrepareStageTexturing( pStage, surf, ac ) ) {
+						RB_FinishStageTexturing( pStage, surf, ac );
+						for ( int i = 1; i < newStage->numShaderTextures; i++ ) {
+							if ( RB_ResolveGLSLShaderTextureImage( newStage, i, NULL ) != NULL ) {
+								GL_SelectTexture( i );
+								globalImages->BindNull();
+							}
+						}
+						GL_SelectTexture( 0 );
+						glUseProgramObjectARB( 0 );
+						if ( useColorArray ) {
+							glDisableClientState( GL_COLOR_ARRAY );
+						}
+						continue;
 					}
-					continue;
+					RB_DrawElementsWithCounters( tri );
+					RB_FinishStageTexturing( pStage, surf, ac );
 				}
-				RB_DrawElementsWithCounters( tri );
-				RB_FinishStageTexturing( pStage, surf, ac );
 
 				for ( int i = 1; i < newStage->numShaderTextures; i++ ) {
 					if ( RB_ResolveGLSLShaderTextureImage( newStage, i, NULL ) != NULL ) {

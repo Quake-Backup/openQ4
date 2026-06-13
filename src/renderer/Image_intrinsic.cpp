@@ -710,6 +710,7 @@ void idImageManager::CreateIntrinsicImages() {
 	ImageFromFunction("_forwardRenderResolvedDepth", R_DepthImage);
 	ImageFromFunction("_postProcessAlbedo0", R_RGBA16FImage);
 	ImageFromFunction("_postProcessAlbedo1", R_RGBA16FImage);
+	ImageFromFunction("_postProcessAlbedo2", R_RGBA16FImage);
 
 
 	// save a copy of this for material comparison, because currentRenderImage may get

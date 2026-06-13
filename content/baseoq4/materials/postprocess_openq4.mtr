@@ -59,7 +59,9 @@ postprocess/smaa_edge
 	{
 		blend gl_one, gl_zero
 		glslProgram smaa_edge.fs
-		shaderParm invTexSize 1.0 / VideoWidth, 1.0 / VideoHeight
+		shaderParm invTexSize postProcessInvTexSize
+		shaderParm sourceColorSpace postProcessSourceColorSpace
+		shaderParm quality postProcessSMAAQuality
 		shaderTexture ColorTex nearest clamp _postProcessAlbedo2
 	}
 }
@@ -71,7 +73,9 @@ postprocess/smaa_weights
 	{
 		blend gl_one, gl_zero
 		glslProgram smaa_weights.fs
-		shaderParm invTexSize 1.0 / VideoWidth, 1.0 / VideoHeight
+		shaderParm invTexSize postProcessInvTexSize
+		shaderParm texSize postProcessTexSize
+		shaderParm quality postProcessSMAAQuality
 		shaderTexture EdgesTex linear clamp _postProcessAlbedo1
 		shaderTexture AreaTex linear clamp _smaaArea
 		shaderTexture SearchTex linear clamp _smaaSearch
@@ -85,7 +89,7 @@ postprocess/smaa_blend
 	{
 		blend gl_one, gl_zero
 		glslProgram smaa_blend.fs
-		shaderParm invTexSize 1.0 / VideoWidth, 1.0 / VideoHeight
+		shaderParm invTexSize postProcessInvTexSize
 		shaderTexture ColorTex linear clamp _postProcessAlbedo2
 		shaderTexture BlendTex linear clamp _postProcessAlbedo0
 	}

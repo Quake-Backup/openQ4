@@ -4,6 +4,7 @@
 
 
 #include "../tr_local.h"
+#include "../GLDebugScope.h"
 
 static const GLuint INVALID_RENDER_TEXTURE_HANDLE = static_cast<GLuint>( -1 );
 
@@ -58,6 +59,58 @@ idRenderTexture::idRenderTexture(idImage *colorImage, idImage *depthImage) {
 		AddRenderImage(colorImage);
 	}
 	this->depthImage = depthImage;
+}
+
+/*
+================
+idRenderTexture::SetDebugLabel
+================
+*/
+void idRenderTexture::SetDebugLabel( const char *label ) {
+	debugLabel = ( label != NULL ) ? label : "";
+	if ( glConfig.isInitialized && debugLabel.Length() > 0 ) {
+		EnsureDeviceHandle();
+		ApplyDebugLabel();
+	}
+}
+
+/*
+================
+idRenderTexture::ApplyDebugLabel
+================
+*/
+void idRenderTexture::ApplyDebugLabel( void ) const {
+	if ( debugLabel.Length() <= 0 ) {
+		return;
+	}
+
+	R_GLDebug_LabelFramebuffer( deviceHandle, debugLabel.c_str() );
+
+	for ( int i = 0; i < colorImages.Num(); i++ ) {
+		if ( colorImages[i] == NULL || !colorImages[i]->IsLoaded() ) {
+			continue;
+		}
+		char label[256];
+		idStr::snPrintf(
+			label,
+			sizeof( label ),
+			"%s color%d %s",
+			debugLabel.c_str(),
+			i,
+			colorImages[i]->GetName() );
+		R_GLDebug_LabelTexture( colorImages[i]->GetDeviceHandle(), label );
+	}
+
+	if ( depthImage != NULL && depthImage->IsLoaded() ) {
+		char label[256];
+		idStr::snPrintf(
+			label,
+			sizeof( label ),
+			"%s depth %s",
+			debugLabel.c_str(),
+			depthImage->GetName() );
+		R_GLDebug_LabelTexture( depthImage->GetDeviceHandle(), label );
+	}
 }
 
 /*
@@ -239,6 +292,7 @@ void idRenderTexture::InitRenderTexture(void) {
 	}
 
 	CaptureAttachmentHandles();
+	ApplyDebugLabel();
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 

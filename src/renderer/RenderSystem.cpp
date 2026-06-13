@@ -1112,6 +1112,17 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 
 	glConfig.vidWidth = windowWidth;
 	glConfig.vidHeight = windowHeight;
+	{
+		const int safeWidth = Max( windowWidth, 1 );
+		const int safeHeight = Max( windowHeight, 1 );
+		postProcessTexelSize.Set(
+			1.0f / static_cast<float>( safeWidth ),
+			1.0f / static_cast<float>( safeHeight ),
+			static_cast<float>( safeWidth ),
+			static_cast<float>( safeHeight ) );
+		postProcessSourceColorSpace.Set( 0.0f, 2.2f, 0.0f, 0.0f );
+		postProcessSMAAQuality.Set( 0.0f, 0.10f, 8.0f, 2.0f );
+	}
 
 	// Keep the 2D viewport anchored to a valid region of the current framebuffer.
 	// Platform backends can narrow this to a monitor sub-rect (top-left origin).
@@ -1734,47 +1745,120 @@ bool idRenderSystemLocal::ValidateMaterialArbPrograms( const idMaterial* materia
 idRenderSystemLocal::ValidateSMAALookupTextures
 ===============
 */
+static const char *R_TextureFilterName( const textureFilter_t filter ) {
+	switch ( filter ) {
+	case TF_LINEAR:
+		return "linear";
+	case TF_NEAREST:
+		return "nearest";
+	case TF_DEFAULT:
+		return "default";
+	default:
+		return "unknown";
+	}
+}
+
+static const char *R_TextureRepeatName( const textureRepeat_t repeat ) {
+	switch ( repeat ) {
+	case TR_REPEAT:
+		return "repeat";
+	case TR_MIRRORED_REPEAT:
+		return "mirroredRepeat";
+	case TR_CLAMP:
+		return "clamp";
+	case TR_CLAMP_TO_BORDER:
+		return "clampToBorder";
+	case TR_CLAMP_TO_ZERO:
+		return "clampToZero";
+	case TR_CLAMP_TO_ZERO_ALPHA:
+		return "clampToZeroAlpha";
+	default:
+		return "unknown";
+	}
+}
+
+static bool R_ValidateSMAALookupImage( const idImage *image, const char *imageName, const int expectedWidth, const int expectedHeight ) {
+	if ( image == NULL ) {
+		common->Warning( "SMAA lookup image '%s' is unavailable.", imageName );
+		return false;
+	}
+
+	if ( !image->IsLoaded() ) {
+		common->Warning( "SMAA lookup image '%s' exists but is not loaded.", imageName );
+		return false;
+	}
+
+	if ( image->GetUploadWidth() != expectedWidth || image->GetUploadHeight() != expectedHeight ) {
+		common->Warning(
+			"SMAA lookup image '%s' has unexpected dimensions %d x %d (expected %d x %d).",
+			imageName,
+			image->GetUploadWidth(),
+			image->GetUploadHeight(),
+			expectedWidth,
+			expectedHeight );
+		return false;
+	}
+
+	if ( image->GetOpts().format != FMT_RGBA8 ) {
+		common->Warning(
+			"SMAA lookup image '%s' has unexpected format %d (expected %d).",
+			imageName,
+			image->GetOpts().format,
+			FMT_RGBA8 );
+		return false;
+	}
+
+	if ( image->GetFilter() != TF_LINEAR ) {
+		common->Warning(
+			"SMAA lookup image '%s' has unexpected filter %s (expected linear).",
+			imageName,
+			R_TextureFilterName( image->GetFilter() ) );
+		return false;
+	}
+
+	if ( image->GetRepeat() != TR_CLAMP ) {
+		common->Warning(
+			"SMAA lookup image '%s' has unexpected repeat mode %s (expected clamp).",
+			imageName,
+			R_TextureRepeatName( image->GetRepeat() ) );
+		return false;
+	}
+
+	return true;
+}
+
 bool idRenderSystemLocal::ValidateSMAALookupTextures( void ) {
 	const idImage *areaImage = globalImages->GetImage( "_smaaArea" );
-	if ( areaImage == NULL ) {
-		common->Warning( "SMAA lookup image '_smaaArea' is unavailable." );
+	const idImage *searchImage = globalImages->GetImage( "_smaaSearch" );
+
+	if ( !R_ValidateSMAALookupImage( areaImage, "_smaaArea", AREATEX_WIDTH, AREATEX_HEIGHT ) ||
+		!R_ValidateSMAALookupImage( searchImage, "_smaaSearch", SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT ) ) {
 		return false;
 	}
 
-	if ( !areaImage->IsLoaded() ) {
-		common->Warning( "SMAA lookup image '_smaaArea' exists but is not loaded." );
-		return false;
-	}
-
-	if ( areaImage->GetUploadWidth() != AREATEX_WIDTH || areaImage->GetUploadHeight() != AREATEX_HEIGHT ) {
-		common->Warning(
-			"SMAA lookup image '_smaaArea' has unexpected dimensions %d x %d (expected %d x %d).",
+	static bool loggedValid = false;
+	static uint64_t loggedAreaGeneration = 0;
+	static uint64_t loggedSearchGeneration = 0;
+	const uint64_t areaGeneration = areaImage->GetStorageGeneration();
+	const uint64_t searchGeneration = searchImage->GetStorageGeneration();
+	if ( !loggedValid ||
+		loggedAreaGeneration != areaGeneration ||
+		loggedSearchGeneration != searchGeneration ) {
+		common->Printf(
+			"SMAA lookup textures validated: _smaaArea=%dx%d format=%d filter=%s repeat=%s, _smaaSearch=%dx%d format=%d filter=%s repeat=%s\n",
 			areaImage->GetUploadWidth(),
 			areaImage->GetUploadHeight(),
-			AREATEX_WIDTH,
-			AREATEX_HEIGHT );
-		return false;
-	}
-
-	const idImage *searchImage = globalImages->GetImage( "_smaaSearch" );
-	if ( searchImage == NULL ) {
-		common->Warning( "SMAA lookup image '_smaaSearch' is unavailable." );
-		return false;
-	}
-
-	if ( !searchImage->IsLoaded() ) {
-		common->Warning( "SMAA lookup image '_smaaSearch' exists but is not loaded." );
-		return false;
-	}
-
-	if ( searchImage->GetUploadWidth() != SEARCHTEX_WIDTH || searchImage->GetUploadHeight() != SEARCHTEX_HEIGHT ) {
-		common->Warning(
-			"SMAA lookup image '_smaaSearch' has unexpected dimensions %d x %d (expected %d x %d).",
+			areaImage->GetOpts().format,
+			R_TextureFilterName( areaImage->GetFilter() ),
+			R_TextureRepeatName( areaImage->GetRepeat() ),
 			searchImage->GetUploadWidth(),
 			searchImage->GetUploadHeight(),
-			SEARCHTEX_WIDTH,
-			SEARCHTEX_HEIGHT );
-		return false;
+			searchImage->GetOpts().format,
+			R_TextureFilterName( searchImage->GetFilter() ),
+			R_TextureRepeatName( searchImage->GetRepeat() ) );
+		loggedValid = true;
+		loggedAreaGeneration = areaGeneration;
+		loggedSearchGeneration = searchGeneration;
 	}
 
 	return true;
@@ -1797,6 +1881,107 @@ idRenderSystemLocal::GetImageSize
 void idRenderSystemLocal::GetImageSize(idImage* image, int& imageWidth, int& imageHeight) {
 	imageWidth = image->GetOpts().width;
 	imageHeight = image->GetOpts().height;
+}
+
+/*
+===============
+idRenderSystemLocal::GetRenderTextureSize
+===============
+*/
+void idRenderSystemLocal::GetRenderTextureSize(idRenderTexture* renderTexture, int& renderTextureWidth, int& renderTextureHeight) {
+	if ( renderTexture == NULL ) {
+		renderTextureWidth = 0;
+		renderTextureHeight = 0;
+		return;
+	}
+
+	renderTextureWidth = renderTexture->GetWidth();
+	renderTextureHeight = renderTexture->GetHeight();
+}
+
+/*
+===============
+idRenderSystemLocal::SetRenderTextureDebugName
+===============
+*/
+void idRenderSystemLocal::SetRenderTextureDebugName(idRenderTexture* renderTexture, const char* label) {
+	if ( renderTexture == NULL ) {
+		return;
+	}
+
+	renderTexture->SetDebugLabel( label );
+}
+
+/*
+===============
+idRenderSystemLocal::SetPostProcessSourceSize
+===============
+*/
+void idRenderSystemLocal::SetPostProcessSourceSize(int width, int height) {
+	width = Max( width, 1 );
+	height = Max( height, 1 );
+	postProcessTexelSize.Set(
+		1.0f / static_cast<float>( width ),
+		1.0f / static_cast<float>( height ),
+		static_cast<float>( width ),
+		static_cast<float>( height ) );
+
+	if ( guiModel != NULL ) {
+		guiModel->EmitFullScreen();
+		guiModel->Clear();
+	}
+
+	setPostProcessSourceSizeCommand_t* cmd =
+		(setPostProcessSourceSizeCommand_t*)R_GetCommandBuffer( sizeof( *cmd ) );
+	cmd->commandId = RC_SET_POSTPROCESS_SOURCE_SIZE;
+	cmd->texelSize = postProcessTexelSize;
+	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
+		R_ScenePackets_AddRenderTargetOp();
+	}
+}
+
+/*
+===============
+idRenderSystemLocal::SetPostProcessSourceColorSpace
+===============
+*/
+void idRenderSystemLocal::SetPostProcessSourceColorSpace(const idVec4& colorSpace) {
+	postProcessSourceColorSpace = colorSpace;
+
+	if ( guiModel != NULL ) {
+		guiModel->EmitFullScreen();
+		guiModel->Clear();
+	}
+
+	setPostProcessSourceColorSpaceCommand_t* cmd =
+		(setPostProcessSourceColorSpaceCommand_t*)R_GetCommandBuffer( sizeof( *cmd ) );
+	cmd->commandId = RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE;
+	cmd->colorSpace = postProcessSourceColorSpace;
+	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
+		R_ScenePackets_AddRenderTargetOp();
+	}
+}
+
+/*
+===============
+idRenderSystemLocal::SetPostProcessSMAAQuality
+===============
+*/
+void idRenderSystemLocal::SetPostProcessSMAAQuality(const idVec4& quality) {
+	postProcessSMAAQuality = quality;
+
+	if ( guiModel != NULL ) {
+		guiModel->EmitFullScreen();
+		guiModel->Clear();
+	}
+
+	setPostProcessSMAAQualityCommand_t* cmd =
+		(setPostProcessSMAAQualityCommand_t*)R_GetCommandBuffer( sizeof( *cmd ) );
+	cmd->commandId = RC_SET_POSTPROCESS_SMAA_QUALITY;
+	cmd->quality = postProcessSMAAQuality;
+	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
+		R_ScenePackets_AddRenderTargetOp();
+	}
 }
 
 /*

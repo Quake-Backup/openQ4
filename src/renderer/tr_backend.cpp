@@ -794,6 +794,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// needed for editor rendering
 	RB_SetDefaultGLState();
 	backEnd.renderTexture = NULL;
+	backEnd.postProcessTexelSize = tr.postProcessTexelSize;
+	backEnd.postProcessSourceColorSpace = tr.postProcessSourceColorSpace;
+	backEnd.postProcessSMAAQuality = tr.postProcessSMAAQuality;
 	idRenderTexture::BindNull();
 
 	// upload any image loads that have completed
@@ -846,6 +849,15 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			RB_ClearRenderTarget(cmds);
 			R_RendererMetrics_EndGpuTimer();
 			c_renderTargetOps++;
+			break;
+		case RC_SET_POSTPROCESS_SOURCE_SIZE:
+			backEnd.postProcessTexelSize = ((const setPostProcessSourceSizeCommand_t *)cmds)->texelSize;
+			break;
+		case RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE:
+			backEnd.postProcessSourceColorSpace = ((const setPostProcessSourceColorSpaceCommand_t *)cmds)->colorSpace;
+			break;
+		case RC_SET_POSTPROCESS_SMAA_QUALITY:
+			backEnd.postProcessSMAAQuality = ((const setPostProcessSMAAQualityCommand_t *)cmds)->quality;
 			break;
 // jmarshall end
 		case RC_SET_BUFFER:

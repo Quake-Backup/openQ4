@@ -1655,6 +1655,9 @@ void R_ScenePackets_BuildLegacyCommandStream( const emptyCommand_t *cmds, idScen
 		case RC_SET_RENDERTEXTURE:
 		case RC_RESOLVE_MSAA:
 		case RC_CLEAR_RENDERTARGET:
+		case RC_SET_POSTPROCESS_SOURCE_SIZE:
+		case RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE:
+		case RC_SET_POSTPROCESS_SMAA_QUALITY:
 			R_ScenePackets_AddCommandPass( packetFrame, RENDER_PASS_AUTHORED_POST, NULL, true );
 			break;
 		case RC_COPY_RENDER:
