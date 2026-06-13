@@ -36,6 +36,7 @@ uniform float uShadowCascadeBiasScale[4];
 uniform int uShadowCascadeCount;
 uniform float uShadowCascadeBlend;
 uniform float uShadowDebugMode;
+uniform float uShadowReceiverDebugReason;
 uniform float uTranslucentShadowEnabled;
 uniform float uTranslucentShadowDensity;
 uniform float uTranslucentShadowFilterRadius;
@@ -71,6 +72,9 @@ const float kShadowDebugBiasOff = 8.0;
 const float kShadowDebugPCFOff = 9.0;
 const float kShadowDebugCasterOffsetOff = 10.0;
 const float kShadowDebugReceiverPlaneBiasOff = 11.0;
+const float kShadowDebugCompareDelta = 12.0;
+const float kShadowDebugReceiverEligibility = 13.0;
+const float kShadowDebugReceiverFallbackReason = 14.0;
 
 float gShadowDebugState = 0.0;
 
@@ -81,7 +85,15 @@ bool ShadowDebugModeIs( float mode ) {
 }
 
 bool ShadowVisualDebugMode() {
-	return uShadowDebugMode > 0.5 && uShadowDebugMode < kShadowDebugBiasOff - 0.5;
+	return ( uShadowDebugMode > 0.5 && uShadowDebugMode < kShadowDebugBiasOff - 0.5 ) ||
+		ShadowDebugModeIs( kShadowDebugCompareDelta ) ||
+		ShadowDebugModeIs( kShadowDebugReceiverEligibility ) ||
+		ShadowDebugModeIs( kShadowDebugReceiverFallbackReason );
+}
+
+bool ShadowReceiverDebugMode() {
+	return ShadowDebugModeIs( kShadowDebugReceiverEligibility ) ||
+		ShadowDebugModeIs( kShadowDebugReceiverFallbackReason );
 }
 
 bool ShadowCoordComponentInvalid( float value ) {
@@ -274,11 +286,15 @@ float SampleShadowCompare( vec2 uv, float depth, int cascadeIndex ) {
 #endif
 }
 
-#ifndef OPENQ4_SHADOW_COMPARE
 float RawShadowDepth( vec2 uv ) {
+#ifdef OPENQ4_SHADOW_COMPARE
+	return shadow2D( uShadowMap, vec3( uv, 0.5 ) ).r;
+#else
 	return texture2D( uShadowMap, uv ).r;
+#endif
 }
 
+#ifndef OPENQ4_SHADOW_COMPARE
 float ProjectedPCSSRadius( vec2 uv, float depth, int cascadeIndex, vec2 clampMin, vec2 clampMax ) {
 	if ( uShadowFilterMode < 1.5 || uShadowPCSSLightRadius <= 0.0 || uShadowPCSSMaxRadius <= 0.0 ) {
 		return uShadowFilterRadius;
@@ -554,9 +570,67 @@ vec4 ShadowCoordWDebugOutput( vec4 shadowCoord ) {
 	return vec4( color * intensity, 1.0 );
 }
 
+vec4 ShadowCompareDeltaDebugOutput( vec4 shadowInfo ) {
+	int cascadeIndex = int( shadowInfo.y + 0.5 );
+	vec2 localUv;
+	float depth;
+	if ( !ProjectShadowCoord( ShadowCoordByIndex( cascadeIndex ), localUv, depth ) ) {
+		return vec4( 1.0, 0.0, 1.0, 1.0 );
+	}
+	if ( localUv.x <= 0.0 || localUv.x >= 1.0 || localUv.y <= 0.0 || localUv.y >= 1.0 || depth <= 0.0 || depth >= 1.0 ) {
+		return vec4( 1.0, 1.0, 0.0, 1.0 );
+	}
+
+	vec4 atlasRect = uShadowAtlasRect[cascadeIndex];
+	vec2 atlasUv = mix( atlasRect.xy, atlasRect.zw, localUv );
+	float storedDepth = RawShadowDepth( atlasUv );
+	float compareDepth = depth - ShadowReceiverBias( cascadeIndex, depth );
+	float delta = compareDepth - storedDepth;
+	float magnitude = clamp( abs( delta ) * 64.0, 0.0, 1.0 );
+	vec3 litColor = vec3( 0.1, 0.35, 1.0 );
+	vec3 shadowColor = vec3( 1.0, 0.16, 0.08 );
+	vec3 nearColor = vec3( 0.0, 1.0, 0.22 );
+	vec3 signColor = ( delta > 0.0 ) ? shadowColor : litColor;
+	return vec4( mix( nearColor, signColor, magnitude ), 1.0 );
+}
+
+vec4 ShadowReceiverDebugOutput() {
+	float reason = floor( uShadowReceiverDebugReason + 0.5 );
+	if ( ShadowDebugModeIs( kShadowDebugReceiverEligibility ) ) {
+		if ( reason < 0.5 ) {
+			return vec4( 0.0, 0.95, 0.18, 1.0 );
+		}
+		if ( reason < 1.5 ) {
+			return vec4( 0.0, 0.85, 1.0, 1.0 );
+		}
+		return vec4( 1.0, 0.18, 0.08, 1.0 );
+	}
+
+	if ( reason < 0.5 ) {
+		return vec4( 0.0, 0.85, 0.16, 1.0 );
+	}
+	if ( reason < 1.5 ) {
+		return vec4( 0.0, 0.82, 1.0, 1.0 );
+	}
+	if ( reason < 2.5 ) {
+		return vec4( 1.0, 0.08, 0.08, 1.0 );
+	}
+	if ( reason < 3.5 ) {
+		return vec4( 0.95, 0.12, 1.0, 1.0 );
+	}
+	if ( reason < 4.5 ) {
+		return vec4( 1.0, 0.86, 0.08, 1.0 );
+	}
+	return vec4( 1.0, 0.45, 0.0, 1.0 );
+}
+
 vec4 ShadowDebugOutput( vec4 shadowInfo ) {
 	if ( uShadowDebugMode < 0.5 ) {
 		return vec4( 0.0 );
+	}
+
+	if ( ShadowReceiverDebugMode() ) {
+		return ShadowReceiverDebugOutput();
 	}
 
 	if ( uShadowDebugMode < kShadowDebugCascadeIndex + 0.5 ) {
@@ -604,6 +678,10 @@ vec4 ShadowDebugOutput( vec4 shadowInfo ) {
 
 	if ( uShadowDebugMode < kShadowDebugProjectedW + 0.5 ) {
 		return ShadowCoordWDebugOutput( ShadowCoordByIndex( int( shadowInfo.y + 0.5 ) ) );
+	}
+
+	if ( ShadowDebugModeIs( kShadowDebugCompareDelta ) ) {
+		return ShadowCompareDeltaDebugOutput( shadowInfo );
 	}
 
 	if ( uShadowDebugMode > kShadowDebugInvalidMask + 0.5 && uShadowDebugMode < kShadowDebugBiasHeatmap + 0.5 ) {

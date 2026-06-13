@@ -1501,6 +1501,18 @@ static glslShaderParmBinding_t R_ParseGLSLShaderParmBinding( const idToken &toke
 	if ( !token.Icmp( "gaussianSampleWeights2" ) ) {
 		return GLSL_SHADERPARM_GAUSSIAN_SAMPLE_WEIGHTS2;
 	}
+	if ( !token.Icmp( "postProcessInvTexSize" ) ) {
+		return GLSL_SHADERPARM_POSTPROCESS_INV_TEX_SIZE;
+	}
+	if ( !token.Icmp( "postProcessTexSize" ) ) {
+		return GLSL_SHADERPARM_POSTPROCESS_TEX_SIZE;
+	}
+	if ( !token.Icmp( "postProcessSourceColorSpace" ) ) {
+		return GLSL_SHADERPARM_POSTPROCESS_SOURCE_COLOR_SPACE;
+	}
+	if ( !token.Icmp( "postProcessSMAAQuality" ) ) {
+		return GLSL_SHADERPARM_POSTPROCESS_SMAA_QUALITY;
+	}
 
 	return GLSL_SHADERPARM_REGISTERS;
 }

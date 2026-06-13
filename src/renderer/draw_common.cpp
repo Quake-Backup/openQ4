@@ -5200,92 +5200,76 @@ static bool RB_ProjectLensFlarePoint( const idVec3 &origin, int viewportWidth, i
 	return true;
 }
 
-static bool RB_LensFlareSurfaceSourceAllowedForParms( const renderLight_t &parms ) {
-	return !parms.pointLight && !parms.parallel && !parms.globalLight;
-}
+static idVec3 RB_LensFlareLiftedSurfaceOrigin( const idVec3 &surfaceCenter, const idVec3 &surfaceUp, float sourceScale ) {
+	idVec3 liftedOrigin = surfaceCenter;
+	idVec3 worldUp = surfaceUp;
+	const float upLength = worldUp.Normalize();
 
-static idVec3 RB_LensFlareSourceOriginForParms( const renderLight_t &parms ) {
-	idVec3 sourceOrigin = parms.origin;
-
-	if ( RB_LensFlareSurfaceSourceAllowedForParms( parms ) ) {
-		sourceOrigin += parms.axis * parms.target;
-
-		idVec3 localUp = parms.up;
-		const float localUpLength = localUp.Normalize();
-		if ( localUpLength > 0.001f ) {
-			const float surfaceLift = idMath::ClampFloat( 2.0f, 16.0f, localUpLength * 0.08f );
-			sourceOrigin += ( parms.axis * localUp ) * surfaceLift;
-		}
+	if ( upLength > 0.001f ) {
+		const float surfaceLift = idMath::ClampFloat( 2.0f, 16.0f, sourceScale * 0.08f );
+		liftedOrigin += worldUp * surfaceLift;
 	}
 
-	// Light-center offsets are for lighting/shadow direction. The visible flare
-	// should stay near the authored surface-light center instead.
-	return sourceOrigin;
+	return liftedOrigin;
 }
 
-static idVec3 RB_LensFlareSourceOrigin( const viewLight_t *vLight ) {
-	if ( vLight == NULL || vLight->lightDef == NULL ) {
-		return vec3_origin;
-	}
-	return RB_LensFlareSourceOriginForParms( vLight->lightDef->parms );
-}
+typedef struct rbLensFlareSurfaceSource_s {
+	idVec3			origin;
+	float			worldRadius;
+	idScreenRect	scissorRect;
+} rbLensFlareSurfaceSource_t;
 
-static bool RB_LensFlareSurfaceSourceAllowed( const viewLight_t *vLight ) {
-	if ( vLight == NULL || vLight->lightDef == NULL || vLight->pointLight ) {
+static bool RB_LensFlareSurfaceDrawSurfSource( const drawSurf_t *surf, rbLensFlareSurfaceSource_t &source ) {
+	if ( surf == NULL || surf->space == NULL || surf->geo == NULL || surf->material == NULL || surf->geo->bounds.IsCleared() ) {
 		return false;
 	}
-	return RB_LensFlareSurfaceSourceAllowedForParms( vLight->lightDef->parms );
-}
-
-static bool RB_EvaluateLensFlareLightColor( const viewLight_t *vLight, idVec4 &lightColor ) {
-	if ( vLight == NULL || vLight->lightShader == NULL || vLight->shaderRegisters == NULL ) {
+	if ( surf->material->Deform() != DFRM_FLARE || surf->scissorRect.IsEmpty() || surf->geo->numVerts <= 0 || surf->geo->numIndexes <= 0 ) {
 		return false;
 	}
-	// Fog and blend lights are volume effects, and ambient lights are area
-	// fills; none of them have a meaningful point source to flare from.
-	if ( vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() || vLight->lightShader->IsAmbientLight() ) {
+
+	const idBounds &bounds = surf->geo->bounds;
+	R_LocalPointToGlobal( surf->space->modelMatrix, bounds.GetCenter(), source.origin );
+
+	const idVec3 boundsSize = bounds.Size();
+	const float sourceScale = Max( boundsSize.x, Max( boundsSize.y, boundsSize.z ) );
+	idVec3 worldUp( surf->space->modelMatrix[8], surf->space->modelMatrix[9], surf->space->modelMatrix[10] );
+	source.origin = RB_LensFlareLiftedSurfaceOrigin( source.origin, worldUp, sourceScale );
+	source.worldRadius = idMath::ClampFloat( 2.0f, 16.0f, sourceScale * 0.08f );
+	source.scissorRect = surf->scissorRect;
+	return true;
+}
+
+static bool RB_EvaluateLensFlareSurfaceColor( const drawSurf_t *surf, idVec4 &lightColor ) {
+	if ( surf == NULL || surf->material == NULL || surf->shaderRegisters == NULL ) {
 		return false;
 	}
 
 	lightColor.Set( 0.0f, 0.0f, 0.0f, 1.0f );
-	const float *regs = vLight->shaderRegisters;
-	const idMaterial *lightShader = vLight->lightShader;
+	const float *regs = surf->shaderRegisters;
+	const idMaterial *surfaceShader = surf->material;
 
-	for ( int lightStageNum = 0; lightStageNum < lightShader->GetNumStages(); lightStageNum++ ) {
-		const shaderStage_t *lightStage = lightShader->GetStage( lightStageNum );
-		if ( lightStage == NULL || !regs[ lightStage->conditionRegister ] ) {
+	for ( int stageNum = 0; stageNum < surfaceShader->GetNumStages(); stageNum++ ) {
+		const shaderStage_t *surfaceStage = surfaceShader->GetStage( stageNum );
+		if ( surfaceStage == NULL || !regs[ surfaceStage->conditionRegister ] ) {
 			continue;
 		}
 
-		lightColor[0] += Max( 0.0f, r_lightScale.GetFloat() * regs[ lightStage->color.registers[0] ] );
-		lightColor[1] += Max( 0.0f, r_lightScale.GetFloat() * regs[ lightStage->color.registers[1] ] );
-		lightColor[2] += Max( 0.0f, r_lightScale.GetFloat() * regs[ lightStage->color.registers[2] ] );
-		lightColor[3] = Max( lightColor[3], Max( 0.0f, regs[ lightStage->color.registers[3] ] ) );
+		lightColor[0] += Max( 0.0f, regs[ surfaceStage->color.registers[0] ] );
+		lightColor[1] += Max( 0.0f, regs[ surfaceStage->color.registers[1] ] );
+		lightColor[2] += Max( 0.0f, regs[ surfaceStage->color.registers[2] ] );
+		lightColor[3] = Max( lightColor[3], Max( 0.0f, regs[ surfaceStage->color.registers[3] ] ) );
 	}
 
 	const float brightness = Max( lightColor[0], Max( lightColor[1], lightColor[2] ) );
 	return brightness > 0.02f;
 }
 
-static float RB_EstimateLensFlareWorldRadius( const viewLight_t *vLight ) {
-	if ( vLight == NULL || vLight->lightDef == NULL ) {
-		return 0.0f;
-	}
-
-	if ( vLight->pointLight ) {
-		return Max( vLight->lightRadius.x, Max( vLight->lightRadius.y, vLight->lightRadius.z ) );
-	}
-
-	const renderLight_t &parms = vLight->lightDef->parms;
-	return Max( parms.right.Length(), Max( parms.up.Length(), parms.target.Length() ) ) * 0.35f;
-}
-
-static float RB_EstimateLensFlareRadiusPixels( const viewLight_t *vLight, const idVec3 &sourceOrigin, float centerX, float centerY, int viewportWidth, int viewportHeight ) {
+static float RB_EstimateLensFlareRadiusPixels( const rbLensFlareSurfaceSource_t &source, float centerX, float centerY, int viewportWidth, int viewportHeight ) {
 	float radiusPixels = 0.0f;
-	const float worldRadius = RB_EstimateLensFlareWorldRadius( vLight );
+	const float worldRadius = source.worldRadius;
 
 	if ( worldRadius > 0.0f ) {
-		const idVec3 offsetPoint = sourceOrigin + backEnd.viewDef->renderView.viewaxis[1] * worldRadius;
+		const idVec3 offsetPoint = source.origin + backEnd.viewDef->renderView.viewaxis[1] * worldRadius;
 		float offsetX = 0.0f;
 		float offsetY = 0.0f;
 		float depth01 = 0.0f;
@@ -5297,9 +5281,7 @@ static float RB_EstimateLensFlareRadiusPixels( const viewLight_t *vLight, const 
 	}
 
 	if ( radiusPixels <= 1.0f ) {
-		const float scissorWidth = Max( 1.0f, static_cast<float>( vLight->scissorRect.x2 - vLight->scissorRect.x1 + 1 ) );
-		const float scissorHeight = Max( 1.0f, static_cast<float>( vLight->scissorRect.y2 - vLight->scissorRect.y1 + 1 ) );
-		radiusPixels = idMath::Sqrt( scissorWidth * scissorHeight ) * 0.12f;
+		radiusPixels = 12.0f;
 	}
 
 	return radiusPixels;
@@ -5343,24 +5325,24 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 	const float screenCenterX = viewportWidth * 0.5f;
 	const float screenCenterY = viewportHeight * 0.5f;
 
-	for ( const viewLight_t *vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+	if ( backEnd.viewDef == NULL || backEnd.viewDef->drawSurfs == NULL ) {
+		return 0;
+	}
+
+	for ( int surfIndex = 0; surfIndex < backEnd.viewDef->numDrawSurfs; surfIndex++ ) {
+		const drawSurf_t *surf = backEnd.viewDef->drawSurfs[surfIndex];
 		stats.consideredLights++;
-		if ( vLight->lightDef == NULL || vLight->scissorRect.IsEmpty() ) {
-			stats.rejectedLights++;
-			continue;
-		}
-		if ( !RB_LensFlareSurfaceSourceAllowed( vLight ) ) {
-			stats.rejectedLights++;
-			continue;
-		}
-		if ( !vLight->localInteractions && !vLight->globalInteractions && !vLight->translucentInteractions ) {
+
+		rbLensFlareSurfaceSource_t flareSource;
+		memset( &flareSource, 0, sizeof( flareSource ) );
+		if ( !RB_LensFlareSurfaceDrawSurfSource( surf, flareSource ) ) {
 			stats.rejectedLights++;
 			continue;
 		}
 
-		// Lights essentially attached to the camera (weapon glows, muzzle
-		// lights) have unstable projections and meaningless occlusion tests.
-		const idVec3 sourceOrigin = RB_LensFlareSourceOrigin( vLight );
+		// Flare cards essentially attached to the camera (weapon glows, muzzle
+		// flashes) have unstable projections and meaningless occlusion tests.
+		const idVec3 sourceOrigin = flareSource.origin;
 		idVec3 toEye = backEnd.viewDef->renderView.vieworg - sourceOrigin;
 		const float eyeDistance = toEye.Normalize();
 		if ( eyeDistance < settings.minEyeDistance ) {
@@ -5369,7 +5351,7 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 		}
 
 		idVec4 lightColor;
-		if ( !RB_EvaluateLensFlareLightColor( vLight, lightColor ) ) {
+		if ( !RB_EvaluateLensFlareSurfaceColor( surf, lightColor ) ) {
 			stats.rejectedLights++;
 			continue;
 		}
@@ -5382,11 +5364,15 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 			continue;
 		}
 		if ( screenX < 0.0f || screenX > viewportWidth || screenY < 0.0f || screenY > viewportHeight ) {
-			stats.rejectedLights++;
-			continue;
+			if ( flareSource.scissorRect.IsEmpty() ) {
+				stats.rejectedLights++;
+				continue;
+			}
+			screenX = idMath::ClampFloat( 0.0f, static_cast<float>( viewportWidth ), ( flareSource.scissorRect.x1 + flareSource.scissorRect.x2 ) * 0.5f );
+			screenY = idMath::ClampFloat( 0.0f, static_cast<float>( viewportHeight ), ( flareSource.scissorRect.y1 + flareSource.scissorRect.y2 ) * 0.5f );
 		}
 
-		float projectedRadius = RB_EstimateLensFlareRadiusPixels( vLight, sourceOrigin, screenX, screenY, viewportWidth, viewportHeight );
+		float projectedRadius = RB_EstimateLensFlareRadiusPixels( flareSource, screenX, screenY, viewportWidth, viewportHeight );
 		if ( projectedRadius <= settings.minSourceRadiusPixels ) {
 			stats.rejectedLights++;
 			continue;
@@ -5629,22 +5615,10 @@ bool RB_LensFlareRuntimeSelfTest( void ) {
 		ok = false;
 	}
 
-	renderLight_t sourceOriginTest;
-	memset( &sourceOriginTest, 0, sizeof( sourceOriginTest ) );
-	sourceOriginTest.axis.Identity();
-	sourceOriginTest.origin.Set( 16.0f, -32.0f, 64.0f );
-	sourceOriginTest.target.Set( 0.0f, 48.0f, 0.0f );
-	sourceOriginTest.up.Set( 0.0f, 0.0f, 80.0f );
-	sourceOriginTest.lightCenter.Set( 0.0f, 0.0f, 128.0f );
-	const idVec3 flareSourceOrigin = RB_LensFlareSourceOriginForParms( sourceOriginTest );
-	const idVec3 expectedFlareSourceOrigin( 16.0f, 16.0f, 70.4f );
-	if ( ( flareSourceOrigin - expectedFlareSourceOrigin ).LengthSqr() > 0.0001f ) {
-		common->Printf( "RendererLensFlareRuntime self-test failed: flare source origin is not above the projected surface center\n" );
-		ok = false;
-	}
-	sourceOriginTest.pointLight = true;
-	if ( RB_LensFlareSurfaceSourceAllowedForParms( sourceOriginTest ) ) {
-		common->Printf( "RendererLensFlareRuntime self-test failed: point lights are eligible for lens flares\n" );
+	const idVec3 liftedSurfaceOrigin = RB_LensFlareLiftedSurfaceOrigin( idVec3( 16.0f, 16.0f, 64.0f ), idVec3( 0.0f, 0.0f, 10.0f ), 80.0f );
+	const idVec3 expectedLiftedSurfaceOrigin( 16.0f, 16.0f, 70.4f );
+	if ( ( liftedSurfaceOrigin - expectedLiftedSurfaceOrigin ).LengthSqr() > 0.0001f ) {
+		common->Printf( "RendererLensFlareRuntime self-test failed: flare surface lift is not slightly above the deform surface center\n" );
 		ok = false;
 	}
 
@@ -5696,7 +5670,7 @@ bool RB_LensFlareRuntimeSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererLensFlareRuntime self-test passed (accumulation/composite contract, sourceAnchor=surface, pointLights=reject, compositeProgram=%d shaderLibrary=%d)\n",
+		"RendererLensFlareRuntime self-test passed (accumulation/composite contract, sourceAnchor=deformFlare, compositeProgram=%d shaderLibrary=%d)\n",
 		compositeProgramChecked ? 1 : 0,
 		shaderLibraryChecked ? 1 : 0 );
 	return true;

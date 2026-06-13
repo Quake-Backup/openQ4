@@ -28,6 +28,7 @@ uniform float uShadowFilterRadius;
 uniform float uShadowFilterTaps;
 uniform float uShadowFilterMode;
 uniform float uShadowDebugMode;
+uniform float uShadowReceiverDebugReason;
 uniform float uPointShadowTexelScale;
 uniform float uPointShadowDepthMode;
 uniform float uTranslucentShadowEnabled;
@@ -39,6 +40,9 @@ uniform float uTranslucentShadowBleedReduction;
 const float kShadowDebugBiasOff = 8.0;
 const float kShadowDebugPCFOff = 9.0;
 const float kShadowDebugReceiverPlaneBiasOff = 11.0;
+const float kShadowDebugCompareDelta = 12.0;
+const float kShadowDebugReceiverEligibility = 13.0;
+const float kShadowDebugReceiverFallbackReason = 14.0;
 
 varying vec2 vBumpTexCoord;
 varying vec2 vDiffuseTexCoord;
@@ -58,6 +62,18 @@ vec3 SafeNormalize( vec3 value ) {
 
 bool ShadowDebugModeIs( float mode ) {
 	return abs( uShadowDebugMode - mode ) < 0.5;
+}
+
+bool ShadowReceiverDebugMode() {
+	return ShadowDebugModeIs( kShadowDebugReceiverEligibility ) ||
+		ShadowDebugModeIs( kShadowDebugReceiverFallbackReason );
+}
+
+bool ShadowVisualDebugMode() {
+	return ShadowDebugModeIs( 1.0 ) ||
+		ShadowDebugModeIs( 4.0 ) ||
+		ShadowDebugModeIs( kShadowDebugCompareDelta ) ||
+		ShadowReceiverDebugMode();
 }
 
 float EffectiveShadowFilterRadius() {
@@ -206,6 +222,14 @@ float SamplePointShadowCompare( vec3 direction, float depth ) {
 #endif
 }
 
+float RawPointShadowDepth( vec3 direction ) {
+#ifdef OPENQ4_POINT_SHADOW_COMPARE
+	return texture( uPointShadowMap, vec4( direction, 0.5 ) );
+#else
+	return DecodePointShadowDepth( textureCube( uPointShadowMap, direction ) );
+#endif
+}
+
 float SamplePointShadow() {
 	if ( uPointShadowFar <= 0.0 ) {
 		return 1.0;
@@ -265,6 +289,68 @@ float SamplePointShadow() {
 	return shadow * ( 1.0 / 13.0 );
 }
 
+vec4 PointReceiverDebugOutput() {
+	float reason = floor( uShadowReceiverDebugReason + 0.5 );
+	if ( ShadowDebugModeIs( kShadowDebugReceiverEligibility ) ) {
+		if ( reason < 0.5 ) {
+			return vec4( 0.0, 0.95, 0.18, 1.0 );
+		}
+		if ( reason < 1.5 ) {
+			return vec4( 0.0, 0.85, 1.0, 1.0 );
+		}
+		return vec4( 1.0, 0.18, 0.08, 1.0 );
+	}
+
+	if ( reason < 0.5 ) {
+		return vec4( 0.0, 0.85, 0.16, 1.0 );
+	}
+	if ( reason < 1.5 ) {
+		return vec4( 0.0, 0.82, 1.0, 1.0 );
+	}
+	if ( reason < 2.5 ) {
+		return vec4( 1.0, 0.08, 0.08, 1.0 );
+	}
+	if ( reason < 3.5 ) {
+		return vec4( 0.95, 0.12, 1.0, 1.0 );
+	}
+	if ( reason < 4.5 ) {
+		return vec4( 1.0, 0.86, 0.08, 1.0 );
+	}
+	return vec4( 1.0, 0.45, 0.0, 1.0 );
+}
+
+vec4 PointShadowDebugOutput() {
+	if ( ShadowReceiverDebugMode() ) {
+		return PointReceiverDebugOutput();
+	}
+	if ( uPointShadowFar <= 0.0 ) {
+		return vec4( 1.0, 0.0, 1.0, 1.0 );
+	}
+
+	float depth = length( vPointShadowVector ) / uPointShadowFar;
+	if ( depth <= 0.0 || depth >= 1.0 ) {
+		return vec4( 1.0, 1.0, 0.0, 1.0 );
+	}
+	vec3 direction = SafeNormalize( vPointShadowVector );
+	float storedDepth = RawPointShadowDepth( direction );
+
+	if ( ShadowDebugModeIs( kShadowDebugCompareDelta ) ) {
+		float delta = depth - ShadowReceiverBias() - storedDepth;
+		float magnitude = clamp( abs( delta ) * 64.0, 0.0, 1.0 );
+		vec3 litColor = vec3( 0.1, 0.35, 1.0 );
+		vec3 shadowColor = vec3( 1.0, 0.16, 0.08 );
+		vec3 nearColor = vec3( 0.0, 1.0, 0.22 );
+		vec3 signColor = ( delta > 0.0 ) ? shadowColor : litColor;
+		return vec4( mix( nearColor, signColor, magnitude ), 1.0 );
+	}
+
+	if ( ShadowDebugModeIs( 4.0 ) ) {
+		return vec4( vec3( depth ), 1.0 );
+	}
+
+	return vec4( direction * 0.5 + 0.5, clamp( storedDepth, 0.0, 1.0 ) );
+}
+
 vec3 SamplePointTranslucentShadow() {
 	if ( uTranslucentShadowEnabled < 0.5 || uPointShadowFar <= 0.0 ) {
 		return vec3( 1.0 );
@@ -303,5 +389,9 @@ void main() {
 	vec3 specular = InteractionSpecular( halfAngle, viewDir, localNormal, specularSample );
 
 	vec3 color = ( diffuse + specular ) * light * vVertexColor;
+	if ( ShadowVisualDebugMode() ) {
+		gl_FragColor = PointShadowDebugOutput();
+		return;
+	}
 	gl_FragColor = vec4( color, 0.0 );
 }

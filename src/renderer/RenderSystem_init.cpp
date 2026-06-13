@@ -144,7 +144,8 @@ idCVar r_inhibitFragmentProgram( "r_inhibitFragmentProgram", "0", CVAR_RENDERER 
 idCVar r_glDriver( "r_glDriver", "", CVAR_RENDERER, "\"opengl32\", etc." );
 idCVar r_useLightPortalFlow( "r_useLightPortalFlow", "1", CVAR_RENDERER | CVAR_BOOL, "use a more precise area reference determination" );
 idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of antialiasing samples" );
-idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "post AA mode: 0 = off, 1 = SMAA 1x", 0, 1, idCmdSystem::ArgCompletion_Integer<0,1> );
+idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "post AA mode: 0 = off, 1 = SMAA 1x medium, 2 = SMAA 1x high, 3 = SMAA 1x ultra, 4 = SMAA 1x colour-edge prototype", 0, 4, idCmdSystem::ArgCompletion_Integer<0,4> );
+idCVar r_postAAStatePoisonTest( "r_postAAStatePoisonTest", "0", CVAR_RENDERER | CVAR_BOOL, "intentionally dirty GL texture/client state before SMAA post-AA draws for validation" );
 idCVar r_bloom( "r_bloom", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable bloom post-process" );
 idCVar r_lensFlare( "r_lensFlare", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "light corona / lens flare quality: 0 = off, 1 = coronas, 2 = high quality", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_bloomThreshold( "r_bloomThreshold", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "bloom bright-pass threshold in scene-referred units", 0.0f, 16.0f );
@@ -3346,6 +3347,9 @@ void idRenderSystemLocal::Clear( void ) {
 	staticAllocCount = 0;
 	frameShaderTime = 0.0f;
 	frameShaderTimeMsec = 0;
+	postProcessTexelSize.Set( 1.0f, 1.0f, 1.0f, 1.0f );
+	postProcessSourceColorSpace.Set( 0.0f, 2.2f, 0.0f, 0.0f );
+	postProcessSMAAQuality.Set( 0.0f, 0.10f, 8.0f, 2.0f );
 	deltaTime = 0.0f;
 	lastRenderTimeMsec = 0;
 	viewportOffset[0] = 0;

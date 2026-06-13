@@ -45,6 +45,11 @@ static void R_FinishDeform( drawSurf_t *drawSurf, srfTriangles_t *newTri, idDraw
 		return;
 	}
 
+	newTri->bounds.Clear();
+	for ( int i = 0; i < newTri->numVerts; i++ ) {
+		newTri->bounds.AddPoint( ac[i].xyz );
+	}
+
 	// generate current normals, tangents, and bitangents
 	// We might want to support the possibility of deform functions generating
 	// explicit normals, and we might also want to allow the cached deformInfo

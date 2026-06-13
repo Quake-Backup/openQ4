@@ -598,6 +598,9 @@ typedef enum {
 	RC_SET_RENDERTEXTURE,
 	RC_RESOLVE_MSAA,
 	RC_CLEAR_RENDERTARGET,
+	RC_SET_POSTPROCESS_SOURCE_SIZE,
+	RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE,
+	RC_SET_POSTPROCESS_SMAA_QUALITY,
 	RC_SWAP_BUFFERS		// can't just assume swap at end of list because
 						// of forced list submission before syncs
 } renderCommand_t;
@@ -648,6 +651,20 @@ typedef struct {
 	bool resolveDepth;
 } resolveRenderTargetCommand_t;
 
+typedef struct {
+	renderCommand_t		commandId, * next;
+	idVec4 texelSize;
+} setPostProcessSourceSizeCommand_t;
+
+typedef struct {
+	renderCommand_t		commandId, * next;
+	idVec4 colorSpace;
+} setPostProcessSourceColorSpaceCommand_t;
+
+typedef struct {
+	renderCommand_t		commandId, * next;
+	idVec4 quality;
+} setPostProcessSMAAQualityCommand_t;
 // jmarshall end
 
 //=======================================================================
@@ -798,6 +815,9 @@ typedef struct {
 
 	idRenderTexture		*renderTexture;
 	idRenderTexture		*feedbackRenderTexture;	// active scene target allowed to feed _currentRender
+	idVec4				postProcessTexelSize;	// x/y = inverse source size, z/w = source size
+	idVec4				postProcessSourceColorSpace;	// x = contract enum, y = display gamma, z/w reserved
+	idVec4				postProcessSMAAQuality;	// x = edge mode, y = threshold, z = search steps, w = local contrast
 
 	const viewEntity_t *currentSpace;		// for detecting when a matrix must change
 	idScreenRect		currentScissor;
@@ -910,9 +930,14 @@ public:
 	virtual void			DestroyRenderTexture(idRenderTexture* renderTexture);
 	virtual void			ResizeImage(idImage* image, int width, int height);
 	virtual void			ResizeRenderTexture(idRenderTexture* renderTexture, int width, int height);
+	virtual void			GetRenderTextureSize(idRenderTexture* renderTexture, int& renderTextureWidth, int& renderTextureHeight);
+	virtual void			SetRenderTextureDebugName(idRenderTexture* renderTexture, const char* label);
 	virtual void			BindRenderTexture(idRenderTexture* renderTexture, idRenderTexture* feedbackRenderTexture);
 	virtual void			ResolveMSAA(idRenderTexture* msaaRenderTexture, idRenderTexture* destRenderTexture, bool resolveDepth = false);
 	virtual void			ClearRenderTarget(bool clearColor, bool clearDepth, float depthValue, float red, float green, float blue);
+	virtual void			SetPostProcessSourceSize(int width, int height);
+	virtual void			SetPostProcessSourceColorSpace(const idVec4& colorSpace);
+	virtual void			SetPostProcessSMAAQuality(const idVec4& quality);
 	virtual void			SetUseUIViewportFor2D( bool enable );
 	virtual bool			GetUseUIViewportFor2D( void ) const;
 	virtual void			GetImageSize(idImage* image, int& imageWidth, int& imageHeight);
@@ -947,6 +972,9 @@ public:
 
 	float					frameShaderTime;	// shader time for all non-world 2D rendering
 	int						frameShaderTimeMsec;	// integer companion for GUI/cinematic/material timing
+	idVec4					postProcessTexelSize;	// x/y = inverse source size, z/w = source size
+	idVec4					postProcessSourceColorSpace;	// x = contract enum, y = display gamma, z/w reserved
+	idVec4					postProcessSMAAQuality;	// x = edge mode, y = threshold, z = search steps, w = local contrast
 	float					deltaTime;		// seconds since the previous top-level RenderScene call
 	int						lastRenderTimeMsec;	// host milliseconds of the previous top-level RenderScene call
 
@@ -1061,7 +1089,8 @@ extern idCVar r_borderless;				// 1 = borderless window when r_fullscreen is 0
 extern idCVar r_windowWidth;				// windowed mode width
 extern idCVar r_windowHeight;				// windowed mode height
 extern idCVar r_multiSamples;			// number of antialiasing samples
-extern idCVar r_postAA;					// post AA mode: 0 = off, 1 = SMAA 1x
+extern idCVar r_postAA;					// post AA mode: 0 = off, 1/2/3 = SMAA medium/high/ultra, 4 = colour-edge prototype
+extern idCVar r_postAAStatePoisonTest;	// intentionally dirty GL texture/client state before SMAA draws
 extern idCVar r_bloom;					// enable bloom post-process
 extern idCVar r_lensFlare;				// light corona / lens flare quality
 extern idCVar r_bloomThreshold;			// bloom bright-pass threshold
