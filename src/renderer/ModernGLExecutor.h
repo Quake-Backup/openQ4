@@ -73,6 +73,12 @@ typedef struct modernGLExecutorStats_s {
 	bool	forwardPlusSceneDepthReady;
 	bool	forwardPlusProgramReady;
 	bool	forwardPlusClusterReady;
+	bool	shadowTextureUnitsReady;
+	bool	shadowTextureBindingsReady;
+	bool	shadowTextureProjectedAtlasReady;
+	bool	shadowTexturePointAtlasReady;
+	bool	shadowTextureProjectedMomentsReady;
+	bool	shadowTexturePointMomentsReady;
 	bool	modernVisibleRequested;
 	bool	modernVisibleCanReplaceFrame;
 	bool	modernVisibleHandoffReady;
@@ -387,6 +393,10 @@ typedef struct modernGLExecutorStats_s {
 	int		forwardPlusShadowFallbackLights;
 	int		forwardPlusShadowSkippedLights;
 	int		forwardPlusShadowDescriptors;
+	int		shadowTextureBaseUnit;
+	int		shadowTextureBoundTextures;
+	int		shadowTextureActualTextures;
+	int		shadowTextureRequiredUnits;
 	int		forwardPlusLightGridContributions;
 	int		forwardPlusClearOps;
 	int		modernVisibleCompositions;

@@ -401,6 +401,7 @@ const int MODERN_GL_MATERIAL_TEXTURE_COUNT = 4;
 const int MODERN_GL_CLUSTER_UBO_BINDING_PARAMS = 3;
 const int MODERN_GL_CLUSTER_UBO_BINDING_LIGHTS = 4;
 const int MODERN_GL_CLUSTER_UBO_BINDING_INDICES = 5;
+const int MODERN_GL_CLUSTER_UBO_BINDING_SHADOW_DESCRIPTORS = 6;
 const int MODERN_GL_VISIBLE_COMPOSITE_TEXTURE_COUNT = 2;
 
 static const char *rg_modernGLGBufferAttachmentNames[MODERN_GL_GBUFFER_ATTACHMENT_COUNT] = {
@@ -424,6 +425,9 @@ static const char *rg_modernGLDeferredTextureUniforms[MODERN_GL_DEFERRED_TEXTURE
 	"uGBufferEmissive",
 	"uSceneDepth"
 };
+
+static const char *rg_modernGLShadowProjectedMomentUniform = "uModernTranslucentShadowMoments[0]";
+static const char *rg_modernGLShadowPointMomentUniform = "uModernPointTranslucentShadowMoments[0]";
 
 static modernGLExecutorStats_t rg_modernGLExecutorStats;
 static idModernGLDrawPlan rg_modernGLDrawPlan;
@@ -2533,6 +2537,8 @@ static bool R_ModernGLExecutor_CommandMaterialColor( const modernGLSubmitCommand
 static void R_ModernGLExecutor_MaterialFlagsForCommand( const modernGLSubmitCommand_t &command, float flags[4] );
 static void R_ModernGLExecutor_MaterialEnhancementForCommand( const modernGLSubmitCommand_t &command, float enhancement[4] );
 static void R_ModernGLExecutor_BindTextureGroup( GLuint first, GLsizei count, const GLuint *textures, modernGLExecutorStats_t &stats );
+static bool R_ModernGLExecutor_CommandUsesShadowTextures( const modernGLSubmitCommand_t &command );
+static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernGLExecutorStats_t &stats );
 
 static void R_ModernGLExecutor_DebugColorForCommand( const modernGLSubmitCommand_t &command, float color[4] ) {
 	float materialColor[4];
@@ -3778,9 +3784,19 @@ static void R_ModernGLExecutor_SetMaterialEnhancement( const modernGLSubmitComma
 	glUniform4f( command.materialEnhancementLocation, enhancement[0], enhancement[1], enhancement[2], enhancement[3] );
 }
 
+static bool R_ModernGLExecutor_CommandUsesShadowTextures( const modernGLSubmitCommand_t &command ) {
+	return command.shaderKind == MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE
+		|| command.shaderKind == MODERN_GL_SHADER_CLUSTERED_FORWARD_OPAQUE
+		|| command.shaderKind == MODERN_GL_SHADER_CLUSTERED_FORWARD_ALPHA_TEST
+		|| command.shaderKind == MODERN_GL_SHADER_TRANSPARENT_FORWARD;
+}
+
 static void R_ModernGLExecutor_BindMaterialTextures( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats ) {
 	GLuint textureIndices[MODERN_GL_MATERIAL_TEXTURE_COUNT];
-	if ( R_ModernGLExecutor_TextureTableIndicesForCommand( command, textureIndices ) && R_ModernGLExecutor_BindMaterialTextureTable( stats ) ) {
+	const bool reserveShadowTextureUnits =
+		R_ModernClusteredLighting_NumShadowDescriptors() > 0
+		&& R_ModernGLExecutor_CommandUsesShadowTextures( command );
+	if ( !reserveShadowTextureUnits && R_ModernGLExecutor_TextureTableIndicesForCommand( command, textureIndices ) && R_ModernGLExecutor_BindMaterialTextureTable( stats ) ) {
 		R_ModernGLExecutor_SetTextureTableMode( command, true );
 		glUniform4ui(
 			command.textureIndicesLocation,
@@ -3881,6 +3897,7 @@ static void R_ModernGLExecutor_BindClusterUniformBlocks( GLuint program ) {
 	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterGridParams", MODERN_GL_CLUSTER_UBO_BINDING_PARAMS );
 	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterLightRecords", MODERN_GL_CLUSTER_UBO_BINDING_LIGHTS );
 	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterIndexRecords", MODERN_GL_CLUSTER_UBO_BINDING_INDICES );
+	R_ModernGLExecutor_SetUniformBlockBinding( program, "ModernClusterShadowDescriptors", MODERN_GL_CLUSTER_UBO_BINDING_SHADOW_DESCRIPTORS );
 	if ( rg_modernGLClusterBlockBoundProgramCount < MODERN_GL_CLUSTER_BLOCK_BOUND_PROGRAM_CAPACITY ) {
 		rg_modernGLClusterBlockBoundPrograms[rg_modernGLClusterBlockBoundProgramCount++] = program;
 	}
@@ -3935,6 +3952,9 @@ static bool R_ModernGLExecutor_SubmitCommand( const modernGLSubmitCommand_t &com
 	R_ModernGLExecutor_SetMaterialFlags( command );
 	R_ModernGLExecutor_SetMaterialEnhancement( command );
 	R_ModernGLExecutor_BindMaterialTextures( command, stats );
+	if ( R_ModernGLExecutor_CommandUsesShadowTextures( command ) ) {
+		R_ModernGLExecutor_BindModernShadowTextures( command.program, stats );
+	}
 
 	R_ModernGLExecutor_ApplyCommandDepthRange( command );
 	R_ModernGLExecutor_ApplyCommandCullState( command );
@@ -4907,6 +4927,142 @@ static void R_ModernGLExecutor_SetSamplerUniform( GLuint program, const char *na
 	}
 }
 
+static int R_ModernGLExecutor_ShadowTextureUnitLimit( void ) {
+	int limit = rg_modernGLExecutorCaps.maxTextureImageUnits;
+	if ( limit <= 0 ) {
+		limit = glConfig.maxTextureImageUnits;
+	}
+	return Max( 0, limit );
+}
+
+static bool R_ModernGLExecutor_ShadowTextureUnitsReady( void ) {
+	return R_ModernGLExecutor_ShadowTextureUnitLimit() >= MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS + MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT;
+}
+
+static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program ) {
+	if ( program == 0 || glGetUniformLocation == NULL || glUniform1i == NULL ) {
+		return false;
+	}
+	const GLint projectedAtlas = glGetUniformLocation( program, "uModernShadowAtlas" );
+	const GLint pointAtlas = glGetUniformLocation( program, "uModernPointShadowAtlas" );
+	const GLint projectedMoments = glGetUniformLocation( program, rg_modernGLShadowProjectedMomentUniform );
+	const GLint pointMoments = glGetUniformLocation( program, rg_modernGLShadowPointMomentUniform );
+	const GLint resourceState = glGetUniformLocation( program, "uModernShadowResourceState" );
+	const GLint samplerState = glGetUniformLocation( program, "uModernShadowSamplerState" );
+	const GLint momentState = glGetUniformLocation( program, "uModernShadowMomentState" );
+	if ( projectedAtlas < 0 || pointAtlas < 0 || projectedMoments < 0 || pointMoments < 0 || resourceState < 0 || samplerState < 0 || momentState < 0 ) {
+		return false;
+	}
+	glUniform1i( projectedAtlas, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS );
+	glUniform1i( pointAtlas, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS );
+	if ( glUniform1iv != NULL ) {
+		GLint projectedMomentUnits[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
+		GLint pointMomentUnits[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
+		for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+			projectedMomentUnits[i] = MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_MOMENTS + i;
+			pointMomentUnits[i] = MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS + i;
+		}
+		glUniform1iv( projectedMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, projectedMomentUnits );
+		glUniform1iv( pointMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, pointMomentUnits );
+	}
+	return true;
+}
+
+static int R_ModernGLExecutor_CountActualShadowTextures( const rendererShadowTextureBindings_t &bindings ) {
+	int count = 0;
+	if ( bindings.projectedAtlas.ready ) {
+		count++;
+	}
+	if ( bindings.pointAtlas.ready ) {
+		count++;
+	}
+	for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+		if ( bindings.projectedMoments[i].ready ) {
+			count++;
+		}
+		if ( bindings.pointMoments[i].ready ) {
+			count++;
+		}
+	}
+	return count;
+}
+
+static void R_ModernGLExecutor_BindShadowTextureSlot( const rendererShadowTextureBinding_t &binding, const unsigned int fallbackTarget, const int unit, modernGLExecutorStats_t &stats ) {
+	const GLenum target = binding.target != 0 ? static_cast<GLenum>( binding.target ) : static_cast<GLenum>( fallbackTarget );
+	const GLuint texture = binding.ready ? binding.texture : 0;
+	R_GLStateCache().ActiveTextureUnit( unit );
+	if ( R_GLStateCache().BindTexture( unit, target, texture ) ) {
+		stats.lowOverheadClassicTextureBinds++;
+	}
+	if ( glBindSampler != NULL ) {
+		R_GLStateCache().BindSampler( unit, 0 );
+	}
+	if ( texture != 0 && ( target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP ) ) {
+		glTexParameteri( target, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+	}
+}
+
+static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernGLExecutorStats_t &stats ) {
+	stats.shadowTextureBaseUnit = MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS;
+	stats.shadowTextureRequiredUnits = MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT;
+	const bool unitsReady = R_ModernGLExecutor_ShadowTextureUnitsReady();
+	stats.shadowTextureUnitsReady = stats.shadowTextureUnitsReady || unitsReady;
+	if ( !unitsReady ) {
+		return false;
+	}
+
+	rendererShadowTextureBindings_t bindings;
+	RB_ShadowMapTextureBindings( bindings );
+	const bool samplerReady = R_ModernGLExecutor_SetShadowSamplerUniforms( program );
+	stats.shadowTextureBindingsReady = stats.shadowTextureBindingsReady || samplerReady;
+	stats.shadowTextureProjectedAtlasReady = stats.shadowTextureProjectedAtlasReady || bindings.projectedAtlasReady;
+	stats.shadowTexturePointAtlasReady = stats.shadowTexturePointAtlasReady || bindings.pointAtlasReady;
+	stats.shadowTextureProjectedMomentsReady = stats.shadowTextureProjectedMomentsReady || bindings.projectedMomentsReady;
+	stats.shadowTexturePointMomentsReady = stats.shadowTexturePointMomentsReady || bindings.pointMomentsReady;
+	const int actualTextures = R_ModernGLExecutor_CountActualShadowTextures( bindings );
+	stats.shadowTextureActualTextures = Max( stats.shadowTextureActualTextures, actualTextures );
+
+	if ( glUniform4f != NULL && program != 0 && glGetUniformLocation != NULL ) {
+		const GLint resourceState = glGetUniformLocation( program, "uModernShadowResourceState" );
+		const GLint samplerState = glGetUniformLocation( program, "uModernShadowSamplerState" );
+		const GLint momentState = glGetUniformLocation( program, "uModernShadowMomentState" );
+		if ( resourceState >= 0 ) {
+			glUniform4f(
+				resourceState,
+				bindings.projectedAtlasReady ? 1.0f : 0.0f,
+				bindings.pointAtlasReady ? 1.0f : 0.0f,
+				bindings.projectedMomentsReady ? 1.0f : 0.0f,
+				bindings.pointMomentsReady ? 1.0f : 0.0f );
+		}
+		if ( samplerState >= 0 ) {
+			glUniform4f(
+				samplerState,
+				bindings.projectedDepthCompare ? 1.0f : 0.0f,
+				bindings.pointDepthCompare ? 1.0f : 0.0f,
+				bindings.pointHighPrecision ? 1.0f : 0.0f,
+				r_shadowMapCascadeBlend.GetFloat() );
+		}
+		if ( momentState >= 0 ) {
+			glUniform4f(
+				momentState,
+				bindings.translucentDensity,
+				bindings.translucentFilterRadius,
+				bindings.translucentMinVariance,
+				bindings.translucentBleedReduction );
+		}
+	}
+
+	R_ModernGLExecutor_BindShadowTextureSlot( bindings.projectedAtlas, GL_TEXTURE_2D, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS, stats );
+	R_ModernGLExecutor_BindShadowTextureSlot( bindings.pointAtlas, GL_TEXTURE_CUBE_MAP, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS, stats );
+	for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+		R_ModernGLExecutor_BindShadowTextureSlot( bindings.projectedMoments[i], GL_TEXTURE_2D, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_MOMENTS + i, stats );
+		R_ModernGLExecutor_BindShadowTextureSlot( bindings.pointMoments[i], GL_TEXTURE_CUBE_MAP, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS + i, stats );
+	}
+	stats.shadowTextureBoundTextures += actualTextures;
+	R_GLStateCache().ActiveTextureUnit( 0 );
+	return samplerReady;
+}
+
 static void R_ModernGLExecutor_BindTextureGroup( GLuint first, GLsizei count, const GLuint *textures, modernGLExecutorStats_t &stats ) {
 	if ( count <= 0 || textures == NULL ) {
 		return;
@@ -5099,6 +5255,7 @@ static void R_ModernGLExecutor_SubmitDeferredResolve( modernGLExecutorStats_t &s
 			R_ModernGLExecutor_SetSamplerUniform( program->program, rg_modernGLDeferredTextureUniforms[i], i );
 		}
 		R_ModernGLExecutor_BindDeferredResolveTextures( textureHandles, stats );
+		R_ModernGLExecutor_BindModernShadowTextures( program->program, stats );
 		glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
 	}
 	R_RendererMetrics_EndGpuTimer();
@@ -5746,6 +5903,15 @@ static bool R_ModernGLExecutor_ModernVisibleShadowReceiversReady( const modernSh
 	// Intentional skips such as ambient/no-receiver lights are diagnostics, not
 	// shadowing gaps. Mapped receivers without modern sampling remain blockers.
 	if ( shadowStats.fallbackLights > 0 || shadowStats.receiverSamplingBlockedLights > 0 ) {
+		return false;
+	}
+	if ( shadowStats.mappedLights > 0 && ( !stats.shadowTextureUnitsReady || !stats.shadowTextureBindingsReady ) ) {
+		return false;
+	}
+	const bool projectedShadowAtlasRequired = shadowStats.singleProjectedMappedLights > 0 || shadowStats.cascadeMappedLights > 0;
+	const bool pointShadowAtlasRequired = shadowStats.pointMappedLights > 0;
+	if ( ( projectedShadowAtlasRequired && !stats.shadowTextureProjectedAtlasReady )
+		|| ( pointShadowAtlasRequired && !stats.shadowTexturePointAtlasReady ) ) {
 		return false;
 	}
 	return stats.deferredResolveShadowFallbackLights == 0 &&
@@ -7803,6 +7969,18 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.visibilityShadowCasterSavedDraws,
 		rg_modernGLExecutorStats.visibilityShadowCasterSavedTriangles );
 	common->Printf(
+		"Modern shadow textures: units=%d/%d base=%d contract=%d actual=%d bound=%d atlas(projected=%d point=%d) moments(projected=%d point=%d)\n",
+		rg_modernGLExecutorStats.shadowTextureUnitsReady ? 1 : 0,
+		rg_modernGLExecutorStats.shadowTextureRequiredUnits,
+		rg_modernGLExecutorStats.shadowTextureBaseUnit,
+		rg_modernGLExecutorStats.shadowTextureBindingsReady ? 1 : 0,
+		rg_modernGLExecutorStats.shadowTextureActualTextures,
+		rg_modernGLExecutorStats.shadowTextureBoundTextures,
+		rg_modernGLExecutorStats.shadowTextureProjectedAtlasReady ? 1 : 0,
+		rg_modernGLExecutorStats.shadowTexturePointAtlasReady ? 1 : 0,
+		rg_modernGLExecutorStats.shadowTextureProjectedMomentsReady ? 1 : 0,
+		rg_modernGLExecutorStats.shadowTexturePointMomentsReady ? 1 : 0 );
+	common->Printf(
 		"Modern forward+: cvar=%d, req=%d exec=%d resources=%d sceneColor=%d sceneDepth=%d program=%d cluster=%d draws=%d opaque=%d alpha=%d transparent=%d viewmodel=%d fog=%d batches=%d fallback=%d resource=%d material=%d geometry=%d texture=%d blend=%d effects=%d sort=%d overdraw=%d reads=%d lights=%d point=%d projected=%d shadow(mapped=%d fallback=%d skipped=%d descriptors=%d) lightGrid=%d clears=%d\n",
 		r_rendererForwardPlus.GetBool() ? 1 : 0,
 		rg_modernGLExecutorStats.forwardPlusRequested ? 1 : 0,
@@ -8923,6 +9101,30 @@ bool RendererGBuffer_RunSelfTest( void ) {
 	return true;
 }
 
+static bool R_ModernGLExecutor_ShadowBindingContractReady( const modernGLShaderProgramInfo_t *program, const char *selfTestName ) {
+	if ( program == NULL || program->program == 0 || !program->linked || !program->reflection.usesShadowTextures ) {
+		common->Printf( "%s self-test failed: shadow binding program contract unavailable\n", selfTestName );
+		return false;
+	}
+	const char *shadowBindingUniforms[] = {
+		"uModernShadowAtlas",
+		"uModernPointShadowAtlas",
+		rg_modernGLShadowProjectedMomentUniform,
+		rg_modernGLShadowPointMomentUniform,
+		"uModernShadowResourceState",
+		"uModernShadowSamplerState",
+		"uModernShadowMomentState"
+	};
+	for ( int i = 0; i < static_cast<int>( sizeof( shadowBindingUniforms ) / sizeof( shadowBindingUniforms[0] ) ); ++i ) {
+		const GLint location = glGetUniformLocation != NULL ? glGetUniformLocation( program->program, shadowBindingUniforms[i] ) : -1;
+		if ( location < 0 ) {
+			common->Printf( "%s self-test failed: missing shadow binding %s\n", selfTestName, shadowBindingUniforms[i] );
+			return false;
+		}
+	}
+	return true;
+}
+
 bool RendererDeferredResolve_RunSelfTest( void ) {
 	if ( !r_rendererModernVisible.GetBool() && !r_rendererModernDeferred.GetBool() && r_rendererModernDeferredDebug.GetInteger() <= 0 ) {
 		common->Printf( "RendererDeferredResolve self-test passed (disabled)\n" );
@@ -8945,6 +9147,9 @@ bool RendererDeferredResolve_RunSelfTest( void ) {
 			common->Printf( "RendererDeferredResolve self-test failed: missing sampler %s\n", rg_modernGLDeferredTextureUniforms[i] );
 			return false;
 		}
+	}
+	if ( !R_ModernGLExecutor_ShadowBindingContractReady( program, "RendererDeferredResolve" ) ) {
+		return false;
 	}
 
 	drawSurf_t drawSurfs[2];
@@ -9070,12 +9275,14 @@ bool RendererDeferredResolve_RunSelfTest( void ) {
 	R_ModernGLExecutor_SubmitDeferredResolve( stats );
 
 	const bool resourcesAvailable = R_RenderGraphResources_Stats().initialized && R_RenderGraphResources_Stats().available && rg_modernGLExecutorAvailable;
-	if ( resourcesAvailable && ( !stats.deferredResolveExecuted || !stats.deferredResolveResourcesReady || !stats.deferredResolveClusterReady || stats.deferredResolvePixels <= 0 || stats.deferredResolveClusterReads <= 0 ) ) {
+	if ( resourcesAvailable && ( !stats.deferredResolveExecuted || !stats.deferredResolveResourcesReady || !stats.deferredResolveClusterReady || !stats.shadowTextureUnitsReady || !stats.shadowTextureBindingsReady || stats.deferredResolvePixels <= 0 || stats.deferredResolveClusterReads <= 0 ) ) {
 		common->Printf(
-			"RendererDeferredResolve self-test failed: execution mismatch (exec=%d res=%d cluster=%d pixels=%d reads=%d fallback=%d)\n",
+			"RendererDeferredResolve self-test failed: execution mismatch (exec=%d res=%d cluster=%d shadowTextures=%d/%d pixels=%d reads=%d fallback=%d)\n",
 			stats.deferredResolveExecuted ? 1 : 0,
 			stats.deferredResolveResourcesReady ? 1 : 0,
 			stats.deferredResolveClusterReady ? 1 : 0,
+			stats.shadowTextureUnitsReady ? 1 : 0,
+			stats.shadowTextureBindingsReady ? 1 : 0,
 			stats.deferredResolvePixels,
 			stats.deferredResolveClusterReads,
 			stats.deferredResolveResourceFallbacks );
@@ -9083,11 +9290,18 @@ bool RendererDeferredResolve_RunSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererDeferredResolve self-test passed (program=%d output=%d resources=%d cluster=%d pixels=%d lights=%d point=%d projected=%d shadow=%d/%d/%d/%d lightGrid=%d reads=%d fallback=%d debug=%d overlay=%d)\n",
+		"RendererDeferredResolve self-test passed (program=%d output=%d resources=%d cluster=%d shadowTextures=%d/%d actual=%d atlas=%d/%d moments=%d/%d pixels=%d lights=%d point=%d projected=%d shadow=%d/%d/%d/%d lightGrid=%d reads=%d fallback=%d debug=%d overlay=%d)\n",
 		stats.deferredResolveProgramReady ? 1 : 0,
 		stats.deferredResolveOutputReady ? 1 : 0,
 		stats.deferredResolveResourcesReady ? 1 : 0,
 		stats.deferredResolveClusterReady ? 1 : 0,
+		stats.shadowTextureUnitsReady ? 1 : 0,
+		stats.shadowTextureBindingsReady ? 1 : 0,
+		stats.shadowTextureActualTextures,
+		stats.shadowTextureProjectedAtlasReady ? 1 : 0,
+		stats.shadowTexturePointAtlasReady ? 1 : 0,
+		stats.shadowTextureProjectedMomentsReady ? 1 : 0,
+		stats.shadowTexturePointMomentsReady ? 1 : 0,
 		stats.deferredResolvePixels,
 		stats.deferredResolveActiveLights,
 		stats.deferredResolvePointLights,
@@ -9123,6 +9337,11 @@ bool RendererForwardPlus_RunSelfTest( void ) {
 		&& transparentProgram != NULL && transparentProgram->program != 0 && transparentProgram->linked;
 	if ( !programsReady ) {
 		common->Printf( "RendererForwardPlus self-test failed: clustered forward programs unavailable\n" );
+		return false;
+	}
+	if ( !R_ModernGLExecutor_ShadowBindingContractReady( opaqueProgram, "RendererForwardPlus opaque" )
+		|| !R_ModernGLExecutor_ShadowBindingContractReady( alphaProgram, "RendererForwardPlus alpha-test" )
+		|| !R_ModernGLExecutor_ShadowBindingContractReady( transparentProgram, "RendererForwardPlus transparent" ) ) {
 		return false;
 	}
 
@@ -9267,12 +9486,14 @@ bool RendererForwardPlus_RunSelfTest( void ) {
 	rg_modernGLExecutorStats = stats;
 
 	const bool resourcesAvailable = R_RenderGraphResources_Stats().initialized && R_RenderGraphResources_Stats().available && rg_modernGLExecutorAvailable;
-	if ( resourcesAvailable && ( !stats.forwardPlusExecuted || !stats.forwardPlusResourcesReady || !stats.forwardPlusClusterReady || stats.forwardPlusDraws <= 0 || stats.forwardPlusTransparentDraws <= 0 || stats.forwardPlusClusterReads <= 0 ) ) {
+	if ( resourcesAvailable && ( !stats.forwardPlusExecuted || !stats.forwardPlusResourcesReady || !stats.forwardPlusClusterReady || !stats.shadowTextureUnitsReady || !stats.shadowTextureBindingsReady || stats.forwardPlusDraws <= 0 || stats.forwardPlusTransparentDraws <= 0 || stats.forwardPlusClusterReads <= 0 ) ) {
 		common->Printf(
-			"RendererForwardPlus self-test failed: execution mismatch (exec=%d res=%d cluster=%d draws=%d transparent=%d reads=%d fallback=%d)\n",
+			"RendererForwardPlus self-test failed: execution mismatch (exec=%d res=%d cluster=%d shadowTextures=%d/%d draws=%d transparent=%d reads=%d fallback=%d)\n",
 			stats.forwardPlusExecuted ? 1 : 0,
 			stats.forwardPlusResourcesReady ? 1 : 0,
 			stats.forwardPlusClusterReady ? 1 : 0,
+			stats.shadowTextureUnitsReady ? 1 : 0,
+			stats.shadowTextureBindingsReady ? 1 : 0,
 			stats.forwardPlusDraws,
 			stats.forwardPlusTransparentDraws,
 			stats.forwardPlusClusterReads,
@@ -9281,12 +9502,19 @@ bool RendererForwardPlus_RunSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererForwardPlus self-test passed (programs=%d resources=%d scene=%d depth=%d cluster=%d draws=%d opaque=%d alpha=%d alphaProgram=%d transparent=%d batches=%d fallback=%d effects=%d overdraw=%d reads=%d lights=%d point=%d projected=%d shadow=%d/%d/%d/%d lightGrid=%d)\n",
+		"RendererForwardPlus self-test passed (programs=%d resources=%d scene=%d depth=%d cluster=%d shadowTextures=%d/%d actual=%d atlas=%d/%d moments=%d/%d draws=%d opaque=%d alpha=%d alphaProgram=%d transparent=%d batches=%d fallback=%d effects=%d overdraw=%d reads=%d lights=%d point=%d projected=%d shadow=%d/%d/%d/%d lightGrid=%d)\n",
 		stats.forwardPlusProgramReady ? 1 : 0,
 		stats.forwardPlusResourcesReady ? 1 : 0,
 		stats.forwardPlusSceneColorReady ? 1 : 0,
 		stats.forwardPlusSceneDepthReady ? 1 : 0,
 		stats.forwardPlusClusterReady ? 1 : 0,
+		stats.shadowTextureUnitsReady ? 1 : 0,
+		stats.shadowTextureBindingsReady ? 1 : 0,
+		stats.shadowTextureActualTextures,
+		stats.shadowTextureProjectedAtlasReady ? 1 : 0,
+		stats.shadowTexturePointAtlasReady ? 1 : 0,
+		stats.shadowTextureProjectedMomentsReady ? 1 : 0,
+		stats.shadowTexturePointMomentsReady ? 1 : 0,
 		stats.forwardPlusDraws,
 		stats.forwardPlusOpaqueDraws,
 		stats.forwardPlusAlphaTestDraws,

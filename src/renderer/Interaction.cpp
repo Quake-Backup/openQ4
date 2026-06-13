@@ -107,23 +107,234 @@ static bool R_TranslucentShadowMapMomentsSupportedForLight( const idRenderLightL
 		( lightDef == NULL || !lightDef->parms.pointLight || glConfig.cubeMapAvailable );
 }
 
-static bool R_ShadowMapShaderCanCastOpaque( const idMaterial *shader ) {
+typedef struct {
+	bool				shaderPresent;
+	bool				dedicatedCollision;
+	materialCoverage_t	coverage;
+	bool				surfaceCastsShadow;
+	bool				hasGui;
+	bool				hasSubview;
+} shadowMapMaterialCasterPolicy_t;
+
+static shadowMapMaterialCasterPolicy_t R_ShadowMapMaterialCasterPolicyForShader( const idMaterial *shader ) {
+	shadowMapMaterialCasterPolicy_t policy;
+	memset( &policy, 0, sizeof( policy ) );
+	policy.coverage = MC_BAD;
+
+	if ( shader == NULL ) {
+		return policy;
+	}
+
+	policy.shaderPresent = true;
+	policy.dedicatedCollision = shader->IsDedicatedCollisionSurface();
+	policy.coverage = shader->Coverage();
+	policy.surfaceCastsShadow = shader->SurfaceCastsShadow();
+	policy.hasGui = shader->HasGui();
+	policy.hasSubview = shader->HasSubview();
+	return policy;
+}
+
+static bool R_ShadowMapMaterialPolicyCanCastOpaque( const shadowMapMaterialCasterPolicy_t &policy ) {
 	// Shadow maps share interaction ownership and material policy with stencil
 	// shadows, but render ambient triangles into depth/moment maps instead of
-	// consuming stencil-volume geometry.
-	return shader != NULL &&
-		!shader->IsDedicatedCollisionSurface() &&
-		shader->Coverage() != MC_TRANSLUCENT &&
-		shader->SurfaceCastsShadow() &&
-		!shader->HasGui() &&
-		!shader->HasSubview();
+	// consuming stencil-volume geometry. Perforated materials stay in this path
+	// so their alpha-tested stages can be sampled by the shadow caster shader.
+	return policy.shaderPresent &&
+		!policy.dedicatedCollision &&
+		policy.coverage != MC_TRANSLUCENT &&
+		policy.surfaceCastsShadow &&
+		!policy.hasGui &&
+		!policy.hasSubview;
+}
+
+static bool R_ShadowMapMaterialPolicyCanCastTranslucent( const shadowMapMaterialCasterPolicy_t &policy ) {
+	// Translucent moment casters are opt-in at the light/resource level. The
+	// material-side rule is deliberately narrower: GUI and subview surfaces stay
+	// excluded, while ordinary translucent effect stages may contribute moments
+	// even when their retail material flags imply no stencil shadow volume.
+	return policy.shaderPresent &&
+		policy.coverage == MC_TRANSLUCENT &&
+		!policy.hasGui &&
+		!policy.hasSubview;
+}
+
+static shadowMapCasterRejectReason_t R_ShadowMapMaterialPolicyRejectReason( const shadowMapMaterialCasterPolicy_t &policy, const bool translucentMomentsEnabled, const bool translucentShadowMapSupported ) {
+	if ( !policy.shaderPresent ) {
+		return SHADOWMAP_CASTER_REJECT_UNKNOWN;
+	}
+	if ( policy.dedicatedCollision ) {
+		return SHADOWMAP_CASTER_REJECT_DEDICATED_COLLISION;
+	}
+	if ( policy.hasGui ) {
+		return SHADOWMAP_CASTER_REJECT_GUI;
+	}
+	if ( policy.hasSubview ) {
+		return SHADOWMAP_CASTER_REJECT_SUBVIEW;
+	}
+	if ( policy.coverage == MC_TRANSLUCENT ) {
+		if ( !translucentMomentsEnabled ) {
+			return SHADOWMAP_CASTER_REJECT_TRANSLUCENT_DISABLED;
+		}
+		if ( !translucentShadowMapSupported ) {
+			return SHADOWMAP_CASTER_REJECT_TRANSLUCENT_UNSUPPORTED;
+		}
+		return SHADOWMAP_CASTER_REJECT_UNKNOWN;
+	}
+	if ( !policy.surfaceCastsShadow ) {
+		return SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW;
+	}
+	return SHADOWMAP_CASTER_REJECT_UNKNOWN;
+}
+
+static bool R_ShadowMapCasterAdmissionCheck( const char *name, const shadowMapMaterialCasterPolicy_t &policy, const bool expectedOpaque, const bool expectedTranslucent, const shadowMapCasterRejectReason_t expectedDisabledReason, const shadowMapCasterRejectReason_t expectedUnsupportedReason, const shadowMapCasterRejectReason_t expectedSupportedReason ) {
+	const bool opaque = R_ShadowMapMaterialPolicyCanCastOpaque( policy );
+	const bool translucent = R_ShadowMapMaterialPolicyCanCastTranslucent( policy );
+	const shadowMapCasterRejectReason_t disabledReason = R_ShadowMapMaterialPolicyRejectReason( policy, false, false );
+	const shadowMapCasterRejectReason_t unsupportedReason = R_ShadowMapMaterialPolicyRejectReason( policy, true, false );
+	const shadowMapCasterRejectReason_t supportedReason = R_ShadowMapMaterialPolicyRejectReason( policy, true, true );
+
+	if ( opaque == expectedOpaque
+		&& translucent == expectedTranslucent
+		&& disabledReason == expectedDisabledReason
+		&& unsupportedReason == expectedUnsupportedReason
+		&& supportedReason == expectedSupportedReason ) {
+		return true;
+	}
+
+	common->Printf(
+		"ShadowMap caster admission self-test failed: %s opaque=%d/%d translucent=%d/%d reasons(disabled=%d/%d unsupported=%d/%d supported=%d/%d)\n",
+		name,
+		opaque ? 1 : 0,
+		expectedOpaque ? 1 : 0,
+		translucent ? 1 : 0,
+		expectedTranslucent ? 1 : 0,
+		disabledReason,
+		expectedDisabledReason,
+		unsupportedReason,
+		expectedUnsupportedReason,
+		supportedReason,
+		expectedSupportedReason );
+	return false;
+}
+
+bool R_ShadowMapCasterAdmissionSelfTest( void ) {
+	shadowMapMaterialCasterPolicy_t policy;
+	memset( &policy, 0, sizeof( policy ) );
+	policy.coverage = MC_BAD;
+
+	if ( !R_ShadowMapCasterAdmissionCheck( "null", policy, false, false, SHADOWMAP_CASTER_REJECT_UNKNOWN, SHADOWMAP_CASTER_REJECT_UNKNOWN, SHADOWMAP_CASTER_REJECT_UNKNOWN ) ) {
+		return false;
+	}
+
+	policy.shaderPresent = true;
+	policy.coverage = MC_OPAQUE;
+	policy.surfaceCastsShadow = true;
+	if ( !R_ShadowMapCasterAdmissionCheck( "opaque", policy, true, false, SHADOWMAP_CASTER_REJECT_UNKNOWN, SHADOWMAP_CASTER_REJECT_UNKNOWN, SHADOWMAP_CASTER_REJECT_UNKNOWN ) ) {
+		return false;
+	}
+
+	policy.coverage = MC_PERFORATED;
+	if ( !R_ShadowMapCasterAdmissionCheck( "perforated", policy, true, false, SHADOWMAP_CASTER_REJECT_UNKNOWN, SHADOWMAP_CASTER_REJECT_UNKNOWN, SHADOWMAP_CASTER_REJECT_UNKNOWN ) ) {
+		return false;
+	}
+
+	policy.coverage = MC_OPAQUE;
+	policy.surfaceCastsShadow = false;
+	if ( !R_ShadowMapCasterAdmissionCheck( "surfaceNoShadow", policy, false, false, SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW, SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW, SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW ) ) {
+		return false;
+	}
+
+	policy.surfaceCastsShadow = true;
+	policy.dedicatedCollision = true;
+	if ( !R_ShadowMapCasterAdmissionCheck( "dedicatedCollision", policy, false, false, SHADOWMAP_CASTER_REJECT_DEDICATED_COLLISION, SHADOWMAP_CASTER_REJECT_DEDICATED_COLLISION, SHADOWMAP_CASTER_REJECT_DEDICATED_COLLISION ) ) {
+		return false;
+	}
+	policy.dedicatedCollision = false;
+
+	policy.hasGui = true;
+	if ( !R_ShadowMapCasterAdmissionCheck( "gui", policy, false, false, SHADOWMAP_CASTER_REJECT_GUI, SHADOWMAP_CASTER_REJECT_GUI, SHADOWMAP_CASTER_REJECT_GUI ) ) {
+		return false;
+	}
+	policy.hasGui = false;
+
+	policy.hasSubview = true;
+	if ( !R_ShadowMapCasterAdmissionCheck( "subview", policy, false, false, SHADOWMAP_CASTER_REJECT_SUBVIEW, SHADOWMAP_CASTER_REJECT_SUBVIEW, SHADOWMAP_CASTER_REJECT_SUBVIEW ) ) {
+		return false;
+	}
+	policy.hasSubview = false;
+
+	policy.coverage = MC_TRANSLUCENT;
+	policy.surfaceCastsShadow = false;
+	if ( !R_ShadowMapCasterAdmissionCheck( "translucent", policy, false, true, SHADOWMAP_CASTER_REJECT_TRANSLUCENT_DISABLED, SHADOWMAP_CASTER_REJECT_TRANSLUCENT_UNSUPPORTED, SHADOWMAP_CASTER_REJECT_UNKNOWN ) ) {
+		return false;
+	}
+
+	policy.hasGui = true;
+	if ( !R_ShadowMapCasterAdmissionCheck( "translucentGui", policy, false, false, SHADOWMAP_CASTER_REJECT_GUI, SHADOWMAP_CASTER_REJECT_GUI, SHADOWMAP_CASTER_REJECT_GUI ) ) {
+		return false;
+	}
+	policy.hasGui = false;
+
+	policy.hasSubview = true;
+	if ( !R_ShadowMapCasterAdmissionCheck( "translucentSubview", policy, false, false, SHADOWMAP_CASTER_REJECT_SUBVIEW, SHADOWMAP_CASTER_REJECT_SUBVIEW, SHADOWMAP_CASTER_REJECT_SUBVIEW ) ) {
+		return false;
+	}
+
+	common->Printf( "ShadowMap caster admission self-test passed\n" );
+	return true;
+}
+
+static void R_RecordShadowMapLODDecision( viewLight_t *vLight, const materialCoverage_t coverage, const bool translucentCaster, const bool admitted ) {
+	if ( vLight == NULL ) {
+		return;
+	}
+
+	vLight->shadowMapLODTestCount++;
+	if ( admitted ) {
+		return;
+	}
+
+	vLight->shadowMapLODRejectedCount++;
+	if ( coverage == MC_PERFORATED ) {
+		vLight->shadowMapLODAlphaRejectedCount++;
+	}
+	if ( translucentCaster || coverage == MC_TRANSLUCENT ) {
+		vLight->shadowMapLODTranslucentRejectedCount++;
+	}
+}
+
+bool R_ShadowMapLODAdmissionSelfTest( void ) {
+	viewLight_t vLight;
+	memset( &vLight, 0, sizeof( vLight ) );
+
+	R_RecordShadowMapLODDecision( NULL, MC_OPAQUE, false, false );
+	R_RecordShadowMapLODDecision( &vLight, MC_OPAQUE, false, true );
+	R_RecordShadowMapLODDecision( &vLight, MC_PERFORATED, false, false );
+	R_RecordShadowMapLODDecision( &vLight, MC_TRANSLUCENT, true, false );
+
+	if ( vLight.shadowMapLODTestCount != 3
+		|| vLight.shadowMapLODRejectedCount != 2
+		|| vLight.shadowMapLODAlphaRejectedCount != 1
+		|| vLight.shadowMapLODTranslucentRejectedCount != 1 ) {
+		common->Printf(
+			"ShadowMap LOD admission self-test failed: tests=%d rejected=%d alpha=%d translucent=%d\n",
+			vLight.shadowMapLODTestCount,
+			vLight.shadowMapLODRejectedCount,
+			vLight.shadowMapLODAlphaRejectedCount,
+			vLight.shadowMapLODTranslucentRejectedCount );
+		return false;
+	}
+
+	common->Printf( "ShadowMap LOD admission self-test passed\n" );
+	return true;
+}
+
+static bool R_ShadowMapShaderCanCastOpaque( const idMaterial *shader ) {
+	return R_ShadowMapMaterialPolicyCanCastOpaque( R_ShadowMapMaterialCasterPolicyForShader( shader ) );
 }
 
 static bool R_ShadowMapShaderCanCastTranslucent( const idMaterial *shader ) {
-	return shader != NULL &&
-		shader->Coverage() == MC_TRANSLUCENT &&
-		!shader->HasGui() &&
-		!shader->HasSubview();
+	return R_ShadowMapMaterialPolicyCanCastTranslucent( R_ShadowMapMaterialCasterPolicyForShader( shader ) );
 }
 
 static bool R_ShadowMapShaderSpectrumMatchesLight( const idMaterial *shader, const idRenderLightLocal *lightDef ) {
@@ -307,23 +518,12 @@ static shadowMapCasterRejectReason_t R_ClassifyShadowMapCasterReject( const idRe
 	if ( skipPointLightEmitterCaster ) {
 		return SHADOWMAP_CASTER_REJECT_POINT_LIGHT_EMITTER;
 	}
-	if ( shadowShader->HasGui() ) {
-		return SHADOWMAP_CASTER_REJECT_GUI;
-	}
-	if ( shadowShader->HasSubview() ) {
-		return SHADOWMAP_CASTER_REJECT_SUBVIEW;
-	}
-	if ( shadowShader->Coverage() == MC_TRANSLUCENT ) {
-		if ( !r_shadowMapTranslucentMoments.GetBool() ) {
-			return SHADOWMAP_CASTER_REJECT_TRANSLUCENT_DISABLED;
-		}
-		if ( !translucentShadowMapSupported ) {
-			return SHADOWMAP_CASTER_REJECT_TRANSLUCENT_UNSUPPORTED;
-		}
-		return SHADOWMAP_CASTER_REJECT_TRANSLUCENT_UNSUPPORTED;
-	}
-	if ( !shadowShader->SurfaceCastsShadow() ) {
-		return SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW;
+	const shadowMapCasterRejectReason_t materialReason = R_ShadowMapMaterialPolicyRejectReason(
+		R_ShadowMapMaterialCasterPolicyForShader( shadowShader ),
+		r_shadowMapTranslucentMoments.GetBool(),
+		translucentShadowMapSupported );
+	if ( materialReason != SHADOWMAP_CASTER_REJECT_UNKNOWN ) {
+		return materialReason;
 	}
 	if ( !sameSpectrumShadowMapCaster ) {
 		return SHADOWMAP_CASTER_REJECT_SPECTRUM_MISMATCH;
@@ -1466,6 +1666,14 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 		const bool shadowLODAdmitted =
 			surfaceNeedsShadowLODDecision &&
 			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
+
+		if ( surfaceCanCastDedicatedShadowMap || surfaceCanCastTranslucentShadowMap ) {
+			R_RecordShadowMapLODDecision(
+				lightDef != NULL ? lightDef->viewLight : NULL,
+				shader->Coverage(),
+				surfaceCanCastTranslucentShadowMap,
+				shadowLODAdmitted );
+		}
 
 		if ( ( surfaceCanCastDedicatedShadowMap || surfaceCanCastTranslucentShadowMap ) && shadowLODAdmitted ) {
 			// Dedicated shadow maps can consume ambient triangles even when the

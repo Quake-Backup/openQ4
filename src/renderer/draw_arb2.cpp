@@ -31,6 +31,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 #include "Model_local.h"
+#include "ShadowMapClassification.h"
+#include "ShadowMapProjected.h"
+#include "ShadowMapArb2Parity.h"
+#include "ModernShadowPlanner.h"
+#include "ModernClusteredLighting.h"
 
 #include "cg_explicit.h"
 #include <ctype.h>
@@ -1796,6 +1801,7 @@ typedef struct {
 	GLint			shadowCascadeCount;
 	GLint			shadowCascadeBlend;
 	GLint			shadowDebugMode;
+	GLint			shadowReceiverDebugReason;
 	GLint			translucentShadowEnabled;
 	GLint			translucentShadowDensity;
 	GLint			translucentShadowFilterRadius;
@@ -1903,6 +1909,7 @@ typedef struct {
 	GLint			shadowFilterTaps;
 	GLint			shadowFilterMode;
 	GLint			shadowDebugMode;
+	GLint			shadowReceiverDebugReason;
 	GLint			pointShadowTexelScale;
 	GLint			pointShadowDepthMode;
 	GLint			translucentShadowEnabled;
@@ -2039,24 +2046,9 @@ typedef enum {
 	TRANSLUCENT_SHADOW_STAGE_CUBEMAP_ADDITIVE
 } translucentShadowStageMode_t;
 
-static const int SHADOWMAP_MAX_CASCADES = 4;
+static const int SHADOWMAP_MAX_CASCADES = SHADOWMAP_PROJECTED_MAX_CASCADES;
 
-typedef struct {
-	bool			valid;
-	int				cascadeCount;
-	int				atlasDiv;
-	int				tileSize;
-	float			splitDepths[SHADOWMAP_MAX_CASCADES];
-	float			biasScale[SHADOWMAP_MAX_CASCADES];
-	float			texelDepthBias[SHADOWMAP_MAX_CASCADES];
-	float			worldTexelSize[SHADOWMAP_MAX_CASCADES];
-	float			sliceNear[SHADOWMAP_MAX_CASCADES];
-	float			sliceFar[SHADOWMAP_MAX_CASCADES];
-	float			depthRange[SHADOWMAP_MAX_CASCADES];
-	float			clipZExtent[SHADOWMAP_MAX_CASCADES];
-	idPlane			clipPlanes[SHADOWMAP_MAX_CASCADES][4];
-	idVec4			atlasRect[SHADOWMAP_MAX_CASCADES];
-} projectedShadowMapState_t;
+typedef shadowMapProjectedLightState_t projectedShadowMapState_t;
 
 static shadowMapProgram_t	g_shadowMapProgram = { 0, 0, 0, -1, false };
 static shadowMapCasterProgram_t	g_shadowMapCasterProgram = { 0, 0, 0, -1, false };
@@ -2108,13 +2100,39 @@ typedef enum {
 	SHADOWMAP_PASS_GLOBAL
 } shadowMapPassKind_t;
 
+typedef enum {
+	SHADOWMAP_RECEIVER_FALLBACK_NONE = -1,
+	SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE = 0,
+	SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL,
+	SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY,
+	SHADOWMAP_RECEIVER_FALLBACK_COUNT
+} shadowMapReceiverFallbackReason_t;
+
+typedef enum {
+	SHADOWMAP_TIMING_MAP_RENDER = 0,
+	SHADOWMAP_TIMING_CACHE_REUSE,
+	SHADOWMAP_TIMING_MASK_PASS,
+	SHADOWMAP_TIMING_RECEIVER_FALLBACK,
+	SHADOWMAP_TIMING_STENCIL_FALLBACK,
+	SHADOWMAP_TIMING_COUNT
+} shadowMapTimingPhase_t;
+
 typedef struct {
+	bool				csmRequested;
+	bool				projectedCsmRequested;
+	int					requestedCascadeCount;
 	int					totalLights;
 	int					supportedLights;
 	int					pointLights;
 	int					projectedLights;
 	int					parallelLights;
 	int					globalLights;
+	int					cascadeLights;
+	int					cascadeCount;
+	int					projectedCsmEligibleLights;
+	int					projectedCsmCascadeLights;
+	int					projectedCsmSuppressedLights;
+	int					nonProjectedCsmLights;
 	int					mappedLocalPasses;
 	int					mappedGlobalPasses;
 	int					unshadowedLocalPasses;
@@ -2123,6 +2141,10 @@ typedef struct {
 	int					fallbackGlobalPasses;
 	int					receiverFallbackLocalPasses;
 	int					receiverFallbackGlobalPasses;
+	int					receiverFallbackSurfaces[SHADOWMAP_RECEIVER_FALLBACK_COUNT];
+	int					receiverWrappedCustomGLSLLocalPasses;
+	int					receiverWrappedCustomGLSLGlobalPasses;
+	int					receiverWrappedCustomGLSLSurfaces;
 	int					renderFailLocalPasses;
 	int					renderFailGlobalPasses;
 	int					maskFailLocalPasses;
@@ -2152,15 +2174,24 @@ typedef struct {
 	int					dynamicCasterCount;
 	int					rejectedCasterCount;
 	int					expandedCasterCount;
+	int					lodCasterTestCount;
+	int					lodCasterRejectedCount;
+	int					lodAlphaCasterRejectedCount;
+	int					lodTranslucentCasterRejectedCount;
 	int					casterRejectReasons[SHADOWMAP_CASTER_REJECT_COUNT];
 	float				cpuRenderMilliseconds;
 	float				cpuMaskMilliseconds;
 	float				gpuSyncMilliseconds;
 	float				gpuTimerMilliseconds;
+	float				cpuPhaseMilliseconds[SHADOWMAP_TIMING_COUNT];
+	float				gpuSyncPhaseMilliseconds[SHADOWMAP_TIMING_COUNT];
+	float				gpuTimerPhaseMilliseconds[SHADOWMAP_TIMING_COUNT];
 	float				minWorldTexelSize;
 	float				maxWorldTexelSize;
 	int					gpuTimerSamples;
 	int					gpuTimerPending;
+	int					gpuTimerPhaseSamples[SHADOWMAP_TIMING_COUNT];
+	int					gpuTimerPhasePending[SHADOWMAP_TIMING_COUNT];
 	int					unsupportedLights[SHADOWMAP_SUPPORT_COUNT];
 } shadowMapStats_t;
 
@@ -2186,6 +2217,10 @@ typedef struct {
 	int					translucentCasterCount;
 	int					rejectedCasterCount;
 	int					expandedCasterCount;
+	int					lodCasterTestCount;
+	int					lodCasterRejectedCount;
+	int					lodAlphaCasterRejectedCount;
+	int					lodTranslucentCasterRejectedCount;
 	int					shadowSurfCount;
 	int					interactionCount;
 	float				cpuMilliseconds;
@@ -2205,13 +2240,6 @@ typedef enum {
 	SHADOWMAP_PASS_RESULT_MASK_FAIL,
 	SHADOWMAP_PASS_RESULT_SCHEDULED_SKIP
 } shadowMapPassResult_t;
-
-typedef enum {
-	SHADOWMAP_LIGHT_PROJECTED = 0,
-	SHADOWMAP_LIGHT_POINT,
-	SHADOWMAP_LIGHT_PARALLEL,
-	SHADOWMAP_LIGHT_GLOBAL
-} shadowMapLightClass_t;
 
 static const int SHADOWMAP_CACHE_MAX_SLOTS = 8;
 static const int SHADOWMAP_LIGHT_HISTORY_SLOTS = 256;
@@ -2261,6 +2289,7 @@ typedef struct {
 	int							lightIndex;
 	int							passKind;
 	int							lightClass;
+	int							phase;
 	int							issuedFrame;
 } shadowMapGpuTimerQuery_t;
 
@@ -2290,6 +2319,8 @@ typedef struct {
 } shadowMapSchedule_t;
 
 void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf );
+static int RB_CountShadowMapReceiverFallbackSurfaces( const drawSurf_t *surf, int *reasons );
+static int RB_CountShadowMapReceiverWrappedCustomGLSLSurfaces( const drawSurf_t *surf );
 
 static const char *RB_ShadowMapSupportReasonName( shadowMapLightSupportReason_t reason ) {
 	switch ( reason ) {
@@ -2351,46 +2382,138 @@ static const char *RB_ShadowMapPassResultName( shadowMapPassResult_t result ) {
 	}
 }
 
+static const char *RB_ShadowMapReceiverFallbackReasonName( const shadowMapReceiverFallbackReason_t reason ) {
+	switch ( reason ) {
+	case SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE:
+		return "invalid";
+	case SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL:
+		return "customGLSL";
+	case SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY:
+		return "generatedSkinned";
+	default:
+		return "none";
+	}
+}
+
+static const char *RB_ShadowMapTimingPhaseName( const shadowMapTimingPhase_t phase ) {
+	switch ( phase ) {
+	case SHADOWMAP_TIMING_MAP_RENDER:
+		return "map-render";
+	case SHADOWMAP_TIMING_CACHE_REUSE:
+		return "cache-reuse";
+	case SHADOWMAP_TIMING_MASK_PASS:
+		return "mask-pass";
+	case SHADOWMAP_TIMING_RECEIVER_FALLBACK:
+		return "receiver-fallback";
+	case SHADOWMAP_TIMING_STENCIL_FALLBACK:
+		return "stencil-fallback";
+	default:
+		return "unknown";
+	}
+}
+
 static shadowMapLightClass_t RB_ShadowMapLightClass( const viewLight_t *vLight ) {
-	if ( vLight == NULL ) {
-		return SHADOWMAP_LIGHT_PROJECTED;
-	}
-	if ( vLight->lightDef != NULL && vLight->lightDef->parms.globalLight ) {
-		return SHADOWMAP_LIGHT_GLOBAL;
-	}
-	if ( vLight->parallel ) {
-		return SHADOWMAP_LIGHT_PARALLEL;
-	}
-	if ( vLight->pointLight ) {
-		return SHADOWMAP_LIGHT_POINT;
-	}
-	return SHADOWMAP_LIGHT_PROJECTED;
+	return R_ClassifyShadowMapLight( vLight ).lightClass;
 }
 
 static const char *RB_ShadowMapLightClassName( const viewLight_t *vLight ) {
-	switch ( RB_ShadowMapLightClass( vLight ) ) {
-	case SHADOWMAP_LIGHT_POINT:
-		return "point";
-	case SHADOWMAP_LIGHT_PARALLEL:
-		return "parallel";
-	case SHADOWMAP_LIGHT_GLOBAL:
-		return "global";
-	default:
-		return "projected";
-	}
+	return R_ShadowMapLightClassName( RB_ShadowMapLightClass( vLight ) );
 }
 
 static const char *RB_ShadowMapLightClassNameByClass( const int lightClass ) {
-	switch ( lightClass ) {
-	case SHADOWMAP_LIGHT_POINT:
+	return R_ShadowMapLightClassName( static_cast<shadowMapLightClass_t>( lightClass ) );
+}
+
+typedef struct shadowMapModernPackedJoin_s {
+	int descriptorCount;
+	int lightDescriptorIndex;
+	int shadowDescriptorIndex;
+	rendererModernLightType_t lightType;
+	int flags;
+	int shadowPolicy;
+	int shadowFallbackReason;
+	const char *debugName;
+} shadowMapModernPackedJoin_t;
+
+static const char *RB_ModernPackedLightTypeName( const rendererModernLightType_t type ) {
+	switch ( type ) {
+	case RENDERER_MODERN_LIGHT_POINT:
 		return "point";
-	case SHADOWMAP_LIGHT_PARALLEL:
-		return "parallel";
-	case SHADOWMAP_LIGHT_GLOBAL:
-		return "global";
-	default:
+	case RENDERER_MODERN_LIGHT_PROJECTED:
 		return "projected";
+	case RENDERER_MODERN_LIGHT_FOG:
+		return "fog";
+	case RENDERER_MODERN_LIGHT_AMBIENT:
+		return "ambient";
+	case RENDERER_MODERN_LIGHT_BLEND:
+		return "blend";
+	case RENDERER_MODERN_LIGHT_SPECIAL:
+		return "special";
+	default:
+		return "unknown";
 	}
+}
+
+static const rendererModernShadowDescriptor_t *RB_ModernClusteredShadowDescriptorByIndex( const int descriptorIndex ) {
+	if ( descriptorIndex < 0 ) {
+		return NULL;
+	}
+
+	const int descriptorCount = R_ModernClusteredLighting_NumShadowDescriptors();
+	for ( int i = 0; i < descriptorCount; i++ ) {
+		const rendererModernShadowDescriptor_t *descriptor = R_ModernClusteredLighting_ShadowDescriptor( i );
+		if ( descriptor != NULL && descriptor->descriptorIndex == descriptorIndex ) {
+			return descriptor;
+		}
+	}
+	return NULL;
+}
+
+static shadowMapModernPackedJoin_t RB_ShadowMapModernPackedJoinForLight( const int lightDefIndex, const int preferredShadowDescriptorIndex ) {
+	shadowMapModernPackedJoin_t joined;
+	joined.descriptorCount = 0;
+	joined.lightDescriptorIndex = -1;
+	joined.shadowDescriptorIndex = -1;
+	joined.lightType = RENDERER_MODERN_LIGHT_SPECIAL;
+	joined.flags = 0;
+	joined.shadowPolicy = MODERN_SHADOW_POLICY_NONE;
+	joined.shadowFallbackReason = MODERN_SHADOW_FALLBACK_NONE;
+	joined.debugName = "<none>";
+
+	if ( lightDefIndex < 0 ) {
+		return joined;
+	}
+
+	const int lightDescriptorCount = R_ModernClusteredLighting_NumLightDescriptors();
+	for ( int i = 0; i < lightDescriptorCount; i++ ) {
+		const rendererModernLightDescriptor_t *descriptor = R_ModernClusteredLighting_LightDescriptor( i );
+		if ( descriptor == NULL || descriptor->lightDefIndex != lightDefIndex ) {
+			continue;
+		}
+
+		joined.descriptorCount++;
+		bool chooseDescriptor = joined.lightDescriptorIndex < 0;
+		if ( !chooseDescriptor && preferredShadowDescriptorIndex >= 0 ) {
+			chooseDescriptor = joined.shadowDescriptorIndex != preferredShadowDescriptorIndex
+				&& descriptor->shadowDescriptorIndex == preferredShadowDescriptorIndex;
+		}
+		if ( !chooseDescriptor && joined.shadowPolicy != MODERN_SHADOW_POLICY_MAPPED ) {
+			chooseDescriptor = descriptor->shadowPolicy == MODERN_SHADOW_POLICY_MAPPED;
+		}
+		if ( !chooseDescriptor ) {
+			continue;
+		}
+
+		joined.lightDescriptorIndex = descriptor->descriptorIndex;
+		joined.shadowDescriptorIndex = descriptor->shadowDescriptorIndex;
+		joined.lightType = descriptor->type;
+		joined.flags = descriptor->flags;
+		joined.shadowPolicy = descriptor->shadowPolicy;
+		joined.shadowFallbackReason = descriptor->shadowFallbackReason;
+		joined.debugName = ( descriptor->debugName[0] != '\0' ) ? descriptor->debugName : "<unnamed>";
+	}
+
+	return joined;
 }
 
 static const char *RB_ShadowMapCasterRejectReasonName( const shadowMapCasterRejectReason_t reason ) {
@@ -2411,6 +2534,8 @@ static const char *RB_ShadowMapCasterRejectReasonName( const shadowMapCasterReje
 		return "translucentUnsupported";
 	case SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW:
 		return "surfaceNoShadow";
+	case SHADOWMAP_CASTER_REJECT_DEDICATED_COLLISION:
+		return "dedicatedCollision";
 	case SHADOWMAP_CASTER_REJECT_GUI:
 		return "gui";
 	case SHADOWMAP_CASTER_REJECT_SUBVIEW:
@@ -2439,7 +2564,9 @@ static bool RB_ShadowMapHashedAlphaEnabled( void ) {
 
 static bool RB_ShadowMapDepthCompareEnabled( void ) {
 	const shadowMapDebugMode_t debugMode = RB_ShadowMapDebugMode();
-	if ( debugMode == SHADOWMAP_DEBUGMODE_ATLAS || debugMode == SHADOWMAP_DEBUGMODE_PROJECTED_DEPTH ) {
+	if ( debugMode == SHADOWMAP_DEBUGMODE_ATLAS
+		|| debugMode == SHADOWMAP_DEBUGMODE_PROJECTED_DEPTH
+		|| debugMode == SHADOWMAP_DEBUGMODE_COMPARE_DELTA ) {
 		return false;
 	}
 	return r_shadowMapDepthCompare.GetBool();
@@ -2450,6 +2577,9 @@ static bool RB_PointShadowMapHighPrecisionEnabled( void ) {
 }
 
 static bool RB_PointShadowMapDepthCompareRequested( void ) {
+	if ( RB_ShadowMapDebugMode() == SHADOWMAP_DEBUGMODE_COMPARE_DELTA ) {
+		return false;
+	}
 	return r_shadowMapPointDepthCompare.GetBool() &&
 		glConfig.GLSLProgramAvailable &&
 		glConfig.cubeMapAvailable &&
@@ -2504,6 +2634,82 @@ static bool RB_PointTranslucentShadowEnabled( void ) {
 	return RB_TranslucentShadowMomentsSupported() && g_pointTranslucentShadowPassReady && RB_TranslucentShadowMomentImagesReady( g_pointTranslucentShadowMomentImages );
 }
 
+static void RB_ShadowMapFillTextureBinding( rendererShadowTextureBinding_t &binding, idImage *image, const unsigned int target, const int width, const int height, const bool ready ) {
+	memset( &binding, 0, sizeof( binding ) );
+	binding.target = target;
+	binding.width = Max( 0, width );
+	binding.height = Max( 0, height );
+	binding.ready = ready && image != NULL && image->IsLoaded() && image->GetDeviceHandle() != 0;
+	if ( binding.ready ) {
+		binding.texture = image->GetDeviceHandle();
+		if ( binding.width <= 0 ) {
+			binding.width = image->GetUploadWidth();
+		}
+		if ( binding.height <= 0 ) {
+			binding.height = image->GetUploadHeight();
+		}
+	}
+}
+
+bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings ) {
+	memset( &bindings, 0, sizeof( bindings ) );
+	bindings.projectedDepthCompare = RB_ShadowMapDepthCompareEnabled();
+	bindings.pointDepthCompare = RB_PointShadowMapDepthCompareEnabled();
+	bindings.pointHighPrecision = RB_PointShadowMapHighPrecisionEnabled();
+	bindings.translucentDensity = r_shadowMapTranslucentDensity.GetFloat();
+	bindings.translucentFilterRadius = r_shadowMapTranslucentFilterRadius.GetFloat();
+	bindings.translucentMinVariance = r_shadowMapTranslucentMinVariance.GetFloat();
+	bindings.translucentBleedReduction = r_shadowMapTranslucentBleedReduction.GetFloat();
+
+	const int projectedWidth = g_shadowMapRenderTexture != NULL ? g_shadowMapRenderTexture->GetWidth() : ( g_shadowMapDepthImage != NULL ? g_shadowMapDepthImage->GetUploadWidth() : 0 );
+	const int projectedHeight = g_shadowMapRenderTexture != NULL ? g_shadowMapRenderTexture->GetHeight() : ( g_shadowMapDepthImage != NULL ? g_shadowMapDepthImage->GetUploadHeight() : 0 );
+	RB_ShadowMapFillTextureBinding(
+		bindings.projectedAtlas,
+		g_shadowMapDepthImage,
+		GL_TEXTURE_2D,
+		projectedWidth,
+		projectedHeight,
+		g_shadowMapDepthImage != NULL && projectedWidth > 0 && projectedHeight > 0 );
+	bindings.projectedAtlasReady = bindings.projectedAtlas.ready;
+
+	idImage *pointAtlasImage = ( bindings.pointDepthCompare && g_pointShadowMapDepthImage != NULL ) ? g_pointShadowMapDepthImage : g_pointShadowMapColorImage;
+	const int pointWidth = g_pointShadowMapRenderTexture != NULL ? g_pointShadowMapRenderTexture->GetWidth() : ( pointAtlasImage != NULL ? pointAtlasImage->GetUploadWidth() : 0 );
+	const int pointHeight = g_pointShadowMapRenderTexture != NULL ? g_pointShadowMapRenderTexture->GetHeight() : ( pointAtlasImage != NULL ? pointAtlasImage->GetUploadHeight() : 0 );
+	RB_ShadowMapFillTextureBinding(
+		bindings.pointAtlas,
+		pointAtlasImage,
+		GL_TEXTURE_CUBE_MAP,
+		pointWidth,
+		pointHeight,
+		pointAtlasImage != NULL && pointWidth > 0 && pointHeight > 0 );
+	bindings.pointAtlasReady = bindings.pointAtlas.ready;
+
+	const bool projectedMomentsEnabled = RB_ProjectedTranslucentShadowEnabled();
+	const bool pointMomentsEnabled = RB_PointTranslucentShadowEnabled();
+	bindings.projectedMomentsReady = projectedMomentsEnabled;
+	bindings.pointMomentsReady = pointMomentsEnabled;
+	for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+		RB_ShadowMapFillTextureBinding(
+			bindings.projectedMoments[i],
+			g_translucentShadowMomentImages[i],
+			GL_TEXTURE_2D,
+			g_translucentShadowMapRenderTexture != NULL ? g_translucentShadowMapRenderTexture->GetWidth() : 0,
+			g_translucentShadowMapRenderTexture != NULL ? g_translucentShadowMapRenderTexture->GetHeight() : 0,
+			projectedMomentsEnabled );
+		bindings.projectedMomentsReady = bindings.projectedMomentsReady && bindings.projectedMoments[i].ready;
+
+		RB_ShadowMapFillTextureBinding(
+			bindings.pointMoments[i],
+			g_pointTranslucentShadowMomentImages[i],
+			GL_TEXTURE_CUBE_MAP,
+			g_pointTranslucentShadowMapRenderTexture != NULL ? g_pointTranslucentShadowMapRenderTexture->GetWidth() : 0,
+			g_pointTranslucentShadowMapRenderTexture != NULL ? g_pointTranslucentShadowMapRenderTexture->GetHeight() : 0,
+			pointMomentsEnabled );
+		bindings.pointMomentsReady = bindings.pointMomentsReady && bindings.pointMoments[i].ready;
+	}
+	return bindings.projectedAtlasReady || bindings.pointAtlasReady || bindings.projectedMomentsReady || bindings.pointMomentsReady;
+}
+
 /*
 =============
 RB_ShadowMapDebugModeName
@@ -2535,6 +2741,12 @@ static const char *RB_ShadowMapDebugModeName( shadowMapDebugMode_t mode ) {
 		return "caster-offset-off";
 	case SHADOWMAP_DEBUGMODE_RECEIVER_PLANE_BIAS_OFF:
 		return "receiver-plane-bias-off";
+	case SHADOWMAP_DEBUGMODE_COMPARE_DELTA:
+		return "compare-depth-delta";
+	case SHADOWMAP_DEBUGMODE_RECEIVER_ELIGIBILITY:
+		return "receiver-eligibility";
+	case SHADOWMAP_DEBUGMODE_RECEIVER_FALLBACK_REASON:
+		return "receiver-fallback-reason";
 	default:
 		return "unknown";
 	}
@@ -2542,6 +2754,11 @@ static const char *RB_ShadowMapDebugModeName( shadowMapDebugMode_t mode ) {
 
 static bool RB_ShadowMapDebugModeIs( shadowMapDebugMode_t mode ) {
 	return RB_ShadowMapDebugMode() == mode;
+}
+
+static bool RB_ShadowMapReceiverDebugMode( void ) {
+	const shadowMapDebugMode_t mode = RB_ShadowMapDebugMode();
+	return mode == SHADOWMAP_DEBUGMODE_RECEIVER_ELIGIBILITY || mode == SHADOWMAP_DEBUGMODE_RECEIVER_FALLBACK_REASON;
 }
 
 static float RB_ShadowMapPolygonFactor( void ) {
@@ -2584,6 +2801,10 @@ static void RB_ShadowMapStatsAccumulateCasterPolicy( const viewLight_t *vLight )
 	g_shadowMapStats.dynamicCasterCount += vLight->shadowMapDynamicCasterCount;
 	g_shadowMapStats.rejectedCasterCount += vLight->shadowMapRejectedCasterCount;
 	g_shadowMapStats.expandedCasterCount += vLight->shadowMapExpandedCasterCount;
+	g_shadowMapStats.lodCasterTestCount += vLight->shadowMapLODTestCount;
+	g_shadowMapStats.lodCasterRejectedCount += vLight->shadowMapLODRejectedCount;
+	g_shadowMapStats.lodAlphaCasterRejectedCount += vLight->shadowMapLODAlphaRejectedCount;
+	g_shadowMapStats.lodTranslucentCasterRejectedCount += vLight->shadowMapLODTranslucentRejectedCount;
 	for ( int i = 0; i < SHADOWMAP_CASTER_REJECT_COUNT; i++ ) {
 		g_shadowMapStats.casterRejectReasons[i] += vLight->shadowMapRejectedCasterReasons[i];
 	}
@@ -2603,12 +2824,37 @@ static bool RB_ShadowMapGpuTimerQueriesAvailable( void ) {
 		glGetQueryObjectui64v != NULL;
 }
 
+static bool RB_ShadowMapTimingPhaseValid( const int phase ) {
+	return phase >= 0 && phase < SHADOWMAP_TIMING_COUNT;
+}
+
+static void RB_ShadowMapRecordGpuTimerResult( const shadowMapGpuTimerQuery_t &slot, const float milliseconds, const bool report ) {
+	g_shadowMapStats.gpuTimerMilliseconds += milliseconds;
+	g_shadowMapStats.gpuTimerSamples++;
+	if ( RB_ShadowMapTimingPhaseValid( slot.phase ) ) {
+		g_shadowMapStats.gpuTimerPhaseMilliseconds[slot.phase] += milliseconds;
+		g_shadowMapStats.gpuTimerPhaseSamples[slot.phase]++;
+	}
+
+	if ( report && idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) >= 2 && g_shadowMapReportThisFrame ) {
+		common->Printf(
+			"SM gpu-time light=%d pass=%s class=%s phase=%s frame=%d elapsed=%.3fms\n",
+			slot.lightIndex,
+			RB_ShadowMapPassName( static_cast<shadowMapPassKind_t>( slot.passKind ) ),
+			RB_ShadowMapLightClassNameByClass( slot.lightClass ),
+			RB_ShadowMapTimingPhaseName( RB_ShadowMapTimingPhaseValid( slot.phase ) ? static_cast<shadowMapTimingPhase_t>( slot.phase ) : SHADOWMAP_TIMING_COUNT ),
+			slot.issuedFrame,
+			milliseconds );
+	}
+}
+
 static void RB_ShadowMapHarvestGpuTimerQueries( void ) {
 	if ( !RB_ShadowMapGpuTimerQueriesAvailable() ) {
 		return;
 	}
 
 	int pending = 0;
+	memset( g_shadowMapStats.gpuTimerPhasePending, 0, sizeof( g_shadowMapStats.gpuTimerPhasePending ) );
 	for ( int i = 0; i < SHADOWMAP_GPU_TIMER_QUERY_SLOTS; i++ ) {
 		shadowMapGpuTimerQuery_t &slot = g_shadowMapGpuTimerQuerySlots[i];
 		if ( !slot.active || slot.query == 0 ) {
@@ -2619,24 +2865,16 @@ static void RB_ShadowMapHarvestGpuTimerQueries( void ) {
 		glGetQueryObjectuiv( slot.query, GL_QUERY_RESULT_AVAILABLE, &available );
 		if ( available == GL_FALSE ) {
 			pending++;
+			if ( RB_ShadowMapTimingPhaseValid( slot.phase ) ) {
+				g_shadowMapStats.gpuTimerPhasePending[slot.phase]++;
+			}
 			continue;
 		}
 
 		GLuint64 elapsedNanoseconds = 0;
 		glGetQueryObjectui64v( slot.query, GL_QUERY_RESULT, &elapsedNanoseconds );
 		const float milliseconds = static_cast<float>( static_cast<double>( elapsedNanoseconds ) / 1000000.0 );
-		g_shadowMapStats.gpuTimerMilliseconds += milliseconds;
-		g_shadowMapStats.gpuTimerSamples++;
-
-		if ( idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) >= 2 && g_shadowMapReportThisFrame ) {
-			common->Printf(
-				"SM gpu-time light=%d pass=%s class=%s frame=%d elapsed=%.3fms\n",
-				slot.lightIndex,
-				RB_ShadowMapPassName( static_cast<shadowMapPassKind_t>( slot.passKind ) ),
-				RB_ShadowMapLightClassNameByClass( slot.lightClass ),
-				slot.issuedFrame,
-				milliseconds );
-		}
+		RB_ShadowMapRecordGpuTimerResult( slot, milliseconds, true );
 
 		slot.active = false;
 	}
@@ -2644,7 +2882,7 @@ static void RB_ShadowMapHarvestGpuTimerQueries( void ) {
 	g_shadowMapStats.gpuTimerPending = pending;
 }
 
-static shadowMapGpuTimerQuery_t *RB_ShadowMapBeginGpuTimerQuery( const viewLight_t *vLight, const shadowMapPassKind_t passKind ) {
+static shadowMapGpuTimerQuery_t *RB_ShadowMapBeginGpuTimerQuery( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const shadowMapTimingPhase_t phase ) {
 	if ( !RB_ShadowMapGpuTimerQueriesAvailable() ) {
 		return NULL;
 	}
@@ -2662,8 +2900,7 @@ static shadowMapGpuTimerQuery_t *RB_ShadowMapBeginGpuTimerQuery( const viewLight
 
 			GLuint64 elapsedNanoseconds = 0;
 			glGetQueryObjectui64v( slot.query, GL_QUERY_RESULT, &elapsedNanoseconds );
-			g_shadowMapStats.gpuTimerMilliseconds += static_cast<float>( static_cast<double>( elapsedNanoseconds ) / 1000000.0 );
-			g_shadowMapStats.gpuTimerSamples++;
+			RB_ShadowMapRecordGpuTimerResult( slot, static_cast<float>( static_cast<double>( elapsedNanoseconds ) / 1000000.0 ), false );
 			slot.active = false;
 		}
 
@@ -2678,6 +2915,7 @@ static shadowMapGpuTimerQuery_t *RB_ShadowMapBeginGpuTimerQuery( const viewLight
 		slot.lightIndex = RB_ShadowMapLightIndex( vLight );
 		slot.passKind = static_cast<int>( passKind );
 		slot.lightClass = static_cast<int>( RB_ShadowMapLightClass( vLight ) );
+		slot.phase = static_cast<int>( phase );
 		slot.issuedFrame = tr.frameCount;
 		glBeginQuery( GL_TIME_ELAPSED, slot.query );
 		return &slot;
@@ -2692,6 +2930,52 @@ static void RB_ShadowMapEndGpuTimerQuery( shadowMapGpuTimerQuery_t *slot ) {
 		return;
 	}
 	glEndQuery( GL_TIME_ELAPSED );
+}
+
+typedef struct shadowMapTimedPhase_s {
+	shadowMapTimingPhase_t phase;
+	idTimer cpuTimer;
+	idTimer gpuSyncTimer;
+	shadowMapGpuTimerQuery_t *gpuTimerQuery;
+	bool active;
+} shadowMapTimedPhase_t;
+
+static void RB_ShadowMapBeginTimedPhase( shadowMapTimedPhase_t &timedPhase, const viewLight_t *vLight, const shadowMapPassKind_t passKind, const shadowMapTimingPhase_t phase ) {
+	timedPhase.phase = phase;
+	timedPhase.cpuTimer.Clear();
+	timedPhase.gpuSyncTimer.Clear();
+	timedPhase.gpuTimerQuery = NULL;
+	timedPhase.active = true;
+	timedPhase.cpuTimer.Start();
+	if ( r_shadowMapGpuSyncTimings.GetBool() ) {
+		glFinish();
+		timedPhase.gpuSyncTimer.Start();
+	}
+	timedPhase.gpuTimerQuery = RB_ShadowMapBeginGpuTimerQuery( vLight, passKind, phase );
+}
+
+static float RB_ShadowMapEndTimedPhase( shadowMapTimedPhase_t &timedPhase ) {
+	if ( !timedPhase.active ) {
+		return 0.0f;
+	}
+
+	RB_ShadowMapEndGpuTimerQuery( timedPhase.gpuTimerQuery );
+	if ( r_shadowMapGpuSyncTimings.GetBool() ) {
+		glFinish();
+		timedPhase.gpuSyncTimer.Stop();
+		const float gpuSyncMilliseconds = timedPhase.gpuSyncTimer.Milliseconds();
+		g_shadowMapStats.gpuSyncMilliseconds += gpuSyncMilliseconds;
+		if ( RB_ShadowMapTimingPhaseValid( static_cast<int>( timedPhase.phase ) ) ) {
+			g_shadowMapStats.gpuSyncPhaseMilliseconds[timedPhase.phase] += gpuSyncMilliseconds;
+		}
+	}
+	timedPhase.cpuTimer.Stop();
+	timedPhase.active = false;
+	const float cpuMilliseconds = timedPhase.cpuTimer.Milliseconds();
+	if ( RB_ShadowMapTimingPhaseValid( static_cast<int>( timedPhase.phase ) ) ) {
+		g_shadowMapStats.cpuPhaseMilliseconds[timedPhase.phase] += cpuMilliseconds;
+	}
+	return cpuMilliseconds;
 }
 
 static void RB_ShadowMapDebugOverlayReset( void ) {
@@ -2719,70 +3003,15 @@ static bool RB_ShadowMapShouldReport( void ) {
 	return true;
 }
 
-/*
-=============
-RB_ShadowMapResetProjectedState
-=============
-*/
-static void RB_ShadowMapResetProjectedState( void ) {
-	memset( &g_projectedShadowMapState, 0, sizeof( g_projectedShadowMapState ) );
-	g_projectedShadowMapState.cascadeCount = 1;
-	g_projectedShadowMapState.atlasDiv = 1;
-	g_projectedShadowMapState.atlasRect[0].Set( 0.0f, 0.0f, 1.0f, 1.0f );
-	for ( int i = 0; i < SHADOWMAP_MAX_CASCADES; i++ ) {
-		g_projectedShadowMapState.splitDepths[i] = 1.0e30f;
-		g_projectedShadowMapState.biasScale[i] = 1.0f;
-		g_projectedShadowMapState.texelDepthBias[i] = 0.0f;
-		g_projectedShadowMapState.worldTexelSize[i] = 0.0f;
-		g_projectedShadowMapState.sliceNear[i] = 0.0f;
-		g_projectedShadowMapState.sliceFar[i] = 0.0f;
-		g_projectedShadowMapState.depthRange[i] = 0.0f;
-		g_projectedShadowMapState.clipZExtent[i] = 0.0f;
-	}
-}
-
-static idVec4 RB_ShadowMapBuildAtlasRect( const int cascadeIndex, const int atlasDiv );
-
-static void RB_ShadowMapInitializeProjectedState( const idPlane baseClipPlanes[4], const int cascadeCount, const int tileSize ) {
-	g_projectedShadowMapState.valid = true;
-	g_projectedShadowMapState.cascadeCount = cascadeCount;
-	g_projectedShadowMapState.atlasDiv = cascadeCount > 1 ? 2 : 1;
-	g_projectedShadowMapState.tileSize = tileSize;
-
-	for ( int cascadeIndex = 0; cascadeIndex < SHADOWMAP_MAX_CASCADES; cascadeIndex++ ) {
-		for ( int planeIndex = 0; planeIndex < 4; planeIndex++ ) {
-			g_projectedShadowMapState.clipPlanes[cascadeIndex][planeIndex] = baseClipPlanes[planeIndex];
-		}
-		g_projectedShadowMapState.atlasRect[cascadeIndex] = RB_ShadowMapBuildAtlasRect( cascadeIndex, g_projectedShadowMapState.atlasDiv );
-		g_projectedShadowMapState.splitDepths[cascadeIndex] = 1.0e30f;
-		g_projectedShadowMapState.biasScale[cascadeIndex] = 1.0f;
-		g_projectedShadowMapState.texelDepthBias[cascadeIndex] = 0.0f;
-		g_projectedShadowMapState.worldTexelSize[cascadeIndex] = 0.0f;
-		g_projectedShadowMapState.sliceNear[cascadeIndex] = 0.0f;
-		g_projectedShadowMapState.sliceFar[cascadeIndex] = 0.0f;
-	}
-}
-
-static bool RB_ShadowMapUseCSM( const viewLight_t *vLight ) {
-	if ( vLight == NULL || vLight->pointLight ) {
-		return false;
-	}
-	if ( RB_ShadowMapLightClass( vLight ) == SHADOWMAP_LIGHT_PROJECTED && !r_shadowMapProjectedCSM.GetBool() ) {
-		return false;
-	}
-	return r_shadowMapCSM.GetBool() && idMath::ClampInt( 1, SHADOWMAP_MAX_CASCADES, r_shadowMapCascadeCount.GetInteger() ) > 1;
-}
-
 static int RB_ShadowMapCascadeCountForLight( const viewLight_t *vLight ) {
-	if ( !RB_ShadowMapUseCSM( vLight ) ) {
-		return 1;
-	}
-	return idMath::ClampInt( 1, SHADOWMAP_MAX_CASCADES, r_shadowMapCascadeCount.GetInteger() );
+	return R_ClassifyShadowMapLight( vLight ).cascadeCount;
 }
 
 static int RB_ShadowMapAtlasDivForLight( const viewLight_t *vLight ) {
-	return RB_ShadowMapCascadeCountForLight( vLight ) > 1 ? 2 : 1;
+	return R_ClassifyShadowMapLight( vLight ).atlasDiv;
 }
+
+static bool RB_ShadowMapValidateProjectedStateContract( const viewLight_t *vLight, const shadowMapProjectedLightState_t &state, const char **reason );
 
 static int RB_ShadowMapTileSizeForLight( const viewLight_t *vLight ) {
 	const int atlasDiv = RB_ShadowMapAtlasDivForLight( vLight );
@@ -2791,6 +3020,59 @@ static int RB_ShadowMapTileSizeForLight( const viewLight_t *vLight ) {
 		return 0;
 	}
 	return idMath::ClampInt( 128, maxTileSize, r_shadowMapSize.GetInteger() );
+}
+
+bool RB_ShadowMapBuildArb2ParityState( const viewLight_t *vLight, const viewDef_t *viewDef, const int shadowMapSize, shadowMapArb2ParityState_t &state ) {
+	memset( &state, 0, sizeof( state ) );
+	R_ShadowMapResetProjectedLightState( state.projectedState );
+	state.projectedFallbackCascade = -1;
+
+	if ( vLight == NULL ) {
+		return false;
+	}
+
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+	state.pointLight = classification.pointLight;
+	state.projectedLight = !classification.pointLight;
+	state.csmEnabled = classification.csmEnabled;
+	state.requestedCascadeCount = Max( 1, classification.cascadeCount );
+	state.cascadeCount = Max( 1, classification.cascadeCount );
+	state.tileCount = Max( 1, classification.tileCount );
+	state.atlasDiv = Max( 1, classification.atlasDiv );
+
+	if ( classification.pointLight ) {
+		state.csmEnabled = false;
+		state.requestedCascadeCount = 1;
+		state.cascadeCount = 1;
+		state.tileCount = 6;
+		state.atlasDiv = 3;
+		state.tileSize = idMath::ClampInt( 128, 2048, shadowMapSize );
+		state.valid = true;
+		return true;
+	}
+
+	const int maxTextureSize = glConfig.maxTextureSize > 0 ? glConfig.maxTextureSize : 4096;
+	const int maxTileSize = maxTextureSize / Max( 1, state.atlasDiv );
+	if ( maxTileSize < 128 ) {
+		return false;
+	}
+	state.tileSize = idMath::ClampInt( 128, maxTileSize, shadowMapSize );
+
+	R_BuildShadowMapProjectedLightState( vLight, viewDef, state.tileSize, state.projectedState );
+	const char *invariantReason = "ok";
+	if ( !RB_ShadowMapValidateProjectedStateContract( vLight, state.projectedState, &invariantReason ) ) {
+		return false;
+	}
+
+	state.projectedStateReady = true;
+	state.projectedCascadeFallback = state.projectedState.cascadeFallback;
+	state.projectedFallbackCascade = state.projectedState.fallbackCascade;
+	state.requestedCascadeCount = Max( 1, state.projectedState.requestedCascadeCount );
+	state.cascadeCount = idMath::ClampInt( 1, SHADOWMAP_PROJECTED_MAX_CASCADES, state.projectedState.cascadeCount );
+	state.tileCount = Max( 1, state.cascadeCount );
+	state.atlasDiv = Max( 1, state.projectedState.atlasDiv );
+	state.valid = true;
+	return true;
 }
 
 static void RB_ShadowMapSelectScratchResources( void ) {
@@ -2817,7 +3099,7 @@ static int RB_ShadowMapHashFloat( int hash, const float value ) {
 	return RB_ShadowMapHashInt( hash, idMath::Ftoi( value * 1024.0f ) );
 }
 
-static int RB_ShadowMapBuildPassSignature( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const bool pointLight ) {
+static int RB_ShadowMapBuildPassSignatureForView( const viewLight_t *vLight, const viewDef_t *viewDef, const shadowMapPassKind_t passKind, const bool pointLight ) {
 	int hash = static_cast<int>( 2166136261u );
 	const int cascadeCount = RB_ShadowMapCascadeCountForLight( vLight );
 	hash = RB_ShadowMapHashInt( hash, RB_ShadowMapLightIndex( vLight ) );
@@ -2853,8 +3135,8 @@ static int RB_ShadowMapBuildPassSignature( const viewLight_t *vLight, const shad
 			hash = RB_ShadowMapHashInt( hash, tr_levelshotProjectionShiftActive ? 1 : 0 );
 			hash = RB_ShadowMapHashFloat( hash, tr_levelshotProjectionShiftX );
 			hash = RB_ShadowMapHashFloat( hash, tr_levelshotProjectionShiftY );
-			if ( backEnd.viewDef != NULL ) {
-				const renderView_t &renderView = backEnd.viewDef->renderView;
+			if ( viewDef != NULL ) {
+				const renderView_t &renderView = viewDef->renderView;
 				hash = RB_ShadowMapHashFloat( hash, renderView.fov_x );
 				hash = RB_ShadowMapHashFloat( hash, renderView.fov_y );
 				hash = RB_ShadowMapHashInt( hash, renderView.cramZNear ? 1 : 0 );
@@ -2881,6 +3163,10 @@ static int RB_ShadowMapBuildPassSignature( const viewLight_t *vLight, const shad
 	return hash;
 }
 
+static int RB_ShadowMapBuildPassSignature( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const bool pointLight ) {
+	return RB_ShadowMapBuildPassSignatureForView( vLight, backEnd.viewDef, passKind, pointLight );
+}
+
 static shadowMapLightHistory_t *RB_ShadowMapFindLightHistory( const int lightIndex ) {
 	if ( lightIndex < 0 ) {
 		return NULL;
@@ -2904,6 +3190,19 @@ static shadowMapLightHistory_t *RB_ShadowMapFindLightHistory( const int lightInd
 	oldest->lightIndex = lightIndex;
 	oldest->lastDynamicFrame = -0x3fffffff;
 	return oldest;
+}
+
+static const shadowMapLightHistory_t *RB_ShadowMapFindLightHistoryConst( const int lightIndex ) {
+	if ( lightIndex < 0 ) {
+		return NULL;
+	}
+	for ( int i = 0; i < SHADOWMAP_LIGHT_HISTORY_SLOTS; i++ ) {
+		const shadowMapLightHistory_t *history = &g_shadowMapLightHistory[i];
+		if ( history->valid && history->lightIndex == lightIndex ) {
+			return history;
+		}
+	}
+	return NULL;
 }
 
 static void RB_ShadowMapInvalidateLightCaches( const int lightIndex ) {
@@ -2944,6 +3243,23 @@ static bool RB_ShadowMapStaticCacheable( const viewLight_t *vLight, const shadow
 			g_shadowMapStats.staticHysteresisPasses++;
 			return false;
 		}
+	}
+	return true;
+}
+
+static bool RB_ShadowMapStaticCacheableReadOnly( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const bool pointLight, const bool haveTranslucentCasters ) {
+	if ( !r_shadowMapStaticCache.GetBool() || vLight == NULL || RB_ShadowMapLightIndex( vLight ) < 0 ) {
+		return false;
+	}
+	if ( haveTranslucentCasters || vLight->shadowMapDynamicCasterCount > 0 || vLight->shadowMapCasterCount <= 0 ) {
+		return false;
+	}
+	if ( !pointLight && RB_ShadowMapCascadeCountForLight( vLight ) > 1 && !r_shadowMapCacheCSM.GetBool() ) {
+		return false;
+	}
+	const shadowMapLightHistory_t *history = RB_ShadowMapFindLightHistoryConst( RB_ShadowMapLightIndex( vLight ) );
+	if ( history != NULL && tr.frameCount - history->lastDynamicFrame < Max( 0, r_shadowMapStaticHysteresisFrames.GetInteger() ) ) {
+		return false;
 	}
 	return true;
 }
@@ -3179,284 +3495,6 @@ static void RB_ShadowMapCompleteCacheUpdate( const shadowMapSchedule_t &schedule
 	}
 }
 
-static float RB_ShadowMapViewNear( const viewDef_t *viewDef ) {
-	float zNear = r_znear.GetFloat();
-	if ( viewDef != NULL && viewDef->renderView.cramZNear ) {
-		zNear *= 0.25f;
-	}
-	return Max( zNear, 0.25f );
-}
-
-static float RB_ShadowMapCascadeDistanceForView( const viewDef_t *viewDef ) {
-	const float zNear = RB_ShadowMapViewNear( viewDef );
-	return Max( r_shadowMapCascadeDistance.GetFloat(), zNear + 32.0f );
-}
-
-static void RB_ShadowMapGetViewExtents( const viewDef_t *viewDef, float &zNear, float &xmin, float &xmax, float &ymin, float &ymax ) {
-	const renderView_t &renderView = viewDef->renderView;
-
-	zNear = RB_ShadowMapViewNear( viewDef );
-	ymax = zNear * tan( renderView.fov_y * idMath::PI / 360.0f );
-	ymin = -ymax;
-
-	xmax = zNear * tan( renderView.fov_x * idMath::PI / 360.0f );
-	xmin = -xmax;
-
-	if ( tr_levelshotProjectionShiftActive ) {
-		const float width = xmax - xmin;
-		const float height = ymax - ymin;
-		const float xShift = 0.5f * width * tr_levelshotProjectionShiftX;
-		const float yShift = 0.5f * height * tr_levelshotProjectionShiftY;
-		xmin += xShift;
-		xmax += xShift;
-		ymin += yShift;
-		ymax += yShift;
-	}
-}
-
-static const int SHADOWMAP_CASCADE_SAMPLE_POINT_COUNT = 23;
-
-static void RB_ShadowMapBuildSliceCorners( const viewDef_t *viewDef, const float sliceNear, const float sliceFar, idVec3 corners[8] ) {
-	const renderView_t &renderView = viewDef->renderView;
-	const idVec3 &origin = renderView.vieworg;
-	const idVec3 &forward = renderView.viewaxis[0];
-	const idVec3 &left = renderView.viewaxis[1];
-	const idVec3 &up = renderView.viewaxis[2];
-	float zNear, xmin, xmax, ymin, ymax;
-
-	RB_ShadowMapGetViewExtents( viewDef, zNear, xmin, xmax, ymin, ymax );
-
-	const float depths[2] = { sliceNear, sliceFar };
-	for ( int depthIndex = 0; depthIndex < 2; depthIndex++ ) {
-		const float depth = depths[depthIndex];
-		const idVec3 center = origin + forward * depth;
-		const float depthScale = depth / Max( zNear, idMath::FLOAT_EPSILON );
-		const float leftExtent = xmax * depthScale;
-		const float rightExtent = xmin * depthScale;
-		const float topExtent = ymax * depthScale;
-		const float bottomExtent = ymin * depthScale;
-		const int baseIndex = depthIndex * 4;
-
-		corners[baseIndex + 0] = center + left * leftExtent + up * topExtent;
-		corners[baseIndex + 1] = center + left * rightExtent + up * topExtent;
-		corners[baseIndex + 2] = center + left * rightExtent + up * bottomExtent;
-		corners[baseIndex + 3] = center + left * leftExtent + up * bottomExtent;
-	}
-}
-
-static int RB_ShadowMapBuildSliceSamplePoints( const viewDef_t *viewDef, const float sliceNear, const float sliceFar, idVec3 samplePoints[SHADOWMAP_CASCADE_SAMPLE_POINT_COUNT] ) {
-	idVec3 corners[8];
-	RB_ShadowMapBuildSliceCorners( viewDef, sliceNear, sliceFar, corners );
-
-	for ( int i = 0; i < 8; i++ ) {
-		samplePoints[i] = corners[i];
-	}
-
-	const idVec3 nearCenter = ( corners[0] + corners[1] + corners[2] + corners[3] ) * 0.25f;
-	const idVec3 farCenter = ( corners[4] + corners[5] + corners[6] + corners[7] ) * 0.25f;
-	int sampleCount = 8;
-	samplePoints[sampleCount++] = nearCenter;
-	samplePoints[sampleCount++] = farCenter;
-	samplePoints[sampleCount++] = ( nearCenter + farCenter ) * 0.5f;
-
-	for ( int i = 0; i < 4; i++ ) {
-		const int next = ( i + 1 ) & 3;
-		samplePoints[sampleCount++] = ( corners[i] + corners[next] ) * 0.5f;
-		samplePoints[sampleCount++] = ( corners[i + 4] + corners[next + 4] ) * 0.5f;
-		samplePoints[sampleCount++] = ( corners[i] + corners[i + 4] ) * 0.5f;
-	}
-
-	return sampleCount;
-}
-
-static float RB_ShadowMapWorldTexelSizeFromSamples( const idVec3 *samplePoints, const int sampleCount, const int tileSize ) {
-	if ( samplePoints == NULL || sampleCount <= 0 || tileSize <= 0 ) {
-		return 0.0f;
-	}
-
-	idBounds bounds;
-	bounds.Clear();
-	for ( int i = 0; i < sampleCount; i++ ) {
-		bounds.AddPoint( samplePoints[i] );
-	}
-
-	const idVec3 size = bounds[1] - bounds[0];
-	const float maxExtent = Max( Max( idMath::Fabs( size.x ), idMath::Fabs( size.y ) ), idMath::Fabs( size.z ) );
-	return maxExtent / Max( 1, tileSize );
-}
-
-static float RB_ShadowMapSliceWorldTexelSize( const viewDef_t *viewDef, const float sliceNear, const float sliceFar, const int tileSize ) {
-	if ( viewDef == NULL ) {
-		return 0.0f;
-	}
-
-	idVec3 samplePoints[SHADOWMAP_CASCADE_SAMPLE_POINT_COUNT];
-	const int sampleCount = RB_ShadowMapBuildSliceSamplePoints( viewDef, sliceNear, sliceFar, samplePoints );
-	return RB_ShadowMapWorldTexelSizeFromSamples( samplePoints, sampleCount, tileSize );
-}
-
-static float RB_ShadowMapLightWorldTexelSize( const viewLight_t *vLight, const int tileSize ) {
-	if ( vLight == NULL || tileSize <= 0 ) {
-		return 0.0f;
-	}
-
-	idVec3 radius = vLight->lightRadius;
-	if ( vLight->lightDef != NULL ) {
-		const renderLight_t &parms = vLight->lightDef->parms;
-		radius[0] = Max( idMath::Fabs( radius[0] ), idMath::Fabs( parms.lightRadius[0] ) + idMath::Fabs( parms.lightCenter[0] ) );
-		radius[1] = Max( idMath::Fabs( radius[1] ), idMath::Fabs( parms.lightRadius[1] ) + idMath::Fabs( parms.lightCenter[1] ) );
-		radius[2] = Max( idMath::Fabs( radius[2] ), idMath::Fabs( parms.lightRadius[2] ) + idMath::Fabs( parms.lightCenter[2] ) );
-	}
-
-	const float maxExtent = Max( Max( idMath::Fabs( radius.x ), idMath::Fabs( radius.y ) ), idMath::Fabs( radius.z ) ) * 2.0f;
-	return maxExtent / Max( 1, tileSize );
-}
-
-static float RB_ShadowMapTexelDepthBias( const float worldTexelSize, const float depthRange ) {
-	if ( worldTexelSize <= 0.0f || depthRange <= 0.0f ) {
-		return 0.0f;
-	}
-	return Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() ) * worldTexelSize / Max( depthRange, 1.0f );
-}
-
-static void RB_ShadowMapTransformPointToClip( const idVec3 &point, const idPlane clipPlanes[4], idVec4 &clip ) {
-	for ( int i = 0; i < 4; i++ ) {
-		clip[i] = point[0] * clipPlanes[i][0] + point[1] * clipPlanes[i][1] + point[2] * clipPlanes[i][2] + clipPlanes[i][3];
-	}
-}
-
-static float RB_ShadowMapProjectedKernelGuardNDC( const int tileSize ) {
-	const float texelStep = 2.0f / Max( 1, tileSize );
-	const float kernelRadius = Max( 0.5f, r_shadowMapFilterRadius.GetFloat() + 0.75f );
-	return texelStep * kernelRadius;
-}
-
-static bool RB_ShadowMapBuildCascadeBounds( const idPlane baseClipPlanes[4], const viewDef_t *viewDef, const float sliceNear, const float sliceFar, const int tileSize, int &validPointsOut, int &skippedPointsOut, bool &mixedWSignsOut, idVec3 &ndcMins, idVec3 &ndcMaxs ) {
-	idVec3 samplePoints[SHADOWMAP_CASCADE_SAMPLE_POINT_COUNT];
-	const int sampleCount = RB_ShadowMapBuildSliceSamplePoints( viewDef, sliceNear, sliceFar, samplePoints );
-
-	validPointsOut = 0;
-	skippedPointsOut = 0;
-	mixedWSignsOut = false;
-	ndcMins.Set( 1.0e30f, 1.0e30f, 1.0e30f );
-	ndcMaxs.Set( -1.0e30f, -1.0e30f, -1.0e30f );
-	int positiveWPoints = 0;
-	int negativeWPoints = 0;
-
-	for ( int i = 0; i < sampleCount; i++ ) {
-		idVec4 clip;
-		RB_ShadowMapTransformPointToClip( samplePoints[i], baseClipPlanes, clip );
-		if ( clip.w == clip.w ) {
-			if ( clip.w > 0.0f ) {
-				positiveWPoints++;
-			} else if ( clip.w < 0.0f ) {
-				negativeWPoints++;
-			}
-		}
-		if ( clip.w != clip.w || clip.w <= 1.0e-5f ) {
-			skippedPointsOut++;
-			continue;
-		}
-
-		const float invW = 1.0f / clip.w;
-		idVec3 ndc( clip.x * invW, clip.y * invW, clip.z );
-		if ( ndc.x != ndc.x || ndc.y != ndc.y || ndc.z != ndc.z ) {
-			skippedPointsOut++;
-			continue;
-		}
-
-		for ( int axis = 0; axis < 3; axis++ ) {
-			ndcMins[axis] = Min( ndcMins[axis], ndc[axis] );
-			ndcMaxs[axis] = Max( ndcMaxs[axis], ndc[axis] );
-		}
-		validPointsOut++;
-	}
-
-	mixedWSignsOut = ( positiveWPoints > 0 && negativeWPoints > 0 );
-
-	if ( validPointsOut < 4 ) {
-		return false;
-	}
-
-	const float pad = Max( 0.0f, r_shadowMapProjectionPad.GetFloat() * 0.5f );
-	const float filterGuard = RB_ShadowMapProjectedKernelGuardNDC( tileSize );
-	idVec3 center = ( ndcMins + ndcMaxs ) * 0.5f;
-	idVec3 extent = ( ndcMaxs - ndcMins ) * 0.5f;
-
-	extent.x = Max( extent.x * ( 1.0f + pad * 2.0f ) + filterGuard, 2.0f / Max( 1, tileSize ) );
-	extent.y = Max( extent.y * ( 1.0f + pad * 2.0f ) + filterGuard, 2.0f / Max( 1, tileSize ) );
-	extent.z = Max( extent.z * ( 1.0f + pad ), 0.001f );
-
-	if ( r_shadowMapCascadeStabilize.GetBool() ) {
-		const float texelStep = 2.0f / Max( 1, tileSize );
-		center.x = floor( center.x / texelStep + 0.5f ) * texelStep;
-		center.y = floor( center.y / texelStep + 0.5f ) * texelStep;
-		extent.x = Max( texelStep, float( ceil( extent.x / texelStep ) ) * texelStep );
-		extent.y = Max( texelStep, float( ceil( extent.y / texelStep ) ) * texelStep );
-	}
-
-	ndcMins = center - extent;
-	ndcMaxs = center + extent;
-
-	ndcMins.x = idMath::ClampFloat( -1.0f, 1.0f, ndcMins.x );
-	ndcMins.y = idMath::ClampFloat( -1.0f, 1.0f, ndcMins.y );
-	ndcMins.z = idMath::ClampFloat( 0.0f, 1.0f, ndcMins.z );
-	ndcMaxs.x = idMath::ClampFloat( -1.0f, 1.0f, ndcMaxs.x );
-	ndcMaxs.y = idMath::ClampFloat( -1.0f, 1.0f, ndcMaxs.y );
-	ndcMaxs.z = idMath::ClampFloat( 0.0f, 1.0f, ndcMaxs.z );
-
-	if ( ndcMaxs.x - ndcMins.x <= 1.0e-4f || ndcMaxs.y - ndcMins.y <= 1.0e-4f ) {
-		return false;
-	}
-
-	return true;
-}
-
-static void RB_ShadowMapBuildCascadeClipPlanes( const idPlane baseClipPlanes[4], const idVec3 &ndcMins, const idVec3 &ndcMaxs, idPlane cascadeClipPlanes[4] ) {
-	const float scaleX = 2.0f / ( ndcMaxs.x - ndcMins.x );
-	const float scaleY = 2.0f / ( ndcMaxs.y - ndcMins.y );
-	const float offsetX = -( ndcMaxs.x + ndcMins.x ) / ( ndcMaxs.x - ndcMins.x );
-	const float offsetY = -( ndcMaxs.y + ndcMins.y ) / ( ndcMaxs.y - ndcMins.y );
-
-	for ( int i = 0; i < 4; i++ ) {
-		cascadeClipPlanes[0][i] = baseClipPlanes[0][i] * scaleX + baseClipPlanes[3][i] * offsetX;
-		cascadeClipPlanes[1][i] = baseClipPlanes[1][i] * scaleY + baseClipPlanes[3][i] * offsetY;
-		cascadeClipPlanes[2][i] = baseClipPlanes[2][i];
-		cascadeClipPlanes[3][i] = baseClipPlanes[3][i];
-	}
-}
-
-static idVec4 RB_ShadowMapBuildAtlasRect( const int cascadeIndex, const int atlasDiv ) {
-	if ( atlasDiv <= 1 ) {
-		return idVec4( 0.0f, 0.0f, 1.0f, 1.0f );
-	}
-
-	const float invAtlasDiv = 1.0f / atlasDiv;
-	const int tileX = cascadeIndex % atlasDiv;
-	const int tileY = cascadeIndex / atlasDiv;
-	return idVec4(
-		tileX * invAtlasDiv,
-		tileY * invAtlasDiv,
-		( tileX + 1 ) * invAtlasDiv,
-		( tileY + 1 ) * invAtlasDiv );
-}
-
-/*
-=============
-RB_ShadowMapCascadeBiasScale
-
-Derives a receiver-bias multiplier from the fitted clip-space footprint and depth extent of a cascade.
-=============
-*/
-static float RB_ShadowMapCascadeBiasScale( const idVec3 &ndcMins, const idVec3 &ndcMaxs ) {
-	const float xyExtent = Max( ndcMaxs.x - ndcMins.x, ndcMaxs.y - ndcMins.y );
-	const float zExtent = ndcMaxs.z - ndcMins.z;
-	const float footprintScale = xyExtent * 0.5f;
-	const float depthScale = Max( zExtent, 0.001f );
-	const float combinedScale = Max( footprintScale, depthScale );
-	return idMath::ClampFloat( 0.35f, 3.0f, combinedScale );
-}
-
 /*
 =============
 RB_ShadowMapReportProjectedSplits
@@ -3468,47 +3506,339 @@ static void RB_ShadowMapReportProjectedSplits( const viewLight_t *vLight, const 
 	}
 
 	const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : "<null>";
-	common->Printf( "SM csm '%s' zNear=%.2f max=%.2f cascades=%d debug=%s splits",
-		shaderName, zNear, maxDistance, cascadeCount, RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ) );
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+	common->Printf( "SM csm '%s' class=%s csm=%d projectedCSM=%d/%d zNear=%.2f max=%.2f cascades=%d debug=%s splits",
+		shaderName,
+		R_ShadowMapLightClassName( classification.lightClass ),
+		classification.csmEnabled ? 1 : 0,
+		classification.projectedCSMEnabled ? 1 : 0,
+		classification.projectedCSMGateApplies ? 1 : 0,
+		zNear,
+		maxDistance,
+		cascadeCount,
+		RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ) );
 	for ( int splitIndex = 0; splitIndex < cascadeCount - 1; splitIndex++ ) {
 		common->Printf( " [%d]=%.2f", splitIndex, g_projectedShadowMapState.splitDepths[splitIndex] );
 	}
 	common->Printf( "\n" );
 }
 
-static void RB_ShadowMapReportProjectedCascadeFit( const viewLight_t *vLight, const int cascadeIndex, const int cascadeCount, const float sliceNear, const float sliceFar, const int validPoints, const int skippedPoints ) {
-	if ( skippedPoints <= 0 || idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) < 2 || !g_shadowMapReportThisFrame || vLight == NULL ) {
+static bool RB_ShadowMapProjectedFloatReady( const float value ) {
+	return value == value && idMath::Fabs( value ) < 1.0e28f;
+}
+
+static bool RB_ShadowMapProjectedAtlasRectReady( const idVec4 &rect ) {
+	const float epsilon = 0.0001f;
+	return RB_ShadowMapProjectedFloatReady( rect.x )
+		&& RB_ShadowMapProjectedFloatReady( rect.y )
+		&& RB_ShadowMapProjectedFloatReady( rect.z )
+		&& RB_ShadowMapProjectedFloatReady( rect.w )
+		&& rect.x >= -epsilon
+		&& rect.y >= -epsilon
+		&& rect.z <= 1.0f + epsilon
+		&& rect.w <= 1.0f + epsilon
+		&& rect.z > rect.x + epsilon
+		&& rect.w > rect.y + epsilon;
+}
+
+static bool RB_ShadowMapProjectedClipPlanesReady( const idPlane clipPlanes[4] ) {
+	for ( int planeIndex = 0; planeIndex < 4; planeIndex++ ) {
+		for ( int componentIndex = 0; componentIndex < 4; componentIndex++ ) {
+			if ( !RB_ShadowMapProjectedFloatReady( clipPlanes[planeIndex][componentIndex] ) ) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static bool RB_ShadowMapProjectedFloatClose( const float lhs, const float rhs, const float epsilon = 0.001f ) {
+	return RB_ShadowMapProjectedFloatReady( lhs ) && RB_ShadowMapProjectedFloatReady( rhs ) && idMath::Fabs( lhs - rhs ) <= epsilon;
+}
+
+static bool RB_ShadowMapProjectedBaseClipPlanesMatchLight( const viewLight_t *vLight, const shadowMapProjectedLightState_t &state ) {
+	if ( vLight == NULL ) {
+		return false;
+	}
+
+	idPlane expectedBaseClipPlanes[4];
+	R_ShadowMapBuildClipPlanes( vLight->lightProject, expectedBaseClipPlanes );
+	for ( int planeIndex = 0; planeIndex < 4; planeIndex++ ) {
+		for ( int componentIndex = 0; componentIndex < 4; componentIndex++ ) {
+			if ( !RB_ShadowMapProjectedFloatClose( state.baseClipPlanes[planeIndex][componentIndex], expectedBaseClipPlanes[planeIndex][componentIndex] ) ) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static bool RB_ShadowMapProjectedFitAccountingReady( const shadowMapProjectedCascadeFit_t &fit ) {
+	if ( !fit.attempted ) {
+		return true;
+	}
+	return fit.sampleCount > 0
+		&& fit.validPoints >= 0
+		&& fit.skippedPoints >= 0
+		&& fit.validPoints + fit.skippedPoints == fit.sampleCount
+		&& fit.positiveWPoints + fit.negativeWPoints + fit.nearZeroWPoints + fit.nanWPoints == fit.sampleCount
+		&& ( fit.mixedWSigns == ( fit.positiveWPoints > 0 && fit.negativeWPoints > 0 ) )
+		&& ( fit.valid || fit.fallbackReason != SHADOWMAP_PROJECTED_FALLBACK_NONE );
+}
+
+static bool RB_ShadowMapProjectedFallbackReasonReady( const shadowMapProjectedLightState_t &state ) {
+	if ( !state.cascadeFallback ) {
+		return state.fallbackReason == SHADOWMAP_PROJECTED_FALLBACK_NONE;
+	}
+	if ( state.fallbackCascade < 0 || state.fallbackCascade >= SHADOWMAP_PROJECTED_MAX_CASCADES ) {
+		return false;
+	}
+
+	const shadowMapProjectedCascadeFit_t &fit = state.cascadeFit[state.fallbackCascade];
+	if ( !fit.attempted || fit.fallbackReason != state.fallbackReason || state.fallbackReason == SHADOWMAP_PROJECTED_FALLBACK_NONE ) {
+		return false;
+	}
+	if ( state.fallbackReason == SHADOWMAP_PROJECTED_FALLBACK_MIXED_W_SIGNS ) {
+		return fit.mixedWSigns && fit.positiveWPoints > 0 && fit.negativeWPoints > 0;
+	}
+	if ( state.fallbackReason == SHADOWMAP_PROJECTED_FALLBACK_INSUFFICIENT_VALID_SAMPLES ) {
+		return fit.validPoints < 4;
+	}
+	if ( state.fallbackReason == SHADOWMAP_PROJECTED_FALLBACK_COLLAPSED_BOUNDS ) {
+		return fit.collapsedBounds && fit.validPoints >= 4;
+	}
+	return false;
+}
+
+static bool RB_ShadowMapValidateProjectedStateContract( const viewLight_t *vLight, const shadowMapProjectedLightState_t &state, const char **reason ) {
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+	const int cascadeCount = state.cascadeCount;
+	if ( reason != NULL ) {
+		*reason = "ok";
+	}
+	if ( vLight == NULL ) {
+		if ( reason != NULL ) {
+			*reason = "null light";
+		}
+		return false;
+	}
+	if ( classification.pointLight ) {
+		if ( reason != NULL ) {
+			*reason = "point light reached projected path";
+		}
+		return false;
+	}
+	if ( !state.valid ) {
+		if ( reason != NULL ) {
+			*reason = "state not valid";
+		}
+		return false;
+	}
+	if ( !RB_ShadowMapProjectedFloatReady( state.projectionPad ) || state.projectionPad < 0.0f || !RB_ShadowMapProjectedFloatClose( state.projectionScale, R_ShadowMapProjectionScale( state.projectionPad ) ) ) {
+		if ( reason != NULL ) {
+			*reason = "invalid projected projection pad or scale";
+		}
+		return false;
+	}
+	if ( !RB_ShadowMapProjectedClipPlanesReady( state.baseClipPlanes ) || !RB_ShadowMapProjectedBaseClipPlanesMatchLight( vLight, state ) ) {
+		if ( reason != NULL ) {
+			*reason = "projected base clip planes do not match padded light projection";
+		}
+		return false;
+	}
+	if ( cascadeCount < 1 || cascadeCount > SHADOWMAP_PROJECTED_MAX_CASCADES ) {
+		if ( reason != NULL ) {
+			*reason = "cascade count outside projected-state limits";
+		}
+		return false;
+	}
+	if ( state.requestedCascadeCount != classification.cascadeCount ) {
+		if ( reason != NULL ) {
+			*reason = "requested cascade count differs from classification";
+		}
+		return false;
+	}
+	if ( state.tileSize <= 0 || state.atlasDiv < 1 || state.atlasDiv * state.atlasDiv < cascadeCount ) {
+		if ( reason != NULL ) {
+			*reason = "invalid tile size or atlas grid";
+		}
+		return false;
+	}
+	for ( int fitIndex = 0; fitIndex < SHADOWMAP_PROJECTED_MAX_CASCADES; fitIndex++ ) {
+		if ( !RB_ShadowMapProjectedFitAccountingReady( state.cascadeFit[fitIndex] ) ) {
+			if ( reason != NULL ) {
+				*reason = "projected sample fit accounting is inconsistent";
+			}
+			return false;
+		}
+	}
+	if ( !RB_ShadowMapProjectedFallbackReasonReady( state ) ) {
+		if ( reason != NULL ) {
+			*reason = "projected fallback reason does not match sample validation";
+		}
+		return false;
+	}
+	if ( state.cascadeFallback ) {
+		if ( state.requestedCascadeCount <= 1 || cascadeCount != 1 || state.fallbackCascade < 0 || state.fallbackCascade >= state.requestedCascadeCount ) {
+			if ( reason != NULL ) {
+				*reason = "invalid projected cascade fallback";
+			}
+			return false;
+		}
+	} else if ( classification.csmEnabled ) {
+		if ( cascadeCount != classification.cascadeCount ) {
+			if ( reason != NULL ) {
+				*reason = "CSM projected state does not match classification";
+			}
+			return false;
+		}
+	} else if ( cascadeCount != 1 ) {
+		if ( reason != NULL ) {
+			*reason = "single projected state has multiple cascades";
+		}
+		return false;
+	}
+
+	for ( int cascadeIndex = 0; cascadeIndex < cascadeCount; cascadeIndex++ ) {
+		if ( !RB_ShadowMapProjectedAtlasRectReady( state.atlasRect[cascadeIndex] ) ) {
+			if ( reason != NULL ) {
+				*reason = "projected atlas rect outside bounds";
+			}
+			return false;
+		}
+		if ( !RB_ShadowMapProjectedClipPlanesReady( state.clipPlanes[cascadeIndex] ) ) {
+			if ( reason != NULL ) {
+				*reason = "projected clip planes contain invalid values";
+			}
+			return false;
+		}
+		if ( !RB_ShadowMapProjectedFloatReady( state.sliceNear[cascadeIndex] ) || !RB_ShadowMapProjectedFloatReady( state.sliceFar[cascadeIndex] ) || state.sliceFar[cascadeIndex] <= state.sliceNear[cascadeIndex] ) {
+			if ( reason != NULL ) {
+				*reason = "projected slice range is invalid";
+			}
+			return false;
+		}
+		if ( !RB_ShadowMapProjectedFloatReady( state.depthRange[cascadeIndex] ) || state.depthRange[cascadeIndex] <= 0.0f ) {
+			if ( reason != NULL ) {
+				*reason = "projected depth range is invalid";
+			}
+			return false;
+		}
+		if ( cascadeIndex > 0 && state.sliceNear[cascadeIndex] < state.sliceFar[cascadeIndex - 1] - 0.25f ) {
+			if ( reason != NULL ) {
+				*reason = "projected slice ranges are not monotonic";
+			}
+			return false;
+		}
+	}
+	if ( cascadeCount > 1 ) {
+		float previousSplit = 0.0f;
+		for ( int splitIndex = 0; splitIndex < cascadeCount - 1; splitIndex++ ) {
+			const float splitDepth = state.splitDepths[splitIndex];
+			if ( !RB_ShadowMapProjectedFloatReady( splitDepth ) || splitDepth <= previousSplit ) {
+				if ( reason != NULL ) {
+					*reason = "projected split depths are not monotonic";
+				}
+				return false;
+			}
+			previousSplit = splitDepth;
+		}
+	}
+
+	return true;
+}
+
+static bool RB_ShadowMapValidateProjectedState( const viewLight_t *vLight, const char **reason ) {
+	return RB_ShadowMapValidateProjectedStateContract( vLight, g_projectedShadowMapState, reason );
+}
+
+static void RB_ShadowMapReportProjectedCascadeFit( const viewLight_t *vLight, const int cascadeIndex, const int cascadeCount, const shadowMapProjectedCascadeFit_t &fit ) {
+	if ( ( fit.skippedPoints <= 0 && !fit.mixedWSigns && fit.fallbackReason == SHADOWMAP_PROJECTED_FALLBACK_NONE ) || idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) < 2 || !g_shadowMapReportThisFrame || vLight == NULL ) {
 		return;
 	}
 
 	const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : "<null>";
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
 	common->Printf(
-		"SM csm fit '%s' cascade=%d/%d range=[%.2f %.2f] validSamples=%d skippedW=%d\n",
+		"SM csm fit '%s' class=%s projectedCSM=%d/%d cascade=%d/%d range=[%.2f %.2f] samples=%d valid=%d skipped=%d w(+%d -%d zero=%d nan=%d mixed=%d) invalidNdc=%d reason=%s\n",
 		shaderName,
+		R_ShadowMapLightClassName( classification.lightClass ),
+		classification.projectedCSMEnabled ? 1 : 0,
+		classification.projectedCSMGateApplies ? 1 : 0,
 		cascadeIndex,
 		cascadeCount,
-		sliceNear,
-		sliceFar,
-		validPoints,
-		skippedPoints );
+		fit.sliceNear,
+		fit.sliceFar,
+		fit.sampleCount,
+		fit.validPoints,
+		fit.skippedPoints,
+		fit.positiveWPoints,
+		fit.negativeWPoints,
+		fit.nearZeroWPoints,
+		fit.nanWPoints,
+		fit.mixedWSigns ? 1 : 0,
+		fit.invalidNdcPoints,
+		R_ShadowMapProjectedFallbackReasonName( fit.fallbackReason ) );
 }
 
-static void RB_ShadowMapReportProjectedCascadeFallback( const viewLight_t *vLight, const int requestedCascadeCount, const int cascadeIndex, const float sliceNear, const float sliceFar, const int validPoints, const int skippedPoints, const bool mixedWSigns ) {
+static void RB_ShadowMapReportProjectedCascadeFallback( const viewLight_t *vLight, const int requestedCascadeCount, const int cascadeIndex, const shadowMapProjectedCascadeFit_t &fit, const int fallbackReason ) {
 	if ( idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) < 2 || !g_shadowMapReportThisFrame || vLight == NULL ) {
 		return;
 	}
 
 	const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : "<null>";
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
 	common->Printf(
-		"SM csm fallback '%s' requested=%d failedCascade=%d range=[%.2f %.2f] validSamples=%d skippedW=%d mixedW=%d -> single-cascade\n",
+		"SM csm fallback '%s' class=%s projectedCSM=%d/%d requested=%d failedCascade=%d reason=%s range=[%.2f %.2f] samples=%d valid=%d skipped=%d w(+%d -%d zero=%d nan=%d mixed=%d) invalidNdc=%d collapsed=%d -> single-cascade\n",
 		shaderName,
+		R_ShadowMapLightClassName( classification.lightClass ),
+		classification.projectedCSMEnabled ? 1 : 0,
+		classification.projectedCSMGateApplies ? 1 : 0,
 		requestedCascadeCount,
 		cascadeIndex,
-		sliceNear,
-		sliceFar,
-		validPoints,
-		skippedPoints,
-		mixedWSigns ? 1 : 0 );
+		R_ShadowMapProjectedFallbackReasonName( fallbackReason ),
+		fit.sliceNear,
+		fit.sliceFar,
+		fit.sampleCount,
+		fit.validPoints,
+		fit.skippedPoints,
+		fit.positiveWPoints,
+		fit.negativeWPoints,
+		fit.nearZeroWPoints,
+		fit.nanWPoints,
+		fit.mixedWSigns ? 1 : 0,
+		fit.invalidNdcPoints,
+		fit.collapsedBounds ? 1 : 0 );
+}
+
+static void RB_ShadowMapProjectedSampleSummary( const shadowMapProjectedLightState_t &state, int &attemptedCascades, int &sampleCount, int &validCount, int &skippedCount, int &positiveWCount, int &negativeWCount, int &nearZeroWCount, int &nanWCount, int &invalidNdcCount, int &mixedWSignCascades ) {
+	attemptedCascades = 0;
+	sampleCount = 0;
+	validCount = 0;
+	skippedCount = 0;
+	positiveWCount = 0;
+	negativeWCount = 0;
+	nearZeroWCount = 0;
+	nanWCount = 0;
+	invalidNdcCount = 0;
+	mixedWSignCascades = 0;
+
+	for ( int cascadeIndex = 0; cascadeIndex < SHADOWMAP_PROJECTED_MAX_CASCADES; cascadeIndex++ ) {
+		const shadowMapProjectedCascadeFit_t &fit = state.cascadeFit[cascadeIndex];
+		if ( !fit.attempted ) {
+			continue;
+		}
+		attemptedCascades++;
+		sampleCount += fit.sampleCount;
+		validCount += fit.validPoints;
+		skippedCount += fit.skippedPoints;
+		positiveWCount += fit.positiveWPoints;
+		negativeWCount += fit.negativeWPoints;
+		nearZeroWCount += fit.nearZeroWPoints;
+		nanWCount += fit.nanWPoints;
+		invalidNdcCount += fit.invalidNdcPoints;
+		mixedWSignCascades += fit.mixedWSigns ? 1 : 0;
+	}
 }
 
 /*
@@ -3518,90 +3848,84 @@ RB_ShadowMapBuildProjectedState
 Builds projected-light shadow-map state, including interior cascade split planes and per-cascade clip volumes.
 =============
 */
-static void RB_ShadowMapBuildProjectedState( const viewLight_t *vLight, const idPlane baseClipPlanes[4], const int tileSize ) {
-	RB_ShadowMapResetProjectedState();
-
-	const int requestedCascadeCount = RB_ShadowMapCascadeCountForLight( vLight );
-	RB_ShadowMapInitializeProjectedState( baseClipPlanes, requestedCascadeCount, tileSize );
-
-	if ( requestedCascadeCount <= 1 || backEnd.viewDef == NULL ) {
-		const float worldTexelSize = RB_ShadowMapLightWorldTexelSize( vLight, tileSize );
-		const float depthRange = Max( worldTexelSize * Max( 1, tileSize ), 1.0f );
-		g_projectedShadowMapState.worldTexelSize[0] = worldTexelSize;
-		g_projectedShadowMapState.sliceNear[0] = 0.0f;
-		g_projectedShadowMapState.sliceFar[0] = depthRange;
-		g_projectedShadowMapState.depthRange[0] = depthRange;
-		g_projectedShadowMapState.clipZExtent[0] = 1.0f;
-		g_projectedShadowMapState.texelDepthBias[0] = RB_ShadowMapTexelDepthBias( worldTexelSize, depthRange );
-		return;
-	}
-
-	const viewDef_t *viewDef = backEnd.viewDef;
-	const float zNear = RB_ShadowMapViewNear( viewDef );
-	const float maxDistance = RB_ShadowMapCascadeDistanceForView( viewDef );
-	const float lambda = idMath::ClampFloat( 0.0f, 1.0f, r_shadowMapCascadeLambda.GetFloat() );
-	const float range = maxDistance - zNear;
-	const float ratio = maxDistance / zNear;
-
-	for ( int splitIndex = 0; splitIndex < requestedCascadeCount - 1; splitIndex++ ) {
-		const float p = float( splitIndex + 1 ) / float( requestedCascadeCount );
-		const float uniformSplit = zNear + range * p;
-		const float logSplit = zNear * pow( ratio, p );
-		g_projectedShadowMapState.splitDepths[splitIndex] = uniformSplit + ( logSplit - uniformSplit ) * lambda;
-	}
-
-	float sliceNear = zNear;
-	for ( int cascadeIndex = 0; cascadeIndex < requestedCascadeCount; cascadeIndex++ ) {
-		const bool finalCascade = cascadeIndex == requestedCascadeCount - 1;
-		const float targetFar = finalCascade ? maxDistance : g_projectedShadowMapState.splitDepths[cascadeIndex];
-		const float sliceFar = Max( targetFar, sliceNear + 1.0f );
-		idVec3 ndcMins;
-		idVec3 ndcMaxs;
-		int validPoints = 0;
-		int skippedPoints = 0;
-		bool mixedWSigns = false;
-		if ( RB_ShadowMapBuildCascadeBounds( baseClipPlanes, viewDef, sliceNear, sliceFar, tileSize, validPoints, skippedPoints, mixedWSigns, ndcMins, ndcMaxs ) ) {
-			if ( mixedWSigns ) {
-				RB_ShadowMapReportProjectedCascadeFallback( vLight, requestedCascadeCount, cascadeIndex, sliceNear, sliceFar, validPoints, skippedPoints, mixedWSigns );
-				RB_ShadowMapResetProjectedState();
-				RB_ShadowMapInitializeProjectedState( baseClipPlanes, 1, tileSize );
-				g_projectedShadowMapState.worldTexelSize[0] = RB_ShadowMapLightWorldTexelSize( vLight, tileSize );
-				g_projectedShadowMapState.sliceNear[0] = zNear;
-				g_projectedShadowMapState.sliceFar[0] = maxDistance;
-				g_projectedShadowMapState.depthRange[0] = Max( maxDistance - zNear, 1.0f );
-				g_projectedShadowMapState.clipZExtent[0] = 1.0f;
-				g_projectedShadowMapState.texelDepthBias[0] = RB_ShadowMapTexelDepthBias( g_projectedShadowMapState.worldTexelSize[0], g_projectedShadowMapState.depthRange[0] );
-				return;
-			}
-			RB_ShadowMapBuildCascadeClipPlanes( baseClipPlanes, ndcMins, ndcMaxs, g_projectedShadowMapState.clipPlanes[cascadeIndex] );
-			g_projectedShadowMapState.biasScale[cascadeIndex] = RB_ShadowMapCascadeBiasScale( ndcMins, ndcMaxs );
-			g_projectedShadowMapState.clipZExtent[cascadeIndex] = ndcMaxs.z - ndcMins.z;
-			g_projectedShadowMapState.worldTexelSize[cascadeIndex] = RB_ShadowMapSliceWorldTexelSize( viewDef, sliceNear, sliceFar, tileSize );
-			RB_ShadowMapReportProjectedCascadeFit( vLight, cascadeIndex, requestedCascadeCount, sliceNear, sliceFar, validPoints, skippedPoints );
-		} else {
-			RB_ShadowMapReportProjectedCascadeFallback( vLight, requestedCascadeCount, cascadeIndex, sliceNear, sliceFar, validPoints, skippedPoints, mixedWSigns );
-			RB_ShadowMapResetProjectedState();
-			RB_ShadowMapInitializeProjectedState( baseClipPlanes, 1, tileSize );
-			g_projectedShadowMapState.worldTexelSize[0] = RB_ShadowMapLightWorldTexelSize( vLight, tileSize );
-			g_projectedShadowMapState.sliceNear[0] = zNear;
-			g_projectedShadowMapState.sliceFar[0] = maxDistance;
-			g_projectedShadowMapState.depthRange[0] = Max( maxDistance - zNear, 1.0f );
-			g_projectedShadowMapState.clipZExtent[0] = 1.0f;
-			g_projectedShadowMapState.texelDepthBias[0] = RB_ShadowMapTexelDepthBias( g_projectedShadowMapState.worldTexelSize[0], g_projectedShadowMapState.depthRange[0] );
-			return;
-		}
-		g_projectedShadowMapState.sliceNear[cascadeIndex] = sliceNear;
-		g_projectedShadowMapState.sliceFar[cascadeIndex] = sliceFar;
-		g_projectedShadowMapState.depthRange[cascadeIndex] = sliceFar - sliceNear;
-		g_projectedShadowMapState.texelDepthBias[cascadeIndex] = RB_ShadowMapTexelDepthBias( g_projectedShadowMapState.worldTexelSize[cascadeIndex], g_projectedShadowMapState.depthRange[cascadeIndex] );
-		sliceNear = sliceFar;
-	}
-
-	RB_ShadowMapReportProjectedSplits( vLight, zNear, maxDistance, requestedCascadeCount );
-	if ( idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) >= 2 && g_shadowMapReportThisFrame && vLight != NULL ) {
+static void RB_ShadowMapReportProjectedState( const viewLight_t *vLight ) {
+	const int requestedCascadeCount = Max( 1, g_projectedShadowMapState.requestedCascadeCount );
+	const int cascadeCount = Max( 1, g_projectedShadowMapState.cascadeCount );
+	const int reportLevel = idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() );
+	int attemptedCascades = 0;
+	int sampleCount = 0;
+	int validCount = 0;
+	int skippedCount = 0;
+	int positiveWCount = 0;
+	int negativeWCount = 0;
+	int nearZeroWCount = 0;
+	int nanWCount = 0;
+	int invalidNdcCount = 0;
+	int mixedWSignCascades = 0;
+	RB_ShadowMapProjectedSampleSummary( g_projectedShadowMapState, attemptedCascades, sampleCount, validCount, skippedCount, positiveWCount, negativeWCount, nearZeroWCount, nanWCount, invalidNdcCount, mixedWSignCascades );
+	if ( reportLevel >= 2 && g_shadowMapReportThisFrame && vLight != NULL ) {
 		const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : "<null>";
-		common->Printf( "SM csm bias '%s'", shaderName );
-		for ( int cascadeIndex = 0; cascadeIndex < requestedCascadeCount; cascadeIndex++ ) {
+		const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+		common->Printf(
+			"SM projected-state '%s' class=%s csm=%d projectedCSM=%d/%d requested=%d cascades=%d tiles=%d atlasDiv=%d tileSize=%d fallback=%d/%d reason=%s projectionPad=%.3f projectionScale=%.6f baseClip0=%.6f,%.6f,%.6f,%.6f sampleValidation(attempted=%d samples=%d valid=%d skipped=%d w=+%d/-%d/zero%d/nan%d invalidNdc=%d mixed=%d) debug=%s\n",
+			shaderName,
+			R_ShadowMapLightClassName( classification.lightClass ),
+			classification.csmEnabled ? 1 : 0,
+			classification.projectedCSMEnabled ? 1 : 0,
+			classification.projectedCSMGateApplies ? 1 : 0,
+			requestedCascadeCount,
+			cascadeCount,
+			cascadeCount,
+			Max( 1, g_projectedShadowMapState.atlasDiv ),
+			Max( 1, g_projectedShadowMapState.tileSize ),
+			g_projectedShadowMapState.cascadeFallback ? 1 : 0,
+			g_projectedShadowMapState.fallbackCascade,
+			R_ShadowMapProjectedFallbackReasonName( g_projectedShadowMapState.fallbackReason ),
+			g_projectedShadowMapState.projectionPad,
+			g_projectedShadowMapState.projectionScale,
+			g_projectedShadowMapState.baseClipPlanes[0][0],
+			g_projectedShadowMapState.baseClipPlanes[0][1],
+			g_projectedShadowMapState.baseClipPlanes[0][2],
+			g_projectedShadowMapState.baseClipPlanes[0][3],
+			attemptedCascades,
+			sampleCount,
+			validCount,
+			skippedCount,
+			positiveWCount,
+			negativeWCount,
+			nearZeroWCount,
+			nanWCount,
+			invalidNdcCount,
+			mixedWSignCascades,
+			RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ) );
+	}
+	if ( requestedCascadeCount > 1 && g_projectedShadowMapState.cascadeFallback ) {
+		const int fallbackCascade = idMath::ClampInt( 0, SHADOWMAP_MAX_CASCADES - 1, g_projectedShadowMapState.fallbackCascade );
+		const shadowMapProjectedCascadeFit_t &fit = g_projectedShadowMapState.cascadeFit[fallbackCascade];
+		RB_ShadowMapReportProjectedCascadeFallback( vLight, requestedCascadeCount, fallbackCascade, fit, g_projectedShadowMapState.fallbackReason );
+	} else if ( requestedCascadeCount > 1 ) {
+		for ( int cascadeIndex = 0; cascadeIndex < cascadeCount && cascadeIndex < SHADOWMAP_MAX_CASCADES; cascadeIndex++ ) {
+			const shadowMapProjectedCascadeFit_t &fit = g_projectedShadowMapState.cascadeFit[cascadeIndex];
+			if ( fit.attempted ) {
+				RB_ShadowMapReportProjectedCascadeFit( vLight, cascadeIndex, cascadeCount, fit );
+			}
+		}
+	}
+
+	if ( cascadeCount > 1 ) {
+		RB_ShadowMapReportProjectedSplits( vLight, g_projectedShadowMapState.sliceNear[0], g_projectedShadowMapState.sliceFar[cascadeCount - 1], cascadeCount );
+	}
+	if ( reportLevel >= 2 && g_shadowMapReportThisFrame && vLight != NULL ) {
+		const char *shaderName = vLight->lightShader != NULL ? vLight->lightShader->GetName() : "<null>";
+		const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+		common->Printf(
+			"SM projected bias '%s' class=%s csm=%d projectedCSM=%d/%d",
+			shaderName,
+			R_ShadowMapLightClassName( classification.lightClass ),
+			classification.csmEnabled ? 1 : 0,
+			classification.projectedCSMEnabled ? 1 : 0,
+			classification.projectedCSMGateApplies ? 1 : 0 );
+		for ( int cascadeIndex = 0; cascadeIndex < cascadeCount; cascadeIndex++ ) {
 			common->Printf( " [%d]=%.3f texel=%.3f texBias=%.6f range=%.2f-%.2f depth=%.2f clipZ=%.3f", cascadeIndex,
 				g_projectedShadowMapState.biasScale[cascadeIndex],
 				g_projectedShadowMapState.worldTexelSize[cascadeIndex],
@@ -3613,6 +3937,28 @@ static void RB_ShadowMapBuildProjectedState( const viewLight_t *vLight, const id
 		}
 		common->Printf( "\n" );
 	}
+}
+
+static void RB_ShadowMapBuildProjectedState( const viewLight_t *vLight, const int tileSize ) {
+	R_BuildShadowMapProjectedLightState( vLight, backEnd.viewDef, tileSize, g_projectedShadowMapState );
+	const char *invariantReason = "ok";
+	if ( g_projectedShadowMapState.valid && !RB_ShadowMapValidateProjectedState( vLight, &invariantReason ) ) {
+		common->Warning(
+			"SM projected-state invariant failed: light=%d reason=%s requested=%d cascades=%d atlasDiv=%d tileSize=%d fallback=%d/%d fallbackReason=%s",
+			vLight != NULL && vLight->lightDef != NULL ? vLight->lightDef->index : -1,
+			invariantReason,
+			g_projectedShadowMapState.requestedCascadeCount,
+			g_projectedShadowMapState.cascadeCount,
+			g_projectedShadowMapState.atlasDiv,
+			g_projectedShadowMapState.tileSize,
+			g_projectedShadowMapState.cascadeFallback ? 1 : 0,
+			g_projectedShadowMapState.fallbackCascade,
+			R_ShadowMapProjectedFallbackReasonName( g_projectedShadowMapState.fallbackReason ) );
+		assert( !"projected shadow-map state invariant failed" );
+		R_ShadowMapResetProjectedLightState( g_projectedShadowMapState );
+		return;
+	}
+	RB_ShadowMapReportProjectedState( vLight );
 }
 
 static void RB_ShadowMapFreeProgram( void ) {
@@ -4118,6 +4464,7 @@ static const char *programBaseName = "glprogs/shadow_interaction";
 	g_shadowMapProgram.shadowCascadeCount = glGetUniformLocationARB( programObject, "uShadowCascadeCount" );
 	g_shadowMapProgram.shadowCascadeBlend = glGetUniformLocationARB( programObject, "uShadowCascadeBlend" );
 	g_shadowMapProgram.shadowDebugMode = glGetUniformLocationARB( programObject, "uShadowDebugMode" );
+	g_shadowMapProgram.shadowReceiverDebugReason = glGetUniformLocationARB( programObject, "uShadowReceiverDebugReason" );
 	g_shadowMapProgram.translucentShadowEnabled = glGetUniformLocationARB( programObject, "uTranslucentShadowEnabled" );
 	g_shadowMapProgram.translucentShadowDensity = glGetUniformLocationARB( programObject, "uTranslucentShadowDensity" );
 	g_shadowMapProgram.translucentShadowFilterRadius = glGetUniformLocationARB( programObject, "uTranslucentShadowFilterRadius" );
@@ -4517,6 +4864,7 @@ static const char *programBaseName = "glprogs/shadow_point_interaction";
 	g_pointShadowMapProgram.shadowFilterTaps = glGetUniformLocationARB( programObject, "uShadowFilterTaps" );
 	g_pointShadowMapProgram.shadowFilterMode = glGetUniformLocationARB( programObject, "uShadowFilterMode" );
 	g_pointShadowMapProgram.shadowDebugMode = glGetUniformLocationARB( programObject, "uShadowDebugMode" );
+	g_pointShadowMapProgram.shadowReceiverDebugReason = glGetUniformLocationARB( programObject, "uShadowReceiverDebugReason" );
 	g_pointShadowMapProgram.pointShadowTexelScale = glGetUniformLocationARB( programObject, "uPointShadowTexelScale" );
 	g_pointShadowMapProgram.pointShadowDepthMode = glGetUniformLocationARB( programObject, "uPointShadowDepthMode" );
 	g_pointShadowMapProgram.translucentShadowEnabled = glGetUniformLocationARB( programObject, "uTranslucentShadowEnabled" );
@@ -4873,40 +5221,6 @@ static const char *programBaseName = "glprogs/shadow_debug_overlay";
 	return true;
 }
 
-static void RB_ShadowMapBuildClipPlanes( const idPlane lightProject[4], idPlane clipPlanes[4] ) {
-	const float projectionPad = Max( 0.0f, r_shadowMapProjectionPad.GetFloat() );
-	const float projectionScale = 1.0f / ( 1.0f + projectionPad * 2.0f );
-
-	for ( int i = 0; i < 4; i++ ) {
-		clipPlanes[0][i] = ( lightProject[0][i] * 2.0f - lightProject[2][i] ) * projectionScale;
-		clipPlanes[1][i] = ( lightProject[1][i] * 2.0f - lightProject[2][i] ) * projectionScale;
-		clipPlanes[2][i] = lightProject[3][i];
-		clipPlanes[3][i] = lightProject[2][i];
-	}
-}
-
-static void RB_ShadowMapClipPlanesToGLMatrix( const idPlane clipPlanes[4], float matrix[16] ) {
-	matrix[0] = clipPlanes[0][0];
-	matrix[4] = clipPlanes[0][1];
-	matrix[8] = clipPlanes[0][2];
-	matrix[12] = clipPlanes[0][3];
-
-	matrix[1] = clipPlanes[1][0];
-	matrix[5] = clipPlanes[1][1];
-	matrix[9] = clipPlanes[1][2];
-	matrix[13] = clipPlanes[1][3];
-
-	matrix[2] = 0.0f;
-	matrix[6] = 0.0f;
-	matrix[10] = 0.0f;
-	matrix[14] = 0.0f;
-
-	matrix[3] = clipPlanes[3][0];
-	matrix[7] = clipPlanes[3][1];
-	matrix[11] = clipPlanes[3][2];
-	matrix[15] = clipPlanes[3][3];
-}
-
 static bool RB_ShadowMapEnsureResources( const viewLight_t *vLight ) {
 	if ( !RB_ShadowMapLoadProgram() || !RB_ShadowMapLoadCasterProgram() ) {
 		return false;
@@ -5170,6 +5484,9 @@ static shadowMapLightSupportReason_t RB_ShadowMapLightSupportReason( const viewL
 
 static void RB_ShadowMapStatsReset( void ) {
 	memset( &g_shadowMapStats, 0, sizeof( g_shadowMapStats ) );
+	g_shadowMapStats.csmRequested = r_shadowMapCSM.GetBool();
+	g_shadowMapStats.projectedCsmRequested = r_shadowMapProjectedCSM.GetBool();
+	g_shadowMapStats.requestedCascadeCount = idMath::ClampInt( 1, SHADOWMAP_CLASSIFICATION_MAX_CASCADES, r_shadowMapCascadeCount.GetInteger() );
 	RB_ShadowMapExpireCaches();
 	RB_ShadowMapCountCacheSlots();
 	g_shadowMapReportThisFrame = false;
@@ -5199,6 +5516,10 @@ static void RB_ShadowMapStatsReport( void ) {
 	if ( reportLevel <= 0 || !g_shadowMapReportThisFrame || g_shadowMapStats.totalLights <= 0 ) {
 		return;
 	}
+	const int receiverFallbackInvalid = g_shadowMapStats.receiverFallbackSurfaces[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE];
+	const int receiverFallbackCustomGLSL = g_shadowMapStats.receiverFallbackSurfaces[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL];
+	const int receiverFallbackGenerated = g_shadowMapStats.receiverFallbackSurfaces[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY];
+	const int receiverFallbackSurfaces = receiverFallbackInvalid + receiverFallbackCustomGLSL + receiverFallbackGenerated;
 
 	idStr unsupportedSummary;
 	for ( int i = 0; i < SHADOWMAP_SUPPORT_COUNT; i++ ) {
@@ -5213,13 +5534,22 @@ static void RB_ShadowMapStatsReport( void ) {
 
 	if ( unsupportedSummary.Length() > 0 ) {
 		common->Printf(
-			"SM summary: lights=%d supported=%d point=%d projected=%d parallel=%d global=%d mapped(local=%d global=%d) unshadowed(local=%d global=%d) fallback(local=%d global=%d) debug=%s unsupported[%s]\n",
+			"SM summary: lights=%d supported=%d point=%d projected=%d parallel=%d global=%d csm=%d/%d projectedCSM=%d/%d/%d nonProjectedCSM=%d cvars(csm=%d projectedCSM=%d cascadeReq=%d) mapped(local=%d global=%d) unshadowed(local=%d global=%d) fallback(local=%d global=%d) debug=%s unsupported[%s]\n",
 			g_shadowMapStats.totalLights,
 			g_shadowMapStats.supportedLights,
 			g_shadowMapStats.pointLights,
 			g_shadowMapStats.projectedLights,
 			g_shadowMapStats.parallelLights,
 			g_shadowMapStats.globalLights,
+			g_shadowMapStats.cascadeLights,
+			g_shadowMapStats.cascadeCount,
+			g_shadowMapStats.projectedCsmEligibleLights,
+			g_shadowMapStats.projectedCsmCascadeLights,
+			g_shadowMapStats.projectedCsmSuppressedLights,
+			g_shadowMapStats.nonProjectedCsmLights,
+			g_shadowMapStats.csmRequested ? 1 : 0,
+			g_shadowMapStats.projectedCsmRequested ? 1 : 0,
+			g_shadowMapStats.requestedCascadeCount,
 			g_shadowMapStats.mappedLocalPasses,
 			g_shadowMapStats.mappedGlobalPasses,
 			g_shadowMapStats.unshadowedLocalPasses,
@@ -5229,22 +5559,38 @@ static void RB_ShadowMapStatsReport( void ) {
 			RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ),
 			unsupportedSummary.c_str() );
 		common->Printf(
-			"SM detail: failures(render local=%d global=%d, mask local=%d global=%d) receiverFallback(local=%d global=%d)\n",
+			"SM detail: failures(render local=%d global=%d, mask local=%d global=%d) receiverFallback(local=%d global=%d surfaces=%d invalid=%d customGLSL=%d generatedSkinned=%d) receiverWrapped(customGLSL=%d local=%d global=%d)\n",
 			g_shadowMapStats.renderFailLocalPasses,
 			g_shadowMapStats.renderFailGlobalPasses,
 			g_shadowMapStats.maskFailLocalPasses,
 			g_shadowMapStats.maskFailGlobalPasses,
 			g_shadowMapStats.receiverFallbackLocalPasses,
-			g_shadowMapStats.receiverFallbackGlobalPasses );
+			g_shadowMapStats.receiverFallbackGlobalPasses,
+			receiverFallbackSurfaces,
+			receiverFallbackInvalid,
+			receiverFallbackCustomGLSL,
+			receiverFallbackGenerated,
+			g_shadowMapStats.receiverWrappedCustomGLSLSurfaces,
+			g_shadowMapStats.receiverWrappedCustomGLSLLocalPasses,
+			g_shadowMapStats.receiverWrappedCustomGLSLGlobalPasses );
 	} else {
 		common->Printf(
-			"SM summary: lights=%d supported=%d point=%d projected=%d parallel=%d global=%d mapped(local=%d global=%d) unshadowed(local=%d global=%d) fallback(local=%d global=%d) debug=%s\n",
+			"SM summary: lights=%d supported=%d point=%d projected=%d parallel=%d global=%d csm=%d/%d projectedCSM=%d/%d/%d nonProjectedCSM=%d cvars(csm=%d projectedCSM=%d cascadeReq=%d) mapped(local=%d global=%d) unshadowed(local=%d global=%d) fallback(local=%d global=%d) debug=%s\n",
 			g_shadowMapStats.totalLights,
 			g_shadowMapStats.supportedLights,
 			g_shadowMapStats.pointLights,
 			g_shadowMapStats.projectedLights,
 			g_shadowMapStats.parallelLights,
 			g_shadowMapStats.globalLights,
+			g_shadowMapStats.cascadeLights,
+			g_shadowMapStats.cascadeCount,
+			g_shadowMapStats.projectedCsmEligibleLights,
+			g_shadowMapStats.projectedCsmCascadeLights,
+			g_shadowMapStats.projectedCsmSuppressedLights,
+			g_shadowMapStats.nonProjectedCsmLights,
+			g_shadowMapStats.csmRequested ? 1 : 0,
+			g_shadowMapStats.projectedCsmRequested ? 1 : 0,
+			g_shadowMapStats.requestedCascadeCount,
 			g_shadowMapStats.mappedLocalPasses,
 			g_shadowMapStats.mappedGlobalPasses,
 			g_shadowMapStats.unshadowedLocalPasses,
@@ -5253,13 +5599,20 @@ static void RB_ShadowMapStatsReport( void ) {
 			g_shadowMapStats.fallbackGlobalPasses,
 			RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ) );
 		common->Printf(
-			"SM detail: failures(render local=%d global=%d, mask local=%d global=%d) receiverFallback(local=%d global=%d)\n",
+			"SM detail: failures(render local=%d global=%d, mask local=%d global=%d) receiverFallback(local=%d global=%d surfaces=%d invalid=%d customGLSL=%d generatedSkinned=%d) receiverWrapped(customGLSL=%d local=%d global=%d)\n",
 			g_shadowMapStats.renderFailLocalPasses,
 			g_shadowMapStats.renderFailGlobalPasses,
 			g_shadowMapStats.maskFailLocalPasses,
 			g_shadowMapStats.maskFailGlobalPasses,
 			g_shadowMapStats.receiverFallbackLocalPasses,
-			g_shadowMapStats.receiverFallbackGlobalPasses );
+			g_shadowMapStats.receiverFallbackGlobalPasses,
+			receiverFallbackSurfaces,
+			receiverFallbackInvalid,
+			receiverFallbackCustomGLSL,
+			receiverFallbackGenerated,
+			g_shadowMapStats.receiverWrappedCustomGLSLSurfaces,
+			g_shadowMapStats.receiverWrappedCustomGLSLLocalPasses,
+			g_shadowMapStats.receiverWrappedCustomGLSLGlobalPasses );
 	}
 
 	common->Printf(
@@ -5280,6 +5633,34 @@ static void RB_ShadowMapStatsReport( void ) {
 		g_shadowMapStats.minWorldTexelSize,
 		g_shadowMapStats.maxWorldTexelSize );
 	common->Printf(
+		"SM timings: cpu(map=%.2f reuse=%.2f mask=%.2f receiverFallback=%.2f stencilFallback=%.2f) gpuSync(map=%.2f reuse=%.2f mask=%.2f receiverFallback=%.2f stencilFallback=%.2f) gpuQuery(map=%.2f/%d reuse=%.2f/%d mask=%.2f/%d receiverFallback=%.2f/%d stencilFallback=%.2f/%d pending=%d:%d/%d/%d/%d/%d)\n",
+		g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_MAP_RENDER],
+		g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_CACHE_REUSE],
+		g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_MASK_PASS],
+		g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_RECEIVER_FALLBACK],
+		g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_STENCIL_FALLBACK],
+		g_shadowMapStats.gpuSyncPhaseMilliseconds[SHADOWMAP_TIMING_MAP_RENDER],
+		g_shadowMapStats.gpuSyncPhaseMilliseconds[SHADOWMAP_TIMING_CACHE_REUSE],
+		g_shadowMapStats.gpuSyncPhaseMilliseconds[SHADOWMAP_TIMING_MASK_PASS],
+		g_shadowMapStats.gpuSyncPhaseMilliseconds[SHADOWMAP_TIMING_RECEIVER_FALLBACK],
+		g_shadowMapStats.gpuSyncPhaseMilliseconds[SHADOWMAP_TIMING_STENCIL_FALLBACK],
+		g_shadowMapStats.gpuTimerPhaseMilliseconds[SHADOWMAP_TIMING_MAP_RENDER],
+		g_shadowMapStats.gpuTimerPhaseSamples[SHADOWMAP_TIMING_MAP_RENDER],
+		g_shadowMapStats.gpuTimerPhaseMilliseconds[SHADOWMAP_TIMING_CACHE_REUSE],
+		g_shadowMapStats.gpuTimerPhaseSamples[SHADOWMAP_TIMING_CACHE_REUSE],
+		g_shadowMapStats.gpuTimerPhaseMilliseconds[SHADOWMAP_TIMING_MASK_PASS],
+		g_shadowMapStats.gpuTimerPhaseSamples[SHADOWMAP_TIMING_MASK_PASS],
+		g_shadowMapStats.gpuTimerPhaseMilliseconds[SHADOWMAP_TIMING_RECEIVER_FALLBACK],
+		g_shadowMapStats.gpuTimerPhaseSamples[SHADOWMAP_TIMING_RECEIVER_FALLBACK],
+		g_shadowMapStats.gpuTimerPhaseMilliseconds[SHADOWMAP_TIMING_STENCIL_FALLBACK],
+		g_shadowMapStats.gpuTimerPhaseSamples[SHADOWMAP_TIMING_STENCIL_FALLBACK],
+		g_shadowMapStats.gpuTimerPending,
+		g_shadowMapStats.gpuTimerPhasePending[SHADOWMAP_TIMING_MAP_RENDER],
+		g_shadowMapStats.gpuTimerPhasePending[SHADOWMAP_TIMING_CACHE_REUSE],
+		g_shadowMapStats.gpuTimerPhasePending[SHADOWMAP_TIMING_MASK_PASS],
+		g_shadowMapStats.gpuTimerPhasePending[SHADOWMAP_TIMING_RECEIVER_FALLBACK],
+		g_shadowMapStats.gpuTimerPhasePending[SHADOWMAP_TIMING_STENCIL_FALLBACK] );
+	common->Printf(
 		"SM cache: hit=%d miss=%d reuse=%d budgetReuse=%d evict=%d expired=%d hysteresis=%d projected=%d/%d point=%d/%d\n",
 		g_shadowMapStats.cacheHitPasses,
 		g_shadowMapStats.cacheMissPasses,
@@ -5293,14 +5674,18 @@ static void RB_ShadowMapStatsReport( void ) {
 		g_shadowMapStats.pointCacheSlotsUsed,
 		g_shadowMapStats.pointCacheSlotsTotal );
 	common->Printf(
-		"SM casters: total=%d static=%d dynamic=%d alpha=%d translucent=%d expanded=%d rejected=%d\n",
+		"SM casters: total=%d static=%d dynamic=%d alpha=%d translucent=%d expanded=%d rejected=%d lod(tests=%d rejected=%d alpha=%d translucent=%d)\n",
 		g_shadowMapStats.casterCount,
 		g_shadowMapStats.staticCasterCount,
 		g_shadowMapStats.dynamicCasterCount,
 		g_shadowMapStats.alphaCasterCount,
 		g_shadowMapStats.translucentCasterCount,
 		g_shadowMapStats.expandedCasterCount,
-		g_shadowMapStats.rejectedCasterCount );
+		g_shadowMapStats.rejectedCasterCount,
+		g_shadowMapStats.lodCasterTestCount,
+		g_shadowMapStats.lodCasterRejectedCount,
+		g_shadowMapStats.lodAlphaCasterRejectedCount,
+		g_shadowMapStats.lodTranslucentCasterRejectedCount );
 
 	if ( g_shadowMapStats.rejectedCasterCount > 0 ) {
 		idStr rejectSummary;
@@ -5320,6 +5705,90 @@ static void RB_ShadowMapStatsReport( void ) {
 
 }
 
+static void RB_ShadowMapJoinedDecisionReport( const char *phase, const viewLight_t *vLight, const shadowMapLightClassification_t &classification, const shadowMapLightSupportReason_t supportReason, const bool hasPass, const shadowMapPassKind_t passKind, const bool pointLight, const shadowMapPassResult_t passResult, const int primaryCasterCount, const int secondaryCasterCount, const int tertiaryCasterCount, const int quaternaryCasterCount, const int primaryShadowSurfCount, const int secondaryShadowSurfCount, const int receiverCount, const int receiverFallbackSurfaces, const int receiverWrappedCustomGLSLSurfaces, const int *receiverFallbackReasons ) {
+	const int lightDefIndex = ( vLight != NULL && vLight->lightDef != NULL ) ? vLight->lightDef->index : -1;
+	const char *shaderName = ( vLight != NULL && vLight->lightShader != NULL ) ? vLight->lightShader->GetName() : "<null>";
+	const modernShadowLightDescriptor_t *planner = R_ModernShadowPlanner_DescriptorForLight( vLight );
+	const int plannerDescriptorIndex = ( planner != NULL ) ? planner->descriptorIndex : -1;
+	const shadowMapModernPackedJoin_t packed = RB_ShadowMapModernPackedJoinForLight( lightDefIndex, plannerDescriptorIndex );
+	const rendererModernShadowDescriptor_t *packedShadow = RB_ModernClusteredShadowDescriptorByIndex( packed.shadowDescriptorIndex );
+	const int fallbackInvalid = ( receiverFallbackReasons != NULL ) ? receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE] : 0;
+	const int fallbackCustomGLSL = ( receiverFallbackReasons != NULL ) ? receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL] : 0;
+	const int fallbackGenerated = ( receiverFallbackReasons != NULL ) ? receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] : 0;
+
+	common->Printf(
+		"SM join phase=%s light=%d '%s' class=%s support=%s planner(desc=%d map=%s policy=%s fallback=%s budgetClass=%d budgetMask=0x%x priority=%d fairness=%d/%d/%d tiles=%d cascades=%d/%d atlasDiv=%d casters=%d/%d/%d receivers=%d/%d/%d lod=%d/%d/%d/%d cache=%d/%d/%d ready=%d/%d/%d) arb2(pass=%s type=%s result=%s csm=%d projectedCSM=%d/%d casters=%d/%d/%d/%d shadowSurfs=%d/%d receivers=%d receiverFallback=%d/%d/%d/%d wrappedCustomGLSL=%d) modernPacked(count=%d lightDesc=%d name='%s' type=%s shadowDesc=%d policy=%s fallback=%s flags=0x%x shadowMap=%s shadowPolicy=%s shadowFallback=%s shadowTiles=%d shadowCascades=%d/%d shadowAtlasDiv=%d shadowFlags=0x%x)\n",
+		phase != NULL ? phase : "<null>",
+		lightDefIndex,
+		shaderName,
+		R_ShadowMapLightClassName( classification.lightClass ),
+		RB_ShadowMapSupportReasonName( supportReason ),
+		planner != NULL ? planner->descriptorIndex : -1,
+		planner != NULL ? ModernShadowMapType_Name( planner->mapType ) : "none",
+		planner != NULL ? ModernShadowPolicy_Name( planner->policy ) : "none",
+		planner != NULL ? ModernShadowFallbackReason_Name( planner->fallbackReason ) : "none",
+		planner != NULL ? planner->budgetClass : 0,
+		planner != NULL ? planner->budgetThrottleReasonMask : 0,
+		planner != NULL ? planner->priority : 0,
+		planner != NULL ? planner->fairnessPriority : 0,
+		planner != NULL ? planner->fairnessAge : 0,
+		planner != NULL ? planner->fairnessBoost : 0,
+		planner != NULL ? planner->tileCount : 0,
+		planner != NULL ? planner->cascadeCount : 0,
+		planner != NULL ? planner->requestedCascadeCount : 0,
+		planner != NULL ? planner->atlasDiv : 0,
+		planner != NULL ? planner->localCasterCount : 0,
+		planner != NULL ? planner->globalCasterCount : 0,
+		planner != NULL ? planner->translucentCasterCount : 0,
+		planner != NULL ? planner->localReceiverCount : 0,
+		planner != NULL ? planner->globalReceiverCount : 0,
+		planner != NULL ? planner->translucentReceiverCount : 0,
+		planner != NULL ? planner->lodCasterTestCount : 0,
+		planner != NULL ? planner->lodCasterRejectedCount : 0,
+		planner != NULL ? planner->lodAlphaCasterRejectedCount : 0,
+		planner != NULL ? planner->lodTranslucentCasterRejectedCount : 0,
+		planner != NULL ? planner->arb2ShadowPasses : 0,
+		planner != NULL ? planner->arb2CacheablePasses : 0,
+		planner != NULL ? planner->arb2CacheHitPasses : 0,
+		planner != NULL && planner->atlasTileReady ? 1 : 0,
+		planner != NULL && planner->casterPassReady ? 1 : 0,
+		planner != NULL && planner->modernReceiverSamplingReady ? 1 : 0,
+		hasPass ? RB_ShadowMapPassName( passKind ) : "none",
+		hasPass ? ( pointLight ? "point" : "projected" ) : ( classification.pointLight ? "point" : "projected" ),
+		hasPass ? RB_ShadowMapPassResultName( passResult ) : "none",
+		classification.csmEnabled ? 1 : 0,
+		classification.projectedCSMEnabled ? 1 : 0,
+		classification.projectedCSMGateApplies ? 1 : 0,
+		primaryCasterCount,
+		secondaryCasterCount,
+		tertiaryCasterCount,
+		quaternaryCasterCount,
+		primaryShadowSurfCount,
+		secondaryShadowSurfCount,
+		receiverCount,
+		receiverFallbackSurfaces,
+		fallbackInvalid,
+		fallbackCustomGLSL,
+		fallbackGenerated,
+		receiverWrappedCustomGLSLSurfaces,
+		packed.descriptorCount,
+		packed.lightDescriptorIndex,
+		packed.debugName,
+		RB_ModernPackedLightTypeName( packed.lightType ),
+		packed.shadowDescriptorIndex,
+		ModernShadowPolicy_Name( static_cast<modernShadowPolicy_t>( packed.shadowPolicy ) ),
+		ModernShadowFallbackReason_Name( static_cast<modernShadowFallbackReason_t>( packed.shadowFallbackReason ) ),
+		packed.flags,
+		packedShadow != NULL ? ModernShadowMapType_Name( static_cast<modernShadowMapType_t>( packedShadow->mapType ) ) : "none",
+		packedShadow != NULL ? ModernShadowPolicy_Name( static_cast<modernShadowPolicy_t>( packedShadow->policy ) ) : "none",
+		packedShadow != NULL ? ModernShadowFallbackReason_Name( static_cast<modernShadowFallbackReason_t>( packedShadow->fallbackReason ) ) : "none",
+		packedShadow != NULL ? packedShadow->tileCount : 0,
+		packedShadow != NULL ? packedShadow->cascadeCount : 0,
+		packedShadow != NULL ? packedShadow->requestedCascadeCount : 0,
+		packedShadow != NULL ? packedShadow->atlasDiv : 0,
+		packedShadow != NULL ? packedShadow->flags : 0 );
+}
+
 static void RB_ShadowMapLightReport( const viewLight_t *vLight, shadowMapLightSupportReason_t reason ) {
 	if ( idMath::ClampInt( 0, 2, r_shadowMapReport.GetInteger() ) < 2 || !g_shadowMapReportThisFrame ) {
 		return;
@@ -5330,12 +5799,19 @@ static void RB_ShadowMapLightReport( const viewLight_t *vLight, shadowMapLightSu
 	if ( vLight != NULL ) {
 		origin = vLight->globalLightOrigin;
 	}
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
 	common->Printf(
-		"SM light[%d] '%s' origin=(%.1f %.1f %.1f) class=%s interactions(local=%d global=%d) shadows(local=%d global=%d) casters(total=%d alpha=%d trans=%d expanded=%d reject=%d) debug=%s support=%s\n",
+		"SM light[%d] '%s' origin=(%.1f %.1f %.1f) class=%s csm=%d projectedCSM=%d/%d cascades=%d tiles=%d atlasDiv=%d interactions(local=%d global=%d) shadows(local=%d global=%d) casters(total=%d alpha=%d trans=%d expanded=%d reject=%d lod=%d/%d/%d/%d) debug=%s support=%s\n",
 		( vLight != NULL && vLight->lightDef != NULL ) ? vLight->lightDef->index : -1,
 		shaderName,
 		origin[0], origin[1], origin[2],
-		RB_ShadowMapLightClassName( vLight ),
+		R_ShadowMapLightClassName( classification.lightClass ),
+		classification.csmEnabled ? 1 : 0,
+		classification.projectedCSMEnabled ? 1 : 0,
+		classification.projectedCSMGateApplies ? 1 : 0,
+		classification.cascadeCount,
+		classification.tileCount,
+		classification.atlasDiv,
 		RB_CountDrawSurfChain( vLight != NULL ? vLight->localInteractions : NULL ),
 		RB_CountDrawSurfChain( vLight != NULL ? vLight->globalInteractions : NULL ),
 		RB_CountDrawSurfChain( vLight != NULL ? vLight->localShadows : NULL ),
@@ -5345,8 +5821,32 @@ static void RB_ShadowMapLightReport( const viewLight_t *vLight, shadowMapLightSu
 		vLight != NULL ? vLight->shadowMapTranslucentCasterCount : 0,
 		vLight != NULL ? vLight->shadowMapExpandedCasterCount : 0,
 		vLight != NULL ? vLight->shadowMapRejectedCasterCount : 0,
+		vLight != NULL ? vLight->shadowMapLODTestCount : 0,
+		vLight != NULL ? vLight->shadowMapLODRejectedCount : 0,
+		vLight != NULL ? vLight->shadowMapLODAlphaRejectedCount : 0,
+		vLight != NULL ? vLight->shadowMapLODTranslucentRejectedCount : 0,
 		RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ),
 		RB_ShadowMapSupportReasonName( reason ) );
+
+	RB_ShadowMapJoinedDecisionReport(
+		"light",
+		vLight,
+		classification,
+		reason,
+		false,
+		SHADOWMAP_PASS_LOCAL,
+		classification.pointLight,
+		SHADOWMAP_PASS_RESULT_STENCIL_ONLY,
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->globalShadowMapCasters : NULL ),
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->localShadowMapCasters : NULL ),
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->globalTranslucentShadowMapCasters : NULL ),
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->localTranslucentShadowMapCasters : NULL ),
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->globalShadows : NULL ),
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->localShadows : NULL ),
+		RB_CountDrawSurfChain( vLight != NULL ? vLight->localInteractions : NULL ) + RB_CountDrawSurfChain( vLight != NULL ? vLight->globalInteractions : NULL ),
+		0,
+		0,
+		NULL );
 }
 
 static void RB_ShadowMapPassReport( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, shadowMapPassResult_t result, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
@@ -5355,13 +5855,27 @@ static void RB_ShadowMapPassReport( const viewLight_t *vLight, shadowMapPassKind
 	}
 
 	const char *shaderName = ( vLight != NULL && vLight->lightShader != NULL ) ? vLight->lightShader->GetName() : "<null>";
+	const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+	int receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_COUNT];
+	memset( receiverFallbackReasons, 0, sizeof( receiverFallbackReasons ) );
+	int receiverFallbackSurfaces = 0;
+	int receiverWrappedCustomGLSLSurfaces = 0;
+	if ( result == SHADOWMAP_PASS_RESULT_MAPPED || result == SHADOWMAP_PASS_RESULT_CACHE_REUSE || result == SHADOWMAP_PASS_RESULT_RECEIVER_FALLBACK ) {
+		receiverFallbackSurfaces = RB_CountShadowMapReceiverFallbackSurfaces( interactions, receiverFallbackReasons );
+		receiverWrappedCustomGLSLSurfaces = RB_CountShadowMapReceiverWrappedCustomGLSLSurfaces( interactions );
+	}
 	common->Printf(
-		"SM pass %s[%d] '%s' class=%s type=%s debug=%s result=%s casters(a=%d b=%d c=%d d=%d) shadowSurfs(primary=%d secondary=%d) receivers=%d\n",
+		"SM pass %s[%d] '%s' class=%s type=%s csm=%d projectedCSM=%d/%d cascades=%d atlasDiv=%d debug=%s result=%s casters(a=%d b=%d c=%d d=%d) shadowSurfs(primary=%d secondary=%d) receivers=%d receiverFallback=%d wrappedCustomGLSL=%d invalid=%d customGLSL=%d generatedSkinned=%d\n",
 		RB_ShadowMapPassName( passKind ),
 		( vLight != NULL && vLight->lightDef != NULL ) ? vLight->lightDef->index : -1,
 		shaderName,
-		RB_ShadowMapLightClassName( vLight ),
+		R_ShadowMapLightClassName( classification.lightClass ),
 		pointLight ? "point" : "projected",
+		classification.csmEnabled ? 1 : 0,
+		classification.projectedCSMEnabled ? 1 : 0,
+		classification.projectedCSMGateApplies ? 1 : 0,
+		classification.cascadeCount,
+		classification.atlasDiv,
 		RB_ShadowMapDebugModeName( RB_ShadowMapDebugMode() ),
 		RB_ShadowMapPassResultName( result ),
 		RB_CountDrawSurfChain( primaryCasters ),
@@ -5370,7 +5884,32 @@ static void RB_ShadowMapPassReport( const viewLight_t *vLight, shadowMapPassKind
 		RB_CountDrawSurfChain( quaternaryCasters ),
 		RB_CountDrawSurfChain( primaryShadowSurfs ),
 		RB_CountDrawSurfChain( secondaryShadowSurfs ),
-		RB_CountDrawSurfChain( interactions ) );
+		RB_CountDrawSurfChain( interactions ),
+		receiverFallbackSurfaces,
+		receiverWrappedCustomGLSLSurfaces,
+		receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE],
+		receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL],
+		receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] );
+
+	RB_ShadowMapJoinedDecisionReport(
+		"pass",
+		vLight,
+		classification,
+		SHADOWMAP_SUPPORT_OK,
+		true,
+		passKind,
+		pointLight,
+		result,
+		RB_CountDrawSurfChain( primaryCasters ),
+		RB_CountDrawSurfChain( secondaryCasters ),
+		RB_CountDrawSurfChain( tertiaryCasters ),
+		RB_CountDrawSurfChain( quaternaryCasters ),
+		RB_CountDrawSurfChain( primaryShadowSurfs ),
+		RB_CountDrawSurfChain( secondaryShadowSurfs ),
+		RB_CountDrawSurfChain( interactions ),
+		receiverFallbackSurfaces,
+		receiverWrappedCustomGLSLSurfaces,
+		receiverFallbackReasons );
 }
 
 static void RB_ShadowMapReportCasterSkip( const drawSurf_t *surf, const srfTriangles_t *casterGeo, const char *reason ) {
@@ -6529,9 +7068,7 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 
-	idPlane baseClipPlanes[4];
-	RB_ShadowMapBuildClipPlanes( backEnd.vLight->lightProject, baseClipPlanes );
-	RB_ShadowMapBuildProjectedState( backEnd.vLight, baseClipPlanes, RB_ShadowMapTileSizeForLight( backEnd.vLight ) );
+	RB_ShadowMapBuildProjectedState( backEnd.vLight, RB_ShadowMapTileSizeForLight( backEnd.vLight ) );
 	if ( !g_projectedShadowMapState.valid ) {
 		return false;
 	}
@@ -6567,7 +7104,7 @@ static bool RB_RenderShadowMap( const drawSurf_t *primaryCasters, const drawSurf
 		const int tileX = ( g_projectedShadowMapState.atlasDiv > 1 ) ? ( cascadeIndex % g_projectedShadowMapState.atlasDiv ) * g_projectedShadowMapState.tileSize : 0;
 		const int tileY = ( g_projectedShadowMapState.atlasDiv > 1 ) ? ( cascadeIndex / g_projectedShadowMapState.atlasDiv ) * g_projectedShadowMapState.tileSize : 0;
 
-		RB_ShadowMapClipPlanesToGLMatrix( g_projectedShadowMapState.clipPlanes[cascadeIndex], clipMatrix );
+		R_ShadowMapClipPlanesToGLMatrix( g_projectedShadowMapState.clipPlanes[cascadeIndex], clipMatrix );
 		glViewport( tileX, tileY, g_projectedShadowMapState.tileSize, g_projectedShadowMapState.tileSize );
 		glScissor( tileX, tileY, g_projectedShadowMapState.tileSize, g_projectedShadowMapState.tileSize );
 		glClear( GL_DEPTH_BUFFER_BIT );
@@ -6843,7 +7380,7 @@ static bool RB_RenderTranslucentShadowMap( const drawSurf_t *primaryCasters, con
 		const int tileX = ( g_projectedShadowMapState.atlasDiv > 1 ) ? ( cascadeIndex % g_projectedShadowMapState.atlasDiv ) * g_projectedShadowMapState.tileSize : 0;
 		const int tileY = ( g_projectedShadowMapState.atlasDiv > 1 ) ? ( cascadeIndex / g_projectedShadowMapState.atlasDiv ) * g_projectedShadowMapState.tileSize : 0;
 
-		RB_ShadowMapClipPlanesToGLMatrix( g_projectedShadowMapState.clipPlanes[cascadeIndex], clipMatrix );
+		R_ShadowMapClipPlanesToGLMatrix( g_projectedShadowMapState.clipPlanes[cascadeIndex], clipMatrix );
 		glViewport( tileX, tileY, g_projectedShadowMapState.tileSize, g_projectedShadowMapState.tileSize );
 		glScissor( tileX, tileY, g_projectedShadowMapState.tileSize, g_projectedShadowMapState.tileSize );
 		glClear( GL_COLOR_BUFFER_BIT );
@@ -7144,9 +7681,29 @@ static void RB_GLSLMaterial_DrawInteraction( const drawInteraction_t *din ) {
 
 static int g_shadowMapInteractionDrawCount = 0;
 static int g_pointShadowMapInteractionDrawCount = 0;
+static float g_shadowMapReceiverDebugReason = 0.0f;
+static float g_pointShadowMapReceiverDebugReason = 0.0f;
 // receiver space whose localized cascade rows are currently uploaded; reset at
 // pass setup so rows are never reused across lights (clip planes are per light)
 static const viewEntity_t *g_shadowMapInteractionLastSpace = NULL;
+
+static bool RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( const drawSurf_t *surf );
+
+static float RB_ShadowMapReceiverDebugReasonValue( const drawSurf_t *surf, const shadowMapReceiverFallbackReason_t fallbackReason ) {
+	if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_NONE ) {
+		return RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( surf ) ? 1.0f : 0.0f;
+	}
+	switch ( fallbackReason ) {
+	case SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE:
+		return 2.0f;
+	case SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL:
+		return 3.0f;
+	case SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY:
+		return 4.0f;
+	default:
+		return 2.0f;
+	}
+}
 
 static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 	g_shadowMapInteractionDrawCount++;
@@ -7215,6 +7772,9 @@ static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 	}
 	const float vertexColorParams[2] = { modulate, add };
 	glUniform2fvARB( g_shadowMapProgram.vertexColorParams, 1, vertexColorParams );
+	if ( g_shadowMapProgram.shadowReceiverDebugReason >= 0 ) {
+		glUniform1fARB( g_shadowMapProgram.shadowReceiverDebugReason, g_shadowMapReceiverDebugReason );
+	}
 
 	GL_SelectTextureNoClient( 0 );
 	din->bumpImage->Bind();
@@ -7292,6 +7852,9 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 	}
 	const float vertexColorParams[2] = { modulate, add };
 	glUniform2fvARB( g_pointShadowMapProgram.vertexColorParams, 1, vertexColorParams );
+	if ( g_pointShadowMapProgram.shadowReceiverDebugReason >= 0 ) {
+		glUniform1fARB( g_pointShadowMapProgram.shadowReceiverDebugReason, g_pointShadowMapReceiverDebugReason );
+	}
 
 	GL_SelectTextureNoClient( 0 );
 	din->bumpImage->Bind();
@@ -7444,21 +8007,7 @@ static bool RB_SurfaceHasActiveCustomGLSLLighting( const drawSurf_t *surf ) {
 		return false;
 	}
 
-	for ( int stageIndex = 0; stageIndex < surf->material->GetNumStages(); stageIndex++ ) {
-		const shaderStage_t *stage = surf->material->GetStage( stageIndex );
-		if ( stage == NULL || stage->newStage == NULL ) {
-			continue;
-		}
-		if ( !stage->newStage->customLighting || !stage->newStage->glslProgram ) {
-			continue;
-		}
-		if ( surf->shaderRegisters[ stage->conditionRegister ] == 0.0f ) {
-			continue;
-		}
-		return true;
-	}
-
-	return false;
+	return surf->material->HasActiveCustomGLSLLighting( surf->shaderRegisters );
 }
 
 static bool RB_DrawSurfChainHasCustomGLSLLighting( const drawSurf_t *surf ) {
@@ -7470,27 +8019,55 @@ static bool RB_DrawSurfChainHasCustomGLSLLighting( const drawSurf_t *surf ) {
 	return false;
 }
 
-typedef bool (*drawSurfFilter_t)( const drawSurf_t *surf );
-
-static bool RB_SurfaceEligibleForShadowMapReceiver( const drawSurf_t *surf ) {
+static bool RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( const drawSurf_t *surf ) {
+	if ( !r_shadowMapCustomGLSLReceiverWrapper.GetBool() ) {
+		return false;
+	}
 	if ( surf == NULL || surf->geo == NULL || surf->space == NULL || surf->material == NULL || surf->shaderRegisters == NULL ) {
 		return false;
 	}
-	if ( surf->geo->numIndexes <= 0 ) {
-		return false;
-	}
-	if ( RB_SurfaceHasActiveCustomGLSLLighting( surf ) ) {
-		return false;
-	}
-	if ( RB_SurfaceUsesGeneratedCharacterGeometry( surf ) ) {
+	if ( surf->geo->numIndexes <= 0 || RB_SurfaceUsesGeneratedCharacterGeometry( surf ) ) {
 		return false;
 	}
 
-	return true;
+	return surf->material->CanUseStockShadowMapReceiverForCustomGLSLLighting( surf->shaderRegisters );
+}
+
+static bool RB_ShadowMapReceiverStageFilter( const shaderStage_t *surfaceStage, const float *surfaceRegs ) {
+	(void)surfaceRegs;
+	if ( surfaceStage == NULL ) {
+		return false;
+	}
+
+	const newShaderStage_t *newStage = surfaceStage->newStage;
+	return newStage == NULL || !newStage->customLighting || !newStage->glslProgram;
+}
+
+typedef bool (*drawSurfFilter_t)( const drawSurf_t *surf );
+
+static shadowMapReceiverFallbackReason_t RB_SurfaceShadowMapReceiverFallbackReason( const drawSurf_t *surf ) {
+	if ( surf == NULL || surf->geo == NULL || surf->space == NULL || surf->material == NULL || surf->shaderRegisters == NULL ) {
+		return SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE;
+	}
+	if ( surf->geo->numIndexes <= 0 ) {
+		return SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE;
+	}
+	if ( RB_SurfaceHasActiveCustomGLSLLighting( surf ) && !RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( surf ) ) {
+		return SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL;
+	}
+	if ( RB_SurfaceUsesGeneratedCharacterGeometry( surf ) ) {
+		return SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY;
+	}
+
+	return SHADOWMAP_RECEIVER_FALLBACK_NONE;
+}
+
+static bool RB_SurfaceEligibleForShadowMapReceiver( const drawSurf_t *surf ) {
+	return RB_SurfaceShadowMapReceiverFallbackReason( surf ) == SHADOWMAP_RECEIVER_FALLBACK_NONE;
 }
 
 static bool RB_SurfaceNeedsShadowMapReceiverFallback( const drawSurf_t *surf ) {
-	return !RB_SurfaceEligibleForShadowMapReceiver( surf );
+	return RB_SurfaceShadowMapReceiverFallbackReason( surf ) != SHADOWMAP_RECEIVER_FALLBACK_NONE;
 }
 
 static bool RB_DrawSurfChainHasFilteredSurface( const drawSurf_t *surf, drawSurfFilter_t filter ) {
@@ -7500,6 +8077,292 @@ static bool RB_DrawSurfChainHasFilteredSurface( const drawSurf_t *surf, drawSurf
 		}
 	}
 	return false;
+}
+
+static int RB_CountShadowMapReceiverFallbackSurfaces( const drawSurf_t *surf, int *reasons ) {
+	if ( reasons != NULL ) {
+		for ( int i = 0; i < SHADOWMAP_RECEIVER_FALLBACK_COUNT; i++ ) {
+			reasons[i] = 0;
+		}
+	}
+
+	int count = 0;
+	for ( ; surf != NULL; surf = surf->nextOnLight ) {
+		const shadowMapReceiverFallbackReason_t reason = RB_SurfaceShadowMapReceiverFallbackReason( surf );
+		if ( reason == SHADOWMAP_RECEIVER_FALLBACK_NONE ) {
+			continue;
+		}
+		count++;
+		if ( reasons != NULL && reason >= 0 && reason < SHADOWMAP_RECEIVER_FALLBACK_COUNT ) {
+			reasons[reason]++;
+		}
+	}
+	return count;
+}
+
+static int RB_CountShadowMapReceiverWrappedCustomGLSLSurfaces( const drawSurf_t *surf ) {
+	int count = 0;
+	for ( ; surf != NULL; surf = surf->nextOnLight ) {
+		if ( RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( surf ) ) {
+			count++;
+		}
+	}
+	return count;
+}
+
+bool RB_ShadowMapArb2ReceiverFallbackSelfTest( void ) {
+	if ( tr.defaultMaterial == NULL ) {
+		common->Printf( "ARB2 receiver fallback self-test passed (default material unavailable)\n" );
+		return true;
+	}
+
+	float shaderRegisters[MAX_EXPRESSION_REGISTERS];
+	for ( int i = 0; i < MAX_EXPRESSION_REGISTERS; i++ ) {
+		shaderRegisters[i] = 1.0f;
+	}
+
+	if ( !R_MaterialCustomGLSLReceiverHelperSelfTest() ) {
+		common->Printf( "ARB2 receiver fallback self-test failed: custom GLSL material helper mismatch\n" );
+		return false;
+	}
+
+	newShaderStage_t customLightingStage;
+	memset( &customLightingStage, 0, sizeof( customLightingStage ) );
+	customLightingStage.glslProgram = true;
+	customLightingStage.customLighting = true;
+	shaderStage_t stockFilterStage;
+	shaderStage_t customFilterStage;
+	memset( &stockFilterStage, 0, sizeof( stockFilterStage ) );
+	memset( &customFilterStage, 0, sizeof( customFilterStage ) );
+	customFilterStage.newStage = &customLightingStage;
+	if ( !RB_ShadowMapReceiverStageFilter( &stockFilterStage, shaderRegisters )
+		|| RB_ShadowMapReceiverStageFilter( &customFilterStage, shaderRegisters ) ) {
+		common->Printf( "ARB2 receiver fallback self-test failed: custom GLSL receiver stage filter mismatch\n" );
+		return false;
+	}
+
+	srfTriangles_t receiverGeo;
+	memset( &receiverGeo, 0, sizeof( receiverGeo ) );
+	receiverGeo.numIndexes = 3;
+
+	viewEntity_t staticSpace;
+	viewEntity_t generatedSpace;
+	memset( &staticSpace, 0, sizeof( staticSpace ) );
+	memset( &generatedSpace, 0, sizeof( generatedSpace ) );
+
+	idJointMat generatedJoint;
+	generatedJoint.SetRotation( mat3_identity );
+	generatedJoint.SetTranslation( vec3_origin );
+	idRenderEntityLocal generatedEntity;
+	generatedEntity.parms.numJoints = 1;
+	generatedEntity.parms.joints = &generatedJoint;
+	generatedSpace.entityDef = &generatedEntity;
+
+	drawSurf_t eligibleReceiver;
+	drawSurf_t generatedReceiver;
+	drawSurf_t invalidReceiver;
+	memset( &eligibleReceiver, 0, sizeof( eligibleReceiver ) );
+	memset( &generatedReceiver, 0, sizeof( generatedReceiver ) );
+	memset( &invalidReceiver, 0, sizeof( invalidReceiver ) );
+	eligibleReceiver.geo = &receiverGeo;
+	eligibleReceiver.space = &staticSpace;
+	eligibleReceiver.material = tr.defaultMaterial;
+	eligibleReceiver.shaderRegisters = shaderRegisters;
+	eligibleReceiver.nextOnLight = &generatedReceiver;
+	generatedReceiver.geo = &receiverGeo;
+	generatedReceiver.space = &generatedSpace;
+	generatedReceiver.material = tr.defaultMaterial;
+	generatedReceiver.shaderRegisters = shaderRegisters;
+	generatedReceiver.nextOnLight = &invalidReceiver;
+
+	int fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_COUNT];
+	const int fallbackSurfaceCount = RB_CountShadowMapReceiverFallbackSurfaces( &eligibleReceiver, fallbackReasons );
+	if ( !RB_SurfaceEligibleForShadowMapReceiver( &eligibleReceiver )
+		|| RB_SurfaceShadowMapReceiverFallbackReason( &generatedReceiver ) != SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY
+		|| fallbackSurfaceCount != 2
+		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] != 1
+		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE] != 1
+		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL] != 0 ) {
+		common->Printf(
+			"ARB2 receiver fallback self-test failed: eligible=%d generatedReason=%s count=%d invalid=%d custom=%d generated=%d\n",
+			RB_SurfaceEligibleForShadowMapReceiver( &eligibleReceiver ) ? 1 : 0,
+			RB_ShadowMapReceiverFallbackReasonName( RB_SurfaceShadowMapReceiverFallbackReason( &generatedReceiver ) ),
+			fallbackSurfaceCount,
+			fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE],
+			fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL],
+			fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] );
+		return false;
+	}
+
+	const idMaterial *projectedLightShader = declManager != NULL ? declManager->FindMaterial( "lights/defaultProjectedLight" ) : NULL;
+	if ( projectedLightShader == NULL ) {
+		projectedLightShader = tr.defaultMaterial;
+	}
+
+	drawSurf_t casterSurf;
+	memset( &casterSurf, 0, sizeof( casterSurf ) );
+	casterSurf.geo = &receiverGeo;
+	casterSurf.space = &staticSpace;
+	casterSurf.material = tr.defaultMaterial;
+	casterSurf.shaderRegisters = shaderRegisters;
+
+	viewLight_t light;
+	idRenderLightLocal lightDef;
+	viewDef_t view;
+	memset( &light, 0, sizeof( light ) );
+	memset( &view, 0, sizeof( view ) );
+	lightDef.index = 991;
+	lightDef.lightShader = projectedLightShader;
+	lightDef.parms.noShadows = false;
+	lightDef.parms.noDynamicShadows = false;
+	light.lightDef = &lightDef;
+	light.lightShader = projectedLightShader;
+	light.globalInteractions = &eligibleReceiver;
+	light.globalShadowMapCasters = &casterSurf;
+	light.globalShadows = &casterSurf;
+
+	shadowMapArb2CacheEstimate_t estimate;
+	if ( !RB_ShadowMapEstimateArb2CacheOwnership( &light, &view, estimate ) || estimate.shadowPasses != 1 || estimate.receiverFallbackPasses != 1 || estimate.freshUpdatePasses != 1 ) {
+		common->Printf(
+			"ARB2 receiver fallback self-test failed: mixed estimate valid=%d passes=%d receiverFallback=%d fresh=%d stencilOnly=%d unshadowed=%d\n",
+			estimate.valid ? 1 : 0,
+			estimate.shadowPasses,
+			estimate.receiverFallbackPasses,
+			estimate.freshUpdatePasses,
+			estimate.stencilOnlyPasses,
+			estimate.unshadowedPasses );
+		return false;
+	}
+
+	generatedReceiver.nextOnLight = NULL;
+	light.globalInteractions = &generatedReceiver;
+	if ( !RB_ShadowMapEstimateArb2CacheOwnership( &light, &view, estimate ) || estimate.shadowPasses != 1 || estimate.receiverFallbackPasses != 1 || estimate.freshUpdatePasses != 0 ) {
+		common->Printf(
+			"ARB2 receiver fallback self-test failed: all-fallback estimate valid=%d passes=%d receiverFallback=%d fresh=%d stencilOnly=%d unshadowed=%d\n",
+			estimate.valid ? 1 : 0,
+			estimate.shadowPasses,
+			estimate.receiverFallbackPasses,
+			estimate.freshUpdatePasses,
+			estimate.stencilOnlyPasses,
+			estimate.unshadowedPasses );
+		return false;
+	}
+
+	common->Printf( "ARB2 receiver fallback self-test passed\n" );
+	return true;
+}
+
+static unsigned int RB_ShadowMapArb2CachePassMask( const shadowMapPassKind_t passKind ) {
+	return ( passKind == SHADOWMAP_PASS_LOCAL ) ? SHADOWMAP_ARB2_CACHE_PASS_LOCAL : SHADOWMAP_ARB2_CACHE_PASS_GLOBAL;
+}
+
+static void RB_ShadowMapArb2CacheSlotCountsReadOnly( shadowMapArb2CacheEstimate_t &estimate ) {
+	estimate.projectedCacheSlotsTotal = RB_ShadowMapProjectedCacheSlotLimit();
+	estimate.pointCacheSlotsTotal = RB_ShadowMapPointCacheSlotLimit();
+	for ( int i = 0; i < estimate.projectedCacheSlotsTotal; i++ ) {
+		if ( g_projectedShadowMapCache[i].valid ) {
+			estimate.projectedCacheSlotsUsed++;
+		}
+	}
+	for ( int i = 0; i < estimate.pointCacheSlotsTotal; i++ ) {
+		if ( g_pointShadowMapCache[i].valid ) {
+			estimate.pointCacheSlotsUsed++;
+		}
+	}
+}
+
+static void RB_ShadowMapEstimateArb2CachePass( const viewLight_t *vLight, const viewDef_t *viewDef, shadowMapArb2CacheEstimate_t &estimate, const shadowMapPassKind_t passKind, const bool pointLight, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
+	if ( interactions == NULL ) {
+		return;
+	}
+
+	const unsigned int passMask = RB_ShadowMapArb2CachePassMask( passKind );
+	estimate.shadowPasses++;
+
+	const drawSurf_t *translucentPrimaryCasters = vLight != NULL ? vLight->globalTranslucentShadowMapCasters : NULL;
+	const drawSurf_t *translucentSecondaryCasters = ( passKind == SHADOWMAP_PASS_GLOBAL && vLight != NULL ) ? vLight->localTranslucentShadowMapCasters : NULL;
+	const bool haveOpaqueCasters = primaryCasters != NULL || secondaryCasters != NULL || tertiaryCasters != NULL || quaternaryCasters != NULL;
+	const bool haveTranslucentCasters = translucentPrimaryCasters != NULL || translucentSecondaryCasters != NULL;
+	const bool haveStencilShadowSurfs = primaryShadowSurfs != NULL || secondaryShadowSurfs != NULL;
+
+	if ( !haveOpaqueCasters && !haveStencilShadowSurfs && !haveTranslucentCasters ) {
+		estimate.unshadowedPasses++;
+		return;
+	}
+
+	if ( !haveOpaqueCasters && !haveTranslucentCasters ) {
+		estimate.stencilOnlyPasses++;
+		return;
+	}
+
+	const bool haveEligibleReceivers = RB_DrawSurfChainHasFilteredSurface( interactions, RB_SurfaceEligibleForShadowMapReceiver );
+	const bool haveReceiverFallbacks = RB_DrawSurfChainHasFilteredSurface( interactions, RB_SurfaceNeedsShadowMapReceiverFallback );
+	if ( !haveEligibleReceivers ) {
+		estimate.receiverFallbackPasses++;
+		return;
+	}
+	if ( haveReceiverFallbacks ) {
+		estimate.receiverFallbackPasses++;
+	}
+
+	const bool cacheable = RB_ShadowMapStaticCacheableReadOnly( vLight, passKind, pointLight, haveTranslucentCasters );
+	if ( cacheable ) {
+		estimate.cacheablePasses++;
+		estimate.cacheablePassMask |= passMask;
+		const int signature = RB_ShadowMapBuildPassSignatureForView( vLight, viewDef, passKind, pointLight );
+		const int lightIndex = RB_ShadowMapLightIndex( vLight );
+		const bool cacheHit = pointLight
+			? RB_ShadowMapFindPointCacheEntry( lightIndex, passKind, signature ) != NULL
+			: RB_ShadowMapFindProjectedCacheEntry( lightIndex, passKind, signature ) != NULL;
+		if ( cacheHit ) {
+			estimate.cacheHitPasses++;
+			estimate.cacheHitPassMask |= passMask;
+			return;
+		}
+		estimate.cacheMissPasses++;
+		estimate.cacheMissPassMask |= passMask;
+	}
+
+	const int updateBudget = r_shadowMapMaxUpdatesPerView.GetInteger();
+	if ( updateBudget > 0 && estimate.freshUpdatePasses >= updateBudget ) {
+		estimate.budgetFallbackPasses++;
+		estimate.budgetFallbackPassMask |= passMask;
+		return;
+	}
+
+	estimate.freshUpdatePasses++;
+	estimate.freshUpdatePassMask |= passMask;
+}
+
+bool RB_ShadowMapEstimateArb2CacheOwnership( const viewLight_t *vLight, const viewDef_t *viewDef, shadowMapArb2CacheEstimate_t &estimate ) {
+	memset( &estimate, 0, sizeof( estimate ) );
+	estimate.lightIndex = RB_ShadowMapLightIndex( vLight );
+	estimate.pointLight = vLight != NULL && vLight->pointLight;
+	estimate.staticCacheEnabled = r_shadowMapStaticCache.GetBool();
+	RB_ShadowMapArb2CacheSlotCountsReadOnly( estimate );
+
+	if ( vLight == NULL || !r_useShadowMap.GetBool() || !r_shadows.GetBool() ) {
+		return false;
+	}
+	if ( RB_ShadowMapLightPolicySupportReason( vLight ) != SHADOWMAP_SUPPORT_OK ) {
+		return false;
+	}
+	if ( vLight->globalInteractions == NULL && vLight->localInteractions == NULL ) {
+		return false;
+	}
+	if ( vLight->pointLight && !r_shadowMapPointLights.GetBool() ) {
+		return false;
+	}
+
+	estimate.valid = true;
+	if ( vLight->pointLight ) {
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, NULL, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, NULL, NULL, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+	} else {
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, NULL, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, NULL, NULL, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+	}
+	return estimate.shadowPasses > 0;
 }
 
 static void RB_ARB2_UploadCustomGLSLShaderParms( const shaderStage_t *stage, const float *regs, const drawInteraction_t *din ) {
@@ -7999,17 +8862,31 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 	int debugSkippedCount = 0;
 	int debugPreparedCount = 0;
 	int debugPrepareFailedCount = 0;
+	int debugInvalidCount = 0;
 	int debugCustomCount = 0;
+	int debugGeneratedCount = 0;
+	int debugWrappedCustomCount = 0;
 	const char *debugFirstMaterial = NULL;
+	const bool receiverDebugMode = RB_ShadowMapReceiverDebugMode();
 	for ( ; surf != NULL; surf = surf->nextOnLight ) {
 		debugSurfaceCount++;
 		if ( debugFirstMaterial == NULL && surf->material != NULL ) {
 			debugFirstMaterial = surf->material->GetName();
 		}
-		if ( RB_SurfaceHasActiveCustomGLSLLighting( surf ) ) {
+		const shadowMapReceiverFallbackReason_t fallbackReason = RB_SurfaceShadowMapReceiverFallbackReason( surf );
+		g_shadowMapReceiverDebugReason = RB_ShadowMapReceiverDebugReasonValue( surf, fallbackReason );
+		if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE ) {
+			debugInvalidCount++;
+		} else if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL ) {
 			debugCustomCount++;
+		} else if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY ) {
+			debugGeneratedCount++;
 		}
-		if ( !RB_SurfaceEligibleForShadowMapReceiver( surf ) ) {
+		if ( RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( surf ) ) {
+			debugWrappedCustomCount++;
+		}
+		if ( fallbackReason != SHADOWMAP_RECEIVER_FALLBACK_NONE
+			&& ( !receiverDebugMode || fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE ) ) {
 			debugSkippedCount++;
 			continue;
 		}
@@ -8027,7 +8904,8 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 		glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
 
-		RB_CreateSingleDrawInteractions( surf, RB_GLSLShadowMap_DrawInteraction );
+		const drawInteractionStageFilter_t stageFilter = ( receiverDebugMode && fallbackReason != SHADOWMAP_RECEIVER_FALLBACK_NONE ) ? NULL : RB_ShadowMapReceiverStageFilter;
+		RB_CreateSingleDrawInteractionsFiltered( surf, RB_GLSLShadowMap_DrawInteraction, stageFilter );
 	}
 
 	glDisableVertexAttribArrayARB( 8 );
@@ -8061,13 +8939,16 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 	const bool submittedInteractions = g_shadowMapInteractionDrawCount != drawCountStart;
 	const bool processedReceivers = debugPreparedCount > 0;
 	if ( RB_ShadowMapVerboseReport() && !submittedInteractions ) {
-		common->Printf( "SM mask-submit type=projected light=%d submitted=0 surfaces=%d skipped=%d prepared=%d prepareFailed=%d custom=%d firstMaterial='%s'\n",
+		common->Printf( "SM mask-submit type=projected light=%d submitted=0 surfaces=%d skipped=%d prepared=%d prepareFailed=%d invalid=%d customGLSL=%d generatedSkinned=%d wrappedCustomGLSL=%d firstMaterial='%s'\n",
 			RB_ShadowMapLightIndex( backEnd.vLight ),
 			debugSurfaceCount,
 			debugSkippedCount,
 			debugPreparedCount,
 			debugPrepareFailedCount,
+			debugInvalidCount,
 			debugCustomCount,
+			debugGeneratedCount,
+			debugWrappedCustomCount,
 			debugFirstMaterial != NULL ? debugFirstMaterial : "<none>" );
 	}
 	return ( submittedInteractions || processedReceivers ) && debugPrepareFailedCount == 0;
@@ -8209,7 +9090,10 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	int pointDebugSkippedCount = 0;
 	int pointDebugPreparedCount = 0;
 	int pointDebugPrepareFailedCount = 0;
+	int pointDebugInvalidCount = 0;
 	int pointDebugCustomCount = 0;
+	int pointDebugGeneratedCount = 0;
+	int pointDebugWrappedCustomCount = 0;
 	int pointDebugTriCacheCount = 0;
 	int pointDebugTriVertsCount = 0;
 	int pointDebugTriPrimBatchCount = 0;
@@ -8218,15 +9102,26 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	int pointDebugAmbientVertsCount = 0;
 	int pointDebugAmbientPrimBatchCount = 0;
 	const char *pointDebugFirstMaterial = NULL;
+	const bool pointReceiverDebugMode = RB_ShadowMapReceiverDebugMode();
 	for ( ; surf != NULL; surf = surf->nextOnLight ) {
 		pointDebugSurfaceCount++;
 		if ( pointDebugFirstMaterial == NULL && surf->material != NULL ) {
 			pointDebugFirstMaterial = surf->material->GetName();
 		}
-		if ( RB_SurfaceHasActiveCustomGLSLLighting( surf ) ) {
+		const shadowMapReceiverFallbackReason_t fallbackReason = RB_SurfaceShadowMapReceiverFallbackReason( surf );
+		g_pointShadowMapReceiverDebugReason = RB_ShadowMapReceiverDebugReasonValue( surf, fallbackReason );
+		if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE ) {
+			pointDebugInvalidCount++;
+		} else if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL ) {
 			pointDebugCustomCount++;
+		} else if ( fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY ) {
+			pointDebugGeneratedCount++;
 		}
-		if ( !RB_SurfaceEligibleForShadowMapReceiver( surf ) ) {
+		if ( RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( surf ) ) {
+			pointDebugWrappedCustomCount++;
+		}
+		if ( fallbackReason != SHADOWMAP_RECEIVER_FALLBACK_NONE
+			&& ( !pointReceiverDebugMode || fallbackReason == SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE ) ) {
 			pointDebugSkippedCount++;
 			continue;
 		}
@@ -8271,7 +9166,8 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 		glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
 
-		RB_CreateSingleDrawInteractions( surf, RB_GLSLPointShadowMap_DrawInteraction );
+		const drawInteractionStageFilter_t stageFilter = ( pointReceiverDebugMode && fallbackReason != SHADOWMAP_RECEIVER_FALLBACK_NONE ) ? NULL : RB_ShadowMapReceiverStageFilter;
+		RB_CreateSingleDrawInteractionsFiltered( surf, RB_GLSLPointShadowMap_DrawInteraction, stageFilter );
 	}
 
 	glDisableVertexAttribArrayARB( 8 );
@@ -8305,13 +9201,16 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	const bool submittedInteractions = g_pointShadowMapInteractionDrawCount != drawCountStart;
 	const bool processedReceivers = pointDebugPreparedCount > 0;
 	if ( RB_ShadowMapVerboseReport() && !submittedInteractions ) {
-		common->Printf( "SM mask-submit type=point light=%d submitted=0 surfaces=%d skipped=%d prepared=%d prepareFailed=%d custom=%d tri(cache=%d verts=%d prim=%d) ambient(surface=%d cache=%d verts=%d prim=%d) firstMaterial='%s'\n",
+		common->Printf( "SM mask-submit type=point light=%d submitted=0 surfaces=%d skipped=%d prepared=%d prepareFailed=%d invalid=%d customGLSL=%d generatedSkinned=%d wrappedCustomGLSL=%d tri(cache=%d verts=%d prim=%d) ambient(surface=%d cache=%d verts=%d prim=%d) firstMaterial='%s'\n",
 			RB_ShadowMapLightIndex( backEnd.vLight ),
 			pointDebugSurfaceCount,
 			pointDebugSkippedCount,
 			pointDebugPreparedCount,
 			pointDebugPrepareFailedCount,
+			pointDebugInvalidCount,
 			pointDebugCustomCount,
+			pointDebugGeneratedCount,
+			pointDebugWrappedCustomCount,
 			pointDebugTriCacheCount,
 			pointDebugTriVertsCount,
 			pointDebugTriPrimBatchCount,
@@ -8376,8 +9275,11 @@ static void RB_ShadowMapStencilFallbackFiltered( const drawSurf_t *primaryShadow
 	}
 }
 
-static void RB_ShadowMapStencilFallback( const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
+static void RB_ShadowMapStencilFallback( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
+	shadowMapTimedPhase_t timedPhase;
+	RB_ShadowMapBeginTimedPhase( timedPhase, vLight, passKind, SHADOWMAP_TIMING_STENCIL_FALLBACK );
 	RB_ShadowMapStencilFallbackFiltered( primaryShadowSurfs, secondaryShadowSurfs, interactions, NULL );
+	RB_ShadowMapEndTimedPhase( timedPhase );
 }
 
 static void RB_ShadowMapDebugOverlayCapture( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const bool pointLight, const bool mapped, const bool renderOk, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
@@ -8415,7 +9317,10 @@ static void RB_ShadowMapDebugOverlayCapture( const viewLight_t *vLight, const sh
 		RB_CountDrawSurfChain( primaryShadowSurfs ) +
 		RB_CountDrawSurfChain( secondaryShadowSurfs );
 	g_shadowMapDebugOverlayState.interactionCount = RB_CountDrawSurfChain( interactions );
-	g_shadowMapDebugOverlayState.cpuMilliseconds = g_shadowMapStats.cpuRenderMilliseconds + g_shadowMapStats.cpuMaskMilliseconds;
+	g_shadowMapDebugOverlayState.cpuMilliseconds = g_shadowMapStats.cpuRenderMilliseconds
+		+ g_shadowMapStats.cpuMaskMilliseconds
+		+ g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_RECEIVER_FALLBACK]
+		+ g_shadowMapStats.cpuPhaseMilliseconds[SHADOWMAP_TIMING_STENCIL_FALLBACK];
 	g_shadowMapDebugOverlayState.gpuMilliseconds = g_shadowMapStats.gpuSyncMilliseconds;
 	g_shadowMapDebugOverlayState.worldTexelSize = g_shadowMapStats.maxWorldTexelSize;
 }
@@ -8716,8 +9621,33 @@ static void RB_ShadowMapDebugOverlayDraw( void ) {
 	GL_SelectTexture( 0 );
 }
 
-static void RB_ShadowMapDrawReceiverFallbacks( const shadowMapPassKind_t passKind, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
-	if ( !RB_DrawSurfChainHasFilteredSurface( interactions, RB_SurfaceNeedsShadowMapReceiverFallback ) ) {
+static void RB_ShadowMapTrackWrappedCustomGLSLReceivers( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const drawSurf_t *interactions ) {
+	const int wrappedSurfaces = RB_CountShadowMapReceiverWrappedCustomGLSLSurfaces( interactions );
+	if ( wrappedSurfaces <= 0 ) {
+		return;
+	}
+
+	if ( passKind == SHADOWMAP_PASS_LOCAL ) {
+		g_shadowMapStats.receiverWrappedCustomGLSLLocalPasses++;
+	} else {
+		g_shadowMapStats.receiverWrappedCustomGLSLGlobalPasses++;
+	}
+	g_shadowMapStats.receiverWrappedCustomGLSLSurfaces += wrappedSurfaces;
+
+	if ( RB_ShadowMapVerboseReport() ) {
+		common->Printf(
+			"SM receiver-wrapper %s[%d] type=%s customGLSL=%d path=stock-shadowmap-interaction\n",
+			RB_ShadowMapPassName( passKind ),
+			RB_ShadowMapLightIndex( vLight ),
+			( vLight != NULL && vLight->pointLight ) ? "point" : "projected",
+			wrappedSurfaces );
+	}
+}
+
+static void RB_ShadowMapDrawReceiverFallbacks( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
+	int receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_COUNT];
+	const int receiverFallbackSurfaces = RB_CountShadowMapReceiverFallbackSurfaces( interactions, receiverFallbackReasons );
+	if ( receiverFallbackSurfaces <= 0 ) {
 		return;
 	}
 
@@ -8726,7 +9656,27 @@ static void RB_ShadowMapDrawReceiverFallbacks( const shadowMapPassKind_t passKin
 	} else {
 		g_shadowMapStats.receiverFallbackGlobalPasses++;
 	}
+	for ( int i = 0; i < SHADOWMAP_RECEIVER_FALLBACK_COUNT; i++ ) {
+		g_shadowMapStats.receiverFallbackSurfaces[i] += receiverFallbackReasons[i];
+	}
+	if ( RB_ShadowMapVerboseReport() ) {
+		common->Printf(
+			"SM receiver-fallback %s[%d] type=%s receivers=%d %s=%d %s=%d %s=%d path=stencil-filtered\n",
+			RB_ShadowMapPassName( passKind ),
+			RB_ShadowMapLightIndex( vLight ),
+			( vLight != NULL && vLight->pointLight ) ? "point" : "projected",
+			receiverFallbackSurfaces,
+			RB_ShadowMapReceiverFallbackReasonName( SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE ),
+			receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE],
+			RB_ShadowMapReceiverFallbackReasonName( SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL ),
+			receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL],
+			RB_ShadowMapReceiverFallbackReasonName( SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY ),
+			receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] );
+	}
+	shadowMapTimedPhase_t timedPhase;
+	RB_ShadowMapBeginTimedPhase( timedPhase, vLight, passKind, SHADOWMAP_TIMING_RECEIVER_FALLBACK );
 	RB_ShadowMapStencilFallbackFiltered( primaryShadowSurfs, secondaryShadowSurfs, interactions, RB_SurfaceNeedsShadowMapReceiverFallback );
+	RB_ShadowMapEndTimedPhase( timedPhase );
 }
 
 static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
@@ -8769,23 +9719,23 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters,
 			primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
-		RB_ShadowMapStencilFallback( primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		return;
 	}
 
 	if ( !RB_DrawSurfChainHasFilteredSurface( interactions, RB_SurfaceEligibleForShadowMapReceiver ) ) {
-		RB_ShadowMapDrawReceiverFallbacks( passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapDrawReceiverFallbacks( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_RECEIVER_FALLBACK, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		return;
 	}
 
 	shadowMapSchedule_t schedule = RB_ShadowMapSchedulePass( vLight, passKind, pointLight, haveTranslucentCasters );
 	if ( schedule.action == SHADOWMAP_SCHEDULE_REUSE ) {
-		idTimer maskTimer;
-		maskTimer.Start();
+		shadowMapTimedPhase_t cacheReuseTimer;
+		RB_ShadowMapBeginTimedPhase( cacheReuseTimer, vLight, passKind, SHADOWMAP_TIMING_CACHE_REUSE );
 		const bool maskOk = pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions );
-		maskTimer.Stop();
-		g_shadowMapStats.cpuMaskMilliseconds += maskTimer.Milliseconds();
+		const float cacheReuseMilliseconds = RB_ShadowMapEndTimedPhase( cacheReuseTimer );
+		g_shadowMapStats.cpuMaskMilliseconds += cacheReuseMilliseconds;
 		if ( pointLight && schedule.pointEntry != NULL ) {
 			schedule.pointEntry->lastUsedFrame = tr.frameCount;
 		} else if ( schedule.projectedEntry != NULL ) {
@@ -8800,7 +9750,8 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			RB_ShadowMapDebugOverlayCapture( vLight, passKind, pointLight, true, true,
 				primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters,
 				primaryShadowSurfs, secondaryShadowSurfs, interactions );
-			RB_ShadowMapDrawReceiverFallbacks( passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+			RB_ShadowMapTrackWrappedCustomGLSLReceivers( vLight, passKind, interactions );
+			RB_ShadowMapDrawReceiverFallbacks( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 			RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_CACHE_REUSE, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 			return;
 		}
@@ -8812,7 +9763,7 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			g_shadowMapStats.maskFailGlobalPasses++;
 		}
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_MASK_FAIL, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
-		RB_ShadowMapStencilFallback( primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		return;
 	}
 
@@ -8824,27 +9775,15 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			g_shadowMapStats.fallbackGlobalPasses++;
 		}
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_SCHEDULED_SKIP, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
-		RB_ShadowMapStencilFallback( primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		return;
 	}
 
-	idTimer renderTimer;
-	idTimer gpuSyncTimer;
-	renderTimer.Start();
-	if ( r_shadowMapGpuSyncTimings.GetBool() ) {
-		glFinish();
-		gpuSyncTimer.Start();
-	}
-	shadowMapGpuTimerQuery_t *gpuTimerQuery = RB_ShadowMapBeginGpuTimerQuery( vLight, passKind );
+	shadowMapTimedPhase_t renderTimer;
+	RB_ShadowMapBeginTimedPhase( renderTimer, vLight, passKind, SHADOWMAP_TIMING_MAP_RENDER );
 	const bool renderOk = pointLight ? RB_RenderPointShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters ) : RB_RenderShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters );
-	RB_ShadowMapEndGpuTimerQuery( gpuTimerQuery );
-	if ( r_shadowMapGpuSyncTimings.GetBool() ) {
-		glFinish();
-		gpuSyncTimer.Stop();
-		g_shadowMapStats.gpuSyncMilliseconds += gpuSyncTimer.Milliseconds();
-	}
-	renderTimer.Stop();
-	g_shadowMapStats.cpuRenderMilliseconds += renderTimer.Milliseconds();
+	const float renderMilliseconds = RB_ShadowMapEndTimedPhase( renderTimer );
+	g_shadowMapStats.cpuRenderMilliseconds += renderMilliseconds;
 	RB_ShadowMapCompleteCacheUpdate( schedule, vLight, passKind, pointLight, renderOk );
 	if ( renderOk && haveTranslucentCasters && RB_TranslucentShadowMomentsRequested() ) {
 		if ( pointLight ) {
@@ -8853,11 +9792,14 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			RB_RenderTranslucentShadowMap( translucentPrimaryCasters, translucentSecondaryCasters );
 		}
 	}
-	idTimer maskTimer;
-	maskTimer.Start();
-	const bool maskOk = renderOk && ( pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions ) );
-	maskTimer.Stop();
-	g_shadowMapStats.cpuMaskMilliseconds += maskTimer.Milliseconds();
+	bool maskOk = false;
+	if ( renderOk ) {
+		shadowMapTimedPhase_t maskTimer;
+		RB_ShadowMapBeginTimedPhase( maskTimer, vLight, passKind, SHADOWMAP_TIMING_MASK_PASS );
+		maskOk = pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions );
+		const float maskMilliseconds = RB_ShadowMapEndTimedPhase( maskTimer );
+		g_shadowMapStats.cpuMaskMilliseconds += maskMilliseconds;
+	}
 	shadowMapPassResult_t passResult = SHADOWMAP_PASS_RESULT_MAPPED;
 	if ( !renderOk ) {
 		passResult = SHADOWMAP_PASS_RESULT_RENDER_FAIL;
@@ -8876,7 +9818,8 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		} else {
 			g_shadowMapStats.mappedGlobalPasses++;
 		}
-		RB_ShadowMapDrawReceiverFallbacks( passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapTrackWrappedCustomGLSLReceivers( vLight, passKind, interactions );
+		RB_ShadowMapDrawReceiverFallbacks( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		return;
 	}
@@ -8897,7 +9840,7 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		}
 	}
 	RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
-	RB_ShadowMapStencilFallback( primaryShadowSurfs, secondaryShadowSurfs, interactions );
+	RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 }
 
 /*
@@ -9222,8 +10165,8 @@ void RB_ARB2_DrawInteractions( void ) {
 		const shadowMapLightSupportReason_t supportReason = RB_ShadowMapLightSupportReason( vLight );
 		if ( supportReason == SHADOWMAP_SUPPORT_OK ) {
 			g_shadowMapStats.supportedLights++;
-			const shadowMapLightClass_t lightClass = RB_ShadowMapLightClass( vLight );
-			switch ( lightClass ) {
+			const shadowMapLightClassification_t classification = R_ClassifyShadowMapLight( vLight );
+			switch ( classification.lightClass ) {
 			case SHADOWMAP_LIGHT_POINT:
 				g_shadowMapStats.pointLights++;
 				break;
@@ -9236,6 +10179,23 @@ void RB_ARB2_DrawInteractions( void ) {
 			default:
 				g_shadowMapStats.projectedLights++;
 				break;
+			}
+			if ( classification.csmEnabled ) {
+				g_shadowMapStats.cascadeLights++;
+				g_shadowMapStats.cascadeCount += classification.cascadeCount;
+			}
+			const bool projectedCsmEligible = classification.ordinaryProjectedLight
+				&& g_shadowMapStats.csmRequested
+				&& g_shadowMapStats.requestedCascadeCount > 1;
+			if ( classification.ordinaryProjectedLight && projectedCsmEligible ) {
+				g_shadowMapStats.projectedCsmEligibleLights++;
+				if ( classification.csmEnabled ) {
+					g_shadowMapStats.projectedCsmCascadeLights++;
+				} else {
+					g_shadowMapStats.projectedCsmSuppressedLights++;
+				}
+			} else if ( !classification.ordinaryProjectedLight && classification.csmEnabled ) {
+				g_shadowMapStats.nonProjectedCsmLights++;
 			}
 			RB_ShadowMapLightReport( vLight, supportReason );
 

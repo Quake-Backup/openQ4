@@ -3926,6 +3926,138 @@ int idMaterial::GetLightGridDiffuseStageIndex( const float *registers ) const {
 
 /*
 ===================
+idMaterial::HasActiveCustomGLSLLighting
+===================
+*/
+static bool MaterialStageIsActive( const shaderStage_t &stage, const float *registers ) {
+	return registers == NULL || registers[stage.conditionRegister] != 0.0f;
+}
+
+static bool MaterialStageHasActiveCustomGLSLLighting( const shaderStage_t &stage, const float *registers ) {
+	if ( stage.newStage == NULL || !stage.newStage->customLighting || !stage.newStage->glslProgram ) {
+		return false;
+	}
+	return MaterialStageIsActive( stage, registers );
+}
+
+static bool MaterialStagesHaveActiveCustomGLSLLighting( const shaderStage_t *stageList, const int stageCount, const float *registers ) {
+	if ( stageList == NULL || stageCount <= 0 ) {
+		return false;
+	}
+	for ( int i = 0 ; i < stageCount ; i++ ) {
+		if ( MaterialStageHasActiveCustomGLSLLighting( stageList[i], registers ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool idMaterial::HasActiveCustomGLSLLighting( const float *registers ) const {
+	return MaterialStagesHaveActiveCustomGLSLLighting( stages, numStages, registers );
+}
+
+/*
+===================
+idMaterial::HasActiveStockLightingInteractions
+===================
+*/
+static bool MaterialStageHasActiveStockBump( const shaderStage_t &stage, const float *registers ) {
+	if ( stage.newStage != NULL || stage.lighting != SL_BUMP || stage.texture.image == NULL ) {
+		return false;
+	}
+	return MaterialStageIsActive( stage, registers );
+}
+
+static bool MaterialStageHasActiveStockLitStage( const shaderStage_t &stage, const float *registers ) {
+	if ( stage.newStage != NULL || stage.texture.image == NULL ) {
+		return false;
+	}
+	if ( stage.lighting != SL_DIFFUSE && stage.lighting != SL_SPECULAR ) {
+		return false;
+	}
+	return MaterialStageIsActive( stage, registers );
+}
+
+static bool MaterialStagesHaveActiveStockLightingInteractions( const shaderStage_t *stageList, const int stageCount, const float *registers ) {
+	if ( stageList == NULL || stageCount <= 0 ) {
+		return false;
+	}
+
+	bool haveBump = false;
+	bool haveLitStage = false;
+
+	for ( int i = 0 ; i < stageCount ; i++ ) {
+		const shaderStage_t &stage = stageList[i];
+		if ( MaterialStageHasActiveStockBump( stage, registers ) ) {
+			haveBump = true;
+		}
+		if ( MaterialStageHasActiveStockLitStage( stage, registers ) ) {
+			haveLitStage = true;
+		}
+	}
+
+	return haveBump && haveLitStage;
+}
+
+bool idMaterial::HasActiveStockLightingInteractions( const float *registers ) const {
+	return MaterialStagesHaveActiveStockLightingInteractions( stages, numStages, registers );
+}
+
+/*
+===================
+idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting
+===================
+*/
+bool idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting( const float *registers ) const {
+	return MaterialStagesHaveActiveCustomGLSLLighting( stages, numStages, registers )
+		&& MaterialStagesHaveActiveStockLightingInteractions( stages, numStages, registers );
+}
+
+bool R_MaterialCustomGLSLReceiverHelperSelfTest( void ) {
+	float shaderRegisters[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+	idImage *fakeImage = (idImage *)1;
+
+	newShaderStage_t customLightingStage;
+	memset( &customLightingStage, 0, sizeof( customLightingStage ) );
+	customLightingStage.glslProgram = true;
+	customLightingStage.customLighting = true;
+
+	shaderStage_t compatibleStages[3];
+	memset( compatibleStages, 0, sizeof( compatibleStages ) );
+	compatibleStages[0].conditionRegister = 0;
+	compatibleStages[0].lighting = SL_BUMP;
+	compatibleStages[0].texture.image = fakeImage;
+	compatibleStages[1].conditionRegister = 1;
+	compatibleStages[1].lighting = SL_DIFFUSE;
+	compatibleStages[1].texture.image = fakeImage;
+	compatibleStages[2].conditionRegister = 2;
+	compatibleStages[2].newStage = &customLightingStage;
+
+	shaderStage_t customOnlyStage;
+	memset( &customOnlyStage, 0, sizeof( customOnlyStage ) );
+	customOnlyStage.conditionRegister = 2;
+	customOnlyStage.newStage = &customLightingStage;
+
+	shaderStage_t inactiveCustomStages[3];
+	memcpy( inactiveCustomStages, compatibleStages, sizeof( inactiveCustomStages ) );
+	inactiveCustomStages[2].conditionRegister = 3;
+
+	shaderStage_t inactiveStockStages[3];
+	memcpy( inactiveStockStages, compatibleStages, sizeof( inactiveStockStages ) );
+	inactiveStockStages[1].conditionRegister = 3;
+
+	return MaterialStagesHaveActiveCustomGLSLLighting( compatibleStages, 3, shaderRegisters )
+		&& MaterialStagesHaveActiveStockLightingInteractions( compatibleStages, 3, shaderRegisters )
+		&& MaterialStagesHaveActiveCustomGLSLLighting( &customOnlyStage, 1, shaderRegisters )
+		&& !MaterialStagesHaveActiveStockLightingInteractions( &customOnlyStage, 1, shaderRegisters )
+		&& !MaterialStagesHaveActiveCustomGLSLLighting( inactiveCustomStages, 3, shaderRegisters )
+		&& MaterialStagesHaveActiveStockLightingInteractions( inactiveCustomStages, 3, shaderRegisters )
+		&& MaterialStagesHaveActiveCustomGLSLLighting( inactiveStockStages, 3, shaderRegisters )
+		&& !MaterialStagesHaveActiveStockLightingInteractions( inactiveStockStages, 3, shaderRegisters );
+}
+
+/*
+===================
 idMaterial::ReloadImages
 ===================
 */

@@ -25,6 +25,70 @@ enum rendererModernLightType_t {
 	RENDERER_MODERN_LIGHT_SPECIAL
 };
 
+static const int RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_TILES = 6;
+static const int RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES = 4;
+
+enum rendererModernShadowDescriptorFlag_t {
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_MAPPED = 1 << 0,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_CACHE_REUSE = 1 << 1,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_STENCIL_FALLBACK = 1 << 2,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_SKIPPED = 1 << 3,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_RECEIVER_BLOCKED = 1 << 4,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_PROJECTED = 1 << 5,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_POINT = 1 << 6,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_CASCADE = 1 << 7,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_TRANSLUCENT = 1 << 8,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_ATLAS_READY = 1 << 9,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_CASTER_READY = 1 << 10,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_RECEIVER_GUARD_READY = 1 << 11,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_SAMPLING_READY = 1 << 12,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_STABLE_CASCADE = 1 << 13,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_PROJECTED_STATE_READY = 1 << 14,
+	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_PROJECTED_FALLBACK = 1 << 15
+};
+
+typedef struct rendererModernShadowDescriptor_s {
+	int		descriptorIndex;
+	int		sceneIndex;
+	int		lightDefIndex;
+	int		mapType;
+	int		policy;
+	int		fallbackReason;
+	int		compareMode;
+	int		biasModel;
+	int		depthFormat;
+	int		pcfKernel;
+	int		tileCount;
+	int		cascadeCount;
+	int		requestedCascadeCount;
+	int		atlasDiv;
+	int		faceIndex;
+	int		cascadeIndex;
+	int		projectedFallbackCascade;
+	int		projectedFallbackReason;
+	int		projectedSampleCount;
+	int		projectedValidSampleCount;
+	int		projectedSkippedSampleCount;
+	int		flags;
+	float	atlasRect[4];
+	float	tileAtlasRect[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_TILES][4];
+	float	shadowMatrix[16];
+	float	viewShadowMatrix[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES][16];
+	float	projection[4];
+	float	cascadeSplitDepths[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	cascadeBiasScale[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	texelDepthBias[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	worldTexelSize[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	sliceNear[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	sliceFar[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	depthRange[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	clipZExtent[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES];
+	float	bias[4];
+	float	projectedBaseClipPlanes[4][4];
+	float	projectedClipPlanes[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES][4][4];
+	float	projectedAtlasRect[RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES][4];
+} rendererModernShadowDescriptor_t;
+
 typedef struct rendererModernLightDescriptor_s {
 	char	debugName[64];
 	rendererModernLightType_t type;
@@ -62,6 +126,7 @@ typedef struct rendererClusteredLightingStats_s {
 	bool	initialized;
 	bool	frameValid;
 	bool	buffersReady;
+	bool	shadowDescriptorBufferReady;
 	bool	uboFallbackReady;
 	bool	debugOverlayReady;
 	bool	debugTextureReady;
@@ -85,6 +150,8 @@ typedef struct rendererClusteredLightingStats_s {
 	int		shadowFallbackLights;
 	int		shadowSkippedLights;
 	int		shadowDescriptorCount;
+	int		uploadedShadowDescriptors;
+	int		shadowDescriptorCapacity;
 	int		shadowReceiverBlockedLights;
 	int		culledLights;
 	int		clippedLights;
@@ -124,6 +191,7 @@ typedef struct rendererClusteredLightingStats_s {
 	int		paramsUBOBytes;
 	int		lightsUBOBytes;
 	int		indicesUBOBytes;
+	int		shadowDescriptorBytes;
 	int		debugMode;
 	int		debugOverlayDraws;
 	int		debugStringTruncations;
@@ -141,6 +209,8 @@ bool R_ModernClusteredLighting_FrameLossless( void );
 bool R_ModernClusteredLighting_BindGridForView( const viewDef_t *viewDef );
 int R_ModernClusteredLighting_NumLightDescriptors( void );
 const rendererModernLightDescriptor_t *R_ModernClusteredLighting_LightDescriptor( int index );
+int R_ModernClusteredLighting_NumShadowDescriptors( void );
+const rendererModernShadowDescriptor_t *R_ModernClusteredLighting_ShadowDescriptor( int index );
 bool RendererClusterGrid_RunSelfTest( void );
 
 #endif /* !__MODERN_CLUSTERED_LIGHTING_H__ */

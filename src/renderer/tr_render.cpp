@@ -862,6 +862,10 @@ interaction into primitive interactions
 =============
 */
 void RB_CreateSingleDrawInteractions( const drawSurf_t *surf, void (*DrawInteraction)(const drawInteraction_t *) ) {
+	RB_CreateSingleDrawInteractionsFiltered( surf, DrawInteraction, NULL );
+}
+
+void RB_CreateSingleDrawInteractionsFiltered( const drawSurf_t *surf, void (*DrawInteraction)(const drawInteraction_t *), drawInteractionStageFilter_t StageFilter ) {
 	const idMaterial	*surfaceShader = surf->material;
 	const float			*surfaceRegs = surf->shaderRegisters;
 	const viewLight_t	*vLight = backEnd.vLight;
@@ -951,6 +955,9 @@ void RB_CreateSingleDrawInteractions( const drawSurf_t *surf, void (*DrawInterac
 		// go through the individual stages
 		for ( int surfaceStageNum = 0 ; surfaceStageNum < surfaceShader->GetNumStages() ; surfaceStageNum++ ) {
 			const shaderStage_t	*surfaceStage = surfaceShader->GetStage( surfaceStageNum );
+			if ( StageFilter != NULL && !StageFilter( surfaceStage, surfaceRegs ) ) {
+				continue;
+			}
 
 			switch( surfaceStage->lighting ) {
 				case SL_AMBIENT: {

@@ -360,12 +360,16 @@ typedef enum {
 	SHADOWMAP_CASTER_REJECT_TRANSLUCENT_DISABLED,
 	SHADOWMAP_CASTER_REJECT_TRANSLUCENT_UNSUPPORTED,
 	SHADOWMAP_CASTER_REJECT_SURFACE_NO_SHADOW,
+	SHADOWMAP_CASTER_REJECT_DEDICATED_COLLISION,
 	SHADOWMAP_CASTER_REJECT_GUI,
 	SHADOWMAP_CASTER_REJECT_SUBVIEW,
 	SHADOWMAP_CASTER_REJECT_AREA_DISCONNECTED,
 	SHADOWMAP_CASTER_REJECT_SPECTRUM_MISMATCH,
 	SHADOWMAP_CASTER_REJECT_COUNT
 } shadowMapCasterRejectReason_t;
+
+bool R_ShadowMapCasterAdmissionSelfTest( void );
+bool R_ShadowMapLODAdmissionSelfTest( void );
 
 // viewLights are allocated on the frame temporary stack memory
 // a viewLight contains everything that the back end needs out of an idRenderLightLocal,
@@ -422,6 +426,10 @@ typedef struct viewLight_s {
 	int						shadowMapDynamicCasterCount;
 	int						shadowMapRejectedCasterCount;
 	int						shadowMapExpandedCasterCount;
+	int						shadowMapLODTestCount;
+	int						shadowMapLODRejectedCount;
+	int						shadowMapLODAlphaRejectedCount;
+	int						shadowMapLODTranslucentRejectedCount;
 	int						shadowMapCasterSignature;
 	int						shadowMapRejectedCasterReasons[SHADOWMAP_CASTER_REJECT_COUNT];
 	const struct drawSurf_s	*translucentInteractions;	// get shadows from everything
@@ -568,6 +576,8 @@ typedef struct {
 	idVec4				specularMatrix[2];
 } drawInteraction_t;
 
+typedef bool (*drawInteractionStageFilter_t)( const shaderStage_t *surfaceStage, const float *surfaceRegs );
+
 
 /*
 =============================================================
@@ -637,6 +647,7 @@ typedef struct {
 	idRenderTexture* destRenderTexture;
 	bool resolveDepth;
 } resolveRenderTargetCommand_t;
+
 // jmarshall end
 
 //=======================================================================
@@ -1201,7 +1212,8 @@ extern idCVar r_shadowMapHashedAlpha;		// 1 = use hashed alpha testing for perfo
 extern idCVar r_shadowMapTranslucentMoments;	// 1 = accumulate experimental translucent shadow moments for blended casters
 extern idCVar r_shadowMapTranslucentDensity;	// density scale applied when resolving translucent shadow moments
 extern idCVar r_shadowMapTranslucentMinAlpha;	// minimum per-stage alpha considered by translucent shadow moments
-extern idCVar r_shadowMapReport;		// 0 = off, 1 = per-view summary, 2 = per-light decisions, 3 = verbose receiver-submit decisions
+extern idCVar r_shadowMapCustomGLSLReceiverWrapper;	// 1 = map compatible custom GLSL receivers through stock interactions
+extern idCVar r_shadowMapReport;		// 0 = off, 1 = per-view summary, 2 = per-light joined planner/ARB2/modern decisions, 3 = verbose receiver-submit decisions
 extern idCVar r_shadowMapReportInterval;	// frames between shadow-map diagnostic reports
 extern idCVar r_shadowMapConservativeCasters;	// 1 = keep shadow-map caster submission independent from visible receiver scissors
 extern idCVar r_shadowMapProjectedCSM;	// 1 = allow ordinary projected lights to use CSM when r_shadowMapCSM is enabled
@@ -1402,6 +1414,9 @@ typedef enum {
 	SHADOWMAP_DEBUGMODE_PCF_OFF,
 	SHADOWMAP_DEBUGMODE_CASTER_OFFSET_OFF,
 	SHADOWMAP_DEBUGMODE_RECEIVER_PLANE_BIAS_OFF,
+	SHADOWMAP_DEBUGMODE_COMPARE_DELTA,
+	SHADOWMAP_DEBUGMODE_RECEIVER_ELIGIBILITY,
+	SHADOWMAP_DEBUGMODE_RECEIVER_FALLBACK_REASON,
 	SHADOWMAP_DEBUGMODE_COUNT
 } shadowMapDebugMode_t;
 extern idCVar r_shadowMapDebugMode;		// projected shadow-map visualization mode
@@ -1502,6 +1517,36 @@ bool R_CheckExtension( char *name );
 // uploads, sampler-state changes) or a later filtered Bind() can silently
 // leave the wrong texture bound
 void R_BindTextureForDirectAccess( unsigned int target, int texnum );
+
+const int RENDERER_SHADOW_TEXTURE_MOMENT_COUNT = 3;
+
+typedef struct rendererShadowTextureBinding_s {
+	unsigned int	texture;
+	unsigned int	target;
+	int				width;
+	int				height;
+	bool			ready;
+} rendererShadowTextureBinding_t;
+
+typedef struct rendererShadowTextureBindings_s {
+	rendererShadowTextureBinding_t	projectedAtlas;
+	rendererShadowTextureBinding_t	pointAtlas;
+	rendererShadowTextureBinding_t	projectedMoments[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
+	rendererShadowTextureBinding_t	pointMoments[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
+	bool							projectedAtlasReady;
+	bool							pointAtlasReady;
+	bool							projectedMomentsReady;
+	bool							pointMomentsReady;
+	bool							projectedDepthCompare;
+	bool							pointDepthCompare;
+	bool							pointHighPrecision;
+	float							translucentDensity;
+	float							translucentFilterRadius;
+	float							translucentMinVariance;
+	float							translucentBleedReduction;
+} rendererShadowTextureBindings_t;
+
+bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings );
 
 // deletes the lazily created CopyFramebuffer/CopyDepthbuffer scratch FBOs;
 // must be called before GLimp_Shutdown while the old context is still current
@@ -1734,6 +1779,7 @@ void RB_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_LoadShaderTextureMatrix( const float *shaderRegisters, const textureStage_t *texture );
 void RB_GetShaderTextureMatrix( const float *shaderRegisters, const textureStage_t *texture, float matrix[16] );
 void RB_CreateSingleDrawInteractions( const drawSurf_t *surf, void (*DrawInteraction)(const drawInteraction_t *) );
+void RB_CreateSingleDrawInteractionsFiltered( const drawSurf_t *surf, void (*DrawInteraction)(const drawInteraction_t *), drawInteractionStageFilter_t StageFilter );
 void R_SetDrawInteraction( const shaderStage_t *surfaceStage, const float *surfaceRegs,
 						  idImage **image, idVec4 matrix[2], float color[4] );
 

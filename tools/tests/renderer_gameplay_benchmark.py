@@ -203,7 +203,9 @@ LENS_FLARE_SIGNOFF_MATRIX = [
     },
 ]
 
-for debug_mode in range(1, 7):
+SHADOW_DEBUG_PRESET_MODES = (1, 2, 3, 4, 5, 6, 7, 12, 13, 14)
+
+for debug_mode in SHADOW_DEBUG_PRESET_MODES:
     SHADOW_PRESETS[f"debug{debug_mode}"] = {
         "r_shadows": "1",
         "r_useShadowMap": "1",
@@ -257,8 +259,27 @@ PROFILE_DEFAULTS = {
         "maxfps": ("240",),
         "swap": ("0",),
         "display": ("windowed",),
-        "shadows": ("stencil", "mapped", "csm", "translucent", "debug1", "debug2", "debug3", "debug4", "debug5", "debug6"),
+        "shadows": ("stencil", "mapped", "csm", "translucent", "debug1", "debug2", "debug3", "debug4", "debug5", "debug6", "debug7", "debug12", "debug13", "debug14"),
         "lensFlare": ("default",),
+    },
+    "shadow-regression": {
+        "cases": (
+            "shadow-projected-airdefense2",
+            "shadow-point-storage2",
+            "shadow-csm-airdefense1",
+            "shadow-character-airdefense2",
+            "shadow-cutout-storage2",
+        ),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("csm",),
+        "lensFlare": ("default",),
+        "cvars": (
+            ("r_shadowMapPointLights", "1"),
+            ("r_shadowMapReport", "1"),
+        ),
     },
     "lensflare": {
         "cases": tuple(LENS_FLARE_SCENES.keys()),
@@ -1214,6 +1235,44 @@ def run_mp_spec(
     }
 
 
+def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
+    message = f"harness exception: {type(exc).__name__}: {exc}"
+    role = "client" if spec.mode == "MP" else "sp"
+    role_result = {
+        "id": spec.id,
+        "role": role,
+        "status": "fail",
+        "exitCode": "",
+        "timedOut": False,
+        "elapsedSeconds": 0.0,
+        "log": "",
+        "stdout": "",
+        "stderr": "",
+        "screenshot": "",
+        "screenshotRequest": "",
+        "warnings": {},
+        "missing": [message],
+        "summary": {},
+        "image": {"status": "harness-error"},
+    }
+    return {
+        "id": spec.id,
+        "mode": spec.mode,
+        "map": spec.map_name,
+        "purpose": spec.purpose,
+        "tier": spec.tier,
+        "maxfps": spec.maxfps,
+        "swapInterval": spec.swap_interval,
+        "display": spec.display_mode,
+        "shadowPreset": spec.shadow_preset,
+        "lensFlarePreset": spec.lens_flare_preset,
+        "renderer": spec.renderer,
+        "status": "fail",
+        "roles": [role_result],
+        "harnessError": message,
+    }
+
+
 def build_specs(args: argparse.Namespace) -> list[RunSpec]:
     defaults = PROFILE_DEFAULTS[args.profile]
     case_ids = split_csv(args.cases, defaults["cases"])
@@ -1295,13 +1354,13 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "",
         "## Results",
         "",
-        "| Status | Case | Mode | Map | Tier | FPS | VSync | Display | Shadow | Lens Flare | Pacing | Benchmark | Screenshot | Log |",
-        "|---|---|---|---|---|---:|---:|---|---|---|---|---|---|---|",
+        "| Status | Case | Mode | Map | Tier | FPS | VSync | Display | Shadow | Lens Flare | Pacing | Benchmark | Image | Screenshot | Log |",
+        "|---|---|---|---|---|---:|---:|---|---|---|---|---|---|---|---|",
     ]
     for result in results:
         if result["status"] == "planned":
             lines.append(
-                f"| planned | `{result['id']}` | {result['mode']} | `{result['map']}` |  |  |  |  |  |  |  | dry run |  |  |"
+                f"| planned | `{result['id']}` | {result['mode']} | `{result['map']}` |  |  |  |  |  |  |  | dry run |  |  |  |"
             )
             continue
         role = next((item for item in result.get("roles", []) if item["role"] in ("client", "sp")), result.get("roles", [{}])[0])
@@ -1314,15 +1373,21 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
             pacing = f"{summary['pacingHz']} Hz"
             if summary.get("pacingP95Ms"):
                 pacing += f" / p95 {summary['pacingP95Ms']} ms"
+        image = role.get("image", {}) or {}
+        image_status = image.get("status", "missing")
+        if image_status == "compared":
+            image_status = f"compared rms={image.get('rms', '?')} max={image.get('maxDelta', '?')} pass={int(bool(image.get('pass', False)))}"
+        elif image_status in ("not-requested", "reference-not-found"):
+            image_status = f"{image_status} {image.get('sha256', '')[:12]}".strip()
         screenshot = role.get("screenshot", "")
         log = role.get("log", "")
         lines.append(
-            f"| {result['status']} | `{result['id']}` | {result['mode']} | `{result['map']}` | `{result['tier']}` | {result['maxfps']} | {result['swapInterval']} | {result['display']} | `{result['shadowPreset']}` | `{result.get('lensFlarePreset', 'default')}` | {pacing or 'missing'} | {benchmark or 'missing'} | `{screenshot}` | `{log}` |"
+            f"| {result['status']} | `{result['id']}` | {result['mode']} | `{result['map']}` | `{result['tier']}` | {result['maxfps']} | {result['swapInterval']} | {result['display']} | `{result['shadowPreset']}` | `{result.get('lensFlarePreset', 'default')}` | {pacing or 'missing'} | {benchmark or 'missing'} | {image_status} | `{screenshot}` | `{log}` |"
         )
         for role_result in result.get("roles", []):
             if role_result.get("missing"):
                 lines.append(
-                    f"|  | `{role_result['role']}` missing |  |  |  |  |  |  |  |  | {'; '.join(role_result['missing'])} |  |  |"
+                    f"|  | `{role_result['role']}` missing |  |  |  |  |  |  |  |  | {'; '.join(role_result['missing'])} |  |  |  |  |"
                 )
 
     lines += [
@@ -1434,7 +1499,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--list", action="store_true", help="List profiles, cases, and shadow presets without running.")
     parsed = parser.parse_args(argv)
     try:
-        parsed.extra_cvars = parse_extra_cvars(parsed.set_cvar)
+        profile_cvars = tuple(PROFILE_DEFAULTS[parsed.profile].get("cvars", ()))
+        parsed.extra_cvars = profile_cvars + parse_extra_cvars(parsed.set_cvar)
         parsed.launch_cvars = parse_extra_cvars(parsed.set_launch_cvar)
         parsed.exec_commands = parse_exec_commands(parsed.exec_command)
     except ValueError as exc:
@@ -1455,7 +1521,9 @@ def print_list() -> None:
             * len(defaults["shadows"])
             * len(defaults["lensFlare"])
         )
-        print(f"  {profile}: {count} generated case(s)")
+        profile_cvars = defaults.get("cvars", ())
+        cvar_text = " " + ", ".join(f"{key}={value}" for key, value in profile_cvars) if profile_cvars else ""
+        print(f"  {profile}: {count} generated case(s){cvar_text}")
     print("\nRequired gameplay cases:")
     for case_id, scene in REQUIRED_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
@@ -1501,12 +1569,17 @@ def main(argv: list[str]) -> int:
 
     results: list[dict[str, Any]] = []
     for index, spec in enumerate(specs):
-        print(f"running {spec.id} ({spec.mode} {spec.map_name})...")
-        if spec.mode == "MP":
-            result = run_mp_spec(root, executable, output_dir, basepath, run_id, spec, index, args)
+        print(f"running {spec.id} ({spec.mode} {spec.map_name})...", flush=True)
+        try:
+            if spec.mode == "MP":
+                result = run_mp_spec(root, executable, output_dir, basepath, run_id, spec, index, args)
+            else:
+                result = run_sp_spec(root, executable, output_dir, basepath, run_id, spec, args)
+        except Exception as exc:
+            result = harness_failure_result(spec, exc)
+            print(f"  fail ({type(exc).__name__}: {exc})", file=sys.stderr, flush=True)
         else:
-            result = run_sp_spec(root, executable, output_dir, basepath, run_id, spec, args)
-        print(f"  {result['status']}")
+            print(f"  {result['status']}", flush=True)
         results.append(result)
 
     metadata = {
@@ -1523,6 +1596,7 @@ def main(argv: list[str]) -> int:
         "minPacingHz": args.min_pacing_hz,
         "maxP95Ms": args.max_p95_ms,
         "maxP99Ms": args.max_p99_ms,
+        "profileCvars": dict(PROFILE_DEFAULTS[args.profile].get("cvars", ())),
         "launchCvars": dict(args.launch_cvars),
         "execCommands": list(args.exec_commands),
     }

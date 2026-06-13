@@ -105,6 +105,27 @@ typedef struct rendererMetricsFrame_s {
 	bool	renderGraphOverflow;
 	renderGraphResourceManagerStats_t renderGraphResourceManager;
 	materialResourceTableStats_t materialResourceTable;
+	int		modernShadowPlanDescriptors;
+	int		modernShadowPlanInvariantFailures;
+	unsigned int modernShadowPlanInvariantFailureMask;
+	int		modernShadowPlanProjectedCsmEligibleLights;
+	int		modernShadowPlanProjectedCsmCascadeLights;
+	int		modernShadowPlanProjectedCsmSuppressedLights;
+	int		modernShadowPlanNonProjectedCsmLights;
+	int		modernShadowPlanBudgetThrottledLights;
+	unsigned int modernShadowPlanBudgetThrottleReasonMask;
+	int		modernShadowPlanThrottleHistoryTrackedLights;
+	int		modernShadowPlanThrottleHistoryRepeatedBudgetMissLights;
+	int		modernShadowPlanThrottleHistoryRecoveredLights;
+	int		modernShadowPlanThrottleHistoryMaxMissStreak;
+	int		modernShadowPlanThrottleHistoryMaxMissLightDefIndex;
+	int		modernShadowPlanLODRejectedLights;
+	int		modernShadowPlanLODRejectedBudgetThrottledLights;
+	int		modernShadowPlanLODRejectedUnmappedLights;
+	int		modernShadowPlanArb2CacheReuseLights;
+	int		modernShadowPlanArb2CacheBudgetIsolatedLights;
+	int		modernShadowPlanArb2CacheHitPasses;
+	int		modernShadowPlanArb2FreshUpdatePasses;
 	rendererModernExecutorMetricsMode_t modernExecutorMode;
 	int		modernExecutorGraphPasses;
 	int		modernExecutorPreparedPasses;
@@ -1253,6 +1274,30 @@ void R_RendererMetrics_RecordMaterialResourceTable( const materialResourceTableS
 	rg_rendererMetrics.materialResourceTable = stats;
 }
 
+void R_RendererMetrics_RecordModernShadowPlanner( const int descriptors, const int invariantFailures, const unsigned int invariantFailureMask, const int projectedCsmEligibleLights, const int projectedCsmCascadeLights, const int projectedCsmSuppressedLights, const int nonProjectedCsmLights, const int budgetThrottledLights, const unsigned int budgetThrottleReasonMask, const int throttleHistoryTrackedLights, const int throttleHistoryRepeatedBudgetMissLights, const int throttleHistoryRecoveredLights, const int throttleHistoryMaxMissStreak, const int throttleHistoryMaxMissLightDefIndex, const int lodRejectedLights, const int lodRejectedBudgetThrottledLights, const int lodRejectedUnmappedLights, const int arb2CacheReuseLights, const int arb2CacheBudgetIsolatedLights, const int arb2CacheHitPasses, const int arb2FreshUpdatePasses ) {
+	rg_rendererMetrics.modernShadowPlanDescriptors = descriptors;
+	rg_rendererMetrics.modernShadowPlanInvariantFailures = invariantFailures;
+	rg_rendererMetrics.modernShadowPlanInvariantFailureMask = invariantFailureMask;
+	rg_rendererMetrics.modernShadowPlanProjectedCsmEligibleLights = projectedCsmEligibleLights;
+	rg_rendererMetrics.modernShadowPlanProjectedCsmCascadeLights = projectedCsmCascadeLights;
+	rg_rendererMetrics.modernShadowPlanProjectedCsmSuppressedLights = projectedCsmSuppressedLights;
+	rg_rendererMetrics.modernShadowPlanNonProjectedCsmLights = nonProjectedCsmLights;
+	rg_rendererMetrics.modernShadowPlanBudgetThrottledLights = budgetThrottledLights;
+	rg_rendererMetrics.modernShadowPlanBudgetThrottleReasonMask = budgetThrottleReasonMask;
+	rg_rendererMetrics.modernShadowPlanThrottleHistoryTrackedLights = throttleHistoryTrackedLights;
+	rg_rendererMetrics.modernShadowPlanThrottleHistoryRepeatedBudgetMissLights = throttleHistoryRepeatedBudgetMissLights;
+	rg_rendererMetrics.modernShadowPlanThrottleHistoryRecoveredLights = throttleHistoryRecoveredLights;
+	rg_rendererMetrics.modernShadowPlanThrottleHistoryMaxMissStreak = throttleHistoryMaxMissStreak;
+	rg_rendererMetrics.modernShadowPlanThrottleHistoryMaxMissLightDefIndex = throttleHistoryMaxMissLightDefIndex;
+	rg_rendererMetrics.modernShadowPlanLODRejectedLights = lodRejectedLights;
+	rg_rendererMetrics.modernShadowPlanLODRejectedBudgetThrottledLights = lodRejectedBudgetThrottledLights;
+	rg_rendererMetrics.modernShadowPlanLODRejectedUnmappedLights = lodRejectedUnmappedLights;
+	rg_rendererMetrics.modernShadowPlanArb2CacheReuseLights = arb2CacheReuseLights;
+	rg_rendererMetrics.modernShadowPlanArb2CacheBudgetIsolatedLights = arb2CacheBudgetIsolatedLights;
+	rg_rendererMetrics.modernShadowPlanArb2CacheHitPasses = arb2CacheHitPasses;
+	rg_rendererMetrics.modernShadowPlanArb2FreshUpdatePasses = arb2FreshUpdatePasses;
+}
+
 void R_RendererMetrics_RecordModernExecutor( rendererModernExecutorMetricsMode_t mode, int graphPasses, int preparedPasses, int fallbackPasses, int preparedDrawPackets, int materialDrawPackets, int resourceDrawPackets, int geometryDrawPackets, bool vaoReady, bool frameUBOReady, bool shaderLibraryReady, int shaderProgramCount, int shaderFailureCount, bool drawPlanReady, bool drawPlanOverflow, int drawPlanDraws, int drawPlanDepthDraws, int drawPlanMaterialDraws, int drawPlanFallbackDraws, int drawPlanStateBatches, int drawPlanProgramSwitches, int drawPlanMaterialSwitches, bool submitPlanReady, bool submitPlanOverflow, int submitPlanDraws, int submitPlanFallbackDraws, int submitPlanDepthDraws, int submitPlanMaterialDraws, int submitPlanMissingAmbientDraws, int submitPlanMissingIndexDraws, int submitPlanIndexUploadDraws, bool submitExecuted, int submittedDraws, int submittedFallbackDraws, int submittedIndexUploadDraws, int submitPlanProgramBatches, int submitPlanVertexBufferBatches, int submitPlanIndexBufferBatches, int submitPlanScissorBatches, int submitPlanMaterialBatches, int submitPlanUniformUpdates, int submitPlanFrameUBOBinds, bool visibleDepthRequested, bool visibleDepthExecuted, bool visibleDepthResourceReady, bool visibleShadowResourceReady, bool visibleDepthDebugOverlayReady, int visibleDepthDraws, int visibleDepthAlphaTestDraws, int visibleDepthSkinnedDraws, int visibleDepthFallbackDraws, int visibleShadowDepthDraws, int visibleShadowFallbackDraws, int visibleStencilShadowFallbackDraws, int visibleDepthMismatchDraws, int visibleDepthDebugOverlayDraws, bool opaqueGBufferRequested, bool opaqueGBufferExecuted, bool opaqueGBufferResourcesReady, bool opaqueGBufferMRTReady, bool opaqueGBufferDebugOverlayReady, int opaqueGBufferDraws, int opaqueGBufferFallbackDraws, int opaqueGBufferAttachmentCount, int opaqueGBufferBytesPerPixel, int opaqueGBufferBandwidthKB, int opaqueGBufferDebugOverlayDraws ) {
 	rg_modernExecutorLatest.mode = mode;
 	rg_modernExecutorLatest.graphPasses = graphPasses;
@@ -1753,8 +1798,33 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	char gpuText[32];
 	R_RendererMetrics_FormatGpuMsec( rg_rendererMetrics, gpuText, sizeof( gpuText ) );
 	if ( detail >= 2 ) {
+		if ( rg_rendererMetrics.modernShadowPlanDescriptors > 0 || rg_rendererMetrics.modernShadowPlanInvariantFailures > 0 || rg_rendererMetrics.modernShadowPlanProjectedCsmEligibleLights > 0 || rg_rendererMetrics.modernShadowPlanNonProjectedCsmLights > 0 || rg_rendererMetrics.modernShadowPlanBudgetThrottledLights > 0 || rg_rendererMetrics.modernShadowPlanThrottleHistoryTrackedLights > 0 || rg_rendererMetrics.modernShadowPlanLODRejectedLights > 0 || rg_rendererMetrics.modernShadowPlanArb2CacheReuseLights > 0 || rg_rendererMetrics.modernShadowPlanArb2CacheBudgetIsolatedLights > 0 ) {
+			common->Printf(
+				"rendererMetrics shadowPlan(descriptors=%d invariantFailures=%d mask=0x%08x projectedCSM(eligible=%d cascaded=%d suppressed=%d nonProjected=%d) budgetThrottled=%d reasonMask=0x%02x history(tracked=%d repeated=%d recovered=%d maxStreak=%d maxLight=%d) lod(rejectedLights=%d budget=%d unmapped=%d) arb2Cache(reuse=%d isolated=%d hitPasses=%d freshPasses=%d))\n",
+				rg_rendererMetrics.modernShadowPlanDescriptors,
+				rg_rendererMetrics.modernShadowPlanInvariantFailures,
+				rg_rendererMetrics.modernShadowPlanInvariantFailureMask,
+				rg_rendererMetrics.modernShadowPlanProjectedCsmEligibleLights,
+				rg_rendererMetrics.modernShadowPlanProjectedCsmCascadeLights,
+				rg_rendererMetrics.modernShadowPlanProjectedCsmSuppressedLights,
+				rg_rendererMetrics.modernShadowPlanNonProjectedCsmLights,
+				rg_rendererMetrics.modernShadowPlanBudgetThrottledLights,
+				rg_rendererMetrics.modernShadowPlanBudgetThrottleReasonMask,
+				rg_rendererMetrics.modernShadowPlanThrottleHistoryTrackedLights,
+				rg_rendererMetrics.modernShadowPlanThrottleHistoryRepeatedBudgetMissLights,
+				rg_rendererMetrics.modernShadowPlanThrottleHistoryRecoveredLights,
+				rg_rendererMetrics.modernShadowPlanThrottleHistoryMaxMissStreak,
+				rg_rendererMetrics.modernShadowPlanThrottleHistoryMaxMissLightDefIndex,
+				rg_rendererMetrics.modernShadowPlanLODRejectedLights,
+				rg_rendererMetrics.modernShadowPlanLODRejectedBudgetThrottledLights,
+				rg_rendererMetrics.modernShadowPlanLODRejectedUnmappedLights,
+				rg_rendererMetrics.modernShadowPlanArb2CacheReuseLights,
+				rg_rendererMetrics.modernShadowPlanArb2CacheBudgetIsolatedLights,
+				rg_rendererMetrics.modernShadowPlanArb2CacheHitPasses,
+				rg_rendererMetrics.modernShadowPlanArb2FreshUpdatePasses );
+		}
 		common->Printf(
-			"rendererMetrics frame=%d tier=%s fe=%dms visibility=%dms packet=%dms graph=%dms submit=%dms be=%dms present=%dms gpu=%s views=%d ents=%d lights=%d draws=%d surf=%d verts=%d idx=%d uploads=%d stalls=%d ring=%d/%dKB allocs=%d overflow=%d static=%dKB/%d live=%d/%dKB writes(p=%d map=%d sub=%d) packets(source=%s scene=%d pass=%d draw=%d clipped=%d cmd=%d views=%d overflow=%d cause=%s sortFailures=%d categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d)) resources(materials=%d geometryRecords=%d instances=%d withMaterial=%d materialRefs=%d geometryRefs=%d instanceRefs=%d geometry=%d regs=%d ibo=%d vbo=%d) graph(pass=%d packets=%d scenes=%d draw=%d cmd=%d res=%d imported=%d transient=%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d overflow=%d) graphGL(prepared=%d available=%d handles=%d imported=%d transient=%d textures=%d buffers=%d physical=%d new=%d reuse=%d aliasReuse=%d fbo=%d/%d skipped(imported=%d buffer=%d) lifetimeFailures=%d overflow=%d status='%s') materialTable(prepared=%d available=%d records=%d source=%d draws=%d textures=%d classic=%d arrays=%d views=%d bindless=%d/%d classes(o=%d p=%d t=%d gui=%d post=%d) fallback=%d missing=%d unsupported=%d reasons(matl=%d nodraw=%d image=%d custom=%d dynamic=%d texgen=%d current=%d slots=%d) status='%s') modernExec(mode=%s vao=%d ubo=%d shaderLib=%d shaders=%d shaderFails=%d passes=%d/%d fallback=%d draws=%d material=%d resources=%d geometry=%d plan=%d planDraws=%d depth=%d materialFamily=%d planFallback=%d batches=%d switches=%d materialSwitches=%d planOverflow=%d submit=%d submitDraws=%d submitDepth=%d submitMaterial=%d submitFallback=%d missing(vbo=%d ibo=%d) indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches(program=%d vbo=%d ibo=%d scissor=%d material=%d) uniforms=%d frameUBO=%d submitOverflow=%d visibleDepth(req=%d exec=%d res=%d/%d draws=%d alpha=%d skinned=%d shadow=%d fallback=%d/%d stencil=%d mismatch=%d overlay=%d/%d) gbuffer(req=%d exec=%d res=%d mrt=%d draws=%d fallback=%d att=%d bpp=%d bw=%dKB overlay=%d/%d) deferred(req=%d exec=%d res=%d out=%d program=%d cluster=%d pixels=%d lights=%d p=%d proj=%d lightGrid=%d reads=%d fallback=%d unsupported=%d fog=%d special=%d overflow=%d clear=%d debug=%d overlay=%d/%d) cluster(req=%d valid=%d grids=%d lights=%d p=%d proj=%d fog=%d ambient=%d special=%d clusters=%d active=%d refs=%d csr=%d records=%d+%d compute=%d/%d/%d overflow=%d/%d overflowRefs=%d max=%d grid=%dx%dx%d build=%dms ubo=%d bytes=%dKB overlay=%d/%d)) stateCache(hits=%d misses=%d invalidations=%d legacyResets=%d labels=%d groups=%d prog=%d vao=%d buf=%d tex=%d sampler=%d fbo=%d blend=%d depth=%d stencil=%d raster=%d viewport=%d scissor=%d color=%d last='%s') gpuPass(3d=%d/%d 2d=%d/%d rt=%d/%d copy=%d/%d special=%d/%d lens=%d/%d setbuf=%d/%d swap=%d/%d deferred=%d/%d dropped=%d) cmds(3d=%d 2d=%d rt=%d copy=%d swap=%d)\n",
+			"rendererMetrics frame=%d tier=%s fe=%dms visibility=%dms packet=%dms graph=%dms submit=%dms be=%dms present=%dms gpu=%s views=%d ents=%d lights=%d draws=%d surf=%d verts=%d idx=%d uploads=%d stalls=%d ring=%d/%dKB allocs=%d overflow=%d static=%dKB/%d live=%d/%dKB writes(p=%d map=%d sub=%d) packets(source=%s scene=%d pass=%d draw=%d clipped=%d cmd=%d views=%d overflow=%d cause=%s sortFailures=%d categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d)) resources(materials=%d geometryRecords=%d instances=%d withMaterial=%d materialRefs=%d geometryRefs=%d instanceRefs=%d geometry=%d regs=%d ibo=%d vbo=%d) graph(pass=%d packets=%d scenes=%d draw=%d cmd=%d res=%d imported=%d transient=%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d overflow=%d) graphGL(prepared=%d available=%d handles=%d imported=%d transient=%d textures=%d buffers=%d physical=%d new=%d reuse=%d aliasReuse=%d fbo=%d/%d skipped(imported=%d buffer=%d) lifetimeFailures=%d overflow=%d status='%s') materialTable(prepared=%d available=%d records=%d source=%d draws=%d textures=%d classic=%d arrays=%d views=%d bindless=%d/%d classes(o=%d p=%d t=%d gui=%d post=%d) fallback=%d missing=%d unsupported=%d reasons(matl=%d nodraw=%d image=%d custom=%d dynamic=%d texgen=%d current=%d slots=%d) status='%s') modernExec(mode=%s vao=%d ubo=%d shaderLib=%d shaders=%d shaderFails=%d passes=%d/%d fallback=%d draws=%d material=%d resources=%d geometry=%d plan=%d planDraws=%d depth=%d materialFamily=%d planFallback=%d batches=%d switches=%d materialSwitches=%d planOverflow=%d submit=%d submitDraws=%d submitDepth=%d submitMaterial=%d submitFallback=%d missing(vbo=%d ibo=%d) indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches(program=%d vbo=%d ibo=%d scissor=%d material=%d) uniforms=%d frameUBO=%d submitOverflow=%d visibleDepth(req=%d exec=%d res=%d/%d draws=%d alpha=%d skinned=%d shadow=%d fallback=%d/%d stencil=%d mismatch=%d overlay=%d/%d) gbuffer(req=%d exec=%d res=%d mrt=%d draws=%d fallback=%d att=%d bpp=%d bw=%dKB overlay=%d/%d) deferred(req=%d exec=%d res=%d out=%d program=%d cluster=%d pixels=%d lights=%d p=%d proj=%d lightGrid=%d reads=%d fallback=%d unsupported=%d fog=%d special=%d overflow=%d clear=%d debug=%d overlay=%d/%d) cluster(req=%d valid=%d grids=%d lights=%d p=%d proj=%d fog=%d ambient=%d special=%d shadow=%d/%d blocked=%d buffer=%d clusters=%d active=%d refs=%d csr=%d records=%d+%d compute=%d/%d/%d overflow=%d/%d overflowRefs=%d max=%d grid=%dx%dx%d build=%dms ubo=%d bytes=%dKB overlay=%d/%d)) stateCache(hits=%d misses=%d invalidations=%d legacyResets=%d labels=%d groups=%d prog=%d vao=%d buf=%d tex=%d sampler=%d fbo=%d blend=%d depth=%d stencil=%d raster=%d viewport=%d scissor=%d color=%d last='%s') gpuPass(3d=%d/%d 2d=%d/%d rt=%d/%d copy=%d/%d special=%d/%d lens=%d/%d setbuf=%d/%d swap=%d/%d deferred=%d/%d dropped=%d) cmds(3d=%d 2d=%d rt=%d copy=%d swap=%d)\n",
 			rg_rendererMetrics.frameCount,
 			RendererTier_Name( glConfig.rendererTier ),
 			rg_rendererMetrics.frontEndMsec,
@@ -1976,6 +2046,10 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.clusteredLighting.fogLights,
 			rg_rendererMetrics.clusteredLighting.ambientLights,
 			rg_rendererMetrics.clusteredLighting.specialLights,
+			rg_rendererMetrics.clusteredLighting.uploadedShadowDescriptors,
+			rg_rendererMetrics.clusteredLighting.shadowDescriptorCount,
+			rg_rendererMetrics.clusteredLighting.shadowReceiverBlockedLights,
+			rg_rendererMetrics.clusteredLighting.shadowDescriptorBufferReady ? 1 : 0,
 			rg_rendererMetrics.clusteredLighting.clusterCount,
 			rg_rendererMetrics.clusteredLighting.activeClusters,
 			rg_rendererMetrics.clusteredLighting.lightReferences,
@@ -1994,7 +2068,7 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.clusteredLighting.sliceCountZ,
 			rg_rendererMetrics.clusteredLighting.buildMsec,
 			rg_rendererMetrics.clusteredLighting.uboFallbackReady ? 1 : 0,
-			( rg_rendererMetrics.clusteredLighting.paramsUBOBytes + rg_rendererMetrics.clusteredLighting.lightsUBOBytes + rg_rendererMetrics.clusteredLighting.indicesUBOBytes ) / 1024,
+			( rg_rendererMetrics.clusteredLighting.paramsUBOBytes + rg_rendererMetrics.clusteredLighting.lightsUBOBytes + rg_rendererMetrics.clusteredLighting.indicesUBOBytes + rg_rendererMetrics.clusteredLighting.shadowDescriptorBytes ) / 1024,
 			rg_rendererMetrics.clusteredLighting.debugOverlayReady ? 1 : 0,
 			rg_rendererMetrics.clusteredLighting.debugOverlayDraws,
 			rg_rendererMetrics.glStateCache.hits,
@@ -2238,7 +2312,7 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	if ( rg_rendererMetricsLastSummaryFrame < 0 || rg_rendererMetrics.frameCount - rg_rendererMetricsLastSummaryFrame >= 60 ) {
 		rg_rendererMetricsLastSummaryFrame = rg_rendererMetrics.frameCount;
 		common->Printf(
-			"rendererMetrics summary tier=%s fe=%dms visibility=%dms packet=%dms graph=%dms submit=%dms be=%dms present=%dms gpu=%s views=%d ents=%d lights=%d draws=%d uploads=%dKB stalls=%d ring=%d/%dKB overflow=%dKB static=%dKB/%d live=%d/%dKB packets=%s:%d/%d/%d clipped=%d packetOverflow=%d cause=%s materials=%d geometryRecords=%d instances=%d resources=%d geometryRefs=%d instanceRefs=%d geometry=%d sort=%d graph=%d/%d/%d res=%d/%d/%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d graphOverflow=%d graphGL=%d/%d handles=%d fbo=%d/%d materialTable=%d/%d records=%d tex=%d fallback=%d missing=%d modernExec=%s shaders=%d shaderFails=%d prep=%d/%d fallback=%d draws=%d resources=%d geometry=%d plan=%d/%d depth=%d materialFamily=%d batches=%d switches=%d submit=%d/%d submitFallback=%d missingVBO=%d missingIBO=%d indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches=%d/%d/%d visibleDepth=%d/%d alpha=%d skinned=%d fallback=%d mismatch=%d overlay=%d gbuffer=%d/%d fallback=%d mrt=%d bw=%dKB overlay=%d deferred=%d/%d pixels=%d lights=%d reads=%d fallback=%d overlay=%d cluster=%d/%d lights=%d refs=%d csr=%d flat=%d compute=%d/%d overflow=%d/%d build=%dms ubo=%d stateCache=%d/%d invalid=%d legacyReset=%d\n",
+			"rendererMetrics summary tier=%s fe=%dms visibility=%dms packet=%dms graph=%dms submit=%dms be=%dms present=%dms gpu=%s views=%d ents=%d lights=%d draws=%d uploads=%dKB stalls=%d ring=%d/%dKB overflow=%dKB static=%dKB/%d live=%d/%dKB packets=%s:%d/%d/%d clipped=%d packetOverflow=%d cause=%s materials=%d geometryRecords=%d instances=%d resources=%d geometryRefs=%d instanceRefs=%d geometry=%d sort=%d graph=%d/%d/%d res=%d/%d/%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d graphOverflow=%d graphGL=%d/%d handles=%d fbo=%d/%d materialTable=%d/%d records=%d tex=%d fallback=%d missing=%d modernExec=%s shaders=%d shaderFails=%d prep=%d/%d fallback=%d draws=%d resources=%d geometry=%d plan=%d/%d depth=%d materialFamily=%d batches=%d switches=%d submit=%d/%d submitFallback=%d missingVBO=%d missingIBO=%d indexUpload=%d submitted=%d/%d submittedFallback=%d submittedUpload=%d submitBatches=%d/%d/%d visibleDepth=%d/%d alpha=%d skinned=%d fallback=%d mismatch=%d overlay=%d gbuffer=%d/%d fallback=%d mrt=%d bw=%dKB overlay=%d deferred=%d/%d pixels=%d lights=%d reads=%d fallback=%d overlay=%d cluster=%d/%d lights=%d shadow=%d/%d refs=%d csr=%d flat=%d compute=%d/%d overflow=%d/%d build=%dms ubo=%d stateCache=%d/%d invalid=%d legacyReset=%d\n",
 			RendererTier_Name( glConfig.rendererTier ),
 			rg_rendererMetrics.frontEndMsec,
 			rg_rendererMetrics.visibilityMsec,
@@ -2353,6 +2427,8 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 			rg_rendererMetrics.clusteredLighting.frameValid ? 1 : 0,
 			rg_rendererMetrics.clusteredLighting.gridCount,
 			rg_rendererMetrics.clusteredLighting.lightCount,
+			rg_rendererMetrics.clusteredLighting.uploadedShadowDescriptors,
+			rg_rendererMetrics.clusteredLighting.shadowDescriptorCount,
 			rg_rendererMetrics.clusteredLighting.lightReferences,
 			rg_rendererMetrics.clusteredLighting.csrReady ? 1 : 0,
 			rg_rendererMetrics.clusteredLighting.flatIndexRecordCount,

@@ -116,6 +116,8 @@ renderer_string = ' \
 	RenderWorld_demo.cpp \
 	RenderWorld_load.cpp \
 	RenderWorld_portals.cpp \
+	ShadowMapClassification.cpp \
+	ShadowMapProjected.cpp \
 	VertexCache.cpp \
 	cg_explicit.cpp \
 	draw_arb.cpp \

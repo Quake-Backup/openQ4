@@ -505,6 +505,12 @@ public:
 	// get the material-compiled diffuse stage used by the light-grid indirect pass
 	int					GetLightGridDiffuseStageIndex(const float* registers) const;
 
+	// custom GLSL lighting can use the stock shadow-map receiver only when the
+	// material still exposes active non-custom bump/diffuse/specular stages.
+	bool				HasActiveCustomGLSLLighting(const float* registers) const;
+	bool				HasActiveStockLightingInteractions(const float* registers) const;
+	bool				CanUseStockShadowMapReceiverForCustomGLSLLighting(const float* registers) const;
+
 	// returns true if the material will draw anything at all.  Triggers, portals,
 	// etc, will not have anything to draw.  A not drawn surface can still castShadow,
 	// which can be used to make a simplified shadow hull for a complex object set
@@ -881,6 +887,9 @@ private:
 	bool				portalSky;
 	int					refCount;
 };
+
+// Parser-free regression hook for custom GLSL receiver compatibility helpers.
+bool R_MaterialCustomGLSLReceiverHelperSelfTest( void );
 
 typedef idList<const idMaterial*> idMatList;
 

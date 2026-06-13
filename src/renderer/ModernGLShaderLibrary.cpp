@@ -453,8 +453,10 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 	const char *clusterHeader =
 		"#define MODERN_CLUSTER_UBO_MAX_LIGHTS 256\n"
 		"#define MODERN_CLUSTER_UBO_MAX_INDEX_RECORDS 1024\n"
+		"#define MODERN_CLUSTER_UBO_MAX_SHADOW_DESCRIPTORS 64\n"
 		"struct ModernClusterLightRecord {\n"
 		"    vec4 positionRadius;\n"
+		"    vec4 worldOriginRadius;\n"
 		"    vec4 colorType;\n"
 		"    vec4 scissorDepth;\n"
 		"    vec4 flags;\n"
@@ -464,12 +466,38 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    vec4 projectT;\n"
 		"    vec4 projectQ;\n"
 		"};\n"
+		"struct ModernClusterShadowDescriptor {\n"
+		"    vec4 identity;\n"
+		"    vec4 policy;\n"
+		"    vec4 layoutInfo;\n"
+		"    vec4 counts;\n"
+		"    vec4 atlasRect;\n"
+		"    vec4 tileAtlasRect[6];\n"
+		"    mat4 shadowMatrix[4];\n"
+		"    vec4 cascadeSplitDepths;\n"
+		"    vec4 cascadeBiasScale;\n"
+		"    vec4 texelDepthBias;\n"
+		"    vec4 worldTexelSize;\n"
+		"    vec4 bias;\n"
+		"    vec4 projection;\n"
+		"    vec4 projectedAtlasRect[4];\n"
+		"};\n"
 		"layout(std140) uniform ModernClusterGridParams {\n"
 		"    vec4 grid;\n"
 		"    vec4 depth;\n"
 		"    vec4 viewport;\n"
 		"    vec4 counts;\n"
+		"    vec4 viewToWorldX;\n"
+		"    vec4 viewToWorldY;\n"
+		"    vec4 viewToWorldZ;\n"
 		"} uClusterGrid;\n"
+		"uniform sampler2D uModernShadowAtlas;\n"
+		"uniform samplerCube uModernPointShadowAtlas;\n"
+		"uniform sampler2D uModernTranslucentShadowMoments[3];\n"
+		"uniform samplerCube uModernPointTranslucentShadowMoments[3];\n"
+		"uniform vec4 uModernShadowResourceState;\n"
+		"uniform vec4 uModernShadowSamplerState;\n"
+		"uniform vec4 uModernShadowMomentState;\n"
 		"#if MODERN_HAS_SHADER_STORAGE\n"
 		"layout(std430, binding = 6) readonly buffer ModernLightRecords {\n"
 		"    ModernClusterLightRecord lights[];\n"
@@ -477,6 +505,9 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"layout(std430, binding = 7) readonly buffer ModernClusterIndexRecordsSSBO {\n"
 		"    uvec4 indices[];\n"
 		"} uClusterIndicesSSBO;\n"
+		"layout(std430, binding = 8) readonly buffer ModernClusterShadowDescriptorsSSBO {\n"
+		"    ModernClusterShadowDescriptor descriptors[];\n"
+		"} uClusterShadowDescriptorsSSBO;\n"
 		"#else\n"
 		"layout(std140) uniform ModernClusterLightRecords {\n"
 		"    ModernClusterLightRecord lights[MODERN_CLUSTER_UBO_MAX_LIGHTS];\n"
@@ -484,10 +515,14 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"layout(std140) uniform ModernClusterIndexRecords {\n"
 		"    uvec4 indices[MODERN_CLUSTER_UBO_MAX_INDEX_RECORDS];\n"
 		"} uClusterIndices;\n"
+		"layout(std140) uniform ModernClusterShadowDescriptors {\n"
+		"    ModernClusterShadowDescriptor descriptors[MODERN_CLUSTER_UBO_MAX_SHADOW_DESCRIPTORS];\n"
+		"} uClusterShadowDescriptors;\n"
 		"#endif\n"
 		"ModernClusterLightRecord ModernClusterEmptyLight() {\n"
 		"    ModernClusterLightRecord light;\n"
 		"    light.positionRadius = vec4(0.0);\n"
+		"    light.worldOriginRadius = vec4(0.0);\n"
 		"    light.colorType = vec4(0.0);\n"
 		"    light.scissorDepth = vec4(0.0);\n"
 		"    light.flags = vec4(0.0);\n"
@@ -498,6 +533,24 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    light.projectQ = vec4(0.0, 0.0, 1.0, 0.0);\n"
 		"    return light;\n"
 		"}\n"
+		"ModernClusterShadowDescriptor ModernClusterEmptyShadowDescriptor() {\n"
+		"    ModernClusterShadowDescriptor descriptor;\n"
+		"    descriptor.identity = vec4(-1.0, 0.0, -1.0, 0.0);\n"
+		"    descriptor.policy = vec4(0.0);\n"
+		"    descriptor.layoutInfo = vec4(0.0);\n"
+		"    descriptor.counts = vec4(0.0);\n"
+		"    descriptor.atlasRect = vec4(0.0);\n"
+		"    for (int i = 0; i < 6; ++i) { descriptor.tileAtlasRect[i] = vec4(0.0); }\n"
+		"    for (int i = 0; i < 4; ++i) { descriptor.shadowMatrix[i] = mat4(1.0); }\n"
+		"    descriptor.cascadeSplitDepths = vec4(0.0);\n"
+		"    descriptor.cascadeBiasScale = vec4(0.0);\n"
+		"    descriptor.texelDepthBias = vec4(0.0);\n"
+		"    descriptor.worldTexelSize = vec4(0.0);\n"
+		"    descriptor.bias = vec4(0.0);\n"
+		"    descriptor.projection = vec4(0.0);\n"
+		"    for (int i = 0; i < 4; ++i) { descriptor.projectedAtlasRect[i] = vec4(0.0); }\n"
+		"    return descriptor;\n"
+		"}\n"
 		"ModernClusterLightRecord ModernClusterFetchLight(uint lightIndex) {\n"
 		"#if MODERN_HAS_SHADER_STORAGE\n"
 		"    if (lightIndex >= uint(uClusterLightsSSBO.lights.length())) { return ModernClusterEmptyLight(); }\n"
@@ -505,6 +558,21 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"#else\n"
 		"    if (lightIndex >= uint(MODERN_CLUSTER_UBO_MAX_LIGHTS)) { return ModernClusterEmptyLight(); }\n"
 		"    return uClusterLights.lights[int(lightIndex)];\n"
+		"#endif\n"
+		"}\n"
+		"uint ModernClusterShadowDescriptorCount() {\n"
+		"    return uint(max(uClusterGrid.counts.w, 0.0));\n"
+		"}\n"
+		"ModernClusterShadowDescriptor ModernClusterFetchShadowDescriptor(float descriptorIndexValue) {\n"
+		"    int descriptorIndex = int(floor(descriptorIndexValue + 0.5));\n"
+		"    uint descriptorCount = ModernClusterShadowDescriptorCount();\n"
+		"    if (descriptorIndex < 0 || descriptorCount == 0u || uint(descriptorIndex) >= descriptorCount) { return ModernClusterEmptyShadowDescriptor(); }\n"
+		"#if MODERN_HAS_SHADER_STORAGE\n"
+		"    if (descriptorIndex >= uClusterShadowDescriptorsSSBO.descriptors.length()) { return ModernClusterEmptyShadowDescriptor(); }\n"
+		"    return uClusterShadowDescriptorsSSBO.descriptors[descriptorIndex];\n"
+		"#else\n"
+		"    if (descriptorIndex >= MODERN_CLUSTER_UBO_MAX_SHADOW_DESCRIPTORS) { return ModernClusterEmptyShadowDescriptor(); }\n"
+		"    return uClusterShadowDescriptors.descriptors[descriptorIndex];\n"
 		"#endif\n"
 		"}\n"
 		"uvec4 ModernClusterFetchIndex(int indexRecord) {\n"
@@ -578,13 +646,225 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    return light.colorType.rgb * attenuation;\n"
 		"}\n";
 	const char *shadowPolicyHeader =
+		"#define MODERN_SHADOW_MAP_PROJECTED 1.0\n"
+		"#define MODERN_SHADOW_MAP_POINT 2.0\n"
+		"#define MODERN_SHADOW_MAP_CASCADE 3.0\n"
+		"#define MODERN_SHADOW_COMPARE_NONE 0.0\n"
+		"#define MODERN_SHADOW_COMPARE_MANUAL_DEPTH 1.0\n"
+		"#define MODERN_SHADOW_COMPARE_MANUAL_PACKED_DEPTH 2.0\n"
+		"#define MODERN_SHADOW_COMPARE_HARDWARE 3.0\n"
 		"#define MODERN_SHADOW_POLICY_MAPPED 1.0\n"
-		"#define MODERN_SHADOW_POLICY_STENCIL_FALLBACK 2.0\n"
-		"#define MODERN_SHADOW_POLICY_SKIPPED 3.0\n"
-		"float ModernClusterShadowVisibility(ModernClusterLightRecord light) {\n"
+		"#define MODERN_SHADOW_POLICY_CACHE_REUSE 2.0\n"
+		"#define MODERN_SHADOW_POLICY_STENCIL_FALLBACK 3.0\n"
+		"#define MODERN_SHADOW_POLICY_SKIPPED 4.0\n"
+		"#define MODERN_SHADOW_FLAG_RECEIVER_BLOCKED 16\n"
+		"#define MODERN_SHADOW_FLAG_TRANSLUCENT 256\n"
+		"#define MODERN_SHADOW_FLAG_ATLAS_READY 512\n"
+		"#define MODERN_SHADOW_FLAG_SAMPLING_READY 4096\n"
+		"#define MODERN_SHADOW_FLAG_PROJECTED_STATE_READY 16384\n"
+		"vec4 ModernClusterShadowResourceProbe(void) {\n"
+		"    vec4 state = uModernShadowResourceState;\n"
+		"    state += vec4(uModernShadowSamplerState.xyz, 0.0) * 0.000001;\n"
+		"    state += uModernShadowMomentState * 0.000001;\n"
+		"    float projectedAtlas = texture(uModernShadowAtlas, vec2(0.5, 0.5)).r;\n"
+		"    float pointAtlas = texture(uModernPointShadowAtlas, vec3(1.0, 0.0, 0.0)).r;\n"
+		"    float projectedMoments = texture(uModernTranslucentShadowMoments[0], vec2(0.5, 0.5)).r + texture(uModernTranslucentShadowMoments[1], vec2(0.5, 0.5)).r + texture(uModernTranslucentShadowMoments[2], vec2(0.5, 0.5)).r;\n"
+		"    float pointMoments = texture(uModernPointTranslucentShadowMoments[0], vec3(1.0, 0.0, 0.0)).r + texture(uModernPointTranslucentShadowMoments[1], vec3(1.0, 0.0, 0.0)).r + texture(uModernPointTranslucentShadowMoments[2], vec3(1.0, 0.0, 0.0)).r;\n"
+		"    state += vec4(projectedAtlas, pointAtlas, projectedMoments, pointMoments) * 0.000001;\n"
+		"    return state;\n"
+		"}\n"
+		"bool ModernClusterShadowFlag(ModernClusterShadowDescriptor descriptor, int flag) {\n"
+		"    int flags = int(floor(descriptor.policy.z + 0.5));\n"
+		"    return (flags & flag) != 0;\n"
+		"}\n"
+		"float ModernClusterShadowComponent(vec4 value, int index) {\n"
+		"    if (index <= 0) { return value.x; }\n"
+		"    if (index == 1) { return value.y; }\n"
+		"    if (index == 2) { return value.z; }\n"
+		"    return value.w;\n"
+		"}\n"
+		"vec4 ModernClusterShadowAtlasRect(ModernClusterShadowDescriptor descriptor, int index) {\n"
+		"    if (index <= 0) { return descriptor.projectedAtlasRect[0]; }\n"
+		"    if (index == 1) { return descriptor.projectedAtlasRect[1]; }\n"
+		"    if (index == 2) { return descriptor.projectedAtlasRect[2]; }\n"
+		"    return descriptor.projectedAtlasRect[3]; }\n"
+		"mat4 ModernClusterShadowMatrix(ModernClusterShadowDescriptor descriptor, int index) {\n"
+		"    if (index <= 0) { return descriptor.shadowMatrix[0]; }\n"
+		"    if (index == 1) { return descriptor.shadowMatrix[1]; }\n"
+		"    if (index == 2) { return descriptor.shadowMatrix[2]; }\n"
+		"    return descriptor.shadowMatrix[3]; }\n"
+		"float ModernClusterShadowReceiverBias(ModernClusterShadowDescriptor descriptor, int cascadeIndex, vec3 normal, vec3 lightDir, float depth) {\n"
+		"    float lightCos = clamp(dot(normalize(normal), normalize(lightDir)), 0.001, 1.0);\n"
+		"    float sinTheta = sqrt(max(1.0 - lightCos * lightCos, 0.0));\n"
+		"    float slopeBias = sinTheta / lightCos;\n"
+		"    float cascadeScale = max(ModernClusterShadowComponent(descriptor.cascadeBiasScale, cascadeIndex), 0.0);\n"
+		"    float scalarBias = (max(descriptor.bias.x, 0.0) + max(descriptor.bias.y, 0.0) * sinTheta) * max(cascadeScale, 1.0);\n"
+		"    float texelBias = max(ModernClusterShadowComponent(descriptor.texelDepthBias, cascadeIndex), 0.0) * (1.0 + slopeBias);\n"
+		"    float receiverPlaneBias = (abs(dFdx(depth)) + abs(dFdy(depth))) * max(descriptor.layoutInfo.z, 1.0);\n"
+		"    return max(max(scalarBias, texelBias), receiverPlaneBias);\n"
+		"}\n"
+		"float ModernClusterCompareProjected(ModernClusterShadowDescriptor descriptor, vec2 uv, float depth, int cascadeIndex, vec3 normal, vec3 lightDir) {\n"
+		"    float compareMode = floor(descriptor.policy.w + 0.5);\n"
+		"    if (compareMode <= MODERN_SHADOW_COMPARE_NONE) { return 1.0; }\n"
+		"    float bias = ModernClusterShadowReceiverBias(descriptor, cascadeIndex, normal, lightDir, depth);\n"
+		"    float storedDepth = texture(uModernShadowAtlas, uv).r;\n"
+		"    return (depth - bias <= storedDepth) ? 1.0 : 0.0;\n"
+		"}\n"
+		"float ModernClusterApproxErf(float x) {\n"
+		"    float s = sign(x);\n"
+		"    float ax = abs(x);\n"
+		"    float t = 1.0 / (1.0 + 0.3275911 * ax);\n"
+		"    float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-ax * ax);\n"
+		"    return s * y;\n"
+		"}\n"
+		"float ModernClusterNormalCdf(float x) {\n"
+		"    return 0.5 * (1.0 + ModernClusterApproxErf(x * 0.70710678));\n"
+		"}\n"
+		"float ModernClusterResolveMoments(vec4 moments, float depth) {\n"
+		"    float totalTau = max(moments.x, 0.0);\n"
+		"    if (totalTau <= 0.0001) { return 1.0; }\n"
+		"    float mean = moments.y / totalTau;\n"
+		"    float variance = max(moments.z / totalTau - mean * mean, max(uModernShadowMomentState.z, 0.000001));\n"
+		"    float sigma = sqrt(variance);\n"
+		"    float fraction = clamp(ModernClusterNormalCdf((depth - mean) / max(sigma, 0.000001)), 0.0, 1.0);\n"
+		"    float bleed = clamp(uModernShadowMomentState.w, 0.0, 0.95);\n"
+		"    fraction = clamp((fraction - bleed) / max(1.0 - bleed, 0.0001), 0.0, 1.0);\n"
+		"    return exp(-min(totalTau * fraction * max(uModernShadowMomentState.x, 0.0), 16.0));\n"
+		"}\n"
+		"float ModernClusterProjectedTranslucentVisibility(ModernClusterShadowDescriptor descriptor, vec2 uv, float depth) {\n"
+		"    if (!ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_TRANSLUCENT) || uModernShadowResourceState.z < 0.5) { return 1.0; }\n"
+		"    vec3 t = vec3(\n"
+		"        ModernClusterResolveMoments(texture(uModernTranslucentShadowMoments[0], uv), depth),\n"
+		"        ModernClusterResolveMoments(texture(uModernTranslucentShadowMoments[1], uv), depth),\n"
+		"        ModernClusterResolveMoments(texture(uModernTranslucentShadowMoments[2], uv), depth));\n"
+		"    return clamp(dot(t, vec3(0.333333)), 0.0, 1.0);\n"
+		"}\n"
+		"float ModernClusterSampleProjectedCascade(ModernClusterShadowDescriptor descriptor, int cascadeIndex, vec3 viewPosition, vec3 normal, vec3 lightDir) {\n"
+		"    vec4 shadowCoord = ModernClusterShadowMatrix(descriptor, cascadeIndex) * vec4(viewPosition, 1.0);\n"
+		"    if (shadowCoord.w != shadowCoord.w || shadowCoord.w <= 0.00001 || shadowCoord.w > 65536.0) { return 1.0; }\n"
+		"    vec2 localUv = shadowCoord.xy / shadowCoord.w * 0.5 + 0.5;\n"
+		"    float depth = shadowCoord.z;\n"
+		"    if (localUv.x <= 0.0 || localUv.x >= 1.0 || localUv.y <= 0.0 || localUv.y >= 1.0 || depth <= 0.0 || depth >= 1.0) { return 1.0; }\n"
+		"    vec4 rect = ModernClusterShadowAtlasRect(descriptor, cascadeIndex);\n"
+		"    vec2 atlasMin = rect.xy;\n"
+		"    vec2 atlasMax = rect.zw;\n"
+		"    if (atlasMax.x <= atlasMin.x || atlasMax.y <= atlasMin.y) { return 1.0; }\n"
+		"    ivec2 atlasSize = textureSize(uModernShadowAtlas, 0);\n"
+		"    vec2 texel = 1.0 / max(vec2(atlasSize), vec2(1.0));\n"
+		"    vec2 guard = texel * max(descriptor.layoutInfo.z + 0.75, 0.5);\n"
+		"    vec2 clampMin = min(atlasMin + guard, atlasMax - guard);\n"
+		"    vec2 clampMax = max(atlasMin + guard, atlasMax - guard);\n"
+		"    vec2 uv = clamp(mix(atlasMin, atlasMax, localUv), clampMin, clampMax);\n"
+		"    float shadow = ModernClusterCompareProjected(descriptor, uv, depth, cascadeIndex, normal, lightDir);\n"
+		"    float radius = max(descriptor.layoutInfo.z, 0.0);\n"
+		"    if (radius > 0.0) {\n"
+		"        vec2 tap = texel * radius;\n"
+		"        shadow += ModernClusterCompareProjected(descriptor, clamp(uv + vec2(-0.5, -0.5) * tap, clampMin, clampMax), depth, cascadeIndex, normal, lightDir);\n"
+		"        shadow += ModernClusterCompareProjected(descriptor, clamp(uv + vec2( 0.5, -0.5) * tap, clampMin, clampMax), depth, cascadeIndex, normal, lightDir);\n"
+		"        shadow += ModernClusterCompareProjected(descriptor, clamp(uv + vec2(-0.5,  0.5) * tap, clampMin, clampMax), depth, cascadeIndex, normal, lightDir);\n"
+		"        shadow += ModernClusterCompareProjected(descriptor, clamp(uv + vec2( 0.5,  0.5) * tap, clampMin, clampMax), depth, cascadeIndex, normal, lightDir);\n"
+		"        shadow *= 0.2;\n"
+		"    }\n"
+		"    return shadow * ModernClusterProjectedTranslucentVisibility(descriptor, uv, depth);\n"
+		"}\n"
+		"int ModernClusterSelectShadowCascade(ModernClusterShadowDescriptor descriptor, float viewDepth) {\n"
+		"    int cascadeCount = int(clamp(floor(descriptor.counts.x + 0.5), 1.0, 4.0));\n"
+		"    if (cascadeCount <= 1 || viewDepth < descriptor.cascadeSplitDepths.x) { return 0; }\n"
+		"    if (cascadeCount <= 2 || viewDepth < descriptor.cascadeSplitDepths.y) { return 1; }\n"
+		"    if (cascadeCount <= 3 || viewDepth < descriptor.cascadeSplitDepths.z) { return 2; }\n"
+		"    return 3;\n"
+		"}\n"
+		"float ModernClusterSampleProjectedShadow(ModernClusterShadowDescriptor descriptor, ModernClusterLightRecord light, vec3 viewPosition, vec3 normal) {\n"
+		"    int cascadeIndex = ModernClusterSelectShadowCascade(descriptor, max(viewPosition.z, 0.0));\n"
+		"    vec3 lightDir = light.positionRadius.xyz - viewPosition;\n"
+		"    float shadow = ModernClusterSampleProjectedCascade(descriptor, cascadeIndex, viewPosition, normal, lightDir);\n"
+		"    int cascadeCount = int(clamp(floor(descriptor.counts.x + 0.5), 1.0, 4.0));\n"
+		"    int lastInterior = cascadeCount - 2;\n"
+		"    float blendAmount = clamp(uModernShadowSamplerState.w, 0.0, 0.5);\n"
+		"    if (cascadeIndex > lastInterior || blendAmount <= 0.0) { return shadow; }\n"
+		"    float previousSplit = cascadeIndex == 0 ? 0.0 : ModernClusterShadowComponent(descriptor.cascadeSplitDepths, cascadeIndex - 1);\n"
+		"    float currentSplit = ModernClusterShadowComponent(descriptor.cascadeSplitDepths, cascadeIndex);\n"
+		"    float blendWidth = max(1.0, (currentSplit - previousSplit) * blendAmount);\n"
+		"    float blendStart = currentSplit - blendWidth;\n"
+		"    if (viewPosition.z <= blendStart) { return shadow; }\n"
+		"    float nextShadow = ModernClusterSampleProjectedCascade(descriptor, cascadeIndex + 1, viewPosition, normal, lightDir);\n"
+		"    float blend = clamp((viewPosition.z - blendStart) / blendWidth, 0.0, 1.0);\n"
+		"    return mix(shadow, nextShadow, blend);\n"
+		"}\n"
+		"vec3 ModernClusterViewVectorToWorld(vec3 viewVector) {\n"
+		"    return uClusterGrid.viewToWorldX.xyz * viewVector.x + uClusterGrid.viewToWorldY.xyz * viewVector.y + uClusterGrid.viewToWorldZ.xyz * viewVector.z;\n"
+		"}\n"
+		"float ModernClusterDecodePointDepth(vec4 encodedDepth, ModernClusterShadowDescriptor descriptor) {\n"
+		"    float compareMode = floor(descriptor.policy.w + 0.5);\n"
+		"    if (uModernShadowSamplerState.z > 0.5 || compareMode == MODERN_SHADOW_COMPARE_HARDWARE) { return encodedDepth.r; }\n"
+		"    return encodedDepth.r + encodedDepth.g * (1.0 / 255.0);\n"
+		"}\n"
+		"float ModernClusterPointReceiverBias(ModernClusterShadowDescriptor descriptor, vec3 normal, vec3 lightDir) {\n"
+		"    float lightCos = clamp(dot(normalize(normal), normalize(lightDir)), 0.001, 1.0);\n"
+		"    float sinTheta = sqrt(max(1.0 - lightCos * lightCos, 0.0));\n"
+		"    float slopeBias = sinTheta / lightCos;\n"
+		"    float texelBias = max(descriptor.texelDepthBias.x, 0.0) * (1.0 + slopeBias);\n"
+		"    return max(max(descriptor.bias.x + descriptor.bias.y * sinTheta, 0.0), texelBias);\n"
+		"}\n"
+		"float ModernClusterComparePoint(ModernClusterShadowDescriptor descriptor, vec3 direction, float depth, vec3 normal, vec3 lightDir) {\n"
+		"    float compareMode = floor(descriptor.policy.w + 0.5);\n"
+		"    if (compareMode <= MODERN_SHADOW_COMPARE_NONE) { return 1.0; }\n"
+		"    float bias = ModernClusterPointReceiverBias(descriptor, normal, lightDir);\n"
+		"    float storedDepth = ModernClusterDecodePointDepth(texture(uModernPointShadowAtlas, direction), descriptor);\n"
+		"    return (depth - bias <= storedDepth) ? 1.0 : 0.0;\n"
+		"}\n"
+		"float ModernClusterPointTranslucentVisibility(ModernClusterShadowDescriptor descriptor, vec3 direction, float depth) {\n"
+		"    if (!ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_TRANSLUCENT) || uModernShadowResourceState.w < 0.5) { return 1.0; }\n"
+		"    vec3 t = vec3(\n"
+		"        ModernClusterResolveMoments(texture(uModernPointTranslucentShadowMoments[0], direction), depth),\n"
+		"        ModernClusterResolveMoments(texture(uModernPointTranslucentShadowMoments[1], direction), depth),\n"
+		"        ModernClusterResolveMoments(texture(uModernPointTranslucentShadowMoments[2], direction), depth));\n"
+		"    return clamp(dot(t, vec3(0.333333)), 0.0, 1.0);\n"
+		"}\n"
+		"float ModernClusterSamplePointShadow(ModernClusterShadowDescriptor descriptor, ModernClusterLightRecord light, vec3 viewPosition, vec3 normal) {\n"
+		"    float pointFar = max(descriptor.projection.x, 1.0);\n"
+		"    vec3 viewVector = viewPosition - light.positionRadius.xyz;\n"
+		"    float depth = length(viewVector) / pointFar;\n"
+		"    if (depth <= 0.0 || depth >= 1.0) { return 1.0; }\n"
+		"    vec3 direction = normalize(ModernClusterViewVectorToWorld(viewVector));\n"
+		"    vec3 lightDir = -viewVector;\n"
+		"    float shadow = ModernClusterComparePoint(descriptor, direction, depth, normal, lightDir);\n"
+		"    float radius = max(descriptor.layoutInfo.z, 0.0);\n"
+		"    if (radius > 0.0) {\n"
+		"        vec3 up = abs(direction.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);\n"
+		"        vec3 tangent = normalize(cross(up, direction));\n"
+		"        vec3 bitangent = cross(direction, tangent);\n"
+		"        ivec2 atlasSize = textureSize(uModernPointShadowAtlas, 0);\n"
+		"        float texelScale = max(descriptor.projection.y, 2.0 / max(float(atlasSize.x), 1.0));\n"
+		"        float tap = texelScale * radius;\n"
+		"        shadow += ModernClusterComparePoint(descriptor, normalize(direction + (tangent * -0.5 + bitangent * -0.5) * tap), depth, normal, lightDir);\n"
+		"        shadow += ModernClusterComparePoint(descriptor, normalize(direction + (tangent *  0.5 + bitangent * -0.5) * tap), depth, normal, lightDir);\n"
+		"        shadow += ModernClusterComparePoint(descriptor, normalize(direction + (tangent * -0.5 + bitangent *  0.5) * tap), depth, normal, lightDir);\n"
+		"        shadow += ModernClusterComparePoint(descriptor, normalize(direction + (tangent *  0.5 + bitangent *  0.5) * tap), depth, normal, lightDir);\n"
+		"        shadow *= 0.2;\n"
+		"    }\n"
+		"    return shadow * ModernClusterPointTranslucentVisibility(descriptor, direction, depth);\n"
+		"}\n"
+		"float ModernClusterShadowAtlasReady(ModernClusterShadowDescriptor descriptor) {\n"
+		"    vec4 resources = ModernClusterShadowResourceProbe();\n"
+		"    float mapType = floor(descriptor.identity.w + 0.5);\n"
+		"    if (mapType == MODERN_SHADOW_MAP_POINT) { return step(0.5, resources.y); }\n"
+		"    if (mapType == MODERN_SHADOW_MAP_PROJECTED || mapType == MODERN_SHADOW_MAP_CASCADE) { return step(0.5, resources.x); }\n"
+		"    return 0.0;\n"
+		"}\n"
+		"float ModernClusterShadowVisibility(ModernClusterLightRecord light, vec3 viewPosition, vec3 normal) {\n"
 		"    float policy = floor(light.flags.w + 0.5);\n"
-		"    float descriptorValid = step(0.0, light.flags.z);\n"
-		"    if (policy == MODERN_SHADOW_POLICY_MAPPED) { return descriptorValid; }\n"
+		"    ModernClusterShadowDescriptor descriptor = ModernClusterFetchShadowDescriptor(light.flags.z);\n"
+		"    float descriptorPolicy = floor(descriptor.policy.x + 0.5);\n"
+		"    float descriptorValid = step(0.0, light.flags.z) * step(0.5, descriptor.policy.x);\n"
+		"    float atlasReady = ModernClusterShadowAtlasReady(descriptor);\n"
+		"    if (policy != MODERN_SHADOW_POLICY_MAPPED && policy != MODERN_SHADOW_POLICY_CACHE_REUSE) { return 1.0; }\n"
+		"    if (descriptorValid < 0.5 || atlasReady < 0.5 || ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_RECEIVER_BLOCKED) || !ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_SAMPLING_READY)) { return 1.0; }\n"
+		"    if (policy == MODERN_SHADOW_POLICY_MAPPED && descriptorPolicy != MODERN_SHADOW_POLICY_MAPPED) { return 1.0; }\n"
+		"    if (policy == MODERN_SHADOW_POLICY_CACHE_REUSE && descriptorPolicy != MODERN_SHADOW_POLICY_CACHE_REUSE) { return 1.0; }\n"
+		"    float mapType = floor(descriptor.identity.w + 0.5);\n"
+		"    if (mapType == MODERN_SHADOW_MAP_POINT) { return ModernClusterSamplePointShadow(descriptor, light, viewPosition, normal); }\n"
+		"    if ((mapType == MODERN_SHADOW_MAP_PROJECTED || mapType == MODERN_SHADOW_MAP_CASCADE) && ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_PROJECTED_STATE_READY)) { return ModernClusterSampleProjectedShadow(descriptor, light, viewPosition, normal); }\n"
 		"    return 1.0;\n"
 		"}\n";
 
@@ -796,7 +1076,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        vec2 pixel = gl_FragCoord.xy;\n"
 			"        float inX = step(light.scissorDepth.x, pixel.x) * step(pixel.x, light.scissorDepth.z);\n"
 			"        float inY = step(light.scissorDepth.y, pixel.y) * step(pixel.y, light.scissorDepth.w);\n"
-			"        float shadowVisibility = ModernClusterShadowVisibility(light);\n"
+		"        float shadowVisibility = ModernClusterShadowVisibility(light, viewPosition, normal);\n"
 			"        float attenuation = 0.0;\n"
 			"        vec3 contribution = ModernClusterEvaluateLight(light, viewPosition, normal, material.g, material.a, attenuation);\n"
 			"        attenuation = supported ? attenuation * inX * inY * shadowVisibility : 0.0;\n"
@@ -807,7 +1087,8 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"    float exposure = max(uLocalParams.x, 0.25);\n"
 			"    float debugMode = floor(uLocalParams.y + 0.5);\n"
 			"    float overflowPressure = clamp(uLocalParams.w, 0.0, 1.0);\n"
-			"    vec3 lit = albedo.rgb * (vec3(0.12) + lightGrid + lightAccum * (0.35 + material.g)) * max(uDebugColor.rgb, vec3(0.0)) * exposure;\n"
+			"    float shadowBindingProbe = dot(ModernClusterShadowResourceProbe(), vec4(0.000001));\n"
+			"    vec3 lit = albedo.rgb * (vec3(0.12) + lightGrid + lightAccum * (0.35 + material.g)) * max(uDebugColor.rgb, vec3(0.0)) * exposure + vec3(shadowBindingProbe);\n"
 			"    if (debugMode == 1.0) {\n"
 			"        out_Color = vec4(clamp(lightAccum, vec3(0.0), vec3(1.0)), 1.0);\n"
 			"    } else if (debugMode == 2.0) {\n"
@@ -863,14 +1144,15 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        bool supported = type == 0 || type == 1;\n"
 			"        float inX = step(light.scissorDepth.x, gl_FragCoord.x) * step(gl_FragCoord.x, light.scissorDepth.z);\n"
 			"        float inY = step(light.scissorDepth.y, gl_FragCoord.y) * step(gl_FragCoord.y, light.scissorDepth.w);\n"
-			"        float shadowVisibility = ModernClusterShadowVisibility(light);\n"
+		"        float shadowVisibility = ModernClusterShadowVisibility(light, vViewPosition, materialNormal);\n"
 			"        float attenuation = 0.0;\n"
 			"        vec3 contribution = ModernClusterEvaluateLight(light, vViewPosition, materialNormal, specular, ModernMaterialFresnel(), attenuation);\n"
 			"        lightAccum += supported ? contribution * inX * inY * shadowVisibility : vec3(0.0);\n"
 			"        scannedLights++;\n"
 			"    }\n"
 			"    float lightScale = clamp(0.18 + uLocalParams.y + float(scannedLights) * 0.02, 0.18, 2.5);\n"
-			"    vec3 lit = texel.rgb * max(uDebugColor.rgb, vec3(0.0)) * (lightScale + lightAccum * (0.30 + specular * 0.25)) + emissive;\n"
+			"    float shadowBindingProbe = dot(ModernClusterShadowResourceProbe(), vec4(0.000001));\n"
+			"    vec3 lit = texel.rgb * max(uDebugColor.rgb, vec3(0.0)) * (lightScale + lightAccum * (0.30 + specular * 0.25)) + emissive + vec3(shadowBindingProbe);\n"
 			"    out_Color = vec4(ModernSceneReferredColor(lit), texel.a * uDebugColor.a);\n"
 			"}\n",
 			glslVersion,
@@ -916,12 +1198,13 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 			"        if (lightIndex == 0xffffffffu || lightIndex >= uint(max(uClusterGrid.counts.x, 0.0))) { continue; }\n"
 			"        ModernClusterLightRecord light = ModernClusterFetchLight(lightIndex);\n"
 			"        int type = int(floor(light.colorType.w + 0.5));\n"
-			"        float shadowVisibility = ModernClusterShadowVisibility(light);\n"
+		"        float shadowVisibility = ModernClusterShadowVisibility(light, vViewPosition, materialNormal);\n"
 			"        float attenuation = 0.0;\n"
 			"        vec3 contribution = ModernClusterEvaluateLight(light, vViewPosition, materialNormal, specular, ModernMaterialFresnel(), attenuation);\n"
 			"        if (type == 0 || type == 1) { lightAccum += contribution * shadowVisibility; }\n"
 			"    }\n"
-			"    vec3 transparentColor = baseColor + lightAccum + emissive;\n"
+			"    float shadowBindingProbe = dot(ModernClusterShadowResourceProbe(), vec4(0.000001));\n"
+			"    vec3 transparentColor = baseColor + lightAccum + emissive + vec3(shadowBindingProbe);\n"
 			"    out_Color = vec4(ModernSceneReferredColor(mix(transparentColor, baseColor, decalMode)), materialColor.a);\n"
 			"}\n",
 			glslVersion,
@@ -1145,6 +1428,13 @@ static bool R_ModernGLShaderLibrary_KindUsesSceneDepthTexture( modernGLShaderPro
 	return kind == MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION;
 }
 
+static bool R_ModernGLShaderLibrary_KindUsesShadowTextures( modernGLShaderProgramKind_t kind ) {
+	return kind == MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE
+		|| kind == MODERN_GL_SHADER_CLUSTERED_FORWARD_OPAQUE
+		|| kind == MODERN_GL_SHADER_CLUSTERED_FORWARD_ALPHA_TEST
+		|| kind == MODERN_GL_SHADER_TRANSPARENT_FORWARD;
+}
+
 static bool R_ModernGLShaderLibrary_KindUsesLensFlareAccumTexture( modernGLShaderProgramKind_t kind ) {
 	return kind == MODERN_GL_SHADER_LENS_FLARE_COMPOSITE;
 }
@@ -1234,6 +1524,7 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.reflection.usesMaterialEnhancement = info.reflection.usesMaterialTextures;
 	info.reflection.usesDrawRecords = info.glslVersion >= 430 && info.kind != MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE;
 	info.reflection.usesSceneDepthTexture = R_ModernGLShaderLibrary_KindUsesSceneDepthTexture( info.kind );
+	info.reflection.usesShadowTextures = R_ModernGLShaderLibrary_KindUsesShadowTextures( info.kind );
 	info.reflection.usesLensFlareAccumTexture = R_ModernGLShaderLibrary_KindUsesLensFlareAccumTexture( info.kind );
 	info.reflection.usesTexCoord = info.reflection.usesMainTexture;
 	info.reflection.usesDrawVertColor = R_ModernGLShaderLibrary_KindUsesDrawVertColor( info.kind );
@@ -1259,6 +1550,13 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.reflection.drawRecordModeLocation = glGetUniformLocation( info.program, "uDrawRecordMode" );
 	info.reflection.sceneDepthTextureLocation = glGetUniformLocation( info.program, "uSceneDepth" );
 	info.reflection.lensFlareAccumTextureLocation = glGetUniformLocation( info.program, "uLensFlareAccum" );
+	const GLint shadowAtlasLocation = glGetUniformLocation( info.program, "uModernShadowAtlas" );
+	const GLint pointShadowAtlasLocation = glGetUniformLocation( info.program, "uModernPointShadowAtlas" );
+	const GLint translucentShadowMomentsLocation = glGetUniformLocation( info.program, "uModernTranslucentShadowMoments[0]" );
+	const GLint pointTranslucentShadowMomentsLocation = glGetUniformLocation( info.program, "uModernPointTranslucentShadowMoments[0]" );
+	const GLint shadowResourceStateLocation = glGetUniformLocation( info.program, "uModernShadowResourceState" );
+	const GLint shadowSamplerStateLocation = glGetUniformLocation( info.program, "uModernShadowSamplerState" );
+	const GLint shadowMomentStateLocation = glGetUniformLocation( info.program, "uModernShadowMomentState" );
 
 	R_ModernGLShaderLibrary_AddReflectionRecord(
 		info.reflection.uniformBlocks,
@@ -1367,6 +1665,92 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 			GL_SAMPLER_2D,
 			true,
 			info.reflection.lensFlareAccumTextureLocation >= 0 );
+	}
+	if ( info.reflection.usesShadowTextures ) {
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.samplers,
+			info.reflection.samplerCount,
+			"uModernShadowAtlas",
+			MODERN_GL_SHADER_RESOURCE_SAMPLER,
+			-1,
+			shadowAtlasLocation,
+			MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS,
+			1,
+			GL_SAMPLER_2D,
+			true,
+			shadowAtlasLocation >= 0 );
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.samplers,
+			info.reflection.samplerCount,
+			"uModernPointShadowAtlas",
+			MODERN_GL_SHADER_RESOURCE_SAMPLER,
+			-1,
+			pointShadowAtlasLocation,
+			MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS,
+			1,
+			GL_SAMPLER_CUBE,
+			true,
+			pointShadowAtlasLocation >= 0 );
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.samplers,
+			info.reflection.samplerCount,
+			"uModernTranslucentShadowMoments",
+			MODERN_GL_SHADER_RESOURCE_SAMPLER,
+			-1,
+			translucentShadowMomentsLocation,
+			MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_MOMENTS,
+			RENDERER_SHADOW_TEXTURE_MOMENT_COUNT,
+			GL_SAMPLER_2D,
+			true,
+			translucentShadowMomentsLocation >= 0 );
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.samplers,
+			info.reflection.samplerCount,
+			"uModernPointTranslucentShadowMoments",
+			MODERN_GL_SHADER_RESOURCE_SAMPLER,
+			-1,
+			pointTranslucentShadowMomentsLocation,
+			MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS,
+			RENDERER_SHADOW_TEXTURE_MOMENT_COUNT,
+			GL_SAMPLER_CUBE,
+			true,
+			pointTranslucentShadowMomentsLocation >= 0 );
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.uniforms,
+			info.reflection.uniformCount,
+			"uModernShadowResourceState",
+			MODERN_GL_SHADER_RESOURCE_UNIFORM,
+			-1,
+			shadowResourceStateLocation,
+			-1,
+			1,
+			GL_FLOAT_VEC4,
+			true,
+			shadowResourceStateLocation >= 0 );
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.uniforms,
+			info.reflection.uniformCount,
+			"uModernShadowSamplerState",
+			MODERN_GL_SHADER_RESOURCE_UNIFORM,
+			-1,
+			shadowSamplerStateLocation,
+			-1,
+			1,
+			GL_FLOAT_VEC4,
+			true,
+			shadowSamplerStateLocation >= 0 );
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.uniforms,
+			info.reflection.uniformCount,
+			"uModernShadowMomentState",
+			MODERN_GL_SHADER_RESOURCE_UNIFORM,
+			-1,
+			shadowMomentStateLocation,
+			-1,
+			1,
+			GL_FLOAT_VEC4,
+			true,
+			shadowMomentStateLocation >= 0 );
 	}
 	if ( info.reflection.usesMaterialTextures ) {
 		R_ModernGLShaderLibrary_AddReflectionRecord(
@@ -1662,6 +2046,26 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 		common->Warning( "Modern GL program '%s' is missing uLensFlareAccum", info.name );
 		return false;
 	}
+	if ( info.reflection.usesShadowTextures
+		&& ( shadowAtlasLocation < 0
+			|| pointShadowAtlasLocation < 0
+			|| translucentShadowMomentsLocation < 0
+			|| pointTranslucentShadowMomentsLocation < 0
+			|| shadowResourceStateLocation < 0
+			|| shadowSamplerStateLocation < 0
+			|| shadowMomentStateLocation < 0 ) ) {
+		common->Warning(
+			"Modern GL program '%s' is missing shadow texture bindings (projectedAtlas=%d pointAtlas=%d projectedMoments=%d pointMoments=%d resource=%d sampler=%d moment=%d)",
+			info.name,
+			static_cast<int>( shadowAtlasLocation ),
+			static_cast<int>( pointShadowAtlasLocation ),
+			static_cast<int>( translucentShadowMomentsLocation ),
+			static_cast<int>( pointTranslucentShadowMomentsLocation ),
+			static_cast<int>( shadowResourceStateLocation ),
+			static_cast<int>( shadowSamplerStateLocation ),
+			static_cast<int>( shadowMomentStateLocation ) );
+		return false;
+	}
 	if ( info.reflection.usesMaterialTextures
 		&& ( info.normalTextureLocation < 0 || info.specularTextureLocation < 0 || info.emissiveTextureLocation < 0 ) ) {
 		common->Warning( "Modern GL program '%s' is missing material texture samplers", info.name );
@@ -1686,7 +2090,7 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	}
 
 	glUniformBlockBinding( info.program, static_cast<GLuint>( info.frameBlockIndex ), 0 );
-	if ( info.reflection.usesMainTexture || info.reflection.usesMaterialTextures || info.reflection.usesSceneDepthTexture || info.reflection.usesLensFlareAccumTexture ) {
+	if ( info.reflection.usesMainTexture || info.reflection.usesMaterialTextures || info.reflection.usesSceneDepthTexture || info.reflection.usesLensFlareAccumTexture || info.reflection.usesShadowTextures ) {
 		glUseProgram( info.program );
 		if ( info.reflection.usesMainTexture ) {
 			glUniform1i( info.mainTextureLocation, 0 );
@@ -1701,6 +2105,23 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 			glUniform1i( info.normalTextureLocation, 1 );
 			glUniform1i( info.specularTextureLocation, 2 );
 			glUniform1i( info.emissiveTextureLocation, 3 );
+		}
+		if ( info.reflection.usesShadowTextures ) {
+			glUniform1i( shadowAtlasLocation, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS );
+			glUniform1i( pointShadowAtlasLocation, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS );
+			if ( glUniform1iv != NULL ) {
+				GLint projectedMomentUnits[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
+				GLint pointMomentUnits[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
+				for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+					projectedMomentUnits[i] = MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_MOMENTS + i;
+					pointMomentUnits[i] = MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS + i;
+				}
+				glUniform1iv( translucentShadowMomentsLocation, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, projectedMomentUnits );
+				glUniform1iv( pointTranslucentShadowMomentsLocation, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, pointMomentUnits );
+			}
+			glUniform4f( shadowResourceStateLocation, 0.0f, 0.0f, 0.0f, 0.0f );
+			glUniform4f( shadowSamplerStateLocation, 0.0f, 0.0f, 0.0f, 0.0f );
+			glUniform4f( shadowMomentStateLocation, 0.0f, 0.0f, 0.0f, 0.0f );
 		}
 		if ( info.reflection.usesMaterialTextureTable && glUniform1iv != NULL ) {
 			GLint tableUnits[MATERIAL_RESOURCE_TABLE_TEXTURE_ARRAY_CAPACITY];
@@ -2338,6 +2759,28 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 		if ( program->reflection.usesLensFlareAccumTexture && program->lensFlareAccumTextureLocation < 0 ) {
 			common->Printf( "RendererModernGLShaderLibrary self-test failed: lens-flare accum sampler reflection mismatch for %s\n", program->name );
 			return false;
+		}
+		if ( program->reflection.usesShadowTextures ) {
+			const char *shadowBindingUniforms[] = {
+				"uModernShadowAtlas",
+				"uModernPointShadowAtlas",
+				"uModernTranslucentShadowMoments[0]",
+				"uModernPointTranslucentShadowMoments[0]",
+				"uModernShadowResourceState",
+				"uModernShadowSamplerState",
+				"uModernShadowMomentState"
+			};
+			for ( int uniformIndex = 0; uniformIndex < static_cast<int>( sizeof( shadowBindingUniforms ) / sizeof( shadowBindingUniforms[0] ) ); ++uniformIndex ) {
+				const GLint location = glGetUniformLocation( program->program, shadowBindingUniforms[uniformIndex] );
+				if ( location < 0 ) {
+					common->Printf( "RendererModernGLShaderLibrary self-test failed: shadow texture reflection mismatch for %s missing %s\n", program->name, shadowBindingUniforms[uniformIndex] );
+					return false;
+				}
+			}
+			if ( program->reflection.samplerCount < 4 || program->reflection.uniformCount < 4 ) {
+				common->Printf( "RendererModernGLShaderLibrary self-test failed: shadow texture reflection records missing for %s\n", program->name );
+				return false;
+			}
 		}
 		if ( program->reflection.usesMaterialTextures
 			&& ( program->normalTextureLocation < 0 || program->specularTextureLocation < 0 || program->emissiveTextureLocation < 0 || program->materialFlagsLocation < 0 || program->materialEnhancementLocation < 0 ) ) {

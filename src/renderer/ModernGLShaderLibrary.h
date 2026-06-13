@@ -28,7 +28,12 @@ enum modernGLShaderProgramKind_t {
 };
 
 const int MODERN_GL_SHADER_MAX_PROGRAMS = 64;
-const int MODERN_GL_SHADER_MAX_REFLECTION_RECORDS = 12;
+const int MODERN_GL_SHADER_MAX_REFLECTION_RECORDS = 20;
+const int MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS = 5;
+const int MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS = 6;
+const int MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_MOMENTS = 7;
+const int MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS = 10;
+const int MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT = 8;
 
 enum modernGLShaderResourceType_t {
 	MODERN_GL_SHADER_RESOURCE_UNIFORM = 0,
@@ -99,6 +104,7 @@ typedef struct modernGLShaderReflection_s {
 	bool	usesMaterialEnhancement;
 	bool	usesDrawRecords;
 	bool	usesSceneDepthTexture;
+	bool	usesShadowTextures;
 	bool	usesLensFlareAccumTexture;
 	bool	usesTexCoord;
 	bool	usesDrawVertColor;

@@ -223,7 +223,8 @@ idCVar r_shadowMapHashedAlpha( "r_shadowMapHashedAlpha", "1", CVAR_RENDERER | CV
 idCVar r_shadowMapTranslucentMoments( "r_shadowMapTranslucentMoments", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "accumulate experimental translucent shadow moments for blended casters" );
 idCVar r_shadowMapTranslucentDensity( "r_shadowMapTranslucentDensity", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "density scale applied when resolving translucent shadow moments", 0.0f, 8.0f );
 idCVar r_shadowMapTranslucentMinAlpha( "r_shadowMapTranslucentMinAlpha", "0.02", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "minimum per-stage alpha considered by translucent shadow moments", 0.0f, 1.0f );
-idCVar r_shadowMapReport( "r_shadowMapReport", "0", CVAR_RENDERER | CVAR_INTEGER, "shadow-map diagnostics: 0 = off, 1 = per-view summary, 2 = per-light decisions, 3 = verbose receiver-submit decisions", 0, 3, idCmdSystem::ArgCompletion_Integer<0,3> );
+idCVar r_shadowMapCustomGLSLReceiverWrapper( "r_shadowMapCustomGLSLReceiverWrapper", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow compatible custom GLSL lighting materials to use stock shadow-map receiver interactions" );
+idCVar r_shadowMapReport( "r_shadowMapReport", "0", CVAR_RENDERER | CVAR_INTEGER, "shadow-map diagnostics: 0 = off, 1 = per-view summary, 2 = per-light joined planner/ARB2/modern decisions, 3 = verbose receiver-submit decisions", 0, 3, idCmdSystem::ArgCompletion_Integer<0,3> );
 idCVar r_shadowMapReportInterval( "r_shadowMapReportInterval", "30", CVAR_RENDERER | CVAR_INTEGER, "frames between shadow-map diagnostic reports when r_shadowMapReport is enabled", 1, 3600 );
 idCVar r_shadowMapConservativeCasters( "r_shadowMapConservativeCasters", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "submit shadow-map casters conservatively even when their receiver interaction scissor is not visible" );
 idCVar r_shadowMapProjectedCSM( "r_shadowMapProjectedCSM", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow ordinary projected lights to use cascades when r_shadowMapCSM is enabled" );
@@ -420,7 +421,7 @@ idCVar r_shadowMapDebugOverlay( "r_shadowMapDebugOverlay", "0", CVAR_RENDERER | 
 	"shadow-map overlay: 0 = off, 1 = show the selected shadow map as a top-left mini-map with stats",
 	0, 1, idCmdSystem::ArgCompletion_Integer<0, 1> );
 idCVar r_shadowMapDebugMode( "r_shadowMapDebugMode", "0", CVAR_RENDERER | CVAR_INTEGER,
-	"projected shadow-map debug mode: 0 = off, 1 = atlas/depth, 2 = cascade index, 3 = projected UV, 4 = projected depth, 5 = projected w, 6 = invalid mask, 7 = bias heatmap, 8 = bias off, 9 = PCF off, 10 = caster offset off, 11 = receiver-plane bias off",
+	"projected shadow-map debug mode: 0 = off, 1 = atlas UV/depth, 2 = cascade index, 3 = projected UV, 4 = projected depth, 5 = projected w, 6 = invalid mask, 7 = bias heatmap, 8 = bias off, 9 = PCF off, 10 = caster offset off, 11 = receiver-plane bias off, 12 = compare-depth delta, 13 = receiver eligibility, 14 = receiver fallback reason",
 	0, SHADOWMAP_DEBUGMODE_COUNT - 1, idCmdSystem::ArgCompletion_Integer<0, SHADOWMAP_DEBUGMODE_COUNT - 1> );
 idCVar r_shadowMapCascadeStabilize( "r_shadowMapCascadeStabilize", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "snap projected-light cascade bounds to texels to reduce shimmering" );
 idCVar r_shadowMapPointFarScale( "r_shadowMapPointFarScale", "1.25", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "padding multiplier applied to point-light shadow-map range", 1.0f, 4.0f );
@@ -725,6 +726,13 @@ static void R_RendererShadowPlannerSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererShadowPlanner_RunSelfTest() ) {
 		common->Warning( "Renderer shadow-planner self-test failed" );
+	}
+}
+
+static void R_RendererShadowProjectedDiagnosticSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererShadowProjectedDiagnostic_RunSelfTest() ) {
+		common->Warning( "Renderer projected shadow diagnostic self-test failed" );
 	}
 }
 
@@ -3295,6 +3303,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererGBufferSelfTest", R_RendererGBufferSelfTest_f, CMD_FL_RENDERER, "run renderer modern opaque G-buffer self tests" );
 	cmdSystem->AddCommand( "rendererClusterGridSelfTest", R_RendererClusterGridSelfTest_f, CMD_FL_RENDERER, "run renderer clustered light-grid self tests" );
 	cmdSystem->AddCommand( "rendererShadowPlannerSelfTest", R_RendererShadowPlannerSelfTest_f, CMD_FL_RENDERER, "run renderer modern shadow-planner self tests" );
+	cmdSystem->AddCommand( "rendererShadowProjectedDiagnosticSelfTest", R_RendererShadowProjectedDiagnosticSelfTest_f, CMD_FL_RENDERER, "run renderer projected shadow diagnostic scene self tests" );
 	cmdSystem->AddCommand( "rendererDeferredResolveSelfTest", R_RendererDeferredResolveSelfTest_f, CMD_FL_RENDERER, "run renderer deferred light resolve self tests" );
 	cmdSystem->AddCommand( "rendererForwardPlusSelfTest", R_RendererForwardPlusSelfTest_f, CMD_FL_RENDERER, "run renderer clustered forward+ self tests" );
 	cmdSystem->AddCommand( "rendererModernVisibleSelfTest", R_RendererModernVisibleSelfTest_f, CMD_FL_RENDERER, "run renderer modern visible-frame composition self tests" );
