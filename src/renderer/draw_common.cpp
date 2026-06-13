@@ -30,6 +30,9 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 #include "ModernGLExecutor.h"
+#include "ModernGLShaderLibrary.h"
+#include "LensFlareSettings.h"
+#include "RendererMetrics.h"
 
 #ifndef GL_FRAMEBUFFER_SRGB
 #define GL_FRAMEBUFFER_SRGB 0x8DB9
@@ -1189,6 +1192,23 @@ static bool RB_PostProcessMotionBlurRequested( void ) {
 	return RB_PostProcessMotionBlurRequested( backEnd.viewDef );
 }
 
+static bool RB_PostProcessLensFlareRequested( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL ) {
+		return false;
+	}
+
+	const int viewportWidth = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int viewportHeight = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	const rendererLensFlareSettings_t settings = RendererLensFlareSettings_Build(
+		r_lensFlare.GetInteger(),
+		glConfig.backendCaps,
+		r_skipPostProcess.GetBool(),
+		RB_IsMainScenePostProcessView( viewDef ),
+		viewportWidth,
+		viewportHeight );
+	return settings.enabled;
+}
+
 static int RB_HDRDebugViewValue( void ) {
 	return idMath::ClampInt( 0, 2, r_hdrDebugView.GetInteger() );
 }
@@ -1220,6 +1240,7 @@ static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef ) {
 
 	const bool bloomRequested = RB_PostProcessBloomRequested();
 	const bool motionBlurRequested = RB_PostProcessMotionBlurRequested( viewDef );
+	const bool lensFlareRequested = RB_PostProcessLensFlareRequested( viewDef );
 	const bool ssaoRequested = r_ssao.GetBool();
 	const bool toneMapRequested = r_hdrToneMap.GetBool();
 	const bool autoExposureRequested = RB_HDRAutoExposureRequested();
@@ -1231,6 +1252,7 @@ static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef ) {
 	// map handoffs, and it also clipped highlight energy before the bright-pass.
 	return bloomRequested
 		|| motionBlurRequested
+		|| lensFlareRequested
 		|| ssaoRequested
 		|| toneMapRequested
 		|| autoExposureRequested
@@ -4688,8 +4710,95 @@ enum rbLensFlareUniformIndex_t {
 
 static newShaderStage_t rbLensFlareStage;
 static bool rbLensFlareStageInitialized = false;
+static idImage *rbLensFlareAccumImage = NULL;
+static idRenderTexture *rbLensFlareAccumRenderTexture = NULL;
+static GLhandleARB rbLensFlareCompositeProgram = 0;
+static GLhandleARB rbLensFlareCompositeVertexShader = 0;
+static GLhandleARB rbLensFlareCompositeFragmentShader = 0;
+static int rbLensFlareCompositeGeneration = -1;
+static GLint rbLensFlareCompositeSceneLocation = -1;
+static GLint rbLensFlareCompositeAccumLocation = -1;
 
-static const int RB_LENSFLARE_MAX_LIGHTS = 8;
+static const int RB_LENSFLARE_MAX_LIGHTS = RENDERER_LENS_FLARE_MAX_SOURCES;
+static const int RB_LENSFLARE_MAX_GHOSTS = RENDERER_LENS_FLARE_MAX_GHOSTS;
+
+typedef struct rbLensFlareRuntimeStats_s {
+	rendererLensFlareSettings_t settings;
+	rendererLensFlareRejectReason_t rejectReason;
+	bool	requested;
+	bool	executed;
+	bool	mainView;
+	bool	programReady;
+	bool	depthReady;
+	bool	accumReady;
+	bool	accumExecuted;
+	bool	compositeReady;
+	bool	compositeExecuted;
+	int		quality;
+	int		consideredLights;
+	int		rejectedLights;
+	int		candidateLights;
+	int		cappedCandidateLights;
+	int		submittedQuads;
+	int		culledQuads;
+} rbLensFlareRuntimeStats_t;
+
+static void RB_RecordLensFlareStats( const rbLensFlareRuntimeStats_t &stats ) {
+	const rendererLensFlareRejectReason_t rejectReason = stats.rejectReason != RENDERER_LENS_FLARE_REJECT_NONE ? stats.rejectReason : stats.settings.rejectReason;
+	R_RendererMetrics_RecordLensFlare(
+		stats.requested,
+		stats.executed,
+		stats.mainView,
+		stats.programReady,
+		stats.depthReady,
+		stats.accumReady,
+		stats.accumExecuted,
+		stats.compositeReady,
+		stats.compositeExecuted,
+		stats.settings.version,
+		stats.settings.requestedQuality,
+		stats.quality,
+		stats.settings.maxSources,
+		stats.settings.maxGhosts,
+		rejectReason,
+		stats.consideredLights,
+		stats.rejectedLights,
+		stats.candidateLights,
+		stats.cappedCandidateLights,
+		stats.submittedQuads,
+		stats.culledQuads );
+}
+
+class rbLensFlareMetricsScope_t {
+public:
+	rbLensFlareMetricsScope_t() {
+		memset( &stats, 0, sizeof( stats ) );
+	}
+	~rbLensFlareMetricsScope_t() {
+		RB_RecordLensFlareStats( stats );
+	}
+
+	rbLensFlareRuntimeStats_t stats;
+};
+
+class rbLensFlareGpuTimerScope_t {
+public:
+	rbLensFlareGpuTimerScope_t()
+		: resumeDraw3D( R_RendererMetrics_PauseGpuTimer( RENDERER_GPU_TIMER_DRAW3D ) ) {
+		if ( resumeDraw3D ) {
+			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_LENS_FLARE );
+		}
+	}
+	~rbLensFlareGpuTimerScope_t() {
+		if ( resumeDraw3D ) {
+			R_RendererMetrics_EndGpuTimer();
+			R_RendererMetrics_ResumeGpuTimer( RENDERER_GPU_TIMER_DRAW3D, true );
+		}
+	}
+
+private:
+	bool resumeDraw3D;
+};
 
 typedef struct rbLensFlareCandidate_s {
 	float	score;
@@ -4738,6 +4847,128 @@ static void RB_InitLensFlareStage( void ) {
 	rbLensFlareStageInitialized = true;
 }
 
+static void RB_FreeLensFlareCompositeProgram( void ) {
+	if ( rbLensFlareCompositeProgram != 0 && glConfig.isInitialized ) {
+		if ( rbLensFlareCompositeVertexShader != 0 ) {
+			glDetachObjectARB( rbLensFlareCompositeProgram, rbLensFlareCompositeVertexShader );
+		}
+		if ( rbLensFlareCompositeFragmentShader != 0 ) {
+			glDetachObjectARB( rbLensFlareCompositeProgram, rbLensFlareCompositeFragmentShader );
+		}
+		glDeleteObjectARB( rbLensFlareCompositeProgram );
+	}
+	if ( rbLensFlareCompositeVertexShader != 0 && glConfig.isInitialized ) {
+		glDeleteObjectARB( rbLensFlareCompositeVertexShader );
+	}
+	if ( rbLensFlareCompositeFragmentShader != 0 && glConfig.isInitialized ) {
+		glDeleteObjectARB( rbLensFlareCompositeFragmentShader );
+	}
+
+	rbLensFlareCompositeProgram = 0;
+	rbLensFlareCompositeVertexShader = 0;
+	rbLensFlareCompositeFragmentShader = 0;
+	rbLensFlareCompositeGeneration = -1;
+	rbLensFlareCompositeSceneLocation = -1;
+	rbLensFlareCompositeAccumLocation = -1;
+}
+
+static bool RB_EnsureLensFlareCompositeProgram( void ) {
+	if ( !glConfig.GLSLProgramAvailable ) {
+		return false;
+	}
+	if ( rbLensFlareCompositeProgram != 0 && rbLensFlareCompositeGeneration == tr.videoRestartCount ) {
+		return true;
+	}
+
+	RB_FreeLensFlareCompositeProgram();
+
+	static const char *vertexSource =
+		"void main() {\n"
+		"	gl_Position = ftransform();\n"
+		"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+		"	gl_TexCoord[1] = gl_MultiTexCoord1;\n"
+		"}\n";
+	static const char *fragmentSource =
+		"uniform sampler2D Scene;\n"
+		"uniform sampler2D LensFlareAccum;\n"
+		"void main() {\n"
+		"	vec4 sceneSample = texture2D( Scene, gl_TexCoord[0].st );\n"
+		"	vec3 flare = max( texture2D( LensFlareAccum, gl_TexCoord[1].st ).rgb, vec3( 0.0 ) );\n"
+		"	gl_FragColor = vec4( max( sceneSample.rgb, vec3( 0.0 ) ) + flare, sceneSample.a );\n"
+		"}\n";
+
+	GLhandleARB vertexShader = glCreateShaderObjectARB( GL_VERTEX_SHADER_ARB );
+	GLhandleARB fragmentShader = glCreateShaderObjectARB( GL_FRAGMENT_SHADER_ARB );
+	if ( vertexShader == 0 || fragmentShader == 0 ) {
+		if ( vertexShader != 0 ) {
+			glDeleteObjectARB( vertexShader );
+		}
+		if ( fragmentShader != 0 ) {
+			glDeleteObjectARB( fragmentShader );
+		}
+		return false;
+	}
+
+	const GLcharARB *vertexSourceARB = (const GLcharARB *)vertexSource;
+	const GLcharARB *fragmentSourceARB = (const GLcharARB *)fragmentSource;
+	glShaderSourceARB( vertexShader, 1, &vertexSourceARB, NULL );
+	glShaderSourceARB( fragmentShader, 1, &fragmentSourceARB, NULL );
+	glCompileShaderARB( vertexShader );
+	glCompileShaderARB( fragmentShader );
+
+	GLint status = GL_FALSE;
+	glGetObjectParameterivARB( vertexShader, GL_OBJECT_COMPILE_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( vertexShader, "vertex shader compile", "lens flare composite" );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+	glGetObjectParameterivARB( fragmentShader, GL_OBJECT_COMPILE_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( fragmentShader, "fragment shader compile", "lens flare composite" );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+
+	GLhandleARB programObject = glCreateProgramObjectARB();
+	if ( programObject == 0 ) {
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+	glAttachObjectARB( programObject, vertexShader );
+	glAttachObjectARB( programObject, fragmentShader );
+	glLinkProgramARB( programObject );
+
+	glGetObjectParameterivARB( programObject, GL_OBJECT_LINK_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( programObject, "program link", "lens flare composite" );
+		glDetachObjectARB( programObject, vertexShader );
+		glDetachObjectARB( programObject, fragmentShader );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		glDeleteObjectARB( programObject );
+		return false;
+	}
+
+	rbLensFlareCompositeProgram = programObject;
+	rbLensFlareCompositeVertexShader = vertexShader;
+	rbLensFlareCompositeFragmentShader = fragmentShader;
+	rbLensFlareCompositeGeneration = tr.videoRestartCount;
+	rbLensFlareCompositeSceneLocation = glGetUniformLocationARB( programObject, "Scene" );
+	rbLensFlareCompositeAccumLocation = glGetUniformLocationARB( programObject, "LensFlareAccum" );
+
+	if ( rbLensFlareCompositeSceneLocation < 0 || rbLensFlareCompositeAccumLocation < 0 ) {
+		common->Warning( "lens flare composite shader is missing required sampler uniforms" );
+		RB_FreeLensFlareCompositeProgram();
+		return false;
+	}
+
+	return true;
+}
+
 static void RB_DestroyPostProcessRenderTexture( idRenderTexture *&renderTexture ) {
 	if ( renderTexture == NULL ) {
 		return;
@@ -4746,8 +4977,38 @@ static void RB_DestroyPostProcessRenderTexture( idRenderTexture *&renderTexture 
 	renderTexture = NULL;
 }
 
+static bool RB_EnsureLensFlareAccumRenderTexture( int viewportWidth, int viewportHeight ) {
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return false;
+	}
+
+	idImageOpts opts;
+	memset( &opts, 0, sizeof( opts ) );
+	opts.textureType = TT_2D;
+	opts.format = FMT_RGBA16F;
+	opts.width = viewportWidth;
+	opts.height = viewportHeight;
+	opts.numLevels = 1;
+	opts.numMSAASamples = 0;
+	opts.isPersistant = true;
+
+	rbLensFlareAccumImage = globalImages->ScratchImage( "_lensFlareAccum", &opts, TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+	if ( rbLensFlareAccumImage == NULL ) {
+		return false;
+	}
+
+	if ( rbLensFlareAccumRenderTexture == NULL ) {
+		rbLensFlareAccumRenderTexture = tr.CreateRenderTexture( rbLensFlareAccumImage, NULL );
+	} else if ( rbLensFlareAccumRenderTexture->GetWidth() != viewportWidth || rbLensFlareAccumRenderTexture->GetHeight() != viewportHeight ) {
+		tr.ResizeRenderTexture( rbLensFlareAccumRenderTexture, viewportWidth, viewportHeight );
+	}
+
+	return rbLensFlareAccumRenderTexture != NULL;
+}
+
 void RB_ShutdownScenePostProcess( void ) {
 	RB_FreeSceneDepthAwarePresentProgram();
+	RB_FreeLensFlareCompositeProgram();
 
 	RB_FreeGLSLProgram( &rbLightGridIndirectStage );
 	RB_FreeGLSLProgram( &rbSSAOStage );
@@ -4766,6 +5027,8 @@ void RB_ShutdownScenePostProcess( void ) {
 	RB_FreeGLSLProgram( &rbRVSpecialMedLabsStage );
 	RB_FreeGLSLProgram( &rbRVSpecialALStage );
 	RB_FreeGLSLProgram( &rbLensFlareStage );
+	RB_DestroyPostProcessRenderTexture( rbLensFlareAccumRenderTexture );
+	rbLensFlareAccumImage = NULL;
 
 	RB_DestroyPostProcessRenderTexture( rbSceneRenderTexture );
 	rbSceneRenderTextureSamples = -1;
@@ -4899,8 +5162,12 @@ static float RB_EstimateLensFlareRadiusPixels( const viewLight_t *vLight, float 
 	return radiusPixels;
 }
 
-static void RB_InsertLensFlareCandidate( rbLensFlareCandidate_t candidates[RB_LENSFLARE_MAX_LIGHTS], int &candidateCount,
+static bool RB_InsertLensFlareCandidate( rbLensFlareCandidate_t candidates[RB_LENSFLARE_MAX_LIGHTS], int &candidateCount, int maxCandidates,
 		const rbLensFlareCandidate_t &candidate ) {
+	if ( maxCandidates <= 0 ) {
+		return false;
+	}
+
 	int insertIndex = candidateCount;
 
 	for ( int i = 0; i < candidateCount; i++ ) {
@@ -4910,11 +5177,11 @@ static void RB_InsertLensFlareCandidate( rbLensFlareCandidate_t candidates[RB_LE
 		}
 	}
 
-	if ( insertIndex >= RB_LENSFLARE_MAX_LIGHTS ) {
-		return;
+	if ( insertIndex >= maxCandidates ) {
+		return false;
 	}
 
-	if ( candidateCount < RB_LENSFLARE_MAX_LIGHTS ) {
+	if ( candidateCount < maxCandidates ) {
 		candidateCount++;
 	}
 
@@ -4923,22 +5190,28 @@ static void RB_InsertLensFlareCandidate( rbLensFlareCandidate_t candidates[RB_LE
 	}
 
 	candidates[insertIndex] = candidate;
+	return true;
 }
 
 static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_LENSFLARE_MAX_LIGHTS], int viewportWidth, int viewportHeight,
-		int depthTextureWidth, int depthTextureHeight ) {
+		int depthTextureWidth, int depthTextureHeight, const rendererLensFlareSettings_t &settings, rbLensFlareRuntimeStats_t &stats ) {
 	int candidateCount = 0;
+	const int maxCandidates = idMath::ClampInt( 0, RB_LENSFLARE_MAX_LIGHTS, settings.maxSources );
 	const float screenCenterX = viewportWidth * 0.5f;
 	const float screenCenterY = viewportHeight * 0.5f;
 
 	for ( const viewLight_t *vLight = backEnd.viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+		stats.consideredLights++;
 		if ( vLight->lightDef == NULL || !vLight->viewSeesGlobalLightOrigin || vLight->scissorRect.IsEmpty() ) {
+			stats.rejectedLights++;
 			continue;
 		}
 		if ( vLight->lightDef->parms.parallel || vLight->lightDef->parms.globalLight ) {
+			stats.rejectedLights++;
 			continue;
 		}
 		if ( !vLight->localInteractions && !vLight->globalInteractions && !vLight->translucentInteractions ) {
+			stats.rejectedLights++;
 			continue;
 		}
 
@@ -4946,12 +5219,14 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 		// lights) have unstable projections and meaningless occlusion tests.
 		idVec3 toEye = backEnd.viewDef->renderView.vieworg - vLight->globalLightOrigin;
 		const float eyeDistance = toEye.Normalize();
-		if ( eyeDistance < 24.0f ) {
+		if ( eyeDistance < settings.minEyeDistance ) {
+			stats.rejectedLights++;
 			continue;
 		}
 
 		idVec4 lightColor;
 		if ( !RB_EvaluateLensFlareLightColor( vLight, lightColor ) ) {
+			stats.rejectedLights++;
 			continue;
 		}
 
@@ -4959,11 +5234,13 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 		float screenY = 0.0f;
 		float lightDepth = 0.0f;
 		if ( !RB_ProjectLensFlarePoint( vLight->globalLightOrigin, viewportWidth, viewportHeight, screenX, screenY, lightDepth ) ) {
+			stats.rejectedLights++;
 			continue;
 		}
 
 		float projectedRadius = RB_EstimateLensFlareRadiusPixels( vLight, screenX, screenY, viewportWidth, viewportHeight );
-		if ( projectedRadius <= 2.0f ) {
+		if ( projectedRadius <= settings.minSourceRadiusPixels ) {
+			stats.rejectedLights++;
 			continue;
 		}
 
@@ -4974,6 +5251,7 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 		const float coverage = projectedRadius / static_cast<float>( Max( 1, viewportHeight ) );
 		const float compactness = idMath::ClampFloat( 0.0f, 1.0f, ( 1.2f - coverage ) / 0.7f );
 		if ( compactness <= 0.0f ) {
+			stats.rejectedLights++;
 			continue;
 		}
 
@@ -5012,10 +5290,10 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 		candidate.screenV = idMath::ClampFloat( 0.0f, static_cast<float>( viewportHeight ) / depthTextureHeight, ( viewportHeight - screenY ) / depthTextureHeight );
 		candidate.lightDepth = lightDepth;
 		candidate.occlusionDepthBias = occlusionDepthBias;
-		candidate.sourceRadiusPixels = idMath::ClampFloat( 2.0f, 12.0f, projectedRadius * 0.18f );
+		candidate.sourceRadiusPixels = idMath::ClampFloat( settings.minSourceRadiusPixels, settings.maxSourceOcclusionRadiusPixels, projectedRadius * 0.18f );
 		// Sub-linear growth keeps large-volume lights from saturating the
 		// screen; the projected volume radius greatly overstates emitter size.
-		candidate.coronaRadiusPixels = idMath::ClampFloat( 14.0f, 96.0f, 10.0f + idMath::Sqrt( projectedRadius ) * 4.0f );
+		candidate.coronaRadiusPixels = idMath::ClampFloat( settings.minCoronaRadiusPixels, settings.maxCoronaRadiusPixels, 10.0f + idMath::Sqrt( projectedRadius ) * 4.0f );
 		candidate.axis.Set( screenCenterX - screenX, screenCenterY - screenY );
 		if ( candidate.axis.LengthSqr() <= 0.0001f ) {
 			candidate.axis.Set( 1.0f, 0.0f );
@@ -5025,14 +5303,17 @@ static int RB_CollectLensFlareCandidates( rbLensFlareCandidate_t candidates[RB_L
 		// Bound the peak channel while preserving hue; flares are a subtle
 		// overlay and bloom already lifts anything bright.
 		const float peak = Max( lightColor[0], Max( lightColor[1], lightColor[2] ) );
-		if ( peak > 1.5f ) {
-			lightColor *= 1.5f / peak;
+		if ( peak > settings.peakChannelClamp ) {
+			lightColor *= settings.peakChannelClamp / peak;
 		}
 		candidate.color = lightColor;
 		candidate.color *= intensityFade;
 		candidate.color[3] = 1.0f;
 
-		RB_InsertLensFlareCandidate( candidates, candidateCount, candidate );
+		const bool sourceBudgetFull = candidateCount >= maxCandidates;
+		if ( !RB_InsertLensFlareCandidate( candidates, candidateCount, maxCandidates, candidate ) || sourceBudgetFull ) {
+			stats.cappedCandidateLights++;
+		}
 	}
 
 	return candidateCount;
@@ -5104,33 +5385,198 @@ static bool RB_DrawLensFlareQuad( const rbLensFlareCandidate_t &candidate, int v
 	return true;
 }
 
+static bool RB_SetLensFlareAccumOrtho( int viewportWidth, int viewportHeight ) {
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return false;
+	}
+
+	glViewport( 0, 0, viewportWidth, viewportHeight );
+	glScissor( 0, 0, viewportWidth, viewportHeight );
+
+	glMatrixMode( GL_PROJECTION );
+	glLoadIdentity();
+	glOrtho( 0, viewportWidth, viewportHeight, 0, -1, 1 );
+	glMatrixMode( GL_MODELVIEW );
+	glLoadIdentity();
+
+	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE );
+	GL_Cull( CT_TWO_SIDED );
+	glDisable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	return true;
+}
+
+static void RB_DrawLensFlareCompositeQuad( int viewportWidth, int viewportHeight, int sceneTextureWidth, int sceneTextureHeight, int accumTextureWidth, int accumTextureHeight ) {
+	const float sceneMaxS = static_cast<float>( viewportWidth ) / static_cast<float>( Max( 1, sceneTextureWidth ) );
+	const float sceneMaxT = static_cast<float>( viewportHeight ) / static_cast<float>( Max( 1, sceneTextureHeight ) );
+	const float accumMaxS = static_cast<float>( viewportWidth ) / static_cast<float>( Max( 1, accumTextureWidth ) );
+	const float accumMaxT = static_cast<float>( viewportHeight ) / static_cast<float>( Max( 1, accumTextureHeight ) );
+
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBegin( GL_QUADS );
+	glMultiTexCoord2fARB( GL_TEXTURE0, 0.0f, 0.0f );
+	glMultiTexCoord2fARB( GL_TEXTURE1, 0.0f, 0.0f );
+	glVertex2f( 0.0f, 0.0f );
+	glMultiTexCoord2fARB( GL_TEXTURE0, 0.0f, sceneMaxT );
+	glMultiTexCoord2fARB( GL_TEXTURE1, 0.0f, accumMaxT );
+	glVertex2f( 0.0f, 1.0f );
+	glMultiTexCoord2fARB( GL_TEXTURE0, sceneMaxS, sceneMaxT );
+	glMultiTexCoord2fARB( GL_TEXTURE1, accumMaxS, accumMaxT );
+	glVertex2f( 1.0f, 1.0f );
+	glMultiTexCoord2fARB( GL_TEXTURE0, sceneMaxS, 0.0f );
+	glMultiTexCoord2fARB( GL_TEXTURE1, accumMaxS, 0.0f );
+	glVertex2f( 1.0f, 0.0f );
+	glEnd();
+}
+
+static bool RB_CompositeLensFlareAccum( idImage *sceneImage, idImage *accumImage, int viewportWidth, int viewportHeight ) {
+	if ( sceneImage == NULL || accumImage == NULL || !RB_EnsureLensFlareCompositeProgram() ) {
+		return false;
+	}
+
+	const int sceneTextureWidth = sceneImage->GetOpts().width;
+	const int sceneTextureHeight = sceneImage->GetOpts().height;
+	const int accumTextureWidth = accumImage->GetOpts().width;
+	const int accumTextureHeight = accumImage->GetOpts().height;
+	if ( sceneTextureWidth <= 0 || sceneTextureHeight <= 0 || accumTextureWidth <= 0 || accumTextureHeight <= 0 ) {
+		return false;
+	}
+
+	RB_BeginFullscreenPostProcessPass(
+		backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+		backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+		backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
+
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+	GL_SelectTexture( 1 );
+	accumImage->Bind();
+	GL_SelectTexture( 0 );
+
+	glUseProgramObjectARB( rbLensFlareCompositeProgram );
+	glUniform1iARB( rbLensFlareCompositeSceneLocation, 0 );
+	glUniform1iARB( rbLensFlareCompositeAccumLocation, 1 );
+	RB_DrawLensFlareCompositeQuad( viewportWidth, viewportHeight, sceneTextureWidth, sceneTextureHeight, accumTextureWidth, accumTextureHeight );
+	glUseProgramObjectARB( 0 );
+
+	GL_SelectTexture( 1 );
+	globalImages->BindNull();
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	RB_EndFullscreenPostProcessPass();
+	return true;
+}
+
+bool RB_LensFlareRuntimeSelfTest( void ) {
+	bool ok = true;
+	if ( RB_LENSFLARE_MAX_LIGHTS != RENDERER_LENS_FLARE_MAX_SOURCES || RB_LENSFLARE_MAX_GHOSTS != RENDERER_LENS_FLARE_MAX_GHOSTS ) {
+		common->Printf( "RendererLensFlareRuntime self-test failed: runtime budgets do not match shared settings\n" );
+		ok = false;
+	}
+	if ( !idStr::Icmp( RendererLensFlareRejectReason_Name( RENDERER_LENS_FLARE_REJECT_SCENE_UNAVAILABLE ), "unknown" )
+		|| !idStr::Icmp( RendererLensFlareRejectReason_Name( RENDERER_LENS_FLARE_REJECT_ACCUM_UNAVAILABLE ), "unknown" )
+		|| !idStr::Icmp( RendererLensFlareRejectReason_Name( RENDERER_LENS_FLARE_REJECT_COMPOSITE_UNAVAILABLE ), "unknown" ) ) {
+		common->Printf( "RendererLensFlareRuntime self-test failed: accumulation/composite rejection names are missing\n" );
+		ok = false;
+	}
+
+	renderBackendCaps_t caps;
+	memset( &caps, 0, sizeof( caps ) );
+	caps.contextCreated = true;
+	caps.hasGLSL = true;
+	caps.hasFBO = true;
+	caps.maxTextureSize = 4096;
+	caps.maxTextureCoords = 2;
+	caps.maxTextureImageUnits = 2;
+	const rendererLensFlareSettings_t settings = RendererLensFlareSettings_Build( 2, caps, false, true, 1280, 720 );
+	if ( !settings.enabled || settings.maxQuadsPerSource != 2 + RENDERER_LENS_FLARE_MAX_GHOSTS + RENDERER_LENS_FLARE_MAX_STREAKS ) {
+		common->Printf(
+			"RendererLensFlareRuntime self-test failed: high-tier settings do not cover accumulation budget (enabled=%d maxQuads=%d)\n",
+			settings.enabled ? 1 : 0,
+			settings.maxQuadsPerSource );
+		ok = false;
+	}
+
+	bool compositeProgramChecked = false;
+	if ( glConfig.GLSLProgramAvailable ) {
+		compositeProgramChecked = true;
+		if ( !RB_EnsureLensFlareCompositeProgram() ) {
+			common->Printf( "RendererLensFlareRuntime self-test failed: composite program did not compile/link\n" );
+			ok = false;
+		}
+	}
+
+	bool shaderLibraryChecked = false;
+	const modernGLShaderLibraryStats_t &shaderLibraryStats = R_ModernGLShaderLibrary_Stats();
+	if ( shaderLibraryStats.available ) {
+		shaderLibraryChecked = true;
+		const modernGLShaderProgramInfo_t *accumProgram = R_ModernGLShaderLibrary_FindProgram( MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION, shaderLibraryStats.highestGLSLVersion );
+		const modernGLShaderProgramInfo_t *compositeProgram = R_ModernGLShaderLibrary_FindProgram( MODERN_GL_SHADER_LENS_FLARE_COMPOSITE, shaderLibraryStats.highestGLSLVersion );
+		if ( accumProgram == NULL
+			|| compositeProgram == NULL
+			|| accumProgram->passCategory != RENDER_PASS_LENS_FLARE
+			|| compositeProgram->passCategory != RENDER_PASS_LENS_FLARE
+			|| !accumProgram->reflection.usesSceneDepthTexture
+			|| !compositeProgram->reflection.usesLensFlareAccumTexture ) {
+			common->Printf( "RendererLensFlareRuntime self-test failed: shader-library lens-flare family is not reflected\n" );
+			ok = false;
+		}
+	}
+
+	if ( !ok ) {
+		return false;
+	}
+
+	common->Printf(
+		"RendererLensFlareRuntime self-test passed (accumulation/composite contract, compositeProgram=%d shaderLibrary=%d)\n",
+		compositeProgramChecked ? 1 : 0,
+		shaderLibraryChecked ? 1 : 0 );
+	return true;
+}
+
 static void RB_STD_LensFlare( void ) {
-	if ( r_skipPostProcess.GetBool() ) {
-		return;
+	rbLensFlareMetricsScope_t metricsScope;
+	rbLensFlareRuntimeStats_t &stats = metricsScope.stats;
+	stats.mainView = RB_IsMainScenePostProcessView();
+
+	int viewportWidth = 0;
+	int viewportHeight = 0;
+	if ( backEnd.viewDef != NULL ) {
+		viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+		viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
 	}
 
-	const int lensFlareQuality = r_lensFlare.GetInteger();
-	if ( lensFlareQuality <= 0 ) {
-		return;
-	}
+	stats.settings = RendererLensFlareSettings_Build(
+		r_lensFlare.GetInteger(),
+		glConfig.backendCaps,
+		r_skipPostProcess.GetBool(),
+		stats.mainView,
+		viewportWidth,
+		viewportHeight );
+	stats.rejectReason = stats.settings.rejectReason;
+	stats.requested = stats.settings.requested;
+	stats.quality = stats.settings.quality;
 
-	if ( !glConfig.GLSLProgramAvailable || !RB_IsMainScenePostProcessView() ) {
+	if ( !stats.settings.enabled ) {
 		return;
 	}
 
 	RB_InitLensFlareStage();
 	if ( !R_ValidateGLSLProgram( &rbLensFlareStage ) ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_SHADER_UNAVAILABLE;
 		return;
 	}
+	stats.programReady = true;
 
-	const int viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
-	const int viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
 	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_INVALID_VIEWPORT;
 		return;
 	}
 
 	idImage *depthImage = globalImages->currentDepthImage;
 	if ( depthImage == NULL ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_DEPTH_UNAVAILABLE;
 		return;
 	}
 
@@ -5138,22 +5584,60 @@ static void RB_STD_LensFlare( void ) {
 		RB_CaptureCurrentDepthImage( viewportWidth, viewportHeight );
 	}
 	if ( !backEnd.currentDepthCopied ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_DEPTH_UNAVAILABLE;
 		return;
 	}
+	stats.depthReady = true;
 
 	const int depthTextureWidth = depthImage->GetOpts().width;
 	const int depthTextureHeight = depthImage->GetOpts().height;
 	if ( depthTextureWidth <= 0 || depthTextureHeight <= 0 ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_DEPTH_UNAVAILABLE;
 		return;
 	}
 
 	rbLensFlareCandidate_t candidates[RB_LENSFLARE_MAX_LIGHTS];
-	const int candidateCount = RB_CollectLensFlareCandidates( candidates, viewportWidth, viewportHeight, depthTextureWidth, depthTextureHeight );
+	const int candidateCount = RB_CollectLensFlareCandidates( candidates, viewportWidth, viewportHeight, depthTextureWidth, depthTextureHeight, stats.settings, stats );
+	stats.candidateLights = candidateCount;
 	if ( candidateCount <= 0 ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_NO_CANDIDATES;
 		return;
 	}
 
-	if ( !RB_SetRVSpecialOrthoForView() ) {
+	idImage *sceneImage = globalImages->currentRenderImage;
+	if ( sceneImage == NULL ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_SCENE_UNAVAILABLE;
+		return;
+	}
+
+	RB_CaptureCurrentRenderImage( viewportWidth, viewportHeight );
+	if ( !backEnd.currentRenderCopied ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_SCENE_UNAVAILABLE;
+		return;
+	}
+
+	stats.accumReady = RB_EnsureLensFlareAccumRenderTexture( viewportWidth, viewportHeight );
+	if ( !stats.accumReady || rbLensFlareAccumImage == NULL || rbLensFlareAccumRenderTexture == NULL ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_ACCUM_UNAVAILABLE;
+		return;
+	}
+
+	stats.compositeReady = RB_EnsureLensFlareCompositeProgram();
+	if ( !stats.compositeReady ) {
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_COMPOSITE_UNAVAILABLE;
+		return;
+	}
+
+	rbLensFlareGpuTimerScope_t gpuTimerScope;
+	idRenderTexture *originalRenderTexture = backEnd.renderTexture;
+
+	RB_BindPostProcessRenderTexture( rbLensFlareAccumRenderTexture, viewportWidth, viewportHeight );
+	glClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
+	glClear( GL_COLOR_BUFFER_BIT );
+	if ( !RB_SetLensFlareAccumOrtho( viewportWidth, viewportHeight ) ) {
+		RB_RestorePostProcessTarget( originalRenderTexture, viewportWidth, viewportHeight );
+		RB_RVSpecialRestoreDrawingView();
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_ORTHO_UNAVAILABLE;
 		return;
 	}
 
@@ -5191,29 +5675,38 @@ static void RB_STD_LensFlare( void ) {
 		const idVec4 haloParams( 2.2f, 0.72f, 0.14f, 0.22f );
 		const idVec3 haloScale( 0.85f, 0.85f, 0.85f );
 
-		RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
-			candidate.screenX, candidate.screenY, coronaRadius, coronaRadius, idVec3( 1.0f, 1.0f, 1.0f ), candidate.axis, 0.0f, coronaParams );
-		RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
-			candidate.screenX, candidate.screenY, coronaRadius * 1.55f, coronaRadius * 1.55f, haloScale, candidate.axis, 1.0f, haloParams );
+		if ( RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+			candidate.screenX, candidate.screenY, coronaRadius, coronaRadius, idVec3( 1.0f, 1.0f, 1.0f ), candidate.axis, 0.0f, coronaParams ) ) {
+			stats.submittedQuads++;
+		} else {
+			stats.culledQuads++;
+		}
+		if ( RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+			candidate.screenX, candidate.screenY, coronaRadius * 1.55f, coronaRadius * 1.55f, haloScale, candidate.axis, 1.0f, haloParams ) ) {
+			stats.submittedQuads++;
+		} else {
+			stats.culledQuads++;
+		}
 
-		if ( lensFlareQuality >= 2 ) {
+		if ( stats.settings.ghostChainEnabled || stats.settings.streakEnabled ) {
 			const idVec2 centerDelta( viewportWidth * 0.5f - candidate.screenX, viewportHeight * 0.5f - candidate.screenY );
 
-			if ( centerDelta.LengthSqr() > 256.0f ) {
+			if ( stats.settings.ghostChainEnabled && centerDelta.LengthSqr() > 256.0f ) {
 				const float viewportDiagonal = idMath::Sqrt( static_cast<float>( viewportWidth * viewportWidth + viewportHeight * viewportHeight ) );
 				const float ghostDistanceReference = Max( 1.0f, viewportDiagonal * 0.50f );
-				static const float ghostFactors[3] = { 0.35f, 1.15f, 1.8f };
-				static const float ghostSizeScales[3] = { 0.60f, 0.42f, 0.78f };
+				static const float ghostFactors[RB_LENSFLARE_MAX_GHOSTS] = { 0.35f, 1.15f, 1.8f };
+				static const float ghostSizeScales[RB_LENSFLARE_MAX_GHOSTS] = { 0.60f, 0.42f, 0.78f };
 				// Keep flare hue driven by the light itself. Hard-coded chromatic
 				// tints here created artificial blue lighting from warm/neutral lights.
-				static const float ghostIntensityScales[3] = { 0.95f, 0.90f, 0.82f };
-				static const idVec4 ghostParams[3] = {
+				static const float ghostIntensityScales[RB_LENSFLARE_MAX_GHOSTS] = { 0.95f, 0.90f, 0.82f };
+				static const idVec4 ghostParams[RB_LENSFLARE_MAX_GHOSTS] = {
 					idVec4( 3.8f, 0.52f, 0.16f, 0.20f ),
 					idVec4( 4.4f, 0.48f, 0.12f, 0.16f ),
 					idVec4( 2.6f, 0.60f, 0.18f, 0.19f )
 				};
 
-				for ( int ghostIndex = 0; ghostIndex < 3; ghostIndex++ ) {
+				const int maxGhosts = idMath::ClampInt( 0, RB_LENSFLARE_MAX_GHOSTS, stats.settings.maxGhosts );
+				for ( int ghostIndex = 0; ghostIndex < maxGhosts; ghostIndex++ ) {
 					const float ghostX = candidate.screenX + centerDelta.x * ghostFactors[ghostIndex];
 					const float ghostY = candidate.screenY + centerDelta.y * ghostFactors[ghostIndex];
 					const float ghostDistanceX = ghostX - candidate.screenX;
@@ -5228,28 +5721,53 @@ static void RB_STD_LensFlare( void ) {
 						ghostIntensityScales[ghostIndex] * ghostIntensityFade,
 						ghostIntensityScales[ghostIndex] * ghostIntensityFade );
 
-					RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
-						ghostX, ghostY, ghostRadius, ghostRadius, ghostScale, candidate.axis, 1.0f, ghostParams[ghostIndex] );
+					if ( RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+						ghostX, ghostY, ghostRadius, ghostRadius, ghostScale, candidate.axis, 1.0f, ghostParams[ghostIndex] ) ) {
+						stats.submittedQuads++;
+					} else {
+						stats.culledQuads++;
+					}
 				}
 			}
 
 			// Anamorphic streaks stay horizontal regardless of where the light
 			// sits; the pattern axis must match the wide axis of the quad or
 			// the streak gets clipped to a smudge by the thin geometry.
-			const float streakHalfWidth = coronaRadius * 4.2f;
-			const float streakHalfHeight = Max( 4.0f, coronaRadius * 0.14f );
-			const idVec4 streakParams( 1.15f, 5.5f, 4.0f, 0.15f );
-			const idVec3 streakScale( 0.95f, 0.95f, 0.95f );
-			RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
-				candidate.screenX, candidate.screenY, streakHalfWidth, streakHalfHeight, streakScale, idVec2( 1.0f, 0.0f ), 2.0f, streakParams );
+			if ( stats.settings.streakEnabled ) {
+				const float streakHalfWidth = coronaRadius * 4.2f;
+				const float streakHalfHeight = Max( 4.0f, coronaRadius * 0.14f );
+				const idVec4 streakParams( 1.15f, 5.5f, 4.0f, 0.15f );
+				const idVec3 streakScale( 0.95f, 0.95f, 0.95f );
+				if ( RB_DrawLensFlareQuad( candidate, viewportWidth, viewportHeight,
+					candidate.screenX, candidate.screenY, streakHalfWidth, streakHalfHeight, streakScale, idVec2( 1.0f, 0.0f ), 2.0f, streakParams ) ) {
+					stats.submittedQuads++;
+				} else {
+					stats.culledQuads++;
+				}
+			}
 		}
 	}
+	stats.accumExecuted = stats.submittedQuads > 0;
 
 	glUseProgramObjectARB( 0 );
 	GL_SelectTexture( 1 );
 	globalImages->BindNull();
 	GL_SelectTexture( 0 );
 	globalImages->BindNull();
+	RB_RestorePostProcessTarget( originalRenderTexture, viewportWidth, viewportHeight );
+
+	if ( !stats.accumExecuted ) {
+		RB_RVSpecialRestoreDrawingView();
+		stats.rejectReason = RENDERER_LENS_FLARE_REJECT_NO_CANDIDATES;
+		return;
+	}
+
+	stats.compositeExecuted = RB_CompositeLensFlareAccum( sceneImage, rbLensFlareAccumImage, viewportWidth, viewportHeight );
+	stats.executed = stats.compositeExecuted;
+	stats.rejectReason = stats.executed ? RENDERER_LENS_FLARE_REJECT_NONE : RENDERER_LENS_FLARE_REJECT_COMPOSITE_UNAVAILABLE;
+	if ( stats.executed ) {
+		backEnd.currentRenderCopied = false;
+	}
 	RB_RVSpecialRestoreDrawingView();
 }
 

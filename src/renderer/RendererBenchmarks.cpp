@@ -166,7 +166,7 @@ void RendererBenchmarks_PrintLatestCapture( void ) {
 	const rendererBenchmarkFrameSample_t &sample = rg_benchmarkLatestSample;
 
 	common->Printf(
-		"rendererBenchmark capture(preset=%s samples=%d frame(avg=%d p50=%d p95=%d p99=%d max=%d latest=%d thresholds=%d/%d pass=%d) cpu(fe=%d visibility=%d packet=%d graph=%d submit=%d backend=%d present=%d) gpu(total=%d 3d=%d/%d 2d=%d/%d rt=%d/%d copy=%d/%d special=%d/%d setbuf=%d/%d swap=%d/%d deferred=%d/%d forward=%d/%d composite=%d/%d indirect=%d/%d) work(upload=%dKB draws=%d surf=%d verts=%d idx=%d ents=%d lights=%d packets=%d/%d/%d graph=%d/%d clusters=%d/%d lights=%d refs=%d overflow=%d fallback(draw=%d submit=%d gbuffer=%d deferred=%d forward=%d visible=%d owner=%d resource=%d)) budget(screen=%d dynamic=%d cluster=%dx%dx%d materialBatch=%d lightBatch=%d shadow=%d update=%d post=%d adaptiveCluster=%d))\n",
+		"rendererBenchmark capture(preset=%s samples=%d frame(avg=%d p50=%d p95=%d p99=%d max=%d latest=%d thresholds=%d/%d pass=%d) cpu(fe=%d visibility=%d packet=%d graph=%d submit=%d backend=%d present=%d) gpu(total=%d 3d=%d/%d 2d=%d/%d rt=%d/%d copy=%d/%d special=%d/%d lens=%d/%d setbuf=%d/%d swap=%d/%d deferred=%d/%d forward=%d/%d composite=%d/%d indirect=%d/%d) work(upload=%dKB draws=%d surf=%d verts=%d idx=%d ents=%d lights=%d packets=%d/%d/%d graph=%d/%d clusters=%d/%d lights=%d refs=%d overflow=%d fallback(draw=%d submit=%d gbuffer=%d deferred=%d forward=%d visible=%d owner=%d resource=%d)) budget(screen=%d dynamic=%d cluster=%dx%dx%d materialBatch=%d lightBatch=%d shadow=%d update=%d post=%d adaptiveCluster=%d))\n",
 		budget.presetName,
 		rg_benchmarkSampleCount,
 		percentiles.averageMsec,
@@ -196,6 +196,8 @@ void RendererBenchmarks_PrintLatestCapture( void ) {
 		sample.gpuPassSamples[RENDERER_GPU_TIMER_COPY_RENDER],
 		sample.gpuPassMsec[RENDERER_GPU_TIMER_SPECIAL_EFFECTS],
 		sample.gpuPassSamples[RENDERER_GPU_TIMER_SPECIAL_EFFECTS],
+		sample.gpuPassMsec[RENDERER_GPU_TIMER_LENS_FLARE],
+		sample.gpuPassSamples[RENDERER_GPU_TIMER_LENS_FLARE],
 		sample.gpuPassMsec[RENDERER_GPU_TIMER_SET_BUFFER],
 		sample.gpuPassSamples[RENDERER_GPU_TIMER_SET_BUFFER],
 		sample.gpuPassMsec[RENDERER_GPU_TIMER_SWAP_BUFFERS],

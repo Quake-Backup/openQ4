@@ -3,6 +3,7 @@
 
 #include "tr_local.h"
 #include "ScenePackets.h"
+#include "LensFlareSettings.h"
 #include "RendererBootstrap.h"
 
 static idScenePacketFrame rg_frontEndScenePacketFrame;
@@ -30,6 +31,20 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererClusterDebug.GetInteger() > 0
 		|| shadowMapSidecarRequested;
 }
+
+class rendererSelfTestSkipPostProcessRestore_t {
+public:
+	rendererSelfTestSkipPostProcessRestore_t()
+		: oldValue( r_skipPostProcess.GetBool() ) {
+		r_skipPostProcess.SetBool( true );
+	}
+	~rendererSelfTestSkipPostProcessRestore_t() {
+		r_skipPostProcess.SetBool( oldValue );
+	}
+
+private:
+	bool oldValue;
+};
 
 bool R_ScenePackets_FrontEndCaptureRequired( void ) {
 	return r_rendererMetrics.GetInteger() >= 2;
@@ -272,7 +287,11 @@ static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t
 	if ( passCategory == RENDER_PASS_PRESENT ) {
 		return SCENE_PACKET_CATEGORY_PRESENT;
 	}
-	if ( passCategory == RENDER_PASS_AUTHORED_POST ) {
+	if ( passCategory == RENDER_PASS_SSAO
+		|| passCategory == RENDER_PASS_MOTION_BLUR
+		|| passCategory == RENDER_PASS_LENS_FLARE
+		|| passCategory == RENDER_PASS_BLOOM
+		|| passCategory == RENDER_PASS_AUTHORED_POST ) {
 		return SCENE_PACKET_CATEGORY_POST_PROCESS;
 	}
 	if ( passCategory == RENDER_PASS_GUI ) {
@@ -306,6 +325,10 @@ static scenePacketCategory_t R_ScenePackets_CategoryForCommandPass( renderPassCa
 	switch ( passCategory ) {
 	case RENDER_PASS_SPECIAL_EFFECTS:
 		return SCENE_PACKET_CATEGORY_SPECIAL_EFFECTS;
+	case RENDER_PASS_SSAO:
+	case RENDER_PASS_MOTION_BLUR:
+	case RENDER_PASS_LENS_FLARE:
+	case RENDER_PASS_BLOOM:
 	case RENDER_PASS_AUTHORED_POST:
 		return SCENE_PACKET_CATEGORY_POST_PROCESS;
 	case RENDER_PASS_GUI:
@@ -1446,6 +1469,103 @@ static void R_ScenePackets_AddFogBlendPass( idScenePacketFrame &packetFrame, con
 	}
 }
 
+static bool R_ScenePackets_IsMainScenePostProcessView( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || viewDef->viewEntitys == NULL ) {
+		return false;
+	}
+	if ( ( viewDef->renderFlags & RF_PORTAL_SKY ) != 0 ) {
+		return false;
+	}
+	if ( viewDef->isSubview
+		|| viewDef->superView != NULL
+		|| viewDef->subviewSurface != NULL
+		|| viewDef->renderView.viewID < 0
+		|| viewDef->isXraySubview ) {
+		return false;
+	}
+	if ( viewDef->renderWorld != NULL && viewDef->renderWorld->mapName.Length() == 0 ) {
+		return false;
+	}
+	return true;
+}
+
+static bool R_ScenePackets_PostProcessBloomOrToneMapRequested( void ) {
+	return ( r_bloom.GetBool() && r_bloomIntensity.GetFloat() > 0.0001f )
+		|| r_hdrToneMap.GetBool()
+		|| r_hdrDebugView.GetInteger() > 0;
+}
+
+static bool R_ScenePackets_PostProcessMotionBlurRequested( void ) {
+	if ( !r_motionBlur.GetBool() || r_jitter.GetBool() ) {
+		return false;
+	}
+	if ( r_motionBlurDebug.GetBool() ) {
+		return true;
+	}
+	return r_motionBlurStrength.GetFloat() > 0.0f
+		&& r_motionBlurMaxPixels.GetFloat() > 0.0f
+		&& r_motionBlurSamples.GetInteger() > 0;
+}
+
+static bool R_ScenePackets_PostProcessPassRequested( const viewDef_t *viewDef, renderPassCategory_t category ) {
+	const bool mainPostView = R_ScenePackets_IsMainScenePostProcessView( viewDef );
+	if ( r_skipPostProcess.GetBool() || !mainPostView ) {
+		return false;
+	}
+
+	switch ( category ) {
+	case RENDER_PASS_LENS_FLARE: {
+		const int viewportWidth = viewDef != NULL ? viewDef->viewport.x2 - viewDef->viewport.x1 + 1 : 0;
+		const int viewportHeight = viewDef != NULL ? viewDef->viewport.y2 - viewDef->viewport.y1 + 1 : 0;
+		const rendererLensFlareSettings_t settings = RendererLensFlareSettings_Build(
+			r_lensFlare.GetInteger(),
+			glConfig.backendCaps,
+			r_skipPostProcess.GetBool(),
+			mainPostView,
+			viewportWidth,
+			viewportHeight );
+		return settings.enabled;
+	}
+	case RENDER_PASS_SSAO:
+		if ( !glConfig.GLSLProgramAvailable ) {
+			return false;
+		}
+		return r_ssao.GetBool() && r_ssaoRadius.GetFloat() > 0.0f && r_ssaoIntensity.GetFloat() > 0.0f;
+	case RENDER_PASS_MOTION_BLUR:
+		if ( !glConfig.GLSLProgramAvailable ) {
+			return false;
+		}
+		return R_ScenePackets_PostProcessMotionBlurRequested();
+	case RENDER_PASS_BLOOM:
+		if ( !glConfig.GLSLProgramAvailable ) {
+			return false;
+		}
+		return R_ScenePackets_PostProcessBloomOrToneMapRequested();
+	default:
+		return false;
+	}
+}
+
+static void R_ScenePackets_AddPostProcessCommandPass( idScenePacketFrame &packetFrame, renderPassCategory_t category ) {
+	packetFrame.AddCommandPacket();
+	packetFrame.AddPass( category, true, true );
+}
+
+static void R_ScenePackets_AddRootPostProcessPasses( idScenePacketFrame &packetFrame, const viewDef_t *viewDef ) {
+	static const renderPassCategory_t postPasses[] = {
+		RENDER_PASS_SSAO,
+		RENDER_PASS_MOTION_BLUR,
+		RENDER_PASS_LENS_FLARE,
+		RENDER_PASS_BLOOM
+	};
+
+	for ( int i = 0; i < static_cast<int>( sizeof( postPasses ) / sizeof( postPasses[0] ) ); ++i ) {
+		if ( R_ScenePackets_PostProcessPassRequested( viewDef, postPasses[i] ) ) {
+			R_ScenePackets_AddPostProcessCommandPass( packetFrame, postPasses[i] );
+		}
+	}
+}
+
 static void R_ScenePackets_AddDrawView( idScenePacketFrame &packetFrame, const viewDef_t *viewDef, bool legacyBridge ) {
 	packetFrame.AddLegacyDrawView();
 	if ( !packetFrame.AddScene( viewDef, legacyBridge ) ) {
@@ -1461,6 +1581,7 @@ static void R_ScenePackets_AddDrawView( idScenePacketFrame &packetFrame, const v
 		R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_LIGHT_GRID, R_ScenePackets_DrawSurfLightGridEligible );
 		R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_AMBIENT, R_ScenePackets_DrawSurfAmbientEligible );
 		R_ScenePackets_AddFogBlendPass( packetFrame, viewDef );
+		R_ScenePackets_AddRootPostProcessPasses( packetFrame, viewDef );
 		R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_AUTHORED_POST, R_ScenePackets_DrawSurfAuthoredPostEligible );
 	} else {
 		R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_GUI, R_ScenePackets_DrawSurfGUIEligible );
@@ -1648,6 +1769,8 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 }
 
 bool RendererScenePacket_RunSelfTest( void ) {
+	rendererSelfTestSkipPostProcessRestore_t skipPostProcessRestore;
+
 	srfTriangles_t geo;
 	memset( &geo, 0, sizeof( geo ) );
 	geo.numVerts = 3;
@@ -1800,6 +1923,37 @@ bool RendererScenePacket_RunSelfTest( void ) {
 	}
 	R_ScenePackets_EndFrame();
 
-	common->Printf( "RendererScenePacket self-test passed (backend and frontend)\n" );
+	idScenePacketFrame postPacketFrame;
+	if ( !postPacketFrame.AddScene( &worldView, false ) ) {
+		common->Printf( "RendererScenePacket self-test failed: could not add post scene\n" );
+		return false;
+	}
+	postPacketFrame.AddCommandPacket();
+	if ( !postPacketFrame.AddPass( RENDER_PASS_LENS_FLARE, true, true ) ) {
+		common->Printf( "RendererScenePacket self-test failed: could not add lens-flare post pass\n" );
+		return false;
+	}
+	postPacketFrame.AddCommandPacket();
+	if ( !postPacketFrame.AddPass( RENDER_PASS_BLOOM, true, true ) ) {
+		common->Printf( "RendererScenePacket self-test failed: could not add bloom post pass\n" );
+		return false;
+	}
+	const scenePacketFrameStats_t &postStats = postPacketFrame.Stats();
+	if ( postStats.scenePackets != 1 || postStats.passPackets != 2 || postStats.commandPackets != 2 || postStats.postProcessPackets != 2 || postStats.worldPackets != 0 || postStats.specialEffectPackets != 0 || postStats.presentPackets != 0 || postPacketFrame.Pass( 0 ).packetCategory != SCENE_PACKET_CATEGORY_POST_PROCESS || postPacketFrame.Pass( 1 ).packetCategory != SCENE_PACKET_CATEGORY_POST_PROCESS ) {
+		common->Printf(
+			"RendererScenePacket self-test failed: post command categorization scenes=%d passes=%d cmds=%d post=%d world=%d special=%d present=%d pass0=%s pass1=%s\n",
+			postStats.scenePackets,
+			postStats.passPackets,
+			postStats.commandPackets,
+			postStats.postProcessPackets,
+			postStats.worldPackets,
+			postStats.specialEffectPackets,
+			postStats.presentPackets,
+			ScenePacketCategory_Name( postPacketFrame.Pass( 0 ).packetCategory ),
+			ScenePacketCategory_Name( postPacketFrame.Pass( 1 ).packetCategory ) );
+		return false;
+	}
+
+	common->Printf( "RendererScenePacket self-test passed (backend, frontend, post commands)\n" );
 	return true;
 }

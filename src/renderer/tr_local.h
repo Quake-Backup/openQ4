@@ -2108,6 +2108,7 @@ void RB_ShowOverdraw( void );
 void RB_RenderDebugTools( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_ShutdownDebugTools( void );
 void RB_ShutdownScenePostProcess( void );
+bool RB_LensFlareRuntimeSelfTest( void );
 
 /*
 =============================================================

@@ -115,7 +115,28 @@ SHADOW_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
-ALL_SCENES = {**REQUIRED_SCENES, **SHADOW_SCENES}
+LENS_FLARE_SCENES: dict[str, dict[str, Any]] = {
+    "lensflare-storage1": {
+        "mode": "SP",
+        "map": "game/storage1",
+        "purpose": "stable indoor lens-flare capture at the early-game spawn with dense local lights and post-process coverage",
+        "path": "spawn-static",
+    },
+    "lensflare-storage2": {
+        "mode": "SP",
+        "map": "game/storage2",
+        "purpose": "indoor bright-source lens-flare capture for local lights, occlusion, and material/post interaction",
+        "path": "spawn-static",
+    },
+    "lensflare-airdefense1": {
+        "mode": "SP",
+        "map": "game/airdefense1",
+        "purpose": "outdoor lens-flare capture with sky/terrain visibility and root-scene post-processing",
+        "path": "spawn-static",
+    },
+}
+
+ALL_SCENES = {**REQUIRED_SCENES, **SHADOW_SCENES, **LENS_FLARE_SCENES}
 
 SHADOW_PRESETS: dict[str, dict[str, str]] = {
     "default": {},
@@ -146,6 +167,42 @@ SHADOW_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 
+LENS_FLARE_PRESETS: dict[str, dict[str, str]] = {
+    "default": {},
+    "off": {
+        "r_lensFlare": "0",
+    },
+    "corona": {
+        "r_skipPostProcess": "0",
+        "r_lensFlare": "1",
+    },
+    "high": {
+        "r_skipPostProcess": "0",
+        "r_lensFlare": "2",
+    },
+}
+
+LENS_FLARE_SIGNOFF_MATRIX = [
+    {
+        "platform": "Windows x64",
+        "tiers": "auto, gl41, gl45",
+        "visualEvidence": "run `--profile lensflare-signoff` with approved `.tmp\\renderer-references\\lensflare-signoff\\windows-x64` references when promotion evidence is being collected",
+        "performanceEvidence": "run the same profile with `--sample-msec 3000 --pacing-only --maxfps 0 --swap-intervals 0` and target-machine P95/P99 thresholds",
+    },
+    {
+        "platform": "Linux x64/arm64",
+        "tiers": "auto plus highest supported forced GL tier",
+        "visualEvidence": "run `--profile lensflare-signoff` against Linux-specific approved references because drivers and desktop color paths can differ from Windows",
+        "performanceEvidence": "capture uncapped pacing with `--pacing-only` under both SDL3 desktop and Steam Deck profile coverage when available",
+    },
+    {
+        "platform": "macOS",
+        "tiers": "gl41 and auto fallback",
+        "visualEvidence": "run `--profile lensflare-signoff --tiers gl41,auto` with macOS-specific references; GL 4.1 is the expected portability floor",
+        "performanceEvidence": "capture reduced-tier/off-vs-high pacing with `--pacing-only`; do not infer GL 4.3+ behavior from macOS runs",
+    },
+]
+
 for debug_mode in range(1, 7):
     SHADOW_PRESETS[f"debug{debug_mode}"] = {
         "r_shadows": "1",
@@ -165,6 +222,7 @@ PROFILE_DEFAULTS = {
         "swap": ("0",),
         "display": ("windowed",),
         "shadows": ("default",),
+        "lensFlare": ("default",),
     },
     "required": {
         "cases": tuple(REQUIRED_SCENES.keys()),
@@ -173,6 +231,7 @@ PROFILE_DEFAULTS = {
         "swap": ("0",),
         "display": ("windowed",),
         "shadows": ("default",),
+        "lensFlare": ("default",),
     },
     "tiers": {
         "cases": ("sp-airdefense1",),
@@ -181,6 +240,7 @@ PROFILE_DEFAULTS = {
         "swap": ("0",),
         "display": ("windowed",),
         "shadows": ("default",),
+        "lensFlare": ("default",),
     },
     "presentation": {
         "cases": ("sp-airdefense1",),
@@ -189,6 +249,7 @@ PROFILE_DEFAULTS = {
         "swap": PRESENTATION_SWAP_INTERVALS,
         "display": DISPLAY_MODES,
         "shadows": ("default",),
+        "lensFlare": ("default",),
     },
     "shadows": {
         "cases": tuple(SHADOW_SCENES.keys()),
@@ -197,6 +258,25 @@ PROFILE_DEFAULTS = {
         "swap": ("0",),
         "display": ("windowed",),
         "shadows": ("stencil", "mapped", "csm", "translucent", "debug1", "debug2", "debug3", "debug4", "debug5", "debug6"),
+        "lensFlare": ("default",),
+    },
+    "lensflare": {
+        "cases": tuple(LENS_FLARE_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "lensFlare": ("off", "corona", "high"),
+    },
+    "lensflare-signoff": {
+        "cases": ("lensflare-storage1", "lensflare-airdefense1"),
+        "tiers": ("auto", "gl41", "gl45"),
+        "maxfps": ("0",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "lensFlare": ("off", "corona", "high"),
     },
     "full": {
         "cases": tuple(ALL_SCENES.keys()),
@@ -205,6 +285,7 @@ PROFILE_DEFAULTS = {
         "swap": PRESENTATION_SWAP_INTERVALS,
         "display": DISPLAY_MODES,
         "shadows": ("default", "stencil", "mapped", "csm", "translucent"),
+        "lensFlare": ("default",),
     },
 }
 
@@ -229,6 +310,7 @@ class RunSpec:
     swap_interval: str
     display_mode: str
     shadow_preset: str
+    lens_flare_preset: str
     renderer: str
 
     @property
@@ -237,9 +319,18 @@ class RunSpec:
 
     @property
     def id(self) -> str:
-        return sanitize_case_id(
-            f"{self.case_id}_{self.tier}_fps{self.maxfps}_vsync{self.swap_interval}_{self.display_mode}_{self.shadow_preset}_{self.renderer}"
-        )
+        parts = [
+            self.case_id,
+            self.tier,
+            f"fps{self.maxfps}",
+            f"vsync{self.swap_interval}",
+            self.display_mode,
+            self.shadow_preset,
+        ]
+        if self.lens_flare_preset != "default":
+            parts.append(f"lf{self.lens_flare_preset}")
+        parts.append(self.renderer)
+        return sanitize_case_id("_".join(parts))
 
 
 def repo_root() -> Path:
@@ -419,6 +510,8 @@ def build_scripted_capture_lines(
         "r_rendererBindless 0",
         "r_rendererShaderReload 0",
     ]
+    for name, value in LENS_FLARE_PRESETS[spec.lens_flare_preset].items():
+        lines.append(f"{name} {value}")
     for name, value in extra_cvars:
         lines.append(f"{name} {value}")
     lines += [
@@ -871,6 +964,7 @@ def run_sp_spec(
             "args": game_args,
             "autoexecCfg": autoexec_cfg,
             "screenshotRequest": screenshot_rel,
+            "lensFlarePreset": spec.lens_flare_preset,
             "roles": [],
         }
 
@@ -912,6 +1006,7 @@ def run_sp_spec(
         "swapInterval": spec.swap_interval,
         "display": spec.display_mode,
         "shadowPreset": spec.shadow_preset,
+        "lensFlarePreset": spec.lens_flare_preset,
         "renderer": spec.renderer,
         "status": role_result["status"],
         "roles": [role_result],
@@ -1021,6 +1116,7 @@ def run_mp_spec(
             "clientAutoexecCfg": client_autoexec_cfg,
             "serverScreenshotRequest": server_screenshot,
             "clientScreenshotRequest": client_screenshot,
+            "lensFlarePreset": spec.lens_flare_preset,
             "roles": [],
         }
 
@@ -1110,6 +1206,7 @@ def run_mp_spec(
         "swapInterval": spec.swap_interval,
         "display": spec.display_mode,
         "shadowPreset": spec.shadow_preset,
+        "lensFlarePreset": spec.lens_flare_preset,
         "renderer": spec.renderer,
         "status": "pass" if ok else "fail",
         "port": port,
@@ -1125,6 +1222,7 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
     swap_values = split_csv(args.swap_intervals, defaults["swap"])
     display_values = split_csv(args.display_modes, defaults["display"])
     shadow_values = split_csv(args.shadow_presets, defaults["shadows"])
+    lens_flare_values = split_csv(args.lens_flare_presets, defaults["lensFlare"])
 
     specs: list[RunSpec] = []
     for case_id in case_ids:
@@ -1142,21 +1240,25 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                         for shadow in shadow_values:
                             if shadow not in SHADOW_PRESETS:
                                 raise ValueError(f"unknown shadow preset '{shadow}'")
-                            specs.append(
-                                RunSpec(
-                                    case_id=case_id,
-                                    mode=scene["mode"],
-                                    map_name=scene["map"],
-                                    purpose=scene["purpose"],
-                                    path_name=scene["path"],
-                                    tier=tier,
-                                    maxfps=maxfps,
-                                    swap_interval=swap,
-                                    display_mode=display,
-                                    shadow_preset=shadow,
-                                    renderer=args.renderer,
+                            for lens_flare in lens_flare_values:
+                                if lens_flare not in LENS_FLARE_PRESETS:
+                                    raise ValueError(f"unknown lens-flare preset '{lens_flare}'")
+                                specs.append(
+                                    RunSpec(
+                                        case_id=case_id,
+                                        mode=scene["mode"],
+                                        map_name=scene["map"],
+                                        purpose=scene["purpose"],
+                                        path_name=scene["path"],
+                                        tier=tier,
+                                        maxfps=maxfps,
+                                        swap_interval=swap,
+                                        display_mode=display,
+                                        shadow_preset=shadow,
+                                        lens_flare_preset=lens_flare,
+                                        renderer=args.renderer,
+                                    )
                                 )
-                            )
     if args.limit > 0:
         specs = specs[: args.limit]
     return specs
@@ -1169,7 +1271,10 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "metadata": metadata,
         "requiredScenes": REQUIRED_SCENES,
         "shadowScenes": SHADOW_SCENES,
+        "lensFlareScenes": LENS_FLARE_SCENES,
         "shadowPresets": SHADOW_PRESETS,
+        "lensFlarePresets": LENS_FLARE_PRESETS,
+        "lensFlareSignoffMatrix": LENS_FLARE_SIGNOFF_MATRIX,
         "results": results,
     }
     report_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1190,13 +1295,13 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "",
         "## Results",
         "",
-        "| Status | Case | Mode | Map | Tier | FPS | VSync | Display | Shadow | Pacing | Benchmark | Screenshot | Log |",
-        "|---|---|---|---|---|---:|---:|---|---|---|---|---|---|",
+        "| Status | Case | Mode | Map | Tier | FPS | VSync | Display | Shadow | Lens Flare | Pacing | Benchmark | Screenshot | Log |",
+        "|---|---|---|---|---|---:|---:|---|---|---|---|---|---|---|",
     ]
     for result in results:
         if result["status"] == "planned":
             lines.append(
-                f"| planned | `{result['id']}` | {result['mode']} | `{result['map']}` |  |  |  |  |  |  | dry run |  |  |"
+                f"| planned | `{result['id']}` | {result['mode']} | `{result['map']}` |  |  |  |  |  |  |  | dry run |  |  |"
             )
             continue
         role = next((item for item in result.get("roles", []) if item["role"] in ("client", "sp")), result.get("roles", [{}])[0])
@@ -1212,7 +1317,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         screenshot = role.get("screenshot", "")
         log = role.get("log", "")
         lines.append(
-            f"| {result['status']} | `{result['id']}` | {result['mode']} | `{result['map']}` | `{result['tier']}` | {result['maxfps']} | {result['swapInterval']} | {result['display']} | `{result['shadowPreset']}` | {pacing or 'missing'} | {benchmark or 'missing'} | `{screenshot}` | `{log}` |"
+            f"| {result['status']} | `{result['id']}` | {result['mode']} | `{result['map']}` | `{result['tier']}` | {result['maxfps']} | {result['swapInterval']} | {result['display']} | `{result['shadowPreset']}` | `{result.get('lensFlarePreset', 'default')}` | {pacing or 'missing'} | {benchmark or 'missing'} | `{screenshot}` | `{log}` |"
         )
         for role_result in result.get("roles", []):
             if role_result.get("missing"):
@@ -1242,6 +1347,39 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
 
     lines += [
         "",
+        "## Lens Flare Capture Coverage",
+        "",
+        "| Case | Mode | Map | Purpose |",
+        "|---|---|---|---|",
+    ]
+    for case_id, scene in LENS_FLARE_SCENES.items():
+        lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
+
+    lines += [
+        "",
+        "## Lens Flare Presets",
+        "",
+        "| Preset | Cvars |",
+        "|---|---|",
+    ]
+    for preset, cvars in LENS_FLARE_PRESETS.items():
+        cvar_text = ", ".join(f"`{key} {value}`" for key, value in cvars.items()) or "stock/default cvars"
+        lines.append(f"| `{preset}` | {cvar_text} |")
+
+    lines += [
+        "",
+        "## Lens Flare Sign-Off Matrix",
+        "",
+        "| Platform | Required Tiers | Visual Evidence | Performance Evidence |",
+        "|---|---|---|---|",
+    ]
+    for item in LENS_FLARE_SIGNOFF_MATRIX:
+        lines.append(
+            f"| {item['platform']} | {item['tiers']} | {item['visualEvidence']} | {item['performanceEvidence']} |"
+        )
+
+    lines += [
+        "",
         "## Shadow Presets",
         "",
         "| Preset | Cvars |",
@@ -1264,6 +1402,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--swap-intervals", default="", help="Comma-separated r_swapInterval values. Overrides profile values.")
     parser.add_argument("--display-modes", default="", help="Comma-separated display modes: windowed,fullscreen.")
     parser.add_argument("--shadow-presets", default="", help="Comma-separated shadow presets. Use --list to inspect values.")
+    parser.add_argument("--lens-flare-presets", default="", help="Comma-separated lens-flare presets: default,off,corona,high.")
     parser.add_argument("--renderer", default="best", help="Value for r_renderer, usually best or arb2.")
     parser.add_argument("--benchmark-preset", default="baseline", help="Value for r_rendererBenchmarkPreset.")
     parser.add_argument("--modern-executor", action="store_true", help="Opt into r_rendererModernExecutor for gameplay benchmarking. Defaults off so ARB2/high-FPS baselines are not polluted by side-path work.")
@@ -1314,6 +1453,7 @@ def print_list() -> None:
             * len(defaults["swap"])
             * len(defaults["display"])
             * len(defaults["shadows"])
+            * len(defaults["lensFlare"])
         )
         print(f"  {profile}: {count} generated case(s)")
     print("\nRequired gameplay cases:")
@@ -1322,10 +1462,20 @@ def print_list() -> None:
     print("\nShadow correctness cases:")
     for case_id, scene in SHADOW_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nLens flare capture cases:")
+    for case_id, scene in LENS_FLARE_SCENES.items():
+        print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nShadow presets:")
     for preset, cvars in SHADOW_PRESETS.items():
         cvar_text = ", ".join(f"{key}={value}" for key, value in cvars.items()) or "stock defaults"
         print(f"  {preset}: {cvar_text}")
+    print("\nLens flare presets:")
+    for preset, cvars in LENS_FLARE_PRESETS.items():
+        cvar_text = ", ".join(f"{key}={value}" for key, value in cvars.items()) or "stock/default cvars"
+        print(f"  {preset}: {cvar_text}")
+    print("\nLens flare sign-off matrix:")
+    for item in LENS_FLARE_SIGNOFF_MATRIX:
+        print(f"  {item['platform']}: {item['tiers']} - {item['visualEvidence']}; {item['performanceEvidence']}")
 
 
 def main(argv: list[str]) -> int:

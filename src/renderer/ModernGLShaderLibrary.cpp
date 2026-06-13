@@ -47,6 +47,8 @@ static const modernGLShaderProgramDescriptor_t rg_modernGLShaderProgramDescripto
 	{ MODERN_GL_SHADER_TRANSPARENT_FORWARD, RENDER_PASS_FOG_BLEND, RENDER_MATERIAL_TRANSLUCENT, 7, 0, 2, 0, 0, 0, 1, 0, true, true, true, false, "transparentForward" },
 	{ MODERN_GL_SHADER_GUI, RENDER_PASS_GUI, RENDER_MATERIAL_GUI, 0, 0, 2, 0, 0, 0, 0, 0, true, false, false, false, "gui" },
 	{ MODERN_GL_SHADER_POST_COPY, RENDER_PASS_AUTHORED_POST, RENDER_MATERIAL_POST_PROCESS, 0, 0, 2, 0, 0, 0, 0, 0, true, true, false, false, "postCopy" },
+	{ MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION, RENDER_PASS_LENS_FLARE, RENDER_MATERIAL_POST_PROCESS, 8, 0, 2, 0, 0, 0, 0, 0, true, true, false, false, "lensFlareAccumulation" },
+	{ MODERN_GL_SHADER_LENS_FLARE_COMPOSITE, RENDER_PASS_LENS_FLARE, RENDER_MATERIAL_POST_PROCESS, 9, 0, 2, 0, 0, 0, 0, 0, true, true, false, false, "lensFlareComposite" },
 	{ MODERN_GL_SHADER_DEBUG_VISUALIZATION, RENDER_PASS_AUTHORED_POST, RENDER_MATERIAL_POST_PROCESS, 0, 0, 0, 0, 0, 0, 0, 1, false, true, false, true, "debugVisualization" }
 };
 
@@ -78,6 +80,10 @@ const char *ModernGLShaderProgramKind_Name( modernGLShaderProgramKind_t kind ) {
 		return "gui";
 	case MODERN_GL_SHADER_POST_COPY:
 		return "postCopy";
+	case MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION:
+		return "lensFlareAccumulation";
+	case MODERN_GL_SHADER_LENS_FLARE_COMPOSITE:
+		return "lensFlareComposite";
 	case MODERN_GL_SHADER_DEBUG_VISUALIZATION:
 		return "debugVisualization";
 	default:
@@ -92,6 +98,11 @@ static const modernGLShaderProgramDescriptor_t *R_ModernGLShaderLibrary_Descript
 		}
 	}
 	return NULL;
+}
+
+static bool R_ModernGLShaderLibrary_IsLensFlareKind( modernGLShaderProgramKind_t kind ) {
+	return kind == MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION
+		|| kind == MODERN_GL_SHADER_LENS_FLARE_COMPOSITE;
 }
 
 static void R_ModernGLShaderLibrary_SetStatus( const char *status ) {
@@ -974,6 +985,57 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		return;
 	}
 
+	if ( kind == MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION ) {
+		idStr::snPrintf(
+			buffer,
+			bufferSize,
+			"#version %d\n"
+			"in vec2 vTexCoord;\n"
+			"layout(location = 0) out vec4 out_Color;\n"
+			"uniform vec4 uDebugColor;\n"
+			"uniform vec4 uLocalParams;\n"
+			"uniform sampler2D uMainTexture;\n"
+			"uniform sampler2D uSceneDepth;\n"
+			"void main() {\n"
+			"    vec2 uv = clamp(vTexCoord, vec2(0.0), vec2(1.0));\n"
+			"    vec4 source = texture(uMainTexture, uv);\n"
+			"    float sceneDepth = texture(uSceneDepth, uv).r;\n"
+			"    float threshold = max(uLocalParams.x, 0.0);\n"
+			"    float knee = max(uLocalParams.y, 0.001);\n"
+			"    float intensity = max(uLocalParams.z, 0.0);\n"
+			"    float luminance = dot(max(source.rgb, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));\n"
+			"    float mask = smoothstep(threshold, threshold + knee, luminance);\n"
+			"    float depthVisibility = step(sceneDepth, 1.0);\n"
+			"    vec3 flare = max(source.rgb - vec3(threshold), vec3(0.0)) * mask * depthVisibility * intensity * max(uDebugColor.rgb, vec3(0.0));\n"
+			"    out_Color = vec4(flare, mask * uDebugColor.a);\n"
+			"}\n",
+			glslVersion );
+		return;
+	}
+
+	if ( kind == MODERN_GL_SHADER_LENS_FLARE_COMPOSITE ) {
+		idStr::snPrintf(
+			buffer,
+			bufferSize,
+			"#version %d\n"
+			"in vec2 vTexCoord;\n"
+			"layout(location = 0) out vec4 out_Color;\n"
+			"uniform vec4 uDebugColor;\n"
+			"uniform vec4 uLocalParams;\n"
+			"uniform sampler2D uMainTexture;\n"
+			"uniform sampler2D uLensFlareAccum;\n"
+			"void main() {\n"
+			"    vec2 uv = clamp(vTexCoord + uLocalParams.yz, vec2(0.0), vec2(1.0));\n"
+			"    vec4 scene = texture(uMainTexture, uv);\n"
+			"    vec3 flare = max(texture(uLensFlareAccum, uv).rgb, vec3(0.0));\n"
+			"    float intensity = max(uLocalParams.x, 0.0);\n"
+			"    vec3 color = max(scene.rgb, vec3(0.0)) + flare * intensity * max(uDebugColor.rgb, vec3(0.0));\n"
+			"    out_Color = vec4(color, scene.a * uDebugColor.a);\n"
+			"}\n",
+			glslVersion );
+		return;
+	}
+
 	if ( kind == MODERN_GL_SHADER_DEBUG_VISUALIZATION ) {
 		idStr::snPrintf(
 			buffer,
@@ -1073,6 +1135,20 @@ static bool R_ModernGLShaderLibrary_KindUsesMaterialTextures( modernGLShaderProg
 		|| kind == MODERN_GL_SHADER_FOG_BLEND;
 }
 
+static bool R_ModernGLShaderLibrary_KindUsesMaterialTextureTable( modernGLShaderProgramKind_t kind ) {
+	return kind != MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE
+		&& kind != MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION
+		&& kind != MODERN_GL_SHADER_LENS_FLARE_COMPOSITE;
+}
+
+static bool R_ModernGLShaderLibrary_KindUsesSceneDepthTexture( modernGLShaderProgramKind_t kind ) {
+	return kind == MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION;
+}
+
+static bool R_ModernGLShaderLibrary_KindUsesLensFlareAccumTexture( modernGLShaderProgramKind_t kind ) {
+	return kind == MODERN_GL_SHADER_LENS_FLARE_COMPOSITE;
+}
+
 static bool R_ModernGLShaderLibrary_KindUsesDrawVertColor( modernGLShaderProgramKind_t kind ) {
 	(void)kind;
 	return false;
@@ -1153,10 +1229,12 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.reflection.usesLocalParams = R_ModernGLShaderLibrary_KindUsesLocalParams( info.kind );
 	info.reflection.usesMainTexture = R_ModernGLShaderLibrary_KindUsesMainTexture( info.kind );
 	info.reflection.usesMaterialTextures = R_ModernGLShaderLibrary_KindUsesMaterialTextures( info.kind );
-	info.reflection.usesMaterialTextureTable = info.glslVersion >= 430 && info.reflection.usesMainTexture && info.kind != MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE;
+	info.reflection.usesMaterialTextureTable = info.glslVersion >= 430 && info.reflection.usesMainTexture && R_ModernGLShaderLibrary_KindUsesMaterialTextureTable( info.kind );
 	info.reflection.usesMaterialFlags = info.reflection.usesMaterialTextures;
 	info.reflection.usesMaterialEnhancement = info.reflection.usesMaterialTextures;
 	info.reflection.usesDrawRecords = info.glslVersion >= 430 && info.kind != MODERN_GL_SHADER_DEFERRED_LIGHT_RESOLVE;
+	info.reflection.usesSceneDepthTexture = R_ModernGLShaderLibrary_KindUsesSceneDepthTexture( info.kind );
+	info.reflection.usesLensFlareAccumTexture = R_ModernGLShaderLibrary_KindUsesLensFlareAccumTexture( info.kind );
 	info.reflection.usesTexCoord = info.reflection.usesMainTexture;
 	info.reflection.usesDrawVertColor = R_ModernGLShaderLibrary_KindUsesDrawVertColor( info.kind );
 	info.reflection.usesDrawVertTangentSpace = R_ModernGLShaderLibrary_KindUsesDrawVertTangentSpace( info.kind );
@@ -1179,6 +1257,8 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.reflection.materialFlagsLocation = glGetUniformLocation( info.program, "uMaterialFlags" );
 	info.reflection.materialEnhancementLocation = glGetUniformLocation( info.program, "uMaterialEnhancement" );
 	info.reflection.drawRecordModeLocation = glGetUniformLocation( info.program, "uDrawRecordMode" );
+	info.reflection.sceneDepthTextureLocation = glGetUniformLocation( info.program, "uSceneDepth" );
+	info.reflection.lensFlareAccumTextureLocation = glGetUniformLocation( info.program, "uLensFlareAccum" );
 
 	R_ModernGLShaderLibrary_AddReflectionRecord(
 		info.reflection.uniformBlocks,
@@ -1259,6 +1339,34 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 			GL_SAMPLER_2D,
 			true,
 			info.reflection.mainTextureLocation >= 0 );
+	}
+	if ( info.reflection.usesSceneDepthTexture ) {
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.samplers,
+			info.reflection.samplerCount,
+			"uSceneDepth",
+			MODERN_GL_SHADER_RESOURCE_SAMPLER,
+			-1,
+			info.reflection.sceneDepthTextureLocation,
+			1,
+			1,
+			GL_SAMPLER_2D,
+			true,
+			info.reflection.sceneDepthTextureLocation >= 0 );
+	}
+	if ( info.reflection.usesLensFlareAccumTexture ) {
+		R_ModernGLShaderLibrary_AddReflectionRecord(
+			info.reflection.samplers,
+			info.reflection.samplerCount,
+			"uLensFlareAccum",
+			MODERN_GL_SHADER_RESOURCE_SAMPLER,
+			-1,
+			info.reflection.lensFlareAccumTextureLocation,
+			1,
+			1,
+			GL_SAMPLER_2D,
+			true,
+			info.reflection.lensFlareAccumTextureLocation >= 0 );
 	}
 	if ( info.reflection.usesMaterialTextures ) {
 		R_ModernGLShaderLibrary_AddReflectionRecord(
@@ -1523,6 +1631,8 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	info.materialFlagsLocation = info.reflection.materialFlagsLocation;
 	info.materialEnhancementLocation = info.reflection.materialEnhancementLocation;
 	info.drawRecordModeLocation = info.reflection.drawRecordModeLocation;
+	info.sceneDepthTextureLocation = info.reflection.sceneDepthTextureLocation;
+	info.lensFlareAccumTextureLocation = info.reflection.lensFlareAccumTextureLocation;
 
 	if ( info.frameBlockIndex < 0 || info.modelViewProjectionLocation < 0 ) {
 		common->Warning( "Modern GL program '%s' is missing required reflected bindings", info.name );
@@ -1542,6 +1652,14 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	}
 	if ( info.reflection.usesMainTexture && info.mainTextureLocation < 0 ) {
 		common->Warning( "Modern GL program '%s' is missing uMainTexture", info.name );
+		return false;
+	}
+	if ( info.reflection.usesSceneDepthTexture && info.sceneDepthTextureLocation < 0 ) {
+		common->Warning( "Modern GL program '%s' is missing uSceneDepth", info.name );
+		return false;
+	}
+	if ( info.reflection.usesLensFlareAccumTexture && info.lensFlareAccumTextureLocation < 0 ) {
+		common->Warning( "Modern GL program '%s' is missing uLensFlareAccum", info.name );
 		return false;
 	}
 	if ( info.reflection.usesMaterialTextures
@@ -1568,10 +1686,16 @@ static bool R_ModernGLShaderLibrary_ReflectProgram( modernGLShaderProgramInfo_t 
 	}
 
 	glUniformBlockBinding( info.program, static_cast<GLuint>( info.frameBlockIndex ), 0 );
-	if ( info.reflection.usesMainTexture || info.reflection.usesMaterialTextures ) {
+	if ( info.reflection.usesMainTexture || info.reflection.usesMaterialTextures || info.reflection.usesSceneDepthTexture || info.reflection.usesLensFlareAccumTexture ) {
 		glUseProgram( info.program );
 		if ( info.reflection.usesMainTexture ) {
 			glUniform1i( info.mainTextureLocation, 0 );
+		}
+		if ( info.reflection.usesSceneDepthTexture ) {
+			glUniform1i( info.sceneDepthTextureLocation, 1 );
+		}
+		if ( info.reflection.usesLensFlareAccumTexture ) {
+			glUniform1i( info.lensFlareAccumTextureLocation, 1 );
 		}
 		if ( info.reflection.usesMaterialTextures ) {
 			glUniform1i( info.normalTextureLocation, 1 );
@@ -1645,6 +1769,12 @@ static void R_ModernGLShaderLibrary_MarkKindReady( modernGLShaderProgramKind_t k
 	case MODERN_GL_SHADER_POST_COPY:
 		readyFlag = &rg_modernGLShaderLibraryStats.postCopyProgramReady;
 		break;
+	case MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION:
+		readyFlag = &rg_modernGLShaderLibraryStats.lensFlareAccumulationProgramReady;
+		break;
+	case MODERN_GL_SHADER_LENS_FLARE_COMPOSITE:
+		readyFlag = &rg_modernGLShaderLibraryStats.lensFlareCompositeProgramReady;
+		break;
 	case MODERN_GL_SHADER_DEBUG_VISUALIZATION:
 		readyFlag = &rg_modernGLShaderLibraryStats.debugVisualizationProgramReady;
 		break;
@@ -1654,6 +1784,49 @@ static void R_ModernGLShaderLibrary_MarkKindReady( modernGLShaderProgramKind_t k
 	if ( readyFlag != NULL && !*readyFlag ) {
 		*readyFlag = true;
 		rg_modernGLShaderLibraryStats.readyProgramKindCount++;
+	}
+}
+
+static void R_ModernGLShaderLibrary_UpdateLensFlareStats( const modernGLShaderProgramInfo_t &info ) {
+	if ( !R_ModernGLShaderLibrary_IsLensFlareKind( info.kind ) ) {
+		return;
+	}
+
+	rg_modernGLShaderLibraryStats.lensFlareProgramCount++;
+	if ( info.kind == MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION ) {
+		rg_modernGLShaderLibraryStats.lensFlareAccumulationProgramCount++;
+	} else if ( info.kind == MODERN_GL_SHADER_LENS_FLARE_COMPOSITE ) {
+		rg_modernGLShaderLibraryStats.lensFlareCompositeProgramCount++;
+	}
+	rg_modernGLShaderLibraryStats.lensFlareReflectedSamplerCount += info.reflection.samplerCount;
+
+	int *versionCount = NULL;
+	bool *versionReady = NULL;
+	switch ( info.glslVersion ) {
+	case 330:
+		versionCount = &rg_modernGLShaderLibraryStats.lensFlareGlsl330ProgramCount;
+		versionReady = &rg_modernGLShaderLibraryStats.lensFlareGLSL330Ready;
+		break;
+	case 410:
+		versionCount = &rg_modernGLShaderLibraryStats.lensFlareGlsl410ProgramCount;
+		versionReady = &rg_modernGLShaderLibraryStats.lensFlareGLSL410Ready;
+		break;
+	case 430:
+		versionCount = &rg_modernGLShaderLibraryStats.lensFlareGlsl430ProgramCount;
+		versionReady = &rg_modernGLShaderLibraryStats.lensFlareGLSL430Ready;
+		break;
+	case 450:
+		versionCount = &rg_modernGLShaderLibraryStats.lensFlareGlsl450ProgramCount;
+		versionReady = &rg_modernGLShaderLibraryStats.lensFlareGLSL450Ready;
+		break;
+	default:
+		break;
+	}
+	if ( versionCount != NULL ) {
+		( *versionCount )++;
+		if ( versionReady != NULL && *versionCount >= 2 ) {
+			*versionReady = true;
+		}
 	}
 }
 
@@ -1699,6 +1872,8 @@ static bool R_ModernGLShaderLibrary_CreateProgram( int glslVersion, modernGLShad
 	info.materialFlagsLocation = -1;
 	info.materialEnhancementLocation = -1;
 	info.drawRecordModeLocation = -1;
+	info.sceneDepthTextureLocation = -1;
+	info.lensFlareAccumTextureLocation = -1;
 	idStr::snPrintf(
 		info.name,
 		sizeof( info.name ),
@@ -1816,6 +1991,7 @@ static bool R_ModernGLShaderLibrary_CreateProgram( int glslVersion, modernGLShad
 		rg_modernGLShaderLibraryStats.highestGLSLVersion = glslVersion;
 	}
 	R_ModernGLShaderLibrary_MarkKindReady( kind );
+	R_ModernGLShaderLibrary_UpdateLensFlareStats( info );
 	rg_modernGLShaderLibraryStats.frameConstantsReady = true;
 	return true;
 }
@@ -1914,9 +2090,46 @@ const modernGLShaderProgramInfo_t *R_ModernGLShaderLibrary_FindProgram( modernGL
 	return best;
 }
 
+static const modernGLShaderProgramInfo_t *R_ModernGLShaderLibrary_FindExactProgram( modernGLShaderProgramKind_t kind, int glslVersion ) {
+	for ( int i = 0; i < rg_modernGLShaderProgramCount; ++i ) {
+		const modernGLShaderProgramInfo_t &info = rg_modernGLShaderPrograms[i];
+		if ( info.kind == kind && info.glslVersion == glslVersion && info.linked ) {
+			return &info;
+		}
+	}
+	return NULL;
+}
+
+static bool R_ModernGLShaderLibrary_LensFlareProgramHasContract( const modernGLShaderProgramInfo_t *program, modernGLShaderProgramKind_t kind, int glslVersion ) {
+	if ( program == NULL
+		|| program->program == 0
+		|| !program->linked
+		|| program->kind != kind
+		|| program->glslVersion != glslVersion
+		|| program->passCategory != RENDER_PASS_LENS_FLARE
+		|| program->materialClass != RENDER_MATERIAL_POST_PROCESS
+		|| !program->reflection.usesMainTexture
+		|| program->mainTextureLocation < 0 ) {
+		return false;
+	}
+	if ( kind == MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION ) {
+		return program->reflection.usesSceneDepthTexture
+			&& program->sceneDepthTextureLocation >= 0
+			&& !program->reflection.usesLensFlareAccumTexture
+			&& program->reflection.samplerCount >= 2;
+	}
+	if ( kind == MODERN_GL_SHADER_LENS_FLARE_COMPOSITE ) {
+		return !program->reflection.usesSceneDepthTexture
+			&& program->reflection.usesLensFlareAccumTexture
+			&& program->lensFlareAccumTextureLocation >= 0
+			&& program->reflection.samplerCount >= 2;
+	}
+	return false;
+}
+
 void R_ModernGLShaderLibrary_PrintGfxInfo( void ) {
 	common->Printf(
-		"Modern GL shader library: %s, programs=%d, kinds=%d/%d, permutations=%d, failed=%d, versions=%d [330=%d 410=%d 430=%d 450=%d], highestGLSL=%d, reloads=%d, reflection(ubo=%d ssbo=%d uniforms=%d samplers=%d images=%d attrs=%d), texturePrograms=%d, ready(depth=%d shadow=%d flat=%d lightGrid=%d fog=%d gbuf=%d/%d deferred=%d clustered=%d/%d transparent=%d gui=%d post=%d debug=%d)\n",
+		"Modern GL shader library: %s, programs=%d, kinds=%d/%d, permutations=%d, failed=%d, versions=%d [330=%d 410=%d 430=%d 450=%d], highestGLSL=%d, reloads=%d, reflection(ubo=%d ssbo=%d uniforms=%d samplers=%d images=%d attrs=%d), texturePrograms=%d, ready(depth=%d shadow=%d flat=%d lightGrid=%d fog=%d gbuf=%d/%d deferred=%d clustered=%d/%d transparent=%d gui=%d post=%d lensFlare=%d/%d debug=%d), lensFlare(programs=%d accum=%d composite=%d samplers=%d tiers=330:%d/%d 410:%d/%d 430:%d/%d 450:%d/%d)\n",
 		rg_modernGLShaderLibraryStats.available ? "available" : rg_modernGLShaderLibraryStats.status,
 		rg_modernGLShaderLibraryStats.programCount,
 		rg_modernGLShaderLibraryStats.readyProgramKindCount,
@@ -1950,7 +2163,21 @@ void R_ModernGLShaderLibrary_PrintGfxInfo( void ) {
 		rg_modernGLShaderLibraryStats.transparentForwardProgramReady ? 1 : 0,
 		rg_modernGLShaderLibraryStats.guiProgramReady ? 1 : 0,
 		rg_modernGLShaderLibraryStats.postCopyProgramReady ? 1 : 0,
-		rg_modernGLShaderLibraryStats.debugVisualizationProgramReady ? 1 : 0 );
+		rg_modernGLShaderLibraryStats.lensFlareAccumulationProgramReady ? 1 : 0,
+		rg_modernGLShaderLibraryStats.lensFlareCompositeProgramReady ? 1 : 0,
+		rg_modernGLShaderLibraryStats.debugVisualizationProgramReady ? 1 : 0,
+		rg_modernGLShaderLibraryStats.lensFlareProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareAccumulationProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareCompositeProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareReflectedSamplerCount,
+		rg_modernGLShaderLibraryStats.lensFlareGlsl330ProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareGLSL330Ready ? 1 : 0,
+		rg_modernGLShaderLibraryStats.lensFlareGlsl410ProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareGLSL410Ready ? 1 : 0,
+		rg_modernGLShaderLibraryStats.lensFlareGlsl430ProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareGLSL430Ready ? 1 : 0,
+		rg_modernGLShaderLibraryStats.lensFlareGlsl450ProgramCount,
+		rg_modernGLShaderLibraryStats.lensFlareGLSL450Ready ? 1 : 0 );
 }
 
 bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
@@ -1980,6 +2207,8 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 		|| !stats.transparentForwardProgramReady
 		|| !stats.guiProgramReady
 		|| !stats.postCopyProgramReady
+		|| !stats.lensFlareAccumulationProgramReady
+		|| !stats.lensFlareCompositeProgramReady
 		|| !stats.debugVisualizationProgramReady ) {
 		common->Printf( "RendererModernGLShaderLibrary self-test failed: required variant missing\n" );
 		return false;
@@ -1996,6 +2225,83 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 	}
 	if ( stats.highestGLSLVersion >= 430 && ( stats.reflectedShaderStorageBlockCount <= 0 || stats.reflectedImageCount <= 0 ) ) {
 		common->Printf( "RendererModernGLShaderLibrary self-test failed: GL430 resource reflection missing\n" );
+		return false;
+	}
+
+	const modernGLShaderProgramInfo_t *lensAccumProgram = R_ModernGLShaderLibrary_FindProgram( MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION, stats.highestGLSLVersion );
+	const modernGLShaderProgramInfo_t *lensCompositeProgram = R_ModernGLShaderLibrary_FindProgram( MODERN_GL_SHADER_LENS_FLARE_COMPOSITE, stats.highestGLSLVersion );
+	if ( lensAccumProgram == NULL
+		|| lensCompositeProgram == NULL
+		|| lensAccumProgram->passCategory != RENDER_PASS_LENS_FLARE
+		|| lensCompositeProgram->passCategory != RENDER_PASS_LENS_FLARE
+		|| lensAccumProgram->materialClass != RENDER_MATERIAL_POST_PROCESS
+		|| lensCompositeProgram->materialClass != RENDER_MATERIAL_POST_PROCESS
+		|| !lensAccumProgram->reflection.usesMainTexture
+		|| !lensAccumProgram->reflection.usesSceneDepthTexture
+		|| !lensCompositeProgram->reflection.usesMainTexture
+		|| !lensCompositeProgram->reflection.usesLensFlareAccumTexture ) {
+		common->Printf( "RendererModernGLShaderLibrary self-test failed: lens-flare family contract mismatch\n" );
+		return false;
+	}
+
+	const int expectedLensFlarePrograms = stats.validatedGLSLVersionCount * 2;
+	if ( stats.lensFlareProgramCount != expectedLensFlarePrograms
+		|| stats.lensFlareAccumulationProgramCount != stats.validatedGLSLVersionCount
+		|| stats.lensFlareCompositeProgramCount != stats.validatedGLSLVersionCount
+		|| stats.lensFlareReflectedSamplerCount < expectedLensFlarePrograms * 2 ) {
+		common->Printf(
+			"RendererModernGLShaderLibrary self-test failed: lens-flare tier stats mismatch (programs=%d/%d accum=%d composite=%d versions=%d samplers=%d)\n",
+			stats.lensFlareProgramCount,
+			expectedLensFlarePrograms,
+			stats.lensFlareAccumulationProgramCount,
+			stats.lensFlareCompositeProgramCount,
+			stats.validatedGLSLVersionCount,
+			stats.lensFlareReflectedSamplerCount );
+		return false;
+	}
+
+	int lensFlareVersionCount = 0;
+	const int lensFlareVersions[4] = { 330, 410, 430, 450 };
+	const int lensFlareProgramCounts[4] = {
+		stats.lensFlareGlsl330ProgramCount,
+		stats.lensFlareGlsl410ProgramCount,
+		stats.lensFlareGlsl430ProgramCount,
+		stats.lensFlareGlsl450ProgramCount
+	};
+	const bool lensFlareVersionReady[4] = {
+		stats.lensFlareGLSL330Ready,
+		stats.lensFlareGLSL410Ready,
+		stats.lensFlareGLSL430Ready,
+		stats.lensFlareGLSL450Ready
+	};
+	for ( int versionIndex = 0; versionIndex < 4; ++versionIndex ) {
+		const int programCount = lensFlareProgramCounts[versionIndex];
+		if ( programCount <= 0 ) {
+			continue;
+		}
+		const int glslVersion = lensFlareVersions[versionIndex];
+		const modernGLShaderProgramInfo_t *versionAccumProgram = R_ModernGLShaderLibrary_FindExactProgram( MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION, glslVersion );
+		const modernGLShaderProgramInfo_t *versionCompositeProgram = R_ModernGLShaderLibrary_FindExactProgram( MODERN_GL_SHADER_LENS_FLARE_COMPOSITE, glslVersion );
+		if ( programCount != 2
+			|| !lensFlareVersionReady[versionIndex]
+			|| !R_ModernGLShaderLibrary_LensFlareProgramHasContract( versionAccumProgram, MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION, glslVersion )
+			|| !R_ModernGLShaderLibrary_LensFlareProgramHasContract( versionCompositeProgram, MODERN_GL_SHADER_LENS_FLARE_COMPOSITE, glslVersion ) ) {
+			common->Printf(
+				"RendererModernGLShaderLibrary self-test failed: lens-flare GLSL %d contract mismatch (programs=%d ready=%d accum=%p composite=%p)\n",
+				glslVersion,
+				programCount,
+				lensFlareVersionReady[versionIndex] ? 1 : 0,
+				static_cast<const void *>( versionAccumProgram ),
+				static_cast<const void *>( versionCompositeProgram ) );
+			return false;
+		}
+		lensFlareVersionCount++;
+	}
+	if ( lensFlareVersionCount != stats.validatedGLSLVersionCount ) {
+		common->Printf(
+			"RendererModernGLShaderLibrary self-test failed: lens-flare version count mismatch (%d/%d)\n",
+			lensFlareVersionCount,
+			stats.validatedGLSLVersionCount );
 		return false;
 	}
 
@@ -2023,6 +2329,14 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 		}
 		if ( program->reflection.usesMainTexture && program->mainTextureLocation < 0 ) {
 			common->Printf( "RendererModernGLShaderLibrary self-test failed: sampler reflection mismatch for %s\n", program->name );
+			return false;
+		}
+		if ( program->reflection.usesSceneDepthTexture && program->sceneDepthTextureLocation < 0 ) {
+			common->Printf( "RendererModernGLShaderLibrary self-test failed: scene-depth sampler reflection mismatch for %s\n", program->name );
+			return false;
+		}
+		if ( program->reflection.usesLensFlareAccumTexture && program->lensFlareAccumTextureLocation < 0 ) {
+			common->Printf( "RendererModernGLShaderLibrary self-test failed: lens-flare accum sampler reflection mismatch for %s\n", program->name );
 			return false;
 		}
 		if ( program->reflection.usesMaterialTextures
@@ -2062,7 +2376,7 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 	}
 
 	common->Printf(
-		"RendererModernGLShaderLibrary self-test passed (%d programs, %d kinds, %d permutations, GLSL %d, reflection ubo=%d ssbo=%d samplers=%d images=%d)\n",
+		"RendererModernGLShaderLibrary self-test passed (%d programs, %d kinds, %d permutations, GLSL %d, reflection ubo=%d ssbo=%d samplers=%d images=%d lensFlare=2 lensFlarePrograms=%d lensFlareVersions=%d/%d lensFlareSamplers=%d)\n",
 		stats.programCount,
 		stats.readyProgramKindCount,
 		stats.permutationCount,
@@ -2070,6 +2384,10 @@ bool RendererModernGLShaderLibrary_RunSelfTest( void ) {
 		stats.reflectedUniformBlockCount,
 		stats.reflectedShaderStorageBlockCount,
 		stats.reflectedSamplerCount,
-		stats.reflectedImageCount );
+		stats.reflectedImageCount,
+		stats.lensFlareProgramCount,
+		lensFlareVersionCount,
+		stats.validatedGLSLVersionCount,
+		stats.lensFlareReflectedSamplerCount );
 	return true;
 }

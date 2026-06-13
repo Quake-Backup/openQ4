@@ -34,6 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererBootstrap.h"
 #include "GLStateCache.h"
 #include "RendererBenchmarks.h"
+#include "LensFlareSettings.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
 #include "RenderGraph.h"
@@ -616,6 +617,20 @@ static void R_RendererGpuTimerSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererGpuTimer_RunSelfTest() ) {
 		common->Warning( "Renderer GPU timer self-test failed" );
+	}
+}
+
+static void R_RendererLensFlareSettingsSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererLensFlareSettings_RunSelfTest() ) {
+		common->Warning( "Renderer lens-flare settings self-test failed" );
+	}
+}
+
+static void R_RendererLensFlareRuntimeSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RB_LensFlareRuntimeSelfTest() ) {
+		common->Warning( "Renderer lens-flare runtime self-test failed" );
 	}
 }
 
@@ -3264,6 +3279,8 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererBenchmarkCapture", R_RendererBenchmarkCapture_f, CMD_FL_RENDERER, "print the latest renderer benchmark capture summary" );
 	cmdSystem->AddCommand( "rendererUploadSelfTest", R_RendererUploadSelfTest_f, CMD_FL_RENDERER, "run renderer upload stream self tests" );
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
+	cmdSystem->AddCommand( "rendererLensFlareSettingsSelfTest", R_RendererLensFlareSettingsSelfTest_f, CMD_FL_RENDERER, "run renderer lens-flare settings self tests" );
+	cmdSystem->AddCommand( "rendererLensFlareRuntimeSelfTest", R_RendererLensFlareRuntimeSelfTest_f, CMD_FL_RENDERER, "run renderer lens-flare accumulation and composite self tests" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphSelfTest", R_RendererRenderGraphSelfTest_f, CMD_FL_RENDERER, "run renderer resource-graph self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceSelfTest", R_RendererRenderGraphResourceSelfTest_f, CMD_FL_RENDERER, "run renderer graph resource owner self tests" );

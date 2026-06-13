@@ -175,6 +175,7 @@ static bool R_RenderGraphResources_IsHDRColorResource( const char *name ) {
 			|| !idStr::Icmp( name, "deferredLight" )
 			|| !idStr::Icmp( name, "hybridSceneColor" )
 			|| !idStr::Icmp( name, "postA" )
+			|| !idStr::Icmp( name, "lensFlareAccum" )
 			|| !idStr::Icmp( name, "gbufferEmissive" )
 			|| !idStr::Icmp( name, "translucentShadowMoments" ) );
 }
@@ -220,6 +221,20 @@ static bool R_RenderGraphResources_FormatForType( const char *name, renderGraphR
 		return false;
 	}
 }
+
+class renderGraphResourceSelfTestSkipPostProcessRestore_t {
+public:
+	renderGraphResourceSelfTestSkipPostProcessRestore_t()
+		: oldValue( r_skipPostProcess.GetBool() ) {
+		r_skipPostProcess.SetBool( true );
+	}
+	~renderGraphResourceSelfTestSkipPostProcessRestore_t() {
+		r_skipPostProcess.SetBool( oldValue );
+	}
+
+private:
+	bool oldValue;
+};
 
 static bool R_RenderGraphResources_CanUseGLObjects( const renderBackendCaps_t &caps, const renderFeatureSet_t &features ) {
 	if ( !features.renderGraph || !caps.hasFBO || caps.maxTextureSize <= 0 ) {
@@ -1090,6 +1105,8 @@ void R_RenderGraphResources_DumpLatest( void ) {
 }
 
 static bool R_RenderGraphResources_BuildWorldSelfTestGraph( idRenderGraph &graph ) {
+	renderGraphResourceSelfTestSkipPostProcessRestore_t skipPostProcessRestore;
+
 	drawSurf_t drawSurfs[2];
 	memset( drawSurfs, 0, sizeof( drawSurfs ) );
 	drawSurf_t *drawSurfPtrs[2] = { &drawSurfs[0], &drawSurfs[1] };
