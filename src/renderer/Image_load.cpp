@@ -76,6 +76,9 @@ static bool R_ShouldSuppressMissingImageWarning( const char * imageName ) {
 	if ( idStr::Icmp( imageName, "textures/common_misc/flickerflare" ) == 0 ) {
 		return true;
 	}
+	if ( idStr::FindText( imageName, "_lightgrid_" ) >= 0 ) {
+		return true;
+	}
 	return false;
 }
 
@@ -386,8 +389,12 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		return;
 	}
 
+	defaulted = false;
+
+	bool sourceFileTimeKnown = false;
 	if ( com_productionMode.GetInteger() != 0 ) {
 		sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
+		sourceFileTimeKnown = true;
 		if ( cubeFiles != CF_2D ) {
 			opts.textureType = TT_CUBIC;
 			repeat = TR_CLAMP;
@@ -396,10 +403,8 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		if ( cubeFiles != CF_2D ) {
 			opts.textureType = TT_CUBIC;
 			repeat = TR_CLAMP;
-			R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
 		} else {
 			opts.textureType = TT_2D;
-			R_LoadImageProgram( GetName(), NULL, NULL, NULL, &sourceFileTime, &usage );
 		}
 	}
 
@@ -421,7 +426,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	}
 
 	idBinaryImage im( generatedName );
-	binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
+	binaryFileTime = im.LoadFromGeneratedFileUnchecked();
 
 	// BFHACK, do not want to tweak on buildgame so catch these images here
 	if ( binaryFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
@@ -430,40 +435,54 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			if ( generatedName.Find( "guis/assets/white#__0000", false ) >= 0 ) {
 				generatedName.Replace( "white#__0000", "white#__0200" );
 				im.SetName( generatedName );
-				binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
+				binaryFileTime = im.LoadFromGeneratedFileUnchecked();
 				break;
 			}
 			if ( generatedName.Find( "guis/assets/white#__0100", false ) >= 0 ) {
 				generatedName.Replace( "white#__0100", "white#__0200" );
 				im.SetName( generatedName );
-				binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
+				binaryFileTime = im.LoadFromGeneratedFileUnchecked();
 				break;
 			}
 			if ( generatedName.Find( "textures/black#__0100", false ) >= 0 ) {
 				generatedName.Replace( "black#__0100", "black#__0200" );
 				im.SetName( generatedName );
-				binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
+				binaryFileTime = im.LoadFromGeneratedFileUnchecked();
 				break;
 			}
 			if ( generatedName.Find( "textures/decals/bulletglass1_d#__0100", false ) >= 0 ) {
 				generatedName.Replace( "bulletglass1_d#__0100", "bulletglass1_d#__0200" );
 				im.SetName( generatedName );
-				binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
+				binaryFileTime = im.LoadFromGeneratedFileUnchecked();
 				break;
 			}
 			if ( generatedName.Find( "models/monsters/skeleton/skeleton01_d#__1000", false ) >= 0 ) {
 				generatedName.Replace( "skeleton01_d#__1000", "skeleton01_d#__0100" );
 				im.SetName( generatedName );
-				binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
+				binaryFileTime = im.LoadFromGeneratedFileUnchecked();
 				break;
 			}
 		}
 	}
-	const bimageFile_t & header = im.GetFileHeader();
+	if ( binaryFileTime != FILE_NOT_FOUND_TIMESTAMP && !fileSystem->InProductionMode() ) {
+		if ( !sourceFileTimeKnown ) {
+			if ( cubeFiles != CF_2D ) {
+				R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
+			} else {
+				R_LoadImageProgram( GetName(), NULL, NULL, NULL, &sourceFileTime, &usage );
+			}
+			sourceFileTimeKnown = true;
+		}
+		if ( im.GetFileHeader().sourceFileTime != sourceFileTime ) {
+			im.Clear();
+			binaryFileTime = FILE_NOT_FOUND_TIMESTAMP;
+		}
+	}
 
 	if ( ( fileSystem->InProductionMode() && binaryFileTime != FILE_NOT_FOUND_TIMESTAMP ) || ( ( binaryFileTime != FILE_NOT_FOUND_TIMESTAMP )
-		&& R_GeneratedImageHeaderMatchesDerivedOpts( header, opts, usage )
+		&& R_GeneratedImageHeaderMatchesDerivedOpts( im.GetFileHeader(), opts, usage )
 		) ) {
+		const bimageFile_t & header = im.GetFileHeader();
 		opts.width = header.width;
 		opts.height = header.height;
 		opts.numLevels = header.numLevels;
@@ -475,6 +494,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		//	fileSystem->AddImagePreload( GetName(), filter, repeat, usage, cubeFiles );
 		//}
 	} else {
+		im.Clear();
 		if ( cubeFiles != CF_2D ) {
 			int size;
 			byte * pics[6];
@@ -497,6 +517,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 					}
 				}
 
+				defaulted = true;
 				return;
 			}
 
@@ -540,6 +561,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 					SubImageUpload( level, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
 				}
 
+				defaulted = true;
 				return;
 			}
 

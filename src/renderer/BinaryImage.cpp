@@ -41,6 +41,22 @@ If you have questions concerning this license or the applicable additional terms
 #include "Color/ColorSpace.h"
 
 idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_BOOL, "Use high quality (slow) compression" );
+idCVar image_writeGeneratedImages( "image_writeGeneratedImages", "0", CVAR_RENDERER | CVAR_BOOL, "write generated binary image cache files during runtime loads" );
+idCVar image_showGeneratedImageWrites( "image_showGeneratedImageWrites", "0", CVAR_RENDERER | CVAR_BOOL, "print each generated binary image cache write" );
+
+static bool R_ShouldWriteGeneratedImages() {
+	return image_writeGeneratedImages.GetBool() || cvarSystem->GetCVarBool( "com_makingBuild" );
+}
+
+/*
+========================
+idBinaryImage::Clear
+========================
+*/
+void idBinaryImage::Clear() {
+	images.Clear();
+	memset( &fileData, 0, sizeof( fileData ) );
+}
 
 /*
 ========================
@@ -317,6 +333,10 @@ idBinaryImage::WriteGeneratedFile
 ========================
 */
 ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
+	if ( !R_ShouldWriteGeneratedImages() ) {
+		return FILE_NOT_FOUND_TIMESTAMP;
+	}
+
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
 	// Write generated cache data to savepath so long image-program names stay under
@@ -326,7 +346,9 @@ ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
 		idLib::Warning( "idBinaryImage: Could not open file '%s'", binaryFileName.c_str() );
 		return FILE_NOT_FOUND_TIMESTAMP;
 	}
-	idLib::Printf( "Writing %s\n", binaryFileName.c_str() );
+	if ( image_showGeneratedImageWrites.GetBool() ) {
+		idLib::Printf( "Writing %s\n", binaryFileName.c_str() );
+	}
 
 	fileData.headerMagic = BIMAGE_MAGIC;
 	fileData.sourceFileTime = sourceFileTime;
@@ -366,7 +388,28 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	if ( bFile == NULL ) {
 		return FILE_NOT_FOUND_TIMESTAMP;
 	}
-	if ( LoadFromGeneratedFile( bFile, sourceFileTime ) ) {
+	if ( LoadFromGeneratedFile( bFile, sourceFileTime, true ) ) {
+		return bFile->Timestamp();
+	}
+	return FILE_NOT_FOUND_TIMESTAMP;
+}
+
+/*
+==========================
+idBinaryImage::LoadFromGeneratedFileUnchecked
+
+Loads an existing generated image before source timestamp validation. Callers
+must compare the header timestamp before using the data outside production mode.
+==========================
+*/
+ID_TIME_T idBinaryImage::LoadFromGeneratedFileUnchecked() {
+	idStr binaryFileName;
+	MakeGeneratedFileName( binaryFileName );
+	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
+	if ( bFile == NULL ) {
+		return FILE_NOT_FOUND_TIMESTAMP;
+	}
+	if ( LoadFromGeneratedFile( bFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
 		return bFile->Timestamp();
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
@@ -379,7 +422,7 @@ idBinaryImage::LoadFromGeneratedFile
 Load the preprocessed image from the generated folder.
 ==========================
 */
-bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileTime ) {
+bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileTime, bool validateSourceFileTime ) {
 	if ( bFile->Read( &fileData, sizeof( fileData ) ) <= 0 ) {
 		return false;
 	}
@@ -396,7 +439,7 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 	if ( BIMAGE_MAGIC != fileData.headerMagic ) {
 		return false;
 	}
-	if (fileData.sourceFileTime != sourceFileTime && !fileSystem->InProductionMode()) {
+	if ( validateSourceFileTime && fileData.sourceFileTime != sourceFileTime && !fileSystem->InProductionMode()) {
 		return false;
 	}
 

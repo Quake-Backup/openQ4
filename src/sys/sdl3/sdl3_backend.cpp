@@ -3343,7 +3343,7 @@ static bool SDL3_ApplySwapInterval(void) {
 		return false;
 	}
 
-	const int requestedInterval = r_swapInterval.GetInteger();
+	const int requestedInterval = R_GetEffectiveSwapInterval();
 	if (!SDL_GL_SetSwapInterval(requestedInterval)) {
 		common->Printf("SDL3: failed to set swap interval %d: %s\n", requestedInterval, SDL_GetError());
 		return false;

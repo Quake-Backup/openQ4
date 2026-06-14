@@ -57,6 +57,8 @@ idCVar	idSessionLocal::com_guid( "com_guid", "", CVAR_SYSTEM | CVAR_ARCHIVE | CV
 idCVar	idSessionLocal::com_lastQuicksave( "com_lastQuicksave", "Quicksave0", CVAR_SYSTEM | CVAR_ARCHIVE, "last quicksave slot" );
 idCVar	com_loadingContinueAutoAdvance( "com_loadingContinueAutoAdvance", "0", CVAR_SYSTEM | CVAR_INTEGER, "auto-accept the single-player loading-screen continue gate after N msec (testing), 0 = off", 0, 60000, idCmdSystem::ArgCompletion_Integer<0,60000> );
 idCVar	com_skipLoadingContinue( "com_skipLoadingContinue", "0", CVAR_SYSTEM | CVAR_BOOL, "skip the single-player loading-screen continue gate (testing)" );
+idCVar	com_minLoadingGuiMsec( "com_minLoadingGuiMsec", "250", CVAR_SYSTEM | CVAR_INTEGER, "minimum time to show the loading GUI before blocking map work starts", 0, 2000, idCmdSystem::ArgCompletion_Integer<0,2000> );
+idCVar	com_showLevelLoadTimes( "com_showLevelLoadTimes", "1", CVAR_SYSTEM | CVAR_BOOL, "print detailed phase timings for level loads" );
 idCVar	com_skipLogoVideos( "com_skipLogoVideos", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "skip startup logo videos and go straight to the main menu" );
 idCVar	com_showLevelshotBounds( "com_showLevelshotBounds", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "draw a centered 4:3 frame guide for levelshot composition" );
 idCVar	s_muteUnfocused( "s_muteUnfocused", "1", CVAR_ARCHIVE | CVAR_BOOL, "mute all audio when the application is out of focus" );
@@ -2661,8 +2663,9 @@ void idSessionLocal::ShowLoadingGui() {
 	// introduced in D3XP code. don't think it actually fixes anything, but doesn't hurt either
 #if 1
 	// Try and prevent the while loop from being skipped over (long hitch on the main thread?)
-	int stop = Sys_Milliseconds() + 1000;
-	int force = 10;
+	const int minShowMsec = idMath::ClampInt( 0, 2000, com_minLoadingGuiMsec.GetInteger() );
+	int stop = Sys_Milliseconds() + minShowMsec;
+	int force = minShowMsec > 0 ? 2 : 1;
 	while ( Sys_Milliseconds() < stop || force-- > 0 ) {
 		openQ4_BeginPresentationFrame();
 		com_frameTime = common->GetUserCmdTime( com_ticNumber );
@@ -3971,6 +3974,18 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	} 
 	
 	int start = Sys_Milliseconds();
+	int phaseStart = start;
+	int renderWorldMsec = 0;
+	int gameInitMsec = 0;
+	int playerSpawnMsec = 0;
+	int mediaFinishMsec = 0;
+	int mediaRenderMsec = 0;
+	int mediaSoundMsec = 0;
+	int mediaDeclMsec = 0;
+	int mediaBseMsec = 0;
+	int mediaLoadSizeMsec = 0;
+	int mediaUiMsec = 0;
+	int settleMsec = 0;
 
 	common->Printf( "--------- Map Initialization ---------\n" );
 	common->Printf( "Map: %s\n", mapString.c_str() );
@@ -3979,6 +3994,8 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	if ( !rw->InitFromMap( fullMapName ) ) {
 		common->Error( "couldn't load %s", fullMapName.c_str() );
 	}
+	renderWorldMsec = Sys_Milliseconds() - phaseStart;
+	phaseStart = Sys_Milliseconds();
 
 	// for the synchronous networking we needed to roll the angles over from
 	// level to level, but now we can just clear everything
@@ -4006,6 +4023,8 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		game->SetServerInfo( mapSpawnData.serverInfo );
 		game->InitFromNewMap( fullMapName, rw, idAsyncNetwork::server.IsActive(), idAsyncNetwork::client.IsActive(), Sys_Milliseconds() );
 	}
+	gameInitMsec = Sys_Milliseconds() - phaseStart;
+	phaseStart = Sys_Milliseconds();
 
 	if ( !idAsyncNetwork::IsActive() && !loadingSaveGame ) {
 		// spawn players
@@ -4013,18 +4032,34 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 			game->SpawnPlayer( i, false, NULL );
 		}
 	}
+	playerSpawnMsec = Sys_Milliseconds() - phaseStart;
+	phaseStart = Sys_Milliseconds();
 
 	// actually purge/load the media
+	int mediaPhaseStart = phaseStart;
 	if ( !reloadingSameMap ) {
 		renderSystem->EndLevelLoad();
+		mediaRenderMsec = Sys_Milliseconds() - mediaPhaseStart;
+		mediaPhaseStart = Sys_Milliseconds();
 		soundSystem->EndLevelLoad();
+		mediaSoundMsec = Sys_Milliseconds() - mediaPhaseStart;
+		mediaPhaseStart = Sys_Milliseconds();
 		declManager->EndLevelLoad();
+		mediaDeclMsec = Sys_Milliseconds() - mediaPhaseStart;
+		mediaPhaseStart = Sys_Milliseconds();
 		if ( bse ) {
 			bse->EndLevelLoad();
 		}
+		mediaBseMsec = Sys_Milliseconds() - mediaPhaseStart;
+		mediaPhaseStart = Sys_Milliseconds();
 		SetBytesNeededForMapLoad( mapString.c_str(), fileSystem->GetReadCount() );
+		mediaLoadSizeMsec = Sys_Milliseconds() - mediaPhaseStart;
+		mediaPhaseStart = Sys_Milliseconds();
 	}
 	uiManager->EndLevelLoad();
+	mediaUiMsec = Sys_Milliseconds() - mediaPhaseStart;
+	mediaFinishMsec = Sys_Milliseconds() - phaseStart;
+	phaseStart = Sys_Milliseconds();
 
 	if ( !idAsyncNetwork::IsActive() && !loadingSaveGame ) {
 		// run a few frames to allow everything to settle
@@ -4032,11 +4067,31 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 			game->RunFrame( mapSpawnData.mapSpawnUsercmd, 0, true, 0 ); // serverGameFrame isn't used
 		}
 	}
+	settleMsec = Sys_Milliseconds() - phaseStart;
 
 	common->Printf ("-----------------------------------\n");
 
 	int	msec = Sys_Milliseconds() - start;
 	common->Printf( "%6d msec to load %s\n", msec, mapString.c_str() );
+	if ( com_showLevelLoadTimes.GetBool() ) {
+		common->Printf(
+			"Map load phases: renderWorld=%d gameInit=%d playerSpawn=%d mediaFinish=%d settle=%d total=%d msec\n",
+			renderWorldMsec,
+			gameInitMsec,
+			playerSpawnMsec,
+			mediaFinishMsec,
+			settleMsec,
+			msec );
+		common->Printf(
+			"Map media phases: render=%d sound=%d decl=%d bse=%d loadSize=%d ui=%d total=%d msec\n",
+			mediaRenderMsec,
+			mediaSoundMsec,
+			mediaDeclMsec,
+			mediaBseMsec,
+			mediaLoadSizeMsec,
+			mediaUiMsec,
+			mediaFinishMsec );
+	}
 
 	// let the game trigger interaction generation after the first game frame
 	// so lights and entities have presented to the render world.
@@ -5249,6 +5304,8 @@ void idSessionLocal::UpdateScreen( bool outOfSequence ) {
 	if ( outOfSequence ) {
 		Sys_GrabMouseCursor( false );
 	}
+
+	R_SetLoadingScreenSwapIntervalBypass( insideExecuteMapChange );
 
 	renderSystem->BeginFrame( renderSystem->GetScreenWidth(), renderSystem->GetScreenHeight() );
 

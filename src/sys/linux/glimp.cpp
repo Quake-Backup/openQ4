@@ -381,7 +381,7 @@ static bool GLX_ApplySwapInterval( void ) {
 		return false;
 	}
 
-	const int requestedInterval = r_swapInterval.GetInteger();
+	const int requestedInterval = R_GetEffectiveSwapInterval();
 	int interval = requestedInterval;
 
 	if ( glx_swap_interval_ext != NULL &&

@@ -48,7 +48,9 @@ public:
 	void				Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips, bool filterNeutralAlpha = false );
 	void				LoadCubeFromMemory( int width, const byte * pics[6], int numLevels, textureFormat_t & textureFormat, bool gammaMips );
 
+	void				Clear();
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );
+	ID_TIME_T			LoadFromGeneratedFileUnchecked();
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 
 	const bimageFile_t &	GetFileHeader() { return fileData; }
@@ -94,7 +96,7 @@ private:
 
 private:
 	void				MakeGeneratedFileName( idStr & gfn );
-	bool				LoadFromGeneratedFile( idFile * f, ID_TIME_T sourceFileTime );
+	bool				LoadFromGeneratedFile( idFile * f, ID_TIME_T sourceFileTime, bool validateSourceFileTime );
 };
 
 #endif // __BINARYIMAGE_H__

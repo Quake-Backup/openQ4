@@ -382,6 +382,7 @@ void idCollisionModelManagerLocal::Clear( void ) {
 	maxContacts = 0;
 	numContacts = 0;
 	numInlinedProcClipModels = 0;
+	precacheModelMisses.Clear();
 }
 
 /*
@@ -4266,6 +4267,7 @@ idCollisionModel *idCollisionModelManagerLocal::LoadModel(const char* mapName, c
 
 	const char *fullName = GetFullModelName( mapName, modelName, fullModelName );
 	const char *loadName = GetModelLoadFileName( mapName, modelName, loadFileName );
+	const bool rememberPrecacheMiss = precache && !com_makingBuild.GetBool();
 
 	handle = static_cast<idCollisionModelLocal *>( FindModel( fullName ) );
 	if ( handle != NULL && handle->fileTime != static_cast<ID_TIME_T>( -1 ) ) {
@@ -4276,6 +4278,10 @@ idCollisionModel *idCollisionModelManagerLocal::LoadModel(const char* mapName, c
 	if ( handle != NULL ) {
 		CM_AddRenderModelReference( handle );
 		return handle;
+	}
+
+	if ( rememberPrecacheMiss && precacheModelMisses.Find( loadFileName ) != NULL ) {
+		return NULL;
 	}
 
 	// try to load a .cm file
@@ -4289,11 +4295,17 @@ idCollisionModel *idCollisionModelManagerLocal::LoadModel(const char* mapName, c
 			return handle;
 		} else {
 			common->Warning( "idCollisionModelManagerLocal::LoadModel: collision file for '%s' contains different model", fullName );
+			if ( rememberPrecacheMiss ) {
+				precacheModelMisses.AddUnique( loadFileName );
+			}
 		}
 	}
 
 	// if only precaching .cm files do not waste memory converting render models
 	if ( precache ) {
+		if ( rememberPrecacheMiss ) {
+			precacheModelMisses.AddUnique( loadFileName );
+		}
 		return 0;
 	}
 

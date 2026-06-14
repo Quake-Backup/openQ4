@@ -619,6 +619,7 @@ private:			// collision map data
 	int				maxContacts;
 	int				numContacts;
 	int				numInlinedProcClipModels;
+	idStrList		precacheModelMisses;
 };
 
 extern idVec4 cm_color;

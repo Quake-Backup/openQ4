@@ -309,6 +309,30 @@ idCVar cl_gunfov_adjust( "cl_gunfov_adjust", "1", CVAR_RENDERER | CVAR_ARCHIVE |
 idCVar r_ignoreGLErrors( "r_ignoreGLErrors", "1", CVAR_RENDERER | CVAR_BOOL, "ignore GL errors" );
 idCVar r_finish( "r_finish", "0", CVAR_RENDERER | CVAR_BOOL, "force a call to glFinish() every frame" );
 idCVar r_swapInterval( "r_swapInterval", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "controls the platform swap interval / VSync state" );
+idCVar r_disableVSyncDuringLevelLoad( "r_disableVSyncDuringLevelLoad", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "temporarily disable VSync for loading-screen presents during blocking level loads" );
+
+static bool r_loadingScreenSwapIntervalBypass = false;
+
+static int R_GetEffectiveSwapIntervalForState( bool loadingScreenBypassActive ) {
+	const int configuredInterval = r_swapInterval.GetInteger();
+	if ( loadingScreenBypassActive && r_disableVSyncDuringLevelLoad.GetBool() && configuredInterval != 0 ) {
+		return 0;
+	}
+	return configuredInterval;
+}
+
+void R_SetLoadingScreenSwapIntervalBypass( bool active ) {
+	const int oldInterval = R_GetEffectiveSwapIntervalForState( r_loadingScreenSwapIntervalBypass );
+	r_loadingScreenSwapIntervalBypass = active;
+	const int newInterval = R_GetEffectiveSwapIntervalForState( r_loadingScreenSwapIntervalBypass );
+	if ( oldInterval != newInterval ) {
+		r_swapInterval.SetModified();
+	}
+}
+
+int R_GetEffectiveSwapInterval( void ) {
+	return R_GetEffectiveSwapIntervalForState( r_loadingScreenSwapIntervalBypass );
+}
 
 idCVar r_gamma( "r_gamma", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "changes gamma tables", 0.5f, 3.0f );
 idCVar r_brightness( "r_brightness", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "changes gamma tables", 0.5f, 2.0f );

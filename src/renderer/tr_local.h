@@ -1153,6 +1153,7 @@ extern idCVar cl_gunfov_adjust;		// weapon FOV aspect policy
 extern idCVar r_finish;					// force a call to glFinish() every frame
 extern idCVar r_frontBuffer;			// draw to front buffer for debugging
 extern idCVar r_swapInterval;			// controls platform swap interval / VSync
+extern idCVar r_disableVSyncDuringLevelLoad;	// temporarily bypass VSync while drawing blocking loading screens
 extern idCVar r_offsetFactor;			// polygon offset parameter
 extern idCVar r_offsetUnits;			// polygon offset parameter
 extern idCVar r_singleTriangle;			// only draw a single triangle per primitive
@@ -1177,6 +1178,8 @@ extern idCVar r_rendererBenchmarkPreset;	// benchmark budget preset
 extern idCVar r_rendererPerfThresholdP95;	// custom P95 benchmark threshold in milliseconds
 extern idCVar r_rendererPerfThresholdP99;	// custom P99 benchmark threshold in milliseconds
 extern idCVar r_rendererAdaptiveClusterGrid;	// use preset-driven cluster-grid dimensions
+void R_SetLoadingScreenSwapIntervalBypass( bool active );
+int R_GetEffectiveSwapInterval( void );
 extern idCVar r_rendererDynamicResolution;	// allow benchmark screen-percentage experiments
 extern idCVar r_rendererUploadMegs;		// dynamic upload stream size in megabytes per frame buffer
 extern idCVar r_rendererUploadFrameBuffers;	// dynamic upload stream frame-buffer rotation depth
