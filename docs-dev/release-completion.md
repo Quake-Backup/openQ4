@@ -10,6 +10,7 @@ Process:
 
 ## Ready For Changelog
 
+- [x] Linux AI wake/sleep behavior is more reliable: SP/MP PVS visibility merging now uses fixed 32-bit words on every platform and the connected-area flood no longer reads past its queue, preventing monsters from incorrectly going dormant when they should remain connected to the player.
 - [x] Multiplayer light-grid coverage now includes one-bounce bakes for Q4DM1, Q4DM2, and Q4DM3; the light-grid receiver now replays terrain material blend layers instead of lighting only one diffuse stage, and the baker completes light-grid metadata files reliably after atlas generation.
 - [x] Save-game loading is more reliable: restored trace-model caches now accept stock-compatible saved collision data without an over-strict plane check, and failed or interrupted restores clean up safely instead of crashing during map shutdown.
 - [x] macOS manual releases now publish both OpenGL and Metal ARM64 packages reliably: the release workflow passes dash-prefixed package suffixes in an argument-safe form, so `-opengl` and `-metal` variants no longer fail before packaging starts.
