@@ -1193,6 +1193,19 @@ this doesn't do any occlusion testing, simply ignoring non-gui surfaces.
 start / end are in global world coordinates.
 ================
 */
+static idRenderModel *R_GuiTraceModelForEntity( idRenderEntityLocal *def ) {
+	idRenderModel *model = def->parms.hModel;
+	if ( model == NULL ) {
+		return NULL;
+	}
+
+	if ( model->IsDynamicModel() == DM_STATIC ) {
+		return def->parms.callback != NULL ? NULL : model;
+	}
+
+	return R_EntityDefDynamicModel( def );
+}
+
 guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 start, const idVec3 end ) const {
 	localTrace_t	local;
 	idVec3			localStart, localEnd, bestPoint;
@@ -1216,8 +1229,8 @@ guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 st
 		return pt;
 	}
 
-	model = def->parms.hModel;
-	if ( def->parms.callback || !def->parms.hModel || def->parms.hModel->IsDynamicModel() != DM_STATIC ) {
+	model = R_GuiTraceModelForEntity( def );
+	if ( model == NULL ) {
 		return pt;
 	}
 
@@ -1301,7 +1314,8 @@ void R_GuiTraceProbe_f( const idCmdArgs &args ) {
 		if ( def == NULL ) {
 			continue;
 		}
-		const idRenderModel *model = def->parms.hModel;
+		const idRenderModel *sourceModel = def->parms.hModel;
+		idRenderModel *model = R_GuiTraceModelForEntity( def );
 		if ( model == NULL ) {
 			continue;
 		}
@@ -1324,8 +1338,9 @@ void R_GuiTraceProbe_f( const idCmdArgs &args ) {
 				guiEntities++;
 				int guiNum = shader->GetEntityGui() - 1;
 				idUserInterface *gui = ( guiNum >= 0 && guiNum < MAX_RENDERENTITY_GUI ) ? def->parms.gui[guiNum] : NULL;
-				common->Printf( "guiTraceProbe: handle %d model '%s' dynamic=%d callback=%d gui='%s' interactive=%d\n",
-					i, model->Name(), (int)model->IsDynamicModel(), def->parms.callback != NULL,
+				common->Printf( "guiTraceProbe: handle %d model '%s' traceModel '%s' dynamic=%d callback=%d gui='%s' interactive=%d\n",
+					i, sourceModel != NULL ? sourceModel->Name() : "NULL", model->Name(),
+					sourceModel != NULL ? (int)sourceModel->IsDynamicModel() : -1, def->parms.callback != NULL,
 					gui != NULL ? gui->Name() : "NULL",
 					gui != NULL ? (int)gui->IsInteractive() : -1 );
 			}
