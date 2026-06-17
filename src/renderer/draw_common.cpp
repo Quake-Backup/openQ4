@@ -8916,6 +8916,7 @@ static void RB_TouchLightGridResidencyArea( idRenderWorldLocal *world, int areaI
 	}
 
 	rbLightGridResidencyLastTouched[areaIndex] = frameIndex;
+	world->EnsureLightGridAreaImages( areaIndex );
 	RB_LoadLightGridResidencyImages( lightGrid );
 }
 
@@ -9056,6 +9057,10 @@ static void RB_STD_DrawLightGridSurface( const drawSurf_t *surf, const LightGrid
 	idImage *irradianceImage = lightGrid.irradianceImage;
 	if ( irradianceImage == NULL ) {
 		return;
+	}
+
+	if ( backEnd.viewDef != NULL && backEnd.viewDef->renderWorld != NULL ) {
+		backEnd.viewDef->renderWorld->EnsureLightGridAreaImages( lightGrid.area );
 	}
 
 	if ( !irradianceImage->IsLoaded() ) {

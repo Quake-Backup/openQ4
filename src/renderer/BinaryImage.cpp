@@ -329,25 +329,12 @@ void idBinaryImage::LoadCubeFromMemory( int width, const byte * pics[6], int num
 
 /*
 ========================
-idBinaryImage::WriteGeneratedFile
+idBinaryImage::WriteToFile
 ========================
 */
-ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
-	if ( !R_ShouldWriteGeneratedImages() ) {
-		return FILE_NOT_FOUND_TIMESTAMP;
-	}
-
-	idStr binaryFileName;
-	MakeGeneratedFileName( binaryFileName );
-	// Write generated cache data to savepath so long image-program names stay under
-	// Windows path limits even when fs_basepath points at "Program Files".
-	idFileLocal file( fileSystem->OpenFileWrite( binaryFileName, "fs_savepath" ) );
+bool idBinaryImage::WriteToFile( idFile *file, ID_TIME_T sourceFileTime ) {
 	if ( file == NULL ) {
-		idLib::Warning( "idBinaryImage: Could not open file '%s'", binaryFileName.c_str() );
-		return FILE_NOT_FOUND_TIMESTAMP;
-	}
-	if ( image_showGeneratedImageWrites.GetBool() ) {
-		idLib::Printf( "Writing %s\n", binaryFileName.c_str() );
+		return false;
 	}
 
 	fileData.headerMagic = BIMAGE_MAGIC;
@@ -369,7 +356,38 @@ ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
 		file->WriteBig( img.width );
 		file->WriteBig( img.height );
 		file->WriteBig( img.dataSize );
-		file->Write( img.data, img.dataSize );
+		if ( file->Write( img.data, img.dataSize ) != img.dataSize ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/*
+========================
+idBinaryImage::WriteGeneratedFile
+========================
+*/
+ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
+	if ( !R_ShouldWriteGeneratedImages() ) {
+		return FILE_NOT_FOUND_TIMESTAMP;
+	}
+
+	idStr binaryFileName;
+	MakeGeneratedFileName( binaryFileName );
+	// Write generated cache data to savepath so long image-program names stay under
+	// Windows path limits even when fs_basepath points at "Program Files".
+	idFileLocal file( fileSystem->OpenFileWrite( binaryFileName, "fs_savepath" ) );
+	if ( file == NULL ) {
+		idLib::Warning( "idBinaryImage: Could not open file '%s'", binaryFileName.c_str() );
+		return FILE_NOT_FOUND_TIMESTAMP;
+	}
+	if ( image_showGeneratedImageWrites.GetBool() ) {
+		idLib::Printf( "Writing %s\n", binaryFileName.c_str() );
+	}
+
+	if ( !WriteToFile( file, sourceFileTime ) ) {
+		return FILE_NOT_FOUND_TIMESTAMP;
 	}
 	return file->Timestamp();
 }
@@ -413,6 +431,15 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFileUnchecked() {
 		return bFile->Timestamp();
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
+}
+
+/*
+==========================
+idBinaryImage::LoadFromFile
+==========================
+*/
+bool idBinaryImage::LoadFromFile( idFile *file ) {
+	return LoadFromGeneratedFile( file, FILE_NOT_FOUND_TIMESTAMP, false );
 }
 
 /*

@@ -435,6 +435,19 @@ static bool Sys_GetLinuxProcessorInfo( idStr &processorName, int &logicalCount, 
 	return processorName.Length() > 0 || logicalCount > 0 || physicalCount > 0;
 }
 
+static int Sys_RoundSystemRamMegabytes( unsigned long long bytes, int fallbackMegabytes ) {
+	if ( bytes == 0 ) {
+		return fallbackMegabytes;
+	}
+
+	unsigned long long megabytes = bytes / ( 1024ULL * 1024ULL );
+	megabytes = ( megabytes + 8ULL ) & ~15ULL;
+	if ( megabytes > static_cast<unsigned long long>( idMath::INT_MAX ) ) {
+		return idMath::INT_MAX;
+	}
+	return static_cast<int>( megabytes );
+}
+
 /*
 ==========================
 Sys_ReportWaylandRuntime
@@ -800,23 +813,22 @@ returns in megabytes
 ================
 */
 int Sys_GetSystemRam( void ) {
-	long	count, page_size;
-	int		mb;
+	long	count, pageSize;
 
 	count = sysconf( _SC_PHYS_PAGES );
-	if ( count == -1 ) {
+	if ( count <= 0 ) {
 		common->Printf( "GetSystemRam: sysconf _SC_PHYS_PAGES failed\n" );
 		return 512;
 	}	
-	page_size = sysconf( _SC_PAGE_SIZE );
-	if ( page_size == -1 ) {
+	pageSize = sysconf( _SC_PAGE_SIZE );
+	if ( pageSize <= 0 ) {
 		common->Printf( "GetSystemRam: sysconf _SC_PAGE_SIZE failed\n" );
 		return 512;
 	}
-	mb= (int)( (double)count * (double)page_size / ( 1024 * 1024 ) );
-	// round to the nearest 16Mb
-	mb = ( mb + 8 ) & ~15;
-	return mb;
+	return Sys_RoundSystemRamMegabytes(
+		static_cast<unsigned long long>( count ) * static_cast<unsigned long long>( pageSize ),
+		512
+	);
 }
 
 /*

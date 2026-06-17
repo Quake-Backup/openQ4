@@ -138,6 +138,8 @@ static bool s_sdlDiagnosticCommandsRegistered = false;
 static bool s_sdlDisplaySummaryLogged = false;
 static bool s_sdlVideoDriverSummaryLogged = false;
 static bool s_sdlGraphicsBridgeSummaryLogged = false;
+static bool s_sdlLifecycleEventWatchRegistered = false;
+static SDL_AtomicInt s_sdlLifecyclePending = { 0 };
 static float s_sdlMouseWheelRemainderY = 0.0f;
 static float s_sdlRelativeMouseRemainderX = 0.0f;
 static float s_sdlRelativeMouseRemainderY = 0.0f;
@@ -300,6 +302,10 @@ static bool s_windowAspectSnapActive = false;
 static float s_windowAspectSnapRatio = 0.0f;
 static bool s_screenParmTransitionActive = false;
 static bool s_waylandSpanWarningLogged = false;
+
+static const int SDL3_LIFECYCLE_PENDING_BACKGROUND = 1 << 0;
+static const int SDL3_LIFECYCLE_PENDING_FOREGROUND = 1 << 1;
+static const int SDL3_LIFECYCLE_PENDING_LOW_MEMORY = 1 << 2;
 
 typedef enum {
 	SDL3_VIDEO_DRIVER_UNKNOWN = 0,
@@ -658,7 +664,32 @@ static void SDL3_SetMouseHintDefaults(void) {
 	(void)SDL_SetHintWithPriority(SDL_HINT_MOUSE_RELATIVE_MODE_CENTER, "1", SDL_HINT_DEFAULT);
 	(void)SDL_SetHintWithPriority(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "0", SDL_HINT_DEFAULT);
 	(void)SDL_SetHintWithPriority(SDL_HINT_MOUSE_RELATIVE_WARP_MOTION, "0", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_MOUSE_TOUCH_EVENTS, "0", SDL_HINT_DEFAULT);
 	(void)SDL_SetHintWithPriority(SDL_HINT_TOUCH_MOUSE_EVENTS, "0", SDL_HINT_DEFAULT);
+}
+
+static void SDL3_SetControllerHintDefaults(void) {
+#if defined(OPENQ4_SDL3_POSIX_HOST)
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "auto", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "0", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_SWITCH2, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_XBOX, "1", SDL_HINT_DEFAULT);
+#if defined(OPENQ4_SDL3_LINUX_HOST)
+	(void)SDL_SetHintWithPriority(SDL_HINT_HIDAPI_UDEV, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_LINUX_CLASSIC, "0", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_LINUX_DEADZONES, "0", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK, "1", SDL_HINT_DEFAULT);
+#endif
+#if defined(OPENQ4_SDL3_DARWIN_HOST)
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_IOKIT, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_MFI, "1", SDL_HINT_DEFAULT);
+#endif
+#endif
 }
 
 static void SDL3_ResetMenuMouseTracking(void) {
@@ -758,7 +789,7 @@ static bool SDL3_BuildGuiMouseTransform(sdl3GuiMouseTransform_t &transform) {
 	transform.pixelToWindowX = static_cast<float>(windowWidth) / static_cast<float>(pixelWidth);
 	transform.pixelToWindowY = static_cast<float>(windowHeight) / static_cast<float>(pixelHeight);
 
-	// Match the fullscreen-2D viewport region (primary monitor on multi-monitor spans).
+	// Match the fullscreen-2D viewport region (selected monitor on multi-monitor spans).
 	transform.drawAreaX = static_cast<float>(glConfig.uiViewportX);
 	transform.drawAreaY = static_cast<float>(glConfig.uiViewportY);
 	transform.drawAreaWidth = static_cast<float>(glConfig.uiViewportWidth);
@@ -1850,6 +1881,77 @@ static void SDL3_HandleFingerEvent(const SDL_TouchFingerEvent &event, int eventT
 	}
 }
 
+static void SDL3_SetLifecyclePendingFlag(int flag) {
+	for (;;) {
+		const int currentFlags = SDL_GetAtomicInt(&s_sdlLifecyclePending);
+		const int newFlags = currentFlags | flag;
+		if (newFlags == currentFlags || SDL_CompareAndSwapAtomicInt(&s_sdlLifecyclePending, currentFlags, newFlags)) {
+			return;
+		}
+	}
+}
+
+static void SDL3_ClearLifecyclePendingFlag(int flag) {
+	for (;;) {
+		const int currentFlags = SDL_GetAtomicInt(&s_sdlLifecyclePending);
+		const int newFlags = currentFlags & ~flag;
+		if (newFlags == currentFlags || SDL_CompareAndSwapAtomicInt(&s_sdlLifecyclePending, currentFlags, newFlags)) {
+			return;
+		}
+	}
+}
+
+static bool SDLCALL SDL3_LifecycleEventWatch(void *userdata, SDL_Event *event) {
+	(void)userdata;
+
+	if (event == NULL) {
+		return true;
+	}
+
+	switch (event->type) {
+		case SDL_EVENT_TERMINATING:
+		case SDL_EVENT_WILL_ENTER_BACKGROUND:
+		case SDL_EVENT_DID_ENTER_BACKGROUND:
+			SDL3_SetLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_BACKGROUND);
+			break;
+
+		case SDL_EVENT_WILL_ENTER_FOREGROUND:
+		case SDL_EVENT_DID_ENTER_FOREGROUND:
+			SDL3_SetLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_FOREGROUND);
+			break;
+
+		case SDL_EVENT_LOW_MEMORY:
+			SDL3_SetLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_LOW_MEMORY);
+			break;
+
+		default:
+			break;
+	}
+
+	return true;
+}
+
+static void SDL3_RegisterLifecycleEventWatch(void) {
+	if (s_sdlLifecycleEventWatchRegistered) {
+		return;
+	}
+
+	SDL_SetAtomicInt(&s_sdlLifecyclePending, 0);
+	if (SDL_AddEventWatch(SDL3_LifecycleEventWatch, NULL)) {
+		s_sdlLifecycleEventWatchRegistered = true;
+	} else {
+		common->Printf("SDL3: could not install lifecycle event watch: %s\n", SDL_GetError());
+	}
+}
+
+static void SDL3_UnregisterLifecycleEventWatch(void) {
+	if (s_sdlLifecycleEventWatchRegistered) {
+		SDL_RemoveEventWatch(SDL3_LifecycleEventWatch, NULL);
+		s_sdlLifecycleEventWatchRegistered = false;
+	}
+	SDL_SetAtomicInt(&s_sdlLifecyclePending, 0);
+}
+
 static void SDL3_HandleAppBackgroundTransition(int eventTime, const char *reason) {
 	if (s_sdlAppInBackground) {
 		return;
@@ -1911,6 +2013,23 @@ static void SDL3_HandleAppForegroundTransition(int eventTime, const char *reason
 	SDL3_UpdateCursorVisibility();
 	if (session != NULL) {
 		session->SetPlayingSoundWorld();
+	}
+}
+
+static void SDL3_ProcessPendingLifecycleEvents(int eventTime) {
+	const int pendingFlags = SDL_SetAtomicInt(&s_sdlLifecyclePending, 0);
+	if (pendingFlags == 0) {
+		return;
+	}
+
+	if ((pendingFlags & SDL3_LIFECYCLE_PENDING_LOW_MEMORY) != 0) {
+		common->Printf("SDL3: low-memory event received from lifecycle event watch.\n");
+	}
+	if ((pendingFlags & SDL3_LIFECYCLE_PENDING_BACKGROUND) != 0) {
+		SDL3_HandleAppBackgroundTransition(eventTime, "event watch");
+	}
+	if ((pendingFlags & SDL3_LIFECYCLE_PENDING_FOREGROUND) != 0) {
+		SDL3_HandleAppForegroundTransition(eventTime, "event watch");
 	}
 }
 
@@ -2168,6 +2287,28 @@ static void SDL3_ListControllers_f(const idCmdArgs &args) {
 		in_joystickLowBatteryRumbleThreshold.GetInteger(),
 		in_joystickLowBatteryRumbleScale.GetFloat(),
 		s_lowBatteryRumbleScaleActive ? "yes" : "no");
+	common->Printf("  SDL controller hints: HIDAPI=%s enhancedReports=%s backgroundEvents=%s PS4=%s PS5=%s Steam=%s Switch=%s Switch2=%s Xbox=%s\n",
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI),
+		SDL3_HintString(SDL_HINT_JOYSTICK_ENHANCED_REPORTS),
+		SDL3_HintString(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_PS4),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_PS5),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_STEAM),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_SWITCH),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_SWITCH2),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_XBOX));
+#if defined(OPENQ4_SDL3_LINUX_HOST)
+	common->Printf("  SDL Linux controller hints: HIDAPI_UDEV=%s LinuxClassic=%s LinuxDeadzones=%s SteamDeck=%s\n",
+		SDL3_HintString(SDL_HINT_HIDAPI_UDEV),
+		SDL3_HintString(SDL_HINT_JOYSTICK_LINUX_CLASSIC),
+		SDL3_HintString(SDL_HINT_JOYSTICK_LINUX_DEADZONES),
+		SDL3_HintString(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK));
+#endif
+#if defined(OPENQ4_SDL3_DARWIN_HOST)
+	common->Printf("  SDL macOS controller hints: IOKit=%s MFi=%s\n",
+		SDL3_HintString(SDL_HINT_JOYSTICK_IOKIT),
+		SDL3_HintString(SDL_HINT_JOYSTICK_MFI));
+#endif
 
 	SDL3_PrintActiveGamepadDetails();
 	SDL3_PrintActiveJoystickDetails();
@@ -2212,6 +2353,8 @@ static void SDL3_ListControllers_f(const idCmdArgs &args) {
 }
 
 static void SDL3_InitControllerSubsystems(void) {
+	SDL3_SetControllerHintDefaults();
+
 	if (!in_joystick.GetBool()) {
 		SDL3_CloseGamepad(Sys_Milliseconds());
 		SDL3_CloseJoystick(Sys_Milliseconds());
@@ -2711,6 +2854,43 @@ static sdl3DisplaySelection_t SDL3_ResolveTargetDisplay(bool warnOnInvalidScreen
 	return selection;
 }
 
+static bool SDL3_QueryDesktopResolution(int *width, int *height, const char *platformName) {
+	if (width == NULL || height == NULL) {
+		return false;
+	}
+
+	const sdl3DisplaySelection_t selectedDisplay = SDL3_ResolveTargetDisplay(false);
+	const SDL_DisplayID display = (selectedDisplay.id != 0) ? selectedDisplay.id : SDL_GetPrimaryDisplay();
+	const char *logPrefix = (platformName != NULL && platformName[0] != '\0') ? platformName : "SDL3";
+
+	const SDL_DisplayMode *desktopMode = SDL_GetDesktopDisplayMode(display);
+	if (desktopMode != NULL && desktopMode->w > 0 && desktopMode->h > 0) {
+		*width = desktopMode->w;
+		*height = desktopMode->h;
+		return true;
+	}
+
+	const SDL_DisplayMode *currentMode = SDL_GetCurrentDisplayMode(display);
+	if (currentMode != NULL && currentMode->w > 0 && currentMode->h > 0) {
+		common->DPrintf("%s: desktop display mode unavailable, using current display mode %dx%d\n",
+			logPrefix, currentMode->w, currentMode->h);
+		*width = currentMode->w;
+		*height = currentMode->h;
+		return true;
+	}
+
+	SDL_Rect bounds;
+	if (display != 0 && SDL_GetDisplayBounds(display, &bounds) && bounds.w > 0 && bounds.h > 0) {
+		common->DPrintf("%s: desktop display mode unavailable, using display bounds %dx%d\n",
+			logPrefix, bounds.w, bounds.h);
+		*width = bounds.w;
+		*height = bounds.h;
+		return true;
+	}
+
+	return false;
+}
+
 static bool SDL3_IsSteamDeckPlatformProfile(void) {
 	if (cvarSystem == NULL || !cvarSystem->IsInitialized()) {
 		return false;
@@ -3109,7 +3289,21 @@ static void SDL3_UpdateWindowAspectSnap(bool sawResizeEvent) {
 	}
 }
 
-static void SDL3_UpdatePrimaryDisplayViewport(int windowX, int windowY, int windowWidth, int windowHeight, int pixelWidth, int pixelHeight) {
+static SDL_DisplayID SDL3_ResolveViewportDisplay(void) {
+	const sdl3DisplaySelection_t selectedDisplay = SDL3_ResolveTargetDisplay(false);
+	if (r_screen.GetInteger() >= 0 && selectedDisplay.id != 0) {
+		return selectedDisplay.id;
+	}
+
+	const SDL_DisplayID primaryDisplay = SDL_GetPrimaryDisplay();
+	if (primaryDisplay != 0) {
+		return primaryDisplay;
+	}
+
+	return selectedDisplay.id;
+}
+
+static void SDL3_UpdateDisplayViewport(SDL_DisplayID display, int windowX, int windowY, int windowWidth, int windowHeight, int pixelWidth, int pixelHeight) {
 	glConfig.uiViewportX = 0;
 	glConfig.uiViewportY = 0;
 	glConfig.uiViewportWidth = pixelWidth;
@@ -3119,25 +3313,24 @@ static void SDL3_UpdatePrimaryDisplayViewport(int windowX, int windowY, int wind
 		return;
 	}
 
-	const SDL_DisplayID primaryDisplay = SDL_GetPrimaryDisplay();
-	if (primaryDisplay == 0) {
+	if (display == 0) {
 		return;
 	}
 
-	SDL_Rect primaryBounds;
-	if (!SDL_GetDisplayBounds(primaryDisplay, &primaryBounds)) {
+	SDL_Rect displayBounds;
+	if (!SDL_GetDisplayBounds(display, &displayBounds)) {
 		return;
 	}
 
 	const int windowRight = windowX + windowWidth;
 	const int windowBottom = windowY + windowHeight;
-	const int primaryRight = primaryBounds.x + primaryBounds.w;
-	const int primaryBottom = primaryBounds.y + primaryBounds.h;
+	const int displayRight = displayBounds.x + displayBounds.w;
+	const int displayBottom = displayBounds.y + displayBounds.h;
 
-	const int overlapLeft = (windowX > primaryBounds.x) ? windowX : primaryBounds.x;
-	const int overlapTop = (windowY > primaryBounds.y) ? windowY : primaryBounds.y;
-	const int overlapRight = (windowRight < primaryRight) ? windowRight : primaryRight;
-	const int overlapBottom = (windowBottom < primaryBottom) ? windowBottom : primaryBottom;
+	const int overlapLeft = (windowX > displayBounds.x) ? windowX : displayBounds.x;
+	const int overlapTop = (windowY > displayBounds.y) ? windowY : displayBounds.y;
+	const int overlapRight = (windowRight < displayRight) ? windowRight : displayRight;
+	const int overlapBottom = (windowBottom < displayBottom) ? windowBottom : displayBottom;
 
 	if (overlapRight <= overlapLeft || overlapBottom <= overlapTop) {
 		return;
@@ -3252,7 +3445,7 @@ static void SDL3_RefreshWindowPlacement(void) {
 	}
 
 	if (SDL3_UseAbsoluteWindowPlacement()) {
-		SDL3_UpdatePrimaryDisplayViewport(x, y, width, height, pixelWidth, pixelHeight);
+		SDL3_UpdateDisplayViewport(SDL3_ResolveViewportDisplay(), x, y, width, height, pixelWidth, pixelHeight);
 	} else {
 		SDL3_UpdateFullWindowViewport(pixelWidth, pixelHeight);
 	}
@@ -3744,6 +3937,7 @@ bool Sys_SDL_PumpEvents(void) {
 #if defined(OPENQ4_SDL3_POSIX_HOST)
 	const bool gameWindowReady = s_sdlVideoActive && s_sdlWindow;
 	if (!gameWindowReady) {
+		SDL3_ProcessPendingLifecycleEvents(Sys_Milliseconds());
 		if (!Posix_ConsoleNeedsEventPump()) {
 			return false;
 		}
@@ -3764,6 +3958,8 @@ bool Sys_SDL_PumpEvents(void) {
 		return false;
 	}
 #endif
+
+	SDL3_ProcessPendingLifecycleEvents(Sys_Milliseconds());
 
 	if (in_joystick.IsModified()) {
 		if (in_joystick.GetBool()) {
@@ -3865,26 +4061,32 @@ bool Sys_SDL_PumpEvents(void) {
 				break;
 
 			case SDL_EVENT_TERMINATING:
+				SDL3_ClearLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_BACKGROUND);
 				SDL3_HandleAppBackgroundTransition(eventTime, "terminating");
 				break;
 
 			case SDL_EVENT_WILL_ENTER_BACKGROUND:
+				SDL3_ClearLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_BACKGROUND);
 				SDL3_HandleAppBackgroundTransition(eventTime, "will enter background");
 				break;
 
 			case SDL_EVENT_DID_ENTER_BACKGROUND:
+				SDL3_ClearLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_BACKGROUND);
 				SDL3_HandleAppBackgroundTransition(eventTime, "did enter background");
 				break;
 
 			case SDL_EVENT_WILL_ENTER_FOREGROUND:
+				SDL3_ClearLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_FOREGROUND);
 				SDL3_HandleAppForegroundTransition(eventTime, "will enter foreground");
 				break;
 
 			case SDL_EVENT_DID_ENTER_FOREGROUND:
+				SDL3_ClearLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_FOREGROUND);
 				SDL3_HandleAppForegroundTransition(eventTime, "did enter foreground");
 				break;
 
 			case SDL_EVENT_LOW_MEMORY:
+				SDL3_ClearLifecyclePendingFlag(SDL3_LIFECYCLE_PENDING_LOW_MEMORY);
 				common->Printf("SDL3: low-memory event received from OS.\n");
 				break;
 
@@ -4135,6 +4337,7 @@ bool Sys_SDL_PumpEvents(void) {
 	}
 
 	// Keep render dimensions in sync even if the platform misses or coalesces resize events.
+	SDL3_ProcessPendingLifecycleEvents(Sys_Milliseconds());
 	SDL3_RefreshWindowPlacement();
 	SDL3_UpdateWindowAspectSnap(sawResizeEvent);
 
@@ -4779,6 +4982,7 @@ bool GLimp_Init(glimpParms_t parms) {
 		}
 		s_sdlVideoActive = true;
 	}
+	SDL3_RegisterLifecycleEventWatch();
 	SDL3_UpdateVideoDriverProfile();
 	SDL3_PrintVideoDriverSummary();
 	SDL3_PrintGraphicsBridgeSummary();
@@ -4959,6 +5163,7 @@ void GLimp_Shutdown(void) {
 	}
 
 	if (s_sdlVideoActive) {
+		SDL3_UnregisterLifecycleEventWatch();
 		SDL_QuitSubSystem(SDL_INIT_VIDEO);
 		s_sdlVideoActive = false;
 		s_sdlVideoDriver = SDL3_VIDEO_DRIVER_UNKNOWN;

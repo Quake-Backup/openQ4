@@ -30,6 +30,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "BinaryImageData.h"
 
+class idFile;
+
 /*
 ================================================
 idBinaryImage is used by the idImage class for constructing mipmapped 
@@ -52,10 +54,12 @@ public:
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );
 	ID_TIME_T			LoadFromGeneratedFileUnchecked();
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
+	bool				LoadFromFile( idFile *file );
+	bool				WriteToFile( idFile *file, ID_TIME_T sourceFileTime );
 
-	const bimageFile_t &	GetFileHeader() { return fileData; }
+	const bimageFile_t &	GetFileHeader() const { return fileData; }
 
-	int					NumImages() { return images.Num(); }
+	int					NumImages() const { return images.Num(); }
 	const bimageImage_t &	GetImageHeader( int i ) const { return images[i]; }
 	const byte *			GetImageData( int i ) const { return images[i].data; }
 	static void			GetGeneratedFileName( idStr & gfn, const char *imageName );

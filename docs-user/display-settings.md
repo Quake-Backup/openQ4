@@ -130,7 +130,7 @@ The in-game menu exposes this as `Settings -> System -> Display Sizing -> UI Asp
 
 When the render surface spans multiple monitors:
 
-- 2D elements (console, HUD, menus, loading/initializing UI) are constrained to the **primary display region**.
+- 2D elements (console, HUD, menus, loading/initializing UI) are constrained to the selected display region. With `r_screen -1`, this defaults to the primary display.
 - 2D aspect behavior inside that region is controlled by `ui_aspectCorrection`.
 - Menu cursor mapping follows the same 2D region so mouse interaction stays aligned.
 

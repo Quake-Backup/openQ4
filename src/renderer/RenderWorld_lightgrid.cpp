@@ -25,6 +25,8 @@ GNU General Public License for more details.
 #endif
 
 static const char *LGRID_FILE_ID = "LGRID";
+static const int LIGHTGRID_PACK_MAGIC = ( 'L' << 0 ) | ( 'G' << 8 ) | ( 'P' << 16 ) | ( 'K' << 24 );
+static const int LIGHTGRID_PACK_VERSION = 1;
 static const int LIGHTGRID_SUPPORTED_VERSION_A = 3;
 static const int LIGHTGRID_SUPPORTED_VERSION_B = 4;
 static const int LIGHTGRID_SUPPORTED_VERSION_C = 5;
@@ -69,6 +71,24 @@ typedef struct lightGridStagedWrite_s {
 	idStr				finalName;
 	idStr				tempName;
 } lightGridStagedWrite_t;
+
+enum lightGridPackChunkKind_t {
+	LIGHTGRID_PACK_CHUNK_IRRADIANCE = 1,
+	LIGHTGRID_PACK_CHUNK_VISIBILITY = 2,
+	LIGHTGRID_PACK_CHUNK_PROBE = 3
+};
+
+typedef struct lightGridPackChunkDirectory_s {
+	int					areaIndex;
+	int					kind;
+	int					format;
+	int					width;
+	int					height;
+	int					dataOffset;
+	int					dataBytes;
+} lightGridPackChunkDirectory_t;
+
+static bool LightGrid_PackedImageRefIsValid( const lightGridPackedImageRef_t &ref );
 
 typedef struct lightGridBakeProbeTask_s {
 	int					atlasX;
@@ -1089,6 +1109,70 @@ static bool LightGrid_WriteProbePositionAtlas( idFile *file, const LightGrid &li
 	return LightGrid_WriteRGBRowsAsTGA( file, pixels.Ptr(), width, height );
 }
 
+static bool LightGrid_WritePackInt( idFile *file, int value ) {
+	return file != NULL && file->WriteInt( value ) == sizeof( value );
+}
+
+static bool LightGrid_WritePackUnsignedInt( idFile *file, unsigned int value ) {
+	return file != NULL && file->WriteUnsignedInt( value ) == sizeof( value );
+}
+
+static bool LightGrid_WritePackFloat( idFile *file, float value ) {
+	return file != NULL && file->WriteFloat( value ) == sizeof( value );
+}
+
+static bool LightGrid_WritePackByte( idFile *file, byte value ) {
+	return file != NULL && file->WriteUnsignedChar( value ) == sizeof( value );
+}
+
+static bool LightGrid_ReadPackInt( idFile *file, int &value ) {
+	return file != NULL && file->ReadInt( value ) == sizeof( value );
+}
+
+static bool LightGrid_ReadPackUnsignedInt( idFile *file, unsigned int &value ) {
+	return file != NULL && file->ReadUnsignedInt( value ) == sizeof( value );
+}
+
+static bool LightGrid_ReadPackFloat( idFile *file, float &value ) {
+	return file != NULL && file->ReadFloat( value ) == sizeof( value );
+}
+
+static bool LightGrid_ReadPackByte( idFile *file, byte &value ) {
+	return file != NULL && file->ReadUnsignedChar( value ) == sizeof( value );
+}
+
+static bool LightGrid_WritePackVec3( idFile *file, const idVec3 &value ) {
+	return LightGrid_WritePackFloat( file, value.x ) &&
+		LightGrid_WritePackFloat( file, value.y ) &&
+		LightGrid_WritePackFloat( file, value.z );
+}
+
+static bool LightGrid_ReadPackVec3( idFile *file, idVec3 &value ) {
+	return LightGrid_ReadPackFloat( file, value.x ) &&
+		LightGrid_ReadPackFloat( file, value.y ) &&
+		LightGrid_ReadPackFloat( file, value.z );
+}
+
+static bool LightGrid_WritePackChunkDirectoryEntry( idFile *file, const lightGridPackChunkDirectory_t &chunk ) {
+	return LightGrid_WritePackInt( file, chunk.areaIndex ) &&
+		LightGrid_WritePackInt( file, chunk.kind ) &&
+		LightGrid_WritePackInt( file, chunk.format ) &&
+		LightGrid_WritePackInt( file, chunk.width ) &&
+		LightGrid_WritePackInt( file, chunk.height ) &&
+		LightGrid_WritePackInt( file, chunk.dataOffset ) &&
+		LightGrid_WritePackInt( file, chunk.dataBytes );
+}
+
+static bool LightGrid_ReadPackChunkDirectoryEntry( idFile *file, lightGridPackChunkDirectory_t &chunk ) {
+	return LightGrid_ReadPackInt( file, chunk.areaIndex ) &&
+		LightGrid_ReadPackInt( file, chunk.kind ) &&
+		LightGrid_ReadPackInt( file, chunk.format ) &&
+		LightGrid_ReadPackInt( file, chunk.width ) &&
+		LightGrid_ReadPackInt( file, chunk.height ) &&
+		LightGrid_ReadPackInt( file, chunk.dataOffset ) &&
+		LightGrid_ReadPackInt( file, chunk.dataBytes );
+}
+
 static void LightGrid_BuildAreaBakePlan( const LightGrid &lightGrid, lightGridBakeAreaPlan_t &areaPlan ) {
 	areaPlan.areaIndex = lightGrid.area;
 	areaPlan.atlasWidth = Max( lightGrid.lightGridBounds[0] * lightGrid.lightGridBounds[2], 1 ) * lightGrid.imageSingleProbeSize;
@@ -1498,6 +1582,224 @@ static bool LightGrid_CommitStagedOutputFile( const lightGridStagedWrite_t &stag
 	return false;
 }
 
+static bool LightGrid_WritePackPointData( idFile *file, const LightGrid &lightGrid ) {
+	if ( !LightGrid_WritePackInt( file, lightGrid.area ) ||
+		 !LightGrid_WritePackInt( file, lightGrid.lightGridPoints.Num() ) ||
+		 !LightGrid_WritePackInt( file, lightGrid.imageSingleProbeSize ) ||
+		 !LightGrid_WritePackInt( file, lightGrid.imageBorderSize ) ||
+		 !LightGrid_WritePackVec3( file, lightGrid.lightGridOrigin ) ||
+		 !LightGrid_WritePackVec3( file, lightGrid.lightGridSize ) ||
+		 !LightGrid_WritePackInt( file, lightGrid.lightGridBounds[0] ) ||
+		 !LightGrid_WritePackInt( file, lightGrid.lightGridBounds[1] ) ||
+		 !LightGrid_WritePackInt( file, lightGrid.lightGridBounds[2] ) ||
+		 !LightGrid_WritePackFloat( file, lightGrid.visibilityMaxDistance ) ||
+		 !LightGrid_WritePackFloat( file, lightGrid.relocationMaxDistance ) ) {
+		return false;
+	}
+
+	for ( int i = 0; i < lightGrid.lightGridPoints.Num(); i++ ) {
+		const lightGridPoint_t &point = lightGrid.lightGridPoints[i];
+		if ( !LightGrid_WritePackByte( file, point.valid ) ||
+			 !LightGrid_WritePackVec3( file, point.origin ) ||
+			 !LightGrid_WritePackFloat( file, point.visibilityMeanDistance ) ||
+			 !LightGrid_WritePackFloat( file, point.visibilityMeanDistanceSq ) ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static textureFormat_t LightGrid_PackChunkFormat( int kind ) {
+	switch ( kind ) {
+		case LIGHTGRID_PACK_CHUNK_IRRADIANCE:
+			return glConfig.textureCompressionAvailable ? FMT_DXT1 : FMT_RGB565;
+		case LIGHTGRID_PACK_CHUNK_VISIBILITY:
+		case LIGHTGRID_PACK_CHUNK_PROBE:
+			return FMT_RGBA8;
+		default:
+			return FMT_RGBA8;
+	}
+}
+
+static void LightGrid_AppendPackChunk( idList<lightGridPackChunkDirectory_t> &chunks, int areaIndex, int kind, int width, int height ) {
+	lightGridPackChunkDirectory_t chunk;
+	chunk.areaIndex = areaIndex;
+	chunk.kind = kind;
+	chunk.format = LightGrid_PackChunkFormat( kind );
+	chunk.width = width;
+	chunk.height = height;
+	chunk.dataOffset = 0;
+	chunk.dataBytes = 0;
+	chunks.Append( chunk );
+}
+
+static const char *LightGrid_PackChunkSourceSuffix( int kind ) {
+	switch ( kind ) {
+		case LIGHTGRID_PACK_CHUNK_IRRADIANCE:
+			return "amb";
+		case LIGHTGRID_PACK_CHUNK_VISIBILITY:
+			return "vis";
+		case LIGHTGRID_PACK_CHUNK_PROBE:
+			return "pos";
+		default:
+			return "";
+	}
+}
+
+static bool LightGrid_WritePackImagePayload( idFile *file, const char *baseName, lightGridPackChunkDirectory_t &chunk ) {
+	const char *suffix = LightGrid_PackChunkSourceSuffix( chunk.kind );
+	if ( suffix[0] == '\0' ) {
+		return false;
+	}
+
+	idStr sourceName = va( "env/%s/area%i_lightgrid_%s.tga", baseName, chunk.areaIndex, suffix );
+	byte *pic = NULL;
+	int width = 0;
+	int height = 0;
+	ID_TIME_T timestamp = FILE_NOT_FOUND_TIMESTAMP;
+	R_LoadImage( sourceName.c_str(), &pic, &width, &height, &timestamp, false );
+	if ( pic == NULL ) {
+		common->Warning( "LightGrid pack: failed to read %s", sourceName.c_str() );
+		return false;
+	}
+
+	if ( width != chunk.width || height != chunk.height ) {
+		common->Warning(
+			"LightGrid pack: %s dimensions changed while packing (%ix%i, expected %ix%i)",
+			sourceName.c_str(),
+			width,
+			height,
+			chunk.width,
+			chunk.height );
+		R_StaticFree( pic );
+		return false;
+	}
+
+	textureFormat_t textureFormat = static_cast<textureFormat_t>( chunk.format );
+	textureColor_t colorFormat = CFM_DEFAULT;
+	bool gammaMips = false;
+	if ( chunk.kind == LIGHTGRID_PACK_CHUNK_IRRADIANCE ) {
+		gammaMips = false;
+	} else {
+		textureFormat = FMT_RGBA8;
+	}
+
+	idBinaryImage packedImage( sourceName.c_str() );
+	packedImage.Load2DFromMemory( width, height, pic, 1, textureFormat, colorFormat, gammaMips );
+	chunk.dataOffset = file->Tell();
+	const bool wrote = packedImage.WriteToFile( file, timestamp );
+	chunk.dataBytes = file->Tell() - chunk.dataOffset;
+	chunk.format = packedImage.GetFileHeader().format;
+	R_StaticFree( pic );
+	if ( !wrote ) {
+		common->Warning( "LightGrid pack: failed to write payload for %s", sourceName.c_str() );
+		return false;
+	}
+
+	return true;
+}
+
+static bool LightGrid_WritePackFileInternal( idFile *file, const idRenderWorldLocal &world, const lightGridBakeFileStats_t &stats, idList<lightGridPackChunkDirectory_t> &chunks ) {
+	if ( !LightGrid_WritePackInt( file, LIGHTGRID_PACK_MAGIC ) ||
+		 !LightGrid_WritePackInt( file, LIGHTGRID_PACK_VERSION ) ||
+		 !LightGrid_WritePackInt( file, LIGHTGRID_CURRENT_VERSION ) ||
+		 !LightGrid_WritePackInt( file, LIGHTGRID_BAKE_HEADER_VERSION ) ||
+		 !LightGrid_WritePackUnsignedInt( file, static_cast<unsigned int>( stats.settingsHash ) ) ||
+		 !LightGrid_WritePackInt( file, world.numPortalAreas ) ||
+		 !LightGrid_WritePackInt( file, chunks.Num() ) ) {
+		return false;
+	}
+
+	for ( int i = 0; i < world.numPortalAreas; i++ ) {
+		if ( !LightGrid_WritePackPointData( file, world.portalAreas[i].lightGrid ) ) {
+			return false;
+		}
+	}
+
+	const int chunkDirectoryOffset = file->Tell();
+	for ( int i = 0; i < chunks.Num(); i++ ) {
+		if ( !LightGrid_WritePackChunkDirectoryEntry( file, chunks[i] ) ) {
+			return false;
+		}
+	}
+
+	idStr baseName = world.mapName;
+	baseName.StripFileExtension();
+	for ( int i = 0; i < chunks.Num(); i++ ) {
+		if ( !LightGrid_WritePackImagePayload( file, baseName.c_str(), chunks[i] ) ) {
+			return false;
+		}
+	}
+
+	const int endOffset = file->Tell();
+	file->Seek( chunkDirectoryOffset, FS_SEEK_SET );
+	for ( int i = 0; i < chunks.Num(); i++ ) {
+		if ( !LightGrid_WritePackChunkDirectoryEntry( file, chunks[i] ) ) {
+			return false;
+		}
+	}
+	file->Seek( endOffset, FS_SEEK_SET );
+
+	return true;
+}
+
+static bool LightGrid_WriteLightGridPackFile( const idRenderWorldLocal &world, const char *name, const lightGridBakeOptions_t &options, const lightGridBakeFileStats_t &stats ) {
+	(void)options;
+
+	idStr fileName = name;
+	fileName.SetFileExtension( "lightgridpack" );
+
+	lightGridStagedWrite_t stagedWrite;
+	stagedWrite.finalName = fileName;
+	stagedWrite.tempName = fileName;
+	stagedWrite.tempName += ".baking";
+
+	idList<lightGridPackChunkDirectory_t> chunks;
+	for ( int areaIndex = 0; areaIndex < world.numPortalAreas; areaIndex++ ) {
+		const LightGrid &lightGrid = world.portalAreas[areaIndex].lightGrid;
+		if ( lightGrid.GridPointCount() <= 0 || lightGrid.CountValidGridPoints() <= 0 ) {
+			continue;
+		}
+
+		LightGrid_AppendPackChunk( chunks, areaIndex, LIGHTGRID_PACK_CHUNK_IRRADIANCE, LightGrid_GetAtlasWidth( lightGrid ), LightGrid_GetAtlasHeight( lightGrid ) );
+		LightGrid_AppendPackChunk( chunks, areaIndex, LIGHTGRID_PACK_CHUNK_VISIBILITY, LightGrid_GetAtlasWidth( lightGrid ), LightGrid_GetAtlasHeight( lightGrid ) );
+		LightGrid_AppendPackChunk( chunks, areaIndex, LIGHTGRID_PACK_CHUNK_PROBE, LightGrid_GetProbePositionAtlasWidth( lightGrid ), LightGrid_GetProbePositionAtlasHeight( lightGrid ) );
+	}
+
+	const int packStart = Sys_Milliseconds();
+	idFile *file = fileSystem->OpenFileWrite( stagedWrite.tempName.c_str(), "fs_savepath" );
+	if ( file == NULL ) {
+		common->Warning( "LightGrid pack: failed to open %s", stagedWrite.tempName.c_str() );
+		return false;
+	}
+
+	const bool wrotePack = LightGrid_WritePackFileInternal( file, world, stats, chunks );
+	fileSystem->CloseFile( file );
+
+	if ( !wrotePack ) {
+		LightGrid_RemoveStagedOutputFile( stagedWrite.tempName );
+		return false;
+	}
+
+	if ( !LightGrid_CommitStagedOutputFile( stagedWrite ) ) {
+		LightGrid_RemoveStagedOutputFile( stagedWrite.tempName );
+		return false;
+	}
+
+	int payloadBytes = 0;
+	for ( int i = 0; i < chunks.Num(); i++ ) {
+		payloadBytes += chunks[i].dataBytes;
+	}
+	common->Printf(
+		"Wrote %s (%i chunks, %.2f MB payload, %.2fs)\n",
+		stagedWrite.finalName.c_str(),
+		chunks.Num(),
+		payloadBytes / ( 1024.0f * 1024.0f ),
+		( Sys_Milliseconds() - packStart ) * 0.001f );
+	return true;
+}
+
 static void LightGrid_WriteBakeStatsBlock( idFile *file, const lightGridBakeOptions_t &options, const lightGridBakeFileStats_t &stats, const idRenderWorldLocal *world ) {
 	char settingsHashString[16];
 	idStr::snPrintf( settingsHashString, sizeof( settingsHashString ), "%08lx", stats.settingsHash );
@@ -1745,6 +2047,341 @@ bool R_LightGridFileMatchesBakeOptions( const char *name, const lightGridBakeOpt
 	return true;
 }
 
+static bool LightGrid_ReadPackHeader( idFile *file, int &packVersion, int &lightGridVersion, int &bakeHeaderVersion, unsigned int &settingsHash, int &numPortalAreas, int &chunkCount ) {
+	int magic = 0;
+	if ( !LightGrid_ReadPackInt( file, magic ) ||
+		 !LightGrid_ReadPackInt( file, packVersion ) ||
+		 !LightGrid_ReadPackInt( file, lightGridVersion ) ||
+		 !LightGrid_ReadPackInt( file, bakeHeaderVersion ) ||
+		 !LightGrid_ReadPackUnsignedInt( file, settingsHash ) ||
+		 !LightGrid_ReadPackInt( file, numPortalAreas ) ||
+		 !LightGrid_ReadPackInt( file, chunkCount ) ) {
+		return false;
+	}
+
+	if ( magic != LIGHTGRID_PACK_MAGIC || packVersion != LIGHTGRID_PACK_VERSION ||
+		 lightGridVersion != LIGHTGRID_CURRENT_VERSION || bakeHeaderVersion != LIGHTGRID_BAKE_HEADER_VERSION ||
+		 numPortalAreas < 0 || chunkCount < 0 ) {
+		return false;
+	}
+	if ( chunkCount > numPortalAreas * 3 ) {
+		return false;
+	}
+
+	return true;
+}
+
+bool R_LightGridPackFileMatchesBakeOptions( const char *name, const lightGridBakeOptions_t &options, const idRenderWorldLocal *world ) {
+	idFile *file = fileSystem->OpenFileRead( name );
+	if ( file == NULL ) {
+		return false;
+	}
+
+	int packVersion = 0;
+	int lightGridVersion = 0;
+	int bakeHeaderVersion = 0;
+	unsigned int fileSettingsHash = 0;
+	int numPortalAreas = 0;
+	int chunkCount = 0;
+	const bool readHeader = LightGrid_ReadPackHeader( file, packVersion, lightGridVersion, bakeHeaderVersion, fileSettingsHash, numPortalAreas, chunkCount );
+	fileSystem->CloseFile( file );
+
+	if ( !readHeader ) {
+		common->Printf( "bakeLightGrids: %s has no valid light-grid pack header; rebuilding\n", name );
+		return false;
+	}
+
+	if ( world != NULL && numPortalAreas != world->numPortalAreas ) {
+		common->Printf(
+			"bakeLightGrids: %s area count changed (file %i, current %i); rebuilding\n",
+			name,
+			numPortalAreas,
+			world->numPortalAreas );
+		return false;
+	}
+
+	const unsigned long expectedSettingsHash = LightGrid_CalculateBakeSettingsHash( options, world );
+	if ( fileSettingsHash != static_cast<unsigned int>( expectedSettingsHash ) ) {
+		common->Printf(
+			"bakeLightGrids: %s settings hash changed (file 0x%08x, current 0x%08lx); rebuilding\n",
+			name,
+			fileSettingsHash,
+			expectedSettingsHash );
+		return false;
+	}
+
+	return true;
+}
+
+static bool LightGrid_ReadPackPointData( idFile *file, idRenderWorldLocal *world ) {
+	int areaIndex = -1;
+	int numLightGridPoints = 0;
+	int imageProbeSize = 0;
+	int imageBorderSize = 0;
+
+	if ( !LightGrid_ReadPackInt( file, areaIndex ) ||
+		 !LightGrid_ReadPackInt( file, numLightGridPoints ) ||
+		 !LightGrid_ReadPackInt( file, imageProbeSize ) ||
+		 !LightGrid_ReadPackInt( file, imageBorderSize ) ) {
+		return false;
+	}
+	if ( areaIndex < 0 || world == NULL || areaIndex >= world->numPortalAreas || numLightGridPoints < 0 || numLightGridPoints > LIGHTGRID_DEFAULT_MAX_AREA_POINTS ||
+		 imageProbeSize <= 0 || imageBorderSize < 0 ) {
+		return false;
+	}
+
+	LightGrid &lightGrid = world->portalAreas[areaIndex].lightGrid;
+	lightGrid.Clear();
+	lightGrid.area = areaIndex;
+	lightGrid.imageSingleProbeSize = imageProbeSize;
+	lightGrid.imageBorderSize = imageBorderSize;
+	lightGrid.totalGridPointCount = numLightGridPoints;
+
+	if ( !LightGrid_ReadPackVec3( file, lightGrid.lightGridOrigin ) ||
+		 !LightGrid_ReadPackVec3( file, lightGrid.lightGridSize ) ||
+		 !LightGrid_ReadPackInt( file, lightGrid.lightGridBounds[0] ) ||
+		 !LightGrid_ReadPackInt( file, lightGrid.lightGridBounds[1] ) ||
+		 !LightGrid_ReadPackInt( file, lightGrid.lightGridBounds[2] ) ||
+		 !LightGrid_ReadPackFloat( file, lightGrid.visibilityMaxDistance ) ||
+		 !LightGrid_ReadPackFloat( file, lightGrid.relocationMaxDistance ) ) {
+		return false;
+	}
+
+	if ( lightGrid.lightGridBounds[0] <= 0 || lightGrid.lightGridBounds[1] <= 0 || lightGrid.lightGridBounds[2] <= 0 ) {
+		return false;
+	}
+
+	lightGrid.lightGridPoints.SetNum( numLightGridPoints );
+	for ( int i = 0; i < numLightGridPoints; i++ ) {
+		lightGridPoint_t &point = lightGrid.lightGridPoints[i];
+		if ( !LightGrid_ReadPackByte( file, point.valid ) ||
+			 !LightGrid_ReadPackVec3( file, point.origin ) ||
+			 !LightGrid_ReadPackFloat( file, point.visibilityMeanDistance ) ||
+			 !LightGrid_ReadPackFloat( file, point.visibilityMeanDistanceSq ) ) {
+			return false;
+		}
+		if ( point.valid != 0 ) {
+			lightGrid.validGridPointCount++;
+			if ( point.valid == LIGHTGRID_POINT_RELOCATED || point.valid == LIGHTGRID_POINT_RELOCATED_NEAR_SOLID ) {
+				lightGrid.relocatedGridPointCount++;
+			}
+			if ( point.valid == LIGHTGRID_POINT_NEAR_SOLID || point.valid == LIGHTGRID_POINT_RELOCATED_NEAR_SOLID ) {
+				lightGrid.nearSolidGridPointCount++;
+			}
+		}
+	}
+
+	return true;
+}
+
+static textureUsage_t LightGrid_PackChunkUsage( int kind ) {
+	switch ( kind ) {
+		case LIGHTGRID_PACK_CHUNK_IRRADIANCE:
+			return TD_LIGHTGRID;
+		case LIGHTGRID_PACK_CHUNK_VISIBILITY:
+			return TD_LIGHTGRID_VISIBILITY;
+		case LIGHTGRID_PACK_CHUNK_PROBE:
+			return TD_LIGHTGRID_PROBE;
+		default:
+			return TD_DEFAULT;
+	}
+}
+
+static bool LightGrid_AssignPackChunk( idRenderWorldLocal *world, const char *packFileName, const lightGridPackChunkDirectory_t &chunk ) {
+	if ( world == NULL || packFileName == NULL || chunk.areaIndex < 0 || chunk.areaIndex >= world->numPortalAreas ||
+		 chunk.width <= 0 || chunk.height <= 0 || chunk.dataOffset <= 0 || chunk.dataBytes <= 0 ) {
+		return false;
+	}
+
+	LightGrid &lightGrid = world->portalAreas[chunk.areaIndex].lightGrid;
+	lightGridPackedImageRef_t *ref = NULL;
+	idImage **image = NULL;
+	switch ( chunk.kind ) {
+		case LIGHTGRID_PACK_CHUNK_IRRADIANCE:
+			ref = &lightGrid.packedIrradianceImage;
+			image = &lightGrid.irradianceImage;
+			break;
+		case LIGHTGRID_PACK_CHUNK_VISIBILITY:
+			ref = &lightGrid.packedVisibilityImage;
+			image = &lightGrid.visibilityImage;
+			break;
+		case LIGHTGRID_PACK_CHUNK_PROBE:
+			ref = &lightGrid.packedProbeImage;
+			image = &lightGrid.probeImage;
+			break;
+		default:
+			return false;
+	}
+
+	ref->packFileName = packFileName;
+	ref->dataOffset = chunk.dataOffset;
+	ref->dataBytes = chunk.dataBytes;
+	ref->width = chunk.width;
+	ref->height = chunk.height;
+
+	idStr baseName = world->mapName;
+	baseName.StripFileExtension();
+	const char *suffix = LightGrid_PackChunkSourceSuffix( chunk.kind );
+	idStr imageName = va( "_lightgridpack/%s/area%i_lightgrid_%s", baseName.c_str(), chunk.areaIndex, suffix );
+	*image = globalImages->ImageHandleDeferred( imageName.c_str(), TF_LINEAR, TR_CLAMP, LightGrid_PackChunkUsage( chunk.kind ), CF_2D );
+	return *image != NULL;
+}
+
+bool idRenderWorldLocal::LoadLightGridPackFile( const char *name ) {
+	const int start = Sys_Milliseconds();
+	idFile *file = fileSystem->OpenFileRead( name );
+	if ( file == NULL ) {
+		return false;
+	}
+
+	int packVersion = 0;
+	int lightGridVersion = 0;
+	int bakeHeaderVersion = 0;
+	unsigned int settingsHash = 0;
+	int packPortalAreas = 0;
+	int chunkCount = 0;
+	if ( !LightGrid_ReadPackHeader( file, packVersion, lightGridVersion, bakeHeaderVersion, settingsHash, packPortalAreas, chunkCount ) ) {
+		fileSystem->CloseFile( file );
+		common->Warning( "%s is not a valid light-grid pack", name );
+		return false;
+	}
+	if ( packPortalAreas != numPortalAreas ) {
+		fileSystem->CloseFile( file );
+		common->Warning( "%s has %i light-grid areas, but map has %i", name, packPortalAreas, numPortalAreas );
+		return false;
+	}
+
+	for ( int i = 0; i < packPortalAreas; i++ ) {
+		if ( !LightGrid_ReadPackPointData( file, this ) ) {
+			fileSystem->CloseFile( file );
+			common->Warning( "%s has invalid light-grid metadata", name );
+			return false;
+		}
+	}
+
+	idList<lightGridPackChunkDirectory_t> chunks;
+	chunks.SetNum( chunkCount );
+	for ( int i = 0; i < chunkCount; i++ ) {
+		if ( !LightGrid_ReadPackChunkDirectoryEntry( file, chunks[i] ) ) {
+			fileSystem->CloseFile( file );
+			common->Warning( "%s has an invalid light-grid chunk directory", name );
+			return false;
+		}
+	}
+	fileSystem->CloseFile( file );
+
+	int assignedChunks = 0;
+	for ( int i = 0; i < chunks.Num(); i++ ) {
+		if ( ( chunks[i].format == FMT_DXT1 || chunks[i].format == FMT_DXT5 ) && !glConfig.textureCompressionAvailable ) {
+			common->Warning( "%s contains compressed light-grid chunks but this renderer does not support texture compression", name );
+			return false;
+		}
+		if ( LightGrid_AssignPackChunk( this, name, chunks[i] ) ) {
+			assignedChunks++;
+		}
+	}
+
+	lightGridAvailabilityFrame = -1;
+	common->DPrintf(
+		"Loaded light-grid pack %s: %i areas, %i/%i chunks, settings 0x%08x in %.3fs\n",
+		name,
+		packPortalAreas,
+		assignedChunks,
+		chunkCount,
+		settingsHash,
+		( Sys_Milliseconds() - start ) * 0.001f );
+	return assignedChunks > 0;
+}
+
+static bool LightGrid_LoadPackedImageRef( const lightGridPackedImageRef_t &ref, idImage *image, textureUsage_t usage ) {
+	(void)usage;
+	if ( !LightGrid_PackedImageRefIsValid( ref ) || image == NULL ) {
+		return false;
+	}
+	if ( image->IsLoaded() && !image->IsDefaulted() ) {
+		return true;
+	}
+
+	idFile *file = fileSystem->OpenFileRead( ref.packFileName.c_str() );
+	if ( file == NULL ) {
+		return false;
+	}
+	if ( file->Seek( ref.dataOffset, FS_SEEK_SET ) != 0 ) {
+		fileSystem->CloseFile( file );
+		return false;
+	}
+
+	idBinaryImage packedImage( image->GetName() );
+	const int chunkStart = file->Tell();
+	const bool readPayload = packedImage.LoadFromFile( file );
+	const int chunkEnd = file->Tell();
+	fileSystem->CloseFile( file );
+	if ( !readPayload || chunkEnd - chunkStart != ref.dataBytes ) {
+		common->Warning( "LightGrid pack: failed to read %s from %s", image->GetName(), ref.packFileName.c_str() );
+		return false;
+	}
+
+	const bimageFile_t &header = packedImage.GetFileHeader();
+	if ( header.width != ref.width || header.height != ref.height || header.textureType != TT_2D || header.numLevels <= 0 ) {
+		common->Warning( "LightGrid pack: invalid image header for %s", image->GetName() );
+		return false;
+	}
+	if ( ( header.format == FMT_DXT1 || header.format == FMT_DXT5 ) && !glConfig.textureCompressionAvailable ) {
+		common->Warning( "LightGrid pack: %s requires compressed texture support", image->GetName() );
+		return false;
+	}
+
+	idImageOpts opts;
+	opts.textureType = static_cast<textureType_t>( header.textureType );
+	opts.format = static_cast<textureFormat_t>( header.format );
+	opts.colorFormat = static_cast<textureColor_t>( header.colorFormat );
+	opts.width = header.width;
+	opts.height = header.height;
+	opts.numLevels = header.numLevels;
+	opts.gammaMips = false;
+	image->AllocImage( opts, TF_LINEAR, TR_CLAMP );
+	for ( int i = 0; i < packedImage.NumImages(); i++ ) {
+		const bimageImage_t &img = packedImage.GetImageHeader( i );
+		image->SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, packedImage.GetImageData( i ) );
+	}
+	return image->IsLoaded() && !image->IsDefaulted();
+}
+
+bool idRenderWorldLocal::EnsureLightGridAreaImages( int areaIndex ) {
+	if ( areaIndex < 0 || areaIndex >= numPortalAreas ) {
+		return false;
+	}
+
+	LightGrid &lightGrid = portalAreas[areaIndex].lightGrid;
+	const int start = Sys_Milliseconds();
+	bool loadedPackedImage = false;
+
+	if ( LightGrid_PackedImageRefIsValid( lightGrid.packedIrradianceImage ) ) {
+		loadedPackedImage = LightGrid_LoadPackedImageRef( lightGrid.packedIrradianceImage, lightGrid.irradianceImage, TD_LIGHTGRID ) || loadedPackedImage;
+		LightGrid_LoadPackedImageRef( lightGrid.packedVisibilityImage, lightGrid.visibilityImage, TD_LIGHTGRID_VISIBILITY );
+		LightGrid_LoadPackedImageRef( lightGrid.packedProbeImage, lightGrid.probeImage, TD_LIGHTGRID_PROBE );
+	} else {
+		if ( lightGrid.irradianceImage != NULL && !lightGrid.irradianceImage->IsLoaded() ) {
+			lightGrid.irradianceImage->ActuallyLoadImage( true );
+		}
+		if ( lightGrid.visibilityImage != NULL && !lightGrid.visibilityImage->IsLoaded() ) {
+			lightGrid.visibilityImage->ActuallyLoadImage( true );
+		}
+		if ( lightGrid.probeImage != NULL && !lightGrid.probeImage->IsLoaded() ) {
+			lightGrid.probeImage->ActuallyLoadImage( true );
+		}
+	}
+
+	if ( loadedPackedImage ) {
+		common->DPrintf(
+			"LightGrid pack: materialized area %i images in %.3fs\n",
+			areaIndex,
+			( Sys_Milliseconds() - start ) * 0.001f );
+	}
+
+	return lightGrid.irradianceImage != NULL && lightGrid.irradianceImage->IsLoaded() && !lightGrid.irradianceImage->IsDefaulted();
+}
+
 static int LightGrid_GetBakeWorkerCount() {
 	const int requestedWorkers = r_lightGridBakeWorkers.GetInteger();
 	if ( requestedWorkers < 0 ) {
@@ -1807,6 +2444,18 @@ void R_SetDefaultLightGridBakeOptions( lightGridBakeOptions_t &options ) {
 	options.gridSize = LIGHTGRID_DEFAULT_SIZE;
 }
 
+static void LightGrid_ClearPackedImageRef( lightGridPackedImageRef_t &ref ) {
+	ref.packFileName.Clear();
+	ref.dataOffset = 0;
+	ref.dataBytes = 0;
+	ref.width = 0;
+	ref.height = 0;
+}
+
+static bool LightGrid_PackedImageRefIsValid( const lightGridPackedImageRef_t &ref ) {
+	return ref.packFileName.Length() > 0 && ref.dataOffset > 0 && ref.dataBytes > 0 && ref.width > 0 && ref.height > 0;
+}
+
 void LightGrid::Clear() {
 	lightGridOrigin.Zero();
 	lightGridSize = LIGHTGRID_DEFAULT_SIZE;
@@ -1822,6 +2471,9 @@ void LightGrid::Clear() {
 	irradianceImage = NULL;
 	visibilityImage = NULL;
 	probeImage = NULL;
+	LightGrid_ClearPackedImageRef( packedIrradianceImage );
+	LightGrid_ClearPackedImageRef( packedVisibilityImage );
+	LightGrid_ClearPackedImageRef( packedProbeImage );
 	imageSingleProbeSize = LIGHTGRID_DEFAULT_SINGLE_PROBE_SIZE;
 	imageBorderSize = LIGHTGRID_DEFAULT_BORDER_SIZE;
 	visibilityMaxDistance = LIGHTGRID_VISIBILITY_MAX_DISTANCE;
@@ -1870,10 +2522,16 @@ void LightGrid::SetupGrid( const idBounds &bounds, const idRenderWorld *world, c
 	idImage *existingImage = irradianceImage;
 	idImage *existingVisibilityImage = visibilityImage;
 	idImage *existingProbeImage = probeImage;
+	const lightGridPackedImageRef_t existingPackedImage = packedIrradianceImage;
+	const lightGridPackedImageRef_t existingPackedVisibilityImage = packedVisibilityImage;
+	const lightGridPackedImageRef_t existingPackedProbeImage = packedProbeImage;
 	Clear();
 	irradianceImage = existingImage;
 	visibilityImage = existingVisibilityImage;
 	probeImage = existingProbeImage;
+	packedIrradianceImage = existingPackedImage;
+	packedVisibilityImage = existingPackedVisibilityImage;
+	packedProbeImage = existingPackedProbeImage;
 	area = areaIndex;
 	lightGridSize = preferredSize;
 
@@ -2008,16 +2666,30 @@ idVec3 LightGrid::GetGridCoordDebugColor( const int gridCoord[3] ) const {
 }
 
 void idRenderWorldLocal::SetupLightGrid() {
+	const int setupStart = Sys_Milliseconds();
 	for ( int i = 0; i < numPortalAreas; i++ ) {
 		portalAreas[i].lightGrid.Clear();
 		portalAreas[i].lightGrid.area = i;
 	}
 
 	idStr filename = mapName;
+	filename.SetFileExtension( "lightgridpack" );
+	if ( LoadLightGridPackFile( filename ) ) {
+		common->DPrintf( "LightGrid setup for %s used packed data in %.3fs\n", mapName.c_str(), ( Sys_Milliseconds() - setupStart ) * 0.001f );
+		return;
+	}
+
+	for ( int i = 0; i < numPortalAreas; i++ ) {
+		portalAreas[i].lightGrid.Clear();
+		portalAreas[i].lightGrid.area = i;
+	}
+
+	filename = mapName;
 	filename.SetFileExtension( "lightgrid" );
 
 	if ( LoadLightGridFile( filename ) ) {
 		LoadLightGridImages();
+		common->DPrintf( "LightGrid setup for %s used loose metadata/images in %.3fs\n", mapName.c_str(), ( Sys_Milliseconds() - setupStart ) * 0.001f );
 		return;
 	}
 
@@ -2032,6 +2704,7 @@ void idRenderWorldLocal::SetupLightGrid() {
 	}
 
 	lightGridAvailabilityFrame = -1;
+	common->DPrintf( "LightGrid setup for %s generated bake/debug layout in %.3fs\n", mapName.c_str(), ( Sys_Milliseconds() - setupStart ) * 0.001f );
 }
 
 /*
@@ -2060,8 +2733,10 @@ bool idRenderWorldLocal::AnyLightGridAvailable() {
 }
 
 void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
+	const int loadStart = Sys_Milliseconds();
 	idStr baseName = mapName;
 	baseName.StripFileExtension();
+	int handleCount = 0;
 
 	for ( int i = 0; i < numPortalAreas; i++ ) {
 		LightGrid &lightGrid = portalAreas[i].lightGrid;
@@ -2072,6 +2747,7 @@ void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
 		idStr imageName = va( "env/%s/area%i_lightgrid_amb", baseName.c_str(), i );
 		lightGrid.irradianceImage = globalImages->ImageHandleDeferred( imageName, TF_LINEAR, TR_CLAMP, TD_LIGHTGRID, CF_2D );
 		if ( lightGrid.irradianceImage != NULL ) {
+			handleCount++;
 			if ( forceReloadLoaded && lightGrid.irradianceImage->IsLoaded() ) {
 				lightGrid.irradianceImage->Reload( true );
 			}
@@ -2083,6 +2759,7 @@ void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
 		idStr visibilityImageName = va( "env/%s/area%i_lightgrid_vis", baseName.c_str(), i );
 		lightGrid.visibilityImage = globalImages->ImageHandleDeferred( visibilityImageName, TF_LINEAR, TR_CLAMP, TD_LIGHTGRID_VISIBILITY, CF_2D );
 		if ( lightGrid.visibilityImage != NULL ) {
+			handleCount++;
 			if ( forceReloadLoaded && lightGrid.visibilityImage->IsLoaded() ) {
 				lightGrid.visibilityImage->Reload( true );
 			}
@@ -2094,6 +2771,7 @@ void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
 		idStr probeImageName = va( "env/%s/area%i_lightgrid_pos", baseName.c_str(), i );
 		lightGrid.probeImage = globalImages->ImageHandleDeferred( probeImageName, TF_LINEAR, TR_CLAMP, TD_LIGHTGRID_PROBE, CF_2D );
 		if ( lightGrid.probeImage != NULL ) {
+			handleCount++;
 			if ( forceReloadLoaded && lightGrid.probeImage->IsLoaded() ) {
 				lightGrid.probeImage->Reload( true );
 			}
@@ -2106,6 +2784,7 @@ void idRenderWorldLocal::LoadLightGridImages( bool forceReloadLoaded ) {
 	// grid images (re)assigned: force AnyLightGridAvailable to re-evaluate
 	// even if tr.frameCount has not advanced (bake paths render inline)
 	lightGridAvailabilityFrame = -1;
+	common->DPrintf( "LightGrid image handles for %s: %i deferred handles in %.3fs\n", mapName.c_str(), handleCount, ( Sys_Milliseconds() - loadStart ) * 0.001f );
 }
 
 bool idRenderWorldLocal::LoadLightGridFile( const char *name ) {
@@ -2621,18 +3300,25 @@ bool R_BakeCurrentLightGrids( const lightGridBakeOptions_t &options, const char 
 		runStats.reloadMsec += Sys_Milliseconds() - reloadStart;
 	}
 
+	idStr lightGridName = world->mapName;
+	lightGridName.SetFileExtension( "lightgrid" );
+	bool metadataAvailableForPack = false;
 	if ( separateAreas ) {
 		const int commitStart = Sys_Milliseconds();
 		if ( LightGrid_CommitStagedOutputFile( stagedLightGridWrite ) ) {
 			common->Printf( "Wrote %s\n", stagedLightGridWrite.finalName.c_str() );
+			metadataAvailableForPack = world->LoadLightGridFile( stagedLightGridWrite.finalName.c_str() );
 		}
 		runStats.commitMsec += Sys_Milliseconds() - commitStart;
 	} else {
-		idStr lightGridName = world->mapName;
-		lightGridName.SetFileExtension( "lightgrid" );
 		const int metadataStart = Sys_Milliseconds();
-		LightGrid_WriteLightGridFile( *world, lightGridName.c_str(), options, fileStats );
+		metadataAvailableForPack = LightGrid_WriteLightGridFile( *world, lightGridName.c_str(), options, fileStats );
 		runStats.metadataMsec += Sys_Milliseconds() - metadataStart;
+	}
+	if ( metadataAvailableForPack ) {
+		const int packStart = Sys_Milliseconds();
+		LightGrid_WriteLightGridPackFile( *world, lightGridName.c_str(), options, fileStats );
+		runStats.metadataMsec += Sys_Milliseconds() - packStart;
 	}
 	const int finalReloadStart = Sys_Milliseconds();
 	world->LoadLightGridImages( true );

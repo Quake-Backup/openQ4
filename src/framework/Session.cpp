@@ -1673,13 +1673,19 @@ static void Session_AppendAllMultiplayerLightGridMaps( idList<idStr> &mapTargets
 	}
 }
 
-static void Session_BuildLightGridOutputPaths( const idStr &mapName, idStr &lightGridPath, idStr &atlasDir ) {
+static void Session_BuildLightGridOutputPaths( const idStr &mapName, idStr &lightGridPath, idStr &atlasDir, idStr *packPath = NULL ) {
 	lightGridPath = "maps/";
 	lightGridPath += mapName;
 	lightGridPath.SetFileExtension( ".lightgrid" );
 
 	atlasDir = "env/maps/";
 	atlasDir += mapName;
+
+	if ( packPath != NULL ) {
+		*packPath = "maps/";
+		*packPath += mapName;
+		packPath->SetFileExtension( ".lightgridpack" );
+	}
 }
 
 static bool Session_IsLightGridAtlasArtifact( const idStr &relativePath ) {
@@ -1714,11 +1720,15 @@ static void Session_RemoveLightGridAtlasArtifacts( const idStr &atlasDir, const 
 static void Session_RemoveLightGridBakeOutputsForMap( const idStr &mapName ) {
 	idStr lightGridPath;
 	idStr atlasDir;
-	Session_BuildLightGridOutputPaths( mapName, lightGridPath, atlasDir );
+	idStr packPath;
+	Session_BuildLightGridOutputPaths( mapName, lightGridPath, atlasDir, &packPath );
 
 	fileSystem->RemoveFile( lightGridPath.c_str() );
 	fileSystem->RemoveFile( va( "%s.prev", lightGridPath.c_str() ) );
 	fileSystem->RemoveFile( va( "%s.baking", lightGridPath.c_str() ) );
+	fileSystem->RemoveFile( packPath.c_str() );
+	fileSystem->RemoveFile( va( "%s.prev", packPath.c_str() ) );
+	fileSystem->RemoveFile( va( "%s.baking", packPath.c_str() ) );
 	Session_RemoveLightGridAtlasArtifacts( atlasDir, ".tga" );
 	Session_RemoveLightGridAtlasArtifacts( atlasDir, ".prev" );
 }
@@ -1753,7 +1763,11 @@ static bool Session_CurrentLightGridOutputsComplete( const lightGridBakeOptions_
 
 	idStr lightGridPath;
 	idStr atlasDir;
-	Session_BuildLightGridOutputPaths( mapName, lightGridPath, atlasDir );
+	idStr packPath;
+	Session_BuildLightGridOutputPaths( mapName, lightGridPath, atlasDir, &packPath );
+	if ( fileSystem->FindFile( packPath.c_str(), true ) != FIND_NO && R_LightGridPackFileMatchesBakeOptions( packPath.c_str(), options, world ) ) {
+		return true;
+	}
 	if ( fileSystem->FindFile( lightGridPath.c_str(), true ) == FIND_NO ) {
 		return false;
 	}
@@ -1787,8 +1801,8 @@ static bool Session_CurrentLightGridOutputsComplete( const lightGridBakeOptions_
 static void Session_PrintLightGridBakeUsage() {
 	common->Printf( "usage: bakeLightGrids [all | all-mp | <map> ...] [force] [-quit] [limit<num>] [bounce<num>] [size<num>] [blends<num>] [samples<num>] [separateAreas] [grid ( x y z )]\n" );
 	common->Printf( "If no map names are given, the currently loaded map is baked.\n" );
-	common->Printf( "Without 'force', maps whose required .lightgrid metadata and area*_lightgrid_amb.tga atlases already exist are skipped.\n" );
-	common->Printf( "When map names, 'all', or 'all-mp' are given, openQ4 loads each map automatically, prints live progress to the console/log, and writes .lightgrid metadata plus area*_lightgrid_amb.tga atlases to fs_savepath.\n" );
+	common->Printf( "Without 'force', maps whose .lightgridpack output or required .lightgrid metadata plus area atlas files already exist are skipped.\n" );
+	common->Printf( "When map names, 'all', or 'all-mp' are given, openQ4 loads each map automatically, prints live progress to the console/log, and writes .lightgridpack plus loose .lightgrid/TGA fallback outputs to fs_savepath.\n" );
 	common->Printf( "'separateAreas' rebuilds one portal-area probe layout at a time and streams .lightgrid metadata during the bake to reduce peak CPU memory usage.\n" );
 	common->Printf( "Multiplayer targets are cheat-protected; enable cheats first with 'sv_cheats 1' or 'net_allowCheats 1'.\n" );
 	common->Printf( "This bake is diffuse-only and LDR. It does not output the BFG EXR/PBR light-grid data path.\n" );
@@ -2105,7 +2119,7 @@ static bool Session_BakeLightGridCurrentMap( const lightGridBakeOptions_t &optio
 			common->Printf( "bakeLightGrids: force requested; cleaning existing outputs for %s\n", mapName.c_str() );
 			Session_RemoveLightGridBakeOutputsForMap( mapName );
 		} else {
-			common->Printf( "bakeLightGrids: skipping %s because %i required atlas file(s) and the .lightgrid metadata already exist\n", mapName.c_str(), requiredAtlasCount );
+			common->Printf( "bakeLightGrids: skipping %s because packed or loose light-grid outputs already exist for %i baked area(s)\n", mapName.c_str(), requiredAtlasCount );
 			if ( wasSkipped != NULL ) {
 				*wasSkipped = true;
 			}

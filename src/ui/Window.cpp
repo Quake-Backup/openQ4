@@ -2092,15 +2092,11 @@ void idWindow::SetupBackground() {
 		if ( background ) {
 			background->SetImageClassifications( 1 );	// just for resource tracking
 		}
-		// Retail stamps gui backgrounds to SS_GUI so in-world gui surfaces keep
-		// their emission order against glyph draws (fonts are forced to SS_GUI),
-		// which R_SortDrawSurfs would otherwise split apart by material sort and
-		// bury window text under higher-sorted backgrounds. Restrict the stamp to
-		// implicitly generated image materials so authored decls keep their
-		// declared or derived sorts (e.g. post-process materials reused as menu
-		// backgrounds).
+		// Retail stamps GUI backgrounds to SS_GUI unless they are defaulted or
+		// explicitly post-process sorted. This preserves GUI file emission order
+		// for authored materials as well as implicit image materials.
 		if ( background && !background->TestMaterialFlag( MF_DEFAULTED )
-				&& ( background->IsImplicit() || background->GetSort() < SS_GUI ) ) {
+				&& background->GetSort() < SS_POST_PROCESS ) {
 			background->SetSort(SS_GUI );
 		}
 	}

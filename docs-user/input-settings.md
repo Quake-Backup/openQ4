@@ -123,6 +123,8 @@ seta in_joystickMoveCurve 1.0
 
 SDL gamepads use SDL's standard controller database, so Xbox, PlayStation, Steam Input, and similar pads should not need axis remapping. Generic SDL joysticks use raw axes with these auto defaults:
 
+Linux and macOS SDL3 builds opt into SDL's HIDAPI controller backends by default so PlayStation, Switch, Steam, Steam Deck, and Xbox-class controllers can expose the same button, stick, trigger, rumble, battery, gyro, and touchpad capabilities available through the shared SDL3 path. Run `listControllers` to confirm which SDL driver, hint state, and capabilities are active for a connected device.
+
 | Cvar | Auto default | What it changes |
 |---|---:|---|
 | `in_joystickUseDedicatedLookAxes` | `-1` | `-1` uses look axes only when a paired look stick is available, `0` keeps classic single-stick behavior, and `1` forces dedicated look axes when any mapped look axis exists. |

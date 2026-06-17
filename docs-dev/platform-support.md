@@ -23,10 +23,12 @@ This document defines the long-term platform direction for openQ4 and how SDL3 +
 - Language baseline target: C++23 semantics (`vc++latest` on current MSVC Meson front-end).
 - Toolchain baseline direction: MSVC 19.46+ (Visual Studio 2026 generation), with compatibility fallback permitted during migration.
 - As of March 30, 2026, Linux and macOS default to the SDL3 backend and keep `-Dplatform_backend=native` as a fallback/comparison path.
-- Steam Deck support is delivered through the explicit `openQ4-steamdeck` launcher/profile, not hardware auto-detection.
+- Steam Deck and SteamOS support is delivered through the explicit `openQ4-steamdeck` launcher/profile, plus direct-client host auto-detection when `com_platformProfile` is still `default`.
 - Native Wayland is supported through the SDL3 backend. The shared SDL3 path logs the selected video driver, active Wayland hints, display content scale, orientation, current/desktop display modes, exact refresh details when SDL reports them, and compositor-accepted window state after screen changes; applies Wayland-aware defaults; avoids persisting compositor-owned window positions; keeps relative mouse-look usable when pointer confinement is unavailable; synchronizes compositor-negotiated size/fullscreen changes before refreshing renderer placement; and tries SDL's unversioned OpenGL compatibility fallback first when `r_glTier` is `auto` on native Wayland.
 - SDL3 Linux VRAM autodetection can enumerate DRM card/render-node sysfs before legacy `/proc/dri` fallback, so native Wayland and minimal X11-free sessions are less dependent on optional XNVCtrl helpers.
-- SDL3 Linux desktop-resolution queries fall back from desktop mode to current mode and display bounds, improving startup robustness on compositors that do not report a conventional desktop mode.
+- SDL3 Linux and macOS desktop-resolution queries fall back from desktop mode to current mode and display bounds, improving startup robustness on compositors or display bridges that do not report a conventional desktop mode.
+- Windows, Linux, and macOS SDL3 builds share the same `r_screen`, `r_multiScreen`, fullscreen, exclusive-mode, borderless, windowed-placement, high-DPI drawable, display-change, selected-display spanned-UI viewport, and diagnostic display-list code paths. Native Wayland keeps compositor-owned placement semantics and falls back from multi-display spanning to the selected display when absolute placement is unavailable.
+- Windows, Linux, and macOS keyboard, mouse, and controller input are routed through the shared SDL3 backend. Linux and macOS explicitly keep SDL's HIDAPI controller stack, enhanced reports, hotplug events, rumble, battery diagnostics, gyro, touchpad, and touchscreen routing available at the same feature level as the Windows SDL3 path while preserving user/SDL environment overrides.
 - XWayland remains available as an explicit fallback by setting `OPENQ4_FORCE_X11=1` or an SDL video-driver override such as `SDL_VIDEO_DRIVER=x11`.
 - If a native Wayland compositor has decoration, resize, or window-control issues, `OPENQ4_WAYLAND_PREFER_LIBDECOR=1` asks SDL to prefer libdecor without changing the default path for other sessions.
 - If a compositor applies window changes too asynchronously for diagnosis, `OPENQ4_WAYLAND_SYNC_WINDOW_OPS=1` asks SDL to synchronize every window operation. Use it only as a troubleshooting option because some compositors may block during window animations.
@@ -39,7 +41,7 @@ This document defines the long-term platform direction for openQ4 and how SDL3 +
 - Windows 7/8/8.1 are no longer hard-blocked by the current x64 binaries, but they are legacy and outside the actively validated support matrix.
 - macOS packaged compatibility floor for the arm64 release line: `macOS 11` or later. Meson now pins the deployment target to `11.0` so the binary floor matches the documented floor.
 - Linux packaged compatibility floor: release archives are built on pinned `Ubuntu 24.04` runners and should be treated as targeting a comparable modern 64-bit desktop userspace with OpenGL plus SDL3 Wayland/EGL or X11/GLX available.
-- Steam Deck support assumes a SteamOS 3.x style environment and the explicit `openQ4-steamdeck` launcher.
+- Steam Deck support assumes a SteamOS 3.x style environment. The explicit `openQ4-steamdeck` launcher remains the preferred shipping path, while raw `openQ4-client_<arch>` launches can auto-select the `steamdeck` profile from Deck/SteamOS host signals unless disabled by environment.
 
 ## SDL3 Direction
 
@@ -71,7 +73,7 @@ This document defines the long-term platform direction for openQ4 and how SDL3 +
 
 - Linux and macOS now use the shared SDL3 runtime path when `-Dplatform_backend=sdl3` is selected, and that is the default configuration as of March 30, 2026.
 - macOS SDL3 builds select `src/sys/osx/macosx_sdl3.cpp` and `src/sys/osx/macosx_sdl3_main.cpp` with the shared SDL3 window, input, controller, and OpenGL context path.
-- The native Linux X11/GLX and macOS Cocoa/OpenGL backends remain available through `-Dplatform_backend=native` for comparison and rollback while SDL3 remains the release path.
+- The native Linux X11/GLX and macOS Cocoa/OpenGL backends remain available through `-Dplatform_backend=native` for comparison and rollback while SDL3 remains the release path. On SteamOS, the SDL3 path also watches application lifecycle events so suspend/resume and foreground/background transitions flow through the same input release, rumble stop, config write, and controller reacquire behavior used by the normal event pump.
 
 ## Definition Of Done For First-Class Platform Support
 

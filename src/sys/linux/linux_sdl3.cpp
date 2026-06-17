@@ -97,7 +97,7 @@ static void Sys_UpdateLargestDrmSysfsVideoRamBytes(const char *nodeName, unsigne
 	if (nodeName == NULL || nodeName[0] == '\0') {
 		return;
 	}
-	if (strncmp(nodeName, "card", 4) != 0 && strncmp(nodeName, "renderD", 7) != 0) {
+	if (idStr::Cmpn(nodeName, "card", 4) != 0 && idStr::Cmpn(nodeName, "renderD", 7) != 0) {
 		return;
 	}
 
@@ -166,38 +166,7 @@ static int Sys_QueryDrmSysfsVideoRamMB(void) {
 }
 
 bool Sys_GetDesktopResolution(int *width, int *height) {
-	if (width == NULL || height == NULL) {
-		return false;
-	}
-
-	const sdl3DisplaySelection_t selectedDisplay = SDL3_ResolveTargetDisplay(false);
-	const SDL_DisplayID display = (selectedDisplay.id != 0) ? selectedDisplay.id : SDL_GetPrimaryDisplay();
-	const SDL_DisplayMode *desktopMode = SDL_GetDesktopDisplayMode(display);
-	if (desktopMode != NULL && desktopMode->w > 0 && desktopMode->h > 0) {
-		*width = desktopMode->w;
-		*height = desktopMode->h;
-		return true;
-	}
-
-	const SDL_DisplayMode *currentMode = SDL_GetCurrentDisplayMode(display);
-	if (currentMode != NULL && currentMode->w > 0 && currentMode->h > 0) {
-		common->DPrintf("SDL3 Linux: desktop display mode unavailable, using current display mode %dx%d\n",
-			currentMode->w, currentMode->h);
-		*width = currentMode->w;
-		*height = currentMode->h;
-		return true;
-	}
-
-	SDL_Rect bounds;
-	if (display != 0 && SDL_GetDisplayBounds(display, &bounds) && bounds.w > 0 && bounds.h > 0) {
-		common->DPrintf("SDL3 Linux: desktop display mode unavailable, using display bounds %dx%d\n",
-			bounds.w, bounds.h);
-		*width = bounds.w;
-		*height = bounds.h;
-		return true;
-	}
-
-	return false;
+	return SDL3_QueryDesktopResolution(width, height, "SDL3 Linux");
 }
 
 int Sys_GetVideoRam(void) {

@@ -46,8 +46,8 @@ Notes:
 
 openQ4's current light-grid path:
 - adds indirect diffuse lighting from precomputed probes
-- loads one `.lightgrid` metadata file per map
-- loads baked irradiance and visibility atlas images per portal area
+- prefers one `.lightgridpack` file per map when present
+- falls back to one `.lightgrid` metadata file plus baked per-area atlas images
 - samples that data at runtime when `r_useLightGrid 1`
 - uses visibility moments during interpolation to reduce wall and corner light leaks
 - relocates probes away from solid or near-solid map space where possible, then uses those relocated positions at runtime
@@ -116,8 +116,9 @@ bakeLightGrids
 ```
 
 After the bake completes:
+- openQ4 writes the `.lightgridpack` runtime pack.
 - openQ4 writes the `.lightgrid` metadata file.
-- openQ4 writes one atlas per area.
+- openQ4 writes loose fallback/debug atlases per area.
 - The newly written data is reloaded automatically.
 
 ## Batch Baking from the Command Line
@@ -146,7 +147,7 @@ Behavior:
 - openQ4 discovers or accepts target map names.
 - It loads each map automatically.
 - It switches between `game_sp` and `game_mp` automatically when needed.
-- Without `force`, it skips maps whose required `.lightgrid` metadata and area atlas files already exist and whose stored bake-settings/layout hash matches the current bake.
+- Without `force`, it skips maps whose `.lightgridpack` output already exists and whose stored bake-settings/layout hash matches the current bake. If no valid pack exists, it can still skip when the older `.lightgrid` metadata and required loose atlas files are complete.
 - It prints live progress plus a final phase timing/counter summary to the console and log as it bakes probes and areas.
 - It exits at the end if `-quit` is supplied.
 
@@ -227,6 +228,7 @@ The bake writes to `fs_savepath`.
 For a map such as `game/tram1`, the main outputs are:
 
 ```text
+maps/game/tram1.lightgridpack
 maps/game/tram1.lightgrid
 env/maps/game/tram1/area0_lightgrid_amb.tga
 env/maps/game/tram1/area0_lightgrid_vis.tga
@@ -238,16 +240,18 @@ env/maps/game/tram1/area1_lightgrid_pos.tga
 ```
 
 What each file is for:
+- `maps/.../*.lightgridpack`
+  Preferred runtime artifact. It stores the probe metadata plus an indexed set of per-area irradiance, visibility, and probe-position image chunks in the engine's binary image payload format, letting openQ4 load the current/neighbor areas from one map-local file.
 - `maps/.../*.lightgrid`
-  Stores probe layout metadata, area assignment, bounds, spacing, probe origins, and deterministic bake stats used to detect stale outputs.
+  Loose fallback/debug metadata. It stores probe layout metadata, area assignment, bounds, spacing, probe origins, and deterministic bake stats used to detect stale outputs.
 - `env/maps/.../area*_lightgrid_amb.tga`
-  Stores the baked per-area indirect diffuse atlas data used at runtime.
+  Loose fallback/debug baked per-area indirect diffuse atlas data.
 - `env/maps/.../area*_lightgrid_vis.tga`
-  Stores baked per-area visibility and distance moments used to reduce indirect-light leakage during runtime interpolation.
+  Loose fallback/debug baked per-area visibility and distance moments used to reduce indirect-light leakage during runtime interpolation.
 - `env/maps/.../area*_lightgrid_pos.tga`
-  Stores compact per-probe relocation offsets so runtime visibility checks use the actual baked probe positions instead of ideal grid centers.
+  Loose fallback/debug compact per-probe relocation offsets so runtime visibility checks use the actual baked probe positions instead of ideal grid centers.
 
-openQ4 loads these files automatically when the corresponding map is loaded.
+openQ4 loads these files automatically when the corresponding map is loaded. A valid `.lightgridpack` wins; the loose `.lightgrid` and TGA files remain useful for inspection, compatibility, and fallback.
 
 ## Typical Workflows
 
@@ -405,9 +409,8 @@ openQ4's current light-grid system is intentionally scoped. End users should exp
 - no specular/reflection-probe lighting from this system
 - no HDR/EXR bake output
 - no BFG PBR pipeline
-- one atlas per portal area
-- one companion visibility atlas per portal area
-- one compact probe-position atlas per portal area
+- one preferred map-local runtime pack, with per-area residency preserved inside the pack
+- loose per-area atlas files retained as fallback/debug outputs
 - console/log progress rather than a fully interactive bake UI
 
 That is by design for the current openQ4 implementation.

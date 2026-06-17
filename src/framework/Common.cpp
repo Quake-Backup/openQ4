@@ -478,7 +478,12 @@ static bool Common_HasSteamDeckHostSignal( void ) {
 		"OPENQ4_STEAMDECK",
 		"OPENQ4_AUTODETECT_STEAMDECK",
 		"SteamDeck",
-		"STEAM_DECK"
+		"STEAM_DECK",
+		"STEAMDECK",
+		"steamdeck",
+		"SteamOS",
+		"STEAMOS",
+		"steamos"
 	};
 	for ( int i = 0; i < static_cast<int>( sizeof( explicitSignals ) / sizeof( explicitSignals[0] ) ); ++i ) {
 		const char *value = Common_GetNonEmptyEnv( explicitSignals[i] );

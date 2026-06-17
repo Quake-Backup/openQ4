@@ -51,6 +51,7 @@ typedef struct lightGridBakeOptions_s {
 void					R_SetDefaultLightGridBakeOptions( lightGridBakeOptions_t &options );
 bool					R_BakeCurrentLightGrids( const lightGridBakeOptions_t &options, const char *jobName = NULL );
 bool					R_LightGridFileMatchesBakeOptions( const char *name, const lightGridBakeOptions_t &options, const idRenderWorldLocal *world );
+bool					R_LightGridPackFileMatchesBakeOptions( const char *name, const lightGridBakeOptions_t &options, const idRenderWorldLocal *world );
 
 // everything that is needed by the backend needs
 // to be double buffered to allow it to run in

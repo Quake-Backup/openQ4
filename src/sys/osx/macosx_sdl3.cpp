@@ -26,22 +26,19 @@ void QGL_Shutdown(void) {
 }
 
 bool Sys_GetDesktopResolution(int *width, int *height) {
-	if (width == NULL || height == NULL) {
-		return false;
-	}
-
-	const sdl3DisplaySelection_t selectedDisplay = SDL3_ResolveTargetDisplay(false);
-	const SDL_DisplayID display = (selectedDisplay.id != 0) ? selectedDisplay.id : SDL_GetPrimaryDisplay();
-	const SDL_DisplayMode *desktopMode = SDL_GetDesktopDisplayMode(display);
-	if (desktopMode == NULL) {
-		return false;
-	}
-
-	*width = desktopMode->w;
-	*height = desktopMode->h;
-	return (*width > 0 && *height > 0);
+	return SDL3_QueryDesktopResolution(width, height, "SDL3 macOS");
 }
 
 CGDirectDisplayID Sys_DisplayToUse(void) {
+	const int requestedScreen = r_screen.GetInteger();
+	if (requestedScreen >= 0) {
+		CGDirectDisplayID displays[32];
+		CGDisplayCount displayCount = 0;
+		const CGError err = CGGetActiveDisplayList(static_cast<CGDisplayCount>(sizeof(displays) / sizeof(displays[0])), displays, &displayCount);
+		if (err == kCGErrorSuccess && requestedScreen < static_cast<int>(displayCount)) {
+			return displays[requestedScreen];
+		}
+	}
+
 	return CGMainDisplayID();
 }

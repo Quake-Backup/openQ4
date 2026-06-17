@@ -257,6 +257,7 @@ void idImage::AllocImage( const idImageOpts &imgOpts, textureFilter_t tf, textur
 	filter = tf;
 	repeat = tr;
 	opts = imgOpts;
+	defaulted = false;
 	DeriveOpts();
 	AllocImage();
 }
@@ -273,6 +274,7 @@ void idImage::GenerateImage( const byte *pic, int width, int height, textureFilt
 	repeat = repeatParm;
 	usage = usageParm;
 	cubeFiles = CF_2D;
+	defaulted = false;
 
 	opts.textureType = TT_2D;
 	opts.width = width;
@@ -314,6 +316,7 @@ void idImage::GenerateCubeImage( const byte *pic[6], int size, textureFilter_t f
 	repeat = TR_CLAMP;
 	usage = usageParm;
 	cubeFiles = CF_NATIVE;
+	defaulted = false;
 
 	opts.textureType = TT_CUBIC;
 	opts.width = size;

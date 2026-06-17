@@ -111,6 +111,19 @@ static bool Sys_CopyExecutablePath( char *outPath, size_t outPathSize ) {
 	return outPath[0] != '\0';
 }
 
+static int Sys_RoundSystemRamMegabytes( unsigned long long bytes, int fallbackMegabytes ) {
+	if ( bytes == 0 ) {
+		return fallbackMegabytes;
+	}
+
+	unsigned long long megabytes = bytes / ( 1024ULL * 1024ULL );
+	megabytes = ( megabytes + 8ULL ) & ~15ULL;
+	if ( megabytes > static_cast<unsigned long long>( idMath::INT_MAX ) ) {
+		return idMath::INT_MAX;
+	}
+	return static_cast<int>( megabytes );
+}
+
 /*
 =================
 Sys_AsyncThread
@@ -375,7 +388,7 @@ int Sys_GetSystemRam( void ) {
 	uint64_t memSizeBytes = 0;
 	size_t len = sizeof( memSizeBytes );
 	if ( sysctlbyname( "hw.memsize", &memSizeBytes, &len, NULL, 0 ) == 0 && memSizeBytes > 0 ) {
-		return (int)( memSizeBytes / ( 1024ULL * 1024ULL ) );
+		return Sys_RoundSystemRamMegabytes( memSizeBytes, 1024 );
 	}
 	return 1024;
 }

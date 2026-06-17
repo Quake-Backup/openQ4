@@ -60,14 +60,14 @@ def require_order(haystack: str, first: str, second: str, context: str) -> None:
 
 
 def validate_launcher_templates() -> None:
-    for relative_path in ("assets/linux/openQ4-steamdeck.in", "assets/linux/OpenQ4-steamdeck.in"):
-        launcher = read(relative_path)
-        require(launcher, 'export OPENQ4_STEAMDECK="${OPENQ4_STEAMDECK:-1}"', relative_path)
-        require(launcher, 'if [ "${OPENQ4_FORCE_X11:-0}" = "1" ]; then', relative_path)
-        require(launcher, "export SDL_VIDEO_DRIVER=x11", relative_path)
-        require(launcher, "export SDL_VIDEODRIVER=x11", relative_path)
-        require(launcher, 'exec "$SCRIPT_DIR/@OPENQ4_CLIENT_BINARY@" +set com_platformProfile steamdeck "$@"', relative_path)
-        reject(launcher, "WAYLAND_DISPLAY", f"{relative_path} should not force X11 in mixed Wayland sessions")
+    relative_path = "assets/linux/openQ4-steamdeck.in"
+    launcher = read(relative_path)
+    require(launcher, 'export OPENQ4_STEAMDECK="${OPENQ4_STEAMDECK:-1}"', relative_path)
+    require(launcher, 'if [ "${OPENQ4_FORCE_X11:-0}" = "1" ]; then', relative_path)
+    require(launcher, "export SDL_VIDEO_DRIVER=x11", relative_path)
+    require(launcher, "export SDL_VIDEODRIVER=x11", relative_path)
+    require(launcher, 'exec "$SCRIPT_DIR/@OPENQ4_CLIENT_BINARY@" +set com_platformProfile steamdeck "$@"', relative_path)
+    reject(launcher, "WAYLAND_DISPLAY", f"{relative_path} should not force X11 in mixed Wayland sessions")
 
 
 def validate_profile_defaults() -> None:
@@ -101,6 +101,11 @@ def validate_common_profile_detection() -> None:
         '"OPENQ4_AUTODETECT_STEAMDECK"',
         '"SteamDeck"',
         '"STEAM_DECK"',
+        '"STEAMDECK"',
+        '"steamdeck"',
+        '"SteamOS"',
+        '"STEAMOS"',
+        '"steamos"',
         '"/sys/devices/virtual/dmi/id/product_name"',
         '"/sys/devices/virtual/dmi/id/board_name"',
         '"/etc/os-release"',
@@ -158,6 +163,10 @@ def validate_sdl3_input_and_lifecycle() -> None:
     pump = function_body(source, "bool Sys_SDL_PumpEvents(void) {")
     background = function_body(source, "static void SDL3_HandleAppBackgroundTransition(int eventTime, const char *reason) {")
     foreground = function_body(source, "static void SDL3_HandleAppForegroundTransition(int eventTime, const char *reason) {")
+    event_watch = function_body(source, "static bool SDLCALL SDL3_LifecycleEventWatch(void *userdata, SDL_Event *event) {")
+    register_watch = function_body(source, "static void SDL3_RegisterLifecycleEventWatch(void) {")
+    unregister_watch = function_body(source, "static void SDL3_UnregisterLifecycleEventWatch(void) {")
+    process_pending = function_body(source, "static void SDL3_ProcessPendingLifecycleEvents(int eventTime) {")
     perf = function_body(source, "static void SDL3_ApplySteamDeckPerformanceDefaults(void) {")
     diagnostics = function_body(source, "static void SDL3_ListControllers_f(const idCmdArgs &args) {")
     gamepad_details = function_body(source, "static void SDL3_PrintActiveGamepadDetails(void) {")
@@ -214,6 +223,24 @@ def validate_sdl3_input_and_lifecycle() -> None:
         "SDL_EVENT_DID_ENTER_FOREGROUND",
     ):
         require(pump, token, "SDL3 event pump Steam Deck routing")
+
+    for token in (
+        "SDL_EVENT_TERMINATING",
+        "SDL_EVENT_LOW_MEMORY",
+        "SDL_EVENT_WILL_ENTER_BACKGROUND",
+        "SDL_EVENT_DID_ENTER_BACKGROUND",
+        "SDL_EVENT_WILL_ENTER_FOREGROUND",
+        "SDL_EVENT_DID_ENTER_FOREGROUND",
+        "SDL3_SetLifecyclePendingFlag",
+    ):
+        require(event_watch, token, "SDL3 lifecycle event watch")
+    require(register_watch, "SDL_AddEventWatch(SDL3_LifecycleEventWatch, NULL)", "SDL3 lifecycle event watch registration")
+    require(unregister_watch, "SDL_RemoveEventWatch(SDL3_LifecycleEventWatch, NULL)", "SDL3 lifecycle event watch removal")
+    require(init, "SDL3_RegisterLifecycleEventWatch();", "SDL3 lifecycle event watch startup")
+    require(source, "SDL3_UnregisterLifecycleEventWatch();", "SDL3 lifecycle event watch shutdown")
+    require(pump, "SDL3_ProcessPendingLifecycleEvents(Sys_Milliseconds());", "SDL3 pending lifecycle processing")
+    require(process_pending, "SDL3_HandleAppBackgroundTransition(eventTime, \"event watch\")", "SDL3 pending background processing")
+    require(process_pending, "SDL3_HandleAppForegroundTransition(eventTime, \"event watch\")", "SDL3 pending foreground processing")
 
     for token in (
         "Sys_GrabMouseCursor(false);",

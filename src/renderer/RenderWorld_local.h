@@ -71,6 +71,14 @@ enum lightGridPointState_t {
 	LIGHTGRID_POINT_RELOCATED_NEAR_SOLID = 4
 };
 
+typedef struct lightGridPackedImageRef_s {
+	idStr					packFileName;
+	int						dataOffset;
+	int						dataBytes;
+	int						width;
+	int						height;
+} lightGridPackedImageRef_t;
+
 class LightGrid {
 public:
 	idVec3					lightGridOrigin;
@@ -85,6 +93,9 @@ public:
 	idImage *				irradianceImage;
 	idImage *				visibilityImage;
 	idImage *				probeImage;
+	lightGridPackedImageRef_t packedIrradianceImage;
+	lightGridPackedImageRef_t packedVisibilityImage;
+	lightGridPackedImageRef_t packedProbeImage;
 	int						imageSingleProbeSize;
 	int						imageBorderSize;
 	float					visibilityMaxDistance;
@@ -281,8 +292,10 @@ public:
 	bool					WriteMD5R( bool compressed );
 	void					SetupLightGrid();
 	void					LoadLightGridImages( bool forceReloadLoaded = false );
+	bool					EnsureLightGridAreaImages( int areaIndex );
 	bool					AnyLightGridAvailable();
 	bool					LoadLightGridFile( const char *name );
+	bool					LoadLightGridPackFile( const char *name );
 	void					ParseLightGridPoints( idLexer *src );
 	void					ParseLightGridVisibility( idLexer *src );
 	void					WriteLightGridsToFile( const char *name ) const;

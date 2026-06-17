@@ -499,7 +499,8 @@ void Sys_GetCurrentMemoryStatus( sysMemoryStats_t &stats ) {
 
 	const unsigned long long unit = info.mem_unit > 0 ? info.mem_unit : 1;
 	const unsigned long long totalPhysical = static_cast<unsigned long long>( info.totalram ) * unit;
-	const unsigned long long availPhysical = static_cast<unsigned long long>( info.freeram + info.bufferram ) * unit;
+	const unsigned long long availPhysical =
+		( static_cast<unsigned long long>( info.freeram ) + static_cast<unsigned long long>( info.bufferram ) ) * unit;
 	const unsigned long long totalSwap = static_cast<unsigned long long>( info.totalswap ) * unit;
 	const unsigned long long availSwap = static_cast<unsigned long long>( info.freeswap ) * unit;
 	const unsigned long long totalVirtual = totalPhysical + totalSwap;
@@ -732,7 +733,10 @@ Sys_LockMemory
 ================
 */
 bool Sys_LockMemory( void *ptr, int bytes ) {
-	return true;
+	if ( ptr == NULL || bytes <= 0 ) {
+		return false;
+	}
+	return mlock( ptr, static_cast<size_t>( bytes ) ) == 0;
 }
 
 /*
@@ -741,7 +745,10 @@ Sys_UnlockMemory
 ================
 */
 bool Sys_UnlockMemory( void *ptr, int bytes ) {
-	return true;
+	if ( ptr == NULL || bytes <= 0 ) {
+		return false;
+	}
+	return munlock( ptr, static_cast<size_t>( bytes ) ) == 0;
 }
 
 /*
