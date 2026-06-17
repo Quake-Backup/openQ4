@@ -117,6 +117,33 @@ static bool R_CheckGLSLProgramExtensions() {
 		&& R_CheckExtension( "GL_ARB_shading_language_100" );
 }
 
+static bool R_HasARBVertexBufferObjectEntryPoints() {
+	return glBindBufferARB != NULL
+		&& glDeleteBuffersARB != NULL
+		&& glGenBuffersARB != NULL
+		&& glBufferDataARB != NULL;
+}
+
+static bool R_HasARBProgramEntryPoints() {
+	return glBindProgramARB != NULL
+		&& glProgramStringARB != NULL
+		&& glProgramEnvParameter4fvARB != NULL;
+}
+
+static bool R_HasGLSLProgramEntryPoints() {
+	return glCreateShaderObjectARB != NULL
+		&& glShaderSourceARB != NULL
+		&& glCompileShaderARB != NULL
+		&& glGetObjectParameterivARB != NULL
+		&& glGetInfoLogARB != NULL
+		&& glCreateProgramObjectARB != NULL
+		&& glAttachObjectARB != NULL
+		&& glLinkProgramARB != NULL
+		&& glUseProgramObjectARB != NULL
+		&& glGetUniformLocationARB != NULL
+		&& glDeleteObjectARB != NULL;
+}
+
 static bool R_CanUseGLSLPrograms() {
 	if ( r_inhibitFragmentProgram.GetBool() ) {
 		return false;
@@ -130,7 +157,16 @@ static bool R_CanUseGLSLPrograms() {
 		return false;
 	}
 
-	return R_CheckGLSLProgramExtensions();
+	if ( !R_CheckGLSLProgramExtensions() ) {
+		return false;
+	}
+
+	if ( !R_HasGLSLProgramEntryPoints() ) {
+		common->Printf( "X..GLSL shader object entry points incomplete\n" );
+		return false;
+	}
+
+	return true;
 }
 
 glconfig_t	glConfig;
@@ -1005,18 +1041,31 @@ static void R_CheckPortableExtensions( void ) {
 
 	// ARB_vertex_buffer_object
 	glConfig.ARBVertexBufferObjectAvailable = R_CheckExtension( "GL_ARB_vertex_buffer_object" );
+	if ( glConfig.ARBVertexBufferObjectAvailable && !R_HasARBVertexBufferObjectEntryPoints() ) {
+		common->Printf( "X..GL_ARB_vertex_buffer_object entry points incomplete; using virtual-memory vertex cache\n" );
+		glConfig.ARBVertexBufferObjectAvailable = false;
+	}
 	glConfig.pixelBufferObjectAvailable =
 		( GLEW_ARB_pixel_buffer_object || GLEW_EXT_pixel_buffer_object || GLEW_VERSION_2_1 );
 
 	// ARB_vertex_program
 	glConfig.ARBVertexProgramAvailable = R_CheckRequiredExtension( "GL_ARB_vertex_program" );
+	if ( glConfig.ARBVertexProgramAvailable && !R_HasARBProgramEntryPoints() ) {
+		common->Printf( "X..GL_ARB_vertex_program entry points incomplete\n" );
+		R_RecordMissingRequiredOpenGLFeature( "GL_ARB_vertex_program entry points" );
+		glConfig.ARBVertexProgramAvailable = false;
+	}
 
 	// ARB_fragment_program
 	if ( r_inhibitFragmentProgram.GetBool() ) {
 		glConfig.ARBFragmentProgramAvailable = false;
 	} else {
 		glConfig.ARBFragmentProgramAvailable = R_CheckRequiredExtension( "GL_ARB_fragment_program" );
-
+		if ( glConfig.ARBFragmentProgramAvailable && !R_HasARBProgramEntryPoints() ) {
+			common->Printf( "X..GL_ARB_fragment_program entry points incomplete\n" );
+			R_RecordMissingRequiredOpenGLFeature( "GL_ARB_fragment_program entry points" );
+			glConfig.ARBFragmentProgramAvailable = false;
+		}
 	}
 
 	// GL_ARB shader objects / GLSL
