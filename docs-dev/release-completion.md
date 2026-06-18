@@ -10,6 +10,7 @@ Process:
 
 ## Ready For Changelog
 
+- [x] Single-player enemy-hit feedback now matches retail Quake 4 again: the stock cursor GUI's per-component color aliases resolve correctly, so damaging enemies flashes the crosshair red without requiring custom HUD content or a new setting.
 - [x] Switching between single-player and multiplayer now keeps the game window open and shows the existing initialization-style loading screen while the matching game module is reloaded, avoiding the old console flash and window recreation during SP/MP map transitions.
 - [x] Headless renderer jobs can now run with `r_hiddenWindow 1`, keeping the GPU-backed OpenGL context needed for light-grid baking while hiding the game window; the all-MP light-grid bake task now opts into that mode, starts directly in the multiplayer game module, and enables the cheat-gated bake path.
 - [x] Baked light grids now produce a map-local `.lightgridpack` runtime artifact that keeps probe metadata and per-area binary image chunks together, reducing loose-file lookup overhead while preserving current-area/neighbor residency and keeping `.lightgrid` plus TGA outputs as fallback/debug files.

@@ -2655,10 +2655,19 @@ idWinVar *idWindow::GetWinVarByName(const char *_name, bool fixup, drawWin_t** o
 	if (idStr::Icmp(_name, "backColor_r") == 0) {
 		retVar = &backColor_r;
 	}
+	if (idStr::Icmp(_name, "backColor_x") == 0) {
+		retVar = &backColor_r;
+	}
 	if (idStr::Icmp(_name, "backColor_g") == 0) {
 		retVar = &backColor_g;
 	}
+	if (idStr::Icmp(_name, "backColor_y") == 0) {
+		retVar = &backColor_g;
+	}
 	if (idStr::Icmp(_name, "backColor_b") == 0) {
+		retVar = &backColor_b;
+	}
+	if (idStr::Icmp(_name, "backColor_z") == 0) {
 		retVar = &backColor_b;
 	}
 	if (idStr::Icmp(_name, "backColor_w") == 0) {
@@ -2672,10 +2681,19 @@ idWinVar *idWindow::GetWinVarByName(const char *_name, bool fixup, drawWin_t** o
 	if (idStr::Icmp(_name, "matColor_r") == 0) {
 		retVar = &matColor_r;
 	}
+	if (idStr::Icmp(_name, "matColor_x") == 0) {
+		retVar = &matColor_r;
+	}
 	if (idStr::Icmp(_name, "matColor_g") == 0) {
 		retVar = &matColor_g;
 	}
+	if (idStr::Icmp(_name, "matColor_y") == 0) {
+		retVar = &matColor_g;
+	}
 	if (idStr::Icmp(_name, "matColor_b") == 0) {
+		retVar = &matColor_b;
+	}
+	if (idStr::Icmp(_name, "matColor_z") == 0) {
 		retVar = &matColor_b;
 	}
 	if (idStr::Icmp(_name, "matColor_w") == 0) {
@@ -2689,10 +2707,19 @@ idWinVar *idWindow::GetWinVarByName(const char *_name, bool fixup, drawWin_t** o
 	if (idStr::Icmp(_name, "foreColor_r") == 0) {
 		retVar = &foreColor_r;
 	}
+	if (idStr::Icmp(_name, "foreColor_x") == 0) {
+		retVar = &foreColor_r;
+	}
 	if (idStr::Icmp(_name, "foreColor_g") == 0) {
 		retVar = &foreColor_g;
 	}
+	if (idStr::Icmp(_name, "foreColor_y") == 0) {
+		retVar = &foreColor_g;
+	}
 	if (idStr::Icmp(_name, "foreColor_b") == 0) {
+		retVar = &foreColor_b;
+	}
+	if (idStr::Icmp(_name, "foreColor_z") == 0) {
 		retVar = &foreColor_b;
 	}
 	if (idStr::Icmp(_name, "foreColor_w") == 0) {
@@ -2706,10 +2733,19 @@ idWinVar *idWindow::GetWinVarByName(const char *_name, bool fixup, drawWin_t** o
 	if (idStr::Icmp(_name, "hoverColor_r") == 0) {
 		retVar = &hoverColor_r;
 	}
+	if (idStr::Icmp(_name, "hoverColor_x") == 0) {
+		retVar = &hoverColor_r;
+	}
 	if (idStr::Icmp(_name, "hoverColor_g") == 0) {
 		retVar = &hoverColor_g;
 	}
+	if (idStr::Icmp(_name, "hoverColor_y") == 0) {
+		retVar = &hoverColor_g;
+	}
 	if (idStr::Icmp(_name, "hoverColor_b") == 0) {
+		retVar = &hoverColor_b;
+	}
+	if (idStr::Icmp(_name, "hoverColor_z") == 0) {
 		retVar = &hoverColor_b;
 	}
 	if (idStr::Icmp(_name, "hoverColor_w") == 0) {
@@ -2723,10 +2759,19 @@ idWinVar *idWindow::GetWinVarByName(const char *_name, bool fixup, drawWin_t** o
 	if (idStr::Icmp(_name, "borderColor_r") == 0) {
 		retVar = &borderColor_r;
 	}
+	if (idStr::Icmp(_name, "borderColor_x") == 0) {
+		retVar = &borderColor_r;
+	}
 	if (idStr::Icmp(_name, "borderColor_g") == 0) {
 		retVar = &borderColor_g;
 	}
+	if (idStr::Icmp(_name, "borderColor_y") == 0) {
+		retVar = &borderColor_g;
+	}
 	if (idStr::Icmp(_name, "borderColor_b") == 0) {
+		retVar = &borderColor_b;
+	}
+	if (idStr::Icmp(_name, "borderColor_z") == 0) {
 		retVar = &borderColor_b;
 	}
 	if (idStr::Icmp(_name, "borderColor_w") == 0) {
