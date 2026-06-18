@@ -524,7 +524,7 @@ static void Session_NormalizeEntityFilterToken( const char *entityFilter, idStr 
 static bool Session_ShouldDefaultFirstEntityFilter( const idStr &normalizedPath );
 
 static void Session_NormalizeMapPathAndEntityFilter( const char *mapPath, const char *entityFilter,
-	idStr &normalizedMapPath, idStr &normalizedEntityFilter ) {
+	idStr &normalizedMapPath, idStr &normalizedEntityFilter, const bool defaultFirstEntityFilter = true ) {
 	idStr mapToken = ( mapPath != NULL ) ? mapPath : "";
 	mapToken.BackSlashesToSlashes();
 	mapToken.Strip( ' ' );
@@ -561,7 +561,7 @@ static void Session_NormalizeMapPathAndEntityFilter( const char *mapPath, const 
 	}
 
 	Session_NormalizeMapDeclPath( mapToken.c_str(), normalizedMapPath );
-	if ( normalizedEntityFilter.Length() == 0 && Session_ShouldDefaultFirstEntityFilter( normalizedMapPath ) ) {
+	if ( defaultFirstEntityFilter && normalizedEntityFilter.Length() == 0 && Session_ShouldDefaultFirstEntityFilter( normalizedMapPath ) ) {
 		normalizedEntityFilter = "first";
 	}
 }
@@ -2386,6 +2386,47 @@ static void Session_openQ4StartSingleplayer_f( const idCmdArgs &args ) {
 
 /*
 ==================
+Session_openQ4AssertMapState_f
+==================
+*/
+static void Session_openQ4AssertMapState_f( const idCmdArgs &args ) {
+	if ( args.Argc() < 2 ) {
+		common->Printf( "USAGE: openq4_assertMapState <map> [entityFilter]\n" );
+		return;
+	}
+
+	idStr expectedMap;
+	idStr expectedEntityFilter;
+	Session_NormalizeMapPathAndEntityFilter( args.Argv( 1 ), Session_GetEntityFilterArg( args ), expectedMap, expectedEntityFilter );
+	if ( expectedMap.Length() == 0 ) {
+		common->Error( "openQ4 map state assertion needs a non-empty expected map" );
+		return;
+	}
+
+	idStr actualMap;
+	idStr actualEntityFilter;
+	Session_NormalizeMapDeclPath( sessLocal.mapSpawnData.serverInfo.GetString( "si_map", "" ), actualMap );
+	Session_NormalizeEntityFilterToken( sessLocal.mapSpawnData.serverInfo.GetString( "si_entityFilter", "" ), actualEntityFilter );
+
+	common->Printf( "openQ4 map state: map=%s entityFilter=%s expectedMap=%s expectedEntityFilter=%s\n",
+		actualMap.c_str(),
+		actualEntityFilter.c_str(),
+		expectedMap.c_str(),
+		expectedEntityFilter.c_str() );
+
+	const bool mapMatches = fileSystem->FilenameCompare( actualMap.c_str(), expectedMap.c_str() ) == 0;
+	const bool filterMatches = idStr::Icmp( actualEntityFilter.c_str(), expectedEntityFilter.c_str() ) == 0;
+	if ( !mapMatches || !filterMatches ) {
+		common->Error( "openQ4 map state mismatch: expected map=%s entityFilter=%s, got map=%s entityFilter=%s",
+			expectedMap.c_str(),
+			expectedEntityFilter.c_str(),
+			actualMap.c_str(),
+			actualEntityFilter.c_str() );
+	}
+}
+
+/*
+==================
 Sess_WritePrecache_f
 ==================
 */
@@ -3491,7 +3532,8 @@ Leaves the existing userinfo and serverinfo
 void idSessionLocal::MoveToNewMap( const char *mapName ) {
 	idStr normalizedMapName;
 	idStr embeddedEntityFilter;
-	Session_NormalizeMapPathAndEntityFilter( mapName, "", normalizedMapName, embeddedEntityFilter );
+	// Preserve filters already chosen by map/devmap/session-command callers.
+	Session_NormalizeMapPathAndEntityFilter( mapName, "", normalizedMapName, embeddedEntityFilter, false );
 	if ( normalizedMapName.Length() == 0 ) {
 		return;
 	}
@@ -5806,6 +5848,7 @@ void idSessionLocal::Init() {
 
 #ifndef	ID_DEDICATED
 	cmdSystem->AddCommand( "openq4_startSingleplayer", Session_openQ4StartSingleplayer_f, CMD_FL_SYSTEM, "internal helper to start singleplayer after game-module switches" );
+	cmdSystem->AddCommand( "openq4_assertMapState", Session_openQ4AssertMapState_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts the active map and entity filter for validation harnesses" );
 	cmdSystem->AddCommand( "openq4_resumeBakeLightGrids", Session_openQ4ResumeBakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "internal helper to continue light-grid baking after game-module switches" );
 	cmdSystem->AddCommand( "iamtheduke", Session_IAmTheDuke_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "toggles the SP-only iamtheduke cheat text overlay" );
 	cmdSystem->AddCommand( "bakeLightGrids", Session_BakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "bakes openQ4-compatible lightgrid metadata and irradiance atlases for the current map or a batch of maps" );

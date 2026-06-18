@@ -245,6 +245,11 @@ GAMEPLAY_BENCHMARK_HARNESS = [
         "coverage": "all required SP maps plus the MP q4dm1 listen-server/local-client case using the selected tier and presentation settings",
     },
     {
+        "profile": "campaign-split-state-transition",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360",
+        "coverage": "real SP end-level target chain from game/mcc_2 through storage1 first, storage2, storage1 second, and game/tram1 with active map/filter assertions after each load",
+    },
+    {
         "profile": "tiers",
         "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile tiers",
         "coverage": "forced auto/legacy/gl33/gl41/gl43/gl45/gl46 gameplay probes that either reach gameplay or fail closed with logged tier-contract reasons",
