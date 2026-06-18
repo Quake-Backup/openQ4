@@ -1723,6 +1723,43 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 			continue;
 		}
 
+		if ( !idStr::Cmp( cmd, ";" ) ) {
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "reloadLanguage" ) ) {
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, "reloadLanguage\n" );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "reloadGuis" ) ) {
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, "reloadGuis\n" );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "CVarStrcmp" ) ) {
+			idUserInterface *gui = guiActive ? guiActive : guiMainMenu;
+			if ( args.Argc() - icmd >= 2 && gui != NULL ) {
+				const char *cvarName = args.Argv( icmd++ );
+				const char *stateName = args.Argv( icmd++ );
+				const char *value = cvarSystem->GetCVarString( cvarName );
+				int matchIndex = -1;
+				int optionIndex = 0;
+				while ( icmd < args.Argc() ) {
+					const char *candidate = args.Argv( icmd++ );
+					if ( strstr( candidate, ";" ) != NULL ) {
+						break;
+					}
+					if ( !idStr::Icmp( candidate, value ) ) {
+						matchIndex = optionIndex;
+					}
+					optionIndex++;
+				}
+				gui->SetStateInt( stateName, matchIndex );
+			}
+			continue;
+		}
+
 		// always let the game know the command is being run
 		if ( game ) {
 			game->HandleMainMenuCommands( cmd, guiActive );

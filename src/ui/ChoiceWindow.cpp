@@ -36,6 +36,33 @@ If you have questions concerning this license or the applicable additional terms
 
 static const int Q4_CHOICE_WINDOW_TEXT_SPACING = 0;
 
+static void AppendChoiceListSegment( idStrList &list, const idStr &segment ) {
+	idStr choice = segment;
+	choice.Strip( ' ' );
+	choice.Strip( '\t' );
+	choice.Strip( '\r' );
+	choice.Strip( '\n' );
+	choice.StripTrailingWhitespace();
+	if ( choice.Length() > 0 ) {
+		choice = common->GetLanguageDict()->GetString( choice.c_str() );
+		list.Append( choice );
+	}
+}
+
+static void SplitChoiceList( const idStr &source, idStrList &list ) {
+	idStr segment;
+	for ( int i = 0; i < source.Length(); i++ ) {
+		const char ch = source[i];
+		if ( ch == ';' ) {
+			AppendChoiceListSegment( list, segment );
+			segment.Clear();
+			continue;
+		}
+		segment.Append( ch );
+	}
+	AppendChoiceListSegment( list, segment );
+}
+
 /*
 ============
 idChoiceWindow::InitVars
@@ -288,28 +315,7 @@ void idChoiceWindow::UpdateChoicesAndVals( void ) {
 
 	if ( latchedChoices.Icmp( choicesStr ) ) {
 		choices.Clear();
-		src.FreeSource();
-		src.SetFlags( LEXFL_NOFATALERRORS | LEXFL_ALLOWPATHNAMES | LEXFL_ALLOWMULTICHARLITERALS | LEXFL_ALLOWBACKSLASHSTRINGCONCAT );
-		src.LoadMemory( choicesStr, choicesStr.Length(), "<ChoiceList>" );
-		if ( src.IsLoaded() ) {
-			while( src.ReadToken( &token ) ) {
-				if ( token == ";" ) {
-					if ( str2.Length() ) {
-						str2.StripTrailingWhitespace();
-						str2 = common->GetLanguageDict()->GetString( str2 );
-						choices.Append(str2);
-						str2 = "";
-					}
-					continue;
-				}
-				str2 += token;
-				str2 += " ";
-			}
-			if ( str2.Length() ) {
-				str2.StripTrailingWhitespace();
-				choices.Append( str2 );
-			}
-		}
+		SplitChoiceList( choicesStr, choices );
 		latchedChoices = choicesStr.c_str();
 	}
 	if ( choiceVals.Length() && latchedVals.Icmp( choiceVals ) ) {
