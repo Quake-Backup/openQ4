@@ -2384,8 +2384,8 @@ bool idRenderWorldLocal::EnsureLightGridAreaImages( int areaIndex ) {
 		}
 	}
 
-	if ( materializedPackedImage ) {
-		common->DPrintf(
+	if ( materializedPackedImage && r_lightGridReport.GetInteger() > 0 ) {
+		common->Printf(
 			"LightGrid pack: materialized area %i images in %.3fs\n",
 			areaIndex,
 			( Sys_Milliseconds() - start ) * 0.001f );

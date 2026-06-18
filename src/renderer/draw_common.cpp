@@ -8963,6 +8963,10 @@ static void RB_TouchLightGridResidencyArea( idRenderWorldLocal *world, int areaI
 		return;
 	}
 
+	if ( rbLightGridResidencyLastTouched[areaIndex] == frameIndex ) {
+		return;
+	}
+
 	LightGrid &lightGrid = world->portalAreas[areaIndex].lightGrid;
 	if ( !RB_LightGridIsUsable( lightGrid ) ) {
 		return;
@@ -8997,6 +9001,42 @@ static void RB_TouchLightGridResidencyAreaAndNeighbors( idRenderWorldLocal *worl
 	}
 }
 
+static void RB_TouchLightGridResidencyReference( idRenderWorldLocal *world, const LightGrid *lightGrid, int frameIndex ) {
+	if ( lightGrid == NULL ) {
+		return;
+	}
+	RB_TouchLightGridResidencyArea( world, lightGrid->area, frameIndex );
+}
+
+static void RB_TouchLightGridResidencyDrawSurfs( idRenderWorldLocal *world, int frameIndex ) {
+	if ( backEnd.viewDef == NULL || backEnd.viewDef->drawSurfs == NULL ) {
+		return;
+	}
+
+	for ( int i = 0; i < backEnd.viewDef->numDrawSurfs; i++ ) {
+		drawSurf_t *surf = backEnd.viewDef->drawSurfs[i];
+		if ( surf == NULL || surf->material == NULL ) {
+			continue;
+		}
+		if ( surf->material->GetSort() >= SS_POST_PROCESS || surf->material->SuppressInSubview() ) {
+			continue;
+		}
+
+		const LightGrid *lightGrid = NULL;
+		if ( RB_SurfaceHasLightGrid( surf, lightGrid ) ) {
+			RB_TouchLightGridResidencyReference( world, lightGrid, frameIndex );
+		}
+		if ( RB_SurfaceHasViewWeaponLightGrid( surf, lightGrid ) ) {
+			RB_TouchLightGridResidencyReference( world, lightGrid, frameIndex );
+
+			rbLightGridPortalBlend_t portalBlend;
+			if ( RB_SurfaceHasLightGridPortalBlend( surf, portalBlend ) ) {
+				RB_TouchLightGridResidencyReference( world, portalBlend.neighborLightGrid, frameIndex );
+			}
+		}
+	}
+}
+
 static void RB_UpdateLightGridImageResidency( idRenderWorldLocal *world ) {
 	if ( world == NULL || world->portalAreas == NULL ) {
 		return;
@@ -9014,6 +9054,7 @@ static void RB_UpdateLightGridImageResidency( idRenderWorldLocal *world ) {
 
 	const int viewArea = RB_CurrentViewLightGridArea( world );
 	RB_TouchLightGridResidencyAreaAndNeighbors( world, viewArea, frameIndex );
+	RB_TouchLightGridResidencyDrawSurfs( world, frameIndex );
 
 	const int residencyFrames = Max( r_lightGridResidencyFrames.GetInteger(), 0 );
 	for ( int areaIndex = 0; areaIndex < world->numPortalAreas; areaIndex++ ) {
