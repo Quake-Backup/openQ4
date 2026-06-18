@@ -246,6 +246,7 @@ python tools\tests\renderer_gameplay_benchmark.py --list
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke --pacing-only --autoexec-delay-ms 2000 --min-pacing-hz 120 --max-p95-ms 12
 python tools\tests\renderer_gameplay_benchmark.py --profile required
+python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360
 python tools\tests\renderer_gameplay_benchmark.py --profile tiers
 python tools\tests\renderer_gameplay_benchmark.py --profile presentation
 python tools\tests\renderer_gameplay_benchmark.py --profile shadows
@@ -259,6 +260,7 @@ The runner fails a case when the process times out, no gameplay screenshot is pr
 |---|---|
 | `smoke` | bounded `game/storage1` SP gameplay smoke with screenshot, metrics, frame-pacing snapshot, and zero-warning log gates |
 | `required` | `game/storage1`, `game/airdefense1`, `game/airdefense2`, `game/storage2`, `game/medlabs`, `game/mcc_landing`, and `mp/q4dm1` listen server plus local client |
+| `campaign-split-state-transition` | triggers the real SP end-level targets from `game/mcc_2` through `game/storage1 first`, `game/storage2`, `game/storage1 second`, and into `game/tram1`, asserting the active `si_entityFilter` after each load |
 | `tiers` | forced `r_glTier auto`, `legacy`, `gl33`, `gl41`, `gl43`, `gl45`, and `gl46` gameplay probes |
 | `presentation` | `r_swapInterval 0/1`, `com_maxfps 0/120/240`, windowed, and fullscreen coverage for uncapped/high-refresh validation |
 | `shadows` | stencil fallback, mapped shadows, CSM, translucent moments, and debug-overlay modes `1..6` over the shadow correctness scenes |

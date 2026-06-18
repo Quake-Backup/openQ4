@@ -38,6 +38,11 @@ idCVar s_centerFractionVO( "s_centerFractionVO", "0.75", CVAR_FLOAT, "Portion of
 extern idCVar s_playDefaultSound;
 extern idCVar s_noSound;
 extern idCVar s_musicVolume;
+extern idCVar s_constantAmplitude;
+
+static const int SOUND_SHADER_SHAKE_RATE_HZ = 30;
+static const float SOUND_SHADER_MATERIAL_SHAKE_SCALE = 2800.0f;
+static const float SOUND_SHADER_SHAKE_NORMALIZE = 1.0f / 32768.0f;
 
 static ID_INLINE float VolumeScaleToDB( const float volumeScale )
 {
@@ -144,6 +149,7 @@ idSoundChannel::idSoundChannel()
 	leadinSample = NULL;
 	loopingSample = NULL;
 	logicalChannel = SCHANNEL_ANY;
+	choice = 0;
 	allowSlow = false;
 	soundShader = NULL;
 
@@ -1010,6 +1016,7 @@ int idSoundEmitterLocal::StartSound( const idSoundShader* shader, const s_channe
 	chan->parms = chanParms;
 	chan->soundShader = shader;
 	chan->logicalChannel = channel;
+	chan->choice = choice;
 	chan->leadinSample = leadinSample;
 	chan->loopingSample = loopingSample;
 	chan->allowSlow = allowSlow;
@@ -1225,8 +1232,14 @@ idSoundEmitterLocal::CurrentAmplitude
 */
 float idSoundEmitterLocal::CurrentAmplitude()
 {
-	float amplitude = 0.0f;
-	int currentTime = soundWorld->GetSoundTime();
+	if( s_constantAmplitude.GetFloat() >= 0.0f )
+	{
+		return s_constantAmplitude.GetFloat();
+	}
+
+	float high = 0.0f;
+	float sampleAmplitude = 0.0f;
+	const int currentTime = soundWorld->GetSoundTime();
 	for( int i = 0; i < channels.Num(); i++ )
 	{
 		idSoundChannel* chan = channels[i];
@@ -1234,16 +1247,53 @@ float idSoundEmitterLocal::CurrentAmplitude()
 		{
 			continue;
 		}
-		int relativeTime = currentTime - chan->startTime;
-		int leadinLength = chan->leadinSample->LengthInMsec();
+
+		if( ( chan->parms.soundShaderFlags & SSF_NO_FLICKER ) != 0 )
+		{
+			high = Max( high, 32767.0f );
+			continue;
+		}
+
+		const int relativeTime = currentTime - chan->startTime;
+		const char* shakeData = chan->soundShader != NULL ? chan->soundShader->GetShakeData( chan->choice ) : "";
+		if( shakeData != NULL && shakeData[0] != '\0' )
+		{
+			int shakeDataLength = 0;
+			while( shakeData[shakeDataLength] != '\0' )
+			{
+				shakeDataLength++;
+			}
+
+			int shakeIndex = SOUND_SHADER_SHAKE_RATE_HZ * relativeTime / 1000;
+			if( ( chan->parms.soundShaderFlags & SSF_LOOPING ) != 0 )
+			{
+				shakeIndex %= shakeDataLength;
+			}
+			if( shakeIndex >= 0 && shakeIndex < shakeDataLength )
+			{
+				const int shakeValue = Max( 0, shakeData[shakeIndex] - 'a' );
+				high = Max( high, shakeValue * SOUND_SHADER_MATERIAL_SHAKE_SCALE );
+			}
+			continue;
+		}
+
+		if( chan->leadinSample == NULL )
+		{
+			continue;
+		}
+		const int leadinLength = chan->leadinSample->LengthInMsec();
 		if( relativeTime < leadinLength )
 		{
-			amplitude = Max( amplitude, chan->leadinSample->GetAmplitude( relativeTime ) );
+			sampleAmplitude = Max( sampleAmplitude, chan->leadinSample->GetAmplitude( relativeTime ) );
 		}
-		else if( chan->loopingSample != NULL )
+		else if( chan->loopingSample != NULL && chan->loopingSample->LengthInMsec() > 0 )
 		{
-			amplitude = Max( amplitude, chan->loopingSample->GetAmplitude( ( relativeTime - leadinLength ) % chan->loopingSample->LengthInMsec() ) );
+			sampleAmplitude = Max( sampleAmplitude, chan->loopingSample->GetAmplitude( ( relativeTime - leadinLength ) % chan->loopingSample->LengthInMsec() ) );
 		}
 	}
-	return amplitude;
+	if( high > 0.0f )
+	{
+		return idMath::ATan( high * SOUND_SHADER_SHAKE_NORMALIZE, 1.0f ) / DEG2RAD( 45.0f );
+	}
+	return sampleAmplitude;
 }

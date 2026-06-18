@@ -136,7 +136,32 @@ LENS_FLARE_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
-ALL_SCENES = {**REQUIRED_SCENES, **SHADOW_SCENES, **LENS_FLARE_SCENES}
+CAMPAIGN_TRANSITION_SCENES: dict[str, dict[str, Any]] = {
+    "sp-campaign-mcc2-to-tram1": {
+        "mode": "SP",
+        "map": "game/mcc_2",
+        "purpose": "scripted campaign transition chain from MCC 2 through Storage 1 first/second state handling into Tram 1",
+        "path": "triggered-campaign-transition",
+    },
+}
+
+CAMPAIGN_MCC2_TO_TRAM1_COMMANDS = (
+    "openq4_assertMapState game/mcc_2",
+    "trigger mcc2_endlevel",
+    "wait 180",
+    "openq4_assertMapState game/storage1 first",
+    "trigger endLevel",
+    "wait 180",
+    "openq4_assertMapState game/storage2",
+    "trigger target_endlevel_1",
+    "wait 180",
+    "openq4_assertMapState game/storage1 second",
+    "trigger target_endlevel_2",
+    "wait 180",
+    "openq4_assertMapState game/tram1",
+)
+
+ALL_SCENES = {**REQUIRED_SCENES, **SHADOW_SCENES, **LENS_FLARE_SCENES, **CAMPAIGN_TRANSITION_SCENES}
 
 SHADOW_PRESETS: dict[str, dict[str, str]] = {
     "default": {},
@@ -234,6 +259,16 @@ PROFILE_DEFAULTS = {
         "display": ("windowed",),
         "shadows": ("default",),
         "lensFlare": ("default",),
+    },
+    "campaign-split-state-transition": {
+        "cases": tuple(CAMPAIGN_TRANSITION_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "lensFlare": ("default",),
+        "execCommands": CAMPAIGN_MCC2_TO_TRAM1_COMMANDS,
     },
     "tiers": {
         "cases": ("sp-airdefense1",),
@@ -365,6 +400,7 @@ WARNING_PATTERNS = {
     "shaderCompile": re.compile(r"(shader compile|program link).*(failed|error)|failed to compile", re.IGNORECASE),
     "glError": re.compile(r"\bGL_INVALID_[A-Z_]+|OpenGL error", re.IGNORECASE),
     "fatal": re.compile(r"Fatal Error|could not initialize OpenGL|Unable to initialize OpenGL", re.IGNORECASE),
+    "mapStateMismatch": re.compile(r"ERROR:\s+openQ4 map state mismatch|openQ4 map state assertion", re.IGNORECASE),
 }
 
 
@@ -1380,6 +1416,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "requiredScenes": REQUIRED_SCENES,
         "shadowScenes": SHADOW_SCENES,
         "lensFlareScenes": LENS_FLARE_SCENES,
+        "campaignTransitionScenes": CAMPAIGN_TRANSITION_SCENES,
         "shadowPresets": SHADOW_PRESETS,
         "lensFlarePresets": LENS_FLARE_PRESETS,
         "lensFlareSignoffMatrix": LENS_FLARE_SIGNOFF_MATRIX,
@@ -1549,9 +1586,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parsed = parser.parse_args(argv)
     try:
         profile_cvars = tuple(PROFILE_DEFAULTS[parsed.profile].get("cvars", ()))
+        profile_exec_commands = tuple(PROFILE_DEFAULTS[parsed.profile].get("execCommands", ()))
         parsed.extra_cvars = profile_cvars + parse_extra_cvars(parsed.set_cvar)
         parsed.launch_cvars = parse_extra_cvars(parsed.set_launch_cvar)
-        parsed.exec_commands = parse_exec_commands(parsed.exec_command)
+        parsed.exec_commands = profile_exec_commands + parse_exec_commands(parsed.exec_command)
     except ValueError as exc:
         parser.error(str(exc))
     parsed.reference_dir_path = Path(parsed.reference_dir).resolve() if parsed.reference_dir else None
@@ -1571,8 +1609,14 @@ def print_list() -> None:
             * len(defaults["lensFlare"])
         )
         profile_cvars = defaults.get("cvars", ())
-        cvar_text = " " + ", ".join(f"{key}={value}" for key, value in profile_cvars) if profile_cvars else ""
-        print(f"  {profile}: {count} generated case(s){cvar_text}")
+        profile_exec_commands = defaults.get("execCommands", ())
+        annotations: list[str] = []
+        if profile_cvars:
+            annotations.append("cvars " + ", ".join(f"{key}={value}" for key, value in profile_cvars))
+        if profile_exec_commands:
+            annotations.append(f"{len(profile_exec_commands)} scripted command(s)")
+        annotation_text = " - " + "; ".join(annotations) if annotations else ""
+        print(f"  {profile}: {count} generated case(s){annotation_text}")
     print("\nRequired gameplay cases:")
     for case_id, scene in REQUIRED_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
@@ -1581,6 +1625,9 @@ def print_list() -> None:
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nLens flare capture cases:")
     for case_id, scene in LENS_FLARE_SCENES.items():
+        print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nCampaign transition cases:")
+    for case_id, scene in CAMPAIGN_TRANSITION_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nShadow presets:")
     for preset, cvars in SHADOW_PRESETS.items():
@@ -1646,6 +1693,7 @@ def main(argv: list[str]) -> int:
         "maxP95Ms": args.max_p95_ms,
         "maxP99Ms": args.max_p99_ms,
         "profileCvars": dict(PROFILE_DEFAULTS[args.profile].get("cvars", ())),
+        "profileExecCommands": list(PROFILE_DEFAULTS[args.profile].get("execCommands", ())),
         "launchCvars": dict(args.launch_cvars),
         "execCommands": list(args.exec_commands),
     }

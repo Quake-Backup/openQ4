@@ -2372,6 +2372,12 @@ idCommonLocal::FilterLangList
 */
 void idCommonLocal::FilterLangList( idStrList* list, idStr lang ) {
 	
+	lang.Strip( ' ' );
+	lang.Strip( '\t' );
+	lang.Strip( '\r' );
+	lang.Strip( '\n' );
+	lang.ToLower();
+
 	idStr temp;
 	for( int i = 0; i < list->Num(); i++ ) {
 		temp = (*list)[i];
@@ -2404,6 +2410,17 @@ void idCommonLocal::InitLanguageDict( void ) {
 
 	StartupVariable( "sys_lang", false );	// let it be set on the command line - this is needed because this init happens very early
 	idStr langName = cvarSystem->GetCVarString( "sys_lang" );
+	langName.Strip( ' ' );
+	langName.Strip( '\t' );
+	langName.Strip( '\r' );
+	langName.Strip( '\n' );
+	langName.ToLower();
+	if ( langName.IsEmpty() ) {
+		langName = "english";
+	}
+	if ( idStr::Cmp( langName.c_str(), cvarSystem->GetCVarString( "sys_lang" ) ) != 0 ) {
+		cvarSystem->SetCVarString( "sys_lang", langName.c_str() );
+	}
 
 	//Loop through the list and filter
 	idStrList currentLangList = langList;
@@ -2411,10 +2428,20 @@ void idCommonLocal::InitLanguageDict( void ) {
 	
 	if ( currentLangList.Num() == 0 ) {
 		// reset cvar to default and try to load again
+		common->Printf( "No language files found for sys_lang '%s'; falling back to English\n", langName.c_str() );
 		cmdSystem->BufferCommandText( CMD_EXEC_NOW, "reset sys_lang" );
 		langName = cvarSystem->GetCVarString( "sys_lang" );
+		langName.ToLower();
 		currentLangList = langList;
 		FilterLangList(&currentLangList, langName);
+	}
+
+	if ( idStr::Icmp( langName.c_str(), "english" ) != 0 ) {
+		idStrList englishLangList = langList;
+		FilterLangList( &englishLangList, "english" );
+		for ( int i = 0; i < englishLangList.Num(); i++ ) {
+			languageDict.Load( englishLangList[i], false );
+		}
 	}
 
 	for( int i = 0; i < currentLangList.Num(); i++ ) {

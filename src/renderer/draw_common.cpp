@@ -159,8 +159,47 @@ static bool RB_DrawSurfNeedsLegacyFeedback( const drawSurf_t *surf ) {
 		|| material->GetSort() == SS_SUBVIEW;
 }
 
-static bool RB_HasLegacyFeedbackDrawSurfs( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+static bool RB_DrawSurfIsDecalMaterialPass( const drawSurf_t *surf ) {
+	const idMaterial *material = surf != NULL ? surf->material : NULL;
+	if ( material == NULL ) {
+		return false;
+	}
+	return surf->decalColorCache != NULL
+		|| ( material->GetSort() >= SS_DECAL && material->GetSort() < SS_FAR );
+}
+
+static bool RB_DrawSurfIsBeforeLitDecalPass( const drawSurf_t *surf ) {
+	const idMaterial *material = surf != NULL ? surf->material : NULL;
+	if ( material == NULL || RB_DrawSurfIsDecalMaterialPass( surf ) ) {
+		return false;
+	}
+	return material->GetSort() < SS_DECAL;
+}
+
+static bool RB_DrawSurfIsLitDecalOrLaterPass( const drawSurf_t *surf ) {
+	const idMaterial *material = surf != NULL ? surf->material : NULL;
+	if ( material == NULL ) {
+		return false;
+	}
+	if ( RB_DrawSurfIsDecalMaterialPass( surf ) ) {
+		return !r_skipDecals.GetBool();
+	}
+	return material->GetSort() >= SS_DECAL && material->GetSort() < SS_POST_PROCESS;
+}
+
+static bool RB_DrawSurfNeedsPreDecalLegacyFeedback( const drawSurf_t *surf ) {
+	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsBeforeLitDecalPass( surf );
+}
+
+static bool RB_DrawSurfNeedsLitDecalLegacyFeedback( const drawSurf_t *surf ) {
+	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsLitDecalOrLaterPass( surf );
+}
+
+static bool RB_HasLegacyFeedbackDrawSurfs( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderPassSurfFilter_t filter = NULL ) {
 	for ( int i = 0; i < numDrawSurfs; ++i ) {
+		if ( filter != NULL && !filter( drawSurfs[i] ) ) {
+			continue;
+		}
 		if ( RB_DrawSurfNeedsLegacyFeedback( drawSurfs[i] ) ) {
 			return true;
 		}
@@ -503,6 +542,40 @@ bool RB_BindGLSLShaderParm( glslShaderParmBinding_t binding, int location, const
 	case GLSL_SHADERPARM_POSTPROCESS_SMAA_QUALITY:
 		glUniform4fvARB( location, 1, backEnd.postProcessSMAAQuality.ToFloatPtr() );
 		return true;
+	case GLSL_SHADERPARM_CURRENT_RENDER_VIEWPORT_ORIGIN: {
+		const GLfloat viewportOrigin[2] = {
+			static_cast<GLfloat>( backEnd.viewDef->viewport.x1 ),
+			static_cast<GLfloat>( backEnd.viewDef->viewport.y1 )
+		};
+		glUniform2fvARB( location, 1, viewportOrigin );
+		return true;
+	}
+	case GLSL_SHADERPARM_CURRENT_RENDER_VIEWPORT_SIZE: {
+		const GLfloat viewportSize[2] = {
+			static_cast<GLfloat>( Max( 1, backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1 ) ),
+			static_cast<GLfloat>( Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 ) )
+		};
+		glUniform2fvARB( location, 1, viewportSize );
+		return true;
+	}
+	case GLSL_SHADERPARM_CURRENT_RENDER_TEXTURE_SCALE: {
+		const int viewportWidth = Max( 1, backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1 );
+		const int viewportHeight = Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+		int textureWidth = viewportWidth;
+		int textureHeight = viewportHeight;
+
+		if ( globalImages->currentRenderImage != NULL ) {
+			textureWidth = Max( 1, globalImages->currentRenderImage->GetOpts().width );
+			textureHeight = Max( 1, globalImages->currentRenderImage->GetOpts().height );
+		}
+
+		const GLfloat textureScale[2] = {
+			static_cast<GLfloat>( viewportWidth ) / static_cast<GLfloat>( textureWidth ),
+			static_cast<GLfloat>( viewportHeight ) / static_cast<GLfloat>( textureHeight )
+		};
+		glUniform2fvARB( location, 1, textureScale );
+		return true;
+	}
 	case GLSL_SHADERPARM_REGISTERS:
 	default:
 		return false;
@@ -4035,6 +4108,207 @@ void RB_ApplyCRTToBackBuffer( void ) {
 	RB_EndFullscreenPostProcessPass();
 }
 
+static GLhandleARB rbColorMappingProgram = 0;
+static GLhandleARB rbColorMappingVertexShader = 0;
+static GLhandleARB rbColorMappingFragmentShader = 0;
+static int rbColorMappingProgramGeneration = 0;
+static GLint rbColorMappingSceneLocation = -1;
+static GLint rbColorMappingBrightnessLocation = -1;
+static GLint rbColorMappingGammaLocation = -1;
+
+static void RB_FreeColorMappingProgram( void ) {
+	if ( rbColorMappingProgram != 0 && glConfig.isInitialized && rbColorMappingProgramGeneration == tr.glContextGeneration ) {
+		if ( rbColorMappingVertexShader != 0 ) {
+			glDetachObjectARB( rbColorMappingProgram, rbColorMappingVertexShader );
+			glDeleteObjectARB( rbColorMappingVertexShader );
+		}
+		if ( rbColorMappingFragmentShader != 0 ) {
+			glDetachObjectARB( rbColorMappingProgram, rbColorMappingFragmentShader );
+			glDeleteObjectARB( rbColorMappingFragmentShader );
+		}
+		glDeleteObjectARB( rbColorMappingProgram );
+	}
+
+	rbColorMappingProgram = 0;
+	rbColorMappingVertexShader = 0;
+	rbColorMappingFragmentShader = 0;
+	rbColorMappingProgramGeneration = 0;
+	rbColorMappingSceneLocation = -1;
+	rbColorMappingBrightnessLocation = -1;
+	rbColorMappingGammaLocation = -1;
+}
+
+static bool RB_EnsureColorMappingProgram( void ) {
+	if ( rbColorMappingProgram != 0 && rbColorMappingProgramGeneration == tr.glContextGeneration ) {
+		return true;
+	}
+
+	RB_FreeColorMappingProgram();
+
+	if ( !glConfig.GLSLProgramAvailable ) {
+		return false;
+	}
+
+	static const char *colorMappingVertexSource =
+		"void main() {\n"
+		"	gl_Position = ftransform();\n"
+		"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+		"}\n";
+	static const char *colorMappingFragmentSource =
+		"uniform sampler2D Scene;\n"
+		"uniform float brightness;\n"
+		"uniform float gamma;\n"
+		"\n"
+		"void main() {\n"
+		"	vec4 sampleColor = texture2D( Scene, gl_TexCoord[0].st );\n"
+		"	vec3 color = clamp( sampleColor.rgb * brightness, 0.0, 1.0 );\n"
+		"	float safeGamma = max( gamma, 0.001 );\n"
+		"	color = pow( color, vec3( 1.0 / safeGamma ) );\n"
+		"	gl_FragColor = vec4( color, sampleColor.a );\n"
+		"}\n";
+
+	GLhandleARB vertexShader = glCreateShaderObjectARB( GL_VERTEX_SHADER_ARB );
+	GLhandleARB fragmentShader = glCreateShaderObjectARB( GL_FRAGMENT_SHADER_ARB );
+	if ( vertexShader == 0 || fragmentShader == 0 ) {
+		if ( vertexShader != 0 ) {
+			glDeleteObjectARB( vertexShader );
+		}
+		if ( fragmentShader != 0 ) {
+			glDeleteObjectARB( fragmentShader );
+		}
+		return false;
+	}
+
+	const GLcharARB *vertexSource = (const GLcharARB *)colorMappingVertexSource;
+	const GLcharARB *fragmentSource = (const GLcharARB *)colorMappingFragmentSource;
+	glShaderSourceARB( vertexShader, 1, &vertexSource, NULL );
+	glShaderSourceARB( fragmentShader, 1, &fragmentSource, NULL );
+	glCompileShaderARB( vertexShader );
+	glCompileShaderARB( fragmentShader );
+
+	GLint status = GL_FALSE;
+	glGetObjectParameterivARB( vertexShader, GL_OBJECT_COMPILE_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( vertexShader, "vertex shader compile", "builtin/final_color_mapping" );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+
+	glGetObjectParameterivARB( fragmentShader, GL_OBJECT_COMPILE_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( fragmentShader, "fragment shader compile", "builtin/final_color_mapping" );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+
+	GLhandleARB programObject = glCreateProgramObjectARB();
+	glAttachObjectARB( programObject, vertexShader );
+	glAttachObjectARB( programObject, fragmentShader );
+	glLinkProgramARB( programObject );
+
+	glGetObjectParameterivARB( programObject, GL_OBJECT_LINK_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( programObject, "program link", "builtin/final_color_mapping" );
+		glDetachObjectARB( programObject, vertexShader );
+		glDetachObjectARB( programObject, fragmentShader );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		glDeleteObjectARB( programObject );
+		return false;
+	}
+
+	rbColorMappingProgram = programObject;
+	rbColorMappingVertexShader = vertexShader;
+	rbColorMappingFragmentShader = fragmentShader;
+	rbColorMappingProgramGeneration = tr.glContextGeneration;
+	rbColorMappingSceneLocation = glGetUniformLocationARB( programObject, "Scene" );
+	rbColorMappingBrightnessLocation = glGetUniformLocationARB( programObject, "brightness" );
+	rbColorMappingGammaLocation = glGetUniformLocationARB( programObject, "gamma" );
+	if ( rbColorMappingSceneLocation < 0 || rbColorMappingBrightnessLocation < 0 || rbColorMappingGammaLocation < 0 ) {
+		common->Warning( "GLSL builtin/final_color_mapping is missing required uniforms" );
+		RB_FreeColorMappingProgram();
+		return false;
+	}
+
+	common->Printf( "Loaded built-in GLSL program 'builtin/final_color_mapping'\n" );
+	return true;
+}
+
+static bool RB_ColorMappingsAreNeutral( float brightness, float gamma ) {
+	return idMath::Fabs( brightness - 1.0f ) <= 0.0001f
+		&& idMath::Fabs( gamma - 1.0f ) <= 0.0001f;
+}
+
+void RB_ApplyColorMappingsToBackBuffer( void ) {
+	if ( GLimp_UseNativeGammaRamps() ) {
+		return;
+	}
+
+	const GLfloat brightness = idMath::ClampFloat( 0.0f, 16.0f, r_brightness.GetFloat() );
+	const GLfloat gamma = Max( r_gamma.GetFloat(), 0.001f );
+	if ( RB_ColorMappingsAreNeutral( brightness, gamma ) ) {
+		return;
+	}
+
+	if ( !glConfig.GLSLProgramAvailable ) {
+		static bool warned = false;
+		if ( !warned ) {
+			common->Warning( "r_brightness/r_gamma require GLSL on this platform backend because native gamma ramps are unavailable" );
+			warned = true;
+		}
+		return;
+	}
+
+	if ( !RB_EnsureColorMappingProgram() ) {
+		return;
+	}
+
+	const int viewportWidth = glConfig.vidWidth;
+	const int viewportHeight = glConfig.vidHeight;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return;
+	}
+
+	idImage *sceneImage = globalImages->currentRenderImage;
+	if ( sceneImage == NULL ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_ApplyColorMappingsToBackBuffer ----------\n" );
+
+	idRenderTexture::BindNull();
+	backEnd.renderTexture = NULL;
+	glDrawBuffer( GL_BACK );
+	glReadBuffer( GL_BACK );
+	glViewport( 0, 0, viewportWidth, viewportHeight );
+	glScissor( 0, 0, viewportWidth, viewportHeight );
+
+	sceneImage->CopyFramebuffer( 0, 0, viewportWidth, viewportHeight );
+
+	const int textureWidth = sceneImage->GetOpts().width;
+	const int textureHeight = sceneImage->GetOpts().height;
+	if ( textureWidth <= 0 || textureHeight <= 0 ) {
+		return;
+	}
+
+	RB_BeginFullscreenPostProcessPass( 0, 0, viewportWidth, viewportHeight );
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+	GL_TexEnv( GL_MODULATE );
+
+	glUseProgramObjectARB( rbColorMappingProgram );
+	glUniform1iARB( rbColorMappingSceneLocation, 0 );
+	glUniform1fARB( rbColorMappingBrightnessLocation, brightness );
+	glUniform1fARB( rbColorMappingGammaLocation, gamma );
+
+	RB_DrawFullscreenPostProcessQuad( viewportWidth, viewportHeight, textureWidth, textureHeight );
+	glUseProgramObjectARB( 0 );
+	globalImages->BindNull();
+	RB_EndFullscreenPostProcessPass();
+}
+
 /*
 =====================
 RB_BakeTextureMatrixIntoTexgen
@@ -5191,6 +5465,7 @@ void RB_ShutdownScenePostProcess( void ) {
 	RB_FreeGLSLProgram( &rbBloomCompositeStage );
 	RB_FreeGLSLProgram( &rbResolutionScaleStage );
 	RB_FreeGLSLProgram( &rbCRTStage );
+	RB_FreeColorMappingProgram();
 	RB_FreeGLSLProgram( &rbSoftParticleStage );
 	RB_FreeGLSLProgram( &rbRVSpecialDepthStage );
 	RB_FreeGLSLProgram( &rbRVSpecialBlurStage );
@@ -7784,6 +8059,10 @@ static bool rbLightGridInlineSubmittedThisView = false;
 int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderPassSurfFilter_t filter = NULL ) {
 	int				i;
 
+	if ( drawSurfs == NULL || numDrawSurfs <= 0 ) {
+		return 0;
+	}
+
 	// only obey skipAmbient if we are rendering a view
 	if ( backEnd.viewDef->viewEntitys && r_skipAmbient.GetBool() ) {
 		return numDrawSurfs;
@@ -8728,18 +9007,43 @@ static bool RB_LightGridIsUsable( const LightGrid &candidate ) {
 	return candidate.IsUsable();
 }
 
+static bool RB_LightGridMaterialHasActiveColorMaskStage( const idMaterial *shader, const float *regs ) {
+	if ( shader == NULL ) {
+		return false;
+	}
+
+	for ( int stageIndex = 0; stageIndex < shader->GetNumStages(); stageIndex++ ) {
+		const shaderStage_t *stage = shader->GetStage( stageIndex );
+		if ( stage != NULL &&
+			( regs == NULL || regs[stage->conditionRegister] != 0.0f ) &&
+			( stage->drawStateBits & GLS_COLORMASK ) != 0 ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static bool RB_SurfaceCanReceiveLightGrid( const drawSurf_t *surf ) {
-	return surf != NULL
-		&& surf->material != NULL
-		&& surf->space != NULL
-		&& surf->geo != NULL
-		&& surf->material->IsDrawn()
-		&& surf->material->ReceivesLighting()
-		&& surf->material->GetSort() == SS_OPAQUE
-		&& !surf->material->IsPortalSky()
-		&& surf->material->Coverage() != MC_TRANSLUCENT
-		&& surf->decalColorCache == NULL
-		&& !surf->material->TestMaterialFlag( MF_POLYGONOFFSET );
+	if ( surf == NULL || surf->material == NULL || surf->space == NULL || surf->geo == NULL ) {
+		return false;
+	}
+	if ( !surf->material->IsDrawn() || !surf->material->ReceivesLighting() || surf->material->GetSort() != SS_OPAQUE ) {
+		return false;
+	}
+	if ( surf->material->IsPortalSky() || surf->material->Coverage() == MC_TRANSLUCENT ) {
+		return false;
+	}
+	if ( surf->decalColorCache != NULL || surf->material->TestMaterialFlag( MF_POLYGONOFFSET ) ) {
+		return false;
+	}
+	// First-person scope/glass surfaces can use color-mask stages to author
+	// alpha/display behavior. The additive indirect pass cannot preserve those
+	// masks, so let the weapon's regular material and GUI light own them.
+	if ( surf->space->weaponDepthHack && RB_LightGridMaterialHasActiveColorMaskStage( surf->material, surf->shaderRegisters ) ) {
+		return false;
+	}
+	return true;
 }
 
 static const LightGrid *RB_CurrentViewLightGrid( void );
@@ -10084,26 +10388,29 @@ void	RB_STD_DrawView( void ) {
 		backEnd.viewDef->renderWorld->RenderPortalFades();
 	}
 
-	// now draw any non-light dependent shading passes
-	int processed = 0;
-	if ( R_ModernGLExecutor_LegacyPassCanSkipForView( RENDER_PASS_AMBIENT, backEnd.viewDef ) ) {
-		processed = RB_STD_FindPostProcessStart( drawSurfs, numDrawSurfs );
-		if ( RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed ) ) {
+	// now draw non-light dependent base shading. Decal and later blended
+	// surfaces are held until after every lighting contribution so their blend
+	// modes see the same lit framebuffer as retail Q4's decal pass.
+	const int processed = RB_STD_FindPostProcessStart( drawSurfs, numDrawSurfs );
+	const bool ambientLegacySkipped = R_ModernGLExecutor_LegacyPassCanSkipForView( RENDER_PASS_AMBIENT, backEnd.viewDef );
+	const bool preDecalFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsBeforeLitDecalPass );
+	const bool litDecalFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsLitDecalOrLaterPass );
+	if ( ambientLegacySkipped ) {
+		if ( preDecalFeedback || litDecalFeedback ) {
 			R_ModernGLExecutor_ComposeVisibleSceneForPost();
 			backEnd.currentRenderCopied = false;
 			backEnd.currentDepthCopied = false;
-			RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsLegacyFeedback );
+			if ( preDecalFeedback ) {
+				RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsPreDecalLegacyFeedback );
+			}
 		}
 		R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_AMBIENT );
-	} else {
+	} else if ( processed > 0 ) {
 		// Keep authored post-process surfaces out of the ambient/material pass.
 		// Some pre-post materials legitimately populate _currentRender; if the
 		// full list is submitted here, SS_POST_PROCESS surfaces can consume that
 		// stale pre-light-grid copy before the indirect overlay has been added.
-		processed = RB_STD_FindPostProcessStart( drawSurfs, numDrawSurfs );
-		if ( processed > 0 ) {
-			RB_STD_DrawShaderPasses( drawSurfs, processed );
-		}
+		RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfIsBeforeLitDecalPass );
 	}
 
 	// Modern visible color/depth must be handed back before legacy overlay
@@ -10121,6 +10428,16 @@ void	RB_STD_DrawView( void ) {
 	}
 
 	R_ModernGLExecutor_SubmitForwardPlusDecalOverlay( backEnd.viewDef );
+
+	if ( ambientLegacySkipped ) {
+		if ( litDecalFeedback ) {
+			backEnd.currentRenderCopied = false;
+			backEnd.currentDepthCopied = false;
+			RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsLitDecalLegacyFeedback );
+		}
+	} else if ( processed > 0 ) {
+		RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfIsLitDecalOrLaterPass );
+	}
 
 	// Apply a configurable brightness floor after ambient/material passes.
 	RB_STD_ForceAmbient();
