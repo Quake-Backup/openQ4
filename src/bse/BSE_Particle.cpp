@@ -54,7 +54,7 @@ ID_INLINE void UnpackColor(dword rgba, byte out[4]) {
 	out[3] = static_cast<byte>((rgba >> 24) & 0xFF);
 }
 
-ID_INLINE void SetDrawVert(idDrawVert& vert, const idVec3& xyz, float s, float t, dword rgba) {
+ID_INLINE void SetDrawVert(idDrawVert& vert, const idVec3& xyz, float s, float t, dword rgba, const idVec3* normal = NULL) {
 	byte color[4];
 	UnpackColor(rgba, color);
 
@@ -62,7 +62,7 @@ ID_INLINE void SetDrawVert(idDrawVert& vert, const idVec3& xyz, float s, float t
 	vert.xyz = xyz;
 	vert.st[0] = s;
 	vert.st[1] = t;
-	vert.normal.Set(1.0f, 0.0f, 0.0f);
+	vert.normal = normal ? *normal : idVec3(1.0f, 0.0f, 0.0f);
 	vert.tangents[0].Set(0.0f, 1.0f, 0.0f);
 	vert.tangents[1].Set(0.0f, 0.0f, 1.0f);
 	vert.color[0] = color[0];
@@ -84,12 +84,12 @@ ID_INLINE bool HasTriCapacity(const srfTriangles_t* tri, int addVerts, int addIn
 	return true;
 }
 
-ID_INLINE void AppendQuad(srfTriangles_t* tri, const idVec3& p0, const idVec3& p1, const idVec3& p2, const idVec3& p3, dword rgba) {
+ID_INLINE void AppendQuad(srfTriangles_t* tri, const idVec3& p0, const idVec3& p1, const idVec3& p2, const idVec3& p3, dword rgba, const idVec3* normal = NULL) {
 	const int base = tri->numVerts;
-	SetDrawVert(tri->verts[base + 0], p0, 0.0f, 0.0f, rgba);
-	SetDrawVert(tri->verts[base + 1], p1, 1.0f, 0.0f, rgba);
-	SetDrawVert(tri->verts[base + 2], p2, 1.0f, 1.0f, rgba);
-	SetDrawVert(tri->verts[base + 3], p3, 0.0f, 1.0f, rgba);
+	SetDrawVert(tri->verts[base + 0], p0, 0.0f, 0.0f, rgba, normal);
+	SetDrawVert(tri->verts[base + 1], p1, 1.0f, 0.0f, rgba, normal);
+	SetDrawVert(tri->verts[base + 2], p2, 1.0f, 1.0f, rgba, normal);
+	SetDrawVert(tri->verts[base + 3], p3, 0.0f, 1.0f, rgba, normal);
 
 	const int indexBase = tri->numIndexes;
 	tri->indexes[indexBase + 0] = base + 0;
@@ -1288,24 +1288,18 @@ bool rvSpriteParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, const
 
 	float s, c;
 	idMath::SinCos(rotation, s, c);
-	idVec3 right = view[1] * c - view[2] * s;
-	idVec3 up = view[1] * s + view[2] * c;
-	right *= idMath::Fabs(size[0]) * 0.5f;
-	up *= idMath::Fabs(size[1]) * 0.5f;
+	idVec3 right = (view[1] * c - view[2] * s) * size[0];
+	idVec3 up = (view[1] * s + view[2] * c) * size[1];
 
 	dword rgba = HandleTint(effect, color, 1.0f);
-	const int baseVert = tri->numVerts;
 	AppendQuad(
 		tri,
-		pos - right - up,
-		pos + right - up,
-		pos + right + up,
-		pos - right + up,
-		rgba);
-	tri->verts[baseVert + 0].normal = pos;
-	tri->verts[baseVert + 1].normal = pos;
-	tri->verts[baseVert + 2].normal = pos;
-	tri->verts[baseVert + 3].normal = pos;
+		pos - right,
+		pos - up,
+		pos + right,
+		pos + up,
+		rgba,
+		&pos);
 	return true;
 }
 
@@ -1465,29 +1459,18 @@ bool rvOrientedParticle::Render(const rvBSE* effect, rvParticleTemplate* pt, con
 
 	idMat3 transform;
 	rvAngles(rotation[0], rotation[1], rotation[2]).ToMat3(transform);
-	const idVec3 right = transform[1] * (size[0] * 0.5f);
-	const idVec3 up = transform[2] * (size[1] * 0.5f);
+	const idVec3 right = transform[1] * -size[0];
+	const idVec3 up = transform[2] * size[1];
 
 	dword rgba = HandleTint(effect, tint, 1.0f);
-	const int base = tri->numVerts;
-	SetDrawVert(tri->verts[base + 0], position - right - up, 0.0f, 0.0f, rgba);
-	SetDrawVert(tri->verts[base + 1], position + right - up, 1.0f, 0.0f, rgba);
-	SetDrawVert(tri->verts[base + 2], position + right + up, 1.0f, 1.0f, rgba);
-	SetDrawVert(tri->verts[base + 3], position - right + up, 0.0f, 1.0f, rgba);
-	tri->verts[base + 0].normal = position;
-	tri->verts[base + 1].normal = position;
-	tri->verts[base + 2].normal = position;
-	tri->verts[base + 3].normal = position;
-
-	const int indexBase = tri->numIndexes;
-	tri->indexes[indexBase + 0] = base + 0;
-	tri->indexes[indexBase + 1] = base + 1;
-	tri->indexes[indexBase + 2] = base + 2;
-	tri->indexes[indexBase + 3] = base + 0;
-	tri->indexes[indexBase + 4] = base + 2;
-	tri->indexes[indexBase + 5] = base + 3;
-	tri->numVerts += 4;
-	tri->numIndexes += 6;
+	AppendQuad(
+		tri,
+		position - right,
+		position - up,
+		position + right,
+		position + up,
+		rgba,
+		&position);
 	return true;
 }
 
