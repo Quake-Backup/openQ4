@@ -79,6 +79,17 @@ jobs:
 
           python tools/build/openq4_release_version.py "${args[@]}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate Discord webhook secret
+        env:
+          DISCORD_RELEASE_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DISCORD_RELEASE_WEBHOOK}" ]; then
+            echo "DISCORD_RELEASE_WEBHOOK must be configured as a repository secret before publishing an openQ4 release."
+            exit 1
+          fi
+
   builds:
     name: ${{ matrix.label }}
     needs: metadata
@@ -710,3 +721,34 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             -f prerelease=false \
             -f draft=false >/dev/null
+
+  discord:
+    name: Announce On Discord
+    needs: [metadata, release]
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Send release embed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          DISCORD_RELEASE_EMOJI: ${{ vars.DISCORD_RELEASE_EMOJI || '' }}
+          DISCORD_RELEASE_MENTIONS: ${{ vars.DISCORD_RELEASE_MENTIONS || '' }}
+          DISCORD_FEEDBACK_CHANNEL: ${{ vars.DISCORD_FEEDBACK_CHANNEL || 'the openQ4 Discord' }}
+          DISCORD_RELEASE_AVATAR_URL: ${{ vars.DISCORD_RELEASE_AVATAR_URL || 'https://raw.githubusercontent.com/themuffinator/OpenQ4/main/assets/icons/quake4_256.png' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .github/scripts/announce-release-discord.mjs
