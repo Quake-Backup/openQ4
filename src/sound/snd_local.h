@@ -237,6 +237,7 @@ public:
 	int						startTime;
 	int						endTime;
 	int						logicalChannel;
+	int						choice;
 	bool					allowSlow;
 
 	soundShaderParms_t		parms;				// combines shader parms and per-channel overrides
