@@ -71,6 +71,8 @@ idCVar com_version( "si_version", version.string, CVAR_SYSTEM|CVAR_ROM|CVAR_SERV
 idCVar com_buildInfo( "com_buildInfo", buildInfo.string, CVAR_SYSTEM|CVAR_ROM, "detailed engine build information" );
 idCVar com_skipRenderer( "com_skipRenderer", "0", CVAR_BOOL|CVAR_SYSTEM, "skip the renderer completely" );
 idCVar com_machineSpec( "com_machineSpec", "-1", CVAR_INTEGER | CVAR_ARCHIVE | CVAR_SYSTEM, "hardware classification, -1 = not detected, 0 = low quality, 1 = medium quality, 2 = high quality, 3 = ultra quality" );
+const char *com_performancePresetArgs[] = { "minimum", "lowpower", "performance", "balanced", "quality", "ultra", NULL };
+idCVar com_performancePreset( "com_performancePreset", "balanced", CVAR_ARCHIVE | CVAR_SYSTEM, "coherent system performance preset: minimum, lowpower, performance, balanced, quality, ultra", com_performancePresetArgs, idCmdSystem::ArgCompletion_String<com_performancePresetArgs> );
 idCVar com_purgeAll( "com_purgeAll", "0", CVAR_BOOL | CVAR_ARCHIVE | CVAR_SYSTEM, "purge everything between level loads" );
 idCVar com_WriteSingleDeclFile( "com_WriteSingleDeclFile", "0", CVAR_SYSTEM | CVAR_BOOL, "write a packed decl file after startup or map loads; use com_singleDeclFileWriteMode for openQ4 or exact-retail game-type coverage" );
 idCVar com_memoryMarker( "com_memoryMarker", "-1", CVAR_INTEGER | CVAR_SYSTEM | CVAR_INIT, "used as a marker for memory stats" );
@@ -524,6 +526,65 @@ static bool Common_HasSteamDeckHostSignal( void ) {
 	return false;
 }
 
+static bool Common_HasRaspberryPiHostSignal( void ) {
+	const char *explicitSignals[] = {
+		"OPENQ4_RASPBERRYPI",
+		"OPENQ4_RPI",
+		"OPENQ4_AUTODETECT_RASPBERRYPI",
+		"RaspberryPi",
+		"RASPBERRY_PI",
+		"raspberrypi"
+	};
+	for ( int i = 0; i < static_cast<int>( sizeof( explicitSignals ) / sizeof( explicitSignals[0] ) ); ++i ) {
+		const char *value = Common_GetNonEmptyEnv( explicitSignals[i] );
+		if ( Common_IsEnvFlagFalse( value ) ) {
+			return false;
+		}
+		if ( Common_IsEnvFlagTrue( value ) ) {
+			return true;
+		}
+	}
+
+#if defined( __linux__ )
+	const char *piTokens[] = {
+		"raspberry pi"
+	};
+	if ( Common_FileContainsAnyToken( "/proc/device-tree/model", piTokens, static_cast<int>( sizeof( piTokens ) / sizeof( piTokens[0] ) ) ) ||
+		 Common_FileContainsAnyToken( "/sys/firmware/devicetree/base/model", piTokens, static_cast<int>( sizeof( piTokens ) / sizeof( piTokens[0] ) ) ) ||
+		 Common_FileContainsAnyToken( "/proc/cpuinfo", piTokens, static_cast<int>( sizeof( piTokens ) / sizeof( piTokens[0] ) ) ) ) {
+		return true;
+	}
+#endif
+
+	return false;
+}
+
+static bool Common_HasExplicitLowPowerHostSignal( void ) {
+	const char *explicitSignals[] = {
+		"OPENQ4_LOWPOWER",
+		"OPENQ4_LOW_POWER",
+		"OPENQ4_AUTODETECT_LOWPOWER"
+	};
+	for ( int i = 0; i < static_cast<int>( sizeof( explicitSignals ) / sizeof( explicitSignals[0] ) ); ++i ) {
+		const char *value = Common_GetNonEmptyEnv( explicitSignals[i] );
+		if ( Common_IsEnvFlagFalse( value ) ) {
+			return false;
+		}
+		if ( Common_IsEnvFlagTrue( value ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool Common_HostCpuIsArm64( void ) {
+#if defined( __aarch64__ ) || defined( _M_ARM64 ) || defined( __arm64__ )
+	return true;
+#else
+	return false;
+#endif
+}
+
 class idCommonLocal : public idCommon {
 public:
 								idCommonLocal( void );
@@ -583,7 +644,7 @@ public:
 	void						PrintLoadingMessage( const char *msg );
 
 	// localization
-	void						InitLanguageDict( void );
+	void						InitLanguageDict( bool applyStartupSysLang );
 	void						LocalizeGui( const char *fileName, idLangDict &langDict );
 	void						LocalizeMapData( const char *fileName, idLangDict &langDict );
 	void						LocalizeSpecificMapData( const char *fileName, idLangDict &langDict, const idLangDict &replaceArgs );
@@ -2166,7 +2227,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "image_useNormalCompression", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_multiSamples", 8, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_postAA", 1, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_lensFlare", 2, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 100, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
@@ -2192,7 +2252,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "r_mode", 4, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_multiSamples", 4, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_postAA", 1, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_lensFlare", 1, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 100, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
@@ -2215,7 +2274,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "r_mode", 3, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_multiSamples", 2, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_postAA", 1, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_lensFlare", 1, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 100, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
@@ -2240,7 +2298,6 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "image_useNormalCompression", 2, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_multiSamples", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_postAA", 0, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "r_lensFlare", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_screenFraction", 85, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "r_swapInterval", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarFloat( "r_forceAmbient", 0.0f, CVAR_ARCHIVE );
@@ -2301,6 +2358,199 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarBool( "r_shadows", true, CVAR_ARCHIVE );
 	}
 #endif
+}
+
+typedef struct openQ4PerformancePreset_s {
+	const char *name;
+	int machineSpec;
+	const char *rendererBenchmarkPreset;
+	int screenFraction;
+	int multiSamples;
+	int postAA;
+	int maxFps;
+	int anisotropy;
+	int downSizeLimit;
+	int downSize;
+	int ignoreHighQuality;
+	int useCompression;
+	int normalCompression;
+	int usePrecompressedTextures;
+	int maxSoundsPerShader;
+	int useShadowMap;
+	int shadowMapSize;
+	int shadowMapMaxUpdates;
+	int bloom;
+	int ssao;
+	int hdrToneMap;
+	int motionBlur;
+	int crt;
+	int useLightGrid;
+	int uploadMegs;
+	int uploadFrameBuffers;
+	int numberOfSpeakers;
+	int useEAXReverb;
+	int maxEmitterChannels;
+} openQ4PerformancePreset_t;
+
+static const openQ4PerformancePreset_t OPENQ4_PERFORMANCE_PRESETS[] = {
+	{ "minimum",     0, "low",      50, 0, 0,  30, 1,  512, 1, 1, 1, 2, 1, 1, 0,  512, 1, 0, 0, 0, 0, 0, 1,  8, 3, 2, 0, 24 },
+	{ "lowpower",    0, "low",      75, 0, 0,  30, 1, 1024, 1, 1, 1, 2, 1, 0, 0,  512, 1, 0, 0, 0, 0, 0, 1,  8, 3, 2, 0, 32 },
+	{ "performance", 1, "baseline", 85, 0, 1,  60, 2,    0, 0, 0, 1, 2, 1, 0, 0, 1024, 2, 0, 0, 0, 0, 0, 1, 16, 4, -1, -1, -1 },
+	{ "balanced",    2, "baseline",100, 2, 1, 120, 4,    0, 0, 0, 1, 2, 1, 0, 0, 1024, 0, 0, 0, 0, 0, 0, 1, 16, 4, -1, -1, -1 },
+	{ "quality",     3, "modern",  100, 4, 1, 144, 8,    0, 0, 0, 1, 0, 1, 0, 0, 1024, 0, 0, 0, 0, 0, 0, 1, 32, 4, -1, -1, -1 },
+	{ "ultra",       3, "high-end",100, 8, 1, 240,16,    0, 0, 0, 0, 0, 0, 0, 0, 2048, 0, 0, 0, 0, 0, 0, 1, 32, 4, -1, -1, -1 }
+};
+
+static const openQ4PerformancePreset_t *Common_FindPerformancePreset( const char *name ) {
+	if ( name == NULL || name[0] == '\0' ) {
+		return NULL;
+	}
+
+	for ( int i = 0; i < static_cast<int>( sizeof( OPENQ4_PERFORMANCE_PRESETS ) / sizeof( OPENQ4_PERFORMANCE_PRESETS[0] ) ); ++i ) {
+		if ( idStr::Icmp( OPENQ4_PERFORMANCE_PRESETS[i].name, name ) == 0 ) {
+			return &OPENQ4_PERFORMANCE_PRESETS[i];
+		}
+	}
+	return NULL;
+}
+
+static void Common_SetArchiveIntIfValid( const char *name, int value ) {
+	if ( value >= 0 ) {
+		cvarSystem->SetCVarInteger( name, value, CVAR_ARCHIVE );
+	}
+}
+
+static void Common_ApplyPerformancePreset( const openQ4PerformancePreset_t &preset ) {
+	com_performancePreset.SetString( preset.name );
+	com_machineSpec.SetInteger( preset.machineSpec );
+
+	cvarSystem->SetCVarString( "r_rendererBenchmarkPreset", preset.rendererBenchmarkPreset, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_screenFraction", preset.screenFraction, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_multiSamples", preset.multiSamples, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_postAA", preset.postAA, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "com_maxfps", preset.maxFps, CVAR_ARCHIVE );
+
+	cvarSystem->SetCVarString( "image_filter", "GL_LINEAR_MIPMAP_LINEAR", CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_anisotropy", preset.anisotropy, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_lodbias", 0, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_forceDownSize", 0, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_roundDown", 1, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_preload", 1, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_useAllFormats", 1, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_usePrecompressedTextures", preset.usePrecompressedTextures, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downSize", preset.downSize, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downsize", preset.downSize, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downSizeLimit", preset.downSizeLimit, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downSizeSpecular", preset.downSize, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downSizeBump", preset.downSize, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downSizeSpecularLimit", 64, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_downSizeBumpLimit", preset.downSize != 0 ? 256 : 0, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_useCompression", preset.useCompression, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_useNormalCompression", preset.normalCompression, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_ignoreHighQuality", preset.ignoreHighQuality, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "image_writeGeneratedImages", 0, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "s_maxSoundsPerShader", preset.maxSoundsPerShader, CVAR_ARCHIVE );
+
+	cvarSystem->SetCVarInteger( "r_useShadowMap", preset.useShadowMap, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_shadowMapSize", preset.shadowMapSize, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_shadowMapMaxUpdatesPerView", preset.shadowMapMaxUpdates, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_bloom", preset.bloom, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_ssao", preset.ssao, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_hdrToneMap", preset.hdrToneMap, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_motionBlur", preset.motionBlur, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_crt", preset.crt, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_useLightGrid", preset.useLightGrid, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_rendererUploadMegs", preset.uploadMegs, CVAR_ARCHIVE );
+	cvarSystem->SetCVarInteger( "r_rendererUploadFrameBuffers", preset.uploadFrameBuffers, CVAR_ARCHIVE );
+
+	Common_SetArchiveIntIfValid( "s_numberOfSpeakers", preset.numberOfSpeakers );
+	Common_SetArchiveIntIfValid( "s_useEAXReverb", preset.useEAXReverb );
+	Common_SetArchiveIntIfValid( "s_maxEmitterChannels", preset.maxEmitterChannels );
+
+	common->Printf( "Applied performance preset '%s'. Run vid_restart to apply video-backend and texture allocation changes.\n", preset.name );
+}
+
+static const char *Common_DetectPerformancePresetName( idStr &reason ) {
+	if ( Common_HasExplicitLowPowerHostSignal() ) {
+		reason = "explicit low-power environment signal";
+		return "lowpower";
+	}
+
+	if ( Common_HasRaspberryPiHostSignal() ) {
+		reason = "Raspberry Pi host signal";
+		return "lowpower";
+	}
+
+	if ( idStr::Icmp( com_platformProfile.GetString(), "steamdeck" ) == 0 || Common_HasSteamDeckHostSignal() ) {
+		reason = "Steam Deck platform profile";
+		return "performance";
+	}
+
+	const int sysRam = Sys_GetSystemRam();
+	const int vidRam = Sys_GetVideoRam();
+	bool oldCard = false;
+	bool nv10or20 = false;
+	renderSystem->GetCardCaps( oldCard, nv10or20 );
+
+	if ( oldCard ) {
+		reason = "legacy renderer architecture";
+		return "minimum";
+	}
+
+	if ( Common_HostCpuIsArm64() ) {
+		if ( sysRam <= 4096 || vidRam <= 1024 ) {
+			reason = va( "ARM64 with constrained memory (%s RAM, %s VRAM)", Sys_FormatMemoryMB( sysRam ).c_str(), Sys_FormatMemoryMB( vidRam ).c_str() );
+			return "lowpower";
+		}
+		reason = va( "ARM64 host (%s RAM, %s VRAM)", Sys_FormatMemoryMB( sysRam ).c_str(), Sys_FormatMemoryMB( vidRam ).c_str() );
+		return "performance";
+	}
+
+	if ( sysRam <= 4096 || vidRam <= 1024 ) {
+		reason = va( "constrained memory (%s RAM, %s VRAM)", Sys_FormatMemoryMB( sysRam ).c_str(), Sys_FormatMemoryMB( vidRam ).c_str() );
+		return "lowpower";
+	}
+
+	if ( sysRam <= 8192 || vidRam <= 2048 ) {
+		reason = va( "modest memory/GPU budget (%s RAM, %s VRAM)", Sys_FormatMemoryMB( sysRam ).c_str(), Sys_FormatMemoryMB( vidRam ).c_str() );
+		return "performance";
+	}
+
+	if ( sysRam >= 16384 && vidRam >= 6144 ) {
+		reason = va( "high memory/GPU budget (%s RAM, %s VRAM)", Sys_FormatMemoryMB( sysRam ).c_str(), Sys_FormatMemoryMB( vidRam ).c_str() );
+		return "quality";
+	}
+
+	reason = va( "standard desktop budget (%s RAM, %s VRAM)", Sys_FormatMemoryMB( sysRam ).c_str(), Sys_FormatMemoryMB( vidRam ).c_str() );
+	return "balanced";
+}
+
+static void Com_ApplyPerformancePreset_f( const idCmdArgs &args ) {
+	const char *presetName = args.Argc() > 1 ? args.Argv( 1 ) : com_performancePreset.GetString();
+	const openQ4PerformancePreset_t *preset = Common_FindPerformancePreset( presetName );
+	if ( preset == NULL ) {
+		common->Printf( "Usage: applyPerformancePreset <minimum|lowpower|performance|balanced|quality|ultra>\n" );
+		common->Printf( "Unknown performance preset '%s'.\n", presetName != NULL ? presetName : "" );
+		return;
+	}
+
+	Common_ApplyPerformancePreset( *preset );
+}
+
+static void Com_AutoDetectPerformancePreset_f( const idCmdArgs &args ) {
+	idStr reason;
+	const char *presetName = Common_DetectPerformancePresetName( reason );
+	const openQ4PerformancePreset_t *preset = Common_FindPerformancePreset( presetName );
+	if ( preset == NULL ) {
+		preset = Common_FindPerformancePreset( "balanced" );
+		reason = "internal fallback";
+	}
+	if ( preset == NULL ) {
+		return;
+	}
+
+	common->Printf( "Auto-detected performance preset '%s' (%s).\n", preset->name, reason.c_str() );
+	Common_ApplyPerformancePreset( *preset );
 }
 
 /*
@@ -2417,7 +2667,7 @@ void idCommonLocal::FilterLangList( idStrList* list, idStr lang ) {
 idCommonLocal::InitLanguageDict
 ===============
 */
-void idCommonLocal::InitLanguageDict( void ) {
+void idCommonLocal::InitLanguageDict( bool applyStartupSysLang ) {
 	idStr fileName;
 	languageDict.Clear();
 
@@ -2430,7 +2680,10 @@ void idCommonLocal::InitLanguageDict( void ) {
 	
 	idStrList langList = langFiles->GetList();
 
-	StartupVariable( "sys_lang", false );	// let it be set on the command line - this is needed because this init happens very early
+	if ( applyStartupSysLang ) {
+		// Let command-line sys_lang apply for the early startup dictionary load.
+		StartupVariable( "sys_lang", false );
+	}
 	idStr langName = cvarSystem->GetCVarString( "sys_lang" );
 	langName.Strip( ' ' );
 	langName.Strip( '\t' );
@@ -2644,9 +2897,10 @@ ReloadLanguage_f
 */
 void Com_ReloadLanguage_f( const idCmdArgs &args ) {
 	(void)args;
+	const bool wasFileLoadingAllowed = fileSystem->GetIsFileLoadingAllowed();
 	fileSystem->SetIsFileLoadingAllowed( true );
-	commonLocal.InitLanguageDict();
-	fileSystem->SetIsFileLoadingAllowed( false );
+	commonLocal.InitLanguageDict( false );
+	fileSystem->SetIsFileLoadingAllowed( wasFileLoadingAllowed );
 }
 
 /*
@@ -3178,6 +3432,8 @@ void idCommonLocal::InitCommands( void ) {
 	cmdSystem->AddCommand( "reloadGameModule", Com_ReloadGameModule_f, CMD_FL_SYSTEM, "reloads the active game module while preserving the render window" );
 	cmdSystem->AddCommand( "setMachineSpec", Com_SetMachineSpec_f, CMD_FL_SYSTEM, "detects system capabilities and sets com_machineSpec to appropriate value" );
 	cmdSystem->AddCommand( "execMachineSpec", Com_ExecMachineSpec_f, CMD_FL_SYSTEM, "execs the appropriate config files and sets cvars based on com_machineSpec" );
+	cmdSystem->AddCommand( "applyPerformancePreset", Com_ApplyPerformancePreset_f, CMD_FL_SYSTEM, "applies the selected openQ4 performance preset", idCmdSystem::ArgCompletion_String<com_performancePresetArgs> );
+	cmdSystem->AddCommand( "autoDetectPerformancePreset", Com_AutoDetectPerformancePreset_f, CMD_FL_SYSTEM, "detects and applies a conservative openQ4 performance preset" );
 
 	cmdSystem->AddCommand("dmap", Dmap_f, CMD_FL_TOOL, "compiles a map", idCmdSystem::ArgCompletion_MapName);
 	//cmdSystem->AddCommand("runAAS", RunAAS_f, CMD_FL_TOOL, "compiles an AAS file for a map", idCmdSystem::ArgCompletion_MapName);
@@ -4188,7 +4444,7 @@ void idCommonLocal::InitGame( void ) {
 	renderSystem->Init();
 
 	// initialize string database right off so we can use it for loading messages
-	InitLanguageDict();
+	InitLanguageDict( true );
 
 	PrintLoadingMessage( common->GetLanguageDict()->GetString( "#str_104343" ) );
 
@@ -4223,14 +4479,18 @@ void idCommonLocal::InitGame( void ) {
 		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "exec autoexec.cfg\n" );
 	}
 
-	// reload the language dictionary now that we've loaded config files
-	cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "reloadLanguage\n" );
-
 	// run cfg execution
 	cmdSystem->ExecuteCommandBuffer();
 
 	// re-override anything from the config files with command line args
 	StartupVariable( NULL, false );
+
+	// Reload the language dictionary after cfg/autoexec and command-line cvars
+	// have settled, so +set sys_lang wins over archived startup scripts.
+	const bool wasFileLoadingAllowed = fileSystem->GetIsFileLoadingAllowed();
+	fileSystem->SetIsFileLoadingAllowed( true );
+	InitLanguageDict( false );
+	fileSystem->SetIsFileLoadingAllowed( wasFileLoadingAllowed );
 
 	bool repairedUnsetMachineSpec = false;
 	if ( com_machineSpec.GetInteger() < 0 ) {

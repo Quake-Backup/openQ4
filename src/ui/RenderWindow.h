@@ -50,6 +50,7 @@ private:
 	void FreeModelJoints();
 	virtual bool ParseInternalVar( const char *name, idParser *src );
 	void Render( int time );
+	void UpdateRenderVars();
 	void PreRender();
 	void BuildAnimation( int time );
 

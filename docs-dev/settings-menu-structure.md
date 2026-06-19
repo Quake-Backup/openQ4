@@ -242,7 +242,7 @@ The pane has two display layouts:
 |---|---|---|---|---|---|
 | Auto Detect | `windowDef` action | `set_b_system_auto` | Auto-detect popup | N/A | Opens the existing auto-detect confirmation flow. |
 | Video Quality / Renderer | `choiceDef` | `set_sys_vidqual_val` | `r_renderer` | `best;arb;arb2;Cg;exp;nv10;nv20;r200` | Displays `BEST;ARB;ARB2;CG;EXP;NV10;NV20;R200`. Marks `desktop::vidwarn`. |
-| Display Resolution | `choiceDef` | `set_sys_screensize_val_0` | GUI state `display_mode_choice` via `applyDisplayModeChoice` | Runtime `gui::display_mode_choices` / `gui::display_mode_values` | Visible compatibility picker. Includes Desktop Native, Custom, then SDL3 fullscreen resolutions from the selected display, falling back to engine presets. The adapter writes `r_mode -2` or `r_mode -1` plus exact `r_customWidth`/`r_customHeight`. |
+| Display Resolution | `choiceDef` | `set_sys_screensize_val_0` | GUI state `display_mode_choice` via `applyDisplayModeChoice` | Runtime `gui::display_mode_choices` / `gui::display_mode_values` | Visible compatibility picker. Includes Desktop Native, SDL3 fullscreen preset resolutions from the selected display, then Custom; static presets are not shown unless the display reports them. The adapter writes `r_mode -2`, a stable legacy `r_mode` ID for catalog matches, or `r_mode -1` plus exact `r_customWidth`/`r_customHeight` for detected modes outside the catalog. |
 | Display Resolution | `choiceDef` | `set_sys_screensize_val_1` | GUI state `display_mode_choice` via `applyDisplayModeChoice` | Runtime `gui::display_mode_choices` / `gui::display_mode_values` | Compatibility duplicate retained for the old aspect-bucketed menu events. It uses the same dynamic list and adapter as `set_sys_screensize_val_0`. |
 | Display Resolution | `choiceDef` | `set_sys_screensize_val_2` | GUI state `display_mode_choice` via `applyDisplayModeChoice` | Runtime `gui::display_mode_choices` / `gui::display_mode_values` | Compatibility duplicate retained for the old aspect-bucketed menu events. It uses the same dynamic list and adapter as `set_sys_screensize_val_0`. |
 | Fullscreen | `choiceDef` | `set_sys_fullscreen_val` | `r_fullscreen` | `No;Yes` | Marks `desktop::vidwarn`. |
@@ -278,7 +278,6 @@ The pane has two display layouts:
 |---|---|---|---|---|---|
 | Irradiance Volumes | `choiceDef` | `set_sys_irradiance_val` | `r_useLightGrid` | `No;Yes` | Enables baked light-grid indirect diffuse when available. |
 | Bloom | `choiceDef` | `set_sys_bloom_val` | `r_bloom` | `No;Yes` | Boolean picker. |
-| Lens Flare | `choiceDef` | `set_sys_lensflare_val` | `r_lensFlare` | `0 Off`, `1 Coronas`, `2 High Quality` | openQ4 post-effect quality picker. |
 | SSAO | `choiceDef` | `set_sys_ssao_val` | `r_ssao` | `No;Yes` | Boolean picker. |
 | Tone Mapping | `choiceDef` | `set_sys_tonemap_val` | `r_hdrToneMap` | `No;Yes` | Boolean picker. |
 | CRT Filter | `choiceDef` | `set_sys_crt_val` | `r_crt` | `No;Yes` | Boolean picker. |
@@ -289,7 +288,7 @@ The pane has two display layouts:
 |---|---|---|---|---|---|
 | Display Sizing | `windowDef` label | `set_sys_display_tuning` | N/A | N/A | Section label below Post Effects. |
 | UI Aspect | `choiceDef` | `set_sys_ui_aspect_val` | `ui_aspectCorrection` | `No;Yes` | `Yes` keeps classic 4:3-style UI correction. |
-| Refresh Rate | `choiceDef` | `set_sys_refresh_val` | `r_displayRefresh` | Runtime `gui::display_refresh_choices` / `gui::display_refresh_values` | SDL3 builds list refresh rates reported by the selected display; fallback builds expose common presets. Marks `desktop::vidwarn`. |
+| Refresh Rate | `choiceDef` | `set_sys_refresh_val` | `r_displayRefresh` | Runtime `gui::display_refresh_choices` / `gui::display_refresh_values` | Lists Auto plus SDL3-reported refresh rates for the currently selected fullscreen resolution. Marks `desktop::vidwarn`. |
 | Window Width | `editDef` | `set_sys_window_width_val` | `r_windowWidth` | Numeric field, `maxchars 5` | Windowed width. Marks `desktop::vidwarn`. |
 | Window Height | `editDef` | `set_sys_window_height_val` | `r_windowHeight` | Numeric field, `maxchars 5` | Windowed height. Marks `desktop::vidwarn`. |
 | Custom FS Width | `editDef` | `set_sys_custom_width_val` | `r_customWidth` | Numeric field, `maxchars 5` | Exclusive custom fullscreen width. Entering a value runs `applyCustomDisplaySize`, selecting `r_mode -1`. Marks `desktop::vidwarn`. |
@@ -314,9 +313,9 @@ The Audio pane is `p_settings_audio`, included from `content/baseoq4/guis/menu/s
 
 | GUI state | Used by | Source behavior |
 |---|---|---|
-| `display_mode_choices`, `display_mode_values` | System Display Resolution | Built from Desktop Native, Custom, and SDL3 fullscreen resolutions for the selected display, with a preset fallback when SDL modes are unavailable. |
+| `display_mode_choices`, `display_mode_values` | System Display Resolution | Built from Desktop Native, SDL3 fullscreen resolutions for the selected display, and Custom. The visible list does not fall back to static presets that the display did not report. |
 | `display_mode_choice` | System Display Resolution | GUI-state index consumed by `applyDisplayModeChoice`; the adapter writes `r_mode`, `r_customWidth`, and `r_customHeight`. |
-| `display_refresh_choices`, `display_refresh_values` | System Refresh Rate | Built from the selected display's SDL3 fullscreen mode refresh rates, with a common preset fallback. |
+| `display_refresh_choices`, `display_refresh_values` | System Refresh Rate | Built from Auto plus the selected display's SDL3 fullscreen mode refresh rates for the currently selected resolution. |
 | `4_3_choices`, `4_3_values` | System Display Resolution compatibility aliases | Kept in sync with `display_mode_choices` / `display_mode_values` for old GUI visibility events. |
 | `16_9_choices`, `16_9_values` | System Display Resolution compatibility aliases | Kept in sync with `display_mode_choices` / `display_mode_values` for old GUI visibility events. |
 | `16_10_choices`, `16_10_values` | System Display Resolution compatibility aliases | Kept in sync with `display_mode_choices` / `display_mode_values` for old GUI visibility events. |

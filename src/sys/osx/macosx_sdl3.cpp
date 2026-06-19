@@ -30,15 +30,23 @@ bool Sys_GetDesktopResolution(int *width, int *height) {
 }
 
 CGDirectDisplayID Sys_DisplayToUse(void) {
+	CGDirectDisplayID displays[32];
+	CGDisplayCount displayCount = 0;
+	const CGError err = CGGetActiveDisplayList(static_cast<CGDisplayCount>(sizeof(displays) / sizeof(displays[0])), displays, &displayCount);
+
 	const int requestedScreen = r_screen.GetInteger();
 	if (requestedScreen >= 0) {
-		CGDirectDisplayID displays[32];
-		CGDisplayCount displayCount = 0;
-		const CGError err = CGGetActiveDisplayList(static_cast<CGDisplayCount>(sizeof(displays) / sizeof(displays[0])), displays, &displayCount);
 		if (err == kCGErrorSuccess && requestedScreen < static_cast<int>(displayCount)) {
 			return displays[requestedScreen];
 		}
 	}
 
-	return CGMainDisplayID();
+	const CGDirectDisplayID mainDisplay = CGMainDisplayID();
+	if (mainDisplay != 0) {
+		return mainDisplay;
+	}
+	if (err == kCGErrorSuccess && displayCount > 0) {
+		return displays[0];
+	}
+	return 0;
 }

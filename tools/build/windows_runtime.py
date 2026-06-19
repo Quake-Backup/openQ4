@@ -249,12 +249,12 @@ def _copy_runtime_tree(source_dir: Path, destination_dir: Path, ignore_patterns:
 def stage_build_game_directory(source_root: Path, build_root: Path) -> dict[str, object]:
     """Prepare builddir/baseoq4 so the client can run directly from builddir."""
 
-    source_game_dir = source_root / "content" / GAME_DIR_NAME
     build_generated_game_dir = build_root / "content" / GAME_DIR_NAME
     build_runtime_game_dir = build_root / GAME_DIR_NAME
+    build_game_pk4 = build_root / "pak0.pk4"
     staged_file_count = 0
 
-    if not source_game_dir.is_dir() and not build_generated_game_dir.is_dir():
+    if not build_generated_game_dir.is_dir() and not build_game_pk4.is_file():
         return {
             "directory": None,
             "file_count": staged_file_count,
@@ -263,8 +263,9 @@ def stage_build_game_directory(source_root: Path, build_root: Path) -> dict[str,
     _remove_directory_inside(build_runtime_game_dir, build_root)
     build_runtime_game_dir.mkdir(parents=True, exist_ok=True)
 
-    _copy_runtime_tree(source_game_dir, build_runtime_game_dir, SOURCE_GAME_RUNTIME_IGNORE_PATTERNS)
     _copy_runtime_tree(build_generated_game_dir, build_runtime_game_dir, BUILD_GAME_GENERATED_IGNORE_PATTERNS)
+    if build_game_pk4.is_file():
+        shutil.copy2(build_game_pk4, build_runtime_game_dir / "pak0.pk4")
 
     for path in build_runtime_game_dir.rglob("*"):
         if path.is_file():

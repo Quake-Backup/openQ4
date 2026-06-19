@@ -402,10 +402,15 @@ returns in megabytes
 int Sys_GetVideoRam( void ) {
 	CGLRendererInfoObj rendererInfo = NULL;
 	GLint rendererCount = 0;
-	GLint maxVRAM = 0;
+	unsigned long maxVRAM = 0;
+	const CGDirectDisplayID display = Sys_DisplayToUse();
+
+	if ( display == 0 ) {
+		return 0;
+	}
 
 	CGLError err = CGLQueryRendererInfo(
-		CGDisplayIDToOpenGLDisplayMask( Sys_DisplayToUse() ),
+		CGDisplayIDToOpenGLDisplayMask( display ),
 		&rendererInfo,
 		&rendererCount );
 	if ( err != kCGLNoError || rendererInfo == NULL ) {
@@ -422,25 +427,25 @@ int Sys_GetVideoRam( void ) {
 		GLint vramMB = 0;
 #if defined( kCGLRPVideoMemoryMegabytes )
 		err = CGLDescribeRenderer( rendererInfo, rendererIndex, kCGLRPVideoMemoryMegabytes, &vramMB );
-		if ( err == kCGLNoError ) {
-			if ( vramMB > maxVRAM ) {
-				maxVRAM = vramMB;
+		if ( err == kCGLNoError && vramMB > 0 ) {
+			if ( static_cast<unsigned long>( vramMB ) > maxVRAM ) {
+				maxVRAM = static_cast<unsigned long>( vramMB );
 			}
 			continue;
 		}
 #endif
 		GLint vramBytes = 0;
 		err = CGLDescribeRenderer( rendererInfo, rendererIndex, kCGLRPVideoMemory, &vramBytes );
-		if ( err == kCGLNoError ) {
-			vramMB = vramBytes / ( 1024 * 1024 );
-			if ( vramMB > maxVRAM ) {
-				maxVRAM = vramMB;
+		if ( err == kCGLNoError && vramBytes > 0 ) {
+			const unsigned long fallbackVRAM = static_cast<unsigned long>( vramBytes ) / ( 1024UL * 1024UL );
+			if ( fallbackVRAM > maxVRAM ) {
+				maxVRAM = fallbackVRAM;
 			}
 		}
 	}
 
 	(void)CGLDestroyRendererInfo( rendererInfo );
-	return maxVRAM;
+	return static_cast<int>( Min( maxVRAM, static_cast<unsigned long>( idMath::INT_MAX ) ) );
 }
 
 /*

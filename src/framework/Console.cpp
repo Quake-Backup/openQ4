@@ -1333,6 +1333,15 @@ void idConsoleLocal::LoadGraphics() {
 	whiteShader = declManager->FindMaterial( "_white" );
 	consoleShader = declManager->FindMaterial( "console" );
 	mouseCursorShader = declManager->FindMaterial( "gfx/guis/guicursor_arrow" );
+	if ( charSetShader != NULL ) {
+		charSetShader->SetSort( SS_GUI );
+	}
+	if ( whiteShader != NULL ) {
+		whiteShader->SetSort( SS_GUI );
+	}
+	if ( consoleShader != NULL ) {
+		consoleShader->SetSort( SS_GUI );
+	}
 	if ( mouseCursorShader != NULL ) {
 		mouseCursorShader->SetSort( SS_GUI );
 	}
@@ -4766,7 +4775,6 @@ void idConsoleLocal::DrawSolidConsole( float frac ) {
 
 	DrawInput();
 	DrawScrollbar();
-	DrawMouseCursor();
 
 	renderSystem->SetColor( colorWhite );
 }
@@ -4840,6 +4848,11 @@ void	idConsoleLocal::Draw( bool forceFullScreen ) {
 
 	if ( !idAsyncNetwork::client.IsActive() && !idAsyncNetwork::server.IsActive() && aasFileOutOfDate ) {
 		SCR_DrawTextRightAlign( y, "AAS" );
+	}
+
+	if ( keyCatching && ( forceFullScreen || displayFrac > 0.0f ) ) {
+		renderSystem->FlushGui();
+		DrawMouseCursor();
 	}
 }
 

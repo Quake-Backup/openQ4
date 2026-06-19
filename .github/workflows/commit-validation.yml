@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile tools/validation/openq4_validate.py tools/tests/renderer_validation_matrix.py tools/tests/campaign_split_state_transition.py tools/tests/filesystem_case_segments.py tools/tests/linux_arm64_ci_coverage.py tools/tests/linux_highdpi_mouse.py tools/tests/linux_vsync_support.py tools/tests/loading_continue_input.py tools/tests/macos_renderer_startup_guard.py tools/tests/macos_metal_bridge.py tools/tests/posix_memory_management.py tools/tests/sdl3_input_parity.py tools/tests/sdl3_multidisplay_windowing.py tools/tests/steam_deck_support.py
+          python -m py_compile tools/build/build_pak0.py tools/build/openq4_pak.py tools/validation/openq4_validate.py tools/tests/renderer_validation_matrix.py tools/tests/campaign_split_state_transition.py tools/tests/filesystem_case_segments.py tools/tests/linux_arm64_ci_coverage.py tools/tests/linux_highdpi_mouse.py tools/tests/linux_sdl3_glew_loader.py tools/tests/linux_vsync_support.py tools/tests/loading_continue_input.py tools/tests/macos_native_backend_guard.py tools/tests/macos_renderer_startup_guard.py tools/tests/macos_sdl3_backend_guard.py tools/tests/macos_metal_bridge.py tools/tests/openq4_pure_pack.py tools/tests/posix_memory_management.py tools/tests/sdl3_input_parity.py tools/tests/sdl3_multidisplay_windowing.py tools/tests/steam_deck_support.py tools/tests/startup_language_override.py
           bash -n tools/build/meson_setup.sh
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
@@ -46,14 +46,19 @@ jobs:
           python tools/tests/hdr_postprocess_math.py
           python tools/tests/linux_arm64_ci_coverage.py
           python tools/tests/linux_highdpi_mouse.py
+          python tools/tests/linux_sdl3_glew_loader.py
           python tools/tests/linux_vsync_support.py
           python tools/tests/loading_continue_input.py
+          python tools/tests/macos_native_backend_guard.py
           python tools/tests/macos_renderer_startup_guard.py
+          python tools/tests/macos_sdl3_backend_guard.py
           python tools/tests/macos_metal_bridge.py
+          python tools/tests/openq4_pure_pack.py
           python tools/tests/posix_memory_management.py
           python tools/tests/sdl3_input_parity.py
           python tools/tests/sdl3_multidisplay_windowing.py
           python tools/tests/steam_deck_support.py
+          python tools/tests/startup_language_override.py
 
       - name: Dry-run validation profiles
         shell: bash

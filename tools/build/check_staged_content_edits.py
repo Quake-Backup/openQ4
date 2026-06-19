@@ -1,35 +1,40 @@
 #!/usr/bin/env python3
-"""Refuse to overwrite newer local edits in the staged baseoq4 content tree."""
+"""Prune stale loose baseoq4 content before staged installs."""
 
 from __future__ import annotations
 
 import argparse
-import filecmp
 import os
+import shutil
 import sys
 from pathlib import Path
 
-INSTALLED_ROOT_FILES = (
+
+STALE_LOOSE_ROOT_FILES = (
     "default.cfg",
     "openq4_defaults.cfg",
     "openq4_profile_steamdeck.cfg",
 )
 
-INSTALLED_SUBDIRS = (
-    "materials",
-    "def",
+STALE_LOOSE_SUBDIRS = (
     "botfiles",
+    "def",
+    "env",
+    "gfx",
     "glprogs",
     "guis",
-    "gfx",
-    "strings",
     "maps",
+    "materials",
+    "strings",
 )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check staged baseoq4 content before Meson install overwrites it."
+        description=(
+            "Remove stale loose baseoq4 content that is now compiled into pak0.pk4 "
+            "before Meson stages a fresh install."
+        )
     )
     parser.add_argument(
         "--source-root",
@@ -39,70 +44,66 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv[1:])
 
 
-def iter_installed_source_files(source_game_dir: Path):
-    for name in INSTALLED_ROOT_FILES:
-        candidate = source_game_dir / name
-        if candidate.is_file():
-            yield candidate
-
-    for name in INSTALLED_SUBDIRS:
-        source_dir = source_game_dir / name
-        if source_dir.is_dir():
-            yield from sorted(path for path in source_dir.rglob("*") if path.is_file())
+def assert_inside(path: Path, root: Path) -> Path:
+    resolved_path = path.resolve()
+    resolved_root = root.resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise RuntimeError(f"refusing to remove path outside staged game directory: {resolved_path}") from exc
+    return resolved_path
 
 
-def find_newer_staged_edits(source_root: Path) -> list[Path]:
-    source_game_dir = source_root / "content" / "baseoq4"
+def remove_stale_path(path: Path, staged_game_dir: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+
+    safe_path = assert_inside(path, staged_game_dir)
+    if safe_path.is_symlink() or safe_path.is_file():
+        safe_path.unlink()
+        return True
+    if safe_path.is_dir():
+        shutil.rmtree(safe_path)
+        return True
+
+    raise RuntimeError(f"refusing to remove non-file staged content path: {safe_path}")
+
+
+def prune_stale_loose_content(source_root: Path) -> list[Path]:
     staged_game_dir = source_root / ".install" / "baseoq4"
-    if not source_game_dir.is_dir() or not staged_game_dir.is_dir():
+    if not staged_game_dir.is_dir():
         return []
 
-    conflicts: list[Path] = []
-    for source_path in iter_installed_source_files(source_game_dir):
-        relative_path = source_path.relative_to(source_game_dir)
-        staged_path = staged_game_dir / relative_path
-        if not staged_path.is_file():
-            continue
+    removed: list[Path] = []
+    for name in STALE_LOOSE_ROOT_FILES:
+        candidate = staged_game_dir / name
+        if remove_stale_path(candidate, staged_game_dir):
+            removed.append(Path(name))
 
-        source_stat = source_path.stat()
-        staged_stat = staged_path.stat()
-        if staged_stat.st_mtime_ns <= source_stat.st_mtime_ns:
-            continue
+    for name in STALE_LOOSE_SUBDIRS:
+        candidate = staged_game_dir / name
+        if remove_stale_path(candidate, staged_game_dir):
+            removed.append(Path(name))
 
-        if filecmp.cmp(source_path, staged_path, shallow=False):
-            continue
-
-        conflicts.append(relative_path)
-
-    return conflicts
+    return removed
 
 
 def main(argv: list[str]) -> int:
-    if os.environ.get("OPENQ4_INSTALL_OVERWRITE_STAGED_CONTENT") == "1":
+    if os.environ.get("OPENQ4_INSTALL_KEEP_STALE_LOOSE_CONTENT") == "1":
         return 0
 
     args = parse_args(argv)
     source_root = Path(args.source_root).resolve()
-    conflicts = find_newer_staged_edits(source_root)
-    if not conflicts:
-        return 0
 
-    print(
-        "error: refusing to stage install because newer edits under "
-        "'.install/baseoq4' would be overwritten.",
-        file=sys.stderr,
-    )
-    print(
-        "Move these edits into 'content/baseoq4' or delete the staged file to discard "
-        "them. Set OPENQ4_INSTALL_OVERWRITE_STAGED_CONTENT=1 to force an overwrite.",
-        file=sys.stderr,
-    )
-    for relative_path in conflicts[:12]:
-        rel = relative_path.as_posix()
-        print(f"  .install/baseoq4/{rel} -> content/baseoq4/{rel}", file=sys.stderr)
-    if len(conflicts) > 12:
-        print(f"  ...and {len(conflicts) - 12} more staged file(s).", file=sys.stderr)
-    return 1
+    try:
+        removed = prune_stale_loose_content(source_root)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    for relative_path in removed:
+        print(f"Removing stale loose staged content '.install/baseoq4/{relative_path.as_posix()}'")
+    return 0
 
 
 if __name__ == "__main__":

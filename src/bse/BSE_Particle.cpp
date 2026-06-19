@@ -693,6 +693,13 @@ void rvLinkedParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birt
 
 void rvDebrisParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birthTime, float fraction, const idVec3& initOffset, const idMat3& initAxis) {
 	if (!bse_debris.GetBool() || !effect || !segment || !game || session->readDemo) {
+		if (bse_debug.GetInteger() > 0 && effect) {
+			common->Printf("BSE debris skipped: effect=%s enabled=%d game=%p demo=%d\n",
+				effect->GetDeclName(),
+				bse_debris.GetBool() ? 1 : 0,
+				game,
+				session && session->readDemo ? 1 : 0);
+		}
 		return;
 	}
 
@@ -710,6 +717,9 @@ void rvDebrisParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birt
 	const char* entityDefName = pt->GetEntityDefName();
 	if (!entityDefName || entityDefName[0] == '\0') {
 		// Keep compatibility with legacy data that may author debris as plain particles.
+		if (bse_debug.GetInteger() > 0) {
+			common->Printf("BSE debris skipped: effect=%s has no entityDef\n", effect->GetDeclName());
+		}
 		return;
 	}
 
@@ -741,6 +751,16 @@ void rvDebrisParticle::FinishSpawn(rvBSE* effect, rvSegment* segment, float birt
 
 	const int maxLifetimeMs = idMath::FtoiFast(BSE_MAX_DURATION * 1000.0f);
 	const int lifetimeMs = idMath::ClampInt(1, maxLifetimeMs, idMath::FtoiFast(GetDuration() * 1000.0f));
+
+	if (bse_debug.GetInteger() > 0) {
+		common->Printf("BSE debris: effect=%s entityDef=%s lifetime=%d origin=(%.1f %.1f %.1f)\n",
+			effect->GetDeclName(),
+			entityDefName,
+			lifetimeMs,
+			worldOrigin.x,
+			worldOrigin.y,
+			worldOrigin.z);
+	}
 
 	game->SpawnClientMoveable(entityDefName, lifetimeMs, worldOrigin, worldAxis, worldVelocity, angularVelocity);
 

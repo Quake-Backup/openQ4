@@ -32,7 +32,7 @@ static int SDLCALL OpenQ4_Main(int argc, char **argv) {
 	Posix_EarlyInit();
 	Sys_ShowSplash();
 
-	if (argc > 1) {
+	if (argc > 1 && argv != NULL) {
 		common->Init(argc - 1, const_cast<const char **>(&argv[1]), NULL);
 	} else {
 		common->Init(0, NULL, NULL);
@@ -51,5 +51,11 @@ static int SDLCALL OpenQ4_Main(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+	static char emptyArg0[] = "openQ4";
+	char *emptyArgv[] = { emptyArg0, NULL };
+	if (argc <= 0 || argv == NULL) {
+		argc = 1;
+		argv = emptyArgv;
+	}
 	return SDL_RunApp(argc, argv, OpenQ4_Main, NULL);
 }

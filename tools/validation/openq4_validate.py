@@ -32,10 +32,23 @@ PROFILE_DEFAULTS = {
 }
 
 STAGED_REQUIRED_GAME_FILES = (
-    "default.cfg",
     "mod.json",
+    "pak0.pk4",
+)
+
+STAGED_FORBIDDEN_LOOSE_GAME_PATHS = (
+    "default.cfg",
     "openq4_defaults.cfg",
     "openq4_profile_steamdeck.cfg",
+    "botfiles",
+    "def",
+    "env",
+    "gfx",
+    "glprogs",
+    "guis",
+    "maps",
+    "materials",
+    "strings",
 )
 
 NON_RUNTIME_PATTERNS = (
@@ -199,17 +212,23 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
     tests = [
         root / "tools" / "tests" / "campaign_split_state_transition.py",
         root / "tools" / "tests" / "filesystem_case_segments.py",
+        root / "tools" / "tests" / "filesystem_mod_manifest.py",
         root / "tools" / "tests" / "hdr_postprocess_math.py",
         root / "tools" / "tests" / "linux_highdpi_mouse.py",
+        root / "tools" / "tests" / "linux_sdl3_glew_loader.py",
         root / "tools" / "tests" / "linux_vsync_support.py",
         root / "tools" / "tests" / "loading_continue_input.py",
+        root / "tools" / "tests" / "macos_native_backend_guard.py",
         root / "tools" / "tests" / "macos_renderer_startup_guard.py",
+        root / "tools" / "tests" / "macos_sdl3_backend_guard.py",
         root / "tools" / "tests" / "macos_metal_bridge.py",
+        root / "tools" / "tests" / "openq4_pure_pack.py",
         root / "tools" / "tests" / "preprocessor_macro_safety.py",
         root / "tools" / "tests" / "posix_memory_management.py",
         root / "tools" / "tests" / "sdl3_input_parity.py",
         root / "tools" / "tests" / "sdl3_multidisplay_windowing.py",
         root / "tools" / "tests" / "steam_deck_support.py",
+        root / "tools" / "tests" / "startup_language_override.py",
     ]
     for test_script in tests:
         if not test_script.is_file():
@@ -580,6 +599,18 @@ def validate_staged_payload(root: Path, *, dry_run: bool) -> None:
         required_file = game_dir / relative_name
         if not required_file.is_file():
             raise ValidationError(f"Required staged game file is missing: {rel(required_file, root)}")
+
+    stale_loose_content = [
+        game_dir / relative_name
+        for relative_name in STAGED_FORBIDDEN_LOOSE_GAME_PATHS
+        if (game_dir / relative_name).exists()
+    ]
+    if stale_loose_content:
+        formatted = "\n".join(f"  - {rel(path, root)}" for path in stale_loose_content)
+        raise ValidationError(
+            "Staged baseoq4 contains loose content that must live inside pak0.pk4:\n"
+            f"{formatted}"
+        )
 
     if host_is_windows():
         if not (install_root / "OpenAL32.dll").is_file():

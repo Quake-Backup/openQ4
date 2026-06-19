@@ -65,6 +65,11 @@
 
 #include <stddef.h>  /* For size_t */
 
+#if defined(OPENQ4_GLEW_SDL3_LOADER)
+typedef void ( *openQ4GlewProcAddress_t ) (void);
+extern openQ4GlewProcAddress_t OpenQ4_GlewGetProcAddress(const unsigned char *name);
+#endif
+
 #if defined(GLEW_EGL)
 #elif defined(GLEW_REGAL)
 
@@ -168,6 +173,8 @@ void* NSGLGetProcAddress (const GLubyte *name)
  */
 #if defined(GLEW_REGAL)
 #  define glewGetProcAddress(name) regalGetProcAddress((const GLchar *)name)
+#elif defined(OPENQ4_GLEW_SDL3_LOADER)
+#  define glewGetProcAddress(name) OpenQ4_GlewGetProcAddress(name)
 #elif defined(GLEW_OSMESA)
 #  define glewGetProcAddress(name) OSMesaGetProcAddress((const char *)name)
 #elif defined(GLEW_EGL)
@@ -23757,6 +23764,8 @@ GLenum GLEWAPIENTRY glewInit (void)
   getCurrentDisplay = (PFNEGLGETCURRENTDISPLAYPROC) glewGetProcAddress("eglGetCurrentDisplay");
   return eglewInit(getCurrentDisplay());
 #elif defined(GLEW_OSMESA) || defined(__ANDROID__) || defined(__native_client__) || defined(__HAIKU__)
+  return r;
+#elif defined(OPENQ4_GLEW_SDL3_LOADER)
   return r;
 #elif defined(_WIN32)
   return wglewInit();

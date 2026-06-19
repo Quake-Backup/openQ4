@@ -295,17 +295,81 @@ typedef struct mainMenuVidMode_s {
 } mainMenuVidMode_t;
 
 static const mainMenuVidMode_t mainMenuVidModes[] = {
+	{ 11, 640, 480 },
+	{ 12, 720, 480 },
+	{ 13, 720, 576 },
+	{ 14, 800, 480 },
+	{ 15, 800, 600 },
+	{ 16, 854, 480 },
+	{ 17, 960, 540 },
+	{ 18, 960, 600 },
+	{ 19, 1024, 576 },
+	{ 20, 1024, 600 },
+	{ 21, 1024, 768 },
+	{ 22, 1152, 648 },
+	{ 23, 1152, 720 },
+	{ 24, 1152, 768 },
+	{ 25, 1152, 864 },
 	{ 0, 1280, 720 },
+	{ 26, 1280, 768 },
+	{ 27, 1280, 800 },
+	{ 28, 1280, 854 },
+	{ 29, 1280, 960 },
+	{ 30, 1280, 1024 },
+	{ 31, 1360, 768 },
 	{ 1, 1366, 768 },
+	{ 32, 1400, 900 },
+	{ 33, 1400, 1050 },
+	{ 34, 1440, 900 },
+	{ 35, 1440, 960 },
+	{ 36, 1536, 864 },
 	{ 2, 1600, 900 },
+	{ 37, 1600, 1200 },
+	{ 38, 1680, 1050 },
 	{ 3, 1920, 1080 },
 	{ 4, 1920, 1200 },
+	{ 39, 1920, 1280 },
+	{ 40, 2048, 1080 },
+	{ 41, 2048, 1152 },
+	{ 42, 2048, 1536 },
+	{ 43, 2160, 1440 },
+	{ 44, 2240, 1260 },
+	{ 45, 2240, 1400 },
+	{ 46, 2256, 1504 },
+	{ 47, 2304, 1440 },
+	{ 48, 2400, 1350 },
+	{ 49, 2400, 1600 },
+	{ 50, 2520, 1680 },
 	{ 5, 2560, 1080 },
 	{ 6, 2560, 1440 },
+	{ 51, 2560, 1600 },
+	{ 52, 2560, 1664 },
+	{ 53, 2736, 1824 },
+	{ 54, 2880, 1620 },
+	{ 55, 2880, 1800 },
+	{ 56, 2880, 1864 },
+	{ 57, 2880, 1920 },
+	{ 58, 3000, 2000 },
+	{ 59, 3024, 1964 },
+	{ 60, 3200, 1800 },
+	{ 61, 3200, 2000 },
+	{ 62, 3240, 2160 },
 	{ 7, 3440, 1440 },
+	{ 63, 3456, 2160 },
+	{ 64, 3456, 2234 },
+	{ 65, 3840, 1080 },
+	{ 66, 3840, 1200 },
+	{ 67, 3840, 1600 },
 	{ 8, 3840, 2160 },
+	{ 68, 3840, 2400 },
+	{ 69, 3840, 2560 },
+	{ 70, 4096, 2160 },
 	{ 9, 5120, 1440 },
-	{ 10, 5120, 2880 }
+	{ 71, 5120, 2160 },
+	{ 10, 5120, 2880 },
+	{ 72, 6016, 3384 },
+	{ 73, 7680, 2160 },
+	{ 74, 7680, 4320 }
 };
 
 typedef struct mainMenuDisplayModeOption_s {
@@ -314,6 +378,7 @@ typedef struct mainMenuDisplayModeOption_s {
 	int		legacyMode;
 	bool	desktopNative;
 	bool	custom;
+	idStr	label;
 } mainMenuDisplayModeOption_t;
 
 static void AppendMainMenuChoice( idStr &choiceNames, idStr &choiceValues, const char *label, int value ) {
@@ -335,6 +400,15 @@ static const mainMenuVidMode_t *FindMainMenuVidModeByMode( int mode ) {
 	return NULL;
 }
 
+static const mainMenuVidMode_t *FindMainMenuVidModeByResolution( int width, int height ) {
+	for ( int i = 0; i < static_cast<int>( sizeof( mainMenuVidModes ) / sizeof( mainMenuVidModes[0] ) ); ++i ) {
+		if ( mainMenuVidModes[i].width == width && mainMenuVidModes[i].height == height ) {
+			return &mainMenuVidModes[i];
+		}
+	}
+	return NULL;
+}
+
 static bool MainMenuDisplayModeResolutionExists( const idList<mainMenuDisplayModeOption_t> &options, int width, int height ) {
 	for ( int i = 0; i < options.Num(); ++i ) {
 		if ( options[i].desktopNative || options[i].custom ) {
@@ -347,10 +421,88 @@ static bool MainMenuDisplayModeResolutionExists( const idList<mainMenuDisplayMod
 	return false;
 }
 
+static int MainMenuGreatestCommonDivisor( int a, int b ) {
+	a = idMath::Abs( a );
+	b = idMath::Abs( b );
+	while ( b != 0 ) {
+		const int remainder = a % b;
+		a = b;
+		b = remainder;
+	}
+	return a > 0 ? a : 1;
+}
+
+static idStr MainMenuDisplayAspectRatioLabel( int width, int height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return "";
+	}
+
+	typedef struct commonAspectRatio_s {
+		int width;
+		int height;
+	} commonAspectRatio_t;
+	static const commonAspectRatio_t commonAspectRatios[] = {
+		{ 5, 4 },
+		{ 4, 3 },
+		{ 3, 2 },
+		{ 5, 3 },
+		{ 16, 10 },
+		{ 16, 9 },
+		{ 21, 9 },
+		{ 32, 10 },
+		{ 32, 9 }
+	};
+
+	const float displayAspect = static_cast<float>( width ) / static_cast<float>( height );
+	int bestIndex = -1;
+	float bestDelta = idMath::INFINITY;
+	for ( int i = 0; i < static_cast<int>( sizeof( commonAspectRatios ) / sizeof( commonAspectRatios[0] ) ); ++i ) {
+		const float targetAspect = static_cast<float>( commonAspectRatios[i].width ) / static_cast<float>( commonAspectRatios[i].height );
+		const float delta = idMath::Fabs( displayAspect - targetAspect );
+		if ( delta < bestDelta ) {
+			bestDelta = delta;
+			bestIndex = i;
+		}
+	}
+
+	if ( bestIndex >= 0 ) {
+		const float targetAspect = static_cast<float>( commonAspectRatios[bestIndex].width ) / static_cast<float>( commonAspectRatios[bestIndex].height );
+		if ( bestDelta <= targetAspect * 0.04f ) {
+			return va( "%d:%d", commonAspectRatios[bestIndex].width, commonAspectRatios[bestIndex].height );
+		}
+	}
+
+	const int gcd = MainMenuGreatestCommonDivisor( width, height );
+	const int reducedWidth = width / gcd;
+	const int reducedHeight = height / gcd;
+	if ( reducedWidth <= 64 && reducedHeight <= 64 ) {
+		return va( "%d:%d", reducedWidth, reducedHeight );
+	}
+
+	return "";
+}
+
+static idStr MainMenuDisplayResolutionLabel( int width, int height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return "";
+	}
+
+	const idStr aspectLabel = MainMenuDisplayAspectRatioLabel( width, height );
+	if ( aspectLabel.Length() > 0 ) {
+		return va( "%dx%d (%s)", width, height, aspectLabel.c_str() );
+	}
+	return va( "%dx%d", width, height );
+}
+
+static bool MainMenuDisplayModeOptionLess( const mainMenuDisplayModeOption_t &a, const mainMenuDisplayModeOption_t &b ) {
+	if ( a.width != b.width ) {
+		return a.width < b.width;
+	}
+	return a.height < b.height;
+}
+
 static void AppendMainMenuDisplayModeOption(
 	idList<mainMenuDisplayModeOption_t> &options,
-	idStr *choiceNames,
-	idStr *choiceValues,
 	const char *label,
 	int width,
 	int height,
@@ -363,12 +515,46 @@ static void AppendMainMenuDisplayModeOption(
 	option.legacyMode = legacyMode;
 	option.desktopNative = desktopNative;
 	option.custom = custom;
+	option.label = label;
+	option.label.Replace( ";", "," );
 
-	const int optionIndex = options.Append( option );
-	if ( choiceNames != NULL && choiceValues != NULL ) {
-		idStr safeLabel = label;
-		safeLabel.Replace( ";", "," );
-		AppendMainMenuChoice( *choiceNames, *choiceValues, safeLabel.c_str(), optionIndex );
+	options.Append( option );
+}
+
+static void InsertMainMenuDisplayModeOptionSorted(
+	idList<mainMenuDisplayModeOption_t> &options,
+	const char *label,
+	int width,
+	int height,
+	int legacyMode ) {
+	mainMenuDisplayModeOption_t option;
+	option.width = width;
+	option.height = height;
+	option.legacyMode = legacyMode;
+	option.desktopNative = false;
+	option.custom = false;
+	option.label = label;
+	option.label.Replace( ";", "," );
+
+	int insertIndex = 0;
+	while ( insertIndex < options.Num() && MainMenuDisplayModeOptionLess( options[insertIndex], option ) ) {
+		insertIndex++;
+	}
+	options.Insert( option, insertIndex );
+}
+
+static void BuildMainMenuDisplayModeChoiceStrings(
+	const idList<mainMenuDisplayModeOption_t> &options,
+	idStr *choiceNames,
+	idStr *choiceValues ) {
+	if ( choiceNames == NULL || choiceValues == NULL ) {
+		return;
+	}
+
+	choiceNames->Clear();
+	choiceValues->Clear();
+	for ( int i = 0; i < options.Num(); ++i ) {
+		AppendMainMenuChoice( *choiceNames, *choiceValues, options[i].label.c_str(), i );
 	}
 }
 
@@ -408,6 +594,26 @@ static SDL_DisplayID GetMainMenuSelectedSDLDisplay( void ) {
 }
 #endif
 
+static bool MainMenuGetSelectedDisplayDesktopResolution( int *width, int *height ) {
+	if ( width == NULL || height == NULL ) {
+		return false;
+	}
+
+#if defined( USE_SDL3 )
+	SDL_DisplayID display = GetMainMenuSelectedSDLDisplay();
+	if ( display != 0 ) {
+		const SDL_DisplayMode *desktopMode = SDL_GetDesktopDisplayMode( display );
+		if ( desktopMode != NULL && desktopMode->w > 0 && desktopMode->h > 0 ) {
+			*width = desktopMode->w;
+			*height = desktopMode->h;
+			return true;
+		}
+	}
+#endif
+
+	return Sys_GetDesktopResolution( width, height );
+}
+
 static void BuildMainMenuDisplayModeChoices(
 	idList<mainMenuDisplayModeOption_t> &options,
 	idStr *choiceNames,
@@ -423,19 +629,19 @@ static void BuildMainMenuDisplayModeChoices(
 	int desktopWidth = 0;
 	int desktopHeight = 0;
 	idStr desktopLabel = common->GetLanguageDict()->GetString( "#str_229973" );
-	if ( Sys_GetDesktopResolution( &desktopWidth, &desktopHeight ) && desktopWidth > 0 && desktopHeight > 0 ) {
-		desktopLabel = va( "%s %dx%d", desktopLabel.c_str(), desktopWidth, desktopHeight );
-	}
-	AppendMainMenuDisplayModeOption( options, choiceNames, choiceValues, desktopLabel.c_str(), desktopWidth, desktopHeight, -2, true, false );
 
-	const int customWidth = idMath::ClampInt( 320, 16384, cvarSystem->GetCVarInteger( "r_customWidth" ) );
-	const int customHeight = idMath::ClampInt( 240, 16384, cvarSystem->GetCVarInteger( "r_customHeight" ) );
-	idStr customLabel = va( "%s %dx%d", common->GetLanguageDict()->GetString( "#str_229974" ), customWidth, customHeight );
-	AppendMainMenuDisplayModeOption( options, choiceNames, choiceValues, customLabel.c_str(), customWidth, customHeight, -1, false, true );
-
-	int displayModeCount = 0;
 #if defined( USE_SDL3 )
 	SDL_DisplayID display = GetMainMenuSelectedSDLDisplay();
+#endif
+
+	if ( MainMenuGetSelectedDisplayDesktopResolution( &desktopWidth, &desktopHeight ) && desktopWidth > 0 && desktopHeight > 0 ) {
+		desktopLabel = va( "%s %dx%d", desktopLabel.c_str(), desktopWidth, desktopHeight );
+	}
+	AppendMainMenuDisplayModeOption( options, desktopLabel.c_str(), desktopWidth, desktopHeight, -2, true, false );
+
+	idList<mainMenuDisplayModeOption_t> displayModes;
+
+#if defined( USE_SDL3 )
 	if ( display != 0 ) {
 		int modeCount = 0;
 		SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes( display, &modeCount );
@@ -445,20 +651,17 @@ static void BuildMainMenuDisplayModeChoices(
 				if ( mode == NULL || mode->w < 320 || mode->h < 240 ) {
 					continue;
 				}
-				if ( MainMenuDisplayModeResolutionExists( options, mode->w, mode->h ) ) {
+				if ( MainMenuDisplayModeResolutionExists( displayModes, mode->w, mode->h ) ) {
 					continue;
 				}
-				AppendMainMenuDisplayModeOption(
-					options,
-					choiceNames,
-					choiceValues,
-					va( "%dx%d", mode->w, mode->h ),
+
+				const mainMenuVidMode_t *legacyMode = FindMainMenuVidModeByResolution( mode->w, mode->h );
+				InsertMainMenuDisplayModeOptionSorted(
+					displayModes,
+					MainMenuDisplayResolutionLabel( mode->w, mode->h ).c_str(),
 					mode->w,
 					mode->h,
-					-1,
-					false,
-					false );
-				displayModeCount++;
+					legacyMode != NULL ? legacyMode->mode : -1 );
 			}
 		}
 		if ( modes != NULL ) {
@@ -467,23 +670,16 @@ static void BuildMainMenuDisplayModeChoices(
 	}
 #endif
 
-	if ( displayModeCount == 0 ) {
-		for ( int i = 0; i < static_cast<int>( sizeof( mainMenuVidModes ) / sizeof( mainMenuVidModes[0] ) ); ++i ) {
-			if ( MainMenuDisplayModeResolutionExists( options, mainMenuVidModes[i].width, mainMenuVidModes[i].height ) ) {
-				continue;
-			}
-			AppendMainMenuDisplayModeOption(
-				options,
-				choiceNames,
-				choiceValues,
-				va( "%dx%d", mainMenuVidModes[i].width, mainMenuVidModes[i].height ),
-				mainMenuVidModes[i].width,
-				mainMenuVidModes[i].height,
-				mainMenuVidModes[i].mode,
-				false,
-				false );
-		}
+	for ( int i = 0; i < displayModes.Num(); ++i ) {
+		options.Append( displayModes[i] );
 	}
+
+	const int customWidth = idMath::ClampInt( 320, 16384, cvarSystem->GetCVarInteger( "r_customWidth" ) );
+	const int customHeight = idMath::ClampInt( 240, 16384, cvarSystem->GetCVarInteger( "r_customHeight" ) );
+	idStr customLabel = va( "%s %dx%d", common->GetLanguageDict()->GetString( "#str_229974" ), customWidth, customHeight );
+	AppendMainMenuDisplayModeOption( options, customLabel.c_str(), customWidth, customHeight, -1, false, true );
+
+	BuildMainMenuDisplayModeChoiceStrings( options, choiceNames, choiceValues );
 }
 
 static int FindMainMenuDisplayModeChoice( const idList<mainMenuDisplayModeOption_t> &options ) {
@@ -517,17 +713,17 @@ static int FindMainMenuDisplayModeChoice( const idList<mainMenuDisplayModeOption
 		return 0;
 	}
 
+	for ( int i = 0; i < options.Num(); ++i ) {
+		if ( !options[i].desktopNative && !options[i].custom && options[i].width == targetWidth && options[i].height == targetHeight ) {
+			return i;
+		}
+	}
+
 	if ( preferCustom ) {
 		for ( int i = 0; i < options.Num(); ++i ) {
 			if ( options[i].custom ) {
 				return i;
 			}
-		}
-	}
-
-	for ( int i = 0; i < options.Num(); ++i ) {
-		if ( options[i].width == targetWidth && options[i].height == targetHeight ) {
-			return i;
 		}
 	}
 
@@ -555,19 +751,56 @@ static void AddMainMenuRefreshRate( idList<int> &refreshRates, int refreshRate )
 	refreshRates.Insert( refreshRate, insertIndex );
 }
 
+static bool MainMenuGetRequestedFullscreenResolution( int &width, int &height ) {
+	width = 0;
+	height = 0;
+
+	const int currentMode = cvarSystem->GetCVarInteger( "r_mode" );
+	if ( currentMode == -2 ) {
+		return MainMenuGetSelectedDisplayDesktopResolution( &width, &height ) && width > 0 && height > 0;
+	}
+
+	if ( currentMode == -1 ) {
+		width = idMath::ClampInt( 320, 16384, cvarSystem->GetCVarInteger( "r_customWidth" ) );
+		height = idMath::ClampInt( 240, 16384, cvarSystem->GetCVarInteger( "r_customHeight" ) );
+		return true;
+	}
+
+	const mainMenuVidMode_t *mode = FindMainMenuVidModeByMode( currentMode );
+	if ( mode == NULL ) {
+		return false;
+	}
+
+	width = mode->width;
+	height = mode->height;
+	return true;
+}
+
 static void BuildMainMenuRefreshChoices( idStr &choiceNames, idStr &choiceValues ) {
 	idList<int> refreshRates;
 	refreshRates.Append( 0 );
 
+	int targetWidth = 0;
+	int targetHeight = 0;
+	const bool haveTargetResolution = MainMenuGetRequestedFullscreenResolution( targetWidth, targetHeight );
+
 #if defined( USE_SDL3 )
 	SDL_DisplayID display = GetMainMenuSelectedSDLDisplay();
 	if ( display != 0 ) {
+		const SDL_DisplayMode *desktopMode = SDL_GetDesktopDisplayMode( display );
+		if ( haveTargetResolution && desktopMode != NULL && desktopMode->w == targetWidth && desktopMode->h == targetHeight ) {
+			AddMainMenuRefreshRate( refreshRates, MainMenuRoundRefreshRate( desktopMode->refresh_rate ) );
+		}
+
 		int modeCount = 0;
 		SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes( display, &modeCount );
 		if ( modes != NULL && modeCount > 0 ) {
 			for ( int i = 0; i < modeCount; ++i ) {
 				const SDL_DisplayMode *mode = modes[i];
 				if ( mode == NULL ) {
+					continue;
+				}
+				if ( !haveTargetResolution || mode->w != targetWidth || mode->h != targetHeight ) {
 					continue;
 				}
 				AddMainMenuRefreshRate( refreshRates, MainMenuRoundRefreshRate( mode->refresh_rate ) );
@@ -578,13 +811,6 @@ static void BuildMainMenuRefreshChoices( idStr &choiceNames, idStr &choiceValues
 		}
 	}
 #endif
-
-	if ( refreshRates.Num() == 1 ) {
-		static const int fallbackRefreshRates[] = { 60, 75, 120, 144, 165, 240 };
-		for ( int i = 0; i < static_cast<int>( sizeof( fallbackRefreshRates ) / sizeof( fallbackRefreshRates[0] ) ); ++i ) {
-			AddMainMenuRefreshRate( refreshRates, fallbackRefreshRates[i] );
-		}
-	}
 
 	choiceNames.Clear();
 	choiceValues.Clear();
@@ -670,9 +896,9 @@ static void ApplyMainMenuDisplayModeChoice( idUserInterface *gui ) {
 	if ( option.desktopNative ) {
 		cvarSystem->SetCVarInteger( "r_mode", -2 );
 	} else {
-		cvarSystem->SetCVarInteger( "r_mode", -1 );
 		cvarSystem->SetCVarInteger( "r_customWidth", idMath::ClampInt( 320, 16384, option.width ) );
 		cvarSystem->SetCVarInteger( "r_customHeight", idMath::ClampInt( 240, 16384, option.height ) );
+		cvarSystem->SetCVarInteger( "r_mode", ( !option.custom && option.legacyMode >= 0 ) ? option.legacyMode : -1 );
 	}
 
 	RefreshMainMenuDisplayChoices( gui );
@@ -1764,9 +1990,28 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 		if ( game ) {
 			game->HandleMainMenuCommands( cmd, guiActive );
 		}
+
+		if ( !idStr::Icmp( cmd, "startMap" ) ) {
+			cvarSystem->SetCVarInteger( "g_skill", guiMainMenu->State().GetInt( "skill" ) );
+			cvarSystem->SetCVarInteger( "g_turboMode", guiMainMenu->State().GetInt( "turboMode" ) );
+			if ( icmd < args.Argc() ) {
+				StartNewGame( args.Argv( icmd++ ) );
+			} else {
+#ifndef ID_DEMO_BUILD
+				StartNewGame( "game/mars_city1" );
+#else
+				StartNewGame( "game/demo_mars_city1" );
+#endif
+			}
+			if ( guiActive == guiMainMenu ) {
+				ExitMenu();
+			}
+			continue;
+		}
 		
 		if ( !idStr::Icmp( cmd, "startGame" ) ) {
 			cvarSystem->SetCVarInteger( "g_skill", guiMainMenu->State().GetInt( "skill" ) );
+			cvarSystem->SetCVarInteger( "g_turboMode", guiMainMenu->State().GetInt( "turboMode" ) );
 			if ( icmd < args.Argc() ) {
 				StartNewGame( args.Argv( icmd++ ) );
 			} else {
@@ -2209,6 +2454,30 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 
 		if ( !idStr::Icmp( cmd, "refreshDisplayChoices" ) ) {
 			RefreshMainMenuDisplayChoices( guiActive ? guiActive : guiMainMenu );
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "applyPerformancePreset" ) ) {
+			idUserInterface *gui = guiActive ? guiActive : guiMainMenu;
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, "applyPerformancePreset\n" );
+			SetMainMenuVideoGuiVars( gui );
+			SetMainMenuQualityGuiVars( gui );
+			SyncMainMenuAspectVisibility( gui );
+			if ( gui != NULL ) {
+				gui->StateChanged( common->GetPresentationTime() );
+			}
+			continue;
+		}
+
+		if ( !idStr::Icmp( cmd, "autoDetectPerformancePreset" ) ) {
+			idUserInterface *gui = guiActive ? guiActive : guiMainMenu;
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, "autoDetectPerformancePreset\n" );
+			SetMainMenuVideoGuiVars( gui );
+			SetMainMenuQualityGuiVars( gui );
+			SyncMainMenuAspectVisibility( gui );
+			if ( gui != NULL ) {
+				gui->StateChanged( common->GetPresentationTime() );
+			}
 			continue;
 		}
 

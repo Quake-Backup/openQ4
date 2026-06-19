@@ -36,6 +36,7 @@ windowDef Desktop
 	float	"loaddefaults"	0
 	float	"com_machineSpec"	0
 	float	"skill"	1
+	float	"turboMode"	0
 	float	"tooltip_x"	0
 	float	"tooltip_y"	0
 	float	"tooltip_w"	0
@@ -1552,6 +1553,13 @@ windowDef Desktop
 				background	"gfx/guis/mainmenu/b2_dark"
 				matcolor	1,1,1,0.4
 			}
+			windowDef new_b5
+			{
+				rect	20,292,208,51
+				visible	1
+				background	"gfx/guis/mainmenu/b2_dark"
+				matcolor	1,1,1,0.4
+			}
 			windowDef new_t_b1
 			{
 				rect	36,184,193,23
@@ -1585,6 +1593,15 @@ windowDef Desktop
 				visible	1
 				forecolor	1,1,1,0.8
 				text	"#str_200017"
+				textscale	.31
+				font	"fonts/marine"
+			}
+			windowDef new_t_b5
+			{
+				rect	36,304,193,23
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41117"
 				textscale	.31
 				font	"fonts/marine"
 			}
@@ -1639,6 +1656,38 @@ windowDef Desktop
 			windowDef new_bstart_corner
 			{
 				rect	248,232,18,18
+				visible	1
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.564,0.603,0.286,0.4
+			}
+			windowDef new_bturbo
+			{
+				rect	237,272,356,43
+				visible	1
+				background	"gfx/guis/mainmenu/b6_light"
+				matcolor	0.545,0.588,0.294,0.4
+			}
+			windowDef new_t_turbo
+			{
+				rect	265,278,198,25
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41119"
+				textscale	.27
+				font	"fonts/marine"
+			}
+			windowDef new_t_turbo_value
+			{
+				rect	489,280,92,25
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41121"
+				textscale	.25
+				font	"fonts/marine"
+			}
+			windowDef new_bturbo_corner
+			{
+				rect	248,282,18,18
 				visible	1
 				background	"gfx/guis/mainmenu/corner"
 				matcolor	0.564,0.603,0.286,0.4
@@ -5884,14 +5933,14 @@ windowDef Desktop
 			}
 			windowDef pop_mods_mid
 			{
-				rect	110,152,420,210
+				rect	110,152,420,250
 				visible	1
 				background	"gfx/guis/mainmenu/popup_mid"
 				matcolor	0,0,0,0
 			}
 			windowDef pop_mods_btm
 			{
-				rect	110,362,420,38
+				rect	110,402,420,38
 				visible	1
 				background	"gfx/guis/mainmenu/popup_btm"
 				matcolor	0,0,0,0
@@ -5941,7 +5990,7 @@ windowDef Desktop
 				}
 				listDef pop_mods_list
 				{
-					rect	132,158,184,196
+					rect	132,158,184,236
 					forecolor	1, 1, 1, 1
 					textscale	0.21
 					listname	"modsList"
@@ -6095,14 +6144,14 @@ windowDef Desktop
 				}
 				windowDef pop_mods_loadmod
 				{
-					rect	132,366,120,30
+					rect	132,406,120,30
 					visible	1
 					background	"gfx/guis/mainmenu/b4_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef pop_mods_t_loadmod
 				{
-					rect	152,368,141,17
+					rect	152,408,141,17
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_200167"
@@ -6111,21 +6160,21 @@ windowDef Desktop
 				}
 				windowDef pop_mods_loadmod_corner
 				{
-					rect	142,374,11,11
+					rect	142,414,11,11
 					visible	1
 					background	"gfx/guis/mainmenu/corner"
 					matcolor	0.564,0.603,0.286,0.4
 				}
 				windowDef pop_mods_cancel
 				{
-					rect	299,366,120,30
+					rect	299,406,120,30
 					visible	1
 					background	"gfx/guis/mainmenu/b4_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef pop_mods_t_cancel
 				{
-					rect	319,368,108,17
+					rect	319,408,108,17
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_200168"
@@ -6134,7 +6183,7 @@ windowDef Desktop
 				}
 				windowDef pop_mods_cancel_corner
 				{
-					rect	309,374,11,11
+					rect	309,414,11,11
 					visible	1
 					background	"gfx/guis/mainmenu/corner"
 					matcolor	0.564,0.603,0.286,0.4
@@ -13746,7 +13795,9 @@ windowDef Desktop
 
 			onTime 0 {
 				consoleCMD "g_skill 1" ;
+				consoleCMD "g_turboMode 0" ;
 				set "desktop::skill" "1" ;
+				set "desktop::turboMode" "0" ;
 				
 				transition "p_newgame::rect" "$d_main_l::rect" "$d_main::rect" "0" ;
 				set "p_newgame::visible" "1" ;
@@ -13754,12 +13805,17 @@ windowDef Desktop
 				transition "grad2::matcolor_w" "0" "0.6" "150" ;
 				
 				namedevent "p_btns::skillCheck" ;
+				namedevent "p_btns::turboCheck" ;
 				
 				
 				// back button
 				transition "new_back::matcolor_w" "0" "0.4" "150" ;
 				transition "new_t_back::forecolor_w"  "0" "0.8" "150" ; 
 				transition "new_back_corner::matcolor_w"  "0" "0.4" "150" ;
+				transition "new_bturbo::matcolor_w" "0" "0.4" "150" ;
+				transition "new_t_turbo::forecolor_w" "0" "0.8" "150" ;
+				transition "new_t_turbo_value::forecolor_w" "0" "0.8" "150" ;
+				transition "new_bturbo_corner::matcolor_w" "0" "0.4" "150" ;
 			}
 
 			onTime +150 {
@@ -13794,6 +13850,10 @@ windowDef Desktop
 				transition "new_back::matcolor_w" "0.8" "0" "100" ;
 				transition "new_t_back::forecolor_w"  "1" "0" "100" ; 
 				transition "new_back_corner::matcolor_w"  "1" "0" "100" ; 
+				transition "new_bturbo::matcolor_w" "0.8" "0" "100" ;
+				transition "new_t_turbo::forecolor_w" "1" "0" "100" ;
+				transition "new_t_turbo_value::forecolor_w" "1" "0" "100" ;
+				transition "new_bturbo_corner::matcolor_w" "1" "0" "100" ;
 			}
 
 			onTime +500 {
@@ -16717,8 +16777,10 @@ windowDef Desktop
 			set "set_b_system_13::visible" "0" ;
 			set "set_b_system_14::visible" "0" ;
 			set "set_b_system_15::visible" "0" ;
-			set "set_b_system_auto::visible" "1" ;
+			set "set_b_system_auto::visible" "0" ;
 			set "set_b_system_adv::visible" "0" ;
+			set "set_sys_perf_preset_val::noevents" "0" ;
+			set "set_sys_perf_autodetect_button::noevents" "0" ;
 			set "set_sys_vidqual_val::noevents" "0" ;
 			set "set_sys_screensize_val_0::noevents" "0" ;
 			set "set_sys_screensize_val_1::noevents" "0" ;
@@ -16762,7 +16824,6 @@ windowDef Desktop
 				namedevent "layoutSetSystemCompact" ;
 			}
 			set "set_sys_bloom_val::noevents" "0" ;
-			set "set_sys_lensflare_val::noevents" "0" ;
 			set "set_sys_ssao_val::noevents" "0" ;
 			set "set_sys_tonemap_val::noevents" "0" ;
 			set "set_sys_crt_val::noevents" "0" ;
@@ -16810,6 +16871,8 @@ windowDef Desktop
 			set "set_b_system_15::visible" "0" ;
 			set "set_b_system_auto::visible" "0" ;
 			set "set_b_system_adv::visible" "0" ;
+			set "set_sys_perf_preset_val::noevents" "1" ;
+			set "set_sys_perf_autodetect_button::noevents" "1" ;
 			set "set_sys_vidqual_val::noevents" "1" ;
 			set "set_sys_screensize_val_0::noevents" "1" ;
 			set "set_sys_screensize_val_1::noevents" "1" ;
@@ -16838,7 +16901,6 @@ windowDef Desktop
 			set "set_sys_multiscreen::visible" "0" ;
 			set "set_sys_multiscreen_val::visible" "0" ;
 			set "set_sys_bloom_val::noevents" "1" ;
-			set "set_sys_lensflare_val::noevents" "1" ;
 			set "set_sys_ssao_val::noevents" "1" ;
 			set "set_sys_tonemap_val::noevents" "1" ;
 			set "set_sys_crt_val::noevents" "1" ;
@@ -16938,37 +17000,34 @@ windowDef Desktop
 			set "set_sys_b21::rect" "228,644,377,25" ;
 			set "set_sys_bloom::rect" "259,646,172,18" ;
 			set "set_sys_bloom_val::rect" "468,646,160,15" ;
-			set "set_sys_b21a::rect" "228,666,377,25" ;
-			set "set_sys_lensflare::rect" "259,668,172,18" ;
-			set "set_sys_lensflare_val::rect" "468,668,160,15" ;
-			set "set_sys_b22::rect" "228,688,377,25" ;
-			set "set_sys_ssao::rect" "259,690,172,18" ;
-			set "set_sys_ssao_val::rect" "468,690,160,15" ;
-			set "set_sys_b23::rect" "228,710,377,25" ;
-			set "set_sys_tonemap::rect" "259,712,172,18" ;
-			set "set_sys_tonemap_val::rect" "468,712,160,15" ;
-			set "set_sys_b24::rect" "228,732,377,25" ;
-			set "set_sys_crt::rect" "259,734,172,18" ;
-			set "set_sys_crt_val::rect" "468,734,160,15" ;
-			set "set_sys_display_tuning::rect" "259,762,327,13" ;
-			set "set_sys_b25::rect" "228,776,377,25" ;
-			set "set_sys_ui_aspect::rect" "259,778,172,18" ;
-			set "set_sys_ui_aspect_val::rect" "468,778,160,15" ;
-			set "set_sys_b26::rect" "228,798,377,25" ;
-			set "set_sys_refresh::rect" "259,800,172,18" ;
-			set "set_sys_refresh_val::rect" "468,800,160,15" ;
-			set "set_sys_b27::rect" "228,820,377,25" ;
-			set "set_sys_window_width::rect" "259,822,172,18" ;
-			set "set_sys_window_width_val::rect" "468,822,160,18" ;
-			set "set_sys_b28::rect" "228,842,377,25" ;
-			set "set_sys_window_height::rect" "259,844,172,18" ;
-			set "set_sys_window_height_val::rect" "468,844,160,18" ;
-			set "set_sys_b29::rect" "228,864,377,25" ;
-			set "set_sys_custom_width::rect" "259,866,172,18" ;
-			set "set_sys_custom_width_val::rect" "468,866,160,18" ;
-			set "set_sys_b30::rect" "228,886,377,25" ;
-			set "set_sys_custom_height::rect" "259,888,172,18" ;
-			set "set_sys_custom_height_val::rect" "468,888,160,18" ;
+			set "set_sys_b22::rect" "228,666,377,25" ;
+			set "set_sys_ssao::rect" "259,668,172,18" ;
+			set "set_sys_ssao_val::rect" "468,668,160,15" ;
+			set "set_sys_b23::rect" "228,688,377,25" ;
+			set "set_sys_tonemap::rect" "259,690,172,18" ;
+			set "set_sys_tonemap_val::rect" "468,690,160,15" ;
+			set "set_sys_b24::rect" "228,710,377,25" ;
+			set "set_sys_crt::rect" "259,712,172,18" ;
+			set "set_sys_crt_val::rect" "468,712,160,15" ;
+			set "set_sys_display_tuning::rect" "259,740,327,13" ;
+			set "set_sys_b25::rect" "228,754,377,25" ;
+			set "set_sys_ui_aspect::rect" "259,756,172,18" ;
+			set "set_sys_ui_aspect_val::rect" "468,756,160,15" ;
+			set "set_sys_b26::rect" "228,776,377,25" ;
+			set "set_sys_refresh::rect" "259,778,172,18" ;
+			set "set_sys_refresh_val::rect" "468,778,160,15" ;
+			set "set_sys_b27::rect" "228,798,377,25" ;
+			set "set_sys_window_width::rect" "259,800,172,18" ;
+			set "set_sys_window_width_val::rect" "468,800,160,18" ;
+			set "set_sys_b28::rect" "228,820,377,25" ;
+			set "set_sys_window_height::rect" "259,822,172,18" ;
+			set "set_sys_window_height_val::rect" "468,822,160,18" ;
+			set "set_sys_b29::rect" "228,842,377,25" ;
+			set "set_sys_custom_width::rect" "259,844,172,18" ;
+			set "set_sys_custom_width_val::rect" "468,844,160,18" ;
+			set "set_sys_b30::rect" "228,864,377,25" ;
+			set "set_sys_custom_height::rect" "259,866,172,18" ;
+			set "set_sys_custom_height_val::rect" "468,866,160,18" ;
 		}
 
 		onNamedEvent layoutSetSystemCompact {
@@ -17013,37 +17072,34 @@ windowDef Desktop
 			set "set_sys_b21::rect" "228,580,377,25" ;
 			set "set_sys_bloom::rect" "259,582,172,18" ;
 			set "set_sys_bloom_val::rect" "468,582,160,15" ;
-			set "set_sys_b21a::rect" "228,602,377,25" ;
-			set "set_sys_lensflare::rect" "259,604,172,18" ;
-			set "set_sys_lensflare_val::rect" "468,604,160,15" ;
-			set "set_sys_b22::rect" "228,624,377,25" ;
-			set "set_sys_ssao::rect" "259,626,172,18" ;
-			set "set_sys_ssao_val::rect" "468,626,160,15" ;
-			set "set_sys_b23::rect" "228,646,377,25" ;
-			set "set_sys_tonemap::rect" "259,648,172,18" ;
-			set "set_sys_tonemap_val::rect" "468,648,160,15" ;
-			set "set_sys_b24::rect" "228,668,377,25" ;
-			set "set_sys_crt::rect" "259,670,172,18" ;
-			set "set_sys_crt_val::rect" "468,670,160,15" ;
-			set "set_sys_display_tuning::rect" "259,698,327,13" ;
-			set "set_sys_b25::rect" "228,712,377,25" ;
-			set "set_sys_ui_aspect::rect" "259,714,172,18" ;
-			set "set_sys_ui_aspect_val::rect" "468,714,160,15" ;
-			set "set_sys_b26::rect" "228,734,377,25" ;
-			set "set_sys_refresh::rect" "259,736,172,18" ;
-			set "set_sys_refresh_val::rect" "468,736,160,15" ;
-			set "set_sys_b27::rect" "228,756,377,25" ;
-			set "set_sys_window_width::rect" "259,758,172,18" ;
-			set "set_sys_window_width_val::rect" "468,758,160,18" ;
-			set "set_sys_b28::rect" "228,778,377,25" ;
-			set "set_sys_window_height::rect" "259,780,172,18" ;
-			set "set_sys_window_height_val::rect" "468,780,160,18" ;
-			set "set_sys_b29::rect" "228,800,377,25" ;
-			set "set_sys_custom_width::rect" "259,802,172,18" ;
-			set "set_sys_custom_width_val::rect" "468,802,160,18" ;
-			set "set_sys_b30::rect" "228,822,377,25" ;
-			set "set_sys_custom_height::rect" "259,824,172,18" ;
-			set "set_sys_custom_height_val::rect" "468,824,160,18" ;
+			set "set_sys_b22::rect" "228,602,377,25" ;
+			set "set_sys_ssao::rect" "259,604,172,18" ;
+			set "set_sys_ssao_val::rect" "468,604,160,15" ;
+			set "set_sys_b23::rect" "228,624,377,25" ;
+			set "set_sys_tonemap::rect" "259,626,172,18" ;
+			set "set_sys_tonemap_val::rect" "468,626,160,15" ;
+			set "set_sys_b24::rect" "228,646,377,25" ;
+			set "set_sys_crt::rect" "259,648,172,18" ;
+			set "set_sys_crt_val::rect" "468,648,160,15" ;
+			set "set_sys_display_tuning::rect" "259,676,327,13" ;
+			set "set_sys_b25::rect" "228,690,377,25" ;
+			set "set_sys_ui_aspect::rect" "259,692,172,18" ;
+			set "set_sys_ui_aspect_val::rect" "468,692,160,15" ;
+			set "set_sys_b26::rect" "228,712,377,25" ;
+			set "set_sys_refresh::rect" "259,714,172,18" ;
+			set "set_sys_refresh_val::rect" "468,714,160,15" ;
+			set "set_sys_b27::rect" "228,734,377,25" ;
+			set "set_sys_window_width::rect" "259,736,172,18" ;
+			set "set_sys_window_width_val::rect" "468,736,160,18" ;
+			set "set_sys_b28::rect" "228,756,377,25" ;
+			set "set_sys_window_height::rect" "259,758,172,18" ;
+			set "set_sys_window_height_val::rect" "468,758,160,18" ;
+			set "set_sys_b29::rect" "228,778,377,25" ;
+			set "set_sys_custom_width::rect" "259,780,172,18" ;
+			set "set_sys_custom_width_val::rect" "468,780,160,18" ;
+			set "set_sys_b30::rect" "228,800,377,25" ;
+			set "set_sys_custom_height::rect" "259,802,172,18" ;
+			set "set_sys_custom_height_val::rect" "468,802,160,18" ;
 		}
 
 		onNamedEvent applySetSystemScroll {
@@ -17059,30 +17115,25 @@ windowDef Desktop
 		}
 
 		onNamedEvent showNew {
-			
+			set "new_b_skill1::visible" "1" ;
+			set "new_b_skill2::visible" "1" ;
+			set "new_b_skill3::visible" "1" ;
+			set "new_b_skill4::visible" "1" ;
+			set "new_b_skill5::visible" "1" ;
 			if ("desktop::skill" == 0) {
 				set "new_b_skill1::visible" "0" ;
-				set "new_b_skill2::visible" "1" ;
-				set "new_b_skill3::visible" "1" ;
-				set "new_b_skill4::visible" "1" ;
 			} else if ("desktop::skill" == 1) {
-				set "new_b_skill1::visible" "1" ;
 				set "new_b_skill2::visible" "0" ;
-				set "new_b_skill3::visible" "1" ;
-				set "new_b_skill4::visible" "1" ;
 			} else if ("desktop::skill" == 2) {
-				set "new_b_skill1::visible" "1" ;
-				set "new_b_skill2::visible" "1" ;
 				set "new_b_skill3::visible" "0" ;
-				set "new_b_skill4::visible" "1" ; 
 			} else if ("desktop::skill" == 3) {
-				set "new_b_skill1::visible" "1" ;
-				set "new_b_skill2::visible" "1" ;
-				set "new_b_skill3::visible" "1" ;
 				set "new_b_skill4::visible" "0" ;
-			}	
+			} else if ("desktop::skill" == 4) {
+				set "new_b_skill5::visible" "0" ;
+			}
 			set "new_b_start::visible" "1" ;
 			set "new_b_back::visible" "1" ;
+			set "new_b_turbo::visible" "1" ;
 		}
 
 		onNamedEvent hideNew {
@@ -17094,6 +17145,7 @@ windowDef Desktop
 			set "new_b_skill6::visible" "0" ;	
 			set "new_b_start::visible" "0" ;
 			set "new_b_back::visible" "0" ;
+			set "new_b_turbo::visible" "0" ;
 		}
 
 		onNamedEvent skillCheck {	
@@ -17109,6 +17161,9 @@ windowDef Desktop
 			set "new_b4::matcolor_w" "0.4" ;
 			set "new_t_b4::forecolor" "$desktop::white_8" ; 
 			set "new_t_b4::textscale" "0.31" ;	
+			set "new_b5::matcolor_w" "0.4" ;
+			set "new_t_b5::forecolor" "$desktop::white_8" ; 
+			set "new_t_b5::textscale" "0.31" ;	
 			if ("desktop::skill" == 0) {
 				set "new_b1::matcolor_w" "1" ;
 				set "new_t_b1::forecolor" "$desktop::orange" "0" ; 
@@ -17129,6 +17184,25 @@ windowDef Desktop
 				set "new_t_b4::forecolor" "$desktop::orange" "0" ; 
 				set "new_t_b4::textscale" "0.32" ; 
 				set "new_diffDescript::text" "#str_200185"
+			} else if ("desktop::skill" == 4) {
+				set "new_b5::matcolor_w" "1" ;
+				set "new_t_b5::forecolor" "$desktop::orange" "0" ; 
+				set "new_t_b5::textscale" "0.32" ; 
+				set "new_diffDescript::text" "#str_41118"
+			}
+		}
+
+		onNamedEvent turboCheck {
+			set "new_bturbo::matcolor_w" "0.4" ;
+			set "new_t_turbo::forecolor" "$desktop::white_8" ;
+			set "new_t_turbo::textscale" "0.27" ;
+			set "new_bturbo_corner::matcolor" "$desktop::corner" ;
+			if ("desktop::turboMode" == 0) {
+				set "new_t_turbo_value::text" "#str_41121" ;
+				set "new_t_turbo_value::forecolor" "$desktop::white_8" ;
+			} else {
+				set "new_t_turbo_value::text" "#str_41120" ;
+				set "new_t_turbo_value::forecolor" "$desktop::orange" "0" ;
 			}
 		}
 
@@ -18188,6 +18262,41 @@ windowDef Desktop
 			}
 
 		}
+		windowDef new_b_skill5
+		{
+			rect	24,304,192,25
+			visible	0
+
+			onMouseEnter {
+				if ("desktop::active" == 0) {
+					stoptransitions "new_b_skill5" ;
+					
+					set "new_b5::matcolor_w" "1" ;
+					transition "new_t_b5::forecolor" "$desktop::white_8" "$desktop::orange" "0" ; 
+					set "new_t_b5::textscale" "0.32" ; 
+					
+					set "cmd" "play main_menu_mouseover" ;	
+				}
+			}
+
+			onMouseExit {
+				if ("desktop::active" == 0 && "desktop::skill" != 4) {
+					transition "new_b5::matcolor_w" "1" "0.4" "300" ;
+					transition "new_t_b5::forecolor"  "$desktop::orange" "$desktop::white_8" "300" ; 
+					transition "new_t_b5::textscale" "0.32" "0.31" "300" ;
+				}
+			}
+
+			onAction {
+				set "desktop::skill" "4" ;
+				consoleCMD "g_skill 4" ;
+				namedevent "p_btns::showNew" ;
+				namedevent "p_btns::skillCheck" ;
+				
+				set "cmd" "play main_menu_selection" ;
+			}
+
+		}
 		windowDef new_b_start
 		{
 			rect	239,226,358,34
@@ -18218,7 +18327,53 @@ windowDef Desktop
 			}
 
 			onAction {
-				consoleCMD "map game/airdefense1" ;
+				set "cmd" "play main_menu_selection ; startMap game/airdefense1" ;
+			}
+
+		}
+		windowDef new_b_turbo
+		{
+			rect	239,276,358,34
+			visible	0
+
+			onMouseEnter {
+				if ("desktop::active" == 0) {
+					stoptransitions "new_b_turbo" ;
+					
+					set "new_bturbo::matcolor_w" "1" ;
+					transition "new_t_turbo::forecolor" "$desktop::white_8" "$desktop::white" "0" ; 
+					transition "new_t_turbo_value::forecolor" "$desktop::white_8" "$desktop::white" "0" ; 
+					transition "new_bturbo_corner::matcolor" "$desktop::corner" "$desktop::orange" "0" ; 
+					
+					set "new_t_turbo::textscale" "0.28" ; 
+					
+					set "cmd" "play main_menu_mouseover" ;	
+				}
+			}
+
+			onMouseExit {
+				if ("desktop::active" == 0) {
+					transition "new_bturbo::matcolor_w" "1" "0.4" "300" ;
+					transition "new_t_turbo::forecolor" "$desktop::white" "$desktop::white_8" "300" ; 
+					transition "new_bturbo_corner::matcolor" "$desktop::orange" "$desktop::corner" "300" ; 
+					transition "new_t_turbo::textscale" "0.28" "0.27" "300" ;
+					if ("desktop::turboMode" == 0) {
+						transition "new_t_turbo_value::forecolor" "$desktop::white" "$desktop::white_8" "300" ;
+					} else {
+						transition "new_t_turbo_value::forecolor" "$desktop::white" "$desktop::orange" "300" ;
+					}
+				}
+			}
+
+			onAction {
+				if ("desktop::turboMode" == 0) {
+					set "desktop::turboMode" "1" ;
+					consoleCMD "g_turboMode 1" ;
+				} else {
+					set "desktop::turboMode" "0" ;
+					consoleCMD "g_turboMode 0" ;
+				}
+				namedevent "p_btns::turboCheck" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -21705,7 +21860,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_mods_loadmod
 		{
-			rect	135,369,119,23
+			rect	135,409,119,23
 			visible	0
 
 			onMouseEnter {
@@ -21742,7 +21897,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_mods_cancel
 		{
-			rect	302,369,119,23
+			rect	302,409,119,23
 			visible	0
 
 			onMouseEnter {

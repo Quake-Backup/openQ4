@@ -150,10 +150,20 @@ bool GLimp_SpawnRenderThread(void (*a) ()) {
 	return false;
 }
 
+bool GLimp_EnsureActiveContext( const char *operation ) {
+	if ( dpy == NULL || ctx == NULL || win == 0 ) {
+		common->Printf( "GLX: cannot make GL context current for %s: missing display, window, or context\n", operation != NULL ? operation : "operation" );
+		return false;
+	}
+	if ( !glXMakeCurrent( dpy, win, ctx ) ) {
+		common->Printf( "GLX: glXMakeCurrent failed for %s\n", operation != NULL ? operation : "operation" );
+		return false;
+	}
+	return true;
+}
+
 void GLimp_ActivateContext() {
-	assert( dpy );
-	assert( ctx );
-	glXMakeCurrent( dpy, win, ctx );
+	(void)GLimp_EnsureActiveContext( "activate context" );
 }
 
 void GLimp_DeactivateContext() {

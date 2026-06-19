@@ -165,7 +165,10 @@ static bool OSX_StartProcessArgs( char *const argv[], bool dofork ) {
 	}
 
 	pid_t childPid = 0;
-	const int result = posix_spawnp( &childPid, argv[0], NULL, NULL, argv, *_NSGetEnviron() );
+	char *const emptyEnvironment[] = { NULL };
+	char ***environmentPointer = _NSGetEnviron();
+	char *const *environment = ( environmentPointer != NULL && *environmentPointer != NULL ) ? *environmentPointer : emptyEnvironment;
+	const int result = posix_spawnp( &childPid, argv[0], NULL, NULL, argv, environment );
 	if ( result != 0 ) {
 		common->Printf( "posix_spawnp %s failed: %s\n", argv[0], strerror( result ) );
 		return false;
@@ -253,16 +256,25 @@ OSX_GetLocalizedString
 */
 const char* OSX_GetLocalizedString( const char* key )
 {
+	static idStr localizedStrings[8];
+	static int localizedStringIndex = 0;
+	localizedStringIndex = ( localizedStringIndex + 1 ) & 7;
+	idStr &localizedString = localizedStrings[localizedStringIndex];
+
 	if ( key == NULL ) {
-		return "";
+		localizedString.Clear();
+		return localizedString.c_str();
 	}
 
 	NSString *lookupKey = [ NSString stringWithUTF8String: key ];
 	if ( lookupKey == nil ) {
-		return key;
+		localizedString = key;
+		return localizedString.c_str();
 	}
 
 	NSString *string = [ [ NSBundle mainBundle ] localizedStringForKey:lookupKey
 													 value:@"No translation" table:nil];
-	return [string UTF8String];
+	const char *localizedText = string != nil ? [string UTF8String] : NULL;
+	localizedString = ( localizedText != NULL && localizedText[0] != '\0' ) ? localizedText : key;
+	return localizedString.c_str();
 }

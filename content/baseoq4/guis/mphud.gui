@@ -1425,7 +1425,7 @@ windowDef Desktop
 	}
 	windowDef p_tourntop
 	{
-		rect	0,0,640,480
+		rect	0,0,( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),480
 		screenalignx	left
 		screenaligny	top
 		visible	1
@@ -2836,14 +2836,14 @@ windowDef Desktop
 		}
 		windowDef tourn_warmupbar
 		{
-			rect	-100,-62,840,62
+			rect	0,-62,( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),62
 			visible	1
 			background	"gfx/guis/common/128_sqsolid"
 			matcolor	0,0,0,1
 			notime	1
 			windowDef tourn_warmup_title
 			{
-				rect	98,32,640,25
+				rect	"gui::virtual_screen_x_expand",32,640,25
 				visible	1
 				forecolor	1,1,1,1
 				text	"#str_200953"
@@ -2855,7 +2855,7 @@ windowDef Desktop
 		}
 		windowDef d_tourn_warmupbar
 		{
-			rect	-100,-28,840,62
+			rect	0,-28,( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),62
 			visible	0
 			background	"gfx/guis/common/128_sqsolid"
 			matcolor	0,0,0,1

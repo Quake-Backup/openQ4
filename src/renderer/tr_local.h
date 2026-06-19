@@ -1095,7 +1095,6 @@ extern idCVar r_multiSamples;			// number of antialiasing samples
 extern idCVar r_postAA;					// post AA mode: 0 = off, 1/2/3 = SMAA medium/high/ultra, 4 = colour-edge prototype
 extern idCVar r_postAAStatePoisonTest;	// intentionally dirty GL texture/client state before SMAA draws
 extern idCVar r_bloom;					// enable bloom post-process
-extern idCVar r_lensFlare;				// light corona / lens flare quality
 extern idCVar r_bloomThreshold;			// bloom bright-pass threshold
 extern idCVar r_bloomSoftKnee;			// relative bloom soft threshold knee
 extern idCVar r_bloomIntensity;			// bloom contribution scale
@@ -1666,6 +1665,7 @@ void		GLimp_WakeBackEnd( void *data );
 // these functions implement the dual processor syncronization
 
 void		GLimp_ActivateContext( void );
+bool		GLimp_EnsureActiveContext( const char *operation );
 void		GLimp_DeactivateContext( void );
 // These are used for managing SMP handoffs of the OpenGL context
 // between threads, and as a performance tunining aid.  Setting
@@ -2210,7 +2210,6 @@ void RB_RenderDebugTools( drawSurf_t **drawSurfs, int numDrawSurfs );
 void RB_ShutdownDebugTools( void );
 void RB_ShutdownScenePostProcess( void );
 void RB_ApplyColorMappingsToBackBuffer( void );
-bool RB_LensFlareRuntimeSelfTest( void );
 
 /*
 =============================================================

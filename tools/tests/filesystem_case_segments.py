@@ -21,6 +21,13 @@ def reject(haystack: str, needle: str, context: str) -> None:
         raise AssertionError(f"Unexpected {needle!r} in {context}")
 
 
+def require_exact_child(parent_relative_path: str, child_name: str, context: str) -> None:
+    parent = ROOT / parent_relative_path
+    names = {child.name for child in parent.iterdir()}
+    if child_name not in names:
+        raise AssertionError(f"Missing exact-case child {child_name!r} in {context}")
+
+
 def function_body(source: str, signature: str) -> str:
     start = source.find(signature)
     if start == -1:
@@ -95,6 +102,32 @@ def validate_posix_directory_diagnostics() -> None:
     require(list_files, 'strerror( errno )', "POSIX directory listing diagnostics")
 
 
+def validate_linux_build_path_casing() -> None:
+    root_meson = read("meson.build")
+    push = read(".github/workflows/push-verification.yml")
+    commit = read(".github/workflows/commit-validation.yml")
+
+    require(root_meson, 'root / ".." / "openQ4-GameLibs"', "default GameLibs repository path")
+    require(root_meson, "../openQ4-GameLibs", "GameLibs repository diagnostics")
+    reject(root_meson, 'root / ".." / "OpenQ4-GameLibs"', "default GameLibs repository path")
+    reject(root_meson, "../OpenQ4-GameLibs", "GameLibs repository diagnostics")
+
+    require(root_meson, "assets/linux/openQ4-steamdeck.in", "Steam Deck launcher template input")
+    require(root_meson, "assets/linux/openq4-steamdeck.desktop.in", "Steam Deck desktop template input")
+    reject(root_meson, "assets/linux/OpenQ4-steamdeck.in", "Steam Deck launcher template input")
+    reject(root_meson, "assets/linux/openQ4-steamdeck.desktop.in", "Steam Deck desktop template input")
+    require_exact_child("assets/linux", "openQ4-steamdeck.in", "Steam Deck launcher template")
+    require_exact_child("assets/linux", "openq4-steamdeck.desktop.in", "Steam Deck desktop template")
+
+    for workflow, context in (
+        (push, "push verification workflow"),
+        (commit, "commit validation workflow"),
+    ):
+        require(workflow, "../openQ4-GameLibs", context)
+        require(workflow, "openQ4-GameLibs.git", context)
+        reject(workflow, "../OpenQ4-GameLibs", context)
+
+
 def validate_release_note() -> None:
     source = read("docs-dev/release-completion.md")
 
@@ -118,6 +151,7 @@ def validate_validation_coverage() -> None:
 def main() -> None:
     validate_filesystem_case_resolution()
     validate_posix_directory_diagnostics()
+    validate_linux_build_path_casing()
     validate_release_note()
     validate_validation_coverage()
     print("filesystem_case_segments: ok")

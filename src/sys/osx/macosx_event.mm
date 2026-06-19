@@ -50,15 +50,17 @@ If you have questions concerning this license or the applicable additional terms
 #import <sys/time.h>
 #import <unistd.h>
 #include <pthread.h>
+#include <math.h>
 
 static NSDate  *distantPast		= NULL;
 static bool		inputActive		= false;
 static bool		mouseActive		= false;
 static bool		inputRectValid	= NO;
-static CGRect	inputRect;
+static CGRect	inputRect		= CGRectZero;
 static const void *sKLuchrData	= NULL;
 static const void *sKLKCHRData	= NULL;
 static float	s_scrollWheelRemainderY = 0.0f;
+static const int MAX_MOUSE_WHEEL_STEPS_PER_EVENT = 64;
 
 int	vkeyToopenQ4Key[256] = {
 	/*0x00*/	'a', 's', 'd', 'f', 'h', 'g', 'z', 'x',
@@ -166,13 +168,18 @@ static void OSX_PostMouseWheelSteps( int wheelSteps ) {
 		return;
 	}
 
-	const int wheelKey = wheelSteps < 0 ? K_MWHEELDOWN : K_MWHEELUP;
-	const int absSteps = abs( wheelSteps );
+	const bool wheelDown = wheelSteps < 0;
+	int absSteps = wheelSteps == idMath::INT_MIN ? idMath::INT_MAX : ( wheelDown ? -wheelSteps : wheelSteps );
+	if ( absSteps > MAX_MOUSE_WHEEL_STEPS_PER_EVENT ) {
+		absSteps = MAX_MOUSE_WHEEL_STEPS_PER_EVENT;
+	}
+	const int queuedWheelSteps = wheelDown ? -absSteps : absSteps;
+	const int wheelKey = wheelDown ? K_MWHEELDOWN : K_MWHEELUP;
 	for ( int i = 0; i < absSteps; ++i ) {
 		Posix_QueEvent( SE_KEY, wheelKey, true, 0, NULL );
 		Posix_QueEvent( SE_KEY, wheelKey, false, 0, NULL );
 	}
-	Posix_AddMousePollEvent( M_DELTAZ, wheelSteps );
+	Posix_AddMousePollEvent( M_DELTAZ, queuedWheelSteps );
 }
 
 /*
@@ -294,6 +301,10 @@ void processMouseMovedEvent( NSEvent *mouseMovedEvent ) {
 
 inline bool OSX_LookupCharacter(unsigned short vkey, unsigned int modifiers, bool keyDownFlag, unsigned char *outChar)
 {
+	if ( outChar == NULL ) {
+		return false;
+	}
+
 	UInt32 translated = 0;
 	UInt32 deadKeyState = 0;
 	UniChar unicodeString[16];
@@ -317,6 +328,11 @@ inline bool OSX_LookupCharacter(unsigned short vkey, unsigned int modifiers, boo
 void OSX_ProcessKeyEvent( NSEvent *keyEvent, bool keyDownFlag ) {
 	unsigned char character;
 	unsigned int modifiers = 0;
+
+	if ( keyEvent == nil ) {
+		return;
+	}
+
 	unsigned int nativeModifiers = [ keyEvent modifierFlags ];
 	unsigned short vkey = [ keyEvent keyCode ];
 
@@ -366,6 +382,10 @@ void processFlagsChangedEvent( NSEvent *flagsChangedEvent ) {
     static int	oldModifierFlags;
     int			newModifierFlags;
 
+	if ( flagsChangedEvent == nil ) {
+		return;
+	}
+
     newModifierFlags = [flagsChangedEvent modifierFlags];
 	sendEventForMaskChangeInFlags( K_CAPSLOCK, NSAlphaShiftKeyMask, oldModifierFlags, newModifierFlags );
     sendEventForMaskChangeInFlags( K_ALT, NSAlternateKeyMask, oldModifierFlags, newModifierFlags );
@@ -380,6 +400,10 @@ void processSystemDefinedEvent( NSEvent *systemDefinedEvent ) {
     int buttonsDelta;
     int buttons;
     int isDown;
+
+	if ( systemDefinedEvent == nil ) {
+		return;
+	}
 
     if ( [systemDefinedEvent subtype] == 7 ) {
 
@@ -408,6 +432,9 @@ void processSystemDefinedEvent( NSEvent *systemDefinedEvent ) {
 void processEvent( NSEvent *event ) {
 	NSEventType eventType;
 
+	if ( event == nil ) {
+		return;
+	}
 	if ( !inputActive ) {
 		return;
 	}
@@ -444,6 +471,14 @@ void processEvent( NSEvent *event ) {
 		return;
 	case NSScrollWheel: {
 		float deltaY = [event deltaY] + s_scrollWheelRemainderY;
+		if ( !isfinite( deltaY ) ) {
+			s_scrollWheelRemainderY = 0.0f;
+			return;
+		}
+		deltaY = idMath::ClampFloat(
+			-static_cast<float>( MAX_MOUSE_WHEEL_STEPS_PER_EVENT ),
+			static_cast<float>( MAX_MOUSE_WHEEL_STEPS_PER_EVENT ),
+			deltaY );
 		int wheelSteps = 0;
 		if ( deltaY >= 1.0f ) {
 			wheelSteps = static_cast<int>( floorf( deltaY ) );
@@ -475,36 +510,54 @@ void Posix_PollInput( void ) {
 	}
 }
 
-void Sys_PreventMouseMovement( CGPoint point ) {
+static bool Sys_InputRectIsUsable( CGRect rect ) {
+	return isfinite( rect.origin.x ) && isfinite( rect.origin.y ) &&
+		isfinite( rect.size.width ) && isfinite( rect.size.height ) &&
+		rect.size.width > 0.0 && rect.size.height > 0.0;
+}
+
+bool Sys_PreventMouseMovement( CGPoint point ) {
     CGEventErr err;
 
     //common->Printf( "**** Calling CGAssociateMouseAndMouseCursorPosition(false)\n" );
     err = CGAssociateMouseAndMouseCursorPosition( false );
     if ( err != CGEventNoErr ) {
-        common->Error( "Could not disable mouse movement, CGAssociateMouseAndMouseCursorPosition returned %d\n", err );
+        common->Printf( "Could not disable mouse movement, CGAssociateMouseAndMouseCursorPosition returned %d\n", err );
+		return false;
     }
 
     // Put the mouse in the position we want to leave it at
     err = CGWarpMouseCursorPosition( point );
     if ( err != CGEventNoErr ) {
-        common->Error( "Could not disable mouse movement, CGWarpMouseCursorPosition returned %d\n", err );
+        common->Printf( "Could not disable mouse movement, CGWarpMouseCursorPosition returned %d\n", err );
+		(void)CGAssociateMouseAndMouseCursorPosition( true );
+		return false;
     }
+	return true;
 }
 
-void Sys_ReenableMouseMovement() {
+bool Sys_ReenableMouseMovement() {
     CGEventErr err;
 
     //common->Printf( "**** Calling CGAssociateMouseAndMouseCursorPosition(true)\n" );
     err = CGAssociateMouseAndMouseCursorPosition( true );
     if ( err != CGEventNoErr ) {
-        common->Error( "Could not reenable mouse movement, CGAssociateMouseAndMouseCursorPosition returned %d\n", err );
+        common->Printf( "Could not reenable mouse movement, CGAssociateMouseAndMouseCursorPosition returned %d\n", err );
+		return false;
     }
 
     // Leave the mouse where it was -- don't warp here.
+	return true;
 }
 
-void Sys_LockMouseInInputRect(CGRect rect) {
+bool Sys_LockMouseInInputRect(CGRect rect) {
     CGPoint center;
+
+	if ( !Sys_InputRectIsUsable( rect ) ) {
+		common->Printf( "Could not lock mouse: invalid input rect %.0f %.0f %.0f %.0f\n",
+			rect.origin.x, rect.origin.y, rect.size.width, rect.size.height );
+		return false;
+	}
 
     center.x = rect.origin.x + rect.size.width / 2.0;
     center.y = rect.origin.y + rect.size.height / 2.0;
@@ -512,15 +565,25 @@ void Sys_LockMouseInInputRect(CGRect rect) {
     // Now, put the mouse in the middle of the input rect (anywhere over it would do)
     // and don't allow it to move.  This means that the user won't be able to accidentally
     // select another application.
-    Sys_PreventMouseMovement(center);
+    return Sys_PreventMouseMovement(center);
 }
 
 void Sys_SetMouseInputRect(CGRect newRect) {
+	if ( !Sys_InputRectIsUsable( newRect ) ) {
+		inputRectValid = NO;
+		if ( mouseActive ) {
+			IN_DeactivateMouse();
+		}
+		return;
+	}
+
     inputRectValid = YES;
     inputRect = newRect;
 
     if ( mouseActive ) {
-        Sys_LockMouseInInputRect( inputRect );
+        if ( !Sys_LockMouseInInputRect( inputRect ) ) {
+			IN_DeactivateMouse();
+		}
 	}
 }
 
@@ -528,12 +591,31 @@ void IN_ActivateMouse( void ) {
     if ( mouseActive ) {
         return;
     }
+	const CGDirectDisplayID display = Sys_DisplayToUse();
     if ( inputRectValid ) {
         // Make sure that if window moved we don't hose the user...
         Sys_UpdateWindowMouseInputRect();
     }
-    Sys_LockMouseInInputRect( inputRect );
-    CGDisplayHideCursor( Sys_DisplayToUse() );
+
+	if ( !inputRectValid && display != 0 ) {
+		CGRect displayRect = CGDisplayBounds( display );
+		if ( Sys_InputRectIsUsable( displayRect ) ) {
+			inputRect = displayRect;
+			inputRectValid = YES;
+		}
+	}
+
+	if ( !inputRectValid || !Sys_LockMouseInInputRect( inputRect ) ) {
+		common->Printf( "Mouse capture unavailable on this macOS display state\n" );
+		return;
+	}
+
+	if ( display != 0 ) {
+		const CGError err = CGDisplayHideCursor( display );
+		if ( err != kCGErrorSuccess ) {
+			common->Printf( "CGDisplayHideCursor returned %d\n", err );
+		}
+	}
     mouseActive = true;
 }
 
@@ -541,8 +623,14 @@ void IN_DeactivateMouse( void ) {
     if ( !mouseActive ) {
         return;
     }
-    Sys_ReenableMouseMovement();
-    CGDisplayShowCursor( Sys_DisplayToUse() );
+    (void)Sys_ReenableMouseMovement();
+	const CGDirectDisplayID display = Sys_DisplayToUse();
+	if ( display != 0 ) {
+		const CGError err = CGDisplayShowCursor( display );
+		if ( err != kCGErrorSuccess ) {
+			common->Printf( "CGDisplayShowCursor returned %d\n", err );
+		}
+	}
     mouseActive = false;
 }
 

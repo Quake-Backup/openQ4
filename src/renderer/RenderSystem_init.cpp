@@ -34,7 +34,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererBootstrap.h"
 #include "GLStateCache.h"
 #include "RendererBenchmarks.h"
-#include "LensFlareSettings.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
 #include "RenderGraph.h"
@@ -218,7 +217,6 @@ idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVA
 idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "post AA mode: 0 = off, 1 = SMAA 1x medium, 2 = SMAA 1x high, 3 = SMAA 1x ultra, 4 = SMAA 1x colour-edge prototype", 0, 4, idCmdSystem::ArgCompletion_Integer<0,4> );
 idCVar r_postAAStatePoisonTest( "r_postAAStatePoisonTest", "0", CVAR_RENDERER | CVAR_BOOL, "intentionally dirty GL texture/client state before SMAA post-AA draws for validation" );
 idCVar r_bloom( "r_bloom", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable bloom post-process" );
-idCVar r_lensFlare( "r_lensFlare", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "light corona / lens flare quality: 0 = off, 1 = coronas, 2 = high quality", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_bloomThreshold( "r_bloomThreshold", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "bloom bright-pass threshold in scene-referred units", 0.0f, 16.0f );
 idCVar r_bloomSoftKnee( "r_bloomSoftKnee", "0.15", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "relative bloom soft-threshold knee", 0.0f, 1.0f );
 idCVar r_bloomIntensity( "r_bloomIntensity", "0.8", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "bloom contribution scale", 0.0f, 4.0f );
@@ -729,20 +727,6 @@ static void R_RendererGpuTimerSelfTest_f( const idCmdArgs &args ) {
 	}
 }
 
-static void R_RendererLensFlareSettingsSelfTest_f( const idCmdArgs &args ) {
-	(void)args;
-	if ( !RendererLensFlareSettings_RunSelfTest() ) {
-		common->Warning( "Renderer lens-flare settings self-test failed" );
-	}
-}
-
-static void R_RendererLensFlareRuntimeSelfTest_f( const idCmdArgs &args ) {
-	(void)args;
-	if ( !RB_LensFlareRuntimeSelfTest() ) {
-		common->Warning( "Renderer lens-flare runtime self-test failed" );
-	}
-}
-
 static void R_RendererScenePacketSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererScenePacket_RunSelfTest() ) {
@@ -934,11 +918,17 @@ static void R_CheckPortableExtensions( void ) {
 	glConfig.glVersion = atof( glConfig.version_string );
 	R_ClearMissingRequiredOpenGLFeatures();
 
+	if ( !GLimp_EnsureActiveContext( "GLEW initialization" ) ) {
+		common->FatalError( "Unable to make OpenGL context current for GLEW initialization\n" );
+	}
 	common->Printf("Init Glew...\n");
 
 	glewExperimental = GL_TRUE;
-	if (glewInit() != GLEW_OK)
-		common->FatalError("Failed to init glew!\n");
+	const GLenum glewResult = glewInit();
+	if ( glewResult != GLEW_OK ) {
+		const GLubyte *glewError = glewGetErrorString( glewResult );
+		common->FatalError( "Failed to init GLEW: %s\n", glewError != NULL ? reinterpret_cast<const char *>( glewError ) : "unknown error" );
+	}
 	while ( glGetError() != GL_NO_ERROR ) {
 	}
 
@@ -1192,40 +1182,184 @@ will be used instead.
 ====================
 */
 typedef struct vidmode_s {
-    const char *description;
-    int         width, height;
+	int         mode;
+	int         width, height;
 } vidmode_t;
 
+// Keep this list in the same resolution order as mainMenuVidModes in
+// Session_menu.cpp. Mode IDs 0..10 preserve the previously shipped openQ4
+// meanings; newer presets are appended by ID while the table stays ordered for
+// readable diagnostics.
 vidmode_t r_vidModes[] = {
-	{ "Mode  0: 1280x720 (16:9)",		1280,	720 },
-	{ "Mode  1: 1366x768 (16:9)",		1366,	768 },
-	{ "Mode  2: 1600x900 (16:9)",		1600,	900 },
-	{ "Mode  3: 1920x1080 (16:9)",		1920,	1080 },
-	{ "Mode  4: 1920x1200 (16:10)",		1920,	1200 },
-	{ "Mode  5: 2560x1080 (21:9)",		2560,	1080 },
-	{ "Mode  6: 2560x1440 (16:9)",		2560,	1440 },
-	{ "Mode  7: 3440x1440 (21:9)",		3440,	1440 },
-	{ "Mode  8: 3840x2160 (16:9)",		3840,	2160 },
-	{ "Mode  9: 5120x1440 (32:9)",		5120,	1440 },
-	{ "Mode 10: 5120x2880 (16:9)",		5120,	2880 }
+	{ 11, 640, 480 },
+	{ 12, 720, 480 },
+	{ 13, 720, 576 },
+	{ 14, 800, 480 },
+	{ 15, 800, 600 },
+	{ 16, 854, 480 },
+	{ 17, 960, 540 },
+	{ 18, 960, 600 },
+	{ 19, 1024, 576 },
+	{ 20, 1024, 600 },
+	{ 21, 1024, 768 },
+	{ 22, 1152, 648 },
+	{ 23, 1152, 720 },
+	{ 24, 1152, 768 },
+	{ 25, 1152, 864 },
+	{ 0, 1280, 720 },
+	{ 26, 1280, 768 },
+	{ 27, 1280, 800 },
+	{ 28, 1280, 854 },
+	{ 29, 1280, 960 },
+	{ 30, 1280, 1024 },
+	{ 31, 1360, 768 },
+	{ 1, 1366, 768 },
+	{ 32, 1400, 900 },
+	{ 33, 1400, 1050 },
+	{ 34, 1440, 900 },
+	{ 35, 1440, 960 },
+	{ 36, 1536, 864 },
+	{ 2, 1600, 900 },
+	{ 37, 1600, 1200 },
+	{ 38, 1680, 1050 },
+	{ 3, 1920, 1080 },
+	{ 4, 1920, 1200 },
+	{ 39, 1920, 1280 },
+	{ 40, 2048, 1080 },
+	{ 41, 2048, 1152 },
+	{ 42, 2048, 1536 },
+	{ 43, 2160, 1440 },
+	{ 44, 2240, 1260 },
+	{ 45, 2240, 1400 },
+	{ 46, 2256, 1504 },
+	{ 47, 2304, 1440 },
+	{ 48, 2400, 1350 },
+	{ 49, 2400, 1600 },
+	{ 50, 2520, 1680 },
+	{ 5, 2560, 1080 },
+	{ 6, 2560, 1440 },
+	{ 51, 2560, 1600 },
+	{ 52, 2560, 1664 },
+	{ 53, 2736, 1824 },
+	{ 54, 2880, 1620 },
+	{ 55, 2880, 1800 },
+	{ 56, 2880, 1864 },
+	{ 57, 2880, 1920 },
+	{ 58, 3000, 2000 },
+	{ 59, 3024, 1964 },
+	{ 60, 3200, 1800 },
+	{ 61, 3200, 2000 },
+	{ 62, 3240, 2160 },
+	{ 7, 3440, 1440 },
+	{ 63, 3456, 2160 },
+	{ 64, 3456, 2234 },
+	{ 65, 3840, 1080 },
+	{ 66, 3840, 1200 },
+	{ 67, 3840, 1600 },
+	{ 8, 3840, 2160 },
+	{ 68, 3840, 2400 },
+	{ 69, 3840, 2560 },
+	{ 70, 4096, 2160 },
+	{ 9, 5120, 1440 },
+	{ 71, 5120, 2160 },
+	{ 10, 5120, 2880 },
+	{ 72, 6016, 3384 },
+	{ 73, 7680, 2160 },
+	{ 74, 7680, 4320 }
 };
 static int	s_numVidModes = ( sizeof( r_vidModes ) / sizeof( r_vidModes[0] ) );
+
+static const vidmode_t *R_FindVidModeByMode( int mode ) {
+	for ( int i = 0; i < s_numVidModes; ++i ) {
+		if ( r_vidModes[i].mode == mode ) {
+			return &r_vidModes[i];
+		}
+	}
+	return NULL;
+}
+
+static const vidmode_t *R_DefaultVidMode( void ) {
+	const vidmode_t *mode = R_FindVidModeByMode( 0 );
+	return mode != NULL ? mode : &r_vidModes[0];
+}
+
+static int R_ModeGreatestCommonDivisor( int a, int b ) {
+	a = idMath::Abs( a );
+	b = idMath::Abs( b );
+	while ( b != 0 ) {
+		const int remainder = a % b;
+		a = b;
+		b = remainder;
+	}
+	return a > 0 ? a : 1;
+}
+
+static idStr R_ModeAspectRatioLabel( int width, int height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return "";
+	}
+
+	typedef struct commonAspectRatio_s {
+		int width;
+		int height;
+	} commonAspectRatio_t;
+	static const commonAspectRatio_t commonAspectRatios[] = {
+		{ 5, 4 },
+		{ 4, 3 },
+		{ 3, 2 },
+		{ 5, 3 },
+		{ 16, 10 },
+		{ 16, 9 },
+		{ 21, 9 },
+		{ 32, 10 },
+		{ 32, 9 }
+	};
+
+	const float displayAspect = static_cast<float>( width ) / static_cast<float>( height );
+	int bestIndex = -1;
+	float bestDelta = idMath::INFINITY;
+	for ( int i = 0; i < static_cast<int>( sizeof( commonAspectRatios ) / sizeof( commonAspectRatios[0] ) ); ++i ) {
+		const float targetAspect = static_cast<float>( commonAspectRatios[i].width ) / static_cast<float>( commonAspectRatios[i].height );
+		const float delta = idMath::Fabs( displayAspect - targetAspect );
+		if ( delta < bestDelta ) {
+			bestDelta = delta;
+			bestIndex = i;
+		}
+	}
+
+	if ( bestIndex >= 0 ) {
+		const float targetAspect = static_cast<float>( commonAspectRatios[bestIndex].width ) / static_cast<float>( commonAspectRatios[bestIndex].height );
+		if ( bestDelta <= targetAspect * 0.04f ) {
+			return va( "%d:%d", commonAspectRatios[bestIndex].width, commonAspectRatios[bestIndex].height );
+		}
+	}
+
+	const int gcd = R_ModeGreatestCommonDivisor( width, height );
+	const int reducedWidth = width / gcd;
+	const int reducedHeight = height / gcd;
+	if ( reducedWidth <= 64 && reducedHeight <= 64 ) {
+		return va( "%d:%d", reducedWidth, reducedHeight );
+	}
+
+	return "";
+}
 
 #if defined( MACOS_X )
 bool R_GetModeInfo( int *width, int *height, int mode ) {
 #else
 static bool R_GetModeInfo( int *width, int *height, int mode ) {
 #endif
-	vidmode_t	*vm;
+	const vidmode_t	*vm;
 	const int originalMode = mode;
 
 	if ( mode < -2 ) {
 		common->Printf( "^3R_GetModeInfo: r_mode %d is invalid, using custom mode (-1)\n", mode );
 		mode = -1;
 	}
-	if ( mode >= s_numVidModes ) {
+	if ( mode >= 0 && R_FindVidModeByMode( mode ) == NULL ) {
+		const vidmode_t *defaultMode = R_DefaultVidMode();
 		common->Printf( "^3R_GetModeInfo: r_mode %d out of range, using mode 0 (%dx%d)\n",
-			mode, r_vidModes[0].width, r_vidModes[0].height );
+			mode, defaultMode->width, defaultMode->height );
 		mode = 0;
 	}
 
@@ -1271,7 +1405,10 @@ static bool R_GetModeInfo( int *width, int *height, int mode ) {
 		return true;
 	}
 
-	vm = &r_vidModes[mode];
+	vm = R_FindVidModeByMode( mode );
+	if ( vm == NULL ) {
+		vm = R_DefaultVidMode();
+	}
 
 	if ( width ) {
 		*width  = vm->width;
@@ -1327,9 +1464,10 @@ static void R_NormalizeDisplayCvars( void ) {
 	if ( normalizedMode < -2 ) {
 		common->Printf( "^3R_GetModeInfo: r_mode %d is invalid, using custom mode (-1)\n", normalizedMode );
 		normalizedMode = -1;
-	} else if ( normalizedMode >= s_numVidModes ) {
+	} else if ( normalizedMode >= 0 && R_FindVidModeByMode( normalizedMode ) == NULL ) {
+		const vidmode_t *defaultMode = R_DefaultVidMode();
 		common->Printf( "^3R_GetModeInfo: r_mode %d out of range, using mode 0 (%dx%d)\n",
-			normalizedMode, r_vidModes[0].width, r_vidModes[0].height );
+			normalizedMode, defaultMode->width, defaultMode->height );
 		normalizedMode = 0;
 	}
 
@@ -1449,19 +1587,23 @@ void R_InitOpenGL( void ) {
 	Sys_InitInput();
 	//soundSystem->Init();
 
+	if ( !GLimp_EnsureActiveContext( "OpenGL startup string query" ) ) {
+		common->FatalError( "Unable to make OpenGL context current after window creation\n" );
+	}
+
 	// get our config strings
 	glConfig.vendor_string = (const char *)glGetString(GL_VENDOR);
 	glConfig.renderer_string = (const char *)glGetString(GL_RENDERER);
 	glConfig.version_string = (const char *)glGetString(GL_VERSION);
 	glConfig.extensions_string = (const char *)glGetString(GL_EXTENSIONS);
+	if ( glConfig.version_string == NULL ) {
+		common->FatalError( "OpenGL context did not report GL_VERSION after window creation; context may not be current\n" );
+	}
 	if ( glConfig.vendor_string == NULL ) {
 		glConfig.vendor_string = "unknown";
 	}
 	if ( glConfig.renderer_string == NULL ) {
 		glConfig.renderer_string = "unknown";
-	}
-	if ( glConfig.version_string == NULL ) {
-		glConfig.version_string = "0.0";
 	}
 	if ( glConfig.extensions_string == NULL ) {
 		glConfig.extensions_string = "";
@@ -1669,7 +1811,12 @@ static void R_ListModes_f( const idCmdArgs &args ) {
 
 	common->Printf( "\n" );
 	for ( i = 0; i < s_numVidModes; i++ ) {
-		common->Printf( "%s\n", r_vidModes[i].description );
+		const idStr aspect = R_ModeAspectRatioLabel( r_vidModes[i].width, r_vidModes[i].height );
+		if ( aspect.Length() > 0 ) {
+			common->Printf( "Mode %2d: %dx%d (%s)\n", r_vidModes[i].mode, r_vidModes[i].width, r_vidModes[i].height, aspect.c_str() );
+		} else {
+			common->Printf( "Mode %2d: %dx%d\n", r_vidModes[i].mode, r_vidModes[i].width, r_vidModes[i].height );
+		}
 	}
 	common->Printf( "Mode -2: native desktop resolution\n" );
 	common->Printf( "Mode -1: custom fullscreen using r_customWidth / r_customHeight\n" );
@@ -3734,8 +3881,6 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererBenchmarkCapture", R_RendererBenchmarkCapture_f, CMD_FL_RENDERER, "print the latest renderer benchmark capture summary" );
 	cmdSystem->AddCommand( "rendererUploadSelfTest", R_RendererUploadSelfTest_f, CMD_FL_RENDERER, "run renderer upload stream self tests" );
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
-	cmdSystem->AddCommand( "rendererLensFlareSettingsSelfTest", R_RendererLensFlareSettingsSelfTest_f, CMD_FL_RENDERER, "run renderer lens-flare settings self tests" );
-	cmdSystem->AddCommand( "rendererLensFlareRuntimeSelfTest", R_RendererLensFlareRuntimeSelfTest_f, CMD_FL_RENDERER, "run renderer lens-flare accumulation and composite self tests" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphSelfTest", R_RendererRenderGraphSelfTest_f, CMD_FL_RENDERER, "run renderer resource-graph self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceSelfTest", R_RendererRenderGraphResourceSelfTest_f, CMD_FL_RENDERER, "run renderer graph resource owner self tests" );

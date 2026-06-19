@@ -3,7 +3,6 @@
 
 #include "tr_local.h"
 #include "ScenePackets.h"
-#include "LensFlareSettings.h"
 #include "RendererBootstrap.h"
 
 static idScenePacketFrame rg_frontEndScenePacketFrame;
@@ -298,7 +297,6 @@ static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t
 	}
 	if ( passCategory == RENDER_PASS_SSAO
 		|| passCategory == RENDER_PASS_MOTION_BLUR
-		|| passCategory == RENDER_PASS_LENS_FLARE
 		|| passCategory == RENDER_PASS_BLOOM
 		|| passCategory == RENDER_PASS_AUTHORED_POST ) {
 		return SCENE_PACKET_CATEGORY_POST_PROCESS;
@@ -336,7 +334,6 @@ static scenePacketCategory_t R_ScenePackets_CategoryForCommandPass( renderPassCa
 		return SCENE_PACKET_CATEGORY_SPECIAL_EFFECTS;
 	case RENDER_PASS_SSAO:
 	case RENDER_PASS_MOTION_BLUR:
-	case RENDER_PASS_LENS_FLARE:
 	case RENDER_PASS_BLOOM:
 	case RENDER_PASS_AUTHORED_POST:
 		return SCENE_PACKET_CATEGORY_POST_PROCESS;
@@ -964,8 +961,6 @@ const char *RenderPassCategory_Name( renderPassCategory_t category ) {
 		return "ssao";
 	case RENDER_PASS_MOTION_BLUR:
 		return "motionBlur";
-	case RENDER_PASS_LENS_FLARE:
-		return "lensFlare";
 	case RENDER_PASS_BLOOM:
 		return "bloom";
 	case RENDER_PASS_AUTHORED_POST:
@@ -1601,18 +1596,6 @@ static bool R_ScenePackets_PostProcessPassRequested( const viewDef_t *viewDef, r
 	}
 
 	switch ( category ) {
-	case RENDER_PASS_LENS_FLARE: {
-		const int viewportWidth = viewDef != NULL ? viewDef->viewport.x2 - viewDef->viewport.x1 + 1 : 0;
-		const int viewportHeight = viewDef != NULL ? viewDef->viewport.y2 - viewDef->viewport.y1 + 1 : 0;
-		const rendererLensFlareSettings_t settings = RendererLensFlareSettings_Build(
-			r_lensFlare.GetInteger(),
-			glConfig.backendCaps,
-			r_skipPostProcess.GetBool(),
-			mainPostView,
-			viewportWidth,
-			viewportHeight );
-		return settings.enabled;
-	}
 	case RENDER_PASS_SSAO:
 		if ( !glConfig.GLSLProgramAvailable ) {
 			return false;
@@ -1642,7 +1625,6 @@ static void R_ScenePackets_AddRootPostProcessPasses( idScenePacketFrame &packetF
 	static const renderPassCategory_t postPasses[] = {
 		RENDER_PASS_SSAO,
 		RENDER_PASS_MOTION_BLUR,
-		RENDER_PASS_LENS_FLARE,
 		RENDER_PASS_BLOOM
 	};
 
@@ -2019,17 +2001,12 @@ bool RendererScenePacket_RunSelfTest( void ) {
 		return false;
 	}
 	postPacketFrame.AddCommandPacket();
-	if ( !postPacketFrame.AddPass( RENDER_PASS_LENS_FLARE, true, true ) ) {
-		common->Printf( "RendererScenePacket self-test failed: could not add lens-flare post pass\n" );
-		return false;
-	}
-	postPacketFrame.AddCommandPacket();
 	if ( !postPacketFrame.AddPass( RENDER_PASS_BLOOM, true, true ) ) {
 		common->Printf( "RendererScenePacket self-test failed: could not add bloom post pass\n" );
 		return false;
 	}
 	const scenePacketFrameStats_t &postStats = postPacketFrame.Stats();
-	if ( postStats.scenePackets != 1 || postStats.passPackets != 2 || postStats.commandPackets != 2 || postStats.postProcessPackets != 2 || postStats.worldPackets != 0 || postStats.specialEffectPackets != 0 || postStats.presentPackets != 0 || postPacketFrame.Pass( 0 ).packetCategory != SCENE_PACKET_CATEGORY_POST_PROCESS || postPacketFrame.Pass( 1 ).packetCategory != SCENE_PACKET_CATEGORY_POST_PROCESS ) {
+	if ( postStats.scenePackets != 1 || postStats.passPackets != 1 || postStats.commandPackets != 1 || postStats.postProcessPackets != 1 || postStats.worldPackets != 0 || postStats.specialEffectPackets != 0 || postStats.presentPackets != 0 || postPacketFrame.Pass( 0 ).packetCategory != SCENE_PACKET_CATEGORY_POST_PROCESS ) {
 		common->Printf(
 			"RendererScenePacket self-test failed: post command categorization scenes=%d passes=%d cmds=%d post=%d world=%d special=%d present=%d pass0=%s pass1=%s\n",
 			postStats.scenePackets,
@@ -2040,7 +2017,7 @@ bool RendererScenePacket_RunSelfTest( void ) {
 			postStats.specialEffectPackets,
 			postStats.presentPackets,
 			ScenePacketCategory_Name( postPacketFrame.Pass( 0 ).packetCategory ),
-			ScenePacketCategory_Name( postPacketFrame.Pass( 1 ).packetCategory ) );
+			"none" );
 		return false;
 	}
 

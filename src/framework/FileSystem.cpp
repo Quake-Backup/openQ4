@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "Unzip.h"
+#include "openq4_pak0_generated.h"
 
 #ifdef WIN32
 	#include <windows.h>
@@ -1123,6 +1124,12 @@ private:
 	idStr				extension;
 };
 
+typedef enum modManifestStatus_s {
+	MOD_MANIFEST_MISSING,
+	MOD_MANIFEST_VALID,
+	MOD_MANIFEST_INVALID
+} modManifestStatus_t;
+
 class idFileSystemLocal : public idFileSystem {
 public:
 							idFileSystemLocal( void );
@@ -1280,9 +1287,11 @@ private:
 	void					SetupGameDirectories( const char *gameName );
 	bool					IsGameDirPack( const pack_t *pak, const char *gameDir ) const;
 	bool					IsBaseGamePack( const pack_t *pak ) const;
+	bool					IsOpenQ4PurePack( const pack_t *pak ) const;
 	pack_t *				FindGamePackByName( const char *name, const char *gameDir ) const;
 	pack_t *				FindBaseGamePackByName( const char *name ) const;
 	bool					FindMisplacedOfficialPaks( idStr &errors ) const;
+	bool					ValidateOpenQ4Pak0( idStr &errors ) const;
 	bool					ValidateRequiredOfficialPaks( idStr &errors ) const;
 	void					Startup( void );
 	void					SetRestrictions( void );
@@ -1297,8 +1306,8 @@ private:
 	pureStatus_t			GetPackStatus( pack_t *pak );
 	addonInfo_t *			ParseAddonDef( const char *buf, const int len );
 	void					FollowAddonDependencies( pack_t *pak );
-	bool					ReadModManifestFromSearchPath( const char *searchPath, const char *modDir, idModInfo &modInfo, idStr *reason = NULL );
-	bool					ReadModManifestFile( const char *manifestPath, idModInfo &modInfo, idStr *reason = NULL );
+	modManifestStatus_t		ReadModManifestFromSearchPath( const char *searchPath, const char *modDir, idModInfo &modInfo, idStr *reason = NULL );
+	modManifestStatus_t		ReadModManifestFile( const char *manifestPath, idModInfo &modInfo, idStr *reason = NULL );
 	bool					ValidateConfiguredGameDir( const char *gameDir, idStr *reason = NULL );
 	bool					NormalizeMapPath( const char *mapName, idStr &relativePath ) const;
 	bool					AddonPackProvidesMap( const pack_t *pak, const char *relativeMapPath ) const;
@@ -2900,6 +2909,132 @@ static const char *FS_SkipJsonWhitespace( const char *cursor ) {
 
 /*
 ===============
+FS_IsJsonHexDigit
+===============
+*/
+static bool FS_IsJsonHexDigit( const char c ) {
+	return ( c >= '0' && c <= '9' ) ||
+		   ( c >= 'a' && c <= 'f' ) ||
+		   ( c >= 'A' && c <= 'F' );
+}
+
+/*
+===============
+FS_JsonHexValue
+===============
+*/
+static int FS_JsonHexValue( const char c ) {
+	if ( c >= '0' && c <= '9' ) {
+		return c - '0';
+	}
+	if ( c >= 'a' && c <= 'f' ) {
+		return 10 + c - 'a';
+	}
+	if ( c >= 'A' && c <= 'F' ) {
+		return 10 + c - 'A';
+	}
+	return -1;
+}
+
+/*
+===============
+FS_AppendJsonCodePoint
+===============
+*/
+static bool FS_AppendJsonCodePoint( idStr &value, const unsigned int codePoint, idStr &errorOut ) {
+	if ( codePoint == 0 ) {
+		errorOut = "NUL characters are not supported in JSON strings";
+		return false;
+	}
+
+	if ( codePoint <= 0x7F ) {
+		value += static_cast<char>( codePoint );
+		return true;
+	}
+
+	char utf8[ 4 ];
+	int utf8Length = 0;
+	if ( codePoint <= 0x7FF ) {
+		utf8[ 0 ] = static_cast<char>( 0xC0 | ( codePoint >> 6 ) );
+		utf8[ 1 ] = static_cast<char>( 0x80 | ( codePoint & 0x3F ) );
+		utf8Length = 2;
+	} else if ( codePoint <= 0xFFFF ) {
+		utf8[ 0 ] = static_cast<char>( 0xE0 | ( codePoint >> 12 ) );
+		utf8[ 1 ] = static_cast<char>( 0x80 | ( ( codePoint >> 6 ) & 0x3F ) );
+		utf8[ 2 ] = static_cast<char>( 0x80 | ( codePoint & 0x3F ) );
+		utf8Length = 3;
+	} else if ( codePoint <= 0x10FFFF ) {
+		utf8[ 0 ] = static_cast<char>( 0xF0 | ( codePoint >> 18 ) );
+		utf8[ 1 ] = static_cast<char>( 0x80 | ( ( codePoint >> 12 ) & 0x3F ) );
+		utf8[ 2 ] = static_cast<char>( 0x80 | ( ( codePoint >> 6 ) & 0x3F ) );
+		utf8[ 3 ] = static_cast<char>( 0x80 | ( codePoint & 0x3F ) );
+		utf8Length = 4;
+	} else {
+		errorOut = "JSON unicode escape is outside the valid Unicode range";
+		return false;
+	}
+
+	value.Append( utf8, utf8Length );
+	return true;
+}
+
+/*
+===============
+FS_ParseJsonHex4
+===============
+*/
+static bool FS_ParseJsonHex4( const char *&cursor, unsigned int &codePoint, idStr &errorOut ) {
+	codePoint = 0;
+	for ( int i = 0; i < 4; ++i ) {
+		if ( cursor == NULL || !FS_IsJsonHexDigit( *cursor ) ) {
+			errorOut = "invalid JSON unicode escape";
+			return false;
+		}
+		codePoint = ( codePoint << 4 ) | FS_JsonHexValue( *cursor );
+		++cursor;
+	}
+
+	return true;
+}
+
+/*
+===============
+FS_ParseJsonUnicodeEscape
+===============
+*/
+static bool FS_ParseJsonUnicodeEscape( const char *&cursor, idStr &value, idStr &errorOut ) {
+	unsigned int codePoint = 0;
+	if ( !FS_ParseJsonHex4( cursor, codePoint, errorOut ) ) {
+		return false;
+	}
+
+	if ( codePoint >= 0xD800 && codePoint <= 0xDBFF ) {
+		if ( cursor == NULL || cursor[ 0 ] != '\\' || cursor[ 1 ] != 'u' ) {
+			errorOut = "high surrogate JSON unicode escape is missing a low surrogate";
+			return false;
+		}
+		cursor += 2;
+
+		unsigned int lowSurrogate = 0;
+		if ( !FS_ParseJsonHex4( cursor, lowSurrogate, errorOut ) ) {
+			return false;
+		}
+		if ( lowSurrogate < 0xDC00 || lowSurrogate > 0xDFFF ) {
+			errorOut = "high surrogate JSON unicode escape is not followed by a low surrogate";
+			return false;
+		}
+
+		codePoint = 0x10000 + ( ( codePoint - 0xD800 ) << 10 ) + ( lowSurrogate - 0xDC00 );
+	} else if ( codePoint >= 0xDC00 && codePoint <= 0xDFFF ) {
+		errorOut = "low surrogate JSON unicode escape appears without a high surrogate";
+		return false;
+	}
+
+	return FS_AppendJsonCodePoint( value, codePoint, errorOut );
+}
+
+/*
+===============
 FS_ParseJsonString
 ===============
 */
@@ -2931,29 +3066,45 @@ static bool FS_ParseJsonString( const char *&cursor, idStr &value, idStr &errorO
 				case '\\':
 				case '/':
 					value += *cursor;
+					++cursor;
 					break;
 				case 'b':
 					value += '\b';
+					++cursor;
 					break;
 				case 'f':
 					value += '\f';
+					++cursor;
 					break;
 				case 'n':
 					value += '\n';
+					++cursor;
 					break;
 				case 'r':
 					value += '\r';
+					++cursor;
 					break;
 				case 't':
 					value += '\t';
+					++cursor;
+					break;
+				case 'u':
+					++cursor;
+					if ( !FS_ParseJsonUnicodeEscape( cursor, value, errorOut ) ) {
+						return false;
+					}
 					break;
 				default:
 					errorOut = va( "unsupported JSON escape '\\%c'", *cursor );
 					return false;
 			}
 
-			++cursor;
 			continue;
+		}
+
+		if ( static_cast<unsigned char>( *cursor ) < 0x20 ) {
+			errorOut = "unescaped control character in JSON string";
+			return false;
 		}
 
 		value += *cursor;
@@ -2962,6 +3113,224 @@ static bool FS_ParseJsonString( const char *&cursor, idStr &value, idStr &errorO
 
 	errorOut = "unterminated JSON string";
 	return false;
+}
+
+static bool FS_SkipJsonValue( const char *&cursor, idStr &errorOut );
+
+/*
+===============
+FS_SkipJsonLiteral
+===============
+*/
+static bool FS_SkipJsonLiteral( const char *&cursor, const char *literal, idStr &errorOut ) {
+	const char *scan = cursor;
+	for ( const char *expected = literal; *expected != '\0'; ++expected, ++scan ) {
+		if ( scan == NULL || *scan != *expected ) {
+			errorOut = va( "expected JSON literal '%s'", literal );
+			return false;
+		}
+	}
+
+	cursor = scan;
+	return true;
+}
+
+/*
+===============
+FS_SkipJsonNumber
+===============
+*/
+static bool FS_SkipJsonNumber( const char *&cursor, idStr &errorOut ) {
+	const char *scan = cursor;
+	if ( *scan == '-' ) {
+		++scan;
+	}
+
+	if ( *scan == '0' ) {
+		++scan;
+	} else if ( *scan >= '1' && *scan <= '9' ) {
+		do {
+			++scan;
+		} while ( *scan >= '0' && *scan <= '9' );
+	} else {
+		errorOut = "invalid JSON number";
+		return false;
+	}
+
+	if ( *scan == '.' ) {
+		++scan;
+		if ( *scan < '0' || *scan > '9' ) {
+			errorOut = "invalid JSON number fraction";
+			return false;
+		}
+		do {
+			++scan;
+		} while ( *scan >= '0' && *scan <= '9' );
+	}
+
+	if ( *scan == 'e' || *scan == 'E' ) {
+		++scan;
+		if ( *scan == '+' || *scan == '-' ) {
+			++scan;
+		}
+		if ( *scan < '0' || *scan > '9' ) {
+			errorOut = "invalid JSON number exponent";
+			return false;
+		}
+		do {
+			++scan;
+		} while ( *scan >= '0' && *scan <= '9' );
+	}
+
+	cursor = scan;
+	return true;
+}
+
+/*
+===============
+FS_SkipJsonArray
+===============
+*/
+static bool FS_SkipJsonArray( const char *&cursor, idStr &errorOut ) {
+	++cursor;
+	cursor = FS_SkipJsonWhitespace( cursor );
+	if ( cursor == NULL ) {
+		errorOut = "unterminated JSON array";
+		return false;
+	}
+	if ( *cursor == ']' ) {
+		++cursor;
+		return true;
+	}
+
+	while ( true ) {
+		if ( !FS_SkipJsonValue( cursor, errorOut ) ) {
+			return false;
+		}
+
+		cursor = FS_SkipJsonWhitespace( cursor );
+		if ( cursor == NULL || *cursor == '\0' ) {
+			errorOut = "unterminated JSON array";
+			return false;
+		}
+		if ( *cursor == ',' ) {
+			++cursor;
+			continue;
+		}
+		if ( *cursor == ']' ) {
+			++cursor;
+			return true;
+		}
+
+		errorOut = "expected ',' or ']' after JSON array value";
+		return false;
+	}
+}
+
+/*
+===============
+FS_SkipJsonObject
+===============
+*/
+static bool FS_SkipJsonObject( const char *&cursor, idStr &errorOut ) {
+	++cursor;
+	cursor = FS_SkipJsonWhitespace( cursor );
+	if ( cursor == NULL ) {
+		errorOut = "unterminated JSON object";
+		return false;
+	}
+	if ( *cursor == '}' ) {
+		++cursor;
+		return true;
+	}
+
+	while ( true ) {
+		idStr key;
+		if ( !FS_ParseJsonString( cursor, key, errorOut ) ) {
+			return false;
+		}
+
+		cursor = FS_SkipJsonWhitespace( cursor );
+		if ( cursor == NULL || *cursor != ':' ) {
+			errorOut = "missing ':' after JSON object key";
+			return false;
+		}
+		++cursor;
+
+		if ( !FS_SkipJsonValue( cursor, errorOut ) ) {
+			return false;
+		}
+
+		cursor = FS_SkipJsonWhitespace( cursor );
+		if ( cursor == NULL || *cursor == '\0' ) {
+			errorOut = "unterminated JSON object";
+			return false;
+		}
+		if ( *cursor == ',' ) {
+			++cursor;
+			continue;
+		}
+		if ( *cursor == '}' ) {
+			++cursor;
+			return true;
+		}
+
+		errorOut = "expected ',' or '}' after JSON object value";
+		return false;
+	}
+}
+
+/*
+===============
+FS_SkipJsonValue
+===============
+*/
+static bool FS_SkipJsonValue( const char *&cursor, idStr &errorOut ) {
+	cursor = FS_SkipJsonWhitespace( cursor );
+	if ( cursor == NULL || *cursor == '\0' ) {
+		errorOut = "expected JSON value";
+		return false;
+	}
+
+	if ( *cursor == '"' ) {
+		idStr ignored;
+		return FS_ParseJsonString( cursor, ignored, errorOut );
+	}
+	if ( *cursor == '{' ) {
+		return FS_SkipJsonObject( cursor, errorOut );
+	}
+	if ( *cursor == '[' ) {
+		return FS_SkipJsonArray( cursor, errorOut );
+	}
+	if ( *cursor == 't' ) {
+		return FS_SkipJsonLiteral( cursor, "true", errorOut );
+	}
+	if ( *cursor == 'f' ) {
+		return FS_SkipJsonLiteral( cursor, "false", errorOut );
+	}
+	if ( *cursor == 'n' ) {
+		return FS_SkipJsonLiteral( cursor, "null", errorOut );
+	}
+	if ( *cursor == '-' || ( *cursor >= '0' && *cursor <= '9' ) ) {
+		return FS_SkipJsonNumber( cursor, errorOut );
+	}
+
+	errorOut = "expected JSON value";
+	return false;
+}
+
+/*
+===============
+FS_ModManifestKeyIsKnown
+===============
+*/
+static bool FS_ModManifestKeyIsKnown( const idStr &key ) {
+	return !key.Icmp( "name" ) ||
+		   !key.Icmp( "version" ) ||
+		   !key.Icmp( "releaseDate" ) ||
+		   !key.Icmp( "website" ) ||
+		   !key.Icmp( "author" ) ||
+		   !key.Icmp( "requiredopenQ4Version" );
 }
 
 /*
@@ -3112,28 +3481,47 @@ static bool FS_ParseModManifest( const char *jsonText, idModInfo &modInfo, idStr
 		}
 		++cursor;
 
-		if ( !FS_ParseJsonString( cursor, value, errorOut ) ) {
+		if ( FS_ModManifestKeyIsKnown( key ) ) {
+			cursor = FS_SkipJsonWhitespace( cursor );
+			if ( cursor == NULL || *cursor != '"' ) {
+				errorOut = va( "field '%s' must be a JSON string", key.c_str() );
+				return false;
+			}
+			if ( !FS_ParseJsonString( cursor, value, errorOut ) ) {
+				errorOut = va( "invalid value for '%s': %s", key.c_str(), errorOut.c_str() );
+				return false;
+			}
+
+			if ( !key.Icmp( "name" ) ) {
+				modInfo.displayName = value;
+			} else if ( !key.Icmp( "version" ) ) {
+				modInfo.version = value;
+			} else if ( !key.Icmp( "releaseDate" ) ) {
+				modInfo.releaseDate = value;
+			} else if ( !key.Icmp( "website" ) ) {
+				modInfo.website = value;
+			} else if ( !key.Icmp( "author" ) ) {
+				modInfo.author = value;
+			} else if ( !key.Icmp( "requiredopenQ4Version" ) ) {
+				modInfo.requiredopenQ4Version = value;
+			}
+		} else if ( !FS_SkipJsonValue( cursor, errorOut ) ) {
 			errorOut = va( "invalid value for '%s': %s", key.c_str(), errorOut.c_str() );
 			return false;
-		}
-
-		if ( !key.Icmp( "name" ) ) {
-			modInfo.displayName = value;
-		} else if ( !key.Icmp( "version" ) ) {
-			modInfo.version = value;
-		} else if ( !key.Icmp( "releaseDate" ) ) {
-			modInfo.releaseDate = value;
-		} else if ( !key.Icmp( "website" ) ) {
-			modInfo.website = value;
-		} else if ( !key.Icmp( "author" ) ) {
-			modInfo.author = value;
-		} else if ( !key.Icmp( "requiredopenQ4Version" ) ) {
-			modInfo.requiredopenQ4Version = value;
 		}
 
 		cursor = FS_SkipJsonWhitespace( cursor );
 		if ( *cursor == ',' ) {
 			++cursor;
+			cursor = FS_SkipJsonWhitespace( cursor );
+			if ( cursor == NULL || *cursor == '\0' ) {
+				errorOut = "manifest ended after trailing comma";
+				return false;
+			}
+			if ( *cursor == '}' ) {
+				errorOut = "trailing comma before closing '}'";
+				return false;
+			}
 			continue;
 		}
 		if ( *cursor == '}' ) {
@@ -3146,6 +3534,12 @@ static bool FS_ParseModManifest( const char *jsonText, idModInfo &modInfo, idStr
 		}
 
 		errorOut = "expected ',' or '}' after manifest value";
+		return false;
+	}
+
+	cursor = FS_SkipJsonWhitespace( cursor );
+	if ( cursor == NULL || *cursor != '\0' ) {
+		errorOut = "unexpected data after manifest object";
 		return false;
 	}
 
@@ -3222,10 +3616,14 @@ idModList *idFileSystemLocal::ListMods( void ) {
 
 			idModInfo modInfo;
 			idStr reason;
-			if ( ReadModManifestFromSearchPath( search[ isearch ], dirs[ i ], modInfo, &reason ) ) {
+			const modManifestStatus_t manifestStatus = ReadModManifestFromSearchPath( search[ isearch ], dirs[ i ], modInfo, &reason );
+			if ( manifestStatus == MOD_MANIFEST_VALID ) {
 				list->mods.Append( modInfo );
-			} else if ( reason.Length() ) {
-				common->DWarning( "Skipping mod '%s': %s", dirs[ i ].c_str(), reason.c_str() );
+				continue;
+			}
+
+			if ( manifestStatus == MOD_MANIFEST_INVALID && reason.Length() ) {
+				common->Warning( "Skipping mod '%s': %s", dirs[ i ].c_str(), reason.c_str() );
 			}
 		}
 	}
@@ -3240,14 +3638,14 @@ idModList *idFileSystemLocal::ListMods( void ) {
 idFileSystemLocal::ReadModManifestFile
 ===============
 */
-bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo &modInfo, idStr *reason ) {
+modManifestStatus_t idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo &modInfo, idStr *reason ) {
 	if ( reason != NULL ) {
 		reason->Clear();
 	}
 
 	FILE *file = OpenOSFile( manifestPath, "rb" );
 	if ( file == NULL ) {
-		return false;
+		return MOD_MANIFEST_MISSING;
 	}
 
 	const int length = DirectFileLength( file );
@@ -3256,7 +3654,7 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 			*reason = va( "manifest '%s' is empty", manifestPath );
 		}
 		fclose( file );
-		return false;
+		return MOD_MANIFEST_INVALID;
 	}
 
 	idList<char> buffer;
@@ -3269,7 +3667,7 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 		if ( reason != NULL ) {
 			*reason = va( "failed to read manifest '%s'", manifestPath );
 		}
-		return false;
+		return MOD_MANIFEST_INVALID;
 	}
 
 	idStr parseError;
@@ -3277,7 +3675,7 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 		if ( reason != NULL ) {
 			*reason = va( "%s: %s", manifestPath, parseError.c_str() );
 		}
-		return false;
+		return MOD_MANIFEST_INVALID;
 	}
 
 	openQ4BaseVersion_t requiredVersion;
@@ -3288,7 +3686,7 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 				modInfo.displayName.c_str(),
 				modInfo.requiredopenQ4Version.c_str() );
 		}
-		return false;
+		return MOD_MANIFEST_INVALID;
 	}
 
 	openQ4BaseVersion_t engineVersion;
@@ -3296,7 +3694,7 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 		if ( reason != NULL ) {
 			*reason = va( "this build has invalid openQ4 version '%s'", OPENQ4_VERSION_BASE );
 		}
-		return false;
+		return MOD_MANIFEST_INVALID;
 	}
 
 	if ( FS_CompareopenQ4BaseVersions( engineVersion, requiredVersion ) < 0 ) {
@@ -3307,10 +3705,10 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 				modInfo.requiredopenQ4Version.c_str(),
 				OPENQ4_VERSION_BASE );
 		}
-		return false;
+		return MOD_MANIFEST_INVALID;
 	}
 
-	return true;
+	return MOD_MANIFEST_VALID;
 }
 
 /*
@@ -3318,21 +3716,22 @@ bool idFileSystemLocal::ReadModManifestFile( const char *manifestPath, idModInfo
 idFileSystemLocal::ReadModManifestFromSearchPath
 ===============
 */
-bool idFileSystemLocal::ReadModManifestFromSearchPath( const char *searchPath, const char *modDir, idModInfo &modInfo, idStr *reason ) {
+modManifestStatus_t idFileSystemLocal::ReadModManifestFromSearchPath( const char *searchPath, const char *modDir, idModInfo &modInfo, idStr *reason ) {
 	if ( !searchPath || !searchPath[ 0 ] || !modDir || !modDir[ 0 ] ) {
 		if ( reason != NULL ) {
 			reason->Clear();
 		}
-		return false;
+		return MOD_MANIFEST_MISSING;
 	}
 
 	const idStr manifestPath = BuildOSPath( searchPath, modDir, OPENQ4_MOD_MANIFEST_FILENAME );
-	if ( !ReadModManifestFile( manifestPath.c_str(), modInfo, reason ) ) {
-		return false;
+	const modManifestStatus_t status = ReadModManifestFile( manifestPath.c_str(), modInfo, reason );
+	if ( status != MOD_MANIFEST_VALID ) {
+		return status;
 	}
 
 	modInfo.directory = modDir;
-	return true;
+	return MOD_MANIFEST_VALID;
 }
 
 /*
@@ -3360,10 +3759,11 @@ bool idFileSystemLocal::GetModInfo( const char *modDir, idModInfo &modInfo, idSt
 	idStr failureReason;
 	for ( int i = 0; i < 3; ++i ) {
 		idStr localReason;
-		if ( ReadModManifestFromSearchPath( search[ i ], modDir, modInfo, &localReason ) ) {
+		const modManifestStatus_t status = ReadModManifestFromSearchPath( search[ i ], modDir, modInfo, &localReason );
+		if ( status == MOD_MANIFEST_VALID ) {
 			return true;
 		}
-		if ( localReason.Length() ) {
+		if ( status == MOD_MANIFEST_INVALID && localReason.Length() ) {
 			failureReason = localReason;
 		}
 	}
@@ -4067,6 +4467,22 @@ bool idFileSystemLocal::IsBaseGamePack( const pack_t *pak ) const {
 
 /*
 ================
+idFileSystemLocal::IsOpenQ4PurePack
+================
+*/
+bool idFileSystemLocal::IsOpenQ4PurePack( const pack_t *pak ) const {
+	idStr name;
+
+	if ( !IsGameDirPack( pak, OPENQ4_GAMEDIR ) ) {
+		return false;
+	}
+
+	pak->pakFilename.ExtractFileName( name );
+	return !name.Icmp( "pak0.pk4" );
+}
+
+/*
+================
 idFileSystemLocal::FindGamePackByName
 ================
 */
@@ -4109,21 +4525,64 @@ bool idFileSystemLocal::FindMisplacedOfficialPaks( idStr &errors ) const {
 	for ( int i = 0; officialPk4s[ i ].name != NULL; i++ ) {
 		info = &officialPk4s[ i ];
 		basePack = FindGamePackByName( info->name, BASE_GAMEDIR );
-		if ( basePack ) {
-			continue;
-		}
 		openQ4Pack = FindGamePackByName( info->name, OPENQ4_GAMEDIR );
 		if ( !openQ4Pack ) {
 			continue;
 		}
+
 		if ( (unsigned int)openQ4Pack->checksum != info->checksum ) {
+			errors += va( "%s was found in %s with checksum 0x%08x but belongs in %s (expected 0x%08x from %s)\n",
+				info->name, OPENQ4_GAMEDIR, (unsigned int)openQ4Pack->checksum, BASE_GAMEDIR,
+				info->checksum, openQ4Pack->pakFilename.c_str() );
 			continue;
 		}
-		errors += va( "%s was found in %s but is missing from %s (%s)\n",
-			info->name, OPENQ4_GAMEDIR, BASE_GAMEDIR, openQ4Pack->pakFilename.c_str() );
+
+		if ( basePack ) {
+			errors += va( "%s was found in both %s and %s; remove the copy from %s (%s)\n",
+				info->name, BASE_GAMEDIR, OPENQ4_GAMEDIR, OPENQ4_GAMEDIR, openQ4Pack->pakFilename.c_str() );
+		} else {
+			errors += va( "%s was found in %s but belongs in %s (%s)\n",
+				info->name, OPENQ4_GAMEDIR, BASE_GAMEDIR, openQ4Pack->pakFilename.c_str() );
+		}
 	}
 
 	return ( errors.Length() != 0 );
+}
+
+/*
+================
+idFileSystemLocal::ValidateOpenQ4Pak0
+================
+*/
+bool idFileSystemLocal::ValidateOpenQ4Pak0( idStr &errors ) const {
+	pack_t		*pack;
+	char		actualMD5[33];
+
+	errors.Clear();
+
+	if ( idStr::Icmp( fs_game.GetString(), OPENQ4_GAMEDIR ) &&
+		 idStr::Icmp( fs_game_base.GetString(), OPENQ4_GAMEDIR ) ) {
+		return true;
+	}
+
+	pack = FindGamePackByName( "pak0.pk4", OPENQ4_GAMEDIR );
+	if ( !pack ) {
+		errors += va( "missing %s/pak0.pk4 (expected checksum %s)\n", OPENQ4_GAMEDIR, OPENQ4_PAK0_MD5 );
+		return false;
+	}
+
+	if ( !MD5_FileChecksum( pack->pakFilename.c_str(), actualMD5 ) ) {
+		errors += va( "could not read %s for checksum validation\n", pack->pakFilename.c_str() );
+		return false;
+	}
+
+	if ( idStr::Icmp( actualMD5, OPENQ4_PAK0_MD5 ) ) {
+		errors += va( "checksum mismatch for %s/pak0.pk4 (expected %s, got %s from %s)\n",
+			OPENQ4_GAMEDIR, OPENQ4_PAK0_MD5, actualMD5, pack->pakFilename.c_str() );
+		return false;
+	}
+
+	return true;
 }
 
 /*
@@ -4220,7 +4679,10 @@ void idFileSystemLocal::Startup( void ) {
 		 idStr::Icmp( fs_game.GetString(), BASE_GAMEDIR ) &&
 		 !ValidateConfiguredGameDir( fs_game.GetString(), &invalidReason ) ) {
 		if ( !idStr::Icmp( fs_game.GetString(), OPENQ4_GAMEDIR ) ) {
-			common->FatalError( "Required openQ4 mod manifest for '%s' is missing or incompatible: %s", fs_game.GetString(), invalidReason.c_str() );
+			common->FatalError(
+				"openQ4 runtime directory '%s' is missing a compatible mod.json.\n\n%s\n"
+				"Rebuild or reinstall openQ4 so '<openQ4 package root>/%s/mod.json' is present and matches this engine version. Do not replace '%s' with retail Quake 4 assets.",
+				fs_game.GetString(), invalidReason.c_str(), OPENQ4_GAMEDIR, OPENQ4_GAMEDIR );
 		}
 
 		common->Warning( "Ignoring fs_game '%s': %s", fs_game.GetString(), invalidReason.c_str() );
@@ -4253,21 +4715,31 @@ void idFileSystemLocal::Startup( void ) {
 		SetupGameDirectories( fs_game.GetString() );
 	}
 
+	idStr openQ4Pak0Errors;
+	if ( !ValidateOpenQ4Pak0( openQ4Pak0Errors ) ) {
+		common->FatalError(
+			"openQ4 runtime content '%s/pak0.pk4' is missing or modified.\n\n%s\n"
+			"Rebuild or reinstall openQ4 so '<openQ4 package root>/%s/pak0.pk4' matches this engine. Retail Quake 4 PK4s belong in '%s', not '%s'.",
+			OPENQ4_GAMEDIR, openQ4Pak0Errors.c_str(), OPENQ4_GAMEDIR, BASE_GAMEDIR, OPENQ4_GAMEDIR );
+	}
+
 	if ( fs_validateOfficialPaks.GetBool() ) {
 		idStr misplacedErrors;
 		if ( FindMisplacedOfficialPaks( misplacedErrors ) ) {
 			common->FatalError(
-				"Official Quake 4 media pk4 files were found in the wrong game directory.\n\n%s\n"
-				"Move the listed files from '%s' to '%s'. Retail Quake 4 assets must live in '%s'; '%s' is reserved for openQ4 runtime content.",
-				misplacedErrors.c_str(), OPENQ4_GAMEDIR, BASE_GAMEDIR, BASE_GAMEDIR, OPENQ4_GAMEDIR );
+				"Retail Quake 4 media pk4 files must be installed in '%s', not '%s'.\n\n%s\n"
+				"Move the listed files into '<Quake 4 install root>/%s', or remove them from '%s' and launch with +set fs_basepath pointing at a Quake 4 install root that contains '%s'. "
+				"The '%s' directory is reserved for openQ4 runtime files such as pak0.pk4, mod.json, and game modules.",
+				BASE_GAMEDIR, OPENQ4_GAMEDIR, misplacedErrors.c_str(), BASE_GAMEDIR, OPENQ4_GAMEDIR, BASE_GAMEDIR, OPENQ4_GAMEDIR );
 		}
 
 		idStr validationErrors;
 		if ( !ValidateRequiredOfficialPaks( validationErrors ) ) {
 			common->FatalError(
-				"Required official Quake 4 media pk4 files are missing or modified.\n\n%s\n"
-				"Install/verify the original q4base assets and remove overrides from fs_savepath/fs_cdpath.",
-				validationErrors.c_str() );
+				"Required official Quake 4 media pk4 files are missing from '%s' or modified.\n\n%s\n"
+				"openQ4 reads the retail Quake 4 assets from '<Quake 4 install root>/%s'. Put pak001.pk4 through pak022.pk4 in that folder, or launch with +set fs_basepath pointing at the install root that contains it. "
+				"Do not put retail pk4 files in '%s'; that directory is reserved for openQ4 runtime files.",
+				BASE_GAMEDIR, validationErrors.c_str(), BASE_GAMEDIR, OPENQ4_GAMEDIR );
 		}
 	}
 
@@ -4925,7 +5397,10 @@ void idFileSystemLocal::Init( void ) {
 	// graphics screen when the font fails to load
 	// Dedicated servers can run with no outside files at all
 	if ( ReadFile( "default.cfg", NULL, NULL ) <= 0 ) {
-		common->FatalError( "Couldn't load default.cfg" );
+		common->FatalError(
+			"openQ4 startup config 'default.cfg' could not be loaded.\n\n"
+			"Rebuild or reinstall openQ4 so '%s/pak0.pk4' contains the runtime config files, and keep retail Quake 4 media PK4s in '%s'.",
+			OPENQ4_GAMEDIR, BASE_GAMEDIR );
 	}
 }
 
@@ -4947,7 +5422,10 @@ void idFileSystemLocal::Restart( void ) {
 	// busted and error out now, rather than getting an unreadable
 	// graphics screen when the font fails to load
 	if ( ReadFile( "default.cfg", NULL, NULL ) <= 0 ) {
-		common->FatalError( "Couldn't load default.cfg" );
+		common->FatalError(
+			"openQ4 startup config 'default.cfg' could not be loaded after filesystem restart.\n\n"
+			"Rebuild or reinstall openQ4 so '%s/pak0.pk4' contains the runtime config files, and keep retail Quake 4 media PK4s in '%s'.",
+			OPENQ4_GAMEDIR, BASE_GAMEDIR );
 	}
 }
 
@@ -5093,8 +5571,14 @@ pureStatus_t idFileSystemLocal::GetPackStatus( pack_t *pak ) {
 		return pak->pureStatus;
 	}
 
-	// Keep the stock Quake 4 base media in the pure list no matter their contents.
+	// Keep openQ4's canonical runtime pack in the pure list no matter its content mix.
 	pak->pakFilename.ExtractFileName( name );
+	if ( IsOpenQ4PurePack( pak ) ) {
+		pak->pureStatus = PURE_ALWAYS;
+		return PURE_ALWAYS;
+	}
+
+	// Keep the stock Quake 4 base media in the pure list no matter their contents.
 	officialInfo = FindOfficialPk4Info( name.c_str() );
 	if ( officialInfo && officialInfo->pureBase ) {
 		pak->pureStatus = PURE_ALWAYS;

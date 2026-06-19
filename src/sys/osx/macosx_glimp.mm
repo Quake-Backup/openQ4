@@ -76,6 +76,9 @@ bool Sys_GetDesktopResolution( int *width, int *height ) {
 	}
 
 	const CGDirectDisplayID display = Sys_DisplayToUse();
+	if ( display == 0 ) {
+		return false;
+	}
 	const int desktopWidth = static_cast<int>( CGDisplayPixelsWide( display ) );
 	const int desktopHeight = static_cast<int>( CGDisplayPixelsHigh( display ) );
 	if ( desktopWidth <= 0 || desktopHeight <= 0 ) {
@@ -94,6 +97,7 @@ bool Sys_GetDesktopResolution( int *width, int *height ) {
 @implementation NSOpenGLContext (CGLContextAccess)
 - (CGLContextObj) cglContext;
 {
+	return [self CGLContextObj];
 }
 @end
 
@@ -107,7 +111,7 @@ void CheckErrors( void ) {
 
 	err = glGetError();
 	if ( err != GL_NO_ERROR ) {
-		common->Error( "glGetError: %s\n", glGetString( err ) );
+		common->Error( "glGetError: 0x%04x\n", static_cast<unsigned int>( err ) );
 	}
 }
 
@@ -180,8 +184,14 @@ GetPixelAttributes
 #define ADD_ATTR(x)	\
 	do {								   \
 		if (attributeIndex >= attributeSize) {	\
-			attributeSize *= 2;	\
-			pixelAttributes = (NSOpenGLPixelFormatAttribute *)NSZoneRealloc(NULL, pixelAttributes, sizeof(*pixelAttributes) * attributeSize); \
+			const unsigned int newAttributeSize = attributeSize * 2;	\
+			NSOpenGLPixelFormatAttribute *newPixelAttributes = (NSOpenGLPixelFormatAttribute *)NSZoneRealloc(NULL, pixelAttributes, sizeof(*pixelAttributes) * newAttributeSize); \
+			if ( newPixelAttributes == NULL ) { \
+				NSZoneFree(NULL, pixelAttributes); \
+				return NULL; \
+			} \
+			pixelAttributes = newPixelAttributes; \
+			attributeSize = newAttributeSize; \
 		} \
 		pixelAttributes[attributeIndex] = (NSOpenGLPixelFormatAttribute)x;	\
 		attributeIndex++;						\
@@ -200,10 +210,18 @@ static NSOpenGLPixelFormatAttribute *GetPixelAttributes( unsigned int multisampl
 	unsigned int depthBits;
 	unsigned int stencilBits;
 	unsigned int buffers;
+	const CGDirectDisplayID display = glw_state.display != 0 ? glw_state.display : Sys_DisplayToUse();
     
 	verbose = 0;
+
+	if ( display == 0 ) {
+		return NULL;
+	}
     
 	pixelAttributes = (NSOpenGLPixelFormatAttribute *)NSZoneMalloc(NULL, sizeof(*pixelAttributes) * attributeSize);
+	if ( pixelAttributes == NULL ) {
+		return NULL;
+	}
 
 	// only greater or equal attributes will be selected
 	ADD_ATTR( NSOpenGLPFAMinimumPolicy );
@@ -214,7 +232,7 @@ static NSOpenGLPixelFormatAttribute *GetPixelAttributes( unsigned int multisampl
 	}
 
 	ADD_ATTR(NSOpenGLPFAScreenMask);
-	ADD_ATTR(CGDisplayIDToOpenGLDisplayMask(Sys_DisplayToUse()));
+	ADD_ATTR(CGDisplayIDToOpenGLDisplayMask(display));
 	
 	// Require hardware acceleration
 	ADD_ATTR(NSOpenGLPFAAccelerated);
@@ -283,7 +301,11 @@ void Sys_UpdateWindowMouseInputRect(void) {
 	Sys_SetMouseInputRect( CGRectMake( windowRect.origin.x, windowRect.origin.y, windowRect.size.width, windowRect.size.height ) );
 	*/
 
-	Sys_SetMouseInputRect( CGDisplayBounds( glw_state.display ) );
+	const CGDirectDisplayID display = glw_state.display != 0 ? glw_state.display : Sys_DisplayToUse();
+	if ( display == 0 ) {
+		return;
+	}
+	Sys_SetMouseInputRect( CGDisplayBounds( display ) );
 }							
 
 // This is needed since CGReleaseAllDisplays() restores the gamma on the displays and we want to fade it up rather than just flickering all the displays
@@ -291,9 +313,71 @@ static void ReleaseAllDisplays() {
 	CGDisplayCount displayIndex;
 
 	common->Printf("Releasing displays\n");
-	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
-		CGDisplayRelease(glw_state.originalDisplayGammaTables[displayIndex].display);
+	if ( glw_state.originalDisplayGammaTables == NULL ) {
+		return;
 	}
+	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
+		const CGDirectDisplayID display = glw_state.originalDisplayGammaTables[displayIndex].display;
+		if ( display != 0 ) {
+			CGDisplayRelease(display);
+		}
+	}
+}
+
+static void OSX_FreeGammaTableStorage( glwgamma_t *table ) {
+	if ( table == NULL ) {
+		return;
+	}
+	free( table->red );
+	free( table->blue );
+	free( table->green );
+	table->red = NULL;
+	table->blue = NULL;
+	table->green = NULL;
+	table->tableSize = 0;
+}
+
+static void OSX_ResetGammaTable( glwgamma_t *table ) {
+	if ( table == NULL ) {
+		return;
+	}
+	OSX_FreeGammaTableStorage( table );
+	table->display = 0;
+}
+
+static void OSX_ReleaseGLContext() {
+	if ( OSX_GetNSGLContext() == nil ) {
+		OSX_SetGLContext((id)nil);
+		return;
+	}
+
+#ifndef USE_CGLMACROS
+	OSX_GLContextClearCurrent();
+#endif
+	if ( OSX_GetCGLContext() != NULL ) {
+		CGLClearDrawable(OSX_GetCGLContext());
+	}
+	[OSX_GetNSGLContext() clearDrawable];
+	[OSX_GetNSGLContext() release];
+	OSX_SetGLContext((id)nil);
+}
+
+static bool OSX_EnsureGLContextCurrent( const char *operation ) {
+	if ( OSX_GetNSGLContext() == nil || OSX_GetCGLContext() == NULL ) {
+		common->Printf( "macOS: cannot %s without an OpenGL context\n", operation != NULL ? operation : "use OpenGL" );
+		return false;
+	}
+	if ( OSX_GLContextIsCurrent() && [NSOpenGLContext currentContext] == OSX_GetNSGLContext() ) {
+		return true;
+	}
+	[OSX_GetNSGLContext() makeCurrentContext];
+	if ( [NSOpenGLContext currentContext] != OSX_GetNSGLContext() ) {
+		common->Printf( "macOS: could not make OpenGL context current for %s\n", operation != NULL ? operation : "operation" );
+		glw_state._ctx_is_current = false;
+		return false;
+	}
+	glw_state._ctx_is_current = true;
+	return true;
 }
 
 static bool OSX_ContextCandidateSupported( const rendererContextCandidate_t &candidate ) {
@@ -318,6 +402,9 @@ static NSOpenGLPixelFormat *OSX_CreatePixelFormatForCandidate( unsigned int &mul
 	NSOpenGLPixelFormat *pixelFormat = nil;
 	while ( !pixelFormat ) {
 		NSOpenGLPixelFormatAttribute *pixelAttributes = GetPixelAttributes( multisamples, candidate );
+		if ( pixelAttributes == NULL ) {
+			return nil;
+		}
 		pixelFormat = [[[NSOpenGLPixelFormat alloc] initWithAttributes: pixelAttributes] autorelease];
 		NSZoneFree(NULL, pixelAttributes);
 		if ( pixelFormat || multisamples == 0 ) {
@@ -358,7 +445,7 @@ static bool OSX_CreateContextWithLadder( unsigned int &selectedMultisamples, NSO
 
 		common->Printf( "macOS: trying OpenGL context %s\n", candidate.label );
 		NSOpenGLContext *context = [[NSOpenGLContext alloc] initWithFormat: pixelFormat shareContext: nil];
-		if ( context != nil ) {
+		if ( context != nil && [context cglContext] != NULL ) {
 			OSX_SetGLContext( context );
 			memset( &glConfig.contextRequest, 0, sizeof( glConfig.contextRequest ) );
 			glConfig.contextRequest = candidate;
@@ -366,6 +453,9 @@ static bool OSX_CreateContextWithLadder( unsigned int &selectedMultisamples, NSO
 			*selectedPixelFormat = pixelFormat;
 			common->Printf( "macOS: created OpenGL context %s\n", glConfig.contextRequest.label );
 			return true;
+		}
+		if ( context != nil ) {
+			[context release];
 		}
 
 		common->Printf( "macOS: OpenGL context %s failed\n", candidate.label );
@@ -388,9 +478,14 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 	int 							nsOpenGLCPSwapLimit = 203;
             
 	glw_state.display = Sys_DisplayToUse();
+	if ( glw_state.display == 0 ) {
+		common->Printf( "No CoreGraphics display available for OpenGL window creation\n" );
+		return false;
+	}
 	glw_state.desktopMode = (NSDictionary *)CGDisplayCurrentMode( glw_state.display );
 	if ( !glw_state.desktopMode ) {
-		common->Error( "Could not get current graphics mode for display 0x%08x\n", glw_state.display );
+		common->Printf( "Could not get current graphics mode for display 0x%08x\n", glw_state.display );
+		return false;
 	}
 
 	common->Printf(  " %d %d %s\n", parms.width, parms.height, windowed[ parms.fullScreen ] );
@@ -403,6 +498,7 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		glw_state.gameMode = Sys_GetMatchingDisplayMode(parms);
 		if (!glw_state.gameMode) {
 			common->Printf(  "Unable to find requested display mode.\n");
+			return false;
 		}
 
 		// Fade all screens to black
@@ -412,6 +508,7 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		if ( err != CGDisplayNoErr ) {
 			CGDisplayRestoreColorSyncSettings();
 			common->Printf(  " Unable to capture displays err = %d\n", err );
+			return false;
 		}
 
 		err = CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.gameMode);
@@ -419,6 +516,7 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 			CGDisplayRestoreColorSyncSettings();
 			ReleaseAllDisplays();
 			common->Printf(  " Unable to set display mode, err = %d\n", err );
+			return false;
 		}
 	} else {
 		glw_state.gameMode = glw_state.desktopMode;
@@ -451,24 +549,41 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		NSScreen*		 screen;
 		NSRect           windowRect;
 		int				 displayIndex;
-		int				 displayCount;
+		NSUInteger		 displayCount;
 		
 		displayIndex = r_screen.GetInteger();
-		displayCount = [[NSScreen screens] count];
+		NSArray *screens = [NSScreen screens];
+		displayCount = [screens count];
 		if ( displayIndex < 0 || displayIndex >= displayCount ) {
 			screen = [NSScreen mainScreen];
 		} else {
-			screen = [[NSScreen screens] objectAtIndex:displayIndex];
+			screen = [screens objectAtIndex:static_cast<NSUInteger>( displayIndex )];
+		}
+		if ( screen == nil && displayCount > 0 ) {
+			screen = [screens objectAtIndex:0];
+		}
+		if ( screen == nil ) {
+			common->Printf( "No NSScreen available for window creation\n" );
+			OSX_ReleaseGLContext();
+			return false;
 		}
 
 		NSRect r = [screen frame];
-		windowRect.origin.x =  ((short)r.size.width - parms.width) / 2;
-		windowRect.origin.y  = ((short)r.size.height - parms.height) / 2;
-		windowRect.size.width = parms.width;
-		windowRect.size.height = parms.height;
+		windowRect.origin.x = r.origin.x + ( r.size.width - static_cast<CGFloat>( parms.width ) ) / 2.0;
+		windowRect.origin.y = r.origin.y + ( r.size.height - static_cast<CGFloat>( parms.height ) ) / 2.0;
+		windowRect.size.width = static_cast<CGFloat>( parms.width );
+		windowRect.size.height = static_cast<CGFloat>( parms.height );
         
-		glw_state.window = [NSWindow alloc];
-		[glw_state.window initWithContentRect:windowRect styleMask:NSTitledWindowMask backing:NSBackingStoreRetained defer:NO screen:screen];
+		glw_state.window = [[NSWindow alloc] initWithContentRect:windowRect styleMask:NSTitledWindowMask backing:NSBackingStoreRetained defer:NO screen:screen];
+		if ( glw_state.window == nil || [glw_state.window contentView] == nil ) {
+			common->Printf( "No NSWindow/content view available for OpenGL context\n" );
+			if ( glw_state.window != nil ) {
+				[glw_state.window release];
+				glw_state.window = nil;
+			}
+			OSX_ReleaseGLContext();
+			return false;
+		}
                                                            
 		[glw_state.window setTitle: @GAME_NAME];
 
@@ -492,16 +607,27 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 			CGDisplayRestoreColorSyncSettings();
 			CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.desktopMode);
 			ReleaseAllDisplays();
+			OSX_ReleaseGLContext();
 			common->Printf("CGLSetFullScreen -> %d (%s)\n", err, CGLErrorString(err));
+			return false;
 		}
 
 		Sys_SetMouseInputRect( CGDisplayBounds( glw_state.display ) );
 	}
 
-#ifndef USE_CGLMACROS
 	// Make this the current context
-	OSX_GLContextSetCurrent();
-#endif
+	if ( !OSX_EnsureGLContextCurrent( "create window" ) ) {
+		OSX_ReleaseGLContext();
+		if ( glw_state.window != nil ) {
+			[glw_state.window release];
+			glw_state.window = nil;
+		}
+		if ( parms.fullScreen && glw_state.display != 0 && glw_state.desktopMode != nil ) {
+			CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.desktopMode);
+			ReleaseAllDisplays();
+		}
+		return false;
+	}
 
 	// Store off the pixel format attributes that we actually got
 	GLint pixelAttrib = 0;
@@ -521,7 +647,13 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 
 // This can be used to temporarily disassociate the GL context from the screen so that CoreGraphics can be used to draw to the screen.
 void Sys_PauseGL () {
+	if ( OSX_GetNSGLContext() == nil || OSX_GetCGLContext() == NULL ) {
+		return;
+	}
 	if (!glw_state.glPauseCount) {
+		if ( !OSX_EnsureGLContextCurrent( "pause OpenGL" ) ) {
+			return;
+		}
 		glFinish (); // must do this to ensure the queue is complete
         
 		CGLClearDrawable(OSX_GetCGLContext());
@@ -532,11 +664,16 @@ void Sys_PauseGL () {
 
 // This can be used to reverse the pausing caused by Sys_PauseGL()
 void Sys_ResumeGL () {
+	if ( OSX_GetNSGLContext() == nil || OSX_GetCGLContext() == NULL ) {
+		return;
+	}
 	if (glw_state.glPauseCount) {
 		glw_state.glPauseCount--;
 		if (!glw_state.glPauseCount) {
 			if (!glConfig.isFullscreen) {
-				[OSX_GetNSGLContext() setView: [glw_state.window contentView]];
+				if ( glw_state.window != nil ) {
+					[OSX_GetNSGLContext() setView: [glw_state.window contentView]];
+				}
 			} else {
 				CGLError err;
                 
@@ -544,6 +681,7 @@ void Sys_ResumeGL () {
 				if (err)
 					common->Printf("CGLSetFullScreen -> %d (%s)\n", err, CGLErrorString(err));
 			}
+			(void)OSX_EnsureGLContextCurrent( "resume OpenGL" );
 		}
 	}
 }
@@ -568,10 +706,13 @@ bool GLimp_Init( glimpParms_t parms ) {
 	Sys_StoreGammaTables();
     
 	if ( !Sys_QueryVideoMemory() ) {
-		common->Error(  "Could not initialize OpenGL.  There does not appear to be an OpenGL-supported video card in your system.\n" );
+		common->Printf( "macOS: video memory query unavailable; continuing with OpenGL context creation\n" );
 	}
     
 	if ( !GLimp_SetMode( parms ) ) {
+		return false;
+	}
+	if ( !OSX_EnsureGLContextCurrent( "initialize renderer" ) ) {
 		return false;
 	}
 
@@ -616,6 +757,9 @@ void GLimp_SwapBuffers( void ) {
 #endif
 
 	if (!glw_state.glPauseCount && !isHidden) {
+		if ( !OSX_EnsureGLContextCurrent( "swap buffers" ) ) {
+			return;
+		}
 		glw_state.bufferSwapCount++;
 		[OSX_GetNSGLContext() flushBuffer];
 	}
@@ -653,7 +797,7 @@ static void _GLimp_RestoreOriginalVideoSettings() {
 	// CGDisplayCurrentMode lies because we've captured the display and thus we won't
 	// get any notifications about what the current display mode really is.  For now,
 	// we just always force it back to what mode we remember the desktop being in.
-	if (glConfig.isFullscreen) {
+	if (glConfig.isFullscreen && glw_state.display != 0 && glw_state.desktopMode != nil) {
 		err = CGDisplaySwitchToMode(glw_state.display, (CFDictionaryRef)glw_state.desktopMode);
 		if ( err != CGDisplayNoErr )
 			common->Printf(  " Unable to restore display mode!\n" );
@@ -669,16 +813,7 @@ void GLimp_Shutdown( void ) {
 
 	Sys_FadeScreen(Sys_DisplayToUse());
     
-	if (OSX_GetNSGLContext()) {
-#ifndef USE_CGLMACROS
-		OSX_GLContextClearCurrent();
-#endif
-		CGLClearDrawable(OSX_GetCGLContext());
-		[OSX_GetNSGLContext() clearDrawable];
-        
-		[OSX_GetNSGLContext() release];
-		OSX_SetGLContext((id)nil);
-	}
+	OSX_ReleaseGLContext();
 
 	_GLimp_RestoreOriginalVideoSettings();
     
@@ -700,22 +835,16 @@ void GLimp_Shutdown( void ) {
 		glw_state.log_fp = 0;
 	}
 
-	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
-		free(glw_state.originalDisplayGammaTables[displayIndex].red);
-		free(glw_state.originalDisplayGammaTables[displayIndex].blue);
-		free(glw_state.originalDisplayGammaTables[displayIndex].green);
+	if ( glw_state.originalDisplayGammaTables != NULL ) {
+		for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
+			OSX_ResetGammaTable( &glw_state.originalDisplayGammaTables[displayIndex] );
+		}
 	}
 	free(glw_state.originalDisplayGammaTables);
-	if (glw_state.tempTable.red) {
-		free(glw_state.tempTable.red);
-		free(glw_state.tempTable.blue);
-		free(glw_state.tempTable.green);
-	}
-	if (glw_state.inGameTable.red) {
-		free(glw_state.inGameTable.red);
-		free(glw_state.inGameTable.blue);
-		free(glw_state.inGameTable.green);
-	}
+	glw_state.originalDisplayGammaTables = NULL;
+	glw_state.displayCount = 0;
+	OSX_ResetGammaTable( &glw_state.tempTable );
+	OSX_ResetGammaTable( &glw_state.inGameTable );
     
 	memset(&glConfig, 0, sizeof(glConfig));
 	//    memset(&glState, 0, sizeof(glState));
@@ -742,6 +871,10 @@ void GLimp_SetGamma(unsigned short red[256],
 	CGGammaValue redGamma[256], greenGamma[256], blueGamma[256];
 	uint32_t i;
 	CGDisplayErr err;
+
+	if ( red == NULL || green == NULL || blue == NULL || glw_state.display == 0 ) {
+		return;
+	}
         
 	for (i = 0; i < 256; i++) {
 		redGamma[i]   = red[i]   / 65535.0;
@@ -1256,48 +1389,23 @@ void glAlphaFragmentOp3ATI (GLenum op, GLuint dst, GLuint dstMod, GLuint arg1, G
 
 void *GLimp_ExtensionPointer(const char *name) {
 	NSSymbol symbol;
-	char *symbolName;
+	idStr symbolName;
 
-	// special case for ATI_fragment_shader calls to map to ATI_text_fragment_shader routines
-	if (!strcmp(name, "glGenFragmentShadersATI")) {
+	if ( name == NULL || name[0] == '\0' ) {
+		return NULL;
 	}
-	if (!strcmp(name, "glBindFragmentShaderATI")) {
-	}
-	if (!strcmp(name, "glDeleteFragmentShaderATI")) {
-	}
-	if (!strcmp(name, "glBeginFragmentShaderATI")) {
-	}
-	if (!strcmp(name, "glEndFragmentShaderATI")) {
-	}
-	if (!strcmp(name, "glPassTexCoordATI")) {
-	}
-	if (!strcmp(name, "glSampleMapATI")) {
-	}
-	if (!strcmp(name, "glColorFragmentOp1ATI")) {
-	}
-	if (!strcmp(name, "glColorFragmentOp2ATI")) {
-	}
-	if (!strcmp(name, "glColorFragmentOp3ATI")) {
-	}
-	if (!strcmp(name, "glAlphaFragmentOp1ATI")) {
-	}
-	if (!strcmp(name, "glAlphaFragmentOp2ATI")) {
-	}
-	if (!strcmp(name, "glAlphaFragmentOp3ATI")) {
-	}
-	if (!strcmp(name, "glSetFragmentShaderConstantATI")) {
-	}
-
-	// Prepend a '_' for the Unix C symbol mangling convention
-	symbolName = (char *)alloca(strlen(name) + 2);
-	strcpy(symbolName + 1, name);
-	symbolName[0] = '_';
-
-	if ( !NSIsSymbolNameDefined( symbolName ) ) {
+	if ( strlen( name ) > static_cast<size_t>( idMath::INT_MAX - 2 ) ) {
 		return NULL;
 	}
 
-	symbol = NSLookupAndBindSymbol(symbolName);
+	symbolName = "_";
+	symbolName += name;
+
+	if ( !NSIsSymbolNameDefined( symbolName.c_str() ) ) {
+		return NULL;
+	}
+
+	symbol = NSLookupAndBindSymbol(symbolName.c_str());
 	if ( !symbol ) {
 		// shouldn't happen ...
 		return NULL;
@@ -1323,12 +1431,17 @@ unsigned long Sys_QueryVideoMemory() {
 	CGLRendererInfoObj rendererInfo = NULL;
 	GLint rendererCount = 0;
 	GLint rendererIndex = 0;
-	GLint maxVRAM = 0;
-	GLint vram = 0;
+	unsigned long maxVRAM = 0;
+	GLint vramValue = 0;
 	GLint accelerated = 0;
+	const CGDirectDisplayID display = Sys_DisplayToUse();
+
+	if ( display == 0 ) {
+		return 0;
+	}
      
-	err = CGLQueryRendererInfo(CGDisplayIDToOpenGLDisplayMask(Sys_DisplayToUse()), &rendererInfo, &rendererCount);
-	if (err) {
+	err = CGLQueryRendererInfo(CGDisplayIDToOpenGLDisplayMask(display), &rendererInfo, &rendererCount);
+	if (err || rendererInfo == NULL) {
 		common->Printf("CGLQueryRendererInfo -> %d\n", err);
 		return 0;
 	}
@@ -1340,35 +1453,45 @@ unsigned long Sys_QueryVideoMemory() {
 		}
 
 #if defined(kCGLRPVideoMemoryMegabytes)
-		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemoryMegabytes, &vram);
+		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemoryMegabytes, &vramValue);
 		if (!err) {
-			vram *= 1024 * 1024;
+			const unsigned long vramBytes = vramValue > 0 ? static_cast<unsigned long>(vramValue) * 1024UL * 1024UL : 0UL;
+			if (vramBytes > maxVRAM) {
+				maxVRAM = vramBytes;
+			}
+			continue;
 		}
-#else
-		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemory, &vram);
 #endif
+		err = CGLDescribeRenderer(rendererInfo, rendererIndex, kCGLRPVideoMemory, &vramValue);
 		if (err) {
 			common->Printf("CGLDescribeRenderer -> %d\n", err);
 			continue;
 		}
-		if (vram > maxVRAM) {
-			maxVRAM = vram;
+		const unsigned long vramBytes = vramValue > 0 ? static_cast<unsigned long>(vramValue) : 0UL;
+		if (vramBytes > maxVRAM) {
+			maxVRAM = vramBytes;
 		}
 	}
 
 	(void)CGLDestroyRendererInfo(rendererInfo);
-	return (unsigned long)maxVRAM;
+	return maxVRAM;
 }
 
 
 // We will set the Sys_IsHidden global to cause input to be handle differently (we'll just let NSApp handle events in this case).  We also will unbind the GL context and restore the video mode.
 bool Sys_Hide() {
 	if ( isHidden ) {
-		// Eh?
+		return true;
 	}
     
 	if ( !r_fullscreen.GetBool() ) {
-		// We only support hiding in fullscreen mode right now
+		return false;
+	}
+	if ( OSX_GetNSGLContext() == nil || OSX_GetCGLContext() == NULL ) {
+		return false;
+	}
+	if ( !OSX_EnsureGLContextCurrent( "hide OpenGL" ) ) {
+		return false;
 	}
     
 	isHidden = true;
@@ -1389,9 +1512,6 @@ bool Sys_Hide() {
 	//        CGDisplayRestoreColorSyncSettings();
 	//    }
 
-	// Release the screen(s)
-	ReleaseAllDisplays();
-    
 	Sys_UnfadeScreens();
     
 	// Shut down the input system so the mouse and keyboard settings are restore to normal
@@ -1399,17 +1519,29 @@ bool Sys_Hide() {
     
 	// Hide the application so that when the user clicks on our app icon, we'll get an unhide notification
 	[NSApp hide: nil];
-    
+	return true;
 }
 
 CGDisplayErr Sys_CaptureActiveDisplays(void) {
 	CGDisplayErr err;
 	CGDisplayCount displayIndex;
+	if ( glw_state.originalDisplayGammaTables == NULL ) {
+		return CGDisplayNoErr;
+	}
 	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
 		const glwgamma_t *table;
 		table = &glw_state.originalDisplayGammaTables[displayIndex];
+		if ( table->display == 0 ) {
+			continue;
+		}
 		err = CGDisplayCapture(table->display);
 		if (err != CGDisplayNoErr) {
+			for ( CGDisplayCount releaseIndex = 0; releaseIndex < displayIndex; ++releaseIndex ) {
+				const CGDirectDisplayID capturedDisplay = glw_state.originalDisplayGammaTables[releaseIndex].display;
+				if ( capturedDisplay != 0 ) {
+					CGDisplayRelease( capturedDisplay );
+				}
+			}
 			return err;
 		}
 	}
@@ -1421,7 +1553,10 @@ bool Sys_Unhide() {
 	CGLError glErr;
     
 	if ( !isHidden) {
-		// Eh?
+		return true;
+	}
+	if ( OSX_GetNSGLContext() == nil || OSX_GetCGLContext() == NULL || glw_state.display == 0 || glw_state.gameMode == nil ) {
+		return false;
 	}
         
 	Sys_FadeScreens();
@@ -1431,6 +1566,7 @@ bool Sys_Unhide() {
 	if (err != CGDisplayNoErr) {
 		Sys_UnfadeScreens();
 		common->Printf(  "Unhide failed -- cannot capture the display again.\n" );
+		return false;
 	}
     
 	// Restore the game mode
@@ -1439,6 +1575,7 @@ bool Sys_Unhide() {
 		ReleaseAllDisplays();
 		Sys_UnfadeScreens();
 		common->Printf(  "Unhide failed -- Unable to set display mode\n" );
+		return false;
 	}
 
 	// Reassociate the GL context and the screen
@@ -1446,11 +1583,16 @@ bool Sys_Unhide() {
 	if (glErr) {
 		ReleaseAllDisplays();
 		Sys_UnfadeScreens();
-		common->Printf(  "Unhide failed: CGLSetFullScreen -> %d (%s)\n", err, CGLErrorString(glErr));
+		common->Printf(  "Unhide failed: CGLSetFullScreen -> %d (%s)\n", glErr, CGLErrorString(glErr));
+		return false;
 	}
 
 	// Restore the current context
-	[OSX_GetNSGLContext() makeCurrentContext];
+	if ( !OSX_EnsureGLContextCurrent( "unhide OpenGL" ) ) {
+		ReleaseAllDisplays();
+		Sys_UnfadeScreens();
+		return false;
+	}
     
 	// Restore the gamma that the game had set
 	Sys_UnfadeScreen(Sys_DisplayToUse(), &glw_state.inGameTable);
@@ -1459,12 +1601,16 @@ bool Sys_Unhide() {
 	Sys_InitInput();
     
 	isHidden = false;
+	return true;
 }
 
 bool GLimp_SpawnRenderThread( void (*function)( void ) ) {
+	(void)function;
+	return false;
 }
 
 void *GLimp_RendererSleep(void) {
+	return NULL;
 }
 
 void GLimp_FrontEndSleep(void) { }
@@ -1472,18 +1618,24 @@ void GLimp_FrontEndSleep(void) { }
 void GLimp_WakeRenderer( void *data ) { }
 
 void *GLimp_BackEndSleep( void ) {
+	return NULL;
 }
 
 void GLimp_WakeBackEnd( void *data ) {
+	(void)data;
 }
 
 // enable / disable context is just for the r_skipRenderContext debug option
 void GLimp_DeactivateContext( void ) {
-	[NSOpenGLContext clearCurrentContext];
+	OSX_GLContextClearCurrent();
 }
 
 void GLimp_ActivateContext( void ) {
-	[OSX_GetNSGLContext() makeCurrentContext];
+	(void)OSX_EnsureGLContextCurrent( "activate context" );
+}
+
+bool GLimp_EnsureActiveContext( const char *operation ) {
+	return OSX_EnsureGLContextCurrent( operation );
 }
 
 void GLimp_EnableLogging(bool stat) { }
@@ -1491,7 +1643,7 @@ void GLimp_EnableLogging(bool stat) { }
 NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
 	NSArray *displayModes;
 	NSDictionary *mode;
-	unsigned int modeIndex, modeCount, bestModeIndex;
+	NSUInteger modeIndex, modeCount, bestModeIndex;
 	int verbose;
 	//	cvar_t *cMinFreq, *cMaxFreq;
 	int minFreq, maxFreq;
@@ -1506,19 +1658,30 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
 	if ( minFreq > maxFreq ) {
 		common->Error( "r_minDisplayRefresh must be less than or equal to r_maxDisplayRefresh" );
 	}
+
+	if ( glw_state.display == 0 ) {
+		return nil;
+	}
     
 	displayModes = (NSArray *)CGDisplayAvailableModes(glw_state.display);
 	if (!displayModes) {
+		return nil;
 	}
     
 	modeCount = [displayModes count];
+	if ( modeCount == 0 ) {
+		common->Printf( "No display modes available.\n" );
+		return nil;
+	}
 	if (verbose) {
-		common->Printf( "%d modes avaliable\n", modeCount);
-		common->Printf( "Current mode is %s\n", [[(id)CGDisplayCurrentMode(glw_state.display) description] UTF8String]);
+		id currentModeDescription = [(id)CGDisplayCurrentMode(glw_state.display) description];
+		const char *currentModeText = currentModeDescription != nil ? [currentModeDescription UTF8String] : NULL;
+		common->Printf( "%lu modes avaliable\n", static_cast<unsigned long>( modeCount ) );
+		common->Printf( "Current mode is %s\n", currentModeText != NULL ? currentModeText : "" );
 	}
     
 	// Default to the current desktop mode
-	bestModeIndex = 0xFFFFFFFF;
+	bestModeIndex = NSNotFound;
     
 	for ( modeIndex = 0; modeIndex < modeCount; ++modeIndex ) {
 		id object;
@@ -1526,7 +1689,8 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
         
 		mode = [displayModes objectAtIndex: modeIndex];
 		if (verbose) {
-			common->Printf( " mode %d -- %s\n", modeIndex, [[mode description] UTF8String]);
+			const char *modeText = [[mode description] UTF8String];
+			common->Printf( " mode %lu -- %s\n", static_cast<unsigned long>( modeIndex ), modeText != NULL ? modeText : "" );
 		}
 
 		// Make sure we get the right size
@@ -1575,16 +1739,17 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
 		
 		bestModeIndex = modeIndex;
 		if (verbose)
-			common->Printf( " -- OK\n", bestModeIndex);
+			common->Printf( " -- OK\n" );
 	}
 
 	if (verbose)
-		common->Printf( " bestModeIndex = %d\n", bestModeIndex);
+		common->Printf( " bestModeIndex = %lu\n", static_cast<unsigned long>( bestModeIndex ) );
 
-	if (bestModeIndex == 0xFFFFFFFF) {
+	if ( bestModeIndex == NSNotFound || bestModeIndex >= modeCount ) {
 		common->Printf( "No suitable display mode available.\n");
+		return nil;
 	}
-    
+	return [displayModes objectAtIndex: bestModeIndex];
 }
 
 
@@ -1593,17 +1758,24 @@ NSDictionary *Sys_GetMatchingDisplayMode( glimpParms_t parms ) {
 void Sys_GetGammaTable(glwgamma_t *table) {
 	uint32_t tableSize = 512;
 	CGDisplayErr err;
+
+	if ( table == NULL ) {
+		return;
+	}
+	if ( table->display == 0 ) {
+		OSX_FreeGammaTableStorage( table );
+		return;
+	}
     
 	table->tableSize = tableSize;
-	if (table->red)
-		free(table->red);
-	table->red = (float *)malloc(tableSize * sizeof(*table->red));
-	if (table->green)
-		free(table->green);
-	table->green = (float *)malloc(tableSize * sizeof(*table->green));
-	if (table->blue)
-		free(table->blue);
-	table->blue = (float *)malloc(tableSize * sizeof(*table->blue));
+	OSX_FreeGammaTableStorage( table );
+	table->red = (CGGammaValue *)malloc(tableSize * sizeof(*table->red));
+	table->green = (CGGammaValue *)malloc(tableSize * sizeof(*table->green));
+	table->blue = (CGGammaValue *)malloc(tableSize * sizeof(*table->blue));
+	if ( table->red == NULL || table->green == NULL || table->blue == NULL ) {
+		OSX_FreeGammaTableStorage( table );
+		return;
+	}
     
 	// TJW: We _could_ loop here if we get back the same size as our table, increasing the table size.
 	err = CGGetDisplayTransferByTable(table->display, tableSize, table->red, table->green, table->blue,
@@ -1621,10 +1793,30 @@ void Sys_StoreGammaTables() {
 	CGDisplayCount displayIndex;
 	CGDisplayErr err;
 
+	if ( glw_state.originalDisplayGammaTables != NULL ) {
+		for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
+			OSX_ResetGammaTable( &glw_state.originalDisplayGammaTables[displayIndex] );
+		}
+		free(glw_state.originalDisplayGammaTables);
+		glw_state.originalDisplayGammaTables = NULL;
+		glw_state.displayCount = 0;
+	}
+
 	err = CGGetActiveDisplayList(MAX_DISPLAYS, displays, &glw_state.displayCount);
-	if (err != CGDisplayNoErr)
-    
+	if (err != CGDisplayNoErr || glw_state.displayCount == 0) {
+		common->Printf("CGGetActiveDisplayList failed; using main display for gamma tracking\n");
+		displays[0] = CGMainDisplayID();
+		glw_state.displayCount = displays[0] != 0 ? 1 : 0;
+	}
+	if ( glw_state.displayCount == 0 ) {
+		return;
+	}
+
 	glw_state.originalDisplayGammaTables = (glwgamma_t *)calloc(glw_state.displayCount, sizeof(*glw_state.originalDisplayGammaTables));
+	if ( glw_state.originalDisplayGammaTables == NULL ) {
+		glw_state.displayCount = 0;
+		return;
+	}
 	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
 		glwgamma_t *table;
 
@@ -1643,8 +1835,9 @@ void Sys_SetScreenFade(glwgamma_t *table, float fraction) {
     
 	//    if (!glConfig.deviceSupportsGamma)
 
-	if (!(tableSize = table->tableSize))
-		// we couldn't get the table for this display for some reason
+	if ( table == NULL || table->display == 0 || table->red == NULL || table->green == NULL || table->blue == NULL || !(tableSize = table->tableSize) ) {
+		return;
+	}
     
 	//    common->Printf("0x%08x %f\n", table->display, fraction);
     
@@ -1652,10 +1845,22 @@ void Sys_SetScreenFade(glwgamma_t *table, float fraction) {
 	green = glw_state.tempTable.green;
 	blue = glw_state.tempTable.blue;
 	if (glw_state.tempTable.tableSize < tableSize) {
+		CGGammaValue *newRed = (CGGammaValue *)malloc(sizeof(*red) * tableSize);
+		CGGammaValue *newGreen = (CGGammaValue *)malloc(sizeof(*green) * tableSize);
+		CGGammaValue *newBlue = (CGGammaValue *)malloc(sizeof(*blue) * tableSize);
+		if ( newRed == NULL || newGreen == NULL || newBlue == NULL ) {
+			free(newRed);
+			free(newGreen);
+			free(newBlue);
+			return;
+		}
+		free(glw_state.tempTable.red);
+		free(glw_state.tempTable.green);
+		free(glw_state.tempTable.blue);
 		glw_state.tempTable.tableSize = tableSize;
-		red = (float *)realloc(red, sizeof(*red) * tableSize);
-		green = (float *)realloc(green, sizeof(*green) * tableSize);
-		blue = (float *)realloc(blue, sizeof(*blue) * tableSize);
+		red = newRed;
+		green = newGreen;
+		blue = newBlue;
 		glw_state.tempTable.red = red;
 		glw_state.tempTable.green = green;
 		glw_state.tempTable.blue = blue;
@@ -1675,7 +1880,6 @@ void Sys_SetScreenFade(glwgamma_t *table, float fraction) {
 #define FADE_DURATION 0.5
 void Sys_FadeScreens() {
 	CGDisplayCount displayIndex;
-	int stepIndex;
 	glwgamma_t *table;
 	NSTimeInterval start, current;
 	float time;
@@ -1683,6 +1887,9 @@ void Sys_FadeScreens() {
 	//   if (!glConfig.deviceSupportsGamma)
 
 	common->Printf("Fading all displays\n");
+	if ( glw_state.originalDisplayGammaTables == NULL || glw_state.displayCount == 0 ) {
+		return;
+	}
     
 	start = [NSDate timeIntervalSinceReferenceDate];
 	time = 0.0;
@@ -1702,7 +1909,6 @@ void Sys_FadeScreens() {
 void Sys_FadeScreen(CGDirectDisplayID display) {
 	CGDisplayCount displayIndex;
 	glwgamma_t *table;
-	int stepIndex;
 
 	common->Printf( "FIXME: Sys_FadeScreen\n" );
     
@@ -1710,6 +1916,12 @@ void Sys_FadeScreen(CGDirectDisplayID display) {
 	//    if (!glConfig.deviceSupportsGamma)
 
 	common->Printf("Fading display 0x%08x\n", display);
+	if ( display == 0 ) {
+		return;
+	}
+	if ( glw_state.originalDisplayGammaTables == NULL || glw_state.displayCount == 0 ) {
+		return;
+	}
 
 	for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
 		if (display == glw_state.originalDisplayGammaTables[displayIndex].display) {
@@ -1728,6 +1940,7 @@ void Sys_FadeScreen(CGDirectDisplayID display) {
 
 				Sys_SetScreenFade(table, 1.0 - time / FADE_DURATION);
 			}
+			return;
 		}
 	}
 
@@ -1736,7 +1949,6 @@ void Sys_FadeScreen(CGDirectDisplayID display) {
 
 void Sys_UnfadeScreens() {
 	CGDisplayCount displayIndex;
-	int stepIndex;
 	glwgamma_t *table;
 	NSTimeInterval start, current;
 	float time;
@@ -1747,6 +1959,9 @@ void Sys_UnfadeScreens() {
 	//    if (!glConfig.deviceSupportsGamma)
         
 	common->Printf("Unfading all displays\n");
+	if ( glw_state.originalDisplayGammaTables == NULL || glw_state.displayCount == 0 ) {
+		return;
+	}
 
 	start = [NSDate timeIntervalSinceReferenceDate];
 	time = 0.0;
@@ -1765,7 +1980,6 @@ void Sys_UnfadeScreens() {
 
 void Sys_UnfadeScreen(CGDirectDisplayID display, glwgamma_t *table) {
 	CGDisplayCount displayIndex;
-	int stepIndex;
 	
 	common->Printf( "FIXME: Sys_UnfadeScreen\n" );
 
@@ -1773,17 +1987,14 @@ void Sys_UnfadeScreen(CGDirectDisplayID display, glwgamma_t *table) {
     
 	common->Printf("Unfading display 0x%08x\n", display);
 
-	if (table) {
-		uint32_t i;
-        
-		common->Printf("Given table:\n");
-		for (i = 0; i < table->tableSize; i++) {
-			common->Printf("  %f %f %f\n", table->red[i], table->blue[i], table->green[i]);
-		}
-	}
-    
 	// Search for the original gamma table for the display
 	if (!table) {
+		if ( display == 0 ) {
+			return;
+		}
+		if ( glw_state.originalDisplayGammaTables == NULL || glw_state.displayCount == 0 ) {
+			return;
+		}
 		for (displayIndex = 0; displayIndex < glw_state.displayCount; displayIndex++) {
 			if (display == glw_state.originalDisplayGammaTables[displayIndex].display) {
 				table = &glw_state.originalDisplayGammaTables[displayIndex];
@@ -1806,6 +2017,7 @@ void Sys_UnfadeScreen(CGDirectDisplayID display, glwgamma_t *table) {
 				time = FADE_DURATION;
 			Sys_SetScreenFade(table, time / FADE_DURATION);
 		}
+		return;
 	}
     
 	common->Printf("Unable to find display to unfade it\n");
@@ -1815,32 +2027,43 @@ void Sys_UnfadeScreen(CGDirectDisplayID display, glwgamma_t *table) {
 
 CGDirectDisplayID Sys_DisplayToUse(void) {
 	static bool					gotDisplay =  NO;
-	static CGDirectDisplayID	displayToUse;
+	static CGDirectDisplayID	displayToUse = 0;
     
 	CGDisplayErr				err;
 	CGDirectDisplayID			displays[MAX_DISPLAYS];
-	CGDisplayCount				displayCount;
+	CGDisplayCount				displayCount = 0;
 	int							displayIndex;
+	CGDirectDisplayID			mainDisplay;
     
 	if ( gotDisplay ) {
+		return displayToUse;
 	}
 	gotDisplay = YES;    
     
 	err = CGGetActiveDisplayList( MAX_DISPLAYS, displays, &displayCount );
-	if ( err != CGDisplayNoErr ) {
-	}
 
-	// -1, the default, means to use the main screen
 	displayIndex = r_screen.GetInteger();
-        
-	if ( displayIndex < 0 || displayIndex >= displayCount ) {
-		// This is documented (in CGDirectDisplay.h) to be the main display.  We want to
-		// display IDs.
-		displayToUse = displays[ 0 ];
-	} else {
+	if ( err == CGDisplayNoErr && displayIndex >= 0 && displayIndex < static_cast<int>( displayCount ) && displays[displayIndex] != 0 ) {
 		displayToUse = displays[ displayIndex ];
+		return displayToUse;
 	}
 
+	mainDisplay = CGMainDisplayID();
+	if ( mainDisplay != 0 ) {
+		displayToUse = mainDisplay;
+		return displayToUse;
+	}
+
+	if ( err == CGDisplayNoErr ) {
+		for ( CGDisplayCount i = 0; i < displayCount; ++i ) {
+			if ( displays[i] != 0 ) {
+				displayToUse = displays[i];
+				break;
+			}
+		}
+	}
+
+	return displayToUse;
 }
 
 /*
@@ -1849,6 +2072,9 @@ GLimp_SetScreenParms
 ===================
 */
 bool GLimp_SetScreenParms( glimpParms_t parms ) {
+	(void)parms;
+	common->Printf( "GLimp_SetScreenParms is not supported by the native macOS backend\n" );
+	return false;
 }
 
 /*

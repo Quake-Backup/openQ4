@@ -106,6 +106,22 @@ static bool RenderWindowResolveViewport( idDeviceContext *dc, const idRectangle 
 	return true;
 }
 
+static bool RenderWindowNeedsPreviewBounds( const idBounds &bounds ) {
+	if ( bounds.IsCleared() ) {
+		return true;
+	}
+
+	return bounds[0].Compare( bounds[1] );
+}
+
+static void RenderWindowEnsurePreviewBounds( renderEntity_t &renderEntity ) {
+	if ( renderEntity.hModel == NULL || !RenderWindowNeedsPreviewBounds( renderEntity.bounds ) ) {
+		return;
+	}
+
+	renderEntity.bounds = idBounds( idVec3( -128.0f, -128.0f, -128.0f ), idVec3( 128.0f, 128.0f, 128.0f ) );
+}
+
 }
 
 idRenderWindow::idRenderWindow( idDeviceContext *d, idUserInterfaceLocal *g ) : idWindow( d, g ) {
@@ -202,6 +218,26 @@ void idRenderWindow::BuildAnimation( int time ) {
 	updateAnimation = false;
 }
 
+void idRenderWindow::UpdateRenderVars() {
+	for ( int i = 0; i < MAX_RENDERWINDOW_MODELS; ++i ) {
+		modelName[i].Update();
+		jointName[i].Update();
+		animName[i].Update();
+		animClass[i].Update();
+	}
+
+	for ( int i = 0; i < MAX_RENDERWINDOW_LIGHTS; ++i ) {
+		lightOrigin[i].Update();
+		lightColor[i].Update();
+	}
+
+	modelOrigin.Update();
+	modelRotate.Update();
+	viewOffset.Update();
+	customSkin.Update();
+	customShader.Update();
+}
+
 void idRenderWindow::PreRender() {
 	if ( !needsRender ) {
 		return;
@@ -248,6 +284,7 @@ void idRenderWindow::PreRender() {
 	spawnArgs.Set( "origin", modelOrigin.c_str() );
 	gameEdit->ParseSpawnArgsToRenderEntity( &spawnArgs, &worldEntity[0] );
 	if ( worldEntity[0].hModel ) {
+		RenderWindowEnsurePreviewBounds( worldEntity[0] );
 		worldEntity[0].axis = baseAxis;
 		RenderWindowInitShaderParms( worldEntity[0] );
 		if ( customShader.Length() && idStr::Icmp( customShader.c_str(), "NONE" ) != 0 ) {
@@ -270,6 +307,7 @@ void idRenderWindow::PreRender() {
 			continue;
 		}
 
+		RenderWindowEnsurePreviewBounds( worldEntity[i] );
 		worldEntity[i].axis = baseAxis;
 		RenderWindowInitShaderParms( worldEntity[i] );
 		if ( customShader.Length() && idStr::Icmp( customShader.c_str(), "NONE" ) != 0 ) {
@@ -366,6 +404,7 @@ void idRenderWindow::Draw( int time, float x, float y ) {
 		gui->SetStateBool( needUpdate.c_str(), false );
 	}
 
+	UpdateRenderVars();
 	PreRender();
 	Render( time );
 

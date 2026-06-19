@@ -270,3 +270,53 @@ unsigned long MD5_BlockChecksum( const void *data, int length ) {
 
 	return val;
 }
+
+/*
+===============
+MD5_FileChecksum
+===============
+*/
+bool MD5_FileChecksum( const char *path, char digestHex[33] ) {
+	static const char hex[] = "0123456789abcdef";
+	unsigned char	buffer[64 * 1024];
+	unsigned char	digest[16];
+	MD5_CTX			ctx;
+	FILE *			file;
+
+	if ( digestHex ) {
+		digestHex[0] = '\0';
+	}
+
+	if ( !path || !path[0] || !digestHex ) {
+		return false;
+	}
+
+	file = fopen( path, "rb" );
+	if ( !file ) {
+		return false;
+	}
+
+	MD5_Init( &ctx );
+	while ( 1 ) {
+		const size_t bytesRead = fread( buffer, 1, sizeof( buffer ), file );
+		if ( bytesRead > 0 ) {
+			MD5_Update( &ctx, buffer, static_cast<unsigned int>( bytesRead ) );
+		}
+		if ( bytesRead < sizeof( buffer ) ) {
+			if ( ferror( file ) ) {
+				fclose( file );
+				return false;
+			}
+			break;
+		}
+	}
+	fclose( file );
+
+	MD5_Final( &ctx, digest );
+	for ( int i = 0; i < 16; i++ ) {
+		digestHex[i * 2] = hex[( digest[i] >> 4 ) & 0x0f];
+		digestHex[i * 2 + 1] = hex[digest[i] & 0x0f];
+	}
+	digestHex[32] = '\0';
+	return true;
+}

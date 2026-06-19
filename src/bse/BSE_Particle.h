@@ -559,7 +559,7 @@ public:
 	virtual		bool			Render( const rvBSE *effect, rvParticleTemplate *pt, const idMat3 &view, srfTriangles_t* tri, float time, float override = 1.0f );
 };
 
-class rvDebrisParticle : public rvParticle
+class rvDebrisParticle : public rvLineParticle
 {
 public:
 	friend		class			rvParticleTemplate;

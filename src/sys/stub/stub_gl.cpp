@@ -382,6 +382,7 @@ void GLimp_WakeBackEnd(void*a) {};
 void GLimp_EnableLogging(bool) {};
 void GLimp_FrontEndSleep() {};
 void GLimp_ActivateContext() {};
+bool GLimp_EnsureActiveContext(const char *) {return true;};
 void GLimp_DeactivateContext() {};
 bool GLimp_SpawnRenderThread(void (*a)()) {return false;};
 

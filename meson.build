@@ -175,6 +175,33 @@ if not build_engine and not build_games
   error('At least one build target must be enabled. Use -Dbuild_engine=true and/or -Dbuild_games=true.')
 endif
 
+openq4_pak0_file = []
+openq4_pak0_generated_header = []
+if build_engine or build_games
+  openq4_pak0_outputs = custom_target(
+    'openq4_pak0',
+    output: ['pak0.pk4', 'openq4_pak0_generated.h'],
+    command: [
+      py,
+      meson.project_source_root() / 'tools' / 'build' / 'build_pak0.py',
+      '--source-dir',
+      meson.project_source_root() / 'content' / 'baseoq4',
+      '--pak-out',
+      '@OUTPUT0@',
+      '--header-out',
+      '@OUTPUT1@',
+      '--stage-out',
+      meson.current_build_dir() / 'baseoq4' / 'pak0.pk4',
+    ],
+    build_by_default: true,
+    build_always_stale: true,
+    install: true,
+    install_dir: [install_game_dir, false],
+  )
+  openq4_pak0_file = openq4_pak0_outputs[0]
+  openq4_pak0_generated_header = [openq4_pak0_outputs[1]]
+endif
+
 if needs_game_headers
   game_libs_repo_discovery = run_command(
     py,
@@ -265,6 +292,9 @@ if engine_source_paths.length() == 0
 endif
 
 openq4_engine_sources = files(engine_source_paths)
+if build_engine
+  openq4_engine_sources += openq4_pak0_generated_header
+endif
 
 game_sources = []
 bse_sources = []
@@ -348,6 +378,10 @@ elif get_option('enforce_msvc_2026')
 endif
 
 fallback_opt = ['default_library=static']
+glew_default_options = fallback_opt
+if host_system == 'linux' and use_sdl3_backend
+  glew_default_options += ['openq4_sdl3_loader=true']
+endif
 
 glew_dep = disabler()
 stb_vorbis_dep = disabler()
@@ -356,12 +390,17 @@ sdl3_dep = disabler()
 macos_graphics_bridge_dep = disabler()
 deps = []
 if build_engine
-  glew_dep = dependency(
-    'glew',
-    required: true,
-    fallback: ['glew', 'glew_dep'],
-    default_options: fallback_opt,
-  )
+  if host_system == 'linux' and use_sdl3_backend
+    glew_sp = subproject('glew', default_options: glew_default_options)
+    glew_dep = glew_sp.get_variable('glew_dep')
+  else
+    glew_dep = dependency(
+      'glew',
+      required: true,
+      fallback: ['glew', 'glew_dep'],
+      default_options: glew_default_options,
+    )
+  endif
 
   stb_vorbis_dep = dependency(
     'stb_vorbis',
@@ -506,6 +545,8 @@ if host_system == 'darwin'
   if use_macos_metal_bridge
     shared_cpp_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']
     shared_c_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']
+    shared_objcpp_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']
+    shared_objc_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']
   endif
 endif
 

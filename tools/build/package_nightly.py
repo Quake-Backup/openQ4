@@ -28,6 +28,14 @@ from windows_runtime import (
     list_staged_runtime_files,
 )
 from generate_release_docs import GeneratedDocSite, generate_release_docs_site
+from openq4_pak import (
+    OPENQ4_PK4_FORBIDDEN_FILES,
+    OPENQ4_REQUIRED_LOOSE_GAME_FILES,
+    OPENQ4_REQUIRED_PK4_FILES,
+    PAK0_NAME,
+    copy_game_pk4,
+    create_game_pk4 as create_openq4_game_pk4,
+)
 
 
 PRODUCT_NAME = "openQ4"
@@ -60,33 +68,6 @@ ARCHIVE_SUFFIX = {
     "tar.xz": ".tar.xz",
 }
 
-OPENQ4_EXCLUDED_DIRS = {"logs", "screenshots"}
-OPENQ4_PK4_EXCLUDED_SUFFIXES = {
-    ".dll",
-    ".so",
-    ".dylib",
-    ".pdb",
-    ".lib",
-    ".exp",
-    ".ilk",
-}
-OPENQ4_REQUIRED_PK4_FILES = {
-    "gfx/guis/loadscreens/generic.dds",
-    "gfx/guis/loadscreens/generic.tga",
-    "glprogs/smaa_blend.fs",
-    "glprogs/smaa_blend.vs",
-    "glprogs/smaa_edge.fs",
-    "glprogs/smaa_edge.vs",
-    "glprogs/smaa_weights.fs",
-    "glprogs/smaa_weights.vs",
-    "materials/postprocess_openq4.mtr",
-}
-OPENQ4_REQUIRED_LOOSE_GAME_FILES = {
-    "mod.json",
-}
-OPENQ4_PK4_EXCLUDED_FILES = {
-    relative_path.lower() for relative_path in OPENQ4_REQUIRED_LOOSE_GAME_FILES
-}
 MACOS_EXPECTED_PLIST_VALUES = {
     "CFBundleExecutable": "openQ4",
     "CFBundleDisplayName": "openQ4",
@@ -785,48 +766,8 @@ def copy_required_loose_game_files(
 def create_game_pk4(
     install_game_dir: Path, destination_pk4: Path
 ) -> tuple[int, list[str], list[str]]:
-    added_files = 0
-    skipped_samples: list[str] = []
-    added_paths: set[str] = set()
-
-    with ZipFile(destination_pk4, "w", compression=ZIP_DEFLATED, compresslevel=9) as pk4:
-        for path in sorted(install_game_dir.rglob("*")):
-            rel = path.relative_to(install_game_dir)
-            if path.is_symlink():
-                raise RuntimeError(f"refusing to package symlink into {destination_pk4.name}: {rel.as_posix()}")
-            if not path.is_file():
-                continue
-
-            rel_parts_lower = {part.lower() for part in rel.parts}
-            rel_posix_lower = rel.as_posix().lower()
-
-            if rel_parts_lower & OPENQ4_EXCLUDED_DIRS:
-                if len(skipped_samples) < 5:
-                    skipped_samples.append(rel.as_posix())
-                continue
-
-            if rel_posix_lower in OPENQ4_PK4_EXCLUDED_FILES:
-                if len(skipped_samples) < 5:
-                    skipped_samples.append(rel.as_posix())
-                continue
-
-            if path.suffix.lower() in OPENQ4_PK4_EXCLUDED_SUFFIXES:
-                if len(skipped_samples) < 5:
-                    skipped_samples.append(rel.as_posix())
-                continue
-
-            arcname = rel.as_posix()
-            pk4.write(path, arcname=arcname)
-            added_paths.add(arcname.lower())
-            added_files += 1
-
-    missing_required = sorted(
-        required_path
-        for required_path in OPENQ4_REQUIRED_PK4_FILES
-        if required_path.lower() not in added_paths
-    )
-
-    return added_files, skipped_samples, missing_required
+    result = create_openq4_game_pk4(install_game_dir, destination_pk4)
+    return result.added_files, result.skipped_samples, result.missing_required
 
 
 def create_release_archive(
@@ -1582,11 +1523,17 @@ def main(argv: list[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    game_pk4_path = package_game_dir / "pak0.pk4"
+    game_pk4_path = package_game_dir / PAK0_NAME
+    staged_game_pk4_path = install_game_dir / PAK0_NAME
 
-    added_files, skipped_samples, missing_required_pk4_files = create_game_pk4(
-        install_game_dir, game_pk4_path
-    )
+    if staged_game_pk4_path.is_file():
+        pk4_result = copy_game_pk4(staged_game_pk4_path, game_pk4_path)
+    else:
+        pk4_result = create_openq4_game_pk4(install_game_dir, game_pk4_path)
+
+    added_files = pk4_result.added_files
+    skipped_samples = pk4_result.skipped_samples
+    missing_required_pk4_files = pk4_result.missing_required
     if added_files == 0:
         print(
             f"error: {GAME_DIR_NAME} pk4 packaging found no eligible files after filtering",
@@ -1673,7 +1620,7 @@ def main(argv: list[str]) -> int:
     print(f"Archive format: {archive_format}")
     print(f"Version manifest: {package_root / 'VERSION.txt'}")
     print(f"Documentation portal: {generated_docs.index_path} ({generated_docs.page_count} pages)")
-    print(f"openQ4 pk4: {game_pk4_path} ({added_files} files)")
+    print(f"openQ4 pk4: {game_pk4_path} ({added_files} files, md5 {pk4_result.md5_hex})")
     if copied_share:
         print(f"Share payload: {package_root / 'share'}")
     if copied_linux_launchers:

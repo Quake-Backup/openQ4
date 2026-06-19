@@ -28,6 +28,13 @@ def reject(haystack: str, needle: str, context: str) -> None:
         raise AssertionError(f"Unexpected {needle!r} in {context}")
 
 
+def require_before(haystack: str, first: str, second: str, context: str) -> None:
+    first_index = haystack.find(first)
+    second_index = haystack.find(second)
+    if first_index == -1 or second_index == -1 or first_index >= second_index:
+        raise AssertionError(f"Expected {first!r} before {second!r} in {context}")
+
+
 def expect_runtime_error(fragment: str, callback, context: str) -> None:
     try:
         callback()
@@ -758,6 +765,8 @@ def validate_meson_contract() -> None:
     require(meson, "use_macos_metal_bridge", "Metal bridge build predicate")
     require(meson, "modules: ['Metal', 'QuartzCore']", "Metal bridge framework dependency")
     require(meson, "-DOPENQ4_MACOS_METAL_BRIDGE=1", "Metal bridge compile define")
+    require(meson, "shared_objcpp_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']", "Metal bridge ObjC++ compile define")
+    require(meson, "shared_objc_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']", "Metal bridge ObjC compile define")
     require(meson, "-fstack-protector-strong", "macOS compile hardening")
     require(meson, "-D_FORTIFY_SOURCE=2", "macOS compile hardening")
     require(meson, "-Wl,-pie", "macOS executable hardening")
@@ -774,27 +783,48 @@ def validate_meson_contract() -> None:
 
 def validate_sdl3_runtime_contract() -> None:
     source = read("src/sys/sdl3/sdl3_backend.cpp")
+    syscon = read("src/sys/posix/posix_syscon.cpp")
     hints = function_body(source, "static void SDL3_SetVideoHintDefaults(void) {")
     summary = function_body(source, "static void SDL3_PrintGraphicsBridgeSummary(void) {")
     init = function_body(source, "bool GLimp_Init(glimpParms_t parms) {")
+    support_renderer = function_body(syscon, "static SDL_Renderer *Posix_CreateSupportRenderer( SDL_Window *window, const char *purpose ) {")
+    console_create = function_body(syscon, "static bool Posix_ConsoleCreateWindow( void ) {")
+    splash_create = function_body(syscon, "void Sys_ShowSplash( void ) {")
+    splash_drain = function_body(syscon, "static void Posix_SplashDrainEvents( SDL_WindowID windowID ) {")
 
     require(source, "OPENQ4_MACOS_METAL_BRIDGE", "SDL3 Metal bridge compile guard")
     require(source, "SDL3_IsMacOSMetalBridge", "SDL3 Metal bridge predicate")
     require(source, "macOS Metal bridge (SDL3/Cocoa host, OpenGL renderer compatibility path)", "SDL3 bridge description")
+    require(source, "static void SDL3_SetHintDefaultLogged", "SDL3 Metal bridge logged hint helper")
+    require(source, "failed to set %s hint", "SDL3 Metal bridge logged hint failure")
 
-    require(hints, "SDL_HINT_VIDEO_DRIVER", "macOS Metal bridge SDL video driver hint")
+    require(hints, "SDL3_SetHintDefaultLogged(SDL_HINT_VIDEO_DRIVER", "macOS Metal bridge SDL video driver hint")
     require(hints, '"cocoa"', "macOS Metal bridge SDL video driver hint")
-    require(hints, "SDL_HINT_RENDER_DRIVER", "macOS Metal bridge render hint")
-    require(hints, "SDL_HINT_GPU_DRIVER", "macOS Metal bridge GPU hint")
-    require(hints, "SDL_HINT_VIDEO_METAL_AUTO_RESIZE_DRAWABLE", "macOS Metal bridge drawable hint")
+    require(hints, "SDL3_SetHintDefaultLogged(SDL_HINT_RENDER_DRIVER", "macOS Metal bridge render hint")
+    require(hints, "SDL3_SetHintDefaultLogged(SDL_HINT_GPU_DRIVER", "macOS Metal bridge GPU hint")
+    require(hints, "SDL3_SetHintDefaultLogged(SDL_HINT_VIDEO_METAL_AUTO_RESIZE_DRAWABLE", "macOS Metal bridge drawable hint")
 
     require(summary, "no native Metal renderer rewrite is selected", "SDL3 Metal bridge log")
     require(summary, "SDL_VIDEO_METAL_AUTO_RESIZE_DRAWABLE", "SDL3 Metal bridge hint log")
     require(init, "SDL3_PrintGraphicsBridgeSummary();", "SDL3 GL initialization")
 
+    require(support_renderer, "OPENQ4_MACOS_METAL_BRIDGE", "Metal bridge support-window renderer path")
+    require(support_renderer, "SDL_CreateRenderer( window, NULL )", "Metal bridge support-window default renderer")
+    require(support_renderer, "falling back to software", "Metal bridge support-window renderer fallback")
+    require(support_renderer, 'SDL_CreateRenderer( window, "software" )', "Metal bridge support-window software fallback")
+    require(console_create, 'Posix_CreateSupportRenderer( s_consoleWindow.window, "system console" )', "Metal bridge system console renderer")
+    require(splash_create, 'Posix_CreateSupportRenderer( s_splashWindow.window, "splash" )', "Metal bridge splash renderer")
+    require_before(console_create, "if ( s_consoleWindow.windowID == 0 )", 'Posix_CreateSupportRenderer( s_consoleWindow.window, "system console" )', "Metal bridge system console window-id guard")
+    require_before(splash_create, "if ( s_splashWindow.windowID == 0 )", 'Posix_CreateSupportRenderer( s_splashWindow.window, "splash" )', "Metal bridge splash window-id guard")
+    require(splash_drain, "if ( !SDL_PushEvent( &event ) ) {", "Metal bridge splash event requeue failure guard")
+    require(splash_drain, "failed to requeue non-splash event", "Metal bridge splash event requeue failure guard")
+    reject(console_create, 'SDL_CreateRenderer( s_consoleWindow.window, "software" )', "Metal bridge system console hard-coded software renderer")
+    reject(splash_create, 'SDL_CreateRenderer( s_splashWindow.window, "software" )', "Metal bridge splash hard-coded software renderer")
+
 
 def validate_packaging_and_release_contract() -> None:
     package = read("tools/build/package_nightly.py")
+    pak_helper = read("tools/build/openq4_pak.py")
     plist = read("src/sys/osx/Info.plist")
     release = read(".github/workflows/manual-release.yml")
     compat = read("src/sys/osx/macosx_compat.mm")
@@ -833,7 +863,7 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "validate_macos_package_file_modes", "macOS package mode validation")
     require(package, "validate_no_package_symlinks", "macOS package symlink validation")
     require(package, "validate_no_package_special_files", "macOS package special-file validation")
-    require(package, "refusing to package symlink", "macOS PK4 symlink validation")
+    require(pak_helper, "refusing to package symlink", "macOS PK4 symlink validation")
     require(package, "macOS archive contains non-regular entry", "macOS archive special-file validation")
     require(package, "validate_version_manifest_bytes", "macOS version manifest validation")
     require(package, "validate_macos_version_manifests", "macOS version manifest validation")

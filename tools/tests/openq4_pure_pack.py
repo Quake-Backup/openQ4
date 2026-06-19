@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Regression checks for openQ4 pak0.pk4 pure-pack handling."""
+
+from __future__ import annotations
+
+import importlib.util
+import hashlib
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def read(relative_path: str) -> str:
+    return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def require(haystack: str, needle: str, context: str) -> None:
+    if needle not in haystack:
+        raise AssertionError(f"Missing {needle!r} in {context}")
+
+
+def reject(haystack: str, needle: str, context: str) -> None:
+    if needle in haystack:
+        raise AssertionError(f"Unexpected {needle!r} in {context}")
+
+
+def function_body(source: str, signature: str) -> str:
+    start = source.find(signature)
+    if start == -1:
+        raise AssertionError(f"Missing function signature {signature!r}")
+
+    depth = 0
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+
+    raise AssertionError(f"Could not find end of function {signature!r}")
+
+
+def require_order(haystack: str, first: str, second: str, context: str) -> None:
+    first_index = haystack.find(first)
+    second_index = haystack.find(second)
+    if first_index == -1 or second_index == -1:
+        raise AssertionError(f"Missing ordered symbols {first!r} and/or {second!r} in {context}")
+    if first_index >= second_index:
+        raise AssertionError(f"Expected {first!r} before {second!r} in {context}")
+
+
+def load_package_module() -> ModuleType:
+    package_path = ROOT / "tools" / "build" / "package_nightly.py"
+    spec = importlib.util.spec_from_file_location("package_nightly_for_openq4_pure_pack_test", package_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"Could not load package module from {package_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_test_file(path: Path, contents: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(contents)
+
+
+def expect_runtime_error(message: str, callback, context: str) -> None:
+    try:
+        callback()
+    except RuntimeError as exc:
+        if message not in str(exc):
+            raise AssertionError(f"Expected {message!r} in {context}, got {exc!r}") from exc
+        return
+    raise AssertionError(f"Expected RuntimeError for {context}")
+
+
+def validate_filesystem_pure_pack_contract() -> None:
+    source = read("src/framework/FileSystem.cpp")
+    md5_header = read("src/idlib/hashing/MD5.h")
+    md5_source = read("src/idlib/hashing/MD5.cpp")
+    helper = function_body(source, "bool idFileSystemLocal::IsOpenQ4PurePack(")
+    checksum_validator = function_body(source, "bool idFileSystemLocal::ValidateOpenQ4Pak0(")
+    misplaced_validator = function_body(source, "bool idFileSystemLocal::FindMisplacedOfficialPaks(")
+    startup = function_body(source, "void idFileSystemLocal::Startup(")
+    status = function_body(source, "pureStatus_t idFileSystemLocal::GetPackStatus(")
+
+    require(source, '#include "openq4_pak0_generated.h"', "filesystem generated pak0 checksum header")
+    require(source, "IsOpenQ4PurePack", "filesystem pure-pack declaration")
+    require(source, "ValidateOpenQ4Pak0", "filesystem pak0 checksum declaration")
+    require(helper, "OPENQ4_GAMEDIR", "openQ4 pure-pack directory check")
+    require(helper, '"pak0.pk4"', "openQ4 pure-pack filename check")
+    require(helper, "IsGameDirPack( pak, OPENQ4_GAMEDIR )", "openQ4 pure-pack directory check")
+    require(checksum_validator, "OPENQ4_PAK0_MD5", "openQ4 pak0 expected checksum")
+    require(checksum_validator, "MD5_FileChecksum", "openQ4 pak0 actual checksum")
+    require(checksum_validator, "FindGamePackByName( \"pak0.pk4\", OPENQ4_GAMEDIR )", "openQ4 pak0 lookup")
+    require(checksum_validator, "checksum mismatch for %s/pak0.pk4", "openQ4 pak0 checksum diagnostic")
+    require(startup, "ValidateOpenQ4Pak0( openQ4Pak0Errors )", "startup pak0 checksum validation")
+    require(startup, "openQ4 runtime content '%s/pak0.pk4' is missing or modified", "startup pak0 checksum fatal")
+    require(startup, "openQ4 runtime directory '%s' is missing a compatible mod.json", "startup mod manifest fatal")
+    require(startup, "Retail Quake 4 media pk4 files must be installed in '%s', not '%s'.", "startup misplaced retail pk4 fatal")
+    require(startup, "Put pak001.pk4 through pak022.pk4 in that folder", "startup retail pk4 location guidance")
+    require(startup, "Do not put retail pk4 files in '%s'", "startup baseoq4 retail pk4 warning")
+    require(misplaced_validator, "FindGamePackByName( info->name, OPENQ4_GAMEDIR )", "misplaced retail pk4 baseoq4 lookup")
+    require(misplaced_validator, "with checksum 0x%08x but belongs in %s", "misplaced retail pk4 checksum diagnostic")
+    require(misplaced_validator, "was found in both %s and %s; remove the copy from %s", "misplaced duplicate retail pk4 diagnostic")
+    require(md5_header, "MD5_FileChecksum", "MD5 file checksum declaration")
+    require(md5_source, "MD5_FileChecksum", "MD5 file checksum implementation")
+    require(md5_source, "fopen( path, \"rb\" )", "MD5 file checksum binary read")
+
+    require(status, "IsOpenQ4PurePack( pak )", "GetPackStatus openQ4 pure-pack check")
+    require_order(
+        status,
+        "IsOpenQ4PurePack( pak )",
+        "FindOfficialPk4Info",
+        "GetPackStatus openQ4 pure-pack precedence",
+    )
+    require_order(
+        status,
+        "IsOpenQ4PurePack( pak )",
+        "// check content for PURE_NEVER",
+        "GetPackStatus openQ4 pure-pack precedence",
+    )
+
+    openq4_check = status[
+        status.find("if ( IsOpenQ4PurePack( pak ) )") :
+        status.find("// Keep the stock Quake 4 base media")
+    ]
+    require(openq4_check, "pak->pureStatus = PURE_ALWAYS;", "openQ4 pure-pack status")
+    require(openq4_check, "return PURE_ALWAYS;", "openQ4 pure-pack return")
+
+
+def validate_install_error_console_contract() -> None:
+    posix_main = read("src/sys/posix/posix_main.cpp")
+    posix_signal = read("src/sys/posix/posix_signal.cpp")
+    posix_console = read("src/sys/posix/posix_syscon.cpp")
+    posix_header = read("src/sys/posix/posix_public.h")
+    win_console = read("src/sys/win32/win_syscon.cpp")
+
+    require(posix_header, "Posix_ConsoleSetFatalError", "POSIX fatal console declaration")
+    require(posix_header, "Posix_ConsoleFatalErrorWait", "POSIX fatal console declaration")
+    require(posix_main, "Sys_SetFatalError( text );", "POSIX Sys_Error fatal banner update")
+    require(posix_main, "Sys_Printf( \"Sys_Error: %s\\n\", text );", "POSIX Sys_Error console log text")
+    require(posix_main, "Posix_ConsoleFatalErrorWait();", "POSIX Sys_Error visible console wait")
+    require(posix_signal, "Posix_ConsoleSetFatalError( fatalError );", "POSIX fatal signal bridge")
+    require(posix_console, "POSIX_CONSOLE_STATUS_HEIGHT", "POSIX console status strip")
+    require(posix_console, "Posix_ConsoleDrawStatus", "POSIX console status rendering")
+    reject(posix_console, "statusText = \"ERROR: \";", "POSIX console fatal status text")
+    require(posix_console, "statusText.Append( scan, 1 );", "POSIX console fatal status text")
+    require(posix_console, "statusText = \"System console ready\";", "POSIX console ready status")
+    require(posix_console, "s_consoleWindow.forceFatalWindow = true;", "POSIX fatal console forced visibility")
+    require(posix_console, "s_consoleWindow.exitRequested = true;", "POSIX fatal console quit/close exit")
+    require(win_console, '"System console ready"', "Windows console ready status")
+    require(win_console, "RGB(0x1b, 0x20, 0x0a)", "Windows console status background color")
+    require(win_console, "RGB(0xf0, 0x9e, 0x0d)", "Windows console status text color")
+    require(win_console, "SetWindowText(s_wcd.hwndErrorBox, s_wcd.errorString);", "Windows console status text update")
+
+
+def validate_packager_pure_pack_contract() -> None:
+    package = load_package_module()
+    pak_helper = read("tools/build/openq4_pak.py")
+    packager = read("tools/build/package_nightly.py")
+    work = ROOT / ".tmp" / "openq4-pure-pack-contract"
+
+    require(pak_helper, "DETERMINISTIC_ZIP_TIMESTAMP", "pak0 deterministic zip metadata")
+    require(pak_helper, "OPENQ4_PK4_FORBIDDEN_FILES", "package pure-pack marker guard")
+    require(pak_helper, '"binary.conf"', "package pure-pack binary marker guard")
+    require(pak_helper, '"addon.conf"', "package pure-pack addon marker guard")
+    require(pak_helper, "must remain a pure runtime pack", "package pure-pack marker diagnostic")
+    require(pak_helper, "hashlib.md5", "pak0 full-file checksum")
+    require(pak_helper, "copy_game_pk4", "package staged pak0 copy helper")
+    require(packager, "from openq4_pak import", "release packager shared pak helper")
+    require(packager, "staged_game_pk4_path", "release packager staged pak0 preference")
+    require(packager, "copy_game_pk4(staged_game_pk4_path, game_pk4_path)", "release packager staged pak0 copy")
+    require(packager, "md5 {pk4_result.md5_hex}", "release packager checksum summary")
+
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        for marker in ("binary.conf", "addon.conf"):
+            shutil.rmtree(work, ignore_errors=True)
+            install_game_dir = work / "baseoq4"
+            destination_pk4 = work / "pak0.pk4"
+            write_test_file(install_game_dir / marker, b"marker\n")
+            expect_runtime_error(
+                "must remain a pure runtime pack",
+                lambda: package.create_game_pk4(install_game_dir, destination_pk4),
+                f"pak0.pk4 marker rejection for {marker}",
+            )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def validate_build_pak0_contract() -> None:
+    meson = read("meson.build")
+    baseoq4_meson = read("content/baseoq4/meson.build")
+    build_pak0 = read("tools/build/build_pak0.py")
+    install_guard = read("tools/build/check_staged_content_edits.py")
+    windows_runtime = read("tools/build/windows_runtime.py")
+    validator = read("tools/validation/openq4_validate.py")
+    work = ROOT / ".tmp" / "openq4-pak0-build-contract"
+
+    require(meson, "custom_target(", "Meson pak0 build target")
+    require(meson, "'openq4_pak0'", "Meson pak0 build target name")
+    require(meson, "build_pak0.py", "Meson pak0 build script")
+    require(meson, "'openq4_pak0_generated.h'", "Meson generated pak0 checksum header")
+    require(meson, "build_by_default: true", "Meson pak0 default build")
+    require(meson, "build_always_stale: true", "Meson pak0 source directory rebuild")
+    require(meson, "install: true", "Meson pak0 install")
+    require(meson, "install_dir: [install_game_dir, false]", "Meson installs pak0 but not generated header")
+    require(meson, "openq4_engine_sources += openq4_pak0_generated_header", "engine depends on pak0 checksum header")
+    require_order(meson, "'openq4_pak0'", "openq4_engine_sources += openq4_pak0_generated_header", "pak0 before engine sources")
+
+    require(baseoq4_meson, "baseoq4_manifest", "loose mod.json install")
+    reject(baseoq4_meson, "install_subdir(", "baseoq4 content should be inside pak0.pk4")
+    reject(baseoq4_meson, "'openq4_defaults.cfg'", "baseoq4 loose config install")
+    reject(baseoq4_meson, "'default.cfg'", "baseoq4 loose default config install")
+
+    require(build_pak0, "OPENQ4_PAK0_MD5", "generated pak0 checksum macro")
+    require(build_pak0, "create_game_pk4", "build pak0 helper")
+    require(build_pak0, "--stage-out", "builddir direct-run pak0 staging")
+    require(install_guard, "STALE_LOOSE_ROOT_FILES", "install guard stale loose root files")
+    require(install_guard, "STALE_LOOSE_SUBDIRS", "install guard stale loose content dirs")
+    require(install_guard, '"default.cfg"', "install guard stale loose default config")
+    require(install_guard, '"env"', "install guard stale loose env content")
+    require(install_guard, "assert_inside", "install guard deletion containment")
+    require(install_guard, "shutil.rmtree", "install guard stale loose directory pruning")
+    require(windows_runtime, "build_game_pk4", "Windows direct-run pak0 staging")
+    require(windows_runtime, 'build_runtime_game_dir / "pak0.pk4"', "Windows direct-run pak0 destination")
+    require(validator, '"pak0.pk4"', "staged payload requires pak0.pk4")
+    require(validator, "STAGED_FORBIDDEN_LOOSE_GAME_PATHS", "staged payload forbids stale loose content")
+    require(validator, '"openq4_defaults.cfg"', "staged payload forbids loose defaults")
+    require(validator, "must live inside pak0.pk4", "staged payload stale loose diagnostic")
+
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        source_dir = work / "source" / "baseoq4"
+        required_files = [
+            "gfx/guis/loadscreens/generic.dds",
+            "gfx/guis/loadscreens/generic.tga",
+            "glprogs/smaa_blend.fs",
+            "glprogs/smaa_blend.vs",
+            "glprogs/smaa_edge.fs",
+            "glprogs/smaa_edge.vs",
+            "glprogs/smaa_weights.fs",
+            "glprogs/smaa_weights.vs",
+            "materials/postprocess_openq4.mtr",
+        ]
+        for relative_path in required_files:
+            write_test_file(source_dir / relative_path, f"{relative_path}\n".encode("utf-8"))
+        write_test_file(source_dir / "mod.json", b'{"name":"openQ4"}\n')
+
+        pak_out = work / "pak0.pk4"
+        header_out = work / "openq4_pak0_generated.h"
+        stage_out = work / "stage" / "baseoq4" / "pak0.pk4"
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "build" / "build_pak0.py"),
+                "--source-dir",
+                str(source_dir),
+                "--pak-out",
+                str(pak_out),
+                "--header-out",
+                str(header_out),
+                "--stage-out",
+                str(stage_out),
+            ],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        digest = hashlib.md5(pak_out.read_bytes()).hexdigest()
+        header = header_out.read_text(encoding="utf-8")
+        require(header, f'#define OPENQ4_PAK0_MD5 "{digest}"', "generated pak0 checksum header")
+        require(header, "#define OPENQ4_PAK0_FILE_COUNT 9", "generated pak0 file count")
+        if pak_out.read_bytes() != stage_out.read_bytes():
+            raise AssertionError("Staged pak0.pk4 does not match generated pak0.pk4")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def validate_validation_coverage() -> None:
+    validator = read("tools/validation/openq4_validate.py")
+    push = read(".github/workflows/push-verification.yml")
+    commit = read(".github/workflows/commit-validation.yml")
+
+    for haystack, context in (
+        (validator, "validation runner"),
+        (push, "push verification workflow"),
+        (commit, "commit validation workflow"),
+    ):
+        require(haystack, "openq4_pure_pack.py", context)
+
+    for haystack, context in (
+        (push, "push verification workflow"),
+        (commit, "commit validation workflow"),
+    ):
+        require(haystack, "build_pak0.py", context)
+        require(haystack, "openq4_pak.py", context)
+
+
+def main() -> None:
+    validate_filesystem_pure_pack_contract()
+    validate_install_error_console_contract()
+    validate_packager_pure_pack_contract()
+    validate_build_pak0_contract()
+    validate_validation_coverage()
+    print("openq4_pure_pack: ok")
+
+
+if __name__ == "__main__":
+    main()

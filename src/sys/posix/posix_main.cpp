@@ -692,6 +692,10 @@ char *Sys_GetClipboardData(void) {
 	}
 
 	char *data = static_cast<char *>( Mem_Alloc( static_cast<int>( clipboardLength ) + 1 ) );
+	if ( data == NULL ) {
+		SDL_free( clipboardText );
+		return NULL;
+	}
 	memcpy( data, clipboardText, clipboardLength + 1 );
 	SDL_free( clipboardText );
 
@@ -990,10 +994,22 @@ void tty_Right() {
 	write( STDOUT_FILENO, "[C", 2 );
 }
 
+static const char *tty_InputState( int &inputLength, int &inputCursor ) {
+	const char *buffer = input_field.GetBuffer();
+	if ( buffer == NULL ) {
+		buffer = "";
+	}
+	const size_t rawLength = strlen( buffer );
+	inputLength = rawLength > static_cast<size_t>( idMath::INT_MAX ) ? idMath::INT_MAX : static_cast<int>( rawLength );
+	inputCursor = idMath::ClampInt( 0, inputLength, input_field.GetCursor() );
+	return buffer;
+}
+
 // clear the display of the line currently edited
 // bring cursor back to beginning of line
 void tty_Hide() {
 	int len, buf_len;
+	int cursor;
 	if ( !tty_enabled ) {
 		return;
 	}
@@ -1001,13 +1017,13 @@ void tty_Hide() {
 		input_hide++;
 		return;
 	}
+	(void)tty_InputState( buf_len, cursor );
 	// clear after cursor
-	len = strlen( input_field.GetBuffer() ) - input_field.GetCursor();
+	len = buf_len - cursor;
 	while ( len > 0 ) {
 		tty_Right();
 		len--;
 	}
-	buf_len = strlen( input_field.GetBuffer() );
 	while ( buf_len > 0 ) {
 		tty_Del();
 		buf_len--;
@@ -1024,10 +1040,12 @@ void tty_Show() {
 	assert( input_hide > 0 );
 	input_hide--;
 	if ( input_hide == 0 ) {
-		char *buf = input_field.GetBuffer();
+		int bufferLength = 0;
+		int cursor = 0;
+		const char *buf = tty_InputState( bufferLength, cursor );
 		if ( buf[0] ) {
-			write( STDOUT_FILENO, buf, strlen( buf ) );
-			int back = strlen( buf ) - input_field.GetCursor();
+			write( STDOUT_FILENO, buf, bufferLength );
+			int back = bufferLength - cursor;
 			while ( back > 0 ) {
 				tty_Left();
 				back--;
@@ -1066,14 +1084,24 @@ char *Posix_ConsoleInput( void ) {
 				input_field.SetCursor( 0 );
 				break;
 			case 5:
-				input_field.SetCursor( strlen( input_field.GetBuffer() ) );
+				{
+					int inputLength = 0;
+					int inputCursor = 0;
+					(void)tty_InputState( inputLength, inputCursor );
+					input_field.SetCursor( inputLength );
+				}
 				break;
 			case 127:
 			case 8:
 				input_field.CharEvent( K_BACKSPACE );
 				break;
 			case '\n':
-				idStr::Copynz( input_ret, input_field.GetBuffer(), sizeof( input_ret ) );
+				{
+					int inputLength = 0;
+					int inputCursor = 0;
+					const char *inputBuffer = tty_InputState( inputLength, inputCursor );
+					idStr::Copynz( input_ret, inputBuffer, sizeof( input_ret ) );
+				}
 				assert( hidden );
 				tty_Show();
 				write( STDOUT_FILENO, &key, 1 );
@@ -1118,7 +1146,12 @@ char *Posix_ConsoleInput( void ) {
 						break;
 					case 70:
 						// xterm only
-						input_field.SetCursor( strlen( input_field.GetBuffer() ) );
+						{
+							int inputLength = 0;
+							int inputCursor = 0;
+							(void)tty_InputState( inputLength, inputCursor );
+							input_field.SetCursor( inputLength );
+						}
 						break;
 					default:
 						Sys_Printf( "dropping sequence: '27' '79' '%d' ", key );
@@ -1174,7 +1207,12 @@ char *Posix_ConsoleInput( void ) {
 							return NULL;
 						}
 						// only screen and linux terms
-						input_field.SetCursor( strlen( input_field.GetBuffer() ) );
+						{
+							int inputLength = 0;
+							int inputCursor = 0;
+							(void)tty_InputState( inputLength, inputCursor );
+							input_field.SetCursor( inputLength );
+						}
 						break;
 					}
 					case 51: {
@@ -1324,11 +1362,20 @@ void Sys_GenerateEvents( void ) {
 
 	if ( ( s = Posix_ConsoleInput() ) ) {
 		char *b;
+		size_t commandLength;
 		int len;
 
-		len = strlen( s ) + 1;
+		commandLength = strlen( s );
+		if ( commandLength > idMath::INT_MAX - 1 ) {
+			common->Printf( "Sys_GenerateEvents: console input is too long\n" );
+			return;
+		}
+		len = (int)commandLength + 1;
 		b = (char *)Mem_Alloc( len );
-		strcpy( b, s );
+		if ( b == NULL ) {
+			return;
+		}
+		idStr::Copynz( b, s, len );
 		Posix_QueEvent( SE_CONSOLE, 0, 0, len, b );
 	}
 }
@@ -1342,6 +1389,9 @@ low level output
 void Sys_DebugPrintf( const char *fmt, ... ) {
 	va_list argptr;
 
+	if ( fmt == NULL ) {
+		return;
+	}
 	tty_Hide();
 	va_start( argptr, fmt );
 	vprintf( fmt, argptr );
@@ -1350,6 +1400,9 @@ void Sys_DebugPrintf( const char *fmt, ... ) {
 }
 
 void Sys_DebugVPrintf( const char *fmt, va_list arg ) {
+	if ( fmt == NULL ) {
+		return;
+	}
 	tty_Hide();
 	vprintf( fmt, arg );
 	tty_Show();
@@ -1361,6 +1414,9 @@ void Sys_Printf(const char *msg, ...) {
 	char text[MAX_POSIX_PRINT_MSG];
 	va_list argptr;
 
+	if ( msg == NULL ) {
+		msg = "";
+	}
 	va_start( argptr, msg );
 	idStr::vsnPrintf( text, sizeof( text ) - 1, msg, argptr );
 	va_end( argptr );
@@ -1376,6 +1432,9 @@ void Sys_Printf(const char *msg, ...) {
 void Sys_VPrintf(const char *msg, va_list arg) {
 	char text[MAX_POSIX_PRINT_MSG];
 
+	if ( msg == NULL ) {
+		msg = "";
+	}
 	idStr::vsnPrintf( text, sizeof( text ) - 1, msg, arg );
 	text[sizeof( text ) - 1] = '\0';
 
@@ -1394,12 +1453,21 @@ Sys_Error
 #if defined( OPENQ4_POSIX_OWNS_COMMON_SYS )
 void Sys_Error(const char *error, ...) {
 	va_list argptr;
+	char text[MAX_POSIX_PRINT_MSG];
 
-	Sys_Printf( "Sys_Error: " );
-	va_start( argptr, error );
-	Sys_DebugVPrintf( error, argptr );
-	va_end( argptr );
-	Sys_Printf( "\n" );
+	if ( error == NULL ) {
+		idStr::Copynz( text, "Unknown error", sizeof( text ) );
+	} else {
+		va_start( argptr, error );
+		idStr::vsnPrintf( text, sizeof( text ) - 1, error, argptr );
+		va_end( argptr );
+		text[sizeof( text ) - 1] = '\0';
+	}
+	text[sizeof( text ) - 1] = '\0';
+
+	Sys_SetFatalError( text );
+	Sys_Printf( "Sys_Error: %s\n", text );
+	Posix_ConsoleFatalErrorWait();
 
 	Posix_Exit( EXIT_FAILURE );
 }

@@ -82,6 +82,7 @@ def validate_keyboard_and_mouse_contract() -> None:
     control_char = function_body(source, "static int SDL3_MapControlChar(int key, bool down, SDL_Keymod modState) {")
     map_mouse_button = function_body(source, "static int SDL3_MapMouseButton(Uint8 button) {")
     queue_button = function_body(source, "static void SDL3_QueueMouseButtonEvent(int key, bool down, int eventTime, bool pollState) {")
+    consume_delta = function_body(source, "static int SDL3_ConsumeMouseDelta(float delta, float &remainder) {")
     activate_mouse = function_body(source, "void IN_ActivateMouse(void) {")
     init_input = function_body(source, "void Sys_InitInput(void) {")
     pump = function_body(source, "bool Sys_SDL_PumpEvents(void) {")
@@ -112,6 +113,19 @@ def validate_keyboard_and_mouse_contract() -> None:
 
     require(queue_button, "Sys_QueEvent(eventTime, SE_KEY, key, down ? 1 : 0, 0, NULL);", "SDL3 mouse button event queue")
     require(queue_button, "SDL3_QueueMouseInput(M_ACTION1 + (key - K_MOUSE1)", "SDL3 mouse poll queue")
+    require(source, "static const int SDL3_MAX_MOUSE_DELTA_PER_EVENT = 32767;", "SDL3 mouse delta cast guard")
+    require(pump, "!std::isfinite(event.motion.x) || !std::isfinite(event.motion.y)", "SDL3 mouse motion finite guard")
+    require(pump, "!std::isfinite(event.motion.xrel) || !std::isfinite(event.motion.yrel)", "SDL3 relative mouse motion finite guard")
+    require(pump, "s_haveAbsoluteMousePosition = false;\n\t\t\t\t\tSDL3_ResetMenuMouseTracking();", "SDL3 malformed mouse motion state reset")
+    require(consume_delta, "if (!std::isfinite(delta) || !std::isfinite(remainder))", "SDL3 mouse delta finite guard")
+    require(consume_delta, "if (!std::isfinite(accumulated))", "SDL3 mouse accumulated delta finite guard")
+    require(consume_delta, "idMath::ClampFloat(", "SDL3 mouse delta clamp")
+    require(source, "static const int SDL3_MAX_MOUSE_WHEEL_STEPS_PER_EVENT = 64;", "SDL3 mouse wheel flood guard")
+    require(pump, "if (!std::isfinite(deltaY))", "SDL3 mouse wheel finite guard")
+    require(pump, "idMath::ClampFloat(", "SDL3 mouse wheel delta clamp")
+    require(pump, "wheelSteps == idMath::INT_MIN", "SDL3 mouse wheel INT_MIN guard")
+    require(pump, "queuedWheelSteps", "SDL3 mouse wheel clamped poll event")
+    reject(pump, "abs(wheelSteps)", "SDL3 mouse wheel raw abs overflow guard")
 
     for token in (
         "SDL_SetWindowRelativeMouseMode(s_sdlWindow, true)",
@@ -155,6 +169,10 @@ def validate_controller_contract() -> None:
     gyro = function_body(source, "static void SDL3_HandleGamepadGyroEvent(const SDL_GamepadSensorEvent &event, int eventTime) {")
     touchpad = function_body(source, "static void SDL3_HandleGamepadTouchpadEvent(const SDL_GamepadTouchpadEvent &event, int eventTime) {")
     finger = function_body(source, "static void SDL3_HandleFingerEvent(const SDL_TouchFingerEvent &event, int eventTime) {")
+    clamp_range = function_body(source, "static float SDL3_ClampRange(float value, float minValue, float maxValue) {")
+    clamp_unit = function_body(source, "static float SDL3_ClampUnit(float value) {")
+    clamp_rumble = function_body(source, "static Uint16 SDL3_ClampRumbleValue(float value) {")
+    axis_float = function_body(source, "static int SDL3_AxisFloatToJoystickValue(float value) {")
     rumble = function_body(source, "bool Sys_SetJoystickRumble(float lowFrequency, float highFrequency, int durationMsec) {")
     background = function_body(source, "static void SDL3_HandleAppBackgroundTransition(int eventTime, const char *reason) {")
     foreground = function_body(source, "static void SDL3_HandleAppForegroundTransition(int eventTime, const char *reason) {")
@@ -208,6 +226,10 @@ def validate_controller_contract() -> None:
     require(open_gamepad, "SDL3_UpdateGamepadSensorState(true)", "SDL3 gamepad sensor capability update")
     require(open_joystick, "SDL_OpenJoystick(instanceId)", "SDL3 joystick open")
     require(open_joystick, "if (SDL_IsGamepad(instanceId))", "SDL3 joystick fallback excludes gamepads")
+    require(clamp_range, "if (!std::isfinite(value))", "SDL3 controller float clamp finite guard")
+    require(clamp_unit, "return SDL3_ClampRange(value, 0.0f, 1.0f);", "SDL3 unit clamp finite guard")
+    require(clamp_rumble, "if (!std::isfinite(value) || value <= 0.0f)", "SDL3 rumble value finite guard")
+    require(axis_float, "if (!std::isfinite(value))", "SDL3 joystick float conversion finite guard")
 
     for token in (
         "SDL_GAMEPAD_AXIS_LEFTX",

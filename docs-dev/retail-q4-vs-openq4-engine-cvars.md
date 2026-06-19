@@ -271,7 +271,6 @@ Generated on 2026-04-19.
 | `r_hdrVibrance` | src/renderer/RenderSystem_init.cpp:127 |
 | `r_hdrWhitePoint` | src/renderer/RenderSystem_init.cpp:123 |
 | `r_interactionColorMode` | src/renderer/RenderSystem_init.cpp:210 |
-| `r_lensFlare` | src/renderer/RenderSystem_init.cpp:104 |
 | `r_lightGridBakeAsyncReadback` | src/renderer/RenderSystem_init.cpp:231 |
 | `r_lightGridBakeMemoryMB` | src/renderer/RenderSystem_init.cpp:232 |
 | `r_lightGridBakeReadbackSlots` | src/renderer/RenderSystem_init.cpp:233 |

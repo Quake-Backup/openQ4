@@ -34,8 +34,6 @@ SELFTEST_CHECKS = [
     ["RendererTierContract self-test passed"],
     ["RendererUpload self-test passed"],
     ["RendererGpuTimer self-test passed", "RendererGpuTimer self-test skipped"],
-    ["RendererLensFlareSettings self-test passed"],
-    ["RendererLensFlareRuntime self-test passed"],
     ["RendererScenePacket self-test passed"],
     ["RendererRenderGraph self-test passed"],
     ["RendererRenderGraphResource self-test passed", "RendererRenderGraphResource self-test skipped"],
@@ -123,24 +121,6 @@ DETERMINISTIC_CAPTURE_MATRIX = [
         "scene": "game/airdefense1 fixed spawn, no input for 3 seconds",
         "purpose": "outdoor lighting, terrain decals, BSE smoke, and stock material parity",
     },
-    {
-        "id": "capture-lensflare-storage1-off",
-        "mode": "SP",
-        "scene": "game/storage1 fixed spawn with `r_lensFlare 0`",
-        "purpose": "baseline image for lens-flare screenshot comparisons without flare contribution",
-    },
-    {
-        "id": "capture-lensflare-storage1-corona",
-        "mode": "SP",
-        "scene": "game/storage1 fixed spawn with `r_lensFlare 1`",
-        "purpose": "corona-tier lens-flare screenshot comparison against the no-flare baseline and references",
-    },
-    {
-        "id": "capture-lensflare-storage1-high",
-        "mode": "SP",
-        "scene": "game/storage1 fixed spawn with `r_lensFlare 2`",
-        "purpose": "high-tier corona/ghost/streak lens-flare screenshot comparison against references",
-    },
 ]
 
 RENDERDOC_TIER_MATRIX = [
@@ -168,50 +148,29 @@ RENDERDOC_TIER_MATRIX = [
 
 SHADER_LIBRARY_TIER_MATRIX = [
     {
-        "id": "shader-lensflare-gl33",
+        "id": "shader-library-gl33",
         "tier": "gl33",
-        "coverage": "GLSL 330 lens-flare accumulation/composite compile, link, exact-version lookup, and sampler reflection",
+        "coverage": "GLSL 330 Shader Library V2 compile, link, exact-version lookup, and sampler reflection",
     },
     {
-        "id": "shader-lensflare-gl41",
+        "id": "shader-library-gl41",
         "tier": "gl41",
-        "coverage": "GLSL 330/410 lens-flare coverage for the macOS-class GL 4.1 portability floor",
+        "coverage": "GLSL 330/410 Shader Library V2 coverage for the macOS-class GL 4.1 portability floor",
     },
     {
-        "id": "shader-lensflare-gl43",
+        "id": "shader-library-gl43",
         "tier": "gl43",
-        "coverage": "GLSL 330/410/430 lens-flare coverage alongside GPU-driven SSBO-capable tiers",
+        "coverage": "GLSL 330/410/430 Shader Library V2 coverage alongside GPU-driven SSBO-capable tiers",
     },
     {
-        "id": "shader-lensflare-gl45",
+        "id": "shader-library-gl45",
         "tier": "gl45",
-        "coverage": "GLSL 330/410/430/450 lens-flare coverage alongside low-overhead DSA-capable tiers",
+        "coverage": "GLSL 330/410/430/450 Shader Library V2 coverage alongside low-overhead DSA-capable tiers",
     },
     {
-        "id": "shader-lensflare-gl46",
+        "id": "shader-library-gl46",
         "tier": "gl46",
-        "coverage": "top-tier lens-flare shader coverage with the highest selected GLSL variant and all reflected sampler bindings",
-    },
-]
-
-LENS_FLARE_SIGNOFF_MATRIX = [
-    {
-        "platform": "Windows x64",
-        "shaderCoverage": "shader-lensflare-gl33/gl41/gl43/gl45/gl46 safe cases plus the `lensflare-signoff` gameplay profile under `auto`, `gl41`, and `gl45`",
-        "visualEvidence": "approved Windows reference comparisons from `.tmp\\renderer-references\\lensflare-signoff\\windows-x64` or an explicitly reviewed replacement reference bundle",
-        "performanceEvidence": "`lensflare-signoff` pacing-only run with `com_maxfps 0`, `r_swapInterval 0`, wall-clock sampling, and target-machine P95/P99 thresholds",
-    },
-    {
-        "platform": "Linux x64/arm64",
-        "shaderCoverage": "assetless shader-tier coverage on supported GL tiers plus SDL3 gameplay capture on `auto` and the highest supported forced tier",
-        "visualEvidence": "Linux-specific reference comparisons because Mesa/proprietary-driver output and desktop color paths are allowed to differ from Windows",
-        "performanceEvidence": "uncapped pacing evidence for desktop Linux and Steam Deck profile coverage when a Deck/SteamOS target is in scope",
-    },
-    {
-        "platform": "macOS",
-        "shaderCoverage": "`shader-lensflare-gl41` and `auto` fallback coverage; GL 4.3+ cases are not expected on Apple OpenGL",
-        "visualEvidence": "macOS-specific reference comparisons from `lensflare-signoff --tiers gl41,auto`",
-        "performanceEvidence": "off/corona/high pacing evidence on the GL 4.1 path, with platform notes for any reduced-quality fallback",
+        "coverage": "top-tier Shader Library V2 coverage with the highest selected GLSL variant and reflected sampler bindings",
     },
 ]
 
@@ -268,16 +227,6 @@ GAMEPLAY_BENCHMARK_HARNESS = [
         "profile": "shadow-regression",
         "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile shadow-regression --reference-dir .tmp\\renderer-references\\shadow-regression\\windows-x64",
         "coverage": "bounded five-scene CSM-enabled projected, point, character/skinned, and alpha-tested shadow-map captures with optional TGA reference comparison and screenshot hashes",
-    },
-    {
-        "profile": "lensflare",
-        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile lensflare",
-        "coverage": "lens-flare screenshot captures over stable SP scenes with off/corona/high presets and optional TGA reference comparison",
-    },
-    {
-        "profile": "lensflare-signoff",
-        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile lensflare-signoff",
-        "coverage": "cross-platform lens-flare sign-off profile covering storage/outdoor scenes, off/corona/high presets, and auto/macOS-floor/low-overhead GL tiers for visual and pacing evidence",
     },
 ]
 
@@ -547,8 +496,6 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+uiFontParitySelfTest",
         "+rendererUploadSelfTest",
         "+rendererGpuTimerSelfTest",
-        "+rendererLensFlareSettingsSelfTest",
-        "+rendererLensFlareRuntimeSelfTest",
         "+rendererScenePacketSelfTest",
         "+rendererRenderGraphSelfTest",
         "+rendererRenderGraphResourceSelfTest",
@@ -1098,13 +1045,10 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 "checks": [
                     ["RendererModernGLShaderLibrary self-test passed"],
                     ["Modern GL shader library: available"],
-                    ["lensFlare=1/1"],
-                    ["lensFlare(programs="],
-                    ["lensFlarePrograms="],
-                    ["lensFlareVersions="],
-                    ["lensFlareSamplers="],
-                    ["accum="],
-                    ["composite="],
+                    ["programs="],
+                    ["kinds="],
+                    ["permutations="],
+                    ["reflection(ubo="],
                     ["samplers="],
                     [f"Requested GL tier: {tier}"],
                     ["Selected renderer tier:"],
@@ -1372,7 +1316,6 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "deterministicCaptureMatrix": DETERMINISTIC_CAPTURE_MATRIX,
         "renderDocTierMatrix": RENDERDOC_TIER_MATRIX,
         "shaderLibraryTierMatrix": SHADER_LIBRARY_TIER_MATRIX,
-        "lensFlareSignoffMatrix": LENS_FLARE_SIGNOFF_MATRIX,
         "longRunValidationMatrix": LONG_RUN_VALIDATION_MATRIX,
         "perfRegressionThresholds": PERF_REGRESSION_THRESHOLDS,
         "promotionEvidenceGate": {
@@ -1491,20 +1434,6 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
 
     lines += [
         "",
-        "## Lens Flare Cross-Platform Sign-Off",
-        "",
-        "`tools/tests/renderer_gameplay_benchmark.py --profile lensflare-signoff` is the repeatable map-loading profile for final lens-flare visual and pacing evidence. It must be run on each target platform with platform-specific screenshot references before release notes claim cross-platform visual parity.",
-        "",
-        "| Platform | Shader Coverage | Visual Evidence | Performance Evidence |",
-        "|---|---|---|---|",
-    ]
-    for item in LENS_FLARE_SIGNOFF_MATRIX:
-        lines.append(
-            f"| {item['platform']} | {item['shaderCoverage']} | {item['visualEvidence']} | {item['performanceEvidence']} |"
-        )
-
-    lines += [
-        "",
         "## Long-Run Matrix",
         "",
         "| Case | Mode | Purpose |",
@@ -1618,12 +1547,6 @@ def main(argv: list[str]) -> int:
         print("\nShader library tier cases:")
         for case in SHADER_LIBRARY_TIER_MATRIX:
             print(f"  {case['id']}: r_glTier {case['tier']} - {case['coverage']}")
-        print("\nLens flare cross-platform sign-off:")
-        for case in LENS_FLARE_SIGNOFF_MATRIX:
-            print(
-                f"  {case['platform']}: {case['shaderCoverage']} - "
-                f"{case['visualEvidence']}; {case['performanceEvidence']}"
-            )
         print("\nLong-run cases:")
         for case in LONG_RUN_VALIDATION_MATRIX:
             print(f"  {case['id']}: {case['mode']} - {case['purpose']}")

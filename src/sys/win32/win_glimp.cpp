@@ -1080,10 +1080,22 @@ GLimp_ActivateContext
 
 ===================
 */
-void GLimp_ActivateContext( void ) {
-	if ( !qwglMakeCurrent( win32.hDC, win32.hGLRC ) ) {
+bool GLimp_EnsureActiveContext( const char *operation ) {
+	if ( win32.hDC == NULL || win32.hGLRC == NULL ) {
+		common->Printf( "WGL: cannot make GL context current for %s: missing device or render context\n", operation != NULL ? operation : "operation" );
 		win32.wglErrors++;
+		return false;
 	}
+	if ( !qwglMakeCurrent( win32.hDC, win32.hGLRC ) ) {
+		common->Printf( "WGL: wglMakeCurrent failed for %s\n", operation != NULL ? operation : "operation" );
+		win32.wglErrors++;
+		return false;
+	}
+	return true;
+}
+
+void GLimp_ActivateContext( void ) {
+	(void)GLimp_EnsureActiveContext( "activate context" );
 }
 
 /*

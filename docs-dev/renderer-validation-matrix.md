@@ -39,7 +39,7 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, upload manager, GPU timer, lens-flare settings contract, lens-flare accumulation/composite runtime contract, lens-flare Shader Library V2 compile/reflection contract, scene packet, lens-flare post command categorization, render graph, lens-flare transient resource edges, render graph resource owner, material resource table, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, material resource table, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
 | `renderer-cluster-grid-selftest` | opt-in modern clustered-light preparation coverage for point/projected/fog/ambient/special light classification, budgeted dynamic grid slicing, cluster reference packing, spill/overflow accounting, GL 3.3 UBO fallback readiness, GL 4.3+ SSBO upload readiness, cluster debug-overlay texture generation, and `gfxInfo` reporting |
@@ -54,12 +54,11 @@ Automated coverage:
 | `renderer-benchmark-selftest` | Phase 16 benchmark coverage for rolling P50/P95/P99 frame-time capture, CPU front-end/visibility/packet/graph/submit/present timings, GPU pass timing fields, upload/draw/light/cluster/fallback counters, benchmark presets, and performance-threshold reporting |
 | `renderer-gpu-driven-selftest` | forced `r_glTier gl43` coverage for GL 4.3 SSBO submit records, compute scissor culling, clustered-bin validation, compacted indirect command generation, CPU/GPU readback comparison, masked multi-draw indirect execution, GPU timer coverage, and `gfxInfo` reporting |
 | `renderer-low-overhead-selftest` | forced `r_glTier gl45` coverage for GL 4.5 DSA graph texture/FBO allocation, DSA sampler creation, named buffer/FBO updates, UBO/SSBO/texture/sampler multi-bind batches, submit-batch compaction, bindless experiment reporting, persistent upload defaults, fence diagnostics, and `gfxInfo` reporting |
-| `shader-lensflare-gl33` | forced `r_glTier gl33` coverage for GLSL 330 lens-flare accumulation/composite compile, link, exact-version lookup, and sampler reflection |
-| `shader-lensflare-gl41` | forced `r_glTier gl41` coverage for GLSL 330/410 lens-flare accumulation/composite variants on the macOS-class GL 4.1 portability floor |
-| `shader-lensflare-gl43` | forced `r_glTier gl43` coverage for GLSL 330/410/430 lens-flare accumulation/composite variants alongside GPU-driven SSBO-capable tiers |
-| `shader-lensflare-gl45` | forced `r_glTier gl45` coverage for GLSL 330/410/430/450 lens-flare accumulation/composite variants alongside low-overhead DSA-capable tiers |
-| `shader-lensflare-gl46` | forced `r_glTier gl46` coverage for top-tier lens-flare shader compile/reflection with the highest selected GLSL variant and all reflected sampler bindings |
-| `lensflare-signoff` | opt-in gameplay profile, not a safe startup case: cross-platform storage/outdoor lens-flare captures across off/corona/high presets and auto/macOS-floor/low-overhead GL tiers |
+| `shader-library-gl33` | forced `r_glTier gl33` coverage for GLSL 330 Shader Library V2 compile, link, exact-version lookup, and sampler reflection |
+| `shader-library-gl41` | forced `r_glTier gl41` coverage for GLSL 330/410 Shader Library V2 variants on the macOS-class GL 4.1 portability floor |
+| `shader-library-gl43` | forced `r_glTier gl43` coverage for GLSL 330/410/430 Shader Library V2 variants alongside GPU-driven SSBO-capable tiers |
+| `shader-library-gl45` | forced `r_glTier gl45` coverage for GLSL 330/410/430/450 Shader Library V2 variants alongside low-overhead DSA-capable tiers |
+| `shader-library-gl46` | forced `r_glTier gl46` coverage for top-tier Shader Library V2 coverage with the highest selected GLSL variant and reflected sampler bindings |
 | `tier-auto` | default compatibility-preserving startup and `gfxInfo` |
 | `tier-legacy` | forced legacy compatibility startup and `gfxInfo` |
 | `tier-gl33` | forced GL 3.3 startup and `gfxInfo` |
@@ -76,9 +75,9 @@ The forced tier cases pass when startup succeeds and the selected tier is report
 
 Automated safe cases also fail if their logs contain renderer warning signatures such as `idStr::snPrintf` overflow, `WARNING: idStr`, shader compile/program link failures, or OpenGL error markers. The generated Markdown/JSON report records per-case warning-signature counts so the Phase 8 `warnings=0` promotion token cannot be inferred from expected-line checks alone.
 
-The visible-depth, G-buffer, clustered-light, deferred-resolve, forward+, modern-visible, modern-compatibility, compatibility-gates, default-promotion, default-safety, benchmark, GPU-driven, low-overhead, and lens-flare shader-tier self-tests intentionally run as their own safe cases instead of being appended to the foundation self-test startup command, because the engine command parser has a fixed startup command list budget.
+The visible-depth, G-buffer, clustered-light, deferred-resolve, forward+, modern-visible, modern-compatibility, compatibility-gates, default-promotion, default-safety, benchmark, GPU-driven, low-overhead, and shader-library tier self-tests intentionally run as their own safe cases instead of being appended to the foundation self-test startup command, because the engine command parser has a fixed startup command list budget.
 
-The lens-flare shader-tier cases force `r_glTier gl33`, `gl41`, `gl43`, `gl45`, and `gl46`, run `rendererShaderLibrarySelfTest`, and require `gfxInfo` to report `Modern GL shader library: available` plus the `lensFlare(programs=...)` coverage tail. The runner marks these cases as assetless startup probes, because they only need renderer initialization and should not load game scripts just to validate internal shader variants. The runtime self-test verifies both lens-flare accumulation and composite programs for every compiled GLSL tier, including `uMainTexture`, `uSceneDepth`, and `uLensFlareAccum` sampler reflection, so a backend can no longer pass by compiling only the highest available variant.
+The shader-library tier cases force `r_glTier gl33`, `gl41`, `gl43`, `gl45`, and `gl46`, run `rendererShaderLibrarySelfTest`, and require `gfxInfo` to report `Modern GL shader library: available` with program, kind, permutation, and sampler-reflection coverage. The runner marks these cases as assetless startup probes, because they only need renderer initialization and should not load game scripts just to validate internal shader variants.
 
 Gameplay benchmark acceptance should use wall-clock sampling for FPS claims. The `--sample-msec` option emits `waitMsec` into the generated cfg so the measurement window is a real duration rather than a frame count:
 
@@ -131,9 +130,6 @@ These image captures are the comparison set for scenes where deterministic outpu
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |
-| `capture-lensflare-storage1-off` | SP | `game/storage1` fixed spawn with `r_lensFlare 0` | baseline image for lens-flare screenshot comparisons without flare contribution |
-| `capture-lensflare-storage1-corona` | SP | `game/storage1` fixed spawn with `r_lensFlare 1` | corona-tier lens-flare screenshot comparison against the no-flare baseline and references |
-| `capture-lensflare-storage1-high` | SP | `game/storage1` fixed spawn with `r_lensFlare 2` | high-tier corona/ghost/streak lens-flare screenshot comparison against references |
 
 ## RenderDoc Tier Checklist
 
@@ -149,39 +145,15 @@ Capture with `r_rendererMetrics 2`, `r_rendererGpuTimers 1` when available, and 
 
 ## Shader Library Tier Checklist
 
-These safe cases run `rendererShaderLibrarySelfTest` under forced GL tiers and require `gfxInfo` to expose the lens-flare program/reflection coverage tail. They use assetless startup automatically inside `renderer_validation_matrix.py`.
+These safe cases run `rendererShaderLibrarySelfTest` under forced GL tiers and require `gfxInfo` to expose Shader Library V2 program/reflection coverage. They use assetless startup automatically inside `renderer_validation_matrix.py`.
 
 | Case | Forced tier | Coverage |
 |---|---|---|
-| `shader-lensflare-gl33` | `r_glTier gl33` | GLSL 330 lens-flare accumulation/composite compile, link, exact-version lookup, and sampler reflection |
-| `shader-lensflare-gl41` | `r_glTier gl41` | GLSL 330/410 lens-flare coverage for the macOS-class GL 4.1 portability floor |
-| `shader-lensflare-gl43` | `r_glTier gl43` | GLSL 330/410/430 lens-flare coverage alongside GPU-driven SSBO-capable tiers |
-| `shader-lensflare-gl45` | `r_glTier gl45` | GLSL 330/410/430/450 lens-flare coverage alongside low-overhead DSA-capable tiers |
-| `shader-lensflare-gl46` | `r_glTier gl46` | top-tier lens-flare shader coverage with the highest selected GLSL variant and all reflected sampler bindings |
-
-## Lens Flare Cross-Platform Sign-Off
-
-`tools\tests\renderer_gameplay_benchmark.py --profile lensflare-signoff` is the release-facing lens-flare profile. It runs `game/storage1` and `game/airdefense1` with `r_lensFlare` off, corona, and high-quality presets under `r_glTier auto`, `gl41`, and `gl45`. Use `--limit` only for local smoke checks; release evidence should run the full profile on each target platform that is being claimed.
-
-Run visual evidence with platform-specific approved references:
-
-```powershell
-python tools\tests\renderer_gameplay_benchmark.py --profile lensflare-signoff --reference-dir .tmp\renderer-references\lensflare-signoff\windows-x64 --require-references
-```
-
-Run pacing evidence with wall-clock sampling and target-machine thresholds:
-
-```powershell
-python tools\tests\renderer_gameplay_benchmark.py --profile lensflare-signoff --sample-msec 3000 --pacing-only --maxfps 0 --swap-intervals 0 --autoexec-delay-ms 2000 --min-pacing-hz 120 --max-p95-ms 12 --max-p99-ms 20
-```
-
-Platform evidence requirements:
-
-| Platform | Shader coverage | Visual evidence | Performance evidence |
-|---|---|---|---|
-| Windows x64 | `shader-lensflare-gl33`, `gl41`, `gl43`, `gl45`, and `gl46`, plus `lensflare-signoff` on `auto`, `gl41`, and `gl45` | Windows-specific approved references, or an explicitly reviewed replacement reference bundle | uncapped `lensflare-signoff` pacing-only run with target-machine P95/P99 thresholds |
-| Linux x64/arm64 | assetless shader-tier coverage on supported GL tiers plus SDL3 gameplay capture on `auto` and the highest supported forced tier | Linux-specific references because Mesa/proprietary-driver output and desktop color paths can differ | desktop Linux and Steam Deck profile pacing evidence when those targets are in scope |
-| macOS | `shader-lensflare-gl41` plus `auto` fallback; GL 4.3+ is not expected on Apple OpenGL | macOS-specific `lensflare-signoff --tiers gl41,auto` references | off/corona/high pacing evidence on the GL 4.1 path, with reduced-quality fallback notes when needed |
+| `shader-library-gl33` | `r_glTier gl33` | GLSL 330 Shader Library V2 compile, link, exact-version lookup, and sampler reflection |
+| `shader-library-gl41` | `r_glTier gl41` | GLSL 330/410 Shader Library V2 coverage for the macOS-class GL 4.1 portability floor |
+| `shader-library-gl43` | `r_glTier gl43` | GLSL 330/410/430 Shader Library V2 coverage alongside GPU-driven SSBO-capable tiers |
+| `shader-library-gl45` | `r_glTier gl45` | GLSL 330/410/430/450 Shader Library V2 coverage alongside low-overhead DSA-capable tiers |
+| `shader-library-gl46` | `r_glTier gl46` | top-tier Shader Library V2 coverage with the highest selected GLSL variant and reflected sampler bindings |
 
 ## Long-Run Matrix
 
@@ -250,8 +222,6 @@ python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state
 python tools\tests\renderer_gameplay_benchmark.py --profile tiers
 python tools\tests\renderer_gameplay_benchmark.py --profile presentation
 python tools\tests\renderer_gameplay_benchmark.py --profile shadows
-python tools\tests\renderer_gameplay_benchmark.py --profile lensflare
-python tools\tests\renderer_gameplay_benchmark.py --profile lensflare-signoff
 ```
 
 The runner fails a case when the process times out, no gameplay screenshot is produced, the benchmark/gfxInfo lines are missing, image comparison fails when references are required, or renderer warning markers such as `idStr::snPrintf: overflow`, `WARNING: idStr`, shader compile failures, program link failures, or fatal OpenGL startup failures appear in the log.
@@ -264,15 +234,10 @@ The runner fails a case when the process times out, no gameplay screenshot is pr
 | `tiers` | forced `r_glTier auto`, `legacy`, `gl33`, `gl41`, `gl43`, `gl45`, and `gl46` gameplay probes |
 | `presentation` | `r_swapInterval 0/1`, `com_maxfps 0/120/240`, windowed, and fullscreen coverage for uncapped/high-refresh validation |
 | `shadows` | stencil fallback, mapped shadows, CSM, translucent moments, and debug-overlay modes `1..6` over the shadow correctness scenes |
-| `lensflare` | stable SP lens-flare screenshot captures over `game/storage1`, `game/storage2`, and `game/airdefense1` with `r_lensFlare` off, corona, and high-quality presets |
-| `lensflare-signoff` | release sign-off coverage for storage/outdoor flare scenes with `r_lensFlare` off/corona/high under `r_glTier auto`, `gl41`, and `gl45`; use full runs for platform evidence and `--limit` only for local smoke |
-
 Optional deterministic image comparison uses TGA references:
 
 ```powershell
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke --reference-dir .tmp\renderer-references --require-references
-python tools\tests\renderer_gameplay_benchmark.py --profile lensflare --reference-dir .tmp\renderer-references\lensflare --require-references
-python tools\tests\renderer_gameplay_benchmark.py --profile lensflare-signoff --reference-dir .tmp\renderer-references\lensflare-signoff\windows-x64 --require-references
 ```
 
 Nondeterministic BSE, cinematic, and MP scenes need human review in addition to the automated log/screenshot gates:
@@ -302,6 +267,5 @@ Nondeterministic BSE, cinematic, and MP scenes need human review in addition to 
 - No stock-asset compatibility overrides are added as a validation shortcut.
 - RenderDoc validation remains limited to forced modern/core bring-up paths until the visible renderer no longer depends on ARB2 compatibility features.
 - Benchmark captures report P50/P95/P99 frame pacing, active preset budgets, and threshold pass/fail status before any claim that the modern visible path matches or beats ARB2 on target scenes.
-- Lens-flare cross-platform claims require `lensflare-signoff` visual and pacing evidence on every claimed platform, with macOS treated as GL 4.1/fallback coverage unless a separate backend is explicitly qualified.
 - `rendererDefaultSafetySelfTest` and `rendererDefaultPromotionSelfTest` pass before any default-promotion discussion.
 - `r_rendererModernAutoPromote 1` is used only with the complete `r_rendererPromotionEvidence` token after the default-promotion criteria pass; `r_renderer arb2`, `r_glTier legacy`, and the modern-disable cvar set remain documented rollback paths.

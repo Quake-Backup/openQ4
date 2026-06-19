@@ -237,6 +237,8 @@ typedef struct {
 
 static const int SDL3_INPUT_QUEUE_SIZE = 512;
 static const int SDL3_INPUT_QUEUE_MASK = SDL3_INPUT_QUEUE_SIZE - 1;
+static const int SDL3_MAX_MOUSE_DELTA_PER_EVENT = 32767;
+static const int SDL3_MAX_MOUSE_WHEEL_STEPS_PER_EVENT = 64;
 
 static_assert((SDL3_INPUT_QUEUE_SIZE & SDL3_INPUT_QUEUE_MASK) == 0, "input queue size must be power-of-two");
 
@@ -475,6 +477,15 @@ static bool SDL3_StringEquals(const char *a, const char *b) {
 	return a != NULL && b != NULL && idStr::Icmp(a, b) == 0;
 }
 
+static void SDL3_SetHintDefaultLogged(const char *name, const char *value, const char *context) {
+	if (name == NULL || name[0] == '\0' || value == NULL) {
+		return;
+	}
+	if (!SDL_SetHintWithPriority(name, value, SDL_HINT_DEFAULT)) {
+		common->Printf("SDL3: failed to set %s hint %s=%s\n", context != NULL ? context : "default", name, value);
+	}
+}
+
 static bool SDL3_IsMacOSMetalBridge(void) {
 #if defined(OPENQ4_SDL3_DARWIN_HOST) && defined(OPENQ4_MACOS_METAL_BRIDGE)
 	return true;
@@ -509,10 +520,10 @@ static void SDL3_SetVideoHintDefaults(void) {
 #endif
 #if defined(OPENQ4_SDL3_DARWIN_HOST)
 	if (SDL3_IsMacOSMetalBridge()) {
-		(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "cocoa", SDL_HINT_DEFAULT);
-		(void)SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "metal", SDL_HINT_DEFAULT);
-		(void)SDL_SetHintWithPriority(SDL_HINT_GPU_DRIVER, "metal", SDL_HINT_DEFAULT);
-		(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_METAL_AUTO_RESIZE_DRAWABLE, "1", SDL_HINT_DEFAULT);
+		SDL3_SetHintDefaultLogged(SDL_HINT_VIDEO_DRIVER, "cocoa", "macOS Metal bridge");
+		SDL3_SetHintDefaultLogged(SDL_HINT_RENDER_DRIVER, "metal", "macOS Metal bridge");
+		SDL3_SetHintDefaultLogged(SDL_HINT_GPU_DRIVER, "metal", "macOS Metal bridge");
+		SDL3_SetHintDefaultLogged(SDL_HINT_VIDEO_METAL_AUTO_RESIZE_DRAWABLE, "1", "macOS Metal bridge");
 	}
 #endif
 }
@@ -737,9 +748,21 @@ static void SDL3_UpdateCursorVisibility(void) {
 }
 
 static int SDL3_ConsumeMouseDelta(float delta, float &remainder) {
+	if (!std::isfinite(delta) || !std::isfinite(remainder)) {
+		remainder = 0.0f;
+		return 0;
+	}
 	const float accumulated = delta + remainder;
-	const int whole = static_cast<int>(accumulated);
-	remainder = accumulated - static_cast<float>(whole);
+	if (!std::isfinite(accumulated)) {
+		remainder = 0.0f;
+		return 0;
+	}
+	const float clampedAccumulated = idMath::ClampFloat(
+		-static_cast<float>(SDL3_MAX_MOUSE_DELTA_PER_EVENT),
+		static_cast<float>(SDL3_MAX_MOUSE_DELTA_PER_EVENT),
+		accumulated);
+	const int whole = static_cast<int>(clampedAccumulated);
+	remainder = clampedAccumulated - static_cast<float>(whole);
 	return whole;
 }
 
@@ -1039,6 +1062,9 @@ static int SDL3_ClampJoystickValue(int value) {
 }
 
 static float SDL3_ClampRange(float value, float minValue, float maxValue) {
+	if (!std::isfinite(value)) {
+		return minValue;
+	}
 	if (value < minValue) {
 		return minValue;
 	}
@@ -1049,7 +1075,7 @@ static float SDL3_ClampRange(float value, float minValue, float maxValue) {
 }
 
 static Uint16 SDL3_ClampRumbleValue(float value) {
-	if (value <= 0.0f) {
+	if (!std::isfinite(value) || value <= 0.0f) {
 		return 0;
 	}
 	if (value >= 1.0f) {
@@ -1059,13 +1085,7 @@ static Uint16 SDL3_ClampRumbleValue(float value) {
 }
 
 static float SDL3_ClampUnit(float value) {
-	if (value < 0.0f) {
-		return 0.0f;
-	}
-	if (value > 1.0f) {
-		return 1.0f;
-	}
-	return value;
+	return SDL3_ClampRange(value, 0.0f, 1.0f);
 }
 
 static float SDL3_ClampRumbleScale(float value) {
@@ -1130,6 +1150,9 @@ static float SDL3_NormalizeSignedAxisFloat(Sint16 value) {
 }
 
 static int SDL3_AxisFloatToJoystickValue(float value) {
+	if (!std::isfinite(value)) {
+		return 0;
+	}
 	return SDL3_ClampJoystickValue(static_cast<int>(roundf(value * 127.0f)));
 }
 
@@ -3304,6 +3327,16 @@ static SDL_DisplayID SDL3_ResolveViewportDisplay(void) {
 	return selectedDisplay.id;
 }
 
+static int SDL3_ClampViewportPixel(double value, int minValue, int maxValue) {
+	if (!std::isfinite(value) || value <= static_cast<double>(minValue)) {
+		return minValue;
+	}
+	if (value >= static_cast<double>(maxValue)) {
+		return maxValue;
+	}
+	return static_cast<int>(value);
+}
+
 static void SDL3_UpdateDisplayViewport(SDL_DisplayID display, int windowX, int windowY, int windowWidth, int windowHeight, int pixelWidth, int pixelHeight) {
 	glConfig.uiViewportX = 0;
 	glConfig.uiViewportY = 0;
@@ -3323,31 +3356,35 @@ static void SDL3_UpdateDisplayViewport(SDL_DisplayID display, int windowX, int w
 		return;
 	}
 
-	const int windowRight = windowX + windowWidth;
-	const int windowBottom = windowY + windowHeight;
-	const int displayRight = displayBounds.x + displayBounds.w;
-	const int displayBottom = displayBounds.y + displayBounds.h;
+	const int64_t windowLeft = static_cast<int64_t>(windowX);
+	const int64_t windowTop = static_cast<int64_t>(windowY);
+	const int64_t windowRight = windowLeft + static_cast<int64_t>(windowWidth);
+	const int64_t windowBottom = windowTop + static_cast<int64_t>(windowHeight);
+	const int64_t displayLeft = static_cast<int64_t>(displayBounds.x);
+	const int64_t displayTop = static_cast<int64_t>(displayBounds.y);
+	const int64_t displayRight = displayLeft + static_cast<int64_t>(displayBounds.w);
+	const int64_t displayBottom = displayTop + static_cast<int64_t>(displayBounds.h);
 
-	const int overlapLeft = (windowX > displayBounds.x) ? windowX : displayBounds.x;
-	const int overlapTop = (windowY > displayBounds.y) ? windowY : displayBounds.y;
-	const int overlapRight = (windowRight < displayRight) ? windowRight : displayRight;
-	const int overlapBottom = (windowBottom < displayBottom) ? windowBottom : displayBottom;
+	const int64_t overlapLeft = (windowLeft > displayLeft) ? windowLeft : displayLeft;
+	const int64_t overlapTop = (windowTop > displayTop) ? windowTop : displayTop;
+	const int64_t overlapRight = (windowRight < displayRight) ? windowRight : displayRight;
+	const int64_t overlapBottom = (windowBottom < displayBottom) ? windowBottom : displayBottom;
 
 	if (overlapRight <= overlapLeft || overlapBottom <= overlapTop) {
 		return;
 	}
 
-	const float pixelScaleX = static_cast<float>(pixelWidth) / static_cast<float>(windowWidth);
-	const float pixelScaleY = static_cast<float>(pixelHeight) / static_cast<float>(windowHeight);
-	const float localLeft = static_cast<float>(overlapLeft - windowX);
-	const float localTop = static_cast<float>(overlapTop - windowY);
-	const float localRight = static_cast<float>(overlapRight - windowX);
-	const float localBottom = static_cast<float>(overlapBottom - windowY);
+	const double pixelScaleX = static_cast<double>(pixelWidth) / static_cast<double>(windowWidth);
+	const double pixelScaleY = static_cast<double>(pixelHeight) / static_cast<double>(windowHeight);
+	const double localLeft = static_cast<double>(overlapLeft - windowLeft);
+	const double localTop = static_cast<double>(overlapTop - windowTop);
+	const double localRight = static_cast<double>(overlapRight - windowLeft);
+	const double localBottom = static_cast<double>(overlapBottom - windowTop);
 
-	int pixelLeft = static_cast<int>(floorf(localLeft * pixelScaleX));
-	int pixelTop = static_cast<int>(floorf(localTop * pixelScaleY));
-	int pixelRight = static_cast<int>(ceilf(localRight * pixelScaleX));
-	int pixelBottom = static_cast<int>(ceilf(localBottom * pixelScaleY));
+	int pixelLeft = SDL3_ClampViewportPixel(std::floor(localLeft * pixelScaleX), 0, pixelWidth);
+	int pixelTop = SDL3_ClampViewportPixel(std::floor(localTop * pixelScaleY), 0, pixelHeight);
+	int pixelRight = SDL3_ClampViewportPixel(std::ceil(localRight * pixelScaleX), pixelLeft, pixelWidth);
+	int pixelBottom = SDL3_ClampViewportPixel(std::ceil(localBottom * pixelScaleY), pixelTop, pixelHeight);
 
 	pixelLeft = idMath::ClampInt(0, pixelWidth, pixelLeft);
 	pixelTop = idMath::ClampInt(0, pixelHeight, pixelTop);
@@ -4157,6 +4194,14 @@ bool Sys_SDL_PumpEvents(void) {
 
 			case SDL_EVENT_MOUSE_MOTION:
 			{
+				if (!std::isfinite(event.motion.x) || !std::isfinite(event.motion.y) ||
+						!std::isfinite(event.motion.xrel) || !std::isfinite(event.motion.yrel)) {
+					s_sdlRelativeMouseRemainderX = 0.0f;
+					s_sdlRelativeMouseRemainderY = 0.0f;
+					s_haveAbsoluteMousePosition = false;
+					SDL3_ResetMenuMouseTracking();
+					break;
+				}
 				int dx = 0;
 				int dy = 0;
 				const bool mouseCaptured = SDL3_IsMouseCaptured();
@@ -4237,16 +4282,29 @@ bool Sys_SDL_PumpEvents(void) {
 				}
 
 				deltaY += s_sdlMouseWheelRemainderY;
+				if (!std::isfinite(deltaY)) {
+					s_sdlMouseWheelRemainderY = 0.0f;
+					break;
+				}
+				deltaY = idMath::ClampFloat(
+					-static_cast<float>(SDL3_MAX_MOUSE_WHEEL_STEPS_PER_EVENT),
+					static_cast<float>(SDL3_MAX_MOUSE_WHEEL_STEPS_PER_EVENT),
+					deltaY);
 				int wheelSteps = static_cast<int>(deltaY);
 				s_sdlMouseWheelRemainderY = deltaY - static_cast<float>(wheelSteps);
 				if (wheelSteps != 0) {
-					const int wheelKey = wheelSteps < 0 ? K_MWHEELDOWN : K_MWHEELUP;
-					const int absSteps = abs(wheelSteps);
+					const bool wheelDown = wheelSteps < 0;
+					int absSteps = wheelSteps == idMath::INT_MIN ? idMath::INT_MAX : (wheelDown ? -wheelSteps : wheelSteps);
+					if (absSteps > SDL3_MAX_MOUSE_WHEEL_STEPS_PER_EVENT) {
+						absSteps = SDL3_MAX_MOUSE_WHEEL_STEPS_PER_EVENT;
+					}
+					const int queuedWheelSteps = wheelDown ? -absSteps : absSteps;
+					const int wheelKey = wheelDown ? K_MWHEELDOWN : K_MWHEELUP;
 					for (int i = 0; i < absSteps; ++i) {
 						Sys_QueEvent(eventTime, SE_KEY, wheelKey, true, 0, NULL);
 						Sys_QueEvent(eventTime, SE_KEY, wheelKey, false, 0, NULL);
 					}
-					SDL3_QueueMouseInput(M_DELTAZ, wheelSteps, eventTime);
+					SDL3_QueueMouseInput(M_DELTAZ, queuedWheelSteps, eventTime);
 				}
 				break;
 			}
@@ -4983,6 +5041,24 @@ static void SDL3_RecordGLContextCandidate(const rendererContextCandidate_t &cand
 	glConfig.contextRequest = candidate;
 }
 
+static bool SDL3_EnsureGLContextCurrent(const char *operation) {
+	if (!s_sdlWindow || !s_sdlContext) {
+		return false;
+	}
+
+	if (SDL_GL_GetCurrentWindow() == s_sdlWindow && SDL_GL_GetCurrentContext() == s_sdlContext) {
+		return true;
+	}
+
+	if (!SDL_GL_MakeCurrent(s_sdlWindow, s_sdlContext)) {
+		common->Printf("SDL3: failed to make GL context current for %s: %s\n", operation ? operation : "operation", SDL_GetError());
+		win32.wglErrors++;
+		return false;
+	}
+
+	return true;
+}
+
 static const char *SDL3_GLProfileMaskName(int profileMask) {
 	switch (profileMask) {
 		case SDL_GL_CONTEXT_PROFILE_COMPATIBILITY:
@@ -5244,9 +5320,7 @@ bool GLimp_SetScreenParms(glimpParms_t parms) {
 		return false;
 	}
 
-	if (s_sdlWindow && s_sdlContext && !SDL_GL_MakeCurrent(s_sdlWindow, s_sdlContext)) {
-		common->Printf("SDL3: failed to reactivate GL context after screen parm change: %s\n", SDL_GetError());
-		win32.wglErrors++;
+	if (s_sdlWindow && s_sdlContext && !SDL3_EnsureGLContextCurrent("screen parm change")) {
 		return false;
 	}
 
@@ -5277,7 +5351,9 @@ void GLimp_Shutdown(void) {
 	}
 
 	if (s_sdlContext) {
-		(void)SDL_GL_MakeCurrent(s_sdlWindow, NULL);
+		if (s_sdlWindow) {
+			(void)SDL_GL_MakeCurrent(s_sdlWindow, NULL);
+		}
 		(void)SDL_GL_DestroyContext(s_sdlContext);
 		s_sdlContext = NULL;
 	}
@@ -5316,7 +5392,7 @@ void GLimp_SwapBuffers(void) {
 		(void)SDL3_ApplySwapInterval();
 	}
 
-	if (s_sdlWindow && !SDL_GL_SwapWindow(s_sdlWindow)) {
+	if (SDL3_EnsureGLContextCurrent("swap buffers") && !SDL_GL_SwapWindow(s_sdlWindow)) {
 		common->Printf("SDL3: failed to swap window buffers: %s\n", SDL_GetError());
 	}
 }
@@ -5422,27 +5498,48 @@ void GLimp_WakeBackEnd(void *data) {
 }
 
 void GLimp_ActivateContext(void) {
-	if (!s_sdlWindow || !s_sdlContext) {
-		return;
-	}
+	(void)SDL3_EnsureGLContextCurrent("activate context");
+}
 
-	if (!SDL_GL_MakeCurrent(s_sdlWindow, s_sdlContext)) {
-		win32.wglErrors++;
-	}
+bool GLimp_EnsureActiveContext(const char *operation) {
+	return SDL3_EnsureGLContextCurrent(operation);
 }
 
 void GLimp_DeactivateContext(void) {
-	glFinish();
-	if (!s_sdlWindow) {
+	if (!SDL3_EnsureGLContextCurrent("deactivate context")) {
 		return;
 	}
 
+	glFinish();
 	if (!SDL_GL_MakeCurrent(s_sdlWindow, NULL)) {
 		win32.wglErrors++;
 	}
 }
 
+#if defined(OPENQ4_SDL3_LINUX_HOST)
+typedef void ( *openQ4GlewProcAddress_t ) (void);
+
+extern "C" openQ4GlewProcAddress_t OpenQ4_GlewGetProcAddress(const unsigned char *name) {
+	if (name == NULL || name[0] == '\0') {
+		return NULL;
+	}
+	if (!SDL3_EnsureGLContextCurrent("GLEW proc lookup")) {
+		return NULL;
+	}
+
+	return reinterpret_cast<openQ4GlewProcAddress_t>(
+		SDL_GL_GetProcAddress(reinterpret_cast<const char *>(name)));
+}
+#endif
+
 void *GLimp_ExtensionPointer(const char *name) {
+	if (name == NULL || name[0] == '\0') {
+		return NULL;
+	}
+	if (!SDL3_EnsureGLContextCurrent("extension proc lookup")) {
+		return NULL;
+	}
+
 	void *proc = (void *)SDL_GL_GetProcAddress(name);
 #if !defined(OPENQ4_SDL3_POSIX_HOST)
 	if (!proc && qwglGetProcAddress) {

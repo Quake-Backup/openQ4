@@ -474,7 +474,8 @@ bool rvSegment::Check(rvBSE* effect, float time, float offset) {
 
 	switch (st->mSegType) {
 	case SEG_EMITTER: {
-		if (!st->GetHasParticles()) {
+		const rvParticleTemplate* pt = st->GetParticleTemplate();
+		if (!pt || pt->GetType() == PTYPE_NONE) {
 			return true;
 		}
 		if (!effect->CanInterpolate()) {
@@ -516,14 +517,17 @@ bool rvSegment::Check(rvBSE* effect, float time, float offset) {
 		SetExpired(true);
 		return true;
 	case SEG_SPAWNER:
-		if (!GetExpired() && st->GetHasParticles()) {
-			const int particleCap = GetSegmentParticleCap();
-			const int count = idMath::ClampInt(
-				0,
-				particleCap,
-				static_cast<int>(idMath::Ceil(AttenuateCount(effect, st, mCount.x, mCount.y))));
-			if (count > 0) {
-				SpawnParticles(effect, st, mSegStartTime, count);
+		if (!GetExpired()) {
+			const rvParticleTemplate* pt = st->GetParticleTemplate();
+			if (pt && pt->GetType() != PTYPE_NONE) {
+				const int particleCap = GetSegmentParticleCap();
+				const int count = idMath::ClampInt(
+					0,
+					particleCap,
+					static_cast<int>(idMath::Ceil(AttenuateCount(effect, st, mCount.x, mCount.y))));
+				if (count > 0) {
+					SpawnParticles(effect, st, mSegStartTime, count);
+				}
 			}
 			SetExpired(true);
 		}
@@ -626,7 +630,7 @@ void rvSegment::CalcCounts(rvBSE* effect, float time) {
 	mLoopParticleCount = 0;
 
 	rvSegmentTemplate* st = (rvSegmentTemplate*)mEffectDecl->GetSegmentTemplate(mSegmentTemplateHandle);
-	if (!st || !st->GetHasParticles()) {
+	if (!st) {
 		return;
 	}
 	if (st->DetailCull()) {
@@ -634,6 +638,9 @@ void rvSegment::CalcCounts(rvBSE* effect, float time) {
 	}
 
 	const int particleType = st->mParticleTemplate.GetType();
+	if (particleType == PTYPE_NONE) {
+		return;
+	}
 	const float particleMaxDuration = st->mParticleTemplate.GetMaxDuration() + BSE_FUTURE;
 	const float effectMinDuration = mEffectDecl ? mEffectDecl->GetMinDuration() : 0.0f;
 	const int particleCap = GetSegmentParticleCap();
@@ -683,7 +690,7 @@ void rvSegment::CalcCounts(rvBSE* effect, float time) {
 	mParticleCount = idMath::ClampInt(0, particleCap, count);
 	mLoopParticleCount = idMath::ClampInt(0, particleCap, loopCount);
 
-	if (st->mSegType == SEG_EMITTER || st->mSegType == SEG_SPAWNER) {
+	if (st->GetHasParticles() && (st->mSegType == SEG_EMITTER || st->mSegType == SEG_SPAWNER)) {
 		CalcTrailCounts(effect, st, &st->mParticleTemplate, trailDuration);
 	}
 

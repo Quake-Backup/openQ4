@@ -8,7 +8,23 @@ This guide covers openQ4 display/window settings for end users, including multi-
 - Run `listDisplays` in the console to list monitor indices for `r_screen`.
 - On SDL3 builds, run `listDisplayModes [displayIndex]` to list available exclusive fullscreen modes, including SDL-reported content scale, pixel density, and exact refresh details when available.
 - The in-game `Settings -> System` menu exposes display resolution, fullscreen policy, borderless/window sizing, custom exclusive fullscreen sizing, refresh rate, UI aspect behavior, display target, multi-screen, and resolution scale controls.
+- `Settings -> System` also exposes a **Performance Preset** dropdown plus an **Auto-Detect** button above the display-resolution controls.
 - After changing video cvars, run `vid_restart` (or `vid_restart partial` for quick window/fullscreen transitions).
+
+## Performance Presets
+
+The `com_performancePreset` cvar stores the selected preset. Use the Settings menu dropdown, or run `applyPerformancePreset <name>` from the console.
+
+| Preset | Intended use |
+|---|---|
+| `minimum` | Most constrained systems; uses 50% resolution scale, no AA, texture downsizing, and conservative audio mixing. |
+| `lowpower` | Raspberry Pi-class and other low-power systems; keeps authored rendering features on while reducing resolution scale, AA, post effects, texture pressure, and surround/EAX audio cost. |
+| `performance` | Modest desktops/handhelds aiming for smoother frame pacing. |
+| `balanced` | General desktop default. |
+| `quality` | Strong desktop GPUs. |
+| `ultra` | Explicit high-end choice; Auto-Detect does not select this automatically. |
+
+`autoDetectPerformancePreset` selects a conservative preset from platform signals, CPU architecture, system RAM, video RAM, and renderer capability flags, then applies it. On Raspberry Pi hosts or explicit `OPENQ4_LOWPOWER=1` / `OPENQ4_RASPBERRYPI=1` signals, it chooses `lowpower`.
 
 ## Core Display Settings
 
@@ -82,8 +98,9 @@ The Display menu exposes curated presets: `10%`, `25%`, `50%`, `75%`, `85%`, `10
 
 - Default behavior is **desktop-native fullscreen** (`r_fullscreenDesktop 1`): fullscreen matches your current desktop resolution and does not change Windows display mode.
 - For **exclusive fullscreen** (explicit mode switch), set `r_fullscreenDesktop 0`. In this mode, `r_mode`/`r_customWidth`/`r_customHeight` control the requested fullscreen resolution.
-- In `Settings -> System`, **Display Resolution** lists Desktop Native, Custom, and SDL3-reported fullscreen resolutions for the selected display. Choosing an explicit resolution writes `r_mode -1` plus the exact custom width/height so unusual monitor modes are not limited by the old preset table.
-- **Refresh Rate** lists the selected display's SDL3-reported refresh rates when available. Leave it on Auto unless you specifically need an exclusive-mode refresh request.
+- In `Settings -> System`, **Display Resolution** lists Desktop Native first, then only the fullscreen preset resolutions SDL3 reports for the selected display, followed by Custom. Preset entries include compact aspect labels such as `16:9` or `21:9`. Choosing an unusual reported mode writes exact custom width/height when no legacy `r_mode` index exists.
+- The console `listModes` command shows the expanded legacy `r_mode` preset catalog for configs and command-line use, covering common desktop, laptop, ultrawide, HiDPI, 4K, 5K, 6K, and 8K resolutions. The Settings dropdown still hides static presets that the selected display does not report.
+- **Refresh Rate** lists Auto plus SDL3-reported refresh rates for the currently selected fullscreen resolution. Leave it on Auto unless you specifically need an exclusive-mode refresh request.
 - On Windows, fullscreen windows minimize on focus loss so system UI such as Alt+Tab and the Snipping Tool overlay can take foreground cleanly.
 - On Windows, `PrintScreen` yields to the system snipping UI by default (`win_printScreenToSystemTool 1`). Use `F12` for the built-in openQ4 screenshot command, or set that cvar to `0` if you explicitly want `PrintScreen` available for in-engine binds again.
 

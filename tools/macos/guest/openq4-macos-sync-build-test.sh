@@ -151,7 +151,7 @@ run_renderer_matrix() {
     echo "Running macOS-facing renderer validation matrix"
     python3 tools/tests/renderer_validation_matrix.py \
         --tiers auto,gl41 \
-        --cases renderer-gbuffer-selftest,renderer-cluster-grid-selftest,renderer-shadow-planner-selftest,renderer-shadow-projected-diagnostic,renderer-modern-visible-selftest,shader-lensflare-gl41,tier-auto,tier-gl41 \
+        --cases renderer-gbuffer-selftest,renderer-cluster-grid-selftest,renderer-shadow-planner-selftest,renderer-shadow-projected-diagnostic,renderer-modern-visible-selftest,shader-library-gl41,tier-auto,tier-gl41 \
         --timeout "${OPENQ4_RENDERER_TIMEOUT:-180}" \
         --output-dir "${run_dir}/renderer-matrix"
 }

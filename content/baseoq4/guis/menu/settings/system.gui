@@ -76,7 +76,7 @@
 				}
 				windowDef set_sys_cat_basic
 				{
-					rect	259,132,327,13
+					rect	259,150,327,13
 					visible	1
 					forecolor	1,1,1,0.4
 					text	"#str_41099"
@@ -92,14 +92,14 @@
 				}
 				windowDef set_sys_b2
 				{
-					rect	228,146,377,25
+					rect	228,164,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_b3
 				{
-					rect	228,168,377,25
+					rect	228,186,377,25
 					visible	0
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
@@ -117,6 +117,84 @@
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
+				}
+				windowDef set_sys_b0
+				{
+					rect	228,126,377,25
+					visible	1
+					background	"gfx/guis/mainmenu/b3_light"
+					matcolor	0.545,0.588,0.294,0.4
+				}
+				windowDef set_sys_perf_preset
+				{
+					rect	259,128,172,18
+					visible	1
+					forecolor	1,1,1,0.8
+					text	"#str_229976"
+					textscale	0.24
+					font	"fonts/lowpixel"
+				}
+				choiceDef set_sys_perf_preset_val
+				{
+					rect	432,128,88,18
+					visible	1
+					forecolor	1,0.745,0.137,0.8
+					choiceType	1
+					choices	"#str_229977"
+					values	"minimum;lowpower;performance;balanced;quality;ultra"
+					cvar	"com_performancePreset"
+					textscale	0.21
+					font	"fonts/lowpixel"
+
+					onAction {
+						set "cmd" "play main_menu_selection" ;
+					}
+
+					onActionRelease {
+						set "set_sys_notice::visible" "1" ;
+						set "desktop::vidwarn" "1" ;
+						set "cmd" "applyPerformancePreset" ;
+					}
+				}
+				windowDef set_sys_perf_autodetect_button
+				{
+					rect	526,126,79,20
+					visible	1
+					background	"gfx/guis/mainmenu/b3_light"
+					matcolor	0.545,0.588,0.294,0.45
+
+					onMouseEnter {
+						if ("desktop::active" == 0) {
+							set "set_sys_perf_autodetect_button::matcolor_w" "0.8" ;
+							set "set_sys_perf_autodetect_text::forecolor" "1,0.745,0.137,0.9" ;
+							set "cmd" "play main_menu_mouseover" ;
+						}
+					}
+
+					onMouseExit {
+						if ("desktop::active" == 0) {
+							transition "set_sys_perf_autodetect_button::matcolor_w" "0.8" "0.45" "200" ;
+							transition "set_sys_perf_autodetect_text::forecolor" "1,0.745,0.137,0.9" "1,1,1,0.8" "200" ;
+						}
+					}
+
+					onAction {
+						set "set_sys_notice::visible" "1" ;
+						set "desktop::vidwarn" "1" ;
+						set "cmd" "play main_menu_selection ; autoDetectPerformancePreset" ;
+					}
+
+					windowDef set_sys_perf_autodetect_text
+					{
+						rect	4,2,71,16
+						visible	1
+						noevents	1
+						forecolor	1,1,1,0.8
+						text	"#str_229978"
+						textscale	0.18
+						font	"fonts/lowpixel"
+						textalign	1
+					}
 				}
 				windowDef set_sys_vidqual
 				{
@@ -151,7 +229,7 @@
 				}
 				windowDef set_sys_screensize
 				{
-					rect	259,148,172,18
+					rect	259,166,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229975"
@@ -160,7 +238,7 @@
 				}
 				choiceDef set_sys_screensize_val_0
 				{
-					rect	468,148,164,18
+					rect	468,166,164,18
 					visible	1
 					forecolor	1,0.741,0.133,0.8
 					choices	"gui::display_mode_choices"
@@ -186,7 +264,7 @@
 				}
 				choiceDef set_sys_screensize_val_1
 				{
-					rect	468,148,164,18
+					rect	468,166,164,18
 					visible	0
 					forecolor	1,0.745,0.137,0.8
 					choices	"gui::display_mode_choices"
@@ -212,7 +290,7 @@
 				}
 				choiceDef set_sys_screensize_val_2
 				{
-					rect	468,148,164,18
+					rect	468,166,164,18
 					visible	0
 					forecolor	1,0.745,0.137,0.8
 					choices	"gui::display_mode_choices"
@@ -934,41 +1012,9 @@
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
-				windowDef set_sys_lensflare
-				{
-					rect	259,668,172,18
-					visible	1
-					forecolor	1,1,1,0.8
-					text	"#str_41117"
-					textscale	0.24
-					font	"fonts/lowpixel"
-				}
-				choiceDef set_sys_lensflare_val
-				{
-					rect	468,668,160,15
-					visible	1
-					forecolor	1,0.745,0.137,0.8
-					choiceType	1
-					choices	"#str_41118"
-					values	"0;1;2"
-					cvar	"r_lensFlare"
-					textscale	0.24
-					font	"fonts/lowpixel"
-
-					onAction {
-						set "cmd" "play main_menu_selection" ;
-					}
-				}
-				windowDef set_sys_b21a
-				{
-					rect	228,666,377,25
-					visible	1
-					background	"gfx/guis/mainmenu/b3_light"
-					matcolor	0.545,0.588,0.294,0.4
-				}
 				windowDef set_sys_ssao
 				{
-					rect	259,690,172,18
+					rect	259,668,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_41088"
@@ -977,7 +1023,7 @@
 				}
 				choiceDef set_sys_ssao_val
 				{
-					rect	468,690,160,15
+					rect	468,668,160,15
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choiceType	0
@@ -992,14 +1038,14 @@
 				}
 				windowDef set_sys_b22
 				{
-					rect	228,688,377,25
+					rect	228,666,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_tonemap
 				{
-					rect	259,712,172,18
+					rect	259,690,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_41084"
@@ -1008,7 +1054,7 @@
 				}
 				choiceDef set_sys_tonemap_val
 				{
-					rect	468,712,160,15
+					rect	468,690,160,15
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choiceType	0
@@ -1023,14 +1069,14 @@
 				}
 				windowDef set_sys_b23
 				{
-					rect	228,710,377,25
+					rect	228,688,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_crt
 				{
-					rect	259,734,172,18
+					rect	259,712,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_41090"
@@ -1039,7 +1085,7 @@
 				}
 				choiceDef set_sys_crt_val
 				{
-					rect	468,734,160,15
+					rect	468,712,160,15
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choiceType	0
@@ -1054,7 +1100,7 @@
 				}
 				windowDef set_sys_b24
 				{
-					rect	228,732,377,25
+					rect	228,710,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
@@ -1085,7 +1131,7 @@
 				}
 				windowDef set_sys_display_tuning
 				{
-					rect	259,762,327,13
+					rect	259,740,327,13
 					visible	1
 					forecolor	1,1,1,0.4
 					text	"#str_229943"
@@ -1094,14 +1140,14 @@
 				}
 				windowDef set_sys_b25
 				{
-					rect	228,776,377,25
+					rect	228,754,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_ui_aspect
 				{
-					rect	259,778,172,18
+					rect	259,756,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229944"
@@ -1110,7 +1156,7 @@
 				}
 				choiceDef set_sys_ui_aspect_val
 				{
-					rect	468,778,160,15
+					rect	468,756,160,15
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choiceType	0
@@ -1125,14 +1171,14 @@
 				}
 				windowDef set_sys_b26
 				{
-					rect	228,798,377,25
+					rect	228,776,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_refresh
 				{
-					rect	259,800,172,18
+					rect	259,778,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229945"
@@ -1141,7 +1187,7 @@
 				}
 				choiceDef set_sys_refresh_val
 				{
-					rect	468,800,160,15
+					rect	468,778,160,15
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choiceType	1
@@ -1162,14 +1208,14 @@
 				}
 				windowDef set_sys_b27
 				{
-					rect	228,820,377,25
+					rect	228,798,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_window_width
 				{
-					rect	259,822,172,18
+					rect	259,800,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229946"
@@ -1178,7 +1224,7 @@
 				}
 				editDef set_sys_window_width_val
 				{
-					rect	468,822,160,18
+					rect	468,800,160,18
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					cvar	r_windowWidth
@@ -1201,14 +1247,14 @@
 				}
 				windowDef set_sys_b28
 				{
-					rect	228,842,377,25
+					rect	228,820,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_window_height
 				{
-					rect	259,844,172,18
+					rect	259,822,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229947"
@@ -1217,7 +1263,7 @@
 				}
 				editDef set_sys_window_height_val
 				{
-					rect	468,844,160,18
+					rect	468,822,160,18
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					cvar	r_windowHeight
@@ -1240,14 +1286,14 @@
 				}
 				windowDef set_sys_b29
 				{
-					rect	228,864,377,25
+					rect	228,842,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_custom_width
 				{
-					rect	259,866,172,18
+					rect	259,844,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229948"
@@ -1256,7 +1302,7 @@
 				}
 				editDef set_sys_custom_width_val
 				{
-					rect	468,866,160,18
+					rect	468,844,160,18
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					cvar	r_customWidth
@@ -1280,14 +1326,14 @@
 				}
 				windowDef set_sys_b30
 				{
-					rect	228,886,377,25
+					rect	228,864,377,25
 					visible	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_custom_height
 				{
-					rect	259,888,172,18
+					rect	259,866,172,18
 					visible	1
 					forecolor	1,1,1,0.8
 					text	"#str_229949"
@@ -1296,7 +1342,7 @@
 				}
 				editDef set_sys_custom_height_val
 				{
-					rect	468,888,160,18
+					rect	468,866,160,18
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					cvar	r_customHeight
@@ -1323,14 +1369,16 @@
 				windowDef set_sys_auto
 				{
 					rect	228,365,377,25
-					visible	1
+					visible	0
+					noevents	1
 					background	"gfx/guis/mainmenu/b3_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef set_sys_t_auto
 				{
 					rect	262,365,328,18
-					visible	1
+					visible	0
+					noevents	1
 					forecolor	1,1,1,0.8
 					text	"#str_200149"
 					textscale	0.26
@@ -1349,7 +1397,8 @@
 				windowDef set_sys_auto_corner
 				{
 					rect	251,371,12,12
-					visible	1
+					visible	0
+					noevents	1
 					background	"gfx/guis/mainmenu/corner"
 					matcolor	0.564,0.603,0.286,0.4
 				}

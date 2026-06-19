@@ -97,7 +97,7 @@ static void Posix_WriteSignalNumber( int value ) {
 
 	if ( value < 0 ) {
 		Posix_WriteSignalText( "-" );
-		number = static_cast<unsigned int>( -value );
+		number = static_cast<unsigned int>( -( value + 1 ) ) + 1U;
 	} else {
 		number = static_cast<unsigned int>( value );
 	}
@@ -227,9 +227,11 @@ Sys_SetFatalError
 void Sys_SetFatalError( const char *error ) {
 	if ( error == NULL ) {
 		fatalError[0] = '\0';
+		Posix_ConsoleSetFatalError( NULL );
 		return;
 	}
 
 	strncpy( fatalError, error, sizeof( fatalError ) - 1 );
 	fatalError[sizeof( fatalError ) - 1] = '\0';
+	Posix_ConsoleSetFatalError( fatalError );
 }

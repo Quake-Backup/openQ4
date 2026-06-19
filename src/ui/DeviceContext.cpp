@@ -60,6 +60,7 @@ static const float Q4_TEXT_STYLE_OFFSET = 1.0f;
 static const float Q4_TEXT_LINE_SPACING_SCALE = 1.25f;
 static const float Q4_GLYPH_HORIZONTAL_GUARD_TEXELS = 0.5f;
 static const float Q4_GLYPH_SMALL_ATLAS_HORIZONTAL_GUARD_TEXELS = 1.0f;
+static const float Q4_GLYPH_SMALL_MARINE_CLIP_RIGHT_PAD_TEXELS = 2.0f;
 static const float Q4_GLYPH_SMALL_FONT_MAX_POINT_SIZE = 12.0f;
 static const int Q4_TEXT_STYLE_SHADOW = 1;
 static const int Q4_TEXT_STYLE_OUTLINE = 2;
@@ -193,6 +194,10 @@ static float openQ4_GlyphHorizontalGuardTexels( const fontInfo_t *font ) {
 	return ( font != NULL && font->pointSize <= Q4_GLYPH_SMALL_FONT_MAX_POINT_SIZE ) ? Q4_GLYPH_SMALL_ATLAS_HORIZONTAL_GUARD_TEXELS : Q4_GLYPH_HORIZONTAL_GUARD_TEXELS;
 }
 
+static bool openQ4_IsSmallMarineFont( const fontInfo_t *font ) {
+	return font != NULL && font->pointSize <= Q4_GLYPH_SMALL_FONT_MAX_POINT_SIZE && idStr::FindText( font->name, "marine_12.fontdat", false ) >= 0;
+}
+
 static bool openQ4_ApplyGlyphHorizontalGuard( const fontInfo_t *font, const glyphInfo_t *glyph, float fontScale, float &x, float &width, float &s1, float &s2 ) {
 	if ( glyph == NULL || fontScale == 0.0f || width <= 0.0f || s2 <= s1 ) {
 		return false;
@@ -228,6 +233,13 @@ static float openQ4_GlyphVisibleRightEdge( float x, const fontInfo_t *font, floa
 	float s2 = glyph->s2;
 	openQ4_ApplyGlyphHorizontalGuard( font, glyph, fontScale, drawX, width, s1, s2 );
 	return drawX + width * fontScale;
+}
+
+static float openQ4_GlyphClipRightPad( const fontInfo_t *font, const glyphInfo_t *glyph, float fontScale ) {
+	if ( !openQ4_IsSmallMarineFont( font ) || glyph == NULL || fontScale <= 0.0f ) {
+		return 0.0f;
+	}
+	return idMath::Ceil( Q4_GLYPH_SMALL_MARINE_CLIP_RIGHT_PAD_TEXELS * fontScale );
 }
 
 static bool openQ4_HasRenderableFont( const q4ScaledFont_t &scaledFont ) {
@@ -1083,7 +1095,17 @@ void idDeviceContext::PaintGlyph( float x, float y, float scale, const fontInfo_
 	float s = glyph->s;
 	float s2 = glyph->s2;
 	openQ4_ApplyGlyphHorizontalGuard( font, glyph, scale, x, width, s, s2 );
+
+	// Tight stock HUD windows can otherwise clip the guarded right edge of the small marine radio font.
+	const float clipRightPad = openQ4_GlyphClipRightPad( font, glyph, scale );
+	const int clipIndex = clipRightPad > 0.0f && enableClipping && clipRects.Num() > 1 ? clipRects.Num() - 1 : -1;
+	if ( clipIndex >= 0 ) {
+		clipRects[clipIndex].w += clipRightPad;
+	}
 	PaintChar( x, y, width, glyph->height, scale, s, glyph->t, s2, glyph->t2, hShader );
+	if ( clipIndex >= 0 ) {
+		clipRects[clipIndex].w -= clipRightPad;
+	}
 }
 
 
@@ -1759,6 +1781,16 @@ bool UI_FontParity_RunSelfTest( void ) {
 	ok &= openQ4_CheckNear( "medium glyph horizontal guard width", guardedW, 9.5625f );
 	ok &= openQ4_CheckNear( "medium glyph horizontal guard s1", guardedS1, 144.5f / 256.0f );
 	ok &= openQ4_CheckNear( "medium glyph horizontal guard s2", guardedS2, 154.0625f / 256.0f );
+
+	fontInfo_t marineClipFont = {};
+	marineClipFont.pointSize = 12.0f;
+	idStr::Copynz( marineClipFont.name, "fonts/english/marine_12.fontdat", sizeof( marineClipFont.name ) );
+	glyphInfo_t &marineClipGlyph = marineClipFont.glyphs[static_cast<unsigned char>( 'g' )];
+	marineClipGlyph.width = 8.296875f;
+	marineClipGlyph.height = 7.078125f;
+	marineClipGlyph.s = 231.0f / 256.0f;
+	marineClipGlyph.s2 = 239.296875f / 256.0f;
+	ok &= openQ4_CheckNear( "marine small glyph clip pad", openQ4_GlyphClipRightPad( &marineClipFont, &marineClipGlyph, 0.8f ), 2.0f );
 	ok &= openQ4_CheckNear( "embedded icon draw width units", static_cast<float>( openQ4_EmbeddedIconWidthUnits( 32.0f, 16.0f, 12.0f, Q4_EMBEDDED_ICON_DRAW_WIDTH ) ), 24.0f );
 	ok &= openQ4_CheckNear( "embedded icon registered width units", static_cast<float>( openQ4_EmbeddedIconWidthUnits( 32.0f, 16.0f, 12.0f, Q4_EMBEDDED_ICON_REGISTERED_WIDTH ) ), 32.0f );
 	ok &= openQ4_CheckNear( "embedded icon full-image dimension", static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( Q4_EMBEDDED_ICON_FULL_IMAGE, 64.0f ) ), 64.0f );

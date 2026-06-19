@@ -19,6 +19,7 @@ This file is part of the Doom 3 GPL Source Code. See docs/legal for details.
 
 #if defined( USE_SDL3 )
 #include <SDL3/SDL.h>
+#include <cmath>
 #endif
 
 static idCVar sys_consoleWindow(
@@ -52,8 +53,11 @@ static const int POSIX_CONSOLE_MARGIN = 8;
 static const int POSIX_CONSOLE_BUTTON_WIDTH = 74;
 static const int POSIX_CONSOLE_BUTTON_HEIGHT = 24;
 static const int POSIX_CONSOLE_INPUT_HEIGHT = 24;
+static const int POSIX_CONSOLE_STATUS_HEIGHT = 28;
 static const int POSIX_CONSOLE_FONT_SIZE = 8;
 static const int POSIX_CONSOLE_APPEND_SIZE = 4096;
+static const int POSIX_CONSOLE_FATAL_SIZE = 4096;
+static const int POSIX_CONSOLE_MAX_WHEEL_STEPS_PER_EVENT = 64;
 static const int POSIX_SPLASH_WIDTH = 512;
 static const int POSIX_SPLASH_HEIGHT = 384;
 static const char POSIX_SPLASH_BMP[] = "assets/splash/quake4_rt_bitmap_4001.bmp";
@@ -61,10 +65,13 @@ static const char POSIX_SPLASH_BMP[] = "assets/splash/quake4_rt_bitmap_4001.bmp"
 struct posixConsoleBuffer_t {
 	pthread_mutex_t mutex;
 	char text[ POSIX_CONSOLE_BUFFER_SIZE + 1 ];
+	char fatalText[ POSIX_CONSOLE_FATAL_SIZE + 1 ];
 	int length;
+	int fatalLength;
 
-	posixConsoleBuffer_t() : mutex( PTHREAD_MUTEX_INITIALIZER ), length( 0 ) {
+	posixConsoleBuffer_t() : mutex( PTHREAD_MUTEX_INITIALIZER ), length( 0 ), fatalLength( 0 ) {
 		text[0] = '\0';
+		fatalText[0] = '\0';
 	}
 };
 
@@ -96,6 +103,7 @@ struct posixSplashWindow_t {
 };
 
 struct posixConsoleLayout_t {
+	SDL_FRect statusRect;
 	SDL_FRect outputRect;
 	SDL_FRect inputRect;
 	SDL_FRect copyButtonRect;
@@ -112,6 +120,8 @@ struct posixConsoleWindow_t {
 	bool inputFocused;
 	bool videoInitializedByConsole;
 	bool createFailed;
+	bool exitRequested;
+	bool forceFatalWindow;
 	int scrollLines;
 	idEditField inputField;
 	idEditField history[ POSIX_CONSOLE_HISTORY ];
@@ -128,6 +138,8 @@ struct posixConsoleWindow_t {
 		, inputFocused( true )
 		, videoInitializedByConsole( false )
 		, createFailed( false )
+		, exitRequested( false )
+		, forceFatalWindow( false )
 		, scrollLines( 0 )
 		, nextHistoryLine( 0 )
 		, historyLine( 0 ) {
@@ -136,6 +148,17 @@ struct posixConsoleWindow_t {
 
 static posixSplashWindow_t s_splashWindow;
 static posixConsoleWindow_t s_consoleWindow;
+
+static const char *Posix_ConsoleInputState( int &inputLength, int &inputCursor ) {
+	const char *inputBuffer = s_consoleWindow.inputField.GetBuffer();
+	if ( inputBuffer == NULL ) {
+		inputBuffer = "";
+	}
+	const size_t rawInputLength = strlen( inputBuffer );
+	inputLength = rawInputLength > static_cast<size_t>( idMath::INT_MAX ) ? idMath::INT_MAX : static_cast<int>( rawInputLength );
+	inputCursor = idMath::ClampInt( 0, inputLength, s_consoleWindow.inputField.GetCursor() );
+	return inputBuffer;
+}
 #endif
 
 static void Posix_ConsoleLockBuffer( void ) {
@@ -149,6 +172,12 @@ static void Posix_ConsoleUnlockBuffer( void ) {
 static void Posix_ConsoleCopyBuffer( idStr &copy ) {
 	Posix_ConsoleLockBuffer();
 	copy = s_consoleBuffer.text;
+	Posix_ConsoleUnlockBuffer();
+}
+
+static void Posix_ConsoleCopyFatalError( idStr &copy ) {
+	Posix_ConsoleLockBuffer();
+	copy = s_consoleBuffer.fatalText;
 	Posix_ConsoleUnlockBuffer();
 }
 
@@ -167,15 +196,69 @@ static void Posix_ConsoleQueueCommand( const char *command ) {
 		return;
 	}
 
-	const int len = strlen( command ) + 1;
+	const size_t commandLength = strlen( command );
+	if ( commandLength > static_cast<size_t>( idMath::INT_MAX - 1 ) ) {
+		return;
+	}
+
+	const int len = static_cast<int>( commandLength ) + 1;
 	char *buffer = static_cast<char *>( Mem_Alloc( len ) );
+	if ( buffer == NULL ) {
+		return;
+	}
 	idStr::Copynz( buffer, command, len );
 	Posix_QueEvent( SE_CONSOLE, 0, 0, len, buffer );
+}
+
+static int Posix_ConsoleCleanText( const char *message, char *cleaned, const int cleanedSize ) {
+	if ( cleaned == NULL || cleanedSize <= 0 ) {
+		return 0;
+	}
+	cleaned[0] = '\0';
+
+	if ( message == NULL || message[0] == '\0' ) {
+		return 0;
+	}
+
+	int write = 0;
+	for ( int read = 0; message[read] != '\0' && write < cleanedSize - 1; ++read ) {
+		if ( message[read] == '\r' ) {
+			if ( message[read + 1] != '\n' ) {
+				cleaned[write++] = '\n';
+			}
+			continue;
+		}
+		int escapeType = 0;
+		const int escapeLength = idStr::IsEscape( &message[read], &escapeType );
+		if ( escapeLength > 0 ) {
+			read += escapeLength - 1;
+			continue;
+		}
+		cleaned[write++] = message[read];
+	}
+	cleaned[write] = '\0';
+	return write;
 }
 
 #if defined( USE_SDL3 )
 static bool Posix_SplashVideoReady( void ) {
 	return ( SDL_WasInit( SDL_INIT_VIDEO ) & SDL_INIT_VIDEO ) != 0;
+}
+
+static SDL_Renderer *Posix_CreateSupportRenderer( SDL_Window *window, const char *purpose ) {
+	if ( window == NULL ) {
+		return NULL;
+	}
+
+#if defined( MACOS_X ) && defined( OPENQ4_MACOS_METAL_BRIDGE )
+	SDL_Renderer *renderer = SDL_CreateRenderer( window, NULL );
+	if ( renderer != NULL ) {
+		return renderer;
+	}
+	Sys_Printf( "SDL %s renderer: Metal/default renderer failed: %s; falling back to software\n", purpose != NULL ? purpose : "support", SDL_GetError() );
+#endif
+
+	return SDL_CreateRenderer( window, "software" );
 }
 
 static bool Posix_SplashEnsureVideo( void ) {
@@ -247,7 +330,9 @@ static void Posix_SplashDrainEvents( SDL_WindowID windowID ) {
 	SDL_Event event;
 	while ( SDL_PollEvent( &event ) ) {
 		if ( !Posix_SplashEventHasWindowID( event, windowID ) ) {
-			SDL_PushEvent( &event );
+			if ( !SDL_PushEvent( &event ) ) {
+				Sys_Printf( "SDL splash: failed to requeue non-splash event %u: %s\n", event.type, SDL_GetError() );
+			}
 			break;
 		}
 	}
@@ -425,13 +510,23 @@ static void Posix_ConsoleUpdateLayout( void ) {
 	const float margin = static_cast<float>( POSIX_CONSOLE_MARGIN );
 	const float buttonHeight = static_cast<float>( POSIX_CONSOLE_BUTTON_HEIGHT );
 	const float inputHeight = static_cast<float>( POSIX_CONSOLE_INPUT_HEIGHT );
+	const float statusHeight = static_cast<float>( POSIX_CONSOLE_STATUS_HEIGHT );
+	const float statusGap = 6.0f;
 	const float bottomY = static_cast<float>( height ) - margin - buttonHeight;
 	const float inputY = bottomY - margin - inputHeight;
-	const float outputHeight = Max( 32.0f, inputY - margin * 2.0f );
+	const float outputY = margin + statusHeight + statusGap;
+	const float outputHeight = Max( 32.0f, inputY - outputY - margin );
+
+	s_consoleWindow.layout.statusRect = {
+		margin,
+		margin,
+		static_cast<float>( width ) - margin * 2.0f,
+		statusHeight
+	};
 
 	s_consoleWindow.layout.outputRect = {
 		margin,
-		margin,
+		outputY,
 		static_cast<float>( width ) - margin * 2.0f,
 		outputHeight
 	};
@@ -465,7 +560,7 @@ static bool Posix_ConsoleCreateWindow( void ) {
 	if ( s_consoleWindow.window != NULL ) {
 		return true;
 	}
-	if ( s_consoleWindow.createFailed || !sys_consoleWindow.GetBool() ) {
+	if ( s_consoleWindow.createFailed || ( !sys_consoleWindow.GetBool() && !s_consoleWindow.forceFatalWindow ) ) {
 		return false;
 	}
 	if ( !Posix_ConsoleEnsureVideo() ) {
@@ -484,17 +579,36 @@ static bool Posix_ConsoleCreateWindow( void ) {
 			Sys_Printf( "SDL system console disabled: failed to create window: %s\n", SDL_GetError() );
 		}
 		s_consoleWindow.createFailed = true;
+		if ( s_consoleWindow.videoInitializedByConsole ) {
+			SDL_QuitSubSystem( SDL_INIT_VIDEO );
+			s_consoleWindow.videoInitializedByConsole = false;
+		}
 		return false;
 	}
 
 	s_consoleWindow.windowID = SDL_GetWindowID( s_consoleWindow.window );
-	s_consoleWindow.renderer = SDL_CreateRenderer( s_consoleWindow.window, "software" );
+	if ( s_consoleWindow.windowID == 0 ) {
+		Sys_Printf( "SDL system console disabled: failed to resolve window id: %s\n", SDL_GetError() );
+		SDL_DestroyWindow( s_consoleWindow.window );
+		s_consoleWindow.window = NULL;
+		s_consoleWindow.createFailed = true;
+		if ( s_consoleWindow.videoInitializedByConsole ) {
+			SDL_QuitSubSystem( SDL_INIT_VIDEO );
+			s_consoleWindow.videoInitializedByConsole = false;
+		}
+		return false;
+	}
+	s_consoleWindow.renderer = Posix_CreateSupportRenderer( s_consoleWindow.window, "system console" );
 	if ( s_consoleWindow.renderer == NULL ) {
-		Sys_Printf( "SDL system console disabled: failed to create software renderer: %s\n", SDL_GetError() );
+		Sys_Printf( "SDL system console disabled: failed to create renderer: %s\n", SDL_GetError() );
 		SDL_DestroyWindow( s_consoleWindow.window );
 		s_consoleWindow.window = NULL;
 		s_consoleWindow.windowID = 0;
 		s_consoleWindow.createFailed = true;
+		if ( s_consoleWindow.videoInitializedByConsole ) {
+			SDL_QuitSubSystem( SDL_INIT_VIDEO );
+			s_consoleWindow.videoInitializedByConsole = false;
+		}
 		return false;
 	}
 
@@ -521,7 +635,10 @@ static void Posix_ConsoleStartTextInput( void ) {
 		static_cast<int>( s_consoleWindow.layout.inputRect.w ),
 		static_cast<int>( s_consoleWindow.layout.inputRect.h )
 	};
-	(void)SDL_SetTextInputArea( s_consoleWindow.window, &inputRect, s_consoleWindow.inputField.GetCursor() * POSIX_CONSOLE_FONT_SIZE );
+	int inputLength = 0;
+	int inputCursor = 0;
+	(void)Posix_ConsoleInputState( inputLength, inputCursor );
+	(void)SDL_SetTextInputArea( s_consoleWindow.window, &inputRect, inputCursor * POSIX_CONSOLE_FONT_SIZE );
 	(void)SDL_StartTextInput( s_consoleWindow.window );
 }
 
@@ -616,6 +733,10 @@ static void Posix_ConsoleClickButton( float x, float y ) {
 		return;
 	}
 	if ( Posix_ConsolePointInRect( x, y, s_consoleWindow.layout.quitButtonRect ) ) {
+		if ( s_consoleWindow.quitOnClose ) {
+			s_consoleWindow.exitRequested = true;
+			return;
+		}
 		Posix_ConsoleQueueCommand( "quit" );
 		return;
 	}
@@ -627,7 +748,7 @@ static void Posix_ConsoleClickButton( float x, float y ) {
 
 static void Posix_ConsoleHandleClose( void ) {
 	if ( s_consoleWindow.quitOnClose ) {
-		Posix_ConsoleQueueCommand( "quit" );
+		s_consoleWindow.exitRequested = true;
 	} else {
 		Posix_ConsoleHide();
 	}
@@ -683,7 +804,12 @@ static bool Posix_ConsoleHandleKey( const SDL_KeyboardEvent &keyEvent ) {
 			s_consoleWindow.inputField.SetCursor( 0 );
 			return true;
 		case SDLK_END:
-			s_consoleWindow.inputField.SetCursor( strlen( s_consoleWindow.inputField.GetBuffer() ) );
+			{
+				int inputLength = 0;
+				int inputCursor = 0;
+				(void)Posix_ConsoleInputState( inputLength, inputCursor );
+				s_consoleWindow.inputField.SetCursor( inputLength );
+			}
 			return true;
 		case SDLK_UP:
 			Posix_ConsoleHistory( -1 );
@@ -778,10 +904,46 @@ static void Posix_ConsoleDrawButton( const SDL_FRect &rect, const char *label ) 
 	Posix_ConsoleDrawRect( rect, 0x3a, 0x3f, 0x27, 0xff, true );
 	Posix_ConsoleDrawRect( rect, 0x79, 0x82, 0x50, 0xff, false );
 
-	const int textWidth = strlen( label ) * POSIX_CONSOLE_FONT_SIZE;
+	const char *buttonLabel = label != NULL ? label : "";
+	const int textWidth = strlen( buttonLabel ) * POSIX_CONSOLE_FONT_SIZE;
 	const float textX = rect.x + Max( 4.0f, ( rect.w - static_cast<float>( textWidth ) ) * 0.5f );
 	const float textY = rect.y + ( rect.h - static_cast<float>( POSIX_CONSOLE_FONT_SIZE ) ) * 0.5f;
-	Posix_ConsoleDrawText( textX, textY, label, 0xf0, 0x9e, 0x0d, 0xff );
+	Posix_ConsoleDrawText( textX, textY, buttonLabel, 0xf0, 0x9e, 0x0d, 0xff );
+}
+
+static void Posix_ConsoleDrawStatus( const char *fatalText ) {
+	const SDL_FRect &rect = s_consoleWindow.layout.statusRect;
+	Posix_ConsoleDrawRect( rect, 0x1b, 0x20, 0x0a, 0xff, true );
+	Posix_ConsoleDrawRect( rect, 0x5b, 0x66, 0x36, 0xff, false );
+
+	idStr statusText;
+	if ( fatalText != NULL && fatalText[0] != '\0' ) {
+		const char *scan = fatalText;
+		while ( *scan != '\0' && *scan != '\n' ) {
+			statusText.Append( scan, 1 );
+			scan++;
+		}
+	} else {
+		statusText = "System console ready";
+	}
+
+	SDL_Rect clip = {
+		static_cast<int>( rect.x + 5.0f ),
+		static_cast<int>( rect.y + 4.0f ),
+		Max( 1, static_cast<int>( rect.w - 10.0f ) ),
+		Max( 1, static_cast<int>( rect.h - 8.0f ) )
+	};
+	SDL_SetRenderClipRect( s_consoleWindow.renderer, &clip );
+	Posix_ConsoleDrawText(
+		rect.x + 5.0f,
+		rect.y + ( rect.h - static_cast<float>( POSIX_CONSOLE_FONT_SIZE ) ) * 0.5f,
+		statusText.c_str(),
+		0xf0,
+		0x9e,
+		0x0d,
+		0xff
+	);
+	SDL_SetRenderClipRect( s_consoleWindow.renderer, NULL );
 }
 
 static void Posix_ConsoleRender( void ) {
@@ -792,10 +954,14 @@ static void Posix_ConsoleRender( void ) {
 	Posix_ConsoleUpdateLayout();
 
 	idStr snapshot;
+	idStr fatalSnapshot;
 	Posix_ConsoleCopyBuffer( snapshot );
+	Posix_ConsoleCopyFatalError( fatalSnapshot );
 
 	(void)SDL_SetRenderDrawColor( s_consoleWindow.renderer, 0x10, 0x13, 0x08, 0xff );
 	(void)SDL_RenderClear( s_consoleWindow.renderer );
+
+	Posix_ConsoleDrawStatus( fatalSnapshot.c_str() );
 
 	Posix_ConsoleDrawRect( s_consoleWindow.layout.outputRect, 0x1b, 0x20, 0x0a, 0xff, true );
 	Posix_ConsoleDrawRect( s_consoleWindow.layout.outputRect, 0x5b, 0x66, 0x36, 0xff, false );
@@ -825,9 +991,9 @@ static void Posix_ConsoleRender( void ) {
 		y += POSIX_CONSOLE_FONT_SIZE;
 	}
 
-	const char *inputBuffer = s_consoleWindow.inputField.GetBuffer();
-	const int inputLength = strlen( inputBuffer );
-	const int inputCursor = s_consoleWindow.inputField.GetCursor();
+	int inputLength = 0;
+	int inputCursor = 0;
+	const char *inputBuffer = Posix_ConsoleInputState( inputLength, inputCursor );
 	const int maxInputChars = Max( 1, static_cast<int>( s_consoleWindow.layout.inputRect.w - 10.0f ) / POSIX_CONSOLE_FONT_SIZE - 1 );
 	int firstInputChar = 0;
 	if ( inputLength > maxInputChars ) {
@@ -888,12 +1054,14 @@ static void Posix_ConsoleShow( int visLevel, bool quitOnClose ) {
 		(void)SDL_RaiseWindow( s_consoleWindow.window );
 		s_consoleWindow.visible = true;
 		s_consoleWindow.inputFocused = true;
+		s_consoleWindow.exitRequested = false;
 		s_consoleWindow.scrollLines = 0;
 		Posix_ConsoleStartTextInput();
 	} else if ( visLevel == 2 ) {
 		(void)SDL_ShowWindow( s_consoleWindow.window );
 		(void)SDL_MinimizeWindow( s_consoleWindow.window );
 		s_consoleWindow.visible = true;
+		s_consoleWindow.exitRequested = false;
 		Posix_ConsoleStopTextInput();
 	}
 }
@@ -901,29 +1069,24 @@ static void Posix_ConsoleShow( int visLevel, bool quitOnClose ) {
 
 } // namespace
 
-void Posix_ConsoleAppendText( const char *message ) {
-	if ( message == NULL || message[0] == '\0' ) {
-		return;
-	}
+void Posix_ConsoleSetFatalError( const char *message ) {
+	char cleaned[ POSIX_CONSOLE_FATAL_SIZE ];
+	const int write = Posix_ConsoleCleanText( message, cleaned, sizeof( cleaned ) );
 
-	char cleaned[ POSIX_CONSOLE_APPEND_SIZE ];
-	int write = 0;
-	for ( int read = 0; message[read] != '\0' && write < static_cast<int>( sizeof( cleaned ) ) - 1; ++read ) {
-		if ( message[read] == '\r' ) {
-			if ( message[read + 1] != '\n' ) {
-				cleaned[write++] = '\n';
-			}
-			continue;
-		}
-		int escapeType = 0;
-		const int escapeLength = idStr::IsEscape( &message[read], &escapeType );
-		if ( escapeLength > 0 ) {
-			read += escapeLength - 1;
-			continue;
-		}
-		cleaned[write++] = message[read];
+	Posix_ConsoleLockBuffer();
+	if ( write <= 0 ) {
+		s_consoleBuffer.fatalText[0] = '\0';
+		s_consoleBuffer.fatalLength = 0;
+	} else {
+		idStr::Copynz( s_consoleBuffer.fatalText, cleaned, sizeof( s_consoleBuffer.fatalText ) );
+		s_consoleBuffer.fatalLength = strlen( s_consoleBuffer.fatalText );
 	}
-	cleaned[write] = '\0';
+	Posix_ConsoleUnlockBuffer();
+}
+
+void Posix_ConsoleAppendText( const char *message ) {
+	char cleaned[ POSIX_CONSOLE_APPEND_SIZE ];
+	const int write = Posix_ConsoleCleanText( message, cleaned, sizeof( cleaned ) );
 	if ( write <= 0 ) {
 		return;
 	}
@@ -1044,9 +1207,20 @@ bool Posix_ConsoleProcessEvent( const void *eventData ) {
 			return event.button.windowID == windowID;
 		case SDL_EVENT_MOUSE_WHEEL:
 			if ( event.wheel.windowID == windowID ) {
-				s_consoleWindow.scrollLines += static_cast<int>( event.wheel.y ) * 3;
-				if ( s_consoleWindow.scrollLines < 0 ) {
+				if ( !std::isfinite( event.wheel.y ) ) {
+					return true;
+				}
+				const float clampedWheelY = idMath::ClampFloat(
+					-static_cast<float>( POSIX_CONSOLE_MAX_WHEEL_STEPS_PER_EVENT ),
+					static_cast<float>( POSIX_CONSOLE_MAX_WHEEL_STEPS_PER_EVENT ),
+					event.wheel.y );
+				const int scrollDelta = static_cast<int>( clampedWheelY ) * 3;
+				if ( scrollDelta < 0 && s_consoleWindow.scrollLines < -scrollDelta ) {
 					s_consoleWindow.scrollLines = 0;
+				} else if ( scrollDelta > 0 && s_consoleWindow.scrollLines > idMath::INT_MAX - scrollDelta ) {
+					s_consoleWindow.scrollLines = idMath::INT_MAX;
+				} else {
+					s_consoleWindow.scrollLines += scrollDelta;
 				}
 				return true;
 			}
@@ -1078,6 +1252,29 @@ void Posix_ConsoleFrame( void ) {
 	}
 
 	Posix_ConsoleRender();
+#endif
+}
+
+void Posix_ConsoleFatalErrorWait( void ) {
+#if defined( USE_SDL3 )
+	s_consoleWindow.forceFatalWindow = true;
+	Sys_ShowConsole( 1, true );
+	if ( s_consoleWindow.window == NULL || !Posix_ConsoleVideoReady() ) {
+		return;
+	}
+
+	while ( !s_consoleWindow.exitRequested ) {
+		SDL_Event event;
+		while ( SDL_PollEvent( &event ) ) {
+			if ( event.type == SDL_EVENT_QUIT ) {
+				s_consoleWindow.exitRequested = true;
+				break;
+			}
+			(void)Posix_ConsoleProcessEvent( &event );
+		}
+		Posix_ConsoleRender();
+		SDL_Delay( 16 );
+	}
 #endif
 }
 
@@ -1135,9 +1332,15 @@ void Sys_ShowSplash( void ) {
 	}
 
 	s_splashWindow.windowID = SDL_GetWindowID( s_splashWindow.window );
-	s_splashWindow.renderer = SDL_CreateRenderer( s_splashWindow.window, "software" );
+	if ( s_splashWindow.windowID == 0 ) {
+		Sys_Printf( "SDL splash disabled: failed to resolve window id: %s\n", SDL_GetError() );
+		Posix_SplashDestroy( true );
+		s_splashWindow.createFailed = true;
+		return;
+	}
+	s_splashWindow.renderer = Posix_CreateSupportRenderer( s_splashWindow.window, "splash" );
 	if ( s_splashWindow.renderer == NULL ) {
-		Sys_Printf( "SDL splash disabled: failed to create software renderer: %s\n", SDL_GetError() );
+		Sys_Printf( "SDL splash disabled: failed to create renderer: %s\n", SDL_GetError() );
 		Posix_SplashDestroy( true );
 		s_splashWindow.createFailed = true;
 		return;

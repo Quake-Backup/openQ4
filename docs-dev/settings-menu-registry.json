@@ -1745,34 +1745,6 @@
       "accessibility": "Standard focusable choiceDef row."
     },
     {
-      "id": "system.lens_flare",
-      "pane": "System",
-      "section": "Post Effects",
-      "path": "Settings > System > Post Effects > Lens Flare",
-      "source": "system",
-      "container": "set_sys_lensflare",
-      "widgets": [
-        "set_sys_lensflare_val"
-      ],
-      "widget_type": "choice",
-      "label_key": "#str_41117",
-      "choices_key": "#str_41118",
-      "values": [
-        "0",
-        "1",
-        "2"
-      ],
-      "target_type": "cvar",
-      "target": "r_lensFlare",
-      "default": "0",
-      "cvar_range": {
-        "low": "0",
-        "high": "2"
-      },
-      "restart_required": false,
-      "accessibility": "Standard focusable choiceDef row."
-    },
-    {
       "id": "system.ssao",
       "pane": "System",
       "section": "Post Effects",

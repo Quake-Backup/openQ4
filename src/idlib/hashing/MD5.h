@@ -12,5 +12,6 @@
 */
 
 unsigned long MD5_BlockChecksum( const void *data, int length );
+bool MD5_FileChecksum( const char *path, char digestHex[33] );
 
 #endif /* !__MD5_H__ */

@@ -102,5 +102,7 @@ void GLimp_DeactivateContext( void ) { }
 
 void GLimp_ActivateContext( void ) { }
 
+bool GLimp_EnsureActiveContext( const char *operation ) { (void)operation; return true; }
+
 bool GLimp_SetScreenParms( glimpParms_t parms ) { return true; }
 

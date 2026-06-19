@@ -13,7 +13,7 @@ The goal is to turn the current side-path implementation into a high-performance
 - The target renderer is OpenGL-only and tiered: GL 3.3 baseline, GL 4.1 macOS-class path, GL 4.3 GPU-driven path, GL 4.5 low-overhead path, GL 4.6 optional experiments.
 - The final visible path is a modern clustered hybrid deferred/forward+ pipeline, not a duplicate side renderer running before the legacy renderer.
 - CPU work is allowed where it is measurably cheaper or necessary for GL 3.3 support, but it must be bounded, parallel-friendly, and observable.
-- HDR, bloom, SSAO, motion blur, lens flare, GUI composition, subviews, render-to-texture, BSE effects, light grids, shadows, and legacy material behavior must be integrated or explicitly owned by fallback passes until parity is proven.
+- HDR, bloom, SSAO, motion blur, GUI composition, subviews, render-to-texture, BSE effects, light grids, shadows, and legacy material behavior must be integrated or explicitly owned by fallback passes until parity is proven.
 - Shadow mapping is a first-class light subsystem, not a bolt-on debug path. Projected-light maps, point-light maps, CSM, hashed-alpha cutout casters, optional translucent moments, stencil-shadow fallback, shadow budgets, and shadow diagnostics must be part of the renderer's pass ownership, clustering, material, tiering, and validation contracts.
 - The solution must continue to work with shipped Quake 4 assets and repo-authored `content/baseoq4/` overrides only. Do not hide renderer gaps with replacement asset content.
 
@@ -43,7 +43,7 @@ The completed plan is internally inconsistent with its own definition of done:
 | Geometry parity | Bind full vertex attributes, correct normal/tangent basis, skinning/deform handling, culling, mirrored transforms, and viewmodel rules. | Model seams, mirror stitching, and lighting errors are expected. |
 | Cluster scalability | Replace fixed tiny cluster/list caps with tier-appropriate dynamic buffers and overflow-safe algorithms. | Overflow warnings and incorrect lighting pressure persist in normal scenes. |
 | Shadow mapping | Promote projected/point/CSM shadow maps into the modern light pipeline with correct caster/material semantics, atlas ownership, budgets, and fallback. | Modern lighting can become fast but visually wrong, or shadow maps can dominate frame time. |
-| Post/HDR integration | Route modern scene color through the existing HDR, tone mapping, bloom, SSAO, motion blur, lens flare, and GUI pipeline. | Modern visible composition is not the shipped visual pipeline. |
+| Post/HDR integration | Route modern scene color through the existing HDR, tone mapping, bloom, SSAO, motion blur, and GUI pipeline. | Modern visible composition is not the shipped visual pipeline. |
 | Subviews/BSE/render demos | Promote or explicitly isolate subviews, remote cameras, copy-render, BSE, and render-demo paths. | Modern visible is blocked or visually incomplete in real content. |
 | GL tier policy | Make each tier a coherent implementation path, not just a capability label. | GL 3.3 and GL 4.1 cannot be trusted as performance baselines yet. |
 | Validation | Add gameplay, image comparison, RenderDoc, and benchmark sign-off before any default promotion. | Startup self-tests are passing while in-game rendering is slow and wrong. |
@@ -291,7 +291,7 @@ Phase 8 implementation notes:
 Goal: preserve and integrate the previously existing post stack instead of bypassing it.
 
 - [x] Make the modern scene target FP16 HDR by default on supported tiers, with documented fallback formats.
-- [x] Route the modern deferred/forward+ composition into the existing HDR, SSAO, motion blur, lens flare, bloom, authored post, resolution scale, CRT, and GUI presentation path through a graph-owned scene handoff. Native graph execution of each post pass remains a later optimization after parity.
+- [x] Route the modern deferred/forward+ composition into the existing HDR, SSAO, motion blur, bloom, authored post, resolution scale, CRT, and GUI presentation path through a graph-owned scene handoff. Native graph execution of each post pass remains a later optimization after parity.
 - [x] Preserve authored copy-render and `_currentRender` semantics for materials that depend on the previous scene color/depth.
 - [x] Integrate SSAO with modern depth handoff and keep the existing quality/performance presets intact.
 - [x] Ensure bloom and tone mapping operate after deferred/forward+ composition and before GUI.

@@ -114,8 +114,11 @@ def validate_sdl3_highdpi_contract() -> None:
     require(refresh, "glConfig.vidHeight = pixelHeight;", "SDL3 framebuffer height refresh")
 
     require(consume, "const float accumulated = delta + remainder;", "SDL3 fractional mouse accumulator")
-    require(consume, "const int whole = static_cast<int>(accumulated);", "SDL3 fractional mouse accumulator")
-    require(consume, "remainder = accumulated - static_cast<float>(whole);", "SDL3 fractional mouse accumulator")
+    require(consume, "if (!std::isfinite(delta) || !std::isfinite(remainder))", "SDL3 fractional mouse accumulator finite guard")
+    require(consume, "if (!std::isfinite(accumulated))", "SDL3 fractional mouse accumulator finite guard")
+    require(consume, "const float clampedAccumulated = idMath::ClampFloat(", "SDL3 fractional mouse accumulator clamp")
+    require(consume, "const int whole = static_cast<int>(clampedAccumulated);", "SDL3 fractional mouse accumulator")
+    require(consume, "remainder = clampedAccumulated - static_cast<float>(whole);", "SDL3 fractional mouse accumulator")
     reject(source, "SDL3_RoundToInt", "SDL3 high-DPI mouse path")
 
     require(routed_delta, "SDL3_ConsumeMouseDelta(menuMouseX - previousX, s_menuMouseRemainderX)", "SDL3 routed mouse delta")

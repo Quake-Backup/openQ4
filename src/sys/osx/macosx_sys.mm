@@ -129,13 +129,28 @@ char *Sys_GetClipboardData(void) // FIXME
     NSArray *pasteboardTypes;
 
     pasteboard = [NSPasteboard generalPasteboard];
+    if ( pasteboard == nil ) {
+        return NULL;
+    }
     pasteboardTypes = [pasteboard types];
     if ([pasteboardTypes containsObject:NSPasteboardTypeString]) {
         NSString *clipboardString;
 
         clipboardString = [pasteboard stringForType:NSPasteboardTypeString];
         if (clipboardString && [clipboardString length] > 0) {
-            return strdup([clipboardString UTF8String]);
+            const char *utf8ClipboardString = [clipboardString UTF8String];
+            if (utf8ClipboardString != NULL && utf8ClipboardString[0] != '\0') {
+                const size_t clipboardLength = strlen( utf8ClipboardString );
+                if ( clipboardLength > static_cast<size_t>( idMath::INT_MAX - 1 ) ) {
+                    return NULL;
+                }
+                char *data = static_cast<char *>( Mem_Alloc( static_cast<int>( clipboardLength ) + 1 ) );
+                if ( data == NULL ) {
+                    return NULL;
+                }
+                memcpy( data, utf8ClipboardString, clipboardLength + 1 );
+                return data;
+            }
         }
     }
     return NULL;
@@ -182,17 +197,30 @@ void Sys_Shutdown(void)
 void Sys_Error(const char *error, ...)
 {
     va_list argptr;
+    NSString *formatString;
     NSString *formattedString;
 
     Sys_Shutdown();
 
+    formatString = error != NULL ? [NSString stringWithUTF8String:error] : nil;
+    if (formatString == nil && error != NULL) {
+        formatString = [NSString stringWithCString:error encoding:NSISOLatin1StringEncoding];
+    }
+    if (formatString == nil) {
+        formatString = @"Unknown error";
+    }
+
     va_start(argptr,error);
-    formattedString = [[NSString alloc] initWithFormat:[NSString stringWithUTF8String:error] arguments:argptr];
+    formattedString = [[NSString alloc] initWithFormat:formatString arguments:argptr];
     va_end(argptr);
+    if (formattedString == nil) {
+        formattedString = [formatString copy];
+    }
 
     NSLog(@"Sys_Error: %@", formattedString);
-    NSRunAlertPanel(@"openQ4 Error", formattedString, nil, nil, nil);
+    NSRunAlertPanel(@"openQ4 Error", @"%@", nil, nil, nil, formattedString);
 
+    [formattedString release];
     Sys_Quit();
 }
 
@@ -224,6 +252,9 @@ char *ansiColors[8] =
 	  
 void Sys_Print(const char *text)
 {
+    if ( text == NULL ) {
+        return;
+    }
 #if 0
 	/* Okay, this is a stupid hack, but what the hell, I was bored. ;) */
 	char *scan = text;

@@ -93,7 +93,7 @@ typedef struct {
 
 	HWND		hwndInputLine;
 
-	char		errorString[80];
+	char		errorString[512];
 
 	char		consoleText[512], returnedText[512];
 	bool		quitOnClose;
@@ -251,7 +251,6 @@ void Sys_DestroySplash(void) {
 
 static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	char* cmdString;
-	static bool s_timePolarity;
 
 	switch (uMsg) {
 	case WM_ACTIVATE:
@@ -279,14 +278,8 @@ static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 			return (long)s_wcd.hbrEditBackground;
 		}
 		else if ((HWND)lParam == s_wcd.hwndErrorBox) {
-			if (s_timePolarity & 1) {
-				SetBkColor((HDC)wParam, RGB(0x80, 0x80, 0x80));
-				SetTextColor((HDC)wParam, RGB(0xff, 0x0, 0x00));
-			}
-			else {
-				SetBkColor((HDC)wParam, RGB(0x80, 0x80, 0x80));
-				SetTextColor((HDC)wParam, RGB(0x00, 0x0, 0x00));
-			}
+			SetBkColor((HDC)wParam, RGB(0x1b, 0x20, 0x0a));
+			SetTextColor((HDC)wParam, RGB(0xf0, 0x9e, 0x0d));
 			return (long)s_wcd.hbrErrorBackground;
 		}
 		break;
@@ -317,8 +310,7 @@ static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 		break;
 	case WM_CREATE:
 		s_wcd.hbrEditBackground = CreateSolidBrush(RGB(0x1b, 0x20, 0x0a));
-		s_wcd.hbrErrorBackground = CreateSolidBrush(RGB(0x80, 0x80, 0x80));
-		SetTimer(hWnd, 1, 1000, NULL);
+		s_wcd.hbrErrorBackground = CreateSolidBrush(RGB(0x1b, 0x20, 0x0a));
 		break;
 		/*
 				case WM_ERASEBKGND:
@@ -340,14 +332,6 @@ static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 					}
 					return 1;
 		*/
-	case WM_TIMER:
-		if (wParam == 1) {
-			s_timePolarity = (bool)!s_timePolarity;
-			if (s_wcd.hwndErrorBox) {
-				InvalidateRect(s_wcd.hwndErrorBox, NULL, FALSE);
-			}
-		}
-		break;
 	}
 
 	return DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -509,6 +493,18 @@ void Sys_CreateConsole(void) {
 	s_wcd.hfBufferFont = CreateFont(nHeight, 0, 0, 0, FW_LIGHT, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FF_MODERN | FIXED_PITCH, "Courier New");
 
 	ReleaseDC(s_wcd.hWnd, hDC);
+
+	//
+	// create the status line
+	//
+	idStr::Copynz(s_wcd.errorString, "System console ready", sizeof(s_wcd.errorString));
+	s_wcd.hwndErrorBox = CreateWindow("static", NULL, WS_CHILD | WS_VISIBLE | SS_SUNKEN | SS_LEFT,
+		6, 5, 526, 30,
+		s_wcd.hWnd,
+		(HMENU)ERRORBOX_ID,
+		win32.hInstance, NULL);
+	SendMessage(s_wcd.hwndErrorBox, WM_SETFONT, (WPARAM)s_wcd.hfBufferFont, 0);
+	SetWindowText(s_wcd.hwndErrorBox, s_wcd.errorString);
 
 	//
 	// create the input line
@@ -731,11 +727,8 @@ void Win_SetErrorText(const char* buf) {
 			(HMENU)ERRORBOX_ID,	// child window ID
 			win32.hInstance, NULL);
 		SendMessage(s_wcd.hwndErrorBox, WM_SETFONT, (WPARAM)s_wcd.hfBufferFont, 0);
-		SetWindowText(s_wcd.hwndErrorBox, s_wcd.errorString);
-
-		DestroyWindow(s_wcd.hwndInputLine);
-		s_wcd.hwndInputLine = NULL;
 	}
+	SetWindowText(s_wcd.hwndErrorBox, s_wcd.errorString);
 }
 
 void Sys_SetDedicatedConsoleTitle(const char* txt) {

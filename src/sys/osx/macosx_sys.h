@@ -61,6 +61,7 @@ do { \
     NSOpenGLContext *_context = (context); \
     glw_state._ctx = _context; \
     glw_state._cgl_ctx = [_context cglContext]; \
+    glw_state._ctx_is_current = NO; \
 } while (0)
 
 #define OSX_GetNSGLContext() glw_state._ctx

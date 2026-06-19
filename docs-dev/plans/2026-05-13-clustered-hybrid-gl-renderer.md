@@ -472,7 +472,7 @@ Goal: close the compatibility gaps that usually break old game content.
 - [x] Promote fullscreen GUI rendering to the modern path.
 - [x] Promote subview/remote camera render targets with graph-owned resources.
 - [x] Promote copy-render and authored post-process commands.
-- [x] Promote bloom, lens flare, SSAO, motion blur, and light-grid related post paths where already supported by content.
+- [x] Promote bloom, SSAO, motion blur, and light-grid related post paths where already supported by content.
 - [x] Keep render demo capture/playback deterministic.
 - [x] Keep AVI/cinematic timing behavior compatible with high-refresh presentation work.
 - [x] Add BSE effect categories: particles, trails, beams, decals, material-driven effects, and fallback reasons.
@@ -481,7 +481,7 @@ Goal: close the compatibility gaps that usually break old game content.
 
 ## Phase 14 Exit
 
-- Completed: The modern visible bridge now assigns every known render-pass category to a visible owner. Depth, shadow-map, G-buffer/deferred, forward+, light-grid sampling, present, and fullscreen GUI are modern-owned when their guarded resources and programs are available. Stencil shadows, authored post/copy-render work, SSAO, motion blur, lens flare, bloom, subview/remote-camera/render-demo views, and BSE special effects remain explicit compatibility fallbacks instead of silent misses.
+- Completed: The modern visible bridge now assigns every known render-pass category to a visible owner. Depth, shadow-map, G-buffer/deferred, forward+, light-grid sampling, present, and fullscreen GUI are modern-owned when their guarded resources and programs are available. Stencil shadows, authored post/copy-render work, SSAO, motion blur, bloom, subview/remote-camera/render-demo views, and BSE special effects remain explicit compatibility fallbacks instead of silent misses.
 - GUI path: `RENDER_PASS_GUI` now has a dedicated modern draw-plan pipeline backed by the internal GUI shader. When `r_rendererModernVisible 1` composes a frame, ready GUI submit commands are replayed as a modern fullscreen overlay after the hybrid scene composite so legacy GUI command packets no longer automatically block the modern visible path.
 - Resource and fallback accounting: Post, copy-render, subview, render-demo, cinematic/AVI-sensitive, and BSE-heavy categories now appear in the modern compatibility inventory with graph/pass counts, fallback counts, deterministic render-demo status, and BSE category buckets for particles, trails, beams, decals, and material-driven effects.
 - Metrics added/changed: `gfxInfo` and `r_rendererMetrics 2` now print `modernCompatibility`, including inventory coverage, modern/legacy owner totals, light-grid promotion, GUI program/pass/draw/readiness/execution state, post/copy fallback counts, subview/remote/render-demo fallback counts, render-demo determinism, BSE fallback buckets, and cinematic compatibility coverage.
