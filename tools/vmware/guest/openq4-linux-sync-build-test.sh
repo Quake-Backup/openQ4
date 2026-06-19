@@ -4,9 +4,9 @@ set -euo pipefail
 action="${1:-build}"
 workspace="${OPENQ4_GUEST_WORKSPACE:-${HOME}/openq4-work}"
 repo="${workspace}/openQ4"
-gamelibs="${workspace}/openQ4-GameLibs"
+gamelibs="${workspace}/openQ4-game"
 host_repo="${OPENQ4_HOST_REPO_SHARE:-/mnt/hgfs/openQ4}"
-host_gamelibs="${OPENQ4_HOST_GAMELIBS_SHARE:-/mnt/hgfs/openQ4-GameLibs}"
+host_gamelibs="${OPENQ4_HOST_GAMELIBS_SHARE:-/mnt/hgfs/openQ4-game}"
 basepath="${OPENQ4_BASEPATH:-}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 results_root="${workspace}/results"
@@ -44,7 +44,7 @@ sync_sources() {
         --exclude '/builddir*/' \
         --exclude '/tmp-game-libs/'
 
-    echo "Syncing openQ4-GameLibs from ${host_gamelibs} to ${gamelibs}"
+    echo "Syncing openQ4-game from ${host_gamelibs} to ${gamelibs}"
     sync_tree "${host_gamelibs}" "${gamelibs}" \
         --exclude '/builddir*/' \
         --exclude '/.tmp/'

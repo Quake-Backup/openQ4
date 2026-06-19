@@ -196,7 +196,7 @@ def validation_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
     if args.game_libs_repo:
         env["OPENQ4_GAMELIBS_REPO"] = str(Path(args.game_libs_repo).resolve())
     elif "OPENQ4_GAMELIBS_REPO" not in env:
-        default_game_libs = (root / ".." / "openQ4-GameLibs").resolve()
+        default_game_libs = (root / ".." / "openQ4-game").resolve()
         env["OPENQ4_GAMELIBS_REPO"] = str(default_game_libs)
 
     if args.build_gamelibs:
@@ -247,7 +247,7 @@ def ensure_game_libs_repo(env: dict[str, str]) -> None:
     expected = game_libs_repo / "src" / "game"
     if not expected.is_dir():
         raise ValidationError(
-            "openQ4-GameLibs source directory was not found. "
+            "openQ4-game source directory was not found. "
             f"Expected: {expected}"
         )
 
@@ -728,8 +728,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-install", dest="install", action="store_false", help="Skip Meson install and staged payload checks.")
     parser.add_argument("--skip-python-tests", action="store_true", help="Skip lightweight Python validation tests.")
     parser.add_argument("--skip-build", action="store_true", help="Skip Meson setup/compile/install steps.")
-    parser.add_argument("--build-gamelibs", action="store_true", help="Ask the Windows Meson wrapper to build openQ4-GameLibs during compile.")
-    parser.add_argument("--game-libs-repo", default="", help="Override the openQ4-GameLibs companion repository path.")
+    parser.add_argument("--build-gamelibs", action="store_true", help="Ask the Windows Meson wrapper to build openQ4-game during compile.")
+    parser.add_argument("--game-libs-repo", default="", help="Override the openQ4-game companion repository path.")
     parser.add_argument("--skip-icon-sync", action="store_true", help="Set OPENQ4_SKIP_ICON_SYNC=1 for this run.")
     parser.add_argument("--jobs", "-j", type=int, default=None, help="Parallel compile job count passed to Meson.")
     parser.add_argument("--extra-setup-arg", action="append", default=[], help="Additional argument appended to Meson setup.")

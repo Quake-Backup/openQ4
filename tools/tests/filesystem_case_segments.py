@@ -107,10 +107,10 @@ def validate_linux_build_path_casing() -> None:
     push = read(".github/workflows/push-verification.yml")
     commit = read(".github/workflows/commit-validation.yml")
 
-    require(root_meson, 'root / ".." / "openQ4-GameLibs"', "default GameLibs repository path")
-    require(root_meson, "../openQ4-GameLibs", "GameLibs repository diagnostics")
-    reject(root_meson, 'root / ".." / "OpenQ4-GameLibs"', "default GameLibs repository path")
-    reject(root_meson, "../OpenQ4-GameLibs", "GameLibs repository diagnostics")
+    require(root_meson, 'root / ".." / "openQ4-game"', "default GameLibs repository path")
+    require(root_meson, "../openQ4-game", "GameLibs repository diagnostics")
+    reject(root_meson, 'root / ".." / "OpenQ4-game"', "default GameLibs repository path")
+    reject(root_meson, "../OpenQ4-game", "GameLibs repository diagnostics")
 
     require(root_meson, "assets/linux/openQ4-steamdeck.in", "Steam Deck launcher template input")
     require(root_meson, "assets/linux/openq4-steamdeck.desktop.in", "Steam Deck desktop template input")
@@ -123,9 +123,9 @@ def validate_linux_build_path_casing() -> None:
         (push, "push verification workflow"),
         (commit, "commit validation workflow"),
     ):
-        require(workflow, "../openQ4-GameLibs", context)
-        require(workflow, "openQ4-GameLibs.git", context)
-        reject(workflow, "../OpenQ4-GameLibs", context)
+        require(workflow, "../openQ4-game", context)
+        require(workflow, "openQ4-game.git", context)
+        reject(workflow, "../OpenQ4-game", context)
 
 
 def validate_release_note() -> None:

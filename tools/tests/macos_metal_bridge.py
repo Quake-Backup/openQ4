@@ -1046,7 +1046,7 @@ def validate_macos_workflow_security_contract() -> None:
     require(host, "rsync -a --delete", "macOS host safe temp extraction sync")
     require(host, "openQ4/.git", "macOS host source metadata exclusion")
     require(host, "openQ4/.codex", "macOS host local agent metadata exclusion")
-    require(host, "openQ4-GameLibs/.git", "macOS host GameLibs metadata exclusion")
+    require(host, "openQ4-game/.git", "macOS host GameLibs metadata exclusion")
     require(host, "$assetRootName/q4base/*.cfg", "macOS host personal config exclusion")
     require(host, "$assetRootName/q4base/q4key", "macOS host private key exclusion")
 

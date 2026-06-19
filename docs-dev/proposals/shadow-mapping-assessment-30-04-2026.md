@@ -18,7 +18,7 @@ On the point-light receiver side, `content/baseoq4/glprogs/shadow_point_interact
 
 The caster side is already more advanced than a naive first pass. `shadow_proj_caster.fs` and `shadow_point_caster.fs` implement classic alpha-test and hashed-alpha caster rejection, while `shadow_proj_translucent_caster.fs` and `shadow_point_translucent_caster.fs` accumulate optical-depth moments into three MRTs for red, green, and blue transmission. That is clever and surprisingly ambitious for this renderer generation, but it also means the opaque path must be made rock-solid before the translucent path deserves more expansion. fileciteturn24file0L1-L1 fileciteturn25file0L1-L1 fileciteturn28file0L1-L1 fileciteturn29file0L1-L1
 
-The game/renderer interface in `openQ4-GameLibs/src/renderer/RenderWorld.h` is especially important. It exposes `renderEntity_t::noShadow`, `noSelfShadow`, `shadowLODDistance`, and `suppressLOD`, and `renderLight_t::noShadows`, `noDynamicShadows`, `pointLight`, `parallel`, and `globalLight`. It also exposes portal-area APIs such as `FindVisibleAreas`, `BoundsInAreas`, and `AreasAreConnected`, plus a portal-sky render flag. In other words: the right classification hooks for a production shadow system already exist, but openQ4 still needs a stronger policy layer that uses them deliberately. fileciteturn31file0L1-L1
+The game/renderer interface in `openQ4-game/src/renderer/RenderWorld.h` is especially important. It exposes `renderEntity_t::noShadow`, `noSelfShadow`, `shadowLODDistance`, and `suppressLOD`, and `renderLight_t::noShadows`, `noDynamicShadows`, `pointLight`, `parallel`, and `globalLight`. It also exposes portal-area APIs such as `FindVisibleAreas`, `BoundsInAreas`, and `AreasAreConnected`, plus a portal-sky render flag. In other words: the right classification hooks for a production shadow system already exist, but openQ4 still needs a stronger policy layer that uses them deliberately. fileciteturn31file0L1-L1
 
 The renderer-side integration surface is also revealing: `RenderSystem_init.cpp` exposes not only shadow-map toggles, but also `r_useLightPortalFlow`, `r_useShadowSurfaceScissor`, `r_lod_entities`, `r_lod_shadows`, and related percentage thresholds. These are useful for cost control, but they are also exactly the sort of culling and LOD gates that can make shadows disappear in complex scenes if caster submission is too tightly coupled to visible interaction submission. fileciteturn18file0L1-L1
 
@@ -93,7 +93,7 @@ For openQ4 specifically, I would choose this stack:
 
 That is the best balance of quality, implementation risk, GPU cost, and compatibility with an idTech4 interaction renderer. fileciteturn24file0L1-L1 fileciteturn25file0L1-L1 fileciteturn31file0L1-L1 citeturn14view2turn14view5turn13view2
 
-## Code-Level Recommendations in openQ4 and openQ4-GameLibs
+## Code-Level Recommendations in openQ4 and openQ4-game
 
 | File | Current behavior | Concrete recommendation |
 |---|---|---|
@@ -106,7 +106,7 @@ That is the best balance of quality, implementation risk, GPU cost, and compatib
 | `src/renderer/tr_local.h` | Shadow-map state is present, including debug and atlas-related data | Extend state with per-cascade world-units-per-texel, fitted near/far, last-stable matrices, light classification, and residency/update metadata. |
 | `src/renderer/Interaction.cpp` | Shadow-caster chain and cache handling are already a critical integration point | Split receiver-set construction from conservative caster-set expansion; classify casters into static, skinned, alpha-cutout, particle/effect, and non-shadowing; cache static caster lists by light/area where possible. |
 | `src/renderer/draw_arb2.cpp` | Central integration point for shadow-map rendering and interaction shading | Introduce explicit light-class shadow paths, timer-query instrumentation, atlas/pool residency tracking, and a shadow update scheduler; if projected depth maps are already true depth textures, move them to compare mode and reduce shader ALU cost. |
-| `openQ4-GameLibs/src/renderer/RenderWorld.h` | Already exposes `noShadow`, `noSelfShadow`, `shadowLODDistance`, `suppressLOD`, `pointLight`, `parallel`, `globalLight` | Prefer a renderer-side sidecar classification table keyed by entity/light handle instead of immediately expanding these structs, because changing the ABI/layout is higher risk for save/demo/game-code integration. |
+| `openQ4-game/src/renderer/RenderWorld.h` | Already exposes `noShadow`, `noSelfShadow`, `shadowLODDistance`, `suppressLOD`, `pointLight`, `parallel`, `globalLight` | Prefer a renderer-side sidecar classification table keyed by entity/light handle instead of immediately expanding these structs, because changing the ABI/layout is higher risk for save/demo/game-code integration. |
 
 The sources above are directly tied to the repository files inspected, especially the receiver shaders, caster shaders, renderer cvars, and the GameLibs renderer interface. fileciteturn18file0L1-L1 fileciteturn21file0L1-L1 fileciteturn22file0L1-L1 fileciteturn24file0L1-L1 fileciteturn25file0L1-L1 fileciteturn28file0L1-L1 fileciteturn29file0L1-L1 fileciteturn31file0L1-L1
 

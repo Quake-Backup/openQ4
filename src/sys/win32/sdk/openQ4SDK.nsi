@@ -21,7 +21,7 @@ SetCompressor lzma
 ; MUI Pages
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_LICENSEPAGE_RADIOBUTTONS
-!insertmacro MUI_PAGE_LICENSE "openQ4-GameLibs\EULA.Development Kit.rtf"
+!insertmacro MUI_PAGE_LICENSE "openQ4-game\EULA.Development Kit.rtf"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH

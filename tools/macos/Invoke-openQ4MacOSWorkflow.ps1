@@ -236,22 +236,22 @@ function Sync-SourceTrees {
     if (Test-Path -LiteralPath $HostGameLibsPath) {
         $gameLibsArchive = New-TransferArchive `
             -SourceDir $HostGameLibsPath `
-            -ArchivePath (Join-Path $transferRoot "openQ4-GameLibs.tar") `
+            -ArchivePath (Join-Path $transferRoot "openQ4-game.tar") `
             -Exclude @(
-                "openQ4-GameLibs/.git",
-                "openQ4-GameLibs/.claude",
-                "openQ4-GameLibs/.codex",
-                "openQ4-GameLibs/.tmp",
-                "openQ4-GameLibs/.vscode",
-                "openQ4-GameLibs/builddir",
-                "openQ4-GameLibs/builddir_*",
-                "openQ4-GameLibs/builddir-*"
+                "openQ4-game/.git",
+                "openQ4-game/.claude",
+                "openQ4-game/.codex",
+                "openQ4-game/.tmp",
+                "openQ4-game/.vscode",
+                "openQ4-game/builddir",
+                "openQ4-game/builddir_*",
+                "openQ4-game/builddir-*"
             )
-        $remoteGameLibsArchive = "$script:RemoteTempRoot/openQ4-GameLibs.tar"
+        $remoteGameLibsArchive = "$script:RemoteTempRoot/openQ4-game.tar"
         Copy-ToMac -Source $gameLibsArchive -RemotePath $remoteGameLibsArchive
-        Expand-RemoteArchive -RemoteArchive $remoteGameLibsArchive -RemoteTarget "$MacWorkspace/openQ4-GameLibs"
+        Expand-RemoteArchive -RemoteArchive $remoteGameLibsArchive -RemoteTarget "$MacWorkspace/openQ4-game"
     } else {
-        Write-Warning "openQ4-GameLibs was not found at $HostGameLibsPath; macOS build may fail until the companion repo is synced."
+        Write-Warning "openQ4-game was not found at $HostGameLibsPath; macOS build may fail until the companion repo is synced."
     }
 }
 
@@ -298,7 +298,7 @@ $script:RemoteTempRoot = "/tmp/openq4-macos-$([System.Guid]::NewGuid().ToString(
 Invoke-MacSsh -Command "umask 077 && mkdir -p $(Quote-Sh $script:RemoteTempRoot)"
 
 if (-not $HostGameLibsPath) {
-    $HostGameLibsPath = Join-Path (Split-Path -Parent $repoRoot) "openQ4-GameLibs"
+    $HostGameLibsPath = Join-Path (Split-Path -Parent $repoRoot) "openQ4-game"
 }
 $HostGameLibsPath = Get-FullPath $HostGameLibsPath
 

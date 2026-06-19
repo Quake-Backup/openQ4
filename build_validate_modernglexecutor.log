@@ -228,7 +228,7 @@ openQ4 0.1.010
     Integrated BSE in client   : YES
     Integrated BSE source dir  : E:/Repositories/openQ4/src/bse
     Build games                : YES
-    GameLibs source repo       : E:/Repositories/openQ4-GameLibs
+    GameLibs source repo       : E:/Repositories/openQ4-game
     Build game_sp              : YES
     Build game_mp              : YES
     game_sp binary             : game-sp_x64

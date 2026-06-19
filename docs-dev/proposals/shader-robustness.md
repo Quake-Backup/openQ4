@@ -8,9 +8,9 @@ Key robustness gaps and failure modes concentrate around (a) incomplete state tr
 
 Modernization should be approached as an incremental hardening + developer UX initiative: unify shader compilation into a single “shader manager” with explicit validity states and structured error payloads; adopt modern diagnostics (`KHR_debug`), robust reset handling (`KHR_robustness`), and optional parallel/async compile (`KHR_parallel_shader_compile`); add a persistent cache guarded by strict compatibility keys and known driver quirks; and invest in reproducible shader-compile tests and runtime metrics. citeturn15search0turn0search1turn18search0
 
-## Code-level pipeline and API entry points in openQ4 and openQ4-GameLibs
+## Code-level pipeline and API entry points in openQ4 and openQ4-game
 
-This section maps the *actual* shader compilation/loading pipeline as implemented in the two requested repos at commit `738afb3…` (openQ4) and `b10475d…` (openQ4-GameLibs). fileciteturn79file0L1-L1 fileciteturn80file0L1-L1
+This section maps the *actual* shader compilation/loading pipeline as implemented in the two requested repos at commit `738afb3…` (openQ4) and `b10475d…` (openQ4-game). fileciteturn79file0L1-L1 fileciteturn80file0L1-L1
 
 ### Capability detection and top-level entry points
 
@@ -24,7 +24,7 @@ openQ4 decides whether the ARB2 and GLSL paths are available during OpenGL initi
 
 ### Extension function entry points and loader interactions
 
-In openQ4-GameLibs, `src/renderer/qgl.h` declares the ARB2 and ARB shader object function entry points used throughout openQ4:
+In openQ4-game, `src/renderer/qgl.h` declares the ARB2 and ARB shader object function entry points used throughout openQ4:
 
 - ARB assembly program API: `qglProgramStringARB`, `qglBindProgramARB`, `qglGenProgramsARB`, and the parameter APIs (`qglProgramEnvParameter4fvARB`, `qglProgramLocalParameter4fvARB`). fileciteturn80file0L1-L1
 

@@ -14,7 +14,7 @@ param(
     [string]$SnapshotName = "openq4-ready",
     [string]$GuestBasePath = "/mnt/openq4-data/Quake4",
     [string]$GuestHostRepoShare = "/mnt/hgfs/openQ4",
-    [string]$GuestHostGameLibsShare = "/mnt/hgfs/openQ4-GameLibs",
+    [string]$GuestHostGameLibsShare = "/mnt/hgfs/openQ4-game",
     [string]$GuestHostResultsDir,
     [switch]$NoStart
 )

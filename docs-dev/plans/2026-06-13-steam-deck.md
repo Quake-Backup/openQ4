@@ -4,7 +4,7 @@
 
 The current Steam Deck implementation in **OpenQ4** is real, but it is narrow in scope: it is centered on a dedicated Linux launcher, a small `steamdeck` platform profile, stock controller bindings, and Steam library auto-discovery. The implementation is **not** based on automatic hardware detection, and the project’s own Steam Deck documentation says so explicitly. In practice, Deck behavior currently depends on launching `openQ4-steamdeck`, which injects `+set com_platformProfile steamdeck`, and on a launcher policy that forces X11/XWayland when both Wayland and X11 session variables are present. The platform support docs also describe Steam Deck support as assuming a SteamOS 3.x-style environment and the explicit Deck launcher. citeturn50view0turn50view6turn29view0turn28view6turn35view0turn35view1
 
-Across the code and docs I reviewed, the Steam Deck path is concentrated in **OpenQ4** engine/content/docs rather than **OpenQ4-GameLibs**. In sampled GameLibs runtime files, I did not identify explicit Steam Deck code or explicit consumption of the Deck-profile tuning cvars; the only clearly Deck-oriented references I found in the overall implementation surface live in the engine-side launcher/profile/bindings/backend/docs. The GameLibs repository itself is also described as gameplay-library source rather than the engine executable. citeturn39view0turn45view0turn45view1turn45view2turn45view3turn45view6turn45view7turn45view8turn45view9
+Across the code and docs I reviewed, the Steam Deck path is concentrated in **OpenQ4** engine/content/docs rather than **openQ4-game**. In sampled GameLibs runtime files, I did not identify explicit Steam Deck code or explicit consumption of the Deck-profile tuning cvars; the only clearly Deck-oriented references I found in the overall implementation surface live in the engine-side launcher/profile/bindings/backend/docs. The GameLibs repository itself is also described as gameplay-library source rather than the engine executable. citeturn39view0turn45view0turn45view1turn45view2turn45view3turn45view6turn45view7turn45view8turn45view9
 
 I found **six high-confidence engineering issues** in the Steam Deck implementation: reliance on a manual launcher instead of automatic Deck detection; lack of native gyro, gamepad touchpad, and touchscreen support in the SDL3 backend; no suspend/resume lifecycle handling; a default policy that forces XWayland in mixed sessions; Steam installation discovery that is more home-directory-centric than it needs to be; and no Deck-specific performance, battery, or adaptive refresh policy despite Valve explicitly recommending FPS limiting for battery life and SDL3 exposing gamepad battery/sensor/touchpad APIs. citeturn50view0turn29view0turn49view2turn49view3turn48view0turn21view2turn21view3turn24view17turn24view18turn49view0
 
@@ -12,7 +12,7 @@ The top action items are straightforward. First, add a **native Deck input path*
 
 ## Scope and implementation surface
 
-This review is based on direct inspection of the two specified GitHub repositories and on primary official documentation from Valve, SDL, and Proton. In **OpenQ4**, the key Steam Deck surfaces are `docs-user/steam-deck.md`, `docs-user/input-settings.md`, `content/baseoq4/default.cfg`, `content/baseoq4/openq4_profile_steamdeck.cfg`, `assets/linux/openQ4-steamdeck.in`, `src/framework/Common.cpp`, `src/framework/FileSystem.cpp`, and `src/sys/sdl3/sdl3_backend.cpp`. In **OpenQ4-GameLibs**, I sampled the repo structure and likely gameplay runtime files to check whether Deck-specific behavior had been pushed into gameplay code; I did not find evidence that it had. citeturn50view0turn30view6turn30view7turn31view0turn31view4turn29view0turn35view0turn35view1turn22view3turn22view4turn23view6turn22view0turn22view2turn39view0turn42view0turn42view1turn45view0turn45view1turn45view2turn45view3turn45view6turn45view7turn45view8turn45view9
+This review is based on direct inspection of the two specified GitHub repositories and on primary official documentation from Valve, SDL, and Proton. In **OpenQ4**, the key Steam Deck surfaces are `docs-user/steam-deck.md`, `docs-user/input-settings.md`, `content/baseoq4/default.cfg`, `content/baseoq4/openq4_profile_steamdeck.cfg`, `assets/linux/openQ4-steamdeck.in`, `src/framework/Common.cpp`, `src/framework/FileSystem.cpp`, and `src/sys/sdl3/sdl3_backend.cpp`. In **openQ4-game**, I sampled the repo structure and likely gameplay runtime files to check whether Deck-specific behavior had been pushed into gameplay code; I did not find evidence that it had. citeturn50view0turn30view6turn30view7turn31view0turn31view4turn29view0turn35view0turn35view1turn22view3turn22view4turn23view6turn22view0turn22view2turn39view0turn42view0turn42view1turn45view0turn45view1turn45view2turn45view3turn45view6turn45view7turn45view8turn45view9
 
 The current implementation shape can be summarized like this. The **launcher** chooses environment defaults and injects the platform profile. The **engine** recognizes `com_platformProfile` and maps the only non-default profile name it accepts to `openq4_profile_steamdeck.cfg`. The **content config** supplies Deck-oriented default binds and a tiny profile override. The **SDL3 backend** is responsible for controller/joystick input, display environment reporting, and most platform-facing behavior. The **filesystem layer** tries to discover Quake 4 assets from native Steam roots and `libraryfolders.vdf`. I found no Vulkan-specific Deck path in the reviewed backend; the Deck path is implemented as SDL3 plus OpenGL-centric behavior, and the docs explicitly talk about Wayland-first OpenGL fallback ordering rather than Vulkan. citeturn29view0turn35view0turn35view1turn33view0turn31view0turn31view4turn22view0turn22view2turn22view3turn22view4turn23view6turn25view6turn24view12
 
@@ -26,7 +26,7 @@ flowchart LR
     G[sdl3_backend.cpp] --> H[JOY/AUX button + axis handling]
     G --> I[Video driver logging and Wayland/XWayland behavior]
     J[FileSystem.cpp] --> K[Steam root search + libraryfolders.vdf expansion]
-    L[OpenQ4-GameLibs sampled runtime files] --> M[No explicit Deck-specific path found]
+    L[openQ4-game sampled runtime files] --> M[No explicit Deck-specific path found]
 ```
 
 ## Priority and module matrix
@@ -50,7 +50,7 @@ The matrices below synthesize the issue set from the inspected launcher, profile
 | `content/baseoq4/openq4_profile_steamdeck.cfg` | Minimal Deck profile | Missing adaptive defaults |
 | `src/sys/sdl3/sdl3_backend.cpp` | Input, lifecycle-adjacent platform behavior, video driver reporting | Missing native Deck inputs, missing suspend/resume, no power integration, Wayland/XWayland policy effects |
 | `src/framework/FileSystem.cpp` | Native Steam asset discovery | Brittle Steam root discovery |
-| `OpenQ4-GameLibs` sampled runtime files | No explicit Deck-specific implementation found in this review | Not directly implicated by the six issues |
+| `openQ4-game` sampled runtime files | No explicit Deck-specific implementation found in this review | Not directly implicated by the six issues |
 
 ## Implementation checklist
 
@@ -100,7 +100,7 @@ The detailed findings below are retained as the original review record. The chec
 
 ## Detailed findings
 
-Before the issue-by-issue analysis, one overarching point matters: in the sampled **OpenQ4-GameLibs** runtime files I reviewed, I did not find a Deck-specific implementation surface comparable to what exists in the engine repo. That means the fixes below should be treated primarily as **OpenQ4 engine/content/packaging work**, not gameplay-library work, unless later full-repo grep reveals otherwise. citeturn39view0turn45view0turn45view1turn45view2turn45view3turn45view6turn45view7turn45view8turn45view9
+Before the issue-by-issue analysis, one overarching point matters: in the sampled **openQ4-game** runtime files I reviewed, I did not find a Deck-specific implementation surface comparable to what exists in the engine repo. That means the fixes below should be treated primarily as **OpenQ4 engine/content/packaging work**, not gameplay-library work, unless later full-repo grep reveals otherwise. citeturn39view0turn45view0turn45view1turn45view2turn45view3turn45view6turn45view7turn45view8turn45view9
 
 **Issue — Launcher-only activation and no automatic Deck detection**
 

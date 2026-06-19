@@ -54,7 +54,7 @@ Update statuses in place as work lands. An item is checked only when implemented
 
 ### Phase D: Structural Projects (design-gated)
 
-- [x] D1. Presentation view sampling groundwork (engine side): `in_presentationView` cvar (default 0) plus `idUsercmdGen::GetPresentationViewDelta`, which drains pending mouse input under the async critical section and reports the accumulated, not-yet-consumed view rotation in degrees without consuming it (next 60 Hz usercmd still receives full movement). Game-side consumption in openQ4-GameLibs remains a companion-repo task.
+- [x] D1. Presentation view sampling groundwork (engine side): `in_presentationView` cvar (default 0) plus `idUsercmdGen::GetPresentationViewDelta`, which drains pending mouse input under the async critical section and reports the accumulated, not-yet-consumed view rotation in degrees without consuming it (next 60 Hz usercmd still receives full movement). Game-side consumption in openQ4-game remains a companion-repo task.
 - [x] D2. Parallel front-end jobs: resolved as DEFERRED via design note (see below) — four concrete thread-safety blockers enumerated; B1/B2 removed the repeated-state cost that motivated the item.
 - [x] D3. SMP front-end/back-end split: design note below; recommendation NO-GO for GL-context-migration SMP on this codebase generation, revisit after modern-executor promotion.
 - [x] D4. GPU matrix-palette skinning scope note for MD5R: scope note below; sequence after modern executor depth/opaque promotion.

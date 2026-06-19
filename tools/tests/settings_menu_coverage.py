@@ -8,7 +8,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
-GAME_LIBS = ROOT.parent / "openQ4-GameLibs"
+GAME_LIBS = ROOT.parent / "openQ4-game"
 
 
 def read(path: Path) -> str:

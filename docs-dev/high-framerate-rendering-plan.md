@@ -33,7 +33,7 @@ openQ4 is currently structured around a `60 Hz` usercmd / async-tic model:
   - `idCommonLocal::SingleAsyncTic()` increments `com_ticNumber`
 - `src/framework/Session.cpp`
   - `idSessionLocal::Frame()` waits for `latchedTicNumber >= minTic` before continuing, which effectively ties frame progression to new tics
-- `E:\Repositories\openQ4-GameLibs\src\game\Game_local.cpp`
+- `E:\Repositories\openQ4-game\src\game\Game_local.cpp`
   - game code reads `common->GetUserCmdMSec()` / `common->GetUserCmdHz()`
   - render view generation and per-frame game flow are built around that cadence
 
@@ -74,14 +74,14 @@ Engine:
 
 GameLibs:
 
-- `E:\Repositories\openQ4-GameLibs\src\game\Game_local.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\game\Player.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\game\Entity.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\game\Camera.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\mpgame\Game_local.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\mpgame\Player.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\mpgame\Entity.cpp`
-- `E:\Repositories\openQ4-GameLibs\src\mpgame\Camera.cpp`
+- `E:\Repositories\openQ4-game\src\game\Game_local.cpp`
+- `E:\Repositories\openQ4-game\src\game\Player.cpp`
+- `E:\Repositories\openQ4-game\src\game\Entity.cpp`
+- `E:\Repositories\openQ4-game\src\game\Camera.cpp`
+- `E:\Repositories\openQ4-game\src\mpgame\Game_local.cpp`
+- `E:\Repositories\openQ4-game\src\mpgame\Player.cpp`
+- `E:\Repositories\openQ4-game\src\mpgame\Entity.cpp`
+- `E:\Repositories\openQ4-game\src\mpgame\Camera.cpp`
 
 ## Phase 0: Measurement And Safety Rails
 

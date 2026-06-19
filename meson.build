@@ -206,18 +206,18 @@ if needs_game_headers
   game_libs_repo_discovery = run_command(
     py,
     '-c',
-    'import os, pathlib, sys; root = pathlib.Path(sys.argv[1]); raw = os.environ.get("OPENQ4_GAMELIBS_REPO", "").strip(); repo = pathlib.Path(raw) if raw else (root / ".." / "openQ4-GameLibs"); print(repo.resolve().as_posix())',
+    'import os, pathlib, sys; root = pathlib.Path(sys.argv[1]); raw = os.environ.get("OPENQ4_GAMELIBS_REPO", "").strip(); repo = pathlib.Path(raw) if raw else (root / ".." / "openQ4-game"); print(repo.resolve().as_posix())',
     meson.project_source_root(),
     check: true,
   )
   game_libs_repo_root = game_libs_repo_discovery.stdout().strip()
   if game_libs_repo_root == ''
-    error('Failed to resolve the openQ4-GameLibs repository path. Set OPENQ4_GAMELIBS_REPO or place it at ../openQ4-GameLibs.')
+    error('Failed to resolve the openQ4-game repository path. Set OPENQ4_GAMELIBS_REPO or place it at ../openQ4-game.')
   endif
 
   game_libs_source_root = game_libs_repo_root / 'src'
   if not fs_mod.is_dir(game_libs_source_root / 'game')
-    error('openQ4-GameLibs source directory not found: ' + game_libs_source_root / 'game')
+    error('openQ4-game source directory not found: ' + game_libs_source_root / 'game')
   endif
 
   game_stage_result = run_command(
@@ -230,7 +230,7 @@ if needs_game_headers
   )
   game_stage_root = game_stage_result.stdout().strip()
   if game_stage_root == ''
-    error('Failed to stage game sources from openQ4-GameLibs.')
+    error('Failed to stage game sources from openQ4-game.')
   endif
 
   game_stage_game_root = game_stage_root / 'src' / 'game'

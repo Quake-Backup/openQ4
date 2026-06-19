@@ -397,7 +397,7 @@ function Get-openQ4GameLibsRepoPath {
         return [System.IO.Path]::GetFullPath($ConfiguredRepo)
     }
 
-    return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "..\openQ4-GameLibs"))
+    return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "..\openQ4-game"))
 }
 
 function Test-GamelibsStageRefreshNeeded {
@@ -760,8 +760,8 @@ if ($effectiveArgs.Length -gt 0 -and ($effectiveArgs[0] -eq "compile" -or $effec
 
     $needsGameLibsRefresh = Test-GamelibsStageRefreshNeeded -BuildDir $buildInfo.BuildDir -RepoRoot $repoRoot -GameLibsRepo $gameLibsRepo
     if ($needsGameLibsRefresh) {
-        Write-Host "openQ4-GameLibs sources changed since the last staged snapshot. Reconfiguring '$($buildInfo.BuildDir)'..."
-        $reconfigureReasons += "staged openQ4-GameLibs refresh"
+        Write-Host "openQ4-game sources changed since the last staged snapshot. Reconfiguring '$($buildInfo.BuildDir)'..."
+        $reconfigureReasons += "staged openQ4-game refresh"
     }
 
     if ($reconfigureReasons.Count -gt 0) {

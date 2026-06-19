@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage openQ4-GameLibs game sources into a temporary local tree."""
+"""Stage openQ4-game game sources into a temporary local tree."""
 
 from __future__ import annotations
 

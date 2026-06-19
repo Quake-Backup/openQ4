@@ -35,7 +35,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     env:
-      OPENQ4_GAMELIBS_REPO: ${{ github.workspace }}/../openQ4-GameLibs
+      OPENQ4_GAMELIBS_REPO: ${{ github.workspace }}/../openQ4-game
     strategy:
       fail-fast: false
       matrix:
@@ -67,12 +67,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch openQ4-GameLibs
+      - name: Fetch openQ4-game
         if: steps.select.outputs.selected == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-GameLibs.git "${OPENQ4_GAMELIBS_REPO}"
+          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
 
       - name: Setup Python
         if: steps.select.outputs.selected == 'true'

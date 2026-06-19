@@ -58,28 +58,28 @@ Alternatively, open `tools/build/openq4_devcmd.cmd` first to initialise the Visu
 
 ## GameLibs Companion Repository
 
-openQ4's game code (single-player and multiplayer modules) lives in a **separate companion repository** — [openQ4-GameLibs](https://github.com/themuffinator/openQ4-GameLibs). This separation clearly identifies the SDK-licensed components derived from the [Quake 4 SDK](https://www.moddb.com/games/quake-4/downloads/quake-4-sdk-v15).
+openQ4's game code (single-player and multiplayer modules) lives in a **separate companion repository** — [openQ4-game](https://github.com/themuffinator/openQ4-game). This separation clearly identifies the SDK-licensed components derived from the [Quake 4 SDK](https://www.moddb.com/games/quake-4/downloads/quake-4-sdk-v15).
 
 > [!IMPORTANT]
-> **The openQ4 build expects openQ4-GameLibs to be checked out alongside openQ4**, at `../openQ4-GameLibs` relative to this repository. If the companion repository is missing or at a different path, game-module builds will fail.
+> **The openQ4 build expects openQ4-game to be checked out alongside openQ4**, at `../openQ4-game` relative to this repository. If the companion repository is missing or at a different path, game-module builds will fail.
 
 ### Setting Up
 
 ```bash
 # Clone both repositories side-by-side:
 git clone https://github.com/themuffinator/openQ4.git
-git clone https://github.com/themuffinator/openQ4-GameLibs.git
+git clone https://github.com/themuffinator/openQ4-game.git
 
 # Result:
 #   ./openQ4/            ← this repository
-#   ./openQ4-GameLibs/   ← game library source
+#   ./openQ4-game/   ← game library source
 ```
 
 To use a custom location, set the environment variable before configuring:
 
 ```bash
-export OPENQ4_GAMELIBS_REPO=/path/to/openQ4-GameLibs   # Linux / macOS
-$env:OPENQ4_GAMELIBS_REPO = "C:\path\to\openQ4-GameLibs"  # PowerShell
+export OPENQ4_GAMELIBS_REPO=/path/to/openQ4-game   # Linux / macOS
+$env:OPENQ4_GAMELIBS_REPO = "C:\path\to\openQ4-game"  # PowerShell
 ```
 
 To rebuild the game libraries as part of the openQ4 build, set `OPENQ4_BUILD_GAMELIBS=1` before running compile.
@@ -147,8 +147,8 @@ Useful options:
 
 - Add `--runtime` to run the safe renderer startup validation matrix after the staged install.
 - Add `--runtime-skip-official-pak-validation` with a targeted no-map runtime case when intentionally running an assetless engine-startup smoke, such as CI coverage without retail Quake 4 PK4s.
-- Add `--build-gamelibs` when you also want the Windows wrapper to build the standalone openQ4-GameLibs outputs during compile.
-- Use `--game-libs-repo <path>` when the companion repository is not at `../openQ4-GameLibs`.
+- Add `--build-gamelibs` when you also want the Windows wrapper to build the standalone openQ4-game outputs during compile.
+- Use `--game-libs-repo <path>` when the companion repository is not at `../openQ4-game`.
 - Use `--build-dir <path>` plus `--no-clean` to validate a specific existing build tree.
 
 ---

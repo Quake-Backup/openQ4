@@ -4,7 +4,7 @@ set -euo pipefail
 action="${1:-build}"
 workspace="${OPENQ4_GUEST_WORKSPACE:-${HOME}/openq4-work}"
 repo="${workspace}/openQ4"
-gamelibs="${workspace}/openQ4-GameLibs"
+gamelibs="${workspace}/openQ4-game"
 basepath="${OPENQ4_BASEPATH:-${workspace}/Quake4}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 results_root="${workspace}/results"

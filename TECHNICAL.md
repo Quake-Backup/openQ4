@@ -232,7 +232,7 @@ Example:
 
 ## SDK and Game Library
 
-The game code is derived from the [Quake 4 SDK](https://www.moddb.com/games/quake-4/downloads/quake-4-sdk-v15) and maintained in the companion [openQ4-GameLibs](https://github.com/themuffinator/openQ4-GameLibs) repository. The SDK is subject to id Software's EULA, which permits modification for use with Quake 4 and non-commercial distribution of modifications, but prohibits commercial use and standalone game creation. For complete terms, see the [EULA](https://github.com/themuffinator/openQ4-GameLibs/blob/main/doc/legacy/EULA.Development%20Kit.rtf).
+The game code is derived from the [Quake 4 SDK](https://www.moddb.com/games/quake-4/downloads/quake-4-sdk-v15) and maintained in the companion [openQ4-game](https://github.com/themuffinator/openQ4-game) repository. The SDK is subject to id Software's EULA, which permits modification for use with Quake 4 and non-commercial distribution of modifications, but prohibits commercial use and standalone game creation. For complete terms, see the [EULA](https://github.com/themuffinator/openQ4-game/blob/main/doc/legacy/EULA.Development%20Kit.rtf).
 
 ---
 

@@ -1,6 +1,6 @@
 # Retail Quake 4 Decl Parity Audit
 
-This audit compares openQ4 decl behavior against the recovered retail Quake 4 decl implementation in `E:\Repositories\Quake4Decompiled-main`, plus the companion game-library registration path in `E:\Repositories\openQ4-GameLibs`.
+This audit compares openQ4 decl behavior against the recovered retail Quake 4 decl implementation in `E:\Repositories\Quake4Decompiled-main`, plus the companion game-library registration path in `E:\Repositories\openQ4-game`.
 
 The goal is not byte-for-byte nostalgia by default. The goal is to identify functional gaps that can break shipped assets, editor/tool workflows, packed decl loading, or openQ4's ability to behave like retail where compatibility matters.
 

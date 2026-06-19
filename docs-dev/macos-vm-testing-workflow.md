@@ -16,7 +16,7 @@ framework, UTM, VMware Fusion, Parallels, or a hosted Mac provider.
 - Guest user recommendation: `codex`
 - Guest workspace: `~/openq4-work/`
 - Guest source checkout: `~/openq4-work/openQ4`
-- Guest GameLibs checkout: `~/openq4-work/openQ4-GameLibs`
+- Guest GameLibs checkout: `~/openq4-work/openQ4-game`
 - Guest Quake 4 assets: `~/openq4-work/Quake4`
 - Guest results: `~/openq4-work/results/`
 
@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4Mac
 - verifies the macOS command-line toolchain
 - installs or updates a user-local Meson/Ninja venv
 - copies the Windows Quake 4 install into `~/openq4-work/Quake4`
-- copies `openQ4` and `openQ4-GameLibs` into the guest workspace
+- copies `openQ4` and `openQ4-game` into the guest workspace
 - configures, builds, and stages openQ4 through `tools/build/meson_setup.sh`
 - runs a renderer smoke profile against the copied Quake 4 assets
 - runs the macOS-facing GL 4.1 renderer validation set

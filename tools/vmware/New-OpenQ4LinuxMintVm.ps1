@@ -319,11 +319,11 @@ if ($EnableVnc) {
 $shares = New-Object System.Collections.Generic.List[object]
 $shares.Add([pscustomobject]@{ Name = "openQ4"; Path = $repoRoot; Writable = $true })
 
-$gameLibs = Get-FullPath (Join-Path (Split-Path -Parent $repoRoot) "openQ4-GameLibs")
+$gameLibs = Get-FullPath (Join-Path (Split-Path -Parent $repoRoot) "openQ4-game")
 if (Test-Path -LiteralPath $gameLibs) {
-    $shares.Add([pscustomobject]@{ Name = "openQ4-GameLibs"; Path = $gameLibs; Writable = $false })
+    $shares.Add([pscustomobject]@{ Name = "openQ4-game"; Path = $gameLibs; Writable = $false })
 } else {
-    Write-Warning "openQ4-GameLibs was not found at $gameLibs; skipping that shared folder."
+    Write-Warning "openQ4-game was not found at $gameLibs; skipping that shared folder."
 }
 
 $quake4 = "C:\Program Files (x86)\Steam\steamapps\common\Quake 4"
