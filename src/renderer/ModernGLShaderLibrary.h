@@ -21,8 +21,6 @@ enum modernGLShaderProgramKind_t {
 	MODERN_GL_SHADER_TRANSPARENT_FORWARD,
 	MODERN_GL_SHADER_GUI,
 	MODERN_GL_SHADER_POST_COPY,
-	MODERN_GL_SHADER_LENS_FLARE_ACCUMULATION,
-	MODERN_GL_SHADER_LENS_FLARE_COMPOSITE,
 	MODERN_GL_SHADER_DEBUG_VISUALIZATION,
 	MODERN_GL_SHADER_PROGRAM_KIND_COUNT
 };
@@ -72,7 +70,6 @@ typedef struct modernGLShaderReflection_s {
 	int		materialEnhancementLocation;
 	int		drawRecordModeLocation;
 	int		sceneDepthTextureLocation;
-	int		lensFlareAccumTextureLocation;
 	int		positionAttribute;
 	int		colorAttribute;
 	int		texCoordAttribute;
@@ -105,7 +102,6 @@ typedef struct modernGLShaderReflection_s {
 	bool	usesDrawRecords;
 	bool	usesSceneDepthTexture;
 	bool	usesShadowTextures;
-	bool	usesLensFlareAccumTexture;
 	bool	usesTexCoord;
 	bool	usesDrawVertColor;
 	bool	usesDrawVertTangentSpace;
@@ -128,7 +124,6 @@ typedef struct modernGLShaderProgramInfo_s {
 	int							localParamsLocation;
 	int							mainTextureLocation;
 	int							sceneDepthTextureLocation;
-	int							lensFlareAccumTextureLocation;
 	int							normalTextureLocation;
 	int							specularTextureLocation;
 	int							emissiveTextureLocation;
@@ -159,12 +154,6 @@ typedef struct modernGLShaderLibraryStats_s {
 	bool	transparentForwardProgramReady;
 	bool	guiProgramReady;
 	bool	postCopyProgramReady;
-	bool	lensFlareAccumulationProgramReady;
-	bool	lensFlareCompositeProgramReady;
-	bool	lensFlareGLSL330Ready;
-	bool	lensFlareGLSL410Ready;
-	bool	lensFlareGLSL430Ready;
-	bool	lensFlareGLSL450Ready;
 	bool	debugVisualizationProgramReady;
 	int		programKindCount;
 	int		readyProgramKindCount;
@@ -172,14 +161,6 @@ typedef struct modernGLShaderLibraryStats_s {
 	int		permutationCount;
 	int		failedProgramCount;
 	int		textureProgramCount;
-	int		lensFlareProgramCount;
-	int		lensFlareAccumulationProgramCount;
-	int		lensFlareCompositeProgramCount;
-	int		lensFlareReflectedSamplerCount;
-	int		lensFlareGlsl330ProgramCount;
-	int		lensFlareGlsl410ProgramCount;
-	int		lensFlareGlsl430ProgramCount;
-	int		lensFlareGlsl450ProgramCount;
 	int		reflectedUniformCount;
 	int		reflectedUniformBlockCount;
 	int		reflectedShaderStorageBlockCount;

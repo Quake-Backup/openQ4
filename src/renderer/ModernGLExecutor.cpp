@@ -297,8 +297,6 @@ static const char *R_ModernGLExecutor_PassName( renderPassCategory_t category ) 
 		return "ssao";
 	case RENDER_PASS_MOTION_BLUR:
 		return "motionBlur";
-	case RENDER_PASS_LENS_FLARE:
-		return "lensFlare";
 	case RENDER_PASS_BLOOM:
 		return "bloom";
 	case RENDER_PASS_AUTHORED_POST:
@@ -341,7 +339,6 @@ static bool R_ModernGLExecutor_PassHasLegacyWork( renderPassCategory_t category 
 	case RENDER_PASS_FOG_BLEND:
 	case RENDER_PASS_SSAO:
 	case RENDER_PASS_MOTION_BLUR:
-	case RENDER_PASS_LENS_FLARE:
 	case RENDER_PASS_BLOOM:
 	case RENDER_PASS_AUTHORED_POST:
 	case RENDER_PASS_SPECIAL_EFFECTS:
@@ -358,7 +355,6 @@ static bool R_ModernGLExecutor_PassHasLegacyWork( renderPassCategory_t category 
 static bool R_ModernGLExecutor_PassIsPost( renderPassCategory_t category ) {
 	return category == RENDER_PASS_SSAO
 		|| category == RENDER_PASS_MOTION_BLUR
-		|| category == RENDER_PASS_LENS_FLARE
 		|| category == RENDER_PASS_BLOOM
 		|| category == RENDER_PASS_AUTHORED_POST;
 }
@@ -1604,7 +1600,6 @@ static void R_ModernGLExecutor_CountModernVisibleOwner( const renderGraphPass_t 
 		break;
 	case RENDER_PASS_SSAO:
 	case RENDER_PASS_MOTION_BLUR:
-	case RENDER_PASS_LENS_FLARE:
 	case RENDER_PASS_BLOOM:
 	case RENDER_PASS_AUTHORED_POST:
 		stats.modernVisiblePostGraphPasses++;
@@ -10117,7 +10112,6 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 		RENDER_PASS_FORWARD_PLUS,
 		RENDER_PASS_SSAO,
 		RENDER_PASS_MOTION_BLUR,
-		RENDER_PASS_LENS_FLARE,
 		RENDER_PASS_BLOOM,
 		RENDER_PASS_AUTHORED_POST,
 		RENDER_PASS_SPECIAL_EFFECTS,

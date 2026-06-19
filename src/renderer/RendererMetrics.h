@@ -8,14 +8,12 @@
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
 #include "ModernClusteredLighting.h"
-#include "LensFlareSettings.h"
 
 enum rendererGpuTimerSlot_t {
 	RENDERER_GPU_TIMER_SET_BUFFER = 0,
 	RENDERER_GPU_TIMER_DRAW3D,
 	RENDERER_GPU_TIMER_DRAW2D,
 	RENDERER_GPU_TIMER_SPECIAL_EFFECTS,
-	RENDERER_GPU_TIMER_LENS_FLARE,
 	RENDERER_GPU_TIMER_RENDER_TARGET,
 	RENDERER_GPU_TIMER_COPY_RENDER,
 	RENDERER_GPU_TIMER_SWAP_BUFFERS,
@@ -40,7 +38,6 @@ void R_RendererMetrics_AddPacketBuildMsec( int msec );
 void R_RendererMetrics_AddGraphBuildMsec( int msec );
 void R_RendererMetrics_AddPresentMsec( int msec );
 void R_RendererMetrics_RecordBackendCommands( int draw3d, int draw2d, int setBuffers, int swapBuffers, int copyRenders, int specialEffects, int renderTargetOps );
-void R_RendererMetrics_RecordLensFlare( bool requested, bool executed, bool mainView, bool programReady, bool depthReady, bool accumReady, bool accumExecuted, bool compositeReady, bool compositeExecuted, int settingsVersion, int requestedQuality, int quality, int maxSources, int maxGhosts, rendererLensFlareRejectReason_t rejectReason, int consideredLights, int rejectedLights, int candidateLights, int cappedCandidateLights, int submittedQuads, int culledQuads );
 void R_RendererMetrics_RecordScenePackets( const scenePacketFrameStats_t &stats );
 void R_RendererMetrics_RecordRenderGraph( int graphPasses, int passPackets, int scenePackets, int drawPackets, int commandPackets, int resources, int importedResources, int transientResources, int aliasableTransientResources, int resourceAccesses, int readAccesses, int writeAccesses, int clearOps, int resolveOps, int invalidateOps, int presentOps, bool overflow );
 void R_RendererMetrics_RecordRenderGraphResources( const renderGraphResourceManagerStats_t &stats );

@@ -175,7 +175,6 @@ static bool R_RenderGraphResources_IsHDRColorResource( const char *name ) {
 			|| !idStr::Icmp( name, "deferredLight" )
 			|| !idStr::Icmp( name, "hybridSceneColor" )
 			|| !idStr::Icmp( name, "postA" )
-			|| !idStr::Icmp( name, "lensFlareAccum" )
 			|| !idStr::Icmp( name, "gbufferEmissive" )
 			|| !idStr::Icmp( name, "translucentShadowMoments" ) );
 }

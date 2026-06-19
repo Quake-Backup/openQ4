@@ -271,8 +271,6 @@ static const char *R_RenderGraph_LegacyPassName( renderPassCategory_t category )
 		return "legacySSAO";
 	case RENDER_PASS_MOTION_BLUR:
 		return "legacyMotionBlur";
-	case RENDER_PASS_LENS_FLARE:
-		return "legacyLensFlare";
 	case RENDER_PASS_BLOOM:
 		return "legacyBloom";
 	case RENDER_PASS_AUTHORED_POST:
@@ -328,10 +326,6 @@ static int R_RenderGraph_EnsureHybridSceneColor( idRenderGraph &graph ) {
 
 static int R_RenderGraph_EnsurePostA( idRenderGraph &graph ) {
 	return R_RenderGraph_EnsureResource( graph, "postA", RENDER_GRAPH_RESOURCE_COLOR, false, true, false, 1 );
-}
-
-static int R_RenderGraph_EnsureLensFlareAccum( idRenderGraph &graph ) {
-	return R_RenderGraph_EnsureResource( graph, "lensFlareAccum", RENDER_GRAPH_RESOURCE_COLOR, false, true, false, 8 );
 }
 
 static bool R_RenderGraph_ShouldModelGBuffer( void ) {
@@ -580,17 +574,6 @@ static void R_RenderGraph_AddPassResources( idRenderGraph &graph, int passIndex,
 		R_RenderGraph_AddAccess( graph, passIndex, sceneDepth, RENDER_GRAPH_ACCESS_READ, "motion-depth-read" );
 		R_RenderGraph_AddAccess( graph, passIndex, motionVectors, RENDER_GRAPH_ACCESS_READ, "motion-vector-read" );
 		R_RenderGraph_AddAccess( graph, passIndex, postA, RENDER_GRAPH_ACCESS_WRITE | RENDER_GRAPH_ACCESS_CLEAR | RENDER_GRAPH_ACCESS_INVALIDATE, "motion-post-write" );
-		break;
-	}
-	case RENDER_PASS_LENS_FLARE: {
-		const int sceneColor = R_RenderGraph_EnsureSceneColor( graph );
-		const int sceneDepth = R_RenderGraph_EnsureSceneDepth( graph );
-		const int lensFlareAccum = R_RenderGraph_EnsureLensFlareAccum( graph );
-		R_RenderGraph_AddAccess( graph, passIndex, sceneColor, RENDER_GRAPH_ACCESS_READ, "lens-source-read" );
-		R_RenderGraph_AddAccess( graph, passIndex, sceneDepth, RENDER_GRAPH_ACCESS_READ, "lens-depth-read" );
-		R_RenderGraph_AddAccess( graph, passIndex, lensFlareAccum, RENDER_GRAPH_ACCESS_WRITE | RENDER_GRAPH_ACCESS_CLEAR | RENDER_GRAPH_ACCESS_INVALIDATE, "lens-accum-write" );
-		R_RenderGraph_AddAccess( graph, passIndex, lensFlareAccum, RENDER_GRAPH_ACCESS_READ | RENDER_GRAPH_ACCESS_INVALIDATE, "lens-accum-composite-read" );
-		R_RenderGraph_AddAccess( graph, passIndex, sceneColor, RENDER_GRAPH_ACCESS_WRITE | RENDER_GRAPH_ACCESS_RESOLVE, "lens-composite" );
 		break;
 	}
 	case RENDER_PASS_BLOOM: {
@@ -1004,87 +987,6 @@ static bool R_RenderGraph_RunWorldPacketSelfTest( void ) {
 		R_RenderGraph_CheckPass( graph, 7, RENDER_PASS_PRESENT, 1, 0 );
 }
 
-static bool R_RenderGraph_RunLensFlarePacketSelfTest( void ) {
-	viewEntity_t viewEntity;
-	memset( &viewEntity, 0, sizeof( viewEntity ) );
-	viewDef_t worldView;
-	memset( &worldView, 0, sizeof( worldView ) );
-	worldView.viewEntitys = &viewEntity;
-
-	idScenePacketFrame packetFrame;
-	if ( !packetFrame.AddScene( &worldView, true ) ) {
-		return false;
-	}
-	packetFrame.AddCommandPacket();
-	if ( !packetFrame.AddPass( RENDER_PASS_DEPTH, true, true ) ) {
-		return false;
-	}
-	packetFrame.AddCommandPacket();
-	if ( !packetFrame.AddPass( RENDER_PASS_LENS_FLARE, true, true ) ) {
-		return false;
-	}
-	packetFrame.FinishScene();
-	if ( !packetFrame.AddScene( NULL, true ) ) {
-		return false;
-	}
-	packetFrame.AddCommandPacket();
-	if ( !packetFrame.AddPass( RENDER_PASS_PRESENT, true, true ) ) {
-		return false;
-	}
-	packetFrame.FinishScene();
-
-	idRenderGraph graph;
-	R_RenderGraph_BuildFromScenePackets( packetFrame, graph );
-	const renderGraphStats_t &stats = graph.Stats();
-	if ( graph.NumPasses() != 3 || stats.passPackets != 3 || stats.scenePackets != 2 || stats.commandPackets != 3 || stats.overflow ) {
-		common->Printf(
-			"RendererRenderGraph self-test detail: lens pass stats passes=%d passPackets=%d scenes=%d cmds=%d overflow=%d\n",
-			graph.NumPasses(),
-			stats.passPackets,
-			stats.scenePackets,
-			stats.commandPackets,
-			stats.overflow ? 1 : 0 );
-		return false;
-	}
-	if ( !R_RenderGraph_CheckResourceStats( graph, 4, 1, 3, 3, 9, 5, 4, 2, 2, 3, 1 ) ) {
-		common->Printf(
-			"RendererRenderGraph self-test detail: lens resources res=%d imported=%d transient=%d aliasable=%d access=%d read=%d write=%d clear=%d resolve=%d invalidate=%d present=%d\n",
-			stats.resources,
-			stats.importedResources,
-			stats.transientResources,
-			stats.aliasableTransientResources,
-			stats.resourceAccesses,
-			stats.readAccesses,
-			stats.writeAccesses,
-			stats.clearOps,
-			stats.resolveOps,
-			stats.invalidateOps,
-			stats.presentOps );
-		return false;
-	}
-	if ( !R_RenderGraph_CheckResource( graph, "sceneDepth", RENDER_GRAPH_RESOURCE_DEPTH_STENCIL, false, true, false, 2 )
-		|| !R_RenderGraph_CheckResource( graph, "sceneColor", RENDER_GRAPH_RESOURCE_COLOR, false, true, false, 1 )
-		|| !R_RenderGraph_CheckResource( graph, "lensFlareAccum", RENDER_GRAPH_RESOURCE_COLOR, false, true, false, 8 )
-		|| !R_RenderGraph_CheckResource( graph, "backBuffer", RENDER_GRAPH_RESOURCE_COLOR, true, false, true, 0 ) ) {
-		common->Printf( "RendererRenderGraph self-test detail: lens resource declaration mismatch\n" );
-		return false;
-	}
-	if ( !R_RenderGraph_CheckAccess( graph, 1, "sceneColor", RENDER_GRAPH_ACCESS_READ )
-		|| !R_RenderGraph_CheckAccess( graph, 1, "sceneDepth", RENDER_GRAPH_ACCESS_READ )
-		|| !R_RenderGraph_CheckAccess( graph, 1, "lensFlareAccum", RENDER_GRAPH_ACCESS_WRITE | RENDER_GRAPH_ACCESS_CLEAR )
-		|| !R_RenderGraph_CheckAccess( graph, 1, "lensFlareAccum", RENDER_GRAPH_ACCESS_READ | RENDER_GRAPH_ACCESS_INVALIDATE )
-		|| !R_RenderGraph_CheckAccess( graph, 1, "sceneColor", RENDER_GRAPH_ACCESS_WRITE | RENDER_GRAPH_ACCESS_RESOLVE )
-		|| !R_RenderGraph_CheckNoCombinedAccess( graph, 1, "sceneColor", RENDER_GRAPH_ACCESS_READ | RENDER_GRAPH_ACCESS_WRITE ) ) {
-		common->Printf( "RendererRenderGraph self-test detail: lens access edge mismatch\n" );
-		return false;
-	}
-
-	return
-		R_RenderGraph_CheckPass( graph, 0, RENDER_PASS_DEPTH, 1, 0 ) &&
-		R_RenderGraph_CheckPass( graph, 1, RENDER_PASS_LENS_FLARE, 1, 0 ) &&
-		R_RenderGraph_CheckPass( graph, 2, RENDER_PASS_PRESENT, 1, 0 );
-}
-
 static bool R_RenderGraph_RunGuiPacketSelfTest( void ) {
 	srfTriangles_t geo;
 	memset( &geo, 0, sizeof( geo ) );
@@ -1161,14 +1063,10 @@ bool RendererRenderGraph_RunSelfTest( void ) {
 		common->Printf( "RendererRenderGraph self-test failed: world resource graph mismatch\n" );
 		return false;
 	}
-	if ( !R_RenderGraph_RunLensFlarePacketSelfTest() ) {
-		common->Printf( "RendererRenderGraph self-test failed: lens-flare resource graph mismatch\n" );
-		return false;
-	}
 	if ( !R_RenderGraph_RunGuiPacketSelfTest() ) {
 		common->Printf( "RendererRenderGraph self-test failed: gui resource graph mismatch\n" );
 		return false;
 	}
-	common->Printf( "RendererRenderGraph self-test passed (resource graph, 3 cases)\n" );
+	common->Printf( "RendererRenderGraph self-test passed (resource graph, 2 cases)\n" );
 	return true;
 }
