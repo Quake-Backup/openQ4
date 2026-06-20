@@ -68,6 +68,10 @@ def validate_linux_sdl3_x11_helpers_are_optional() -> None:
     require(linux_sdl3, "OPENQ4_HAVE_X11_HELPERS", "SDL3 Linux optional X11 helper guard")
     require(linux_sdl3, '#include "linux_shared.h"', "SDL3 Linux shared defaults")
     require(linux_sdl3, "Sys_QueryDrmSysfsVideoRamMB", "SDL3 Linux DRM sysfs VRAM probe")
+    require(linux_sdl3, "Sys_PreferDrmSysfsBeforeX11VideoRam", "SDL3 Linux Wayland-first VRAM probe")
+    require(linux_sdl3, 'Sys_IsWaylandVideoDriverName(getenv("SDL_VIDEO_DRIVER"))', "SDL3 Linux explicit Wayland VRAM probe")
+    require(linux_sdl3, 'Sys_IsWaylandVideoDriverName(getenv("SDL_VIDEODRIVER"))', "SDL3 Linux explicit legacy Wayland VRAM probe")
+    require(linux_sdl3, "if (!preferDrmBeforeX11)", "SDL3 Linux skips X11 VRAM probe on native Wayland")
     require(linux_sdl3, "opendir(\"/sys/class/drm\")", "SDL3 Linux DRM sysfs enumeration")
     require(linux_sdl3, "Sys_UpdateLargestDrmSysfsVideoRamBytes(entry->d_name", "SDL3 Linux DRM sysfs enumerated nodes")
     require(linux_sdl3, "Sys_QueryKnownDrmSysfsVideoRamBytes", "SDL3 Linux DRM sysfs fixed-node fallback")
@@ -84,6 +88,7 @@ def validate_linux_sdl3_x11_helpers_are_optional() -> None:
     reject(sdl3_backend, '../linux/local.h', "SDL3 backend local X11 header dependency")
     reject(linux_main, '#include "local.h"', "shared Linux main X11 header dependency")
     require(linux_main, "OPENQ4_FORCE_X11=1", "Linux Wayland runtime XWayland fallback guidance")
+    require(linux_main, "OPENQ4_WAYLAND_DISABLE_LIBDECOR=1", "Linux Wayland runtime libdecor opt-out guidance")
     require(linux_main, "OPENQ4_WAYLAND_PREFER_LIBDECOR=1", "Linux Wayland runtime libdecor guidance")
     require(linux_main, "OPENQ4_WAYLAND_SYNC_WINDOW_OPS=1", "Linux Wayland runtime sync-window guidance")
 

@@ -1208,15 +1208,20 @@ static idRenderModel *R_GuiTraceModelForEntity( idRenderEntityLocal *def ) {
 
 guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 start, const idVec3 end ) const {
 	localTrace_t	local;
-	idVec3			localStart, localEnd, bestPoint;
+	localTrace_t	bestLocal;
+	idVec3			localStart, localEnd;
+	idVec3			bestOrigin, bestAxis[3];
 	int				j;
 	idRenderModel	*model;
 	srfTriangles_t	*tri;
 	const idMaterial *shader;
+	const idMaterial *bestShader;
+	float			bestAxisLen[2];
 	guiPoint_t	pt;
 
 	pt.x = pt.y = -1;
 	pt.guiId = 0;
+	pt.fraction = 1.0f;
 
 	if ( ( entityHandle < 0 ) || ( entityHandle >= entityDefs.Num() ) ) {
 		common->Printf( "idRenderWorld::GuiTrace: invalid handle %i\n", entityHandle );
@@ -1239,8 +1244,8 @@ guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 st
 	R_GlobalPointToLocal( def->modelMatrix, end, localEnd );
 
 
-	float best = 99999.0;
-	const modelSurface_t *bestSurf = NULL;
+	float best = 1.0f;
+	bestShader = NULL;
 
 	for ( j = 0 ; j < model->NumSurfaces() ; j++ ) {
 		const modelSurface_t *surf = model->Surface( j );
@@ -1260,13 +1265,11 @@ guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 st
 		}
 
 		local = R_LocalTrace( localStart, localEnd, 0.0f, tri );
-		if ( local.fraction < 1.0 ) {
+		if ( local.fraction < best ) {
 			idVec3				origin, axis[3];
-			idVec3				cursor;
 			float				axisLen[2];
 
 			R_SurfaceToTextureAxis( tri, origin, axis );
-			cursor = local.point - origin;
 
 			axisLen[0] = axis[0].Length();
 			axisLen[1] = axis[1].Length();
@@ -1274,12 +1277,24 @@ guiPoint_t	idRenderWorldLocal::GuiTrace( qhandle_t entityHandle, const idVec3 st
 				continue;
 			}
 
-			pt.x = ( cursor * axis[0] ) / ( axisLen[0] * axisLen[0] );
-			pt.y = ( cursor * axis[1] ) / ( axisLen[1] * axisLen[1] );
-			pt.guiId = shader->GetEntityGui();
-
-			return pt;
+			best = local.fraction;
+			bestLocal = local;
+			bestShader = shader;
+			bestOrigin = origin;
+			bestAxis[0] = axis[0];
+			bestAxis[1] = axis[1];
+			bestAxisLen[0] = axisLen[0];
+			bestAxisLen[1] = axisLen[1];
 		}
+	}
+
+	if ( bestShader != NULL ) {
+		const idVec3 cursor = bestLocal.point - bestOrigin;
+
+		pt.x = ( cursor * bestAxis[0] ) / ( bestAxisLen[0] * bestAxisLen[0] );
+		pt.y = ( cursor * bestAxis[1] ) / ( bestAxisLen[1] * bestAxisLen[1] );
+		pt.guiId = bestShader->GetEntityGui();
+		pt.fraction = bestLocal.fraction;
 	}
 
 	return pt;
@@ -1370,8 +1385,8 @@ void R_GuiTraceProbe_f( const idCmdArgs &args ) {
 			if ( pt.x != -1.0f ) {
 				hits++;
 			}
-			common->Printf( "guiTraceProbe:   surf %d shader '%s' entityGui=%d -> pt=(%.3f %.3f) guiId=%d\n",
-				j, shader->GetName(), shader->GetEntityGui(), pt.x, pt.y, pt.guiId );
+			common->Printf( "guiTraceProbe:   surf %d shader '%s' entityGui=%d -> pt=(%.3f %.3f) guiId=%d fraction=%.3f\n",
+				j, shader->GetName(), shader->GetEntityGui(), pt.x, pt.y, pt.guiId, pt.fraction );
 
 			// optional 'click' mode: drive the same event sequence the game's
 			// focus/click path sends and report what the gui returns

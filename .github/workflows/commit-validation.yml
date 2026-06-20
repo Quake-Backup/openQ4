@@ -37,21 +37,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile tools/build/build_pak0.py tools/build/openq4_pak.py tools/validation/openq4_validate.py tools/tests/renderer_validation_matrix.py tools/tests/campaign_split_state_transition.py tools/tests/filesystem_case_segments.py tools/tests/linux_arm64_ci_coverage.py tools/tests/linux_highdpi_mouse.py tools/tests/linux_sdl3_glew_loader.py tools/tests/linux_vsync_support.py tools/tests/loading_continue_input.py tools/tests/macos_native_backend_guard.py tools/tests/macos_renderer_startup_guard.py tools/tests/macos_sdl3_backend_guard.py tools/tests/macos_metal_bridge.py tools/tests/openq4_pure_pack.py tools/tests/posix_memory_management.py tools/tests/sdl3_input_parity.py tools/tests/sdl3_multidisplay_windowing.py tools/tests/steam_deck_support.py tools/tests/startup_language_override.py
+          python -m py_compile tools/build/build_pak0.py tools/build/linux_metadata.py tools/build/openq4_pak.py tools/build/stage_gamelibs.py tools/validation/openq4_validate.py tools/tests/renderer_validation_matrix.py tools/tests/campaign_split_state_transition.py tools/tests/filesystem_case_segments.py tools/tests/gamelibs_staging.py tools/tests/linux_arm64_ci_coverage.py tools/tests/linux_highdpi_mouse.py tools/tests/linux_metadata_fuzz.py tools/tests/linux_packaging_guidance.py tools/tests/linux_sanitizer_ci.py tools/tests/linux_sdl3_glew_loader.py tools/tests/linux_vsync_support.py tools/tests/loading_continue_input.py tools/tests/macos_native_backend_guard.py tools/tests/macos_renderer_startup_guard.py tools/tests/macos_sdl3_backend_guard.py tools/tests/macos_static_policy.py tools/tests/macos_metal_bridge.py tools/tests/openq4_pure_pack.py tools/tests/posix_memory_management.py tools/tests/sdl3_input_parity.py tools/tests/sdl3_multidisplay_windowing.py tools/tests/steam_deck_support.py tools/tests/startup_language_override.py
           bash -n tools/build/meson_setup.sh
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
           python tools/tests/campaign_split_state_transition.py
           python tools/tests/filesystem_case_segments.py
+          python tools/tests/gamelibs_staging.py
           python tools/tests/hdr_postprocess_math.py
           python tools/tests/linux_arm64_ci_coverage.py
           python tools/tests/linux_highdpi_mouse.py
+          python tools/tests/linux_metadata_fuzz.py
+          python tools/tests/linux_packaging_guidance.py
+          python tools/tests/linux_sanitizer_ci.py
           python tools/tests/linux_sdl3_glew_loader.py
           python tools/tests/linux_vsync_support.py
           python tools/tests/loading_continue_input.py
           python tools/tests/macos_native_backend_guard.py
           python tools/tests/macos_renderer_startup_guard.py
           python tools/tests/macos_sdl3_backend_guard.py
+          python tools/tests/macos_static_policy.py
           python tools/tests/macos_metal_bridge.py
           python tools/tests/openq4_pure_pack.py
           python tools/tests/posix_memory_management.py
@@ -145,6 +150,7 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3; do
             if sudo apt-get update && sudo apt-get install -y \
+              binutils \
               libasound2-dev \
               libdbus-1-dev \
               libdecor-0-dev \
@@ -195,7 +201,289 @@ jobs:
           env LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11 xvfb-run -a bash tools/validation/validate_pr.sh \
             --fail-on-dirty \
             --runtime \
-            --runtime-cases renderer-default-safety-selftest \
+            --runtime-cases renderer-default-safety-selftest,sdl3-x11-display-diagnostics \
+            --runtime-tiers auto \
+            --runtime-basepath "" \
+            --runtime-skip-official-pak-validation
+          env LIBGL_ALWAYS_SOFTWARE=1 OPENQ4_FORCE_X11=1 xvfb-run -a python tools/tests/renderer_validation_matrix.py \
+            --cases sdl3-force-x11-display-diagnostics \
+            --tiers auto \
+            --basepath "" \
+            --skip-official-pak-validation \
+            --output-dir .tmp/renderer-validation/force-x11
+
+      - name: Publish renderer validation reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: commit-linux-arm64-renderer-validation
+          path: .tmp/renderer-validation
+          if-no-files-found: warn
+          retention-days: 14
+          include-hidden-files: true
+
+  linux-sanitizer:
+    name: Linux x64 ASan+UBSan Commit Validation
+    runs-on: ubuntu-24.04
+    needs: script-smoke
+    timeout-minutes: 90
+    env:
+      OPENQ4_GAMELIBS_REPO: ${{ github.workspace }}/../openQ4-game
+      ASAN_OPTIONS: halt_on_error=1:detect_leaks=0
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch openQ4-game
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install Meson and Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install meson ninja
+
+      - name: Install Linux native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y \
+              binutils \
+              libasound2-dev \
+              libdbus-1-dev \
+              libdecor-0-dev \
+              libdrm-dev \
+              libegl1-mesa-dev \
+              libfribidi-dev \
+              libgbm-dev \
+              libgl1-mesa-dri \
+              libgl1-mesa-dev \
+              libglx-mesa0 \
+              libibus-1.0-dev \
+              libjack-dev \
+              libopenal-dev \
+              libpipewire-0.3-dev \
+              libpulse-dev \
+              libsndio-dev \
+              libthai-dev \
+              libudev-dev \
+              libwayland-dev \
+              libx11-dev \
+              libxcursor-dev \
+              libxext-dev \
+              libxfixes-dev \
+              libxi-dev \
+              libxkbcommon-dev \
+              libxrandr-dev \
+              libxss-dev \
+              libxtst-dev \
+              libxxf86dga-dev \
+              libxxf86vm-dev; then
+              exit 0
+            fi
+
+            if [ "${attempt}" -eq 3 ]; then
+              echo "Failed to install Linux native dependencies after ${attempt} attempts."
+              exit 1
+            fi
+
+            echo "Linux dependency installation attempt ${attempt} failed; retrying in 10 seconds..."
+            sleep 10
+          done
+
+      - name: Run sanitizer build
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/validation/validate_pr.sh \
+            --skip-python-tests \
+            --no-install \
+            --build-dir .tmp/validation/linux-sanitizer-builddir \
+            --buildtype debugoptimized \
+            --jobs 2 \
+            --extra-setup-arg=-Duse_pch=false \
+            --extra-setup-arg=-Db_sanitize=address,undefined
+
+      - name: Publish sanitizer build logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: commit-linux-sanitizer-build-logs
+          path: |
+            .tmp/validation/linux-sanitizer-builddir/meson-logs
+            .tmp/gamelibs_stage/openq4_gamelibs_stage_manifest.json
+          if-no-files-found: warn
+          retention-days: 14
+          include-hidden-files: true
+
+  linux-wayland:
+    name: Linux Wayland ${{ matrix.libdecor_label }} Commit Validation
+    runs-on: ubuntu-24.04
+    needs: script-smoke
+    timeout-minutes: 90
+    env:
+      OPENQ4_GAMELIBS_REPO: ${{ github.workspace }}/../openQ4-game
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libdecor_label: libdecor
+            disable_libdecor: "0"
+            sync_window_ops: "0"
+            artifact_suffix: libdecor
+          - libdecor_label: no-libdecor
+            disable_libdecor: "1"
+            sync_window_ops: "0"
+            artifact_suffix: no-libdecor
+          - libdecor_label: sync-window-ops
+            disable_libdecor: "0"
+            sync_window_ops: "1"
+            artifact_suffix: sync-window-ops
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch openQ4-game
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install Meson and Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install meson ninja
+
+      - name: Install Linux Wayland dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y \
+              binutils \
+              libasound2-dev \
+              libdbus-1-dev \
+              libdecor-0-dev \
+              libdrm-dev \
+              libegl1-mesa-dev \
+              libfribidi-dev \
+              libgbm-dev \
+              libgl1-mesa-dri \
+              libgl1-mesa-dev \
+              libglx-mesa0 \
+              libibus-1.0-dev \
+              libjack-dev \
+              libopenal-dev \
+              libpipewire-0.3-dev \
+              libpulse-dev \
+              libsndio-dev \
+              libthai-dev \
+              libudev-dev \
+              libwayland-dev \
+              libx11-dev \
+              libxcursor-dev \
+              libxext-dev \
+              libxfixes-dev \
+              libxi-dev \
+              libxkbcommon-dev \
+              libxrandr-dev \
+              libxss-dev \
+              libxtst-dev \
+              libxxf86dga-dev \
+              libxxf86vm-dev \
+              weston; then
+              exit 0
+            fi
+
+            if [ "${attempt}" -eq 3 ]; then
+              echo "Failed to install Linux Wayland dependencies after ${attempt} attempts."
+              exit 1
+            fi
+
+            echo "Linux Wayland dependency installation attempt ${attempt} failed; retrying in 10 seconds..."
+            sleep 10
+          done
+
+      - name: Run native Wayland validation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/openq4-wayland-runtime"
+          rm -rf "${XDG_RUNTIME_DIR}"
+          mkdir -p "${XDG_RUNTIME_DIR}"
+          chmod 700 "${XDG_RUNTIME_DIR}"
+
+          weston_log="${RUNNER_TEMP}/openq4-weston-${{ matrix.artifact_suffix }}.log"
+          weston --backend=headless-backend.so --socket=openq4-wayland --idle-time=0 --no-config >"${weston_log}" 2>&1 &
+          weston_pid=$!
+          cleanup() {
+            status=$?
+            if [ "${status}" -ne 0 ] && [ -f "${weston_log}" ]; then
+              echo "Weston log:"
+              cat "${weston_log}"
+            fi
+            kill "${weston_pid}" >/dev/null 2>&1 || true
+            wait "${weston_pid}" >/dev/null 2>&1 || true
+            exit "${status}"
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..30}; do
+            if [ -S "${XDG_RUNTIME_DIR}/openq4-wayland" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ ! -S "${XDG_RUNTIME_DIR}/openq4-wayland" ]; then
+            echo "Weston did not create the Wayland socket."
+            exit 1
+          fi
+
+          export WAYLAND_DISPLAY=openq4-wayland
+          unset DISPLAY
+          export SDL_VIDEO_DRIVER=wayland
+          export SDL_VIDEODRIVER=wayland
+          export LIBGL_ALWAYS_SOFTWARE=1
+          if [ "${{ matrix.disable_libdecor }}" = "1" ]; then
+            export OPENQ4_WAYLAND_DISABLE_LIBDECOR=1
+          else
+            unset OPENQ4_WAYLAND_DISABLE_LIBDECOR
+          fi
+          if [ "${{ matrix.sync_window_ops }}" = "1" ]; then
+            export OPENQ4_WAYLAND_SYNC_WINDOW_OPS=1
+          else
+            unset OPENQ4_WAYLAND_SYNC_WINDOW_OPS
+          fi
+
+          bash tools/validation/validate_pr.sh \
+            --fail-on-dirty \
+            --runtime \
+            --runtime-cases renderer-default-safety-selftest,sdl3-wayland-window-lifecycle,sdl3-wayland-window-stress,sdl3-wayland-mouse-capture,sdl3-wayland-mouse-capture-stress,sdl3-wayland-display-diagnostics \
             --runtime-tiers auto \
             --runtime-basepath "" \
             --runtime-skip-official-pak-validation
@@ -204,7 +492,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: commit-linux-arm64-renderer-validation
+          name: commit-linux-wayland-${{ matrix.artifact_suffix }}-renderer-validation
           path: .tmp/renderer-validation
           if-no-files-found: warn
           retention-days: 14
@@ -223,9 +511,11 @@ jobs:
         include:
           - bridge_label: OpenGL
             macos_graphics_bridge: opengl
+            macos_openal_provider: apple_framework
             artifact_suffix: opengl
           - bridge_label: Metal
             macos_graphics_bridge: metal
+            macos_openal_provider: apple_framework
             artifact_suffix: metal
 
     steps:
@@ -259,7 +549,8 @@ jobs:
           bash tools/validation/validate_pr.sh \
             --fail-on-dirty \
             --platform-backend=sdl3 \
-            --extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }}
+            --extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }} \
+            --extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}
 
       - name: Publish staged payload
         if: always()

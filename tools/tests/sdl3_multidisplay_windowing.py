@@ -150,6 +150,7 @@ def validate_ci_hooks() -> None:
     validator = read("tools/validation/openq4_validate.py")
     push = read(".github/workflows/push-verification.yml")
     commit = read(".github/workflows/commit-validation.yml")
+    renderer = read("tools/tests/renderer_validation_matrix.py")
 
     for source, context in (
         (validator, "validation runner"),
@@ -157,6 +158,16 @@ def validate_ci_hooks() -> None:
         (commit, "commit validation workflow"),
     ):
         require(source, "sdl3_multidisplay_windowing.py", context)
+
+    require(renderer, '"id": "sdl3-wayland-display-diagnostics"', "Wayland display diagnostics runtime case")
+    require(renderer, '"id": "sdl3-wayland-window-stress"', "Wayland window stress runtime case")
+    require(renderer, "native Wayland SDL3 repeated window/fullscreen transition stress", "Wayland window stress runtime case")
+    require(renderer, '"id": "sdl3-x11-display-diagnostics"', "X11 display diagnostics runtime case")
+    require(renderer, '"+listDisplays"', "Wayland display diagnostics runtime command")
+    require(renderer, '"r_windowWidth",\n                "1280"', "Wayland window stress size change")
+    require(commit, "sdl3-wayland-window-stress", "Wayland CI window stress case")
+    require(commit, "sdl3-wayland-display-diagnostics", "Wayland CI display diagnostics case")
+    require(commit, "sdl3-x11-display-diagnostics", "X11 CI display diagnostics case")
 
 
 def main() -> None:

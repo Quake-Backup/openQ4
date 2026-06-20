@@ -9,7 +9,6 @@ import json
 import os
 import plistlib
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -26,6 +25,11 @@ from windows_runtime import (
     RuntimeFlavor,
     infer_runtime_flavor,
     list_staged_runtime_files,
+)
+from linux_metadata import (
+    LinuxMetadataError,
+    desktop_entry_exec as parse_linux_desktop_entry_exec,
+    desktop_exec_command as parse_linux_desktop_exec_command,
 )
 from generate_release_docs import GeneratedDocSite, generate_release_docs_site
 from openq4_pak import (
@@ -59,10 +63,11 @@ PLATFORM_GAME_MODULE_EXT = {
 DEFAULT_ARCHIVE_FORMAT = {
     "windows": "zip",
     "linux": "tar.xz",
-    "macos": "tar.gz",
+    "macos": "dmg",
 }
 
 ARCHIVE_SUFFIX = {
+    "dmg": ".dmg",
     "zip": ".zip",
     "tar.gz": ".tar.gz",
     "tar.xz": ".tar.xz",
@@ -100,6 +105,48 @@ MACOS_LIPO_ARCHES = {
     "x64": "x86_64",
     "x86": "i386",
 }
+MACOS_SIGNING_MODES = (
+    "ad-hoc",
+    "developer-id",
+)
+MACOS_FORBIDDEN_ENTITLEMENTS = {
+    "com.apple.security.app-sandbox": (
+        "openQ4 direct-distribution packages are not App Sandbox-ready because "
+        "they need explicit access to user-selected Quake 4 assets, saves, logs, "
+        "and staged runtime overlays"
+    ),
+    "com.apple.security.get-task-allow": (
+        "get-task-allow is a development/debug entitlement and must not be present "
+        "in release signing inputs"
+    ),
+}
+
+
+class MacOSSigningConfig:
+    def __init__(
+        self,
+        *,
+        mode: str,
+        identity: str,
+        hardened_runtime: bool,
+        timestamp: bool,
+        entitlements: Path | None,
+        notarize: bool,
+        notary_keychain_profile: str,
+        notary_keychain: Path | None,
+    ) -> None:
+        self.mode = mode
+        self.identity = identity
+        self.hardened_runtime = hardened_runtime
+        self.timestamp = timestamp
+        self.entitlements = entitlements
+        self.notarize = notarize
+        self.notary_keychain_profile = notary_keychain_profile
+        self.notary_keychain = notary_keychain
+
+
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -149,7 +196,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help=(
             "Archive format for the top-level package (default: platform-specific; "
-            "windows=zip, linux=tar.xz, macos=tar.gz)."
+            "windows=zip, linux=tar.xz, macos=dmg)."
         ),
     )
     parser.add_argument(
@@ -167,6 +214,41 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Allow packaging to continue when required platform binaries are missing. "
             "Useful for host bring-up previews."
         ),
+    )
+    parser.add_argument(
+        "--macos-signing-mode",
+        choices=MACOS_SIGNING_MODES,
+        default=os.environ.get("OPENQ4_MACOS_SIGNING_MODE", "ad-hoc"),
+        help=(
+            "macOS signing mode. Use ad-hoc for local/debug packaging and developer-id "
+            "for release packages that will be notarized."
+        ),
+    )
+    parser.add_argument(
+        "--macos-code-sign-identity",
+        default=os.environ.get("OPENQ4_MACOS_CODE_SIGN_IDENTITY", ""),
+        help="Developer ID Application identity for --macos-signing-mode=developer-id.",
+    )
+    parser.add_argument(
+        "--macos-entitlements",
+        default=os.environ.get("OPENQ4_MACOS_ENTITLEMENTS", ""),
+        help="Optional entitlements plist passed to codesign for macOS release signing.",
+    )
+    parser.add_argument(
+        "--macos-notarize",
+        action="store_true",
+        default=env_flag("OPENQ4_MACOS_NOTARIZE"),
+        help="Submit the signed macOS package payload to Apple notarization and staple the app ticket.",
+    )
+    parser.add_argument(
+        "--macos-notary-keychain-profile",
+        default=os.environ.get("OPENQ4_MACOS_NOTARY_KEYCHAIN_PROFILE", ""),
+        help="notarytool keychain profile used when --macos-notarize is enabled.",
+    )
+    parser.add_argument(
+        "--macos-notary-keychain",
+        default=os.environ.get("OPENQ4_MACOS_NOTARY_KEYCHAIN", ""),
+        help="Optional keychain path that contains the notarytool keychain profile.",
     )
     return parser.parse_args(argv[1:])
 
@@ -443,7 +525,7 @@ def validate_macos_binary_architectures(binary_paths: list[Path], arch: str) -> 
             )
 
 
-def run_macos_codesign(command: list[str], *, label: str) -> None:
+def run_macos_command(command: list[str], *, label: str) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         command,
         check=False,
@@ -454,35 +536,139 @@ def run_macos_codesign(command: list[str], *, label: str) -> None:
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"{label} failed: {message}")
+    return completed
 
 
-def ad_hoc_sign_macos_payload(package_root: Path, arch: str) -> None:
+def run_macos_codesign(command: list[str], *, label: str) -> subprocess.CompletedProcess[str]:
+    return run_macos_command(command, label=label)
+
+
+def validate_macos_entitlements_file(entitlements: Path) -> None:
+    try:
+        with entitlements.open("rb") as handle:
+            entitlement_values = plistlib.load(handle)
+    except (plistlib.InvalidFileException, TypeError, ValueError) as exc:
+        raise RuntimeError(f"macOS entitlements file is not a valid plist: {entitlements}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"macOS entitlements file is unreadable: {entitlements}") from exc
+
+    if not isinstance(entitlement_values, dict):
+        raise RuntimeError(f"macOS entitlements file must contain a dictionary root: {entitlements}")
+
+    forbidden_keys = []
+    for key, reason in MACOS_FORBIDDEN_ENTITLEMENTS.items():
+        if entitlement_values.get(key):
+            forbidden_keys.append(f"{key} ({reason})")
+
+    if forbidden_keys:
+        joined = "; ".join(forbidden_keys)
+        raise RuntimeError(f"macOS entitlements file contains unsupported release entitlements: {joined}")
+
+
+def resolve_macos_signing_config(args: argparse.Namespace) -> MacOSSigningConfig:
+    entitlements = Path(args.macos_entitlements).resolve() if args.macos_entitlements else None
+    if entitlements is not None and not entitlements.is_file():
+        raise RuntimeError(f"macOS entitlements file does not exist: {entitlements}")
+    if entitlements is not None:
+        validate_macos_entitlements_file(entitlements)
+
+    if args.macos_signing_mode == "ad-hoc":
+        if args.macos_notarize:
+            raise RuntimeError("macOS notarization requires --macos-signing-mode=developer-id")
+        return MacOSSigningConfig(
+            mode="ad-hoc",
+            identity="-",
+            hardened_runtime=False,
+            timestamp=False,
+            entitlements=entitlements,
+            notarize=False,
+            notary_keychain_profile="",
+            notary_keychain=None,
+        )
+
+    identity = args.macos_code_sign_identity.strip()
+    if identity == "":
+        raise RuntimeError("macOS Developer ID signing requires --macos-code-sign-identity")
+
+    notary_keychain_profile = args.macos_notary_keychain_profile.strip()
+    if args.macos_notarize and notary_keychain_profile == "":
+        raise RuntimeError("macOS notarization requires --macos-notary-keychain-profile")
+
+    return MacOSSigningConfig(
+        mode="developer-id",
+        identity=identity,
+        hardened_runtime=True,
+        timestamp=True,
+        entitlements=entitlements,
+        notarize=args.macos_notarize,
+        notary_keychain_profile=notary_keychain_profile,
+        notary_keychain=Path(args.macos_notary_keychain).resolve() if args.macos_notary_keychain else None,
+    )
+
+
+def macos_signable_targets(package_root: Path, arch: str) -> list[Path]:
+    return [
+        package_root / f"{PRODUCT_NAME}-client_{arch}",
+        package_root / f"{PRODUCT_NAME}-ded_{arch}",
+        package_root / GAME_DIR_NAME / f"game-sp_{arch}.dylib",
+        package_root / GAME_DIR_NAME / f"game-mp_{arch}.dylib",
+    ]
+
+
+def macos_codesign_target(codesign_path: str, target: Path, config: MacOSSigningConfig) -> None:
+    command = [
+        codesign_path,
+        "--force",
+        "--sign",
+        config.identity,
+    ]
+    if config.hardened_runtime:
+        command += ["--options", "runtime"]
+    if config.timestamp:
+        command.append("--timestamp")
+    else:
+        command.append("--timestamp=none")
+    if config.entitlements is not None:
+        command += ["--entitlements", str(config.entitlements)]
+    command.append(str(target))
+
+    run_macos_codesign(command, label=f"{config.mode} signing {target}")
+
+
+def sign_macos_payload(package_root: Path, arch: str, config: MacOSSigningConfig) -> None:
     if sys.platform != "darwin":
+        if config.mode == "developer-id" or config.notarize:
+            raise RuntimeError("macOS Developer ID signing and notarization require a macOS host")
         return
 
     codesign_path = shutil.which("codesign")
     if codesign_path is None:
         raise RuntimeError("macOS code-sign validation requires codesign")
 
-    sign_targets = [
-        package_root / f"{PRODUCT_NAME}-client_{arch}",
-        package_root / f"{PRODUCT_NAME}-ded_{arch}",
-        package_root / GAME_DIR_NAME / f"game-sp_{arch}.dylib",
-        package_root / GAME_DIR_NAME / f"game-mp_{arch}.dylib",
-    ]
-    for target in sign_targets:
-        run_macos_codesign(
-            [codesign_path, "--force", "--sign", "-", "--timestamp=none", str(target)],
-            label=f"ad-hoc signing {target}",
-        )
+    for target in macos_signable_targets(package_root, arch):
+        macos_codesign_target(codesign_path, target, config)
 
     app_root = package_root / "openQ4.app"
     app_executable = app_root / "Contents" / "MacOS" / "openQ4"
     shutil.copy2(package_root / f"{PRODUCT_NAME}-client_{arch}", app_executable)
     ensure_posix_executable(app_executable)
-    run_macos_codesign(
-        [codesign_path, "--force", "--sign", "-", "--timestamp=none", str(app_root)],
-        label=f"ad-hoc signing {app_root}",
+    macos_codesign_target(codesign_path, app_root, config)
+
+
+def ad_hoc_sign_macos_payload(package_root: Path, arch: str) -> None:
+    sign_macos_payload(
+        package_root,
+        arch,
+        MacOSSigningConfig(
+            mode="ad-hoc",
+            identity="-",
+            hardened_runtime=False,
+            timestamp=False,
+            entitlements=None,
+            notarize=False,
+            notary_keychain_profile="",
+            notary_keychain=None,
+        ),
     )
 
 
@@ -495,10 +681,7 @@ def verify_macos_codesignature(package_root: Path, arch: str) -> None:
         raise RuntimeError("macOS code-sign validation requires codesign")
 
     verify_targets = [
-        package_root / f"{PRODUCT_NAME}-client_{arch}",
-        package_root / f"{PRODUCT_NAME}-ded_{arch}",
-        package_root / GAME_DIR_NAME / f"game-sp_{arch}.dylib",
-        package_root / GAME_DIR_NAME / f"game-mp_{arch}.dylib",
+        *macos_signable_targets(package_root, arch),
         package_root / "openQ4.app" / "Contents" / "MacOS" / "openQ4",
         package_root / "openQ4.app",
     ]
@@ -507,6 +690,125 @@ def verify_macos_codesignature(package_root: Path, arch: str) -> None:
             [codesign_path, "--verify", "--strict", "--verbose=2", str(target)],
             label=f"code signature verification for {target}",
         )
+
+
+def macos_codesign_details(target: Path) -> str:
+    if sys.platform != "darwin":
+        return ""
+
+    codesign_path = shutil.which("codesign")
+    if codesign_path is None:
+        raise RuntimeError("macOS code-sign validation requires codesign")
+
+    completed = run_macos_codesign(
+        [codesign_path, "-dv", "--verbose=4", str(target)],
+        label=f"code signature detail inspection for {target}",
+    )
+    return completed.stdout + completed.stderr
+
+
+def verify_macos_developer_id_signature(package_root: Path, arch: str, config: MacOSSigningConfig) -> None:
+    if sys.platform != "darwin" or config.mode != "developer-id":
+        return
+
+    verify_targets = [
+        *macos_signable_targets(package_root, arch),
+        package_root / "openQ4.app" / "Contents" / "MacOS" / "openQ4",
+        package_root / "openQ4.app",
+    ]
+    for target in verify_targets:
+        details = macos_codesign_details(target)
+        if "Authority=Developer ID Application:" not in details:
+            raise RuntimeError(f"macOS target is not Developer ID Application signed: {target}")
+        if "Signature=adhoc" in details:
+            raise RuntimeError(f"macOS target is still ad-hoc signed: {target}")
+        if config.hardened_runtime and "Runtime Version=" not in details:
+            raise RuntimeError(f"macOS target is missing Hardened Runtime metadata: {target}")
+
+
+def notarize_macos_app_bundle(package_root: Path, config: MacOSSigningConfig) -> None:
+    if sys.platform != "darwin" or not config.notarize:
+        return
+
+    for tool_name in ("ditto", "xcrun", "spctl"):
+        if shutil.which(tool_name) is None:
+            raise RuntimeError(f"macOS notarization requires {tool_name}")
+
+    app_root = package_root / "openQ4.app"
+    notary_archive = package_root.parent / f"{package_root.name}-notary.zip"
+    if notary_archive.exists():
+        notary_archive.unlink()
+
+    run_macos_command(
+        ["ditto", "-c", "-k", "--keepParent", str(package_root), str(notary_archive)],
+        label=f"creating notarization archive {notary_archive}",
+    )
+
+    notary_command = [
+        "xcrun",
+        "notarytool",
+        "submit",
+        str(notary_archive),
+        "--keychain-profile",
+        config.notary_keychain_profile,
+        "--wait",
+    ]
+    if config.notary_keychain is not None:
+        notary_command += ["--keychain", str(config.notary_keychain)]
+    try:
+        run_macos_command(notary_command, label=f"notarizing {package_root}")
+    finally:
+        try:
+            notary_archive.unlink()
+        except OSError:
+            pass
+
+    run_macos_command(["xcrun", "stapler", "staple", str(app_root)], label=f"stapling {app_root}")
+    run_macos_command(["xcrun", "stapler", "validate", str(app_root)], label=f"validating stapled ticket for {app_root}")
+    run_macos_command(
+        ["spctl", "--assess", "--type", "execute", "--verbose=4", str(app_root)],
+        label=f"Gatekeeper assessment for {app_root}",
+    )
+
+
+def validate_macos_dmg_image(dmg_path: Path) -> None:
+    if sys.platform != "darwin":
+        raise RuntimeError("macOS DMG validation requires a macOS host")
+
+    hdiutil_path = shutil.which("hdiutil")
+    if hdiutil_path is None:
+        raise RuntimeError("macOS DMG validation requires hdiutil")
+
+    run_macos_command([hdiutil_path, "verify", str(dmg_path)], label=f"verifying macOS DMG {dmg_path}")
+    run_macos_command([hdiutil_path, "imageinfo", str(dmg_path)], label=f"reading macOS DMG info for {dmg_path}")
+
+
+def notarize_macos_dmg_image(dmg_path: Path, config: MacOSSigningConfig) -> None:
+    if sys.platform != "darwin" or not config.notarize:
+        return
+
+    xcrun_path = shutil.which("xcrun")
+    if xcrun_path is None:
+        raise RuntimeError("macOS DMG notarization requires xcrun")
+
+    notary_command = [
+        xcrun_path,
+        "notarytool",
+        "submit",
+        str(dmg_path),
+        "--keychain-profile",
+        config.notary_keychain_profile,
+        "--wait",
+    ]
+    if config.notary_keychain is not None:
+        notary_command += ["--keychain", str(config.notary_keychain)]
+
+    run_macos_command(notary_command, label=f"notarizing macOS DMG {dmg_path}")
+    run_macos_command([xcrun_path, "stapler", "staple", str(dmg_path)], label=f"stapling macOS DMG {dmg_path}")
+    run_macos_command(
+        [xcrun_path, "stapler", "validate", str(dmg_path)],
+        label=f"validating stapled macOS DMG ticket for {dmg_path}",
+    )
 
 
 def write_version_manifest(
@@ -770,6 +1072,31 @@ def create_game_pk4(
     return result.added_files, result.skipped_samples, result.missing_required
 
 
+def create_macos_dmg(package_root: Path, archive_path: Path) -> None:
+    if sys.platform != "darwin":
+        raise RuntimeError("macOS DMG packaging requires a macOS host")
+
+    hdiutil_path = shutil.which("hdiutil")
+    if hdiutil_path is None:
+        raise RuntimeError("macOS DMG packaging requires hdiutil")
+
+    run_macos_command(
+        [
+            hdiutil_path,
+            "create",
+            "-volname",
+            package_root.name,
+            "-srcfolder",
+            str(package_root),
+            "-format",
+            "UDZO",
+            "-ov",
+            str(archive_path),
+        ],
+        label=f"creating macOS DMG {archive_path}",
+    )
+
+
 def create_release_archive(
     package_root: Path,
     archive_path: Path,
@@ -788,6 +1115,10 @@ def create_release_archive(
         relative_path.as_posix()
         for relative_path in (executable_relative_paths or set())
     }
+
+    if archive_format == "dmg":
+        create_macos_dmg(package_root, archive_path)
+        return
 
     if archive_format == "zip":
         with ZipFile(archive_path, "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:
@@ -1209,22 +1540,16 @@ def copy_optional_linux_launchers(install_dir: Path, package_root: Path) -> list
 
 def desktop_entry_exec(path: Path) -> str:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("Exec="):
-                return line[5:].strip()
-    except OSError as exc:
-        raise RuntimeError(f"Linux desktop entry is unreadable: {path}") from exc
-    return ""
+        return parse_linux_desktop_entry_exec(path)
+    except LinuxMetadataError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def desktop_exec_command(exec_line: str) -> str:
-    if not exec_line:
-        return ""
     try:
-        parts = shlex.split(exec_line, posix=True)
-    except ValueError:
-        parts = exec_line.split()
-    return parts[0] if parts else ""
+        return parse_linux_desktop_exec_command(exec_line)
+    except LinuxMetadataError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def require_packaged_executable(path: Path, label: str, *, allow_missing: bool = False) -> None:
@@ -1288,7 +1613,10 @@ def validate_linux_package_metadata(package_root: Path, arch: str, *, allow_miss
         if not desktop_path.is_file():
             raise RuntimeError(f"Linux desktop entry is missing from the package: {desktop_path}")
 
-        exec_command = desktop_exec_command(desktop_entry_exec(desktop_path))
+        try:
+            exec_command = desktop_exec_command(desktop_entry_exec(desktop_path))
+        except ValueError as exc:
+            raise RuntimeError(f"Linux desktop entry {desktop_path} has an invalid Exec line: {exc}") from exc
         if exec_command != expected_command:
             raise RuntimeError(
                 f"Linux desktop entry {desktop_path} points at {exec_command or '<empty>'!r}; "
@@ -1427,6 +1755,9 @@ def main(argv: list[str]) -> int:
 
     archive_format = args.archive_format or DEFAULT_ARCHIVE_FORMAT[args.platform]
     archive_suffix = ARCHIVE_SUFFIX[archive_format]
+    if archive_format == "dmg" and args.platform != "macos":
+        print("error: archive format 'dmg' is only supported for macOS packages", file=sys.stderr)
+        return 1
 
     source_root = Path(args.source_root).resolve()
     install_dir = (
@@ -1578,12 +1909,15 @@ def main(argv: list[str]) -> int:
             validate_macos_package_file_modes(package_root)
             strip_macos_forbidden_xattrs(package_root)
             validate_no_macos_forbidden_xattrs(package_root)
-            ad_hoc_sign_macos_payload(package_root, args.arch)
+            macos_signing = resolve_macos_signing_config(args)
+            sign_macos_payload(package_root, args.arch, macos_signing)
             validate_macos_version_manifests(package_root, args.arch, args.version, args.version_tag)
             validate_macos_localized_info_files(package_root, args.version)
             validate_macos_app_bundle(package_root, macos_app_bundle, args.arch, args.version)
             validate_macos_binary_dependencies(package_root, args.arch)
             verify_macos_codesignature(package_root, args.arch)
+            verify_macos_developer_id_signature(package_root, args.arch, macos_signing)
+            notarize_macos_app_bundle(package_root, macos_signing)
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -1595,21 +1929,30 @@ def main(argv: list[str]) -> int:
     )
 
     archive_path = output_dir / f"{package_stem}{archive_suffix}"
-    create_release_archive(
-        package_root,
-        archive_path,
-        archive_format,
-        archive_executable_paths,
-    )
+    try:
+        create_release_archive(
+            package_root,
+            archive_path,
+            archive_format,
+            archive_executable_paths,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if args.platform == "macos":
         try:
-            validate_macos_archive_contents(
-                package_root,
-                archive_path,
-                archive_format,
-                args.arch,
-                args.version,
-            )
+            if archive_format == "dmg":
+                validate_macos_dmg_image(archive_path)
+                notarize_macos_dmg_image(archive_path, macos_signing)
+                validate_macos_dmg_image(archive_path)
+            else:
+                validate_macos_archive_contents(
+                    package_root,
+                    archive_path,
+                    archive_format,
+                    args.arch,
+                    args.version,
+                )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

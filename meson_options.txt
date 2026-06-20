@@ -50,6 +50,14 @@ option(
 )
 
 option(
+  'macos_openal_provider',
+  type: 'combo',
+  choices: ['apple_framework', 'system'],
+  value: 'apple_framework',
+  description: 'macOS OpenAL provider. apple_framework is the release default; system uses dependency("openal") plus OpenAL Soft-style AL/... headers for migration testing.',
+)
+
+option(
   'version_track',
   type: 'string',
   value: 'dev',

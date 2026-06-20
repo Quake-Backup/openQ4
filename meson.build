@@ -35,12 +35,16 @@ endif
 platform_backend_requested = get_option('platform_backend')
 platform_backend = platform_backend_requested
 macos_graphics_bridge = get_option('macos_graphics_bridge')
+macos_openal_provider = get_option('macos_openal_provider')
 if host_system == 'windows' and platform_backend_requested == 'native'
   error('platform_backend=native is only valid on non-Windows hosts.')
 endif
 
 if host_system != 'darwin' and macos_graphics_bridge != 'opengl'
   error('macos_graphics_bridge=' + macos_graphics_bridge + ' is only valid on macOS hosts.')
+endif
+if host_system != 'darwin' and macos_openal_provider != 'apple_framework'
+  error('macos_openal_provider=' + macos_openal_provider + ' is only valid on macOS hosts.')
 endif
 
 if host_system == 'linux'
@@ -237,6 +241,10 @@ if needs_game_headers
   if not fs_mod.is_dir(game_stage_game_root)
     error('Staged game source directory not found: ' + game_stage_game_root)
   endif
+  game_stage_manifest = game_stage_root / 'openq4_gamelibs_stage_manifest.json'
+  if not fs_mod.is_file(game_stage_manifest)
+    error('Staged openQ4-game source manifest not found: ' + game_stage_manifest)
+  endif
 
   game_module_defs_file = game_stage_game_root / 'Game.def'
   if host_system == 'windows' and not fs_mod.is_file(game_module_defs_file)
@@ -410,7 +418,11 @@ if build_engine
   )
 
   if host_system == 'darwin'
-    openal_dep = dependency('appleframeworks', modules: ['OpenAL'], required: true)
+    if macos_openal_provider == 'apple_framework'
+      openal_dep = dependency('appleframeworks', modules: ['OpenAL'], required: true)
+    else
+      openal_dep = dependency('openal', required: true)
+    endif
   else
     if host_system == 'windows' and openal_root_override != ''
       openal_override_root = openal_root_override
@@ -490,11 +502,15 @@ if build_engine
         required: true,
       )
     endif
+    macos_framework_modules = ['Cocoa', 'OpenGL', 'ApplicationServices']
+    if not use_sdl3_backend
+      macos_framework_modules += ['Carbon']
+    endif
     deps += [
       dependency('threads', required: true),
       dependency(
         'appleframeworks',
-        modules: ['Cocoa', 'OpenGL', 'ApplicationServices', 'Carbon'],
+        modules: macos_framework_modules,
         required: true,
       ),
     ]
@@ -512,6 +528,8 @@ shared_c_args = ['-DGLEW_NO_GLU']
 shared_objcpp_args = []
 shared_objc_args = []
 engine_link_args = []
+linux_executable_pie = false
+linux_module_link_hardening_args = []
 
 if host_system == 'windows'
   shared_cpp_args += ['-D_WINDOWS', '-DWIN32']
@@ -525,6 +543,10 @@ endif
 if host_system == 'darwin'
   shared_cpp_args += ['-DMACOS_X=1']
   shared_c_args += ['-DMACOS_X=1']
+  if macos_openal_provider == 'system'
+    shared_cpp_args += ['-DUSE_OPENAL_SOFT_INCLUDES=1']
+    shared_c_args += ['-DUSE_OPENAL_SOFT_INCLUDES=1']
+  endif
   macos_compile_hardening_args = []
   foreach hardening_arg : ['-fstack-protector-strong', '-D_FORTIFY_SOURCE=2']
     if cpp.has_argument(hardening_arg) and cc.has_argument(hardening_arg)
@@ -548,6 +570,27 @@ if host_system == 'darwin'
     shared_objcpp_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']
     shared_objc_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']
   endif
+endif
+
+if host_system == 'linux'
+  linux_compile_hardening_args = []
+  foreach hardening_arg : ['-fstack-protector-strong', '-D_FORTIFY_SOURCE=2']
+    if cpp.has_argument(hardening_arg) and cc.has_argument(hardening_arg)
+      linux_compile_hardening_args += hardening_arg
+    endif
+  endforeach
+  shared_cpp_args += linux_compile_hardening_args
+  shared_c_args += linux_compile_hardening_args
+
+  linux_link_hardening_args = []
+  foreach hardening_arg : ['-Wl,-z,relro', '-Wl,-z,now', '-Wl,-z,noexecstack']
+    if cpp.has_link_argument(hardening_arg)
+      linux_link_hardening_args += hardening_arg
+    endif
+  endforeach
+  engine_link_args += linux_link_hardening_args
+  linux_module_link_hardening_args += linux_link_hardening_args
+  linux_executable_pie = cpp.has_argument('-fPIE') and cc.has_argument('-fPIE') and cpp.has_link_argument('-pie')
 endif
 
 if use_sdl3_backend
@@ -642,6 +685,7 @@ if build_engine
     cpp_args: bse_cpp_args,
     c_args: bse_c_args,
     cpp_pch: pch_headers,
+    pic: host_system == 'linux',
     install: false,
   )
 endif
@@ -692,6 +736,7 @@ if build_engine
       c_args: engine_c_args,
       cpp_pch: pch_headers,
       link_args: engine_link_args,
+      pie: linux_executable_pie,
       install: true,
       install_dir: install_root_dir,
     )
@@ -744,6 +789,7 @@ if build_engine
       c_args: dedicated_c_args,
       cpp_pch: pch_headers,
       link_args: engine_link_args,
+      pie: linux_executable_pie,
       install: true,
       install_dir: install_root_dir,
     )
@@ -772,6 +818,8 @@ elif host_system == 'darwin'
       game_module_link_args += hardening_arg
     endif
   endforeach
+elif host_system == 'linux'
+  game_module_link_args += linux_module_link_hardening_args
 endif
 
 game_idlib_library = disabler()
@@ -783,6 +831,7 @@ if build_engine or build_games
     cpp_args: game_common_cpp_args,
     c_args: game_common_c_args,
     cpp_pch: game_idlib_pch_headers,
+    pic: host_system == 'linux',
     install: false,
   )
 endif
@@ -906,6 +955,7 @@ summary(
     'Platform backend requested': platform_backend_requested,
     'Platform backend': platform_backend,
     'macOS graphics bridge': macos_graphics_bridge,
+    'macOS OpenAL provider': macos_openal_provider,
     'OpenAL override root': openal_root_override == '' ? 'bundled/default' : openal_root_override,
     'Build engine': build_engine,
     'engine client binary': engine_client_binary_name,
@@ -921,6 +971,7 @@ summary(
     'Resource compiler': resource_compiler.found(),
     'SDL3': use_sdl3_backend and sdl3_dep.found(),
     'Linux X11 helpers': linux_x11_helpers_enabled,
+    'Linux executable PIE': linux_executable_pie,
     'GLEW': glew_dep.found(),
     'OpenAL': openal_dep.found(),
     'stb_vorbis': stb_vorbis_dep.found(),

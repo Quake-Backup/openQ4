@@ -922,6 +922,243 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
             ],
         },
         {
+            "id": "sdl3-wayland-window-lifecycle",
+            "category": "windowing",
+            "description": "native Wayland SDL3 window lifecycle smoke: windowed startup, fullscreen transition, windowed restore, compositor state refresh, and pixel-size diagnostics.",
+            "videoDriver": "wayland",
+            "assetless": True,
+            "args": [
+                "+set",
+                "r_windowWidth",
+                "960",
+                "+set",
+                "r_windowHeight",
+                "540",
+                "+set",
+                "r_fullscreenDesktop",
+                "1",
+                "+set",
+                "r_fullscreen",
+                "1",
+                "+vid_restart",
+                "partial",
+                "+set",
+                "r_fullscreen",
+                "0",
+                "+set",
+                "r_windowWidth",
+                "800",
+                "+set",
+                "r_windowHeight",
+                "600",
+                "+vid_restart",
+                "partial",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: wayland"],
+                ["SDL3: native Wayland active"],
+                ["SDL3: Wayland hints:"],
+                ["SDL3: native Wayland window state after windowed change"],
+                ["SDL3: native Wayland window state after fullscreen change"],
+                ["pixels="],
+                ["pixelDensity="],
+                ["displayScale="],
+                ["fullscreen=yes"],
+                ["fullscreen=no"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "sdl3-wayland-window-stress",
+            "category": "windowing",
+            "description": "native Wayland SDL3 repeated window/fullscreen transition stress: multiple compositor-negotiated vid_restart cycles with changing window sizes.",
+            "videoDriver": "wayland",
+            "assetless": True,
+            "args": [
+                "+set",
+                "r_windowWidth",
+                "1024",
+                "+set",
+                "r_windowHeight",
+                "576",
+                "+set",
+                "r_fullscreenDesktop",
+                "1",
+                "+set",
+                "r_fullscreen",
+                "1",
+                "+vid_restart",
+                "partial",
+                "+set",
+                "r_fullscreen",
+                "0",
+                "+set",
+                "r_windowWidth",
+                "832",
+                "+set",
+                "r_windowHeight",
+                "624",
+                "+vid_restart",
+                "partial",
+                "+set",
+                "r_windowWidth",
+                "1280",
+                "+set",
+                "r_windowHeight",
+                "720",
+                "+set",
+                "r_fullscreen",
+                "1",
+                "+vid_restart",
+                "partial",
+                "+set",
+                "r_fullscreen",
+                "0",
+                "+set",
+                "r_windowWidth",
+                "900",
+                "+set",
+                "r_windowHeight",
+                "700",
+                "+vid_restart",
+                "partial",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: wayland"],
+                ["SDL3: native Wayland active"],
+                ["SDL3: Wayland hints:"],
+                ["SDL3: native Wayland window state after windowed change"],
+                ["SDL3: native Wayland window state after fullscreen change"],
+                ["pixels="],
+                ["pixelDensity="],
+                ["displayScale="],
+                ["fullscreen=yes"],
+                ["fullscreen=no"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "sdl3-wayland-mouse-capture",
+            "category": "input",
+            "description": "native Wayland SDL3 relative mouse capture smoke: command-driven capture toggle, relative-mode confirmation, and release cleanup.",
+            "videoDriver": "wayland",
+            "assetless": True,
+            "args": [
+                "+sdl3MouseCaptureDiagnostics",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: wayland"],
+                ["SDL3: native Wayland active"],
+                ["SDL3 mouse capture diagnostics: begin"],
+                ["SDL3 mouse capture diagnostics before:", "videoDriver=wayland", "nativeWayland=yes"],
+                ["SDL3 mouse capture diagnostics after activate:", "relative=on", "captured=yes"],
+                ["SDL3 mouse capture diagnostics after deactivate:", "relative=off", "captured=no"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "sdl3-wayland-mouse-capture-stress",
+            "category": "input",
+            "description": "native Wayland SDL3 repeated relative mouse capture stress: several activate/deactivate cycles to catch capture-state leaks.",
+            "videoDriver": "wayland",
+            "assetless": True,
+            "args": [
+                "+sdl3MouseCaptureDiagnostics",
+                "4",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: wayland"],
+                ["SDL3: native Wayland active"],
+                ["SDL3 mouse capture diagnostics: begin repeat=4"],
+                ["SDL3 mouse capture diagnostics: iteration 4/4"],
+                ["SDL3 mouse capture diagnostics after activate:", "relative=on", "captured=yes"],
+                ["SDL3 mouse capture diagnostics after deactivate:", "relative=off", "captured=no"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "sdl3-wayland-display-diagnostics",
+            "category": "windowing",
+            "description": "native Wayland SDL3 display diagnostics smoke: compositor display enumeration, scale/orientation reporting, selected-display resolution, and mode metadata.",
+            "videoDriver": "wayland",
+            "assetless": True,
+            "args": [
+                "+listDisplays",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: wayland"],
+                ["SDL3: native Wayland active"],
+                ["SDL3: detected"],
+                ["display(s):"],
+                ["contentScale"],
+                ["orientation"],
+                ["desktop"],
+                ["current"],
+                ["SDL3: r_screen ="],
+                ["selected display"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "sdl3-x11-display-diagnostics",
+            "category": "windowing",
+            "description": "SDL3 X11/Xvfb fallback display diagnostics smoke: display enumeration, scale/orientation reporting, selected-display resolution, and mode metadata.",
+            "videoDriver": "x11",
+            "assetless": True,
+            "args": [
+                "+listDisplays",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: x11"],
+                ["SDL3: detected"],
+                ["display(s):"],
+                ["contentScale"],
+                ["orientation"],
+                ["desktop"],
+                ["current"],
+                ["SDL3: r_screen ="],
+                ["selected display"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "sdl3-force-x11-display-diagnostics",
+            "category": "windowing",
+            "description": "openQ4 XWayland fallback diagnostics smoke: OPENQ4_FORCE_X11 requests SDL's X11 driver and preserves display diagnostics.",
+            "videoDriver": "x11",
+            "assetless": True,
+            "args": [
+                "+listDisplays",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["SDL3: current video driver: x11"],
+                ["OPENQ4_FORCE_X11=1"],
+                ["SDL3: detected"],
+                ["display(s):"],
+                ["contentScale"],
+                ["orientation"],
+                ["desktop"],
+                ["current"],
+                ["SDL3: r_screen ="],
+                ["selected display"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
             "id": "renderer-benchmark-selftest",
             "category": "selftest",
             "description": "Phase 16 benchmark capture format, frame-time percentile, preset budget, and regression-threshold coverage.",
@@ -1148,6 +1385,23 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         cases = [case for case in cases if case["id"] != "tier-gl33-debug-context"]
 
     return cases
+
+
+def requested_sdl_video_driver() -> str:
+    for name in ("SDL_VIDEO_DRIVER", "SDL_VIDEODRIVER"):
+        value = os.environ.get(name, "").strip().lower()
+        if value:
+            return value
+    return ""
+
+
+def filter_driver_specific_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    video_driver = requested_sdl_video_driver()
+    return [
+        case
+        for case in cases
+        if not case.get("videoDriver") or case.get("videoDriver") == video_driver
+    ]
 
 
 def find_log(savepath: Path, log_name: str) -> Path | None:
@@ -1521,6 +1775,8 @@ def main(argv: list[str]) -> int:
             return 2
         requested = set(requested_cases)
         safe_cases = [case for case in safe_cases if case["id"] in requested]
+    elif not args.list:
+        safe_cases = filter_driver_specific_cases(safe_cases)
 
     if args.list:
         print("Automated safe cases:")

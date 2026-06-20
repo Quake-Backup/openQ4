@@ -6,9 +6,17 @@ workspace="${OPENQ4_GUEST_WORKSPACE:-${HOME}/openq4-work}"
 repo="${workspace}/openQ4"
 gamelibs="${workspace}/openQ4-game"
 basepath="${OPENQ4_BASEPATH:-${workspace}/Quake4}"
-stamp="$(date +%Y%m%d-%H%M%S)"
+graphics_bridge="${OPENQ4_MACOS_GRAPHICS_BRIDGE:-opengl}"
+openal_provider="${OPENQ4_MACOS_OPENAL_PROVIDER:-apple_framework}"
+stamp="${OPENQ4_MACOS_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+case "${stamp}" in
+    ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)
+        echo "Invalid OPENQ4_MACOS_RUN_ID '${stamp}'. Use letters, digits, dots, underscores, or dashes, starting with a letter or digit." >&2
+        exit 2
+        ;;
+esac
 results_root="${workspace}/results"
-run_dir="${results_root}/${stamp}-${action}"
+run_dir="${results_root}/${stamp}-${action}-${graphics_bridge}"
 
 shell_quote() {
     python3 - "$1" <<'PY'
@@ -96,16 +104,16 @@ build_openq4() {
     local buildtype="${OPENQ4_BUILDTYPE:-debug}"
     local builddir="${OPENQ4_BUILDDIR:-builddir}"
     local platform_backend="${OPENQ4_PLATFORM_BACKEND:-sdl3}"
-    local bridge="${OPENQ4_MACOS_GRAPHICS_BRIDGE:-opengl}"
     builddir="$(resolve_under_repo "${builddir}")"
 
-    echo "Configuring openQ4 (${buildtype}, backend=${platform_backend}, macos_graphics_bridge=${bridge})"
+    echo "Configuring openQ4 (${buildtype}, backend=${platform_backend}, macos_graphics_bridge=${graphics_bridge}, macos_openal_provider=${openal_provider})"
     bash tools/build/meson_setup.sh setup --wipe "${builddir}" . \
         --backend ninja \
         --buildtype="${buildtype}" \
         --wrap-mode=forcefallback \
         "-Dplatform_backend=${platform_backend}" \
-        "-Dmacos_graphics_bridge=${bridge}"
+        "-Dmacos_graphics_bridge=${graphics_bridge}" \
+        "-Dmacos_openal_provider=${openal_provider}"
 
     echo "Compiling openQ4"
     bash tools/build/meson_setup.sh compile -C "${builddir}"
@@ -156,6 +164,20 @@ run_renderer_matrix() {
         --output-dir "${run_dir}/renderer-matrix"
 }
 
+append_command_report() {
+    local report="$1"
+    local title="$2"
+    shift 2
+
+    {
+        echo
+        echo "## ${title}"
+        echo '```text'
+        "$@" 2>&1 || true
+        echo '```'
+    } >> "${report}"
+}
+
 install_launcher() {
     require_repo
     mkdir -p "${HOME}/Desktop"
@@ -182,6 +204,62 @@ EOF
     echo "Installed macOS launcher: ${launcher}"
 }
 
+write_signoff_report() {
+    require_repo
+    local report="${run_dir}/macos-runtime-signoff.md"
+    local client
+    client="$(client_binary 2>/dev/null || true)"
+
+    {
+        echo "# macOS Runtime Signoff"
+        echo
+        echo "- Date (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        echo "- Host: $(hostname)"
+        echo "- Architecture: $(uname -m)"
+        echo "- Graphics bridge: ${graphics_bridge}"
+        echo "- OpenAL provider: ${openal_provider}"
+        echo "- Build directory: ${OPENQ4_BUILDDIR:-builddir}"
+        echo "- Asset basepath: ${basepath}"
+        echo "- Client: ${client:-not found}"
+        echo "- Results: ${run_dir}"
+        echo
+        echo "## Automated Evidence"
+        echo "- [x] Bridge-specific build and staged install completed."
+        echo "- [x] Renderer smoke profile completed with retail Quake 4 assets."
+        echo "- [x] macOS-facing renderer validation matrix completed."
+        echo "- [x] Desktop launcher was written for Finder/Terminal launch checks."
+        echo "- Renderer smoke output: ${run_dir}/renderer-smoke"
+        echo "- Renderer matrix output: ${run_dir}/renderer-matrix"
+        echo "- Workflow log: ${run_dir}/openq4-macos-workflow.log"
+        echo
+        echo "## Manual Hardware Checklist"
+        echo "- [ ] Launch openQ4 from Finder or the Desktop launcher and enter a single-player map."
+        echo "- [ ] Verify keyboard text entry, console toggle, mouse-look, clicks, and wheel input."
+        echo "- [ ] Verify at least one SDL game controller, including hotplug and rumble when hardware supports it."
+        echo "- [ ] Verify audio output, volume changes, and at least one device switch or reconnect."
+        echo "- [ ] Verify windowed, fullscreen, selected-display, and HiDPI/Retina behavior on attached displays."
+        echo "- [ ] Verify the matching OpenGL or Metal bridge package path in actual gameplay, not only at the main menu."
+        echo "- [ ] Record any input, audio, display, renderer, package, Gatekeeper, or crash issues with logs from this results directory."
+    } > "${report}"
+
+    append_command_report "${report}" "macOS Version" sw_vers
+    append_command_report "${report}" "Kernel" uname -a
+    append_command_report "${report}" "Displays" system_profiler SPDisplaysDataType
+    append_command_report "${report}" "Audio Devices" system_profiler SPAudioDataType
+    append_command_report "${report}" "USB Devices" system_profiler SPUSBDataType
+    append_command_report "${report}" "Bluetooth Devices" system_profiler SPBluetoothDataType
+
+    echo "macOS runtime signoff report: ${report}"
+}
+
+run_signoff() {
+    build_openq4
+    run_smoke
+    run_renderer_matrix
+    install_launcher
+    write_signoff_report
+}
+
 case "${action}" in
     build)
         build_openq4
@@ -195,14 +273,14 @@ case "${action}" in
     launcher)
         install_launcher
         ;;
+    signoff)
+        run_signoff
+        ;;
     all)
-        build_openq4
-        run_smoke
-        run_renderer_matrix
-        install_launcher
+        run_signoff
         ;;
     *)
-        echo "Unknown action '${action}'. Expected build, smoke, renderer, launcher, or all." >&2
+        echo "Unknown action '${action}'. Expected build, smoke, renderer, launcher, signoff, or all." >&2
         exit 2
         ;;
 esac

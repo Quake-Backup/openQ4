@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+
 
 OPENQ4_SUPPORT_DIRS = (
     "idlib",
@@ -16,35 +20,163 @@ OPENQ4_SUPPORT_DIRS = (
     "MayaImport",
 )
 
+MANIFEST_NAME = "openq4_gamelibs_stage_manifest.json"
 
-def copy_game_sources(source_game_dir: Path, dest_game_dir: Path) -> None:
-    if dest_game_dir.exists():
-        shutil.rmtree(dest_game_dir)
 
-    for path in source_game_dir.rglob("*"):
-        rel = path.relative_to(source_game_dir)
-        dest_path = dest_game_dir / rel
+def repo_git_value(root: Path, *args: str) -> str:
+    if not (root / ".git").exists():
+        return ""
+
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def repo_git_dirty(root: Path) -> bool:
+    return bool(repo_git_value(root, "status", "--porcelain"))
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def iter_regular_source_files(source_dir: Path) -> list[Path]:
+    files: list[Path] = []
+    for path in sorted(source_dir.rglob("*")):
+        if path.is_symlink():
+            raise RuntimeError(f"refusing to stage symlink: {path}")
         if path.is_dir():
-            dest_path.mkdir(parents=True, exist_ok=True)
             continue
+        if not path.is_file():
+            raise RuntimeError(f"refusing to stage non-regular file: {path}")
+        files.append(path)
+    return files
 
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dest_path)
 
-
-def mirror_support_dir(source_dir: Path, dest_dir: Path) -> None:
+def copy_regular_tree(source_dir: Path, dest_dir: Path) -> list[Path]:
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
-    if source_dir.is_dir():
-        shutil.copytree(source_dir, dest_dir)
+
+    copied: list[Path] = []
+    for source_path in iter_regular_source_files(source_dir):
+        rel = source_path.relative_to(source_dir)
+        if any(part in ("", ".", "..") for part in rel.parts):
+            raise RuntimeError(f"refusing to stage unsafe path: {source_path}")
+
+        dest_path = dest_dir / rel
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        copied.append(dest_path)
+    return copied
 
 
-def mirror_project_support_dirs(project_root: Path, stage_root: Path) -> None:
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_stage_root(project_root: Path, gamelibs_root: Path, stage_root: Path) -> None:
+    if stage_root.is_symlink():
+        raise RuntimeError(f"refusing to stage into symlink: {stage_root}")
+
+    project_tmp = project_root / ".tmp"
+    if not is_relative_to(stage_root, project_tmp) or stage_root == project_tmp:
+        raise RuntimeError(f"stage root must be under openQ4 .tmp: {stage_root}")
+
+    if is_relative_to(project_root, stage_root) or is_relative_to(gamelibs_root, stage_root):
+        raise RuntimeError(f"refusing to stage over source repository: {stage_root}")
+
+
+def copy_game_sources(source_game_dir: Path, dest_game_dir: Path) -> list[Path]:
+    return copy_regular_tree(source_game_dir, dest_game_dir)
+
+
+def mirror_support_dir(source_dir: Path, dest_dir: Path) -> list[Path]:
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir)
+    if not source_dir.is_dir():
+        return []
+    return copy_regular_tree(source_dir, dest_dir)
+
+
+def mirror_project_support_dirs(project_root: Path, stage_root: Path) -> list[Path]:
     source_root = project_root / "src"
     stage_src_root = stage_root / "src"
+    copied: list[Path] = []
 
     for dir_name in OPENQ4_SUPPORT_DIRS:
-        mirror_support_dir(source_root / dir_name, stage_src_root / dir_name)
+        copied += mirror_support_dir(source_root / dir_name, stage_src_root / dir_name)
+    return copied
+
+
+def staged_file_manifest(stage_root: Path, staged_files: list[Path]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for path in sorted(staged_files):
+        entries.append(
+            {
+                "path": path.relative_to(stage_root).as_posix(),
+                "sha256": file_sha256(path),
+            }
+        )
+    return entries
+
+
+def write_stage_manifest(project_root: Path, gamelibs_root: Path, stage_root: Path, staged_files: list[Path]) -> None:
+    manifest = {
+        "format": 1,
+        "projectRoot": project_root.as_posix(),
+        "projectGitCommit": repo_git_value(project_root, "rev-parse", "--verify", "HEAD"),
+        "projectGitDirty": repo_git_dirty(project_root),
+        "gameLibsRoot": gamelibs_root.as_posix(),
+        "gameLibsGitCommit": repo_git_value(gamelibs_root, "rev-parse", "--verify", "HEAD"),
+        "gameLibsGitDirty": repo_git_dirty(gamelibs_root),
+        "fileCount": len(staged_files),
+        "files": staged_file_manifest(stage_root, staged_files),
+    }
+
+    manifest_path = stage_root / MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def validate_stage_manifest(stage_root: Path) -> None:
+    manifest_path = stage_root / MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = manifest.get("files")
+    if not isinstance(files, list) or manifest.get("fileCount") != len(files):
+        raise RuntimeError("stage manifest file count is inconsistent")
+
+    for entry in files:
+        rel = entry.get("path")
+        expected_hash = entry.get("sha256")
+        if not isinstance(rel, str) or not isinstance(expected_hash, str):
+            raise RuntimeError("stage manifest contains malformed file entry")
+
+        path = stage_root / rel
+        if not path.is_file():
+            raise RuntimeError(f"stage manifest references missing file: {rel}")
+        actual_hash = file_sha256(path)
+        if actual_hash != expected_hash:
+            raise RuntimeError(f"stage manifest hash mismatch for {rel}")
+
+
+def prepare_stage_root(stage_root: Path) -> None:
+    if stage_root.exists():
+        shutil.rmtree(stage_root)
+    stage_root.mkdir(parents=True, exist_ok=True)
 
 
 def main(argv: list[str]) -> int:
@@ -68,9 +200,16 @@ def main(argv: list[str]) -> int:
         print(f"error: openQ4 root not found: {project_root}", file=sys.stderr)
         return 1
 
-    dest_game_dir = stage_root / "src" / "game"
-    copy_game_sources(source_game_dir, dest_game_dir)
-    mirror_project_support_dirs(project_root, stage_root)
+    try:
+        validate_stage_root(project_root, gamelibs_root, stage_root)
+        prepare_stage_root(stage_root)
+        staged_files = copy_game_sources(source_game_dir, stage_root / "src" / "game")
+        staged_files += mirror_project_support_dirs(project_root, stage_root)
+        write_stage_manifest(project_root, gamelibs_root, stage_root, staged_files)
+        validate_stage_manifest(stage_root)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     print(stage_root.as_posix())
     return 0

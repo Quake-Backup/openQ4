@@ -8,6 +8,7 @@ import plistlib
 import shutil
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 
@@ -615,6 +616,96 @@ def validate_macos_archive_validator_runtime() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def validate_macos_signing_config_runtime() -> None:
+    package = load_package_module()
+
+    def args(**overrides):
+        values = {
+            "macos_signing_mode": "ad-hoc",
+            "macos_code_sign_identity": "",
+            "macos_entitlements": "",
+            "macos_notarize": False,
+            "macos_notary_keychain_profile": "",
+            "macos_notary_keychain": "",
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    ad_hoc = package.resolve_macos_signing_config(args())
+    if ad_hoc.mode != "ad-hoc" or ad_hoc.identity != "-" or ad_hoc.hardened_runtime or ad_hoc.timestamp:
+        raise AssertionError("macOS ad-hoc signing config should keep local/debug signing lightweight")
+
+    expect_runtime_error(
+        "notarization requires --macos-signing-mode=developer-id",
+        lambda: package.resolve_macos_signing_config(args(macos_notarize=True)),
+        "ad-hoc macOS notarization rejection",
+    )
+    expect_runtime_error(
+        "requires --macos-code-sign-identity",
+        lambda: package.resolve_macos_signing_config(args(macos_signing_mode="developer-id")),
+        "Developer ID signing without identity",
+    )
+
+    work = ROOT / ".tmp" / "macos-entitlements-contract"
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        work.mkdir(parents=True)
+        valid_entitlements = work / "valid.entitlements"
+        invalid_entitlements = work / "invalid.entitlements"
+        list_entitlements = work / "list.entitlements"
+        sandbox_entitlements = work / "sandbox.entitlements"
+        debug_entitlements = work / "debug.entitlements"
+
+        valid_entitlements.write_bytes(plistlib.dumps({"com.apple.security.files.user-selected.read-only": True}))
+        invalid_entitlements.write_text("not a plist\n", encoding="utf-8")
+        list_entitlements.write_bytes(plistlib.dumps(["not", "a", "dict"]))
+        sandbox_entitlements.write_bytes(plistlib.dumps({"com.apple.security.app-sandbox": True}))
+        debug_entitlements.write_bytes(plistlib.dumps({"com.apple.security.get-task-allow": True}))
+
+        expect_runtime_error(
+            "not a valid plist",
+            lambda: package.resolve_macos_signing_config(args(macos_entitlements=str(invalid_entitlements))),
+            "malformed macOS entitlements rejection",
+        )
+        expect_runtime_error(
+            "dictionary root",
+            lambda: package.resolve_macos_signing_config(args(macos_entitlements=str(list_entitlements))),
+            "non-dictionary macOS entitlements rejection",
+        )
+        expect_runtime_error(
+            "com.apple.security.app-sandbox",
+            lambda: package.resolve_macos_signing_config(args(macos_entitlements=str(sandbox_entitlements))),
+            "unsupported macOS App Sandbox entitlement rejection",
+        )
+        expect_runtime_error(
+            "com.apple.security.get-task-allow",
+            lambda: package.resolve_macos_signing_config(args(macos_entitlements=str(debug_entitlements))),
+            "unsupported macOS debug entitlement rejection",
+        )
+
+        developer_id = package.resolve_macos_signing_config(
+            args(
+                macos_signing_mode="developer-id",
+                macos_code_sign_identity="Developer ID Application: DarkMatter Productions (TEAMID1234)",
+                macos_entitlements=str(valid_entitlements),
+                macos_notarize=True,
+                macos_notary_keychain_profile="openq4-release-notary",
+                macos_notary_keychain=".tmp/notary.keychain-db",
+            )
+        )
+        if (
+            developer_id.mode != "developer-id"
+            or not developer_id.hardened_runtime
+            or not developer_id.timestamp
+            or developer_id.entitlements != valid_entitlements.resolve()
+            or not developer_id.notarize
+            or developer_id.notary_keychain_profile != "openq4-release-notary"
+        ):
+            raise AssertionError("Developer ID macOS signing config did not enable release signing requirements")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def validate_macos_pk4_symlink_guard_runtime() -> None:
     if not hasattr(os, "symlink"):
         return
@@ -781,12 +872,24 @@ def validate_meson_contract() -> None:
     require(options, "'macos_graphics_bridge'", "Meson options")
     require(options, "choices: ['opengl', 'metal']", "Meson options")
     require(options, "Metal-ready SDL3/Cocoa integration surface", "Meson option description")
+    require(options, "'macos_openal_provider'", "Meson options")
+    require(options, "choices: ['apple_framework', 'system']", "Meson options")
+    require(options, "OpenAL Soft-style AL/... headers", "Meson option description")
 
     require(meson, "macos_graphics_bridge = get_option('macos_graphics_bridge')", "Meson bridge option")
+    require(meson, "macos_openal_provider = get_option('macos_openal_provider')", "Meson OpenAL provider option")
     require(meson, "macos_graphics_bridge != 'opengl'", "non-macOS bridge guard")
+    require(meson, "macos_openal_provider != 'apple_framework'", "non-macOS OpenAL provider guard")
     require(meson, "macos_graphics_bridge == 'metal' and platform_backend_requested != 'sdl3'", "SDL3 bridge guard")
     require(meson, "use_macos_metal_bridge", "Metal bridge build predicate")
+    require(meson, "dependency('appleframeworks', modules: ['OpenAL'], required: true)", "macOS Apple OpenAL provider")
+    require(meson, "dependency('openal', required: true)", "macOS system OpenAL provider")
+    require(meson, "-DUSE_OPENAL_SOFT_INCLUDES=1", "macOS system OpenAL include mode")
     require(meson, "modules: ['Metal', 'QuartzCore']", "Metal bridge framework dependency")
+    require(meson, "macos_framework_modules = ['Cocoa', 'OpenGL', 'ApplicationServices']", "macOS SDL3 framework list")
+    require(meson, "if not use_sdl3_backend\n      macos_framework_modules += ['Carbon']", "native macOS Carbon isolation")
+    require(meson, "modules: macos_framework_modules", "macOS conditional framework dependency")
+    reject(meson, "modules: ['Cocoa', 'OpenGL', 'ApplicationServices', 'Carbon']", "macOS SDL3 Carbon isolation")
     require(meson, "-DOPENQ4_MACOS_METAL_BRIDGE=1", "Metal bridge compile define")
     require(meson, "shared_objcpp_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']", "Metal bridge ObjC++ compile define")
     require(meson, "shared_objc_args += ['-DOPENQ4_MACOS_METAL_BRIDGE=1']", "Metal bridge ObjC compile define")
@@ -795,13 +898,16 @@ def validate_meson_contract() -> None:
     require(meson, "-Wl,-pie", "macOS executable hardening")
     require(meson, "-Wl,-dead_strip", "macOS link hardening")
     require(meson, "'macOS graphics bridge': macos_graphics_bridge", "Meson summary")
+    require(meson, "'macOS OpenAL provider': macos_openal_provider", "Meson summary")
 
     require(baseoq4_meson, "elif host_system == 'darwin'", "macOS game module source branch")
     require(baseoq4_meson, "name_suffix: 'dylib'", "macOS game module dylib suffix")
     require(baseoq4_meson, "-Wl,-install_name,@loader_path/", "macOS game module install name")
 
     require(setup_sh, "macos_graphics_bridge", "Bash Meson wrapper option preservation")
+    require(setup_sh, "macos_openal_provider", "Bash Meson wrapper OpenAL provider preservation")
     require(setup_ps1, '"macos_graphics_bridge"', "PowerShell Meson wrapper option preservation")
+    require(setup_ps1, '"macos_openal_provider"', "PowerShell Meson wrapper OpenAL provider preservation")
 
 
 def validate_sdl3_runtime_contract() -> None:
@@ -859,6 +965,8 @@ def validate_packaging_and_release_contract() -> None:
 
     require(package, "--package-suffix", "release packaging variant suffix")
     require(package, "normalize_package_suffix", "release packaging variant suffix")
+    require(package, '"macos": "dmg"', "macOS DMG default archive format")
+    require(package, '"dmg": ".dmg"', "macOS DMG archive suffix")
     require(package, "import filecmp", "macOS app executable comparison")
     require(package, "import stat", "macOS archive symlink validation")
     require(package, "import subprocess", "macOS binary dependency validation")
@@ -868,6 +976,12 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "get_package_executable_archive_paths", "POSIX archive executable mode preservation")
     require(package, "ZipInfo.from_file", "POSIX archive executable mode preservation")
     require(package, "info.mode = 0o755", "POSIX archive executable mode preservation")
+    require(package, "create_macos_dmg", "macOS DMG creation")
+    require(package, "hdiutil_path", "macOS DMG hdiutil lookup")
+    require(package, '"-format",\n            "UDZO"', "macOS compressed DMG format")
+    require(package, "validate_macos_dmg_image", "macOS DMG validation")
+    require(package, "notarize_macos_dmg_image", "macOS DMG notarization")
+    require(package, "archive format 'dmg' is only supported for macOS packages", "macOS DMG platform guard")
     require(package, "MACOS_ALLOWED_RUNTIME_DEPENDENCY_PREFIXES", "macOS binary dependency validation")
     require(package, "macos_otool_dependencies", "macOS binary dependency validation")
     require(package, "macos_otool_install_name", "macOS game module install-name validation")
@@ -905,9 +1019,30 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "macos_lipo_arches", "macOS binary architecture validation")
     require(package, "validate_macos_binary_architectures", "macOS binary architecture validation")
     require(package, "lipo_path, \"-archs\"", "macOS binary architecture validation")
+    require(package, "MACOS_SIGNING_MODES", "macOS signing mode validation")
+    require(package, "class MacOSSigningConfig", "macOS signing config")
+    require(package, "--macos-signing-mode", "macOS signing CLI")
+    require(package, "--macos-code-sign-identity", "macOS Developer ID signing CLI")
+    require(package, "--macos-entitlements", "macOS signing entitlements CLI")
+    require(package, "--macos-notarize", "macOS notarization CLI")
+    require(package, "MACOS_FORBIDDEN_ENTITLEMENTS", "macOS entitlements policy")
+    require(package, "validate_macos_entitlements_file", "macOS entitlements validation")
+    require(package, "com.apple.security.app-sandbox", "macOS App Sandbox entitlement policy")
+    require(package, "com.apple.security.get-task-allow", "macOS debug entitlement policy")
+    require(package, "resolve_macos_signing_config", "macOS signing config")
+    require(package, "sign_macos_payload", "macOS shared signing")
     require(package, "ad_hoc_sign_macos_payload", "macOS ad-hoc signing")
     require(package, "verify_macos_codesignature", "macOS code-sign validation")
-    require(package, "codesign_path, \"--force\"", "macOS ad-hoc signing")
+    require(package, "verify_macos_developer_id_signature", "macOS Developer ID validation")
+    require(package, "notarize_macos_app_bundle", "macOS notarization")
+    require(package, "\"--force\"", "macOS code-sign force option")
+    require(package, "\"--timestamp=none\"", "macOS ad-hoc signing timestamp suppression")
+    require(package, "\"--options\", \"runtime\"", "macOS Hardened Runtime signing")
+    require(package, "\"Authority=Developer ID Application:\"", "macOS Developer ID validation")
+    require(package, "\"Runtime Version=\"", "macOS Hardened Runtime validation")
+    require(package, "\"xcrun\",\n        \"notarytool\",\n        \"submit\"", "macOS notarytool submission")
+    require(package, "\"xcrun\", \"stapler\", \"staple\"", "macOS stapling")
+    require(package, "\"spctl\", \"--assess\"", "macOS Gatekeeper assessment")
     require(package, "code signature verification", "macOS code-sign validation")
     require(package, "game-sp_{arch}.dylib", "macOS archive game module validation")
     require(package, "game-mp_{arch}.dylib", "macOS archive game module validation")
@@ -969,7 +1104,9 @@ def validate_packaging_and_release_contract() -> None:
     require(commit, "macOS ARM64 ${{ matrix.bridge_label }} Commit Validation", "commit validation macOS job")
     require(commit, "macos_graphics_bridge: opengl", "commit validation macOS OpenGL job")
     require(commit, "macos_graphics_bridge: metal", "commit validation macOS Metal job")
+    require(commit, "macos_openal_provider: apple_framework", "commit validation macOS OpenAL provider")
     require(commit, "--extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }}", "commit validation macOS bridge setup")
+    require(commit, "--extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}", "commit validation macOS OpenAL setup")
     require(commit, "runs-on: macos-15", "commit validation macOS job")
     require(commit, "bash tools/validation/validate_pr.sh \\", "commit validation macOS job")
     require(commit, "--fail-on-dirty \\", "commit validation macOS job")
@@ -977,7 +1114,9 @@ def validate_packaging_and_release_contract() -> None:
     require(push, "macOS Metal Push Verification", "push verification macOS Metal job")
     require(push, "macos-opengl", "push verification macOS OpenGL artifact")
     require(push, "macos-metal", "push verification macOS Metal artifact")
+    require(push, "macos_openal_provider: apple_framework", "push verification macOS OpenAL provider")
     require(push, "--extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }}", "push verification macOS bridge setup")
+    require(push, "--extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}", "push verification macOS OpenAL setup")
 
     for source, context in ((package, "macOS package Info.plist"), (plist, "legacy macOS Info.plist")):
         require(source, "CFBundleDisplayName", context)
@@ -994,12 +1133,25 @@ def validate_packaging_and_release_contract() -> None:
 
     require(release, "label: macOS ARM64 OpenGL", "manual release macOS OpenGL matrix")
     require(release, "macos_graphics_bridge: opengl", "manual release OpenGL bridge matrix")
+    require(release, "macos_openal_provider: apple_framework", "manual release macOS OpenAL provider")
     require(release, 'package_suffix: "-opengl"', "manual release OpenGL package suffix")
+    require(release, "archive_format: dmg", "manual release macOS DMG archive format")
+    require(release, "archive_ext: .dmg", "manual release macOS DMG extension")
     require(release, "label: macOS ARM64 Metal", "manual release macOS Metal matrix")
     require(release, "macos_graphics_bridge: metal", "manual release macOS matrix")
     require(release, 'package_suffix: "-metal"', "manual release Metal package suffix")
     require(release, "-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }}", "manual release setup")
+    require(release, "-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}", "manual release OpenAL setup")
+    require(release, "Import macOS Developer ID certificate", "manual release Developer ID setup")
+    require(release, "MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64", "manual release Developer ID certificate secret")
+    require(release, "MACOS_DEVELOPER_ID_APPLICATION_IDENTITY", "manual release Developer ID identity secret")
+    require(release, "MACOS_NOTARY_APP_PASSWORD", "manual release notarization secret")
+    require(release, "security import", "manual release Developer ID certificate import")
+    require(release, "xcrun notarytool store-credentials", "manual release notarytool profile")
     require(release, "--package-suffix=\"${{ matrix.package_suffix }}\"", "manual release packaging")
+    require(release, "--macos-signing-mode developer-id", "manual release Developer ID package signing")
+    require(release, "--macos-notarize", "manual release notarized package signing")
+    reject(release, "--macos-entitlements", "manual release default entitlements policy")
     require(release, 'cmp -s "${app_exec}" "${client_binary}"', "manual release macOS app validation")
     require(release, "macOS app executable does not match the packaged client binary", "manual release macOS app validation")
     require(release, "Missing or invalid macOS app PkgInfo", "manual release macOS app validation")
@@ -1010,6 +1162,13 @@ def validate_packaging_and_release_contract() -> None:
     require(release, "lipo -archs", "manual release macOS architecture validation")
     require(release, "check_macos_codesignature", "manual release macOS signature validation")
     require(release, "codesign --verify --strict", "manual release macOS signature validation")
+    require(release, "check_macos_developer_id_signature", "manual release Developer ID signature validation")
+    require(release, "Authority=Developer ID Application:", "manual release Developer ID authority validation")
+    require(release, "Runtime Version=", "manual release Hardened Runtime validation")
+    require(release, "xcrun stapler validate", "manual release stapled notarization validation")
+    require(release, "hdiutil verify", "manual release DMG validation")
+    require(release, "hdiutil imageinfo", "manual release DMG validation")
+    require(release, "spctl --assess --type execute", "manual release Gatekeeper validation")
     require(release, "check_macos_install_name", "manual release macOS install-name validation")
     require(release, "@loader_path/game-sp_${{ matrix.binary_arch }}.dylib", "manual release macOS install-name validation")
     require(release, "check_macos_binary_dependencies", "manual release macOS dependency validation")
@@ -1028,15 +1187,18 @@ def validate_packaging_and_release_contract() -> None:
     require(release, "check_plist_value LSApplicationCategoryType public.app-category.games", "manual release macOS app validation")
     require(release, "check_plist_value NSPrincipalClass NSApplication", "manual release macOS app validation")
     require(release, "check_plist_value NSSupportsAutomaticGraphicsSwitching true", "manual release macOS app validation")
-    require(release, "openq4-${{ needs.metadata.outputs.version_tag }}-macos-arm64-opengl.tar.gz", "manual release expected assets")
-    require(release, "openq4-${{ needs.metadata.outputs.version_tag }}-macos-arm64-metal.tar.gz", "manual release expected assets")
+    require(release, "openq4-${{ needs.metadata.outputs.version_tag }}-macos-arm64-opengl.dmg", "manual release expected assets")
+    require(release, "openq4-${{ needs.metadata.outputs.version_tag }}-macos-arm64-metal.dmg", "manual release expected assets")
 
 
 def validate_macos_workflow_security_contract() -> None:
     host = read("tools/macos/Invoke-openQ4MacOSWorkflow.ps1")
     assets = read("tools/macos/guest/openq4-macos-install-quake4-assets.sh")
     guest = read("tools/macos/guest/openq4-macos-sync-build-test.sh")
+    signoff_validator = read("tools/macos/validate_signoff_archive.py")
     debug = read(".github/workflows/macos-debug.yml")
+    workflow_doc = read("docs-dev/macos-vm-testing-workflow.md")
+    validation_runner = read("tools/validation/openq4_validate.py")
 
     require(host, "Assert-NoArchiveLinks", "macOS host archive symlink guard")
     require(host, "RemoteTempRoot", "macOS host per-run remote temp root")
@@ -1049,6 +1211,38 @@ def validate_macos_workflow_security_contract() -> None:
     require(host, "openQ4-game/.git", "macOS host GameLibs metadata exclusion")
     require(host, "$assetRootName/q4base/*.cfg", "macOS host personal config exclusion")
     require(host, "$assetRootName/q4base/q4key", "macOS host private key exclusion")
+    require(host, '"Signoff"', "macOS host signoff action")
+    require(host, '"CollectResults"', "macOS host result collection action")
+    require(host, '-ScriptAction "signoff"', "macOS host signoff action")
+    require(host, '[string]$ResultCollectionDir', "macOS host result collection directory")
+    require(host, '[string]$MacOSRunId', "macOS host result collection run ID")
+    require(host, '[switch]$SkipResultCollection', "macOS host result collection opt-out")
+    require(host, '[switch]$SkipResultArchiveValidation', "macOS host result archive validation opt-out")
+    require(host, '[switch]$RequireCompletedSignoffChecklist', "macOS host completed checklist validation")
+    require(host, "function Copy-FromMac", "macOS host result copy helper")
+    require(host, "function Collect-MacOSResults", "macOS host result collection helper")
+    require(host, "function Test-MacOSResultArchive", "macOS host result archive validation helper")
+    require(host, 'openq4-macos-results-${RunId}.tar.gz', "macOS host result archive naming")
+    require(host, "No macOS result directories matched", "macOS host missing result guard")
+    require(host, "-Action CollectResults requires -MacOSRunId <id>", "macOS host collect-results run ID guard")
+    require(host, "validate_signoff_archive.py", "macOS host result archive validator")
+    require(host, '"--run-id"', "macOS host result archive validator run ID")
+    require(host, '"--bridges"', "macOS host result archive validator bridge list")
+    require(host, '"--require-completed-checklist"', "macOS host completed checklist validator flag")
+    require(host, '[ValidateSet("opengl", "metal", "both")]', "macOS host dual bridge selection")
+    require(host, '[ValidateSet("apple_framework", "system")]', "macOS host OpenAL provider selection")
+    require(host, "function Get-MacOSGraphicsBridgeRuns", "macOS host bridge run expansion")
+    require(host, 'return @("opengl", "metal")', "macOS host bridge run expansion")
+    require(host, "function Get-MacOSBridgeBuildDir", "macOS host bridge-specific builddir")
+    require(host, 'return "${BuildDir}-${Bridge}"', "macOS host bridge-specific builddir")
+    require(host, "function Invoke-BuildTestActionForBridge", "macOS host bridge action environment")
+    require(host, '"OPENQ4_MACOS_OPENAL_PROVIDER" = $MacOSOpenALProvider', "macOS host OpenAL provider environment")
+    require(host, '"OPENQ4_MACOS_RUN_ID" = $MacOSRunId', "macOS host run ID environment")
+    require(host, 'foreach ($bridge in (Get-MacOSGraphicsBridgeRuns))', "macOS host multi-bridge loop")
+    require(host, "-MacOSGraphicsBridge both is supported for Build, Signoff, and All", "macOS host multi-bridge guard")
+    require(host, "Collect-MacOSResults -RunId $MacOSRunId", "macOS host automatic signoff result collection")
+    require(host, '"CollectResults" {\n            $shouldCollectResults = $true\n        }', "macOS host collect-results action")
+    require(host, "Test-MacOSResultArchive -ArchivePath $archivePath -RunId $MacOSRunId", "macOS host automatic signoff result validation")
 
     require(assets, "reject_unsafe_tar_entries", "macOS asset tar path validation")
     require(assets, "reject_unsafe_tree_entries", "macOS asset symlink validation")
@@ -1061,13 +1255,58 @@ def validate_macos_workflow_security_contract() -> None:
     require(guest, "Path escapes the openQ4 repository", "macOS guest builddir containment")
     require(guest, "OPENQ4_ALLOW_CROSS_ARCH_CLIENT", "macOS guest cross-arch launch opt-in")
     require(guest, "Missing staged macOS client for host architecture", "macOS guest exact-arch client selection")
+    require(guest, 'graphics_bridge="${OPENQ4_MACOS_GRAPHICS_BRIDGE:-opengl}"', "macOS guest bridge environment")
+    require(guest, 'openal_provider="${OPENQ4_MACOS_OPENAL_PROVIDER:-apple_framework}"', "macOS guest OpenAL provider environment")
+    require(guest, 'stamp="${OPENQ4_MACOS_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"', "macOS guest host-controlled run ID")
+    require(guest, "Invalid OPENQ4_MACOS_RUN_ID", "macOS guest run ID validation")
+    require(guest, 'run_dir="${results_root}/${stamp}-${action}-${graphics_bridge}"', "macOS guest bridge-specific results")
+    require(guest, '"-Dmacos_graphics_bridge=${graphics_bridge}"', "macOS guest bridge setup option")
+    require(guest, '"-Dmacos_openal_provider=${openal_provider}"', "macOS guest OpenAL setup option")
     require(guest, "shell_quote", "macOS guest launcher quoting")
     require(guest, "shlex.quote", "macOS guest launcher quoting")
     require(guest, "exec ${client_q} +set fs_basepath ${basepath_q}", "macOS guest launcher quoted exec")
+    require(guest, "run_signoff", "macOS guest runtime signoff action")
+    require(guest, "macos-runtime-signoff.md", "macOS guest runtime signoff report")
+    require(guest, "Manual Hardware Checklist", "macOS guest runtime signoff checklist")
+    require(guest, "Graphics bridge: ${graphics_bridge}", "macOS guest signoff bridge metadata")
+    require(guest, "OpenAL provider: ${openal_provider}", "macOS guest signoff OpenAL metadata")
+    require(guest, "Bridge-specific build and staged install completed.", "macOS guest signoff build evidence")
+    require(guest, "SPDisplaysDataType", "macOS guest display inventory")
+    require(guest, "SPAudioDataType", "macOS guest audio inventory")
+    require(guest, "SPUSBDataType", "macOS guest USB inventory")
+    require(guest, "SPBluetoothDataType", "macOS guest Bluetooth inventory")
+    require(guest, "build_openq4\n    run_smoke\n    run_renderer_matrix\n    install_launcher\n    write_signoff_report", "macOS guest signoff run order")
+
+    require(signoff_validator, "validate_signoff_archive", "macOS signoff archive validator")
+    require(signoff_validator, "Archive path escapes through '..'", "macOS signoff archive path guard")
+    require(signoff_validator, "Archive contains a non-regular entry", "macOS signoff archive entry-type guard")
+    require(signoff_validator, "macos-runtime-signoff.md", "macOS signoff archive report check")
+    require(signoff_validator, "openq4-macos-workflow.log", "macOS signoff archive log check")
+    require(signoff_validator, "renderer-smoke", "macOS signoff archive smoke output check")
+    require(signoff_validator, "renderer-matrix", "macOS signoff archive matrix output check")
+    require(signoff_validator, "require_completed_checklist", "macOS signoff archive completed checklist gate")
+    require(validation_runner, "macos_signoff_archive.py", "validation runner macOS signoff archive test")
 
     require(debug, "bash -n tools/macos/guest/openq4-macos-bootstrap.sh", "macOS debug workflow guest script syntax check")
     require(debug, "bash -n tools/macos/guest/openq4-macos-install-quake4-assets.sh", "macOS debug workflow asset script syntax check")
     require(debug, "bash -n tools/macos/guest/openq4-macos-sync-build-test.sh", "macOS debug workflow build script syntax check")
+    require(workflow_doc, "-Action Signoff", "macOS workflow signoff documentation")
+    require(workflow_doc, "-Action CollectResults", "macOS workflow collect-results documentation")
+    require(workflow_doc, "-MacOSGraphicsBridge both", "macOS workflow dual bridge signoff documentation")
+    require(workflow_doc, "<timestamp>-signoff-opengl", "macOS workflow bridge-specific signoff documentation")
+    require(workflow_doc, "<timestamp>-signoff-metal", "macOS workflow bridge-specific signoff documentation")
+    require(workflow_doc, ".tmp/macos-vm/results/openq4-macos-results-<run-id>.tar.gz", "macOS workflow result collection documentation")
+    require(workflow_doc, "-MacOSRunId <id>", "macOS workflow run ID documentation")
+    require(workflow_doc, "-ResultCollectionDir", "macOS workflow result directory documentation")
+    require(workflow_doc, "-SkipResultCollection", "macOS workflow result collection opt-out documentation")
+    require(workflow_doc, "-SkipResultArchiveValidation", "macOS workflow result archive validation opt-out documentation")
+    require(workflow_doc, "-RequireCompletedSignoffChecklist", "macOS workflow completed checklist validation documentation")
+    require(workflow_doc, "-Action CollectResults -MacOSRunId <run-id>", "macOS workflow collect-results expected validation documentation")
+    require(workflow_doc, "tools/macos/validate_signoff_archive.py", "macOS workflow signoff archive validator documentation")
+    require(workflow_doc, "--require-completed-checklist", "macOS workflow signoff archive completed checklist documentation")
+    require(workflow_doc, "-MacOSOpenALProvider system", "macOS workflow OpenAL provider documentation")
+    require(workflow_doc, "macos-runtime-signoff.md", "macOS workflow signoff documentation")
+    require(workflow_doc, "keyboard/mouse/controller input", "macOS workflow signoff documentation")
 
 
 def validate_macos_shell_entrypoints() -> None:
@@ -1095,14 +1334,47 @@ def validate_docs_and_ci_hooks() -> None:
 
     require(building, "-Dmacos_graphics_bridge=metal", "build documentation")
     require(building, "without a native renderer rewrite", "build documentation")
-    require(getting_started, "separate OpenGL and Metal bridge variants", "getting started guide")
-    require(getting_started, "xattr -dr com.apple.quarantine", "getting started guide")
-    require(package_readme, "separate OpenGL and Metal bridge variants", "release package README")
-    require(package_readme, "xattr -dr com.apple.quarantine", "release package README")
+    require(building, "Official macOS release jobs require Apple distribution credentials", "macOS release signing documentation")
+    require(building, "MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64", "macOS release signing documentation")
+    require(building, "xcrun stapler validate", "macOS release signing documentation")
+    require(building, "openq4-<version>-macos-arm64-opengl.dmg", "macOS DMG release asset documentation")
+    require(building, "final DMG notarization/stapling", "macOS DMG release documentation")
+    require(building, "do not pass a custom entitlements file by default", "macOS entitlement policy documentation")
+    require(building, "rejects App Sandbox or `get-task-allow` entitlements", "macOS entitlement policy documentation")
+    require(building, "Current official macOS release artifacts are Apple Silicon/arm64 only", "macOS architecture policy documentation")
+    require(building, "Intel Mac and universal2 packages are not published", "macOS architecture policy documentation")
+    require(building, "SDL3 is the default platform path and does not link Carbon", "macOS Carbon isolation documentation")
+    require(building, "macos_openal_provider", "macOS OpenAL provider documentation")
+    require(building, "system/OpenAL Soft dependency", "macOS OpenAL provider documentation")
+    require(getting_started, "separate OpenGL and Metal bridge DMGs", "getting started guide")
+    require(getting_started, "Keep `openQ4.app`, `baseoq4/`, and the loose runtime files together", "getting started guide")
+    require(getting_started, "Current macOS release packages are for Apple Silicon/arm64 Macs", "getting started macOS architecture policy")
+    require(getting_started, "Intel Mac and universal2 packages are not published yet", "getting started macOS architecture policy")
+    require(package_readme, "separate OpenGL and Metal bridge DMGs", "release package README")
+    require(package_readme, "Keep <code>openQ4.app</code>, <code>baseoq4/</code>, and the loose runtime files together", "release package README")
+    require(package_readme, "Current macOS release packages are for Apple Silicon/arm64 Macs", "release package macOS architecture policy")
+    require(package_readme, "Intel Mac and universal2 packages are not published yet", "release package macOS architecture policy")
     require(release_notes, "retain the OpenGL package while adding a separate Metal bridge package", "release completion notes")
-    require(release_notes, "Final macOS release archive", "release completion notes")
+    require(release_notes, "Final macOS package validation", "release completion notes")
+    require(release_notes, "Developer ID/notarization lane", "release completion notes")
+    require(release_notes, "macOS release entitlement handling is now explicit and fail-fast", "release completion entitlement policy")
+    require(release_notes, "macOS release artifacts now use compressed DMG images", "release completion DMG packaging")
+    require(release_notes, "Apple Silicon/arm64-only macOS support policy", "release completion macOS architecture policy")
+    require(release_notes, "Intel Mac and universal2 packages are not advertised", "release completion macOS architecture policy")
+    require(release_notes, "macOS SDL3 release builds now avoid linking the legacy Carbon framework", "release completion Carbon isolation note")
+    require(release_notes, "macOS OpenAL migration now has an explicit build switch", "release completion OpenAL migration note")
     require(platform_support, "Linux and macOS now use the shared SDL3 runtime path", "platform support roadmap")
     require(platform_support, "macOS SDL3 builds select `src/sys/osx/macosx_sdl3.cpp`", "platform support roadmap")
+    require(platform_support, "Current official macOS release artifacts are Apple Silicon/arm64 only", "platform support macOS architecture policy")
+    require(platform_support, "Intel Mac and universal2 packages are intentionally not claimed", "platform support macOS architecture policy")
+    require(platform_support, "final compressed DMG creation", "platform support DMG packaging")
+    require(platform_support, "DMG notarization/stapling", "platform support DMG packaging")
+    require(platform_support, "keeps the legacy Carbon framework isolated to `-Dplatform_backend=native`", "platform support Carbon isolation")
+    require(platform_support, "Hardened Runtime without custom entitlements by default", "platform support entitlement policy")
+    require(platform_support, "App Sandbox or `get-task-allow` entitlements are rejected", "platform support entitlement policy")
+    require(platform_support, "macOS audio still defaults to Apple's OpenAL framework", "platform support OpenAL provider policy")
+    require(platform_support, "`-Dmacos_openal_provider=system`", "platform support OpenAL provider switch")
+    require(migration, "leaves Carbon isolated to the native Cocoa fallback", "SDL3 migration Carbon isolation")
     require(migration, "macOS CI covers OpenGL and Metal bridge configure/build/install/package validation", "SDL3 migration plan")
 
     require(validator, "macos_metal_bridge.py", "validation runner")
@@ -1118,6 +1390,7 @@ def main() -> None:
     validate_macos_shell_entrypoints()
     validate_macos_app_bundle_validator_runtime()
     validate_macos_archive_validator_runtime()
+    validate_macos_signing_config_runtime()
     validate_macos_pk4_symlink_guard_runtime()
     validate_legacy_macos_plist_runtime()
     validate_macos_staged_payload_validator_runtime()

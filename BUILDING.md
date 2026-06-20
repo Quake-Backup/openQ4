@@ -58,7 +58,7 @@ Alternatively, open `tools/build/openq4_devcmd.cmd` first to initialise the Visu
 
 ## GameLibs Companion Repository
 
-openQ4's game code (single-player and multiplayer modules) lives in a **separate companion repository** — [openQ4-game](https://github.com/themuffinator/openQ4-game). This separation clearly identifies the SDK-licensed components derived from the [Quake 4 SDK](https://www.moddb.com/games/quake-4/downloads/quake-4-sdk-v15).
+openQ4's game code (single-player and multiplayer modules) lives in a **separate companion repository** — [openQ4-game](https://github.com/themuffinator/openQ4-game). This separation clearly identifies the SDK-licensed components derived from the [Quake 4 SDK](https://www.moddb.com/games/quake-4/downloads/quake-4-sdk-v15), and makes openQ4-game the canonical source-input repository for SDK/game-library code.
 
 > [!IMPORTANT]
 > **The openQ4 build expects openQ4-game to be checked out alongside openQ4**, at `../openQ4-game` relative to this repository. If the companion repository is missing or at a different path, game-module builds will fail.
@@ -84,11 +84,13 @@ $env:OPENQ4_GAMELIBS_REPO = "C:\path\to\openQ4-game"  # PowerShell
 
 To rebuild the game libraries as part of the openQ4 build, set `OPENQ4_BUILD_GAMELIBS=1` before running compile.
 
+During configure, openQ4 stages the required game-library source inputs from openQ4-game into `.tmp/gamelibs_stage/` and writes a source manifest with file hashes and git state. Meson requires that manifest before compiling the game modules, so Linux/macOS builds consume the companion repository directly without maintaining a local `src/game` mirror. The standalone openQ4-game build remains useful for Windows/MSVC developer outputs and compatibility checks, but the cross-platform engine build owns the staged module build.
+
 ---
 
 ## Build Setup
 
-Third-party libraries such as SDL3, GLEW, OpenAL Soft, and stb_vorbis are managed as Meson subprojects. On Linux, the default SDL3 backend requires OpenGL plus the SDL3 runtime integration development packages, while X11/Xext are optional helpers used only when available for the SDL3 NVIDIA VRAM probe. The legacy `-Dplatform_backend=native` path still requires X11/GLX and VidMode development packages. On macOS, SDL3 is the default platform path; `-Dmacos_graphics_bridge=metal` enables the Metal-ready SDL3/Cocoa bridge while keeping the stock-compatible OpenGL renderer rather than introducing a native Metal rewrite.
+Third-party libraries such as SDL3, GLEW, OpenAL Soft, and stb_vorbis are managed as Meson subprojects. On Linux, the default SDL3 backend requires OpenGL plus the SDL3 runtime integration development packages, while X11/Xext are optional helpers used only when available for the SDL3 NVIDIA VRAM probe. The legacy `-Dplatform_backend=native` path still requires X11/GLX and VidMode development packages on Linux and the legacy Carbon framework on macOS. On macOS, SDL3 is the default platform path and does not link Carbon; `-Dmacos_graphics_bridge=metal` enables the Metal-ready SDL3/Cocoa bridge while keeping the stock-compatible OpenGL renderer rather than introducing a native Metal rewrite. macOS releases currently use Apple's OpenAL framework for audio; `-Dmacos_openal_provider=system` is available for local migration testing with a system/OpenAL Soft dependency and `AL/...` headers.
 
 On current Debian/Ubuntu systems, install the SDL3/Linux package set (`binutils`, `libasound2-dev`, `libdbus-1-dev`, `libdecor-0-dev`, `libdrm-dev`, `libegl1-mesa-dev`, `libfribidi-dev`, `libgbm-dev`, `libgl1-mesa-dev`, `libibus-1.0-dev`, `libjack-dev`, `libopenal-dev`, `libpipewire-0.3-dev`, `libpulse-dev`, `libsndio-dev`, `libthai-dev`, `libudev-dev`, `libwayland-dev`, and `libxkbcommon-dev`). Add `libx11-dev`, `libxext-dev`, `libxcursor-dev`, `libxfixes-dev`, `libxi-dev`, `libxrandr-dev`, `libxss-dev`, `libxtst-dev`, `libxxf86dga-dev`, and `libxxf86vm-dev` when validating the optional SDL3 X11 helper path or the native Linux backend.
 
@@ -106,6 +108,7 @@ Pass any of these with `-D<option>=<value>` on the `meson setup` command line:
 | `build_game_mp` | `true` | Build multiplayer game module |
 | `platform_backend` | `sdl3` | `sdl3` or `legacy_win32` on Windows, `sdl3` or `native` on Linux/macOS |
 | `macos_graphics_bridge` | `opengl` | macOS-only graphics bridge: `opengl` or `metal`; `metal` requires `platform_backend=sdl3` and keeps rendering on the OpenGL compatibility path |
+| `macos_openal_provider` | `apple_framework` | macOS-only audio provider: `apple_framework` for release builds, or `system` for OpenAL Soft migration testing with `dependency('openal')` |
 | `version_track` | `dev` | Build track label (`stable`, `dev`, `beta`, `rc`) |
 | `version_iteration` | *(empty)* | Dot-separated iteration counter for pre-release builds |
 | `version_base_override` | *(empty)* | Override the generated release version without editing `meson.build` |
@@ -117,7 +120,11 @@ Pass any of these with `-D<option>=<value>` on the `meson setup` command line:
 
 openQ4 includes two local validation profiles under `tools/validation/`. They share one Python runner and use the platform build wrappers so Windows validation still goes through `tools/build/meson_setup.ps1`.
 
-GitHub Actions runs the same validation entrypoints on every pushed commit, pull request, and manual dispatch. Branch pushes run the faster push profile across Linux x64, Linux ARM64, macOS, and Windows. Pull requests/manual dispatches run the full PR profile on Windows x64, Linux ARM64, and macOS ARM64; the staged Linux ARM64 client also runs an assetless no-map renderer startup smoke under a virtual X display.
+GitHub Actions runs the same validation entrypoints on every pushed commit, pull request, and manual dispatch. Branch pushes run the faster push profile across Linux x64, Linux ARM64, macOS ARM64, and Windows. Pull requests/manual dispatches run the full PR profile on Windows x64, Linux ARM64, and macOS ARM64; the staged Linux ARM64 client also runs an assetless no-map renderer startup smoke under a virtual X display, and a native Wayland PR job runs the same renderer smoke under headless Weston with libdecor both enabled and disabled.
+
+Pull requests also run Linux Sanitizer Validation on x64 with ASan+UBSan enabled. This is a compile-focused lane for engine and staged game-module code, not a gameplay/runtime sanitizer pass yet; it disables precompiled headers to keep sanitizer diagnostics attached to normal translation units and skips install packaging so failures stay centered on configure/compile output.
+
+Current official macOS release artifacts are Apple Silicon/arm64 only. Intel Mac and universal2 packages are not published until a dedicated Intel runner or universal packaging lane is added; local Intel builds may still be used for development bring-up, but they are outside the packaged release support matrix.
 
 ### Push Validation
 
@@ -150,6 +157,23 @@ Useful options:
 - Add `--build-gamelibs` when you also want the Windows wrapper to build the standalone openQ4-game outputs during compile.
 - Use `--game-libs-repo <path>` when the companion repository is not at `../openQ4-game`.
 - Use `--build-dir <path>` plus `--no-clean` to validate a specific existing build tree.
+
+### Linux Sanitizer Validation
+
+On Linux, use this when touching memory-sensitive code, SDL event normalization, display/window geometry, staged source handling, or parser/launcher logic:
+
+```bash
+bash tools/validation/validate_pr.sh \
+  --skip-python-tests \
+  --no-install \
+  --build-dir .tmp/validation/linux-sanitizer-builddir \
+  --buildtype debugoptimized \
+  --jobs 2 \
+  --extra-setup-arg=-Duse_pch=false \
+  --extra-setup-arg=-Db_sanitize=address,undefined
+```
+
+This matches the PR sanitizer job. It requires the normal Linux build dependencies and the sibling `openQ4-game` checkout so the game modules are compiled from staged source input.
 
 ---
 
@@ -222,6 +246,29 @@ bash tools/build/meson_setup.sh setup --wipe builddir . --backend ninja --buildt
 ```
 
 This mode links the Metal/QuartzCore bridge frameworks, defaults SDL's render/GPU hints to Metal, and logs the active bridge during OpenGL startup. The visible renderer remains openQ4's OpenGL compatibility path so shipped Quake 4 asset behavior stays the guiding constraint.
+
+### Linux Packager Notes
+
+For downstream Linux packages, treat official openQ4 Linux archives as targeting an Ubuntu 24.04-class userspace unless broader distro coverage has been validated for the release. The Meson dependency floor is SDL3 `>=3.4.4`; the bundled fallback wrap currently tracks SDL3 3.4.10.
+
+Package the default SDL3 backend with OpenGL plus Wayland/EGL support, and keep X11/GLX available where practical for fallback and diagnostics. The launcher or package notes should document both SDL spellings for explicit driver selection because users and SDL documentation may use either form:
+
+- Native Wayland: `SDL_VIDEODRIVER=wayland` or `SDL_VIDEO_DRIVER=wayland`.
+- X11/XWayland: `SDL_VIDEODRIVER=x11`, `SDL_VIDEO_DRIVER=x11`, or the project-specific `OPENQ4_FORCE_X11=1`.
+- Wayland decoration fallback: `OPENQ4_WAYLAND_DISABLE_LIBDECOR=1` when libdecor causes startup or window-decoration issues.
+- Wayland decoration preference: `OPENQ4_WAYLAND_PREFER_LIBDECOR=1` when a compositor behaves better with libdecor.
+- Wayland window-operation diagnostics: `OPENQ4_WAYLAND_SYNC_WINDOW_OPS=1`; use only for troubleshooting because some compositors can block during window animations.
+
+Build from the companion `openQ4-game` checkout through `OPENQ4_GAMELIBS_REPO` or the default sibling path. The staged `.tmp/gamelibs_stage/openq4_gamelibs_stage_manifest.json` records the exact source-input hashes and git state used by the engine build; keep that manifest in CI artifacts when investigating packaging or reproducibility problems, but do not package `.tmp/gamelibs_stage/` as a runtime payload.
+
+Release packaging publishes detached Linux debug symbols as `openQ4-<version>-linux-<arch>-debugsymbols.tar.xz`. Keep that archive paired with the matching runtime package so crash reports from optimized Linux builds can be symbolized.
+
+Before shipping a downstream package, run at least:
+
+```bash
+bash tools/validation/validate_push.sh --install
+bash tools/validation/validate_pr.sh --runtime --runtime-cases renderer-default-safety-selftest,sdl3-x11-display-diagnostics --runtime-tiers auto --runtime-basepath "" --runtime-skip-official-pak-validation
+```
 
 ### Optimized Build
 
@@ -302,7 +349,11 @@ The `meson install` step (via the wrapper) stages all required binaries into `.i
 
 Release archives also generate a packaged offline HTML documentation site under `docs/`. If you run the release packager manually instead of using GitHub Actions, make sure `python -m pip install markdown` is available in the same environment.
 
-The manually dispatched GitHub release workflow publishes architecture-qualified release assets such as `openq4-<version>-windows-x64.zip`, `openq4-<version>-windows-arm64.zip`, `openq4-<version>-linux-x64.tar.xz`, `openq4-<version>-linux-arm64.tar.xz`, `openq4-<version>-macos-arm64-opengl.tar.gz`, and `openq4-<version>-macos-arm64-metal.tar.gz`. Release workflow packages use `version_track=stable`; Windows payloads use Meson `buildtype=debug`, include PDB files, and write crash logs plus minidumps under `crashes/` beside the executable after unhandled exceptions. Linux and macOS payloads use Meson `buildtype=debugoptimized` with `b_ndebug=true`; Linux release runs also publish detached debug-symbol archives such as `openq4-<version>-linux-x64-debugsymbols.tar.xz` and `openq4-<version>-linux-arm64-debugsymbols.tar.xz`. Windows release payloads also get native installer executables such as `openq4-<version>-windows-x64-setup.exe` and `openq4-<version>-windows-arm64-setup.exe`. Each installer is compiled from the already-packaged Windows release directory so its file set matches the archive instead of diverging from it, writes install metadata to the registry for upgrade detection, registers a normal Windows uninstaller entry, and can optionally register `openq4://` browser links.
+The manually dispatched GitHub release workflow publishes architecture-qualified release assets such as `openq4-<version>-windows-x64.zip`, `openq4-<version>-windows-arm64.zip`, `openq4-<version>-linux-x64.tar.xz`, `openq4-<version>-linux-arm64.tar.xz`, `openq4-<version>-macos-arm64-opengl.dmg`, and `openq4-<version>-macos-arm64-metal.dmg`. Release workflow packages use `version_track=stable`; Windows payloads use Meson `buildtype=debug`, include PDB files, and write crash logs plus minidumps under `crashes/` beside the executable after unhandled exceptions. Linux and macOS payloads use Meson `buildtype=debugoptimized` with `b_ndebug=true`; Linux release runs also publish detached debug-symbol archives such as `openq4-<version>-linux-x64-debugsymbols.tar.xz` and `openq4-<version>-linux-arm64-debugsymbols.tar.xz`. macOS release payloads are signed/stapled, packed into compressed DMG images, submitted for final DMG notarization/stapling, and verified with `hdiutil` before upload. Windows release payloads also get native installer executables such as `openq4-<version>-windows-x64-setup.exe` and `openq4-<version>-windows-arm64-setup.exe`. Each installer is compiled from the already-packaged Windows release directory so its file set matches the archive instead of diverging from it, writes install metadata to the registry for upgrade detection, registers a normal Windows uninstaller entry, and can optionally register `openq4://` browser links.
+
+Official macOS release jobs require Apple distribution credentials before packaging starts. Configure `MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64`, `MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_APPLICATION_IDENTITY`, `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, and `MACOS_NOTARY_APP_PASSWORD` as repository secrets. The workflow imports the Developer ID Application certificate into a temporary keychain, signs macOS payloads with the Hardened Runtime, submits the package payload with `notarytool`, staples the app ticket, and validates the result with `codesign`, `spctl`, and `xcrun stapler validate`.
+
+Official macOS release jobs do not pass a custom entitlements file by default. If an entitlement plist is supplied for a future release experiment, `tools/build/package_nightly.py` validates that it is a plist dictionary and rejects App Sandbox or `get-task-allow` entitlements until the project has a reviewed sandbox/file-access design. The current direct-distribution package relies on Hardened Runtime protections without sandboxing because openQ4 must read user-selected Quake 4 assets, saves, logs, and staged runtime overlays outside an App Sandbox container.
 
 The release workflow also posts an openQ4 release announcement to Discord after the GitHub release is published. Configure the repository secret `DISCORD_RELEASE_WEBHOOK` with the Discord webhook URL before running the workflow; the metadata job checks for it before the package matrix starts. Optional repository variables can tune the announcement without editing workflow files: `DISCORD_RELEASE_EMOJI`, `DISCORD_RELEASE_MENTIONS`, `DISCORD_FEEDBACK_CHANNEL`, and `DISCORD_RELEASE_AVATAR_URL`. If no avatar override is set, the broadcaster uses `assets/img/avatar.png`. Releases created by the manual workflow announce themselves because GitHub releases created with `GITHUB_TOKEN` do not retrigger release workflows; `.github/workflows/discord-release.yml` covers releases published manually through GitHub.
 

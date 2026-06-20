@@ -15,6 +15,16 @@ import sys
 import time
 from pathlib import Path
 
+BUILD_TOOLS_DIR = Path(__file__).resolve().parents[1] / "build"
+if str(BUILD_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(BUILD_TOOLS_DIR))
+
+from linux_metadata import (  # noqa: E402
+    LinuxMetadataError,
+    desktop_entry_exec as parse_linux_desktop_entry_exec,
+    desktop_exec_command as parse_linux_desktop_exec_command,
+)
+
 
 PROFILE_DEFAULTS = {
     "push": {
@@ -213,14 +223,20 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "campaign_split_state_transition.py",
         root / "tools" / "tests" / "filesystem_case_segments.py",
         root / "tools" / "tests" / "filesystem_mod_manifest.py",
+        root / "tools" / "tests" / "gamelibs_staging.py",
         root / "tools" / "tests" / "hdr_postprocess_math.py",
         root / "tools" / "tests" / "linux_highdpi_mouse.py",
+        root / "tools" / "tests" / "linux_metadata_fuzz.py",
+        root / "tools" / "tests" / "linux_packaging_guidance.py",
+        root / "tools" / "tests" / "linux_sanitizer_ci.py",
         root / "tools" / "tests" / "linux_sdl3_glew_loader.py",
         root / "tools" / "tests" / "linux_vsync_support.py",
         root / "tools" / "tests" / "loading_continue_input.py",
         root / "tools" / "tests" / "macos_native_backend_guard.py",
         root / "tools" / "tests" / "macos_renderer_startup_guard.py",
         root / "tools" / "tests" / "macos_sdl3_backend_guard.py",
+        root / "tools" / "tests" / "macos_signoff_archive.py",
+        root / "tools" / "tests" / "macos_static_policy.py",
         root / "tools" / "tests" / "macos_metal_bridge.py",
         root / "tools" / "tests" / "openq4_pure_pack.py",
         root / "tools" / "tests" / "preprocessor_macro_safety.py",
@@ -412,22 +428,16 @@ def validate_linux_steamdeck_launcher(path: Path, root: Path, client_candidates:
 
 def desktop_entry_exec(path: Path, root: Path) -> str:
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("Exec="):
-                return line[5:].strip()
-    except OSError as exc:
-        raise ValidationError(f"Linux desktop entry is unreadable: {rel(path, root)}") from exc
-    return ""
+        return parse_linux_desktop_entry_exec(path)
+    except LinuxMetadataError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 def desktop_exec_command(exec_line: str) -> str:
-    if not exec_line:
-        return ""
     try:
-        parts = shlex.split(exec_line, posix=True)
-    except ValueError:
-        parts = exec_line.split()
-    return parts[0] if parts else ""
+        return parse_linux_desktop_exec_command(exec_line)
+    except LinuxMetadataError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def validate_linux_launch_metadata(root: Path, install_root: Path, client_candidates: list[Path]) -> None:
@@ -448,13 +458,59 @@ def validate_linux_launch_metadata(root: Path, install_root: Path, client_candid
             raise ValidationError(f"Linux staged payload is missing desktop entry: {rel(desktop_path, root)}")
 
         exec_line = desktop_entry_exec(desktop_path, root)
-        exec_command = desktop_exec_command(exec_line)
+        try:
+            exec_command = desktop_exec_command(exec_line)
+        except ValueError as exc:
+            raise ValidationError(
+                f"Linux desktop entry {rel(desktop_path, root)} has an invalid Exec line: {exc}"
+            ) from exc
         if exec_command not in allowed_commands:
             allowed = ", ".join(sorted(allowed_commands))
             raise ValidationError(
                 f"Linux desktop entry {rel(desktop_path, root)} points at {exec_command or '<empty>'!r}; "
                 f"expected one of: {allowed}"
             )
+
+
+def readelf_output(path: Path, args: list[str], root: Path) -> str:
+    readelf_path = shutil.which("readelf")
+    if readelf_path is None:
+        raise ValidationError("Linux hardening validation requires readelf from binutils.")
+
+    completed = subprocess.run(
+        [readelf_path, *args, str(path)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip()
+        raise ValidationError(f"readelf failed for {rel(path, root)}: {message}")
+    return completed.stdout
+
+
+def validate_linux_binary_hardening(root: Path, binary_paths: list[Path]) -> None:
+    for binary_path in binary_paths:
+        elf_header = readelf_output(binary_path, ["-h"], root)
+        if "Type:" not in elf_header or "DYN" not in elf_header:
+            raise ValidationError(f"Linux binary is not PIE/ET_DYN: {rel(binary_path, root)}")
+
+        program_headers = readelf_output(binary_path, ["-W", "-l"], root)
+        if "GNU_RELRO" not in program_headers:
+            raise ValidationError(f"Linux binary is missing GNU_RELRO: {rel(binary_path, root)}")
+
+        stack_line = next((line for line in program_headers.splitlines() if "GNU_STACK" in line), "")
+        if not stack_line:
+            raise ValidationError(f"Linux binary is missing GNU_STACK metadata: {rel(binary_path, root)}")
+        stack_fields = stack_line.split()
+        stack_flags = stack_fields[-2] if len(stack_fields) >= 2 else ""
+        if "E" in stack_flags:
+            raise ValidationError(f"Linux binary has an executable stack: {rel(binary_path, root)}")
+
+        dynamic_section = readelf_output(binary_path, ["-W", "-d"], root)
+        if "BIND_NOW" not in dynamic_section and "(NOW)" not in dynamic_section:
+            raise ValidationError(f"Linux binary is missing immediate binding/BIND_NOW: {rel(binary_path, root)}")
 
 
 def macos_binary_arch(path: Path, stem: str) -> str | None:
@@ -579,6 +635,7 @@ def validate_staged_payload(root: Path, *, dry_run: bool) -> None:
         require_posix_executable(dedicated_candidates[0], root, "Staged dedicated-server executable")
     if host_is_linux():
         validate_linux_launch_metadata(root, install_root, client_candidates)
+        validate_linux_binary_hardening(root, client_candidates + dedicated_candidates)
     if host_is_macos():
         validate_macos_staged_metadata(
             root,

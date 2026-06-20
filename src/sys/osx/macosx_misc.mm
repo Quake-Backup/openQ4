@@ -33,7 +33,9 @@ If you have questions concerning this license or the applicable additional terms
 #import <crt_externs.h>
 #import <errno.h>
 #import <ctype.h>
+#import <limits.h>
 #import <spawn.h>
+#import <stdlib.h>
 #import <string.h>
 #import <sys/stat.h>
 #import <unistd.h>
@@ -58,6 +60,10 @@ static bool OSX_StringHasControlCharacters( const char *text ) {
 static bool OSX_IsRegularFile( const char *path ) {
 	struct stat st;
 	return path != NULL && path[0] != '\0' && stat( path, &st ) == 0 && S_ISREG( st.st_mode );
+}
+
+static bool OSX_IsAbsolutePath( const char *path ) {
+	return path != NULL && path[0] == '/';
 }
 
 static void OSX_EnsureOwnerExecutable( const char *path ) {
@@ -132,7 +138,7 @@ static bool OSX_ParseProcessCommandLine( const char *command, char *buffer, size
 	return argc > 0 && argv[0][0] != '\0';
 }
 
-static bool OSX_IsSafeURL( const char *url ) {
+static bool OSX_URLHasSafeSchemeSyntax( const char *url ) {
 	if ( url == NULL || url[0] == '\0' || OSX_StringHasControlCharacters( url ) ) {
 		return false;
 	}
@@ -150,27 +156,138 @@ static bool OSX_IsSafeURL( const char *url ) {
 	return false;
 }
 
+static bool OSX_ResolvedPathIsUnderDirectory( const char *path, const char *directory ) {
+	if ( path == NULL || path[0] == '\0' || directory == NULL || directory[0] == '\0' ) {
+		return false;
+	}
+
+	char resolvedPath[PATH_MAX];
+	char resolvedDirectory[PATH_MAX];
+	if ( realpath( path, resolvedPath ) == NULL || realpath( directory, resolvedDirectory ) == NULL ) {
+		return false;
+	}
+
+	const size_t directoryLength = strlen( resolvedDirectory );
+	if ( directoryLength == 0 || strncmp( resolvedPath, resolvedDirectory, directoryLength ) != 0 ) {
+		return false;
+	}
+	return resolvedPath[directoryLength] == '\0' || resolvedPath[directoryLength] == '/';
+}
+
+static bool OSX_FileURLIsLocalRuntimeFile( NSURL *url ) {
+	if ( url == nil || ![url isFileURL] ) {
+		return false;
+	}
+
+	NSString *pathString = [url path];
+	const char *path = pathString != nil ? [pathString fileSystemRepresentation] : NULL;
+	if ( path == NULL || !OSX_IsAbsolutePath( path ) || !OSX_IsRegularFile( path ) ) {
+		return false;
+	}
+
+	const char *savePath = cvarSystem != NULL ? cvarSystem->GetCVarString( "fs_savepath" ) : NULL;
+	const char *basePath = cvarSystem != NULL ? cvarSystem->GetCVarString( "fs_basepath" ) : NULL;
+	return OSX_ResolvedPathIsUnderDirectory( path, savePath ) || OSX_ResolvedPathIsUnderDirectory( path, basePath );
+}
+
+static bool OSX_IsAllowedURL( NSURL *url ) {
+	if ( url == nil ) {
+		return false;
+	}
+
+	NSString *scheme = [url scheme];
+	if ( scheme == nil ) {
+		return false;
+	}
+	if ( [scheme caseInsensitiveCompare:@"https"] == NSOrderedSame || [scheme caseInsensitiveCompare:@"http"] == NSOrderedSame ) {
+		return true;
+	}
+	if ( [scheme caseInsensitiveCompare:@"file"] == NSOrderedSame ) {
+		return OSX_FileURLIsLocalRuntimeFile( url );
+	}
+	return false;
+}
+
+static bool OSX_EnvironmentEntryHasName( const char *entry, const char *name ) {
+	if ( entry == NULL || name == NULL || name[0] == '\0' ) {
+		return false;
+	}
+	const size_t nameLength = strlen( name );
+	return strncmp( entry, name, nameLength ) == 0 && entry[nameLength] == '=';
+}
+
+static bool OSX_ShouldDropProcessEnvironmentEntry( const char *entry ) {
+	if ( entry == NULL ) {
+		return true;
+	}
+	if ( strncmp( entry, "DYLD_", 5 ) == 0 ) {
+		return true;
+	}
+	return OSX_EnvironmentEntryHasName( entry, "LD_PRELOAD" ) ||
+		OSX_EnvironmentEntryHasName( entry, "LD_LIBRARY_PATH" ) ||
+		OSX_EnvironmentEntryHasName( entry, "LD_AUDIT" );
+}
+
+static char **OSX_CreateFilteredProcessEnvironment() {
+	char ***environmentPointer = _NSGetEnviron();
+	char *const *sourceEnvironment = ( environmentPointer != NULL && *environmentPointer != NULL ) ? *environmentPointer : NULL;
+
+	size_t sourceCount = 0;
+	size_t keepCount = 0;
+	if ( sourceEnvironment != NULL ) {
+		for ( ; sourceEnvironment[sourceCount] != NULL; ++sourceCount ) {
+			if ( !OSX_ShouldDropProcessEnvironmentEntry( sourceEnvironment[sourceCount] ) ) {
+				++keepCount;
+			}
+		}
+	}
+
+	char **filteredEnvironment = static_cast<char **>( calloc( keepCount + 1, sizeof( char * ) ) );
+	if ( filteredEnvironment == NULL ) {
+		return NULL;
+	}
+
+	size_t writeIndex = 0;
+	for ( size_t sourceIndex = 0; sourceIndex < sourceCount; ++sourceIndex ) {
+		if ( !OSX_ShouldDropProcessEnvironmentEntry( sourceEnvironment[sourceIndex] ) ) {
+			filteredEnvironment[writeIndex++] = sourceEnvironment[sourceIndex];
+		}
+	}
+	filteredEnvironment[writeIndex] = NULL;
+	return filteredEnvironment;
+}
+
 static bool OSX_StartProcessArgs( char *const argv[], bool dofork ) {
 	if ( argv == NULL || argv[0] == NULL || argv[0][0] == '\0' ) {
+		return false;
+	}
+	if ( OSX_StringHasControlCharacters( argv[0] ) || !OSX_IsAbsolutePath( argv[0] ) || !OSX_IsRegularFile( argv[0] ) ) {
+		common->Printf( "Sys_StartProcess '%s' rejected: expected an absolute executable file path\n", argv[0] );
 		return false;
 	}
 
 	OSX_EnsureOwnerExecutable( argv[0] );
 
+	char **environment = OSX_CreateFilteredProcessEnvironment();
+	if ( environment == NULL ) {
+		common->Printf( "Sys_StartProcess '%s' rejected: process environment allocation failed\n", argv[0] );
+		return false;
+	}
+
 	if ( !dofork ) {
 		common->Printf( "exec %s\n", argv[0] );
-		execvp( argv[0], argv );
-		common->Printf( "exec %s failed: %s\n", argv[0], strerror( errno ) );
+		execve( argv[0], argv, environment );
+		const int savedErrno = errno;
+		free( environment );
+		common->Printf( "exec %s failed: %s\n", argv[0], strerror( savedErrno ) );
 		_exit( 127 );
 	}
 
 	pid_t childPid = 0;
-	char *const emptyEnvironment[] = { NULL };
-	char ***environmentPointer = _NSGetEnviron();
-	char *const *environment = ( environmentPointer != NULL && *environmentPointer != NULL ) ? *environmentPointer : emptyEnvironment;
-	const int result = posix_spawnp( &childPid, argv[0], NULL, NULL, argv, environment );
+	const int result = posix_spawn( &childPid, argv[0], NULL, NULL, argv, environment );
+	free( environment );
 	if ( result != 0 ) {
-		common->Printf( "posix_spawnp %s failed: %s\n", argv[0], strerror( result ) );
+		common->Printf( "posix_spawn %s failed: %s\n", argv[0], strerror( result ) );
 		return false;
 	}
 	(void)childPid;
@@ -192,7 +309,7 @@ void idSysLocal::OpenURL( const char *url, bool doexit ) {
 	}
 
 	common->Printf( "Open URL: %s\n", url ? url : "" );
-	if ( !OSX_IsSafeURL( url ) ) {
+	if ( !OSX_URLHasSafeSchemeSyntax( url ) ) {
 		common->Printf( "OpenURL '%s' rejected: expected a URL with a safe scheme\n", url ? url : "" );
 		return;
 	}
@@ -206,6 +323,10 @@ void idSysLocal::OpenURL( const char *url, bool doexit ) {
 	NSURL *nsURL = [ NSURL URLWithString: urlString ];
 	if ( nsURL == nil || [ nsURL scheme ] == nil ) {
 		common->Printf( "OpenURL '%s' rejected: Foundation could not parse URL\n", url );
+		return;
+	}
+	if ( !OSX_IsAllowedURL( nsURL ) ) {
+		common->Printf( "OpenURL '%s' rejected: scheme is not allowed\n", url );
 		return;
 	}
 

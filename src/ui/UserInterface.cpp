@@ -216,7 +216,8 @@ idUserInterface *idUserInterfaceManagerLocal::FindGui( const char *qpath, bool a
 	for ( int i = 0; i < c; i++ ) {
 		idUserInterfaceLocal *gui = guis[i];
 		if ( !idStr::Icmp( guis[i]->GetSourceFile(), qpath ) ) {
-			if ( !forceNOTUnique && ( needUnique || guis[i]->IsInteractive() ) ) {
+			// Retail keeps unique GUI instances isolated even when state changes make them temporarily noninteractive.
+			if ( !forceNOTUnique && ( needUnique || guis[i]->IsInteractive() || guis[i]->IsUniqued() ) ) {
 				break;
 			}
 			guis[i]->AddRef();

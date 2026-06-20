@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Probe", "Bootstrap", "Assets", "Sync", "Build", "Smoke", "Renderer", "Launcher", "All")]
+    [ValidateSet("Probe", "Bootstrap", "Assets", "Sync", "Build", "Smoke", "Renderer", "Launcher", "Signoff", "CollectResults", "All")]
     [string[]]$Action = @("All"),
     [Parameter(Mandatory = $true)]
     [string]$MacHost,
@@ -12,13 +12,20 @@ param(
     [string]$HostQuake4Path = "C:\Program Files (x86)\Steam\steamapps\common\Quake 4",
     [string]$HostGameLibsPath,
     [string]$TmpRoot,
-    [ValidateSet("opengl", "metal")]
+    [string]$ResultCollectionDir,
+    [string]$MacOSRunId,
+    [ValidateSet("opengl", "metal", "both")]
     [string]$MacOSGraphicsBridge = "opengl",
+    [ValidateSet("apple_framework", "system")]
+    [string]$MacOSOpenALProvider = "apple_framework",
     [string]$BuildType = "debug",
     [string]$BuildDir = "builddir",
     [int]$SmokeLimit = 1,
     [switch]$SkipAssets,
-    [switch]$SkipSync
+    [switch]$SkipSync,
+    [switch]$SkipResultCollection,
+    [switch]$SkipResultArchiveValidation,
+    [switch]$RequireCompletedSignoffChecklist
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,6 +82,21 @@ function Copy-ToMac {
     & scp @(Get-ScpArgs) $Source $target
     if ($LASTEXITCODE -ne 0) {
         throw "scp failed with exit code ${LASTEXITCODE}: $Source -> $RemotePath"
+    }
+}
+
+function Copy-FromMac {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemotePath,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $destinationFullPath = Get-FullPath $Destination
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destinationFullPath) | Out-Null
+    $target = "${MacUser}@${MacHost}:$RemotePath"
+    & scp @(Get-ScpArgs) $target $destinationFullPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "scp failed with exit code ${LASTEXITCODE}: $RemotePath -> $destinationFullPath"
     }
 }
 
@@ -288,12 +310,152 @@ function Install-Assets {
         -Environment @{ "OPENQ4_Q4_TAR" = $remoteAssetArchive }
 }
 
+function Get-MacOSGraphicsBridgeRuns {
+    if ($MacOSGraphicsBridge -eq "both") {
+        return @("opengl", "metal")
+    }
+    return @($MacOSGraphicsBridge)
+}
+
+function Get-MacOSBridgeBuildDir {
+    param([Parameter(Mandatory = $true)][string]$Bridge)
+
+    if ($MacOSGraphicsBridge -ne "both") {
+        return $BuildDir
+    }
+    return "${BuildDir}-${Bridge}"
+}
+
+function Invoke-BuildTestActionForBridge {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptAction,
+        [Parameter(Mandatory = $true)][string]$Bridge,
+        [hashtable]$ExtraEnvironment = @{}
+    )
+
+    $environment = @{
+        "OPENQ4_MACOS_GRAPHICS_BRIDGE" = $Bridge
+        "OPENQ4_MACOS_OPENAL_PROVIDER" = $MacOSOpenALProvider
+        "OPENQ4_MACOS_RUN_ID" = $MacOSRunId
+        "OPENQ4_BUILDDIR" = (Get-MacOSBridgeBuildDir -Bridge $Bridge)
+    }
+    foreach ($key in $ExtraEnvironment.Keys) {
+        $environment[$key] = $ExtraEnvironment[$key]
+    }
+
+    Invoke-GuestScript `
+        -ScriptName "openq4-macos-sync-build-test.sh" `
+        -ScriptAction $ScriptAction `
+        -Environment $environment
+}
+
+function Assert-SingleMacOSGraphicsBridge {
+    param([Parameter(Mandatory = $true)][string]$ActionName)
+
+    if ($MacOSGraphicsBridge -eq "both") {
+        throw "-MacOSGraphicsBridge both is supported for Build, Signoff, and All. Use Signoff for smoke/renderer/launcher evidence across both bridge variants."
+    }
+}
+
+function Collect-MacOSResults {
+    param([Parameter(Mandatory = $true)][string]$RunId)
+
+    $archiveName = "openq4-macos-results-${RunId}.tar.gz"
+    $remoteArchive = "$script:RemoteTempRoot/$archiveName"
+    $workspaceQ = Quote-Sh $MacWorkspace
+    $runIdQ = Quote-Sh $RunId
+    $archiveQ = Quote-Sh $remoteArchive
+    $script = @'
+set -euo pipefail
+workspace=__WORKSPACE__
+run_id=__RUN_ID__
+archive=__ARCHIVE__
+results_dir="${workspace%/}/results"
+if [[ ! -d "${results_dir}" ]]; then
+    echo "No macOS results directory exists yet: ${results_dir}" >&2
+    exit 1
+fi
+cd "${results_dir}"
+matches=()
+for path in "${run_id}"-*; do
+    if [[ -d "${path}" ]]; then
+        matches+=("${path}")
+    fi
+done
+if (( ${#matches[@]} == 0 )); then
+    echo "No macOS result directories matched ${results_dir}/${run_id}-*" >&2
+    exit 1
+fi
+tar -czf "${archive}" "${matches[@]}"
+'@
+    $script = $script.Replace("__WORKSPACE__", $workspaceQ).Replace("__RUN_ID__", $runIdQ).Replace("__ARCHIVE__", $archiveQ)
+    Invoke-MacSsh -Command "bash -lc $(Quote-Sh $script)"
+
+    $localArchive = Join-Path $ResultCollectionDir $archiveName
+    Copy-FromMac -RemotePath $remoteArchive -Destination $localArchive
+    $localArchive = Get-FullPath $localArchive
+    Write-Host "Collected macOS signoff results: $localArchive"
+    return $localArchive
+}
+
+function Test-MacOSResultArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $validator = Join-Path $repoRoot "tools\macos\validate_signoff_archive.py"
+    if (-not (Test-Path -LiteralPath $validator)) {
+        throw "macOS signoff archive validator was not found: $validator"
+    }
+
+    $bridgeList = $MacOSGraphicsBridge
+    if ($MacOSGraphicsBridge -eq "both") {
+        $bridgeList = "opengl,metal"
+    }
+
+    $python = $env:PYTHON
+    if (-not $python) {
+        $python = "python"
+    }
+
+    $args = @(
+        $validator,
+        $ArchivePath,
+        "--run-id",
+        $RunId,
+        "--bridges",
+        $bridgeList
+    )
+    if ($RequireCompletedSignoffChecklist) {
+        $args += "--require-completed-checklist"
+    }
+
+    & $python @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "macOS signoff archive validation failed for $ArchivePath"
+    }
+}
+
 $repoRoot = Get-RepoRoot
 if (-not $TmpRoot) {
     $TmpRoot = Join-Path (Join-Path $repoRoot ".tmp") "macos-vm"
 }
 $TmpRoot = Get-FullPath $TmpRoot
 New-Item -ItemType Directory -Force -Path $TmpRoot | Out-Null
+if (-not $ResultCollectionDir) {
+    $ResultCollectionDir = Join-Path $TmpRoot "results"
+}
+$ResultCollectionDir = Get-FullPath $ResultCollectionDir
+if (-not $MacOSRunId) {
+    if ($Action -contains "CollectResults") {
+        throw "-Action CollectResults requires -MacOSRunId <id> so the existing guest result directories can be selected."
+    }
+    $MacOSRunId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
+}
+if ($MacOSRunId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "Invalid MacOSRunId '$MacOSRunId'. Use letters, digits, dots, underscores, or dashes, starting with a letter or digit."
+}
 $script:RemoteTempRoot = "/tmp/openq4-macos-$([System.Guid]::NewGuid().ToString("N"))"
 Invoke-MacSsh -Command "umask 077 && mkdir -p $(Quote-Sh $script:RemoteTempRoot)"
 
@@ -302,6 +464,7 @@ if (-not $HostGameLibsPath) {
 }
 $HostGameLibsPath = Get-FullPath $HostGameLibsPath
 
+$shouldCollectResults = $false
 foreach ($item in $Action) {
     switch ($item) {
         "Probe" {
@@ -321,26 +484,48 @@ foreach ($item in $Action) {
             }
         }
         "Build" {
-            Invoke-GuestScript `
-                -ScriptName "openq4-macos-sync-build-test.sh" `
-                -ScriptAction "build" `
-                -Environment @{
-                    "OPENQ4_MACOS_GRAPHICS_BRIDGE" = $MacOSGraphicsBridge
-                    "OPENQ4_BUILDTYPE" = $BuildType
-                    "OPENQ4_BUILDDIR" = $BuildDir
-                }
+            foreach ($bridge in (Get-MacOSGraphicsBridgeRuns)) {
+                Invoke-BuildTestActionForBridge `
+                    -ScriptAction "build" `
+                    -Bridge $bridge `
+                    -ExtraEnvironment @{
+                        "OPENQ4_BUILDTYPE" = $BuildType
+                    }
+            }
         }
         "Smoke" {
-            Invoke-GuestScript `
-                -ScriptName "openq4-macos-sync-build-test.sh" `
+            Assert-SingleMacOSGraphicsBridge -ActionName "Smoke"
+            Invoke-BuildTestActionForBridge `
                 -ScriptAction "smoke" `
-                -Environment @{ "OPENQ4_SMOKE_LIMIT" = [string]$SmokeLimit }
+                -Bridge $MacOSGraphicsBridge `
+                -ExtraEnvironment @{ "OPENQ4_SMOKE_LIMIT" = [string]$SmokeLimit }
         }
         "Renderer" {
-            Invoke-GuestScript -ScriptName "openq4-macos-sync-build-test.sh" -ScriptAction "renderer"
+            Assert-SingleMacOSGraphicsBridge -ActionName "Renderer"
+            Invoke-BuildTestActionForBridge `
+                -ScriptAction "renderer" `
+                -Bridge $MacOSGraphicsBridge
         }
         "Launcher" {
-            Invoke-GuestScript -ScriptName "openq4-macos-sync-build-test.sh" -ScriptAction "launcher"
+            Assert-SingleMacOSGraphicsBridge -ActionName "Launcher"
+            Invoke-BuildTestActionForBridge `
+                -ScriptAction "launcher" `
+                -Bridge $MacOSGraphicsBridge
+        }
+        "Signoff" {
+            foreach ($bridge in (Get-MacOSGraphicsBridgeRuns)) {
+                Invoke-BuildTestActionForBridge `
+                    -ScriptAction "signoff" `
+                    -Bridge $bridge `
+                    -ExtraEnvironment @{
+                        "OPENQ4_BUILDTYPE" = $BuildType
+                        "OPENQ4_SMOKE_LIMIT" = [string]$SmokeLimit
+                    }
+            }
+            $shouldCollectResults = $true
+        }
+        "CollectResults" {
+            $shouldCollectResults = $true
         }
         "All" {
             Invoke-GuestScript -ScriptName "openq4-macos-bootstrap.sh"
@@ -350,15 +535,29 @@ foreach ($item in $Action) {
             if (-not $SkipSync) {
                 Sync-SourceTrees
             }
-            Invoke-GuestScript `
-                -ScriptName "openq4-macos-sync-build-test.sh" `
-                -ScriptAction "all" `
-                -Environment @{
-                    "OPENQ4_MACOS_GRAPHICS_BRIDGE" = $MacOSGraphicsBridge
-                    "OPENQ4_BUILDTYPE" = $BuildType
-                    "OPENQ4_BUILDDIR" = $BuildDir
-                    "OPENQ4_SMOKE_LIMIT" = [string]$SmokeLimit
-                }
+            foreach ($bridge in (Get-MacOSGraphicsBridgeRuns)) {
+                Invoke-BuildTestActionForBridge `
+                    -ScriptAction "signoff" `
+                    -Bridge $bridge `
+                    -ExtraEnvironment @{
+                        "OPENQ4_BUILDTYPE" = $BuildType
+                        "OPENQ4_SMOKE_LIMIT" = [string]$SmokeLimit
+                    }
+            }
+            $shouldCollectResults = $true
+        }
+    }
+}
+
+if ($shouldCollectResults) {
+    if ($SkipResultCollection) {
+        Write-Host "Skipping macOS result collection for run ID '${MacOSRunId}'."
+    } else {
+        $archivePath = Collect-MacOSResults -RunId $MacOSRunId
+        if ($SkipResultArchiveValidation) {
+            Write-Host "Skipping macOS signoff archive validation for $archivePath"
+        } else {
+            Test-MacOSResultArchive -ArchivePath $archivePath -RunId $MacOSRunId
         }
     }
 }

@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Validate a collected macOS runtime signoff archive."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import tarfile
+from pathlib import Path, PurePosixPath
+
+
+class SignoffArchiveError(RuntimeError):
+    pass
+
+
+REQUIRED_REPORT_TOKENS = (
+    "# macOS Runtime Signoff",
+    "## Automated Evidence",
+    "Bridge-specific build and staged install completed.",
+    "Renderer smoke profile completed with retail Quake 4 assets.",
+    "macOS-facing renderer validation matrix completed.",
+    "Desktop launcher was written for Finder/Terminal launch checks.",
+    "## Manual Hardware Checklist",
+    "keyboard text entry",
+    "SDL game controller",
+    "audio output",
+    "windowed, fullscreen",
+    "matching OpenGL or Metal bridge",
+)
+
+
+REQUIRED_LOG_TOKENS = (
+    "Configuring openQ4",
+    "Compiling openQ4",
+    "Staging openQ4 into .install",
+    "Running openQ4 macOS renderer smoke",
+    "Running macOS-facing renderer validation matrix",
+    "Installed macOS launcher",
+    "macOS runtime signoff report:",
+)
+
+
+def parse_bridges(value: str) -> tuple[str, ...]:
+    bridges = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not bridges:
+        raise SignoffArchiveError("At least one bridge must be requested.")
+    invalid = [bridge for bridge in bridges if bridge not in {"opengl", "metal"}]
+    if invalid:
+        raise SignoffArchiveError(f"Unsupported bridge name(s): {', '.join(invalid)}")
+    return bridges
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SignoffArchiveError(message)
+
+
+def validate_member(member: tarfile.TarInfo) -> None:
+    name = member.name
+    path = PurePosixPath(name)
+    require(name != "", "Archive contains an empty path.")
+    require("\\" not in name, f"Archive path uses backslashes: {name}")
+    require(not path.is_absolute(), f"Archive path is absolute: {name}")
+    require(".." not in path.parts, f"Archive path escapes through '..': {name}")
+    require(member.isfile() or member.isdir(), f"Archive contains a non-regular entry: {name}")
+
+
+def read_text(archive: tarfile.TarFile, name: str) -> str:
+    try:
+        member = archive.getmember(name)
+    except KeyError as exc:
+        raise SignoffArchiveError(f"Missing required archive member: {name}") from exc
+    require(member.isfile(), f"Required archive member is not a file: {name}")
+    stream = archive.extractfile(member)
+    require(stream is not None, f"Unable to read archive member: {name}")
+    try:
+        return stream.read().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SignoffArchiveError(f"Archive member is not UTF-8 text: {name}") from exc
+
+
+def infer_run_id(top_dirs: set[str], action: str, bridges: tuple[str, ...]) -> str:
+    inferred: str | None = None
+    for bridge in bridges:
+        suffix = f"-{action}-{bridge}"
+        matches = sorted(directory for directory in top_dirs if directory.endswith(suffix))
+        require(len(matches) == 1, f"Expected exactly one *{suffix} directory, found {len(matches)}.")
+        run_id = matches[0][: -len(suffix)]
+        require(run_id != "", f"Could not infer run ID from {matches[0]}.")
+        if inferred is None:
+            inferred = run_id
+        else:
+            require(run_id == inferred, "Bridge result directories do not share the same run ID.")
+    return inferred or ""
+
+
+def has_member_under(member_names: set[str], prefix: str) -> bool:
+    normalized = prefix.rstrip("/") + "/"
+    return any(name.startswith(normalized) and name != normalized for name in member_names)
+
+
+def validate_report(report: str, *, bridge: str, require_completed_checklist: bool) -> None:
+    for token in REQUIRED_REPORT_TOKENS:
+        require(token in report, f"{bridge} signoff report is missing {token!r}.")
+    require(f"- Graphics bridge: {bridge}" in report, f"{bridge} signoff report has wrong bridge metadata.")
+    require("- OpenAL provider:" in report, f"{bridge} signoff report is missing OpenAL provider metadata.")
+    require("- Build directory:" in report, f"{bridge} signoff report is missing build directory metadata.")
+    require("- Results:" in report, f"{bridge} signoff report is missing result directory metadata.")
+    if require_completed_checklist:
+        open_items = [line for line in report.splitlines() if re.match(r"^- \[ \] ", line)]
+        require(not open_items, f"{bridge} signoff report still has open manual checklist item(s).")
+
+
+def validate_log(log_text: str, *, bridge: str) -> None:
+    for token in REQUIRED_LOG_TOKENS:
+        require(token in log_text, f"{bridge} workflow log is missing {token!r}.")
+    require(
+        f"macos_graphics_bridge={bridge}" in log_text,
+        f"{bridge} workflow log does not show the selected graphics bridge.",
+    )
+    require(
+        "macos_openal_provider=" in log_text,
+        f"{bridge} workflow log does not show the selected OpenAL provider.",
+    )
+
+
+def validate_signoff_archive(
+    archive_path: Path,
+    *,
+    run_id: str | None,
+    action: str,
+    bridges: tuple[str, ...],
+    require_completed_checklist: bool,
+) -> str:
+    require(archive_path.is_file(), f"Archive was not found: {archive_path}")
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        require(members, "Archive is empty.")
+        for member in members:
+            validate_member(member)
+
+        member_names = {member.name.rstrip("/") for member in members}
+        top_dirs = {PurePosixPath(name).parts[0] for name in member_names if PurePosixPath(name).parts}
+        effective_run_id = run_id or infer_run_id(top_dirs, action, bridges)
+
+        for bridge in bridges:
+            result_dir = f"{effective_run_id}-{action}-{bridge}"
+            require(result_dir in top_dirs, f"Missing result directory for {bridge}: {result_dir}")
+
+            report_name = f"{result_dir}/macos-runtime-signoff.md"
+            log_name = f"{result_dir}/openq4-macos-workflow.log"
+            report = read_text(archive, report_name)
+            log_text = read_text(archive, log_name)
+            validate_report(report, bridge=bridge, require_completed_checklist=require_completed_checklist)
+            validate_log(log_text, bridge=bridge)
+
+            require(
+                has_member_under(member_names, f"{result_dir}/renderer-smoke"),
+                f"{bridge} signoff archive is missing renderer-smoke output.",
+            )
+            require(
+                has_member_under(member_names, f"{result_dir}/renderer-matrix"),
+                f"{bridge} signoff archive is missing renderer-matrix output.",
+            )
+
+    return effective_run_id
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("archive", type=Path, help="Collected openQ4 macOS signoff .tar.gz archive.")
+    parser.add_argument("--run-id", default="", help="Expected run ID. Defaults to inferring from result directories.")
+    parser.add_argument("--action", default="signoff", help="Expected guest action in result directory names.")
+    parser.add_argument("--bridges", default="opengl,metal", help="Comma-separated bridge list to require.")
+    parser.add_argument(
+        "--require-completed-checklist",
+        action="store_true",
+        help="Fail if any manual hardware checklist item remains unchecked.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    try:
+        args = parse_args(argv)
+        run_id = validate_signoff_archive(
+            args.archive,
+            run_id=args.run_id or None,
+            action=args.action,
+            bridges=parse_bridges(args.bridges),
+            require_completed_checklist=args.require_completed_checklist,
+        )
+    except (SignoffArchiveError, tarfile.TarError) as exc:
+        print(f"macOS signoff archive validation failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"macOS signoff archive validation passed: {args.archive} (run ID {run_id})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -361,6 +361,7 @@ typedef struct {
 typedef struct {
 	float				x, y;			// 0.0 to 1.0 range if trace hit a gui, otherwise -1
 	int					guiId;			// id of gui ( 0, 1, or 2 ) that the trace happened against
+	float				fraction;		// fraction of trace completed before hitting the gui surface
 } guiPoint_t;
 
 

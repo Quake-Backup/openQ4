@@ -165,6 +165,25 @@ static int Sys_QueryDrmSysfsVideoRamMB(void) {
 	return static_cast<int>(megabytes);
 }
 
+static bool Sys_TryDrmSysfsVideoRam(int &cachedVideoRam) {
+	cachedVideoRam = Sys_QueryDrmSysfsVideoRamMB();
+	if (cachedVideoRam > 0) {
+		common->Printf("found DRM sysfs VRAM total: %d MB\n", cachedVideoRam);
+		return true;
+	}
+	return false;
+}
+
+static bool Sys_IsWaylandVideoDriverName(const char *driverName) {
+	return driverName != NULL && driverName[0] != '\0' && idStr::Icmp(driverName, "wayland") == 0;
+}
+
+static bool Sys_PreferDrmSysfsBeforeX11VideoRam(void) {
+	return SDL3_IsNativeWaylandVideoDriver() ||
+		Sys_IsWaylandVideoDriverName(getenv("SDL_VIDEO_DRIVER")) ||
+		Sys_IsWaylandVideoDriverName(getenv("SDL_VIDEODRIVER"));
+}
+
 bool Sys_GetDesktopResolution(int *width, int *height) {
 	return SDL3_QueryDesktopResolution(width, height, "SDL3 Linux");
 }
@@ -182,40 +201,46 @@ int Sys_GetVideoRam(void) {
 
 	common->Printf("guessing video ram ( use +set sys_videoRam to force ) ..\n");
 
-#if defined(OPENQ4_HAVE_X11_HELPERS)
-	Display *queryDisplay = dpy;
-	const bool ownsDisplay = (queryDisplay == NULL);
-	if (queryDisplay == NULL && getenv("DISPLAY") != NULL) {
-		queryDisplay = XOpenDisplay(NULL);
+	const bool preferDrmBeforeX11 = Sys_PreferDrmSysfsBeforeX11VideoRam();
+	bool triedDrmSysfsVideoRam = preferDrmBeforeX11;
+	if (preferDrmBeforeX11 && Sys_TryDrmSysfsVideoRam(cachedVideoRam)) {
+		return cachedVideoRam;
 	}
 
-	if (queryDisplay != NULL) {
-		const int screen = DefaultScreen(queryDisplay);
-		int major = 0;
-		int minor = 0;
-		int value = 0;
+#if defined(OPENQ4_HAVE_X11_HELPERS)
+	if (!preferDrmBeforeX11) {
+		Display *queryDisplay = dpy;
+		const bool ownsDisplay = (queryDisplay == NULL);
+		if (queryDisplay == NULL && getenv("DISPLAY") != NULL) {
+			queryDisplay = XOpenDisplay(NULL);
+		}
 
-		if (XNVCTRLQueryVersion(queryDisplay, &major, &minor)) {
-			common->Printf("found XNVCtrl extension %d.%d\n", major, minor);
-			if (XNVCTRLIsNvScreen(queryDisplay, screen) &&
-				XNVCTRLQueryAttribute(queryDisplay, screen, 0, NV_CTRL_VIDEO_RAM, &value)) {
-				cachedVideoRam = value / 1024;
+		if (queryDisplay != NULL) {
+			const int screen = DefaultScreen(queryDisplay);
+			int major = 0;
+			int minor = 0;
+			int value = 0;
+
+			if (XNVCTRLQueryVersion(queryDisplay, &major, &minor)) {
+				common->Printf("found XNVCtrl extension %d.%d\n", major, minor);
+				if (XNVCTRLIsNvScreen(queryDisplay, screen) &&
+					XNVCTRLQueryAttribute(queryDisplay, screen, 0, NV_CTRL_VIDEO_RAM, &value)) {
+					cachedVideoRam = value / 1024;
+				}
 			}
-		}
 
-		if (ownsDisplay) {
-			XCloseDisplay(queryDisplay);
-		}
+			if (ownsDisplay) {
+				XCloseDisplay(queryDisplay);
+			}
 
-		if (cachedVideoRam > 0) {
-			return cachedVideoRam;
+			if (cachedVideoRam > 0) {
+				return cachedVideoRam;
+			}
 		}
 	}
 #endif
 
-	cachedVideoRam = Sys_QueryDrmSysfsVideoRamMB();
-	if (cachedVideoRam > 0) {
-		common->Printf("found DRM sysfs VRAM total: %d MB\n", cachedVideoRam);
+	if (!triedDrmSysfsVideoRam && Sys_TryDrmSysfsVideoRam(cachedVideoRam)) {
 		return cachedVideoRam;
 	}
 

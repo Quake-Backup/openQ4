@@ -502,18 +502,19 @@ static const char *SDL3_GraphicsBridgeDescription(void) {
 
 static void SDL3_SetVideoHintDefaults(void) {
 #if defined(OPENQ4_SDL3_LINUX_HOST)
+	const bool disableWaylandLibdecor = SDL3_EnvFlagEnabled("OPENQ4_WAYLAND_DISABLE_LIBDECOR");
 	if (SDL3_EnvFlagEnabled("OPENQ4_FORCE_X11") &&
 			!SDL3_EnvHasValue("SDL_VIDEO_DRIVER") &&
 			!SDL3_EnvHasValue("SDL_VIDEODRIVER")) {
 		(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "x11", SDL_HINT_DEFAULT);
 	}
-	if (SDL3_EnvFlagEnabled("OPENQ4_WAYLAND_PREFER_LIBDECOR")) {
+	if (!disableWaylandLibdecor && SDL3_EnvFlagEnabled("OPENQ4_WAYLAND_PREFER_LIBDECOR")) {
 		(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_WAYLAND_PREFER_LIBDECOR, "1", SDL_HINT_DEFAULT);
 	}
 	if (SDL3_EnvFlagEnabled("OPENQ4_WAYLAND_SYNC_WINDOW_OPS")) {
 		(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_SYNC_WINDOW_OPERATIONS, "1", SDL_HINT_DEFAULT);
 	}
-	(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, "1", SDL_HINT_DEFAULT);
+	(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, disableWaylandLibdecor ? "0" : "1", SDL_HINT_DEFAULT);
 	(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_WAYLAND_MODE_EMULATION, "1", SDL_HINT_DEFAULT);
 	(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_WAYLAND_MODE_SCALING, "aspect", SDL_HINT_DEFAULT);
 	(void)SDL_SetHintWithPriority(SDL_HINT_VIDEO_WAYLAND_SCALE_TO_DISPLAY, "0", SDL_HINT_DEFAULT);
@@ -574,8 +575,9 @@ static void SDL3_PrintVideoDriverSummary(void) {
 
 #if defined(OPENQ4_SDL3_LINUX_HOST)
 	common->Printf(
-		"SDL3: Linux video environment: OPENQ4_FORCE_X11=%s OPENQ4_WAYLAND_PREFER_LIBDECOR=%s OPENQ4_WAYLAND_SYNC_WINDOW_OPS=%s SDL_VIDEO_DRIVER=%s SDL_VIDEODRIVER=%s WAYLAND_DISPLAY=%s DISPLAY=%s\n",
+		"SDL3: Linux video environment: OPENQ4_FORCE_X11=%s OPENQ4_WAYLAND_DISABLE_LIBDECOR=%s OPENQ4_WAYLAND_PREFER_LIBDECOR=%s OPENQ4_WAYLAND_SYNC_WINDOW_OPS=%s SDL_VIDEO_DRIVER=%s SDL_VIDEODRIVER=%s WAYLAND_DISPLAY=%s DISPLAY=%s\n",
 		SDL3_EnvString("OPENQ4_FORCE_X11"),
+		SDL3_EnvString("OPENQ4_WAYLAND_DISABLE_LIBDECOR"),
 		SDL3_EnvString("OPENQ4_WAYLAND_PREFER_LIBDECOR"),
 		SDL3_EnvString("OPENQ4_WAYLAND_SYNC_WINDOW_OPS"),
 		SDL3_EnvString("SDL_VIDEO_DRIVER"),
@@ -4598,6 +4600,50 @@ void IN_DeactivateMouse(void) {
 	SDL3_UpdateCursorVisibility();
 }
 
+static void SDL3_PrintMouseCaptureDiagnosticsLine(const char *label) {
+	const bool hasWindow = s_sdlWindow != NULL;
+	const bool relativeMode = hasWindow && SDL_GetWindowRelativeMouseMode(s_sdlWindow);
+	const bool mouseGrab = hasWindow && SDL_GetWindowMouseGrab(s_sdlWindow);
+	const bool captured = SDL3_IsMouseCaptured();
+
+	common->Printf(
+		"SDL3 mouse capture diagnostics %s: window=%s videoDriver=%s nativeWayland=%s in_mouse=%s relative=%s grab=%s captured=%s\n",
+		label != NULL ? label : "state",
+		hasWindow ? "yes" : "no",
+		s_sdlVideoDriverName,
+		SDL3_IsNativeWaylandVideoDriver() ? "yes" : "no",
+		win32.in_mouse.GetBool() ? "on" : "off",
+		relativeMode ? "on" : "off",
+		mouseGrab ? "on" : "off",
+		captured ? "yes" : "no");
+}
+
+static void SDL3_MouseCaptureDiagnostics_f(const idCmdArgs &args) {
+	int iterations = 1;
+	if (args.Argc() > 1) {
+		if (idStr::IsNumeric(args.Argv(1))) {
+			iterations = idMath::ClampInt(1, 8, atoi(args.Argv(1)));
+		} else {
+			common->Printf("SDL3 mouse capture diagnostics: ignoring non-numeric repeat count '%s'\n", args.Argv(1));
+		}
+	}
+
+	common->Printf("SDL3 mouse capture diagnostics: begin repeat=%d\n", iterations);
+	SDL3_PrintMouseCaptureDiagnosticsLine("before");
+	if (!s_sdlWindow) {
+		common->Printf("SDL3 mouse capture diagnostics: skipped; no SDL window is active.\n");
+		return;
+	}
+
+	for (int iteration = 0; iteration < iterations; ++iteration) {
+		common->Printf("SDL3 mouse capture diagnostics: iteration %d/%d\n", iteration + 1, iterations);
+		IN_ActivateMouse();
+		SDL3_PrintMouseCaptureDiagnosticsLine("after activate");
+		IN_DeactivateMouse();
+		SDL3_PrintMouseCaptureDiagnosticsLine("after deactivate");
+	}
+}
+
 void IN_DeactivateMouseIfWindowed(void) {
 	if (!win32.cdsFullscreen) {
 		IN_DeactivateMouse();
@@ -5146,6 +5192,7 @@ bool GLimp_Init(glimpParms_t parms) {
 		cmdSystem->AddCommand("listDisplays", SDL3_ListDisplays_f, CMD_FL_SYSTEM, "lists SDL3 displays and monitor indices");
 		cmdSystem->AddCommand("listDisplayModes", SDL3_ListDisplayModes_f, CMD_FL_SYSTEM, "lists SDL3 fullscreen display modes (optional display index)");
 		cmdSystem->AddCommand("listControllers", SDL3_ListControllers_f, CMD_FL_SYSTEM, "lists SDL3 controller, sensor, touchpad, and battery diagnostics");
+		cmdSystem->AddCommand("sdl3MouseCaptureDiagnostics", SDL3_MouseCaptureDiagnostics_f, CMD_FL_SYSTEM, "toggles SDL3 mouse capture and prints backend state; optional repeat count is clamped to 1..8");
 		s_sdlDiagnosticCommandsRegistered = true;
 	}
 

@@ -84,6 +84,7 @@ def validate_keyboard_and_mouse_contract() -> None:
     queue_button = function_body(source, "static void SDL3_QueueMouseButtonEvent(int key, bool down, int eventTime, bool pollState) {")
     consume_delta = function_body(source, "static int SDL3_ConsumeMouseDelta(float delta, float &remainder) {")
     activate_mouse = function_body(source, "void IN_ActivateMouse(void) {")
+    mouse_capture_diag = function_body(source, "static void SDL3_MouseCaptureDiagnostics_f(const idCmdArgs &args) {")
     init_input = function_body(source, "void Sys_InitInput(void) {")
     pump = function_body(source, "bool Sys_SDL_PumpEvents(void) {")
     poll_mouse = function_body(source, "int Sys_PollMouseInputEvents(void) {")
@@ -133,6 +134,11 @@ def validate_keyboard_and_mouse_contract() -> None:
         "SDL_GetRelativeMouseState(NULL, NULL)",
     ):
         require(activate_mouse, token, "SDL3 relative mouse capture")
+    require(source, 'cmdSystem->AddCommand("sdl3MouseCaptureDiagnostics"', "SDL3 mouse capture diagnostic command")
+    require(mouse_capture_diag, "SDL3 mouse capture diagnostics: begin", "SDL3 mouse capture diagnostic output")
+    require(mouse_capture_diag, "IN_ActivateMouse();", "SDL3 mouse capture diagnostic activation")
+    require(mouse_capture_diag, "IN_DeactivateMouse();", "SDL3 mouse capture diagnostic cleanup")
+    require(source, "relative=%s grab=%s captured=%s", "SDL3 mouse capture diagnostic state")
 
     require(init_input, "SDL_StartTextInput(s_sdlWindow)", "SDL3 text input startup")
     for token in (

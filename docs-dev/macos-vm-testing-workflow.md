@@ -78,6 +78,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4Mac
 - runs a renderer smoke profile against the copied Quake 4 assets
 - runs the macOS-facing GL 4.1 renderer validation set
 - creates `~/Desktop/openQ4.command` pointing at the staged runtime and assets
+- writes a bridge-specific runtime signoff report when running `All` or `Signoff`
 
 Run narrower actions as needed:
 
@@ -89,9 +90,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4Mac
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 -Action Smoke -MacHost <host>
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 -Action Renderer -MacHost <host>
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 -Action Launcher -MacHost <host>
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 -Action Signoff -MacHost <host>
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 -Action CollectResults -MacHost <host> -MacOSRunId <run-id>
 ```
 
-To test the Metal bridge package path:
+To test only the Metal bridge package path:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 `
@@ -100,6 +103,66 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4Mac
   -MacOSGraphicsBridge metal
 ```
 
+For a self-contained hardware signoff pass after syncing, run both bridge
+variants:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 `
+  -Action Signoff `
+  -MacHost <host> `
+  -MacOSGraphicsBridge both
+```
+
+The signoff action builds and stages each selected bridge before running the
+smoke profile and macOS-facing renderer matrix, installs the Desktop launcher,
+records `sw_vers`, kernel, display, audio, USB, and Bluetooth inventory, and
+writes bridge-specific reports under
+`~/openq4-work/results/<timestamp>-signoff-opengl/macos-runtime-signoff.md` and
+`~/openq4-work/results/<timestamp>-signoff-metal/macos-runtime-signoff.md`.
+When `-MacOSGraphicsBridge both` is selected, OpenGL uses `builddir-opengl` and
+Metal uses `builddir-metal` so Meson configuration state does not bleed between
+variants. Use those reports for the manual hardware checklist: Finder/launcher
+startup, real keyboard/mouse/controller input, audio output/device switching,
+windowed and fullscreen display modes, HiDPI/Retina behavior, and in-game
+OpenGL or Metal bridge coverage beyond hosted CI.
+
+After `Signoff` or `All`, the host workflow automatically copies the matching
+guest result directories into a compressed archive at
+`.tmp/macos-vm/results/openq4-macos-results-<run-id>.tar.gz`. Use
+`-MacOSRunId <id>` to choose a stable collection prefix, `-ResultCollectionDir`
+to store archives elsewhere, or `-SkipResultCollection` when the results should
+remain only on the Apple host. The copied archive is validated automatically
+unless `-SkipResultArchiveValidation` is set.
+
+The automatic validation checks structure, both bridge reports, workflow logs,
+and renderer smoke/matrix output. To rerun it manually:
+
+```powershell
+python tools/macos/validate_signoff_archive.py .tmp/macos-vm/results/openq4-macos-results-<run-id>.tar.gz
+```
+
+After the manual hardware checklist has been completed in both bridge reports,
+add `-RequireCompletedSignoffChecklist` to the host workflow, or
+`--require-completed-checklist` to the manual validator command, to fail on any
+remaining unchecked item.
+
+If the manual checklist is completed on the Apple host after the original run,
+copy and validate the existing results without rebuilding:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4MacOSWorkflow.ps1 `
+  -Action CollectResults `
+  -MacHost <host> `
+  -MacOSRunId <run-id> `
+  -MacOSGraphicsBridge both `
+  -RequireCompletedSignoffChecklist
+```
+
+The Apple OpenAL framework remains the default signoff audio provider. To test
+the system/OpenAL Soft-style path on the Apple host, add
+`-MacOSOpenALProvider system`; the selected provider is recorded in the signoff
+report.
+
 ## Expected Validation
 
 For macOS debugging, do not stop at static checks. Use this VM workflow for:
@@ -107,6 +170,11 @@ For macOS debugging, do not stop at static checks. Use this VM workflow for:
 - `renderer_gameplay_benchmark.py --profile smoke`
 - `renderer_validation_matrix.py --tiers auto,gl41`
 - staged launch from `~/Desktop/openQ4.command`
+- `macos-runtime-signoff.md` from `-Action Signoff -MacOSGraphicsBridge both` when collecting hardware signoff evidence
+- `.tmp/macos-vm/results/openq4-macos-results-<run-id>.tar.gz` copied back by the host workflow
+- `tools/macos/validate_signoff_archive.py` run against the collected archive
+- `-RequireCompletedSignoffChecklist` once manual hardware checks are filled in
+- `-Action CollectResults -MacOSRunId <run-id>` when re-collecting completed manual evidence
 - log inspection under the guest `~/openq4-work/results/` run directory
 
 The remaining stock Quake 4 duplicate material warnings from retail assets are

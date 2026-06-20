@@ -218,7 +218,12 @@ void Sys_Error(const char *error, ...)
     }
 
     NSLog(@"Sys_Error: %@", formattedString);
-    NSRunAlertPanel(@"openQ4 Error", @"%@", nil, nil, nil, formattedString);
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"openQ4 Error"];
+    [alert setInformativeText:formattedString];
+    [alert setAlertStyle:NSAlertStyleCritical];
+    [alert runModal];
+    [alert release];
 
     [formattedString release];
     Sys_Quit();
