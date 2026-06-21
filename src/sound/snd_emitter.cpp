@@ -32,17 +32,30 @@ If you have questions concerning this license or the applicable additional terms
 
 idCVar s_singleEmitter( "s_singleEmitter", "0", CVAR_INTEGER, "mute all sounds but this emitter" );
 idCVar s_showStartSound( "s_showStartSound", "0", CVAR_BOOL, "print a message every time a sound starts/stops" );
+idCVar s_skipStartSound( "s_skipStartSound", "0", CVAR_BOOL, "skip starting sounds" );
 idCVar s_useOcclusion( "s_useOcclusion", "1", CVAR_BOOL, "Attenuate sounds based on walls" );
 idCVar s_centerFractionVO( "s_centerFractionVO", "0.75", CVAR_FLOAT, "Portion of VO sounds routed to the center channel" );
 
 extern idCVar s_playDefaultSound;
 extern idCVar s_noSound;
+extern idCVar s_volume;
 extern idCVar s_musicVolume;
 extern idCVar s_constantAmplitude;
+extern idCVar s_speakerFraction;
+extern idCVar s_radioChatterFraction;
+extern idCVar s_quadraticFalloff;
+extern idCVar s_frequencyShift;
 
 static const int SOUND_SHADER_SHAKE_RATE_HZ = 30;
 static const float SOUND_SHADER_MATERIAL_SHAKE_SCALE = 2800.0f;
 static const float SOUND_SHADER_SHAKE_NORMALIZE = 1.0f / 32768.0f;
+static const float SOUND_WORLD_VOLUME_EPSILON = 1.0f / 1024.0f;
+static const int Q4_SOUND_CHANNEL_SPECIAL_ATTENUATION_EXEMPT_0 = 6;
+static const int Q4_SOUND_CHANNEL_SPECIAL_ATTENUATION_EXEMPT_1 = 7;
+static const int Q4_SOUND_CHANNEL_RADIO_CHATTER = 10;
+static const int Q4_SOUND_CLASS_SPECIAL_ATTENUATION_EXEMPT = 3;
+static const float SOUND_FREQUENCY_SHIFT_MIN = 0.25f;
+static const float SOUND_FREQUENCY_SHIFT_MAX = 4.0f;
 
 static ID_INLINE float VolumeScaleToDB( const float volumeScale )
 {
@@ -51,6 +64,47 @@ static ID_INLINE float VolumeScaleToDB( const float volumeScale )
 		return DB_SILENCE;
 	}
 	return LinearToDB( volumeScale );
+}
+
+static ID_INLINE float SoundChannelFrequencyShift( const idSoundChannel* chan )
+{
+	if( !s_frequencyShift.GetBool() )
+	{
+		return 1.0f;
+	}
+
+	const float frequencyShift = chan->parms.frequencyShift > 0.0f ? chan->parms.frequencyShift : 1.0f;
+	return idMath::ClampFloat( SOUND_FREQUENCY_SHIFT_MIN, SOUND_FREQUENCY_SHIFT_MAX, frequencyShift );
+}
+
+static void SoundWorldApplyDistanceFalloff( float& volumeScale, const float distance, const float minDistance, const float maxDistance )
+{
+	if( distance >= maxDistance )
+	{
+		volumeScale = 0.0f;
+	}
+	else if( ( distance > minDistance ) && ( maxDistance > minDistance ) )
+	{
+		float frac = 1.0f - ( distance - minDistance ) / ( maxDistance - minDistance );
+		frac = idMath::ClampFloat( 0.0f, 1.0f, frac );
+		if( s_quadraticFalloff.GetBool() )
+		{
+			frac *= frac;
+		}
+		volumeScale *= frac;
+	}
+}
+
+static bool IsRadioChatterChannel( const idSoundChannel* chan )
+{
+	return chan->logicalChannel == Q4_SOUND_CHANNEL_RADIO_CHATTER;
+}
+
+static bool ReceivesQuake4ExtraAttenuation( const idSoundChannel* chan )
+{
+	return chan->logicalChannel != Q4_SOUND_CHANNEL_SPECIAL_ATTENUATION_EXEMPT_0 &&
+		   chan->logicalChannel != Q4_SOUND_CHANNEL_SPECIAL_ATTENUATION_EXEMPT_1 &&
+		   chan->parms.soundClass != Q4_SOUND_CLASS_SPECIAL_ATTENUATION_EXEMPT;
 }
 
 /*
@@ -70,8 +124,8 @@ void idSoundFade::Clear()
 {
 	fadeStartTime = 0;
 	fadeEndTime = 0;
-	fadeStartVolume = 0.0f;
-	fadeEndVolume = 0.0f;
+	fadeStartVolume = 1.0f;
+	fadeEndVolume = 1.0f;
 }
 
 /*
@@ -274,25 +328,24 @@ void idSoundChannel::UpdateVolume( int currentTime )
 		}
 	}
 
-	// volume fading
-	float baseVolumeScale = parms.volume;
+	float volumeScale = parms.volume;
 	if( soundShader != NULL && leadinSample != NULL && soundShader->leadinVolume != 1.0f )
 	{
 		const int leadinLength = leadinSample->LengthInMsec();
 		const int relativeTime = currentTime - startTime;
 		if( relativeTime >= 0 && relativeTime < leadinLength )
 		{
-			baseVolumeScale = soundShader->leadinVolume;
+			volumeScale = soundShader->leadinVolume;
 		}
 	}
 
-	float newVolumeDB = VolumeScaleToDB( baseVolumeScale );
-	newVolumeDB += volumeFade.GetVolume( currentTime );
-	newVolumeDB += soundWorld->volumeFade.GetVolume( currentTime );
-	newVolumeDB += soundWorld->pauseFade.GetVolume( currentTime );
+	volumeScale *= s_volume.GetFloat();
+	volumeScale *= volumeFade.GetVolume( currentTime );
+	volumeScale *= soundWorld->volumeFade.GetVolume( currentTime );
+	volumeScale *= soundWorld->pauseFade.GetVolume( currentTime );
 	if( parms.soundClass >= 0 && parms.soundClass < SOUND_MAX_CLASSES )
 	{
-		newVolumeDB += soundWorld->soundClassFade[parms.soundClass].GetVolume( currentTime );
+		volumeScale *= soundWorld->soundClassFade[parms.soundClass].GetVolume( currentTime );
 	}
 
 	bool global = ( parms.soundShaderFlags & SSF_GLOBAL ) != 0;
@@ -300,35 +353,40 @@ void idSoundChannel::UpdateVolume( int currentTime )
 	// attenuation
 	if( !global && !emitterIsListener )
 	{
-		float distance = ( parms.soundShaderFlags & SSF_NO_OCCLUSION ) == 0 ? emitter->spatializedDistance : emitter->directDistance;
-		float mindist = parms.minDistance;
-		float maxdist = parms.maxDistance;
-		if( distance >= maxdist )
+		const bool noOcclusion = ( parms.soundShaderFlags & SSF_NO_OCCLUSION ) != 0 || !s_useOcclusion.GetBool();
+		const float distance = noOcclusion ? emitter->directDistance : emitter->spatializedDistance;
+		SoundWorldApplyDistanceFalloff( volumeScale, distance, parms.minDistance, parms.maxDistance );
+
+		// OpenQ4 keeps the SDK's SSF_IS_VO name for bit 13; retail uses the same bit to bypass
+		// this extra speaker/radio attenuation pass.
+		if( ( parms.soundShaderFlags & SSF_IS_VO ) == 0 && ReceivesQuake4ExtraAttenuation( this ) )
 		{
-			newVolumeDB = DB_SILENCE;
-		}
-		else if( ( distance > mindist ) && ( maxdist > mindist ) )
-		{
-			float f = ( distance - mindist ) / ( maxdist - mindist );
-			newVolumeDB += LinearToDB( Square( 1.0f - f ) );
+			if( IsRadioChatterChannel( this ) )
+			{
+				volumeScale *= s_radioChatterFraction.GetFloat();
+			}
+			else
+			{
+				volumeScale *= s_speakerFraction.GetFloat();
+			}
 		}
 	}
 
 	if( ( parms.soundShaderFlags & SSF_MUSIC ) != 0 )
 	{
-		newVolumeDB += VolumeScaleToDB( idMath::ClampFloat( 0.0f, 1.0f, s_musicVolume.GetFloat() ) );
+		volumeScale *= idMath::ClampFloat( 0.0f, 1.0f, s_musicVolume.GetFloat() );
 	}
 
 	if( soundSystemLocal.musicMuted && ( parms.soundShaderFlags & SSF_MUSIC ) != 0 )
 	{
-		newVolumeDB = DB_SILENCE;
+		volumeScale = 0.0f;
 	}
 
 	// store the new volume on the channel
-	volumeDB = newVolumeDB;
+	volumeDB = volumeScale < SOUND_WORLD_VOLUME_EPSILON ? DB_SILENCE : VolumeScaleToDB( volumeScale );
 
 	// keep track of the maximum volume
-	float currentVolumeDB = newVolumeDB;
+	float currentVolumeDB = volumeDB;
 	if( hardwareVoice != NULL )
 	{
 		float amplitude = hardwareVoice->GetAmplitude();
@@ -371,7 +429,8 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	}
 
 	// convert volumes from decibels to linear
-	float volume = Max( 0.0f, DBtoLinear( volumeDB + volumeAdd ) );
+	const float mixedVolumeDB = volumeDB + volumeAdd;
+	float volume = mixedVolumeDB <= DB_SILENCE ? 0.0f : Max( 0.0f, DBtoLinear( mixedVolumeDB ) );
 
 	if( ( parms.soundShaderFlags & SSF_UNCLAMPED ) == 0 )
 	{
@@ -400,7 +459,7 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 		}
 
 		issueStart = true;
-		startOffset = currentTime - startTime;
+		startOffset = idMath::FtoiFast( ( currentTime - startTime ) * SoundChannelFrequencyShift( this ) );
 	}
 
 	if( omni || global || emitterIsListener )
@@ -439,7 +498,7 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	hardwareVoice->SetGain( volume );
 	hardwareVoice->SetInnerRadius( parms.minDistance * METERS_TO_DOOM );
 	const float pitchScale = idMath::ClampFloat( 0.2f, 5.0f, com_timescale.GetFloat() );
-	const float frequencyShift = (parms.frequencyShift > 0.0f) ? parms.frequencyShift : 1.0f;
+	const float frequencyShift = SoundChannelFrequencyShift( this );
 	const float wetLevel = Max( 0.0f, parms.wetLevel );
 	const float dryLevel = Max( 0.0f, parms.dryLevel );
 	hardwareVoice->SetWetLevel( wetLevel );
@@ -846,7 +905,7 @@ int idSoundEmitterLocal::StartSound( const idSoundShader* shader, const s_channe
 	assert( soundWorld != NULL );
 	assert( soundWorld->emitters[this->index] == this );
 
-	if( shader == NULL )
+	if( shader == NULL || s_skipStartSound.GetBool() )
 	{
 		return 0;
 	}
@@ -1043,7 +1102,8 @@ int idSoundEmitterLocal::StartSound( const idSoundShader* shader, const s_channe
 	else
 	{
 		// This channel will automatically end at this time
-		chan->endTime = chan->startTime + length + 100;
+		const float frequencyShift = SoundChannelFrequencyShift( chan );
+		chan->endTime = chan->startTime + idMath::FtoiFast( length / frequencyShift ) + 100;
 	}
 	if( showStartSound )
 	{
@@ -1190,7 +1250,7 @@ void idSoundEmitterLocal::FadeSound( const s_channelType channel, float to, floa
 		}
 
 		// fade it
-		chan->volumeFade.Fade( to - VolumeScaleToDB( chan->parms.volume ), overMSec, soundWorld->GetSoundTime() );
+		chan->volumeFade.Fade( idMath::dBToScale( to ), overMSec, soundWorld->GetSoundTime() );
 	}
 }
 

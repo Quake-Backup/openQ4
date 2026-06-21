@@ -30,9 +30,11 @@ If you have questions concerning this license or the applicable additional terms
 #include "snd_local.h"
 
 idCVar s_noSound( "s_noSound", "0", CVAR_BOOL, "returns NULL for all sounds loaded and does not update the sound rendering" );
-idCVar s_volume( "s_volume", "1.0", CVAR_ARCHIVE | CVAR_FLOAT, "master volume (0-1)", 0.0f, 1.0f );
+idCVar s_volume( "s_volume", "0.5", CVAR_ARCHIVE | CVAR_FLOAT, "master volume (0-1)", 0.0f, 1.0f );
 idCVar s_musicVolume( "s_musicVolume", "0.5", CVAR_ARCHIVE | CVAR_FLOAT, "music volume (0-1)", 0.0f, 1.0f );
-idCVar s_speakerFraction( "s_speakerFraction", "0.5", CVAR_ARCHIVE | CVAR_FLOAT, "center channel mix fraction" );
+idCVar s_speakerFraction( "s_speakerFraction", "0.65", CVAR_ARCHIVE | CVAR_FLOAT, "speaker attenuation fraction" );
+idCVar s_radioChatterFraction( "s_radioChatterFraction", "0.5", CVAR_ARCHIVE | CVAR_FLOAT, "radio chatter attenuation fraction" );
+idCVar s_frequencyShift( "s_frequencyShift", "1", CVAR_BOOL, "enable sound shader frequency shift playback" );
 idCVar s_useOpenAL( "s_useOpenAL", "1", CVAR_ARCHIVE | CVAR_BOOL, "use OpenAL audio backend" );
 idCVar s_deviceName( "s_deviceName", "", CVAR_ARCHIVE, "OpenAL device name override" );
 idCVar s_useEAXReverb( "s_useEAXReverb", "1", CVAR_ARCHIVE | CVAR_BOOL, "use EAX reverb if available" );
@@ -113,26 +115,150 @@ RestartSound_f
 */
 void RestartSound_f( const idCmdArgs& args )
 {
+	idLib::Printf( "Sound System Restart...\n" );
 	soundSystemLocal.Restart();
+}
+
+/*
+========================
+ReloadSounds_f
+========================
+*/
+void ReloadSounds_f( const idCmdArgs& args )
+{
+	soundSystemLocal.Restart();
+	idLib::Printf( "sound: changed sounds reloaded\n" );
+}
+
+/*
+========================
+ListSounds_f
+
+========================
+*/
+void ListSounds_f( const idCmdArgs& args )
+{
+	const char* filter = args.Argc() > 1 ? args.Argv( 1 ) : NULL;
+	int totalSounds = 0;
+	int totalLoaded = 0;
+	int totalMemory = 0;
+	int totalCompressedMemory = 0;
+	int totalPCMMemory = 0;
+
+	idLib::Printf( "Sound samples\n-------------\n" );
+	for( int i = 0; i < soundSystemLocal.samples.Num(); i++ )
+	{
+		const idSoundSample* sample = soundSystemLocal.samples[ i ];
+		const char* name = sample->GetName();
+
+		if( filter != NULL && idStr::FindText( name, filter, false ) < 0 )
+		{
+			continue;
+		}
+
+		const bool loaded = sample->IsLoaded();
+		const bool compressed = loaded && sample->IsCompressed();
+		const char* channels = sample->NumChannels() == 2 ? "ST" : "  ";
+		const char* format = compressed ? "OGG" : "WAV";
+		const char* state = !loaded ? "(PURGED)" : ( sample->IsDefault() ? "(DEFAULTED)" : "" );
+		const int sampleRateKHz = sample->SampleRate() > 0 ? sample->SampleRate() / 1000 : 0;
+		const int sampleBytes = sample->BufferSize();
+
+		idLib::Printf( "%s %2dkHz %6dms %5dkB %4s %s%s\n",
+					   channels,
+					   sampleRateKHz,
+					   loaded ? sample->LengthInMsec() : 0,
+					   sampleBytes / 1024,
+					   format,
+					   name,
+					   state );
+
+		totalSounds++;
+		if( loaded )
+		{
+			totalLoaded++;
+			totalMemory += sampleBytes;
+			if( compressed )
+			{
+				totalCompressedMemory += sampleBytes;
+			}
+			else
+			{
+				totalPCMMemory += sampleBytes;
+			}
+		}
+	}
+
+	idLib::Printf( "%8d total sounds\n", totalSounds );
+	idLib::Printf( "%8d total samples loaded\n", totalLoaded );
+	idLib::Printf( "%8d kB OGG samples loaded\n", totalCompressedMemory / 1024 );
+	idLib::Printf( "%8d kB PCM samples loaded\n", totalPCMMemory / 1024 );
+	idLib::Printf( "%8d kB total system memory used\n", totalMemory / 1024 );
 }
 
 /*
 ========================
 ListSamples_f
 
+Compatibility name retained for OpenQ4 scripts.
 ========================
 */
 void ListSamples_f( const idCmdArgs& args )
 {
-	idLib::Printf( "Sound samples\n-------------\n" );
-	int totSize = 0;
-	for( int i = 0; i < soundSystemLocal.samples.Num(); i++ )
+	ListSounds_f( args );
+}
+
+/*
+========================
+ListSoundDecoders_f
+
+OpenQ4's OpenAL path decodes through hardware voices rather than retail's persistent idSampleDecoder objects.
+========================
+*/
+void ListSoundDecoders_f( const idCmdArgs& args )
+{
+	int numActiveDecoders = 0;
+
+	for( int w = 0; w < soundSystemLocal.soundWorlds.Num(); w++ )
 	{
-		idLib::Printf( "%05dkb\t%s\n", soundSystemLocal.samples[ i ]->BufferSize() / 1024, soundSystemLocal.samples[ i ]->GetName() );
-		totSize += soundSystemLocal.samples[ i ]->BufferSize();
+		const idSoundWorldLocal* soundWorld = soundSystemLocal.soundWorlds[ w ];
+		if( soundWorld != soundSystemLocal.currentSoundWorld )
+		{
+			continue;
+		}
+
+		for( int e = 0; e < soundWorld->emitters.Num(); e++ )
+		{
+			const idSoundEmitterLocal* emitter = soundWorld->emitters[ e ];
+			if( emitter == NULL )
+			{
+				continue;
+			}
+
+			for( int c = 0; c < emitter->channels.Num(); c++ )
+			{
+				const idSoundChannel* channel = emitter->channels[ c ];
+				if( channel == NULL || channel->hardwareVoice == NULL || channel->leadinSample == NULL )
+				{
+					continue;
+				}
+
+				const idSoundSample* sample = channel->leadinSample;
+				const int elapsedMS = Max( 0, soundSystemLocal.SoundTime() - channel->startTime );
+				const int durationMS = Max( 1, sample->LengthInMsec() );
+				const int percent = channel->IsLooping() ? ( 100 * ( elapsedMS % durationMS ) / durationMS ) : Min( 100, 100 * elapsedMS / durationMS );
+				const char* format = sample->IsCompressed() ? "OGG" : "WAV";
+
+				idLib::Printf( "%3d decoding %3d%% %s: %s\n", numActiveDecoders, percent, format, sample->GetName() );
+				numActiveDecoders++;
+			}
+		}
 	}
-	idLib::Printf( "--------------------------\n" );
-	idLib::Printf( "%05dkb total size\n", totSize / 1024 );
+
+	idLib::Printf( "%d decoders\n", numActiveDecoders );
+	idLib::Printf( "0 waiting decoders\n" );
+	idLib::Printf( "%d active decoders\n", numActiveDecoders );
+	idLib::Printf( "0 kB decoder memory in 0 blocks\n" );
 }
 
 /*
@@ -142,6 +268,8 @@ idSoundSystemLocal::Restart
 */
 void idSoundSystemLocal::Restart()
 {
+	const bool wasMuted = IsMuted();
+	SetMute( true );
 
 	// Mute all channels in all worlds
 	for( int i = 0; i < soundWorlds.Num(); i++ )
@@ -171,6 +299,22 @@ void idSoundSystemLocal::Restart()
 	}
 
 	InitStreamBuffers();
+
+	if( !s_noSound.GetBool() )
+	{
+		int reloaded = 0;
+		for( int i = 0; i < samples.Num(); i++ )
+		{
+			samples[i]->LoadResource();
+			if( samples[i]->IsLoaded() )
+			{
+				reloaded++;
+			}
+		}
+		idLib::Printf( "%d sound samples reloaded\n", reloaded );
+	}
+
+	SetMute( wasMuted );
 }
 
 /*
@@ -194,9 +338,12 @@ void idSoundSystemLocal::Init()
 		InitStreamBuffers();
 	}
 
-	cmdSystem->AddCommand( "testSound", TestSound_f, 0, "tests a sound", idCmdSystem::ArgCompletion_SoundName );
-	cmdSystem->AddCommand( "s_restart", RestartSound_f, 0, "restart sound system" );
-	cmdSystem->AddCommand( "listSamples", ListSamples_f, 0, "lists all loaded sound samples" );
+	cmdSystem->AddCommand( "testSound", TestSound_f, CMD_FL_SOUND, "tests a sound", idCmdSystem::ArgCompletion_SoundName );
+	cmdSystem->AddCommand( "listSounds", ListSounds_f, CMD_FL_SOUND, "lists all sounds" );
+	cmdSystem->AddCommand( "listSoundDecoders", ListSoundDecoders_f, CMD_FL_SOUND, "list active sound decoders" );
+	cmdSystem->AddCommand( "reloadSounds", ReloadSounds_f, CMD_FL_SOUND | CMD_FL_CHEAT, "reloads all sounds" );
+	cmdSystem->AddCommand( "s_restart", RestartSound_f, CMD_FL_SOUND, "restarts the sound system" );
+	cmdSystem->AddCommand( "listSamples", ListSamples_f, CMD_FL_SOUND, "lists all loaded sound samples" );
 
 	idLib::Printf( "sound system initialized.\n" );
 	idLib::Printf( "--------------------------------------\n" );

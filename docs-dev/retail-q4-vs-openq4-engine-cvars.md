@@ -130,7 +130,6 @@ Generated on 2026-04-19.
 | `s_dotbias2` | idSoundSystemLocal::s_dotbias2 | sound/default/snd_world.cpp:840<br>sound/default/snd_world.cpp:842<br>sound/default/snd_world.cpp:845<br>`+1 more` |
 | `s_dotbias6` | idSoundSystemLocal::s_dotbias6 | sound/default/snd_world.cpp:799<br>sound/default/snd_world.cpp:800<br>sound/default/snd_world.cpp:807<br>`+7 more` |
 | `s_force22kHz` | s_force22kHz | sound/default/snd_cache.cpp:170 |
-| `s_frequencyShift` | idSoundSystemLocal::s_frequencyShift | sound/default/snd_world.cpp:1127 |
 | `s_globalFraction` | s_globalFraction | sound/default/snd_world.cpp:1227<br>sound/default/snd_world.cpp:1228<br>sound/default/snd_world.cpp:1229<br>`+3 more` |
 | `s_loadOpenALFailed` | idSoundSystemLocal::s_loadOpenALFailed | sound/default/snd_system.cpp:2000<br>sound/default/snd_system.cpp:2001 |
 | `s_maxChannelsMixed` | s_maxChannelsMixed | sound/default/snd_system.cpp:2251<br>sound/default/snd_world.cpp:2616 |
@@ -139,11 +138,8 @@ Generated on 2026-04-19.
 | `s_minVolume2` | idSoundSystemLocal::s_minVolume2 | sound/default/snd_world.cpp:847<br>sound/default/snd_world.cpp:848<br>sound/default/snd_world.cpp:850<br>`+1 more` |
 | `s_minVolume6` | idSoundSystemLocal::s_minVolume6 | sound/default/snd_world.cpp:802<br>sound/default/snd_world.cpp:803<br>sound/default/snd_world.cpp:810<br>`+7 more` |
 | `s_muteEAXReverb` | idSoundSystemLocal::s_muteEAXReverb | sound/default/snd_world.cpp:2304<br>sound/default/snd_world.cpp:2563 |
-| `s_quadraticFalloff` | s_quadraticFalloff | sound/default/snd_world.cpp:1742<br>sound/default/snd_world.cpp:937 |
-| `s_radioChatterFraction` | idSoundSystemLocal::s_radioChatterFraction | sound/default/snd_world.cpp:952 |
 | `s_realTimeDecoding` | idSoundSystemLocal::s_realTimeDecoding | sound/default/snd_decoder.cpp:195 |
 | `s_reverse` | idSoundSystemLocal::s_reverse | sound/default/snd_system.cpp:747<br>sound/default/snd_system.cpp:822 |
-| `s_skipStartSound` | s_skipStartSound | sound/default/snd_emitter.cpp:534 |
 | `s_spatializationDecay` | idSoundSystemLocal::s_spatializationDecay | sound/default/snd_world.cpp:841 |
 | `s_useDeferredSettings` | idSoundSystemLocal::s_useDeferredSettings | sound/default/snd_system.cpp:719<br>sound/default/snd_system.cpp:734<br>sound/default/snd_system.cpp:798<br>`+1 more` |
 | `s_useEAXOcclusion` | idSoundSystemLocal::s_useEAXOcclusion | sound/default/snd_system.cpp:2005<br>sound/default/snd_system.cpp:2006<br>sound/default/snd_system.cpp:2060<br>`+8 more` |
@@ -354,14 +350,14 @@ Generated on 2026-04-19.
 | `s_maxEmitterChannels` | src/sound/snd_world.cpp:34 |
 | `s_meterPosition` | src/sound/OpenAL/AL_SoundHardware.cpp:38 |
 | `s_muteUnfocused` | src/framework/Session.cpp:61 |
-| `s_openALEfxDebugMode` | src/sound/snd_system.cpp:39 |
+| `s_openALEfxDebugMode` | src/sound/snd_system.cpp:41 |
 | `s_showPerfData` | src/sound/OpenAL/AL_SoundHardware.cpp:40 |
-| `s_showVoices` | src/sound/snd_world.cpp:42 |
+| `s_showVoices` | src/sound/snd_world.cpp:43 |
 | `s_skipHardwareSets` | src/sound/OpenAL/AL_SoundVoice.cpp:75 |
 | `s_unpauseFadeInTime` | src/sound/snd_world.cpp:39 |
-| `s_useCompression` | src/sound/snd_system.cpp:44<br>src/sound/snd_system.cpp:48 |
-| `s_volume_dB` | src/sound/snd_world.cpp:43 |
-| `s_warnOnMissingSamples` | src/sound/snd_system.cpp:41 |
+| `s_useCompression` | src/sound/snd_system.cpp:47<br>src/sound/snd_system.cpp:51 |
+| `s_volume_dB` | src/sound/snd_world.cpp:44 |
+| `s_warnOnMissingSamples` | src/sound/snd_system.cpp:43 |
 | `si_idleServer` | src/framework/async/AsyncNetwork.cpp:68 |
 | `sv_cheats` | src/framework/async/AsyncNetwork.cpp:39 |
 | `sys_lang` | src/sys/sys_local.cpp:38 |
@@ -369,6 +365,15 @@ Generated on 2026-04-19.
 | `sys_videoRam` | src/sys/linux/glimp.cpp:41<br>src/sys/linux/linux_sdl3.cpp:44 |
 | `ui_aspectCorrection` | src/ui/UserInterface.cpp:39 |
 | `win_printScreenToSystemTool` | src/sys/win32/win_main.cpp:77 |
+
+## 2a. Shared Sound Names Added After Snapshot
+
+| CVar | openQ4 source(s) | Retail evidence | Note |
+| --- | --- | --- | --- |
+| `s_quadraticFalloff` | src/sound/snd_world.cpp:41 | sound/default/snd_world.cpp:1742<br>sound/default/snd_world.cpp:937 | Implemented for retail distance-falloff parity; full retail metadata should be re-extracted in the next cvar audit. |
+| `s_radioChatterFraction` | src/sound/snd_system.cpp:36 | sound/default/snd_world.cpp:952 | Implemented for the retail radio-chatter attenuation branch; full retail metadata should be re-extracted in the next cvar audit. |
+| `s_frequencyShift` | src/sound/snd_system.cpp:37 | sound/default/snd_world.cpp:1127 | Implemented for retail frequency-shift gating; full retail metadata should be re-extracted in the next cvar audit. |
+| `s_skipStartSound` | src/sound/snd_emitter.cpp:35 | sound/default/snd_emitter.cpp:534 | Implemented for retail start-sound suppression diagnostics; full retail metadata should be re-extracted in the next cvar audit. |
 
 ## 3. Shared Names With Metadata Differences
 
@@ -417,12 +422,12 @@ Generated on 2026-04-19.
 | `s_showLevelMeter` | flags | `0` | `0` | `SND ST CH` | `ST AR` | `bool` | `bool` |
 | `s_showStartSound` | flags, type/range | `0` | `0` | `SND ST CH` | `ST CH` | `int` | `bool` |
 | `s_singleEmitter` | default, flags | `-1` | `0` | `SND ST CH` | `ST CH` | `int` | `int` |
-| `s_speakerFraction` | default, flags | `0.65` | `0.5` | `SND ST AR` | `ST AR` | `float` | `float` |
+| `s_speakerFraction` | flags | `0.65` | `0.65` | `SND ST AR` | `ST AR` | `float` | `float` |
 | `s_subFraction` | flags | `0.5` | `0.5` | `SND ST AR` | `ST AR` | `float` | `float` |
 | `s_useEAXReverb` | flags | `1` | `1` | `SND ST AR` | `ST AR` | `bool` | `bool` |
 | `s_useOcclusion` | flags | `1` | `1` | `SND ST AR` | `ST CH` | `bool` | `bool` |
 | `s_useOpenAL` | default, flags | `0` | `1` | `SND ST AR` | `ST AR` | `bool` | `bool` |
-| `s_volume` | default, flags, type/range | `0.5` | `1.0` | `SND ST AR` | `ST AR` | `float` | `float [0, 1]` |
+| `s_volume` | flags, type/range | `0.5` | `0.5` | `SND ST AR` | `ST AR` | `float` | `float [0, 1]` |
 | `si_version` | default | `Quake4  V1.4.3 win-x86 Oct 20 2010` | `openQ4 0.1.010-nightly.20260319.1+g47f946e3.dirty` | `SYS SI ST RO` | `SYS SI ST RO` | `string` | `string` |
 | `timescale` | type/range | `1` | `1` | `SYS ST CH` | `SYS ST CH` | `string` | `float [0.1, 10]` |
 
