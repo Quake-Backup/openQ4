@@ -2282,6 +2282,10 @@ bool idRenderWorldLocal::LoadLightGridPackFile( const char *name ) {
 			common->Warning( "%s contains compressed light-grid chunks but this renderer does not support texture compression", name );
 			return false;
 		}
+		if ( chunks[i].format == FMT_BC7 && !glConfig.bptcTextureCompressionAvailable ) {
+			common->Warning( "%s contains BC7 light-grid chunks but this renderer does not support BPTC texture compression", name );
+			return false;
+		}
 		if ( LightGrid_AssignPackChunk( this, name, chunks[i] ) ) {
 			assignedChunks++;
 		}
@@ -2334,6 +2338,10 @@ static lightGridPackedImageLoadResult_t LightGrid_LoadPackedImageRef( const ligh
 	}
 	if ( ( header.format == FMT_DXT1 || header.format == FMT_DXT5 ) && !glConfig.textureCompressionAvailable ) {
 		common->Warning( "LightGrid pack: %s requires compressed texture support", image->GetName() );
+		return LIGHTGRID_PACKED_IMAGE_LOAD_FAILED;
+	}
+	if ( header.format == FMT_BC7 && !glConfig.bptcTextureCompressionAvailable ) {
+		common->Warning( "LightGrid pack: %s requires BC7/BPTC texture support", image->GetName() );
 		return LIGHTGRID_PACKED_IMAGE_LOAD_FAILED;
 	}
 

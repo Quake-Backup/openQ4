@@ -48,6 +48,7 @@ public:
 	void				SetName( const char *_name ) { imgName = _name; }
 
 	void				Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips, bool filterNeutralAlpha = false );
+	void				Load2DFromCompressedData( int width, int height, int numLevels, textureFormat_t textureFormat, textureColor_t colorFormat, const byte *data, const int *levelOffsets, const int *levelSizes );
 	void				LoadCubeFromMemory( int width, const byte * pics[6], int numLevels, textureFormat_t & textureFormat, bool gammaMips );
 
 	void				Clear();

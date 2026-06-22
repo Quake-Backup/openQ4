@@ -10,6 +10,8 @@ Process:
 
 ## Ready For Changelog
 
+- [x] Texture replacements can now drop a valid `.dds` beside an existing `.tga` or `.jpg` reference and have openQ4 prefer the DDS source automatically: DXT DDS files feed the normal RGBA/generation path, while BC7 DDS files upload directly on BPTC-capable renderers without requiring material scripts to be rewritten.
+- [x] Explicit BC7 DDS textures can now load directly as precompressed BPTC images on OpenGL 4.2/BPTC-capable renderers, including standard DX10 BC7 headers and common BC7 FourCC variants; unsupported drivers fail closed with a clear warning instead of mis-decoding the image.
 - [x] Manual releases keep macOS downloads visible when Apple signing credentials are absent: the workflow now always builds the macOS ARM64 OpenGL and Metal packages, publishes signed/notarized DMGs when Developer ID/notary secrets are configured, and otherwise publishes clearly labeled `-unsigned.tar.gz` archives that are ad-hoc signed only for bundle validity and expected to show normal Gatekeeper warnings.
 - [x] Manual releases no longer fail late when Apple signing credentials are absent: the workflow now builds a credential-aware release matrix, keeps Windows/Linux packages mandatory, includes signed/notarized macOS DMGs only when all Apple Developer ID and notary secrets are configured, and verifies the expected artifact list against the matrix that actually ran.
 - [x] Runtime PK4 packaging now tracks `content/baseoq4/pak0/` and `content/baseoq4/pak1/` through generated source manifests, so removing generated content such as obsolete Air Defense 1 light-grid chunks no longer leaves stale Ninja dependencies that break the fast local build.

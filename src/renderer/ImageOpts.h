@@ -94,7 +94,9 @@ enum textureFormat_t {
 	// Floating-point color image formats
 	//------------------------
 
-	FMT_RGBA16F			// 64 bpp
+	FMT_RGBA16F,		// 64 bpp
+
+	FMT_BC7				// 8 bpp
 };
 
 int BitsForFormat( textureFormat_t format );

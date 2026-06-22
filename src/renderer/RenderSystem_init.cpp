@@ -987,13 +987,17 @@ static void R_CheckPortableExtensions( void ) {
 	// GL_ARB_texture_non_power_of_two
 	glConfig.textureNonPowerOfTwoAvailable = R_CheckExtension( "GL_ARB_texture_non_power_of_two" );
 
-	// GL_ARB_texture_compression + GL_S3_s3tc
+	// GL 1.3/GL_ARB_texture_compression + GL_S3_s3tc
 	// DRI drivers may have GL_ARB_texture_compression but no GL_EXT_texture_compression_s3tc
-	if ( R_CheckExtension( "GL_ARB_texture_compression" ) && R_CheckExtension( "GL_EXT_texture_compression_s3tc" ) ) {
+	const bool textureCompressionAvailable = glConfig.glVersion >= 1.3f || R_CheckExtension( "GL_ARB_texture_compression" );
+	if ( textureCompressionAvailable && R_CheckExtension( "GL_EXT_texture_compression_s3tc" ) ) {
 		glConfig.textureCompressionAvailable = true;
 	} else {
 		glConfig.textureCompressionAvailable = false;
 	}
+	glConfig.bptcTextureCompressionAvailable =
+		textureCompressionAvailable &&
+		( glConfig.glVersion >= 4.2f || R_CheckExtension( "GL_ARB_texture_compression_bptc" ) || R_CheckExtension( "GL_EXT_texture_compression_bptc" ) );
 
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicAvailable = R_CheckExtension( "GL_EXT_texture_filter_anisotropic" );

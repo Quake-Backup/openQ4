@@ -48,6 +48,7 @@ int BitsForFormat( textureFormat_t format ) {
 		case FMT_INT8:		return 8;
 		case FMT_DXT1:		return 4;
 		case FMT_DXT5:		return 8;
+		case FMT_BC7:		return 8;
 		case FMT_DEPTH:		return 32;
 		case FMT_DEPTH_STENCIL:	return 32;
 		case FMT_X16:		return 16;
@@ -372,6 +373,44 @@ name contains GetName() upon entry
 	}
 }
 
+static bool R_ImageNameIsProgramOperator( const idToken &token ) {
+	return !token.Icmp( "heightmap" ) ||
+		!token.Icmp( "addnormals" ) ||
+		!token.Icmp( "smoothnormals" ) ||
+		!token.Icmp( "add" ) ||
+		!token.Icmp( "scale" ) ||
+		!token.Icmp( "invertAlpha" ) ||
+		!token.Icmp( "invertColor" ) ||
+		!token.Icmp( "makeIntensity" ) ||
+		!token.Icmp( "downsize" ) ||
+		!token.Icmp( "makeAlpha" );
+}
+
+static bool R_IsPlainImageSourceName( const char *imageName ) {
+	if ( imageName == NULL || imageName[0] == '\0' ) {
+		return false;
+	}
+
+	idLexer src;
+	src.LoadMemory( imageName, strlen( imageName ), imageName );
+	src.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
+
+	idToken token;
+	if ( !src.ReadToken( &token ) ) {
+		src.FreeSource();
+		return false;
+	}
+	if ( R_ImageNameIsProgramOperator( token ) ) {
+		src.FreeSource();
+		return false;
+	}
+
+	idToken nextToken;
+	const bool hasExtraToken = src.ReadToken( &nextToken );
+	src.FreeSource();
+	return !hasExtraToken;
+}
+
 
 /*
 ===============
@@ -429,12 +468,43 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			generatedName.SetFileExtension( mipExt );
 		}
 	}
+	idStr sourceExtension;
+	idStr sourceName = GetName();
+	sourceName.ExtractFileExtension( sourceExtension );
+	const bool explicitDDSImage = idStr::Icmp( sourceExtension.c_str(), "dds" ) == 0;
+	idStr preferredDDSName;
+	ID_TIME_T preferredDDSFileTime = FILE_NOT_FOUND_TIMESTAMP;
+	bool preferredDDSPrecompressed = false;
+	const bool preferredDDSImage = !explicitDDSImage &&
+		cubeFiles == CF_2D &&
+		R_IsPlainImageSourceName( GetName() ) &&
+		R_ResolvePreferredDDSImageSource( GetName(), preferredDDSName, &preferredDDSFileTime, true, &preferredDDSPrecompressed );
+	const char *loadSourceName = preferredDDSImage ? preferredDDSName.c_str() : GetName();
+	const bool selectedDDSImage = explicitDDSImage || preferredDDSImage;
+	const bool bypassGeneratedFile = explicitDDSImage || preferredDDSPrecompressed;
+	if ( preferredDDSImage && !preferredDDSPrecompressed ) {
+		generatedName = preferredDDSName;
+		GetGeneratedName( generatedName, usage, cubeFiles, allowDownSize, flags );
+		if ( filter == TF_LINEAR || filter == TF_NEAREST ) {
+			idStr mipExt;
+			generatedName.ExtractFileExtension( mipExt );
+			generatedName.StripFileExtension();
+			generatedName += "m0";
+			if ( mipExt.Length() > 0 ) {
+				generatedName.SetFileExtension( mipExt );
+			}
+		}
+	}
 
 	idBinaryImage im( generatedName );
-	binaryFileTime = im.LoadFromGeneratedFileUnchecked();
+	if ( bypassGeneratedFile ) {
+		binaryFileTime = FILE_NOT_FOUND_TIMESTAMP;
+	} else {
+		binaryFileTime = im.LoadFromGeneratedFileUnchecked();
+	}
 
 	// BFHACK, do not want to tweak on buildgame so catch these images here
-	if ( binaryFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
+	if ( !bypassGeneratedFile && binaryFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
 		int c = 1;
 		while ( c-- > 0 ) {
 			if ( generatedName.Find( "guis/assets/white#__0000", false ) >= 0 ) {
@@ -473,6 +543,8 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		if ( !sourceFileTimeKnown ) {
 			if ( cubeFiles != CF_2D ) {
 				R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
+			} else if ( preferredDDSImage ) {
+				sourceFileTime = preferredDDSFileTime;
 			} else {
 				R_LoadImageProgram( GetName(), NULL, NULL, NULL, &sourceFileTime, &usage );
 			}
@@ -500,6 +572,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		//}
 	} else {
 		im.Clear();
+		bool loadedPrecompressedDDS = false;
 		if ( cubeFiles != CF_2D ) {
 			int size;
 			byte * pics[6];
@@ -545,41 +618,55 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			int width, height;
 			byte * pic;
 
-			// load the full specification, and perform any image program calculations
-			R_LoadImageProgram( GetName(), &pic, &width, &height, &sourceFileTime, &usage );
+			if ( selectedDDSImage && R_LoadPrecompressedDDS( loadSourceName, im, &sourceFileTime ) ) {
+				const bimageFile_t &header = im.GetFileHeader();
+				opts.width = header.width;
+				opts.height = header.height;
+				opts.numLevels = header.numLevels;
+				opts.colorFormat = (textureColor_t)header.colorFormat;
+				opts.format = (textureFormat_t)header.format;
+				opts.textureType = (textureType_t)header.textureType;
+				sourceFileTimeKnown = true;
+				loadedPrecompressedDDS = true;
+			} else {
+				// load the full specification, and perform any image program calculations
+				R_LoadImageProgram( loadSourceName, &pic, &width, &height, &sourceFileTime, &usage );
 
-			if ( pic == NULL ) {
-				if ( !R_ShouldSuppressMissingImageWarning( GetName() ) ) {
-					idLib::Warning( "Couldn't load image: %s : %s", GetName(), generatedName.c_str() );
+				if ( pic == NULL ) {
+					if ( !R_ShouldSuppressMissingImageWarning( GetName() ) ) {
+						idLib::Warning( "Couldn't load image: %s : %s", GetName(), generatedName.c_str() );
+					}
+					// create a default so it doesn't get continuously reloaded
+					opts.width = 8;
+					opts.height = 8;
+					opts.numLevels = 1;
+					DeriveOpts();
+					AllocImage();
+
+					// clear the data so it's not left uninitialized
+					idTempArray<byte> clear( opts.width * opts.height * 4 );
+					memset( clear.Ptr(), 0, clear.Size() );
+					for ( int level = 0; level < opts.numLevels; level++ ) {
+						SubImageUpload( level, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
+					}
+
+					defaulted = true;
+					return;
 				}
-				// create a default so it doesn't get continuously reloaded
-				opts.width = 8;
-				opts.height = 8;
-				opts.numLevels = 1;
+
+				R_DownsizeLoadedImageData( usage, allowDownSize, pic, width, height );
+				opts.width = width;
+				opts.height = height;
+				opts.numLevels = 0;
 				DeriveOpts();
-				AllocImage();
-				
-				// clear the data so it's not left uninitialized
-				idTempArray<byte> clear( opts.width * opts.height * 4 );
-				memset( clear.Ptr(), 0, clear.Size() );
-				for ( int level = 0; level < opts.numLevels; level++ ) {
-					SubImageUpload( level, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
-				}
+				im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips, ( flags & IMAGEFLAG_FILTER_NEUTRAL_ALPHA ) != 0 );
 
-				defaulted = true;
-				return;
+				Mem_Free( pic );
 			}
-
-			R_DownsizeLoadedImageData( usage, allowDownSize, pic, width, height );
-			opts.width = width;
-			opts.height = height;
-			opts.numLevels = 0;
-			DeriveOpts();
-			im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips, ( flags & IMAGEFLAG_FILTER_NEUTRAL_ALPHA ) != 0 );
-
-			Mem_Free( pic );
 		}
-		binaryFileTime = im.WriteGeneratedFile( sourceFileTime );
+		if ( !loadedPrecompressedDDS ) {
+			binaryFileTime = im.WriteGeneratedFile( sourceFileTime );
+		}
 	}
 
 	AllocImage();
@@ -1226,6 +1313,7 @@ void idImage::Print() const {
 		NAME_FORMAT( INT8 );
 		NAME_FORMAT( DXT1 );
 		NAME_FORMAT( DXT5 );
+		NAME_FORMAT( BC7 );
 		NAME_FORMAT( DEPTH );
 		NAME_FORMAT( X16 );
 		NAME_FORMAT( Y16_X16 );

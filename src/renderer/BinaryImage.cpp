@@ -257,6 +257,38 @@ static void PadImageTo4x4( const byte *src, int width, int height, byte dest[64]
 
 /*
 ========================
+idBinaryImage::Load2DFromCompressedData
+========================
+*/
+void idBinaryImage::Load2DFromCompressedData( int width, int height, int numLevels, textureFormat_t textureFormat, textureColor_t colorFormat, const byte *data, const int *levelOffsets, const int *levelSizes ) {
+	Clear();
+
+	fileData.textureType = TT_2D;
+	fileData.format = textureFormat;
+	fileData.colorFormat = colorFormat;
+	fileData.width = width;
+	fileData.height = height;
+	fileData.numLevels = numLevels;
+
+	images.SetNum( numLevels );
+	int levelWidth = width;
+	int levelHeight = height;
+	for ( int level = 0; level < numLevels; level++ ) {
+		idBinaryImageData &img = images[ level ];
+		img.level = level;
+		img.destZ = 0;
+		img.width = levelWidth;
+		img.height = levelHeight;
+		img.Alloc( levelSizes[ level ] );
+		memcpy( img.data, data + levelOffsets[ level ], levelSizes[ level ] );
+
+		levelWidth = Max( 1, levelWidth >> 1 );
+		levelHeight = Max( 1, levelHeight >> 1 );
+	}
+}
+
+/*
+========================
 idBinaryImage::LoadCubeFromMemory
 ========================
 */
@@ -476,7 +508,7 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 	if ( fileData.textureType != TT_2D && fileData.textureType != TT_CUBIC ) {
 		return false;
 	}
-	if ( fileData.format <= FMT_NONE || fileData.format > FMT_RGBA16F || BitsForFormat( (textureFormat_t)fileData.format ) <= 0 ) {
+	if ( fileData.format <= FMT_NONE || fileData.format > FMT_BC7 || BitsForFormat( (textureFormat_t)fileData.format ) <= 0 ) {
 		return false;
 	}
 	if ( fileData.colorFormat < CFM_DEFAULT || fileData.colorFormat > CFM_GREEN_ALPHA ) {

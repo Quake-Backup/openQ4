@@ -161,7 +161,7 @@ public:
 	// done under any normal circumstances, and probably not at all on consoles.
 	void		Resize(int width, int height);
 
-	bool		IsCompressed() const { return (opts.format == FMT_DXT1 || opts.format == FMT_DXT5); }
+	bool		IsCompressed() const { return ( opts.format == FMT_DXT1 || opts.format == FMT_DXT5 || opts.format == FMT_BC7 ); }
 
 	void		SetTexParameters();	// update aniso and trilinear
 
@@ -387,6 +387,8 @@ IMAGEFILES
 */
 
 void R_LoadImage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2);
+bool R_ResolvePreferredDDSImageSource(const char* name, idStr& ddsName, ID_TIME_T* timestamp, bool allowPrecompressedDDS, bool* precompressedDDS);
+bool R_LoadPrecompressedDDS(const char* name, idBinaryImage& image, ID_TIME_T* timestamp);
 // pic is in top to bottom raster format
 bool R_LoadCubeImages(const char* cname, cubeFiles_t extensions, byte* pic[6], int* size, ID_TIME_T* timestamp);
 

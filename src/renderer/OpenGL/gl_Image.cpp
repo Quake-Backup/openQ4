@@ -44,6 +44,30 @@ Contains the Image implementation for OpenGL.
 #define GL_SRGB8_ALPHA8 0x8C43
 #endif
 
+#ifndef GL_COMPRESSED_RGBA_BPTC_UNORM
+#define GL_COMPRESSED_RGBA_BPTC_UNORM 0x8E8C
+#endif
+
+static int R_CompressedTextureSizeInBytes( textureFormat_t format, int width, int height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return 0;
+	}
+
+	const int bitsPerPixel = BitsForFormat( format );
+	if ( bitsPerPixel <= 0 ) {
+		idLib::Error( "Invalid compressed texture format %d", format );
+	}
+
+	const int64 blocksWide = Max( (int64)1, ( (int64)width + 3 ) >> 2 );
+	const int64 blocksHigh = Max( (int64)1, ( (int64)height + 3 ) >> 2 );
+	const int64 bytesPerBlock = (int64)16 * bitsPerPixel / 8;
+	const int64 compressedSize = blocksWide * blocksHigh * bytesPerBlock;
+	if ( compressedSize <= 0 || compressedSize > 0x7fffffff ) {
+		idLib::Error( "Compressed texture %dx%d format %d is too large", width, height, format );
+	}
+	return (int)compressedSize;
+}
+
 /*
 ========================
 idImage::SubImageUpload
@@ -58,9 +82,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		assert( !(x&3) && !(y&3) );
 
 		// compressed size may be larger than the dimensions due to padding to quads
-		int quadW = ( width + 3 ) & ~3;
-		int quadH = ( height + 3 ) & ~3;
-		compressedSize = quadW * quadH * BitsForFormat( opts.format ) / 8;
+		compressedSize = R_CompressedTextureSizeInBytes( opts.format, width, height );
 
 		int padW = ( opts.width + 3 ) & ~3;
 		int padH = ( opts.height + 3 ) & ~3;
@@ -382,6 +404,11 @@ void idImage::AllocImage() {
 		dataFormat = GL_RGBA;
 		dataType = GL_UNSIGNED_BYTE;
 		break;
+	case FMT_BC7:
+		internalFormat = GL_COMPRESSED_RGBA_BPTC_UNORM;
+		dataFormat = GL_RGBA;
+		dataType = GL_UNSIGNED_BYTE;
+		break;
 	case FMT_DEPTH:
 		internalFormat = GL_DEPTH_COMPONENT;
 		dataFormat = GL_DEPTH_COMPONENT;
@@ -483,7 +510,7 @@ void idImage::AllocImage() {
 			GL_CheckErrors();
 
 			if ( IsCompressed() ) {
-				int compressedSize = ( ((w+3)/4) * ((h+3)/4) * int64_t( 16 ) * BitsForFormat( opts.format ) ) / 8;
+				const int compressedSize = R_CompressedTextureSizeInBytes( opts.format, w, h );
 
 				// Even though the OpenGL specification allows the 'data' pointer to be NULL, for some
 				// drivers we actually need to upload data to get it to allocate the texture.
