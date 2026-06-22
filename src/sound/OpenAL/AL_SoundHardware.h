@@ -79,6 +79,10 @@ public:
 	{
 		return efxEnabled;
 	}
+	bool			HasEFXFilters() const
+	{
+		return efxFiltersAvailable;
+	}
 	ALuint			GetAuxEffectSlot() const
 	{
 		return auxEffectSlot;
@@ -110,6 +114,7 @@ private:
 
 	int					lastResetTime;
 	int					lastDeviceCheckTime;
+	bool				efxFiltersAvailable;
 	bool				efxEnabled;
 	ALuint				auxEffectSlot;
 	ALuint				auxReverbEffect;

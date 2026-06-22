@@ -78,6 +78,11 @@ public:
 		idSoundVoice_Base::SetDryLevel( dry );
 		ApplyWetDryRouting();
 	}
+	void		SetOcclusion( float f ) override
+	{
+		idSoundVoice_Base::SetOcclusion( f );
+		ApplyWetDryRouting();
+	}
 
 	void					Create( const idSoundSample* leadinSample, const idSoundSample* loopingSample );
 

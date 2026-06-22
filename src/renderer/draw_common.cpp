@@ -168,15 +168,7 @@ static bool RB_DrawSurfIsDecalMaterialPass( const drawSurf_t *surf ) {
 		|| ( material->GetSort() >= SS_DECAL && material->GetSort() < SS_FAR );
 }
 
-static bool RB_DrawSurfIsBeforeLitDecalPass( const drawSurf_t *surf ) {
-	const idMaterial *material = surf != NULL ? surf->material : NULL;
-	if ( material == NULL || RB_DrawSurfIsDecalMaterialPass( surf ) ) {
-		return false;
-	}
-	return material->GetSort() < SS_DECAL;
-}
-
-static bool RB_DrawSurfIsLitDecalOrLaterPass( const drawSurf_t *surf ) {
+static bool RB_DrawSurfIsPreFogMaterialPass( const drawSurf_t *surf ) {
 	const idMaterial *material = surf != NULL ? surf->material : NULL;
 	if ( material == NULL ) {
 		return false;
@@ -184,15 +176,23 @@ static bool RB_DrawSurfIsLitDecalOrLaterPass( const drawSurf_t *surf ) {
 	if ( RB_DrawSurfIsDecalMaterialPass( surf ) ) {
 		return !r_skipDecals.GetBool();
 	}
-	return material->GetSort() >= SS_DECAL && material->GetSort() < SS_POST_PROCESS;
+	return material->GetSort() < SS_MEDIUM;
 }
 
-static bool RB_DrawSurfNeedsPreDecalLegacyFeedback( const drawSurf_t *surf ) {
-	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsBeforeLitDecalPass( surf );
+static bool RB_DrawSurfIsPostFogMaterialPass( const drawSurf_t *surf ) {
+	const idMaterial *material = surf != NULL ? surf->material : NULL;
+	if ( material == NULL ) {
+		return false;
+	}
+	return material->GetSort() >= SS_MEDIUM && material->GetSort() < SS_POST_PROCESS;
 }
 
-static bool RB_DrawSurfNeedsLitDecalLegacyFeedback( const drawSurf_t *surf ) {
-	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsLitDecalOrLaterPass( surf );
+static bool RB_DrawSurfNeedsPreFogLegacyFeedback( const drawSurf_t *surf ) {
+	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsPreFogMaterialPass( surf );
+}
+
+static bool RB_DrawSurfNeedsPostFogLegacyFeedback( const drawSurf_t *surf ) {
+	return RB_DrawSurfNeedsLegacyFeedback( surf ) && RB_DrawSurfIsPostFogMaterialPass( surf );
 }
 
 static bool RB_HasLegacyFeedbackDrawSurfs( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderPassSurfFilter_t filter = NULL ) {
@@ -9316,20 +9316,21 @@ void	RB_STD_DrawView( void ) {
 		backEnd.viewDef->renderWorld->RenderPortalFades();
 	}
 
-	// now draw non-light dependent base shading. Decal and later blended
-	// surfaces are held until after every lighting contribution so their blend
-	// modes see the same lit framebuffer as retail Q4's decal pass.
+	// Draw the non-light dependent base shading that retail Q4 submits before
+	// fog: opaque, decal, and far-sort surfaces. Medium/close translucent
+	// surfaces are held until after fog so additive BSE layers are not painted
+	// over by fog volumes that only owned the opaque scene depth.
 	const int processed = RB_STD_FindPostProcessStart( drawSurfs, numDrawSurfs );
 	const bool ambientLegacySkipped = R_ModernGLExecutor_LegacyPassCanSkipForView( RENDER_PASS_AMBIENT, backEnd.viewDef );
-	const bool preDecalFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsBeforeLitDecalPass );
-	const bool litDecalFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsLitDecalOrLaterPass );
+	const bool preFogFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsPreFogMaterialPass );
+	const bool postFogFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsPostFogMaterialPass );
 	if ( ambientLegacySkipped ) {
-		if ( preDecalFeedback || litDecalFeedback ) {
+		if ( preFogFeedback || postFogFeedback ) {
 			R_ModernGLExecutor_ComposeVisibleSceneForPost();
 			backEnd.currentRenderCopied = false;
 			backEnd.currentDepthCopied = false;
-			if ( preDecalFeedback ) {
-				RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsPreDecalLegacyFeedback );
+			if ( preFogFeedback ) {
+				RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsPreFogLegacyFeedback );
 			}
 		}
 		R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_AMBIENT );
@@ -9338,7 +9339,7 @@ void	RB_STD_DrawView( void ) {
 		// Some pre-post materials legitimately populate _currentRender; if the
 		// full list is submitted here, SS_POST_PROCESS surfaces can consume that
 		// stale pre-light-grid copy before the indirect overlay has been added.
-		RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfIsBeforeLitDecalPass );
+		RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfIsPreFogMaterialPass );
 	}
 
 	// Modern visible color/depth must be handed back before legacy overlay
@@ -9357,16 +9358,6 @@ void	RB_STD_DrawView( void ) {
 
 	R_ModernGLExecutor_SubmitForwardPlusDecalOverlay( backEnd.viewDef );
 
-	if ( ambientLegacySkipped ) {
-		if ( litDecalFeedback ) {
-			backEnd.currentRenderCopied = false;
-			backEnd.currentDepthCopied = false;
-			RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsLitDecalLegacyFeedback );
-		}
-	} else if ( processed > 0 ) {
-		RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfIsLitDecalOrLaterPass );
-	}
-
 	// Apply a configurable brightness floor after ambient/material passes.
 	RB_STD_ForceAmbient();
 
@@ -9375,6 +9366,18 @@ void	RB_STD_DrawView( void ) {
 		R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_FOG_BLEND );
 	} else {
 		RB_STD_FogAllLights();
+		backEnd.currentRenderCopied = false;
+		backEnd.currentDepthCopied = false;
+	}
+
+	if ( ambientLegacySkipped ) {
+		if ( postFogFeedback ) {
+			backEnd.currentRenderCopied = false;
+			backEnd.currentDepthCopied = false;
+			RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfNeedsPostFogLegacyFeedback );
+		}
+	} else if ( processed > 0 ) {
+		RB_STD_DrawShaderPasses( drawSurfs, processed, RB_DrawSurfIsPostFogMaterialPass );
 	}
 
 	RB_CaptureSceneRenderTargetPreserveDepthImage();

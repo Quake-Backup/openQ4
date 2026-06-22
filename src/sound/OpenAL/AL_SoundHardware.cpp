@@ -127,6 +127,7 @@ idSoundHardware_OpenAL::idSoundHardware_OpenAL()
 {
 	openalDevice = NULL;
 	openalContext = NULL;
+	efxFiltersAvailable = false;
 	efxEnabled = false;
 	auxEffectSlot = 0;
 	auxReverbEffect = 0;
@@ -537,10 +538,17 @@ void idSoundHardware_OpenAL::Init()
 	}
 
 	efxEnabled = false;
+	efxFiltersAvailable = false;
 	auxEffectSlot = 0;
 	auxReverbEffect = 0;
 #if OPENQ4_OPENAL_EFX_SUPPORTED
-	if( s_useEAXReverb.GetBool() && openALVersionSupported && alcIsExtensionPresent( openalDevice, "ALC_EXT_EFX" ) == AL_TRUE && openQ4_LoadHardwareEfxProcs() )
+	const bool efxExtensionPresent = openALVersionSupported && alcIsExtensionPresent( openalDevice, "ALC_EXT_EFX" ) == AL_TRUE;
+	efxFiltersAvailable = efxExtensionPresent;
+	if( efxFiltersAvailable )
+	{
+		common->Printf( "OpenAL EFX filters available.\n" );
+	}
+	if( s_useEAXReverb.GetBool() && efxExtensionPresent && openQ4_LoadHardwareEfxProcs() )
 	{
 		qalGenEffects( 1, &auxReverbEffect );
 		if( CheckALErrors() == AL_NO_ERROR && auxReverbEffect != 0 )
@@ -588,7 +596,7 @@ void idSoundHardware_OpenAL::Init()
 	{
 		common->Warning( "OpenAL EFX requested, but the runtime OpenAL version is older than 1.1; wet send disabled." );
 	}
-	else if( s_useEAXReverb.GetBool() && alcIsExtensionPresent( openalDevice, "ALC_EXT_EFX" ) == AL_TRUE )
+	else if( s_useEAXReverb.GetBool() && efxExtensionPresent )
 	{
 		common->Warning( "OpenAL EFX extension reported but required EFX entry points are missing; wet send disabled." );
 	}
@@ -712,6 +720,7 @@ void idSoundHardware_OpenAL::Shutdown()
 		}
 	#endif
 	efxEnabled = false;
+	efxFiltersAvailable = false;
 
 #if defined(USE_DOOMCLASSIC)
 	// ---------------------

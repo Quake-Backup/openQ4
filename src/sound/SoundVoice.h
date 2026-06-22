@@ -93,9 +93,9 @@ public:
 	const idSoundSample* GetCurrentSample();
 
 	// Controls the low pass filter, where 0.0f = no filtering, 1.0f = full filter
-	void		SetOcclusion( float f )
+	virtual void	SetOcclusion( float f )
 	{
-		occlusion = f;
+		occlusion = idMath::ClampFloat( 0.0f, 1.0f, f );
 	}
 
 	float		GetGain()

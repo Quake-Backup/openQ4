@@ -776,7 +776,12 @@ set at maxDistance
 */
 static const int MAX_PORTAL_TRACE_DEPTH = 10;
 
-void idSoundWorldLocal::ResolveOrigin( const int stackDepth, const soundPortalTrace_t* prevStack, const int soundArea, const float dist, const idVec3& soundOrigin, idSoundEmitterLocal* def )
+static bool SoundPortalBlocksAudio( const exitPortal_t& portal )
+{
+	return ( portal.blockingBits & ( PS_BLOCK_VIEW | PS_BLOCK_AIR ) ) != 0;
+}
+
+void idSoundWorldLocal::ResolveOrigin( const int stackDepth, const soundPortalTrace_t* prevStack, const int soundArea, const float dist, const int occludingPortals, const idVec3& soundOrigin, idSoundEmitterLocal* def )
 {
 
 	if( dist >= def->spatializedDistance )
@@ -792,6 +797,7 @@ void idSoundWorldLocal::ResolveOrigin( const int stackDepth, const soundPortalTr
 		{
 			def->spatializedDistance = fullDist;
 			def->spatializedOrigin = soundOrigin;
+			def->occludingPortalCount = occludingPortals;
 		}
 		return;
 	}
@@ -814,7 +820,8 @@ void idSoundWorldLocal::ResolveOrigin( const int stackDepth, const soundPortalTr
 		float occlusionDistance = 0;
 
 		// air blocking windows will block sound like closed doors
-		if( ( re.blockingBits & ( PS_BLOCK_VIEW | PS_BLOCK_AIR ) ) )
+		const bool portalBlocksAudio = SoundPortalBlocksAudio( re );
+		if( portalBlocksAudio )
 		{
 			// we could just completely cut sound off, but reducing the volume works better
 			// continue;
@@ -884,7 +891,8 @@ void idSoundWorldLocal::ResolveOrigin( const int stackDepth, const soundPortalTr
 		idVec3 tlen = source - soundOrigin;
 		float tlenLength = tlen.LengthFast();
 
-		ResolveOrigin( stackDepth + 1, &newStack, otherArea, dist + tlenLength + occlusionDistance, source, def );
+		const int childOccludingPortals = occludingPortals + ( portalBlocksAudio ? 1 : 0 );
+		ResolveOrigin( stackDepth + 1, &newStack, otherArea, dist + tlenLength + occlusionDistance, childOccludingPortals, source, def );
 	}
 }
 

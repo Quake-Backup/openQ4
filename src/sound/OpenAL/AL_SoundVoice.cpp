@@ -79,6 +79,14 @@ idCVar s_debugHardware( "s_debugHardware", "0", CVAR_BOOL, "Print a message any 
 static int SYSTEM_SAMPLE_RATE = 44100;
 static float ONE_OVER_SYSTEM_SAMPLE_RATE = 1.0f / SYSTEM_SAMPLE_RATE;
 
+static const float OPENQ4_OPENAL_MAX_OCCLUSION_ATTENUATION_DB = -18.0f;
+
+static float OpenQ4_OcclusionToLowPassHF( const float occlusion )
+{
+	const float clampedOcclusion = idMath::ClampFloat( 0.0f, 1.0f, occlusion );
+	return DBtoLinear( OPENQ4_OPENAL_MAX_OCCLUSION_ATTENUATION_DB * clampedOcclusion );
+}
+
 
 
 /*
@@ -832,7 +840,7 @@ idSoundVoice_OpenAL::CreateWetDryFilters
 void idSoundVoice_OpenAL::CreateWetDryFilters()
 {
 #if OPENQ4_OPENAL_EFX_SUPPORTED
-	if( !soundSystemLocal.hardware.HasEFX() || !openQ4_LoadVoiceEfxProcs() || !alIsSource( openalSource ) )
+	if( !soundSystemLocal.hardware.HasEFXFilters() || !openQ4_LoadVoiceEfxProcs() || !alIsSource( openalSource ) )
 	{
 		return;
 	}
@@ -928,18 +936,19 @@ void idSoundVoice_OpenAL::ApplyWetDryRouting()
 	effectiveDry = idMath::ClampFloat( 0.0f, 1.0f, effectiveDry );
 	effectiveWet = idMath::ClampFloat( 0.0f, 1.0f, effectiveWet );
 	const float effectiveGain = Max( 0.0f, gain );
+	const float occlusionGainHF = OpenQ4_OcclusionToLowPassHF( occlusion );
 
 #if OPENQ4_OPENAL_EFX_SUPPORTED
-	const bool hasEfx = soundSystemLocal.hardware.HasEFX() && openQ4_LoadVoiceEfxProcs();
-	if( hasEfx )
+	const bool hasEfxFilters = soundSystemLocal.hardware.HasEFXFilters() && openQ4_LoadVoiceEfxProcs();
+	if( hasEfxFilters )
 	{
 		CreateWetDryFilters();
 	}
 
-	if( hasEfx && openalDirectFilter != 0 )
+	if( hasEfxFilters && openalDirectFilter != 0 )
 	{
 		qalFilterf( openalDirectFilter, AL_LOWPASS_GAIN, effectiveDry );
-		qalFilterf( openalDirectFilter, AL_LOWPASS_GAINHF, 1.0f );
+		qalFilterf( openalDirectFilter, AL_LOWPASS_GAINHF, occlusionGainHF );
 		alSourcei( openalSource, AL_DIRECT_FILTER, openalDirectFilter );
 		alSourcef( openalSource, AL_GAIN, effectiveGain );
 	}
@@ -948,13 +957,13 @@ void idSoundVoice_OpenAL::ApplyWetDryRouting()
 		alSourcef( openalSource, AL_GAIN, effectiveGain * effectiveDry );
 	}
 
-	if( hasEfx && openalAuxFilter != 0 && soundSystemLocal.hardware.GetAuxEffectSlot() != 0 && effectiveWet > 0.0f )
+	if( hasEfxFilters && openalAuxFilter != 0 && soundSystemLocal.hardware.HasEFX() && soundSystemLocal.hardware.GetAuxEffectSlot() != 0 && effectiveWet > 0.0f )
 	{
 		qalFilterf( openalAuxFilter, AL_LOWPASS_GAIN, effectiveWet );
-		qalFilterf( openalAuxFilter, AL_LOWPASS_GAINHF, 1.0f );
+		qalFilterf( openalAuxFilter, AL_LOWPASS_GAINHF, occlusionGainHF );
 		alSource3i( openalSource, AL_AUXILIARY_SEND_FILTER, soundSystemLocal.hardware.GetAuxEffectSlot(), 0, openalAuxFilter );
 	}
-	else if( hasEfx )
+	else if( hasEfxFilters )
 	{
 		alSource3i( openalSource, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 0, AL_FILTER_NULL );
 	}

@@ -385,7 +385,7 @@ public:
 		const soundPortalTrace_t* prevStack;
 	};
 
-	void			ResolveOrigin( const int stackDepth, const soundPortalTrace_t* prevStack, const int soundArea, const float dist, const idVec3& soundOrigin, idSoundEmitterLocal* def );
+	void			ResolveOrigin( const int stackDepth, const soundPortalTrace_t* prevStack, const int soundArea, const float dist, const int occludingPortals, const idVec3& soundOrigin, idSoundEmitterLocal* def );
 };
 
 
@@ -450,6 +450,7 @@ public:
 	float		directDistance;
 	float		spatializedDistance;
 	idVec3		spatializedOrigin;
+	int			occludingPortalCount;
 
 	// sound emitters are only allocated by the soundWorld block allocator
 	idSoundEmitterLocal();

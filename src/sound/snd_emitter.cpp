@@ -58,6 +58,8 @@ static const int Q4_SOUND_CHANNEL_RADIO_CHATTER = 10;
 static const int Q4_SOUND_CLASS_SPECIAL_ATTENUATION_EXEMPT = 3;
 static const float SOUND_FREQUENCY_SHIFT_MIN = 0.25f;
 static const float SOUND_FREQUENCY_SHIFT_MAX = 4.0f;
+static const float SOUND_OCCLUSION_PER_BLOCKED_PORTAL = 0.5f;
+static const float SOUND_ENVIROSUIT_OCCLUSION = 0.5f;
 
 static ID_INLINE float VolumeScaleToDB( const float volumeScale )
 {
@@ -95,6 +97,13 @@ static void SoundWorldApplyDistanceFalloff( float& volumeScale, const float dist
 		}
 		volumeScale *= frac;
 	}
+}
+
+static ID_INLINE float SoundCombineOcclusion( const float a, const float b )
+{
+	const float clampedA = idMath::ClampFloat( 0.0f, 1.0f, a );
+	const float clampedB = idMath::ClampFloat( 0.0f, 1.0f, b );
+	return 1.0f - ( ( 1.0f - clampedA ) * ( 1.0f - clampedB ) );
 }
 
 static bool IsRadioChatterChannel( const idSoundChannel* chan )
@@ -515,14 +524,17 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	hardwareVoice->SetDryLevel( dryLevel );
 	hardwareVoice->SetPitch( soundWorld->slowmoSpeed * pitchScale * frequencyShift );
 
+	float occlusion = 0.0f;
+	const bool allowPortalOcclusion = !global && !emitterIsListener && s_useOcclusion.GetBool() && ( parms.soundShaderFlags & SSF_NO_OCCLUSION ) == 0;
+	if( allowPortalOcclusion && leadinSample->NumChannels() == 1 && emitter->occludingPortalCount > 0 )
+	{
+		occlusion = SoundCombineOcclusion( occlusion, SOUND_OCCLUSION_PER_BLOCKED_PORTAL * emitter->occludingPortalCount );
+	}
 	if( soundWorld->enviroSuitActive )
 	{
-		hardwareVoice->SetOcclusion( 0.5f );
+		occlusion = SoundCombineOcclusion( occlusion, SOUND_ENVIROSUIT_OCCLUSION );
 	}
-	else
-	{
-		hardwareVoice->SetOcclusion( 0.0f );
-	}
+	hardwareVoice->SetOcclusion( occlusion );
 
 	if( issueStart )
 	{
@@ -584,6 +596,7 @@ void idSoundEmitterLocal::Init( int i, idSoundWorldLocal* sw )
 	lastValidPortalArea = -1;
 	spatializedDistance = 0.0f;
 	spatializedOrigin.Zero();
+	occludingPortalCount = 0;
 
 	memset( &parms, 0, sizeof( parms ) );
 
@@ -739,6 +752,7 @@ void idSoundEmitterLocal::Update( int currentTime )
 
 	spatializedDistance = directDistance;
 	spatializedOrigin = origin;
+	occludingPortalCount = 0;
 
 	// Initialize all channels to silence
 	for( int i = 0; i < channels.Num(); i++ )
@@ -802,7 +816,7 @@ void idSoundEmitterLocal::Update( int currentTime )
 			if( soundInArea != -1 && soundInArea != soundWorld->listener.area )
 			{
 				spatializedDistance = maxDistance * METERS_TO_DOOM;
-				soundWorld->ResolveOrigin( 0, NULL, soundInArea, 0.0f, origin, this );
+				soundWorld->ResolveOrigin( 0, NULL, soundInArea, 0.0f, 0, origin, this );
 				spatializedDistance *= DOOM_TO_METERS;
 			}
 		}

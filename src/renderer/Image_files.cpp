@@ -977,22 +977,42 @@ static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_T
 		return;
 	}
 
-	byte *ddsRgba = (byte *)R_StaticAlloc( ddsWidth * ddsHeight * 4 );
+	const int realWidth = (int)ddsWidth;
+	const int realHeight = (int)ddsHeight;
+	const int paddedWidth = blocksWide * 4;
+	const int paddedHeight = blocksHigh * 4;
+	const int64 realBytes = (int64)realWidth * realHeight * 4;
+	const int64 paddedBytes = (int64)paddedWidth * paddedHeight * 4;
+	if ( realBytes <= 0 || realBytes > 0x7FFFFFFF || paddedBytes <= 0 || paddedBytes > 0x7FFFFFFF ) {
+		fileSystem->FreeFile( buffer );
+		return;
+	}
+
+	byte *decodedRgba = (byte *)R_StaticAlloc( (int)paddedBytes );
 	idDxtDecoder decoder;
 	if ( compression == DDS_COMPRESSION_DXT1 ) {
-		decoder.DecompressImageDXT1( buffer + dataOffset, ddsRgba, ddsWidth, ddsHeight );
+		decoder.DecompressImageDXT1( buffer + dataOffset, decodedRgba, paddedWidth, paddedHeight );
 	} else if ( decodeRXGBNormalMap ) {
-		decoder.DecompressNormalMapDXT5( buffer + dataOffset, ddsRgba, ddsWidth, ddsHeight );
+		decoder.DecompressNormalMapDXT5( buffer + dataOffset, decodedRgba, paddedWidth, paddedHeight );
 	} else {
-		decoder.DecompressImageDXT5( buffer + dataOffset, ddsRgba, ddsWidth, ddsHeight );
+		decoder.DecompressImageDXT5( buffer + dataOffset, decodedRgba, paddedWidth, paddedHeight );
+	}
+
+	byte *ddsRgba = decodedRgba;
+	if ( paddedWidth != realWidth || paddedHeight != realHeight ) {
+		ddsRgba = (byte *)R_StaticAlloc( (int)realBytes );
+		for ( int y = 0; y < realHeight; y++ ) {
+			memcpy( ddsRgba + y * realWidth * 4, decodedRgba + y * paddedWidth * 4, realWidth * 4 );
+		}
+		R_StaticFree( decodedRgba );
 	}
 
 	*pic = ddsRgba;
 	if ( width ) {
-		*width = ddsWidth;
+		*width = realWidth;
 	}
 	if ( height ) {
-		*height = ddsHeight;
+		*height = realHeight;
 	}
 
 	fileSystem->FreeFile( buffer );
