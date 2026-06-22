@@ -19,12 +19,14 @@ The `com_performancePreset` cvar stores the selected preset. Use the Settings me
 |---|---|
 | `minimum` | Most constrained systems; uses 50% resolution scale, no AA, texture downsizing, and conservative audio mixing. |
 | `lowpower` | Raspberry Pi-class and other low-power systems; keeps authored rendering features on while reducing resolution scale, AA, post effects, texture pressure, and surround/EAX audio cost. |
-| `performance` | Modest desktops/handhelds aiming for smoother frame pacing. |
+| `performance` | Modest desktops/handhelds aiming for smoother frame pacing, with lighter AA and audio-effect targets. |
 | `balanced` | General desktop default. |
 | `quality` | Strong desktop GPUs. |
 | `ultra` | Explicit high-end choice; Auto-Detect does not select this automatically. |
 
 `autoDetectPerformancePreset` selects a conservative preset from platform signals, CPU architecture, system RAM, video RAM, and renderer capability flags, then applies it. On Raspberry Pi hosts or explicit `OPENQ4_LOWPOWER=1` / `OPENQ4_RASPBERRYPI=1` signals, it chooses `lowpower`.
+
+For package or platform validation, `performancePresetSelfTest` checks that the preset commands are registered, every preset is known to the menu-facing cvar, auto-detect returns a supported non-`ultra` preset, and the preset cvar mappings apply correctly.
 
 ## Core Display Settings
 

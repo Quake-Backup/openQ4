@@ -30,6 +30,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/docs/img/readme-airdefense1-cinematic.png" alt="openQ4 airdefense1 intro cinematic showing ships approaching Stroggos" width="92%">
+</p>
+
 ## What is openQ4?
 
 **openQ4** is an open-source replacement for the Quake 4 engine and game binaries, built to keep the original game playable on modern PCs while improving presentation, controls, packaging, and day-to-day usability.
@@ -38,16 +42,6 @@ It is designed for players who want the original Quake 4 experience with a clean
 
 > [!NOTE]
 > openQ4 does **not** include Quake 4 assets. You still need a legitimate Quake 4 copy from Steam or GOG.
-
-<p align="center">
-  <img src="assets/docs/img/readme-airdefense1-start.png" alt="openQ4 frustum culling off and on comparison at the game airdefense1 start" width="92%">
-</p>
-<p align="center"><sub>Air Defense 1's post-intro start position with triangle debug rendering: culling disabled on the left, modern culling enabled on the right.</sub></p>
-
-<p align="center">
-  <img src="assets/docs/img/readme-airdefense1-cinematic.png" alt="openQ4 airdefense1 intro cinematic showing ships approaching Stroggos" width="92%">
-</p>
-<p align="center"><sub>Campaign cinematics and scripted scenes remain part of the stock-asset compatibility target.</sub></p>
 
 ---
 
@@ -83,6 +77,11 @@ It is designed for players who want the original Quake 4 experience with a clean
   <img src="assets/docs/img/readme-crt-q4dm6.png" alt="openQ4 CRT post-process off and on comparison on mp q4dm6" width="92%">
 </p>
 <p align="center"><sub>A second CRT comparison on mp/q4dm6 shows the same post-process across a brighter indoor arena.</sub></p>
+
+<p align="center">
+  <img src="assets/docs/img/readme-airdefense1-start.png" alt="openQ4 frustum culling off and on comparison at the game airdefense1 start" width="92%">
+</p>
+<p align="center"><sub>Air Defense 1's post-intro start position with triangle debug rendering: culling disabled on the left, modern culling enabled on the right.</sub></p>
 
 <p align="center">
   <img src="assets/docs/img/readme-culling-tris.png" alt="openQ4 visible triangle debug comparison with frustum culling off and on" width="92%">
