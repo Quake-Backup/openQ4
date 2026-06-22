@@ -102,7 +102,7 @@ def validate_macos_process_handoff_guards() -> None:
     require(filtered_environment, "environmentPointer != NULL && *environmentPointer != NULL", "macOS process handoff environment guard")
     require(filtered_environment, "calloc( keepCount + 1, sizeof( char * ) )", "macOS process handoff filtered environment allocation")
     require(filtered_environment, "OSX_ShouldDropProcessEnvironmentEntry( sourceEnvironment[sourceCount] )", "macOS process handoff filtered environment policy")
-    require(drop_environment, 'strncmp( entry, "DYLD_", 5 ) == 0', "macOS process handoff DYLD environment filter")
+    require(drop_environment, 'idStr::Cmpn( entry, "DYLD_", 5 ) == 0', "macOS process handoff DYLD environment filter")
     require(drop_environment, 'OSX_EnvironmentEntryHasName( entry, "LD_PRELOAD" )', "macOS process handoff loader environment filter")
     require(drop_environment, 'OSX_EnvironmentEntryHasName( entry, "LD_LIBRARY_PATH" )', "macOS process handoff loader environment filter")
     require(drop_environment, 'OSX_EnvironmentEntryHasName( entry, "LD_AUDIT" )', "macOS process handoff loader environment filter")

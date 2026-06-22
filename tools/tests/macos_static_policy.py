@@ -106,7 +106,7 @@ def validate_process_launch_policy() -> None:
     require(start_process, "char **environment = OSX_CreateFilteredProcessEnvironment();", "macOS filtered child environment")
     require(start_process, "free( environment );", "macOS filtered child environment cleanup")
     require(filtered_environment, "calloc( keepCount + 1, sizeof( char * ) )", "macOS filtered child environment allocation")
-    require(drop_environment, 'strncmp( entry, "DYLD_", 5 ) == 0', "macOS DYLD environment filter")
+    require(drop_environment, 'idStr::Cmpn( entry, "DYLD_", 5 ) == 0', "macOS DYLD environment filter")
     require(drop_environment, 'OSX_EnvironmentEntryHasName( entry, "LD_PRELOAD" )', "macOS loader environment filter")
     require(drop_environment, 'OSX_EnvironmentEntryHasName( entry, "LD_LIBRARY_PATH" )', "macOS loader environment filter")
     require(drop_environment, 'OSX_EnvironmentEntryHasName( entry, "LD_AUDIT" )', "macOS loader environment filter")

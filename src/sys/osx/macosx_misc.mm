@@ -168,7 +168,7 @@ static bool OSX_ResolvedPathIsUnderDirectory( const char *path, const char *dire
 	}
 
 	const size_t directoryLength = strlen( resolvedDirectory );
-	if ( directoryLength == 0 || strncmp( resolvedPath, resolvedDirectory, directoryLength ) != 0 ) {
+	if ( directoryLength == 0 || idStr::Cmpn( resolvedPath, resolvedDirectory, static_cast<int>( directoryLength ) ) != 0 ) {
 		return false;
 	}
 	return resolvedPath[directoryLength] == '\0' || resolvedPath[directoryLength] == '/';
@@ -213,14 +213,14 @@ static bool OSX_EnvironmentEntryHasName( const char *entry, const char *name ) {
 		return false;
 	}
 	const size_t nameLength = strlen( name );
-	return strncmp( entry, name, nameLength ) == 0 && entry[nameLength] == '=';
+	return idStr::Cmpn( entry, name, static_cast<int>( nameLength ) ) == 0 && entry[nameLength] == '=';
 }
 
 static bool OSX_ShouldDropProcessEnvironmentEntry( const char *entry ) {
 	if ( entry == NULL ) {
 		return true;
 	}
-	if ( strncmp( entry, "DYLD_", 5 ) == 0 ) {
+	if ( idStr::Cmpn( entry, "DYLD_", 5 ) == 0 ) {
 		return true;
 	}
 	return OSX_EnvironmentEntryHasName( entry, "LD_PRELOAD" ) ||

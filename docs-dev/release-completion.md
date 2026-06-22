@@ -11,6 +11,7 @@ Process:
 ## Ready For Changelog
 
 - [x] Runtime PK4 packaging now tracks `content/baseoq4/pak0/` and `content/baseoq4/pak1/` through generated source manifests, so removing generated content such as obsolete Air Defense 1 light-grid chunks no longer leaves stale Ninja dependencies that break the fast local build.
+- [x] macOS push verification builds are unblocked again: process handoff path and environment filtering now use openQ4's guarded string-compare API instead of raw C string calls rejected by the shared idStr safety wrappers.
 - [x] Renderer helper and diagnostic loops do less repeated count work: portal export/find/show paths, MSAA resolves, light and subview winding projection, debug polygon drawing, material register printing, shadow-planner descriptor checks, and benchmark preset scans now cache stable loop counts before iterating.
 - [x] Renderer geometry helper overhead is lower: GUI clipping, decal projection and decal winding emission, overlay creation, portal screen/fade checks, GUI/model tracing, and polytope surface construction now cache stable winding point and model surface counts while building or tracing geometry.
 - [x] Renderer classic material passes do less repeated CPU work: soft particles, RV depth capture, depth fill, ambient shader passes, blend lights, lightgrid submission, shadow-map casters, point-shadow casters, custom GLSL interactions, and subview generation now cache material stage counts before scanning stages.
