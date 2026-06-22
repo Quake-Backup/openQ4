@@ -614,7 +614,7 @@ static bool R_ParseImageProgram_r(idLexer& src, byte** pic, int* width, int* hei
 	}
 
 	// load it as an image
-	R_LoadImage(token.c_str(), pic, width, height, &timestamp, true);
+	R_LoadImageForUsage(token.c_str(), pic, width, height, &timestamp, true, usage ? *usage : TD_DEFAULT);
 
 	if (timestamp == -1) {
 		return false;

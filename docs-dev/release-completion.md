@@ -10,6 +10,7 @@ Process:
 
 ## Ready For Changelog
 
+- [x] DXT5/RXGB normal-map DDS replacements now decode through the normal-map path when loaded as bump maps, so mod texture packs can replace `.tga`/`.jpg` bump sources with RXGB-style DDS files without losing the X/alpha normal channel.
 - [x] Texture replacements can now drop a valid `.dds` beside an existing `.tga` or `.jpg` reference and have openQ4 prefer the DDS source automatically: DXT DDS files feed the normal RGBA/generation path, while BC7 DDS files upload directly on BPTC-capable renderers without requiring material scripts to be rewritten.
 - [x] Explicit BC7 DDS textures can now load directly as precompressed BPTC images on OpenGL 4.2/BPTC-capable renderers, including standard DX10 BC7 headers and common BC7 FourCC variants; unsupported drivers fail closed with a clear warning instead of mis-decoding the image.
 - [x] Manual releases keep macOS downloads visible when Apple signing credentials are absent: the workflow now always builds the macOS ARM64 OpenGL and Metal packages, publishes signed/notarized DMGs when Developer ID/notary secrets are configured, and otherwise publishes clearly labeled `-unsigned.tar.gz` archives that are ad-hoc signed only for bundle validity and expected to show normal Gatekeeper warnings.

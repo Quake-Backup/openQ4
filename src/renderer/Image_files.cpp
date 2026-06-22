@@ -115,7 +115,7 @@ void R_WriteTGA( const char *filename, const byte *data, int width, int height, 
 
 static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp );
 static void LoadJPG( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp );
-static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp );
+static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool decodeRXGBNormalMap );
 
 /*
 ========================================================================
@@ -911,7 +911,7 @@ bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T 
 LoadDDS
 =============
 */
-static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp ) {
+static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool decodeRXGBNormalMap ) {
 	int fileSize;
 	byte *buffer;
 
@@ -981,6 +981,8 @@ static void LoadDDS( const char *name, byte **pic, int *width, int *height, ID_T
 	idDxtDecoder decoder;
 	if ( compression == DDS_COMPRESSION_DXT1 ) {
 		decoder.DecompressImageDXT1( buffer + dataOffset, ddsRgba, ddsWidth, ddsHeight );
+	} else if ( decodeRXGBNormalMap ) {
+		decoder.DecompressNormalMapDXT5( buffer + dataOffset, ddsRgba, ddsWidth, ddsHeight );
 	} else {
 		decoder.DecompressImageDXT5( buffer + dataOffset, ddsRgba, ddsWidth, ddsHeight );
 	}
@@ -1032,8 +1034,9 @@ If pic is NULL, the image won't actually be loaded, it will just find the
 timestamp.
 =================
 */
-void R_LoadImage( const char *cname, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool makePowerOf2 ) {
+static void R_LoadImageInternal( const char *cname, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool makePowerOf2, textureUsage_t usage ) {
 	idStr name = cname;
+	const bool decodeRXGBNormalMap = ( usage == TD_BUMP );
 
 	if ( pic ) {
 		*pic = NULL;
@@ -1060,7 +1063,7 @@ void R_LoadImage( const char *cname, byte **pic, int *width, int *height, ID_TIM
 
 	idStr preferredDDSName;
 	if ( ext != "dds" && R_ResolvePreferredDDSImageSource( name.c_str(), preferredDDSName, NULL, false, NULL ) ) {
-		LoadDDS( preferredDDSName.c_str(), pic, width, height, timestamp );
+		LoadDDS( preferredDDSName.c_str(), pic, width, height, timestamp, decodeRXGBNormalMap );
 		if ( R_LoadImageSucceeded( pic, timestamp ) ) {
 			return;
 		}
@@ -1076,17 +1079,17 @@ void R_LoadImage( const char *cname, byte **pic, int *width, int *height, ID_TIM
 		if ( ( pic && *pic == 0 ) || ( timestamp && *timestamp == -1 ) ) { //-V595
 			name.StripFileExtension();
 			name.DefaultFileExtension( ".dds" );
-			LoadDDS( name.c_str(), pic, width, height, timestamp );
+			LoadDDS( name.c_str(), pic, width, height, timestamp, decodeRXGBNormalMap );
 		}
 	} else if ( ext == "jpg" ) {
 		LoadJPG( name.c_str(), pic, width, height, timestamp );
 		if ( ( pic && *pic == 0 ) || ( timestamp && *timestamp == -1 ) ) { //-V595
 			name.StripFileExtension();
 			name.DefaultFileExtension( ".dds" );
-			LoadDDS( name.c_str(), pic, width, height, timestamp );
+			LoadDDS( name.c_str(), pic, width, height, timestamp, decodeRXGBNormalMap );
 		}
 	} else if ( ext == "dds" ) {
-		LoadDDS( name.c_str(), pic, width, height, timestamp );
+		LoadDDS( name.c_str(), pic, width, height, timestamp, decodeRXGBNormalMap );
 	}
 
 	if ( ( width && *width < 1 ) || ( height && *height < 1 ) ) {
@@ -1122,6 +1125,14 @@ void R_LoadImage( const char *cname, byte **pic, int *width, int *height, ID_TIM
 		}
 	}
 	*/
+}
+
+void R_LoadImage( const char *cname, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool makePowerOf2 ) {
+	R_LoadImageInternal( cname, pic, width, height, timestamp, makePowerOf2, TD_DEFAULT );
+}
+
+void R_LoadImageForUsage( const char *cname, byte **pic, int *width, int *height, ID_TIME_T *timestamp, bool makePowerOf2, textureUsage_t usage ) {
+	R_LoadImageInternal( cname, pic, width, height, timestamp, makePowerOf2, usage );
 }
 
 
