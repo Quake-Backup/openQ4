@@ -225,6 +225,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "campaign_split_state_transition.py",
         root / "tools" / "tests" / "filesystem_case_segments.py",
         root / "tools" / "tests" / "filesystem_mod_manifest.py",
+        root / "tools" / "tests" / "game_class_allocator_alignment.py",
         root / "tools" / "tests" / "gamelibs_staging.py",
         root / "tools" / "tests" / "hdr_postprocess_math.py",
         root / "tools" / "tests" / "linux_highdpi_mouse.py",
