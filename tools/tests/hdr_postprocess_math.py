@@ -84,7 +84,7 @@ def aces_film_scalar(value):
 def highlight_compress(color, highlight_desaturation, gamut_compression):
     luma = dot(color, LUMA)
     peak = max_channel(color)
-    highlight = clamp((peak - 0.6) / 0.4, 0.0, 1.0)
+    highlight = smoothstep(0.98, 1.0, peak)
     color = mix(color, (luma, luma, luma), clamp(highlight * highlight_desaturation, 0.0, 1.0))
 
     peak = max_channel(color)
@@ -101,7 +101,7 @@ def tone_map_hdr(color, exposure, white_point, highlight_desaturation, gamut_com
     safe_exposure = max(exposure, 1.0e-3)
     exposed = tuple(channel * safe_exposure for channel in color)
     safe_white = max(white_point, 1.0)
-    shoulder_start = 0.75
+    shoulder_start = 0.98
     exposed_white = max(safe_white * safe_exposure, shoulder_start + 1.0e-3)
     shoulder_range = max(exposed_white - shoulder_start, 1.0e-3)
     shoulder_norm = max(1.0 - math.exp(-4.0), 1.0e-4)
@@ -250,6 +250,18 @@ def test_tone_map_preserves_midrange_sdr():
         assert_true(abs(mapped_channel - source_channel) < 0.02, "HDR tonemap should preserve midrange SDR contrast before the shoulder")
 
 
+def test_tone_map_preserves_ldr_authored_highlights():
+    colors = [
+        (1.0, 1.0, 1.0),
+        (0.85, 1.0, 1.0),
+        (1.0, 0.7, 0.35),
+    ]
+    for color in colors:
+        mapped = tone_map_hdr(color, 1.0, 6.0, 0.35, 1.0)
+        for mapped_channel, source_channel in zip(mapped, color):
+            assert_true(abs(mapped_channel - source_channel) < 0.03, "HDR tonemap should not dull stock LDR-authored additive highlights")
+
+
 def test_hdr_rejects_negative_scene_energy():
     mapped = tone_map_hdr((-8.0, 0.5, -0.25), 1.0, 6.0, 0.35, 1.0)
     assert_true(mapped[0] == 0.0 and mapped[2] == 0.0, "negative HDR color must not create tone-mapped output")
@@ -361,6 +373,7 @@ def main():
         test_tone_map_monotonic,
         test_white_point_near_one,
         test_tone_map_preserves_midrange_sdr,
+        test_tone_map_preserves_ldr_authored_highlights,
         test_hdr_rejects_negative_scene_energy,
         test_no_nan_edge_cases,
         test_modern_lighting_keeps_scene_referred_energy,

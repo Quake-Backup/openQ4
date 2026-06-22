@@ -59,7 +59,7 @@ vec3 SceneReferredHDRColor( vec3 color ) {
 vec3 HighlightCompress( vec3 color ) {
 	float luma = dot( color, vec3( 0.2126, 0.7152, 0.0722 ) );
 	float peak = max( max( color.r, color.g ), color.b );
-	float highlight = smoothstep( 0.6, 1.0, peak );
+	float highlight = smoothstep( 0.98, 1.0, peak );
 
 	color = mix( color, vec3( luma ), clamp( highlight * hdrHighlightDesaturation, 0.0, 1.0 ) );
 
@@ -77,7 +77,7 @@ vec3 ToneMapHDR( vec3 color ) {
 	float safeExposure = max( hdrExposure, 0.001 );
 	vec3 exposedColor = color * safeExposure;
 	float safeWhitePoint = max( hdrWhitePoint, 1.0 );
-	float shoulderStart = 0.75;
+	float shoulderStart = 0.98;
 	float exposedWhitePoint = max( safeWhitePoint * safeExposure, shoulderStart + 0.001 );
 	float shoulderRange = max( exposedWhitePoint - shoulderStart, 0.001 );
 	float shoulderNorm = max( 1.0 - exp( -4.0 ), 0.0001 );
