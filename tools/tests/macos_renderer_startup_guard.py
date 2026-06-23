@@ -35,6 +35,18 @@ def function_body(source: str, signature: str) -> str:
     raise AssertionError(f"Could not find end of function {signature!r}")
 
 
+def source_section(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.find(start_marker)
+    if start == -1:
+        raise AssertionError(f"Missing section marker {start_marker!r}")
+
+    end = source.find(end_marker, start)
+    if end == -1:
+        raise AssertionError(f"Missing section end marker {end_marker!r}")
+
+    return source[start:end]
+
+
 def validate_renderer_entry_point_guards() -> None:
     source = read("src/renderer/RenderSystem_init.cpp")
     multitexture_guard = function_body(source, "static bool R_HasARBMultitextureEntryPoints() {")
@@ -124,8 +136,72 @@ def validate_renderer_entry_point_guards() -> None:
         'R_RecordMissingRequiredOpenGLFeature( "GL_ARB_vertex_program entry points" )',
         "glConfig.ARBFragmentProgramAvailable && !R_HasARBProgramEntryPoints()",
         'R_RecordMissingRequiredOpenGLFeature( "GL_ARB_fragment_program entry points" )',
+        "glConfig.ARBVertexBufferObjectAvailable && !glConfig.backendCaps.hasVBO",
+        "GL_ARB_vertex_buffer_object disabled by renderer driver quirk",
     ):
         require(source, token, "renderer startup capability fallback")
+
+
+def validate_apple_gl21_vbo_quirk() -> None:
+    header = read("src/renderer/RendererCaps.h")
+    source = read("src/renderer/RendererCaps.cpp")
+    apply_body = function_body(source, "void RendererDriverQuirks_Apply( renderBackendCaps_t &caps, const rendererDriverInfo_t &driverInfo ) {")
+    self_test = function_body(source, "bool RendererCompatibilityGates_RunSelfTest( void ) {")
+
+    for token in (
+        "RENDERER_DRIVER_QUIRK_DISABLE_VBO",
+        "1u << 6",
+    ):
+        require(header, token, "renderer driver quirk flags")
+
+    for token in (
+        '"Apple"',
+        '"2.1"',
+        "Apple OpenGL 2.1 compatibility path uses CPU-backed vertex cache for ARB2 stability",
+        '{ RENDERER_DRIVER_QUIRK_DISABLE_VBO, "disableVBO" }',
+    ):
+        require(source, token, "Apple GL 2.1 VBO driver quirk")
+
+    require(apply_body, "caps.hasVBO = false", "Apple GL 2.1 VBO driver quirk application")
+    for token in (
+        '"Apple M4 Max"',
+        '"2.1 Metal"',
+        "RENDERER_DRIVER_QUIRK_DISABLE_VBO",
+        "caps.hasVBO != quirkCasesTable[i].expectedVBO",
+    ):
+        require(self_test, token, "renderer compatibility self-test Apple GL 2.1 VBO quirk")
+
+
+def validate_classic_arb2_vbo_offset_pointers() -> None:
+    source = read("src/renderer/draw_arb2.cpp")
+    helper = function_body(source, "static void *RB_DrawVertAttributePointer( const idDrawVert *base, const int byteOffset ) {")
+    classic_interactions = source_section(
+        source,
+        "// set the vertex pointers",
+        "// this may cause RB_ARB2_DrawInteraction",
+    )
+
+    require(helper, "reinterpret_cast<uintptr_t>( base ) + byteOffset", "draw-vertex VBO offset helper")
+    for token in (
+        "RB_DrawVertAttributePointer( ac, DRAWVERT_COLOR_OFFSET )",
+        "RB_DrawVertAttributePointer( ac, DRAWVERT_NORMAL_OFFSET )",
+        "RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT1_OFFSET )",
+        "RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT0_OFFSET )",
+        "RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET )",
+        "RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET )",
+    ):
+        require(classic_interactions, token, "classic ARB2 interaction VBO attribute pointers")
+
+    for token in (
+        "ac->color",
+        "ac->normal.ToFloatPtr()",
+        "ac->tangents[1].ToFloatPtr()",
+        "ac->tangents[0].ToFloatPtr()",
+        "ac->st.ToFloatPtr()",
+        "ac->xyz.ToFloatPtr()",
+    ):
+        if token in classic_interactions:
+            raise AssertionError(f"Classic ARB2 interactions must not form field pointers through VBO offsets: {token!r}")
 
 
 def validate_docs_and_validation() -> None:
@@ -143,13 +219,19 @@ def validate_docs_and_validation() -> None:
         require(haystack, "macos_renderer_startup_guard.py", context)
 
     require(release, "macOS renderer startup now validates the exact callable OpenGL entry points", "release completion notes")
+    require(release, "Apple OpenGL 2.1 compatibility launches now disable the legacy VBO vertex cache", "release completion notes")
+    require(release, "macOS ARB2 interaction draws now pass VBO byte offsets", "release completion notes")
     require(platform, "macOS startup validates both advertised OpenGL extensions and the callable entry points", "platform support docs")
+    require(platform, "Apple OpenGL 2.1 compatibility contexts now disable the legacy VBO vertex cache", "platform support docs")
+    require(platform, "Classic ARB2 interaction draws use explicit `idDrawVert` VBO byte offsets", "platform support docs")
     for issue_comment in ISSUE_COMMENTS:
         require(release, issue_comment, "issue comment traceability")
 
 
 def main() -> None:
     validate_renderer_entry_point_guards()
+    validate_apple_gl21_vbo_quirk()
+    validate_classic_arb2_vbo_offset_pointers()
     validate_docs_and_validation()
     print("macos_renderer_startup_guard: ok")
 

@@ -4604,11 +4604,15 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 		Session_GenerateSaveFileName( *this, saveSlotName, saveType );
 	}
 
-	soundSystem->SetMute( true );
-
 	// setup up filenames and paths
 	gameFile = saveSlotName;
 	ScrubSaveGameFileName( gameFile );
+	if ( gameFile.IsEmpty() ) {
+		common->Warning( "Save name '%s' does not contain a valid file name\n", saveSlotName.c_str() );
+		return false;
+	}
+
+	soundSystem->SetMute( true );
 
 	gameFile = "savegames/" + gameFile;
 	gameFile.SetFileExtension( ".save" );
@@ -4648,6 +4652,8 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 	if ( fileDesc == NULL ) {
 		common->Warning( "Failed to open description file '%s'\n", descriptionFile.c_str() );
 		fileSystem->CloseFile( fileOut );
+		fileSystem->RemoveFile( gameFile );
+		fileSystem->RemoveFile( previewFile );
 		syncNextGameFrame = true;
 		soundSystem->SetMute( insideExecuteMapChange );
 		return false;
@@ -4743,6 +4749,13 @@ bool idSessionLocal::LoadGame( const char *saveName ) {
 		requestedSaveName = "Quicksave0";
 	}
 
+	loadFile = requestedSaveName;
+	ScrubSaveGameFileName( loadFile );
+	if ( loadFile.IsEmpty() ) {
+		common->Warning( "Save name '%s' does not contain a valid file name\n", requestedSaveName.c_str() );
+		return false;
+	}
+
 	const char *activeModule = cvarSystem->GetCVarString( "com_activeGameModule" );
 	if ( idStr::Icmp( activeModule, "game_sp" ) != 0 ) {
 		cvarSystem->SetCVarString( "si_gameType", "singleplayer" );
@@ -4757,8 +4770,6 @@ bool idSessionLocal::LoadGame( const char *saveName ) {
 	//Hide the dialog box if it is up.
 	StopBox();
 
-	loadFile = requestedSaveName;
-	ScrubSaveGameFileName( loadFile );
 	loadFile.SetFileExtension( ".save" );
 
 	in = "savegames/";
@@ -4893,8 +4904,17 @@ bool idSessionLocal::DeleteGame( const char *saveName ) {
 		return false;
 	}
 
+	idStr deleteFile = saveName;
+	ScrubSaveGameFileName( deleteFile );
+	if ( deleteFile.IsEmpty() ) {
+		common->Warning( "Save name '%s' does not contain a valid file name\n", saveName );
+		return false;
+	}
+
 	idStr quicksaveName = com_lastQuicksave.GetString();
-	if ( !idStr::Icmp( saveName, quicksaveName ) ) {
+	idStr quicksaveFile = quicksaveName;
+	ScrubSaveGameFileName( quicksaveFile );
+	if ( !idStr::Icmp( deleteFile, quicksaveFile ) ) {
 		int currentSlot = 0;
 		const bool hasSlotSuffix = Session_GetTrailingDigit( quicksaveName, currentSlot );
 		const int previousSlot = ( currentSlot - 1 ) & 3;
@@ -4908,9 +4928,9 @@ bool idSessionLocal::DeleteGame( const char *saveName ) {
 		com_lastQuicksave.SetString( quicksaveName );
 	}
 
-	fileSystem->RemoveFile( va( "savegames/%s.save", saveName ) );
-	fileSystem->RemoveFile( va( "savegames/%s.tga", saveName ) );
-	fileSystem->RemoveFile( va( "savegames/%s.txt", saveName ) );
+	fileSystem->RemoveFile( va( "savegames/%s.save", deleteFile.c_str() ) );
+	fileSystem->RemoveFile( va( "savegames/%s.tga", deleteFile.c_str() ) );
+	fileSystem->RemoveFile( va( "savegames/%s.txt", deleteFile.c_str() ) );
 	return true;
 }
 

@@ -31,6 +31,13 @@ static const rendererDriverQuirkRule_t rg_driverQuirkRules[] = {
 		"Microsoft OpenGL-D3D translation path is limited to the legacy compatibility renderer"
 	},
 	{
+		"Apple",
+		"",
+		"2.1",
+		RENDERER_DRIVER_QUIRK_DISABLE_VBO,
+		"Apple OpenGL 2.1 compatibility path uses CPU-backed vertex cache for ARB2 stability"
+	},
+	{
 		"openQ4Test",
 		"Missing UBO",
 		"",
@@ -139,7 +146,8 @@ static void RendererDriverQuirks_FormatFlags( unsigned int flags, char *buffer, 
 		{ RENDERER_DRIVER_QUIRK_DISABLE_MRT, "disableMRT" },
 		{ RENDERER_DRIVER_QUIRK_DISABLE_TIMER_QUERY, "disableTimerQuery" },
 		{ RENDERER_DRIVER_QUIRK_DISABLE_BUFFER_STORAGE, "disableBufferStorage" },
-		{ RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT, "rejectDebugContext" }
+		{ RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT, "rejectDebugContext" },
+		{ RENDERER_DRIVER_QUIRK_DISABLE_VBO, "disableVBO" }
 	};
 
 	if ( flags == RENDERER_DRIVER_QUIRK_NONE ) {
@@ -798,6 +806,9 @@ void RendererDriverQuirks_Apply( renderBackendCaps_t &caps, const rendererDriver
 	}
 	if ( ( rg_driverQuirkReport.flags & RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT ) != 0 ) {
 		caps.debugContext = false;
+	}
+	if ( ( rg_driverQuirkReport.flags & RENDERER_DRIVER_QUIRK_DISABLE_VBO ) != 0 ) {
+		caps.hasVBO = false;
 	}
 
 	rg_driverQuirkReport.changedCaps = memcmp( &originalCaps, &caps, sizeof( caps ) ) != 0;
@@ -1533,18 +1544,22 @@ bool RendererCompatibilityGates_RunSelfTest( void ) {
 	fallbackCases++;
 
 	struct quirkCase_t {
+		const char *vendor;
 		const char *renderer;
+		const char *version;
 		unsigned int expectedFlag;
 		rendererTier_t expectedTier;
 		bool expectedTimerQuery;
 		bool expectedDebugContext;
+		bool expectedVBO;
 	};
 	const quirkCase_t quirkCasesTable[] = {
-		{ "Missing UBO", RENDERER_DRIVER_QUIRK_DISABLE_UBO, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true },
-		{ "Broken MRT", RENDERER_DRIVER_QUIRK_DISABLE_MRT, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true },
-		{ "Missing Timer Query", RENDERER_DRIVER_QUIRK_DISABLE_TIMER_QUERY, RENDERER_TIER_TOP_GL46, false, true },
-		{ "Missing Buffer Storage", RENDERER_DRIVER_QUIRK_DISABLE_BUFFER_STORAGE, RENDERER_TIER_GPU_DRIVEN_GL43, true, true },
-		{ "Rejected Debug Context", RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT, RENDERER_TIER_TOP_GL46, true, false }
+		{ "openQ4Test", "Missing UBO", "1.0", RENDERER_DRIVER_QUIRK_DISABLE_UBO, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, true },
+		{ "openQ4Test", "Broken MRT", "1.0", RENDERER_DRIVER_QUIRK_DISABLE_MRT, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, true },
+		{ "openQ4Test", "Missing Timer Query", "1.0", RENDERER_DRIVER_QUIRK_DISABLE_TIMER_QUERY, RENDERER_TIER_TOP_GL46, false, true, true },
+		{ "openQ4Test", "Missing Buffer Storage", "1.0", RENDERER_DRIVER_QUIRK_DISABLE_BUFFER_STORAGE, RENDERER_TIER_GPU_DRIVEN_GL43, true, true, true },
+		{ "openQ4Test", "Rejected Debug Context", "1.0", RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT, RENDERER_TIER_TOP_GL46, true, false, true },
+		{ "Apple", "Apple M4 Max", "2.1 Metal", RENDERER_DRIVER_QUIRK_DISABLE_VBO, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false }
 	};
 
 	for ( int i = 0; i < static_cast<int>( sizeof( quirkCasesTable ) / sizeof( quirkCasesTable[0] ) ); ++i ) {
@@ -1552,9 +1567,9 @@ bool RendererCompatibilityGates_RunSelfTest( void ) {
 		caps.debugContext = true;
 		caps.hasTimerQuery = true;
 		const rendererDriverInfo_t driverInfo = {
-			"openQ4Test",
+			quirkCasesTable[i].vendor,
 			quirkCasesTable[i].renderer,
-			"1.0"
+			quirkCasesTable[i].version
 		};
 		RendererDriverQuirks_Apply( caps, driverInfo );
 		const rendererTier_t selected = RendererTier_Select( caps, RENDERER_TIER_PREF_AUTO );
@@ -1562,14 +1577,16 @@ bool RendererCompatibilityGates_RunSelfTest( void ) {
 		if ( ( report.flags & quirkCasesTable[i].expectedFlag ) == 0 ||
 			selected != quirkCasesTable[i].expectedTier ||
 			caps.hasTimerQuery != quirkCasesTable[i].expectedTimerQuery ||
-			caps.debugContext != quirkCasesTable[i].expectedDebugContext ) {
+			caps.debugContext != quirkCasesTable[i].expectedDebugContext ||
+			caps.hasVBO != quirkCasesTable[i].expectedVBO ) {
 			common->Printf(
-				"RendererCompatibilityGates self-test failed: quirk '%s' selected %s flags=0x%x timer=%d debug=%d\n",
+				"RendererCompatibilityGates self-test failed: quirk '%s' selected %s flags=0x%x timer=%d debug=%d vbo=%d\n",
 				quirkCasesTable[i].renderer,
 				RendererTier_Name( selected ),
 				report.flags,
 				caps.hasTimerQuery ? 1 : 0,
-				caps.debugContext ? 1 : 0 );
+				caps.debugContext ? 1 : 0,
+				caps.hasVBO ? 1 : 0 );
 			ok = false;
 		}
 		quirkCases++;

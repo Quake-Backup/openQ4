@@ -5660,16 +5660,23 @@ idFileSystemLocal::FileAllowedFromDir
 bool idFileSystemLocal::FileAllowedFromDir( const char *path ) {
 	unsigned int l;
 
-	l = strlen( path );
+	if ( path == NULL ) {
+		return false;
+	}
 
-	if ( !strcmp( path + l - 4, ".cfg" )		// for config files
-		|| !strcmp( path + l - 4, ".dat" )		// for journal files
-		|| !strcmp( path + l - 4, ".dll" )		// dynamic modules are handled a different way for pure
-		|| !strcmp( path + l - 3, ".so" )
-		|| ( l > 6 && !strcmp( path + l - 6, ".dylib" ) )
-		|| ( l > 10 && !strcmp( path + l - 10, ".scriptcfg" ) )	// configuration script, such as map cycle
+	l = strlen( path );
+	if ( l == 0 ) {
+		return false;
+	}
+
+	if ( ( l >= 4 && !strcmp( path + l - 4, ".cfg" ) )		// for config files
+		|| ( l >= 4 && !strcmp( path + l - 4, ".dat" ) )		// for journal files
+		|| ( l >= 4 && !strcmp( path + l - 4, ".dll" ) )		// dynamic modules are handled a different way for pure
+		|| ( l >= 3 && !strcmp( path + l - 3, ".so" ) )
+		|| ( l >= 6 && !strcmp( path + l - 6, ".dylib" ) )
+		|| ( l >= 10 && !strcmp( path + l - 10, ".scriptcfg" ) )	// configuration script, such as map cycle
 #if ID_PURE_ALLOWDDS
-		 || !strcmp( path + l - 4, ".dds" )
+		 || ( l >= 4 && !strcmp( path + l - 4, ".dds" ) )
 #endif
 		 ) {
 		// note: cd and xp keys, as well as config.spec are opened through an explicit OS path and don't hit this
@@ -5677,21 +5684,21 @@ bool idFileSystemLocal::FileAllowedFromDir( const char *path ) {
 	}
 	// savegames
 	if ( strstr( path, "savegames" ) == path &&
-		( !strcmp( path + l - 4, ".tga" ) || !strcmp( path + l -4, ".txt" ) || !strcmp( path + l - 5, ".save" ) ) ) {
+		( ( l >= 4 && !strcmp( path + l - 4, ".tga" ) ) || ( l >= 4 && !strcmp( path + l -4, ".txt" ) ) || ( l >= 5 && !strcmp( path + l - 5, ".save" ) ) ) ) {
 		return true;
 	}
 	// screen shots
-	if ( strstr( path, "screenshots" ) == path && !strcmp( path + l - 4, ".tga" ) ) {
+	if ( strstr( path, "screenshots" ) == path && l >= 4 && !strcmp( path + l - 4, ".tga" ) ) {
 		return true;
 	}
 	// objective tgas
-	if ( strstr( path, "maps/game" ) == path && 
-		!strcmp( path + l - 4, ".tga" ) ) {
+	if ( strstr( path, "maps/game" ) == path &&
+		l >= 4 && !strcmp( path + l - 4, ".tga" ) ) {
 		return true;
 	}
 	// splash screens extracted from addons
 	if ( strstr( path, "guis/assets/splash/addon" ) == path &&
-		 !strcmp( path + l -4, ".tga" ) ) {
+		 l >= 4 && !strcmp( path + l -4, ".tga" ) ) {
 		return true;
 	}
 

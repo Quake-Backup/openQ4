@@ -10093,12 +10093,12 @@ void RB_ARB2_CreateDrawInteractions( const drawSurf_t *surf ) {
 
 			// set the vertex pointers
 			idDrawVert	*ac = (idDrawVert *)vertexCache.Position( surf->geo->ambientCache );
-			glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( idDrawVert ), ac->color );
-			glVertexAttribPointerARB( 11, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->normal.ToFloatPtr() );
-			glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[1].ToFloatPtr() );
-			glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ), ac->tangents[0].ToFloatPtr() );
-			glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ), ac->st.ToFloatPtr() );
-			glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), ac->xyz.ToFloatPtr() );
+			glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_COLOR_OFFSET ) );
+			glVertexAttribPointerARB( 11, 3, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_NORMAL_OFFSET ) );
+			glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT1_OFFSET ) );
+			glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT0_OFFSET ) );
+			glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
+			glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
 		}
 
 		// this may cause RB_ARB2_DrawInteraction to be exacuted multiple

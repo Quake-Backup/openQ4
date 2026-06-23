@@ -1158,6 +1158,10 @@ static void R_CheckPortableExtensions( void ) {
 		glConfig.version_string
 	};
 	RendererDriverQuirks_Apply( glConfig.backendCaps, driverInfo );
+	if ( glConfig.ARBVertexBufferObjectAvailable && !glConfig.backendCaps.hasVBO ) {
+		common->Printf( "X..GL_ARB_vertex_buffer_object disabled by renderer driver quirk; using virtual-memory vertex cache\n" );
+		glConfig.ARBVertexBufferObjectAvailable = false;
+	}
 	RendererBootstrap_BeginOpenGL( glConfig.backendCaps, r_glTier.GetString() );
 	glConfig.rendererTier = RendererBootstrap_GetState().selectedTier;
 	glConfig.renderFeatures = RendererBootstrap_GetState().features;
