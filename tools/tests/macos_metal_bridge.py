@@ -243,12 +243,8 @@ def validate_macos_app_bundle_validator_runtime() -> None:
 
         package.validate_macos_app_bundle(package_root, app_root, arch, version)
 
-        write_test_file(app_contents / "MacOS" / "openQ4", b"other-binary\n", 0o755)
-        expect_runtime_error(
-            "macOS app executable does not match packaged client binary",
-            lambda: package.validate_macos_app_bundle(package_root, app_root, arch, version),
-            "macOS app executable drift from packaged client",
-        )
+        write_test_file(app_contents / "MacOS" / "openQ4", b"bundle-scoped-signature\n", 0o755)
+        package.validate_macos_app_bundle(package_root, app_root, arch, version)
 
         write_test_file(app_contents / "MacOS" / "openQ4", client_bytes, 0o755)
         write_test_file(app_contents / "PkgInfo", b"BROKEN!!")
@@ -563,9 +559,9 @@ def validate_macos_archive_validator_runtime() -> None:
             "mismatched macOS archive plist version",
         )
 
-        bad_app_exec_archive = work / "bad-app-exec.tar.gz"
+        signed_app_exec_archive = work / "signed-app-exec.tar.gz"
         write_test_targz_archive(
-            bad_app_exec_archive,
+            signed_app_exec_archive,
             make_macos_archive_entries(
                 package,
                 package_root.name,
@@ -579,16 +575,12 @@ def validate_macos_archive_validator_runtime() -> None:
                 },
             ),
         )
-        expect_runtime_error(
-            "macOS archive app executable does not match packaged client binary",
-            lambda: package.validate_macos_archive_contents(
-                package_root,
-                bad_app_exec_archive,
-                "tar.gz",
-                arch,
-                version,
-            ),
-            "mismatched macOS archive app executable",
+        package.validate_macos_archive_contents(
+            package_root,
+            signed_app_exec_archive,
+            "tar.gz",
+            arch,
+            version,
         )
 
         unsafe_archive = work / "unsafe.tar.gz"
@@ -707,9 +699,9 @@ def validate_macos_signing_config_runtime() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def validate_macos_signing_preserves_client_app_match_runtime() -> None:
+def validate_macos_signing_keeps_standalone_client_signature_runtime() -> None:
     package = load_package_module()
-    work = ROOT / ".tmp" / "macos-signing-match-contract"
+    work = ROOT / ".tmp" / "macos-standalone-signing-contract"
     package_root = work / "openq4-v0.2.000-macos-arm64-opengl"
     app_root = package_root / "openQ4.app"
     app_executable = app_root / "Contents" / "MacOS" / "openQ4"
@@ -739,9 +731,9 @@ def validate_macos_signing_preserves_client_app_match_runtime() -> None:
             del codesign_path, config
             calls.append(target.relative_to(package_root).as_posix())
             if target == app_root:
-                write_test_file(app_executable, b"signed-app-executable\n", 0o755)
+                write_test_file(app_executable, app_executable.read_bytes() + b"bundle-signed\n", 0o755)
             else:
-                target.write_bytes(target.read_bytes() + b"signed\n")
+                target.write_bytes(target.read_bytes() + b"standalone-signed\n")
 
         package.sys.platform = "darwin"
         package.shutil.which = fake_which
@@ -762,6 +754,7 @@ def validate_macos_signing_preserves_client_app_match_runtime() -> None:
         )
 
         expected_calls = [
+            f"openQ4-client_{arch}",
             f"openQ4-ded_{arch}",
             f"{package.GAME_DIR_NAME}/game-sp_{arch}.dylib",
             f"{package.GAME_DIR_NAME}/game-mp_{arch}.dylib",
@@ -769,8 +762,12 @@ def validate_macos_signing_preserves_client_app_match_runtime() -> None:
         ]
         if calls != expected_calls:
             raise AssertionError(f"Unexpected macOS signing order: {calls!r}")
-        if client_binary.read_bytes() != app_executable.read_bytes():
-            raise AssertionError("macOS signing should preserve loose client/app executable byte match")
+        if client_binary.read_bytes() != b"unsigned-client\nstandalone-signed\n":
+            raise AssertionError("macOS signing should leave the loose client standalone-signed")
+        if app_executable.read_bytes() != b"unsigned-client\nstandalone-signed\nbundle-signed\n":
+            raise AssertionError("macOS signing should bundle-sign only the app executable copy")
+        if client_binary.read_bytes() == app_executable.read_bytes():
+            raise AssertionError("macOS signing should not recopy the bundle-scoped app signature to the loose client")
         if not os.access(client_binary, os.X_OK):
             raise AssertionError("macOS signing should preserve the loose client executable bit")
     finally:
@@ -1108,13 +1105,12 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "normalize_package_suffix", "release packaging variant suffix")
     require(package, '"macos": "dmg"', "macOS DMG default archive format")
     require(package, '"dmg": ".dmg"', "macOS DMG archive suffix")
-    require(package, "import filecmp", "macOS app executable comparison")
     require(package, "import stat", "macOS archive symlink validation")
     require(package, "import subprocess", "macOS binary dependency validation")
-    require(package, "filecmp.cmp(client_binary, app_executable, shallow=False)", "macOS app executable comparison")
     require(package, "shutil.copy2(client_binary, app_executable)", "macOS app executable creation")
-    require(package, "shutil.copy2(app_executable, client_binary)", "macOS signed app executable recopy")
-    require(package, "macOS app executable does not match packaged client binary", "macOS app executable validation")
+    require(package, "macos_codesign_target(codesign_path, target, config)", "macOS standalone client signing")
+    reject(package, "if target == client_binary", "macOS standalone client signing")
+    reject(package, "shutil.copy2(app_executable, client_binary)", "macOS signed app executable recopy")
     require(package, "get_package_executable_archive_paths", "POSIX archive executable mode preservation")
     require(package, "ZipInfo.from_file", "POSIX archive executable mode preservation")
     require(package, "info.mode = 0o755", "POSIX archive executable mode preservation")
@@ -1213,7 +1209,6 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "English.lproj/InfoPlist.strings", "macOS package archive validation")
     require(package, "French.lproj/InfoPlist.strings", "macOS package archive validation")
     require(package, "macOS archive entry is not executable", "macOS package archive validation")
-    require(package, "macOS archive app executable does not match packaged client binary", "macOS package archive validation")
     require(package, "macOS archive contains unsafe or out-of-package path", "macOS package archive validation")
     require(package, "macOS archive Info.plist", "macOS package archive validation")
     require(package, "plistlib.loads", "macOS package Info.plist validation")
@@ -1310,8 +1305,8 @@ def validate_packaging_and_release_contract() -> None:
     require(release, "--macos-signing-mode ad-hoc", "manual release unsigned macOS package signing")
     require(release, "--macos-notarize", "manual release notarized package signing")
     reject(release, "--macos-entitlements", "manual release default entitlements policy")
-    require(release, 'cmp -s "${app_exec}" "${client_binary}"', "manual release macOS app validation")
-    require(release, "macOS app executable does not match the packaged client binary", "manual release macOS app validation")
+    reject(release, 'cmp -s "${app_exec}" "${client_binary}"', "manual release macOS app validation")
+    reject(release, "macOS app executable does not match the packaged client binary", "manual release macOS app validation")
     require(release, "Missing or invalid macOS app PkgInfo", "manual release macOS app validation")
     require(release, "Missing or non-executable macOS dedicated binary", "manual release macOS app validation")
     require(release, "Missing or non-executable macOS package game module", "manual release macOS app validation")
@@ -1562,7 +1557,7 @@ def main() -> None:
     validate_macos_app_bundle_validator_runtime()
     validate_macos_archive_validator_runtime()
     validate_macos_signing_config_runtime()
-    validate_macos_signing_preserves_client_app_match_runtime()
+    validate_macos_signing_keeps_standalone_client_signature_runtime()
     validate_macos_install_name_normalization_runtime()
     validate_macos_pk4_symlink_guard_runtime()
     validate_legacy_macos_plist_runtime()

@@ -677,10 +677,6 @@ jobs:
               exit 1
             fi
           done
-          if ! cmp -s "${app_exec}" "${client_binary}"; then
-            echo "macOS app executable does not match the packaged client binary."
-            exit 1
-          fi
           if ! command -v otool >/dev/null 2>&1; then
             echo "otool is required for macOS runtime dependency validation."
             exit 1

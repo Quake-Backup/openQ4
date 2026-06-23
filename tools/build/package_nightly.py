@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import filecmp
 import json
 import os
 import plistlib
@@ -731,17 +730,13 @@ def sign_macos_payload(package_root: Path, arch: str, config: MacOSSigningConfig
     app_executable = app_root / "Contents" / "MacOS" / "openQ4"
 
     for target in macos_signable_targets(package_root, arch):
-        # The app bundle signature can rewrite the copied executable; copy that
-        # final signed executable back to the loose client below so both match.
-        if target == client_binary:
-            continue
         macos_codesign_target(codesign_path, target, config)
 
+    # The app bundle can receive a bundle-scoped executable signature; keep the
+    # loose client signed independently as a standalone binary.
     shutil.copy2(client_binary, app_executable)
     ensure_posix_executable(app_executable)
     macos_codesign_target(codesign_path, app_root, config)
-    shutil.copy2(app_executable, client_binary)
-    ensure_posix_executable(client_binary)
 
 
 def ad_hoc_sign_macos_payload(package_root: Path, arch: str) -> None:
@@ -1340,8 +1335,6 @@ def validate_macos_archive_contents(
     root_version_bytes: bytes | None = None
     app_version_bytes: bytes | None = None
     localized_info_bytes: dict[str, bytes] = {}
-    client_bytes: bytes | None = None
-    app_executable_bytes: bytes | None = None
     package_version_tag = macos_package_version_tag_from_name(package_root, arch)
 
     if archive_format == "zip":
@@ -1373,10 +1366,6 @@ def validate_macos_archive_contents(
                 entry = f"{package_prefix}openQ4.app/Contents/Resources/{locale}.lproj/InfoPlist.strings"
                 if entry in entry_names:
                     localized_info_bytes[locale] = archive.read(entry)
-            if client_entry in entry_names:
-                client_bytes = archive.read(client_entry)
-            if app_executable_entry in entry_names:
-                app_executable_bytes = archive.read(app_executable_entry)
     else:
         with tarfile.open(archive_path, "r:*") as archive:
             for member in archive.getmembers():
@@ -1411,14 +1400,6 @@ def validate_macos_archive_contents(
                     extracted = archive.extractfile(member)
                     if extracted is not None:
                         localized_info_bytes[locale] = extracted.read()
-                elif name == client_entry:
-                    extracted = archive.extractfile(member)
-                    if extracted is not None:
-                        client_bytes = extracted.read()
-                elif name == app_executable_entry:
-                    extracted = archive.extractfile(member)
-                    if extracted is not None:
-                        app_executable_bytes = extracted.read()
 
     bad_metadata_names = [
         name
@@ -1485,12 +1466,6 @@ def validate_macos_archive_contents(
         if data is None:
             raise RuntimeError(f"macOS archive missing {locale} localized InfoPlist.strings")
         validate_macos_localized_info_bytes(data, f"macOS archive {locale} InfoPlist.strings", version)
-    if client_bytes is None or app_executable_bytes is None:
-        raise RuntimeError("macOS archive executable payloads are unreadable")
-    if client_bytes != app_executable_bytes:
-        raise RuntimeError(
-            "macOS archive app executable does not match packaged client binary"
-        )
     try:
         validate_macos_plist_values(
             plistlib.loads(plist_bytes),
@@ -1742,11 +1717,6 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
         raise RuntimeError(f"macOS app Info.plist is unreadable: {app_plist}") from exc
 
     validate_macos_plist_values(plist, "macOS app Info.plist", version)
-
-    if not filecmp.cmp(client_binary, app_executable, shallow=False):
-        raise RuntimeError(
-            f"macOS app executable does not match packaged client binary: {app_executable}"
-        )
 
 
 def create_macos_app_bundle(
