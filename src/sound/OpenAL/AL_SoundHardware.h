@@ -49,6 +49,8 @@ public:
 	void			Init();
 	void			Shutdown();
 
+	void			BeginDeferredUpdates();
+	void			EndDeferredUpdates();
 	void 			Update();
 
 	idSoundVoice* 	AllocateVoice( const idSoundSample* leadinSample, const idSoundSample* loopingSample );
@@ -114,11 +116,19 @@ private:
 
 	int					lastResetTime;
 	int					lastDeviceCheckTime;
+	int					lastPerfPrintTime;
 	bool				efxFiltersAvailable;
 	bool				efxEnabled;
 	ALuint				auxEffectSlot;
 	ALuint				auxReverbEffect;
+	bool				deviceEventsEnabled;
+	int					enabledDeviceEventFlags;
+	bool				reopenDeviceAvailable;
+	bool				deferredUpdatesAvailable;
+	bool				deferredUpdatesActive;
 	bool				openedWithDefaultFallback;
+	int					openedHrtfMode;
+	int					openedSpeakerCount;
 	idStr				openedRequestedDeviceName;
 	idStr				openedActiveDeviceName;
 	idStr				openedDefaultDeviceName;
@@ -141,7 +151,11 @@ private:
 	static idStr		SanitizeDeviceLabel( const char* deviceName );
 
 	void			CaptureOpenedDeviceState( const char* requestedDeviceName );
+	void			EnableDeviceEventMonitoring();
+	void			DisableDeviceEventMonitoring();
+	bool			TryReopenDevice( const char* requestedDeviceName, const char* reason );
 	bool			UpdateDeviceMonitoring();
+	void			PrintPerformanceData();
 };
 
 /*

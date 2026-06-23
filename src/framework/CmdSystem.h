@@ -83,6 +83,7 @@ public:
 						// Setup a reloadEngine to happen on next command run, and give a command to execute after reload
 	virtual void		SetupReloadEngine( const idCmdArgs &args ) = 0;
 	virtual void		SetupReloadGameModule( const idCmdArgs &args ) = 0;
+						// Executes the saved post-reload command in the rebuilt session.
 	virtual bool		PostReloadEngine( void ) = 0;
 
 						// There is a cache of the last completion operation that may need to be cleared sometimes

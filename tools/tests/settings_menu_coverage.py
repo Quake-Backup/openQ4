@@ -596,6 +596,7 @@ def main() -> None:
         "s_deviceName",
         "s_useEAXReverb",
         "s_numberOfSpeakers",
+        "s_openALHRTF",
         "s_musicVolume",
     ]
     for cvar in audio_cvars:
@@ -626,6 +627,7 @@ def main() -> None:
         "windowDef set_audio_cat_effects",
         "windowDef set_audio_eax",
         "windowDef set_audio_speakers",
+        "windowDef set_audio_hrtf",
     )
     last_position = -1
     for token in audio_order:

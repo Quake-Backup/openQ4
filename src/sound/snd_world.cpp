@@ -475,6 +475,7 @@ void idSoundWorldLocal::Update()
 							   soundSystemLocal.hardware.GetNumFreeVoices(), soundSystemLocal.hardware.GetNumZombieVoices(),
 							   soundSystemLocal.activeStreamBufferContexts.Num(), soundSystemLocal.freeStreamBufferContexts.Num() );
 	}
+	soundSystemLocal.hardware.BeginDeferredUpdates();
 	for( int i = 0; i < activeEmitterChannels.Num(); i++ )
 	{
 		idSoundChannel* chan = activeEmitterChannels[i].channel;
@@ -521,6 +522,7 @@ void idSoundWorldLocal::Update()
 		}
 		rumbleAmp += channelRumble;
 	}
+	soundSystemLocal.hardware.EndDeferredUpdates();
 	if( showVoices )
 	{
 //		static idOverlayHandle handle;

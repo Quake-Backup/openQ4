@@ -72,6 +72,16 @@ static bool openQ4_LoadVoiceEfxProcs() {
 }
 #endif
 
+#if defined( AL_SEC_OFFSET_LATENCY_SOFT )
+	#define OPENQ4_OPENAL_SOURCE_LATENCY_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_SOURCE_LATENCY_SUPPORTED 0
+#endif
+
+#if OPENQ4_OPENAL_SOURCE_LATENCY_SUPPORTED
+static LPALGETSOURCEDVSOFT qalGetSourcedvSOFT = NULL;
+#endif
+
 idCVar s_skipHardwareSets( "s_skipHardwareSets", "0", CVAR_BOOL, "Do all calculation, but skip XA2 calls" );
 idCVar s_debugHardware( "s_debugHardware", "0", CVAR_BOOL, "Print a message any time a hardware voice changes" );
 
@@ -79,14 +89,48 @@ idCVar s_debugHardware( "s_debugHardware", "0", CVAR_BOOL, "Print a message any 
 static int SYSTEM_SAMPLE_RATE = 44100;
 static float ONE_OVER_SYSTEM_SAMPLE_RATE = 1.0f / SYSTEM_SAMPLE_RATE;
 
-static const float OPENQ4_OPENAL_MAX_OCCLUSION_ATTENUATION_DB = -18.0f;
+static const float OPENQ4_OPENAL_PORTAL_DIRECT_ATTENUATION_DB = -8.0f;
+static const float OPENQ4_OPENAL_PORTAL_DIRECT_HF_ATTENUATION_DB = -24.0f;
+static const float OPENQ4_OPENAL_PORTAL_WET_ATTENUATION_DB = -3.0f;
+static const float OPENQ4_OPENAL_PORTAL_WET_HF_ATTENUATION_DB = -10.0f;
+static const float OPENQ4_OPENAL_ENV_DIRECT_ATTENUATION_DB = -2.0f;
+static const float OPENQ4_OPENAL_ENV_DIRECT_HF_ATTENUATION_DB = -16.0f;
+static const float OPENQ4_OPENAL_ENV_WET_ATTENUATION_DB = -1.0f;
+static const float OPENQ4_OPENAL_ENV_WET_HF_ATTENUATION_DB = -12.0f;
 
-static float OpenQ4_OcclusionToLowPassHF( const float occlusion )
+struct openQ4OcclusionFilter_t
 {
-	const float clampedOcclusion = idMath::ClampFloat( 0.0f, 1.0f, occlusion );
-	return DBtoLinear( OPENQ4_OPENAL_MAX_OCCLUSION_ATTENUATION_DB * clampedOcclusion );
+	float directGain;
+	float directGainHF;
+	float wetGain;
+	float wetGainHF;
+};
+
+static float OpenQ4_DBToClampedGain( const float db )
+{
+	return idMath::ClampFloat( 0.0f, 1.0f, DBtoLinear( db ) );
 }
 
+static openQ4OcclusionFilter_t OpenQ4_BuildOcclusionFilter( const float occlusion, const float environmentMuffle )
+{
+	const float clampedOcclusion = idMath::ClampFloat( 0.0f, 1.0f, occlusion );
+	const float clampedEnvironmentMuffle = idMath::ClampFloat( 0.0f, 1.0f, environmentMuffle );
+
+	openQ4OcclusionFilter_t filter;
+	filter.directGain = OpenQ4_DBToClampedGain(
+		OPENQ4_OPENAL_PORTAL_DIRECT_ATTENUATION_DB * clampedOcclusion +
+		OPENQ4_OPENAL_ENV_DIRECT_ATTENUATION_DB * clampedEnvironmentMuffle );
+	filter.directGainHF = OpenQ4_DBToClampedGain(
+		OPENQ4_OPENAL_PORTAL_DIRECT_HF_ATTENUATION_DB * clampedOcclusion +
+		OPENQ4_OPENAL_ENV_DIRECT_HF_ATTENUATION_DB * clampedEnvironmentMuffle );
+	filter.wetGain = OpenQ4_DBToClampedGain(
+		OPENQ4_OPENAL_PORTAL_WET_ATTENUATION_DB * clampedOcclusion +
+		OPENQ4_OPENAL_ENV_WET_ATTENUATION_DB * clampedEnvironmentMuffle );
+	filter.wetGainHF = OpenQ4_DBToClampedGain(
+		OPENQ4_OPENAL_PORTAL_WET_HF_ATTENUATION_DB * clampedOcclusion +
+		OPENQ4_OPENAL_ENV_WET_HF_ATTENUATION_DB * clampedEnvironmentMuffle );
+	return filter;
+}
 
 
 /*
@@ -627,6 +671,60 @@ bool idSoundVoice_OpenAL::Update()
 
 /*
 ========================
+idSoundVoice_OpenAL::SourceLatencyQueriesAvailable
+========================
+*/
+bool idSoundVoice_OpenAL::SourceLatencyQueriesAvailable()
+{
+#if OPENQ4_OPENAL_SOURCE_LATENCY_SUPPORTED
+	if( alIsExtensionPresent( "AL_SOFT_source_latency" ) != AL_TRUE )
+	{
+		return false;
+	}
+	if( qalGetSourcedvSOFT == NULL )
+	{
+		qalGetSourcedvSOFT = reinterpret_cast<LPALGETSOURCEDVSOFT>( alGetProcAddress( "alGetSourcedvSOFT" ) );
+	}
+	return qalGetSourcedvSOFT != NULL;
+#else
+	return false;
+#endif
+}
+
+/*
+========================
+idSoundVoice_OpenAL::GetPlaybackLatencyMS
+========================
+*/
+bool idSoundVoice_OpenAL::GetPlaybackLatencyMS( float& offsetMS, float& latencyMS ) const
+{
+	offsetMS = 0.0f;
+	latencyMS = 0.0f;
+
+#if OPENQ4_OPENAL_SOURCE_LATENCY_SUPPORTED
+	if( !alIsSource( openalSource ) || !SourceLatencyQueriesAvailable() )
+	{
+		return false;
+	}
+
+	ALdouble offsetAndLatencySeconds[2] = { 0.0, 0.0 };
+	(void)alGetError();
+	qalGetSourcedvSOFT( openalSource, AL_SEC_OFFSET_LATENCY_SOFT, offsetAndLatencySeconds );
+	if( CheckALErrors() != AL_NO_ERROR )
+	{
+		return false;
+	}
+
+	offsetMS = Max( 0.0f, static_cast<float>( offsetAndLatencySeconds[0] * 1000.0 ) );
+	latencyMS = Max( 0.0f, static_cast<float>( offsetAndLatencySeconds[1] * 1000.0 ) );
+	return true;
+#else
+	return false;
+#endif
+}
+
+/*
+========================
 idSoundVoice_OpenAL::IsPlaying
 ========================
 */
@@ -936,7 +1034,9 @@ void idSoundVoice_OpenAL::ApplyWetDryRouting()
 	effectiveDry = idMath::ClampFloat( 0.0f, 1.0f, effectiveDry );
 	effectiveWet = idMath::ClampFloat( 0.0f, 1.0f, effectiveWet );
 	const float effectiveGain = Max( 0.0f, gain );
-	const float occlusionGainHF = OpenQ4_OcclusionToLowPassHF( occlusion );
+	const openQ4OcclusionFilter_t occlusionFilter = OpenQ4_BuildOcclusionFilter( occlusion, environmentMuffle );
+	const float directFilterGain = effectiveDry * occlusionFilter.directGain;
+	const float wetFilterGain = effectiveWet * occlusionFilter.wetGain;
 
 #if OPENQ4_OPENAL_EFX_SUPPORTED
 	const bool hasEfxFilters = soundSystemLocal.hardware.HasEFXFilters() && openQ4_LoadVoiceEfxProcs();
@@ -947,20 +1047,20 @@ void idSoundVoice_OpenAL::ApplyWetDryRouting()
 
 	if( hasEfxFilters && openalDirectFilter != 0 )
 	{
-		qalFilterf( openalDirectFilter, AL_LOWPASS_GAIN, effectiveDry );
-		qalFilterf( openalDirectFilter, AL_LOWPASS_GAINHF, occlusionGainHF );
+		qalFilterf( openalDirectFilter, AL_LOWPASS_GAIN, directFilterGain );
+		qalFilterf( openalDirectFilter, AL_LOWPASS_GAINHF, occlusionFilter.directGainHF );
 		alSourcei( openalSource, AL_DIRECT_FILTER, openalDirectFilter );
 		alSourcef( openalSource, AL_GAIN, effectiveGain );
 	}
 	else
 	{
-		alSourcef( openalSource, AL_GAIN, effectiveGain * effectiveDry );
+		alSourcef( openalSource, AL_GAIN, effectiveGain * directFilterGain );
 	}
 
-	if( hasEfxFilters && openalAuxFilter != 0 && soundSystemLocal.hardware.HasEFX() && soundSystemLocal.hardware.GetAuxEffectSlot() != 0 && effectiveWet > 0.0f )
+	if( hasEfxFilters && openalAuxFilter != 0 && soundSystemLocal.hardware.HasEFX() && soundSystemLocal.hardware.GetAuxEffectSlot() != 0 && wetFilterGain > 0.0f )
 	{
-		qalFilterf( openalAuxFilter, AL_LOWPASS_GAIN, effectiveWet );
-		qalFilterf( openalAuxFilter, AL_LOWPASS_GAINHF, occlusionGainHF );
+		qalFilterf( openalAuxFilter, AL_LOWPASS_GAIN, wetFilterGain );
+		qalFilterf( openalAuxFilter, AL_LOWPASS_GAINHF, occlusionFilter.wetGainHF );
 		alSource3i( openalSource, AL_AUXILIARY_SEND_FILTER, soundSystemLocal.hardware.GetAuxEffectSlot(), 0, openalAuxFilter );
 	}
 	else if( hasEfxFilters )
@@ -968,7 +1068,7 @@ void idSoundVoice_OpenAL::ApplyWetDryRouting()
 		alSource3i( openalSource, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 0, AL_FILTER_NULL );
 	}
 #else
-	alSourcef( openalSource, AL_GAIN, effectiveGain * effectiveDry );
+	alSourcef( openalSource, AL_GAIN, effectiveGain * directFilterGain );
 #endif
 }
 

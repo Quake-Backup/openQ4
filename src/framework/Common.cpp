@@ -5243,7 +5243,11 @@ void idCommonLocal::ShutdownGame( bool reloading ) {
 	DumpWarnings();
 #endif
 	// only shut down the log file after all output is done
+	const int savedLogFile = com_logFile.GetInteger();
 	CloseLogFile();
+	if ( reloading ) {
+		com_logFile.SetInteger( savedLogFile );
+	}
 
 	// shut down the file system
 	fileSystem->Shutdown( reloading );

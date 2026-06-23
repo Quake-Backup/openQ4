@@ -1212,6 +1212,30 @@
       "accessibility": "Standard focusable choiceDef row."
     },
     {
+      "id": "audio.headphone_hrtf",
+      "pane": "Audio",
+      "section": "Effects",
+      "path": "Settings > Audio > Effects > Headphone HRTF",
+      "source": "audio",
+      "container": "set_audio_hrtf",
+      "widgets": [
+        "set_audio_hrtf_val"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_229981",
+      "choices_key": "#str_229980",
+      "values": [
+        "0",
+        "1",
+        "2"
+      ],
+      "target_type": "cvar",
+      "target": "s_openALHRTF",
+      "default": "0",
+      "restart_required": false,
+      "accessibility": "Standard focusable choiceDef row."
+    },
+    {
       "id": "audio.music_volume",
       "pane": "Audio",
       "section": "Levels",

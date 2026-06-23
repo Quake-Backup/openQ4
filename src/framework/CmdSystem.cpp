@@ -880,7 +880,8 @@ bool idCmdSystemLocal::PostReloadEngine( void ) {
 	if ( !postReload.Argc() ) {
 		return false;
 	}
-	BufferCommandArgs( CMD_EXEC_APPEND, postReload );
+	idCmdArgs reloadCommand = postReload;
 	postReload.Clear();
+	ExecuteTokenizedString( reloadCommand );
 	return true;
 }

@@ -1055,4 +1055,6 @@
 	"#str_229914"	"Auto"
 	"#str_229915"	"Etendre sur plusieurs ecrans"
 	"#str_229916"	"Ecran principal uniquement;Etendre sur tous les ecrans"
+	"#str_229980"	"Auto;Non;Oui"
+	"#str_229981"	"HRTF casque"
 }

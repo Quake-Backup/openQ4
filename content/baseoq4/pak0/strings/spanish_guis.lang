@@ -1133,4 +1133,6 @@
 	"#str_229914"	"Auto"
 	"#str_229915"	"Expansión Multipantalla"
 	"#str_229916"	"Solo Pantalla Principal;Expandir a Todas las Pantallas"
+	"#str_229980"	"Auto;No;Si"
+	"#str_229981"	"HRTF auriculares"
 }

@@ -92,10 +92,16 @@ public:
 
 	const idSoundSample* GetCurrentSample();
 
-	// Controls the low pass filter, where 0.0f = no filtering, 1.0f = full filter
+	// Controls portal/wall obstruction, where 0.0f = clear, 1.0f = fully obstructed
 	virtual void	SetOcclusion( float f )
 	{
 		occlusion = idMath::ClampFloat( 0.0f, 1.0f, f );
+	}
+
+	// Controls listener/world muffling effects such as enviro-suit filtering
+	virtual void	SetEnvironmentMuffle( float f )
+	{
+		environmentMuffle = idMath::ClampFloat( 0.0f, 1.0f, f );
 	}
 
 	float		GetGain()
@@ -114,6 +120,12 @@ public:
 	{
 		return dryLevel;
 	}
+	virtual bool	GetPlaybackLatencyMS( float& offsetMS, float& latencyMS ) const
+	{
+		offsetMS = 0.0f;
+		latencyMS = 0.0f;
+		return false;
+	}
 
 protected:
 	idVec3		position;			// Position of the sound relative to listener
@@ -125,6 +137,7 @@ protected:
 	float		dryLevel;			// Direct path level (0-1)
 	float		innerRadius;		// Anything closer than this is omni
 	float		occlusion;			// How much of this sound is occluded (0-1)
+	float		environmentMuffle;	// Listener/world muffling amount (0-1)
 	uint32		channelMask;		// Set to override the default channel mask
 
 	// These are some setting used to do SSF_DISTANCE_BASED_STERO blending

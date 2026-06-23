@@ -37,11 +37,18 @@ idCVar s_showLevelMeter( "s_showLevelMeter", "0", CVAR_BOOL | CVAR_ARCHIVE, "Sho
 idCVar s_meterTopTime( "s_meterTopTime", "1000", CVAR_INTEGER | CVAR_ARCHIVE, "How long (in milliseconds) peaks are displayed on the VU meter" );
 idCVar s_meterPosition( "s_meterPosition", "100 100 20 200", CVAR_ARCHIVE, "VU meter location (x y w h)" );
 idCVar s_device( "s_device", "-1", CVAR_INTEGER | CVAR_ARCHIVE, "Which audio device to use (listDevices to list, -1 for default)" );
-idCVar s_showPerfData( "s_showPerfData", "0", CVAR_BOOL, "Show XAudio2 Performance data" );
+idCVar s_showPerfData( "s_showPerfData", "0", CVAR_BOOL, "Show sound backend performance data" );
 extern idCVar s_useEAXReverb;
 extern idCVar s_deviceName;
+extern idCVar s_openALHRTF;
+extern idCVar s_numberOfSpeakers;
 
 static const char* OPENQ4_AUDIO_DEVICE_DEFAULT_CHOICE = "__OPENQ4_DEFAULT_AUDIO_DEVICE__";
+static const int OPENQ4_OPENAL_HRTF_AUTO = 0;
+static const int OPENQ4_OPENAL_HRTF_OFF = 1;
+static const int OPENQ4_OPENAL_HRTF_ON = 2;
+static const int OPENQ4_OPENAL_SPEAKERS_STEREO = 2;
+static const int OPENQ4_OPENAL_SPEAKERS_SURROUND = 6;
 
 static bool openQ4_UseEnumerateAllDevices( ALCdevice* device ) {
 #if defined( ALC_ALL_DEVICES_SPECIFIER ) && defined( ALC_DEFAULT_ALL_DEVICES_SPECIFIER )
@@ -68,6 +75,169 @@ static ALCenum openQ4_GetDefaultPlaybackDeviceToken( ALCdevice* device ) {
 #endif
 	return ALC_DEFAULT_DEVICE_SPECIFIER;
 }
+
+#if defined( ALC_EVENT_TYPE_DEFAULT_DEVICE_CHANGED_SOFT ) && defined( ALC_EVENT_TYPE_DEVICE_ADDED_SOFT ) && defined( ALC_EVENT_TYPE_DEVICE_REMOVED_SOFT ) && defined( ALC_PLAYBACK_DEVICE_SOFT ) && defined( ALC_EVENT_SUPPORTED_SOFT )
+	#define OPENQ4_OPENAL_SYSTEM_EVENTS_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_SYSTEM_EVENTS_SUPPORTED 0
+#endif
+
+static const int OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED = BIT( 0 );
+static const int OPENQ4_OPENAL_DEVICE_EVENT_ADDED = BIT( 1 );
+static const int OPENQ4_OPENAL_DEVICE_EVENT_REMOVED = BIT( 2 );
+
+#if OPENQ4_OPENAL_SYSTEM_EVENTS_SUPPORTED
+typedef ALCenum ( ALC_APIENTRY *openq4_alcEventIsSupportedSOFT_t )( ALCenum eventType, ALCenum deviceType );
+typedef ALCboolean ( ALC_APIENTRY *openq4_alcEventControlSOFT_t )( ALCsizei count, const ALCenum* events, ALCboolean enable );
+typedef void ( ALC_APIENTRY *openq4_alcEventCallbackSOFT_t )( ALCEVENTPROCTYPESOFT callback, void* userParam );
+
+static openq4_alcEventIsSupportedSOFT_t qalcEventIsSupportedSOFT = NULL;
+static openq4_alcEventControlSOFT_t qalcEventControlSOFT = NULL;
+static openq4_alcEventCallbackSOFT_t qalcEventCallbackSOFT = NULL;
+static volatile int openQ4_PendingOpenALDeviceEvents = 0;
+
+static int openQ4_DeviceEventFlagForType( const ALCenum eventType )
+{
+	switch( eventType )
+	{
+		case ALC_EVENT_TYPE_DEFAULT_DEVICE_CHANGED_SOFT:
+			return OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED;
+		case ALC_EVENT_TYPE_DEVICE_ADDED_SOFT:
+			return OPENQ4_OPENAL_DEVICE_EVENT_ADDED;
+		case ALC_EVENT_TYPE_DEVICE_REMOVED_SOFT:
+			return OPENQ4_OPENAL_DEVICE_EVENT_REMOVED;
+		default:
+			return 0;
+	}
+}
+
+static ALCenum openQ4_DeviceEventTypeForFlag( const int flag )
+{
+	switch( flag )
+	{
+		case OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED:
+			return ALC_EVENT_TYPE_DEFAULT_DEVICE_CHANGED_SOFT;
+		case OPENQ4_OPENAL_DEVICE_EVENT_ADDED:
+			return ALC_EVENT_TYPE_DEVICE_ADDED_SOFT;
+		case OPENQ4_OPENAL_DEVICE_EVENT_REMOVED:
+			return ALC_EVENT_TYPE_DEVICE_REMOVED_SOFT;
+		default:
+			return 0;
+	}
+}
+
+static const char* openQ4_DeviceEventFlagName( const int flag )
+{
+	switch( flag )
+	{
+		case OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED:
+			return "default changed";
+		case OPENQ4_OPENAL_DEVICE_EVENT_ADDED:
+			return "device added";
+		case OPENQ4_OPENAL_DEVICE_EVENT_REMOVED:
+			return "device removed";
+		default:
+			return "unknown";
+	}
+}
+
+static void openQ4_AppendDeviceEventName( idStr& eventNames, const int flag )
+{
+	if( eventNames.Length() > 0 )
+	{
+		eventNames += ", ";
+	}
+	eventNames += openQ4_DeviceEventFlagName( flag );
+}
+
+static void ALC_APIENTRY openQ4_OpenALDeviceEventCallback( ALCenum eventType, ALCenum deviceType, ALCdevice* device, ALCsizei length, const ALCchar* message, void* userParam ) ALC_API_NOEXCEPT
+{
+	(void)device;
+	(void)length;
+	(void)message;
+	(void)userParam;
+
+	if( deviceType != ALC_PLAYBACK_DEVICE_SOFT )
+	{
+		return;
+	}
+
+	const int flag = openQ4_DeviceEventFlagForType( eventType );
+	if( flag != 0 )
+	{
+		openQ4_PendingOpenALDeviceEvents |= flag;
+	}
+}
+
+static bool openQ4_LoadSystemEventProcs( ALCdevice* device )
+{
+	qalcEventIsSupportedSOFT = reinterpret_cast<openq4_alcEventIsSupportedSOFT_t>( alcGetProcAddress( device, "alcEventIsSupportedSOFT" ) );
+	qalcEventControlSOFT = reinterpret_cast<openq4_alcEventControlSOFT_t>( alcGetProcAddress( device, "alcEventControlSOFT" ) );
+	qalcEventCallbackSOFT = reinterpret_cast<openq4_alcEventCallbackSOFT_t>( alcGetProcAddress( device, "alcEventCallbackSOFT" ) );
+	return qalcEventIsSupportedSOFT != NULL && qalcEventControlSOFT != NULL && qalcEventCallbackSOFT != NULL;
+}
+
+static int openQ4_ConsumePendingDeviceEventFlags()
+{
+	const int eventFlags = openQ4_PendingOpenALDeviceEvents;
+	openQ4_PendingOpenALDeviceEvents = 0;
+	return eventFlags;
+}
+#else
+static int openQ4_ConsumePendingDeviceEventFlags()
+{
+	return 0;
+}
+#endif
+
+#if defined( ALC_SOFT_reopen_device )
+	#define OPENQ4_OPENAL_REOPEN_DEVICE_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_REOPEN_DEVICE_SUPPORTED 0
+#endif
+
+#if OPENQ4_OPENAL_REOPEN_DEVICE_SUPPORTED
+typedef ALCboolean ( ALC_APIENTRY *openq4_alcReopenDeviceSOFT_t )( ALCdevice* device, const ALCchar* deviceName, const ALCint* attribs );
+static openq4_alcReopenDeviceSOFT_t qalcReopenDeviceSOFT = NULL;
+
+static bool openQ4_LoadReopenDeviceProc( ALCdevice* device )
+{
+	qalcReopenDeviceSOFT = reinterpret_cast<openq4_alcReopenDeviceSOFT_t>( alcGetProcAddress( device, "alcReopenDeviceSOFT" ) );
+	return qalcReopenDeviceSOFT != NULL;
+}
+#else
+static bool openQ4_LoadReopenDeviceProc( ALCdevice* device )
+{
+	(void)device;
+	return false;
+}
+#endif
+
+#if defined( AL_DEFERRED_UPDATES_SOFT )
+	#define OPENQ4_OPENAL_DEFERRED_UPDATES_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_DEFERRED_UPDATES_SUPPORTED 0
+#endif
+
+#if OPENQ4_OPENAL_DEFERRED_UPDATES_SUPPORTED
+typedef void ( AL_APIENTRY *openq4_alDeferUpdatesSOFT_t )( void );
+typedef void ( AL_APIENTRY *openq4_alProcessUpdatesSOFT_t )( void );
+
+static openq4_alDeferUpdatesSOFT_t qalDeferUpdatesSOFT = NULL;
+static openq4_alProcessUpdatesSOFT_t qalProcessUpdatesSOFT = NULL;
+
+static bool openQ4_LoadDeferredUpdateProcs()
+{
+	qalDeferUpdatesSOFT = reinterpret_cast<openq4_alDeferUpdatesSOFT_t>( alGetProcAddress( "alDeferUpdatesSOFT" ) );
+	qalProcessUpdatesSOFT = reinterpret_cast<openq4_alProcessUpdatesSOFT_t>( alGetProcAddress( "alProcessUpdatesSOFT" ) );
+	return qalDeferUpdatesSOFT != NULL && qalProcessUpdatesSOFT != NULL;
+}
+#else
+static bool openQ4_LoadDeferredUpdateProcs()
+{
+	return false;
+}
+#endif
 
 #if defined( AL_EFFECTSLOT_EFFECT ) && defined( AL_EFFECT_NULL ) && defined( AL_AUXILIARY_SEND_FILTER )
 	#define OPENQ4_OPENAL_EFX_SUPPORTED 1
@@ -117,6 +287,297 @@ static bool openQ4_LoadHardwareEfxProcs() {
 }
 #endif
 
+#if defined( ALC_HRTF_SOFT ) && defined( ALC_HRTF_STATUS_SOFT ) && defined( ALC_HRTF_DISABLED_SOFT ) && defined( ALC_HRTF_ENABLED_SOFT )
+	#define OPENQ4_OPENAL_HRTF_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_HRTF_SUPPORTED 0
+#endif
+
+static int openQ4_GetHrtfMode()
+{
+	return idMath::ClampInt( OPENQ4_OPENAL_HRTF_AUTO, OPENQ4_OPENAL_HRTF_ON, s_openALHRTF.GetInteger() );
+}
+
+static const char* openQ4_HrtfModeName( const int mode )
+{
+	switch( mode )
+	{
+		case OPENQ4_OPENAL_HRTF_OFF:
+			return "off";
+		case OPENQ4_OPENAL_HRTF_ON:
+			return "on";
+		case OPENQ4_OPENAL_HRTF_AUTO:
+		default:
+			return "auto";
+	}
+}
+
+static int openQ4_GetSpeakerCount()
+{
+	return ( s_numberOfSpeakers.GetInteger() == OPENQ4_OPENAL_SPEAKERS_SURROUND ) ? OPENQ4_OPENAL_SPEAKERS_SURROUND : OPENQ4_OPENAL_SPEAKERS_STEREO;
+}
+
+static const char* openQ4_SpeakerCountName( const int speakerCount )
+{
+	return ( speakerCount == OPENQ4_OPENAL_SPEAKERS_SURROUND ) ? "5.1 surround" : "stereo";
+}
+
+#if defined( ALC_OUTPUT_MODE_SOFT ) && defined( ALC_ANY_SOFT ) && defined( ALC_STEREO_SOFT ) && defined( ALC_SURROUND_5_1_SOFT )
+	#define OPENQ4_OPENAL_OUTPUT_MODE_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_OUTPUT_MODE_SUPPORTED 0
+#endif
+
+#if OPENQ4_OPENAL_OUTPUT_MODE_SUPPORTED
+static const char* openQ4_OutputModeName( const ALCint outputMode )
+{
+	switch( outputMode )
+	{
+		case ALC_ANY_SOFT:
+			return "any";
+#if defined( ALC_MONO_SOFT )
+		case ALC_MONO_SOFT:
+			return "mono";
+#endif
+		case ALC_STEREO_SOFT:
+			return "stereo";
+#if defined( ALC_STEREO_BASIC_SOFT )
+		case ALC_STEREO_BASIC_SOFT:
+			return "basic stereo";
+#endif
+#if defined( ALC_STEREO_UHJ_SOFT )
+		case ALC_STEREO_UHJ_SOFT:
+			return "UHJ stereo";
+#endif
+#if defined( ALC_STEREO_HRTF_SOFT )
+		case ALC_STEREO_HRTF_SOFT:
+			return "HRTF stereo";
+#endif
+#if defined( ALC_QUAD_SOFT )
+		case ALC_QUAD_SOFT:
+			return "quad";
+#endif
+		case ALC_SURROUND_5_1_SOFT:
+			return "5.1 surround";
+#if defined( ALC_SURROUND_6_1_SOFT )
+		case ALC_SURROUND_6_1_SOFT:
+			return "6.1 surround";
+#endif
+#if defined( ALC_SURROUND_7_1_SOFT )
+		case ALC_SURROUND_7_1_SOFT:
+			return "7.1 surround";
+#endif
+		default:
+			return "unknown";
+	}
+}
+
+static ALCint openQ4_GetRequestedOutputMode()
+{
+#if defined( ALC_STEREO_HRTF_SOFT )
+	if( openQ4_GetHrtfMode() == OPENQ4_OPENAL_HRTF_ON )
+	{
+		return ALC_STEREO_HRTF_SOFT;
+	}
+#endif
+	return ( openQ4_GetSpeakerCount() == OPENQ4_OPENAL_SPEAKERS_SURROUND ) ? ALC_SURROUND_5_1_SOFT : ALC_STEREO_SOFT;
+}
+
+static const ALCint* openQ4_BuildOutputModeContextAttributes( ALCdevice* device, ALCint attributes[ 3 ] )
+{
+	attributes[0] = 0;
+	if( device == NULL || alcIsExtensionPresent( device, "ALC_SOFT_output_mode" ) != AL_TRUE )
+	{
+		if( openQ4_GetSpeakerCount() == OPENQ4_OPENAL_SPEAKERS_SURROUND )
+		{
+			common->Warning( "OpenAL output mode requested '%s', but ALC_SOFT_output_mode is not available.", openQ4_SpeakerCountName( openQ4_GetSpeakerCount() ) );
+		}
+		return NULL;
+	}
+
+	const ALCint outputMode = openQ4_GetRequestedOutputMode();
+	attributes[0] = ALC_OUTPUT_MODE_SOFT;
+	attributes[1] = outputMode;
+	attributes[2] = 0;
+	common->Printf( "OpenAL output mode requested: %s\n", openQ4_OutputModeName( outputMode ) );
+	return attributes;
+}
+
+static void openQ4_ReportOutputMode( ALCdevice* device )
+{
+	if( device == NULL || alcIsExtensionPresent( device, "ALC_SOFT_output_mode" ) != AL_TRUE )
+	{
+		common->Printf( "OpenAL output mode: unavailable\n" );
+		return;
+	}
+
+	ALCint outputMode = ALC_ANY_SOFT;
+	alcGetIntegerv( device, ALC_OUTPUT_MODE_SOFT, 1, &outputMode );
+	if( CheckALCErrors( device ) == ALC_NO_ERROR )
+	{
+		common->Printf( "OpenAL output mode active: %s\n", openQ4_OutputModeName( outputMode ) );
+	}
+}
+#else
+static const ALCint* openQ4_BuildOutputModeContextAttributes( ALCdevice* device, ALCint attributes[ 3 ] )
+{
+	(void)device;
+	(void)attributes;
+	if( openQ4_GetSpeakerCount() == OPENQ4_OPENAL_SPEAKERS_SURROUND )
+	{
+		common->Warning( "OpenAL output mode requested '%s', but this build does not expose ALC_SOFT_output_mode symbols.", openQ4_SpeakerCountName( openQ4_GetSpeakerCount() ) );
+	}
+	return NULL;
+}
+
+static void openQ4_ReportOutputMode( ALCdevice* device )
+{
+	(void)device;
+	common->Printf( "OpenAL output mode: unavailable\n" );
+}
+#endif
+
+#if OPENQ4_OPENAL_HRTF_SUPPORTED
+typedef const ALCchar* ( ALC_APIENTRY *openq4_alcGetStringiSOFT_t )( ALCdevice* device, ALCenum paramName, ALCsizei index );
+typedef ALCboolean ( ALC_APIENTRY *openq4_alcResetDeviceSOFT_t )( ALCdevice* device, const ALCint* attribs );
+
+static openq4_alcGetStringiSOFT_t qalcGetStringiSOFT = NULL;
+static openq4_alcResetDeviceSOFT_t qalcResetDeviceSOFT = NULL;
+
+static const char* openQ4_HrtfStatusName( const ALCint status )
+{
+	switch( status )
+	{
+		case ALC_HRTF_DISABLED_SOFT:
+			return "disabled";
+		case ALC_HRTF_ENABLED_SOFT:
+			return "enabled";
+#if defined( ALC_HRTF_DENIED_SOFT )
+		case ALC_HRTF_DENIED_SOFT:
+			return "denied";
+#endif
+#if defined( ALC_HRTF_REQUIRED_SOFT )
+		case ALC_HRTF_REQUIRED_SOFT:
+			return "required";
+#endif
+#if defined( ALC_HRTF_HEADPHONES_DETECTED_SOFT )
+		case ALC_HRTF_HEADPHONES_DETECTED_SOFT:
+			return "headphones-detected";
+#endif
+#if defined( ALC_HRTF_UNSUPPORTED_FORMAT_SOFT )
+		case ALC_HRTF_UNSUPPORTED_FORMAT_SOFT:
+			return "unsupported-format";
+#endif
+		default:
+			return "unknown";
+	}
+}
+
+static bool openQ4_LoadHrtfProcs( ALCdevice* device )
+{
+	qalcGetStringiSOFT = reinterpret_cast<openq4_alcGetStringiSOFT_t>( alcGetProcAddress( device, "alcGetStringiSOFT" ) );
+	qalcResetDeviceSOFT = reinterpret_cast<openq4_alcResetDeviceSOFT_t>( alcGetProcAddress( device, "alcResetDeviceSOFT" ) );
+	return qalcResetDeviceSOFT != NULL;
+}
+
+static void openQ4_ApplyHrtfPreference( ALCdevice* device )
+{
+	if( device == NULL )
+	{
+		return;
+	}
+
+	const int mode = openQ4_GetHrtfMode();
+	if( alcIsExtensionPresent( device, "ALC_SOFT_HRTF" ) != AL_TRUE )
+	{
+		if( mode != OPENQ4_OPENAL_HRTF_AUTO )
+		{
+			common->Warning( "OpenAL HRTF requested '%s', but ALC_SOFT_HRTF is not available.", openQ4_HrtfModeName( mode ) );
+		}
+		return;
+	}
+
+	if( !openQ4_LoadHrtfProcs( device ) )
+	{
+		if( mode != OPENQ4_OPENAL_HRTF_AUTO )
+		{
+			common->Warning( "OpenAL HRTF requested '%s', but alcResetDeviceSOFT is unavailable.", openQ4_HrtfModeName( mode ) );
+		}
+		return;
+	}
+
+	common->Printf( "OpenAL HRTF requested mode: %s\n", openQ4_HrtfModeName( mode ) );
+	if( mode == OPENQ4_OPENAL_HRTF_AUTO )
+	{
+		return;
+	}
+
+	const ALCint hrtfValue = ( mode == OPENQ4_OPENAL_HRTF_ON ) ? ALC_TRUE : ALC_FALSE;
+	const ALCint hrtfAttributes[] = {
+		ALC_HRTF_SOFT, hrtfValue,
+		0
+	};
+	(void)alcGetError( device );
+	const bool resetSucceeded = qalcResetDeviceSOFT( device, hrtfAttributes ) == ALC_TRUE;
+	const ALCenum resetError = CheckALCErrors( device );
+	if( !resetSucceeded || resetError != ALC_NO_ERROR )
+	{
+		common->Warning( "OpenAL HRTF request '%s' was rejected by the active device.", openQ4_HrtfModeName( mode ) );
+	}
+}
+
+static void openQ4_ReportHrtfStatus( ALCdevice* device )
+{
+	if( device == NULL || alcIsExtensionPresent( device, "ALC_SOFT_HRTF" ) != AL_TRUE )
+	{
+		common->Printf( "OpenAL HRTF: unavailable\n" );
+		return;
+	}
+
+	ALCint hrtfStatus = ALC_HRTF_DISABLED_SOFT;
+	alcGetIntegerv( device, ALC_HRTF_STATUS_SOFT, 1, &hrtfStatus );
+	if( CheckALCErrors( device ) == ALC_NO_ERROR )
+	{
+		common->Printf( "OpenAL HRTF status: %s\n", openQ4_HrtfStatusName( hrtfStatus ) );
+	}
+
+#if defined( ALC_NUM_HRTF_SPECIFIERS_SOFT ) && defined( ALC_HRTF_SPECIFIER_SOFT )
+	if( qalcGetStringiSOFT != NULL )
+	{
+		ALCint numSpecifiers = 0;
+		alcGetIntegerv( device, ALC_NUM_HRTF_SPECIFIERS_SOFT, 1, &numSpecifiers );
+		if( CheckALCErrors( device ) == ALC_NO_ERROR && numSpecifiers > 0 )
+		{
+			common->Printf( "OpenAL HRTF specifiers:\n" );
+			for( ALCint i = 0; i < numSpecifiers; ++i )
+			{
+				const ALCchar* specifier = qalcGetStringiSOFT( device, ALC_HRTF_SPECIFIER_SOFT, i );
+				if( specifier != NULL && specifier[0] != '\0' )
+				{
+					common->Printf( "    %s\n", specifier );
+				}
+			}
+		}
+	}
+#endif
+}
+#else
+static void openQ4_ApplyHrtfPreference( ALCdevice* device )
+{
+	(void)device;
+	if( openQ4_GetHrtfMode() != OPENQ4_OPENAL_HRTF_AUTO )
+	{
+		common->Warning( "OpenAL HRTF requested '%s', but this build does not expose ALC_SOFT_HRTF symbols.", openQ4_HrtfModeName( openQ4_GetHrtfMode() ) );
+	}
+}
+
+static void openQ4_ReportHrtfStatus( ALCdevice* device )
+{
+	(void)device;
+	common->Printf( "OpenAL HRTF: unavailable\n" );
+}
+#endif
+
 
 /*
 ========================
@@ -131,8 +592,16 @@ idSoundHardware_OpenAL::idSoundHardware_OpenAL()
 	efxEnabled = false;
 	auxEffectSlot = 0;
 	auxReverbEffect = 0;
+	deviceEventsEnabled = false;
+	enabledDeviceEventFlags = 0;
+	reopenDeviceAvailable = false;
+	deferredUpdatesAvailable = false;
+	deferredUpdatesActive = false;
 	lastDeviceCheckTime = 0;
+	lastPerfPrintTime = 0;
 	openedWithDefaultFallback = false;
+	openedHrtfMode = openQ4_GetHrtfMode();
+	openedSpeakerCount = openQ4_GetSpeakerCount();
 
 	//vuMeterRMS = NULL;
 	//vuMeterPeak = NULL;
@@ -301,12 +770,233 @@ void idSoundHardware_OpenAL::CaptureOpenedDeviceState( const char* requestedDevi
 	openedRequestedDeviceName = NormalizeRequestedDeviceName( requestedDeviceName );
 	openedActiveDeviceName = GetActivePlaybackDeviceName( openalDevice );
 	openedWithDefaultFallback = openedRequestedDeviceName.Length() > 0 && openedActiveDeviceName.Icmp( openedRequestedDeviceName ) != 0;
+	openedHrtfMode = openQ4_GetHrtfMode();
+	openedSpeakerCount = openQ4_GetSpeakerCount();
 	lastDeviceCheckTime = Sys_Milliseconds();
+}
+
+void idSoundHardware_OpenAL::EnableDeviceEventMonitoring() {
+	DisableDeviceEventMonitoring();
+
+#if OPENQ4_OPENAL_SYSTEM_EVENTS_SUPPORTED
+	if( openalDevice == NULL )
+	{
+		return;
+	}
+
+	if( alcIsExtensionPresent( openalDevice, "ALC_SOFT_system_events" ) != ALC_TRUE || !openQ4_LoadSystemEventProcs( openalDevice ) )
+	{
+		return;
+	}
+
+	ALCenum events[ 3 ];
+	int eventCount = 0;
+	enabledDeviceEventFlags = 0;
+	const int eventFlags[] = {
+		OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED,
+		OPENQ4_OPENAL_DEVICE_EVENT_ADDED,
+		OPENQ4_OPENAL_DEVICE_EVENT_REMOVED
+	};
+	for( int i = 0; i < sizeof( eventFlags ) / sizeof( eventFlags[ 0 ] ); ++i )
+	{
+		const ALCenum eventType = openQ4_DeviceEventTypeForFlag( eventFlags[ i ] );
+		if( eventType != 0 && qalcEventIsSupportedSOFT( eventType, ALC_PLAYBACK_DEVICE_SOFT ) == ALC_EVENT_SUPPORTED_SOFT )
+		{
+			events[ eventCount++ ] = eventType;
+			enabledDeviceEventFlags |= eventFlags[ i ];
+		}
+	}
+
+	if( eventCount == 0 )
+	{
+		enabledDeviceEventFlags = 0;
+		return;
+	}
+
+	openQ4_ConsumePendingDeviceEventFlags();
+	qalcEventCallbackSOFT( openQ4_OpenALDeviceEventCallback, NULL );
+	if( qalcEventControlSOFT( eventCount, events, ALC_TRUE ) != ALC_TRUE )
+	{
+		common->Warning( "OpenAL playback device event monitoring could not be enabled; falling back to polling." );
+		qalcEventCallbackSOFT( NULL, NULL );
+		enabledDeviceEventFlags = 0;
+		return;
+	}
+
+	deviceEventsEnabled = true;
+
+	idStr eventNames;
+	for( int i = 0; i < sizeof( eventFlags ) / sizeof( eventFlags[ 0 ] ); ++i )
+	{
+		if( ( enabledDeviceEventFlags & eventFlags[ i ] ) != 0 )
+		{
+			openQ4_AppendDeviceEventName( eventNames, eventFlags[ i ] );
+		}
+	}
+	common->Printf( "OpenAL playback device event monitoring enabled: %s\n", eventNames.c_str() );
+#endif
+}
+
+void idSoundHardware_OpenAL::DisableDeviceEventMonitoring() {
+#if OPENQ4_OPENAL_SYSTEM_EVENTS_SUPPORTED
+	if( qalcEventControlSOFT != NULL && deviceEventsEnabled && enabledDeviceEventFlags != 0 )
+	{
+		ALCenum events[ 3 ];
+		int eventCount = 0;
+		const int eventFlags[] = {
+			OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED,
+			OPENQ4_OPENAL_DEVICE_EVENT_ADDED,
+			OPENQ4_OPENAL_DEVICE_EVENT_REMOVED
+		};
+		for( int i = 0; i < sizeof( eventFlags ) / sizeof( eventFlags[ 0 ] ); ++i )
+		{
+			if( ( enabledDeviceEventFlags & eventFlags[ i ] ) != 0 )
+			{
+				const ALCenum eventType = openQ4_DeviceEventTypeForFlag( eventFlags[ i ] );
+				if( eventType != 0 )
+				{
+					events[ eventCount++ ] = eventType;
+				}
+			}
+		}
+		if( eventCount > 0 )
+		{
+			qalcEventControlSOFT( eventCount, events, ALC_FALSE );
+		}
+	}
+	if( qalcEventCallbackSOFT != NULL && deviceEventsEnabled )
+	{
+		qalcEventCallbackSOFT( NULL, NULL );
+	}
+	openQ4_ConsumePendingDeviceEventFlags();
+#endif
+	deviceEventsEnabled = false;
+	enabledDeviceEventFlags = 0;
+}
+
+bool idSoundHardware_OpenAL::TryReopenDevice( const char* requestedDeviceName, const char* reason ) {
+	const idStr normalizedRequestedDeviceName = NormalizeRequestedDeviceName( requestedDeviceName );
+
+#if OPENQ4_OPENAL_REOPEN_DEVICE_SUPPORTED
+	if( openalDevice == NULL || !reopenDeviceAvailable || qalcReopenDeviceSOFT == NULL )
+	{
+		return false;
+	}
+
+	idStr reopenTargetDeviceName = normalizedRequestedDeviceName;
+	if( reopenTargetDeviceName.Length() > 0 )
+	{
+		idStrList currentDeviceNames;
+		idStr currentDefaultDeviceName;
+		GetAvailablePlaybackDevices( currentDeviceNames, currentDefaultDeviceName );
+		if( !DeviceListContains( currentDeviceNames, reopenTargetDeviceName.c_str() ) )
+		{
+			reopenTargetDeviceName.Clear();
+		}
+	}
+
+	const char* reopenDeviceName = reopenTargetDeviceName.Length() > 0 ? reopenTargetDeviceName.c_str() : NULL;
+	if( normalizedRequestedDeviceName.Length() > 0 && reopenDeviceName == NULL )
+	{
+		common->Printf( "OpenAL %s; requested device '%s' is unavailable, attempting in-place device reopen to system default.\n", reason != NULL ? reason : "device change detected", normalizedRequestedDeviceName.c_str() );
+	}
+	else
+	{
+		common->Printf( "OpenAL %s; attempting in-place device reopen to %s.\n", reason != NULL ? reason : "device change detected", reopenDeviceName != NULL ? reopenDeviceName : "system default" );
+	}
+
+	(void)alcGetError( openalDevice );
+	const bool reopened = qalcReopenDeviceSOFT( openalDevice, reopenDeviceName, NULL ) == ALC_TRUE;
+	const ALCenum reopenError = CheckALCErrors( openalDevice );
+	if( !reopened || reopenError != ALC_NO_ERROR )
+	{
+		common->Warning( "OpenAL in-place device reopen failed; falling back to sound system restart." );
+		return false;
+	}
+
+	CaptureOpenedDeviceState( normalizedRequestedDeviceName.c_str() );
+
+	if( openedDefaultDeviceName.Length() > 0 )
+	{
+		common->Printf( "OpenAL default device: %s\n", openedDefaultDeviceName.c_str() );
+	}
+	if( openedActiveDeviceName.Length() > 0 )
+	{
+		common->Printf( "OpenAL active device: %s\n", openedActiveDeviceName.c_str() );
+	}
+	if( openedWithDefaultFallback )
+	{
+		common->Warning( "OpenAL requested device '%s' is unavailable; using '%s' until it returns.", openedRequestedDeviceName.c_str(), openedActiveDeviceName.c_str() );
+	}
+	openQ4_ReportHrtfStatus( openalDevice );
+	openQ4_ReportOutputMode( openalDevice );
+	return true;
+#else
+	(void)normalizedRequestedDeviceName;
+	(void)reason;
+	return false;
+#endif
+}
+
+void idSoundHardware_OpenAL::BeginDeferredUpdates() {
+#if OPENQ4_OPENAL_DEFERRED_UPDATES_SUPPORTED
+	if( !deferredUpdatesAvailable || deferredUpdatesActive || openalContext == NULL || alcGetCurrentContext() != openalContext )
+	{
+		return;
+	}
+
+	qalDeferUpdatesSOFT();
+	if( CheckALErrors() == AL_NO_ERROR )
+	{
+		deferredUpdatesActive = true;
+	}
+	else
+	{
+		deferredUpdatesAvailable = false;
+	}
+#endif
+}
+
+void idSoundHardware_OpenAL::EndDeferredUpdates() {
+#if OPENQ4_OPENAL_DEFERRED_UPDATES_SUPPORTED
+	if( !deferredUpdatesActive )
+	{
+		return;
+	}
+
+	qalProcessUpdatesSOFT();
+	deferredUpdatesActive = false;
+	if( CheckALErrors() != AL_NO_ERROR )
+	{
+		deferredUpdatesAvailable = false;
+	}
+#endif
 }
 
 bool idSoundHardware_OpenAL::UpdateDeviceMonitoring() {
 	const int nowTime = Sys_Milliseconds();
-	if( lastDeviceCheckTime + 1000 > nowTime ) {
+	const int pendingDeviceEventFlags = openQ4_ConsumePendingDeviceEventFlags();
+	if( pendingDeviceEventFlags != 0 )
+	{
+		idStr eventNames;
+#if OPENQ4_OPENAL_SYSTEM_EVENTS_SUPPORTED
+		const int eventFlags[] = {
+			OPENQ4_OPENAL_DEVICE_EVENT_DEFAULT_CHANGED,
+			OPENQ4_OPENAL_DEVICE_EVENT_ADDED,
+			OPENQ4_OPENAL_DEVICE_EVENT_REMOVED
+		};
+		for( int i = 0; i < sizeof( eventFlags ) / sizeof( eventFlags[ 0 ] ); ++i )
+		{
+			if( ( pendingDeviceEventFlags & eventFlags[ i ] ) != 0 )
+			{
+				openQ4_AppendDeviceEventName( eventNames, eventFlags[ i ] );
+			}
+		}
+#endif
+		common->Printf( "OpenAL playback device event received: %s\n", eventNames.Length() > 0 ? eventNames.c_str() : "unknown" );
+	}
+
+	if( pendingDeviceEventFlags == 0 && lastDeviceCheckTime + 1000 > nowTime ) {
 		return false;
 	}
 	lastDeviceCheckTime = nowTime;
@@ -314,12 +1004,31 @@ bool idSoundHardware_OpenAL::UpdateDeviceMonitoring() {
 	const idStr requestedDeviceName = NormalizeRequestedDeviceName( s_deviceName.GetString() );
 	if( requestedDeviceName.Icmp( openedRequestedDeviceName ) != 0 ) {
 		if( requestedDeviceName.Length() == 0 ) {
-			common->Printf( "OpenAL requested device changed to system default; restarting sound system.\n" );
+			common->Printf( "OpenAL requested device changed to system default.\n" );
 		} else if( openedRequestedDeviceName.Length() == 0 ) {
-			common->Printf( "OpenAL requested device changed to '%s'; restarting sound system.\n", requestedDeviceName.c_str() );
+			common->Printf( "OpenAL requested device changed to '%s'.\n", requestedDeviceName.c_str() );
 		} else {
-			common->Printf( "OpenAL requested device changed from '%s' to '%s'; restarting sound system.\n", openedRequestedDeviceName.c_str(), requestedDeviceName.c_str() );
+			common->Printf( "OpenAL requested device changed from '%s' to '%s'.\n", openedRequestedDeviceName.c_str(), requestedDeviceName.c_str() );
 		}
+		if( TryReopenDevice( requestedDeviceName.c_str(), "requested device changed" ) )
+		{
+			return false;
+		}
+		common->Printf( "OpenAL requested device change requires sound system restart.\n" );
+		soundSystemLocal.SetNeedsRestart();
+		return true;
+	}
+
+	const int hrtfMode = openQ4_GetHrtfMode();
+	if( hrtfMode != openedHrtfMode ) {
+		common->Printf( "OpenAL HRTF mode changed from %s to %s; restarting sound system.\n", openQ4_HrtfModeName( openedHrtfMode ), openQ4_HrtfModeName( hrtfMode ) );
+		soundSystemLocal.SetNeedsRestart();
+		return true;
+	}
+
+	const int speakerCount = openQ4_GetSpeakerCount();
+	if( speakerCount != openedSpeakerCount ) {
+		common->Printf( "OpenAL speaker mode changed from %s to %s; restarting sound system.\n", openQ4_SpeakerCountName( openedSpeakerCount ), openQ4_SpeakerCountName( speakerCount ) );
 		soundSystemLocal.SetNeedsRestart();
 		return true;
 	}
@@ -329,7 +1038,12 @@ bool idSoundHardware_OpenAL::UpdateDeviceMonitoring() {
 		ALCint connected = ALC_TRUE;
 		alcGetIntegerv( openalDevice, ALC_CONNECTED, 1, &connected );
 		if( CheckALCErrors( openalDevice ) == ALC_NO_ERROR && connected == ALC_FALSE ) {
-			common->Warning( "OpenAL device '%s' disconnected; restarting sound system.", openedActiveDeviceName.c_str() );
+			common->Warning( "OpenAL device '%s' disconnected.", openedActiveDeviceName.c_str() );
+			if( TryReopenDevice( openedRequestedDeviceName.c_str(), "active device disconnected" ) )
+			{
+				return false;
+			}
+			common->Printf( "OpenAL disconnected device recovery requires sound system restart.\n" );
 			soundSystemLocal.SetNeedsRestart();
 			return true;
 		}
@@ -341,13 +1055,23 @@ bool idSoundHardware_OpenAL::UpdateDeviceMonitoring() {
 	GetAvailablePlaybackDevices( deviceNames, defaultDeviceName );
 
 	if( openedWithDefaultFallback && DeviceListContains( deviceNames, openedRequestedDeviceName.c_str() ) ) {
-		common->Printf( "OpenAL requested device '%s' is available again; restarting sound system.\n", openedRequestedDeviceName.c_str() );
+		common->Printf( "OpenAL requested device '%s' is available again.\n", openedRequestedDeviceName.c_str() );
+		if( TryReopenDevice( openedRequestedDeviceName.c_str(), "requested device became available" ) )
+		{
+			return false;
+		}
+		common->Printf( "OpenAL requested device return requires sound system restart.\n" );
 		soundSystemLocal.SetNeedsRestart();
 		return true;
 	}
 
 	if( ( openedRequestedDeviceName.IsEmpty() || openedWithDefaultFallback ) && defaultDeviceName.Length() > 0 && defaultDeviceName.Icmp( openedDefaultDeviceName ) != 0 ) {
-		common->Printf( "OpenAL system default device changed from '%s' to '%s'; restarting sound system.\n", openedDefaultDeviceName.c_str(), defaultDeviceName.c_str() );
+		common->Printf( "OpenAL system default device changed from '%s' to '%s'.\n", openedDefaultDeviceName.c_str(), defaultDeviceName.c_str() );
+		if( TryReopenDevice( openedRequestedDeviceName.c_str(), "system default device changed" ) )
+		{
+			return false;
+		}
+		common->Printf( "OpenAL default device change requires sound system restart.\n" );
 		soundSystemLocal.SetNeedsRestart();
 		return true;
 	}
@@ -476,7 +1200,17 @@ void idSoundHardware_OpenAL::Init()
 		return;
 	}
 
-	openalContext = alcCreateContext( openalDevice, NULL );
+	openQ4_ApplyHrtfPreference( openalDevice );
+
+	ALCint openalContextAttributes[ 3 ];
+	const ALCint* requestedContextAttributes = openQ4_BuildOutputModeContextAttributes( openalDevice, openalContextAttributes );
+	openalContext = alcCreateContext( openalDevice, requestedContextAttributes );
+	if( openalContext == NULL && requestedContextAttributes != NULL )
+	{
+		CheckALCErrors( openalDevice );
+		common->Warning( "idSoundHardware_OpenAL::Init: alcCreateContext() rejected requested OpenAL output mode; retrying with runtime default." );
+		openalContext = alcCreateContext( openalDevice, NULL );
+	}
 	if( openalContext == NULL )
 	{
 		common->Printf( "Failed.\n" );
@@ -521,7 +1255,28 @@ void idSoundHardware_OpenAL::Init()
 	common->Printf( "OpenAL version: %s\n", alGetString( AL_VERSION ) );
 	common->Printf( "OpenAL extensions: %s\n", alGetString( AL_EXTENSIONS ) );
 
+	deferredUpdatesAvailable = alIsExtensionPresent( "AL_SOFT_deferred_updates" ) == AL_TRUE && openQ4_LoadDeferredUpdateProcs();
+	deferredUpdatesActive = false;
+	if( deferredUpdatesAvailable )
+	{
+		common->Printf( "OpenAL deferred source updates enabled.\n" );
+	}
+	if( idSoundVoice_OpenAL::SourceLatencyQueriesAvailable() )
+	{
+		common->Printf( "OpenAL source latency queries enabled.\n" );
+	}
+	if( alIsExtensionPresent( "AL_SOFT_callback_buffer" ) == AL_TRUE )
+	{
+		common->Printf( "OpenAL callback buffers available.\n" );
+	}
+
 	CaptureOpenedDeviceState( requestedDeviceName.c_str() );
+	reopenDeviceAvailable = alcIsExtensionPresent( openalDevice, "ALC_SOFT_reopen_device" ) == ALC_TRUE && openQ4_LoadReopenDeviceProc( openalDevice );
+	if( reopenDeviceAvailable )
+	{
+		common->Printf( "OpenAL in-place device reopen available.\n" );
+	}
+	EnableDeviceEventMonitoring();
 	if( openedRequestedDeviceName.Length() == 0 ) {
 		common->Printf( "OpenAL requested device: system default\n" );
 	} else {
@@ -536,6 +1291,8 @@ void idSoundHardware_OpenAL::Init()
 	if( openedWithDefaultFallback ) {
 		common->Warning( "OpenAL requested device '%s' is unavailable; using '%s' until it returns.", openedRequestedDeviceName.c_str(), openedActiveDeviceName.c_str() );
 	}
+	openQ4_ReportHrtfStatus( openalDevice );
+	openQ4_ReportOutputMode( openalDevice );
 
 	efxEnabled = false;
 	efxFiltersAvailable = false;
@@ -692,6 +1449,9 @@ idSoundHardware_OpenAL::Shutdown
 */
 void idSoundHardware_OpenAL::Shutdown()
 {
+	EndDeferredUpdates();
+	DisableDeviceEventMonitoring();
+
 	for( int i = 0; i < voices.Num(); i++ )
 	{
 		voices[ i ].DestroyInternal();
@@ -737,7 +1497,13 @@ void idSoundHardware_OpenAL::Shutdown()
 	alcCloseDevice( openalDevice );
 	openalDevice = NULL;
 	lastDeviceCheckTime = 0;
+	lastPerfPrintTime = 0;
+	reopenDeviceAvailable = false;
+	deferredUpdatesAvailable = false;
+	deferredUpdatesActive = false;
 	openedWithDefaultFallback = false;
+	openedHrtfMode = OPENQ4_OPENAL_HRTF_AUTO;
+	openedSpeakerCount = OPENQ4_OPENAL_SPEAKERS_SURROUND;
 	openedRequestedDeviceName.Clear();
 	openedActiveDeviceName.Clear();
 	openedDefaultDeviceName.Clear();
@@ -817,6 +1583,68 @@ void idSoundHardware_OpenAL::FreeVoice( idSoundVoice* voice )
 
 /*
 ========================
+idSoundHardware_OpenAL::PrintPerformanceData
+========================
+*/
+void idSoundHardware_OpenAL::PrintPerformanceData()
+{
+	if( !s_showPerfData.GetBool() )
+	{
+		return;
+	}
+
+	const int nowTime = Sys_Milliseconds();
+	if( lastPerfPrintTime + 1000 > nowTime )
+	{
+		return;
+	}
+	lastPerfPrintTime = nowTime;
+
+	int activeVoices = 0;
+	int latencyVoices = 0;
+	float totalLatencyMS = 0.0f;
+	float maxLatencyMS = 0.0f;
+
+	for( int i = 0; i < voices.Num(); i++ )
+	{
+		if( !voices[i].IsPlaying() )
+		{
+			continue;
+		}
+
+		activeVoices++;
+		float offsetMS = 0.0f;
+		float latencyMS = 0.0f;
+		if( voices[i].GetPlaybackLatencyMS( offsetMS, latencyMS ) )
+		{
+			latencyVoices++;
+			totalLatencyMS += latencyMS;
+			maxLatencyMS = Max( maxLatencyMS, latencyMS );
+		}
+	}
+
+	if( latencyVoices > 0 )
+	{
+		common->Printf( "OpenAL perf: active voices %d/%d, free %d, zombies %d, output latency avg %.2f ms max %.2f ms\n",
+			activeVoices,
+			voices.Num(),
+			freeVoices.Num(),
+			zombieVoices.Num(),
+			totalLatencyMS / latencyVoices,
+			maxLatencyMS );
+	}
+	else
+	{
+		common->Printf( "OpenAL perf: active voices %d/%d, free %d, zombies %d, source latency unavailable\n",
+			activeVoices,
+			voices.Num(),
+			freeVoices.Num(),
+			zombieVoices.Num() );
+	}
+}
+
+/*
+========================
 idSoundHardware_OpenAL::Update
 ========================
 */
@@ -864,6 +1692,8 @@ void idSoundHardware_OpenAL::Update()
 			playingZombies++;
 		}
 	}
+
+	PrintPerformanceData();
 
 	/*
 	if( s_showPerfData.GetBool() )

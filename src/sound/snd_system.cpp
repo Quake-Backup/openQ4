@@ -38,6 +38,7 @@ idCVar s_frequencyShift( "s_frequencyShift", "1", CVAR_BOOL, "enable sound shade
 idCVar s_useOpenAL( "s_useOpenAL", "1", CVAR_ARCHIVE | CVAR_BOOL, "use OpenAL audio backend" );
 idCVar s_deviceName( "s_deviceName", "", CVAR_ARCHIVE, "OpenAL device name override" );
 idCVar s_useEAXReverb( "s_useEAXReverb", "1", CVAR_ARCHIVE | CVAR_BOOL, "use EAX reverb if available" );
+idCVar s_openALHRTF( "s_openALHRTF", "0", CVAR_ARCHIVE | CVAR_INTEGER, "OpenAL Soft HRTF mode: 0 = auto, 1 = off, 2 = on", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar s_openALEfxDebugMode( "s_openALEfxDebugMode", "0", CVAR_ARCHIVE | CVAR_INTEGER, "OpenAL wet/dry debug mode (0=normal, 1=wet-only, 2=dry-only)" );
 idCVar s_numberOfSpeakers( "s_numberOfSpeakers", "6", CVAR_ARCHIVE | CVAR_INTEGER, "number of speakers (2 or 6)" );
 idCVar s_warnOnMissingSamples( "s_warnOnMissingSamples", "0", CVAR_ARCHIVE | CVAR_BOOL, "warn when falling back to default sound samples" );
@@ -249,7 +250,16 @@ void ListSoundDecoders_f( const idCmdArgs& args )
 				const int percent = channel->IsLooping() ? ( 100 * ( elapsedMS % durationMS ) / durationMS ) : Min( 100, 100 * elapsedMS / durationMS );
 				const char* format = sample->IsCompressed() ? "OGG" : "WAV";
 
-				idLib::Printf( "%3d decoding %3d%% %s: %s\n", numActiveDecoders, percent, format, sample->GetName() );
+				float offsetMS = 0.0f;
+				float latencyMS = 0.0f;
+				if( channel->hardwareVoice->GetPlaybackLatencyMS( offsetMS, latencyMS ) )
+				{
+					idLib::Printf( "%3d decoding %3d%% %s latency %5.1fms offset %8.1fms: %s\n", numActiveDecoders, percent, format, latencyMS, offsetMS, sample->GetName() );
+				}
+				else
+				{
+					idLib::Printf( "%3d decoding %3d%% %s: %s\n", numActiveDecoders, percent, format, sample->GetName() );
+				}
 				numActiveDecoders++;
 			}
 		}

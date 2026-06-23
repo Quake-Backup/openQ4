@@ -524,17 +524,14 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	hardwareVoice->SetDryLevel( dryLevel );
 	hardwareVoice->SetPitch( soundWorld->slowmoSpeed * pitchScale * frequencyShift );
 
-	float occlusion = 0.0f;
+	float portalOcclusion = 0.0f;
 	const bool allowPortalOcclusion = !global && !emitterIsListener && s_useOcclusion.GetBool() && ( parms.soundShaderFlags & SSF_NO_OCCLUSION ) == 0;
 	if( allowPortalOcclusion && leadinSample->NumChannels() == 1 && emitter->occludingPortalCount > 0 )
 	{
-		occlusion = SoundCombineOcclusion( occlusion, SOUND_OCCLUSION_PER_BLOCKED_PORTAL * emitter->occludingPortalCount );
+		portalOcclusion = SoundCombineOcclusion( portalOcclusion, SOUND_OCCLUSION_PER_BLOCKED_PORTAL * emitter->occludingPortalCount );
 	}
-	if( soundWorld->enviroSuitActive )
-	{
-		occlusion = SoundCombineOcclusion( occlusion, SOUND_ENVIROSUIT_OCCLUSION );
-	}
-	hardwareVoice->SetOcclusion( occlusion );
+	hardwareVoice->SetOcclusion( portalOcclusion );
+	hardwareVoice->SetEnvironmentMuffle( soundWorld->enviroSuitActive ? SOUND_ENVIROSUIT_OCCLUSION : 0.0f );
 
 	if( issueStart )
 	{

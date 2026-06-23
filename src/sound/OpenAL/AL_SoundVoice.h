@@ -83,6 +83,11 @@ public:
 		idSoundVoice_Base::SetOcclusion( f );
 		ApplyWetDryRouting();
 	}
+	void		SetEnvironmentMuffle( float f ) override
+	{
+		idSoundVoice_Base::SetEnvironmentMuffle( f );
+		ApplyWetDryRouting();
+	}
 
 	void					Create( const idSoundSample* leadinSample, const idSoundSample* loopingSample );
 
@@ -111,6 +116,8 @@ public:
 	{
 		return sampleRate;
 	}
+	bool					GetPlaybackLatencyMS( float& offsetMS, float& latencyMS ) const override;
+	static bool				SourceLatencyQueriesAvailable();
 
 	// callback function
 	void					OnBufferStart( idSoundSample_OpenAL* sample, int bufferNumber );

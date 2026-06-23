@@ -54,6 +54,7 @@ idSoundVoice_Base::idSoundVoice_Base() :
 	dryLevel( 1.0f ),
 	innerRadius( 32.0f ),
 	occlusion( 0.0f ),
+	environmentMuffle( 0.0f ),
 	channelMask( 0 ),
 	innerSampleRangeSqr( 0.0f ),
 	outerSampleRangeSqr( 0.0f )
