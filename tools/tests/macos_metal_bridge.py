@@ -707,6 +707,79 @@ def validate_macos_signing_config_runtime() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def validate_macos_signing_preserves_client_app_match_runtime() -> None:
+    package = load_package_module()
+    work = ROOT / ".tmp" / "macos-signing-match-contract"
+    package_root = work / "openq4-v0.2.000-macos-arm64-opengl"
+    app_root = package_root / "openQ4.app"
+    app_executable = app_root / "Contents" / "MacOS" / "openQ4"
+    arch = "arm64"
+
+    original_platform = package.sys.platform
+    original_which = package.shutil.which
+    original_codesign_target = package.macos_codesign_target
+
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        client_binary = package_root / f"openQ4-client_{arch}"
+        write_test_file(client_binary, b"unsigned-client\n", 0o755)
+        write_test_file(package_root / f"openQ4-ded_{arch}", b"dedicated\n", 0o755)
+        write_test_file(package_root / package.GAME_DIR_NAME / f"game-sp_{arch}.dylib", b"sp\n", 0o755)
+        write_test_file(package_root / package.GAME_DIR_NAME / f"game-mp_{arch}.dylib", b"mp\n", 0o755)
+        write_test_file(app_executable, b"stale-app-executable\n", 0o755)
+
+        calls = []
+
+        def fake_which(tool_name):
+            if tool_name == "codesign":
+                return "/usr/bin/codesign"
+            return original_which(tool_name)
+
+        def fake_codesign_target(codesign_path, target, config):
+            del codesign_path, config
+            calls.append(target.relative_to(package_root).as_posix())
+            if target == app_root:
+                write_test_file(app_executable, b"signed-app-executable\n", 0o755)
+            else:
+                target.write_bytes(target.read_bytes() + b"signed\n")
+
+        package.sys.platform = "darwin"
+        package.shutil.which = fake_which
+        package.macos_codesign_target = fake_codesign_target
+        package.sign_macos_payload(
+            package_root,
+            arch,
+            package.MacOSSigningConfig(
+                mode="ad-hoc",
+                identity="-",
+                hardened_runtime=False,
+                timestamp=False,
+                entitlements=None,
+                notarize=False,
+                notary_keychain_profile="",
+                notary_keychain=None,
+            ),
+        )
+
+        expected_calls = [
+            f"openQ4-ded_{arch}",
+            f"{package.GAME_DIR_NAME}/game-sp_{arch}.dylib",
+            f"{package.GAME_DIR_NAME}/game-mp_{arch}.dylib",
+            "openQ4.app",
+        ]
+        if calls != expected_calls:
+            raise AssertionError(f"Unexpected macOS signing order: {calls!r}")
+        if client_binary.read_bytes() != app_executable.read_bytes():
+            raise AssertionError("macOS signing should preserve loose client/app executable byte match")
+        if not os.access(client_binary, os.X_OK):
+            raise AssertionError("macOS signing should preserve the loose client executable bit")
+    finally:
+        package.sys.platform = original_platform
+        package.shutil.which = original_which
+        package.macos_codesign_target = original_codesign_target
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def validate_macos_pk4_symlink_guard_runtime() -> None:
     if not hasattr(os, "symlink"):
         return
@@ -973,6 +1046,7 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "import subprocess", "macOS binary dependency validation")
     require(package, "filecmp.cmp(client_binary, app_executable, shallow=False)", "macOS app executable comparison")
     require(package, "shutil.copy2(client_binary, app_executable)", "macOS app executable creation")
+    require(package, "shutil.copy2(app_executable, client_binary)", "macOS signed app executable recopy")
     require(package, "macOS app executable does not match packaged client binary", "macOS app executable validation")
     require(package, "get_package_executable_archive_paths", "POSIX archive executable mode preservation")
     require(package, "ZipInfo.from_file", "POSIX archive executable mode preservation")
@@ -1412,6 +1486,7 @@ def main() -> None:
     validate_macos_app_bundle_validator_runtime()
     validate_macos_archive_validator_runtime()
     validate_macos_signing_config_runtime()
+    validate_macos_signing_preserves_client_app_match_runtime()
     validate_macos_pk4_symlink_guard_runtime()
     validate_legacy_macos_plist_runtime()
     validate_macos_staged_payload_validator_runtime()

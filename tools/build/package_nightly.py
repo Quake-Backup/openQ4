@@ -645,14 +645,22 @@ def sign_macos_payload(package_root: Path, arch: str, config: MacOSSigningConfig
     if codesign_path is None:
         raise RuntimeError("macOS code-sign validation requires codesign")
 
+    app_root = package_root / "openQ4.app"
+    client_binary = package_root / f"{PRODUCT_NAME}-client_{arch}"
+    app_executable = app_root / "Contents" / "MacOS" / "openQ4"
+
     for target in macos_signable_targets(package_root, arch):
+        # The app bundle signature can rewrite the copied executable; copy that
+        # final signed executable back to the loose client below so both match.
+        if target == client_binary:
+            continue
         macos_codesign_target(codesign_path, target, config)
 
-    app_root = package_root / "openQ4.app"
-    app_executable = app_root / "Contents" / "MacOS" / "openQ4"
-    shutil.copy2(package_root / f"{PRODUCT_NAME}-client_{arch}", app_executable)
+    shutil.copy2(client_binary, app_executable)
     ensure_posix_executable(app_executable)
     macos_codesign_target(codesign_path, app_root, config)
+    shutil.copy2(app_executable, client_binary)
+    ensure_posix_executable(client_binary)
 
 
 def ad_hoc_sign_macos_payload(package_root: Path, arch: str) -> None:
