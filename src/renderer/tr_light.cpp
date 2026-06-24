@@ -1827,6 +1827,7 @@ const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const re
 	static float refRegs[MAX_EXPRESSION_REGISTERS];	// don't put on stack, or VC++ will do a page touch
 	static const float defaultShaderParms[MAX_ENTITY_SHADER_PARMS] = { 0.0f };
 	const float *shaderParms = defaultShaderParms;
+	float generatedShaderParms[MAX_ENTITY_SHADER_PARMS];
 	idSoundEmitter *soundEmitter = NULL;
 
 	if ( shader == NULL ) {
@@ -1868,7 +1869,6 @@ const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const re
 	}
 
 	if ( renderEntity != NULL && renderEntity->referenceShader != NULL ) {
-		float generatedShaderParms[MAX_ENTITY_SHADER_PARMS];
 		const shaderStage_t *pStage;
 
 		renderEntity->referenceShader->EvaluateRegisters( refRegs, renderEntity->shaderParms, tr.viewDef, soundEmitter );
