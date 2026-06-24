@@ -104,9 +104,15 @@ static LPALGETSTRINGISOFT qalGetStringiSOFT = NULL;
 #endif
 
 #if OPENQ4_OPENAL_CALLBACK_BUFFER_SUPPORTED
+#ifndef AL_API_NOEXCEPT
+	#define OPENQ4_AL_API_NOEXCEPT noexcept
+#else
+	#define OPENQ4_AL_API_NOEXCEPT AL_API_NOEXCEPT
+#endif
+
 static LPALBUFFERCALLBACKSOFT qalBufferCallbackSOFT = NULL;
 
-static ALsizei AL_APIENTRY openQ4_OpenALCallbackBufferProbe( ALvoid* userptr, ALvoid* sampledata, ALsizei numbytes ) AL_API_NOEXCEPT
+static ALsizei AL_APIENTRY openQ4_OpenALCallbackBufferProbe( ALvoid* userptr, ALvoid* sampledata, ALsizei numbytes ) OPENQ4_AL_API_NOEXCEPT
 {
 	(void)userptr;
 	if( sampledata != NULL && numbytes > 0 )

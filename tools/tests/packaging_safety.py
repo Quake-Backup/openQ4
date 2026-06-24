@@ -889,15 +889,20 @@ def validate_windows_runtime_staging_guards() -> None:
     missing_openal_source = WORK / "windows-runtime" / "missing-openal-source"
     missing_openal_build = WORK / "windows-runtime" / "missing-openal-build"
     write_file(missing_openal_build / "openQ4-client_x64.exe", b"MZ\n")
-    expect_runtime_error(
-        lambda: WINDOWS_RUNTIME.stage_runtime_payloads(
-            missing_openal_source,
-            missing_openal_build,
-            [WORK / "windows-runtime" / "missing-openal-target"],
-        ),
-        "OpenAL32.dll runtime not found",
-        "missing OpenAL runtime",
-    )
+    original_openal_root = os.environ.pop("OPENQ4_OPENAL_ROOT", None)
+    try:
+        expect_runtime_error(
+            lambda: WINDOWS_RUNTIME.stage_runtime_payloads(
+                missing_openal_source,
+                missing_openal_build,
+                [WORK / "windows-runtime" / "missing-openal-target"],
+            ),
+            "OpenAL32.dll runtime not found",
+            "missing OpenAL runtime",
+        )
+    finally:
+        if original_openal_root is not None:
+            os.environ["OPENQ4_OPENAL_ROOT"] = original_openal_root
 
     symlink_binary_root = WORK / "windows-runtime" / "symlink-binary"
     real_binary = symlink_binary_root / "real.exe"
