@@ -72,6 +72,10 @@ private:
 	idWinVec4 modelOrigin;
 	idWinVec4 modelRotate;
 	idWinVec4 viewOffset;
+	idWinVec4 outlineColor;
+	idWinVec4 rimlightColor;
+	idWinVec4 brightSkinColor;
+	idWinFloat outlineWidth;
 	idWinStr customSkin;
 	idWinStr customShader;
 	idWinBool needsRender;

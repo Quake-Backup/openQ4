@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 import tarfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 
 
@@ -16,7 +17,22 @@ class SignoffArchiveError(RuntimeError):
 
 MAX_TEXT_MEMBER_BYTES = 2 * 1024 * 1024
 MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 4096
 RESULT_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+MACOS_FORBIDDEN_ARCHIVE_NAMES = (
+    ".DS_Store",
+    "__MACOSX",
+    ".fseventsd",
+    ".Spotlight-V100",
+    ".Trashes",
+    "Icon\r",
+)
+MACOS_FORBIDDEN_ARCHIVE_PREFIXES = (
+    "._",
+)
+MACOS_FORBIDDEN_ARCHIVE_SUFFIXES = (
+    ".dSYM",
+)
 
 
 REQUIRED_REPORT_TOKENS = (
@@ -34,6 +50,18 @@ REQUIRED_REPORT_TOKENS = (
     "audio output",
     "windowed, fullscreen",
     "matching OpenGL or Metal bridge",
+    "## macOS Version",
+    "## Kernel",
+    "## Displays",
+    "## Audio Devices",
+    "## USB Devices",
+    "## Bluetooth Devices",
+    "## Staged Payload",
+    "## Staged Binary Architectures",
+    "openQ4-client_",
+    "openQ4-ded_",
+    "game-sp_",
+    "game-mp_",
 )
 
 
@@ -57,6 +85,8 @@ def parse_bridges(value: str) -> tuple[str, ...]:
     invalid = [bridge for bridge in bridges if bridge not in {"opengl", "metal"}]
     if invalid:
         raise SignoffArchiveError(f"Unsupported bridge name(s): {', '.join(invalid)}")
+    if len(set(bridges)) != len(bridges):
+        raise SignoffArchiveError("Bridge list contains duplicates.")
     return bridges
 
 
@@ -70,6 +100,10 @@ def validate_member(member: tarfile.TarInfo) -> None:
     path = PurePosixPath(name)
     parts = name.split("/")
     require(name != "", "Archive contains an empty path.")
+    require(
+        not any(ord(character) < 32 or ord(character) == 127 for character in name),
+        f"Archive path contains a control character: {name!r}",
+    )
     require("\\" not in name, f"Archive path uses backslashes: {name}")
     require(not path.is_absolute(), f"Archive path is absolute: {name}")
     require(".." not in path.parts, f"Archive path escapes through '..': {name}")
@@ -81,6 +115,22 @@ def validate_member(member: tarfile.TarInfo) -> None:
             member.size <= MAX_ARCHIVE_MEMBER_BYTES,
             f"Archive member is too large: {name} ({member.size} bytes)",
         )
+
+
+def signoff_casefold_path_key(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def is_macos_non_runtime_metadata_path(name: str) -> bool:
+    for part in PurePosixPath(name).parts:
+        normalized_part = part.casefold()
+        if any(normalized_part == forbidden.casefold() for forbidden in MACOS_FORBIDDEN_ARCHIVE_NAMES):
+            return True
+        if any(normalized_part.startswith(prefix.casefold()) for prefix in MACOS_FORBIDDEN_ARCHIVE_PREFIXES):
+            return True
+        if any(normalized_part.endswith(suffix.casefold()) for suffix in MACOS_FORBIDDEN_ARCHIVE_SUFFIXES):
+            return True
+    return False
 
 
 def read_text(archive: tarfile.TarFile, name: str) -> str:
@@ -116,24 +166,47 @@ def infer_run_id(top_dirs: set[str], action: str, bridges: tuple[str, ...]) -> s
     return inferred or ""
 
 
-def has_member_under(member_names: set[str], prefix: str) -> bool:
+def validate_result_token(label: str, value: str) -> None:
+    require(
+        RESULT_TOKEN_PATTERN.fullmatch(value) is not None,
+        f"Invalid signoff archive {label} token: {value}",
+    )
+
+
+def has_file_under(file_names: set[str], prefix: str) -> bool:
     normalized = prefix.rstrip("/") + "/"
-    return any(name.startswith(normalized) and name != normalized for name in member_names)
+    return any(name.startswith(normalized) and name != normalized for name in file_names)
 
 
-def validate_report(report: str, *, bridge: str, require_completed_checklist: bool) -> None:
+def validate_report(
+    report: str,
+    *,
+    bridge: str,
+    result_dir: str,
+    require_completed_checklist: bool,
+) -> None:
     for token in REQUIRED_REPORT_TOKENS:
         require(token in report, f"{bridge} signoff report is missing {token!r}.")
     require(f"- Graphics bridge: {bridge}" in report, f"{bridge} signoff report has wrong bridge metadata.")
     require("- OpenAL provider:" in report, f"{bridge} signoff report is missing OpenAL provider metadata.")
     require("- Build directory:" in report, f"{bridge} signoff report is missing build directory metadata.")
     require("- Results:" in report, f"{bridge} signoff report is missing result directory metadata.")
+    require("- Client: not found" not in report, f"{bridge} signoff report did not record a staged client path.")
+    require(f"{result_dir}" in report, f"{bridge} signoff report does not reference its expected result directory.")
+    require(
+        f"{result_dir}/renderer-smoke" in report,
+        f"{bridge} signoff report does not reference its renderer-smoke output directory.",
+    )
+    require(
+        f"{result_dir}/renderer-matrix" in report,
+        f"{bridge} signoff report does not reference its renderer-matrix output directory.",
+    )
     if require_completed_checklist:
         open_items = [line for line in report.splitlines() if re.match(r"^- \[ \] ", line)]
         require(not open_items, f"{bridge} signoff report still has open manual checklist item(s).")
 
 
-def validate_log(log_text: str, *, bridge: str) -> None:
+def validate_log(log_text: str, *, bridge: str, result_dir: str) -> None:
     for token in REQUIRED_LOG_TOKENS:
         require(token in log_text, f"{bridge} workflow log is missing {token!r}.")
     require(
@@ -143,6 +216,10 @@ def validate_log(log_text: str, *, bridge: str) -> None:
     require(
         "macos_openal_provider=" in log_text,
         f"{bridge} workflow log does not show the selected OpenAL provider.",
+    )
+    require(
+        f"{result_dir}/macos-runtime-signoff.md" in log_text,
+        f"{bridge} workflow log does not reference the expected signoff report path.",
     )
 
 
@@ -155,15 +232,24 @@ def validate_signoff_archive(
     require_completed_checklist: bool,
 ) -> str:
     require(archive_path.is_file(), f"Archive was not found: {archive_path}")
+    require(not archive_path.is_symlink(), f"Archive path must not be a symlink: {archive_path}")
     require(
         RESULT_TOKEN_PATTERN.fullmatch(action) is not None,
         f"Invalid signoff archive action token: {action}",
     )
+    if run_id is not None:
+        validate_result_token("run ID", run_id)
 
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
         require(members, "Archive is empty.")
+        require(
+            len(members) <= MAX_ARCHIVE_MEMBERS,
+            f"Archive contains too many members: {len(members)} (max {MAX_ARCHIVE_MEMBERS})",
+        )
         seen_members: set[str] = set()
+        seen_casefold_members: dict[str, str] = {}
+        file_names: set[str] = set()
         for member in members:
             validate_member(member)
             normalized_name = member.name.rstrip("/")
@@ -172,11 +258,26 @@ def validate_signoff_archive(
                     normalized_name not in seen_members,
                     f"Archive contains a duplicate member: {normalized_name}",
                 )
+                casefold_name = signoff_casefold_path_key(normalized_name)
+                previous_name = seen_casefold_members.get(casefold_name)
+                require(
+                    previous_name is None or previous_name == normalized_name,
+                    "Archive contains case-insensitive duplicate members: "
+                    f"{previous_name}, {normalized_name}",
+                )
+                require(
+                    not is_macos_non_runtime_metadata_path(normalized_name),
+                    f"Archive contains non-runtime macOS metadata/debug entry: {normalized_name}",
+                )
                 seen_members.add(normalized_name)
+                seen_casefold_members[casefold_name] = normalized_name
+                if member.isfile():
+                    file_names.add(normalized_name)
 
         member_names = {member.name.rstrip("/") for member in members}
         top_dirs = {PurePosixPath(name).parts[0] for name in member_names if PurePosixPath(name).parts}
         effective_run_id = run_id or infer_run_id(top_dirs, action, bridges)
+        validate_result_token("run ID", effective_run_id)
         expected_result_dirs = {f"{effective_run_id}-{action}-{bridge}" for bridge in bridges}
         unexpected_top_dirs = sorted(top_dirs - expected_result_dirs)
         require(
@@ -193,15 +294,20 @@ def validate_signoff_archive(
             log_name = f"{result_dir}/openq4-macos-workflow.log"
             report = read_text(archive, report_name)
             log_text = read_text(archive, log_name)
-            validate_report(report, bridge=bridge, require_completed_checklist=require_completed_checklist)
-            validate_log(log_text, bridge=bridge)
+            validate_report(
+                report,
+                bridge=bridge,
+                result_dir=result_dir,
+                require_completed_checklist=require_completed_checklist,
+            )
+            validate_log(log_text, bridge=bridge, result_dir=result_dir)
 
             require(
-                has_member_under(member_names, f"{result_dir}/renderer-smoke"),
+                has_file_under(file_names, f"{result_dir}/renderer-smoke"),
                 f"{bridge} signoff archive is missing renderer-smoke output.",
             )
             require(
-                has_member_under(member_names, f"{result_dir}/renderer-matrix"),
+                has_file_under(file_names, f"{result_dir}/renderer-matrix"),
                 f"{bridge} signoff archive is missing renderer-matrix output.",
             )
 

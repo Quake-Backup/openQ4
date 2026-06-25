@@ -22,7 +22,7 @@ incoming="${workspace}/incoming-quake4"
 
 reject_unsafe_tar_entries() {
     local tar_path="$1"
-    tar -tf "${tar_path}" | while IFS= read -r entry; do
+    COPYFILE_DISABLE=1 tar -tf "${tar_path}" | while IFS= read -r entry; do
         case "${entry}" in
             ""|"."|".."|./*|*/./*|*//*|/*|../*|*/../*|*/..|*\\*)
                 echo "Unsafe asset archive path: ${entry}" >&2
@@ -31,7 +31,7 @@ reject_unsafe_tar_entries() {
         esac
     done
 
-    tar -tvf "${tar_path}" | while IFS= read -r listing; do
+    COPYFILE_DISABLE=1 tar -tvf "${tar_path}" | while IFS= read -r listing; do
         entry_type="${listing:0:1}"
         case "${entry_type}" in
             -|d)
@@ -54,6 +54,107 @@ reject_unsafe_tree_entries() {
     fi
 }
 
+find_case_insensitive_path_collision() {
+    local tree="$1"
+    python3 - "${tree}" <<'PY'
+import pathlib
+import sys
+import unicodedata
+
+root = pathlib.Path(sys.argv[1])
+seen = {}
+for path in sorted(root.rglob("*")):
+    rel = path.relative_to(root).as_posix()
+    key = unicodedata.normalize("NFC", rel).casefold()
+    previous = seen.get(key)
+    if previous is not None and previous != rel:
+        print(previous)
+        print(rel)
+        raise SystemExit(0)
+    seen[key] = rel
+PY
+}
+
+reject_case_insensitive_tree_collisions() {
+    local tree="$1"
+    local label="$2"
+    local case_collision
+    case_collision="$(find_case_insensitive_path_collision "${tree}")"
+    if [[ -n "${case_collision}" ]]; then
+        echo "${label} contains a case-insensitive path collision:" >&2
+        printf '%s\n' "${case_collision}" >&2
+        exit 1
+    fi
+}
+
+reject_macos_non_runtime_metadata_entries() {
+    local tree="$1"
+    local label="$2"
+    local bad_entry
+    bad_entry="$(find "${tree}" \( -iname '.DS_Store' -o -name '._*' -o -iname '__MACOSX' -o -iname '.fseventsd' -o -iname '.Spotlight-V100' -o -iname '.Trashes' -o -name $'Icon\r' -o -iname '*.dSYM' \) -print -quit)"
+    if [[ -n "${bad_entry}" ]]; then
+        echo "${label} contains non-runtime macOS metadata/debug entry: ${bad_entry}" >&2
+        exit 1
+    fi
+}
+
+require_safe_asset_roots() {
+    python3 - "${workspace}" "${basepath}" <<'PY'
+import pathlib
+import sys
+
+workspace_raw = sys.argv[1]
+basepath_raw = sys.argv[2]
+workspace = pathlib.Path(workspace_raw).expanduser()
+basepath = pathlib.Path(basepath_raw).expanduser()
+home = pathlib.Path.home().resolve()
+root = pathlib.Path("/")
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def require_absolute_after_expansion(label: str, raw_value: str, path: pathlib.Path) -> None:
+    path_text = raw_value
+    if "\\" in path_text:
+        fail(f"{label} must be a POSIX path without backslashes: {path_text}")
+    if not path.is_absolute():
+        fail(f"{label} must be an absolute path after ~ expansion: {path_text}")
+    segments = path_text.strip("/").split("/") if path_text.strip("/") else []
+    if any(segment in {"", ".", ".."} for segment in segments):
+        fail(f"{label} must not contain dot or empty path segments: {path_text}")
+
+
+def resolve(label: str, raw_value: str, path: pathlib.Path) -> pathlib.Path:
+    require_absolute_after_expansion(label, raw_value, path)
+    if str(path) in {"", ".", ".."}:
+        fail(f"{label} must be an explicit directory path: {path}")
+    if path.is_symlink():
+        fail(f"{label} must not be a symlink: {path}")
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError as exc:
+        fail(f"{label} could not be resolved safely: {path}: {exc}")
+    if resolved in {root, home}:
+        fail(f"{label} must not be the filesystem root or home directory: {resolved}")
+    return resolved
+
+
+workspace_resolved = resolve("OPENQ4_GUEST_WORKSPACE", workspace_raw, workspace)
+basepath_resolved = resolve("OPENQ4_BASEPATH", basepath_raw, basepath)
+if basepath_resolved == workspace_resolved:
+    fail("Asset install basepath must not be the same as the workflow workspace; rsync --delete would remove workflow files.")
+try:
+    workspace_resolved.relative_to(basepath_resolved)
+except ValueError:
+    pass
+else:
+    fail("Asset install basepath must not contain the workflow workspace; rsync --delete would remove workflow files.")
+PY
+}
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "This asset script must run inside macOS." >&2
     exit 1
@@ -63,14 +164,22 @@ if [[ -z "${archive}" || ! -f "${archive}" ]]; then
     echo "OPENQ4_Q4_TAR must point to a Quake 4 asset tar copied to the macOS VM." >&2
     exit 1
 fi
+if [[ -L "${archive}" ]]; then
+    echo "OPENQ4_Q4_TAR must not be a symlink: ${archive}" >&2
+    exit 1
+fi
+
+require_safe_asset_roots
 
 rm -rf "${incoming}"
 mkdir -p "${incoming}" "${basepath}"
 
 echo "Extracting Quake 4 asset archive: ${archive}"
 reject_unsafe_tar_entries "${archive}"
-tar -xf "${archive}" -C "${incoming}"
+COPYFILE_DISABLE=1 tar -xf "${archive}" -C "${incoming}"
 reject_unsafe_tree_entries "${incoming}"
+reject_macos_non_runtime_metadata_entries "${incoming}" "Asset archive"
+reject_case_insensitive_tree_collisions "${incoming}" "Asset archive"
 
 q4base_dirs=()
 while IFS= read -r q4base_candidate; do
@@ -109,6 +218,9 @@ if [[ ! -d "${basepath}/q4base" ]]; then
     echo "Installed asset directory is missing q4base: ${basepath}" >&2
     exit 1
 fi
+reject_unsafe_tree_entries "${basepath}"
+reject_macos_non_runtime_metadata_entries "${basepath}" "Installed Quake 4 asset tree"
+reject_case_insensitive_tree_collisions "${basepath}" "Installed Quake 4 asset tree"
 
 pk4_count="$(find "${basepath}/q4base" -maxdepth 1 -type f \( -name '*.pk4' -o -name '*.PK4' \) | wc -l | tr -d '[:space:]')"
 if [[ "${pk4_count}" == "0" ]]; then

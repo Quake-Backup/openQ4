@@ -1,6 +1,6 @@
-# macOS VM Testing Workflow
+# Experimental macOS VM Testing Workflow
 
-This workflow is the macOS counterpart to `docs/dev/linux-mint-vmware-workflow.md`.
+This workflow is the experimental macOS counterpart to `docs/dev/linux-mint-vmware-workflow.md`.
 It is intentionally SSH-based instead of VMware-on-Windows based: macOS test VMs
 must run on Apple-branded hardware or a compliant Apple-hosted service.
 
@@ -77,7 +77,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4Mac
 - copies `openQ4` and `openQ4-game` into the guest workspace
 - configures, builds, and stages openQ4 through `tools/build/meson_setup.sh`
 - runs a renderer smoke profile against the copied Quake 4 assets
-- runs the macOS-facing GL 4.1 renderer validation set
+- runs the experimental macOS-facing GL 4.1 renderer validation set
 - creates `~/Desktop/openQ4.command` pointing at the staged runtime and assets
 - writes a bridge-specific runtime signoff report when running `All` or `Signoff`
 
@@ -115,7 +115,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/macos/Invoke-openQ4Mac
 ```
 
 The signoff action builds and stages each selected bridge before running the
-smoke profile and macOS-facing renderer matrix, installs the Desktop launcher,
+smoke profile and experimental macOS-facing renderer matrix, installs the Desktop launcher,
 records `sw_vers`, kernel, display, audio, USB, and Bluetooth inventory, and
 writes bridge-specific reports under
 `~/openq4-work/results/<timestamp>-signoff-opengl/macos-runtime-signoff.md` and
@@ -125,11 +125,10 @@ Metal uses `builddir-metal` so Meson configuration state does not bleed between
 variants. Use those reports for the manual hardware checklist: Finder/launcher
 startup, real keyboard/mouse/controller input, audio output/device switching,
 windowed and fullscreen display modes, HiDPI/Retina behavior, and in-game
-OpenGL or Metal bridge coverage beyond hosted CI.
+OpenGL or Metal bridge coverage beyond hosted CI before macOS support can move
+out of its experimental state.
 
-Guest paths passed through `-MacWorkspace` and `-MacBasePath` may use a leading
-`~/`; the host workflow and guest scripts expand that prefix on the Apple host
-before syncing source trees, installing assets, building, or collecting results.
+Guest paths passed through `-MacWorkspace` and `-MacBasePath` must be absolute POSIX paths or use a leading `~/`; the host workflow rejects relative, dot-segment, empty-segment, and backslash paths, and the guest scripts recheck that the paths are absolute after `~` expansion before syncing source trees, installing assets, building, or collecting results.
 Keep `-BuildDir` pointed at a dedicated build output directory such as
 `builddir`, `builddir-opengl`, or `builddir-metal`; the guest script refuses the
 repo root, source/content/tool trees, `.install`, symlinks, and files as Meson
@@ -144,8 +143,9 @@ remain only on the Apple host. The copied archive is validated automatically
 unless `-SkipResultArchiveValidation` is set.
 
 The automatic validation checks structure, both bridge reports, workflow logs,
-staged payload evidence, asset-basepath evidence, and renderer smoke/matrix
-output. Collection is intentionally limited to the expected
+staged payload evidence, binary architecture evidence, macOS system/device
+inventory sections, asset-basepath evidence, and renderer smoke/matrix output.
+Collection is intentionally limited to the expected
 `<run-id>-signoff-<bridge>` directories so older build/smoke result directories
 with the same run ID cannot be mixed into final signoff evidence. To rerun it
 manually:
@@ -178,7 +178,7 @@ report.
 
 ## Expected Validation
 
-For macOS debugging, do not stop at static checks. Use this VM workflow for:
+For experimental macOS debugging, do not stop at static checks. Use this VM workflow for:
 
 - `renderer_gameplay_benchmark.py --profile smoke`
 - `renderer_validation_matrix.py --tiers auto,gl41`
@@ -198,8 +198,8 @@ device failures, and crashes.
 ## No Persistent Mac Yet
 
 If no Apple VM or hosted Mac is available yet, use the manual GitHub Actions
-workflow `.github/workflows/macos-debug.yml` as the interim macOS debug target.
-It builds and stages the macOS OpenGL and/or Metal bridge variants on Apple's
+workflow `.github/workflows/macos-debug.yml` as the interim experimental macOS debug target.
+It builds and stages the experimental macOS OpenGL and/or Metal bridge variants on Apple's
 hosted macOS runner, uploads `.install`, Meson logs, host diagnostics, and
 optional assetless renderer-probe logs.
 

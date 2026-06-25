@@ -6,7 +6,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Status](https://img.shields.io/badge/status-Beta%20Development-d97a1f.svg)](https://github.com/themuffinator/openQ4/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/themuffinator/openQ4)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20experimental-lightgrey.svg)](https://github.com/themuffinator/openQ4)
 [![Architecture](https://img.shields.io/badge/arch-x64%20%7C%20ARM64-orange.svg)](https://github.com/themuffinator/openQ4)
 
 **Play Quake 4 on modern systems with an open-source engine and game-code replacement built around the original retail assets.**
@@ -36,7 +36,7 @@
 
 ## What is openQ4?
 
-**openQ4** is an open-source replacement for the Quake 4 engine and game binaries, built to keep the original game playable on modern PCs while improving presentation, controls, packaging, and day-to-day usability.
+**openQ4** is an open-source replacement for the Quake 4 engine and game binaries, built to keep the original game playable on modern PCs while improving presentation, audio, controls, packaging, and day-to-day usability.
 
 It is designed for players who want the original Quake 4 experience with a cleaner path to running it on today's hardware.
 
@@ -49,9 +49,10 @@ It is designed for players who want the original Quake 4 experience with a clean
 
 - **Modern display support** for widescreen, ultrawide, multi-monitor, borderless, and fullscreen setups.
 - **Optional visual upgrades** such as bloom, HDR, anti-aliasing, baked light grids, soft particles, and enhanced shadow options.
+- **Enhanced OpenAL audio** with more reliable sample playback, safer restart/device handling, HRTF/output-mode support, source-radius spatialization, and optional EFX reverb/occlusion.
 - **Improved input and quality-of-life features** including controller support, better console UX, and modern settings behavior.
 - **Single-player and multiplayer in one install** with active compatibility work aimed at the stock game.
-- **Cross-platform support** with Windows and Linux release packages, Steam Deck support on Linux, and a signed/notarized macOS DMG lane for credentialed release runs.
+- **Cross-platform support** with Windows and Linux release packages, Steam Deck support on Linux, and experimental Apple Silicon macOS packages through the signed/notarized DMG lane for credentialed release runs.
 - **Open development** with releases, issue tracking, and community feedback all happening in public.
 
 ---
@@ -65,7 +66,7 @@ You need a legitimate Quake 4 install plus the openQ4 package that matches your 
 | **Minimum** | 64-bit CPU, 4 GB RAM, a working OpenGL compatibility driver with ARB2-era vertex/fragment program support, and about 12 GB free for the openQ4 package plus retail Quake 4 assets. Use the `minimum` or `lowpower` performance preset on constrained systems. |
 | **Recommended** | Modern quad-core CPU, 8 GB RAM, OpenGL 4.1+ compatibility-class GPU with 2 GB+ VRAM, current graphics drivers, and 15 GB+ free. For high resolutions, `quality`, or `ultra`, 16 GB RAM and 6 GB+ VRAM gives much better headroom. |
 
-Packaged support currently focuses on Windows, Linux, Steam Deck/SteamOS, and Apple Silicon macOS. See the [Getting Started guide](docs/user/getting-started.md#system-requirements) for the platform-specific requirements and caveats.
+Packaged support currently focuses on Windows, Linux, Steam Deck/SteamOS, and experimental Apple Silicon macOS. See the [Getting Started guide](docs/user/getting-started.md#system-requirements) for the platform-specific requirements and caveats.
 
 ---
 

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 BUILD_TOOLS_DIR = Path(__file__).resolve().parents[1] / "build"
@@ -486,6 +487,25 @@ def validate_no_macos_non_runtime_artifacts(root: Path, install_root: Path, game
     )
 
 
+def macos_casefold_path_key(path: str) -> str:
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def validate_no_macos_casefold_path_collisions(root: Path, install_root: Path) -> None:
+    seen_paths: dict[str, str] = {}
+    for path in sorted(install_root.rglob("*")):
+        relative = path.relative_to(install_root).as_posix()
+        key = macos_casefold_path_key(relative)
+        previous = seen_paths.get(key)
+        if previous is not None and previous != relative:
+            raise ValidationError(
+                "macOS staged payload contains case-insensitive duplicate paths:\n"
+                f"  - {rel(install_root / previous, root)}\n"
+                f"  - {rel(path, root)}"
+            )
+        seen_paths[key] = relative
+
+
 def validate_no_staged_symlinks(root: Path, install_root: Path) -> None:
     symlinks = [path for path in install_root.rglob("*") if path.is_symlink()]
     if symlinks:
@@ -786,6 +806,7 @@ def validate_macos_staged_metadata(
         )
 
     validate_no_macos_non_runtime_artifacts(root, install_root, game_dir)
+    validate_no_macos_casefold_path_collisions(root, install_root)
     validate_no_macos_forbidden_xattrs(root, install_root)
     validate_no_macos_unsafe_file_modes(root, install_root)
 

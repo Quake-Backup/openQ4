@@ -76,7 +76,7 @@ public:
 	}
 	// RB end
 
-	void		SetCenterChannel( float c )
+	virtual void	SetCenterChannel( float c )
 	{
 		centerChannel = c;
 	}

@@ -295,7 +295,10 @@ static materialResourceSortGroup_t R_MaterialResourceTable_SortGroupForMaterial(
 	return MATERIAL_RESOURCE_SORT_UNKNOWN;
 }
 
+static int R_MaterialResourceTable_BlendBits( int drawStateBits );
+static bool R_MaterialResourceTable_IsAdditiveBlend( int drawStateBits );
 static bool R_MaterialResourceTable_IsFilterBlend( int drawStateBits );
+static bool R_MaterialResourceTable_IsAlphaBlend( int drawStateBits );
 
 static materialResourceBlendMode_t R_MaterialResourceTable_BlendModeForMaterial( const idMaterial *material, rendererMaterialClass_t materialClass ) {
 	if ( materialClass == RENDER_MATERIAL_GUI ) {
@@ -391,6 +394,14 @@ static bool R_MaterialResourceTable_ColorRegistersMatch( const materialResourceT
 	return true;
 }
 
+static void R_MaterialResourceTable_AddStageColorFallback( materialResourceTableRecord_t &record ) {
+	const bool hadFallback = ( record.fallbackFlags & MATERIAL_RESOURCE_FALLBACK_FLAG_STAGE_COLOR ) != 0;
+	R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_STAGE_COLOR, MATERIAL_RESOURCE_FALLBACK_FLAG_STAGE_COLOR );
+	if ( !hadFallback ) {
+		rg_materialResourceTable.stats.unsupportedFeatures++;
+	}
+}
+
 static void R_MaterialResourceTable_ValidateStageColorContract( materialResourceTableRecord_t &record ) {
 	const materialResourceTextureBinding_t *diffuse = R_MaterialResourceTable_FindStageBinding( record, MATERIAL_RESOURCE_TEXTURE_DIFFUSE );
 	const materialResourceTextureBinding_t *emissive = R_MaterialResourceTable_FindStageBinding( record, MATERIAL_RESOURCE_TEXTURE_EMISSIVE );
@@ -401,8 +412,103 @@ static void R_MaterialResourceTable_ValidateStageColorContract( materialResource
 	// The modern material programs currently carry one material tint. Stock light
 	// cards often combine a neutral diffuse base with a parm-colored additive
 	// glow, so let the legacy path preserve the separate glow color/off state.
-	R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_STAGE_COLOR, MATERIAL_RESOURCE_FALLBACK_FLAG_STAGE_COLOR );
-	rg_materialResourceTable.stats.unsupportedFeatures++;
+	R_MaterialResourceTable_AddStageColorFallback( record );
+}
+
+static bool R_MaterialResourceTable_RecordHasLitTextureStages( const materialResourceTableRecord_t &record ) {
+	return record.hasBump || record.hasDiffuse || record.hasSpecular;
+}
+
+static bool R_MaterialResourceTable_AmbientOverlayNeedsLegacyStage( const materialResourceTextureBinding_t &emissive ) {
+	if ( emissive.semantic != MATERIAL_RESOURCE_TEXTURE_EMISSIVE || emissive.stageIndex < 0 ) {
+		return false;
+	}
+	if ( R_MaterialResourceTable_BlendBits( emissive.drawStateBits ) == 0 ) {
+		return false;
+	}
+	return R_MaterialResourceTable_IsAdditiveBlend( emissive.drawStateBits )
+		|| R_MaterialResourceTable_IsFilterBlend( emissive.drawStateBits )
+		|| R_MaterialResourceTable_IsAlphaBlend( emissive.drawStateBits )
+		|| emissive.colorMasked
+		|| !emissive.depthWrite;
+}
+
+static void R_MaterialResourceTable_ValidateAmbientOverlayContract( materialResourceTableRecord_t &record ) {
+	if ( record.materialClass != RENDER_MATERIAL_OPAQUE && record.materialClass != RENDER_MATERIAL_PERFORATED ) {
+		return;
+	}
+	if ( !R_MaterialResourceTable_RecordHasLitTextureStages( record ) ) {
+		return;
+	}
+	const materialResourceTextureBinding_t *emissive = R_MaterialResourceTable_FindStageBinding( record, MATERIAL_RESOURCE_TEXTURE_EMISSIVE );
+	if ( emissive == NULL || !R_MaterialResourceTable_AmbientOverlayNeedsLegacyStage( *emissive ) ) {
+		return;
+	}
+
+	// The modern opaque programs only carry a single emissive texture channel.
+	// Authored overlay stages such as multiplayer bright-skin glows still need
+	// their own blend/depth/color-mask state to avoid tinting the base material.
+	R_MaterialResourceTable_AddStageColorFallback( record );
+}
+
+static void R_MaterialResourceTable_InitSelfTestRecord( materialResourceTableRecord_t &record ) {
+	memset( &record, 0, sizeof( record ) );
+	for ( int i = 0; i < MATERIAL_RESOURCE_TEXTURE_COUNT; ++i ) {
+		record.semanticBindingIndex[i] = -1;
+	}
+	record.fallbackReason = MATERIAL_RESOURCE_FALLBACK_NONE;
+}
+
+static bool R_MaterialResourceTable_RunAmbientOverlayContractSelfTest( void ) {
+	const int unsupportedStart = rg_materialResourceTable.stats.unsupportedFeatures;
+
+	materialResourceTableRecord_t overlay;
+	R_MaterialResourceTable_InitSelfTestRecord( overlay );
+	overlay.materialClass = RENDER_MATERIAL_OPAQUE;
+	overlay.hasDiffuse = true;
+	overlay.textureBindingCount = 1;
+	overlay.semanticBindingIndex[MATERIAL_RESOURCE_TEXTURE_EMISSIVE] = 0;
+	overlay.textures[0].semantic = MATERIAL_RESOURCE_TEXTURE_EMISSIVE;
+	overlay.textures[0].stageIndex = 3;
+	overlay.textures[0].drawStateBits = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	R_MaterialResourceTable_ValidateAmbientOverlayContract( overlay );
+	if ( overlay.fallbackReason != MATERIAL_RESOURCE_FALLBACK_STAGE_COLOR
+		|| ( overlay.fallbackFlags & MATERIAL_RESOURCE_FALLBACK_FLAG_STAGE_COLOR ) == 0
+		|| rg_materialResourceTable.stats.unsupportedFeatures != unsupportedStart + 1 ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: additive overlay fallback mismatch\n" );
+		return false;
+	}
+
+	materialResourceTableRecord_t ambientOnly;
+	R_MaterialResourceTable_InitSelfTestRecord( ambientOnly );
+	ambientOnly.materialClass = RENDER_MATERIAL_OPAQUE;
+	ambientOnly.textureBindingCount = 1;
+	ambientOnly.semanticBindingIndex[MATERIAL_RESOURCE_TEXTURE_EMISSIVE] = 0;
+	ambientOnly.textures[0].semantic = MATERIAL_RESOURCE_TEXTURE_EMISSIVE;
+	ambientOnly.textures[0].stageIndex = 1;
+	ambientOnly.textures[0].drawStateBits = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+	R_MaterialResourceTable_ValidateAmbientOverlayContract( ambientOnly );
+	if ( ambientOnly.fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: ambient-only overlay should not fallback\n" );
+		return false;
+	}
+
+	materialResourceTableRecord_t unblended;
+	R_MaterialResourceTable_InitSelfTestRecord( unblended );
+	unblended.materialClass = RENDER_MATERIAL_OPAQUE;
+	unblended.hasDiffuse = true;
+	unblended.textureBindingCount = 1;
+	unblended.semanticBindingIndex[MATERIAL_RESOURCE_TEXTURE_EMISSIVE] = 0;
+	unblended.textures[0].semantic = MATERIAL_RESOURCE_TEXTURE_EMISSIVE;
+	unblended.textures[0].stageIndex = 2;
+	R_MaterialResourceTable_ValidateAmbientOverlayContract( unblended );
+	if ( unblended.fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE
+		|| rg_materialResourceTable.stats.unsupportedFeatures != unsupportedStart + 1 ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: unblended emissive fallback mismatch\n" );
+		return false;
+	}
+
+	return true;
 }
 
 static int R_MaterialResourceTable_BlendBits( int drawStateBits ) {
@@ -1001,6 +1107,7 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 		rg_materialResourceTable.stats.missingImages++;
 	}
 	R_MaterialResourceTable_ValidateStageColorContract( record );
+	R_MaterialResourceTable_ValidateAmbientOverlayContract( record );
 	if ( !scanMaterialStages ) {
 		record.shadowCasterSupported = record.castsShadow && record.fallbackReason == MATERIAL_RESOURCE_FALLBACK_NONE;
 		record.shadowFallbackFlags = record.fallbackFlags;
@@ -1343,6 +1450,9 @@ static bool R_MaterialResourceTable_RunSyntheticRecordSelfTest( void ) {
 			stats.textureArrayTableTextures,
 			stats.textureArrayTableDescriptors,
 			stats.textureArrayTableOverflows );
+		return false;
+	}
+	if ( !R_MaterialResourceTable_RunAmbientOverlayContractSelfTest() ) {
 		return false;
 	}
 	return true;

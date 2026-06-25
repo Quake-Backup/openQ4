@@ -116,6 +116,7 @@ public:
 	}
 	void			ApplySourceResampler( ALuint source );
 	void			ApplySourceRadius( ALuint source, float radius );
+	void			ApplySourceSpatialize( ALuint source, bool spatialize );
 	ALuint			GetAuxEffectSlot() const
 	{
 		return auxEffectSlot;
@@ -171,6 +172,8 @@ private:
 	int					sourceResamplerSelected;
 	bool				sourceRadiusAvailable;
 	bool				sourceRadiusWarningIssued;
+	bool				sourceSpatializeAvailable;
+	bool				sourceSpatializeWarningIssued;
 	bool				callbackBufferAvailable;
 	bool				callbackBufferWarningIssued;
 	bool				openedWithDefaultFallback;

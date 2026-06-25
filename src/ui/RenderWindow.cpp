@@ -122,6 +122,18 @@ static void RenderWindowEnsurePreviewBounds( renderEntity_t &renderEntity ) {
 	renderEntity.bounds = idBounds( idVec3( -128.0f, -128.0f, -128.0f ), idVec3( 128.0f, 128.0f, 128.0f ) );
 }
 
+static idVec4 RenderWindowVec4( const idWinVec4 &value ) {
+	return idVec4( value.x(), value.y(), value.z(), value.w() );
+}
+
+static void RenderWindowApplyPreviewEffects( renderEntity_t &renderEntity, const idVec4 &outline, const float width, const idVec4 &rimlight, const idVec4 &brightSkin ) {
+	renderEntity.outlineColor = outline;
+	renderEntity.rimlightColor = rimlight;
+	renderEntity.brightSkinColor = brightSkin;
+	renderEntity.outlineWidth = idMath::ClampFloat( 0.0f, 6.0f, width );
+	renderEntity.outlineFlags = 0;
+}
+
 }
 
 idRenderWindow::idRenderWindow( idDeviceContext *d, idUserInterfaceLocal *g ) : idWindow( d, g ) {
@@ -164,6 +176,10 @@ void idRenderWindow::CommonInit() {
 
 	modelOrigin.Zero();
 	viewOffset = idVec4( -128.0f, 0.0f, 0.0f, 1.0f );
+	outlineColor.Zero();
+	rimlightColor.Zero();
+	brightSkinColor.Zero();
+	outlineWidth = 2.0f;
 	customSkin = "";
 	customShader = "NONE";
 	needUpdate.Clear();
@@ -234,6 +250,10 @@ void idRenderWindow::UpdateRenderVars() {
 	modelOrigin.Update();
 	modelRotate.Update();
 	viewOffset.Update();
+	outlineColor.Update();
+	rimlightColor.Update();
+	brightSkinColor.Update();
+	outlineWidth.Update();
 	customSkin.Update();
 	customShader.Update();
 }
@@ -287,6 +307,7 @@ void idRenderWindow::PreRender() {
 		RenderWindowEnsurePreviewBounds( worldEntity[0] );
 		worldEntity[0].axis = baseAxis;
 		RenderWindowInitShaderParms( worldEntity[0] );
+		RenderWindowApplyPreviewEffects( worldEntity[0], RenderWindowVec4( outlineColor ), outlineWidth, RenderWindowVec4( rimlightColor ), RenderWindowVec4( brightSkinColor ) );
 		if ( customShader.Length() && idStr::Icmp( customShader.c_str(), "NONE" ) != 0 ) {
 			worldEntity[0].customShader = declManager->FindMaterial( customShader.c_str() );
 		}
@@ -310,6 +331,7 @@ void idRenderWindow::PreRender() {
 		RenderWindowEnsurePreviewBounds( worldEntity[i] );
 		worldEntity[i].axis = baseAxis;
 		RenderWindowInitShaderParms( worldEntity[i] );
+		RenderWindowApplyPreviewEffects( worldEntity[i], RenderWindowVec4( outlineColor ), outlineWidth, RenderWindowVec4( rimlightColor ), RenderWindowVec4( brightSkinColor ) );
 		if ( customShader.Length() && idStr::Icmp( customShader.c_str(), "NONE" ) != 0 ) {
 			worldEntity[i].customShader = declManager->FindMaterial( customShader.c_str() );
 		}
@@ -356,6 +378,7 @@ void idRenderWindow::Render( int time ) {
 	}
 
 	worldEntity[0].axis = RenderWindowRotationToAxis( modelRotate );
+	RenderWindowApplyPreviewEffects( worldEntity[0], RenderWindowVec4( outlineColor ), outlineWidth, RenderWindowVec4( rimlightColor ), RenderWindowVec4( brightSkinColor ) );
 	if ( modelDef[0] != -1 ) {
 		world->UpdateEntityDef( modelDef[0], &worldEntity[0] );
 	}
@@ -389,6 +412,7 @@ void idRenderWindow::Render( int time ) {
 			}
 		}
 
+		RenderWindowApplyPreviewEffects( worldEntity[i], RenderWindowVec4( outlineColor ), outlineWidth, RenderWindowVec4( rimlightColor ), RenderWindowVec4( brightSkinColor ) );
 		if ( modelDef[i] != -1 ) {
 			world->UpdateEntityDef( modelDef[i], &worldEntity[i] );
 		}
@@ -481,6 +505,18 @@ idWinVar *idRenderWindow::GetWinVarByName( const char *_name, bool fixup, drawWi
 	}
 	if ( idStr::Icmp( _name, "viewOffset" ) == 0 ) {
 		return &viewOffset;
+	}
+	if ( idStr::Icmp( _name, "outlineColor" ) == 0 ) {
+		return &outlineColor;
+	}
+	if ( idStr::Icmp( _name, "rimlightColor" ) == 0 ) {
+		return &rimlightColor;
+	}
+	if ( idStr::Icmp( _name, "brightSkinColor" ) == 0 ) {
+		return &brightSkinColor;
+	}
+	if ( idStr::Icmp( _name, "outlineWidth" ) == 0 ) {
+		return &outlineWidth;
 	}
 	if ( idStr::Icmp( _name, "customShader" ) == 0 ) {
 		return &customShader;

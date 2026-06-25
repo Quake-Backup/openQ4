@@ -62,6 +62,11 @@ static const float Q4_GLYPH_HORIZONTAL_GUARD_TEXELS = 0.5f;
 static const float Q4_GLYPH_SMALL_ATLAS_HORIZONTAL_GUARD_TEXELS = 1.0f;
 static const float Q4_GLYPH_SMALL_MARINE_CLIP_RIGHT_PAD_TEXELS = 2.0f;
 static const float Q4_GLYPH_SMALL_FONT_MAX_POINT_SIZE = 12.0f;
+// Retail guis/cinematic.gui used a 640x480 desktop with 60px top/bottom bars,
+// leaving a 640x360 cinematic view.
+static const float Q4_CINEMATIC_RETAIL_VISIBLE_WIDTH = 640.0f;
+static const float Q4_CINEMATIC_RETAIL_VISIBLE_HEIGHT = 360.0f;
+static const float Q4_CINEMATIC_RETAIL_ASPECT = Q4_CINEMATIC_RETAIL_VISIBLE_WIDTH / Q4_CINEMATIC_RETAIL_VISIBLE_HEIGHT;
 static const int Q4_TEXT_STYLE_SHADOW = 1;
 static const int Q4_TEXT_STYLE_OUTLINE = 2;
 static const int Q4_TEXT_ALIGN_VERTICAL_CENTER = 3;
@@ -402,7 +407,7 @@ static void openQ4_CalcCinematic16x9Bars( float width, float height, float windo
 		return;
 	}
 
-	const float targetPhysicalAspect = 16.0f / 9.0f;
+	const float targetPhysicalAspect = Q4_CINEMATIC_RETAIL_ASPECT;
 	const float targetLogicalAspect = targetPhysicalAspect * ( physicalScaleY / physicalScaleX );
 	const float fullLogicalAspect = fullArea.w / fullArea.h;
 	const float aspectEpsilon = 0.0001f;
@@ -2038,8 +2043,15 @@ bool UI_FontParity_RunSelfTest( void ) {
 	openQ4_CalcCinematic16x9Bars( 640.0f, 480.0f, 640.0f, 480.0f, true, cinematicTop, cinematicBottom, cinematicLeft, cinematicRight, cinematicVisible );
 	ok &= openQ4_CheckNear( "4:3 cinematic top bar height", cinematicTop.h, 60.0f );
 	ok &= openQ4_CheckNear( "4:3 cinematic bottom bar y", cinematicBottom.y, 420.0f );
-	ok &= openQ4_CheckNear( "4:3 cinematic visible height", cinematicVisible.h, 360.0f );
+	ok &= openQ4_CheckNear( "4:3 cinematic visible width", cinematicVisible.w, Q4_CINEMATIC_RETAIL_VISIBLE_WIDTH );
+	ok &= openQ4_CheckNear( "4:3 cinematic visible height", cinematicVisible.h, Q4_CINEMATIC_RETAIL_VISIBLE_HEIGHT );
 	ok &= openQ4_CheckNear( "4:3 cinematic left pillar width", cinematicLeft.w, 0.0f );
+
+	openQ4_CalcCinematic16x9Bars( 640.0f, 480.0f, 1080.0f, 1920.0f, true, cinematicTop, cinematicBottom, cinematicLeft, cinematicRight, cinematicVisible );
+	ok &= openQ4_CheckNear( "tall cinematic top bar height", cinematicTop.h, 388.888885f );
+	ok &= openQ4_CheckNear( "tall cinematic bottom bar y", cinematicBottom.y, 420.0f );
+	ok &= openQ4_CheckNear( "tall cinematic visible height", cinematicVisible.h, Q4_CINEMATIC_RETAIL_VISIBLE_HEIGHT );
+	ok &= openQ4_CheckNear( "tall cinematic left pillar width", cinematicLeft.w, 0.0f );
 
 	openQ4_CalcCinematic16x9Bars( 640.0f, 480.0f, 1920.0f, 1080.0f, true, cinematicTop, cinematicBottom, cinematicLeft, cinematicRight, cinematicVisible );
 	ok &= openQ4_CheckNear( "16:9 cinematic top bar height", cinematicTop.h, 0.0f );

@@ -1882,6 +1882,19 @@ static bool rbLightGridDepthCompareAvailable = false;
 static int rbLightGridDepthCompareWidth = 0;
 static int rbLightGridDepthCompareHeight = 0;
 
+enum rbPlayerRimlightUniformIndex_t {
+	RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW0 = 0,
+	RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW1,
+	RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW2,
+	RB_PLAYER_RIMLIGHT_UNIFORM_VIEW_ORIGIN,
+	RB_PLAYER_RIMLIGHT_UNIFORM_COLOR,
+	RB_PLAYER_RIMLIGHT_UNIFORM_PARAMS,
+	RB_PLAYER_RIMLIGHT_UNIFORM_COUNT
+};
+
+static newShaderStage_t rbPlayerRimlightStage;
+static bool rbPlayerRimlightStageInitialized = false;
+
 static void RB_InitLightGridIndirectStage( void ) {
 	if ( rbLightGridIndirectStageInitialized ) {
 		return;
@@ -1932,6 +1945,33 @@ static void RB_InitLightGridIndirectStage( void ) {
 	idStr::Copynz( rbLightGridIndirectStage.shaderTextureNames[5], "uSceneDepth", sizeof( rbLightGridIndirectStage.shaderTextureNames[5] ) );
 
 	rbLightGridIndirectStageInitialized = true;
+}
+
+static void RB_InitPlayerRimlightStage( void ) {
+	if ( rbPlayerRimlightStageInitialized ) {
+		return;
+	}
+
+	memset( &rbPlayerRimlightStage, 0, sizeof( rbPlayerRimlightStage ) );
+	rbPlayerRimlightStage.glslProgram = true;
+	idStr::Copynz( rbPlayerRimlightStage.glslProgramName, "player_rimlight.fs", sizeof( rbPlayerRimlightStage.glslProgramName ) );
+
+	static const rbBuiltinUniformDef_t uniforms[RB_PLAYER_RIMLIGHT_UNIFORM_COUNT] = {
+		{ "uModelMatrixRow0", 4 },
+		{ "uModelMatrixRow1", 4 },
+		{ "uModelMatrixRow2", 4 },
+		{ "uViewOrigin", 4 },
+		{ "uColor", 4 },
+		{ "uRimParams", 4 }
+	};
+
+	rbPlayerRimlightStage.numShaderParms = RB_PLAYER_RIMLIGHT_UNIFORM_COUNT;
+	for ( int i = 0; i < RB_PLAYER_RIMLIGHT_UNIFORM_COUNT; i++ ) {
+		idStr::Copynz( rbPlayerRimlightStage.shaderParmNames[i], uniforms[i].name, sizeof( rbPlayerRimlightStage.shaderParmNames[i] ) );
+		rbPlayerRimlightStage.shaderParmNumRegisters[i] = uniforms[i].components;
+	}
+
+	rbPlayerRimlightStageInitialized = true;
 }
 
 enum rbSSAOUniformIndex_t {
@@ -5159,6 +5199,7 @@ void RB_ShutdownScenePostProcess( void ) {
 	RB_FreeSceneDepthAwarePresentProgram();
 
 	RB_FreeGLSLProgram( &rbLightGridIndirectStage );
+	RB_FreeGLSLProgram( &rbPlayerRimlightStage );
 	RB_FreeGLSLProgram( &rbSSAOStage );
 	RB_FreeGLSLProgram( &rbMotionBlurStage );
 	RB_FreeGLSLProgram( &rbMotionVectorStage );
@@ -9263,6 +9304,343 @@ static void RB_STD_LightGridIndirect( void ) {
 	RB_STD_FinishLightGridDrawState( false );
 }
 
+static bool RB_PlayerVisibilityEffectsSurfaceAllowed( const drawSurf_t *surf ) {
+	if ( surf == NULL || surf->space == NULL || surf->space->entityDef == NULL || surf->geo == NULL || surf->material == NULL ) {
+		return false;
+	}
+	if ( ( surf->dsFlags & DSF_BSE_EFFECT ) != 0 ) {
+		return false;
+	}
+	if ( surf->geo->numIndexes <= 0 ) {
+		return false;
+	}
+
+	const idMaterial *shader = surf->material;
+	if ( !shader->IsDrawn() || shader->Coverage() == MC_TRANSLUCENT ) {
+		return false;
+	}
+	if ( shader->IsPortalSky() || shader->SuppressInSubview() || shader->GetSort() >= SS_POST_PROCESS || shader->HasGui() ) {
+		return false;
+	}
+
+	return true;
+}
+
+static bool RB_PlayerVisibilityEffectsHasOutline( const renderEntity_t &renderEntity ) {
+	return renderEntity.outlineColor[3] > 0.0f && renderEntity.outlineWidth > 0.0f;
+}
+
+static bool RB_PlayerVisibilityEffectsHasRimlight( const renderEntity_t &renderEntity ) {
+	return renderEntity.rimlightColor[3] > 0.0f;
+}
+
+static bool RB_PlayerVisibilityEffectsHasBrightSkin( const renderEntity_t &renderEntity ) {
+	return renderEntity.brightSkinColor[3] > 0.0f;
+}
+
+static void RB_PlayerVisibilitySetSurfaceSetup( const drawSurf_t *surf, const float *modelViewMatrix ) {
+	glLoadMatrixf( modelViewMatrix );
+	backEnd.currentSpace = NULL;
+
+	if ( r_useScissor.GetBool() && !backEnd.currentScissor.Equals( surf->scissorRect ) ) {
+		backEnd.currentScissor = surf->scissorRect;
+		glScissor(
+			backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
+			backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
+			backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
+			backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
+	}
+}
+
+static bool RB_PlayerVisibilityPrepareSurface( const drawSurf_t *surf, idDrawVert *&ac ) {
+	if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true ) ) {
+		return false;
+	}
+
+	const srfTriangles_t *tri = surf->geo;
+	if ( tri->ambientCache == NULL ) {
+		return false;
+	}
+
+	ac = static_cast<idDrawVert *>( vertexCache.Position( tri->ambientCache ) );
+	if ( ac == NULL ) {
+		return false;
+	}
+
+	GL_SelectTexture( 0 );
+	glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), ac->xyz.ToFloatPtr() );
+	glTexCoordPointer( 2, GL_FLOAT, sizeof( idDrawVert ), reinterpret_cast<void *>( &ac->st ) );
+	glDisableClientState( GL_COLOR_ARRAY );
+	return true;
+}
+
+static void RB_PlayerVisibilityBuildScaledModelViewMatrix( const drawSurf_t *surf, const float scale, float out[16] ) {
+	memcpy( out, surf->space->modelViewMatrix, sizeof( float ) * 16 );
+	if ( scale == 1.0f ) {
+		return;
+	}
+
+	for ( int column = 0; column < 3; column++ ) {
+		const int offset = column * 4;
+		out[offset + 0] *= scale;
+		out[offset + 1] *= scale;
+		out[offset + 2] *= scale;
+		out[offset + 3] *= scale;
+	}
+}
+
+static float RB_PlayerVisibilityOutlineScale( const drawSurf_t *surf, const float requestedWidth ) {
+	const float width = idMath::ClampFloat( 0.5f, 6.0f, requestedWidth );
+	float radius = 0.0f;
+	if ( surf->space->entityDef != NULL ) {
+		radius = surf->space->entityDef->parms.bounds.GetRadius();
+	}
+	if ( radius <= 1.0f && surf->geo != NULL ) {
+		radius = surf->geo->bounds.GetRadius();
+	}
+	if ( radius <= 1.0f ) {
+		return 1.02f;
+	}
+
+	const int viewportHeight = Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+	const float distance = Max( 1.0f, surf->space->distanceToCamera );
+	const float fovY = idMath::ClampFloat( 1.0f, 179.0f, backEnd.viewDef->renderView.fov_y );
+	const float worldHeightAtDistance = 2.0f * idMath::Tan( DEG2RAD( fovY * 0.5f ) ) * distance;
+	const float worldUnitsPerPixel = worldHeightAtDistance / static_cast<float>( viewportHeight );
+	const float desiredExpansion = width * worldUnitsPerPixel;
+	const float scale = 1.0f + desiredExpansion / radius;
+
+	return idMath::ClampFloat( 1.005f, 3.0f, Max( scale, 1.02f ) );
+}
+
+static void RB_PlayerVisibilityModelRows( const viewEntity_t *space, idVec4 rows[3] ) {
+	rows[0].Set( space->modelMatrix[0], space->modelMatrix[4], space->modelMatrix[8], space->modelMatrix[12] );
+	rows[1].Set( space->modelMatrix[1], space->modelMatrix[5], space->modelMatrix[9], space->modelMatrix[13] );
+	rows[2].Set( space->modelMatrix[2], space->modelMatrix[6], space->modelMatrix[10], space->modelMatrix[14] );
+}
+
+static void RB_PlayerVisibilitySetRimlightUniforms( const drawSurf_t *surf, const renderEntity_t &renderEntity ) {
+	idVec4 rows[3];
+	RB_PlayerVisibilityModelRows( surf->space, rows );
+
+	const idVec3 &viewOrg = backEnd.viewDef->renderView.vieworg;
+	const float viewOrigin[4] = { viewOrg.x, viewOrg.y, viewOrg.z, 1.0f };
+	const float rimParams[4] = { 2.0f, 1.0f, 0.0f, 0.0f };
+
+	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW0] >= 0 ) {
+		glUniform4fvARB( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW0], 1, rows[0].ToFloatPtr() );
+	}
+	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW1] >= 0 ) {
+		glUniform4fvARB( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW1], 1, rows[1].ToFloatPtr() );
+	}
+	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW2] >= 0 ) {
+		glUniform4fvARB( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW2], 1, rows[2].ToFloatPtr() );
+	}
+	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_VIEW_ORIGIN] >= 0 ) {
+		glUniform4fvARB( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_VIEW_ORIGIN], 1, viewOrigin );
+	}
+	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_COLOR] >= 0 ) {
+		glUniform4fvARB( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_COLOR], 1, renderEntity.rimlightColor.ToFloatPtr() );
+	}
+	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_PARAMS] >= 0 ) {
+		glUniform4fvARB( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_PARAMS], 1, rimParams );
+	}
+}
+
+static bool RB_PlayerVisibilityDrawOutlineSurface( const drawSurf_t *surf ) {
+	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
+	if ( !RB_PlayerVisibilityEffectsHasOutline( renderEntity ) ) {
+		return false;
+	}
+
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	float modelViewMatrix[16];
+	RB_PlayerVisibilityBuildScaledModelViewMatrix( surf, RB_PlayerVisibilityOutlineScale( surf, renderEntity.outlineWidth ), modelViewMatrix );
+	RB_PlayerVisibilitySetSurfaceSetup( surf, modelViewMatrix );
+
+	const int depthFunc = ( renderEntity.outlineFlags & REF_OUTLINE_NODEPTH ) != 0 ? GLS_DEPTHFUNC_ALWAYS : GLS_DEPTHFUNC_LESS;
+	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | depthFunc );
+	glEnable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	GL_Cull( CT_FRONT_SIDED );
+	GL_SelectTexture( 0 );
+	globalImages->whiteImage->Bind();
+	glColor4fv( renderEntity.outlineColor.ToFloatPtr() );
+	glDisableClientState( GL_NORMAL_ARRAY );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static bool RB_PlayerVisibilityDrawRimlightSurface( const drawSurf_t *surf ) {
+	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
+	if ( !RB_PlayerVisibilityEffectsHasRimlight( renderEntity ) ) {
+		return false;
+	}
+
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix );
+	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+	glEnable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	GL_Cull( surf->material->GetCullType() );
+
+	glNormalPointer( GL_FLOAT, sizeof( idDrawVert ), ac->normal.ToFloatPtr() );
+	glEnableClientState( GL_NORMAL_ARRAY );
+	RB_PlayerVisibilitySetRimlightUniforms( surf, renderEntity );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static bool RB_PlayerVisibilityDrawBrightSkinSurface( const drawSurf_t *surf ) {
+	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
+	if ( !RB_PlayerVisibilityEffectsHasBrightSkin( renderEntity ) ) {
+		return false;
+	}
+
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix );
+	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+	glEnable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	GL_Cull( surf->material->GetCullType() );
+	GL_SelectTexture( 0 );
+	globalImages->whiteImage->Bind();
+
+	idVec4 color = renderEntity.brightSkinColor;
+	color[0] *= color[3];
+	color[1] *= color[3];
+	color[2] *= color[3];
+	glColor4fv( color.ToFloatPtr() );
+	glDisableClientState( GL_NORMAL_ARRAY );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static bool RB_PlayerVisibilityDrawRimlightFallbackSurface( const drawSurf_t *surf ) {
+	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
+	if ( !RB_PlayerVisibilityEffectsHasRimlight( renderEntity ) ) {
+		return false;
+	}
+
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	float modelViewMatrix[16];
+	RB_PlayerVisibilityBuildScaledModelViewMatrix( surf, 1.01f, modelViewMatrix );
+	RB_PlayerVisibilitySetSurfaceSetup( surf, modelViewMatrix );
+
+	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
+	glEnable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	GL_Cull( CT_FRONT_SIDED );
+	GL_SelectTexture( 0 );
+	globalImages->whiteImage->Bind();
+
+	idVec4 color = renderEntity.rimlightColor;
+	color[0] *= color[3];
+	color[1] *= color[3];
+	color[2] *= color[3];
+	glColor4fv( color.ToFloatPtr() );
+	glDisableClientState( GL_NORMAL_ARRAY );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static void RB_STD_DrawPlayerVisibilityEffects( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	if ( !backEnd.viewDef->viewEntitys || drawSurfs == NULL || numDrawSurfs <= 0 ) {
+		return;
+	}
+
+	bool submitted = false;
+
+	RB_LogComment( "---------- RB_STD_DrawPlayerVisibilityEffects ----------\n" );
+
+	glMatrixMode( GL_PROJECTION );
+	glLoadMatrixf( backEnd.viewDef->projectionMatrix );
+	glMatrixMode( GL_MODELVIEW );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glDisableClientState( GL_NORMAL_ARRAY );
+	glDisable( GL_STENCIL_TEST );
+
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
+			continue;
+		}
+		if ( RB_PlayerVisibilityDrawBrightSkinSurface( surf ) ) {
+			submitted = true;
+		}
+	}
+
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
+			continue;
+		}
+		if ( RB_PlayerVisibilityDrawOutlineSurface( surf ) ) {
+			submitted = true;
+		}
+	}
+
+	RB_InitPlayerRimlightStage();
+	const bool useGLSLRimlight = glConfig.GLSLProgramAvailable && R_ValidateGLSLProgram( &rbPlayerRimlightStage );
+	if ( useGLSLRimlight ) {
+		glUseProgramObjectARB( (GLhandleARB)rbPlayerRimlightStage.glslProgramObject );
+	}
+
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
+			continue;
+		}
+		if ( useGLSLRimlight ) {
+			if ( RB_PlayerVisibilityDrawRimlightSurface( surf ) ) {
+				submitted = true;
+			}
+		} else if ( RB_PlayerVisibilityDrawRimlightFallbackSurface( surf ) ) {
+			submitted = true;
+		}
+	}
+
+	if ( glConfig.GLSLProgramAvailable ) {
+		glUseProgramObjectARB( 0 );
+	}
+	glDisableClientState( GL_NORMAL_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	glEnable( GL_STENCIL_TEST );
+	glStencilFunc( GL_ALWAYS, 128, 255 );
+	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
+	GL_Cull( CT_FRONT_SIDED );
+	GL_ClearStateDelta();
+	backEnd.currentSpace = NULL;
+
+	if ( submitted ) {
+		backEnd.currentRenderCopied = false;
+	}
+}
+
 //=========================================================================================
 
 /*
@@ -9382,6 +9760,8 @@ void	RB_STD_DrawView( void ) {
 	// Modern visible color/depth must be handed back before legacy overlay
 	// passes, otherwise the later composition overwrites those contributions.
 	R_ModernGLExecutor_ComposeVisibleSceneForPost();
+
+	RB_STD_DrawPlayerVisibilityEffects( drawSurfs, processed );
 
 	// Add precomputed indirect diffuse from irradiance-volume atlases after
 	// ambient/material shading. This matches the render graph and keeps the

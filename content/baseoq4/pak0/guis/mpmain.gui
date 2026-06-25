@@ -188,8 +188,40 @@ windowDef Desktop
 		set "p_admin::rect" "0,0,640,480" ;
 		
 		set "p_join::visible" "1" ;
-		
+
 		resettime "anim_in" "0" ;
+	}
+
+	onNamedEvent initialJoin {
+		set "desktop::active" "0" ;
+		set "desktop::dest" "2" ;
+		set "desktop::curr" "2" ;
+
+		namedevent "p_btns::hideMain" ;
+		namedevent "p_btns::hideJoin" ;
+		namedevent "p_btns::hidePlayers" ;
+		namedevent "p_btns::hideAdmin" ;
+		namedevent "p_btns::hideAdminSections" ;
+		namedevent "p_btns::hideAdminPlayers" ;
+		namedevent "p_btns::hideAdminServer" ;
+		namedevent "p_btns::hideAdminPass" ;
+		namedevent "p_btns::hideSet" ;
+		namedevent "p_btns::hideVote" ;
+		namedevent "p_btns::hideVcfg" ;
+
+		set "p_join::rect" "0,0,640,480" ;
+		set "p_join::visible" "1" ;
+		set "p_joinblock::visible" "1" ;
+		set "p_players::visible" "0" ;
+		set "p_vote::visible" "0" ;
+		set "p_settings::visible" "0" ;
+		set "p_info::visible" "0" ;
+		set "p_admin::visible" "0" ;
+		set "p_voiceconfig::visible" "0" ;
+		set "join_t_msg::visible" "0" ;
+
+		namedevent "p_btns::showMain" ;
+		namedevent "p_btns::showJoin" ;
 	}
 
 	onEvent {
@@ -209,6 +241,7 @@ windowDef Desktop
 		if ( "gui::gametype" == 3 || "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8 ) {
 			
 			set "t_b2::text" "#str_200186" ;
+			set "join_options_title::text" "#str_200186" ;
 			
 			set "p_playerlist_strogg::visible" "1";
 			set "p_playerlist_marine::visible" "1";
@@ -280,6 +313,7 @@ windowDef Desktop
 		} else if ( "gui::gametype" == 1 ) {
 			
 			set "t_b2::text" "#str_200187" ;
+			set "join_options_title::text" "#str_200187" ;
 			
 			set "p_playerlist_strogg::visible" "0";
 			set "p_playerlist_marine::visible" "0";
@@ -336,6 +370,7 @@ windowDef Desktop
 				set "p_playerlist_spectator::visible" "0";
 			}
 		} else {
+			set "join_options_title::text" "gui::toggleTourneyButton" ;
 			
 			set "p_playerlist_strogg::visible" "0";
 			set "p_playerlist_marine::visible" "0";
@@ -750,16 +785,117 @@ windowDef Desktop
 		{
 			rect	0,0,640,480
 			visible	0
+			windowDef join_server_panel
+			{
+				rect	188,44,386,80
+				visible	1
+				background	"gfx/guis/mainmenu/screen"
+				matcolor	0.05,0.07,0.06,0.72
+			}
+			windowDef join_server_panel_grad
+			{
+				rect	188,44,386,80
+				visible	1
+				background	"gfx/guis/mainmenu/bg_darkgrad"
+				matcolor	0.545,0.588,0.294,0.22
+			}
+			windowDef join_server_line
+			{
+				rect	204,63,244,6
+				visible	1
+				background	"gfx/guis/mainmenu/horiz_line2"
+				matcolor	1,1,1,0.18
+			}
+			windowDef join_server_title
+			{
+				rect	204,50,244,16
+				visible	1
+				forecolor	1,1,1,0.85
+				text	"#str_200190"
+				textscale	.25
+				font	"fonts/marine"
+				textspacing	-1
+			}
+			windowDef join_server_info_0
+			{
+				rect	204,70,244,11
+				visible	1
+				forecolor	1,1,1,0.58
+				text	"gui::join_server_line_0"
+				textscale	.18
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
+			windowDef join_server_info_1
+			{
+				rect	204,80,244,11
+				visible	1
+				forecolor	1,1,1,0.58
+				text	"gui::join_server_line_1"
+				textscale	.18
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
+			windowDef join_server_info_2
+			{
+				rect	204,90,244,11
+				visible	1
+				forecolor	1,1,1,0.58
+				text	"gui::join_server_line_2"
+				textscale	.18
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
+			windowDef join_server_info_3
+			{
+				rect	204,100,244,11
+				visible	1
+				forecolor	1,1,1,0.58
+				text	"gui::join_server_line_3"
+				textscale	.18
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
+			windowDef join_server_info_4
+			{
+				rect	204,110,116,11
+				visible	1
+				forecolor	1,1,1,0.58
+				text	"gui::join_server_line_4"
+				textscale	.18
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
+			windowDef join_server_info_5
+			{
+				rect	326,110,122,11
+				visible	1
+				forecolor	1,1,1,0.58
+				text	"gui::join_server_line_5"
+				textscale	.18
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
+			windowDef join_options_title
+			{
+				rect	204,124,370,16
+				visible	1
+				forecolor	0.890,0.537,0,0.9
+				text	"#str_200187"
+				textscale	.22
+				font	"fonts/lowpixel"
+				textspacing	-1
+			}
 			windowDef join_b1
 			{
-				rect	190,58,252,31
+				rect	190,140,184,31
 				visible	0
 				background	"gfx/guis/mainmenu/b6_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef join_t_b1
 			{
-				rect	205,61,226,19
+				rect	205,143,154,19
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"#str_200192"
@@ -773,14 +909,14 @@ windowDef Desktop
 				visible	1
 				windowDef join_b2
 				{
-					rect	190,96,252,31
+					rect	386,140,184,31
 					visible	0
 					background	"gfx/guis/mainmenu/b6_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef join_t_b2
 				{
-					rect	205,99,226,19
+					rect	401,143,154,19
 					visible	0
 					forecolor	1,1,1,0.8
 					text	"#str_200193"
@@ -790,14 +926,14 @@ windowDef Desktop
 				}
 				windowDef join_b3
 				{
-					rect	190,125,252,31
+					rect	190,176,184,31
 					visible	0
 					background	"gfx/guis/mainmenu/b6_light"
 					matcolor	0.545,0.588,0.294,0.4
 				}
 				windowDef join_t_b3
 				{
-					rect	205,128,226,19
+					rect	205,179,154,19
 					visible	0
 					forecolor	1,1,1,0.8
 					text	"#str_200194"
@@ -808,14 +944,14 @@ windowDef Desktop
 			}
 			windowDef join_b4
 			{
-				rect	190,167,252,31
+				rect	386,176,184,31
 				visible	0
 				background	"gfx/guis/mainmenu/b6_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef join_t_b4
 			{
-				rect	205,170,226,19
+				rect	401,179,154,19
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"#str_200195"
@@ -825,14 +961,14 @@ windowDef Desktop
 			}
 			windowDef join_b5
 			{
-				rect	190,58,252,31
+				rect	190,140,184,31
 				visible	0
 				background	"gfx/guis/mainmenu/b6_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef join_t_b5
 			{
-				rect	205,61,226,19
+				rect	205,143,154,19
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"#str_200187"
@@ -842,14 +978,14 @@ windowDef Desktop
 			}
 			windowDef join_b6
 			{
-				rect	190,96,252,31
+				rect	386,140,184,31
 				visible	0
 				background	"gfx/guis/mainmenu/b6_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef join_t_b6
 			{
-				rect	205,99,226,19
+				rect	401,143,154,19
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"#str_200195"
@@ -859,14 +995,14 @@ windowDef Desktop
 			}
 			windowDef join_b7
 			{
-				rect	190,58,252,31
+				rect	190,140,184,31
 				visible	0
 				background	"gfx/guis/mainmenu/b6_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef join_t_b7
 			{
-				rect	205,61,226,19
+				rect	205,143,154,19
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"gui::toggleTourneyButton"
@@ -876,14 +1012,14 @@ windowDef Desktop
 			}
 			windowDef join_b8
 			{
-				rect	461,69,162,44
+				rect	461,69,102,44
 				visible	0
 				background	"gfx/guis/mainmenu/b4_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef join_t_b8
 			{
-				rect	492,78,146,25
+				rect	492,78,70,25
 				visible	0
 				forecolor	1,1,1,0.8
 				text	"gui::readyStatus"
@@ -900,7 +1036,7 @@ windowDef Desktop
 			}
 			windowDef join_t_readystatus
 			{
-				rect	492,57,146,17
+				rect	492,57,70,17
 				visible	0
 				forecolor	1,1,1,0.4
 				text	"#str_106737"
@@ -910,11 +1046,11 @@ windowDef Desktop
 			}
 			windowDef join_t_msg
 			{
-				rect	205,101,226,64
+				rect	205,124,350,22
 				visible	0
 				forecolor	0.890,0.537,0,1*guitable_10_5[time*0.001]
 				text	""
-				textscale	0.31
+				textscale	0.25
 				font	"fonts/lowpixel"
 				textspacing	-1
 			}
@@ -2223,43 +2359,160 @@ windowDef Desktop
 			visible	0
 			windowDef set_b1
 			{
-				rect	174,59,362,26
+				rect	174,91,362,26
 				visible	1
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef set_b2
 			{
-				rect	174,83,362,26
+				rect	174,115,362,26
 				visible	1
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef set_b3
 			{
-				rect	174,107,362,26
+				rect	174,139,362,26
 				visible	1
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef set_b4
 			{
-				rect	174,131,362,26
+				rect	174,163,362,26
 				visible	1
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
 			windowDef set_b5
 			{
-				rect	174,155,362,26
+				rect	174,187,362,26
 				visible	1
 				background	"gfx/guis/mainmenu/b3_light"
 				matcolor	0.545,0.588,0.294,0.4
 			}
+			windowDef set_b6
+			{
+				rect	174,211,362,26
+				visible	("gui::appearance_tab" != 0)
+				background	"gfx/guis/mainmenu/b3_light"
+				matcolor	0.545,0.588,0.294,0.4
+			}
+			windowDef set_b7
+			{
+				rect	174,235,362,26
+				visible	("gui::appearance_tab" != 0)
+				background	"gfx/guis/mainmenu/b3_light"
+				matcolor	0.545,0.588,0.294,0.4
+			}
+			windowDef set_appearance_tabs
+			{
+				rect	174,59,362,26
+				visible	1
+				background	"gfx/guis/mainmenu/b3_light"
+				matcolor	0.545,0.588,0.294,0.4
+			}
+			windowDef set_tab_self
+			{
+				rect	196,63,96,18
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41201"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_tab_enemy
+			{
+				rect	302,63,96,18
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41202"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_tab_team
+			{
+				rect	408,63,96,18
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41203"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_tab_self_active
+			{
+				rect	196,82,74,2
+				visible	("gui::appearance_tab" == 0)
+				background	"gfx/guis/common/32_sqsolid"
+				matcolor	1,0.745,0.137,0.9
+			}
+			windowDef set_tab_enemy_active
+			{
+				rect	302,82,74,2
+				visible	("gui::appearance_tab" == 1)
+				background	"gfx/guis/common/32_sqsolid"
+				matcolor	1,0.745,0.137,0.9
+			}
+			windowDef set_tab_team_active
+			{
+				rect	408,82,96,2
+				visible	("gui::appearance_tab" == 2)
+				background	"gfx/guis/common/32_sqsolid"
+				matcolor	1,0.745,0.137,0.9
+			}
+			windowDef set_tab_self_btn
+			{
+				rect	190,61,96,22
+				visible	1
+				onAction {
+					set "set_b_railcolor1::visible" "1" ;
+					set "set_b_railcolor2::visible" "1" ;
+					set "set_b_railcolor3::visible" "1" ;
+					set "set_b_railcolor4::visible" "1" ;
+					set "set_b_railcolor5::visible" "1" ;
+					set "set_b_railcolor6::visible" "1" ;
+					set "set_b_railcolor7::visible" "1" ;
+					set "cmd" "appearance_tab self" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			windowDef set_tab_enemy_btn
+			{
+				rect	296,61,96,22
+				visible	1
+				onAction {
+					set "set_b_railcolor1::visible" "0" ;
+					set "set_b_railcolor2::visible" "0" ;
+					set "set_b_railcolor3::visible" "0" ;
+					set "set_b_railcolor4::visible" "0" ;
+					set "set_b_railcolor5::visible" "0" ;
+					set "set_b_railcolor6::visible" "0" ;
+					set "set_b_railcolor7::visible" "0" ;
+					set "cmd" "appearance_tab enemy" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			windowDef set_tab_team_btn
+			{
+				rect	402,61,116,22
+				visible	1
+				onAction {
+					set "set_b_railcolor1::visible" "0" ;
+					set "set_b_railcolor2::visible" "0" ;
+					set "set_b_railcolor3::visible" "0" ;
+					set "set_b_railcolor4::visible" "0" ;
+					set "set_b_railcolor5::visible" "0" ;
+					set "set_b_railcolor6::visible" "0" ;
+					set "set_b_railcolor7::visible" "0" ;
+					set "cmd" "appearance_tab team" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
 			editDef set_name_val
 			{
-				rect	334,62,135,18
-				visible	1
+				rect	334,94,150,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,0.745,0.137,0.8
 				cvar	gui_ui_name
 				maxchars	23
@@ -2277,13 +2530,13 @@ windowDef Desktop
 			}
 			editDef set_clan_val
 			{
-				visible	1
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,0.745,0.137,0.8
 				cvar	gui_ui_clan
 				maxchars	12
 				textscale	0.24
 				font	"fonts/lowpixel"
-				rect	334,86,135,18
+				rect	334,118,150,18
 
 				onEnter {
 					setFocus "main_b_back" ;
@@ -2296,8 +2549,8 @@ windowDef Desktop
 			}
 			choiceDef set_model_dm_list
 			{
-				rect	334,109,135,20
-				visible	0
+				rect	334,141,150,20
+				visible	("gui::appearance_model_slot" == 0)
 				textscale	0.24
 				cvar	ui_model
 				choices	"gui::model_names"
@@ -2325,8 +2578,8 @@ windowDef Desktop
 			}
 			choiceDef set_model_strogg_list
 			{
-				rect	334,109,135,20
-				visible	0
+				rect	334,141,150,20
+				visible	("gui::appearance_model_slot" == 2)
 				textscale	0.24
 				cvar	ui_model_strogg
 				choices	"gui::model_names"
@@ -2354,8 +2607,8 @@ windowDef Desktop
 			}
 			choiceDef set_model_marine_list
 			{
-				rect	334,109,135,20
-				visible	0
+				rect	334,141,150,20
+				visible	("gui::appearance_model_slot" == 1)
 				textscale	0.24
 				cvar	ui_model_marine
 				choices	"gui::model_names"
@@ -2381,10 +2634,241 @@ windowDef Desktop
 				}
 
 			}
+			choiceDef set_force_dm_list
+			{
+				rect	334,93,150,20
+				visible	("gui::appearance_model_slot" == 3 && ("gui::appearance_tab" == 1 || "gui::appearance_team_available" == 1))
+				textscale	0.24
+				cvar	g_forceModel
+				choices	"gui::model_names"
+				values	"gui::model_values"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd"	"update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_force_marine_list
+			{
+				rect	334,93,150,20
+				visible	("gui::appearance_model_slot" == 4)
+				textscale	0.24
+				cvar	g_forceMarineModel
+				choices	"gui::model_names"
+				values	"gui::model_values"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd"	"update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_force_strogg_list
+			{
+				rect	334,93,150,20
+				visible	("gui::appearance_model_slot" == 5)
+				textscale	0.24
+				cvar	g_forceStroggModel
+				choices	"gui::model_names"
+				values	"gui::model_values"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd"	"update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_enemy_outline_val
+			{
+				rect	334,117,150,20
+				visible	("gui::appearance_tab" == 1)
+				textscale	0.24
+				cvar	cl_player_outline_enemy
+				choices	"#str_41207"
+				values	"0;0.35;0.7;1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_team_outline_val
+			{
+				rect	334,117,150,20
+				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
+				textscale	0.24
+				cvar	cl_player_outline_team
+				choices	"#str_41207"
+				values	"0;0.35;0.7;1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_enemy_rimlight_val
+			{
+				rect	334,141,150,20
+				visible	("gui::appearance_tab" == 1)
+				textscale	0.24
+				cvar	cl_player_rimlight_enemy
+				choices	"#str_41207"
+				values	"0;0.35;0.7;1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_team_rimlight_val
+			{
+				rect	334,141,150,20
+				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
+				textscale	0.24
+				cvar	cl_player_rimlight_team
+				choices	"#str_41207"
+				values	"0;0.35;0.7;1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			editDef set_enemy_fx_color_val
+			{
+				rect	334,166,150,18
+				visible	("gui::appearance_tab" == 1)
+				forecolor	1,0.745,0.137,0.8
+				cvar	cl_player_visibility_enemy_color
+				maxchars	24
+				textscale	0.24
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			editDef set_team_fx_color_val
+			{
+				rect	334,166,150,18
+				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
+				forecolor	1,0.745,0.137,0.8
+				cvar	cl_player_visibility_team_color
+				maxchars	24
+				textscale	0.24
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_enemy_brightskin_val
+			{
+				rect	334,189,150,20
+				visible	("gui::appearance_tab" == 1)
+				textscale	0.24
+				cvar	cl_player_brightskin_enemy
+				choices	"#str_41207"
+				values	"0;0.35;0.7;1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			choiceDef set_team_brightskin_val
+			{
+				rect	334,189,150,20
+				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
+				textscale	0.24
+				cvar	cl_player_brightskin_team
+				choices	"#str_41207"
+				values	"0;0.35;0.7;1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			editDef set_enemy_bright_color_val
+			{
+				rect	334,214,150,18
+				visible	("gui::appearance_tab" == 1)
+				forecolor	1,0.745,0.137,0.8
+				cvar	cl_player_brightskin_enemy_color
+				maxchars	24
+				textscale	0.24
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			editDef set_team_bright_color_val
+			{
+				rect	334,214,150,18
+				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
+				forecolor	1,0.745,0.137,0.8
+				cvar	cl_player_brightskin_team_color
+				maxchars	24
+				textscale	0.24
+				font	"fonts/lowpixel"
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
+			editDef set_outline_width_val
+			{
+				rect	334,238,150,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,0.745,0.137,0.8
+				cvar	cl_player_outline_width
+				maxchars	4
+				textscale	0.24
+				font	"fonts/lowpixel"
+				numeric	1
+				cvarMin	0.5
+				cvarMax	6
+
+				onAction {
+					set "cmd" "update_model" ;
+					set "cmd" "play main_menu_selection" ;
+				}
+			}
 			editDef set_handicap_val
 			{
-				rect	334,158,135,18
-				visible	1
+				rect	334,190,150,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,0.745,0.137,0.8
 				textscale	0.24
 				font	"fonts/lowpixel"
@@ -2400,8 +2884,8 @@ windowDef Desktop
 			}
 			windowDef set_name
 			{
-				rect	205,62,128,18
-				visible	1
+				rect	205,94,128,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,1,1,0.8
 				text	"#str_200219"
 				textscale	0.24
@@ -2409,8 +2893,8 @@ windowDef Desktop
 			}
 			windowDef set_clan
 			{
-				rect	205,86,128,18
-				visible	1
+				rect	205,118,128,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,1,1,0.8
 				text	"#str_200220"
 				textscale	0.24
@@ -2418,8 +2902,8 @@ windowDef Desktop
 			}
 			windowDef set_model
 			{
-				rect	205,110,128,18
-				visible	1
+				rect	205,142,128,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,1,1,0.8
 				text	"#str_200221"
 				textscale	0.24
@@ -2427,8 +2911,8 @@ windowDef Desktop
 			}
 			windowDef set_railcolor
 			{
-				rect	205,134,128,18
-				visible	1
+				rect	205,166,128,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,1,1,0.8
 				text	"#str_200981"
 				textscale	0.24
@@ -2436,10 +2920,82 @@ windowDef Desktop
 			}
 			windowDef set_handicap
 			{
-				rect	205,158,128,18
-				visible	1
+				rect	205,190,128,18
+				visible	("gui::appearance_tab" == 0)
 				forecolor	1,1,1,0.8
 				text	"#str_223001"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_force_model
+			{
+				rect	205,94,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41204"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_outline
+			{
+				rect	205,118,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41205"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_rimlight
+			{
+				rect	205,142,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41206"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_fx_color
+			{
+				rect	205,166,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41208"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_brightskin
+			{
+				rect	205,190,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41209"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_bright_color
+			{
+				rect	205,214,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41210"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_outline_width
+			{
+				rect	205,238,128,18
+				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
+				forecolor	1,1,1,0.8
+				text	"#str_41211"
+				textscale	0.24
+				font	"fonts/lowpixel"
+			}
+			windowDef set_team_mode_note
+			{
+				rect	205,94,300,40
+				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 0)
+				forecolor	1,1,1,0.8
+				text	"#str_41212"
 				textscale	0.24
 				font	"fonts/lowpixel"
 			}
@@ -2517,50 +3073,50 @@ windowDef Desktop
 			}
 			windowDef railcolor1
 			{
-				rect	336,135,12,14
-				visible	1
+				rect	336,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	1,0,0,1
 			}
 			windowDef railcolor2
 			{
-				rect	350,135,12,14
-				visible	1
+				rect	350,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	1,0.501,0,1
 			}
 			windowDef railcolor3
 			{
-				rect	364,135,12,14
-				visible	1
+				rect	364,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	1,1,0,1
 			}
 			windowDef railcolor4
 			{
-				rect	378,135,12,14
-				visible	1
+				rect	378,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	0,1,0,1
 			}
 			windowDef railcolor5
 			{
-				rect	392,135,12,14
-				visible	1
+				rect	392,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	0,1,1,1
 			}
 			windowDef railcolor6
 			{
-				rect	406,135,12,14
-				visible	1
+				rect	406,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	0,0,1,1
 			}
 			windowDef railcolor7
 			{
-				rect	420,135,12,14
-				visible	1
+				rect	420,167,12,14
+				visible	("gui::appearance_tab" == 0)
 				background	"gfx/guis/common/32_sqsolid"
 				matcolor	1,0,0.501,1
 			}
@@ -2571,6 +3127,10 @@ windowDef Desktop
 				backcolor	0,0,0,0
 				model	"gui::player_model_name"
 				skin	"gui::player_skin_name"
+				outlineColor	"gui::player_outline_color"
+				rimlightColor	"gui::player_rimlight_color"
+				brightSkinColor	"gui::player_brightskin_color"
+				outlineWidth	"gui::player_outline_width"
 				animClass	"player_ui_anims"
 				anim	"idle"
 				model1	"gui::player_head_model_name"
@@ -4900,20 +5460,7 @@ windowDef Desktop
 			notime	1
 
 			onTime 0 {
-				if ( "gui::gametype" == 3 || "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8) {
-					set "set_model_dm_list::visible" "0" ;
-					if ( "gui::player_team" == 0) {
-						set "set_model_strogg_list::visible" "0" ;
-						set "set_model_marine_list::visible" "1" ;
-					} else if ( "gui::player_team" == 1) {
-						set "set_model_strogg_list::visible" "1" ;
-						set "set_model_marine_list::visible" "0" ;
-					}
-				}else{
-					set "set_model_dm_list::visible" "1" ;
-					set "set_model_strogg_list::visible" "0" ;
-					set "set_model_marine_list::visible" "0" ;
-				}
+				set "cmd" "appearance_tab self" ;
 				
 				namedevent "p_anims::resetMp" ;
 				set "p_settings::rect" "0,0,640,480" ;
@@ -4922,70 +5469,70 @@ windowDef Desktop
 				namedevent "p_btns::showSet" ;
 				namedevent "p_btns::showMain" ;
 				
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				if ( "gui::ui_hitscanTint" == 0) {
-					set "railcolor1::rect" "336,135,12,18" ;
-					set "railcolor2::rect" "350,135,12,14" ;
-					set "railcolor3::rect" "364,135,12,14" ;
-					set "railcolor4::rect" "378,135,12,14" ;
-					set "railcolor5::rect" "392,135,12,14" ;
-					set "railcolor6::rect" "406,135,12,14" ;
-					set "railcolor7::rect" "420,135,12,14" ;
+					set "railcolor1::rect" "336,167,12,18" ;
+					set "railcolor2::rect" "350,167,12,14" ;
+					set "railcolor3::rect" "364,167,12,14" ;
+					set "railcolor4::rect" "378,167,12,14" ;
+					set "railcolor5::rect" "392,167,12,14" ;
+					set "railcolor6::rect" "406,167,12,14" ;
+					set "railcolor7::rect" "420,167,12,14" ;
 				} else if ( "gui::ui_hitscanTint" == 30) {
-					set "railcolor1::rect" "336,135,12,14" ;
-					set "railcolor2::rect" "350,135,12,18" ;
-					set "railcolor3::rect" "364,135,12,14" ;
-					set "railcolor4::rect" "378,135,12,14" ;
-					set "railcolor5::rect" "392,135,12,14" ;
-					set "railcolor6::rect" "406,135,12,14" ;
-					set "railcolor7::rect" "420,135,12,14" ;
+					set "railcolor1::rect" "336,167,12,14" ;
+					set "railcolor2::rect" "350,167,12,18" ;
+					set "railcolor3::rect" "364,167,12,14" ;
+					set "railcolor4::rect" "378,167,12,14" ;
+					set "railcolor5::rect" "392,167,12,14" ;
+					set "railcolor6::rect" "406,167,12,14" ;
+					set "railcolor7::rect" "420,167,12,14" ;
 				} else if ( "gui::ui_hitscanTint" == 60) {
-					set "railcolor1::rect" "336,135,12,14" ;
-					set "railcolor2::rect" "350,135,12,14" ;
-					set "railcolor3::rect" "364,135,12,18" ;
-					set "railcolor4::rect" "378,135,12,14" ;
-					set "railcolor5::rect" "392,135,12,14" ;
-					set "railcolor6::rect" "406,135,12,14" ;
-					set "railcolor7::rect" "420,135,12,14" ;
+					set "railcolor1::rect" "336,167,12,14" ;
+					set "railcolor2::rect" "350,167,12,14" ;
+					set "railcolor3::rect" "364,167,12,18" ;
+					set "railcolor4::rect" "378,167,12,14" ;
+					set "railcolor5::rect" "392,167,12,14" ;
+					set "railcolor6::rect" "406,167,12,14" ;
+					set "railcolor7::rect" "420,167,12,14" ;
 				} else if ( "gui::ui_hitscanTint" == 120) {
-					set "railcolor1::rect" "336,135,12,14" ;
-					set "railcolor2::rect" "350,135,12,14" ;
-					set "railcolor3::rect" "364,135,12,14" ;
-					set "railcolor4::rect" "378,135,12,18" ;
-					set "railcolor5::rect" "392,135,12,14" ;
-					set "railcolor6::rect" "406,135,12,14" ;
-					set "railcolor7::rect" "420,135,12,14" ;
+					set "railcolor1::rect" "336,167,12,14" ;
+					set "railcolor2::rect" "350,167,12,14" ;
+					set "railcolor3::rect" "364,167,12,14" ;
+					set "railcolor4::rect" "378,167,12,18" ;
+					set "railcolor5::rect" "392,167,12,14" ;
+					set "railcolor6::rect" "406,167,12,14" ;
+					set "railcolor7::rect" "420,167,12,14" ;
 				} else if ( "gui::ui_hitscanTint" == 180) {
-					set "railcolor1::rect" "336,135,12,14" ;
-					set "railcolor2::rect" "350,135,12,14" ;
-					set "railcolor3::rect" "364,135,12,14" ;
-					set "railcolor4::rect" "378,135,12,14" ;
-					set "railcolor5::rect" "392,135,12,18" ;
-					set "railcolor6::rect" "406,135,12,14" ;
-					set "railcolor7::rect" "420,135,12,14" ;
+					set "railcolor1::rect" "336,167,12,14" ;
+					set "railcolor2::rect" "350,167,12,14" ;
+					set "railcolor3::rect" "364,167,12,14" ;
+					set "railcolor4::rect" "378,167,12,14" ;
+					set "railcolor5::rect" "392,167,12,18" ;
+					set "railcolor6::rect" "406,167,12,14" ;
+					set "railcolor7::rect" "420,167,12,14" ;
 				} else if ( "gui::ui_hitscanTint" == 240) {
-					set "railcolor1::rect" "336,135,12,14" ;
-					set "railcolor2::rect" "350,135,12,14" ;
-					set "railcolor3::rect" "364,135,12,14" ;
-					set "railcolor4::rect" "378,135,12,14" ;
-					set "railcolor5::rect" "392,135,12,14" ;
-					set "railcolor6::rect" "406,135,12,18" ;
-					set "railcolor7::rect" "420,135,12,14" ;
+					set "railcolor1::rect" "336,167,12,14" ;
+					set "railcolor2::rect" "350,167,12,14" ;
+					set "railcolor3::rect" "364,167,12,14" ;
+					set "railcolor4::rect" "378,167,12,14" ;
+					set "railcolor5::rect" "392,167,12,14" ;
+					set "railcolor6::rect" "406,167,12,18" ;
+					set "railcolor7::rect" "420,167,12,14" ;
 				} else if ( "gui::ui_hitscanTint" == 300) {
-					set "railcolor1::rect" "336,135,12,14" ;
-					set "railcolor2::rect" "350,135,12,14" ;
-					set "railcolor3::rect" "364,135,12,14" ;
-					set "railcolor4::rect" "378,135,12,14" ;
-					set "railcolor5::rect" "392,135,12,14" ;
-					set "railcolor6::rect" "406,135,12,14" ;
-					set "railcolor7::rect" "420,135,12,18" ;
+					set "railcolor1::rect" "336,167,12,14" ;
+					set "railcolor2::rect" "350,167,12,14" ;
+					set "railcolor3::rect" "364,167,12,14" ;
+					set "railcolor4::rect" "378,167,12,14" ;
+					set "railcolor5::rect" "392,167,12,14" ;
+					set "railcolor6::rect" "406,167,12,14" ;
+					set "railcolor7::rect" "420,167,12,18" ;
 				}
 				
 				set "desktop::active" "0" ;
@@ -5732,6 +6279,20 @@ windowDef Desktop
 			set "set_model_dm_list::noevents" "0" ;
 			set "set_model_strogg_list::noevents" "0" ;
 			set "set_model_marine_list::noevents" "0" ;
+			set "set_force_dm_list::noevents" "0" ;
+			set "set_force_marine_list::noevents" "0" ;
+			set "set_force_strogg_list::noevents" "0" ;
+			set "set_enemy_outline_val::noevents" "0" ;
+			set "set_team_outline_val::noevents" "0" ;
+			set "set_enemy_rimlight_val::noevents" "0" ;
+			set "set_team_rimlight_val::noevents" "0" ;
+			set "set_enemy_fx_color_val::noevents" "0" ;
+			set "set_team_fx_color_val::noevents" "0" ;
+			set "set_enemy_brightskin_val::noevents" "0" ;
+			set "set_team_brightskin_val::noevents" "0" ;
+			set "set_enemy_bright_color_val::noevents" "0" ;
+			set "set_team_bright_color_val::noevents" "0" ;
+			set "set_outline_width_val::noevents" "0" ;
 			set "set_handicap_val::noevents" "0" ;
 		}
 
@@ -5759,6 +6320,20 @@ windowDef Desktop
 			set "set_model_dm_list::noevents" "1" ;
 			set "set_model_strogg_list::noevents" "1" ;
 			set "set_model_marine_list::noevents" "1" ;
+			set "set_force_dm_list::noevents" "1" ;
+			set "set_force_marine_list::noevents" "1" ;
+			set "set_force_strogg_list::noevents" "1" ;
+			set "set_enemy_outline_val::noevents" "1" ;
+			set "set_team_outline_val::noevents" "1" ;
+			set "set_enemy_rimlight_val::noevents" "1" ;
+			set "set_team_rimlight_val::noevents" "1" ;
+			set "set_enemy_fx_color_val::noevents" "1" ;
+			set "set_team_fx_color_val::noevents" "1" ;
+			set "set_enemy_brightskin_val::noevents" "1" ;
+			set "set_team_brightskin_val::noevents" "1" ;
+			set "set_enemy_bright_color_val::noevents" "1" ;
+			set "set_team_bright_color_val::noevents" "1" ;
+			set "set_outline_width_val::noevents" "1" ;
 			set "set_handicap_val::noevents" "1" ;
 		}
 
@@ -6274,7 +6849,7 @@ windowDef Desktop
 		}
 		windowDef join_b_autojoin
 		{
-			rect	191,60,255,25
+			rect	191,142,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6306,7 +6881,7 @@ windowDef Desktop
 		}
 		windowDef join_b_marine
 		{
-			rect	191,98,255,25
+			rect	387,142,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6339,7 +6914,7 @@ windowDef Desktop
 		}
 		windowDef join_b_strogg
 		{
-			rect	191,127,255,25
+			rect	191,178,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6372,7 +6947,7 @@ windowDef Desktop
 		}
 		windowDef join_b_spectate
 		{
-			rect	191,169,255,25
+			rect	387,178,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6404,7 +6979,7 @@ windowDef Desktop
 		}
 		windowDef join_b_dmjoin
 		{
-			rect	191,60,255,25
+			rect	191,142,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6436,7 +7011,7 @@ windowDef Desktop
 		}
 		windowDef join_b_dmspectate
 		{
-			rect	191,98,255,25
+			rect	387,142,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6468,7 +7043,7 @@ windowDef Desktop
 		}
 		windowDef join_b_tourney
 		{
-			rect	191,60,255,25
+			rect	191,142,185,25
 			visible	0
 
 			onMouseEnter {
@@ -6500,7 +7075,7 @@ windowDef Desktop
 		}
 		windowDef join_b_ready
 		{
-			rect	466,73,165,35
+			rect	466,73,100,35
 			visible	0
 
 			onMouseEnter {
@@ -6721,7 +7296,7 @@ windowDef Desktop
 		}
 		windowDef set_b_1
 		{
-			rect	190,61,280,21
+			rect	190,93,280,21
 			visible	0
 
 			onMouseEnter {
@@ -6743,7 +7318,7 @@ windowDef Desktop
 		}
 		windowDef set_b_2
 		{
-			rect	190,85,280,21
+			rect	190,117,280,21
 			visible	0
 
 			onMouseEnter {
@@ -6765,7 +7340,7 @@ windowDef Desktop
 		}
 		windowDef set_b_3
 		{
-			rect	190,109,280,21
+			rect	190,141,280,21
 			visible	0
 
 			onMouseEnter {
@@ -6787,7 +7362,7 @@ windowDef Desktop
 		}
 		windowDef set_b_4
 		{
-			rect	190,133,280,21
+			rect	190,165,280,21
 			visible	0
 
 			onMouseEnter {
@@ -6809,7 +7384,7 @@ windowDef Desktop
 		}
 		windowDef set_b_5
 		{
-			rect	190,157,280,21
+			rect	190,189,280,21
 			visible	0
 
 			onMouseEnter {
@@ -6831,18 +7406,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor1
 		{
-			rect	336,135,12,14
+			rect	336,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 0 1 1" ;
-				set "railcolor1::rect" "336,135,12,18" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,18" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -6850,18 +7425,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor2
 		{
-			rect	350,135,12,14
+			rect	350,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 30 1 1" ;
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,18" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,18" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -6869,18 +7444,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor3
 		{
-			rect	364,135,12,14
+			rect	364,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 60 1 1" ;
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,18" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,18" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -6888,18 +7463,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor4
 		{
-			rect	378,135,12,14
+			rect	378,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 120 0.6 1" ;
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,18" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,18" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -6907,18 +7482,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor5
 		{
-			rect	392,135,12,14
+			rect	392,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 180 1 1" ;
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,18" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,18" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -6926,18 +7501,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor6
 		{
-			rect	406,135,12,14
+			rect	406,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 240 0.6 1" ;
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,18" ;
-				set "railcolor7::rect" "420,135,12,14" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,18" ;
+				set "railcolor7::rect" "420,167,12,14" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}
@@ -6945,18 +7520,18 @@ windowDef Desktop
 		}
 		windowDef set_b_railcolor7
 		{
-			rect	420,135,12,14
+			rect	420,167,12,14
 			visible	0
 
 			onAction {
 				consoleCMD "ui_hitscanTint 300 1 1" ;
-				set "railcolor1::rect" "336,135,12,14" ;
-				set "railcolor2::rect" "350,135,12,14" ;
-				set "railcolor3::rect" "364,135,12,14" ;
-				set "railcolor4::rect" "378,135,12,14" ;
-				set "railcolor5::rect" "392,135,12,14" ;
-				set "railcolor6::rect" "406,135,12,14" ;
-				set "railcolor7::rect" "420,135,12,18" ;
+				set "railcolor1::rect" "336,167,12,14" ;
+				set "railcolor2::rect" "350,167,12,14" ;
+				set "railcolor3::rect" "364,167,12,14" ;
+				set "railcolor4::rect" "378,167,12,14" ;
+				set "railcolor5::rect" "392,167,12,14" ;
+				set "railcolor6::rect" "406,167,12,14" ;
+				set "railcolor7::rect" "420,167,12,18" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}

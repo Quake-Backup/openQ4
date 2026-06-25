@@ -58,3 +58,4 @@ _tmp_*
 *.log.*
 InstallationLog.txt
 logs/
+/.home-listen-server

@@ -16,6 +16,18 @@ def require(haystack: str, needle: str, context: str) -> None:
         raise AssertionError(f"Missing {needle!r} in {context}")
 
 
+def reject(haystack: str, needle: str, context: str) -> None:
+    if needle in haystack:
+        raise AssertionError(f"Unexpected {needle!r} in {context}")
+
+
+def require_before(haystack: str, first: str, second: str, context: str) -> None:
+    first_index = haystack.find(first)
+    second_index = haystack.find(second)
+    if first_index == -1 or second_index == -1 or first_index >= second_index:
+        raise AssertionError(f"Expected {first!r} before {second!r} in {context}")
+
+
 def function_body(source: str, signature: str) -> str:
     start = source.find(signature)
     if start == -1:
@@ -104,6 +116,7 @@ def validate_shared_backend_contract() -> None:
     require(screen_parms, "SDL_SetWindowBordered(s_sdlWindow, !useBorderlessWindow)", "borderless window transition")
     require(screen_parms, "SDL3_ConstrainWindowRectToBounds", "window restore bounds constraint")
     require(screen_parms, "SDL3_SyncWindowAfterScreenChange", "post-transition compositor sync")
+    require_before(screen_parms, "SDL_SetWindowFullscreen(s_sdlWindow, true)", "SDL_ShowWindow(s_sdlWindow)", "fullscreen startup shows window only after mode transition")
     require(leave_fullscreen, "SDL_SetWindowFullscreen(s_sdlWindow, false)", "fullscreen exit")
 
     require(refresh_placement, "win32.win_xpos.SetInteger(x)", "window position persistence")
@@ -116,6 +129,9 @@ def validate_shared_backend_contract() -> None:
     require(window_event, "case SDL_EVENT_WINDOW_DISPLAY_CHANGED:", "display migration handling")
     require(window_event, "case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:", "display scale handling")
     require(window_event, "case SDL_EVENT_WINDOW_RESIZED:", "window resize handling")
+
+    require(init, "SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN", "hidden SDL3 render-window startup")
+    reject(init, "Sys_DestroySplash();", "SDL3 startup splash must survive until render window handoff")
 
 
 def validate_platform_wrappers() -> None:

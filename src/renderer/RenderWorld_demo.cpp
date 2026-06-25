@@ -82,6 +82,10 @@ bool R_DemoReadVec3( idDemoFile *demo, idVec3 &value ) {
 	return demo->ReadVec3( value ) == sizeof( value );
 }
 
+bool R_DemoReadVec4( idDemoFile *demo, idVec4 &value ) {
+	return demo->ReadVec4( value ) == sizeof( value );
+}
+
 bool R_DemoReadMat3( idDemoFile *demo, idMat3 &value ) {
 	return demo->ReadMat3( value ) == sizeof( value );
 }
@@ -932,6 +936,11 @@ void	idRenderWorldLocal::WriteRenderEntity( qhandle_t handle, const renderEntity
 	session->writeDemo->WriteInt( ent->referenceSound );
 	for ( int i = 0; i < MAX_ENTITY_SHADER_PARMS; i++ )
 		session->writeDemo->WriteFloat( ent->shaderParms[i] );
+	session->writeDemo->WriteVec4( ent->outlineColor );
+	session->writeDemo->WriteVec4( ent->rimlightColor );
+	session->writeDemo->WriteVec4( ent->brightSkinColor );
+	session->writeDemo->WriteFloat( ent->outlineWidth );
+	session->writeDemo->WriteInt( ent->outlineFlags );
 	for ( int i = 0; i < MAX_RENDERENTITY_GUI; i++ )
 		session->writeDemo->WriteBool( ent->gui[i] != NULL );
 	session->writeDemo->WriteBool( ent->remoteRenderView != NULL );
@@ -1097,6 +1106,15 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 	}
 	for ( i = 0; i < MAX_ENTITY_SHADER_PARMS; i++ ) {
 		if ( !R_DemoReadFloat( session->readDemo, ent.shaderParms[i] ) ) {
+			return false;
+		}
+	}
+	if ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_VISIBILITY_EFFECTS_VERSION ) {
+		if ( !R_DemoReadVec4( session->readDemo, ent.outlineColor ) ||
+			 !R_DemoReadVec4( session->readDemo, ent.rimlightColor ) ||
+			 ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_BRIGHTSKIN_VERSION && !R_DemoReadVec4( session->readDemo, ent.brightSkinColor ) ) ||
+			 !R_DemoReadFloat( session->readDemo, ent.outlineWidth ) ||
+			 !R_DemoReadInt( session->readDemo, ent.outlineFlags ) ) {
 			return false;
 		}
 	}

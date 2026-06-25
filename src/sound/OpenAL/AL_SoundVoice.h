@@ -42,53 +42,18 @@ public:
 	idSoundVoice_OpenAL();
 	~idSoundVoice_OpenAL();
 
-	void					SetPosition( const idVec3& p )
-	{
-		idSoundVoice_Base::SetPosition( p );
+	void					SetPosition( const idVec3& p ) override;
+	void					SetVelocity( const idVec3& v ) override;
 
-		alSource3f( openalSource, AL_POSITION, -p.y, p.z, -p.x );
-	}
+	void					SetGain( float gain ) override;
 
-	void					SetVelocity( const idVec3& v ) override
-	{
-		idSoundVoice_Base::SetVelocity( v );
-
-		alSource3f( openalSource, AL_VELOCITY, -v.y, v.z, -v.x );
-	}
-
-	void					SetGain( float gain )
-	{
-		idSoundVoice_Base::SetGain( gain );
-		ApplyWetDryRouting();
-	}
-
-	void		SetPitch( float p )
-	{
-		idSoundVoice_Base::SetPitch( p );
-
-		alSourcef( openalSource, AL_PITCH, p );
-	}
+	void		SetPitch( float p ) override;
+	void		SetCenterChannel( float c ) override;
 	void		SetInnerRadius( float r ) override;
-	void		SetWetLevel( float wet ) override
-	{
-		idSoundVoice_Base::SetWetLevel( wet );
-		ApplyWetDryRouting();
-	}
-	void		SetDryLevel( float dry ) override
-	{
-		idSoundVoice_Base::SetDryLevel( dry );
-		ApplyWetDryRouting();
-	}
-	void		SetOcclusion( float f ) override
-	{
-		idSoundVoice_Base::SetOcclusion( f );
-		ApplyWetDryRouting();
-	}
-	void		SetEnvironmentMuffle( float f ) override
-	{
-		idSoundVoice_Base::SetEnvironmentMuffle( f );
-		ApplyWetDryRouting();
-	}
+	void		SetWetLevel( float wet ) override;
+	void		SetDryLevel( float dry ) override;
+	void		SetOcclusion( float f ) override;
+	void		SetEnvironmentMuffle( float f ) override;
 
 	void					Create( const idSoundSample* leadinSample, const idSoundSample* loopingSample );
 
@@ -142,6 +107,8 @@ private:
 	int						SubmitBuffer( idSoundSample_OpenAL* sample, int bufferNumber, int offset );
 
 	bool					EnsureStreamingBuffers();
+	bool					SupportsQueuedPCM( idSoundSample_OpenAL* sample ) const;
+	bool					ValidateSampleBufferLayout( idSoundSample_OpenAL* sample, const idSoundSample_OpenAL::sampleBuffer_t*& sampleBuffers, int& numBuffers ) const;
 	bool					ValidateStreamingSample( idSoundSample_OpenAL* sample, ALenum& alFormat, int& blockBytes );
 	bool					SetStreamingCursor( idSoundSample_OpenAL* sample, int absoluteSampleFrame );
 	bool					AdvanceStreamingCursor( int queuedFrames );
@@ -149,9 +116,11 @@ private:
 	int						BeginStreaming( idSoundSample_OpenAL* sample, int bufferNumber, int offset );
 	bool					PumpStreamingBuffers();
 	void					ResetStreamingState();
+	void					DestroyStreamingBuffers();
 
 	// Adjust the voice frequency based on the new sample rate for the buffer
 	void					SetSampleRate( uint32 newSampleRate, uint32 operationSet );
+	void					ApplySpatialization();
 	void					ApplyWetDryRouting();
 	bool					CreateWetDryFilters();
 	bool					DetachWetDryRouting();

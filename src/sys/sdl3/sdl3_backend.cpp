@@ -5163,7 +5163,6 @@ bool GLimp_Init(glimpParms_t parms) {
 	const char *driverName;
 
 	common->Printf("Initializing OpenGL subsystem (SDL3 backend)\n");
-	Sys_DestroySplash();
 	SDL3_SetMouseHintDefaults();
 	SDL3_SetVideoHintDefaults();
 
@@ -5216,12 +5215,9 @@ bool GLimp_Init(glimpParms_t parms) {
 		common->Printf("SDL3: creating hidden OpenGL render window\n");
 	}
 
-	SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+	SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
 	if (!parms.fullScreen && parms.borderless) {
 		flags |= SDL_WINDOW_BORDERLESS;
-	}
-	if (parms.hiddenWindow) {
-		flags |= SDL_WINDOW_HIDDEN;
 	}
 
 	const bool usingPreservedWindow = s_sdlWindow != NULL;

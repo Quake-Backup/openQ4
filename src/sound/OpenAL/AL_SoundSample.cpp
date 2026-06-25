@@ -578,8 +578,34 @@ bool idSoundSample_OpenAL::CreateOpenALBuffer()
 {
 	if( openalBuffer != 0 )
 	{
-		openalUploadPending = false;
-		return true;
+		const bool warnAboutContext = !openalUploadWarningIssued;
+		if( !openQ4_MakeSampleOpenALContextCurrent( "sample buffer validation", GetName(), warnAboutContext ) )
+		{
+			idSoundHardware_OpenAL::CountDiagnosticEvent( idSoundHardware_OpenAL::OPENAL_DIAG_SAMPLE_UPLOAD_CONTEXT_MISSES );
+			openalUploadPending = true;
+			openalUploadWarningIssued = true;
+			return false;
+		}
+
+		CheckALErrors();
+		const bool validExistingBuffer = alIsBuffer( openalBuffer ) == AL_TRUE;
+		const ALenum validationError = CheckALErrors();
+		if( validExistingBuffer && validationError == AL_NO_ERROR )
+		{
+			openalUploadPending = false;
+			openalUploadWarningIssued = false;
+			return true;
+		}
+
+		if( validationError != AL_NO_ERROR )
+		{
+			common->Warning( "idSoundSample_OpenAL::CreateOpenALBuffer: stale OpenAL buffer validation failed for '%s' (0x%x)", GetName(), validationError );
+		}
+
+		common->DPrintf( "idSoundSample_OpenAL::CreateOpenALBuffer: discarding stale OpenAL buffer %u for '%s'\n", openalBuffer, GetName() );
+		openalBuffer = 0;
+		openalUploadPending = true;
+		openalUploadWarningIssued = true;
 	}
 
 	if( !loaded || buffers.Num() <= 0 )

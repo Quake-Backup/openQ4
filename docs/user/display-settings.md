@@ -88,6 +88,30 @@ Notes:
 - Changing `r_multiSamples` should be followed by `vid_restart`.
 - `r_postAA`, `r_msaaAlphaToCoverage`, and `r_msaaResolveDepth` can be changed at runtime, but a `vid_restart` is still safe if behavior looks stale.
 
+## Multiplayer Visibility Effects
+
+These optional client-side cvars add player outlines and rim lighting in multiplayer. Defaults keep the effects off; set one or more strength values above `0` to enable them. They do not change hit detection, snapshots, or server authority.
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `cl_player_outline_enemy` | `0` | Enemy player outline strength (`0..1`). |
+| `cl_player_outline_team` | `0` | Teammate player outline strength (`0..1`). Teammate outlines render through depth so allies stay readable. |
+| `cl_player_outline_width` | `2.0` | Approximate outline width in screen pixels (`0.5..6.0`). |
+| `cl_player_rimlight_enemy` | `0` | Enemy player rimlight strength (`0..1`). |
+| `cl_player_rimlight_team` | `0` | Teammate player rimlight strength (`0..1`). |
+| `cl_player_visibility_enemy_color` | `1 0.12 0.05` | Enemy outline/rimlight RGB color, using float components. |
+| `cl_player_visibility_team_color` | `0.1 0.85 0.25` | Teammate outline/rimlight RGB color, using float components. |
+
+Example:
+
+```cfg
+seta cl_player_outline_enemy 0.85
+seta cl_player_rimlight_enemy 0.5
+seta cl_player_outline_team 0.45
+seta cl_player_rimlight_team 0.25
+seta cl_player_outline_width 2.0
+```
+
 ## Resolution Scale
 
 | Setting | Default | What it does |

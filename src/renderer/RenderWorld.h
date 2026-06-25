@@ -104,6 +104,9 @@ struct renderEntity_s;
 struct renderView_s;
 typedef bool(*deferredEntityCallback_t)( renderEntity_s *, const renderView_s * );
 
+enum {
+	REF_OUTLINE_NODEPTH = 1 << 0
+};
 
 // RAVEN BEGIN
 // bdube: attachments
@@ -173,6 +176,14 @@ typedef struct renderEntity_s {
 	int						referenceSoundHandle;	// for shader sound tables, allowing effects to vary with sounds
 // RAVEN END	
 	float					shaderParms[ MAX_ENTITY_SHADER_PARMS ];	// can be used in any way by shader or model generation
+
+	// Optional presentation-only visibility effects. An alpha value <= 0 disables
+	// the effect for this entity.
+	idVec4					outlineColor;
+	idVec4					rimlightColor;
+	idVec4					brightSkinColor;
+	float					outlineWidth;
+	int						outlineFlags;
   
 // RAVEN BEGIN
 // mwhitlock: Xenon texture streaming

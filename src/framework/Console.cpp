@@ -54,6 +54,8 @@ void SCR_DrawTextRightAlign( float &y, const char *text, ... ) id_attribute((for
 #define CON_COMPLETION_MAX_VISIBLE		8
 #define CON_TEXT_DRAG_THRESHOLD			4.0f
 #define CON_MOUSE_CURSOR_SIZE			32.0f
+#define CON_MOUSE_CURSOR_HOTSPOT_X		0.0f
+#define CON_MOUSE_CURSOR_HOTSPOT_Y		static_cast<float>( SMALLCHAR_HEIGHT )
 
 #define	COMMAND_HISTORY			64
 static const char *kConsoleHistoryFileName = "consolehistory.dat";
@@ -4578,9 +4580,12 @@ void idConsoleLocal::DrawMouseCursor( void ) {
 	EnsureMouseInitialized();
 
 	if ( mouseCursorShader != NULL ) {
-		const float cursorWidth = CON_MOUSE_CURSOR_SIZE * Con_GetConsoleXScale();
+		const float cursorXScale = Con_GetConsoleXScale();
+		const float cursorWidth = CON_MOUSE_CURSOR_SIZE * cursorXScale;
+		const float cursorDrawX = mouseX - CON_MOUSE_CURSOR_HOTSPOT_X * cursorXScale;
+		const float cursorDrawY = mouseY - CON_MOUSE_CURSOR_HOTSPOT_Y;
 		renderSystem->SetColor( colorWhite );
-		renderSystem->DrawStretchPic( mouseX, mouseY, cursorWidth, CON_MOUSE_CURSOR_SIZE,
+		renderSystem->DrawStretchPic( cursorDrawX, cursorDrawY, cursorWidth, CON_MOUSE_CURSOR_SIZE,
 			0.0f, 0.0f, 1.0f, 1.0f, mouseCursorShader );
 		return;
 	}

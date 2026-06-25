@@ -51,6 +51,147 @@ function Quote-Sh {
     return "'" + $Value.Replace("'", "'\''") + "'"
 }
 
+function Assert-NoShellTokenHazards {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()][string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -match '[\x00-\x20\x7f]') {
+        throw "Invalid ${Label} '$Value'. Use a non-empty value without whitespace or control characters."
+    }
+    if ($Value.StartsWith("-")) {
+        throw "Invalid ${Label} '$Value'. Values must not begin with '-'."
+    }
+}
+
+function Assert-ValidMacUser {
+    Assert-NoShellTokenHazards -Label "MacUser" -Value $MacUser
+    if ($MacUser -notmatch '^[A-Za-z_][A-Za-z0-9._-]*$') {
+        throw "Invalid MacUser '$MacUser'. Use a macOS short user name made from letters, digits, dots, underscores, or dashes."
+    }
+}
+
+function Assert-ValidMacHost {
+    Assert-NoShellTokenHazards -Label "MacHost" -Value $MacHost
+    if ($MacHost -match '[@/\\''"`]') {
+        throw "Invalid MacHost '$MacHost'. Use only a host name, host alias, IPv4 address, or bracketed IPv6 address."
+    }
+    if ($MacHost -match ':') {
+        if ($MacHost -notmatch '^\[[0-9A-Fa-f:.%]+\]$') {
+            throw "Invalid MacHost '$MacHost'. IPv6 addresses must be bracketed for scp, for example [fe80::1]."
+        }
+        return
+    }
+    if ($MacHost -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        throw "Invalid MacHost '$MacHost'. Use a host name, host alias, IPv4 address, or bracketed IPv6 address."
+    }
+}
+
+function Assert-SafeRemoteWorkflowPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()][string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -match '[\x00-\x1f\x7f]') {
+        throw "Invalid ${Label} '$Value'. Use a non-empty single-line POSIX path."
+    }
+    if ($Value.StartsWith("-") -or $Value -match '\\') {
+        throw "Invalid ${Label} '$Value'. Use a POSIX path that does not begin with '-' or contain backslashes."
+    }
+    if (-not ($Value.StartsWith("/") -or $Value.StartsWith("~/"))) {
+        throw "Invalid ${Label} '$Value'. Use an absolute POSIX path or a ~/ path so SSH shell working directories cannot change the workflow target."
+    }
+    if ($Value -match '//') {
+        throw "Invalid ${Label} '$Value'. Empty POSIX path segments are not allowed."
+    }
+
+    $trimmed = $Value.TrimEnd("/")
+    if ($trimmed -in @("", ".", "..", "~", "/")) {
+        throw "Invalid ${Label} '$Value'. Refusing to use a home, root, or relative traversal path."
+    }
+    if ($Value -match '(^|/)\.($|/)') {
+        throw "Invalid ${Label} '$Value'. Dot path segments are not allowed."
+    }
+    if ($Value -match '(^|/)\.\.($|/)') {
+        throw "Invalid ${Label} '$Value'. Parent-directory traversal is not allowed."
+    }
+}
+
+function Assert-LocalRegularFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $fullPath = Get-FullPath $Path
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "${Label} was not found or is not a file: $fullPath"
+    }
+    $item = Get-Item -LiteralPath $fullPath -Force
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "${Label} must not be a symlink, junction, or reparse point: $fullPath"
+    }
+}
+
+function Assert-LocalOutputFileTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $fullPath = Get-FullPath $Path
+    $parent = Split-Path -Parent $fullPath
+    Initialize-LocalDirectory -Path $parent -Label "${Label} parent directory" | Out-Null
+    if (Test-Path -LiteralPath $fullPath) {
+        $item = Get-Item -LiteralPath $fullPath -Force
+        if ($item.PSIsContainer) {
+            throw "${Label} target exists but is a directory: $fullPath"
+        }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "${Label} target must not be a symlink, junction, or reparse point: $fullPath"
+        }
+    }
+}
+
+function Initialize-LocalDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $fullPath = Get-FullPath $Path
+    if (Test-Path -LiteralPath $fullPath) {
+        $item = Get-Item -LiteralPath $fullPath -Force
+        if (-not $item.PSIsContainer) {
+            throw "${Label} path exists but is not a directory: $fullPath"
+        }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "${Label} must not be a symlink, junction, or reparse point: $fullPath"
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $fullPath | Out-Null
+    $created = Get-Item -LiteralPath $fullPath -Force
+    if (($created.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "${Label} must not be a symlink, junction, or reparse point: $fullPath"
+    }
+    return $fullPath
+}
+
+function Assert-MacOSWorkflowInputs {
+    Assert-ValidMacUser
+    Assert-ValidMacHost
+    Assert-SafeRemoteWorkflowPath -Label "MacWorkspace" -Value $MacWorkspace
+    Assert-SafeRemoteWorkflowPath -Label "MacBasePath" -Value $MacBasePath
+    if ($MacWorkspace.TrimEnd("/") -eq $MacBasePath.TrimEnd("/")) {
+        throw "MacBasePath must not be the same directory as MacWorkspace; asset installation uses rsync --delete."
+    }
+    if ($IdentityFile) {
+        Assert-LocalRegularFile -Path $IdentityFile -Label "IdentityFile"
+    }
+}
+
 function Get-SshArgs {
     $args = @("-p", [string]$SshPort, "-o", "BatchMode=yes")
     if ($IdentityFile) {
@@ -101,6 +242,7 @@ function Copy-ToMac {
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$RemotePath
     )
+    Assert-LocalRegularFile -Path $Source -Label "macOS copy source"
     $target = "${MacUser}@${MacHost}:$RemotePath"
     & scp @(Get-ScpArgs) $Source $target
     if ($LASTEXITCODE -ne 0) {
@@ -115,7 +257,7 @@ function Copy-FromMac {
     )
 
     $destinationFullPath = Get-FullPath $Destination
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destinationFullPath) | Out-Null
+    Assert-LocalOutputFileTarget -Path $destinationFullPath -Label "macOS copy destination"
     $target = "${MacUser}@${MacHost}:$RemotePath"
     & scp @(Get-ScpArgs) $target $destinationFullPath
     if ($LASTEXITCODE -ne 0) {
@@ -128,6 +270,10 @@ function Assert-NoArchiveLinks {
 
     $sourceFullPath = Get-FullPath $SourceDir
     $badEntries = @()
+    $sourceItem = Get-Item -LiteralPath $sourceFullPath -Force
+    if (($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        $badEntries += $sourceItem.FullName
+    }
     Get-ChildItem -LiteralPath $sourceFullPath -Recurse -Force | ForEach-Object {
         if (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             $badEntries += $_.FullName
@@ -137,6 +283,51 @@ function Assert-NoArchiveLinks {
     if ($badEntries.Count -ne 0) {
         $sample = ($badEntries | Select-Object -First 10) -join "`n  - "
         throw "Refusing to archive symlink/junction/reparse-point entries from ${sourceFullPath}:`n  - $sample"
+    }
+}
+
+function Assert-NoCaseInsensitiveArchiveCollisions {
+    param([Parameter(Mandatory = $true)][string]$SourceDir)
+
+    $sourceFullPath = Get-FullPath $SourceDir
+    $seen = @{}
+    Get-ChildItem -LiteralPath $sourceFullPath -Recurse -Force | ForEach-Object {
+        $fullPath = $_.FullName
+        $relative = $fullPath.Substring($sourceFullPath.Length).TrimStart('\', '/') -replace '\\', '/'
+        if ($relative) {
+            $key = $relative.Normalize([System.Text.NormalizationForm]::FormC).ToLowerInvariant()
+            if ($seen.ContainsKey($key) -and $seen[$key] -ne $relative) {
+                throw "Refusing to archive case-insensitive path collision from ${sourceFullPath}: $($seen[$key]) <-> $relative"
+            }
+            $seen[$key] = $relative
+        }
+    }
+}
+
+function Assert-NoMacOSMetadataEntries {
+    param([Parameter(Mandatory = $true)][string]$SourceDir)
+
+    $sourceFullPath = Get-FullPath $SourceDir
+    $badEntries = @()
+    Get-ChildItem -LiteralPath $sourceFullPath -Recurse -Force | ForEach-Object {
+        $name = $_.Name
+        if (
+            $name -ieq ".DS_Store" -or
+            $name -ieq "__MACOSX" -or
+            $name -ieq ".fseventsd" -or
+            $name -ieq ".Spotlight-V100" -or
+            $name -ieq ".Trashes" -or
+            $name -eq "Icon`r" -or
+            $name.StartsWith("._", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $name.EndsWith(".dSYM", [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            $badEntries += $_.FullName
+        }
+    }
+
+    if ($badEntries.Count -ne 0) {
+        $sample = ($badEntries | Select-Object -First 10) -join "`n  - "
+        throw "Refusing to archive non-runtime macOS metadata/debug entries from ${sourceFullPath}:`n  - $sample"
     }
 }
 
@@ -150,10 +341,17 @@ function New-TransferArchive {
     if (-not (Test-Path -LiteralPath $SourceDir)) {
         throw "Source directory was not found: $SourceDir"
     }
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "Source path was not a directory: $SourceDir"
+    }
     Assert-NoArchiveLinks -SourceDir $SourceDir
+    Assert-NoCaseInsensitiveArchiveCollisions -SourceDir $SourceDir
+    Assert-NoMacOSMetadataEntries -SourceDir $SourceDir
 
     $archiveFullPath = Get-FullPath $ArchivePath
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $archiveFullPath) | Out-Null
+    $archiveParent = Split-Path -Parent $archiveFullPath
+    Initialize-LocalDirectory -Path $archiveParent -Label "macOS transfer archive directory" | Out-Null
+    Assert-LocalOutputFileTarget -Path $archiveFullPath -Label "macOS transfer archive"
     if (Test-Path -LiteralPath $archiveFullPath) {
         Remove-Item -LiteralPath $archiveFullPath -Force
     }
@@ -197,12 +395,54 @@ expand_remote_path() {
     esac
 }
 
+require_regular_remote_archive() {
+    local archive_path="`$1"
+    if [[ -L "`$archive_path" || ! -f "`$archive_path" ]]; then
+        echo "Remote archive must be a regular file, not a symlink or special path: `$archive_path" >&2
+        exit 1
+    fi
+}
+
+prepare_remote_extract_target() {
+    local target_path="`$1"
+    if [[ -z "`$target_path" || "`$target_path" == "/" || "`$target_path" == "`$HOME" ]]; then
+        echo "Refusing unsafe remote extraction target: `$target_path" >&2
+        exit 1
+    fi
+    if [[ -L "`$target_path" ]]; then
+        echo "Remote extraction target must not be a symlink: `$target_path" >&2
+        exit 1
+    fi
+    if [[ -e "`$target_path" && ! -d "`$target_path" ]]; then
+        echo "Remote extraction target must be a directory: `$target_path" >&2
+        exit 1
+    fi
+    mkdir -p "`$target_path"
+    if [[ -L "`$target_path" || ! -d "`$target_path" ]]; then
+        echo "Remote extraction target must be a real directory: `$target_path" >&2
+        exit 1
+    fi
+}
+
+require_single_archive_root() {
+    local archive_path="`$1"
+    local archive_roots archive_root_count
+    archive_roots="`$(tar -tf "`$archive_path" | awk -F/ 'NF && `$1 != "" {print `$1}' | sort -u)"
+    archive_root_count="`$(printf '%s\n' "`$archive_roots" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+    if [[ "`$archive_root_count" != "1" ]]; then
+        echo "Archive must contain exactly one top-level source root before stripping components: `$archive_path" >&2
+        printf '%s\n' "`$archive_roots" >&2
+        exit 1
+    fi
+}
+
 archive_raw=$(Quote-Sh $RemoteArchive)
 target_raw=$(Quote-Sh $RemoteTarget)
 archive="`$(expand_remote_path "`$archive_raw")"
 target="`$(expand_remote_path "`$target_raw")"
 
-mkdir -p "`$target"
+require_regular_remote_archive "`$archive"
+prepare_remote_extract_target "`$target"
 tmp_dir="`$(mktemp -d /tmp/openq4-extract.XXXXXX)"
 trap 'rm -rf "`$tmp_dir"' EXIT
 
@@ -214,6 +454,8 @@ tar -tf "`$archive" | while IFS= read -r entry; do
             ;;
     esac
 done
+
+require_single_archive_root "`$archive"
 
 tar -tvf "`$archive" | while IFS= read -r listing; do
     entry_type="`${listing:0:1}"
@@ -234,6 +476,30 @@ if [[ -n "`$bad_entry" ]]; then
     exit 1
 fi
 
+case_collision="`$(python3 - "`$tmp_dir" <<'PY'
+import pathlib
+import sys
+import unicodedata
+
+root = pathlib.Path(sys.argv[1])
+seen = {}
+for path in sorted(root.rglob("*")):
+    rel = path.relative_to(root).as_posix()
+    key = unicodedata.normalize("NFC", rel).casefold()
+    previous = seen.get(key)
+    if previous is not None and previous != rel:
+        print(previous)
+        print(rel)
+        raise SystemExit(0)
+    seen[key] = rel
+PY
+)"
+if [[ -n "`$case_collision" ]]; then
+    echo "Archive contains a case-insensitive path collision:" >&2
+    printf '%s\n' "`$case_collision" >&2
+    exit 1
+fi
+
 rsync -a --delete "`$tmp_dir/" "`$target/"
 "@
     Invoke-MacSsh -Command "bash -lc $(Quote-Sh $script)"
@@ -246,6 +512,7 @@ function Copy-GuestScript {
     if (-not (Test-Path -LiteralPath $localScript)) {
         throw "Guest script was not found: $localScript"
     }
+    Assert-LocalRegularFile -Path $localScript -Label "Guest script"
 
     if (-not $script:RemoteTempRoot) {
         throw "Remote temporary root was not initialized."
@@ -283,7 +550,7 @@ function Invoke-GuestScript {
 
 function Sync-SourceTrees {
     $transferRoot = Join-Path $TmpRoot "transfer"
-    New-Item -ItemType Directory -Force -Path $transferRoot | Out-Null
+    $transferRoot = Initialize-LocalDirectory -Path $transferRoot -Label "macOS transfer root"
 
     $repoArchive = New-TransferArchive `
         -SourceDir $repoRoot `
@@ -335,7 +602,7 @@ function Install-Assets {
     }
 
     $transferRoot = Join-Path $TmpRoot "transfer"
-    New-Item -ItemType Directory -Force -Path $transferRoot | Out-Null
+    $transferRoot = Initialize-LocalDirectory -Path $transferRoot -Label "macOS transfer root"
     $assetRootName = Split-Path -Leaf (Get-FullPath $HostQuake4Path)
     $assetArchive = New-TransferArchive `
         -SourceDir $HostQuake4Path `
@@ -440,12 +707,68 @@ workspace="$(expand_remote_path "${workspace_raw}")"
 run_id=__RUN_ID__
 archive=__ARCHIVE__
 expected_bridges=(__BRIDGES__)
+if [[ -z "${workspace}" || "${workspace}" == "/" || "${workspace}" == "${HOME}" || -L "${workspace}" || ! -d "${workspace}" ]]; then
+    echo "Unsafe macOS workspace path for result collection: ${workspace}" >&2
+    exit 1
+fi
 results_dir="${workspace%/}/results"
-if [[ ! -d "${results_dir}" ]]; then
+if [[ -L "${results_dir}" || ! -d "${results_dir}" ]]; then
     echo "No macOS results directory exists yet: ${results_dir}" >&2
     exit 1
 fi
 cd "${results_dir}"
+
+reject_unsafe_result_tree() {
+    local path="$1"
+    local bad_entry
+    bad_entry="$(find "${path}" \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+    if [[ -n "${bad_entry}" ]]; then
+        echo "macOS signoff result directory contains a symlink or special file: ${results_dir}/${bad_entry}" >&2
+        exit 1
+    fi
+    bad_entry="$(find "${path}" \( -iname '.DS_Store' -o -name '._*' -o -iname '__MACOSX' -o -iname '.fseventsd' -o -iname '.Spotlight-V100' -o -iname '.Trashes' -o -name $'Icon\r' -o -iname '*.dSYM' \) -print -quit)"
+    if [[ -n "${bad_entry}" ]]; then
+        echo "macOS signoff result directory contains non-runtime metadata/debug entry: ${results_dir}/${bad_entry}" >&2
+        exit 1
+    fi
+}
+
+require_result_file_under() {
+    local path="$1"
+    local relative_dir="$2"
+    local dir="${path}/${relative_dir}"
+    if [[ ! -d "${dir}" ]]; then
+        echo "macOS signoff result directory is missing ${relative_dir}: ${results_dir}/${dir}" >&2
+        exit 1
+    fi
+    if ! find "${dir}" -type f -print -quit | grep -q .; then
+        echo "macOS signoff result directory has no file evidence under ${relative_dir}: ${results_dir}/${dir}" >&2
+        exit 1
+    fi
+}
+
+reject_result_case_collisions() {
+    python3 - "$@" <<'PY'
+import pathlib
+import sys
+import unicodedata
+
+seen = {}
+for selected_root in sys.argv[1:]:
+    root = pathlib.Path(selected_root)
+    for path in sorted(root.rglob("*")):
+        rel = path.as_posix()
+        key = unicodedata.normalize("NFC", rel).casefold()
+        previous = seen.get(key)
+        if previous is not None and previous != rel:
+            print("macOS signoff result directories contain a case-insensitive path collision:", file=sys.stderr)
+            print(previous, file=sys.stderr)
+            print(rel, file=sys.stderr)
+            raise SystemExit(1)
+        seen[key] = rel
+PY
+}
+
 matches=()
 for bridge in "${expected_bridges[@]}"; do
     path="${run_id}-signoff-${bridge}"
@@ -453,17 +776,31 @@ for bridge in "${expected_bridges[@]}"; do
         echo "No macOS result directories matched required signoff path: ${results_dir}/${path}" >&2
         exit 1
     fi
-    if [[ ! -f "${path}/macos-runtime-signoff.md" || ! -f "${path}/openq4-macos-workflow.log" ]]; then
+    reject_unsafe_result_tree "${path}"
+    if [[ ! -s "${path}/macos-runtime-signoff.md" || ! -s "${path}/openq4-macos-workflow.log" ]]; then
         echo "macOS signoff result directory is incomplete: ${results_dir}/${path}" >&2
         exit 1
     fi
+    require_result_file_under "${path}" "renderer-smoke"
+    require_result_file_under "${path}" "renderer-matrix"
     matches+=("${path}")
 done
 if (( ${#matches[@]} == 0 )); then
     echo "No macOS result directories matched ${results_dir}/${run_id}-*" >&2
     exit 1
 fi
-tar -czf "${archive}" "${matches[@]}"
+reject_result_case_collisions "${matches[@]}"
+archive_parent="${archive%/*}"
+if [[ -z "${archive_parent}" || "${archive_parent}" == "${archive}" || -L "${archive_parent}" || ! -d "${archive_parent}" ]]; then
+    echo "Unsafe macOS result archive directory: ${archive_parent}" >&2
+    exit 1
+fi
+if [[ -e "${archive}" && ( -L "${archive}" || ! -f "${archive}" ) ]]; then
+    echo "Unsafe macOS result archive target: ${archive}" >&2
+    exit 1
+fi
+rm -f "${archive}"
+COPYFILE_DISABLE=1 tar -czf "${archive}" -- "${matches[@]}"
 '@
     $script = $script.Replace("__WORKSPACE__", $workspaceQ).Replace("__RUN_ID__", $runIdQ).Replace("__ARCHIVE__", $archiveQ).Replace("__BRIDGES__", $bridgesQ)
     Invoke-MacSsh -Command "bash -lc $(Quote-Sh $script)"
@@ -516,15 +853,15 @@ function Test-MacOSResultArchive {
 
 function Invoke-MacOSWorkflowMain {
     $repoRoot = Get-RepoRoot
+    Assert-MacOSWorkflowInputs
     if (-not $TmpRoot) {
         $TmpRoot = Join-Path (Join-Path $repoRoot ".tmp") "macos-vm"
     }
-    $TmpRoot = Get-FullPath $TmpRoot
-    New-Item -ItemType Directory -Force -Path $TmpRoot | Out-Null
+    $TmpRoot = Initialize-LocalDirectory -Path $TmpRoot -Label "TmpRoot"
     if (-not $ResultCollectionDir) {
         $ResultCollectionDir = Join-Path $TmpRoot "results"
     }
-    $ResultCollectionDir = Get-FullPath $ResultCollectionDir
+    $ResultCollectionDir = Initialize-LocalDirectory -Path $ResultCollectionDir -Label "ResultCollectionDir"
     if (-not $MacOSRunId) {
         if ($Action -contains "CollectResults") {
             throw "-Action CollectResults requires -MacOSRunId <id> so the existing guest result directories can be selected."

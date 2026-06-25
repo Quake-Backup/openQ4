@@ -58,6 +58,53 @@ def report_text(bridge: str, *, completed: bool) -> str:
 - [{checkbox}] Verify audio output, volume changes, and at least one device switch or reconnect.
 - [{checkbox}] Verify windowed, fullscreen, selected-display, and HiDPI/Retina behavior on attached displays.
 - [{checkbox}] Verify the matching OpenGL or Metal bridge package path in actual gameplay, not only at the main menu.
+
+## macOS Version
+```text
+ProductName:        macOS
+ProductVersion:     15.5
+```
+
+## Kernel
+```text
+Darwin test-mac 24.5.0 arm64
+```
+
+## Displays
+```text
+Apple Studio Display
+```
+
+## Audio Devices
+```text
+External Headphones
+```
+
+## USB Devices
+```text
+Game Controller
+```
+
+## Bluetooth Devices
+```text
+Wireless Controller
+```
+
+## Staged Payload
+```text
+/Users/test/openq4-work/openQ4/.install/openQ4-client_arm64
+/Users/test/openq4-work/openQ4/.install/openQ4-ded_arm64
+/Users/test/openq4-work/openQ4/.install/baseoq4/game-sp_arm64.dylib
+/Users/test/openq4-work/openQ4/.install/baseoq4/game-mp_arm64.dylib
+```
+
+## Staged Binary Architectures
+```text
+/Users/test/openq4-work/openQ4/.install/openQ4-client_arm64: arm64
+/Users/test/openq4-work/openQ4/.install/openQ4-ded_arm64: arm64
+/Users/test/openq4-work/openQ4/.install/baseoq4/game-sp_arm64.dylib: arm64
+/Users/test/openq4-work/openQ4/.install/baseoq4/game-mp_arm64.dylib: arm64
+```
 """
 
 
@@ -139,6 +186,90 @@ def write_archive_with_unexpected_top_dir(path: Path) -> None:
         add_file(archive, "testrun-build-opengl/openq4-macos-workflow.log", "stale\n")
 
 
+def write_archive_with_metadata_under_result(path: Path) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        root = "testrun-signoff-opengl"
+        directory = tarfile.TarInfo(root)
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        add_file(archive, f"{root}/macos-runtime-signoff.md", report_text("opengl", completed=True))
+        add_file(archive, f"{root}/openq4-macos-workflow.log", log_text("opengl"))
+        add_file(archive, f"{root}/renderer-smoke/report.json", "{}\n")
+        add_file(archive, f"{root}/renderer-matrix/report.md", "# ok\n")
+        add_file(archive, f"{root}/renderer-smoke/.DS_Store", "finder\n")
+
+
+def write_archive_with_case_duplicate(path: Path) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        root = "testrun-signoff-opengl"
+        directory = tarfile.TarInfo(root)
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        add_file(archive, f"{root}/macos-runtime-signoff.md", report_text("opengl", completed=True))
+        add_file(archive, f"{root}/openq4-macos-workflow.log", log_text("opengl"))
+        add_file(archive, f"{root}/renderer-smoke/report.json", "{}\n")
+        add_file(archive, f"{root}/renderer-smoke/REPORT.json", "{}\n")
+        add_file(archive, f"{root}/renderer-matrix/report.md", "# ok\n")
+
+
+def write_archive_with_output_dirs_only(path: Path) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        root = "testrun-signoff-opengl"
+        for name in (
+            root,
+            f"{root}/renderer-smoke",
+            f"{root}/renderer-matrix",
+        ):
+            directory = tarfile.TarInfo(name)
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o755
+            archive.addfile(directory)
+        add_file(archive, f"{root}/macos-runtime-signoff.md", report_text("opengl", completed=True))
+        add_file(archive, f"{root}/openq4-macos-workflow.log", log_text("opengl"))
+
+
+def write_archive_with_report(path: Path, *, bridge: str, report: str) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        root = f"testrun-signoff-{bridge}"
+        directory = tarfile.TarInfo(root)
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        add_file(archive, f"{root}/macos-runtime-signoff.md", report)
+        add_file(archive, f"{root}/openq4-macos-workflow.log", log_text(bridge))
+        add_file(archive, f"{root}/renderer-smoke/report.json", "{}\n")
+        add_file(archive, f"{root}/renderer-matrix/report.md", "# ok\n")
+
+
+def write_archive_with_log(path: Path, *, bridge: str, log: str) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        root = f"testrun-signoff-{bridge}"
+        directory = tarfile.TarInfo(root)
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        add_file(archive, f"{root}/macos-runtime-signoff.md", report_text(bridge, completed=True))
+        add_file(archive, f"{root}/openq4-macos-workflow.log", log)
+        add_file(archive, f"{root}/renderer-smoke/report.json", "{}\n")
+        add_file(archive, f"{root}/renderer-matrix/report.md", "# ok\n")
+
+
+def write_archive_with_control_character_member(path: Path) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        root = "testrun-signoff-opengl"
+        directory = tarfile.TarInfo(root)
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        add_file(archive, f"{root}/macos-runtime-signoff.md", report_text("opengl", completed=True))
+        add_file(archive, f"{root}/openq4-macos-workflow.log", log_text("opengl"))
+        add_file(archive, f"{root}/renderer-smoke/report.json", "{}\n")
+        add_file(archive, f"{root}/renderer-smoke/bad\nname.txt", "bad\n")
+        add_file(archive, f"{root}/renderer-matrix/report.md", "# ok\n")
+
+
 def write_bad_member_archive(path: Path, name: str, *, duplicate: bool = False) -> None:
     with tarfile.open(path, "w:gz") as archive:
         add_file(archive, name, "bad\n")
@@ -173,6 +304,23 @@ def main() -> int:
         )
         if run_id != "testrun":
             raise AssertionError(f"Unexpected inferred run ID: {run_id}")
+
+        symlink_archive = temp / "openq4-macos-results-symlink.tar.gz"
+        try:
+            symlink_archive.symlink_to(good.name)
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            expect_error(
+                "must not be a symlink",
+                lambda: validator.validate_signoff_archive(
+                    symlink_archive,
+                    run_id="testrun",
+                    action="signoff",
+                    bridges=("opengl", "metal"),
+                    require_completed_checklist=False,
+                ),
+            )
 
         completed = temp / "openq4-macos-results-completed.tar.gz"
         write_archive(completed, bridges=("opengl", "metal"), completed=True)
@@ -218,6 +366,19 @@ def main() -> int:
             "duplicate member",
             lambda: validator.validate_signoff_archive(
                 duplicate_member,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        control_character_member = temp / "openq4-macos-results-control-character.tar.gz"
+        write_archive_with_control_character_member(control_character_member)
+        expect_error(
+            "control character",
+            lambda: validator.validate_signoff_archive(
+                control_character_member,
                 run_id="testrun",
                 action="signoff",
                 bridges=("opengl",),
@@ -282,6 +443,82 @@ def main() -> int:
         finally:
             validator.MAX_ARCHIVE_MEMBER_BYTES = previous_member_cap
 
+        previous_member_count_cap = validator.MAX_ARCHIVE_MEMBERS
+        validator.MAX_ARCHIVE_MEMBERS = 4
+        try:
+            expect_error(
+                "too many members",
+                lambda: validator.validate_signoff_archive(
+                    completed,
+                    run_id="testrun",
+                    action="signoff",
+                    bridges=("opengl",),
+                    require_completed_checklist=False,
+                ),
+            )
+        finally:
+            validator.MAX_ARCHIVE_MEMBERS = previous_member_count_cap
+
+        missing_client_report = temp / "openq4-macos-results-missing-client.tar.gz"
+        write_archive_with_report(
+            missing_client_report,
+            bridge="opengl",
+            report=report_text("opengl", completed=True).replace(
+                "- Client: /Users/test/openq4-work/openQ4/.install/openQ4-client_arm64",
+                "- Client: not found",
+            ),
+        )
+        expect_error(
+            "staged client path",
+            lambda: validator.validate_signoff_archive(
+                missing_client_report,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        wrong_smoke_report = temp / "openq4-macos-results-wrong-smoke-report.tar.gz"
+        write_archive_with_report(
+            wrong_smoke_report,
+            bridge="opengl",
+            report=report_text("opengl", completed=True).replace(
+                "- Renderer smoke output: /Users/test/openq4-work/results/testrun-signoff-opengl/renderer-smoke",
+                "- Renderer smoke output: /tmp/openq4-wrong-renderer-smoke",
+            ),
+        )
+        expect_error(
+            "renderer-smoke output directory",
+            lambda: validator.validate_signoff_archive(
+                wrong_smoke_report,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        wrong_report_log = temp / "openq4-macos-results-wrong-report-log.tar.gz"
+        write_archive_with_log(
+            wrong_report_log,
+            bridge="opengl",
+            log=log_text("opengl").replace(
+                "macOS runtime signoff report: /Users/test/openq4-work/results/testrun-signoff-opengl/macos-runtime-signoff.md",
+                "macOS runtime signoff report: /tmp/openq4-wrong/macos-runtime-signoff.md",
+            ),
+        )
+        expect_error(
+            "expected signoff report path",
+            lambda: validator.validate_signoff_archive(
+                wrong_report_log,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
         expect_error(
             "Invalid signoff archive action token",
             lambda: validator.validate_signoff_archive(
@@ -293,12 +530,67 @@ def main() -> int:
             ),
         )
 
+        expect_error(
+            "Invalid signoff archive run ID token",
+            lambda: validator.validate_signoff_archive(
+                completed,
+                run_id="../testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        expect_error(
+            "Bridge list contains duplicates",
+            lambda: validator.parse_bridges("opengl,opengl"),
+        )
+
         unexpected_top_dir = temp / "openq4-macos-results-unexpected-top-dir.tar.gz"
         write_archive_with_unexpected_top_dir(unexpected_top_dir)
         expect_error(
             "unexpected top-level result directories",
             lambda: validator.validate_signoff_archive(
                 unexpected_top_dir,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        metadata_under_result = temp / "openq4-macos-results-metadata.tar.gz"
+        write_archive_with_metadata_under_result(metadata_under_result)
+        expect_error(
+            "non-runtime macOS metadata",
+            lambda: validator.validate_signoff_archive(
+                metadata_under_result,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        case_duplicate = temp / "openq4-macos-results-case-duplicate.tar.gz"
+        write_archive_with_case_duplicate(case_duplicate)
+        expect_error(
+            "case-insensitive duplicate",
+            lambda: validator.validate_signoff_archive(
+                case_duplicate,
+                run_id="testrun",
+                action="signoff",
+                bridges=("opengl",),
+                require_completed_checklist=False,
+            ),
+        )
+
+        output_dirs_only = temp / "openq4-macos-results-output-dirs-only.tar.gz"
+        write_archive_with_output_dirs_only(output_dirs_only)
+        expect_error(
+            "missing renderer-smoke output",
+            lambda: validator.validate_signoff_archive(
+                output_dirs_only,
                 run_id="testrun",
                 action="signoff",
                 bridges=("opengl",),

@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import unicodedata
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -110,6 +111,28 @@ MACOS_PKGINFO_BYTES = b"APPL????"
 MACOS_LOCALIZED_INFO_LOCALES = (
     "English",
     "French",
+)
+MACOS_EXPECTED_APP_BUNDLE_DIRS = (
+    "Contents",
+    "Contents/MacOS",
+    "Contents/Resources",
+    "Contents/Resources/English.lproj",
+    "Contents/Resources/French.lproj",
+)
+MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_DIRS = (
+    "Contents/_CodeSignature",
+)
+MACOS_EXPECTED_APP_BUNDLE_FILES = (
+    "Contents/Info.plist",
+    "Contents/PkgInfo",
+    "Contents/MacOS/openQ4",
+    "Contents/Resources/openQ4.icns",
+    "Contents/Resources/VERSION.txt",
+    "Contents/Resources/English.lproj/InfoPlist.strings",
+    "Contents/Resources/French.lproj/InfoPlist.strings",
+)
+MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_FILES = (
+    "Contents/_CodeSignature/CodeResources",
 )
 MAX_MACOS_METADATA_MEMBER_BYTES = 64 * 1024
 DETERMINISTIC_ARCHIVE_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -326,6 +349,19 @@ def require_package_directory(path: Path, label: str, *, must_exist: bool) -> Pa
     return path.resolve()
 
 
+def prepare_archive_output_path(archive_path: Path, label: str) -> None:
+    if archive_path.parent.is_symlink():
+        raise RuntimeError(f"{label} parent must not be a symlink: {archive_path.parent}")
+    if archive_path.is_symlink():
+        raise RuntimeError(f"{label} must not be a symlink: {archive_path}")
+    if archive_path.exists():
+        if archive_path.is_dir():
+            raise RuntimeError(f"{label} path is a directory: {archive_path}")
+        if not archive_path.is_file():
+            raise RuntimeError(f"{label} path is not a regular file: {archive_path}")
+        archive_path.unlink()
+
+
 def copy_regular_file(source: Path, destination: Path) -> None:
     if source.is_symlink():
         raise RuntimeError(f"refusing to package symlinked file: {source}")
@@ -454,6 +490,24 @@ def validate_no_macos_metadata_artifacts(root: Path) -> None:
         raise RuntimeError(f"macOS package contains non-runtime metadata/debug entries: {joined}")
 
 
+def macos_casefold_path_key(path: str) -> str:
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def validate_no_macos_casefold_path_collisions(root: Path) -> None:
+    seen_paths: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        key = macos_casefold_path_key(relative)
+        previous = seen_paths.get(key)
+        if previous is not None and previous != relative:
+            raise RuntimeError(
+                "macOS package contains case-insensitive duplicate paths: "
+                f"{previous}, {relative}"
+            )
+        seen_paths[key] = relative
+
+
 def validate_no_package_symlinks(root: Path) -> None:
     symlinks = [path for path in root.rglob("*") if path.is_symlink()]
     if symlinks:
@@ -491,6 +545,15 @@ def validate_macos_package_file_modes(root: Path) -> None:
 
     if offenders:
         raise RuntimeError("macOS package contains unsafe file modes: " + ", ".join(offenders[:10]))
+
+
+def validate_macos_dmg_source_tree(package_root: Path) -> None:
+    validate_no_package_symlinks(package_root)
+    validate_no_package_special_files(package_root)
+    validate_macos_package_file_modes(package_root)
+    validate_no_macos_metadata_artifacts(package_root)
+    validate_no_macos_casefold_path_collisions(package_root)
+    validate_no_macos_forbidden_xattrs(package_root)
 
 
 def parse_version_manifest_bytes(data: bytes, label: str) -> dict[str, str]:
@@ -546,6 +609,18 @@ def validate_version_manifest_bytes(
 def validate_macos_metadata_bytes_size(data: bytes, label: str) -> None:
     if len(data) > MAX_MACOS_METADATA_MEMBER_BYTES:
         raise RuntimeError(f"{label} is too large ({len(data)} bytes)")
+
+
+def validate_macos_code_resources_bytes(data: bytes, label: str) -> None:
+    validate_macos_metadata_bytes_size(data, label)
+    if not data:
+        raise RuntimeError(f"{label} is empty")
+    try:
+        values = plistlib.loads(data)
+    except (plistlib.InvalidFileException, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{label} is not a valid plist") from exc
+    if not isinstance(values, dict):
+        raise RuntimeError(f"{label} must contain a dictionary root")
 
 
 def parse_macos_localized_info_strings(data: bytes, label: str) -> dict[str, str]:
@@ -930,10 +1005,10 @@ def notarize_macos_app_bundle(package_root: Path, config: MacOSSigningConfig) ->
         if shutil.which(tool_name) is None:
             raise RuntimeError(f"macOS notarization requires {tool_name}")
 
+    validate_macos_dmg_source_tree(package_root)
     app_root = package_root / "openQ4.app"
     notary_archive = package_root.parent / f"{package_root.name}-notary.zip"
-    if notary_archive.exists():
-        notary_archive.unlink()
+    prepare_archive_output_path(notary_archive, "macOS notarization archive output")
 
     run_macos_command(
         ["ditto", "-c", "-k", "--keepParent", str(package_root), str(notary_archive)],
@@ -1270,6 +1345,8 @@ def create_macos_dmg(package_root: Path, archive_path: Path) -> None:
     if sys.platform != "darwin":
         raise RuntimeError("macOS DMG packaging requires a macOS host")
 
+    validate_macos_dmg_source_tree(package_root)
+    prepare_archive_output_path(archive_path, "macOS DMG output")
     hdiutil_path = shutil.which("hdiutil")
     if hdiutil_path is None:
         raise RuntimeError("macOS DMG packaging requires hdiutil")
@@ -1297,14 +1374,7 @@ def create_release_archive(
     archive_format: str,
     executable_relative_paths: set[Path] | None = None,
 ) -> None:
-    if archive_path.is_symlink():
-        raise RuntimeError(f"release archive output must not be a symlink: {archive_path}")
-    if archive_path.exists():
-        if archive_path.is_dir():
-            raise RuntimeError(f"release archive output path is a directory: {archive_path}")
-        if not archive_path.is_file():
-            raise RuntimeError(f"release archive output path is not a regular file: {archive_path}")
-        archive_path.unlink()
+    prepare_archive_output_path(archive_path, "release archive output")
 
     symlinks = [path for path in package_root.rglob("*") if path.is_symlink()]
     if symlinks:
@@ -1425,6 +1495,7 @@ def is_macos_bounded_metadata_entry(name: str) -> bool:
         or name.endswith("/PkgInfo")
         or name.endswith("/VERSION.txt")
         or name.endswith(".lproj/InfoPlist.strings")
+        or name.endswith("/_CodeSignature/CodeResources")
     )
 
 
@@ -1433,17 +1504,39 @@ def validate_macos_archive_metadata_member_size(name: str, size: int) -> None:
         raise RuntimeError(f"macOS archive metadata member is too large: {name} ({size} bytes)")
 
 
-def record_macos_archive_entry(entry_names: set[str], name: str, package_prefix: str) -> None:
+def record_macos_archive_entry(
+    entry_names: set[str],
+    casefold_entry_names: dict[str, str],
+    name: str,
+    package_prefix: str,
+) -> None:
     validate_macos_archive_name(name, package_prefix)
     if name in entry_names:
         raise RuntimeError(f"macOS archive contains duplicate entry: {name}")
+    casefold_key = macos_casefold_path_key(name)
+    previous = casefold_entry_names.get(casefold_key)
+    if previous is not None and previous != name:
+        raise RuntimeError(
+            "macOS archive contains case-insensitive duplicate entries: "
+            f"{previous}, {name}"
+        )
     entry_names.add(name)
+    casefold_entry_names[casefold_key] = name
 
 
 def validate_macos_archive_contents(
     package_root: Path, archive_path: Path, archive_format: str, arch: str, version: str
 ) -> None:
     package_prefix = package_root.name + "/"
+    app_bundle_prefix = f"{package_prefix}openQ4.app/"
+    expected_app_bundle_entries = {
+        f"{app_bundle_prefix}{relative_path}"
+        for relative_path in MACOS_EXPECTED_APP_BUNDLE_FILES
+    }
+    optional_app_bundle_entries = {
+        f"{app_bundle_prefix}{relative_path}"
+        for relative_path in MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_FILES
+    }
     client_entry = f"{package_prefix}openQ4-client_{arch}"
     dedicated_entry = f"{package_prefix}openQ4-ded_{arch}"
     app_executable_entry = f"{package_prefix}openQ4.app/Contents/MacOS/openQ4"
@@ -1475,12 +1568,15 @@ def validate_macos_archive_contents(
 
     modes: dict[str, int] = {}
     entry_names: set[str] = set()
+    casefold_entry_names: dict[str, str] = {}
     plist_bytes: bytes | None = None
     pkginfo_bytes: bytes | None = None
     root_version_bytes: bytes | None = None
     app_version_bytes: bytes | None = None
     localized_info_bytes: dict[str, bytes] = {}
+    code_resources_bytes: bytes | None = None
     package_version_tag = macos_package_version_tag_from_name(package_root, arch)
+    code_resources_entry = f"{package_prefix}openQ4.app/Contents/_CodeSignature/CodeResources"
 
     if archive_format == "zip":
         with ZipFile(archive_path, "r") as archive:
@@ -1488,12 +1584,14 @@ def validate_macos_archive_contents(
                 name = info.filename.rstrip("/")
                 if not name:
                     continue
+                if info.is_dir():
+                    raise RuntimeError(f"macOS archive contains non-regular entry: {name}")
                 mode_type = (info.external_attr >> 16) & 0o170000
                 if info.create_system == 3 and mode_type == stat.S_IFLNK:
                     raise RuntimeError(f"macOS archive contains symlink entry: {name}")
                 if info.create_system == 3 and mode_type not in (0, stat.S_IFREG):
                     raise RuntimeError(f"macOS archive contains non-regular entry: {name}")
-                record_macos_archive_entry(entry_names, name, package_prefix)
+                record_macos_archive_entry(entry_names, casefold_entry_names, name, package_prefix)
                 validate_macos_archive_metadata_member_size(name, info.file_size)
                 modes[name] = (info.external_attr >> 16) & 0o7777
                 validate_macos_archive_mode(name, modes[name])
@@ -1512,6 +1610,8 @@ def validate_macos_archive_contents(
                 entry = f"{package_prefix}openQ4.app/Contents/Resources/{locale}.lproj/InfoPlist.strings"
                 if entry in entry_names:
                     localized_info_bytes[locale] = archive.read(entry)
+            if code_resources_entry in entry_names:
+                code_resources_bytes = archive.read(code_resources_entry)
     else:
         with tarfile.open(archive_path, "r:*") as archive:
             for member in archive.getmembers():
@@ -1522,7 +1622,7 @@ def validate_macos_archive_contents(
                     raise RuntimeError(f"macOS archive contains symlink entry: {name}")
                 if not member.isfile():
                     raise RuntimeError(f"macOS archive contains non-regular entry: {name}")
-                record_macos_archive_entry(entry_names, name, package_prefix)
+                record_macos_archive_entry(entry_names, casefold_entry_names, name, package_prefix)
                 validate_macos_archive_metadata_member_size(name, member.size)
                 modes[name] = member.mode & 0o7777
                 validate_macos_archive_mode(name, modes[name])
@@ -1547,6 +1647,10 @@ def validate_macos_archive_contents(
                     extracted = archive.extractfile(member)
                     if extracted is not None:
                         localized_info_bytes[locale] = extracted.read()
+                elif name == code_resources_entry:
+                    extracted = archive.extractfile(member)
+                    if extracted is not None:
+                        code_resources_bytes = extracted.read()
 
     bad_metadata_names = [
         name
@@ -1562,20 +1666,40 @@ def validate_macos_archive_contents(
         joined = ", ".join(missing_entries)
         raise RuntimeError(f"macOS archive is missing required entries: {joined}")
 
+    unexpected_app_bundle_entries = sorted(
+        name
+        for name in entry_names
+        if name.startswith(app_bundle_prefix)
+        and name not in expected_app_bundle_entries
+        and name not in optional_app_bundle_entries
+    )
+    if unexpected_app_bundle_entries:
+        joined = ", ".join(unexpected_app_bundle_entries[:10])
+        raise RuntimeError(f"macOS archive app bundle contains unexpected entries: {joined}")
+    if code_resources_entry in entry_names:
+        if code_resources_bytes is None:
+            raise RuntimeError(f"macOS archive code signature resources are unreadable: {code_resources_entry}")
+        validate_macos_code_resources_bytes(
+            code_resources_bytes,
+            "macOS archive code signature resources",
+        )
+
     expected_game_modules = {
         f"{package_prefix}{GAME_DIR_NAME}/game-sp_{arch}.dylib",
         f"{package_prefix}{GAME_DIR_NAME}/game-mp_{arch}.dylib",
     }
-    stale_game_modules = sorted(
+    unexpected_game_modules = sorted(
         name
         for name in entry_names
         if name.startswith(f"{package_prefix}{GAME_DIR_NAME}/game-")
-        and name.endswith(".dylib")
+        and Path(name).name.lower().endswith((".dll", ".so", ".dylib"))
         and name not in expected_game_modules
     )
-    if stale_game_modules:
-        joined = ", ".join(stale_game_modules[:5])
-        raise RuntimeError(f"macOS archive contains stale or mismatched game modules: {joined}")
+    if unexpected_game_modules:
+        joined = ", ".join(unexpected_game_modules[:5])
+        raise RuntimeError(
+            f"macOS archive contains stale or mismatched game modules, including wrong-platform entries: {joined}"
+        )
 
     for entry in sorted(executable_entries):
         if modes.get(entry, 0) & 0o111 == 0:
@@ -1837,6 +1961,48 @@ def require_non_empty_package_file(path: Path, label: str) -> None:
 def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, version: str) -> None:
     client_binary = package_root / f"{PRODUCT_NAME}-client_{arch}"
     require_packaged_executable(client_binary, "macOS client binary")
+
+    expected_bundle_dirs = {Path(relative_path) for relative_path in MACOS_EXPECTED_APP_BUNDLE_DIRS}
+    expected_bundle_files = {Path(relative_path) for relative_path in MACOS_EXPECTED_APP_BUNDLE_FILES}
+    optional_signature_dirs = {Path(relative_path) for relative_path in MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_DIRS}
+    optional_signature_files = {Path(relative_path) for relative_path in MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_FILES}
+    allowed_bundle_dirs = expected_bundle_dirs | optional_signature_dirs
+    allowed_bundle_files = expected_bundle_files | optional_signature_files
+    actual_bundle_dirs = {
+        path.relative_to(app_root)
+        for path in app_root.rglob("*")
+        if path.is_dir()
+    }
+    actual_bundle_files = {
+        path.relative_to(app_root)
+        for path in app_root.rglob("*")
+        if path.is_file()
+    }
+    unexpected_bundle_files = sorted(actual_bundle_files - allowed_bundle_files)
+    if unexpected_bundle_files:
+        joined = ", ".join(path.as_posix() for path in unexpected_bundle_files[:10])
+        raise RuntimeError(f"macOS app bundle contains unexpected files: {joined}")
+    missing_bundle_dirs = sorted(expected_bundle_dirs - actual_bundle_dirs)
+    if missing_bundle_dirs:
+        joined = ", ".join(path.as_posix() for path in missing_bundle_dirs[:10])
+        raise RuntimeError(f"macOS app bundle is missing required directories: {joined}")
+    unexpected_bundle_dirs = sorted(actual_bundle_dirs - allowed_bundle_dirs)
+    if unexpected_bundle_dirs:
+        joined = ", ".join(path.as_posix() for path in unexpected_bundle_dirs[:10])
+        raise RuntimeError(f"macOS app bundle contains unexpected directories: {joined}")
+    signature_dir = Path("Contents/_CodeSignature")
+    signature_resources = Path("Contents/_CodeSignature/CodeResources")
+    if signature_dir in actual_bundle_dirs or signature_resources in actual_bundle_files:
+        if signature_resources not in actual_bundle_files:
+            raise RuntimeError("macOS app code signature resources are missing")
+        try:
+            signature_bytes = (app_root / signature_resources).read_bytes()
+        except OSError as exc:
+            raise RuntimeError("macOS app code signature resources are unreadable") from exc
+        validate_macos_code_resources_bytes(
+            signature_bytes,
+            "macOS app code signature resources",
+        )
 
     package_game_dir = package_root / GAME_DIR_NAME
     if not package_game_dir.is_dir():
@@ -2128,6 +2294,7 @@ def main(argv: list[str]) -> int:
             validate_no_package_special_files(package_root)
             validate_macos_package_file_modes(package_root)
             validate_no_macos_metadata_artifacts(package_root)
+            validate_no_macos_casefold_path_collisions(package_root)
             strip_macos_forbidden_xattrs(package_root)
             validate_no_macos_forbidden_xattrs(package_root)
             normalize_macos_game_module_install_names(package_root, args.arch)

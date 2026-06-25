@@ -135,7 +135,7 @@
       <ul>
         <li>A legitimate Quake 4 installation from Steam or GOG.</li>
         <li>The stock retail PK4 files in a <code>q4base/</code> directory, available through openQ4's asset discovery or a manual <code>fs_basepath</code> setting.</li>
-        <li>A supported package target: Windows, Linux, Steam Deck/SteamOS, or Apple Silicon macOS.</li>
+        <li>A supported package target: Windows, Linux, Steam Deck/SteamOS, or experimental Apple Silicon macOS.</li>
         <li>Use <code>minimum</code>, <code>lowpower</code>, or <code>performance</code> presets on constrained systems before enabling expensive visual options.</li>
       </ul>
     </section>
@@ -165,10 +165,10 @@
     </section>
 
     <section>
-      <h2>macOS Notes</h2>
+      <h2>Experimental macOS Notes</h2>
       <ul>
-        <li>macOS packages are for Apple Silicon/arm64 Macs. Intel Mac and universal2 packages are not published yet.</li>
-        <li>Credentialed macOS release runs publish signed/notarized OpenGL and Metal bridge DMGs. Releases without Apple Developer ID signing and notarization credentials publish clearly labeled <code>-unsigned.tar.gz</code> archives instead.</li>
+        <li>macOS support is experimental. Current packages are for Apple Silicon/arm64 Macs only; Intel Mac and universal2 packages are not published yet.</li>
+        <li>Credentialed experimental macOS release runs publish signed/notarized OpenGL and Metal bridge DMGs. Releases without Apple Developer ID signing and notarization credentials publish clearly labeled <code>-unsigned.tar.gz</code> archives instead.</li>
         <li>Unsigned macOS archives are ad-hoc signed only for bundle validity, are not notarized, and may require normal Gatekeeper approval on first launch.</li>
         <li>The Metal package is a bridge mode around the existing OpenGL renderer, preserving stock-asset compatibility while Metal translation-layer work continues.</li>
         <li>Open the DMG or unpack the <code>-unsigned.tar.gz</code> archive, then launch <code>openQ4.app</code>. Keep <code>openQ4.app</code>, <code>baseoq4/</code>, and the loose runtime files together.</li>

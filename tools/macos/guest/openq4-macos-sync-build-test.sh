@@ -76,10 +76,68 @@ require_positive_integer() {
     fi
 }
 
+require_safe_guest_roots() {
+    python3 - "${workspace}" "${basepath}" <<'PY'
+import pathlib
+import sys
+
+workspace_raw = sys.argv[1]
+basepath_raw = sys.argv[2]
+workspace = pathlib.Path(workspace_raw).expanduser()
+basepath = pathlib.Path(basepath_raw).expanduser()
+home = pathlib.Path.home().resolve()
+root = pathlib.Path("/")
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def require_absolute_after_expansion(label: str, raw_value: str, path: pathlib.Path) -> None:
+    path_text = raw_value
+    if "\\" in path_text:
+        fail(f"{label} must be a POSIX path without backslashes: {path_text}")
+    if not path.is_absolute():
+        fail(f"{label} must be an absolute path after ~ expansion: {path_text}")
+    segments = path_text.strip("/").split("/") if path_text.strip("/") else []
+    if any(segment in {"", ".", ".."} for segment in segments):
+        fail(f"{label} must not contain dot or empty path segments: {path_text}")
+
+
+def resolve(label: str, raw_value: str, path: pathlib.Path) -> pathlib.Path:
+    require_absolute_after_expansion(label, raw_value, path)
+    if str(path) in {"", ".", ".."}:
+        fail(f"{label} must be an explicit directory path: {path}")
+    if path.is_symlink():
+        fail(f"{label} must not be a symlink: {path}")
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError as exc:
+        fail(f"{label} could not be resolved safely: {path}: {exc}")
+    if resolved in {root, home}:
+        fail(f"{label} must not be the filesystem root or home directory: {resolved}")
+    return resolved
+
+
+workspace_resolved = resolve("OPENQ4_GUEST_WORKSPACE", workspace_raw, workspace)
+basepath_resolved = resolve("OPENQ4_BASEPATH", basepath_raw, basepath)
+if basepath_resolved == workspace_resolved:
+    fail("OPENQ4_BASEPATH must not be the same as OPENQ4_GUEST_WORKSPACE.")
+try:
+    workspace_resolved.relative_to(basepath_resolved)
+except ValueError:
+    pass
+else:
+    fail("OPENQ4_BASEPATH must not contain OPENQ4_GUEST_WORKSPACE.")
+PY
+}
+
 require_result_token "OPENQ4_MACOS_RUN_ID" "${stamp}"
 require_choice "macOS workflow action" "${action}" build smoke renderer launcher signoff all
 require_choice "OPENQ4_MACOS_GRAPHICS_BRIDGE" "${graphics_bridge}" opengl metal
 require_choice "OPENQ4_MACOS_OPENAL_PROVIDER" "${openal_provider}" apple_framework system
+require_safe_guest_roots
 
 results_root="${workspace}/results"
 run_dir="${results_root}/${stamp}-${action}-${graphics_bridge}"
@@ -150,12 +208,73 @@ require_safe_builddir() {
     esac
 }
 
+prepare_run_dir() {
+    local log_path="${run_dir}/openq4-macos-workflow.log"
+
+    if [[ -L "${results_root}" ]]; then
+        echo "macOS results root must not be a symlink: ${results_root}" >&2
+        exit 2
+    fi
+    if [[ -e "${results_root}" && ! -d "${results_root}" ]]; then
+        echo "macOS results root must be a directory: ${results_root}" >&2
+        exit 2
+    fi
+    mkdir -p "${results_root}"
+    if [[ -L "${results_root}" || ! -d "${results_root}" ]]; then
+        echo "macOS results root must be a real directory: ${results_root}" >&2
+        exit 2
+    fi
+
+    if [[ -L "${run_dir}" ]]; then
+        echo "macOS result directory must not be a symlink: ${run_dir}" >&2
+        exit 2
+    fi
+    if [[ -e "${run_dir}" && ! -d "${run_dir}" ]]; then
+        echo "macOS result directory must be a directory: ${run_dir}" >&2
+        exit 2
+    fi
+    mkdir -p "${run_dir}"
+    if [[ -L "${run_dir}" || ! -d "${run_dir}" ]]; then
+        echo "macOS result directory must be a real directory: ${run_dir}" >&2
+        exit 2
+    fi
+    if [[ -L "${log_path}" || -d "${log_path}" ]]; then
+        echo "macOS workflow log path must not be a symlink or directory: ${log_path}" >&2
+        exit 2
+    fi
+    if [[ -e "${log_path}" && ! -f "${log_path}" ]]; then
+        echo "macOS workflow log path must be a regular file: ${log_path}" >&2
+        exit 2
+    fi
+}
+
+find_case_insensitive_tree_collision() {
+    local tree="$1"
+    python3 - "${tree}" <<'PY'
+import pathlib
+import sys
+import unicodedata
+
+root = pathlib.Path(sys.argv[1])
+seen = {}
+for path in sorted(root.rglob("*")):
+    rel = path.relative_to(root).as_posix()
+    key = unicodedata.normalize("NFC", rel).casefold()
+    previous = seen.get(key)
+    if previous is not None and previous != rel:
+        print(previous)
+        print(rel)
+        raise SystemExit(0)
+    seen[key] = rel
+PY
+}
+
 if [[ -x "${HOME}/.local/bin/meson" ]]; then
     export PATH="${HOME}/.local/bin:${PATH}"
     export OPENQ4_MESON="${OPENQ4_MESON:-${HOME}/.local/bin/meson}"
 fi
 
-mkdir -p "${run_dir}"
+prepare_run_dir
 exec > >(tee -a "${run_dir}/openq4-macos-workflow.log") 2>&1
 
 host_arch() {
@@ -177,8 +296,13 @@ host_lipo_arch() {
 client_binary() {
     local arch
     arch="$(host_arch)"
-    if [[ -x "${repo}/.install/openQ4-client_${arch}" ]]; then
-        printf '%s\n' "${repo}/.install/openQ4-client_${arch}"
+    local preferred="${repo}/.install/openQ4-client_${arch}"
+    if [[ -e "${preferred}" && -L "${preferred}" ]]; then
+        echo "Staged macOS client must not be a symlink: ${preferred}" >&2
+        return 1
+    fi
+    if [[ -f "${preferred}" && -x "${preferred}" ]]; then
+        printf '%s\n' "${preferred}"
         return
     fi
 
@@ -190,6 +314,10 @@ client_binary() {
 
     local candidate
     for candidate in "${repo}"/.install/openQ4-client_*; do
+        if [[ -e "${candidate}" && -L "${candidate}" ]]; then
+            echo "Staged macOS client must not be a symlink: ${candidate}" >&2
+            return 1
+        fi
         if [[ -f "${candidate}" && -x "${candidate}" ]]; then
             printf '%s\n' "${candidate}"
             return
@@ -206,6 +334,30 @@ validate_asset_basepath() {
     if [[ ! -d "${basepath}/q4base" ]]; then
         echo "Missing Quake 4 asset basepath: ${basepath}" >&2
         echo "Expected ${basepath}/q4base. Run host action Assets or set OPENQ4_BASEPATH." >&2
+        exit 1
+    fi
+    if [[ -L "${basepath}" || -L "${basepath}/q4base" ]]; then
+        echo "Quake 4 asset basepath must not be a symlink: ${basepath}" >&2
+        exit 1
+    fi
+
+    local bad_entry
+    bad_entry="$(find "${basepath}" \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+    if [[ -n "${bad_entry}" ]]; then
+        echo "Quake 4 asset basepath contains a symlink or special file: ${bad_entry}" >&2
+        exit 1
+    fi
+    bad_entry="$(find "${basepath}" \( -iname '.DS_Store' -o -name '._*' -o -iname '__MACOSX' -o -iname '.fseventsd' -o -iname '.Spotlight-V100' -o -iname '.Trashes' -o -name $'Icon\r' -o -iname '*.dSYM' \) -print -quit)"
+    if [[ -n "${bad_entry}" ]]; then
+        echo "Quake 4 asset basepath contains non-runtime macOS metadata/debug entry: ${bad_entry}" >&2
+        exit 1
+    fi
+
+    local case_collision
+    case_collision="$(find_case_insensitive_tree_collision "${basepath}")"
+    if [[ -n "${case_collision}" ]]; then
+        echo "Quake 4 asset basepath contains a case-insensitive path collision:" >&2
+        printf '%s\n' "${case_collision}" >&2
         exit 1
     fi
 
@@ -238,17 +390,27 @@ validate_staged_macos_payload() {
         exit 1
     fi
 
-    local required=(
+    local required_executables=(
         "${install_root}/openQ4-client_${arch}"
         "${install_root}/openQ4-ded_${arch}"
         "${game_dir}/game-sp_${arch}.dylib"
         "${game_dir}/game-mp_${arch}.dylib"
     )
+    local required_files=(
+        "${install_root}/openQ4.icns"
+        "${install_root}/assets/splash/quake4_rt_bitmap_4001.bmp"
+    )
 
     local path
-    for path in "${required[@]}"; do
+    for path in "${required_executables[@]}"; do
         if [[ ! -f "${path}" || ! -x "${path}" ]]; then
             echo "Missing or non-executable staged macOS payload: ${path}" >&2
+            exit 1
+        fi
+    done
+    for path in "${required_files[@]}"; do
+        if [[ ! -f "${path}" ]]; then
+            echo "Missing staged macOS support file: ${path}" >&2
             exit 1
         fi
     done
@@ -259,14 +421,46 @@ validate_staged_macos_payload() {
         echo "macOS staged install contains non-runtime metadata/debug entry: ${bad_entry}" >&2
         exit 1
     fi
+    bad_entry="$(find "${install_root}" \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+    if [[ -n "${bad_entry}" ]]; then
+        echo "macOS staged install contains a symlink or special file: ${bad_entry}" >&2
+        exit 1
+    fi
+
+    local case_collision
+    case_collision="$(find_case_insensitive_tree_collision "${install_root}")"
+    if [[ -n "${case_collision}" ]]; then
+        echo "macOS staged install contains a case-insensitive path collision:" >&2
+        printf '%s\n' "${case_collision}" >&2
+        exit 1
+    fi
 
     if compgen -G "${game_dir}/game-*.dll" >/dev/null || compgen -G "${game_dir}/game-*.so" >/dev/null; then
         echo "macOS staged install contains non-dylib game modules." >&2
         exit 1
     fi
 
+    local expected_modules=(
+        "${game_dir}/game-sp_${arch}.dylib"
+        "${game_dir}/game-mp_${arch}.dylib"
+    )
+    while IFS= read -r path; do
+        local matched=0
+        local expected_module
+        for expected_module in "${expected_modules[@]}"; do
+            if [[ "${path}" == "${expected_module}" ]]; then
+                matched=1
+                break
+            fi
+        done
+        if [[ "${matched}" == "0" ]]; then
+            echo "macOS staged install contains stale or mismatched game module: ${path}" >&2
+            exit 1
+        fi
+    done < <(find "${game_dir}" -maxdepth 1 -type f -name 'game-*.dylib' -print)
+
     if command -v lipo >/dev/null 2>&1; then
-        for path in "${required[@]}"; do
+        for path in "${required_executables[@]}"; do
             if ! lipo -archs "${path}" | tr ' ' '\n' | grep -qx "${lipo_arch}"; then
                 echo "Staged macOS binary architecture mismatch: ${path}; expected ${lipo_arch}" >&2
                 lipo -archs "${path}" >&2 || true
@@ -416,6 +610,10 @@ install_launcher() {
     require_repo
     mkdir -p "${HOME}/Desktop"
     local launcher="${HOME}/Desktop/openQ4.command"
+    if [[ -L "${launcher}" || -d "${launcher}" || ( -e "${launcher}" && ! -f "${launcher}" ) ]]; then
+        echo "Refusing to replace unsafe macOS launcher path: ${launcher}" >&2
+        exit 1
+    fi
     local client
     if ! client="$(client_binary)"; then
         exit 1
@@ -429,18 +627,27 @@ install_launcher() {
     client_q="$(shell_quote "${client}")"
     basepath_q="$(shell_quote "${basepath}")"
 
-    cat > "${launcher}" <<EOF
+    local launcher_tmp
+    launcher_tmp="$(mktemp "${HOME}/Desktop/openQ4.command.XXXXXX")"
+    cat > "${launcher_tmp}" <<EOF
 #!/usr/bin/env bash
 cd ${install_dir_q}
 exec ${client_q} +set fs_basepath ${basepath_q} "\$@"
 EOF
-    chmod +x "${launcher}"
+    chmod +x "${launcher_tmp}"
+    mv -f "${launcher_tmp}" "${launcher}"
     echo "Installed macOS launcher: ${launcher}"
 }
 
 write_signoff_report() {
     require_repo
     local report="${run_dir}/macos-runtime-signoff.md"
+    if [[ -L "${report}" || -d "${report}" || ( -e "${report}" && ! -f "${report}" ) ]]; then
+        echo "Refusing to replace unsafe macOS signoff report path: ${report}" >&2
+        exit 1
+    fi
+    local report_tmp
+    report_tmp="$(mktemp "${run_dir}/macos-runtime-signoff.md.XXXXXX")"
     local client
     client="$(client_binary 2>/dev/null || true)"
 
@@ -476,16 +683,17 @@ write_signoff_report() {
         echo "- [ ] Verify windowed, fullscreen, selected-display, and HiDPI/Retina behavior on attached displays."
         echo "- [ ] Verify the matching OpenGL or Metal bridge package path in actual gameplay, not only at the main menu."
         echo "- [ ] Record any input, audio, display, renderer, package, Gatekeeper, or crash issues with logs from this results directory."
-    } > "${report}"
+    } > "${report_tmp}"
 
-    append_command_report "${report}" "macOS Version" sw_vers
-    append_command_report "${report}" "Kernel" uname -a
-    append_command_report "${report}" "Displays" system_profiler SPDisplaysDataType
-    append_command_report "${report}" "Audio Devices" system_profiler SPAudioDataType
-    append_command_report "${report}" "USB Devices" system_profiler SPUSBDataType
-    append_command_report "${report}" "Bluetooth Devices" system_profiler SPBluetoothDataType
-    append_command_report "${report}" "Staged Payload" find "${repo}/.install" -maxdepth 2 -print
-    append_staged_binary_arch_report "${report}"
+    append_command_report "${report_tmp}" "macOS Version" sw_vers
+    append_command_report "${report_tmp}" "Kernel" uname -a
+    append_command_report "${report_tmp}" "Displays" system_profiler SPDisplaysDataType
+    append_command_report "${report_tmp}" "Audio Devices" system_profiler SPAudioDataType
+    append_command_report "${report_tmp}" "USB Devices" system_profiler SPUSBDataType
+    append_command_report "${report_tmp}" "Bluetooth Devices" system_profiler SPBluetoothDataType
+    append_command_report "${report_tmp}" "Staged Payload" find "${repo}/.install" -maxdepth 2 -print
+    append_staged_binary_arch_report "${report_tmp}"
+    mv -f "${report_tmp}" "${report}"
 
     echo "macOS runtime signoff report: ${report}"
 }

@@ -63,6 +63,12 @@ static const int OPENQ4_OPENAL_RESAMPLER_RUNTIME_DEFAULT = -1;
 	#define OPENQ4_OPENAL_SOURCE_RADIUS_SUPPORTED 0
 #endif
 
+#if defined( AL_SOFT_source_spatialize ) && defined( AL_SOURCE_SPATIALIZE_SOFT )
+	#define OPENQ4_OPENAL_SOURCE_SPATIALIZE_SUPPORTED 1
+#else
+	#define OPENQ4_OPENAL_SOURCE_SPATIALIZE_SUPPORTED 0
+#endif
+
 #if defined( AL_SOFT_callback_buffer ) && defined( AL_BUFFER_CALLBACK_FUNCTION_SOFT ) && defined( AL_BUFFER_CALLBACK_USER_PARAM_SOFT )
 	#define OPENQ4_OPENAL_CALLBACK_BUFFER_SUPPORTED 1
 #else
@@ -1082,6 +1088,36 @@ void idSoundHardware_OpenAL::ApplySourceRadius( ALuint source, float radius )
 
 /*
 ========================
+idSoundHardware_OpenAL::ApplySourceSpatialize
+========================
+*/
+void idSoundHardware_OpenAL::ApplySourceSpatialize( ALuint source, bool spatialize )
+{
+#if OPENQ4_OPENAL_SOURCE_SPATIALIZE_SUPPORTED
+	if( !sourceSpatializeAvailable || !alIsSource( source ) )
+	{
+		return;
+	}
+
+	CheckALErrors();
+	alSourcei( source, AL_SOURCE_SPATIALIZE_SOFT, spatialize ? AL_TRUE : AL_FALSE );
+	if( CheckALErrors() != AL_NO_ERROR )
+	{
+		sourceSpatializeAvailable = false;
+		if( !sourceSpatializeWarningIssued )
+		{
+			sourceSpatializeWarningIssued = true;
+			common->Warning( "OpenAL explicit source spatialization disabled for this session; AL_SOURCE_SPATIALIZE_SOFT was rejected." );
+		}
+	}
+#else
+	(void)source;
+	(void)spatialize;
+#endif
+}
+
+/*
+========================
 idSoundHardware_OpenAL::InitCallbackBufferSupport
 ========================
 */
@@ -1176,6 +1212,8 @@ idSoundHardware_OpenAL::idSoundHardware_OpenAL()
 	sourceResamplerSelected = OPENQ4_OPENAL_RESAMPLER_RUNTIME_DEFAULT;
 	sourceRadiusAvailable = false;
 	sourceRadiusWarningIssued = false;
+	sourceSpatializeAvailable = false;
+	sourceSpatializeWarningIssued = false;
 	callbackBufferAvailable = false;
 	callbackBufferWarningIssued = false;
 	lastDeviceCheckTime = 0;
@@ -1869,6 +1907,20 @@ static const char* openQ4_OpenALSourceStateName( ALint state )
 	}
 }
 
+static void openQ4_FillGeneratedPCM16Mono( int16* samples, const int numFrames, const int sampleRate, const int firstFrame, const float frequency, const float amplitude )
+{
+	if( samples == NULL || numFrames <= 0 || sampleRate <= 0 )
+	{
+		return;
+	}
+
+	for( int i = 0; i < numFrames; ++i )
+	{
+		const float phase = idMath::TWO_PI * frequency * static_cast<float>( firstFrame + i ) / static_cast<float>( sampleRate );
+		samples[i] = static_cast<int16>( idMath::Sin( phase ) * amplitude * 32767.0f );
+	}
+}
+
 void openALSourceSelfTest_f( const idCmdArgs& args )
 {
 	(void)args;
@@ -1896,11 +1948,7 @@ void openALSourceSelfTest_f( const idCmdArgs& args )
 	static const float SELFTEST_FREQUENCY = 440.0f;
 	static const float SELFTEST_AMPLITUDE = 0.12f;
 	int16 samples[ SELFTEST_FRAMES ];
-	for( int i = 0; i < SELFTEST_FRAMES; ++i )
-	{
-		const float phase = idMath::TWO_PI * SELFTEST_FREQUENCY * static_cast<float>( i ) / static_cast<float>( SELFTEST_SAMPLE_RATE );
-		samples[i] = static_cast<int16>( idMath::Sin( phase ) * SELFTEST_AMPLITUDE * 32767.0f );
-	}
+	openQ4_FillGeneratedPCM16Mono( samples, SELFTEST_FRAMES, SELFTEST_SAMPLE_RATE, 0, SELFTEST_FREQUENCY, SELFTEST_AMPLITUDE );
 
 	ALuint buffer = 0;
 	ALuint source = 0;
@@ -1919,6 +1967,7 @@ void openALSourceSelfTest_f( const idCmdArgs& args )
 			{
 				hardware.ApplySourceResampler( source );
 				hardware.ApplySourceRadius( source, 0.0f );
+				hardware.ApplySourceSpatialize( source, false );
 				alSourcei( source, AL_BUFFER, buffer );
 				alSourcef( source, AL_GAIN, 0.1f );
 				alSourcei( source, AL_SOURCE_RELATIVE, AL_TRUE );
@@ -1949,13 +1998,21 @@ void openALSourceSelfTest_f( const idCmdArgs& args )
 
 	if( source != 0 )
 	{
-		alSourceStop( source );
-		alSourcei( source, AL_BUFFER, 0 );
-		alDeleteSources( 1, &source );
+		if( alIsSource( source ) )
+		{
+			alSourceStop( source );
+			alSourcei( source, AL_BUFFER, 0 );
+			alDeleteSources( 1, &source );
+		}
+		source = 0;
 	}
 	if( buffer != 0 )
 	{
-		alDeleteBuffers( 1, &buffer );
+		if( alIsBuffer( buffer ) )
+		{
+			alDeleteBuffers( 1, &buffer );
+		}
+		buffer = 0;
 	}
 	CheckALErrors();
 
@@ -1972,6 +2029,238 @@ void openALSourceSelfTest_f( const idCmdArgs& args )
 	else
 	{
 		idLib::Warning( "OpenAL source self-test failed: source state %s.", openQ4_OpenALSourceStateName( state ) );
+	}
+}
+
+void openALQueueSelfTest_f( const idCmdArgs& args )
+{
+	(void)args;
+
+	idSoundHardware_OpenAL& hardware = soundSystemLocal.hardware;
+	ALCdevice* device = hardware.GetOpenALDevice();
+	ALCcontext* context = hardware.GetOpenALContext();
+	if( device == NULL || context == NULL )
+	{
+		idLib::Warning( "OpenAL queued source self-test requires an active OpenAL device and context." );
+		return;
+	}
+
+	ALCcontext* previousContext = alcGetCurrentContext();
+	const bool restoreContext = previousContext != context;
+	if( restoreContext && alcMakeContextCurrent( context ) == 0 )
+	{
+		CheckALCErrors( device );
+		idLib::Warning( "OpenAL queued source self-test could not make the sound context current." );
+		return;
+	}
+
+	static const int SELFTEST_SAMPLE_RATE = 44100;
+	static const int SELFTEST_BUFFER_MSEC = 50;
+	static const int SELFTEST_BUFFER_FRAMES = SELFTEST_SAMPLE_RATE * SELFTEST_BUFFER_MSEC / 1000;
+	static const int SELFTEST_QUEUE_BUFFERS = 4;
+	static const int SELFTEST_TARGET_REFILLS = 4;
+	static const int SELFTEST_TIMEOUT_MSEC = 750;
+	static const float SELFTEST_FREQUENCY = 660.0f;
+	static const float SELFTEST_AMPLITUDE = 0.08f;
+
+	ALuint source = 0;
+	ALuint buffers[ SELFTEST_QUEUE_BUFFERS ];
+	int16 samples[ SELFTEST_BUFFER_FRAMES ];
+	int nextFrame = 0;
+	int submittedBuffers = 0;
+	int refilledBuffers = 0;
+	int processedBuffersTotal = 0;
+	bool passed = false;
+	bool failed = false;
+	ALint state = AL_INITIAL;
+	memset( buffers, 0, sizeof( buffers ) );
+
+	CheckALErrors();
+	alGenBuffers( SELFTEST_QUEUE_BUFFERS, buffers );
+	if( CheckALErrors() != AL_NO_ERROR )
+	{
+		failed = true;
+	}
+
+	for( int i = 0; !failed && i < SELFTEST_QUEUE_BUFFERS; ++i )
+	{
+		if( buffers[i] == 0 || !alIsBuffer( buffers[i] ) )
+		{
+			failed = true;
+			break;
+		}
+		openQ4_FillGeneratedPCM16Mono( samples, SELFTEST_BUFFER_FRAMES, SELFTEST_SAMPLE_RATE, nextFrame, SELFTEST_FREQUENCY, SELFTEST_AMPLITUDE );
+		nextFrame += SELFTEST_BUFFER_FRAMES;
+		alBufferData( buffers[i], AL_FORMAT_MONO16, samples, sizeof( samples ), SELFTEST_SAMPLE_RATE );
+		if( CheckALErrors() != AL_NO_ERROR )
+		{
+			failed = true;
+			break;
+		}
+		submittedBuffers++;
+	}
+
+	if( !failed )
+	{
+		alGenSources( 1, &source );
+		if( CheckALErrors() != AL_NO_ERROR || source == 0 || !alIsSource( source ) )
+		{
+			failed = true;
+		}
+	}
+
+	if( !failed )
+	{
+		hardware.ApplySourceResampler( source );
+		hardware.ApplySourceRadius( source, 0.0f );
+		hardware.ApplySourceSpatialize( source, false );
+		alSourcef( source, AL_GAIN, 0.08f );
+		alSourcei( source, AL_SOURCE_RELATIVE, AL_TRUE );
+		alSource3f( source, AL_POSITION, 0.0f, 0.0f, 0.0f );
+		alSource3f( source, AL_VELOCITY, 0.0f, 0.0f, 0.0f );
+		alSourceQueueBuffers( source, SELFTEST_QUEUE_BUFFERS, buffers );
+		alSourcePlay( source );
+		if( CheckALErrors() != AL_NO_ERROR )
+		{
+			failed = true;
+		}
+	}
+
+	if( !failed )
+	{
+		for( int attempt = 0; attempt < 10; ++attempt )
+		{
+			alGetSourcei( source, AL_SOURCE_STATE, &state );
+			if( CheckALErrors() != AL_NO_ERROR || state == AL_PLAYING )
+			{
+				break;
+			}
+			Sys_Sleep( 10 );
+		}
+		if( state != AL_PLAYING )
+		{
+			failed = true;
+		}
+	}
+
+	const int startTime = Sys_Milliseconds();
+	while( !failed && refilledBuffers < SELFTEST_TARGET_REFILLS && Sys_Milliseconds() - startTime < SELFTEST_TIMEOUT_MSEC )
+	{
+		ALint processedBuffers = 0;
+		alGetSourcei( source, AL_BUFFERS_PROCESSED, &processedBuffers );
+		if( CheckALErrors() != AL_NO_ERROR )
+		{
+			failed = true;
+			break;
+		}
+
+		while( processedBuffers > 0 && refilledBuffers < SELFTEST_TARGET_REFILLS )
+		{
+			ALuint buffer = 0;
+			alSourceUnqueueBuffers( source, 1, &buffer );
+			if( CheckALErrors() != AL_NO_ERROR || buffer == 0 || !alIsBuffer( buffer ) )
+			{
+				failed = true;
+				break;
+			}
+			processedBuffersTotal++;
+
+			openQ4_FillGeneratedPCM16Mono( samples, SELFTEST_BUFFER_FRAMES, SELFTEST_SAMPLE_RATE, nextFrame, SELFTEST_FREQUENCY, SELFTEST_AMPLITUDE );
+			nextFrame += SELFTEST_BUFFER_FRAMES;
+			alBufferData( buffer, AL_FORMAT_MONO16, samples, sizeof( samples ), SELFTEST_SAMPLE_RATE );
+			alSourceQueueBuffers( source, 1, &buffer );
+			if( CheckALErrors() != AL_NO_ERROR )
+			{
+				failed = true;
+				break;
+			}
+			submittedBuffers++;
+			refilledBuffers++;
+			processedBuffers--;
+		}
+
+		if( failed )
+		{
+			break;
+		}
+
+		alGetSourcei( source, AL_SOURCE_STATE, &state );
+		if( CheckALErrors() != AL_NO_ERROR )
+		{
+			failed = true;
+			break;
+		}
+		if( state != AL_PLAYING )
+		{
+			break;
+		}
+		if( refilledBuffers < SELFTEST_TARGET_REFILLS )
+		{
+			Sys_Sleep( 10 );
+		}
+	}
+	passed = !failed && state == AL_PLAYING && refilledBuffers >= SELFTEST_TARGET_REFILLS;
+
+	if( source != 0 )
+	{
+		if( alIsSource( source ) )
+		{
+			alSourceStop( source );
+			ALint queuedBuffers = 0;
+			alGetSourcei( source, AL_BUFFERS_QUEUED, &queuedBuffers );
+			if( CheckALErrors() == AL_NO_ERROR )
+			{
+				while( queuedBuffers > 0 )
+				{
+					ALuint buffer = 0;
+					alSourceUnqueueBuffers( source, 1, &buffer );
+					if( CheckALErrors() != AL_NO_ERROR )
+					{
+						break;
+					}
+					queuedBuffers--;
+				}
+			}
+			alSourcei( source, AL_BUFFER, 0 );
+			alDeleteSources( 1, &source );
+		}
+		source = 0;
+	}
+
+	for( int i = 0; i < SELFTEST_QUEUE_BUFFERS; ++i )
+	{
+		if( buffers[i] != 0 )
+		{
+			if( alIsBuffer( buffers[i] ) )
+			{
+				alDeleteBuffers( 1, &buffers[i] );
+			}
+			buffers[i] = 0;
+		}
+	}
+	CheckALErrors();
+
+	if( restoreContext )
+	{
+		alcMakeContextCurrent( previousContext );
+		CheckALCErrors( device );
+	}
+
+	if( passed )
+	{
+		idLib::Printf( "OpenAL queued source self-test: source stayed %s after %d submitted buffers, %d processed buffers, and %d refills.\n",
+			openQ4_OpenALSourceStateName( state ),
+			submittedBuffers,
+			processedBuffersTotal,
+			refilledBuffers );
+	}
+	else
+	{
+		idLib::Warning( "OpenAL queued source self-test failed: state %s, submitted %d, processed %d, refilled %d.",
+			openQ4_OpenALSourceStateName( state ),
+			submittedBuffers,
+			processedBuffersTotal,
+			refilledBuffers );
 	}
 }
 
@@ -2066,6 +2355,7 @@ void idSoundHardware_OpenAL::Init()
 {
 	cmdSystem->AddCommand( "listDevices", listDevices_f, 0, "Lists the connected sound devices", NULL );
 	cmdSystem->AddCommand( "openALSourceSelfTest", openALSourceSelfTest_f, CMD_FL_SOUND | CMD_FL_CHEAT, "plays a generated tone through a temporary OpenAL source", NULL );
+	cmdSystem->AddCommand( "openALQueueSelfTest", openALQueueSelfTest_f, CMD_FL_SOUND | CMD_FL_CHEAT, "validates generated PCM playback through queued OpenAL buffers", NULL );
 	cmdSystem->AddCommand( "openALSimulateDeviceEvent", openALSimulateDeviceEvent_f, CMD_FL_SOUND | CMD_FL_CHEAT, "queues a synthetic OpenAL playback device event", NULL );
 	cmdSystem->AddCommand( "openALSimulateDefaultDeviceChange", openALSimulateDefaultDeviceChange_f, CMD_FL_SOUND | CMD_FL_CHEAT, "queues a synthetic OpenAL system default playback device change", NULL );
 	cmdSystem->AddCommand( "openALSimulateDeviceDisconnect", openALSimulateDeviceDisconnect_f, CMD_FL_SOUND | CMD_FL_CHEAT, "queues a synthetic OpenAL active playback device disconnect", NULL );
@@ -2175,6 +2465,17 @@ void idSoundHardware_OpenAL::Init()
 #else
 	sourceRadiusAvailable = false;
 	sourceRadiusWarningIssued = false;
+#endif
+#if OPENQ4_OPENAL_SOURCE_SPATIALIZE_SUPPORTED
+	sourceSpatializeAvailable = alIsExtensionPresent( "AL_SOFT_source_spatialize" ) == AL_TRUE;
+	sourceSpatializeWarningIssued = false;
+	if( sourceSpatializeAvailable )
+	{
+		common->Printf( "OpenAL explicit source spatialization enabled.\n" );
+	}
+#else
+	sourceSpatializeAvailable = false;
+	sourceSpatializeWarningIssued = false;
 #endif
 	InitSourceResampler();
 
@@ -2371,19 +2672,23 @@ void idSoundHardware_OpenAL::Shutdown()
 	#if OPENQ4_OPENAL_EFX_SUPPORTED
 		if( auxEffectSlot != 0 )
 		{
+			CheckALErrors();
 			if ( qalAuxiliaryEffectSloti != NULL ) {
 				qalAuxiliaryEffectSloti( auxEffectSlot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL );
 			}
 			if ( qalDeleteAuxiliaryEffectSlots != NULL ) {
 				qalDeleteAuxiliaryEffectSlots( 1, &auxEffectSlot );
 			}
+			CheckALErrors();
 			auxEffectSlot = 0;
 		}
 		if( auxReverbEffect != 0 )
 		{
+			CheckALErrors();
 			if ( qalDeleteEffects != NULL ) {
 				qalDeleteEffects( 1, &auxReverbEffect );
 			}
+			CheckALErrors();
 			auxReverbEffect = 0;
 		}
 	#endif
@@ -2397,13 +2702,18 @@ void idSoundHardware_OpenAL::Shutdown()
 	I_ShutdownSoundHardware();
 #endif
 
-	alcMakeContextCurrent( NULL );
+	if( openalContext != NULL )
+	{
+		alcMakeContextCurrent( NULL );
+		alcDestroyContext( openalContext );
+		openalContext = NULL;
+	}
 
-	alcDestroyContext( openalContext );
-	openalContext = NULL;
-
-	alcCloseDevice( openalDevice );
-	openalDevice = NULL;
+	if( openalDevice != NULL )
+	{
+		alcCloseDevice( openalDevice );
+		openalDevice = NULL;
+	}
 	lastDeviceCheckTime = 0;
 	pendingDeviceEventFlags = 0;
 	pendingDeviceEventCheckTime = 0;
@@ -2421,6 +2731,8 @@ void idSoundHardware_OpenAL::Shutdown()
 	sourceResamplerSelected = OPENQ4_OPENAL_RESAMPLER_RUNTIME_DEFAULT;
 	sourceRadiusAvailable = false;
 	sourceRadiusWarningIssued = false;
+	sourceSpatializeAvailable = false;
+	sourceSpatializeWarningIssued = false;
 	callbackBufferAvailable = false;
 	callbackBufferWarningIssued = false;
 	openedWithDefaultFallback = false;
@@ -2502,11 +2814,32 @@ idSoundHardware_OpenAL::FreeVoice
 */
 void idSoundHardware_OpenAL::FreeVoice( idSoundVoice* voice )
 {
-	voice->Stop();
+	if( voice == NULL )
+	{
+		return;
+	}
 
-	// Stop() is asyncronous, so we won't flush bufferes until the
+	idSoundVoice_OpenAL* openalVoice = static_cast<idSoundVoice_OpenAL*>( voice );
+	openalVoice->Stop();
+
+	for( int i = 0; i < zombieVoices.Num(); i++ )
+	{
+		if( zombieVoices[i] == openalVoice )
+		{
+			return;
+		}
+	}
+	for( int i = 0; i < freeVoices.Num(); i++ )
+	{
+		if( freeVoices[i] == openalVoice )
+		{
+			return;
+		}
+	}
+
+	// Stop() is asynchronous, so we won't flush buffers until the
 	// voice on the zombie channel actually returns !IsPlaying()
-	zombieVoices.Append( voice );
+	zombieVoices.Append( openalVoice );
 }
 
 /*
@@ -2670,14 +3003,9 @@ void idSoundHardware_OpenAL::Update()
 		return;
 	}
 
-	if( soundSystem->IsMuted() )
-	{
-		alListenerf( AL_GAIN, 0.0f );
-	}
-	else
-	{
-		alListenerf( AL_GAIN, 1.0f );
-	}
+	CheckALErrors();
+	alListenerf( AL_GAIN, soundSystem->IsMuted() ? 0.0f : 1.0f );
+	CheckALErrors();
 
 	// IXAudio2SourceVoice::Stop() has been called for every sound on the
 	// zombie list, but it is documented as asyncronous, so we have to wait
