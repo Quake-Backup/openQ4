@@ -76,12 +76,12 @@ public:
 	}
 	// RB end
 
-	virtual void	SetCenterChannel( float c )
+	void		SetCenterChannel( float c )
 	{
 		centerChannel = c;
 	}
 
-	virtual void	SetInnerRadius( float r )
+	void		SetInnerRadius( float r )
 	{
 		innerRadius = r;
 	}

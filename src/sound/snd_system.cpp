@@ -36,6 +36,7 @@ idCVar s_speakerFraction( "s_speakerFraction", "0.65", CVAR_ARCHIVE | CVAR_FLOAT
 idCVar s_radioChatterFraction( "s_radioChatterFraction", "0.5", CVAR_ARCHIVE | CVAR_FLOAT, "radio chatter attenuation fraction" );
 idCVar s_frequencyShift( "s_frequencyShift", "1", CVAR_BOOL, "enable sound shader frequency shift playback" );
 idCVar s_useOpenAL( "s_useOpenAL", "1", CVAR_ARCHIVE | CVAR_BOOL, "use OpenAL audio backend" );
+idCVar s_openALPostPlanBehavior( "s_openALPostPlanBehavior", "0", CVAR_ARCHIVE | CVAR_BOOL, "enable the gated OpenAL post-plan voice playback path; 0 uses the pre-plan sound implementation" );
 idCVar s_deviceName( "s_deviceName", "", CVAR_ARCHIVE, "OpenAL device name override" );
 idCVar s_useEAXReverb( "s_useEAXReverb", "1", CVAR_ARCHIVE | CVAR_BOOL, "use EAX reverb if available" );
 idCVar s_openALHRTF( "s_openALHRTF", "0", CVAR_ARCHIVE | CVAR_INTEGER, "OpenAL Soft HRTF mode: 0 = auto, 1 = off, 2 = on", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
@@ -269,7 +270,6 @@ void ListSoundDecoders_f( const idCmdArgs& args )
 	idLib::Printf( "0 waiting decoders\n" );
 	idLib::Printf( "%d active decoders\n", numActiveDecoders );
 	idLib::Printf( "0 kB decoder memory in 0 blocks\n" );
-	idSoundHardware_OpenAL::PrintDiagnosticCounters();
 }
 
 /*
@@ -279,8 +279,6 @@ idSoundSystemLocal::Restart
 */
 void idSoundSystemLocal::Restart()
 {
-	idSoundHardware_OpenAL::CountDiagnosticEvent( idSoundHardware_OpenAL::OPENAL_DIAG_SOUND_RESTARTS );
-
 	const bool wasMuted = IsMuted();
 	SetMute( true );
 

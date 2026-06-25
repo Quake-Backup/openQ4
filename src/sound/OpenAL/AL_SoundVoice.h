@@ -42,18 +42,52 @@ public:
 	idSoundVoice_OpenAL();
 	~idSoundVoice_OpenAL();
 
-	void					SetPosition( const idVec3& p ) override;
-	void					SetVelocity( const idVec3& v ) override;
+	void					SetPosition( const idVec3& p )
+	{
+		idSoundVoice_Base::SetPosition( p );
 
-	void					SetGain( float gain ) override;
+		alSource3f( openalSource, AL_POSITION, -p.y, p.z, -p.x );
+	}
 
-	void		SetPitch( float p ) override;
-	void		SetCenterChannel( float c ) override;
-	void		SetInnerRadius( float r ) override;
-	void		SetWetLevel( float wet ) override;
-	void		SetDryLevel( float dry ) override;
-	void		SetOcclusion( float f ) override;
-	void		SetEnvironmentMuffle( float f ) override;
+	void					SetVelocity( const idVec3& v ) override
+	{
+		idSoundVoice_Base::SetVelocity( v );
+
+		alSource3f( openalSource, AL_VELOCITY, -v.y, v.z, -v.x );
+	}
+
+	void					SetGain( float gain )
+	{
+		idSoundVoice_Base::SetGain( gain );
+		ApplyWetDryRouting();
+	}
+
+	void		SetPitch( float p )
+	{
+		idSoundVoice_Base::SetPitch( p );
+
+		alSourcef( openalSource, AL_PITCH, p );
+	}
+	void		SetWetLevel( float wet ) override
+	{
+		idSoundVoice_Base::SetWetLevel( wet );
+		ApplyWetDryRouting();
+	}
+	void		SetDryLevel( float dry ) override
+	{
+		idSoundVoice_Base::SetDryLevel( dry );
+		ApplyWetDryRouting();
+	}
+	void		SetOcclusion( float f ) override
+	{
+		idSoundVoice_Base::SetOcclusion( f );
+		ApplyWetDryRouting();
+	}
+	void		SetEnvironmentMuffle( float f ) override
+	{
+		idSoundVoice_Base::SetEnvironmentMuffle( f );
+		ApplyWetDryRouting();
+	}
 
 	void					Create( const idSoundSample* leadinSample, const idSoundSample* loopingSample );
 
@@ -120,10 +154,8 @@ private:
 
 	// Adjust the voice frequency based on the new sample rate for the buffer
 	void					SetSampleRate( uint32 newSampleRate, uint32 operationSet );
-	void					ApplySpatialization();
 	void					ApplyWetDryRouting();
-	bool					CreateWetDryFilters();
-	bool					DetachWetDryRouting();
+	void					CreateWetDryFilters();
 	void					DestroyWetDryFilters();
 
 	enum openQ4OpenALPlaybackMode_t
@@ -143,7 +175,6 @@ private:
 	ALuint					lastopenalStreamingBuffer[3];
 	ALuint					openalDirectFilter;
 	ALuint					openalAuxFilter;
-	bool					efxRoutingAttached;
 
 	idSoundSample_OpenAL*	leadinSample;
 	idSoundSample_OpenAL*	loopingSample;

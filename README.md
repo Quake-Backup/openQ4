@@ -49,7 +49,7 @@ It is designed for players who want the original Quake 4 experience with a clean
 
 - **Modern display support** for widescreen, ultrawide, multi-monitor, borderless, and fullscreen setups.
 - **Optional visual upgrades** such as bloom, HDR, anti-aliasing, baked light grids, soft particles, and enhanced shadow options.
-- **Enhanced OpenAL audio** with more reliable sample playback, safer restart/device handling, HRTF/output-mode support, source-radius spatialization, and optional EFX reverb/occlusion.
+- **OpenAL audio** restored to the pre-plan compatibility path by default, with newer voice handling revalidated behind an opt-in gate.
 - **Improved input and quality-of-life features** including controller support, better console UX, and modern settings behavior.
 - **Single-player and multiplayer in one install** with active compatibility work aimed at the stock game.
 - **Cross-platform support** with Windows and Linux release packages, Steam Deck support on Linux, and experimental Apple Silicon macOS packages through the signed/notarized DMG lane for credentialed release runs.

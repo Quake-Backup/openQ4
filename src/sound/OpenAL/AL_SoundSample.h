@@ -152,7 +152,7 @@ public:
 
 	ALenum			GetOpenALBufferFormat() const;
 
-	bool			CreateOpenALBuffer();
+	void			CreateOpenALBuffer();
 
 protected:
 	friend class idSoundHardware_OpenAL;
@@ -164,7 +164,6 @@ protected:
 	bool			LoadOgg( const idStr& name );
 	bool			LoadRoQ( const idStr& name );
 	bool			LoadAmplitude( const idStr& name );
-	bool			NormalizeForOpenALPlayback( const char* sourceName );
 	void			WriteAllSamples( const idStr& sampleName );
 	bool			LoadGeneratedSample( const idStr& name );
 	void			WriteGeneratedSample( idFile* fileOut );
@@ -198,9 +197,6 @@ protected:
 	bool			neverPurge;
 	bool			levelLoadReferenced;
 	bool			usesMapHeap;
-	bool			openalUploadPending;
-	bool			openalUploadWarningIssued;
-	bool			openalFallbackWarningIssued;
 
 	uint32			lastPlayedTime;
 
