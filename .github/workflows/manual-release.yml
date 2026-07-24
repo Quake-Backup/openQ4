@@ -1362,7 +1362,9 @@ jobs:
             exit 1
           fi
 
-          runtime_root="${GITHUB_WORKSPACE}/.tmp/release-runtime/${{ matrix.binary_arch }}/appimage"
+          # Keep the Wayland socket path beneath the Unix-domain limit on
+          # GitHub-hosted runners, whose workspace root is already long.
+          runtime_root="${GITHUB_WORKSPACE}/.tmp/release-runtime/${{ matrix.binary_arch }}"
           rm -rf "${runtime_root}"
           mkdir -p "${runtime_root}/wayland" "${runtime_root}/x11"
           export APPIMAGE_EXTRACT_AND_RUN=1
@@ -1447,7 +1449,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: openq4-release-${{ needs.metadata.outputs.version_tag }}-linux-${{ matrix.binary_arch }}${{ matrix.package_suffix }}-appimage-diagnostics
-          path: .tmp/release-runtime/${{ matrix.binary_arch }}/appimage
+          path: .tmp/release-runtime/${{ matrix.binary_arch }}
           if-no-files-found: warn
           retention-days: 14
           include-hidden-files: true

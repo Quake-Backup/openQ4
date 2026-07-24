@@ -558,6 +558,17 @@ def get_required_root_binaries(platform: str, arch: str) -> tuple[str, str]:
     )
 
 
+def get_required_renderer_module_binaries(platform: str, arch: str) -> tuple[str, ...]:
+    if platform not in ("windows", "linux"):
+        return ()
+
+    module_ext = PLATFORM_GAME_MODULE_EXT[platform]
+    return (
+        f"renderer-gl_{arch}{module_ext}",
+        f"renderer-vk_{arch}{module_ext}",
+    )
+
+
 def get_required_game_module_binaries(platform: str, arch: str) -> tuple[str, str]:
     module_ext = PLATFORM_GAME_MODULE_EXT[platform]
     return (
@@ -2109,7 +2120,11 @@ def copy_required_binaries(
 ) -> list[str]:
     missing_required: list[str] = []
 
-    for filename in get_required_root_binaries(platform, arch):
+    runtime_binaries = (
+        *get_required_root_binaries(platform, arch),
+        *get_required_renderer_module_binaries(platform, arch),
+    )
+    for filename in runtime_binaries:
         source = install_dir / filename
         if not source.is_file():
             if allow_missing_binaries:

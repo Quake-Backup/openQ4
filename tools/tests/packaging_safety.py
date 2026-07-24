@@ -597,6 +597,33 @@ def validate_package_name_and_copy_guards() -> None:
             raise AssertionError("write_version_manifest emitted platform-dependent CRLF newlines")
 
 
+def validate_renderer_module_staging() -> None:
+    install_dir = WORK / "renderer-module-staging" / "install"
+    package_root = WORK / "renderer-module-staging" / "package"
+    required_files = (
+        *PACKAGE.get_required_root_binaries("linux", "x64"),
+        *PACKAGE.get_required_renderer_module_binaries("linux", "x64"),
+    )
+    for filename in required_files:
+        write_file(install_dir / filename, filename.encode("utf-8"))
+
+    missing = PACKAGE.copy_required_binaries(
+        "linux",
+        "x64",
+        install_dir,
+        package_root,
+        allow_missing_binaries=False,
+    )
+    if missing:
+        raise AssertionError(f"Linux renderer-module staging reported missing files: {missing}")
+    for filename in required_files:
+        if not (package_root / filename).is_file():
+            raise AssertionError(f"Release package is missing required renderer runtime module: {filename}")
+
+    if PACKAGE.get_required_renderer_module_binaries("macos", "arm64"):
+        raise AssertionError("macOS must not require renderer modules outside its static renderer policy")
+
+
 def validate_build_pack_and_header_cli_guards() -> None:
     pack_source = WORK / "build-pack" / "source"
     write_file(pack_source / "materials" / "ok.mtr")
@@ -1041,6 +1068,7 @@ def main() -> None:
         validate_fast_stage_guards_and_copy()
         validate_stale_content_prune_symlink_handling()
         validate_package_name_and_copy_guards()
+        validate_renderer_module_staging()
         validate_build_pack_and_header_cli_guards()
         validate_version_manifest_integrity()
         validate_macos_signing_input_guards()
