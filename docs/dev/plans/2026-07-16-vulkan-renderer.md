@@ -134,13 +134,35 @@ SPIR-V interaction shaders validated against ARB2 captures on fixed scenes; clus
 
 Two-sided stencil pipelines, depth-bounds dynamic state (feature-gated exactly as GL), turboshadow paths, texgen fog/blend lights, light-grid indirect diffuse, force-ambient. Milestone: `r_useShadowMap 0` parity; per-light shadow-technique dispatch matches GL.
 
+Stock shadow-path closure landed on 2026-07-24. Vulkan now preserves
+LOCAL/GLOBAL ownership independently across stencil, projected, point, and
+one-to-four-cascade maps; covers static, animated, packed MD5R, two-sided,
+and perforated/hashed-alpha casters; supports hardware or manual depth
+comparison plus fixed, rotated, and PCSS-lite filtering; and reuses exact
+static maps without consuming the per-view update budget. If a mapped
+ownership cannot be submitted, its complete retained stencil set is used in
+the same frame (including a proven empty set after view culling); map-only
+ownerships fail closed rather than receiving falsely unshadowed light.
+Mapped Vulkan lights retain successfully generated and linked per-surface
+stencil volumes and build dedicated LOCAL/GLOBAL supplement chains containing
+only casters absent from a partial map. Combined optimized-prelight volumes
+are never stamped as partial-map supplements. Update-budget and subview
+fallback policies apply only when a complete stencil result exists;
+ownerships containing map-only casters schedule their required map beyond the
+nominal update budget and fail closed only on a genuine map submission
+failure. Correctness-required ownerships are admitted before maps that can
+fall back to stencil, and a subview target without a usable stencil path
+renders required maps regardless of the normal cache-only subview policy.
+
 ### Phase H — post-process chain + feedback captures + MSAA
 
 `_currentRender`/`_currentDepth` capture points in graph order; SSAO → motion blur → bloom → HDR tonemap/auto-exposure → authored post materials → SMAA → CRT → resolution scale → gamma; soft particles; MSAA with alpha-to-coverage and depth resolve. Milestone: full visual-stack parity screenshots across the benchmark scenes.
 
 ### Phase I — long tail to full parity
 
-Subviews (mirrors, remote screens, xray), screenshots/envshot/tiled readback, crop/capture-to-image, debug rendertools (`r_show*` suite as buffered-line implementations), MD5R packed path, demo/timedemo capture. Milestone: gameplay benchmark profiles pass on Vulkan; every renderer cvar triaged implemented / documented-no-op-with-warning.
+Subviews (mirrors, remote screens, xray), screenshots/envshot/tiled readback, crop/capture-to-image, debug rendertools (`r_show*` suite as buffered-line implementations), optional native packed-MD5R GPU submission, demo/timedemo capture. Milestone: gameplay benchmark profiles pass on Vulkan; every renderer cvar triaged implemented / documented-no-op-with-warning.
+
+MD5/MD5R functional closure landed on 2026-07-24. The Vulkan module deliberately consumes MD5R through the renderer's complete classic surface contract, giving authored MD5 plus converted, ASCII-prebuilt, and compiled-prebuilt MD5R the same coverage across Vulkan passes. A future direct packed-buffer submission path is an optimization opportunity rather than a remaining compatibility requirement.
 
 ### Phase J — optimization + promotion evidence
 

@@ -33,6 +33,7 @@
 #include "../ModernGLExecutor.h"
 #include "../RenderGraphResources.h"
 #include "VulkanDevice.h"
+#include "vk_Image.h"
 
 // the back-end state object normally defined by tr_backend.cpp
 backEndState_t	backEnd;
@@ -47,9 +48,22 @@ static float vkClearColor[ 4 ] = { 0.0f, 0.0f, 0.0f, 1.0f };
 void VK_GuiExecutor_SetClearColor( const float color[ 4 ] );
 void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef );
 void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef );
+void VK_GuiExecutor_PrepareSpecialEffects( const viewDef_t *viewDef );
+bool VK_GuiExecutor_SpecialEffectsAwaitResolve(
+		idRenderTexture *sourceRenderTexture );
+void VK_GuiExecutor_DrawResolvedSpecialEffects(
+		idRenderTexture *sourceRenderTexture,
+		idRenderTexture *destinationRenderTexture );
 bool VK_GuiExecutor_EnsureFrameOpen( void );
 bool VK_GuiExecutor_EndFrameAndPresent( void );
 bool VK_GuiExecutor_FrameIsOpen( void );
+bool VK_Exec_SetRenderTarget( idRenderTexture *renderTexture );
+void VK_Exec_ClearRenderTarget( bool clearColor, bool clearDepth, float depthValue,
+		const float colorValue[ 4 ] );
+bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
+		int cubeFace, bool copyDepth );
+bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
+		idRenderTexture *destinationRenderTexture, bool resolveDepth );
 
 /*
 ====================
@@ -271,7 +285,12 @@ void GLimp_SwapBuffers( void ) {
 	// present whatever the frame holds; a frame with no draws still clears
 	VK_GuiExecutor_SetClearColor( vkClearColor );
 	if ( VK_GuiExecutor_EnsureFrameOpen() ) {
-		VK_GuiExecutor_EndFrameAndPresent();
+		// Screenshot/capture readback consumes the completed swapchain image
+		// before presentation.  The GL backend observes the same
+		// tr.takingScreenshot contract in RB_SwapBuffers.
+		if ( !tr.takingScreenshot ) {
+			VK_GuiExecutor_EndFrameAndPresent();
+		}
 	}
 }
 
@@ -338,6 +357,12 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		return;
 	}
 
+	backEnd.renderTexture = NULL;
+	backEnd.feedbackRenderTexture = NULL;
+	backEnd.postProcessTexelSize = tr.postProcessTexelSize;
+	backEnd.postProcessSourceColorSpace = tr.postProcessSourceColorSpace;
+	backEnd.postProcessSMAAQuality = tr.postProcessSMAAQuality;
+
 	for ( ; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
 		switch ( cmds->commandId ) {
 			case RC_NOP:
@@ -376,11 +401,70 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				}
 				break;
 			}
+			case RC_SET_RENDERTEXTURE: {
+				const setRenderTargetCommand_t *cmd = (const setRenderTargetCommand_t *)cmds;
+				if ( cmd->renderTexture != NULL ) {
+					if ( cmd->renderTexture->MakeCurrent() ) {
+						backEnd.renderTexture = cmd->renderTexture;
+						backEnd.feedbackRenderTexture = cmd->feedbackRenderTexture;
+					}
+				} else if ( VK_Exec_SetRenderTarget( NULL ) ) {
+					backEnd.renderTexture = NULL;
+					backEnd.feedbackRenderTexture = NULL;
+				}
+				break;
+			}
+			case RC_DRAW_SPECIAL_EFFECTS: {
+				const drawSurfsCommand_t *cmd = (const drawSurfsCommand_t *)cmds;
+				VK_GuiExecutor_PrepareSpecialEffects( cmd->viewDef );
+				break;
+			}
+			case RC_CLEAR_RENDERTARGET: {
+				const renderClearBufferCommand_t *cmd = (const renderClearBufferCommand_t *)cmds;
+				VK_Exec_ClearRenderTarget( cmd->clearColor, cmd->clearDepth,
+						cmd->clearDepthValue, cmd->clearColorValue.ToFloatPtr() );
+				break;
+			}
+			case RC_RESOLVE_MSAA: {
+				const resolveRenderTargetCommand_t *cmd = (const resolveRenderTargetCommand_t *)cmds;
+				const bool specialEffectsAwaitResolve =
+						VK_GuiExecutor_SpecialEffectsAwaitResolve(
+								cmd->msaaRenderTexture );
+				const bool resolved = VK_Exec_ResolveRenderTargets(
+						cmd->msaaRenderTexture, cmd->destRenderTexture,
+						cmd->resolveDepth || specialEffectsAwaitResolve );
+				if ( resolved && specialEffectsAwaitResolve ) {
+					VK_GuiExecutor_DrawResolvedSpecialEffects(
+							cmd->msaaRenderTexture, cmd->destRenderTexture );
+				}
+				break;
+			}
+			case RC_SET_POSTPROCESS_SOURCE_SIZE:
+				backEnd.postProcessTexelSize =
+						((const setPostProcessSourceSizeCommand_t *)cmds)->texelSize;
+				break;
+			case RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE:
+				backEnd.postProcessSourceColorSpace =
+						((const setPostProcessSourceColorSpaceCommand_t *)cmds)->colorSpace;
+				break;
+			case RC_SET_POSTPROCESS_SMAA_QUALITY:
+				backEnd.postProcessSMAAQuality =
+						((const setPostProcessSMAAQualityCommand_t *)cmds)->quality;
+				break;
+			case RC_COPY_RENDER: {
+				const copyRenderCommand_t *cmd = (const copyRenderCommand_t *)cmds;
+				if ( !r_skipCopyTexture.GetBool() ) {
+					(void)VK_Exec_CopyRender( cmd->image, cmd->x, cmd->y,
+							cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
+				}
+				break;
+			}
 			case RC_SWAP_BUFFERS:
 				GLimp_SwapBuffers();
 				break;
 			default:
-				// copy/capture commands arrive with Phase E+
+				// Debug-only command families remain part of the later
+				// long-tail parity phase.
 				break;
 		}
 	}
@@ -405,8 +489,7 @@ frameData_t *frameData = NULL;
 
 // idImage GPU half: real Vulkan implementation in vk_Image.cpp (Phase D)
 
-// --- idRenderTexture (OpenGL/gl_RenderTexture.cpp): bookkeeping-only until
-// the Vulkan render-target path lands (Phase E/H) ---
+// --- idRenderTexture (Vulkan dynamic-rendering attachment set) ---
 idRenderTexture::idRenderTexture( idImage *colorImage, idImage *depthImage ) {
 	if ( colorImage != NULL ) {
 		colorImages.Append( colorImage );
@@ -420,45 +503,171 @@ idRenderTexture::idRenderTexture( idImage *colorImage, idImage *depthImage ) {
 }
 
 idRenderTexture::~idRenderTexture() {
+	ReleaseDeviceHandle();
 }
 
 bool idRenderTexture::Resize( int width, int height ) {
-	(void)width; (void)height;
-	return true;
+	if ( width <= 0 || height <= 0 || colorImages.Num() <= 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < colorImages.Num(); i++ ) {
+		if ( colorImages[ i ] == NULL ) {
+			return false;
+		}
+		colorImages[ i ]->Resize( width, height );
+	}
+	if ( depthImage != NULL ) {
+		depthImage->Resize( width, height );
+	}
+	ReleaseDeviceHandle();
+	return EnsureDeviceHandle();
 }
 
 bool idRenderTexture::EnsureDeviceHandle( void ) {
-	return false;
+	if ( HasCurrentDeviceHandle() && !NeedsAttachmentRefresh() ) {
+		return true;
+	}
+	ReleaseDeviceHandle();
+	return InitRenderTexture();
 }
 
 bool idRenderTexture::MakeCurrent( void ) {
-	return false;
+	if ( !EnsureDeviceHandle() ) {
+		return false;
+	}
+	return VK_Exec_SetRenderTarget( this );
 }
 
 bool idRenderTexture::MakeCurrent( int cubeFace ) {
-	(void)cubeFace;
+	if ( cubeFace == 0 ) {
+		return MakeCurrent();
+	}
+	static bool warnedCubeTargets = false;
+	if ( !warnedCubeTargets ) {
+		warnedCubeTargets = true;
+		common->Warning( "Vulkan: cubemap render-target faces are not yet supported" );
+	}
 	return false;
 }
 
 void idRenderTexture::BindNull( void ) {
+	if ( VK_GuiExecutor_FrameIsOpen() ) {
+		(void)VK_Exec_SetRenderTarget( NULL );
+	}
 }
 
 unsigned int idRenderTexture::GetDeviceHandle( void ) {
-	return 0;
+	return EnsureDeviceHandle() ? deviceHandle : 0;
 }
 
 void idRenderTexture::SetDebugLabel( const char *label ) {
 	debugLabel = label != NULL ? label : "";
+	ApplyDebugLabel();
 }
 
 void idRenderTexture::AddRenderImage( idImage *image ) {
 	if ( image != NULL ) {
 		colorImages.Append( image );
+		ReleaseDeviceHandle();
 	}
 }
 
 bool idRenderTexture::InitRenderTexture( void ) {
+	if ( !vkCtx.initialized || colorImages.Num() != 1 || colorImages[ 0 ] == NULL ) {
+		knownIncomplete = true;
+		incompleteGeneration = tr.glContextGeneration;
+		return false;
+	}
+
+	vkImageEntry_t *colorEntry = VK_Image_GetEntry( colorImages[ 0 ]->GetDeviceHandle() );
+	vkImageEntry_t *depthEntry = depthImage != NULL
+			? VK_Image_GetEntry( depthImage->GetDeviceHandle() ) : NULL;
+	if ( colorEntry == NULL || colorEntry->attachmentView == VK_NULL_HANDLE
+			|| ( colorEntry->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ) == 0
+			|| ( depthImage != NULL && ( depthEntry == NULL
+				|| depthEntry->attachmentView == VK_NULL_HANDLE
+				|| ( depthEntry->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT ) == 0
+				|| depthEntry->width != colorEntry->width
+				|| depthEntry->height != colorEntry->height
+				|| depthEntry->samples != colorEntry->samples ) ) ) {
+		knownIncomplete = true;
+		incompleteGeneration = tr.glContextGeneration;
+		return false;
+	}
+
+	// The public handle remains an opaque non-zero token. Vulkan attachment
+	// objects live on idImage entries, so no framebuffer object is required.
+	deviceHandle = colorImages[ 0 ]->GetDeviceHandle() + 1;
+	deviceHandleGeneration = tr.glContextGeneration;
+	knownIncomplete = false;
+	incompleteGeneration = -1;
+	CaptureAttachmentHandles();
+	ApplyDebugLabel();
+	return true;
+}
+
+bool idRenderTexture::HasCurrentDeviceHandle( void ) const {
+	return deviceHandle != 0 && deviceHandleGeneration == tr.glContextGeneration;
+}
+
+void idRenderTexture::ReleaseDeviceHandle( void ) {
+	deviceHandle = 0;
+	deviceHandleGeneration = -1;
+	validatedCubeFaces = 0;
+	cachedColorHandles.Clear();
+	cachedColorGenerations.Clear();
+	cachedDepthHandle = 0;
+	cachedDepthGeneration = 0;
+}
+
+bool idRenderTexture::FailFramebuffer( unsigned int status, const char *operation ) {
+	ReportFramebufferFailure( status, operation );
+	knownIncomplete = true;
+	incompleteGeneration = tr.glContextGeneration;
+	ReleaseDeviceHandle();
 	return false;
+}
+
+void idRenderTexture::ReportFramebufferFailure( unsigned int status, const char *operation ) const {
+	common->Warning( "Vulkan render target '%s' failed during %s (status %u)",
+			debugLabel.Length() > 0 ? debugLabel.c_str() : "<unnamed>",
+			operation != NULL ? operation : "validation", status );
+}
+
+bool idRenderTexture::NeedsAttachmentRefresh( void ) const {
+	if ( cachedColorHandles.Num() != colorImages.Num()
+			|| cachedColorGenerations.Num() != colorImages.Num() ) {
+		return true;
+	}
+	for ( int i = 0; i < colorImages.Num(); i++ ) {
+		if ( colorImages[ i ] == NULL
+				|| cachedColorHandles[ i ] != colorImages[ i ]->GetDeviceHandle()
+				|| cachedColorGenerations[ i ] != colorImages[ i ]->GetStorageGeneration() ) {
+			return true;
+		}
+	}
+	const unsigned int depthHandle = depthImage != NULL ? depthImage->GetDeviceHandle() : 0;
+	const uint64_t depthGeneration = depthImage != NULL ? depthImage->GetStorageGeneration() : 0;
+	return cachedDepthHandle != depthHandle || cachedDepthGeneration != depthGeneration;
+}
+
+void idRenderTexture::CaptureAttachmentHandles( void ) {
+	cachedColorHandles.SetNum( colorImages.Num() );
+	cachedColorGenerations.SetNum( colorImages.Num() );
+	for ( int i = 0; i < colorImages.Num(); i++ ) {
+		cachedColorHandles[ i ] = colorImages[ i ] != NULL
+				? colorImages[ i ]->GetDeviceHandle() : 0;
+		cachedColorGenerations[ i ] = colorImages[ i ] != NULL
+				? colorImages[ i ]->GetStorageGeneration() : 0;
+	}
+	cachedDepthHandle = depthImage != NULL ? depthImage->GetDeviceHandle() : 0;
+	cachedDepthGeneration = depthImage != NULL ? depthImage->GetStorageGeneration() : 0;
+}
+
+void idRenderTexture::ApplyDebugLabel( void ) const {
+	// VK_EXT_debug_utils object labels can be added once image ownership
+	// moves behind a dedicated render-target registry. The label is retained
+	// now so diagnostics and future labeling preserve the public contract.
 }
 
 // --- tr_backend helpers ---
@@ -508,9 +717,177 @@ void RB_GetShaderTextureMatrix( const float *shaderRegisters, const textureStage
 }
 
 // --- draw_arb2 surface ---
+static const int VK_MAX_MATERIAL_PROGRAMS = 256;
+typedef struct vkMaterialProgramRecord_s {
+	unsigned int	target;
+	char			name[ MAX_OSPATH ];
+	vkMaterialProgramFamily_t family;
+	bool			supported;
+} vkMaterialProgramRecord_t;
+static vkMaterialProgramRecord_t vkMaterialPrograms[ VK_MAX_MATERIAL_PROGRAMS ];
+static int vkNumMaterialPrograms = 0;
+
+static const char *VK_MaterialProgramBaseName( const char *name ) {
+	if ( name == NULL ) {
+		return "";
+	}
+	const char *base = name;
+	for ( const char *cursor = name; *cursor != '\0'; cursor++ ) {
+		if ( *cursor == '/' || *cursor == '\\' ) {
+			base = cursor + 1;
+		}
+	}
+	return base;
+}
+
+vkGLSLProgramFamily_t R_GetGLSLProgramFamily( const char *program ) {
+	idStr base = VK_MaterialProgramBaseName( program );
+	idStr extension;
+	base.ExtractFileExtension( extension );
+	base.StripFileExtension();
+
+	// openQ4's live depth-aware postprocess uses the split-source token
+	// `blur.fs`; all retail Quake 4 families use canonical `.glsl` tokens.
+	// Reject other extensions before comparing basenames so an unrelated
+	// split shader cannot silently inherit a stock-family ABI.
+	if ( !base.Icmp( "Blur" ) && !extension.Icmp( "fs" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DEPTH_AWARE_BLUR;
+	}
+	if ( !extension.Icmp( "fs" ) ) {
+		if ( !base.Icmp( "smaa_edge" ) ) {
+			return VK_GLSL_PROGRAM_FAMILY_SMAA_EDGE;
+		}
+		if ( !base.Icmp( "smaa_weights" ) ) {
+			return VK_GLSL_PROGRAM_FAMILY_SMAA_WEIGHTS;
+		}
+		if ( !base.Icmp( "smaa_blend" ) ) {
+			return VK_GLSL_PROGRAM_FAMILY_SMAA_BLEND;
+		}
+	}
+	if ( extension.Icmp( "glsl" ) != 0 ) {
+		return VK_GLSL_PROGRAM_FAMILY_UNKNOWN;
+	}
+
+	if ( !base.Icmp( "Displacement" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT;
+	}
+	if ( !base.Icmp( "DisplacementTwoStage" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_TWO_STAGE;
+	}
+	if ( !base.Icmp( "GhostPulling" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_GHOST_PULLING;
+	}
+	if ( !base.Icmp( "Displacement2" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT2;
+	}
+	if ( !base.Icmp( "MultiplyBlend" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_MULTIPLY_BLEND;
+	}
+	if ( !base.Icmp( "DisplacementCube" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE;
+	}
+	if ( !base.Icmp( "SniperStretch2" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_SNIPER_STRETCH2;
+	}
+	if ( !base.Icmp( "DepthTexture" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE;
+	}
+	if ( !base.Icmp( "Blur" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_BLUR;
+	}
+	if ( !base.Icmp( "MedLabs" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_MEDLABS;
+	}
+	if ( !base.Icmp( "DepthTexture2" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE2;
+	}
+	if ( !base.Icmp( "AL" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_AL;
+	}
+	if ( !base.Icmp( "Parallaxbump" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_PARALLAX_BUMP;
+	}
+	if ( !base.Icmp( "Customlit" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_CUSTOM_LIT;
+	}
+	if ( !base.Icmp( "Water" ) ) {
+		return VK_GLSL_PROGRAM_FAMILY_WATER;
+	}
+	return VK_GLSL_PROGRAM_FAMILY_UNKNOWN;
+}
+
+static vkMaterialProgramFamily_t VK_MaterialProgramCanonicalFamily( const char *name ) {
+	const char *base = VK_MaterialProgramBaseName( name );
+	if ( idStr::Icmp( base, "bumpyEnvironment" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_BUMPY_ENVIRONMENT;
+	}
+	if ( idStr::Icmp( base, "heatHaze" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE;
+	}
+	if ( idStr::Icmp( base, "heatHazeWithMask" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK;
+	}
+	if ( idStr::Icmp( base, "heatHazeGrayWithMask" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_GRAY_WITH_MASK;
+	}
+	if ( idStr::Icmp( base, "heatHazeWithMaskAndVertex" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK_AND_VERTEX;
+	}
+	if ( idStr::Icmp( base, "monochrome" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_MONOCHROME;
+	}
+	if ( idStr::Icmp( base, "arbFP1_Glass" ) == 0
+			|| idStr::Icmp( base, "nvFP20_Glass" ) == 0 ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_REFRACTIVE_GLASS;
+	}
+	return VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN;
+}
+
+static bool VK_MaterialProgramHasNativeImplementation( unsigned int target, const char *name ) {
+	if ( target != GL_VERTEX_PROGRAM_ARB
+			&& target != GL_FRAGMENT_PROGRAM_ARB ) {
+		return false;
+	}
+	switch ( VK_MaterialProgramCanonicalFamily( name ) ) {
+		case VK_MATERIAL_PROGRAM_FAMILY_BUMPY_ENVIRONMENT:
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE:
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK:
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_GRAY_WITH_MASK:
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK_AND_VERTEX:
+		case VK_MATERIAL_PROGRAM_FAMILY_MONOCHROME:
+		case VK_MATERIAL_PROGRAM_FAMILY_REFRACTIVE_GLASS:
+			return true;
+		default:
+			return false;
+	}
+}
+
 int R_FindARBProgram( unsigned int target, const char *program ) {
-	(void)target; (void)program;
-	return 0;
+	if ( program == NULL || program[ 0 ] == '\0' ) {
+		return 0;
+	}
+	idStr normalized = program;
+	normalized.StripFileExtension();
+	for ( int i = 0; i < vkNumMaterialPrograms; i++ ) {
+		if ( vkMaterialPrograms[ i ].target == target
+				&& idStr::Icmp( vkMaterialPrograms[ i ].name, normalized.c_str() ) == 0 ) {
+			return i + 1;
+		}
+	}
+	if ( vkNumMaterialPrograms >= VK_MAX_MATERIAL_PROGRAMS ) {
+		common->Error( "Vulkan R_FindARBProgram: VK_MAX_MATERIAL_PROGRAMS" );
+		return 0;
+	}
+	vkMaterialProgramRecord_t &record = vkMaterialPrograms[ vkNumMaterialPrograms ];
+	memset( &record, 0, sizeof( record ) );
+	record.target = target;
+	idStr::Copynz( record.name, normalized.c_str(), sizeof( record.name ) );
+	record.family = VK_MaterialProgramCanonicalFamily( record.name );
+	record.supported = VK_MaterialProgramHasNativeImplementation( target, record.name );
+	vkNumMaterialPrograms++;
+	// A stable nonzero identity preserves newShaderStage_t in the material
+	// parser even when the native implementation is still pending.
+	return vkNumMaterialPrograms;
 }
 
 bool RB_DrawSurfHasSoftParticleStage( const drawSurf_t *surf ) {
@@ -651,17 +1028,83 @@ void R_ReloadARBPrograms_f( const idCmdArgs &args ) {
 
 void R_ReportShaderPrograms_f( const idCmdArgs &args ) {
 	(void)args;
-	common->Printf( "reportShaderPrograms: not applicable under the Vulkan backend\n" );
+	common->Printf( "Vulkan material programs: %d registered\n", vkNumMaterialPrograms );
+	for ( int i = 0; i < vkNumMaterialPrograms; i++ ) {
+		const vkMaterialProgramRecord_t &record = vkMaterialPrograms[ i ];
+		common->Printf( "  %3d  %s  %s  %s\n", i + 1,
+				record.target == GL_VERTEX_PROGRAM_ARB ? "vertex  " : "fragment",
+				record.supported ? "native     " : "unsupported",
+				record.name );
+	}
 }
 
 bool R_ValidateGLSLProgram( newShaderStage_t *stage ) {
-	(void)stage;
-	return true;
+	if ( stage == NULL || !stage->glslProgram ) {
+		return false;
+	}
+
+	const vkGLSLProgramFamily_t family =
+			R_GetGLSLProgramFamily( stage->glslProgramName );
+	const bool supported = family > VK_GLSL_PROGRAM_FAMILY_UNKNOWN
+			&& family < VK_GLSL_PROGRAM_FAMILY_COUNT;
+
+	stage->glslProgramLoaded = true;
+	stage->glslProgramValid = supported;
+	stage->glslProgramGeneration = tr.glContextGeneration;
+	// Vulkan pipelines are selected by the stable family enum. Keep all GL
+	// object handles zero so material teardown cannot mistake native Vulkan
+	// identities for live OpenGL resources.
+	stage->glslProgramObject = 0;
+	stage->glslVertexShaderObject = 0;
+	stage->glslFragmentShaderObject = 0;
+	return supported;
+}
+
+idImage *RB_ResolveGLSLShaderTextureImage( const newShaderStage_t *stage,
+		int slot, const drawInteraction_t *din ) {
+	if ( stage == NULL || slot < 0 || slot >= stage->numShaderTextures ) {
+		return NULL;
+	}
+
+	switch ( stage->shaderTextureBindings[ slot ] ) {
+		case GLSL_SHADERTEXTURE_LIGHT_FALLOFF:
+			return din != NULL && din->lightFalloffImage != NULL
+					? din->lightFalloffImage : globalImages->whiteImage;
+		case GLSL_SHADERTEXTURE_LIGHT_IMAGE:
+			return din != NULL && din->lightImage != NULL
+					? din->lightImage : globalImages->whiteImage;
+		case GLSL_SHADERTEXTURE_AMBIENT_NORMAL_MAP:
+			return globalImages->ambientNormalMap != NULL
+					? globalImages->ambientNormalMap : globalImages->defaultImage;
+		case GLSL_SHADERTEXTURE_NORMAL_CUBE_MAP:
+			return globalImages->normalCubeMapImage != NULL
+					? globalImages->normalCubeMapImage : globalImages->defaultImage;
+		case GLSL_SHADERTEXTURE_SPECULAR_TABLE:
+			return globalImages->specularTableImage != NULL
+					? globalImages->specularTableImage : globalImages->defaultImage;
+		case GLSL_SHADERTEXTURE_IMAGE:
+		default:
+			return stage->shaderTextureImages[ slot ];
+	}
 }
 
 bool R_IsARBProgramValid( unsigned int target, unsigned int handle ) {
-	(void)target; (void)handle;
-	return true;
+	if ( handle == 0 || handle > (unsigned int)vkNumMaterialPrograms ) {
+		return false;
+	}
+	const vkMaterialProgramRecord_t &record = vkMaterialPrograms[ handle - 1 ];
+	return record.target == target && record.supported;
+}
+
+vkMaterialProgramFamily_t R_GetARBProgramFamily( unsigned int target, unsigned int handle ) {
+	if ( handle == 0 || handle > (unsigned int)vkNumMaterialPrograms ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN;
+	}
+	const vkMaterialProgramRecord_t &record = vkMaterialPrograms[ handle - 1 ];
+	if ( record.target != target ) {
+		return VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN;
+	}
+	return record.family;
 }
 
 // GL state wrappers (cold)
@@ -791,9 +1234,10 @@ void R_RendererUpload_RecordLegacyUpload( int bytes ) {
 // vk_ShadowMap.cpp narrow accessor (the shadow module state stays file-static there)
 bool VK_ShadowMap_ResourcesKnownGood( bool pointLight );
 
-// Phase F3: per-light-class truth for the front-end stencil-volume elision
-// gate (R_ShadowMapLightWillUseShadowMaps, tr_light.cpp) — true once the
-// shadow module has proven the class's resources this video generation
+// Phase F3 hook for the front-end stencil-volume elision gate
+// (R_ShadowMapLightWillUseShadowMaps, tr_light.cpp). Vulkan deliberately
+// remains conservative until per-view atlas/cube/material admission can be
+// proven before front-end submission, preserving same-frame stencil fallback.
 bool RB_ShadowMapResourcesKnownGood( bool pointLight ) {
 	return VK_ShadowMap_ResourcesKnownGood( pointLight );
 }

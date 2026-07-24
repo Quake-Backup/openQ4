@@ -38,6 +38,7 @@ static const int VK_FRAMES_IN_FLIGHT = 2;
 typedef struct vkDeferredDestroy_s {
 	VkImage				image;
 	VkImageView			view;
+	VkImageView			secondaryView;
 	VkBuffer			buffer;
 	VmaAllocation		allocation;
 } vkDeferredDestroy_t;
@@ -52,6 +53,8 @@ typedef struct vkDeviceContext_s {
 	VkSurfaceKHR		surface;
 	VkPhysicalDevice	physicalDevice;
 	VkPhysicalDeviceProperties deviceProperties;
+	bool				depthClampSupported;
+	bool				depthBoundsSupported;
 	VkDevice			device;
 	uint32_t			graphicsQueueFamily;	// also the present family (required)
 	VkQueue				graphicsQueue;
@@ -63,6 +66,7 @@ typedef struct vkDeviceContext_s {
 	uint32_t			swapchainImageCount;
 	VkImage				swapchainImages[ 8 ];
 	VkImageView			swapchainViews[ 8 ];
+	bool				swapchainTransferSrc;
 
 	VkCommandPool		commandPool;
 	VkCommandBuffer		commandBuffers[ VK_FRAMES_IN_FLIGHT ];
@@ -72,6 +76,10 @@ typedef struct vkDeviceContext_s {
 	VkSemaphore			renderFinishedSemaphores[ 8 ];
 	VkFence				frameFences[ VK_FRAMES_IN_FLIGHT ];
 	int					frameSlot;
+	// Slot whose command buffer is currently recording. frameSlot advances
+	// when a slot is claimed, so mid-frame resource retirement must use
+	// this value to remain behind the recording frame's fence.
+	int					recordingSlot;
 
 	// requested swap interval the swapchain was created with; a change
 	// triggers recreation at the next present
@@ -85,6 +93,12 @@ typedef struct vkDeviceContext_s {
 	// GPU, so a single shared depth image would race); recreated with the
 	// swapchain, transient contents (cleared per 3D view, never stored)
 	VkFormat			depthFormat;			// probed D24S8 or D32S8
+	// Shadow maps need attachment + sampled-image + tile-transfer support.
+	// Keep their format independent from the main depth/stencil attachment so
+	// depth-only fallbacks remain available on devices with narrower support.
+	VkFormat			shadowDepthFormat;
+	bool				shadowDepthHasStencil;
+	bool				shadowDepthFilterLinear;
 	VkImage				depthImages[ VK_FRAMES_IN_FLIGHT ];
 	VkImageView			depthViews[ VK_FRAMES_IN_FLIGHT ];
 	VmaAllocation		depthAllocations[ VK_FRAMES_IN_FLIGHT ];
@@ -125,7 +139,8 @@ bool	VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user );
 
 // queues GPU objects for destruction once the current frame slot's fence
 // has cycled; any handle may be VK_NULL_HANDLE
-void	VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, VmaAllocation allocation );
+void	VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, VmaAllocation allocation,
+			VkImageView secondaryView = VK_NULL_HANDLE );
 
 // drains the destroy queue for a slot whose fence has just been waited on
 void	VK_Device_FlushDeferredDestroys( int slot );

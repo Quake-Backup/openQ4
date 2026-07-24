@@ -73,6 +73,100 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VK_DebugMessengerCallback(
 
 /*
 ====================
+VK_Device_DepthFormatHasStencil
+====================
+*/
+static bool VK_Device_DepthFormatHasStencil( VkFormat format ) {
+	switch ( format ) {
+		case VK_FORMAT_D16_UNORM_S8_UINT:
+		case VK_FORMAT_D24_UNORM_S8_UINT:
+		case VK_FORMAT_D32_SFLOAT_S8_UINT:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/*
+====================
+VK_Device_SelectShadowDepthFormat
+
+Shadow maps are depth attachments and sampled compare images; projected-cache
+reuse also copies depth tiles to and from the live atlas. Probe that combined
+usage independently from the main depth/stencil attachment so a depth-only
+format remains a valid fallback. Vulkan 1.3's comparison feature bit prevents
+selecting a generally sampleable format that sampler*Shadow cannot use.
+Preserve candidate priority within each tier, but prefer a linearly filterable
+format before accepting the nearest-filter fallback.
+====================
+*/
+static void VK_Device_SelectShadowDepthFormat( void ) {
+	vkCtx.shadowDepthFormat = VK_FORMAT_UNDEFINED;
+	vkCtx.shadowDepthHasStencil = false;
+	vkCtx.shadowDepthFilterLinear = false;
+
+	static const VkFormat candidates[] = {
+		VK_FORMAT_D24_UNORM_S8_UINT,
+		VK_FORMAT_D32_SFLOAT_S8_UINT,
+		VK_FORMAT_D32_SFLOAT,
+		VK_FORMAT_X8_D24_UNORM_PACK32,
+		VK_FORMAT_D16_UNORM,
+		VK_FORMAT_D16_UNORM_S8_UINT
+	};
+	const VkFormatFeatureFlags2 requiredFeatures =
+			VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT |
+			VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+			VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT |
+			VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+			VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+	VkFormat nearestFallback = VK_FORMAT_UNDEFINED;
+	bool nearestFallbackHasStencil = false;
+
+	for ( int i = 0; i < (int)( sizeof( candidates ) / sizeof( candidates[ 0 ] ) ); i++ ) {
+		VkFormatProperties3 props3;
+		memset( &props3, 0, sizeof( props3 ) );
+		props3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+		VkFormatProperties2 props2;
+		memset( &props2, 0, sizeof( props2 ) );
+		props2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+		props2.pNext = &props3;
+		vkGetPhysicalDeviceFormatProperties2( vkCtx.physicalDevice, candidates[ i ], &props2 );
+		if ( ( props3.optimalTilingFeatures & requiredFeatures ) != requiredFeatures ) {
+			continue;
+		}
+
+		const bool linearFilter =
+				( props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) != 0;
+		if ( !linearFilter ) {
+			if ( nearestFallback == VK_FORMAT_UNDEFINED ) {
+				nearestFallback = candidates[ i ];
+				nearestFallbackHasStencil = VK_Device_DepthFormatHasStencil( candidates[ i ] );
+			}
+			continue;
+		}
+
+		vkCtx.shadowDepthFormat = candidates[ i ];
+		vkCtx.shadowDepthHasStencil = VK_Device_DepthFormatHasStencil( candidates[ i ] );
+		vkCtx.shadowDepthFilterLinear = true;
+		break;
+	}
+
+	if ( vkCtx.shadowDepthFormat == VK_FORMAT_UNDEFINED && nearestFallback != VK_FORMAT_UNDEFINED ) {
+		vkCtx.shadowDepthFormat = nearestFallback;
+		vkCtx.shadowDepthHasStencil = nearestFallbackHasStencil;
+	}
+
+	if ( vkCtx.shadowDepthFormat == VK_FORMAT_UNDEFINED ) {
+		common->Warning( "Vulkan: no attachment+sampled+transfer compare-capable depth format available; shadow maps disabled" );
+		return;
+	}
+
+	common->Printf( "Vulkan: shadow depth format=%d, compare filtering=%s\n",
+			(int)vkCtx.shadowDepthFormat, vkCtx.shadowDepthFilterLinear ? "linear" : "nearest" );
+}
+
+/*
+====================
 VK_Device_DestroySwapchainObjects
 ====================
 */
@@ -92,6 +186,7 @@ static void VK_Device_DestroySwapchainObjects( void ) {
 		vkCtx.swapchain = VK_NULL_HANDLE;
 	}
 	vkCtx.swapchainImageCount = 0;
+	vkCtx.swapchainTransferSrc = false;
 
 	for ( int i = 0; i < VK_FRAMES_IN_FLIGHT; i++ ) {
 		if ( vkCtx.depthViews[ i ] != VK_NULL_HANDLE ) {
@@ -144,7 +239,7 @@ static bool VK_Device_CreateDepthImages( void ) {
 		ici.arrayLayers = 1;
 		ici.samples = VK_SAMPLE_COUNT_1_BIT;
 		ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-		ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
 		VmaAllocationCreateInfo vaci;
 		memset( &vaci, 0, sizeof( vaci ) );
@@ -277,6 +372,10 @@ static bool VK_Device_CreateSwapchain( void ) {
 	sci.imageExtent = extent;
 	sci.imageArrayLayers = 1;
 	sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	const bool transferSrcSupported = ( caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) != 0;
+	if ( transferSrcSupported ) {
+		sci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	}
 	sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	sci.preTransform = caps.currentTransform;
 	sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -299,6 +398,7 @@ static bool VK_Device_CreateSwapchain( void ) {
 	vkCtx.swapchainExtent = extent;
 	vkCtx.presentMode = presentMode;
 	vkCtx.swapInterval = requestedInterval;
+	vkCtx.swapchainTransferSrc = transferSrcSupported;
 
 	uint32_t count = 0;
 	vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, NULL );
@@ -343,6 +443,9 @@ static bool VK_Device_CreateSwapchain( void ) {
 
 	common->Printf( "Vulkan: created swapchain %ux%u format=%d images=%u presentMode=%d\n",
 			extent.width, extent.height, (int)chosen.format, count, (int)presentMode );
+	if ( !vkCtx.swapchainTransferSrc ) {
+		common->Warning( "Vulkan: swapchain does not support transfer-source captures; screenshots and backbuffer feedback are unavailable" );
+	}
 	return true;
 }
 
@@ -506,6 +609,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	vkGetPhysicalDeviceProperties( vkCtx.physicalDevice, &vkCtx.deviceProperties );
 	common->Printf( "Vulkan: device %d '%s' (queue family %u)\n",
 			chosenDevice, vkCtx.deviceProperties.deviceName, chosenQueueFamily );
+	VK_Device_SelectShadowDepthFormat();
 
 	// logical device: swapchain + the VK 1.3 dynamic-rendering/sync2 floor
 	const float queuePriority = 1.0f;
@@ -524,8 +628,9 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	features13.dynamicRendering = VK_TRUE;
 	features13.synchronization2 = VK_TRUE;
 
-	// base features: anisotropic filtering when the device offers it (the
-	// sampler cache only enables it per-sampler when this succeeded)
+	// Base features: anisotropic filtering for the sampler cache, depth clamp
+	// for point-shadow casters, and depth bounds for stencil-volume fill
+	// reduction. Every optional feature remains disabled when unsupported.
 	VkPhysicalDeviceFeatures supported;
 	vkGetPhysicalDeviceFeatures( vkCtx.physicalDevice, &supported );
 	VkPhysicalDeviceFeatures2 features2;
@@ -533,6 +638,13 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 	features2.pNext = &features13;
 	features2.features.samplerAnisotropy = supported.samplerAnisotropy;
+	features2.features.depthClamp = supported.depthClamp;
+	features2.features.depthBounds = supported.depthBounds;
+	vkCtx.depthClampSupported = supported.depthClamp == VK_TRUE;
+	vkCtx.depthBoundsSupported = supported.depthBounds == VK_TRUE;
+	common->Printf( "Vulkan: optional depth features clamp=%d bounds=%d\n",
+			vkCtx.depthClampSupported ? 1 : 0,
+			vkCtx.depthBoundsSupported ? 1 : 0 );
 
 	VkDeviceCreateInfo dci;
 	memset( &dci, 0, sizeof( dci ) );
@@ -714,6 +826,7 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 
 	const int slot = vkCtx.frameSlot;
 	vkCtx.frameSlot = ( vkCtx.frameSlot + 1 ) % VK_FRAMES_IN_FLIGHT;
+	vkCtx.recordingSlot = slot;
 
 	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ], VK_TRUE, UINT64_MAX );
 	VK_Device_FlushDeferredDestroys( slot );
@@ -889,11 +1002,13 @@ bool VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user ) {
 VK_Device_DeferDestroy / VK_Device_FlushDeferredDestroys
 ====================
 */
-void VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, VmaAllocation allocation ) {
-	if ( image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && buffer == VK_NULL_HANDLE && allocation == NULL ) {
+void VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, VmaAllocation allocation,
+		VkImageView secondaryView ) {
+	if ( image == VK_NULL_HANDLE && view == VK_NULL_HANDLE && secondaryView == VK_NULL_HANDLE
+			&& buffer == VK_NULL_HANDLE && allocation == NULL ) {
 		return;
 	}
-	const int slot = vkCtx.frameSlot;
+	const int slot = vkCtx.recordingSlot;
 	if ( vkCtx.numDeferredDestroys[ slot ] >= VK_MAX_DEFERRED_DESTROYS ) {
 		// queue full: block for safety rather than leak or free early
 		vkDeviceWaitIdle( vkCtx.device );
@@ -904,6 +1019,7 @@ void VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, V
 	vkDeferredDestroy_t &entry = vkCtx.deferredDestroys[ slot ][ vkCtx.numDeferredDestroys[ slot ]++ ];
 	entry.image = image;
 	entry.view = view;
+	entry.secondaryView = secondaryView;
 	entry.buffer = buffer;
 	entry.allocation = allocation;
 }
@@ -913,6 +1029,9 @@ void VK_Device_FlushDeferredDestroys( int slot ) {
 		vkDeferredDestroy_t &entry = vkCtx.deferredDestroys[ slot ][ i ];
 		if ( entry.view != VK_NULL_HANDLE ) {
 			vkDestroyImageView( vkCtx.device, entry.view, NULL );
+		}
+		if ( entry.secondaryView != VK_NULL_HANDLE && entry.secondaryView != entry.view ) {
+			vkDestroyImageView( vkCtx.device, entry.secondaryView, NULL );
 		}
 		if ( entry.image != VK_NULL_HANDLE && vkCtx.allocator != NULL ) {
 			vmaDestroyImage( vkCtx.allocator, entry.image, entry.allocation );

@@ -227,7 +227,7 @@ FakeWndProc
 Only used to get wglExtensions
 ====================
 */
-LONG WINAPI FakeWndProc (
+LRESULT CALLBACK FakeWndProc (
     HWND    hWnd,
     UINT    uMsg,
     WPARAM  wParam,
@@ -531,7 +531,7 @@ static void GLW_CreateWindowClasses( void ) {
 	memset( &wc, 0, sizeof( wc ) );
 
 	wc.style         = 0;
-	wc.lpfnWndProc   = (WNDPROC) MainWndProc;
+	wc.lpfnWndProc   = MainWndProc;
 	wc.cbClsExtra    = 0;
 	wc.cbWndExtra    = 0;
 	wc.hInstance     = win32.hInstance;
@@ -549,7 +549,7 @@ static void GLW_CreateWindowClasses( void ) {
 	// now register the fake window class that is only used
 	// to get wgl extensions
 	wc.style         = 0;
-	wc.lpfnWndProc   = (WNDPROC) FakeWndProc;
+	wc.lpfnWndProc   = FakeWndProc;
 	wc.cbClsExtra    = 0;
 	wc.cbWndExtra    = 0;
 	wc.hInstance     = win32.hInstance;

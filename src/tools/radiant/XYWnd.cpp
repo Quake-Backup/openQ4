@@ -518,7 +518,7 @@ CXYWnd::CXYWnd() {
 	g_bPathMode = false;
 	g_nPathCount = 0;
 	g_nPathLimit = 0;
-	m_nTimerID = -1;
+	m_nTimerID = 0;
 	m_nButtonstate = 0;
 	XY_Init();
 }
@@ -569,7 +569,7 @@ BEGIN_MESSAGE_MAP(CXYWnd, CWnd)
 	ON_COMMAND_RANGE(ID_ENTITY_START, ID_ENTITY_END, OnEntityCreate)
 END_MESSAGE_MAP()
 // CXYWnd message handlers
-LONG WINAPI XYWndProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK XYWndProc(HWND, UINT, WPARAM, LPARAM);
 
 /*
  =======================================================================================================================
@@ -642,7 +642,7 @@ static unsigned s_stipple[32] = {
     WXY_WndProc
  =======================================================================================================================
  */
-LONG WINAPI XYWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK XYWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	switch (uMsg)
 	{
 		case WM_DESTROY:
@@ -1226,7 +1226,7 @@ void CXYWnd::OnMouseMove(UINT nFlags, CPoint point) {
 			m_ptDragAdj.y = fAdjustment;
 		}
 
-		if (m_nTimerID == -1) {
+		if (m_nTimerID == 0) {
 			m_nTimerID = SetTimer(100, 50, NULL);
 			m_ptDrag = point;
 			m_ptDragTotal = 0;
@@ -1235,12 +1235,12 @@ void CXYWnd::OnMouseMove(UINT nFlags, CPoint point) {
 		return;
 	}
 
-	// else if (m_nTimerID != -1)
-	if (m_nTimerID != -1) {
+	// else if (m_nTimerID != 0)
+	if (m_nTimerID != 0) {
 		KillTimer(m_nTimerID);
 		pressx -= m_ptDragTotal.x;
 		pressy += m_ptDragTotal.y;
-		m_nTimerID = -1;
+		m_nTimerID = 0;
 
 		// return;
 	}
@@ -2101,7 +2101,7 @@ bool MergeMenu(CMenu * pMenuDestination, const CMenu * pMenuAdd, bool bTopLevel 
 			HMENU hNewMenu = NewPopupMenu.GetSafeHmenu();
 			if (pMenuDestination->InsertMenu(iInsertPosDefault,
 				MF_BYPOSITION | MF_POPUP | MF_ENABLED, 
-				(UINT)hNewMenu, sMenuAddString ))
+					reinterpret_cast< UINT_PTR >( hNewMenu ), sMenuAddString ))
 			{
 				// don't forget to correct the item count
 				iMenuDestItemCount++;
@@ -2172,7 +2172,7 @@ void CXYWnd::HandleDrop() {
 					if (pChild) {
 						pMakeEntityPop->AppendMenu (
 							MF_POPUP,
-							reinterpret_cast < unsigned int > (pChild->GetSafeHmenu()),
+							reinterpret_cast< UINT_PTR >( pChild->GetSafeHmenu() ),
 							strActive
 						);
 						g_ptrMenus.Add(pChild);
@@ -2191,7 +2191,7 @@ void CXYWnd::HandleDrop() {
 				if (pChild) {
 					pMakeEntityPop->AppendMenu (
 						MF_POPUP,
-						reinterpret_cast < unsigned int > (pChild->GetSafeHmenu()),
+						reinterpret_cast< UINT_PTR >( pChild->GetSafeHmenu() ),
 						strActive
 					);
 					g_ptrMenus.Add(pChild);
@@ -2207,7 +2207,7 @@ void CXYWnd::HandleDrop() {
 		if ( pMakeEntityPop != &m_mnuDrop ) {
 			m_mnuDrop.AppendMenu (
 				MF_POPUP,
-				reinterpret_cast < unsigned int > (pMakeEntityPop->GetSafeHmenu()),
+				reinterpret_cast< UINT_PTR >( pMakeEntityPop->GetSafeHmenu() ),
 				"Make Entity"
 			);
 		}
@@ -4383,7 +4383,7 @@ idVec3 &CXYWnd::RotateOrigin() {
  =======================================================================================================================
  =======================================================================================================================
  */
-void CXYWnd::OnTimer(UINT nIDEvent) {
+void CXYWnd::OnTimer(UINT_PTR nIDEvent) {
 	if (nIDEvent == 100) {
 		int nDim1 = (m_nViewType == YZ) ? 1 : 0;
 		int nDim2 = (m_nViewType == XY) ? 1 : 2;

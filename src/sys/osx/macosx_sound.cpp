@@ -42,9 +42,9 @@ public:
     bool	Initialize( );
 
 	// OSX driver doesn't support memory map API
-	bool	Lock( void **pDSLockedBuffer, ulong *dwDSLockedBufferSize ) { return false; }
+	bool	Lock( void **pDSLockedBuffer, uint32_t *dwDSLockedBufferSize ) { return false; }
 	bool	Unlock( void *pDSLockedBuffer, dword dwDSLockedBufferSize ) { return false; }
-	bool	GetCurrentPosition( ulong *pdwCurrentWriteCursor ) { return false; }
+	bool	GetCurrentPosition( uint32_t *pdwCurrentWriteCursor ) { return false; }
 	int		GetMixBufferSize( void )  { return 0; }
 	
 	int		GetNumberOfSpeakers( void );
@@ -439,7 +439,7 @@ int	idAudioHardwareOSX::GetNumberOfSpeakers() {
  */
 bool Sys_LoadOpenAL( void ) {
 	OSErr	err;
-	long gestaltOSVersion;
+	SInt32 gestaltOSVersion = 0;
 	err = Gestalt(gestaltSystemVersion, &gestaltOSVersion);
 	if ( err || gestaltOSVersion < 0x1040 ) {
 		return false;

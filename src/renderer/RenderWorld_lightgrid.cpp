@@ -123,7 +123,7 @@ typedef struct lightGridBakeAreaFileStats_s {
 } lightGridBakeAreaFileStats_t;
 
 typedef struct lightGridBakeFileStats_s {
-	unsigned long		settingsHash;
+	uint32_t			settingsHash;
 	int					numPortalAreas;
 	int					bakeAreaCount;
 	int					totalProbes;
@@ -1283,35 +1283,35 @@ static void LightGrid_AddAreaFileStats( lightGridBakeFileStats_t &stats, const L
 	}
 }
 
-static void LightGrid_HashBytes( unsigned long &hash, const void *data, int bytes ) {
+static void LightGrid_HashBytes( uint32_t &hash, const void *data, int bytes ) {
 	CRC32_UpdateChecksum( hash, data, bytes );
 }
 
-static void LightGrid_HashInt( unsigned long &hash, int value ) {
+static void LightGrid_HashInt( uint32_t &hash, int value ) {
 	LightGrid_HashBytes( hash, &value, sizeof( value ) );
 }
 
-static void LightGrid_HashBool( unsigned long &hash, bool value ) {
+static void LightGrid_HashBool( uint32_t &hash, bool value ) {
 	const int intValue = value ? 1 : 0;
 	LightGrid_HashInt( hash, intValue );
 }
 
-static void LightGrid_HashFloat( unsigned long &hash, float value ) {
+static void LightGrid_HashFloat( uint32_t &hash, float value ) {
 	LightGrid_HashBytes( hash, &value, sizeof( value ) );
 }
 
-static void LightGrid_HashVec3( unsigned long &hash, const idVec3 &value ) {
+static void LightGrid_HashVec3( uint32_t &hash, const idVec3 &value ) {
 	LightGrid_HashFloat( hash, value.x );
 	LightGrid_HashFloat( hash, value.y );
 	LightGrid_HashFloat( hash, value.z );
 }
 
-static void LightGrid_HashString( unsigned long &hash, const char *value ) {
+static void LightGrid_HashString( uint32_t &hash, const char *value ) {
 	const char *safeValue = ( value != NULL ) ? value : "";
 	CRC32_UpdateChecksum( hash, safeValue, idStr::Length( safeValue ) + 1 );
 }
 
-static void LightGrid_HashFileContents( unsigned long &hash, const char *relativePath ) {
+static void LightGrid_HashFileContents( uint32_t &hash, const char *relativePath ) {
 	LightGrid_HashString( hash, relativePath );
 
 	void *buffer = NULL;
@@ -1325,8 +1325,8 @@ static void LightGrid_HashFileContents( unsigned long &hash, const char *relativ
 	}
 }
 
-static unsigned long LightGrid_CalculateBakeSettingsHash( const lightGridBakeOptions_t &options, const idRenderWorldLocal *world ) {
-	unsigned long hash;
+static uint32_t LightGrid_CalculateBakeSettingsHash( const lightGridBakeOptions_t &options, const idRenderWorldLocal *world ) {
+	uint32_t hash;
 	CRC32_InitChecksum( hash );
 
 	LightGrid_HashString( hash, "openQ4 lightgrid bake settings" );
@@ -1818,7 +1818,7 @@ static bool LightGrid_WriteLightGridPackFile( const idRenderWorldLocal &world, c
 
 static void LightGrid_WriteBakeStatsBlock( idFile *file, const lightGridBakeOptions_t &options, const lightGridBakeFileStats_t &stats, const idRenderWorldLocal *world ) {
 	char settingsHashString[16];
-	idStr::snPrintf( settingsHashString, sizeof( settingsHashString ), "%08lx", stats.settingsHash );
+	idStr::snPrintf( settingsHashString, sizeof( settingsHashString ), "%08x", static_cast<unsigned int>( stats.settingsHash ) );
 
 	file->WriteFloatString( "lightGridBakeStats {\n" );
 	file->WriteFloatString( "\theaderVersion %i\n", LIGHTGRID_BAKE_HEADER_VERSION );
@@ -1953,7 +1953,7 @@ static void LightGrid_PrintBakeProbeProgress( lightGridBakeProgress_t &progress,
 		totalFraction * 100.0f );
 }
 
-static bool LightGrid_ReadBakeStatsHash( idLexer *src, int &headerVersion, unsigned long &settingsHash ) {
+static bool LightGrid_ReadBakeStatsHash( idLexer *src, int &headerVersion, uint32_t &settingsHash ) {
 	headerVersion = 0;
 	settingsHash = 0;
 	bool foundHeaderVersion = false;
@@ -1979,7 +1979,12 @@ static bool LightGrid_ReadBakeStatsHash( idLexer *src, int &headerVersion, unsig
 			if ( !src->ReadToken( &token ) ) {
 				return false;
 			}
-			settingsHash = strtoul( token.c_str(), NULL, 0 );
+			char *end = NULL;
+			const unsigned long long parsedHash = strtoull( token.c_str(), &end, 16 );
+			if ( end == token.c_str() || *end != '\0' || parsedHash > 0xFFFFFFFFULL ) {
+				return false;
+			}
+			settingsHash = static_cast<uint32_t>( parsedHash );
 			foundSettingsHash = true;
 			continue;
 		}
@@ -1988,7 +1993,7 @@ static bool LightGrid_ReadBakeStatsHash( idLexer *src, int &headerVersion, unsig
 	return false;
 }
 
-static bool LightGrid_ReadFileBakeStatsHash( const char *name, int &fileVersion, int &headerVersion, unsigned long &settingsHash ) {
+static bool LightGrid_ReadFileBakeStatsHash( const char *name, int &fileVersion, int &headerVersion, uint32_t &settingsHash ) {
 	fileVersion = 0;
 	headerVersion = 0;
 	settingsHash = 0;
@@ -2040,7 +2045,7 @@ static bool LightGrid_ReadFileBakeStatsHash( const char *name, int &fileVersion,
 bool R_LightGridFileMatchesBakeOptions( const char *name, const lightGridBakeOptions_t &options, const idRenderWorldLocal *world ) {
 	int fileVersion = 0;
 	int headerVersion = 0;
-	unsigned long fileSettingsHash = 0;
+	uint32_t fileSettingsHash = 0;
 	if ( !LightGrid_ReadFileBakeStatsHash( name, fileVersion, headerVersion, fileSettingsHash ) ) {
 		if ( fileVersion > 0 && fileVersion != LIGHTGRID_CURRENT_VERSION ) {
 			common->Printf( "bakeLightGrids: %s uses light-grid cache version %i; rebuilding for version %i\n", name, fileVersion, LIGHTGRID_CURRENT_VERSION );
@@ -2050,13 +2055,13 @@ bool R_LightGridFileMatchesBakeOptions( const char *name, const lightGridBakeOpt
 		return false;
 	}
 
-	const unsigned long expectedSettingsHash = LightGrid_CalculateBakeSettingsHash( options, world );
+	const uint32_t expectedSettingsHash = LightGrid_CalculateBakeSettingsHash( options, world );
 	if ( fileSettingsHash != expectedSettingsHash ) {
 		common->Printf(
-			"bakeLightGrids: %s settings hash changed (file 0x%08lx, current 0x%08lx); rebuilding\n",
+			"bakeLightGrids: %s settings hash changed (file 0x%08x, current 0x%08x); rebuilding\n",
 			name,
-			fileSettingsHash,
-			expectedSettingsHash );
+			static_cast<unsigned int>( fileSettingsHash ),
+			static_cast<unsigned int>( expectedSettingsHash ) );
 		return false;
 	}
 
@@ -2116,13 +2121,13 @@ bool R_LightGridPackFileMatchesBakeOptions( const char *name, const lightGridBak
 		return false;
 	}
 
-	const unsigned long expectedSettingsHash = LightGrid_CalculateBakeSettingsHash( options, world );
+	const uint32_t expectedSettingsHash = LightGrid_CalculateBakeSettingsHash( options, world );
 	if ( fileSettingsHash != static_cast<unsigned int>( expectedSettingsHash ) ) {
 		common->Printf(
-			"bakeLightGrids: %s settings hash changed (file 0x%08x, current 0x%08lx); rebuilding\n",
+			"bakeLightGrids: %s settings hash changed (file 0x%08x, current 0x%08x); rebuilding\n",
 			name,
 			fileSettingsHash,
-			expectedSettingsHash );
+			static_cast<unsigned int>( expectedSettingsHash ) );
 		return false;
 	}
 
@@ -3097,7 +3102,7 @@ bool R_BakeCurrentLightGrids( const lightGridBakeOptions_t &options, const char 
 	}
 
 	common->Printf(
-		"bakeLightGrids: %s has %i valid probes (%i relocated, %i near solid) and %i invalid probes across %i bake areas, capture size %i, blends %i, samples %i, bounces %i, settings 0x%08lx\n",
+		"bakeLightGrids: %s has %i valid probes (%i relocated, %i near solid) and %i invalid probes across %i bake areas, capture size %i, blends %i, samples %i, bounces %i, settings 0x%08x\n",
 		bakeLabel.c_str(),
 		fileStats.validProbes,
 		fileStats.relocatedProbes,
@@ -3108,7 +3113,7 @@ bool R_BakeCurrentLightGrids( const lightGridBakeOptions_t &options, const char 
 		options.blends,
 		options.samples,
 		options.bounces,
-		fileStats.settingsHash );
+		static_cast<unsigned int>( fileStats.settingsHash ) );
 	if ( options.bounces > 1 ) {
 		common->Printf( "bakeLightGrids: bounce 2+ reuse the previous openQ4 bake through the runtime light-grid pass.\n" );
 	}
@@ -3413,8 +3418,8 @@ bool R_BakeCurrentLightGrids( const lightGridBakeOptions_t &options, const char 
 	const int totalMsec = totalEnd - totalStart;
 	common->Printf( "bakeLightGrids: %s completed in %.2f minutes\n", bakeLabel.c_str(), totalMsec / ( 1000.0f * 60.0f ) );
 	common->Printf(
-		"bakeLightGrids: stats settings 0x%08lx, areas %i/%i, probes %i valid / %i relocated / %i near-solid / %i invalid / %i total, processed %i, atlases %i, max atlas %dx%d, captures %i probes / %i faces in %i batches, visibility %i probes / %i traces\n",
-		fileStats.settingsHash,
+		"bakeLightGrids: stats settings 0x%08x, areas %i/%i, probes %i valid / %i relocated / %i near-solid / %i invalid / %i total, processed %i, atlases %i, max atlas %dx%d, captures %i probes / %i faces in %i batches, visibility %i probes / %i traces\n",
+		static_cast<unsigned int>( fileStats.settingsHash ),
 		fileStats.bakeAreaCount,
 		fileStats.numPortalAreas,
 		fileStats.validProbes,

@@ -980,18 +980,23 @@ if host_system == 'linux' and use_sdl3_backend and linux_x11_helpers_enabled
 endif
 
 if cpp.get_argument_syntax() == 'msvc'
-  shared_cpp_args += ['/J', '/FS', '/source-charset:windows-1252', '/execution-charset:windows-1252', '/Zc:strictStrings-']
+  shared_cpp_args += [
+    '/J',
+    '/FS',
+    '/source-charset:windows-1252',
+    '/execution-charset:windows-1252',
+    '/Zc:strictStrings-',
+    '/we4302', # pointer truncation
+    '/we4311', # pointer truncation through an integer
+    '/we4312', # integer widened to a pointer
+  ]
   shared_c_args += ['/FS', '/source-charset:windows-1252', '/execution-charset:windows-1252']
 
-  # Quake 4 legacy code (including integrated BSE sources) currently relies on
-  # pointer-sized casts and old C/C++ constructs that trigger noisy warnings
-  # under modern MSVC defaults.
+  # Keep narrowly scoped suppressions for legacy C/C++ constructs. Pointer/
+  # integer size diagnostics remain enabled so Win64 truncations cannot hide.
   msvc_suppressed_warnings = [
     '/wd4091', # typedef enum pattern without declarator
-    '/wd4302', # truncation on legacy pointer/int casts
     '/wd4305', # double -> float literal truncation
-    '/wd4311', # pointer truncation in legacy alloc/index paths
-    '/wd4312', # integer/pointer size widening in legacy alloc/index paths
     '/wd4838', # narrowing in legacy list constructors
     '/wd5033', # register keyword used in imported legacy code
     '/wd5055', # enum/float comparison in legacy declarations

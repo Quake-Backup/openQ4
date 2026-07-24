@@ -229,7 +229,7 @@ static int MapKey (int key)
 
 LRESULT CALLBACK rvGEViewer::WndProc ( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
 {
-	rvGEViewer* viewer = (rvGEViewer*) GetWindowLong ( hwnd, GWL_USERDATA );
+	rvGEViewer* viewer = reinterpret_cast< rvGEViewer * >( GetWindowLongPtr( hwnd, GWLP_USERDATA ) );
 	
 	switch ( msg )
 	{
@@ -365,13 +365,13 @@ LRESULT CALLBACK rvGEViewer::WndProc ( HWND hwnd, UINT msg, WPARAM wParam, LPARA
 		case WM_CREATE:
 		{
 			CREATESTRUCT* cs = (CREATESTRUCT*) lParam;
-			SetWindowLong ( hwnd, GWL_USERDATA, (LONG)cs->lpCreateParams );
+			SetWindowLongPtr( hwnd, GWLP_USERDATA, reinterpret_cast< LONG_PTR >( cs->lpCreateParams ) );
 					
 			viewer = (rvGEViewer*)cs->lpCreateParams;
 			viewer->mWnd = hwnd;
 			viewer->SetupPixelFormat ( );
 
-			viewer->mToolbar = CreateWindowEx ( 0, TOOLBARCLASSNAME, "", CCS_BOTTOM|WS_CHILD|WS_VISIBLE,0,0,0,0, hwnd, (HMENU)IDR_GUIED_VIEWERTOOLBAR, gApp.GetInstance(), NULL );
+			viewer->mToolbar = CreateWindowEx ( 0, TOOLBARCLASSNAME, "", CCS_BOTTOM|WS_CHILD|WS_VISIBLE,0,0,0,0, hwnd, reinterpret_cast< HMENU >( static_cast< INT_PTR >( IDR_GUIED_VIEWERTOOLBAR ) ), gApp.GetInstance(), NULL );
 
 		    // Send the TB_BUTTONSTRUCTSIZE message, which is required for backward compatibility. 
 			SendMessage( viewer->mToolbar, TB_BUTTONSTRUCTSIZE, ( WPARAM )sizeof( TBBUTTON ), 0 );

@@ -4,10 +4,10 @@
 // docs/dev/plans/2026-07-19-vulkan-phase-f.md).
 //
 // interaction.vert plus the projected shadow coordinate of the GL
-// shadow_interaction.vs contract (single cascade, scratch-first): the four
-// shadow rows are the light's world clip planes localized to the surface's
-// model space CPU-side per space (draw_arb2.cpp:8552-8581), so the shadow
-// coordinate is four dot products against the raw model-space position.
+// shadow_interaction.vs contract: four sets of shadow rows are the light's
+// cascade clip planes localized to the surface's model space CPU-side per
+// space (draw_arb2.cpp:8552-8581), so every shadow coordinate is four dot
+// products against the raw model-space position.
 // Normal-offset shadows push the sampled point along the geometric normal by
 // (world texel size × sinθ) before projecting, fixing self-shadow acne
 // structurally where pure depth bias would detach contact shadows.
@@ -45,13 +45,20 @@ layout(set = 6, binding = 0, std140) uniform InteractionBlock {
 } inter;
 
 layout(set = 7, binding = 1, std140) uniform ShadowBlock {
-    vec4 shadowRow0;
-    vec4 shadowRow1;
-    vec4 shadowRow2;
-    vec4 shadowRow3;
-    vec4 atlasRect;    // composed atlas UV rect (u0, v0, u1, v1); v span inverted for the Vulkan row order
-    vec4 biasParams;   // x: constant bias, y: normal bias, z: texel depth bias, w: normal-offset world units
+    vec4 shadowRow0[4];
+    vec4 shadowRow1[4];
+    vec4 shadowRow2[4];
+    vec4 shadowRow3[4];
+    vec4 atlasRects[4];
+    vec4 splitDepths;
+    vec4 cascadeBiasScale;
+    vec4 texelDepthBias;
+    vec4 normalOffsetWorld;
+    vec4 viewDepthRow;
+    vec4 biasParams;   // x: constant bias, y: normal bias, z: cascade blend, w: cascade count
     vec4 texelSize;    // x,y: 1 / atlas dimensions
+    vec4 filterParams; // x: radius, y: taps, z: mode, w: hardware compare
+    vec4 pcssParams;   // x: light radius, y: max radius, z: effective radius, w: receiver-plane bias
 } shadow;
 
 layout(location = 0) out vec2 vBumpTexCoord;
@@ -62,14 +69,30 @@ layout(location = 4) out vec4 vLightProjectionTexCoord;
 layout(location = 5) out vec3 vLightVector;
 layout(location = 6) out vec3 vHalfAngleVector;
 layout(location = 7) out vec3 vVertexColor;
-layout(location = 8) out vec4 vShadowCoord;
-layout(location = 9) out float vShadowLightCos;
+layout(location = 8) out vec4 vShadowCoord0;
+layout(location = 9) out vec4 vShadowCoord1;
+layout(location = 10) out vec4 vShadowCoord2;
+layout(location = 11) out vec4 vShadowCoord3;
+layout(location = 12) out float vShadowLightCos;
+layout(location = 13) out vec3 vViewVector;
+layout(location = 14) out float vViewDepth;
 
 vec3 TangentSpaceVector(vec3 objectVector) {
     return vec3(
         dot(inTangent0, objectVector),
         dot(inTangent1, objectVector),
         dot(inNormal, objectVector));
+}
+
+vec4 BuildShadowCoord(vec4 position, vec3 normalOffsetDir,
+        float sinTheta, int cascadeIndex) {
+    vec4 offsetPosition = vec4(position.xyz + normalOffsetDir
+        * (shadow.normalOffsetWorld[cascadeIndex] * sinTheta), 1.0);
+    return vec4(
+        dot(offsetPosition, shadow.shadowRow0[cascadeIndex]),
+        dot(offsetPosition, shadow.shadowRow1[cascadeIndex]),
+        dot(offsetPosition, shadow.shadowRow2[cascadeIndex]),
+        dot(offsetPosition, shadow.shadowRow3[cascadeIndex]));
 }
 
 void main() {
@@ -81,6 +104,7 @@ void main() {
 
     vLightVector = TangentSpaceVector(toLight);
     vHalfAngleVector = TangentSpaceVector(normalize(toLight) + normalize(toView));
+    vViewVector = TangentSpaceVector(toView);
 
     vBumpTexCoord = vec2(dot(texCoord, inter.bumpMatrixS), dot(texCoord, inter.bumpMatrixT));
     vDiffuseTexCoord = vec2(dot(texCoord, inter.diffuseMatrixS), dot(texCoord, inter.diffuseMatrixT));
@@ -96,13 +120,12 @@ void main() {
     vec3 shadowNormal = normalize(inNormal);
     float shadowLightCos = max(dot(shadowNormal, normalize(toLight)), 0.0);
     float shadowSinTheta = sqrt(max(1.0 - shadowLightCos * shadowLightCos, 0.0));
-    vec4 offsetPosition = vec4(position.xyz + shadowNormal * (shadow.biasParams.w * shadowSinTheta), 1.0);
-    vShadowCoord = vec4(
-        dot(offsetPosition, shadow.shadowRow0),
-        dot(offsetPosition, shadow.shadowRow1),
-        dot(offsetPosition, shadow.shadowRow2),
-        dot(offsetPosition, shadow.shadowRow3));
+    vShadowCoord0 = BuildShadowCoord(position, shadowNormal, shadowSinTheta, 0);
+    vShadowCoord1 = BuildShadowCoord(position, shadowNormal, shadowSinTheta, 1);
+    vShadowCoord2 = BuildShadowCoord(position, shadowNormal, shadowSinTheta, 2);
+    vShadowCoord3 = BuildShadowCoord(position, shadowNormal, shadowSinTheta, 3);
     vShadowLightCos = shadowLightCos;
+    vViewDepth = max(dot(position, shadow.viewDepthRow), 0.0);
 
     vVertexColor = inColor.rgb * pc.a.x + vec3(pc.a.y);
 

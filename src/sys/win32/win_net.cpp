@@ -56,8 +56,8 @@ static SOCKET	socks_socket;
 static char		socksBuf[4096];
 
 typedef struct {
-	unsigned long ip;
-	unsigned long mask;
+	uint32_t ip;
+	uint32_t mask;
 } net_interface;
 
 #define 		MAX_INTERFACES	32
@@ -243,7 +243,7 @@ static bool Net_StringToSockaddr( const char *s, struct sockaddr *sadr, bool doD
 NET_IPSocket
 ====================
 */
-int NET_IPSocket( const char *net_interface, int port, netadr_t *bound_to ) {
+SOCKET NET_IPSocket( const char *net_interface, int port, netadr_t *bound_to ) {
 	SOCKET				newsocket;
 	struct sockaddr_in	address;
 	unsigned long		_true = 1;
@@ -493,7 +493,7 @@ void NET_OpenSocks( int port ) {
 Net_WaitForUDPPacket
 ==================
 */
-bool Net_WaitForUDPPacket( int netSocket, int timeout ) {
+bool Net_WaitForUDPPacket( SOCKET netSocket, int timeout ) {
 	int					ret;
 	fd_set				set;
 	struct timeval		tv;
@@ -512,7 +512,7 @@ bool Net_WaitForUDPPacket( int netSocket, int timeout ) {
 	tv.tv_sec = 0;
 	tv.tv_usec = timeout * 1000;
 
-	ret = select( netSocket + 1, &set, NULL, NULL, &tv );
+	ret = select( 0, &set, NULL, NULL, &tv );
 
 	if ( ret == -1 ) {
 		common->DPrintf( "Net_WaitForUPDPacket select(): %s\n", strerror( errno ) );
@@ -532,7 +532,7 @@ bool Net_WaitForUDPPacket( int netSocket, int timeout ) {
 Net_GetUDPPacket
 ==================
 */
-bool Net_GetUDPPacket( int netSocket, netadr_t &net_from, char *data, int &size, int maxSize ) {
+bool Net_GetUDPPacket( SOCKET netSocket, netadr_t &net_from, char *data, int &size, int maxSize ) {
 	int 			ret;
 	struct sockaddr	from;
 	int				fromlen;
@@ -598,7 +598,7 @@ bool Net_GetUDPPacket( int netSocket, netadr_t &net_from, char *data, int &size,
 Net_SendUDPPacket
 ==================
 */
-void Net_SendUDPPacket( int netSocket, int length, const void *data, const netadr_t to ) {
+void Net_SendUDPPacket( SOCKET netSocket, int length, const void *data, const netadr_t to ) {
 	int				ret;
 	struct sockaddr	addr;
 
@@ -677,7 +677,7 @@ void Sys_InitNetworking( void ) {
 
 	pAdapterInfo = (IP_ADAPTER_INFO *)malloc( sizeof( IP_ADAPTER_INFO ) );
 	if( !pAdapterInfo ) {
-		common->FatalError( "Sys_InitNetworking: Couldn't malloc( %d )", sizeof( IP_ADAPTER_INFO ) );
+		common->FatalError( "Sys_InitNetworking: Couldn't malloc( %zu )", sizeof( IP_ADAPTER_INFO ) );
 	}
 	ulOutBufLen = sizeof( IP_ADAPTER_INFO );
 
@@ -687,20 +687,20 @@ void Sys_InitNetworking( void ) {
 		free( pAdapterInfo );
 		pAdapterInfo = (IP_ADAPTER_INFO *)malloc( ulOutBufLen ); 
 		if( !pAdapterInfo ) {
-			common->FatalError( "Sys_InitNetworking: Couldn't malloc( %ld )", ulOutBufLen );
+			common->FatalError( "Sys_InitNetworking: Couldn't malloc( %lu )", ulOutBufLen );
 		}
 	}
 
 	if( ( dwRetVal = GetAdaptersInfo( pAdapterInfo, &ulOutBufLen) ) != NO_ERROR ) {
 		// happens if you have no network connection
-		common->Printf( "Sys_InitNetworking: GetAdaptersInfo failed (%ld).\n", dwRetVal );
+		common->Printf( "Sys_InitNetworking: GetAdaptersInfo failed (%lu).\n", dwRetVal );
 	} else {
 		pAdapter = pAdapterInfo;
 		while( pAdapter ) {
 			common->Printf( "Found interface: %s %s - ", pAdapter->AdapterName, pAdapter->Description );
 			pIPAddrString = &pAdapter->IpAddressList;
 			while( pIPAddrString ) {
-				unsigned long ip_a, ip_m;
+				uint32_t ip_a, ip_m;
 				if( !idStr::Icmp( "127.0.0.1", pIPAddrString->IpAddress.String ) ) {
 					foundloopback = true;
 				}
@@ -813,10 +813,9 @@ bool Sys_IsLANAddress( const netadr_t adr ) {
 
 	if( num_interfaces ) {
 		int i;
-		unsigned long *p_ip;
-		unsigned long ip;
-		p_ip = (unsigned long *)&adr.ip[0];
-		ip = ntohl( *p_ip );
+		uint32_t packedIP;
+		memcpy( &packedIP, adr.ip, sizeof( packedIP ) );
+		const uint32_t ip = ntohl( packedIP );
                 
 		for( i=0; i < num_interfaces; i++ ) {
 			if( ( netint[i].ip & netint[i].mask ) == ( ip & netint[i].mask ) ) {

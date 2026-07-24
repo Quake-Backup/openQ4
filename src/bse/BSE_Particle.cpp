@@ -80,10 +80,15 @@ ID_INLINE bool HasTriCapacity(const srfTriangles_t* tri, int addVerts, int addIn
 	if (!tri || addVerts < 0 || addIndexes < 0) {
 		return false;
 	}
-	if (tri->numAllocedVerts > 0 && tri->numVerts + addVerts > tri->numAllocedVerts) {
+	if (tri->numVerts < 0 || tri->numIndexes < 0) {
 		return false;
 	}
-	if (tri->numAllocedIndices > 0 && tri->numIndexes + addIndexes > tri->numAllocedIndices) {
+	if (tri->numAllocedVerts > 0 &&
+		(tri->numVerts > tri->numAllocedVerts || addVerts > tri->numAllocedVerts - tri->numVerts)) {
+		return false;
+	}
+	if (tri->numAllocedIndices > 0 &&
+		(tri->numIndexes > tri->numAllocedIndices || addIndexes > tri->numAllocedIndices - tri->numIndexes)) {
 		return false;
 	}
 	return true;

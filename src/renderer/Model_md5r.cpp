@@ -40,6 +40,42 @@ static const float MD5R_DefaultLODRanges[] = { 100.0f, 250.0f, 500.0f };
 
 /*
 ========================
+R_MD5R_UsePackedRuntimeSurfaces
+
+The Vulkan backend consumes the renderer's classic idDrawVert/index surface
+contract. Packed MD5R light and shadow surfaces carry primitive-batch headers
+and palette data that are not valid flat Vulkan draw geometry, so materialize
+MD5R through the existing CPU-skinned/classic path at the model boundary.
+OpenGL keeps the native packed path.
+========================
+*/
+static ID_INLINE bool R_MD5R_UsePackedRuntimeSurfaces() {
+#if defined( OPENQ4_RENDERER_VK_MODULE )
+	return false;
+#else
+	return true;
+#endif
+}
+
+/*
+========================
+R_MD5R_DeferDynamicTangents
+
+Vulkan ambient-only cube/reflection stages can consume the vertex basis before
+an interaction asks R_CreateAmbientCache to derive it. Classicized animated
+MD5R surfaces therefore need their current-pose basis immediately.
+========================
+*/
+static ID_INLINE bool R_MD5R_DeferDynamicTangents() {
+#if defined( OPENQ4_RENDERER_VK_MODULE )
+	return false;
+#else
+	return r_useDeferredTangents.GetBool();
+#endif
+}
+
+/*
+========================
 R_MD5R_ReadBinaryAwareTimestamp
 ========================
 */
@@ -426,13 +462,332 @@ static void R_MD5R_CalcMeshGeometryProfile( rvMD5RMesh &mesh ) {
 	}
 }
 
+enum md5rVertexDataType_t {
+	MD5R_VERTEX_DATA_INT = 0,
+	MD5R_VERTEX_DATA_FLOAT = TT_FLOAT,
+	MD5R_VERTEX_DATA_FLOAT16 = 0x10000,
+	MD5R_VERTEX_DATA_UINT,
+	MD5R_VERTEX_DATA_INTN,
+	MD5R_VERTEX_DATA_UINTN,
+	MD5R_VERTEX_DATA_COLOR,
+	MD5R_VERTEX_DATA_UBYTE,
+	MD5R_VERTEX_DATA_BYTE,
+	MD5R_VERTEX_DATA_UBYTEN,
+	MD5R_VERTEX_DATA_BYTEN,
+	MD5R_VERTEX_DATA_SHORT,
+	MD5R_VERTEX_DATA_USHORT,
+	MD5R_VERTEX_DATA_SHORTN,
+	MD5R_VERTEX_DATA_USHORTN,
+	MD5R_VERTEX_DATA_UDEC_10_10_10,
+	MD5R_VERTEX_DATA_DEC_10_10_10,
+	MD5R_VERTEX_DATA_UDEC_10_10_10N,
+	MD5R_VERTEX_DATA_DEC_10_10_10N,
+	MD5R_VERTEX_DATA_UDEC_10_11_11,
+	MD5R_VERTEX_DATA_DEC_10_11_11,
+	MD5R_VERTEX_DATA_UDEC_10_11_11N,
+	MD5R_VERTEX_DATA_DEC_10_11_11N,
+	MD5R_VERTEX_DATA_UDEC_11_11_10,
+	MD5R_VERTEX_DATA_DEC_11_11_10,
+	MD5R_VERTEX_DATA_UDEC_11_11_10N,
+	MD5R_VERTEX_DATA_DEC_11_11_10N
+};
+
 /*
 ===========================
-R_MD5R_TokenTypeIsFloat
+R_MD5R_VertexDataTypeLanesPerWord
 ===========================
 */
-static bool R_MD5R_TokenTypeIsFloat( int tokenType ) {
-	return ( tokenType & TT_FLOAT ) != 0;
+static int R_MD5R_VertexDataTypeLanesPerWord( int dataType ) {
+	switch ( dataType ) {
+		case MD5R_VERTEX_DATA_FLOAT16:
+		case MD5R_VERTEX_DATA_SHORT:
+		case MD5R_VERTEX_DATA_USHORT:
+		case MD5R_VERTEX_DATA_SHORTN:
+		case MD5R_VERTEX_DATA_USHORTN:
+			return 2;
+
+		case MD5R_VERTEX_DATA_COLOR:
+		case MD5R_VERTEX_DATA_UBYTE:
+		case MD5R_VERTEX_DATA_BYTE:
+		case MD5R_VERTEX_DATA_UBYTEN:
+		case MD5R_VERTEX_DATA_BYTEN:
+			return 4;
+
+		case MD5R_VERTEX_DATA_UDEC_10_10_10:
+		case MD5R_VERTEX_DATA_DEC_10_10_10:
+		case MD5R_VERTEX_DATA_UDEC_10_10_10N:
+		case MD5R_VERTEX_DATA_DEC_10_10_10N:
+		case MD5R_VERTEX_DATA_UDEC_10_11_11:
+		case MD5R_VERTEX_DATA_DEC_10_11_11:
+		case MD5R_VERTEX_DATA_UDEC_10_11_11N:
+		case MD5R_VERTEX_DATA_DEC_10_11_11N:
+		case MD5R_VERTEX_DATA_UDEC_11_11_10:
+		case MD5R_VERTEX_DATA_DEC_11_11_10:
+		case MD5R_VERTEX_DATA_UDEC_11_11_10N:
+		case MD5R_VERTEX_DATA_DEC_11_11_10N:
+			return 3;
+
+		default:
+			return 1;
+	}
+}
+
+/*
+===========================
+R_MD5R_HalfToFloat
+===========================
+*/
+static float R_MD5R_HalfToFloat( unsigned int halfValue ) {
+	const unsigned int sign = ( halfValue & 0x8000u ) << 16;
+	int exponent = static_cast<int>( ( halfValue >> 10 ) & 0x1fu );
+	unsigned int mantissa = halfValue & 0x3ffu;
+	unsigned int floatBits;
+
+	if ( exponent == 0 ) {
+		if ( mantissa == 0 ) {
+			floatBits = sign;
+		} else {
+			while ( ( mantissa & 0x400u ) == 0 ) {
+				mantissa <<= 1;
+				--exponent;
+			}
+			mantissa &= 0x3ffu;
+			floatBits = sign | ( static_cast<unsigned int>( exponent + 113 ) << 23 ) | ( mantissa << 13 );
+		}
+	} else if ( exponent == 31 ) {
+		floatBits = sign | 0x7f800000u | ( mantissa << 13 );
+	} else {
+		floatBits = sign | ( static_cast<unsigned int>( exponent + 112 ) << 23 ) | ( mantissa << 13 );
+	}
+
+	float value;
+	memcpy( &value, &floatBits, sizeof( value ) );
+	return value;
+}
+
+/*
+===========================
+R_MD5R_SignExtend
+===========================
+*/
+static int R_MD5R_SignExtend( unsigned int value, int bits ) {
+	const unsigned int signBit = 1u << ( bits - 1 );
+	const unsigned int mask = ( 1u << bits ) - 1u;
+	value &= mask;
+	return ( value & signBit ) != 0 ? static_cast<int>( value ) - static_cast<int>( 1u << bits ) : static_cast<int>( value );
+}
+
+/*
+===========================
+R_MD5R_DecodePackedFloatComponents
+===========================
+*/
+static void R_MD5R_DecodePackedFloatComponents( unsigned int packedValue, int dataType, float *values, int count ) {
+	int laneBits[ 4 ] = { 32, 0, 0, 0 };
+	int laneShifts[ 4 ] = { 0, 0, 0, 0 };
+	float laneScales[ 4 ] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	bool signedStorage = false;
+
+	switch ( dataType ) {
+		case MD5R_VERTEX_DATA_FLOAT16:
+			for ( int lane = 0; lane < count && lane < 2; ++lane ) {
+				values[ lane ] = R_MD5R_HalfToFloat( ( packedValue >> ( lane == 0 ? 16 : 0 ) ) & 0xffffu );
+			}
+			return;
+
+		case MD5R_VERTEX_DATA_COLOR:
+		case MD5R_VERTEX_DATA_UBYTE:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = laneBits[ 3 ] = 8;
+			laneShifts[ 1 ] = 8;
+			laneShifts[ 2 ] = 16;
+			laneShifts[ 3 ] = 24;
+			break;
+		case MD5R_VERTEX_DATA_UBYTEN:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = laneBits[ 3 ] = 8;
+			laneShifts[ 1 ] = 8;
+			laneShifts[ 2 ] = 16;
+			laneShifts[ 3 ] = 24;
+			laneScales[ 0 ] = laneScales[ 1 ] = laneScales[ 2 ] = laneScales[ 3 ] = 1.0f / 255.0f;
+			break;
+		case MD5R_VERTEX_DATA_BYTE:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = laneBits[ 3 ] = 8;
+			laneShifts[ 1 ] = 8;
+			laneShifts[ 2 ] = 16;
+			laneShifts[ 3 ] = 24;
+			signedStorage = true;
+			break;
+		case MD5R_VERTEX_DATA_BYTEN:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = laneBits[ 3 ] = 8;
+			laneShifts[ 1 ] = 8;
+			laneShifts[ 2 ] = 16;
+			laneShifts[ 3 ] = 24;
+			laneScales[ 0 ] = laneScales[ 1 ] = laneScales[ 2 ] = laneScales[ 3 ] = 1.0f / 127.0f;
+			signedStorage = true;
+			break;
+
+		case MD5R_VERTEX_DATA_SHORT:
+			laneBits[ 0 ] = laneBits[ 1 ] = 16;
+			laneShifts[ 0 ] = 16;
+			signedStorage = true;
+			break;
+		case MD5R_VERTEX_DATA_SHORTN:
+			laneBits[ 0 ] = laneBits[ 1 ] = 16;
+			laneShifts[ 0 ] = 16;
+			laneScales[ 0 ] = laneScales[ 1 ] = 1.0f / 32767.0f;
+			signedStorage = true;
+			break;
+		case MD5R_VERTEX_DATA_USHORT:
+			laneBits[ 0 ] = laneBits[ 1 ] = 16;
+			laneShifts[ 0 ] = 16;
+			break;
+		case MD5R_VERTEX_DATA_USHORTN:
+			laneBits[ 0 ] = laneBits[ 1 ] = 16;
+			laneShifts[ 0 ] = 16;
+			laneScales[ 0 ] = laneScales[ 1 ] = 1.0f / 65535.0f;
+			break;
+
+		case MD5R_VERTEX_DATA_UDEC_10_10_10:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 20;
+			laneShifts[ 1 ] = 10;
+			break;
+		case MD5R_VERTEX_DATA_DEC_10_10_10:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 20;
+			laneShifts[ 1 ] = 10;
+			signedStorage = true;
+			break;
+		case MD5R_VERTEX_DATA_UDEC_10_10_10N:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 20;
+			laneShifts[ 1 ] = 10;
+			laneScales[ 0 ] = laneScales[ 1 ] = laneScales[ 2 ] = 1.0f / 1023.0f;
+			break;
+		case MD5R_VERTEX_DATA_DEC_10_10_10N:
+			laneBits[ 0 ] = laneBits[ 1 ] = laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 20;
+			laneShifts[ 1 ] = 10;
+			laneScales[ 0 ] = laneScales[ 1 ] = laneScales[ 2 ] = 1.0f / 511.0f;
+			signedStorage = true;
+			break;
+
+		case MD5R_VERTEX_DATA_UDEC_10_11_11:
+			laneBits[ 0 ] = 10;
+			laneBits[ 1 ] = laneBits[ 2 ] = 11;
+			laneShifts[ 0 ] = 22;
+			laneShifts[ 1 ] = 11;
+			break;
+		case MD5R_VERTEX_DATA_DEC_10_11_11:
+			laneBits[ 0 ] = 10;
+			laneBits[ 1 ] = laneBits[ 2 ] = 11;
+			laneShifts[ 0 ] = 22;
+			laneShifts[ 1 ] = 11;
+			signedStorage = true;
+			break;
+		case MD5R_VERTEX_DATA_UDEC_10_11_11N:
+			laneBits[ 0 ] = 10;
+			laneBits[ 1 ] = laneBits[ 2 ] = 11;
+			laneShifts[ 0 ] = 22;
+			laneShifts[ 1 ] = 11;
+			laneScales[ 0 ] = 1.0f / 1023.0f;
+			laneScales[ 1 ] = laneScales[ 2 ] = 1.0f / 2047.0f;
+			break;
+		case MD5R_VERTEX_DATA_DEC_10_11_11N:
+			laneBits[ 0 ] = 10;
+			laneBits[ 1 ] = laneBits[ 2 ] = 11;
+			laneShifts[ 0 ] = 22;
+			laneShifts[ 1 ] = 11;
+			laneScales[ 0 ] = 1.0f / 511.0f;
+			laneScales[ 1 ] = laneScales[ 2 ] = 1.0f / 1023.0f;
+			signedStorage = true;
+			break;
+
+		case MD5R_VERTEX_DATA_UDEC_11_11_10:
+			laneBits[ 0 ] = laneBits[ 1 ] = 11;
+			laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 21;
+			laneShifts[ 1 ] = 10;
+			break;
+		case MD5R_VERTEX_DATA_DEC_11_11_10:
+			laneBits[ 0 ] = laneBits[ 1 ] = 11;
+			laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 21;
+			laneShifts[ 1 ] = 10;
+			signedStorage = true;
+			break;
+		case MD5R_VERTEX_DATA_UDEC_11_11_10N:
+			laneBits[ 0 ] = laneBits[ 1 ] = 11;
+			laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 21;
+			laneShifts[ 1 ] = 10;
+			laneScales[ 0 ] = laneScales[ 1 ] = 1.0f / 2047.0f;
+			laneScales[ 2 ] = 1.0f / 1023.0f;
+			break;
+		case MD5R_VERTEX_DATA_DEC_11_11_10N:
+			laneBits[ 0 ] = laneBits[ 1 ] = 11;
+			laneBits[ 2 ] = 10;
+			laneShifts[ 0 ] = 21;
+			laneShifts[ 1 ] = 10;
+			laneScales[ 0 ] = laneScales[ 1 ] = 1.0f / 1023.0f;
+			laneScales[ 2 ] = 1.0f / 511.0f;
+			signedStorage = true;
+			break;
+
+		default:
+			values[ 0 ] = static_cast<float>( static_cast<int>( packedValue ) );
+			return;
+	}
+
+	for ( int lane = 0; lane < count; ++lane ) {
+		const int bits = laneBits[ lane ];
+		const unsigned int mask = ( 1u << bits ) - 1u;
+		const unsigned int rawValue = ( packedValue >> laneShifts[ lane ] ) & mask;
+		const float numericValue = signedStorage
+			? static_cast<float>( R_MD5R_SignExtend( rawValue, bits ) )
+			: static_cast<float>( rawValue );
+		values[ lane ] = numericValue * laneScales[ lane ];
+	}
+}
+
+/*
+===========================
+R_MD5R_ParseFloatComponents
+===========================
+*/
+static void R_MD5R_ParseFloatComponents( Lexer &parser, int dataType, int count, float *values ) {
+	if ( dataType == MD5R_VERTEX_DATA_FLOAT ) {
+		for ( int lane = 0; lane < count; ++lane ) {
+			values[ lane ] = parser.ParseFloat();
+		}
+		return;
+	}
+
+	if ( dataType == MD5R_VERTEX_DATA_INT
+		|| dataType == MD5R_VERTEX_DATA_UINT
+		|| dataType == MD5R_VERTEX_DATA_INTN
+		|| dataType == MD5R_VERTEX_DATA_UINTN ) {
+		const double scale = dataType == MD5R_VERTEX_DATA_INTN
+			? 1.0 / 2147483647.0
+			: ( dataType == MD5R_VERTEX_DATA_UINTN ? 1.0 / 4294967295.0 : 1.0 );
+		for ( int lane = 0; lane < count; ++lane ) {
+			const unsigned int rawValue = static_cast<unsigned int>( parser.ParseInt() );
+			const double numericValue = ( dataType == MD5R_VERTEX_DATA_INT || dataType == MD5R_VERTEX_DATA_INTN )
+				? static_cast<double>( static_cast<int>( rawValue ) )
+				: static_cast<double>( rawValue );
+			values[ lane ] = static_cast<float>( numericValue * scale );
+		}
+		return;
+	}
+
+	const int lanesPerWord = R_MD5R_VertexDataTypeLanesPerWord( dataType );
+	for ( int laneBase = 0; laneBase < count; laneBase += lanesPerWord ) {
+		const unsigned int packedValue = static_cast<unsigned int>( parser.ParseInt() );
+		R_MD5R_DecodePackedFloatComponents(
+			packedValue,
+			dataType,
+			values + laneBase,
+			Min( lanesPerWord, count - laneBase ) );
+	}
 }
 
 /*
@@ -440,12 +795,10 @@ static bool R_MD5R_TokenTypeIsFloat( int tokenType ) {
 R_MD5R_ParseNumericAsFloat
 ===========================
 */
-static float R_MD5R_ParseNumericAsFloat( Lexer &parser, int tokenType ) {
-	if ( R_MD5R_TokenTypeIsFloat( tokenType ) ) {
-		return parser.ParseFloat();
-	}
-
-	return static_cast<float>( parser.ParseInt() );
+static float R_MD5R_ParseNumericAsFloat( Lexer &parser, int dataType ) {
+	float value = 0.0f;
+	R_MD5R_ParseFloatComponents( parser, dataType, 1, &value );
+	return value;
 }
 
 /*
@@ -453,8 +806,8 @@ static float R_MD5R_ParseNumericAsFloat( Lexer &parser, int tokenType ) {
 R_MD5R_ParseNumericAsInt
 ===========================
 */
-static int R_MD5R_ParseNumericAsInt( Lexer &parser, int tokenType ) {
-	if ( R_MD5R_TokenTypeIsFloat( tokenType ) ) {
+static int R_MD5R_ParseNumericAsInt( Lexer &parser, int dataType ) {
+	if ( dataType == MD5R_VERTEX_DATA_FLOAT ) {
 		return static_cast<int>( parser.ParseFloat() );
 	}
 
@@ -466,9 +819,11 @@ static int R_MD5R_ParseNumericAsInt( Lexer &parser, int tokenType ) {
 R_MD5R_SkipNumericValues
 ===========================
 */
-static void R_MD5R_SkipNumericValues( Lexer &parser, int tokenType, int count ) {
-	for ( int i = 0; i < count; ++i ) {
-		if ( R_MD5R_TokenTypeIsFloat( tokenType ) ) {
+static void R_MD5R_SkipNumericValues( Lexer &parser, int dataType, int count ) {
+	const int lanesPerWord = R_MD5R_VertexDataTypeLanesPerWord( dataType );
+	const int serializedValueCount = ( count + lanesPerWord - 1 ) / lanesPerWord;
+	for ( int i = 0; i < serializedValueCount; ++i ) {
+		if ( dataType == MD5R_VERTEX_DATA_FLOAT ) {
 			parser.ParseFloat();
 		} else {
 			parser.ParseInt();
@@ -482,48 +837,100 @@ R_MD5R_ParseVertexDataType
 ===========================
 */
 static void R_MD5R_ParseVertexDataType( Lexer &parser, int defaultTokenType, int &tokenType ) {
-	idToken token;
+	struct md5rVertexDataTypeName_t {
+		const char *name;
+		int dataType;
+	};
+	static const md5rVertexDataTypeName_t dataTypeNames[] = {
+		{ "Float", MD5R_VERTEX_DATA_FLOAT },
+		{ "Float16", MD5R_VERTEX_DATA_FLOAT16 },
+		{ "Int", MD5R_VERTEX_DATA_INT },
+		{ "UInt", MD5R_VERTEX_DATA_UINT },
+		{ "IntN", MD5R_VERTEX_DATA_INTN },
+		{ "UIntN", MD5R_VERTEX_DATA_UINTN },
+		{ "Color", MD5R_VERTEX_DATA_COLOR },
+		{ "UByte", MD5R_VERTEX_DATA_UBYTE },
+		{ "Byte", MD5R_VERTEX_DATA_BYTE },
+		{ "UByteN", MD5R_VERTEX_DATA_UBYTEN },
+		{ "ByteN", MD5R_VERTEX_DATA_BYTEN },
+		{ "Short", MD5R_VERTEX_DATA_SHORT },
+		{ "UShort", MD5R_VERTEX_DATA_USHORT },
+		{ "ShortN", MD5R_VERTEX_DATA_SHORTN },
+		{ "UShortN", MD5R_VERTEX_DATA_USHORTN },
+		{ "UDec_10_10_10", MD5R_VERTEX_DATA_UDEC_10_10_10 },
+		{ "DEC_10_10_10", MD5R_VERTEX_DATA_DEC_10_10_10 },
+		{ "UDec_10_10_10N", MD5R_VERTEX_DATA_UDEC_10_10_10N },
+		{ "DEC_10_10_10N", MD5R_VERTEX_DATA_DEC_10_10_10N },
+		{ "UDec_10_11_11", MD5R_VERTEX_DATA_UDEC_10_11_11 },
+		{ "DEC_10_11_11", MD5R_VERTEX_DATA_DEC_10_11_11 },
+		{ "UDec_10_11_11N", MD5R_VERTEX_DATA_UDEC_10_11_11N },
+		{ "DEC_10_11_11N", MD5R_VERTEX_DATA_DEC_10_11_11N },
+		{ "UDec_11_11_10", MD5R_VERTEX_DATA_UDEC_11_11_10 },
+		{ "DEC_11_11_10", MD5R_VERTEX_DATA_DEC_11_11_10 },
+		{ "UDec_11_11_10N", MD5R_VERTEX_DATA_UDEC_11_11_10N },
+		{ "DEC_11_11_10N", MD5R_VERTEX_DATA_DEC_11_11_10N }
+	};
 
+	idToken token;
 	if ( !parser.ReadToken( &token ) ) {
 		parser.Error( "Unexpected end of token stream while parsing MD5R vertex datatype" );
 	}
 
-	if ( token.Icmp( "Float" ) == 0 || token.Icmp( "Float16" ) == 0 ) {
-		tokenType = TT_FLOAT;
-		return;
-	}
-
-	if ( token.Icmp( "Byte" ) == 0
-		|| token.Icmp( "ByteN" ) == 0
-		|| token.Icmp( "Color" ) == 0
-		|| token.Icmp( "DEC_10_10_10" ) == 0
-		|| token.Icmp( "DEC_10_10_10N" ) == 0
-		|| token.Icmp( "DEC_10_11_11" ) == 0
-		|| token.Icmp( "DEC_10_11_11N" ) == 0
-		|| token.Icmp( "DEC_11_11_10" ) == 0
-		|| token.Icmp( "DEC_11_11_10N" ) == 0
-		|| token.Icmp( "Int" ) == 0
-		|| token.Icmp( "IntN" ) == 0
-		|| token.Icmp( "Short" ) == 0
-		|| token.Icmp( "ShortN" ) == 0
-		|| token.Icmp( "UInt" ) == 0
-		|| token.Icmp( "UIntN" ) == 0
-		|| token.Icmp( "UByte" ) == 0
-		|| token.Icmp( "UByteN" ) == 0
-		|| token.Icmp( "UDec_10_10_10" ) == 0
-		|| token.Icmp( "UDec_10_10_10N" ) == 0
-		|| token.Icmp( "UDec_10_11_11" ) == 0
-		|| token.Icmp( "UDec_10_11_11N" ) == 0
-		|| token.Icmp( "UDec_11_11_10" ) == 0
-		|| token.Icmp( "UDec_11_11_10N" ) == 0
-		|| token.Icmp( "UShort" ) == 0
-		|| token.Icmp( "UShortN" ) == 0 ) {
-		tokenType = 0;
-		return;
+	for ( int i = 0; i < static_cast<int>( sizeof( dataTypeNames ) / sizeof( dataTypeNames[ 0 ] ) ); ++i ) {
+		if ( token.Icmp( dataTypeNames[ i ].name ) == 0 ) {
+			tokenType = dataTypeNames[ i ].dataType;
+			return;
+		}
 	}
 
 	parser.UnreadToken( &token );
 	tokenType = defaultTokenType;
+}
+
+/*
+========================
+R_MD5R_VertexFormatsEquivalent
+
+LoadVertexFormat is only a distinct persistence schema when its component
+layout differs from the runtime VertexFormat. Retail permits SoA when an
+identical LoadVertexFormat is redundantly serialized.
+========================
+*/
+static bool R_MD5R_VertexFormatsEquivalent( const rvMD5RVertexFormatDesc &a, const rvMD5RVertexFormatDesc &b ) {
+	if ( a.hasPosition != b.hasPosition
+		|| a.positionSwizzled != b.positionSwizzled
+		|| a.positionDim != b.positionDim
+		|| a.positionTokenType != b.positionTokenType
+		|| a.hasBlendIndex != b.hasBlendIndex
+		|| a.blendIndexTokenType != b.blendIndexTokenType
+		|| a.hasBlendWeight != b.hasBlendWeight
+		|| a.blendWeightDim != b.blendWeightDim
+		|| a.blendWeightTransformCount != b.blendWeightTransformCount
+		|| a.blendWeightTokenType != b.blendWeightTokenType
+		|| a.hasNormal != b.hasNormal
+		|| a.normalTokenType != b.normalTokenType
+		|| a.hasTangent != b.hasTangent
+		|| a.tangentTokenType != b.tangentTokenType
+		|| a.hasBinormal != b.hasBinormal
+		|| a.binormalTokenType != b.binormalTokenType
+		|| a.hasDiffuseColor != b.hasDiffuseColor
+		|| a.diffuseColorTokenType != b.diffuseColorTokenType
+		|| a.hasSpecularColor != b.hasSpecularColor
+		|| a.specularColorTokenType != b.specularColorTokenType
+		|| a.hasPointSize != b.hasPointSize
+		|| a.pointSizeTokenType != b.pointSizeTokenType ) {
+		return false;
+	}
+
+	for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
+		if ( a.hasTexCoord[ texCoordSet ] != b.hasTexCoord[ texCoordSet ]
+			|| a.texCoordDim[ texCoordSet ] != b.texCoordDim[ texCoordSet ]
+			|| a.texCoordTokenType[ texCoordSet ] != b.texCoordTokenType[ texCoordSet ] ) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 /*
@@ -534,9 +941,7 @@ R_MD5R_SetPosition
 static void R_MD5R_SetPosition( idVec4 &value, Lexer &parser, int tokenType, int dimension ) {
 	value.Zero();
 	value.w = 1.0f;
-	for ( int i = 0; i < dimension; ++i ) {
-		value[ i ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-	}
+	R_MD5R_ParseFloatComponents( parser, tokenType, dimension, value.ToFloatPtr() );
 }
 
 /*
@@ -553,15 +958,9 @@ static void R_MD5R_SetSwizzledPositions( idList<idVec4> &positions, Lexer &parse
 		float swizzledY[ 4 ];
 		float swizzledZ[ 4 ];
 
-		for ( int lane = 0; lane < 4; ++lane ) {
-			swizzledX[ lane ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-		}
-		for ( int lane = 0; lane < 4; ++lane ) {
-			swizzledY[ lane ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-		}
-		for ( int lane = 0; lane < 4; ++lane ) {
-			swizzledZ[ lane ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-		}
+		R_MD5R_ParseFloatComponents( parser, tokenType, 4, swizzledX );
+		R_MD5R_ParseFloatComponents( parser, tokenType, 4, swizzledY );
+		R_MD5R_ParseFloatComponents( parser, tokenType, 4, swizzledZ );
 
 		for ( int lane = 0; lane < 4; ++lane ) {
 			const int vertexIndex = vertexBase + lane;
@@ -585,9 +984,7 @@ R_MD5R_SetVec3
 ===========================
 */
 static void R_MD5R_SetVec3( idVec3 &value, Lexer &parser, int tokenType ) {
-	value.x = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-	value.y = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-	value.z = R_MD5R_ParseNumericAsFloat( parser, tokenType );
+	R_MD5R_ParseFloatComponents( parser, tokenType, 3, value.ToFloatPtr() );
 }
 
 /*
@@ -597,9 +994,7 @@ R_MD5R_SetTexCoord
 */
 static void R_MD5R_SetTexCoord( idVec4 &value, Lexer &parser, int tokenType, int dimension ) {
 	value.Zero();
-	for ( int i = 0; i < dimension; ++i ) {
-		value[ i ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
-	}
+	R_MD5R_ParseFloatComponents( parser, tokenType, dimension, value.ToFloatPtr() );
 }
 
 /*
@@ -622,15 +1017,56 @@ R_MD5R_SetBlendWeights
 static void R_MD5R_SetBlendWeights( idVec4 &value, Lexer &parser, int tokenType, int dimension, int numTransforms ) {
 	value.Zero();
 
+	const int parsedDimension = Min( dimension, 4 );
+	R_MD5R_ParseFloatComponents( parser, tokenType, parsedDimension, value.ToFloatPtr() );
+
 	float explicitWeightSum = 0.0f;
-	for ( int i = 0; i < dimension && i < 4; ++i ) {
-		value[ i ] = R_MD5R_ParseNumericAsFloat( parser, tokenType );
+	for ( int i = 0; i < parsedDimension; ++i ) {
 		explicitWeightSum += idMath::Fabs( value[ i ] );
 	}
 
 	if ( numTransforms == dimension + 1 && dimension >= 0 && dimension < 4 ) {
-		value[ dimension ] = idMath::ClampFloat( 0.0f, 1.0f, 1.0f - explicitWeightSum );
+		// Preserve the retail transcode result exactly. Quantized explicit
+		// weights can sum slightly above one, and the signed remainder is
+		// intentionally retained for the packed skinning convention.
+		value[ dimension ] = 1.0f - explicitWeightSum;
 	}
+}
+
+/*
+========================
+R_MD5R_GetImplicitBlendWeightIndex
+
+Retail stores up to three authored blend weights as magnitudes and derives the
+next weight as a signed remainder. Keep that synthesized component signed
+during CPU materialization; fully authored four-weight buffers still use the
+historic absolute-value convention.
+========================
+*/
+static int R_MD5R_GetImplicitBlendWeightIndex( const rvMD5RVertexBufferDesc &vertexBuffer ) {
+	const rvMD5RVertexFormatDesc &format = vertexBuffer.hasLoadVertexFormat
+		? vertexBuffer.loadVertexFormat
+		: vertexBuffer.vertexFormat;
+
+	if ( !format.hasBlendWeight
+		|| format.blendWeightDim < 0
+		|| format.blendWeightDim >= 4
+		|| format.blendWeightTransformCount != format.blendWeightDim + 1 ) {
+		return -1;
+	}
+
+	return format.blendWeightDim;
+}
+
+/*
+========================
+R_MD5R_GetSkinningBlendWeight
+========================
+*/
+static ID_INLINE float R_MD5R_GetSkinningBlendWeight( const idVec4 &blendWeights, int influenceIndex, int implicitWeightIndex ) {
+	return influenceIndex == implicitWeightIndex
+		? blendWeights[ influenceIndex ]
+		: idMath::Fabs( blendWeights[ influenceIndex ] );
 }
 
 /*
@@ -912,13 +1348,14 @@ static bool R_MD5R_SkinVertexPositionFromPackedTransforms(
 	if ( hasBlendWeights ) {
 		blendWeights = vertexBuffer.blendWeights[ sourceVertexIndex ];
 	}
+	const int implicitWeightIndex = R_MD5R_GetImplicitBlendWeightIndex( vertexBuffer );
 
 	skinnedPosition.Zero();
 	float totalWeight = 0.0f;
 
 	for ( int influenceIndex = 0; influenceIndex < 4; ++influenceIndex ) {
-		const float weight = idMath::Fabs( blendWeights[ influenceIndex ] );
-		if ( weight <= 0.0f ) {
+		const float weight = R_MD5R_GetSkinningBlendWeight( blendWeights, influenceIndex, implicitWeightIndex );
+		if ( weight == 0.0f ) {
 			continue;
 		}
 
@@ -935,7 +1372,7 @@ static bool R_MD5R_SkinVertexPositionFromPackedTransforms(
 		skinnedPosition += weight * R_MD5R_TransformPackedPosition(
 			skinToModelTransforms + transformIndex * 16,
 			sourcePosition );
-		totalWeight += weight;
+		totalWeight += idMath::Fabs( weight );
 	}
 
 	if ( totalWeight <= 0.0f ) {
@@ -2065,7 +2502,7 @@ void rvRenderModelMD5R::ParseVertexFormat( Lexer &parser, rvMD5RVertexFormatDesc
 			if ( vertexFormat.positionDim < 1 || vertexFormat.positionDim > 4 ) {
 				parser.Error( "Vertex format was initialized with an unsupported position dimension" );
 			}
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.positionTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.positionTokenType );
 			continue;
 		}
 
@@ -2073,13 +2510,13 @@ void rvRenderModelMD5R::ParseVertexFormat( Lexer &parser, rvMD5RVertexFormatDesc
 			vertexFormat.hasPosition = true;
 			vertexFormat.positionSwizzled = true;
 			vertexFormat.positionDim = 3;
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.positionTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.positionTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "BlendIndex" ) == 0 ) {
 			vertexFormat.hasBlendIndex = true;
-			R_MD5R_ParseVertexDataType( parser, 0, vertexFormat.blendIndexTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_UBYTEN, vertexFormat.blendIndexTokenType );
 			continue;
 		}
 
@@ -2098,43 +2535,43 @@ void rvRenderModelMD5R::ParseVertexFormat( Lexer &parser, rvMD5RVertexFormatDesc
 				parser.Error( "Vertex format was initialized with an unsupported number of blend transforms" );
 			}
 
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.blendWeightTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.blendWeightTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "Normal" ) == 0 ) {
 			vertexFormat.hasNormal = true;
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.normalTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.normalTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "Tangent" ) == 0 ) {
 			vertexFormat.hasTangent = true;
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.tangentTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.tangentTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "Binormal" ) == 0 ) {
 			vertexFormat.hasBinormal = true;
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.binormalTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.binormalTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "DiffuseColor" ) == 0 ) {
 			vertexFormat.hasDiffuseColor = true;
-			R_MD5R_ParseVertexDataType( parser, 0, vertexFormat.diffuseColorTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_COLOR, vertexFormat.diffuseColorTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "SpecularColor" ) == 0 ) {
 			vertexFormat.hasSpecularColor = true;
-			R_MD5R_ParseVertexDataType( parser, 0, vertexFormat.specularColorTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_COLOR, vertexFormat.specularColorTokenType );
 			continue;
 		}
 
 		if ( token.Icmp( "PointSize" ) == 0 ) {
 			vertexFormat.hasPointSize = true;
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.pointSizeTokenType );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.pointSizeTokenType );
 			continue;
 		}
 
@@ -2150,7 +2587,7 @@ void rvRenderModelMD5R::ParseVertexFormat( Lexer &parser, rvMD5RVertexFormatDesc
 
 			vertexFormat.hasTexCoord[ texCoordSet ] = true;
 			vertexFormat.texCoordDim[ texCoordSet ] = dimension;
-			R_MD5R_ParseVertexDataType( parser, TT_FLOAT, vertexFormat.texCoordTokenType[ texCoordSet ] );
+			R_MD5R_ParseVertexDataType( parser, MD5R_VERTEX_DATA_FLOAT, vertexFormat.texCoordTokenType[ texCoordSet ] );
 			continue;
 		}
 
@@ -2210,7 +2647,9 @@ void rvRenderModelMD5R::ParseVertexBuffer( Lexer &parser, rvMD5RVertexBufferDesc
 		parser.Error( "Expected VertexFormat block in VertexBuffer" );
 	}
 
-	if ( vertexBuffer.soA && vertexBuffer.hasLoadVertexFormat ) {
+	if ( vertexBuffer.soA
+		&& vertexBuffer.hasLoadVertexFormat
+		&& !R_MD5R_VertexFormatsEquivalent( vertexBuffer.vertexFormat, vertexBuffer.loadVertexFormat ) ) {
 		parser.Error( "SoA is currently not supported with LoadVertexFormat" );
 	}
 
@@ -2230,6 +2669,16 @@ void rvRenderModelMD5R::ParseVertexBuffer( Lexer &parser, rvMD5RVertexBufferDesc
 	}
 
 	parser.ExpectTokenString( "{" );
+
+	if ( parser.PeekTokenString( "}" ) ) {
+		// Compressed MD5R files may omit rebuildable sil-trace and shadow
+		// payloads. Vulkan's classicized path reconstructs its silhouette data
+		// from the decoded draw surface in FinishSurfaces.
+		parser.ExpectTokenString( "}" );
+		vertexBuffer.rebuildOnLoad = true;
+		parser.ExpectTokenString( "}" );
+		return;
+	}
 
 	if ( vertexBuffer.loadVertexFormat.hasPosition ) {
 		vertexBuffer.positions.SetNum( vertexBuffer.numVertices );
@@ -2833,56 +3282,56 @@ bool rvRenderModelMD5R::GenerateStaticSurfaces() {
 	FinishSurfaces();
 
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
-	int primBatchBackedSurfaces = 0;
-	for ( int meshIndex = 0; meshIndex < meshes.Num(); ++meshIndex ) {
-		rvMD5RMesh &mesh = meshes[ meshIndex ];
-		if ( mesh.surfaceNum < 0 || mesh.surfaceNum >= surfaces.Num() ) {
-			continue;
-		}
-
-		srfTriangles_t *tri = surfaces[ mesh.surfaceNum ].geometry;
-		if ( tri == NULL || tri->verts == NULL || tri->indexes == NULL
-			|| tri->numVerts != mesh.numDrawVertices || tri->numIndexes != mesh.numDrawIndices ) {
-			continue;
-		}
-
-		idDrawVert *primBatchVerts = (idDrawVert *)_alloca16( tri->numVerts * sizeof( primBatchVerts[ 0 ] ) );
-		glIndex_t *primBatchIndexes = (glIndex_t *)_alloca16( tri->numIndexes * sizeof( primBatchIndexes[ 0 ] ) );
-		if ( !CopyPrimBatchTriangles( mesh, primBatchVerts, primBatchIndexes, NULL ) ) {
-			continue;
-		}
-
-		if ( memcmp( primBatchIndexes, tri->indexes, tri->numIndexes * sizeof( tri->indexes[ 0 ] ) ) != 0 ) {
-			continue;
-		}
-
-		bool verticesMatch = true;
-		for ( int vertIndex = 0; vertIndex < tri->numVerts; ++vertIndex ) {
-			if ( !R_MD5R_DrawVertsEquivalent( primBatchVerts[ vertIndex ], tri->verts[ vertIndex ] ) ) {
-				verticesMatch = false;
-				break;
+	if ( R_MD5R_UsePackedRuntimeSurfaces() ) {
+		for ( int meshIndex = 0; meshIndex < meshes.Num(); ++meshIndex ) {
+			rvMD5RMesh &mesh = meshes[ meshIndex ];
+			if ( mesh.surfaceNum < 0 || mesh.surfaceNum >= surfaces.Num() ) {
+				continue;
 			}
-		}
-		if ( !verticesMatch ) {
-			continue;
-		}
 
-		R_AllocStaticTriSurfSilTraceVerts( tri, tri->numVerts );
-		rvSilTraceVertT *surfaceSilTraceVerts = reinterpret_cast<rvSilTraceVertT *>( tri->silTraceVerts );
-		for ( int vertIndex = 0; vertIndex < tri->numVerts; ++vertIndex ) {
-			surfaceSilTraceVerts[ vertIndex ].xyzw.Set(
-				tri->verts[ vertIndex ].xyz.x,
-				tri->verts[ vertIndex ].xyz.y,
-				tri->verts[ vertIndex ].xyz.z,
-				1.0f );
-		}
+			srfTriangles_t *tri = surfaces[ mesh.surfaceNum ].geometry;
+			if ( tri == NULL || tri->verts == NULL || tri->indexes == NULL
+				|| tri->numVerts != mesh.numDrawVertices || tri->numIndexes != mesh.numDrawIndices ) {
+				continue;
+			}
+
+			idDrawVert *primBatchVerts = (idDrawVert *)_alloca16( tri->numVerts * sizeof( primBatchVerts[ 0 ] ) );
+			glIndex_t *primBatchIndexes = (glIndex_t *)_alloca16( tri->numIndexes * sizeof( primBatchIndexes[ 0 ] ) );
+			if ( !CopyPrimBatchTriangles( mesh, primBatchVerts, primBatchIndexes, NULL ) ) {
+				continue;
+			}
+
+			if ( memcmp( primBatchIndexes, tri->indexes, tri->numIndexes * sizeof( tri->indexes[ 0 ] ) ) != 0 ) {
+				continue;
+			}
+
+			bool verticesMatch = true;
+			for ( int vertIndex = 0; vertIndex < tri->numVerts; ++vertIndex ) {
+				if ( !R_MD5R_DrawVertsEquivalent( primBatchVerts[ vertIndex ], tri->verts[ vertIndex ] ) ) {
+					verticesMatch = false;
+					break;
+				}
+			}
+			if ( !verticesMatch ) {
+				continue;
+			}
+
+			R_AllocStaticTriSurfSilTraceVerts( tri, tri->numVerts );
+			rvSilTraceVertT *surfaceSilTraceVerts = reinterpret_cast<rvSilTraceVertT *>( tri->silTraceVerts );
+			for ( int vertIndex = 0; vertIndex < tri->numVerts; ++vertIndex ) {
+				surfaceSilTraceVerts[ vertIndex ].xyzw.Set(
+					tri->verts[ vertIndex ].xyz.x,
+					tri->verts[ vertIndex ].xyz.y,
+					tri->verts[ vertIndex ].xyz.z,
+					1.0f );
+			}
 
 #if defined( _MD5R_SUPPORT )
-		tri->primBatchMesh = reinterpret_cast<rvMesh *>( &mesh );
+			tri->primBatchMesh = reinterpret_cast<rvMesh *>( &mesh );
 #else
-		tri->primBatchMesh = reinterpret_cast<void *>( &mesh );
+			tri->primBatchMesh = reinterpret_cast<void *>( &mesh );
 #endif
-		++primBatchBackedSurfaces;
+		}
 	}
 #endif
 
@@ -2939,6 +3388,7 @@ static bool R_MD5R_SkinVertexPosition(
 	const rvMD5RPrimBatch &primBatch,
 	const idJointMat *entJoints,
 	int numJoints,
+	float skinScale,
 	idVec3 &skinnedPosition ) {
 	if ( entJoints == NULL
 		|| sourceVertexIndex < 0
@@ -2958,13 +3408,14 @@ static bool R_MD5R_SkinVertexPosition(
 	if ( hasBlendWeights ) {
 		blendWeights = vertexBuffer.blendWeights[ sourceVertexIndex ];
 	}
+	const int implicitWeightIndex = R_MD5R_GetImplicitBlendWeightIndex( vertexBuffer );
 
 	skinnedPosition.Zero();
 	float totalWeight = 0.0f;
 
 	for ( int influenceIndex = 0; influenceIndex < 4; ++influenceIndex ) {
-		const float weight = idMath::Fabs( blendWeights[ influenceIndex ] );
-		if ( weight <= 0.0f ) {
+		const float weight = R_MD5R_GetSkinningBlendWeight( blendWeights, influenceIndex, implicitWeightIndex );
+		if ( weight == 0.0f ) {
 			continue;
 		}
 
@@ -2975,7 +3426,7 @@ static bool R_MD5R_SkinVertexPosition(
 		}
 
 		skinnedPosition += weight * ( entJoints[ jointIndex ] * sourcePosition );
-		totalWeight += weight;
+		totalWeight += idMath::Fabs( weight );
 	}
 
 	if ( totalWeight <= 0.0f ) {
@@ -2986,6 +3437,10 @@ static bool R_MD5R_SkinVertexPosition(
 		}
 
 		skinnedPosition = entJoints[ jointIndex ] * sourcePosition;
+	}
+
+	if ( skinScale != 0.0f ) {
+		skinnedPosition *= skinScale;
 	}
 
 	return true;
@@ -3282,7 +3737,7 @@ static bool R_MD5R_UpdatePackedDynamicSurface(
 			}
 
 			idVec3 skinnedPosition;
-			if ( !R_MD5R_SkinVertexPosition( silTraceVertexBuffer, sourceVertexIndex, primBatch, entJoints, numJoints, skinnedPosition ) ) {
+			if ( !R_MD5R_SkinVertexPosition( silTraceVertexBuffer, sourceVertexIndex, primBatch, entJoints, numJoints, 0.0f, skinnedPosition ) ) {
 				return false;
 			}
 
@@ -3379,13 +3834,15 @@ bool rvRenderModelMD5R::BuildDynamicMeshTemplate( rvMD5RMesh &mesh ) {
 rvRenderModelMD5R::UpdateDynamicSurface
 ========================
 */
-bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJointMat *entJoints, modelSurface_t &surface, bool calculateTangents ) const {
+bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJointMat *entJoints, modelSurface_t &surface, bool calculateTangents, float skinScale ) const {
 	const idList<rvMD5RVertexBufferDesc> &vertexBuffers = GetVertexBuffers();
 	const idList<rvMD5RIndexBufferDesc> &indexBuffers = GetIndexBuffers();
 	const idList<silEdge_t> &silEdges = GetSilhouetteEdges();
 
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
-	if ( R_MD5R_UpdatePackedDynamicSurface( mesh, entJoints, vertexBuffers, indexBuffers, silEdges, joints.Num(), surface, calculateTangents ) ) {
+	if ( skinScale == 0.0f
+		&& R_MD5R_UsePackedRuntimeSurfaces()
+		&& R_MD5R_UpdatePackedDynamicSurface( mesh, entJoints, vertexBuffers, indexBuffers, silEdges, joints.Num(), surface, calculateTangents ) ) {
 		return true;
 	}
 #endif
@@ -3399,6 +3856,18 @@ bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJo
 
 	const rvMD5RVertexBufferDesc &drawVertexBuffer = vertexBuffers[ mesh.drawVertexBuffer ];
 	srfTriangles_t *tri = surface.geometry;
+
+	if ( tri != NULL ) {
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+		// A packed update may have failed after initializing the surface. Do not
+		// retain its palette/sil-trace ownership when falling back to classic.
+		if ( tri->primBatchMesh != NULL ) {
+			R_FreeStaticTriSurf( tri );
+			surface.geometry = NULL;
+			tri = NULL;
+		}
+#endif
+	}
 
 	if ( tri != NULL ) {
 		if ( tri->numVerts == mesh.deformInfo->numOutputVerts && tri->numIndexes == mesh.deformInfo->numIndexes ) {
@@ -3449,7 +3918,7 @@ bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJo
 			}
 
 			idVec3 skinnedPosition;
-			if ( !R_MD5R_SkinVertexPosition( drawVertexBuffer, sourceVertexIndex, primBatch, entJoints, joints.Num(), skinnedPosition ) ) {
+			if ( !R_MD5R_SkinVertexPosition( drawVertexBuffer, sourceVertexIndex, primBatch, entJoints, joints.Num(), skinScale, skinnedPosition ) ) {
 				return false;
 			}
 
@@ -3476,7 +3945,7 @@ bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJo
 
 	R_BoundTriSurf( tri );
 
-	if ( calculateTangents && !r_useDeferredTangents.GetBool() ) {
+	if ( calculateTangents && !R_MD5R_DeferDynamicTangents() ) {
 		R_DeriveTangents( tri );
 	}
 
@@ -3504,8 +3973,11 @@ bool rvRenderModelMD5R::GenerateDynamicSurface( idRenderModelStatic &staticModel
 
 	const bool collisionOnly = ( surfMask & SURF_COLLISION ) != 0;
 	const idMaterial *shader = R_RemapShaderBySkin( mesh.material, ent.customSkin, ent.customShader );
+	const float skinScale = ent.shaderParms[ SHADERPARM_MD5_SKINSCALE ];
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
-	bool canUsePackedDynamicSurface = R_MD5R_CanUsePackedDynamicSurface( mesh, vertexBuffers, indexBuffers );
+	bool canUsePackedDynamicSurface = skinScale == 0.0f
+		&& R_MD5R_UsePackedRuntimeSurfaces()
+		&& R_MD5R_CanUsePackedDynamicSurface( mesh, vertexBuffers, indexBuffers );
 #else
 	const bool canUsePackedDynamicSurface = false;
 #endif
@@ -3561,7 +4033,7 @@ bool rvRenderModelMD5R::GenerateDynamicSurface( idRenderModelStatic &staticModel
 		surface->mOriginalSurfaceName = NULL;
 	}
 
-	if ( !UpdateDynamicSurface( mesh, entJoints, *surface, !collisionOnly ) ) {
+	if ( !UpdateDynamicSurface( mesh, entJoints, *surface, !collisionOnly, skinScale ) ) {
 		staticModel.DeleteSurfaceWithId( mesh.meshIdentifier );
 		staticModel.DeleteSurfaceWithId( mesh.meshIdentifier + MD5R_BackSideSurfaceIdOffset );
 		mesh.surfaceNum = -1;
@@ -3713,7 +4185,10 @@ void rvRenderModelMD5R::LoadModel() {
 	source = MD5R_SOURCE_FILE;
 
 	idAutoPtr<Lexer> parser( LexerFactory::MakeLexer( name.c_str(), LEXFL_ALLOWPATHNAMES | LEXFL_NOSTRINGESCAPECHARS ) );
-	if ( parser.get() == NULL || !parser->LoadFile( name.c_str() ) ) {
+	// The filename constructor loads either the compiled companion or the
+	// canonical ASCII source. Calling LoadFile again breaks the ASCII delegate
+	// with "another script already loaded".
+	if ( parser.get() == NULL || !parser->IsLoaded() ) {
 		MakeDefaultModel();
 		return;
 	}
@@ -3871,6 +4346,9 @@ void rvRenderModelMD5R::Print() const {
 	} else {
 		common->Printf( "MD5R model.\n" );
 	}
+	common->Printf(
+		"runtime surfaces: %s.\n",
+		R_MD5R_UsePackedRuntimeSurfaces() ? "packed primitive batches" : "classic Vulkan-compatible geometry" );
 
 	common->Printf(
 		"bounds: (%f %f %f) to (%f %f %f)\n",
@@ -4335,6 +4813,8 @@ idStr rvRenderModelMD5R::BuildExportFileName() const {
 	return exportName;
 }
 
+static bool R_MD5R_HasResolvedVertexPayload( const rvMD5RVertexBufferDesc &vertexBuffer, const rvMD5RVertexFormatDesc &format );
+
 /*
 ========================
 rvRenderModelMD5R::CanWriteModelData
@@ -4369,6 +4849,10 @@ bool rvRenderModelMD5R::CanWriteModelData( idStr &reason ) const {
 	for ( int vertexBufferIndex = 0; vertexBufferIndex < vertexBuffers.Num(); ++vertexBufferIndex ) {
 		const rvMD5RVertexBufferDesc &vertexBuffer = vertexBuffers[ vertexBufferIndex ];
 		const rvMD5RVertexFormatDesc &format = vertexBuffer.loadVertexFormat;
+
+		if ( vertexBuffer.rebuildOnLoad && !R_MD5R_HasResolvedVertexPayload( vertexBuffer, format ) ) {
+			continue;
+		}
 
 		if ( format.hasPosition && vertexBuffer.positions.Num() != vertexBuffer.numVertices ) {
 			reason = va( "vertex buffer %d position data was not fully decoded", vertexBufferIndex );
@@ -4506,6 +4990,14 @@ void rvRenderModelMD5R::WriteVertexFormat( idFile &outFile, const rvMD5RVertexFo
 		outFile.WriteFloatString( "%sDiffuseColor Int\n", innerIndent.c_str() );
 	}
 
+	if ( vertexFormat.hasSpecularColor ) {
+		outFile.WriteFloatString( "%sSpecularColor Int\n", innerIndent.c_str() );
+	}
+
+	if ( vertexFormat.hasPointSize ) {
+		outFile.WriteFloatString( "%sPointSize Float\n", innerIndent.c_str() );
+	}
+
 	for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
 		if ( !vertexFormat.hasTexCoord[ texCoordSet ] ) {
 			continue;
@@ -4523,11 +5015,46 @@ void rvRenderModelMD5R::WriteVertexFormat( idFile &outFile, const rvMD5RVertexFo
 
 /*
 ========================
+R_MD5R_HasResolvedVertexPayload
+
+Retail compressed MD5R resources can intentionally retain an empty,
+rebuild-on-load sil-trace or shadow payload. Keep such a resource empty when
+round-tripping it instead of indexing component arrays that were never
+serialized.
+========================
+*/
+static bool R_MD5R_HasResolvedVertexPayload( const rvMD5RVertexBufferDesc &vertexBuffer, const rvMD5RVertexFormatDesc &format ) {
+	if ( ( format.hasPosition && vertexBuffer.positions.Num() != vertexBuffer.numVertices )
+		|| ( format.hasBlendIndex && vertexBuffer.blendIndices.Num() != vertexBuffer.numVertices )
+		|| ( format.hasBlendWeight && vertexBuffer.blendWeights.Num() != vertexBuffer.numVertices )
+		|| ( format.hasNormal && vertexBuffer.normals.Num() != vertexBuffer.numVertices )
+		|| ( format.hasTangent && vertexBuffer.tangents.Num() != vertexBuffer.numVertices )
+		|| ( format.hasBinormal && vertexBuffer.binormals.Num() != vertexBuffer.numVertices )
+		|| ( format.hasDiffuseColor && vertexBuffer.diffuseColors.Num() != vertexBuffer.numVertices )
+		|| ( format.hasSpecularColor && vertexBuffer.specularColors.Num() != vertexBuffer.numVertices )
+		|| ( format.hasPointSize && vertexBuffer.pointSizes.Num() != vertexBuffer.numVertices ) ) {
+		return false;
+	}
+
+	for ( int texCoordSet = 0; texCoordSet < 7; ++texCoordSet ) {
+		if ( format.hasTexCoord[ texCoordSet ]
+			&& vertexBuffer.texCoords[ texCoordSet ].Num() != vertexBuffer.numVertices ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+========================
 rvRenderModelMD5R::WriteVertexBuffer
 ========================
 */
 void rvRenderModelMD5R::WriteVertexBuffer( idFile &outFile, const rvMD5RVertexBufferDesc &vertexBuffer, const char *prepend ) {
 	rvMD5RVertexFormatDesc format = vertexBuffer.loadVertexFormat;
+	const bool writeEmptyRebuildPayload =
+		vertexBuffer.rebuildOnLoad && !R_MD5R_HasResolvedVertexPayload( vertexBuffer, format );
 	if ( format.hasPosition && format.positionSwizzled ) {
 		format.positionSwizzled = false;
 		format.positionDim = 3;
@@ -4553,6 +5080,12 @@ void rvRenderModelMD5R::WriteVertexBuffer( idFile &outFile, const rvMD5RVertexBu
 
 	outFile.WriteFloatString( "%sVertex [ %d ]\n", innerIndent.c_str(), vertexBuffer.numVertices );
 	outFile.WriteFloatString( "%s{\n", innerIndent.c_str() );
+
+	if ( writeEmptyRebuildPayload ) {
+		outFile.WriteFloatString( "%s}\n", innerIndent.c_str() );
+		outFile.WriteFloatString( "%s}\n", prepend );
+		return;
+	}
 
 	for ( int vertexIndex = 0; vertexIndex < vertexBuffer.numVertices; ++vertexIndex ) {
 		outFile.WriteFloatString( "%s", vertexIndent.c_str() );
@@ -5065,7 +5598,13 @@ bool rvRenderModelMD5R::WriteFile( const char *fileName, bool compressed ) const
 	outFile.reset( NULL );
 
 	if ( compressed ) {
-		idLexer::WriteBinaryFile( fileName );
+		const idStr savePathFileName = fileSystem->RelativePathToOSPath( fileName, "fs_savepath" );
+		idLexer::WriteBinaryFile( savePathFileName.c_str(), true );
+	} else {
+		idStr compiledFileName = fileName;
+		compiledFileName += Lexer::sCompiledFileSuffix;
+		const idStr compiledSavePath = fileSystem->RelativePathToOSPath( compiledFileName.c_str(), "fs_savepath" );
+		fileSystem->RemoveExplicitFile( compiledSavePath.c_str() );
 	}
 
 	return true;

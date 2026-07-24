@@ -392,7 +392,7 @@ extern void CL_Quit_f(void);
 - (BOOL)checkOS
 {
 	OSErr	err;
-	long gestaltOSVersion;
+	SInt32 gestaltOSVersion = 0;
 	err = Gestalt(gestaltSystemVersion, &gestaltOSVersion);
 	if ( err || gestaltOSVersion < 0x1038 ) {
 		NSBundle *thisBundle = [ NSBundle mainBundle ];
@@ -513,8 +513,8 @@ enum {
 
 typedef union {
 	struct {
-		unsigned long hi;
-		unsigned long lo;
+		uint32_t hi;
+		uint32_t lo;
 	} i;
 	double d;
 } hexdouble;
@@ -656,13 +656,14 @@ Sys_ClockTicksPerSecond
 double Sys_ClockTicksPerSecond(void) {
 	// Our strategy is to query both Gestalt & IOKit and then take the larger of the two values.
 	
-	long gestaltSpeed, ioKitSpeed = -1;
+	SInt32 gestaltSpeed = 0;
+	int64_t ioKitSpeed = -1;
 	
 	// GESTALT
 	
 	// gestaltProcClkSpeedMHz available in 10.3 needs to be used because CPU speeds have now
 	// exceeded the signed long that Gestalt returns.
-	long osVers;
+	SInt32 osVers = 0;
 	OSErr err;
 	Gestalt(gestaltSystemVersion, &osVers);
 	if (osVers >= 0x1030)
@@ -698,8 +699,13 @@ double Sys_ClockTicksPerSecond(void) {
 		if (ioCpu)
 		{
 			CFDataRef data = (CFDataRef)IORegistryEntryCreateCFProperty(ioCpu, CFSTR("clock-frequency"),kCFAllocatorDefault,0);
-			if (data)
-				ioKitSpeed = *((unsigned long*)CFDataGetBytePtr(data)) / 1000000;
+			if ( data ) {
+				UInt32 clockFrequency = 0;
+				if ( CFDataGetLength( data ) >= static_cast<CFIndex>( sizeof( clockFrequency ) ) ) {
+					memcpy( &clockFrequency, CFDataGetBytePtr( data ), sizeof( clockFrequency ) );
+					ioKitSpeed = clockFrequency / 1000000;
+				}
+			}
 		}
 		service = IOIteratorNext(itThis);
 	}
@@ -717,7 +723,7 @@ returns in megabytes
 ================
 */
 int Sys_GetSystemRam( void ) {
-	long ramSize;
+	SInt32 ramSize = 0;
 	
 	if ( Gestalt( gestaltPhysicalRAMSize, &ramSize ) == noErr ) {
 		return ramSize / (1024*1024);
@@ -735,7 +741,7 @@ returns in megabytes
 int Sys_GetVideoRam( void ) {
 	unsigned int i;
 	CFTypeRef typeCode;
-	long vramStorage = 64;
+	SInt32 vramStorage = 64;
 	const short MAXDISPLAYS = 8;
 	CGDisplayCount displayCount;
 	io_service_t dspPorts[MAXDISPLAYS];
@@ -759,11 +765,27 @@ int Sys_GetVideoRam( void ) {
 
 bool OSX_GetCPUIdentification( int& cpuId, bool& oldArchitecture )
 {
-	long cpu;
+	SInt32 cpu = 0;
 	Gestalt(gestaltNativeCPUtype, &cpu);
 	
 	cpuId = cpu;
 	oldArchitecture = cpuId < gestaltCPU970;
+	return true;
+}
+
+static bool OSX_ReadRegistryUInt32( CFTypeRef value, UInt32& result )
+{
+	result = 0;
+	if ( value == NULL || CFGetTypeID( value ) != CFDataGetTypeID() ) {
+		return false;
+	}
+
+	const CFDataRef data = static_cast<CFDataRef>( value );
+	if ( CFDataGetLength( data ) < static_cast<CFIndex>( sizeof( result ) ) ) {
+		return false;
+	}
+
+	memcpy( &result, CFDataGetBytePtr( data ), sizeof( result ) );
 	return true;
 }
 
@@ -798,27 +820,41 @@ void OSX_GetVideoCard( int& outVendorId, int& outDeviceId )
 		if(service)
 		{
 			// Get the classcode so we know what we're looking at
-			CFDataRef classCode =  (CFDataRef)IORegistryEntryCreateCFProperty(service,CFSTR("class-code"),kCFAllocatorDefault,0);
+			CFTypeRef classCode = IORegistryEntryCreateCFProperty(service,CFSTR("class-code"),kCFAllocatorDefault,0);
+			UInt32 classCodeValue = 0;
 			// Only accept devices that are 
 			// PCI Spec - 0x00030000 is a display device
-			if((*(UInt32*)CFDataGetBytePtr(classCode) & 0x00ff0000) == 0x00030000)
+			if( OSX_ReadRegistryUInt32( classCode, classCodeValue ) &&
+				( classCodeValue & 0x00ff0000 ) == 0x00030000 )
 			{
 				// Get the name of the service (hw)
 				IORegistryEntryGetName(service, dName);
 				
-			    CFDataRef vendorID, deviceID;
+			    CFTypeRef vendorID, deviceID;
 			    
 				// Get the information for the device we've selected from the list
 			    vendorID = (CFDataRef)IORegistryEntryCreateCFProperty(service, CFSTR("vendor-id"),kCFAllocatorDefault,0);
 			    deviceID = (CFDataRef)IORegistryEntryCreateCFProperty(service, CFSTR("device-id"),kCFAllocatorDefault,0);
-			    
-			    outVendorId = *((long*)CFDataGetBytePtr(vendorID));
-			    outDeviceId = *((long*)CFDataGetBytePtr(deviceID));
+
+				UInt32 vendorIDValue = 0;
+				UInt32 deviceIDValue = 0;
+				if ( OSX_ReadRegistryUInt32( vendorID, vendorIDValue ) &&
+					OSX_ReadRegistryUInt32( deviceID, deviceIDValue ) ) {
+					outVendorId = static_cast<int>( vendorIDValue );
+					outDeviceId = static_cast<int>( deviceIDValue );
+				}
 				
-				CFRelease(vendorID);
-				CFRelease(deviceID);
+				if ( vendorID != NULL ) {
+					CFRelease(vendorID);
+				}
+				if ( deviceID != NULL ) {
+					CFRelease(deviceID);
+				}
 			}
-			CFRelease(classCode);
+			if ( classCode != NULL ) {
+				CFRelease(classCode);
+			}
+			IOObjectRelease( service );
 			
 			// Stop after finding the first device
 			if (outVendorId != -1)
@@ -827,6 +863,7 @@ void OSX_GetVideoCard( int& outVendorId, int& outDeviceId )
 		else
 			break;
 	}
+	IOObjectRelease( itThis );
 }
 
 /*

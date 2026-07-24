@@ -10,8 +10,11 @@
 // Direction vectors normalize in-shader (no normalization cube map, locked
 // Phase F decision). Ambient lights substitute the constant tangent-space
 // direction the ambient normal-map cube decodes to (pushed as pc.b, with
-// the cube's 8-bit quantization applied CPU-side). Additive ONE:ONE blend;
-// alpha writes 0 like the GL reference.
+// the cube's 8-bit quantization applied CPU-side). The shipped
+// Parallaxbump custom-lighting guide enables a scale/bias height offset
+// through pc.c; the otherwise-unused red channel of RXGB normal maps holds
+// the height while alpha/green/blue retain the tangent-space normal.
+// Additive ONE:ONE blend; alpha writes 0 like the GL reference.
 
 layout(set = 0, binding = 0) uniform sampler2D specularTableMap;
 layout(set = 1, binding = 0) uniform sampler2D bumpMap;
@@ -53,6 +56,7 @@ layout(location = 4) in vec4 vLightProjectionTexCoord;
 layout(location = 5) in vec3 vLightVector;
 layout(location = 6) in vec3 vHalfAngleVector;
 layout(location = 7) in vec3 vVertexColor;
+layout(location = 8) in vec3 vViewVector;
 
 layout(location = 0) out vec4 outColor;
 
@@ -61,7 +65,18 @@ vec3 SafeNormalize(vec3 value) {
 }
 
 void main() {
-    vec4 bumpSample = texture(bumpMap, vBumpTexCoord);
+    vec2 bumpTexCoord = vBumpTexCoord;
+    vec2 diffuseTexCoord = vDiffuseTexCoord;
+    vec2 specularTexCoord = vSpecularTexCoord;
+    if (pc.c.z > 0.5) {
+        float height = texture(bumpMap, bumpTexCoord).r;
+        vec2 offset = SafeNormalize(vViewVector).xy * (height * pc.c.x + pc.c.y);
+        bumpTexCoord += offset;
+        diffuseTexCoord += offset;
+        specularTexCoord += offset;
+    }
+
+    vec4 bumpSample = texture(bumpMap, bumpTexCoord);
     vec3 localNormal = vec3(bumpSample.a, bumpSample.g, bumpSample.b) * 2.0 - 1.0;
 
     vec3 lightDir = (pc.a.z > 0.5) ? pc.b.xyz : SafeNormalize(vLightVector);
@@ -71,12 +86,12 @@ void main() {
     light *= textureProj(lightFalloffMap, vLightFalloffTexCoord).rgb;
     light *= textureProj(lightProjectionMap, vLightProjectionTexCoord).rgb;
 
-    vec3 diffuse = texture(diffuseMap, vDiffuseTexCoord).rgb * inter.diffuseColor.rgb;
+    vec3 diffuse = texture(diffuseMap, diffuseTexCoord).rgb * inter.diffuseColor.rgb;
 
     vec3 halfAngle = SafeNormalize(vHalfAngleVector);
     float specularDot = clamp(dot(halfAngle, localNormal), 0.0, 1.0);
     float specularTerm = texture(specularTableMap, vec2(specularDot, 0.5)).r * 2.0;
-    vec3 specular = texture(specularMap, vSpecularTexCoord).rgb * inter.specularColor.rgb * specularTerm;
+    vec3 specular = texture(specularMap, specularTexCoord).rgb * inter.specularColor.rgb * specularTerm;
 
     outColor = vec4((diffuse + specular) * light * vVertexColor, 0.0);
 }

@@ -409,7 +409,8 @@ struct rvMD5RVertexBufferDesc {
 									videoMemory( false ),
 									soA( false ),
 									hasVertexFormat( false ),
-									hasLoadVertexFormat( false ) {
+									hasLoadVertexFormat( false ),
+									rebuildOnLoad( false ) {
 								}
 
 	int							numVertices;
@@ -418,6 +419,7 @@ struct rvMD5RVertexBufferDesc {
 	bool						soA;
 	bool						hasVertexFormat;
 	bool						hasLoadVertexFormat;
+	bool						rebuildOnLoad;
 	rvMD5RVertexFormatDesc		vertexFormat;
 	rvMD5RVertexFormatDesc		loadVertexFormat;
 	idList<idVec4>				positions;
@@ -525,7 +527,7 @@ private:
 	void						ParseJoint( Lexer &parser, int jointIndex, idJointQuat &worldPose );
 	void						BuildLevelsOfDetail();
 	bool						BuildDynamicMeshTemplate( rvMD5RMesh &mesh );
-	bool						UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJointMat *entJoints, modelSurface_t &surface, bool calculateTangents ) const;
+	bool						UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJointMat *entJoints, modelSurface_t &surface, bool calculateTangents, float skinScale ) const;
 	bool						GenerateDynamicSurface( idRenderModelStatic &staticModel, rvMD5RMesh &mesh, const renderEntity_s &ent, const idJointMat *entJoints, dword surfMask );
 	bool						CopyPrimBatchTriangles( const rvMD5RMesh &mesh, idDrawVert *destDrawVerts, glIndex_t *destIndices, const rvSilTraceVertT *silTraceVerts ) const;
 	bool						GenerateStaticSurfaces();

@@ -32,6 +32,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "Unzip.h"
 #include "openq4_paks_generated.h"
 
+#include <stdint.h>
+
 #ifdef WIN32
 	#include <windows.h>
 	#include <io.h>	// for _read
@@ -1150,7 +1152,7 @@ static bool FS_AutoDiscoverBasePath( idStr &basePath ) {
 
 typedef struct fileInPack_s {
 	idStr				name;						// name of the file
-	unsigned long		pos;						// file info position in zip
+	uint32_t			pos;						// classic-ZIP central-directory position
 	struct fileInPack_s * next;						// next file in the hash
 } fileInPack_t;
 
@@ -1377,7 +1379,7 @@ private:
 	void					ReplaceSeparators( idStr &path, char sep = PATHSEPERATOR_CHAR );
 	bool					FindCaseInsensitiveOSPathEntry( const char *directory, const char *segment, bool directoryOnly, idStr &resolvedSegment );
 	bool					ResolveCaseInsensitiveOSPath( const char *path, idStr &resolvedPath, bool finalSegmentIsFile );
-	long					HashFileName( const char *fname ) const;
+	int						HashFileName( const char *fname ) const;
 	int						ListOSFiles( const char *directory, const char *extension, idStrList &list );
 	FILE *					OpenOSFile( const char *name, const char *mode, idStr *caseSensitiveName = NULL );
 	FILE *					OpenOSFileCorrectName( idStr &path, const char *mode );
@@ -1478,26 +1480,25 @@ idFileSystemLocal::HashFileName
 return a hash value for the filename
 ================
 */
-long idFileSystemLocal::HashFileName( const char *fname ) const {
+int idFileSystemLocal::HashFileName( const char *fname ) const {
 	int		i;
-	long	hash;
-	char	letter;
+	uint32_t	hash;
+	byte	letter;
 
 	hash = 0;
 	i = 0;
 	while( fname[i] != '\0' ) {
-		letter = idStr::ToLower( fname[i] );
+		letter = static_cast<byte>( idStr::ToLower( fname[i] ) );
 		if ( letter == '.' ) {
 			break;				// don't include extension
 		}
 		if ( letter == '\\' ) {
 			letter = '/';		// damn path names
 		}
-		hash += (long)(letter) * (i+119);
+		hash += static_cast<uint32_t>( letter ) * ( static_cast<uint32_t>( i ) + 119u );
 		i++;
 	}
-	hash &= (FILE_HASH_SIZE-1);
-	return hash;
+	return static_cast<int>( hash & ( FILE_HASH_SIZE - 1 ) );
 }
 
 /*
@@ -2140,7 +2141,7 @@ bool idFileSystemLocal::FileIsInPAK( const char *relativePath ) {
 	searchpath_t	*search;
 	pack_t			*pak;
 	fileInPack_t	*pakFile;
-	long			hash;
+	int				hash;
 
 	if ( !searchPaths ) {
 		common->FatalError( "Filesystem call made without initialization\n" );
@@ -2582,22 +2583,32 @@ pack_t *idFileSystemLocal::LoadZipFile( const char *zipfile ) {
 	char			filename_inzip[MAX_ZIPPED_FILE_NAME];
 	unz_file_info	file_info;
 	int				i;
-	long			hash;
+	int				hash;
 	int				fs_numHeaderLongs;
 	int *			fs_headerLongs;
 	FILE			*f;
 	int				len;
 	int				confHash;
 	fileInPack_t	*pakFile;
+	long			fileLength;
 
 	f = OpenOSFile( zipfile, "rb" );
 	if ( !f ) {
 		common->Warning( "Could not open pk4 '%s': %s", zipfile, strerror( errno ) );
 		return NULL;
 	}
-	fseek( f, 0, SEEK_END );
-	len = ftell( f );
+	if ( fseek( f, 0, SEEK_END ) != 0 ) {
+		common->Warning( "Could not seek pk4 '%s': %s", zipfile, strerror( errno ) );
+		fclose( f );
+		return NULL;
+	}
+	fileLength = ftell( f );
 	fclose( f );
+	if ( fileLength < 0 || fileLength > idMath::INT_MAX ) {
+		common->Warning( "PK4 '%s' is too large for the legacy file interface", zipfile );
+		return NULL;
+	}
+	len = static_cast<int>( fileLength );
 
 	fs_numHeaderLongs = 0;
 
@@ -2613,8 +2624,13 @@ pack_t *idFileSystemLocal::LoadZipFile( const char *zipfile ) {
 		unzClose( uf );
 		return NULL;
 	}
+	if ( gi.number_entry > static_cast<unsigned long>( idMath::INT_MAX ) ) {
+		common->Warning( "PK4 '%s' has too many files", zipfile );
+		unzClose( uf );
+		return NULL;
+	}
 
-	buildBuffer = new fileInPack_t[gi.number_entry];
+	buildBuffer = new fileInPack_t[static_cast<size_t>( gi.number_entry )];
 	pack = new pack_t;
 	for( i = 0; i < FILE_HASH_SIZE; i++ ) {
 		pack->hashTable[i] = NULL;
@@ -2622,7 +2638,7 @@ pack_t *idFileSystemLocal::LoadZipFile( const char *zipfile ) {
 
 	pack->pakFilename = zipfile;
 	pack->handle = uf;
-	pack->numfiles = gi.number_entry;
+	pack->numfiles = static_cast<int>( gi.number_entry );
 	pack->buildBuffer = buildBuffer;
 	pack->referenced = false;
 	pack->binary = BINARY_UNKNOWN;
@@ -2634,11 +2650,20 @@ pack_t *idFileSystemLocal::LoadZipFile( const char *zipfile ) {
 
 	pack->length = len;
 
-	unzGoToFirstFile(uf);
-	fs_headerLongs = (int *)Mem_ClearedAlloc( gi.number_entry * sizeof(int) );
-	for ( i = 0; i < (int)gi.number_entry; i++ ) {
+	err = unzGoToFirstFile( uf );
+	bool zipIndexValid = ( pack->numfiles == 0 || err == UNZ_OK );
+	fs_headerLongs = static_cast<int *>( Mem_ClearedAlloc(
+		static_cast<size_t>( pack->numfiles ) * sizeof( int ) ) );
+	for ( i = 0; zipIndexValid && i < pack->numfiles; i++ ) {
 		err = unzGetCurrentFileInfo( uf, &file_info, filename_inzip, sizeof(filename_inzip), NULL, 0, NULL, 0 );
 		if ( err != UNZ_OK ) {
+			common->Warning( "Could not read file %d from pk4 central directory '%s'", i, zipfile );
+			zipIndexValid = false;
+			break;
+		}
+		if ( file_info.uncompressed_size > static_cast<unsigned long>( idMath::INT_MAX ) ) {
+			common->Warning( "File %d in pk4 '%s' is too large for the legacy file interface", i, zipfile );
+			zipIndexValid = false;
 			break;
 		}
 		if ( file_info.uncompressed_size > 0 ) {
@@ -2648,13 +2673,32 @@ pack_t *idFileSystemLocal::LoadZipFile( const char *zipfile ) {
 		buildBuffer[i].name = filename_inzip;
 		buildBuffer[i].name.ToLower();
 		buildBuffer[i].name.BackSlashesToSlashes();
-		// store the file position in the zip
-		unzGetCurrentFileInfoPosition( uf, &buildBuffer[i].pos );
+		// Minizip exposes a native unsigned long, but classic ZIP stores this
+		// central-directory position in exactly 32 bits.
+		unsigned long fileInfoPosition = 0;
+		err = unzGetCurrentFileInfoPosition( uf, &fileInfoPosition );
+		if ( err != UNZ_OK || fileInfoPosition > static_cast<unsigned long>( UINT32_MAX ) ) {
+			common->Warning( "Invalid file %d position in pk4 central directory '%s'", i, zipfile );
+			zipIndexValid = false;
+			break;
+		}
+		buildBuffer[i].pos = static_cast<uint32_t>( fileInfoPosition );
 		// add the file to the hash
 		buildBuffer[i].next = pack->hashTable[hash];
 		pack->hashTable[hash] = &buildBuffer[i];
 		// go to the next file in the zip
-		unzGoToNextFile(uf);
+		if ( i + 1 < pack->numfiles && unzGoToNextFile( uf ) != UNZ_OK ) {
+			common->Warning( "Could not advance pk4 central directory '%s'", zipfile );
+			zipIndexValid = false;
+		}
+	}
+
+	if ( !zipIndexValid || i != pack->numfiles ) {
+		Mem_Free( fs_headerLongs );
+		delete[] buildBuffer;
+		unzClose( uf );
+		delete pack;
+		return NULL;
 	}
 
 	// check if this is an addon pak
@@ -4449,7 +4493,7 @@ bool idFileSystemLocal::AddonPackProvidesMap( const pack_t *pak, const char *rel
 		return false;
 	}
 
-	const long hash = HashFileName( relativeMapPath );
+	const int hash = HashFileName( relativeMapPath );
 	for ( const fileInPack_t *pakFile = pak->hashTable[ hash ]; pakFile; pakFile = pakFile->next ) {
 		if ( !FilenameCompare( pakFile->name, relativeMapPath ) ) {
 			return true;
@@ -5146,6 +5190,10 @@ bool idFileSystemLocal::UpdateGamePakChecksums( void ) {
 			if ( !FilenameCompare( pakFile->name, BINARY_CONFIG ) ) {
 				search->pack->binary = BINARY_YES;
 				confFile = ReadFileFromZip( search->pack, pakFile, BINARY_CONFIG );
+				if ( confFile == NULL ) {
+					search->pack->binary = BINARY_NO;
+					break;
+				}
 				buf = new char[ confFile->Length() + 1 ];
 				confFile->Read( (void *)buf, confFile->Length() );
 				buf[ confFile->Length() ] = '\0';
@@ -5829,15 +5877,23 @@ idFile_InZip * idFileSystemLocal::ReadFileFromZip( pack_t *pak, fileInPack_t *pa
 	// in case the file was new
 	fp = zfi->file;
 	// set the file position in the zip file (also sets the current file info)
-	unzSetCurrentFileInfoPosition( pak->handle, pakFile->pos );
+	if ( unzSetCurrentFileInfoPosition( pak->handle, static_cast<unsigned long>( pakFile->pos ) ) != UNZ_OK ) {
+		common->Warning( "Could not seek to '%s' in pk4 '%s'", relativePath, pak->pakFilename.c_str() );
+		delete file;
+		return NULL;
+	}
 	// copy the file info into the unzip structure
 	memcpy( zfi, pak->handle, sizeof(unz_s) );
 	// we copy this back into the structure
 	zfi->file = fp;
 	// open the file in the zip
-	unzOpenCurrentFile( file->z );
+	if ( unzOpenCurrentFile( file->z ) != UNZ_OK ) {
+		common->Warning( "Could not open '%s' in pk4 '%s'", relativePath, pak->pakFilename.c_str() );
+		delete file;
+		return NULL;
+	}
 	file->zipFilePos = pakFile->pos;
-	file->fileSize = zfi->cur_file_info.uncompressed_size;
+	file->fileSize = static_cast<int>( zfi->cur_file_info.uncompressed_size );
 	file->containerChecksum = pak->checksum;
 	return file;
 }
@@ -5858,7 +5914,7 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 	pack_t *		pak;
 	fileInPack_t *	pakFile;
 	directory_t *	dir;
-	long			hash;
+	int				hash;
 	FILE *			fp;
 	
 	if ( !searchPaths ) {
@@ -6039,6 +6095,9 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 				// case and separator insensitive comparisons
 				if ( !FilenameCompare( pakFile->name, relativePath ) ) {
 					idFile_InZip *file = ReadFileFromZip( pak, pakFile, relativePath );
+					if ( file == NULL ) {
+						continue;
+					}
 
 					if ( foundInPak ) {
 						*foundInPak = pak;
@@ -6070,6 +6129,9 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 			for ( pakFile = pak->hashTable[hash]; pakFile; pakFile = pakFile->next ) {
 				if ( !FilenameCompare( pakFile->name, relativePath ) ) {
 					idFile_InZip *file = ReadFileFromZip( pak, pakFile, relativePath );
+					if ( file == NULL ) {
+						continue;
+					}
 					if ( foundInPak ) {
 						*foundInPak = pak;
 					}
@@ -6554,6 +6616,9 @@ pack_t *idFileSystemLocal::FindPakForFileChecksum( const char *relativePath, int
 			for ( pakFile = pak->hashTable[ hash ]; pakFile; pakFile = pakFile->next ) {
 				if ( !FilenameCompare( pakFile->name, relativePath ) ) {
 					idFile_InZip *file = ReadFileFromZip( pak, pakFile, relativePath );
+					if ( file == NULL ) {
+						continue;
+					}
 					if ( findChecksum == GetFileChecksum( file ) ) {
 						if ( fs_debug.GetBool() ) {
 							common->Printf( "found '%s' with checksum 0x%x in pak '%s'\n", relativePath, findChecksum, pak->pakFilename.c_str() );

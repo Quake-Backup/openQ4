@@ -90,7 +90,8 @@ static const VkComponentMapping VK_SWIZZLE_IDENTITY = {
 	VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
 	VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
 
-static bool VK_Image_GetFormatInfo( const idImageOpts &opts, vkFormatInfo_t &info ) {
+static bool VK_Image_GetFormatInfo( const idImageOpts &opts,
+		textureUsage_t usage, vkFormatInfo_t &info ) {
 	info.format = VK_FORMAT_UNDEFINED;
 	info.bytesPerBlock = 4;
 	info.blockDim = 1;
@@ -162,7 +163,11 @@ static bool VK_Image_GetFormatInfo( const idImageOpts &opts, vkFormatInfo_t &inf
 			info.bytesPerBlock = 4;
 			break;
 		case FMT_DEPTH_STENCIL:
-			info.format = VK_FORMAT_D24_UNORM_S8_UINT;
+			// Match the device-selected attachment format. Some Vulkan
+			// implementations expose D32S8 but not D24S8; render-target
+			// creation must follow the same probe as the swapchain depth.
+			info.format = vkCtx.depthFormat != VK_FORMAT_UNDEFINED
+					? vkCtx.depthFormat : VK_FORMAT_D24_UNORM_S8_UINT;
 			info.bytesPerBlock = 4;
 			break;
 		case FMT_RGB565:
@@ -184,6 +189,11 @@ static bool VK_Image_GetFormatInfo( const idImageOpts &opts, vkFormatInfo_t &inf
 		info.swizzle.g = VK_COMPONENT_SWIZZLE_ONE;
 		info.swizzle.b = VK_COMPONENT_SWIZZLE_ONE;
 		info.swizzle.a = VK_COMPONENT_SWIZZLE_G;
+	} else if ( usage == TD_BUMP && opts.colorFormat != CFM_NORMAL_DXT5 ) {
+		// Legacy interaction programs decode Nx from alpha. Match the GL
+		// backend by exposing the authored red channel through alpha for
+		// bump maps that were not already packed as RXGB/DXT5 normals.
+		info.swizzle.a = VK_COMPONENT_SWIZZLE_R;
 	}
 	return true;
 }
@@ -310,6 +320,10 @@ void VK_Image_ShutdownAll( void ) {
 		if ( vkImages[ i ].view != VK_NULL_HANDLE ) {
 			vkDestroyImageView( vkCtx.device, vkImages[ i ].view, NULL );
 		}
+		if ( vkImages[ i ].attachmentView != VK_NULL_HANDLE
+				&& vkImages[ i ].attachmentView != vkImages[ i ].view ) {
+			vkDestroyImageView( vkCtx.device, vkImages[ i ].attachmentView, NULL );
+		}
 		if ( vkImages[ i ].image != VK_NULL_HANDLE && vkCtx.allocator != NULL ) {
 			vmaDestroyImage( vkCtx.allocator, vkImages[ i ].image, vkImages[ i ].allocation );
 		}
@@ -330,10 +344,76 @@ void idImage::PurgeImage( void ) {
 	vkImageEntry_t *entry = VK_Image_GetEntry( texnum );
 	if ( entry != NULL ) {
 		// the image may still be referenced by an in-flight frame
-		VK_Device_DeferDestroy( entry->image, entry->view, VK_NULL_HANDLE, entry->allocation );
+		VK_Device_DeferDestroy( entry->image, entry->view, VK_NULL_HANDLE, entry->allocation,
+				entry->attachmentView != entry->view ? entry->attachmentView : VK_NULL_HANDLE );
 		memset( entry, 0, sizeof( *entry ) );
 	}
 	texnum = TEXTURE_NOT_LOADED;
+}
+
+static VkSampleCountFlagBits VK_Image_SelectSampleCount( const idImageOpts &imageOpts,
+		VkFormat format, VkImageAspectFlags aspectMask, VkImageUsageFlags usage,
+		VkImageCreateFlags flags, bool attachmentCapable ) {
+	if ( !attachmentCapable || imageOpts.textureType != TT_2D
+			|| imageOpts.numMSAASamples <= 1 ) {
+		return VK_SAMPLE_COUNT_1_BIT;
+	}
+
+	// Color and depth/stencil images form one forward render target and must
+	// receive an identical count. The game retries lower tiers if the exact
+	// color and depth formats disagree, while this global intersection avoids
+	// selecting a tier no framebuffer combination can support.
+	VkSampleCountFlags supported =
+			vkCtx.deviceProperties.limits.framebufferColorSampleCounts
+			& vkCtx.deviceProperties.limits.framebufferDepthSampleCounts;
+	if ( ( aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT ) != 0 ) {
+		supported &= vkCtx.deviceProperties.limits.framebufferStencilSampleCounts;
+	}
+
+	VkPhysicalDeviceImageFormatInfo2 formatInfo;
+	memset( &formatInfo, 0, sizeof( formatInfo ) );
+	formatInfo.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+	formatInfo.format = format;
+	formatInfo.type = VK_IMAGE_TYPE_2D;
+	formatInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	formatInfo.usage = usage;
+	formatInfo.flags = flags;
+
+	VkImageFormatProperties2 imageProperties;
+	memset( &imageProperties, 0, sizeof( imageProperties ) );
+	imageProperties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+	if ( vkGetPhysicalDeviceImageFormatProperties2(
+			vkCtx.physicalDevice, &formatInfo, &imageProperties ) != VK_SUCCESS ) {
+		return VK_SAMPLE_COUNT_1_BIT;
+	}
+	supported &= imageProperties.imageFormatProperties.sampleCounts;
+
+	static const struct {
+		int samples;
+		VkSampleCountFlagBits bit;
+	} choices[] = {
+		{ 8, VK_SAMPLE_COUNT_8_BIT },
+		{ 4, VK_SAMPLE_COUNT_4_BIT },
+		{ 2, VK_SAMPLE_COUNT_2_BIT },
+	};
+	for ( int i = 0; i < (int)( sizeof( choices ) / sizeof( choices[ 0 ] ) ); i++ ) {
+		if ( choices[ i ].samples <= imageOpts.numMSAASamples && ( supported & choices[ i ].bit ) != 0 ) {
+			return choices[ i ].bit;
+		}
+	}
+	return VK_SAMPLE_COUNT_1_BIT;
+}
+
+static int VK_Image_SampleCountInteger( VkSampleCountFlagBits samples ) {
+	switch ( samples ) {
+		case VK_SAMPLE_COUNT_64_BIT: return 64;
+		case VK_SAMPLE_COUNT_32_BIT: return 32;
+		case VK_SAMPLE_COUNT_16_BIT: return 16;
+		case VK_SAMPLE_COUNT_8_BIT: return 8;
+		case VK_SAMPLE_COUNT_4_BIT: return 4;
+		case VK_SAMPLE_COUNT_2_BIT: return 2;
+		default: return 0;
+	}
 }
 
 /*
@@ -357,12 +437,41 @@ void idImage::AllocImage( void ) {
 	}
 
 	vkFormatInfo_t info;
-	if ( !VK_Image_GetFormatInfo( opts, info ) ) {
+	if ( !VK_Image_GetFormatInfo( opts, usage, info ) ) {
 		return;
 	}
 
 	const bool isCube = opts.textureType == TT_CUBIC;
-	const int numMips = opts.numLevels > 0 ? opts.numLevels : 1;
+	const bool isDepth = opts.format == FMT_DEPTH || opts.format == FMT_DEPTH_STENCIL;
+	const VkImageAspectFlags sampledAspect = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	const VkImageAspectFlags attachmentAspect = opts.format == FMT_DEPTH_STENCIL
+			? ( VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT ) : sampledAspect;
+
+	VkFormatProperties formatProperties;
+	memset( &formatProperties, 0, sizeof( formatProperties ) );
+	vkGetPhysicalDeviceFormatProperties( vkCtx.physicalDevice, info.format, &formatProperties );
+	const VkFormatFeatureFlags optimalFeatures = formatProperties.optimalTilingFeatures;
+	const bool attachmentCapable = isDepth
+			? ( optimalFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ) != 0
+			: ( optimalFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ) != 0;
+
+	VkImageUsageFlags imageUsage =
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if ( optimalFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT ) {
+		imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	}
+	if ( attachmentCapable ) {
+		imageUsage |= isDepth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+				: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	}
+	const VkImageCreateFlags imageFlags =
+			isCube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+	const VkSampleCountFlagBits samples = VK_Image_SelectSampleCount(
+			opts, info.format, attachmentAspect, imageUsage, imageFlags,
+			attachmentCapable );
+	opts.numMSAASamples = VK_Image_SampleCountInteger( samples );
+	const int numMips = samples == VK_SAMPLE_COUNT_1_BIT
+			? ( opts.numLevels > 0 ? opts.numLevels : 1 ) : 1;
 
 	VkImageCreateInfo ici;
 	memset( &ici, 0, sizeof( ici ) );
@@ -374,13 +483,11 @@ void idImage::AllocImage( void ) {
 	ici.extent.depth = 1;
 	ici.mipLevels = (uint32_t)numMips;
 	ici.arrayLayers = isCube ? 6 : 1;
-	ici.samples = VK_SAMPLE_COUNT_1_BIT;
+	ici.samples = samples;
 	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-	ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	ici.usage = imageUsage;
 	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	if ( isCube ) {
-		ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-	}
+	ici.flags = imageFlags;
 
 	VmaAllocationCreateInfo vaci;
 	memset( &vaci, 0, sizeof( vaci ) );
@@ -405,8 +512,7 @@ void idImage::AllocImage( void ) {
 	ivci.viewType = isCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
 	ivci.format = info.format;
 	ivci.components = info.swizzle;
-	ivci.subresourceRange.aspectMask = ( opts.format == FMT_DEPTH || opts.format == FMT_DEPTH_STENCIL )
-			? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	ivci.subresourceRange.aspectMask = sampledAspect;
 	ivci.subresourceRange.levelCount = (uint32_t)numMips;
 	ivci.subresourceRange.layerCount = isCube ? 6 : 1;
 	if ( vkCreateImageView( vkCtx.device, &ivci, NULL, &entry.view ) != VK_SUCCESS ) {
@@ -415,9 +521,24 @@ void idImage::AllocImage( void ) {
 		memset( &entry, 0, sizeof( entry ) );
 		return;
 	}
+	entry.attachmentView = entry.view;
+	if ( attachmentAspect != sampledAspect ) {
+		ivci.subresourceRange.aspectMask = attachmentAspect;
+		if ( vkCreateImageView( vkCtx.device, &ivci, NULL, &entry.attachmentView ) != VK_SUCCESS ) {
+			common->Warning( "Vulkan: depth/stencil attachment view creation failed" );
+			vkDestroyImageView( vkCtx.device, entry.view, NULL );
+			vmaDestroyImage( vkCtx.allocator, entry.image, entry.allocation );
+			memset( &entry, 0, sizeof( entry ) );
+			return;
+		}
+	}
 
 	entry.inUse = true;
 	entry.format = info.format;
+	entry.usage = ici.usage;
+	entry.aspectMask = attachmentAspect;
+	entry.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	entry.samples = samples;
 	entry.width = opts.width;
 	entry.height = opts.height;
 	entry.numMips = numMips;
@@ -428,6 +549,123 @@ void idImage::AllocImage( void ) {
 	entry.sampler = VK_Image_GetSampler( filter, repeat, numMips > 1 );
 
 	texnum = (unsigned int)slot;
+}
+
+/*
+====================
+VK_Image_MakeDepthCopyTarget
+
+Depth copies cannot rely on image blits: Vulkan only guarantees a direct
+depth copy when source and destination formats match exactly. Keep the
+front-end idImage dimensions current, then replace its backing with a
+single-sample sampled/transfer-destination image in the device depth format.
+====================
+*/
+bool VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
+		VkFormat depthFormat ) {
+	if ( image == NULL || !vkCtx.initialized || width <= 0 || height <= 0
+			|| depthFormat == VK_FORMAT_UNDEFINED ) {
+		return false;
+	}
+
+	if ( image->GetUploadWidth() != width || image->GetUploadHeight() != height ) {
+		image->Resize( width, height );
+	}
+	if ( !image->IsLoaded() ) {
+		idImageOpts imageOpts = image->GetOpts();
+		imageOpts.width = width;
+		imageOpts.height = height;
+		imageOpts.numLevels = 1;
+		imageOpts.numMSAASamples = 0;
+		image->AllocImage( imageOpts, image->GetFilter(), image->GetRepeat() );
+		if ( !image->IsLoaded() ) {
+			return false;
+		}
+	}
+
+	vkImageEntry_t *entry = VK_Image_GetEntry( image->GetDeviceHandle() );
+	if ( entry == NULL ) {
+		return false;
+	}
+	const VkImageUsageFlags requiredUsage =
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if ( entry->format == depthFormat
+			&& entry->width == width && entry->height == height
+			&& entry->view != VK_NULL_HANDLE
+			&& entry->samples == VK_SAMPLE_COUNT_1_BIT
+			&& entry->aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT
+			&& ( entry->usage & requiredUsage ) == requiredUsage ) {
+		return true;
+	}
+
+	VkImageCreateInfo ici;
+	memset( &ici, 0, sizeof( ici ) );
+	ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ici.imageType = VK_IMAGE_TYPE_2D;
+	ici.format = depthFormat;
+	ici.extent.width = (uint32_t)width;
+	ici.extent.height = (uint32_t)height;
+	ici.extent.depth = 1;
+	ici.mipLevels = 1;
+	ici.arrayLayers = 1;
+	ici.samples = VK_SAMPLE_COUNT_1_BIT;
+	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ici.usage = requiredUsage;
+	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	VmaAllocationCreateInfo vaci;
+	memset( &vaci, 0, sizeof( vaci ) );
+	vaci.usage = VMA_MEMORY_USAGE_AUTO;
+
+	VkImage newImage = VK_NULL_HANDLE;
+	VmaAllocation newAllocation = NULL;
+	if ( vmaCreateImage( vkCtx.allocator, &ici, &vaci,
+			&newImage, &newAllocation, NULL ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: depth-copy target image creation failed (%dx%d)",
+				width, height );
+		return false;
+	}
+
+	VkImageViewCreateInfo ivci;
+	memset( &ivci, 0, sizeof( ivci ) );
+	ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	ivci.image = newImage;
+	ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	ivci.format = depthFormat;
+	ivci.components = VK_SWIZZLE_IDENTITY;
+	ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+	ivci.subresourceRange.levelCount = 1;
+	ivci.subresourceRange.layerCount = 1;
+
+	VkImageView newView = VK_NULL_HANDLE;
+	if ( vkCreateImageView( vkCtx.device, &ivci, NULL, &newView ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: depth-copy target view creation failed" );
+		vmaDestroyImage( vkCtx.allocator, newImage, newAllocation );
+		return false;
+	}
+
+	VK_Device_DeferDestroy( entry->image, entry->view, VK_NULL_HANDLE,
+			entry->allocation,
+			entry->attachmentView != entry->view ? entry->attachmentView : VK_NULL_HANDLE );
+
+	entry->image = newImage;
+	entry->allocation = newAllocation;
+	entry->view = newView;
+	entry->attachmentView = newView;
+	entry->sampler = VK_Image_GetSampler( TF_NEAREST, TR_CLAMP, false );
+	entry->format = depthFormat;
+	entry->usage = requiredUsage;
+	entry->aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+	entry->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	entry->samples = VK_SAMPLE_COUNT_1_BIT;
+	entry->width = width;
+	entry->height = height;
+	entry->numMips = 1;
+	entry->numLayers = 1;
+	entry->isCube = false;
+	entry->everUploaded = false;
+	entry->generation = vkImageGenerationCounter++;
+	return true;
 }
 
 /*
@@ -446,7 +684,7 @@ typedef struct vkUploadContext_s {
 	int				x, y;
 	int				width, height;
 	uint32_t		bufferRowLengthTexels;
-	bool			firstUseOfImage;
+	VkImageLayout	oldLayout;
 } vkUploadContext_t;
 
 static void VK_Image_RecordUpload( VkCommandBuffer cmd, void *user ) {
@@ -458,7 +696,7 @@ static void VK_Image_RecordUpload( VkCommandBuffer cmd, void *user ) {
 	toTransfer.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	toTransfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
 	toTransfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-	toTransfer.oldLayout = ctx->firstUseOfImage ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	toTransfer.oldLayout = ctx->oldLayout;
 	toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	toTransfer.image = ctx->entry->image;
 	toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -501,12 +739,14 @@ static void VK_Image_RecordUpload( VkCommandBuffer cmd, void *user ) {
 
 void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int height, const void *pic, int pixelPitch ) const {
 	vkImageEntry_t *entry = VK_Image_GetEntry( texnum );
-	if ( entry == NULL || pic == NULL || width <= 0 || height <= 0 ) {
+	if ( entry == NULL || pic == NULL || width <= 0 || height <= 0
+			|| entry->samples != VK_SAMPLE_COUNT_1_BIT
+			|| ( entry->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ) == 0 ) {
 		return;
 	}
 
 	vkFormatInfo_t info;
-	if ( !VK_Image_GetFormatInfo( opts, info ) ) {
+	if ( !VK_Image_GetFormatInfo( opts, usage, info ) ) {
 		return;
 	}
 
@@ -541,7 +781,29 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		common->Warning( "Vulkan: staging buffer creation failed (%d bytes)", (int)dataBytes );
 		return;
 	}
-	memcpy( stagingInfo.pMappedData, pic, dataBytes );
+	if ( opts.format == FMT_RGB565 ) {
+		// The CPU-side image path stores RGB565 as big-endian byte pairs;
+		// OpenGL uses GL_UNPACK_SWAP_BYTES. Vulkan has no pixel-store
+		// equivalent, so feed PACK16 native-endian values explicitly.
+		const uint8_t *src = (const uint8_t *)pic;
+		uint8_t *dst = (uint8_t *)stagingInfo.pMappedData;
+		const size_t texels = dataBytes / 2;
+		for ( size_t i = 0; i < texels; i++ ) {
+			dst[ i * 2 + 0 ] = src[ i * 2 + 1 ];
+			dst[ i * 2 + 1 ] = src[ i * 2 + 0 ];
+		}
+	} else {
+		memcpy( stagingInfo.pMappedData, pic, dataBytes );
+	}
+	const VkResult flushResult = vmaFlushAllocation(
+			vkCtx.allocator, stagingAlloc, 0, (VkDeviceSize)dataBytes );
+	if ( flushResult != VK_SUCCESS ) {
+		common->Warning( "Vulkan: staging buffer flush failed (%d)",
+				(int)flushResult );
+		VK_Device_DeferDestroy(
+				VK_NULL_HANDLE, VK_NULL_HANDLE, staging, stagingAlloc );
+		return;
+	}
 
 	vkUploadContext_t ctx;
 	ctx.entry = entry;
@@ -553,10 +815,11 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	ctx.width = width;
 	ctx.height = height;
 	ctx.bufferRowLengthTexels = rowLengthTexels;
-	ctx.firstUseOfImage = !entry->everUploaded;
+	ctx.oldLayout = entry->layout;
 
 	if ( VK_Device_ImmediateSubmit( VK_Image_RecordUpload, &ctx ) ) {
 		entry->everUploaded = true;
+		entry->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
 
 	VK_Device_DeferDestroy( VK_NULL_HANDLE, VK_NULL_HANDLE, staging, stagingAlloc );

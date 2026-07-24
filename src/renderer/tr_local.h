@@ -179,8 +179,18 @@ typedef enum {
 	SHADOWMAP_CASTER_REJECT_COUNT
 } shadowMapCasterRejectReason_t;
 
+// Per-receiver ownership completeness bits shared by the front end and
+// renderer backends. LOCAL maps contain global caster chains; GLOBAL maps
+// additionally contain noSelfShadow/local caster chains.
+typedef enum {
+	SHADOWMAP_RECEIVER_MASK_LOCAL = 1 << 0,
+	SHADOWMAP_RECEIVER_MASK_GLOBAL = 1 << 1
+} shadowMapReceiverMask_t;
+
 bool R_ShadowMapCasterAdmissionSelfTest( void );
 bool R_ShadowMapLODAdmissionSelfTest( void );
+bool R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+		const idRenderLightLocal *lightDef );
 
 // viewLights are allocated on the frame temporary stack memory
 // a viewLight contains everything that the back end needs out of an idRenderLightLocal,
@@ -225,6 +235,11 @@ typedef struct viewLight_s {
 	const struct drawSurf_s	*globalShadows;				// shadow everything
 	const struct drawSurf_s	*localInteractions;			// don't get local shadows
 	const struct drawSurf_s	*localShadows;				// don't shadow local Surfaces
+	// Receiver-specific stencil lists containing only casters absent from a
+	// partial shadow map. Vulkan combines these with map sampling without
+	// re-stamping casters already represented in the map.
+	const struct drawSurf_s	*globalShadowMapStencilSupplements;
+	const struct drawSurf_s	*localShadowMapStencilSupplements;
 	const struct drawSurf_s	*globalInteractions;		// get shadows from everything
 	const struct drawSurf_s	*localShadowMapCasters;		// ambient caster geometry that should not shadow local receivers
 	const struct drawSurf_s	*globalShadowMapCasters;	// ambient caster geometry that can shadow all receivers
@@ -245,6 +260,21 @@ typedef struct viewLight_s {
 	int						shadowMapLODTranslucentRejectedCount;
 	int						shadowMapCasterSignature;
 	int						shadowMapRejectedCasterReasons[SHADOWMAP_CASTER_REJECT_COUNT];
+	// A complete mapped receiver pass contains every parity-relevant stock
+	// stencil caster. A partial map remains usable only with the exact
+	// ownership-specific stencil supplements below. Conversely, a mapped-pass
+	// miss may use full stencil only when every admitted map caster has a
+	// usable volume.
+	int						shadowMapIncompleteMapMask;
+	int						shadowMapIncompleteStencilMask;
+	// A hybrid receiver samples the partial map while stencil supplies the
+	// casters absent from it. This mask is narrower than either completeness
+	// mask: it records only ownership for which at least one required caster
+	// is absent from BOTH representations.
+	int						shadowMapHybridIncompleteMask;
+	int						shadowMapPrelightMapMissingMask;
+	int						shadowMapPrelightStencilRequiredMask;
+	int						shadowMapPrelightStencilReadyMask;
 	const struct drawSurf_s	*translucentInteractions;	// get shadows from everything
 } viewLight_t;
 
@@ -795,7 +825,7 @@ public:
 												 // (full restart); partial restarts keep the context and its
 												 // objects alive, so generation-stamped GL handles stay valid
 
-	int						staticAllocCount;	// running total of bytes allocated
+	size_t					staticAllocCount;	// running total of bytes allocated
 
 	float					frameShaderTime;	// shader time for all non-world 2D rendering
 	int						frameShaderTimeMsec;	// integer companion for GUI/cinematic/material timing
@@ -1588,7 +1618,7 @@ void R_FinalizeDrawSurf( drawSurf_t *drawSurf );
 void R_AddDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space, const renderEntity_t *renderEntity,
 					const idMaterial *shader, const idScreenRect &scissor, int extraDrawSurfFlags = 0 );
 
-void R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const viewEntity_t *space, 
+bool R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const viewEntity_t *space,
 				   const idRenderLightLocal *light, const idMaterial *shader, const idScreenRect &scissor, bool viewInsideShadow );
 
 bool R_CreateAmbientCache( srfTriangles_t *tri, bool needsLighting );
@@ -1746,9 +1776,56 @@ bool	RB_ARB2_DrawPreparedPackedMD5RStageBatches( const srfTriangles_t *tri );
 bool	RB_ARB2_DrawPreparedPackedMD5RDirectBatches( const srfTriangles_t *tri );
 void	R_ReloadARBPrograms_f( const idCmdArgs &args );
 void	R_ReportShaderPrograms_f( const idCmdArgs &args );
+
+// Stable identities for the stock ARB newStage program families.  Vulkan
+// keeps parser handles opaque; its stage executor uses this
+// identity instead of depending on registry insertion order or program-name
+// spelling.  Unknown is also returned for invalid handles.
+typedef enum {
+	VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN = 0,
+	VK_MATERIAL_PROGRAM_FAMILY_BUMPY_ENVIRONMENT = 1,
+	VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE = 2,
+	VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK = 3,
+	VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_GRAY_WITH_MASK = 4,
+	VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK_AND_VERTEX = 5,
+	VK_MATERIAL_PROGRAM_FAMILY_MONOCHROME = 6,
+	VK_MATERIAL_PROGRAM_FAMILY_REFRACTIVE_GLASS = 7
+} vkMaterialProgramFamily_t;
+
 int		R_FindARBProgram( unsigned int target, const char *program );
 bool	R_IsARBProgramValid( unsigned int target, unsigned int ident );
+vkMaterialProgramFamily_t R_GetARBProgramFamily( unsigned int target, unsigned int ident );
 bool	R_BindARBProgram( unsigned int target, unsigned int ident, const char *usage, bool required );
+
+// Stable identities for every GLSL family named by the shipped Quake 4
+// materials. Vulkan embeds native SPIR-V replacements and resolves authored
+// shaderParm/shaderTexture declarations by semantic name, so it does not
+// depend on source files or OpenGL shader-object handles at run time.
+typedef enum {
+	VK_GLSL_PROGRAM_FAMILY_UNKNOWN = 0,
+	VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT,
+	VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_TWO_STAGE,
+	VK_GLSL_PROGRAM_FAMILY_GHOST_PULLING,
+	VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT2,
+	VK_GLSL_PROGRAM_FAMILY_MULTIPLY_BLEND,
+	VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE,
+	VK_GLSL_PROGRAM_FAMILY_SNIPER_STRETCH2,
+	VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE,
+	VK_GLSL_PROGRAM_FAMILY_BLUR,
+	VK_GLSL_PROGRAM_FAMILY_MEDLABS,
+	VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE2,
+	VK_GLSL_PROGRAM_FAMILY_AL,
+	VK_GLSL_PROGRAM_FAMILY_PARALLAX_BUMP,
+	VK_GLSL_PROGRAM_FAMILY_CUSTOM_LIT,
+	VK_GLSL_PROGRAM_FAMILY_WATER,
+	VK_GLSL_PROGRAM_FAMILY_DEPTH_AWARE_BLUR,
+	VK_GLSL_PROGRAM_FAMILY_SMAA_EDGE,
+	VK_GLSL_PROGRAM_FAMILY_SMAA_WEIGHTS,
+	VK_GLSL_PROGRAM_FAMILY_SMAA_BLEND,
+	VK_GLSL_PROGRAM_FAMILY_COUNT
+} vkGLSLProgramFamily_t;
+
+vkGLSLProgramFamily_t R_GetGLSLProgramFamily( const char *program );
 void	RB_ShutdownShadowMapResources( void );
 
 typedef enum {

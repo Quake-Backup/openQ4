@@ -145,7 +145,7 @@ bool rvGEWorkspace::Attach ( HWND wnd )
 
 	// Jam the workspace pointer into the userdata window long so 
 	// we can retrieve the workspace from the window later
-	SetWindowLong ( mWnd, GWL_USERDATA, (LONG) this );
+	SetWindowLongPtr( mWnd, GWLP_USERDATA, reinterpret_cast< LONG_PTR >( this ) );
 	
 	UpdateTitle ( );
 	
@@ -163,7 +163,7 @@ void rvGEWorkspace::Detach ( void )
 {
 	assert ( mWnd );
 	
-	SetWindowLong ( mWnd, GWL_USERDATA, 0 );
+	SetWindowLongPtr( mWnd, GWLP_USERDATA, 0 );
 	mWnd = NULL;
 }
 
@@ -571,31 +571,31 @@ void rvGEWorkspace::UpdateCursor ( rvGESelectionMgr::EHitTest type )
 	switch ( type )
 	{
 		case rvGESelectionMgr::HT_SELECT:
-			SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_ARROW) ) );
+			SetCursor( LoadCursor( NULL, IDC_ARROW ) );
 			break;
 			
 		case rvGESelectionMgr::HT_MOVE:
-			SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_SIZEALL) ) );
+			SetCursor( LoadCursor( NULL, IDC_SIZEALL ) );
 			break;
 
 		case rvGESelectionMgr::HT_SIZE_LEFT:
 		case rvGESelectionMgr::HT_SIZE_RIGHT:
-			SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_SIZEWE ) ) );
+			SetCursor( LoadCursor( NULL, IDC_SIZEWE ) );
 			break;
 
 		case rvGESelectionMgr::HT_SIZE_TOP:
 		case rvGESelectionMgr::HT_SIZE_BOTTOM:
-			SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_SIZENS ) ) );
+			SetCursor( LoadCursor( NULL, IDC_SIZENS ) );
 			break;
 
 		case rvGESelectionMgr::HT_SIZE_TOPRIGHT:
 		case rvGESelectionMgr::HT_SIZE_BOTTOMLEFT:
-			SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_SIZENESW ) ) );
+			SetCursor( LoadCursor( NULL, IDC_SIZENESW ) );
 			break;
 
 		case rvGESelectionMgr::HT_SIZE_BOTTOMRIGHT:
 		case rvGESelectionMgr::HT_SIZE_TOPLEFT:
-			SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_SIZENWSE ) ) );
+			SetCursor( LoadCursor( NULL, IDC_SIZENWSE ) );
 			break;
 	}
 }	
@@ -618,7 +618,7 @@ void rvGEWorkspace::UpdateCursor ( float x, float y )
 	}
 	else
 	{
-		SetCursor ( LoadCursor ( NULL, MAKEINTRESOURCE(IDC_ARROW ) ) );
+		SetCursor( LoadCursor( NULL, IDC_ARROW ) );
 	}
 }
 
@@ -878,7 +878,7 @@ int	rvGEWorkspace::HandleRButtonDown ( WPARAM wParam, LPARAM lParam )
 		AppendMenu ( popup, MF_STRING|MF_ENABLED|(wrapper->IsSelected()?MF_CHECKED:0), ID_GUIED_SELECT_FIRST + i, mSelectMenu[i]->GetName() );
 	}
 
-	InsertMenu ( menu, 1, MF_POPUP|MF_BYPOSITION, (LONG) popup, "Select" );
+	InsertMenu( menu, 1, MF_POPUP | MF_BYPOSITION, reinterpret_cast< UINT_PTR >( popup ), "Select" );
 
 	// Bring up the popup menu
 	ClientToScreen ( mWnd, &point );

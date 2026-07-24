@@ -245,18 +245,19 @@ int g_thread_count = 0;
 
 typedef void *(*pthread_function_t) (void *);
 
+static_assert( sizeof( pthread_t ) <= sizeof( uintptr_t ),
+	"xthreadInfo::threadHandle cannot represent pthread_t on this platform" );
+
 static uintptr_t Sys_PThreadToHandle( pthread_t thread ) {
 	uintptr_t handle = 0;
-	const size_t copyBytes = Min( sizeof( handle ), sizeof( thread ) );
-	memcpy( &handle, &thread, copyBytes );
+	memcpy( &handle, &thread, sizeof( thread ) );
 	return handle;
 }
 
 static pthread_t Sys_HandleToPThread( uintptr_t handle ) {
 	pthread_t thread;
 	memset( &thread, 0, sizeof( thread ) );
-	const size_t copyBytes = Min( sizeof( handle ), sizeof( thread ) );
-	memcpy( &thread, &handle, copyBytes );
+	memcpy( &thread, &handle, sizeof( thread ) );
 	return thread;
 }
 

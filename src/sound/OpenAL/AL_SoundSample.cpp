@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../snd_local.h"
 #include <cstdlib>
+#include <stdint.h>
 
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -105,6 +106,52 @@ static bool openQ4_ReadWaveExact( idWaveFile& wave, void* buffer, const int size
 		return false;
 	}
 	return wave.Read( buffer, size ) == ( size_t )size;
+}
+
+/*
+========================
+openQ4_GetMSADPCMDecodedSize
+
+Validates the MS ADPCM block geometry before any arithmetic is narrowed to
+the engine's legacy int-sized allocation and sample-count interfaces.
+========================
+*/
+static bool openQ4_GetMSADPCMDecodedSize( const uint32_t encodedBytes, const uint16_t blockSize,
+	const uint16_t samplesPerBlock, const uint16_t channels, const uint16_t numCoefficients,
+	size_t& decodedBytes )
+{
+	decodedBytes = 0;
+	if( encodedBytes == 0 || blockSize == 0 || ( channels != 1 && channels != 2 ) ||
+		samplesPerBlock < 2 || numCoefficients == 0 || numCoefficients > 7 || encodedBytes % blockSize != 0 )
+	{
+		return false;
+	}
+
+	const uint64_t blockHeaderBytes = static_cast<uint64_t>( channels ) * 7u;
+	const uint64_t samplesAfterHeader =
+		( static_cast<uint64_t>( samplesPerBlock ) - 2u ) * static_cast<uint64_t>( channels );
+	if( ( samplesAfterHeader & 1u ) != 0 )
+	{
+		return false;
+	}
+
+	const uint64_t encodedSampleBytes = samplesAfterHeader / 2u;
+	if( blockHeaderBytes + encodedSampleBytes != static_cast<uint64_t>( blockSize ) )
+	{
+		return false;
+	}
+
+	const uint64_t blockCount = static_cast<uint64_t>( encodedBytes ) / blockSize;
+	const uint64_t decodedByteCount = blockCount * static_cast<uint64_t>( samplesPerBlock ) *
+		static_cast<uint64_t>( channels ) * sizeof( int16_t );
+	if( decodedByteCount == 0 || decodedByteCount > static_cast<uint64_t>( idMath::INT_MAX ) )
+	{
+		return false;
+	}
+
+	// idMath::INT_MAX is no larger than SIZE_MAX on every supported target.
+	decodedBytes = static_cast<size_t>( decodedByteCount );
+	return true;
 }
 
 static bool openQ4_CanUploadSampleToOpenAL()
@@ -617,7 +664,10 @@ bool idSoundSample_OpenAL::LoadWav( const idStr& filename )
 	}
 	else if( format.basic.formatTag == idWaveFile::FORMAT_ADPCM )
 	{
-		if( format.extra.adpcm.samplesPerBlock == 0 || totalBufferSize % format.basic.blockSize != 0 )
+		size_t decodedBytes = 0;
+		if( !openQ4_GetMSADPCMDecodedSize( dataChunkSize, format.basic.blockSize,
+			format.extra.adpcm.samplesPerBlock, format.basic.numChannels,
+			format.extra.adpcm.numCoef, decodedBytes ) )
 		{
 			idLib::Warning( "LoadWav( %s ) : invalid ADPCM block layout", filename.c_str() );
 			MakeDefault();
@@ -625,7 +675,8 @@ bool idSoundSample_OpenAL::LoadWav( const idStr& filename )
 		}
 
 		playBegin = 0;
-		playLength = ( ( totalBufferSize / format.basic.blockSize ) * format.extra.adpcm.samplesPerBlock );
+		playLength = static_cast<int>( decodedBytes /
+			( static_cast<size_t>( format.basic.numChannels ) * sizeof( int16_t ) ) );
 
 		buffers.SetNum( 1 );
 		buffers[0].bufferSize = totalBufferSize;
@@ -1730,28 +1781,30 @@ int32 idSoundSample_OpenAL::MS_ADPCM_nibble( MS_ADPCM_decodeState_t* state, int8
 		768, 614, 512, 409, 307, 230, 230, 230
 	};
 
-	int32 new_sample, delta;
+	int32 delta;
 
-	new_sample = ( ( state->iSamp1 * state->coef1 ) +
-				   ( state->iSamp2 * state->coef2 ) ) / 256;
+	int64_t widenedSample =
+		( static_cast<int64_t>( state->iSamp1 ) * state->coef1 +
+			static_cast<int64_t>( state->iSamp2 ) * state->coef2 ) / 256;
 
 	if( nybble & 0x08 )
 	{
-		new_sample += state->iDelta * ( nybble - 0x10 );
+		widenedSample += static_cast<int64_t>( state->iDelta ) * ( nybble - 0x10 );
 	}
 	else
 	{
-		new_sample += state->iDelta * nybble;
+		widenedSample += static_cast<int64_t>( state->iDelta ) * nybble;
 	}
 
-	if( new_sample < min_audioval )
+	if( widenedSample < min_audioval )
 	{
-		new_sample = min_audioval;
+		widenedSample = min_audioval;
 	}
-	else if( new_sample > max_audioval )
+	else if( widenedSample > max_audioval )
 	{
-		new_sample = max_audioval;
+		widenedSample = max_audioval;
 	}
+	const int32 new_sample = static_cast<int32>( widenedSample );
 
 	delta = ( ( int32 ) state->iDelta * adaptive[nybble] ) / 256;
 	if( delta < 16 )
@@ -1771,26 +1824,51 @@ int idSoundSample_OpenAL::MS_ADPCM_decode( uint8** audio_buf, uint32* audio_len 
 	static MS_ADPCM_decodeState_t	states[2];
 	MS_ADPCM_decodeState_t*			state[2];
 
-	uint8* freeable, *encoded, *decoded;
-	int32 encoded_len, samplesleft;
+	uint8* encoded;
+	uint8* decoded;
+	uint32_t encoded_len;
+	int32 samplesleft;
 	int8 nybble;
 	int8 stereo;
 	int32 new_sample;
 
-	// Allocate the proper sized output buffer
+	if( audio_buf == NULL || audio_len == NULL || *audio_buf == NULL )
+	{
+		return -1;
+	}
+
+	size_t decodedBytes = 0;
+	if( !openQ4_GetMSADPCMDecodedSize( *audio_len, format.basic.blockSize,
+		format.extra.adpcm.samplesPerBlock, format.basic.numChannels,
+		format.extra.adpcm.numCoef, decodedBytes ) )
+	{
+		return -1;
+	}
+
+	uint8* const originalBuffer = *audio_buf;
 	encoded_len = *audio_len;
 	encoded = *audio_buf;
-	freeable = *audio_buf;
 
-	*audio_len = ( encoded_len / format.basic.blockSize ) * format.extra.adpcm.samplesPerBlock * format.basic.numChannels * sizeof( int16 );
+	// Validate every block's coefficient selector before allocating or decoding.
+	for( uint32_t blockOffset = 0; blockOffset < encoded_len; blockOffset += format.basic.blockSize )
+	{
+		for( uint16_t channel = 0; channel < format.basic.numChannels; ++channel )
+		{
+			const uint8_t predictor = encoded[ blockOffset + channel ];
+			if( predictor >= format.extra.adpcm.numCoef || predictor >= 7 )
+			{
+				return -1;
+			}
+		}
+	}
 
-	*audio_buf = ( uint8* ) Mem_Alloc( *audio_len );
-	if( *audio_buf == NULL )
+	uint8* const decodedBuffer = static_cast<uint8*>( Mem_Alloc( decodedBytes ) );
+	if( decodedBuffer == NULL )
 	{
 		//SDL_Error( SDL_ENOMEM );
-		return ( -1 );
+		return -1;
 	}
-	decoded = *audio_buf;
+	decoded = decodedBuffer;
 
 	assert( format.basic.numChannels == 1 || format.basic.numChannels == 2 );
 
@@ -1894,7 +1972,15 @@ int idSoundSample_OpenAL::MS_ADPCM_decode( uint8** audio_buf, uint32* audio_len 
 		encoded_len -= format.basic.blockSize;
 	}
 
-	Mem_Free( freeable );
+	if( encoded_len != 0 || static_cast<size_t>( decoded - decodedBuffer ) != decodedBytes )
+	{
+		Mem_Free( decodedBuffer );
+		return -1;
+	}
+
+	Mem_Free( originalBuffer );
+	*audio_buf = decodedBuffer;
+	*audio_len = static_cast<uint32_t>( decodedBytes );
 
 	return 0;
 }

@@ -881,9 +881,9 @@ BOOL CNewTexWnd::OnToolTipNotify( UINT id, NMHDR * pNMHDR, LRESULT * pResult ) {
     return(FALSE);
 }
 
-int CNewTexWnd::OnToolHitTest(CPoint point, TOOLINFO * pTI)
+INT_PTR CNewTexWnd::OnToolHitTest(CPoint point, TOOLINFO * pTI) const
 {
-	const idMaterial *mat = getMaterialAtPoint(point);
+	const idMaterial *mat = const_cast<CNewTexWnd *>( this )->getMaterialAtPoint(point);
 	if (mat) {
 		return 0;
 	}

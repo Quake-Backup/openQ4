@@ -23,8 +23,16 @@ typedef struct vkImageEntry_s {
 	VkImage			image;
 	VmaAllocation	allocation;
 	VkImageView		view;
+	// Depth/stencil images need a depth-only sampled view and a combined
+	// depth+stencil attachment view. Color and depth-only images alias this
+	// to view.
+	VkImageView		attachmentView;
 	VkSampler		sampler;
 	VkFormat		format;
+	VkImageUsageFlags usage;
+	VkImageAspectFlags aspectMask;
+	VkImageLayout	layout;
+	VkSampleCountFlagBits samples;
 	int				width;
 	int				height;
 	int				numMips;
@@ -38,6 +46,11 @@ typedef struct vkImageEntry_s {
 static const int VK_MAX_IMAGES = 4096;
 
 vkImageEntry_t *VK_Image_GetEntry( unsigned int texnum );
+// Re-backs an idImage with exact-format, single-sample depth storage suitable
+// for vkCmdCopyImage feedback captures while keeping the idImage's public
+// dimensions in sync with the copied region.
+bool	VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
+			VkFormat depthFormat );
 void	VK_Image_ShutdownAll( void );
 
 #endif /* !__VK_IMAGE_H__ */

@@ -5,7 +5,8 @@ Unlike renderer_validation_matrix.py, this runner enters maps. It is intended
 for local, target-hardware validation where stock Quake 4 assets are available.
 It launches from .install, writes isolated save/log roots under .tmp, captures
 screenshots, dumps renderer benchmark metrics, and records a Markdown/JSON
-report for performance triage.
+report for performance triage. Every role fails closed on renderer, Vulkan
+validation/call, fatal, and engine ERROR diagnostics found in its log streams.
 """
 
 from __future__ import annotations
@@ -341,9 +342,22 @@ WARNING_PATTERNS = {
         r"[^\r\n]*$",
         re.IGNORECASE | re.MULTILINE,
     ),
-    "fatal": re.compile(r"Fatal Error|could not initialize OpenGL|Unable to initialize OpenGL", re.IGNORECASE),
+    "vulkanValidation": re.compile(r"\bVulkan validation:", re.IGNORECASE),
+    "vulkanVuid": re.compile(r"\bVUID-[A-Za-z0-9][A-Za-z0-9_.-]*\b"),
+    "vulkanCallFailed": re.compile(
+        r"\bVulkan\b[^\r\n]{0,160}\bvk[A-Z][A-Za-z0-9_]*\b[^\r\n]{0,96}\bfailed\b",
+        re.IGNORECASE,
+    ),
+    "fatal": re.compile(
+        r"\bFatal Error\b|^[ \t]*(?:\*+[ \t]*)?FATAL[ \t]*:|(?:could not|unable to) initialize OpenGL",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    "errorLine": re.compile(r"^[ \t]*(?:\*+[ \t]*)?ERROR(?:[ \t]*:|[ \t]*$)", re.MULTILINE),
     "mapStateMismatch": re.compile(r"ERROR:\s+openQ4 map state mismatch|openQ4 map state assertion", re.IGNORECASE),
 }
+
+MAX_FAILURE_DIAGNOSTICS = 32
+MAX_FAILURE_DIAGNOSTIC_CHARS = 600
 
 
 @dataclass(frozen=True)
@@ -665,6 +679,41 @@ def warning_counts(text: str) -> dict[str, int]:
     return {name: len(pattern.findall(text)) for name, pattern in WARNING_PATTERNS.items()}
 
 
+def collect_failure_diagnostics(
+    sources: tuple[tuple[str, str], ...],
+) -> tuple[list[dict[str, Any]], int]:
+    diagnostics: list[dict[str, Any]] = []
+    omitted = 0
+    for source_name, source_text in sources:
+        for line_number, raw_line in enumerate(source_text.splitlines(), start=1):
+            signatures = [name for name, pattern in WARNING_PATTERNS.items() if pattern.search(raw_line)]
+            if not signatures:
+                continue
+            line = raw_line.strip()
+            if len(line) > MAX_FAILURE_DIAGNOSTIC_CHARS:
+                line = line[: MAX_FAILURE_DIAGNOSTIC_CHARS - 3] + "..."
+            if len(diagnostics) < MAX_FAILURE_DIAGNOSTICS:
+                diagnostics.append(
+                    {
+                        "source": source_name,
+                        "lineNumber": line_number,
+                        "signatures": signatures,
+                        "text": line,
+                    }
+                )
+            else:
+                omitted += 1
+    return diagnostics, omitted
+
+
+def format_failure_diagnostic(diagnostic: dict[str, Any]) -> str:
+    signatures = ",".join(diagnostic["signatures"])
+    return (
+        f"{diagnostic['source']}:{diagnostic['lineNumber']} "
+        f"[{signatures}] {diagnostic['text']}"
+    )
+
+
 def extract_last_line(text: str, token: str) -> str:
     lines = [line.strip() for line in text.splitlines() if token in line]
     return lines[-1] if lines else ""
@@ -878,13 +927,15 @@ def evaluate_role_result(
     max_p99_ms: float = 0.0,
 ) -> dict[str, Any]:
     log_path = find_log(savepath, log_name)
-    text = "\n".join(
-        part
-        for part in (read_text(log_path), read_text(stdout_path), read_text(stderr_path))
-        if part
+    diagnostic_sources = (
+        ("log", read_text(log_path)),
+        ("stdout", read_text(stdout_path)),
+        ("stderr", read_text(stderr_path)),
     )
+    text = "\n".join(part for _, part in diagnostic_sources if part)
     screenshot = find_screenshot(savepath, screenshot_rel)
     warnings = warning_counts(text)
+    failure_diagnostics, failure_diagnostics_omitted = collect_failure_diagnostics(diagnostic_sources)
     summary = extract_summary(text)
     image = compare_screenshot_if_requested(
         screenshot,
@@ -950,6 +1001,8 @@ def evaluate_role_result(
         "screenshot": str(screenshot) if screenshot is not None else "",
         "screenshotRequest": screenshot_rel,
         "warnings": warnings,
+        "failureDiagnostics": failure_diagnostics,
+        "failureDiagnosticsOmitted": failure_diagnostics_omitted,
         "missing": missing,
         "summary": summary,
         "image": image,
@@ -1300,6 +1353,8 @@ def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
         "screenshot": "",
         "screenshotRequest": "",
         "warnings": {},
+        "failureDiagnostics": [],
+        "failureDiagnosticsOmitted": 0,
         "missing": [message],
         "summary": {},
         "image": {"status": "harness-error"},
@@ -1430,6 +1485,32 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
                 lines.append(
                     f"|  | `{role_result['role']}` missing |  |  |  |  |  |  |  | {'; '.join(role_result['missing'])} |  |  |  |  |"
                 )
+
+    diagnostic_roles = [
+        (result, role_result)
+        for result in results
+        for role_result in result.get("roles", [])
+        if role_result.get("failureDiagnostics")
+    ]
+    if diagnostic_roles:
+        lines += [
+            "",
+            "## Matched Failure Diagnostics",
+            "",
+            "The exact matched lines are retained here even when they fall outside the normal log tail.",
+        ]
+        for result, role_result in diagnostic_roles:
+            lines += [
+                "",
+                f"### `{result['id']}` / `{role_result['role']}`",
+                "",
+                "```text",
+            ]
+            lines.extend(format_failure_diagnostic(item) for item in role_result["failureDiagnostics"])
+            omitted = role_result.get("failureDiagnosticsOmitted", 0)
+            if omitted:
+                lines.append(f"... {omitted} additional matching line(s) omitted")
+            lines.append("```")
 
     lines += [
         "",

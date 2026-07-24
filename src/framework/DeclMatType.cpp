@@ -68,7 +68,7 @@ byte *MT_GetMaterialTypeArray( idStr image, int &width, int &height ) {
 			file->ReadInt( cachedHeight );
 			file->ReadInt( cachedWidth );
 
-			if ( cachedWidth > 0 && cachedHeight > 0 ) {
+			if ( cachedWidth > 0 && cachedHeight > 0 && cachedWidth <= idMath::INT_MAX / cachedHeight ) {
 				const int pixelCount = cachedWidth * cachedHeight;
 				byte *array = static_cast<byte *>( Mem_Alloc( pixelCount ) );
 				const int bytesRead = file->Read( array, pixelCount );
@@ -93,6 +93,11 @@ byte *MT_GetMaterialTypeArray( idStr image, int &width, int &height ) {
 	R_LoadImage( image.c_str(), &pic, &width, &height, NULL, false );
 	if ( pic == NULL || width <= 0 || height <= 0 ) {
 		common->Warning( "Failed to load hit material image %s", image.c_str() );
+		return NULL;
+	}
+	if ( width > idMath::INT_MAX / height ) {
+		common->Warning( "Hit material image %s is too large (%dx%d)", image.c_str(), width, height );
+		R_StaticFree( pic );
 		return NULL;
 	}
 

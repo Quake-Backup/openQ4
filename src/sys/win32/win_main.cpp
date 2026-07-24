@@ -566,13 +566,15 @@ Sys_Createthread
 ==================
 */
 void Sys_CreateThread(xthread_t function, void* parms, xthreadPriority priority, xthreadInfo& info, const char* name, xthreadInfo* threads[MAX_THREADS], int* thread_count) {
+	DWORD threadId = 0;
 	HANDLE temp = CreateThread(NULL,	// LPSECURITY_ATTRIBUTES lpsa,
 		0,		// DWORD cbStack,
 		(LPTHREAD_START_ROUTINE)function,	// LPTHREAD_START_ROUTINE lpStartAddr,
 		parms,	// LPVOID lpvThreadParm,
 		0,		//   DWORD fdwCreate,
-		&info.threadId);
+		&threadId);
 	info.threadHandle = reinterpret_cast<uintptr_t>(temp);
+	info.threadId = static_cast<uint32_t>( threadId );
 	info.stopRequested = false;
 	if (priority == THREAD_HIGHEST) {
 		SetThreadPriority(reinterpret_cast<HANDLE>(info.threadHandle), THREAD_PRIORITY_HIGHEST);		//  we better sleep enough to do this
@@ -1038,9 +1040,15 @@ Sys_FileTimeStamp
 =================
 */
 ID_TIME_T Sys_FileTimeStamp(FILE* fp) {
-	struct _stat st;
-	_fstat(_fileno(fp), &st);
-	return (long)st.st_mtime;
+	if ( fp == NULL ) {
+		return static_cast<ID_TIME_T>( -1 );
+	}
+
+	struct __stat64 st;
+	if ( _fstat64( _fileno( fp ), &st ) != 0 ) {
+		return static_cast<ID_TIME_T>( -1 );
+	}
+	return static_cast<ID_TIME_T>( st.st_mtime );
 }
 
 /*

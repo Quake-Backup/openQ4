@@ -19,6 +19,7 @@
 #define BSE_DENSITY_FACTOR		( 50.0f )
 
 #define BSE_MAX_FORKS			( 16 )
+#define BSE_MAX_TRAIL_COUNT		( 2500 )			// fits both the 10000-vertex and 30000-index surface budgets
 
 #define BSE_MAX_DURATION		( 60.0f * 5.0f )	// 5 Minutes
 
@@ -697,7 +698,16 @@ public:
 				float				GetTrailTime( void ) const { return( rvRandom::flrand( mTrailInfo->mTrailTime[0], mTrailInfo->mTrailTime[1] ) ); }
 				float				GetMaxTrailTime( void ) const { return( mTrailInfo->mTrailTime[1] ); }
 				int					GetTrailCount( void ) const;
-				int					GetMaxTrailCount( void ) const { return( ( int )ceilf( mTrailInfo->mTrailCount[1] ) + 1 ); }
+				int					GetMaxTrailCount( void ) const {
+					const float count = mTrailInfo->mTrailCount[1];
+					if ( !( count > -1.0f ) ) {
+						return 0;
+					}
+					if ( count >= static_cast<float>( BSE_MAX_TRAIL_COUNT - 1 ) ) {
+						return BSE_MAX_TRAIL_COUNT;
+					}
+					return static_cast<int>( ceilf( count ) ) + 1;
+				}
 				float				GetDuration( void ) const { return( rvRandom::flrand( mDuration[0], mDuration[1] ) ); }
 				float				GetMaxDuration( void ) const { return( mDuration[1] ); }
 				int					GetNumTimeoutEffects( void ) const { return( mNumTimeoutEffects ); }
@@ -765,8 +775,8 @@ private:
 			float					mPhysicsDistance;
 			float					mWindDeviationAngle;
 
-			short					mVertexCount;
-			short					mIndexCount;
+			int						mVertexCount;
+			int						mIndexCount;
 			
 			byte					mTrailRepeat;
 			byte					mNumSizeParms;

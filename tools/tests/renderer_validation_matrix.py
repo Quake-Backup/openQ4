@@ -386,9 +386,21 @@ WARNING_PATTERNS = {
         r"[^\r\n]*$",
         re.IGNORECASE | re.MULTILINE,
     ),
-    "vulkanValidation": re.compile(r"Vulkan validation:"),
-    "vulkanCallFailed": re.compile(r"Vulkan[^\r\n]{0,48}\bvk[A-Z]\w+ failed"),
+    "vulkanValidation": re.compile(r"\bVulkan validation:", re.IGNORECASE),
+    "vulkanVuid": re.compile(r"\bVUID-[A-Za-z0-9][A-Za-z0-9_.-]*\b"),
+    "vulkanCallFailed": re.compile(
+        r"\bVulkan\b[^\r\n]{0,160}\bvk[A-Z][A-Za-z0-9_]*\b[^\r\n]{0,96}\bfailed\b",
+        re.IGNORECASE,
+    ),
+    "fatal": re.compile(
+        r"\bFatal Error\b|^[ \t]*(?:\*+[ \t]*)?FATAL[ \t]*:|(?:could not|unable to) initialize OpenGL",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    "errorLine": re.compile(r"^[ \t]*(?:\*+[ \t]*)?ERROR(?:[ \t]*:|[ \t]*$)", re.MULTILINE),
 }
+
+MAX_FAILURE_DIAGNOSTICS = 32
+MAX_FAILURE_DIAGNOSTIC_CHARS = 600
 
 
 def repo_root() -> Path:
@@ -1566,6 +1578,41 @@ def count_warning_signatures(text: str) -> dict[str, int]:
     return {name: len(pattern.findall(text)) for name, pattern in WARNING_PATTERNS.items()}
 
 
+def collect_failure_diagnostics(
+    sources: tuple[tuple[str, str], ...],
+) -> tuple[list[dict[str, Any]], int]:
+    diagnostics: list[dict[str, Any]] = []
+    omitted = 0
+    for source_name, source_text in sources:
+        for line_number, raw_line in enumerate(source_text.splitlines(), start=1):
+            signatures = [name for name, pattern in WARNING_PATTERNS.items() if pattern.search(raw_line)]
+            if not signatures:
+                continue
+            line = raw_line.strip()
+            if len(line) > MAX_FAILURE_DIAGNOSTIC_CHARS:
+                line = line[: MAX_FAILURE_DIAGNOSTIC_CHARS - 3] + "..."
+            if len(diagnostics) < MAX_FAILURE_DIAGNOSTICS:
+                diagnostics.append(
+                    {
+                        "source": source_name,
+                        "lineNumber": line_number,
+                        "signatures": signatures,
+                        "text": line,
+                    }
+                )
+            else:
+                omitted += 1
+    return diagnostics, omitted
+
+
+def format_failure_diagnostic(diagnostic: dict[str, Any]) -> str:
+    signatures = ",".join(diagnostic["signatures"])
+    return (
+        f"{diagnostic['source']}:{diagnostic['lineNumber']} "
+        f"[{signatures}] {diagnostic['text']}"
+    )
+
+
 def format_warning_signatures(warnings: dict[str, int]) -> str:
     active = [f"{name}={count}" for name, count in sorted(warnings.items()) if count > 0]
     return ", ".join(active) if active else "0"
@@ -1576,12 +1623,7 @@ def evaluate_checks(text: str, checks: list[list[str]], warnings: dict[str, int]
     for alternatives in checks:
         if not any(pattern in text for pattern in alternatives):
             missing.append(" or ".join(alternatives))
-    failed_markers = [
-        "self-test failed",
-        "Fatal Error",
-        "could not initialize OpenGL",
-        "Unable to initialize OpenGL",
-    ]
+    failed_markers = ["self-test failed"]
     for marker in failed_markers:
         if marker in text:
             missing.append(f"unexpected marker: {marker}")
@@ -1613,6 +1655,13 @@ def print_failure_details(result: dict[str, Any]) -> None:
         print("  missing:")
         for missing in result["missing"]:
             print(f"    - {missing}")
+    if result.get("failureDiagnostics"):
+        print("  matched diagnostics:")
+        for diagnostic in result["failureDiagnostics"]:
+            print(f"    - {format_failure_diagnostic(diagnostic)}")
+        omitted = result.get("failureDiagnosticsOmitted", 0)
+        if omitted:
+            print(f"    ... {omitted} additional matching line(s) omitted")
     tail_source = result["log"] or result["stdout"]
     if tail_source:
         tail_path = Path(tail_source)
@@ -1700,9 +1749,15 @@ def run_case(
         case_log_path.write_text(log_text, encoding="utf-8")
     stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
     stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
-    diagnostic_text = "\n".join(part for part in (log_text, stdout_text, stderr_text) if part)
+    diagnostic_sources = (
+        ("log", log_text),
+        ("stdout", stdout_text),
+        ("stderr", stderr_text),
+    )
+    diagnostic_text = "\n".join(part for _, part in diagnostic_sources if part)
 
     warning_signatures = count_warning_signatures(diagnostic_text)
+    failure_diagnostics, failure_diagnostics_omitted = collect_failure_diagnostics(diagnostic_sources)
     checks_ok, missing = evaluate_checks(diagnostic_text, case["checks"], warning_signatures)
     ok = exit_code == 0 and not timed_out and log_path is not None and checks_ok
     return {
@@ -1719,6 +1774,8 @@ def run_case(
         "stderr": str(stderr_path),
         "missing": missing,
         "warningSignatures": warning_signatures,
+        "failureDiagnostics": failure_diagnostics,
+        "failureDiagnosticsOmitted": failure_diagnostics_omitted,
         "summary": extract_summary(diagnostic_text),
     }
 
@@ -1779,6 +1836,27 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         if result["missing"]:
             lines.append(f"|  | missing |  | {'; '.join(result['missing'])} |  |  |  |")
 
+    diagnostic_results = [result for result in results if result.get("failureDiagnostics")]
+    if diagnostic_results:
+        lines += [
+            "",
+            "## Matched Failure Diagnostics",
+            "",
+            "The exact matched lines are retained here even when they fall outside the normal log tail.",
+        ]
+        for result in diagnostic_results:
+            lines += [
+                "",
+                f"### `{result['id']}`",
+                "",
+                "```text",
+            ]
+            lines.extend(format_failure_diagnostic(item) for item in result["failureDiagnostics"])
+            omitted = result.get("failureDiagnosticsOmitted", 0)
+            if omitted:
+                lines.append(f"... {omitted} additional matching line(s) omitted")
+            lines.append("```")
+
     lines += [
         "",
         "## Manual Gameplay Matrix",
@@ -1795,7 +1873,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "",
         "## Gameplay Benchmark Harness",
         "",
-        "`tools/tests/renderer_gameplay_benchmark.py` is the opt-in map-loading runner for Phase 12 evidence. It launches from `.install`, enters SP maps or an MP listen server plus loopback client, waits for streaming, records `rendererBenchmarkCapture`, captures screenshots, optionally compares TGA references, and fails on renderer overflow warnings.",
+        "`tools/tests/renderer_gameplay_benchmark.py` is the opt-in map-loading runner for Phase 12 evidence. It launches from `.install`, enters SP maps or an MP listen server plus loopback client, waits for streaming, records `rendererBenchmarkCapture`, captures screenshots, optionally compares TGA references, and fails on renderer, Vulkan validation/call, fatal, and engine ERROR diagnostics.",
         "",
         "| Profile | Command | Coverage |",
         "|---|---|---|",

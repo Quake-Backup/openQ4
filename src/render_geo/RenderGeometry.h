@@ -46,8 +46,8 @@ struct portalArea_s;
 ===============================================================================
 */
 
-#define LIGHT_TRIS_DEFERRED			((srfTriangles_t *)-1)
-#define LIGHT_CULL_ALL_FRONT		((byte *)-1)
+#define LIGHT_TRIS_DEFERRED			reinterpret_cast< srfTriangles_t * >( static_cast<uintptr_t>( -1 ) )
+#define LIGHT_CULL_ALL_FRONT		reinterpret_cast< byte * >( static_cast<uintptr_t>( -1 ) )
 #define	LIGHT_CLIP_EPSILON			0.1f
 
 typedef struct {
@@ -109,7 +109,7 @@ public:
 };
 
 ID_INLINE bool R_IsInvalidPrelightModelPointer( const idRenderModel *model ) {
-	return ( (uintptr_t)model ) == ~(uintptr_t)0;
+	return reinterpret_cast<uintptr_t>( model ) == static_cast<uintptr_t>( -1 );
 }
 
 ID_INLINE idRenderModel *R_SanitizePrelightModelPointer( idRenderModel *model ) {

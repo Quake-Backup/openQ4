@@ -1095,13 +1095,13 @@ void idRenderWorldLocal::CreateLightDefInteractions( idRenderLightLocal *ldef ) 
 R_LinkLightSurf
 =================
 */
-void R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const viewEntity_t *space, 
+bool R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const viewEntity_t *space,
 				   const idRenderLightLocal *light, const idMaterial *shader, const idScreenRect &scissor, bool viewInsideShadow ) {
 	drawSurf_t		*drawSurf;
 	const int		limitBatchSize = r_limitBatchSize.GetInteger();
 
 	if ( limitBatchSize > 0 && tri->numIndexes <= limitBatchSize ) {
-		return;
+		return false;
 	}
 
 	if ( !space ) {
@@ -1139,7 +1139,7 @@ void R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const 
 			R_SpecularTexGen( drawSurf, light->globalLightOrigin, tr.viewDef->renderView.vieworg );
 			// if we failed to allocate space for the specular calculations, drop the surface
 			if ( !drawSurf->dynamicTexCoords ) {
-				return;
+				return false;
 			}
 		}
 	}
@@ -1147,6 +1147,7 @@ void R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const 
 	// actually link it in
 	drawSurf->nextOnLight = *link;
 	*link = drawSurf;
+	return true;
 }
 
 static const portalArea_t *R_FallbackDrawSurfArea( const viewEntity_t *space ) {
@@ -1424,6 +1425,13 @@ bool R_ShadowMapLightWillUseShadowMaps( const idRenderLightLocal *lightDef ) {
 	if ( r_shadowMapMaxUpdatesPerView.GetInteger() > 0 ) {
 		return false;
 	}
+	// Subview policies 1/2 can reject a fresh map after front-end submission
+	// (reuse-or-stencil / always-stencil). Keep legacy volumes available so a
+	// cache miss or backend without subview reuse never loses the shadow.
+	if ( tr.viewDef != NULL && tr.viewDef->isSubview
+			&& r_shadowMapSubviewPolicy.GetInteger() > 0 ) {
+		return false;
+	}
 	if ( lightDef == NULL || lightDef->shadowMapStencilFallbackSticky ) {
 		return false;
 	}
@@ -1453,8 +1461,22 @@ R_AddOptimizedPrelightShadows
 =================
 */
 static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
+	// Vulkan mapped lights retain per-surface volumes so a partial filtered
+	// map can stamp only its genuinely missing casters. The combined prelight
+	// remains available for stencil-only Vulkan lights and the OpenGL path.
+	if ( vLight != NULL &&
+		R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+			vLight->lightDef ) ) {
+		return;
+	}
+
 	idRenderModel *prelightModel = R_ViewLightPrelightModel( vLight );
 	if ( prelightModel == NULL ) {
+		// A cached interaction may still remember that its per-surface volume
+		// was replaced by this prelight. If the model became unavailable, its
+		// non-mapped stock casters make mapped ownership incomplete.
+		vLight->shadowMapIncompleteMapMask |=
+			vLight->shadowMapPrelightMapMissingMask;
 		return;
 	}
 
@@ -1469,6 +1491,8 @@ static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
 	if ( !R_IsUsablePrelightModel( prelightModel ) ) {
 		common->DWarning( "R_AddOptimizedPrelightShadows: discarding stale prelight model pointer for lightDef %d", light->index );
 		light->parms.prelightModel = NULL;
+		vLight->shadowMapIncompleteMapMask |=
+			vLight->shadowMapPrelightMapMissingMask;
 		return;
 	}
 	light->parms.prelightModel = prelightModel;
@@ -1494,6 +1518,11 @@ static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
 	// These shadows will all have valid bounds, and can be culled normally.
 	if ( r_useShadowCulling.GetBool() ) {
 		if ( R_CullLocalBox( tri->bounds, tr.viewDef->worldSpace.modelMatrix, 5, tr.viewDef->frustum ) ) {
+			// The combined volume proves every pending prelight caster
+			// irrelevant to this view, so remove rather than satisfy the
+			// full-chain obligation. Ready bits only describe linked volumes.
+			vLight->shadowMapPrelightStencilRequiredMask = 0;
+			vLight->shadowMapPrelightMapMissingMask = 0;
 			return;
 		}
 	}
@@ -1507,6 +1536,8 @@ static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
 		if ( !tri->shadowCache ) {
 			R_CreatePrivateShadowCache( tri );
 			if ( !tri->shadowCache ) {
+				vLight->shadowMapIncompleteMapMask |=
+					vLight->shadowMapPrelightMapMissingMask;
 				return;
 			}
 		}
@@ -1524,8 +1555,21 @@ static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
 #endif
 
 	const bool protectStaticWorldNoSelfReceivers = R_ViewLightHasStaticWorldLocalInteractions( vLight );
-	R_LinkLightSurf( protectStaticWorldNoSelfReceivers ? &vLight->localShadows : &vLight->globalShadows,
+	const bool linkedPrelightVolume = R_LinkLightSurf(
+		protectStaticWorldNoSelfReceivers ? &vLight->localShadows : &vLight->globalShadows,
 		tri, NULL, light, NULL, vLight->scissorRect, true /* FIXME? */ );
+	vLight->shadowMapIncompleteMapMask |=
+		vLight->shadowMapPrelightMapMissingMask;
+	const int prelightStencilOwnershipMask =
+		protectStaticWorldNoSelfReceivers
+			? SHADOWMAP_RECEIVER_MASK_GLOBAL
+			: ( SHADOWMAP_RECEIVER_MASK_LOCAL |
+				SHADOWMAP_RECEIVER_MASK_GLOBAL );
+	if ( linkedPrelightVolume ) {
+		vLight->shadowMapPrelightStencilReadyMask |=
+			vLight->shadowMapPrelightStencilRequiredMask &
+			prelightStencilOwnershipMask;
+	}
 }
 
 /*
@@ -2879,6 +2923,8 @@ void R_RemoveUnecessaryViewLights( void ) {
 		if ( !vLight->localInteractions && !vLight->globalInteractions && !vLight->translucentInteractions ) {
 			vLight->localShadows = NULL;
 			vLight->globalShadows = NULL;
+			vLight->localShadowMapStencilSupplements = NULL;
+			vLight->globalShadowMapStencilSupplements = NULL;
 			vLight->localShadowMapCasters = NULL;
 			vLight->globalShadowMapCasters = NULL;
 			vLight->localShadowMapDynamicCasters = NULL;

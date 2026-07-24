@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -460,11 +461,51 @@ def reject(source: str, needle: str, context: str) -> None:
         raise AssertionError(f"Unexpected {needle!r} in {context}")
 
 
+def audit_tool_size_formats(sources: dict[str, str]) -> None:
+    """Reject obvious size_t values passed to legacy 32-bit integer formats."""
+    call_pattern = re.compile(
+        r"(?s)\b(?:common->(?:Printf|Warning|Error)|Sys_Status|WriteFileString|"
+        r"MemFile_fprintf|(?:idStr::)?snPrintf|sprintf|fprintf|printf)"
+        r"\s*\(\s*\"(?P<format>(?:\\.|[^\"])*)\"\s*,(?P<args>.*?)(?:\);)"
+    )
+    narrow_format = re.compile(r"%(?!%)[-+ #0-9.*]*[diuoxX]")
+    size_format = re.compile(r"%(?!%)[-+ #0-9.*]*z[diuoxX]")
+    size_value = re.compile(r"\b(?:strlen\s*\([^)]*\)|sizeof\s*(?:\([^)]*\)|\w+))")
+    guarded_cast = re.compile(
+        r"(?:static_cast\s*<\s*(?:unsigned\s+)?int\s*>\s*\(\s*|"
+        r"\(\s*(?:unsigned\s+)?int\s*\)\s*)$"
+    )
+
+    for path, source in sources.items():
+        for call in call_pattern.finditer(source):
+            format_string = call.group("format")
+            if not narrow_format.search(format_string) or size_format.search(format_string):
+                continue
+            arguments = call.group("args")
+            for value in size_value.finditer(arguments):
+                prefix = arguments[max(0, value.start() - 64):value.start()]
+                if guarded_cast.search(prefix):
+                    continue
+                line = source.count("\n", 0, call.start()) + 1
+                raise AssertionError(
+                    f"Potential size_t value passed to a 32-bit format in {path}:{line}"
+                )
+
+
 def main() -> None:
     meson = read("meson.build")
     md4 = read("src/idlib/hashing/MD4.cpp")
+    md4_h = read("src/idlib/hashing/MD4.h")
+    md5 = read("src/idlib/hashing/MD5.cpp")
+    md5_h = read("src/idlib/hashing/MD5.h")
     crc32 = read("src/idlib/hashing/CRC32.cpp")
+    crc32_h = read("src/idlib/hashing/CRC32.h")
+    crc16 = read("src/idlib/hashing/CRC16.cpp")
+    crc16_h = read("src/idlib/hashing/CRC16.h")
+    crc8 = read("src/idlib/hashing/CRC8.cpp")
+    crc8_h = read("src/idlib/hashing/CRC8.h")
     honeyman = read("src/idlib/hashing/Honeyman.cpp")
+    honeyman_h = read("src/idlib/hashing/Honeyman.h")
     math = read("src/idlib/math/Math.h")
     str_cpp = read("src/idlib/Str.cpp")
     trace_model = read("src/idlib/geometry/TraceModel.cpp")
@@ -481,6 +522,10 @@ def main() -> None:
     common_cpp = read("src/framework/Common.cpp")
     console_cpp = read("src/framework/Console.cpp")
     file_system = read("src/framework/FileSystem.cpp")
+    file_system_h = read("src/framework/FileSystem.h")
+    file_cpp = read("src/framework/File.cpp")
+    file_h = read("src/framework/File.h")
+    unzip = read("src/framework/Unzip.cpp")
     session = read("src/framework/Session.cpp")
     async_client = read("src/framework/async/AsyncClient.cpp")
     async_server = read("src/framework/async/AsyncServer.cpp")
@@ -496,11 +541,15 @@ def main() -> None:
     renderer_light = read("src/renderer/tr_light.cpp")
     renderer_local = read("src/renderer/tr_local.h")
     renderer_vertex_cache = read("src/renderer/VertexCache.h")
+    renderer_vertex_cache_cpp = read("src/renderer/VertexCache.cpp")
+    renderer_vk_gui = read("src/renderer/Vulkan/vk_GuiExecutor.cpp")
     renderer_draw_arb2 = read("src/renderer/draw_arb2.cpp")
     renderer_main = read("src/renderer/tr_main.cpp")
-    renderer_trisurf = read("src/renderer/tr_trisurf.cpp")
+    renderer_trisurf = read("src/render_geo/RenderGeometryTriSurf.cpp")
     render_world = read("src/renderer/RenderWorld.cpp")
-    image_files = read("src/renderer/Image_files.cpp")
+    image_files = read("src/imagetools/Image_files.cpp")
+    image_tools_h = read("src/imagetools/ImageTools.h")
+    image_tools_state = read("src/imagetools/ImageToolsState.cpp")
     bse_manager = read("src/bse/BSE_Manager.cpp")
     model_h = read("src/renderer/Model.h")
     model_cpp = read("src/renderer/Model.cpp")
@@ -510,11 +559,57 @@ def main() -> None:
     mapfile = read("src/idlib/mapfile.cpp")
     dict_cpp = read("src/idlib/Dict.cpp")
     lib = read("src/idlib/Lib.cpp")
+    lib_h = read("src/idlib/Lib.h")
+    heap_h = read("src/idlib/Heap.h")
+    heap_cpp = read("src/idlib/Heap.cpp")
+    rv_memsys = read("src/idlib/rvMemSys.cpp")
     swap = read("src/idlib/Swap.h")
     aas_file = read("src/aas/AASFile.cpp")
     cvar_system = read("src/framework/CVarSystem.cpp")
+    cvar_system_h = read("src/framework/CVarSystem.h")
     linux_input = read("src/sys/linux/input.cpp")
+    sys_public = read("src/sys/sys_public.h")
+    win_net = read("src/sys/win32/win_net.cpp")
+    win_main = read("src/sys/win32/win_main.cpp")
+    win_local = read("src/sys/win32/win_local.h")
+    win_syscon = read("src/sys/win32/win_syscon.cpp")
+    posix_threads = read("src/sys/posix/posix_threads.cpp")
+    renderer_gl_module = read("src/renderer/RendererGLModule.cpp")
+    render_geometry_h = read("src/render_geo/RenderGeometry.h")
+    renderer_material = read("src/renderer/Material.cpp")
+    maya_import = read("src/MayaImport/maya_main.cpp")
+    linux_sound_h = read("src/sys/linux/sound.h")
+    al_sound_sample = read("src/sound/OpenAL/AL_SoundSample.cpp")
+    macos_sound = read("src/sys/osx/macosx_sound.cpp")
+    macos_controller = read("src/sys/osx/DOOMController.mm")
+    macos_glimp = read("src/sys/osx/macosx_glimp.mm")
+    macos_preferences_h = read("src/sys/osx/PreferencesDialog.h")
     dmap = read("src/tools/compilers/dmap/dmap.cpp")
+    tool_property_grid = read("src/tools/common/PropertyGrid.cpp")
+    tool_path_tree_h = read("src/tools/comafx/CPathTreeCtrl.h")
+    tool_path_tree = read("src/tools/comafx/CPathTreeCtrl.cpp")
+    tool_prop_tree = read("src/tools/common/PropTree/PropTree.cpp")
+    tool_prop_tree_combo = read("src/tools/common/PropTree/PropTreeItemCombo.cpp")
+    tool_debugger_window = read("src/tools/debugger/DebuggerWindow.cpp")
+    tool_ge_app = read("src/tools/guied/GEApp.cpp")
+    tool_ge_item_props = read("src/tools/guied/GEItemPropsDlg.cpp")
+    tool_ge_navigator = read("src/tools/guied/GENavigator.cpp")
+    tool_ge_status_bar = read("src/tools/guied/GEStatusBar.cpp")
+    tool_ge_wrapper = read("src/tools/guied/GEWindowWrapper.cpp")
+    tool_ge_workspace = read("src/tools/guied/GEWorkspace.cpp")
+    tool_radiant_cam = read("src/tools/radiant/CamWnd.cpp")
+    tool_radiant_entity_list = read("src/tools/radiant/EntityListDlg.cpp")
+    tool_radiant_main = read("src/tools/radiant/MainFrm.cpp")
+    tool_radiant_map = read("src/tools/radiant/EditorMap.cpp")
+    tool_radiant_new_tex_h = read("src/tools/radiant/NewTexWnd.h")
+    tool_radiant_new_tex = read("src/tools/radiant/NewTexWnd.cpp")
+    tool_radiant_xy = read("src/tools/radiant/XYWnd.cpp")
+    renderer_lightrun = read("src/renderer/tr_lightrun.cpp")
+    win32_tool_sources = {
+        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8", errors="surrogateescape")
+        for path in (ROOT / "src" / "tools").rglob("*")
+        if path.is_file() and path.suffix.lower() in {".c", ".cc", ".cpp", ".h"}
+    }
 
     require(
         meson,
@@ -633,6 +728,24 @@ def main() -> None:
     require(md4, "typedef uint32_t UINT4;", "MD4 word type")
     require(md4, 'static_assert( sizeof( UINT4 ) == 4, "MD4 requires 32-bit words" );', "MD4 word contract")
     reject(md4, "typedef unsigned long int UINT4;", "LP64-wide MD4 word")
+    require(md4_h, "uint32_t MD4_BlockChecksum", "fixed-width MD4 public result")
+    require(md5_h, "uint32_t MD5_BlockChecksum", "fixed-width MD5 public result")
+    require(md4, "uint32_t MD4_BlockChecksum", "fixed-width MD4 implementation result")
+    require(md5, "uint32_t MD5_BlockChecksum", "fixed-width MD5 implementation result")
+    reject(md4_h, "unsigned long MD4_BlockChecksum", "LP64-wide MD4 public result")
+    reject(md5_h, "unsigned long MD5_BlockChecksum", "LP64-wide MD5 public result")
+
+    for source, header, word_type, prefix, context in (
+        (crc8, crc8_h, "uint8_t", "CRC8", "CRC-8"),
+        (crc16, crc16_h, "uint16_t", "CRC16", "CRC-16"),
+    ):
+        require(header, f"void {prefix}_InitChecksum( {word_type} &crcvalue );", f"fixed-width {context} public state")
+        require(header, f"{word_type} {prefix}_BlockChecksum", f"fixed-width {context} public result")
+        require(source, f"static const {word_type} crctable[256]", f"fixed-width {context} table")
+        require(source, f"void {prefix}_UpdateChecksum( {word_type} &crcvalue", f"fixed-width {context} implementation state")
+        reject(header, "unsigned long", f"LP64-wide {context} public API")
+    require(crc8, "uint32_t poly, c;", "fixed-width CRC-8 table generation")
+    require(crc16, "uint32_t poly, c;", "fixed-width CRC-16 table generation")
 
     require(
         str_cpp,
@@ -647,25 +760,57 @@ def main() -> None:
     require(str_cpp, "length > 0 && string[length - 1] == '\\\"'", "empty-safe trailing quote check")
     reject(str_cpp, "strcpy(string, string + 1);", "overlapping quote-strip copy")
     reject(str_cpp, "string[strlen(string) - 1]", "empty quote-strip index")
+    require(str_cpp, "uint32_t\thash;", "fixed-width filename hash accumulator")
+    require(str_cpp, "static_cast<uint32_t>( letter )", "defined filename hash arithmetic")
+    reject(str_cpp, "long\thash;", "LP64-wide filename hash accumulator")
+    require(file_system, "int\t\t\t\t\t\tHashFileName( const char *fname ) const;", "fixed-width filesystem hash result")
+    require(file_system, "uint32_t\thash;", "fixed-width filesystem hash accumulator")
+    require(file_system, "static_cast<uint32_t>( letter )", "defined filesystem hash arithmetic")
+    reject(file_system, "long idFileSystemLocal::HashFileName", "LP64-wide filesystem hash result")
+    require(file_system, "uint32_t\t\t\tpos;", "fixed-width classic-ZIP file position")
+    require(file_h, "uint32_t\t\t\t\tzipFilePos;", "fixed-width open ZIP file position")
+    require(
+        file_system,
+        "fileInfoPosition > static_cast<unsigned long>( UINT32_MAX )",
+        "checked classic-ZIP position narrowing",
+    )
+    require(
+        file_system,
+        "unzSetCurrentFileInfoPosition( pak->handle, static_cast<unsigned long>( pakFile->pos ) )",
+        "explicit native minizip position conversion",
+    )
+    require(
+        file_cpp,
+        "unzSetCurrentFileInfoPosition( z, static_cast<unsigned long>( zipFilePos ) )",
+        "explicit native minizip seek conversion",
+    )
+    reject(file_system, "unsigned long\t\tpos;", "LP64-wide stored classic-ZIP position")
+    reject(file_h, "int\t\t\t\t\t\tzipFilePos;", "signed stored classic-ZIP position")
     require(
         trace_model,
         "if ( numSilEdges == 0 ) {\n\t\treturn 0;\n\t}",
         "empty silhouette edge list",
     )
 
-    for source, word_type, assertion, context in (
-        (crc32, "crc32Word_t", "CRC-32 requires a 32-bit word", "CRC-32"),
-        (honeyman, "honeymanWord_t", "Honeyman checksum requires a 32-bit word", "Honeyman"),
+    for source, header, word_type, assertion, prefix, context in (
+        (crc32, crc32_h, "crc32Word_t", "CRC-32 requires a 32-bit word", "CRC32", "CRC-32"),
+        (honeyman, honeyman_h, "honeymanWord_t", "Honeyman checksum requires a 32-bit word", "Honeyman", "Honeyman"),
     ):
         require(source, f"typedef uint32_t {word_type};", f"fixed-width {context} word")
         require(source, f'static_assert( sizeof( {word_type} ) == 4, "{assertion}" );', f"fixed-width {context} contract")
         require(source, f"static const {word_type} crctable[256]", f"fixed-width {context} table")
-        require(source, f"static_cast<{word_type}>( crcvalue )", f"32-bit {context} public-state truncation")
+        require(header, f"void {prefix}_InitChecksum( uint32_t &crcvalue );", f"fixed-width {context} public state")
+        require(header, f"uint32_t {prefix}_BlockChecksum", f"fixed-width {context} public result")
+        require(source, f"void {prefix}_InitChecksum( uint32_t &crcvalue )", f"fixed-width {context} implementation state")
+        reject(header, "unsigned long &crcvalue", f"LP64-wide {context} public state")
         reject(source, "static unsigned long crctable[256]", f"LP64-wide {context} table")
 
     for helper in ("idMath_FloatBits", "idMath_FloatFromBits", "idMath_FloatXorBits"):
         require(math, helper, "alias-safe float-bit helpers")
     reject(math, "reinterpret_cast<int *>", "strict-aliasing float-bit access")
+    require(math, "static uint32_t\t\t\tFtol( float f );", "fixed-width float-to-word result")
+    require(math, "ID_INLINE uint32_t idMath::Ftol( float f )", "fixed-width float-to-word implementation")
+    reject(math, "unsigned long idMath::Ftol", "LP64-wide float-to-word result")
     require(random, "int\t\t\t\t\tseed;", "legacy signed idRandom save/network state")
     require(random, "unsigned int\t\t\tseed;", "32-bit idRandom2 state")
     require(random, "const unsigned int nextSeed = 69069u * static_cast<unsigned int>( seed ) + 1u;", "32-bit idRandom wraparound")
@@ -688,9 +833,17 @@ def main() -> None:
     )
     require(simd_sse2, "defined( __x86_64__ )", "x86-only SSE2 declaration guard")
     require(simd, "#if defined( ID_SIMD_SSE2_AVAILABLE )", "guarded SSE2 processor selection")
+    require(simd, "#define TIME_TYPE int64_t", "fixed-width SIMD benchmark clock type")
+    require(simd, "TIME_TYPE baseClocks = 0;", "fixed-width SIMD benchmark baseline")
+    require(simd, "void PrintClocks( char *string, int dataCount, TIME_TYPE clocks, TIME_TYPE otherClocks = 0 )", "wide SIMD benchmark reporting")
+    reject(simd, "long baseClocks", "LP64-dependent SIMD benchmark baseline")
+    reject(simd, "#define TIME_TYPE int\n", "truncated SIMD benchmark clock type")
 
     require(token, "unsigned int\tintvalue;", "32-bit binary token storage")
+    require(token, "uint32_t\t\tGetUnsignedLongValue( void );", "fixed-width binary token accessor")
+    require(token, "ID_INLINE uint32_t idToken::GetUnsignedLongValue( void )", "fixed-width binary token accessor implementation")
     reject(token, "unsigned long\tintvalue;", "LP64-wide binary token storage")
+    reject(token, "ID_INLINE unsigned long\tidToken::GetUnsignedLongValue", "LP64-wide binary token accessor")
     for expected in (
         "unsigned int val = static_cast<unsigned int>( tok->GetUnsignedLongValue() );",
         "case BTT_SUBTYPE_INT: {",
@@ -716,10 +869,166 @@ def main() -> None:
     ):
         reject(lexer, legacy, "LP64-unsafe binary token serialization")
 
-    if parser.count('sprintf( buf, "%ld", abs( value ) );') != 2:
-        raise AssertionError("integer parser evaluation must format both signed-long results portably")
-    reject(parser, 'sprintf(buf, "%d", abs(value));', "LP64-unsafe parser evaluation")
-    reject(parser, 'sprintf( buf, "%d", abs( value ) );', "LP64-unsafe dollar parser evaluation")
+    require(parser, "int32_t intvalue;", "fixed-width parser expression storage")
+    for directive in (
+        "int idParser::Directive_elif( void ) {",
+        "int idParser::Directive_if( void ) {",
+        "int idParser::Directive_eval( void ) {",
+        "int idParser::DollarDirective_evalint( void ) {",
+    ):
+        directive_start = parser.find(directive)
+        if directive_start < 0 or "int32_t value;" not in parser[directive_start : directive_start + 400]:
+            raise AssertionError(f"Parser directive {directive!r} must retain a fixed-width result")
+    if parser.count('sprintf( buf, "%u", magnitude );') != 2:
+        raise AssertionError("Both integer parser directives must format a defined 32-bit magnitude")
+    require(parser, "-static_cast<int64_t>( value )", "INT32_MIN-safe parser magnitude")
+    reject(parser, "signed long int", "LP64-wide parser expression storage")
+    reject(parser, 'sprintf( buf, "%ld",', "LP64-dependent parser integer format")
+    for helper in (
+        "idParser_Int32Negate",
+        "idParser_Int32Add",
+        "idParser_Int32Subtract",
+        "idParser_Int32Multiply",
+        "idParser_Int32LeftShift",
+        "idParser_Int32ArithmeticRightShift",
+        "idParser_Int32Divide",
+        "idParser_Int32Modulo",
+    ):
+        require(parser, helper, "defined 32-bit parser expression arithmetic")
+    require(
+        parser,
+        "return idParser_Int32FromBits( 0u - idParser_Int32Bits( value ) );",
+        "modulo-2^32 parser unary negation",
+    )
+    require(
+        parser,
+        "return shift >= 0 && shift < 32;",
+        "bounded parser shift count",
+    )
+    if parser.count("if ( !idParser_IsValidShiftCount( v2->intvalue ) ) {") != 2:
+        raise AssertionError("Both parser shift operators must validate counts before shifting")
+    if parser.count("if ( lhs == INT32_MIN && rhs == -1 ) {") != 2:
+        raise AssertionError("Parser division and modulo must handle INT32_MIN / -1 explicitly")
+    require(parser, "return INT32_MIN;", "defined parser INT32_MIN / -1 division result")
+    require(parser, "return 0;", "defined parser INT32_MIN / -1 modulo result")
+    evaluator = parser.split("int idParser::EvaluateTokens", 1)[1].split("idParser::Evaluate\n", 1)[0]
+    if re.search(r"v1->intvalue\s*(?:\*=|/=|%=|\+=|-=|<<=|>>=|&=|\|=|\^=)", evaluator):
+        raise AssertionError("Parser evaluator contains direct signed compound arithmetic")
+    reject(evaluator, "v->intvalue = - t->GetIntValue()", "direct signed parser unary negation")
+    for shift_call in (
+        "idParser_Int32ArithmeticRightShift( v1->intvalue, static_cast<uint32_t>( v2->intvalue ) )",
+        "idParser_Int32LeftShift( v1->intvalue, static_cast<uint32_t>( v2->intvalue ) )",
+    ):
+        require(evaluator, shift_call, "checked fixed-width parser shift")
+
+    if re.search(r"\btypedef\b[^;]+\bulong\s*;", lib_h):
+        raise AssertionError("Project-local ulong alias conflicts with LP64 system headers")
+    if linux_sound_h.count("Lock( void **pDSLockedBuffer, uint32_t *dwDSLockedBufferSize )") != 2:
+        raise AssertionError("Both Linux sound stubs must expose a fixed-width lock size")
+    if linux_sound_h.count("GetCurrentPosition( uint32_t *pdwCurrentWriteCursor )") != 2:
+        raise AssertionError("Both Linux sound stubs must expose a fixed-width cursor")
+    require(macos_sound, "Lock( void **pDSLockedBuffer, uint32_t *dwDSLockedBufferSize )", "fixed-width macOS sound lock size")
+    require(macos_sound, "GetCurrentPosition( uint32_t *pdwCurrentWriteCursor )", "fixed-width macOS sound cursor")
+    reject(linux_sound_h, "ulong *", "ambiguous Linux sound word width")
+    reject(macos_sound, "ulong *", "ambiguous macOS sound word width")
+    require(heap_h, "static const size_t ID_HEAP_MAX_SIZE = 0x7fffffffu;", "shared signed-32-bit heap boundary")
+    if heap_h.count("( uintptr_t )( addr + 15 ) & ~(uintptr_t)15") != 2:
+        raise AssertionError("Both Mem_StackAlloc16 variants must preserve pointer high bits")
+    reject(heap_h, "0xfffffff0", "32-bit stack-alignment pointer mask")
+    if heap_h.count("Mem_Alloc( const size_t size") != 2:
+        raise AssertionError("Normal and debug heap APIs must accept native-width allocation sizes")
+    if heap_h.count("Mem_ClearedAlloc( const size_t size") != 2:
+        raise AssertionError("Normal and debug cleared-allocation APIs must accept native-width sizes")
+    if heap_h.count("Mem_Alloc16( const size_t size") != 2:
+        raise AssertionError("Normal and debug aligned-allocation APIs must accept native-width sizes")
+    reject(heap_h, "Mem_Alloc( const int size", "truncated public allocation size")
+    require(heap_h, "class alignas(16) idDynamicBlock", "aligned dynamic-block payload header")
+    require(heap_h, "static bool\t\t\t\t\t\tGetAlignedBlockSize( const int num, int &alignedBytes );", "checked dynamic-block size calculation")
+    require(heap_h, "usedBlockMemory += oldBlockSize;", "failed dynamic-block resize accounting rollback")
+    require(heap_h, "block = ( idDynamicBlock<type> * ) Mem_Alloc16( allocSize, memoryTag );\n//RAVEN END\n\t\tif ( block == NULL )", "failed dynamic-block base allocation handling")
+    require(heap_h, "Mem_Alloc16( baseBlockSize, memoryTag );\n//RAVEN END\n\t\tif ( block == NULL )", "failed fixed-block allocation handling")
+    if heap_h.count("GetUsedBlockMemorySize( void ) const") != 2:
+        raise AssertionError("Both dynamic allocators must expose full-width memory accounting")
+    require(heap_h, "static_cast<int64_t>( sizeof( idDynamicBlock<type> ) )", "wide adjacent-block size calculation")
+    require(heap_cpp, "#define MALLOC_HEADER_SIZE\t\t0", "release allocator metadata model")
+    require(heap_cpp, "static bool Mem_ValidateAllocSize( const size_t size", "checked legacy-heap narrowing boundary")
+    require(heap_cpp, "allocation of %zu bytes exceeds the 32-bit heap limit", "native-width allocation diagnostic")
+    require(heap_cpp, "const dword bytesLeft = pageSize - smallCurPageOffset;", "width-stable small-page remainder")
+    reject(heap_cpp, "(long)(pageSize) - smallCurPageOffset", "LP64-dependent small-page remainder")
+    require(rv_memsys, "static bool MemSys_ValidateAllocSize( const size_t size", "checked alternate-heap narrowing boundary")
+    reject(rv_memsys, "void *Mem_Alloc( const int size", "truncated alternate-heap allocation size")
+    require(cvar_system, "Mem_Alloc( allocationSize )", "native-width CVar string-table allocation")
+    reject(cvar_system, "Mem_Alloc( (int)allocationSize )", "truncated CVar string-table allocation")
+    require(file_system_h, "FILE_NOT_FOUND_TIMESTAMP\t= static_cast<ID_TIME_T>( -1 );", "width-stable missing-file timestamp")
+    reject(file_system_h, "FILE_NOT_FOUND_TIMESTAMP\t= 0xFFFFFFFF", "32-bit-only missing-file timestamp")
+
+    require(sys_public, "typedef uintptr_t idSocketHandle_t;", "Win64-sized socket handle")
+    require(sys_public, "idSocketHandle_t\tnetSocket;", "Win64-safe UDP socket storage")
+    require(sys_public, "idSocketHandle_t\tfd;", "Win64-safe TCP socket storage")
+    reject(sys_public, "int\t\t\tnetSocket;", "Win64-truncated UDP socket storage")
+    reject(sys_public, "int\t\t\tfd;", "Win64-truncated TCP socket storage")
+    for signature in (
+        "SOCKET NET_IPSocket(",
+        "bool Net_WaitForUDPPacket( SOCKET netSocket",
+        "bool Net_GetUDPPacket( SOCKET netSocket",
+        "void Net_SendUDPPacket( SOCKET netSocket",
+    ):
+        require(win_net, signature, "Win64-safe Winsock helper signature")
+    require(win_local, "LRESULT CALLBACK MainWndProc", "pointer-sized main window result")
+    if win_syscon.count("LRESULT CALLBACK") != 3:
+        raise AssertionError("All system-console window procedures must return pointer-sized LRESULT")
+    reject(win_syscon, "LONG WINAPI ConWndProc", "truncated system-console window result")
+    require(win_main, "struct __stat64 st;", "64-bit Windows file timestamp source")
+    require(win_main, "_fstat64( _fileno( fp ), &st )", "64-bit Windows file timestamp query")
+    reject(win_main, "return (long)st.st_mtime;", "LLP64-truncated Windows file timestamp")
+    require(sys_public, "uint32_t\t\tthreadId;", "fixed-width cross-platform thread id")
+    require(win_main, "DWORD threadId = 0;", "Win32-native CreateThread id output")
+    reject(win_main, "&info.threadId", "non-DWORD CreateThread id output")
+    require(posix_threads, "static_assert( sizeof( pthread_t ) <= sizeof( uintptr_t )", "representable POSIX thread handle")
+    require(posix_threads, "memcpy( &handle, &thread, sizeof( thread ) );", "complete POSIX thread-handle encoding")
+    require(renderer_gl_module, "DWORD threadId = 0;", "renderer Win32-native CreateThread id output")
+    require(renderer_gl_module, "static_assert( sizeof( pthread_t ) <= sizeof( uintptr_t )", "renderer POSIX thread handle representation")
+
+    if maya_import.count("va_arg( argPtr, int )") != 2:
+        raise AssertionError("Maya integer formatters must read promoted int arguments")
+    if maya_import.count("va_arg( argPtr, unsigned int )") != 4:
+        raise AssertionError("Maya unsigned formatters must read promoted unsigned-int arguments")
+    reject(maya_import, "va_arg( argPtr, long )", "LP64-invalid Maya promoted integer read")
+    reject(maya_import, "va_arg( argPtr, unsigned long )", "LP64-invalid Maya promoted unsigned read")
+    require(macos_preferences_h, "typedef int32_t LONG;", "fixed-width legacy macOS point coordinate")
+    require(macos_preferences_h, "uint32_t\t\t\tflags;", "fixed-width legacy macOS display flags")
+    for source, declaration, context in (
+        (macos_sound, "SInt32 gestaltOSVersion = 0;", "legacy macOS sound OS version"),
+        (macos_glimp, "SInt32 system_version = 0;", "legacy macOS OpenGL OS version"),
+        (macos_controller, "SInt32 gestaltOSVersion = 0;", "legacy macOS controller OS version"),
+        (macos_controller, "SInt32 gestaltSpeed = 0;", "legacy macOS processor speed"),
+        (macos_controller, "SInt32 osVers = 0;", "legacy macOS processor OS version"),
+        (macos_controller, "SInt32 ramSize = 0;", "legacy macOS physical RAM response"),
+        (macos_controller, "SInt32 cpu = 0;", "legacy macOS CPU response"),
+    ):
+        require(source, declaration, f"Gestalt-compatible {context}")
+    require(macos_glimp, "const GLint\t\t\t\t\t\tswap_limit = 0;", "OpenGL-sized macOS swap interval")
+    require(macos_controller, "uint32_t hi;", "fixed-width PPC floating-point control word")
+    require(macos_controller, "uint32_t lo;", "fixed-width PPC floating-point control word")
+    require(macos_controller, "static bool OSX_ReadRegistryUInt32( CFTypeRef value, UInt32& result )", "fixed-width macOS PCI registry reader")
+    require(macos_controller, "CFDataGetLength( data ) < static_cast<CFIndex>( sizeof( result ) )", "bounds-checked macOS PCI registry value")
+    require(macos_controller, "memcpy( &result, CFDataGetBytePtr( data ), sizeof( result ) );", "alignment-safe macOS PCI registry value")
+    reject(macos_controller, "*((long*)CFDataGetBytePtr", "LP64-wide macOS PCI registry read")
+    reject(macos_controller, "*(UInt32*)CFDataGetBytePtr", "unaligned macOS PCI registry read")
+    reject(macos_sound, "long gestaltOSVersion", "LP64-wide Gestalt response")
+    reject(macos_glimp, "long system_version", "LP64-wide Gestalt response")
+    for legacy_response in ("long gestaltOSVersion", "long gestaltSpeed", "long osVers", "long ramSize", "long cpu"):
+        reject(macos_controller, legacy_response, "LP64-wide Gestalt response")
+
+    cvar_sentinel = "reinterpret_cast< idCVar * >( static_cast<uintptr_t>( -1 ) )"
+    if cvar_system_h.count(cvar_sentinel) != 3:
+        raise AssertionError("Every CVar registration sentinel must be constructed at pointer width")
+    reject(cvar_system_h, "(idCVar *)-1", "integer-to-pointer CVar sentinel cast")
+    require(render_geometry_h, "reinterpret_cast< srfTriangles_t * >( static_cast<uintptr_t>( -1 ) )", "pointer-width deferred-light sentinel")
+    require(render_geometry_h, "reinterpret_cast< byte * >( static_cast<uintptr_t>( -1 ) )", "pointer-width cull sentinel")
+    reject(render_geometry_h, "((srfTriangles_t *)-1)", "integer-to-pointer deferred-light sentinel cast")
+    require(renderer_material, "reinterpret_cast< idImage * >( static_cast<uintptr_t>( 1 ) )", "pointer-width renderer self-test sentinel")
+    reject(renderer_material, "(idImage *)1", "integer-to-pointer renderer self-test sentinel cast")
 
     require(
         common_cpp,
@@ -808,6 +1117,23 @@ def main() -> None:
         "reinterpret_cast<uintptr_t>( base ) + byteOffset",
         "integer-space VBO attribute offset",
     )
+    require(
+        renderer_vertex_cache_cpp,
+        "reinterpret_cast<void *>( static_cast<uintptr_t>( buffer->offset ) )",
+        "pointer-width VBO offset sentinel",
+    )
+    reject(renderer_vertex_cache_cpp, "(void *)buffer->offset", "integer-to-pointer VBO offset cast")
+    require(renderer_vk_gui, "VK_Ring_Alloc( vkRing_t &ring, const void *data, size_t bytes, int alignment )", "native-width Vulkan ring upload size")
+    require(renderer_vk_gui, "bytes > capacity - offset", "overflow-free Vulkan ring capacity check")
+    require(renderer_vk_gui, "( alignment & ( alignment - 1 ) ) != 0", "validated Vulkan ring alignment")
+    for geometry_type in ("idDrawVert", "glIndex_t", "shadowCache_t", "idVec3"):
+        require(
+            renderer_vk_gui,
+            f"static_cast<size_t>( tri->num{'Indexes' if geometry_type == 'glIndex_t' else 'Verts'} ) * sizeof( {geometry_type} )",
+            f"native-width Vulkan {geometry_type} upload product",
+        )
+    reject(renderer_vk_gui, "tri->numVerts * (int)sizeof", "signed-overflowing Vulkan vertex upload product")
+    reject(renderer_vk_gui, "tri->numIndexes * (int)sizeof", "signed-overflowing Vulkan index upload product")
     self_check_renderer_vertex_cache_audit()
     audit_renderer_vertex_cache_consumers()
     for guarded_copy, context in (
@@ -836,6 +1162,56 @@ def main() -> None:
     reject(render_world, '"%i interaction take %i bytes\\n"', "LP64-unsafe interaction memory report")
     require(image_files, "R_ReadTargaUInt16( const byte *data )", "unaligned TGA header read")
     reject(image_files, "LittleShort ( *(short *)buf_p )", "unaligned TGA header read")
+    require(image_tools_h, "R_StaticAlloc( size_t bytes )", "native-width static image allocation API")
+    require(image_tools_h, "R_ClearedStaticAlloc( size_t bytes )", "native-width cleared image allocation API")
+    require(image_tools_h, "( *onStaticAlloc )( size_t bytes )", "native-width static allocation hook")
+    reject(image_tools_h, "R_StaticAlloc( int bytes )", "truncated static image allocation API")
+    require(image_tools_state, 'R_StaticAlloc failed on %zu bytes', "native-width static allocation diagnostic")
+    require(renderer_local, "size_t\t\t\t\t\tstaticAllocCount;", "native-width renderer static allocation accounting")
+    require(render_world, "staticAllocCount = %zu", "native-width interaction allocation report")
+    require(renderer_lightrun, "staticAllocCount = %zu", "native-width regenerated-world allocation report")
+    require(unzip, "Mem_ClearedAlloc(static_cast<size_t>(items) * static_cast<size_t>(size))", "wide zlib allocator multiplication")
+    reject(unzip, "Mem_ClearedAlloc(items*size)", "32-bit zlib allocator multiplication")
+    require(unzip, "uint8_t bytes[2];", "byte-wise classic-ZIP 16-bit read")
+    require(unzip, "const uint16_t value = static_cast<uint16_t>( bytes[0] )", "unsigned classic-ZIP 16-bit assembly")
+    require(unzip, "uint8_t bytes[4];", "byte-wise classic-ZIP 32-bit read")
+    require(unzip, "const uint32_t value = static_cast<uint32_t>( bytes[0] )", "unsigned classic-ZIP 32-bit assembly")
+    if unzip.count("fread( bytes, 1, sizeof( bytes ), fin ) != sizeof( bytes )") != 2:
+        raise AssertionError("Both classic-ZIP scalar readers must reject short fread results")
+    reject(unzip, "LittleShort( v)", "signed classic-ZIP 16-bit read")
+    reject(unzip, "LittleLong( v)", "signed classic-ZIP 32-bit read")
+    zip_set_position = unzip.split("extern int unzSetCurrentFileInfoPosition", 1)[1].split(
+        "extern int unzLocateFile", 1
+    )[0]
+    require(zip_set_position, "s->current_file_ok = (err == UNZ_OK);", "classic-ZIP seek validity state")
+    require(zip_set_position, "return err;", "classic-ZIP seek error propagation")
+    reject(zip_set_position, "return UNZ_OK;", "discarded classic-ZIP seek failure")
+    require(al_sound_sample, "const uint64_t decodedByteCount", "wide ADPCM decoded-size product")
+    require(al_sound_sample, "int64_t widenedSample =", "wide ADPCM predictor accumulation")
+    require(al_sound_sample, "static_cast<int64_t>( state->iSamp1 ) * state->coef1", "overflow-free ADPCM first coefficient product")
+    require(al_sound_sample, "static_cast<int64_t>( state->iSamp2 ) * state->coef2", "overflow-free ADPCM second coefficient product")
+    reject(al_sound_sample, "state->iSamp1 * state->coef1", "signed-overflowing ADPCM predictor product")
+    require(
+        al_sound_sample,
+        "decodedByteCount > static_cast<uint64_t>( idMath::INT_MAX )",
+        "checked ADPCM legacy-size narrowing",
+    )
+    require(
+        al_sound_sample,
+        "blockHeaderBytes + encodedSampleBytes != static_cast<uint64_t>( blockSize )",
+        "validated ADPCM block geometry",
+    )
+    adpcm_decode = al_sound_sample.split("int idSoundSample_OpenAL::MS_ADPCM_decode", 1)[1]
+    validation_end = adpcm_decode.index("if( encoded_len != 0")
+    if "*audio_buf = decodedBuffer;" in adpcm_decode[:validation_end] or "*audio_len =" in adpcm_decode[:validation_end]:
+        raise AssertionError("ADPCM caller outputs are mutated before decode validation succeeds")
+    require(adpcm_decode, "*audio_buf = decodedBuffer;", "commit decoded ADPCM buffer after success")
+    require(adpcm_decode, "*audio_len = static_cast<uint32_t>( decodedBytes );", "checked ADPCM output-length narrowing")
+    require(
+        read("src/framework/DeclMatType.cpp"),
+        "cachedWidth <= idMath::INT_MAX / cachedHeight",
+        "checked cached material-map pixel product",
+    )
     require(
         bse_manager,
         '"bse_active: %i particles: %i traces: %i texels: %g\\n"',
@@ -887,6 +1263,109 @@ def main() -> None:
     require(swap, "#define BIG16(v) idSwapBig16( static_cast<uint16_t>( v ) )", "fixed-width BIG16 helper")
     reject(swap, "((uint32)(v))", "undefined BIG32 alias")
     reject(swap, "((uint16)(v))", "undefined BIG16 alias")
+
+    # Legacy editor targets are not part of the Meson build, so keep their
+    # Win64 ABI safety explicit in this source contract.
+    for warning_suppression in ("/wd4302", "/wd4311", "/wd4312"):
+        reject(meson, warning_suppression, "suppressed MSVC pointer-width diagnostic")
+    for warning_error in ("/we4302", "/we4311", "/we4312"):
+        require(meson, warning_error, "enforced MSVC pointer-width diagnostic")
+
+    for path, source in win32_tool_sources.items():
+        for legacy_index in (
+            "GWL_USERDATA",
+            "GWL_WNDPROC",
+            "GWL_HINSTANCE",
+            "GWL_HWNDPARENT",
+            "DWL_DLGPROC",
+            "DWL_MSGRESULT",
+            "GCL_HICON",
+            "GCL_HICONSM",
+            "GCL_WNDPROC",
+            "GCL_HBRBACKGROUND",
+        ):
+            reject(source, legacy_index, f"Win64-unsafe window-long index in {path}")
+        if re.search(
+            r"MAKEINTRESOURCE\s*\(\s*IDC_(?:APPSTARTING|ARROW|CROSS|HAND|HELP|IBEAM|ICON|NO|"
+            r"SIZEALL|SIZENESW|SIZENS|SIZENWSE|SIZEWE|UPARROW|WAIT)\s*\)",
+            source,
+        ):
+            raise AssertionError(f"System cursor was truncated through MAKEINTRESOURCE in {path}")
+        if re.search(r"\bOnTimer\s*\(\s*UINT\s+", source):
+            raise AssertionError(f"Win64-truncated MFC timer id in {path}")
+        if re.search(r"\b(?:virtual\s+)?int\s+[A-Za-z_0-9:]*OnToolHitTest\s*\(", source):
+            raise AssertionError(f"Win64-truncated MFC tooltip id in {path}")
+        if re.search(r"\bUINT\s+\w+\s*=\s*\w+->idFrom\b", source):
+            raise AssertionError(f"Win64-truncated notification id in {path}")
+        if re.search(r"\(\s*HMENU\s*\)\s*(?:IDC_|IDR_|\d)", source):
+            raise AssertionError(f"Win64-unsafe child-control HMENU cast in {path}")
+        if re.search(r"\bBOOL\s+CALLBACK\s+RBFProc\b|\(\s*DLGPROC\s*\)\s*RBFProc\b", source):
+            raise AssertionError(f"Win64-truncated dialog procedure in {path}")
+        if "unsigned int m_nTimerID" in source or re.search(r"m_nTimerID\s*(?:[!=]=|=)\s*-1", source):
+            raise AssertionError(f"Win64-truncated MFC timer handle in {path}")
+        if re.search(r'_T\(\s*"%d"\s*\)\s*,\s*lParam\b', source):
+            raise AssertionError(f"LPARAM passed directly to a 32-bit vararg format in {path}")
+
+    audit_tool_size_formats(win32_tool_sources)
+
+    require(tool_property_grid, "GetWindowLongPtr( mWindow, GWLP_WNDPROC )", "pointer-sized property-grid subclass procedure")
+    require(tool_property_grid, "reinterpret_cast< LPARAM >( item )", "pointer-sized property-grid item data")
+    require(tool_property_grid, "reinterpret_cast< HMENU >( static_cast< INT_PTR >( id ) )", "pointer-sized child control id")
+    reject(tool_property_grid, "(LONG)item", "truncated property-grid item data")
+    require(tool_path_tree_h, "virtual INT_PTR\t\tOnToolHitTest", "pointer-sized path-tree tooltip id")
+    require(tool_path_tree, "reinterpret_cast<UINT_PTR>( hitem )", "pointer-sized path-tree item tooltip id")
+    require(tool_path_tree, "reinterpret_cast<UINT_PTR>( m_hWnd )", "pointer-sized path-tree tooltip window id")
+    reject(tool_path_tree, "pTI->uId = (UINT)hitem", "truncated path-tree tooltip id")
+    require(tool_prop_tree, "const UINT_PTR id = static_cast< UINT_PTR >( ::GetDlgCtrlID( m_hWnd ) );", "pointer-sized property-tree notification id")
+    reject(tool_prop_tree, "(UINT)::GetMenu(m_hWnd)", "truncated property-tree control id")
+    require(tool_prop_tree_combo, "static_cast< DWORD_PTR >( lParam )", "pointer-sized property-tree combo data")
+    reject(tool_prop_tree_combo, "(DWORD)lParam", "truncated property-tree combo data")
+
+    require(tool_debugger_window, "GetWindowLongPtr( mWndScript, GWLP_WNDPROC )", "pointer-sized debugger subclass procedure")
+    require(tool_debugger_window, "reinterpret_cast< WPARAM >( &num )", "pointer-sized rich-edit zoom numerator")
+    reject(tool_debugger_window, "(LONG)&num", "truncated rich-edit zoom numerator")
+
+    require(tool_ge_app, "SetClassLongPtr( mMDIFrame, GCLP_HICON", "pointer-sized GUI editor class icon")
+    if tool_ge_app.count("reinterpret_cast< LPARAM >( workspace )") != 2:
+        raise AssertionError("Both GUI editor MDI creation paths must preserve the workspace pointer")
+    reject(tool_ge_app, "(LONG)workspace", "truncated GUI editor workspace pointer")
+    if tool_ge_item_props.count("reinterpret_cast< LPARAM >( new rvGEItemProps") != 4:
+        raise AssertionError("Every GUI editor property-sheet page must preserve its page pointer")
+    if tool_ge_item_props.count("item.lParam = reinterpret_cast< LPARAM >( key );") != 2:
+        raise AssertionError("Every GUI editor key-list item must preserve its key pointer")
+    reject(tool_ge_item_props, "item.lParam = (LONG) key", "truncated GUI editor list-item pointer")
+    require(tool_ge_navigator, "item.lParam = reinterpret_cast< LPARAM >( window );", "pointer-sized GUI navigator item data")
+    require(tool_ge_status_bar, "reinterpret_cast< LPARAM >( parts )", "pointer-sized status-bar parts payload")
+    require(tool_ge_workspace, "reinterpret_cast< UINT_PTR >( popup )", "pointer-sized GUI editor submenu handle")
+    require(tool_ge_wrapper, "idWinStr *var = new idWinStr();", "pointer-width-safe GUI window-wrapper association")
+    require(tool_ge_wrapper, 'sscanf( var->c_str(), "%p", &wrapper )', "GUI window-wrapper pointer round trip")
+    reject(tool_ge_wrapper, "int x = (int)this;", "truncated GUI window-wrapper pointer")
+
+    require(tool_radiant_cam, "LRESULT CALLBACK CamWndProc", "pointer-sized Radiant camera window result")
+    require(tool_radiant_xy, "LRESULT CALLBACK XYWndProc", "pointer-sized Radiant XY window result")
+    reject(tool_radiant_cam, "LONG WINAPI CamWndProc", "truncated Radiant camera window result")
+    reject(tool_radiant_xy, "LONG WINAPI XYWndProc", "truncated Radiant XY window result")
+    if tool_radiant_xy.count("reinterpret_cast< UINT_PTR >") != 4:
+        raise AssertionError("Every Radiant entity submenu must preserve its HMENU value")
+    require(tool_radiant_entity_list, "reinterpret_cast< DWORD_PTR >( pEntity )", "pointer-sized Radiant list-item data")
+    reject(tool_radiant_entity_list, "reinterpret_cast<DWORD>(pEntity)", "truncated Radiant list-item data")
+    require(tool_radiant_main, 'input string was %zu bytes too large', "size_t-safe Radiant string warning")
+    reject(tool_radiant_main, 'input string was %d bytes too large', "size_t-unsafe Radiant string warning")
+    for handler in ("OnDisplayChange", "OnBSPStatus", "OnBSPDone"):
+        require(
+            tool_radiant_main,
+            f"LRESULT CMainFrame::{handler}(WPARAM wParam, LPARAM lParam)",
+            f"pointer-width Radiant {handler} message ABI",
+        )
+    reject(tool_radiant_main, "UINT wParam, long lParam", "truncated Radiant registered-message ABI")
+    require(tool_radiant_new_tex_h, "virtual INT_PTR OnToolHitTest", "pointer-sized Radiant texture tooltip id")
+    require(tool_radiant_new_tex, "INT_PTR CNewTexWnd::OnToolHitTest", "pointer-sized Radiant texture tooltip implementation")
+    if tool_radiant_map.count("va_arg( argPtr, int )") != 4:
+        raise AssertionError("Radiant integer formatters must read promoted int arguments")
+    if tool_radiant_map.count("va_arg( argPtr, unsigned int )") != 8:
+        raise AssertionError("Radiant unsigned formatters must read promoted unsigned-int arguments")
+    reject(tool_radiant_map, "va_arg( argPtr, long )", "LP64-invalid promoted integer read")
+    reject(tool_radiant_map, "va_arg( argPtr, unsigned long )", "LP64-invalid promoted unsigned read")
 
     print("linux_arm64_source_portability: ok")
 

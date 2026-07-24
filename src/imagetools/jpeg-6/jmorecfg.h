@@ -149,10 +149,18 @@ typedef unsigned short UINT16;
 typedef unsigned int UINT16;
 #endif /* HAVE_UNSIGNED_SHORT */
 
-#ifndef __MWERKS__
-#ifndef _BASETSD_H_
-typedef long INT32;
+/* The codec's arithmetic and RIGHT_SHIFT helper require exactly 32 bits.
+ * `long` is 32-bit on Windows (LLP64), but 64-bit on Linux/macOS (LP64).
+ */
+#if !defined(__MWERKS__) && !defined(_BASETSD_H_) && !defined(XMD_H)
+#include <stdint.h>
+typedef int32_t INT32;
 #endif
+
+#if defined(__cplusplus)
+static_assert(sizeof(INT32) == 4, "JPEG INT32 must be exactly 32 bits");
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(INT32) == 4, "JPEG INT32 must be exactly 32 bits");
 #endif
 
 /* INT16 must hold at least the values -32768..32767. */

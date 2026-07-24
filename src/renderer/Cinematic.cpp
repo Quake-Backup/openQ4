@@ -56,7 +56,7 @@ public:
 	virtual void			ResetTime(int time);
 
 private:
-	size_t					mcomp[256];
+	ptrdiff_t				mcomp[256];
 	byte** qStatus[2];
 	idStr					fileName;
 	int						CIN_WIDTH, CIN_HEIGHT;
@@ -74,11 +74,11 @@ private:
 	byte* buf;
 	int						samplesPerPixel;				// defaults to 2
 	unsigned int			xsize, ysize, maxsize, minsize;
-	int						normalBuffer0;
+	ptrdiff_t				normalBuffer0;
 	int						roq_flags;
 	int						roqF0;
 	int						roqF1;
-	int						t[2];
+	ptrdiff_t				t[2];
 	int						roqFPS;
 	int						drawX, drawY;
 
@@ -87,6 +87,7 @@ private:
 	float					frameRate;
 
 	byte* image;
+	size_t					imageCapacity;
 
 	bool					looping;
 	bool					dirty;
@@ -111,7 +112,7 @@ private:
 	void					decodeCodeBook(byte* input, unsigned short roq_flags);
 	void					recurseQuad(int startX, int startY, int quadSize, int xOff, int yOff);
 	void					setupQuad(int xOff, int yOff);
-	void					readQuadInfo(byte* qData);
+	bool					readQuadInfo(byte* qData);
 	void					RoQPrepMcomp(int xoff, int yoff);
 	void					RoQReset();
 };
@@ -120,6 +121,7 @@ const int DEFAULT_CIN_WIDTH = 512;
 const int DEFAULT_CIN_HEIGHT = 512;
 const int MAXSIZE = 8;
 const int MINSIZE = 4;
+const int MAX_QUAD_STATUS = 32768;
 
 const int ROQ_FILE = 0x1084;
 const int ROQ_QUAD = 0x1000;
@@ -266,6 +268,7 @@ idCinematicLocal::idCinematicLocal
 */
 idCinematicLocal::idCinematicLocal() {
 	image = NULL;
+	imageCapacity = 0;
 	status = FMV_EOF;
 	buf = NULL;
 	iFile = NULL;
@@ -370,9 +373,10 @@ void idCinematicLocal::Close() {
 	if (image) {
 		Mem_Free((void*)image);
 		image = NULL;
-		buf = NULL;
-		status = FMV_EOF;
 	}
+	imageCapacity = 0;
+	buf = NULL;
+	status = FMV_EOF;
 	RoQShutdown();
 }
 
@@ -1221,16 +1225,8 @@ idCinematicLocal::setupQuad
 ==============
 */
 void idCinematicLocal::setupQuad(int xOff, int yOff) {
-	int numQuadCels, i, x, y;
+	int i, x, y;
 	byte* temp;
-
-	numQuadCels = (CIN_WIDTH * CIN_HEIGHT) / (16);
-	numQuadCels += numQuadCels / 4 + numQuadCels / 16;
-	numQuadCels += 64;							  // for overflow
-
-	numQuadCels = (xsize * ysize) / (16);
-	numQuadCels += numQuadCels / 4;
-	numQuadCels += 64;							  // for overflow
 
 	onQuad = 0;
 
@@ -1240,7 +1236,7 @@ void idCinematicLocal::setupQuad(int xOff, int yOff) {
 
 	temp = NULL;
 
-	for (i = (numQuadCels - 64); i < numQuadCels; i++) {
+	for (i = onQuad; i < onQuad + 64; i++) {
 		qStatus[0][i] = temp;			  // eoq
 		qStatus[1][i] = temp;			  // eoq
 	}
@@ -1251,30 +1247,52 @@ void idCinematicLocal::setupQuad(int xOff, int yOff) {
 idCinematicLocal::readQuadInfo
 ==============
 */
-void idCinematicLocal::readQuadInfo(byte* qData) {
+bool idCinematicLocal::readQuadInfo(byte* qData) {
 	xsize = qData[0] + qData[1] * 256;
 	ysize = qData[2] + qData[3] * 256;
 	maxsize = qData[4] + qData[5] * 256;
 	minsize = qData[6] + qData[7] * 256;
 
-	CIN_HEIGHT = ysize;
-	CIN_WIDTH = xsize;
+	const uint64 pixelCount = static_cast<uint64>( xsize ) * ysize;
+	const uint64 imageBytes = pixelCount * samplesPerPixel * 2;
+	const uint64 quadBlocksWide = ( static_cast<uint64>( xsize ) + 15 ) / 16;
+	const uint64 quadBlocksHigh = ( static_cast<uint64>( ysize ) + 15 ) / 16;
+	const uint64 quadStatusCount = quadBlocksWide * quadBlocksHigh * 20 + 64;
+	if ( xsize == 0 || ysize == 0 || imageBytes > static_cast<uint64>( idMath::INT_MAX ) ||
+			quadStatusCount > MAX_QUAD_STATUS ) {
+		common->Warning( "RoQ dimensions %ux%u exceed the cinematic decoder limits", xsize, ysize );
+		status = FMV_EOF;
+		return false;
+	}
+
+	CIN_HEIGHT = static_cast<int>( ysize );
+	CIN_WIDTH = static_cast<int>( xsize );
 
 	samplesPerLine = CIN_WIDTH * samplesPerPixel;
 	screenDelta = CIN_HEIGHT * samplesPerLine;
 
-	if (!image) {
-		image = (byte*)Mem_Alloc(CIN_WIDTH * CIN_HEIGHT * samplesPerPixel * 2);
+	if ( imageBytes > imageCapacity ) {
+		byte *newImage = (byte *)Mem_Alloc( static_cast<int>( imageBytes ) );
+		if ( newImage == NULL ) {
+			status = FMV_EOF;
+			return false;
+		}
+		if ( image != NULL ) {
+			Mem_Free( image );
+		}
+		image = newImage;
+		imageCapacity = static_cast<size_t>( imageBytes );
 	}
 
 	half = false;
 	smootheddouble = false;
 
-	t[0] = (0 - (ptrdiff_t)image) + (ptrdiff_t)image + screenDelta;
-	t[1] = (0 - ((ptrdiff_t)image + screenDelta)) + (ptrdiff_t)image;
+	t[0] = screenDelta;
+	t[1] = -screenDelta;
 
 	drawX = CIN_WIDTH;
 	drawY = CIN_HEIGHT;
+	return true;
 }
 
 /*
@@ -1515,7 +1533,9 @@ redump:
 		break;
 	case	ROQ_QUAD_INFO:
 		if (numQuads == -1) {
-			readQuadInfo(framedata);
+			if ( !readQuadInfo(framedata) ) {
+				return;
+			}
 			setupQuad(0, 0);
 		}
 		if (numQuads != 1) numQuads = 0;

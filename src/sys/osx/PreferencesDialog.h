@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef PREFERENCESDIALOG_H
 #define PREFERENCESDIALOG_H
 
+#include <stdint.h>
+
 enum GameDisplayMode
 {
 	kInactive,
@@ -36,7 +38,7 @@ enum GameDisplayMode
 	kWindow
 };
 
-typedef long LONG;
+typedef int32_t LONG;
 
 typedef struct tagPOINT
 {
@@ -53,7 +55,7 @@ typedef struct
 	short				depth;				// Screen bit depth used for full screen mode.
 	Fixed				frequency;			// Screen refresh rate in MHz for full screen mode. If zero, then a default will be used.
 	POINT				windowLoc;			// Device-local coordinate of top left corner for window mode. Expressed as a Win32 POINT. Coordiantes may be CW_USEDEFAULT indicating no location has yet been established.
-	unsigned long		flags;				// kBlankingWindow, kDontRepositionWindow, etc.
+	uint32_t			flags;				// kBlankingWindow, kDontRepositionWindow, etc.
 	UInt32				resFlags;			// boolean bits to mark special modes for each resolution, e.g. stretched
 } GameDisplayInfo;
 

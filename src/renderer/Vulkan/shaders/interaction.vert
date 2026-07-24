@@ -11,7 +11,8 @@
 // {mat4; vec4 a,b,c,d} so every pipeline layout carries the same range:
 //   a.x = vertex-color modulate, a.y = vertex-color add (SVC packing),
 //   a.z = ambient light flag; b.xyz = the tangent-space ambient light
-//   direction exactly as the ambient normal-map cube decodes it.
+//   direction exactly as the ambient normal-map cube decodes it;
+//   c.xy = custom-lighting parallax scale/bias, c.z = parallax enable.
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec4 inColor;
@@ -53,6 +54,7 @@ layout(location = 4) out vec4 vLightProjectionTexCoord;
 layout(location = 5) out vec3 vLightVector;
 layout(location = 6) out vec3 vHalfAngleVector;
 layout(location = 7) out vec3 vVertexColor;
+layout(location = 8) out vec3 vViewVector;
 
 vec3 TangentSpaceVector(vec3 objectVector) {
     return vec3(
@@ -70,6 +72,7 @@ void main() {
 
     vLightVector = TangentSpaceVector(toLight);
     vHalfAngleVector = TangentSpaceVector(normalize(toLight) + normalize(toView));
+    vViewVector = TangentSpaceVector(toView);
 
     vBumpTexCoord = vec2(dot(texCoord, inter.bumpMatrixS), dot(texCoord, inter.bumpMatrixT));
     vDiffuseTexCoord = vec2(dot(texCoord, inter.diffuseMatrixS), dot(texCoord, inter.diffuseMatrixT));

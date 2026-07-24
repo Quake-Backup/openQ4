@@ -41,23 +41,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "rc/AFEditor_resource.h"
 #include "rc/doom_resource.h"
 
-// jmarshall
-	// Various 64bit wrapper functions.
-#undef  GetWindowLong
-#undef  SetWindowLong
-#undef SetClassLong
-#undef LONG 
-
-#define GWL_WNDPROC GWLP_WNDPROC
-#define SetClassLong	SetClassLongPtr
-#define GetWindowLong	GetWindowLongPtr
-#define SetWindowLong	SetWindowLongPtr
-#define GWL_USERDATA GWLP_USERDATA
-#define GCL_HICON GCLP_HICON
-#define DWL_MSGRESULT DWLP_MSGRESULT
-#define DWL_DLGPROC DWLP_DLGPROC
-// jmarshall end
-
 #define COPY_ID			1
 #define QUIT_ID			2
 #define CLEAR_ID		3
@@ -113,7 +96,7 @@ typedef struct {
 
 static WinConData s_wcd;
 
-static LONG WINAPI SplashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+static LRESULT CALLBACK SplashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	switch (uMsg) {
 	case WM_ERASEBKGND:
 		// Avoid background clears that can cause visible flicker on startup.
@@ -190,7 +173,7 @@ void Sys_ShowSplash(void) {
 	WNDCLASS wc;
 	memset(&wc, 0, sizeof(wc));
 	wc.style = 0;
-	wc.lpfnWndProc = (WNDPROC)SplashWndProc;
+	wc.lpfnWndProc = SplashWndProc;
 	wc.cbClsExtra = 0;
 	wc.cbWndExtra = 0;
 	wc.hInstance = win32.hInstance;
@@ -249,7 +232,7 @@ void Sys_DestroySplash(void) {
 	}
 }
 
-static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+static LRESULT CALLBACK ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	char* cmdString;
 
 	switch (uMsg) {
@@ -275,12 +258,12 @@ static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 		if ((HWND)lParam == s_wcd.hwndBuffer) {
 			SetBkColor((HDC)wParam, RGB(0x1b, 0x20, 0x0a));
 			SetTextColor((HDC)wParam, RGB(0xf0, 0x9e, 0x0d));
-			return (long)s_wcd.hbrEditBackground;
+			return reinterpret_cast<LRESULT>( s_wcd.hbrEditBackground );
 		}
 		else if ((HWND)lParam == s_wcd.hwndErrorBox) {
 			SetBkColor((HDC)wParam, RGB(0x1b, 0x20, 0x0a));
 			SetTextColor((HDC)wParam, RGB(0xf0, 0x9e, 0x0d));
-			return (long)s_wcd.hbrErrorBackground;
+			return reinterpret_cast<LRESULT>( s_wcd.hbrErrorBackground );
 		}
 		break;
 	case WM_SYSCOMMAND:
@@ -337,7 +320,7 @@ static LONG WINAPI ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 	return DefWindowProc(hWnd, uMsg, wParam, lParam);
 }
 
-LONG WINAPI InputLineWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK InputLineWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	int key, cursor;
 	switch (uMsg) {
 	case WM_KILLFOCUS:
@@ -449,7 +432,7 @@ void Sys_CreateConsole(void) {
 	memset(&wc, 0, sizeof(wc));
 
 	wc.style = 0;
-	wc.lpfnWndProc = (WNDPROC)ConWndProc;
+	wc.lpfnWndProc = ConWndProc;
 	wc.cbClsExtra = 0;
 	wc.cbWndExtra = 0;
 	wc.hInstance = win32.hInstance;
@@ -563,7 +546,10 @@ void Sys_CreateConsole(void) {
 		win32.hInstance, NULL);
 	SendMessage(s_wcd.hwndBuffer, WM_SETFONT, (WPARAM)s_wcd.hfBufferFont, 0);
 
-	s_wcd.SysInputLineWndProc = (WNDPROC)SetWindowLong(s_wcd.hwndInputLine, GWL_WNDPROC, (LONG_PTR)InputLineWndProc);
+	s_wcd.SysInputLineWndProc = reinterpret_cast<WNDPROC>( SetWindowLongPtr(
+		s_wcd.hwndInputLine,
+		GWLP_WNDPROC,
+		reinterpret_cast<LONG_PTR>( InputLineWndProc ) ) );
 	SendMessage(s_wcd.hwndInputLine, WM_SETFONT, (WPARAM)s_wcd.hfBufferFont, 0);
 
 	Sys_ShowSplash();

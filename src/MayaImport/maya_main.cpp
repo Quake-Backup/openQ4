@@ -74,10 +74,10 @@ FS_WriteFloatString
 */
 #define	MAX_PRINT_MSG	4096
 static int WriteFloatString( FILE *file, const char *fmt, ... ) {
-	long i;
-	unsigned long u;
+	int i;
+	unsigned int u;
 	double f;
-	char *str;
+	const char *str;
 	int index;
 	idStr tmp, format;
 	va_list argPtr;
@@ -116,31 +116,31 @@ static int WriteFloatString( FILE *file, const char *fmt, ... ) {
 						break;
 					case 'd':
 					case 'i':
-						i = va_arg( argPtr, long );
+						i = va_arg( argPtr, int );
 						index += fprintf( file, format.c_str(), i );
 						break;
 					case 'u':
-						u = va_arg( argPtr, unsigned long );
+						u = va_arg( argPtr, unsigned int );
 						index += fprintf( file, format.c_str(), u );
 						break;
 					case 'o':
-						u = va_arg( argPtr, unsigned long );
+						u = va_arg( argPtr, unsigned int );
 						index += fprintf( file, format.c_str(), u );
 						break;
 					case 'x':
-						u = va_arg( argPtr, unsigned long );
+						u = va_arg( argPtr, unsigned int );
 						index += fprintf( file, format.c_str(), u );
 						break;
 					case 'X':
-						u = va_arg( argPtr, unsigned long );
+						u = va_arg( argPtr, unsigned int );
 						index += fprintf( file, format.c_str(), u );
 						break;
 					case 'c':
-						i = va_arg( argPtr, long );
+						i = va_arg( argPtr, int );
 						index += fprintf( file, format.c_str(), (char) i );
 						break;
 					case 's':
-						str = va_arg( argPtr, char * );
+						str = va_arg( argPtr, const char * );
 						index += fprintf( file, format.c_str(), str );
 						break;
 					case '%':

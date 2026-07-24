@@ -474,7 +474,7 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 	NSOpenGLPixelFormat				*pixelFormat;
 	CGDisplayErr					err;
 	unsigned int					multisamples;
-	const long 						swap_limit = false;
+	const GLint						swap_limit = 0;
 	int 							nsOpenGLCPSwapLimit = 203;
             
 	glw_state.display = Sys_DisplayToUse();
@@ -538,7 +538,7 @@ static bool CreateGameWindow(  glimpParms_t parms ) {
 		return false;
 	}
 #ifdef __ppc__
-	long system_version = 0;
+	SInt32 system_version = 0;
 	Gestalt( gestaltSystemVersion, &system_version );
 	if ( parms.width <= 1024 && parms.height <= 768 && system_version <= 0x1045 ) {
 		[ OSX_GetNSGLContext() setValues: &swap_limit forParameter: (NSOpenGLContextParameter)nsOpenGLCPSwapLimit ];

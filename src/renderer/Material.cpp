@@ -68,6 +68,30 @@ typedef struct mtrParsingData_s {
 	bool			forceOverlays;
 } mtrParsingData_t;
 
+// `glslPrograms` is an authored material-capability condition, while
+// glConfig.GLSLProgramAvailable also advertises the OpenGL renderer's broad
+// post-processing and modern-feature surface. Vulkan implements the stock
+// material-program families natively without claiming those unrelated paths.
+static bool R_MaterialGLSLProgramsAvailable() {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	return true;
+#else
+	return glConfig.GLSLProgramAvailable;
+#endif
+}
+
+// Like glslPrograms, fragmentPrograms is an authored material capability.
+// Vulkan supplies native implementations for the stock ARB/FP20 material
+// families, so declarations must select their programmable branch even
+// though no OpenGL ARB program capability is advertised by this backend.
+static bool R_MaterialFragmentProgramsAvailable() {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	return true;
+#else
+	return glConfig.ARBFragmentProgramAvailable;
+#endif
+}
+
 struct q4ImplicitGuiAtlasMaterialPrefix_t {
 	const char *prefix;
 	int length;
@@ -858,7 +882,7 @@ int idMaterial::ParseTerm( idLexer &src ) {
 		return EXP_REG_GLOBAL7;
 	}
 	if ( !token.Icmp( "fragmentPrograms" ) ) {
-		return GetExpressionConstant( (float) glConfig.ARBFragmentProgramAvailable );
+		return GetExpressionConstant( R_MaterialFragmentProgramsAvailable() ? 1.0f : 0.0f );
 	}
 	if ( !token.Icmp( "glslPrograms" ) ) {
 		// Retail Quake 4 keeps glslPrograms as a runtime capability opcode so
@@ -1335,6 +1359,14 @@ void idMaterial::ParseFragmentMap( idLexer &src, newShaderStage_t *newStage ) {
 		}
 		if ( !token.Icmp( "mirroredrepeat" ) ) {
 			trp = TR_MIRRORED_REPEAT;
+			continue;
+		}
+		// NV_texture_shader's DSDT qualifier selected a signed two-channel
+		// displacement texture format. Modern backends sample the authored
+		// image directly; retain the bump-map usage hint and consume the
+		// qualifier so it cannot be mistaken for the image program.
+		if ( !token.Icmp( "dsdt" ) ) {
+			td = TD_BUMP;
 			continue;
 		}
 		if ( !token.Icmp( "forceHighQuality" ) ) {
@@ -2312,6 +2344,15 @@ void idMaterial::ParseStage( idLexer &src, const textureRepeat_t trpDefault ) {
 			}
 			continue;
 		}
+		// Quake 4's NV20 guide fallback spells the fragment-program
+		// directive fp20Program. It has the same material-stage role and
+		// binding ABI as fragmentProgram on modern renderers.
+		if ( !token.Icmp( "fp20Program" ) ) {
+			if ( src.ReadTokenOnLine( &token ) ) {
+				newStage.fragmentProgram = R_FindARBProgram( GL_FRAGMENT_PROGRAM_ARB, token.c_str() );
+			}
+			continue;
+		}
 		if ( !token.Icmp( "vertexProgram" ) ) {
 			if ( src.ReadTokenOnLine( &token ) ) {
 				newStage.vertexProgram = R_FindARBProgram( GL_VERTEX_PROGRAM_ARB, token.c_str() );
@@ -3022,7 +3063,12 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 	// in temporary form
 	if ( cullType == CT_TWO_SIDED ) {
 		for ( i = 0 ; i < numStages ; i++ ) {
-			if ( pd->parseStages[i].lighting != SL_AMBIENT || pd->parseStages[i].texture.texgen != TG_EXPLICIT ) {
+			const newShaderStage_t *newStage = pd->parseStages[i].newStage;
+			const bool customLighting =
+				newStage != NULL && newStage->customLighting;
+			if ( pd->parseStages[i].lighting != SL_AMBIENT
+					|| pd->parseStages[i].texture.texgen != TG_EXPLICIT
+					|| customLighting ) {
 				if ( cullType == CT_TWO_SIDED ) {
 					cullType = CT_FRONT_SIDED;
 					shouldCreateBackSides = true;
@@ -3091,7 +3137,10 @@ bool idMaterial::Parse( const char *text, const int textLength ) {
 	numAmbientStages = 0;
 	int i;
 	for ( i = 0 ; i < numStages ; i++ ) {
-		if ( pd->parseStages[i].lighting == SL_AMBIENT ) {
+		const newShaderStage_t *newStage = pd->parseStages[i].newStage;
+		const bool customLighting =
+			newStage != NULL && newStage->customLighting;
+		if ( pd->parseStages[i].lighting == SL_AMBIENT && !customLighting ) {
 			numAmbientStages++;
 		}
 	}
@@ -3494,7 +3543,8 @@ void idMaterial::EvaluateRegisters( float *registers, const float shaderParms[MA
 			}
 			break;
 		case OP_TYPE_GLSL_ENABLED:
-			registers[op->c] = glConfig.GLSLProgramAvailable ? 1.0f : 0.0f;
+			registers[op->c] =
+					R_MaterialGLSLProgramsAvailable() ? 1.0f : 0.0f;
 			break;
 		case OP_TYPE_GT:
 			registers[op->c] = registers[ op->a ] > registers[op->b];
@@ -3606,7 +3656,8 @@ void idMaterial::EvaluateStageRegisters( int stageIndex, float *registers,
 			registers[op->c] = 0.0f;
 			break;
 		case OP_TYPE_GLSL_ENABLED:
-			registers[op->c] = glConfig.GLSLProgramAvailable ? 1.0f : 0.0f;
+			registers[op->c] =
+					R_MaterialGLSLProgramsAvailable() ? 1.0f : 0.0f;
 			break;
 		case OP_TYPE_GT:
 			registers[op->c] = registers[ op->a ] > registers[op->b];
@@ -3989,7 +4040,7 @@ bool idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting( const float 
 
 bool R_MaterialCustomGLSLReceiverHelperSelfTest( void ) {
 	float shaderRegisters[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
-	idImage *fakeImage = (idImage *)1;
+	idImage *fakeImage = reinterpret_cast< idImage * >( static_cast<uintptr_t>( 1 ) );
 
 	newShaderStage_t customLightingStage;
 	memset( &customLightingStage, 0, sizeof( customLightingStage ) );

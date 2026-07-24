@@ -29,11 +29,12 @@ layout(push_constant) uniform CasterPushConstants {
     vec4 depthRow;   // x: zA, y: zB (clip z = zA*z_eye + zB*w_eye), z: far envelope
     vec4 alphaS;     // alpha-test texture matrix S row; z = slope-scale depth factor
     vec4 alphaT;     // alpha-test texture matrix T row; z = constant depth offset
-    vec4 params;     // x: alpha mode (0 off, 1 greater, -1 less, 2 equal), y: alphaRef, z: alphaScale
+    vec4 params;     // x: alpha mode, y: alphaRef, z: alphaScale, w: alpha-hash mode/seed
 } pc;
 
 layout(location = 0) out vec2 vAlphaTexCoord;
 layout(location = 1) out vec3 vPointShadowVector;
+layout(location = 2) out vec3 vAlphaHashCoord;
 
 void main() {
     vec4 position = vec4(inPosition, 1.0);
@@ -43,5 +44,7 @@ void main() {
     vAlphaTexCoord = vec2(dot(texCoord, pc.alphaS), dot(texCoord, pc.alphaT));
     vec4 viewPos = pc.mvp * position;
     vPointShadowVector = viewPos.xyz;
+    // Shared across all six faces, unlike face-view coordinates.
+    vAlphaHashCoord = inPosition;
     gl_Position = vec4(viewPos.xy, pc.depthRow.x * viewPos.z + pc.depthRow.y * viewPos.w, -viewPos.z);
 }

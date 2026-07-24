@@ -5,6 +5,8 @@
 #include "Simd_generic.h"
 #include "Simd_SSE2.h"
 
+#include <stdint.h>
+
 
 idSIMDProcessor	*	processor = NULL;			// pointer to SIMD processor
 idSIMDProcessor *	generic = NULL;				// pointer to generic SIMD implementation
@@ -107,34 +109,28 @@ void idSIMD::Shutdown( void ) {
 #define COUNT		1024		// data count
 #define NUMTESTS	2048		// number of tests
 
-#define RANDOM_SEED		1013904223L	//((int)idLib::sys->GetClockTicks())
+#define RANDOM_SEED		1013904223	//((int)idLib::sys->GetClockTicks())
+
+#define TIME_TYPE int64_t
 
 idSIMDProcessor *p_simd;
 idSIMDProcessor *p_generic;
-long baseClocks = 0;
+TIME_TYPE baseClocks = 0;
 
 #ifdef _WINDOWS
-
-#define TIME_TYPE int
-
-#pragma warning(disable : 4731)     // frame pointer register 'ebx' modified by inline assembly code
-
-long saved_ebx = 0;
 
 #define StartRecordTime( start )			\
 	{										\
 		LARGE_INTEGER li;					\
 		QueryPerformanceCounter( &li );		\
-		start = (double ) li.LowPart + (double) 0xFFFFFFFF * li.HighPart;	\
-		start *= 64; /* 50 MHz */			\
+		start = static_cast<TIME_TYPE>( li.QuadPart );	\
 	}
 
 #define StopRecordTime( end )				\
 	{										\
 		LARGE_INTEGER li;					\
 		QueryPerformanceCounter( &li );		\
-		end = (double ) li.LowPart + (double) 0xFFFFFFFF * li.HighPart;	\
-		end *= 64; /* 50 MHz */				\
+		end = static_cast<TIME_TYPE>( li.QuadPart );	\
 	}
 
 #elif defined(MACOS_X)
@@ -146,8 +142,6 @@ long saved_ebx = 0;
 #include <mach/mach_time.h>
 
 double ticksPerNanosecond;
-
-#define TIME_TYPE uint64_t
 
 /*
 
@@ -240,8 +234,6 @@ TIME_TYPE time_in_millisec( void ) {
 
 #else
 
-#define TIME_TYPE int
-
 #define StartRecordTime( start )			\
 	start = 0;
 
@@ -261,7 +253,7 @@ TIME_TYPE time_in_millisec( void ) {
 PrintClocks
 ============
 */
-void PrintClocks( char *string, int dataCount, int clocks, int otherClocks = 0 ) {
+void PrintClocks( char *string, int dataCount, TIME_TYPE clocks, TIME_TYPE otherClocks = 0 ) {
 	int i;
 
 	idLib::common->Printf( "%s", string );
@@ -274,10 +266,10 @@ void PrintClocks( char *string, int dataCount, int clocks, int otherClocks = 0 )
 	clocks -= baseClocks;
 	if ( otherClocks ) {
 		otherClocks -= baseClocks;
-		int p = (int) ( (float) ( otherClocks - clocks ) * 100.0f / (float) otherClocks );
-		idLib::common->Printf( "c = %4d, clcks = %5d, %d%%\n", dataCount, clocks, p );
+		const int p = ( otherClocks != 0 ) ? static_cast<int>( static_cast<double>( otherClocks - clocks ) * 100.0 / static_cast<double>( otherClocks ) ) : 0;
+		idLib::common->Printf( "c = %4d, clcks = %5lld, %d%%\n", dataCount, static_cast<long long>( clocks ), p );
 	} else {
-		idLib::common->Printf( "c = %4d, clcks = %5d\n", dataCount, clocks );
+		idLib::common->Printf( "c = %4d, clcks = %5lld\n", dataCount, static_cast<long long>( clocks ) );
 	}
 }
 
@@ -287,7 +279,8 @@ GetBaseClocks
 ============
 */
 void GetBaseClocks( void ) {
-	int i, start, end, bestClocks;
+	int i;
+	TIME_TYPE start, end, bestClocks;
 
 	bestClocks = 0;
 	for ( i = 0; i < NUMTESTS; i++ ) {

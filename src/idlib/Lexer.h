@@ -246,10 +246,10 @@ public:
 
 	static void		SetBaseFolder(char const * const);
 
-// RAVEN BEGIN
+	// RAVEN BEGIN
 					// write a binary representation of a token
 	void			WriteBinaryToken(idToken *tok);
-	static void		WriteBinaryFile(char const * const filename);
+	static void		WriteBinaryFile(char const * const filename, bool OSPath = false);
 // RAVEN END
 
 // RAVEN BEGIN

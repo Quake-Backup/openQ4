@@ -2,6 +2,8 @@
 #ifndef __MATH_MATH_H__
 #define __MATH_MATH_H__
 
+#include <stdint.h>
+
 /*
 ===============================================================================
 
@@ -234,7 +236,7 @@ public:
 	static float				Rint( float f );			// returns the nearest integer
 	static int					Ftoi( float f );			// float to int conversion
 	static int					FtoiFast( float f );		// fast float to int conversion but uses current FPU round mode (default round nearest)
-	static unsigned long		Ftol(float f);			// float to long conversion
+	static uint32_t			Ftol( float f );		// float to 32-bit unsigned conversion
 	static byte					Ftob( float f );			// float to byte conversion, the result is clamped to the range [0-255]
 
 // jmarshall
@@ -1055,8 +1057,8 @@ ID_INLINE int idMath::FloatHash( const float *array, const int numFloats ) {
 	return hash;
 }
 
-ID_INLINE unsigned long idMath::Ftol(float f) {
-	return (unsigned long)f;
+ID_INLINE uint32_t idMath::Ftol( float f ) {
+	return static_cast<uint32_t>( f );
 }
 
 /*

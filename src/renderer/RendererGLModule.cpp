@@ -206,8 +206,10 @@ bool Sys_IsThreadStopRequested( const xthreadInfo &info ) {
 #if defined( _WIN32 )
 
 void Sys_CreateThread( xthread_t function, void *parms, xthreadPriority priority, xthreadInfo &info, const char *name, xthreadInfo *threads[MAX_THREADS], int *thread_count ) {
-	HANDLE temp = CreateThread( NULL, 0, ( LPTHREAD_START_ROUTINE )function, parms, 0, &info.threadId );
+	DWORD threadId = 0;
+	HANDLE temp = CreateThread( NULL, 0, ( LPTHREAD_START_ROUTINE )function, parms, 0, &threadId );
 	info.threadHandle = reinterpret_cast<uintptr_t>( temp );
+	info.threadId = static_cast<uint32_t>( threadId );
 	info.stopRequested = false;
 	if ( priority == THREAD_HIGHEST ) {
 		SetThreadPriority( reinterpret_cast<HANDLE>( info.threadHandle ), THREAD_PRIORITY_HIGHEST );
@@ -246,18 +248,19 @@ void Sys_DestroyThread( xthreadInfo &info ) {
 
 typedef void *( *rgmPthreadFunction_t )( void * );
 
+static_assert( sizeof( pthread_t ) <= sizeof( uintptr_t ),
+	"xthreadInfo::threadHandle cannot represent pthread_t on this platform" );
+
 static uintptr_t RGM_PThreadToHandle( pthread_t thread ) {
 	uintptr_t handle = 0;
-	const size_t copyBytes = sizeof( handle ) < sizeof( thread ) ? sizeof( handle ) : sizeof( thread );
-	memcpy( &handle, &thread, copyBytes );
+	memcpy( &handle, &thread, sizeof( thread ) );
 	return handle;
 }
 
 static pthread_t RGM_HandleToPThread( uintptr_t handle ) {
 	pthread_t thread;
 	memset( &thread, 0, sizeof( thread ) );
-	const size_t copyBytes = sizeof( handle ) < sizeof( thread ) ? sizeof( handle ) : sizeof( thread );
-	memcpy( &thread, &handle, copyBytes );
+	memcpy( &thread, &handle, sizeof( thread ) );
 	return thread;
 }
 

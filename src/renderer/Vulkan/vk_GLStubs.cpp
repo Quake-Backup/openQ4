@@ -27,6 +27,8 @@
 
 #include "../tr_local.h"
 
+bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixels );
+
 void glAccum(GLenum op, GLfloat value){};
 void glAlphaFunc(GLenum func, GLclampf ref){};
 GLboolean glAreTexturesResident(GLsizei n, const GLuint *textures, GLboolean *residences){return GL_FALSE;};
@@ -275,7 +277,15 @@ void glRasterPos4iv(const GLint *v){};
 void glRasterPos4s(GLshort x, GLshort y, GLshort z, GLshort w){};
 void glRasterPos4sv(const GLshort *v){};
 void glReadBuffer(GLenum mode){};
-void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels){};
+void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels){
+	if ( format == GL_RGB && type == GL_UNSIGNED_BYTE ) {
+		if ( !VK_GuiExecutor_ReadPixels( x, y, width, height, pixels ) ) {
+			common->Warning( "Vulkan glReadPixels failed for %d x %d capture", width, height );
+		}
+		return;
+	}
+	common->Warning( "Vulkan glReadPixels does not support format 0x%x/type 0x%x", format, type );
+};
 void glRectd(GLdouble x1, GLdouble y1, GLdouble x2, GLdouble y2){};
 void glRectdv(const GLdouble *v1, const GLdouble *v2){};
 void glRectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2){};

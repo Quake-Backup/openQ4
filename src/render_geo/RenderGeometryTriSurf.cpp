@@ -413,6 +413,20 @@ void R_ReallyFreeStaticTriSurf( srfTriangles_t *tri ) {
 	}
 #endif
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	// Dynamic packed MD5R surfaces own their materialized draw-index buffer,
+	// even though deformedSurface keeps silhouette/deform arrays externally
+	// owned. Release that one owned allocation without changing the ownership
+	// contract for the remaining deformed-surface pointers.
+	if ( tri->deformedSurface && tri->primBatchMesh != NULL && tri->indexes != NULL && tri->numAllocedIndices > 0 ) {
+		if ( tri->ambientSurface == NULL || tri->indexes != tri->ambientSurface->indexes ) {
+			triIndexAllocator.Free( tri->indexes );
+		}
+		tri->indexes = NULL;
+		tri->numAllocedIndices = 0;
+	}
+#endif
+
 	if ( !tri->deformedSurface ) {
 		if ( tri->indexes != NULL ) {
 			// if a surface is completely inside a light volume R_CreateLightTris points tri->indexes at the indexes of the ambient surface
@@ -2401,4 +2415,3 @@ int R_DeformInfoMemoryUsed( deformInfo_t *deformInfo ) {
 	total += sizeof( *deformInfo );
 	return total;
 }
-

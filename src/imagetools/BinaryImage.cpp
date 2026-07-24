@@ -742,8 +742,7 @@ void idBinaryImage::GetGeneratedFileName( idStr & gfn, const char *name ) {
 	idStr prefix;
 	R_BinaryImageSanitizedPrefix( prefix, normalizedName );
 
-	const unsigned long crc = CRC32_BlockChecksum( normalizedName.c_str(), normalizedName.Length() );
-	gfn = va( "generated/images/_programs/%s_%08lx.bimage", prefix.c_str(), crc );
+	const uint32_t crc = CRC32_BlockChecksum( normalizedName.c_str(), normalizedName.Length() );
+	gfn = va( "generated/images/_programs/%s_%08x.bimage", prefix.c_str(), static_cast<unsigned int>( crc ) );
 }
-
 

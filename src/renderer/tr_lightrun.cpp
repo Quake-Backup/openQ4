@@ -641,5 +641,5 @@ void R_RegenerateWorld_f( const idCmdArgs &args ) {
 
 	R_ReCreateWorldReferences();
 
-	common->Printf( "Regenerated world, staticAllocCount = %i.\n", tr.staticAllocCount );
+	common->Printf( "Regenerated world, staticAllocCount = %zu.\n", tr.staticAllocCount );
 }

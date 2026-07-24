@@ -28,6 +28,7 @@
 #pragma hdrstop
 
 #include "../tr_local.h"
+#include "../Model_local.h"
 #include "../RenderModuleAPI.h"
 
 #undef snprintf
@@ -65,6 +66,7 @@ void VK_Fog_DrawAllLights( const viewDef_t *viewDef );
 // suspended for the shadow atlas caster pass and resumed with loadOp LOAD
 bool VK_Exec_BeginMainRendering( bool clearColorDepth );
 void VK_Exec_EndMainRendering( void );
+bool VK_GuiExecutor_EndFrameAndPresent( void );
 
 // no module-owned vertex-cache GPU state exists: the engine cache runs
 // CPU-backed under Vulkan and the executor streams into its own rings
@@ -81,15 +83,23 @@ Executor state
 static const int VK_VERTEX_RING_BYTES = 32 * 1024 * 1024;
 static const int VK_INDEX_RING_BYTES = 8 * 1024 * 1024;
 static const int VK_MAX_GUI_PIPELINES = 64;
+static const int VK_MAX_SCREEN_PIPELINES = 64;
 static const int VK_MAX_CUBE_PIPELINES = 32;
-static const int VK_MAX_BLEND_LIGHT_PIPELINES = 16;
+static const int VK_MAX_ENV_PIPELINES = 32;
+static const int VK_MAX_PROGRAM_PIPELINES = 128;
+static const int VK_MAX_BLEND_LIGHT_PIPELINES = 32;
+static const int VK_MAX_SPECIAL_PIPELINES = 64;
 static const int VK_MAX_DESCRIPTOR_SETS = 4096;
-// per-draw interaction blocks stream through a dynamic uniform ring;
-// slices align to 256 (the guaranteed minUniformBufferOffsetAlignment
-// ceiling) and the descriptor range is one slice, not WHOLE_SIZE, so the
-// effective range stays under maxUniformBufferRange everywhere
-static const int VK_UNIFORM_RING_BYTES = 2 * 1024 * 1024;
+// Descriptor sets displaced by a generation change during command recording
+// cannot be rewritten until the slot fence completes.
+static const int VK_MAX_RETIRED_SETS = 128;
+// Per-draw blocks share one dynamic uniform ring. Ordinary interaction
+// blocks retain their 256-byte range; the projected CSM block gets a
+// shadow-only 512-byte range. Dynamic offsets use the device-reported
+// alignment rather than assuming 256.
+static const int VK_UNIFORM_RING_BYTES = 4 * 1024 * 1024;
 static const int VK_UNIFORM_SLICE_BYTES = 256;
+static const int VK_SHADOW_UNIFORM_SLICE_BYTES = 512;
 
 typedef struct vkRing_s {
 	VkBuffer		buffer;
@@ -99,16 +109,48 @@ typedef struct vkRing_s {
 	int				cursor;
 } vkRing_t;
 
+typedef struct vkPipelineTarget_s {
+	VkFormat			colorFormat;
+	VkFormat			depthFormat;
+	VkFormat			stencilFormat;
+	VkSampleCountFlagBits samples;
+} vkPipelineTarget_t;
+
 typedef struct vkGuiPipeline_s {
-	int				blendBits;		// GLS src|dst blend bits
+	int				stateBits;		// GLS blend + per-channel write masks
+	bool			separateColor;	// tightly-packed RGBA8 stream on binding 1
+	vkPipelineTarget_t target;
 	VkPipeline		pipeline;
 } vkGuiPipeline_t;
 
+typedef struct vkProgramPipeline_s {
+	int				family;			// ARB family, or 0x100 + vkGLSLProgramFamily_t
+	int				stateBits;		// GLS blend + per-channel write masks
+	bool			separateColor;	// stage-specific decal color stream on binding 1
+	vkPipelineTarget_t target;
+	VkPipeline		pipeline;
+} vkProgramPipeline_t;
+
 typedef struct vkCubePipeline_s {
-	int				blendBits;		// GLS src|dst blend bits
+	int				stateBits;		// GLS blend + per-channel write masks
 	bool			dirFromNormal;	// TG_DIFFUSE_CUBE: dir attribute reads the idDrawVert normal
+	vkPipelineTarget_t target;
 	VkPipeline		pipeline;
 } vkCubePipeline_t;
+
+enum vkSpecialPipelineKind_t {
+	VK_SPECIAL_INTERACTION,
+	VK_SPECIAL_SHADOW_INTERACTION,
+	VK_SPECIAL_POINT_SHADOW_INTERACTION,
+	VK_SPECIAL_STENCIL_SHADOW,
+	VK_SPECIAL_FOG
+};
+
+typedef struct vkSpecialPipeline_s {
+	vkSpecialPipelineKind_t kind;
+	vkPipelineTarget_t target;
+	VkPipeline		pipeline;
+} vkSpecialPipeline_t;
 
 typedef struct vkGuiPushConstants_s {
 	float			mvp[ 16 ];
@@ -117,6 +159,13 @@ typedef struct vkGuiPushConstants_s {
 	float			texMatrixT[ 4 ];
 	float			params[ 4 ];	// x: vertexColorMode, y: alphaTest, z: alphaTestRef, w: texMatrix enable
 } vkGuiPushConstants_t;
+
+typedef struct vkBumpyEnvironmentBlock_s {
+	float			localViewOrigin[ 4 ];
+	float			modelRow0[ 4 ];
+	float			modelRow1[ 4 ];
+	float			modelRow2[ 4 ];
+} vkBumpyEnvironmentBlock_t;
 
 typedef struct vkDescriptorCacheEntry_s {
 	VkDescriptorSet	set;
@@ -142,8 +191,27 @@ typedef struct vkGuiExecutor_s {
 
 	VkShaderModule		vertModule;
 	VkShaderModule		fragModule;
+	VkShaderModule		screenVertModule;
+	VkShaderModule		screenFragModule;
 	VkShaderModule		skyVertModule;
 	VkShaderModule		skyFragModule;
+	VkShaderModule		envVertModule;
+	VkShaderModule		envFragModule;
+	VkShaderModule		bumpyEnvVertModule;
+	VkShaderModule		bumpyEnvFragModule;
+	VkShaderModule		heatHazeVertModule;
+	VkShaderModule		heatHazeFragModule;
+	VkShaderModule		heatHazeMaskFragModule;
+	VkShaderModule		heatHazeVertexVertModule;
+	VkShaderModule		heatHazeMaskVertexFragModule;
+	VkShaderModule		monochromeVertModule;
+	VkShaderModule		monochromeFragModule;
+	VkShaderModule		glassWarpVertModule;
+	VkShaderModule		glassWarpFragModule;
+	VkShaderModule		refractiveGlassVertModule;
+	VkShaderModule		refractiveGlassFragModule;
+	VkShaderModule		glslMaterialVertModules[ VK_GLSL_PROGRAM_FAMILY_COUNT ];
+	VkShaderModule		glslMaterialFragModules[ VK_GLSL_PROGRAM_FAMILY_COUNT ];
 	VkShaderModule		interactionVertModule;
 	VkShaderModule		interactionFragModule;
 	VkShaderModule		interactionShadowVertModule;
@@ -175,17 +243,20 @@ typedef struct vkGuiExecutor_s {
 	// fog/blend lights: 2 single-combined-sampler sets (0=fog/projection,
 	// 1=fogEnter/falloff) + set 2 dynamic UBO (blend-light block ring)
 	VkPipelineLayout	fogBlendPipelineLayout;
-	VkPipeline			interactionPipeline;	// lazily built; ONE/ONE additive
-	VkPipeline			shadowInteractionPipeline;	// lazily built; ONE/ONE additive + atlas sampling
-	VkPipeline			pointShadowInteractionPipeline;	// lazily built; ONE/ONE additive + cube compare sampling
 	VkPipeline			casterPipeline;			// lazily built; depth-only atlas caster
 	VkPipeline			pointCasterPipeline;	// lazily built; depth-only cube-face caster
-	VkPipeline			stencilShadowPipeline;	// lazily built; stencil shadow volumes (color writes off)
-	VkPipeline			fogPipeline;			// lazily built; fog lights (SRC_ALPHA/ONE_MINUS_SRC_ALPHA)
+	vkSpecialPipeline_t	specialPipelines[ VK_MAX_SPECIAL_PIPELINES ];
+	int					numSpecialPipelines;
 	vkGuiPipeline_t		pipelines[ VK_MAX_GUI_PIPELINES ];
 	int					numPipelines;
+	vkGuiPipeline_t		screenPipelines[ VK_MAX_SCREEN_PIPELINES ];
+	int					numScreenPipelines;
 	vkCubePipeline_t	cubePipelines[ VK_MAX_CUBE_PIPELINES ];
 	int					numCubePipelines;
+	vkGuiPipeline_t		envPipelines[ VK_MAX_ENV_PIPELINES ];
+	int					numEnvPipelines;
+	vkProgramPipeline_t	programPipelines[ VK_MAX_PROGRAM_PIPELINES ];
+	int					numProgramPipelines;
 	vkGuiPipeline_t		blendLightPipelines[ VK_MAX_BLEND_LIGHT_PIPELINES ];	// per light-stage blend bits
 	int					numBlendLightPipelines;
 	VkFormat			pipelineTargetFormat;	// swapchain format the pipelines were built for
@@ -195,9 +266,11 @@ typedef struct vkGuiExecutor_s {
 	vkRing_t			uniformRings[ VK_FRAMES_IN_FLIGHT ];
 	VkDescriptorSet		uniformRingSets[ VK_FRAMES_IN_FLIGHT ];
 	VkDescriptorSet		shadowSets[ VK_FRAMES_IN_FLIGHT ];
-	bool				shadowSetsHaveAtlas;	// binding 0 written with a live atlas view
+	bool				shadowSetsHaveAtlas;	// compare + raw bindings written with a live atlas view
 
 	vkDescriptorCacheEntry_t descriptorCache[ 4096 ];	// parallel to the image table
+	VkDescriptorSet		retiredSets[ VK_FRAMES_IN_FLIGHT ][ VK_MAX_RETIRED_SETS ];
+	int					numRetiredSets[ VK_FRAMES_IN_FLIGHT ];
 
 	// frame-in-progress state
 	bool				frameOpen;
@@ -207,12 +280,47 @@ typedef struct vkGuiExecutor_s {
 	VkCommandBuffer		cmd;
 	float				clearColor[ 4 ];
 	int					boundVertexOffset;	// binding-0 ring offset of the last VK_Exec_BindTriGeometry
+	idRenderTexture *	activeRenderTexture;
+	vkImageEntry_t *	activeColorEntry;
+	vkImageEntry_t *	activeDepthEntry;
+	VkImageView			activeDepthAttachmentView;
+	VkExtent2D			activeExtent;
+	vkPipelineTarget_t	activePipelineTarget;
+	const viewDef_t *	pendingSpecialEffectsView;
+	int					pendingSpecialEffectsMask;
+	idRenderTexture *	pendingSpecialEffectsSource;
+	bool				pendingSpecialEffectsNeedsResolve;
 
 	vkVertUpload_t		vertMemo[ VK_TRI_MEMO_SIZE ];
 	vkIdxUpload_t		idxMemo[ VK_TRI_MEMO_SIZE ];
 } vkGuiExecutor_t;
 
 static vkGuiExecutor_t vkExec;
+
+static vkPipelineTarget_t VK_Exec_SwapchainPipelineTarget( void ) {
+	vkPipelineTarget_t target;
+	target.colorFormat = vkCtx.swapchainFormat;
+	target.depthFormat = vkCtx.depthFormat;
+	target.stencilFormat = vkCtx.depthFormat;
+	target.samples = VK_SAMPLE_COUNT_1_BIT;
+	return target;
+}
+
+static const vkPipelineTarget_t &VK_Exec_CurrentPipelineTarget( void ) {
+	if ( vkExec.frameOpen && vkExec.activePipelineTarget.colorFormat != VK_FORMAT_UNDEFINED ) {
+		return vkExec.activePipelineTarget;
+	}
+	static vkPipelineTarget_t swapchainTarget;
+	swapchainTarget = VK_Exec_SwapchainPipelineTarget();
+	return swapchainTarget;
+}
+
+static bool VK_Exec_PipelineTargetsMatch( const vkPipelineTarget_t &a, const vkPipelineTarget_t &b ) {
+	return a.colorFormat == b.colorFormat
+			&& a.depthFormat == b.depthFormat
+			&& a.stencilFormat == b.stencilFormat
+			&& a.samples == b.samples;
+}
 
 /*
 ====================
@@ -262,15 +370,46 @@ static bool VK_Ring_Create( vkRing_t &ring, int capacity, VkBufferUsageFlags usa
 	return true;
 }
 
-static int VK_Ring_Alloc( vkRing_t &ring, const void *data, int bytes, int alignment ) {
-	int offset = ( ring.cursor + alignment - 1 ) & ~( alignment - 1 );
-	if ( offset + bytes > ring.capacity ) {
-		common->Warning( "Vulkan: frame geometry ring overflow (%d + %d > %d)", offset, bytes, ring.capacity );
+static int VK_Ring_Alloc( vkRing_t &ring, const void *data, size_t bytes, int alignment ) {
+	if ( data == NULL || ring.mapped == NULL || bytes == 0 || ring.capacity <= 0 ||
+			ring.cursor < 0 || ring.cursor > ring.capacity || alignment <= 0 ||
+			( alignment & ( alignment - 1 ) ) != 0 ) {
+		common->Warning( "Vulkan: invalid frame geometry ring allocation" );
+		return -1;
+	}
+
+	const size_t capacity = static_cast<size_t>( ring.capacity );
+	const size_t alignmentMask = static_cast<size_t>( alignment - 1 );
+	const size_t offset = ( static_cast<size_t>( ring.cursor ) + alignmentMask ) & ~alignmentMask;
+	if ( offset > capacity || bytes > capacity - offset ) {
+		common->Warning( "Vulkan: frame geometry ring overflow (%zu + %zu > %zu)", offset, bytes, capacity );
 		return -1;
 	}
 	memcpy( ring.mapped + offset, data, bytes );
-	ring.cursor = offset + bytes;
-	return offset;
+	const VkResult flushResult = vmaFlushAllocation(
+			vkCtx.allocator, ring.allocation, (VkDeviceSize)offset,
+			(VkDeviceSize)bytes );
+	if ( flushResult != VK_SUCCESS ) {
+		common->Warning( "Vulkan: frame geometry ring flush failed (%d)",
+				(int)flushResult );
+		return -1;
+	}
+	ring.cursor = static_cast<int>( offset + bytes );
+	return static_cast<int>( offset );
+}
+
+static int VK_Exec_UniformSliceAlignment( const int sliceBytes ) {
+	VkDeviceSize alignment =
+			vkCtx.deviceProperties.limits.minUniformBufferOffsetAlignment;
+	if ( alignment < (VkDeviceSize)sliceBytes ) {
+		alignment = (VkDeviceSize)sliceBytes;
+	}
+	if ( alignment == 0 || alignment > (VkDeviceSize)INT_MAX ) {
+		return 0;
+	}
+	const int intAlignment = (int)alignment;
+	return ( intAlignment & ( intAlignment - 1 ) ) == 0
+			? intAlignment : 0;
 }
 
 /*
@@ -312,14 +451,15 @@ static VkBlendFactor VK_BlendFactorFromGLSDst( int bits ) {
 // modules, vertex input, and pipeline layout is identical (dynamic
 // depth/cull/bias/stencil state, blend from the GLS bits, dynamic rendering
 // against the swapchain + depth formats). depthOnly pipelines target the
-// shadow atlas: zero color attachments, same depth/stencil format (the
-// atlas reuses vkCtx.depthFormat). colorWriteOff keeps the swapchain color
+// shadow atlas: zero color attachments and the separately probed sampled
+// shadow-depth format. colorWriteOff keeps the swapchain color
 // attachment but masks every channel (GLS_COLORMASK|GLS_ALPHAMASK for the
 // stencil shadow volumes) — the write mask is not dynamic without EDS3, so
 // it is a pipeline-level variant
 static VkPipeline VK_Exec_CreatePipeline( VkShaderModule vertModule, VkShaderModule fragModule,
 		const VkPipelineVertexInputStateCreateInfo *vertexInput, int blendBits, VkPipelineLayout layout,
-		bool depthOnly, bool colorWriteOff ) {
+		bool depthOnly, bool colorWriteOff, const vkPipelineTarget_t &target,
+		bool enableDepthClamp = false ) {
 	VkPipelineShaderStageCreateInfo stages[ 2 ];
 	memset( stages, 0, sizeof( stages ) );
 	stages[ 0 ].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -349,17 +489,28 @@ static VkPipeline VK_Exec_CreatePipeline( VkShaderModule vertModule, VkShaderMod
 	raster.cullMode = VK_CULL_MODE_NONE;	// 2D
 	raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	raster.lineWidth = 1.0f;
+	raster.depthClampEnable = enableDepthClamp ? VK_TRUE : VK_FALSE;
 
 	VkPipelineMultisampleStateCreateInfo multisample;
 	memset( &multisample, 0, sizeof( multisample ) );
 	multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	multisample.rasterizationSamples = target.samples;
 
 	VkPipelineColorBlendAttachmentState blendAttachment;
 	memset( &blendAttachment, 0, sizeof( blendAttachment ) );
 	if ( !colorWriteOff ) {
-		blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-				| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		if ( !( blendBits & GLS_REDMASK ) ) {
+			blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
+		}
+		if ( !( blendBits & GLS_GREENMASK ) ) {
+			blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
+		}
+		if ( !( blendBits & GLS_BLUEMASK ) ) {
+			blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
+		}
+		if ( !( blendBits & GLS_ALPHAMASK ) ) {
+			blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
+		}
 	}
 	const VkBlendFactor srcFactor = VK_BlendFactorFromGLSSrc( blendBits );
 	const VkBlendFactor dstFactor = VK_BlendFactorFromGLSDst( blendBits );
@@ -388,7 +539,7 @@ static VkPipeline VK_Exec_CreatePipeline( VkShaderModule vertModule, VkShaderMod
 	// reference are core 1.0; the interaction pipelines can then toggle
 	// per-light stencil without pipeline-cache growth. The frame baseline
 	// (VK_Exec_BeginMainRendering) latches all five before any draw.
-	VkDynamicState dynamicStates[ 14 ] = {
+	VkDynamicState dynamicStates[ 16 ] = {
 		VK_DYNAMIC_STATE_VIEWPORT,
 		VK_DYNAMIC_STATE_SCISSOR,
 		VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
@@ -404,10 +555,15 @@ static VkPipeline VK_Exec_CreatePipeline( VkShaderModule vertModule, VkShaderMod
 		VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
 		VK_DYNAMIC_STATE_STENCIL_REFERENCE,
 	};
+	uint32_t dynamicStateCount = 14;
+	if ( vkCtx.depthBoundsSupported ) {
+		dynamicStates[ dynamicStateCount++ ] = VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE;
+		dynamicStates[ dynamicStateCount++ ] = VK_DYNAMIC_STATE_DEPTH_BOUNDS;
+	}
 	VkPipelineDynamicStateCreateInfo dynamicState;
 	memset( &dynamicState, 0, sizeof( dynamicState ) );
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = 14;
+	dynamicState.dynamicStateCount = dynamicStateCount;
 	dynamicState.pDynamicStates = dynamicStates;
 
 	VkPipelineDepthStencilStateCreateInfo depthStencil;
@@ -419,9 +575,9 @@ static VkPipeline VK_Exec_CreatePipeline( VkShaderModule vertModule, VkShaderMod
 	memset( &rendering, 0, sizeof( rendering ) );
 	rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	rendering.colorAttachmentCount = depthOnly ? 0 : 1;
-	rendering.pColorAttachmentFormats = depthOnly ? NULL : &vkCtx.swapchainFormat;
-	rendering.depthAttachmentFormat = vkCtx.depthFormat;
-	rendering.stencilAttachmentFormat = vkCtx.depthFormat;
+	rendering.pColorAttachmentFormats = depthOnly ? NULL : &target.colorFormat;
+	rendering.depthAttachmentFormat = target.depthFormat;
+	rendering.stencilAttachmentFormat = target.stencilFormat;
 
 	VkGraphicsPipelineCreateInfo gpci;
 	memset( &gpci, 0, sizeof( gpci ) );
@@ -447,11 +603,15 @@ static VkPipeline VK_Exec_CreatePipeline( VkShaderModule vertModule, VkShaderMod
 	return pipeline;
 }
 
-static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits ) {
-	const int blendBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS );
+static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits, bool separateColor = false ) {
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
 
 	for ( int i = 0; i < vkExec.numPipelines; i++ ) {
-		if ( vkExec.pipelines[ i ].blendBits == blendBits ) {
+		if ( vkExec.pipelines[ i ].stateBits == pipelineBits
+				&& vkExec.pipelines[ i ].separateColor == separateColor
+				&& VK_Exec_PipelineTargetsMatch( vkExec.pipelines[ i ].target, target ) ) {
 			return vkExec.pipelines[ i ].pipeline;
 		}
 	}
@@ -461,10 +621,14 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits ) {
 	}
 
 	// idDrawVert: xyz@0, color ubyte4@12, st@56 (64-byte stride)
-	VkVertexInputBindingDescription binding;
-	memset( &binding, 0, sizeof( binding ) );
-	binding.stride = sizeof( idDrawVert );
-	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	VkVertexInputBindingDescription bindings[ 2 ];
+	memset( bindings, 0, sizeof( bindings ) );
+	bindings[ 0 ].binding = 0;
+	bindings[ 0 ].stride = sizeof( idDrawVert );
+	bindings[ 0 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	bindings[ 1 ].binding = 1;
+	bindings[ 1 ].stride = 4;
+	bindings[ 1 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
 	VkVertexInputAttributeDescription attrs[ 3 ];
 	memset( attrs, 0, sizeof( attrs ) );
@@ -472,8 +636,9 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits ) {
 	attrs[ 0 ].format = VK_FORMAT_R32G32B32_SFLOAT;
 	attrs[ 0 ].offset = 0;
 	attrs[ 1 ].location = 1;
+	attrs[ 1 ].binding = separateColor ? 1 : 0;
 	attrs[ 1 ].format = VK_FORMAT_R8G8B8A8_UNORM;
-	attrs[ 1 ].offset = 12;
+	attrs[ 1 ].offset = separateColor ? 0 : 12;
 	attrs[ 2 ].location = 2;
 	attrs[ 2 ].format = VK_FORMAT_R32G32_SFLOAT;
 	attrs[ 2 ].offset = 56;
@@ -481,18 +646,85 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	memset( &vertexInput, 0, sizeof( vertexInput ) );
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInput.vertexBindingDescriptionCount = 1;
-	vertexInput.pVertexBindingDescriptions = &binding;
+	vertexInput.vertexBindingDescriptionCount = separateColor ? 2 : 1;
+	vertexInput.pVertexBindingDescriptions = bindings;
 	vertexInput.vertexAttributeDescriptionCount = 3;
 	vertexInput.pVertexAttributeDescriptions = attrs;
 
-	VkPipeline pipeline = VK_Exec_CreatePipeline( vkExec.vertModule, vkExec.fragModule, &vertexInput, blendBits, vkExec.pipelineLayout, false, false );
+	VkPipeline pipeline = VK_Exec_CreatePipeline( vkExec.vertModule, vkExec.fragModule,
+			&vertexInput, pipelineBits, vkExec.pipelineLayout, false, false, target );
 	if ( pipeline == VK_NULL_HANDLE ) {
 		return vkExec.numPipelines > 0 ? vkExec.pipelines[ 0 ].pipeline : VK_NULL_HANDLE;
 	}
-	vkExec.pipelines[ vkExec.numPipelines ].blendBits = blendBits;
+	vkExec.pipelines[ vkExec.numPipelines ].stateBits = pipelineBits;
+	vkExec.pipelines[ vkExec.numPipelines ].separateColor = separateColor;
+	vkExec.pipelines[ vkExec.numPipelines ].target = target;
 	vkExec.pipelines[ vkExec.numPipelines ].pipeline = pipeline;
 	vkExec.numPipelines++;
+	return pipeline;
+}
+
+static VkPipeline VK_GuiExecutor_GetScreenPipeline( int stateBits,
+		bool separateColor = false ) {
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+
+	for ( int i = 0; i < vkExec.numScreenPipelines; i++ ) {
+		if ( vkExec.screenPipelines[ i ].stateBits == pipelineBits
+				&& vkExec.screenPipelines[ i ].separateColor == separateColor
+				&& VK_Exec_PipelineTargetsMatch( vkExec.screenPipelines[ i ].target, target ) ) {
+			return vkExec.screenPipelines[ i ].pipeline;
+		}
+	}
+	if ( vkExec.screenVertModule == VK_NULL_HANDLE
+			|| vkExec.screenFragModule == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	if ( vkExec.numScreenPipelines >= VK_MAX_SCREEN_PIPELINES ) {
+		common->Warning( "Vulkan: screen pipeline cache exhausted" );
+		return vkExec.screenPipelines[ 0 ].pipeline;
+	}
+
+	VkVertexInputBindingDescription bindings[ 2 ];
+	memset( bindings, 0, sizeof( bindings ) );
+	bindings[ 0 ].binding = 0;
+	bindings[ 0 ].stride = sizeof( idDrawVert );
+	bindings[ 0 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	bindings[ 1 ].binding = 1;
+	bindings[ 1 ].stride = 4;
+	bindings[ 1 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription attrs[ 2 ];
+	memset( attrs, 0, sizeof( attrs ) );
+	attrs[ 0 ].location = 0;
+	attrs[ 0 ].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attrs[ 0 ].offset = (uint32_t)offsetof( idDrawVert, xyz );
+	attrs[ 1 ].location = 1;
+	attrs[ 1 ].binding = separateColor ? 1 : 0;
+	attrs[ 1 ].format = VK_FORMAT_R8G8B8A8_UNORM;
+	attrs[ 1 ].offset = separateColor ? 0 : (uint32_t)offsetof( idDrawVert, color );
+
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	memset( &vertexInput, 0, sizeof( vertexInput ) );
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInput.vertexBindingDescriptionCount = separateColor ? 2 : 1;
+	vertexInput.pVertexBindingDescriptions = bindings;
+	vertexInput.vertexAttributeDescriptionCount = 2;
+	vertexInput.pVertexAttributeDescriptions = attrs;
+
+	VkPipeline pipeline = VK_Exec_CreatePipeline( vkExec.screenVertModule,
+			vkExec.screenFragModule, &vertexInput, pipelineBits,
+			vkExec.pipelineLayout, false, false, target );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return vkExec.numScreenPipelines > 0
+				? vkExec.screenPipelines[ 0 ].pipeline : VK_NULL_HANDLE;
+	}
+	vkGuiPipeline_t &entry = vkExec.screenPipelines[ vkExec.numScreenPipelines++ ];
+	entry.stateBits = pipelineBits;
+	entry.separateColor = separateColor;
+	entry.target = target;
+	entry.pipeline = pipeline;
 	return pipeline;
 }
 
@@ -501,11 +733,14 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits ) {
 // front-end texgen's tightly packed stream on binding 1 for the skies, or
 // the idDrawVert normal straight off binding 0 for diffuse cube maps
 static VkPipeline VK_GuiExecutor_GetCubePipeline( int stateBits, bool dirFromNormal ) {
-	const int blendBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS );
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
 
 	for ( int i = 0; i < vkExec.numCubePipelines; i++ ) {
-		if ( vkExec.cubePipelines[ i ].blendBits == blendBits
-				&& vkExec.cubePipelines[ i ].dirFromNormal == dirFromNormal ) {
+		if ( vkExec.cubePipelines[ i ].stateBits == pipelineBits
+				&& vkExec.cubePipelines[ i ].dirFromNormal == dirFromNormal
+				&& VK_Exec_PipelineTargetsMatch( vkExec.cubePipelines[ i ].target, target ) ) {
 			return vkExec.cubePipelines[ i ].pipeline;
 		}
 	}
@@ -547,14 +782,87 @@ static VkPipeline VK_GuiExecutor_GetCubePipeline( int stateBits, bool dirFromNor
 	vertexInput.vertexAttributeDescriptionCount = 2;
 	vertexInput.pVertexAttributeDescriptions = attrs;
 
-	VkPipeline pipeline = VK_Exec_CreatePipeline( vkExec.skyVertModule, vkExec.skyFragModule, &vertexInput, blendBits, vkExec.pipelineLayout, false, false );
+	VkPipeline pipeline = VK_Exec_CreatePipeline( vkExec.skyVertModule, vkExec.skyFragModule,
+			&vertexInput, pipelineBits, vkExec.pipelineLayout, false, false, target );
 	if ( pipeline == VK_NULL_HANDLE ) {
 		return VK_NULL_HANDLE;
 	}
-	vkExec.cubePipelines[ vkExec.numCubePipelines ].blendBits = blendBits;
+	vkExec.cubePipelines[ vkExec.numCubePipelines ].stateBits = pipelineBits;
 	vkExec.cubePipelines[ vkExec.numCubePipelines ].dirFromNormal = dirFromNormal;
+	vkExec.cubePipelines[ vkExec.numCubePipelines ].target = target;
 	vkExec.cubePipelines[ vkExec.numCubePipelines ].pipeline = pipeline;
 	vkExec.numCubePipelines++;
+	return pipeline;
+}
+
+static void VK_Exec_InteractionVertexInput( VkVertexInputBindingDescription &binding,
+		VkVertexInputAttributeDescription attrs[ 6 ],
+		VkPipelineVertexInputStateCreateInfo &vertexInput );
+
+// TG_REFLECT_CUBE follows Quake 4's environment.vfp or, when the material
+// owns a bump stage, bumpyEnvironment.vfp with a second sampler and the
+// model-space transform block.
+static VkPipeline VK_GuiExecutor_GetEnvironmentPipeline( int stateBits, bool bumpy ) {
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+
+	for ( int i = 0; i < vkExec.numEnvPipelines; i++ ) {
+		if ( vkExec.envPipelines[ i ].stateBits == pipelineBits
+				&& vkExec.envPipelines[ i ].separateColor == bumpy
+				&& VK_Exec_PipelineTargetsMatch( vkExec.envPipelines[ i ].target, target ) ) {
+			return vkExec.envPipelines[ i ].pipeline;
+		}
+	}
+	const VkShaderModule vertModule = bumpy ? vkExec.bumpyEnvVertModule : vkExec.envVertModule;
+	const VkShaderModule fragModule = bumpy ? vkExec.bumpyEnvFragModule : vkExec.envFragModule;
+	if ( vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	if ( vkExec.numEnvPipelines >= VK_MAX_ENV_PIPELINES ) {
+		common->Warning( "Vulkan: environment pipeline cache exhausted" );
+		return vkExec.envPipelines[ 0 ].pipeline;
+	}
+
+	VkVertexInputBindingDescription binding;
+	VkVertexInputAttributeDescription attrs[ 6 ];
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	if ( bumpy ) {
+		VK_Exec_InteractionVertexInput( binding, attrs, vertexInput );
+	} else {
+		memset( &binding, 0, sizeof( binding ) );
+		binding.stride = sizeof( idDrawVert );
+		binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+		memset( attrs, 0, sizeof( attrs ) );
+		attrs[ 0 ].location = 0;
+		attrs[ 0 ].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attrs[ 0 ].offset = (uint32_t)offsetof( idDrawVert, xyz );
+		attrs[ 1 ].location = 1;
+		attrs[ 1 ].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attrs[ 1 ].offset = (uint32_t)offsetof( idDrawVert, normal );
+		attrs[ 2 ].location = 2;
+		attrs[ 2 ].format = VK_FORMAT_R8G8B8A8_UNORM;
+		attrs[ 2 ].offset = (uint32_t)offsetof( idDrawVert, color );
+		memset( &vertexInput, 0, sizeof( vertexInput ) );
+		vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+		vertexInput.vertexBindingDescriptionCount = 1;
+		vertexInput.pVertexBindingDescriptions = &binding;
+		vertexInput.vertexAttributeDescriptionCount = 3;
+		vertexInput.pVertexAttributeDescriptions = attrs;
+	}
+
+	const VkPipelineLayout layout = bumpy
+			? vkExec.interactionPipelineLayout : vkExec.pipelineLayout;
+	VkPipeline pipeline = VK_Exec_CreatePipeline( vertModule, fragModule,
+			&vertexInput, pipelineBits, layout, false, false, target );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	vkExec.envPipelines[ vkExec.numEnvPipelines ].stateBits = pipelineBits;
+	vkExec.envPipelines[ vkExec.numEnvPipelines ].separateColor = bumpy;
+	vkExec.envPipelines[ vkExec.numEnvPipelines ].target = target;
+	vkExec.envPipelines[ vkExec.numEnvPipelines ].pipeline = pipeline;
+	vkExec.numEnvPipelines++;
 	return pipeline;
 }
 
@@ -595,13 +903,43 @@ static void VK_Exec_InteractionVertexInput( VkVertexInputBindingDescription &bin
 	vertexInput.pVertexAttributeDescriptions = attrs;
 }
 
+static VkPipeline VK_Exec_FindSpecialPipeline( vkSpecialPipelineKind_t kind,
+		const vkPipelineTarget_t &target ) {
+	for ( int i = 0; i < vkExec.numSpecialPipelines; i++ ) {
+		if ( vkExec.specialPipelines[ i ].kind == kind
+				&& VK_Exec_PipelineTargetsMatch( vkExec.specialPipelines[ i ].target, target ) ) {
+			return vkExec.specialPipelines[ i ].pipeline;
+		}
+	}
+	return VK_NULL_HANDLE;
+}
+
+static VkPipeline VK_Exec_StoreSpecialPipeline( vkSpecialPipelineKind_t kind,
+		const vkPipelineTarget_t &target, VkPipeline pipeline ) {
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	if ( vkExec.numSpecialPipelines >= VK_MAX_SPECIAL_PIPELINES ) {
+		common->Warning( "Vulkan: specialized pipeline cache exhausted" );
+		vkDestroyPipeline( vkCtx.device, pipeline, NULL );
+		return VK_NULL_HANDLE;
+	}
+	vkSpecialPipeline_t &entry = vkExec.specialPipelines[ vkExec.numSpecialPipelines++ ];
+	entry.kind = kind;
+	entry.target = target;
+	entry.pipeline = pipeline;
+	return pipeline;
+}
+
 // interaction pipeline (Phase F1): full idDrawVert vertex input, fixed
 // ONE/ONE additive blend (the only state the GL interaction batch ever
 // uses), depth func/write and cull through the shared dynamic state.
 // Lazily built and dropped with the other pipelines on format changes.
 VkPipeline VK_Exec_InteractionPipeline( void ) {
-	if ( vkExec.interactionPipeline != VK_NULL_HANDLE ) {
-		return vkExec.interactionPipeline;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	VkPipeline cached = VK_Exec_FindSpecialPipeline( VK_SPECIAL_INTERACTION, target );
+	if ( cached != VK_NULL_HANDLE ) {
+		return cached;
 	}
 	if ( vkExec.interactionVertModule == VK_NULL_HANDLE || vkExec.interactionFragModule == VK_NULL_HANDLE ) {
 		return VK_NULL_HANDLE;
@@ -612,9 +950,10 @@ VkPipeline VK_Exec_InteractionPipeline( void ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VK_Exec_InteractionVertexInput( binding, attrs, vertexInput );
 
-	vkExec.interactionPipeline = VK_Exec_CreatePipeline( vkExec.interactionVertModule, vkExec.interactionFragModule,
-			&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, vkExec.interactionPipelineLayout, false, false );
-	return vkExec.interactionPipeline;
+	return VK_Exec_StoreSpecialPipeline( VK_SPECIAL_INTERACTION, target,
+			VK_Exec_CreatePipeline( vkExec.interactionVertModule, vkExec.interactionFragModule,
+				&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE,
+				vkExec.interactionPipelineLayout, false, false, target ) );
 }
 
 VkPipelineLayout VK_Exec_InteractionPipelineLayout( void ) {
@@ -624,8 +963,10 @@ VkPipelineLayout VK_Exec_InteractionPipelineLayout( void ) {
 // shadow-receiving interaction variant (Phase F2a): same vertex input and
 // additive blend, plus set 7 (atlas compare sampler + per-space shadow UBO)
 VkPipeline VK_Exec_ShadowInteractionPipeline( void ) {
-	if ( vkExec.shadowInteractionPipeline != VK_NULL_HANDLE ) {
-		return vkExec.shadowInteractionPipeline;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	VkPipeline cached = VK_Exec_FindSpecialPipeline( VK_SPECIAL_SHADOW_INTERACTION, target );
+	if ( cached != VK_NULL_HANDLE ) {
+		return cached;
 	}
 	if ( vkExec.interactionShadowVertModule == VK_NULL_HANDLE || vkExec.interactionShadowFragModule == VK_NULL_HANDLE
 			|| vkExec.shadowInteractionPipelineLayout == VK_NULL_HANDLE ) {
@@ -637,9 +978,10 @@ VkPipeline VK_Exec_ShadowInteractionPipeline( void ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VK_Exec_InteractionVertexInput( binding, attrs, vertexInput );
 
-	vkExec.shadowInteractionPipeline = VK_Exec_CreatePipeline( vkExec.interactionShadowVertModule, vkExec.interactionShadowFragModule,
-			&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, vkExec.shadowInteractionPipelineLayout, false, false );
-	return vkExec.shadowInteractionPipeline;
+	return VK_Exec_StoreSpecialPipeline( VK_SPECIAL_SHADOW_INTERACTION, target,
+			VK_Exec_CreatePipeline( vkExec.interactionShadowVertModule, vkExec.interactionShadowFragModule,
+				&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE,
+				vkExec.shadowInteractionPipelineLayout, false, false, target ) );
 }
 
 VkPipelineLayout VK_Exec_ShadowInteractionPipelineLayout( void ) {
@@ -647,11 +989,13 @@ VkPipelineLayout VK_Exec_ShadowInteractionPipelineLayout( void ) {
 }
 
 // point-shadow-receiving interaction variant (Phase F2b): identical to the
-// projected variant except the shaders sample a samplerCubeShadow through
-// set 7's combined-image-sampler binding (the layout is view-type agnostic)
+// projected variant except the shaders sample samplerCubeShadow + samplerCube
+// through set 7's compare/raw bindings (the layout is view-type agnostic)
 VkPipeline VK_Exec_PointShadowInteractionPipeline( void ) {
-	if ( vkExec.pointShadowInteractionPipeline != VK_NULL_HANDLE ) {
-		return vkExec.pointShadowInteractionPipeline;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	VkPipeline cached = VK_Exec_FindSpecialPipeline( VK_SPECIAL_POINT_SHADOW_INTERACTION, target );
+	if ( cached != VK_NULL_HANDLE ) {
+		return cached;
 	}
 	if ( vkExec.interactionShadowPointVertModule == VK_NULL_HANDLE || vkExec.interactionShadowPointFragModule == VK_NULL_HANDLE
 			|| vkExec.shadowInteractionPipelineLayout == VK_NULL_HANDLE ) {
@@ -663,10 +1007,11 @@ VkPipeline VK_Exec_PointShadowInteractionPipeline( void ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VK_Exec_InteractionVertexInput( binding, attrs, vertexInput );
 
-	vkExec.pointShadowInteractionPipeline = VK_Exec_CreatePipeline( vkExec.interactionShadowPointVertModule,
-			vkExec.interactionShadowPointFragModule,
-			&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, vkExec.shadowInteractionPipelineLayout, false, false );
-	return vkExec.pointShadowInteractionPipeline;
+	return VK_Exec_StoreSpecialPipeline( VK_SPECIAL_POINT_SHADOW_INTERACTION, target,
+			VK_Exec_CreatePipeline( vkExec.interactionShadowPointVertModule,
+				vkExec.interactionShadowPointFragModule,
+				&vertexInput, GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE,
+				vkExec.shadowInteractionPipelineLayout, false, false, target ) );
 }
 
 // position + st off the idDrawVert stream, shared by the caster pipelines
@@ -693,6 +1038,288 @@ static void VK_Exec_CasterVertexInput( VkVertexInputBindingDescription &binding,
 	vertexInput.pVertexAttributeDescriptions = attrs;
 }
 
+// Native replacements for Quake 4's closed ARB newStage program set.  Heat
+// haze uses the compact position/ST stream; the AndVertex variant also reads
+// the packed primary color from idDrawVert.
+static VkPipeline VK_Exec_GetProgramPipeline( vkMaterialProgramFamily_t family,
+		int stateBits, bool separateColor ) {
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+
+	for ( int i = 0; i < vkExec.numProgramPipelines; i++ ) {
+		const vkProgramPipeline_t &entry = vkExec.programPipelines[ i ];
+		if ( entry.family == family && entry.stateBits == pipelineBits
+				&& entry.separateColor == separateColor
+				&& VK_Exec_PipelineTargetsMatch( entry.target, target ) ) {
+			return entry.pipeline;
+		}
+	}
+	if ( vkExec.numProgramPipelines >= VK_MAX_PROGRAM_PIPELINES ) {
+		common->Warning( "Vulkan: material-program pipeline cache exhausted" );
+		return VK_NULL_HANDLE;
+	}
+
+	VkShaderModule vertModule = VK_NULL_HANDLE;
+	VkShaderModule fragModule = VK_NULL_HANDLE;
+	bool vertexColorVariant = false;
+	bool fullVertexInput = false;
+	switch ( family ) {
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE:
+			vertModule = vkExec.heatHazeVertModule;
+			fragModule = vkExec.heatHazeFragModule;
+			break;
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK:
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_GRAY_WITH_MASK:
+			vertModule = vkExec.heatHazeVertModule;
+			fragModule = vkExec.heatHazeMaskFragModule;
+			break;
+		case VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK_AND_VERTEX:
+			vertModule = vkExec.heatHazeVertexVertModule;
+			fragModule = vkExec.heatHazeMaskVertexFragModule;
+			vertexColorVariant = true;
+			break;
+		case VK_MATERIAL_PROGRAM_FAMILY_MONOCHROME:
+			vertModule = vkExec.monochromeVertModule;
+			fragModule = vkExec.monochromeFragModule;
+			break;
+		case VK_MATERIAL_PROGRAM_FAMILY_REFRACTIVE_GLASS:
+			vertModule = vkExec.refractiveGlassVertModule;
+			fragModule = vkExec.refractiveGlassFragModule;
+			fullVertexInput = true;
+			break;
+		default:
+			return VK_NULL_HANDLE;
+	}
+	if ( vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+
+	VkVertexInputBindingDescription bindings[ 2 ];
+	VkVertexInputAttributeDescription attrs[ 6 ];
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	memset( bindings, 0, sizeof( bindings ) );
+	memset( attrs, 0, sizeof( attrs ) );
+	if ( fullVertexInput ) {
+		VK_Exec_InteractionVertexInput( bindings[ 0 ], attrs, vertexInput );
+	} else {
+		VK_Exec_CasterVertexInput( bindings[ 0 ], attrs, vertexInput );
+	}
+	if ( vertexColorVariant && !fullVertexInput ) {
+		attrs[ 2 ].location = 2;
+		attrs[ 2 ].binding = separateColor ? 1 : 0;
+		attrs[ 2 ].format = VK_FORMAT_R8G8B8A8_UNORM;
+		attrs[ 2 ].offset = separateColor ? 0 : (uint32_t)offsetof( idDrawVert, color );
+		vertexInput.vertexAttributeDescriptionCount = 3;
+		if ( separateColor ) {
+			bindings[ 1 ].binding = 1;
+			bindings[ 1 ].stride = 4;
+			bindings[ 1 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+			vertexInput.vertexBindingDescriptionCount = 2;
+			vertexInput.pVertexBindingDescriptions = bindings;
+		}
+	}
+
+	VkPipeline pipeline = VK_Exec_CreatePipeline( vertModule, fragModule,
+			&vertexInput, pipelineBits, vkExec.interactionPipelineLayout,
+			false, false, target );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	vkProgramPipeline_t &entry =
+			vkExec.programPipelines[ vkExec.numProgramPipelines++ ];
+	entry.family = family;
+	entry.stateBits = pipelineBits;
+	entry.separateColor = separateColor;
+	entry.target = target;
+	entry.pipeline = pipeline;
+	return pipeline;
+}
+
+// Quake 4 GLSL material stages read family-specific subsets of idDrawVert.
+// Their program-family key is kept disjoint from the legacy ARB family
+// values in the shared cache.
+static bool VK_Exec_GLSLFamilyUsesVertexColor(
+		vkGLSLProgramFamily_t family ) {
+	switch ( family ) {
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT:
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_TWO_STAGE:
+		case VK_GLSL_PROGRAM_FAMILY_GHOST_PULLING:
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT2:
+		case VK_GLSL_PROGRAM_FAMILY_MULTIPLY_BLEND:
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+static VkPipeline VK_Exec_GetGLSLMaterialPipeline( vkGLSLProgramFamily_t family,
+		int stateBits, bool separateColor ) {
+	if ( family <= VK_GLSL_PROGRAM_FAMILY_UNKNOWN
+			|| family >= VK_GLSL_PROGRAM_FAMILY_COUNT ) {
+		return VK_NULL_HANDLE;
+	}
+	const bool usesVertexColor =
+			VK_Exec_GLSLFamilyUsesVertexColor( family );
+	separateColor = separateColor && usesVertexColor;
+	const int programKey = 0x100 + (int)family;
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+
+	for ( int i = 0; i < vkExec.numProgramPipelines; i++ ) {
+		const vkProgramPipeline_t &entry = vkExec.programPipelines[ i ];
+		if ( entry.family == programKey && entry.stateBits == pipelineBits
+				&& entry.separateColor == separateColor
+				&& VK_Exec_PipelineTargetsMatch( entry.target, target ) ) {
+			return entry.pipeline;
+		}
+	}
+	if ( vkExec.numProgramPipelines >= VK_MAX_PROGRAM_PIPELINES ) {
+		common->Warning( "Vulkan: material-program pipeline cache exhausted" );
+		return VK_NULL_HANDLE;
+	}
+
+	const VkShaderModule vertModule = vkExec.glslMaterialVertModules[ family ];
+	const VkShaderModule fragModule = vkExec.glslMaterialFragModules[ family ];
+	if ( vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+
+	VkVertexInputBindingDescription bindings[ 2 ];
+	memset( bindings, 0, sizeof( bindings ) );
+	bindings[ 0 ].binding = 0;
+	bindings[ 0 ].stride = sizeof( idDrawVert );
+	bindings[ 0 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	bindings[ 1 ].binding = 1;
+	bindings[ 1 ].stride = 4;
+	bindings[ 1 ].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription attrs[ 6 ];
+	memset( attrs, 0, sizeof( attrs ) );
+	int numAttributes = 0;
+	attrs[ numAttributes ].location = 0;
+	attrs[ numAttributes ].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attrs[ numAttributes ].offset = (uint32_t)offsetof( idDrawVert, xyz );
+	numAttributes++;
+	if ( usesVertexColor ) {
+		attrs[ numAttributes ].location = 1;
+		attrs[ numAttributes ].binding = separateColor ? 1 : 0;
+		attrs[ numAttributes ].format = VK_FORMAT_R8G8B8A8_UNORM;
+		attrs[ numAttributes ].offset =
+				separateColor ? 0 : (uint32_t)offsetof( idDrawVert, color );
+		numAttributes++;
+	}
+	if ( family == VK_GLSL_PROGRAM_FAMILY_WATER ) {
+		attrs[ numAttributes ].location = 2;
+		attrs[ numAttributes ].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attrs[ numAttributes ].offset =
+				(uint32_t)offsetof( idDrawVert, normal );
+		numAttributes++;
+		attrs[ numAttributes ].location = 3;
+		attrs[ numAttributes ].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attrs[ numAttributes ].offset =
+				(uint32_t)offsetof( idDrawVert, tangents );
+		numAttributes++;
+		attrs[ numAttributes ].location = 4;
+		attrs[ numAttributes ].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attrs[ numAttributes ].offset =
+				(uint32_t)( offsetof( idDrawVert, tangents ) + sizeof( idVec3 ) );
+		numAttributes++;
+	} else if ( family == VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE ) {
+		attrs[ numAttributes ].location = 2;
+		attrs[ numAttributes ].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attrs[ numAttributes ].offset =
+				(uint32_t)offsetof( idDrawVert, normal );
+		numAttributes++;
+	}
+	attrs[ numAttributes ].location = 5;
+	attrs[ numAttributes ].format = VK_FORMAT_R32G32_SFLOAT;
+	attrs[ numAttributes ].offset = (uint32_t)offsetof( idDrawVert, st );
+	numAttributes++;
+
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	memset( &vertexInput, 0, sizeof( vertexInput ) );
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInput.vertexBindingDescriptionCount = separateColor ? 2 : 1;
+	vertexInput.pVertexBindingDescriptions = bindings;
+	vertexInput.vertexAttributeDescriptionCount = (uint32_t)numAttributes;
+	vertexInput.pVertexAttributeDescriptions = attrs;
+
+	VkPipeline pipeline = VK_Exec_CreatePipeline( vertModule, fragModule,
+			&vertexInput, pipelineBits, vkExec.interactionPipelineLayout,
+			false, false, target );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	vkProgramPipeline_t &entry =
+			vkExec.programPipelines[ vkExec.numProgramPipelines++ ];
+	entry.family = programKey;
+	entry.stateBits = pipelineBits;
+	entry.separateColor = separateColor;
+	entry.target = target;
+	entry.pipeline = pipeline;
+	return pipeline;
+}
+
+static VkPipeline VK_Exec_GetGlassWarpPipeline( int stateBits ) {
+	static const int programKey = 0x80;
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	for ( int i = 0; i < vkExec.numProgramPipelines; i++ ) {
+		const vkProgramPipeline_t &entry = vkExec.programPipelines[ i ];
+		if ( entry.family == programKey && entry.stateBits == pipelineBits
+				&& !entry.separateColor
+				&& VK_Exec_PipelineTargetsMatch( entry.target, target ) ) {
+			return entry.pipeline;
+		}
+	}
+	if ( vkExec.glassWarpVertModule == VK_NULL_HANDLE
+			|| vkExec.glassWarpFragModule == VK_NULL_HANDLE
+			|| vkExec.numProgramPipelines >= VK_MAX_PROGRAM_PIPELINES ) {
+		return VK_NULL_HANDLE;
+	}
+
+	VkVertexInputBindingDescription binding;
+	memset( &binding, 0, sizeof( binding ) );
+	binding.binding = 0;
+	binding.stride = sizeof( idDrawVert );
+	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	VkVertexInputAttributeDescription attrs[ 2 ];
+	memset( attrs, 0, sizeof( attrs ) );
+	attrs[ 0 ].location = 0;
+	attrs[ 0 ].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attrs[ 0 ].offset = (uint32_t)offsetof( idDrawVert, xyz );
+	attrs[ 1 ].location = 5;
+	attrs[ 1 ].format = VK_FORMAT_R32G32_SFLOAT;
+	attrs[ 1 ].offset = (uint32_t)offsetof( idDrawVert, st );
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	memset( &vertexInput, 0, sizeof( vertexInput ) );
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInput.vertexBindingDescriptionCount = 1;
+	vertexInput.pVertexBindingDescriptions = &binding;
+	vertexInput.vertexAttributeDescriptionCount = 2;
+	vertexInput.pVertexAttributeDescriptions = attrs;
+
+	const VkPipeline pipeline = VK_Exec_CreatePipeline(
+			vkExec.glassWarpVertModule, vkExec.glassWarpFragModule,
+			&vertexInput, pipelineBits, vkExec.interactionPipelineLayout,
+			false, false, target );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	vkProgramPipeline_t &entry =
+			vkExec.programPipelines[ vkExec.numProgramPipelines++ ];
+	entry.family = programKey;
+	entry.stateBits = pipelineBits;
+	entry.separateColor = false;
+	entry.target = target;
+	entry.pipeline = pipeline;
+	return pipeline;
+}
+
 // depth-only shadow-map caster (Phase F2a): zero color attachments,
 // single-image layout (slot 0 = alpha map)
 VkPipeline VK_Exec_CasterPipeline( void ) {
@@ -708,13 +1335,19 @@ VkPipeline VK_Exec_CasterPipeline( void ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VK_Exec_CasterVertexInput( binding, attrs, vertexInput );
 
+	vkPipelineTarget_t target;
+	target.colorFormat = VK_FORMAT_UNDEFINED;
+	target.depthFormat = vkCtx.shadowDepthFormat;
+	target.stencilFormat = vkCtx.shadowDepthHasStencil ? vkCtx.shadowDepthFormat : VK_FORMAT_UNDEFINED;
+	target.samples = VK_SAMPLE_COUNT_1_BIT;
 	vkExec.casterPipeline = VK_Exec_CreatePipeline( vkExec.casterVertModule, vkExec.casterFragModule,
-			&vertexInput, 0, vkExec.pipelineLayout, true, false );
+			&vertexInput, 0, vkExec.pipelineLayout, true, false, target );
 	return vkExec.casterPipeline;
 }
 
 // depth-only point cube-face caster (Phase F2b): same shape as the atlas
-// caster (the cube faces reuse vkCtx.depthFormat), radial-depth shaders
+// caster, radial-depth shaders; depth clamp is restricted to this pipeline
+// and remains off when the optional device feature was unavailable
 VkPipeline VK_Exec_PointCasterPipeline( void ) {
 	if ( vkExec.pointCasterPipeline != VK_NULL_HANDLE ) {
 		return vkExec.pointCasterPipeline;
@@ -728,8 +1361,13 @@ VkPipeline VK_Exec_PointCasterPipeline( void ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VK_Exec_CasterVertexInput( binding, attrs, vertexInput );
 
+	vkPipelineTarget_t target;
+	target.colorFormat = VK_FORMAT_UNDEFINED;
+	target.depthFormat = vkCtx.shadowDepthFormat;
+	target.stencilFormat = vkCtx.shadowDepthHasStencil ? vkCtx.shadowDepthFormat : VK_FORMAT_UNDEFINED;
+	target.samples = VK_SAMPLE_COUNT_1_BIT;
 	vkExec.pointCasterPipeline = VK_Exec_CreatePipeline( vkExec.pointCasterVertModule, vkExec.pointCasterFragModule,
-			&vertexInput, 0, vkExec.pipelineLayout, true, false );
+			&vertexInput, 0, vkExec.pipelineLayout, true, false, target, vkCtx.depthClampSupported );
 	return vkExec.pointCasterPipeline;
 }
 
@@ -740,8 +1378,10 @@ VkPipeline VK_Exec_PointCasterPipeline( void ) {
 // r_shadowPolygonFactor/-Offset bias all ride the shared dynamic state.
 // Uses the base 128B-push layout; the shaders bind no descriptor sets.
 VkPipeline VK_Exec_StencilShadowPipeline( void ) {
-	if ( vkExec.stencilShadowPipeline != VK_NULL_HANDLE ) {
-		return vkExec.stencilShadowPipeline;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	VkPipeline cached = VK_Exec_FindSpecialPipeline( VK_SPECIAL_STENCIL_SHADOW, target );
+	if ( cached != VK_NULL_HANDLE ) {
+		return cached;
 	}
 	if ( vkExec.stencilShadowVertModule == VK_NULL_HANDLE || vkExec.stencilShadowFragModule == VK_NULL_HANDLE ) {
 		return VK_NULL_HANDLE;
@@ -766,9 +1406,9 @@ VkPipeline VK_Exec_StencilShadowPipeline( void ) {
 	vertexInput.vertexAttributeDescriptionCount = 1;
 	vertexInput.pVertexAttributeDescriptions = &attr;
 
-	vkExec.stencilShadowPipeline = VK_Exec_CreatePipeline( vkExec.stencilShadowVertModule, vkExec.stencilShadowFragModule,
-			&vertexInput, 0, vkExec.pipelineLayout, false, true );
-	return vkExec.stencilShadowPipeline;
+	return VK_Exec_StoreSpecialPipeline( VK_SPECIAL_STENCIL_SHADOW, target,
+			VK_Exec_CreatePipeline( vkExec.stencilShadowVertModule, vkExec.stencilShadowFragModule,
+				&vertexInput, 0, vkExec.pipelineLayout, false, true, target ) );
 }
 
 VkPipelineLayout VK_Exec_BasePipelineLayout( void ) {
@@ -803,8 +1443,10 @@ static void VK_Exec_PositionVertexInput( VkVertexInputBindingDescription &bindin
 // shared dynamic state. The fog shaders bind only sets 0/1 of the
 // fog/blend layout.
 VkPipeline VK_Exec_FogPipeline( void ) {
-	if ( vkExec.fogPipeline != VK_NULL_HANDLE ) {
-		return vkExec.fogPipeline;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	VkPipeline cached = VK_Exec_FindSpecialPipeline( VK_SPECIAL_FOG, target );
+	if ( cached != VK_NULL_HANDLE ) {
+		return cached;
 	}
 	if ( vkExec.fogVertModule == VK_NULL_HANDLE || vkExec.fogFragModule == VK_NULL_HANDLE
 			|| vkExec.fogBlendPipelineLayout == VK_NULL_HANDLE ) {
@@ -816,20 +1458,23 @@ VkPipeline VK_Exec_FogPipeline( void ) {
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VK_Exec_PositionVertexInput( binding, attr, vertexInput );
 
-	vkExec.fogPipeline = VK_Exec_CreatePipeline( vkExec.fogVertModule, vkExec.fogFragModule,
-			&vertexInput, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA,
-			vkExec.fogBlendPipelineLayout, false, false );
-	return vkExec.fogPipeline;
+	return VK_Exec_StoreSpecialPipeline( VK_SPECIAL_FOG, target,
+			VK_Exec_CreatePipeline( vkExec.fogVertModule, vkExec.fogFragModule,
+				&vertexInput, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA,
+				vkExec.fogBlendPipelineLayout, false, false, target ) );
 }
 
 // blend-light pipelines (Phase G2): one per light-stage blend combination —
 // GL_State( GLS_DEPTHMASK | stage->drawStateBits | GLS_DEPTHFUNC_EQUAL ),
 // where only the blend factors are pipeline-level state
 VkPipeline VK_Exec_BlendLightPipeline( int stateBits ) {
-	const int blendBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS );
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
 
 	for ( int i = 0; i < vkExec.numBlendLightPipelines; i++ ) {
-		if ( vkExec.blendLightPipelines[ i ].blendBits == blendBits ) {
+		if ( vkExec.blendLightPipelines[ i ].stateBits == pipelineBits
+				&& VK_Exec_PipelineTargetsMatch( vkExec.blendLightPipelines[ i ].target, target ) ) {
 			return vkExec.blendLightPipelines[ i ].pipeline;
 		}
 	}
@@ -848,11 +1493,12 @@ VkPipeline VK_Exec_BlendLightPipeline( int stateBits ) {
 	VK_Exec_PositionVertexInput( binding, attr, vertexInput );
 
 	VkPipeline pipeline = VK_Exec_CreatePipeline( vkExec.blendLightVertModule, vkExec.blendLightFragModule,
-			&vertexInput, blendBits, vkExec.fogBlendPipelineLayout, false, false );
+			&vertexInput, pipelineBits, vkExec.fogBlendPipelineLayout, false, false, target );
 	if ( pipeline == VK_NULL_HANDLE ) {
 		return VK_NULL_HANDLE;
 	}
-	vkExec.blendLightPipelines[ vkExec.numBlendLightPipelines ].blendBits = blendBits;
+	vkExec.blendLightPipelines[ vkExec.numBlendLightPipelines ].stateBits = pipelineBits;
+	vkExec.blendLightPipelines[ vkExec.numBlendLightPipelines ].target = target;
 	vkExec.blendLightPipelines[ vkExec.numBlendLightPipelines ].pipeline = pipeline;
 	vkExec.numBlendLightPipelines++;
 	return pipeline;
@@ -876,6 +1522,23 @@ static VkDescriptorSet VK_GuiExecutor_GetImageDescriptor( unsigned int texnum ) 
 	vkDescriptorCacheEntry_t &cached = vkExec.descriptorCache[ texnum ];
 	if ( cached.set != VK_NULL_HANDLE && cached.generation == entry->generation ) {
 		return cached.set;
+	}
+
+	// A generation bump can occur mid-frame when a feedback image is resized
+	// or re-backed. Already-recorded draws may still reference the old set, so
+	// allocate a fresh one and retire the old set with this recording slot.
+	if ( cached.set != VK_NULL_HANDLE ) {
+		if ( vkExec.numRetiredSets[ vkExec.frameSlot ] >= VK_MAX_RETIRED_SETS ) {
+			static bool warnedRetiredSetOverflow = false;
+			if ( !warnedRetiredSetOverflow ) {
+				warnedRetiredSetOverflow = true;
+				common->Warning( "Vulkan: descriptor retirement budget exhausted; image draw skipped" );
+			}
+			return VK_NULL_HANDLE;
+		}
+		vkExec.retiredSets[ vkExec.frameSlot ]
+				[ vkExec.numRetiredSets[ vkExec.frameSlot ]++ ] = cached.set;
+		cached.set = VK_NULL_HANDLE;
 	}
 
 	if ( cached.set == VK_NULL_HANDLE ) {
@@ -913,14 +1576,69 @@ static VkDescriptorSet VK_GuiExecutor_GetImageDescriptor( unsigned int texnum ) 
 
 /*
 ====================
+VK_GuiExecutor_GetResidentImageDescriptor
+
+The OpenGL backend's idImage::Bind path loads purged images on demand. Vulkan
+binds descriptors directly, so preserve that residency contract here before
+looking up the image's device handle. This is required while a level load is
+active: BeginLevelLoad deliberately purges non-persistent GUI images and the
+loading GUI must be able to draw them before EndLevelLoad reloads map media.
+====================
+*/
+static VkDescriptorSet VK_GuiExecutor_GetResidentImageDescriptor( idImage *image ) {
+	if ( image == NULL ) {
+		return VK_NULL_HANDLE;
+	}
+	if ( !image->IsLoaded() ) {
+		image->ActuallyLoadImage( true );
+	}
+	if ( !image->IsLoaded() ) {
+		return VK_NULL_HANDLE;
+	}
+	return VK_GuiExecutor_GetImageDescriptor( image->GetDeviceHandle() );
+}
+
+/*
+====================
 Init / Shutdown
 ====================
 */
+void VK_GuiExecutor_Shutdown( void );
+
+class vkGuiExecutorInitGuard_t {
+public:
+	vkGuiExecutorInitGuard_t() : committed( false ) {
+	}
+
+	~vkGuiExecutorInitGuard_t() {
+		if ( !committed ) {
+			VK_GuiExecutor_Shutdown();
+		}
+	}
+
+	void Commit( void ) {
+		committed = true;
+	}
+
+private:
+	bool committed;
+};
+
 static bool VK_GuiExecutor_Init( void ) {
 	if ( vkExec.initialized ) {
 		return true;
 	}
 	memset( &vkExec, 0, sizeof( vkExec ) );
+	vkGuiExecutorInitGuard_t initGuard;
+	if ( vkCtx.deviceProperties.limits.maxUniformBufferRange
+				< VK_SHADOW_UNIFORM_SLICE_BYTES
+			|| VK_Exec_UniformSliceAlignment( VK_UNIFORM_SLICE_BYTES ) == 0
+			|| VK_Exec_UniformSliceAlignment(
+					VK_SHADOW_UNIFORM_SLICE_BYTES ) == 0 ) {
+		common->Warning(
+				"Vulkan: dynamic uniform limits cannot represent shadow receiver blocks" );
+		return false;
+	}
 
 	VkShaderModuleCreateInfo smci;
 	memset( &smci, 0, sizeof( smci ) );
@@ -937,6 +1655,18 @@ static bool VK_GuiExecutor_Init( void ) {
 		common->Warning( "Vulkan: GUI fragment shader module creation failed" );
 		return false;
 	}
+	smci.codeSize = vk_screen_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_screen_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.screenVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: screen vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_screen_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_screen_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.screenFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: screen fragment shader module creation failed" );
+		return false;
+	}
 	smci.codeSize = vk_sky_vert_spv_size;
 	smci.pCode = (const uint32_t *)vk_sky_vert_spv;
 	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.skyVertModule ) != VK_SUCCESS ) {
@@ -948,6 +1678,198 @@ static bool VK_GuiExecutor_Init( void ) {
 	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.skyFragModule ) != VK_SUCCESS ) {
 		common->Warning( "Vulkan: sky fragment shader module creation failed" );
 		return false;
+	}
+	smci.codeSize = vk_environment_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_environment_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.envVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: environment vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_environment_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_environment_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.envFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: environment fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_bumpy_environment_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_bumpy_environment_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.bumpyEnvVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: bumpy-environment vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_bumpy_environment_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_bumpy_environment_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.bumpyEnvFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: bumpy-environment fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_heathaze_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_heathaze_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.heatHazeVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: heat-haze vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_heathaze_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_heathaze_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.heatHazeFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: heat-haze fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_heathaze_mask_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_heathaze_mask_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.heatHazeMaskFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: masked heat-haze fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_heathaze_vertex_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_heathaze_vertex_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.heatHazeVertexVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: vertex-colored heat-haze vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_heathaze_mask_vertex_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_heathaze_mask_vertex_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.heatHazeMaskVertexFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: vertex-colored heat-haze fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_monochrome_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_monochrome_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.monochromeVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: monochrome compatibility vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_monochrome_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_monochrome_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.monochromeFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: monochrome compatibility fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_glasswarp_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_glasswarp_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.glassWarpVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: glass-warp vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_glasswarp_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_glasswarp_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.glassWarpFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: glass-warp fragment shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_refractive_glass_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_refractive_glass_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+			&vkExec.refractiveGlassVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: refractive-glass vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_refractive_glass_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_refractive_glass_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+			&vkExec.refractiveGlassFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: refractive-glass fragment shader module creation failed" );
+		return false;
+	}
+
+	struct embeddedMaterialProgram_t {
+		vkGLSLProgramFamily_t family;
+		const unsigned char *vertCode;
+		unsigned int vertSize;
+		const unsigned char *fragCode;
+		unsigned int fragSize;
+		const char *name;
+	};
+	static const embeddedMaterialProgram_t materialPrograms[] = {
+		{ VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT,
+			vk_material_displacement_vert_spv, vk_material_displacement_vert_spv_size,
+			vk_material_displacement_frag_spv, vk_material_displacement_frag_spv_size,
+			"Displacement" },
+		{ VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_TWO_STAGE,
+			vk_material_displacement_two_stage_vert_spv, vk_material_displacement_two_stage_vert_spv_size,
+			vk_material_displacement_two_stage_frag_spv, vk_material_displacement_two_stage_frag_spv_size,
+			"DisplacementTwoStage" },
+		{ VK_GLSL_PROGRAM_FAMILY_GHOST_PULLING,
+			vk_material_ghost_pulling_vert_spv, vk_material_ghost_pulling_vert_spv_size,
+			vk_material_ghost_pulling_frag_spv, vk_material_ghost_pulling_frag_spv_size,
+			"GhostPulling" },
+		{ VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT2,
+			vk_material_displacement2_vert_spv, vk_material_displacement2_vert_spv_size,
+			vk_material_displacement2_frag_spv, vk_material_displacement2_frag_spv_size,
+			"Displacement2" },
+		{ VK_GLSL_PROGRAM_FAMILY_MULTIPLY_BLEND,
+			vk_material_multiply_blend_vert_spv, vk_material_multiply_blend_vert_spv_size,
+			vk_material_multiply_blend_frag_spv, vk_material_multiply_blend_frag_spv_size,
+			"MultiplyBlend" },
+		{ VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE,
+			vk_material_displacement_cube_vert_spv, vk_material_displacement_cube_vert_spv_size,
+			vk_material_displacement_cube_frag_spv, vk_material_displacement_cube_frag_spv_size,
+			"DisplacementCube" },
+		{ VK_GLSL_PROGRAM_FAMILY_SNIPER_STRETCH2,
+			vk_material_sniper_stretch2_vert_spv, vk_material_sniper_stretch2_vert_spv_size,
+			vk_material_sniper_stretch2_frag_spv, vk_material_sniper_stretch2_frag_spv_size,
+			"SniperStretch2" },
+		{ VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE,
+			vk_material_depth_texture_vert_spv, vk_material_depth_texture_vert_spv_size,
+			vk_material_depth_texture_frag_spv, vk_material_depth_texture_frag_spv_size,
+			"DepthTexture" },
+		{ VK_GLSL_PROGRAM_FAMILY_BLUR,
+			vk_material_blur_vert_spv, vk_material_blur_vert_spv_size,
+			vk_material_blur_frag_spv, vk_material_blur_frag_spv_size,
+			"Blur" },
+		{ VK_GLSL_PROGRAM_FAMILY_MEDLABS,
+			vk_material_medlabs_vert_spv, vk_material_medlabs_vert_spv_size,
+			vk_material_medlabs_frag_spv, vk_material_medlabs_frag_spv_size,
+			"MedLabs" },
+		{ VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE2,
+			vk_material_depth_texture2_vert_spv, vk_material_depth_texture2_vert_spv_size,
+			vk_material_depth_texture2_frag_spv, vk_material_depth_texture2_frag_spv_size,
+			"DepthTexture2" },
+		{ VK_GLSL_PROGRAM_FAMILY_AL,
+			vk_material_al_vert_spv, vk_material_al_vert_spv_size,
+			vk_material_al_frag_spv, vk_material_al_frag_spv_size,
+			"AL" },
+		{ VK_GLSL_PROGRAM_FAMILY_WATER,
+			vk_material_water_vert_spv, vk_material_water_vert_spv_size,
+			vk_material_water_frag_spv, vk_material_water_frag_spv_size,
+			"Water" },
+		{ VK_GLSL_PROGRAM_FAMILY_DEPTH_AWARE_BLUR,
+			vk_material_depth_aware_blur_vert_spv, vk_material_depth_aware_blur_vert_spv_size,
+			vk_material_depth_aware_blur_frag_spv, vk_material_depth_aware_blur_frag_spv_size,
+			"depth-aware blur" },
+		{ VK_GLSL_PROGRAM_FAMILY_SMAA_EDGE,
+			vk_material_smaa_edge_vert_spv, vk_material_smaa_edge_vert_spv_size,
+			vk_material_smaa_edge_frag_spv, vk_material_smaa_edge_frag_spv_size,
+			"SMAA edge" },
+		{ VK_GLSL_PROGRAM_FAMILY_SMAA_WEIGHTS,
+			vk_material_smaa_weights_vert_spv, vk_material_smaa_weights_vert_spv_size,
+			vk_material_smaa_weights_frag_spv, vk_material_smaa_weights_frag_spv_size,
+			"SMAA weights" },
+		{ VK_GLSL_PROGRAM_FAMILY_SMAA_BLEND,
+			vk_material_smaa_blend_vert_spv, vk_material_smaa_blend_vert_spv_size,
+			vk_material_smaa_blend_frag_spv, vk_material_smaa_blend_frag_spv_size,
+			"SMAA blend" },
+	};
+	const int numMaterialPrograms =
+			(int)( sizeof( materialPrograms ) / sizeof( materialPrograms[ 0 ] ) );
+	for ( int i = 0; i < numMaterialPrograms; i++ ) {
+		const embeddedMaterialProgram_t &program = materialPrograms[ i ];
+		smci.codeSize = program.vertSize;
+		smci.pCode = (const uint32_t *)program.vertCode;
+		if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+				&vkExec.glslMaterialVertModules[ program.family ] ) != VK_SUCCESS ) {
+			common->Warning( "Vulkan: %s material vertex shader module creation failed",
+					program.name );
+			return false;
+		}
+		smci.codeSize = program.fragSize;
+		smci.pCode = (const uint32_t *)program.fragCode;
+		if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+				&vkExec.glslMaterialFragModules[ program.family ] ) != VK_SUCCESS ) {
+			common->Warning( "Vulkan: %s material fragment shader module creation failed",
+					program.name );
+			return false;
+		}
 	}
 	smci.codeSize = vk_interaction_vert_spv_size;
 	smci.pCode = (const uint32_t *)vk_interaction_vert_spv;
@@ -1076,9 +1998,10 @@ static bool VK_GuiExecutor_Init( void ) {
 		return false;
 	}
 
-	// shadow receiver set: atlas compare sampler + per-space shadow block
-	// slice off the same uniform ring (second dynamic offset)
-	VkDescriptorSetLayoutBinding shadowBindings[ 2 ];
+	// shadow receiver set: compare sampler, per-space shadow block, and raw
+	// depth sampler. Both sampler families are always valid so a cvar can
+	// choose hardware or manual comparisons without a pipeline variant.
+	VkDescriptorSetLayoutBinding shadowBindings[ 3 ];
 	memset( shadowBindings, 0, sizeof( shadowBindings ) );
 	shadowBindings[ 0 ].binding = 0;
 	shadowBindings[ 0 ].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1088,7 +2011,11 @@ static bool VK_GuiExecutor_Init( void ) {
 	shadowBindings[ 1 ].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 	shadowBindings[ 1 ].descriptorCount = 1;
 	shadowBindings[ 1 ].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-	dslci.bindingCount = 2;
+	shadowBindings[ 2 ].binding = 2;
+	shadowBindings[ 2 ].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	shadowBindings[ 2 ].descriptorCount = 1;
+	shadowBindings[ 2 ].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	dslci.bindingCount = 3;
 	dslci.pBindings = shadowBindings;
 	if ( vkCreateDescriptorSetLayout( vkCtx.device, &dslci, NULL, &vkExec.shadowSetLayout ) != VK_SUCCESS ) {
 		common->Warning( "Vulkan: shadow descriptor set layout creation failed" );
@@ -1096,19 +2023,22 @@ static bool VK_GuiExecutor_Init( void ) {
 	}
 	dslci.bindingCount = 1;
 
-	// shadow-set budget: the atlas set per slot plus one set per (point
-	// cube, slot) — each is a combined image sampler + a dynamic UBO
-	const int shadowSetBudget = ( 1 + VK_SHADOW_MAX_POINT_CUBES ) * VK_FRAMES_IN_FLIGHT;
+	// Shadow-set budget: the atlas set plus scratch and identity-resident
+	// point-cache cubes per frame slot. Each set is two combined image
+	// samplers plus one dynamic UBO.
+	const int shadowSetBudget = ( 1 + VK_SHADOW_MAX_POINT_CUBES
+			+ VK_SHADOW_MAX_CACHE_SLOTS ) * VK_FRAMES_IN_FLIGHT;
+	const int retiredSetBudget = VK_MAX_RETIRED_SETS * VK_FRAMES_IN_FLIGHT;
 	VkDescriptorPoolSize poolSizes[ 2 ];
 	poolSizes[ 0 ].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[ 0 ].descriptorCount = VK_MAX_DESCRIPTOR_SETS + shadowSetBudget;
+	poolSizes[ 0 ].descriptorCount = VK_MAX_DESCRIPTOR_SETS + 2 * shadowSetBudget + retiredSetBudget;
 	poolSizes[ 1 ].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 	poolSizes[ 1 ].descriptorCount = VK_FRAMES_IN_FLIGHT + shadowSetBudget;
 	VkDescriptorPoolCreateInfo dpci;
 	memset( &dpci, 0, sizeof( dpci ) );
 	dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	dpci.maxSets = VK_MAX_DESCRIPTOR_SETS + VK_FRAMES_IN_FLIGHT + shadowSetBudget;
+	dpci.maxSets = VK_MAX_DESCRIPTOR_SETS + VK_FRAMES_IN_FLIGHT + shadowSetBudget + retiredSetBudget;
 	dpci.poolSizeCount = 2;
 	dpci.pPoolSizes = poolSizes;
 	if ( vkCreateDescriptorPool( vkCtx.device, &dpci, NULL, &vkExec.descriptorPool ) != VK_SUCCESS ) {
@@ -1213,6 +2143,7 @@ static bool VK_GuiExecutor_Init( void ) {
 			common->Warning( "Vulkan: shadow descriptor set allocation failed" );
 			return false;
 		}
+		bufferInfo.range = VK_SHADOW_UNIFORM_SLICE_BYTES;
 		write.dstSet = vkExec.shadowSets[ i ];
 		write.dstBinding = 1;
 		vkUpdateDescriptorSets( vkCtx.device, 1, &write, 0, NULL );
@@ -1224,6 +2155,7 @@ static bool VK_GuiExecutor_Init( void ) {
 	vkExec.clearColor[ 2 ] = 0.0f;
 	vkExec.clearColor[ 3 ] = 1.0f;
 	vkExec.initialized = true;
+	initGuard.Commit();
 	common->Printf( "Vulkan: GUI executor initialized\n" );
 	return true;
 }
@@ -1239,31 +2171,36 @@ void VK_GuiExecutor_Shutdown( void ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.pipelines[ i ].pipeline, NULL );
 		}
 	}
+	for ( int i = 0; i < vkExec.numScreenPipelines; i++ ) {
+		if ( vkExec.screenPipelines[ i ].pipeline != VK_NULL_HANDLE ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.screenPipelines[ i ].pipeline, NULL );
+		}
+	}
 	for ( int i = 0; i < vkExec.numCubePipelines; i++ ) {
 		if ( vkExec.cubePipelines[ i ].pipeline != VK_NULL_HANDLE ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.cubePipelines[ i ].pipeline, NULL );
 		}
 	}
-	if ( vkExec.interactionPipeline != VK_NULL_HANDLE ) {
-		vkDestroyPipeline( vkCtx.device, vkExec.interactionPipeline, NULL );
+	for ( int i = 0; i < vkExec.numEnvPipelines; i++ ) {
+		if ( vkExec.envPipelines[ i ].pipeline != VK_NULL_HANDLE ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.envPipelines[ i ].pipeline, NULL );
+		}
 	}
-	if ( vkExec.shadowInteractionPipeline != VK_NULL_HANDLE ) {
-		vkDestroyPipeline( vkCtx.device, vkExec.shadowInteractionPipeline, NULL );
+	for ( int i = 0; i < vkExec.numProgramPipelines; i++ ) {
+		if ( vkExec.programPipelines[ i ].pipeline != VK_NULL_HANDLE ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.programPipelines[ i ].pipeline, NULL );
+		}
 	}
-	if ( vkExec.pointShadowInteractionPipeline != VK_NULL_HANDLE ) {
-		vkDestroyPipeline( vkCtx.device, vkExec.pointShadowInteractionPipeline, NULL );
+	for ( int i = 0; i < vkExec.numSpecialPipelines; i++ ) {
+		if ( vkExec.specialPipelines[ i ].pipeline != VK_NULL_HANDLE ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.specialPipelines[ i ].pipeline, NULL );
+		}
 	}
 	if ( vkExec.casterPipeline != VK_NULL_HANDLE ) {
 		vkDestroyPipeline( vkCtx.device, vkExec.casterPipeline, NULL );
 	}
 	if ( vkExec.pointCasterPipeline != VK_NULL_HANDLE ) {
 		vkDestroyPipeline( vkCtx.device, vkExec.pointCasterPipeline, NULL );
-	}
-	if ( vkExec.stencilShadowPipeline != VK_NULL_HANDLE ) {
-		vkDestroyPipeline( vkCtx.device, vkExec.stencilShadowPipeline, NULL );
-	}
-	if ( vkExec.fogPipeline != VK_NULL_HANDLE ) {
-		vkDestroyPipeline( vkCtx.device, vkExec.fogPipeline, NULL );
 	}
 	for ( int i = 0; i < vkExec.numBlendLightPipelines; i++ ) {
 		if ( vkExec.blendLightPipelines[ i ].pipeline != VK_NULL_HANDLE ) {
@@ -1300,11 +2237,72 @@ void VK_GuiExecutor_Shutdown( void ) {
 	if ( vkExec.fragModule != VK_NULL_HANDLE ) {
 		vkDestroyShaderModule( vkCtx.device, vkExec.fragModule, NULL );
 	}
+	if ( vkExec.screenVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.screenVertModule, NULL );
+	}
+	if ( vkExec.screenFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.screenFragModule, NULL );
+	}
 	if ( vkExec.skyVertModule != VK_NULL_HANDLE ) {
 		vkDestroyShaderModule( vkCtx.device, vkExec.skyVertModule, NULL );
 	}
 	if ( vkExec.skyFragModule != VK_NULL_HANDLE ) {
 		vkDestroyShaderModule( vkCtx.device, vkExec.skyFragModule, NULL );
+	}
+	if ( vkExec.envVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.envVertModule, NULL );
+	}
+	if ( vkExec.envFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.envFragModule, NULL );
+	}
+	if ( vkExec.bumpyEnvVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.bumpyEnvVertModule, NULL );
+	}
+	if ( vkExec.bumpyEnvFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.bumpyEnvFragModule, NULL );
+	}
+	if ( vkExec.heatHazeVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.heatHazeVertModule, NULL );
+	}
+	if ( vkExec.heatHazeFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.heatHazeFragModule, NULL );
+	}
+	if ( vkExec.heatHazeMaskFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.heatHazeMaskFragModule, NULL );
+	}
+	if ( vkExec.heatHazeVertexVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.heatHazeVertexVertModule, NULL );
+	}
+	if ( vkExec.heatHazeMaskVertexFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.heatHazeMaskVertexFragModule, NULL );
+	}
+	if ( vkExec.monochromeVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.monochromeVertModule, NULL );
+	}
+	if ( vkExec.monochromeFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.monochromeFragModule, NULL );
+	}
+	if ( vkExec.glassWarpVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.glassWarpVertModule, NULL );
+	}
+	if ( vkExec.glassWarpFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.glassWarpFragModule, NULL );
+	}
+	if ( vkExec.refractiveGlassVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.refractiveGlassVertModule, NULL );
+	}
+	if ( vkExec.refractiveGlassFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.refractiveGlassFragModule, NULL );
+	}
+	for ( int i = 0; i < VK_GLSL_PROGRAM_FAMILY_COUNT; i++ ) {
+		if ( vkExec.glslMaterialVertModules[ i ] != VK_NULL_HANDLE ) {
+			vkDestroyShaderModule( vkCtx.device,
+					vkExec.glslMaterialVertModules[ i ], NULL );
+		}
+		if ( vkExec.glslMaterialFragModules[ i ] != VK_NULL_HANDLE ) {
+			vkDestroyShaderModule( vkCtx.device,
+					vkExec.glslMaterialFragModules[ i ], NULL );
+		}
 	}
 	if ( vkExec.interactionVertModule != VK_NULL_HANDLE ) {
 		vkDestroyShaderModule( vkCtx.device, vkExec.interactionVertModule, NULL );
@@ -1415,22 +2413,28 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.pipelines[ i ].pipeline, NULL );
 		}
 		vkExec.numPipelines = 0;
+		for ( int i = 0; i < vkExec.numScreenPipelines; i++ ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.screenPipelines[ i ].pipeline, NULL );
+		}
+		vkExec.numScreenPipelines = 0;
 		for ( int i = 0; i < vkExec.numCubePipelines; i++ ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.cubePipelines[ i ].pipeline, NULL );
 		}
 		vkExec.numCubePipelines = 0;
-		if ( vkExec.interactionPipeline != VK_NULL_HANDLE ) {
-			vkDestroyPipeline( vkCtx.device, vkExec.interactionPipeline, NULL );
-			vkExec.interactionPipeline = VK_NULL_HANDLE;
+		for ( int i = 0; i < vkExec.numEnvPipelines; i++ ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.envPipelines[ i ].pipeline, NULL );
 		}
-		if ( vkExec.shadowInteractionPipeline != VK_NULL_HANDLE ) {
-			vkDestroyPipeline( vkCtx.device, vkExec.shadowInteractionPipeline, NULL );
-			vkExec.shadowInteractionPipeline = VK_NULL_HANDLE;
+		vkExec.numEnvPipelines = 0;
+		for ( int i = 0; i < vkExec.numProgramPipelines; i++ ) {
+			vkDestroyPipeline( vkCtx.device, vkExec.programPipelines[ i ].pipeline, NULL );
 		}
-		if ( vkExec.pointShadowInteractionPipeline != VK_NULL_HANDLE ) {
-			vkDestroyPipeline( vkCtx.device, vkExec.pointShadowInteractionPipeline, NULL );
-			vkExec.pointShadowInteractionPipeline = VK_NULL_HANDLE;
+		vkExec.numProgramPipelines = 0;
+		for ( int i = 0; i < vkExec.numSpecialPipelines; i++ ) {
+			if ( vkExec.specialPipelines[ i ].pipeline != VK_NULL_HANDLE ) {
+				vkDestroyPipeline( vkCtx.device, vkExec.specialPipelines[ i ].pipeline, NULL );
+			}
 		}
+		vkExec.numSpecialPipelines = 0;
 		if ( vkExec.casterPipeline != VK_NULL_HANDLE ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.casterPipeline, NULL );
 			vkExec.casterPipeline = VK_NULL_HANDLE;
@@ -1438,14 +2442,6 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 		if ( vkExec.pointCasterPipeline != VK_NULL_HANDLE ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.pointCasterPipeline, NULL );
 			vkExec.pointCasterPipeline = VK_NULL_HANDLE;
-		}
-		if ( vkExec.stencilShadowPipeline != VK_NULL_HANDLE ) {
-			vkDestroyPipeline( vkCtx.device, vkExec.stencilShadowPipeline, NULL );
-			vkExec.stencilShadowPipeline = VK_NULL_HANDLE;
-		}
-		if ( vkExec.fogPipeline != VK_NULL_HANDLE ) {
-			vkDestroyPipeline( vkCtx.device, vkExec.fogPipeline, NULL );
-			vkExec.fogPipeline = VK_NULL_HANDLE;
 		}
 		for ( int i = 0; i < vkExec.numBlendLightPipelines; i++ ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.blendLightPipelines[ i ].pipeline, NULL );
@@ -1456,9 +2452,15 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 
 	const int slot = vkCtx.frameSlot;
 	vkCtx.frameSlot = ( vkCtx.frameSlot + 1 ) % VK_FRAMES_IN_FLIGHT;
+	vkCtx.recordingSlot = slot;
 
 	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ], VK_TRUE, UINT64_MAX );
 	VK_Device_FlushDeferredDestroys( slot );
+	if ( vkExec.numRetiredSets[ slot ] > 0 ) {
+		vkFreeDescriptorSets( vkCtx.device, vkExec.descriptorPool,
+				(uint32_t)vkExec.numRetiredSets[ slot ], vkExec.retiredSets[ slot ] );
+		vkExec.numRetiredSets[ slot ] = 0;
+	}
 
 	uint32_t imageIndex = 0;
 	VkResult res = vkAcquireNextImageKHR( vkCtx.device, vkCtx.swapchain, UINT64_MAX,
@@ -1516,9 +2518,15 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	vkExec.frameSlot = slot;
 	vkExec.swapImageIndex = imageIndex;
 	vkExec.cmd = cmd;
+	vkExec.activeRenderTexture = NULL;
+	vkExec.activeColorEntry = NULL;
+	vkExec.activeDepthEntry = NULL;
+	vkExec.activeDepthAttachmentView = vkCtx.depthViews[ slot ];
+	vkExec.activeExtent = vkCtx.swapchainExtent;
+	vkExec.activePipelineTarget = VK_Exec_SwapchainPipelineTarget();
+	vkExec.frameOpen = true;
 	VK_Exec_BeginMainRendering( true );
 
-	vkExec.frameOpen = true;
 	vkExec.vertexRings[ slot ].cursor = 0;
 	vkExec.indexRings[ slot ].cursor = 0;
 	vkExec.uniformRings[ slot ].cursor = 0;
@@ -1541,16 +2549,78 @@ switches to STORE only when a shadow interruption may need the depth-fill
 contents to survive the scope break.
 ====================
 */
+static void VK_Exec_BarrierActiveTargetForLoad( void ) {
+	VkImageMemoryBarrier2 barriers[ 2 ];
+	memset( barriers, 0, sizeof( barriers ) );
+
+	barriers[ 0 ].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+	barriers[ 0 ].srcStageMask =
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	barriers[ 0 ].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+	barriers[ 0 ].dstStageMask =
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	barriers[ 0 ].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+			| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+	barriers[ 0 ].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	barriers[ 0 ].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	barriers[ 0 ].image = vkExec.activeColorEntry != NULL
+			? vkExec.activeColorEntry->image
+			: vkCtx.swapchainImages[ vkExec.swapImageIndex ];
+	barriers[ 0 ].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barriers[ 0 ].subresourceRange.levelCount = 1;
+	barriers[ 0 ].subresourceRange.layerCount = 1;
+
+	barriers[ 1 ].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+	barriers[ 1 ].srcStageMask =
+			VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+	barriers[ 1 ].srcAccessMask =
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	barriers[ 1 ].dstStageMask =
+			VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+	barriers[ 1 ].dstAccessMask =
+			VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+			| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	barriers[ 1 ].oldLayout =
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	barriers[ 1 ].newLayout =
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	barriers[ 1 ].image = vkExec.activeDepthEntry != NULL
+			? vkExec.activeDepthEntry->image
+			: vkCtx.depthImages[ vkExec.frameSlot ];
+	barriers[ 1 ].subresourceRange.aspectMask =
+			vkExec.activeDepthEntry != NULL
+			? vkExec.activeDepthEntry->aspectMask
+			: VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	barriers[ 1 ].subresourceRange.levelCount = 1;
+	barriers[ 1 ].subresourceRange.layerCount = 1;
+
+	VkDependencyInfo dependency;
+	memset( &dependency, 0, sizeof( dependency ) );
+	dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dependency.imageMemoryBarrierCount =
+			vkExec.activeDepthAttachmentView != VK_NULL_HANDLE ? 2 : 1;
+	dependency.pImageMemoryBarriers = barriers;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
+}
+
 bool VK_Exec_BeginMainRendering( bool clearColorDepth ) {
 	if ( vkExec.mainScopeOpen || vkExec.cmd == VK_NULL_HANDLE ) {
 		return vkExec.mainScopeOpen;
 	}
 	VkCommandBuffer cmd = vkExec.cmd;
+	if ( !clearColorDepth ) {
+		// Dynamic-rendering scopes do not provide implicit external
+		// dependencies. Make the previous stores visible to LOAD before a
+		// scope resumes, including when the layout itself did not change.
+		VK_Exec_BarrierActiveTargetForLoad();
+	}
 
 	VkRenderingAttachmentInfo color;
 	memset( &color, 0, sizeof( color ) );
 	color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	color.imageView = vkCtx.swapchainViews[ vkExec.swapImageIndex ];
+	color.imageView = vkExec.activeColorEntry != NULL
+			? vkExec.activeColorEntry->attachmentView
+			: vkCtx.swapchainViews[ vkExec.swapImageIndex ];
 	color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	color.loadOp = clearColorDepth ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
 	color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1564,23 +2634,30 @@ bool VK_Exec_BeginMainRendering( bool clearColorDepth ) {
 	VkRenderingAttachmentInfo depth;
 	memset( &depth, 0, sizeof( depth ) );
 	depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	depth.imageView = vkCtx.depthViews[ vkExec.frameSlot ];
+	depth.imageView = vkExec.activeDepthAttachmentView;
 	depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	depth.loadOp = clearColorDepth ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-	depth.storeOp = ( r_useShadowMap.GetBool() && r_shadows.GetBool() )
-			? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	// Render-target switches, feedback captures, and depth readback can all
+	// interrupt the scope. Keep depth/stencil contents live across those
+	// breaks; default direct rendering still uses transient device-local
+	// storage, so this changes bandwidth rather than allocation policy.
+	depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	depth.clearValue.depthStencil.depth = 1.0f;
 	depth.clearValue.depthStencil.stencil = 128;
 
 	VkRenderingInfo ri;
 	memset( &ri, 0, sizeof( ri ) );
 	ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-	ri.renderArea.extent = vkCtx.swapchainExtent;
+	ri.renderArea.extent = vkExec.activeExtent;
 	ri.layerCount = 1;
 	ri.colorAttachmentCount = 1;
 	ri.pColorAttachments = &color;
-	ri.pDepthAttachment = &depth;
-	ri.pStencilAttachment = &depth;
+	if ( depth.imageView != VK_NULL_HANDLE ) {
+		ri.pDepthAttachment = &depth;
+		if ( vkExec.activePipelineTarget.stencilFormat != VK_FORMAT_UNDEFINED ) {
+			ri.pStencilAttachment = &depth;
+		}
+	}
 	vkCmdBeginRendering( cmd, &ri );
 
 	// baseline dynamic state: 2D semantics (depth/cull off); the world
@@ -1592,6 +2669,10 @@ bool VK_Exec_BeginMainRendering( bool clearColorDepth ) {
 	vkCmdSetFrontFace( cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
 	vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
 	vkCmdSetDepthBias( cmd, 0.0f, 0.0f, 0.0f );
+	if ( vkCtx.depthBoundsSupported ) {
+		vkCmdSetDepthBoundsTestEnable( cmd, VK_FALSE );
+		vkCmdSetDepthBounds( cmd, 0.0f, 1.0f );
+	}
 
 	// stencil baseline: off with benign values. Every pipeline declares the
 	// five stencil dynamics (Phase G1), so all five must be latched before
@@ -1616,6 +2697,976 @@ void VK_Exec_EndMainRendering( void ) {
 	vkExec.mainScopeOpen = false;
 }
 
+static void VK_Exec_LayoutAccess( VkImageLayout layout, VkPipelineStageFlags2 &stage,
+		VkAccessFlags2 &access ) {
+	switch ( layout ) {
+		case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+			stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+			break;
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+			stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+			access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			break;
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+			stage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+			access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+			break;
+		case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+			stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+			access = VK_ACCESS_2_TRANSFER_READ_BIT;
+			break;
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+			stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+			access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+			break;
+		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+			stage = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+			access = 0;
+			break;
+		case VK_IMAGE_LAYOUT_UNDEFINED:
+			stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+			access = 0;
+			break;
+		default:
+			stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+			break;
+	}
+}
+
+static VkImageAspectFlags VK_Exec_BarrierAspectMask( const vkImageEntry_t *entry ) {
+	VkImageAspectFlags aspectMask = entry->aspectMask;
+	// A depth-only sampled/attachment view can still be backed by a combined
+	// depth-stencil image. Without separate depth/stencil layouts, image
+	// barriers must cover both aspects even when an operation consumes depth.
+	switch ( entry->format ) {
+		case VK_FORMAT_D16_UNORM_S8_UINT:
+		case VK_FORMAT_D24_UNORM_S8_UINT:
+		case VK_FORMAT_D32_SFLOAT_S8_UINT:
+			aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+			break;
+		default:
+			break;
+	}
+	return aspectMask;
+}
+
+static void VK_Exec_TransitionImage( vkImageEntry_t *entry, VkImageLayout newLayout ) {
+	if ( entry == NULL || entry->image == VK_NULL_HANDLE || entry->layout == newLayout ) {
+		return;
+	}
+	VkImageMemoryBarrier2 barrier;
+	memset( &barrier, 0, sizeof( barrier ) );
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+	VK_Exec_LayoutAccess( entry->layout, barrier.srcStageMask, barrier.srcAccessMask );
+	VK_Exec_LayoutAccess( newLayout, barrier.dstStageMask, barrier.dstAccessMask );
+	barrier.oldLayout = entry->layout;
+	barrier.newLayout = newLayout;
+	barrier.image = entry->image;
+	barrier.subresourceRange.aspectMask = VK_Exec_BarrierAspectMask( entry );
+	barrier.subresourceRange.levelCount = (uint32_t)entry->numMips;
+	barrier.subresourceRange.layerCount = (uint32_t)entry->numLayers;
+
+	VkDependencyInfo dep;
+	memset( &dep, 0, sizeof( dep ) );
+	dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dep.imageMemoryBarrierCount = 1;
+	dep.pImageMemoryBarriers = &barrier;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dep );
+	entry->layout = newLayout;
+}
+
+static void VK_Exec_TransitionSwapchain( VkImageLayout oldLayout, VkImageLayout newLayout ) {
+	if ( oldLayout == newLayout ) {
+		return;
+	}
+	VkImageMemoryBarrier2 barrier;
+	memset( &barrier, 0, sizeof( barrier ) );
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+	VK_Exec_LayoutAccess( oldLayout, barrier.srcStageMask, barrier.srcAccessMask );
+	VK_Exec_LayoutAccess( newLayout, barrier.dstStageMask, barrier.dstAccessMask );
+	barrier.oldLayout = oldLayout;
+	barrier.newLayout = newLayout;
+	barrier.image = vkCtx.swapchainImages[ vkExec.swapImageIndex ];
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+
+	VkDependencyInfo dep;
+	memset( &dep, 0, sizeof( dep ) );
+	dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dep.imageMemoryBarrierCount = 1;
+	dep.pImageMemoryBarriers = &barrier;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dep );
+}
+
+static void VK_Exec_TransitionSwapchainDepth( VkImageLayout oldLayout, VkImageLayout newLayout ) {
+	if ( oldLayout == newLayout ) {
+		return;
+	}
+	VkImageMemoryBarrier2 barrier;
+	memset( &barrier, 0, sizeof( barrier ) );
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+	VK_Exec_LayoutAccess( oldLayout, barrier.srcStageMask, barrier.srcAccessMask );
+	VK_Exec_LayoutAccess( newLayout, barrier.dstStageMask, barrier.dstAccessMask );
+	barrier.oldLayout = oldLayout;
+	barrier.newLayout = newLayout;
+	barrier.image = vkCtx.depthImages[ vkExec.frameSlot ];
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+
+	VkDependencyInfo dep;
+	memset( &dep, 0, sizeof( dep ) );
+	dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dep.imageMemoryBarrierCount = 1;
+	dep.pImageMemoryBarriers = &barrier;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dep );
+}
+
+static bool VK_Exec_RenderTextureEntries( idRenderTexture *renderTexture,
+		vkImageEntry_t *&colorEntry, vkImageEntry_t *&depthEntry ) {
+	colorEntry = NULL;
+	depthEntry = NULL;
+	if ( renderTexture == NULL || !renderTexture->EnsureDeviceHandle()
+			|| renderTexture->GetNumColorImages() != 1 ) {
+		return false;
+	}
+
+	idImage *colorImage = renderTexture->GetColorImage( 0 );
+	if ( colorImage == NULL ) {
+		return false;
+	}
+	colorEntry = VK_Image_GetEntry( colorImage->GetDeviceHandle() );
+	if ( colorEntry == NULL || colorEntry->attachmentView == VK_NULL_HANDLE
+			|| ( colorEntry->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ) == 0 ) {
+		return false;
+	}
+
+	idImage *depthImage = renderTexture->GetDepthImage();
+	if ( depthImage != NULL ) {
+		depthEntry = VK_Image_GetEntry( depthImage->GetDeviceHandle() );
+		if ( depthEntry == NULL || depthEntry->attachmentView == VK_NULL_HANDLE
+				|| ( depthEntry->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT ) == 0
+				|| depthEntry->width != colorEntry->width || depthEntry->height != colorEntry->height
+				|| depthEntry->samples != colorEntry->samples ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void VK_Exec_TransitionActiveTargetToSampled( void ) {
+	if ( vkExec.activeRenderTexture == NULL ) {
+		return;
+	}
+	VK_Exec_TransitionImage( vkExec.activeColorEntry, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	VK_Exec_TransitionImage( vkExec.activeDepthEntry, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+}
+
+static void VK_Exec_TransitionActiveTargetToAttachments( void ) {
+	if ( vkExec.activeRenderTexture == NULL ) {
+		return;
+	}
+	VK_Exec_TransitionImage( vkExec.activeColorEntry, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	VK_Exec_TransitionImage( vkExec.activeDepthEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+}
+
+bool VK_Exec_SetRenderTarget( idRenderTexture *renderTexture ) {
+	if ( !VK_GuiExecutor_BeginFrame() ) {
+		return false;
+	}
+	if ( renderTexture == vkExec.activeRenderTexture ) {
+		if ( !vkExec.mainScopeOpen ) {
+			VK_Exec_TransitionActiveTargetToAttachments();
+			return VK_Exec_BeginMainRendering( false );
+		}
+		return true;
+	}
+
+	vkImageEntry_t *colorEntry = NULL;
+	vkImageEntry_t *depthEntry = NULL;
+	if ( renderTexture != NULL && !VK_Exec_RenderTextureEntries( renderTexture, colorEntry, depthEntry ) ) {
+		return false;
+	}
+
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionActiveTargetToSampled();
+
+	vkExec.activeRenderTexture = renderTexture;
+	vkExec.activeColorEntry = colorEntry;
+	vkExec.activeDepthEntry = depthEntry;
+	if ( renderTexture != NULL ) {
+		VK_Exec_TransitionActiveTargetToAttachments();
+		vkExec.activeDepthAttachmentView = depthEntry != NULL ? depthEntry->attachmentView : VK_NULL_HANDLE;
+		vkExec.activeExtent.width = (uint32_t)colorEntry->width;
+		vkExec.activeExtent.height = (uint32_t)colorEntry->height;
+		vkExec.activePipelineTarget.colorFormat = colorEntry->format;
+		vkExec.activePipelineTarget.depthFormat = depthEntry != NULL ? depthEntry->format : VK_FORMAT_UNDEFINED;
+		vkExec.activePipelineTarget.stencilFormat = depthEntry != NULL
+				&& ( depthEntry->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT ) != 0
+				? depthEntry->format : VK_FORMAT_UNDEFINED;
+		vkExec.activePipelineTarget.samples = colorEntry->samples;
+	} else {
+		vkExec.activeDepthAttachmentView = vkCtx.depthViews[ vkExec.frameSlot ];
+		vkExec.activeExtent = vkCtx.swapchainExtent;
+		vkExec.activePipelineTarget = VK_Exec_SwapchainPipelineTarget();
+	}
+	return VK_Exec_BeginMainRendering( false );
+}
+
+int VK_Exec_ActiveFramebufferWidth( void ) {
+	return vkExec.frameOpen ? (int)vkExec.activeExtent.width : (int)vkCtx.swapchainExtent.width;
+}
+
+int VK_Exec_ActiveFramebufferHeight( void ) {
+	return vkExec.frameOpen ? (int)vkExec.activeExtent.height : (int)vkCtx.swapchainExtent.height;
+}
+
+bool VK_Exec_ActiveTargetHasStencil( void ) {
+	return vkExec.frameOpen
+		&& vkExec.activeDepthAttachmentView != VK_NULL_HANDLE
+		&& vkExec.activePipelineTarget.stencilFormat != VK_FORMAT_UNDEFINED;
+}
+
+void VK_Exec_ClearRenderTarget( bool clearColor, bool clearDepth, float depthValue,
+		const float colorValue[ 4 ] ) {
+	if ( !VK_GuiExecutor_BeginFrame() ) {
+		return;
+	}
+	if ( !vkExec.mainScopeOpen && !VK_Exec_BeginMainRendering( false ) ) {
+		return;
+	}
+
+	VkClearAttachment attachments[ 2 ];
+	memset( attachments, 0, sizeof( attachments ) );
+	int attachmentCount = 0;
+	if ( clearColor ) {
+		VkClearAttachment &attachment = attachments[ attachmentCount++ ];
+		attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		attachment.colorAttachment = 0;
+		memcpy( attachment.clearValue.color.float32, colorValue, 4 * sizeof( float ) );
+	}
+	if ( clearDepth && vkExec.activeDepthAttachmentView != VK_NULL_HANDLE ) {
+		VkClearAttachment &attachment = attachments[ attachmentCount++ ];
+		attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		if ( vkExec.activePipelineTarget.stencilFormat != VK_FORMAT_UNDEFINED ) {
+			attachment.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+		attachment.clearValue.depthStencil.depth = depthValue;
+		attachment.clearValue.depthStencil.stencil = 128;
+	}
+	if ( attachmentCount == 0 ) {
+		return;
+	}
+
+	VkClearRect rect;
+	memset( &rect, 0, sizeof( rect ) );
+	rect.rect.extent = vkExec.activeExtent;
+	rect.layerCount = 1;
+	vkCmdClearAttachments( vkExec.cmd, (uint32_t)attachmentCount, attachments, 1, &rect );
+}
+
+static bool VK_Exec_PrepareCopyDestination( idImage *image, int width, int height,
+		vkImageEntry_t *&entry ) {
+	entry = NULL;
+	if ( image == NULL || width <= 0 || height <= 0 ) {
+		return false;
+	}
+	if ( image->GetUploadWidth() != width || image->GetUploadHeight() != height ) {
+		image->Resize( width, height );
+	}
+	entry = VK_Image_GetEntry( image->GetDeviceHandle() );
+	return entry != NULL && ( entry->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) != 0;
+}
+
+bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
+		int cubeFace, bool copyDepth ) {
+	if ( !VK_GuiExecutor_BeginFrame() || image == NULL || width <= 0 || height <= 0 ) {
+		return false;
+	}
+
+	VkImage sourceImage = VK_NULL_HANDLE;
+	VkFormat sourceFormat = VK_FORMAT_UNDEFINED;
+	VkImageAspectFlags copyAspect = copyDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	vkImageEntry_t *sourceEntry = NULL;
+	if ( copyDepth ) {
+		sourceEntry = vkExec.activeRenderTexture != NULL ? vkExec.activeDepthEntry : NULL;
+		sourceImage = sourceEntry != NULL ? sourceEntry->image : vkCtx.depthImages[ vkExec.frameSlot ];
+		sourceFormat = sourceEntry != NULL ? sourceEntry->format : vkCtx.depthFormat;
+	} else {
+		sourceEntry = vkExec.activeRenderTexture != NULL ? vkExec.activeColorEntry : NULL;
+		sourceImage = sourceEntry != NULL ? sourceEntry->image : vkCtx.swapchainImages[ vkExec.swapImageIndex ];
+		sourceFormat = sourceEntry != NULL ? sourceEntry->format : vkCtx.swapchainFormat;
+	}
+	if ( sourceImage == VK_NULL_HANDLE
+			|| ( sourceEntry == NULL && !copyDepth && !vkCtx.swapchainTransferSrc )
+			|| ( sourceEntry != NULL && ( sourceEntry->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) == 0 )
+			|| ( sourceEntry != NULL && sourceEntry->samples != VK_SAMPLE_COUNT_1_BIT ) ) {
+		return false;
+	}
+
+	const int sourceWidth = VK_Exec_ActiveFramebufferWidth();
+	const int sourceHeight = VK_Exec_ActiveFramebufferHeight();
+	if ( x < 0 ) {
+		width += x;
+		x = 0;
+	}
+	if ( y < 0 ) {
+		height += y;
+		y = 0;
+	}
+	if ( x + width > sourceWidth ) {
+		width = sourceWidth - x;
+	}
+	if ( y + height > sourceHeight ) {
+		height = sourceHeight - y;
+	}
+	if ( width <= 0 || height <= 0 ) {
+		return false;
+	}
+
+	// Validate aliasing before a resize/re-back can retire the destination.
+	vkImageEntry_t *destination = VK_Image_GetEntry( image->GetDeviceHandle() );
+	if ( destination != NULL && destination->image == sourceImage ) {
+		return false;
+	}
+	if ( copyDepth ) {
+		if ( !VK_Image_MakeDepthCopyTarget( image, width, height, sourceFormat ) ) {
+			return false;
+		}
+		destination = VK_Image_GetEntry( image->GetDeviceHandle() );
+	} else if ( !VK_Exec_PrepareCopyDestination( image, width, height, destination ) ) {
+		return false;
+	}
+	if ( destination == NULL || destination->image == sourceImage
+			|| destination->samples != VK_SAMPLE_COUNT_1_BIT
+			|| ( destination->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) == 0
+			|| ( copyDepth && destination->format != sourceFormat ) ) {
+		return false;
+	}
+
+	VK_Exec_EndMainRendering();
+	if ( sourceEntry != NULL ) {
+		VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	} else if ( !copyDepth ) {
+		if ( !vkCtx.swapchainTransferSrc ) {
+			VK_Exec_BeginMainRendering( false );
+			return false;
+		}
+		VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	} else {
+		VK_Exec_TransitionSwapchainDepth( VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	}
+	VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+	if ( copyDepth ) {
+		// vkCmdBlitImage is not universally supported for depth formats and a
+		// copy cannot use reversed coordinates. Emit one exact-format copy per
+		// row to preserve the GL bottom-left capture orientation.
+		VkImageCopy *rows = (VkImageCopy *)Mem_Alloc( height * sizeof( VkImageCopy ) );
+		if ( rows == NULL ) {
+			VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+			if ( sourceEntry != NULL ) {
+				VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+			} else {
+				VK_Exec_TransitionSwapchainDepth( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+						VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+			}
+			VK_Exec_BeginMainRendering( false );
+			return false;
+		}
+		memset( rows, 0, height * sizeof( VkImageCopy ) );
+		for ( int row = 0; row < height; row++ ) {
+			rows[ row ].srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			rows[ row ].srcSubresource.layerCount = 1;
+			rows[ row ].srcOffset.x = x;
+			rows[ row ].srcOffset.y = sourceHeight - 1 - ( y + row );
+			rows[ row ].dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			rows[ row ].dstSubresource.layerCount = 1;
+			rows[ row ].dstOffset.y = row;
+			rows[ row ].extent.width = (uint32_t)width;
+			rows[ row ].extent.height = 1;
+			rows[ row ].extent.depth = 1;
+		}
+		vkCmdCopyImage( vkExec.cmd, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				destination->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				(uint32_t)height, rows );
+		Mem_Free( rows );
+
+		destination->everUploaded = true;
+		VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+		if ( sourceEntry != NULL ) {
+			VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+		} else {
+			VK_Exec_TransitionSwapchainDepth( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+		}
+		VK_Exec_BeginMainRendering( false );
+		return true;
+	}
+
+	VkImageBlit region;
+	memset( &region, 0, sizeof( region ) );
+	region.srcSubresource.aspectMask = copyAspect;
+	region.srcSubresource.layerCount = 1;
+	region.srcOffsets[ 0 ].x = x;
+	region.srcOffsets[ 0 ].y = sourceHeight - y;
+	region.srcOffsets[ 1 ].x = x + width;
+	region.srcOffsets[ 1 ].y = sourceHeight - y - height;
+	region.srcOffsets[ 1 ].z = 1;
+	region.dstSubresource.aspectMask = copyAspect;
+	region.dstSubresource.baseArrayLayer = destination->isCube
+			? (uint32_t)Max( 0, Min( cubeFace, destination->numLayers - 1 ) ) : 0;
+	region.dstSubresource.layerCount = 1;
+	region.dstOffsets[ 1 ].x = width;
+	region.dstOffsets[ 1 ].y = height;
+	region.dstOffsets[ 1 ].z = 1;
+	vkCmdBlitImage( vkExec.cmd, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			destination->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST );
+
+	destination->everUploaded = true;
+	VK_Exec_TransitionImage( destination, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	if ( sourceEntry != NULL ) {
+		VK_Exec_TransitionImage( sourceEntry, copyDepth
+				? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+				: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	} else if ( !copyDepth ) {
+		VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	} else {
+		VK_Exec_TransitionSwapchainDepth( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
+	}
+	VK_Exec_BeginMainRendering( false );
+	return true;
+}
+
+static bool VK_Exec_AutomaticCaptureAllowed( void ) {
+	return backEnd.renderTexture == NULL
+			|| ( backEnd.feedbackRenderTexture != NULL
+				&& backEnd.renderTexture == backEnd.feedbackRenderTexture );
+}
+
+static bool VK_Exec_ImageIsCurrentRender( const idImage *image ) {
+	if ( image == NULL || globalImages == NULL ) {
+		return false;
+	}
+	if ( image == globalImages->currentRenderImage
+			|| image == globalImages->originalCurrentRenderImage ) {
+		return true;
+	}
+	const char *name = image->GetName();
+	return name != NULL && idStr::Icmpn( name, "_currentRender", 14 ) == 0;
+}
+
+static bool VK_Exec_ImageIsCurrentDepth( const idImage *image ) {
+	if ( image == NULL || globalImages == NULL ) {
+		return false;
+	}
+	if ( image == globalImages->currentDepthImage ) {
+		return true;
+	}
+	const char *name = image->GetName();
+	return name != NULL && idStr::Icmpn( name, "_currentDepth", 13 ) == 0;
+}
+
+static bool VK_Exec_StageUsesCurrentRender( const shaderStage_t *stage ) {
+	if ( stage == NULL ) {
+		return false;
+	}
+	if ( VK_Exec_ImageIsCurrentRender( stage->texture.image ) ) {
+		return true;
+	}
+	const newShaderStage_t *newStage = stage->newStage;
+	if ( newStage == NULL ) {
+		return false;
+	}
+	for ( int i = 0; i < newStage->numFragmentProgramImages; i++ ) {
+		if ( VK_Exec_ImageIsCurrentRender( newStage->fragmentProgramImages[ i ] ) ) {
+			return true;
+		}
+	}
+	for ( int i = 0; i < newStage->numShaderTextures; i++ ) {
+		if ( VK_Exec_ImageIsCurrentRender( newStage->shaderTextureImages[ i ] ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool VK_Exec_StageUsesCurrentDepth( const shaderStage_t *stage ) {
+	if ( stage == NULL ) {
+		return false;
+	}
+	if ( VK_Exec_ImageIsCurrentDepth( stage->texture.image ) ) {
+		return true;
+	}
+	const newShaderStage_t *newStage = stage->newStage;
+	if ( newStage == NULL ) {
+		return false;
+	}
+	for ( int i = 0; i < newStage->numFragmentProgramImages; i++ ) {
+		if ( VK_Exec_ImageIsCurrentDepth( newStage->fragmentProgramImages[ i ] ) ) {
+			return true;
+		}
+	}
+	for ( int i = 0; i < newStage->numShaderTextures; i++ ) {
+		if ( VK_Exec_ImageIsCurrentDepth( newStage->shaderTextureImages[ i ] ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool VK_Exec_MaterialUsesCurrentDepth( const idMaterial *material ) {
+	if ( material == NULL ) {
+		return false;
+	}
+	for ( int i = 0; i < material->GetNumStages(); i++ ) {
+		if ( VK_Exec_StageUsesCurrentDepth( material->GetStage( i ) ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool VK_Exec_CaptureCurrentRender( const viewDef_t *viewDef ) {
+	if ( globalImages == NULL || globalImages->currentRenderImage == NULL
+			|| viewDef == NULL ) {
+		return false;
+	}
+	const int width = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int height = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( width <= 0 || height <= 0 ) {
+		return false;
+	}
+	idImage *sceneImage = globalImages->currentRenderImage;
+	if ( backEnd.renderTexture != NULL && backEnd.renderTexture->GetNumColorImages() > 0
+			&& backEnd.renderTexture->GetColorImage( 0 ) == sceneImage ) {
+		static bool warnedColorAlias = false;
+		if ( !warnedColorAlias ) {
+			warnedColorAlias = true;
+			common->Warning( "Vulkan: refusing _currentRender feedback from the active color attachment" );
+		}
+		return false;
+	}
+	if ( !VK_Exec_CopyRender( sceneImage, viewDef->viewport.x1, viewDef->viewport.y1,
+			width, height, 0, false ) ) {
+		return false;
+	}
+	backEnd.currentRenderCopied = true;
+	return true;
+}
+
+static bool VK_Exec_CaptureCurrentDepth( const viewDef_t *viewDef ) {
+	if ( globalImages == NULL || globalImages->currentDepthImage == NULL
+			|| viewDef == NULL ) {
+		return false;
+	}
+	const int width = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int height = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( width <= 0 || height <= 0 ) {
+		return false;
+	}
+	idImage *depthImage = globalImages->currentDepthImage;
+	if ( backEnd.renderTexture != NULL
+			&& backEnd.renderTexture->GetDepthImage() == depthImage ) {
+		static bool warnedDepthAlias = false;
+		if ( !warnedDepthAlias ) {
+			warnedDepthAlias = true;
+			common->Warning( "Vulkan: refusing _currentDepth feedback from the active depth attachment" );
+		}
+		return false;
+	}
+	if ( !VK_Exec_CopyRender( depthImage, viewDef->viewport.x1, viewDef->viewport.y1,
+			width, height, 0, true ) ) {
+		return false;
+	}
+	backEnd.currentDepthCopied = true;
+	return true;
+}
+
+static VkResolveModeFlagBits VK_Exec_DepthResolveMode( void ) {
+	VkPhysicalDeviceDepthStencilResolveProperties resolveProperties;
+	memset( &resolveProperties, 0, sizeof( resolveProperties ) );
+	resolveProperties.sType =
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
+
+	VkPhysicalDeviceProperties2 properties;
+	memset( &properties, 0, sizeof( properties ) );
+	properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	properties.pNext = &resolveProperties;
+	vkGetPhysicalDeviceProperties2( vkCtx.physicalDevice, &properties );
+
+	// SAMPLE_ZERO most closely matches the implementation-selected sample
+	// produced by the legacy framebuffer depth blit. Prefer MIN next so
+	// silhouettes retain the nearest covered surface for depth-aware effects.
+	const VkResolveModeFlags modes = resolveProperties.supportedDepthResolveModes;
+	if ( ( modes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT ) != 0 ) {
+		return VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+	}
+	if ( ( modes & VK_RESOLVE_MODE_MIN_BIT ) != 0 ) {
+		return VK_RESOLVE_MODE_MIN_BIT;
+	}
+	if ( ( modes & VK_RESOLVE_MODE_MAX_BIT ) != 0 ) {
+		return VK_RESOLVE_MODE_MAX_BIT;
+	}
+	if ( ( modes & VK_RESOLVE_MODE_AVERAGE_BIT ) != 0 ) {
+		return VK_RESOLVE_MODE_AVERAGE_BIT;
+	}
+	return VK_RESOLVE_MODE_NONE;
+}
+
+static void VK_Exec_DepthResolveBarrier( vkImageEntry_t *sourceDepth,
+		vkImageEntry_t *destinationDepth, bool beforeResolve ) {
+	VkImageMemoryBarrier2 barriers[ 2 ];
+	memset( barriers, 0, sizeof( barriers ) );
+
+	for ( int i = 0; i < 2; i++ ) {
+		vkImageEntry_t *entry = i == 0 ? sourceDepth : destinationDepth;
+		VkImageMemoryBarrier2 &barrier = barriers[ i ];
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+		barrier.image = entry->image;
+		barrier.subresourceRange.aspectMask =
+				VK_Exec_BarrierAspectMask( entry );
+		barrier.subresourceRange.levelCount = (uint32_t)entry->numMips;
+		barrier.subresourceRange.layerCount = (uint32_t)entry->numLayers;
+
+		if ( beforeResolve ) {
+			VK_Exec_LayoutAccess( entry->layout,
+					barrier.srcStageMask, barrier.srcAccessMask );
+			barrier.dstStageMask = i == 0
+					? VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+							| VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+					: VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			barrier.dstAccessMask = i == 0
+					? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+							| VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+					: VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+							| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.oldLayout = entry->layout;
+			barrier.newLayout =
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		} else {
+			barrier.srcStageMask = i == 0
+					? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+							| VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+					: VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+			barrier.srcAccessMask = i == 0
+					? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+							| VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+					: VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+							| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+					| VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+			barrier.oldLayout =
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		}
+	}
+
+	VkDependencyInfo dependency;
+	memset( &dependency, 0, sizeof( dependency ) );
+	dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dependency.imageMemoryBarrierCount = 2;
+	dependency.pImageMemoryBarriers = barriers;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
+
+	sourceDepth->layout = beforeResolve
+			? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+			: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	destinationDepth->layout = sourceDepth->layout;
+}
+
+static bool VK_Exec_ResolveDepthImage( vkImageEntry_t *sourceDepth,
+		vkImageEntry_t *destinationDepth, uint32_t width, uint32_t height ) {
+	if ( sourceDepth == NULL || destinationDepth == NULL
+			|| sourceDepth->format != destinationDepth->format
+			|| sourceDepth->image == destinationDepth->image
+			|| width == 0 || height == 0 ) {
+		return false;
+	}
+
+	if ( sourceDepth->samples == VK_SAMPLE_COUNT_1_BIT
+			&& destinationDepth->samples == VK_SAMPLE_COUNT_1_BIT ) {
+		if ( ( sourceDepth->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) == 0
+				|| ( destinationDepth->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) == 0 ) {
+			return false;
+		}
+		VK_Exec_TransitionImage( sourceDepth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+		VK_Exec_TransitionImage( destinationDepth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+		VkImageCopy region;
+		memset( &region, 0, sizeof( region ) );
+		region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		region.srcSubresource.layerCount = 1;
+		region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		region.dstSubresource.layerCount = 1;
+		region.extent.width = width;
+		region.extent.height = height;
+		region.extent.depth = 1;
+		vkCmdCopyImage( vkExec.cmd,
+				sourceDepth->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				destinationDepth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				1, &region );
+	} else if ( sourceDepth->samples != VK_SAMPLE_COUNT_1_BIT
+			&& destinationDepth->samples == VK_SAMPLE_COUNT_1_BIT ) {
+		const VkResolveModeFlagBits resolveMode = VK_Exec_DepthResolveMode();
+		if ( resolveMode == VK_RESOLVE_MODE_NONE ) {
+			return false;
+		}
+
+		// The fixed-function depth resolve is synchronized in the color-output
+		// domain, even though both images use depth/stencil attachment layouts.
+		// Resolve-specific barriers avoid treating its destination write as a
+		// late-fragment depth-test write.
+		VK_Exec_DepthResolveBarrier(
+				sourceDepth, destinationDepth, true );
+
+		VkRenderingAttachmentInfo depthAttachment;
+		memset( &depthAttachment, 0, sizeof( depthAttachment ) );
+		depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+		depthAttachment.imageView = sourceDepth->attachmentView;
+		depthAttachment.imageLayout =
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		depthAttachment.resolveMode = resolveMode;
+		depthAttachment.resolveImageView = destinationDepth->attachmentView;
+		depthAttachment.resolveImageLayout =
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+		VkRenderingInfo renderingInfo;
+		memset( &renderingInfo, 0, sizeof( renderingInfo ) );
+		renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+		renderingInfo.renderArea.extent.width = width;
+		renderingInfo.renderArea.extent.height = height;
+		renderingInfo.layerCount = 1;
+		renderingInfo.pDepthAttachment = &depthAttachment;
+		vkCmdBeginRendering( vkExec.cmd, &renderingInfo );
+		vkCmdEndRendering( vkExec.cmd );
+
+		VK_Exec_DepthResolveBarrier(
+				sourceDepth, destinationDepth, false );
+		sourceDepth->everUploaded = true;
+		destinationDepth->everUploaded = true;
+		return true;
+	} else {
+		return false;
+	}
+
+	sourceDepth->everUploaded = true;
+	destinationDepth->everUploaded = true;
+	VK_Exec_TransitionImage( sourceDepth,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	VK_Exec_TransitionImage( destinationDepth,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	return true;
+}
+
+bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
+		idRenderTexture *destinationRenderTexture, bool resolveDepth ) {
+	if ( !VK_GuiExecutor_BeginFrame() || sourceRenderTexture == NULL
+			|| destinationRenderTexture == NULL ) {
+		return false;
+	}
+	vkImageEntry_t *sourceColor = NULL;
+	vkImageEntry_t *sourceDepth = NULL;
+	vkImageEntry_t *destinationColor = NULL;
+	vkImageEntry_t *destinationDepth = NULL;
+	if ( !VK_Exec_RenderTextureEntries( sourceRenderTexture, sourceColor, sourceDepth )
+			|| !VK_Exec_RenderTextureEntries( destinationRenderTexture, destinationColor, destinationDepth )
+			|| sourceColor->format != destinationColor->format
+			|| sourceColor->image == destinationColor->image
+			|| ( sourceColor->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) == 0
+			|| ( destinationColor->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) == 0 ) {
+		return false;
+	}
+
+	const uint32_t width = (uint32_t)Min( sourceColor->width, destinationColor->width );
+	const uint32_t height = (uint32_t)Min( sourceColor->height, destinationColor->height );
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionImage( sourceColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	VK_Exec_TransitionImage( destinationColor, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+	if ( sourceColor->samples != VK_SAMPLE_COUNT_1_BIT
+			&& destinationColor->samples == VK_SAMPLE_COUNT_1_BIT ) {
+		VkImageResolve region;
+		memset( &region, 0, sizeof( region ) );
+		region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.srcSubresource.layerCount = 1;
+		region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.dstSubresource.layerCount = 1;
+		region.extent.width = width;
+		region.extent.height = height;
+		region.extent.depth = 1;
+		vkCmdResolveImage( vkExec.cmd, sourceColor->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				destinationColor->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+	} else if ( sourceColor->samples == VK_SAMPLE_COUNT_1_BIT
+			&& destinationColor->samples == VK_SAMPLE_COUNT_1_BIT ) {
+		VkImageCopy region;
+		memset( &region, 0, sizeof( region ) );
+		region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.srcSubresource.layerCount = 1;
+		region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.dstSubresource.layerCount = 1;
+		region.extent.width = width;
+		region.extent.height = height;
+		region.extent.depth = 1;
+		vkCmdCopyImage( vkExec.cmd,
+				sourceColor->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				destinationColor->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				1, &region );
+	} else {
+		VK_Exec_TransitionImage( sourceColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+		VK_Exec_TransitionImage( destinationColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+		VK_Exec_TransitionActiveTargetToAttachments();
+		VK_Exec_BeginMainRendering( false );
+		return false;
+	}
+
+	sourceColor->everUploaded = true;
+	destinationColor->everUploaded = true;
+	VK_Exec_TransitionImage( sourceColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	VK_Exec_TransitionImage( destinationColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+
+	bool depthResolved = true;
+	if ( resolveDepth ) {
+		const uint32_t depthWidth = sourceDepth != NULL && destinationDepth != NULL
+				? (uint32_t)Min( sourceDepth->width, destinationDepth->width ) : 0;
+		const uint32_t depthHeight = sourceDepth != NULL && destinationDepth != NULL
+				? (uint32_t)Min( sourceDepth->height, destinationDepth->height ) : 0;
+		depthResolved = VK_Exec_ResolveDepthImage( sourceDepth, destinationDepth,
+				depthWidth, depthHeight );
+		if ( !depthResolved ) {
+			static bool warnedDepthResolve = false;
+			if ( !warnedDepthResolve ) {
+				warnedDepthResolve = true;
+				common->Warning( "Vulkan: requested depth resolve failed; color resolve completed" );
+			}
+		}
+	}
+
+	VK_Exec_TransitionActiveTargetToAttachments();
+	VK_Exec_BeginMainRendering( false );
+	return depthResolved;
+}
+
+bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixels ) {
+	if ( pixels == NULL || width <= 0 || height <= 0 || !VK_GuiExecutor_BeginFrame()
+			|| !vkCtx.swapchainTransferSrc ) {
+		return false;
+	}
+	if ( vkExec.activeRenderTexture != NULL && !VK_Exec_SetRenderTarget( NULL ) ) {
+		return false;
+	}
+
+	const int framebufferWidth = (int)vkCtx.swapchainExtent.width;
+	const int framebufferHeight = (int)vkCtx.swapchainExtent.height;
+	if ( x < 0 ) {
+		width += x;
+		x = 0;
+	}
+	if ( y < 0 ) {
+		height += y;
+		y = 0;
+	}
+	if ( x + width > framebufferWidth ) {
+		width = framebufferWidth - x;
+	}
+	if ( y + height > framebufferHeight ) {
+		height = framebufferHeight - y;
+	}
+	if ( width <= 0 || height <= 0 ) {
+		return false;
+	}
+
+	const VkDeviceSize readbackBytes = (VkDeviceSize)width * (VkDeviceSize)height * 4;
+	VkBufferCreateInfo bci;
+	memset( &bci, 0, sizeof( bci ) );
+	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bci.size = readbackBytes;
+	bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+	VmaAllocationCreateInfo vaci;
+	memset( &vaci, 0, sizeof( vaci ) );
+	vaci.usage = VMA_MEMORY_USAGE_AUTO;
+	vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+	VkBuffer readbackBuffer = VK_NULL_HANDLE;
+	VmaAllocation readbackAllocation = NULL;
+	VmaAllocationInfo allocationInfo;
+	memset( &allocationInfo, 0, sizeof( allocationInfo ) );
+	if ( vmaCreateBuffer( vkCtx.allocator, &bci, &vaci, &readbackBuffer,
+			&readbackAllocation, &allocationInfo ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: screenshot readback buffer allocation failed" );
+		return false;
+	}
+
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+
+	VkBufferImageCopy copy;
+	memset( &copy, 0, sizeof( copy ) );
+	copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copy.imageSubresource.layerCount = 1;
+	copy.imageOffset.x = x;
+	copy.imageOffset.y = framebufferHeight - y - height;
+	copy.imageExtent.width = (uint32_t)width;
+	copy.imageExtent.height = (uint32_t)height;
+	copy.imageExtent.depth = 1;
+	vkCmdCopyImageToBuffer( vkExec.cmd, vkCtx.swapchainImages[ vkExec.swapImageIndex ],
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy );
+
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	const int submittedSlot = vkExec.frameSlot;
+	if ( !VK_GuiExecutor_EndFrameAndPresent() ) {
+		vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
+		return false;
+	}
+	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ submittedSlot ], VK_TRUE, UINT64_MAX );
+	vmaInvalidateAllocation( vkCtx.allocator, readbackAllocation, 0, VK_WHOLE_SIZE );
+
+	const bool bgra = vkCtx.swapchainFormat == VK_FORMAT_B8G8R8A8_UNORM
+			|| vkCtx.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+	const bool rgba = vkCtx.swapchainFormat == VK_FORMAT_R8G8B8A8_UNORM
+			|| vkCtx.swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB;
+	if ( !bgra && !rgba ) {
+		common->Warning( "Vulkan: screenshot readback does not support swapchain format %d",
+				(int)vkCtx.swapchainFormat );
+		vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
+		return false;
+	}
+
+	const byte *source = (const byte *)allocationInfo.pMappedData;
+	byte *destination = (byte *)pixels;
+	const int destinationStride = ( width * 3 + 3 ) & ~3;
+	for ( int row = 0; row < height; row++ ) {
+		const byte *sourceRow = source + (size_t)( height - 1 - row ) * (size_t)width * 4;
+		byte *destinationRow = destination + (size_t)row * (size_t)destinationStride;
+		for ( int column = 0; column < width; column++ ) {
+			const byte *sourcePixel = sourceRow + column * 4;
+			byte *destinationPixel = destinationRow + column * 3;
+			destinationPixel[ 0 ] = sourcePixel[ bgra ? 2 : 0 ];
+			destinationPixel[ 1 ] = sourcePixel[ 1 ];
+			destinationPixel[ 2 ] = sourcePixel[ bgra ? 0 : 2 ];
+		}
+		if ( destinationStride > width * 3 ) {
+			memset( destinationRow + width * 3, 0, (size_t)( destinationStride - width * 3 ) );
+		}
+	}
+
+	vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
+	return true;
+}
+
 bool VK_GuiExecutor_EndFrameAndPresent( void ) {
 	if ( !vkExec.frameOpen ) {
 		return false;
@@ -1625,6 +3676,7 @@ bool VK_GuiExecutor_EndFrameAndPresent( void ) {
 	VkCommandBuffer cmd = vkExec.cmd;
 
 	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionActiveTargetToSampled();
 
 	VkImageMemoryBarrier2 toPresent;
 	memset( &toPresent, 0, sizeof( toPresent ) );
@@ -1694,14 +3746,195 @@ Shared surface helpers (2D + world views)
 ====================
 */
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+/*
+====================
+VK_Exec_PackedLightIndexesHeadered
+
+Packed MD5R light tris store one emitted-index count per primitive batch
+before the actual light-triangle index stream. tri->numIndexes deliberately
+excludes those header words. Validate the complete header before treating the
+array as headered so the classic flat fallback from R_CreateLightTris remains
+usable when the packed builder declined a surface.
+====================
+*/
+static bool VK_Exec_PackedLightIndexesHeadered( const srfTriangles_t *tri,
+		const rvMD5RMesh *mesh ) {
+	if ( tri == NULL || mesh == NULL || tri->ambientSurface == NULL
+			|| tri->indexes == NULL || tri->numIndexes <= 0 ) {
+		return false;
+	}
+
+	const int numBatches = mesh->primBatches.Num();
+	if ( numBatches <= 0 || tri->numIndexes > INT_MAX - numBatches
+			|| tri->numAllocedIndices < tri->numIndexes + numBatches ) {
+		return false;
+	}
+
+	int headerIndexCount = 0;
+	for ( int batchIndex = 0 ; batchIndex < numBatches ; batchIndex++ ) {
+		const unsigned int encodedCount = tri->indexes[ batchIndex ];
+		if ( encodedCount > static_cast<unsigned int>( INT_MAX ) ) {
+			return false;
+		}
+		const int batchIndexCount = static_cast<int>( encodedCount );
+		if ( ( batchIndexCount % 3 ) != 0
+				|| batchIndexCount > tri->numIndexes - headerIndexCount ) {
+			return false;
+		}
+		headerIndexCount += batchIndexCount;
+	}
+
+	return headerIndexCount == tri->numIndexes;
+}
+
+/*
+====================
+VK_Exec_FlattenPackedLightIndexes
+
+The packed light-triangle stream addresses vertices in the source MD5R draw
+buffer. Vulkan's compatibility cache concatenates each batch into one
+idDrawVert array, so remap the source ranges to that flattened cache.
+====================
+*/
+static bool VK_Exec_FlattenPackedLightIndexes( const srfTriangles_t *tri,
+		const rvMD5RMesh *mesh, glIndex_t *flattened ) {
+	if ( tri == NULL || mesh == NULL || flattened == NULL
+			|| !VK_Exec_PackedLightIndexesHeadered( tri, mesh ) ) {
+		return false;
+	}
+
+	const int numBatches = mesh->primBatches.Num();
+	const glIndex_t *batchHeader = tri->indexes;
+	const glIndex_t *batchIndexes = tri->indexes + numBatches;
+	int destVertexBase = 0;
+	int destIndexBase = 0;
+
+	for ( int batchIndex = 0 ; batchIndex < numBatches ; batchIndex++ ) {
+		const rvMD5RPrimBatch &batch = mesh->primBatches[ batchIndex ];
+		const int batchIndexCount = static_cast<int>( batchHeader[ batchIndex ] );
+		if ( !batch.hasDrawGeoSpec
+				|| batch.drawGeoSpec.vertexStart < 0
+				|| batch.drawGeoSpec.vertexCount < 0
+				|| batch.drawGeoSpec.vertexCount > tri->numVerts - destVertexBase ) {
+			return false;
+		}
+
+		const int sourceVertexStart = batch.drawGeoSpec.vertexStart;
+		if ( batch.drawGeoSpec.vertexCount > INT_MAX - sourceVertexStart ) {
+			return false;
+		}
+		const int sourceVertexEnd = sourceVertexStart + batch.drawGeoSpec.vertexCount;
+		for ( int index = 0 ; index < batchIndexCount ; index++ ) {
+			const unsigned int encodedIndex = batchIndexes[ index ];
+			if ( encodedIndex > static_cast<unsigned int>( INT_MAX ) ) {
+				return false;
+			}
+			const int sourceIndex = static_cast<int>( encodedIndex );
+			if ( sourceIndex < sourceVertexStart || sourceIndex >= sourceVertexEnd ) {
+				return false;
+			}
+			flattened[ destIndexBase + index ] = static_cast<glIndex_t>(
+					destVertexBase + sourceIndex - sourceVertexStart );
+		}
+
+		batchIndexes += batchIndexCount;
+		destIndexBase += batchIndexCount;
+		destVertexBase += batch.drawGeoSpec.vertexCount;
+	}
+
+	return destIndexBase == tri->numIndexes && destVertexBase == tri->numVerts;
+}
+
+/*
+====================
+VK_Exec_FlattenPackedAmbientIndexes
+
+Frame-temp packed caster caches can be vertex-only when the legacy
+r_useIndexBuffers cvar is disabled. Reconstruct the full ambient index stream
+directly from the decoded MD5R draw buffer in that case.
+====================
+*/
+static bool VK_Exec_FlattenPackedAmbientIndexes( const srfTriangles_t *tri,
+		const rvMD5RMesh *mesh, glIndex_t *flattened ) {
+	if ( tri == NULL || mesh == NULL || flattened == NULL
+			|| tri->ambientSurface != NULL ) {
+		return false;
+	}
+
+	const rvMD5RIndexBufferDesc *drawIndexBuffer =
+			R_MD5R_GetDrawIndexBufferForTri( tri );
+	if ( drawIndexBuffer == NULL || drawIndexBuffer->numIndices <= 0
+			|| drawIndexBuffer->indices.Num() != drawIndexBuffer->numIndices ) {
+		return false;
+	}
+
+	int destVertexBase = 0;
+	int destIndexBase = 0;
+	for ( int batchIndex = 0 ; batchIndex < mesh->primBatches.Num() ; batchIndex++ ) {
+		const rvMD5RPrimBatch &batch = mesh->primBatches[ batchIndex ];
+		if ( !batch.hasDrawGeoSpec
+				|| batch.drawGeoSpec.vertexStart < 0
+				|| batch.drawGeoSpec.vertexCount < 0
+				|| batch.drawGeoSpec.primitiveCount < 0
+				|| batch.drawGeoSpec.primitiveCount > INT_MAX / 3 ) {
+			return false;
+		}
+
+		const int batchIndexCount = batch.drawGeoSpec.primitiveCount * 3;
+		if ( batch.drawGeoSpec.indexStart < 0
+				|| batchIndexCount > drawIndexBuffer->numIndices - batch.drawGeoSpec.indexStart
+				|| batchIndexCount > tri->numIndexes - destIndexBase
+				|| batch.drawGeoSpec.vertexCount > tri->numVerts - destVertexBase ) {
+			return false;
+		}
+
+		const int sourceVertexStart = batch.drawGeoSpec.vertexStart;
+		if ( batch.drawGeoSpec.vertexCount > INT_MAX - sourceVertexStart ) {
+			return false;
+		}
+		const int sourceVertexEnd = sourceVertexStart + batch.drawGeoSpec.vertexCount;
+		const glIndex_t *source =
+				drawIndexBuffer->indices.Ptr() + batch.drawGeoSpec.indexStart;
+		for ( int index = 0 ; index < batchIndexCount ; index++ ) {
+			const unsigned int encodedIndex = source[ index ];
+			if ( encodedIndex > static_cast<unsigned int>( INT_MAX ) ) {
+				return false;
+			}
+			const int sourceIndex = static_cast<int>( encodedIndex );
+			if ( sourceIndex < sourceVertexStart || sourceIndex >= sourceVertexEnd ) {
+				return false;
+			}
+			flattened[ destIndexBase + index ] = static_cast<glIndex_t>(
+					destVertexBase + sourceIndex - sourceVertexStart );
+		}
+
+		destVertexBase += batch.drawGeoSpec.vertexCount;
+		destIndexBase += batchIndexCount;
+	}
+
+	return destVertexBase == tri->numVerts && destIndexBase == tri->numIndexes;
+}
+#endif
+
 // memoized ring upload + bind: the depth fill and both ambient walks visit
 // the same tris; a hit re-binds without re-copying. Also serves the
 // interaction pass, where the light-tris chains carry their own index
 // subset over the shared ambient vertex cache (distinct idxKey, so memo
 // entries never alias across the subsets).
 bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri ) {
+	if ( tri == NULL || tri->ambientCache == NULL
+			|| tri->numVerts <= 0 || tri->numIndexes <= 0
+			|| slot < 0 || slot >= VK_FRAMES_IN_FLIGHT ) {
+		return false;
+	}
+
 	const void *vertKey = tri->ambientCache;
-	const void *idxKey = tri->indexes;
+	const void *idxKey = tri->indexes != NULL
+			? static_cast<const void *>( tri->indexes )
+			: ( tri->indexCache != NULL
+				? static_cast<const void *>( tri->indexCache )
+				: static_cast<const void *>( tri ) );
 
 	// independent vert/index memos: light-tris chains carry their own index
 	// subset over the SHARED ambient vertex array, so a combined memo would
@@ -1714,10 +3947,8 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 			vertexOffset = memo.vertexOffset;
 		} else {
 			const idDrawVert *verts = (const idDrawVert *)vertexCache.Position( tri->ambientCache );
-			if ( verts == NULL ) {
-				return false;
-			}
-			vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts, tri->numVerts * (int)sizeof( idDrawVert ), 64 );
+			vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts,
+				static_cast<size_t>( tri->numVerts ) * sizeof( idDrawVert ), 64 );
 			if ( vertexOffset < 0 ) {
 				return false;
 			}
@@ -1734,7 +3965,47 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 		if ( memo.idxKey == idxKey && idxKey != NULL ) {
 			indexOffset = memo.indexOffset;
 		} else {
-			indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ], tri->indexes, tri->numIndexes * (int)sizeof( glIndex_t ), 4 );
+			const size_t indexBytes =
+					static_cast<size_t>( tri->numIndexes ) * sizeof( glIndex_t );
+			if ( indexBytes > static_cast<size_t>( vkExec.indexRings[ slot ].capacity ) ) {
+				return false;
+			}
+
+			const glIndex_t *indexSource = tri->indexes;
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+			const rvMD5RMesh *packedMesh = R_MD5R_GetMeshForTri( tri );
+			const bool headeredLightIndexes =
+					VK_Exec_PackedLightIndexesHeadered( tri, packedMesh );
+			const bool rebuildPackedAmbientIndexes =
+					indexSource == NULL && tri->indexCache == NULL
+					&& packedMesh != NULL && tri->ambientSurface == NULL;
+			if ( headeredLightIndexes || rebuildPackedAmbientIndexes ) {
+				idTempArray<glIndex_t> flattened(
+						static_cast<unsigned int>( tri->numIndexes ) );
+				const bool flattenedOK = headeredLightIndexes
+						? VK_Exec_FlattenPackedLightIndexes( tri, packedMesh,
+								flattened.Ptr() )
+						: VK_Exec_FlattenPackedAmbientIndexes( tri, packedMesh,
+								flattened.Ptr() );
+				if ( !flattenedOK ) {
+					return false;
+				}
+				indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ],
+						flattened.Ptr(), indexBytes, 4 );
+			} else
+#endif
+			if ( indexSource != NULL ) {
+				indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ],
+						indexSource, indexBytes, 4 );
+			} else if ( tri->indexCache != NULL
+					&& tri->indexCache->size >= static_cast<int>( indexBytes ) ) {
+				const glIndex_t *cachedIndexes =
+						static_cast<const glIndex_t *>( vertexCache.Position( tri->indexCache ) );
+				indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ],
+						cachedIndexes, indexBytes, 4 );
+			} else {
+				return false;
+			}
 			if ( indexOffset < 0 ) {
 				return false;
 			}
@@ -1759,6 +4030,10 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 // tables — cache handles and index arrays never alias across the two
 // families, and a direct-mapped collision just re-uploads.
 bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri ) {
+	if ( tri == NULL ) {
+		return false;
+	}
+
 	const void *vertKey = tri->shadowCache;
 	const void *idxKey = tri->indexes;
 	if ( vertKey == NULL || idxKey == NULL || tri->numVerts <= 0 || tri->numIndexes <= 0 ) {
@@ -1773,10 +4048,8 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 			vertexOffset = memo.vertexOffset;
 		} else {
 			const shadowCache_t *verts = (const shadowCache_t *)vertexCache.Position( tri->shadowCache );
-			if ( verts == NULL ) {
-				return false;
-			}
-			vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts, tri->numVerts * (int)sizeof( shadowCache_t ), 16 );
+			vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts,
+				static_cast<size_t>( tri->numVerts ) * sizeof( shadowCache_t ), 16 );
 			if ( vertexOffset < 0 ) {
 				return false;
 			}
@@ -1791,7 +4064,8 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 		if ( memo.idxKey == idxKey ) {
 			indexOffset = memo.indexOffset;
 		} else {
-			indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ], tri->indexes, tri->numIndexes * (int)sizeof( glIndex_t ), 4 );
+			indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ], tri->indexes,
+				static_cast<size_t>( tri->numIndexes ) * sizeof( glIndex_t ), 4 );
 			if ( indexOffset < 0 ) {
 				return false;
 			}
@@ -1807,7 +4081,38 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 	return true;
 }
 
-// per-surface scissor: viewport base + drawSurf scissor (GL bottom-left)
+// Backend-generated geometry which has no idVertexCache handle cannot use the
+// pointer-keyed upload memo above. Packed MD5R shadow volumes are decoded and
+// skinned one primitive batch at a time, so stream those transient arrays
+// directly into the active frame rings.
+bool VK_Exec_BindRawShadowGeometry( VkCommandBuffer cmd, int slot,
+		const shadowCache_t *verts, int numVerts,
+		const glIndex_t *indexes, int numIndexes ) {
+	if ( verts == NULL || indexes == NULL || numVerts <= 0 || numIndexes <= 0 ) {
+		return false;
+	}
+
+	const int vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts,
+			static_cast<size_t>( numVerts ) * sizeof( shadowCache_t ), 16 );
+	if ( vertexOffset < 0 ) {
+		return false;
+	}
+	const int indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ], indexes,
+			static_cast<size_t>( numIndexes ) * sizeof( glIndex_t ), 4 );
+	if ( indexOffset < 0 ) {
+		return false;
+	}
+
+	VkDeviceSize vertexBindOffset = (VkDeviceSize)vertexOffset;
+	vkCmdBindVertexBuffers( cmd, 0, 1, &vkExec.vertexRings[ slot ].buffer, &vertexBindOffset );
+	vkCmdBindIndexBuffer( cmd, vkExec.indexRings[ slot ].buffer, (VkDeviceSize)indexOffset, VK_INDEX_TYPE_UINT32 );
+	vkExec.boundVertexOffset = vertexOffset;
+	return true;
+}
+
+// Per-surface scissor: viewport base + drawSurf scissor (GL bottom-left).
+// When r_useScissor is disabled, retain RB_BeginDrawingView's view-level
+// scissor instead of expanding subviews to the whole viewport.
 void VK_Exec_SetSurfScissor( VkCommandBuffer cmd, const viewDef_t *viewDef, const drawSurf_t *drawSurf, int fbHeight ) {
 	const int vpX = viewDef->viewport.x1;
 	const int vpYGL = viewDef->viewport.y1;
@@ -1815,23 +4120,33 @@ void VK_Exec_SetSurfScissor( VkCommandBuffer cmd, const viewDef_t *viewDef, cons
 	const int vpH = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
 
 	VkRect2D scissor;
-	if ( !drawSurf->scissorRect.IsEmpty() ) {
-		const int scX = viewDef->viewport.x1 + drawSurf->scissorRect.x1;
-		const int scYGL = viewDef->viewport.y1 + drawSurf->scissorRect.y1;
-		const int scW = drawSurf->scissorRect.x2 - drawSurf->scissorRect.x1 + 1;
-		const int scH = drawSurf->scissorRect.y2 - drawSurf->scissorRect.y1 + 1;
-		scissor.offset.x = scX > 0 ? scX : 0;
-		scissor.offset.y = fbHeight - scYGL - scH;
-		if ( scissor.offset.y < 0 ) {
-			scissor.offset.y = 0;
-		}
-		scissor.extent.width = (uint32_t)( scW > 0 ? scW : 0 );
-		scissor.extent.height = (uint32_t)( scH > 0 ? scH : 0 );
+	const idScreenRect &requested =
+			( r_useScissor.GetBool() && !drawSurf->scissorRect.IsEmpty() )
+				? drawSurf->scissorRect : viewDef->scissor;
+	if ( !requested.IsEmpty() ) {
+		const int requestedX0 = vpX + requested.x1;
+		const int requestedY0GL = vpYGL + requested.y1;
+		const int requestedX1 = vpX + requested.x2 + 1;
+		const int requestedY1GL = vpYGL + requested.y2 + 1;
+		const int x0 = Max( 0, Max( vpX, requestedX0 ) );
+		const int x1 = Max( x0, Min( vpX + vpW, requestedX1 ) );
+		const int y0GL = Max( vpYGL, requestedY0GL );
+		const int y1GL = Max( y0GL, Min( vpYGL + vpH, requestedY1GL ) );
+		const int y0 = Max( 0, fbHeight - y1GL );
+		const int y1 = Max( y0, Min( fbHeight, fbHeight - y0GL ) );
+		scissor.offset.x = x0;
+		scissor.offset.y = y0;
+		scissor.extent.width = (uint32_t)( x1 - x0 );
+		scissor.extent.height = (uint32_t)( y1 - y0 );
 	} else {
-		scissor.offset.x = vpX;
-		scissor.offset.y = fbHeight - vpYGL - vpH;
-		scissor.extent.width = (uint32_t)vpW;
-		scissor.extent.height = (uint32_t)vpH;
+		const int x0 = Max( 0, vpX );
+		const int x1 = Max( x0, vpX + vpW );
+		const int y0 = Max( 0, fbHeight - vpYGL - vpH );
+		const int y1 = Max( y0, Min( fbHeight, fbHeight - vpYGL ) );
+		scissor.offset.x = x0;
+		scissor.offset.y = y0;
+		scissor.extent.width = (uint32_t)( x1 - x0 );
+		scissor.extent.height = (uint32_t)( y1 - y0 );
 	}
 	vkCmdSetScissor( cmd, 0, 1, &scissor );
 }
@@ -1886,27 +4201,51 @@ VkDescriptorSet VK_Exec_InteractionUniformSet( void ) {
 	return vkExec.uniformRingSets[ vkExec.frameSlot ];
 }
 
-// streams one interaction block into the frame's uniform ring; returns the
-// 256-aligned dynamic offset, or -1 on overflow
+// Streams one ordinary interaction block into the frame's uniform ring.
+// The descriptor range stays 256 bytes, while the dynamic offset honors the
+// device's possibly stricter alignment.
 int VK_Exec_InteractionUniformAlloc( const void *data, int bytes ) {
 	if ( bytes > VK_UNIFORM_SLICE_BYTES ) {
 		return -1;
 	}
-	return VK_Ring_Alloc( vkExec.uniformRings[ vkExec.frameSlot ], data, bytes, VK_UNIFORM_SLICE_BYTES );
+	const int alignment =
+			VK_Exec_UniformSliceAlignment( VK_UNIFORM_SLICE_BYTES );
+	return alignment > 0
+			? VK_Ring_Alloc( vkExec.uniformRings[ vkExec.frameSlot ],
+					data, bytes, alignment )
+			: -1;
 }
 
-// the frame slot's shadow set (atlas compare sampler + shadow-block ring),
-// or NULL until the atlas descriptor has been written
+// Shadow receiver blocks use a larger descriptor range for four localized
+// projected cascades. Point receivers share set 7 and use this allocator too,
+// keeping every set-7 dynamic descriptor valid through the full 512 bytes.
+int VK_Exec_ShadowUniformAlloc( const void *data, int bytes ) {
+	if ( bytes > VK_SHADOW_UNIFORM_SLICE_BYTES ) {
+		return -1;
+	}
+	const int alignment =
+			VK_Exec_UniformSliceAlignment( VK_SHADOW_UNIFORM_SLICE_BYTES );
+	return alignment > 0
+			? VK_Ring_Alloc( vkExec.uniformRings[ vkExec.frameSlot ],
+					data, bytes, alignment )
+			: -1;
+}
+
+// the frame slot's shadow set (atlas compare/raw samplers + shadow-block
+// ring), or NULL until both atlas descriptors have been written
 VkDescriptorSet VK_Exec_ShadowDescriptorSet( void ) {
 	return vkExec.shadowSetsHaveAtlas ? vkExec.shadowSets[ vkExec.frameSlot ] : VK_NULL_HANDLE;
 }
 
-// (re)points every frame slot's shadow set at the atlas view + compare
-// sampler (vk_ShadowMap.cpp calls this at atlas creation, before the set is
-// ever bound; recreation waits the device idle first). NULL view clears.
-bool VK_Exec_UpdateShadowAtlasDescriptors( VkImageView view, VkSampler sampler ) {
+// (re)points every frame slot's shadow set at the atlas view + compare/raw
+// samplers (vk_ShadowMap.cpp calls this at atlas creation, before the set is
+// ever bound; recreation waits the device idle first). Any NULL clears.
+bool VK_Exec_UpdateShadowAtlasDescriptors( VkImageView view,
+		VkSampler compareSampler, VkSampler rawSampler ) {
 	vkExec.shadowSetsHaveAtlas = false;
-	if ( view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE ) {
+	if ( view == VK_NULL_HANDLE ||
+			compareSampler == VK_NULL_HANDLE ||
+			rawSampler == VK_NULL_HANDLE ) {
 		return true;
 	}
 	if ( !vkExec.initialized ) {
@@ -1916,32 +4255,43 @@ bool VK_Exec_UpdateShadowAtlasDescriptors( VkImageView view, VkSampler sampler )
 		if ( vkExec.shadowSets[ i ] == VK_NULL_HANDLE ) {
 			return false;
 		}
-		VkDescriptorImageInfo imageInfo;
-		memset( &imageInfo, 0, sizeof( imageInfo ) );
-		imageInfo.sampler = sampler;
-		imageInfo.imageView = view;
-		imageInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-		VkWriteDescriptorSet write;
-		memset( &write, 0, sizeof( write ) );
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = vkExec.shadowSets[ i ];
-		write.dstBinding = 0;
-		write.descriptorCount = 1;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		write.pImageInfo = &imageInfo;
-		vkUpdateDescriptorSets( vkCtx.device, 1, &write, 0, NULL );
+		VkDescriptorImageInfo imageInfos[ 2 ];
+		memset( imageInfos, 0, sizeof( imageInfos ) );
+		imageInfos[ 0 ].sampler = compareSampler;
+		imageInfos[ 1 ].sampler = rawSampler;
+		for ( int imageIndex = 0; imageIndex < 2; imageIndex++ ) {
+			imageInfos[ imageIndex ].imageView = view;
+			imageInfos[ imageIndex ].imageLayout =
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		}
+		VkWriteDescriptorSet writes[ 2 ];
+		memset( writes, 0, sizeof( writes ) );
+		for ( int writeIndex = 0; writeIndex < 2; writeIndex++ ) {
+			writes[ writeIndex ].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[ writeIndex ].dstSet = vkExec.shadowSets[ i ];
+			writes[ writeIndex ].dstBinding = writeIndex == 0 ? 0 : 2;
+			writes[ writeIndex ].descriptorCount = 1;
+			writes[ writeIndex ].descriptorType =
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			writes[ writeIndex ].pImageInfo = &imageInfos[ writeIndex ];
+		}
+		vkUpdateDescriptorSets( vkCtx.device, 2, writes, 0, NULL );
 	}
 	vkExec.shadowSetsHaveAtlas = true;
 	return true;
 }
 
 // allocates (first call per cube) and points one point-light cube's
-// per-frame-slot shadow sets at the cube view + compare sampler; binding 1
-// is that slot's uniform ring (the same shadow set layout as the atlas set,
+// per-frame-slot shadow sets at the cube view + compare/raw samplers; binding
+// 1 is that slot's uniform ring (the same shadow set layout as the atlas set,
 // so the point pipelines stay set-7 compatible). Called at cube creation,
 // before the sets are ever bound; recreation waits the device idle first.
-bool VK_Exec_CreateShadowCubeSets( VkImageView cubeView, VkSampler sampler, VkDescriptorSet sets[ VK_FRAMES_IN_FLIGHT ] ) {
-	if ( !vkExec.initialized || cubeView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE ) {
+bool VK_Exec_CreateShadowCubeSets( VkImageView cubeView,
+		VkSampler compareSampler, VkSampler rawSampler,
+		VkDescriptorSet sets[ VK_FRAMES_IN_FLIGHT ] ) {
+	if ( !vkExec.initialized || cubeView == VK_NULL_HANDLE ||
+			compareSampler == VK_NULL_HANDLE ||
+			rawSampler == VK_NULL_HANDLE ) {
 		return false;
 	}
 	for ( int i = 0; i < VK_FRAMES_IN_FLIGHT; i++ ) {
@@ -1960,7 +4310,7 @@ bool VK_Exec_CreateShadowCubeSets( VkImageView cubeView, VkSampler sampler, VkDe
 			VkDescriptorBufferInfo bufferInfo;
 			bufferInfo.buffer = vkExec.uniformRings[ i ].buffer;
 			bufferInfo.offset = 0;
-			bufferInfo.range = VK_UNIFORM_SLICE_BYTES;
+			bufferInfo.range = VK_SHADOW_UNIFORM_SLICE_BYTES;
 			VkWriteDescriptorSet ringWrite;
 			memset( &ringWrite, 0, sizeof( ringWrite ) );
 			ringWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1972,20 +4322,27 @@ bool VK_Exec_CreateShadowCubeSets( VkImageView cubeView, VkSampler sampler, VkDe
 			vkUpdateDescriptorSets( vkCtx.device, 1, &ringWrite, 0, NULL );
 		}
 
-		VkDescriptorImageInfo imageInfo;
-		memset( &imageInfo, 0, sizeof( imageInfo ) );
-		imageInfo.sampler = sampler;
-		imageInfo.imageView = cubeView;
-		imageInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-		VkWriteDescriptorSet write;
-		memset( &write, 0, sizeof( write ) );
-		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		write.dstSet = sets[ i ];
-		write.dstBinding = 0;
-		write.descriptorCount = 1;
-		write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		write.pImageInfo = &imageInfo;
-		vkUpdateDescriptorSets( vkCtx.device, 1, &write, 0, NULL );
+		VkDescriptorImageInfo imageInfos[ 2 ];
+		memset( imageInfos, 0, sizeof( imageInfos ) );
+		imageInfos[ 0 ].sampler = compareSampler;
+		imageInfos[ 1 ].sampler = rawSampler;
+		for ( int imageIndex = 0; imageIndex < 2; imageIndex++ ) {
+			imageInfos[ imageIndex ].imageView = cubeView;
+			imageInfos[ imageIndex ].imageLayout =
+					VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		}
+		VkWriteDescriptorSet writes[ 2 ];
+		memset( writes, 0, sizeof( writes ) );
+		for ( int writeIndex = 0; writeIndex < 2; writeIndex++ ) {
+			writes[ writeIndex ].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[ writeIndex ].dstSet = sets[ i ];
+			writes[ writeIndex ].dstBinding = writeIndex == 0 ? 0 : 2;
+			writes[ writeIndex ].descriptorCount = 1;
+			writes[ writeIndex ].descriptorType =
+					VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			writes[ writeIndex ].pImageInfo = &imageInfos[ writeIndex ];
+		}
+		vkUpdateDescriptorSets( vkCtx.device, 2, writes, 0, NULL );
 	}
 	return true;
 }
@@ -2003,7 +4360,1550 @@ void VK_Exec_FreeShadowCubeSets( VkDescriptorSet sets[ VK_FRAMES_IN_FLIGHT ] ) {
 // the world ambient passes. Geometry and scissor are already bound; mvp is
 // clip-z fixed. worldDepthState additionally applies each stage's GLS depth
 // bits. Cube texgens (skybox/wobblesky/diffuse) draw through the cube
-// pipeline; reflect/screen texgens remain later-phase gaps.
+// pipeline and non-bumpy reflection stages use the environment pipeline.
+static float VK_Exec_AlphaTestModeValue( const shaderStage_t *stage ) {
+	if ( stage == NULL || !stage->hasAlphaTest ) {
+		return 0.0f;
+	}
+	if ( stage->alphaTestMode == GL_LESS ) {
+		return -1.0f;
+	}
+	if ( stage->alphaTestMode == GL_EQUAL ) {
+		return 2.0f;
+	}
+	return 1.0f;
+}
+
+static void VK_Exec_SetPushTextureMatrix( const shaderStage_t *stage,
+		const float *registers, vkGuiPushConstants_t &push ) {
+	push.texMatrixS[ 0 ] = 1.0f;
+	push.texMatrixS[ 1 ] = 0.0f;
+	push.texMatrixS[ 2 ] = 0.0f;
+	push.texMatrixS[ 3 ] = 0.0f;
+	push.texMatrixT[ 0 ] = 0.0f;
+	push.texMatrixT[ 1 ] = 1.0f;
+	push.texMatrixT[ 2 ] = 0.0f;
+	push.texMatrixT[ 3 ] = 0.0f;
+	push.params[ 3 ] = 0.0f;
+	if ( stage == NULL || !stage->texture.hasMatrix || registers == NULL ) {
+		return;
+	}
+	float matrix[ 16 ];
+	RB_GetShaderTextureMatrix( registers, &stage->texture, matrix );
+	push.texMatrixS[ 0 ] = matrix[ 0 ];
+	push.texMatrixS[ 1 ] = matrix[ 4 ];
+	push.texMatrixS[ 3 ] = matrix[ 12 ];
+	push.texMatrixT[ 0 ] = matrix[ 1 ];
+	push.texMatrixT[ 1 ] = matrix[ 5 ];
+	push.texMatrixT[ 3 ] = matrix[ 13 ];
+	push.params[ 3 ] = 1.0f;
+}
+
+static void VK_Exec_RestoreSurfaceState( VkCommandBuffer cmd, const viewDef_t *viewDef,
+		const idMaterial *shader, bool worldDepthState ) {
+	vkCmdSetDepthTestEnable( cmd, worldDepthState ? VK_TRUE : VK_FALSE );
+	if ( !worldDepthState || viewDef == NULL || shader == NULL ) {
+		return;
+	}
+	switch ( shader->GetCullType() ) {
+		case CT_TWO_SIDED:
+			vkCmdSetCullMode( cmd, VK_CULL_MODE_NONE );
+			break;
+		case CT_BACK_SIDED:
+			vkCmdSetCullMode( cmd,
+					viewDef->isMirror ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT );
+			break;
+		default:
+			vkCmdSetCullMode( cmd,
+					viewDef->isMirror ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT );
+			break;
+	}
+	if ( shader->TestMaterialFlag( MF_POLYGONOFFSET ) ) {
+		vkCmdSetDepthBiasEnable( cmd, VK_TRUE );
+		vkCmdSetDepthBias( cmd, r_offsetUnits.GetFloat() * shader->GetPolygonOffset(),
+				0.0f, r_offsetFactor.GetFloat() );
+	} else {
+		vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
+	}
+}
+
+static void VK_Exec_SetProgramStageDepthState( VkCommandBuffer cmd,
+		const shaderStage_t *stage, bool worldDepthState ) {
+	if ( !worldDepthState ) {
+		return;
+	}
+	const int bits = stage->drawStateBits;
+	VkCompareOp compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+	if ( bits & GLS_DEPTHFUNC_EQUAL ) {
+		compareOp = VK_COMPARE_OP_EQUAL;
+	} else if ( bits & GLS_DEPTHFUNC_ALWAYS ) {
+		compareOp = VK_COMPARE_OP_ALWAYS;
+	}
+	vkCmdSetDepthCompareOp( cmd, compareOp );
+	vkCmdSetDepthWriteEnable( cmd, ( bits & GLS_DEPTHMASK ) ? VK_FALSE : VK_TRUE );
+}
+
+static bool VK_Exec_DrawBumpyProgramStage( const viewDef_t *viewDef,
+		const drawSurf_t *drawSurf, const srfTriangles_t *tri, const float mvp[ 16 ],
+		bool worldDepthState, const shaderStage_t *stage ) {
+	const newShaderStage_t *newStage = stage->newStage;
+	if ( drawSurf->space == NULL || newStage->numFragmentProgramImages < 2
+			|| newStage->fragmentProgramImages[ 0 ] == NULL
+			|| newStage->fragmentProgramImages[ 1 ] == NULL ) {
+		return false;
+	}
+
+	idImage *cubeImage = newStage->fragmentProgramImages[ 0 ];
+	idImage *bumpImage = newStage->fragmentProgramImages[ 1 ];
+	const vkImageEntry_t *cubeEntry =
+			VK_Image_GetEntry( cubeImage->GetDeviceHandle() );
+	const vkImageEntry_t *bumpEntry =
+			VK_Image_GetEntry( bumpImage->GetDeviceHandle() );
+	if ( cubeEntry == NULL || !cubeEntry->isCube
+			|| bumpEntry == NULL || bumpEntry->isCube ) {
+		return false;
+	}
+	VkDescriptorSet cubeSet =
+			VK_GuiExecutor_GetImageDescriptor( cubeImage->GetDeviceHandle() );
+	VkDescriptorSet bumpSet =
+			VK_Exec_ImageDescriptor( bumpImage->GetDeviceHandle(), true );
+	if ( cubeSet == VK_NULL_HANDLE || bumpSet == VK_NULL_HANDLE ) {
+		return false;
+	}
+
+	idVec3 localViewOrigin;
+	R_GlobalPointToLocal( drawSurf->space->modelMatrix,
+			viewDef->renderView.vieworg, localViewOrigin );
+	const float *modelMatrix = drawSurf->space->modelMatrix;
+	vkBumpyEnvironmentBlock_t block;
+	memset( &block, 0, sizeof( block ) );
+	block.localViewOrigin[ 0 ] = localViewOrigin[ 0 ];
+	block.localViewOrigin[ 1 ] = localViewOrigin[ 1 ];
+	block.localViewOrigin[ 2 ] = localViewOrigin[ 2 ];
+	block.localViewOrigin[ 3 ] = 1.0f;
+	block.modelRow0[ 0 ] = modelMatrix[ 0 ];
+	block.modelRow0[ 1 ] = modelMatrix[ 4 ];
+	block.modelRow0[ 2 ] = modelMatrix[ 8 ];
+	block.modelRow0[ 3 ] = modelMatrix[ 12 ];
+	block.modelRow1[ 0 ] = modelMatrix[ 1 ];
+	block.modelRow1[ 1 ] = modelMatrix[ 5 ];
+	block.modelRow1[ 2 ] = modelMatrix[ 9 ];
+	block.modelRow1[ 3 ] = modelMatrix[ 13 ];
+	block.modelRow2[ 0 ] = modelMatrix[ 2 ];
+	block.modelRow2[ 1 ] = modelMatrix[ 6 ];
+	block.modelRow2[ 2 ] = modelMatrix[ 10 ];
+	block.modelRow2[ 3 ] = modelMatrix[ 14 ];
+	const int uniformOffset =
+			VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
+	if ( uniformOffset < 0 ) {
+		return false;
+	}
+
+	VkPipeline pipeline =
+			VK_GuiExecutor_GetEnvironmentPipeline( stage->drawStateBits, true );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return false;
+	}
+
+	vkGuiPushConstants_t push;
+	memset( &push, 0, sizeof( push ) );
+	memcpy( push.mvp, mvp, sizeof( push.mvp ) );
+	VK_Exec_SetProgramStageDepthState( vkExec.cmd, stage, worldDepthState );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 0, 1, &cubeSet, 0, NULL );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 1, 1, &bumpSet, 0, NULL );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+			1, &dynamicOffset );
+	vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( push ), &push );
+	vkCmdDrawIndexed( vkExec.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+	return true;
+}
+
+static bool VK_Exec_DrawRefractiveGlassStage( const viewDef_t *viewDef,
+		const drawSurf_t *drawSurf, const srfTriangles_t *tri,
+		const float mvp[ 16 ], bool worldDepthState,
+		const shaderStage_t *stage ) {
+	const newShaderStage_t *newStage = stage->newStage;
+	const float *regs = drawSurf->shaderRegisters;
+	if ( drawSurf->space == NULL || newStage == NULL
+			|| newStage->numFragmentProgramImages < 3 ) {
+		return false;
+	}
+
+	VkDescriptorSet textureSets[ 3 ];
+	for ( int i = 0; i < 3; i++ ) {
+		idImage *image = newStage->fragmentProgramImages[ i ];
+		if ( image == NULL ) {
+			return false;
+		}
+		const vkImageEntry_t *entry =
+				VK_Image_GetEntry( image->GetDeviceHandle() );
+		const bool expectCube = i == 2;
+		if ( entry == NULL || entry->isCube != expectCube ) {
+			return false;
+		}
+		textureSets[ i ] =
+				VK_GuiExecutor_GetImageDescriptor( image->GetDeviceHandle() );
+		if ( textureSets[ i ] == VK_NULL_HANDLE ) {
+			return false;
+		}
+	}
+
+	float parms[ 16 ][ 4 ];
+	memset( parms, 0, sizeof( parms ) );
+	for ( int i = 0; i < newStage->numVertexParms && i < 2; i++ ) {
+		for ( int j = 0; j < 4; j++ ) {
+			parms[ i ][ j ] = regs != NULL
+					? regs[ newStage->vertexParms[ i ][ j ] ] : 0.0f;
+		}
+	}
+
+	idVec3 localViewOrigin;
+	R_GlobalPointToLocal( drawSurf->space->modelMatrix,
+			viewDef->renderView.vieworg, localViewOrigin );
+	parms[ 2 ][ 0 ] = localViewOrigin[ 0 ];
+	parms[ 2 ][ 1 ] = localViewOrigin[ 1 ];
+	parms[ 2 ][ 2 ] = localViewOrigin[ 2 ];
+	parms[ 2 ][ 3 ] = 1.0f;
+
+	const float *modelMatrix = drawSurf->space->modelMatrix;
+	parms[ 3 ][ 0 ] = modelMatrix[ 0 ];
+	parms[ 3 ][ 1 ] = modelMatrix[ 4 ];
+	parms[ 3 ][ 2 ] = modelMatrix[ 8 ];
+	parms[ 4 ][ 0 ] = modelMatrix[ 1 ];
+	parms[ 4 ][ 1 ] = modelMatrix[ 5 ];
+	parms[ 4 ][ 2 ] = modelMatrix[ 9 ];
+	parms[ 5 ][ 0 ] = modelMatrix[ 2 ];
+	parms[ 5 ][ 1 ] = modelMatrix[ 6 ];
+	parms[ 5 ][ 2 ] = modelMatrix[ 10 ];
+
+	const int viewportWidth =
+			Max( 1, viewDef->viewport.x2 - viewDef->viewport.x1 + 1 );
+	const int viewportHeight =
+			Max( 1, viewDef->viewport.y2 - viewDef->viewport.y1 + 1 );
+	int currentRenderWidth = viewportWidth;
+	int currentRenderHeight = viewportHeight;
+	if ( globalImages->currentRenderImage != NULL ) {
+		currentRenderWidth =
+				Max( 1, globalImages->currentRenderImage->GetUploadWidth() );
+		currentRenderHeight =
+				Max( 1, globalImages->currentRenderImage->GetUploadHeight() );
+	}
+	parms[ 12 ][ 0 ] = (float)VK_Exec_ActiveFramebufferHeight();
+	parms[ 13 ][ 0 ] = (float)viewDef->viewport.x1;
+	parms[ 13 ][ 1 ] = (float)viewDef->viewport.y1;
+	parms[ 14 ][ 0 ] = (float)viewportWidth;
+	parms[ 14 ][ 1 ] = (float)viewportHeight;
+	parms[ 15 ][ 0 ] = (float)viewportWidth / (float)currentRenderWidth;
+	parms[ 15 ][ 1 ] = (float)viewportHeight / (float)currentRenderHeight;
+
+	const int uniformOffset =
+			VK_Exec_InteractionUniformAlloc( parms, sizeof( parms ) );
+	if ( uniformOffset < 0 ) {
+		return false;
+	}
+	const VkPipeline pipeline = VK_Exec_GetProgramPipeline(
+			VK_MATERIAL_PROGRAM_FAMILY_REFRACTIVE_GLASS,
+			stage->drawStateBits, false );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return false;
+	}
+
+	vkGuiPushConstants_t push;
+	memset( &push, 0, sizeof( push ) );
+	memcpy( push.mvp, mvp, sizeof( push.mvp ) );
+	if ( regs != NULL ) {
+		for ( int i = 0; i < 4; i++ ) {
+			push.stageColor[ i ] = regs[ stage->color.registers[ i ] ];
+		}
+	} else {
+		push.stageColor[ 0 ] = push.stageColor[ 1 ] =
+				push.stageColor[ 2 ] = push.stageColor[ 3 ] = 1.0f;
+	}
+	push.params[ 1 ] = VK_Exec_AlphaTestModeValue( stage );
+	push.params[ 2 ] = stage->hasAlphaTest && regs != NULL
+			? regs[ stage->alphaTestRegister ] : 0.0f;
+
+	VK_Exec_SetProgramStageDepthState( vkExec.cmd, stage, worldDepthState );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 0, 3, textureSets, 0, NULL );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+			1, &dynamicOffset );
+	vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( push ), &push );
+	vkCmdDrawIndexed( vkExec.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+	return true;
+}
+
+static int VK_Exec_GLSLCanonicalParmSlot( vkGLSLProgramFamily_t family,
+		const char *name ) {
+	if ( name == NULL ) {
+		return -1;
+	}
+	static const char * const displacementParms[] = {
+		"scrollX", "scrollY", "sizeX", "sizeY", "texCoordSize"
+	};
+	static const char * const twoStageParms[] = {
+		"scrollX", "scrollY", "sizeX", "sizeY", "texCoordSize",
+		"scrollX2", "scrollY2", "sizeX2", "sizeY2", "texCoordSize2"
+	};
+	static const char * const ghostParms[] = {
+		"scrollX", "scrollY", "sizeX", "sizeY", "distortionLength"
+	};
+	static const char * const displacement2Parms[] = {
+		"OffsetScrollSpeed", "EffectAScrollSpeed", "EffectBScrollSpeed",
+		"OffsetScale", "EffectAScale", "EffectBScale", "BaseFlicker",
+		"EffectAFlicker", "EffectBFlicker"
+	};
+	static const char * const sniperParms[] = {
+		"textureScale", "textureHalfScale", "backgroundColor"
+	};
+	static const char * const blurParms[] = {
+		"textureScale", "sampleDist"
+	};
+	static const char * const medLabsParms[] = {
+		"range", "focus", "Scroll", "ApproachColor", "ApproachPercent"
+	};
+	static const char * const alParms[] = {
+		"distanceScale", "textureScale", "LightLoc", "LightColor",
+		"LightSize", "LightBehind", "LightMinDistance"
+	};
+	static const char * const waterParms[] = {
+		"fRefractionIndexAndPower", "vColorLight", "vColorDark",
+		"POTCorrection", "TextureTranslateScale",
+		"TextureTranslateScale2", "vFogColor", "vDistortionScale",
+		"localEyePos"
+	};
+	static const char * const depthAwareBlurParms[] = {
+		"invTexSize", "range", "focus", "approachColor",
+		"approachPercent", "distanceScale"
+	};
+	static const char * const smaaEdgeParms[] = {
+		"invTexSize", "sourceColorSpace", "quality"
+	};
+	static const char * const smaaWeightsParms[] = {
+		"invTexSize", "texSize", "quality"
+	};
+
+	const char * const *names = NULL;
+	int count = 0;
+	switch ( family ) {
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT:
+			names = displacementParms;
+			count = sizeof( displacementParms ) / sizeof( displacementParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_TWO_STAGE:
+			names = twoStageParms;
+			count = sizeof( twoStageParms ) / sizeof( twoStageParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_GHOST_PULLING:
+			names = ghostParms;
+			count = sizeof( ghostParms ) / sizeof( ghostParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT2:
+			names = displacement2Parms;
+			count = sizeof( displacement2Parms ) / sizeof( displacement2Parms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE:
+			names = displacementParms;
+			count = sizeof( displacementParms ) / sizeof( displacementParms[ 0 ] );
+			if ( !idStr::Icmp( name, "EyeVector" ) ) {
+				return 5;
+			}
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_SNIPER_STRETCH2:
+			if ( !idStr::Icmp( name, "currentRenderViewportOrigin" ) ) {
+				return 13;
+			}
+			if ( !idStr::Icmp( name, "currentRenderViewportSize" ) ) {
+				return 14;
+			}
+			if ( !idStr::Icmp( name, "currentRenderTextureScale" ) ) {
+				return 15;
+			}
+			names = sniperParms;
+			count = sizeof( sniperParms ) / sizeof( sniperParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE:
+		case VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE2:
+			if ( !idStr::Icmp( name, "distanceScale" ) ) {
+				return 0;
+			}
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_BLUR:
+			names = blurParms;
+			count = sizeof( blurParms ) / sizeof( blurParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_MEDLABS:
+			names = medLabsParms;
+			count = sizeof( medLabsParms ) / sizeof( medLabsParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_AL:
+			names = alParms;
+			count = sizeof( alParms ) / sizeof( alParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_WATER:
+			names = waterParms;
+			count = sizeof( waterParms ) / sizeof( waterParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_DEPTH_AWARE_BLUR:
+			names = depthAwareBlurParms;
+			count = sizeof( depthAwareBlurParms )
+					/ sizeof( depthAwareBlurParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_SMAA_EDGE:
+			names = smaaEdgeParms;
+			count = sizeof( smaaEdgeParms ) / sizeof( smaaEdgeParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_SMAA_WEIGHTS:
+			names = smaaWeightsParms;
+			count = sizeof( smaaWeightsParms )
+					/ sizeof( smaaWeightsParms[ 0 ] );
+			break;
+		case VK_GLSL_PROGRAM_FAMILY_SMAA_BLEND:
+			if ( !idStr::Icmp( name, "invTexSize" ) ) {
+				return 0;
+			}
+			break;
+		default:
+			break;
+	}
+	for ( int i = 0; i < count; i++ ) {
+		if ( !idStr::Icmp( name, names[ i ] ) ) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool VK_Exec_EvaluateGLSLParm( const viewDef_t *viewDef,
+		const drawSurf_t *drawSurf, const newShaderStage_t *newStage,
+		int authoredSlot, float value[ 4 ] ) {
+	memset( value, 0, 4 * sizeof( value[ 0 ] ) );
+	const glslShaderParmBinding_t binding =
+			newStage->shaderParmBindings[ authoredSlot ];
+	const float *regs = drawSurf->shaderRegisters;
+	switch ( binding ) {
+		case GLSL_SHADERPARM_REGISTERS: {
+			const int count = newStage->shaderParmNumRegisters[ authoredSlot ];
+			if ( regs == NULL || count <= 0 ) {
+				return false;
+			}
+			for ( int i = 0; i < count && i < 4; i++ ) {
+				value[ i ] =
+						regs[ newStage->shaderParmRegisters[ authoredSlot ][ i ] ];
+			}
+			return true;
+		}
+		case GLSL_SHADERPARM_VIEW_ORIGIN:
+			value[ 0 ] = viewDef->renderView.vieworg[ 0 ];
+			value[ 1 ] = viewDef->renderView.vieworg[ 1 ];
+			value[ 2 ] = viewDef->renderView.vieworg[ 2 ];
+			value[ 3 ] = 1.0f;
+			return true;
+		case GLSL_SHADERPARM_CURRENT_RENDER_VIEWPORT_ORIGIN:
+			value[ 0 ] = (float)viewDef->viewport.x1;
+			value[ 1 ] = (float)viewDef->viewport.y1;
+			return true;
+		case GLSL_SHADERPARM_CURRENT_RENDER_VIEWPORT_SIZE:
+			value[ 0 ] =
+					(float)( viewDef->viewport.x2 - viewDef->viewport.x1 + 1 );
+			value[ 1 ] =
+					(float)( viewDef->viewport.y2 - viewDef->viewport.y1 + 1 );
+			return true;
+		case GLSL_SHADERPARM_CURRENT_RENDER_TEXTURE_SCALE: {
+			const int viewportWidth =
+					Max( 1, viewDef->viewport.x2 - viewDef->viewport.x1 + 1 );
+			const int viewportHeight =
+					Max( 1, viewDef->viewport.y2 - viewDef->viewport.y1 + 1 );
+			int textureWidth = viewportWidth;
+			int textureHeight = viewportHeight;
+			if ( globalImages->currentRenderImage != NULL ) {
+				textureWidth =
+						Max( 1, globalImages->currentRenderImage->GetUploadWidth() );
+				textureHeight =
+						Max( 1, globalImages->currentRenderImage->GetUploadHeight() );
+			}
+			value[ 0 ] = (float)viewportWidth / (float)textureWidth;
+			value[ 1 ] = (float)viewportHeight / (float)textureHeight;
+			return true;
+		}
+		case GLSL_SHADERPARM_POSTPROCESS_INV_TEX_SIZE:
+			value[ 0 ] = backEnd.postProcessTexelSize[ 0 ];
+			value[ 1 ] = backEnd.postProcessTexelSize[ 1 ];
+			return true;
+		case GLSL_SHADERPARM_POSTPROCESS_TEX_SIZE:
+			value[ 0 ] = backEnd.postProcessTexelSize[ 2 ];
+			value[ 1 ] = backEnd.postProcessTexelSize[ 3 ];
+			return true;
+		case GLSL_SHADERPARM_POSTPROCESS_SOURCE_COLOR_SPACE:
+			memcpy( value, backEnd.postProcessSourceColorSpace.ToFloatPtr(),
+					4 * sizeof( value[ 0 ] ) );
+			return true;
+		case GLSL_SHADERPARM_POSTPROCESS_SMAA_QUALITY:
+			memcpy( value, backEnd.postProcessSMAAQuality.ToFloatPtr(),
+					4 * sizeof( value[ 0 ] ) );
+			return true;
+		default:
+			return false;
+	}
+}
+
+static int VK_Exec_GLSLTextureSet( vkGLSLProgramFamily_t family,
+		const char *name, bool &cube ) {
+	cube = false;
+	if ( name == NULL ) {
+		return -1;
+	}
+	if ( !idStr::Icmp( name, "Image" )
+			|| !idStr::Icmp( name, "BackgroundImage" )
+			|| !idStr::Icmp( name, "Depth" )
+			|| !idStr::Icmp( name, "Scene" )
+			|| !idStr::Icmp( name, "ColorTex" )
+			|| !idStr::Icmp( name, "EdgesTex" )
+			|| !idStr::Icmp( name, "RT" ) ) {
+		return 0;
+	}
+	if ( !idStr::Icmp( name, "DisplacementMap" )
+			|| !idStr::Icmp( name, "Scope" )
+			|| !idStr::Icmp( name, "DepthTex" )
+			|| !idStr::Icmp( name, "Blur1" )
+			|| !idStr::Icmp( name, "AreaTex" )
+			|| !idStr::Icmp( name, "BlendTex" )
+			|| !idStr::Icmp( name, "LightImage" ) ) {
+		return 1;
+	}
+	if ( !idStr::Icmp( name, "DisplacementMap2" )
+			|| !idStr::Icmp( name, "EffectA" )
+			|| !idStr::Icmp( name, "SearchTex" )
+			|| !idStr::Icmp( name, "Variance" )
+			|| !idStr::Icmp( name, "ReflectTexture" ) ) {
+		return 2;
+	}
+	if ( !idStr::Icmp( name, "CubeImage" ) ) {
+		cube = true;
+		return family == VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE ? 2 : -1;
+	}
+	if ( !idStr::Icmp( name, "EffectB" )
+			|| !idStr::Icmp( name, "RefractTexture" ) ) {
+		return 3;
+	}
+	if ( !idStr::Icmp( name, "NoiseNormalTexture" ) ) {
+		return family == VK_GLSL_PROGRAM_FAMILY_WATER ? 0 : -1;
+	}
+	if ( !idStr::Icmp( name, "NoiseNormalTexture2" ) ) {
+		return family == VK_GLSL_PROGRAM_FAMILY_WATER ? 1 : -1;
+	}
+	if ( !idStr::Icmp( name, "Mask" ) ) {
+		return 4;
+	}
+	return -1;
+}
+
+static unsigned int VK_Exec_GLSLRequiredTextureMask(
+		vkGLSLProgramFamily_t family ) {
+	switch ( family ) {
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT:
+		case VK_GLSL_PROGRAM_FAMILY_GHOST_PULLING:
+		case VK_GLSL_PROGRAM_FAMILY_SNIPER_STRETCH2:
+		case VK_GLSL_PROGRAM_FAMILY_AL:
+		case VK_GLSL_PROGRAM_FAMILY_DEPTH_AWARE_BLUR:
+			return 0x03;
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_TWO_STAGE:
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT_CUBE:
+		case VK_GLSL_PROGRAM_FAMILY_MEDLABS:
+			return 0x07;
+		case VK_GLSL_PROGRAM_FAMILY_DISPLACEMENT2:
+			return 0x1f;
+		case VK_GLSL_PROGRAM_FAMILY_WATER:
+			return 0x0f;
+		case VK_GLSL_PROGRAM_FAMILY_MULTIPLY_BLEND:
+		case VK_GLSL_PROGRAM_FAMILY_BLUR:
+		case VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE:
+		case VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE2:
+		case VK_GLSL_PROGRAM_FAMILY_SMAA_EDGE:
+			return 0x01;
+		case VK_GLSL_PROGRAM_FAMILY_SMAA_BLEND:
+			return 0x03;
+		case VK_GLSL_PROGRAM_FAMILY_SMAA_WEIGHTS:
+			return 0x07;
+		default:
+			return UINT_MAX;
+	}
+}
+
+static bool VK_Exec_BindGLSLStageColor( const drawSurf_t *drawSurf,
+		const srfTriangles_t *tri, const shaderStage_t *stage, int stageNum ) {
+	if ( stage->vertexColor == SVC_IGNORE || drawSurf->decalColorCache == NULL
+			|| stageNum < 0 || stageNum >= drawSurf->decalColorStageCount
+			|| drawSurf->decalColorStride < tri->numVerts * 4 ) {
+		return false;
+	}
+	const byte *colorData =
+			(const byte *)vertexCache.Position( drawSurf->decalColorCache );
+	if ( colorData == NULL ) {
+		return false;
+	}
+	const int colorOffset = VK_Ring_Alloc(
+			vkExec.vertexRings[ vkExec.frameSlot ],
+			colorData + drawSurf->decalColorOffset
+				+ stageNum * drawSurf->decalColorStride,
+			(size_t)tri->numVerts * 4, 4 );
+	if ( colorOffset < 0 ) {
+		return false;
+	}
+	const VkBuffer colorBuffer =
+			vkExec.vertexRings[ vkExec.frameSlot ].buffer;
+	const VkDeviceSize bindOffset = (VkDeviceSize)colorOffset;
+	vkCmdBindVertexBuffers( vkExec.cmd, 1, 1, &colorBuffer, &bindOffset );
+	return true;
+}
+
+static bool VK_Exec_DrawGLSLProgramStage( const viewDef_t *viewDef,
+		const drawSurf_t *drawSurf, const srfTriangles_t *tri, const float mvp[ 16 ],
+		bool worldDepthState, const shaderStage_t *stage, int stageNum ) {
+	newShaderStage_t *newStage = stage->newStage;
+	if ( newStage == NULL || !newStage->glslProgram
+			|| !R_ValidateGLSLProgram( newStage ) ) {
+		return false;
+	}
+	const vkGLSLProgramFamily_t family =
+			R_GetGLSLProgramFamily( newStage->glslProgramName );
+	if ( family <= VK_GLSL_PROGRAM_FAMILY_UNKNOWN
+			|| family >= VK_GLSL_PROGRAM_FAMILY_COUNT ) {
+		return false;
+	}
+
+	float parms[ 16 ][ 4 ];
+	memset( parms, 0, sizeof( parms ) );
+	for ( int i = 0; i < newStage->numShaderParms; i++ ) {
+		const int targetSlot = VK_Exec_GLSLCanonicalParmSlot(
+				family, newStage->shaderParmNames[ i ] );
+		if ( targetSlot < 0 || targetSlot >= 16 ) {
+			continue;
+		}
+		float value[ 4 ];
+		if ( VK_Exec_EvaluateGLSLParm( viewDef, drawSurf, newStage, i, value ) ) {
+			if ( family == VK_GLSL_PROGRAM_FAMILY_WATER
+					&& targetSlot == 8 && drawSurf->space != NULL ) {
+				idVec3 localEye;
+				R_GlobalPointToLocal( drawSurf->space->modelMatrix,
+						viewDef->renderView.vieworg, localEye );
+				value[ 0 ] = localEye[ 0 ];
+				value[ 1 ] = localEye[ 1 ];
+				value[ 2 ] = localEye[ 2 ];
+				value[ 3 ] = 1.0f;
+			}
+			memcpy( parms[ targetSlot ], value, sizeof( value ) );
+		}
+	}
+
+	const int viewportWidth =
+			Max( 1, viewDef->viewport.x2 - viewDef->viewport.x1 + 1 );
+	const int viewportHeight =
+			Max( 1, viewDef->viewport.y2 - viewDef->viewport.y1 + 1 );
+	int currentRenderWidth = viewportWidth;
+	int currentRenderHeight = viewportHeight;
+	if ( globalImages->currentRenderImage != NULL ) {
+		currentRenderWidth =
+				Max( 1, globalImages->currentRenderImage->GetUploadWidth() );
+		currentRenderHeight =
+				Max( 1, globalImages->currentRenderImage->GetUploadHeight() );
+	}
+	// Slots 12..15 are reserved across all embedded material modules for
+	// framebuffer/current-render facts. SniperStretch2 consumes them to
+	// support both the retail and openQ4 override parameter contracts.
+	parms[ 12 ][ 0 ] = (float)VK_Exec_ActiveFramebufferHeight();
+	parms[ 13 ][ 0 ] = (float)viewDef->viewport.x1;
+	parms[ 13 ][ 1 ] = (float)viewDef->viewport.y1;
+	parms[ 14 ][ 0 ] = (float)viewportWidth;
+	parms[ 14 ][ 1 ] = (float)viewportHeight;
+	parms[ 15 ][ 0 ] = (float)viewportWidth / (float)currentRenderWidth;
+	parms[ 15 ][ 1 ] = (float)viewportHeight / (float)currentRenderHeight;
+
+	const int uniformOffset =
+			VK_Exec_InteractionUniformAlloc( parms, sizeof( parms ) );
+	if ( uniformOffset < 0 ) {
+		return false;
+	}
+
+	unsigned int boundTextureMask = 0;
+	for ( int i = 0; i < newStage->numShaderTextures; i++ ) {
+		bool cube = false;
+		const int setIndex = VK_Exec_GLSLTextureSet(
+				family, newStage->shaderTextureNames[ i ], cube );
+		if ( setIndex < 0 || setIndex >= 6 ) {
+			continue;
+		}
+		idImage *image = RB_ResolveGLSLShaderTextureImage( newStage, i, NULL );
+		if ( image == NULL ) {
+			return false;
+		}
+		image->SetSamplerState( newStage->shaderTextureFilters[ i ],
+				newStage->shaderTextureRepeats[ i ] );
+		const vkImageEntry_t *entry =
+				VK_Image_GetEntry( image->GetDeviceHandle() );
+		if ( entry == NULL || entry->isCube != cube ) {
+			return false;
+		}
+		const VkDescriptorSet descriptor =
+				VK_GuiExecutor_GetImageDescriptor( image->GetDeviceHandle() );
+		if ( descriptor == VK_NULL_HANDLE ) {
+			return false;
+		}
+		vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkExec.interactionPipelineLayout, (uint32_t)setIndex, 1,
+				&descriptor, 0, NULL );
+		boundTextureMask |= 1u << setIndex;
+	}
+	// The shipped DepthTexture hardwareShader has no shaderTexture entry.
+	// The original program consequently saw opaque coverage; bind the
+	// engine-owned white image explicitly so the Vulkan descriptor contract
+	// remains valid without requiring an asset override.
+	if ( family == VK_GLSL_PROGRAM_FAMILY_DEPTH_TEXTURE
+			&& ( boundTextureMask & 0x01 ) == 0 ) {
+		idImage *image = globalImages->whiteImage;
+		const vkImageEntry_t *entry = image != NULL
+				? VK_Image_GetEntry( image->GetDeviceHandle() ) : NULL;
+		if ( entry == NULL || entry->isCube ) {
+			return false;
+		}
+		const VkDescriptorSet descriptor =
+				VK_GuiExecutor_GetImageDescriptor( image->GetDeviceHandle() );
+		if ( descriptor == VK_NULL_HANDLE ) {
+			return false;
+		}
+		vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkExec.interactionPipelineLayout, 0, 1, &descriptor, 0, NULL );
+		boundTextureMask |= 0x01;
+	}
+	const unsigned int requiredMask =
+			VK_Exec_GLSLRequiredTextureMask( family );
+	if ( requiredMask == UINT_MAX
+			|| ( boundTextureMask & requiredMask ) != requiredMask ) {
+		return false;
+	}
+
+	const bool separateColor =
+			VK_Exec_GLSLFamilyUsesVertexColor( family )
+			&& VK_Exec_BindGLSLStageColor( drawSurf, tri, stage, stageNum );
+	const VkPipeline pipeline = VK_Exec_GetGLSLMaterialPipeline(
+			family, stage->drawStateBits, separateColor );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return false;
+	}
+
+	vkGuiPushConstants_t push;
+	memset( &push, 0, sizeof( push ) );
+	memcpy( push.mvp, mvp, sizeof( push.mvp ) );
+	if ( separateColor ) {
+		push.stageColor[ 0 ] = 1.0f;
+		push.stageColor[ 1 ] = 1.0f;
+		push.stageColor[ 2 ] = 1.0f;
+		push.stageColor[ 3 ] = 1.0f;
+	} else if ( drawSurf->shaderRegisters != NULL ) {
+		for ( int i = 0; i < 4; i++ ) {
+			push.stageColor[ i ] =
+					drawSurf->shaderRegisters[ stage->color.registers[ i ] ];
+		}
+	} else {
+		push.stageColor[ 0 ] = 1.0f;
+		push.stageColor[ 1 ] = 1.0f;
+		push.stageColor[ 2 ] = 1.0f;
+		push.stageColor[ 3 ] = 1.0f;
+	}
+	switch ( stage->vertexColor ) {
+		case SVC_MODULATE:			push.params[ 0 ] = 1.0f; break;
+		case SVC_INVERSE_MODULATE:	push.params[ 0 ] = 2.0f; break;
+		default:					push.params[ 0 ] = 0.0f; break;
+	}
+	push.params[ 1 ] = VK_Exec_AlphaTestModeValue( stage );
+	push.params[ 2 ] = stage->hasAlphaTest
+			&& drawSurf->shaderRegisters != NULL
+			? drawSurf->shaderRegisters[ stage->alphaTestRegister ] : 0.0f;
+
+	VK_Exec_SetProgramStageDepthState( vkExec.cmd, stage, worldDepthState );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+			1, &dynamicOffset );
+	vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( push ), &push );
+	vkCmdDrawIndexed( vkExec.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+
+	static bool loggedFamily[ VK_GLSL_PROGRAM_FAMILY_COUNT ];
+	if ( !loggedFamily[ family ] ) {
+		loggedFamily[ family ] = true;
+		common->Printf( "Vulkan: first native GLSL family %d stage drew (%s)\n",
+				(int)family, drawSurf->material->GetName() );
+	}
+	return true;
+}
+
+/*
+====================
+VK_GuiExecutor_PrepareSpecialEffects
+
+RC_DRAW_SPECIAL_EFFECTS is deliberately adjacent to its RC_DRAW_VIEW.  The
+legacy GL backend performs the Raven controller's source capture immediately;
+Vulkan keeps the view pointer and consumes it from the matching world walk,
+after the scene color and depth are complete and before any later HUD view.
+====================
+*/
+void VK_GuiExecutor_PrepareSpecialEffects( const viewDef_t *viewDef ) {
+	int activeMask = tr.specialEffectsEnabled;
+	if ( r_forceSpecialEffects.GetInteger() > 0 ) {
+		activeMask = r_forceSpecialEffects.GetInteger();
+	}
+	activeMask &= SPECIAL_EFFECT_BLUR | SPECIAL_EFFECT_AL;
+
+	vkExec.pendingSpecialEffectsView =
+			activeMask != 0 ? viewDef : NULL;
+	vkExec.pendingSpecialEffectsMask = activeMask;
+	vkExec.pendingSpecialEffectsSource = NULL;
+	vkExec.pendingSpecialEffectsNeedsResolve = false;
+}
+
+static void VK_Exec_SetSpecialEffectsViewport( const viewDef_t *viewDef ) {
+	const int framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	const int viewportWidth =
+			viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int viewportHeight =
+			viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+
+	VkViewport viewport;
+	viewport.x = (float)viewDef->viewport.x1;
+	viewport.y = (float)( framebufferHeight - viewDef->viewport.y1 );
+	viewport.width = (float)viewportWidth;
+	viewport.height = -(float)viewportHeight;
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+	vkCmdSetViewport( vkExec.cmd, 0, 1, &viewport );
+
+	VkRect2D scissor;
+	scissor.offset.x =
+			Max( 0, viewDef->viewport.x1 + viewDef->scissor.x1 );
+	scissor.offset.y = framebufferHeight
+			- viewDef->viewport.y1 - viewDef->scissor.y2 - 1;
+	scissor.offset.y = Max( 0, scissor.offset.y );
+	scissor.extent.width = (uint32_t)Max( 0,
+			viewDef->scissor.x2 - viewDef->scissor.x1 + 1 );
+	scissor.extent.height = (uint32_t)Max( 0,
+			viewDef->scissor.y2 - viewDef->scissor.y1 + 1 );
+	vkCmdSetScissor( vkExec.cmd, 0, 1, &scissor );
+}
+
+static void VK_Exec_InitSpecialEffectsPushConstants(
+		vkGuiPushConstants_t &push ) {
+	memset( &push, 0, sizeof( push ) );
+	push.mvp[ 0 ] = 1.0f;
+	push.mvp[ 5 ] = 1.0f;
+	push.mvp[ 10 ] = 1.0f;
+	push.mvp[ 15 ] = 1.0f;
+	push.stageColor[ 0 ] = 1.0f;
+	push.stageColor[ 1 ] = 1.0f;
+	push.stageColor[ 2 ] = 1.0f;
+	push.stageColor[ 3 ] = 1.0f;
+}
+
+static bool VK_Exec_BindSpecialEffectsQuad( float x1, float y1,
+		float x2, float y2 ) {
+	idDrawVert vertices[ 4 ];
+	memset( vertices, 0, sizeof( vertices ) );
+	vertices[ 0 ].xyz.Set( x1, y1, 0.0f );
+	vertices[ 0 ].st.Set( 0.0f, 0.0f );
+	vertices[ 1 ].xyz.Set( x2, y1, 0.0f );
+	vertices[ 1 ].st.Set( 1.0f, 0.0f );
+	vertices[ 2 ].xyz.Set( x2, y2, 0.0f );
+	vertices[ 2 ].st.Set( 1.0f, 1.0f );
+	vertices[ 3 ].xyz.Set( x1, y2, 0.0f );
+	vertices[ 3 ].st.Set( 0.0f, 1.0f );
+	for ( int i = 0; i < 4; i++ ) {
+		vertices[ i ].color[ 0 ] = 255;
+		vertices[ i ].color[ 1 ] = 255;
+		vertices[ i ].color[ 2 ] = 255;
+		vertices[ i ].color[ 3 ] = 255;
+	}
+
+	const glIndex_t indices[ 6 ] = { 0, 1, 2, 0, 2, 3 };
+	const int vertexOffset = VK_Ring_Alloc(
+			vkExec.vertexRings[ vkExec.frameSlot ],
+			vertices, sizeof( vertices ), 64 );
+	const int indexOffset = VK_Ring_Alloc(
+			vkExec.indexRings[ vkExec.frameSlot ],
+			indices, sizeof( indices ), 4 );
+	if ( vertexOffset < 0 || indexOffset < 0 ) {
+		return false;
+	}
+
+	const VkBuffer vertexBuffer =
+			vkExec.vertexRings[ vkExec.frameSlot ].buffer;
+	const VkDeviceSize vertexBindOffset = (VkDeviceSize)vertexOffset;
+	vkCmdBindVertexBuffers( vkExec.cmd, 0, 1,
+			&vertexBuffer, &vertexBindOffset );
+	vkCmdBindIndexBuffer( vkExec.cmd,
+			vkExec.indexRings[ vkExec.frameSlot ].buffer,
+			(VkDeviceSize)indexOffset, VK_INDEX_TYPE_UINT32 );
+	return true;
+}
+
+static bool VK_Exec_DrawRVSpecialBlur( const viewDef_t *viewDef ) {
+	if ( globalImages == NULL || globalImages->currentRenderImage == NULL
+			|| globalImages->currentDepthImage == NULL ) {
+		return false;
+	}
+	if ( !VK_Exec_CaptureCurrentRender( viewDef )
+			|| !VK_Exec_CaptureCurrentDepth( viewDef ) ) {
+		return false;
+	}
+
+	idImage *sceneImage = globalImages->currentRenderImage;
+	idImage *depthImage = globalImages->currentDepthImage;
+	sceneImage->SetSamplerState( TF_LINEAR, TR_CLAMP );
+	depthImage->SetSamplerState( TF_NEAREST, TR_CLAMP );
+	const VkDescriptorSet sceneSet =
+			VK_GuiExecutor_GetImageDescriptor( sceneImage->GetDeviceHandle() );
+	const VkDescriptorSet depthSet =
+			VK_GuiExecutor_GetImageDescriptor( depthImage->GetDeviceHandle() );
+	if ( sceneSet == VK_NULL_HANDLE || depthSet == VK_NULL_HANDLE ) {
+		return false;
+	}
+
+	const int sourceWidth = Max( 1, sceneImage->GetUploadWidth() );
+	const int sourceHeight = Max( 1, sceneImage->GetUploadHeight() );
+	const float distanceScale =
+			Max( tr.specialEffectParms[ SPECIAL_EFFECT_BLUR ][ 7 ], 1.0f );
+	float parms[ 16 ][ 4 ];
+	memset( parms, 0, sizeof( parms ) );
+	parms[ 0 ][ 0 ] = 1.0f / (float)sourceWidth;
+	parms[ 0 ][ 1 ] = 1.0f / (float)sourceHeight;
+	// The retail controller stores focus/range against its normalized
+	// 256x256 depth texture. The native pass consumes view-space distance,
+	// so translate the authored controller values at this boundary.
+	parms[ 1 ][ 0 ] = Max(
+			tr.specialEffectParms[ SPECIAL_EFFECT_BLUR ][ 4 ]
+					* distanceScale * 0.125f,
+			1.0f );
+	parms[ 2 ][ 0 ] = idMath::ClampFloat( 0.0f, 1.0f,
+			tr.specialEffectParms[ SPECIAL_EFFECT_BLUR ][ 5 ] )
+					* distanceScale;
+	for ( int i = 0; i < 4; i++ ) {
+		parms[ 3 ][ i ] =
+				tr.specialEffectParms[ SPECIAL_EFFECT_BLUR ][ i ];
+	}
+	parms[ 4 ][ 0 ] = idMath::ClampFloat( 0.0f, 1.0f,
+			tr.specialEffectParms[ SPECIAL_EFFECT_BLUR ][ 6 ] );
+	parms[ 5 ][ 0 ] = distanceScale;
+
+	const int uniformOffset =
+			VK_Exec_InteractionUniformAlloc( parms, sizeof( parms ) );
+	const VkPipeline pipeline = VK_Exec_GetGLSLMaterialPipeline(
+			VK_GLSL_PROGRAM_FAMILY_DEPTH_AWARE_BLUR, 0, false );
+	if ( uniformOffset < 0 || pipeline == VK_NULL_HANDLE
+			|| !VK_Exec_BindSpecialEffectsQuad(
+					-1.0f, -1.0f, 1.0f, 1.0f ) ) {
+		return false;
+	}
+
+	VK_Exec_SetSpecialEffectsViewport( viewDef );
+	vkCmdSetDepthTestEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthWriteEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthCompareOp( vkExec.cmd, VK_COMPARE_OP_ALWAYS );
+	vkCmdSetCullMode( vkExec.cmd, VK_CULL_MODE_NONE );
+	vkCmdSetStencilTestEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthBiasEnable( vkExec.cmd, VK_FALSE );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 0, 1, &sceneSet, 0, NULL );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 1, 1, &depthSet, 0, NULL );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+			1, &dynamicOffset );
+	vkGuiPushConstants_t push;
+	VK_Exec_InitSpecialEffectsPushConstants( push );
+	vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( push ), &push );
+	vkCmdDrawIndexed( vkExec.cmd, 6, 1, 0, 0, 0 );
+	return true;
+}
+
+static bool VK_Exec_ProjectRVSpecialLight( const viewDef_t *viewDef,
+		const idVec3 &origin, float size, float &x1, float &y1,
+		float &x2, float &y2, idVec3 &eyePoint, float &lightDepth ) {
+	idPlane eye;
+	idPlane clip;
+	const idVec3 right = viewDef->renderView.viewaxis[ 1 ] * size;
+	const idVec3 up = viewDef->renderView.viewaxis[ 2 ] * size;
+	const idVec3 points[ 4 ] = {
+		origin + right + up,
+		origin - right + up,
+		origin - right - up,
+		origin + right - up
+	};
+	const int viewportWidth =
+			viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int viewportHeight =
+			viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+
+	R_TransformModelToClip( origin,
+			viewDef->worldSpace.modelViewMatrix,
+			viewDef->projectionMatrix, eye, clip );
+	if ( clip[ 3 ] <= 0.0f ) {
+		return false;
+	}
+	lightDepth = -eye[ 2 ];
+	if ( lightDepth <= 0.0f ) {
+		return false;
+	}
+
+	x1 = idMath::INFINITY;
+	y1 = idMath::INFINITY;
+	x2 = -idMath::INFINITY;
+	y2 = -idMath::INFINITY;
+	for ( int i = 0; i < 4; i++ ) {
+		idVec3 ndc;
+		R_TransformModelToClip( points[ i ],
+				viewDef->worldSpace.modelViewMatrix,
+				viewDef->projectionMatrix, eye, clip );
+		if ( clip[ 3 ] <= 0.0f ) {
+			return false;
+		}
+		R_TransformClipToDevice( clip, viewDef, ndc );
+		const float screenX =
+				( ndc.x * 0.5f + 0.5f ) * viewportWidth;
+		const float screenY =
+				( 1.0f - ( ndc.y * 0.5f + 0.5f ) )
+						* viewportHeight;
+		x1 = Min( x1, screenX );
+		y1 = Min( y1, screenY );
+		x2 = Max( x2, screenX );
+		y2 = Max( y2, screenY );
+	}
+	if ( x2 < 0.0f || y2 < 0.0f
+			|| x1 > viewportWidth || y1 > viewportHeight ) {
+		return false;
+	}
+	x1 = idMath::ClampFloat( 0.0f, (float)viewportWidth, x1 );
+	y1 = idMath::ClampFloat( 0.0f, (float)viewportHeight, y1 );
+	x2 = idMath::ClampFloat( 0.0f, (float)viewportWidth, x2 );
+	y2 = idMath::ClampFloat( 0.0f, (float)viewportHeight, y2 );
+	R_LocalPointToGlobal(
+			viewDef->worldSpace.modelViewMatrix, origin, eyePoint );
+	return x2 > x1 && y2 > y1;
+}
+
+static bool VK_Exec_DrawRVSpecialAL( const viewDef_t *viewDef ) {
+	if ( globalImages == NULL || globalImages->currentDepthImage == NULL
+			|| tr.primaryWorld == NULL ) {
+		return false;
+	}
+	if ( !backEnd.currentDepthCopied
+			&& !VK_Exec_CaptureCurrentDepth( viewDef ) ) {
+		return false;
+	}
+	if ( tr.specialALLightImage == NULL ) {
+		tr.specialALLightImage =
+				globalImages->GetImage( "gfx/lights/round.tga" );
+	}
+	if ( tr.specialALLightImage == NULL ) {
+		static bool warnedMissingLightImage = false;
+		if ( !warnedMissingLightImage ) {
+			warnedMissingLightImage = true;
+			common->Warning(
+					"Vulkan: Alpha Labs special effect is missing gfx/lights/round.tga" );
+		}
+		return false;
+	}
+
+	idImage *depthImage = globalImages->currentDepthImage;
+	depthImage->SetSamplerState( TF_NEAREST, TR_CLAMP );
+	tr.specialALLightImage->SetSamplerState( TF_LINEAR, TR_CLAMP );
+	const VkDescriptorSet depthSet =
+			VK_GuiExecutor_GetImageDescriptor( depthImage->GetDeviceHandle() );
+	const VkDescriptorSet lightSet = VK_GuiExecutor_GetImageDescriptor(
+			tr.specialALLightImage->GetDeviceHandle() );
+	const VkPipeline pipeline = VK_Exec_GetGLSLMaterialPipeline(
+			VK_GLSL_PROGRAM_FAMILY_AL,
+			GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE, false );
+	if ( depthSet == VK_NULL_HANDLE || lightSet == VK_NULL_HANDLE
+			|| pipeline == VK_NULL_HANDLE ) {
+		return false;
+	}
+
+	VK_Exec_SetSpecialEffectsViewport( viewDef );
+	vkCmdSetDepthTestEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthWriteEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthCompareOp( vkExec.cmd, VK_COMPARE_OP_ALWAYS );
+	vkCmdSetCullMode( vkExec.cmd, VK_CULL_MODE_NONE );
+	vkCmdSetStencilTestEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthBiasEnable( vkExec.cmd, VK_FALSE );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 0, 1, &depthSet, 0, NULL );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 1, 1, &lightSet, 0, NULL );
+
+	const int viewportWidth =
+			viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int viewportHeight =
+			viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	const float distanceScale = 2000.0f;
+	int drawnLights = 0;
+	for ( int i = 0; i < tr.primaryWorld->lightDefs.Num(); i++ ) {
+		idRenderLightLocal *light = tr.primaryWorld->lightDefs[ i ];
+		if ( light == NULL ) {
+			continue;
+		}
+		idVec3 lightColor( light->parms.shaderParms[ 0 ],
+				light->parms.shaderParms[ 1 ],
+				light->parms.shaderParms[ 2 ] );
+		if ( lightColor.LengthSqr() <= idMath::FLOAT_EPSILON ) {
+			continue;
+		}
+		lightColor.Normalize();
+
+		float x1;
+		float y1;
+		float x2;
+		float y2;
+		float lightDepth;
+		idVec3 eyePoint;
+		const float lightSize = 300.0f;
+		if ( !VK_Exec_ProjectRVSpecialLight( viewDef,
+				light->globalLightOrigin, lightSize,
+				x1, y1, x2, y2, eyePoint, lightDepth ) ) {
+			continue;
+		}
+
+		float parms[ 16 ][ 4 ];
+		memset( parms, 0, sizeof( parms ) );
+		parms[ 0 ][ 0 ] = distanceScale;
+		parms[ 1 ][ 0 ] = 1.0f;
+		parms[ 1 ][ 1 ] = 1.0f;
+		parms[ 2 ][ 0 ] = eyePoint[ 0 ];
+		parms[ 2 ][ 1 ] = eyePoint[ 1 ];
+		parms[ 2 ][ 2 ] = eyePoint[ 2 ];
+		parms[ 3 ][ 0 ] = lightColor[ 0 ];
+		parms[ 3 ][ 1 ] = lightColor[ 1 ];
+		parms[ 3 ][ 2 ] = lightColor[ 2 ];
+		parms[ 3 ][ 3 ] = 1.0f;
+		parms[ 4 ][ 0 ] = lightSize;
+		parms[ 6 ][ 0 ] = lightDepth;
+		// Direct Vulkan controller capture samples the resolved hardware
+		// depth image. Stock material draws leave this marker at zero and
+		// continue sampling the authored encoded DepthTexture.
+		parms[ 7 ][ 0 ] = 1.0f;
+		parms[ 12 ][ 0 ] = (float)VK_Exec_ActiveFramebufferHeight();
+		parms[ 13 ][ 0 ] = (float)viewDef->viewport.x1;
+		parms[ 13 ][ 1 ] = (float)viewDef->viewport.y1;
+		parms[ 14 ][ 0 ] = (float)viewportWidth;
+		parms[ 14 ][ 1 ] = (float)viewportHeight;
+		const int uniformOffset =
+				VK_Exec_InteractionUniformAlloc( parms, sizeof( parms ) );
+		if ( uniformOffset < 0 ) {
+			break;
+		}
+
+		const float ndcX1 = x1 * 2.0f / viewportWidth - 1.0f;
+		const float ndcX2 = x2 * 2.0f / viewportWidth - 1.0f;
+		const float ndcY1 = 1.0f - y1 * 2.0f / viewportHeight;
+		const float ndcY2 = 1.0f - y2 * 2.0f / viewportHeight;
+		if ( !VK_Exec_BindSpecialEffectsQuad(
+				ndcX1, ndcY2, ndcX2, ndcY1 ) ) {
+			break;
+		}
+		const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+		const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+		vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+				1, &dynamicOffset );
+		vkGuiPushConstants_t push;
+		VK_Exec_InitSpecialEffectsPushConstants( push );
+		vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof( push ), &push );
+		vkCmdDrawIndexed( vkExec.cmd, 6, 1, 0, 0, 0 );
+		drawnLights++;
+	}
+	return drawnLights > 0;
+}
+
+static void VK_Exec_DrawRVSpecialEffects( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || vkExec.pendingSpecialEffectsView != viewDef ) {
+		if ( viewDef != NULL && vkExec.pendingSpecialEffectsMask != 0 ) {
+			static bool warnedSpecialEffectsViewMismatch = false;
+			if ( !warnedSpecialEffectsViewMismatch ) {
+				warnedSpecialEffectsViewMismatch = true;
+				common->Warning(
+						"Vulkan: Raven special-effects view mismatch (pending=%p draw=%p)",
+						vkExec.pendingSpecialEffectsView, viewDef );
+			}
+		}
+		return;
+	}
+	if ( vkExec.activePipelineTarget.samples != VK_SAMPLE_COUNT_1_BIT ) {
+		// The forward scene is resolved by the immediately following
+		// RC_RESOLVE_MSAA command. Keep the matching viewDef alive and apply
+		// the controller to that single-sample destination instead of trying
+		// to feed vkCmdCopyImage from a multisampled attachment.
+		vkExec.pendingSpecialEffectsSource = vkExec.activeRenderTexture;
+		vkExec.pendingSpecialEffectsNeedsResolve = true;
+		return;
+	}
+	const int activeMask = vkExec.pendingSpecialEffectsMask;
+	vkExec.pendingSpecialEffectsView = NULL;
+	vkExec.pendingSpecialEffectsMask = 0;
+	vkExec.pendingSpecialEffectsSource = NULL;
+	vkExec.pendingSpecialEffectsNeedsResolve = false;
+
+	bool drewBlur = false;
+	bool drewAL = false;
+	if ( ( activeMask & SPECIAL_EFFECT_BLUR ) != 0 ) {
+		drewBlur = VK_Exec_DrawRVSpecialBlur( viewDef );
+	}
+	if ( ( activeMask & SPECIAL_EFFECT_AL ) != 0 ) {
+		drewAL = VK_Exec_DrawRVSpecialAL( viewDef );
+	}
+
+	static bool loggedBlur = false;
+	static bool loggedAL = false;
+	if ( drewBlur && !loggedBlur ) {
+		loggedBlur = true;
+		common->Printf(
+				"Vulkan: Raven MedLabs controller drew its native depth-aware blur pass\n" );
+	}
+	if ( drewAL && !loggedAL ) {
+		loggedAL = true;
+		common->Printf(
+				"Vulkan: Raven Alpha Labs controller drew projected light overlays\n" );
+	}
+}
+
+bool VK_GuiExecutor_SpecialEffectsAwaitResolve(
+		idRenderTexture *sourceRenderTexture ) {
+	return vkExec.pendingSpecialEffectsNeedsResolve
+			&& vkExec.pendingSpecialEffectsView != NULL
+			&& vkExec.pendingSpecialEffectsMask != 0
+			&& vkExec.pendingSpecialEffectsSource == sourceRenderTexture;
+}
+
+void VK_GuiExecutor_DrawResolvedSpecialEffects(
+		idRenderTexture *sourceRenderTexture,
+		idRenderTexture *destinationRenderTexture ) {
+	if ( !VK_GuiExecutor_SpecialEffectsAwaitResolve( sourceRenderTexture )
+			|| destinationRenderTexture == NULL ) {
+		return;
+	}
+
+	idRenderTexture *savedRenderTexture = vkExec.activeRenderTexture;
+	idRenderTexture *savedBackEndRenderTexture = backEnd.renderTexture;
+	idRenderTexture *savedFeedbackRenderTexture =
+			backEnd.feedbackRenderTexture;
+	if ( !VK_Exec_SetRenderTarget( destinationRenderTexture ) ) {
+		return;
+	}
+	backEnd.renderTexture = destinationRenderTexture;
+	backEnd.feedbackRenderTexture = NULL;
+	vkExec.pendingSpecialEffectsNeedsResolve = false;
+	VK_Exec_DrawRVSpecialEffects( vkExec.pendingSpecialEffectsView );
+
+	(void)VK_Exec_SetRenderTarget( savedRenderTexture );
+	backEnd.renderTexture = savedBackEndRenderTexture;
+	backEnd.feedbackRenderTexture = savedFeedbackRenderTexture;
+}
+
+// Draws the stock ARB newStage families for which Vulkan has native SPIR-V.
+// The stable family query deliberately avoids depending on parser handle
+// allocation order.
+static void VK_Exec_DrawProgramStage( const viewDef_t *viewDef,
+		const drawSurf_t *drawSurf, const srfTriangles_t *tri, const float mvp[ 16 ],
+		bool worldDepthState, const shaderStage_t *stage, int stageNum ) {
+	const newShaderStage_t *newStage = stage->newStage;
+	const idMaterial *shader = drawSurf->material;
+	const float *regs = drawSurf->shaderRegisters;
+	if ( newStage == NULL || newStage->customLighting ) {
+		return;
+	}
+	if ( r_skipNewAmbient.GetBool() && shader->GetSort() < SS_POST_PROCESS ) {
+		return;
+	}
+	if ( newStage->glslProgram ) {
+		(void)VK_Exec_DrawGLSLProgramStage( viewDef, drawSurf, tri, mvp,
+				worldDepthState, stage, stageNum );
+		return;
+	}
+
+	const vkMaterialProgramFamily_t fragmentFamily =
+			R_GetARBProgramFamily( GL_FRAGMENT_PROGRAM_ARB,
+				newStage->fragmentProgram );
+	const vkMaterialProgramFamily_t vertexFamily =
+			R_GetARBProgramFamily( GL_VERTEX_PROGRAM_ARB,
+				newStage->vertexProgram );
+	vkMaterialProgramFamily_t family = fragmentFamily;
+	if ( family == VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN ) {
+		family = vertexFamily;
+	}
+	if ( family == VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN
+			|| ( fragmentFamily != VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN
+				&& vertexFamily != VK_MATERIAL_PROGRAM_FAMILY_UNKNOWN
+				&& fragmentFamily != vertexFamily ) ) {
+		static bool loggedUnknownProgram = false;
+		if ( !loggedUnknownProgram ) {
+			loggedUnknownProgram = true;
+			common->Printf( "Vulkan: unsupported ARB material program skipped (%s)\n",
+					shader->GetName() );
+		}
+		return;
+	}
+
+	if ( family == VK_MATERIAL_PROGRAM_FAMILY_MONOCHROME ) {
+		// The retail PK4 names monochrome.vfp but does not contain its source.
+		// Preserve the authored test material with the documented grayscale
+		// reconstruction embedded above: fragmentMap 0, sampled alpha, and
+		// the ordinary material blend/depth/alpha-test contract.
+		if ( newStage->numFragmentProgramImages < 1
+				|| newStage->fragmentProgramImages[ 0 ] == NULL ) {
+			return;
+		}
+		const VkDescriptorSet imageSet = VK_Exec_ImageDescriptor(
+				newStage->fragmentProgramImages[ 0 ]->GetDeviceHandle(), true );
+		const VkPipeline pipeline = VK_Exec_GetProgramPipeline(
+				family, stage->drawStateBits, false );
+		if ( imageSet == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE ) {
+			return;
+		}
+
+		vkGuiPushConstants_t push;
+		memset( &push, 0, sizeof( push ) );
+		memcpy( push.mvp, mvp, sizeof( push.mvp ) );
+		if ( regs != NULL ) {
+			for ( int i = 0; i < 4; i++ ) {
+				push.stageColor[ i ] =
+						regs[ stage->color.registers[ i ] ];
+			}
+		} else {
+			push.stageColor[ 0 ] = push.stageColor[ 1 ] =
+					push.stageColor[ 2 ] = push.stageColor[ 3 ] = 1.0f;
+		}
+		push.params[ 1 ] = VK_Exec_AlphaTestModeValue( stage );
+		push.params[ 2 ] = stage->hasAlphaTest && regs != NULL
+				? regs[ stage->alphaTestRegister ] : 0.0f;
+
+		VK_Exec_SetProgramStageDepthState( vkExec.cmd, stage, worldDepthState );
+		vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+		vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkExec.interactionPipelineLayout, 0, 1, &imageSet, 0, NULL );
+		vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof( push ), &push );
+		vkCmdDrawIndexed( vkExec.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+
+		static bool loggedMonochromeProgram = false;
+		if ( !loggedMonochromeProgram ) {
+			loggedMonochromeProgram = true;
+			common->Printf( "Vulkan: first monochrome compatibility program stage drew (%s)\n",
+					shader->GetName() );
+		}
+		return;
+	}
+
+	if ( family == VK_MATERIAL_PROGRAM_FAMILY_REFRACTIVE_GLASS ) {
+		if ( VK_Exec_DrawRefractiveGlassStage( viewDef, drawSurf, tri, mvp,
+				worldDepthState, stage ) ) {
+			static bool loggedRefractiveGlass = false;
+			if ( !loggedRefractiveGlass ) {
+				loggedRefractiveGlass = true;
+				common->Printf(
+						"Vulkan: first refractive-glass compatibility stage drew (%s)\n",
+						shader->GetName() );
+			}
+		}
+		return;
+	}
+
+	if ( family == VK_MATERIAL_PROGRAM_FAMILY_BUMPY_ENVIRONMENT ) {
+		if ( VK_Exec_DrawBumpyProgramStage( viewDef, drawSurf, tri, mvp,
+				worldDepthState, stage ) ) {
+			static bool loggedBumpyProgram = false;
+			if ( !loggedBumpyProgram ) {
+				loggedBumpyProgram = true;
+				common->Printf( "Vulkan: first explicit bumpy-environment program stage drew (%s)\n",
+						shader->GetName() );
+			}
+		}
+		return;
+	}
+
+	const bool masked = family == VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK
+			|| family == VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_GRAY_WITH_MASK
+			|| family == VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK_AND_VERTEX;
+	const bool vertexColorVariant =
+			family == VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE_WITH_MASK_AND_VERTEX;
+	if ( family != VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE && !masked ) {
+		return;
+	}
+	const int numTextures = masked ? 3 : 2;
+	if ( newStage->numFragmentProgramImages < numTextures
+			|| drawSurf->space == NULL ) {
+		return;
+	}
+	VkDescriptorSet textureSets[ 3 ];
+	for ( int i = 0; i < numTextures; i++ ) {
+		idImage *image = newStage->fragmentProgramImages[ i ];
+		if ( image == NULL ) {
+			return;
+		}
+		textureSets[ i ] =
+				VK_Exec_ImageDescriptor( image->GetDeviceHandle(), true );
+		if ( textureSets[ i ] == VK_NULL_HANDLE ) {
+			return;
+		}
+	}
+
+	float parms[ 8 ][ 4 ];
+	memset( parms, 0, sizeof( parms ) );
+	for ( int i = 0; i < newStage->numVertexParms && i < 2; i++ ) {
+		for ( int j = 0; j < 4; j++ ) {
+			parms[ i ][ j ] = regs != NULL
+					? regs[ newStage->vertexParms[ i ][ j ] ] : 0.0f;
+		}
+	}
+	const float *modelView = drawSurf->space->modelViewMatrix;
+	const float *projection = viewDef->projectionMatrix;
+	parms[ 2 ][ 0 ] = modelView[ 2 ];
+	parms[ 2 ][ 1 ] = modelView[ 6 ];
+	parms[ 2 ][ 2 ] = modelView[ 10 ];
+	parms[ 2 ][ 3 ] = modelView[ 14 ];
+	parms[ 3 ][ 0 ] = projection[ 0 ];
+	parms[ 3 ][ 1 ] = projection[ 4 ];
+	parms[ 3 ][ 2 ] = projection[ 8 ];
+	parms[ 3 ][ 3 ] = projection[ 12 ];
+	parms[ 4 ][ 0 ] = projection[ 3 ];
+	parms[ 4 ][ 1 ] = projection[ 7 ];
+	parms[ 4 ][ 2 ] = projection[ 11 ];
+	parms[ 4 ][ 3 ] = projection[ 15 ];
+
+	const int viewportWidth =
+			viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int viewportHeight =
+			viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return;
+	}
+	int textureWidth = viewportWidth;
+	int textureHeight = viewportHeight;
+	if ( globalImages->currentRenderImage != NULL ) {
+		if ( globalImages->currentRenderImage->GetUploadWidth() > 0 ) {
+			textureWidth =
+					globalImages->currentRenderImage->GetUploadWidth();
+		}
+		if ( globalImages->currentRenderImage->GetUploadHeight() > 0 ) {
+			textureHeight =
+					globalImages->currentRenderImage->GetUploadHeight();
+		}
+	}
+	parms[ 5 ][ 0 ] = (float)viewportWidth / (float)textureWidth;
+	parms[ 5 ][ 1 ] = (float)viewportHeight / (float)textureHeight;
+	parms[ 5 ][ 3 ] = 1.0f;
+	parms[ 6 ][ 0 ] = 1.0f / (float)viewportWidth;
+	parms[ 6 ][ 1 ] = 1.0f / (float)viewportHeight;
+	parms[ 6 ][ 2 ] = (float)VK_Exec_ActiveFramebufferHeight();
+	parms[ 7 ][ 0 ] = (float)viewDef->viewport.x1;
+	parms[ 7 ][ 1 ] = (float)viewDef->viewport.y1;
+
+	const int uniformOffset =
+			VK_Exec_InteractionUniformAlloc( parms, sizeof( parms ) );
+	if ( uniformOffset < 0 ) {
+		return;
+	}
+
+	bool separateColor = false;
+	if ( vertexColorVariant && drawSurf->decalColorCache != NULL
+			&& stageNum >= 0 && stageNum < drawSurf->decalColorStageCount
+			&& drawSurf->decalColorStride >= tri->numVerts * 4 ) {
+		const byte *colorData =
+				(const byte *)vertexCache.Position( drawSurf->decalColorCache );
+		const size_t colorBytes = (size_t)tri->numVerts * 4;
+		const int colorOffset = colorData != NULL
+				? VK_Ring_Alloc( vkExec.vertexRings[ vkExec.frameSlot ],
+					colorData + drawSurf->decalColorOffset
+						+ stageNum * drawSurf->decalColorStride,
+					colorBytes, 4 )
+				: -1;
+		if ( colorOffset >= 0 ) {
+			const VkBuffer colorBuffer =
+					vkExec.vertexRings[ vkExec.frameSlot ].buffer;
+			const VkDeviceSize bindOffset = (VkDeviceSize)colorOffset;
+			vkCmdBindVertexBuffers( vkExec.cmd, 1, 1,
+					&colorBuffer, &bindOffset );
+			separateColor = true;
+		}
+	}
+
+	VkPipeline pipeline = VK_Exec_GetProgramPipeline( family,
+			stage->drawStateBits, separateColor );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return;
+	}
+	vkGuiPushConstants_t push;
+	memset( &push, 0, sizeof( push ) );
+	memcpy( push.mvp, mvp, sizeof( push.mvp ) );
+	if ( regs != NULL ) {
+		for ( int i = 0; i < 4; i++ ) {
+			push.stageColor[ i ] =
+					regs[ stage->color.registers[ i ] ];
+		}
+	} else {
+		push.stageColor[ 0 ] = push.stageColor[ 1 ] =
+				push.stageColor[ 2 ] = push.stageColor[ 3 ] = 1.0f;
+	}
+	push.params[ 1 ] = VK_Exec_AlphaTestModeValue( stage );
+	push.params[ 2 ] = stage->hasAlphaTest && regs != NULL
+			? regs[ stage->alphaTestRegister ] : 0.0f;
+
+	VK_Exec_SetProgramStageDepthState( vkExec.cmd, stage, worldDepthState );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 0, (uint32_t)numTextures,
+			textureSets, 0, NULL );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+			1, &dynamicOffset );
+	vkCmdPushConstants( vkExec.cmd, vkExec.interactionPipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( push ), &push );
+	vkCmdDrawIndexed( vkExec.cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
+
+	static bool loggedHeatHazeFamily[ 4 ] = { false, false, false, false };
+	const int logIndex = family - VK_MATERIAL_PROGRAM_FAMILY_HEAT_HAZE;
+	if ( logIndex >= 0 && logIndex < 4 && !loggedHeatHazeFamily[ logIndex ] ) {
+		loggedHeatHazeFamily[ logIndex ] = true;
+		common->Printf( "Vulkan: first heat-haze program family %d stage drew (%s)\n",
+				(int)family, shader->GetName() );
+	}
+}
+
 static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_t *drawSurf,
 		const srfTriangles_t *tri, const float mvp[ 16 ], bool worldDepthState ) {
 	VkCommandBuffer cmd = vkExec.cmd;
@@ -2022,14 +5922,91 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 		if ( ( pStage->drawStateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_ONE ) ) {
 			continue;	// alpha-mask stage
 		}
-		if ( pStage->newStage != NULL ) {
-			continue;	// program stages: unsupported flat-render gap
+		if ( pStage->texture.dynamic == DI_REFLECTION_RENDER
+				|| pStage->texture.dynamic == DI_REFRACTION_RENDER ) {
+			continue;	// capture producer; a later image stage consumes it
 		}
-		// cube texgens draw through the cube pipeline; reflect/screen texgens
-		// remain later-phase gaps
+		// Feedback is captured lazily at the first stage that samples it.
+		// This must run before the program-stage dispatcher/skip so program
+		// materials see the same scheduling contract as fixed stages.
+		bool feedbackCaptureFailed = false;
+		bool captureInterruptedScope = false;
+		if ( !backEnd.currentRenderCopied && VK_Exec_StageUsesCurrentRender( pStage ) ) {
+			if ( VK_Exec_AutomaticCaptureAllowed() ) {
+				if ( VK_Exec_CaptureCurrentRender( viewDef ) ) {
+					captureInterruptedScope = true;
+				} else {
+					feedbackCaptureFailed = true;
+				}
+			} else {
+				backEnd.currentRenderCopied = true;
+			}
+		}
+		if ( !backEnd.currentDepthCopied && VK_Exec_StageUsesCurrentDepth( pStage ) ) {
+			if ( VK_Exec_AutomaticCaptureAllowed() ) {
+				if ( VK_Exec_CaptureCurrentDepth( viewDef ) ) {
+					captureInterruptedScope = true;
+				} else {
+					feedbackCaptureFailed = true;
+				}
+			} else {
+				backEnd.currentDepthCopied = true;
+			}
+		}
+		if ( captureInterruptedScope ) {
+			VK_Exec_RestoreSurfaceState( cmd, viewDef, shader, worldDepthState );
+		}
+		if ( feedbackCaptureFailed ) {
+			continue;
+		}
+		if ( pStage->newStage != NULL ) {
+			// Program stages use the same per-stage depth-bias contract as
+			// classic stages.  Decal materials can select either path, so
+			// applying privatePolygonOffset only below would leave program
+			// decals fighting the receiving surface.
+			const bool stagePolygonOffset =
+					worldDepthState && pStage->privatePolygonOffset != 0.0f;
+			if ( stagePolygonOffset ) {
+				vkCmdSetDepthBiasEnable( cmd, VK_TRUE );
+				vkCmdSetDepthBias( cmd,
+						r_offsetUnits.GetFloat() * pStage->privatePolygonOffset,
+						0.0f, r_offsetFactor.GetFloat() );
+			}
+			VK_Exec_DrawProgramStage( viewDef, drawSurf, tri, mvp,
+					worldDepthState, pStage, stageNum );
+			if ( stagePolygonOffset ) {
+				if ( shader->TestMaterialFlag( MF_POLYGONOFFSET ) ) {
+					vkCmdSetDepthBias( cmd,
+							r_offsetUnits.GetFloat() * shader->GetPolygonOffset(),
+							0.0f, r_offsetFactor.GetFloat() );
+				} else {
+					vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
+				}
+			}
+			continue;
+		}
+		// Cube texgens draw through the cube pipeline.  Reflection stages
+		// use environment.vfp or bumpyEnvironment.vfp when a normal map exists.
 		const int texgen = pStage->texture.texgen;
 		const bool cubeStage = texgen == TG_SKYBOX_CUBE || texgen == TG_WOBBLESKY_CUBE || texgen == TG_DIFFUSE_CUBE;
-		if ( worldDepthState && texgen != TG_EXPLICIT && !cubeStage ) {
+		const bool screenStage = texgen == TG_SCREEN || texgen == TG_SCREEN2;
+		const bool glassStage = texgen == TG_GLASSWARP;
+		bool reflectStage = false;
+		bool bumpyReflectStage = false;
+		const shaderStage_t *bumpStage = NULL;
+		if ( texgen == TG_REFLECT_CUBE ) {
+			if ( drawSurf->space == NULL ) {
+				continue;
+			}
+			reflectStage = true;
+			bumpStage = shader->GetBumpStage();
+			bumpyReflectStage = bumpStage != NULL;
+			if ( bumpyReflectStage && bumpStage->texture.image == NULL ) {
+				continue;
+			}
+		}
+		if ( worldDepthState && texgen != TG_EXPLICIT && !cubeStage
+				&& !reflectStage && !screenStage && !glassStage ) {
 			continue;
 		}
 		if ( ( texgen == TG_SKYBOX_CUBE || texgen == TG_WOBBLESKY_CUBE ) && drawSurf->dynamicTexCoords == NULL ) {
@@ -2077,17 +6054,50 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 		if ( stageImage == NULL ) {
 			continue;
 		}
-		// cube stages sample through samplerCube; the descriptor's view must
+		// cube/reflect stages sample through samplerCube; the descriptor's view must
 		// really be a cube view or validation trips
-		if ( cubeStage ) {
+		if ( cubeStage || reflectStage ) {
 			const vkImageEntry_t *cubeEntry = VK_Image_GetEntry( stageImage->GetDeviceHandle() );
 			if ( cubeEntry == NULL || !cubeEntry->isCube ) {
 				continue;
 			}
 		}
-		VkDescriptorSet descriptor = VK_GuiExecutor_GetImageDescriptor( stageImage->GetDeviceHandle() );
+		VkDescriptorSet descriptor = VK_GuiExecutor_GetResidentImageDescriptor( stageImage );
 		if ( descriptor == VK_NULL_HANDLE ) {
 			continue;
+		}
+		VkDescriptorSet glassDescriptors[ 2 ] = {
+			VK_NULL_HANDLE, VK_NULL_HANDLE
+		};
+		if ( glassStage ) {
+			const vkImageEntry_t *warpEntry =
+					VK_Image_GetEntry( stageImage->GetDeviceHandle() );
+			if ( warpEntry == NULL || warpEntry->isCube
+					|| globalImages->scratchImage2 == NULL
+					|| globalImages->scratchImage == NULL ) {
+				continue;
+			}
+			glassDescriptors[ 0 ] = VK_Exec_ImageDescriptor(
+					globalImages->scratchImage2->GetDeviceHandle(), true );
+			glassDescriptors[ 1 ] = VK_Exec_ImageDescriptor(
+					globalImages->scratchImage->GetDeviceHandle(), true );
+			if ( glassDescriptors[ 0 ] == VK_NULL_HANDLE
+					|| glassDescriptors[ 1 ] == VK_NULL_HANDLE ) {
+				continue;
+			}
+		}
+		VkDescriptorSet bumpDescriptor = VK_NULL_HANDLE;
+		if ( bumpyReflectStage ) {
+			const vkImageEntry_t *bumpEntry =
+					VK_Image_GetEntry( bumpStage->texture.image->GetDeviceHandle() );
+			if ( bumpEntry == NULL || bumpEntry->isCube ) {
+				continue;
+			}
+			bumpDescriptor =
+					VK_GuiExecutor_GetImageDescriptor( bumpStage->texture.image->GetDeviceHandle() );
+			if ( bumpDescriptor == VK_NULL_HANDLE ) {
+				continue;
+			}
 		}
 
 		// skybox/wobblesky direction stream: the front-end texgen writes
@@ -2096,13 +6106,13 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 		// idDrawVert stream (diffuse cube reads the idDrawVert normal off
 		// binding 0 instead, so no extra buffer is needed)
 		if ( texgen == TG_SKYBOX_CUBE || texgen == TG_WOBBLESKY_CUBE ) {
-			const void *dirCoords = vertexCache.Position( drawSurf->dynamicTexCoords );
-			if ( dirCoords == NULL ) {
+			if ( drawSurf->dynamicTexCoords == NULL ) {
 				continue;
 			}
+			const void *dirCoords = vertexCache.Position( drawSurf->dynamicTexCoords );
 			const int slot = vkExec.frameSlot;
 			const int dirOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], dirCoords,
-					tri->numVerts * (int)sizeof( idVec3 ), 16 );
+					static_cast<size_t>( tri->numVerts ) * sizeof( idVec3 ), 16 );
 			if ( dirOffset < 0 ) {
 				continue;
 			}
@@ -2116,10 +6126,27 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 		// decal surfaces bake regs-color (x depth fade) into the uploaded
 		// vertex colors; modulating by the regs color again double-applies
 		// it (the skip culls above still use the regs color)
-		const bool bakedDecalStageColor = drawSurf->decalColorCache != NULL
+		bool bakedDecalStageColor = !cubeStage && !reflectStage && !glassStage
+				&& drawSurf->decalColorCache != NULL
 				&& stageNum < drawSurf->decalColorStageCount
-				&& drawSurf->decalColorStride > 0
+				&& drawSurf->decalColorStride >= tri->numVerts * 4
 				&& pStage->vertexColor != SVC_IGNORE;
+		if ( bakedDecalStageColor ) {
+			const byte *colorData = (const byte *)vertexCache.Position( drawSurf->decalColorCache );
+			const size_t colorBytes = static_cast<size_t>( tri->numVerts ) * 4;
+			const int colorOffset = colorData != NULL
+					? VK_Ring_Alloc( vkExec.vertexRings[ vkExec.frameSlot ],
+						colorData + drawSurf->decalColorOffset + stageNum * drawSurf->decalColorStride,
+						colorBytes, 4 )
+					: -1;
+			if ( colorOffset >= 0 ) {
+				const VkBuffer colorBuffer = vkExec.vertexRings[ vkExec.frameSlot ].buffer;
+				const VkDeviceSize colorBindOffset = (VkDeviceSize)colorOffset;
+				vkCmdBindVertexBuffers( cmd, 1, 1, &colorBuffer, &colorBindOffset );
+			} else {
+				bakedDecalStageColor = false;
+			}
+		}
 		if ( bakedDecalStageColor ) {
 			push.stageColor[ 0 ] = 1.0f;
 			push.stageColor[ 1 ] = 1.0f;
@@ -2132,21 +6159,41 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 			push.stageColor[ 3 ] = color[ 3 ];
 		}
 
-		// texture matrix (2x3 from the stage registers)
-		if ( pStage->texture.hasMatrix && regs != NULL ) {
-			push.texMatrixS[ 0 ] = regs[ pStage->texture.matrix[ 0 ][ 0 ] ];
-			push.texMatrixS[ 1 ] = regs[ pStage->texture.matrix[ 0 ][ 1 ] ];
-			push.texMatrixS[ 2 ] = 0.0f;
-			push.texMatrixS[ 3 ] = regs[ pStage->texture.matrix[ 0 ][ 2 ] ];
-			push.texMatrixT[ 0 ] = regs[ pStage->texture.matrix[ 1 ][ 0 ] ];
-			push.texMatrixT[ 1 ] = regs[ pStage->texture.matrix[ 1 ][ 1 ] ];
-			push.texMatrixT[ 2 ] = 0.0f;
-			push.texMatrixT[ 3 ] = regs[ pStage->texture.matrix[ 1 ][ 2 ] ];
-			push.params[ 3 ] = 1.0f;
-		} else {
-			push.texMatrixS[ 0 ] = 1.0f; push.texMatrixS[ 1 ] = 0.0f; push.texMatrixS[ 2 ] = 0.0f; push.texMatrixS[ 3 ] = 0.0f;
-			push.texMatrixT[ 0 ] = 0.0f; push.texMatrixT[ 1 ] = 1.0f; push.texMatrixT[ 2 ] = 0.0f; push.texMatrixT[ 3 ] = 0.0f;
+		VK_Exec_SetPushTextureMatrix( pStage, regs, push );
+		int bumpyUniformOffset = -1;
+		if ( reflectStage ) {
+			idVec3 localViewOrigin;
+			R_GlobalPointToLocal( drawSurf->space->modelMatrix, viewDef->renderView.vieworg, localViewOrigin );
+			push.texMatrixS[ 0 ] = localViewOrigin[ 0 ];
+			push.texMatrixS[ 1 ] = localViewOrigin[ 1 ];
+			push.texMatrixS[ 2 ] = localViewOrigin[ 2 ];
+			push.texMatrixS[ 3 ] = 0.0f;
 			push.params[ 3 ] = 0.0f;
+			if ( bumpyReflectStage ) {
+				const float *modelMatrix = drawSurf->space->modelMatrix;
+				vkBumpyEnvironmentBlock_t block;
+				memset( &block, 0, sizeof( block ) );
+				block.localViewOrigin[ 0 ] = localViewOrigin[ 0 ];
+				block.localViewOrigin[ 1 ] = localViewOrigin[ 1 ];
+				block.localViewOrigin[ 2 ] = localViewOrigin[ 2 ];
+				block.localViewOrigin[ 3 ] = 1.0f;
+				block.modelRow0[ 0 ] = modelMatrix[ 0 ];
+				block.modelRow0[ 1 ] = modelMatrix[ 4 ];
+				block.modelRow0[ 2 ] = modelMatrix[ 8 ];
+				block.modelRow0[ 3 ] = modelMatrix[ 12 ];
+				block.modelRow1[ 0 ] = modelMatrix[ 1 ];
+				block.modelRow1[ 1 ] = modelMatrix[ 5 ];
+				block.modelRow1[ 2 ] = modelMatrix[ 9 ];
+				block.modelRow1[ 3 ] = modelMatrix[ 13 ];
+				block.modelRow2[ 0 ] = modelMatrix[ 2 ];
+				block.modelRow2[ 1 ] = modelMatrix[ 6 ];
+				block.modelRow2[ 2 ] = modelMatrix[ 10 ];
+				block.modelRow2[ 3 ] = modelMatrix[ 14 ];
+				bumpyUniformOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
+				if ( bumpyUniformOffset < 0 ) {
+					continue;
+				}
+			}
 		}
 
 		switch ( pStage->vertexColor ) {
@@ -2155,26 +6202,11 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 			default:					push.params[ 0 ] = 0.0f; break;
 		}
 
-		// alpha test from the GLS bits
-		switch ( pStage->drawStateBits & GLS_ATEST_BITS ) {
-			case GLS_ATEST_GE_128:
-				push.params[ 1 ] = 1.0f;
-				push.params[ 2 ] = 0.5f - ( 1.0f / 255.0f );
-				break;
-			case GLS_ATEST_LT_128:
-				// inverted compare is rare; approximate as none
-				push.params[ 1 ] = 0.0f;
-				push.params[ 2 ] = 0.0f;
-				break;
-			case GLS_ATEST_EQ_255:
-				push.params[ 1 ] = 1.0f;
-				push.params[ 2 ] = 1.0f - ( 1.0f / 255.0f );
-				break;
-			default:
-				push.params[ 1 ] = 0.0f;
-				push.params[ 2 ] = 0.0f;
-				break;
-		}
+		// Material parsing keeps alpha-test state explicitly; GLS_ATEST_BITS
+		// are retained only for legacy fixed-function call sites.
+		push.params[ 1 ] = VK_Exec_AlphaTestModeValue( pStage );
+		push.params[ 2 ] = pStage->hasAlphaTest && regs != NULL
+				? regs[ pStage->alphaTestRegister ] : 0.0f;
 
 		if ( worldDepthState ) {
 			// stage depth semantics from the material parse: opaque and
@@ -2201,8 +6233,14 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 		VkPipeline pipeline;
 		if ( cubeStage ) {
 			pipeline = VK_GuiExecutor_GetCubePipeline( pStage->drawStateBits, texgen == TG_DIFFUSE_CUBE );
+		} else if ( reflectStage ) {
+			pipeline = VK_GuiExecutor_GetEnvironmentPipeline( pStage->drawStateBits, bumpyReflectStage );
+		} else if ( glassStage ) {
+			pipeline = VK_Exec_GetGlassWarpPipeline( pStage->drawStateBits );
+		} else if ( screenStage ) {
+			pipeline = VK_GuiExecutor_GetScreenPipeline( pStage->drawStateBits, bakedDecalStageColor );
 		} else {
-			pipeline = VK_GuiExecutor_GetPipeline( pStage->drawStateBits );
+			pipeline = VK_GuiExecutor_GetPipeline( pStage->drawStateBits, bakedDecalStageColor );
 		}
 		if ( pipeline == VK_NULL_HANDLE ) {
 			continue;
@@ -2216,9 +6254,48 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 				common->Printf( "Vulkan: first cube-texgen stage drew (texgen %d, %s)\n", texgen, shader->GetName() );
 			}
 		}
+		if ( reflectStage ) {
+			static bool loggedFirstReflectStage[ 2 ] = { false, false };
+			const int variant = bumpyReflectStage ? 1 : 0;
+			if ( !loggedFirstReflectStage[ variant ] ) {
+				loggedFirstReflectStage[ variant ] = true;
+				common->Printf( "Vulkan: first %sreflect-cube environment stage drew (%s)\n",
+						bumpyReflectStage ? "bumpy " : "", shader->GetName() );
+			}
+		}
+		if ( screenStage ) {
+			static bool loggedFirstScreenStage = false;
+			if ( !loggedFirstScreenStage ) {
+				loggedFirstScreenStage = true;
+				common->Printf( "Vulkan: first projective screen-texgen stage drew (%s)\n",
+						shader->GetName() );
+			}
+		}
+		if ( glassStage ) {
+			static bool loggedFirstGlassWarpStage = false;
+			if ( !loggedFirstGlassWarpStage ) {
+				loggedFirstGlassWarpStage = true;
+				common->Printf( "Vulkan: first glass-warp stage drew (%s)\n",
+						shader->GetName() );
+			}
+		}
+		const VkPipelineLayout stageLayout = bumpyReflectStage || glassStage
+				? vkExec.interactionPipelineLayout : vkExec.pipelineLayout;
 		vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
-		vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkExec.pipelineLayout, 0, 1, &descriptor, 0, NULL );
-		vkCmdPushConstants( cmd, vkExec.pipelineLayout,
+		vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				stageLayout, 0, 1, &descriptor, 0, NULL );
+		if ( bumpyReflectStage ) {
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					stageLayout, 1, 1, &bumpDescriptor, 0, NULL );
+			const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+			const uint32_t dynamicOffset = (uint32_t)bumpyUniformOffset;
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					stageLayout, 6, 1, &uniformSet, 1, &dynamicOffset );
+		} else if ( glassStage ) {
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					stageLayout, 1, 2, glassDescriptors, 0, NULL );
+		}
+		vkCmdPushConstants( cmd, stageLayout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 		vkCmdDrawIndexed( cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
 
@@ -2240,7 +6317,12 @@ The RB_STD_DrawShaderPasses contract for 2D views, on the swapchain.
 ====================
 */
 void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
-	if ( viewDef == NULL || viewDef->numDrawSurfs <= 0 ) {
+	if ( viewDef == NULL ) {
+		return;
+	}
+	backEnd.currentRenderCopied = false;
+	backEnd.currentDepthCopied = false;
+	if ( viewDef->numDrawSurfs <= 0 ) {
 		return;
 	}
 	if ( !VK_GuiExecutor_BeginFrame() ) {
@@ -2251,7 +6333,7 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 
 	VkCommandBuffer cmd = vkExec.cmd;
 	const int slot = vkExec.frameSlot;
-	const int fbHeight = (int)vkCtx.swapchainExtent.height;
+	const int fbHeight = VK_Exec_ActiveFramebufferHeight();
 
 	// 2D semantics regardless of what an earlier 3D view left behind
 	vkCmdSetDepthTestEnable( cmd, VK_FALSE );
@@ -2311,7 +6393,12 @@ walks. Post-process surfaces belong to Phase H.
 ====================
 */
 void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
-	if ( viewDef == NULL || viewDef->numDrawSurfs <= 0 ) {
+	if ( viewDef == NULL ) {
+		return;
+	}
+	backEnd.currentRenderCopied = false;
+	backEnd.currentDepthCopied = false;
+	if ( viewDef->numDrawSurfs <= 0 ) {
 		return;
 	}
 	if ( !VK_GuiExecutor_BeginFrame() ) {
@@ -2322,7 +6409,8 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 
 	VkCommandBuffer cmd = vkExec.cmd;
 	const int slot = vkExec.frameSlot;
-	const int fbHeight = (int)vkCtx.swapchainExtent.height;
+	const int fbHeight = VK_Exec_ActiveFramebufferHeight();
+	const int fbWidth = VK_Exec_ActiveFramebufferWidth();
 
 	drawSurf_t **drawSurfs = (drawSurf_t **)viewDef->drawSurfs;
 	const int numDrawSurfs = viewDef->numDrawSurfs;
@@ -2353,17 +6441,25 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			y0 = 0;
 		}
 		int x1 = vpX + vpW;
-		if ( x1 > (int)vkCtx.swapchainExtent.width ) {
-			x1 = (int)vkCtx.swapchainExtent.width;
+		if ( x1 > fbWidth ) {
+			x1 = fbWidth;
 		}
 		int y1 = fbHeight - vpYGL;
-		if ( y1 > (int)vkCtx.swapchainExtent.height ) {
-			y1 = (int)vkCtx.swapchainExtent.height;
+		if ( y1 > fbHeight ) {
+			y1 = fbHeight;
 		}
-		if ( x1 > x0 && y1 > y0 ) {
+		VkImageAspectFlags clearAspects = 0;
+		if ( vkExec.activeDepthAttachmentView != VK_NULL_HANDLE
+				&& vkExec.activePipelineTarget.depthFormat != VK_FORMAT_UNDEFINED ) {
+			clearAspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
+		}
+		if ( vkExec.activePipelineTarget.stencilFormat != VK_FORMAT_UNDEFINED ) {
+			clearAspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+		if ( x1 > x0 && y1 > y0 && clearAspects != 0 ) {
 			VkClearAttachment clearAtt;
 			memset( &clearAtt, 0, sizeof( clearAtt ) );
-			clearAtt.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+			clearAtt.aspectMask = clearAspects;
 			clearAtt.clearValue.depthStencil.depth = 1.0f;
 			clearAtt.clearValue.depthStencil.stencil = 128;
 			VkClearRect clearRect;
@@ -2483,10 +6579,6 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 				if ( pStage->texture.image == NULL || pStage->texture.texgen != TG_EXPLICIT ) {
 					continue;
 				}
-				// only greater-style compares map onto the shader's test
-				if ( pStage->alphaTestMode != GL_GREATER ) {
-					continue;
-				}
 				VkDescriptorSet stageDescriptor = VK_GuiExecutor_GetImageDescriptor( pStage->texture.image->GetDeviceHandle() );
 				if ( stageDescriptor == VK_NULL_HANDLE ) {
 					continue;
@@ -2498,17 +6590,9 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 					vkCmdSetDepthBias( cmd, r_offsetUnits.GetFloat() * pStage->privatePolygonOffset, 0.0f, r_offsetFactor.GetFloat() );
 				}
 				push.stageColor[ 3 ] = stageAlpha;
-				push.params[ 1 ] = 1.0f;
+				push.params[ 1 ] = VK_Exec_AlphaTestModeValue( pStage );
 				push.params[ 2 ] = regs != NULL ? regs[ pStage->alphaTestRegister ] : 0.5f;
-				if ( pStage->texture.hasMatrix && regs != NULL ) {
-					push.texMatrixS[ 0 ] = regs[ pStage->texture.matrix[ 0 ][ 0 ] ];
-					push.texMatrixS[ 1 ] = regs[ pStage->texture.matrix[ 0 ][ 1 ] ];
-					push.texMatrixS[ 3 ] = regs[ pStage->texture.matrix[ 0 ][ 2 ] ];
-					push.texMatrixT[ 0 ] = regs[ pStage->texture.matrix[ 1 ][ 0 ] ];
-					push.texMatrixT[ 1 ] = regs[ pStage->texture.matrix[ 1 ][ 1 ] ];
-					push.texMatrixT[ 3 ] = regs[ pStage->texture.matrix[ 1 ][ 2 ] ];
-					push.params[ 3 ] = 1.0f;
-				}
+				VK_Exec_SetPushTextureMatrix( pStage, regs, push );
 				VkPipeline pipeline = VK_GuiExecutor_GetPipeline( fillBlendBits );
 				if ( pipeline == VK_NULL_HANDLE ) {
 					continue;
@@ -2564,9 +6648,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	viewport.maxDepth = 1.0f;
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
 
-	// ---- passes 2+3: ambient shader walks split at the fog boundary ----
-	// post-process surfaces (sort >= SS_POST_PROCESS) need _currentRender
-	// captures (Phase H); the walks stop at that boundary
+	// ---- passes 2-4: ambient walks split at fog, then post-process ----
 	int processed = numDrawSurfs;
 	for ( int i = 0; i < numDrawSurfs; i++ ) {
 		if ( drawSurfs[ i ]->material != NULL && drawSurfs[ i ]->material->GetSort() >= SS_POST_PROCESS ) {
@@ -2575,7 +6657,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		}
 	}
 
-	for ( int pass = 0; pass < 2; pass++ ) {
+	for ( int pass = 0; pass < 3; pass++ ) {
 		// ---- fog and blend lights between the two walks (Phase G2) ----
 		// RB_STD_DrawView order: pre-fog material passes (draw_common.cpp:
 		// 9774), RB_STD_FogAllLights (:9806), post-fog passes (:9818) —
@@ -2584,13 +6666,59 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		// bias off; restart the walk baseline like the interaction pass.
 		if ( pass == 1 ) {
 			VK_Fog_DrawAllLights( viewDef );
+			// Fog changes the framebuffer after any earlier lazy capture.
+			backEnd.currentRenderCopied = false;
+			backEnd.currentDepthCopied = false;
 			currentSpace = NULL;
 			weaponDepthRange = false;
 			viewport.maxDepth = 1.0f;
 			vkCmdSetViewport( cmd, 0, 1, &viewport );
 		}
 		if ( !r_skipAmbient.GetBool() ) {
-			for ( int surfNum = 0; surfNum < processed; surfNum++ ) {
+			if ( pass == 2 ) {
+				if ( processed >= numDrawSurfs || r_skipPostProcess.GetBool() ) {
+					break;
+				}
+				bool feedbackReady = true;
+				if ( VK_Exec_AutomaticCaptureAllowed() ) {
+					feedbackReady = backEnd.currentRenderCopied
+							|| VK_Exec_CaptureCurrentRender( viewDef );
+					bool needsCurrentDepth = false;
+					for ( int surfNum = processed; surfNum < numDrawSurfs; surfNum++ ) {
+						if ( VK_Exec_MaterialUsesCurrentDepth( drawSurfs[ surfNum ]->material ) ) {
+							needsCurrentDepth = true;
+							break;
+						}
+					}
+					if ( needsCurrentDepth && !backEnd.currentDepthCopied ) {
+						feedbackReady = VK_Exec_CaptureCurrentDepth( viewDef ) && feedbackReady;
+					}
+				} else {
+					// Explicit offscreen post chains own their source capture.
+					backEnd.currentRenderCopied = true;
+				}
+				if ( !feedbackReady ) {
+					static bool warnedPostCapture = false;
+					if ( !warnedPostCapture ) {
+						warnedPostCapture = true;
+						common->Warning( "Vulkan: post-process surfaces skipped because feedback capture failed" );
+					}
+					break;
+				}
+				static bool loggedFirstPostProcessPass = false;
+				if ( !loggedFirstPostProcessPass ) {
+					loggedFirstPostProcessPass = true;
+					common->Printf( "Vulkan: first post-process surface pass: %d surfaces (_currentRender %dx%d)\n",
+							numDrawSurfs - processed,
+							globalImages->currentRenderImage != NULL
+								? globalImages->currentRenderImage->GetUploadWidth() : 0,
+							globalImages->currentRenderImage != NULL
+								? globalImages->currentRenderImage->GetUploadHeight() : 0 );
+				}
+			}
+			const int surfBegin = pass == 2 ? processed : 0;
+			const int surfEnd = pass == 2 ? numDrawSurfs : processed;
+			for ( int surfNum = surfBegin; surfNum < surfEnd; surfNum++ ) {
 				const drawSurf_t *drawSurf = drawSurfs[ surfNum ];
 				const idMaterial *shader = drawSurf->material;
 				if ( shader == NULL || !shader->HasAmbient() || shader->IsPortalSky() ) {
@@ -2600,18 +6728,29 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 					continue;
 				}
 
-				// pre-fog: decal materials + sort < SS_MEDIUM; post-fog:
-				// SS_MEDIUM..<SS_POST_PROCESS (RB_DrawSurfIs*FogMaterialPass)
-				const bool isDecal = drawSurf->decalColorCache != NULL
-						|| ( shader->GetSort() >= SS_DECAL && shader->GetSort() < SS_FAR );
-				bool inPass;
-				if ( pass == 0 ) {
-					inPass = isDecal ? !r_skipDecals.GetBool() : shader->GetSort() < SS_MEDIUM;
-				} else {
-					inPass = !isDecal && shader->GetSort() >= SS_MEDIUM && shader->GetSort() < SS_POST_PROCESS;
-				}
-				if ( !inPass ) {
-					continue;
+				if ( pass < 2 ) {
+					// pre-fog: decals + sort < SS_MEDIUM; post-fog:
+					// SS_MEDIUM..<SS_POST_PROCESS.
+					const bool isDecal = drawSurf->decalColorCache != NULL
+							|| ( shader->GetSort() >= SS_DECAL && shader->GetSort() < SS_FAR );
+					const bool inPass = pass == 0
+							? ( isDecal ? !r_skipDecals.GetBool() : shader->GetSort() < SS_MEDIUM )
+							: ( !isDecal && shader->GetSort() >= SS_MEDIUM
+								&& shader->GetSort() < SS_POST_PROCESS );
+					if ( !inPass ) {
+						continue;
+					}
+					if ( shader->TestMaterialFlag( MF_NEED_CURRENT_RENDER )
+							&& shader->GetSort() < SS_POST_PROCESS
+							&& !backEnd.currentRenderCopied ) {
+						if ( VK_Exec_AutomaticCaptureAllowed() ) {
+							if ( !VK_Exec_CaptureCurrentRender( viewDef ) ) {
+								continue;
+							}
+						} else {
+							backEnd.currentRenderCopied = true;
+						}
+					}
 				}
 
 				const srfTriangles_t *tri = drawSurf->geo;
@@ -2661,6 +6800,11 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			}
 		}
 	}
+
+	// RC_DRAW_SPECIAL_EFFECTS immediately precedes this view in the command
+	// stream. Consume its Raven controller state only after the complete scene
+	// is available, while the world depth attachment is still intact.
+	VK_Exec_DrawRVSpecialEffects( viewDef );
 
 	// leave 2D-friendly state for a following HUD view
 	if ( weaponDepthRange ) {

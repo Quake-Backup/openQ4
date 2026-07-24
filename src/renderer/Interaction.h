@@ -67,6 +67,11 @@ typedef struct {
 	bool					shadowLODDecisionValid;
 	bool					shadowLODAdmitted;
 	int						shadowLODDecisionFrame;
+	// The classic volume path admitted this surface. A static-world surface
+	// may be represented by the light's combined prelight volume instead of
+	// carrying per-interaction shadowTris.
+	bool					shadowStencilEligible;
+	bool					shadowStencilUsesPrelight;
 
 	int						expCulled;			// only for the experimental shadow buffer renderer
 

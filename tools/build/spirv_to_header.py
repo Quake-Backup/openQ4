@@ -50,7 +50,9 @@ def compile_spirv(glslang: str, source: pathlib.Path, out_dir: pathlib.Path) -> 
 
 
 def emit_array(name: str, data: bytes) -> str:
-    lines = [f"static const unsigned char {name}[] = {{"]
+    # VkShaderModuleCreateInfo::pCode must be aligned to uint32_t even though
+    # byte arrays keep the generated header compact and endian-transparent.
+    lines = [f"alignas(4) static const unsigned char {name}[] = {{"]
     for i in range(0, len(data), 16):
         chunk = ", ".join(f"0x{b:02x}" for b in data[i : i + 16])
         lines.append(f"\t{chunk},")

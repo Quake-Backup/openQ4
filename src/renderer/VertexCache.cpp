@@ -178,7 +178,7 @@ void *idVertexCache::Position( vertCache_t *buffer ) {
 		} else {
 			BindArrayBuffer( buffer->vbo );
 		}
-		return (void *)buffer->offset;
+		return reinterpret_cast<void *>( static_cast<uintptr_t>( buffer->offset ) );
 	}
 
 	// Client-memory array and index pointers are only interpreted as CPU

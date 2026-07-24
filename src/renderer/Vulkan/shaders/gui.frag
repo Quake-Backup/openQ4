@@ -24,7 +24,15 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 color = texture(texSampler, fragTexCoord) * fragColor;
-    if (pc.params.y > 0.5 && color.a <= pc.params.z) {
+    if (pc.params.y > 0.5) {
+        if (pc.params.y > 1.5) {
+            if (abs(color.a - pc.params.z) > (0.5 / 255.0)) {
+                discard;
+            }
+        } else if (color.a <= pc.params.z) {
+            discard;
+        }
+    } else if (pc.params.y < -0.5 && color.a >= pc.params.z) {
         discard;
     }
     outColor = color;

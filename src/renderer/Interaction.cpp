@@ -107,6 +107,17 @@ static bool R_CachedInteractionShadowLODAdmitted( surfaceInteraction_t *sint, id
 }
 
 static bool R_TranslucentShadowMapMomentsSupportedForLight( const idRenderLightLocal *lightDef ) {
+	// The Vulkan backend does not own the experimental moment attachments or
+	// their translucent caster chains. Reject that tier explicitly so stale
+	// OpenGL capability state can never admit casters Vulkan would omit; its
+	// stock translucent shadow casters instead use binary stencil-parity depth.
+	const char *activeRenderApi =
+		cvarSystem != NULL
+			? cvarSystem->GetCVarString( "r_actualRenderApi" )
+			: "";
+	if ( idStr::Icmp( activeRenderApi, "vulkan" ) == 0 ) {
+		return false;
+	}
 	return r_shadowMapTranslucentMoments.GetBool() &&
 		glConfig.GLSLProgramAvailable &&
 		glConfig.maxTextureUnits >= 9 &&
@@ -114,6 +125,35 @@ static bool R_TranslucentShadowMapMomentsSupportedForLight( const idRenderLightL
 		glConfig.maxDrawBuffers >= 3 &&
 		glConfig.maxColorAttachments >= 3 &&
 		( lightDef == NULL || !lightDef->parms.pointLight || lightDef->parms.parallel || glConfig.cubeMapAvailable );
+}
+
+/*
+=================
+R_VulkanShadowMapsNeedPerSurfaceStencilVolumes
+
+Optimized prelights combine every static-world caster for a light into one
+volume. A partial filtered shadow map needs only S\M as its stencil
+supplement, so the combined volume cannot be used without hardening casters
+already represented in the map. Keep the stock per-surface volume path for
+Vulkan lights that can actually use mapped shadows; stencil-only and OpenGL
+paths retain the optimized prelight behavior.
+=================
+*/
+bool R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+		const idRenderLightLocal *lightDef ) {
+	if ( lightDef == NULL || !r_shadows.GetBool() ||
+		!r_useShadowMap.GetBool() ) {
+		return false;
+	}
+	if ( lightDef->parms.pointLight && !lightDef->parms.parallel &&
+		!r_shadowMapPointLights.GetBool() ) {
+		return false;
+	}
+	const char *activeRenderApi =
+		cvarSystem != NULL
+			? cvarSystem->GetCVarString( "r_actualRenderApi" )
+			: "";
+	return idStr::Icmp( activeRenderApi, "vulkan" ) == 0;
 }
 
 typedef struct {
@@ -1523,6 +1563,9 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 	const bool translucentShadowMapsEnabledForInteraction =
 		shadowMapsEnabledForInteraction &&
 		R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
+	idVec3 shadowMapLocalLightOrigin;
+	R_GlobalPointToLocal( entityDef->modelMatrix,
+		lightDef->globalLightOrigin, shadowMapLocalLightOrigin );
 
 	// check each surface in the model
 	for ( int c = 0 ; c < numSurfaces ; c++ ) {
@@ -1602,6 +1645,29 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 		const bool shadowLODAdmitted =
 			surfaceNeedsShadowLODDecision &&
 			R_CachedInteractionShadowLODAdmitted( sint, entityDef );
+		sint->shadowStencilEligible =
+			surfaceCanCastStencilShadowVolume && shadowLODAdmitted;
+		sint->shadowStencilUsesPrelight =
+			sint->shadowStencilEligible &&
+			R_LightHasRealPrelightModel( lightDef->parms ) &&
+			model->IsStaticWorldModel() &&
+			r_useOptimizedShadows.GetBool() &&
+			!R_VulkanShadowMapsNeedPerSurfaceStencilVolumes( lightDef );
+
+		// A thin panel surrounding its owning point-light origin is excluded
+		// from the point depth map. Probe its retail stencil path even when
+		// dynamic map use would normally elide volume generation; AddActiveInteraction
+		// makes the light sticky only if the probe produces a real volume.
+		const bool pointMapPolicyActive =
+			shadowMapsEnabledForInteraction &&
+			lightDef->parms.pointLight &&
+			!lightDef->parms.parallel &&
+			r_shadowMapPointLights.GetBool();
+		const bool forcePointEmitterStencilGeneration =
+			pointMapPolicyActive &&
+			sint->shadowStencilEligible &&
+			R_ShouldSkipPointLightEmitterCaster( shader, tri,
+				shadowMapLocalLightOrigin, lightDef->parms.lightRadius );
 
 		if ( surfaceCanCastDedicatedShadowMap || surfaceCanCastTranslucentShadowMap ) {
 			R_RecordShadowMapLODDecision(
@@ -1626,14 +1692,15 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 		const bool suppressDynamicShadowVolume =
 			surfaceCanCastStencilShadowVolume && shadowLODAdmitted &&
 			model->IsDynamicModel() != DM_STATIC &&
+			!forcePointEmitterStencilGeneration &&
 			R_ShadowMapLightWillUseShadowMaps( lightDef );
 		if ( suppressDynamicShadowVolume ) {
 			// shadow ownership stays with this interaction even without volumes
 			interactionGenerated = true;
-		} else if ( surfaceCanCastStencilShadowVolume && shadowLODAdmitted ) {
+		} else if ( sint->shadowStencilEligible ) {
 
 			// if the light has an optimized shadow volume, don't create shadows for any models that are part of the base areas
-			if ( !R_LightHasRealPrelightModel( lightDef->parms ) || !model->IsStaticWorldModel() || !r_useOptimizedShadows.GetBool() ) {
+			if ( !sint->shadowStencilUsesPrelight ) {
 
 				// this is the only place during gameplay (outside the utilities) that R_CreateShadowVolume() is called
 				sint->shadowTris = R_CreateShadowVolume( entityDef, tri, lightDef, shadowGen, sint->cullInfo );
@@ -2006,6 +2073,14 @@ void idInteraction::AddActiveInteraction( void ) {
 		// interaction material. Retail does not let global shader overrides change
 		// whether a surface casts or locally routes its shadows.
 		const bool materialNoSelfShadow = shadowShader->TestMaterialFlag( MF_NOSELFSHADOW );
+		const int shadowReceiverMask = materialNoSelfShadow
+			? SHADOWMAP_RECEIVER_MASK_GLOBAL
+			: ( SHADOWMAP_RECEIVER_MASK_LOCAL | SHADOWMAP_RECEIVER_MASK_GLOBAL );
+		const bool shadowMapCasterPolicyActive =
+			r_useShadowMap.GetBool() &&
+			( !vLight->pointLight || vLight->parallel || r_shadowMapPointLights.GetBool() );
+		bool admittedShadowMapCaster = false;
+		bool linkedShadowMapCaster = false;
 
 		// the shadow-map caster policy (spectrum match, emitter-panel geometry
 		// check, LOD admission) is per-surface work that only matters when the
@@ -2013,8 +2088,7 @@ void idInteraction::AddActiveInteraction( void ) {
 		// skips it entirely, as do point lights the backend will refuse
 		// (r_shadowMapPointLights 0 previously built full caster chains the
 		// backend never consumed)
-		if ( r_useShadowMap.GetBool()
-			&& ( !vLight->pointLight || vLight->parallel || r_shadowMapPointLights.GetBool() ) ) {
+		if ( shadowMapCasterPolicyActive ) {
 			const bool isViewOnlyEntity =
 				( entityDef->parms.allowSurfaceInViewID != 0 &&
 					entityDef->parms.allowSurfaceInViewID == tr.viewDef->renderView.viewID ) ||
@@ -2053,6 +2127,9 @@ void idInteraction::AddActiveInteraction( void ) {
 				sameSpectrumShadowMapCaster &&
 				R_ShadowMapShaderCanCastTranslucent( shadowShader ) &&
 				R_CachedInteractionShadowLODAdmitted( sint, entityDef );
+			admittedShadowMapCaster =
+				allowShadowMapCaster ||
+				allowTranslucentShadowMapCaster;
 
 			if ( sint->ambientTris != NULL && !allowShadowMapCaster && !allowTranslucentShadowMapCaster ) {
 				R_RecordShadowMapRejectedCaster( vLight, R_ClassifyShadowMapCasterReject( entityDef, vEntity, sint, shadowShader, isViewOnlyEntity, translucentShadowMapSupported, skipPointLightEmitterCaster, sameSpectrumShadowMapCaster, R_CachedInteractionShadowLODAdmitted( sint, entityDef ) ) );
@@ -2077,6 +2154,7 @@ void idInteraction::AddActiveInteraction( void ) {
 						R_LinkShadowMapCasterSurf( dynamicCasterSurf ? &vLight->globalShadowMapDynamicCasters : &vLight->globalShadowMapCasters,
 							casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
 					}
+					linkedShadowMapCaster = true;
 				}
 			}
 
@@ -2096,39 +2174,147 @@ void idInteraction::AddActiveInteraction( void ) {
 						R_LinkShadowMapCasterSurf( &vLight->globalTranslucentShadowMapCasters,
 							casterTris, vEntity, &entityDef->parms, shadowShader, shadowScissor );
 					}
+					linkedShadowMapCaster = true;
 				}
 			}
 		}
 
 		srfTriangles_t *shadowTris = sint->shadowTris;
+		const bool mapMissingCasterNeedsStencil =
+			shadowMapCasterPolicyActive &&
+			!sint->shadowStencilUsesPrelight &&
+			!linkedShadowMapCaster &&
+			( admittedShadowMapCaster ||
+				shadowTris != NULL ) &&
+			( !shadowMapCasterOnly ||
+				admittedShadowMapCaster );
+		const bool prelightMapMissingCasterNeedsStencil =
+			shadowMapCasterPolicyActive &&
+			sint->shadowStencilUsesPrelight &&
+			!linkedShadowMapCaster;
+		if ( ( mapMissingCasterNeedsStencil ||
+				prelightMapMissingCasterNeedsStencil ) &&
+			lightDef != NULL ) {
+			// Keep this light's volume links resident: Vulkan can combine the
+			// partial ownership map with per-surface missing-caster volumes,
+			// or fall back to the combined prelight volume.
+			lightDef->shadowMapStencilFallbackSticky = true;
+		}
+		const bool volumeElidedForShadowMaps =
+			shadowTris != NULL &&
+			!shadowMapCasterOnly &&
+			R_ShadowMapLightWillUseShadowMaps( lightDef );
+		bool mapMissingNeedsVisibleVolume = false;
+		bool mappedCasterNeedsVisibleFallbackVolume = false;
+
+		if ( shadowMapCasterPolicyActive ) {
+			if ( sint->shadowStencilUsesPrelight ) {
+				// Static-world per-surface volumes are replaced by one combined
+				// prelight volume. R_AddOptimizedPrelightShadows resolves these
+				// pending masks after its whole-volume cull/resource checks.
+				vLight->shadowMapPrelightStencilRequiredMask |=
+					shadowReceiverMask;
+				if ( !linkedShadowMapCaster ) {
+					vLight->shadowMapPrelightMapMissingMask |=
+						shadowReceiverMask;
+				}
+			} else if ( linkedShadowMapCaster ) {
+				// A mapped-only/expanded caster cannot be recovered by a
+				// different surface's volume. Treat a backend map miss as
+				// fail-closed even when this light has other stencil surfs.
+				if ( shadowTris == NULL || volumeElidedForShadowMaps ) {
+					vLight->shadowMapIncompleteStencilMask |=
+						shadowReceiverMask;
+				} else {
+					mappedCasterNeedsVisibleFallbackVolume = true;
+				}
+			} else if ( mapMissingCasterNeedsStencil ) {
+				// If the usable volume survives the per-view cull below, this
+				// stock stencil caster is absent from the ownership map. An
+				// admitted mapped caster whose geometry-cache setup failed
+				// follows the same path so it cannot silently disappear from
+				// both representations.
+				if ( shadowTris == NULL || volumeElidedForShadowMaps ) {
+					vLight->shadowMapIncompleteMapMask |=
+						shadowReceiverMask;
+					vLight->shadowMapIncompleteStencilMask |=
+						shadowReceiverMask;
+					vLight->shadowMapHybridIncompleteMask |=
+						shadowReceiverMask;
+				} else {
+					mapMissingNeedsVisibleVolume = true;
+				}
+			}
+		}
 
 		// the shadows will always have to be added, unless we can tell they
 		// are from a surface in an unconnected area, or the light renders
 		// shadow maps this frame and its stencil volumes would go unused
-		if ( shadowTris && !shadowMapCasterOnly && !R_ShadowMapLightWillUseShadowMaps( lightDef ) ) {
+		const bool shouldLinkShadowVolume =
+			shadowTris != NULL &&
+			( !shadowMapCasterOnly ||
+				mappedCasterNeedsVisibleFallbackVolume ||
+				mapMissingNeedsVisibleVolume );
+		if ( shouldLinkShadowVolume &&
+			!volumeElidedForShadowMaps ) {
 
 			// cull static shadows that have a non-empty bounds
 			// dynamic shadows that use the turboshadow code will not have valid
 			// bounds, because the perspective projection extends them to infinity
-			if ( r_useShadowCulling.GetBool() && !R_ShouldDisableEntityCullingForLevelshot() && !shadowTris->bounds.IsCleared() ) {
+			if ( !shadowMapCasterOnly &&
+				r_useShadowCulling.GetBool() &&
+				!R_ShouldDisableEntityCullingForLevelshot() &&
+				!shadowTris->bounds.IsCleared() ) {
 				if ( R_CullLocalBox( shadowTris->bounds, vEntity->modelMatrix, 5, tr.viewDef->frustum ) ) {
 					continue;
 				}
 			}
 
+			if ( mapMissingNeedsVisibleVolume ) {
+				vLight->shadowMapIncompleteMapMask |= shadowReceiverMask;
+			}
 			if ( !R_EnsureInteractionShadowCache( sint, entityDef ) ) {
+				if ( shadowMapCasterPolicyActive &&
+					( linkedShadowMapCaster ||
+						mapMissingNeedsVisibleVolume ) ) {
+					vLight->shadowMapIncompleteStencilMask |=
+						shadowReceiverMask;
+					if ( mapMissingNeedsVisibleVolume ) {
+						vLight->shadowMapHybridIncompleteMask |=
+							shadowReceiverMask;
+					}
+				}
 				continue;
 			}
 
 			// see if we can avoid using the shadow volume caps
 			bool inside = R_PotentiallyInsideInfiniteShadow( sint->ambientTris, localViewOrigin, localLightOrigin );
 
-			if ( materialNoSelfShadow ) {
-				R_LinkLightSurf( &vLight->localShadows,
-					shadowTris, vEntity, lightDef, NULL, shadowScissor, inside );
-			} else {
-				R_LinkLightSurf( &vLight->globalShadows,
-					shadowTris, vEntity, lightDef, NULL, shadowScissor, inside );
+			const drawSurf_t **fullShadowChain = materialNoSelfShadow
+				? &vLight->localShadows
+				: &vLight->globalShadows;
+			const bool linkedFullShadowVolume = R_LinkLightSurf(
+				fullShadowChain, shadowTris, vEntity, lightDef, NULL,
+				shadowScissor, inside );
+			if ( shadowMapCasterPolicyActive &&
+				( linkedShadowMapCaster ||
+					mapMissingNeedsVisibleVolume ) &&
+				!linkedFullShadowVolume ) {
+				vLight->shadowMapIncompleteStencilMask |=
+					shadowReceiverMask;
+			}
+
+			if ( mapMissingNeedsVisibleVolume ) {
+				const drawSurf_t **supplementChain = materialNoSelfShadow
+					? &vLight->localShadowMapStencilSupplements
+					: &vLight->globalShadowMapStencilSupplements;
+				const bool linkedStencilSupplement = R_LinkLightSurf(
+					supplementChain, shadowTris, vEntity, lightDef, NULL,
+					shadowScissor, inside );
+				if ( !linkedStencilSupplement ) {
+					vLight->shadowMapHybridIncompleteMask |=
+						shadowReceiverMask;
+				}
 			}
 		}
 	}

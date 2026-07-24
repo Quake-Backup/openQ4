@@ -40,7 +40,9 @@ void main() {
     if (pc.params.x < 0.5) {
         vertexColor = vec4(1.0);
     } else if (pc.params.x > 1.5) {
-        vertexColor = vec4(1.0) - inColor;
+        // GL's inverse-modulate combiner inverts only the RGB operand;
+        // primary alpha continues to modulate texture alpha unchanged.
+        vertexColor = vec4(vec3(1.0) - inColor.rgb, inColor.a);
     }
     fragColor = vertexColor * pc.stageColor;
 }

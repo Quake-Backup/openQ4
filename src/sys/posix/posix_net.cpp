@@ -52,8 +52,8 @@ idCVar net_ip( "net_ip", "localhost", CVAR_SYSTEM, "local IP address" );
 idCVar net_port( "net_port", "", CVAR_SYSTEM | CVAR_INTEGER, "local IP port number" );
 
 typedef struct {
-	unsigned long ip;
-	unsigned long mask;
+	uint32_t ip;
+	uint32_t mask;
 } net_interface;
 
 #define 		MAX_INTERFACES	32
@@ -364,7 +364,7 @@ Sys_IsLANAddress
 */
 bool Sys_IsLANAddress( const netadr_t adr ) {
 	int i;
-	unsigned long ip;
+	uint32_t ip;
 
 #if ID_NOLANADDRESS
 	common->Printf( "Sys_IsLANAddress: ID_NOLANADDRESS\n" );

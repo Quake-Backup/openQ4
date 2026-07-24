@@ -1096,7 +1096,13 @@ bool idRenderWorldLocal::WriteMD5R( bool compressed ) {
 	fileSystem->CloseFile( outFile );
 
 	if ( compressed ) {
-		idLexer::WriteBinaryFile( exportFilename.c_str() );
+		const idStr savePathExportFilename = fileSystem->RelativePathToOSPath( exportFilename.c_str(), "fs_savepath" );
+		idLexer::WriteBinaryFile( savePathExportFilename.c_str(), true );
+	} else {
+		idStr compiledExportFilename = exportFilename;
+		compiledExportFilename += Lexer::sCompiledFileSuffix;
+		const idStr compiledSavePath = fileSystem->RelativePathToOSPath( compiledExportFilename.c_str(), "fs_savepath" );
+		fileSystem->RemoveExplicitFile( compiledSavePath.c_str() );
 	}
 
 	common->Printf(

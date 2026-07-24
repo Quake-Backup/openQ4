@@ -1901,7 +1901,7 @@ void idRenderWorldLocal::GenerateAllInteractions() {
 	int end = Sys_Milliseconds();
 	int	msec = end - start;
 
-	common->Printf( "idRenderWorld::GenerateAllInteractions, msec = %i, staticAllocCount = %i.\n", msec, tr.staticAllocCount );
+	common->Printf( "idRenderWorld::GenerateAllInteractions, msec = %i, staticAllocCount = %zu.\n", msec, tr.staticAllocCount );
 
 
 	// build the interaction table

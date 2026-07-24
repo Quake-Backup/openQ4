@@ -66,7 +66,7 @@ static int Base64_DecodeSixtet( const byte c ) {
 
 void idBase64::Encode( const byte *from, int size ) {
 	int i, j;
-	unsigned long w;
+	uint32_t w;
 	byte *to;
 
 	if ( from == NULL || size <= 0 ) {
@@ -94,7 +94,7 @@ void idBase64::Encode( const byte *from, int size ) {
 	w = 0;
 	i = 0;
 	while (size > 0) {
-		w |= (unsigned long)( *from ) << ( i * 8 );
+		w |= static_cast<uint32_t>( *from ) << ( i * 8 );
 		++from;
 		--size;
 		++i;
@@ -157,7 +157,7 @@ idBase64::Decode
 ============
 */
 int idBase64::Decode( byte *to ) const {
-	unsigned long w;
+	uint32_t w;
 	int i, j;
 	size_t n;
 	byte *from = data;

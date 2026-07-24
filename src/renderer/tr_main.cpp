@@ -308,7 +308,7 @@ R_StaticAlloc/R_StaticFree moved into the shared imagetools library; the
 renderer keeps its performance counters through these installed hooks.
 =================
 */
-static void R_ImageToolsOnStaticAlloc( int bytes ) {
+static void R_ImageToolsOnStaticAlloc( size_t bytes ) {
 	tr.pc.c_alloc++;
 	tr.staticAllocCount += bytes;
 }
@@ -1372,6 +1372,11 @@ void R_RenderView( viewDef_t *parms ) {
 			viewBuildLastMark = Sys_Milliseconds();
 		}
 	}
+	// Raven's MedLabs / Alpha Labs controllers capture their source data
+	// immediately before the matching view draw, then composite from within
+	// that view. Keep the command adjacent so both renderer backends consume
+	// the same viewDef lifetime and ordering contract.
+	R_AddSpecialEffects( parms );
 	R_AddDrawViewCmd( parms );
 	if ( reportViewBuildTimes ) {
 		const int now = Sys_Milliseconds();

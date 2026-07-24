@@ -34,7 +34,7 @@ void ImageTools_SetStaticAllocHooks( const imageToolsAllocHooks_t &hooks ) {
 R_StaticAlloc
 =================
 */
-void *R_StaticAlloc( int bytes ) {
+void *R_StaticAlloc( size_t bytes ) {
 	void	*buf;
 
 	if ( it_allocHooks.onStaticAlloc != NULL ) {
@@ -45,7 +45,7 @@ void *R_StaticAlloc( int bytes ) {
 
 	// don't exit on failure on zero length allocations since the old code didn't
 	if ( !buf && ( bytes != 0 ) ) {
-		common->FatalError( "R_StaticAlloc failed on %i bytes", bytes );
+		common->FatalError( "R_StaticAlloc failed on %zu bytes", bytes );
 	}
 	return buf;
 }
@@ -55,11 +55,14 @@ void *R_StaticAlloc( int bytes ) {
 R_ClearedStaticAlloc
 =================
 */
-void *R_ClearedStaticAlloc( int bytes ) {
+void *R_ClearedStaticAlloc( size_t bytes ) {
 	void	*buf;
 
 	buf = R_StaticAlloc( bytes );
-	SIMDProcessor->Memset( buf, 0, bytes );
+	if ( buf != NULL ) {
+		// Mem_Alloc rejects values above the legacy heap's signed 32-bit limit.
+		SIMDProcessor->Memset( buf, 0, static_cast<int>( bytes ) );
+	}
 	return buf;
 }
 

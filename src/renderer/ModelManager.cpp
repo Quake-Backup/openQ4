@@ -119,10 +119,15 @@ static bool R_ModelManager_FindLoadablePrebuiltMD5R( const idStr &md5rName, idSt
 	idStr compiledName = md5rName;
 	compiledName += "c";
 
-	if ( idFile *compiledFile = fileSystem->OpenFileRead( compiledName ) ) {
-		fileSystem->CloseFile( compiledFile );
-		loadableName = md5rName;
-		return true;
+	// The binary-aware lexer only probes the compiled companion when binary
+	// reads are enabled. Do not select an orphaned .md5rc while the ASCII lexer
+	// is active, because it can only open the canonical .md5r source.
+	if ( cvarSystem->GetCVarBool( "com_binaryRead" ) ) {
+		if ( idFile *compiledFile = fileSystem->OpenFileRead( compiledName ) ) {
+			fileSystem->CloseFile( compiledFile );
+			loadableName = md5rName;
+			return true;
+		}
 	}
 
 	if ( idFile *sourceFile = fileSystem->OpenFileRead( md5rName ) ) {

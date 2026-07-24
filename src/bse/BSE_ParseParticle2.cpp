@@ -1660,9 +1660,10 @@ void  rvParticleTemplate::Finish()
 		v3->mIndexCount = 6;
 		if (0.0 != v11->mTrailCount.y && v11->mTrailType == 1)
 		{
-			v3->mVertexCount *= (unsigned short)v3->GetMaxTrailCount();
+			const int maxTrailCount = v3->GetMaxTrailCount();
+			v3->mVertexCount *= maxTrailCount;
 			v2 = 0.0;
-			v3->mIndexCount *= (unsigned short)v3->GetMaxTrailCount();
+			v3->mIndexCount *= maxTrailCount;
 		}
 		break;
 	case 4:
@@ -1714,8 +1715,8 @@ void  rvParticleTemplate::Finish()
 		break;
 	case 7:
 		v12 = this->mElecInfo;
-		this->mVertexCount = 20 * ((unsigned short)v12->mNumForks + 1);
-		this->mIndexCount = 60 * ((unsigned short)v12->mNumForks + 1);
+		this->mVertexCount = 20 * ( idMath::ClampInt( 0, BSE_MAX_FORKS, v12->mNumForks ) + 1 );
+		this->mIndexCount = 60 * ( idMath::ClampInt( 0, BSE_MAX_FORKS, v12->mNumForks ) + 1 );
 		break;
 	case 0xA:
 		this->mVertexCount = 0;
@@ -2208,8 +2209,14 @@ idTraceModel* rvParticleTemplate::GetTraceModel(void) const {
 }
 
 int rvParticleTemplate::GetTrailCount(void) const {
-	const int count = idMath::FtoiFast(rvRandom::flrand(mTrailInfo->mTrailCount.x, mTrailInfo->mTrailCount.y));
-	return Max(0, count);
+	const float count = rvRandom::flrand(mTrailInfo->mTrailCount.x, mTrailInfo->mTrailCount.y);
+	if (!(count > 0.0f)) {
+		return 0;
+	}
+	if (count >= static_cast<float>(BSE_MAX_TRAIL_COUNT)) {
+		return BSE_MAX_TRAIL_COUNT;
+	}
+	return idMath::FtoiFast(count);
 }
 
 bool rvParticleTemplate::Compare(const rvParticleTemplate& a) const {

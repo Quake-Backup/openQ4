@@ -26,6 +26,16 @@ ID_INLINE int GetSegmentParticleCap() {
 	return idMath::ClampInt(0, MAX_PARTICLES, bse_maxParticles.GetInteger());
 }
 
+ID_INLINE int BSE_ClampGeometryCapacity(int minimum, int maximum, int64_t count) {
+	if (count <= minimum) {
+		return minimum;
+	}
+	if (count >= maximum) {
+		return maximum;
+	}
+	return static_cast<int>(count);
+}
+
 ID_INLINE bool BSE_DecalsEnabled() {
 	if (!cvarSystem) {
 		return true;
@@ -732,8 +742,8 @@ void rvSegment::AllocateSurface(rvBSE* effect, idRenderModel* model) {
 		return;
 	}
 
-	const int maxVerts = idMath::ClampInt(4, 10000, particleCount * pt->GetVertexCount());
-	const int maxIndexes = idMath::ClampInt(6, 30000, particleCount * pt->GetIndexCount());
+	const int maxVerts = BSE_ClampGeometryCapacity(4, 10000, static_cast<int64_t>(particleCount) * pt->GetVertexCount());
+	const int maxIndexes = BSE_ClampGeometryCapacity(6, 30000, static_cast<int64_t>(particleCount) * pt->GetIndexCount());
 	srfTriangles_t* tri = model->AllocSurfaceTriangles(maxVerts, maxIndexes);
 	if (!tri) {
 		return;
@@ -753,8 +763,10 @@ void rvSegment::AllocateSurface(rvBSE* effect, idRenderModel* model) {
 
 	const bool motionTrail = (pt->GetTrailType() == TRAIL_MOTION) && (pt->GetMaxTrailCount() > 0 || pt->GetMaxTrailTime() >= BSE_TIME_EPSILON);
 	if (motionTrail) {
-		const int trailVerts = idMath::ClampInt(4, 10000, particleCount * pt->GetMaxTrailCount() * 2 + 2);
-		const int trailIndexes = idMath::ClampInt(6, 30000, particleCount * pt->GetMaxTrailCount() * 12);
+		const int maxTrailCount = pt->GetMaxTrailCount();
+		const int64_t trailParticleCount = static_cast<int64_t>(particleCount) * maxTrailCount;
+		const int trailVerts = BSE_ClampGeometryCapacity(4, 10000, trailParticleCount * 2 + 2);
+		const int trailIndexes = BSE_ClampGeometryCapacity(6, 30000, trailParticleCount * 12);
 		srfTriangles_t* trailTri = model->AllocSurfaceTriangles(trailVerts, trailIndexes);
 		if (trailTri) {
 			trailTri->numVerts = 0;
@@ -1032,12 +1044,16 @@ void rvSegment::Render(rvBSE* effect, const renderEffect_s* owner, idRenderModel
 			p->ExtendLife(time + 1.0f);
 		}
 
+		const int requiredVerts = pt->GetVertexCount();
 		int requiredIndexes = pt->GetIndexCount();
 		if (linkedStrip && tri->numVerts == 0) {
 			requiredIndexes = 0;
 		}
 
-		if (tri->numVerts + pt->GetVertexCount() > maxVerts || tri->numIndexes + requiredIndexes > maxIndexes) {
+		if (requiredVerts < 0 || requiredIndexes < 0 ||
+			tri->numVerts < 0 || tri->numIndexes < 0 ||
+			tri->numVerts > maxVerts || requiredVerts > maxVerts - tri->numVerts ||
+			tri->numIndexes > maxIndexes || requiredIndexes > maxIndexes - tri->numIndexes) {
 			return false;
 		}
 		if (p->Render(effect, pt, view, tri, time, 1.0f)) {

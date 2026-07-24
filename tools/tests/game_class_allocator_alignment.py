@@ -40,11 +40,15 @@ def validate_class_allocator_source(relative_path: str) -> None:
         "static const int IDCLASS_ALLOC_HEADER_SIZE = 16;",
         "static byte *idClass_AllocBlock( size_t objectSize )",
         "static byte *idClass_BlockFromObject( void *ptr )",
-        "Mem_Alloc16( static_cast<int>( totalSize ), MA_CLASS )",
+        "objectSize > ID_HEAP_MAX_SIZE - IDCLASS_ALLOC_HEADER_SIZE",
+        "const size_t totalSize = objectSize + IDCLASS_ALLOC_HEADER_SIZE;",
+        "Mem_Alloc16( totalSize, MA_CLASS )",
+        "if ( block == NULL )",
         "*reinterpret_cast<int *>( block ) = static_cast<int>( totalSize );",
         "block + IDCLASS_ALLOC_HEADER_SIZE",
         "return static_cast<byte *>( ptr ) - IDCLASS_ALLOC_HEADER_SIZE;",
-        "const size_t totalSize = s + IDCLASS_ALLOC_HEADER_SIZE;",
+        "size_t\tidClass::memused",
+        "memused += static_cast<size_t>( *reinterpret_cast<int *>( p ) );",
         "return p + IDCLASS_ALLOC_HEADER_SIZE;",
         "p = idClass_BlockFromObject( ptr );",
         "Mem_Free16( p );",
@@ -58,6 +62,7 @@ def validate_class_allocator_source(relative_path: str) -> None:
         "unsigned long *ptr = ( ( unsigned long * )this ) - 1;",
         "Mem_Alloc( s, MA_CLASS )",
         "Mem_Free( p );",
+        "const size_t totalSize = s + IDCLASS_ALLOC_HEADER_SIZE;",
     ):
         reject(source, legacy_token, relative_path)
 

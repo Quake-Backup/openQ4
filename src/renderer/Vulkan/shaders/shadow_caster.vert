@@ -24,11 +24,12 @@ layout(push_constant) uniform CasterPushConstants {
     vec4 depthRow;   // model-local shadow depth plane (clip plane 2)
     vec4 alphaS;     // alpha-test texture matrix S row; z = slope-scale depth factor
     vec4 alphaT;     // alpha-test texture matrix T row; z = constant depth offset
-    vec4 params;     // x: alpha mode (0 off, 1 greater, -1 less, 2 equal), y: alphaRef, z: alphaScale
+    vec4 params;     // x: alpha mode, y: alphaRef, z: alphaScale, w: alpha-hash mode/seed
 } pc;
 
 layout(location = 0) out vec2 vAlphaTexCoord;
 layout(location = 1) out float vShadowDepth;
+layout(location = 2) out vec3 vAlphaHashCoord;
 
 void main() {
     vec4 position = vec4(inPosition, 1.0);
@@ -37,5 +38,10 @@ void main() {
     // rows' z components never contribute to the texture coordinate
     vAlphaTexCoord = vec2(dot(texCoord, pc.alphaS), dot(texCoord, pc.alphaT));
     vShadowDepth = dot(position, pc.depthRow);
+    // The portable 128-byte push block cannot also carry three model rows.
+    // Model-local coordinates plus the world-translation phase in params.w
+    // retain a stable hash. This matches identity/world geometry; arbitrary
+    // rotated or scaled entities use the documented stable approximation.
+    vAlphaHashCoord = inPosition;
     gl_Position = pc.mvp * position;
 }

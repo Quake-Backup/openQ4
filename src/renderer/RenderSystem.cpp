@@ -477,6 +477,11 @@ void R_AddSpecialEffects( viewDef_t *parms ) {
 	if ( ( activeMask & ( SPECIAL_EFFECT_BLUR | SPECIAL_EFFECT_AL ) ) == 0 ) {
 		return;
 	}
+	if ( ( activeMask & SPECIAL_EFFECT_AL ) != 0
+			&& tr.specialALLightImage == NULL && globalImages != NULL ) {
+		tr.specialALLightImage = globalImages->ImageFromFile(
+				"gfx/lights/round.tga", TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+	}
 
 	// Portal-sky cameras and other negative view IDs submit their own scene renders and
 	// should never inherit fullscreen player special effects.
@@ -484,7 +489,17 @@ void R_AddSpecialEffects( viewDef_t *parms ) {
 		return;
 	}
 
-	cmd = (drawSurfsCommand_t *)R_GetCommandBuffer( sizeof( *cmd ) );
+	if ( ( parms->renderFlags & RF_DEFER_COMMAND_SUBMIT ) != 0 ) {
+		cmd = (drawSurfsCommand_t *)R_GetCommandBufferDeferred(
+				sizeof( *cmd ) );
+	} else {
+		// Keep this controller command on the same side of the deferred-view
+		// flush as its RC_DRAW_VIEW partner. Without the flush, a pending
+		// portal-sky/subview draw can land between the special command and the
+		// primary view it captures.
+		R_SubmitDeferredCommands();
+		cmd = (drawSurfsCommand_t *)R_GetCommandBuffer( sizeof( *cmd ) );
+	}
 	cmd->commandId = RC_DRAW_SPECIAL_EFFECTS;
 	cmd->viewDef = parms;
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
@@ -608,6 +623,15 @@ void idRenderSystemLocal::SetSpecialEffect( ESpecialEffectType Which, bool Enabl
 
 	if ( Enabled ) {
 		specialEffectsEnabled |= Which;
+		// Alpha Labs' projected overlay is controller-owned rather than a
+		// normal world material, so make its stock sprite resident while this
+		// call is still on the front end. Vulkan can then consume the queued
+		// command without attempting an image load during command recording.
+		if ( Which == SPECIAL_EFFECT_AL && specialALLightImage == NULL
+				&& globalImages != NULL ) {
+			specialALLightImage = globalImages->ImageFromFile(
+					"gfx/lights/round.tga", TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+		}
 	} else {
 		specialEffectsEnabled &= ~Which;
 	}
@@ -1281,15 +1305,25 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	// at creation time; toggling the cvars that drive it must rebuild them,
 	// or the stale decisions persist until the entity or light is otherwise
 	// modified ("shadows did not change after toggling the cvar" reports).
-	if ( r_useShadowMap.IsModified()
+	if ( r_shadows.IsModified()
+		|| r_useShadowMap.IsModified()
+		|| r_useOptimizedShadows.IsModified()
 		|| r_stencilTranslucentShadows.IsModified()
 		|| r_lod_shadows.IsModified()
+		|| r_lod_shadows_percent.IsModified()
 		|| r_shadowMapTranslucentMoments.IsModified()
+		|| r_shadowMapPointLights.IsModified()
+		|| r_shadowMapConservativeCasters.IsModified()
 		|| r_shadowMapSkipStencilShadows.IsModified() ) {
+		r_shadows.ClearModified();
 		r_useShadowMap.ClearModified();
+		r_useOptimizedShadows.ClearModified();
 		r_stencilTranslucentShadows.ClearModified();
 		r_lod_shadows.ClearModified();
+		r_lod_shadows_percent.ClearModified();
 		r_shadowMapTranslucentMoments.ClearModified();
+		r_shadowMapPointLights.ClearModified();
+		r_shadowMapConservativeCasters.ClearModified();
 		r_shadowMapSkipStencilShadows.ClearModified();
 		if ( primaryWorld != NULL ) {
 			primaryWorld->FreeInteractions();
@@ -1728,6 +1762,8 @@ void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlp
 
 	guiModel->EmitFullScreen();
 	guiModel->Clear();
+	const bool wasTakingScreenshot = tr.takingScreenshot;
+	tr.takingScreenshot = true;
 	R_IssueRenderCommands();
 
 	glReadBuffer( GL_BACK );
@@ -1737,6 +1773,7 @@ void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlp
 	byte *data = (byte *)R_StaticAlloc( c * 3 );
 	
 	glReadPixels( rc->x, rc->y, rc->width, rc->height, GL_RGB, GL_UNSIGNED_BYTE, data ); 
+	tr.takingScreenshot = wasTakingScreenshot;
 
 	byte *data2 = (byte *)R_StaticAlloc( c * 4 );
 

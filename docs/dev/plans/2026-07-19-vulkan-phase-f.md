@@ -91,3 +91,101 @@ F3. RB_ShadowMapResourcesKnownGood honesty (per light class) + the sticky
 Exit: interactions + shadow maps render correctly on Vulkan for q4dm2 SP
 and MP smokes, validation-clean; GL default untouched; r_useShadowMap
 default flip remains a separate user-gated decision.
+
+## Shadow parity follow-up (2026-07-24)
+
+The scratch-first F2 limitations have now been closed for stock opaque and
+perforated shadows:
+
+- projected, parallel/global, and point lights retain separate LOCAL/GLOBAL
+  ownership resources, with GLOBAL aliasing only when no local caster chain
+  exists;
+- one to four stabilized projected cascades use contiguous atlas blocks,
+  per-cascade caster culling, split blending, and cascade-aware receiver bias;
+- fixed and stable-rotated PCF support 1/5/9/13 taps, projected lights also
+  support PCSS-lite, and both projected and point receivers can select
+  hardware comparison or raw-depth manual comparison at runtime;
+- stock perforated casters preserve LESS/EQUAL/GREATER alpha tests, texture
+  matrices, vertex color, and stable hashed-alpha coverage; unsupported
+  dynamic/cinematic coverage never becomes an opaque substitute;
+- ordinary triangle surfaces, packed MD5R interactions, and CPU-decoded or
+  skinned stencil volumes participate in the same ownership policy;
+- exact static-only projected and point maps can be reused across views,
+  while discretionary update-budget or subview cache misses retain stencil
+  for that frame; ownerships containing map-only casters schedule the required
+  map beyond the nominal budget instead, and required maps are admitted before
+  optional maps can consume the bounded light table, atlas, or cube pool;
+- independent Vulkan depth-format/filter probing and fail-closed descriptor,
+  pipeline, atlas, and cube readiness prevent partially valid maps from being
+  sampled.
+
+The original F3 assumption that the front end could generally elide Vulkan
+stencil volumes was too optimistic: atlas capacity, per-view budgets, and
+late material admission are not all knowable before front-end submission.
+Vulkan therefore reports shadow-map resources conservatively and retains
+volumes so a mapped-light failure can use a same-frame stencil fallback
+when the required receiver ownership has a complete silhouette-volume set.
+A set proven empty by per-view culling is also complete and needs no stencil
+attachment. Mixed lights no longer have to choose between map-only and
+stencil-only casters: the front end builds ownership-specific supplement
+chains containing only casters absent from the map, and Vulkan samples the
+partial map while applying those volumes through stencil in the same receiver
+draw. This avoids both skipped light contribution and duplicate hard stencil
+silhouettes for casters already represented in the map. Completeness and
+supplement membership use silhouette volumes actually generated and
+successfully linked, not caster eligibility alone. Mapped Vulkan lights
+therefore build stock per-surface volumes even when a combined optimized
+prelight exists. The combined optimized-prelight path remains available to
+OpenGL and stencil-only Vulkan, but is never used as a partial-map supplement.
+Update and subview fallback policies apply only when that actual linkage
+proves a complete stencil result; map-only ownerships schedule the required
+map beyond the nominal update budget. Required ownerships are processed before
+discretionary maps, and subview targets without a usable stencil attachment
+render required maps instead of selecting an impossible fallback. LOCAL and
+GLOBAL receivers choose their complete map, hybrid map-plus-stencil result,
+or fallback independently, so failure in one ownership never discards a valid
+resource for the other.
+Vulkan retains stock translucent receiver behavior. The experimental
+translucent-moment caster extension is outside this closure and remains
+disabled on Vulkan.
+
+## World-interaction parity follow-up (2026-07-24)
+
+The F1 interaction walk now carries the complete stock rendering contract,
+not only the common one-bump/one-diffuse/one-specular case:
+
+- every active light stage is decomposed against conditioned bump, diffuse,
+  and specular surface stages with the stock texture matrices, color clamps,
+  vertex-color mode, local origins, light projections, and ambient-light
+  specular suppression;
+- Raven `Customlit` and `Parallaxbump` stages participate once per active
+  light stage and keep their authored maps under the legacy `r_skipBump`,
+  `r_skipDiffuse`, and `r_skipSpecular` debug switches, matching the separate
+  OpenGL custom-GLSL path;
+- opaque LOCAL/GLOBAL receivers retain depth EQUAL and retail shadow
+  ownership, translucent receivers use LEQUAL, and all interaction draws keep
+  additive ONE/ONE blending, material culling, polygon offset, depth hacks,
+  and fail-closed shadow selection; mixed mapped/stencil caster sets compose
+  in one receiver draw through ownership-specific supplement volumes, and
+  the lazy point-cube pool has one slot for both receiver ownerships of every
+  admitted light rather than imposing a sixteen-map cutoff on dense worlds;
+- non-RXGB bump images expose their authored red X-normal through the sampled
+  alpha component, reproducing the legacy interaction-program input contract;
+- `r_useScissor 0` keeps the view-level scissor established for the current
+  main or subview, while the enabled path retains per-surface/per-light
+  clipping.
+
+A frozen-camera `game/core1` Windows x64 comparison exercised the normal
+frame plus scissor, diffuse, specular, bump, whole-interaction, stencil-shadow,
+and mapped-shadow variants. The matched normal Vulkan/OpenGL captures differed
+by 0.056 mean RGB levels (0.40 RMS), and Vulkan validation reported no VUID,
+validation error, fatal error, or device error. The source contract is pinned
+by `tools/tests/renderer_vulkan_world_interaction_compatibility.py`.
+
+The final staged runtime pass also exercised the dense `game/core1` point-light
+case with shadow maps enabled: Vulkan prepared all 17 required ownership maps
+and drew 419 interactions, including 250 shadow-receiving draws across nine
+mapped lights, without an allocation fallback or validation error. Default
+stencil regressions reached the same 419 SP interactions plus 230 volumes, and
+an `mp/q4dm1` listen server drew 471 interactions plus 59 volumes through the
+MP module.

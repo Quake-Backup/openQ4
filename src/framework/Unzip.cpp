@@ -1,7 +1,6 @@
-
-
-
 #include "Unzip.h"
+
+#include <stdint.h>
 
 /* unzip.h -- IO for uncompress .zip files using zlib 
    Version 0.15 beta, Mar 19th, 1998,
@@ -1100,68 +1099,32 @@ static int unzlocal_getByte(FILE *fin,int *pi)
 */
 static int unzlocal_getShort (FILE* fin, uLong *pX)
 {
-	short	v;
+	uint8_t bytes[2];
+	if ( fread( bytes, 1, sizeof( bytes ), fin ) != sizeof( bytes ) ) {
+		*pX = 0;
+		return ferror( fin ) ? UNZ_ERRNO : UNZ_EOF;
+	}
 
-	fread( &v, sizeof(v), 1, fin );
-
-	*pX = LittleShort( v);
+	const uint16_t value = static_cast<uint16_t>( bytes[0] ) |
+		( static_cast<uint16_t>( bytes[1] ) << 8 );
+	*pX = static_cast<uLong>( value );
 	return UNZ_OK;
-
-/*
-    uLong x ;
-    int i;
-    int err;
-
-    err = unzlocal_getByte(fin,&i);
-    x = (uLong)i;
-    
-    if (err==UNZ_OK)
-        err = unzlocal_getByte(fin,&i);
-    x += ((uLong)i)<<8;
-   
-    if (err==UNZ_OK)
-        *pX = x;
-    else
-        *pX = 0;
-    return err;
-*/
 }
 
 static int unzlocal_getLong (FILE *fin, uLong *pX)
 {
-	int		v;
+	uint8_t bytes[4];
+	if ( fread( bytes, 1, sizeof( bytes ), fin ) != sizeof( bytes ) ) {
+		*pX = 0;
+		return ferror( fin ) ? UNZ_ERRNO : UNZ_EOF;
+	}
 
-	fread( &v, sizeof(v), 1, fin );
-
-	*pX = LittleLong( v);
+	const uint32_t value = static_cast<uint32_t>( bytes[0] ) |
+		( static_cast<uint32_t>( bytes[1] ) << 8 ) |
+		( static_cast<uint32_t>( bytes[2] ) << 16 ) |
+		( static_cast<uint32_t>( bytes[3] ) << 24 );
+	*pX = static_cast<uLong>( value );
 	return UNZ_OK;
-
-/*
-    uLong x ;
-    int i;
-    int err;
-
-    err = unzlocal_getByte(fin,&i);
-    x = (uLong)i;
-    
-    if (err==UNZ_OK)
-        err = unzlocal_getByte(fin,&i);
-    x += ((uLong)i)<<8;
-
-    if (err==UNZ_OK)
-        err = unzlocal_getByte(fin,&i);
-    x += ((uLong)i)<<16;
-
-    if (err==UNZ_OK)
-        err = unzlocal_getByte(fin,&i);
-    x += ((uLong)i)<<24;
-   
-    if (err==UNZ_OK)
-        *pX = x;
-    else
-        *pX = 0;
-    return err;
-*/
 }
 
 
@@ -1702,7 +1665,7 @@ extern int unzSetCurrentFileInfoPosition (unzFile file, unsigned long pos )
 											   &s->cur_file_info_internal,
 											   NULL,0,NULL,0,NULL,0);
 	s->current_file_ok = (err == UNZ_OK);
-	return UNZ_OK;
+	return err;
 }
 
 /*
@@ -4460,7 +4423,7 @@ int inflateSyncPoint(z_streamp z)
 voidp zcalloc (voidp opaque, unsigned items, unsigned size)
 {
     if (opaque) items += size - size; /* make compiler happy */
-    return (voidp)Mem_ClearedAlloc(items*size);
+    return (voidp)Mem_ClearedAlloc(static_cast<size_t>(items) * static_cast<size_t>(size));
 }
 
 void  zcfree (voidp opaque, voidp ptr)

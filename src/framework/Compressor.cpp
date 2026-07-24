@@ -1490,7 +1490,9 @@ idCompressor_Arithmetic::GetCurrentCount
 ================
 */
 int idCompressor_Arithmetic::GetCurrentCount( void ) {
-    return (unsigned int) ( ( ( ( (long) code - low ) + 1 ) * scale - 1 ) / ( ( (long) high - low ) + 1 ) );
+	const int64_t scaledCode = ( ( static_cast<int64_t>( code ) - low ) + 1 ) * scale - 1;
+	const int64_t range = ( static_cast<int64_t>( high ) - low ) + 1;
+	return static_cast<int>( scaledCode / range );
 }
 
 /*
@@ -1559,9 +1561,9 @@ idCompressor_Arithmetic::RemoveSymbolFromStream
 ================
 */
 void idCompressor_Arithmetic::RemoveSymbolFromStream( acSymbol_t* symbol ) {
-    long range;
+	uint64_t range;
 
-	range	= ( long )( high - low ) + 1;
+	range	= static_cast<uint64_t>( high - low ) + 1;
 	high	= low + ( unsigned short )( ( range * symbol->high ) / scale - 1 );
 	low		= low + ( unsigned short )( ( range * symbol->low ) / scale );
 
@@ -1614,7 +1616,7 @@ idCompressor_Arithmetic::EncodeSymbol
 ================
 */
 void idCompressor_Arithmetic::EncodeSymbol( acSymbol_t* symbol ) {
-	unsigned int range;
+	uint64_t range;
 	
 	// rescale high and low for the new symbol.
 	range	= ( high - low ) + 1;

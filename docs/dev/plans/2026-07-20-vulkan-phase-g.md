@@ -6,7 +6,7 @@ Parent: [2026-07-16-vulkan-renderer.md](2026-07-16-vulkan-renderer.md) Phase G;
 Phase F record: [2026-07-19-vulkan-phase-f.md](2026-07-19-vulkan-phase-f.md).
 Milestone: retail-default shadows (r_shadows 1, r_useShadowMap 0) render on
 Vulkan via stencil volumes; fog and blend lights draw; F3 (folded in from
-Phase F) lets the front-end shed stencil volumes when shadow maps own a
+Phase F) guarantees a stencil fallback when a shadow-map pass cannot own a
 light.
 
 ## Decisions locked by recon (phase-g-recon/stencil-pass.md)
@@ -70,8 +70,9 @@ G3. Light-grid: per phase-g-recon/lightgrid-misc.md the draw-time path is
 F3. (folded in) RB_ShadowMapResourcesKnownGood per-light-class honesty +
     the sticky fallback contract (lightDef->shadowMapStencilFallbackSticky
     set exactly like the GL backend on caster/receiver failure), keeping
-    the r_shadowMapMaxUpdatesPerView coupling — now meaningful because
-    stencil volumes exist as the fallback.
+    the r_shadowMapMaxUpdatesPerView coupling and same-frame stencil
+    availability — now meaningful because stencil volumes exist as the
+    fallback.
 
 Exit: retail-default lighting+shadows+fog on Vulkan for q4dm2 and SP
 smokes, validation-clean, both r_useShadowMap states correct, GL default
@@ -125,3 +126,49 @@ Verified against the code (recon: phase-g-recon/lightgrid-misc.md §1-2):
   elision active: 1 of 1 shadow-mapped lights carry no stencil volumes";
   zero validation both runs.
 - G3: audit only (above).
+
+## Same-frame fallback amendment (2026-07-24)
+
+The F3 validation above proved the resource-ready path but not every
+per-view admission outcome. A later Air Defense run exposed the missing
+case: the front end had already elided a light's volume before the backend
+learned that its atlas/update/material admission could not be satisfied,
+so the affected receiver had to be skipped fail-closed.
+
+Vulkan now deliberately keeps `RB_ShadowMapResourcesKnownGood` conservative
+and retains stock per-surface stencil volumes through front-end submission.
+Successful mapped lights still bypass their full volume draws, but an atlas
+allocation failure, unsupported caster, late descriptor/pipeline failure, or
+discretionary update-budget/subview miss can immediately execute the
+already-linked stencil path when actual linkage proves that receiver
+ownership complete. Dedicated supplement lists contain only casters absent
+from a partial map, so mapped casters are not stamped again as hard
+silhouettes. If map-only casters make stencil incomplete, the required map
+bypasses those scheduling policies; only a genuine map failure fail-closes
+that ownership. Required ownership maps are admitted before discretionary
+maps can consume bounded resources, and a stencil-less subview target renders
+its required maps despite the normal cache-only subview policy.
+LOCAL and GLOBAL ownerships are resolved independently, late volume upload
+failures invalidate only affected receivers, and a volume set proven empty
+by view culling can fall back without a stencil attachment. Map-only casters
+without a complete stencil representation remain fail-closed. Sticky
+fallback remains part of the shared front-end volume-retention contract;
+Vulkan still retries mapped admission on later views rather than treating a
+transient per-view miss as permanent. This supersedes the earlier Vulkan
+stencil-elision claim; correctness takes priority over the saved front-end
+volume work until all per-view admissions can be proven before submission.
+
+## World-interaction state follow-up (2026-07-24)
+
+The optional `depthBounds` feature is now queried and enabled with the Vulkan
+device when supported. Every compatible graphics pipeline declares the
+depth-bounds enable/range state dynamically; stencil-volume rendering applies
+each surface's clamped `scissorRect.zmin/zmax` and restores the disabled
+0..1 baseline before returning. Unsupported devices retain the full-depth
+stencil path.
+
+Interaction and stencil-clear scissors now also follow `r_useScissor`
+accurately. Enabled mode uses the surface/light rectangle; disabled mode
+retains `RB_BeginDrawingView`'s view scissor rather than expanding a subview
+to the framebuffer. All converted rectangles are clipped to the active
+viewport and framebuffer before command recording.

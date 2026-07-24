@@ -187,7 +187,7 @@ const char **idInternalCVar::CopyValueStrings( const char **strings ) {
 	}
 	allocationSize += totalLength;
 
-	ptr = (const char **) Mem_Alloc( (int)allocationSize );
+	ptr = (const char **) Mem_Alloc( allocationSize );
 	str = (char *) (((byte *)ptr) + ( (size_t)stringCount + 1 ) * sizeof( char * ) );
 
 	for ( i = 0; i < stringCount; i++ ) {

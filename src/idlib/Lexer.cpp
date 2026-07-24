@@ -2626,31 +2626,31 @@ void idLexer::WriteBinaryToken(idToken *tok)
 
 // jsinger: this method takes an existing file and causes a binary tokenized
 //          version of the file to be generated
-void idLexer::WriteBinaryFile(char const * const filename)
+void idLexer::WriteBinaryFile(char const * const filename, bool OSPath)
 {
-	if(!cvarSystem->GetCVarBool("com_BinaryRead"))
+	unsigned int swap=0;
+
+	switch(cvarSystem->GetCVarInteger("com_BinaryWrite"))
 	{
-		unsigned int swap=0;
+	case 1:
+		swap = 0;
+		break;
+	case 2:
+		swap = LEXFL_BYTESWAP;
+		break;
+	}
 
-		switch(cvarSystem->GetCVarInteger("com_BinaryWrite"))
+	// This helper explicitly tokenizes the named ASCII source. Binary-read
+	// policy only controls normal consumers and must not suppress a requested
+	// companion refresh (for example exportCmpMD5R with com_binaryRead 1).
+	idLexer src(filename, LEXFL_WRITEBINARY | swap, OSPath);
+	idToken token;
+	if(src.IsLoaded())
+	{
+		while(src.ReadToken(&token))
 		{
-		case 1:
-			swap = 0;
-			break;
-		case 2:
-			swap = LEXFL_BYTESWAP;
-			break;
-		}
-
-		idLexer src(filename, LEXFL_WRITEBINARY | swap);
-		idToken token;
-		if(src.IsLoaded())
-		{
-            while(src.ReadToken(&token))
-			{
-				// we don't need to do anything, because just reading the file
-				// causes it to write a tokenized version
-			}
+			// we don't need to do anything, because just reading the file
+			// causes it to write a tokenized version
 		}
 	}
 }

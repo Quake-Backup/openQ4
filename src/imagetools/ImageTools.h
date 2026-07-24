@@ -4,6 +4,8 @@
 #ifndef __IMAGETOOLS_H__
 #define __IMAGETOOLS_H__
 
+#include <stddef.h>
+
 /*
 ===============================================================================
 
@@ -37,8 +39,8 @@ byte *	R_ResampleTexture( const byte *in, int inwidth, int inheight, int outwidt
 void	R_WriteTGA( const char *filename, const byte *data, int width, int height, bool flipVertical, const char *basePath );
 
 // malloc with error checking; pairs with R_StaticFree
-void *	R_StaticAlloc( int bytes );
-void *	R_ClearedStaticAlloc( int bytes );
+void *	R_StaticAlloc( size_t bytes );
+void *	R_ClearedStaticAlloc( size_t bytes );
 void	R_StaticFree( void *data );
 
 // GPU compression support pushed by the renderer after capability probing;
@@ -54,7 +56,7 @@ const imageToolsCompressionCaps_t &ImageTools_GetCompressionCaps( void );
 // optional static-allocation counters (renderer performance counters);
 // zeroed hooks disable the callbacks
 typedef struct imageToolsAllocHooks_s {
-	void	( *onStaticAlloc )( int bytes );
+	void	( *onStaticAlloc )( size_t bytes );
 	void	( *onStaticFree )( void );
 } imageToolsAllocHooks_t;
 

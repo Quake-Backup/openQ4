@@ -49,6 +49,8 @@ layout(set = 7, binding = 1, std140) uniform ShadowBlock {
     vec4 modelRow2;
     vec4 lightOriginFar; // xyz: world-space light origin, w: far envelope
     vec4 biasParams;     // x: constant bias, y: normal bias, z: texel depth bias, w: per-distance normal-offset factor
+    vec4 filterParams;   // x: radius, y: taps, z: mode, w: cube texel scale
+    vec4 samplingParams; // x: hardware compare enabled
 } shadow;
 
 layout(location = 0) out vec2 vBumpTexCoord;
@@ -61,6 +63,7 @@ layout(location = 6) out vec3 vHalfAngleVector;
 layout(location = 7) out vec3 vVertexColor;
 layout(location = 8) out vec3 vPointShadowVector;
 layout(location = 9) out float vShadowLightCos;
+layout(location = 10) out vec3 vViewVector;
 
 vec3 TangentSpaceVector(vec3 objectVector) {
     return vec3(
@@ -78,6 +81,7 @@ void main() {
 
     vLightVector = TangentSpaceVector(toLight);
     vHalfAngleVector = TangentSpaceVector(normalize(toLight) + normalize(toView));
+    vViewVector = TangentSpaceVector(toView);
 
     vBumpTexCoord = vec2(dot(texCoord, inter.bumpMatrixS), dot(texCoord, inter.bumpMatrixT));
     vDiffuseTexCoord = vec2(dot(texCoord, inter.diffuseMatrixS), dot(texCoord, inter.diffuseMatrixT));
