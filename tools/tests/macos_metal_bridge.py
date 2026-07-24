@@ -742,7 +742,7 @@ def validate_macos_self_contained_app_creation_runtime() -> None:
             0o755,
         )
         write_test_file(
-            package_root / "assets" / "splash" / "quake4_rt_bitmap_4001.bmp",
+            install_dir / "assets" / "splash" / "quake4_rt_bitmap_4001.bmp",
             b"bmp\n",
         )
         write_test_file(install_dir / "openQ4.icns", b"icns\n")

@@ -3261,6 +3261,11 @@ def create_macos_app_bundle(
 
     staged_splash_dir = package_root / "assets" / "splash"
     staged_splash = staged_splash_dir / "quake4_rt_bitmap_4001.bmp"
+    if not staged_splash.is_file():
+        installed_splash = install_dir / "assets" / "splash" / "quake4_rt_bitmap_4001.bmp"
+        require_non_empty_package_file(installed_splash, "macOS staged splash image")
+        staged_splash_dir.mkdir(parents=True, exist_ok=True)
+        copy_regular_file(installed_splash, staged_splash)
     require_non_empty_package_file(staged_splash, "macOS staged splash image")
     embedded_splash_dir = app_root / MACOS_APP_SPLASH_DIR
     embedded_splash_dir.parent.mkdir(parents=True, exist_ok=True)
