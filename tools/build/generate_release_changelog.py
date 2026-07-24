@@ -126,7 +126,7 @@ def sanitize_release_notes_override(body: str, version_tag: str, release_tag: st
 
     if lines:
         title_pattern = re.compile(
-            rf"^#{1,6}\s+openQ4\s+(?:{re.escape(version_tag)}|{re.escape(release_tag)})"
+            rf"^#{{1,6}}\s+openQ4\s+(?:{re.escape(version_tag)}|{re.escape(release_tag)})"
             rf"(?:\s+Release(?:\s+Notes)?)?\s*$",
             re.IGNORECASE,
         )

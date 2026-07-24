@@ -67,6 +67,7 @@ void VK_Fog_DrawAllLights( const viewDef_t *viewDef );
 bool VK_Exec_BeginMainRendering( bool clearColorDepth );
 void VK_Exec_EndMainRendering( void );
 bool VK_GuiExecutor_EndFrameAndPresent( void );
+static bool VK_GuiExecutor_SubmitFrame( bool present );
 
 // no module-owned vertex-cache GPU state exists: the engine cache runs
 // CPU-backed under Vulkan and the executor streams into its own rings
@@ -274,6 +275,10 @@ typedef struct vkGuiExecutor_s {
 
 	// frame-in-progress state
 	bool				frameOpen;
+	// The acquire semaphore is consumed by the first submission that uses
+	// this swapchain image. A synchronous screenshot readback can split one
+	// logical engine frame into two submissions without reacquiring it.
+	bool				acquireWaitPending;
 	bool				mainScopeOpen;		// the swapchain dynamic-rendering scope is recording
 	int					frameSlot;
 	uint32_t			swapImageIndex;
@@ -2525,6 +2530,7 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	vkExec.activeExtent = vkCtx.swapchainExtent;
 	vkExec.activePipelineTarget = VK_Exec_SwapchainPipelineTarget();
 	vkExec.frameOpen = true;
+	vkExec.acquireWaitPending = true;
 	VK_Exec_BeginMainRendering( true );
 
 	vkExec.vertexRings[ slot ].cursor = 0;
@@ -3585,6 +3591,15 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 	if ( width <= 0 || height <= 0 ) {
 		return false;
 	}
+	const bool bgra = vkCtx.swapchainFormat == VK_FORMAT_B8G8R8A8_UNORM
+			|| vkCtx.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+	const bool rgba = vkCtx.swapchainFormat == VK_FORMAT_R8G8B8A8_UNORM
+			|| vkCtx.swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB;
+	if ( !bgra && !rgba ) {
+		common->Warning( "Vulkan: screenshot readback does not support swapchain format %d",
+				(int)vkCtx.swapchainFormat );
+		return false;
+	}
 
 	const VkDeviceSize readbackBytes = (VkDeviceSize)width * (VkDeviceSize)height * 4;
 	VkBufferCreateInfo bci;
@@ -3627,23 +3642,19 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
 	const int submittedSlot = vkExec.frameSlot;
-	if ( !VK_GuiExecutor_EndFrameAndPresent() ) {
+	// CaptureRenderToFile deliberately calls R_IssueRenderCommands with
+	// tr.takingScreenshot set so the GL backend leaves this crop in the back
+	// buffer for the real frame to replace. Presenting here exposes the
+	// save-preview crop (normally 320x240) for one frame. Submit it only for
+	// the synchronous readback, then resume recording against this acquired
+	// swapchain image for the actual frame.
+	const bool resumeAfterReadback = tr.takingScreenshot;
+	if ( !VK_GuiExecutor_SubmitFrame( !resumeAfterReadback ) ) {
 		vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
 		return false;
 	}
 	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ submittedSlot ], VK_TRUE, UINT64_MAX );
 	vmaInvalidateAllocation( vkCtx.allocator, readbackAllocation, 0, VK_WHOLE_SIZE );
-
-	const bool bgra = vkCtx.swapchainFormat == VK_FORMAT_B8G8R8A8_UNORM
-			|| vkCtx.swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
-	const bool rgba = vkCtx.swapchainFormat == VK_FORMAT_R8G8B8A8_UNORM
-			|| vkCtx.swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB;
-	if ( !bgra && !rgba ) {
-		common->Warning( "Vulkan: screenshot readback does not support swapchain format %d",
-				(int)vkCtx.swapchainFormat );
-		vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
-		return false;
-	}
 
 	const byte *source = (const byte *)allocationInfo.pMappedData;
 	byte *destination = (byte *)pixels;
@@ -3664,10 +3675,25 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 	}
 
 	vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
+	if ( resumeAfterReadback ) {
+		VkCommandBufferBeginInfo cbbi;
+		memset( &cbbi, 0, sizeof( cbbi ) );
+		cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if ( vkResetFences( vkCtx.device, 1, &vkCtx.frameFences[ submittedSlot ] ) != VK_SUCCESS
+				|| vkResetCommandBuffer( vkExec.cmd, 0 ) != VK_SUCCESS
+				|| vkBeginCommandBuffer( vkExec.cmd, &cbbi ) != VK_SUCCESS ) {
+			common->Warning( "Vulkan: failed to resume rendering after screenshot readback" );
+			return false;
+		}
+		vkExec.frameOpen = true;
+		vkExec.mainScopeOpen = false;
+		VK_Exec_BeginMainRendering( true );
+	}
 	return true;
 }
 
-bool VK_GuiExecutor_EndFrameAndPresent( void ) {
+static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 	if ( !vkExec.frameOpen ) {
 		return false;
 	}
@@ -3678,24 +3704,26 @@ bool VK_GuiExecutor_EndFrameAndPresent( void ) {
 	VK_Exec_EndMainRendering();
 	VK_Exec_TransitionActiveTargetToSampled();
 
-	VkImageMemoryBarrier2 toPresent;
-	memset( &toPresent, 0, sizeof( toPresent ) );
-	toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-	toPresent.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-	toPresent.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-	toPresent.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-	toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-	toPresent.image = vkCtx.swapchainImages[ imageIndex ];
-	toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	toPresent.subresourceRange.levelCount = 1;
-	toPresent.subresourceRange.layerCount = 1;
-	VkDependencyInfo dep;
-	memset( &dep, 0, sizeof( dep ) );
-	dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-	dep.imageMemoryBarrierCount = 1;
-	dep.pImageMemoryBarriers = &toPresent;
-	vkCmdPipelineBarrier2( cmd, &dep );
+	if ( present ) {
+		VkImageMemoryBarrier2 toPresent;
+		memset( &toPresent, 0, sizeof( toPresent ) );
+		toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+		toPresent.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+		toPresent.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+		toPresent.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+		toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		toPresent.image = vkCtx.swapchainImages[ imageIndex ];
+		toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		toPresent.subresourceRange.levelCount = 1;
+		toPresent.subresourceRange.layerCount = 1;
+		VkDependencyInfo dep;
+		memset( &dep, 0, sizeof( dep ) );
+		dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+		dep.imageMemoryBarrierCount = 1;
+		dep.pImageMemoryBarriers = &toPresent;
+		vkCmdPipelineBarrier2( cmd, &dep );
+	}
 
 	vkEndCommandBuffer( cmd );
 
@@ -3716,13 +3744,20 @@ bool VK_GuiExecutor_EndFrameAndPresent( void ) {
 	VkSubmitInfo2 si;
 	memset( &si, 0, sizeof( si ) );
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-	si.waitSemaphoreInfoCount = 1;
-	si.pWaitSemaphoreInfos = &waitInfo;
+	si.waitSemaphoreInfoCount = vkExec.acquireWaitPending ? 1 : 0;
+	si.pWaitSemaphoreInfos = vkExec.acquireWaitPending ? &waitInfo : NULL;
 	si.commandBufferInfoCount = 1;
 	si.pCommandBufferInfos = &cmdInfo;
-	si.signalSemaphoreInfoCount = 1;
-	si.pSignalSemaphoreInfos = &signalInfo;
-	vkQueueSubmit2( vkCtx.graphicsQueue, 1, &si, vkCtx.frameFences[ slot ] );
+	si.signalSemaphoreInfoCount = present ? 1 : 0;
+	si.pSignalSemaphoreInfos = present ? &signalInfo : NULL;
+	if ( vkQueueSubmit2( vkCtx.graphicsQueue, 1, &si, vkCtx.frameFences[ slot ] ) != VK_SUCCESS ) {
+		return false;
+	}
+	vkExec.acquireWaitPending = false;
+	vkExec.frameOpen = false;
+	if ( !present ) {
+		return true;
+	}
 
 	VkPresentInfoKHR pi;
 	memset( &pi, 0, sizeof( pi ) );
@@ -3733,11 +3768,14 @@ bool VK_GuiExecutor_EndFrameAndPresent( void ) {
 	pi.pSwapchains = &vkCtx.swapchain;
 	pi.pImageIndices = &imageIndex;
 	const VkResult res = vkQueuePresentKHR( vkCtx.graphicsQueue, &pi );
-	vkExec.frameOpen = false;
 	if ( res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR ) {
 		VK_Device_RecreateSwapchain();
 	}
 	return true;
+}
+
+bool VK_GuiExecutor_EndFrameAndPresent( void ) {
+	return VK_GuiExecutor_SubmitFrame( true );
 }
 
 /*

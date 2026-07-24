@@ -50,9 +50,31 @@ def test_capture_defers_only_the_window_present() -> None:
     )
 
 
+def test_vulkan_capture_resumes_the_acquired_back_buffer() -> None:
+    backend_cpp = read("src/renderer/Vulkan/vk_Backend.cpp")
+    executor_cpp = read("src/renderer/Vulkan/vk_GuiExecutor.cpp")
+    require(
+        backend_cpp,
+        "if ( !tr.takingScreenshot )",
+        "Vulkan swap-buffer screenshot presentation gate",
+    )
+    read_pixels_start = executor_cpp.index("bool VK_GuiExecutor_ReadPixels")
+    submit_start = executor_cpp.index("static bool VK_GuiExecutor_SubmitFrame", read_pixels_start)
+    require_order(
+        executor_cpp[read_pixels_start:submit_start],
+        (
+            "const bool resumeAfterReadback = tr.takingScreenshot;",
+            "VK_GuiExecutor_SubmitFrame( !resumeAfterReadback )",
+            "VK_Exec_BeginMainRendering( true );",
+        ),
+        "Vulkan screenshot readback resume path",
+    )
+
+
 def main() -> None:
     test_screenshot_reads_the_unpresented_back_buffer()
     test_capture_defers_only_the_window_present()
+    test_vulkan_capture_resumes_the_acquired_back_buffer()
     print("renderer_screenshot_readback: ok")
 
 

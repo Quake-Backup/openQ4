@@ -460,7 +460,13 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				break;
 			}
 			case RC_SWAP_BUFFERS:
-				GLimp_SwapBuffers();
+				// CaptureRenderToFile flushes a cropped save-preview frame with
+				// tr.takingScreenshot set. Match RB_SwapBuffers: retain that
+				// back-buffer work for readback so it can be replaced by the real
+				// frame instead of presenting the crop by itself.
+				if ( !tr.takingScreenshot ) {
+					GLimp_SwapBuffers();
+				}
 				break;
 			default:
 				// Debug-only command families remain part of the later

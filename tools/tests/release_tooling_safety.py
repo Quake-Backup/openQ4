@@ -223,6 +223,17 @@ def validate_changelog_input_and_markdown_safety() -> None:
     if "safe \\| injected next row" not in rendered or "run \\| id" not in rendered:
         raise AssertionError(f"release header lost escaped text:\n{rendered}")
 
+    release_notes_body = CHANGELOG.sanitize_release_notes_override(
+        "# openQ4 0.9.0 Release Notes\n\n## Highlights\n\n- Item\n",
+        "0.9.0",
+        "v0.9.0",
+    )
+    if release_notes_body != "## Highlights\n\n- Item":
+        raise AssertionError(
+            "release notes title should be removed before the generated header: "
+            f"{release_notes_body!r}"
+        )
+
     expect_exception(
         lambda: CHANGELOG.non_negative_int("-1"),
         argparse.ArgumentTypeError,
