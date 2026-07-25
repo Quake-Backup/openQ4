@@ -33,6 +33,9 @@
 #define UINT_MAX	0xffffffffu
 #endif
 #include <cstdio>
+#if defined( MACOS_X )
+#include <dlfcn.h>
+#endif
 #include "volk.h"
 #include "vk_mem_alloc.h"
 
@@ -69,6 +72,144 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VK_DebugMessengerCallback(
 		common->DPrintf( "Vulkan validation: %s\n", callbackData->pMessage );
 	}
 	return VK_FALSE;
+}
+
+/*
+====================
+VK_Device_InitLoader
+
+volk resolves the loader itself on Windows and Linux. On macOS its Apple branch
+dlopens bare leaf names (libvulkan.dylib, libMoltenVK.dylib, ...), which dyld
+resolves against DYLD paths and /usr/local/lib but never against the app
+bundle -- so a MoltenVK shipped in openQ4.app/Contents/Frameworks is invisible
+to it, while SDL binds that same bundled copy because its own search list starts
+at @executable_path/../Frameworks/libMoltenVK.dylib.
+
+The engine creates the surface through SDL and the module creates the instance
+through volk, so the two MUST resolve to the same image; two libraries behind
+one VkInstance is undefined behavior. This mirrors SDL's precedence exactly:
+
+  1. SDL_VULKAN_LIBRARY (the environment backing of SDL_HINT_VULKAN_LIBRARY)
+  2. the bundled MoltenVK, bundle-relative then beside the executable
+  3. whatever volk finds on its own (a system Vulkan loader)
+
+so every case lands on one library. Developers who want validation layers point
+SDL_VULKAN_LIBRARY at an SDK loader and both halves follow.
+====================
+*/
+#if defined( MACOS_X )
+static bool VK_Device_AdoptLoaderAt( const char *path ) {
+	void *handle = dlopen( path, RTLD_NOW | RTLD_LOCAL );
+	if ( handle == NULL ) {
+		return false;
+	}
+	PFN_vkGetInstanceProcAddr getInstanceProcAddr =
+			(PFN_vkGetInstanceProcAddr)dlsym( handle, "vkGetInstanceProcAddr" );
+	if ( getInstanceProcAddr == NULL ) {
+		dlclose( handle );
+		return false;
+	}
+	volkInitializeCustom( getInstanceProcAddr );
+	common->Printf( "Vulkan: loader %s\n", path );
+	return true;
+}
+#endif
+
+static bool VK_Device_InitLoader( void ) {
+#if defined( MACOS_X )
+	const char *pinned = getenv( "SDL_VULKAN_LIBRARY" );
+	if ( pinned != NULL && pinned[ 0 ] != '\0' && VK_Device_AdoptLoaderAt( pinned ) ) {
+		return true;
+	}
+
+	idStr exeDir = Sys_EXEPath();
+	exeDir.StripFilename();
+
+	// openQ4.app/Contents/MacOS/openQ4 -> openQ4.app/Contents/Frameworks, then
+	// the loose package layout where the dylib sits beside the executable
+	const idStr bundled = exeDir + "/../Frameworks/libMoltenVK.dylib";
+	if ( VK_Device_AdoptLoaderAt( bundled.c_str() ) ) {
+		return true;
+	}
+	const idStr adjacent = exeDir + "/libMoltenVK.dylib";
+	if ( VK_Device_AdoptLoaderAt( adjacent.c_str() ) ) {
+		return true;
+	}
+#endif
+	return volkInitialize() == VK_SUCCESS;
+}
+
+/*
+====================
+VK_Device_InstanceExtensionSupported
+
+Vulkan Portability negotiation. VK_KHR_portability_enumeration is a *loader*
+extension: the Khronos loader advertises it and REQUIRES both the extension and
+VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR before it will enumerate a
+portability ICD such as MoltenVK (otherwise vkCreateInstance fails with
+VK_ERROR_INCOMPATIBLE_DRIVER). A directly loaded libMoltenVK.dylib does NOT
+advertise it, and requesting it there fails with VK_ERROR_EXTENSION_NOT_PRESENT.
+Probing instead of hardcoding keeps one code path correct for both, and is a
+no-op on native Windows/Linux drivers.
+====================
+*/
+static bool VK_Device_InstanceExtensionSupported( const char *name ) {
+	uint32_t count = 0;
+	if ( vkEnumerateInstanceExtensionProperties( NULL, &count, NULL ) != VK_SUCCESS || count == 0 ) {
+		return false;
+	}
+	if ( count > 512 ) {
+		count = 512;
+	}
+	VkExtensionProperties *properties = (VkExtensionProperties *)Mem_Alloc( count * sizeof( VkExtensionProperties ) );
+	if ( properties == NULL ) {
+		return false;
+	}
+	bool found = false;
+	if ( vkEnumerateInstanceExtensionProperties( NULL, &count, properties ) == VK_SUCCESS ) {
+		for ( uint32_t i = 0; i < count; i++ ) {
+			if ( idStr::Cmp( properties[ i ].extensionName, name ) == 0 ) {
+				found = true;
+				break;
+			}
+		}
+	}
+	Mem_Free( properties );
+	return found;
+}
+
+/*
+====================
+VK_Device_DeviceExtensionSupported
+
+VK_KHR_portability_subset must be enabled whenever the device advertises it
+(VUID-VkDeviceCreateInfo-pProperties-04451), and must NOT be requested when it
+does not -- MoltenVK's advertiseExtensions configuration can suppress it.
+====================
+*/
+static bool VK_Device_DeviceExtensionSupported( VkPhysicalDevice device, const char *name ) {
+	uint32_t count = 0;
+	if ( vkEnumerateDeviceExtensionProperties( device, NULL, &count, NULL ) != VK_SUCCESS || count == 0 ) {
+		return false;
+	}
+	if ( count > 1024 ) {
+		count = 1024;
+	}
+	VkExtensionProperties *properties = (VkExtensionProperties *)Mem_Alloc( count * sizeof( VkExtensionProperties ) );
+	if ( properties == NULL ) {
+		return false;
+	}
+	bool found = false;
+	if ( vkEnumerateDeviceExtensionProperties( device, NULL, &count, properties ) == VK_SUCCESS ) {
+		for ( uint32_t i = 0; i < count; i++ ) {
+			if ( idStr::Cmp( properties[ i ].extensionName, name ) == 0 ) {
+				found = true;
+				break;
+			}
+		}
+	}
+	Mem_Free( properties );
+	return found;
 }
 
 /*
@@ -131,12 +272,30 @@ static void VK_Device_SelectShadowDepthFormat( void ) {
 		props2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
 		props2.pNext = &props3;
 		vkGetPhysicalDeviceFormatProperties2( vkCtx.physicalDevice, candidates[ i ], &props2 );
-		if ( ( props3.optimalTilingFeatures & requiredFeatures ) != requiredFeatures ) {
+
+		// VkFormatProperties3 is core 1.3 and every conformant implementation at
+		// this renderer's API floor populates it (MoltenVK included, since 1.2.7).
+		// If one ever leaves it zeroed, fall back to the 1.0 flags rather than
+		// silently rejecting every candidate and disabling shadows: the depth
+		// comparison bit has no 1.0 equivalent, so it is approximated by the
+		// sampled-image + depth-attachment pair that implies it in practice.
+		VkFormatFeatureFlags2 optimalFeatures = props3.optimalTilingFeatures;
+		if ( optimalFeatures == 0 ) {
+			const VkFormatFeatureFlags legacy = props2.formatProperties.optimalTilingFeatures;
+			optimalFeatures = (VkFormatFeatureFlags2)legacy;
+			const VkFormatFeatureFlags legacyCompareProxy =
+					VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+			if ( ( legacy & legacyCompareProxy ) == legacyCompareProxy ) {
+				optimalFeatures |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT;
+			}
+		}
+
+		if ( ( optimalFeatures & requiredFeatures ) != requiredFeatures ) {
 			continue;
 		}
 
 		const bool linearFilter =
-				( props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) != 0;
+				( optimalFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) != 0;
 		if ( !linearFilter ) {
 			if ( nearestFallback == VK_FORMAT_UNDEFINED ) {
 				nearestFallback = candidates[ i ];
@@ -477,7 +636,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 		return false;
 	}
 
-	if ( volkInitialize() != VK_SUCCESS ) {
+	if ( !VK_Device_InitLoader() ) {
 		common->Warning( "Vulkan: no Vulkan loader available (volkInitialize failed)" );
 		return false;
 	}
@@ -500,6 +659,17 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 		extensions[ extensionCount++ ] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 	}
 
+	// portability enumeration: required by the Khronos loader before it will
+	// surface MoltenVK, rejected by a directly loaded MoltenVK, absent-but-
+	// harmless nowhere -- so it is strictly presence-gated. The flag bit is
+	// only ever set together with the extension
+	// (VUID-VkInstanceCreateInfo-flags-06559).
+	const bool portabilityEnumeration =
+			VK_Device_InstanceExtensionSupported( VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME );
+	if ( portabilityEnumeration ) {
+		extensions[ extensionCount++ ] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+	}
+
 	const char *validationLayer = "VK_LAYER_KHRONOS_validation";
 
 	VkApplicationInfo appInfo;
@@ -515,6 +685,9 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	ici.pApplicationInfo = &appInfo;
 	ici.enabledExtensionCount = (uint32_t)extensionCount;
 	ici.ppEnabledExtensionNames = extensions;
+	if ( portabilityEnumeration ) {
+		ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+	}
 	if ( wantValidation ) {
 		ici.enabledLayerCount = 1;
 		ici.ppEnabledLayerNames = &validationLayer;
@@ -609,6 +782,54 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	vkGetPhysicalDeviceProperties( vkCtx.physicalDevice, &vkCtx.deviceProperties );
 	common->Printf( "Vulkan: device %d '%s' (queue family %u)\n",
 			chosenDevice, vkCtx.deviceProperties.deviceName, chosenQueueFamily );
+
+	// Hard API floor. The back end calls ~135 core-1.3 entry points
+	// (vkCmdBeginRendering, vkCmdPipelineBarrier2, vkQueueSubmit2 and the
+	// extended-dynamic-state setters); on a device below the floor volk leaves
+	// them NULL and the first frame faults. Fail here with a diagnosable
+	// message instead, so the loader's fail-closed ladder drops back to GL.
+	// MoltenVK advertises 1.3 from 1.3.0 onward (1.4 by default today, but the
+	// advertised version is user-tunable downward, so this is a >= test).
+	if ( vkCtx.deviceProperties.apiVersion < VK_API_VERSION_1_3 ) {
+		common->Warning( "Vulkan: device '%s' reports API %u.%u.%u; this renderer requires Vulkan 1.3 "
+				"(dynamic rendering, synchronization2, extended dynamic state)",
+				vkCtx.deviceProperties.deviceName,
+				VK_API_VERSION_MAJOR( vkCtx.deviceProperties.apiVersion ),
+				VK_API_VERSION_MINOR( vkCtx.deviceProperties.apiVersion ),
+				VK_API_VERSION_PATCH( vkCtx.deviceProperties.apiVersion ) );
+		VK_Device_Shutdown();
+		return false;
+	}
+
+	// The shadowed-interaction pipeline layout binds 8 descriptor sets, which is
+	// exactly the ceiling on Metal-backed implementations. Report it here rather
+	// than failing opaquely inside vkCreatePipelineLayout much later.
+	if ( vkCtx.deviceProperties.limits.maxBoundDescriptorSets < VK_REQUIRED_BOUND_DESCRIPTOR_SETS ) {
+		common->Warning( "Vulkan: device '%s' supports only %u bound descriptor sets; this renderer needs %d",
+				vkCtx.deviceProperties.deviceName,
+				vkCtx.deviceProperties.limits.maxBoundDescriptorSets,
+				VK_REQUIRED_BOUND_DESCRIPTOR_SETS );
+		VK_Device_Shutdown();
+		return false;
+	}
+
+	// light cookies are the only packed-16-bit users; widen them when the
+	// implementation has no R5G6B5 (Metal exposes it on Apple GPUs only)
+	{
+		VkFormatProperties packedProps;
+		memset( &packedProps, 0, sizeof( packedProps ) );
+		vkGetPhysicalDeviceFormatProperties( vkCtx.physicalDevice,
+				VK_FORMAT_R5G6B5_UNORM_PACK16, &packedProps );
+		const VkFormatFeatureFlags needed =
+				VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+				| VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+				| VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+		vkCtx.packed565Supported = ( packedProps.optimalTilingFeatures & needed ) == needed;
+		if ( !vkCtx.packed565Supported ) {
+			common->Printf( "Vulkan: R5G6B5 unsupported; light cookies expand to RGBA8\n" );
+		}
+	}
+
 	VK_Device_SelectShadowDepthFormat();
 
 	// logical device: swapchain + the VK 1.3 dynamic-rendering/sync2 floor
@@ -620,13 +841,50 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	qci.queueCount = 1;
 	qci.pQueuePriorities = &queuePriority;
 
-	const char *deviceExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+	// Portability implementations (MoltenVK) must have VK_KHR_portability_subset
+	// enabled when they advertise it, and their optional subset features read
+	// back through the chained feature struct. Native drivers advertise neither,
+	// and every portability capability then stays at its permissive default.
+	const char *deviceExtensions[ 2 ];
+	uint32_t deviceExtensionCount = 0;
+	deviceExtensions[ deviceExtensionCount++ ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+
+	vkCtx.portabilitySubset = VK_Device_DeviceExtensionSupported(
+			vkCtx.physicalDevice, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME );
+	vkCtx.portabilityImageViewFormatSwizzle = true;
+	vkCtx.portabilityMutableComparisonSamplers = true;
+
+	VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures;
+	memset( &portabilityFeatures, 0, sizeof( portabilityFeatures ) );
+	portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+	if ( vkCtx.portabilitySubset ) {
+		deviceExtensions[ deviceExtensionCount++ ] = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
+
+		VkPhysicalDeviceFeatures2 portabilityQuery;
+		memset( &portabilityQuery, 0, sizeof( portabilityQuery ) );
+		portabilityQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		portabilityQuery.pNext = &portabilityFeatures;
+		vkGetPhysicalDeviceFeatures2( vkCtx.physicalDevice, &portabilityQuery );
+
+		vkCtx.portabilityImageViewFormatSwizzle =
+				portabilityFeatures.imageViewFormatSwizzle == VK_TRUE;
+		vkCtx.portabilityMutableComparisonSamplers =
+				portabilityFeatures.mutableComparisonSamplers == VK_TRUE;
+		common->Printf( "Vulkan: portability subset active (imageViewFormatSwizzle=%d mutableComparisonSamplers=%d)\n",
+				vkCtx.portabilityImageViewFormatSwizzle ? 1 : 0,
+				vkCtx.portabilityMutableComparisonSamplers ? 1 : 0 );
+	}
 
 	VkPhysicalDeviceVulkan13Features features13;
 	memset( &features13, 0, sizeof( features13 ) );
 	features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 	features13.dynamicRendering = VK_TRUE;
 	features13.synchronization2 = VK_TRUE;
+	if ( vkCtx.portabilitySubset ) {
+		// the subset feature struct must stay chained on device creation so the
+		// implementation sees which optional behaviors the app relies on
+		portabilityFeatures.pNext = &features13;
+	}
 
 	// Base features: anisotropic filtering for the sampler cache, depth clamp
 	// for point-shadow casters, and depth bounds for stencil-volume fill
@@ -636,15 +894,25 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	VkPhysicalDeviceFeatures2 features2;
 	memset( &features2, 0, sizeof( features2 ) );
 	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-	features2.pNext = &features13;
+	// With VK_KHR_portability_subset enabled, an omitted subset feature struct
+	// leaves every optional portability behavior DISABLED, so the queried struct
+	// (which already carries what the implementation supports) is chained ahead
+	// of the 1.3 features to enable them back.
+	features2.pNext = vkCtx.portabilitySubset ? (void *)&portabilityFeatures : (void *)&features13;
 	features2.features.samplerAnisotropy = supported.samplerAnisotropy;
 	features2.features.depthClamp = supported.depthClamp;
 	features2.features.depthBounds = supported.depthBounds;
+	// Stock Quake 4 ships BC1/BC3/BC7 art and R_BinaryImageHeaderSupportedByRenderer
+	// rejects generated .bimage files when the renderer denies compression, so the
+	// feature is enabled whenever the device has it and reported honestly downstream.
+	features2.features.textureCompressionBC = supported.textureCompressionBC;
 	vkCtx.depthClampSupported = supported.depthClamp == VK_TRUE;
 	vkCtx.depthBoundsSupported = supported.depthBounds == VK_TRUE;
-	common->Printf( "Vulkan: optional depth features clamp=%d bounds=%d\n",
+	vkCtx.textureCompressionBCSupported = supported.textureCompressionBC == VK_TRUE;
+	common->Printf( "Vulkan: optional depth features clamp=%d bounds=%d, BC texture compression=%d\n",
 			vkCtx.depthClampSupported ? 1 : 0,
-			vkCtx.depthBoundsSupported ? 1 : 0 );
+			vkCtx.depthBoundsSupported ? 1 : 0,
+			vkCtx.textureCompressionBCSupported ? 1 : 0 );
 
 	VkDeviceCreateInfo dci;
 	memset( &dci, 0, sizeof( dci ) );
@@ -652,7 +920,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	dci.pNext = &features2;
 	dci.queueCreateInfoCount = 1;
 	dci.pQueueCreateInfos = &qci;
-	dci.enabledExtensionCount = 1;
+	dci.enabledExtensionCount = deviceExtensionCount;
 	dci.ppEnabledExtensionNames = deviceExtensions;
 
 	res = vkCreateDevice( vkCtx.physicalDevice, &dci, NULL, &vkCtx.device );

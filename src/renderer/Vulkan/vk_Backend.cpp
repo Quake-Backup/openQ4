@@ -118,8 +118,12 @@ static void VK_FillGLConfigFromDevice( void ) {
 	// bypass the check, which masked this at menu scope), cube maps
 	// (vk_Image allocates 6-layer CUBE_COMPATIBLE images since Phase D)
 	glConfig.textureNonPowerOfTwoAvailable = true;
-	glConfig.textureCompressionAvailable = true;
-	glConfig.bptcTextureCompressionAvailable = true;
+	// BC availability is reported from the device feature the logical device
+	// actually enabled rather than asserted, so a portability implementation
+	// without block compression degrades to uncompressed art instead of failing
+	// every BC image allocation one warning at a time.
+	glConfig.textureCompressionAvailable = vkCtx.textureCompressionBCSupported;
+	glConfig.bptcTextureCompressionAvailable = vkCtx.textureCompressionBCSupported;
 	glConfig.cubeMapAvailable = true;
 }
 

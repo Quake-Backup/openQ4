@@ -122,6 +122,7 @@ Pass any of these with `-D<option>=<value>` on the `meson setup` command line:
 | `linux_x11` | `auto` | Linux SDL3 X11/XWayland driver and optional engine X11 helpers: `enabled`/`disabled` force bundled SDL with that selection; `auto` may use system SDL; `disabled` is Wayland/EGL-only |
 | `macos_graphics_bridge` | `opengl` | Experimental macOS-only graphics bridge: `opengl` or `metal`; `metal` requires `platform_backend=sdl3` and keeps rendering on the OpenGL compatibility path |
 | `macos_openal_provider` | `apple_framework` | Experimental macOS-only audio provider: `apple_framework` for release builds, or `system` for local OpenAL Soft migration testing with `dependency('openal')`; current macOS packages do not bundle OpenAL Soft |
+| `build_renderer_vk` | `true` | Build the Vulkan renderer module `renderer-vk_<arch>`; requires `platform_backend=sdl3`. On macOS the module runs through MoltenVK, a Vulkan-on-Metal translation layer, and stays opt-in behind `r_renderApi vulkan` with OpenGL as the default renderer |
 | `version_track` | `dev` | Build track label (`stable`, `dev`, `beta`, `rc`) |
 | `version_iteration` | *(empty)* | Dot-separated iteration counter for pre-release builds |
 | `version_base_override` | *(empty)* | Override the generated release version without editing `meson.build` |
@@ -423,6 +424,22 @@ bash tools/build/meson_setup.sh setup --wipe builddir . --backend ninja --buildt
 ```
 
 This mode links the Metal/QuartzCore bridge frameworks and applies the SDL render/GPU hint defaults at first SDL video use — including the early startup splash/system-console windows — with a `metal,gpu,software` renderer-driver fallback list; the actually-created SDL renderer driver is logged as signoff evidence, and the active bridge is logged during OpenGL startup. The visible renderer remains openQ4's OpenGL compatibility path so shipped Quake 4 asset behavior stays the guiding constraint. It is a Metal bridge package, not a native Metal renderer.
+
+### Experimental macOS Vulkan Through MoltenVK
+
+`build_renderer_vk` also applies to macOS, so a normal SDL3 macOS configure builds `renderer-vk_<arch>.dylib` alongside the client. Apple ships no Vulkan driver, so the module runs on top of MoltenVK, a Vulkan-on-Metal translation layer that is bundled in the package. It is a translation layer, not a Metal renderer, and it neither replaces nor removes the OpenGL renderer.
+
+Build and packaging facts worth knowing before touching this path:
+
+- OpenGL remains the default and recommended macOS renderer in both package variants. Vulkan is opt-in at run time with `r_renderApi vulkan` plus an engine restart, and `r_renderApi best` still resolves to `gl` on macOS.
+- The module and `libMoltenVK.dylib` are staged into `openQ4.app/Contents/Frameworks` inside the existing `OpenGL` and `Metal bridge` packages. They add no third package variant and no new `macos_graphics_bridge` value.
+- The darwin target is a `shared_library` with `name_suffix: 'dylib'`, an `@loader_path` install name, hidden symbol visibility, dead stripping, and `-Wl,-exported_symbols_list,tools/build/macos_renderer_module.exp`, which exports only `GetRenderAPI`. The macOS client still links a second copy of the renderer statically, so any further exported symbol would interpose at `dlopen` time.
+- `tools/build/prepare_macos_moltenvk.sh` acquires, verifies, and stages the pinned MoltenVK release. The pin is `v1.4.1` because that is the newest release that still runs on macOS 11.0; `v1.4.2` raised its runtime floor to macOS 12.0. Do not advance the pin without executing the full macOS floor change documented in `docs/dev/macos-support-matrix-policy.md`.
+- Both staged binaries are nested code and are signed inside-out with the Developer ID Application identity before the outer app is signed and notarized. The published MoltenVK dylib is ad-hoc signed only, so a credentialed release run must re-sign it.
+- Configure with `-Dbuild_renderer_vk=false` to leave the module and translation layer out entirely; `r_renderApi vulkan` then falls back to OpenGL through the normal fail-closed ladder.
+- The decision-gate plan is `docs/dev/macos-moltenvk-decision.md`, the staged record is `docs/dev/plans/2026-07-25-macos-moltenvk.md`, and the sourcing/pinning/signing policy is `docs/dev/macos-moltenvk-provider-policy.md`. `python tools/tests/macos_moltenvk_policy.py` pins the parts of this contract that no Windows or Linux build can observe.
+
+macOS Vulkan is experimental inside an experimental platform and has no accepted real-Apple-hardware evidence, so it must not be described as a supported renderer.
 
 ### Linux Packager Notes
 

@@ -95,6 +95,47 @@ temporary working directory and requires the log's `fs_cdpath` to resolve to
 claiming that CI has exercised Finder UI, Gatekeeper prompts, mounted-DMG
 gameplay, or a copied package on end-user hardware.
 
+## Renderer Module And Bundled MoltenVK
+
+Added: 2026-07-25.
+
+Both existing macOS package variants also carry the Vulkan renderer module and
+its translation layer as nested code:
+
+- `Contents/Frameworks/renderer-vk_<arch>.dylib` — openQ4's Vulkan renderer
+  module, built with hidden symbol visibility and an export list that exposes
+  only `GetRenderAPI`, because the macOS client still links a second copy of the
+  renderer statically and any further exported symbol would interpose at
+  `dlopen` time. Its install name is `@loader_path/renderer-vk_<arch>.dylib`.
+- `Contents/Frameworks/libMoltenVK.dylib` — MoltenVK, a Vulkan-on-Metal
+  translation layer, pinned to `v1.4.1` because that is the newest release
+  compatible with the documented macOS 11 floor. Staging rewrites its install
+  name to `@executable_path/../Frameworks/libMoltenVK.dylib` and validates its
+  architecture set, minimum-OS load command, and dependency allowlist
+  (`/System/Library/` and `/usr/lib/` only).
+
+These are additions to the two existing package variants, not a new variant.
+There is no third macOS download and no new `macos_graphics_bridge` value.
+OpenGL remains the default renderer in both packages; the Vulkan renderer is
+selected at run time with `r_renderApi vulkan`. The decision plan is
+[macos-moltenvk-decision.md](macos-moltenvk-decision.md).
+
+Both files are nested code and follow the existing inside-out signing rule: each
+is signed with the Developer ID Application identity, without app entitlements,
+before the outer app is signed and notarized. The published MoltenVK release
+dylib is ad-hoc signed only, so a credentialed release run must re-sign it; an
+ad-hoc signature surviving into a notarized package is a signing defect rather
+than an acceptable state.
+
+MoltenVK is Apache-2.0 licensed. Its attribution belongs in the package license
+collateral. The provider, pinning, verification, and refresh policy is recorded
+in `docs/dev/macos-moltenvk-provider-policy.md`.
+
+For a future universal2 artifact, `renderer-vk` is merged by `lipo` like the
+other code items, while `libMoltenVK.dylib` is already universal and is checked
+for identity across slices instead of being merged, because merging two
+different MoltenVK builds is not meaningful.
+
 ## Symbol Artifacts
 
 Runtime macOS packages may include the small root `SYMBOLS.txt` manifest so

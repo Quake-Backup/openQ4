@@ -58,6 +58,28 @@ Until that plan exists, release packages remain `OpenGL` and `Metal bridge`,
 and the `Metal bridge` label must not imply a native Metal renderer or
 OpenGL-free renderer.
 
+## MoltenVK Boundary
+
+Added: 2026-07-25.
+
+openQ4's Vulkan renderer module now builds and ships for macOS, where it runs
+through MoltenVK, a Vulkan-on-Metal translation layer. The decision plan is
+[macos-moltenvk-decision.md](macos-moltenvk-decision.md).
+
+That does not move the native Metal boundary above. Nothing in
+`src/renderer`, `src/sys/osx`, `src/sys/posix`, or `src/sys/sdl3` imports Metal,
+MetalKit, QuartzCore `CAMetalLayer`, or any `MTL*` type for the Vulkan path;
+presentation-surface creation goes through `SDL_Vulkan_CreateSurface` only, and
+the Metal work is entirely internal to the third-party translation layer.
+
+The wording rules are the same ones the boundary already enforces. The
+translation layer must not be described as native Metal, a Metal renderer, a
+Metal backend, a native Vulkan driver, or an OpenGL-free renderer, and the
+macOS packages remain the two
+existing `OpenGL` and `Metal bridge` variants with OpenGL as the default
+renderer in both. `tools/tests/macos_moltenvk_policy.py` rejects
+native-backend wording for MoltenVK in the release-facing documents.
+
 ## Static Guard
 
 `tools/tests/macos_native_backend_containment.py` enforces this policy by

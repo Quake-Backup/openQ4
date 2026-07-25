@@ -305,6 +305,16 @@ def make_macos_symbol_manifest_bytes(package_name: str, arch: str, version: str,
         "  size=1\n"
         f"  macho_uuid=UUID: 00000000-0000-0000-0000-000000000005 (arm64) game-mp_{arch}.dylib\n"
         f"  dsym=dSYMs/game-mp_{arch}.dylib.dSYM\n"
+        # The Vulkan renderer module is openQ4-built, so it carries a dSYM and
+        # belongs in the manifest exactly like the game modules. libMoltenVK.dylib
+        # ships beside it in Contents/Frameworks but is deliberately absent here:
+        # it is a third-party prebuilt with no DWARF, and macos_symbol_targets()
+        # excludes it for the same reason.
+        f"- path=openQ4.app/Contents/Frameworks/renderer-vk_{arch}.dylib\n"
+        f"  sha256={'5' * 64}\n"
+        "  size=1\n"
+        f"  macho_uuid=UUID: 00000000-0000-0000-0000-000000000006 (arm64) renderer-vk_{arch}.dylib\n"
+        f"  dsym=dSYMs/renderer-vk_{arch}.dylib.dSYM\n"
     ).encode("utf-8")
 
 
@@ -335,6 +345,14 @@ def make_macos_archive_entries(
         f"{prefix}openQ4-ded_{arch}": (b"dedicated-binary\n", dedicated_mode),
         f"{prefix}openQ4.app/Contents/Frameworks/game-sp_{arch}.dylib": (b"sp-module\n", 0o755),
         f"{prefix}openQ4.app/Contents/Frameworks/game-mp_{arch}.dylib": (b"mp-module\n", 0o755),
+        # The Vulkan renderer module and the MoltenVK runtime it loads are both
+        # signed executable code inside Contents/Frameworks, so both carry the
+        # same 0o755 archive mode the game modules do.
+        f"{prefix}openQ4.app/Contents/Frameworks/renderer-vk_{arch}.dylib": (b"renderer-vk-module\n", 0o755),
+        f"{prefix}openQ4.app/Contents/Frameworks/{package.MACOS_MOLTENVK_DYLIB_NAME}": (
+            b"moltenvk-runtime\n",
+            0o755,
+        ),
         f"{prefix}openQ4.app/Contents/Resources/{package.GAME_DIR_NAME}/mod.json": (b'{"version":"0.2.000"}\n', 0o644),
         f"{prefix}openQ4.app/Contents/Resources/{package.GAME_DIR_NAME}/pak0.pk4": (b"pk4\n", 0o644),
         f"{prefix}openQ4.app/Contents/Resources/{package.GAME_DIR_NAME}/pak1.pk4": (b"pk4\n", 0o644),
@@ -394,6 +412,13 @@ def make_macos_symbol_archive_entries(
             b"mp-dsym\n",
             0o644,
         ),
+        f"{prefix}dSYMs/renderer-vk_{arch}.dylib.dSYM/Contents/Resources/DWARF/renderer-vk_{arch}.dylib": (
+            b"renderer-vk-dsym\n",
+            0o644,
+        ),
+        # No libMoltenVK.dylib.dSYM entry: MoltenVK is a third-party prebuilt with
+        # no DWARF to harvest, so package_nightly.py keeps it out of the symbol
+        # archive on purpose.
     }
 
 
@@ -573,6 +598,12 @@ def validate_macos_app_bundle_validator_runtime() -> None:
         write_test_file(app_contents / "MacOS" / "openQ4", client_bytes, 0o755)
         write_test_file(app_contents / "Frameworks" / f"game-sp_{arch}.dylib", b"sp-module\n", 0o755)
         write_test_file(app_contents / "Frameworks" / f"game-mp_{arch}.dylib", b"mp-module\n", 0o755)
+        write_test_file(app_contents / "Frameworks" / f"renderer-vk_{arch}.dylib", b"renderer-vk-module\n", 0o755)
+        write_test_file(
+            app_contents / "Frameworks" / package.MACOS_MOLTENVK_DYLIB_NAME,
+            b"moltenvk-runtime\n",
+            0o755,
+        )
         write_test_file(app_contents / "Resources" / "openQ4.icns", b"icns\n")
         write_test_file(app_contents / "Resources" / "VERSION.txt", b"openQ4\n")
         write_test_file(app_contents / "Resources" / package.GAME_DIR_NAME / "mod.json", b"{}\n")
@@ -697,11 +728,26 @@ def validate_macos_app_bundle_validator_runtime() -> None:
             b"mp-module\n",
             0o755,
         )
+        # meson installs the renderer module beside the engine binaries in the
+        # package root, and MoltenVK is staged into the install tree by
+        # tools/build/prepare_macos_moltenvk.sh. Both are consumed before the icon
+        # lookup, so both must be present for the icon failure to be the one that
+        # is actually exercised here.
+        write_test_file(
+            missing_icon_package / f"renderer-vk_{arch}.dylib",
+            b"renderer-vk-module\n",
+            0o755,
+        )
         write_test_file(
             missing_icon_package / "assets" / "splash" / "quake4_rt_bitmap_4001.bmp",
             b"bmp\n",
         )
         missing_icon_install.mkdir(parents=True, exist_ok=True)
+        write_test_file(
+            missing_icon_install / package.MACOS_MOLTENVK_DYLIB_NAME,
+            b"moltenvk-runtime\n",
+            0o755,
+        )
         expect_runtime_error(
             "app icon source was not found",
             lambda: package.create_macos_app_bundle(
@@ -741,6 +787,10 @@ def validate_macos_self_contained_app_creation_runtime() -> None:
             b"mp\n",
             0o755,
         )
+        # The renderer module is installed into the package root and moved into
+        # Contents/Frameworks; MoltenVK is copied there from the install tree.
+        write_test_file(package_root / f"renderer-vk_{arch}.dylib", b"renderer-vk\n", 0o755)
+        write_test_file(install_dir / package.MACOS_MOLTENVK_DYLIB_NAME, b"moltenvk\n", 0o755)
         write_test_file(
             install_dir / "assets" / "splash" / "quake4_rt_bitmap_4001.bmp",
             b"bmp\n",
@@ -760,6 +810,8 @@ def validate_macos_self_contained_app_creation_runtime() -> None:
             raise AssertionError("macOS package must not duplicate game data beside a self-contained app")
         if (package_root / "assets" / "splash").exists():
             raise AssertionError("macOS package must not retain a duplicate splash tree beside the app")
+        if (package_root / f"renderer-vk_{arch}.dylib").exists():
+            raise AssertionError("macOS package must not retain the renderer module beside the app")
         for relative_path in (
             package.MACOS_APP_GAME_DATA_DIR / "mod.json",
             package.MACOS_APP_GAME_DATA_DIR / "pak0.pk4",
@@ -767,6 +819,8 @@ def validate_macos_self_contained_app_creation_runtime() -> None:
             package.MACOS_APP_SPLASH_DIR / "quake4_rt_bitmap_4001.bmp",
             package.MACOS_APP_FRAMEWORKS_DIR / f"game-sp_{arch}.dylib",
             package.MACOS_APP_FRAMEWORKS_DIR / f"game-mp_{arch}.dylib",
+            package.MACOS_APP_FRAMEWORKS_DIR / f"renderer-vk_{arch}.dylib",
+            package.MACOS_APP_FRAMEWORKS_DIR / package.MACOS_MOLTENVK_DYLIB_NAME,
         ):
             if not (app_root / relative_path).is_file():
                 raise AssertionError(f"macOS self-contained app is missing {relative_path}")
@@ -2181,6 +2235,8 @@ def validate_macos_signing_keeps_standalone_client_signature_runtime() -> None:
         framework_root = app_root / package.MACOS_APP_FRAMEWORKS_DIR
         write_test_file(framework_root / f"game-sp_{arch}.dylib", b"sp\n", 0o755)
         write_test_file(framework_root / f"game-mp_{arch}.dylib", b"mp\n", 0o755)
+        write_test_file(framework_root / f"renderer-vk_{arch}.dylib", b"renderer-vk\n", 0o755)
+        write_test_file(framework_root / package.MACOS_MOLTENVK_DYLIB_NAME, b"moltenvk\n", 0o755)
         write_test_file(app_executable, b"stale-app-executable\n", 0o755)
 
         calls = []
@@ -2216,11 +2272,17 @@ def validate_macos_signing_keeps_standalone_client_signature_runtime() -> None:
             ),
         )
 
+        # Every nested Contents/Frameworks image is signed inside-out and without
+        # the app entitlements, including the vendored libMoltenVK.dylib, which
+        # arrives ad-hoc signed upstream and must be re-signed with the release
+        # identity before notarization.
         expected_calls = [
             (f"openQ4-client_{arch}", True),
             (f"openQ4-ded_{arch}", True),
             (f"openQ4.app/Contents/Frameworks/game-sp_{arch}.dylib", False),
             (f"openQ4.app/Contents/Frameworks/game-mp_{arch}.dylib", False),
+            (f"openQ4.app/Contents/Frameworks/renderer-vk_{arch}.dylib", False),
+            (f"openQ4.app/Contents/Frameworks/{package.MACOS_MOLTENVK_DYLIB_NAME}", False),
             ("openQ4.app", True),
         ]
         if calls != expected_calls:

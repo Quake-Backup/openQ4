@@ -84,6 +84,10 @@ typedef struct vkFormatInfo_s {
 	int					bytesPerBlock;	// compressed block or texel size
 	int					blockDim;		// 1 for uncompressed, 4 for BC
 	VkComponentMapping	swizzle;
+	// FMT_RGB565 has no Metal equivalent on Intel/AMD Macs, so the upload
+	// expands the CPU-side 16-bit texels to RGBA8 instead. Source data stays
+	// 2 bytes per texel; bytesPerBlock describes the destination.
+	bool				expandRgb565;
 } vkFormatInfo_t;
 
 static const VkComponentMapping VK_SWIZZLE_IDENTITY = {
@@ -96,6 +100,7 @@ static bool VK_Image_GetFormatInfo( const idImageOpts &opts,
 	info.bytesPerBlock = 4;
 	info.blockDim = 1;
 	info.swizzle = VK_SWIZZLE_IDENTITY;
+	info.expandRgb565 = false;
 
 	switch ( opts.format ) {
 		case FMT_RGBA8:
@@ -173,9 +178,18 @@ static bool VK_Image_GetFormatInfo( const idImageOpts &opts,
 		case FMT_RGB565:
 			// CPU packs big-endian byte pairs (GL compensates with
 			// UNPACK_SWAP_BYTES); gameplay-only format, byte-swap when the
-			// upload path first meets it (Phase E lightgrid work)
-			info.format = VK_FORMAT_R5G6B5_UNORM_PACK16;
-			info.bytesPerBlock = 2;
+			// upload path first meets it (Phase E lightgrid work).
+			// Packed 16-bit formats are an Apple-GPU-only Metal feature, so
+			// portability implementations without R5G6B5 expand to RGBA8
+			// rather than losing every colored light cookie.
+			if ( vkCtx.packed565Supported ) {
+				info.format = VK_FORMAT_R5G6B5_UNORM_PACK16;
+				info.bytesPerBlock = 2;
+			} else {
+				info.format = VK_FORMAT_R8G8B8A8_UNORM;
+				info.bytesPerBlock = 4;
+				info.expandRgb565 = true;
+			}
 			break;
 		default:
 			common->Warning( "Vulkan: unsupported textureFormat_t %d", (int)opts.format );
@@ -781,7 +795,24 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		common->Warning( "Vulkan: staging buffer creation failed (%d bytes)", (int)dataBytes );
 		return;
 	}
-	if ( opts.format == FMT_RGB565 ) {
+	if ( opts.format == FMT_RGB565 && info.expandRgb565 ) {
+		// No packed 16-bit format on this implementation: widen to RGBA8 with
+		// the same big-endian source unpacking, replicating the high bits into
+		// the low ones so full-scale values stay full-scale.
+		const uint8_t *src = (const uint8_t *)pic;
+		uint8_t *dst = (uint8_t *)stagingInfo.pMappedData;
+		const size_t texels = dataBytes / 4;
+		for ( size_t i = 0; i < texels; i++ ) {
+			const uint16_t packed = (uint16_t)( ( (uint16_t)src[ i * 2 + 0 ] << 8 ) | src[ i * 2 + 1 ] );
+			const uint8_t r5 = (uint8_t)( ( packed >> 11 ) & 0x1f );
+			const uint8_t g6 = (uint8_t)( ( packed >> 5 ) & 0x3f );
+			const uint8_t b5 = (uint8_t)( packed & 0x1f );
+			dst[ i * 4 + 0 ] = (uint8_t)( ( r5 << 3 ) | ( r5 >> 2 ) );
+			dst[ i * 4 + 1 ] = (uint8_t)( ( g6 << 2 ) | ( g6 >> 4 ) );
+			dst[ i * 4 + 2 ] = (uint8_t)( ( b5 << 3 ) | ( b5 >> 2 ) );
+			dst[ i * 4 + 3 ] = 0xff;
+		}
+	} else if ( opts.format == FMT_RGB565 ) {
 		// The CPU-side image path stores RGB565 as big-endian byte pairs;
 		// OpenGL uses GL_UNPACK_SWAP_BYTES. Vulkan has no pixel-store
 		// equivalent, so feed PACK16 native-endian values explicitly.

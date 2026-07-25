@@ -50,6 +50,9 @@ const char *R_RendererModule_ApiName( rendererModuleApi_t api );
 
 // builds the arch-tagged module base name, e.g. "renderer-vk_x64"
 void	R_RendererModule_BuildBinaryName( rendererModuleApi_t api, char *outName, int maxLength );
+// same, for an explicit architecture token; macOS universal2 packages carry a
+// single two-slice module whose name cannot be this slice's own arch tag
+void	R_RendererModule_BuildBinaryNameForArch( rendererModuleApi_t api, const char *archTag, char *outName, int maxLength );
 
 // composes the fail-closed candidate ladder for a requested API; returns the
 // number of entries written (GL is always the final entry)

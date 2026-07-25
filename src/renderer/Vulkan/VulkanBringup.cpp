@@ -33,6 +33,9 @@ static bool vk_volkInitialized = false;
 // the feature floor the real Vulkan renderer is designed against
 // (docs/dev/plans/2026-07-16-vulkan-renderer.md, "Vulkan technical design")
 #define VK_BRINGUP_REQUIRED_API_VERSION		VK_API_VERSION_1_3
+// mirrors VK_REQUIRED_BOUND_DESCRIPTOR_SETS in VulkanDevice.h; kept as its own
+// literal because the probe deliberately links none of the device back end
+#define VK_BRINGUP_REQUIRED_BOUND_DESCRIPTOR_SETS	8
 
 typedef struct vkBringupDeviceInfo_s {
 	VkPhysicalDevice					physicalDevice;
@@ -128,6 +131,123 @@ static int VK_CVarGetInteger( const char *name ) {
 
 /*
 ====================
+VK_Bringup_DeviceExtensionSupported
+====================
+*/
+static bool VK_Bringup_DeviceExtensionSupported( VkPhysicalDevice physicalDevice, const char *name ) {
+	uint32_t count = 0;
+	if ( vkEnumerateDeviceExtensionProperties( physicalDevice, NULL, &count, NULL ) != VK_SUCCESS || count == 0 ) {
+		return false;
+	}
+	if ( count > 512 ) {
+		count = 512;
+	}
+	static VkExtensionProperties properties[ 512 ];
+	if ( vkEnumerateDeviceExtensionProperties( physicalDevice, NULL, &count, properties ) != VK_SUCCESS ) {
+		return false;
+	}
+	for ( uint32_t i = 0; i < count; i++ ) {
+		if ( strcmp( properties[ i ].extensionName, name ) == 0 ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+====================
+VK_Bringup_ReportPortability
+
+Records the portability facts a Metal-backed implementation decides at runtime.
+This is the evidence artifact the macOS MoltenVK lane publishes: every capability
+the renderer negotiates rather than assumes is printed here so a CI log answers
+them without needing a debugger on an Apple machine.
+====================
+*/
+static void VK_Bringup_ReportPortability( VkPhysicalDevice physicalDevice, const vkBringupDeviceInfo_t &info ) {
+	const bool subset = VK_Bringup_DeviceExtensionSupported(
+			physicalDevice, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME );
+
+	VK_Printf( "  portability: subset=%s maxBoundDescriptorSets=%u (need %d)\n",
+			subset ? "yes" : "no",
+			info.props.limits.maxBoundDescriptorSets,
+			VK_BRINGUP_REQUIRED_BOUND_DESCRIPTOR_SETS );
+
+	if ( subset ) {
+		VkPhysicalDevicePortabilitySubsetFeaturesKHR portability;
+		memset( &portability, 0, sizeof( portability ) );
+		portability.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+		VkPhysicalDeviceFeatures2 query;
+		memset( &query, 0, sizeof( query ) );
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &portability;
+		vkGetPhysicalDeviceFeatures2( physicalDevice, &query );
+
+		VK_Printf( "  portability subset: imageViewFormatSwizzle=%d imageViewFormatReinterpretation=%d "
+				"mutableComparisonSamplers=%d samplerMipLodBias=%d triangleFans=%d "
+				"vertexAttributeAccessBeyondStride=%d constantAlphaColorBlendFactors=%d separateStencilMaskRef=%d\n",
+				portability.imageViewFormatSwizzle ? 1 : 0,
+				portability.imageViewFormatReinterpretation ? 1 : 0,
+				portability.mutableComparisonSamplers ? 1 : 0,
+				portability.samplerMipLodBias ? 1 : 0,
+				portability.triangleFans ? 1 : 0,
+				portability.vertexAttributeAccessBeyondStride ? 1 : 0,
+				portability.constantAlphaColorBlendFactors ? 1 : 0,
+				portability.separateStencilMaskRef ? 1 : 0 );
+	}
+
+	// formats the back end uses without a fallback today
+	static const struct {
+		VkFormat		format;
+		const char *	name;
+	} probedFormats[] = {
+		{ VK_FORMAT_R5G6B5_UNORM_PACK16,	"R5G6B5 (light cookies)" },
+		{ VK_FORMAT_BC1_RGB_UNORM_BLOCK,	"BC1" },
+		{ VK_FORMAT_BC3_UNORM_BLOCK,		"BC3" },
+		{ VK_FORMAT_BC7_UNORM_BLOCK,		"BC7" },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT,	"RGBA16F (HDR scene)" },
+	};
+	for ( int i = 0; i < (int)( sizeof( probedFormats ) / sizeof( probedFormats[ 0 ] ) ); i++ ) {
+		VkFormatProperties props;
+		memset( &props, 0, sizeof( props ) );
+		vkGetPhysicalDeviceFormatProperties( physicalDevice, probedFormats[ i ].format, &props );
+		VK_Printf( "  format %s: sampled=%d filterLinear=%d colorAttachment=%d\n",
+				probedFormats[ i ].name,
+				( props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ) != 0 ? 1 : 0,
+				( props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) != 0 ? 1 : 0,
+				( props.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ) != 0 ? 1 : 0 );
+	}
+
+	// VkFormatProperties3 population (core 1.3): the shadow depth-format probe
+	// depends on it, and the depth-comparison bit has no 1.0 equivalent
+	VkFormatProperties3 props3;
+	memset( &props3, 0, sizeof( props3 ) );
+	props3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+	VkFormatProperties2 props2;
+	memset( &props2, 0, sizeof( props2 ) );
+	props2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+	props2.pNext = &props3;
+	vkGetPhysicalDeviceFormatProperties2( physicalDevice, VK_FORMAT_D32_SFLOAT, &props2 );
+	VK_Printf( "  formatProperties3 populated=%d depthComparison(D32_SFLOAT)=%d\n",
+			props3.optimalTilingFeatures != 0 ? 1 : 0,
+			( props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT ) != 0 ? 1 : 0 );
+
+	VkPhysicalDeviceDepthStencilResolveProperties resolveProperties;
+	memset( &resolveProperties, 0, sizeof( resolveProperties ) );
+	resolveProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
+	VkPhysicalDeviceProperties2 properties2;
+	memset( &properties2, 0, sizeof( properties2 ) );
+	properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	properties2.pNext = &resolveProperties;
+	vkGetPhysicalDeviceProperties2( physicalDevice, &properties2 );
+	VK_Printf( "  depthResolveModes=0x%x stencilResolveModes=0x%x sampleCounts(color)=0x%x\n",
+			(unsigned)resolveProperties.supportedDepthResolveModes,
+			(unsigned)resolveProperties.supportedStencilResolveModes,
+			(unsigned)info.props.limits.framebufferColorSampleCounts );
+}
+
+/*
+====================
 VK_Bringup_QueryDevice
 ====================
 */
@@ -203,14 +323,17 @@ static void VK_Bringup_QueryDevice( VkPhysicalDevice physicalDevice, vkBringupDe
 	info.hasTextureCompressionBC = features2.features.textureCompressionBC == VK_TRUE;
 	info.hasDepthBounds = features2.features.depthBounds == VK_TRUE;
 
+	// What the shipping renderer actually requires of a device: the 1.3 core
+	// floor, a graphics+present queue, and enough bound descriptor sets for the
+	// shadowed-interaction pipeline layout. Timeline semaphores, descriptor
+	// indexing and BC compression are reported for information only -- the back
+	// end uses none of them for device creation, and gating on them made this
+	// probe report FAIL on otherwise perfectly capable portability devices.
 	info.meetsRequirements = info.props.apiVersion >= VK_BRINGUP_REQUIRED_API_VERSION
 			&& info.hasGraphicsQueue
 			&& info.hasDynamicRendering
 			&& info.hasSynchronization2
-			&& info.hasTimelineSemaphore
-			&& info.hasDescriptorIndexing
-			&& info.hasSamplerAnisotropy
-			&& info.hasTextureCompressionBC;
+			&& info.props.limits.maxBoundDescriptorSets >= (uint32_t)VK_BRINGUP_REQUIRED_BOUND_DESCRIPTOR_SETS;
 
 	info.score = 0;
 	if ( info.meetsRequirements ) {
@@ -334,6 +457,7 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 	bool hasSurfaceExtension = false;
 	bool hasPlatformSurfaceExtension = false;
 	bool hasDebugUtils = false;
+	bool hasPortabilityEnumeration = false;
 	{
 		uint32_t extensionCount = 0;
 		vkEnumerateInstanceExtensionProperties( NULL, &extensionCount, NULL );
@@ -354,6 +478,8 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 				hasPlatformSurfaceExtension = true;
 			} else if ( strcmp( name, VK_EXT_DEBUG_UTILS_EXTENSION_NAME ) == 0 ) {
 				hasDebugUtils = true;
+			} else if ( strcmp( name, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME ) == 0 ) {
+				hasPortabilityEnumeration = true;
 			}
 		}
 	}
@@ -380,10 +506,16 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 	if ( enableValidation ) {
 		enabledLayers[ enabledLayerCount++ ] = "VK_LAYER_KHRONOS_validation";
 	}
-	const char *enabledExtensions[ 1 ];
+	const char *enabledExtensions[ 2 ];
 	uint32_t enabledExtensionCount = 0;
 	if ( hasDebugUtils && enableValidation ) {
 		enabledExtensions[ enabledExtensionCount++ ] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+	}
+	// mirror the real device path: without portability enumeration the Khronos
+	// loader hides portability ICDs (MoltenVK) and this probe would report a
+	// driverless machine on a perfectly working Mac
+	if ( hasPortabilityEnumeration ) {
+		enabledExtensions[ enabledExtensionCount++ ] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
 	}
 
 	VkInstanceCreateInfo instanceInfo;
@@ -394,6 +526,9 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 	instanceInfo.ppEnabledLayerNames = enabledLayerCount > 0 ? enabledLayers : NULL;
 	instanceInfo.enabledExtensionCount = enabledExtensionCount;
 	instanceInfo.ppEnabledExtensionNames = enabledExtensionCount > 0 ? enabledExtensions : NULL;
+	if ( hasPortabilityEnumeration ) {
+		instanceInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+	}
 
 	VkInstance instance = VK_NULL_HANDLE;
 	result = vkCreateInstance( &instanceInfo, NULL, &instance );
@@ -445,7 +580,8 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 						info.hasDescriptorIndexing ? 1 : 0, info.hasBufferDeviceAddress ? 1 : 0, info.hasSamplerAnisotropy ? 1 : 0,
 						info.hasTextureCompressionBC ? 1 : 0, info.hasDepthBounds ? 1 : 0,
 						info.meetsRequirements ? "SUITABLE" : "unsuitable" );
-				VK_Bringup_ReportFormatSupport( physicalDevices[ i ], verbose );
+				VK_Bringup_ReportPortability( physicalDevices[ i ], info );
+			VK_Bringup_ReportFormatSupport( physicalDevices[ i ], verbose );
 			}
 			if ( bestIndex < 0 || info.score > deviceInfos[ bestIndex ].score ) {
 				bestIndex = ( int )i;
@@ -510,20 +646,32 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 		memset( &enable12, 0, sizeof( enable12 ) );
 		enable12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 		enable12.pNext = &enable13;
-		enable12.timelineSemaphore = VK_TRUE;
-		enable12.descriptorIndexing = VK_TRUE;
-		enable12.runtimeDescriptorArray = VK_TRUE;
-		enable12.descriptorBindingPartiallyBound = VK_TRUE;
-		enable12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+		// every optional 1.2 feature is requested only where the device reported
+		// it, so a portability implementation that lacks update-after-bind
+		// descriptor indexing still creates a probe device instead of failing
+		enable12.timelineSemaphore = selected.hasTimelineSemaphore ? VK_TRUE : VK_FALSE;
+		enable12.descriptorIndexing = selected.hasDescriptorIndexing ? VK_TRUE : VK_FALSE;
+		enable12.runtimeDescriptorArray = selected.hasDescriptorIndexing ? VK_TRUE : VK_FALSE;
+		enable12.descriptorBindingPartiallyBound = selected.hasDescriptorIndexing ? VK_TRUE : VK_FALSE;
+		enable12.descriptorBindingSampledImageUpdateAfterBind = selected.hasDescriptorIndexing ? VK_TRUE : VK_FALSE;
 		enable12.bufferDeviceAddress = selected.hasBufferDeviceAddress ? VK_TRUE : VK_FALSE;
 
 		VkPhysicalDeviceFeatures2 enableFeatures2;
 		memset( &enableFeatures2, 0, sizeof( enableFeatures2 ) );
 		enableFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 		enableFeatures2.pNext = &enable12;
-		enableFeatures2.features.samplerAnisotropy = VK_TRUE;
-		enableFeatures2.features.textureCompressionBC = VK_TRUE;
+		enableFeatures2.features.samplerAnisotropy = selected.hasSamplerAnisotropy ? VK_TRUE : VK_FALSE;
+		enableFeatures2.features.textureCompressionBC = selected.hasTextureCompressionBC ? VK_TRUE : VK_FALSE;
 		enableFeatures2.features.depthBounds = selected.hasDepthBounds ? VK_TRUE : VK_FALSE;
+
+		// portability devices (MoltenVK) require their subset extension to be
+		// enabled whenever they advertise it
+		const char *probeDeviceExtensions[ 1 ];
+		uint32_t probeDeviceExtensionCount = 0;
+		if ( VK_Bringup_DeviceExtensionSupported( selected.physicalDevice,
+					VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME ) ) {
+			probeDeviceExtensions[ probeDeviceExtensionCount++ ] = VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME;
+		}
 
 		VkDeviceCreateInfo deviceInfo;
 		memset( &deviceInfo, 0, sizeof( deviceInfo ) );
@@ -531,6 +679,8 @@ static bool VK_Bringup_RunProbeInternal( bool verbose, char *outSummary, int sum
 		deviceInfo.pNext = &enableFeatures2;
 		deviceInfo.queueCreateInfoCount = queueInfoCount;
 		deviceInfo.pQueueCreateInfos = queueInfos;
+		deviceInfo.enabledExtensionCount = probeDeviceExtensionCount;
+		deviceInfo.ppEnabledExtensionNames = probeDeviceExtensionCount > 0 ? probeDeviceExtensions : NULL;
 
 		result = vkCreateDevice( selected.physicalDevice, &deviceInfo, NULL, &device );
 		if ( result != VK_SUCCESS ) {

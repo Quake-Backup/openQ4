@@ -139,6 +139,13 @@ MACOS_PACKAGE_ROOT_ERROR_STRINGS = {
         "OpenQ4BundleRuntimeMissingBody": "Reinstallez l'application openQ4.app complete. Ses donnees de jeu et ses modules de jeu signes doivent rester dans l'application.",
     },
 }
+# macOS renderer payload. The Vulkan renderer module runs on macOS through
+# MoltenVK, a Vulkan-on-Metal translation layer that openQ4 does not build and
+# that meson therefore never installs. tools/build/prepare_macos_moltenvk.sh
+# stages the pinned universal libMoltenVK.dylib into the install tree; both files
+# are then relocated into openQ4.app/Contents/Frameworks beside the game modules.
+MACOS_MOLTENVK_DYLIB_NAME = "libMoltenVK.dylib"
+MACOS_MOLTENVK_PREPARE_SCRIPT = "tools/build/prepare_macos_moltenvk.sh"
 MACOS_APP_FRAMEWORKS_DIR = Path("Contents") / "Frameworks"
 MACOS_APP_RESOURCES_DIR = Path("Contents") / "Resources"
 MACOS_APP_GAME_DATA_DIR = MACOS_APP_RESOURCES_DIR / GAME_DIR_NAME
@@ -559,6 +566,12 @@ def get_required_root_binaries(platform: str, arch: str) -> tuple[str, str]:
 
 
 def get_required_renderer_module_binaries(platform: str, arch: str) -> tuple[str, ...]:
+    if platform == "macos":
+        # darwin builds only the Vulkan renderer module: build_renderer_gl stays
+        # off there because the macOS client still links its OpenGL renderer
+        # statically. Requiring renderer-gl here would fail every macOS package.
+        return (f"renderer-vk_{arch}{PLATFORM_GAME_MODULE_EXT[platform]}",)
+
     if platform not in ("windows", "linux"):
         return ()
 
@@ -1013,6 +1026,32 @@ def validate_macos_binary_architectures(binary_paths: list[Path], arch: str) -> 
             )
 
 
+def validate_macos_prebuilt_binary_architectures(binary_paths: list[Path], arch: str) -> None:
+    """Slice check for vendored third-party Mach-O payloads.
+
+    openQ4-built binaries must match the package architecture exactly. A
+    prebuilt universal dependency such as libMoltenVK.dylib is shipped as
+    vendored (arm64 + x86_64) even inside a thin package, because re-slicing it
+    would invalidate its upstream signature for no runtime benefit -- dyld picks
+    the right slice. The requirement is only that every slice this package needs
+    is present.
+    """
+
+    if sys.platform != "darwin":
+        return
+
+    expected_arches = macos_expected_lipo_arches(arch)
+    for binary_path in binary_paths:
+        actual_arches = macos_lipo_arches(binary_path)
+        missing_arches = expected_arches - actual_arches
+        if missing_arches:
+            actual = ", ".join(sorted(actual_arches)) or "<none>"
+            raise RuntimeError(
+                "macOS prebuilt binary is missing required architecture slices: "
+                f"{binary_path}: needs {', '.join(sorted(missing_arches))}, found {actual}"
+            )
+
+
 def run_macos_command(command: list[str], *, label: str) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         command,
@@ -1119,18 +1158,45 @@ def macos_embedded_game_module_paths(package_root: Path, arch: str) -> tuple[Pat
     )
 
 
-def macos_signable_targets(package_root: Path, arch: str) -> list[Path]:
+def macos_embedded_renderer_module_path(package_root: Path, arch: str) -> Path:
+    return package_root / "openQ4.app" / MACOS_APP_FRAMEWORKS_DIR / f"renderer-vk_{arch}.dylib"
+
+
+def macos_embedded_moltenvk_path(package_root: Path) -> Path:
+    return package_root / "openQ4.app" / MACOS_APP_FRAMEWORKS_DIR / MACOS_MOLTENVK_DYLIB_NAME
+
+
+def macos_embedded_library_paths(package_root: Path, arch: str) -> list[Path]:
+    """Every Mach-O library nested inside openQ4.app/Contents/Frameworks.
+
+    These are signed inside-out and never receive the app entitlements, which
+    belong to the main executable alone.
+    """
+
     sp_module, mp_module = macos_embedded_game_module_paths(package_root, arch)
+    return [
+        sp_module,
+        mp_module,
+        macos_embedded_renderer_module_path(package_root, arch),
+        macos_embedded_moltenvk_path(package_root),
+    ]
+
+
+def macos_signable_targets(package_root: Path, arch: str) -> list[Path]:
     return [
         package_root / f"{PRODUCT_NAME}-client_{arch}",
         package_root / f"{PRODUCT_NAME}-ded_{arch}",
-        sp_module,
-        mp_module,
+        *macos_embedded_library_paths(package_root, arch),
     ]
 
 
 def macos_game_module_install_names(package_root: Path, arch: str) -> dict[Path, str]:
     sp_module, mp_module = macos_embedded_game_module_paths(package_root, arch)
+    # Scope note: this map drives install_name_tool rewriting. The renderer
+    # module already links with -Wl,-install_name,@loader_path/renderer-vk_<arch>
+    # .dylib from meson, and libMoltenVK's package-relative install name is set
+    # and asserted by tools/build/prepare_macos_moltenvk.sh before it is staged,
+    # so neither is rewritten here.
     return {
         sp_module: f"@loader_path/game-sp_{arch}.dylib",
         mp_module: f"@loader_path/game-mp_{arch}.dylib",
@@ -1202,11 +1268,14 @@ def sign_macos_payload(package_root: Path, arch: str, config: MacOSSigningConfig
     client_binary = package_root / f"{PRODUCT_NAME}-client_{arch}"
     app_executable = app_root / "Contents" / "MacOS" / "openQ4"
 
-    embedded_modules = set(macos_embedded_game_module_paths(package_root, arch))
+    embedded_modules = set(macos_embedded_library_paths(package_root, arch))
     for target in macos_signable_targets(package_root, arch):
         if target in embedded_modules:
             # Nested libraries are signed inside-out, but app entitlements belong
             # only to the main executable rather than copied onto library code.
+            # This covers the game modules, the Vulkan renderer module, and the
+            # vendored libMoltenVK.dylib, which ships ad-hoc signed upstream and
+            # must be re-signed with the release identity before notarization.
             macos_codesign_target(codesign_path, target, config, include_entitlements=False)
         else:
             macos_codesign_target(codesign_path, target, config)
@@ -1538,6 +1607,18 @@ def macos_symbol_targets(package_root: Path, arch: str) -> list[tuple[Path, Path
             mp_module,
             Path("dSYMs") / f"game-mp_{arch}.dylib.dSYM",
         ),
+        (
+            Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"renderer-vk_{arch}.dylib",
+            macos_embedded_renderer_module_path(package_root, arch),
+            Path("dSYMs") / f"renderer-vk_{arch}.dylib.dSYM",
+        ),
+        # DELIBERATE EXCLUSION: openQ4.app/Contents/Frameworks/libMoltenVK.dylib
+        # is NOT listed here and must not be added. MoltenVK is a third-party
+        # prebuilt binary that openQ4 does not compile, so there is no DWARF for
+        # dsymutil to harvest and no dSYM to pair against it. Adding it would
+        # make create_macos_symbol_archive() fail on every macOS package. Crash
+        # reports that land inside MoltenVK are symbolicated against the
+        # upstream MoltenVK release, not against this archive.
     ]
 
 
@@ -1716,6 +1797,9 @@ def validate_macos_symbol_manifest_bytes(
         f"{PRODUCT_NAME}-ded_{arch}": f"dSYMs/{PRODUCT_NAME}-ded_{arch}.dSYM",
         f"openQ4.app/Contents/Frameworks/game-sp_{arch}.dylib": f"dSYMs/game-sp_{arch}.dylib.dSYM",
         f"openQ4.app/Contents/Frameworks/game-mp_{arch}.dylib": f"dSYMs/game-mp_{arch}.dylib.dSYM",
+        # Mirrors macos_symbol_targets(); libMoltenVK.dylib is intentionally
+        # absent because it is third-party and has no dSYM.
+        f"openQ4.app/Contents/Frameworks/renderer-vk_{arch}.dylib": f"dSYMs/renderer-vk_{arch}.dylib.dSYM",
     }
     if "binaries:" not in [line.strip() for line in lines]:
         raise RuntimeError(f"{label} is missing required token: binaries:")
@@ -1873,6 +1957,7 @@ def validate_macos_symbol_archive_contents(
         f"{package_prefix}dSYMs/{PRODUCT_NAME}-ded_{arch}.dSYM/Contents/Resources/DWARF/{PRODUCT_NAME}-ded_{arch}",
         f"{package_prefix}dSYMs/game-sp_{arch}.dylib.dSYM/Contents/Resources/DWARF/game-sp_{arch}.dylib",
         f"{package_prefix}dSYMs/game-mp_{arch}.dylib.dSYM/Contents/Resources/DWARF/game-mp_{arch}.dylib",
+        f"{package_prefix}dSYMs/renderer-vk_{arch}.dylib.dSYM/Contents/Resources/DWARF/renderer-vk_{arch}.dylib",
     }
     forbidden_runtime_entries = {
         f"{package_prefix}openQ4.app/Contents/MacOS/openQ4",
@@ -1880,6 +1965,10 @@ def validate_macos_symbol_archive_contents(
         f"{package_prefix}{PRODUCT_NAME}-ded_{arch}",
         f"{package_prefix}openQ4.app/Contents/Frameworks/game-sp_{arch}.dylib",
         f"{package_prefix}openQ4.app/Contents/Frameworks/game-mp_{arch}.dylib",
+        f"{package_prefix}openQ4.app/Contents/Frameworks/renderer-vk_{arch}.dylib",
+        # libMoltenVK has no dSYM, so it must never appear in the symbol archive
+        # at all -- if it does, someone copied runtime payload in by mistake.
+        f"{package_prefix}openQ4.app/Contents/Frameworks/{MACOS_MOLTENVK_DYLIB_NAME}",
     }
 
     entry_names: set[str] = set()
@@ -2368,6 +2457,8 @@ def get_package_executable_archive_paths(
             {
                 Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"game-sp_{arch}.dylib",
                 Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"game-mp_{arch}.dylib",
+                Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"renderer-vk_{arch}.dylib",
+                Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / MACOS_MOLTENVK_DYLIB_NAME,
             }
         )
 
@@ -2500,8 +2591,15 @@ def validate_macos_archive_contents(
     }
     embedded_sp_module_entry = f"{app_bundle_prefix}Contents/Frameworks/game-sp_{arch}.dylib"
     embedded_mp_module_entry = f"{app_bundle_prefix}Contents/Frameworks/game-mp_{arch}.dylib"
+    embedded_renderer_module_entry = f"{app_bundle_prefix}Contents/Frameworks/renderer-vk_{arch}.dylib"
+    embedded_moltenvk_entry = f"{app_bundle_prefix}Contents/Frameworks/{MACOS_MOLTENVK_DYLIB_NAME}"
     expected_app_bundle_entries.update(
-        {embedded_sp_module_entry, embedded_mp_module_entry}
+        {
+            embedded_sp_module_entry,
+            embedded_mp_module_entry,
+            embedded_renderer_module_entry,
+            embedded_moltenvk_entry,
+        }
     )
     optional_app_bundle_entries = {
         f"{app_bundle_prefix}{relative_path}"
@@ -2516,6 +2614,8 @@ def validate_macos_archive_contents(
         dedicated_entry,
         embedded_sp_module_entry,
         embedded_mp_module_entry,
+        embedded_renderer_module_entry,
+        embedded_moltenvk_entry,
         f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/mod.json",
         f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/pak0.pk4",
         f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/pak1.pk4",
@@ -2539,6 +2639,8 @@ def validate_macos_archive_contents(
         support_info_entry,
         embedded_sp_module_entry,
         embedded_mp_module_entry,
+        embedded_renderer_module_entry,
+        embedded_moltenvk_entry,
     }
     plist_entry = f"{package_prefix}openQ4.app/Contents/Info.plist"
 
@@ -2743,6 +2845,40 @@ def validate_macos_archive_contents(
             f"macOS archive contains stale or mismatched game modules, including wrong-platform entries: {joined}"
         )
 
+    # Same sweep for renderer modules: a leftover renderer-vk_x64.dylib inside an
+    # arm64 package, or a renderer-gl module that darwin never builds, must not
+    # ride along beside the one module the loader will actually open.
+    expected_renderer_modules = {embedded_renderer_module_entry}
+    unexpected_renderer_modules = sorted(
+        name
+        for name in entry_names
+        if (
+            name.startswith(f"{package_prefix}renderer-")
+            or name.startswith(f"{app_bundle_prefix}Contents/Frameworks/renderer-")
+            or name.startswith(f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/renderer-")
+        )
+        and Path(name).name.lower().endswith((".dll", ".so", ".dylib"))
+        and name not in expected_renderer_modules
+    )
+    if unexpected_renderer_modules:
+        joined = ", ".join(unexpected_renderer_modules[:5])
+        raise RuntimeError(
+            "macOS archive contains stale or mismatched renderer modules, "
+            f"including wrong-architecture entries: {joined}"
+        )
+
+    # libMoltenVK.dylib must appear exactly once, inside the app bundle. A second
+    # copy loose in the package root would be a different (possibly unsigned)
+    # image than the one SDL and volk pin at runtime.
+    unexpected_moltenvk = sorted(
+        name
+        for name in entry_names
+        if Path(name).name == MACOS_MOLTENVK_DYLIB_NAME and name != embedded_moltenvk_entry
+    )
+    if unexpected_moltenvk:
+        joined = ", ".join(unexpected_moltenvk[:5])
+        raise RuntimeError(f"macOS archive contains misplaced MoltenVK runtime copies: {joined}")
+
     expected_root_binaries = {client_entry, dedicated_entry}
     unexpected_root_binaries = sorted(
         name
@@ -2882,13 +3018,11 @@ def macos_otool_install_name(binary_path: Path, *, macho_arch: str | None = None
 
 
 def macos_dependency_validation_binaries(package_root: Path, arch: str) -> list[Path]:
-    sp_module, mp_module = macos_embedded_game_module_paths(package_root, arch)
     return [
         package_root / f"{PRODUCT_NAME}-client_{arch}",
         package_root / f"{PRODUCT_NAME}-ded_{arch}",
         package_root / "openQ4.app" / "Contents" / "MacOS" / "openQ4",
-        sp_module,
-        mp_module,
+        *macos_embedded_library_paths(package_root, arch),
     ]
 
 
@@ -2976,7 +3110,16 @@ def validate_macos_binary_dependencies(package_root: Path, arch: str) -> None:
     for binary_path in binary_paths:
         require_packaged_executable(binary_path, "macOS dependency validation binary")
 
-    validate_macos_binary_architectures(binary_paths, arch)
+    # Everything openQ4 compiles must be sliced exactly like the package. The
+    # vendored libMoltenVK.dylib is a prebuilt universal binary, so it legitimately
+    # carries both slices even in a thin package; it only has to contain the ones
+    # this package needs.
+    moltenvk_path = macos_embedded_moltenvk_path(package_root)
+    validate_macos_binary_architectures(
+        [binary_path for binary_path in binary_paths if binary_path != moltenvk_path],
+        arch,
+    )
+    validate_macos_prebuilt_binary_architectures([moltenvk_path], arch)
 
     for binary_path in binary_paths:
         for macho_arch in sorted(macos_expected_lipo_arches(arch)):
@@ -3131,11 +3274,16 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
     embedded_sp_module, embedded_mp_module = macos_embedded_game_module_paths(package_root, arch)
 
     expected_bundle_dirs = {Path(relative_path) for relative_path in MACOS_EXPECTED_APP_BUNDLE_DIRS}
+    embedded_renderer_module = macos_embedded_renderer_module_path(package_root, arch)
+    embedded_moltenvk = macos_embedded_moltenvk_path(package_root)
+
     expected_bundle_files = {Path(relative_path) for relative_path in MACOS_EXPECTED_APP_BUNDLE_FILES}
     expected_bundle_files.update(
         {
             embedded_sp_module.relative_to(app_root),
             embedded_mp_module.relative_to(app_root),
+            embedded_renderer_module.relative_to(app_root),
+            embedded_moltenvk.relative_to(app_root),
         }
     )
     optional_signature_dirs = {Path(relative_path) for relative_path in MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_DIRS}
@@ -3205,6 +3353,8 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
         require_non_empty_package_file(app_root / relative_path, f"macOS embedded runtime file {relative_path}")
     require_packaged_executable(embedded_sp_module, "macOS embedded SP game module")
     require_packaged_executable(embedded_mp_module, "macOS embedded MP game module")
+    require_packaged_executable(embedded_renderer_module, "macOS embedded Vulkan renderer module")
+    require_packaged_executable(embedded_moltenvk, "macOS embedded MoltenVK runtime")
     if not app_pkginfo.is_file() or app_pkginfo.read_bytes() != MACOS_PKGINFO_BYTES:
         raise RuntimeError(f"macOS app bundle is missing a valid PkgInfo file: {app_pkginfo}")
 
@@ -3218,6 +3368,39 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
         "macOS app Info.plist",
         version,
         require_self_contained_runtime=True,
+    )
+
+
+def macos_moltenvk_source_candidates(install_dir: Path) -> tuple[Path, ...]:
+    return (
+        install_dir / MACOS_MOLTENVK_DYLIB_NAME,
+        install_dir / "Frameworks" / MACOS_MOLTENVK_DYLIB_NAME,
+    )
+
+
+def resolve_macos_moltenvk_source(install_dir: Path) -> Path:
+    """Locate the staged MoltenVK runtime, or explain how to stage it.
+
+    MoltenVK is a Vulkan-on-Metal translation layer. It is not produced by the
+    meson build, so it will simply be absent from the install tree unless it has
+    been staged first. Fail with the fix instead of a bare lookup error.
+    """
+
+    candidates = macos_moltenvk_source_candidates(install_dir)
+    for candidate in candidates:
+        if candidate.is_symlink():
+            raise RuntimeError(f"macOS MoltenVK runtime must not be a symlink: {candidate}")
+        if candidate.is_file():
+            return candidate
+
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise RuntimeError(
+        f"macOS package is missing the bundled MoltenVK runtime ({MACOS_MOLTENVK_DYLIB_NAME}). "
+        "The Vulkan renderer module reaches the GPU on macOS through MoltenVK, a "
+        "Vulkan-on-Metal translation layer that openQ4 does not build, so meson never "
+        "installs it. Stage the pinned universal libMoltenVK.dylib before packaging: "
+        f"{MACOS_MOLTENVK_PREPARE_SCRIPT} --output-dir {install_dir}. "
+        f"Searched: {searched}"
     )
 
 
@@ -3273,6 +3456,26 @@ def create_macos_app_bundle(
         str(embedded_game_dir / staged_mp_module.name),
         str(app_frameworks / staged_mp_module.name),
     )
+
+    # The renderer module is installed beside the engine binaries, so it lands in
+    # the package root first. Move it into the same signed Contents/Frameworks
+    # code directory the game modules use; RM_ResolveModulePath() searches the
+    # trusted module root, which is exactly that directory.
+    staged_renderer_module = package_root / f"renderer-vk_{arch}.dylib"
+    require_packaged_executable(staged_renderer_module, "macOS staged Vulkan renderer module")
+    embedded_renderer_module = app_frameworks / staged_renderer_module.name
+    shutil.move(str(staged_renderer_module), str(embedded_renderer_module))
+    ensure_posix_executable(embedded_renderer_module)
+
+    # MoltenVK is staged separately (see resolve_macos_moltenvk_source) and is
+    # copied, not moved, because it never lands in the package root. It must sit
+    # beside the renderer module: both SDL and volk pin
+    # <exe>/../Frameworks/libMoltenVK.dylib so the engine and the module bind the
+    # same image.
+    staged_moltenvk = resolve_macos_moltenvk_source(install_dir)
+    embedded_moltenvk = app_frameworks / MACOS_MOLTENVK_DYLIB_NAME
+    copy_regular_file(staged_moltenvk, embedded_moltenvk)
+    ensure_posix_executable(embedded_moltenvk)
 
     staged_splash_dir = package_root / "assets" / "splash"
     staged_splash = staged_splash_dir / "quake4_rt_bitmap_4001.bmp"

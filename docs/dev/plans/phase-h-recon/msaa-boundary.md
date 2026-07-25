@@ -24,7 +24,7 @@
 - `vk_Image.cpp` AllocImage **ignores** `opts.numMSAASamples` (samples hardwired at `vk_Image.cpp:377`) and does not zero it — so `GetImageMSAASamples` lies under vk: the game ladder (`Game_render.cpp:963-982`) would believe MSAA was allocated. Phase H must either honor `numMSAASamples` in vk AllocImage (color/depth-attachment usage + resolve pairing) or clamp `opts.numMSAASamples = 0` so the game path stays truthful.
 - Clamp against `VkPhysicalDeviceLimits::framebufferColor/DepthSampleCounts` (analog of the GL_MAX_SAMPLES clamp `gl_Image.cpp:495-502`).
 
-**Is MSAA pure opt-in?** Cvar default 0, yes — **but** `Com_ExecMachineSpec_f` sets r_multiSamples 8/4/2 for machineSpec 3/2/1 (`framework\Common.cpp:2280,2305,2327`; 0 only for low `:2351`), and the performance-preset system applies/verifies it (`Common.cpp:2716`, high tiers require ≥2/≥4 `:3148,:3157`). Settings menu also exposes it (`docs\dev\settings-menu-registry.json`). So preset users on high/ultra get MSAA silently dropped under vk until H lands — not a correctness break, but a visible-quality parity gap.
+**Is MSAA pure opt-in?** Cvar default 0, yes — **but** `Com_ExecMachineSpec_f` sets r_multiSamples 8/4/2 for machineSpec 3/2/1 (`framework/Common.cpp:2280,2305,2327`; 0 only for low `:2351`), and the performance-preset system applies/verifies it (`Common.cpp:2716`, high tiers require ≥2/≥4 `:3148,:3157`). Settings menu also exposes it (`docs/dev/settings-menu-registry.json`). So preset users on high/ultra get MSAA silently dropped under vk until H lands — not a correctness break, but a visible-quality parity gap.
 
 ## 2. r_screenFraction / supersampling
 

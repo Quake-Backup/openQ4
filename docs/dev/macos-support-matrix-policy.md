@@ -111,6 +111,35 @@ Before changing the floor, update all of these together:
 - `docs/dev/macos-signoff-evidence.md`.
 - macOS matrix and package policy tests.
 
+## Bundled MoltenVK And The OS Floor
+
+Added: 2026-07-25.
+
+Both macOS package variants now also carry the Vulkan renderer module
+(`renderer-vk_<arch>.dylib`) and MoltenVK, a Vulkan-on-Metal translation layer
+(`libMoltenVK.dylib`), inside `openQ4.app/Contents/Frameworks`. This adds no
+package variant, no artifact name, and no architecture to the matrix above:
+OpenGL remains the default renderer and Vulkan is opt-in through
+`r_renderApi vulkan`. The decision plan is
+[macos-moltenvk-decision.md](macos-moltenvk-decision.md).
+
+The matrix consequence is the OS floor. MoltenVK is pinned to `v1.4.1`, which is
+the newest release that still runs on macOS 11.0. MoltenVK `v1.4.2` raised its
+runtime floor to macOS 12.0, above openQ4's documented `macOS 11` floor.
+Advancing the MoltenVK pin past `v1.4.1` therefore requires the full floor
+change listed above — Meson deployment target, `tools/build/package_nightly.py`
+app metadata, `.github/workflows/manual-release.yml` package validation,
+`BUILDING.md`, `docs/dev/platform-support.md`, `docs/user/getting-started.md`,
+`assets/release/README.html`, `docs/dev/macos-signoff-evidence.md`, and the
+macOS matrix and package policy tests — and must never be treated as routine
+dependency maintenance. The provider pin is recorded in
+`docs/dev/macos-moltenvk-provider-policy.md`.
+
+macOS Vulkan evidence is additive to, and never a substitute for, the OpenGL and
+Metal bridge signoff requirements below. There is no accepted real-Apple-hardware
+evidence that MoltenVK-backed Vulkan renders correctly, so it is documented as an
+experimental opt-in that may not work.
+
 ## Evidence Requirements
 
 Every completed macOS signoff record must include:

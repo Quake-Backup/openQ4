@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WORK_BASE = ROOT / ".tmp" / "docs-link-integrity"
 
 SKIP_DIR_NAMES = {
+    # .claude holds untracked scratch worktrees; auditing them reports stale
+    # copies of files that were already fixed in the real checkout.
+    ".claude",
     ".git",
     ".home",
     ".install",

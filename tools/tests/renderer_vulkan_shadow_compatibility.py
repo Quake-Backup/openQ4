@@ -443,7 +443,16 @@ def validate_shadow_depth_format_selection() -> None:
             "VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT",
             "VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT",
             "vkGetPhysicalDeviceFormatProperties2(",
-            "( props3.optimalTilingFeatures & requiredFeatures ) != requiredFeatures",
+            # VkFormatProperties3 is core 1.3 and every implementation at the
+            # renderer's API floor populates it, but an implementation that
+            # left it zeroed would silently reject every candidate and disable
+            # shadow maps, so the selector falls back to the 1.0 flags.
+            "VkFormatFeatureFlags2 optimalFeatures = props3.optimalTilingFeatures;",
+            "if ( optimalFeatures == 0 ) {",
+            "props2.formatProperties.optimalTilingFeatures",
+            "VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT",
+            "optimalFeatures |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT;",
+            "( optimalFeatures & requiredFeatures ) != requiredFeatures",
             "VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT",
             "nearestFallback = candidates[ i ];",
             "vkCtx.shadowDepthFormat = candidates[ i ];",

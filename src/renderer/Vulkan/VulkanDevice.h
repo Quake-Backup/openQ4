@@ -32,6 +32,12 @@ struct renderWindowServices_s;
 // per-slot frame synchronization (frames in flight)
 static const int VK_FRAMES_IN_FLIGHT = 2;
 
+// The widest pipeline layout the back end builds is the shadowed-interaction
+// one: six reused per-image sampler sets, the interaction UBO set, and the
+// shadow set. Metal-backed implementations cap maxBoundDescriptorSets at
+// exactly this value, so it is checked once at device creation.
+static const int VK_REQUIRED_BOUND_DESCRIPTOR_SETS = 8;
+
 // deferred GPU-object destruction: resources retired while their frame may
 // still be in flight are queued per slot and destroyed once that slot's
 // fence has been waited on
@@ -55,6 +61,18 @@ typedef struct vkDeviceContext_s {
 	VkPhysicalDeviceProperties deviceProperties;
 	bool				depthClampSupported;
 	bool				depthBoundsSupported;
+	// Vulkan Portability (MoltenVK on macOS): the device is a portability
+	// implementation whose optional subset features must be honored instead of
+	// assumed. False on native drivers, where the whole subset reads as
+	// supported.
+	bool				portabilitySubset;
+	bool				portabilityImageViewFormatSwizzle;
+	bool				portabilityMutableComparisonSamplers;
+	bool				textureCompressionBCSupported;
+	// VK_FORMAT_R5G6B5_UNORM_PACK16 backs the light projection/falloff cookies.
+	// Metal only exposes the packed 16-bit formats on Apple GPUs, so this is
+	// probed and the image path widens to RGBA8 when it is missing.
+	bool				packed565Supported;
 	VkDevice			device;
 	uint32_t			graphicsQueueFamily;	// also the present family (required)
 	VkQueue				graphicsQueue;

@@ -53,15 +53,26 @@ For package or platform validation, `performancePresetSelfTest` checks that the 
 ## Renderer Backend (OpenGL default; Vulkan is experimental)
 
 openQ4 ships with an **OpenGL renderer as the default and only supported
-backend**. A **native Vulkan renderer is included but is experimental and
-opt-in** — it is under active development, not feature-complete or
-performance-validated, and can show visual artifacts or instability. Do not
+backend** on every platform. A **Vulkan renderer is included but is
+experimental and opt-in** — it is under active development, not feature-complete
+or performance-validated, and can show visual artifacts or instability. Do not
 use it for normal play; OpenGL remains the recommended renderer.
 
 | Setting | Default | What it does |
 |---|---:|---|
 | `r_renderApi` | `gl` | Renderer backend: `gl` (default, supported) or `vulkan` (**experimental**). `best` resolves to `gl` until the Vulkan backend clears its promotion evidence and sign-off. Takes effect on **engine restart**, not `vid_restart`. |
 | `r_actualRenderApi` | (read-only) | Reports the backend that actually initialized. If a Vulkan request fails, the engine **falls back to OpenGL** and this reports `gl`. |
+
+### All `r_renderApi` values
+
+| Value | Aliases | What it selects |
+|---|---|---|
+| `best` | — | The platform default. Currently resolves to `gl` on **every** platform, and will keep doing so until Vulkan clears its promotion evidence and sign-off. |
+| `gl` | `opengl` | The OpenGL renderer. This is the default and the recommended choice. |
+| `vulkan` | `vk` | The experimental Vulkan renderer module. |
+| `gl-module` | — | Always loads the OpenGL renderer as a module instead of using a statically linked copy. This is a diagnostic option; it renders identically to `gl`. |
+
+Anything else is rejected with a warning, and openQ4 uses `gl`.
 
 Notes:
 
@@ -74,6 +85,35 @@ Notes:
 - Experimental status means known issues are expected; please only file
   Vulkan-specific reports with `openq4.log` and `gfxInfo`, and note that it is
   not yet a release-supported path.
+
+### Vulkan on macOS (through MoltenVK)
+
+Apple does not ship a Vulkan driver. On macOS, openQ4's Vulkan renderer runs on
+top of **MoltenVK**, a Vulkan-on-Metal translation layer that is bundled inside
+both macOS packages. It is a translation layer, not a Metal renderer, and it
+does not replace or remove the OpenGL renderer.
+
+- **OpenGL is still the default on macOS**, in both the OpenGL and Metal bridge
+  packages. Nothing changes unless you opt in.
+- Vulkan is a **runtime option, not a separate download**. There is no third
+  macOS package to install and nothing to enable at install time.
+- To try it: open the console, run `r_renderApi vulkan`, then quit and relaunch
+  openQ4. Check `r_actualRenderApi` or `gfxInfo` afterwards to confirm what
+  actually started.
+- **Expect problems.** macOS support is experimental, the Vulkan renderer is
+  experimental, and this combination has no accepted testing on real Apple
+  hardware yet. Missing effects, wrong shading, poor performance, or a refusal
+  to start are all plausible.
+- **To go back:** run `r_renderApi gl` and restart. The setting is saved to your
+  config, so it stays on OpenGL after that.
+- **If it cannot start**, you do not need to do anything. openQ4 logs the
+  reason and renders with OpenGL instead, so a failed attempt never leaves you
+  without a picture. Common reasons on a Mac are a GPU that does not meet the
+  renderer's Vulkan 1.3 feature floor, or a package whose bundled translation
+  layer is missing or was stripped by a copy.
+- When reporting a macOS Vulkan problem, include `openq4.log` (it records which
+  translation-layer library was loaded), the `gfxInfo` output, and your Mac
+  model and macOS version.
 
 ## Frame Cap
 

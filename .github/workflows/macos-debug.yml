@@ -164,6 +164,19 @@ jobs:
             fi
           } > macos-debug-evidence-scope.txt
 
+      - name: Fetch MoltenVK
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # macOS has no native Vulkan driver: the renderer module runs on
+          # MoltenVK, a Vulkan-on-Metal translation layer staged into the
+          # package. Pinned and checksum-verified; see
+          # docs/dev/macos-moltenvk-provider-policy.md.
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install \
+            | tee macos-debug-moltenvk-provenance.txt
+
       - name: Configure
         if: steps.select.outputs.selected == 'true'
         shell: bash
@@ -178,6 +191,7 @@ jobs:
             --buildtype=debug \
             --wrap-mode=forcefallback \
             -Dplatform_backend=sdl3 \
+            -Dbuild_renderer_vk=true \
             -Dmacos_graphics_bridge=${{ matrix.bridge }}
 
       - name: Compile
@@ -217,6 +231,26 @@ jobs:
             --skip-official-pak-validation \
             --output-dir ".tmp/macos-debug-${{ matrix.artifact_suffix }}-renderer"
 
+      - name: MoltenVK capability probe
+        if: steps.select.outputs.selected == 'true' && inputs.run_runtime_assetless
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rendererVkProbe records what MoltenVK decides at runtime: advertised
+          # Vulkan version, portability-subset feature values, maxBoundDescriptorSets,
+          # BC/R5G6B5 format support, VkFormatProperties3 population and the depth
+          # resolve modes. These are the facts the renderer negotiates rather than
+          # assumes, and this log is the only place the project can observe them
+          # without Apple hardware. Best-effort: a hosted runner may not be able to
+          # create a Metal device or a window in a non-interactive session.
+          python tools/tests/renderer_validation_matrix.py \
+            --cases renderer-vk-clear-startup,renderer-vk-fallback-drill \
+            --timeout 180 \
+            --basepath "" \
+            --skip-official-pak-validation \
+            --output-dir ".tmp/macos-debug-${{ matrix.artifact_suffix }}-moltenvk"
+
       - name: Publish debug artifacts
         if: always() && steps.select.outputs.selected == 'true'
         uses: actions/upload-artifact@v6
@@ -225,6 +259,8 @@ jobs:
           path: |
             macos-debug-host.txt
             macos-debug-evidence-scope.txt
+            macos-debug-moltenvk-provenance.txt
+            .tmp/macos-debug-${{ matrix.artifact_suffix }}-moltenvk
             builddir/meson-logs
             .install
             .home

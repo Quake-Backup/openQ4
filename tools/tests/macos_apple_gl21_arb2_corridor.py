@@ -366,7 +366,7 @@ def validate_upload_and_vertex_cache_static_coverage() -> None:
         "if ( buffer->vbo )",
         "BindIndexBuffer( buffer->vbo )",
         "BindArrayBuffer( buffer->vbo )",
-        "return (void *)buffer->offset",
+        "return reinterpret_cast<void *>( static_cast<uintptr_t>( buffer->offset ) )",
         "return (void *)((byte *)buffer->virtMem + buffer->offset)",
         "BindIndexBuffer( 0 )",
         "BindArrayBuffer( 0 )",

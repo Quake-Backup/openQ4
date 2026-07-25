@@ -20,6 +20,20 @@ Use this checklist before editing curated release notes or front-door package do
 - [ ] `platform_backend=native` on macOS is described as comparison-only diagnostic infrastructure, not a release backend.
 - [ ] Until GitHub issue #73 is closed, curated release notes include issue #73 as a known experimental macOS Apple OpenGL 2.1/ARB2 startup limitation, or explicitly move it to a named known-limitation section with matching signoff evidence.
 
+## macOS Vulkan Renderer Wording Guard
+
+Added 2026-07-25. Use this alongside the checklist above whenever release notes,
+package docs, or store text mention the macOS Vulkan option. The decision plan
+is `docs/dev/macos-moltenvk-decision.md`.
+
+- [ ] macOS Vulkan is described as running through MoltenVK, a Vulkan-on-Metal translation layer, and the first user-facing mention includes the words "translation layer".
+- [ ] The translation layer is never called native Metal, a Metal renderer, a Metal backend, a native Vulkan driver, or an OpenGL-free renderer, and no wording implies openQ4 renders through Metal directly.
+- [ ] OpenGL is stated as the default and recommended macOS renderer, with Vulkan opt-in through `r_renderApi vulkan` applied at the next engine start, and `r_renderApi best` still resolving to `gl`.
+- [ ] The Vulkan renderer is described as a runtime choice inside the two existing `OpenGL` and `Metal bridge` packages, never as a third download, a new package variant, or a new `macos_graphics_bridge` value.
+- [ ] Any macOS Vulkan claim states that it is experimental and may not work, because no accepted real-Apple-hardware evidence exists; performance claims and comparisons for macOS Vulkan are not made at all.
+- [ ] An initialization failure is described as falling back to the OpenGL renderer.
+- [ ] The bundled MoltenVK version matches the pin recorded in `docs/dev/macos-moltenvk-provider-policy.md`, and its Apache-2.0 attribution is present in the package license collateral.
+
 ## Ready For Changelog
 
 - [x] 64-bit builds are now safer and more reliable across Windows, Linux, and macOS: engine/game allocation paths, media parsing, renderer uploads, operating-system handles, and editor callbacks no longer truncate native-width values. Oversized or malformed inputs fail cleanly, newly written event saves use a portable typed format while legacy saves remain readable, and strict Win64 plus LP64 build and contract checks prevent regressions. No configuration or save reset is required.

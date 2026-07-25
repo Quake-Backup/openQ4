@@ -620,8 +620,15 @@ def validate_renderer_module_staging() -> None:
         if not (package_root / filename).is_file():
             raise AssertionError(f"Release package is missing required renderer runtime module: {filename}")
 
-    if PACKAGE.get_required_renderer_module_binaries("macos", "arm64"):
-        raise AssertionError("macOS must not require renderer modules outside its static renderer policy")
+    # macOS keeps its statically linked OpenGL renderer AND ships the Vulkan
+    # renderer module, which runs there on MoltenVK. The GL module is still not
+    # built on darwin, so exactly one renderer module is required.
+    macos_modules = PACKAGE.get_required_renderer_module_binaries("macos", "arm64")
+    if macos_modules != ("renderer-vk_arm64.dylib",):
+        raise AssertionError(
+            "macOS must require exactly the Vulkan renderer module (MoltenVK-backed, opt-in); "
+            f"got {macos_modules!r}"
+        )
 
 
 def validate_build_pack_and_header_cli_guards() -> None:

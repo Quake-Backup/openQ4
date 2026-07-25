@@ -37,7 +37,7 @@ option(
   'build_renderer_vk',
   type: 'boolean',
   value: true,
-  description: 'Build the native Vulkan renderer module (renderer-vk_<arch>). Skipped on macOS until the macOS renderer-backend policy admits a non-GL backend.',
+  description: 'Build the Vulkan renderer module (renderer-vk_<arch>). Requires the SDL3 platform backend. On macOS the module runs through MoltenVK, a Vulkan-on-Metal translation layer, and stays opt-in behind r_renderApi vulkan; see docs/dev/macos-moltenvk-decision.md.',
 )
 
 option(

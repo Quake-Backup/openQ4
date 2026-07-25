@@ -42,6 +42,15 @@ COMMON_BUILD_FIELDS = (
     "deploymentTarget",
     "buildType",
 )
+# libMoltenVK.dylib is a third-party Vulkan-on-Metal translation layer that
+# openQ4 does not build. It ships as a genuinely universal (arm64 + x86_64)
+# binary, so the arm64 and x64 thin trees stage byte-identical copies of it and
+# it flows through as ordinary shared payload. It is deliberately NOT a
+# CODE_KEY: lipo must not touch it, its install name must not be rewritten, and
+# it has no openQ4 entry point to check. Treating it as shared payload also
+# means validate_matching_inputs() rejects two thin trees that staged different
+# MoltenVK builds, and copy_shared_payload() reproduces it byte-for-byte.
+MOLTENVK_DYLIB_NAME = "libMoltenVK.dylib"
 REQUIRED_SHARED_PATHS = (
     "openQ4.icns",
     "collect_macos_support_info.sh",
@@ -49,8 +58,18 @@ REQUIRED_SHARED_PATHS = (
     "baseoq4/mod.json",
     "baseoq4/pak0.pk4",
     "baseoq4/pak1.pk4",
+    MOLTENVK_DYLIB_NAME,
 )
-CODE_KEYS = ("client", "dedicated", "game-sp", "game-mp")
+# Code files that lipo merges into one universal2 artifact. renderer-vk is the
+# macOS Vulkan renderer module; renderer-gl is not built on darwin, so it has no
+# entry here (the stale-code sweep below still rejects one if it ever appears).
+CODE_KEYS = ("client", "dedicated", "game-sp", "game-mp", "renderer-vk")
+# Loadable modules carry a @loader_path install name and one required export.
+MODULE_ENTRY_POINT_EXPORTS = {
+    "game-sp": "GetGameAPI",
+    "game-mp": "GetGameAPI",
+    "renderer-vk": "GetRenderAPI",
+}
 
 
 class Universal2Error(RuntimeError):
@@ -65,20 +84,28 @@ def thin_code_paths(arch: str) -> dict[str, Path]:
         "dedicated": Path(f"openQ4-ded_{arch}"),
         "game-sp": Path("baseoq4") / f"game-sp_{arch}.dylib",
         "game-mp": Path("baseoq4") / f"game-mp_{arch}.dylib",
+        # meson installs the renderer module beside the engine binaries in the
+        # install root; package_nightly.py is what relocates it into
+        # openQ4.app/Contents/Frameworks.
+        "renderer-vk": Path(f"renderer-vk_{arch}.dylib"),
     }
 
 
 def universal_code_paths() -> dict[str, Path]:
+    # A fused package carries ONE file per code key, so every per-arch name
+    # collapses onto the same "universal2" arch token the game modules already
+    # use (openQ4-client_universal2, game-sp_universal2.dylib, ...).
     return {
         "client": Path("openQ4-client_universal2"),
         "dedicated": Path("openQ4-ded_universal2"),
         "game-sp": Path("baseoq4") / "game-sp_universal2.dylib",
         "game-mp": Path("baseoq4") / "game-mp_universal2.dylib",
+        "renderer-vk": Path("renderer-vk_universal2.dylib"),
     }
 
 
 def expected_install_name(code_key: str, arch: str) -> str:
-    if code_key not in ("game-sp", "game-mp"):
+    if code_key not in MODULE_ENTRY_POINT_EXPORTS:
         return ""
     return f"@loader_path/{code_key}_{arch}.dylib"
 
@@ -216,13 +243,21 @@ def dependencies(path: Path, *, macho_arch: str | None = None, own_install_name:
     return sorted(result)
 
 
-def require_game_api_export(path: Path, *, macho_arch: str) -> None:
+def require_module_entry_export(path: Path, *, macho_arch: str, code_key: str) -> None:
+    """Check the one entry point the loader resolves for this module kind.
+
+    game-sp/game-mp export GetGameAPI; the renderer module exports GetRenderAPI
+    and nothing else (tools/build/macos_renderer_module.exp). Checking the wrong
+    symbol would silently accept a module the engine can never bind.
+    """
+
+    symbol = MODULE_ENTRY_POINT_EXPORTS[code_key]
     completed = run_command(
         [require_tool("nm"), "-arch", macho_arch, "-gU", str(path)],
         f"reading exported symbols for {path} ({macho_arch})",
     )
-    if re.search(r"(?:^|\s)_?GetGameAPI(?:$|\s)", completed.stdout, re.MULTILINE) is None:
-        raise Universal2Error(f"macOS game module does not export GetGameAPI: {path}")
+    if re.search(rf"(?:^|\s)_?{re.escape(symbol)}(?:$|\s)", completed.stdout, re.MULTILINE) is None:
+        raise Universal2Error(f"macOS {code_key} module does not export {symbol}: {path}")
 
 
 def load_source_manifest(path: Path) -> dict[str, object]:
@@ -292,9 +327,15 @@ def classify_staged_tree(root: Path, arch: str) -> tuple[dict[str, dict[str, obj
             raise Universal2Error(f"thin macOS payload contains a special file: {relative}")
         if relative == THIN_MANIFEST_NAME:
             continue
+        # A per-arch code file that is not the one this tree is supposed to hold
+        # would otherwise be classified as shared payload and copied verbatim
+        # into the fused tree, shipping a wrong-architecture binary. The
+        # renderer arm covers gl as well as vk so a future renderer-gl build on
+        # darwin cannot slip through unnoticed.
         if (
             (path.parent == root and re.fullmatch(r"openQ4-(?:client|ded)_[A-Za-z0-9]+", path.name))
             or (path.parent == root / "baseoq4" and re.fullmatch(r"game-(?:sp|mp)_[A-Za-z0-9]+\.dylib", path.name))
+            or (path.parent == root and re.fullmatch(r"renderer-(?:gl|vk)_[A-Za-z0-9]+\.dylib", path.name))
         ) and relative not in expected_code_names:
             raise Universal2Error(f"thin macOS payload contains a stale or mismatched code file: {relative}")
         record = {
@@ -336,7 +377,7 @@ def collect_binary_metadata(root: Path, arch: str, deployment_target: str) -> di
                 f"install name mismatch for {path}: expected {expected_id!r}, found {actual_id!r}"
             )
         if expected_id:
-            require_game_api_export(path, macho_arch=macho_arch)
+            require_module_entry_export(path, macho_arch=macho_arch, code_key=code_key)
         result[code_key] = {
             "path": relative.as_posix(),
             "sha256": file_sha256(path),
@@ -583,7 +624,7 @@ def merge_binary(arm_path: Path, x64_path: Path, output_path: Path, code_key: st
                     f"universal2 {code_key} install name mismatch for {macho_arch}: {actual_id!r}"
                 )
         for macho_arch in sorted(UNIVERSAL_MACHO_ARCHES):
-            require_game_api_export(output_path, macho_arch=macho_arch)
+            require_module_entry_export(output_path, macho_arch=macho_arch, code_key=code_key)
 
 
 def copy_shared_payload(source_root: Path, output_root: Path, shared: dict[str, dict[str, object]]) -> None:

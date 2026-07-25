@@ -130,6 +130,16 @@ def symbol_manifest_text(
             "  size=1",
             "  macho_uuid=UUID: 00000000-0000-0000-0000-000000000005 (arm64) game-mp_arm64.dylib",
             "  dsym=dSYMs/game-mp_arm64.dylib.dSYM",
+            # The Vulkan renderer module is openQ4-built and therefore carries a
+            # dSYM, so it is a manifest binary exactly like the game modules.
+            # libMoltenVK.dylib ships next to it in Contents/Frameworks but is
+            # deliberately NOT listed: it is a third-party prebuilt with no DWARF,
+            # and macos_symbol_targets() excludes it for that reason.
+            "- path=openQ4.app/Contents/Frameworks/renderer-vk_arm64.dylib",
+            "  sha256=" + "5" * 64,
+            "  size=1",
+            "  macho_uuid=UUID: 00000000-0000-0000-0000-000000000006 (arm64) renderer-vk_arm64.dylib",
+            "  dsym=dSYMs/renderer-vk_arm64.dylib.dSYM",
             "",
         ]
     )
@@ -168,6 +178,9 @@ def create_symbol_archive(
         f"{root_name}/dSYMs/openQ4-ded_arm64.dSYM/Contents/Resources/DWARF/openQ4-ded_arm64": b"dsym\n",
         f"{root_name}/dSYMs/game-sp_arm64.dylib.dSYM/Contents/Resources/DWARF/game-sp_arm64.dylib": b"dsym\n",
         f"{root_name}/dSYMs/game-mp_arm64.dylib.dSYM/Contents/Resources/DWARF/game-mp_arm64.dylib": b"dsym\n",
+        f"{root_name}/dSYMs/renderer-vk_arm64.dylib.dSYM/Contents/Resources/DWARF/renderer-vk_arm64.dylib": b"dsym\n",
+        # No libMoltenVK.dylib.dSYM: MoltenVK is third-party, has no debug symbols
+        # to ship, and package_nightly.py never stages one here.
     }
     if leak_runtime:
         entries[f"{root_name}/openQ4-client_arm64"] = b"runtime\n"
@@ -197,6 +210,7 @@ def validate_packager_contract() -> None:
         f'Path(f"{{PRODUCT_NAME}}-ded_{{arch}}")',
         'Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"game-sp_{arch}.dylib"',
         'Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"game-mp_{arch}.dylib"',
+        'Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"renderer-vk_{arch}.dylib"',
         "dwarfdump",
         "dsymutil",
         "create_macos_dsym_bundle",

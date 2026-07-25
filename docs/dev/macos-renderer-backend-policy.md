@@ -94,6 +94,46 @@ implementation. That plan must cover:
 Until that plan exists and has matching tests, docs must continue to call the
 current package `Metal bridge`.
 
+## MoltenVK-Backed Vulkan Renderer
+
+Added: 2026-07-25.
+
+The gate above has been cleared for exactly one non-GL macOS renderer path: the
+existing openQ4 Vulkan renderer module running through MoltenVK, a
+Vulkan-on-Metal translation layer. The design plan is
+[macos-moltenvk-decision.md](macos-moltenvk-decision.md) and the staged record
+is [plans/2026-07-25-macos-moltenvk.md](plans/2026-07-25-macos-moltenvk.md).
+
+Clearing that gate did not change the default renderer, the package set, or the
+macOS support claim:
+
+- OpenGL remains the default and recommended macOS renderer in both package
+  variants.
+- Vulkan is opt-in only, through `r_renderApi vulkan`, applied at the next
+  engine start. `r_renderApi best` still resolves to `gl` on macOS.
+- No third package variant and no new `macos_graphics_bridge` value are
+  introduced. The `renderer-vk_<arch>.dylib` module and the bundled
+  `libMoltenVK.dylib` ship inside the existing `OpenGL` and `Metal bridge`
+  packages, in `openQ4.app/Contents/Frameworks`.
+- macOS support remains experimental Apple Silicon/arm64. macOS Vulkan is an
+  experimental renderer inside an experimental platform, and no first-class or
+  supported-renderer claim follows from this decision.
+- An initialization failure falls back to the OpenGL renderer through the
+  existing fail-closed ladder, so a failed opt-in never leaves a user without a
+  picture.
+
+The gate remains closed for a native Metal renderer, for making Vulkan the macOS
+default or resolving `best` to `vulkan` on macOS, and for any additional macOS
+package variant. Each needs its own plan, its own tests, and real
+Apple-hardware evidence.
+
+MoltenVK is a translation layer. It must never be described as native Metal, a
+Metal renderer, a native Vulkan driver, or an OpenGL-free renderer. The
+provider, pinning, and signing policy is recorded in
+[macos-moltenvk-provider-policy.md](macos-moltenvk-provider-policy.md), and
+`tools/tests/macos_moltenvk_policy.py` enforces the runtime and wording
+contracts that no Windows or Linux build can observe.
+
 ## Native Cocoa/OpenGL Backend Policy
 
 The legacy macOS native backend selected by `-Dplatform_backend=native` is

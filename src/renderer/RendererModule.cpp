@@ -278,9 +278,13 @@ const char *R_RendererModule_ApiName( rendererModuleApi_t api ) {
 R_RendererModule_BuildBinaryName
 ====================
 */
-void R_RendererModule_BuildBinaryName( rendererModuleApi_t api, char *outName, int maxLength ) {
+void R_RendererModule_BuildBinaryNameForArch( rendererModuleApi_t api, const char *archTag, char *outName, int maxLength ) {
 	const char *tag = ( api >= 0 && api < RENDER_MODULE_API_COUNT ) ? rm_moduleBinaryTags[ api ] : "invalid";
-	idStr::snPrintf( outName, maxLength, "renderer-%s_%s", tag, RENDERER_MODULE_ARCH_TAG );
+	idStr::snPrintf( outName, maxLength, "renderer-%s_%s", tag, archTag );
+}
+
+void R_RendererModule_BuildBinaryName( rendererModuleApi_t api, char *outName, int maxLength ) {
+	R_RendererModule_BuildBinaryNameForArch( api, RENDERER_MODULE_ARCH_TAG, outName, maxLength );
 }
 
 /*
@@ -309,14 +313,37 @@ int R_RendererModule_BuildFallbackLadder( rendererModuleApi_t requested, rendere
 ====================
 RM_ResolveModulePath
 
-Renderer modules load only from the executable directory (or the platform
-package root), mirroring the trusted-root policy in idFileSystem::FindDLL;
-they are never loaded from pak files, fs_savepath, or mod content.
+Renderer modules load only from the executable directory, the platform package
+root, or the platform's trusted module root, mirroring the trusted-root policy
+in idFileSystem::FindDLL; they are never loaded from pak files, fs_savepath, or
+mod content. The extra roots matter on macOS, where the executable lives in
+openQ4.app/Contents/MacOS while signed Mach-O modules are staged in the flat
+Contents/Frameworks code directory.
 ====================
 */
+static bool RM_ModuleFileExists( const char *path ) {
+	FILE *file = fopen( path, "rb" );
+	if ( file == NULL ) {
+		return false;
+	}
+	fclose( file );
+	return true;
+}
+
 static bool RM_ResolveModulePath( rendererModuleApi_t api, char *outPath, int maxLength ) {
 	char	binaryName[ MAX_OSPATH ];
 	char	fileName[ MAX_OSPATH ];
+
+	// Thin packages carry architecture-specific module names. A universal2
+	// macOS package instead carries ONE two-slice module, so both executable
+	// slices must converge on the same trusted name -- mirrors the game-module
+	// fallback in openQ4_BuildGameModuleBinaryNameForArch / Common.cpp.
+	const char *archTags[ 2 ];
+	int numArchTags = 0;
+	archTags[ numArchTags++ ] = RENDERER_MODULE_ARCH_TAG;
+#if defined( MACOS_X ) || defined( __APPLE__ )
+	archTags[ numArchTags++ ] = "universal2";
+#endif
 
 	R_RendererModule_BuildBinaryName( api, binaryName, sizeof( binaryName ) );
 	sys->DLL_GetFileName( binaryName, fileName, sizeof( fileName ) );
@@ -324,12 +351,57 @@ static bool RM_ResolveModulePath( rendererModuleApi_t api, char *outPath, int ma
 	idStr exeDir = Sys_EXEPath();
 	exeDir.StripFilename();
 
-	idStr candidate = exeDir + PATHSEPERATOR_STR + fileName;
-	if ( candidate.Length() >= maxLength ) {
+	idStr searchRoots[ 3 ];
+	int numSearchRoots = 0;
+	searchRoots[ numSearchRoots++ ] = exeDir;
+
+	char moduleRoot[ MAX_OSPATH ];
+	if ( Sys_GetGameModuleRootDirectory( moduleRoot, sizeof( moduleRoot ) )
+			&& exeDir.Icmp( moduleRoot ) != 0 ) {
+		searchRoots[ numSearchRoots++ ] = moduleRoot;
+	}
+	char packageRoot[ MAX_OSPATH ];
+	if ( Sys_GetPackageRootDirectory( packageRoot, sizeof( packageRoot ) ) ) {
+		bool duplicateRoot = false;
+		for ( int i = 0; i < numSearchRoots; i++ ) {
+			if ( searchRoots[ i ].Icmp( packageRoot ) == 0 ) {
+				duplicateRoot = true;
+				break;
+			}
+		}
+		if ( !duplicateRoot ) {
+			searchRoots[ numSearchRoots++ ] = packageRoot;
+		}
+	}
+
+	// first existing candidate wins; fall back to the executable directory and
+	// this slice's own arch name so a missing module still reports the path the
+	// operator most likely expected
+	idStr fallback;
+	for ( int archIndex = 0; archIndex < numArchTags; archIndex++ ) {
+		R_RendererModule_BuildBinaryNameForArch( api, archTags[ archIndex ], binaryName, sizeof( binaryName ) );
+		sys->DLL_GetFileName( binaryName, fileName, sizeof( fileName ) );
+
+		for ( int i = 0; i < numSearchRoots; i++ ) {
+			idStr candidate = searchRoots[ i ] + PATHSEPERATOR_STR + fileName;
+			if ( candidate.Length() >= maxLength ) {
+				continue;
+			}
+			if ( archIndex == 0 && i == 0 ) {
+				fallback = candidate;
+			}
+			if ( RM_ModuleFileExists( candidate.c_str() ) ) {
+				idStr::Copynz( outPath, candidate.c_str(), maxLength );
+				return true;
+			}
+		}
+	}
+
+	if ( fallback.Length() == 0 ) {
 		outPath[ 0 ] = '\0';
 		return false;
 	}
-	idStr::Copynz( outPath, candidate.c_str(), maxLength );
+	idStr::Copynz( outPath, fallback.c_str(), maxLength );
 	return true;
 }
 
@@ -819,6 +891,14 @@ bool RendererModule_RunSelfTest( void ) {
 		expected = va( "renderer-gl_%s", RENDERER_MODULE_ARCH_TAG );
 		if ( expected.Cmp( name ) != 0 ) {
 			common->Warning( "rendererModuleSelfTest: gl module name '%s', expected '%s'", name, expected.c_str() );
+			numFailures++;
+		}
+
+		// a universal2 macOS package carries one two-slice module, so both
+		// executable slices must be able to name it
+		R_RendererModule_BuildBinaryNameForArch( RENDER_MODULE_API_VULKAN, "universal2", name, sizeof( name ) );
+		if ( idStr::Cmp( name, "renderer-vk_universal2" ) != 0 ) {
+			common->Warning( "rendererModuleSelfTest: universal2 vulkan module name '%s', expected 'renderer-vk_universal2'", name );
 			numFailures++;
 		}
 	}

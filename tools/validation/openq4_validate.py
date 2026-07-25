@@ -444,6 +444,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "macos_universal2_runtime.py",
         root / "tools" / "tests" / "macos_universal2_release_candidate.py",
         root / "tools" / "tests" / "macos_metal_bridge.py",
+        root / "tools" / "tests" / "macos_moltenvk_policy.py",
         root / "tools" / "tests" / "native_glx_shutdown.py",
         root / "tools" / "tests" / "openq4_pure_pack.py",
         root / "tools" / "tests" / "packaging_safety.py",

@@ -45,9 +45,15 @@ def populate_staging(root: Path, arch: str, *, shared_value: bytes = b"same\n") 
         "baseoq4/mod.json": b"{}\n",
         "baseoq4/pak0.pk4": b"pak0\n",
         "baseoq4/pak1.pk4": b"pak1\n",
+        # libMoltenVK.dylib is third-party and already universal upstream, so both
+        # thin trees stage the SAME bytes and it flows through as ordinary shared
+        # payload rather than as a lipo-merged code key. The literal is deliberately
+        # arch-independent: staging different MoltenVK builds per arch is exactly
+        # what validate_matching_inputs() must reject.
+        ASSEMBLER.MOLTENVK_DYLIB_NAME: b"moltenvk-universal\n",
     }
     for relative, data in shared.items():
-        write_file(root / relative, data, 0o755 if relative.endswith(".sh") else 0o644)
+        write_file(root / relative, data, 0o755 if relative.endswith((".sh", ".dylib")) else 0o644)
     for key, relative in ASSEMBLER.thin_code_paths(arch).items():
         write_file(root / relative, f"{key}-{arch}\n".encode(), 0o755)
 
@@ -104,8 +110,12 @@ def test_tree_classification_and_shared_matching() -> None:
         populate_staging(x64_root, "x64")
         arm_code, arm_shared = ASSEMBLER.classify_staged_tree(arm_root, "arm64")
         x64_code, x64_shared = ASSEMBLER.classify_staged_tree(x64_root, "x64")
+        # POLICY UPDATE: the required code set grew from four to five when the
+        # Vulkan renderer module (renderer-vk) became a macOS build product. The
+        # check itself is still driven by CODE_KEYS, so only the message needed to
+        # catch up.
         if set(arm_code) != set(ASSEMBLER.CODE_KEYS) or set(x64_code) != set(ASSEMBLER.CODE_KEYS):
-            raise AssertionError("thin staging classifier did not find the four required binaries")
+            raise AssertionError("thin staging classifier did not find the five required binaries")
         if arm_shared != x64_shared:
             raise AssertionError("byte-identical shared payloads did not normalize equally")
 
@@ -252,6 +262,11 @@ def make_universal_symbol_manifest() -> bytes:
         ("openQ4-ded_universal2", "openQ4-ded_universal2.dSYM"),
         ("openQ4.app/Contents/Frameworks/game-sp_universal2.dylib", "game-sp_universal2.dylib.dSYM"),
         ("openQ4.app/Contents/Frameworks/game-mp_universal2.dylib", "game-mp_universal2.dylib.dSYM"),
+        # The fused renderer module gets a dSYM like any other openQ4-built code.
+        # libMoltenVK.dylib rides in the same Frameworks directory but has no
+        # record here: it is third-party, ships no DWARF, and the packager's
+        # expected-binary set excludes it.
+        ("openQ4.app/Contents/Frameworks/renderer-vk_universal2.dylib", "renderer-vk_universal2.dylib.dSYM"),
     )
     lines = [
         "openQ4 macOS symbols",

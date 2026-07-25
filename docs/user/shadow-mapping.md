@@ -344,6 +344,7 @@ Useful workflow:
 | Linux (GL3.3+) | Supported | Same GL feature path as Windows. |
 | Steam Deck | Supported | Recommended: `r_shadowMapSize 1024`, `r_shadowMapPointSize 512`, `r_shadowMapMaxUpdatesPerView 2`, `r_shadowMapCSM 1` with `r_shadowMapCascadeCount 3`. The importance-ordered update budget keeps per-frame shadow cost bounded. |
 | macOS (Apple legacy GL2.1 tier) | Stencil only | The Apple compatibility corridor lacks the GLSL/FBO feature set the shadow-map receiver and caster programs require. Lights fall back to the retail stencil path automatically; this is expected and documented behavior, not an error. |
+| macOS (opt-in Vulkan through MoltenVK) | Implemented, untested on Apple hardware | Requires `r_renderApi vulkan` and a full engine restart. MoltenVK is a Vulkan-on-Metal translation layer bundled in both macOS packages, not a Metal renderer. This path uses the same Vulkan shadow implementation as Windows and Linux — projected, point, parallel, and global lights, cascades, PCF/PCSS-lite, and static caching — but no real-Mac evidence exists yet, so treat it as experimental and expect problems. The default macOS renderer is still OpenGL, which uses the row above. |
 
 The shadow-map pipeline fails closed per light: any light that cannot complete the map path (missing capability, failed framebuffer, unsupported receiver) renders with the retail stencil path for that light instead of losing its shadows.
 

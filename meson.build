@@ -698,7 +698,9 @@ if build_engine
       fallback: ['glew', 'glew_dep'],
       default_options: glew_default_options,
     )
-    if host_system == 'linux' or host_system == 'windows'
+    if host_system == 'linux' or host_system == 'windows' or host_system == 'darwin'
+      # darwin needs it for the MoltenVK-backed Vulkan renderer module, which
+      # links no GL but shares front-end translation units that reference it
       glew_dedicated_sp = subproject('glew', default_options: glew_default_options)
       glew_dedicated_dep = glew_dedicated_sp.get_variable('glew_dedicated_dep')
     endif
@@ -1333,10 +1335,13 @@ if build_renderer_gl and (host_system == 'darwin' or platform_backend != 'sdl3')
   build_renderer_gl = false
 endif
 
-# Vulkan module availability mirrors the GL module gating (needs the SDL3
-# window-services seam) plus the macOS renderer-backend policy carve-out
+# Vulkan module availability needs the SDL3 window-services seam on every host.
+# macOS is admitted through MoltenVK, a Vulkan-on-Metal translation layer, per
+# docs/dev/macos-moltenvk-decision.md; the module is built and shipped there but
+# stays opt-in behind r_renderApi vulkan with OpenGL as the default renderer.
+# MoltenVK is not a native Metal renderer and must never be described as one.
 build_renderer_vk = get_option('build_renderer_vk')
-if build_renderer_vk and (host_system == 'darwin' or platform_backend != 'sdl3')
+if build_renderer_vk and platform_backend != 'sdl3'
   build_renderer_vk = false
 endif
 renderer_vk_binary_name = 'renderer-vk_' + binary_arch
@@ -1439,8 +1444,12 @@ if build_renderer_vk and build_engine
     '-DOPENQ4_RENDERER_BACKEND_DESC="openQ4 native Vulkan renderer module"',
     '-DVMA_STATIC_VULKAN_FUNCTIONS=0',
     '-DVMA_DYNAMIC_VULKAN_FUNCTIONS=1',
+    # VK_KHR_portability_subset lives in vulkan_beta.h. Defined for every host so
+    # volk.h and the C++ translation units agree on the header set (volk exposes
+    # no beta entry points, so this adds declarations only).
+    '-DVK_ENABLE_BETA_EXTENSIONS',
   ]
-  renderer_vk_c_args = engine_c_args
+  renderer_vk_c_args = engine_c_args + ['-DVK_ENABLE_BETA_EXTENSIONS']
   if host_system == 'windows'
     renderer_vk_module_args += ['-DVK_USE_PLATFORM_WIN32_KHR', '-DGLAPI=extern']
     renderer_vk_c_args += ['-DGLAPI=extern']
@@ -1462,24 +1471,63 @@ if build_renderer_vk and build_engine
     renderer_vk_export_map = files('tools/build/linux_renderer_module.map')
     renderer_vk_link_args += '-Wl,--version-script=' + renderer_vk_export_map[0].full_path()
     renderer_vk_link_depends += renderer_vk_export_map
+  elif host_system == 'darwin'
+    # The macOS client keeps its statically linked OpenGL renderer, so this
+    # module ships alongside a second copy of the renderer/idlib symbols.
+    # Exporting only GetRenderAPI keeps the two from interposing, mirroring the
+    # Linux version script. -headerpad_max_install_names leaves room for the
+    # packaging step to rewrite the install name inside the app bundle.
+    renderer_vk_export_list = files('tools/build/macos_renderer_module.exp')
+    renderer_vk_link_args += [
+      '-Wl,-exported_symbols_list,' + renderer_vk_export_list[0].full_path(),
+      '-Wl,-dead_strip',
+      '-Wl,-headerpad_max_install_names',
+      '-Wl,-install_name,@loader_path/' + renderer_vk_binary_name + '.dylib',
+    ]
+    renderer_vk_link_depends += renderer_vk_export_list
   endif
 
-  renderer_vk_module_target = shared_module(
-    renderer_vk_binary_name,
-    renderer_vk_sources,
-    include_directories: renderer_vk_include_dirs,
-    cpp_args: renderer_vk_module_args,
-    c_args: renderer_vk_c_args,
-    cpp_pch: pch_headers,
-    link_with: [renderer_idlib_library, imagetools_library, render_geo_library],
-    dependencies: renderer_vk_deps,
-    link_args: renderer_vk_link_args,
-    link_depends: renderer_vk_link_depends,
-    gnu_symbol_visibility: host_system == 'linux' ? 'hidden' : 'default',
-    name_prefix: '',
-    install: true,
-    install_dir: install_root_dir,
-  )
+  if host_system == 'darwin'
+    # shared_library, not shared_module: meson links shared_module on darwin as
+    # an MH_BUNDLE with -undefined dynamic_lookup, which drops the
+    # undefined-symbol closure the other hosts get and breaks the otool -D /
+    # install_name_tool expectations the universal2 assembler relies on.
+    # Mirrors the game modules in content/baseoq4/meson.build.
+    renderer_vk_module_target = shared_library(
+      renderer_vk_binary_name,
+      renderer_vk_sources,
+      include_directories: renderer_vk_include_dirs,
+      cpp_args: renderer_vk_module_args,
+      c_args: renderer_vk_c_args,
+      cpp_pch: pch_headers,
+      link_with: [renderer_idlib_library, imagetools_library, render_geo_library],
+      dependencies: renderer_vk_deps,
+      link_args: renderer_vk_link_args,
+      link_depends: renderer_vk_link_depends,
+      gnu_symbol_visibility: 'hidden',
+      name_prefix: '',
+      name_suffix: 'dylib',
+      install: true,
+      install_dir: install_root_dir,
+    )
+  else
+    renderer_vk_module_target = shared_module(
+      renderer_vk_binary_name,
+      renderer_vk_sources,
+      include_directories: renderer_vk_include_dirs,
+      cpp_args: renderer_vk_module_args,
+      c_args: renderer_vk_c_args,
+      cpp_pch: pch_headers,
+      link_with: [renderer_idlib_library, imagetools_library, render_geo_library],
+      dependencies: renderer_vk_deps,
+      link_args: renderer_vk_link_args,
+      link_depends: renderer_vk_link_depends,
+      gnu_symbol_visibility: host_system == 'linux' ? 'hidden' : 'default',
+      name_prefix: '',
+      install: true,
+      install_dir: install_root_dir,
+    )
+  endif
 endif
 
 if build_engine or (build_games and (build_game_sp or build_game_mp))

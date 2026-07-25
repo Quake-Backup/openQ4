@@ -1546,19 +1546,26 @@ def filter_driver_specific_cases(cases: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def vk_module_path(root: Path) -> Path:
-    suffix = ".dll" if os.name == "nt" else ".so"
+    if os.name == "nt":
+        suffix = ".dll"
+    elif sys.platform == "darwin":
+        suffix = ".dylib"
+    else:
+        suffix = ".so"
     return root / ".install" / f"renderer-vk_{host_arch()}{suffix}"
 
 
 def filter_vulkan_module_cases(cases: list[dict[str, Any]], root: Path) -> list[dict[str, Any]]:
     # the Vulkan cases need a staged renderer-vk module and a live Vulkan
-    # driver; headless Linux legs (Xvfb/WSL) offer neither, so they only run
-    # on a Windows host with the module staged next to the executable
-    if os.name == "nt" and vk_module_path(root).exists():
+    # driver. Headless Linux legs (Xvfb/WSL) offer neither, so they stay
+    # dropped there. Windows has a native driver; macOS runs the module on
+    # MoltenVK, which is bundled with the package, so both hosts qualify once
+    # the module is staged next to the executable.
+    if (os.name == "nt" or sys.platform == "darwin") and vk_module_path(root).exists():
         return cases
     dropped = [case["id"] for case in cases if case.get("requiresVulkanModule")]
     if dropped:
-        print(f"note: skipping Vulkan module cases (module not staged or non-Windows host): {', '.join(dropped)}")
+        print(f"note: skipping Vulkan module cases (module not staged or unsupported host): {', '.join(dropped)}")
     return [case for case in cases if not case.get("requiresVulkanModule")]
 
 
