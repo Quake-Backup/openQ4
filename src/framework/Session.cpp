@@ -4283,6 +4283,16 @@ void idSessionLocal::UnloadMap() {
 		Session_PrintFramePacingSummary( framePacingStats, " final" );
 	}
 
+	// Stop the game sound world before the entities that own its emitters are
+	// destroyed. ~idEntity frees its emitter without stopping it, and a freed
+	// emitter is only recycled once its channel list is empty, so every looping
+	// sound from the outgoing session otherwise survives into the next one.
+	// idSessionLocal::Stop() already does this, which is why quitting to the
+	// menu first was clean while loading a savegame over a live map was not.
+	if ( soundSystem ) {
+		soundSystem->StopAllSounds( SOUNDWORLD_GAME );
+	}
+
 	// end the current map in the game
 	if ( game ) {
 		game->MapShutdown();
@@ -4295,6 +4305,13 @@ void idSessionLocal::UnloadMap() {
 
 	if ( writeDemo ) {
 		StopRecordingRenderDemo();
+	}
+
+	// drop every render entity/light the outgoing session registered, matching
+	// the original engine's teardown order; InitFromMap's same-map retain path
+	// frees them too, but only after the next map has already begun loading
+	if ( rw ) {
+		rw->FreeDefs();
 	}
 
 	iamTheDukeActive = false;

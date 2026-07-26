@@ -125,6 +125,12 @@ static void VK_FillGLConfigFromDevice( void ) {
 	glConfig.textureCompressionAvailable = vkCtx.textureCompressionBCSupported;
 	glConfig.bptcTextureCompressionAvailable = vkCtx.textureCompressionBCSupported;
 	glConfig.cubeMapAvailable = true;
+
+	// imagetools keeps a private copy of these per linked binary and gates all
+	// precompressed-DDS selection on it; without this the Vulkan backend would
+	// report BC7 support in gfxInfo while every DDS replacement (and every
+	// retail progimg/ block upload) was silently rejected and re-decoded
+	R_PublishCompressionCapsToImageTools();
 }
 
 /*

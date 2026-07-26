@@ -411,7 +411,16 @@ void idImage::AllocImage() {
 		break;
 	case FMT_BC7:
 		if ( !glConfig.bptcTextureCompressionAvailable ) {
-			idLib::Error( "%s requires BC7/BPTC texture support, but this renderer does not expose it\n", GetName() );
+			// This used to be a fatal idLib::Error raised from inside texture
+			// upload, i.e. in the middle of a map load. Every other BC7 gate in
+			// the tree warns and degrades (R_BinaryImageHeaderSupportedByRenderer,
+			// the lightgrid chunk loader), so match them: an unexpected BC7 image
+			// on a driver without BPTC must cost one texture, not the session.
+			common->Warning( "%s holds BC7/BPTC data but this renderer does not expose BPTC; uploading as uncompressed RGBA8", GetName() );
+			internalFormat = GL_RGBA8;
+			dataFormat = GL_RGBA;
+			dataType = GL_UNSIGNED_BYTE;
+			break;
 		}
 		internalFormat = GL_COMPRESSED_RGBA_BPTC_UNORM;
 		dataFormat = GL_RGBA;

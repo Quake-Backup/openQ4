@@ -154,6 +154,54 @@ static bool openQ4_GetMSADPCMDecodedSize( const uint32_t encodedBytes, const uin
 	return true;
 }
 
+/*
+========================
+SoundSample_AppendUniqueSampleVariant
+========================
+*/
+static void SoundSample_AppendUniqueSampleVariant( idList< idStr >& variants, const idStr& name )
+{
+	for( int i = 0; i < variants.Num(); i++ )
+	{
+		// Icmp so the probe list does not gain a duplicate entry on
+		// case-insensitive hosts while still being correct on Linux
+		if( variants[ i ].Icmp( name ) == 0 )
+		{
+			return;
+		}
+	}
+	variants.Append( name );
+}
+
+/*
+========================
+SoundSample_AppendLocalizedVOVariants
+
+Sound shaders reference the unlocalized 'sound/vo/...' path, but the retail
+data only ships voice-over under a per-language tree. Add both spellings retail
+used for a given language.
+========================
+*/
+static void SoundSample_AppendLocalizedVOVariants( idList< idStr >& variants, const idStr& baseName, const char* language )
+{
+	if( language == NULL || language[ 0 ] == '\0' )
+	{
+		return;
+	}
+
+	idStr localized = baseName;
+	if( localized.Replace( "/vo/", va( "/vo_%s/", language ) ) )
+	{
+		SoundSample_AppendUniqueSampleVariant( variants, localized );
+	}
+
+	localized = baseName;
+	if( localized.Replace( "/vo/", va( "/vo/%s/", language ) ) )
+	{
+		SoundSample_AppendUniqueSampleVariant( variants, localized );
+	}
+}
+
 static bool openQ4_CanUploadSampleToOpenAL()
 {
 	ALCcontext* const expectedContext = soundSystemLocal.hardware.GetOpenALContext();
@@ -388,29 +436,17 @@ void idSoundSample_OpenAL::LoadResource()
 	idStr baseSampleName = GetName();
 	if( baseSampleName.Find( "/vo/" ) >= 0 )
 	{
-		const char *language = sys_lang.GetString();
-		if( language && language[ 0 ] ) {
-			idStr localizedSampleName = baseSampleName;
-			if( localizedSampleName.Replace( "/vo/", va( "/vo_%s/", language ) ) ) {
-				sampleVariants.Append( localizedSampleName );
-			}
+		SoundSample_AppendLocalizedVOVariants( sampleVariants, baseSampleName, sys_lang.GetString() );
 
-			localizedSampleName = baseSampleName;
-			if( localizedSampleName.Replace( "/vo/", va( "/vo/%s/", language ) ) ) {
-				bool duplicateVariant = false;
-				for ( int j = 0; j < sampleVariants.Num(); j++ ) {
-					if ( sampleVariants[ j ] == localizedSampleName ) {
-						duplicateVariant = true;
-						break;
-					}
-				}
-				if ( !duplicateVariant ) {
-					sampleVariants.Append( localizedSampleName );
-				}
-			}
-		}
+		// Retail Quake 4 resolves the voice-over language separately from the
+		// text language (idSoundSample::Load -> SoundSample_SelectVOLanguage)
+		// and falls back to English for any language that ships localized
+		// subtitles but no localized voice track. Without this a text-only
+		// language pack silences every line of dialogue while lip-sync, which
+		// is driven from the decl rather than the sample, keeps animating.
+		SoundSample_AppendLocalizedVOVariants( sampleVariants, baseSampleName, "english" );
 	}
-	sampleVariants.Append( baseSampleName );
+	SoundSample_AppendUniqueSampleVariant( sampleVariants, baseSampleName );
 
 	for( int i = 0; i < sampleVariants.Num(); i++ )
 	{
@@ -492,6 +528,23 @@ void idSoundSample_OpenAL::LoadResource()
 
 	if( !loaded )
 	{
+		// Retail warns unconditionally here (idSoundSample::Load). Without it a
+		// sample that resolves to nothing is completely invisible in the log,
+		// which is how "no character audio at all" reports end up undiagnosable.
+		// Name every path probed: for voice-over the probe list is rewritten
+		// from the shader's unlocalized 'sound/vo/...' name, so the failing
+		// filename is not the one the material author wrote.
+		idStr probed;
+		for( int i = 0; i < sampleVariants.Num(); i++ )
+		{
+			if( i > 0 )
+			{
+				probed += ", ";
+			}
+			probed += sampleVariants[ i ];
+		}
+		idLib::Warning( "Couldn't load sound '%s' using default (probed: %s)", GetName(), probed.c_str() );
+
 		// make it default if everything else fails
 		MakeDefault();
 	}

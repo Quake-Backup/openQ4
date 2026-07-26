@@ -3677,8 +3677,12 @@ int Lexer::ReadToken(idToken *token)
 								unreadSize = sizeof(int);
 								break;
 							default:
-								// invalid stored size for an integer
-								assert(false);
+								// Fail the read rather than asserting: release builds
+								// compile asserts out, and falling through here leaves
+								// unreadSize at 0, which desynchronizes every later
+								// token in the binary stream.
+								idLib::Warning( "binary lexer: invalid stored size %u for an integer token", (unsigned int)size );
+								return 0;
 							}
 
 							const int signedValue = static_cast<int>( token->intvalue );
@@ -3712,8 +3716,10 @@ int Lexer::ReadToken(idToken *token)
 								unreadSize = sizeof(unsigned int);
 								break;
 							default:
-								// invalid stored size for an unsigned integer
-								assert(false);
+								// see the signed-integer case: an unhandled stored size
+								// must fail the read, not silently consume zero bytes
+								idLib::Warning( "binary lexer: invalid stored size %u for an unsigned integer token", (unsigned int)size );
+								return 0;
 							}
 							token->floatvalue = token->intvalue;
 
@@ -3751,7 +3757,10 @@ int Lexer::ReadToken(idToken *token)
 								unreadSize = sizeof(signed char);
 								break;
 							default:
-								assert(false);
+								// see the signed-integer case: an unhandled stored size
+								// must fail the read, not silently consume zero bytes
+								idLib::Warning( "binary lexer: invalid stored size %u for a float token", (unsigned int)size );
+								return 0;
 							}
 
 							// I hate the fact that I have to copy into the string, but there's no way
@@ -3788,7 +3797,10 @@ int Lexer::ReadToken(idToken *token)
 								unreadSize = sizeof(signed char);
 								break;
 							default:
-								assert(false);
+								// see the signed-integer case: an unhandled stored size
+								// must fail the read, not silently consume zero bytes
+								idLib::Warning( "binary lexer: invalid stored size %u for a double token", (unsigned int)size );
+								return 0;
 							}
 
 							// I hate the fact that I have to copy into the string, but there's no way
@@ -3802,8 +3814,10 @@ int Lexer::ReadToken(idToken *token)
 				break;
 
 			default:
-				// unsupported binary type
-				assert(false);
+				// unsupported binary type; fail the read rather than returning a
+				// token that was never populated and advancing by a bogus size
+				idLib::Warning( "binary lexer: unsupported binary token type in '%s'", GetFileName() );
+				return 0;
 			}
 		}
 

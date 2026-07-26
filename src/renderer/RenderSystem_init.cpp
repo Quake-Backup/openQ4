@@ -914,6 +914,25 @@ static void R_RendererModernGLSubmitPlanSelfTest_f( const idCmdArgs &args ) {
 
 /*
 ==================
+R_PublishCompressionCapsToImageTools
+
+imagetools is a static library, so every binary that links it (the engine, and
+each renderer module) owns a private copy of the capability block that gates
+precompressed-DDS selection. Any backend that fills glConfig must therefore
+publish through here, and the engine must republish into its own copy once the
+renderer reports its configuration - otherwise the un-published copies stay
+zero-initialized and silently reject every DDS replacement, BC7 included.
+==================
+*/
+void R_PublishCompressionCapsToImageTools( void ) {
+	imageToolsCompressionCaps_t compressionCaps;
+	compressionCaps.textureCompressionAvailable = glConfig.textureCompressionAvailable;
+	compressionCaps.bptcTextureCompressionAvailable = glConfig.bptcTextureCompressionAvailable;
+	ImageTools_SetCompressionCaps( compressionCaps );
+}
+
+/*
+==================
 R_CheckPortableExtensions
 
 ==================
@@ -1013,12 +1032,7 @@ static void R_CheckPortableExtensions( void ) {
 
 	// push the compression capabilities into the shared imagetools library,
 	// which gates precompressed-DDS selection without reading renderer globals
-	{
-		imageToolsCompressionCaps_t compressionCaps;
-		compressionCaps.textureCompressionAvailable = glConfig.textureCompressionAvailable;
-		compressionCaps.bptcTextureCompressionAvailable = glConfig.bptcTextureCompressionAvailable;
-		ImageTools_SetCompressionCaps( compressionCaps );
-	}
+	R_PublishCompressionCapsToImageTools();
 
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicAvailable = R_CheckExtension( "GL_EXT_texture_filter_anisotropic" );
@@ -4201,11 +4215,13 @@ void idRenderSystemLocal::Shutdown( void ) {
 	// free frame memory
 	R_ShutdownFrameData();
 
-	// The dedicated renderer never creates an OpenGL context or initializes the
-	// vertex-cache list sentinels. Only tear the cache down after InitOpenGL.
-	if ( glConfig.isInitialized ) {
-		vertexCache.Shutdown();
-	}
+	// idVertexCache::Shutdown() is a no-op until Init() has linked its list
+	// sentinels, so this is safe on the dedicated renderer (which never creates
+	// a context) and on an early-startup teardown. Do not re-add a
+	// glConfig.isInitialized guard here: ShutdownOpenGL() clears that flag
+	// without touching the cache, so a guarded call would leak every buffer
+	// after a vid_restart teardown.
+	vertexCache.Shutdown();
 
 	R_ShutdownTriSurfData();
 

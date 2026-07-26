@@ -1139,12 +1139,65 @@ bool idAASFileLocal::ParseClusters( idLexer &src ) {
 idAASFileLocal::FinishAreas
 ================
 */
+// upward probe length used to find the ceiling above a floor area
+static const float	AAS_FLOOR_CEILING_TRACE_HEIGHT		= 500.0f;
+// far-above probe that PushPointIntoAreaNum() clamps down to a volume's top
+static const float	AAS_NONFLOOR_CEILING_PROBE_Z		= 131072.0f;
+static const int	AAS_CEILING_TRACE_MAX_AREAS			= 10;
+
 void idAASFileLocal::FinishAreas( void ) {
 	int i;
+
+	// A file with fewer than two areas carries no usable navigation volume;
+	// deriving from it would trace against a degenerate tree. Zero the derived
+	// fields and stop, matching the original engine.
+	if ( areas.Num() < 2 ) {
+		for ( i = 0; i < areas.Num(); i++ ) {
+			areas[i].center.Zero();
+			areas[i].bounds.Clear();
+			areas[i].ceiling = 0.0f;
+		}
+		return;
+	}
 
 	for ( i = 0; i < areas.Num(); i++ ) {
 		areas[i].center = AreaReachableGoal( i );
 		areas[i].bounds = AreaBounds( i );
+	}
+
+	// aasArea_t::ceiling is not an editor-only leftover: the game surfaces it
+	// through idAASLocal::AreaCeiling(), which clamps flying-AI movement and
+	// bounds tether goal searches. It is not stored in the file, so failing to
+	// derive it here left every area reporting a ceiling of 0 and broke both.
+	for ( i = 0; i < areas.Num(); i++ ) {
+		if ( areas[i].flags & AREA_FLOOR ) {
+			aasTrace_t	trace;
+			int			traceAreas[AAS_CEILING_TRACE_MAX_AREAS];
+			idVec3		tracePoints[AAS_CEILING_TRACE_MAX_AREAS];
+			idVec3		end;
+
+			trace.areas = traceAreas;
+			trace.points = tracePoints;
+			trace.maxAreas = AAS_CEILING_TRACE_MAX_AREAS;
+
+			end = areas[i].center;
+			end.z += AAS_FLOOR_CEILING_TRACE_HEIGHT;
+
+			Trace( trace, areas[i].center, end );
+			areas[i].ceiling = trace.endpos.z;
+
+			// stop at the first point where the probe left this area
+			for ( int j = 0; j < trace.numAreas; j++ ) {
+				if ( trace.areas[j] != i ) {
+					areas[i].ceiling = trace.points[j].z;
+					break;
+				}
+			}
+		} else {
+			idVec3 point( 0.0f, 0.0f, AAS_NONFLOOR_CEILING_PROBE_Z );
+			PushPointIntoAreaNum( i, point );
+			areas[i].ceiling = point.z;
+		}
 	}
 }
 

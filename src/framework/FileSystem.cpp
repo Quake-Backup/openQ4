@@ -1399,6 +1399,7 @@ private:
 	bool					IsOpenQ4PurePack( const pack_t *pak ) const;
 	pack_t *				FindGamePackByName( const char *name, const char *gameDir ) const;
 	pack_t *				FindBaseGamePackByName( const char *name ) const;
+	void					PrintContentSearchDiagnostics( void );
 	bool					FindMisplacedOfficialPaks( idStr &errors ) const;
 	bool					ValidateOpenQ4Paks( idStr &errors ) const;
 	bool					ValidateRequiredOfficialPaks( idStr &errors ) const;
@@ -4825,6 +4826,73 @@ bool idFileSystemLocal::ValidateRequiredOfficialPaks( idStr &errors ) const {
 
 /*
 ===============
+idFileSystemLocal::PrintContentSearchDiagnostics
+
+The startup content checks abort the engine, so the log must say where the
+engine actually looked and what it found there. Without this the user only
+learns that something is "missing or modified"; the dominant Linux cause is a
+case-mismatched 'q4base'/'pakNNN.pk4' tree copied from a Windows install, which
+no amount of checksum text can reveal.
+===============
+*/
+void idFileSystemLocal::PrintContentSearchDiagnostics( void ) {
+	const char *roots[ 3 ];
+	const char *rootNames[ 3 ];
+	const char *dirs[ 2 ];
+	idStrList	found;
+	idStr		osPath;
+	int			i, j, k;
+
+	roots[ 0 ] = fs_basepath.GetString();	rootNames[ 0 ] = "fs_basepath";
+	roots[ 1 ] = fs_savepath.GetString();	rootNames[ 1 ] = "fs_savepath";
+	roots[ 2 ] = fs_cdpath.GetString();		rootNames[ 2 ] = "fs_cdpath";
+
+	dirs[ 0 ] = BASE_GAMEDIR;
+	dirs[ 1 ] = OPENQ4_GAMEDIR;
+
+	common->Printf( "----- content search diagnostics -----\n" );
+	common->Printf( "fs_game      = '%s'\n", fs_game.GetString() );
+	common->Printf( "fs_game_base = '%s'\n", fs_game_base.GetString() );
+
+	for ( i = 0; i < 3; i++ ) {
+		if ( roots[ i ] == NULL || roots[ i ][ 0 ] == '\0' ) {
+			common->Printf( "%s = <unset>\n", rootNames[ i ] );
+			continue;
+		}
+		common->Printf( "%s = '%s'\n", rootNames[ i ], roots[ i ] );
+
+		for ( j = 0; j < 2; j++ ) {
+			// skip a duplicate root rather than listing the same tree twice
+			for ( k = 0; k < i; k++ ) {
+				if ( roots[ k ] != NULL && roots[ k ][ 0 ] != '\0' && idStr::Icmp( roots[ k ], roots[ i ] ) == 0 ) {
+					break;
+				}
+			}
+			if ( k < i ) {
+				continue;
+			}
+
+			osPath = BuildOSPath( roots[ i ], dirs[ j ], "" );
+			osPath.StripTrailing( '/' );
+			osPath.StripTrailing( '\\' );
+
+			found.Clear();
+			if ( ListOSFiles( osPath, ".pk4", found ) == -1 ) {
+				common->Printf( "   %s: directory not found (note: paths are case sensitive on Linux)\n", osPath.c_str() );
+				continue;
+			}
+
+			common->Printf( "   %s: %d pk4 file(s)\n", osPath.c_str(), found.Num() );
+			for ( k = 0; k < found.Num(); k++ ) {
+				common->Printf( "      %s\n", found[ k ].c_str() );
+			}
+		}
+	}
+	common->Printf( "-------------------------------------\n" );
+}
+
+/*
+===============
 idFileSystemLocal::FollowDependencies
 ===============
 */
@@ -4889,6 +4957,7 @@ void idFileSystemLocal::Startup( void ) {
 		 idStr::Icmp( fs_game.GetString(), BASE_GAMEDIR ) &&
 		 !ValidateConfiguredGameDir( fs_game.GetString(), &invalidReason ) ) {
 		if ( !idStr::Icmp( fs_game.GetString(), OPENQ4_GAMEDIR ) ) {
+			PrintContentSearchDiagnostics();
 			common->FatalError(
 				"openQ4 runtime directory '%s' is missing a compatible mod.json.\n\n%s\n"
 				"Rebuild or reinstall openQ4 so '<openQ4 package root>/%s/mod.json' is present and matches this engine version. Do not replace '%s' with retail Quake 4 assets.",
@@ -4927,6 +4996,7 @@ void idFileSystemLocal::Startup( void ) {
 
 	idStr openQ4PakErrors;
 	if ( !ValidateOpenQ4Paks( openQ4PakErrors ) ) {
+		PrintContentSearchDiagnostics();
 		common->FatalError(
 			"openQ4 runtime content packs in '%s' are missing or modified.\n\n%s\n"
 			"Rebuild or reinstall openQ4 so '<openQ4 package root>/%s/pak0.pk4' and '<openQ4 package root>/%s/pak1.pk4' match this engine. Retail Quake 4 PK4s belong in '%s', not '%s'.",
@@ -4936,6 +5006,7 @@ void idFileSystemLocal::Startup( void ) {
 	if ( fs_validateOfficialPaks.GetBool() ) {
 		idStr misplacedErrors;
 		if ( FindMisplacedOfficialPaks( misplacedErrors ) ) {
+			PrintContentSearchDiagnostics();
 			common->FatalError(
 				"Retail Quake 4 media pk4 files must be installed in '%s', not '%s'.\n\n%s\n"
 				"Move the listed files into '<Quake 4 install root>/%s', or remove them from '%s' and launch with +set fs_basepath pointing at a Quake 4 install root that contains '%s'. "
@@ -4945,6 +5016,7 @@ void idFileSystemLocal::Startup( void ) {
 
 		idStr validationErrors;
 		if ( !ValidateRequiredOfficialPaks( validationErrors ) ) {
+			PrintContentSearchDiagnostics();
 			common->FatalError(
 				"Required official Quake 4 media pk4 files are missing from '%s' or modified.\n\n%s\n"
 				"openQ4 reads the retail Quake 4 assets from '<Quake 4 install root>/%s'. Put pak001.pk4 through pak022.pk4 in that folder, or launch with +set fs_basepath pointing at the install root that contains it. "

@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 //#include "../renderer/Image.h"
 #include "../bse/BSE_API.h"
+#include "../imagetools/ImageTools.h"
 #include "../renderer/RendererModule.h"
 #include "RenderDoc.h"
 
@@ -1254,7 +1255,24 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 		// full screen rendering window covering the
 		// error dialog
 		if ( com_errorEntered == ERP_FATAL ) {
-			Sys_Quit();
+			// A second error raised while unwinding a fatal error used to call
+			// Sys_Quit() here, which exits with EXIT_SUCCESS and prints nothing:
+			// the original fatal message never reached the log, the shell saw a
+			// clean exit, and the user was left with a truncated log ending at
+			// whichever teardown step tripped over uninitialized state.
+			// Report both messages and exit through the fatal path instead.
+			char secondary[ sizeof( errorMessage ) ];
+			va_list argptr2;
+
+			va_start( argptr2, fmt );
+			idStr::vsnPrintf( secondary, sizeof( secondary ), fmt, argptr2 );
+			va_end( argptr2 );
+			secondary[ sizeof( secondary ) - 1 ] = '\0';
+
+			Sys_Printf( "FATAL: %s\n", errorMessage );
+			Sys_Printf( "FATAL: secondary error while shutting down: %s\n", secondary );
+
+			Sys_Error( "%s (secondary error while shutting down: %s)", errorMessage, secondary );
 		}
 		code = ERP_FATAL;
 	}
@@ -1342,8 +1360,10 @@ void idCommonLocal::FatalError( const char *fmt, ... ) {
 
 		Sys_Printf( "%s\n", errorMessage );
 
-		// write the console to a log file?
-		Sys_Quit();
+		// exit through the fatal path rather than Sys_Quit(): Sys_Quit() reports
+		// EXIT_SUCCESS and writes no durable record, so a recursed fatal used to
+		// look like a clean shutdown to the shell and to support tooling
+		Sys_Error( "%s", errorMessage );
 	}
 	com_errorEntered = ERP_FATAL;
 
@@ -2275,7 +2295,9 @@ void Com_ExecMachineSpec_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarInteger( "image_downSizeBump", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "image_downSizeSpecularLimit", 64, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "image_downSizeBumpLimit", 256, CVAR_ARCHIVE );
-		cvarSystem->SetCVarInteger( "image_usePrecompressedTextures", 0, CVAR_ARCHIVE );
+		// keep DDS replacements enabled at the top spec; in openQ4 this cvar also
+		// gates user-supplied replacement packs, not just the stock progimg tree
+		cvarSystem->SetCVarInteger( "image_usePrecompressedTextures", 1, CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "image_downSize", 0, CVAR_ARCHIVE );
 		cvarSystem->SetCVarString( "image_filter", "GL_LINEAR_MIPMAP_LINEAR", CVAR_ARCHIVE );
 		cvarSystem->SetCVarInteger( "image_anisotropy", 16, CVAR_ARCHIVE );
@@ -2475,9 +2497,14 @@ static const openQ4PerformancePreset_t OPENQ4_PERFORMANCE_PRESETS[] = {
 		8, 0, 0, 0, 1, 0,
 		0, 1024, 0, 0, 0, 0, 0, 0, 1, 32, 4,
 		6, 1, 48 },
+	// image_usePrecompressedTextures stays at 1 here even though retail's top
+	// machine spec used 0. In openQ4 that cvar also gates user-supplied DDS
+	// replacement packs, so 0 silently discarded a player's high-resolution BC7
+	// art the moment they touched the settings menu - the reverse of what the
+	// highest preset should do.
 	{ "ultra", 3, "high-end",
 		100, 8, 1, 240,
-		16, 0, 0, 0, 0, 0,
+		16, 0, 0, 0, 1, 0,
 		0, 2048, 0, 0, 0, 0, 0, 0, 1, 32, 4,
 		6, 1, 48 }
 };
@@ -3172,7 +3199,7 @@ static bool Common_ValidatePerformancePresetIntent( const openQ4PerformancePrese
 		passed &= Common_PerformancePresetCheckExpectedInt( preset, "r_screenFraction", preset.screenFraction, 100 );
 		passed &= Common_PerformancePresetCheckIntAtLeast( preset, "r_multiSamples", preset.multiSamples, 8 );
 		passed &= Common_PerformancePresetCheckExpectedInt( preset, "image_anisotropy", preset.anisotropy, 16 );
-		passed &= Common_PerformancePresetCheckExpectedInt( preset, "image_usePrecompressedTextures", preset.usePrecompressedTextures, 0 );
+		passed &= Common_PerformancePresetCheckExpectedInt( preset, "image_usePrecompressedTextures", preset.usePrecompressedTextures, 1 );
 		passed &= Common_PerformancePresetCheckIntAtLeast( preset, "r_rendererUploadMegs", preset.uploadMegs, 32 );
 		passed &= Common_PerformancePresetCheckRestoredAudio( preset );
 	} else {
@@ -4723,6 +4750,21 @@ void idCommonLocal::InitRenderSystem( void ) {
 	}
 
 	renderSystem->InitOpenGL();
+
+	// imagetools is a static library, so the executable and the renderer module
+	// each hold a private copy of the texture-compression capability block that
+	// gates precompressed-DDS selection. The renderer publishes into its own
+	// copy during context bring-up; mirror it into ours or engine-side image
+	// loads (material types, the session, GUI widgets) silently reject every DDS
+	// replacement and CPU-decode compressed data the GPU could take directly.
+	if ( renderSystem->IsOpenGLRunning() ) {
+		const glconfig_t &rendererConfig = renderSystem->GetGLConfig();
+		imageToolsCompressionCaps_t compressionCaps;
+		compressionCaps.textureCompressionAvailable = rendererConfig.textureCompressionAvailable;
+		compressionCaps.bptcTextureCompressionAvailable = rendererConfig.bptcTextureCompressionAvailable;
+		ImageTools_SetCompressionCaps( compressionCaps );
+	}
+
 	PrintLoadingMessage( common->GetLanguageDict()->GetString( "#str_104343" ) );
 }
 
