@@ -46,7 +46,7 @@ idCVar image_showPrecompressedTextures(
 	"image_showPrecompressedTextures",
 	"0",
 	CVAR_RENDERER | CVAR_BOOL,
-	"log the exact DDS replacement selected for each image" );
+	"log the DDS replacement selected for each image, and every candidate path rejected when none is selected" );
 
 /*
 
@@ -999,7 +999,11 @@ static bool R_ImageHasRetailProgramDDSName( const char *imageProgram ) {
 	return sourceName.IcmpPrefix( "gfx/env/" ) == 0;
 }
 
-static bool R_TryResolvePreferredDDSImageSource( const idStr &candidateName, idStr &ddsName, ID_TIME_T *timestamp, bool allowPrecompressedDDS, bool *precompressedDDS ) {
+static bool R_TryResolvePreferredDDSImageSource( const idStr &candidateName, idStr &ddsName, ID_TIME_T *timestamp, bool allowPrecompressedDDS, bool *precompressedDDS, const char **rejectReason = NULL ) {
+	if ( rejectReason != NULL ) {
+		*rejectReason = "no such file";
+	}
+
 	ID_TIME_T ddsTimestamp = FILE_NOT_FOUND_TIMESTAMP;
 	ddsFileInfo_t info;
 	if ( !R_ReadDDSFileInfo( candidateName.c_str(), info, &ddsTimestamp ) ) {
@@ -1011,6 +1015,9 @@ static bool R_TryResolvePreferredDDSImageSource( const idStr &candidateName, idS
 		 info.format == DDS_STORED_FORMAT_DXT5 ||
 		 info.format == DDS_STORED_FORMAT_RXGB ) {
 		if ( usePrecompressedTextures >= 2 ) {
+			if ( rejectReason != NULL ) {
+				*rejectReason = "DXT/RXGB data ignored because image_usePrecompressedTextures is 2 (BC7 only)";
+			}
 			return false;
 		}
 		ddsName = candidateName;
@@ -1024,7 +1031,16 @@ static bool R_TryResolvePreferredDDSImageSource( const idStr &candidateName, idS
 	}
 
 	if ( info.format == DDS_STORED_FORMAT_BC7 ) {
-		if ( !allowPrecompressedDDS || !ImageTools_GetCompressionCaps().bptcTextureCompressionAvailable ) {
+		if ( !allowPrecompressedDDS ) {
+			if ( rejectReason != NULL ) {
+				*rejectReason = "BC7 data, but this image is an image-program input that must be decoded on the CPU";
+			}
+			return false;
+		}
+		if ( !ImageTools_GetCompressionCaps().bptcTextureCompressionAvailable ) {
+			if ( rejectReason != NULL ) {
+				*rejectReason = "BC7 data, but the active renderer reports no BPTC support";
+			}
 			return false;
 		}
 		ddsName = candidateName;
@@ -1037,7 +1053,70 @@ static bool R_TryResolvePreferredDDSImageSource( const idStr &candidateName, idS
 		return true;
 	}
 
+	if ( rejectReason != NULL ) {
+		*rejectReason = "unsupported DDS pixel format";
+	}
 	return false;
+}
+
+static void R_AppendDDSCandidate( idStrList &candidates, idStrList &origins, const idStr &name, const char *origin ) {
+	if ( name.Length() == 0 ) {
+		return;
+	}
+	for ( int i = 0; i < candidates.Num(); i++ ) {
+		if ( candidates[i].Icmp( name ) == 0 ) {
+			return;
+		}
+	}
+	candidates.Append( name );
+	origins.Append( idStr( origin ) );
+}
+
+/*
+=============
+R_BuildDDSCandidates
+
+Ordered list of DDS files that may stand in for an image source. User-supplied
+replacements are probed before the retail progimg/ tree: the retail tree exists
+for nearly every image-program result, so probing it first made a user's dds/
+pack a silent no-op for every bump map and most speculars.
+=============
+*/
+static void R_BuildDDSCandidates( const char *cname, idStrList &candidates, idStrList &origins ) {
+	idStr canonicalDDSName;
+	R_ImageProgramToCompressedFileName( cname, canonicalDDSName );
+	R_AppendDDSCandidate( candidates, origins, canonicalDDSName, "dds/ (dhewm3 naming)" );
+
+	if ( R_IsPlainImageSourceName( cname ) ) {
+		idStr sourceName = cname;
+		sourceName.DefaultFileExtension( ".tga" );
+		sourceName.BackSlashesToSlashes();
+		sourceName.ToLower();
+
+		idStr ext;
+		sourceName.ExtractFileExtension( ext );
+		if ( ext == "tga" || ext == "jpg" ) {
+			if ( !R_ImageNameHasDDSShadowPrefix( sourceName ) ) {
+				idStr shadowDDSName = "dds/";
+				shadowDDSName += sourceName;
+				shadowDDSName.StripFileExtension();
+				shadowDDSName.DefaultFileExtension( ".dds" );
+				R_AppendDDSCandidate( candidates, origins, shadowDDSName, "dds/ (asset path)" );
+			}
+
+			idStr siblingDDSName = sourceName;
+			siblingDDSName.StripFileExtension();
+			siblingDDSName.DefaultFileExtension( ".dds" );
+			R_AppendDDSCandidate( candidates, origins, siblingDDSName, "alongside the original asset (Quake 4 style)" );
+		}
+	}
+
+	// stock retail data last, so any user replacement wins
+	if ( R_ImageHasRetailProgramDDSName( cname ) ) {
+		idStr retailDDSName;
+		R_ImageProgramToRetailCompressedFileName( cname, retailDDSName );
+		R_AppendDDSCandidate( candidates, origins, retailDDSName, "retail progimg/" );
+	}
 }
 
 /*
@@ -1060,53 +1139,30 @@ bool R_ResolvePreferredDDSImageSource( const char *cname, idStr &ddsName, ID_TIM
 		return false;
 	}
 
-	if ( R_ImageHasRetailProgramDDSName( cname ) ) {
-		idStr retailDDSName;
-		R_ImageProgramToRetailCompressedFileName( cname, retailDDSName );
-		if ( R_TryResolvePreferredDDSImageSource( retailDDSName, ddsName, timestamp, allowPrecompressedDDS, precompressedDDS ) ) {
+	idStrList candidates;
+	idStrList origins;
+	R_BuildDDSCandidates( cname, candidates, origins );
+
+	const bool logMisses = image_showPrecompressedTextures.GetBool();
+	idStr rejections;
+
+	for ( int i = 0; i < candidates.Num(); i++ ) {
+		const char *rejectReason = NULL;
+		if ( R_TryResolvePreferredDDSImageSource( candidates[i], ddsName, timestamp, allowPrecompressedDDS, precompressedDDS, &rejectReason ) ) {
 			return true;
+		}
+		if ( logMisses ) {
+			rejections += va( "   %-64s [%s] %s\n", candidates[i].c_str(), origins[i].c_str(),
+				rejectReason != NULL ? rejectReason : "rejected" );
 		}
 	}
 
-	idStr canonicalDDSName;
-	R_ImageProgramToCompressedFileName( cname, canonicalDDSName );
-	if ( R_TryResolvePreferredDDSImageSource( canonicalDDSName, ddsName, timestamp, allowPrecompressedDDS, precompressedDDS ) ) {
-		return true;
+	if ( logMisses && candidates.Num() > 0 ) {
+		// a miss is what needs explaining; logging only hits leaves a pack
+		// author with no way to discover the name the engine expects
+		idLib::Printf( "no DDS replacement for '%s':\n%s", cname, rejections.c_str() );
 	}
-
-	if ( !R_IsPlainImageSourceName( cname ) ) {
-		return false;
-	}
-
-	idStr sourceName = cname;
-	sourceName.DefaultFileExtension( ".tga" );
-	sourceName.BackSlashesToSlashes();
-	sourceName.ToLower();
-
-	idStr ext;
-	sourceName.ExtractFileExtension( ext );
-	if ( ext != "tga" && ext != "jpg" ) {
-		return false;
-	}
-
-	if ( !R_ImageNameHasDDSShadowPrefix( sourceName ) ) {
-		idStr shadowDDSName = "dds/";
-		shadowDDSName += sourceName;
-		shadowDDSName.StripFileExtension();
-		shadowDDSName.DefaultFileExtension( ".dds" );
-		if ( canonicalDDSName.Icmp( shadowDDSName ) != 0 &&
-			 R_TryResolvePreferredDDSImageSource( shadowDDSName, ddsName, timestamp, allowPrecompressedDDS, precompressedDDS ) ) {
-			return true;
-		}
-	}
-
-	idStr siblingDDSName = sourceName;
-	siblingDDSName.StripFileExtension();
-	siblingDDSName.DefaultFileExtension( ".dds" );
-	if ( canonicalDDSName.Icmp( siblingDDSName ) == 0 ) {
-		return false;
-	}
-	return R_TryResolvePreferredDDSImageSource( siblingDDSName, ddsName, timestamp, allowPrecompressedDDS, precompressedDDS );
+	return false;
 }
 
 /*
@@ -1191,9 +1247,15 @@ bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T 
 			break;
 		}
 
+		// RXGB and DXT5nm store the normal's X in alpha because DXT5 gives alpha
+		// its own higher-precision interpolator; the renderer then skips the
+		// alpha<-red swizzle and the interaction shader reads X straight out of
+		// alpha. BC7 has no such convention - every common encoder writes plain
+		// XYZ in RGB - so forcing that layout on BC7 made ordinary BC7 normal
+		// maps sample X = 1.0 everywhere and flattened all bump lighting.
 		const bool rxgbNormal =
 			info.format == DDS_STORED_FORMAT_RXGB ||
-			( usage == TD_BUMP && ( textureFormat == FMT_DXT5 || textureFormat == FMT_BC7 ) );
+			( usage == TD_BUMP && textureFormat == FMT_DXT5 );
 		const textureColor_t colorFormat = rxgbNormal ? CFM_NORMAL_DXT5 : CFM_DEFAULT;
 		image.Load2DFromCompressedData( selectedWidth, selectedHeight, selectedLevels, textureFormat, colorFormat,
 			buffer, levelOffsets.Ptr() + firstLevel, levelSizes.Ptr() + firstLevel );

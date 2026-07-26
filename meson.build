@@ -1015,6 +1015,18 @@ else
       shared_c_args += aliasing_arg
     endif
   endforeach
+  # GCC/Clang default to -ffp-contract=fast, which fuses a*b+c into an FMA
+  # wherever the target has one. AArch64 always does; the x86-64 SSE2 baseline
+  # openQ4 is validated against does not. That makes identical source produce
+  # different float results per architecture in collision, AAS and physics
+  # code, which is exactly the class of divergence behind arm64-only map and
+  # savegame failures. MSVC already defaults to precise contraction.
+  foreach fp_arg : ['-ffp-contract=off']
+    if cpp.has_argument(fp_arg) and cc.has_argument(fp_arg)
+      shared_cpp_args += fp_arg
+      shared_c_args += fp_arg
+    endif
+  endforeach
 endif
 
 if host_system == 'darwin'

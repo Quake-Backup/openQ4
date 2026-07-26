@@ -361,6 +361,14 @@ the cached data isn't valid
 ===========
 */
 void idVertexCache::PurgeAll() {
+	if ( staticHeaders.next == NULL ) {
+		// Init() has never run, so the list sentinels are not self-linked yet.
+		// Without this the loop condition is immediately true and ActuallyFree()
+		// is handed a NULL block, which raises an error from inside whatever
+		// teardown reached us - typically an early-startup fatal error unwinding
+		// through idRenderSystem::Shutdown() long before R_InitOpenGL() ran.
+		return;
+	}
 	while( staticHeaders.next != &staticHeaders ) {
 		ActuallyFree( staticHeaders.next );
 	}
@@ -372,6 +380,12 @@ idVertexCache::Shutdown
 ===========
 */
 void idVertexCache::Shutdown() {
+	if ( staticHeaders.next == NULL || deferredFreeList.next == NULL ) {
+		// never initialized; the sentinels still hold their zero-initialized
+		// static-storage values and there is nothing to free
+		return;
+	}
+
 	PurgeAll();
 
 	while( deferredFreeList.next != &deferredFreeList ) {

@@ -86,6 +86,7 @@ jobs:
             tools/tests/linux_gui_presentation_defaults.py \
             tools/tests/linux_highdpi_mouse.py \
             tools/tests/linux_appimage_packaging.py \
+            tools/tests/lang_table_encoding.py \
             tools/tests/linux_metadata_fuzz.py \
             tools/tests/linux_packaging_guidance.py \
             tools/tests/linux_sanitizer_ci.py \
@@ -141,6 +142,7 @@ jobs:
             tools/tests/renderer_vulkan_shadow_compatibility.py \
             tools/tests/renderer_vulkan_world_interaction_compatibility.py \
             tools/tests/savegame_corruption_contract.py \
+            tools/tests/savegame_pointer_width_safety.py \
             tools/tests/sdl3_input_parity.py \
             tools/tests/sdl3_multidisplay_windowing.py \
             tools/tests/settings_menu_coverage.py \
@@ -172,6 +174,7 @@ jobs:
           python tools/tests/linux_gui_presentation_defaults.py
           python tools/tests/linux_highdpi_mouse.py
           python tools/tests/linux_appimage_packaging.py
+          python tools/tests/lang_table_encoding.py
           python tools/tests/linux_metadata_fuzz.py
           python tools/tests/linux_packaging_guidance.py
           python tools/tests/linux_pk4_legacy_tools.py
@@ -227,6 +230,7 @@ jobs:
           python tools/tests/renderer_vulkan_shadow_compatibility.py
           python tools/tests/renderer_vulkan_world_interaction_compatibility.py
           python tools/tests/savegame_corruption_contract.py
+          python tools/tests/savegame_pointer_width_safety.py
           python tools/tests/sdl3_input_parity.py
           python tools/tests/sdl3_multidisplay_windowing.py
           python tools/tests/settings_menu_coverage.py

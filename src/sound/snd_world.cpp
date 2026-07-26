@@ -562,8 +562,13 @@ void idSoundWorldLocal::Update()
 	soundSystemLocal.hardware.EndDeferredUpdates();
 	if( showVoices )
 	{
+		// The overlay console this used to draw into does not exist in openQ4,
+		// which left s_showVoices building a table every frame and throwing it
+		// away - i.e. the cvar produced no output at all. Print it instead so
+		// the voice list is actually usable for diagnosing silent sounds.
 //		static idOverlayHandle handle;
 //		console->PrintOverlay( handle, JUSTIFY_LEFT, showVoiceTable.c_str() );
+		idLib::Printf( "%s", showVoiceTable.c_str() );
 	}
 
 	//if( s_drawSounds.GetBool() && renderWorld != NULL )

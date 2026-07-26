@@ -1421,6 +1421,10 @@ const int GLS_DEFAULT							= GLS_DEPTHFUNC_ALWAYS;
 void R_Init( void );
 void R_InitOpenGL( void );
 
+// publish glConfig's compression capabilities into this binary's imagetools
+// copy; every backend that fills glConfig must call it
+void R_PublishCompressionCapsToImageTools( void );
+
 void R_DoneFreeType( void );
 
 void R_SetColorMappings( void );

@@ -71,10 +71,32 @@ def main() -> None:
         '#ifdef ID_DEDICATED\n\tcommon->Printf( "Dedicated server: skipping client GUI preload.\\n" );\n#else',
         "dedicated session client-GUI exclusion",
     )
+    # The dedicated server never creates a context, so idRenderSystem::Shutdown()
+    # tears down a vertex cache that Init() never touched. That used to be
+    # guarded at the call site with glConfig.isInitialized, which was wrong in
+    # both directions: the flag is set before vertexCache.Init() runs, and
+    # ShutdownOpenGL() clears it without freeing the cache. The guard now lives
+    # in idVertexCache itself, keyed off the list sentinels.
+    vertex_cache = read("src/renderer/VertexCache.cpp")
     require(
         renderer,
+        "vertexCache.Shutdown();",
+        "dedicated vertex-cache shutdown",
+    )
+    reject(
+        renderer,
         "if ( glConfig.isInitialized ) {\n\t\tvertexCache.Shutdown();\n\t}",
-        "uninitialized dedicated vertex-cache shutdown guard",
+        "call-site vertex-cache shutdown guard (must live inside idVertexCache)",
+    )
+    require(
+        vertex_cache,
+        "void idVertexCache::PurgeAll() {\n\tif ( staticHeaders.next == NULL ) {",
+        "uninitialized vertex-cache purge guard",
+    )
+    require(
+        vertex_cache,
+        "void idVertexCache::Shutdown() {\n\tif ( staticHeaders.next == NULL || deferredFreeList.next == NULL ) {",
+        "uninitialized vertex-cache shutdown guard",
     )
 
     dedicated_source_block = meson_sources[
