@@ -190,7 +190,7 @@ const char *idChoiceWindow::HandleEvent(const sysEvent_t *event, bool *updateVis
 
 		int potentialChoice = -1;
 		for ( int i = 0; i < choices.Num(); i++ ) {
-			if ( toupper(key) == toupper(choices[i][0]) ) {
+			if ( toupper(key) == toupper( (unsigned char)choices[i][0] ) ) {
 				if ( i < currentChoice && potentialChoice < 0 ) {
 					potentialChoice = i;
 				} else if ( i > currentChoice ) {

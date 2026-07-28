@@ -147,7 +147,7 @@ static void FindMatches( const char *s ) {
 
 	// cut currentMatch to the amount common with s
 	for ( i = 0; s[i]; i++ ) {
-		if ( tolower( globalAutoComplete.currentMatch[i] ) != tolower( s[i] ) ) {
+		if ( tolower( (unsigned char)globalAutoComplete.currentMatch[i] ) != tolower( (unsigned char)s[i] ) ) {
 			globalAutoComplete.currentMatch[i] = 0;
 			break;
 		}

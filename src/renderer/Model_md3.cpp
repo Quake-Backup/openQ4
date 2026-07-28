@@ -152,7 +152,7 @@ void idRenderModelMD3::InitFromFile( const char *fileName ) {
 		// lowercase the surface name so skin compares are faster
 		int slen = (int)strlen( surf->name );
 		for( j = 0; j < slen; j++ ) {
-			surf->name[j] = tolower( surf->name[j] );
+			surf->name[j] = (char)tolower( (unsigned char)surf->name[j] );
 		}
 
 		// strip off a trailing _1 or _2

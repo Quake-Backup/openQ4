@@ -109,21 +109,21 @@ const bool idStr::printableCharacter[256] =
 	true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,
 //  p      q      r      s      t      u      v      w      x      y      z      {      |      }      ~
 	true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  false,
-//  €             X                                                                                                                            S  C                      Œ P         T C         Z C          Z P
+//  ï¿½             X                                                                                                                            S  C                      ï¿½ P         T C         Z C          Z P
 	true,  true,  false, false, false, false, false, false, false, false, true,  false, true,  true,  true,  true,
-//                                                                 ™      s C           œ P    t C    z C    z P 
+//                                                                 ï¿½      s C           ï¿½ P    t C    z C    z P 
 	false, false, false, false, false, false, false, false, false, true,  true,  false, true,  true,  true,  true,
-//         ¡             £ P    ¤      ¥ P           §             ©             «                    ®        P
+//         ï¿½             ï¿½ P    ï¿½      ï¿½ P           ï¿½             ï¿½             ï¿½                    ï¿½        P
 	false, true,  false, true,  true,  true,  false, true,  false, true,  false, true,  false, false, true,  true,
-//  °                    £ P    ´      µ             ·               P           »                           ¿ P
+//  ï¿½                    ï¿½ P    ï¿½      ï¿½             ï¿½               P           ï¿½                           ï¿½ P
 	true,  false, false, true,  true,  true,  false, true,  false, true,  false, true,  false, false, false, true,
-//  À      Á C    Â      Ã      Ä      Å      Æ P    Ç      È C    É C    Ê P    Ë      Ì C    Í C    Î      Ï C
+//  ï¿½      ï¿½ C    ï¿½      ï¿½      ï¿½      ï¿½      ï¿½ P    ï¿½      ï¿½ C    ï¿½ C    ï¿½ P    ï¿½      ï¿½ C    ï¿½ C    ï¿½      ï¿½ C
 	true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,
-//  Ð      Ñ P    Ò C    Ó PC   Ô      Õ      Ö      ×      Ø C    Ù C    Ú C    Û      Ü      Ý C    Þ      ß
+//  ï¿½      ï¿½ P    ï¿½ C    ï¿½ PC   ï¿½      ï¿½      ï¿½      ï¿½      ï¿½ C    ï¿½ C    ï¿½ C    ï¿½      ï¿½      ï¿½ C    ï¿½      ï¿½
 	true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,
-//  à      á C    â      ã      ä      å      æ P    ç      è C    é C    ê P    ë      ì C    í C    î      ï C
+//  ï¿½      ï¿½ C    ï¿½      ï¿½      ï¿½      ï¿½      ï¿½ P    ï¿½      ï¿½ C    ï¿½ C    ï¿½ P    ï¿½      ï¿½ C    ï¿½ C    ï¿½      ï¿½ C
 	true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,
-//  ð      ñ P    ò C    ó PC   ô      õ      ö      ÷      ø C    ù C    ú C    û      ü      ý C    þ      ÿ
+//  ï¿½      ï¿½ P    ï¿½ C    ï¿½ PC   ï¿½      ï¿½      ï¿½      ï¿½      ï¿½ C    ï¿½ C    ï¿½ C    ï¿½      ï¿½      ï¿½ C    ï¿½      ï¿½
 	true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true,
 };
 
@@ -145,22 +145,22 @@ const char idStr::upperCaseCharacter[256] =
 	0,   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
 //  p    q    r    s    t    u    v    w    x    y    z    {    |    }    ~
 	'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 0,   0,   0,   0,   0,
-//  €         X                                                                                        S                   Œ      T        Z
-	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'Š', 0,   'Œ', '', 'Ž', 'Ž',
-//                                               TM   s         œ    t    z 
-	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'Š', 0,   'Œ', '', 'Ž', '',
-//       ¡         £    ¤    ¥         §         ©         «              ®
-	0,   0,   0,   '£', 0,   '¥', 0,   0,   0,   0,   0,   0,   0,   0,   0,   '¿',
-//  °                   ´    µ         ·                   »                   ¿
-	0,   0,   0,   '£', 0,   0,   0,   0,   0,   '¥', 0,   0,   0,   0,   0,   '¿',
-//  À    Á    Â    Ã    Ä    Å    Æ    Ç    È    É    Ê    Ë    Ì    Í    Î    Ï
-	'À', 'Á', 'Â', 'Ã', 'Ä', 'Å', 'Æ', 'Ç', 'È', 'É', 'Ê', 'Ë', 'Ì', 'Í', 'Î', 'Ï',
-//  Ð    Ñ    Ò    Ó    Ô    Õ    Ö    ×    Ø    Ù    Ú    Û    Ü    Ý    Þ    ß
-	'Ð', 'Ñ', 'Ò', 'Ó', 'Ô', 'Õ', 'Ö', 0,   'Ø', 'Ù', 'Ú', 'Û', 'Ü', 'Ý', 'Þ', 'ß',
-//  à    á    â    ã    ä    å    æ    ç    è    é    ê    ë    ì    í    î    ï
-	'À', 'Á', 'Â', 'Ã', 'Ä', 'Å', 'Æ', 'Ç', 'È', 'É', 'Ê', 'Ë', 'Ì', 'Í', 'Î', 'Ï',
-//  ð    ñ    ò    ó    ô    õ    ö    ÷    ø    ù    ú    û    ü    ý    þ    ÿ
-	'Ð', 'Ñ', 'Ò', 'Ó', 'Ô', 'Õ', 'Ö', 0,   'Ø', 'Ù', 'Ú', 'Û', 'Ü', 'Ý', 'Þ', 'ß',
+//  ï¿½         X                                                                                        S                   ï¿½      T        Z
+	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//                                               TM   s         ï¿½    t    z 
+	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//       ï¿½         ï¿½    ï¿½    ï¿½         ï¿½         ï¿½         ï¿½              ï¿½
+	0,   0,   0,   'ï¿½', 0,   'ï¿½', 0,   0,   0,   0,   0,   0,   0,   0,   0,   'ï¿½',
+//  ï¿½                   ï¿½    ï¿½         ï¿½                   ï¿½                   ï¿½
+	0,   0,   0,   'ï¿½', 0,   0,   0,   0,   0,   'ï¿½', 0,   0,   0,   0,   0,   'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
 };
 
 const char idStr::lowerCaseCharacter[256] =
@@ -181,22 +181,22 @@ const char idStr::lowerCaseCharacter[256] =
 	0,   'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
 //  p    q    r    s    t    u    v    w    x    y    z    {    |    }    ~
 	'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0,   0,   0,   0,   0,
-//  €         X                                                                                        S                   Œ      T        Z
-	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'š', 0,   'œ', '', 'ž', 'Ÿ',
-//                                               TM   s         œ    t    z 
-	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'š', 0,   'œ', '', 'ž', 'Ÿ',
-//       ¡         £    ¤    ¥         §         ©         «              ®
-	0,   0,   0,   '³', 0,   '¹', 0,   0,   0,   0,   0,   0,   0,   0,   0,   '¯',
-//  °                   ´    µ         ·                   »                   ¿
-	0,   0,   0,   '³', 0,   0,   0,   0,   0,   '¹', 0,   0,   0,   0,   0,   '¯',
-//  À    Á    Â    Ã    Ä    Å    Æ    Ç    È    É    Ê    Ë    Ì    Í    Î    Ï
-	'à', 'á', 'â', 'ã', 'ä', 'å', 'æ', 'ç', 'è', 'é', 'ê', 'ë', 'ì', 'í', 'î', 'ï',
-//  Ð    Ñ    Ò    Ó    Ô    Õ    Ö    ×    Ø    Ù    Ú    Û    Ü    Ý    Þ    ß
-	'ð', 'ñ', 'ò', 'ó', 'ô', 'õ', 'ö', 0,   'ø', 'ù', 'ú', 'û', 'ü', 'ý', 'þ', 'ß',
-//  à    á    â    ã    ä    å    æ    ç    è    é    ê    ë    ì    í    î    ï
-	'à', 'á', 'â', 'ã', 'ä', 'å', 'æ', 'ç', 'è', 'é', 'ê', 'ë', 'ì', 'í', 'î', 'ï',
-//  ð    ñ    ò    ó    ô    õ    ö    ÷    ø    ù    ú    û    ü    ý    þ    ÿ
-	'ð', 'ñ', 'ò', 'ó', 'ô', 'õ', 'ö', 0,   'ø', 'ù', 'ú', 'û', 'ü', 'ý', 'þ', 'ß',
+//  ï¿½         X                                                                                        S                   ï¿½      T        Z
+	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//                                               TM   s         ï¿½    t    z 
+	0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//       ï¿½         ï¿½    ï¿½    ï¿½         ï¿½         ï¿½         ï¿½              ï¿½
+	0,   0,   0,   'ï¿½', 0,   'ï¿½', 0,   0,   0,   0,   0,   0,   0,   0,   0,   'ï¿½',
+//  ï¿½                   ï¿½    ï¿½         ï¿½                   ï¿½                   ï¿½
+	0,   0,   0,   'ï¿½', 0,   0,   0,   0,   0,   'ï¿½', 0,   0,   0,   0,   0,   'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
+//  ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½    ï¿½
+	'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 0,   'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½', 'ï¿½',
 };
 // RAVEN END
 
@@ -477,7 +477,7 @@ int idStr::FindText( const char *str, const char *text, bool casesensitive, int 
 			}
 		} else {
 			for ( j = 0; text[j]; j++ ) {
-				if ( ::toupper( str[i+j] ) != ::toupper( text[j] ) ) {
+				if ( ::toupper( (unsigned char)str[i+j] ) != ::toupper( (unsigned char)text[j] ) ) {
 					break;
 				}
 			}
@@ -555,7 +555,7 @@ bool idStr::Filter( const char *filter, const char *name, bool casesensitive ) {
 							}
 						}
 						else {
-							if ( ::toupper(*name) >= ::toupper(*filter) && ::toupper(*name) <= ::toupper(*(filter+2)) ) {
+							if ( ::toupper( (unsigned char)*name ) >= ::toupper( (unsigned char)*filter ) && ::toupper( (unsigned char)*name ) <= ::toupper( (unsigned char)*(filter+2) ) ) {
 								found = true;
 							}
 						}
@@ -568,7 +568,7 @@ bool idStr::Filter( const char *filter, const char *name, bool casesensitive ) {
 							}
 						}
 						else {
-							if ( ::toupper(*filter) == ::toupper(*name) ) {
+							if ( ::toupper( (unsigned char)*filter ) == ::toupper( (unsigned char)*name ) ) {
 								found = true;
 							}
 						}
@@ -595,7 +595,7 @@ bool idStr::Filter( const char *filter, const char *name, bool casesensitive ) {
 				}
 			}
 			else {
-				if ( ::toupper(*filter) != ::toupper(*name) ) {
+				if ( ::toupper( (unsigned char)*filter ) != ::toupper( (unsigned char)*name ) ) {
 					return false;
 				}
 			}
@@ -1501,9 +1501,16 @@ idStr::Cmp
 int idStr::Cmp( const char *s1, const char *s2 ) {
 	int c1, c2, d;
 
+	// Every comparison in this family reads through byte rather than through
+	// plain char. char is signed on x86-64 and on Apple/Windows arm64 but
+	// unsigned on Linux AArch64, so reading through char would order any byte
+	// >= 0x80 before the ASCII range on some targets and after it on others.
+	// idDict::Checksum sorts its keys with idStr::Cmp and that checksum is
+	// compared across the network, so collation has to be byte-value ordered
+	// and identical on every platform.
 	do {
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		d = c1 - c2;
 		if ( d ) {
@@ -1525,8 +1532,8 @@ int idStr::Cmpn( const char *s1, const char *s2, int n ) {
 	assert( n >= 0 );
 
 	do {
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		if ( !n-- ) {
 			return 0;		// strings are equal until end point
@@ -1550,8 +1557,8 @@ int idStr::Icmp( const char *s1, const char *s2 ) {
 	int c1, c2, d;
 
 	do {
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		d = c1 - c2;
 		while( d ) {
@@ -1585,8 +1592,8 @@ int idStr::Icmpn( const char *s1, const char *s2, int n ) {
 	assert( n >= 0 );
 
 	do {
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		if ( !n-- ) {
 			return 0;		// strings are equal until end point
@@ -1631,8 +1638,8 @@ int idStr::IcmpNoEscape ( const char *s1, const char *s2 ) {
 			s2 += d;
 		}
 // RAVEN END
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		d = c1 - c2;
 		while( d ) {
@@ -1669,8 +1676,8 @@ int idStr::IcmpPath( const char *s1, const char *s2 ) {
 #endif
 
 	do {
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		d = c1 - c2;
 		while( d ) {
@@ -1703,13 +1710,13 @@ int idStr::IcmpPath( const char *s1, const char *s2 ) {
 				if ( c1 == '/' || c1 == '\\' ) {
 					break;
 				}
-				c1 = *s1++;
+				c1 = static_cast<byte>( *s1++ );
 			}
 			while( c2 ) {
 				if ( c2 == '/' || c2 == '\\' ) {
 					break;
 				}
-				c2 = *s2++;
+				c2 = static_cast<byte>( *s2++ );
 			}
 			if ( c1 && !c2 ) {
 				return -1;
@@ -1740,8 +1747,8 @@ int idStr::IcmpnPath( const char *s1, const char *s2, int n ) {
 	assert( n >= 0 );
 
 	do {
-		c1 = *s1++;
-		c2 = *s2++;
+		c1 = static_cast<byte>( *s1++ );
+		c2 = static_cast<byte>( *s2++ );
 
 		if ( !n-- ) {
 			return 0;		// strings are equal until end point
@@ -1778,13 +1785,13 @@ int idStr::IcmpnPath( const char *s1, const char *s2, int n ) {
 				if ( c1 == '/' || c1 == '\\' ) {
 					break;
 				}
-				c1 = *s1++;
+				c1 = static_cast<byte>( *s1++ );
 			}
 			while( c2 ) {
 				if ( c2 == '/' || c2 == '\\' ) {
 					break;
 				}
-				c2 = *s2++;
+				c2 = static_cast<byte>( *s2++ );
 			}
 			if ( c1 && !c2 ) {
 				return -1;
