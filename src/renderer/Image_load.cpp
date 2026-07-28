@@ -343,6 +343,15 @@ name contains GetName() upon entry
 	_name.StripFileExtension();
 
 	_name += va( "#__%02d%02d", (int)_usage, (int)_cube );
+	if ( _cube != CF_2D ) {
+		// Cube faces are assembled on the CPU before they reach the generated
+		// file, so a change to that assembly invalidates every cached cube even
+		// though the pk4 sources it names are untouched. Bump this revision with
+		// any such change: builds up to 0.9.x cached faces that had the retail
+		// progimg/ camera->native conversion applied twice, which left skyboxes
+		// mis-oriented until the cache was deleted by hand.
+		_name += "r1";
+	}
 	const unsigned int downsizeSignature = R_GetImageDownsizeSignature( _usage, allowDownSize );
 	if ( downsizeSignature != 0 ) {
 		_name += va( "d%08x", downsizeSignature );

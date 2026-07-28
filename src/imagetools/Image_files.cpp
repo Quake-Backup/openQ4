@@ -988,15 +988,10 @@ static bool R_ImageHasRetailProgramDDSName( const char *imageProgram ) {
 	if ( imageProgram == NULL || imageProgram[0] == '\0' ) {
 		return false;
 	}
-	if ( strchr( imageProgram, '(' ) != NULL ) {
-		return true;
-	}
-
-	// Retail cube sides are stored as plain progimg/gfx/env/... DDS files.
-	idStr sourceName = imageProgram;
-	sourceName.BackSlashesToSlashes();
-	sourceName.ToLower();
-	return sourceName.IcmpPrefix( "gfx/env/" ) == 0;
+	// Retail progimg/ mirrors image-program results. Plain source files have no
+	// entry there, except under gfx/env/ - and those are cube sides, which must
+	// never take the retail replacement (see R_BuildDDSCandidates).
+	return strchr( imageProgram, '(' ) != NULL;
 }
 
 static bool R_TryResolvePreferredDDSImageSource( const idStr &candidateName, idStr &ddsName, ID_TIME_T *timestamp, bool allowPrecompressedDDS, bool *precompressedDDS, const char **rejectReason = NULL ) {
@@ -1074,6 +1069,33 @@ static void R_AppendDDSCandidate( idStrList &candidates, idStrList &origins, con
 
 /*
 =============
+Retail progimg/ and cube faces
+
+progimg/ holds Raven's ENGINE OUTPUT for each image, and for the six faces of a
+cameraCubeMap that output already went through the camera -> native conversion
+R_LoadCubeImages applies below: forward/up/down transposed, left flipped
+vertically, right flipped horizontally, back transposed and flipped both ways.
+Retail never read those files back for cube maps - that is what id's "FIXME:
+precompressed cube map files" note stands for - so the faces were always
+re-derived from the .tga sources.
+
+Accepting the retail replacement for a face would run that conversion a second
+time and leave the whole skybox mis-oriented, so cube-face loads skip the retail
+tree. Replacements under dds/ and .dds files sitting beside the source (Quake
+4's own gfx/env/mp_sky/) are authored in source orientation, so they stay
+eligible.
+=============
+*/
+static int ddsRetailProgramSuppressed = 0;
+
+class idSuppressRetailProgramDDS {
+public:
+	idSuppressRetailProgramDDS() { ddsRetailProgramSuppressed++; }
+	~idSuppressRetailProgramDDS() { ddsRetailProgramSuppressed--; }
+};
+
+/*
+=============
 R_BuildDDSCandidates
 
 Ordered list of DDS files that may stand in for an image source. User-supplied
@@ -1112,7 +1134,7 @@ static void R_BuildDDSCandidates( const char *cname, idStrList &candidates, idSt
 	}
 
 	// stock retail data last, so any user replacement wins
-	if ( R_ImageHasRetailProgramDDSName( cname ) ) {
+	if ( ddsRetailProgramSuppressed == 0 && R_ImageHasRetailProgramDDSName( cname ) ) {
 		idStr retailDDSName;
 		R_ImageProgramToRetailCompressedFileName( cname, retailDDSName );
 		R_AppendDDSCandidate( candidates, origins, retailDDSName, "retail progimg/" );
@@ -1657,6 +1679,10 @@ bool R_LoadCubeImages( const char *imgName, cubeFiles_t extensions, byte *pics[6
 	if ( timestamp ) {
 		*timestamp = 0;
 	}
+
+	// the retail progimg/ replacements for these faces are already converted;
+	// see the note above R_BuildDDSCandidates
+	idSuppressRetailProgramDDS noRetailProgramFaces;
 
 	for ( i = 0 ; i < 6 ; i++ ) {
 		idStr::snPrintf( fullName, sizeof( fullName ), "%s%s", imgName, sides[i] );
