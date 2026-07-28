@@ -41,13 +41,33 @@ If you have questions concerning this license or the applicable additional terms
 #include "Color/ColorSpace.h"
 
 idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_BOOL, "Use high quality (slow) compression" );
-idCVar image_writeGeneratedImages( "image_writeGeneratedImages", "0", CVAR_RENDERER | CVAR_BOOL, "write generated binary image cache files during runtime loads" );
+idCVar image_writeGeneratedImages( "image_writeGeneratedImages", "1", CVAR_RENDERER | CVAR_BOOL, "write generated binary image cache files during runtime loads" );
 idCVar image_showGeneratedImageWrites( "image_showGeneratedImageWrites", "0", CVAR_RENDERER | CVAR_BOOL, "print each generated binary image cache write" );
 
 static const int MAX_BINARY_IMAGE_DIMENSION = 32768;
 static const int MAX_BINARY_IMAGE_LEVELS = 32;
 static const int MAX_BINARY_IMAGE_DATA_SIZE = 1 << 30;
 
+/*
+========================
+R_ShouldWriteGeneratedImages
+
+Only the CPU decode/compress path reaches WriteGeneratedFile - anything served
+straight from a precompressed DDS bypasses the generated file entirely - so this
+caches exactly the images that are expensive to produce. On stock retail data
+that is a few dozen image programs (~17 MB for a large single-player map);
+without a usable DDS fast path (no S3TC, image_usePrecompressedTextures 0 or 2,
+cube maps, custom content) it is the whole set.
+
+This defaults on because the cache is otherwise never populated: no generated/
+tree ships, and com_productionMode is 0 for players, so leaving writes off meant
+every load re-decoded and re-compressed the same sources and threw the result
+away. Measured on maps/game/mcc_1, steady-state loads: ~10.5s -> ~7.8s with
+retail DDS available, and ~19.1s -> ~6.4s without it. The cache costs ~17 MB per
+map on retail data, but ~550 MB per map when the whole set has to go through the
+CPU path, and each distinct downsize signature stores its own copy.
+========================
+*/
 static bool R_ShouldWriteGeneratedImages() {
 	return image_writeGeneratedImages.GetBool() || cvarSystem->GetCVarBool( "com_makingBuild" );
 }

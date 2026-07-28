@@ -2760,7 +2760,10 @@ static bool Common_ApplyPerformancePreset( const openQ4PerformancePreset_t &pres
 	applied &= Common_SetPerformancePresetInt( preset.name, "image_downSizeSpecularLimit", 64, quiet );
 	applied &= Common_SetPerformancePresetInt( preset.name, "image_downSizeBumpLimit", preset.downSize != 0 ? 256 : 0, quiet );
 	applied &= Common_SetPerformancePresetInt( preset.name, "image_ignoreHighQuality", preset.ignoreHighQuality, quiet );
-	applied &= Common_SetPerformancePresetInt( preset.name, "image_writeGeneratedImages", 0, quiet );
+	// 1 at every preset: the generated image cache is a load-time win at any
+	// quality level, and the downsize cvars above are part of its cache key, so
+	// a preset change is exactly when the new variants need to be written out
+	applied &= Common_SetPerformancePresetInt( preset.name, "image_writeGeneratedImages", 1, quiet );
 	applied &= Common_SetPerformancePresetInt( preset.name, "s_maxSoundsPerShader", preset.maxSoundsPerShader, quiet );
 
 	applied &= Common_SetPerformancePresetInt( preset.name, "r_useShadowMap", preset.useShadowMap, quiet );
@@ -3390,7 +3393,7 @@ static bool Common_ValidatePerformancePresetApplied( const openQ4PerformancePres
 	passed &= Common_CheckPerformancePresetInt( preset.name, "image_downSizeSpecularLimit", 64 );
 	passed &= Common_CheckPerformancePresetInt( preset.name, "image_downSizeBumpLimit", preset.downSize != 0 ? 256 : 0 );
 	passed &= Common_CheckPerformancePresetInt( preset.name, "image_ignoreHighQuality", preset.ignoreHighQuality );
-	passed &= Common_CheckPerformancePresetInt( preset.name, "image_writeGeneratedImages", 0 );
+	passed &= Common_CheckPerformancePresetInt( preset.name, "image_writeGeneratedImages", 1 );
 	passed &= Common_CheckPerformancePresetInt( preset.name, "s_maxSoundsPerShader", preset.maxSoundsPerShader );
 	passed &= Common_CheckPerformancePresetInt( preset.name, "r_useShadowMap", preset.useShadowMap );
 	passed &= Common_CheckPerformancePresetInt( preset.name, "r_shadowMapSize", preset.shadowMapSize );
