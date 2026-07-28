@@ -4295,6 +4295,61 @@ windowDef Desktop
   		font "fonts/lowpixel"
    		textscale	0.2
 	}
+
+	// openQ4: match progression readouts carried over from Quake Live.  These
+	// are gametype agnostic and sit above the centre of the screen, clear of
+	// the crosshair and of the per-gametype panels below.
+	windowDef oq4_roundText
+	{
+		rect	170,40,300,20
+		screenalignx	left
+		screenaligny	top
+		visible	"gui::showround"
+		forecolor	1,1,1,1
+		text	"gui::roundtext"
+		font	"fonts/lowpixel"
+		textscale	0.3
+		textalign	1
+	}
+
+	windowDef oq4_roundTime
+	{
+		rect	170,58,300,20
+		screenalignx	left
+		screenaligny	top
+		visible	"gui::showroundtime"
+		forecolor	1,0.25,0.25,1
+		text	"gui::roundtime"
+		font	"fonts/lowpixel"
+		textscale	0.35
+		textalign	1
+	}
+
+	windowDef oq4_overtime
+	{
+		rect	170,58,300,20
+		screenalignx	left
+		screenaligny	top
+		visible	"gui::overtime"
+		forecolor	1,0.85,0.3,1
+		text	"gui::overtimetext"
+		font	"fonts/lowpixel"
+		textscale	0.3
+		textalign	1
+	}
+
+	windowDef oq4_readyCount
+	{
+		rect	170,76,300,20
+		screenalignx	left
+		screenaligny	top
+		visible	"gui::showready"
+		forecolor	1,1,1,1
+		text	"gui::readytext"
+		font	"fonts/lowpixel"
+		textscale	0.25
+		textalign	1
+	}
 		
 	windowDef anim_transitionIn
 	{

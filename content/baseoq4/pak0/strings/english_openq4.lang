@@ -136,5 +136,89 @@
 	"#str_41210"	"Bright Color"
 	"#str_41211"	"Outline Width"
 	"#str_41212"	"Teammate appearance applies only in team modes."
+
+// multiplayer gametypes carried over from Quake Live
+	"#str_41300"	"Duel"
+	"#str_41301"	"Clan Arena"
+	"#str_41302"	"Freeze Tag"
+	"#str_41303"	"Red Rover"
+	"#str_41304"	"Overload"
+	"#str_41305"	"Harvester"
+	"#str_41306"	"Domination"
+	"#str_41307"	"Attack & Defend"
+
+// match progression.  every parameter in this block is pre-formatted to text
+// by idMultiplayerGame::CenterPrint, so only %s is valid here - never %d.
+	"#str_41310"	"OVERTIME"
+	"#str_41311"	"OVERTIME %s"
+	"#str_41312"	"Match tied - going to overtime"
+	"#str_41313"	"%s wins!"
+	"#str_41314"	"%s team wins!"
+	"#str_41315"	"Match forfeited"
+	"#str_41316"	"%s team wins by forfeit"
+	"#str_41317"	"%s team wins by mercy rule"
+	"#str_41318"	"Waiting for players"
+	"#str_41319"	"%s of %s players ready"
+	"#str_41320"	"Waiting for %s more player on the %s team"
+	"#str_41321"	"Waiting for %s more players on the %s team"
+	"#str_41322"	"Teams will be shuffled in %s"
+	"#str_41323"	"Press %s to ready up"
+	"#str_41324"	"Waiting for other players to ready up"
+
+// round based modes
+	"#str_41330"	"ROUND %s"
+	"#str_41331"	"Round begins in %s"
+	"#str_41332"	"FIGHT!"
+	"#str_41333"	"%s team wins the round"
+	"#str_41334"	"Round draw"
+	"#str_41335"	"%s players remaining"
+	"#str_41336"	"You are the last one standing"
+	"#str_41337"	"%s health remaining"
+	"#str_41338"	"%s wins the round with %s health remaining"
+	"#str_41339"	"Round %s of %s"
+
+// Freeze Tag
+	"#str_41350"	"You have been frozen"
+	"#str_41351"	"%s froze %s"
+	"#str_41352"	"%s thawed you out"
+	"#str_41353"	"%s thawed %s"
+	"#str_41354"	"Stand next to a frozen team mate to thaw them"
+
+// Red Rover
+	"#str_41360"	"You have joined the %s team"
+	"#str_41361"	"You have been infected"
+	"#str_41362"	"The infection spreads in %s"
+	"#str_41363"	"%s survivors remaining"
+
+// Overload and Harvester
+	"#str_41370"	"Your obelisk is under attack"
+	"#str_41371"	"%s team destroyed the obelisk"
+	"#str_41372"	"You are carrying %s skulls"
+	"#str_41373"	"%s team scored %s"
+	"#str_41374"	"Take the skulls to the enemy obelisk"
+
+// Domination
+	"#str_41380"	"%s team captured a control point"
+	"#str_41381"	"%s team lost a control point"
+	"#str_41382"	"Capturing control point"
+	"#str_41383"	"Control point contested"
+
+// Attack & Defend
+	"#str_41390"	"ATTACK THE FLAG"
+	"#str_41391"	"DEFEND THE FLAG"
+	"#str_41392"	"%s team is attacking"
+	"#str_41393"	"%s captured the flag"
+	"#str_41394"	"Attackers eliminated"
+
+// HUD labels
+	"#str_41400"	"ROUND"
+	"#str_41401"	"OT"
+	"#str_41402"	"READY"
+	"#str_41403"	"Score Limit"
+	"#str_41404"	"Round Limit"
+	"#str_41405"	"Rounds"
+	"#str_41406"	"Damage"
+	"#str_41407"	"Thaws"
+	"#str_41408"	"Captures"
+	"#str_41409"	"Points"
 }
-	"#str_229972"	"Scope Sensitivity"
