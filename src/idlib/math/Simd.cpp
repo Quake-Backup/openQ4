@@ -234,11 +234,24 @@ TIME_TYPE time_in_millisec( void ) {
 
 #else
 
+#include <time.h>
+
+// The previous stub recorded a constant single tick, so every SIMD benchmark on
+// this path printed the same meaningless number and no before/after comparison
+// of a SIMD implementation was possible - including on Linux ARM64, the only
+// arm64 platform with CI. Sys_GetClockTicks in src/sys/linux/main.cpp already
+// uses this same source and documents why rdtsc is not an option here.
+static TIME_TYPE Sys_SimdMonotonicNanoseconds( void ) {
+	struct timespec ts;
+	clock_gettime( CLOCK_MONOTONIC, &ts );
+	return ( TIME_TYPE )ts.tv_sec * 1000000000LL + ( TIME_TYPE )ts.tv_nsec;
+}
+
 #define StartRecordTime( start )			\
-	start = 0;
+	start = Sys_SimdMonotonicNanoseconds();
 
 #define StopRecordTime( end )				\
-	end = 1;
+	end = Sys_SimdMonotonicNanoseconds();
 
 #endif // _WINDOWS
 
@@ -4374,6 +4387,17 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	idLib::common->SetRefreshOnPrint( true );
 
 	idLib::common->Printf( "using %s for SIMD processing\n", p_simd->GetName() );
+
+	if ( p_simd == p_generic ) {
+		// InitProcessor only installs a specialized processor on architectures
+		// that have one; arm64 currently has none, so p_simd and p_generic are
+		// the same object and every comparison below compares a buffer against
+		// itself. Say so loudly: a page of "ok" results here would otherwise
+		// read as a passing SIMD validation on a platform where nothing is
+		// actually being validated.
+		idLib::common->Printf( "WARNING: no specialized SIMD processor is available on this architecture.\n" );
+		idLib::common->Printf( "WARNING: generic and SIMD paths are the same object, so every comparison below is vacuous.\n" );
+	}
 
 	GetBaseClocks();
 /*
