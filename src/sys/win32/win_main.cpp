@@ -583,10 +583,19 @@ void Sys_CreateThread(xthread_t function, void* parms, xthreadPriority priority,
 		SetThreadPriority(reinterpret_cast<HANDLE>(info.threadHandle), THREAD_PRIORITY_ABOVE_NORMAL);
 	}
 	info.name = name;
+	// Publishing the slot and bumping the count are two separate stores. The
+	// POSIX backend already serializes the registry against its readers, and
+	// ARM64's weak memory model makes the unsynchronized version genuinely
+	// reorderable: a worker polling Sys_IsCurrentThreadStopRequested could
+	// observe the incremented count before the slot store lands and
+	// dereference an uninitialized pointer.
+	Sys_EnterCriticalSection();
 	if (*thread_count < MAX_THREADS) {
 		threads[(*thread_count)++] = &info;
+		Sys_LeaveCriticalSection();
 	}
 	else {
+		Sys_LeaveCriticalSection();
 		common->DPrintf("WARNING: MAX_THREADS reached\n");
 	}
 }
@@ -597,6 +606,7 @@ Sys_RemoveThreadInfo
 ==================
 */
 static void Sys_RemoveThreadInfo( xthreadInfo& info ) {
+	Sys_EnterCriticalSection();
 	for( int i = 0 ; i < g_thread_count ; i++ ) {
 		if ( &info == g_threads[ i ] ) {
 			g_threads[ i ] = NULL;
@@ -606,9 +616,10 @@ static void Sys_RemoveThreadInfo( xthreadInfo& info ) {
 			}
 			g_threads[ j-1 ] = NULL;
 			g_thread_count--;
-			return;
+			break;
 		}
 	}
+	Sys_LeaveCriticalSection();
 }
 
 /*
@@ -639,12 +650,17 @@ Sys_IsCurrentThreadStopRequested
 */
 bool Sys_IsCurrentThreadStopRequested( void ) {
 	const DWORD id = GetCurrentThreadId();
+	bool stopRequested = false;
+
+	Sys_EnterCriticalSection();
 	for (int i = 0; i < g_thread_count; i++) {
 		if ( g_threads[i] != NULL && id == g_threads[i]->threadId ) {
-			return g_threads[i]->stopRequested;
+			stopRequested = g_threads[i]->stopRequested;
+			break;
 		}
 	}
-	return false;
+	Sys_LeaveCriticalSection();
+	return stopRequested;
 }
 
 /*
@@ -677,19 +693,26 @@ Sys_GetThreadName
 ==================
 */
 const char* Sys_GetThreadName(int* index) {
-	int id = GetCurrentThreadId();
+	const DWORD id = GetCurrentThreadId();
+	const char* name = "main";
+	int foundIndex = -1;
+
+	Sys_EnterCriticalSection();
 	for (int i = 0; i < g_thread_count; i++) {
-		if (id == g_threads[i]->threadId) {
-			if (index) {
-				*index = i;
-			}
-			return g_threads[i]->name;
+		// Sys_RemoveThreadInfo can leave a NULL slot behind, so this has to be
+		// guarded the same way Sys_IsCurrentThreadStopRequested already is.
+		if (g_threads[i] != NULL && id == g_threads[i]->threadId) {
+			foundIndex = i;
+			name = g_threads[i]->name;
+			break;
 		}
 	}
+	Sys_LeaveCriticalSection();
+
 	if (index) {
-		*index = -1;
+		*index = foundIndex;
 	}
-	return "main";
+	return name;
 }
 
 

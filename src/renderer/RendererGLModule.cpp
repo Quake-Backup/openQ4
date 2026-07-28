@@ -217,21 +217,31 @@ void Sys_CreateThread( xthread_t function, void *parms, xthreadPriority priority
 		SetThreadPriority( reinterpret_cast<HANDLE>( info.threadHandle ), THREAD_PRIORITY_ABOVE_NORMAL );
 	}
 	info.name = name;
+	// Match RGM_RemoveThreadInfo and the POSIX branch below: the slot store and
+	// the count bump have to be serialized against the readers, otherwise a
+	// weakly ordered target can expose the bumped count with a stale slot.
+	Sys_EnterCriticalSection( CRITICAL_SECTION_ZERO );
 	if ( *thread_count < MAX_THREADS ) {
 		threads[( *thread_count )++] = &info;
+		Sys_LeaveCriticalSection( CRITICAL_SECTION_ZERO );
 	} else {
+		Sys_LeaveCriticalSection( CRITICAL_SECTION_ZERO );
 		common->DPrintf( "WARNING: MAX_THREADS reached\n" );
 	}
 }
 
 bool Sys_IsCurrentThreadStopRequested( void ) {
 	const DWORD id = GetCurrentThreadId();
+	bool stopRequested = false;
+	Sys_EnterCriticalSection( CRITICAL_SECTION_ZERO );
 	for ( int i = 0; i < g_thread_count; i++ ) {
 		if ( g_threads[i] != NULL && id == g_threads[i]->threadId ) {
-			return g_threads[i]->stopRequested;
+			stopRequested = g_threads[i]->stopRequested;
+			break;
 		}
 	}
-	return false;
+	Sys_LeaveCriticalSection( CRITICAL_SECTION_ZERO );
+	return stopRequested;
 }
 
 void Sys_DestroyThread( xthreadInfo &info ) {
