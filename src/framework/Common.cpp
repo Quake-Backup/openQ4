@@ -5473,16 +5473,46 @@ static int Common_DetectMachineSpec( double ghz, int vidRam, int sysRam, bool ol
 	// probe should fall back to a share of system memory.
 	if ( ghz <= 0.0 && !oldCard ) {
 		int effectiveVidRam = vidRam;
-		if ( effectiveVidRam <= 0 ) {
+		const bool guessedVidRam = ( effectiveVidRam <= 0 );
+		if ( guessedVidRam ) {
 			effectiveVidRam = sysRam / 2;
 		}
-		if ( effectiveVidRam >= 300 && sysRam >= 1000 ) {
+
+		// Thresholds for the upper tiers. A real VRAM probe is trusted and uses
+		// the stock numbers. A *guessed* one is not: sysRam / 2 says nothing
+		// about GPU capability, so a 8 GB single-board computer produces the
+		// same number as a workstation.
+		//
+		// This matters because tier 0 is the only tier that downsizes textures
+		// (image_downSize, image_ignoreHighQuality, image_downSizeSpecular and
+		// image_downSizeBump - see Com_ExecMachineSpec_f), and openQ4 currently
+		// uploads ordinary textures uncompressed, so promoting out of tier 0
+		// multiplies the texture budget. Both arm64 hosts that have reported
+		// memory failures were 8 GB boards killed by the OOM reaper during load
+		// (issues #76 on a Pi 5 and #78 on aarch64 Linux). So when we are
+		// guessing, require clearly abundant system memory before leaving the
+		// downsizing tier.
+		//
+		// Apple Silicon keeps the stock thresholds regardless: it has genuine
+		// unified memory on a GPU class known to run the game well, and no arm64
+		// Mac has reported a memory-pressure failure.
+#if defined( MACOS_X )
+		const int ultraSysRam = 1000;
+		const int highSysRam = 1000;
+		const int mediumSysRam = 750;
+#else
+		const int ultraSysRam = guessedVidRam ? 24000 : 1000;
+		const int highSysRam = guessedVidRam ? 16000 : 1000;
+		const int mediumSysRam = guessedVidRam ? 12000 : 750;
+#endif
+
+		if ( effectiveVidRam >= 300 && sysRam >= ultraSysRam ) {
 			return 3;
 		}
-		if ( effectiveVidRam >= 160 && sysRam >= 1000 ) {
+		if ( effectiveVidRam >= 160 && sysRam >= highSysRam ) {
 			return 2;
 		}
-		if ( effectiveVidRam >= 160 && sysRam >= 750 ) {
+		if ( effectiveVidRam >= 160 && sysRam >= mediumSysRam ) {
 			return 1;
 		}
 		return 0;
