@@ -231,7 +231,16 @@ Sys_GetCPUId
 ================
 */
 cpuid_t Sys_GetCPUId(void) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+	// Windows on ARM has no CPUID instruction and no x86 vendor to report.
+	// Claiming CPUID_INTEL here would make the engine print "Intel processor"
+	// on Snapdragon-class hardware and would put an x86 vendor bit in front of
+	// every consumer of win32.cpuid. Match what the Linux backend already
+	// returns on aarch64.
+	return CPUID_GENERIC;
+#else
 	return CPUID_INTEL;
+#endif
 }
 
 

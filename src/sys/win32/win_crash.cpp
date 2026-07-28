@@ -433,6 +433,28 @@ static void Sys_WriteCrashLog(
 			(unsigned long)ctx->Esi, (unsigned long)ctx->Edi, (unsigned long)ctx->Ebp, (unsigned long)ctx->Esp,
 			(unsigned long)ctx->Eip, (unsigned long)ctx->EFlags
 		);
+#elif defined(_M_ARM64)
+		Sys_StringAppendf(
+			logBuffer,
+			ARRAYSIZE(logBuffer),
+			"\r\n"
+			"PC =0x%016llX SP =0x%016llX FP =0x%016llX LR =0x%016llX\r\n"
+			"Cpsr=0x%08lX Fpcr=0x%08lX Fpsr=0x%08lX\r\n",
+			(unsigned long long)ctx->Pc, (unsigned long long)ctx->Sp,
+			(unsigned long long)ctx->Fp, (unsigned long long)ctx->Lr,
+			(unsigned long)ctx->Cpsr, (unsigned long)ctx->Fpcr, (unsigned long)ctx->Fpsr
+		);
+		// X0-X28. X29/X30 are reported above as FP/LR.
+		for (int reg = 0; reg < 29; reg++) {
+			Sys_StringAppendf(
+				logBuffer,
+				ARRAYSIZE(logBuffer),
+				"X%-2d=0x%016llX%s",
+				reg,
+				(unsigned long long)ctx->X[reg],
+				((reg % 4) == 3 || reg == 28) ? "\r\n" : " "
+			);
+		}
 #endif
 	}
 
