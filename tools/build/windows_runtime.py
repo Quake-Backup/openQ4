@@ -24,6 +24,12 @@ WINDOWS_ROOT_RUNTIME_PATTERNS = (
 RUNTIME_BINARY_PATTERNS = (
     f"{PRODUCT_NAME}-client_*.exe",
     f"{PRODUCT_NAME}-ded_*.exe",
+    # Renderer modules are shipped package members and are loaded into the
+    # client process, so they belong under the same static-CRT enforcement and
+    # mixed-architecture guard as everything else. Without them a stale
+    # renderer-gl_x64.dll can sit next to an arm64 client and pass every check.
+    "renderer-gl_*.dll",
+    "renderer-vk_*.dll",
     f"{GAME_DIR_NAME}/game-sp_*.dll",
     f"{GAME_DIR_NAME}/game-mp_*.dll",
 )

@@ -956,8 +956,13 @@ jobs:
             done
           fi
 
-      - name: Validate Linux staged ELF/package
-        if: matrix.platform == 'linux'
+      # Windows is included here so the arch-suffixed client/dedicated/game
+      # binaries, the staged OpenAL32.dll, and the architecture-matched PDB set
+      # are checked for Windows x64 and arm64 packages too. With --skip-build,
+      # --install only requests validation of the already-staged tree; it does
+      # not re-run meson install. macOS keeps its own inline validation suite.
+      - name: Validate staged binaries and package layout (Linux/Windows)
+        if: matrix.platform != 'macos'
         shell: bash
         run: |
           set -euo pipefail
