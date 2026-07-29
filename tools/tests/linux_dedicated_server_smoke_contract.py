@@ -122,11 +122,12 @@ def main() -> None:
     ):
         require(meson, token, "Linux dedicated Meson split")
     require_count(meson, "dependencies: dedicated_deps", 3, "dedicated target dependency split")
-    require(
-        glew_meson,
-        "c_args: ['-DGLEW_NO_GLU', '-DOPENQ4_GLEW_SDL3_LOADER']",
-        "headless dedicated GLEW resolver",
-    )
+    # Pin the defines the dedicated GLEW variant depends on, not the exact
+    # argument list: it also carries -DGLAPI=extern so the GL-free dedicated
+    # targets can satisfy GL 1.1 references from plain stub definitions.
+    dedicated_glew_block = glew_meson[glew_meson.index("glew_dedicated_lib = static_library(") :]
+    for define in ("'-DGLEW_NO_GLU'", "'-DOPENQ4_GLEW_SDL3_LOADER'"):
+        require(dedicated_glew_block, define, "headless dedicated GLEW resolver")
 
     require(linux_dedicated, "Sys_GetDesktopResolution", "Linux dedicated platform stubs")
     reject(linux_dedicated, '#include "local.h"', "Linux dedicated X11-free platform stubs")

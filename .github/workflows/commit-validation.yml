@@ -157,6 +157,7 @@ jobs:
             tools/tests/startup_language_override.py \
             tools/tests/ui_embedded_icons.py \
             tools/tests/validation_hardening.py \
+            tools/tests/vk_shader_header_pin.py \
             tools/tests/vscode_fast_build.py
           bash -n tools/build/meson_setup.sh
           bash -n tools/macos/collect_macos_support_info.sh
@@ -253,6 +254,7 @@ jobs:
           python tools/tests/startup_language_override.py
           python tools/tests/ui_embedded_icons.py
           python tools/tests/validation_hardening.py
+          python tools/tests/vk_shader_header_pin.py
           python tools/tests/vscode_fast_build.py
 
       - name: Dry-run validation profiles

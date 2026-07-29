@@ -4989,15 +4989,15 @@ static bool VK_Exec_BindGLSLStageColor( const drawSurf_t *drawSurf,
 			|| drawSurf->decalColorStride < tri->numVerts * 4 ) {
 		return false;
 	}
-	const byte *colorData =
-			(const byte *)vertexCache.Position( drawSurf->decalColorCache );
-	if ( colorData == NULL ) {
-		return false;
-	}
+	// Position() returns a byte offset, not an address, when the cache is
+	// VBO-backed, so offset zero is legal and must never be null-tested or
+	// used as a pointer base. Form the attribute address in integer space
+	// exactly like the GL back end does (VertexCache.h).
+	const void *colorData = vertexCache.Position( drawSurf->decalColorCache );
 	const int colorOffset = VK_Ring_Alloc(
 			vkExec.vertexRings[ vkExec.frameSlot ],
-			colorData + drawSurf->decalColorOffset
-				+ stageNum * drawSurf->decalColorStride,
+			RB_DrawVertAttributePointer( colorData,
+				drawSurf->decalColorOffset + stageNum * drawSurf->decalColorStride ),
 			(size_t)tri->numVerts * 4, 4 );
 	if ( colorOffset < 0 ) {
 		return false;
@@ -5878,15 +5878,15 @@ static void VK_Exec_DrawProgramStage( const viewDef_t *viewDef,
 	if ( vertexColorVariant && drawSurf->decalColorCache != NULL
 			&& stageNum >= 0 && stageNum < drawSurf->decalColorStageCount
 			&& drawSurf->decalColorStride >= tri->numVerts * 4 ) {
-		const byte *colorData =
-				(const byte *)vertexCache.Position( drawSurf->decalColorCache );
+		// Offset zero is a legal VBO-backed Position() result; see
+		// VK_Exec_BindGLSLStageColor.
+		const void *colorData = vertexCache.Position( drawSurf->decalColorCache );
 		const size_t colorBytes = (size_t)tri->numVerts * 4;
-		const int colorOffset = colorData != NULL
-				? VK_Ring_Alloc( vkExec.vertexRings[ vkExec.frameSlot ],
-					colorData + drawSurf->decalColorOffset
-						+ stageNum * drawSurf->decalColorStride,
-					colorBytes, 4 )
-				: -1;
+		const int colorOffset = VK_Ring_Alloc(
+				vkExec.vertexRings[ vkExec.frameSlot ],
+				RB_DrawVertAttributePointer( colorData,
+					drawSurf->decalColorOffset + stageNum * drawSurf->decalColorStride ),
+				colorBytes, 4 );
 		if ( colorOffset >= 0 ) {
 			const VkBuffer colorBuffer =
 					vkExec.vertexRings[ vkExec.frameSlot ].buffer;
@@ -6170,13 +6170,14 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 				&& drawSurf->decalColorStride >= tri->numVerts * 4
 				&& pStage->vertexColor != SVC_IGNORE;
 		if ( bakedDecalStageColor ) {
-			const byte *colorData = (const byte *)vertexCache.Position( drawSurf->decalColorCache );
+			// Offset zero is a legal VBO-backed Position() result; see
+			// VK_Exec_BindGLSLStageColor.
+			const void *colorData = vertexCache.Position( drawSurf->decalColorCache );
 			const size_t colorBytes = static_cast<size_t>( tri->numVerts ) * 4;
-			const int colorOffset = colorData != NULL
-					? VK_Ring_Alloc( vkExec.vertexRings[ vkExec.frameSlot ],
-						colorData + drawSurf->decalColorOffset + stageNum * drawSurf->decalColorStride,
-						colorBytes, 4 )
-					: -1;
+			const int colorOffset = VK_Ring_Alloc( vkExec.vertexRings[ vkExec.frameSlot ],
+					RB_DrawVertAttributePointer( colorData,
+						drawSurf->decalColorOffset + stageNum * drawSurf->decalColorStride ),
+					colorBytes, 4 );
 			if ( colorOffset >= 0 ) {
 				const VkBuffer colorBuffer = vkExec.vertexRings[ vkExec.frameSlot ].buffer;
 				const VkDeviceSize colorBindOffset = (VkDeviceSize)colorOffset;

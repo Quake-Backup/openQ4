@@ -812,7 +812,10 @@ def validate_manual_release_linux_staged_gate() -> None:
     workflow = (ROOT / ".github" / "workflows" / "manual-release.yml").read_text(encoding="utf-8")
     validator = (ROOT / "tools" / "validation" / "openq4_validate.py").read_text(encoding="utf-8")
 
-    gate_name = "- name: Validate Linux staged ELF/package"
+    # The gate covers Windows packages as well as Linux ones, but the ordering
+    # invariant it enforces is Linux-specific: staged ELF/package validation
+    # must see the binaries before debug symbols are split out of them.
+    gate_name = "- name: Validate staged binaries and package layout (Linux/Windows)"
     symbols_name = "- name: Prepare Linux debug symbols"
     try:
         gate_offset = workflow.index(gate_name)
@@ -825,7 +828,7 @@ def validate_manual_release_linux_staged_gate() -> None:
 
     gate = workflow[gate_offset:symbols_offset]
     for token in (
-        "if: matrix.platform == 'linux'",
+        "if: matrix.platform != 'macos'",
         "python tools/validation/openq4_validate.py push",
         "--skip-build",
         "--install",
@@ -875,7 +878,7 @@ def validate_manual_release_linux_post_mutation_gates() -> None:
         if token not in workflow:
             raise AssertionError(f"manual release post-mutation Linux gate is missing token: {token}")
 
-    pre_split = workflow.index("- name: Validate Linux staged ELF/package")
+    pre_split = workflow.index("- name: Validate staged binaries and package layout (Linux/Windows)")
     split = workflow.index("- name: Prepare Linux debug symbols", pre_split)
     post_split = workflow.index("- name: Validate stripped Linux ELFs and detached symbols", split)
     package = workflow.index("- name: Prepare package", post_split)

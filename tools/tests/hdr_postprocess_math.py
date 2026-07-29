@@ -377,7 +377,10 @@ def test_display_color_mapping_matches_legacy_curve_and_present_path():
     root = Path(__file__).resolve().parents[2]
     draw_common = (root / "src" / "renderer" / "draw_common.cpp").read_text(encoding="utf-8")
     tr_backend = (root / "src" / "renderer" / "tr_backend.cpp").read_text(encoding="utf-8")
-    sdl3_backend = (root / "src" / "sys" / "sdl3" / "sdl3_backend.cpp").read_text(encoding="utf-8")
+    # The SDL3 GL context half now lives in the renderer-gl module, and the
+    # renderer-vk module owns its own copy; both must decline native ramps.
+    gl_module = (root / "src" / "renderer" / "OpenGL" / "gl_ContextSDL3.cpp").read_text(encoding="utf-8")
+    vk_module = (root / "src" / "renderer" / "Vulkan" / "vk_Backend.cpp").read_text(encoding="utf-8")
     win32_backend = (root / "src" / "sys" / "win32" / "win_glimp.cpp").read_text(encoding="utf-8")
     linux_native = (root / "src" / "sys" / "linux" / "glimp.cpp").read_text(encoding="utf-8")
     osx_native = (root / "src" / "sys" / "osx" / "macosx_glimp.mm").read_text(encoding="utf-8")
@@ -391,7 +394,8 @@ def test_display_color_mapping_matches_legacy_curve_and_present_path():
     assert_true("color = pow( color, vec3( 1.0 / safeGamma ) );" in draw_common, "final color mapping should apply r_gamma as the legacy display curve")
     assert_true("GLimp_UseNativeGammaRamps()" in draw_common, "final color mapping should skip platforms that still use native gamma ramps")
     assert_true("RB_ApplyResolutionScaleToBackBuffer();\n\t\tRB_ApplyCRTToBackBuffer();\n\t\tRB_ApplyColorMappingsToBackBuffer();" in tr_backend, "display color mapping should run after other final backbuffer passes")
-    assert_true("bool GLimp_UseNativeGammaRamps(void) {\n\treturn false;\n}" in sdl3_backend, "SDL3 should use renderer-owned color mapping")
+    assert_true("bool GLimp_UseNativeGammaRamps(void) {\n\treturn false;\n}" in gl_module, "SDL3 renderer-gl module should use renderer-owned color mapping")
+    assert_true("bool GLimp_UseNativeGammaRamps( void ) {\n\treturn false;\n}" in vk_module, "renderer-vk module should use renderer-owned color mapping")
     assert_true("bool GLimp_UseNativeGammaRamps( void ) {\n\treturn false;\n}" in win32_backend, "legacy Win32 should use renderer-owned color mapping")
     assert_true("bool GLimp_UseNativeGammaRamps( void ) {\n\treturn true;\n}" in linux_native, "native Linux GL should keep using OS gamma ramps")
     assert_true("bool GLimp_UseNativeGammaRamps(void) {\n\treturn true;\n}" in osx_native, "native macOS GL should keep using OS gamma ramps")

@@ -49,15 +49,23 @@ def require_order(haystack: str, first: str, second: str, context: str) -> None:
 
 
 def validate_sdl3_swap_interval() -> None:
-    source = read("src/sys/sdl3/sdl3_backend.cpp")
+    # The SDL3 GL context half moved into the renderer-gl module; it now reaches
+    # SDL through the window-services seam, so both halves have to be pinned.
+    source = read("src/renderer/OpenGL/gl_ContextSDL3.cpp")
+    backend = read("src/sys/sdl3/sdl3_backend.cpp")
     apply_swap = function_body(source, "static bool SDL3_ApplySwapInterval(void) {")
     init = function_body(source, "bool GLimp_Init(glimpParms_t parms) {")
     set_screen = function_body(source, "bool GLimp_SetScreenParms(glimpParms_t parms) {")
     swap = function_body(source, "void GLimp_SwapBuffers(void) {")
+    backend_set = function_body(backend, "static bool SDL3_WindowServices_SetGLSwapInterval(int interval) {")
+    backend_get = function_body(backend, "static bool SDL3_WindowServices_GetGLSwapInterval(int *outInterval) {")
 
-    require(apply_swap, "SDL_GL_SetSwapInterval(requestedInterval)", "SDL3 swap interval helper")
-    require(apply_swap, "SDL_GL_GetSwapInterval(&actualInterval)", "SDL3 swap interval helper")
+    require(apply_swap, "SetGLSwapInterval(requestedInterval)", "SDL3 swap interval helper")
+    require(apply_swap, "GetGLSwapInterval(&actualInterval)", "SDL3 swap interval helper")
     require(apply_swap, "requested swap interval", "SDL3 swap interval diagnostics")
+
+    require(backend_set, "SDL_GL_SetSwapInterval(interval)", "SDL3 swap interval seam implementation")
+    require(backend_get, "SDL_GL_GetSwapInterval(outInterval)", "SDL3 swap interval seam implementation")
 
     require(init, "SDL3_LoadWGLExtensions();", "SDL3 GL init")
     require(init, "SDL3_ApplySwapInterval();", "SDL3 GL init")

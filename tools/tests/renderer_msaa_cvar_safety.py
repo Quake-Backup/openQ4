@@ -131,23 +131,34 @@ def test_postaa_smaa_quality_presets_are_explicit_and_logged():
 
 
 def test_sdl3_context_creation_has_msaa_fallback_ladder():
+    # The context ladder itself lives in the renderer-gl module; the SDL calls
+    # it drives stay in the platform backend behind the window-services seam.
+    gl_module = read_repo_file(Path("src") / "renderer" / "OpenGL" / "gl_ContextSDL3.cpp")
     sdl3_backend = read_repo_file(Path("src") / "sys" / "sdl3" / "sdl3_backend.cpp")
 
-    assert_true("static int SDL3_BuildMSAASampleFallbacks" in sdl3_backend, "SDL3 backend should build an MSAA fallback ladder")
-    assert_true("static const int sampleSteps[] = {16, 8, 4, 2, 0};" in sdl3_backend, "SDL3 MSAA fallback ladder should descend 16 -> 8 -> 4 -> 2 -> 0")
-    assert_true("SDL3_SetGLAttributesForCandidate(parms, candidate, candidateMultiSamples);" in sdl3_backend, "SDL3 context attempts should apply the current MSAA fallback value")
-    assert_true("SDL3: trying OpenGL context %s with MSAA samples=%d" in sdl3_backend, "SDL3 should log the context/MSAA attempt")
-    assert_true("SDL3: OpenGL context %s with MSAA samples=%d failed" in sdl3_backend, "SDL3 should log failed context/MSAA attempts")
-    assert_true("r_multiSamples.SetInteger(selectedMultiSamples);" in sdl3_backend, "SDL3 fallback should update the effective r_multiSamples value")
+    assert_true("static int SDL3_BuildMSAASampleFallbacks" in gl_module, "SDL3 backend should build an MSAA fallback ladder")
+    assert_true("static const int sampleSteps[] = {16, 8, 4, 2, 0};" in gl_module, "SDL3 MSAA fallback ladder should descend 16 -> 8 -> 4 -> 2 -> 0")
+    assert_true("SDL3_BuildFramebufferDesc(parms, candidate, candidateMultiSamples, framebufferDesc);" in gl_module, "SDL3 context attempts should apply the current MSAA fallback value")
+    assert_true("SDL3: trying OpenGL context %s with MSAA samples=%d" in gl_module, "SDL3 should log the context/MSAA attempt")
+    assert_true("SDL3: OpenGL context %s with MSAA samples=%d failed" in gl_module, "SDL3 should log failed context/MSAA attempts")
+    assert_true("r_multiSamples.SetInteger(selectedMultiSamples);" in gl_module, "SDL3 fallback should update the effective r_multiSamples value")
+    # The per-attempt sample count must actually reach SDL, or the ladder would
+    # silently retry the same visual until it ran out of candidates.
+    assert_true("SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1)" in sdl3_backend, "SDL3 backend should request a multisample buffer for the current ladder step")
+    assert_true("SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, desc->multiSamples)" in sdl3_backend, "SDL3 backend should request the current ladder step's sample count")
 
 
 def test_sdl3_logs_requested_selected_and_actual_msaa_attributes():
+    gl_module = read_repo_file(Path("src") / "renderer" / "OpenGL" / "gl_ContextSDL3.cpp")
     sdl3_backend = read_repo_file(Path("src") / "sys" / "sdl3" / "sdl3_backend.cpp")
 
-    assert_true("SDL_GL_GetAttribute(SDL_GL_MULTISAMPLEBUFFERS, &multisampleBuffers)" in sdl3_backend, "SDL3 should query actual multisample buffer count")
-    assert_true("SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &multisampleSamples)" in sdl3_backend, "SDL3 should query actual multisample sample count")
-    assert_true("SDL3: reported OpenGL multisample attributes: requested=%d selected=%d actualBuffers=%s%d actualSamples=%s%d" in sdl3_backend, "SDL3 should report requested, selected, and actual MSAA attributes")
-    assert_true("SDL3_LogGLContextAttributes(requestedMultiSamples, selectedMultiSamples);" in sdl3_backend, "SDL3 should pass requested/selected MSAA values into context logging")
+    assert_true("GetGLAttribute(RENDER_GLATTR_MULTISAMPLE_BUFFERS, &multisampleBuffers)" in gl_module, "SDL3 should query actual multisample buffer count")
+    assert_true("GetGLAttribute(RENDER_GLATTR_MULTISAMPLE_SAMPLES, &multisampleSamples)" in gl_module, "SDL3 should query actual multisample sample count")
+    assert_true("case RENDER_GLATTR_MULTISAMPLE_BUFFERS:" in sdl3_backend and "SDL_GL_MULTISAMPLEBUFFERS; break;" in sdl3_backend, "SDL3 backend should map the multisample buffer selector onto SDL")
+    assert_true("case RENDER_GLATTR_MULTISAMPLE_SAMPLES:" in sdl3_backend and "SDL_GL_MULTISAMPLESAMPLES; break;" in sdl3_backend, "SDL3 backend should map the multisample sample selector onto SDL")
+    assert_true("SDL_GL_GetAttribute(sdlAttribute, outValue)" in sdl3_backend, "SDL3 backend should resolve GL attribute queries through SDL")
+    assert_true("SDL3: reported OpenGL multisample attributes: requested=%d selected=%d actualBuffers=%s%d actualSamples=%s%d" in gl_module, "SDL3 should report requested, selected, and actual MSAA attributes")
+    assert_true("SDL3_LogGLContextAttributes(requestedMultiSamples, selectedMultiSamples);" in gl_module, "SDL3 should pass requested/selected MSAA values into context logging")
 
 
 def test_render_texture_failures_degrade_and_retry_msaa():

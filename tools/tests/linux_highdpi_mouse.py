@@ -41,6 +41,7 @@ def function_body(source: str, signature: str) -> str:
 
 def validate_sdl3_highdpi_contract() -> None:
     source = read("src/sys/sdl3/sdl3_backend.cpp")
+    gl_module = read("src/renderer/OpenGL/gl_ContextSDL3.cpp")
     syscon = read("src/sys/posix/posix_syscon.cpp")
     hints = function_body(source, "static void SDL3_SetMouseHintDefaults(void) {")
     video_hints = function_body(source, "static void SDL3_SetVideoHintDefaults(void) {")
@@ -64,7 +65,14 @@ def validate_sdl3_highdpi_contract() -> None:
     activate_mouse = function_body(source, "void IN_ActivateMouse(void) {")
     mouse_capture_diagnostics = function_body(source, "static void SDL3_MouseCaptureDiagnostics_f(const idCmdArgs &args) {")
     pump = function_body(source, "bool Sys_SDL_PumpEvents(void) {")
-    init = function_body(source, "bool GLimp_Init(glimpParms_t parms) {")
+    # GLimp_Init moved into the renderer-gl module; the backend now owns window
+    # and input startup (PrepareWindowSystem) and render-window creation
+    # (CreateWindowForFramebuffer), which the module drives across the seam.
+    startup = function_body(source, "static bool SDL3_WindowServices_PrepareWindowSystem(void) {")
+    create_window = function_body(
+        source,
+        "static bool SDL3_WindowServices_CreateWindowForFramebuffer(const renderFramebufferDesc_t *desc, const renderWindowParms_t *parms,",
+    )
     console_layout = function_body(syscon, "static void Posix_ConsoleUpdateLayout( void ) {")
     console_presentation = function_body(syscon, "static void Posix_ConsoleApplyLogicalPresentation( int width, int height ) {")
     console_coordinates = function_body(syscon, "static void Posix_ConsoleWindowToRenderCoordinates( float &x, float &y ) {")
@@ -95,8 +103,8 @@ def validate_sdl3_highdpi_contract() -> None:
     if apply_video_defaults.index("SDL3_SetAppMetadataDefaults();") >= apply_video_defaults.index("SDL3_SetVideoHintDefaults();"):
         raise AssertionError("SDL3 application metadata must be set before video hints/initialization")
     require(read("assets/linux/openq4.desktop.in"), "Name=openQ4", "Linux desktop identity paired with SDL metadata")
-    require(init, "Sys_SDL_ApplyVideoHintDefaults();", "SDL3 game metadata and hints before video initialization")
-    if init.index("Sys_SDL_ApplyVideoHintDefaults();") >= init.index("SDL_InitSubSystem(SDL_INIT_VIDEO)"):
+    require(startup, "Sys_SDL_ApplyVideoHintDefaults();", "SDL3 game metadata and hints before video initialization")
+    if startup.index("Sys_SDL_ApplyVideoHintDefaults();") >= startup.index("SDL_InitSubSystem(SDL_INIT_VIDEO)"):
         raise AssertionError("SDL3 game metadata and hints must be applied before video initialization")
     require(summary, "OPENQ4_FORCE_X11=%s OPENQ4_WAYLAND_DISABLE_LIBDECOR=%s OPENQ4_WAYLAND_PREFER_LIBDECOR=%s OPENQ4_WAYLAND_SYNC_WINDOW_OPS=%s", "SDL3 Linux video environment summary")
     require(summary, "SDL3: Wayland hints:", "SDL3 Wayland hint diagnostics")
@@ -119,7 +127,7 @@ def validate_sdl3_highdpi_contract() -> None:
     require(display_list, "orientation %s/%s", "SDL3 display orientation log")
     require(display_modes_command, "SDL_GetDisplayContentScale(display)", "SDL3 listDisplayModes display scale diagnostics")
     require(display_modes_command, "SDL3_FormatDisplayMode(mode, modeText, sizeof(modeText))", "SDL3 listDisplayModes pixel density diagnostics")
-    require(init, "SDL_WINDOW_HIGH_PIXEL_DENSITY", "SDL3 high pixel density window creation")
+    require(create_window, "SDL_WINDOW_HIGH_PIXEL_DENSITY", "SDL3 high pixel density window creation")
     require(syscon, "SDL_WINDOW_HIGH_PIXEL_DENSITY", "SDL3 system console high pixel density window creation")
     require(console_layout, "SDL_GetWindowSize( s_consoleWindow.window, &width, &height )", "SDL3 system console logical window size")
     require(console_layout, "Posix_ConsoleApplyLogicalPresentation( width, height );", "SDL3 system console logical presentation refresh")
@@ -144,14 +152,23 @@ def validate_sdl3_highdpi_contract() -> None:
     require(mouse_capture_diagnostics, "SDL3 mouse capture diagnostics: iteration %d/%d", "SDL3 mouse capture diagnostics iteration log")
     require(mouse_capture_diagnostics, "IN_ActivateMouse();", "SDL3 mouse capture diagnostics repeated activate")
     require(mouse_capture_diagnostics, "IN_DeactivateMouse();", "SDL3 mouse capture diagnostics repeated deactivate")
-    require(init, "optional repeat count is clamped to 1..8", "SDL3 mouse capture diagnostics command help")
+    require(startup, "optional repeat count is clamped to 1..8", "SDL3 mouse capture diagnostics command help")
 
     require(transform, "SDL_GetWindowSize(s_sdlWindow, &windowWidth, &windowHeight)", "SDL3 GUI mouse transform")
     require(transform, "SDL_GetWindowSizeInPixels(s_sdlWindow, &pixelWidth, &pixelHeight)", "SDL3 GUI mouse transform")
     require(transform, "transform.windowToPixelX", "SDL3 window-to-pixel mouse scale")
     require(refresh, "SDL_GetWindowSizeInPixels(s_sdlWindow, &pixelWidth, &pixelHeight)", "SDL3 placement refresh")
-    require(refresh, "glConfig.vidWidth = pixelWidth;", "SDL3 framebuffer width refresh")
-    require(refresh, "glConfig.vidHeight = pixelHeight;", "SDL3 framebuffer height refresh")
+    # The framebuffer size is published through one setter that writes the
+    # shared engine window state; the static renderer keeps its glConfig mirror
+    # and module renderers poll the same state through the window services.
+    set_vid_size = function_body(source, "static void SDL3_SetVidSize( int width, int height ) {")
+    require(refresh, "SDL3_SetVidSize( pixelWidth, pixelHeight );", "SDL3 framebuffer size refresh")
+    require(set_vid_size, "engineWindowState.vidWidth = width;", "SDL3 framebuffer width refresh")
+    require(set_vid_size, "engineWindowState.vidHeight = height;", "SDL3 framebuffer height refresh")
+    require(set_vid_size, "glConfig.vidWidth = width;", "SDL3 framebuffer width mirror")
+    require(set_vid_size, "glConfig.vidHeight = height;", "SDL3 framebuffer height mirror")
+    require(gl_module, "glConfig.vidWidth = windowInfo.pixelWidth;", "renderer-gl module framebuffer width poll")
+    require(gl_module, "glConfig.vidHeight = windowInfo.pixelHeight;", "renderer-gl module framebuffer height poll")
 
     require(consume, "const float accumulated = delta + remainder;", "SDL3 fractional mouse accumulator")
     require(consume, "if (!std::isfinite(delta) || !std::isfinite(remainder))", "SDL3 fractional mouse accumulator finite guard")

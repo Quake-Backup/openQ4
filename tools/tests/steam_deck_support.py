@@ -170,7 +170,15 @@ def validate_sdl3_input_and_lifecycle() -> None:
     perf = function_body(source, "static void SDL3_ApplySteamDeckPerformanceDefaults(void) {")
     diagnostics = function_body(source, "static void SDL3_ListControllers_f(const idCmdArgs &args) {")
     gamepad_details = function_body(source, "static void SDL3_PrintActiveGamepadDetails(void) {")
-    init = function_body(source, "bool GLimp_Init(glimpParms_t parms) {")
+    # GLimp_Init moved into the renderer-gl module and now delegates window and
+    # input startup to this window-services entry point, which the module calls
+    # before it creates any GL context.
+    startup = function_body(source, "static bool SDL3_WindowServices_PrepareWindowSystem(void) {")
+    require(
+        read("src/renderer/OpenGL/gl_ContextSDL3.cpp"),
+        "s_glWindowServices->PrepareWindowSystem()",
+        "renderer-gl module window/input startup handoff",
+    )
 
     for token in (
         'idCVar in_joystickLowBatteryRumbleThreshold("in_joystickLowBatteryRumbleThreshold"',
@@ -236,7 +244,7 @@ def validate_sdl3_input_and_lifecycle() -> None:
         require(event_watch, token, "SDL3 lifecycle event watch")
     require(register_watch, "SDL_AddEventWatch(SDL3_LifecycleEventWatch, NULL)", "SDL3 lifecycle event watch registration")
     require(unregister_watch, "SDL_RemoveEventWatch(SDL3_LifecycleEventWatch, NULL)", "SDL3 lifecycle event watch removal")
-    require(init, "SDL3_RegisterLifecycleEventWatch();", "SDL3 lifecycle event watch startup")
+    require(startup, "SDL3_RegisterLifecycleEventWatch();", "SDL3 lifecycle event watch startup")
     require(source, "SDL3_UnregisterLifecycleEventWatch();", "SDL3 lifecycle event watch shutdown")
     require(pump, "SDL3_ProcessPendingLifecycleEvents(Sys_Milliseconds());", "SDL3 pending lifecycle processing")
     require(process_pending, "SDL3_HandleAppBackgroundTransition(eventTime, \"event watch\")", "SDL3 pending background processing")
@@ -260,8 +268,8 @@ def validate_sdl3_input_and_lifecycle() -> None:
     require(perf, "SDL3_IsSteamDeckPlatformProfile()", "Steam Deck performance defaults")
     require(perf, "OPENQ4_GLOBAL_DEFAULT_MAXFPS = 240", "Steam Deck performance defaults")
     require(perf, "com_maxfps.SetInteger(deckFrameCap);", "Steam Deck performance defaults")
-    require(init, "SDL3_ApplySteamDeckPerformanceDefaults();", "SDL3 startup performance defaults")
-    require(init, 'cmdSystem->AddCommand("listControllers"', "SDL3 controller diagnostics command")
+    require(startup, "SDL3_ApplySteamDeckPerformanceDefaults();", "SDL3 startup performance defaults")
+    require(startup, 'cmdSystem->AddCommand("listControllers"', "SDL3 controller diagnostics command")
 
     for token in (
         "SDL3 controller diagnostics",

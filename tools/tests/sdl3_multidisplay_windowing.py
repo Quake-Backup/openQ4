@@ -65,7 +65,14 @@ def validate_shared_backend_contract() -> None:
     display_event = function_body(source, "static void SDL3_HandleDisplayEvent(const SDL_DisplayEvent &event) {")
     window_event = function_body(source, "static void SDL3_HandleWindowEvent(const SDL_WindowEvent &event, int eventTime) {")
     pump = function_body(source, "bool Sys_SDL_PumpEvents(void) {")
-    init = function_body(source, "bool GLimp_Init(glimpParms_t parms) {")
+    # GLimp_Init moved into the renderer-gl module; the backend now owns window
+    # and input startup (PrepareWindowSystem) and render-window creation
+    # (CreateWindowForFramebuffer), which the module drives across the seam.
+    startup = function_body(source, "static bool SDL3_WindowServices_PrepareWindowSystem(void) {")
+    create_window = function_body(
+        source,
+        "static bool SDL3_WindowServices_CreateWindowForFramebuffer(const renderFramebufferDesc_t *desc, const renderWindowParms_t *parms,",
+    )
 
     require(source, 'static idCVar r_screen("r_screen"', "SDL3 monitor selection cvar")
     require(source, 'static idCVar r_multiScreen("r_multiScreen"', "SDL3 multi-screen span cvar")
@@ -79,8 +86,8 @@ def validate_shared_backend_contract() -> None:
     require(display_list, "SDL_GetDisplayContentScale(display)", "SDL3 display diagnostics scale")
     require(display_list, "SDL_GetCurrentDisplayOrientation(display)", "SDL3 display diagnostics orientation")
     require(display_modes, "SDL_GetFullscreenDisplayModes(display, &modeCount)", "SDL3 mode diagnostics")
-    require(init, 'cmdSystem->AddCommand("listDisplays"', "SDL3 display diagnostic command")
-    require(init, 'cmdSystem->AddCommand("listDisplayModes"', "SDL3 mode diagnostic command")
+    require(startup, 'cmdSystem->AddCommand("listDisplays"', "SDL3 display diagnostic command")
+    require(startup, 'cmdSystem->AddCommand("listDisplayModes"', "SDL3 mode diagnostic command")
 
     require(query_desktop, "SDL_GetDesktopDisplayMode(display)", "shared desktop-mode query")
     require(query_desktop, "SDL_GetCurrentDisplayMode(display)", "shared current-mode desktop fallback")
@@ -106,8 +113,20 @@ def validate_shared_backend_contract() -> None:
     require(display_viewport, "const int64_t displayRight", "selected-display viewport signed-overflow guard")
     require(display_viewport, "SDL3_ClampViewportPixel(std::floor", "selected-display viewport floor clamp")
     require(display_viewport, "SDL3_ClampViewportPixel(std::ceil", "selected-display viewport ceil clamp")
-    require(display_viewport, "glConfig.uiViewportX", "selected-display viewport x")
-    require(display_viewport, "glConfig.uiViewportWidth", "selected-display viewport width")
+    # The viewport is published through one setter that writes the shared
+    # engine window state; the static renderer keeps its glConfig mirror and
+    # module renderers poll the same state through the window services.
+    set_ui_viewport = function_body(source, "static void SDL3_SetUIViewport( int x, int y, int width, int height ) {")
+    require(display_viewport, "SDL3_SetUIViewport( pixelLeft, pixelTop, viewportWidth, viewportHeight );", "selected-display viewport publication")
+    require(set_ui_viewport, "engineWindowState.uiViewportX = x;", "selected-display viewport x")
+    require(set_ui_viewport, "engineWindowState.uiViewportWidth = width;", "selected-display viewport width")
+    require(set_ui_viewport, "glConfig.uiViewportX = x;", "selected-display viewport x mirror")
+    require(set_ui_viewport, "glConfig.uiViewportWidth = width;", "selected-display viewport width mirror")
+    require(
+        read("src/renderer/OpenGL/gl_ContextSDL3.cpp"),
+        "glConfig.uiViewportX = windowInfo.uiViewportX;",
+        "renderer-gl module selected-display viewport poll",
+    )
 
     require(screen_parms, "SDL3_SnapshotCurrentWindowedPlacement();", "windowed placement preservation before fullscreen")
     require(screen_parms, "r_multiScreen.GetInteger() == 1", "multi-screen span request")
@@ -153,8 +172,10 @@ def validate_shared_backend_contract() -> None:
     require(pump, "SDL3_HandleDisplayEvent(event.display);", "SDL3 process-wide display event handling")
     require_before(pump, "SDL3_HandleDisplayEvent(event.display);", "SDL3_EventTargetsGameWindow(event)", "display events handled before per-window filtering")
 
-    require(init, "SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN", "hidden SDL3 render-window startup")
-    reject(init, "Sys_DestroySplash();", "SDL3 startup splash must survive until render window handoff")
+    require(create_window, "SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN", "hidden SDL3 render-window startup")
+    require(create_window, "requestedSurfaceKind == RENDER_SURFACE_VULKAN ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL", "SDL3 render-window surface-kind selection")
+    reject(startup, "Sys_DestroySplash();", "SDL3 startup splash must survive until render window handoff")
+    reject(create_window, "Sys_DestroySplash();", "SDL3 startup splash must survive until render window handoff")
 
 
 def validate_platform_wrappers() -> None:

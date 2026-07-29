@@ -479,6 +479,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "startup_language_override.py",
         root / "tools" / "tests" / "ui_embedded_icons.py",
         root / "tools" / "tests" / "validation_hardening.py",
+        root / "tools" / "tests" / "vk_shader_header_pin.py",
         root / "tools" / "tests" / "vscode_fast_build.py",
     ]
     for test_script in tests:
