@@ -1027,6 +1027,13 @@ else
       shared_c_args += fp_arg
     endif
   endforeach
+  # src/idlib/Lib.h keys assert()/verify() off _DEBUG, which MSVC supplies via
+  # /MTd but GCC and Clang never do here, so idlib's ownership and alignment
+  # checks are dead on Linux and macOS unless this is asked for.
+  if get_option('idlib_asserts')
+    shared_cpp_args += ['-DOPENQ4_ENABLE_IDLIB_ASSERTS=1']
+    shared_c_args += ['-DOPENQ4_ENABLE_IDLIB_ASSERTS=1']
+  endif
 endif
 
 if host_system == 'darwin'
@@ -1074,6 +1081,7 @@ game_include_dirs = [
 ]
 engine_include_dirs = [root_include_dir, src_include_dir]
 game_idlib_include_dirs = [root_include_dir, src_include_dir]
+game_idlib_mp_include_dirs = [root_include_dir, src_include_dir]
 bse_client_include_dirs = [root_include_dir, src_include_dir, src_bse_include_dir]
 
 if needs_game_headers
@@ -1081,6 +1089,9 @@ if needs_game_headers
   staged_mpgame_include_dir = include_directories(game_stage_mpgame_include_rel)
   engine_include_dirs += [staged_game_include_dir]
   game_idlib_include_dirs += [staged_game_include_dir]
+  # the multiplayer idlib flavour resolves precompiled.h's
+  # "../mpgame/Game_local.h" through the staged mpgame tree
+  game_idlib_mp_include_dirs += [staged_mpgame_include_dir, staged_game_include_dir]
   game_include_dirs += [staged_game_include_dir, staged_mpgame_include_dir]
   bse_client_include_dirs += [staged_game_include_dir]
 endif
@@ -1310,6 +1321,13 @@ elif host_system == 'darwin'
       game_module_link_args += hardening_arg
     endif
   endforeach
+  # Darwin peer of the Linux version script and the Windows .def files: a game
+  # module carries its own idlib and its own flavour of the game types, so
+  # exporting anything beyond the entry point makes two disagreeing definitions
+  # of the same symbol visible to the loader at once (issue #90).
+  darwin_game_module_export_list = files('tools/build/darwin_game_module.exp')
+  game_module_link_args += '-Wl,-exported_symbols_list,' + darwin_game_module_export_list[0].full_path()
+  game_module_link_depends += darwin_game_module_export_list
 elif host_system == 'linux'
   game_module_link_args += linux_module_link_hardening_args
   if cpp.has_link_argument('-Wl,-z,defs')
@@ -1321,7 +1339,14 @@ elif host_system == 'linux'
 endif
 
 game_idlib_library = disabler()
+game_idlib_library_mp = disabler()
 if build_engine or build_games
+  # One archive per game flavour. src/idlib/precompiled.h includes
+  # mpgame/Game_local.h under -DGAME_MPAPI and game/Game_local.h otherwise, and
+  # every idlib translation unit includes precompiled.h. Linking one
+  # single-player-flavoured archive into both modules therefore put two
+  # different definitions of the same game types into each multiplayer binary,
+  # which is an ODR violation the linker resolves however it likes.
   game_idlib_library = static_library(
     'openq4_game_idlib',
     game_idlib_sources,
@@ -1331,7 +1356,19 @@ if build_engine or build_games
     cpp_pch: game_idlib_pch_headers,
     override_options: game_target_override_options,
     pic: host_system == 'linux',
-    gnu_symbol_visibility: host_system == 'linux' ? 'hidden' : 'default',
+    gnu_symbol_visibility: host_system == 'windows' ? 'default' : 'hidden',
+    install: false,
+  )
+  game_idlib_library_mp = static_library(
+    'openq4_game_idlib_mp',
+    game_idlib_sources,
+    include_directories: game_idlib_mp_include_dirs,
+    cpp_args: game_common_cpp_args + ['-DGAME_MPAPI'],
+    c_args: game_common_c_args,
+    cpp_pch: game_idlib_pch_headers,
+    override_options: game_target_override_options,
+    pic: host_system == 'linux',
+    gnu_symbol_visibility: host_system == 'windows' ? 'default' : 'hidden',
     install: false,
   )
 endif

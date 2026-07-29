@@ -28,6 +28,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../idlib/precompiled.h"
 #include "posix_public.h"
 #include "../../renderer/RendererStartupDiagnostics.h"
+#include "../../framework/GameModuleDiagnostics.h"
 
 // module-only clients carry no renderer TUs; the crash breadcrumb loses the
 // startup-phase detail rather than reaching into the module from a signal
@@ -183,15 +184,20 @@ static void sig_handler( int signum, siginfo_t *info, void *context ) {
 	Posix_WriteSignalText( "openQ4: last renderer startup phase: " );
 	Posix_WriteSignalText( Posix_RendererStartupPhaseName() );
 	Posix_WriteSignalText( "\n" );
+	Posix_WriteSignalText( "openQ4: last game module phase: " );
+	Posix_WriteSignalText( Com_GameModuleLoadPhaseSignalName() );
+	Posix_WriteSignalText( "\n" );
 
 	// Mirror the stderr breadcrumb into the save-path fatal file so support
 	// bundles capture signal deaths. Pure memory ops plus the raw
 	// open/write/close appender keep this async-signal-safe.
-	char breadcrumb[ 320 ];
+	char breadcrumb[ 448 ];
 	strcpy( breadcrumb, "fatal signal " );
 	strcat( breadcrumb, Posix_SignalName( signum ) );
 	strcat( breadcrumb, "; last renderer startup phase: " );
 	strcat( breadcrumb, Posix_RendererStartupPhaseName() );
+	strcat( breadcrumb, "; last game module phase: " );
+	strcat( breadcrumb, Com_GameModuleLoadPhaseSignalName() );
 	Posix_AppendFatalBreadcrumbRaw( breadcrumb );
 
 	_exit( 128 + signum );

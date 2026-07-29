@@ -86,6 +86,189 @@ idCVar image_ignoreHighQuality(
 	"0",
 	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
 	"ignore material highquality / uncompressed image usage hints" );
+idCVar image_picmip(
+	"image_picmip",
+	"0",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
+	"reduce the diffuse layer of materials by this many mip levels; 0 = full resolution, each step halves the texture. Normal, specular, light, sky, font, and 2D images keep their authored size",
+	0,
+	MAX_IMAGE_PICMIP );
+idCVar image_picmipFilter(
+	"image_picmipFilter",
+	"1",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
+	"image paths image_picmip may reduce:\n 0: every diffuse texture\n 1: textures/* (world surfaces)\n 2: models/* (characters, weapons, props)\n 4: any other namespace\nAdd values to combine categories.",
+	0,
+	PICMIP_FILTER_MASK );
+idCVar image_picmipMinSize(
+	"image_picmipMinSize",
+	"32",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
+	"image_picmip stops reducing a texture once its longest axis reaches this size",
+	1,
+	4096 );
+
+/*
+===============
+R_ImagePicmipFilterAllows
+
+image_picmip is scoped by namespace the same way Quake 3 style picmip filters
+scope shader paths. openQ4 classifies the image rather than the material because
+one idImage is shared by every material that names it, and because the diffuse
+usage check already keeps GUI, font, light, and sky images out of range.
+===============
+*/
+static bool R_ImagePathStartsWith( const char *name, const char *dir, int dirLength ) {
+	return idStr::Icmpn( name, dir, dirLength ) == 0 && ( name[dirLength] == '/' || name[dirLength] == '\\' );
+}
+
+// Spelled out rather than deferred to <ctype.h>, whose classifiers are undefined
+// for bytes above 0x7f under a signed char. Image names are matched as plain
+// ASCII everywhere else in the pipeline.
+static bool R_IsImageProgramNameChar( char c ) {
+	return ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) || ( c >= '0' && c <= '9' ) || c == '_';
+}
+
+static bool R_ImagePicmipFilterAllows( const char *name ) {
+	const int filter = image_picmipFilter.GetInteger() & PICMIP_FILTER_MASK;
+	if ( filter == PICMIP_FILTER_ALL ) {
+		return true;
+	}
+	if ( name == NULL || name[0] == '\0' ) {
+		return false;
+	}
+
+	// An image program names its subject as the first operand, so unwrap the
+	// leading function calls: addnormals( textures/a, heightmap( textures/b, 4 ) )
+	// is classified as textures/a. Scanning to the last '(' or ',' instead would
+	// land on a numeric argument and misfile the whole image.
+	const char *path = name;
+	for ( ;; ) {
+		const char *probe = path;
+		while ( R_IsImageProgramNameChar( *probe ) ) {
+			probe++;
+		}
+		if ( probe == path || *probe != '(' ) {
+			break;
+		}
+		path = probe + 1;
+		while ( *path == ' ' || *path == '\t' ) {
+			path++;
+		}
+	}
+
+	if ( R_ImagePathStartsWith( path, "textures", 8 ) ) {
+		return ( filter & PICMIP_FILTER_TEXTURES ) != 0;
+	}
+	if ( R_ImagePathStartsWith( path, "models", 6 ) ) {
+		return ( filter & PICMIP_FILTER_MODELS ) != 0;
+	}
+	return ( filter & PICMIP_FILTER_OTHER ) != 0;
+}
+
+/*
+===============
+R_GetImageDownsizePolicy
+
+The one place the image reduction cvars are turned into a policy. Every loader
+path resolves its target size through this, and the generated .bimage cache key
+is derived from it, so a cvar change always produces a cache miss rather than a
+stale texture at the previous size.
+===============
+*/
+void R_GetImageDownsizePolicy( const char *name, textureUsage_t usage, bool allowDownSize, imageDownsizePolicy_t &policy ) {
+	policy = imageDownsizePolicy_t();
+
+	// 'nopicmip' materials and the presentation namespaces opt out entirely
+	if ( !allowDownSize ) {
+		return;
+	}
+
+	if ( usage == TD_SPECULAR && image_downSizeSpecular.GetInteger() != 0 ) {
+		policy.maxDimension = image_downSizeSpecularLimit.GetInteger();
+	} else if ( usage == TD_BUMP && image_downSizeBump.GetInteger() != 0 ) {
+		policy.maxDimension = image_downSizeBumpLimit.GetInteger();
+	} else if ( image_downSize.GetInteger() != 0 ) {
+		policy.maxDimension = image_downSizeLimit.GetInteger();
+	}
+	if ( policy.maxDimension < 0 ) {
+		policy.maxDimension = 0;
+	}
+
+	// picmip is deliberately narrower than the downsize limits: it only touches
+	// the diffuse layer, so bump and specular detail, lighting, sky, decals, and
+	// every 2D surface keep their authored resolution.
+	if ( usage == TD_DIFFUSE && R_ImagePicmipFilterAllows( name ) ) {
+		policy.mipShift = Max( 0, image_picmip.GetInteger() );
+	}
+	policy.minDimension = Max( 1, image_picmipMinSize.GetInteger() );
+}
+
+/*
+===============
+R_ImageReductionCvarsChanged
+
+One list, consumed by both the startup priming and the per-frame check so the
+two can never drift apart.
+===============
+*/
+static bool R_ImageReductionCvarsChanged( bool clear ) {
+	idCVar *const reductionCvars[] = {
+		&image_picmip, &image_picmipFilter, &image_picmipMinSize,
+		&image_downSize, &image_downSizeLimit,
+		&image_downSizeSpecular, &image_downSizeSpecularLimit,
+		&image_downSizeBump, &image_downSizeBumpLimit
+	};
+
+	bool changed = false;
+	for ( int i = 0; i < static_cast<int>( sizeof( reductionCvars ) / sizeof( reductionCvars[0] ) ); i++ ) {
+		if ( reductionCvars[i]->IsModified() ) {
+			changed = true;
+			if ( clear ) {
+				reductionCvars[i]->ClearModified();
+			}
+		}
+	}
+
+	return changed;
+}
+
+/*
+===============
+idImageManager::PrimeCvars
+
+Every cvar is born CVAR_MODIFIED, so without this the first rendered frame of
+every launch would see nine "changed" reduction cvars and reload every image for
+nothing. Called once the intrinsic images exist and the real values are in.
+===============
+*/
+void idImageManager::PrimeCvars() {
+	R_ImageReductionCvarsChanged( true );
+}
+
+/*
+===============
+idImageManager::CheckCvars
+
+The image reduction cvars change the pixels a texture is built from, so they can
+only take effect through a reload. Doing it here means a console change is
+visible immediately instead of silently waiting for the next vid_restart.
+===============
+*/
+void idImageManager::CheckCvars() {
+	if ( !R_ImageReductionCvarsChanged( true ) ) {
+		return;
+	}
+
+	// vid_restart already purges and reloads everything, and a level load is
+	// about to touch every image anyway, so do not duplicate that work here.
+	if ( insideLevelLoad ) {
+		return;
+	}
+
+	common->Printf( "Texture reduction changed, reloading images...\n" );
+	ReloadImages( true );
+}
 
 static void R_NormalizeInternalImageName( idStr& name ) {
 	// Runtime render targets are referenced from materials with option hashes
@@ -879,6 +1062,10 @@ void idImageManager::Init() {
 	cmdSystem->AddCommand( "listImages", R_ListImages_f, CMD_FL_RENDERER, "lists images" );
 	cmdSystem->AddCommand( "imageDDSSelfTest", R_ImageDDSSelfTest_f, CMD_FL_RENDERER, "validates DDS naming and BC7 metadata handling" );
 	cmdSystem->AddCommand( "combineCubeImages", R_CombineCubeImages_f, CMD_FL_RENDERER, "combines six images for roq compression" );
+
+	// swallow the born-modified state of the reduction cvars so the first
+	// rendered frame does not reload every image for a change nobody made
+	PrimeCvars();
 
 	// should forceLoadImages be here?
 }

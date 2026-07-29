@@ -298,7 +298,7 @@ def validate_posix_console_guards() -> None:
     handle_key = function_body(source, "static bool Posix_ConsoleHandleKey( const SDL_KeyboardEvent &keyEvent ) {")
     console_create = function_body(source, "static bool Posix_ConsoleCreateWindow( void ) {")
     process_event = function_body(source, "bool Posix_ConsoleProcessEvent( const void *eventData ) {")
-    draw_button = function_body(source, "static void Posix_ConsoleDrawButton( const SDL_FRect &rect, const char *label ) {")
+    draw_button = function_body(source, "static void Posix_ConsoleDrawButton( int button ) {")
     render = function_body(source, "static void Posix_ConsoleRender( void ) {")
     queue = function_body(source, "static void Posix_ConsoleQueueCommand( const char *command ) {")
     splash_create = function_body(source, "void Sys_ShowSplash( void ) {")

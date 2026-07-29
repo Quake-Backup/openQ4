@@ -975,7 +975,8 @@ def main() -> None:
     ):
         require(win_net, signature, "Win64-safe Winsock helper signature")
     require(win_local, "LRESULT CALLBACK MainWndProc", "pointer-sized main window result")
-    if win_syscon.count("LRESULT CALLBACK") != 3:
+    # Splash, console, input-line and button-subclass procedures.
+    if win_syscon.count("LRESULT CALLBACK") != 4:
         raise AssertionError("All system-console window procedures must return pointer-sized LRESULT")
     reject(win_syscon, "LONG WINAPI ConWndProc", "truncated system-console window result")
     require(win_main, "struct __stat64 st;", "64-bit Windows file timestamp source")

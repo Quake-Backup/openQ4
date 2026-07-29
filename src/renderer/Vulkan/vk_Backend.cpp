@@ -1037,6 +1037,12 @@ void R_ARB2_Init( void ) {
 void RB_ResetARB2InteractionHandoffBreadcrumb( void ) {
 }
 
+void RB_ResetAppleGL21RouteCounters( void ) {
+}
+
+void RB_ReportAppleGL21RouteCounters( void ) {
+}
+
 void R_ReloadARBPrograms_f( const idCmdArgs &args ) {
 	(void)args;
 	common->Printf( "reloadARBprograms: not applicable under the Vulkan backend\n" );

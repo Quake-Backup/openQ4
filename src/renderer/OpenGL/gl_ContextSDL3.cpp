@@ -322,6 +322,25 @@ static void SDL3_LogGLContextAttributes(const int requestedMultiSamples, const i
 		multisampleBuffers,
 		gotMultisampleSamples ? "" : "<unreported> ",
 		multisampleSamples);
+
+	// Stencil shadow volumes need a stencil buffer, and a driver is free to
+	// hand back a visual without one. Nothing printed the achieved sizes, so
+	// "no shadows" was undiagnosable from a reporter log (issue #73).
+	int depthBits = 0;
+	int stencilBits = 0;
+	const bool gotDepthBits = s_glWindowServices->GetGLAttribute(RENDER_GLATTR_DEPTH_SIZE, &depthBits);
+	const bool gotStencilBits = s_glWindowServices->GetGLAttribute(RENDER_GLATTR_STENCIL_SIZE, &stencilBits);
+	common->Printf(
+		"SDL3: reported OpenGL framebuffer attributes: depthBits=%s%d stencilBits=%s%d hasStencilBuffer=%d\n",
+		gotDepthBits ? "" : "<unreported> ",
+		depthBits,
+		gotStencilBits ? "" : "<unreported> ",
+		stencilBits,
+		( gotStencilBits && stencilBits > 0 ) ? 1 : 0);
+	if (gotStencilBits && stencilBits <= 0) {
+		common->Warning(
+			"the OpenGL context has no stencil buffer; stencil shadow volumes cannot be drawn on this visual");
+	}
 }
 
 bool GLimp_Init(glimpParms_t parms) {

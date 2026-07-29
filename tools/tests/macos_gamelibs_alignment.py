@@ -165,6 +165,68 @@ def validate_companion_macos_contract() -> None:
         require(readme, token, "openQ4-game README macOS GameLibs contract")
 
 
+def validate_game_module_symbol_discipline() -> None:
+    """Issue #90: darwin was the only host that let a game module export its
+    whole symbol table, and both modules shared one single-player-flavoured
+    idlib archive even though GAME_MPAPI changes which Game_local.h every idlib
+    translation unit compiles against."""
+
+    engine_meson = read("meson.build")
+    module_meson = read("content/baseoq4/meson.build")
+    engine_exports = read("tools/build/darwin_game_module.exp")
+
+    require(engine_exports, "_GetGameAPI", "darwin game module export list")
+    for line in engine_exports.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped != "_GetGameAPI":
+            raise AssertionError(f"darwin game module export list exports {stripped!r} beyond the entry point")
+
+    for token in (
+        "game_idlib_library_mp = static_library(",
+        "'openq4_game_idlib_mp',",
+        "game_common_cpp_args + ['-DGAME_MPAPI'],",
+        "game_idlib_mp_include_dirs",
+        "darwin_game_module_export_list = files('tools/build/darwin_game_module.exp')",
+        "'-Wl,-exported_symbols_list,' + darwin_game_module_export_list[0].full_path()",
+    ):
+        require(engine_meson, token, "engine per-flavour game idlib and darwin export list")
+
+    if module_meson.count("link_with: game_idlib_library_mp,") != 3:
+        raise AssertionError("every multiplayer game module target must link the multiplayer idlib archive")
+    if module_meson.count("link_with: game_idlib_library,") != 3:
+        raise AssertionError("every single-player game module target must link the single-player idlib archive")
+    if module_meson.count("gnu_symbol_visibility: 'hidden',") != 4:
+        raise AssertionError("darwin and linux game modules must both hide non-exported symbols")
+
+    companion_meson = read_game_libs("src/meson.build")
+    for token in (
+        "idlib_mp = static_library(",
+        "'idLibMP',",
+        "game_mpapi_define_arg",
+        "darwin_game_module_export_list",
+        "'-Wl,-exported_symbols_list,'",
+        "gnu_symbol_visibility : 'hidden',",
+    ):
+        require(companion_meson, token, "openQ4-game per-flavour idlib and darwin export list")
+
+    # _DEBUG changes shared struct layouts (srfTriangles_t::description,
+    # Heap.h's MemScopedTag). The engine never defines it on Clang, so the
+    # companion build must not either.
+    reject(companion_meson, "common_defines += ['_DEBUG']", "companion _DEBUG parity with the engine")
+
+    # Excluding the SSE sources on x86-64 left the archive without the
+    # idSIMD_SSE2 definition idSIMD::InitProcessor constructs there.
+    reject(companion_meson, "'idlib/math/Simd_SSE2.cpp',", "companion x86-64 SIMD source coverage")
+
+    lib_header = read("src/idlib/Lib.h")
+    require(
+        lib_header,
+        "#if defined( _DEBUG ) || defined( OPENQ4_ENABLE_IDLIB_ASSERTS )",
+        "idlib assert gate reachable on Clang",
+    )
+    require(read("meson_options.txt"), "'idlib_asserts',", "idlib assert build option")
+
+
 def validate_build_string_contract() -> None:
     sys_public = read("src/sys/sys_public.h")
     reject(sys_public, "MacOSX-universal", "macOS build string contract")
@@ -301,6 +363,7 @@ def main() -> None:
     validate_engine_interface_header_parity()
     validate_companion_boundary()
     validate_companion_macos_contract()
+    validate_game_module_symbol_discipline()
     validate_build_string_contract()
     validate_metadata_contract()
     validate_phase8_docs()

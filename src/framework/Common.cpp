@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../bse/BSE_API.h"
 #include "../imagetools/ImageTools.h"
 #include "../renderer/RendererModule.h"
+#include "GameModuleDiagnostics.h"
 #include "RenderDoc.h"
 
 #if defined( USE_SDL3 )
@@ -3617,10 +3618,39 @@ void Com_ReloadGameModule_f( const idCmdArgs &args ) {
 	}
 #endif
 
-	GLimp_PreserveWindowOnShutdown( true );
-	commonLocal.ShutdownGame( true );
-	GLimp_PreserveWindowOnShutdown( false );
-	commonLocal.InitGame();
+	// A module swap tears down and rebuilds the renderer, the sound system and
+	// the whole decl set in the middle of a menu click. Without a guard an
+	// ERP_DROP anywhere in there unwinds all the way to idCommonLocal::Frame,
+	// which swallows it silently and leaves a half-built engine with no clue in
+	// the log about which half failed.
+	idStr swapError;
+	bool swapFailed = false;
+	try {
+		GLimp_PreserveWindowOnShutdown( true );
+		commonLocal.ShutdownGame( true );
+		GLimp_PreserveWindowOnShutdown( false );
+		commonLocal.InitGame();
+	}
+	catch( idException &ex ) {
+		GLimp_PreserveWindowOnShutdown( false );
+		swapFailed = true;
+		swapError = ex.error;
+	}
+
+	if ( swapFailed ) {
+		cvarSystem->SetCVarString( "com_nextGameModule", "" );
+		common->Warning(
+			"game module swap to '%s' failed at phase '%s': %s",
+			nextModule,
+			Com_GameModuleLoadPhaseName( Com_GetGameModuleLoadPhase() ),
+			swapError.c_str() );
+		common->Printf( "============= ReloadGameModule failed ============\n" );
+		// Whatever was queued to run after the swap assumed the new module
+		// came up. Do not run it; the next successful swap overwrites it.
+		session->StartMenu();
+		fileSystem->SetIsFileLoadingAllowed( false );
+		return;
+	}
 
 	common->Printf( "============= ReloadGameModule end ===============\n" );
 
@@ -5194,8 +5224,45 @@ void idCommonLocal::Async( void ) {
 	}
 }
 
+// Mirror of si_gameTypeArgs in the GameLibs repo (src/mpgame/mp/GameTypes.cpp),
+// minus its leading "singleplayer" entry. The engine has to choose a game module
+// before any module is loaded, so it cannot ask the game for its own table;
+// tools/tests/game_type_module_selection.py cross-checks the two lists.
+//
+// This is an allowlist on purpose. "anything that is not singleplayer is
+// multiplayer" meant a typo, a stale config or a mod-specific value booted
+// game_mp and then forced a full renderer-tearing module swap on the first
+// New Game.
+static const char *openQ4_multiplayerGameTypes[] = {
+	"DM",
+	"Tourney",
+	"Team DM",
+	"CTF",
+	"One Flag CTF",
+	"Arena CTF",
+	"Arena One Flag CTF",
+	"DeadZone",
+	"Duel",
+	"Clan Arena",
+	"Freeze Tag",
+	"Red Rover",
+	"Overload",
+	"Harvester",
+	"Domination",
+	"Attack Defend",
+	NULL
+};
+
 static bool openQ4_IsMultiplayerGameType( const char *gameType ) {
-	return gameType && gameType[0] && idStr::Icmp( gameType, "singleplayer" ) != 0;
+	if ( gameType == NULL || gameType[0] == '\0' ) {
+		return false;
+	}
+	for ( int i = 0; openQ4_multiplayerGameTypes[i] != NULL; i++ ) {
+		if ( idStr::Icmp( gameType, openQ4_multiplayerGameTypes[i] ) == 0 ) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static bool openQ4_IsValidGameModuleName( const char *moduleName ) {
@@ -5210,7 +5277,14 @@ static const char *openQ4_SelectGameModuleBaseName( void ) {
 	}
 
 	const char *gameType = cvarSystem->GetCVarString( "si_gameType" );
+#ifdef ID_DEDICATED
+	// A dedicated server has no single-player mode at all (StartNewGame refuses
+	// there), so keep the historical "anything but singleplayer" reading rather
+	// than sending an unrecognised gametype to the single-player module.
+	return ( gameType != NULL && idStr::Icmp( gameType, "singleplayer" ) == 0 ) ? "game_sp" : "game_mp";
+#else
 	return openQ4_IsMultiplayerGameType( gameType ) ? "game_mp" : "game_sp";
+#endif
 }
 
 #if defined( _M_X64 ) || defined( __x86_64__ )
@@ -5293,6 +5367,61 @@ void idCommonLocal::DetachBSE( void ) {
 #endif
 }
 
+static volatile sig_atomic_t com_lastGameModuleLoadPhase = GAME_MODULE_PHASE_IDLE;
+
+static gameModuleLoadPhase_t Com_NormalizeGameModuleLoadPhase( sig_atomic_t phase ) {
+	if ( phase < GAME_MODULE_PHASE_IDLE || phase >= GAME_MODULE_PHASE_COUNT ) {
+		return GAME_MODULE_PHASE_IDLE;
+	}
+	return static_cast<gameModuleLoadPhase_t>( phase );
+}
+
+const char *Com_GameModuleLoadPhaseName( gameModuleLoadPhase_t phase ) {
+	switch ( phase ) {
+	case GAME_MODULE_PHASE_IDLE:
+		return "idle";
+	case GAME_MODULE_PHASE_LOCATE:
+		return "locating game module binary";
+	case GAME_MODULE_PHASE_BINARY_LOAD:
+		return "loading game module binary (static initializers)";
+	case GAME_MODULE_PHASE_RESOLVE_ENTRY_POINT:
+		return "resolving GetGameAPI";
+	case GAME_MODULE_PHASE_CALL_GET_GAME_API:
+		return "calling GetGameAPI";
+	case GAME_MODULE_PHASE_VERIFY_API_VERSION:
+		return "verifying game API version";
+	case GAME_MODULE_PHASE_GAME_INIT:
+		return "game->Init()";
+	case GAME_MODULE_PHASE_READY:
+		return "game module ready";
+	case GAME_MODULE_PHASE_GAME_SHUTDOWN:
+		return "game->Shutdown()";
+	case GAME_MODULE_PHASE_BINARY_UNLOAD:
+		return "unloading game module binary";
+	default:
+		return "unknown game module phase";
+	}
+}
+
+void Com_SetGameModuleLoadPhase( gameModuleLoadPhase_t phase ) {
+	com_lastGameModuleLoadPhase = static_cast<sig_atomic_t>( Com_NormalizeGameModuleLoadPhase( phase ) );
+}
+
+void Com_RecordGameModuleLoadPhase( gameModuleLoadPhase_t phase ) {
+	Com_SetGameModuleLoadPhase( phase );
+	if ( common != NULL ) {
+		common->Printf( "game module phase: %s\n", Com_GameModuleLoadPhaseName( phase ) );
+	}
+}
+
+gameModuleLoadPhase_t Com_GetGameModuleLoadPhase( void ) {
+	return Com_NormalizeGameModuleLoadPhase( com_lastGameModuleLoadPhase );
+}
+
+const char *Com_GameModuleLoadPhaseSignalName( void ) {
+	return Com_GameModuleLoadPhaseName( Com_NormalizeGameModuleLoadPhase( com_lastGameModuleLoadPhase ) );
+}
+
 /*
 =================
 idCommonLocal::LoadGameDLL
@@ -5310,6 +5439,8 @@ void idCommonLocal::LoadGameDLL( void ) {
 	gameImport_t	gameImport;
 	gameExport_t	gameExport;
 	GetGameAPI_t	GetGameAPI;
+
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_LOCATE );
 
 	const char *gameModuleBaseName = openQ4_SelectGameModuleBaseName();
 	openQ4_BuildGameModuleBinaryName( gameModuleBaseName, preferredGameModuleBinary );
@@ -5342,6 +5473,7 @@ void idCommonLocal::LoadGameDLL( void ) {
 		selectedModuleBinary,
 		dllPath );
 	common->DPrintf( "Loading game DLL: '%s'\n", dllPath );
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_BINARY_LOAD );
 	gameDLL = sys->DLL_Load( dllPath );
 	if ( !gameDLL ) {
 		common->Printf(
@@ -5353,6 +5485,7 @@ void idCommonLocal::LoadGameDLL( void ) {
 		return;
 	}
 
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_RESOLVE_ENTRY_POINT );
 	GetGameAPI = (GetGameAPI_t) Sys_DLL_GetProcAddress( gameDLL, "GetGameAPI" );
 	if ( !GetGameAPI ) {
 		Sys_DLL_Unload( gameDLL );
@@ -5377,8 +5510,19 @@ void idCommonLocal::LoadGameDLL( void ) {
 	gameImport.collisionModelManager	= ::collisionModelManager;
 	gameImport.bse						= ::bse;
 
-	gameExport							= *GetGameAPI( &gameImport );
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_CALL_GET_GAME_API );
+	const gameExport_t *gameExportPtr = GetGameAPI( &gameImport );
+	if ( gameExportPtr == NULL ) {
+		Sys_DLL_Unload( gameDLL );
+		gameDLL = NULL;
+		common->FatalError(
+			"game module '%s' returned no export table from GetGameAPI",
+			selectedModuleBinary );
+		return;
+	}
+	gameExport							= *gameExportPtr;
 
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_VERIFY_API_VERSION );
 	if ( gameExport.version != GAME_API_VERSION ) {
 		Sys_DLL_Unload( gameDLL );
 		gameDLL = NULL;
@@ -5394,9 +5538,11 @@ void idCommonLocal::LoadGameDLL( void ) {
 #endif
 
 	// initialize the game object
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_INIT );
 	if ( game != NULL ) {
 		game->Init();
 	}
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_READY );
 }
 
 /*
@@ -5407,12 +5553,14 @@ idCommonLocal::UnloadGameDLL
 void idCommonLocal::UnloadGameDLL( void ) {
 
 	// shut down the game object
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_SHUTDOWN );
 	if ( game != NULL ) {
 		game->Shutdown();
 	}
 
 #ifdef __DOOM_DLL__
 
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_BINARY_UNLOAD );
 	if ( gameDLL ) {
 		Sys_DLL_Unload( gameDLL );
 		gameDLL = NULL;
@@ -5422,6 +5570,7 @@ void idCommonLocal::UnloadGameDLL( void ) {
 	com_activeGameModule.SetString( "" );
 
 #endif
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_IDLE );
 }
 
 /*
@@ -5856,6 +6005,18 @@ void idCommonLocal::InitGame( void ) {
 	}
 
 	Common_MigrateLegacyConsoleAllowCVar();
+
+	// Unconditional, because the "This system qualifies for ..." banner above
+	// only prints on the run that detects the tier. Every later run -- which is
+	// every run a reporter actually sends -- said nothing about which quality
+	// tier, VRAM figure, preset or ambient floor produced the image they are
+	// asking about (issue #73).
+	Printf(
+		"Quality profile: com_machineSpec=%d com_videoRam=%d com_performancePreset='%s' r_forceAmbient=%.3f\n",
+		com_machineSpec.GetInteger(),
+		com_videoRam.GetInteger(),
+		com_performancePreset.GetString(),
+		cvarSystem->GetCVarFloat( "r_forceAmbient" ) );
 
 	// if any archived cvars are modified after this, we will trigger a writing of the config file
 	cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );

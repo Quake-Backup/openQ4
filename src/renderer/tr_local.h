@@ -1000,6 +1000,23 @@ extern idCVar r_crtCurvature;			// screen curvature
 extern idCVar r_crtChromatic;			// chromatic offset in pixel units
 extern idCVar r_msaaResolveDepth;		// include depth when resolving MSAA render targets
 extern idCVar r_msaaAlphaToCoverage;	// alpha-to-coverage for perforated materials on MSAA targets
+extern idCVar r_celShading;				// cel shading on model entities
+extern idCVar r_celShadingWorld;		// cel shading and edge outlines on world geometry
+extern idCVar r_celShadingBands;		// quantize interaction lighting into cel bands
+extern idCVar r_celShadingSteps;		// number of cel lighting bands
+extern idCVar r_celShadingSpecular;		// hard-edge specular highlights when cel shading
+extern idCVar r_celViewWeapon;			// allow cel shading on the first-person weapon
+extern idCVar r_celOutline;				// silhouette outline shells on cel-shaded models
+extern idCVar r_celOutlineWidth;		// model outline width in pixels
+extern idCVar r_celOutlineAlpha;		// model outline opacity
+extern idCVar r_celOutlineColor;		// model outline colour as "r g b a" (0-255)
+extern idCVar r_celViewWeaponOutlineWidth;	// first-person weapon outline width in pixels
+extern idCVar r_celViewWeaponOutlineAlpha;	// first-person weapon outline opacity
+extern idCVar r_celShadingWorldWidth;	// screen-space world outline radius in pixels
+extern idCVar r_celShadingWorldAlpha;	// screen-space world outline opacity
+extern idCVar r_celShadingWorldDepthThreshold;	// relative depth discontinuity threshold
+extern idCVar r_celShadingWorldNormalThreshold;	// surface crease threshold
+extern idCVar r_celShadingWorldDebug;	// draw world cel edges over a flat background
 
 extern idCVar r_ignore;					// used for random debugging without defining new vars
 extern idCVar r_ignore2;				// used for random debugging without defining new vars
@@ -1066,6 +1083,7 @@ extern idCVar r_rendererHiZ;	// allocate and build the modern scene Hi-Z depth p
 extern idCVar r_useSimpleInteraction;	// use the simpler Quake 4 interaction program pair as a compatibility fallback
 extern idCVar r_interactionColorMode;	// interaction color mode: 0 auto, 1 packed env16.xy, 2 vector env16/env17
 extern idCVar r_appleARB2Interactions;	// Apple GL 2.1: 0 automatic GLSL/simple fallback, 1 simple diagnostic, 2 full diagnostic, 3 emergency bypass
+extern idCVar r_forceAppleGL21InteractionCorridor;	// treat a GL 2.1 compatibility context as the Apple corridor on non-Apple hosts (reproduction only)
 extern idCVar r_shaderReport;			// shader diagnostics: 0 off, 1 summaries, 2 invalid-use warnings
 
 extern idCVar r_cgVertexProfile;		// arbvp1, vp20, vp30
@@ -1098,6 +1116,9 @@ extern idCVar r_useExternalShadows;		// 1 = skip drawing caps when outside the l
 extern idCVar r_useOptimizedShadows;	// 1 = use the dmap generated static shadow volumes
 extern idCVar r_useShadowVertexProgram;	// 1 = do the shadow projection in the vertex program on capable cards
 extern idCVar r_useShadowProjectedCull;	// 1 = discard triangles outside light volume before shadowing
+extern idCVar r_useTrueTypeFonts;		// 1 = render GUI text from the shipped .ttf faces instead of the bitmap atlases
+extern idCVar r_ttfFontResolution;		// multiplier on the rasterisation resolution of the TrueType glyph atlases
+extern idCVar r_ttfFontDebug;			// 1 = dump each TrueType glyph atlas to fs_savepath and log its layout
 extern idCVar r_useShadowMap;			// 1 = use a simple shadow-map path for projected and point lights when supported
 extern idCVar r_shadowMapCSM;			// 1 = use projected-light cascaded shadow maps when shadow maps are enabled
 extern idCVar r_shadowMapHashedAlpha;		// 1 = use hashed alpha testing for perforated shadow-map casters when available
@@ -1221,6 +1242,7 @@ extern idCVar r_lightGridBakeMemoryMB;	// transient memory budget for in-flight 
 extern idCVar r_lightGridBakeReadbackSlots;	// async readback slot count for light-grid baking (0 = auto)
 extern idCVar r_skipBlendLights;		// skip all blend lights
 extern idCVar r_skipFogLights;			// skip all fog lights
+extern idCVar r_skipPlayerVisibilityEffects;	// skip the player brightskin / rimlight / outline overlays
 extern idCVar r_skipSubviews;			// 1 = don't render any mirrors / cameras / etc
 extern idCVar r_skipGuiShaders;			// 1 = don't render any gui elements on surfaces
 extern idCVar r_skipParticles;			// 1 = don't render any particles
@@ -1426,6 +1448,15 @@ void R_InitOpenGL( void );
 void R_PublishCompressionCapsToImageTools( void );
 
 void R_DoneFreeType( void );
+
+// Scalable font path: rasterises the shipped .ttf faces at the display's own
+// resolution instead of scaling up the fixed 12/24/48 point retail atlases.
+// Returns false when no usable face exists, leaving the bitmap path in charge.
+bool R_RegisterTrueTypeFont( const char *fontName, fontInfoEx_t &font );
+// Rebuilds the fixed-cell 'bigchars' console sheet at display resolution and
+// retargets its material, so the console and loading screen sharpen too.
+bool R_BuildConsoleFontAtlas( void );
+void R_ShutdownTrueTypeFonts( void );
 
 void R_SetColorMappings( void );
 
@@ -1763,6 +1794,8 @@ DRAW_*
 void	R_ARB2_Init( void );
 void	RB_ARB2_DrawInteractions( void );
 void	RB_ResetARB2InteractionHandoffBreadcrumb( void );
+void	RB_ResetAppleGL21RouteCounters( void );
+void	RB_ReportAppleGL21RouteCounters( void );
 void	RB_ARB2_MD5R_DrawDepthElements( const drawSurf_t *surf );
 void	RB_ARB2_MD5R_DrawShadowElements( const drawSurf_t *surf, int numIndexes );
 void	RB_ARB2_MD5R_DrawBasicFog( const drawSurf_t *surf );

@@ -54,11 +54,9 @@ static bool R_ShouldSuppressMissingImageWarning( const char * imageName ) {
 	return false;
 }
 
-static bool R_GetImageDownsizeLimit( textureUsage_t usage, bool allowDownSize, int &limit );
-static void R_ApplyImageDownsizePolicy( textureUsage_t usage, bool allowDownSize, int &width, int &height );
-static unsigned int R_GetImageDownsizeSignature( textureUsage_t usage, bool allowDownSize );
-static void R_DownsizeLoadedImageData( textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height );
-static void R_DownsizeLoadedCubeImageData( textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size );
+static unsigned int R_GetImageDownsizeSignature( const char *name, textureUsage_t usage, bool allowDownSize );
+static void R_DownsizeLoadedImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height );
+static void R_DownsizeLoadedCubeImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size );
 
 /*
 ========================
@@ -336,7 +334,7 @@ GetGeneratedName
 name contains GetName() upon entry
 ===============
 */
- void idImage::GetGeneratedName( idStr &_name, const textureUsage_t &_usage, const cubeFiles_t &_cube, bool allowDownSize, unsigned int flags ) {
+ void idImage::GetGeneratedName( idStr &_name, const char *_policyName, const textureUsage_t &_usage, const cubeFiles_t &_cube, bool allowDownSize, unsigned int flags ) {
 	idStr extension;
 
 	_name.ExtractFileExtension( extension );
@@ -352,7 +350,7 @@ name contains GetName() upon entry
 		// mis-oriented until the cache was deleted by hand.
 		_name += "r1";
 	}
-	const unsigned int downsizeSignature = R_GetImageDownsizeSignature( _usage, allowDownSize );
+	const unsigned int downsizeSignature = R_GetImageDownsizeSignature( _policyName, _usage, allowDownSize );
 	if ( downsizeSignature != 0 ) {
 		_name += va( "d%08x", downsizeSignature );
 	}
@@ -431,7 +429,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	DeriveOpts();
 
 	idStr generatedName = GetName();
-	GetGeneratedName( generatedName, usage, cubeFiles, allowDownSize, flags );
+	GetGeneratedName( generatedName, GetName(), usage, cubeFiles, allowDownSize, flags );
 	if ( filter == TF_LINEAR || filter == TF_NEAREST ) {
 		// the unmipped sampler policy changes the generated mip count ( DeriveOpts ), so
 		// keep its cache file distinct from the mipped variant of the same source
@@ -481,7 +479,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	}
 	if ( preferredDDSImage && !preferredDDSPrecompressed ) {
 		generatedName = preferredDDSName;
-		GetGeneratedName( generatedName, usage, cubeFiles, allowDownSize, flags );
+		GetGeneratedName( generatedName, GetName(), usage, cubeFiles, allowDownSize, flags );
 		if ( filter == TF_LINEAR || filter == TF_NEAREST ) {
 			idStr mipExt;
 			generatedName.ExtractFileExtension( mipExt );
@@ -597,7 +595,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 				return;
 			}
 
-			R_DownsizeLoadedCubeImageData( usage, allowDownSize, pics, size );
+			R_DownsizeLoadedCubeImageData( GetName(), usage, allowDownSize, pics, size );
 			opts.textureType = TT_CUBIC;
 			repeat = TR_CLAMP;
 			opts.width = size;
@@ -615,12 +613,12 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		} else {
 			int width, height;
 			byte *pic = NULL;
-			int precompressedDownsizeLimit = 0;
-			R_GetImageDownsizeLimit( usage, allowDownSize, precompressedDownsizeLimit );
+			imageDownsizePolicy_t precompressedDownsizePolicy;
+			R_GetImageDownsizePolicy( GetName(), usage, allowDownSize, precompressedDownsizePolicy );
 			const bool usePrecompressedMipmaps = ( flags & IMAGEFLAG_NOMIPS ) == 0 && filter != TF_LINEAR && filter != TF_NEAREST;
 			const bool tryDirectDDSLoad = selectedDDSImage && ( explicitDDSImage || preferredDDSPrecompressed );
 
-			if ( tryDirectDDSLoad && R_LoadPrecompressedDDS( loadSourceName, im, &sourceFileTime, usage, precompressedDownsizeLimit, usePrecompressedMipmaps ) ) {
+			if ( tryDirectDDSLoad && R_LoadPrecompressedDDS( loadSourceName, im, &sourceFileTime, usage, precompressedDownsizePolicy, usePrecompressedMipmaps ) ) {
 				const bimageFile_t &header = im.GetFileHeader();
 				opts.width = header.width;
 				opts.height = header.height;
@@ -630,6 +628,21 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 				opts.textureType = (textureType_t)header.textureType;
 				sourceFileTimeKnown = true;
 				loadedPrecompressedDDS = true;
+
+				// Compressed data can only be reduced by dropping authored mip
+				// levels, so a replacement exported without a full chain cannot
+				// always reach the requested size. If the policy would still
+				// shrink what we ended up with, the chain ran out.
+				if ( precompressedDownsizePolicy.IsActive() ) {
+					int reachedWidth = header.width;
+					int reachedHeight = header.height;
+					R_ApplyImageDownsizePolicy( precompressedDownsizePolicy, reachedWidth, reachedHeight );
+					if ( ( reachedWidth != header.width || reachedHeight != header.height ) &&
+						cvarSystem->GetCVarBool( "image_showPrecompressedTextures" ) ) {
+						common->Printf( "%s: %s has no mip level small enough for the active texture reduction (kept %dx%d, wanted %dx%d)\n",
+							GetName(), loadSourceName, header.width, header.height, reachedWidth, reachedHeight );
+					}
+				}
 			} else {
 				const char *fallbackLoadSourceName = loadSourceName;
 				if ( preferredDDSPrecompressed ) {
@@ -671,7 +684,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 					return;
 				}
 
-				R_DownsizeLoadedImageData( usage, allowDownSize, pic, width, height );
+				R_DownsizeLoadedImageData( GetName(), usage, allowDownSize, pic, width, height );
 				opts.width = width;
 				opts.height = height;
 				opts.numLevels = 0;
@@ -811,63 +824,108 @@ int MakePowerOfTwo( int num ) {
 	return pot;
 }
 
-static bool R_GetImageDownsizeLimit( textureUsage_t usage, bool allowDownSize, int &limit ) {
-	limit = 0;
-
-	if ( !allowDownSize ) {
-		return false;
-	}
-
-	if ( usage == TD_SPECULAR && cvarSystem->GetCVarInteger( "image_downSizeSpecular" ) != 0 ) {
-		limit = cvarSystem->GetCVarInteger( "image_downSizeSpecularLimit" );
-	} else if ( usage == TD_BUMP && cvarSystem->GetCVarInteger( "image_downSizeBump" ) != 0 ) {
-		limit = cvarSystem->GetCVarInteger( "image_downSizeBumpLimit" );
-	} else if ( cvarSystem->GetCVarInteger( "image_downSize" ) != 0 ) {
-		limit = cvarSystem->GetCVarInteger( "image_downSizeLimit" );
-	}
-
-	return limit > 0;
-}
-
-static void R_ApplyImageDownsizePolicy( textureUsage_t usage, bool allowDownSize, int &width, int &height ) {
-	int limit = 0;
-	if ( !R_GetImageDownsizeLimit( usage, allowDownSize, limit ) ) {
-		return;
-	}
-
-	while ( width > limit || height > limit ) {
-		const int nextWidth = Max( 1, width >> 1 );
-		const int nextHeight = Max( 1, height >> 1 );
-		if ( nextWidth == width && nextHeight == height ) {
-			break;
-		}
-		width = nextWidth;
-		height = nextHeight;
-	}
-}
-
-static unsigned int R_GetImageDownsizeSignature( textureUsage_t usage, bool allowDownSize ) {
-	int limit = 0;
-	if ( !R_GetImageDownsizeLimit( usage, allowDownSize, limit ) ) {
+static unsigned int R_GetImageDownsizeSignature( const char *name, textureUsage_t usage, bool allowDownSize ) {
+	imageDownsizePolicy_t policy;
+	R_GetImageDownsizePolicy( name, usage, allowDownSize, policy );
+	if ( !policy.IsActive() ) {
 		return 0;
 	}
 
-	return ( static_cast<unsigned int>( limit ) << 8 ) ^ static_cast<unsigned int>( usage ) ^ 0x6F713400u;
+	// The trailing byte is a revision of the reduction itself, not of any cvar.
+	// Bump it whenever the pixels a given policy produces change: 0x00 -> 0x01
+	// moved reduction from a single bilinear resample onto the same box-filter
+	// mip chain the rest of the pipeline uses, so every cached downsized image
+	// written before that is stale even though its policy is unchanged.
+	unsigned int signature = ( static_cast<unsigned int>( policy.maxDimension ) << 8 ) ^ static_cast<unsigned int>( usage ) ^ 0x6F713401u;
+	if ( policy.mipShift > 0 ) {
+		signature ^= ( static_cast<unsigned int>( policy.mipShift ) * 0x9E3779B9u );
+		signature ^= ( static_cast<unsigned int>( policy.minDimension ) * 0x85EBCA6Bu );
+	}
+
+	return signature;
 }
 
-static void R_DownsizeLoadedImageData( textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height ) {
+/*
+================
+R_ShrinkLoadedImageData
+
+Reduces decoded pixels to the size the policy asks for. An exact halving chain
+goes through the same box filter that builds the mip chain, so image_picmip N
+produces byte for byte what mip level N of the unreduced texture would have
+been; anything else falls back to a general resample.
+================
+*/
+static bool R_ImageUsageUsesGammaMips( textureUsage_t usage ) {
+	// mirrors the gammaMips choices DeriveOpts makes for each usage
+	return usage == TD_FONT || usage == TD_LIGHT;
+}
+
+static int R_CountExactHalvings( int width, int height, int scaledWidth, int scaledHeight ) {
+	int halvings = 0;
+	while ( width > scaledWidth || height > scaledHeight ) {
+		if ( ( width > 1 && ( width & 1 ) ) || ( height > 1 && ( height & 1 ) ) ) {
+			return -1;	// odd extent, not an exact mip step
+		}
+		width = Max( 1, width >> 1 );
+		height = Max( 1, height >> 1 );
+		halvings++;
+		if ( width < scaledWidth || height < scaledHeight ) {
+			return -1;	// overshoots the requested size
+		}
+	}
+	return ( width == scaledWidth && height == scaledHeight ) ? halvings : -1;
+}
+
+static byte *R_ShrinkLoadedImageData( const byte *pic, int width, int height, int scaledWidth, int scaledHeight, bool gammaMips ) {
+	const int halvings = R_CountExactHalvings( width, height, scaledWidth, scaledHeight );
+	if ( halvings <= 0 ) {
+		return R_ResampleTexture( pic, width, height, scaledWidth, scaledHeight );
+	}
+
+	byte *shrunk = NULL;
+	int level = width;
+	int levelHeight = height;
+	for ( int i = 0; i < halvings; i++ ) {
+		const byte *source = ( shrunk != NULL ) ? shrunk : pic;
+		byte *next = gammaMips ? R_MipMapWithGamma( source, level, levelHeight ) : R_MipMap( source, level, levelHeight );
+		if ( next == NULL ) {
+			break;
+		}
+		if ( shrunk != NULL ) {
+			Mem_Free( shrunk );
+		}
+		shrunk = next;
+		level = Max( 1, level >> 1 );
+		levelHeight = Max( 1, levelHeight >> 1 );
+	}
+
+	if ( shrunk == NULL ) {
+		return R_ResampleTexture( pic, width, height, scaledWidth, scaledHeight );
+	}
+	if ( level != scaledWidth || levelHeight != scaledHeight ) {
+		Mem_Free( shrunk );
+		return R_ResampleTexture( pic, width, height, scaledWidth, scaledHeight );
+	}
+
+	return shrunk;
+}
+
+static void R_DownsizeLoadedImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height ) {
 	if ( pic == NULL || width <= 0 || height <= 0 ) {
 		return;
 	}
 
+	imageDownsizePolicy_t policy;
+	R_GetImageDownsizePolicy( name, usage, allowDownSize, policy );
+
 	int scaledWidth = width;
 	int scaledHeight = height;
-	R_ApplyImageDownsizePolicy( usage, allowDownSize, scaledWidth, scaledHeight );
+	R_ApplyImageDownsizePolicy( policy, scaledWidth, scaledHeight );
 	if ( scaledWidth == width && scaledHeight == height ) {
 		return;
 	}
 
-	byte *resampled = R_ResampleTexture( pic, width, height, scaledWidth, scaledHeight );
+	byte *resampled = R_ShrinkLoadedImageData( pic, width, height, scaledWidth, scaledHeight, R_ImageUsageUsesGammaMips( usage ) );
 	if ( resampled == NULL ) {
 		return;
 	}
@@ -878,14 +936,17 @@ static void R_DownsizeLoadedImageData( textureUsage_t usage, bool allowDownSize,
 	height = scaledHeight;
 }
 
-static void R_DownsizeLoadedCubeImageData( textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size ) {
+static void R_DownsizeLoadedCubeImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size ) {
 	if ( pics == NULL || size <= 0 ) {
 		return;
 	}
 
+	imageDownsizePolicy_t policy;
+	R_GetImageDownsizePolicy( name, usage, allowDownSize, policy );
+
 	int scaledSize = size;
 	int scaledHeight = size;
-	R_ApplyImageDownsizePolicy( usage, allowDownSize, scaledSize, scaledHeight );
+	R_ApplyImageDownsizePolicy( policy, scaledSize, scaledHeight );
 	if ( scaledSize == size && scaledHeight == size ) {
 		return;
 	}
@@ -895,7 +956,7 @@ static void R_DownsizeLoadedCubeImageData( textureUsage_t usage, bool allowDownS
 			continue;
 		}
 
-		byte *resampled = R_ResampleTexture( pics[i], size, size, scaledSize, scaledSize );
+		byte *resampled = R_ShrinkLoadedImageData( pics[i], size, size, scaledSize, scaledSize, R_ImageUsageUsesGammaMips( usage ) );
 		if ( resampled == NULL ) {
 			continue;
 		}

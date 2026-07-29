@@ -5834,6 +5834,8 @@ static bool SDL3_WindowServices_GetGLAttribute(int attribute, int *outValue) {
 		case RENDER_GLATTR_CONTEXT_FLAGS:			sdlAttribute = SDL_GL_CONTEXT_FLAGS; break;
 		case RENDER_GLATTR_MULTISAMPLE_BUFFERS:		sdlAttribute = SDL_GL_MULTISAMPLEBUFFERS; break;
 		case RENDER_GLATTR_MULTISAMPLE_SAMPLES:		sdlAttribute = SDL_GL_MULTISAMPLESAMPLES; break;
+		case RENDER_GLATTR_DEPTH_SIZE:				sdlAttribute = SDL_GL_DEPTH_SIZE; break;
+		case RENDER_GLATTR_STENCIL_SIZE:			sdlAttribute = SDL_GL_STENCIL_SIZE; break;
 		default: return false;
 	}
 	if (!SDL_GL_GetAttribute(sdlAttribute, outValue)) {

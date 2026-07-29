@@ -1,5 +1,35 @@
 # macOS Rendering Closure Plan
 
+Updated: 2026-07-29
+
+## Landed Status (2026-07-29)
+
+| gap | state | where |
+| --- | --- | --- |
+| G2 | landed | per-flavour `openq4_game_idlib` / `openq4_game_idlib_mp`; `tools/build/darwin_game_module.exp` plus hidden visibility on both darwin modules; the companion repo's x86-64 SIMD exclusion and its `_DEBUG` divergence from the engine both removed |
+| G3 | landed | `si_gameType` defaults to `singleplayer`; `openQ4_IsMultiplayerGameType` is an allowlist mirrored from `si_gameTypeArgs`; dedicated keeps the old reading; `Com_ReloadGameModule_f` guards the swap and names the failing phase |
+| G4 | landed | `material_interaction.fs` normalizes the half-angle unconditionally |
+| G5 | landed | `RB_SurfaceUsesGPUPosedGeometry` replaces the `deformedSurface` proxy; the receiver self-test now models a real CPU-skinned MD5 surface |
+| G6 | landed | `Apple GL 2.1 interaction routes:` per-run counters with the fallback reason breakdown |
+| G7 | landed | the interaction program load cache keys on the attempt, not on the resulting object |
+| G9 | landed | the corridor is selected by context shape on darwin hosts; off-darwin it needs the vendor string or `r_forceAppleGL21InteractionCorridor`; the verbatim `GL_VENDOR` is logged when the shape matches but the host test rejects it |
+| G10 | landed | `SDL3: reported OpenGL framebuffer attributes:` with `depthBits`/`stencilBits`/`hasStencilBuffer` and a warning when the visual has no stencil |
+| G20 | landed | unconditional `Quality profile:` line carrying `com_machineSpec`, `com_videoRam`, `com_performancePreset` |
+| G21 | landed | both `shadow.vp` binds report failure instead of falling silently to fixed function |
+| G22 | landed | `-Didlib_asserts=true` reaches `src/idlib/Lib.h` on Clang; the macOS sanitizer lane sets it |
+| G23 | landed | `r_forceAppleGL21InteractionCorridor` plus `r_appleARB2Interactions` authority over the archived `r_useSimpleInteraction` |
+| G24 | landed | `r_forceAmbient` is echoed in the `Quality profile:` line |
+| G19 | partial | the S3TC/BPTC AND was already correct; the Apple 4.1 ceiling is now documented in `docs/user/texture-replacements.md`. macOS CI runs no GL client, so `BC7/BPTC=0` cannot be asserted there |
+| G11, G12, G13 | open | fullscreen letterbox, Retina mode list and archived-cvar rewrites are untouched; they need Apple hardware to verify |
+| G8, G14-G18, G25-G30 | open | unchanged |
+
+A new `game module phase` breadcrumb (`src/framework/GameModuleDiagnostics.h`)
+is printed by the POSIX fatal-signal handler. Issue #90 could not distinguish a
+bad static initializer from `GetGameAPI` from `idGameLocal::Init`; the next
+report on that machine names the step.
+
+Original plan follows.
+
 Updated: 2026-07-25
 
 This plan closes the macOS rendering gaps behind issue #73 (Apple Silicon

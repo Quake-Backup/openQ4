@@ -2753,14 +2753,16 @@ windowDef Desktop
 					set "cmd" "play main_menu_selection" ;
 				}
 			}
-			editDef set_enemy_fx_color_val
+			choiceDef set_enemy_fx_color_val
 			{
-				rect	334,166,150,18
+				rect	334,166,150,20
 				visible	("gui::appearance_tab" == 1)
-				forecolor	1,0.745,0.137,0.8
-				cvar	cl_player_visibility_enemy_color
-				maxchars	24
 				textscale	0.24
+				cvar	cl_player_visibility_enemy_color
+				choices	"#str_41213"
+				values	"1 0.12 0.05;1 0.45 0.05;1 0.9 0.15;0.1 0.85 0.25;0.1 0.9 0.95;0.3 0.45 1;1 0.15 0.85;1 1 1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
 				font	"fonts/lowpixel"
 
 				onAction {
@@ -2768,14 +2770,16 @@ windowDef Desktop
 					set "cmd" "play main_menu_selection" ;
 				}
 			}
-			editDef set_team_fx_color_val
+			choiceDef set_team_fx_color_val
 			{
-				rect	334,166,150,18
+				rect	334,166,150,20
 				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
-				forecolor	1,0.745,0.137,0.8
-				cvar	cl_player_visibility_team_color
-				maxchars	24
 				textscale	0.24
+				cvar	cl_player_visibility_team_color
+				choices	"#str_41213"
+				values	"1 0.12 0.05;1 0.45 0.05;1 0.9 0.15;0.1 0.85 0.25;0.1 0.9 0.95;0.3 0.45 1;1 0.15 0.85;1 1 1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
 				font	"fonts/lowpixel"
 
 				onAction {
@@ -2817,14 +2821,16 @@ windowDef Desktop
 					set "cmd" "play main_menu_selection" ;
 				}
 			}
-			editDef set_enemy_bright_color_val
+			choiceDef set_enemy_bright_color_val
 			{
-				rect	334,214,150,18
+				rect	334,214,150,20
 				visible	("gui::appearance_tab" == 1)
-				forecolor	1,0.745,0.137,0.8
+				textscale	0.24
 				cvar	cl_player_brightskin_enemy_color
-				maxchars	24
-				textscale	0.24
+				choices	"#str_41213"
+				values	"1 0.05 0.02;1 0.4 0.02;1 0.88 0.1;0.05 1 0.22;0.05 0.9 1;0.25 0.4 1;1 0.1 0.85;1 1 1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
 				font	"fonts/lowpixel"
 
 				onAction {
@@ -2832,14 +2838,16 @@ windowDef Desktop
 					set "cmd" "play main_menu_selection" ;
 				}
 			}
-			editDef set_team_bright_color_val
+			choiceDef set_team_bright_color_val
 			{
-				rect	334,214,150,18
+				rect	334,214,150,20
 				visible	("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1)
-				forecolor	1,0.745,0.137,0.8
-				cvar	cl_player_brightskin_team_color
-				maxchars	24
 				textscale	0.24
+				cvar	cl_player_brightskin_team_color
+				choices	"#str_41213"
+				values	"1 0.05 0.02;1 0.4 0.02;1 0.88 0.1;0.05 1 0.22;0.05 0.9 1;0.25 0.4 1;1 0.1 0.85;1 1 1"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
 				font	"fonts/lowpixel"
 
 				onAction {
@@ -2847,18 +2855,17 @@ windowDef Desktop
 					set "cmd" "play main_menu_selection" ;
 				}
 			}
-			editDef set_outline_width_val
+			choiceDef set_outline_width_val
 			{
-				rect	334,238,150,18
+				rect	334,238,150,20
 				visible	("gui::appearance_tab" == 1 || ("gui::appearance_tab" == 2 && "gui::appearance_team_available" == 1))
-				forecolor	1,0.745,0.137,0.8
-				cvar	cl_player_outline_width
-				maxchars	4
 				textscale	0.24
+				cvar	cl_player_outline_width
+				choices	"#str_41214"
+				values	"1.0;1.5;2.0;3.0;4.0;6.0"
+				choiceType	1
+				forecolor	1,0.745,0.137,0.8
 				font	"fonts/lowpixel"
-				numeric	1
-				cvarMin	0.5
-				cvarMax	6
 
 				onAction {
 					set "cmd" "update_model" ;

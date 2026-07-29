@@ -143,7 +143,21 @@ void idUserInterfaceManagerLocal::EndLevelLoad() {
 			}
 		}
 	}
+
+	// icons registered before their image was resident can be sized now
+	dc.SizeIcons();
 }
+
+// RAVEN BEGIN
+// bdube: embedded icons
+// The game registers the inline text icons it needs ( weapon and means-of-death
+// obituary icons, team/ready/voice icons ) from "icon <code>" spawn args while
+// caching entity def media, so this has to reach the device context or every
+// ^i escape in game text silently draws nothing.
+void idUserInterfaceManagerLocal::RegisterIcon( const char *code, const char *shader, int x, int y, int w, int h ) {
+	dc.RegisterIcon( code, shader, x, y, w, h );
+}
+// RAVEN END
 
 void idUserInterfaceManagerLocal::Reload( bool all ) {
 	ID_TIME_T ts;

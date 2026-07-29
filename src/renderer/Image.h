@@ -71,6 +71,57 @@ typedef enum {
 static const unsigned int IMAGEFLAG_NOMIPS = BIT( 0 );
 static const unsigned int IMAGEFLAG_FILTER_NEUTRAL_ALPHA = BIT( 1 );
 
+// Highest mip shift image_picmip accepts. Anything beyond this is meaningless
+// once image_picmipMinSize floors the reduction, but the range is kept wide so
+// the cvar behaves like the Quake 3 style r_picmip it mirrors.
+static const int	MAX_IMAGE_PICMIP = 16;
+
+// image_picmipFilter buckets. The filter classifies the logical image name, so
+// a DDS replacement under dds/ is still judged by the texture it stands in for.
+static const int	PICMIP_FILTER_ALL = 0;
+static const int	PICMIP_FILTER_TEXTURES = BIT( 0 );
+static const int	PICMIP_FILTER_MODELS = BIT( 1 );
+static const int	PICMIP_FILTER_OTHER = BIT( 2 );
+static const int	PICMIP_FILTER_MASK = PICMIP_FILTER_TEXTURES | PICMIP_FILTER_MODELS | PICMIP_FILTER_OTHER;
+
+/*
+================================================
+imageDownsizePolicy_t
+
+The single reduction contract shared by every path that can shrink a source
+image: the raw 2D loader, the cube loader, and the precompressed DDS loader.
+Keeping one struct means a texture reaches the same dimensions no matter which
+of those supplied its pixels, which is what lets the generated .bimage cache key
+be derived from the policy alone.
+
+maxDimension is retail Quake 4's absolute ceiling (image_downSize* family) and
+mipShift is the Quake 3 style relative reduction (image_picmip). The ceiling is
+applied first so every mipShift step still halves a texture that was already
+clamped; applying them the other way round would let a low ceiling silently
+swallow the first few picmip steps.
+================================================
+*/
+struct imageDownsizePolicy_t {
+	int			maxDimension;	// hard ceiling on either axis, 0 = no ceiling
+	int			mipShift;		// whole mip levels dropped after the ceiling
+	int			minDimension;	// mipShift stops once the larger axis reaches this
+
+	imageDownsizePolicy_t() : maxDimension( 0 ), mipShift( 0 ), minDimension( 1 ) {}
+
+	bool		IsActive() const { return maxDimension > 0 || mipShift > 0; }
+};
+
+// Resolves the image reduction cvars for one image. Implemented next to those
+// cvars in ImageManager.cpp; every loader path and the cache key go through it.
+void R_GetImageDownsizePolicy( const char *name, textureUsage_t usage, bool allowDownSize, imageDownsizePolicy_t &policy );
+
+// Reduces width/height in place. Safe for non power of two and degenerate sizes.
+void R_ApplyImageDownsizePolicy( const imageDownsizePolicy_t &policy, int &width, int &height );
+
+// Number of whole mip levels between the source size and the policy result, for
+// loaders that select a level out of an existing mip chain instead of resampling.
+int R_ImageDownsizePolicyMipSkip( const imageDownsizePolicy_t &policy, int width, int height, int availableLevels );
+
 #include "ImageOpts.h"
 #include "../imagetools/BinaryImage.h"
 
@@ -168,7 +219,11 @@ public:
 	bool		IsLoaded() const { return texnum != TEXTURE_NOT_LOADED; }
 	uint64_t	GetStorageGeneration() const { return storageGeneration; }
 
-	static void			GetGeneratedName(idStr& _name, const textureUsage_t& _usage, const cubeFiles_t& _cube, bool allowDownSize = true, unsigned int flags = 0);
+	// _policyName is the logical image name the downsize policy is classified
+	// against. It differs from _name whenever a dds/ replacement supplies the
+	// pixels, and passing it keeps the cache key in step with the reduction that
+	// is actually applied to those pixels.
+	static void			GetGeneratedName(idStr& _name, const char* _policyName, const textureUsage_t& _usage, const cubeFiles_t& _cube, bool allowDownSize = true, unsigned int flags = 0);
 
 	unsigned int		GetDeviceHandle(void) { return texnum; }
 private:
@@ -290,6 +345,12 @@ public:
 	// reloads all apropriate images after a vid_restart
 	void				ReloadImages(bool all);
 
+	// reloads every image when a texture reduction cvar changed this frame
+	void				CheckCvars();
+
+	// swallows the born-modified state of those cvars during startup
+	void				PrimeCvars();
+
 	// unbind all textures from all texture units
 	void				UnbindAll();
 
@@ -391,7 +452,7 @@ IMAGEFILES
 void R_LoadImage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2);
 void R_LoadImageForUsage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2, textureUsage_t usage);
 bool R_ResolvePreferredDDSImageSource(const char* name, idStr& ddsName, ID_TIME_T* timestamp, bool allowPrecompressedDDS, bool* precompressedDDS);
-bool R_LoadPrecompressedDDS(const char* name, idBinaryImage& image, ID_TIME_T* timestamp, textureUsage_t usage, int downsizeLimit, bool useMipmaps);
+bool R_LoadPrecompressedDDS(const char* name, idBinaryImage& image, ID_TIME_T* timestamp, textureUsage_t usage, const imageDownsizePolicy_t& downsizePolicy, bool useMipmaps);
 bool R_ImageDDS_RunSelfTest();
 // pic is in top to bottom raster format
 bool R_LoadCubeImages(const char* cname, cubeFiles_t extensions, byte* pic[6], int* size, ID_TIME_T* timestamp);

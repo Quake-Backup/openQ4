@@ -177,6 +177,7 @@ def validate_install_error_console_contract() -> None:
     posix_console = read("src/sys/posix/posix_syscon.cpp")
     posix_header = read("src/sys/posix/posix_public.h")
     win_console = read("src/sys/win32/win_syscon.cpp")
+    console_theme = read("src/sys/sys_console_theme.h")
 
     require(posix_header, "Posix_ConsoleSetFatalError", "POSIX fatal console declaration")
     require(posix_header, "Posix_ConsoleFatalErrorWait", "POSIX fatal console declaration")
@@ -188,7 +189,10 @@ def validate_install_error_console_contract() -> None:
     require(posix_console, "Posix_ConsoleDrawStatus", "POSIX console status rendering")
     reject(posix_console, "statusText = \"ERROR: \";", "POSIX console fatal status text")
     require(posix_console, "statusText.Append( scan, 1 );", "POSIX console fatal status text")
-    require(posix_console, "statusText = \"System console ready\";", "POSIX console ready status")
+    # Presentation moved to the shared cross-platform theme; see
+    # tools/tests/system_console_presentation.py for the full contract.
+    require(console_theme, '#define SYSCON_STATUS_READY_TEXT\t"System console ready"', "shared console ready status text")
+    require(posix_console, "statusText = SYSCON_STATUS_READY_TEXT;", "POSIX console ready status")
     require(posix_console, "s_consoleWindow.forceFatalWindow = true;", "POSIX fatal console forced visibility")
     require(
         posix_console,
@@ -196,9 +200,10 @@ def validate_install_error_console_contract() -> None:
         "POSIX fatal console avoids released cvar storage",
     )
     require(posix_console, "s_consoleWindow.exitRequested = true;", "POSIX fatal console quit/close exit")
-    require(win_console, '"System console ready"', "Windows console ready status")
-    require(win_console, "RGB(0x1b, 0x20, 0x0a)", "Windows console status background color")
-    require(win_console, "RGB(0xf0, 0x9e, 0x0d)", "Windows console status text color")
+    require(win_console, "SYSCON_STATUS_READY_TEXT", "Windows console ready status")
+    require(win_console, "SYSCON_WIN_RGB(PANEL)", "Windows console status background color")
+    require(win_console, "SYSCON_WIN_RGB(TEXT)", "Windows console status text color")
+    require(win_console, "SYSCON_WIN_RGB(ALERT_PANEL)", "Windows console fatal status background color")
     require(win_console, "SetWindowText(s_wcd.hwndErrorBox, s_wcd.errorString);", "Windows console status text update")
 
 

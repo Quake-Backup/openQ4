@@ -561,7 +561,8 @@ See if some cvars that we watch have changed
 =============
 */
 static void R_CheckCvars( void ) {
-	//globalImages->CheckCvars();
+	// texture reduction cvars only reach the GPU through a reload
+	globalImages->CheckCvars();
 
 	// gamma stuff
 	if ( r_gamma.IsModified() || r_brightness.IsModified() ) {

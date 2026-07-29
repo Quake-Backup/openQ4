@@ -136,6 +136,8 @@
 	"#str_41210"	"Bright Color"
 	"#str_41211"	"Outline Width"
 	"#str_41212"	"Teammate appearance applies only in team modes."
+	"#str_41213"	"Red;Orange;Yellow;Green;Cyan;Blue;Magenta;White"
+	"#str_41214"	"1 px;1.5 px;2 px;3 px;4 px;6 px"
 
 // multiplayer gametypes carried over from Quake Live
 	"#str_41300"	"Duel"

@@ -1192,7 +1192,7 @@ bool R_ResolvePreferredDDSImageSource( const char *cname, idStr &ddsName, ID_TIM
 R_LoadPrecompressedDDS
 =============
 */
-bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T *timestamp, textureUsage_t usage, int downsizeLimit, bool useMipmaps ) {
+bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T *timestamp, textureUsage_t usage, const imageDownsizePolicy_t &downsizePolicy, bool useMipmaps ) {
 	if ( cname == NULL || cname[0] == '\0' ) {
 		return false;
 	}
@@ -1240,11 +1240,16 @@ bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T 
 			break;
 		}
 
-		int firstLevel = 0;
+		// Precompressed data already carries a filtered mip chain, so honor the
+		// downsize policy by starting at a lower level rather than decompressing
+		// and resampling. That matches the raw loader whenever the file carries a
+		// full chain; a replacement exported without one simply runs out of levels
+		// and stays larger, which the caller reports under
+		// image_showPrecompressedTextures.
 		int selectedWidth = (int)info.width;
 		int selectedHeight = (int)info.height;
-		while ( downsizeLimit > 0 && ( selectedWidth > downsizeLimit || selectedHeight > downsizeLimit ) && firstLevel + 1 < info.numLevels ) {
-			firstLevel++;
+		const int firstLevel = R_ImageDownsizePolicyMipSkip( downsizePolicy, selectedWidth, selectedHeight, (int)info.numLevels );
+		for ( int i = 0; i < firstLevel; i++ ) {
 			selectedWidth = Max( 1, selectedWidth >> 1 );
 			selectedHeight = Max( 1, selectedHeight >> 1 );
 		}

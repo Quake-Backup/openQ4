@@ -67,6 +67,14 @@ Set `image_usePrecompressedTextures` before loading a map:
 BC7 requires a renderer with BPTC support. Run `gfxInfo` and look for the BC7/BPTC capability line if a pack is not being selected.
 DXT/RXGB files fall back to CPU decoding when direct texture-compression upload is unavailable. A BC7 file on a renderer without BPTC support is uploaded uncompressed rather than failing the load.
 
+> **macOS has no BC7.** BPTC entered OpenGL in 4.2, and Apple's OpenGL
+> implementation stops at 4.1 — and at 2.1 on the compatibility profile openQ4
+> actually runs there. `gfxInfo` reports `BC7/BPTC=0` on every Mac, Apple
+> Silicon and Intel alike, and every BC7 file is uploaded uncompressed. This is
+> a platform limit, not a configuration problem: no cvar, driver update or
+> `image_usePrecompressedTextures` value changes it. Ship DXT/RXGB alongside BC7
+> if Mac users matter to your pack.
+
 ## BC7 file requirements
 
 Supported BC7 files are single 2D textures using either:

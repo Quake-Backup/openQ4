@@ -66,7 +66,14 @@ def validate_context_aware_apple_gl21_quirk() -> None:
         require(header, token, "renderer driver info selected context facts")
 
     parse_body = function_body(source, "static bool RendererDriverQuirk_ParseGLVersionPrefix( const char *version, int &major, int &minor ) {")
-    apple_body = function_body(source, "static bool RendererDriverQuirk_IsAppleGL21CompatibilityFallback( const renderBackendCaps_t &caps, const rendererDriverInfo_t &driverInfo ) {")
+    host_stack_body = function_body(source, "static bool RendererDriverQuirk_HostRunsAppleGLStack( void ) {")
+    apple_body = function_body(
+        source,
+        "static bool RendererDriverQuirk_IsAppleGL21CompatibilityFallback(\n"
+        "\tconst renderBackendCaps_t &caps,\n"
+        "\tconst rendererDriverInfo_t &driverInfo,\n"
+        "\tbool *outHasCompatibilityShape = NULL ) {",
+    )
     apply_body = function_body(source, "void RendererDriverQuirks_Apply( renderBackendCaps_t &caps, const rendererDriverInfo_t &driverInfo ) {")
     self_test = function_body(source, "bool RendererCompatibilityGates_RunSelfTest( void ) {")
 
@@ -77,8 +84,20 @@ def validate_context_aware_apple_gl21_quirk() -> None:
     ):
         require(parse_body, token, "Apple GL version prefix parser")
 
+    # Apple's GL reports the GPU vendor on Intel, AMD and NVIDIA Macs, so the
+    # corridor cannot be gated on GL_VENDOR alone (issue #90).
+    for token in (
+        "#if defined( MACOS_X ) || defined( __APPLE__ )",
+        "return true;",
+        "return r_forceAppleGL21InteractionCorridor.GetBool();",
+    ):
+        require(host_stack_body, token, "Apple GL stack host predicate")
+
     for token in (
         'idStr::Icmp( driverInfo.vendor, "Apple" )',
+        "vendorSaysApple || RendererDriverQuirk_HostRunsAppleGLStack()",
+        "hasCompatibilityShape && appleGLStack",
+        "outHasCompatibilityShape",
         "RendererDriverQuirk_ParseGLVersionPrefix",
         "reportsGL21",
         "selectedGL21",
@@ -91,7 +110,8 @@ def validate_context_aware_apple_gl21_quirk() -> None:
         require(apple_body, token, "context-aware Apple GL 2.1 detector")
 
     for token in (
-        "RendererDriverQuirk_IsAppleGL21CompatibilityFallback( caps, driverInfo )",
+        "RendererDriverQuirk_IsAppleGL21CompatibilityFallback( caps, driverInfo, &appleGL21CompatibilityShape )",
+        "OpenGL 2.1 compatibility shape seen but the Apple GL 2.1 corridor was not applied; GL_VENDOR='%s' GL_RENDERER='%s' GL_VERSION='%s'",
         "RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS",
         "Apple OpenGL 2.1 compatibility path uses a CPU-backed vertex cache with automatic stock GLSL interactions, simple ARB per-surface fallback, and an emergency interaction bypass",
         "selectedContext=%d.%d %s fixedFunction=%d VBO:%d->%d PBO:%d->%d simpleInteraction=%d ARB2:%d->%d",
@@ -112,6 +132,13 @@ def validate_context_aware_apple_gl21_quirk() -> None:
         "expectedFlags",
         "expectedVBO",
         "caps.hasVBO != quirkCasesTable[i].expectedVBO",
+        # the machines in issue #90: Apple GL reporting a non-Apple vendor
+        '"Intel Inc."',
+        '"ATI Technologies Inc."',
+        '"NVIDIA Corporation"',
+        "nonAppleVendorMacFlags",
+        "nonAppleVendorMacVBO",
+        "RendererDriverQuirk_HostRunsAppleGLStack()",
     ):
         require(self_test, token, "Apple GL 2.1 synthetic quirk cases")
 
@@ -472,8 +499,136 @@ def validate_docs_and_wiring() -> None:
         require(source, "python tools/tests/macos_apple_gl21_arb2_corridor.py", context)
 
 
+def validate_corridor_lighting_contract() -> None:
+    """Pins the four lighting defects behind issue #73's "still not ok" image."""
+
+    source = read("src/renderer/draw_arb2.cpp")
+    fragment = read("content/baseoq4/pak0/glprogs/material_interaction.fs")
+
+    # The stock ARB2 interaction normalizes the half-angle through the
+    # normalization cube map. The GLSL replacement fed the raw interpolated
+    # varying, whose magnitude reaches 2, into clamp( dot * 4 - 3 ).
+    require(
+        fragment,
+        "vec3 halfAngle = SafeNormalize( vHalfAngleVector );",
+        "unconditional half-angle normalization",
+    )
+    reject(
+        fragment,
+        "vec3 halfAngle = ( uStockInteraction > 0.5 ) ? vHalfAngleVector",
+        "stock interaction must not use an unnormalized half-angle",
+    )
+
+    # deformedSurface is an ownership flag that every CPU-skinned MD5 surface
+    # carries; it must not stand in for "GPU-posed".
+    gpu_posed_body = function_body(source, "static bool RB_SurfaceUsesGPUPosedGeometry( const drawSurf_t *surf ) {")
+    for token in (
+        "primBatchMesh",
+        "skinToModelTransforms",
+        "numSkinToModelTransforms",
+    ):
+        require(gpu_posed_body, token, "GPU-posed geometry predicate")
+    reject(gpu_posed_body, "deformedSurface", "GPU-posed predicate must not read the ownership flag")
+
+    # The rebuilt self-test has to model the shape the engine really produces.
+    receiver_self_test = function_body(source, "bool RB_ShadowMapArb2ReceiverFallbackSelfTest( void ) {")
+    for token in (
+        "cpuSkinnedGeo.deformedSurface = true;",
+        "RB_SurfaceEligibleForShadowMapReceiver( &skinnedReceiver )",
+        "gpuPosedGeo.numSkinToModelTransforms = 1;",
+        "expectedGeneratedReason",
+    ):
+        require(receiver_self_test, token, "CPU-skinned receiver self-test")
+
+    # A failed GLSL interaction load has to be remembered, or it recompiles per
+    # surface per light per frame.
+    load_body = function_body(source, "static bool RB_MaterialInteractionLoadProgram( void ) {")
+    require(
+        load_body,
+        "if ( g_materialInteractionProgram.programGeneration == tr.videoRestartCount ) {",
+        "failed GLSL interaction load caching",
+    )
+    reject(
+        load_body,
+        "g_materialInteractionProgram.programObject != 0 && g_materialInteractionProgram.programGeneration",
+        "load cache must not key on the resulting program object",
+    )
+    require(
+        source,
+        "g_materialInteractionProgram.programGeneration = -1;",
+        "never-attempted generation sentinel",
+    )
+
+    # shadow.vp failing to bind silently left w=0 shadow volumes drawn through
+    # fixed function, which is indistinguishable from "no shadows".
+    reject(
+        source,
+        'VPROG_STENCIL_SHADOW, "stencil shadow vertex program", false',
+        "stencil shadow program bind must report failures",
+    )
+    reject(
+        source,
+        'VPROG_STENCIL_SHADOW, "stencil shadow fallback vertex program", false',
+        "stencil shadow fallback bind must report failures",
+    )
+
+    # r_appleARB2Interactions 2 exists to run the full ARB path; an archived
+    # r_useSimpleInteraction 1 used to OR that away.
+    simple_body = function_body(source, "static bool RB_UseSimpleInteractionShader( void ) {")
+    for token in (
+        "RB_AppleGL21CorridorActive()",
+        "return RB_DriverPrefersSimpleInteraction();",
+    ):
+        require(simple_body, token, "Apple policy authority over r_useSimpleInteraction")
+
+    # per-surface route counters, so a reporter log says how much of the frame
+    # actually took the corridor
+    for token in (
+        "Apple GL 2.1 interaction routes: glsl=%d simpleARB=%d (customGLSL=%d gpuPosed=%d unprepared=%d)",
+        "void RB_ResetAppleGL21RouteCounters( void ) {",
+        "void RB_ReportAppleGL21RouteCounters( void ) {",
+        "g_appleGL21RouteCounts.glslCorridor++;",
+        "g_appleGL21RouteCounts.simpleFallback++;",
+    ):
+        require(source, token, "Apple GL 2.1 interaction route counters")
+    require(
+        read("src/renderer/draw_common.cpp"),
+        "RB_ReportAppleGL21RouteCounters();",
+        "route counter report call",
+    )
+
+
+def validate_framebuffer_and_profile_diagnostics() -> None:
+    """Stencil, quality-tier and ambient facts a reporter log never carried."""
+
+    context_source = read("src/renderer/OpenGL/gl_ContextSDL3.cpp")
+    for token in (
+        "RENDER_GLATTR_DEPTH_SIZE",
+        "RENDER_GLATTR_STENCIL_SIZE",
+        "SDL3: reported OpenGL framebuffer attributes: depthBits=%s%d stencilBits=%s%d hasStencilBuffer=%d",
+        "the OpenGL context has no stencil buffer; stencil shadow volumes cannot be drawn on this visual",
+    ):
+        require(context_source, token, "achieved framebuffer attribute reporting")
+
+    backend = read("src/sys/sdl3/sdl3_backend.cpp")
+    for token in (
+        "case RENDER_GLATTR_DEPTH_SIZE:",
+        "case RENDER_GLATTR_STENCIL_SIZE:",
+    ):
+        require(backend, token, "SDL3 framebuffer attribute plumbing")
+
+    common = read("src/framework/Common.cpp")
+    require(
+        common,
+        "Quality profile: com_machineSpec=%d com_videoRam=%d com_performancePreset='%s' r_forceAmbient=%.3f",
+        "unconditional quality profile line",
+    )
+
+
 def main() -> None:
     validate_context_aware_apple_gl21_quirk()
+    validate_corridor_lighting_contract()
+    validate_framebuffer_and_profile_diagnostics()
     validate_simple_interaction_fail_closed()
     validate_arb_entrypoint_and_binding_audit()
     validate_upload_and_vertex_cache_static_coverage()

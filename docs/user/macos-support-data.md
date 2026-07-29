@@ -113,6 +113,11 @@ For issue #73 style reports, keep the lines around these markers:
 - `Game module load failed:`
 - `dlopen ... failed:`
 - `fatal signal SIGSEGV`
+- `last game module phase:`
+- `Quality profile:`
+- `reported OpenGL framebuffer attributes:`
+- `Apple GL 2.1 interaction routes:`
+- `the Apple GL 2.1 corridor was not applied`
 
 ## Run The Support Collector
 

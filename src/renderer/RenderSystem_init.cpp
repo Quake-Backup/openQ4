@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 #include "../imagetools/DXT/DXTCodec.h"
+#include "CelShading.h"
 #include "RendererBootstrap.h"
 #include "RendererModule.h"
 #include "GLDebugScope.h"
@@ -267,6 +268,23 @@ idCVar r_crtScanlineStrength( "r_crtScanlineStrength", "0.55", CVAR_RENDERER | C
 idCVar r_crtMaskStrength( "r_crtMaskStrength", "0.35", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "phosphor mask intensity for the CRT monitor post-process", 0.0f, 1.0f );
 idCVar r_crtCurvature( "r_crtCurvature", "0.01", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "screen curvature amount for the CRT monitor post-process", 0.0f, 0.25f );
 idCVar r_crtChromatic( "r_crtChromatic", "0.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "optional channel convergence offset in pixel units for the CRT monitor post-process", 0.0f, 0.35f );
+idCVar r_celShading( "r_celShading", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "cel shade model entities: quantized lighting plus silhouette outlines on players, monsters, moveables and the view weapon" );
+idCVar r_celShadingWorld( "r_celShadingWorld", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "extend cel shading to BSP world geometry, adding banded lighting and screen-space edge outlines" );
+idCVar r_celShadingBands( "r_celShadingBands", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "quantize interaction lighting into cel bands; disable to keep smooth lighting and use outlines alone" );
+idCVar r_celShadingSteps( "r_celShadingSteps", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of cel lighting bands; higher values keep more intermediate tones", CEL_MIN_BANDS, CEL_MAX_BANDS, idCmdSystem::ArgCompletion_Integer<CEL_MIN_BANDS,CEL_MAX_BANDS> );
+idCVar r_celShadingSpecular( "r_celShadingSpecular", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "collapse specular highlights into a hard-edged cel highlight instead of a smooth falloff" );
+idCVar r_celViewWeapon( "r_celViewWeapon", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow cel shading and cel outlines on the first-person weapon and arms" );
+idCVar r_celOutline( "r_celOutline", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "draw a silhouette outline shell around cel-shaded model entities" );
+idCVar r_celOutlineWidth( "r_celOutlineWidth", "2.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "model cel outline width in pixels; the shell expansion is rescaled per surface so the line holds its thickness at any distance", CEL_MIN_OUTLINE_WIDTH, CEL_MAX_OUTLINE_WIDTH );
+idCVar r_celOutlineAlpha( "r_celOutlineAlpha", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "opacity multiplier for model cel outlines", 0.0f, 1.0f );
+idCVar r_celOutlineColor( "r_celOutlineColor", "0 0 0 255", CVAR_RENDERER | CVAR_ARCHIVE, "cel outline colour as \"r g b a\" with components in 0-255" );
+idCVar r_celViewWeaponOutlineWidth( "r_celViewWeaponOutlineWidth", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "first-person weapon cel outline width in pixels", CEL_MIN_OUTLINE_WIDTH, CEL_MAX_OUTLINE_WIDTH );
+idCVar r_celViewWeaponOutlineAlpha( "r_celViewWeaponOutlineAlpha", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "opacity multiplier for first-person weapon cel outlines", 0.0f, 1.0f );
+idCVar r_celShadingWorldWidth( "r_celShadingWorldWidth", "2.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "screen-space radius in pixels used by world cel edge detection; larger values draw thicker outlines", CEL_MIN_WORLD_OUTLINE_WIDTH, CEL_MAX_WORLD_OUTLINE_WIDTH );
+idCVar r_celShadingWorldAlpha( "r_celShadingWorldAlpha", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "opacity of world cel outline edges", 0.0f, 1.0f );
+idCVar r_celShadingWorldDepthThreshold( "r_celShadingWorldDepthThreshold", "0.0015", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "world cel silhouette sensitivity as a fraction of view distance; lower values catch more subtle depth steps", 0.0001f, 0.02f );
+idCVar r_celShadingWorldNormalThreshold( "r_celShadingWorldNormalThreshold", "0.4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "world cel crease sensitivity for corners that share a depth; 0 disables interior crease lines", 0.0f, 1.0f );
+idCVar r_celShadingWorldDebug( "r_celShadingWorldDebug", "0", CVAR_RENDERER | CVAR_BOOL, "draw the world cel edge mask over a flat background instead of compositing it" );
 idCVar r_msaaResolveDepth( "r_msaaResolveDepth", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "resolve depth when blitting MSAA render targets" );
 idCVar r_msaaAlphaToCoverage( "r_msaaAlphaToCoverage", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable alpha-to-coverage for perforated materials on MSAA render targets" );
 idCVar r_mode( "r_mode", "-2", CVAR_ARCHIVE | CVAR_RENDERER | CVAR_INTEGER, "video mode number (-2 = desktop native, -1 = custom, 0+ = predefined)" );
@@ -285,6 +303,9 @@ idCVar r_useSilRemap( "r_useSilRemap", "1", CVAR_RENDERER | CVAR_BOOL, "consider
 idCVar r_useNodeCommonChildren( "r_useNodeCommonChildren", "1", CVAR_RENDERER | CVAR_BOOL, "stop pushing reference bounds early when possible" );
 idCVar r_useShadowProjectedCull( "r_useShadowProjectedCull", "1", CVAR_RENDERER | CVAR_BOOL, "discard triangles outside light volume before shadowing" );
 idCVar r_useShadowVertexProgram( "r_useShadowVertexProgram", "1", CVAR_RENDERER | CVAR_BOOL, "do the shadow projection in the vertex program on capable cards" );
+idCVar r_useTrueTypeFonts( "r_useTrueTypeFonts", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "render GUI text from the shipped .ttf faces, rasterised at the display's own resolution, instead of scaling up the fixed 12/24/48 point bitmap atlases" );
+idCVar r_ttfFontResolution( "r_ttfFontResolution", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "multiplier on the resolution the TrueType glyph atlases are rasterised at; raise for sharper text at the cost of atlas memory", 0.25f, 4.0f );
+idCVar r_ttfFontDebug( "r_ttfFontDebug", "0", CVAR_RENDERER | CVAR_BOOL, "dump each TrueType glyph atlas to fs_savepath/ttfatlas and log its layout" );
 idCVar r_useShadowMap( "r_useShadowMap", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use a simple shadow-map path for projected and point lights when supported" );
 idCVar r_shadowMapCSM( "r_shadowMapCSM", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use projected-light cascaded shadow maps when shadow maps are enabled" );
 idCVar r_shadowMapHashedAlpha( "r_shadowMapHashedAlpha", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use hashed alpha testing for perforated shadow-map casters when supported" );
@@ -455,6 +476,11 @@ idCVar r_useSimpleInteraction( "r_useSimpleInteraction", "0", CVAR_RENDERER | CV
 idCVar r_interactionColorMode( "r_interactionColorMode", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "interaction vertex-color mode: 0 = auto, 1 = packed env16.xy, 2 = vector env16/env17", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_appleARB2Interactions( "r_appleARB2Interactions", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "Apple GL 2.1 light-interaction handling: 0 = automatic stock GLSL interactions with simple ARB per-surface fallback, 1 = force simple ARB diagnostic, 2 = force full ARB diagnostic, 3 = emergency interaction bypass; requires vid_restart", 0, 3, idCmdSystem::ArgCompletion_Integer<0,3> );
 idCVar r_shaderReport( "r_shaderReport", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shader diagnostics: 0 = off, 1 = startup/vid_restart summary, 2 = also warn on invalid program use", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+// Deliberately not archived: this exists so the Apple GL 2.1 corridor can be
+// reproduced from a Windows or Linux checkout without an Apple machine. On a
+// darwin host the corridor is selected by the context shape and this cvar is
+// not consulted.
+idCVar r_forceAppleGL21InteractionCorridor( "r_forceAppleGL21InteractionCorridor", "0", CVAR_RENDERER | CVAR_BOOL, "non-Apple hosts only: treat a GL 2.1 compatibility context as the Apple GL 2.1 interaction corridor for reproduction; requires vid_restart" );
 
 idCVar r_jitter( "r_jitter", "0", CVAR_RENDERER | CVAR_BOOL, "randomly subpixel jitter the projection matrix" );
 
@@ -491,6 +517,7 @@ idCVar r_lightGridBakeMemoryMB( "r_lightGridBakeMemoryMB", "12", CVAR_RENDERER |
 idCVar r_lightGridBakeReadbackSlots( "r_lightGridBakeReadbackSlots", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "async readback slots for light-grid baking (0 = auto, 1..16 = explicit; lower reduces driver/GPU memory use)", 0, 16, idCmdSystem::ArgCompletion_Integer<0,16> );
 idCVar r_skipBlendLights( "r_skipBlendLights", "0", CVAR_RENDERER | CVAR_BOOL, "skip all blend lights" );
 idCVar r_skipFogLights( "r_skipFogLights", "0", CVAR_RENDERER | CVAR_BOOL, "skip all fog lights" );
+idCVar r_skipPlayerVisibilityEffects( "r_skipPlayerVisibilityEffects", "0", CVAR_RENDERER | CVAR_BOOL, "skip the multiplayer player brightskin / rimlight / outline overlays" );
 idCVar r_skipDeforms( "r_skipDeforms", "0", CVAR_RENDERER | CVAR_BOOL, "leave all deform materials in their original state" );
 idCVar r_skipFrontEnd( "r_skipFrontEnd", "0", CVAR_RENDERER | CVAR_BOOL, "bypasses all front end work, but 2D gui rendering still draws" );
 idCVar r_skipUpdates( "r_skipUpdates", "0", CVAR_RENDERER | CVAR_BOOL, "1 = don't accept any entity or light updates, making everything static" );
@@ -1606,6 +1633,7 @@ void R_InitOpenGL( void ) {
 	common->Printf( "----- R_InitOpenGL -----\n" );
 	R_RecordRendererStartupPhase( RENDERER_STARTUP_PHASE_R_INIT_OPENGL );
 	RB_ResetARB2InteractionHandoffBreadcrumb();
+	RB_ResetAppleGL21RouteCounters();
 
 	if ( glConfig.isInitialized ) {
 		common->FatalError( "R_InitOpenGL called while active" );

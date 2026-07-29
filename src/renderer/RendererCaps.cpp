@@ -123,11 +123,26 @@ static bool RendererDriverQuirk_ParseGLVersionPrefix( const char *version, int &
 	return true;
 }
 
-static bool RendererDriverQuirk_IsAppleGL21CompatibilityFallback( const renderBackendCaps_t &caps, const rendererDriverInfo_t &driverInfo ) {
-	if ( driverInfo.vendor == NULL || idStr::Icmp( driverInfo.vendor, "Apple" ) != 0 ) {
-		return false;
-	}
+// macOS ships exactly one OpenGL implementation, and it reports the *GPU*
+// vendor rather than "Apple" on Intel, AMD and NVIDIA Macs -- "Intel Inc.",
+// "ATI Technologies Inc.", "NVIDIA Corporation". A GL_VENDOR == "Apple" gate
+// therefore left every Intel Mac with none of the corridor workarounds and no
+// quirk log line at all (issue #90). On a darwin host the corridor is
+// identified by the context shape alone; elsewhere the vendor string still has
+// to say Apple, or r_forceAppleGL21InteractionCorridor has to ask for it so the
+// corridor can be reproduced off-Apple.
+static bool RendererDriverQuirk_HostRunsAppleGLStack( void ) {
+#if defined( MACOS_X ) || defined( __APPLE__ )
+	return true;
+#else
+	return r_forceAppleGL21InteractionCorridor.GetBool();
+#endif
+}
 
+static bool RendererDriverQuirk_IsAppleGL21CompatibilityFallback(
+	const renderBackendCaps_t &caps,
+	const rendererDriverInfo_t &driverInfo,
+	bool *outHasCompatibilityShape = NULL ) {
 	int versionMajor = 0;
 	int versionMinor = 0;
 	const bool parsedVersion = RendererDriverQuirk_ParseGLVersionPrefix( driverInfo.version, versionMajor, versionMinor );
@@ -146,7 +161,15 @@ static bool RendererDriverQuirk_IsAppleGL21CompatibilityFallback( const renderBa
 		caps.profile == RENDERER_CONTEXT_PROFILE_COMPATIBILITY ||
 		caps.hasFixedFunctionCompatibility;
 
-	return ( reportsGL21 || selectedGL21 ) && selectedCompatibility;
+	const bool hasCompatibilityShape = ( reportsGL21 || selectedGL21 ) && selectedCompatibility;
+	if ( outHasCompatibilityShape != NULL ) {
+		*outHasCompatibilityShape = hasCompatibilityShape;
+	}
+
+	const bool vendorSaysApple = driverInfo.vendor != NULL && idStr::Icmp( driverInfo.vendor, "Apple" ) == 0;
+	const bool appleGLStack = vendorSaysApple || RendererDriverQuirk_HostRunsAppleGLStack();
+
+	return hasCompatibilityShape && appleGLStack;
 }
 
 static void RendererDriverQuirks_AppendSummary( const char *text ) {
@@ -843,13 +866,23 @@ void RendererDriverQuirks_Apply( renderBackendCaps_t &caps, const rendererDriver
 		RendererDriverQuirks_AppendSummary( rule.summary );
 	}
 
-	if ( RendererDriverQuirk_IsAppleGL21CompatibilityFallback( caps, driverInfo ) ) {
+	bool appleGL21CompatibilityShape = false;
+	if ( RendererDriverQuirk_IsAppleGL21CompatibilityFallback( caps, driverInfo, &appleGL21CompatibilityShape ) ) {
 		rg_driverQuirkReport.flags |=
 			RENDERER_DRIVER_QUIRK_DISABLE_VBO |
 			RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION |
 			RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS;
 		rg_driverQuirkReport.rulesMatched++;
 		RendererDriverQuirks_AppendSummary( "Apple OpenGL 2.1 compatibility path uses a CPU-backed vertex cache with automatic stock GLSL interactions, simple ARB per-surface fallback, and an emergency interaction bypass" );
+	} else if ( appleGL21CompatibilityShape ) {
+		// The decisive fact a reporter cannot otherwise send back: the context
+		// has the GL 2.1 compatibility shape but the host was not treated as an
+		// Apple GL stack, so none of the corridor workarounds applied.
+		common->Printf(
+			"Renderer driver quirks: OpenGL 2.1 compatibility shape seen but the Apple GL 2.1 corridor was not applied; GL_VENDOR='%s' GL_RENDERER='%s' GL_VERSION='%s'\n",
+			( driverInfo.vendor != NULL ) ? driverInfo.vendor : "",
+			( driverInfo.renderer != NULL ) ? driverInfo.renderer : "",
+			( driverInfo.version != NULL ) ? driverInfo.version : "" );
 	}
 
 	if ( ( rg_driverQuirkReport.flags & RENDERER_DRIVER_QUIRK_FORCE_LEGACY ) != 0 ) {
@@ -1648,6 +1681,14 @@ bool RendererCompatibilityGates_RunSelfTest( void ) {
 		bool expectedDebugContext;
 		bool expectedVBO;
 	};
+	// On a darwin host every GL 2.1 compatibility context is the Apple stack no
+	// matter what GL_VENDOR reports, so the Intel/AMD/NVIDIA Mac rows below
+	// take the corridor there and take nothing anywhere else.
+	const unsigned int nonAppleVendorMacFlags = RendererDriverQuirk_HostRunsAppleGLStack()
+		? ( RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS )
+		: static_cast<unsigned int>( RENDERER_DRIVER_QUIRK_NONE );
+	const bool nonAppleVendorMacVBO = !RendererDriverQuirk_HostRunsAppleGLStack();
+
 	const quirkCase_t quirkCasesTable[] = {
 		{ "openQ4Test", "Missing UBO", "1.0", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_UBO, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, true },
 		{ "openQ4Test", "Broken MRT", "1.0", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_MRT, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, true },
@@ -1660,7 +1701,12 @@ bool RendererCompatibilityGates_RunSelfTest( void ) {
 		{ "Apple", "Apple M5 macOS 16 Tahoe", "OpenGL 2.1 Metal", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false },
 		{ "Apple", "unknown", "2.1 Metal", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false },
 		{ "Apple", "", "2.1 Metal", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false },
-		{ "Apple", "Apple Silicon modern context", "4.1 Metal", 4, 1, RENDERER_CONTEXT_PROFILE_CORE, false, RENDERER_DRIVER_QUIRK_NONE, RENDERER_TIER_MODERN_GL41, true, true, true }
+		{ "Apple", "Apple Silicon modern context", "4.1 Metal", 4, 1, RENDERER_CONTEXT_PROFILE_CORE, false, RENDERER_DRIVER_QUIRK_NONE, RENDERER_TIER_MODERN_GL41, true, true, true },
+		// Apple's GL reports the GPU vendor on these machines; issue #90 is an
+		// Intel iMac whose log carries no quirk line at all.
+		{ "Intel Inc.", "Intel(R) UHD Graphics 630", "2.1 INTEL-16.5.6", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, nonAppleVendorMacFlags, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, nonAppleVendorMacVBO },
+		{ "ATI Technologies Inc.", "AMD Radeon Pro 5300M OpenGL Engine", "2.1 ATI-6.4.5", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, nonAppleVendorMacFlags, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, nonAppleVendorMacVBO },
+		{ "NVIDIA Corporation", "NVIDIA GeForce GT 750M OpenGL Engine", "2.1 NVIDIA-14.0.32", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, nonAppleVendorMacFlags, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, nonAppleVendorMacVBO }
 	};
 
 	for ( int i = 0; i < static_cast<int>( sizeof( quirkCasesTable ) / sizeof( quirkCasesTable[0] ) ); ++i ) {

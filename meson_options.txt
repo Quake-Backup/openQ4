@@ -112,3 +112,10 @@ option(
   value: false,
   description: 'Fail configure when MSVC is older than the VS 2026 baseline (19.46+).',
 )
+
+option(
+  'idlib_asserts',
+  type: 'boolean',
+  value: false,
+  description: 'Compile idlib assert()/verify() into live checks on GCC/Clang. src/idlib/Lib.h keys them off _DEBUG, which no GCC/Clang openQ4 build defines, so every ownership and alignment assert is otherwise a no-op there. Enabled by the sanitizer lanes; note that AssertFailed raises SIGTRAP/SIGINT, so a firing assert stops the process.',
+)

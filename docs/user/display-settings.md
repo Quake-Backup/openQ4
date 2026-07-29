@@ -50,6 +50,54 @@ For package or platform validation, `performancePresetSelfTest` checks that the 
 | `r_displayRefresh` | `0` | Requested fullscreen refresh rate (0 = default/driver choice). |
 | `r_screen` | `-1` | SDL3 monitor target (`-1` auto/current, `0..N` explicit index). |
 
+## Texture Quality (Picmip and Downsizing)
+
+openQ4 has two independent ways to spend less memory and bandwidth on textures.
+
+**`image_downSize*`** is retail Quake 4's ceiling: no texture of that kind is
+allowed to exceed a given size. Performance presets drive these.
+
+**`image_picmip`** is the Quake 3 style relative reduction familiar from
+`r_picmip`: it drops whole mip levels, so every step halves a texture no matter
+how large it started. Unlike the Quake 3 version, openQ4 applies it **only to the
+diffuse layer of materials** — the color texture of a `diffusemap` stage. Normal
+maps, specular maps, lighting, skies, decals, fonts, and every 2D/HUD surface
+keep their authored resolution, so surfaces stay correctly lit and the interface
+stays sharp while the bulk of texture memory still comes down.
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `image_picmip` | `0` | Mip levels to drop from diffuse textures. `0` = full resolution. Each step halves the texture. |
+| `image_picmipFilter` | `1` | Which image paths `image_picmip` may reduce. `0` = every diffuse texture, `1` = `textures/*` (world surfaces), `2` = `models/*` (characters, weapons, props), `4` = any other namespace. Add values to combine. |
+| `image_picmipMinSize` | `32` | Reduction stops once a texture's longest axis reaches this size, so small textures never turn to mush. |
+| `image_downSize` | `0` | Enables the general texture size ceiling. |
+| `image_downSizeLimit` | `0` | That ceiling, in pixels. `0` = no limit. |
+| `image_downSizeBump` / `image_downSizeBumpLimit` | `0` / `256` | Separate ceiling for normal maps. |
+| `image_downSizeSpecular` / `image_downSizeSpecularLimit` | `0` / `64` | Separate ceiling for specular maps. |
+
+The ceiling is applied first and `image_picmip` reduces from there, so raising
+`image_picmip` always halves the result even when a preset has already clamped a
+texture. A material that declares `nopicmip` opts out of both.
+
+These settings change the pixels a texture is built from, so openQ4 reloads
+images automatically when you change one — no `vid_restart` needed. The generated
+texture cache is keyed by the active reduction, so switching back and forth does
+not leave stale sizes behind.
+
+One limitation applies to DDS replacement packs. Compressed data can only be
+reduced by discarding mip levels the file already contains, so a `.dds` exported
+without a full mip chain stays larger than the same texture would on the normal
+path. Set `image_showPrecompressedTextures 1` to have openQ4 name any replacement
+that could not reach the requested size.
+
+```
+image_picmip 2
+image_picmipFilter 3
+```
+
+That halves world and model diffuse textures twice while leaving lighting detail,
+the HUD, and menus untouched.
+
 ## Renderer Backend (OpenGL default; Vulkan is experimental)
 
 openQ4 ships with an **OpenGL renderer as the default and only supported
@@ -161,17 +209,23 @@ Notes:
 
 ## Multiplayer Visibility Effects
 
-These optional client-side cvars add player outlines and rim lighting in multiplayer. Defaults keep the effects off; set one or more strength values above `0` to enable them. They do not change hit detection, snapshots, or server authority.
+These optional client-side cvars add player outlines, rim lighting, and bright skins in multiplayer. Defaults keep the effects off; set one or more strength values above `0` to enable them. They do not change hit detection, snapshots, or server authority.
+
+All of them are exposed in `Multiplayer -> Settings -> Appearance`, under the **Enemy** and **Teammate** tabs, with a live preview of the selected model. Colors and outline width are preset dropdowns there; the cvars accept any value in range if you prefer to set them from a config.
 
 | Setting | Default | What it does |
 |---|---:|---|
-| `cl_player_outline_enemy` | `0` | Enemy player outline strength (`0..1`). |
-| `cl_player_outline_team` | `0` | Teammate player outline strength (`0..1`). Teammate outlines render through depth so allies stay readable. |
-| `cl_player_outline_width` | `2.0` | Approximate outline width in screen pixels (`0.5..6.0`). |
+| `cl_player_outline_enemy` | `0` | Enemy player outline strength (`0..1`), used as the outline opacity. |
+| `cl_player_outline_team` | `0` | Teammate player outline strength (`0..1`). Teammate outlines ignore depth so allies stay readable through geometry. |
+| `cl_player_outline_width` | `2.0` | Outline width in screen pixels (`0.5..6.0`). |
 | `cl_player_rimlight_enemy` | `0` | Enemy player rimlight strength (`0..1`). |
 | `cl_player_rimlight_team` | `0` | Teammate player rimlight strength (`0..1`). |
 | `cl_player_visibility_enemy_color` | `1 0.12 0.05` | Enemy outline/rimlight RGB color, using float components. |
 | `cl_player_visibility_team_color` | `0.1 0.85 0.25` | Teammate outline/rimlight RGB color, using float components. |
+| `cl_player_brightskin_enemy` | `0` | Enemy player bright skin strength (`0..1`). |
+| `cl_player_brightskin_team` | `0` | Teammate player bright skin strength (`0..1`). |
+| `cl_player_brightskin_enemy_color` | `1 0.05 0.02` | Enemy bright skin RGB color, using float components. |
+| `cl_player_brightskin_team_color` | `0.05 1 0.22` | Teammate bright skin RGB color, using float components. |
 
 Example:
 
@@ -182,6 +236,13 @@ seta cl_player_outline_team 0.45
 seta cl_player_rimlight_team 0.25
 seta cl_player_outline_width 2.0
 ```
+
+Notes:
+- The outline is a shell drawn just outside the player silhouette and masked against the silhouette itself, so it stays a constant-width ring at any distance instead of tinting the whole body. Overlapping body, head, and weapon surfaces are each painted once, so the outline does not darken where they meet.
+- The rimlight needs GLSL support (`glprogs/player_rimlight.*`). On a driver without it the rimlight is skipped; outline and bright skin still work.
+- Without GLSL the outline falls back to a scaled shell, which approximates the requested pixel width instead of matching it exactly.
+- The overlays are drawn after the ambient floor and light-grid passes, so `r_forceAmbient` and indirect lighting no longer wash them out.
+- `r_skipPlayerVisibilityEffects 1` disables all three overlays engine-side, for clean captures or A/B comparisons.
 
 ## Resolution Scale
 
@@ -253,6 +314,59 @@ The in-game menu exposes this as `Settings -> System -> Display Sizing -> UI Asp
 | Setting | Default | What it does |
 |---|---:|---|
 | `ui_aspectCorrection` | `1` | `1` keeps classic 4:3-style correction for all 2D UI. `0` stretches 2D UI to the full 2D draw region. |
+
+## Text Rendering (New)
+
+Menu and HUD text is drawn from scalable font files rather than the original
+fixed-size bitmap ones. The letterforms are the same — the fonts were rebuilt by
+tracing the game's own artwork — but they are now rasterised at whatever
+resolution your display is actually running at, instead of a 640x480-era atlas
+being magnified. Text stays sharp at 1440p and 4K rather than softening.
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `r_useTrueTypeFonts` | `1` | `1` draws text from the scalable fonts. `0` returns to the original bitmap fonts. |
+| `r_ttfFontResolution` | `1.0` | Multiplies the resolution the glyphs are rasterised at. Raise for slightly sharper text at the cost of texture memory; lower to save memory. |
+
+Changing either takes effect the next time fonts are loaded, so restart the game
+or run `vid_restart` to see the change.
+
+One visible difference: the original `chain` font shipped with a zero-width
+space character, which ran words together in that face. The rebuilt font gives it
+a normal space, so some text is spaced differently — correctly — than it used to be.
+
+This covers the developer console and the loading screen too. Those draw from a
+separate fixed-size character sheet, which is rebuilt at your display's
+resolution the same way.
+
+Raising `r_ttfFontResolution` costs texture memory quadratically: at 1440p a font
+uses roughly 21 MB across its three sizes at the default of `1.0`. Lowering it to
+`0.75` roughly halves that if you are short on video memory.
+
+If the font files are missing (for example in a mod that replaces them), the game
+falls back to the original bitmap fonts automatically.
+
+## Text Background (Accessibility)
+
+Quake 4 draws much of its text directly over the world and over busy panel
+artwork, which can leave very little contrast. This draws a solid black backing
+behind each line of menu and HUD text, so the text stays readable regardless of
+what is behind it.
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `gui_textBackground` | `0` | How opaque the backing is. `0` is off, `1` is fully opaque black. `0.6`–`0.8` is usually enough to read comfortably while still showing the artwork. |
+| `gui_textBackgroundPadding` | `2` | How far the backing extends past the text, in 640x480 virtual units. Raise it if the text feels cramped against the edge. |
+
+Both apply immediately — no restart needed — and work with either font path.
+
+```
+seta gui_textBackground 0.75
+seta gui_textBackgroundPadding 2
+```
+
+The backing covers text drawn by the menus, HUD and in-game GUIs. The developer
+console draws on its own path and is not affected.
 
 ## Multi-Monitor Behavior (New)
 

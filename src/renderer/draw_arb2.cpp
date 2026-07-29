@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "tr_local.h"
+#include "CelShading.h"
 #include "Model_local.h"
 #include "ShadowMapClassification.h"
 #include "ShadowMapProjected.h"
@@ -1825,6 +1826,7 @@ typedef struct {
 	GLint			specularMap;
 	GLint			shadowMap;
 	GLint			translucentShadowMap[3];
+	GLint			celParams;
 	bool			depthCompareMode;
 } shadowMapProgram_t;
 
@@ -1937,6 +1939,7 @@ typedef struct {
 	GLint			specularMap;
 	GLint			pointShadowMap;
 	GLint			translucentShadowMap[3];
+	GLint			celParams;
 	bool			depthCompareMode;
 } pointShadowMapProgram_t;
 
@@ -1974,6 +1977,7 @@ typedef struct {
 	GLint			lightProjectionMap;
 	GLint			diffuseMap;
 	GLint			specularMap;
+	GLint			celParams;
 } materialInteractionProgram_t;
 
 typedef struct {
@@ -4436,6 +4440,13 @@ static void RB_TranslucentShadowMapFreeCasterProgram( void ) {
 	memset( &g_translucentShadowCasterProgram, 0, sizeof( g_translucentShadowCasterProgram ) );
 }
 
+// programGeneration is the load-attempt cache key, so it has to say "never
+// attempted" rather than "attempted during video restart 0" after a reset.
+static void RB_MaterialInteractionResetProgramState( void ) {
+	memset( &g_materialInteractionProgram, 0, sizeof( g_materialInteractionProgram ) );
+	g_materialInteractionProgram.programGeneration = -1;
+}
+
 static void RB_MaterialInteractionFreeProgram( void ) {
 	if ( g_materialInteractionProgram.programObject != 0 ) {
 		if ( g_materialInteractionProgram.vertexShaderObject != 0 ) {
@@ -4449,7 +4460,7 @@ static void RB_MaterialInteractionFreeProgram( void ) {
 		glDeleteObjectARB( g_materialInteractionProgram.programObject );
 	}
 
-	memset( &g_materialInteractionProgram, 0, sizeof( g_materialInteractionProgram ) );
+	RB_MaterialInteractionResetProgramState();
 }
 
 static void RB_PointShadowMapFreeProgram( void ) {
@@ -4528,7 +4539,7 @@ static void RB_ShadowMapResetProgramStateNoGL( void ) {
 	memset( &g_shadowMapProgram, 0, sizeof( g_shadowMapProgram ) );
 	memset( &g_shadowMapCasterProgram, 0, sizeof( g_shadowMapCasterProgram ) );
 	memset( &g_translucentShadowCasterProgram, 0, sizeof( g_translucentShadowCasterProgram ) );
-	memset( &g_materialInteractionProgram, 0, sizeof( g_materialInteractionProgram ) );
+	RB_MaterialInteractionResetProgramState();
 	memset( &g_pointShadowMapProgram, 0, sizeof( g_pointShadowMapProgram ) );
 	memset( &g_pointShadowCasterProgram, 0, sizeof( g_pointShadowCasterProgram ) );
 	memset( &g_pointTranslucentShadowCasterProgram, 0, sizeof( g_pointTranslucentShadowCasterProgram ) );
@@ -4630,7 +4641,11 @@ static bool RB_MaterialInteractionLoadProgram( void ) {
 		return false;
 	}
 
-	if ( g_materialInteractionProgram.programObject != 0 && g_materialInteractionProgram.programGeneration == tr.videoRestartCount ) {
+	// Key the cache on the attempt, not on the resulting object. Keying it on
+	// programObject != 0 meant a failed compile or a missing .vs/.fs was never
+	// remembered, so the whole load ran again for every surface of every light
+	// of every frame.
+	if ( g_materialInteractionProgram.programGeneration == tr.videoRestartCount ) {
 		return g_materialInteractionProgram.programValid;
 	}
 
@@ -4735,6 +4750,7 @@ static bool RB_MaterialInteractionLoadProgram( void ) {
 	g_materialInteractionProgram.materialNormalScale = glGetUniformLocationARB( programObject, "uMaterialNormalScale" );
 	g_materialInteractionProgram.materialSpecularBoost = glGetUniformLocationARB( programObject, "uMaterialSpecularBoost" );
 	g_materialInteractionProgram.materialFresnel = glGetUniformLocationARB( programObject, "uMaterialFresnel" );
+	g_materialInteractionProgram.celParams = glGetUniformLocationARB( programObject, "uCelParams" );
 	g_materialInteractionProgram.stockInteraction = glGetUniformLocationARB( programObject, "uStockInteraction" );
 	g_materialInteractionProgram.ambientLight = glGetUniformLocationARB( programObject, "uAmbientLight" );
 	g_materialInteractionProgram.ambientNormalMap = glGetUniformLocationARB( programObject, "uAmbientNormalMap" );
@@ -4887,6 +4903,7 @@ static const char *programBaseName = "glprogs/shadow_interaction";
 	g_shadowMapProgram.materialNormalScale = glGetUniformLocationARB( programObject, "uMaterialNormalScale" );
 	g_shadowMapProgram.materialSpecularBoost = glGetUniformLocationARB( programObject, "uMaterialSpecularBoost" );
 	g_shadowMapProgram.materialFresnel = glGetUniformLocationARB( programObject, "uMaterialFresnel" );
+	g_shadowMapProgram.celParams = glGetUniformLocationARB( programObject, "uCelParams" );
 	g_shadowMapProgram.shadowTexelSize = glGetUniformLocationARB( programObject, "uShadowTexelSize" );
 	g_shadowMapProgram.shadowBias = glGetUniformLocationARB( programObject, "uShadowBias" );
 	g_shadowMapProgram.shadowNormalBias = glGetUniformLocationARB( programObject, "uShadowNormalBias" );
@@ -5298,6 +5315,7 @@ static const char *programBaseName = "glprogs/shadow_point_interaction";
 	g_pointShadowMapProgram.materialNormalScale = glGetUniformLocationARB( programObject, "uMaterialNormalScale" );
 	g_pointShadowMapProgram.materialSpecularBoost = glGetUniformLocationARB( programObject, "uMaterialSpecularBoost" );
 	g_pointShadowMapProgram.materialFresnel = glGetUniformLocationARB( programObject, "uMaterialFresnel" );
+	g_pointShadowMapProgram.celParams = glGetUniformLocationARB( programObject, "uCelParams" );
 	g_pointShadowMapProgram.shadowBias = glGetUniformLocationARB( programObject, "uShadowBias" );
 	g_pointShadowMapProgram.shadowNormalBias = glGetUniformLocationARB( programObject, "uShadowNormalBias" );
 	g_pointShadowMapProgram.pointShadowTexelDepthBias = glGetUniformLocationARB( programObject, "uPointShadowTexelDepthBias" );
@@ -8423,6 +8441,32 @@ static bool RB_EnhancedMaterialShadingActive( void ) {
 	return glConfig.GLSLProgramAvailable && r_enhancedMaterials.GetBool();
 }
 
+/*
+==================
+RB_SetCelInteractionUniform
+
+Cel banding is decided per surface (world, model and view weapon all have their
+own gate), so uCelParams is refreshed for every interaction rather than once per
+program bind. Programs built before the uniform existed report -1 and are left
+untouched.
+==================
+*/
+static void RB_SetCelInteractionUniform( const GLint location, const drawSurf_t *surf ) {
+	if ( location < 0 ) {
+		return;
+	}
+
+	const bool banded = R_CelShadingSurfaceActive( surf );
+	const float celParams[4] = {
+		banded ? 1.0f : 0.0f,
+		(float)R_CelBandCount(),
+		( banded && r_celShadingSpecular.GetBool() ) ? 1.0f : 0.0f,
+		0.0f
+	};
+
+	glUniform4fvARB( location, 1, celParams );
+}
+
 static float RB_EnhancedMaterialNormalScaleValue( void ) {
 	return RB_EnhancedMaterialShadingActive() ? idMath::ClampFloat( 0.5f, 2.0f, r_enhancedMaterialNormalScale.GetFloat() ) : 1.0f;
 }
@@ -8776,36 +8820,39 @@ static bool RB_GLSLPrepareInteractionVertexCache( const drawSurf_t *surf, idDraw
 	return true;
 }
 
-static bool RB_SurfaceUsesGeneratedCharacterGeometry( const drawSurf_t *surf ) {
+// GPU-posed geometry is geometry whose vertex cache holds bind-pose positions
+// that a vertex program moves into the final pose, so gl_Vertex is not where
+// the surface is actually drawn. Only the MD5R primitive-batch path does that:
+// it uploads rest-pose vertices plus a skin-to-model transform table and poses
+// them in md5rinteraction.vp.
+//
+// srfTriangles_t::deformedSurface is NOT that flag. Model.h defines it as
+// "indexes, silIndexes, mirrorVerts and silEdges are pointers into the original
+// surface and should not be freed", and idMD5Mesh::UpdateSurface sets it on
+// every CPU-skinned MD5 surface -- which is every character and the viewmodel.
+// Reading it as "GPU-posed" dropped all of them onto diffuse-only
+// SimpleInteraction.vfp and onto hard stencil shadow receivers, which is the
+// flat, bump-less, shadow-less character lighting reported in issue #73. Their
+// ambient caches already hold final-pose model-space vertices that the
+// interaction and receiver programs sample exactly like static geometry.
+static bool RB_SurfaceUsesGPUPosedGeometry( const drawSurf_t *surf ) {
 	if ( surf == NULL || surf->geo == NULL ) {
 		return true;
 	}
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 	const srfTriangles_t *tri = surf->geo;
 	const srfTriangles_t *ambientTri = ( tri->ambientSurface != NULL ) ? tri->ambientSurface : tri;
 
-	if ( tri->deformedSurface || ( ambientTri != NULL && ambientTri->deformedSurface ) ) {
-		return true;
-	}
-
-#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
-	if ( tri->primBatchMesh != NULL || ( ambientTri != NULL && ambientTri->primBatchMesh != NULL ) ) {
+	if ( tri->primBatchMesh != NULL || ambientTri->primBatchMesh != NULL ) {
 		return true;
 	}
 	if ( tri->skinToModelTransforms != NULL || tri->numSkinToModelTransforms > 0
-		|| ( ambientTri != NULL && ( ambientTri->skinToModelTransforms != NULL || ambientTri->numSkinToModelTransforms > 0 ) ) ) {
+		|| ambientTri->skinToModelTransforms != NULL || ambientTri->numSkinToModelTransforms > 0 ) {
 		return true;
 	}
 #endif
 
-	// CPU-skinned and cached dynamic models are deliberately NOT excluded:
-	// their ambient caches hold final-pose model-space vertices that the
-	// receiver program samples exactly like static geometry (the ARB2
-	// fallback lights them from the same vertex data). Only GPU-side posed
-	// geometry above, whose gl_Vertex is not the rendered position, needs
-	// the hard-stencil receiver fallback. Excluding every dynamic model here
-	// put hard stencil shadows on characters next to soft mapped world
-	// shadows in every scene.
 	return false;
 }
 
@@ -8816,7 +8863,7 @@ static bool RB_SurfaceEligibleForStockGLSLInteraction( const drawSurf_t *surf ) 
 	if ( surf->geo->numIndexes <= 0 || surf->geo->ambientCache == NULL ) {
 		return false;
 	}
-	if ( RB_SurfaceUsesGeneratedCharacterGeometry( surf ) ) {
+	if ( RB_SurfaceUsesGPUPosedGeometry( surf ) ) {
 		return false;
 	}
 
@@ -8855,6 +8902,51 @@ static bool RB_AppleGL21AutomaticInteractionPath( void ) {
 	return g_appleGL21AutomaticInteractionPath && !glConfig.disableARB2Interactions;
 }
 
+// "family=simple" in the startup log only describes which ARB pair is armed as
+// the per-surface fallback; it says nothing about how many surfaces actually
+// take the GLSL corridor. Without that number a reporter screenshot of flat
+// lighting cannot be told apart from a corridor that never ran (issue #73).
+typedef struct {
+	int		glslCorridor;
+	int		simpleFallback;
+	int		fallbackCustomGLSL;
+	int		fallbackGPUPosed;
+	int		fallbackUnprepared;
+} appleGL21RouteCounts_t;
+
+static appleGL21RouteCounts_t g_appleGL21RouteCounts = { 0, 0, 0, 0, 0 };
+static bool g_appleGL21RouteSummaryPrinted = false;
+
+static void RB_RecordAppleGL21FallbackReason( const drawSurf_t *surf ) {
+	if ( RB_SurfaceHasActiveCustomGLSLLighting( surf ) ) {
+		g_appleGL21RouteCounts.fallbackCustomGLSL++;
+	} else if ( RB_SurfaceUsesGPUPosedGeometry( surf ) ) {
+		g_appleGL21RouteCounts.fallbackGPUPosed++;
+	} else {
+		g_appleGL21RouteCounts.fallbackUnprepared++;
+	}
+}
+
+void RB_ResetAppleGL21RouteCounters( void ) {
+	memset( &g_appleGL21RouteCounts, 0, sizeof( g_appleGL21RouteCounts ) );
+	g_appleGL21RouteSummaryPrinted = false;
+}
+
+void RB_ReportAppleGL21RouteCounters( void ) {
+	const int total = g_appleGL21RouteCounts.glslCorridor + g_appleGL21RouteCounts.simpleFallback;
+	if ( total <= 0 || g_appleGL21RouteSummaryPrinted ) {
+		return;
+	}
+	g_appleGL21RouteSummaryPrinted = true;
+	common->Printf(
+		"Apple GL 2.1 interaction routes: glsl=%d simpleARB=%d (customGLSL=%d gpuPosed=%d unprepared=%d)\n",
+		g_appleGL21RouteCounts.glslCorridor,
+		g_appleGL21RouteCounts.simpleFallback,
+		g_appleGL21RouteCounts.fallbackCustomGLSL,
+		g_appleGL21RouteCounts.fallbackGPUPosed,
+		g_appleGL21RouteCounts.fallbackUnprepared );
+}
+
 static bool RB_SurfaceEligibleForAppleGL21StockGLSLInteraction( const drawSurf_t *surf ) {
 	return RB_SurfaceEligibleForStockGLSLInteraction( surf ) &&
 		!RB_SurfaceHasActiveCustomGLSLLighting( surf );
@@ -8867,7 +8959,7 @@ static bool RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( const drawSurf_t *sur
 	if ( surf == NULL || surf->geo == NULL || surf->space == NULL || surf->material == NULL || surf->shaderRegisters == NULL ) {
 		return false;
 	}
-	if ( surf->geo->numIndexes <= 0 || RB_SurfaceUsesGeneratedCharacterGeometry( surf ) ) {
+	if ( surf->geo->numIndexes <= 0 || RB_SurfaceUsesGPUPosedGeometry( surf ) ) {
 		return false;
 	}
 
@@ -8903,7 +8995,7 @@ static shadowMapReceiverFallbackReason_t RB_SurfaceShadowMapReceiverFallbackReas
 	if ( RB_SurfaceHasActiveCustomGLSLLighting( surf ) && !RB_SurfaceUsesWrappedCustomGLSLShadowReceiver( surf ) ) {
 		return SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL;
 	}
-	if ( RB_SurfaceUsesGeneratedCharacterGeometry( surf ) ) {
+	if ( RB_SurfaceUsesGPUPosedGeometry( surf ) ) {
 		return SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY;
 	}
 
@@ -9005,13 +9097,29 @@ bool RB_ShadowMapArb2ReceiverFallbackSelfTest( void ) {
 	memset( &receiverGeo, 0, sizeof( receiverGeo ) );
 	receiverGeo.numIndexes = 3;
 
-	// deform-generated geometry is the class that genuinely cannot use the
-	// mapped receiver program; CPU-skinned jointed entities can (their
-	// ambient caches hold final-pose model-space vertices)
-	srfTriangles_t deformedGeo;
-	memset( &deformedGeo, 0, sizeof( deformedGeo ) );
-	deformedGeo.numIndexes = 3;
-	deformedGeo.deformedSurface = true;
+	// A CPU-skinned MD5 surface -- every character and the viewmodel -- is
+	// exactly this shape: deformedSurface set by idMD5Mesh::UpdateSurface,
+	// no primitive batch, no skin-to-model transform table. It is a first
+	// class mapped receiver, because its ambient cache already holds
+	// final-pose model-space vertices.
+	srfTriangles_t cpuSkinnedGeo;
+	memset( &cpuSkinnedGeo, 0, sizeof( cpuSkinnedGeo ) );
+	cpuSkinnedGeo.numIndexes = 3;
+	cpuSkinnedGeo.deformedSurface = true;
+
+	// GPU-posed MD5R geometry is the class that genuinely cannot use the
+	// mapped receiver program: its cached vertices are the bind pose and
+	// md5rinteraction.vp moves them.
+	float gpuPosedSkinTransform[16];
+	memset( gpuPosedSkinTransform, 0, sizeof( gpuPosedSkinTransform ) );
+	srfTriangles_t gpuPosedGeo;
+	memset( &gpuPosedGeo, 0, sizeof( gpuPosedGeo ) );
+	gpuPosedGeo.numIndexes = 3;
+	gpuPosedGeo.deformedSurface = true;
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	gpuPosedGeo.skinToModelTransforms = gpuPosedSkinTransform;
+	gpuPosedGeo.numSkinToModelTransforms = 1;
+#endif
 
 	viewEntity_t staticSpace;
 	viewEntity_t generatedSpace;
@@ -9026,44 +9134,57 @@ bool RB_ShadowMapArb2ReceiverFallbackSelfTest( void ) {
 	generatedEntity.parms.joints = &generatedJoint;
 	generatedSpace.entityDef = &generatedEntity;
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	const bool gpuPosingSupported = true;
+#else
+	const bool gpuPosingSupported = false;
+	(void)gpuPosedSkinTransform;
+#endif
+
 	drawSurf_t eligibleReceiver;
-	drawSurf_t jointedReceiver;
+	drawSurf_t skinnedReceiver;
 	drawSurf_t generatedReceiver;
 	drawSurf_t invalidReceiver;
 	memset( &eligibleReceiver, 0, sizeof( eligibleReceiver ) );
-	memset( &jointedReceiver, 0, sizeof( jointedReceiver ) );
+	memset( &skinnedReceiver, 0, sizeof( skinnedReceiver ) );
 	memset( &generatedReceiver, 0, sizeof( generatedReceiver ) );
 	memset( &invalidReceiver, 0, sizeof( invalidReceiver ) );
 	eligibleReceiver.geo = &receiverGeo;
 	eligibleReceiver.space = &staticSpace;
 	eligibleReceiver.material = tr.defaultMaterial;
 	eligibleReceiver.shaderRegisters = shaderRegisters;
-	eligibleReceiver.nextOnLight = &jointedReceiver;
-	// pins the narrowed contract: a CPU-skinned jointed entity is a first
-	// class mapped receiver, not a hard-stencil fallback
-	jointedReceiver.geo = &receiverGeo;
-	jointedReceiver.space = &generatedSpace;
-	jointedReceiver.material = tr.defaultMaterial;
-	jointedReceiver.shaderRegisters = shaderRegisters;
-	jointedReceiver.nextOnLight = &generatedReceiver;
-	generatedReceiver.geo = &deformedGeo;
+	eligibleReceiver.nextOnLight = &skinnedReceiver;
+	// pins the narrowed contract against the shape the engine really
+	// produces: a CPU-skinned MD5 surface carries deformedSurface and is
+	// still a first class mapped receiver, not a hard-stencil fallback
+	skinnedReceiver.geo = &cpuSkinnedGeo;
+	skinnedReceiver.space = &generatedSpace;
+	skinnedReceiver.material = tr.defaultMaterial;
+	skinnedReceiver.shaderRegisters = shaderRegisters;
+	skinnedReceiver.nextOnLight = &generatedReceiver;
+	generatedReceiver.geo = &gpuPosedGeo;
 	generatedReceiver.space = &generatedSpace;
 	generatedReceiver.material = tr.defaultMaterial;
 	generatedReceiver.shaderRegisters = shaderRegisters;
 	generatedReceiver.nextOnLight = &invalidReceiver;
 
+	const shadowMapReceiverFallbackReason_t expectedGeneratedReason =
+		gpuPosingSupported ? SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY : SHADOWMAP_RECEIVER_FALLBACK_NONE;
+	const int expectedGeneratedCount = gpuPosingSupported ? 1 : 0;
+
 	int fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_COUNT];
 	const int fallbackSurfaceCount = RB_CountShadowMapReceiverFallbackSurfaces( &eligibleReceiver, fallbackReasons );
 	if ( !RB_SurfaceEligibleForShadowMapReceiver( &eligibleReceiver )
-		|| !RB_SurfaceEligibleForShadowMapReceiver( &jointedReceiver )
-		|| RB_SurfaceShadowMapReceiverFallbackReason( &generatedReceiver ) != SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY
-		|| fallbackSurfaceCount != 2
-		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] != 1
+		|| !RB_SurfaceEligibleForShadowMapReceiver( &skinnedReceiver )
+		|| RB_SurfaceShadowMapReceiverFallbackReason( &generatedReceiver ) != expectedGeneratedReason
+		|| fallbackSurfaceCount != 1 + expectedGeneratedCount
+		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] != expectedGeneratedCount
 		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE] != 1
 		|| fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_CUSTOM_GLSL] != 0 ) {
 		common->Printf(
-			"ARB2 receiver fallback self-test failed: eligible=%d generatedReason=%s count=%d invalid=%d custom=%d generated=%d\n",
+			"ARB2 receiver fallback self-test failed: eligible=%d skinnedEligible=%d generatedReason=%s count=%d invalid=%d custom=%d generated=%d\n",
 			RB_SurfaceEligibleForShadowMapReceiver( &eligibleReceiver ) ? 1 : 0,
+			RB_SurfaceEligibleForShadowMapReceiver( &skinnedReceiver ) ? 1 : 0,
 			RB_ShadowMapReceiverFallbackReasonName( RB_SurfaceShadowMapReceiverFallbackReason( &generatedReceiver ) ),
 			fallbackSurfaceCount,
 			fallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_INVALID_SURFACE],
@@ -9757,6 +9878,7 @@ static bool RB_GLSLMaterial_CreateDrawInteractions( const drawSurf_t *surf, cons
 		glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
 
+		RB_SetCelInteractionUniform( g_materialInteractionProgram.celParams, surf );
 		RB_CreateSingleDrawInteractions( surf, RB_GLSLMaterial_DrawInteraction );
 		submittedInteractions = true;
 	}
@@ -9787,6 +9909,29 @@ static bool RB_GLSLMaterial_CreateDrawInteractions( const drawSurf_t *surf, cons
 	return submittedInteractions;
 }
 
+/*
+==================
+RB_DrawSurfChainNeedsCelBanding
+
+True when at least one surface on this light's chain wants banded lighting.
+Checked per chain rather than per surface because the interaction path is
+chosen for the whole chain at once.
+==================
+*/
+static bool RB_DrawSurfChainNeedsCelBanding( const drawSurf_t *surf ) {
+	if ( !R_CelShadingAnyEnabled() ) {
+		return false;
+	}
+
+	for ( ; surf != NULL; surf = surf->nextOnLight ) {
+		if ( R_CelShadingSurfaceActive( surf ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static void RB_DrawMaterialInteractions( const drawSurf_t *surf ) {
 	if ( surf == NULL ) {
 		return;
@@ -9802,17 +9947,28 @@ static void RB_DrawMaterialInteractions( const drawSurf_t *surf ) {
 			singleSurf.nextOnLight = NULL;
 			if ( RB_SurfaceEligibleForAppleGL21StockGLSLInteraction( &singleSurf ) &&
 				RB_GLSLMaterial_CreateDrawInteractions( &singleSurf, true ) ) {
+				g_appleGL21RouteCounts.glslCorridor++;
 				continue;
 			}
+			g_appleGL21RouteCounts.simpleFallback++;
+			RB_RecordAppleGL21FallbackReason( &singleSurf );
 			RB_ARB2_CreateDrawInteractions( &singleSurf );
 		}
 		return;
 	}
 
+	// Cel banding lives in the GLSL interaction shaders, and the stock ARB
+	// assembly programs ship with the game so they cannot carry it. A cel-shaded
+	// chain therefore borrows the GLSL path even when enhanced materials are
+	// off; forcing neutral enhancements keeps the stock lighting model, so the
+	// banding is the only visible difference.
+	const bool enhanced = RB_EnhancedMaterialShadingActive();
+	const bool celBanded = !enhanced && glConfig.GLSLProgramAvailable && RB_DrawSurfChainNeedsCelBanding( surf );
+
 	if ( !RB_DrawSurfChainHasCustomGLSLLighting( surf )
-		&& RB_EnhancedMaterialShadingActive()
+		&& ( enhanced || celBanded )
 		&& RB_DrawSurfChainEligibleForStockGLSLInteractions( surf )
-		&& RB_GLSLMaterial_CreateDrawInteractions( surf, false ) ) {
+		&& RB_GLSLMaterial_CreateDrawInteractions( surf, !enhanced ) ) {
 		return;
 	}
 
@@ -10037,6 +10193,7 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
 
 		const drawInteractionStageFilter_t stageFilter = ( receiverDebugMode && fallbackReason != SHADOWMAP_RECEIVER_FALLBACK_NONE ) ? NULL : RB_ShadowMapReceiverStageFilter;
+		RB_SetCelInteractionUniform( g_shadowMapProgram.celParams, surf );
 		RB_CreateSingleDrawInteractionsFiltered( surf, RB_GLSLShadowMap_DrawInteraction, stageFilter );
 	}
 
@@ -10316,6 +10473,7 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
 
 		const drawInteractionStageFilter_t stageFilter = ( pointReceiverDebugMode && fallbackReason != SHADOWMAP_RECEIVER_FALLBACK_NONE ) ? NULL : RB_ShadowMapReceiverStageFilter;
+		RB_SetCelInteractionUniform( g_pointShadowMapProgram.celParams, surf );
 		RB_CreateSingleDrawInteractionsFiltered( surf, RB_GLSLPointShadowMap_DrawInteraction, stageFilter );
 	}
 
@@ -10408,7 +10566,7 @@ static void RB_ShadowMapStencilFallbackFiltered( const drawSurf_t *primaryShadow
 		}
 		glClear( GL_STENCIL_BUFFER_BIT );
 
-		if ( r_useShadowVertexProgram.GetBool() && R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW, "stencil shadow fallback vertex program", false ) ) {
+		if ( r_useShadowVertexProgram.GetBool() && R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW, "stencil shadow fallback vertex program", true ) ) {
 			glEnable( GL_VERTEX_PROGRAM_ARB );
 			RB_StencilShadowPass( primaryShadowSurfs );
 			RB_StencilShadowPass( secondaryShadowSurfs );
@@ -11613,12 +11771,12 @@ void RB_ARB2_DrawInteractions( void ) {
 			glStencilFunc( GL_ALWAYS, 128, 255 );
 		}
 
-		if ( r_useShadowVertexProgram.GetBool() && R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW, "stencil shadow vertex program", false ) ) {
+		if ( r_useShadowVertexProgram.GetBool() && R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW, "stencil shadow vertex program", true ) ) {
 			glEnable( GL_VERTEX_PROGRAM_ARB );
 			RB_StencilShadowPass( vLight->globalShadows );
 			RB_DrawMaterialInteractions( vLight->localInteractions );
 			glEnable( GL_VERTEX_PROGRAM_ARB );
-			R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW, "stencil shadow vertex program", false );
+			R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW, "stencil shadow vertex program", true );
 			RB_StencilShadowPass( vLight->localShadows );
 			RB_DrawMaterialInteractions( vLight->globalInteractions );
 			glDisable( GL_VERTEX_PROGRAM_ARB );	// if there weren't any globalInteractions, it would have stayed on
@@ -11807,7 +11965,18 @@ static bool RB_DriverPrefersSimpleInteraction( void ) {
 		( ( RendererDriverQuirks_LastReport().flags & RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION ) != 0 );
 }
 
+static bool RB_AppleGL21CorridorActive( void ) {
+	return ( RendererDriverQuirks_LastReport().flags & RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS ) != 0;
+}
+
 static bool RB_UseSimpleInteractionShader( void ) {
+	// Inside the Apple GL 2.1 corridor r_appleARB2Interactions is authoritative.
+	// r_useSimpleInteraction is archived, so ORing it in here silently defeated
+	// mode 2 -- the one mode whose whole purpose is to run the full ARB2 path --
+	// for anyone who had ever set it.
+	if ( RB_AppleGL21CorridorActive() ) {
+		return RB_DriverPrefersSimpleInteraction();
+	}
 	return r_useSimpleInteraction.GetBool() || RB_DriverPrefersSimpleInteraction();
 }
 

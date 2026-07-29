@@ -90,6 +90,12 @@ public:
 					// Sends an unreliable message, in order and without duplicates.
 	int				SendMessage( idPort &port, const int time, const idBitMsg &msg );
 
+					// Bytes SendMessage can still carry once the pending reliable
+					// backlog has taken its share.  Anything larger is refused
+					// outright, so callers that pay to build their payload can ask
+					// first instead of losing it.
+	int				GetMaxSendMessageSize( void ) const;
+
 					// Sends the next fragment if the last message was too large to send at once.
 	void			SendNextFragment( idPort &port, const int time );
 

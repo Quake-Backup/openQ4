@@ -34,6 +34,80 @@ If you have questions concerning this license or the applicable additional terms
 
 /*
 ================
+R_ApplyImageDownsizePolicy
+
+Resolves a source size to the size the policy asks for. Lives here rather than
+next to the cvars so the renderer's raw and cube loaders and the imagetools DDS
+loader all reduce through the exact same arithmetic.
+================
+*/
+void R_ApplyImageDownsizePolicy( const imageDownsizePolicy_t &policy, int &width, int &height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return;
+	}
+
+	// absolute ceiling first, scaling both axes together so the aspect ratio and
+	// the mip alignment of the source are preserved
+	if ( policy.maxDimension > 0 ) {
+		while ( width > policy.maxDimension || height > policy.maxDimension ) {
+			const int nextWidth = Max( 1, width >> 1 );
+			const int nextHeight = Max( 1, height >> 1 );
+			if ( nextWidth == width && nextHeight == height ) {
+				break;
+			}
+			width = nextWidth;
+			height = nextHeight;
+		}
+	}
+
+	// then the relative picmip reduction. The floor is tested against the result
+	// of the step, not the size going into it, so the longest axis genuinely never
+	// ends up below minDimension and a small texture is never reduced to mush.
+	const int minDimension = Max( 1, policy.minDimension );
+	for ( int i = 0; i < policy.mipShift; i++ ) {
+		const int nextWidth = Max( 1, width >> 1 );
+		const int nextHeight = Max( 1, height >> 1 );
+		if ( nextWidth == width && nextHeight == height ) {
+			break;
+		}
+		if ( Max( nextWidth, nextHeight ) < minDimension ) {
+			break;
+		}
+		width = nextWidth;
+		height = nextHeight;
+	}
+}
+
+/*
+================
+R_ImageDownsizePolicyMipSkip
+
+How many levels of an existing mip chain to discard to land on the size the
+policy asks for. Precompressed DDS data already carries filtered mips, so the
+loader selects a level instead of decompressing and resampling.
+================
+*/
+int R_ImageDownsizePolicyMipSkip( const imageDownsizePolicy_t &policy, int width, int height, int availableLevels ) {
+	if ( availableLevels <= 1 || width <= 0 || height <= 0 ) {
+		return 0;
+	}
+
+	int targetWidth = width;
+	int targetHeight = height;
+	R_ApplyImageDownsizePolicy( policy, targetWidth, targetHeight );
+
+	int skip = 0;
+	while ( skip + 1 < availableLevels && ( width > targetWidth || height > targetHeight ) ) {
+		width = Max( 1, width >> 1 );
+		height = Max( 1, height >> 1 );
+		skip++;
+	}
+
+	return skip;
+}
+
+/*
+================
 R_ResampleTexture
 
 Used to resample images in a more general than quartering fashion.

@@ -13,6 +13,7 @@ This file is part of the Doom 3 GPL Source Code. See docs/legal for details.
 #include "../../framework/Common.h"
 #include "../../framework/async/AsyncNetwork.h"
 #include "../sys_public.h"
+#include "../sys_console_theme.h"
 #include "posix_public.h"
 
 #include <pthread.h>
@@ -58,14 +59,29 @@ namespace {
 
 static const int POSIX_CONSOLE_BUFFER_SIZE = 32768;
 static const int POSIX_CONSOLE_HISTORY = 64;
-static const int POSIX_CONSOLE_WIDTH = 760;
-static const int POSIX_CONSOLE_HEIGHT = 520;
-static const int POSIX_CONSOLE_MARGIN = 8;
-static const int POSIX_CONSOLE_BUTTON_WIDTH = 74;
-static const int POSIX_CONSOLE_BUTTON_HEIGHT = 24;
-static const int POSIX_CONSOLE_INPUT_HEIGHT = 24;
-static const int POSIX_CONSOLE_STATUS_HEIGHT = 28;
-static const int POSIX_CONSOLE_FONT_SIZE = 8;
+
+// Presentation comes from sys/sys_console_theme.h so this console and the
+// Win32 console cannot drift apart. See that header for the rationale.
+static const int POSIX_CONSOLE_WIDTH = SYSCON_METRIC_WINDOW_W;
+static const int POSIX_CONSOLE_HEIGHT = SYSCON_METRIC_WINDOW_H;
+static const int POSIX_CONSOLE_MIN_WIDTH = SYSCON_METRIC_MIN_W;
+static const int POSIX_CONSOLE_MIN_HEIGHT = SYSCON_METRIC_MIN_H;
+static const int POSIX_CONSOLE_MARGIN = SYSCON_METRIC_MARGIN;
+static const int POSIX_CONSOLE_GUTTER = SYSCON_METRIC_GUTTER;
+static const int POSIX_CONSOLE_BUTTON_WIDTH = SYSCON_METRIC_BUTTON_W;
+static const int POSIX_CONSOLE_BUTTON_HEIGHT = SYSCON_METRIC_BUTTON_H;
+static const int POSIX_CONSOLE_INPUT_HEIGHT = SYSCON_METRIC_INPUT_H;
+static const int POSIX_CONSOLE_STATUS_HEIGHT = SYSCON_METRIC_STATUS_H;
+static const int POSIX_CONSOLE_TEXT_PAD = SYSCON_METRIC_TEXT_PAD;
+static const int POSIX_CONSOLE_SCROLLBAR_WIDTH = SYSCON_METRIC_SCROLLBAR_W;
+
+// SDL_RenderDebugText draws a fixed 8x8 bitmap cell with no built-in leading.
+// Advancing by the cell height alone puts the descenders of one line on the
+// ascenders of the next, so the log pitch is the shared line height instead.
+static const int POSIX_CONSOLE_FONT_SIZE = SYSCON_METRIC_GLYPH_W;
+static const int POSIX_CONSOLE_GLYPH_HEIGHT = SYSCON_METRIC_GLYPH_H;
+static const int POSIX_CONSOLE_LINE_HEIGHT = SYSCON_METRIC_LINE_H;
+
 static const int POSIX_CONSOLE_APPEND_SIZE = 4096;
 static const int POSIX_CONSOLE_FATAL_SIZE = 4096;
 static const int POSIX_CONSOLE_MAX_WHEEL_STEPS_PER_EVENT = 64;
@@ -113,13 +129,26 @@ struct posixSplashWindow_t {
 	}
 };
 
+enum posixConsoleButton_t {
+	POSIX_CONSOLE_BUTTON_NONE = -1,
+	POSIX_CONSOLE_BUTTON_COPY = 0,
+	POSIX_CONSOLE_BUTTON_CLEAR,
+	POSIX_CONSOLE_BUTTON_QUIT,
+	POSIX_CONSOLE_BUTTON_COUNT
+};
+
+static const char * const POSIX_CONSOLE_BUTTON_LABELS[ POSIX_CONSOLE_BUTTON_COUNT ] = {
+	SYSCON_LABEL_COPY,
+	SYSCON_LABEL_CLEAR,
+	SYSCON_LABEL_QUIT
+};
+
 struct posixConsoleLayout_t {
 	SDL_FRect statusRect;
 	SDL_FRect outputRect;
+	SDL_FRect scrollTrackRect;
 	SDL_FRect inputRect;
-	SDL_FRect copyButtonRect;
-	SDL_FRect clearButtonRect;
-	SDL_FRect quitButtonRect;
+	SDL_FRect buttonRects[ POSIX_CONSOLE_BUTTON_COUNT ];
 };
 
 struct posixConsoleWindow_t {
@@ -137,6 +166,8 @@ struct posixConsoleWindow_t {
 	int logicalWidth;
 	int logicalHeight;
 	int scrollLines;
+	int hotButton;
+	int pressedButton;
 	idEditField inputField;
 	idEditField history[ POSIX_CONSOLE_HISTORY ];
 	int nextHistoryLine;
@@ -158,6 +189,8 @@ struct posixConsoleWindow_t {
 		, logicalWidth( 0 )
 		, logicalHeight( 0 )
 		, scrollLines( 0 )
+		, hotButton( POSIX_CONSOLE_BUTTON_NONE )
+		, pressedButton( POSIX_CONSOLE_BUTTON_NONE )
 		, nextHistoryLine( 0 )
 		, historyLine( 0 ) {
 	}
@@ -451,13 +484,13 @@ static bool Posix_SplashLoadTexture( void ) {
 }
 
 static void Posix_SplashRenderFallback( void ) {
-	(void)SDL_SetRenderDrawColor( s_splashWindow.renderer, 0x10, 0x13, 0x08, 0xff );
+	(void)SDL_SetRenderDrawColor( s_splashWindow.renderer, SYSCON_RGB( WINDOW ), 0xff );
 	(void)SDL_RenderClear( s_splashWindow.renderer );
 
 	SDL_FRect panel = { 28.0f, 110.0f, POSIX_SPLASH_WIDTH - 56.0f, 164.0f };
-	(void)SDL_SetRenderDrawColor( s_splashWindow.renderer, 0x1b, 0x20, 0x0a, 0xff );
+	(void)SDL_SetRenderDrawColor( s_splashWindow.renderer, SYSCON_RGB( PANEL ), 0xff );
 	(void)SDL_RenderFillRect( s_splashWindow.renderer, &panel );
-	(void)SDL_SetRenderDrawColor( s_splashWindow.renderer, 0xf0, 0x9e, 0x0d, 0xff );
+	(void)SDL_SetRenderDrawColor( s_splashWindow.renderer, SYSCON_RGB( TEXT ), 0xff );
 	(void)SDL_RenderRect( s_splashWindow.renderer, &panel );
 	(void)SDL_RenderDebugText( s_splashWindow.renderer, 196.0f, 174.0f, GAME_NAME );
 	(void)SDL_RenderDebugText( s_splashWindow.renderer, 176.0f, 194.0f, "initializing..." );
@@ -580,59 +613,81 @@ static void Posix_ConsoleUpdateLayout( void ) {
 		(void)SDL_GetWindowSize( s_consoleWindow.window, &width, &height );
 	}
 
-	if ( width < 360 ) {
-		width = 360;
+	// The window itself is clamped to the same minimum, but a compositor can
+	// still hand us a smaller size during a resize; clamp so the fixed rows
+	// never overlap the log pane.
+	if ( width < POSIX_CONSOLE_MIN_WIDTH ) {
+		width = POSIX_CONSOLE_MIN_WIDTH;
 	}
-	if ( height < 240 ) {
-		height = 240;
+	if ( height < POSIX_CONSOLE_MIN_HEIGHT ) {
+		height = POSIX_CONSOLE_MIN_HEIGHT;
 	}
 	Posix_ConsoleApplyLogicalPresentation( width, height );
 
 	const float margin = static_cast<float>( POSIX_CONSOLE_MARGIN );
+	const float gutter = static_cast<float>( POSIX_CONSOLE_GUTTER );
+	const float buttonWidth = static_cast<float>( POSIX_CONSOLE_BUTTON_WIDTH );
 	const float buttonHeight = static_cast<float>( POSIX_CONSOLE_BUTTON_HEIGHT );
 	const float inputHeight = static_cast<float>( POSIX_CONSOLE_INPUT_HEIGHT );
 	const float statusHeight = static_cast<float>( POSIX_CONSOLE_STATUS_HEIGHT );
-	const float statusGap = 6.0f;
-	const float bottomY = static_cast<float>( height ) - margin - buttonHeight;
-	const float inputY = bottomY - margin - inputHeight;
-	const float outputY = margin + statusHeight + statusGap;
-	const float outputHeight = Max( 32.0f, inputY - outputY - margin );
+	const float contentWidth = static_cast<float>( width ) - margin * 2.0f;
+
+	// Rows stack margin / status / log / input / buttons / margin, separated by
+	// one gutter each. The log pane absorbs every remaining pixel.
+	const float buttonY = static_cast<float>( height ) - margin - buttonHeight;
+	const float inputY = buttonY - gutter - inputHeight;
+	const float outputY = margin + statusHeight + gutter;
+	const float outputHeight = Max( static_cast<float>( POSIX_CONSOLE_LINE_HEIGHT ), inputY - gutter - outputY );
 
 	s_consoleWindow.layout.statusRect = {
 		margin,
 		margin,
-		static_cast<float>( width ) - margin * 2.0f,
+		contentWidth,
 		statusHeight
 	};
 
 	s_consoleWindow.layout.outputRect = {
 		margin,
 		outputY,
-		static_cast<float>( width ) - margin * 2.0f,
+		contentWidth,
 		outputHeight
 	};
+
+	// The scroll gutter lives inside the log panel, flush against its right
+	// border, mirroring the Win32 edit control's own vertical scrollbar.
+	const float scrollWidth = static_cast<float>( POSIX_CONSOLE_SCROLLBAR_WIDTH );
+	s_consoleWindow.layout.scrollTrackRect = {
+		s_consoleWindow.layout.outputRect.x + s_consoleWindow.layout.outputRect.w - 1.0f - scrollWidth,
+		s_consoleWindow.layout.outputRect.y + 1.0f,
+		scrollWidth,
+		Max( 1.0f, s_consoleWindow.layout.outputRect.h - 2.0f )
+	};
+
 	s_consoleWindow.layout.inputRect = {
 		margin,
 		inputY,
-		static_cast<float>( width ) - margin * 2.0f,
+		contentWidth,
 		inputHeight
 	};
-	s_consoleWindow.layout.copyButtonRect = {
+
+	// Copy and Clear act on the log and sit under it; Quit is destructive and
+	// is pushed to the opposite corner so it cannot be hit by accident.
+	s_consoleWindow.layout.buttonRects[ POSIX_CONSOLE_BUTTON_COPY ] = {
 		margin,
-		bottomY,
-		static_cast<float>( POSIX_CONSOLE_BUTTON_WIDTH ),
+		buttonY,
+		buttonWidth,
 		buttonHeight
 	};
-	s_consoleWindow.layout.clearButtonRect = {
-		margin + static_cast<float>( POSIX_CONSOLE_BUTTON_WIDTH ) + margin,
-		bottomY,
-		static_cast<float>( POSIX_CONSOLE_BUTTON_WIDTH ),
+	s_consoleWindow.layout.buttonRects[ POSIX_CONSOLE_BUTTON_CLEAR ] = {
+		margin + buttonWidth + gutter,
+		buttonY,
+		buttonWidth,
 		buttonHeight
 	};
-	s_consoleWindow.layout.quitButtonRect = {
-		static_cast<float>( width ) - margin - static_cast<float>( POSIX_CONSOLE_BUTTON_WIDTH ),
-		bottomY,
-		static_cast<float>( POSIX_CONSOLE_BUTTON_WIDTH ),
+	s_consoleWindow.layout.buttonRects[ POSIX_CONSOLE_BUTTON_QUIT ] = {
+		static_cast<float>( width ) - margin - buttonWidth,
+		buttonY,
+		buttonWidth,
 		buttonHeight
 	};
 }
@@ -700,6 +755,9 @@ static bool Posix_ConsoleCreateWindow( void ) {
 		return false;
 	}
 
+	// Below this the fixed status/input/button rows would eat the log pane.
+	(void)SDL_SetWindowMinimumSize( s_consoleWindow.window, POSIX_CONSOLE_MIN_WIDTH, POSIX_CONSOLE_MIN_HEIGHT );
+
 	s_consoleWindow.inputField.Clear();
 	for ( int i = 0; i < POSIX_CONSOLE_HISTORY; ++i ) {
 		s_consoleWindow.history[i].Clear();
@@ -707,6 +765,8 @@ static bool Posix_ConsoleCreateWindow( void ) {
 	s_consoleWindow.nextHistoryLine = 0;
 	s_consoleWindow.historyLine = 0;
 	s_consoleWindow.inputFocused = true;
+	s_consoleWindow.hotButton = POSIX_CONSOLE_BUTTON_NONE;
+	s_consoleWindow.pressedButton = POSIX_CONSOLE_BUTTON_NONE;
 	Posix_ConsoleUpdateLayout();
 
 	return true;
@@ -726,7 +786,14 @@ static void Posix_ConsoleStartTextInput( void ) {
 	int inputLength = 0;
 	int inputCursor = 0;
 	(void)Posix_ConsoleInputState( inputLength, inputCursor );
-	(void)SDL_SetTextInputArea( s_consoleWindow.window, &inputRect, inputCursor * POSIX_CONSOLE_FONT_SIZE );
+	// Offset of the caret from the left edge of the field, so an IME candidate
+	// window opens under the caret rather than at the field's corner. The
+	// leading pad and the one cell spent on the "]" prompt both count.
+	const int caretOffset = idMath::ClampInt(
+		0,
+		Max( 0, inputRect.w - POSIX_CONSOLE_FONT_SIZE ),
+		POSIX_CONSOLE_TEXT_PAD + ( 1 + inputCursor ) * POSIX_CONSOLE_FONT_SIZE );
+	(void)SDL_SetTextInputArea( s_consoleWindow.window, &inputRect, caretOffset );
 	(void)SDL_StartTextInput( s_consoleWindow.window );
 }
 
@@ -842,27 +909,67 @@ static void Posix_ConsoleWindowToRenderCoordinates( float &x, float &y ) {
 	}
 }
 
-static void Posix_ConsoleClickButton( float x, float y ) {
-	Posix_ConsoleWindowToRenderCoordinates( x, y );
-	if ( Posix_ConsolePointInRect( x, y, s_consoleWindow.layout.copyButtonRect ) ) {
-		Posix_ConsoleCopyAll();
-		return;
-	}
-	if ( Posix_ConsolePointInRect( x, y, s_consoleWindow.layout.clearButtonRect ) ) {
-		Posix_ConsoleClearBuffer();
-		return;
-	}
-	if ( Posix_ConsolePointInRect( x, y, s_consoleWindow.layout.quitButtonRect ) ) {
-		if ( s_consoleWindow.quitOnClose ) {
-			s_consoleWindow.exitRequested = true;
-			return;
+static int Posix_ConsoleButtonAtPoint( float x, float y ) {
+	for ( int i = 0; i < POSIX_CONSOLE_BUTTON_COUNT; ++i ) {
+		if ( Posix_ConsolePointInRect( x, y, s_consoleWindow.layout.buttonRects[i] ) ) {
+			return i;
 		}
-		Posix_ConsoleQueueCommand( "quit" );
-		return;
 	}
+	return POSIX_CONSOLE_BUTTON_NONE;
+}
+
+// Hover highlight. Win32 gets this from the native button control; here it has
+// to be tracked by hand so the two consoles feel the same under the pointer.
+static void Posix_ConsoleTrackPointer( float x, float y ) {
+	Posix_ConsoleWindowToRenderCoordinates( x, y );
+	s_consoleWindow.hotButton = Posix_ConsoleButtonAtPoint( x, y );
+}
+
+static void Posix_ConsoleBeginPress( float x, float y ) {
+	Posix_ConsoleWindowToRenderCoordinates( x, y );
+	s_consoleWindow.hotButton = Posix_ConsoleButtonAtPoint( x, y );
+	s_consoleWindow.pressedButton = s_consoleWindow.hotButton;
+
 	if ( Posix_ConsolePointInRect( x, y, s_consoleWindow.layout.inputRect ) ) {
 		s_consoleWindow.inputFocused = true;
 		Posix_ConsoleStartTextInput();
+	}
+}
+
+/*
+** Posix_ConsoleClickButton
+**
+** Runs on button release over the rect the press started in, matching the
+** native Win32 buttons on the other console. Firing on press instead would
+** make Quit unrecoverable after a misclick.
+*/
+static void Posix_ConsoleClickButton( float x, float y ) {
+	Posix_ConsoleWindowToRenderCoordinates( x, y );
+
+	const int pressed = s_consoleWindow.pressedButton;
+	s_consoleWindow.pressedButton = POSIX_CONSOLE_BUTTON_NONE;
+	s_consoleWindow.hotButton = Posix_ConsoleButtonAtPoint( x, y );
+
+	if ( pressed == POSIX_CONSOLE_BUTTON_NONE || pressed != s_consoleWindow.hotButton ) {
+		return;
+	}
+
+	switch ( pressed ) {
+		case POSIX_CONSOLE_BUTTON_COPY:
+			Posix_ConsoleCopyAll();
+			return;
+		case POSIX_CONSOLE_BUTTON_CLEAR:
+			Posix_ConsoleClearBuffer();
+			return;
+		case POSIX_CONSOLE_BUTTON_QUIT:
+			if ( s_consoleWindow.quitOnClose ) {
+				s_consoleWindow.exitRequested = true;
+				return;
+			}
+			Posix_ConsoleQueueCommand( "quit" );
+			return;
+		default:
+			return;
 	}
 }
 
@@ -1011,50 +1118,107 @@ static void Posix_ConsoleDrawText( float x, float y, const char *text, Uint8 r, 
 	(void)SDL_RenderDebugText( s_consoleWindow.renderer, x, y, text != NULL ? text : "" );
 }
 
-static void Posix_ConsoleDrawButton( const SDL_FRect &rect, const char *label ) {
-	Posix_ConsoleDrawRect( rect, 0x3a, 0x3f, 0x27, 0xff, true );
-	Posix_ConsoleDrawRect( rect, 0x79, 0x82, 0x50, 0xff, false );
+// Vertically centres an 8px glyph cell inside a row of the given height.
+static float Posix_ConsoleTextBaseline( const SDL_FRect &rect ) {
+	return rect.y + SDL_floorf( ( rect.h - static_cast<float>( POSIX_CONSOLE_GLYPH_HEIGHT ) ) * 0.5f );
+}
 
+static void Posix_ConsoleDrawButton( int button ) {
+	if ( button < 0 || button >= POSIX_CONSOLE_BUTTON_COUNT ) {
+		return;
+	}
+
+	const SDL_FRect &rect = s_consoleWindow.layout.buttonRects[ button ];
+	const bool isPressed = ( s_consoleWindow.pressedButton == button && s_consoleWindow.hotButton == button );
+	const bool isHot = ( s_consoleWindow.hotButton == button );
+
+	if ( isPressed ) {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( BUTTON_DOWN ), 0xff, true );
+	} else if ( isHot ) {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( BUTTON_HOT ), 0xff, true );
+	} else {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( BUTTON ), 0xff, true );
+	}
+
+	if ( isHot ) {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( TEXT ), 0xff, false );
+	} else {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( BORDER_LIT ), 0xff, false );
+	}
+
+	const char *label = POSIX_CONSOLE_BUTTON_LABELS[ button ];
 	const char *buttonLabel = label != NULL ? label : "";
 	const int textWidth = strlen( buttonLabel ) * POSIX_CONSOLE_FONT_SIZE;
-	const float textX = rect.x + Max( 4.0f, ( rect.w - static_cast<float>( textWidth ) ) * 0.5f );
-	const float textY = rect.y + ( rect.h - static_cast<float>( POSIX_CONSOLE_FONT_SIZE ) ) * 0.5f;
-	Posix_ConsoleDrawText( textX, textY, buttonLabel, 0xf0, 0x9e, 0x0d, 0xff );
+	const float textX = rect.x + Max( 4.0f, SDL_floorf( ( rect.w - static_cast<float>( textWidth ) ) * 0.5f ) );
+	// A pressed button nudges its label down a pixel, the same tactile cue the
+	// native Win32 push button gives.
+	const float textY = Posix_ConsoleTextBaseline( rect ) + ( isPressed ? 1.0f : 0.0f );
+	Posix_ConsoleDrawText( textX, textY, buttonLabel, SYSCON_RGB( TEXT ), 0xff );
 }
 
 static void Posix_ConsoleDrawStatus( const char *fatalText ) {
 	const SDL_FRect &rect = s_consoleWindow.layout.statusRect;
-	Posix_ConsoleDrawRect( rect, 0x1b, 0x20, 0x0a, 0xff, true );
-	Posix_ConsoleDrawRect( rect, 0x5b, 0x66, 0x36, 0xff, false );
+	const bool isFatal = ( fatalText != NULL && fatalText[0] != '\0' );
+
+	if ( isFatal ) {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( ALERT_PANEL ), 0xff, true );
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( ALERT ), 0xff, false );
+	} else {
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( PANEL ), 0xff, true );
+		Posix_ConsoleDrawRect( rect, SYSCON_RGB( BORDER_LIT ), 0xff, false );
+	}
 
 	idStr statusText;
-	if ( fatalText != NULL && fatalText[0] != '\0' ) {
+	if ( isFatal ) {
 		const char *scan = fatalText;
 		while ( *scan != '\0' && *scan != '\n' ) {
 			statusText.Append( scan, 1 );
 			scan++;
 		}
 	} else {
-		statusText = "System console ready";
+		statusText = SYSCON_STATUS_READY_TEXT;
 	}
 
+	const float textPad = static_cast<float>( POSIX_CONSOLE_TEXT_PAD );
 	SDL_Rect clip = {
-		static_cast<int>( rect.x + 5.0f ),
-		static_cast<int>( rect.y + 4.0f ),
-		Max( 1, static_cast<int>( rect.w - 10.0f ) ),
-		Max( 1, static_cast<int>( rect.h - 8.0f ) )
+		static_cast<int>( rect.x + 1.0f ),
+		static_cast<int>( rect.y + 1.0f ),
+		Max( 1, static_cast<int>( rect.w - 2.0f ) ),
+		Max( 1, static_cast<int>( rect.h - 2.0f ) )
 	};
 	SDL_SetRenderClipRect( s_consoleWindow.renderer, &clip );
-	Posix_ConsoleDrawText(
-		rect.x + 5.0f,
-		rect.y + ( rect.h - static_cast<float>( POSIX_CONSOLE_FONT_SIZE ) ) * 0.5f,
-		statusText.c_str(),
-		0xf0,
-		0x9e,
-		0x0d,
-		0xff
-	);
+	if ( isFatal ) {
+		Posix_ConsoleDrawText( rect.x + textPad, Posix_ConsoleTextBaseline( rect ), statusText.c_str(), SYSCON_RGB( ALERT ), 0xff );
+	} else {
+		Posix_ConsoleDrawText( rect.x + textPad, Posix_ConsoleTextBaseline( rect ), statusText.c_str(), SYSCON_RGB( TEXT_DIM ), 0xff );
+	}
 	SDL_SetRenderClipRect( s_consoleWindow.renderer, NULL );
+}
+
+/*
+** Posix_ConsoleDrawScrollbar
+**
+** Mirrors the WS_VSCROLL gutter on the Win32 console's log control: thumb
+** length is the visible fraction of the log, thumb position is the scroll
+** offset. Drawn only when the log actually overflows, so an idle console is
+** not decorated with a full-height thumb that looks like a stuck control.
+*/
+static void Posix_ConsoleDrawScrollbar( int totalLines, int visibleLines, int firstLine ) {
+	if ( totalLines <= visibleLines || visibleLines <= 0 ) {
+		return;
+	}
+
+	const SDL_FRect &track = s_consoleWindow.layout.scrollTrackRect;
+	Posix_ConsoleDrawRect( track, SYSCON_RGB( SCROLL_TRACK ), 0xff, true );
+
+	const float visibleFraction = static_cast<float>( visibleLines ) / static_cast<float>( totalLines );
+	const float thumbHeight = Max( 16.0f, track.h * visibleFraction );
+	const float scrollable = static_cast<float>( totalLines - visibleLines );
+	const float progress = scrollable > 0.0f ? static_cast<float>( firstLine ) / scrollable : 0.0f;
+	const float thumbY = track.y + ( track.h - thumbHeight ) * idMath::ClampFloat( 0.0f, 1.0f, progress );
+
+	const SDL_FRect thumb = { track.x + 2.0f, thumbY, Max( 1.0f, track.w - 4.0f ), thumbHeight };
+	Posix_ConsoleDrawRect( thumb, SYSCON_RGB( SCROLL_THUMB ), 0xff, true );
 }
 
 static void Posix_ConsoleRender( void ) {
@@ -1069,18 +1233,30 @@ static void Posix_ConsoleRender( void ) {
 	Posix_ConsoleCopyBuffer( snapshot );
 	Posix_ConsoleCopyFatalError( fatalSnapshot );
 
-	(void)SDL_SetRenderDrawColor( s_consoleWindow.renderer, 0x10, 0x13, 0x08, 0xff );
+	(void)SDL_SetRenderDrawColor( s_consoleWindow.renderer, SYSCON_RGB( WINDOW ), 0xff );
 	(void)SDL_RenderClear( s_consoleWindow.renderer );
 
 	Posix_ConsoleDrawStatus( fatalSnapshot.c_str() );
 
-	Posix_ConsoleDrawRect( s_consoleWindow.layout.outputRect, 0x1b, 0x20, 0x0a, 0xff, true );
-	Posix_ConsoleDrawRect( s_consoleWindow.layout.outputRect, 0x5b, 0x66, 0x36, 0xff, false );
-	Posix_ConsoleDrawRect( s_consoleWindow.layout.inputRect, 0x0e, 0x10, 0x08, 0xff, true );
-	Posix_ConsoleDrawRect( s_consoleWindow.layout.inputRect, 0x7b, 0x86, 0x50, 0xff, false );
+	const SDL_FRect &outputRect = s_consoleWindow.layout.outputRect;
+	const SDL_FRect &inputRect = s_consoleWindow.layout.inputRect;
+	const float textPad = static_cast<float>( POSIX_CONSOLE_TEXT_PAD );
 
-	const int maxColumns = Max( 1, static_cast<int>( s_consoleWindow.layout.outputRect.w - 8.0f ) / POSIX_CONSOLE_FONT_SIZE );
-	const int visibleLines = Max( 1, static_cast<int>( s_consoleWindow.layout.outputRect.h - 8.0f ) / POSIX_CONSOLE_FONT_SIZE );
+	Posix_ConsoleDrawRect( outputRect, SYSCON_RGB( PANEL ), 0xff, true );
+	Posix_ConsoleDrawRect( outputRect, SYSCON_RGB( BORDER_LIT ), 0xff, false );
+	Posix_ConsoleDrawRect( inputRect, SYSCON_RGB( INPUT ), 0xff, true );
+	// A focus ring on the command line, so it is obvious where typing lands.
+	if ( s_consoleWindow.inputFocused ) {
+		Posix_ConsoleDrawRect( inputRect, SYSCON_RGB( TEXT ), 0xff, false );
+	} else {
+		Posix_ConsoleDrawRect( inputRect, SYSCON_RGB( BORDER ), 0xff, false );
+	}
+
+	// The scroll gutter is reserved whether or not a thumb is showing, so text
+	// does not reflow the moment the log starts to overflow.
+	const float logTextWidth = outputRect.w - textPad * 2.0f - static_cast<float>( POSIX_CONSOLE_SCROLLBAR_WIDTH );
+	const int maxColumns = Max( 1, static_cast<int>( logTextWidth ) / POSIX_CONSOLE_FONT_SIZE );
+	const int visibleLines = Max( 1, static_cast<int>( outputRect.h - textPad * 2.0f ) / POSIX_CONSOLE_LINE_HEIGHT );
 	idList<idStr> lines;
 	Posix_ConsoleBuildLines( snapshot.c_str(), maxColumns, lines );
 
@@ -1088,56 +1264,66 @@ static void Posix_ConsoleRender( void ) {
 	s_consoleWindow.scrollLines = idMath::ClampInt( 0, maxScroll, s_consoleWindow.scrollLines );
 	const int firstLine = Max( 0, lines.Num() - visibleLines - s_consoleWindow.scrollLines );
 	const int lastLine = Min( lines.Num(), firstLine + visibleLines );
-	float y = s_consoleWindow.layout.outputRect.y + 4.0f;
+
+	SDL_Rect logClip = {
+		static_cast<int>( outputRect.x + 1.0f ),
+		static_cast<int>( outputRect.y + 1.0f ),
+		Max( 1, static_cast<int>( outputRect.w - 2.0f ) ),
+		Max( 1, static_cast<int>( outputRect.h - 2.0f ) )
+	};
+	SDL_SetRenderClipRect( s_consoleWindow.renderer, &logClip );
+	float y = outputRect.y + textPad;
 	for ( int i = firstLine; i < lastLine; ++i ) {
 		Posix_ConsoleDrawText(
-			s_consoleWindow.layout.outputRect.x + 4.0f,
+			outputRect.x + textPad,
 			y,
 			lines[i].c_str(),
-			0xf0,
-			0x9e,
-			0x0d,
+			SYSCON_RGB( TEXT ),
 			0xff
 		);
-		y += POSIX_CONSOLE_FONT_SIZE;
+		// Advance by the shared line pitch, not by the glyph cell: an 8px
+		// advance for an 8px cell leaves no leading and the rows collide.
+		y += static_cast<float>( POSIX_CONSOLE_LINE_HEIGHT );
 	}
+	SDL_SetRenderClipRect( s_consoleWindow.renderer, NULL );
+
+	Posix_ConsoleDrawScrollbar( lines.Num(), visibleLines, firstLine );
 
 	int inputLength = 0;
 	int inputCursor = 0;
 	const char *inputBuffer = Posix_ConsoleInputState( inputLength, inputCursor );
-	const int maxInputChars = Max( 1, static_cast<int>( s_consoleWindow.layout.inputRect.w - 10.0f ) / POSIX_CONSOLE_FONT_SIZE - 1 );
+	const float inputTextX = inputRect.x + textPad;
+	const float inputTextY = Posix_ConsoleTextBaseline( inputRect );
+
+	// One glyph cell is spent on the prompt, which is drawn dimmer than the
+	// command so the typed text is what the eye lands on.
+	Posix_ConsoleDrawText( inputTextX, inputTextY, "]", SYSCON_RGB( TEXT_DIM ), 0xff );
+
+	const float commandX = inputTextX + static_cast<float>( POSIX_CONSOLE_FONT_SIZE );
+	const int maxInputChars = Max( 1, static_cast<int>( inputRect.w - textPad * 2.0f ) / POSIX_CONSOLE_FONT_SIZE - 1 );
 	int firstInputChar = 0;
 	if ( inputLength > maxInputChars ) {
 		firstInputChar = idMath::ClampInt( 0, inputLength - maxInputChars, inputCursor - maxInputChars + 1 );
 	}
 	const int visibleInputChars = Min( maxInputChars, inputLength - firstInputChar );
-	idStr inputText = "]";
+	idStr inputText;
 	inputText.Append( inputBuffer + firstInputChar, visibleInputChars );
-	Posix_ConsoleDrawText(
-		s_consoleWindow.layout.inputRect.x + 5.0f,
-		s_consoleWindow.layout.inputRect.y + 8.0f,
-		inputText.c_str(),
-		0xf0,
-		0x9e,
-		0x0d,
-		0xff
-	);
+	Posix_ConsoleDrawText( commandX, inputTextY, inputText.c_str(), SYSCON_RGB( TEXT ), 0xff );
 
-	if ( s_consoleWindow.inputFocused ) {
-		const float cursorX = s_consoleWindow.layout.inputRect.x + 5.0f +
-			static_cast<float>( 1 + inputCursor - firstInputChar ) * POSIX_CONSOLE_FONT_SIZE;
+	if ( s_consoleWindow.inputFocused && ( ( SDL_GetTicks() / 530 ) & 1 ) == 0 ) {
+		const float cursorX = commandX + static_cast<float>( inputCursor - firstInputChar ) * POSIX_CONSOLE_FONT_SIZE;
 		const SDL_FRect cursorRect = {
 			cursorX,
-			s_consoleWindow.layout.inputRect.y + 5.0f,
-			1.0f,
-			s_consoleWindow.layout.inputRect.h - 10.0f
+			inputTextY - 1.0f,
+			2.0f,
+			static_cast<float>( POSIX_CONSOLE_GLYPH_HEIGHT ) + 2.0f
 		};
-		Posix_ConsoleDrawRect( cursorRect, 0xf0, 0x9e, 0x0d, 0xff, true );
+		Posix_ConsoleDrawRect( cursorRect, SYSCON_RGB( TEXT ), 0xff, true );
 	}
 
-	Posix_ConsoleDrawButton( s_consoleWindow.layout.copyButtonRect, "copy" );
-	Posix_ConsoleDrawButton( s_consoleWindow.layout.clearButtonRect, "clear" );
-	Posix_ConsoleDrawButton( s_consoleWindow.layout.quitButtonRect, "quit" );
+	for ( int i = 0; i < POSIX_CONSOLE_BUTTON_COUNT; ++i ) {
+		Posix_ConsoleDrawButton( i );
+	}
 
 	(void)SDL_RenderPresent( s_consoleWindow.renderer );
 }
@@ -1272,7 +1458,17 @@ bool Posix_ConsoleProcessEvent( const void *eventData ) {
 		case SDL_EVENT_WINDOW_FOCUS_LOST:
 			if ( event.window.windowID == windowID ) {
 				s_consoleWindow.inputFocused = false;
+				// A press that ends outside our focus never becomes a click, so
+				// drop the highlight instead of leaving a button stuck lit.
+				s_consoleWindow.hotButton = POSIX_CONSOLE_BUTTON_NONE;
+				s_consoleWindow.pressedButton = POSIX_CONSOLE_BUTTON_NONE;
 				Posix_ConsoleStopTextInput();
+				return true;
+			}
+			return false;
+		case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+			if ( event.window.windowID == windowID ) {
+				s_consoleWindow.hotButton = POSIX_CONSOLE_BUTTON_NONE;
 				return true;
 			}
 			return false;
@@ -1307,14 +1503,22 @@ bool Posix_ConsoleProcessEvent( const void *eventData ) {
 		case SDL_EVENT_TEXT_EDITING:
 			return event.edit.windowID == windowID;
 		case SDL_EVENT_MOUSE_MOTION:
-			return event.motion.windowID == windowID;
+			if ( event.motion.windowID == windowID ) {
+				Posix_ConsoleTrackPointer( event.motion.x, event.motion.y );
+				return true;
+			}
+			return false;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 			if ( event.button.windowID == windowID && event.button.button == SDL_BUTTON_LEFT ) {
-				Posix_ConsoleClickButton( event.button.x, event.button.y );
+				Posix_ConsoleBeginPress( event.button.x, event.button.y );
 				return true;
 			}
 			return event.button.windowID == windowID;
 		case SDL_EVENT_MOUSE_BUTTON_UP:
+			if ( event.button.windowID == windowID && event.button.button == SDL_BUTTON_LEFT ) {
+				Posix_ConsoleClickButton( event.button.x, event.button.y );
+				return true;
+			}
 			return event.button.windowID == windowID;
 		case SDL_EVENT_MOUSE_WHEEL:
 			if ( event.wheel.windowID == windowID ) {

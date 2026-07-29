@@ -59,7 +59,12 @@ if ( !verify(game) ) {
 }
 */
 
-#ifdef _DEBUG
+// MSVC defines _DEBUG for us through /MTd and /MDd, but no GCC or Clang openQ4
+// build ever defines it -- precompiled.h defines NDEBUG instead when neither is
+// set -- so every assert() and verify() in idlib, including the allocator
+// ownership and 16-byte alignment checks, compiled away to nothing on Linux and
+// macOS even in a debug build. -Didlib_asserts=true brings them back.
+#if defined( _DEBUG ) || defined( OPENQ4_ENABLE_IDLIB_ASSERTS )
 
 	#define ID_CONDITIONAL_ASSERT
 

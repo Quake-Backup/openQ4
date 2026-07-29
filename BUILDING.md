@@ -338,11 +338,17 @@ bash tools/build/meson_setup.sh setup --wipe builddir . \
   -Dmacos_graphics_bridge=opengl \
   -Dmacos_openal_provider=apple_framework \
   -Duse_pch=false \
+  -Didlib_asserts=true \
   -Db_sanitize=address,undefined
 ```
 
 PCH is deliberately disabled so sanitizer compilation does not reuse an
-uninstrumented header image. Failed and successful runs retain host/toolchain
+uninstrumented header image. `-Didlib_asserts=true` is what makes idlib's
+allocator-ownership and alignment `assert()`s exist at all on Clang:
+`src/idlib/Lib.h` keys them off `_DEBUG`, which MSVC supplies through `/MTd`
+but no GCC or Clang openQ4 build defines. Keep it off for ordinary debug
+builds — `AssertFailed` raises `SIGTRAP` on Linux and `SIGINT` on macOS, so a
+firing assert stops the process. Failed and successful runs retain host/toolchain
 details, Meson logs, staged-source metadata, binary instrumentation reports,
 and runtime output. This workflow improves macOS-only diagnostics, but it does not replace real Apple-hardware gameplay signoff for SP, MP, audio, input,
 displays, or release packages.

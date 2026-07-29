@@ -20,6 +20,7 @@ uniform float uMaterialEnhanced;
 uniform float uMaterialNormalScale;
 uniform float uMaterialSpecularBoost;
 uniform float uMaterialFresnel;
+uniform vec4 uCelParams;
 uniform float uPointShadowFar;
 uniform float uShadowBias;
 uniform float uShadowNormalBias;
@@ -60,6 +61,43 @@ varying float vShadowLightCos;
 
 vec3 SafeNormalize( vec3 value ) {
 	return value * inversesqrt( max( dot( value, value ), 1.0e-8 ) );
+}
+
+// ---------------------------------------------------------------------------
+// Cel banding. uCelParams is ( bandsEnabled, bandCount, hardSpecular, unused ).
+// The same ladder is shared with R_CelQuantizeUnitValue on the CPU side.
+// ---------------------------------------------------------------------------
+
+float CelSteps() {
+	return max( uCelParams.y - 1.0, 1.0 );
+}
+
+// Quantizes a light contribution without shifting its hue: the brightest
+// channel picks the band and the others follow it. Black and overbright pass
+// through untouched so unlit surfaces stay unlit and headroom is preserved.
+vec3 CelQuantizeLight( vec3 light ) {
+	if ( uCelParams.x <= 0.5 ) {
+		return light;
+	}
+
+	float peak = max( max( light.r, light.g ), light.b );
+	if ( peak <= 0.0 || peak >= 1.0 ) {
+		return light;
+	}
+
+	float steps = CelSteps();
+	return light * ( ( floor( peak * steps + 0.5 ) / steps ) / peak );
+}
+
+// Collapses the specular falloff into flat plateaus on the same ladder, which
+// is what gives cel highlights their hard edge.
+float CelSpecularTerm( float term ) {
+	if ( uCelParams.x <= 0.5 || uCelParams.z <= 0.5 ) {
+		return term;
+	}
+
+	float steps = CelSteps();
+	return floor( clamp( term, 0.0, 1.0 ) * steps + 0.5 ) / steps;
 }
 
 bool ShadowDebugModeIs( float mode ) {
@@ -117,9 +155,9 @@ float LegacySpecularTerm( vec3 halfAngle, vec3 localNormal ) {
 
 vec3 InteractionSpecular( vec3 halfAngle, vec3 viewDir, vec3 localNormal, vec3 specularSample ) {
 	if ( uMaterialEnhanced >= 0.5 ) {
-		return specularSample * uSpecularColor.rgb * EnhancedSpecularTerm( halfAngle, viewDir, localNormal, specularSample );
+		return specularSample * uSpecularColor.rgb * CelSpecularTerm( EnhancedSpecularTerm( halfAngle, viewDir, localNormal, specularSample ) );
 	}
-	return specularSample * ( uSpecularColor.rgb * 2.0 ) * LegacySpecularTerm( halfAngle, localNormal );
+	return specularSample * ( uSpecularColor.rgb * 2.0 ) * CelSpecularTerm( LegacySpecularTerm( halfAngle, localNormal ) );
 }
 
 float ApproxErf( float x ) {
@@ -390,7 +428,7 @@ void main() {
 	vec3 viewDir = SafeNormalize( vViewVector );
 	vec3 specular = InteractionSpecular( halfAngle, viewDir, localNormal, specularSample );
 
-	vec3 color = ( diffuse + specular ) * light * vVertexColor;
+	vec3 color = ( diffuse + specular ) * CelQuantizeLight( light ) * vVertexColor;
 	if ( ShadowVisualDebugMode() ) {
 		gl_FragColor = PointShadowDebugOutput();
 		return;

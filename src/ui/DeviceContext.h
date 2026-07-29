@@ -50,6 +50,7 @@ public:
 	bool				Initialized() { return initialized; }
 	void				EnableLocalization();
 	void				RegisterIcon( const char *code, const char *shader, int x = -1, int y = -1, int w = -1, int h = -1 );
+	void				SizeIcons();
 
 	void				GetTransformInfo(idVec3& origin, idMat3& mat );
 
@@ -147,6 +148,13 @@ private:
 		float				t2;
 		float				width;
 		float				height;
+		// authored sprite rect, kept so the icon can be re-sized once the
+		// material's image dimensions become resident
+		int					registeredX;
+		int					registeredY;
+		int					registeredWidth;
+		int					registeredHeight;
+		bool				sized;
 
 		embeddedIcon_t() :
 			material( NULL ),
@@ -155,7 +163,12 @@ private:
 			s2( 1.0f ),
 			t2( 1.0f ),
 			width( 0.0f ),
-			height( 0.0f ) {
+			height( 0.0f ),
+			registeredX( -1 ),
+			registeredY( -1 ),
+			registeredWidth( -1 ),
+			registeredHeight( -1 ),
+			sized( false ) {
 			code[0] = '\0';
 		}
 	};
@@ -163,7 +176,7 @@ private:
 	void				CalcVirtualScaleOffset( float width, float height, float &outXScale, float &outYScale, float &outXOffset, float &outYOffset ) const;
 	void				RegisterBuiltinIcons();
 	void				SizeIcon( embeddedIcon_t &icon );
-	bool				FindIcon( const char *code, const embeddedIcon_t **icon ) const;
+	bool				FindIcon( const char *code, const embeddedIcon_t **icon );
 	float				GetIconDisplayWidth( const embeddedIcon_t &icon, float referenceHeight ) const;
 	int					DrawText(float x, float y, float scale, idVec4 color, const char *text, float adjust, int limit, int style, int cursor = -1, bool resetEscapes = false);
 	void				PaintChar(float x,float y,float width,float height,float scale,float	s,float	t,float	s2,float t2,const idMaterial *hShader);

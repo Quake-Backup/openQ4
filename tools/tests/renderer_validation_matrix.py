@@ -529,6 +529,12 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+set",
         "r_rendererModernSubmit",
         "0",
+        # uiFontParitySelfTest asserts parity with the retail bitmap atlases, so
+        # it has to run against them; the TrueType path is on by default and
+        # deliberately rasterises its own glyphs and binds its own atlas.
+        "+set",
+        "r_useTrueTypeFonts",
+        "0",
         "+rendererModuleSelfTest",
         "+rendererContextLadderSelfTest",
         "+rendererTierSelfTest",

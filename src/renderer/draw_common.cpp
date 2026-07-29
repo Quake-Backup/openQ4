@@ -29,6 +29,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "tr_local.h"
+#include "CelShading.h"
 #include "ModernGLExecutor.h"
 #include "ModernGLShaderLibrary.h"
 #include "RendererMetrics.h"
@@ -1895,6 +1896,15 @@ enum rbPlayerRimlightUniformIndex_t {
 static newShaderStage_t rbPlayerRimlightStage;
 static bool rbPlayerRimlightStageInitialized = false;
 
+enum rbPlayerOutlineUniformIndex_t {
+	RB_PLAYER_OUTLINE_UNIFORM_COLOR = 0,
+	RB_PLAYER_OUTLINE_UNIFORM_PARAMS,
+	RB_PLAYER_OUTLINE_UNIFORM_COUNT
+};
+
+static newShaderStage_t rbPlayerOutlineStage;
+static bool rbPlayerOutlineStageInitialized = false;
+
 static void RB_InitLightGridIndirectStage( void ) {
 	if ( rbLightGridIndirectStageInitialized ) {
 		return;
@@ -1972,6 +1982,29 @@ static void RB_InitPlayerRimlightStage( void ) {
 	}
 
 	rbPlayerRimlightStageInitialized = true;
+}
+
+static void RB_InitPlayerOutlineStage( void ) {
+	if ( rbPlayerOutlineStageInitialized ) {
+		return;
+	}
+
+	memset( &rbPlayerOutlineStage, 0, sizeof( rbPlayerOutlineStage ) );
+	rbPlayerOutlineStage.glslProgram = true;
+	idStr::Copynz( rbPlayerOutlineStage.glslProgramName, "player_outline.fs", sizeof( rbPlayerOutlineStage.glslProgramName ) );
+
+	static const rbBuiltinUniformDef_t uniforms[RB_PLAYER_OUTLINE_UNIFORM_COUNT] = {
+		{ "uColor", 4 },
+		{ "uOutlineParams", 4 }
+	};
+
+	rbPlayerOutlineStage.numShaderParms = RB_PLAYER_OUTLINE_UNIFORM_COUNT;
+	for ( int i = 0; i < RB_PLAYER_OUTLINE_UNIFORM_COUNT; i++ ) {
+		idStr::Copynz( rbPlayerOutlineStage.shaderParmNames[i], uniforms[i].name, sizeof( rbPlayerOutlineStage.shaderParmNames[i] ) );
+		rbPlayerOutlineStage.shaderParmNumRegisters[i] = uniforms[i].components;
+	}
+
+	rbPlayerOutlineStageInitialized = true;
 }
 
 enum rbSSAOUniformIndex_t {
@@ -2240,6 +2273,273 @@ static void RB_STD_SSAO( void ) {
 	GL_SelectTexture( 0 );
 	globalImages->BindNull();
 	RB_EndFullscreenPostProcessPass();
+}
+
+/*
+=============================================================================================
+
+WORLD CEL OUTLINE
+
+Model entities get their outline from a geometry shell, but BSP geometry has no
+shell to expand, so the world is inked in screen space instead: a depth and
+normal discontinuity pass over a world-only depth snapshot. Working from a
+snapshot rather than the final depth buffer is what keeps the ink off model
+entities, which already carry their own outline.
+
+That snapshot predates every model in the frame, though, so it cannot say which
+of its edges the player can still see. The finished depth buffer is captured
+alongside it and handed over as well, and the shader inks an edge only where the
+world is the surface the frame settled on. Without it the pass paints world
+edges straight over the first-person weapon.
+
+The depth reconstruction below is deliberately identical to the SSAO pass so
+the two agree on what "one world unit away" means.
+
+=============================================================================================
+*/
+
+enum rbCelOutlineUniformIndex_t {
+	RB_CEL_OUTLINE_UNIFORM_INV_TEX_SIZE = 0,
+	RB_CEL_OUTLINE_UNIFORM_PROJECTION_INFO,
+	RB_CEL_OUTLINE_UNIFORM_DEPTH_PROJECTION,
+	RB_CEL_OUTLINE_UNIFORM_EDGE_PARAMS,
+	RB_CEL_OUTLINE_UNIFORM_COLOR,
+	RB_CEL_OUTLINE_UNIFORM_COUNT
+};
+
+static newShaderStage_t rbCelOutlineStage;
+static bool rbCelOutlineStageInitialized = false;
+static idImage *rbCelWorldDepthImage = NULL;
+static idImage *rbCelSceneDepthImage = NULL;
+static int rbCelWorldDepthFrame = -1;
+static int rbCelWorldDepthWidth = 0;
+static int rbCelWorldDepthHeight = 0;
+
+/*
+==================
+RB_ReportCelWorldOutlineSkip
+
+The world pass has several ways to decline, and every one of them looks the same
+from the outside: no ink. Under r_celShadingWorldDebug each distinct reason is
+named once, so a missing outline reports its own cause instead of needing a
+debugger. Reasons are string literals, so identity comparison is enough to keep
+a steady state from repeating every frame.
+==================
+*/
+static void RB_ReportCelWorldOutlineSkip( const char *reason ) {
+	static const char *lastReason = NULL;
+
+	if ( !r_celShadingWorldDebug.GetBool() || reason == lastReason ) {
+		return;
+	}
+
+	lastReason = reason;
+	if ( reason != NULL ) {
+		common->Printf( "cel world outline skipped: %s\n", reason );
+	}
+}
+
+static bool RB_CelWorldOutlineRequestedForCurrentView( void ) {
+	if ( r_skipPostProcess.GetBool() ) {
+		RB_ReportCelWorldOutlineSkip( "r_skipPostProcess is set" );
+		return false;
+	}
+	if ( !R_CelWorldOutlineEnabled() ) {
+		RB_ReportCelWorldOutlineSkip( "r_celShadingWorld is off, or its alpha is zero" );
+		return false;
+	}
+	if ( !glConfig.GLSLProgramAvailable ) {
+		RB_ReportCelWorldOutlineSkip( "no GLSL support; the screen-space pass has no fallback" );
+		return false;
+	}
+	if ( !RB_IsMainScenePostProcessView() ) {
+		RB_ReportCelWorldOutlineSkip( "not the main scene view (subview, portal sky, or 2D pass)" );
+		return false;
+	}
+
+	RB_ReportCelWorldOutlineSkip( NULL );
+	return true;
+}
+
+static void RB_InitCelOutlineStage( void ) {
+	if ( rbCelOutlineStageInitialized ) {
+		return;
+	}
+
+	memset( &rbCelOutlineStage, 0, sizeof( rbCelOutlineStage ) );
+	rbCelOutlineStage.glslProgram = true;
+	idStr::Copynz( rbCelOutlineStage.glslProgramName, "celoutline.fs", sizeof( rbCelOutlineStage.glslProgramName ) );
+
+	static const rbBuiltinUniformDef_t uniforms[RB_CEL_OUTLINE_UNIFORM_COUNT] = {
+		{ "invTexSize", 2 },
+		{ "projectionInfo", 4 },
+		{ "depthProjection", 2 },
+		{ "celEdgeParams", 4 },
+		{ "celOutlineColor", 4 }
+	};
+
+	rbCelOutlineStage.numShaderParms = RB_CEL_OUTLINE_UNIFORM_COUNT;
+	for ( int i = 0; i < RB_CEL_OUTLINE_UNIFORM_COUNT; i++ ) {
+		idStr::Copynz( rbCelOutlineStage.shaderParmNames[i], uniforms[i].name, sizeof( rbCelOutlineStage.shaderParmNames[i] ) );
+		rbCelOutlineStage.shaderParmNumRegisters[i] = uniforms[i].components;
+	}
+
+	rbCelOutlineStage.numShaderTextures = 3;
+	idStr::Copynz( rbCelOutlineStage.shaderTextureNames[0], "Scene", sizeof( rbCelOutlineStage.shaderTextureNames[0] ) );
+	idStr::Copynz( rbCelOutlineStage.shaderTextureNames[1], "WorldDepthBuffer", sizeof( rbCelOutlineStage.shaderTextureNames[1] ) );
+	idStr::Copynz( rbCelOutlineStage.shaderTextureNames[2], "SceneDepthBuffer", sizeof( rbCelOutlineStage.shaderTextureNames[2] ) );
+
+	rbCelOutlineStageInitialized = true;
+}
+
+static void RB_STD_CelWorldOutline( void ) {
+	if ( !RB_CelWorldOutlineRequestedForCurrentView() ) {
+		return;
+	}
+	if ( rbCelWorldDepthFrame != backEnd.frameCount || rbCelWorldDepthImage == NULL ) {
+		// No world was drawn this view, so there is nothing to ink.
+		return;
+	}
+
+	RB_InitCelOutlineStage();
+	if ( !R_ValidateGLSLProgram( &rbCelOutlineStage ) ) {
+		return;
+	}
+
+	const int viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+	const int viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+		|| rbCelWorldDepthWidth != viewportWidth || rbCelWorldDepthHeight != viewportHeight ) {
+		return;
+	}
+
+	idImage *sceneImage = globalImages->currentRenderImage;
+	if ( sceneImage == NULL ) {
+		return;
+	}
+
+	const GLfloat projX = backEnd.viewDef->projectionMatrix[0];
+	const GLfloat projY = backEnd.viewDef->projectionMatrix[5];
+	if ( idMath::Fabs( projX ) <= 0.00001f || idMath::Fabs( projY ) <= 0.00001f ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_STD_CelWorldOutline ----------\n" );
+
+	sceneImage->CopyFramebuffer(
+		backEnd.viewDef->viewport.x1,
+		backEnd.viewDef->viewport.y1,
+		viewportWidth,
+		viewportHeight );
+
+	// The depth buffer still holds the finished opaque scene at this point: the
+	// passes since the prepass have all been full-screen and depth-preserving.
+	// That is what tells the shader which world edges are still visible.
+	idImage *sceneDepthImage = RB_EnsureSSAODepthScratchImage( rbCelSceneDepthImage, "_celSceneDepth", viewportWidth, viewportHeight );
+	if ( sceneDepthImage != NULL ) {
+		sceneDepthImage->CopyDepthbuffer(
+			backEnd.viewDef->viewport.x1,
+			backEnd.viewDef->viewport.y1,
+			viewportWidth,
+			viewportHeight );
+	} else {
+		// Handing the world snapshot over for both scores every pixel as world
+		// visible, which degrades to the unmasked look rather than to no ink.
+		sceneDepthImage = rbCelWorldDepthImage;
+	}
+
+	const int textureWidth = sceneImage->GetOpts().width;
+	const int textureHeight = sceneImage->GetOpts().height;
+	const int depthTextureWidth = rbCelWorldDepthImage->GetOpts().width;
+	const int depthTextureHeight = rbCelWorldDepthImage->GetOpts().height;
+	if ( textureWidth <= 0 || textureHeight <= 0 || depthTextureWidth <= 0 || depthTextureHeight <= 0 ) {
+		return;
+	}
+
+	backEnd.currentScissor = backEnd.viewDef->scissor;
+
+	RB_BeginFullscreenPostProcessPass(
+		backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+		backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+		backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
+
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+	GL_SelectTexture( 1 );
+	rbCelWorldDepthImage->Bind();
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+	glTexParameteri( GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE );
+	GL_SelectTexture( 2 );
+	sceneDepthImage->Bind();
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+	glTexParameteri( GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE );
+	GL_SelectTexture( 0 );
+
+	glUseProgramObjectARB( (GLhandleARB)rbCelOutlineStage.glslProgramObject );
+
+	if ( rbCelOutlineStage.shaderTextureLocations[0] >= 0 ) {
+		glUniform1iARB( rbCelOutlineStage.shaderTextureLocations[0], 0 );
+	}
+	if ( rbCelOutlineStage.shaderTextureLocations[1] >= 0 ) {
+		glUniform1iARB( rbCelOutlineStage.shaderTextureLocations[1], 1 );
+	}
+	if ( rbCelOutlineStage.shaderTextureLocations[2] >= 0 ) {
+		glUniform1iARB( rbCelOutlineStage.shaderTextureLocations[2], 2 );
+	}
+
+	const GLfloat invTexSize[2] = {
+		1.0f / static_cast<GLfloat>( depthTextureWidth ),
+		1.0f / static_cast<GLfloat>( depthTextureHeight )
+	};
+	const GLfloat projectionInfo[4] = {
+		1.0f / projX,
+		1.0f / projY,
+		backEnd.viewDef->projectionMatrix[8],
+		backEnd.viewDef->projectionMatrix[9]
+	};
+	const GLfloat depthProjection[2] = {
+		backEnd.viewDef->projectionMatrix[10],
+		backEnd.viewDef->projectionMatrix[14]
+	};
+	const GLfloat edgeParams[4] = {
+		R_CelWorldOutlineWidth(),
+		R_CelWorldOutlineDepthThreshold(),
+		R_CelWorldOutlineNormalThreshold(),
+		r_celShadingWorldDebug.GetBool() ? 1.0f : 0.0f
+	};
+
+	idVec4 outlineColor;
+	R_CelWorldOutlineColor( outlineColor );
+
+	if ( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_INV_TEX_SIZE] >= 0 ) {
+		glUniform2fvARB( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
+	}
+	if ( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_PROJECTION_INFO] >= 0 ) {
+		glUniform4fvARB( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_PROJECTION_INFO], 1, projectionInfo );
+	}
+	if ( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_DEPTH_PROJECTION] >= 0 ) {
+		glUniform2fvARB( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_DEPTH_PROJECTION], 1, depthProjection );
+	}
+	if ( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_EDGE_PARAMS] >= 0 ) {
+		glUniform4fvARB( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_EDGE_PARAMS], 1, edgeParams );
+	}
+	if ( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_COLOR] >= 0 ) {
+		glUniform4fvARB( rbCelOutlineStage.shaderParmLocations[RB_CEL_OUTLINE_UNIFORM_COLOR], 1, outlineColor.ToFloatPtr() );
+	}
+
+	RB_DrawFullscreenPostProcessQuad( viewportWidth, viewportHeight, textureWidth, textureHeight );
+
+	glUseProgramObjectARB( 0 );
+	GL_SelectTexture( 2 );
+	globalImages->BindNull();
+	GL_SelectTexture( 1 );
+	globalImages->BindNull();
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	RB_EndFullscreenPostProcessPass();
+
+	backEnd.currentRenderCopied = false;
 }
 
 enum rbMotionBlurUniformIndex_t {
@@ -5200,6 +5500,8 @@ void RB_ShutdownScenePostProcess( void ) {
 
 	RB_FreeGLSLProgram( &rbLightGridIndirectStage );
 	RB_FreeGLSLProgram( &rbPlayerRimlightStage );
+	RB_FreeGLSLProgram( &rbPlayerOutlineStage );
+	RB_FreeGLSLProgram( &rbCelOutlineStage );
 	RB_FreeGLSLProgram( &rbSSAOStage );
 	RB_FreeGLSLProgram( &rbMotionBlurStage );
 	RB_FreeGLSLProgram( &rbMotionVectorStage );
@@ -6346,6 +6648,85 @@ static void RB_CaptureSSAOWorldDepthImage( drawSurf_t **drawSurfs, int numDrawSu
 
 	// Restore the view to a clean depth/stencil buffer before the normal renderer
 	// either runs its full depth prepass or accepts the modern visible handoff.
+	RB_BeginDrawingView();
+}
+
+/*
+==================
+RB_CelWorldDepthSurfFilter
+
+World geometry only. Model entities are excluded because they are inked by the
+outline shell instead, and letting them into the snapshot would draw a second
+line along every silhouette the shell already covers.
+==================
+*/
+static bool RB_CelWorldDepthSurfFilter( const drawSurf_t *surf ) {
+	if ( surf == NULL || surf->space == NULL || surf->geo == NULL || surf->material == NULL ) {
+		return false;
+	}
+	if ( ( surf->dsFlags & DSF_BSE_EFFECT ) != 0 || !R_CelSurfaceIsWorld( surf ) ) {
+		return false;
+	}
+
+	const idMaterial *material = surf->material;
+	if ( !material->IsDrawn() || material->Coverage() == MC_TRANSLUCENT ) {
+		return false;
+	}
+	if ( material->GetSort() >= SS_POST_PROCESS || material->GetSort() == SS_SUBVIEW ) {
+		return false;
+	}
+	if ( material->HasGui() || material->SuppressInSubview() || RB_MaterialIsSkyForSSAODepth( material ) ) {
+		return false;
+	}
+
+	return true;
+}
+
+/*
+==================
+RB_CaptureCelWorldDepthImage
+
+Snapshots world-only depth before the real depth prepass, the same way SSAO
+does. The pass runs at all only while r_celShadingWorld is enabled, so the cost
+belongs entirely to the cel mode.
+==================
+*/
+static void RB_CaptureCelWorldDepthImage( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	rbCelWorldDepthFrame = -1;
+	rbCelWorldDepthWidth = 0;
+	rbCelWorldDepthHeight = 0;
+
+	if ( !RB_CelWorldOutlineRequestedForCurrentView() || globalImages == NULL || backEnd.viewDef == NULL ) {
+		return;
+	}
+
+	const int viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+	const int viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
+	idImage *worldDepthImage = RB_EnsureSSAODepthScratchImage( rbCelWorldDepthImage, "_celWorldDepth", viewportWidth, viewportHeight );
+	if ( worldDepthImage == NULL ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_CaptureCelWorldDepthImage ----------\n" );
+
+	glColorMask( GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE );
+	const int rendered = RB_STD_FillDepthBufferFiltered( drawSurfs, numDrawSurfs, RB_CelWorldDepthSurfFilter );
+	glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+
+	if ( rendered > 0 ) {
+		worldDepthImage->CopyDepthbuffer(
+			backEnd.viewDef->viewport.x1,
+			backEnd.viewDef->viewport.y1,
+			viewportWidth,
+			viewportHeight );
+		rbCelWorldDepthFrame = backEnd.frameCount;
+		rbCelWorldDepthWidth = viewportWidth;
+		rbCelWorldDepthHeight = viewportHeight;
+	} else {
+		RB_ReportCelWorldOutlineSkip( "no world surfaces passed the depth snapshot filter" );
+	}
+
+	RB_RestoreAfterSSAOWorldDepthCapture();
 	RB_BeginDrawingView();
 }
 
@@ -9297,6 +9678,37 @@ static void RB_STD_LightGridIndirect( void ) {
 	RB_STD_FinishLightGridDrawState( false );
 }
 
+/*
+=========================================================================================
+
+	Player visibility effects
+
+	Presentation-only overlays driven by renderEntity_t: an additive brightskin
+	wash, an additive rimlight, and a silhouette outline. Only the multiplayer
+	game sets them, and only on other players, so the pass costs one walk of the
+	surface list in every other view.
+
+	The outline is a shell pushed away from the silhouette and masked against the
+	silhouette itself in the stencil buffer. Without that mask the shell covers
+	the whole body instead of ringing it, and overlapping surfaces blend their
+	shells over each other.
+
+=========================================================================================
+*/
+
+// Stencil bit used to mask the outline shell against the body it belongs to.
+// The pass runs after the interactions, where RB_STD_DrawView has already
+// neutralized the shadow stencil test, and only this single bit is ever cleared
+// or written so any remaining shadow counts survive untouched.
+static const GLuint RB_PLAYER_OUTLINE_STENCIL_BIT = 1;
+
+// Matches the value RB_DrawView and the modern executor install before their
+// own stencil clears, so restoring it leaves shared GL state exactly as found.
+static GLint RB_PlayerVisibilitySafeStencilClearValue( void ) {
+	const int stencilBits = idMath::ClampInt( 1, 30, ( glConfig.stencilBits > 0 ) ? glConfig.stencilBits : 8 );
+	return 1 << ( stencilBits - 1 );
+}
+
 static bool RB_PlayerVisibilityEffectsSurfaceAllowed( const drawSurf_t *surf ) {
 	if ( surf == NULL || surf->space == NULL || surf->space->entityDef == NULL || surf->geo == NULL || surf->material == NULL ) {
 		return false;
@@ -9305,6 +9717,13 @@ static bool RB_PlayerVisibilityEffectsSurfaceAllowed( const drawSurf_t *surf ) {
 		return false;
 	}
 	if ( surf->geo->numIndexes <= 0 ) {
+		return false;
+	}
+	// Every pass here re-draws against the depth buffer the scene already filled,
+	// which only lines up for spaces submitted with the unmodified projection.
+	// Players never own a depth hack, so this only rejects surfaces that would
+	// have compared against the wrong depths.
+	if ( surf->space->weaponDepthHack || surf->space->modelDepthHack != 0.0f ) {
 		return false;
 	}
 
@@ -9331,18 +9750,27 @@ static bool RB_PlayerVisibilityEffectsHasBrightSkin( const renderEntity_t &rende
 	return renderEntity.brightSkinColor[3] > 0.0f;
 }
 
-static void RB_PlayerVisibilitySetSurfaceSetup( const drawSurf_t *surf, const float *modelViewMatrix ) {
+static void RB_PlayerVisibilityApplyScissor( const idScreenRect &rect ) {
+	if ( !r_useScissor.GetBool() || backEnd.currentScissor.Equals( rect ) ) {
+		return;
+	}
+
+	backEnd.currentScissor = rect;
+	glScissor(
+		backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
+		backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
+		backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
+}
+
+// The outline shell reaches outside the surface scissor rect, which is sized to
+// the unexpanded model, so the outline passes clip against the whole view
+// instead of clipping their own edges away.
+static void RB_PlayerVisibilitySetSurfaceSetup( const drawSurf_t *surf, const float *modelViewMatrix, const bool useSurfaceScissor ) {
 	glLoadMatrixf( modelViewMatrix );
 	backEnd.currentSpace = NULL;
 
-	if ( r_useScissor.GetBool() && !backEnd.currentScissor.Equals( surf->scissorRect ) ) {
-		backEnd.currentScissor = surf->scissorRect;
-		glScissor(
-			backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
-			backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
-			backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
-			backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
-	}
+	RB_PlayerVisibilityApplyScissor( useSurfaceScissor ? surf->scissorRect : backEnd.viewDef->scissor );
 }
 
 static bool RB_PlayerVisibilityPrepareSurface( const drawSurf_t *surf, idDrawVert *&ac ) {
@@ -9364,11 +9792,28 @@ static bool RB_PlayerVisibilityPrepareSurface( const drawSurf_t *surf, idDrawVer
 	return true;
 }
 
-static void RB_PlayerVisibilityBuildScaledModelViewMatrix( const drawSurf_t *surf, const float scale, float out[16] ) {
-	memcpy( out, surf->space->modelViewMatrix, sizeof( float ) * 16 );
+static const idBounds &RB_PlayerVisibilityModelBounds( const drawSurf_t *surf ) {
+	const idRenderEntityLocal *entityDef = surf->space->entityDef;
+	if ( !entityDef->referenceBounds.IsCleared() ) {
+		return entityDef->referenceBounds;
+	}
+	if ( !entityDef->parms.bounds.IsCleared() ) {
+		return entityDef->parms.bounds;
+	}
+	return surf->geo->bounds;
+}
+
+static void RB_PlayerVisibilityBuildExpandedModelViewMatrix( const drawSurf_t *surf, const float scale, float out[16] ) {
+	const float *modelView = surf->space->modelViewMatrix;
+	memcpy( out, modelView, sizeof( float ) * 16 );
 	if ( scale == 1.0f ) {
 		return;
 	}
+
+	// Scale about the centre of the model bounds, not the model origin. Player
+	// models keep their origin at the feet, so scaling about it would slide the
+	// shell upwards: a thick band above the head and no outline at the legs.
+	const idVec3 recenter = RB_PlayerVisibilityModelBounds( surf ).GetCenter() * ( 1.0f - scale );
 
 	for ( int column = 0; column < 3; column++ ) {
 		const int offset = column * 4;
@@ -9377,30 +9822,36 @@ static void RB_PlayerVisibilityBuildScaledModelViewMatrix( const drawSurf_t *sur
 		out[offset + 2] *= scale;
 		out[offset + 3] *= scale;
 	}
+	for ( int row = 0; row < 4; row++ ) {
+		out[12 + row] = modelView[12 + row]
+			+ modelView[row] * recenter.x
+			+ modelView[4 + row] * recenter.y
+			+ modelView[8 + row] * recenter.z;
+	}
 }
 
-static float RB_PlayerVisibilityOutlineScale( const drawSurf_t *surf, const float requestedWidth ) {
-	const float width = idMath::ClampFloat( 0.5f, 6.0f, requestedWidth );
-	float radius = 0.0f;
-	if ( surf->space->entityDef != NULL ) {
-		radius = surf->space->entityDef->parms.bounds.GetRadius();
-	}
-	if ( radius <= 1.0f && surf->geo != NULL ) {
-		radius = surf->geo->bounds.GetRadius();
-	}
-	if ( radius <= 1.0f ) {
-		return 1.02f;
-	}
-
+static float RB_PlayerVisibilityWorldUnitsPerPixel( const drawSurf_t *surf ) {
 	const int viewportHeight = Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
 	const float distance = Max( 1.0f, surf->space->distanceToCamera );
 	const float fovY = idMath::ClampFloat( 1.0f, 179.0f, backEnd.viewDef->renderView.fov_y );
 	const float worldHeightAtDistance = 2.0f * idMath::Tan( DEG2RAD( fovY * 0.5f ) ) * distance;
-	const float worldUnitsPerPixel = worldHeightAtDistance / static_cast<float>( viewportHeight );
-	const float desiredExpansion = width * worldUnitsPerPixel;
-	const float scale = 1.0f + desiredExpansion / radius;
 
-	return idMath::ClampFloat( 1.005f, 3.0f, Max( scale, 1.02f ) );
+	return worldHeightAtDistance / static_cast<float>( viewportHeight );
+}
+
+// Fallback width control for the fixed-function shell. A uniform scale can only
+// approximate a constant pixel width - parts of the model further from the
+// bounds centre expand more - so the GLSL path is preferred whenever it loads.
+static float RB_PlayerVisibilityOutlineScale( const drawSurf_t *surf, const float requestedWidth ) {
+	const float width = idMath::ClampFloat( 0.5f, 6.0f, requestedWidth );
+	const float radius = RB_PlayerVisibilityModelBounds( surf ).GetRadius();
+	if ( radius <= 1.0f ) {
+		return 1.02f;
+	}
+
+	const float expansion = width * RB_PlayerVisibilityWorldUnitsPerPixel( surf );
+
+	return idMath::ClampFloat( 1.001f, 2.0f, 1.0f + expansion / radius );
 }
 
 static void RB_PlayerVisibilityModelRows( const viewEntity_t *space, idVec4 rows[3] ) {
@@ -9415,6 +9866,8 @@ static void RB_PlayerVisibilitySetRimlightUniforms( const drawSurf_t *surf, cons
 
 	const idVec3 &viewOrg = backEnd.viewDef->renderView.vieworg;
 	const float viewOrigin[4] = { viewOrg.x, viewOrg.y, viewOrg.z, 1.0f };
+	// exponent, scale, bias, unused: a squared falloff keeps the band tight
+	// enough to read as a rim rather than as a second brightskin.
 	const float rimParams[4] = { 2.0f, 1.0f, 0.0f, 0.0f };
 
 	if ( rbPlayerRimlightStage.shaderParmLocations[RB_PLAYER_RIMLIGHT_UNIFORM_MODEL_MATRIX_ROW0] >= 0 ) {
@@ -9437,7 +9890,28 @@ static void RB_PlayerVisibilitySetRimlightUniforms( const drawSurf_t *surf, cons
 	}
 }
 
-static bool RB_PlayerVisibilityDrawOutlineSurface( const drawSurf_t *surf ) {
+static void RB_PlayerVisibilitySetOutlineUniforms( const renderEntity_t &renderEntity ) {
+	const int viewportWidth = Max( 1, backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1 );
+	const int viewportHeight = Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+	const float outlineParams[4] = {
+		idMath::ClampFloat( 0.5f, 6.0f, renderEntity.outlineWidth ),
+		2.0f / static_cast<float>( viewportWidth ),
+		2.0f / static_cast<float>( viewportHeight ),
+		0.0f
+	};
+
+	if ( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_COLOR] >= 0 ) {
+		glUniform4fvARB( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_COLOR], 1, renderEntity.outlineColor.ToFloatPtr() );
+	}
+	if ( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_PARAMS] >= 0 ) {
+		glUniform4fvARB( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_PARAMS], 1, outlineParams );
+	}
+}
+
+// Marks the pixels the body itself covers, so the shell pass can stay outside
+// them. A depth tested outline only has to avoid the visible part of the body;
+// a see-through outline has to avoid all of it.
+static bool RB_PlayerVisibilityMaskOutlineSurface( const drawSurf_t *surf ) {
 	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
 	if ( !RB_PlayerVisibilityEffectsHasOutline( renderEntity ) ) {
 		return false;
@@ -9448,19 +9922,55 @@ static bool RB_PlayerVisibilityDrawOutlineSurface( const drawSurf_t *surf ) {
 		return false;
 	}
 
-	float modelViewMatrix[16];
-	RB_PlayerVisibilityBuildScaledModelViewMatrix( surf, RB_PlayerVisibilityOutlineScale( surf, renderEntity.outlineWidth ), modelViewMatrix );
-	RB_PlayerVisibilitySetSurfaceSetup( surf, modelViewMatrix );
+	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix, false );
 
-	const int depthFunc = ( renderEntity.outlineFlags & REF_OUTLINE_NODEPTH ) != 0 ? GLS_DEPTHFUNC_ALWAYS : GLS_DEPTHFUNC_LESS;
-	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | depthFunc );
-	glEnable( GL_DEPTH_TEST );
-	glDisable( GL_STENCIL_TEST );
-	GL_Cull( CT_FRONT_SIDED );
-	GL_SelectTexture( 0 );
-	globalImages->whiteImage->Bind();
-	glColor4fv( renderEntity.outlineColor.ToFloatPtr() );
+	const int depthFunc = ( renderEntity.outlineFlags & REF_OUTLINE_NODEPTH ) != 0 ? GLS_DEPTHFUNC_ALWAYS : GLS_DEPTHFUNC_EQUAL;
+	GL_State( GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK | depthFunc );
+	GL_Cull( surf->material->GetCullType() );
 	glDisableClientState( GL_NORMAL_ARRAY );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static bool RB_PlayerVisibilityDrawOutlineSurface( const drawSurf_t *surf, const bool useGLSL, const bool maskSilhouette ) {
+	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
+	if ( !RB_PlayerVisibilityEffectsHasOutline( renderEntity ) ) {
+		return false;
+	}
+
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	if ( useGLSL ) {
+		// Screen space normal extrusion holds the outline at the requested pixel
+		// width whatever the distance, which is what cl_player_outline_width
+		// documents.
+		RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix, false );
+		glNormalPointer( GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, offsetof( idDrawVert, normal ) ) );
+		glEnableClientState( GL_NORMAL_ARRAY );
+		RB_PlayerVisibilitySetOutlineUniforms( renderEntity );
+	} else {
+		float modelViewMatrix[16];
+		RB_PlayerVisibilityBuildExpandedModelViewMatrix( surf, RB_PlayerVisibilityOutlineScale( surf, renderEntity.outlineWidth ), modelViewMatrix );
+		RB_PlayerVisibilitySetSurfaceSetup( surf, modelViewMatrix, false );
+		GL_SelectTexture( 0 );
+		globalImages->whiteImage->Bind();
+		glColor4fv( renderEntity.outlineColor.ToFloatPtr() );
+		glDisableClientState( GL_NORMAL_ARRAY );
+	}
+
+	// A see-through outline relies entirely on the silhouette mask to stay out of
+	// the body, so without one it has to keep depth testing instead.
+	const bool ignoreDepth = maskSilhouette && ( renderEntity.outlineFlags & REF_OUTLINE_NODEPTH ) != 0;
+	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA
+		| ( ignoreDepth ? GLS_DEPTHFUNC_ALWAYS : GLS_DEPTHFUNC_LESS ) );
+	// Draw the far side of the shell. Its depth sits behind the body, so the
+	// interior is rejected by the depth test as well as by the stencil mask, and
+	// the visible band is exactly the part that pokes past the silhouette.
+	GL_Cull( CT_BACK_SIDED );
 
 	RB_DrawElementsWithCounters( surf->geo );
 	return true;
@@ -9477,10 +9987,8 @@ static bool RB_PlayerVisibilityDrawRimlightSurface( const drawSurf_t *surf ) {
 		return false;
 	}
 
-	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix );
+	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix, true );
 	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
-	glEnable( GL_DEPTH_TEST );
-	glDisable( GL_STENCIL_TEST );
 	GL_Cull( surf->material->GetCullType() );
 
 	glNormalPointer( GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, offsetof( idDrawVert, normal ) ) );
@@ -9502,10 +10010,8 @@ static bool RB_PlayerVisibilityDrawBrightSkinSurface( const drawSurf_t *surf ) {
 		return false;
 	}
 
-	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix );
+	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix, true );
 	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
-	glEnable( GL_DEPTH_TEST );
-	glDisable( GL_STENCIL_TEST );
 	GL_Cull( surf->material->GetCullType() );
 	GL_SelectTexture( 0 );
 	globalImages->whiteImage->Bind();
@@ -9521,47 +10027,145 @@ static bool RB_PlayerVisibilityDrawBrightSkinSurface( const drawSurf_t *surf ) {
 	return true;
 }
 
-static bool RB_PlayerVisibilityDrawRimlightFallbackSurface( const drawSurf_t *surf ) {
-	const renderEntity_t &renderEntity = surf->space->entityDef->parms;
-	if ( !RB_PlayerVisibilityEffectsHasRimlight( renderEntity ) ) {
-		return false;
+struct rbPlayerVisibilityWork_t {
+	bool	brightSkin;
+	bool	rimlight;
+	bool	outline;
+};
+
+static bool RB_PlayerVisibilityGatherWork( drawSurf_t **drawSurfs, int numDrawSurfs, rbPlayerVisibilityWork_t &work ) {
+	work.brightSkin = false;
+	work.rimlight = false;
+	work.outline = false;
+
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
+			continue;
+		}
+
+		const renderEntity_t &renderEntity = surf->space->entityDef->parms;
+		work.brightSkin = work.brightSkin || RB_PlayerVisibilityEffectsHasBrightSkin( renderEntity );
+		work.rimlight = work.rimlight || RB_PlayerVisibilityEffectsHasRimlight( renderEntity );
+		work.outline = work.outline || RB_PlayerVisibilityEffectsHasOutline( renderEntity );
+
+		if ( work.brightSkin && work.rimlight && work.outline ) {
+			break;
+		}
 	}
 
-	idDrawVert *ac = NULL;
-	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
-		return false;
-	}
-
-	float modelViewMatrix[16];
-	RB_PlayerVisibilityBuildScaledModelViewMatrix( surf, 1.01f, modelViewMatrix );
-	RB_PlayerVisibilitySetSurfaceSetup( surf, modelViewMatrix );
-
-	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHFUNC_EQUAL );
-	glEnable( GL_DEPTH_TEST );
-	glDisable( GL_STENCIL_TEST );
-	GL_Cull( CT_FRONT_SIDED );
-	GL_SelectTexture( 0 );
-	globalImages->whiteImage->Bind();
-
-	idVec4 color = renderEntity.rimlightColor;
-	color[0] *= color[3];
-	color[1] *= color[3];
-	color[2] *= color[3];
-	glColor4fv( color.ToFloatPtr() );
-	glDisableClientState( GL_NORMAL_ARRAY );
-
-	RB_DrawElementsWithCounters( surf->geo );
-	return true;
+	return work.brightSkin || work.rimlight || work.outline;
 }
 
-static void RB_STD_DrawPlayerVisibilityEffects( drawSurf_t **drawSurfs, int numDrawSurfs ) {
-	if ( !backEnd.viewDef->viewEntitys || drawSurfs == NULL || numDrawSurfs <= 0 ) {
-		return;
+static bool RB_PlayerVisibilityDrawBrightSkinPass( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	bool submitted = false;
+
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) && RB_PlayerVisibilityDrawBrightSkinSurface( surf ) ) {
+			submitted = true;
+		}
+	}
+
+	return submitted;
+}
+
+static bool RB_PlayerVisibilityDrawRimlightPass( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	RB_InitPlayerRimlightStage();
+	// Like every other programmable effect in this backend the rimlight is
+	// simply unavailable without GLSL. The fixed-function pipeline cannot
+	// evaluate a per-pixel view/normal term, and faking it with a scaled hull
+	// produced a pass that never survived its own depth test.
+	if ( !glConfig.GLSLProgramAvailable || !R_ValidateGLSLProgram( &rbPlayerRimlightStage ) ) {
+		return false;
 	}
 
 	bool submitted = false;
 
+	glUseProgramObjectARB( (GLhandleARB)rbPlayerRimlightStage.glslProgramObject );
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) && RB_PlayerVisibilityDrawRimlightSurface( surf ) ) {
+			submitted = true;
+		}
+	}
+	glUseProgramObjectARB( 0 );
+
+	return submitted;
+}
+
+static bool RB_PlayerVisibilityDrawOutlinePass( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	RB_InitPlayerOutlineStage();
+	const bool useGLSLOutline = glConfig.GLSLProgramAvailable && R_ValidateGLSLProgram( &rbPlayerOutlineStage );
+	// No stencil buffer means no silhouette mask. The depth tested outline still
+	// works - the body's own depth rejects the shell - so only the see-through
+	// variant has to give something up.
+	const bool maskSilhouette = glConfig.stencilBits > 0;
+	bool submitted = false;
+
+	if ( maskSilhouette ) {
+		// Reserve the mask bit over the whole view before any silhouette is
+		// marked. glClear honours the scissor and the stencil write mask, so
+		// this only touches RB_PLAYER_OUTLINE_STENCIL_BIT inside the view.
+		RB_PlayerVisibilityApplyScissor( backEnd.viewDef->scissor );
+		glEnable( GL_STENCIL_TEST );
+		glStencilMask( RB_PLAYER_OUTLINE_STENCIL_BIT );
+		glClearStencil( 0 );
+		glClear( GL_STENCIL_BUFFER_BIT );
+		glStencilFunc( GL_ALWAYS, RB_PLAYER_OUTLINE_STENCIL_BIT, RB_PLAYER_OUTLINE_STENCIL_BIT );
+		glStencilOp( GL_KEEP, GL_KEEP, GL_REPLACE );
+
+		for ( int i = 0; i < numDrawSurfs; i++ ) {
+			const drawSurf_t *surf = drawSurfs[i];
+			if ( RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
+				RB_PlayerVisibilityMaskOutlineSurface( surf );
+			}
+		}
+
+		// Paint the shell only where the silhouette bit is clear, and claim the
+		// bit as we go so overlapping surfaces never blend their shells over
+		// each other.
+		glStencilFunc( GL_NOTEQUAL, RB_PLAYER_OUTLINE_STENCIL_BIT, RB_PLAYER_OUTLINE_STENCIL_BIT );
+	}
+
+	if ( useGLSLOutline ) {
+		glUseProgramObjectARB( (GLhandleARB)rbPlayerOutlineStage.glslProgramObject );
+	}
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) && RB_PlayerVisibilityDrawOutlineSurface( surf, useGLSLOutline, maskSilhouette ) ) {
+			submitted = true;
+		}
+	}
+	if ( useGLSLOutline ) {
+		glUseProgramObjectARB( 0 );
+	}
+
+	if ( maskSilhouette ) {
+		glDisable( GL_STENCIL_TEST );
+		glStencilMask( 0xff );
+		glClearStencil( RB_PlayerVisibilitySafeStencilClearValue() );
+	}
+
+	return submitted;
+}
+
+static void RB_STD_DrawPlayerVisibilityEffects( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	if ( !backEnd.viewDef->viewEntitys || drawSurfs == NULL || numDrawSurfs <= 0 || r_skipPlayerVisibilityEffects.GetBool() ) {
+		return;
+	}
+
+	// One scan decides which passes have anything to draw, so a view without
+	// visibility effects - every singleplayer view, and multiplayer with the
+	// cvars off - never touches GL state at all.
+	rbPlayerVisibilityWork_t work;
+	if ( !RB_PlayerVisibilityGatherWork( drawSurfs, numDrawSurfs, work ) ) {
+		return;
+	}
+
 	RB_LogComment( "---------- RB_STD_DrawPlayerVisibilityEffects ----------\n" );
+
+	bool submitted = false;
 
 	glMatrixMode( GL_PROJECTION );
 	glLoadMatrixf( backEnd.viewDef->projectionMatrix );
@@ -9570,53 +10174,214 @@ static void RB_STD_DrawPlayerVisibilityEffects( drawSurf_t **drawSurfs, int numD
 	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 	glDisableClientState( GL_COLOR_ARRAY );
 	glDisableClientState( GL_NORMAL_ARRAY );
+	glEnable( GL_DEPTH_TEST );
 	glDisable( GL_STENCIL_TEST );
 
-	for ( int i = 0; i < numDrawSurfs; i++ ) {
-		const drawSurf_t *surf = drawSurfs[i];
-		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
-			continue;
-		}
-		if ( RB_PlayerVisibilityDrawBrightSkinSurface( surf ) ) {
-			submitted = true;
-		}
+	// Body overlays first, then the outline: the outline owns the stencil for
+	// the rest of the pass and only covers pixels outside the bodies anyway.
+	if ( work.brightSkin && RB_PlayerVisibilityDrawBrightSkinPass( drawSurfs, numDrawSurfs ) ) {
+		submitted = true;
+	}
+	if ( work.rimlight && RB_PlayerVisibilityDrawRimlightPass( drawSurfs, numDrawSurfs ) ) {
+		submitted = true;
+	}
+	if ( work.outline && RB_PlayerVisibilityDrawOutlinePass( drawSurfs, numDrawSurfs ) ) {
+		submitted = true;
 	}
 
-	for ( int i = 0; i < numDrawSurfs; i++ ) {
-		const drawSurf_t *surf = drawSurfs[i];
-		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
-			continue;
-		}
-		if ( RB_PlayerVisibilityDrawOutlineSurface( surf ) ) {
-			submitted = true;
-		}
-	}
-
-	RB_InitPlayerRimlightStage();
-	const bool useGLSLRimlight = glConfig.GLSLProgramAvailable && R_ValidateGLSLProgram( &rbPlayerRimlightStage );
-	if ( useGLSLRimlight ) {
-		glUseProgramObjectARB( (GLhandleARB)rbPlayerRimlightStage.glslProgramObject );
-	}
-
-	for ( int i = 0; i < numDrawSurfs; i++ ) {
-		const drawSurf_t *surf = drawSurfs[i];
-		if ( !RB_PlayerVisibilityEffectsSurfaceAllowed( surf ) ) {
-			continue;
-		}
-		if ( useGLSLRimlight ) {
-			if ( RB_PlayerVisibilityDrawRimlightSurface( surf ) ) {
-				submitted = true;
-			}
-		} else if ( RB_PlayerVisibilityDrawRimlightFallbackSurface( surf ) ) {
-			submitted = true;
-		}
-	}
-
-	if ( glConfig.GLSLProgramAvailable ) {
-		glUseProgramObjectARB( 0 );
-	}
 	glDisableClientState( GL_NORMAL_ARRAY );
 	glDisableClientState( GL_COLOR_ARRAY );
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	glEnable( GL_STENCIL_TEST );
+	glStencilFunc( GL_ALWAYS, 128, 255 );
+	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
+	GL_Cull( CT_FRONT_SIDED );
+	GL_ClearStateDelta();
+	backEnd.currentSpace = NULL;
+
+	if ( submitted ) {
+		backEnd.currentRenderCopied = false;
+	}
+}
+
+/*
+=============================================================================================
+
+CEL OUTLINES
+
+Silhouette shells around cel-shaded model entities. The extrusion program, the
+stencil silhouette mask and the geometry plumbing are all shared with the
+multiplayer visibility outline above, so the two cannot drift apart visually;
+only the policy that picks colour and width differs. World geometry is inked by
+RB_STD_CelWorldOutline in screen space instead.
+
+=============================================================================================
+*/
+
+static void RB_CelSetOutlineUniforms( const drawSurf_t *surf, const idVec4 &color ) {
+	const int viewportWidth = Max( 1, backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1 );
+	const int viewportHeight = Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+	const float outlineParams[4] = {
+		R_CelOutlineWidthForSurface( surf ),
+		2.0f / static_cast<float>( viewportWidth ),
+		2.0f / static_cast<float>( viewportHeight ),
+		0.0f
+	};
+
+	if ( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_COLOR] >= 0 ) {
+		glUniform4fvARB( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_COLOR], 1, color.ToFloatPtr() );
+	}
+	if ( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_PARAMS] >= 0 ) {
+		glUniform4fvARB( rbPlayerOutlineStage.shaderParmLocations[RB_PLAYER_OUTLINE_UNIFORM_PARAMS], 1, outlineParams );
+	}
+}
+
+// Marks the pixels the model itself covers so the shell pass can stay outside
+// them and the ink reads as a single clean band.
+static bool RB_CelMaskOutlineSurface( const drawSurf_t *surf ) {
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix, false );
+
+	GL_State( GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK | GLS_DEPTHFUNC_EQUAL );
+	GL_Cull( surf->material->GetCullType() );
+	glDisableClientState( GL_NORMAL_ARRAY );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static bool RB_CelDrawOutlineSurface( const drawSurf_t *surf, const bool useGLSL ) {
+	idVec4 color;
+	R_CelOutlineColorForSurface( surf, color );
+	if ( color.w <= 0.0f ) {
+		return false;
+	}
+
+	idDrawVert *ac = NULL;
+	if ( !RB_PlayerVisibilityPrepareSurface( surf, ac ) ) {
+		return false;
+	}
+
+	if ( useGLSL ) {
+		// Screen-space normal extrusion holds the ink at the requested pixel
+		// width whatever the distance, which is what r_celOutlineWidth promises.
+		RB_PlayerVisibilitySetSurfaceSetup( surf, surf->space->modelViewMatrix, false );
+		glNormalPointer( GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, offsetof( idDrawVert, normal ) ) );
+		glEnableClientState( GL_NORMAL_ARRAY );
+		RB_CelSetOutlineUniforms( surf, color );
+	} else {
+		float modelViewMatrix[16];
+		RB_PlayerVisibilityBuildExpandedModelViewMatrix( surf,
+			RB_PlayerVisibilityOutlineScale( surf, R_CelOutlineWidthForSurface( surf ) ), modelViewMatrix );
+		RB_PlayerVisibilitySetSurfaceSetup( surf, modelViewMatrix, false );
+		GL_SelectTexture( 0 );
+		globalImages->whiteImage->Bind();
+		glColor4fv( color.ToFloatPtr() );
+		glDisableClientState( GL_NORMAL_ARRAY );
+	}
+
+	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHFUNC_LESS );
+	// Draw the far side of the shell: its depth sits behind the model, so the
+	// interior is rejected by the depth test as well as by the stencil mask and
+	// the visible band is exactly the part that pokes past the silhouette.
+	GL_Cull( CT_BACK_SIDED );
+
+	RB_DrawElementsWithCounters( surf->geo );
+	return true;
+}
+
+static bool RB_CelHasOutlineWork( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		if ( R_CelOutlineSurfaceActive( drawSurfs[i] ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void RB_STD_DrawCelOutlines( drawSurf_t **drawSurfs, int numDrawSurfs ) {
+	if ( !backEnd.viewDef->viewEntitys || drawSurfs == NULL || numDrawSurfs <= 0 || !R_CelOutlineEnabled() ) {
+		return;
+	}
+
+	// One scan up front, so a view with nothing to outline never touches GL
+	// state and the disabled mode really is free.
+	if ( !RB_CelHasOutlineWork( drawSurfs, numDrawSurfs ) ) {
+		return;
+	}
+
+	RB_InitPlayerOutlineStage();
+	const bool useGLSLOutline = glConfig.GLSLProgramAvailable && R_ValidateGLSLProgram( &rbPlayerOutlineStage );
+	const bool maskSilhouette = glConfig.stencilBits > 0;
+
+	RB_LogComment( "---------- RB_STD_DrawCelOutlines ----------\n" );
+
+	glMatrixMode( GL_PROJECTION );
+	glLoadMatrixf( backEnd.viewDef->projectionMatrix );
+	glMatrixMode( GL_MODELVIEW );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glDisableClientState( GL_NORMAL_ARRAY );
+	glEnable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+
+	if ( maskSilhouette ) {
+		// Reserve the mask bit over the whole view before any silhouette is
+		// marked. glClear honours the scissor and the stencil write mask, so
+		// only RB_PLAYER_OUTLINE_STENCIL_BIT inside the view is touched.
+		RB_PlayerVisibilityApplyScissor( backEnd.viewDef->scissor );
+		glEnable( GL_STENCIL_TEST );
+		glStencilMask( RB_PLAYER_OUTLINE_STENCIL_BIT );
+		glClearStencil( 0 );
+		glClear( GL_STENCIL_BUFFER_BIT );
+		glStencilFunc( GL_ALWAYS, RB_PLAYER_OUTLINE_STENCIL_BIT, RB_PLAYER_OUTLINE_STENCIL_BIT );
+		glStencilOp( GL_KEEP, GL_KEEP, GL_REPLACE );
+
+		for ( int i = 0; i < numDrawSurfs; i++ ) {
+			const drawSurf_t *surf = drawSurfs[i];
+			if ( R_CelOutlineSurfaceActive( surf ) ) {
+				RB_CelMaskOutlineSurface( surf );
+			}
+		}
+
+		// Paint the shell only where the silhouette bit is clear, claiming the
+		// bit as we go so overlapping models never blend their shells over each
+		// other.
+		glStencilFunc( GL_NOTEQUAL, RB_PLAYER_OUTLINE_STENCIL_BIT, RB_PLAYER_OUTLINE_STENCIL_BIT );
+	}
+
+	bool submitted = false;
+
+	if ( useGLSLOutline ) {
+		glUseProgramObjectARB( (GLhandleARB)rbPlayerOutlineStage.glslProgramObject );
+	}
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		const drawSurf_t *surf = drawSurfs[i];
+		if ( R_CelOutlineSurfaceActive( surf ) && RB_CelDrawOutlineSurface( surf, useGLSLOutline ) ) {
+			submitted = true;
+		}
+	}
+	if ( useGLSLOutline ) {
+		glUseProgramObjectARB( 0 );
+	}
+
+	if ( maskSilhouette ) {
+		glDisable( GL_STENCIL_TEST );
+		glStencilMask( 0xff );
+		glClearStencil( RB_PlayerVisibilitySafeStencilClearValue() );
+	}
+
+	glDisableClientState( GL_NORMAL_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
 	GL_SelectTexture( 0 );
 	globalImages->BindNull();
 	glEnable( GL_STENCIL_TEST );
@@ -9705,6 +10470,7 @@ void	RB_STD_DrawView( void ) {
 	// clear the z buffer, set the projection matrix, etc
 	RB_BeginDrawingView();
 	RB_CaptureSSAOWorldDepthImage( drawSurfs, numDrawSurfs );
+	RB_CaptureCelWorldDepthImage( drawSurfs, numDrawSurfs );
 
 	// decide how much overbrighting we are going to do
 	RB_DetermineLightScale();
@@ -9731,6 +10497,11 @@ void	RB_STD_DrawView( void ) {
 	} else {
 		RB_ARB2_DrawInteractions();
 	}
+
+	// one-shot once a view has actually lit something, so a reporter log says
+	// how many surfaces took the Apple GL 2.1 GLSL corridor instead of only
+	// which fallback pair was armed
+	RB_ReportAppleGL21RouteCounters();
 
 	if ( RB_ARB2InteractionBypassActive() ) {
 		RB_RecordARB2InteractionBypassFramePhase( RENDERER_STARTUP_PHASE_ARB2_INTERACTION_BYPASS_LIGHT_SCALE_SKIPPED );
@@ -9778,8 +10549,6 @@ void	RB_STD_DrawView( void ) {
 	// passes, otherwise the later composition overwrites those contributions.
 	R_ModernGLExecutor_ComposeVisibleSceneForPost();
 
-	RB_STD_DrawPlayerVisibilityEffects( drawSurfs, processed );
-
 	// Add precomputed indirect diffuse from irradiance-volume atlases after
 	// ambient/material shading. This matches the render graph and keeps the
 	// baked contribution visible instead of letting later material passes bury
@@ -9796,6 +10565,16 @@ void	RB_STD_DrawView( void ) {
 
 	// Apply a configurable brightness floor after ambient/material passes.
 	RB_STD_ForceAmbient();
+
+	// Player readability overlays go on top of the finished shading. The light
+	// grid overlay and the ambient floor both lift the whole frame, so running
+	// this earlier washed the outline out by exactly the amount the player had
+	// turned their brightness up.
+	RB_STD_DrawPlayerVisibilityEffects( drawSurfs, processed );
+
+	// Ink the cel silhouettes after every lighting contribution, so the ambient
+	// floor and the indirect overlay cannot wash the outline back out.
+	RB_STD_DrawCelOutlines( drawSurfs, processed );
 
 	RB_RecordARB2InteractionBypassFramePhase( RENDERER_STARTUP_PHASE_ARB2_INTERACTION_BYPASS_FRAME_TAIL );
 
@@ -9828,6 +10607,10 @@ void	RB_STD_DrawView( void ) {
 
 	// Apply scene bloom before authored post-process overlays that sample _currentRender.
 	RB_STD_Bloom();
+
+	// World cel edges land after bloom so the ink stays crisp instead of being
+	// smeared by the blur of whatever it borders.
+	RB_STD_CelWorldOutline();
 
 	// now draw any post-processing effects using _currentRender
 	if ( processed < numDrawSurfs ) {

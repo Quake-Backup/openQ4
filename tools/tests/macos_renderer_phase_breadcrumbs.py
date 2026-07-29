@@ -136,10 +136,61 @@ def validate_posix_signal_bridge() -> None:
             'Posix_WriteSignalText( "), exiting without unsafe engine shutdown\\n" );',
             'Posix_WriteSignalText( "openQ4: last renderer startup phase: " );',
             "Posix_RendererStartupPhaseName()",
+            'Posix_WriteSignalText( "openQ4: last game module phase: " );',
+            "Com_GameModuleLoadPhaseSignalName()",
             "_exit( 128 + signum );",
         ),
         "POSIX fatal signal renderer startup phase output order",
     )
+    require(
+        source,
+        '#include "../../framework/GameModuleDiagnostics.h"',
+        "POSIX fatal signal game module phase bridge",
+    )
+    require(
+        source,
+        'strcat( breadcrumb, "; last game module phase: " );',
+        "fatal breadcrumb file game module phase",
+    )
+
+
+def validate_game_module_phase_breadcrumbs() -> None:
+    """Issue #90: a SIGABRT between 'Selected game module:' and 'Initializing
+    Game' named no step at all, so nothing distinguished a bad static
+    initializer from GetGameAPI from idGameLocal::Init."""
+
+    header = read("src/framework/GameModuleDiagnostics.h")
+    for token in (
+        "GAME_MODULE_PHASE_IDLE = 0,",
+        "GAME_MODULE_PHASE_LOCATE,",
+        "GAME_MODULE_PHASE_BINARY_LOAD,",
+        "GAME_MODULE_PHASE_RESOLVE_ENTRY_POINT,",
+        "GAME_MODULE_PHASE_CALL_GET_GAME_API,",
+        "GAME_MODULE_PHASE_VERIFY_API_VERSION,",
+        "GAME_MODULE_PHASE_GAME_INIT,",
+        "GAME_MODULE_PHASE_READY,",
+        "const char *Com_GameModuleLoadPhaseSignalName( void );",
+    ):
+        require(header, token, "game module diagnostics header")
+
+    common = read("src/framework/Common.cpp")
+    load_body = function_body(common, "void idCommonLocal::LoadGameDLL( void ) {")
+    require_ordered(
+        load_body,
+        (
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_LOCATE );",
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_BINARY_LOAD );",
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_RESOLVE_ENTRY_POINT );",
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_CALL_GET_GAME_API );",
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_VERIFY_API_VERSION );",
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_INIT );",
+            "Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_READY );",
+        ),
+        "game module load phase order",
+    )
+    # GetGameAPI is dereferenced immediately; a NULL return has to be caught.
+    require(load_body, "const gameExport_t *gameExportPtr = GetGameAPI( &gameImport );", "GetGameAPI NULL guard")
+    require(load_body, "if ( gameExportPtr == NULL ) {", "GetGameAPI NULL guard")
 
 
 def validate_renderer_startup_order() -> None:
@@ -376,6 +427,7 @@ def validate_ci_and_local_wiring() -> None:
 def main() -> None:
     validate_diagnostics_module()
     validate_posix_signal_bridge()
+    validate_game_module_phase_breadcrumbs()
     validate_renderer_startup_order()
     validate_phase2_plan_status()
     validate_docs_and_release_notes()

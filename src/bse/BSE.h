@@ -612,6 +612,8 @@ public:
 	virtual void				UpdateRateTimes(void) ;
 	virtual bool				CanPlayRateLimited(effectCategory_t category);
 
+	void						ResetRateTimes(void);
+
 	virtual int							AddTraceModel(idTraceModel* model);
 	virtual idTraceModel*				GetTraceModel(int index);
 	virtual void						FreeTraceModel(int index);
@@ -623,5 +625,6 @@ private:
 	static		const char* mSegmentNames[SEG_COUNT];
 	static		int							mPerfCounters[NUM_PERF_COUNTERS];
 	static		float						mEffectRates[EC_MAX];
+	static		int							mEffectRateTime;	// ms stamp the rate buckets were last drained at
 	float								pauseTime;	// -1 means pause at the next time update
 };

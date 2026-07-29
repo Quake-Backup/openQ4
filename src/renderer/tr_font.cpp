@@ -248,6 +248,27 @@ Loads 3 point sizes, 12, 24, and 48
 bool idRenderSystemLocal::RegisterFont( const char *fontName, fontInfoEx_t &font ) {
 	memset( &font, 0, sizeof( font ) );
 
+	// The console sheet is not registered through here, so piggyback on the
+	// first font registration to rebuild it once the renderer is up.
+	static bool consoleFontChecked = false;
+	if ( !consoleFontChecked ) {
+		consoleFontChecked = true;
+		R_BuildConsoleFontAtlas();
+	}
+
+	// The scalable path produces the same fontInfo_t layout, so it can simply
+	// stand in for the atlases when a .ttf face is present and enabled.
+	if ( R_RegisterTrueTypeFont( fontName, font ) ) {
+		if ( r_ttfFontDebug.GetBool() ) {
+			common->Printf( "font register: '%s' -> TrueType\n", fontName );
+		}
+		return true;
+	}
+	if ( r_ttfFontDebug.GetBool() ) {
+		common->Printf( "font register: '%s' -> bitmap atlas\n", fontName );
+	}
+	memset( &font, 0, sizeof( font ) );
+
 	int foundMask = Q4_FONT_SLOT_MASK_NONE;
 	for ( int slotIndex = 0; slotIndex < Q4_FONT_SLOT_COUNT; ++slotIndex ) {
 		const q4FontSlotSpec_t &slotSpec = Q4_FONT_SLOT_SPECS[slotIndex];

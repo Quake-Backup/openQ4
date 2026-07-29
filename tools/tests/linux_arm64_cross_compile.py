@@ -124,9 +124,11 @@ def validate_build_machine_generators() -> None:
 
     require(baseoq4_meson, "game_sp_module_target = shared_module(", "SP linker target capture")
     require(baseoq4_meson, "game_mp_module_target = shared_module(", "MP linker target capture")
-    if baseoq4_meson.count("gnu_symbol_visibility: 'hidden'") != 2:
-        raise AssertionError("Linux SP and MP modules must hide non-API symbols")
-    require(meson, "gnu_symbol_visibility: host_system == 'linux' ? 'hidden' : 'default'", "integrated game idlib visibility")
+    # two Linux targets plus the two darwin targets, which hide their symbols
+    # for the same reason (issue #90)
+    if baseoq4_meson.count("gnu_symbol_visibility: 'hidden'") != 4:
+        raise AssertionError("Linux and darwin SP and MP modules must hide non-API symbols")
+    require(meson, "gnu_symbol_visibility: host_system == 'windows' ? 'default' : 'hidden'", "integrated game idlib visibility")
     require(meson, "'openq4_stage_game_sp_direct_run'", "SP direct-run staging target")
     require(meson, "input: game_sp_module_target", "SP direct-run staging dependency")
     require(meson, "'openq4_stage_game_mp_direct_run'", "MP direct-run staging target")

@@ -14,6 +14,7 @@ uniform float uMaterialFresnel;
 uniform float uStockInteraction;
 uniform float uAmbientLight;
 uniform samplerCube uAmbientNormalMap;
+uniform vec4 uCelParams;
 
 varying vec2 vBumpTexCoord;
 varying vec2 vDiffuseTexCoord;
@@ -27,6 +28,43 @@ varying vec3 vVertexColor;
 
 vec3 SafeNormalize( vec3 value ) {
 	return value * inversesqrt( max( dot( value, value ), 1.0e-8 ) );
+}
+
+// ---------------------------------------------------------------------------
+// Cel banding. uCelParams is ( bandsEnabled, bandCount, hardSpecular, unused ).
+// The same ladder is shared with R_CelQuantizeUnitValue on the CPU side.
+// ---------------------------------------------------------------------------
+
+float CelSteps() {
+	return max( uCelParams.y - 1.0, 1.0 );
+}
+
+// Quantizes a light contribution without shifting its hue: the brightest
+// channel picks the band and the others follow it. Black and overbright pass
+// through untouched so unlit surfaces stay unlit and headroom is preserved.
+vec3 CelQuantizeLight( vec3 light ) {
+	if ( uCelParams.x <= 0.5 ) {
+		return light;
+	}
+
+	float peak = max( max( light.r, light.g ), light.b );
+	if ( peak <= 0.0 || peak >= 1.0 ) {
+		return light;
+	}
+
+	float steps = CelSteps();
+	return light * ( ( floor( peak * steps + 0.5 ) / steps ) / peak );
+}
+
+// Collapses the specular falloff into flat plateaus on the same ladder, which
+// is what gives cel highlights their hard edge.
+float CelSpecularTerm( float term ) {
+	if ( uCelParams.x <= 0.5 || uCelParams.z <= 0.5 ) {
+		return term;
+	}
+
+	float steps = CelSteps();
+	return floor( clamp( term, 0.0, 1.0 ) * steps + 0.5 ) / steps;
 }
 
 vec3 DecodeLocalNormal( vec4 bumpSample ) {
@@ -83,13 +121,20 @@ void main() {
 	vec3 diffuse = texture2D( uDiffuseMap, vDiffuseTexCoord ).rgb * uDiffuseColor.rgb;
 
 	vec3 specularSample = texture2D( uSpecularMap, vSpecularTexCoord ).rgb;
-	vec3 halfAngle = ( uStockInteraction > 0.5 ) ? vHalfAngleVector : SafeNormalize( vHalfAngleVector );
+	// The stock ARB2 interaction reads the half-angle back through the
+	// normalization cube map before the specular term. The interpolated
+	// varying is the sum of two unit vectors pushed through the tangent
+	// frame, so its magnitude reaches 2; feeding that straight into
+	// clamp( dot * 4 - 3 ) pins the term at 1 across most of the lit
+	// hemisphere and blows specular out on every stock surface. Normalize
+	// unconditionally, which is what the cube-map lookup did.
+	vec3 halfAngle = SafeNormalize( vHalfAngleVector );
 	vec3 viewDir = SafeNormalize( vViewVector );
 	float specularTerm = ( uStockInteraction > 0.5 )
 		? StockSpecularTerm( halfAngle, localNormal )
 		: EnhancedSpecularTerm( halfAngle, viewDir, localNormal, specularSample );
-	vec3 specular = specularSample * uSpecularColor.rgb * specularTerm;
+	vec3 specular = specularSample * uSpecularColor.rgb * CelSpecularTerm( specularTerm );
 
-	vec3 color = ( diffuse + specular ) * light * vVertexColor;
+	vec3 color = ( diffuse + specular ) * CelQuantizeLight( light ) * vVertexColor;
 	gl_FragColor = vec4( color, 0.0 );
 }

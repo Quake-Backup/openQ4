@@ -44,6 +44,11 @@ const int NOINPUT_IDLE_TIME				= 30000;
 
 const int HEARTBEAT_MSEC				= 5*60*1000;
 
+// openQ4: below this much room in the message channel there is no point building
+// a snapshot - the channel would refuse it and the game would have already
+// consumed the client's unreliable message queue writing it.
+const int MIN_SNAPSHOT_SEND_SIZE		= 1024;
+
 // must be kept in sync with authReplyMsg_t
 const char* authReplyMsg[] = {
 	//	"Waiting for authorization",
@@ -337,6 +342,20 @@ void idAsyncServer::ExecuteMapChange( void ) {
 		localClientNum = -1;
 	}
 
+	// openQ4: a bot has no remote end to announce itself on the new map, and
+	// InitClient below wipes the user info that carries its name, so both are
+	// remembered here and restored once the map is up.
+	bool	botClient[MAX_ASYNC_CLIENTS];
+	idStr	botClientName[MAX_ASYNC_CLIENTS];
+
+	for ( i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
+		botClient[i] = ( clients[i].clientState >= SCS_PUREWAIT &&
+						 clients[i].channel.GetRemoteAddress().type == NA_BOT );
+		if ( botClient[i] ) {
+			botClientName[i] = sessLocal.mapSpawnData.userInfo[i].GetString( "ui_name" );
+		}
+	}
+
 	// re-initialize all connected clients for the new map
 	for ( i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
 		if ( clients[i].clientState >= SCS_PUREWAIT && i != localClientNum ) {
@@ -368,6 +387,22 @@ void idAsyncServer::ExecuteMapChange( void ) {
 		BeginLocalClient();
 	} else {
 		game->SetLocalClient( -1 );
+	}
+
+	// openQ4: put the bots back into the game.  A remote client does this for
+	// itself with CLIENT_RELIABLE_MESSAGE_INGAME once it has the new map.
+	for ( i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
+		if ( !botClient[i] ) {
+			continue;
+		}
+
+		idDict botSpawnArgs;
+
+		clients[i].clientState = SCS_INGAME;
+		botSpawnArgs.Set( "ui_name", botClientName[i].c_str() );
+
+		game->ServerClientBegin( i, true, botClientName[i].c_str() );
+		SendUserInfoBroadcast( i, botSpawnArgs, true );
 	}
 
 	if ( sessLocal.mapSpawnData.serverInfo.GetInt( "si_pure" ) ) {
@@ -852,7 +887,17 @@ void idAsyncServer::CheckClientTimeouts( void ) {
 
 // jmarshall
 		if (client.channel.GetRemoteAddress().type == NA_BOT)
+		{
+			// openQ4: a bot never sends a packet, so lastPacketTime is frozen
+			// and the zombie timeout below can never fire for it.  Without this
+			// every removed bot would hold its client slot for the rest of the
+			// map and the server would eventually run out of slots.
+			if ( client.clientState == SCS_ZOMBIE ) {
+				client.channel.Shutdown();
+				client.clientState = SCS_FREE;
+			}
 			continue;
+		}
 // jmarshall end
 
 		if ( client.lastPacketTime > serverTime ) {
@@ -1197,6 +1242,19 @@ bool idAsyncServer::SendSnapshotToClient( int clientNum ) {
 		common->Printf( "sending snapshot to client %d: gameInitId = %d, gameFrame = %d, gameTime = %d\n", clientNum, gameInitId, gameFrame, gameTime );
 	}
 
+	// openQ4: building a snapshot is destructive - game->ServerWriteSnapshot below
+	// serialises this client's queued unreliable messages (hitscans, effects) and
+	// then clears the queue, and it advances the client's delta baseline.  If the
+	// pending reliable backlog has already eaten the packet budget, the channel
+	// refuses the send and all of that is thrown away silently.  Find out first,
+	// and leave the queue alone so the batch rides the next snapshot instead.
+	if ( client.channel.GetMaxSendMessageSize() < MIN_SNAPSHOT_SEND_SIZE ) {
+		if ( idAsyncNetwork::verbose.GetInteger() ) {
+			common->Printf( "client %d: reliable backlog leaves no room for a snapshot, deferring\n", clientNum );
+		}
+		return false;
+	}
+
 	// how far is the client ahead of the server minus the packet delay
 	client.clientAheadTime = client.gameTime - ( gameTime + gameTimeResidual );
 
@@ -1240,7 +1298,13 @@ bool idAsyncServer::SendSnapshotToClient( int clientNum ) {
 	}
 	msg.WriteByte( MAX_ASYNC_CLIENTS );
 
-	client.channel.SendMessage( serverPort, serverTime, msg );
+	// openQ4: a refused send used to look exactly like a successful one.  The
+	// snapshot and its unreliable batch are gone either way at this point, but say
+	// so rather than leaving a client quietly starved of entity and effect updates.
+	if ( client.channel.SendMessage( serverPort, serverTime, msg ) == -1 ) {
+		common->DWarning( "client %d: snapshot %d dropped, %d bytes did not fit the channel",
+						  clientNum, client.snapshotSequence, msg.GetSize() );
+	}
 
 	client.lastSnapshotTime = serverTime;
 	client.snapshotSequence++;
@@ -2251,8 +2315,16 @@ void idAsyncServer::SendReliableGameMessage( int clientNum, const idBitMsg &msg 
 	outMsg.WriteByte( SERVER_RELIABLE_MESSAGE_GAME );
 	outMsg.WriteData( msg.GetData(), msg.GetSize() );
 
-	if ( clientNum >= 0 && clientNum < MAX_ASYNC_CLIENTS ) {
-		if ( clients[clientNum].clientState == SCS_INGAME ) {
+	// openQ4: only a negative clientNum means "everyone".  A clientNum at or past
+	// the end of the client array is the game's server-demo pseudo client
+	// (idGameLocal passes MAX_CLIENTS for it from ServerSendInstanceReliableMessage*
+	// whenever the owner is in instance 0, i.e. every non-tourney match).  This
+	// engine records no server demos, so that message has nowhere to go - and
+	// falling through to the broadcast below delivered every instance-scoped
+	// event a second time to every client, including the one the caller had just
+	// asked to exclude.
+	if ( clientNum >= 0 ) {
+		if ( clientNum < MAX_ASYNC_CLIENTS && clients[clientNum].clientState == SCS_INGAME ) {
 			SendReliableMessage( clientNum, outMsg );
 		}
 		return;
@@ -2459,7 +2531,15 @@ void idAsyncServer::RunFrame( bool allowBlocking ) {
 
 		// update time
 		gameFrame++;
-		gameTime = common->GetUserCmdTime( gameFrame );
+		// openQ4: this stamp is handed to the game in every snapshot header and is
+		// then compared against timestamps the game produced itself - projectile
+		// launch times, entity event times - so it has to advance exactly the way
+		// idGameLocal advances gameLocal.time, which is one GetUserCmdMSec() per
+		// frame.  GetUserCmdTime()'s exact 1000/Hz ladder is 16.667ms at 60Hz
+		// against the game's 16, and that 0.667ms a frame compounds into 40ms for
+		// every second of map time.  Frame pacing still uses the exact ladder
+		// (nextGameFrameMsec below); only the label the game sees changes.
+		gameTime = gameFrame * common->GetUserCmdMSec();
 		gameTimeResidual -= nextGameFrameMsec;
 	}
 
@@ -2895,6 +2975,8 @@ int idAsyncServer::AllocOpenClientSlotForAI(const char* botName, int maxPlayersO
 	game->ServerClientBegin(botClientId, true, botName);
 	idAsyncServer::SendUserInfoBroadcast(botClientId, spawnArgs, true);
 
-	return 1;
+	// openQ4: hand back the slot that was actually allocated.  The game side
+	// needs it to drive this bot's user commands, and it used to get a bare 1.
+	return botClientId;
 }
 // jmarshall end

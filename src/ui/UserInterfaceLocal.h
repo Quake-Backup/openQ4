@@ -145,6 +145,7 @@ public:
 	virtual	idListGUI *			AllocListGUI( void ) const;
 	virtual void				FreeListGUI( idListGUI *listgui );
 	virtual void				RunAlwaysThinkGUIs( int time );
+	virtual void				RegisterIcon( const char *code, const char *shader, int x = -1, int y = -1, int w = -1, int h = -1 );
 
 private:
 	void						UpdateAlwaysThinkGui( idUserInterfaceLocal *gui );

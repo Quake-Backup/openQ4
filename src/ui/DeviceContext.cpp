@@ -46,6 +46,15 @@ idVec4 idDeviceContext::colorNone;
 idCVar gui_smallFontLimit( "gui_smallFontLimit", "0.30", CVAR_GUI | CVAR_ARCHIVE, "" );
 idCVar gui_mediumFontLimit( "gui_mediumFontLimit", "0.60", CVAR_GUI | CVAR_ARCHIVE, "" );
 
+// Accessibility: Quake 4 draws most of its text straight over the world and over
+// busy panel artwork, which leaves low-vision players with very little contrast
+// to work with. A solid backing behind each line fixes the contrast ratio no
+// matter what is underneath.
+idCVar gui_textBackground( "gui_textBackground", "0", CVAR_GUI | CVAR_ARCHIVE | CVAR_FLOAT,
+						   "accessibility: opacity of a solid black backing drawn behind menu and HUD text; 0 is off, 1 is fully opaque", 0.0f, 1.0f );
+idCVar gui_textBackgroundPadding( "gui_textBackgroundPadding", "2", CVAR_GUI | CVAR_ARCHIVE | CVAR_FLOAT,
+								  "accessibility: how far the text backing extends past the text, in 640x480 virtual units", 0.0f, 16.0f );
+
 
 idList<fontInfoEx_t> idDeviceContext::fonts;
 
@@ -248,6 +257,72 @@ static float openQ4_GlyphClipRightPad( const fontInfo_t *font, const glyphInfo_t
 
 static bool openQ4_HasRenderableFont( const q4ScaledFont_t &scaledFont ) {
 	return scaledFont.font != NULL && scaledFont.renderScale != 0.0f;
+}
+
+// How far a font's glyphs actually reach either side of the baseline, in the
+// font's own units.
+struct q4TextInkExtents_t {
+	float	ascent;
+	float	descent;
+};
+
+/*
+================
+openQ4_FontInkExtents
+
+Measured from the glyphs rather than read out of fontInfo_t.  The retail
+ascender and descender fields do not describe where the ink is: the marine font
+declares an ascender of 29.9 while its capitals reach 40.4, and declares no
+descender at all despite having glyphs 11 units below the baseline.  A backing
+box built from those numbers would clip the text it exists to sit behind.
+================
+*/
+static void openQ4_FontInkExtents( const fontInfo_t *font, q4TextInkExtents_t &extents ) {
+	extents.ascent = 0.0f;
+	extents.descent = 0.0f;
+	if ( font == NULL ) {
+		return;
+	}
+	for ( int i = 0; i < GLYPHS_PER_FONT; i++ ) {
+		const glyphInfo_t *glyph = &font->glyphs[i];
+		if ( glyph->height <= 0.0f ) {
+			continue;
+		}
+		extents.ascent = Max( extents.ascent, glyph->horiBearingY );
+		extents.descent = Max( extents.descent, glyph->height - glyph->horiBearingY );
+	}
+}
+
+/*
+================
+openQ4_TextBackgroundRect
+
+Places the accessibility backing for one line of text.  The box is anchored on
+the baseline and sized from the font's ink extents, so every line of a given
+font gets the same height whatever characters it happens to contain.
+================
+*/
+static bool openQ4_TextBackgroundRect( const q4ScaledFont_t &scaledFont, float x, float baselineY,
+									   float textWidth, float padding,
+									   float &outX, float &outY, float &outWidth, float &outHeight ) {
+	if ( textWidth <= 0.0f || !openQ4_HasRenderableFont( scaledFont ) ) {
+		return false;
+	}
+
+	q4TextInkExtents_t ink;
+	openQ4_FontInkExtents( scaledFont.font, ink );
+
+	const float ascent = ink.ascent * scaledFont.renderScale;
+	const float descent = ink.descent * scaledFont.renderScale;
+	if ( ascent + descent <= 0.0f ) {
+		return false;
+	}
+
+	outX = x - padding;
+	outY = baselineY - ascent - padding;
+	outWidth = textWidth + padding * 2.0f;
+	outHeight = ascent + descent + padding * 2.0f;
+	return true;
 }
 
 static bool openQ4_TextCursorReached( int cursor, int count ) {
@@ -587,28 +662,42 @@ void idDeviceContext::SizeIcon( embeddedIcon_t &icon ) {
 		return;
 	}
 
+	// Always resolve from the authored rect rather than from the previously
+	// resolved UVs, so sizing an icon more than once is idempotent.
 	const float imageWidth = static_cast<float>( icon.material->GetImageWidth() );
 	const float imageHeight = static_cast<float>( icon.material->GetImageHeight() );
 	if ( imageWidth <= 0.0f || imageHeight <= 0.0f ) {
+		// The image is not resident yet; leave the icon unsized so SizeIcons()
+		// or the next lookup can pick it up once level media has loaded.
 		icon.width = 0.0f;
 		icon.height = 0.0f;
+		icon.sized = false;
 		return;
 	}
 
-	const int x = static_cast<int>( icon.s1 );
-	const int y = static_cast<int>( icon.t1 );
-	const int registeredWidth = static_cast<int>( icon.width );
-	const int registeredHeight = static_cast<int>( icon.height );
-
-	openQ4_SetEmbeddedIconAxisUV( icon.s1, icon.s2, x, registeredWidth, imageWidth );
-	openQ4_SetEmbeddedIconAxisUV( icon.t1, icon.t2, y, registeredHeight, imageHeight );
-	icon.width = static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( registeredWidth, imageWidth ) );
-	icon.height = static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( registeredHeight, imageHeight ) );
+	openQ4_SetEmbeddedIconAxisUV( icon.s1, icon.s2, icon.registeredX, icon.registeredWidth, imageWidth );
+	openQ4_SetEmbeddedIconAxisUV( icon.t1, icon.t2, icon.registeredY, icon.registeredHeight, imageHeight );
+	icon.width = static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( icon.registeredWidth, imageWidth ) );
+	icon.height = static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( icon.registeredHeight, imageHeight ) );
+	icon.sized = true;
 }
 
-bool idDeviceContext::FindIcon( const char *code, const embeddedIcon_t **icon ) const {
+void idDeviceContext::SizeIcons() {
+	for ( int i = 0; i < icons.Num(); ++i ) {
+		embeddedIcon_t *icon = icons.GetIndex( i );
+		if ( icon != NULL && !icon->sized ) {
+			SizeIcon( *icon );
+		}
+	}
+}
+
+bool idDeviceContext::FindIcon( const char *code, const embeddedIcon_t **icon ) {
 	embeddedIcon_t *foundIcon = NULL;
 	const bool found = icons.Get( code, &foundIcon );
+	if ( found && foundIcon != NULL && !foundIcon->sized ) {
+		// registered before its image was resident
+		SizeIcon( *foundIcon );
+	}
 	if ( icon != NULL ) {
 		*icon = foundIcon;
 	}
@@ -633,10 +722,10 @@ void idDeviceContext::RegisterIcon( const char *code, const char *shader, int x,
 
 	const_cast<idMaterial *>( icon.material )->EnsureNotPurged();
 	icon.material->SetSort( SS_GUI );
-	icon.s1 = static_cast<float>( x );
-	icon.t1 = static_cast<float>( y );
-	icon.width = static_cast<float>( w );
-	icon.height = static_cast<float>( h );
+	icon.registeredX = x;
+	icon.registeredY = y;
+	icon.registeredWidth = w;
+	icon.registeredHeight = h;
 	SizeIcon( icon );
 	icons.Set( icon.code, icon );
 	idStr::RegisterIconEscapeCode( icon.code );
@@ -1208,6 +1297,24 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 	}
 
 	idVec4 currentColor = drawTextColor;
+
+	// Accessibility backing, drawn once for the whole line before any glyph so
+	// it never shows through the gaps between characters. Colour escapes inside
+	// the line change the text colour but not the backing.
+	const float backgroundOpacity = gui_textBackground.GetFloat();
+	if ( backgroundOpacity > 0.0f ) {
+		float backgroundX = 0.0f;
+		float backgroundY = 0.0f;
+		float backgroundWidth = 0.0f;
+		float backgroundHeight = 0.0f;
+		const float lineWidth = static_cast<float>( TextWidth( text, scale, limit, static_cast<int>( adjust ) ) );
+		if ( openQ4_TextBackgroundRect( scaledFont, x, y, lineWidth, gui_textBackgroundPadding.GetFloat(),
+										backgroundX, backgroundY, backgroundWidth, backgroundHeight ) ) {
+			DrawFilledRect( backgroundX, backgroundY, backgroundWidth, backgroundHeight,
+							idVec4( 0.0f, 0.0f, 0.0f, backgroundOpacity * color.w ) );
+		}
+	}
+
 	renderSystem->SetColor( currentColor );
 
 	const unsigned char *s = reinterpret_cast<const unsigned char *>( text );
@@ -1802,6 +1909,17 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 bool UI_FontParity_RunSelfTest( void ) {
 	bool ok = true;
 
+	// The later cases here assert parity with the retail bitmap atlases: exact
+	// glyph advances, and that the radio font resolves to the marine atlas
+	// material.  The TrueType path deliberately rasterises its own glyphs and
+	// binds its own atlas, so measuring it against the retail atlas is a
+	// category error rather than a regression.  Say so instead of failing.
+	const bool retailAtlasActive = !cvarSystem->GetCVarBool( "r_useTrueTypeFonts" );
+	if ( !retailAtlasActive ) {
+		common->Printf( "uiFontParitySelfTest: skipping retail atlas parity cases, "
+						"r_useTrueTypeFonts is enabled; set it to 0 to run them\n" );
+	}
+
 	fontInfo_t font = {};
 	font.pointSize = 12.0f;
 	ok &= openQ4_CheckNear( "12 point font scale", openQ4_FontRenderScale( &font, 0.25f ), 1.0f );
@@ -1859,6 +1977,36 @@ bool UI_FontParity_RunSelfTest( void ) {
 	marineClipGlyph.s = 231.0f / 256.0f;
 	marineClipGlyph.s2 = 239.296875f / 256.0f;
 	ok &= openQ4_CheckNear( "marine small glyph clip pad", openQ4_GlyphClipRightPad( &marineClipFont, &marineClipGlyph, 0.8f ), 2.0f );
+	// Accessibility text backing. These are font-path independent, so they run
+	// whichever glyph source is active.
+	fontInfo_t inkFont = {};
+	inkFont.glyphs['H'].horiBearingY = 10.0f;
+	inkFont.glyphs['H'].height = 10.0f;
+	inkFont.glyphs['g'].horiBearingY = 7.0f;
+	inkFont.glyphs['g'].height = 9.0f;		// two units below the baseline
+	inkFont.glyphs[' '].horiBearingY = 99.0f;	// blank glyphs must not count
+	inkFont.glyphs[' '].height = 0.0f;
+	q4TextInkExtents_t ink;
+	openQ4_FontInkExtents( &inkFont, ink );
+	ok &= openQ4_CheckNear( "font ink ascent", ink.ascent, 10.0f );
+	ok &= openQ4_CheckNear( "font ink descent", ink.descent, 2.0f );
+
+	q4ScaledFont_t inkScaledFont;
+	inkScaledFont.font = &inkFont;
+	inkScaledFont.renderScale = 2.0f;
+	inkScaledFont.maxWidth = 0.0f;
+	inkScaledFont.maxHeight = 0.0f;
+	float backX = 0.0f;
+	float backY = 0.0f;
+	float backW = 0.0f;
+	float backH = 0.0f;
+	ok &= openQ4_CheckBool( "text background rect built", openQ4_TextBackgroundRect( inkScaledFont, 100.0f, 50.0f, 40.0f, 3.0f, backX, backY, backW, backH ), true );
+	ok &= openQ4_CheckNear( "text background x", backX, 97.0f );
+	ok &= openQ4_CheckNear( "text background y", backY, 27.0f );
+	ok &= openQ4_CheckNear( "text background width", backW, 46.0f );
+	ok &= openQ4_CheckNear( "text background height", backH, 30.0f );
+	ok &= openQ4_CheckBool( "empty text draws no background", openQ4_TextBackgroundRect( inkScaledFont, 100.0f, 50.0f, 0.0f, 3.0f, backX, backY, backW, backH ), false );
+
 	ok &= openQ4_CheckNear( "embedded icon draw width units", static_cast<float>( openQ4_EmbeddedIconWidthUnits( 32.0f, 16.0f, 12.0f, Q4_EMBEDDED_ICON_DRAW_WIDTH ) ), 24.0f );
 	ok &= openQ4_CheckNear( "embedded icon registered width units", static_cast<float>( openQ4_EmbeddedIconWidthUnits( 32.0f, 16.0f, 12.0f, Q4_EMBEDDED_ICON_REGISTERED_WIDTH ) ), 32.0f );
 	ok &= openQ4_CheckNear( "embedded icon full-image dimension", static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( Q4_EMBEDDED_ICON_FULL_IMAGE, 64.0f ) ), 64.0f );
@@ -1900,7 +2048,8 @@ bool UI_FontParity_RunSelfTest( void ) {
 	radioFontDc.Init();
 	const int radioFont = radioFontDc.FindFont( "fonts/marine" );
 	ok &= openQ4_CheckBool( "hud radio marine font registered", radioFont >= 0, true );
-	if ( radioFont >= 0 ) {
+	// The measurements below are keyed to the retail atlas's exact advances.
+	if ( radioFont >= 0 && retailAtlasActive ) {
 		radioFontDc.SetFont( radioFont );
 		const float radioFontScale = 0.2f / 12.0f * Q4_GUI_FONT_BASE_POINT_SIZE;
 		const float incomingGlyphBearingX = 1.140625f;
@@ -1982,16 +2131,20 @@ bool UI_FontParity_RunSelfTest( void ) {
 	if ( fontAtlasLang == "french" || fontAtlasLang == "german" || fontAtlasLang == "spanish" || fontAtlasLang == "italian" ) {
 		fontAtlasLang = "english";
 	}
-	const idMaterial *fontAtlasMaterial = declManager->FindMaterial( va( "fonts/%s/marine_12.fontdat", fontAtlasLang.c_str() ), false );
-	ok &= openQ4_CheckBool( "hud radio marine atlas material", fontAtlasMaterial != NULL, true );
-	if ( fontAtlasMaterial != NULL && fontAtlasMaterial->GetNumStages() > 0 ) {
-		materialImageInfo_t fontAtlasInfo;
-		const bool fontAtlasImagePresent = renderSystem->GetMaterialStageImageInfo( fontAtlasMaterial, 0, fontAtlasInfo );
-		ok &= openQ4_CheckBool( "hud radio marine atlas image", fontAtlasImagePresent, true );
-		if ( fontAtlasImagePresent ) {
-			ok &= openQ4_CheckBool( "hud radio marine atlas format", fontAtlasInfo.isDXT1Compressed, true );
-			ok &= openQ4_CheckBool( "hud radio marine atlas color format", fontAtlasInfo.usesGreenAlphaColorFormat, true );
-			ok &= openQ4_CheckInt( "hud radio marine atlas mip levels", fontAtlasInfo.numLevels, 4 );
+	// The TrueType path never touches the retail .fontdat atlas, so this only
+	// means anything while the bitmap fonts are in charge.
+	if ( retailAtlasActive ) {
+		const idMaterial *fontAtlasMaterial = declManager->FindMaterial( va( "fonts/%s/marine_12.fontdat", fontAtlasLang.c_str() ), false );
+		ok &= openQ4_CheckBool( "hud radio marine atlas material", fontAtlasMaterial != NULL, true );
+		if ( fontAtlasMaterial != NULL && fontAtlasMaterial->GetNumStages() > 0 ) {
+			materialImageInfo_t fontAtlasInfo;
+			const bool fontAtlasImagePresent = renderSystem->GetMaterialStageImageInfo( fontAtlasMaterial, 0, fontAtlasInfo );
+			ok &= openQ4_CheckBool( "hud radio marine atlas image", fontAtlasImagePresent, true );
+			if ( fontAtlasImagePresent ) {
+				ok &= openQ4_CheckBool( "hud radio marine atlas format", fontAtlasInfo.isDXT1Compressed, true );
+				ok &= openQ4_CheckBool( "hud radio marine atlas color format", fontAtlasInfo.usesGreenAlphaColorFormat, true );
+				ok &= openQ4_CheckInt( "hud radio marine atlas mip levels", fontAtlasInfo.numLevels, 4 );
+			}
 		}
 	}
 

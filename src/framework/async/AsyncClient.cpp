@@ -1811,7 +1811,10 @@ void idAsyncClient::RunFrame( bool allowBlocking ) {
 
 		// update time
 		gameFrame++;
-		gameTime = common->GetUserCmdTime( gameFrame );
+		// openQ4: keep the client's game clock on the same ladder the game itself
+		// uses (see idAsyncServer::RunFrame) so replicated timestamps compare
+		// against a clock that means the same thing on both ends.
+		gameTime = gameFrame * common->GetUserCmdMSec();
 		gameTimeResidual -= nextGameFrameMsec;
 
 		// run from the snapshot up to the local game frame
@@ -1831,7 +1834,7 @@ void idAsyncClient::RunFrame( bool allowBlocking ) {
 			idAsyncNetwork::ExecuteSessionCommand( ret.sessionCommand );
 
 			snapshotGameFrame++;
-			snapshotGameTime = common->GetUserCmdTime( snapshotGameFrame );
+			snapshotGameTime = snapshotGameFrame * common->GetUserCmdMSec();
 		}
 	}
 }

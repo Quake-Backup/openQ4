@@ -289,6 +289,19 @@ void idMsgChannel::SendNextFragment( idPort &port, const int time ) {
 
 /*
 ===============
+idMsgChannel::GetMaxSendMessageSize
+
+  How large a message SendMessage will still accept right now.
+================
+*/
+int idMsgChannel::GetMaxSendMessageSize( void ) const {
+	// mirrors the totalLength test in SendMessage below
+	const int overhead = 4 + reliableSend.GetTotalSize() + 4;
+	return Max( 0, MAX_MESSAGE_SIZE - overhead );
+}
+
+/*
+===============
 idMsgChannel::SendMessage
 
   Sends a message to a connection, fragmenting if necessary

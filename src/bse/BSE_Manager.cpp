@@ -61,6 +61,13 @@ void BSE_AddRendered(int count) {
 
 float effectCosts[EC_MAX] = { 0.0f, 0.1f, 0.1f };
 
+// How much rate budget each category pays back per second.  The buckets used to
+// drain one 0.1 step per StartFrame() call, and the game only reaches StartFrame
+// from idGameLocal::RunFrame at the fixed 60Hz game tic, so 6.0/sec reproduces
+// the drain the server has always had - without inheriting its dependence on
+// who calls StartFrame, or on the caller's frame rate.
+static const float BSE_RATE_DECAY_PER_SEC = 6.0f;
+
 idBlockAlloc<rvBSE, 256, 0>	rvBSEManagerLocal::effects;
 idVec3						rvBSEManagerLocal::mCubeNormals[6];
 idMat3						rvBSEManagerLocal::mModelToBSE;
@@ -68,6 +75,7 @@ idList<idTraceModel*>		rvBSEManagerLocal::mTraceModels;
 const char* rvBSEManagerLocal::mSegmentNames[SEG_COUNT];
 int							rvBSEManagerLocal::mPerfCounters[NUM_PERF_COUNTERS];
 float						rvBSEManagerLocal::mEffectRates[EC_MAX];
+int							rvBSEManagerLocal::mEffectRateTime = 0;
 /*
 ====================
 rvBSEManagerLocal::Init
@@ -314,15 +322,18 @@ bool rvBSEManagerLocal::CheckDefForSound(const renderEffect_t* def) {
 }
 
 void rvBSEManagerLocal::BeginLevelLoad(void) {
-	mEffectRates[0] = 0.0f;
-	mEffectRates[1] = 0.0f;
-	mEffectRates[2] = 0.0f;
+	ResetRateTimes();
 }
 
 void rvBSEManagerLocal::EndLevelLoad(void) {
-	mEffectRates[0] = 0.0f;
-	mEffectRates[1] = 0.0f;
-	mEffectRates[2] = 0.0f;
+	ResetRateTimes();
+}
+
+void rvBSEManagerLocal::ResetRateTimes(void) {
+	for (int i = 0; i < EC_MAX; ++i) {
+		mEffectRates[i] = 0.0f;
+	}
+	mEffectRateTime = Sys_Milliseconds();
 }
 
 void rvBSEManagerLocal::StartFrame(void) {
@@ -372,8 +383,35 @@ bool rvBSEManagerLocal::Filtered(const char* name, effectCategory_t category) {
 	return !CanPlayRateLimited(category);
 }
 
+/*
+====================
+rvBSEManagerLocal::UpdateRateTimes
+
+Drain the per-category rate buckets by however much wall time has passed.
+
+This used to drain a fixed step per call, which quietly made the limiter depend
+on someone calling it every frame.  Only the game does, and only from
+idGameLocal::RunFrame - a path a multiplayer client never runs.  On a client the
+buckets therefore only ever filled, and after ten bullet impacts EC_IMPACT was
+over budget for the rest of the map and every hit effect was silently dropped.
+Draining by elapsed time is correct no matter who calls this, or how often, so
+the limiter can no longer ratchet shut on any frame loop.
+====================
+*/
 void rvBSEManagerLocal::UpdateRateTimes(void) {
-	const float decay = Max(0.0f, bse_rateCost.GetFloat()) * 0.1f;
+	const int now = Sys_Milliseconds();
+	const int elapsed = now - mEffectRateTime;
+
+	if (elapsed <= 0) {
+		// same millisecond, or the timer went backwards
+		if (elapsed < 0) {
+			mEffectRateTime = now;
+		}
+		return;
+	}
+	mEffectRateTime = now;
+
+	const float decay = Max(0.0f, bse_rateCost.GetFloat()) * BSE_RATE_DECAY_PER_SEC * (elapsed * 0.001f);
 	for (int i = 0; i < EC_MAX; ++i) {
 		mEffectRates[i] = Max(0.0f, mEffectRates[i] - decay);
 	}
@@ -383,6 +421,11 @@ bool rvBSEManagerLocal::CanPlayRateLimited(effectCategory_t category) {
 	if (category <= EC_IGNORE || category >= EC_MAX) {
 		return true;
 	}
+
+	// Pay the buckets back before charging them.  Callers are spread across the
+	// game frame, the client snapshot path and the renderer's effect service,
+	// and only the first of those ever reaches StartFrame().
+	UpdateRateTimes();
 
 	const float limit = Max(0.0f, bse_rateLimit.GetFloat());
 	if (limit <= 0.0f) {
