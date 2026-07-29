@@ -472,6 +472,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "sdl3_input_parity.py",
         root / "tools" / "tests" / "sdl3_multidisplay_windowing.py",
         root / "tools" / "tests" / "settings_menu_coverage.py",
+        root / "tools" / "tests" / "source_charset_integrity.py",
         root / "tools" / "tests" / "steam_deck_support.py",
         root / "tools" / "tests" / "system_console_presentation.py",
         root / "tools" / "tests" / "lang_table_encoding.py",

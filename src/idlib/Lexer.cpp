@@ -486,8 +486,8 @@ punctuation_t default_punctuations[] = {
 	{"#",P_PRECOMP},					// pre-compiler
 	{"$",P_DOLLAR},
 // RAVEN BEGIN
-	{"�",P_INVERTED_PLING},
-	{"�",P_INVERTED_QUERY},
+	{"\xa1",P_INVERTED_PLING},
+	{"\xbf",P_INVERTED_QUERY},
 // RAVEN END
 	{NULL, 0}
 };
@@ -2601,11 +2601,11 @@ void idLexer::WriteBinaryToken(idToken *tok)
 			{
 				TextCompiler::WriteValue<unsigned char>(BTT_MAKEPUNCTUATION_PREFIX(BTT_PUNC_TIMESEQUAL), mBinaryFile, swapBytes);
 			}
-			else if(*tok == "�")
+			else if(*tok == "\xa1")
 			{
 				TextCompiler::WriteValue<unsigned char>(BTT_PUNC_INVERTEDPLING, mBinaryFile, swapBytes);
 			}
-			else if(*tok == "�")
+			else if(*tok == "\xbf")
 			{
 				TextCompiler::WriteValue<unsigned char>(BTT_PUNC_INVERTEDQUERY, mBinaryFile, swapBytes);
 			}
@@ -3641,10 +3641,10 @@ int Lexer::ReadToken(idToken *token)
 					*token = "||";
 					break;
 				case BTT_PUNC_INVERTEDPLING:
-					*token = "�";
+					*token = "\xa1";
 					break;
 				case BTT_PUNC_INVERTEDQUERY:
-					*token = "�";
+					*token = "\xbf";
 					break;
 				default:
 					assert(false);		// unrecognized punctuation
