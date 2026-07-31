@@ -271,6 +271,9 @@ static bool Session_SaveGameHeaderUsesEntityFilter( const idStr &gameName ) {
 
 static bool Session_IsCompatibleSaveGameVersion( const int version );
 static const int SESSION_MAX_SAVEGAME_DICT_KV = 16384;
+static const int SESSION_MAX_CMD_DEMO_DICT_KV = 16384;
+static const int SESSION_MAX_CMD_DEMO_TOTAL_KV = 65536;
+static const int SESSION_MAX_CMD_DEMO_HEADER_BYTES = 16 * 1024 * 1024;
 static const int SESSION_MAX_SAVE_DESCRIPTION_BYTES = 8192;
 static const int SESSION_MAX_SAVE_PREVIEW_BYTES = 64 * 1024 * 1024;
 static const char *SESSION_SAVEGAME_NO_OVERWRITE_TOKEN = "nooverwrite";
@@ -3029,6 +3032,23 @@ void idSessionLocal::Clear() {
 	writeDemo = NULL;
 	renderdemoVersion = 0;
 	cmdDemoFile = NULL;
+	activeRenderDemoName.Clear();
+	renderDemoDurationName.Clear();
+	renderDemoPaused = false;
+	renderDemoSeeking = false;
+	renderDemoSeekRestartPending = false;
+	renderDemoSeekRestartPresentationPending = false;
+	renderDemoSeekWorkDeferred = false;
+	renderDemoStepPending = false;
+	renderDemoFramePayloadPending = false;
+	renderDemoSeekMuteOwned = false;
+	renderDemoSeekRestoreMute = false;
+	renderDemoPlaybackRate = 1.0f;
+	renderDemoFrameAccumulator = 0.0;
+	renderDemoStartViewTime = 0;
+	renderDemoKnownDurationMS = -1;
+	renderDemoSeekTargetMS = 0;
+	renderDemoSeekDeadlineMS = 0;
 
 	syncNextGameFrame = false;
 	syncNextGameFrameAwaitingAsyncTicLog = false;
@@ -3036,6 +3056,12 @@ void idSessionLocal::Clear() {
 	cinematicActive = false;
 	mapSpawned = false;
 	guiActive = NULL;
+	demoReturnGui = NULL;
+	demoOverlayVisible = false;
+	demoBrowserMode = true;
+	demoMenuOpenedOverPlayback = false;
+	demoResumeAfterMenu = false;
+	demoActiveType = DEMO_LIBRARY_UNKNOWN;
 	aviCaptureMode = false;
 	timeDemo = TD_NO;
 	waitingOnBind = false;
@@ -3063,6 +3089,9 @@ void idSessionLocal::Clear() {
 
 	loadGameList.Clear();
 	modsList.Clear();
+	demoLibrary.Clear();
+	demoLibraryFilter = "all";
+	demoSelectedPath.Clear();
 
 	authEmitTimeout = 0;
 	authWaitBox = false;
@@ -3082,7 +3111,8 @@ idSessionLocal::idSessionLocal
 idSessionLocal::idSessionLocal() {
 	guiInGame = guiMainMenu = guiIntro \
 		= guiRestartMenu = guiLoading = guiGameOver = guiActive \
-		= guiTest = guiMsg = guiMsgRestore = guiTakeNotes = NULL;	
+		= guiTest = guiMsg = guiMsgRestore = guiTakeNotes = guiDemoMenu = NULL;
+	guiDemoList = NULL;
 	
 	menuSoundWorld = NULL;
 	
@@ -3106,6 +3136,8 @@ called on errors and game exits
 */
 void idSessionLocal::Stop() {
 	ClearWipe();
+
+	idAsyncNetwork::multiViewDemo.SessionStop();
 
 	// clear mapSpawned and demo playing flags
 	UnloadMap();
@@ -3172,6 +3204,7 @@ void idSessionLocal::Shutdown() {
 		uiManager->FreeListGUI( guiMainMenu_MapList );
 		guiMainMenu_MapList = NULL;
 	}
+	ShutdownDemoSystem();
 
 	Clear();
 }
@@ -3685,6 +3718,7 @@ Reports timeDemo numbers and finishes any avi recording
 ================
 */
 void idSessionLocal::StopPlayingRenderDemo() {
+	FinishRenderDemoSeek();
 	if ( !readDemo ) {
 		timeDemo = TD_NO;
 		return;
@@ -3703,6 +3737,19 @@ void idSessionLocal::StopPlayingRenderDemo() {
 	common->Printf( "stopped playing %s.\n", readDemo->GetName() );
 	delete readDemo;
 	readDemo = NULL;
+	activeRenderDemoName.Clear();
+	renderDemoPaused = false;
+	renderDemoSeeking = false;
+	renderDemoStepPending = false;
+	renderDemoFramePayloadPending = false;
+	renderDemoPlaybackRate = 1.0f;
+	renderDemoFrameAccumulator = 0.0;
+	if ( sw != NULL ) {
+		sw->SetSlowmoSpeed( 1.0f );
+		if ( sw->IsPaused() ) {
+			sw->UnPause();
+		}
+	}
 
 	if ( timeDemo ) {
 		// report the stats
@@ -3748,6 +3795,12 @@ void idSessionLocal::StartPlayingRenderDemo( idStr demoName ) {
 		common->Printf( "idSessionLocal::StartPlayingRenderDemo: no name specified\n" );
 		return;
 	}
+	demoName.DefaultFileExtension( ".demo" );
+	const int cachedDuration =
+		!renderDemoDurationName.IsEmpty() && !renderDemoDurationName.Icmp( demoName )
+			? renderDemoKnownDurationMS : -1;
+	const bool restoreDemoMenu = guiDemoMenu != NULL && guiActive == guiDemoMenu;
+	const bool restoreMuteOnFailure = soundSystem->IsMuted();
 
 	// make sure localSound / GUI intro music shuts up
 	sw->StopAllSounds();
@@ -3768,15 +3821,33 @@ void idSessionLocal::StartPlayingRenderDemo( idStr demoName ) {
 // jmarshall end
 	guiLoading->SetStateString( "demo", common->GetLanguageDict()->GetString( "#str_02087" ) );
 	readDemo = new idDemoFile;
-	demoName.DefaultFileExtension( ".demo" );
 	if ( !readDemo->OpenForReading( demoName ) ) {
 		common->Printf( "couldn't open %s\n", demoName.c_str() );
 		delete readDemo;
 		readDemo = NULL;
 		Stop();
 		StartMenu();
-		soundSystem->SetMute( false );
+		soundSystem->SetMute( restoreMuteOnFailure );
 		return;
+	}
+	activeRenderDemoName = demoName;
+	renderDemoPaused = false;
+	renderDemoSeekRestartPending = false;
+	renderDemoSeekRestartPresentationPending = false;
+	renderDemoSeekWorkDeferred = false;
+	renderDemoStepPending = false;
+	renderDemoFramePayloadPending = false;
+	renderDemoPlaybackRate = 1.0f;
+	renderDemoFrameAccumulator = 0.0;
+	renderDemoStartViewTime = 0;
+	renderDemoKnownDurationMS = cachedDuration;
+	renderDemoSeekDeadlineMS = 0;
+	SetPlayingSoundWorld( sw );
+	if ( sw != NULL ) {
+		sw->SetSlowmoSpeed( 1.0f );
+		if ( sw->IsPaused() ) {
+			sw->UnPause();
+		}
 	}
 
 	insideExecuteMapChange = true;
@@ -3789,12 +3860,31 @@ void idSessionLocal::StartPlayingRenderDemo( idStr demoName ) {
 	renderdemoVersion = 1;
 	savegameVersion = 16;
 
+	numDemoFrames = 0;
+	memset( &currentDemoRenderView, 0, sizeof( currentDemoRenderView ) );
+	// The first successfully decoded render view replaces this sentinel.
+	// It lets the EOF compatibility path distinguish a complete legacy
+	// demoShot from a truncated stream that never supplied a usable view.
+	demoTimeOffset = idMath::INT_MIN;
 	AdvanceRenderDemo( true );
-
-	numDemoFrames = 1;
+	if ( readDemo == NULL || numDemoFrames != 1 ||
+		 demoTimeOffset == idMath::INT_MIN ) {
+		if ( readDemo != NULL ) {
+			common->Warning( "Render demo '%s' did not contain a complete first frame",
+				demoName.c_str() );
+			Stop();
+			StartMenu( false );
+		}
+		return;
+	}
+	renderDemoStartViewTime = currentDemoRenderView.time;
 
 	lastDemoTic = -1;
 	timeDemoStartTime = Sys_Milliseconds();
+	if ( restoreDemoMenu && guiDemoMenu != NULL ) {
+		SetGUI( guiDemoMenu, NULL );
+		UpdateDemoMenuGui();
+	}
 }
 
 /*
@@ -3804,6 +3894,7 @@ idSessionLocal::TimeRenderDemo
 */
 void idSessionLocal::TimeRenderDemo( const char *demoName, bool twice ) {
 	idStr demo = demoName;
+	const bool restoreMuteOnFailure = soundSystem->IsMuted();
 	
 	// no sound in time demos
 	soundSystem->SetMute( true );
@@ -3826,6 +3917,7 @@ void idSessionLocal::TimeRenderDemo( const char *demoName, bool twice ) {
 	
 
 	if ( !readDemo ) {
+		soundSystem->SetMute( restoreMuteOnFailure );
 		return;
 	}
 
@@ -4126,15 +4218,148 @@ void idSessionLocal::SaveCmdDemoToFile( idFile *file ) {
 idSessionLocal::LoadCmdDemoFromFile
 ==============
 */
-void idSessionLocal::LoadCmdDemoFromFile( idFile *file ) {
-
-	mapSpawnData.serverInfo.ReadFromFileHandle( file );
-
-	for ( int i = 0 ; i < MAX_ASYNC_CLIENTS ; i++ ) {
-		mapSpawnData.userInfo[i].ReadFromFileHandle( file );
-		mapSpawnData.persistentPlayerInfo[i].ReadFromFileHandle( file );
+static bool Session_ReadCmdDemoCString(
+	idFile *file,
+	idStr &string,
+	const int headerStart,
+	idStr &error ) {
+	string.Clear();
+	for ( int len = 0; len < MAX_STRING_CHARS; len++ ) {
+		if ( file->Tell() < headerStart ||
+			 file->Tell() - headerStart >= SESSION_MAX_CMD_DEMO_HEADER_BYTES ) {
+			error = "command-demo header exceeds the supported size";
+			string.Clear();
+			return false;
+		}
+		char ch = '\0';
+		if ( file->Read( &ch, 1 ) != 1 ) {
+			error = "truncated command-demo dictionary string";
+			string.Clear();
+			return false;
+		}
+		if ( ch == '\0' ) {
+			return true;
+		}
+		string += ch;
 	}
-	file->Read( &mapSpawnData.mapSpawnUsercmd, sizeof( mapSpawnData.mapSpawnUsercmd ) );
+	error = "unterminated command-demo dictionary string";
+	string.Clear();
+	return false;
+}
+
+static bool Session_ReadCmdDemoDict(
+	idFile *file,
+	idDict &dict,
+	const int headerStart,
+	int &totalKeyValues,
+	idStr &error ) {
+	dict.Clear();
+	int count = 0;
+	if ( file->ReadInt( count ) != sizeof( count ) ) {
+		error = "truncated command-demo dictionary count";
+		return false;
+	}
+	if ( count < 0 || count > SESSION_MAX_CMD_DEMO_DICT_KV ||
+		 totalKeyValues > SESSION_MAX_CMD_DEMO_TOTAL_KV - count ) {
+		error = va( "invalid command-demo dictionary count %d", count );
+		return false;
+	}
+	totalKeyValues += count;
+
+	for ( int i = 0; i < count; i++ ) {
+		idStr key;
+		idStr value;
+		if ( !Session_ReadCmdDemoCString( file, key, headerStart, error ) ||
+			 !Session_ReadCmdDemoCString( file, value, headerStart, error ) ) {
+			dict.Clear();
+			return false;
+		}
+		dict.Set( key, value );
+	}
+	return true;
+}
+
+static bool Session_ParseCmdDemoHeader(
+	idFile *file,
+	mapSpawnData_t &parsed,
+	idStr &error ) {
+	error.Clear();
+	if ( file == NULL || file->Length() <= 0 ) {
+		error = "empty command-demo file";
+		return false;
+	}
+
+	const int headerStart = file->Tell();
+	if ( headerStart < 0 ) {
+		error = "invalid command-demo file position";
+		return false;
+	}
+
+	int totalKeyValues = 0;
+	if ( !Session_ReadCmdDemoDict(
+			file, parsed.serverInfo, headerStart, totalKeyValues, error ) ) {
+		return false;
+	}
+	for ( int i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
+		if ( !Session_ReadCmdDemoDict(
+				file, parsed.userInfo[i], headerStart, totalKeyValues, error ) ||
+			 !Session_ReadCmdDemoDict(
+				file, parsed.persistentPlayerInfo[i],
+				headerStart, totalKeyValues, error ) ) {
+			return false;
+		}
+	}
+
+	const int spawnCommandBytes =
+		static_cast<int>( sizeof( parsed.mapSpawnUsercmd ) );
+	if ( file->Tell() < headerStart ||
+		 file->Tell() - headerStart >
+			SESSION_MAX_CMD_DEMO_HEADER_BYTES - spawnCommandBytes ||
+		 file->Length() - file->Tell() < spawnCommandBytes ||
+		 file->Read( parsed.mapSpawnUsercmd, spawnCommandBytes ) != spawnCommandBytes ) {
+		error = "truncated command-demo map user commands";
+		return false;
+	}
+
+	const int commandBytes = file->Length() - file->Tell();
+	if ( commandBytes < static_cast<int>( sizeof( logCmd_t ) ) ) {
+		error = "command demo contains no complete command frames";
+		return false;
+	}
+	if ( commandBytes % static_cast<int>( sizeof( logCmd_t ) ) != 0 ) {
+		error = "command-demo command stream is truncated or ABI-incompatible";
+		return false;
+	}
+	return true;
+}
+
+bool idSessionLocal::LoadCmdDemoFromFile( idFile *file, idStr &error ) {
+	mapSpawnData_t parsed;
+	if ( !Session_ParseCmdDemoHeader( file, parsed, error ) ) {
+		return false;
+	}
+
+	mapSpawnData.serverInfo = parsed.serverInfo;
+	for ( int i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
+		mapSpawnData.userInfo[i] = parsed.userInfo[i];
+		mapSpawnData.persistentPlayerInfo[i] = parsed.persistentPlayerInfo[i];
+	}
+	memcpy( mapSpawnData.mapSpawnUsercmd,
+		parsed.mapSpawnUsercmd, sizeof( mapSpawnData.mapSpawnUsercmd ) );
+	return true;
+}
+
+bool idSessionLocal::ValidateCmdDemoFile( const char *path, idStr &error ) {
+	error.Clear();
+	idFile *file = fileSystem->OpenFileRead( path, false );
+	if ( file == NULL ) {
+		error = "command-demo file not found";
+		return false;
+	}
+	mapSpawnData_t parsed;
+	const bool valid = Session_ParseCmdDemoHeader( file, parsed, error );
+	fileSystem->CloseFile( file );
+	return valid;
 }
 
 /*
@@ -4204,11 +4429,15 @@ void idSessionLocal::StartPlayingCmdDemo(const char *demoName) {
 
 	idStr fullDemoName = "demos/";
 	fullDemoName += demoName;
-	fullDemoName.DefaultFileExtension( ".cdemo" );
+	if ( fullDemoName.Length() < 6 ||
+		 idStr::Icmp( fullDemoName.c_str() + fullDemoName.Length() - 6, ".cdemo" ) != 0 ) {
+		fullDemoName += ".cdemo";
+	}
 	cmdDemoFile = fileSystem->OpenFileRead(fullDemoName);
 
 	if ( cmdDemoFile == NULL ) {
 		common->Printf( "Couldn't open %s\n", fullDemoName.c_str() );
+		StartMenu( false );
 		return;
 	}
 
@@ -4217,7 +4446,15 @@ void idSessionLocal::StartPlayingCmdDemo(const char *demoName) {
 // jmarshall end
 	//cmdDemoFile->Read(&loadGameTime, sizeof(loadGameTime));
 
-	LoadCmdDemoFromFile(cmdDemoFile);
+	idStr error;
+	if ( !LoadCmdDemoFromFile( cmdDemoFile, error ) ) {
+		common->Warning( "Rejected command demo '%s': %s",
+			fullDemoName.c_str(), error.c_str() );
+		fileSystem->CloseFile( cmdDemoFile );
+		cmdDemoFile = NULL;
+		StartMenu( false );
+		return;
+	}
 
 	// start the map
 	ExecuteMapChange();
@@ -4225,7 +4462,14 @@ void idSessionLocal::StartPlayingCmdDemo(const char *demoName) {
 	cmdDemoFile = fileSystem->OpenFileRead(fullDemoName);
 
 	// have to do this twice as the execmapchange clears the cmddemofile
-	LoadCmdDemoFromFile(cmdDemoFile);
+	if ( cmdDemoFile == NULL || !LoadCmdDemoFromFile( cmdDemoFile, error ) ) {
+		common->Warning( "Could not restart command demo '%s' after map load: %s",
+			fullDemoName.c_str(),
+			cmdDemoFile == NULL ? "file not found" : error.c_str() );
+		Stop();
+		StartMenu( false );
+		return;
+	}
 
 	// run one frame to get the view angles correct
 	RunGameTic();
@@ -5618,6 +5862,10 @@ bool idSessionLocal::ProcessEvent( const sysEvent_t *event ) {
 	if ( !guiActive && event->evType == SE_KEY && event->evValue2 == 1 &&
 		( event->evValue == K_ESCAPE || event->evValue == K_JOY7 || event->evValue == K_JOY8 ) ) {
 		console->Close();
+		if ( IsDemoPlaybackActive() ) {
+			OpenDemoMenu( false );
+			return true;
+		}
 		if ( game ) {
 			idUserInterface	*gui = NULL;
 			escReply_t		op;
@@ -5704,6 +5952,13 @@ idSessionLocal::AdvanceRenderDemo
 ===============
 */
 void idSessionLocal::AdvanceRenderDemo( bool singleFrameOnly ) {
+	if ( readDemo == NULL ) {
+		return;
+	}
+	if ( renderDemoSeeking && !singleFrameOnly ) {
+		ProcessRenderDemoSeekBudget();
+		return;
+	}
 	if ( lastDemoTic == -1 ) {
 		lastDemoTic = latchedTicNumber - 1;
 	}
@@ -5711,22 +5966,89 @@ void idSessionLocal::AdvanceRenderDemo( bool singleFrameOnly ) {
 	int skipFrames = 0;
 
 	if ( !aviCaptureMode && !timeDemo && !singleFrameOnly ) {
-		skipFrames = ( (latchedTicNumber - lastDemoTic) / USERCMD_PER_DEMO_FRAME ) - 1;
-		// never skip too many frames, just let it go into slightly slow motion
-		if ( skipFrames > 4 ) {
-			skipFrames = 4;
+		const int scheduledDemoTic =
+			latchedTicNumber - latchedTicNumber % USERCMD_PER_DEMO_FRAME;
+		if ( renderDemoPaused && !renderDemoStepPending ) {
+			lastDemoTic = scheduledDemoTic;
+			return;
 		}
-		lastDemoTic = latchedTicNumber - latchedTicNumber % USERCMD_PER_DEMO_FRAME;
+		if ( renderDemoStepPending ) {
+			renderDemoStepPending = false;
+			skipFrames = 0;
+		} else {
+			const int elapsedDemoFrames = Max( 0,
+				( scheduledDemoTic - lastDemoTic ) / USERCMD_PER_DEMO_FRAME );
+			lastDemoTic = scheduledDemoTic;
+			if ( elapsedDemoFrames <= 0 ) {
+				return;
+			}
+			renderDemoFrameAccumulator +=
+				elapsedDemoFrames *
+				idMath::ClampFloat( 0.05f, 16.0f, renderDemoPlaybackRate );
+			int framesToAdvance = static_cast<int>( renderDemoFrameAccumulator );
+			if ( framesToAdvance <= 0 ) {
+				return;
+			}
+			framesToAdvance = Min( framesToAdvance, 64 );
+			renderDemoFrameAccumulator -= framesToAdvance;
+			skipFrames = framesToAdvance - 1;
+		}
+		lastDemoTic = scheduledDemoTic;
 	} else {
 		// always advance a single frame with avidemo and timedemo
 		lastDemoTic = latchedTicNumber; 
 	}
 
 	while( skipFrames > -1 ) {
+		if ( renderDemoSeeking && singleFrameOnly &&
+			 renderDemoSeekDeadlineMS > 0 &&
+			 Sys_Milliseconds() > renderDemoSeekDeadlineMS ) {
+			renderDemoSeekWorkDeferred = true;
+			break;
+		}
 		int		ds = DS_FINISHED;
-
-		readDemo->ReadInt( ds );
+		const int tokenBytes = readDemo->ReadInt( ds );
+		if ( tokenBytes != 0 && tokenBytes != sizeof( ds ) ) {
+			common->Warning( "Render demo '%s' has a truncated top-level token; playback stopped safely",
+				activeRenderDemoName.c_str() );
+			Stop();
+			StartMenu( false );
+			break;
+		}
 		if ( ds == DS_FINISHED ) {
+			if ( renderDemoFramePayloadPending ) {
+				// Early demoShot writers could end directly after a complete
+				// first render view without emitting DC_END_FRAME. Accept only
+				// that exact EOF case. Any later unterminated frame is a
+				// malformed multi-frame stream, not a one-frame demo.
+				if ( tokenBytes == 0 && readDemo->IsOpen() &&
+					 singleFrameOnly &&
+					 numDemoFrames == 0 &&
+					 demoTimeOffset != idMath::INT_MIN ) {
+					renderDemoFramePayloadPending = false;
+					numDemoFrames = 1;
+					renderDemoKnownDurationMS = 0;
+					renderDemoDurationName = activeRenderDemoName;
+					common->DPrintf( "Accepted legacy render demoShot without DC_END_FRAME: %s\n",
+						activeRenderDemoName.c_str() );
+					break;
+				}
+				common->Warning( "Render demo '%s' ended before DC_END_FRAME; playback stopped safely",
+					activeRenderDemoName.c_str() );
+				Stop();
+				StartMenu( false );
+				break;
+			}
+			if ( numDemoFrames <= 0 ) {
+				common->Warning( "Render demo '%s' contains no complete frames",
+					activeRenderDemoName.c_str() );
+				Stop();
+				StartMenu( false );
+				break;
+			}
+			renderDemoKnownDurationMS = Max( 0,
+				currentDemoRenderView.time - renderDemoStartViewTime );
+			renderDemoDurationName = activeRenderDemoName;
 			if ( numDemoFrames != 1 ) {
 				// if the demo has a single frame (a demoShot), continuously replay
 				// the renderView that has already been read
@@ -5736,26 +6058,56 @@ void idSessionLocal::AdvanceRenderDemo( bool singleFrameOnly ) {
 			break;
 		}
 		if ( ds == DS_RENDER ) {
+			renderDemoFramePayloadPending = true;
 			if ( rw->ProcessDemoCommand( readDemo, &currentDemoRenderView, &demoTimeOffset ) ) {
 				// The render world returns true once the full frame payload has been consumed.
+				renderDemoFramePayloadPending = false;
 				skipFrames--;
 				numDemoFrames++;
 			}
 			continue;
 		}
 		if ( ds == DS_SOUND ) {
-			sw->ProcessDemoCommand( readDemo );
+			renderDemoFramePayloadPending = true;
+			if ( !sw->ProcessDemoCommand( readDemo ) ) {
+				common->Warning( "Render demo '%s' contains a malformed sound command; playback stopped safely",
+					activeRenderDemoName.c_str() );
+				Stop();
+				StartMenu( false );
+				break;
+			}
 			continue;
 		}
 		// appears in v1.2, with savegame format 17
 		if ( ds == DS_VERSION ) {
-			readDemo->ReadInt( renderdemoVersion );
+			int streamVersion = 0;
+			if ( readDemo->ReadInt( streamVersion ) != sizeof( streamVersion ) ) {
+				common->Warning( "Render demo '%s' has a truncated version token; playback stopped safely",
+					activeRenderDemoName.c_str() );
+				Stop();
+				StartMenu( false );
+				break;
+			}
+			if ( streamVersion < 1 ||
+				 streamVersion > OPENQ4_RENDERDEMO_CURRENT_VERSION ) {
+				common->Warning( "Render demo '%s' uses unsupported stream version %d (supported: 1-%d)",
+					activeRenderDemoName.c_str(), streamVersion,
+					OPENQ4_RENDERDEMO_CURRENT_VERSION );
+				Stop();
+				StartMenu( false );
+				break;
+			}
+			renderdemoVersion = streamVersion;
 			common->Printf( "reading a v%d render demo\n", renderdemoVersion );
 			// set the savegameVersion to current for render demo paths that share the savegame paths
 			savegameVersion = SAVEGAME_VERSION;
 			continue;
 		}
-		common->Error( "Bad render demo token" );
+		common->Warning( "Render demo '%s' contains invalid token %d; playback stopped safely",
+			activeRenderDemoName.c_str(), ds );
+		Stop();
+		StartMenu( false );
+		break;
 	}
 
 	if ( com_showDemo.GetBool() ) {
@@ -5948,6 +6300,9 @@ idSessionLocal::Draw
 void idSessionLocal::Draw() {
 	static const int fallbackMenuDelayMs = 3000;
 	const int presentationTime = common->GetPresentationTime();
+	if ( guiDemoMenu != NULL && ( IsDemoPlaybackActive() || guiActive == guiDemoMenu ) ) {
+		UpdateDemoMenuGui();
+	}
 
 	bool fullConsole = false;
 	float menuIntroBlackoutAlpha = 0.0f;
@@ -5979,7 +6334,13 @@ void idSessionLocal::Draw() {
 			game->Draw( GetLocalClientNum() );
 		}
 
-		if ( guiActive->State().GetBool( "gameDraw" ) ) {
+		if ( guiActive == guiDemoMenu && readDemo != NULL ) {
+			// Playback controls are translucent, so keep the current recorded
+			// frame live behind them even though this GUI does not request the
+			// ordinary in-game "gameDraw" path.
+			rw->RenderScene( &currentDemoRenderView );
+			renderSystem->DrawDemoPics();
+		} else if ( guiActive->State().GetBool( "gameDraw" ) ) {
 			if ( mapSpawned && !com_skipGameDraw.GetBool() && GetLocalClientNum() >= 0 ) {
 				bool gameDraw = game->Draw( GetLocalClientNum() );
 				if ( !gameDraw ) {
@@ -6108,6 +6469,13 @@ void idSessionLocal::Draw() {
 		Session_DrawLevelshotBounds();
 	}
 
+	if ( guiActive == NULL && demoOverlayVisible && IsDemoPlaybackActive() &&
+		 guiDemoMenu != NULL && !insideExecuteMapChange ) {
+		demoBrowserMode = false;
+		UpdateDemoMenuGui();
+		guiDemoMenu->Redraw( presentationTime );
+	}
+
 	// draw the wipe material on top of this if it hasn't completed yet
 	DrawWipeModel();
 	
@@ -6232,7 +6600,12 @@ void idSessionLocal::Frame() {
 	}
 	
 	if ( readDemo ) {
-		if ( !timeDemo && numDemoFrames != 1 ) {
+		if ( renderDemoSeeking ) {
+			// Replay-seek work is main-thread budgeted and does not represent
+			// real-time presentation, so do not throttle it to the 30 Hz demo
+			// cadence.
+			minTic = previousLatchedTicNumber;
+		} else if ( !timeDemo && numDemoFrames != 1 ) {
 			minTic = lastDemoTic + USERCMD_PER_DEMO_FRAME;
 		} else {
 			// timedemos and demoshots will run as fast as they can, other demos
@@ -6423,7 +6796,7 @@ void idSessionLocal::RunGameTic() {
 
 	// if we are doing a command demo, read or write from the file
 	if ( cmdDemoFile ) {
-		if ( !cmdDemoFile->Read( &logCmd, sizeof( logCmd ) ) ) {
+		if ( cmdDemoFile->Read( &logCmd, sizeof( logCmd ) ) != sizeof( logCmd ) ) {
 			common->Printf( "Command demo completed at logIndex %i\n", logIndex );
 			fileSystem->CloseFile( cmdDemoFile );
 			cmdDemoFile = NULL;
@@ -6648,6 +7021,7 @@ void idSessionLocal::Init() {
 	guiMsg = uiManager->FindGui( "guis/msg.gui", true, false, true );
 	guiTakeNotes = uiManager->FindGui( "guis/takeNotes.gui", true, false, true );
 	guiIntro = uiManager->FindGui( "guis/intro.gui", true, false, true );
+	InitDemoSystem();
 #endif
 
 	whiteMaterial = declManager->FindMaterial( "_white" );

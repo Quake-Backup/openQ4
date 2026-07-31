@@ -61,6 +61,14 @@ idAsyncClient::idAsyncClient( void ) {
 	Clear();
 }
 
+bool idAsyncClient::IsActive( void ) const {
+	return active || idAsyncNetwork::multiViewDemo.IsPlaying();
+}
+
+int idAsyncClient::GetLocalClientNum( void ) const {
+	return idAsyncNetwork::multiViewDemo.IsPlaying() ? MAX_ASYNC_CLIENTS : clientNum;
+}
+
 /*
 ==================
 idAsyncClient::Clear
@@ -816,7 +824,14 @@ void idAsyncClient::ProcessUnreliableServerMessage( const idBitMsg &msg ) {
 			aheadOfServer = msg.ReadShort();
 
 			// read the game snapshot
-			game->ClientReadSnapshot( clientNum, snapshotSequence, snapshotGameFrame, snapshotGameTime, numDuplicatedUsercmds, aheadOfServer, msg );
+			if ( !game->ClientReadSnapshot(
+					clientNum, snapshotSequence, snapshotGameFrame, snapshotGameTime,
+					numDuplicatedUsercmds, aheadOfServer, msg ) ) {
+				common->Warning( "server sent malformed snapshot %d; disconnecting safely",
+					snapshotSequence );
+				DisconnectFromServer();
+				return;
+			}
 
 			// read user commands of other clients from the snapshot
 			for ( last = NULL, i = msg.ReadByte(); i < MAX_ASYNC_CLIENTS; i = msg.ReadByte() ) {
@@ -1658,6 +1673,9 @@ idAsyncClient::SendReliableGameMessage
 ==================
 */
 void idAsyncClient::SendReliableGameMessage( const idBitMsg &msg ) {
+	if ( idAsyncNetwork::multiViewDemo.IsPlaying() ) {
+		return;
+	}
 	idBitMsg	outMsg;
 	byte		msgBuf[MAX_MESSAGE_SIZE];
 
@@ -1845,6 +1863,9 @@ idAsyncClient::PacifierUpdate
 ==================
 */
 void idAsyncClient::PacifierUpdate( void ) {
+	if ( idAsyncNetwork::multiViewDemo.IsPlaying() ) {
+		return;
+	}
 	if ( !IsActive() ) {
 		return;
 	}

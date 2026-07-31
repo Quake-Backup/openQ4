@@ -124,7 +124,7 @@ typedef struct vkInteractionPush_s {
 	float			d[ 4 ];
 } vkInteractionPush_t;
 
-// std140 mirror of the set-6 InteractionBlock (14 vec4 = 224 bytes,
+// std140 mirror of the set-6 InteractionBlock (15 vec4 = 240 bytes,
 // inside the 256B ring slice)
 typedef struct vkInteractionBlock_s {
 	float			localLightOrigin[ 4 ];
@@ -141,6 +141,7 @@ typedef struct vkInteractionBlock_s {
 	float			specularMatrixT[ 4 ];
 	float			diffuseColor[ 4 ];
 	float			specularColor[ 4 ];
+	float			flatDiffuseParams[ 4 ];
 } vkInteractionBlock_t;
 
 // std140 mirror of the projected set-7 ShadowBlock (29 vec4 = 464 bytes in
@@ -180,6 +181,8 @@ static_assert( sizeof( vkShadowBlock_t ) == 464,
 		"projected shadow std140 block must remain 29 vec4s" );
 static_assert( sizeof( vkPointShadowBlock_t ) == 112,
 		"point shadow std140 block must remain 7 vec4s" );
+static_assert( sizeof( vkInteractionBlock_t ) == 240,
+		"interaction std140 block must remain 15 vec4s" );
 static_assert( sizeof( vkShadowBlock_t ) <= 512 &&
 		sizeof( vkPointShadowBlock_t ) <= 512,
 		"set-7 shadow blocks must fit the fixed 512-byte descriptor range" );
@@ -570,6 +573,7 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	// the shader doubles the specular term (ARB2 doubles the env constant)
 	memcpy( block.diffuseColor, din->diffuseColor.ToFloatPtr(), sizeof( block.diffuseColor ) );
 	memcpy( block.specularColor, din->specularColor.ToFloatPtr(), sizeof( block.specularColor ) );
+	memcpy( block.flatDiffuseParams, din->flatDiffuseParams.ToFloatPtr(), sizeof( block.flatDiffuseParams ) );
 
 	const int uboOffset = VK_Exec_InteractionUniformAlloc( &block, sizeof( block ) );
 	if ( uboOffset < 0 ) {
@@ -751,6 +755,8 @@ static void VK_DrawCustomLightingStage( const shaderStage_t *surfaceStage,
 			surfaceColor[ component ] * lightColor[ component ];
 	}
 	customInter.vertexColor = surfaceStage->vertexColor;
+	RB_ApplyFlatDiffuseStage( customInter.surf, &customInter.diffuseImage,
+		customInter.diffuseColor.ToFloatPtr(), customInter.flatDiffuseParams );
 
 	const bool parallax = family == VK_GLSL_PROGRAM_FAMILY_PARALLAX_BUMP;
 	float scaleBias[ 2 ];
@@ -1684,6 +1690,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 		inter.diffuseImage = NULL;
 		inter.diffuseColor[0] = inter.diffuseColor[1] = inter.diffuseColor[2] = inter.diffuseColor[3] = 0;
 		inter.specularColor[0] = inter.specularColor[1] = inter.specularColor[2] = inter.specularColor[3] = 0;
+		inter.flatDiffuseParams.Zero();
 
 		float lightColor[4];
 
@@ -1725,6 +1732,8 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 					}
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.diffuseImage,
 											inter.diffuseMatrix, inter.diffuseColor.ToFloatPtr() );
+					RB_ApplyFlatDiffuseStage( surf, &inter.diffuseImage,
+						inter.diffuseColor.ToFloatPtr(), inter.flatDiffuseParams );
 					inter.diffuseColor[0] *= lightColor[0];
 					inter.diffuseColor[1] *= lightColor[1];
 					inter.diffuseColor[2] *= lightColor[2];

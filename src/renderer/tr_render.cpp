@@ -951,6 +951,7 @@ void RB_CreateSingleDrawInteractionsFiltered( const drawSurf_t *surf, void (*Dra
 		inter.diffuseImage = NULL;
 		inter.diffuseColor[0] = inter.diffuseColor[1] = inter.diffuseColor[2] = inter.diffuseColor[3] = 0;
 		inter.specularColor[0] = inter.specularColor[1] = inter.specularColor[2] = inter.specularColor[3] = 0;
+		inter.flatDiffuseParams.Zero();
 
 		float lightColor[4];
 
@@ -995,6 +996,8 @@ void RB_CreateSingleDrawInteractionsFiltered( const drawSurf_t *surf, void (*Dra
 					}
 					R_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.diffuseImage,
 											inter.diffuseMatrix, inter.diffuseColor.ToFloatPtr() );
+					RB_ApplyFlatDiffuseStage( surf, &inter.diffuseImage,
+						inter.diffuseColor.ToFloatPtr(), inter.flatDiffuseParams );
 					inter.diffuseColor[0] *= lightColor[0];
 					inter.diffuseColor[1] *= lightColor[1];
 					inter.diffuseColor[2] *= lightColor[2];

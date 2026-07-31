@@ -66,8 +66,17 @@ def cel_band_count(requested):
     return int(clamp(requested, CEL_MIN_BANDS, CEL_MAX_BANDS))
 
 
-def cel_quantize_unit_value(value, bands):
-    """Mirror of R_CelQuantizeUnitValue and the shaders' CelQuantizeLight."""
+def smoothstep(edge0, edge1, value):
+    """Mirror of GLSL smoothstep and R_CelSmoothStep."""
+    if edge1 <= edge0:
+        return 0.0 if value < edge0 else 1.0
+
+    t = clamp((value - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def cel_quantize_unit_value(value, bands, softness=0.0):
+    """Mirror of R_CelQuantizeUnitValue and the shaders' CelLadder."""
     if value <= 0.0:
         return 0.0
     if value >= 1.0:
@@ -77,8 +86,14 @@ def cel_quantize_unit_value(value, bands):
     if steps <= 0.0:
         return value
 
-    band = clamp(math.floor(value * steps + 0.5), 0.0, steps)
-    return band / steps
+    scaled = value * steps
+    if softness <= 0.0:
+        return clamp(math.floor(scaled + 0.5), 0.0, steps) / steps
+
+    lower = math.floor(scaled)
+    half_width = softness * 0.5
+    blend = smoothstep(0.5 - half_width, 0.5 + half_width, scaled - lower)
+    return clamp((lower + blend) / steps, 0.0, 1.0)
 
 
 def test_band_ladder_is_evenly_spaced_and_hits_both_ends():
@@ -117,22 +132,112 @@ def test_requested_band_count_is_clamped():
     assert_true(cel_band_count(999) == CEL_MAX_BANDS, "band count must clamp down to the maximum")
 
 
+def test_softened_bands_stay_monotonic_and_bounded():
+    for bands in range(CEL_MIN_BANDS, CEL_MAX_BANDS + 1):
+        for softness in (0.1, 0.25, 0.5, 1.0):
+            previous = -1.0
+            for step in range(0, 1025):
+                value = step / 1024.0
+                quantized = cel_quantize_unit_value(value, bands, softness)
+                assert_true(
+                    quantized >= previous - 1.0e-6,
+                    f"softness {softness} must never invert the lighting ramp",
+                )
+                assert_true(0.0 <= quantized <= 1.0, f"softness {softness} must stay in range")
+                previous = quantized
+
+
+def test_softening_a_boundary_leaves_the_band_centres_alone():
+    """Softness is allowed to spend a band boundary, never a band. A value that
+    sits on a band level must come back off the ladder unchanged, or raising the
+    knob would drift the whole tonal layout instead of just easing the steps."""
+
+    for bands in range(CEL_MIN_BANDS, CEL_MAX_BANDS + 1):
+        steps = bands - 1
+        for softness in (0.0, 0.25, 0.5, 1.0):
+            for level in range(steps):
+                value = level / steps
+                produced = cel_quantize_unit_value(value, bands, softness)
+                assert_true(
+                    abs(produced - value) < 1.0e-9,
+                    f"{bands} bands at softness {softness} moved the level at {value}",
+                )
+
+
+def test_softening_never_moves_a_value_past_its_neighbouring_band():
+    for bands in range(CEL_MIN_BANDS, CEL_MAX_BANDS + 1):
+        steps = bands - 1
+        for softness in (0.25, 0.5, 1.0):
+            for step in range(1, 1024):
+                value = step / 1024.0
+                soft = cel_quantize_unit_value(value, bands, softness)
+                hard = cel_quantize_unit_value(value, bands)
+                assert_true(
+                    abs(soft - hard) <= 1.0 / steps + 1.0e-6,
+                    "a softened boundary must stay between the two bands it joins",
+                )
+
+
+def test_softness_is_what_removes_the_cliff():
+    """The reason to soften a boundary is that a one-texel step crawls across a
+    curved surface as the camera moves. Pinning the largest jump the ladder can
+    make is what says the knob actually does that."""
+
+    samples = 4096
+    for bands in range(CEL_MIN_BANDS, CEL_MAX_BANDS + 1):
+        steps = bands - 1
+
+        def largest_jump(softness):
+            biggest = 0.0
+            previous = cel_quantize_unit_value(0.0, bands, softness)
+            for step in range(1, samples):
+                current = cel_quantize_unit_value(step / samples, bands, softness)
+                biggest = max(biggest, current - previous)
+                previous = current
+            return biggest
+
+        hard = largest_jump(0.0)
+        assert_true(
+            abs(hard - 1.0 / steps) < 1.0e-9,
+            "the hard ladder must jump a full band at a boundary",
+        )
+
+        # smoothstep peaks at slope 1.5, so over one sample the fully softened
+        # ladder can move by at most 1.5 sample widths.
+        soft = largest_jump(1.0)
+        assert_true(
+            soft <= 1.5 / samples + 1.0e-9,
+            f"full softness must leave no cliff, largest jump was {soft}",
+        )
+
+
 def test_cpu_helper_matches_the_pinned_ladder():
     source = read(RENDERER / "CelShading.cpp")
     body = cxx_function_body(source, "float R_CelQuantizeUnitValue( float value )")
 
     assert_true("if ( value <= 0.0f ) {" in body, "unlit input must short-circuit to black")
-    assert_true("if ( value >= 1.0f ) {" in body, "overbright input must pass through untouched")
     assert_true(
-        "idMath::Floor( value * steps + 0.5f )" in body,
+        "if ( value >= 1.0f ) {\n\t\treturn value;" in body,
+        "overbright input must pass through untouched, exactly like the shaders",
+    )
+    assert_true(
+        "idMath::Floor( scaled + 0.5f )" in body,
         "the CPU ladder must round to the nearest band, matching the shaders",
     )
     assert_true("band / steps" in body, "the CPU ladder must normalize by the step count")
+    assert_true(
+        "R_CelSmoothStep( 0.5f - halfWidth, 0.5f + halfWidth, scaled - lower )" in body,
+        "the CPU ladder must soften a boundary the same way the shaders do",
+    )
 
     header = read(RENDERER / "CelShading.h")
     assert_true(
         f"CEL_MIN_BANDS = {CEL_MIN_BANDS}" in header and f"CEL_MAX_BANDS = {CEL_MAX_BANDS}" in header,
         "the band range pinned here must match CelShading.h",
+    )
+    assert_true(
+        "CEL_MIN_BAND_SOFTNESS = 0.0f" in header and "CEL_MAX_BAND_SOFTNESS = 1.0f" in header,
+        "the softness range pinned here must match CelShading.h",
     )
 
 
@@ -150,11 +255,11 @@ def test_every_interaction_shader_carries_the_same_ladder():
             f"{name} must pass black and overbright through untouched, like the CPU helper",
         )
         assert_true(
-            "return light * ( ( floor( peak * steps + 0.5 ) / steps ) / peak );" in source,
+            "return light * ( CelLadder( peak ) / peak );" in source,
             f"{name} must band by the brightest channel so quantizing cannot shift hue",
         )
         assert_true(
-            "return floor( clamp( term, 0.0, 1.0 ) * steps + 0.5 ) / steps;" in source,
+            "return CelLadder( clamp( term, 0.0, 1.0 ) );" in source,
             f"{name} must place the specular plateau on the same ladder",
         )
         assert_true(
@@ -162,6 +267,47 @@ def test_every_interaction_shader_carries_the_same_ladder():
             f"{name} must apply banding to the full light term, shadows included",
         )
         assert_true("CelSpecularTerm(" in source, f"{name} must route its specular term through the cel gate")
+
+
+def test_band_softness_reaches_every_shader():
+    for name in INTERACTION_SHADERS:
+        source = read(GLPROGS / name)
+
+        assert_true(
+            "float CelLadder( float value ) {" in source,
+            f"{name} must place both the diffuse and specular terms on one ladder",
+        )
+        assert_true(
+            "float softness = clamp( uCelParams.w, 0.0, 1.0 );" in source,
+            f"{name} must read the softness out of the fourth cel parameter",
+        )
+        assert_true(
+            "return floor( scaled + 0.5 ) / steps;" in source,
+            f"{name} must keep the exact hard step available at zero softness",
+        )
+        assert_true(
+            "float blend = smoothstep( 0.5 - halfWidth, 0.5 + halfWidth, scaled - lower );" in source,
+            f"{name} must centre the softened window on the hard step's own boundary",
+        )
+        assert_true(
+            "uCelParams is ( bandsEnabled, bandCount, hardSpecular, softness )" in source,
+            f"{name} must document the fourth parameter now that it carries something",
+        )
+
+
+def test_the_shared_ladder_really_is_shared():
+    """The three interaction shaders each carry their own copy of the ladder, so
+    nothing but a check like this stops one of them drifting."""
+
+    bodies = {
+        name: cxx_function_body(read(GLPROGS / name), "float CelLadder( float value )")
+        for name in INTERACTION_SHADERS
+    }
+
+    assert_true(
+        len(set(bodies.values())) == 1,
+        f"CelLadder must be byte-identical across {', '.join(INTERACTION_SHADERS)}",
+    )
 
 
 def test_banding_reaches_the_shipping_lighting_path():
@@ -200,6 +346,10 @@ def test_banding_reaches_the_shipping_lighting_path():
     assert_true(
         "R_CelShadingSurfaceActive( surf )" in setter,
         "the cel uniform must follow the per-surface gate, not a global toggle",
+    )
+    assert_true(
+        "banded ? R_CelBandSoftness() : 0.0f" in setter,
+        "band softness must ride along with the rest of the cel parameters",
     )
 
 
@@ -298,6 +448,56 @@ def test_disabled_cel_shading_costs_nothing():
     )
 
 
+def test_a_fully_transparent_ink_costs_nothing():
+    """Both outline passes commit real resources before they ever look at a
+    colour: the shells reserve and clear a stencil bit, the world pass pays for
+    a second depth prepass and a fullscreen draw. An ink whose alpha is zero
+    draws no pixels either way, so it has to be caught by the same gate that
+    catches the feature being switched off."""
+
+    source = read(RENDERER / "CelShading.cpp")
+
+    for signature in ("bool R_CelOutlineEnabled( void )", "bool R_CelWorldOutlineEnabled( void )"):
+        body = cxx_function_body(source, signature)
+        assert_true(
+            "R_CelInkAlpha() > 0.0f" in body,
+            f"{signature} must decline when the ink itself is transparent",
+        )
+
+    ink = cxx_function_body(source, "static float R_CelInkAlpha( void )")
+    assert_true(
+        "R_CelParsedOutlineColor( color );" in ink,
+        "the ink alpha must come from the same parse the outline colour uses",
+    )
+
+    backend = read(RENDERER / "draw_common.cpp")
+    capture = cxx_function_body(
+        backend,
+        "static void RB_CaptureCelWorldDepthImage( drawSurf_t **drawSurfs, int numDrawSurfs )",
+    )
+    assert_true(
+        "RB_CelWorldOutlineRequestedForCurrentView()" in capture,
+        "the world depth prepass must answer to the same gate as the pass that consumes it",
+    )
+
+
+def test_the_world_outline_diagnostic_reports_the_current_state():
+    """Reasons are compared by identity to keep a steady state from printing
+    every frame, which means the last one has to be dropped while the
+    diagnostic is off. Otherwise switching it on to ask why there is no outline
+    answers with silence."""
+
+    source = read(RENDERER / "draw_common.cpp")
+    body = cxx_function_body(source, "static void RB_ReportCelWorldOutlineSkip( const char *reason )")
+
+    off = body.find("if ( !r_celShadingWorldDebug.GetBool() ) {")
+    assert_true(off >= 0, "the reporter must handle the diagnostic being off on its own")
+
+    reset = body.find("\t\tlastReason = NULL;")
+    compare = body.find("if ( reason == lastReason ) {")
+    assert_true(off < reset < compare, "the reason must be forgotten while the diagnostic is off")
+
+
 def test_graceful_degradation_is_explicit():
     source = read(RENDERER / "draw_common.cpp")
 
@@ -373,6 +573,7 @@ def test_cvars_are_archived_and_ranged():
         "r_celShadingWorld": "0",
         "r_celShadingBands": "1",
         "r_celShadingSteps": "4",
+        "r_celShadingSoftness": "0",
         "r_celShadingSpecular": "1",
         "r_celViewWeapon": "1",
         "r_celOutline": "1",
@@ -407,6 +608,10 @@ def test_cvars_are_archived_and_ranged():
     # Cel shading must ship off, so stock Quake 4 still looks like Quake 4.
     assert_true(expected["r_celShading"] == "0", "cel shading must default off")
     assert_true(expected["r_celShadingWorld"] == "0", "world cel shading must default off")
+
+    # And softening the bands must be opt-in, so an existing cel config keeps
+    # the look it was tuned against.
+    assert_true(expected["r_celShadingSoftness"] == "0", "band softening must default off")
 
 
 def test_world_edge_shader_detects_both_silhouettes_and_creases():
@@ -526,12 +731,20 @@ def main():
         test_band_ladder_is_monotonic_and_bounded,
         test_overbright_and_unlit_pass_through_untouched,
         test_requested_band_count_is_clamped,
+        test_softened_bands_stay_monotonic_and_bounded,
+        test_softening_a_boundary_leaves_the_band_centres_alone,
+        test_softening_never_moves_a_value_past_its_neighbouring_band,
+        test_softness_is_what_removes_the_cliff,
         test_cpu_helper_matches_the_pinned_ladder,
         test_every_interaction_shader_carries_the_same_ladder,
+        test_band_softness_reaches_every_shader,
+        test_the_shared_ladder_really_is_shared,
         test_banding_reaches_the_shipping_lighting_path,
         test_surface_classification_separates_world_model_and_view_weapon,
         test_world_outline_only_snapshots_world_geometry,
         test_disabled_cel_shading_costs_nothing,
+        test_a_fully_transparent_ink_costs_nothing,
+        test_the_world_outline_diagnostic_reports_the_current_state,
         test_graceful_degradation_is_explicit,
         test_frame_order_places_cel_passes_where_they_survive,
         test_cvars_are_archived_and_ranged,

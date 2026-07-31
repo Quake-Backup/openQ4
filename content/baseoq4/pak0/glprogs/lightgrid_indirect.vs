@@ -16,6 +16,7 @@ varying vec3 vWorldBitangent;
 varying vec3 vWorldNormal;
 varying vec3 vWorldPosition;
 varying vec3 vVertexColor;
+varying float vLocalZ;
 
 vec3 TransformVectorToWorld( vec3 localVector ) {
 	return vec3(
@@ -40,6 +41,7 @@ void main() {
 		dot( gl_Vertex, uModelMatrixRow2 ) );
 
 	vVertexColor = gl_Color.rgb * uVertexColorParams.x + vec3( uVertexColorParams.y );
+	vLocalZ = gl_Vertex.z;
 
 	gl_Position = ftransform();
 }

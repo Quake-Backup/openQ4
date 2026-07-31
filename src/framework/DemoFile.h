@@ -54,9 +54,12 @@ public:
 
 	void			SetLog( bool b, const char *p );
 	void			Log( const char *p );
-	bool			OpenForReading( const char *fileName );
+	bool			OpenForReading( const char *fileName, bool allowPreload = true, bool quiet = false );
 	bool			OpenForWriting( const char *fileName );
-	void			Close();
+	// Virtual for renderer modules, which must be able to invalidate a corrupt
+	// stream without linking directly against the engine implementation.
+	virtual void	Close();
+	bool			IsOpen() const { return compressor != NULL; }
 
 	// virtual so the renderer module reaches them across the DLL boundary
 	// (Phase B8, docs/dev/plans/2026-07-16-vulkan-renderer-phase-b.md)

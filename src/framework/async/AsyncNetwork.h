@@ -65,6 +65,7 @@ const int GAME_INIT_ID_MAP_LOAD		= -2;
 #include "AsyncServer.h"
 #include "ServerScan.h"
 #include "AsyncClient.h"
+#include "MultiViewDemo.h"
 
 /*
 ===============================================================================
@@ -168,6 +169,7 @@ public:
 
 	static idAsyncServer	server;
 	static idAsyncClient	client;
+	static idMultiViewDemo	multiViewDemo;
 	
 	static idCVar			verbose;						// verbose output
 	static idCVar			allowCheats;					// legacy cheats toggle

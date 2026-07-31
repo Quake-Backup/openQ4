@@ -54,6 +54,14 @@ static ID_INLINE void R_SetGuiDrawVert( idDrawVert *vert, float x, float y, floa
 	R_SetGuiDrawVertPayload( vert );
 }
 
+static bool R_RejectGuiModelDemo( idDemoFile *demo, const char *reason ) {
+	common->Warning( "Malformed render demo GUI model: %s; playback stopped safely", reason );
+	if ( demo != NULL ) {
+		demo->Close();
+	}
+	return false;
+}
+
 /*
 ================
 idGuiModel::idGuiModel
@@ -132,42 +140,60 @@ void idGuiModel::WriteToDemo( idDemoFile *demo ) {
 idGuiModel::ReadFromDemo
 ================
 */
-void idGuiModel::ReadFromDemo( idDemoFile *demo ) {
+bool idGuiModel::ReadFromDemo( idDemoFile *demo ) {
 	int		i, j;
 
-	i = verts.Num();
-	demo->ReadInt( i );
+	i = 0;
+	if ( demo == NULL || demo->ReadInt( i ) != sizeof( i ) ) {
+		Clear();
+		return R_RejectGuiModelDemo( demo, "truncated vertex count" );
+	}
 	if ( i < 0 || i > 1 << 20 ) {
-		common->Error( "idGuiModel::ReadFromDemo: bad vertex count %d", i );
+		Clear();
+		return R_RejectGuiModelDemo( demo, va( "vertex count %d is out of range", i ) );
 	}
 	verts.SetNum( i, false );
 	for ( j = 0; j < i; j++ )
 	{
-		demo->ReadVec3( verts[j].xyz );
-		demo->ReadVec2( verts[j].st );
-		demo->ReadVec3( verts[j].normal );
-		demo->ReadVec3( verts[j].tangents[0] );
-		demo->ReadVec3( verts[j].tangents[1] );
-		demo->ReadUnsignedChar( verts[j].color[0] );
-		demo->ReadUnsignedChar( verts[j].color[1] );
-		demo->ReadUnsignedChar( verts[j].color[2] );
-		demo->ReadUnsignedChar( verts[j].color[3] );
+		if ( demo->ReadVec3( verts[j].xyz ) != sizeof( verts[j].xyz ) ||
+			 demo->ReadVec2( verts[j].st ) != sizeof( verts[j].st ) ||
+			 demo->ReadVec3( verts[j].normal ) != sizeof( verts[j].normal ) ||
+			 demo->ReadVec3( verts[j].tangents[0] ) != sizeof( verts[j].tangents[0] ) ||
+			 demo->ReadVec3( verts[j].tangents[1] ) != sizeof( verts[j].tangents[1] ) ||
+			 demo->ReadUnsignedChar( verts[j].color[0] ) != sizeof( verts[j].color[0] ) ||
+			 demo->ReadUnsignedChar( verts[j].color[1] ) != sizeof( verts[j].color[1] ) ||
+			 demo->ReadUnsignedChar( verts[j].color[2] ) != sizeof( verts[j].color[2] ) ||
+			 demo->ReadUnsignedChar( verts[j].color[3] ) != sizeof( verts[j].color[3] ) ) {
+			Clear();
+			return R_RejectGuiModelDemo( demo, "truncated vertex payload" );
+		}
 	}
 	
-	i = indexes.Num();
-	demo->ReadInt( i );
+	i = 0;
+	if ( demo->ReadInt( i ) != sizeof( i ) ) {
+		Clear();
+		return R_RejectGuiModelDemo( demo, "truncated index count" );
+	}
 	if ( i < 0 || i > 1 << 21 ) {
-		common->Error( "idGuiModel::ReadFromDemo: bad index count %d", i );
+		Clear();
+		return R_RejectGuiModelDemo( demo, va( "index count %d is out of range", i ) );
 	}
 	indexes.SetNum( i, false );
 	for ( j = 0; j < i; j++ ) {
-		demo->ReadInt(indexes[j] );
+		if ( demo->ReadInt( indexes[j] ) != sizeof( indexes[j] ) ) {
+			Clear();
+			return R_RejectGuiModelDemo( demo, "truncated index payload" );
+		}
 	}
 	
-	i = surfaces.Num();
-	demo->ReadInt( i );
+	i = 0;
+	if ( demo->ReadInt( i ) != sizeof( i ) ) {
+		Clear();
+		return R_RejectGuiModelDemo( demo, "truncated surface count" );
+	}
 	if ( i < 0 || i > 1 << 16 ) {
-		common->Error( "idGuiModel::ReadFromDemo: bad surface count %d", i );
+		Clear();
+		return R_RejectGuiModelDemo( demo, va( "surface count %d is out of range", i ) );
 	}
 	surfaces.SetNum( i, false );
 	for ( j = 0 ; j < i ; j++ ) {
@@ -175,26 +201,48 @@ void idGuiModel::ReadFromDemo( idDemoFile *demo ) {
 		bool				hasMaterial = false;
 		
 		if ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_POINTER_FREE_VERSION ) {
-			demo->ReadBool( hasMaterial );
+			if ( demo->ReadBool( hasMaterial ) != sizeof( byte ) ) {
+				Clear();
+				return R_RejectGuiModelDemo( demo, "truncated material flag" );
+			}
 		} else {
 			int legacyMaterial = 0;
-			demo->ReadInt( legacyMaterial );
+			if ( demo->ReadInt( legacyMaterial ) != sizeof( legacyMaterial ) ) {
+				Clear();
+				return R_RejectGuiModelDemo( demo, "truncated legacy material flag" );
+			}
 			hasMaterial = ( legacyMaterial != 0 );
 		}
-		demo->ReadFloat( surf->color[0] );
-		demo->ReadFloat( surf->color[1] );
-		demo->ReadFloat( surf->color[2] );
-		demo->ReadFloat( surf->color[3] );
-		demo->ReadInt( surf->firstVert );
-		demo->ReadInt( surf->numVerts );
-		demo->ReadInt( surf->firstIndex );
-		demo->ReadInt( surf->numIndexes );
+		if ( demo->ReadFloat( surf->color[0] ) != sizeof( surf->color[0] ) ||
+			 demo->ReadFloat( surf->color[1] ) != sizeof( surf->color[1] ) ||
+			 demo->ReadFloat( surf->color[2] ) != sizeof( surf->color[2] ) ||
+			 demo->ReadFloat( surf->color[3] ) != sizeof( surf->color[3] ) ||
+			 demo->ReadInt( surf->firstVert ) != sizeof( surf->firstVert ) ||
+			 demo->ReadInt( surf->numVerts ) != sizeof( surf->numVerts ) ||
+			 demo->ReadInt( surf->firstIndex ) != sizeof( surf->firstIndex ) ||
+			 demo->ReadInt( surf->numIndexes ) != sizeof( surf->numIndexes ) ) {
+			Clear();
+			return R_RejectGuiModelDemo( demo, "truncated surface payload" );
+		}
 		if ( surf->firstVert < 0 || surf->numVerts < 0 || surf->firstVert > verts.Num() - surf->numVerts ||
 			 surf->firstIndex < 0 || surf->numIndexes < 0 || surf->firstIndex > indexes.Num() - surf->numIndexes ) {
-			common->Error( "idGuiModel::ReadFromDemo: bad surface range" );
+			Clear();
+			return R_RejectGuiModelDemo( demo, "surface range is out of bounds" );
+		}
+		for ( int indexOffset = 0; indexOffset < surf->numIndexes; indexOffset++ ) {
+			const int storedIndex = indexes[surf->firstIndex + indexOffset];
+			if ( storedIndex < 0 || storedIndex >= surf->numVerts ) {
+				Clear();
+				return R_RejectGuiModelDemo( demo, va( "surface vertex index %d is out of range", storedIndex ) );
+			}
 		}
 		surf->material = hasMaterial ? declManager->FindMaterial( demo->ReadHashString() ) : NULL;
+		if ( !demo->IsOpen() ) {
+			Clear();
+			return false;
+		}
 	}
+	return true;
 }
 
 /*

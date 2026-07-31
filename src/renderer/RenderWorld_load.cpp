@@ -1152,6 +1152,10 @@ void idRenderWorldLocal::FreeDefs() {
 		}
 	}
 
+	// FreeEntityDef drops each handle as it goes, so this is only a backstop: a
+	// handle surviving a map change would ring an entity in the next map.
+	throughWorldOutlineEntities.Clear();
+
 	FreeDeferredLightDefs();
 
 	// free all effectDefs

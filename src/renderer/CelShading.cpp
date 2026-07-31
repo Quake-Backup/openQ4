@@ -16,6 +16,9 @@
 ===============================================================================
 */
 
+// The outline colour parser lives below the gates that need its alpha.
+static void	R_CelParsedOutlineColor( idVec4 &color );
+
 /*
 ==================
 R_CelBandCount
@@ -27,11 +30,45 @@ int R_CelBandCount( void ) {
 
 /*
 ==================
+R_CelBandSoftness
+==================
+*/
+float R_CelBandSoftness( void ) {
+	return idMath::ClampFloat( CEL_MIN_BAND_SOFTNESS, CEL_MAX_BAND_SOFTNESS, r_celShadingSoftness.GetFloat() );
+}
+
+/*
+==================
+R_CelSmoothStep
+
+GLSL's smoothstep, spelled out so the CPU ladder and the shader ladder agree
+to the bit on where a softened band boundary sits.
+==================
+*/
+static float R_CelSmoothStep( float edge0, float edge1, float value ) {
+	if ( edge1 <= edge0 ) {
+		return ( value < edge0 ) ? 0.0f : 1.0f;
+	}
+
+	const float t = idMath::ClampFloat( 0.0f, 1.0f, ( value - edge0 ) / ( edge1 - edge0 ) );
+
+	return t * t * ( 3.0f - 2.0f * t );
+}
+
+/*
+==================
 R_CelQuantizeUnitValue
 
 Snaps an intensity onto the band ladder. Both endpoints are preserved exactly
 so unlit surfaces stay black and fully lit ones keep their peak value; only the
 ramp between them is stepped.
+
+r_celShadingSoftness widens each boundary into a smoothstep centred on the same
+place the hard step would have landed. The plateaus survive - a boundary only
+ever eats into the band on either side of it - but the transition itself stops
+being a single texel wide, which is what kept the terminator crawling across a
+curved surface as the camera moved. At 0 the result is bit-identical to the
+hard step.
 ==================
 */
 float R_CelQuantizeUnitValue( float value ) {
@@ -39,7 +76,7 @@ float R_CelQuantizeUnitValue( float value ) {
 		return 0.0f;
 	}
 	if ( value >= 1.0f ) {
-		return 1.0f;
+		return value;
 	}
 
 	const float steps = (float)R_CelBandCount() - 1.0f;
@@ -47,10 +84,20 @@ float R_CelQuantizeUnitValue( float value ) {
 		return value;
 	}
 
-	float band = idMath::Floor( value * steps + 0.5f );
-	band = idMath::ClampFloat( 0.0f, steps, band );
+	const float scaled = value * steps;
+	const float softness = R_CelBandSoftness();
+	if ( softness <= 0.0f ) {
+		const float band = idMath::ClampFloat( 0.0f, steps, idMath::Floor( scaled + 0.5f ) );
+		return band / steps;
+	}
 
-	return band / steps;
+	// floor( scaled ) names the band below the pixel and the boundary above it
+	// sits half a band away, so the blend window is centred on 0.5.
+	const float lower = idMath::Floor( scaled );
+	const float halfWidth = softness * 0.5f;
+	const float blend = R_CelSmoothStep( 0.5f - halfWidth, 0.5f + halfWidth, scaled - lower );
+
+	return idMath::ClampFloat( 0.0f, 1.0f, ( lower + blend ) / steps );
 }
 
 /*
@@ -82,11 +129,30 @@ bool R_CelShadingAnyEnabled( void ) {
 
 /*
 ==================
+R_CelInkAlpha
+
+The opacity r_celOutlineColor carries on its own, before any per-surface
+multiplier. Zero here means every outline in the frame is invisible whatever
+the other knobs say, and both outline passes reserve real resources - a stencil
+bit for the shells, a depth prepass and a fullscreen pass for the world - long
+before they discover a surface draws nothing. Asking up front is what keeps a
+transparent ink as cheap as a disabled one.
+==================
+*/
+static float R_CelInkAlpha( void ) {
+	idVec4 color;
+	R_CelParsedOutlineColor( color );
+
+	return color.w;
+}
+
+/*
+==================
 R_CelOutlineEnabled
 ==================
 */
 bool R_CelOutlineEnabled( void ) {
-	return R_CelShadingEnabled() && r_celOutline.GetBool();
+	return R_CelShadingEnabled() && r_celOutline.GetBool() && R_CelInkAlpha() > 0.0f;
 }
 
 /*
@@ -95,7 +161,7 @@ R_CelWorldOutlineEnabled
 ==================
 */
 bool R_CelWorldOutlineEnabled( void ) {
-	return R_CelShadingWorldEnabled() && R_CelWorldOutlineAlpha() > 0.0f;
+	return R_CelShadingWorldEnabled() && R_CelWorldOutlineAlpha() > 0.0f && R_CelInkAlpha() > 0.0f;
 }
 
 /*

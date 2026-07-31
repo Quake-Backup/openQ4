@@ -64,6 +64,7 @@ jobs:
             tools/validation/openq4_validate.py \
             tools/tests/renderer_validation_matrix.py \
             tools/tests/campaign_split_state_transition.py \
+            tools/tests/demo_playback.py \
             tools/tests/docs_link_integrity.py \
             tools/tests/filesystem_case_segments.py \
             tools/tests/filesystem_mod_manifest.py \
@@ -126,8 +127,10 @@ jobs:
             tools/tests/macos_universal2_release_candidate.py \
             tools/tests/macos_metal_bridge.py \
             tools/tests/macos_moltenvk_policy.py \
+            tools/tests/mp_bot_characters.py \
             tools/tests/mp_bot_navigation.py \
             tools/tests/mp_client_combat_effects.py \
+            tools/tests/multiview_demo.py \
             tools/tests/native_glx_shutdown.py \
             tools/tests/openq4_pure_pack.py \
             tools/tests/packaging_safety.py \
@@ -140,6 +143,7 @@ jobs:
             tools/tests/renderer_cel_shading.py \
             tools/tests/renderer_msaa_cvar_safety.py \
             tools/tests/renderer_picmip_policy.py \
+            tools/tests/renderer_player_visibility.py \
             tools/tests/renderer_screenshot_readback.py \
             tools/tests/renderer_supersampling_safety.py \
             tools/tests/renderer_vulkan_decal_compatibility.py \
@@ -165,6 +169,7 @@ jobs:
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
           python tools/tests/campaign_split_state_transition.py
+          python tools/tests/demo_playback.py
           python tools/tests/docs_link_integrity.py
           python tools/tests/filesystem_case_segments.py
           python tools/tests/filesystem_mod_manifest.py
@@ -223,8 +228,10 @@ jobs:
           python tools/tests/macos_universal2_release_candidate.py
           python tools/tests/macos_metal_bridge.py
           python tools/tests/macos_moltenvk_policy.py
+          python tools/tests/mp_bot_characters.py
           python tools/tests/mp_bot_navigation.py
           python tools/tests/mp_client_combat_effects.py
+          python tools/tests/multiview_demo.py
           python tools/tests/native_glx_shutdown.py
           python tools/tests/openq4_pure_pack.py
           python tools/tests/packaging_safety.py
@@ -237,6 +244,7 @@ jobs:
           python tools/tests/renderer_cel_shading.py
           python tools/tests/renderer_msaa_cvar_safety.py
           python tools/tests/renderer_picmip_policy.py
+          python tools/tests/renderer_player_visibility.py
           python tools/tests/renderer_screenshot_readback.py
           python tools/tests/renderer_supersampling_safety.py
           python tools/tests/renderer_vulkan_decal_compatibility.py

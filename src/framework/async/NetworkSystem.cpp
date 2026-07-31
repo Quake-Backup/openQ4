@@ -82,6 +82,40 @@ void idNetworkSystem::ServerSendReliableMessageExcluding( int clientNum, const i
 
 /*
 ==================
+idNetworkSystem::ServerSendReliableMessageNoDemo
+==================
+*/
+void idNetworkSystem::ServerSendReliableMessageNoDemo( int clientNum, const idBitMsg &msg ) {
+	if ( idAsyncNetwork::server.IsActive() ) {
+		idAsyncNetwork::server.SendReliableGameMessage( clientNum, msg, false );
+	}
+}
+
+/*
+==================
+idNetworkSystem::ServerSendReliableMessageExcludingNoDemo
+==================
+*/
+void idNetworkSystem::ServerSendReliableMessageExcludingNoDemo( int clientNum, const idBitMsg &msg ) {
+	if ( idAsyncNetwork::server.IsActive() ) {
+		idAsyncNetwork::server.SendReliableGameMessageExcluding( clientNum, msg, false );
+	}
+}
+
+/*
+==================
+idNetworkSystem::ServerRecordInstanceReliableMessage
+==================
+*/
+void idNetworkSystem::ServerRecordInstanceReliableMessage( int instance, int excludeClient, const idBitMsg &msg ) {
+	if ( idAsyncNetwork::server.IsActive() && idAsyncNetwork::multiViewDemo.IsRecording() ) {
+		idAsyncNetwork::multiViewDemo.CaptureReliableMessage(
+			msg, DEMO_RECORD_INSTANCE, excludeClient, instance );
+	}
+}
+
+/*
+==================
 idNetworkSystem::ServerGetClientPing
 ==================
 */
@@ -170,6 +204,9 @@ idNetworkSystem::ClientSendReliableMessage
 ==================
 */
 void idNetworkSystem::ClientSendReliableMessage( const idBitMsg &msg ) {
+	if ( idAsyncNetwork::multiViewDemo.IsPlaying() ) {
+		return;
+	}
 	if ( idAsyncNetwork::client.IsActive() ) {
 		idAsyncNetwork::client.SendReliableGameMessage( msg );
 	} else if ( idAsyncNetwork::server.IsActive() ) {
@@ -195,6 +232,9 @@ idNetworkSystem::ClientGetTimeSinceLastPacket
 ==================
 */
 int idNetworkSystem::ClientGetTimeSinceLastPacket( void ) {
+	if ( idAsyncNetwork::multiViewDemo.IsPlaying() ) {
+		return 0;
+	}
 	if ( idAsyncNetwork::client.IsActive() ) {
 		return idAsyncNetwork::client.GetTimeSinceLastPacket();
 	}

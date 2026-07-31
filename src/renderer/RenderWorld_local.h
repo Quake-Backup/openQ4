@@ -249,6 +249,13 @@ public:
 	idRenderWorldMD5RProcData *	md5rProcData;
 
 	idList<idRenderEntityLocal*>	entityDefs;
+
+	// Handles of the entityDefs carrying REF_OUTLINE_THROUGH_WORLD. The view build
+	// has to find them every frame and they are a handful of players at most, so
+	// they are tracked as they are updated rather than searched for by walking
+	// every entity in the map. See R_AddThroughWorldOutlines.
+	idList<int>						throughWorldOutlineEntities;
+
 	idList<idRenderLightLocal*>		lightDefs;
 	idList<idRenderLightLocal*>		deferredFreeLightDefs;
 // jmarshall: BSE
@@ -361,6 +368,7 @@ public:
 	void					ResizeInteractionTable();
 
 	void					AddEntityRefToArea( idRenderEntityLocal *def, portalArea_t *area );
+	void					TrackThroughWorldOutlineEntity( qhandle_t entityHandle, int outlineFlags );
 	void					AddLightRefToArea( idRenderLightLocal *light, portalArea_t *area );
 
 	void					RecurseProcBSP_r( modelTrace_t *results, int parentNodeNum, int nodeNum, float p1f, float p2f, const idVec3 &p1, const idVec3 &p2 ) const;

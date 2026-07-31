@@ -42,6 +42,7 @@ layout(set = 6, binding = 0, std140) uniform InteractionBlock {
     vec4 specularMatrixT;
     vec4 diffuseColor;
     vec4 specularColor;
+    vec4 flatDiffuseParams;
 } inter;
 
 layout(set = 7, binding = 1, std140) uniform ShadowBlock {
@@ -110,7 +111,8 @@ void main() {
     vDiffuseTexCoord = vec2(dot(texCoord, inter.diffuseMatrixS), dot(texCoord, inter.diffuseMatrixT));
     vSpecularTexCoord = vec2(dot(texCoord, inter.specularMatrixS), dot(texCoord, inter.specularMatrixT));
 
-    vLightFalloffTexCoord = vec4(dot(position, inter.lightFalloffS), 0.5, 0.0, 1.0);
+    // z is unused by textureProj for this 2D sampler; carry model-local Z.
+    vLightFalloffTexCoord = vec4(dot(position, inter.lightFalloffS), 0.5, position.z, 1.0);
     vLightProjectionTexCoord = vec4(
         dot(position, inter.lightProjectionS),
         dot(position, inter.lightProjectionT),

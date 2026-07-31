@@ -1320,8 +1320,22 @@ idMsgQueue::ReadFrom
 */
 void idMsgQueue::ReadFrom( const idBitMsg &msg ) {
 	Init( 0 );
-	endIndex = msg.ReadUShort();
-	msg.ReadData( buffer, endIndex );
+	const int encodedSize = msg.ReadUShort();
+	if ( encodedSize < 0 || encodedSize >= MAX_MSG_QUEUE_SIZE ||
+		 encodedSize > msg.GetRemainingData() ) {
+		common->Warning( "idMsgQueue::ReadFrom: invalid encoded queue size %d", encodedSize );
+		const int discard = idMath::ClampInt( 0, msg.GetRemainingData(), encodedSize );
+		if ( discard > 0 ) {
+			msg.ReadData( NULL, discard );
+		}
+		endIndex = 0;
+		return;
+	}
+	endIndex = encodedSize;
+	if ( msg.ReadData( buffer, endIndex ) != endIndex ) {
+		common->Warning( "idMsgQueue::ReadFrom: truncated encoded queue" );
+		endIndex = 0;
+	}
 }
 
 /*

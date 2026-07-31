@@ -157,12 +157,14 @@ public:
 	int					GetNumClients( void ) const;
 	int					GetNumIdleClients( void ) const;
 	int					GetLocalClientNum( void ) const { return localClientNum; }
+	int					GetGameFrame( void ) const { return gameFrame; }
+	int					GetGameTime( void ) const { return gameTime; }
 
 	void				RunFrame( bool allowBlocking = true );
 	void				ProcessConnectionLessMessages( void );
 	void				RemoteConsoleOutput( const char *string );
-	void				SendReliableGameMessage( int clientNum, const idBitMsg &msg );
-	void				SendReliableGameMessageExcluding( int clientNum, const idBitMsg &msg );
+	void				SendReliableGameMessage( int clientNum, const idBitMsg &msg, bool captureDemo = true );
+	void				SendReliableGameMessageExcluding( int clientNum, const idBitMsg &msg, bool captureDemo = true );
 	void				LocalClientSendReliableMessage( const idBitMsg &msg );
 
 	void				MasterHeartbeat( bool force = false );

@@ -34,6 +34,8 @@ idCVar idDemoFile::com_compressDemos( "com_compressDemos", "1", CVAR_SYSTEM | CV
 idCVar idDemoFile::com_preloadDemos( "com_preloadDemos", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_ARCHIVE, "Load the whole demo in to RAM before running it" );
 
 #define DEMO_MAGIC GAME_NAME " RDEMO"
+#define DEMO_MAGIC_HISTORICAL "OpenQ4 RDEMO"
+#define DEMO_MAGIC_QUAKE4 "Quake4 RDEMO"
 #define MAX_DEMO_HASH_STRINGS 65536
 #define MAX_DEMO_DICT_ENTRIES 4096
 
@@ -80,11 +82,12 @@ idCompressor *idDemoFile::AllocCompressor( int type ) {
 idDemoFile::OpenForReading
 ================
 */
-bool idDemoFile::OpenForReading( const char *fileName ) {
+bool idDemoFile::OpenForReading( const char *fileName, bool allowPreload, bool quiet ) {
 	static const int magicLen = sizeof(DEMO_MAGIC) / sizeof(DEMO_MAGIC[0]);
 	char magicBuffer[magicLen];
 	int compression;
 	int fileLength;
+	bool ambiguousQuake4Wrapper = false;
 
 	Close();
 
@@ -99,7 +102,7 @@ bool idDemoFile::OpenForReading( const char *fileName ) {
 		return false;
 	}
 
-	if ( com_preloadDemos.GetBool() ) {
+	if ( allowPreload && com_preloadDemos.GetBool() ) {
 		fileImage = (byte *)Mem_Alloc( fileLength );
 		if ( f->Read( fileImage, fileLength ) != fileLength ) {
 			Close();
@@ -119,7 +122,11 @@ bool idDemoFile::OpenForReading( const char *fileName ) {
 		Close();
 		return false;
 	}
-	if ( memcmp( magicBuffer, DEMO_MAGIC, magicLen ) == 0 ) {
+	if ( memcmp( magicBuffer, DEMO_MAGIC, magicLen ) == 0 ||
+		 memcmp( magicBuffer, DEMO_MAGIC_HISTORICAL, magicLen ) == 0 ||
+		 memcmp( magicBuffer, DEMO_MAGIC_QUAKE4, magicLen ) == 0 ) {
+		ambiguousQuake4Wrapper =
+			memcmp( magicBuffer, DEMO_MAGIC_QUAKE4, magicLen ) == 0;
 		if ( f->ReadInt( compression ) != sizeof( compression ) ) {
 			Close();
 			return false;
@@ -137,6 +144,35 @@ bool idDemoFile::OpenForReading( const char *fileName ) {
 		return false;
 	}
 	compressor->Init( f, false, 8 );
+
+	// The earliest openQ4 builds and retail Quake 4 used the same wrapper
+	// spelling.  Probe the decoded token before accepting it: openQ4 streams
+	// begin with the 32-bit DS_VERSION token, while retail streams use a
+	// byte-oriented command layout.  Reinitialize the decompressor afterward
+	// so callers still see the stream from byte zero.
+	if ( ambiguousQuake4Wrapper ) {
+		int firstToken = DS_FINISHED;
+		if ( ReadInt( firstToken ) != sizeof( firstToken ) ||
+			 firstToken != DS_VERSION ) {
+			Close();
+			if ( !quiet ) {
+				common->Warning( "Demo '%s' uses the unsupported retail Quake 4 render-demo stream", fileName );
+			}
+			return false;
+		}
+		delete compressor;
+		compressor = NULL;
+		if ( f->Seek( magicLen + static_cast<int>( sizeof( int ) ), FS_SEEK_SET ) != 0 ) {
+			Close();
+			return false;
+		}
+		compressor = AllocCompressor( compression );
+		if ( compressor == NULL ) {
+			Close();
+			return false;
+		}
+		compressor->Init( f, false, 8 );
+	}
 
 	return true;
 }
@@ -243,23 +279,36 @@ const char *idDemoFile::ReadHashString() {
 
 	if ( ReadInt( index ) != sizeof( index ) ) {
 		Close();
-		common->Error( "demo hash index truncated" );
+		common->Warning( "Malformed render demo: truncated hash index; playback stopped safely" );
+		return "";
 	}
 
 	if ( index == -1 ) {
 		// read a new string for the table
 		if ( demoStrings.Num() >= MAX_DEMO_HASH_STRINGS ) {
 			Close();
-			common->Error( "demo hash table overflow" );
+			common->Warning( "Malformed render demo: hash table exceeds %d entries; playback stopped safely", MAX_DEMO_HASH_STRINGS );
+			return "";
 		}
-		idStr	*str = new idStr;
-		
-		idStr data;
-		ReadString( data );
-		if ( data.Length() >= MAX_STRING_CHARS ) {
+
+		int length = 0;
+		if ( ReadInt( length ) != sizeof( length ) || length < 0 || length >= MAX_STRING_CHARS ) {
 			Close();
-			common->Error( "demo hash string too long" );
+			common->Warning( "Malformed render demo: invalid hash string length %d; playback stopped safely", length );
+			return "";
 		}
+
+		idStr data;
+		if ( length > 0 ) {
+			data.Fill( ' ', length );
+			if ( Read( &data[0], length ) != length ) {
+				Close();
+				common->Warning( "Malformed render demo: truncated hash string payload; playback stopped safely" );
+				return "";
+			}
+		}
+
+		idStr	*str = new idStr;
 		*str = data;
 		
 		demoStrings.Append( str );
@@ -269,7 +318,8 @@ const char *idDemoFile::ReadHashString() {
 
 	if ( index < -1 || index >= demoStrings.Num() ) {
 		Close();
-		common->Error( "demo hash index out of range" );
+		common->Warning( "Malformed render demo: hash index %d is out of range; playback stopped safely", index );
+		return "";
 	}
 
 	return demoStrings[index]->c_str();
@@ -318,11 +368,18 @@ void idDemoFile::ReadDict( idDict &dict ) {
 	dict.Clear();
 	if ( ReadInt( c ) != sizeof( c ) || c < 0 || c > MAX_DEMO_DICT_ENTRIES ) {
 		Close();
-		common->Error( "demo dictionary count out of range" );
+		common->Warning( "Malformed render demo: dictionary count is out of range; playback stopped safely" );
+		return;
 	}
 	for ( i = 0; i < c; i++ ) {
 		key = ReadHashString();
+		if ( !IsOpen() ) {
+			return;
+		}
 		val = ReadHashString();
+		if ( !IsOpen() ) {
+			return;
+		}
 		dict.Set( key, val );
 	}
 }

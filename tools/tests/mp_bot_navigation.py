@@ -17,6 +17,11 @@ non-obvious agreements hold, none of which the compiler can check:
   * Navigation is generated from the collision world with the player's own
     bounding box and step height, which is what makes it work on maps that have
     no .aas file - which is every stock Quake 4 multiplayer map.
+  * A non-walk link retains both its entry and exit and is completed from
+    grounded traversal state, not merely because its adjacent grid corner is
+    within the ordinary steering radius.
+  * Item and roam goals are reachable in the requested direction; weak
+    connected areas cannot make an upward-only ledge look reachable.
 """
 
 from __future__ import annotations
@@ -142,9 +147,78 @@ def validate_game_wiring() -> None:
     # An unreachable goal must not cost a failed search every frame.  The
     # throttle counts attempts, not successes: keying it off goalType leaves it
     # dead on the failure path, which is the only path it exists for.
-    goal = bot[bot.index("void rvBot::UpdateGoal") :][:3000]
+    # Sliced to the function's closing brace rather than a fixed character
+    # count, so the pin keeps covering the whole of UpdateGoal as it grows.
+    goal = bot[bot.index("void rvBot::UpdateGoal") :]
+    goal = goal[: goal.index("\n}\n") + 3]
     require(goal, "gameLocal.time - enemyPathTime <= BOT_REPATH_COMBAT_MSEC", "rvBot::UpdateGoal")
     require(goal, "gameLocal.time < nextGoalSelectTime", "rvBot::UpdateGoal")
+    require_order(
+        goal,
+        "traversalCorner == pathCorner",
+        "if ( currentFoe && chase )",
+        "rvBot::UpdateGoal traversal commitment",
+    )
+
+    # Goal selection must return the successful directed route along with the
+    # entity.  A weak connected-area match is only a rejection shortcut:
+    # one-way ledges are not proof that the item can be approached from below.
+    item_goal = bot[bot.index("idEntity *rvBot::PickItemGoal") :]
+    item_goal = item_goal[: item_goal.index("\n}\n") + 3]
+    require(item_goal, "navMesh.FindPath(", "rvBot::PickItemGoal")
+    require(item_goal, "goalPath = candidatePath;", "rvBot::PickItemGoal")
+
+    # A special link is an action.  q4dm1's crate links are only one 24-unit
+    # cell apart but rise 32-48 units; the ordinary 28x72 proximity test used
+    # to consume each landing before UpdateMovement could press jump.
+    advance = bot[bot.index("bool rvBot::AdvancePath") :]
+    advance = advance[: advance.index("\n}\n") + 3]
+    require(advance, "actionEntry ? BOT_TRAVEL_ENTRY_REACH", "rvBot::AdvancePath")
+    require(advance, "traversalStarted && self->pfl.onGround", "rvBot::AdvancePath")
+    require(advance, "BotReachedTravelEnd(", "rvBot::AdvancePath")
+    for travel in (
+        "NAVTRAVEL_JUMP",
+        "NAVTRAVEL_DROP",
+        "NAVTRAVEL_JUMPPAD",
+        "NAVTRAVEL_TELEPORT",
+    ):
+        require(advance, travel, "rvBot::AdvancePath")
+
+    travel_end = bot[bot.index("static bool BotReachedTravelEnd") :]
+    travel_end = travel_end[: travel_end.index("\n}\n") + 3]
+    require(
+        travel_end,
+        "Min( travelDistance * 0.5f",
+        "BotReachedTravelEnd destination-side progress",
+    )
+    require(
+        travel_end,
+        "idMath::Fabs( end.z - start.z ) <= zTolerance",
+        "BotReachedTravelEnd same-floor progress guard",
+    )
+    require(advance, "BotTouchesTravelVolume(", "rvBot::AdvancePath volume entry")
+    require(advance, "self->IsInTeleport()", "rvBot::AdvancePath teleporter activation")
+
+    movement = bot[bot.index("void rvBot::UpdateMovement") :]
+    movement = movement[: movement.index("\n}\n") + 3]
+    require(movement, "corner.travelType != NAVTRAVEL_WALK", "rvBot::UpdateMovement")
+    require(movement, "!committedTravel && foe", "rvBot::UpdateMovement")
+    require(movement, "!committedTravel && gameLocal.time < unstickUntil", "rvBot::UpdateMovement")
+    require(movement, "progress.z = 0.0f;", "rvBot::UpdateMovement")
+    require(movement, "stuckChecks >= 2", "rvBot::UpdateMovement")
+    require(movement, "const bool hasMoveDir", "rvBot::UpdateMovement vertical action")
+    require(movement, "transportInProgress", "rvBot::UpdateMovement authored transport progress")
+    require(movement, "BOT_TRAVEL_TIMEOUT_MSEC", "rvBot::UpdateMovement traversal timeout")
+    if "climb > pm_stepsize.GetFloat()" in movement:
+        raise AssertionError(
+            "UpdateMovement guesses jumps from corner height again; jump input must follow "
+            "the route's explicit NAVTRAVEL_JUMP action"
+        )
+
+    jump = bot[bot.index("void rvBot::PressJump") :]
+    jump = jump[: jump.index("\n}\n") + 3]
+    require(jump, "self->pfl.onGround", "rvBot::PressJump")
+    require(jump, "gameLocal.framenum + clientNum", "rvBot::PressJump")
 
     # Bots outlive a map change, the navmesh does not.
     require(bot, "!navMesh.IsValid() && NumBots() > 0", "rvBotManager::Think")
@@ -193,8 +267,62 @@ def validate_navmesh() -> None:
     require(links, "idPlayerStart::GetClassType()", "rvNavMesh::AddOffMeshLinks")
 
     # Smoothing may never skip a link that has to be entered deliberately.
-    pull = nav[nav.index("void rvNavMesh::StringPull") :][:2000]
+    pull = nav[nav.index("void rvNavMesh::StringPull") :]
+    pull = pull[: pull.index("\n}\n") + 3]
     require(pull, "!= NAVTRAVEL_WALK", "rvNavMesh::StringPull")
+    require_order(
+        pull,
+        "path.Append( source, NAVTRAVEL_WALK );",
+        "path.Append( nodes[nodePath[i + 1]].origin, immediateTravel,",
+        "rvNavMesh::StringPull action entry and exit",
+    )
+    require(pull, "LinkActionEntity(", "rvNavMesh::StringPull volume identity")
+
+    walkable = nav[nav.index("bool rvNavMesh::WalkableLine") :]
+    walkable = walkable[: walkable.index("\n}\n") + 3]
+    require(walkable, "Max( 2,", "rvNavMesh::WalkableLine interior ground sample")
+    require_order(
+        walkable,
+        "NAV_GROUND_OFFSET",
+        "probeLift = stepSize",
+        "rvNavMesh::WalkableLine low-clearance flat sweep",
+    )
+
+    # Areas are weak/undirected by design, so all public reachability decisions
+    # must still respect outgoing links.
+    reachable = nav[nav.index("bool rvNavMesh::IsReachable") :]
+    reachable = reachable[: reachable.index("\n}\n") + 3]
+    require(reachable, "FindPath( start, goal, path )", "rvNavMesh::IsReachable")
+
+    roam = nav[nav.index("bool rvNavMesh::RandomReachablePoint") :]
+    roam = roam[: roam.index("\n}\n") + 3]
+    require(roam, "nodes[node].firstLink", "rvNavMesh::RandomReachablePoint")
+    require(roam, "reachable.Append( destination );", "rvNavMesh::RandomReachablePoint")
+    require(roam, "FindPath( origin, nodes[candidate].origin", "rvNavMesh::RandomReachablePoint")
+
+    same_node = nav[nav.index("if ( startNode == goalNode )") :]
+    same_node = same_node[: same_node.index("\n\t}\n") + 4]
+    require(same_node, "if ( !WalkableLine( start, goal ) )", "rvNavMesh::FindPath same node")
+    require(same_node, "return false;", "rvNavMesh::FindPath same node")
+
+    find_path = nav[nav.index("bool rvNavMesh::FindPath") :]
+    find_path = find_path[: find_path.index("\n}\n") + 3]
+    require(
+        find_path,
+        "path[path.Num() - 1].origin - goal",
+        "rvNavMesh::FindPath exact-goal completion",
+    )
+    require(
+        find_path,
+        "FindNearestNode( start, 256.0f, true )",
+        "rvNavMesh::FindPath reachable start snap",
+    )
+    require(
+        find_path,
+        "!WalkableLine( start, path[0].origin )",
+        "rvNavMesh::FindPath safe first shortcut",
+    )
+    require(find_path, "path.Clear();", "rvNavMesh::FindPath rejected partial path")
 
     header = read(mp / "bots" / "NavMesh.h")
     for travel in (

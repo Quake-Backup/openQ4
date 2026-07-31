@@ -392,6 +392,11 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 		entityDefs.Append( NULL );
 	}
 
+	// Track before the early-out paths below. Those return only when nothing that
+	// matters changed, which includes the flag, so tracking here is correct for
+	// every path rather than for the ones that happen to reach the bottom.
+	TrackThroughWorldOutlineEntity( entityHandle, re->outlineFlags );
+
 	idRenderEntityLocal	*def = entityDefs[entityHandle];
 	if ( def ) {
 
@@ -514,6 +519,10 @@ void idRenderWorldLocal::FreeEntityDef( qhandle_t entityHandle ) {
 		common->Printf( "idRenderWorld::FreeEntityDef: handle %i is NULL\n", entityHandle );
 		return;
 	}
+
+	// Drop the handle before the slot can be reused, or the next entity to take it
+	// inherits a ring it never asked for.
+	TrackThroughWorldOutlineEntity( entityHandle, 0 );
 
 	R_FreeEntityDefDerivedData( def, false, false );
 
@@ -1813,6 +1822,27 @@ This is called by R_PushVolumeIntoTree and also directly
 for the world model references that are precalculated.
 =================
 */
+/*
+===================
+idRenderWorldLocal::TrackThroughWorldOutlineEntity
+
+Keeps the through-world outline registry in step with the flag. Called on every
+entity update and on free, because a handle left behind here would put a ring
+around whatever entity next reused the slot.
+===================
+*/
+void idRenderWorldLocal::TrackThroughWorldOutlineEntity( qhandle_t entityHandle, int outlineFlags ) {
+	const int index = throughWorldOutlineEntities.FindIndex( entityHandle );
+
+	if ( ( outlineFlags & REF_OUTLINE_THROUGH_WORLD ) != 0 ) {
+		if ( index < 0 ) {
+			throughWorldOutlineEntities.Append( entityHandle );
+		}
+	} else if ( index >= 0 ) {
+		throughWorldOutlineEntities.RemoveIndex( index );
+	}
+}
+
 void idRenderWorldLocal::AddEntityRefToArea( idRenderEntityLocal *def, portalArea_t *area ) {
 	areaReference_t	*ref;
 

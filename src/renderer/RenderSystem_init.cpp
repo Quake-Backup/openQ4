@@ -272,6 +272,7 @@ idCVar r_celShading( "r_celShading", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BO
 idCVar r_celShadingWorld( "r_celShadingWorld", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "extend cel shading to BSP world geometry, adding banded lighting and screen-space edge outlines" );
 idCVar r_celShadingBands( "r_celShadingBands", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "quantize interaction lighting into cel bands; disable to keep smooth lighting and use outlines alone" );
 idCVar r_celShadingSteps( "r_celShadingSteps", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of cel lighting bands; higher values keep more intermediate tones", CEL_MIN_BANDS, CEL_MAX_BANDS, idCmdSystem::ArgCompletion_Integer<CEL_MIN_BANDS,CEL_MAX_BANDS> );
+idCVar r_celShadingSoftness( "r_celShadingSoftness", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "soften cel band boundaries as a fraction of one band; 0 keeps the classic hard step, higher values trade a little of the step for a terminator that stops crawling across curved surfaces", CEL_MIN_BAND_SOFTNESS, CEL_MAX_BAND_SOFTNESS );
 idCVar r_celShadingSpecular( "r_celShadingSpecular", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "collapse specular highlights into a hard-edged cel highlight instead of a smooth falloff" );
 idCVar r_celViewWeapon( "r_celViewWeapon", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow cel shading and cel outlines on the first-person weapon and arms" );
 idCVar r_celOutline( "r_celOutline", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "draw a silhouette outline shell around cel-shaded model entities" );
@@ -518,6 +519,8 @@ idCVar r_lightGridBakeReadbackSlots( "r_lightGridBakeReadbackSlots", "0", CVAR_R
 idCVar r_skipBlendLights( "r_skipBlendLights", "0", CVAR_RENDERER | CVAR_BOOL, "skip all blend lights" );
 idCVar r_skipFogLights( "r_skipFogLights", "0", CVAR_RENDERER | CVAR_BOOL, "skip all fog lights" );
 idCVar r_skipPlayerVisibilityEffects( "r_skipPlayerVisibilityEffects", "0", CVAR_RENDERER | CVAR_BOOL, "skip the multiplayer player brightskin / rimlight / outline overlays" );
+idCVar r_playerRimlightPower( "r_playerRimlightPower", "2.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "multiplayer player rimlight falloff exponent; higher tightens the band to the silhouette, lower spreads it across the body", RB_PLAYER_RIMLIGHT_MIN_POWER, RB_PLAYER_RIMLIGHT_MAX_POWER );
+idCVar r_playerRimlightFloor( "r_playerRimlightFloor", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "multiplayer player rimlight floor; lifts the whole body by this much of the rim strength so a player facing the camera is still tinted", RB_PLAYER_RIMLIGHT_MIN_FLOOR, RB_PLAYER_RIMLIGHT_MAX_FLOOR );
 idCVar r_skipDeforms( "r_skipDeforms", "0", CVAR_RENDERER | CVAR_BOOL, "leave all deform materials in their original state" );
 idCVar r_skipFrontEnd( "r_skipFrontEnd", "0", CVAR_RENDERER | CVAR_BOOL, "bypasses all front end work, but 2D gui rendering still draws" );
 idCVar r_skipUpdates( "r_skipUpdates", "0", CVAR_RENDERER | CVAR_BOOL, "1 = don't accept any entity or light updates, making everything static" );

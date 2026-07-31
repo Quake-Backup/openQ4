@@ -327,7 +327,7 @@ public:
 	virtual void			StopWritingDemo();
 
 	// read a sound command from a demo file
-	virtual void			ProcessDemoCommand( idDemoFile* readDemo );
+	virtual bool			ProcessDemoCommand( idDemoFile* readDemo );
 
 	// menu sounds
 	virtual int				PlayShaderDirectly( const char* name, int channel = -1 );
@@ -364,6 +364,11 @@ public:
 
 	idSoundChannel* 	AllocSoundChannel();
 	void				FreeSoundChannel( idSoundChannel* );
+
+private:
+	// Shared save/demo state decoder. demoFile is non-NULL only for the
+	// non-fatal render-demo path.
+	bool			ReadSoundState( idFile* savefile, idDemoFile* demoFile );
 
 public:
 	// even though all these variables are public, nobody outside the sound system includes SoundWorld_local.h

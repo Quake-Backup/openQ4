@@ -827,6 +827,21 @@ viewEntity_t *R_SetEntityDefViewEntity( idRenderEntityLocal *def ) {
 
 	// copy the model and weapon depth hack for back-end use
 	vModel->modelDepthHack = def->parms.modelDepthHack;
+	vModel->flatDiffuseColor = def->parms.flatDiffuseColor;
+	vModel->flatDiffuseFlags = def->parms.flatDiffuseFlags;
+	// View-only entities remain ineligible even in mirrors or render-demo
+	// views where the per-view weaponDepthHack boolean is not active.
+	if ( def->parms.weaponDepthHackInViewID != 0 || def->parms.allowSurfaceInViewID != 0 ) {
+		vModel->flatDiffuseColor.Zero();
+		vModel->flatDiffuseFlags = 0;
+	}
+	if ( !def->referenceBounds.IsCleared() ) {
+		const float height = def->referenceBounds[1][2] - def->referenceBounds[0][2];
+		if ( height > 0.001f ) {
+			vModel->flatDiffuseMinZ = def->referenceBounds[0][2];
+			vModel->flatDiffuseInvHeight = 1.0f / height;
+		}
+	}
 	R_AxisToModelMatrix( def->parms.axis, def->parms.origin, vModel->modelMatrix );
 
 	// we may not have a viewDef if we are just creating shadows at entity creation time
@@ -2819,6 +2834,249 @@ void R_AddEffectSurfaces(void) {
 			serviceSpawnGateFalse,
 			(serviceGateLagMin == 0x7fffffff) ? 0 : serviceGateLagMin,
 			(serviceGateLagMax == (-0x7fffffff - 1)) ? 0 : serviceGateLagMax);
+	}
+}
+
+/*
+=========================================================================
+
+	Through-world outlines
+
+	REF_OUTLINE_THROUGH_WORLD asks for a silhouette wherever the entity is,
+	including places the portal walk never reached - an ally on the far side of
+	the level. Occlusion is the only thing being defeated: the view frustum still
+	applies, because nothing off screen needs a ring.
+
+	Everything these entities produce goes on viewDef->outlineDrawSurfs. Keeping
+	them off the main list is the whole safety argument. They are in no depth
+	buffer, receive no light and cast no shadow, so the depth fill, the ambient
+	pass, the interaction passes, the cel passes and the motion vectors would all
+	draw them wrong - and would do so by simply not knowing about them. A pass
+	only sees these surfaces if it goes looking for the second list.
+
+	They also never reach the rimlight or the brightskin. Both of those shade the
+	body, and both compare depth-equal against a depth value that was never
+	written.
+
+=========================================================================
+*/
+
+// Only surfaces the outline shell can actually carry are worth submitting. This
+// mirrors what RB_PlayerVisibilityEffectsSurfaceAllowed and
+// RB_PlayerVisibilityOutlineShellAllowed accept, which is what lets the submit
+// below stay a short, provably sufficient setup instead of a copy of
+// R_AddDrawSurf: no gui hookup, no deform, no subview, no sort games.
+static bool R_ThroughWorldOutlineShaderAllowed( const idMaterial *shader ) {
+	if ( shader == NULL || !shader->IsDrawn() ) {
+		return false;
+	}
+	// Perforated is allowed: a Quake 4 player body is alpha tested for small
+	// details and is still player-shaped, so the shell traces the right silhouette.
+	if ( shader->Coverage() == MC_TRANSLUCENT ) {
+		return false;
+	}
+	if ( shader->Deform() != DFRM_NONE ) {
+		return false;
+	}
+	if ( shader->HasGui() || shader->HasSubview() || shader->SuppressInSubview() ) {
+		return false;
+	}
+	if ( shader->IsPortalSky() || shader->GetSort() >= SS_POST_PROCESS ) {
+		return false;
+	}
+
+	return true;
+}
+
+static bool R_ThroughWorldOutlineEntityAllowed( const idRenderEntityLocal *def ) {
+	if ( def == NULL || def->parms.hModel == NULL ) {
+		return false;
+	}
+	if ( ( def->parms.outlineFlags & REF_OUTLINE_THROUGH_WORLD ) == 0 ) {
+		return false;
+	}
+	// Nothing to draw is the cheapest possible answer, and the game clears the
+	// colour rather than the flag when it turns the effect off.
+	if ( def->parms.outlineColor[3] <= 0.0f || def->parms.outlineWidth <= 0.0f ) {
+		return false;
+	}
+	// The portal walk already reached it, so it is lit, depth tested and outlined
+	// by the ordinary path. Forcing it again would double the ring.
+	if ( def->viewCount == tr.viewCount ) {
+		return false;
+	}
+	if ( r_skipEntities.GetBool() ) {
+		return false;
+	}
+	if ( r_singleEntity.GetInteger() >= 0 && r_singleEntity.GetInteger() != def->index ) {
+		return false;
+	}
+	// The same view-id suppression the portal walk honours. Without it a player
+	// whose own body is suppressed in their own view would ring themselves.
+	if ( !r_skipSuppress.GetBool() ) {
+		if ( def->parms.suppressSurfaceInViewID
+				&& def->parms.suppressSurfaceInViewID == tr.viewDef->renderView.viewID ) {
+			return false;
+		}
+		if ( def->parms.allowSurfaceInViewID
+				&& def->parms.allowSurfaceInViewID != tr.viewDef->renderView.viewID ) {
+			return false;
+		}
+	}
+	if ( R_ShouldSuppressViewModelForLevelshot( tr.viewDef->renderView.viewID,
+			def->parms.allowSurfaceInViewID, def->parms.weaponDepthHackInViewID ) ) {
+		return false;
+	}
+	// Off screen stays off screen. tr.viewDef->frustum is the unconstrained view
+	// frustum: R_ConstrainViewFrustum only narrows viewFrustum, which nothing here
+	// consults, so this cull is independent of what else happened to be visible.
+	if ( !R_ShouldDisableEntityCullingForLevelshot()
+			&& R_CullLocalBox( def->referenceBounds, def->modelMatrix, 5, tr.viewDef->frustum ) ) {
+		return false;
+	}
+
+	return true;
+}
+
+static void R_AddThroughWorldOutlineDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space,
+		const renderEntity_t *renderEntity, const idMaterial *shader ) {
+	viewDef_t *viewDef = tr.viewDef;
+
+	if ( viewDef->numOutlineDrawSurfs == viewDef->maxOutlineDrawSurfs ) {
+		drawSurf_t **old = viewDef->outlineDrawSurfs;
+		const int used = viewDef->maxOutlineDrawSurfs * sizeof( viewDef->outlineDrawSurfs[0] );
+
+		viewDef->maxOutlineDrawSurfs = ( viewDef->maxOutlineDrawSurfs == 0 ) ? 64 : viewDef->maxOutlineDrawSurfs * 2;
+		viewDef->outlineDrawSurfs = (drawSurf_t **)R_FrameAlloc(
+			viewDef->maxOutlineDrawSurfs * sizeof( viewDef->outlineDrawSurfs[0] ) );
+		if ( used > 0 ) {
+			memcpy( viewDef->outlineDrawSurfs, old, used );
+		}
+	}
+
+	// Cleared frame memory, so every field this surface does not use reads as zero
+	// rather than as whatever the allocator last held.
+	drawSurf_t *drawSurf = (drawSurf_t *)R_ClearedFrameAlloc( sizeof( *drawSurf ) );
+	drawSurf->geo = tri;
+	drawSurf->space = space;
+	drawSurf->material = shader;
+	drawSurf->scissorRect = space->scissorRect;
+	drawSurf->sort = shader->GetSort();
+	drawSurf->dsFlags = DSF_OUTLINE_ONLY;
+	drawSurf->shaderRegisters = R_SetupDrawSurfShaderRegisters( space, renderEntity, shader );
+
+	viewDef->outlineDrawSurfs[viewDef->numOutlineDrawSurfs] = drawSurf;
+	viewDef->numOutlineDrawSurfs++;
+}
+
+static void R_AddThroughWorldOutlineEntity( idRenderEntityLocal *def ) {
+	viewEntity_t *vEntity = R_SetEntityDefViewEntity( def );
+	if ( vEntity == NULL ) {
+		return;
+	}
+
+	// The shell reaches outside the model's own bounds and the entity was never
+	// assigned a portal rect, so it clips against the whole view.
+	vEntity->scissorRect = tr.viewDef->scissor;
+
+	idRenderModel *model = R_EntityDefDynamicModel( def );
+	if ( model == NULL ) {
+		return;
+	}
+
+	const int numSurfaces = model->NumSurfaces();
+	for ( int i = 0; i < numSurfaces; i++ ) {
+		const modelSurface_t *surf = model->Surface( i );
+
+		if ( surf->id >= 0 && surf->id < static_cast<int>( sizeof( unsigned int ) * 8 )
+			&& ( static_cast<unsigned int>( def->parms.suppressSurfaceMask ) & ( 1u << surf->id ) ) != 0 ) {
+			continue;
+		}
+		if ( r_singleSurface.GetInteger() >= 0 && i != r_singleSurface.GetInteger() ) {
+			continue;
+		}
+
+		srfTriangles_t *tri = surf->geometry;
+		if ( tri == NULL || tri->numIndexes <= 0 ) {
+			continue;
+		}
+
+		const idMaterial *shader = R_RemapShaderBySkin( surf->shader, def->parms.customSkin, def->parms.customShader );
+		R_GlobalShaderOverride( &shader );
+		if ( !R_ThroughWorldOutlineShaderAllowed( shader ) ) {
+			continue;
+		}
+
+		// Player models are packed MD5R meshes and carry no idDrawVert array of
+		// their own, so they need the packed-to-classic conversion the ambient pass
+		// uses. Rejecting them instead left an ally marked by a few stray arcs off
+		// whichever surfaces happened not to be packed.
+		//
+		// needsLighting is false throughout: the shell reads positions and normals
+		// and never a lighting vector.
+		if ( R_TriHasPrimBatchMesh( tri ) ) {
+			if ( !R_CreatePackedSurfaceFrameCaches( tri, false, true ) ) {
+				return;
+			}
+		} else {
+			if ( tri->verts == NULL ) {
+				continue;
+			}
+			if ( !R_CreateAmbientCache( tri, false ) ) {
+				return;
+			}
+			if ( tri->indexCache == NULL && tri->indexes != NULL && R_StaticIndexCacheAllowed( def ) ) {
+				vertexCache.Alloc( tri->indexes, tri->numIndexes * sizeof( tri->indexes[0] ), &tri->indexCache, true );
+			}
+		}
+
+		R_TouchVertexCache( tri->ambientCache );
+		if ( tri->indexCache ) {
+			R_TouchVertexCache( tri->indexCache );
+		}
+
+		// Deliberately not setting tri->ambientViewCount. That is the flag light
+		// interactions test to decide whether a surface is visible this view, and
+		// leaving it alone is what keeps an entity that exists only for its ring
+		// out of every light list.
+		R_AddThroughWorldOutlineDrawSurf( tri, vEntity, &def->parms, shader );
+	}
+}
+
+/*
+===================
+R_AddThroughWorldOutlines
+
+Runs at the very end of the view build, after every pass that walks viewEntitys or
+builds interactions has already run, so the entities added here cannot be picked up
+by any of them.
+===================
+*/
+void R_AddThroughWorldOutlines( void ) {
+	tr.viewDef->outlineDrawSurfs = NULL;
+	tr.viewDef->numOutlineDrawSurfs = 0;
+	tr.viewDef->maxOutlineDrawSurfs = 0;
+
+	if ( tr.viewDef->renderWorld == NULL || r_skipPlayerVisibilityEffects.GetBool() ) {
+		return;
+	}
+
+	idRenderWorldLocal *world = static_cast<idRenderWorldLocal *>( tr.viewDef->renderWorld );
+
+	// The registry holds a handful of handles at most, which is the point: finding
+	// the players that want a ring must not cost a walk of every entity in the map.
+	for ( int i = 0; i < world->throughWorldOutlineEntities.Num(); i++ ) {
+		const int handle = world->throughWorldOutlineEntities[i];
+		if ( handle < 0 || handle >= world->entityDefs.Num() ) {
+			continue;
+		}
+
+		idRenderEntityLocal *def = world->entityDefs[handle];
+		if ( !R_ThroughWorldOutlineEntityAllowed( def ) ) {
+			continue;
+		}
+
+		R_AddThroughWorldOutlineEntity( def );
 	}
 }
 

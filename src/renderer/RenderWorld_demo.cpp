@@ -62,32 +62,61 @@ void R_FreeRenderDemoEntityPayload( renderEntity_t &ent, idRenderModelDecal *dec
 	idRenderModelOverlay::Free( overlay );
 }
 
+bool R_RejectRenderDemo( idDemoFile *demo, const char *reason ) {
+	common->Warning( "Malformed render demo: %s; playback stopped safely", reason );
+	if ( demo != NULL ) {
+		demo->Close();
+	}
+	return false;
+}
+
 bool R_DemoReadInt( idDemoFile *demo, int &value ) {
-	return demo->ReadInt( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadInt( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated integer payload" );
 }
 
 bool R_DemoReadFloat( idDemoFile *demo, float &value ) {
-	return demo->ReadFloat( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadFloat( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated floating-point payload" );
 }
 
 bool R_DemoReadBool( idDemoFile *demo, bool &value ) {
-	return demo->ReadBool( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadBool( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated boolean payload" );
 }
 
 bool R_DemoReadChar( idDemoFile *demo, char &value ) {
-	return demo->ReadChar( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadChar( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated byte payload" );
 }
 
 bool R_DemoReadVec3( idDemoFile *demo, idVec3 &value ) {
-	return demo->ReadVec3( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadVec3( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated vector payload" );
 }
 
 bool R_DemoReadVec4( idDemoFile *demo, idVec4 &value ) {
-	return demo->ReadVec4( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadVec4( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated vector payload" );
 }
 
 bool R_DemoReadMat3( idDemoFile *demo, idMat3 &value ) {
-	return demo->ReadMat3( value ) == sizeof( value );
+	if ( demo != NULL && demo->ReadMat3( value ) == sizeof( value ) ) {
+		return true;
+	}
+	return R_RejectRenderDemo( demo, "truncated matrix payload" );
 }
 
 void R_WriteDemoRenderViewData( idDemoFile *demo, const renderView_t *renderView ) {
@@ -154,6 +183,9 @@ bool R_ReadDemoRenderViewData( idDemoFile *demo, renderView_t *renderView, int r
 		}
 		if ( hasGlobalMaterial ) {
 			renderView->globalMaterial = declManager->FindMaterial( demo->ReadHashString() );
+			if ( !demo->IsOpen() ) {
+				return false;
+			}
 		}
 	} else {
 		int legacyGlobalMaterial = 0;
@@ -235,6 +267,9 @@ bool R_ReadDemoEffectData( idDemoFile *demo, renderEffect_t *effect, int *gameTi
 	}
 	if ( hasDeclEffect ) {
 		effect->declEffect = declManager->FindType( DECL_EFFECT, demo->ReadHashString() );
+		if ( !demo->IsOpen() ) {
+			return false;
+		}
 	}
 
 	return true;
@@ -297,8 +332,8 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 	demoCommand_t	dc;
 	qhandle_t		h;
 
-	if ( !readDemo->ReadInt( (int&)dc ) ) {
-		// a demoShot may not have an endFrame, but it is still valid
+	if ( readDemo->ReadInt( (int&)dc ) != sizeof( dc ) ) {
+		R_RejectRenderDemo( readDemo, "truncated render command" );
 		return false;
 	}
 
@@ -307,13 +342,13 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		// read the initial data
 		demoHeader_t	header = {};
 
-		if ( readDemo->ReadInt( header.version ) != sizeof( header.version ) ||
-			 readDemo->ReadInt( header.sizeofRenderEntity ) != sizeof( header.sizeofRenderEntity ) ||
-			 readDemo->ReadInt( header.sizeofRenderLight ) != sizeof( header.sizeofRenderLight ) ) {
+		if ( !R_DemoReadInt( readDemo, header.version ) ||
+			 !R_DemoReadInt( readDemo, header.sizeofRenderEntity ) ||
+			 !R_DemoReadInt( readDemo, header.sizeofRenderLight ) ) {
 			return false;
 		}
 		for ( int i = 0; i < (int)sizeof( header.mapname ); i++ ) {
-			if ( readDemo->ReadChar( header.mapname[i] ) != sizeof( header.mapname[i] ) ) {
+			if ( !R_DemoReadChar( readDemo, header.mapname[i] ) ) {
 				return false;
 			}
 		}
@@ -321,13 +356,15 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		header.mapname[sizeof( header.mapname ) - 1] = '\0';
 		// the internal version value got replaced by DS_VERSION at toplevel
 		if ( header.version < 4 || header.version > OPENQ4_RENDERDEMO_CURRENT_VERSION ) {
-				common->Error( "Demo version mismatch.\n" );
+			return R_RejectRenderDemo( readDemo, va( "unsupported internal version %d", header.version ) );
 		}
 
 		if ( r_showDemo.GetBool() ) {
 			common->Printf( "DC_LOADMAP: %s\n", header.mapname );
 		}
-		InitFromMap( header.mapname );
+		if ( !InitFromMap( header.mapname ) ) {
+			return R_RejectRenderDemo( readDemo, va( "map '%s' could not be loaded", header.mapname ) );
+		}
 
 		pendingDemoTimeOffset = true;		// the first render view after the map load sets the playback offset
 
@@ -356,7 +393,7 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		}
 		break;
 	case DC_DELETE_ENTITYDEF:
-		if ( !readDemo->ReadInt( h ) ) {
+		if ( !R_DemoReadInt( readDemo, h ) ) {
 			return false;
 		}
 		if ( r_showDemo.GetBool() ) {
@@ -370,7 +407,7 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		}
 		break;
 	case DC_DELETE_LIGHTDEF:
-		if ( !readDemo->ReadInt( h ) ) {
+		if ( !R_DemoReadInt( readDemo, h ) ) {
 			return false;
 		}
 		if ( r_showDemo.GetBool() ) {
@@ -384,7 +421,7 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		}
 		break;
 	case DC_STOP_EFFECTDEF:
-		if ( !readDemo->ReadInt( h ) ) {
+		if ( !R_DemoReadInt( readDemo, h ) ) {
 			return false;
 		}
 		if ( r_showDemo.GetBool() ) {
@@ -393,7 +430,7 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		StopEffectDef( h );
 		break;
 	case DC_DELETE_EFFECTDEF:
-		if ( !readDemo->ReadInt( h ) ) {
+		if ( !R_DemoReadInt( readDemo, h ) ) {
 			return false;
 		}
 		if ( r_showDemo.GetBool() ) {
@@ -407,6 +444,9 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 			common->Printf( "DC_CAPTURE_RENDER\n" );
 		}
 		renderSystem->CaptureRenderToImage( readDemo->ReadHashString() );
+		if ( !readDemo->IsOpen() ) {
+			return false;
+		}
 		break;
 
 	case DC_CROP_RENDER:
@@ -414,13 +454,13 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 			common->Printf( "DC_CROP_RENDER\n" );
 		}
 		int	size[3];
-		if ( readDemo->ReadInt( size[0] ) != sizeof( size[0] ) ||
-			 readDemo->ReadInt( size[1] ) != sizeof( size[1] ) ||
-			 readDemo->ReadInt( size[2] ) != sizeof( size[2] ) ) {
+		if ( !R_DemoReadInt( readDemo, size[0] ) ||
+			 !R_DemoReadInt( readDemo, size[1] ) ||
+			 !R_DemoReadInt( readDemo, size[2] ) ) {
 			return false;
 		}
 		if ( size[0] < 1 || size[0] > 32768 || size[1] < 1 || size[1] > 32768 ) {
-			common->Error( "DC_CROP_RENDER: bad sizes %d %d", size[0], size[1] );
+			return R_RejectRenderDemo( readDemo, va( "invalid crop size %d x %d", size[0], size[1] ) );
 		}
 		renderSystem->CropRenderSize( size[0], size[1], size[2] != 0 );
 		break;
@@ -436,7 +476,9 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		if ( r_showDemo.GetBool() ) {
 			common->Printf( "DC_GUI_MODEL\n" );
 		}
-		tr.demoGuiModel->ReadFromDemo( readDemo );
+		if ( !tr.demoGuiModel->ReadFromDemo( readDemo ) ) {
+			return false;
+		}
 		break;
 
 	case DC_DEFINE_MODEL:
@@ -459,12 +501,12 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 	case DC_SET_PORTAL_STATE:
 		{
 			int		data[2];
-			if ( readDemo->ReadInt( data[0] ) != sizeof( data[0] ) ||
-				 readDemo->ReadInt( data[1] ) != sizeof( data[1] ) ) {
+			if ( !R_DemoReadInt( readDemo, data[0] ) ||
+				 !R_DemoReadInt( readDemo, data[1] ) ) {
 				return false;
 			}
-			if ( data[0] < 0 ) {
-				common->Error( "DC_SET_PORTAL_STATE: bad portal %d", data[0] );
+			if ( data[0] < 0 || data[0] > numInterAreaPortals ) {
+				return R_RejectRenderDemo( readDemo, va( "portal %d is out of range", data[0] ) );
 			}
 			SetPortalState( data[0], data[1] );
 			if ( r_showDemo.GetBool() ) {
@@ -477,7 +519,7 @@ bool		idRenderWorldLocal::ProcessDemoCommand( idDemoFile *readDemo, renderView_t
 		return true;
 
 	default:
-		common->Error( "Bad token in demo stream" );
+		return R_RejectRenderDemo( readDemo, va( "invalid render command %d", static_cast<int>( dc ) ) );
 	}
 
 	return false;
@@ -758,8 +800,8 @@ bool	idRenderWorldLocal::ReadRenderLight( ) {
 	if ( !R_DemoReadInt( session->readDemo, index ) ) {
 		return false;
 	}
-	if ( index < 0 ) {
-		common->Error( "ReadRenderLight: index < 0 " );
+	if ( index < 0 || index > LUDICROUS_INDEX ) {
+		return R_RejectRenderDemo( session->readDemo, va( "light index %d is out of range", index ) );
 	}
 
 	if ( !R_DemoReadMat3( session->readDemo, light.axis ) ||
@@ -819,9 +861,15 @@ bool	idRenderWorldLocal::ReadRenderLight( ) {
 	}
 	if ( hasPrelightModel ) {
 		light.prelightModel = renderModelManager->FindModel( session->readDemo->ReadHashString() );
+		if ( !session->readDemo->IsOpen() ) {
+			return false;
+		}
 	}
 	if ( hasShader ) {
 		light.shader = declManager->FindMaterial( session->readDemo->ReadHashString() );
+		if ( !session->readDemo->IsOpen() ) {
+			return false;
+		}
 	}
 	if ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_LIGHT_EXTRAS_VERSION ) {
 		if ( !R_DemoReadBool( session->readDemo, light.noDynamicShadows ) ||
@@ -876,8 +924,8 @@ bool	idRenderWorldLocal::ReadRenderEffect() {
 	if ( !R_DemoReadInt( session->readDemo, index ) ) {
 		return false;
 	}
-	if ( index < 0 ) {
-		common->Error( "ReadRenderEffect: index < 0" );
+	if ( index < 0 || index > LUDICROUS_INDEX ) {
+		return R_RejectRenderDemo( session->readDemo, va( "effect index %d is out of range", index ) );
 	}
 	if ( !R_ReadDemoEffectData( session->readDemo, &effect, &effectGameTime, &stopped ) ) {
 		return false;
@@ -941,6 +989,8 @@ void	idRenderWorldLocal::WriteRenderEntity( qhandle_t handle, const renderEntity
 	session->writeDemo->WriteVec4( ent->brightSkinColor );
 	session->writeDemo->WriteFloat( ent->outlineWidth );
 	session->writeDemo->WriteInt( ent->outlineFlags );
+	session->writeDemo->WriteVec4( ent->flatDiffuseColor );
+	session->writeDemo->WriteInt( ent->flatDiffuseFlags );
 	for ( int i = 0; i < MAX_RENDERENTITY_GUI; i++ )
 		session->writeDemo->WriteBool( ent->gui[i] != NULL );
 	session->writeDemo->WriteBool( ent->remoteRenderView != NULL );
@@ -1037,8 +1087,8 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 	if ( !R_DemoReadInt( session->readDemo, index ) ) {
 		return false;
 	}
-	if ( index < 0 ) {
-		common->Error( "ReadRenderEntity: index < 0" );
+	if ( index < 0 || index > LUDICROUS_INDEX ) {
+		return R_RejectRenderDemo( session->readDemo, va( "entity index %d is out of range", index ) );
 	}
 
 	if ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_POINTER_FREE_VERSION ) {
@@ -1118,6 +1168,12 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 			return false;
 		}
 	}
+	if ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_FLAT_DIFFUSE_VERSION ) {
+		if ( !R_DemoReadVec4( session->readDemo, ent.flatDiffuseColor ) ||
+			 !R_DemoReadInt( session->readDemo, ent.flatDiffuseFlags ) ) {
+			return false;
+		}
+	}
 	for ( i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
 		if ( session->renderdemoVersion >= OPENQ4_RENDERDEMO_POINTER_FREE_VERSION ) {
 			if ( !R_DemoReadBool( session->readDemo, hasGui[i] ) ) {
@@ -1149,7 +1205,7 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 		return false;
 	}
 	if ( ent.numJoints < 0 || ent.numJoints > DEMO_MAX_ENTITY_JOINTS ) {
-		common->Error( "ReadRenderEntity: bad numJoints %i", ent.numJoints );
+		return R_RejectRenderDemo( session->readDemo, va( "entity joint count %d is out of range", ent.numJoints ) );
 	}
 	if ( session->renderdemoVersion < OPENQ4_RENDERDEMO_POINTER_FREE_VERSION ) {
 		int legacyJoints = 0;
@@ -1173,15 +1229,27 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 	ent.callback = NULL;
 	if ( hasCustomShader ) {
 		ent.customShader = declManager->FindMaterial( session->readDemo->ReadHashString() );
+		if ( !session->readDemo->IsOpen() ) {
+			return false;
+		}
 	}
 	if ( hasCustomSkin ) {
 		ent.customSkin = declManager->FindSkin( session->readDemo->ReadHashString() );
+		if ( !session->readDemo->IsOpen() ) {
+			return false;
+		}
 	}
 	if ( hasModel ) {
 		ent.hModel = renderModelManager->FindModel( session->readDemo->ReadHashString() );
+		if ( !session->readDemo->IsOpen() ) {
+			return false;
+		}
 	}
 	if ( hasReferenceShader ) {
 		ent.referenceShader = declManager->FindMaterial( session->readDemo->ReadHashString() );
+		if ( !session->readDemo->IsOpen() ) {
+			return false;
+		}
 	}
 	if ( ent.numJoints ) {
 		ent.joints = (idJointMat *)Mem_Alloc16( ent.numJoints * sizeof( ent.joints[0] ) ); 
@@ -1227,6 +1295,10 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 		}
 		if ( hasOverlayShader ) {
 			ent.overlayShader = declManager->FindMaterial( session->readDemo->ReadHashString() );
+			if ( !session->readDemo->IsOpen() ) {
+				R_FreeRenderDemoEntityPayload( ent, demoDecals, demoOverlay );
+				return false;
+			}
 		}
 
 		if ( !R_DemoReadBool( session->readDemo, hasDecals ) ) {
@@ -1255,6 +1327,11 @@ bool	idRenderWorldLocal::ReadRenderEntity() {
 	}
 
 	ent.callbackData = NULL;
+
+	if ( ent.hModel == NULL ) {
+		R_FreeRenderDemoEntityPayload( ent, demoDecals, demoOverlay );
+		return R_RejectRenderDemo( session->readDemo, "entity update has no replayable model" );
+	}
 
 	for ( i = 0; i < MAX_RENDERENTITY_GUI; i++ ) {
 		if ( hasGui[ i ] ) {

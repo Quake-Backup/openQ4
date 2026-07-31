@@ -42,6 +42,15 @@
 #include <string.h>
 #endif
 
+#if defined( MACOS_X )
+#include <limits.h>
+#include <mach-o/dyld.h>
+// same defensive fallback the macOS platform sources carry
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#endif
+
 /*
 ====================
 Engine interface globals
@@ -146,6 +155,39 @@ const char *Sys_GetProcessorString( void ) {
 	// cvar; read it through the services instead of the engine's sys globals
 	return rgm_services->CVar_GetString( "sys_cpustring" );
 }
+
+#if defined( MACOS_X )
+/*
+====================
+Sys_EXEPath
+
+macOS only, and required rather than merely convenient: the ELF modules can
+leave this undefined and let dlopen bind the engine's copy, but Mach-O resolves
+every undefined symbol when the dylib is *linked*, so renderer-vk fails to link
+outright without a module-local definition. The reference comes from the
+MoltenVK loader search in VulkanDevice.cpp, which anchors its bundle-relative
+lookup on the executable directory.
+
+_NSGetExecutablePath is exactly what the engine's own macOS Sys_EXEPath is built
+on (src/sys/osx/macosx_compat.mm), so both halves resolve the same MoltenVK
+image - which is the whole point of that search, since two libraries behind one
+VkInstance is undefined behavior. The engine's NSBundle fallback is dropped
+here: it needs Objective-C, and it only ever runs when _NSGetExecutablePath
+itself fails.
+====================
+*/
+const char *Sys_EXEPath( void ) {
+	static char exePath[ PATH_MAX ];
+
+	uint32_t bufferSize = (uint32_t)sizeof( exePath );
+	if ( _NSGetExecutablePath( exePath, &bufferSize ) != 0 ) {
+		// the real path does not fit; callers treat empty as "unknown" and
+		// fall through to the system Vulkan loader
+		exePath[ 0 ] = '\0';
+	}
+	return exePath;
+}
+#endif
 
 void Sys_InitInput( void ) {
 	if ( rgm_windowServices != NULL && rgm_windowServices->InitInput != NULL ) {

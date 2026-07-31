@@ -2194,20 +2194,49 @@
       "id": "game.simple_items",
       "pane": "Game Options",
       "section": "Gameplay And View",
-      "path": "Settings > Game Options > Gameplay And View > Simple Items",
+      "path": "Settings > Game Options > Gameplay And View > Pickup Style",
       "source": "game",
       "container": "set_game_simpleitems",
       "widgets": [
         "set_game_simpleitems_value"
       ],
       "widget_type": "choice",
-      "label_key": "#str_223000",
-      "choices_key": "#str_200059",
+      "label_key": "#str_41215",
+      "choices_key": "#str_41216",
+      "values": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
       "target_type": "cvar",
       "target": "g_simpleItems",
       "default": "0",
       "restart_required": false,
-      "accessibility": "Standard focusable choiceDef row."
+      "accessibility": "Focusable four-style choiceDef row; the setting is client-side and takes effect without a restart."
+    },
+    {
+      "id": "game.opponent_weapon_style",
+      "pane": "Game Options",
+      "section": "Gameplay And View",
+      "path": "Settings > Game Options > Gameplay And View > Opponent Weapon Style",
+      "source": "game",
+      "container": "set_game_opponentweaponstyle",
+      "widgets": [
+        "set_game_opponentweaponstyle_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_41217",
+      "choices_key": "#str_41218",
+      "values": [
+        "0",
+        "1"
+      ],
+      "target_type": "cvar",
+      "target": "g_mpFlatOpponentWeapons",
+      "default": "0",
+      "restart_required": false,
+      "accessibility": "Focusable client-side choiceDef row that leaves view weapons unchanged."
     },
     {
       "id": "game.mouse.invert",
@@ -3115,6 +3144,25 @@
       ],
       "restart_required": false,
       "accessibility": "Focusable choiceDef replaces the old mouse-only swatch control."
+    },
+    {
+      "id": "game.crosshair_hit_marker",
+      "pane": "Game Options",
+      "section": "Crosshair",
+      "path": "Settings > Game Options > Crosshair > Hit Marker",
+      "source": "game",
+      "container": "set_game_hitmarker",
+      "widgets": [
+        "set_game_hitmarker_value"
+      ],
+      "widget_type": "choice",
+      "label_key": "#str_229979",
+      "choices_key": "#str_200059",
+      "target_type": "cvar",
+      "target": "hud_hitMarker",
+      "default": "1",
+      "restart_required": false,
+      "accessibility": "Standard focusable choiceDef row. Turning the marker off restores stock Quake 4's crosshair recolour on a hit."
     },
     {
       "id": "game.auto_skip_cinematics",

@@ -215,7 +215,7 @@ def validate_reliable_routing() -> None:
     server = read(ROOT / "src" / "framework" / "async" / "AsyncServer.cpp")
     send = body_of(
         server,
-        "void idAsyncServer::SendReliableGameMessage( int clientNum, const idBitMsg &msg )",
+        "void idAsyncServer::SendReliableGameMessage( int clientNum, const idBitMsg &msg, bool captureDemo )",
         "AsyncServer.cpp",
     )
     # The game passes MAX_CLIENTS for its server-demo pseudo client. Only a negative
@@ -227,6 +227,11 @@ def validate_reliable_routing() -> None:
             "broadcast; the game's MAX_CLIENTS demo pseudo client then doubles every event"
         )
     require(send, "if ( clientNum >= 0 ) {", "idAsyncServer::SendReliableGameMessage")
+    require(
+        send,
+        "if ( captureDemo && idAsyncNetwork::multiViewDemo.IsRecording() )",
+        "idAsyncServer::SendReliableGameMessage MVD capture guard",
+    )
 
 
 def main() -> int:

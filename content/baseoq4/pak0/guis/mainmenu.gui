@@ -500,9 +500,9 @@ windowDef Desktop
 			set "main_b6_corner::matcolor_w" "0.4" ; 
 			set "main_t_b7::forecolor_w" "0.5" ; 
 			set "main_b7_corner::matcolor_w" "0.4" ;
-			set "main_b9::matcolor_w" "0" ; 
-			set "main_t_b9::forecolor_w" "0" ; 
-			set "main_b9_corner::matcolor_w" "0" ; 
+			set "main_b9::matcolor_w" "0.4" ;
+			set "main_t_b9::forecolor_w" "0.8" ;
+			set "main_b9_corner::matcolor_w" "0.4" ;
 			
 			set "main_b_returnmp::visible" "0" ;		
 			set "main_b_newgame::visible" "1" ;
@@ -511,6 +511,7 @@ windowDef Desktop
 			set "main_b_disconnect::visible" "0" ;
 			set "main_b_multiplayer::visible" "1" ;
 			set "main_b_return::visible" "0" ;
+			set "main_b_demos::visible" "1" ;
 			set "main_b_mods::visible" "1" ;
 			set "main_b_updates::visible" "1" ;
 			set "main_b_credits::visible" "1" ;
@@ -521,6 +522,7 @@ windowDef Desktop
 			set "main_t_b1::text" "#str_200000" ;
 			set "main_t_b2::text" "#str_200001" ;
 			set "main_t_b3::text" "#str_200002" ;
+			set "main_t_b9::text" "#str_41500" ;
 			
 			set "desktop::music" "0" ;
 		} else if ("gui::ingame" == 1 && "desktop::curr" != 16) {
@@ -544,6 +546,7 @@ windowDef Desktop
 			set "main_b_disconnect::visible" "0" ;
 			set "main_b_multiplayer::visible" "0" ;
 			set "main_b_return::visible" "1" ;
+			set "main_b_demos::visible" "0" ;
 			set "main_b_mods::visible" "0" ;
 			set "main_b_updates::visible" "0" ;
 			set "main_b_credits::visible" "0" ;			
@@ -554,6 +557,7 @@ windowDef Desktop
 			set "main_t_b1::text" "#str_200003" ;
 			set "main_t_b2::text" "#str_200001" ;
 			set "main_t_b3::text" "#str_200004" ;
+			set "main_t_b9::text" "#str_200005" ;
 			
 			set "desktop::music" "1" ;
 			
@@ -579,6 +583,7 @@ windowDef Desktop
 			set "main_b_disconnect::visible" "1" ;
 			set "main_b_multiplayer::visible" "1" ;
 			set "main_b_return::visible" "0" ;
+			set "main_b_demos::visible" "0" ;
 			set "main_b_mods::visible" "1" ;
 			set "main_b_updates::visible" "1" ;
 			set "main_b_credits::visible" "1" ;			
@@ -588,6 +593,7 @@ windowDef Desktop
 			
 			set "main_t_b1::text" "#str_200005" ;
 			set "main_t_b2::text" "#str_200006" ;
+			set "main_t_b9::text" "#str_200005" ;
 			
 			set "desktop::music" "1" ;
 			
@@ -12671,6 +12677,7 @@ windowDef Desktop
 			set "main_t_b8::forecolor"  "$desktop::white_0" ; 
 			set "main_b8_corner::matcolor" "$desktop::corner_0" ;
 			set "main_t_b8::textscale" "0.22" ;  
+			set "main_b9::matcolor_w" "0" ;
 			set "main_t_b9::forecolor"  "$desktop::white_0" ; 
 			set "main_b9_corner::matcolor" "$desktop::corner_0" ;
 			set "main_t_b9::textscale" "0.33" ;
@@ -12695,6 +12702,11 @@ windowDef Desktop
 				set "main_t_b3::forecolor"  "$desktop::white_8" ; 
 				set "main_b3_corner::matcolor" "$desktop::corner" ;
 				set "main_t_b3::textscale" "0.33" ; 
+				set "main_b9::matcolor" "$desktop::white_4" ;
+				set "main_t_b9::forecolor" "$desktop::white_8" ;
+				set "main_b9_corner::matcolor" "$desktop::corner" ;
+				set "main_t_b9::textscale" "0.33" ;
+				set "main_t_b9::text" "#str_41500" ;
 			} else if ("gui::ingame" == 1) {
 				set "main_t_b5::forecolor"  "$desktop::white_0" ; 
 				set "main_b5_corner::matcolor" "$desktop::corner_0" ;
@@ -12713,6 +12725,7 @@ windowDef Desktop
 				set "main_t_b3::forecolor"  "$desktop::white_8" ; 
 				set "main_b3_corner::matcolor" "$desktop::corner" ;
 				set "main_t_b3::textscale" "0.33" ; 
+				set "main_t_b9::text" "#str_200005" ;
 			}else if ("gui::ingame" == 2) {
 				set "main_t_b5::forecolor"  "$desktop::white_5" ; 
 				set "main_b5_corner::matcolor" "$desktop::corner" ;
@@ -12731,6 +12744,7 @@ windowDef Desktop
 				set "main_t_b3::forecolor"  "$desktop::white_8" ; 
 				set "main_b3_corner::matcolor" "$desktop::corner" ;
 				set "main_t_b3::textscale" "0.33" ; 
+				set "main_t_b9::text" "#str_200005" ;
 			}
 			
 			set "main_b1::matcolor" "$desktop::white_4" ;
@@ -13260,6 +13274,7 @@ windowDef Desktop
 					set "main_t_b1::text" "#str_200003" ;
 					set "main_t_b2::text" "#str_200001" ;
 					set "main_t_b3::text" "#str_200004" ;	
+					set "main_t_b9::text" "#str_200005" ;
 					
 				} else	if ("gui::ingame" == 2) {
 					
@@ -13284,10 +13299,14 @@ windowDef Desktop
 					transition "main_b6_corner::matcolor_w"  "0" "0.4" "150" ; 
 					transition "main_t_b7::forecolor_w"  "0" "0.5" "150" ; 
 					transition "main_b7_corner::matcolor_w"  "0" "0.4" "150" ;					
+					transition "main_b9::matcolor_w" "0" "0.4" "150" ;
+					transition "main_t_b9::forecolor_w" "0" "0.8" "150" ;
+					transition "main_b9_corner::matcolor_w" "0" "0.4" "150" ;
 					
 					set "main_t_b1::text" "#str_200000" ;
 					set "main_t_b2::text" "#str_200001" ;
 					set "main_t_b3::text" "#str_200002" ;
+					set "main_t_b9::text" "#str_41500" ;
 				}
 			}
 
@@ -13317,6 +13336,7 @@ windowDef Desktop
 				stoptransitions "main_b_disconnect" ;
 				stoptransitions "main_b_quitcurrent" ;
 				stoptransitions "main_b_settings" ;
+				stoptransitions "main_b_demos" ;
 				stoptransitions "main_b_mods" ;
 				stoptransitions "main_b_updates" ;
 				stoptransitions "main_b_credits" ;
@@ -13365,6 +13385,9 @@ windowDef Desktop
 					transition "main_b6_corner::matcolor_w"  "0.4" "0" "50" ; 
 					transition "main_t_b7::forecolor_w"  "0.5" "0" "50" ; 
 					transition "main_b7_corner::matcolor_w"  "0.4" "0" "50" ; 
+					transition "main_b9::matcolor_w" "0.4" "0" "250" ;
+					transition "main_t_b9::forecolor_w" "0.8" "0" "250" ;
+					transition "main_b9_corner::matcolor_w" "0.4" "0" "250" ;
 				}
 				
 			}
@@ -15723,6 +15746,7 @@ windowDef Desktop
 				set "main_b_disconnect::visible" "0" ;
 				set "main_b_multiplayer::visible" "1" ;
 				set "main_b_return::visible" "0" ;
+				set "main_b_demos::visible" "1" ;
 				set "main_b_mods::visible" "1" ;
 				set "main_b_updates::visible" "1" ;
 				set "main_b_credits::visible" "1" ;
@@ -15734,6 +15758,7 @@ windowDef Desktop
 				set "main_b_disconnect::visible" "0" ;
 				set "main_b_multiplayer::visible" "0" ;
 				set "main_b_return::visible" "1" ;
+				set "main_b_demos::visible" "0" ;
 				set "main_b_mods::visible" "0" ;
 				set "main_b_updates::visible" "0" ;
 				set "main_b_credits::visible" "0" ;
@@ -15745,6 +15770,7 @@ windowDef Desktop
 				set "main_b_disconnect::visible" "1" ;
 				set "main_b_multiplayer::visible" "1" ;
 				set "main_b_return::visible" "0" ;
+				set "main_b_demos::visible" "0" ;
 				set "main_b_mods::visible" "1" ;
 				set "main_b_updates::visible" "1" ;
 				set "main_b_credits::visible" "1" ;
@@ -15762,6 +15788,7 @@ windowDef Desktop
 			set "main_b_disconnect::visible" "0" ;
 			set "main_b_multiplayer::visible" "0" ;
 			set "main_b_return::visible" "0" ;
+			set "main_b_demos::visible" "0" ;
 			set "main_b_mods::visible" "0" ;
 			set "main_b_updates::visible" "0" ;
 			set "main_b_credits::visible" "0" ;
@@ -16081,6 +16108,8 @@ windowDef Desktop
 			set "set_game_gunXYZ_hover::visible" "1" ;
 			set "set_game_simpleitems::visible" "1" ;
 			set "set_game_simpleitems_hover::visible" "1" ;
+			set "set_game_opponentweaponstyle::visible" "1" ;
+			set "set_game_opponentweaponstyle_hover::visible" "1" ;
 			set "set_game_forcemodel::visible" "1" ;
 			set "set_game_forcemodel_hover::visible" "1" ;
 			set "set_game_mouse::visible" "1" ;
@@ -16157,6 +16186,8 @@ windowDef Desktop
 			set "set_game_xhairsize_hover::visible" "1" ;
 			set "set_game_xhaircolor::visible" "1" ;
 			set "set_game_xhaircolor_hover::visible" "1" ;
+			set "set_game_hitmarker::visible" "1" ;
+			set "set_game_hitmarker_hover::visible" "1" ;
 			set "set_game_corpsesink::visible" "1" ;
 			set "set_game_corpsesink_hover::visible" "1" ;
 			set "set_game_corpsetime::visible" "1" ;
@@ -16187,6 +16218,7 @@ windowDef Desktop
 			set "set_game_showgun::noevents" "0" ;
 			set "set_game_gunXYZ::noevents" "0" ;
 			set "set_game_simpleitems::noevents" "0" ;
+			set "set_game_opponentweaponstyle::noevents" "0" ;
 			set "set_game_forcemodel::noevents" "0" ;
 			set "set_game_mpitch::noevents" "0" ;
 			set "set_game_msmooth::noevents" "0" ;
@@ -16217,6 +16249,7 @@ windowDef Desktop
 			set "set_game_previewxhair::noevents" "0" ;
 			set "set_game_xhairsize::noevents" "0" ;
 			set "set_game_xhaircolor::noevents" "0" ;
+			set "set_game_hitmarker::noevents" "0" ;
 			set "set_game_corpsesink::noevents" "0" ;
 			set "set_game_corpsetime::noevents" "0" ;
 			set "set_game_language_value::noevents" "0" ;
@@ -16252,6 +16285,8 @@ windowDef Desktop
 			set "set_game_gunXYZ_hover::visible" "0" ;
 			set "set_game_simpleitems::visible" "0" ;
 			set "set_game_simpleitems_hover::visible" "0" ;
+			set "set_game_opponentweaponstyle::visible" "0" ;
+			set "set_game_opponentweaponstyle_hover::visible" "0" ;
 			set "set_game_forcemodel::visible" "0" ;
 			set "set_game_forcemodel_hover::visible" "0" ;
 			set "set_game_mouse::visible" "0" ;
@@ -16314,6 +16349,8 @@ windowDef Desktop
 			set "set_game_xhairsize_hover::visible" "0" ;
 			set "set_game_xhaircolor::visible" "0" ;
 			set "set_game_xhaircolor_hover::visible" "0" ;
+			set "set_game_hitmarker::visible" "0" ;
+			set "set_game_hitmarker_hover::visible" "0" ;
 			set "set_game_corpsesink::visible" "0" ;
 			set "set_game_corpsesink_hover::visible" "0" ;
 			set "set_game_corpsetime::visible" "0" ;
@@ -16344,6 +16381,7 @@ windowDef Desktop
 			set "set_game_showgun::noevents" "1" ;
 			set "set_game_gunXYZ::noevents" "1" ;
 			set "set_game_simpleitems::noevents" "1" ;
+			set "set_game_opponentweaponstyle::noevents" "1" ;
 			set "set_game_forcemodel::noevents" "1" ;
 			set "set_game_mpitch::noevents" "1" ;
 			set "set_game_msmooth::noevents" "1" ;
@@ -16374,6 +16412,7 @@ windowDef Desktop
 			set "set_game_previewxhair::noevents" "1" ;
 			set "set_game_xhairsize::noevents" "1" ;
 			set "set_game_xhaircolor::noevents" "1" ;
+			set "set_game_hitmarker::noevents" "1" ;
 			set "set_game_corpsesink::noevents" "1" ;
 			set "set_game_corpsetime::noevents" "1" ;
 			set "set_game_language_value::noevents" "1" ;
@@ -17641,6 +17680,40 @@ windowDef Desktop
 			}
 
 		}
+		windowDef main_b_demos
+		{
+			rect	24,334,333,26
+			visible	0
+
+			onMouseEnter {
+				if ("desktop::active" == 0) {
+					stoptransitions "main_b_demos" ;
+
+					set "main_b9::matcolor_w" "0.8" ;
+					transition "main_t_b9::forecolor" "$desktop::white_8" "$desktop::orange" "0" ;
+					transition "main_b9_corner::matcolor" "$desktop::corner" "$desktop::orange" "0" ;
+
+					set "main_t_b9::textscale" "0.34" ;
+
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				if ("desktop::active" == 0) {
+					transition "main_b9::matcolor_w" "0.8" "0.4" "300" ;
+					transition "main_t_b9::forecolor"  "$desktop::orange" "$desktop::white_8" "300" ;
+					transition "main_b9_corner::matcolor"  "$desktop::orange" "$desktop::corner" "300" ;
+
+					transition "main_t_b9::textscale" "0.34" "0.33" "300" ;
+				}
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection ; demoOpen" ;
+			}
+
+		}
 		windowDef main_b_mods
 		{
 			rect	32,403,62,20
@@ -18390,6 +18463,7 @@ windowDef Desktop
 				set "set_game_showgun_background::matcolor_w" "0.4" ;
 				set "set_game_gunXYZ_background::matcolor_w" "0.4" ;
 				set "set_game_simpleitems_background::matcolor_w" "0.4" ;
+				set "set_game_opponentweaponstyle_background::matcolor_w" "0.4" ;
 				set "set_game_forcemodel_background::matcolor_w" "0.4" ;
 				set "set_game_mpitch_background::matcolor_w" "0.4" ;
 				set "set_game_msmooth_background::matcolor_w" "0.4" ;
@@ -18435,6 +18509,7 @@ windowDef Desktop
 				}
 				set "set_game_xhairsize_background::matcolor_w" "0.4" ;
 				set "set_game_xhaircolor_background::matcolor_w" "0.4" ;
+				set "set_game_hitmarker_background::matcolor_w" "0.4" ;
 				
 				set "t_settings_title::text" "#str_200008" ;
 				

@@ -58,6 +58,14 @@ bool R_ReadDrawVertFromDemo( idDemoFile *f, idDrawVert &vert ) {
 		f->ReadUnsignedChar( vert.color[3] ) == sizeof( vert.color[3] );
 }
 
+bool R_RejectDecalDemo( idDemoFile *f, const char *reason ) {
+	common->Warning( "Malformed render demo decal: %s; playback stopped safely", reason );
+	if ( f != NULL ) {
+		f->Close();
+	}
+	return false;
+}
+
 bool R_MaterializePrimBatchDecalTriangles( const srfTriangles_t &sourceTri, srfTriangles_t &tempTri, idDrawVert *tempVerts, glIndex_t *tempIndexes ) {
 	memset( &tempTri, 0, sizeof( tempTri ) );
 	tempTri.bounds = sourceTri.bounds;
@@ -724,10 +732,10 @@ bool idRenderModelDecal::ReadFromDemoFile( idDemoFile *f ) {
 	material = NULL;
 
 	if ( f == NULL || f->ReadInt( numDecals ) != sizeof( numDecals ) ) {
-		return false;
+		return R_RejectDecalDemo( f, "truncated decal count" );
 	}
 	if ( numDecals < 0 || numDecals > 1024 ) {
-		common->Error( "idRenderModelDecal::ReadFromDemoFile: bad decal count %d", numDecals );
+		return R_RejectDecalDemo( f, va( "decal count %d is out of range", numDecals ) );
 	}
 
 	if ( numDecals == 0 ) {
@@ -737,29 +745,32 @@ bool idRenderModelDecal::ReadFromDemoFile( idDemoFile *f ) {
 	decal = this;
 	for ( int decalIndex = 0; decalIndex < numDecals; decalIndex++ ) {
 		const char *materialName = f->ReadHashString();
+		if ( !f->IsOpen() ) {
+			return false;
+		}
 
 		decal->material = ( materialName[0] != '\0' ) ? declManager->FindMaterial( materialName ) : NULL;
 
 		if ( f->ReadInt( decal->tri.numVerts ) != sizeof( decal->tri.numVerts ) ) {
-			return false;
+			return R_RejectDecalDemo( f, "truncated vertex count" );
 		}
 		if ( decal->tri.numVerts < 0 || decal->tri.numVerts > MAX_DECAL_VERTS ) {
-			common->Error( "idRenderModelDecal::ReadFromDemoFile: bad vert count %d", decal->tri.numVerts );
+			return R_RejectDecalDemo( f, va( "vertex count %d is out of range", decal->tri.numVerts ) );
 		}
 
 		for ( int vertIndex = 0; vertIndex < decal->tri.numVerts; vertIndex++ ) {
 			if ( !R_ReadDrawVertFromDemo( f, decal->tri.verts[vertIndex] ) ||
 				 f->ReadFloat( decal->vertDepthFade[vertIndex] ) != sizeof( decal->vertDepthFade[vertIndex] ) ||
 				 f->ReadFloat( decal->vertLifeSpan[vertIndex] ) != sizeof( decal->vertLifeSpan[vertIndex] ) ) {
-				return false;
+				return R_RejectDecalDemo( f, "truncated vertex payload" );
 			}
 		}
 
 		if ( f->ReadInt( decal->tri.numIndexes ) != sizeof( decal->tri.numIndexes ) ) {
-			return false;
+			return R_RejectDecalDemo( f, "truncated index count" );
 		}
 		if ( decal->tri.numIndexes < 0 || decal->tri.numIndexes > MAX_DECAL_INDEXES || ( decal->tri.numIndexes % 3 ) != 0 ) {
-			common->Error( "idRenderModelDecal::ReadFromDemoFile: bad index count %d", decal->tri.numIndexes );
+			return R_RejectDecalDemo( f, va( "index count %d is invalid", decal->tri.numIndexes ) );
 		}
 
 		for ( int index = 0; index < decal->tri.numIndexes; index++ ) {
@@ -767,14 +778,14 @@ bool idRenderModelDecal::ReadFromDemoFile( idDemoFile *f ) {
 			int storedStartTime;
 
 			if ( f->ReadInt( storedIndex ) != sizeof( storedIndex ) ) {
-				return false;
+				return R_RejectDecalDemo( f, "truncated vertex index" );
 			}
 			if ( storedIndex < 0 || storedIndex >= decal->tri.numVerts ) {
-				common->Error( "idRenderModelDecal::ReadFromDemoFile: bad index %d", storedIndex );
+				return R_RejectDecalDemo( f, va( "vertex index %d is out of range", storedIndex ) );
 			}
 			decal->tri.indexes[index] = storedIndex;
 			if ( f->ReadInt( storedStartTime ) != sizeof( storedStartTime ) ) {
-				return false;
+				return R_RejectDecalDemo( f, "truncated index start time" );
 			}
 			decal->indexStartTime[index] = (float)storedStartTime;
 		}

@@ -45,6 +45,7 @@ layout(set = 6, binding = 0, std140) uniform InteractionBlock {
     vec4 specularMatrixT;
     vec4 diffuseColor;
     vec4 specularColor;
+    vec4 flatDiffuseParams;
 } inter;
 
 layout(set = 7, binding = 1, std140) uniform ShadowBlock {
@@ -89,6 +90,18 @@ vec4 gShadowDepthGradients = vec4(0.0);
 
 vec3 SafeNormalize(vec3 value) {
     return value * inversesqrt(max(dot(value, value), 1.0e-8));
+}
+
+vec3 ApplyFlatDiffuseSweep(vec3 diffuse, float localZ) {
+    if (inter.flatDiffuseParams.x <= 0.0) {
+        return diffuse;
+    }
+    float height = clamp((localZ - inter.flatDiffuseParams.y)
+        * inter.flatDiffuseParams.z, 0.0, 1.0);
+    float distanceToBand = abs(height - fract(inter.flatDiffuseParams.w));
+    distanceToBand = min(distanceToBand, 1.0 - distanceToBand);
+    float band = 1.0 - smoothstep(0.045, 0.16, distanceToBand);
+    return mix(diffuse, vec3(1.0), inter.flatDiffuseParams.x * band);
 }
 
 int ShadowCascadeCount() {
@@ -397,6 +410,7 @@ void main() {
     light *= SampleShadowFactor();
 
     vec3 diffuse = texture(diffuseMap, diffuseTexCoord).rgb * inter.diffuseColor.rgb;
+    diffuse = ApplyFlatDiffuseSweep(diffuse, vLightFalloffTexCoord.z);
 
     vec3 halfAngle = SafeNormalize(vHalfAngleVector);
     float specularDot = clamp(dot(halfAngle, localNormal), 0.0, 1.0);

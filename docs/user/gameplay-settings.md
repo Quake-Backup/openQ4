@@ -16,6 +16,9 @@ The auto-skip cinematics, corpse cleanup, and corpse sink controls are also avai
 | `hud_damageNumbers` | `0` | Multiplayer client | Floating damage numbers over the players you hit. `0` off, `1` opponents only, `2` all damage you deal. |
 | `hud_damageNumberStyle` | `1` | Multiplayer client | How damage numbers are coloured. `1` white through red, `2` one colour per damage band, `3` one colour per weapon. |
 | `hud_damageNumberScale` | `1` | Multiplayer client | Damage number size multiplier, `0.25` to `4`. |
+| `hud_hitMarker` | `1` | SP and MP client | Crosshair hit marker on hits you land. On by default. |
+| `hud_hitMarkerScale` | `1` | SP and MP client | Hit marker size multiplier, `0.25` to `4`, on top of `g_crosshairSize`. |
+| `hud_crosshairHitFlash` | `0` | SP and MP client | Recolours the crosshair on a hit, as stock Quake 4 does. Implied when `hud_hitMarker` is off. |
 | `g_hitFeedback` | `2` | Multiplayer server | Whether the server tells attackers about their hits at all. `0` none, `1` without the amount, `2` with the amount. |
 
 ## Cinematics
@@ -121,6 +124,40 @@ seta s_musicVolume 0.2
 ```cfg
 seta s_musicVolume 0
 ```
+
+## Hit Marker
+
+Every hit you land blooms four short angled marks out of your crosshair and fades
+them within a fraction of a second. It works in single-player and multiplayer, and
+it is on by default: `Settings -> Game Options -> Crosshair -> Hit Marker`.
+
+The marker reads the hit back to you rather than just confirming it:
+
+- A graze or a splash hit is a small, quiet tick.
+- A normal hit is the reference pulse.
+- A heavy hit - a rail, a rocket, a direct dark matter hit - is wider, brighter,
+  and lasts a beat longer.
+- A hit that finishes the target flashes white hot and travels furthest.
+- Armour absorbing part of the hit lifts the marks towards white.
+- Team damage shows amber and self damage shows a muted grey-blue, so a mistake
+  never reads like a reward.
+
+Sustained fire re-arms the marker instead of stacking a second one, and a heavier
+hit landing behind a lighter one keeps the heavier look for the rest of the pulse.
+
+`hud_hitMarker 0` turns it off. `hud_hitMarkerScale` scales it between `0.25` and
+`4`; it already follows `g_crosshairSize`, so the marks frame whatever crosshair
+you use.
+
+Stock Quake 4 recolours the crosshair red for a moment when you hit something. The
+marker replaces that cue, so the recolour is off while the marker is on. Turning
+the marker off brings the recolour back on its own, and
+`hud_crosshairHitFlash 1` asks for both at once.
+
+In multiplayer the marker sizes itself from the same server-permitted hit
+information as damage numbers, so with `g_hitFeedback 1` or `0` you still get a
+marker on every hit - just always the normal one, because the server is not
+telling you what the hit was worth.
 
 ## Damage Numbers
 

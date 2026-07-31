@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 
 idAsyncServer		idAsyncNetwork::server;
 idAsyncClient		idAsyncNetwork::client;
+idMultiViewDemo		idAsyncNetwork::multiViewDemo;
 
 idCVar				idAsyncNetwork::verbose( "net_verbose", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "1 = verbose output, 2 = even more verbose output", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar				idAsyncNetwork::allowCheats( "net_allowCheats", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_NETWORKSYNC, "legacy multiplayer cheats toggle (use sv_cheats)" );
@@ -87,6 +88,7 @@ idAsyncNetwork::Init
 void idAsyncNetwork::Init( void ) {
 
 	realTime = 0;
+	multiViewDemo.Init();
 
 	memset( masters, 0, sizeof( masters ) );
 	masters[0].var = &master0;
@@ -157,6 +159,7 @@ idAsyncNetwork::Shutdown
 ==================
 */
 void idAsyncNetwork::Shutdown( void ) {
+	multiViewDemo.Shutdown();
 	client.serverList.Shutdown();
 	client.DisconnectFromServer();
 	client.ClearServers();
@@ -183,8 +186,15 @@ void idAsyncNetwork::RunFrame( void ) {
 	// Dedicated-style paths can keep blocking until the next game frame because they are not
 	// trying to present repeated-state render frames in between async ticks.
 	const bool allowBlocking = ( idAsyncNetwork::serverDedicated.GetInteger() != 0 );
+	if ( multiViewDemo.IsPlaying() ) {
+		multiViewDemo.RunPlaybackFrame();
+		return;
+	}
 	client.RunFrame( allowBlocking );
 	server.RunFrame( allowBlocking );
+	if ( multiViewDemo.IsRecording() && server.IsActive() ) {
+		multiViewDemo.CaptureServerFrame( server.GetGameFrame(), server.GetGameTime() );
+	}
 }
 
 /*

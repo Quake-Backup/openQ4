@@ -364,6 +364,14 @@ bool idModernGLDrawPlan::Build( const idScenePacketFrame &packetFrame, const idR
 			stats.fallbackDraws++;
 			continue;
 		}
+		if ( RB_FlatDiffuseSurfaceActive( draw.legacyDrawSurf ) ) {
+			// Keep flat-diffuse surfaces on the legacy owner until the modern
+			// stage model can isolate lit diffuse RGB from authored alpha and
+			// ambient layers.
+			stats.fallbackDraws++;
+			stats.materialFallbackDraws++;
+			continue;
+		}
 		if ( R_ModernGLDrawPlan_NeedsLegacySoftParticlePath( draw ) ) {
 			stats.fallbackDraws++;
 			continue;

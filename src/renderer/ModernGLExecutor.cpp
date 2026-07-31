@@ -1882,6 +1882,15 @@ static void R_ModernGLExecutor_RecordPacketFallbackBlockers( const idScenePacket
 
 		const int viewIndex = R_ModernGLExecutor_ViewIndexForViewDef( packetFrame, draw.viewDef );
 		const bool legacyFeedbackSurface = R_ModernGLExecutor_DrawPacketUsesLegacyFeedbackSurface( draw );
+		if ( RB_FlatDiffuseSurfaceActive( draw.legacyDrawSurf ) ) {
+			// The modern material shaders currently collapse authored ambient
+			// and diffuse stages into one albedo.  Fail the visible owner closed
+			// so the compatible legacy path can replace diffuse RGB without
+			// touching alpha, ambient, bump or specular.
+			stats.modernVisibleMaterialFallbackDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", viewIndex, draw.passCategory, i, "material", "flat-diffuse-legacy" );
+			continue;
+		}
 		if ( draw.geometryRecord == NULL || draw.instanceRecord == NULL || !draw.hasGeometry || draw.indexCount <= 0 ) {
 			if ( legacyFeedbackSurface ) {
 				continue;

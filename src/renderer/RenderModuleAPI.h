@@ -46,7 +46,9 @@
 //      surface kind so the engine creates the window for the right API, and
 //      the window services gain SDL-mediated Vulkan instance-extension and
 //      surface creation (the module never links SDL)
-#define RENDER_API_VERSION			6
+// Version 7 keeps stale renderer modules from consuming the extended
+// renderEntity_t presentation contract (flat diffuse colour and sweep flags).
+#define RENDER_API_VERSION			7
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;

@@ -22,6 +22,7 @@ uniform vec4 uDepthInfo;
 uniform vec4 uDepthViewport;
 uniform vec4 uColorInfo;
 uniform vec4 uDiffuseColor;
+uniform vec4 uFlatDiffuseParams;
 
 varying vec2 vBumpTexCoord;
 varying vec2 vDiffuseTexCoord;
@@ -30,6 +31,7 @@ varying vec3 vWorldBitangent;
 varying vec3 vWorldNormal;
 varying vec3 vWorldPosition;
 varying vec3 vVertexColor;
+varying float vLocalZ;
 
 vec2 SignNotZero( vec2 value ) {
 	return vec2( value.x >= 0.0 ? 1.0 : -1.0, value.y >= 0.0 ? 1.0 : -1.0 );
@@ -50,6 +52,17 @@ vec3 ShapeLightGridContribution( vec3 value ) {
 		value = min( value, vec3( maxContribution ) );
 	}
 	return max( value, vec3( 0.0 ) );
+}
+
+vec3 ApplyFlatDiffuseSweep( vec3 diffuse, float localZ ) {
+	if ( uFlatDiffuseParams.x <= 0.0 ) {
+		return diffuse;
+	}
+	float height = clamp( ( localZ - uFlatDiffuseParams.y ) * uFlatDiffuseParams.z, 0.0, 1.0 );
+	float distanceToBand = abs( height - fract( uFlatDiffuseParams.w ) );
+	distanceToBand = min( distanceToBand, 1.0 - distanceToBand );
+	float band = 1.0 - smoothstep( 0.045, 0.16, distanceToBand );
+	return mix( diffuse, vec3( 1.0 ), uFlatDiffuseParams.x * band );
 }
 
 vec3 DecodeLocalNormal( vec4 bumpSample ) {
@@ -291,6 +304,7 @@ void main() {
 	}
 
 	vec3 diffuseSample = texture2D( uDiffuseMap, vDiffuseTexCoord ).rgb;
+	diffuseSample = ApplyFlatDiffuseSweep( diffuseSample, vLocalZ );
 	if ( uDebugInfo.x > 1.5 && uDebugInfo.x < 2.5 ) {
 		gl_FragColor = vec4( ShapeLightGridContribution( irradiance * LightGridContributionScale() ), 1.0 );
 		return;

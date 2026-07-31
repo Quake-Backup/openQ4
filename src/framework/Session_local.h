@@ -76,6 +76,57 @@ typedef enum {
 	TD_YES_THEN_QUIT
 } timeDemo_t;
 
+enum demoLibraryType_t {
+	DEMO_LIBRARY_UNKNOWN,
+	DEMO_LIBRARY_MVD,
+	DEMO_LIBRARY_RENDER,
+	DEMO_LIBRARY_COMMAND,
+	DEMO_LIBRARY_LEGACY_NET,
+	DEMO_LIBRARY_LEGACY_RENDER,
+	DEMO_LIBRARY_INCOMPLETE
+};
+
+enum demoLibraryCapability_t {
+	DEMO_CAP_PLAY			= 1 << 0,
+	DEMO_CAP_PAUSE			= 1 << 1,
+	DEMO_CAP_RATE			= 1 << 2,
+	DEMO_CAP_SEEK			= 1 << 3,
+	DEMO_CAP_STEP			= 1 << 4,
+	DEMO_CAP_FREE_ROAM		= 1 << 5,
+	DEMO_CAP_FOLLOW			= 1 << 6,
+	DEMO_CAP_DELETE			= 1 << 7,
+	DEMO_CAP_FULL_WORLD		= 1 << 8
+};
+
+struct demoLibraryEntry_t {
+							demoLibraryEntry_t() :
+								type( DEMO_LIBRARY_UNKNOWN ),
+								capabilities( 0 ),
+								sizeBytes( 0 ),
+								timestamp( 0 ),
+								durationMS( -1 ),
+								playable( false ),
+								compatible( false ),
+								cleanEnd( false ) {
+							}
+
+	demoLibraryType_t		type;
+	int						capabilities;
+	int						sizeBytes;
+	ID_TIME_T				timestamp;
+	int						durationMS;
+	bool					playable;
+	bool					compatible;
+	bool					cleanEnd;
+	idStr					path;
+	idStr					displayName;
+	idStr					mapName;
+	idStr					gameType;
+	idStr					format;
+	idStr					status;
+	idStr					details;
+};
+
 typedef enum {
 	OPENQ4_FRAME_BOUND_UNKNOWN,
 	OPENQ4_FRAME_BOUND_SIMULATION,
@@ -306,6 +357,8 @@ public:
 	idUserInterface *	guiInGame;
 	idUserInterface *	guiMainMenu;
 	idListGUI *			guiMainMenu_MapList;		// easy map list handling
+	idUserInterface *	guiDemoMenu;
+	idListGUI *			guiDemoList;
 	idUserInterface *	guiRestartMenu;
 	idUserInterface *	guiLoading;
 	idUserInterface *	guiIntro;
@@ -347,7 +400,8 @@ public:
 	void				StartPlayingCmdDemo( const char *demoName);
 	void				TimeCmdDemo( const char *demoName);
 	void				SaveCmdDemoToFile(idFile *file);
-	void				LoadCmdDemoFromFile(idFile *file);
+	bool				LoadCmdDemoFromFile( idFile *file, idStr &error );
+	bool				ValidateCmdDemoFile( const char *path, idStr &error );
 	void				StartRecordingRenderDemo( const char *name );
 	void				StopRecordingRenderDemo();
 	void				StartPlayingRenderDemo( idStr name );
@@ -361,7 +415,25 @@ public:
 	void				EndAVICapture();
 
 	void				AdvanceRenderDemo( bool singleFrameOnly );
+	void				ProcessRenderDemoSeekBudget();
+	void				FinishRenderDemoSeek();
 	void				RunGameTic();
+
+	void				InitDemoSystem();
+	void				ShutdownDemoSystem();
+	void				OpenDemoMenu( bool browser = true );
+	void				CloseDemoMenu();
+	void				RefreshDemoLibrary();
+	void				UpdateDemoMenuGui();
+	bool				HandleDemoMenuCommand( const char *menuCommand );
+	bool				IsDemoPlaybackActive() const;
+	void				SetDemoPaused( bool paused );
+	void				ToggleDemoPaused();
+	void				SetDemoSpeed( float speed );
+	bool				SeekDemoMS( int timeMS );
+	bool				SkipDemoMS( int deltaMS );
+	void				StepDemo();
+	void				StopDemoPlayback();
 	
 	void				FinishCmdLoad();
 	void				LoadLoadingGui(const char *mapName);
@@ -385,6 +457,33 @@ public:
 
 	idStrList			loadGameList;
 	idList<idModInfo>	modsList;
+	idList<demoLibraryEntry_t> demoLibrary;
+	idStr				demoLibraryFilter;
+	idStr				demoSelectedPath;
+	idUserInterface *	demoReturnGui;
+	bool				demoOverlayVisible;
+	bool				demoBrowserMode;
+	bool				demoMenuOpenedOverPlayback;
+	bool				demoResumeAfterMenu;
+	int					demoActiveType;
+
+	idStr				activeRenderDemoName;
+	idStr				renderDemoDurationName;
+	bool				renderDemoPaused;
+	bool				renderDemoSeeking;
+	bool				renderDemoSeekRestartPending;
+	bool				renderDemoSeekRestartPresentationPending;
+	bool				renderDemoSeekWorkDeferred;
+	bool				renderDemoStepPending;
+	bool				renderDemoFramePayloadPending;
+	bool				renderDemoSeekMuteOwned;
+	bool				renderDemoSeekRestoreMute;
+	float				renderDemoPlaybackRate;
+	double				renderDemoFrameAccumulator;
+	int					renderDemoStartViewTime;
+	int					renderDemoKnownDurationMS;
+	int					renderDemoSeekTargetMS;
+	int					renderDemoSeekDeadlineMS;
 
 	idUserInterface *	GetActiveMenu();
 

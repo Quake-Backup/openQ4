@@ -1324,6 +1324,11 @@ void R_RenderView( viewDef_t *parms ) {
 		viewBuildLastMark = now;
 	}
 
+	// Force in the entities that want an outline wherever they are, now that every
+	// pass which walks viewEntitys or builds interactions has run. Their surfaces
+	// land on their own list, so R_SortDrawSurfs below never sees them either.
+	R_AddThroughWorldOutlines();
+
 	// any viewLight that didn't have visible surfaces can have it's shadows removed
 	R_RemoveUnecessaryViewLights();
 	if ( reportViewBuildTimes ) {

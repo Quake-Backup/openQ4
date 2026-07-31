@@ -44,7 +44,7 @@ extern glconfig_t glConfig;
 idCVar	idSessionLocal::gui_configServerRate( "gui_configServerRate", "0", CVAR_GUI | CVAR_ARCHIVE | CVAR_ROM | CVAR_INTEGER, "" );
 idCVar gui_set_sys_scroll( "gui_set_sys_scroll", "0", CVAR_GUI | CVAR_INTEGER, "display menu scroll step", 0, 26 );
 idCVar gui_set_audio_scroll( "gui_set_audio_scroll", "0", CVAR_GUI | CVAR_INTEGER, "audio menu scroll step", 0.0f, 0.0f );
-idCVar gui_set_game_scroll( "gui_set_game_scroll", "0", CVAR_GUI | CVAR_INTEGER, "game menu scroll step", 0, 44 );
+idCVar gui_set_game_scroll( "gui_set_game_scroll", "0", CVAR_GUI | CVAR_INTEGER, "game menu scroll step", 0, 46 );
 
 static const int MENU_CONTROLLER_AXIS_THRESHOLD = 50;
 static const int MENU_CONTROLLER_REPEAT_INITIAL_MSEC = 320;
@@ -2286,6 +2286,11 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 			continue;
 		}
 
+		if ( !idStr::Icmp( cmd, "demoOpen" ) ) {
+			OpenDemoMenu( true );
+			return;
+		}
+
 		if ( !idStr::Icmp( cmd, "reloadLanguage" ) ) {
 			cmdSystem->BufferCommandText( CMD_EXEC_NOW, "reloadLanguage\n" );
 			continue;
@@ -3020,6 +3025,9 @@ void idSessionLocal::DispatchCommand( idUserInterface *gui, const char *menuComm
 	if ( gui == guiMainMenu ) {
 		HandleMainMenuCommands( menuCommand );
 		return;
+	} else if ( gui == guiDemoMenu ) {
+		HandleDemoMenuCommand( menuCommand );
+		return;
 	} else if ( gui == guiIntro) {
 		HandleIntroMenuCommands( menuCommand );
 	} else if ( gui == guiMsg ) {
@@ -3167,10 +3175,10 @@ static const mainMenuSettingsScrollPage_t MAINMENU_SETTINGS_SCROLL_PAGES[] = {
 		"game_section_choice",
 		21,
 		0,
-		44,
+		46,
 		-24,
 		-41,
-		1380,
+		1428,
 		24.0f
 	}
 };
@@ -3206,19 +3214,19 @@ static bool MainMenuSetWindowVar( idUserInterface *gui, const char *stateName, c
 
 static int MainMenuSettingsSectionChoiceForScroll( const mainMenuSettingsScrollPage_t &page, int scrollValue ) {
 	if ( idStr::Icmp( page.name, "game" ) == 0 ) {
-		if ( scrollValue < 10 ) {
+		if ( scrollValue < 11 ) {
 			return 0;
 		}
-		if ( scrollValue < 20 ) {
+		if ( scrollValue < 21 ) {
 			return 1;
 		}
-		if ( scrollValue < 36 ) {
+		if ( scrollValue < 37 ) {
 			return 2;
 		}
-		if ( scrollValue < 42 ) {
+		if ( scrollValue < 44 ) {
 			return 3;
 		}
-		if ( scrollValue < 44 ) {
+		if ( scrollValue < 46 ) {
 			return 4;
 		}
 		return 5;

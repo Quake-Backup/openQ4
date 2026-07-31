@@ -49,7 +49,7 @@ Scroll controls:
 | Pane | Scroll widget | Cvar | Range | Step | Notes |
 |---|---|---|---|---|---|
 | Game Options | `choiceDef set_game_section_choice` | `game_section_choice` | General / Mouse / Controller / Crosshair / Gameplay / View Weapon | `1` | Localized section picker below the pane title and above the scroll frame. Sets live GUI state `gui::gui_set_game_scroll` to the group anchor and calls `applySettingsScroll game`; the engine clamps and applies the matching row-canvas rect. |
-| Game Options | `sliderDef set_game_scroll_thumb` | `gui_set_game_scroll` | `0..44` | `1` | Vertical scrollbar. Calls `applySettingsScroll game`; `idSliderWindow` propagates the command from thumb drag as well as key/button events. |
+| Game Options | `sliderDef set_game_scroll_thumb` | `gui_set_game_scroll` | `0..46` | `1` | Vertical scrollbar. Calls `applySettingsScroll game`; `idSliderWindow` propagates the command from thumb drag as well as key/button events. |
 | System | `choiceDef set_sys_section_choice` | `sys_section_choice` | Video / Window / Rendering / Quality / Post FX / Sizing | `1` | Localized section picker above the scroll frame. Sets live GUI state `gui::gui_set_sys_scroll` to the group anchor and calls `applySettingsScroll system`; the engine clamps and applies the matching row-canvas rect. |
 | System | `sliderDef set_sys_scroll_thumb` | `gui_set_sys_scroll` | `0..26` | `1` | Vertical scrollbar. Calls `applySettingsScroll system`; `idSliderWindow` propagates the command from thumb drag as well as key/button events. |
 | Audio | `sliderDef set_audio_scroll_thumb` | `gui_set_audio_scroll` | `0..0` | `1` | Disabled in practice because Audio fits without scrolling; the engine keeps its scroll thumb hidden and no-evented. |
@@ -153,7 +153,7 @@ The numbered `set_b_controls_move_1..13` windows are row hover/action surfaces f
 
 The Game Options pane is `p_settings_game` and is included from `content/baseoq4/pak0/guis/menu/settings/game.gui`. It uses hover/action overlays from `game_hovers.gui`.
 
-### Gameplay And View
+### General (Gameplay And View)
 
 | Label | Widget type | Value widget | Target | Values or range | Notes |
 |---|---|---|---|---|---|
@@ -165,7 +165,8 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Show Decals | `choiceDef` | `set_game_showdecals_value` | `g_decals` | `No;Yes` | Boolean picker. |
 | Show Gun | `choiceDef` | `set_game_showgun_value` | `ui_showGun` | `No;Yes` | Boolean picker. |
 | Gun Position | `choiceDef` | `set_game_gunXYZ_value` | GUI state `g_gunXYZ` via `applyGunPositionChoice` | `0 Right`, `1 Centered`, `2 Lower Right` | The C++ menu adapter writes the preset `g_gunX`, `g_gunY`, and `g_gunZ` values, and enables `g_weaponFovEffect` when that cvar exists. |
-| Simple Items | `choiceDef` | `set_game_simpleitems_value` | `g_simpleItems` | `No;Yes` | Boolean picker. |
+| Pickup Style | `choiceDef` | `set_game_simpleitems_value` | `g_simpleItems` | `0 Original`, `1 Simple Icons`, `2 Flat Color`, `3 Flat + Light Sweep` | Client-side pickup presentation selector. The light sweep applies only to world items. |
+| Opponent Weapon Style | `choiceDef` | `set_game_opponentweaponstyle_value` | `g_mpFlatOpponentWeapons` | `0 Original`, `1 Flat Color` | Client-side multiplayer option for weapons held by opponents. View weapons are never affected. |
 | Force Model | `choiceDef` | `set_game_forcemodel_value` | GUI state `ui_proskins` via `applyForceModelChoice` | `0 No`, `1 Yes` | The C++ menu adapter writes the pro-skin force-model cvars when enabled and clears `g_forceModel`, `g_forceMarineModel`, and `g_forceStroggModel` when disabled. |
 | Auto Skip Cinematics | `choiceDef` | `set_game_autoskipcinematics_value` | `g_autoSkipCinematics` | `No;Yes` | Archived SP/MP gameplay cvar. Affects future cinematics. |
 
@@ -206,6 +207,7 @@ The Game Options pane is `p_settings_game` and is included from `content/baseoq4
 | Crosshair Preview | `windowDef` action | `set_game_previewxhair` and preview size windows | `chooseCrosshair` command | Next/previous through command args `1` and `-1` | Disabled when `g_crosshairCustom` is off. |
 | Crosshair Size | `choiceDef` | `set_game_xhairsize_value` | `g_crosshairSize` | `16 Small`, `24 Medium`, `32 Default`, `40 Large`, `48 Extra Large` | Paired with preview update events. |
 | Crosshair Color | `choiceDef` | `set_game_xhaircolor_value` | GUI state `g_crosshairColorChoice` | White, red, orange, yellow, green, cyan, blue, magenta | Focusable picker. Selection writes `g_crosshairColor` RGBA values and updates the preview. |
+| Hit Marker | `choiceDef` | `set_game_hitmarker_value` | `hud_hitMarker` | `No;Yes` | Boolean picker, on by default. Off restores stock Quake 4's crosshair recolour on a hit; `hud_hitMarkerScale` and `hud_crosshairHitFlash` stay console-only. |
 
 ### Corpse, Language, Console
 

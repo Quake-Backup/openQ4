@@ -43,7 +43,7 @@ public:
 	void	Clear();
 
 	void	WriteToDemo( idDemoFile *demo );
-	void	ReadFromDemo( idDemoFile *demo );	
+	bool	ReadFromDemo( idDemoFile *demo );
 	
 	void	EmitToCurrentView( float modelMatrix[16], bool depthHack );
 	void	EmitFullScreen();

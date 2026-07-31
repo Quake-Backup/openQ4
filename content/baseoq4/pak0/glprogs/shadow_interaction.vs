@@ -78,7 +78,9 @@ void main() {
 	vDiffuseTexCoord = vec2( dot( texCoord, uDiffuseMatrixS ), dot( texCoord, uDiffuseMatrixT ) );
 	vSpecularTexCoord = vec2( dot( texCoord, uSpecularMatrixS ), dot( texCoord, uSpecularMatrixT ) );
 
-	vLightFalloffTexCoord = vec4( dot( position, uLightFalloffS ), 0.5, 0.0, 1.0 );
+	// z is unused by the projected 2D lookup, so carry model-local height to
+	// the fragment stage without consuming another GL 2.1 varying slot.
+	vLightFalloffTexCoord = vec4( dot( position, uLightFalloffS ), 0.5, position.z, 1.0 );
 	vLightProjectionTexCoord = vec4(
 		dot( position, uLightProjectionS ),
 		dot( position, uLightProjectionT ),

@@ -260,6 +260,7 @@ void idAsyncServer::ExecuteMapChange( void ) {
 	//char		bestGameType[ MAX_STRING_CHARS ];
 
 	assert( active );
+	idAsyncNetwork::multiViewDemo.OnServerMapChange();
 
 	// reset any pureness
 	fileSystem->ClearPureChecksums();
@@ -2306,10 +2307,15 @@ bool idAsyncServer::ProcessMessage( const netadr_t from, idBitMsg &msg ) {
 idAsyncServer::SendReliableGameMessage
 ==================
 */
-void idAsyncServer::SendReliableGameMessage( int clientNum, const idBitMsg &msg ) {
+void idAsyncServer::SendReliableGameMessage( int clientNum, const idBitMsg &msg, bool captureDemo ) {
 	int			i;
 	idBitMsg	outMsg;
 	byte		msgBuf[MAX_MESSAGE_SIZE];
+
+	if ( captureDemo && idAsyncNetwork::multiViewDemo.IsRecording() ) {
+		const int routeClient = clientNum >= MAX_ASYNC_CLIENTS ? -1 : clientNum;
+		idAsyncNetwork::multiViewDemo.CaptureReliableMessage( msg, DEMO_RECORD_CLIENTNUM, routeClient );
+	}
 
 	outMsg.Init( msgBuf, sizeof( msgBuf ) );
 	outMsg.WriteByte( SERVER_RELIABLE_MESSAGE_GAME );
@@ -2343,10 +2349,14 @@ void idAsyncServer::SendReliableGameMessage( int clientNum, const idBitMsg &msg 
 idAsyncServer::LocalClientSendReliableMessageExcluding
 ==================
 */
-void idAsyncServer::SendReliableGameMessageExcluding( int clientNum, const idBitMsg &msg ) {
+void idAsyncServer::SendReliableGameMessageExcluding( int clientNum, const idBitMsg &msg, bool captureDemo ) {
 	int			i;
 	idBitMsg	outMsg;
 	byte		msgBuf[MAX_MESSAGE_SIZE];
+
+	if ( captureDemo && idAsyncNetwork::multiViewDemo.IsRecording() ) {
+		idAsyncNetwork::multiViewDemo.CaptureReliableMessage( msg, DEMO_RECORD_EXCLUDE, clientNum );
+	}
 
 	//assert( clientNum >= 0 && clientNum < MAX_ASYNC_CLIENTS );
 

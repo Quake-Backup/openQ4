@@ -31,6 +31,280 @@ If you have questions concerning this license or the applicable additional terms
 
 static const int SOUND_SAVEGAME_MAX_EMITTERS = 8192;
 static const int SOUND_SAVEGAME_MAX_TOTAL_CHANNELS = 8192;
+static const int SOUND_DEMO_MAX_CACHED_SOUNDS = 4096;
+
+namespace
+{
+
+static bool StopMalformedSoundDemo( idDemoFile* demo, const char* commandName, const char* detail )
+{
+	if( demo != NULL && demo->IsOpen() )
+	{
+		demo->Close();
+	}
+	common->Warning( "Malformed render demo: %s %s; playback stopped safely",
+		commandName != NULL ? commandName : "sound command",
+		detail != NULL ? detail : "is invalid" );
+	return false;
+}
+
+static const char* SoundDemoCommandName( int command )
+{
+	switch( command )
+	{
+		case SCMD_STATE:				return "SCMD_STATE";
+		case SCMD_PLACE_LISTENER:	return "SCMD_PLACE_LISTENER";
+		case SCMD_ALLOC_EMITTER:		return "SCMD_ALLOC_EMITTER";
+		case SCMD_FREE:				return "SCMD_FREE";
+		case SCMD_UPDATE:			return "SCMD_UPDATE";
+		case SCMD_START:				return "SCMD_START";
+		case SCMD_MODIFY:			return "SCMD_MODIFY";
+		case SCMD_STOP:				return "SCMD_STOP";
+		case SCMD_FADE:				return "SCMD_FADE";
+		case SCMD_CACHESOUNDSHADER:	return "SCMD_CACHESOUNDSHADER";
+		default:					return "sound command";
+	}
+}
+
+class idSoundDemoCommandReader
+{
+public:
+	idSoundDemoCommandReader( idDemoFile* demoFile, const char* command ) :
+		demo( demoFile ),
+		commandName( command )
+	{
+	}
+
+	bool ReadInt( int& value, const char* fieldName )
+	{
+		return ReadChecked( demo->ReadInt( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadFloat( float& value, const char* fieldName )
+	{
+		return ReadChecked( demo->ReadFloat( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadVec3( idVec3& value, const char* fieldName )
+	{
+		return ReadChecked( demo->ReadVec3( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadMat3( idMat3& value, const char* fieldName )
+	{
+		return ReadChecked( demo->ReadMat3( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadHashString( idStr& value, const char* fieldName )
+	{
+		const char* stringValue = demo->ReadHashString();
+		if( !demo->IsOpen() )
+		{
+			// idDemoFile::ReadHashString already closed the file and reported the
+			// malformed hash-table entry.
+			return false;
+		}
+		if( stringValue == NULL )
+		{
+			return Fail( va( "contains a NULL %s", fieldName ) );
+		}
+		value = stringValue;
+		return true;
+	}
+
+	bool Fail( const char* detail )
+	{
+		return StopMalformedSoundDemo( demo, commandName, detail );
+	}
+
+private:
+	bool ReadChecked( int bytesRead, int expectedBytes, const char* fieldName )
+	{
+		if( bytesRead == expectedBytes )
+		{
+			return true;
+		}
+		return Fail( va( "has a truncated %s (read %d of %d bytes)",
+			fieldName, bytesRead, expectedBytes ) );
+	}
+
+	idDemoFile*	demo;
+	const char*	commandName;
+};
+
+static bool ReadDemoShaderParms( idSoundDemoCommandReader& reader, soundShaderParms_t& parms )
+{
+	if( !reader.ReadFloat( parms.minDistance, "minimum distance" ) ||
+		!reader.ReadFloat( parms.maxDistance, "maximum distance" ) ||
+		!reader.ReadFloat( parms.volume, "volume" ) ||
+		!reader.ReadFloat( parms.attenuatedVolume, "attenuated volume" ) ||
+		!reader.ReadFloat( parms.shakes, "shake amplitude" ) ||
+		!reader.ReadInt( parms.soundShaderFlags, "sound shader flags" ) ||
+		!reader.ReadInt( parms.soundClass, "sound class" ) ||
+		!reader.ReadFloat( parms.frequencyShift, "frequency shift" ) ||
+		!reader.ReadFloat( parms.wetLevel, "wet level" ) ||
+		!reader.ReadFloat( parms.dryLevel, "dry level" ) )
+	{
+		return false;
+	}
+	if( parms.soundClass < 0 || parms.soundClass >= SOUND_MAX_CLASSES )
+	{
+		return reader.Fail( va( "contains invalid sound class %d", parms.soundClass ) );
+	}
+	return true;
+}
+
+class idSoundStateReader
+{
+public:
+	idSoundStateReader( idFile* sourceFile, idDemoFile* sourceDemo ) :
+		file( sourceFile ),
+		demo( sourceDemo )
+	{
+	}
+
+	bool ReadInt( int& value, const char* fieldName )
+	{
+		return ReadChecked( file->ReadInt( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadFloat( float& value, const char* fieldName )
+	{
+		return ReadChecked( file->ReadFloat( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadBool( bool& value, const char* fieldName )
+	{
+		return ReadChecked( file->ReadBool( value ), sizeof( byte ), fieldName );
+	}
+
+	bool ReadVec3( idVec3& value, const char* fieldName )
+	{
+		return ReadChecked( file->ReadVec3( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadMat3( idMat3& value, const char* fieldName )
+	{
+		return ReadChecked( file->ReadMat3( value ), sizeof( value ), fieldName );
+	}
+
+	bool ReadString( idStr& value, const char* fieldName )
+	{
+		int length = 0;
+		if( !ReadInt( length, fieldName ) )
+		{
+			return false;
+		}
+
+		if( length < 0 || length > MAX_STRING_CHARS )
+		{
+			return Fail( va( "contains invalid %s length %d", fieldName, length ) );
+		}
+		if( demo == NULL )
+		{
+			const int remainingBytes = Max( 0, file->Length() - file->Tell() );
+			if( length > remainingBytes )
+			{
+				return Fail( va( "contains invalid %s length %d (remaining %d)",
+					fieldName, length, remainingBytes ) );
+			}
+		}
+
+		value.Clear();
+		if( length == 0 )
+		{
+			return true;
+		}
+		value.Fill( ' ', length );
+		const int bytesRead = file->Read( &value[0], length );
+		if( bytesRead != length )
+		{
+			return Fail( va( "has a truncated %s payload (read %d of %d bytes)",
+				fieldName, bytesRead, length ) );
+		}
+		return true;
+	}
+
+	bool ReadSoundFade( idSoundFade& fade, int timeDelta )
+	{
+		if( !ReadInt( fade.fadeStartTime, "sound fade start time" ) ||
+			!ReadInt( fade.fadeEndTime, "sound fade end time" ) ||
+			!ReadFloat( fade.fadeStartVolume, "sound fade start volume" ) ||
+			!ReadFloat( fade.fadeEndVolume, "sound fade end volume" ) )
+		{
+			return false;
+		}
+		fade.Sanitize();
+		if( fade.fadeEndTime > 0 )
+		{
+			if( !AddTimeDelta( fade.fadeStartTime, timeDelta, "sound fade start time" ) ||
+				!AddTimeDelta( fade.fadeEndTime, timeDelta, "sound fade end time" ) )
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ReadShaderParms( soundShaderParms_t& parms )
+	{
+		if( !ReadFloat( parms.minDistance, "sound min distance" ) ||
+			!ReadFloat( parms.maxDistance, "sound max distance" ) ||
+			!ReadFloat( parms.volume, "sound volume" ) ||
+			!ReadFloat( parms.attenuatedVolume, "sound attenuated volume" ) ||
+			!ReadFloat( parms.shakes, "sound shakes" ) ||
+			!ReadInt( parms.soundShaderFlags, "sound shader flags" ) ||
+			!ReadInt( parms.soundClass, "sound class" ) ||
+			!ReadFloat( parms.frequencyShift, "sound frequency shift" ) ||
+			!ReadFloat( parms.wetLevel, "sound wet level" ) ||
+			!ReadFloat( parms.dryLevel, "sound dry level" ) )
+		{
+			return false;
+		}
+		if( parms.soundClass < 0 || parms.soundClass >= SOUND_MAX_CLASSES )
+		{
+			return Fail( va( "contains invalid sound class %d", parms.soundClass ) );
+		}
+		return true;
+	}
+
+	bool AddTimeDelta( int& value, int timeDelta, const char* fieldName )
+	{
+		const int64 adjusted = static_cast<int64>( value ) + static_cast<int64>( timeDelta );
+		if( adjusted < idMath::INT_MIN || adjusted > idMath::INT_MAX )
+		{
+			return Fail( va( "contains overflowing %s", fieldName ) );
+		}
+		value = static_cast<int>( adjusted );
+		return true;
+	}
+
+	bool Fail( const char* detail )
+	{
+		if( demo != NULL )
+		{
+			return StopMalformedSoundDemo( demo, "SCMD_STATE", detail );
+		}
+		common->Error( "idSoundWorldLocal::ReadFromSaveGame: %s", detail );
+		return false;
+	}
+
+private:
+	bool ReadChecked( int bytesRead, int expectedBytes, const char* fieldName )
+	{
+		if( bytesRead == expectedBytes )
+		{
+			return true;
+		}
+		return Fail( va( "has a truncated %s (read %d of %d bytes)",
+			fieldName, bytesRead, expectedBytes ) );
+	}
+
+	idFile*		file;
+	idDemoFile*	demo;
+};
+
+}
 
 idCVar s_lockListener( "s_lockListener", "0", CVAR_BOOL, "lock listener updates" );
 idCVar s_constantAmplitude( "s_constantAmplitude", "-1", CVAR_FLOAT, "" );
@@ -978,44 +1252,52 @@ void idSoundWorldLocal::StopWritingDemo()
 idSoundWorldLocal::ProcessDemoCommand
 ========================
 */
-void idSoundWorldLocal::ProcessDemoCommand( idDemoFile* readDemo )
+bool idSoundWorldLocal::ProcessDemoCommand( idDemoFile* readDemo )
 {
-
-	if( !readDemo )
+	if( readDemo == NULL || !readDemo->IsOpen() )
 	{
-		return;
+		return false;
 	}
 
-	int index;
-	soundDemoCommand_t	dc;
-
-	if( !readDemo->ReadInt( ( int& )dc ) )
+	int command = 0;
+	if( readDemo->ReadInt( command ) != sizeof( command ) )
 	{
-		return;
+		return StopMalformedSoundDemo( readDemo, "sound command", "has a truncated command identifier" );
 	}
 
-	switch( dc )
+	idSoundDemoCommandReader reader( readDemo, SoundDemoCommandName( command ) );
+	switch( command )
 	{
 		case SCMD_CACHESOUNDSHADER:
 		{
 			int numCaches = 0;
-			readDemo->ReadInt( numCaches );
-			if( numCaches < 0 || numCaches > 4096 )
+			if( !reader.ReadInt( numCaches, "cache count" ) )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad sound cache count %d", numCaches );
+				return false;
+			}
+			if( numCaches < 0 || numCaches > SOUND_DEMO_MAX_CACHED_SOUNDS )
+			{
+				return reader.Fail( va( "contains invalid cache count %d", numCaches ) );
 			}
 			for( int i = 0; i < numCaches; ++i )
 			{
-				const char* declName = readDemo->ReadHashString();
+				idStr declName;
+				if( !reader.ReadHashString( declName, "sound shader name" ) )
+				{
+					return false;
+				}
 				declManager->FindSound( declName );
 			}
-			break;
+			return true;
 		}
 		case SCMD_STATE:
 		{
-			ReadFromSaveGame( readDemo );
+			if( !ReadSoundState( readDemo, readDemo ) )
+			{
+				return false;
+			}
 			UnPause();
-			break;
+			return true;
 		}
 		case SCMD_PLACE_LISTENER:
 		{
@@ -1023,148 +1305,173 @@ void idSoundWorldLocal::ProcessDemoCommand( idDemoFile* readDemo )
 			idMat3	axis;
 			int		listenerId;
 
-			readDemo->ReadVec3( origin );
-			readDemo->ReadMat3( axis );
-			readDemo->ReadInt( listenerId );
-
+			if( !reader.ReadVec3( origin, "listener origin" ) ||
+				!reader.ReadMat3( axis, "listener axis" ) ||
+				!reader.ReadInt( listenerId, "listener id" ) )
+			{
+				return false;
+			}
 			PlaceListener( origin, axis, listenerId );
-		};
-		break;
+			return true;
+		}
 		case SCMD_ALLOC_EMITTER:
 		{
-			readDemo->ReadInt( index );
-			if( index <= 0 || index > 65536 )
+			int index = 0;
+			if( !reader.ReadInt( index, "emitter index" ) )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return false;
+			}
+			if( index <= 0 || index >= SOUND_SAVEGAME_MAX_EMITTERS )
+			{
+				return reader.Fail( va( "contains invalid emitter index %d", index ) );
 			}
 
 			while( emitters.Num() <= index )
 			{
 				idSoundEmitterLocal* emitter = emitterAllocator.Alloc();
+				if( emitter == NULL )
+				{
+					return reader.Fail( "could not allocate an emitter" );
+				}
 				emitter->Init( emitters.Append( emitter ), this );
 			}
+			if( emitters[index] == NULL )
+			{
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
+			}
 			emitters[index]->Reset();
+			return true;
 		}
-		break;
 		case SCMD_FREE:
 		{
-			int	immediate;
-
-			readDemo->ReadInt( index );
-			readDemo->ReadInt( immediate );
+			int index = 0;
+			int immediate = 0;
+			if( !reader.ReadInt( index, "emitter index" ) ||
+				!reader.ReadInt( immediate, "immediate flag" ) )
+			{
+				return false;
+			}
 			idSoundEmitter* emitter = EmitterForIndex( index );
 			if( emitter == NULL )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
 			}
 			emitter->Free( immediate != 0 );
+			return true;
 		}
-		break;
 		case SCMD_UPDATE:
 		{
+			int index = 0;
 			idVec3 origin;
 			idVec3 velocity;
-			int listenerId;
+			int listenerId = 0;
 			soundShaderParms_t parms;
 
-			readDemo->ReadInt( index );
-			readDemo->ReadVec3( origin );
-			readDemo->ReadVec3( velocity );
-			readDemo->ReadInt( listenerId );
-			readDemo->ReadFloat( parms.minDistance );
-			readDemo->ReadFloat( parms.maxDistance );
-			readDemo->ReadFloat( parms.volume );
-			readDemo->ReadFloat( parms.attenuatedVolume );
-			readDemo->ReadFloat( parms.shakes );
-			readDemo->ReadInt( parms.soundShaderFlags );
-			readDemo->ReadInt( parms.soundClass );
-			readDemo->ReadFloat( parms.frequencyShift );
-			readDemo->ReadFloat( parms.wetLevel );
-			readDemo->ReadFloat( parms.dryLevel );
+			if( !reader.ReadInt( index, "emitter index" ) ||
+				!reader.ReadVec3( origin, "emitter origin" ) ||
+				!reader.ReadVec3( velocity, "emitter velocity" ) ||
+				!reader.ReadInt( listenerId, "listener id" ) ||
+				!ReadDemoShaderParms( reader, parms ) )
+			{
+				return false;
+			}
 			idSoundEmitter* emitter = EmitterForIndex( index );
 			if( emitter == NULL )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
 			}
 			emitter->UpdateEmitter( origin, velocity, listenerId, &parms );
+			return true;
 		}
-		break;
 		case SCMD_START:
 		{
-			const idSoundShader* shader;
-			int			channel;
-			float		diversity;
-			int			shaderFlags;
+			int index = 0;
+			idStr shaderName;
+			int channel = 0;
+			float diversity = 0.0f;
+			int shaderFlags = 0;
 
-			readDemo->ReadInt( index );
-			shader = declManager->FindSound( readDemo->ReadHashString() );
-			readDemo->ReadInt( channel );
-			readDemo->ReadFloat( diversity );
-			readDemo->ReadInt( shaderFlags );
+			if( !reader.ReadInt( index, "emitter index" ) ||
+				!reader.ReadHashString( shaderName, "sound shader name" ) ||
+				!reader.ReadInt( channel, "channel" ) ||
+				!reader.ReadFloat( diversity, "diversity" ) ||
+				!reader.ReadInt( shaderFlags, "sound shader flags" ) )
+			{
+				return false;
+			}
+			if( FLOAT_IS_NAN( diversity ) || diversity < 0.0f || diversity > 1.0f )
+			{
+				return reader.Fail( va( "contains invalid diversity %g", diversity ) );
+			}
 			idSoundEmitter* emitter = EmitterForIndex( index );
 			if( emitter == NULL )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
 			}
+			const idSoundShader* shader = declManager->FindSound( shaderName );
 			emitter->StartSound( shader, ( s_channelType )channel, diversity, shaderFlags );
+			return true;
 		}
-		break;
 		case SCMD_MODIFY:
 		{
-			int		channel;
+			int index = 0;
+			int channel = 0;
 			soundShaderParms_t parms;
 
-			readDemo->ReadInt( index );
-			readDemo->ReadInt( channel );
-			readDemo->ReadFloat( parms.minDistance );
-			readDemo->ReadFloat( parms.maxDistance );
-			readDemo->ReadFloat( parms.volume );
-			readDemo->ReadFloat( parms.attenuatedVolume );
-			readDemo->ReadFloat( parms.shakes );
-			readDemo->ReadInt( parms.soundShaderFlags );
-			readDemo->ReadInt( parms.soundClass );
-			readDemo->ReadFloat( parms.frequencyShift );
-			readDemo->ReadFloat( parms.wetLevel );
-			readDemo->ReadFloat( parms.dryLevel );
+			if( !reader.ReadInt( index, "emitter index" ) ||
+				!reader.ReadInt( channel, "channel" ) ||
+				!ReadDemoShaderParms( reader, parms ) )
+			{
+				return false;
+			}
 			idSoundEmitter* emitter = EmitterForIndex( index );
 			if( emitter == NULL )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
 			}
 			emitter->ModifySound( ( s_channelType )channel, &parms );
+			return true;
 		}
-		break;
 		case SCMD_STOP:
 		{
-			int		channel;
-
-			readDemo->ReadInt( index );
-			readDemo->ReadInt( channel );
+			int index = 0;
+			int channel = 0;
+			if( !reader.ReadInt( index, "emitter index" ) ||
+				!reader.ReadInt( channel, "channel" ) )
+			{
+				return false;
+			}
 			idSoundEmitter* emitter = EmitterForIndex( index );
 			if( emitter == NULL )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
 			}
 			emitter->StopSound( ( s_channelType )channel );
+			return true;
 		}
-		break;
 		case SCMD_FADE:
 		{
-			int		channel;
-			float	to, over;
-
-			readDemo->ReadInt( index );
-			readDemo->ReadInt( channel );
-			readDemo->ReadFloat( to );
-			readDemo->ReadFloat( over );
+			int index = 0;
+			int channel = 0;
+			float to = 0.0f;
+			float over = 0.0f;
+			if( !reader.ReadInt( index, "emitter index" ) ||
+				!reader.ReadInt( channel, "channel" ) ||
+				!reader.ReadFloat( to, "target volume" ) ||
+				!reader.ReadFloat( over, "fade duration" ) )
+			{
+				return false;
+			}
 			idSoundEmitter* emitter = EmitterForIndex( index );
 			if( emitter == NULL )
 			{
-				common->Error( "idSoundWorldLocal::ProcessDemoCommand: bad emitter index %d", index );
+				return reader.Fail( va( "references unavailable emitter %d", index ) );
 			}
 			emitter->FadeSound( ( s_channelType )channel, to, over );
+			return true;
 		}
-		break;
+		default:
+			return reader.Fail( va( "has unknown command identifier %d", command ) );
 	}
 }
 
@@ -1379,135 +1686,98 @@ idSoundWorldLocal::ReadFromSaveGame
 */
 void idSoundWorldLocal::ReadFromSaveGame( idFile* savefile )
 {
-	struct helper
-	{
-		static void ReadInt( idFile* savefile, int& value, const char* fieldName )
-		{
-			const int bytesRead = savefile->ReadInt( value );
-			if( bytesRead != sizeof( value ) )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: truncated %s (read %d of %d)",
-					fieldName, bytesRead, static_cast<int>( sizeof( value ) ) );
-			}
-		}
-		static void ReadFloat( idFile* savefile, float& value, const char* fieldName )
-		{
-			const int bytesRead = savefile->ReadFloat( value );
-			if( bytesRead != sizeof( value ) )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: truncated %s (read %d of %d)",
-					fieldName, bytesRead, static_cast<int>( sizeof( value ) ) );
-			}
-		}
-		static void ReadBool( idFile* savefile, bool& value, const char* fieldName )
-		{
-			const int bytesRead = savefile->ReadBool( value );
-			if( bytesRead != sizeof( byte ) )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: truncated %s (read %d of %d)",
-					fieldName, bytesRead, static_cast<int>( sizeof( byte ) ) );
-			}
-		}
-		static void ReadVec3( idFile* savefile, idVec3& value, const char* fieldName )
-		{
-			const int bytesRead = savefile->ReadVec3( value );
-			if( bytesRead != sizeof( value ) )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: truncated %s (read %d of %d)",
-					fieldName, bytesRead, static_cast<int>( sizeof( value ) ) );
-			}
-		}
-		static void ReadMat3( idFile* savefile, idMat3& value, const char* fieldName )
-		{
-			const int bytesRead = savefile->ReadMat3( value );
-			if( bytesRead != sizeof( value ) )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: truncated %s (read %d of %d)",
-					fieldName, bytesRead, static_cast<int>( sizeof( value ) ) );
-			}
-		}
-		static void ReadString( idFile* savefile, idStr& value, const char* fieldName )
-		{
-			int len = 0;
-			ReadInt( savefile, len, fieldName );
-			const int remainingBytes = Max( 0, savefile->Length() - savefile->Tell() );
-			if( len < 0 || len > MAX_STRING_CHARS || len > remainingBytes )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: invalid %s length %d (remaining %d)",
-					fieldName, len, remainingBytes );
-			}
-			value.Clear();
-			if( len == 0 )
-			{
-				return;
-			}
-			value.Fill( ' ', len );
-			const int bytesRead = savefile->Read( &value[0], len );
-			if( bytesRead != len )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: truncated %s payload (read %d of %d)",
-					fieldName, bytesRead, len );
-			}
-		}
-		static void ReadSoundFade( idFile* savefile, idSoundFade& sf, int timeDelta )
-		{
-			ReadInt( savefile, sf.fadeStartTime, "sound fade start time" );
-			ReadInt( savefile, sf.fadeEndTime, "sound fade end time" );
-			ReadFloat( savefile, sf.fadeStartVolume, "sound fade start volume" );
-			ReadFloat( savefile, sf.fadeEndVolume, "sound fade end volume" );
-			sf.Sanitize();
-			if( sf.fadeEndTime > 0 )
-			{
-				sf.fadeStartTime += timeDelta;
-				sf.fadeEndTime += timeDelta;
-			}
-		}
-		static void ReadShaderParms( idFile* savefile, soundShaderParms_t& parms )
-		{
-			ReadFloat( savefile, parms.minDistance, "sound min distance" );
-			ReadFloat( savefile, parms.maxDistance, "sound max distance" );
-			ReadFloat( savefile, parms.volume, "sound volume" );
-			ReadFloat( savefile, parms.attenuatedVolume, "sound attenuated volume" );
-			ReadFloat( savefile, parms.shakes, "sound shakes" );
-			ReadInt( savefile, parms.soundShaderFlags, "sound shader flags" );
-			ReadInt( savefile, parms.soundClass, "sound class" );
-			if( parms.soundClass < 0 || parms.soundClass >= SOUND_MAX_CLASSES )
-			{
-				common->Error( "idSoundWorldLocal::ReadFromSaveGame: invalid sound class %d", parms.soundClass );
-			}
-			ReadFloat( savefile, parms.frequencyShift, "sound frequency shift" );
-			ReadFloat( savefile, parms.wetLevel, "sound wet level" );
-			ReadFloat( savefile, parms.dryLevel, "sound dry level" );
-		}
-	};
-	int oldSoundTime = 0;
-	helper::ReadInt( savefile, oldSoundTime, "old sound time" );
-	int timeDelta = GetSoundTime() - oldSoundTime;
+	ReadSoundState( savefile, NULL );
+}
 
-	helper::ReadSoundFade( savefile, volumeFade, timeDelta );
+/*
+=================
+idSoundWorldLocal::ReadSoundState
+
+SCMD_STATE deliberately uses the savegame wire layout. Savegame failures keep
+their historical fatal policy, while render-demo failures close the demo and
+return false to the session.
+=================
+*/
+bool idSoundWorldLocal::ReadSoundState( idFile* savefile, idDemoFile* demoFile )
+{
+	if( savefile == NULL )
+	{
+		if( demoFile != NULL )
+		{
+			return StopMalformedSoundDemo( demoFile, "SCMD_STATE", "has no input file" );
+		}
+		common->Error( "idSoundWorldLocal::ReadFromSaveGame: NULL input file" );
+		return false;
+	}
+
+	idSoundStateReader reader( savefile, demoFile );
+	bool rebuildingEmitters = false;
+	const auto AbortRead = [&]() -> bool
+	{
+		if( demoFile != NULL && rebuildingEmitters )
+		{
+			// Never leave partially initialized emitters or channel slots live
+			// after a malformed state command.
+			ClearAllSoundEmitters();
+		}
+		return false;
+	};
+
+	int oldSoundTime = 0;
+	if( !reader.ReadInt( oldSoundTime, "old sound time" ) )
+	{
+		return AbortRead();
+	}
+	const int64 timeDelta64 = static_cast<int64>( GetSoundTime() ) - static_cast<int64>( oldSoundTime );
+	if( timeDelta64 < idMath::INT_MIN || timeDelta64 > idMath::INT_MAX )
+	{
+		reader.Fail( "contains an overflowing sound time delta" );
+		return AbortRead();
+	}
+	const int timeDelta = static_cast<int>( timeDelta64 );
+
+	idSoundFade restoredVolumeFade;
+	idSoundFade restoredSoundClassFade[SOUND_MAX_CLASSES];
+	float restoredSlowmoSpeed = 1.0f;
+	bool restoredEnviroSuitActive = false;
+	listener_t restoredListener;
+	float restoredShakeAmp = 0.0f;
+
+	if( !reader.ReadSoundFade( restoredVolumeFade, timeDelta ) )
+	{
+		return AbortRead();
+	}
 	for( int c = 0; c < SOUND_MAX_CLASSES; c++ )
 	{
-		helper::ReadSoundFade( savefile, soundClassFade[c], timeDelta );
+		if( !reader.ReadSoundFade( restoredSoundClassFade[c], timeDelta ) )
+		{
+			return AbortRead();
+		}
 	}
-	helper::ReadFloat( savefile, slowmoSpeed, "slowmo speed" );
-	SetSlowmoSpeed( slowmoSpeed );
-	helper::ReadBool( savefile, enviroSuitActive, "enviro suit state" );
-
-	helper::ReadMat3( savefile, listener.axis, "listener axis" );
-	helper::ReadVec3( savefile, listener.pos, "listener position" );
-	helper::ReadInt( savefile, listener.id, "listener id" );
-	helper::ReadInt( savefile, listener.area, "listener area" );
-
-	helper::ReadFloat( savefile, shakeAmp, "shake amplitude" );
-	rumbleAmp = 0.0f;
+	if( !reader.ReadFloat( restoredSlowmoSpeed, "slowmo speed" ) ||
+		!reader.ReadBool( restoredEnviroSuitActive, "enviro suit state" ) ||
+		!reader.ReadMat3( restoredListener.axis, "listener axis" ) ||
+		!reader.ReadVec3( restoredListener.pos, "listener position" ) ||
+		!reader.ReadInt( restoredListener.id, "listener id" ) ||
+		!reader.ReadInt( restoredListener.area, "listener area" ) ||
+		!reader.ReadFloat( restoredShakeAmp, "shake amplitude" ) )
+	{
+		return AbortRead();
+	}
 
 	int numEmitters = 0;
-	helper::ReadInt( savefile, numEmitters, "sound emitter count" );
+	if( !reader.ReadInt( numEmitters, "sound emitter count" ) )
+	{
+		return AbortRead();
+	}
 	if( numEmitters < 1 || numEmitters > SOUND_SAVEGAME_MAX_EMITTERS )
 	{
-		common->Error( "idSoundWorldLocal::ReadFromSaveGame: bad emitter count %d", numEmitters );
+		reader.Fail( va( "contains invalid emitter count %d", numEmitters ) );
+		return AbortRead();
 	}
+
 	ClearAllSoundEmitters();
+	rebuildingEmitters = true;
 	idStr shaderName;
 	int totalChannels = 0;
 	// Start at 1 because the local sound emitter is not saved
@@ -1517,50 +1787,87 @@ void idSoundWorldLocal::ReadFromSaveGame( idFile* savefile )
 		// channels is immediately reusable and would collapse the serialized
 		// index space before later emitters have been recreated.
 		idSoundEmitterLocal* emitter = emitterAllocator.Alloc();
+		if( emitter == NULL )
+		{
+			reader.Fail( va( "could not allocate emitter %d", e ) );
+			return AbortRead();
+		}
 		const int restoredIndex = emitters.Append( emitter );
 		emitter->Init( restoredIndex, this );
 		if( restoredIndex != e || emitter->index != e || emitter->soundWorld != this || emitter->channels.Num() != 0 )
 		{
-			common->Error( "idSoundWorldLocal::ReadFromSaveGame: failed to recreate emitter index %d (got %d)",
-				e, restoredIndex );
+			reader.Fail( va( "could not recreate emitter index %d (got %d)", e, restoredIndex ) );
+			return AbortRead();
 		}
-		helper::ReadBool( savefile, emitter->canFree, "emitter can-free flag" );
-		helper::ReadVec3( savefile, emitter->origin, "emitter origin" );
-		helper::ReadInt( savefile, emitter->emitterId, "emitter listener id" );
-		helper::ReadShaderParms( savefile, emitter->parms );
+		if( !reader.ReadBool( emitter->canFree, "emitter can-free flag" ) ||
+			!reader.ReadVec3( emitter->origin, "emitter origin" ) ||
+			!reader.ReadInt( emitter->emitterId, "emitter listener id" ) ||
+			!reader.ReadShaderParms( emitter->parms ) )
+		{
+			return AbortRead();
+		}
+
 		int numChannels = 0;
-		helper::ReadInt( savefile, numChannels, "emitter channel count" );
+		if( !reader.ReadInt( numChannels, "emitter channel count" ) )
+		{
+			return AbortRead();
+		}
 		if( numChannels < 0 || numChannels > MAX_CHANNELS_PER_EMITTER )
 		{
-			common->Error( "idSoundWorldLocal::ReadFromSaveGame: bad channel count %d", numChannels );
+			reader.Fail( va( "contains invalid channel count %d for emitter %d", numChannels, e ) );
+			return AbortRead();
 		}
 		if( totalChannels > SOUND_SAVEGAME_MAX_TOTAL_CHANNELS - numChannels )
 		{
-			common->Error( "idSoundWorldLocal::ReadFromSaveGame: too many restored sound channels" );
+			reader.Fail( va( "contains more than %d sound channels", SOUND_SAVEGAME_MAX_TOTAL_CHANNELS ) );
+			return AbortRead();
 		}
 		totalChannels += numChannels;
-		emitter->channels.SetNum( numChannels );
+
 		for( int c = 0; c < numChannels; c++ )
 		{
 			idSoundChannel* channel = AllocSoundChannel();
-			emitter->channels[c] = channel;
+			if( channel == NULL )
+			{
+				reader.Fail( va( "could not allocate channel %d for emitter %d", c, e ) );
+				return AbortRead();
+			}
+			emitter->channels.Append( channel );
 			channel->emitter = emitter;
 			channel->lastFrequencyShiftTime = 0;
 			channel->lastFrequencyShift = 1.0f;
 			channel->elapsedFrequencyShiftTime = 0.0f;
-			helper::ReadInt( savefile, channel->startTime, "channel start time" );
-			helper::ReadInt( savefile, channel->endTime, "channel end time" );
-			helper::ReadInt( savefile, channel->logicalChannel, "channel logical channel" );
-			helper::ReadInt( savefile, channel->choice, "channel sample choice" );
-			helper::ReadBool( savefile, channel->allowSlow, "channel allow-slow flag" );
-			helper::ReadShaderParms( savefile, channel->parms );
-			helper::ReadSoundFade( savefile, channel->volumeFade, timeDelta );
-			helper::ReadString( savefile, shaderName, "sound shader name" );
-			channel->soundShader = declManager->FindSound( shaderName );
+
+			if( !reader.ReadInt( channel->startTime, "channel start time" ) ||
+				!reader.ReadInt( channel->endTime, "channel end time" ) ||
+				!reader.ReadInt( channel->logicalChannel, "channel logical channel" ) ||
+				!reader.ReadInt( channel->choice, "channel sample choice" ) ||
+				!reader.ReadBool( channel->allowSlow, "channel allow-slow flag" ) ||
+				!reader.ReadShaderParms( channel->parms ) ||
+				!reader.ReadSoundFade( channel->volumeFade, timeDelta ) ||
+				!reader.ReadString( shaderName, "sound shader name" ) )
+			{
+				return AbortRead();
+			}
+
 			int leadin = 0;
 			int looping = 0;
-			helper::ReadInt( savefile, leadin, "channel leadin index" );
-			helper::ReadInt( savefile, looping, "channel looping index" );
+			if( !reader.ReadInt( leadin, "channel leadin index" ) ||
+				!reader.ReadInt( looping, "channel looping index" ) ||
+				!reader.ReadInt( channel->lastFrequencyShiftTime, "channel frequency shift time" ) ||
+				!reader.ReadFloat( channel->lastFrequencyShift, "channel last frequency shift" ) ||
+				!reader.ReadFloat( channel->elapsedFrequencyShiftTime, "channel elapsed frequency shift time" ) )
+			{
+				return AbortRead();
+			}
+
+			channel->soundShader = declManager->FindSound( shaderName );
+			if( channel->soundShader == NULL )
+			{
+				reader.Fail( va( "could not resolve sound shader '%s'", shaderName.c_str() ) );
+				return AbortRead();
+			}
+
 			// If the leadin sample is not valid (possible if the shader changed after saving) then the looping entry can't be valid either.
 			channel->leadinSample = NULL;
 			channel->loopingSample = NULL;
@@ -1570,10 +1877,10 @@ void idSoundWorldLocal::ReadFromSaveGame( idFile* savefile )
 			}
 			else if( leadin <= -2 )
 			{
-				const int leadinIndex = -2 - leadin;
+				const int64 leadinIndex = -2LL - static_cast<int64>( leadin );
 				if( leadinIndex >= 0 && leadinIndex < channel->soundShader->leadins.Num() )
 				{
-					channel->leadinSample = channel->soundShader->leadins[ leadinIndex ];
+					channel->leadinSample = channel->soundShader->leadins[ static_cast<int>( leadinIndex ) ];
 				}
 			}
 			if( channel->leadinSample != NULL && looping >= 0 && looping < channel->soundShader->entries.Num() )
@@ -1584,12 +1891,13 @@ void idSoundWorldLocal::ReadFromSaveGame( idFile* savefile )
 			{
 				channel->loopingSample = channel->leadinSample;
 			}
-			helper::ReadInt( savefile, channel->lastFrequencyShiftTime, "channel frequency shift time" );
-			helper::ReadFloat( savefile, channel->lastFrequencyShift, "channel last frequency shift" );
-			helper::ReadFloat( savefile, channel->elapsedFrequencyShiftTime, "channel elapsed frequency shift time" );
+
 			if( channel->lastFrequencyShiftTime > 0 )
 			{
-				channel->lastFrequencyShiftTime += timeDelta;
+				if( !reader.AddTimeDelta( channel->lastFrequencyShiftTime, timeDelta, "channel frequency shift time" ) )
+				{
+					return AbortRead();
+				}
 			}
 			else
 			{
@@ -1607,7 +1915,10 @@ void idSoundWorldLocal::ReadFromSaveGame( idFile* savefile )
 			{
 				channel->elapsedFrequencyShiftTime = 0.0f;
 			}
-			channel->startTime += timeDelta;
+			if( !reader.AddTimeDelta( channel->startTime, timeDelta, "channel start time" ) )
+			{
+				return AbortRead();
+			}
 			if( channel->endTime == 0 )
 			{
 				// Do nothing, endTime == 0 means loop forever
@@ -1619,10 +1930,25 @@ void idSoundWorldLocal::ReadFromSaveGame( idFile* savefile )
 			}
 			else
 			{
-				channel->endTime += timeDelta;
+				if( !reader.AddTimeDelta( channel->endTime, timeDelta, "channel end time" ) )
+				{
+					return AbortRead();
+				}
 			}
 		}
 	}
+
+	volumeFade = restoredVolumeFade;
+	for( int c = 0; c < SOUND_MAX_CLASSES; c++ )
+	{
+		soundClassFade[c] = restoredSoundClassFade[c];
+	}
+	SetSlowmoSpeed( restoredSlowmoSpeed );
+	enviroSuitActive = restoredEnviroSuitActive;
+	listener = restoredListener;
+	shakeAmp = restoredShakeAmp;
+	rumbleAmp = 0.0f;
+	return true;
 }
 
 /*

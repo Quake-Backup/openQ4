@@ -66,6 +66,14 @@ void R_ClearOverlayMaterials( idList<overlayMaterial_t *> &materials ) {
 	materials.Clear();
 }
 
+bool R_RejectOverlayDemo( idDemoFile *f, const char *reason ) {
+	common->Warning( "Malformed render demo overlay: %s; playback stopped safely", reason );
+	if ( f != NULL ) {
+		f->Close();
+	}
+	return false;
+}
+
 bool R_MaterializePrimBatchOverlayTriangles( const srfTriangles_t &sourceTri, srfTriangles_t &tempTri, idDrawVert *tempVerts, glIndex_t *tempIndexes ) {
 	memset( &tempTri, 0, sizeof( tempTri ) );
 	tempTri.bounds = sourceTri.bounds;
@@ -488,10 +496,10 @@ bool idRenderModelOverlay::ReadFromDemoFile( idDemoFile *f ) {
 	R_ClearOverlayMaterials( materials );
 
 	if ( f == NULL || f->ReadInt( numMaterials ) != sizeof( numMaterials ) ) {
-		return false;
+		return R_RejectOverlayDemo( f, "truncated material count" );
 	}
 	if ( numMaterials < 0 || numMaterials > 1024 ) {
-		common->Error( "idRenderModelOverlay::ReadFromDemoFile: bad material count %d", numMaterials );
+		return R_RejectOverlayDemo( f, va( "material count %d is out of range", numMaterials ) );
 	}
 
 	for ( int materialIndex = 0; materialIndex < numMaterials; materialIndex++ ) {
@@ -499,15 +507,19 @@ bool idRenderModelOverlay::ReadFromDemoFile( idDemoFile *f ) {
 		const char *materialName = f->ReadHashString();
 		int numSurfaces;
 
+		if ( !f->IsOpen() ) {
+			R_FreeOverlayMaterial( material );
+			return false;
+		}
 		material->material = ( materialName[0] != '\0' ) ? declManager->FindMaterial( materialName ) : NULL;
 
 		if ( f->ReadInt( numSurfaces ) != sizeof( numSurfaces ) ) {
 			R_FreeOverlayMaterial( material );
-			return false;
+			return R_RejectOverlayDemo( f, "truncated surface count" );
 		}
 		if ( numSurfaces < 0 || numSurfaces > MAX_OVERLAY_SURFACES ) {
 			R_FreeOverlayMaterial( material );
-			common->Error( "idRenderModelOverlay::ReadFromDemoFile: bad surface count %d", numSurfaces );
+			return R_RejectOverlayDemo( f, va( "surface count %d is out of range", numSurfaces ) );
 		}
 
 		material->surfaces.SetNum( numSurfaces );
@@ -527,16 +539,15 @@ bool idRenderModelOverlay::ReadFromDemoFile( idDemoFile *f ) {
 				 f->ReadInt( numIndexes ) != sizeof( numIndexes ) ) {
 				Mem_Free( surface );
 				R_FreeOverlayMaterial( material );
-				return false;
+				return R_RejectOverlayDemo( f, "truncated surface header" );
 			}
 
 			if ( numVerts < 0 || numVerts > 1 << 20 || numIndexes < 0 || numIndexes > 1 << 21 || ( numIndexes % 3 ) != 0 ) {
 				Mem_Free( surface );
 				R_FreeOverlayMaterial( material );
-				common->Error(
-					"idRenderModelOverlay::ReadFromDemoFile: invalid surface payload verts=%d indexes=%d",
-					numVerts,
-					numIndexes
+				return R_RejectOverlayDemo(
+					f,
+					va( "surface payload has invalid counts (vertices %d, indices %d)", numVerts, numIndexes )
 				);
 			}
 
@@ -551,7 +562,7 @@ bool idRenderModelOverlay::ReadFromDemoFile( idDemoFile *f ) {
 						 f->ReadFloat( surface->verts[vertIndex].st[1] ) != sizeof( surface->verts[vertIndex].st[1] ) ) {
 						FreeSurface( surface );
 						R_FreeOverlayMaterial( material );
-						return false;
+						return R_RejectOverlayDemo( f, "truncated vertex payload" );
 					}
 				}
 			}
@@ -564,12 +575,12 @@ bool idRenderModelOverlay::ReadFromDemoFile( idDemoFile *f ) {
 					if ( f->ReadInt( storedIndex ) != sizeof( storedIndex ) ) {
 						FreeSurface( surface );
 						R_FreeOverlayMaterial( material );
-						return false;
+						return R_RejectOverlayDemo( f, "truncated vertex index" );
 					}
 					if ( storedIndex < 0 || storedIndex >= surface->numVerts ) {
 						FreeSurface( surface );
 						R_FreeOverlayMaterial( material );
-						common->Error( "idRenderModelOverlay::ReadFromDemoFile: bad index %d", storedIndex );
+						return R_RejectOverlayDemo( f, va( "vertex index %d is out of range", storedIndex ) );
 					}
 					surface->indexes[index] = storedIndex;
 				}

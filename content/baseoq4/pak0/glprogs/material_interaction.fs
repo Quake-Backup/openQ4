@@ -15,6 +15,7 @@ uniform float uStockInteraction;
 uniform float uAmbientLight;
 uniform samplerCube uAmbientNormalMap;
 uniform vec4 uCelParams;
+uniform vec4 uFlatDiffuseParams;
 
 varying vec2 vBumpTexCoord;
 varying vec2 vDiffuseTexCoord;
@@ -30,13 +31,49 @@ vec3 SafeNormalize( vec3 value ) {
 	return value * inversesqrt( max( dot( value, value ), 1.0e-8 ) );
 }
 
+// uFlatDiffuseParams = ( strength, local min Z, inverse height, upward phase ).
+// A wrapped, feathered band avoids a visible reset when it reaches the top.
+vec3 ApplyFlatDiffuseSweep( vec3 diffuse, float localZ ) {
+	if ( uFlatDiffuseParams.x <= 0.0 ) {
+		return diffuse;
+	}
+	float height = clamp( ( localZ - uFlatDiffuseParams.y ) * uFlatDiffuseParams.z, 0.0, 1.0 );
+	float distanceToBand = abs( height - fract( uFlatDiffuseParams.w ) );
+	distanceToBand = min( distanceToBand, 1.0 - distanceToBand );
+	float band = 1.0 - smoothstep( 0.045, 0.16, distanceToBand );
+	return mix( diffuse, vec3( 1.0 ), uFlatDiffuseParams.x * band );
+}
+
 // ---------------------------------------------------------------------------
-// Cel banding. uCelParams is ( bandsEnabled, bandCount, hardSpecular, unused ).
+// Cel banding. uCelParams is ( bandsEnabled, bandCount, hardSpecular, softness ).
 // The same ladder is shared with R_CelQuantizeUnitValue on the CPU side.
 // ---------------------------------------------------------------------------
 
 float CelSteps() {
 	return max( uCelParams.y - 1.0, 1.0 );
+}
+
+// Places a 0..1 value on the band ladder. uCelParams.w widens every boundary
+// into a smoothstep centred exactly where the hard step would have landed, so
+// the plateaus survive but the transition stops being one texel wide - which
+// is what kept a terminator crawling across a curved surface as the camera
+// moved. At 0 this is floor( value * steps + 0.5 ) / steps again, to the bit.
+float CelLadder( float value ) {
+	float steps = CelSteps();
+	float scaled = value * steps;
+
+	float softness = clamp( uCelParams.w, 0.0, 1.0 );
+	if ( softness <= 0.0 ) {
+		return floor( scaled + 0.5 ) / steps;
+	}
+
+	// floor( scaled ) names the band below this value and the boundary above it
+	// sits half a band away, so the blend window is centred on 0.5.
+	float lower = floor( scaled );
+	float halfWidth = softness * 0.5;
+	float blend = smoothstep( 0.5 - halfWidth, 0.5 + halfWidth, scaled - lower );
+
+	return ( lower + blend ) / steps;
 }
 
 // Quantizes a light contribution without shifting its hue: the brightest
@@ -52,8 +89,7 @@ vec3 CelQuantizeLight( vec3 light ) {
 		return light;
 	}
 
-	float steps = CelSteps();
-	return light * ( ( floor( peak * steps + 0.5 ) / steps ) / peak );
+	return light * ( CelLadder( peak ) / peak );
 }
 
 // Collapses the specular falloff into flat plateaus on the same ladder, which
@@ -63,8 +99,7 @@ float CelSpecularTerm( float term ) {
 		return term;
 	}
 
-	float steps = CelSteps();
-	return floor( clamp( term, 0.0, 1.0 ) * steps + 0.5 ) / steps;
+	return CelLadder( clamp( term, 0.0, 1.0 ) );
 }
 
 vec3 DecodeLocalNormal( vec4 bumpSample ) {
@@ -119,6 +154,7 @@ void main() {
 	light *= texture2DProj( uLightProjectionMap, vLightProjectionTexCoord ).rgb;
 
 	vec3 diffuse = texture2D( uDiffuseMap, vDiffuseTexCoord ).rgb * uDiffuseColor.rgb;
+	diffuse = ApplyFlatDiffuseSweep( diffuse, vLightFalloffTexCoord.z );
 
 	vec3 specularSample = texture2D( uSpecularMap, vSpecularTexCoord ).rgb;
 	// The stock ARB2 interaction reads the half-angle back through the

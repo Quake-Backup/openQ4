@@ -133,6 +133,11 @@ SURFACES
 // drawSurf_t are always allocated and freed every frame, they are never cached
 static const int	DSF_VIEW_INSIDE_SHADOW	= 1;
 static const int	DSF_BSE_EFFECT			= 2;
+// Surface of an entity forced into the view by REF_OUTLINE_THROUGH_WORLD that the
+// portal walk never reached. It lives on viewDef->outlineDrawSurfs rather than
+// viewDef->drawSurfs, so the flag is a statement of provenance for anything
+// holding one, not a test the main passes have to remember to make.
+static const int	DSF_OUTLINE_ONLY		= 4;
 
 typedef struct drawSurf_s {
 	const srfTriangles_t	*geo;
@@ -303,6 +308,14 @@ typedef struct viewEntity_s {
 	float				distanceToCamera;
 	float				screenCoverage;
 
+	// Immutable back-end copy of renderEntity_t's flat diffuse presentation.
+	// Height parameters normalize model-local Z as
+	// ( localZ - flatDiffuseMinZ ) * flatDiffuseInvHeight.
+	idVec4				flatDiffuseColor;
+	int					flatDiffuseFlags;
+	float				flatDiffuseMinZ;
+	float				flatDiffuseInvHeight;
+
 	float				modelMatrix[16];		// local coords to global coords
 	float				modelViewMatrix[16];	// local coords to eye coords
 
@@ -373,6 +386,15 @@ typedef struct viewDef_s {
 	int					numDrawSurfs;			// it is allocated in frame temporary memory
 	int					maxDrawSurfs;			// may be resized
 
+	// Surfaces of entities forced into the view for their outline alone, which the
+	// portal walk never reached - see R_AddThroughWorldOutlines. They are kept off
+	// drawSurfs deliberately. Such an entity is in no depth buffer, receives no
+	// light and casts no shadow, so every pass but the outline would draw it
+	// wrong; a separate list means no pass can get it wrong by forgetting to look.
+	drawSurf_t **		outlineDrawSurfs;
+	int					numOutlineDrawSurfs;
+	int					maxOutlineDrawSurfs;
+
 	struct viewLight_s	*viewLights;			// chain of all viewLights effecting view
 	struct viewEntity_s	*viewEntitys;			// chain of all viewEntities effecting view, including off screen ones casting shadows
 	// we use viewEntities as a check to see if a given view consists solely
@@ -405,6 +427,7 @@ typedef struct {
 
 	idVec4				diffuseColor;	// may have a light color baked into it, will be < tr.backEndRendererMaxLight
 	idVec4				specularColor;	// may have a light color baked into it, will be < tr.backEndRendererMaxLight
+	idVec4				flatDiffuseParams;	// sweep strength, local min Z, inverse height, upward phase
 	stageVertexColor_t	vertexColor;	// applies to both diffuse and specular
 
 	int					ambientLight;	// use tr.ambientNormalMap instead of normalization cube map 
@@ -1004,6 +1027,7 @@ extern idCVar r_celShading;				// cel shading on model entities
 extern idCVar r_celShadingWorld;		// cel shading and edge outlines on world geometry
 extern idCVar r_celShadingBands;		// quantize interaction lighting into cel bands
 extern idCVar r_celShadingSteps;		// number of cel lighting bands
+extern idCVar r_celShadingSoftness;		// how far a cel band boundary is allowed to blend
 extern idCVar r_celShadingSpecular;		// hard-edge specular highlights when cel shading
 extern idCVar r_celViewWeapon;			// allow cel shading on the first-person weapon
 extern idCVar r_celOutline;				// silhouette outline shells on cel-shaded models
@@ -1243,6 +1267,17 @@ extern idCVar r_lightGridBakeReadbackSlots;	// async readback slot count for lig
 extern idCVar r_skipBlendLights;		// skip all blend lights
 extern idCVar r_skipFogLights;			// skip all fog lights
 extern idCVar r_skipPlayerVisibilityEffects;	// skip the player brightskin / rimlight / outline overlays
+
+// Player rimlight shaping ladder, shared by the cvar registration and the pass
+// that feeds glprogs/player_rimlight.fs. The defaults reproduce the squared
+// falloff the pass used to hard-code, so an untouched config looks unchanged.
+const float RB_PLAYER_RIMLIGHT_MIN_POWER = 0.25f;
+const float RB_PLAYER_RIMLIGHT_MAX_POWER = 8.0f;
+const float RB_PLAYER_RIMLIGHT_MIN_FLOOR = 0.0f;
+const float RB_PLAYER_RIMLIGHT_MAX_FLOOR = 1.0f;
+
+extern idCVar r_playerRimlightPower;	// player rimlight falloff exponent
+extern idCVar r_playerRimlightFloor;	// player rimlight floor, keeps a sliver of colour on camera-facing surfaces
 extern idCVar r_skipSubviews;			// 1 = don't render any mirrors / cameras / etc
 extern idCVar r_skipGuiShaders;			// 1 = don't render any gui elements on surfaces
 extern idCVar r_skipParticles;			// 1 = don't render any particles
@@ -1682,6 +1717,7 @@ void R_AddEffectSurfaces(void);
 
 void R_AddLightSurfaces( void );
 void R_AddModelSurfaces( void );
+void R_AddThroughWorldOutlines( void );
 void R_RemoveUnecessaryViewLights( void );
 
 void R_FreeDerivedData( void );
@@ -1749,6 +1785,10 @@ void RB_CreateSingleDrawInteractions( const drawSurf_t *surf, void (*DrawInterac
 void RB_CreateSingleDrawInteractionsFiltered( const drawSurf_t *surf, void (*DrawInteraction)(const drawInteraction_t *), drawInteractionStageFilter_t StageFilter );
 void R_SetDrawInteraction( const shaderStage_t *surfaceStage, const float *surfaceRegs,
 						  idImage **image, idVec4 matrix[2], float color[4] );
+bool RB_FlatDiffuseSurfaceActive( const drawSurf_t *surf );
+bool RB_FlatDiffuseSweepActive( const drawSurf_t *surf );
+void RB_GetFlatDiffuseParams( const drawSurf_t *surf, idVec4 &params );
+void RB_ApplyFlatDiffuseStage( const drawSurf_t *surf, idImage **diffuseImage, float diffuseColor[4], idVec4 &params );
 
 const shaderStage_t *RB_SetLightTexture( const idRenderLightLocal *light );
 

@@ -93,8 +93,8 @@ public:
 	void				RemoteConsole( const char *command );
 	bool				IsPortInitialized() { return clientPort.GetPort() != 0; }
 
-	bool				IsActive( void ) const { return active; }
-	int					GetLocalClientNum( void ) const { return clientNum; }
+	bool				IsActive( void ) const;
+	int					GetLocalClientNum( void ) const;
 	const netadr_t&		GetServerAddress( void ) const { return serverAddress; }
 	int					GetPrediction( void ) const;
 	int					GetTimeSinceLastPacket( void ) const;

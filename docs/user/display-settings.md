@@ -227,6 +227,13 @@ All of them are exposed in `Multiplayer -> Settings -> Appearance`, under the **
 | `cl_player_brightskin_enemy_color` | `1 0.05 0.02` | Enemy bright skin RGB color, using float components. |
 | `cl_player_brightskin_team_color` | `0.05 1 0.22` | Teammate bright skin RGB color, using float components. |
 
+Two renderer cvars shape the rimlight itself. They are not in the menu, and their defaults reproduce the fixed falloff the pass used before they existed, so an untouched config looks the same:
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `r_playerRimlightPower` | `2.0` | Rimlight falloff exponent (`0.25..8.0`). Higher tightens the band to the silhouette; lower spreads it across the body. |
+| `r_playerRimlightFloor` | `0` | Rimlight floor (`0..1`). Lifts the whole body by this fraction of the rim strength, so a player facing you head on is still tinted. At `1` the rimlight becomes a flat additive wash. |
+
 Example:
 
 ```cfg
@@ -239,10 +246,37 @@ seta cl_player_outline_width 2.0
 
 Notes:
 - The outline is a shell drawn just outside the player silhouette and masked against the silhouette itself, so it stays a constant-width ring at any distance instead of tinting the whole body. Overlapping body, head, and weapon surfaces are each painted once, so the outline does not darken where they meet.
-- The rimlight needs GLSL support (`glprogs/player_rimlight.*`). On a driver without it the rimlight is skipped; outline and bright skin still work.
+- The ring holds its requested pixel width in every direction, including on ultrawide displays.
+- Only the **outline** is ever drawn through geometry. Teammate outlines ignore depth and are drawn across the whole level, so an ally anywhere on the map reads as a ring at their position. The rimlight and the bright skin stay depth tested in every case — a ring marks a position, while a shaded body seen through a wall is a different thing entirely.
+- See-through and depth-tested outlines are masked separately, so an ally behind geometry never erases the ring off an enemy standing in front of them.
+- The rimlight needs GLSL support (`glprogs/player_rimlight.*`). On a driver without it the rimlight is skipped and the console says so once; outline and bright skin still work.
 - Without GLSL the outline falls back to a scaled shell, which approximates the requested pixel width instead of matching it exactly.
 - The overlays are drawn after the ambient floor and light-grid passes, so `r_forceAmbient` and indirect lighting no longer wash them out.
 - `r_skipPlayerVisibilityEffects 1` disables all three overlays engine-side, for clean captures or A/B comparisons.
+- Bots are ordinary players for this feature: they occupy real client slots, so they receive the same overlays as human opponents and teammates. Nothing in the decision keys on being a bot.
+- `g_showPlayerVisibilityEffects 1` prints one line per player whenever the answer changes — whether the overlays were applied and which render entities were reached (body, head, world weapon), or the reason they were skipped, and whether the client is a bot. Use it when a strength cvar looks like it is doing nothing. Steady states print once, not every frame.
+
+## Multiplayer Pickup and Opponent-Weapon Style
+
+`Settings -> Game Options -> General` includes two client-side presentation
+controls for multiplayer. Stock appearance remains the default, and neither
+control changes game state or what anybody else sees.
+
+| Setting | Default | What it does |
+|---|---:|---|
+| `g_simpleItems` | `0` | Pickup style: `0` original models, `1` legacy simple icons, `2` icon-coloured flat diffuse, or `3` flat diffuse with a soft light sweep moving up each world item. |
+| `g_mpFlatOpponentWeapons` | `0` | `1` gives weapons held by opponents the matching icon-coloured flat diffuse. Held weapons never receive the moving sweep. |
+
+Flat pickup styles change only the diffuse colour layer of a model. Authored
+normal maps, specular highlights, effects, emissive/ambient layers, and alpha
+coverage remain intact; transparent shells such as the bubbles around health
+pickups therefore keep their original appearance. Weapon and ammo pickups in
+the world are items, so style `3` gives them the upward sweep too.
+
+The first-person view weapon is always excluded, even when opponent-weapon
+colour is enabled. In team modes the optional held-weapon colour applies only
+to the opposing team; in free-for-all it applies to every other player.
+Changes take effect immediately without reconnecting.
 
 ## Resolution Scale
 

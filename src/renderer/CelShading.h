@@ -31,6 +31,12 @@ typedef struct drawSurf_s drawSurf_t;
 static const int CEL_MIN_BANDS = 2;
 static const int CEL_MAX_BANDS = 8;
 
+// How much of a band width each boundary is allowed to blend across. 0 is the
+// classic hard step; 1 spreads the transition over a whole band, which is
+// nearly smooth again but keeps the band count's tonal spacing.
+static const float CEL_MIN_BAND_SOFTNESS = 0.0f;
+static const float CEL_MAX_BAND_SOFTNESS = 1.0f;
+
 // Outline widths are authored in pixels and converted to a model expansion
 // scale per surface, so a silhouette stays the same thickness at any range.
 static const float CEL_MIN_OUTLINE_WIDTH = 0.5f;
@@ -42,6 +48,9 @@ static const float CEL_MAX_WORLD_OUTLINE_WIDTH = 8.0f;
 
 // Number of quantization steps requested by r_celShadingSteps, clamped.
 int			R_CelBandCount( void );
+
+// Band edge softness requested by r_celShadingSoftness, clamped.
+float		R_CelBandSoftness( void );
 
 // Quantize a 0..1 intensity onto the band ladder. Values outside the open
 // interval pass through untouched so full black and full white stay exact.

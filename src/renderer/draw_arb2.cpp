@@ -1791,6 +1791,7 @@ typedef struct {
 	GLint			vertexColorParams;
 	GLint			diffuseColor;
 	GLint			specularColor;
+	GLint			flatDiffuseParams;
 	GLint			materialEnhanced;
 	GLint			materialNormalScale;
 	GLint			materialSpecularBoost;
@@ -1911,6 +1912,7 @@ typedef struct {
 	GLint			vertexColorParams;
 	GLint			diffuseColor;
 	GLint			specularColor;
+	GLint			flatDiffuseParams;
 	GLint			materialEnhanced;
 	GLint			materialNormalScale;
 	GLint			materialSpecularBoost;
@@ -1965,6 +1967,7 @@ typedef struct {
 	GLint			vertexColorParams;
 	GLint			diffuseColor;
 	GLint			specularColor;
+	GLint			flatDiffuseParams;
 	GLint			materialNormalScale;
 	GLint			materialSpecularBoost;
 	GLint			materialFresnel;
@@ -4747,6 +4750,7 @@ static bool RB_MaterialInteractionLoadProgram( void ) {
 	g_materialInteractionProgram.vertexColorParams = glGetUniformLocationARB( programObject, "uVertexColorParams" );
 	g_materialInteractionProgram.diffuseColor = glGetUniformLocationARB( programObject, "uDiffuseColor" );
 	g_materialInteractionProgram.specularColor = glGetUniformLocationARB( programObject, "uSpecularColor" );
+	g_materialInteractionProgram.flatDiffuseParams = glGetUniformLocationARB( programObject, "uFlatDiffuseParams" );
 	g_materialInteractionProgram.materialNormalScale = glGetUniformLocationARB( programObject, "uMaterialNormalScale" );
 	g_materialInteractionProgram.materialSpecularBoost = glGetUniformLocationARB( programObject, "uMaterialSpecularBoost" );
 	g_materialInteractionProgram.materialFresnel = glGetUniformLocationARB( programObject, "uMaterialFresnel" );
@@ -4899,6 +4903,7 @@ static const char *programBaseName = "glprogs/shadow_interaction";
 	g_shadowMapProgram.vertexColorParams = glGetUniformLocationARB( programObject, "uVertexColorParams" );
 	g_shadowMapProgram.diffuseColor = glGetUniformLocationARB( programObject, "uDiffuseColor" );
 	g_shadowMapProgram.specularColor = glGetUniformLocationARB( programObject, "uSpecularColor" );
+	g_shadowMapProgram.flatDiffuseParams = glGetUniformLocationARB( programObject, "uFlatDiffuseParams" );
 	g_shadowMapProgram.materialEnhanced = glGetUniformLocationARB( programObject, "uMaterialEnhanced" );
 	g_shadowMapProgram.materialNormalScale = glGetUniformLocationARB( programObject, "uMaterialNormalScale" );
 	g_shadowMapProgram.materialSpecularBoost = glGetUniformLocationARB( programObject, "uMaterialSpecularBoost" );
@@ -5311,6 +5316,7 @@ static const char *programBaseName = "glprogs/shadow_point_interaction";
 	g_pointShadowMapProgram.vertexColorParams = glGetUniformLocationARB( programObject, "uVertexColorParams" );
 	g_pointShadowMapProgram.diffuseColor = glGetUniformLocationARB( programObject, "uDiffuseColor" );
 	g_pointShadowMapProgram.specularColor = glGetUniformLocationARB( programObject, "uSpecularColor" );
+	g_pointShadowMapProgram.flatDiffuseParams = glGetUniformLocationARB( programObject, "uFlatDiffuseParams" );
 	g_pointShadowMapProgram.materialEnhanced = glGetUniformLocationARB( programObject, "uMaterialEnhanced" );
 	g_pointShadowMapProgram.materialNormalScale = glGetUniformLocationARB( programObject, "uMaterialNormalScale" );
 	g_pointShadowMapProgram.materialSpecularBoost = glGetUniformLocationARB( programObject, "uMaterialSpecularBoost" );
@@ -8461,7 +8467,7 @@ static void RB_SetCelInteractionUniform( const GLint location, const drawSurf_t 
 		banded ? 1.0f : 0.0f,
 		(float)R_CelBandCount(),
 		( banded && r_celShadingSpecular.GetBool() ) ? 1.0f : 0.0f,
-		0.0f
+		banded ? R_CelBandSoftness() : 0.0f
 	};
 
 	glUniform4fvARB( location, 1, celParams );
@@ -8518,6 +8524,9 @@ static void RB_GLSLMaterial_DrawInteraction( const drawInteraction_t *din ) {
 	glUniform4fvARB( g_materialInteractionProgram.specularMatrixT, 1, din->specularMatrix[1].ToFloatPtr() );
 	glUniform4fvARB( g_materialInteractionProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
 	glUniform4fvARB( g_materialInteractionProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
+	if ( g_materialInteractionProgram.flatDiffuseParams >= 0 ) {
+		glUniform4fvARB( g_materialInteractionProgram.flatDiffuseParams, 1, din->flatDiffuseParams.ToFloatPtr() );
+	}
 	glUniform1fARB( g_materialInteractionProgram.ambientLight, din->ambientLight ? 1.0f : 0.0f );
 
 	float modulate = 0.0f;
@@ -8639,6 +8648,9 @@ static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 	glUniform4fvARB( g_shadowMapProgram.specularMatrixT, 1, din->specularMatrix[1].ToFloatPtr() );
 	glUniform4fvARB( g_shadowMapProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
 	glUniform4fvARB( g_shadowMapProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
+	if ( g_shadowMapProgram.flatDiffuseParams >= 0 ) {
+		glUniform4fvARB( g_shadowMapProgram.flatDiffuseParams, 1, din->flatDiffuseParams.ToFloatPtr() );
+	}
 
 	float modulate = 0.0f;
 	float add = 1.0f;
@@ -8719,6 +8731,9 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 	glUniform1fARB( g_pointShadowMapProgram.pointShadowFar, RB_PointShadowMapLightFar( backEnd.vLight ) );
 	glUniform4fvARB( g_pointShadowMapProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
 	glUniform4fvARB( g_pointShadowMapProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
+	if ( g_pointShadowMapProgram.flatDiffuseParams >= 0 ) {
+		glUniform4fvARB( g_pointShadowMapProgram.flatDiffuseParams, 1, din->flatDiffuseParams.ToFloatPtr() );
+	}
 
 	float modulate = 0.0f;
 	float add = 1.0f;
@@ -9751,6 +9766,9 @@ static void RB_ARB2_CreateCustomGLSLDrawInteractionsForSurface( const drawSurf_t
 				inter.diffuseColor[component] = surfaceColor[component] * lightColor[component];
 				inter.specularColor[component] = surfaceColor[component] * lightColor[component];
 			}
+			idImage *flatDiffuseImage = globalImages->whiteImage;
+			RB_ApplyFlatDiffuseStage( surf, &flatDiffuseImage,
+				inter.diffuseColor.ToFloatPtr(), inter.flatDiffuseParams );
 			inter.vertexColor = surfaceStage->vertexColor;
 
 			RB_ARB2_DrawCustomGLSLInteractionStage( surfaceStage, surfaceRegs, &inter );
@@ -9932,6 +9950,15 @@ static bool RB_DrawSurfChainNeedsCelBanding( const drawSurf_t *surf ) {
 	return false;
 }
 
+static bool RB_DrawSurfChainNeedsFlatDiffuseSweep( const drawSurf_t *surf ) {
+	for ( ; surf != NULL; surf = surf->nextOnLight ) {
+		if ( RB_FlatDiffuseSweepActive( surf ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void RB_DrawMaterialInteractions( const drawSurf_t *surf ) {
 	if ( surf == NULL ) {
 		return;
@@ -9957,12 +9984,34 @@ static void RB_DrawMaterialInteractions( const drawSurf_t *surf ) {
 		return;
 	}
 
+	// The stock ARB interaction program can carry the flat base color (the CPU
+	// substitutes a white diffuse map) but has no model-local coordinate for
+	// the moving band.  Split only chains containing a swept pickup so one
+	// unrelated custom/GPU-posed surface cannot force the entire light chain
+	// back to ARB and silently lose the item cue.
+	const bool enhanced = RB_EnhancedMaterialShadingActive();
+	if ( glConfig.GLSLProgramAvailable && RB_DrawSurfChainNeedsFlatDiffuseSweep( surf ) ) {
+		for ( const drawSurf_t *chainSurf = surf; chainSurf != NULL; chainSurf = chainSurf->nextOnLight ) {
+			drawSurf_t singleSurf = *chainSurf;
+			singleSurf.nextOnLight = NULL;
+			const bool celBandedSurface = !enhanced && R_CelShadingSurfaceActive( &singleSurf );
+			const bool needsGLSL = enhanced || celBandedSurface || RB_FlatDiffuseSweepActive( &singleSurf );
+			if ( !RB_SurfaceHasActiveCustomGLSLLighting( &singleSurf )
+				&& needsGLSL
+				&& RB_SurfaceEligibleForStockGLSLInteraction( &singleSurf )
+				&& RB_GLSLMaterial_CreateDrawInteractions( &singleSurf, !enhanced ) ) {
+				continue;
+			}
+			RB_ARB2_CreateDrawInteractions( &singleSurf );
+		}
+		return;
+	}
+
 	// Cel banding lives in the GLSL interaction shaders, and the stock ARB
 	// assembly programs ship with the game so they cannot carry it. A cel-shaded
 	// chain therefore borrows the GLSL path even when enhanced materials are
 	// off; forcing neutral enhancements keeps the stock lighting model, so the
 	// banding is the only visible difference.
-	const bool enhanced = RB_EnhancedMaterialShadingActive();
 	const bool celBanded = !enhanced && glConfig.GLSLProgramAvailable && RB_DrawSurfChainNeedsCelBanding( surf );
 
 	if ( !RB_DrawSurfChainHasCustomGLSLLighting( surf )

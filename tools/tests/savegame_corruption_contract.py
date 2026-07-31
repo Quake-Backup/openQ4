@@ -572,15 +572,18 @@ def validate_session_source_contract() -> None:
         "while( num > 1 )",
         "const int restoredIndex = emitters.Append( emitter );",
         "Do not use AllocSoundEmitter here",
-        "static void ReadInt( idFile* savefile, int& value, const char* fieldName )",
-        "idSoundWorldLocal::ReadFromSaveGame: truncated %s",
-        "static void ReadString( idFile* savefile, idStr& value, const char* fieldName )",
+        "class idSoundStateReader",
+        "bool ReadInt( int& value, const char* fieldName )",
+        "common->Error( \"idSoundWorldLocal::ReadFromSaveGame: %s\", detail );",
+        "has a truncated %s",
+        "bool ReadString( idStr& value, const char* fieldName )",
         "len < 0 || len > MAX_STRING_CHARS",
         "parms.soundClass < 0 || parms.soundClass >= SOUND_MAX_CLASSES",
         "numEmitters < 1 || numEmitters > SOUND_SAVEGAME_MAX_EMITTERS",
         "numChannels < 0 || numChannels > MAX_CHANNELS_PER_EMITTER",
         "totalChannels > SOUND_SAVEGAME_MAX_TOTAL_CHANNELS - numChannels",
-        "helper::ReadString( savefile, shaderName, \"sound shader name\" )",
+        "idSoundStateReader reader( savefile, demoFile );",
+        "reader.ReadString( shaderName, \"sound shader name\" )",
     ):
         require(sound_world_source, token, "sound-world savegame restore corruption contract")
 

@@ -46,7 +46,7 @@ typedef struct {
 } logStats_t;
 
 static const int	MAX_LOGGED_STATS = 60 * 120;		// log every half second 
-static const int	OPENQ4_RENDERDEMO_CURRENT_VERSION = 9;
+static const int	OPENQ4_RENDERDEMO_CURRENT_VERSION = 10;
 static const int	OPENQ4_RENDERDEMO_ENTITY_EXTRAS_VERSION = 3;
 static const int	OPENQ4_RENDERDEMO_LIGHT_EXTRAS_VERSION = 4;
 static const int	OPENQ4_RENDERDEMO_RENDER_VIEW_DECLS_VERSION = 5;
@@ -55,6 +55,7 @@ static const int	OPENQ4_RENDERDEMO_POINTER_FREE_VERSION = 6;
 static const int	OPENQ4_RENDERDEMO_EFFECTS_VERSION = 7;
 static const int	OPENQ4_RENDERDEMO_VISIBILITY_EFFECTS_VERSION = 8;
 static const int	OPENQ4_RENDERDEMO_BRIGHTSKIN_VERSION = 9;
+static const int	OPENQ4_RENDERDEMO_FLAT_DIFFUSE_VERSION = 10;
 
 typedef enum {
 	MSG_OK,
