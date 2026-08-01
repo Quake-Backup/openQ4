@@ -111,10 +111,57 @@ def validate_swap_guard() -> None:
         require(body, token, "game module swap exception guard")
 
 
+def validate_async_module_state() -> None:
+    common = read(ROOT / "src" / "framework" / "Common.cpp")
+    helper_start = common.index("static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( void ) {")
+    helper_end = common.index("\n}\n", helper_start)
+    helper = common[helper_start:helper_end]
+
+    # The async thread runs while game DLL initialization registers static
+    # CVars. A name-based lookup here races the registry's backing array, and a
+    # direct idStr read still has a phase-check/read timing gap during unload.
+    if "cvarSystem->" in helper or "GetCVarString" in helper or "com_activeGameModule" in helper:
+        raise AssertionError("async slow-time helper still reads mutable CVar/module strings")
+    require(
+        common,
+        "static std::atomic<bool> openQ4_singleplayerGameModuleReady( false );",
+        "async-safe game module state",
+    )
+    require(
+        helper,
+        "openQ4_singleplayerGameModuleReady.load( std::memory_order_acquire )",
+        "async-safe game module state",
+    )
+
+    load_start = common.index("void idCommonLocal::LoadGameDLL( void ) {")
+    unload_start = common.index("void idCommonLocal::UnloadGameDLL( void ) {", load_start)
+    load_body = common[load_start:unload_start]
+    require(
+        load_body,
+        "openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );",
+        "game module load transition",
+    )
+    require(
+        load_body,
+        'game != NULL && idStr::Icmp( gameModuleBaseName, "game_sp" ) == 0,',
+        "game module ready transition",
+    )
+
+    unload_end = common.index("idCommonLocal::IsInitialized", unload_start)
+    unload_body = common[unload_start:unload_end]
+    false_store = unload_body.index(
+        "openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );"
+    )
+    shutdown = unload_body.index("game->Shutdown();")
+    if false_store > shutdown:
+        raise AssertionError("single-player module state is cleared after game shutdown begins")
+
+
 def main() -> int:
     validate_engine_mirror()
     validate_default_cfg()
     validate_swap_guard()
+    validate_async_module_state()
     print("game_type_module_selection: ok")
     return 0
 

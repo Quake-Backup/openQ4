@@ -144,21 +144,24 @@ def validate_game_wiring() -> None:
     # The player rebuilds its view from the command plus its delta angles.
     require(bot, "ANGLE2SHORT( aimAngles[i] - self->GetDeltaViewAngles()[i] )", "rvBot::UpdateAim")
 
-    # An unreachable goal must not cost a failed search every frame.  The
-    # throttle counts attempts, not successes: keying it off goalType leaves it
-    # dead on the failure path, which is the only path it exists for.
+    # An unreachable moving goal must not cost a failed search every frame, and
+    # rule objectives must be considered only after a committed traversal has
+    # been allowed to finish.
     # Sliced to the function's closing brace rather than a fixed character
     # count, so the pin keeps covering the whole of UpdateGoal as it grows.
     goal = bot[bot.index("void rvBot::UpdateGoal") :]
     goal = goal[: goal.index("\n}\n") + 3]
-    require(goal, "gameLocal.time - enemyPathTime <= BOT_REPATH_COMBAT_MSEC", "rvBot::UpdateGoal")
+    require(goal, "gameLocal.time - enemyPathTime > BOT_REPATH_COMBAT_MSEC", "rvBot::UpdateGoal")
     require(goal, "gameLocal.time < nextGoalSelectTime", "rvBot::UpdateGoal")
     require_order(
         goal,
         "traversalCorner == pathCorner",
-        "if ( currentFoe && chase )",
+        "BotFindObjective( self, objective )",
         "rvBot::UpdateGoal traversal commitment",
     )
+    require(goal, "BOT_GOAL_SWITCH_MARGIN", "rvBot::UpdateGoal hysteresis")
+    require(goal, "criticalHealth", "rvBot::UpdateGoal survival priority")
+    require(goal, "BOTGOAL_OBJECTIVE", "rvBot::UpdateGoal mode objective")
 
     # Goal selection must return the successful directed route along with the
     # entity.  A weak connected-area match is only a rejection shortcut:
@@ -204,11 +207,14 @@ def validate_game_wiring() -> None:
     require(movement, "corner.travelType != NAVTRAVEL_WALK", "rvBot::UpdateMovement")
     require(movement, "!committedTravel && foe", "rvBot::UpdateMovement")
     require(movement, "!committedTravel && gameLocal.time < unstickUntil", "rvBot::UpdateMovement")
-    require(movement, "progress.z = 0.0f;", "rvBot::UpdateMovement")
+    require(movement, "const bool routeProgress", "rvBot::UpdateMovement route progress")
+    require(movement, "stuckPathCorner", "rvBot::UpdateMovement corner progress")
     require(movement, "stuckChecks >= 2", "rvBot::UpdateMovement")
     require(movement, "const bool hasMoveDir", "rvBot::UpdateMovement vertical action")
     require(movement, "transportInProgress", "rvBot::UpdateMovement authored transport progress")
     require(movement, "BOT_TRAVEL_TIMEOUT_MSEC", "rvBot::UpdateMovement traversal timeout")
+    require(movement, "BotMoveDirectionSafe", "rvBot::UpdateMovement safe combat steering")
+    require(movement, "gameLocal.time - noRouteSince", "rvBot::UpdateMovement no-route recovery")
     if "climb > pm_stepsize.GetFloat()" in movement:
         raise AssertionError(
             "UpdateMovement guesses jumps from corner height again; jump input must follow "
@@ -260,6 +266,20 @@ def validate_navmesh() -> None:
     require(step, "pm_stepsize.GetFloat()", "rvNavMesh::TryStep")
     require(step, "pm_jumpheight.GetFloat()", "rvNavMesh::TryStep")
 
+    # Closed proximity doors are usable traversal, not permanent holes in a
+    # graph that happens to be generated before the first player approaches.
+    door_trace = nav[nav.index("static bool NavTranslationThroughDoors") :]
+    door_trace = door_trace[: door_trace.index("\n}\n") + 3]
+    require(door_trace, "passEntity2", "NavTranslationThroughDoors double doors")
+    require(door_trace, "NavDoorIsWalkActivated", "NavTranslationThroughDoors usable door filter")
+    door_filter = nav[nav.index("static bool NavDoorIsWalkActivated") :]
+    door_filter = door_filter[: door_filter.index("\n}\n") + 3]
+    require(door_filter, "idDoor::GetClassType()", "NavDoorIsWalkActivated")
+    require(door_filter, "IsLocked()", "NavDoorIsWalkActivated locked door")
+    require(door_filter, "IsNoTouch()", "NavDoorIsWalkActivated scripted door")
+    require(door_filter, 'GetString( "requires"', "NavDoorIsWalkActivated required door")
+    require(step, "NavTranslationThroughDoors", "rvNavMesh::TryStep door traversal")
+
     # Off-mesh links are what keep a Quake 4 multiplayer map one component.
     links = nav[nav.index("void rvNavMesh::AddOffMeshLinks") :][:2500]
     require(links, "rvJumpPad::GetClassType()", "rvNavMesh::AddOffMeshLinks")
@@ -287,6 +307,11 @@ def validate_navmesh() -> None:
         "probeLift = stepSize",
         "rvNavMesh::WalkableLine low-clearance flat sweep",
     )
+    require(
+        walkable,
+        "NavTranslationThroughDoors",
+        "rvNavMesh::WalkableLine usable closed doors",
+    )
 
     # Areas are weak/undirected by design, so all public reachability decisions
     # must still respect outgoing links.
@@ -299,32 +324,111 @@ def validate_navmesh() -> None:
     require(roam, "nodes[node].firstLink", "rvNavMesh::RandomReachablePoint")
     require(roam, "reachable.Append( destination );", "rvNavMesh::RandomReachablePoint")
     require(roam, "FindPath( origin, nodes[candidate].origin", "rvNavMesh::RandomReachablePoint")
+    require(roam, "reachable.RemoveIndex( candidateIndex )", "rvNavMesh::RandomReachablePoint retry")
 
     same_node = nav[nav.index("if ( startNode == goalNode )") :]
     same_node = same_node[: same_node.index("\n\t}\n") + 4]
-    require(same_node, "if ( !WalkableLine( start, goal ) )", "rvNavMesh::FindPath same node")
-    require(same_node, "return false;", "rvNavMesh::FindPath same node")
+    require(
+        same_node,
+        "if ( !WalkableLine( routeStart, routeGoal ) )",
+        "rvNavMesh::FindPath same node",
+    )
+    require(
+        same_node,
+        "WalkableLine( routeStart, via )",
+        "rvNavMesh::FindPath same-node inbound leg",
+    )
+    require(
+        same_node,
+        "WalkableLine( via, routeGoal )",
+        "rvNavMesh::FindPath same-node outbound leg",
+    )
+    require(same_node, "path.Append( via, NAVTRAVEL_WALK )", "rvNavMesh::FindPath same-node via route")
 
     find_path = nav[nav.index("bool rvNavMesh::FindPath") :]
     find_path = find_path[: find_path.index("\n}\n") + 3]
     require(
         find_path,
-        "path[path.Num() - 1].origin - goal",
+        "path[path.Num() - 1].origin - routeGoal",
         "rvNavMesh::FindPath exact-goal completion",
     )
     require(
         find_path,
-        "FindNearestNode( start, 256.0f, true )",
+        "FindNearestNode( routeStart, 256.0f, true )",
         "rvNavMesh::FindPath reachable start snap",
     )
     require(
         find_path,
-        "!WalkableLine( start, path[0].origin )",
+        "!WalkableLine( routeStart, path[0].origin )",
         "rvNavMesh::FindPath safe first shortcut",
     )
     require(find_path, "path.Clear();", "rvNavMesh::FindPath rejected partial path")
+    require(find_path, "heuristicScale", "rvNavMesh::FindPath transport-safe heuristic")
+    require(find_path, "rejectedLinks", "rvNavMesh::FindPath blocked-edge repair")
+    require(find_path, "LinkTraversable(", "rvNavMesh::FindPath live route validation")
+    require(find_path, "SetTravelCost(", "rvNavMesh::FindPath weighted route cost")
+    require(find_path, "routeStart", "rvNavMesh::FindPath airborne start projection")
+    require(find_path, "routeGoal", "rvNavMesh::FindPath airborne goal projection")
+    require(find_path, "SampleFloor( start", "rvNavMesh::FindPath safe landing projection")
+    require(find_path, "start.z - projected.z > pm_stepsize", "rvNavMesh::FindPath airborne-only fallback")
+    if find_path.index("SampleFloor( start") > find_path.index("FindNearestNode( routeStart"):
+        raise AssertionError(
+            "FindPath snaps before projecting an airborne endpoint; a nearby in-air node can "
+            "then preserve an unreachable exact goal instead of routing to the landing floor"
+        )
+
+    link_nodes = nav[nav.index("void rvNavMesh::LinkNodes") :]
+    link_nodes = link_nodes[: link_nodes.index("\n}\n") + 3]
+    require(link_nodes, "cost / geometricCost", "rvNavMesh admissible heuristic scale")
+    require(link_nodes, "Min( heuristicScale, edgeScale )", "rvNavMesh heuristic lower bound")
+
+    length_from = nav[nav.index("float rvNavPath::LengthFrom") :]
+    length_from = length_from[: length_from.index("\n}\n") + 3]
+    require(length_from, "hasTravelCost", "rvNavPath retained graph cost")
+    require(length_from, "return travelCost;", "rvNavPath weighted goal comparison")
+
+    begin_search = nav[nav.index("void rvNavMesh::BeginSearch") :]
+    begin_search = begin_search[: begin_search.index("\n}\n") + 3]
+    require(begin_search, "0x7ffffffe", "rvNavMesh search serial rollover")
+    require(begin_search, "openTag[i] = 0", "rvNavMesh search tag reset")
+
+    traversable = nav[nav.index("bool rvNavMesh::LinkTraversable") :]
+    traversable = traversable[: traversable.index("\n}\n") + 3]
+    for travel in (
+        "NAVTRAVEL_WALK",
+        "NAVTRAVEL_DROP",
+        "NAVTRAVEL_JUMP",
+        "NAVTRAVEL_JUMPPAD",
+        "NAVTRAVEL_TELEPORT",
+    ):
+        require(traversable, travel, "rvNavMesh::LinkTraversable")
+    grid_validation = traversable[: traversable.index("case NAVTRAVEL_JUMPPAD")]
+    require(
+        grid_validation,
+        "NavEntityTranslationThroughDoors(",
+        "rvNavMesh::LinkTraversable dynamic-entity validation",
+    )
+    if "TryStep(" in grid_validation:
+        raise AssertionError(
+            "LinkTraversable re-samples generated grid topology; live repair must only "
+            "invalidate links blocked by newly present solid entities"
+        )
+    if "WalkableLine(" in grid_validation:
+        raise AssertionError(
+            "LinkTraversable uses the stricter string-pull proof on adjacent graph edges; "
+            "stair-riser midpoint probes can reject links that TryStep legally generated"
+        )
+    require(
+        nav,
+        "gameLocal.TranslationEntities(",
+        "rvNavMesh dynamic route-edge entity sweep",
+    )
+    require(traversable, "IsActive( TH_THINK )", "rvNavMesh::LinkTraversable live jump pad")
 
     header = read(mp / "bots" / "NavMesh.h")
+    require(header, "LengthFrom", "rvNavPath complete length")
+    require(header, "travelCost", "rvNavPath weighted route cost")
+    require(header, "heuristicScale", "rvNavMesh scaled admissible heuristic")
     for travel in (
         "NAVTRAVEL_WALK",
         "NAVTRAVEL_DROP",

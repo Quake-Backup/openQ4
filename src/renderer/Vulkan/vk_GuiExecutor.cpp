@@ -91,6 +91,10 @@ static const int VK_MAX_PROGRAM_PIPELINES = 128;
 static const int VK_MAX_BLEND_LIGHT_PIPELINES = 32;
 static const int VK_MAX_SPECIAL_PIPELINES = 64;
 static const int VK_MAX_DESCRIPTOR_SETS = 4096;
+// rvspecial_depth.fs linearizes the Raven controller's depth texture with
+// this historical near-plane convention.  The Vulkan path samples raw depth,
+// so it must use the same value after translating normalized focus/range.
+static const float VK_RVSPECIAL_DEPTH_ZNEAR = 0.25f;
 // Descriptor sets displaced by a generation change during command recording
 // cannot be rewritten until the slot fence completes.
 static const int VK_MAX_RETIRED_SETS = 128;
@@ -5346,7 +5350,7 @@ static bool VK_Exec_DrawRVSpecialBlur( const viewDef_t *viewDef ) {
 	}
 	parms[ 4 ][ 0 ] = idMath::ClampFloat( 0.0f, 1.0f,
 			tr.specialEffectParms[ SPECIAL_EFFECT_BLUR ][ 6 ] );
-	parms[ 5 ][ 0 ] = distanceScale;
+	parms[ 5 ][ 0 ] = VK_RVSPECIAL_DEPTH_ZNEAR;
 
 	const int uniformOffset =
 			VK_Exec_InteractionUniformAlloc( parms, sizeof( parms ) );

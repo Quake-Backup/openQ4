@@ -385,27 +385,54 @@ def validate_gui_and_localization() -> None:
 
     for needle in (
         "listDef demoList",
-        '"demoFilter all"',
-        '"demoFilter mvd"',
-        '"demoFilter render"',
-        '"demoFilter legacy"',
-        '"demoFilter incomplete"',
-        '"demoPlay"',
-        '"demoDelete"',
-        '"demoPause"',
-        '"demoSkip -30"',
-        '"demoSkip -10"',
-        '"demoStep"',
-        '"demoSkip 10"',
-        '"demoSkip 30"',
-        '"demoFreeRoam"',
-        '"demoFollow"',
-        '"demoSpeed 0.25"',
-        '"demoSpeed 0.5"',
-        '"demoSpeed 1"',
-        '"demoSpeed 2"',
-        '"demoSpeed 4"',
-        '"demoStop"',
+        "demo_browser_reveal_timeline",
+        "demo_browser_exit_timeline",
+        "gfx/guis/mainmenu/bg_darkgrad2",
+        "gfx/guis/mainmenu/bg_grid",
+        "gfx/guis/mainmenu/topbar",
+        "gfx/guis/mainmenu/btmbar",
+        "demo_browser_topbar_tile_left",
+        "demo_browser_topbar_tile_right",
+        "demo_browser_btmbar_tile_left",
+        "demo_browser_btmbar_tile_right",
+        "demo_filter_all_active",
+        "demo_filter_mvd_active",
+        "demo_filter_render_active",
+        "demo_filter_legacy_active",
+        "demo_filter_incomplete_active",
+        "demo_selected_name",
+        "demo_playback_reveal_timeline",
+        "demo_playback_transition_blocker",
+        "demo_playback_transition_input_blocker",
+        "demo_playback_reveal_curtain",
+        "demo_playback_deck_surface",
+        "demo_playback_deck_line",
+        "screenaligny\ttop",
+        "screenaligny\tbottom",
+        "gfx/guis/mainmenu/b2_dark",
+        "gfx/guis/mainmenu/b4_light",
+        '"play main_menu_selection ; demoFilter all"',
+        '"play main_menu_selection ; demoFilter mvd"',
+        '"play main_menu_selection ; demoFilter render"',
+        '"play main_menu_selection ; demoFilter legacy"',
+        '"play main_menu_selection ; demoFilter incomplete"',
+        '"play main_menu_selection ; demoPlay"',
+        '"play main_menu_selection ; demoDelete"',
+        '"play main_menu_selection ; demoPause"',
+        '"play main_menu_selection ; demoSkip -30"',
+        '"play main_menu_selection ; demoSkip -10"',
+        '"play main_menu_selection ; demoStep"',
+        '"play main_menu_selection ; demoSkip 10"',
+        '"play main_menu_selection ; demoSkip 30"',
+        '"play main_menu_selection ; demoFreeRoam"',
+        '"play main_menu_selection ; demoFollow"',
+        '"play main_menu_selection ; demoSpeed 0.25"',
+        '"play main_menu_selection ; demoSpeed 0.5"',
+        '"play main_menu_selection ; demoSpeed 1"',
+        '"play main_menu_selection ; demoSpeed 2"',
+        '"play main_menu_selection ; demoSpeed 4"',
+        '"play main_menu_selection ; demoStop"',
+        '"play main_menu_mouseover"',
     ):
         require(gui, needle, "demo menu actions")
 
@@ -422,9 +449,24 @@ def validate_gui_and_localization() -> None:
         "demo_seeking",
         "demo_browserMode",
         "demo_interactive",
+        "demo_filter",
     ):
         require(gui, f"gui::{state}", "capability-gated demo menu")
         require(source, f'"{state}"', "demo menu state producer")
+
+    require(source, "DemoEllipsizeText", "bounded demo-browser text")
+    command_handler = between(
+        source,
+        "bool idSessionLocal::HandleDemoMenuCommand",
+        "return handled;",
+        "demo menu compound command handler",
+    )
+    for needle in (
+        "for ( int icmd = 0; icmd < args.Argc(); )",
+        '"play"',
+        "PlayShaderDirectly",
+    ):
+        require(command_handler, needle, "demo menu sound/action sequencing")
 
     require(
         main_menu,
@@ -432,6 +474,19 @@ def validate_gui_and_localization() -> None:
         "main-menu Demos entry",
     )
     require(main_menu, 'set "main_t_b9::text" "#str_41500" ;', "localized Demos label")
+
+    open_menu = between(
+        source,
+        "void idSessionLocal::OpenDemoMenu",
+        "void idSessionLocal::CloseDemoMenu",
+        "demo browser activation",
+    )
+    state_update = open_menu.find("UpdateDemoMenuGui();")
+    activation = open_menu.find("SetGUI( guiDemoMenu, NULL );")
+    if not 0 <= state_update < activation:
+        raise AssertionError(
+            "Demo browser state must be published before the synchronous GUI activation"
+        )
 
     # GUI display text must be localized or dynamic. A slash is the only
     # intentional literal, used between current and total time.
@@ -441,7 +496,10 @@ def validate_gui_and_localization() -> None:
         raise AssertionError(f"Unlocalized demo GUI text: {value!r}")
 
     used_ids = set(re.findall(r"#str_415\d{2}", "\n".join((gui, main_menu, source))))
-    expected_ids = {f"#str_{value}" for value in range(41500, 41567)}
+    expected_ids = {f"#str_{value}" for value in range(41500, 41571)}
+    # The long-form seek caption remains in the language tables for existing
+    # consumers; the tight capability chip deliberately uses its compact sibling.
+    expected_ids.remove("#str_41538")
     missing_usage = sorted(expected_ids - used_ids)
     if missing_usage:
         raise AssertionError(f"Demo string contract is not referenced: {missing_usage}")

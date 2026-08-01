@@ -388,6 +388,7 @@ def validate_game_libs_repo_path(game_libs_repo: Path) -> Path:
 
 def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) -> None:
     tests = [
+        root / "tools" / "tests" / "arena_campaign.py",
         root / "tools" / "tests" / "campaign_split_state_transition.py",
         root / "tools" / "tests" / "demo_playback.py",
         root / "tools" / "tests" / "docs_link_integrity.py",
@@ -398,6 +399,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "gamelibs_staging.py",
         root / "tools" / "tests" / "generated_animation_cache.py",
         root / "tools" / "tests" / "hdr_postprocess_math.py",
+        root / "tools" / "tests" / "key_bind_presentation.py",
         root / "tools" / "tests" / "linux_arm64_cross_compile.py",
         root / "tools" / "tests" / "linux_arm64_ci_coverage.py",
         root / "tools" / "tests" / "linux_arm64_release_evidence.py",
@@ -418,6 +420,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "linux_vsync_support.py",
         root / "tools" / "tests" / "linux_wayland_build_contract.py",
         root / "tools" / "tests" / "loading_continue_input.py",
+        root / "tools" / "tests" / "map_entity_strings.py",
         root / "tools" / "tests" / "macos_apple_gl21_arb2_corridor.py",
         root / "tools" / "tests" / "macos_dedicated_server_smoke_contract.py",
         root / "tools" / "tests" / "macos_evidence_plumbing.py",

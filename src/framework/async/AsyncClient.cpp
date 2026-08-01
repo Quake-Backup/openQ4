@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "AsyncNetwork.h"
 
+#include "../ArenaCampaign.h"
 #include "../Session_local.h"
 
 static ID_INLINE int AsyncClient_NextGameFrameMsec( int gameFrame ) {
@@ -200,6 +201,11 @@ idAsyncClient::ConnectToServer
 */
 void idAsyncClient::ConnectToServer( const netadr_t adr ) {
 	// shutdown any current game. that includes network disconnect
+	// A console connect/reconnect can arrive during Arena's pre-server entrance,
+	// or replace its loopback client. Release that campaign transaction before
+	// Stop dismantles the session so its temporary multiplayer settings cannot
+	// survive into the remote connection.
+	arenaCampaign.AbortMatch();
 	session->Stop();
 
 	if ( !InitPort() ) {
@@ -1035,6 +1041,9 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 				clientNum = msg.ReadLong( );
 				ReadLocalizedServerString( msg, string, MAX_STRING_CHARS );
 				if ( clientNum == idAsyncClient::clientNum ) {
+					// Server-directed disconnects bypass the console disconnect command.
+					// Restore any Arena transaction before tearing down its listen session.
+					arenaCampaign.AbortMatch();
 					session->Stop();
 					session->MessageBox( MSG_OK, string, common->GetLanguageDict()->GetString ( "#str_04319" ), true );
 					session->StartMenu();
@@ -1206,6 +1215,7 @@ void idAsyncClient::ProcessDisconnectMessage( const netadr_t from, const idBitMs
 		common->Printf( "Disconnect packet from unknown server.\n" );
 		return;
 	}
+	arenaCampaign.AbortMatch();
 	session->Stop();
 	session->MessageBox( MSG_OK, common->GetLanguageDict()->GetString ( "#str_04320" ), NULL, true );
 	session->StartMenu();

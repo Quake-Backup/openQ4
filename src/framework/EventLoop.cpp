@@ -150,6 +150,10 @@ void idEventLoop::ProcessEvent( sysEvent_t ev ) {
 	// track key up / down states
 	if ( ev.evType == SE_KEY ) {
 		idKeyInput::PreliminaryKeyEvent( ev.evValue, ( ev.evValue2 != 0 ) );
+	} else if ( ev.evType == SE_MOUSE ) {
+		idKeyInput::PreliminaryMouseEvent( ev.evValue, ev.evValue2 );
+	} else if ( ev.evType == SE_JOYSTICK_AXIS ) {
+		idKeyInput::PreliminaryJoystickEvent( ev.evValue2 );
 	}
 
 	if ( ev.evType == SE_CONSOLE ) {

@@ -186,7 +186,7 @@ readable weakness as well as a cure for passive novice bots.
 | `weaponSkill` | 0.20 | 0.38 | 0.55 | 0.75 | 0.92 | 0..1 | chance the range-correct weapon is chosen over merely the first available. |
 | `targetSelection` | 0.25 | 0.40 | 0.55 | 0.72 | 0.88 | 0..1 | chance the best enemy is chosen rather than simply the nearest. |
 | `chatiness` | 0.50 | 0.50 | 0.50 | 0.50 | 0.50 | 0..1 | chance a chat-worthy event produces a line. Character-owned. |
-| `chatDelayScale` | 1.60 | 1.35 | 1.10 | 0.90 | 0.75 | 0.1..5 | multiplier on `bot_chatDelay`. A worse player takes longer to type. |
+| `chatDelayScale` | 1.60 | 1.35 | 1.10 | 0.90 | 0.75 | 0.1..5 | multiplier on the thinking pause and CPM typing delay. A worse player takes longer to type. |
 
 ### Sanity check against today
 
@@ -667,10 +667,12 @@ Fifteen characters ship four lines in every reply rule. Kane ships two terse
 lines in every rule. The 558 reply lines bring the complete authored dialogue
 count to 2,350 without changing the existing 1,792 event lines.
 
-Delay after the event is `bot_chatDelay * traits.chatDelayScale`, plus a small
-random jitter, so a bot never chats on the kill frame. The line is queued on
-the bot and sent when the timer expires; a bot that dies or leaves in between
-drops it.
+Delay after the event is the `bot_chatDelay` thinking pause plus the line's
+visible character count at `bot_chatCPM`, all multiplied by
+`traits.chatDelayScale` and given a small random jitter. Formatting escapes do
+not count, the result is clamped to 750..5000 ms, and `isChatting` stays set
+during the wait so Quake 4's existing `mtr_icon_chatting` appears above the bot.
+The line is queued on the bot and sent when the timer expires.
 
 Throttles, because **the engine has no chat flood protection anywhere** and
 `idAsyncServer::SendReliableMessage` drops a client whose reliable queue
@@ -690,7 +692,8 @@ everyone as Marine and restricts delivery by the team field.
 | Cvar | Default | Flags | Effect |
 | --- | --- | --- | --- |
 | `bot_chat` | `1` | `CVAR_GAME｜CVAR_ARCHIVE｜CVAR_INTEGER` | 0 off, 1 normal, 2 chatty |
-| `bot_chatDelay` | `1200` | `CVAR_GAME｜CVAR_ARCHIVE｜CVAR_INTEGER` | ms between a chat-worthy event and the line |
+| `bot_chatDelay` | `600` | `CVAR_GAME｜CVAR_ARCHIVE｜CVAR_INTEGER` | initial thinking pause before typing, in ms |
+| `bot_chatCPM` | `900` | `CVAR_GAME｜CVAR_ARCHIVE｜CVAR_INTEGER` | base visible characters typed per minute |
 | `bot_characters` | `1` | `CVAR_GAME｜CVAR_ARCHIVE｜CVAR_BOOL` | 0 disables character files; bots run the plain skill curve |
 | `bot_forceCharacter` | `""` | `CVAR_GAME` | forces every bot onto one character |
 | `bot_skillVariance` | `0` | `CVAR_GAME｜CVAR_ARCHIVE｜CVAR_FLOAT` | per-bot random skill spread, 0..2 levels |

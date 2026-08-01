@@ -154,6 +154,7 @@ windowDef Desktop
 		// 34 = popup_vidsettings_warning
 		// 35 = popup_advanced_sound_settings
 		// 36 = settings_audio
+		// 37 = single_player_selector handoff
 	}
 
 	onActivate {
@@ -238,7 +239,7 @@ windowDef Desktop
 		} else if ("desktop::curr" == 1 && "desktop::active" == 0) {
 			set "desktop::active" "1" ;
 			resettime "anim_newOut" "0" ;
-			set "desktop::dest" "0" ;
+			set "desktop::dest" "37" ;
 			set "cmd" "play main_menu_selection" ;
 		} else if ("desktop::curr" == 2 && "desktop::active" == 0) {
 			set "desktop::active" "1" ;
@@ -489,6 +490,35 @@ windowDef Desktop
 		set "cmd" "play main_menu_selection" ;
 	}
 
+	onNamedEvent openMission {
+		set "desktop::active" "1" ;
+		resettime "anim_mainOut" "0" ;
+		set "desktop::dest" "1" ;
+
+		set "new_bstart::matcolor_w" "0.4" ;
+		set "new_t_bstart::forecolor" "$desktop::white_8" ;
+		set "new_bstart_corner::matcolor" "$desktop::corner" ;
+		set "new_t_bstart::textscale" "0.33" ;
+	}
+
+	onNamedEvent returnFromSinglePlayer {
+		// Restore the normal landing state before the selector hands control
+		// back.  This mirrors the legacy sub-page return, without flashing the
+		// main menu between the Mission page and its Single Player parent.
+		set "desktop::dest" "0" ;
+		set "desktop::curr" "0" ;
+		set "desktop::active" "1" ;
+		set "p_main::visible" "1" ;
+		// Start from the live rects.  A direct selector return has the rails
+		// parked offscreen, while Mission -> Back has already restored them.
+		// This keeps both routes smooth without a one-frame snap.
+		transition "p_main::rect" "$p_main::rect" "$d_main::rect" "260" ;
+		transition "topbar::rect" "$topbar::rect" "$singleplayer_topbar_home::rect" "500" "150" "150" ;
+		transition "btmbar::rect" "$btmbar::rect" "$singleplayer_btmbar_home::rect" "500" "150" "150" ;
+		resettime "anim_mainIn" "0" ;
+		namedevent "p_anims::mainReset0" ;
+	}
+
 	onNamedEvent ingameCheck {
 		if ("gui::ingame" == 0 && "desktop::curr" != 16) {
 			set "main_b3::matcolor_w" "0.4" ; 
@@ -519,7 +549,7 @@ windowDef Desktop
 			set "main_b_settings::visible" "1" ;
 			set "main_b_exit::visible" "1" ;
 			
-			set "main_t_b1::text" "#str_200000" ;
+			set "main_t_b1::text" "#str_42000" ;
 			set "main_t_b2::text" "#str_200001" ;
 			set "main_t_b3::text" "#str_200002" ;
 			set "main_t_b9::text" "#str_41500" ;
@@ -1046,6 +1076,19 @@ windowDef Desktop
 			background	"gfx/guis/mainmenu/btmbar"
 			matcolor	1,1,1,1
 		}
+		// Stable home rectangles used by the Single Player selector return.
+		// topbar/btmbar themselves animate, so they cannot safely serve as
+		// both the live transition source and the fixed destination.
+		windowDef singleplayer_topbar_home
+		{
+			rect	-400,0,1045,129
+			visible	0
+		}
+		windowDef singleplayer_btmbar_home
+		{
+			rect	-399,351,1045,129
+			visible	0
+		}
 		windowDef p_main
 		{
 			rect	0,0,640,480
@@ -1139,7 +1182,7 @@ windowDef Desktop
 				rect	44,214,314,23
 				visible	1
 				forecolor	1,1,1,0.8
-				text	"#str_200000"
+				text	"#str_42000"
 				textscale	.33
 				font	"fonts/marine"
 			}
@@ -13303,7 +13346,7 @@ windowDef Desktop
 					transition "main_t_b9::forecolor_w" "0" "0.8" "150" ;
 					transition "main_b9_corner::matcolor_w" "0" "0.4" "150" ;
 					
-					set "main_t_b1::text" "#str_200000" ;
+					set "main_t_b1::text" "#str_42000" ;
 					set "main_t_b2::text" "#str_200001" ;
 					set "main_t_b3::text" "#str_200002" ;
 					set "main_t_b9::text" "#str_41500" ;
@@ -13420,6 +13463,10 @@ windowDef Desktop
 				} else if ("desktop::dest" == 1) {
 					resettime "anim_newIn" "0" ;
 					namedevent "p_anims::backReset0" ;
+				} else if ("desktop::dest" == 37) {
+					// Let the stock main-menu exit complete before the dedicated
+					// Single Player selector takes ownership of the screen.
+					set "cmd" "singlePlayerOpen" ;
 				} else if ("desktop::dest" == 21) {
 					resettime "anim_settingsIn" "0" ;
 					namedevent "p_anims::backReset0" ;
@@ -13510,9 +13557,20 @@ windowDef Desktop
 
 			onTime +500 {
 				set "p_newgame::visible" "0" ;
-				
-				resettime "anim_mainIn" "0" ;
-				namedevent "p_anims::mainReset0" ;
+
+				if ("desktop::dest" == 37) {
+					// Mission is a child of the Single Player choice screen.  Reset
+					// the legacy page before returning there so that reopening the
+					// main menu later always starts from a valid top-level state.
+					set "desktop::curr" "0" ;
+					set "desktop::active" "0" ;
+					set "p_main::visible" "0" ;
+					namedevent "p_anims::mainReset0" ;
+					set "cmd" "singlePlayerOpen" ;
+				} else {
+					resettime "anim_mainIn" "0" ;
+					namedevent "p_anims::mainReset0" ;
+				}
 			}
 
 		}
@@ -17390,13 +17448,8 @@ windowDef Desktop
 			onAction {
 				set "desktop::active" "1" ;
 				resettime "anim_mainOut" "0" ;
-				set "desktop::dest" "1" ;
-				
-				set "new_bstart::matcolor_w" "0.4" ;
-				set "new_t_bstart::forecolor" "$desktop::white_8" ; 
-				set "new_bstart_corner::matcolor" "$desktop::corner" ; 
-				set "new_t_bstart::textscale" "0.33" ;
-				
+				set "desktop::dest" "37" ;
+
 				set "cmd" "play main_menu_selection" ;
 			}
 
@@ -18144,7 +18197,7 @@ windowDef Desktop
 			onAction {
 				set "desktop::active" "1" ;
 				resettime "anim_newOut" "0" ;
-				set "desktop::dest" "0" ;
+				set "desktop::dest" "37" ;
 				
 				set "cmd" "play main_menu_selection" ;
 			}

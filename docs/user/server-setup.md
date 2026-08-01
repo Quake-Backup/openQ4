@@ -44,6 +44,7 @@ openQ4-ded_x64 +set si_name "My openQ4 Server" +set si_map mp/q4dm1 +set si_game
 | `bot_skillVariance` | Spread bot skill this many levels either side of `bot_skill`, so a match is not all one difficulty |
 | `bot_characters` | Give bots named characters with their own play style and voice (`0` for plain skill-curve bots) |
 | `bot_chat` | Bot chat: `0` silent, `1` normal, `2` chatty |
+| `bot_chatCPM` | Bot typing speed in visible characters per minute (`900` by default) |
 
 Default multiplayer values are seeded from `content/baseoq4/pak0/default.cfg`.
 
@@ -74,7 +75,8 @@ They can answer common conversational phrases from people or other bots, and
 addressing one by name makes that character the preferred responder. Team chat
 stays inside the team, and replies cannot trigger reply chains. Set
 `bot_characters 0` for anonymous bots on the plain skill curve, or `bot_chat 0`
-to keep them quiet.
+to keep them quiet. Messages wait briefly according to their visible length,
+and the stock Quake 4 typing icon appears above the bot until the line is sent.
 
 The bot cvars are archived, so setting them once in your server config is
 enough. For the full command list, the character file format, and how to add

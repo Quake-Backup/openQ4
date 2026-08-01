@@ -63,6 +63,7 @@ jobs:
             src/sys/linux/pk4/id_utils.py \
             tools/validation/openq4_validate.py \
             tools/tests/renderer_validation_matrix.py \
+            tools/tests/arena_campaign.py \
             tools/tests/campaign_split_state_transition.py \
             tools/tests/demo_playback.py \
             tools/tests/docs_link_integrity.py \
@@ -97,6 +98,7 @@ jobs:
             tools/tests/linux_vsync_support.py \
             tools/tests/linux_wayland_build_contract.py \
             tools/tests/loading_continue_input.py \
+            tools/tests/map_entity_strings.py \
             tools/tests/macos_apple_gl21_arb2_corridor.py \
             tools/tests/macos_dedicated_server_smoke.py \
             tools/tests/macos_dedicated_server_smoke_contract.py \
@@ -168,6 +170,7 @@ jobs:
           bash -n tools/validation/validate_macos_static.sh
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
+          python tools/tests/arena_campaign.py
           python tools/tests/campaign_split_state_transition.py
           python tools/tests/demo_playback.py
           python tools/tests/docs_link_integrity.py
@@ -199,6 +202,7 @@ jobs:
           python tools/tests/linux_vsync_support.py
           python tools/tests/linux_wayland_build_contract.py
           python tools/tests/loading_continue_input.py
+          python tools/tests/map_entity_strings.py
           python tools/tests/macos_apple_gl21_arb2_corridor.py
           python tools/tests/macos_dedicated_server_smoke_contract.py
           python tools/tests/macos_evidence_plumbing.py

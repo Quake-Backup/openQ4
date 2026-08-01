@@ -827,7 +827,7 @@ void idUserInterfaceLocal::RecurseSetKeyBindingNames( idWindow *window ) {
 	int i;
 	idWinVar *v = window->GetWinVarByName( "bind" );
 	if ( v ) {
-		SetStateString( v->GetName(), idKeyInput::KeysFromBinding( v->GetName() ) );
+		SetStateString( v->GetName(), idKeyInput::KeysFromBindingForMenu( v->GetName() ) );
 	}
 	i = 0;
 	while ( i < window->GetChildCount() ) {

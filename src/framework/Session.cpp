@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "Session_local.h"
+#include "ArenaCampaign.h"
 #include "BuildVersion.h"
 #if defined( __has_include )
 #if __has_include( "openq4_savegame_compat_generated.h" )
@@ -3009,6 +3010,8 @@ void idSessionLocal::Clear() {
 	
 	insideUpdateScreen = false;
 	insideExecuteMapChange = false;
+	stopDepth = 0;
+	preserveWipeDuringStop = false;
 
 	loadingSaveGame = false;
 	savegameFile = NULL;
@@ -3135,28 +3138,76 @@ called on errors and game exits
 ===============
 */
 void idSessionLocal::Stop() {
-	ClearWipe();
+	StopInternal( false );
+}
 
-	idAsyncNetwork::multiViewDemo.SessionStop();
+/*
+===============
+idSessionLocal::StopPreservingWipe
 
-	// clear mapSpawned and demo playing flags
-	UnloadMap();
+Used for a completed scene-to-menu fade whose held black frame must survive
+world teardown until the destination GUI has received its reveal event.
+===============
+*/
+void idSessionLocal::StopPreservingWipe() {
+	StopInternal( true );
+}
 
-	// disconnect async client
-	idAsyncNetwork::client.DisconnectFromServer();
+/*
+===============
+idSessionLocal::StopInternal
 
-	// kill async server
-	idAsyncNetwork::server.Kill();
+idAsyncServer::Kill re-enters Stop after marking the server inactive. Preserve
+the outer stop's wipe policy across that nested call.
+===============
+*/
+void idSessionLocal::StopInternal( bool preserveWipe ) {
+	const bool outermostStop = stopDepth == 0;
+	if ( outermostStop ) {
+		preserveWipeDuringStop = preserveWipe;
+	}
+	stopDepth++;
+	const auto finishStopPolicy = [this, outermostStop]() {
+		stopDepth--;
+		if ( outermostStop ) {
+			preserveWipeDuringStop = false;
+		}
+	};
 
-	if ( sw ) {
-		sw->StopAllSounds();
+	try {
+		if ( !preserveWipeDuringStop ) {
+			ClearWipe();
+		}
+
+		idAsyncNetwork::multiViewDemo.SessionStop();
+
+		// clear mapSpawned and demo playing flags
+		UnloadMap();
+
+		// disconnect async client
+		idAsyncNetwork::client.DisconnectFromServer();
+
+		// kill async server
+		idAsyncNetwork::server.Kill();
+
+		if ( sw ) {
+			sw->StopAllSounds();
+		}
+
+		insideUpdateScreen = false;
+		insideExecuteMapChange = false;
+
+		// drop all guis
+		SetGUI( NULL, NULL );
+	}
+	catch( ... ) {
+		// A recoverable drop during MapShutdown must not poison the policy for
+		// later Stop calls after the outer exception is handled.
+		finishStopPolicy();
+		throw;
 	}
 
-	insideUpdateScreen = false;
-	insideExecuteMapChange = false;
-
-	// drop all guis
-	SetGUI( NULL, NULL );
+	finishStopPolicy();
 }
 
 /*
@@ -3204,6 +3255,9 @@ void idSessionLocal::Shutdown() {
 		uiManager->FreeListGUI( guiMainMenu_MapList );
 		guiMainMenu_MapList = NULL;
 	}
+#ifndef ID_DEDICATED
+	arenaCampaign.Shutdown();
+#endif
 	ShutdownDemoSystem();
 
 	Clear();
@@ -3614,6 +3668,7 @@ Session_Disconnect_f
 ================
 */
 static void Session_Disconnect_f( const idCmdArgs &args ) {
+	arenaCampaign.AbortMatch();
 	sessLocal.Stop();
 	sessLocal.StartMenu();
 	if ( soundSystem ) {
@@ -3882,6 +3937,9 @@ void idSessionLocal::StartPlayingRenderDemo( idStr demoName ) {
 	lastDemoTic = -1;
 	timeDemoStartTime = Sys_Milliseconds();
 	if ( restoreDemoMenu && guiDemoMenu != NULL ) {
+		// The menu chooses its visual mode in onActivate, so publish the current
+		// playback state before the synchronous SetGUI activation.
+		UpdateDemoMenuGui();
 		SetGUI( guiDemoMenu, NULL );
 		UpdateDemoMenuGui();
 	}
@@ -5110,6 +5168,10 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 
 				if ( ev.evType == SE_KEY ) {
 					idKeyInput::PreliminaryKeyEvent( ev.evValue, ( ev.evValue2 != 0 ) );
+				} else if ( ev.evType == SE_MOUSE ) {
+					idKeyInput::PreliminaryMouseEvent( ev.evValue, ev.evValue2 );
+				} else if ( ev.evType == SE_JOYSTICK_AXIS ) {
+					idKeyInput::PreliminaryJoystickEvent( ev.evValue2 );
 				}
 
 				if ( ev.evType == SE_CONSOLE ) {
@@ -7022,6 +7084,7 @@ void idSessionLocal::Init() {
 	guiTakeNotes = uiManager->FindGui( "guis/takeNotes.gui", true, false, true );
 	guiIntro = uiManager->FindGui( "guis/intro.gui", true, false, true );
 	InitDemoSystem();
+	arenaCampaign.Init();
 #endif
 
 	whiteMaterial = declManager->FindMaterial( "_white" );

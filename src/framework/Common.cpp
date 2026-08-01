@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../bse/BSE_API.h"
 #include "../imagetools/ImageTools.h"
 #include "../renderer/RendererModule.h"
+#include "ArenaCampaign.h"
 #include "GameModuleDiagnostics.h"
 #include "RenderDoc.h"
 
@@ -124,8 +125,8 @@ idCVar com_autoScreenshot( "com_autoScreenshot", "0", CVAR_SYSTEM | CVAR_BOOL | 
 idCVar com_makingBuild( "com_makingBuild", "0", CVAR_BOOL | CVAR_SYSTEM, "1 when making a build" );
 idCVar com_updateLoadSize( "com_updateLoadSize", "0", CVAR_BOOL | CVAR_SYSTEM | CVAR_NOCHEAT, "update the load size after loading a map" );
 idCVar com_videoRam( "com_videoRam", "64", CVAR_INTEGER | CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ARCHIVE, "holds the last amount of detected video ram" );
-idCVar com_activeGameModule( "com_activeGameModule", "", CVAR_SYSTEM, "active game module (game_sp/game_mp)" );
-idCVar com_nextGameModule( "com_nextGameModule", "", CVAR_SYSTEM, "internal one-shot game module override for reloadEngine" );
+idCVar com_activeGameModule( "com_activeGameModule", "", CVAR_SYSTEM | CVAR_NOCHEAT, "active game module (game_sp/game_mp)" );
+idCVar com_nextGameModule( "com_nextGameModule", "", CVAR_SYSTEM | CVAR_NOCHEAT, "internal one-shot game module override for reloadEngine" );
 idCVar com_platformProfile( "com_platformProfile", "default", CVAR_SYSTEM | CVAR_INIT, "startup platform profile (default or steamdeck)" );
 
 static bool openQ4_IsValidGameModuleName( const char *moduleName );
@@ -1304,6 +1305,13 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 
 	// Dont shut down the session for gui editor or debugger
 	if ( !( com_editors & ( EDITOR_GUI | EDITOR_DEBUGGER ) ) ) {
+#ifndef ID_DEDICATED
+		// A recoverable drop can bypass the ordinary disconnect command. Restore
+		// Arena's temporary server rules before the session tears its server down.
+		if ( arenaCampaign.NeedsCleanup() ) {
+			arenaCampaign.AbortMatch();
+		}
+#endif
 		session->Stop();
 	}
 
@@ -1408,6 +1416,16 @@ void idCommonLocal::Quit( void ) {
 
 	// don't try to shutdown if we are in a recursive error
 	if ( !com_errorEntered ) {
+#ifndef ID_DEDICATED
+		// Arena temporarily overrides archived multiplayer and user settings.
+		// Restore and flush them while the session and filesystem are still
+		// alive; session shutdown is too late to repair a config written during
+		// the active match.
+		if ( arenaCampaign.NeedsCleanup() ) {
+			arenaCampaign.AbortMatch();
+			WriteConfiguration();
+		}
+#endif
 		Shutdown();
 	}
 
@@ -1958,6 +1976,14 @@ void idCommonLocal::WriteConfiguration( void ) {
 	if ( !com_fullyInitialized ) {
 		return;
 	}
+#ifndef ID_DEDICATED
+	// Arena owns a temporary transaction of archived multiplayer rules. Do not
+	// serialize that transaction; once it restores the player's values, the
+	// ordinary modified-flag path writes the durable configuration.
+	if ( arenaCampaign.NeedsCleanup() ) {
+		return;
+	}
+#endif
 
 	if ( !( cvarSystem->GetModifiedFlags() & CVAR_ARCHIVE ) ) {
 		return;
@@ -3647,6 +3673,15 @@ void Com_ReloadGameModule_f( const idCmdArgs &args ) {
 		common->Printf( "============= ReloadGameModule failed ============\n" );
 		// Whatever was queued to run after the swap assumed the new module
 		// came up. Do not run it; the next successful swap overwrites it.
+#ifndef ID_DEDICATED
+		// ArenaCampaign::Shutdown deliberately preserves its transaction across
+		// the expected game_sp -> game_mp swap. If InitGame failed, that handoff
+		// will never complete, so release the token and restore the saved server
+		// settings before returning to a usable menu.
+		if ( arenaCampaign.NeedsCleanup() ) {
+			arenaCampaign.AbortMatch();
+		}
+#endif
 		session->StartMenu();
 		fileSystem->SetIsFileLoadingAllowed( false );
 		return;
@@ -3655,7 +3690,22 @@ void Com_ReloadGameModule_f( const idCmdArgs &args ) {
 	common->Printf( "============= ReloadGameModule end ===============\n" );
 
 	if ( !cmdSystem->PostReloadEngine() ) {
+#ifndef ID_DEDICATED
+		// A successful module load is not enough for Arena: its replayed
+		// spawnServer command is the second half of the transaction. If that
+		// command disappeared, fail closed instead of leaving an active token
+		// and archived multiplayer overrides stranded behind the main menu.
+		const bool abandonedArenaLaunch = arenaCampaign.NeedsCleanup();
+		if ( abandonedArenaLaunch ) {
+			arenaCampaign.AbortMatch();
+		}
+#endif
 		session->StartMenu();
+#ifndef ID_DEDICATED
+		if ( abandonedArenaLaunch ) {
+			arenaCampaign.OpenBrowser();
+		}
+#endif
 	}
 	fileSystem->SetIsFileLoadingAllowed( false );
 }
@@ -4976,6 +5026,13 @@ void idCommonLocal::Frame( void ) {
 
 		idAsyncNetwork::RunFrame();
 
+#ifndef ID_DEDICATED
+		// Drive Arena presentation transitions from the common frame path: while
+		// its listen server is active, idSessionLocal::Frame is intentionally not
+		// called by the ordinary multiplayer branch below.
+		arenaCampaign.Frame();
+#endif
+
 	if ( idAsyncNetwork::IsActive() ) {
 		if ( idAsyncNetwork::serverDedicated.GetInteger() != 1 ) {
 			// Keep netplay flow the same as stock, but ensure audio mixes each frame.
@@ -5130,13 +5187,15 @@ void openQ4_GetAsyncTimingStats( openq4AsyncTimingStats_t &stats, int maxSamples
 	stats.avgJitterMsec = jitterSum / static_cast<float>( stats.sampleCount );
 }
 
-static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( void ) {
-	if ( cvarSystem == NULL || idAsyncNetwork::IsActive() ) {
-		return false;
-	}
+// The async thread must not search the global CVar registry while a game DLL is
+// registering its static CVars. Module swaps grow that registry on the main
+// thread and can invalidate an in-flight FindInternal traversal. Publish the
+// only bit of module state needed by the timer after game->Init() completes.
+static std::atomic<bool> openQ4_singleplayerGameModuleReady( false );
 
-	const char *gameType = cvarSystem->GetCVarString( "si_gameType" );
-	if ( gameType == NULL || idStr::Icmp( gameType, "singleplayer" ) != 0 ) {
+static bool openQ4_ShouldUseSmoothSingleplayerSlowTime( void ) {
+	if ( !openQ4_singleplayerGameModuleReady.load( std::memory_order_acquire ) ||
+		 idAsyncNetwork::IsActive() ) {
 		return false;
 	}
 
@@ -5428,6 +5487,9 @@ idCommonLocal::LoadGameDLL
 =================
 */
 void idCommonLocal::LoadGameDLL( void ) {
+	openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );
+	const char *gameModuleBaseName = openQ4_SelectGameModuleBaseName();
+
 #ifdef __DOOM_DLL__
 	char			dllPath[ MAX_OSPATH ];
 	char			preferredGameModuleBinary[ MAX_OSPATH ];
@@ -5442,7 +5504,6 @@ void idCommonLocal::LoadGameDLL( void ) {
 
 	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_LOCATE );
 
-	const char *gameModuleBaseName = openQ4_SelectGameModuleBaseName();
 	openQ4_BuildGameModuleBinaryName( gameModuleBaseName, preferredGameModuleBinary );
 	selectedModuleBinary = preferredGameModuleBinary;
 	fileSystem->FindDLL( selectedModuleBinary, dllPath, true );
@@ -5542,6 +5603,9 @@ void idCommonLocal::LoadGameDLL( void ) {
 	if ( game != NULL ) {
 		game->Init();
 	}
+	openQ4_singleplayerGameModuleReady.store(
+		game != NULL && idStr::Icmp( gameModuleBaseName, "game_sp" ) == 0,
+		std::memory_order_release );
 	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_READY );
 }
 
@@ -5551,6 +5615,9 @@ idCommonLocal::UnloadGameDLL
 =================
 */
 void idCommonLocal::UnloadGameDLL( void ) {
+	// Stop advertising a ready single-player module before shutdown can mutate
+	// game-owned state or unloading can unregister module-owned static CVars.
+	openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );
 
 	// shut down the game object
 	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_SHUTDOWN );

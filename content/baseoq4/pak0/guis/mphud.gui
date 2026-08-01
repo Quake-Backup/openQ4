@@ -7,6 +7,10 @@ windowDef Desktop
 	menugui	1
 	float	"chatCount"	0
 	float	"igOffset"	282-((32*"gui::ig_awards")/2)
+	// Arena Campaign presentation is local to the HUD.  Ordinary multiplayer
+	// never fires these events and therefore never sees the cinematic layer.
+	float	"arena_presentVisible"	0
+	float	"arena_presentMode"	0
 	definevec4	"white"	1,1,1,1
 	definevec4	"white_5"	1,1,1,0.5
 	definevec4	"white_0"	1,1,1,0
@@ -67,6 +71,22 @@ windowDef Desktop
 		// gui script window character limitation
 		
 		namedevent "event_arenaFocus::arenaFocus" ;
+	}
+
+	onNamedEvent arenaCampaignEntrance {
+		set "Desktop::arena_presentVisible" "1" ;
+		set "Desktop::arena_presentMode" "1" ;
+		resetTime "oq4_arena_present_entrance" "0" ;
+	}
+
+	onNamedEvent arenaCampaignVictory {
+		set "Desktop::arena_presentVisible" "1" ;
+		set "Desktop::arena_presentMode" "2" ;
+		resetTime "oq4_arena_present_victory" "0" ;
+	}
+
+	onNamedEvent arenaCampaignPresentationClear {
+		resetTime "oq4_arena_present_clear" "0" ;
 	}
 	
 	onNamedEvent roundTransitionIn {
@@ -1452,7 +1472,7 @@ windowDef Desktop
 		}
 		windowDef tourn_time
 		{
-			rect	23,59,120,20
+			rect	23,59,200,20
 			visible	("gui::infinity" == 0)
 			forecolor	1,1,1,1
 			text	"gui::timeleft"
@@ -3234,7 +3254,7 @@ windowDef Desktop
 		}
 		windowDef ctf_time
 		{
-			rect	23,96,120,20
+			rect	23,96,200,20
 			visible	("gui::infinity" == 0)
 			forecolor	1,1,1,1
 			text	"gui::timeleft"
@@ -3388,7 +3408,7 @@ windowDef Desktop
 		}
 		windowDef ffa_time
 		{
-			rect	23,94,120,20
+			rect	23,94,200,20
 			visible	("gui::infinity" == 0)
 			forecolor	1,1,1,1
 			text	"gui::timeleft"
@@ -4351,6 +4371,321 @@ windowDef Desktop
 		textalign	1
 	}
 		
+	// ---------------------------------------------------------------------
+	// Single-player Arena presentation layer.  The world remains visible
+	// beneath the translucent framing so the game-side camera can stage the
+	// combatants on entry and orbit the frozen victor after the final score.
+	// ---------------------------------------------------------------------
+	windowDef oq4_arena_present_shade
+	{
+		rect	0,0,640,480
+		visible	"Desktop::arena_presentVisible"
+		backcolor	0,0,0,0
+		noevents	1
+	}
+
+	windowDef oq4_arena_letterbox_top
+	{
+		rect	0,0,640,0
+		visible	"Desktop::arena_presentVisible"
+		backcolor	0.005,0.008,0.005,0.98
+		noevents	1
+	}
+
+	windowDef oq4_arena_letterbox_bottom
+	{
+		rect	0,480,640,0
+		visible	"Desktop::arena_presentVisible"
+		backcolor	0.005,0.008,0.005,0.98
+		noevents	1
+	}
+
+	windowDef oq4_arena_rule_top
+	{
+		rect	64,40,512,1
+		visible	"Desktop::arena_presentVisible"
+		backcolor	0.95,0.49,0.06,0
+		noevents	1
+	}
+
+	windowDef oq4_arena_rule_bottom
+	{
+		rect	64,439,512,1
+		visible	"Desktop::arena_presentVisible"
+		backcolor	0.95,0.49,0.06,0
+		noevents	1
+	}
+
+	windowDef oq4_arena_entrance_kicker
+	{
+		rect	80,151,480,22
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 1 )
+		forecolor	0.95,0.72,0.25,0
+		text	"#str_42079"
+		textscale	0.22
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_entrance_title
+	{
+		rect	48,181,544,56
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 1 )
+		forecolor	1,0.97,0.84,0
+		text	"gui::arena_presentTitle"
+		textscale	0.52
+		textalign	1
+		font	"fonts/marine"
+		noevents	1
+	}
+
+	windowDef oq4_arena_entrance_subtitle
+	{
+		rect	80,244,480,24
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 1 )
+		forecolor	0.78,0.84,0.69,0
+		text	"gui::arena_presentSubtitle"
+		textscale	0.22
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_entrance_ready
+	{
+		rect	120,288,400,21
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 1 )
+		forecolor	0.95,0.49,0.06,0
+		text	"#str_42086"
+		textscale	0.18
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_victory_kicker
+	{
+		rect	80,66,480,22
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
+		forecolor	0.95,0.72,0.25,0
+		text	"#str_42085"
+		textscale	0.22
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_victory_title
+	{
+		rect	48,94,544,52
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
+		forecolor	1,0.97,0.84,0
+		text	"gui::arena_presentTitle"
+		textscale	0.52
+		textalign	1
+		font	"fonts/marine"
+		noevents	1
+	}
+
+	windowDef oq4_arena_victor_card
+	{
+		rect	160,328,320,76
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
+		backcolor	0.015,0.022,0.014,0
+		bordercolor	0.95,0.49,0.06,0
+		bordersize	1
+		noevents	1
+	}
+
+	windowDef oq4_arena_victor_label
+	{
+		rect	176,339,288,17
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
+		forecolor	0.67,0.75,0.56,0
+		text	"#str_42084"
+		textscale	0.17
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_victor_name
+	{
+		rect	176,362,288,28
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
+		forecolor	1,0.94,0.76,0
+		text	"gui::arena_presentVictor"
+		textscale	0.31
+		textalign	1
+		font	"fonts/marine"
+		noevents	1
+	}
+
+	windowDef oq4_arena_victory_score
+	{
+		rect	220,153,200,26
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
+		forecolor	0.95,0.72,0.25,0
+		text	"gui::arena_presentScore"
+		textscale	0.28
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_recording_result
+	{
+		rect	160,415,320,18
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
+		forecolor	0.67,0.75,0.56,0
+		text	"#str_42087"
+		textscale	0.15
+		textalign	1
+		font	"fonts/lowpixel"
+		noevents	1
+	}
+
+	windowDef oq4_arena_present_entrance
+	{
+		rect	0,0,1,1
+		visible	1
+		notime	1
+
+		onTime 0 {
+			stopTransitions "oq4_arena_present_shade" ;
+			stopTransitions "oq4_arena_letterbox_top" ;
+			stopTransitions "oq4_arena_letterbox_bottom" ;
+			stopTransitions "oq4_arena_rule_top" ;
+			stopTransitions "oq4_arena_rule_bottom" ;
+			set "oq4_arena_present_shade::backcolor" "0,0,0,0" ;
+			set "oq4_arena_letterbox_top::rect" "0,0,640,0" ;
+			set "oq4_arena_letterbox_bottom::rect" "0,480,640,0" ;
+			set "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" ;
+			set "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" ;
+			set "oq4_arena_entrance_kicker::forecolor" "0.95,0.72,0.25,0" ;
+			set "oq4_arena_entrance_title::forecolor" "1,0.97,0.84,0" ;
+			set "oq4_arena_entrance_subtitle::forecolor" "0.78,0.84,0.69,0" ;
+			set "oq4_arena_entrance_ready::forecolor" "0.95,0.49,0.06,0" ;
+			transition "oq4_arena_present_shade::backcolor" "0,0,0,0" "0,0,0,0.42" "400" ;
+			transition "oq4_arena_letterbox_top::rect" "0,0,640,0" "0,0,640,34" "400" ;
+			transition "oq4_arena_letterbox_bottom::rect" "0,480,640,0" "0,446,640,34" "400" ;
+			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "500" ;
+			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "500" ;
+		}
+
+		onTime 220 {
+			transition "oq4_arena_entrance_kicker::forecolor" "0.95,0.72,0.25,0" "0.95,0.72,0.25,1" "320" ;
+		}
+
+		onTime 520 {
+			transition "oq4_arena_entrance_title::forecolor" "1,0.97,0.84,0" "1,0.97,0.84,1" "420" ;
+			transition "oq4_arena_entrance_subtitle::forecolor" "0.78,0.84,0.69,0" "0.78,0.84,0.69,1" "420" ;
+		}
+
+		onTime 1050 {
+			transition "oq4_arena_entrance_ready::forecolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,1" "250" ;
+		}
+
+		onTime 2450 {
+			transition "oq4_arena_entrance_kicker::forecolor" "0.95,0.72,0.25,1" "0.95,0.72,0.25,0" "350" ;
+			transition "oq4_arena_entrance_title::forecolor" "1,0.97,0.84,1" "1,0.97,0.84,0" "350" ;
+			transition "oq4_arena_entrance_subtitle::forecolor" "0.78,0.84,0.69,1" "0.78,0.84,0.69,0" "350" ;
+			transition "oq4_arena_entrance_ready::forecolor" "0.95,0.49,0.06,1" "0.95,0.49,0.06,0" "350" ;
+		}
+
+		onTime 2850 {
+			transition "oq4_arena_present_shade::backcolor" "0,0,0,0.42" "0,0,0,0" "450" ;
+			transition "oq4_arena_letterbox_top::rect" "0,0,640,34" "0,0,640,0" "450" ;
+			transition "oq4_arena_letterbox_bottom::rect" "0,446,640,34" "0,480,640,0" "450" ;
+			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "350" ;
+			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "350" ;
+		}
+
+		onTime 3350 {
+			set "Desktop::arena_presentVisible" "0" ;
+		}
+	}
+
+	windowDef oq4_arena_present_victory
+	{
+		rect	0,0,1,1
+		visible	1
+		notime	1
+
+		onTime 0 {
+			stopTransitions "oq4_arena_present_shade" ;
+			stopTransitions "oq4_arena_letterbox_top" ;
+			stopTransitions "oq4_arena_letterbox_bottom" ;
+			set "oq4_arena_present_shade::backcolor" "0,0,0,0" ;
+			set "oq4_arena_letterbox_top::rect" "0,0,640,0" ;
+			set "oq4_arena_letterbox_bottom::rect" "0,480,640,0" ;
+			set "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" ;
+			set "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" ;
+			set "oq4_arena_victory_kicker::forecolor" "0.95,0.72,0.25,0" ;
+			set "oq4_arena_victory_title::forecolor" "1,0.97,0.84,0" ;
+			set "oq4_arena_victory_score::forecolor" "0.95,0.72,0.25,0" ;
+			set "oq4_arena_victor_card::backcolor" "0.015,0.022,0.014,0" ;
+			set "oq4_arena_victor_card::bordercolor" "0.95,0.49,0.06,0" ;
+			set "oq4_arena_victor_label::forecolor" "0.67,0.75,0.56,0" ;
+			set "oq4_arena_victor_name::forecolor" "1,0.94,0.76,0" ;
+			set "oq4_arena_recording_result::forecolor" "0.67,0.75,0.56,0" ;
+			transition "oq4_arena_present_shade::backcolor" "0,0,0,0" "0,0,0,0.18" "500" ;
+			transition "oq4_arena_letterbox_top::rect" "0,0,640,0" "0,0,640,34" "450" ;
+			transition "oq4_arena_letterbox_bottom::rect" "0,480,640,0" "0,446,640,34" "450" ;
+			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "550" ;
+			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "550" ;
+		}
+
+		onTime 220 {
+			transition "oq4_arena_victory_kicker::forecolor" "0.95,0.72,0.25,0" "0.95,0.72,0.25,1" "300" ;
+			transition "oq4_arena_victory_title::forecolor" "1,0.97,0.84,0" "1,0.97,0.84,1" "420" ;
+		}
+
+		onTime 620 {
+			transition "oq4_arena_victory_score::forecolor" "0.95,0.72,0.25,0" "0.95,0.72,0.25,1" "300" ;
+		}
+
+		onTime 900 {
+			transition "oq4_arena_victor_card::backcolor" "0.015,0.022,0.014,0" "0.015,0.022,0.014,0.78" "450" ;
+			transition "oq4_arena_victor_card::bordercolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "450" ;
+			transition "oq4_arena_victor_label::forecolor" "0.67,0.75,0.56,0" "0.67,0.75,0.56,1" "400" ;
+			transition "oq4_arena_victor_name::forecolor" "1,0.94,0.76,0" "1,0.94,0.76,1" "400" ;
+		}
+
+		onTime 2600 {
+			transition "oq4_arena_recording_result::forecolor" "0.67,0.75,0.56,0" "0.67,0.75,0.56,0.9" "350" ;
+		}
+	}
+
+	windowDef oq4_arena_present_clear
+	{
+		rect	0,0,1,1
+		visible	1
+		notime	1
+
+		onTime 0 {
+			transition "oq4_arena_present_shade::backcolor" "$oq4_arena_present_shade::backcolor" "0,0,0,0" "350" ;
+			transition "oq4_arena_letterbox_top::rect" "$oq4_arena_letterbox_top::rect" "0,0,640,0" "350" ;
+			transition "oq4_arena_letterbox_bottom::rect" "$oq4_arena_letterbox_bottom::rect" "0,480,640,0" "350" ;
+			transition "oq4_arena_rule_top::backcolor" "$oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" "300" ;
+			transition "oq4_arena_rule_bottom::backcolor" "$oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" "300" ;
+			transition "oq4_arena_victory_kicker::forecolor" "$oq4_arena_victory_kicker::forecolor" "0.95,0.72,0.25,0" "250" ;
+			transition "oq4_arena_victory_title::forecolor" "$oq4_arena_victory_title::forecolor" "1,0.97,0.84,0" "250" ;
+			transition "oq4_arena_victory_score::forecolor" "$oq4_arena_victory_score::forecolor" "0.95,0.72,0.25,0" "250" ;
+			transition "oq4_arena_victor_card::backcolor" "$oq4_arena_victor_card::backcolor" "0.015,0.022,0.014,0" "250" ;
+			transition "oq4_arena_victor_card::bordercolor" "$oq4_arena_victor_card::bordercolor" "0.95,0.49,0.06,0" "250" ;
+			transition "oq4_arena_victor_label::forecolor" "$oq4_arena_victor_label::forecolor" "0.67,0.75,0.56,0" "250" ;
+			transition "oq4_arena_victor_name::forecolor" "$oq4_arena_victor_name::forecolor" "1,0.94,0.76,0" "250" ;
+			transition "oq4_arena_recording_result::forecolor" "$oq4_arena_recording_result::forecolor" "0.67,0.75,0.56,0" "250" ;
+		}
+
+		onTime 400 {
+			set "Desktop::arena_presentVisible" "0" ;
+			set "Desktop::arena_presentMode" "0" ;
+		}
+	}
+
 	windowDef anim_transitionIn
 	{
 		rect	0,0,1,1

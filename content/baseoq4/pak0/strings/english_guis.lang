@@ -917,7 +917,7 @@
 	"#str_200927"	"CURRENT MAP"
 	"#str_200928"	"SERVER SETTINGS"
 	"#str_200929"	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone"
-	"#str_200930"	"Select a key binding and hit ESCAPE to clear key assignment."
+	"#str_200930"	"^ik0d / ^ikc7 CHANGE\n^ik90 / ^ikca CLEAR\n^ik1b / ^ikcc CANCEL"
 	"#str_200931"	"SECURE SERVER"
 	"#str_200932"	"FAVORITE SERVER"
 	"#str_200933"	"PASSWORD ENABLED"

@@ -199,6 +199,8 @@ public:
 
 	static void			ArgCompletion_KeyName( const idCmdArgs &args, void(*callback)( const char *s ) );
 	static void			PreliminaryKeyEvent( int keyNum, bool down );
+	static void			PreliminaryMouseEvent( int deltaX, int deltaY );
+	static void			PreliminaryJoystickEvent( int value );
 	static bool			IsDown( int keyNum );
 	static int			GetUsercmdAction( int keyNum );
 	static bool			GetOverstrikeMode( void );
@@ -213,6 +215,7 @@ public:
 	static int			NumBinds( const char *binding );
 	static bool			ExecKeyBinding( int keyNum );
 	static const char *	KeysFromBinding( const char *bind );
+	static const char *	KeysFromBindingForMenu( const char *bind );
 	static const char *	BindingFromKey( const char *key );
 	static bool			KeyIsBoundTo( int keyNum, const char *binding );
 	static void			WriteBindings( idFile *f );

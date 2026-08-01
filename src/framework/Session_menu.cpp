@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "Session_local.h"
+#include "ArenaCampaign.h"
 #include "../ui/ListGUILocal.h"
 #include "../ui/Window.h"
 #include "../sound/snd_local.h"
@@ -1983,6 +1984,7 @@ void idSessionLocal::SetMainMenuGuiVars( void ) {
 #endif
 
 	SetMainMenuMPModelVars( guiMainMenu );
+	arenaCampaign.UpdateMainMenuGui( guiMainMenu );
 }
 
 /*
@@ -2288,6 +2290,11 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 
 		if ( !idStr::Icmp( cmd, "demoOpen" ) ) {
 			OpenDemoMenu( true );
+			return;
+		}
+
+		if ( !idStr::Icmp( cmd, "singlePlayerOpen" ) ) {
+			arenaCampaign.OpenSelector();
 			return;
 		}
 
@@ -3024,6 +3031,9 @@ void idSessionLocal::DispatchCommand( idUserInterface *gui, const char *menuComm
 
 	if ( gui == guiMainMenu ) {
 		HandleMainMenuCommands( menuCommand );
+		return;
+	} else if ( arenaCampaign.IsGui( gui ) ) {
+		arenaCampaign.HandleGuiCommand( menuCommand );
 		return;
 	} else if ( gui == guiDemoMenu ) {
 		HandleDemoMenuCommand( menuCommand );

@@ -1053,6 +1053,15 @@ static void SDL3_QueueMouseDelta(int dx, int dy, int eventTime) {
 	}
 }
 
+static void SDL3_QueueControllerActivity(int eventTime, int value) {
+	// SE_JOYSTICK_AXIS is consumed by the framework's active-input tracker.  SDL
+	// keeps gameplay axes on the polled path, so this lightweight event carries
+	// only post-deadzone device activity and cannot alter a usercmd.
+	if (idMath::Abs(value) >= 16) {
+		Sys_QueEvent(eventTime, SE_JOYSTICK_AXIS, AXIS_SIDE, idMath::ClampChar(value), 0, NULL);
+	}
+}
+
 static void SDL3_QueueMouseButtonEvent(int key, bool down, int eventTime, bool pollState) {
 	if (key == 0) {
 		return;
@@ -1580,6 +1589,8 @@ static void SDL3_UpdateGamepadAxes(int eventTime) {
 	Sys_LeaveCriticalSection(CRITICAL_SECTION_ONE);
 
 	SDL3_UpdateTriggerButtons(leftTrigger, rightTrigger, eventTime);
+	const int activity = Max(Max(idMath::Abs(moveX), idMath::Abs(moveY)), Max(idMath::Abs(lookX), idMath::Abs(lookY)));
+	SDL3_QueueControllerActivity(eventTime, activity);
 }
 
 static void SDL3_UpdateJoystickAxes(void) {
@@ -1655,6 +1666,10 @@ static void SDL3_UpdateJoystickAxes(void) {
 	s_joystickAxisState[AXIS_YAW] = moveX;
 	s_joystickAxisState[AXIS_PITCH] = moveY;
 	Sys_LeaveCriticalSection(CRITICAL_SECTION_ONE);
+
+	const int activity = Max(Max(idMath::Abs(moveX), idMath::Abs(moveY)),
+		Max(Max(idMath::Abs(lookX), idMath::Abs(lookY)), idMath::Abs(up)));
+	SDL3_QueueControllerActivity(Sys_Milliseconds(), activity);
 }
 
 static void SDL3_SetJoystickHat(Uint8 newHat, int eventTime) {
@@ -1865,6 +1880,9 @@ static void SDL3_HandleGamepadGyroEvent(const SDL_GamepadSensorEvent &event, int
 	const int dx = SDL3_ConsumeMouseDelta(yawCounts, s_gamepadGyroRemainderX);
 	const int dy = SDL3_ConsumeMouseDelta(pitchCounts, s_gamepadGyroRemainderY);
 	SDL3_QueueMouseDelta(dx, dy, eventTime);
+	if (dx != 0 || dy != 0) {
+		SDL3_QueueControllerActivity(eventTime, 127);
+	}
 }
 
 static bool SDL3_GamepadTouchpadEventMatchesTrackedFinger(const SDL_GamepadTouchpadEvent &event) {
@@ -1950,6 +1968,9 @@ static void SDL3_HandleGamepadTouchpadEvent(const SDL_GamepadTouchpadEvent &even
 	const int dx = SDL3_ConsumeMouseDelta(deltaX, s_gamepadTouchpadRemainderX);
 	const int dy = SDL3_ConsumeMouseDelta(deltaY, s_gamepadTouchpadRemainderY);
 	SDL3_QueueMouseDelta(dx, dy, eventTime);
+	if (dx != 0 || dy != 0) {
+		SDL3_QueueControllerActivity(eventTime, 127);
+	}
 }
 
 static void SDL3_HandleFingerEvent(const SDL_TouchFingerEvent &event, int eventTime) {

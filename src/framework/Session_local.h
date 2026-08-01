@@ -181,6 +181,9 @@ public:
 	virtual void		Shutdown();
 
 	virtual void		Stop();
+	// Arena's result handoff keeps the completed fade held while Stop tears
+	// down the live world and the result GUI is prepared.
+	void				StopPreservingWipe();
 
 	virtual void		UpdateScreen( bool outOfSequence = true );
 
@@ -385,6 +388,8 @@ public:
 	int					wipeStartTic;
 	int					wipeStopTic;
 	bool				wipeHold;
+	int					stopDepth;
+	bool				preserveWipeDuringStop;
 
 #if ID_CONSOLE_LOCK
 	int					emptyDrawCount;				// watchdog to force the main menu to restart
@@ -392,6 +397,7 @@ public:
 
 	//=====================================
 	void				Clear();
+	void				StopInternal( bool preserveWipe );
 
 	void				DrawCmdGraph();
 	void				Draw();

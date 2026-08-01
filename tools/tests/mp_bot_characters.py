@@ -1341,9 +1341,9 @@ def validate_cvars_and_commands() -> None:
     cvar_table = doc[doc.index("\n## Cvars") :]
     cvar_table = cvar_table[: cvar_table.index("\n## ", 1)]
     documented = re.findall(r"^\|\s*`(bot_\w+)`\s*\|\s*`([^`]*)`\s*\|", cvar_table, re.MULTILINE)
-    if len(documented) < 13:
+    if len(documented) < 14:
         raise AssertionError(
-            f"docs/dev/mp-bots.md documents {len(documented)} bot cvars; the block has thirteen"
+            f"docs/dev/mp-bots.md documents {len(documented)} bot cvars; the block has fourteen"
         )
 
     command_table = doc[doc.index("\n## Commands") :]
@@ -1383,6 +1383,7 @@ def validate_cvars_and_commands() -> None:
         "bot_characters",
         "bot_chat",
         "bot_chatDelay",
+        "bot_chatCPM",
     ):
         line = re.search(rf"^idCVar {name}\(.*$", declared, re.MULTILINE)
         if line is None or "CVAR_ARCHIVE" not in line.group(0):
@@ -1443,6 +1444,7 @@ def validate_chat_path() -> None:
     # all".  Releasing it somewhere else does not cover the kick.
     teardown = bot[bot.index("void rvBot::Shutdown") :][:1500]
     require(teardown, "ReleaseCharacter(", "rvBot::Shutdown")
+    require(teardown, "isChatting = false", "rvBot::Shutdown typing-icon cleanup")
 
     # The gauntlet and the lightning gun set neither def_projectile nor
     # def_hitscan, so attackHitscan is false for both even though they are
@@ -1572,6 +1574,9 @@ def validate_reply_runtime() -> None:
 
     update_at = bot.index("void rvBot::UpdateChat")
     update = braced_body(bot, update_at, "rvBot::UpdateChat")
+    require(update, "isChatting =", "rvBot::UpdateChat typing icon")
+    require(update, "!chatPending.IsEmpty()", "rvBot::UpdateChat typing icon pending state")
+    require(update, "gameLocal.time < chatSendTime", "rvBot::UpdateChat typing icon deadline")
     require(update, "chatPendingIsReply", "rvBot::UpdateChat reply provenance")
     require(update, "!wasReply", "rvBot::UpdateChat recursion suppression")
     require_regex(
@@ -1588,6 +1593,7 @@ def validate_reply_runtime() -> None:
         "chatPendingIsReply = false",
         "rvBot::QueueChat event-chat provenance",
     )
+    require(queue_event, "BotChatSendTime(", "rvBot::QueueChat CPM delay")
 
     queue_at = bot.index("bool rvBot::TryQueueReply")
     update_signature_at = bot.index("void rvBot::UpdateChat", queue_at)
@@ -1600,12 +1606,33 @@ def validate_reply_runtime() -> None:
     require(queue, "ReplyLine(", "rvBot::TryQueueReply content selection")
     require(queue, "AllowChat(", "rvBot::TryQueueReply existing flood throttle")
     require(queue, "chatPendingIsReply = true", "rvBot::TryQueueReply provenance stamp")
+    require(queue, "BotChatSendTime(", "rvBot::TryQueueReply CPM delay")
     require_order(
         queue,
         "ReplyLine(",
         "AllowChat(",
         "rvBot::TryQueueReply usable-line-before-throttle ordering",
     )
+
+    delay_at = bot.index("static int BotChatSendTime")
+    display_name_at = bot.index("static idStr BotReadableName", delay_at)
+    delay = bot[delay_at:display_name_at]
+    for needle in (
+        "LengthWithoutEscapes()",
+        "bot_chatCPM.GetInteger()",
+        "60000.0f",
+        "traits.chatDelayScale",
+        "BOT_CHAT_MIN_DELAY_MSEC",
+        "BOT_CHAT_MAX_DELAY_MSEC",
+    ):
+        require(delay if needle != "traits.chatDelayScale" else queue_event,
+                needle, "rvBot length-based CPM chat delay")
+
+    icon_manager = strip_comments(read(mp / "IconManager.cpp"))
+    chat_icons_at = icon_manager.index("void rvIconManager::UpdateChatIcons")
+    chat_icons = braced_body(icon_manager, chat_icons_at, "rvIconManager::UpdateChatIcons")
+    require(chat_icons, "player->isChatting", "Quake 4 stock chat icon state")
+    require(chat_icons, '"mtr_icon_chatting"', "Quake 4 stock chat icon material")
 
     on_chat_at = bot.index("void rvBotManager::OnChatMessage")
     num_bots_at = bot.index("int rvBotManager::NumBots", on_chat_at)

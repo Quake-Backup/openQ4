@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "AsyncNetwork.h"
+#include "../ArenaCampaign.h"
 
 idAsyncServer		idAsyncNetwork::server;
 idAsyncClient		idAsyncNetwork::client;
@@ -334,6 +335,16 @@ void idAsyncNetwork::SpawnServer_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarString("si_map", args.Argv(1));
 	}
 
+	// Arena is an offline campaign presented under Single Player, but its
+	// bots are real multiplayer clients.  Re-apply the authored match settings
+	// here so late CVAR_GAME registration during the game_mp swap cannot lose
+	// them.
+	if ( !arenaCampaign.PrepareServer() ) {
+		session->StartMenu( false );
+		arenaCampaign.OpenBrowser();
+		return;
+	}
+
 	// don't let a server spawn with singleplayer game type - it will crash
 	if ( idStr::Icmp( cvarSystem->GetCVarString( "si_gameType" ), "singleplayer" ) == 0 ) {
 		cvarSystem->SetCVarString( "si_gameType", "dm" );
@@ -379,6 +390,8 @@ void idAsyncNetwork::SpawnServer_f( const idCmdArgs &args ) {
 	if ( com_WriteSingleDeclFile.GetBool() ) {
 		declManager->WriteDeclFile();
 	}
+
+	arenaCampaign.PopulateBots();
 }
 
 /*
@@ -544,6 +557,13 @@ void idAsyncNetwork::ExecuteSessionCommand( const char *sessCmd ) {
 	if ( sessCmd[ 0 ] ) {
 		if ( !idStr::Icmp( sessCmd, "game_startmenu" ) ) {
 			session->SetGUI( game->StartMenu(), NULL );
+			return;
+		}
+
+		idCmdArgs args;
+		args.TokenizeString( sessCmd, false );
+		if ( args.Argc() > 0 && !idStr::Icmp( args.Argv( 0 ), "arenaComplete" ) ) {
+			arenaCampaign.QueueCompletion( args );
 		}
 	}
 }

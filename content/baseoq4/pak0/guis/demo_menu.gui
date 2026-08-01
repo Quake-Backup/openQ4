@@ -3,15 +3,33 @@ windowDef Desktop
 	rect		0,0,640,480
 	menugui		1
 	noclip		1
+	float		"demo_browserOpening"	0
+	float		"demo_browserClosing"	0
+	float		"demo_playbackOpening"	0
 
 	onActivate {
 		if ( "gui::demo_browserMode" == 1 ) {
-			setfocus "demoList" ;
+			// Demos enters through the same short rail-and-list reveal used by
+			// the stock save browser, rather than appearing as an unrelated page.
+			set "Desktop::demo_browserOpening" "1" ;
+			set "Desktop::demo_browserClosing" "0" ;
+			setfocus "demo_browser_transition_blocker" ;
+			resetTime "demo_browser_reveal_timeline" "0" ;
+		} else if ( "gui::demo_interactive" == 1 && "gui::demo_browserMode" == 0 ) {
+			// Playback returns immediately to the world, but its controls still
+			// rise in on the same measured cadence as the browser page.
+			set "Desktop::demo_playbackOpening" "1" ;
+			setfocus "demo_playback_transition_input_blocker" ;
+			resetTime "demo_playback_reveal_timeline" "0" ;
 		}
 	}
 
 	onESC {
-		if ( "gui::demo_interactive" == 1 ) {
+		if ( "gui::demo_browserMode" == 1 && "gui::demo_interactive" == 1 && "Desktop::demo_browserOpening" != 1 && "Desktop::demo_browserClosing" != 1 ) {
+			set "Desktop::demo_browserClosing" "1" ;
+			setfocus "demo_browser_transition_blocker" ;
+			resetTime "demo_browser_exit_timeline" "0" ;
+		} else if ( "gui::demo_interactive" == 1 && "gui::demo_browserMode" == 0 ) {
 			set "cmd" "demoClose" ;
 		}
 	}
@@ -21,8 +39,88 @@ windowDef Desktop
 	{
 		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
 		visible		( "gui::demo_browserMode" == 1 && "gui::demo_interactive" == 1 )
-		backcolor	0.015,0.02,0.018,1
+		background	"gfx/guis/mainmenu/bg_darkgrad2"
+		matcolor	0.12,0.15,0.1,1
 		noevents	1
+	}
+
+	// The browser deliberately borrows the stock Load Game rail treatment: a
+	// dark grid/screen field bounded by the familiar top and bottom bars.
+	windowDef demo_browser_grid
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "gui::demo_browserMode" == 1 && "gui::demo_interactive" == 1 )
+		// The stock main-menu grid keeps the library visually tied to Load Game;
+		// it is deliberately quiet beneath the more data-dense browser.
+		background	"gfx/guis/mainmenu/bg_grid"
+		matcolor	0.45,0.52,0.3,0.1
+		naturalmatscale	1
+		noevents	1
+	}
+
+	windowDef demo_browser_screen
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "gui::demo_browserMode" == 1 && "gui::demo_interactive" == 1 )
+		background	"gfx/guis/mainmenu/screen"
+		matcolor	0.45,0.52,0.3,0.16
+		noevents	1
+	}
+
+	windowDef demo_browser_topbar
+	{
+		rect		-400,0,1045,129
+		visible		( "gui::demo_browserMode" == 1 && "gui::demo_interactive" == 1 )
+		noclip		1
+		background	"gfx/guis/mainmenu/topbar"
+		matcolor	1,1,1,0.9
+		noevents	1
+
+		windowDef demo_browser_topbar_tile_left
+		{
+			rect		-4096,0,4097,129
+			background	"gfx/guis/mainmenu/topbar_tile_left"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+
+		windowDef demo_browser_topbar_tile_right
+		{
+			rect		1044,0,4097,129
+			background	"gfx/guis/mainmenu/topbar_tile_right"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+	}
+
+	windowDef demo_browser_btmbar
+	{
+		rect		-399,351,1045,129
+		visible		( "gui::demo_browserMode" == 1 && "gui::demo_interactive" == 1 )
+		noclip		1
+		background	"gfx/guis/mainmenu/btmbar"
+		matcolor	1,1,1,0.9
+		noevents	1
+
+		windowDef demo_browser_btmbar_tile_left
+		{
+			rect		-4096,0,4097,129
+			background	"gfx/guis/mainmenu/btmbar_tile_left"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+
+		windowDef demo_browser_btmbar_tile_right
+		{
+			rect		1044,0,4097,129
+			background	"gfx/guis/mainmenu/btmbar_tile_right"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
 	}
 
 	windowDef demo_browser
@@ -32,36 +130,27 @@ windowDef Desktop
 
 		windowDef demo_browser_header_glow
 		{
-			rect		0,0,640,58
-			backcolor	0.12,0.15,0.08,0.72
+			rect		20,14,600,28
+			background	"gfx/guis/mainmenu/b1_dark"
+			matcolor	0.46,0.52,0.29,0.45
 			noevents	1
 		}
 
 		windowDef demo_browser_header_line
 		{
-			rect		20,54,600,2
-			backcolor	0.95,0.49,0.06,0.8
+			rect		217,75,410,6
+			background	"gfx/guis/mainmenu/horiz_line2"
+			matcolor	0.545,0.588,0.294,0.34
 			noevents	1
 		}
 
 		windowDef demo_browser_title
 		{
-			rect		22,15,360,30
+			rect		39,19,314,16
 			forecolor	0.96,0.96,0.9,1
 			text		"#str_41501"
-			textscale	0.42
+			textscale	0.25
 			font		"fonts/marine"
-			noevents	1
-		}
-
-		windowDef demo_browser_status
-		{
-			rect		392,19,226,22
-			forecolor	0.76,0.8,0.64,0.9
-			text		"gui::demo_status"
-			textscale	0.2
-			textalign	2
-			font		"fonts/lowpixel"
 			noevents	1
 		}
 
@@ -78,7 +167,8 @@ windowDef Desktop
 		windowDef demo_filter_all
 		{
 			rect		20,83,66,25
-			backcolor	0.16,0.18,0.12,0.85
+			background	"gfx/guis/mainmenu/b2_dark"
+			matcolor	0.545,0.588,0.294,0.44
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.92,0.93,0.86,1
@@ -88,24 +178,36 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,0.95" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_filter_all::matcolor" "$demo_filter_all::matcolor" "0.95,0.49,0.06,0.88" "120" ;
+				transition "demo_filter_all::bordercolor" "$demo_filter_all::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.85" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_filter_all::matcolor" "$demo_filter_all::matcolor" "0.545,0.588,0.294,0.44" "180" ;
+				transition "demo_filter_all::bordercolor" "$demo_filter_all::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFilter all" ;
+				set "cmd" "play main_menu_selection ; demoFilter all" ;
+			}
+
+			windowDef demo_filter_all_active
+			{
+				rect		1,1,64,23
+				visible		( "gui::demo_filter" == "all" )
+				backcolor	0.95,0.49,0.06,0.12
+				bordercolor	0.95,0.49,0.06,0.94
+				bordersize	1
+				noevents	1
 			}
 		}
 
 		windowDef demo_filter_mvd
 		{
 			rect		90,83,92,25
-			backcolor	0.16,0.18,0.12,0.85
+			background	"gfx/guis/mainmenu/b2_dark"
+			matcolor	0.545,0.588,0.294,0.44
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.92,0.93,0.86,1
@@ -115,24 +217,36 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,0.95" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_filter_mvd::matcolor" "$demo_filter_mvd::matcolor" "0.95,0.49,0.06,0.88" "120" ;
+				transition "demo_filter_mvd::bordercolor" "$demo_filter_mvd::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.85" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_filter_mvd::matcolor" "$demo_filter_mvd::matcolor" "0.545,0.588,0.294,0.44" "180" ;
+				transition "demo_filter_mvd::bordercolor" "$demo_filter_mvd::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFilter mvd" ;
+				set "cmd" "play main_menu_selection ; demoFilter mvd" ;
+			}
+
+			windowDef demo_filter_mvd_active
+			{
+				rect		1,1,90,23
+				visible		( "gui::demo_filter" == "mvd" )
+				backcolor	0.95,0.49,0.06,0.12
+				bordercolor	0.95,0.49,0.06,0.94
+				bordersize	1
+				noevents	1
 			}
 		}
 
 		windowDef demo_filter_render
 		{
-			rect		186,83,70,25
-			backcolor	0.16,0.18,0.12,0.85
+			rect		186,83,78,25
+			background	"gfx/guis/mainmenu/b2_dark"
+			matcolor	0.545,0.588,0.294,0.44
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.92,0.93,0.86,1
@@ -142,24 +256,36 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,0.95" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_filter_render::matcolor" "$demo_filter_render::matcolor" "0.95,0.49,0.06,0.88" "120" ;
+				transition "demo_filter_render::bordercolor" "$demo_filter_render::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.85" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_filter_render::matcolor" "$demo_filter_render::matcolor" "0.545,0.588,0.294,0.44" "180" ;
+				transition "demo_filter_render::bordercolor" "$demo_filter_render::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFilter render" ;
+				set "cmd" "play main_menu_selection ; demoFilter render" ;
+			}
+
+			windowDef demo_filter_render_active
+			{
+				rect		1,1,76,23
+				visible		( "gui::demo_filter" == "render" )
+				backcolor	0.95,0.49,0.06,0.12
+				bordercolor	0.95,0.49,0.06,0.94
+				bordersize	1
+				noevents	1
 			}
 		}
 
 		windowDef demo_filter_legacy
 		{
-			rect		260,83,70,25
-			backcolor	0.16,0.18,0.12,0.85
+			rect		268,83,70,25
+			background	"gfx/guis/mainmenu/b2_dark"
+			matcolor	0.545,0.588,0.294,0.44
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.92,0.93,0.86,1
@@ -169,24 +295,36 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,0.95" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_filter_legacy::matcolor" "$demo_filter_legacy::matcolor" "0.95,0.49,0.06,0.88" "120" ;
+				transition "demo_filter_legacy::bordercolor" "$demo_filter_legacy::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.85" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_filter_legacy::matcolor" "$demo_filter_legacy::matcolor" "0.545,0.588,0.294,0.44" "180" ;
+				transition "demo_filter_legacy::bordercolor" "$demo_filter_legacy::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFilter legacy" ;
+				set "cmd" "play main_menu_selection ; demoFilter legacy" ;
+			}
+
+			windowDef demo_filter_legacy_active
+			{
+				rect		1,1,68,23
+				visible		( "gui::demo_filter" == "legacy" )
+				backcolor	0.95,0.49,0.06,0.12
+				bordercolor	0.95,0.49,0.06,0.94
+				bordersize	1
+				noevents	1
 			}
 		}
 
 		windowDef demo_filter_incomplete
 		{
-			rect		334,83,90,25
-			backcolor	0.16,0.18,0.12,0.85
+			rect		342,83,90,25
+			background	"gfx/guis/mainmenu/b2_dark"
+			matcolor	0.545,0.588,0.294,0.44
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.92,0.93,0.86,1
@@ -196,24 +334,36 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,0.95" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_filter_incomplete::matcolor" "$demo_filter_incomplete::matcolor" "0.95,0.49,0.06,0.88" "120" ;
+				transition "demo_filter_incomplete::bordercolor" "$demo_filter_incomplete::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.85" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_filter_incomplete::matcolor" "$demo_filter_incomplete::matcolor" "0.545,0.588,0.294,0.44" "180" ;
+				transition "demo_filter_incomplete::bordercolor" "$demo_filter_incomplete::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFilter incomplete" ;
+				set "cmd" "play main_menu_selection ; demoFilter incomplete" ;
+			}
+
+			windowDef demo_filter_incomplete_active
+			{
+				rect		1,1,88,23
+				visible		( "gui::demo_filter" == "incomplete" )
+				backcolor	0.95,0.49,0.06,0.12
+				bordercolor	0.95,0.49,0.06,0.94
+				bordersize	1
+				noevents	1
 			}
 		}
 
 		windowDef demo_list_panel
 		{
 			rect		18,116,602,216
-			backcolor	0.025,0.03,0.025,0.94
+			background	"gfx/guis/mainmenu/bg2"
+			matcolor	0.25,0.3,0.16,0.72
 			bordercolor	0.25,0.29,0.17,1
 			bordersize	1
 			noevents	1
@@ -221,7 +371,7 @@ windowDef Desktop
 
 		windowDef demo_heading_name
 		{
-			rect		23,120,130,14
+			rect		23,120,142,14
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41507"
 			textscale	0.16
@@ -231,7 +381,7 @@ windowDef Desktop
 
 		windowDef demo_heading_type
 		{
-			rect		158,120,80,14
+			rect		171,120,60,14
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41508"
 			textscale	0.16
@@ -241,7 +391,7 @@ windowDef Desktop
 
 		windowDef demo_heading_map
 		{
-			rect		244,120,100,14
+			rect		237,120,98,14
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41509"
 			textscale	0.16
@@ -251,7 +401,7 @@ windowDef Desktop
 
 		windowDef demo_heading_date
 		{
-			rect		350,120,70,14
+			rect		343,120,70,14
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41557"
 			textscale	0.16
@@ -261,7 +411,7 @@ windowDef Desktop
 
 		windowDef demo_heading_duration
 		{
-			rect		426,120,62,14
+			rect		421,120,64,14
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41510"
 			textscale	0.14
@@ -271,7 +421,7 @@ windowDef Desktop
 
 		windowDef demo_heading_status
 		{
-			rect		494,120,112,14
+			rect		492,120,108,14
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41511"
 			textscale	0.15
@@ -295,7 +445,7 @@ windowDef Desktop
 			scrollbar	1
 			tabValigns	"0,0,0,0,0,0"
 			tabaligns	"0,0,0,0,0,0"
-			tabstops	"0,132,218,324,400,468,590"
+			tabstops	"0,148,214,320,398,468,576"
 			backgroundHover	"gfx/guis/mainmenu/bg_hover"
 			backgroundLine	"gfx/guis/mainmenu/bg_line"
 			backgroundFocus	"gfx/guis/mainmenu/bg_focus"
@@ -305,21 +455,26 @@ windowDef Desktop
 			textscale	0.17
 			font		"fonts/lowpixel"
 
+			onMouseEnter {
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
 			onAction {
-				set "cmd" "demoSelect" ;
+				set "cmd" "play main_menu_selection ; demoSelect" ;
 			}
 
 			onEnter {
 				if ( "gui::demo_canPlay" == 1 ) {
-					set "cmd" "demoPlay" ;
+					set "cmd" "play main_menu_selection ; demoPlay" ;
 				}
 			}
 		}
 
 		windowDef demo_detail_panel
 		{
-			rect		18,338,602,58
-			backcolor	0.04,0.045,0.035,0.96
+			rect		18,338,602,62
+			background	"gfx/guis/mainmenu/b1_dark"
+			matcolor	0.42,0.48,0.26,0.5
 			bordercolor	0.25,0.29,0.17,1
 			bordersize	1
 			noevents	1
@@ -363,24 +518,41 @@ windowDef Desktop
 			noevents	1
 		}
 
+		windowDef demo_selected_name
+		{
+			rect		194,345,248,18
+			forecolor	0.95,0.93,0.8,1
+			text		"gui::demo_selectedName"
+			textscale	0.2
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef demo_detail_rule_right
+		{
+			rect		194,365,248,1
+			backcolor	0.4,0.45,0.25,0.8
+			noevents	1
+		}
+
 		windowDef demo_detail_label
 		{
-			rect		194,346,250,14
+			rect		194,368,248,10
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41558"
-			textscale	0.16
+			textscale	0.13
 			font		"fonts/lowpixel"
 			noevents	1
 		}
 
 		windowDef demo_detail_text
 		{
-			rect		194,364,250,26
+			rect		194,380,248,13
 			forecolor	0.84,0.86,0.78,1
 			text		"gui::demo_details"
-			textscale	0.17
+			textscale	0.14
 			font		"fonts/lowpixel"
-			wrap		1
+			wrap		0
 			noevents	1
 		}
 
@@ -391,7 +563,7 @@ windowDef Desktop
 			bordercolor	0.2,0.2,0.17,1
 			bordersize	1
 			forecolor	0.4,0.4,0.36,1
-			text		"#str_41538"
+			text		"#str_41567"
 			textscale	0.15
 			textalign	1
 			font		"fonts/lowpixel"
@@ -406,7 +578,7 @@ windowDef Desktop
 			bordercolor	0.5,0.56,0.28,1
 			bordersize	1
 			forecolor	0.86,0.9,0.7,1
-			text		"#str_41538"
+			text		"#str_41567"
 			textscale	0.15
 			textalign	1
 			font		"fonts/lowpixel"
@@ -449,7 +621,7 @@ windowDef Desktop
 			bordercolor	0.2,0.2,0.17,1
 			bordersize	1
 			forecolor	0.4,0.4,0.36,1
-			text		"#str_41539"
+			text		"#str_41568"
 			textscale	0.135
 			textalign	1
 			font		"fonts/lowpixel"
@@ -464,7 +636,7 @@ windowDef Desktop
 			bordercolor	0.5,0.56,0.28,1
 			bordersize	1
 			forecolor	0.86,0.9,0.7,1
-			text		"#str_41539"
+			text		"#str_41568"
 			textscale	0.135
 			textalign	1
 			font		"fonts/lowpixel"
@@ -475,7 +647,8 @@ windowDef Desktop
 		{
 			rect		20,410,124,42
 			visible		( "gui::demo_canPlay" != 1 )
-			backcolor	0.08,0.08,0.07,0.9
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.2,0.22,0.16,0.24
 			bordercolor	0.2,0.2,0.17,1
 			bordersize	1
 			forecolor	0.38,0.38,0.34,1
@@ -490,7 +663,8 @@ windowDef Desktop
 		{
 			rect		20,410,124,42
 			visible		( "gui::demo_canPlay" == 1 )
-			backcolor	0.18,0.21,0.11,0.95
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.545,0.588,0.294,0.68
 			bordercolor	0.5,0.56,0.28,1
 			bordersize	1
 			forecolor	0.96,0.96,0.9,1
@@ -500,17 +674,18 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.45,0.24,0.05,1" ;
-				set "bordercolor" "1,0.58,0.08,1" ;
+				transition "demo_play::matcolor" "$demo_play::matcolor" "0.95,0.49,0.06,0.98" "120" ;
+				transition "demo_play::bordercolor" "$demo_play::bordercolor" "1,0.58,0.08,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.18,0.21,0.11,0.95" ;
-				set "bordercolor" "0.5,0.56,0.28,1" ;
+				transition "demo_play::matcolor" "$demo_play::matcolor" "0.545,0.588,0.294,0.68" "180" ;
+				transition "demo_play::bordercolor" "$demo_play::bordercolor" "0.5,0.56,0.28,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoPlay" ;
+				set "cmd" "play main_menu_selection ; demoPlay" ;
 			}
 		}
 
@@ -518,7 +693,8 @@ windowDef Desktop
 		{
 			rect		152,410,100,42
 			visible		( "gui::demo_canDelete" != 1 )
-			backcolor	0.08,0.08,0.07,0.9
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.2,0.22,0.16,0.24
 			bordercolor	0.2,0.2,0.17,1
 			bordersize	1
 			forecolor	0.38,0.38,0.34,1
@@ -533,7 +709,8 @@ windowDef Desktop
 		{
 			rect		152,410,100,42
 			visible		( "gui::demo_canDelete" == 1 )
-			backcolor	0.16,0.14,0.1,0.95
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.7,0.28,0.08,0.62
 			bordercolor	0.43,0.4,0.24,1
 			bordersize	1
 			forecolor	0.9,0.9,0.83,1
@@ -543,24 +720,26 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.38,0.12,0.07,1" ;
-				set "bordercolor" "0.86,0.3,0.12,1" ;
+				transition "demo_delete::matcolor" "$demo_delete::matcolor" "1,0.42,0.12,0.98" "120" ;
+				transition "demo_delete::bordercolor" "$demo_delete::bordercolor" "0.86,0.3,0.12,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.14,0.1,0.95" ;
-				set "bordercolor" "0.43,0.4,0.24,1" ;
+				transition "demo_delete::matcolor" "$demo_delete::matcolor" "0.7,0.28,0.08,0.62" "180" ;
+				transition "demo_delete::bordercolor" "$demo_delete::bordercolor" "0.43,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoDelete" ;
+				set "cmd" "play main_menu_selection ; demoDelete" ;
 			}
 		}
 
 		windowDef demo_refresh
 		{
-			rect		436,410,84,42
-			backcolor	0.16,0.18,0.12,0.95
+			rect		420,410,100,42
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.545,0.588,0.294,0.54
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.9,0.91,0.84,1
@@ -570,24 +749,26 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,1" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_refresh::matcolor" "$demo_refresh::matcolor" "0.95,0.49,0.06,0.92" "120" ;
+				transition "demo_refresh::bordercolor" "$demo_refresh::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.95" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_refresh::matcolor" "$demo_refresh::matcolor" "0.545,0.588,0.294,0.54" "180" ;
+				transition "demo_refresh::bordercolor" "$demo_refresh::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoRefresh" ;
+				set "cmd" "play main_menu_selection ; demoRefresh" ;
 			}
 		}
 
 		windowDef demo_browser_close
 		{
 			rect		528,410,92,42
-			backcolor	0.16,0.18,0.12,0.95
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.545,0.588,0.294,0.54
 			bordercolor	0.36,0.4,0.24,1
 			bordersize	1
 			forecolor	0.9,0.91,0.84,1
@@ -597,18 +778,145 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,1" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_browser_close::matcolor" "$demo_browser_close::matcolor" "0.95,0.49,0.06,0.92" "120" ;
+				transition "demo_browser_close::bordercolor" "$demo_browser_close::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.95" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_browser_close::matcolor" "$demo_browser_close::matcolor" "0.545,0.588,0.294,0.54" "180" ;
+				transition "demo_browser_close::bordercolor" "$demo_browser_close::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoClose" ;
+				if ( "Desktop::demo_browserOpening" != 1 && "Desktop::demo_browserClosing" != 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "Desktop::demo_browserClosing" "1" ;
+					setfocus "demo_browser_transition_blocker" ;
+					resetTime "demo_browser_exit_timeline" "0" ;
+				}
 			}
+		}
+	}
+
+	// The browser uses a short shared curtain for enter/leave.  It preserves the
+	// direct, responsive list behavior while making the page feel like a sibling
+	// of Load Game rather than a separate application.
+	windowDef demo_browser_transition_curtain
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::demo_browserOpening" == 1 || "Desktop::demo_browserClosing" == 1 )
+		backcolor	0,0,0,0
+		noevents	1
+	}
+
+	windowDef demo_browser_transition_blocker
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::demo_browserOpening" == 1 || "Desktop::demo_browserClosing" == 1 )
+		backcolor	0,0,0,0
+
+		onAction {
+			setfocus "demo_browser_transition_blocker" ;
+		}
+
+		onESC {
+			setfocus "demo_browser_transition_blocker" ;
+		}
+	}
+
+	windowDef demo_browser_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "demo_browser_transition_curtain" ;
+			stopTransitions "demo_browser" ;
+			set "demo_browser_transition_curtain::backcolor" "0,0,0,0.86" ;
+			set "demo_browser::rect" "32,0,640,480" ;
+			transition "demo_browser_transition_curtain::backcolor" "0,0,0,0.86" "0,0,0,0" "360" ;
+			transition "demo_browser::rect" "32,0,640,480" "0,0,640,480" "320" ;
+		}
+
+		onTime 380 {
+			set "Desktop::demo_browserOpening" "0" ;
+			setfocus "demoList" ;
+		}
+	}
+
+	windowDef demo_browser_exit_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "demo_browser_transition_curtain" ;
+			stopTransitions "demo_browser" ;
+			set "demo_browser_transition_curtain::backcolor" "0,0,0,0" ;
+			transition "demo_browser_transition_curtain::backcolor" "0,0,0,0" "0,0,0,1" "260" ;
+			transition "demo_browser::rect" "0,0,640,480" "-32,0,640,480" "240" ;
+		}
+
+		onTime 280 {
+			set "cmd" "demoClose" ;
+			set "Desktop::demo_browserClosing" "0" ;
+		}
+	}
+
+	// The playback deck is deliberately faster than a page change: it rises a
+	// short distance from the lower rail, then releases focus to its controls.
+	windowDef demo_playback_transition_blocker
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::demo_playbackOpening" == 1 )
+		backcolor	0,0,0,0
+
+		onAction {
+			setfocus "demo_playback_transition_blocker" ;
+		}
+
+		onESC {
+			setfocus "demo_playback_transition_blocker" ;
+		}
+	}
+
+	windowDef demo_playback_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "demo_playback" ;
+			stopTransitions "demo_playback_deck_surface" ;
+			stopTransitions "demo_playback_deck_line" ;
+			stopTransitions "demo_playback_reveal_curtain" ;
+			set "demo_playback::rect" "0,300,640,204" ;
+			set "demo_playback::backcolor" "0.015,0.02,0.018,0" ;
+			set "demo_playback::bordercolor" "0.32,0.36,0.2,0" ;
+			set "demo_playback_deck_surface::matcolor" "0.12,0.15,0.09,0" ;
+			set "demo_playback_deck_line::matcolor" "0.95,0.49,0.06,0" ;
+			set "demo_playback_reveal_curtain::backcolor" "0,0,0,1" ;
+			transition "demo_playback::rect" "0,300,640,204" "0,276,640,204" "200" ;
+			transition "demo_playback::backcolor" "0.015,0.02,0.018,0" "0.015,0.02,0.018,0.94" "180" ;
+			transition "demo_playback::bordercolor" "0.32,0.36,0.2,0" "0.32,0.36,0.2,1" "180" ;
+			transition "demo_playback_deck_surface::matcolor" "0.12,0.15,0.09,0" "0.12,0.15,0.09,0.88" "180" ;
+			transition "demo_playback_deck_line::matcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.68" "180" ;
+		}
+
+		onTime 220 {
+			// The deck has settled before any child text or controls can appear;
+			// this also masks the fixed wide-screen surface while the inner card
+			// rises the final few pixels.
+			transition "demo_playback_reveal_curtain::backcolor" "0,0,0,1" "0,0,0,0" "120" ;
+		}
+
+		onTime 360 {
+			set "Desktop::demo_playbackOpening" "0" ;
+			setfocus "demo_playback_close" ;
 		}
 	}
 
@@ -626,6 +934,8 @@ windowDef Desktop
 	{
 		rect		118,8,404,38
 		visible		( "gui::demo_browserMode" == 0 && "gui::demo_interactive" != 1 && "gui::demo_active" == 1 )
+		screenalignx	middle
+		screenaligny	top
 		backcolor	0.015,0.02,0.018,0.76
 		bordercolor	0.32,0.36,0.2,0.85
 		bordersize	1
@@ -709,10 +1019,36 @@ windowDef Desktop
 		}
 	}
 
+	// Keep the playback controls readable at their authored width while the
+	// standard screen treatment continues cleanly through widescreen gutters.
+	windowDef demo_playback_deck_surface
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),276,( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),204
+		visible		( "gui::demo_browserMode" == 0 && "gui::demo_interactive" == 1 )
+		background	"gfx/guis/mainmenu/screen"
+		matcolor	0.12,0.15,0.09,0.88
+		screenalignx	middle
+		screenaligny	bottom
+		noevents	1
+	}
+
+	windowDef demo_playback_deck_line
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),276,( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),3
+		visible		( "gui::demo_browserMode" == 0 && "gui::demo_interactive" == 1 )
+		background	"gfx/guis/mainmenu/horiz_line2"
+		matcolor	0.95,0.49,0.06,0.68
+		screenalignx	middle
+		screenaligny	bottom
+		noevents	1
+	}
+
 	windowDef demo_playback
 	{
 		rect		0,276,640,204
 		visible		( "gui::demo_browserMode" == 0 && "gui::demo_interactive" == 1 )
+		screenalignx	middle
+		screenaligny	bottom
 		backcolor	0.015,0.02,0.018,0.94
 		bordercolor	0.32,0.36,0.2,1
 		bordersize	1
@@ -726,17 +1062,17 @@ windowDef Desktop
 
 		windowDef demo_playback_title
 		{
-			rect		20,13,240,24
+			rect		20,13,270,24
 			forecolor	0.96,0.96,0.9,1
 			text		"#str_41522"
-			textscale	0.31
+			textscale	0.28
 			font		"fonts/marine"
 			noevents	1
 		}
 
 		windowDef demo_now_playing
 		{
-			rect		270,17,92,18
+			rect		296,17,84,18
 			forecolor	0.62,0.67,0.5,1
 			text		"#str_41523"
 			textscale	0.17
@@ -747,7 +1083,7 @@ windowDef Desktop
 
 		windowDef demo_playback_status
 		{
-			rect		368,16,250,20
+			rect		386,16,232,20
 			forecolor	0.94,0.91,0.78,1
 			text		"gui::demo_status"
 			textscale	0.2
@@ -887,15 +1223,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_skip_back_30::backcolor" "$demo_skip_back_30::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_skip_back_30::bordercolor" "$demo_skip_back_30::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_skip_back_30::backcolor" "$demo_skip_back_30::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_skip_back_30::bordercolor" "$demo_skip_back_30::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoSkip -30" ;
+				set "cmd" "play main_menu_selection ; demoSkip -30" ;
 			}
 		}
 
@@ -928,15 +1267,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_skip_back_10::backcolor" "$demo_skip_back_10::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_skip_back_10::bordercolor" "$demo_skip_back_10::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_skip_back_10::backcolor" "$demo_skip_back_10::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_skip_back_10::bordercolor" "$demo_skip_back_10::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoSkip -10" ;
+				set "cmd" "play main_menu_selection ; demoSkip -10" ;
 			}
 		}
 
@@ -954,15 +1296,18 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.45,0.24,0.05,1" ;
+				transition "demo_pause::backcolor" "$demo_pause::backcolor" "0.45,0.24,0.05,1" "120" ;
+				transition "demo_pause::bordercolor" "$demo_pause::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.18,0.21,0.11,0.98" ;
+				transition "demo_pause::backcolor" "$demo_pause::backcolor" "0.18,0.21,0.11,0.98" "180" ;
+				transition "demo_pause::bordercolor" "$demo_pause::bordercolor" "0.5,0.56,0.28,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoPause" ;
+				set "cmd" "play main_menu_selection ; demoPause" ;
 			}
 		}
 
@@ -980,15 +1325,18 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.5,0.27,0.06,1" ;
+				transition "demo_resume::backcolor" "$demo_resume::backcolor" "0.5,0.27,0.06,1" "120" ;
+				transition "demo_resume::bordercolor" "$demo_resume::bordercolor" "1,0.64,0.12,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.33,0.2,0.06,0.98" ;
+				transition "demo_resume::backcolor" "$demo_resume::backcolor" "0.33,0.2,0.06,0.98" "180" ;
+				transition "demo_resume::bordercolor" "$demo_resume::bordercolor" "0.95,0.49,0.06,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoPause" ;
+				set "cmd" "play main_menu_selection ; demoPause" ;
 			}
 		}
 
@@ -1021,15 +1369,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_step::backcolor" "$demo_step::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_step::bordercolor" "$demo_step::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_step::backcolor" "$demo_step::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_step::bordercolor" "$demo_step::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoStep" ;
+				set "cmd" "play main_menu_selection ; demoStep" ;
 			}
 		}
 
@@ -1062,15 +1413,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_skip_forward_10::backcolor" "$demo_skip_forward_10::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_skip_forward_10::bordercolor" "$demo_skip_forward_10::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_skip_forward_10::backcolor" "$demo_skip_forward_10::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_skip_forward_10::bordercolor" "$demo_skip_forward_10::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoSkip 10" ;
+				set "cmd" "play main_menu_selection ; demoSkip 10" ;
 			}
 		}
 
@@ -1103,15 +1457,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_skip_forward_30::backcolor" "$demo_skip_forward_30::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_skip_forward_30::bordercolor" "$demo_skip_forward_30::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_skip_forward_30::backcolor" "$demo_skip_forward_30::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_skip_forward_30::bordercolor" "$demo_skip_forward_30::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoSkip 30" ;
+				set "cmd" "play main_menu_selection ; demoSkip 30" ;
 			}
 		}
 
@@ -1144,15 +1501,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_free::backcolor" "$demo_free::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_free::bordercolor" "$demo_free::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_free::backcolor" "$demo_free::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_free::bordercolor" "$demo_free::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFreeRoam" ;
+				set "cmd" "play main_menu_selection ; demoFreeRoam" ;
 			}
 		}
 
@@ -1185,15 +1545,18 @@ windowDef Desktop
 			font		"fonts/lowpixel"
 
 			onMouseEnter {
-				set "backcolor" "0.32,0.19,0.06,1" ;
+				transition "demo_follow::backcolor" "$demo_follow::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_follow::bordercolor" "$demo_follow::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.14,0.16,0.1,0.95" ;
+				transition "demo_follow::backcolor" "$demo_follow::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_follow::bordercolor" "$demo_follow::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoFollow" ;
+				set "cmd" "play main_menu_selection ; demoFollow" ;
 			}
 		}
 
@@ -1221,8 +1584,19 @@ windowDef Desktop
 			textalign	1
 			font		"fonts/lowpixel"
 
+			onMouseEnter {
+				transition "demo_speed_quarter::backcolor" "$demo_speed_quarter::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_speed_quarter::bordercolor" "$demo_speed_quarter::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				transition "demo_speed_quarter::backcolor" "$demo_speed_quarter::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_speed_quarter::bordercolor" "$demo_speed_quarter::bordercolor" "0.36,0.4,0.24,1" "180" ;
+			}
+
 			onAction {
-				set "cmd" "demoSpeed 0.25" ;
+				set "cmd" "play main_menu_selection ; demoSpeed 0.25" ;
 			}
 		}
 
@@ -1239,8 +1613,19 @@ windowDef Desktop
 			textalign	1
 			font		"fonts/lowpixel"
 
+			onMouseEnter {
+				transition "demo_speed_half::backcolor" "$demo_speed_half::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_speed_half::bordercolor" "$demo_speed_half::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				transition "demo_speed_half::backcolor" "$demo_speed_half::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_speed_half::bordercolor" "$demo_speed_half::bordercolor" "0.36,0.4,0.24,1" "180" ;
+			}
+
 			onAction {
-				set "cmd" "demoSpeed 0.5" ;
+				set "cmd" "play main_menu_selection ; demoSpeed 0.5" ;
 			}
 		}
 
@@ -1257,8 +1642,19 @@ windowDef Desktop
 			textalign	1
 			font		"fonts/lowpixel"
 
+			onMouseEnter {
+				transition "demo_speed_one::backcolor" "$demo_speed_one::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_speed_one::bordercolor" "$demo_speed_one::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				transition "demo_speed_one::backcolor" "$demo_speed_one::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_speed_one::bordercolor" "$demo_speed_one::bordercolor" "0.36,0.4,0.24,1" "180" ;
+			}
+
 			onAction {
-				set "cmd" "demoSpeed 1" ;
+				set "cmd" "play main_menu_selection ; demoSpeed 1" ;
 			}
 		}
 
@@ -1275,8 +1671,19 @@ windowDef Desktop
 			textalign	1
 			font		"fonts/lowpixel"
 
+			onMouseEnter {
+				transition "demo_speed_two::backcolor" "$demo_speed_two::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_speed_two::bordercolor" "$demo_speed_two::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				transition "demo_speed_two::backcolor" "$demo_speed_two::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_speed_two::bordercolor" "$demo_speed_two::bordercolor" "0.36,0.4,0.24,1" "180" ;
+			}
+
 			onAction {
-				set "cmd" "demoSpeed 2" ;
+				set "cmd" "play main_menu_selection ; demoSpeed 2" ;
 			}
 		}
 
@@ -1293,8 +1700,19 @@ windowDef Desktop
 			textalign	1
 			font		"fonts/lowpixel"
 
+			onMouseEnter {
+				transition "demo_speed_four::backcolor" "$demo_speed_four::backcolor" "0.32,0.19,0.06,1" "120" ;
+				transition "demo_speed_four::bordercolor" "$demo_speed_four::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				transition "demo_speed_four::backcolor" "$demo_speed_four::backcolor" "0.14,0.16,0.1,0.95" "180" ;
+				transition "demo_speed_four::bordercolor" "$demo_speed_four::bordercolor" "0.36,0.4,0.24,1" "180" ;
+			}
+
 			onAction {
-				set "cmd" "demoSpeed 4" ;
+				set "cmd" "play main_menu_selection ; demoSpeed 4" ;
 			}
 		}
 
@@ -1312,15 +1730,18 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.42,0.12,0.06,1" ;
+				transition "demo_stop::backcolor" "$demo_stop::backcolor" "0.42,0.12,0.06,1" "120" ;
+				transition "demo_stop::bordercolor" "$demo_stop::bordercolor" "1,0.42,0.12,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.24,0.1,0.06,0.97" ;
+				transition "demo_stop::backcolor" "$demo_stop::backcolor" "0.24,0.1,0.06,0.97" "180" ;
+				transition "demo_stop::bordercolor" "$demo_stop::bordercolor" "0.68,0.25,0.12,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoStop" ;
+				set "cmd" "play main_menu_selection ; demoStop" ;
 			}
 		}
 
@@ -1337,18 +1758,47 @@ windowDef Desktop
 			font		"fonts/marine"
 
 			onMouseEnter {
-				set "backcolor" "0.34,0.2,0.07,1" ;
-				set "bordercolor" "0.95,0.49,0.06,1" ;
+				transition "demo_playback_close::backcolor" "$demo_playback_close::backcolor" "0.34,0.2,0.07,1" "120" ;
+				transition "demo_playback_close::bordercolor" "$demo_playback_close::bordercolor" "0.95,0.49,0.06,1" "120" ;
+				set "cmd" "play main_menu_mouseover" ;
 			}
 
 			onMouseExit {
-				set "backcolor" "0.16,0.18,0.12,0.95" ;
-				set "bordercolor" "0.36,0.4,0.24,1" ;
+				transition "demo_playback_close::backcolor" "$demo_playback_close::backcolor" "0.16,0.18,0.12,0.95" "180" ;
+				transition "demo_playback_close::bordercolor" "$demo_playback_close::bordercolor" "0.36,0.4,0.24,1" "180" ;
 			}
 
 			onAction {
-				set "cmd" "demoClose" ;
+				set "cmd" "play main_menu_selection ; demoClose" ;
 			}
+		}
+	}
+
+	// Root-level ordering matters for GUI hit testing: this is defined after all
+	// controls, so the opening deck cannot accept a stray mouse click while the
+	// visual curtain is still releasing.
+	windowDef demo_playback_reveal_curtain
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),276,( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),204
+		visible		( "Desktop::demo_playbackOpening" == 1 )
+		backcolor	0,0,0,1
+		screenalignx	middle
+		screenaligny	bottom
+		noevents	1
+	}
+
+	windowDef demo_playback_transition_input_blocker
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::demo_playbackOpening" == 1 )
+		backcolor	0,0,0,0
+
+		onAction {
+			setfocus "demo_playback_transition_input_blocker" ;
+		}
+
+		onESC {
+			setfocus "demo_playback_transition_input_blocker" ;
 		}
 	}
 }

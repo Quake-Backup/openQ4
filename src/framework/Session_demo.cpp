@@ -78,6 +78,23 @@ static idStr DemoSanitizeText( const char *text, int maxLength = 96 ) {
 	return result;
 }
 
+// Browser rows deliberately prefer a stable column edge over displaying a
+// filename that runs into the next field.  The full selected name remains
+// available in the detail card beneath the list.
+static idStr DemoEllipsizeText( const char *text, int maxLength ) {
+	idStr result = DemoSanitizeText( text, maxLength + 1 );
+	if ( result.Length() <= maxLength ) {
+		return result;
+	}
+	if ( maxLength <= 3 ) {
+		result.CapLength( maxLength );
+		return result;
+	}
+	result.CapLength( maxLength - 3 );
+	result += "...";
+	return result;
+}
+
 static const char *DemoMVDProblemString( const idStr &error ) {
 	if ( error.Find( "network protocol" ) >= 0 ) {
 		return "#str_41561";
@@ -507,21 +524,36 @@ void idSessionLocal::RefreshDemoLibrary() {
 		if ( !DemoEntryMatchesFilter( entry, demoLibraryFilter ) ) {
 			continue;
 		}
-		idStr row = DemoSanitizeText( entry.displayName );
+		idStr row = DemoEllipsizeText( entry.displayName, 28 );
 		row += "\t";
-		row += DemoSanitizeText( entry.format );
+		// The table needs the recording format, not the internal protocol tail.
+		// Showing only the former makes MVD versions legible in their narrow
+		// legacy-style column; the selected-demo detail retains full metadata.
+		idStr listFormat = entry.format;
+		const int protocolSeparator = listFormat.Find( " / " );
+		if ( protocolSeparator >= 0 ) {
+			listFormat.CapLength( protocolSeparator );
+		}
+		row += DemoEllipsizeText( listFormat, 11 );
 		row += "\t";
-		row += DemoSanitizeText( entry.mapName.IsEmpty() ? "-" : entry.mapName.c_str() );
+		row += DemoEllipsizeText( entry.mapName.IsEmpty() ? "-" : entry.mapName.c_str(), 18 );
 		row += "\t";
 		if ( entry.timestamp > 0 ) {
-			row += DemoSanitizeText( Sys_TimeStampToStr( entry.timestamp ), 32 );
+			idStr listDate = DemoSanitizeText( Sys_TimeStampToStr( entry.timestamp ), 32 );
+			listDate.CapLength( 10 );
+			row += listDate;
 		} else {
 			row += "-";
 		}
 		row += "\t";
 		row += DemoFormatTime( entry.durationMS );
 		row += "\t";
-		row += DemoSanitizeText( entry.status );
+		// Treat the compact table state as a readable badge.  Long diagnostic
+		// reasons remain intact in the selected row instead of becoming a noisy
+		// sequence of ellipses in every browser line.
+		const char *statusKey = entry.playable ? "#str_41546" :
+			( entry.type == DEMO_LIBRARY_INCOMPLETE ? "#str_41570" : "#str_41569" );
+		row += DemoEllipsizeText( DemoLocalized( statusKey ), 13 );
 		list->Add( i, row );
 		if ( !entry.path.Icmp( demoSelectedPath ) ) {
 			selectedRow = visibleRows;
@@ -650,21 +682,30 @@ void idSessionLocal::UpdateDemoMenuGui() {
 			selection >= 0 && selection < demoLibrary.Num() ? &demoLibrary[selection] : NULL;
 		if ( entry != NULL ) {
 			demoSelectedPath = entry->path;
-			idStr details = entry->details;
+			idStr details = DemoEllipsizeText( entry->details, 36 );
+			idStr metadata = DemoEllipsizeText( entry->mapName, 20 );
 			if ( !entry->format.IsEmpty() ) {
-				details += "\n";
-				details += DemoSanitizeText( entry->format );
+				// The table needs the full format/protocol pair, while this concise
+				// summary only needs the player-facing format revision.  Keeping the
+				// first segment avoids ending a narrow detail line on a dangling slash.
+				idStr displayFormat = entry->format;
+				const int protocolSeparator = displayFormat.Find( " / " );
+				if ( protocolSeparator >= 0 ) {
+					displayFormat.CapLength( protocolSeparator );
+				}
+				if ( !metadata.IsEmpty() ) {
+					metadata += " / ";
+				}
+				metadata += DemoEllipsizeText( displayFormat, 12 );
 			}
-			if ( entry->timestamp > 0 ) {
-				details += "\n";
-				details += Sys_TimeStampToStr( entry->timestamp );
+			if ( !details.IsEmpty() && !metadata.IsEmpty() ) {
+				details += " / ";
 			}
-			details += "\n";
-			details += DemoFormatSize( entry->sizeBytes );
-			guiDemoMenu->SetStateString( "demo_selectedName", DemoSanitizeText( entry->displayName ) );
+			details += metadata;
+			guiDemoMenu->SetStateString( "demo_selectedName", DemoEllipsizeText( entry->displayName, 43 ) );
 			guiDemoMenu->SetStateString( "demo_selectedMap", DemoSanitizeText( entry->mapName ) );
 			guiDemoMenu->SetStateString( "demo_status", DemoSanitizeText( entry->status ) );
-			guiDemoMenu->SetStateString( "demo_details", DemoSanitizeText( details, 512 ) );
+			guiDemoMenu->SetStateString( "demo_details", DemoEllipsizeText( details, 52 ) );
 			guiDemoMenu->SetStateBool( "demo_canPlay", ( entry->capabilities & DEMO_CAP_PLAY ) != 0 );
 			guiDemoMenu->SetStateBool( "demo_canDelete", ( entry->capabilities & DEMO_CAP_DELETE ) != 0 );
 			guiDemoMenu->SetStateBool( "demo_canPause", ( entry->capabilities & DEMO_CAP_PAUSE ) != 0 );
@@ -722,6 +763,9 @@ void idSessionLocal::OpenDemoMenu( bool browser ) {
 	if ( demoBrowserMode ) {
 		RefreshDemoLibrary();
 	}
+	// Set the mode state before SetGUI activates the menu.  The browser's
+	// onActivate script selects its entrance treatment from demo_browserMode.
+	UpdateDemoMenuGui();
 	SetGUI( guiDemoMenu, NULL );
 	UpdateDemoMenuGui();
 #endif
@@ -890,6 +934,9 @@ void idSessionLocal::ProcessRenderDemoSeekBudget() {
 			}
 		}
 		if ( restoreDemoMenu && guiDemoMenu != NULL && guiActive != guiDemoMenu ) {
+			// Keep the activation script from reading the previous browser/playback
+			// mode while a render-demo seek restores the overlay.
+			UpdateDemoMenuGui();
 			SetGUI( guiDemoMenu, NULL );
 		}
 
@@ -1048,7 +1095,29 @@ bool idSessionLocal::HandleDemoMenuCommand( const char *menuCommand ) {
 	if ( args.Argc() <= 0 ) {
 		return false;
 	}
-	const char *cmd = args.Argv( 0 );
+
+	bool handled = false;
+	for ( int icmd = 0; icmd < args.Argc(); ) {
+		const char *cmd = args.Argv( icmd++ );
+		if ( !idStr::Icmp( cmd, ";" ) ) {
+			continue;
+		}
+		if ( !idStr::Icmp( cmd, "play" ) ) {
+			if ( icmd < args.Argc() ) {
+				idStr sound = args.Argv( icmd++ );
+				int channel = 1;
+				if ( sound.Length() == 1 && idStr::IsNumeric( sound.c_str() ) &&
+					 icmd < args.Argc() ) {
+					channel = atoi( sound.c_str() );
+					sound = args.Argv( icmd++ );
+				}
+				if ( menuSoundWorld != NULL ) {
+					menuSoundWorld->PlayShaderDirectly( sound, channel );
+				}
+			}
+			handled = true;
+			continue;
+		}
 
 	if ( !idStr::Icmp( cmd, "demoOpen" ) ) {
 		OpenDemoMenu( true );
@@ -1059,7 +1128,7 @@ bool idSessionLocal::HandleDemoMenuCommand( const char *menuCommand ) {
 		return true;
 	}
 	if ( !idStr::Icmp( cmd, "demoFilter" ) ) {
-		const char *filter = args.Argc() > 1 ? args.Argv( 1 ) : DEMO_FILTER_ALL;
+		const char *filter = icmd < args.Argc() ? args.Argv( icmd++ ) : DEMO_FILTER_ALL;
 		if ( idStr::Icmp( filter, DEMO_FILTER_ALL ) &&
 			 idStr::Icmp( filter, DEMO_FILTER_MVD ) &&
 			 idStr::Icmp( filter, DEMO_FILTER_RENDER ) &&
@@ -1160,8 +1229,8 @@ bool idSessionLocal::HandleDemoMenuCommand( const char *menuCommand ) {
 		return true;
 	}
 	if ( !idStr::Icmp( cmd, "demoSkip" ) ) {
-		if ( args.Argc() > 1 ) {
-			SkipDemoMS( static_cast<int>( atof( args.Argv( 1 ) ) * 1000.0 ) );
+		if ( icmd < args.Argc() ) {
+			SkipDemoMS( static_cast<int>( atof( args.Argv( icmd++ ) ) * 1000.0 ) );
 		}
 		return true;
 	}
@@ -1172,8 +1241,8 @@ bool idSessionLocal::HandleDemoMenuCommand( const char *menuCommand ) {
 		} else if ( readDemo != NULL ) {
 			duration = renderDemoKnownDurationMS;
 		}
-		if ( args.Argc() > 1 ) {
-			SeekDemoMS( static_cast<int>( atof( args.Argv( 1 ) ) * 1000.0 ) );
+		if ( icmd < args.Argc() ) {
+			SeekDemoMS( static_cast<int>( atof( args.Argv( icmd++ ) ) * 1000.0 ) );
 		} else if ( duration > 0 ) {
 			SeekDemoMS( static_cast<int>( demo_uiSeek.GetFloat() * duration ) );
 		}
@@ -1184,8 +1253,8 @@ bool idSessionLocal::HandleDemoMenuCommand( const char *menuCommand ) {
 		return true;
 	}
 	if ( !idStr::Icmp( cmd, "demoSpeed" ) ) {
-		if ( args.Argc() > 1 ) {
-			SetDemoSpeed( static_cast<float>( atof( args.Argv( 1 ) ) ) );
+		if ( icmd < args.Argc() ) {
+			SetDemoSpeed( static_cast<float>( atof( args.Argv( icmd++ ) ) ) );
 		}
 		return true;
 	}
@@ -1205,5 +1274,6 @@ bool idSessionLocal::HandleDemoMenuCommand( const char *menuCommand ) {
 		StopDemoPlayback();
 		return true;
 	}
-	return false;
+	}
+	return handled;
 }

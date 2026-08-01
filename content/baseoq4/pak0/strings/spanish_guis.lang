@@ -917,7 +917,7 @@
 	"#str_200927"	"MAPA ACTUAL"
 	"#str_200928"	"AJUSTES DEL SERVIDOR"
 	"#str_200929"	"PaM (DM);Torneo;PaMpE (TDM);CLB;CLB (Arena);Zona Muerta"
-	"#str_200930"	"Selecciona la tecla asociada y pulsa ESC para eliminar una asignación."
+	"#str_200930"	"^ik0d / ^ikc7 CAMBIAR\n^ik90 / ^ikca BORRAR\n^ik1b / ^ikcc CANCELAR"
 	"#str_200931"	"SERVIDOR SEGURO"
 	"#str_200932"	"SERVIDOR FAVORITO"
 	"#str_200933"	"CONTRASEÑA ACTIVADA"

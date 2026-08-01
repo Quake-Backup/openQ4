@@ -1,0 +1,3335 @@
+windowDef Desktop
+{
+	rect		0,0,640,480
+	menugui		1
+	noclip		1
+	float		"arena_focusContext"	-1
+	float		"arena_launchVisible"	0
+	float		"arena_resultPhase"	0
+	float		"arena_resultReady"	0
+	float		"arena_resultAction"	0
+	float		"arena_progressAnimating"	0
+	float		"arena_browserRevealing"	0
+	float		"arena_navigationAnimating"	0
+	float		"arena_navigationAction"	0
+	float		"arena_resetPresentation"	0
+	float		"arena_resetAnimating"	0
+	float		"arena_resetContentVisible"	0
+	float		"arena_resetRequested"	0
+	float		"arena_resetAwaitingClear"	0
+
+	onActivate {
+		set "Desktop::arena_focusContext" "-1" ;
+		set "Desktop::arena_launchVisible" "0" ;
+		set "Desktop::arena_resultPhase" "0" ;
+		set "Desktop::arena_resultReady" "0" ;
+		set "Desktop::arena_resultAction" "0" ;
+		set "Desktop::arena_progressAnimating" "0" ;
+		set "Desktop::arena_browserRevealing" "0" ;
+		set "Desktop::arena_navigationAnimating" "1" ;
+		set "Desktop::arena_navigationAction" "0" ;
+		set "Desktop::arena_resetPresentation" "0" ;
+		set "Desktop::arena_resetAnimating" "0" ;
+		set "Desktop::arena_resetContentVisible" "0" ;
+		set "Desktop::arena_resetRequested" "0" ;
+		set "Desktop::arena_resetAwaitingClear" "0" ;
+		setfocus "arena_transition_blocker" ;
+		if ( "gui::arena_view" == 0 ) {
+			resetTime "arena_mode_reveal_timeline" "0" ;
+		} else {
+			resetTime "arena_browser_entry_timeline" "0" ;
+		}
+	}
+
+	onNamedEvent arenaMatchLaunch {
+		set "Desktop::arena_focusContext" "-1" ;
+		set "Desktop::arena_launchVisible" "1" ;
+		setfocus "arena_transition_blocker" ;
+		resetTime "arena_launch_timeline" "0" ;
+	}
+
+	onNamedEvent arenaResultReveal {
+		set "Desktop::arena_focusContext" "-1" ;
+		set "Desktop::arena_launchVisible" "0" ;
+		set "Desktop::arena_progressAnimating" "0" ;
+		set "Desktop::arena_browserRevealing" "0" ;
+		set "Desktop::arena_resultPhase" "0" ;
+		set "Desktop::arena_resultReady" "0" ;
+		set "Desktop::arena_resultAction" "0" ;
+		setfocus "arena_transition_blocker" ;
+		resetTime "arena_result_reveal_timeline" "0" ;
+	}
+
+	onNamedEvent arenaProgressReveal {
+		set "Desktop::arena_focusContext" "-1" ;
+		set "Desktop::arena_launchVisible" "0" ;
+		set "Desktop::arena_browserRevealing" "0" ;
+		set "Desktop::arena_progressAnimating" "1" ;
+		setfocus "arena_transition_blocker" ;
+		resetTime "arena_progress_reveal_timeline" "0" ;
+	}
+
+	onNamedEvent arenaBrowserReveal {
+		set "Desktop::arena_focusContext" "-1" ;
+		set "Desktop::arena_launchVisible" "0" ;
+		set "Desktop::arena_progressAnimating" "0" ;
+		set "Desktop::arena_browserRevealing" "1" ;
+		setfocus "arena_transition_blocker" ;
+		resetTime "arena_browser_reveal_timeline" "0" ;
+	}
+
+	// Navigation owns a short black-frame handoff before changing the authored
+	// context.  The underlying C++ commands remain unchanged and are issued by
+	// the timelines after their outgoing frame has been presented.
+	onNamedEvent arenaOpenBrowser {
+		if ( "Desktop::arena_navigationAnimating" == 0 ) {
+			set "Desktop::arena_focusContext" "-1" ;
+			set "Desktop::arena_navigationAnimating" "1" ;
+			set "Desktop::arena_navigationAction" "1" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_mode_exit_timeline" "0" ;
+		}
+	}
+
+	onNamedEvent arenaOpenMission {
+		if ( "Desktop::arena_navigationAnimating" == 0 ) {
+			set "Desktop::arena_focusContext" "-1" ;
+			set "Desktop::arena_navigationAnimating" "1" ;
+			set "Desktop::arena_navigationAction" "2" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_mode_exit_timeline" "0" ;
+		}
+	}
+
+	onNamedEvent arenaCloseSelector {
+		if ( "Desktop::arena_navigationAnimating" == 0 ) {
+			set "Desktop::arena_focusContext" "-1" ;
+			set "Desktop::arena_navigationAnimating" "1" ;
+			set "Desktop::arena_navigationAction" "3" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_mode_exit_timeline" "0" ;
+		}
+	}
+
+	onNamedEvent arenaReturnToModes {
+		if ( "Desktop::arena_navigationAnimating" == 0 ) {
+			set "Desktop::arena_focusContext" "-1" ;
+			set "Desktop::arena_navigationAnimating" "1" ;
+			set "Desktop::arena_navigationAction" "4" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_browser_exit_timeline" "0" ;
+		}
+	}
+
+	// The framework raises this as soon as it publishes the confirmation state.
+	// Keeping the reveal event-driven gives the first covered frame the same
+	// deterministic ownership as the launch and results cards.
+	onNamedEvent arenaResetReveal {
+		if ( "Desktop::arena_resetPresentation" == 0 && "Desktop::arena_resetAwaitingClear" == 0 ) {
+			set "gui::arena_resetConfirm" "1" ;
+			set "Desktop::arena_resetPresentation" "1" ;
+			set "Desktop::arena_resetAnimating" "1" ;
+			set "Desktop::arena_resetContentVisible" "0" ;
+			set "Desktop::arena_resetRequested" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_reset_reveal_timeline" "0" ;
+		}
+	}
+
+	onNamedEvent arenaResetCancelTransition {
+		if ( "Desktop::arena_resetPresentation" == 1 && "Desktop::arena_resetAnimating" == 0 ) {
+			set "Desktop::arena_resetRequested" "1" ;
+			set "Desktop::arena_resetAnimating" "1" ;
+			set "Desktop::arena_focusContext" "-1" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_reset_exit_timeline" "0" ;
+		}
+	}
+
+	onNamedEvent arenaResetConfirmTransition {
+		if ( "Desktop::arena_resetPresentation" == 1 && "Desktop::arena_resetAnimating" == 0 ) {
+			set "Desktop::arena_resetRequested" "2" ;
+			set "Desktop::arena_resetAnimating" "1" ;
+			set "Desktop::arena_focusContext" "-1" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_reset_exit_timeline" "0" ;
+		}
+	}
+
+	// GUI state is refreshed just after activation, so choose focus on the next
+	// frame and only when the visible interaction context actually changes.
+	onEvent {
+		if ( "gui::arena_resetConfirm" != 1 && "Desktop::arena_resetAwaitingClear" == 1 ) {
+			set "Desktop::arena_resetAwaitingClear" "0" ;
+		} else if ( "gui::arena_resetConfirm" == 1 && "Desktop::arena_resetPresentation" == 0 && "Desktop::arena_resetAwaitingClear" == 0 ) {
+			set "Desktop::arena_resetPresentation" "1" ;
+			set "Desktop::arena_resetAnimating" "1" ;
+			set "Desktop::arena_resetContentVisible" "0" ;
+			set "Desktop::arena_resetRequested" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_reset_reveal_timeline" "0" ;
+		} else if ( "gui::arena_resetConfirm" != 1 && "Desktop::arena_resetPresentation" == 1 ) {
+			set "Desktop::arena_resetPresentation" "2" ;
+			set "Desktop::arena_resetAnimating" "1" ;
+			set "Desktop::arena_focusContext" "-1" ;
+			setfocus "arena_transition_blocker" ;
+			resetTime "arena_reset_exit_timeline" "0" ;
+		}
+
+		if ( "Desktop::arena_navigationAnimating" == 1 || "Desktop::arena_resetAnimating" == 1 || "Desktop::arena_launchVisible" == 1 || "Desktop::arena_progressAnimating" == 1 || "Desktop::arena_browserRevealing" == 1 || ( "gui::arena_result" != 0 && "Desktop::arena_resultReady" == 0 ) ) {
+			if ( "Desktop::arena_focusContext" != 12 ) {
+				setfocus "arena_transition_blocker" ;
+				set "Desktop::arena_focusContext" "12" ;
+			}
+		} else if ( "Desktop::arena_resetPresentation" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 10 ) {
+				setfocus "arena_reset_cancel" ;
+				set "Desktop::arena_focusContext" "10" ;
+			}
+		} else if ( "gui::arena_result" == 1 && "gui::arena_campaignComplete" == 0 && "gui::arena_resultCanRetry" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 2 ) {
+				setfocus "arena_result_next" ;
+				set "Desktop::arena_focusContext" "2" ;
+			}
+		} else if ( "gui::arena_result" == 1 && "gui::arena_campaignComplete" == 0 ) {
+			if ( "Desktop::arena_focusContext" != 3 ) {
+				setfocus "arena_result_next_full" ;
+				set "Desktop::arena_focusContext" "3" ;
+			}
+		} else if ( "gui::arena_result" == 1 && "gui::arena_resultCanRetry" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 4 ) {
+				setfocus "arena_result_return" ;
+				set "Desktop::arena_focusContext" "4" ;
+			}
+		} else if ( "gui::arena_result" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 5 ) {
+				setfocus "arena_result_return_full" ;
+				set "Desktop::arena_focusContext" "5" ;
+			}
+		} else if ( "gui::arena_result" == 2 && "gui::arena_resultCanRetry" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 6 ) {
+				setfocus "arena_result_retry" ;
+				set "Desktop::arena_focusContext" "6" ;
+			}
+		} else if ( "gui::arena_result" == 4 && "gui::arena_resultCanRetry" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 7 ) {
+				setfocus "arena_result_replay" ;
+				set "Desktop::arena_focusContext" "7" ;
+			}
+		} else if ( "gui::arena_result" == 2 || "gui::arena_result" == 4 ) {
+			if ( "Desktop::arena_focusContext" != 8 ) {
+				setfocus "arena_result_return_full" ;
+				set "Desktop::arena_focusContext" "8" ;
+			}
+		} else if ( "gui::arena_result" == 3 ) {
+			if ( "Desktop::arena_focusContext" != 9 ) {
+				setfocus "arena_result_continue_only" ;
+				set "Desktop::arena_focusContext" "9" ;
+			}
+		} else if ( "gui::arena_view" == 0 ) {
+			if ( "Desktop::arena_focusContext" != 0 ) {
+				setfocus "arena_mode_mission_card" ;
+				set "Desktop::arena_focusContext" "0" ;
+			}
+		} else if ( "gui::arena_canStart" == 1 ) {
+			if ( "Desktop::arena_focusContext" != 1 ) {
+				setfocus "arena_start_enabled" ;
+				set "Desktop::arena_focusContext" "1" ;
+			}
+		} else {
+			if ( "Desktop::arena_focusContext" != 11 ) {
+				setfocus "arena_browser_back" ;
+				set "Desktop::arena_focusContext" "11" ;
+			}
+		}
+	}
+
+	onESC {
+		if ( "Desktop::arena_navigationAnimating" == 1 || "Desktop::arena_resetAnimating" == 1 || "Desktop::arena_launchVisible" == 1 || "Desktop::arena_progressAnimating" == 1 || "Desktop::arena_browserRevealing" == 1 || ( "gui::arena_result" != 0 && "Desktop::arena_resultReady" == 0 ) ) {
+			set "Desktop::arena_focusContext" "12" ;
+		} else if ( "gui::arena_resetConfirm" == 1 ) {
+			namedevent "arenaResetCancelTransition" ;
+		} else if ( "gui::arena_result" != 0 ) {
+			set "Desktop::arena_resultAction" "1" ;
+			set "Desktop::arena_resultReady" "0" ;
+			resetTime "arena_result_exit_timeline" "0" ;
+		} else if ( "gui::arena_view" == 1 ) {
+			namedevent "arenaReturnToModes" ;
+		} else {
+			namedevent "arenaCloseSelector" ;
+		}
+	}
+
+	// Shared widescreen-safe backdrop.
+	windowDef arena_backdrop
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		background	"gfx/guis/mainmenu/bg_darkgrad2"
+		matcolor	0.2,0.25,0.16,1
+		noevents	1
+	}
+
+	windowDef arena_grid
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		background	"gfx/guis/loading/bg_grid_tiled"
+		matcolor	0.35,0.42,0.22,0.24
+		naturalmatscale	1
+		noevents	1
+	}
+
+	windowDef arena_screen_tint
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		background	"gfx/guis/mainmenu/screen"
+		matcolor	0.44,0.48,0.3,0.18
+		noclip		1
+		noevents	1
+	}
+
+	windowDef arena_topbar
+	{
+		rect		-400,0,1045,129
+		noclip		1
+		background	"gfx/guis/mainmenu/topbar"
+		matcolor	1,1,1,0.9
+		noevents	1
+
+		windowDef arena_topbar_tile_left
+		{
+			rect		-4096,0,4097,129
+			background	"gfx/guis/mainmenu/topbar_tile_left"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+
+		windowDef arena_topbar_tile_right
+		{
+			rect		1044,0,4097,129
+			background	"gfx/guis/mainmenu/topbar_tile_right"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+	}
+
+	windowDef arena_btmbar
+	{
+		rect		-399,351,1045,129
+		noclip		1
+		background	"gfx/guis/mainmenu/btmbar"
+		matcolor	1,1,1,0.9
+		noevents	1
+
+		windowDef arena_btmbar_tile_left
+		{
+			rect		-4096,0,4097,129
+			background	"gfx/guis/mainmenu/btmbar_tile_left"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+
+		windowDef arena_btmbar_tile_right
+		{
+			rect		1044,0,4097,129
+			background	"gfx/guis/mainmenu/btmbar_tile_right"
+			matscalex	128
+			matcolor	1,1,1,0.9
+			noevents	1
+		}
+	}
+
+	// First level: choose the story mission or the arena circuit.
+	windowDef arena_mode_selector
+	{
+		rect		0,0,640,480
+		visible		( "gui::arena_view" == 0 )
+
+		windowDef arena_mode_header_glow
+		{
+			rect		0,28,640,76
+			background	"gfx/guis/mainmenu/b1_dark"
+			matcolor	0.4,0.47,0.24,0.56
+			noevents	1
+		}
+
+		windowDef arena_mode_header_line
+		{
+			rect		28,96,584,6
+			background	"gfx/guis/mainmenu/horiz_line2"
+			matcolor	0.95,0.49,0.06,0.68
+			noevents	1
+		}
+
+		windowDef arena_mode_title
+		{
+			rect		30,42,580,34
+			forecolor	0.96,0.97,0.9,1
+			text		"#str_42000"
+			textscale	0.48
+			textalign	1
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_mode_subtitle
+		{
+			rect		30,78,580,18
+			forecolor	0.72,0.76,0.59,0.95
+			text		"#str_42027"
+			textscale	0.19
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_mode_mission_card
+		{
+			rect		38,126,272,260
+			background	"gfx/guis/mainmenu/b1_dark"
+			matcolor	0.42,0.49,0.25,0.66
+			bordercolor	0.3,0.34,0.2,1
+			bordersize	1
+
+			onMouseEnter {
+				set "matcolor" "0.95,0.49,0.06,0.82" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "matcolor" "0.42,0.49,0.25,0.66" ;
+				set "bordercolor" "0.3,0.34,0.2,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				namedevent "arenaOpenMission" ;
+			}
+
+			windowDef arena_mode_mission_band
+			{
+				rect		1,1,270,48
+				background	"gfx/guis/mainmenu/b1_dark"
+				matcolor	0.58,0.64,0.36,0.82
+				noevents	1
+			}
+
+			windowDef arena_mode_mission_kicker
+			{
+				rect		18,17,236,16
+				forecolor	0.72,0.78,0.6,1
+				text		"#str_42003"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_mode_mission_title
+			{
+				rect		18,72,236,34
+				forecolor	0.96,0.97,0.91,1
+				text		"#str_42001"
+				textscale	0.44
+				font		"fonts/marine"
+				noevents	1
+			}
+
+			windowDef arena_mode_mission_rule
+			{
+				rect		18,111,86,2
+				backcolor	0.95,0.49,0.06,0.95
+				noevents	1
+			}
+
+			windowDef arena_mode_mission_description
+			{
+				rect		18,130,234,66
+				forecolor	0.76,0.79,0.68,1
+				text		"#str_42028"
+				textscale	0.22
+				font		"fonts/lowpixel"
+				wrap		1
+				noevents	1
+			}
+
+			windowDef arena_mode_mission_arrow
+			{
+				rect		219,215,28,28
+				background	"gfx/guis/mainmenu/createserver_arrow"
+				matcolor	0.95,0.49,0.06,0.9
+				noevents	1
+			}
+
+			windowDef arena_mode_mission_corner
+			{
+				rect		8,240,12,12
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.56,0.6,0.28,0.65
+				noevents	1
+			}
+		}
+
+		windowDef arena_mode_arena_card
+		{
+			rect		330,126,272,260
+			background	"gfx/guis/mainmenu/b2_dark"
+			matcolor	0.42,0.49,0.25,0.66
+			bordercolor	0.3,0.34,0.2,1
+			bordersize	1
+
+			onMouseEnter {
+				set "matcolor" "0.95,0.49,0.06,0.82" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "matcolor" "0.42,0.49,0.25,0.66" ;
+				set "bordercolor" "0.3,0.34,0.2,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				namedevent "arenaOpenBrowser" ;
+			}
+
+			windowDef arena_mode_arena_band
+			{
+				rect		1,1,270,48
+				background	"gfx/guis/mainmenu/b2_dark"
+				matcolor	0.58,0.64,0.36,0.82
+				noevents	1
+			}
+
+			windowDef arena_mode_arena_kicker
+			{
+				rect		18,17,236,16
+				forecolor	0.72,0.78,0.6,1
+				text		"#str_42004"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_mode_arena_title
+			{
+				rect		18,72,236,34
+				forecolor	0.96,0.97,0.91,1
+				text		"#str_42002"
+				textscale	0.44
+				font		"fonts/marine"
+				noevents	1
+			}
+
+			windowDef arena_mode_arena_rule
+			{
+				rect		18,111,86,2
+				backcolor	0.95,0.49,0.06,0.95
+				noevents	1
+			}
+
+			windowDef arena_mode_arena_description
+			{
+				rect		18,130,234,66
+				forecolor	0.76,0.79,0.68,1
+				text		"#str_42029"
+				textscale	0.22
+				font		"fonts/lowpixel"
+				wrap		1
+				noevents	1
+			}
+
+			windowDef arena_mode_arena_arrow
+			{
+				rect		219,215,28,28
+				background	"gfx/guis/mainmenu/createserver_arrow"
+				matcolor	0.95,0.49,0.06,0.9
+				noevents	1
+			}
+
+			windowDef arena_mode_arena_corner
+			{
+				rect		8,240,12,12
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.56,0.6,0.28,0.65
+				noevents	1
+			}
+		}
+
+		windowDef arena_mode_back
+		{
+			rect		38,414,112,27
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.545,0.588,0.294,0.4
+			forecolor	0.88,0.9,0.8,1
+			text		"#str_42005"
+			textscale	0.21
+			textalign	1
+			font		"fonts/lowpixel"
+
+			onMouseEnter {
+				set "matcolor" "0.95,0.49,0.06,0.92" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "matcolor" "0.545,0.588,0.294,0.4" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				namedevent "arenaCloseSelector" ;
+			}
+		}
+	}
+
+	// Second level: tier and match browser.
+	windowDef arena_browser
+	{
+		rect		0,0,640,480
+		visible		( "gui::arena_view" == 1 )
+
+		windowDef arena_browser_header_glow
+		{
+			rect		0,27,640,35
+			background	"gfx/guis/mainmenu/b1_dark"
+			matcolor	0.4,0.47,0.24,0.56
+			noevents	1
+		}
+
+		windowDef arena_browser_header_line
+		{
+			rect		18,57,604,6
+			background	"gfx/guis/mainmenu/horiz_line2"
+			matcolor	0.95,0.49,0.06,0.68
+			noevents	1
+		}
+
+		windowDef arena_browser_title
+		{
+			rect		20,31,340,27
+			forecolor	0.96,0.97,0.9,1
+			text		"#str_42006"
+			textscale	0.37
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_browser_progress
+		{
+			rect		380,33,240,20
+			forecolor	0.95,0.72,0.25,1
+			text		"gui::arena_progress"
+			textscale	0.2
+			textalign	2
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_browser_progress_track
+		{
+			rect		380,55,240,3
+			backcolor	0.17,0.2,0.12,1
+			noevents	1
+		}
+
+		windowDef arena_browser_progress_fill
+		{
+			rect		380,55,( "gui::arenaCampaignProgress" * 12 ),3
+			backcolor	0.75,0.88,0.42,1
+			noevents	1
+		}
+
+		windowDef arena_campaign_complete_banner
+		{
+			rect		384,64,236,18
+			visible		( "gui::arena_campaignComplete" == 1 )
+			backcolor	0.12,0.24,0.08,0.95
+			bordercolor	0.5,0.74,0.28,1
+			bordersize	1
+			forecolor	0.88,1,0.7,1
+			text		"#str_42026"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_tiers_heading
+		{
+			rect		18,69,132,16
+			forecolor	0.68,0.72,0.57,0.95
+			text		"#str_42007"
+			textscale	0.18
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_matches_heading
+		{
+			rect		158,69,146,16
+			forecolor	0.68,0.72,0.57,0.95
+			text		"#str_42008"
+			textscale	0.18
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		// Tier 0.
+		windowDef arena_tier0
+		{
+			rect		18,87,132,34
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_tier0_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_tier0_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectTier 0" ;
+				}
+			}
+
+			windowDef arena_tier0_selected
+			{
+				rect		1,1,130,32
+				visible		( "gui::arena_tier0_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_tier0_completed
+			{
+				rect		1,1,4,32
+				visible		( "gui::arena_tier0_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_tier0_name
+		{
+			rect		9,5,94,14
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42091"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier0_status
+			{
+				rect		9,20,112,11
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_tier0_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier0_lock
+			{
+				rect		108,8,14,17
+				visible		( "gui::arena_tier0_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_tier0_check
+			{
+				rect		108,8,15,15
+				visible		( "gui::arena_tier0_completed" == 1 && "gui::arena_tier0_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Tier 1.
+		windowDef arena_tier1
+		{
+			rect		18,125,132,34
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_tier1_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_tier1_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectTier 1" ;
+				}
+			}
+
+			windowDef arena_tier1_selected
+			{
+				rect		1,1,130,32
+				visible		( "gui::arena_tier1_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_tier1_completed
+			{
+				rect		1,1,4,32
+				visible		( "gui::arena_tier1_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_tier1_name
+		{
+			rect		9,5,94,14
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42092"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier1_status
+			{
+				rect		9,20,112,11
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_tier1_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier1_lock
+			{
+				rect		108,8,14,17
+				visible		( "gui::arena_tier1_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_tier1_check
+			{
+				rect		108,8,15,15
+				visible		( "gui::arena_tier1_completed" == 1 && "gui::arena_tier1_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Tier 2.
+		windowDef arena_tier2
+		{
+			rect		18,163,132,34
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_tier2_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_tier2_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectTier 2" ;
+				}
+			}
+
+			windowDef arena_tier2_selected
+			{
+				rect		1,1,130,32
+				visible		( "gui::arena_tier2_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_tier2_completed
+			{
+				rect		1,1,4,32
+				visible		( "gui::arena_tier2_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_tier2_name
+		{
+			rect		9,5,94,14
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42093"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier2_status
+			{
+				rect		9,20,112,11
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_tier2_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier2_lock
+			{
+				rect		108,8,14,17
+				visible		( "gui::arena_tier2_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_tier2_check
+			{
+				rect		108,8,15,15
+				visible		( "gui::arena_tier2_completed" == 1 && "gui::arena_tier2_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Tier 3.
+		windowDef arena_tier3
+		{
+			rect		18,201,132,34
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_tier3_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_tier3_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectTier 3" ;
+				}
+			}
+
+			windowDef arena_tier3_selected
+			{
+				rect		1,1,130,32
+				visible		( "gui::arena_tier3_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_tier3_completed
+			{
+				rect		1,1,4,32
+				visible		( "gui::arena_tier3_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_tier3_name
+		{
+			rect		9,5,94,14
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42094"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier3_status
+			{
+				rect		9,20,112,11
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_tier3_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier3_lock
+			{
+				rect		108,8,14,17
+				visible		( "gui::arena_tier3_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_tier3_check
+			{
+				rect		108,8,15,15
+				visible		( "gui::arena_tier3_completed" == 1 && "gui::arena_tier3_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Tier 4.
+		windowDef arena_tier4
+		{
+			rect		18,239,132,34
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_tier4_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_tier4_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectTier 4" ;
+				}
+			}
+
+			windowDef arena_tier4_selected
+			{
+				rect		1,1,130,32
+				visible		( "gui::arena_tier4_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_tier4_completed
+			{
+				rect		1,1,4,32
+				visible		( "gui::arena_tier4_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_tier4_name
+		{
+			rect		9,5,94,14
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42095"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier4_status
+			{
+				rect		9,20,112,11
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_tier4_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_tier4_lock
+			{
+				rect		108,8,14,17
+				visible		( "gui::arena_tier4_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_tier4_check
+			{
+				rect		108,8,15,15
+				visible		( "gui::arena_tier4_completed" == 1 && "gui::arena_tier4_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Match 0.
+		windowDef arena_match0
+		{
+			rect		158,87,146,40
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_match0_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_match0_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectMatch 0" ;
+				}
+			}
+
+			windowDef arena_match0_selected
+			{
+				rect		1,1,144,38
+				visible		( "gui::arena_match0_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_match0_completed
+			{
+				rect		1,1,4,38
+				visible		( "gui::arena_match0_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_match0_name
+		{
+			rect		9,6,104,15
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42088"
+			textscale	0.16
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match0_status
+			{
+				rect		9,23,124,12
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_match0_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match0_lock
+			{
+				rect		121,11,14,17
+				visible		( "gui::arena_match0_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_match0_check
+			{
+				rect		121,11,15,15
+				visible		( "gui::arena_match0_completed" == 1 && "gui::arena_match0_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Match 1.
+		windowDef arena_match1
+		{
+			rect		158,133,146,40
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_match1_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_match1_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectMatch 1" ;
+				}
+			}
+
+			windowDef arena_match1_selected
+			{
+				rect		1,1,144,38
+				visible		( "gui::arena_match1_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_match1_completed
+			{
+				rect		1,1,4,38
+				visible		( "gui::arena_match1_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_match1_name
+		{
+			rect		9,6,104,15
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42089"
+			textscale	0.16
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match1_status
+			{
+				rect		9,23,124,12
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_match1_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match1_lock
+			{
+				rect		121,11,14,17
+				visible		( "gui::arena_match1_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_match1_check
+			{
+				rect		121,11,15,15
+				visible		( "gui::arena_match1_completed" == 1 && "gui::arena_match1_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Match 2.
+		windowDef arena_match2
+		{
+			rect		158,179,146,40
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_match2_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_match2_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectMatch 2" ;
+				}
+			}
+
+			windowDef arena_match2_selected
+			{
+				rect		1,1,144,38
+				visible		( "gui::arena_match2_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_match2_completed
+			{
+				rect		1,1,4,38
+				visible		( "gui::arena_match2_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_match2_name
+		{
+			rect		9,6,104,15
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42090"
+			textscale	0.16
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match2_status
+			{
+				rect		9,23,124,12
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_match2_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match2_lock
+			{
+				rect		121,11,14,17
+				visible		( "gui::arena_match2_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_match2_check
+			{
+				rect		121,11,15,15
+				visible		( "gui::arena_match2_completed" == 1 && "gui::arena_match2_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Match 3.
+		windowDef arena_match3
+		{
+			rect		158,225,146,40
+			backcolor	0.045,0.055,0.04,0.95
+			bordercolor	0.25,0.29,0.17,1
+			bordersize	1
+
+			onMouseEnter {
+				if ( "gui::arena_match3_locked" == 0 ) {
+					set "backcolor" "0.18,0.12,0.04,0.98" ;
+					set "bordercolor" "0.95,0.49,0.06,1" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				set "backcolor" "0.045,0.055,0.04,0.95" ;
+				set "bordercolor" "0.25,0.29,0.17,1" ;
+			}
+
+			onAction {
+				if ( "gui::arena_match3_locked" == 0 ) {
+					set "cmd" "play main_menu_selection ; arenaSelectMatch 3" ;
+				}
+			}
+
+			windowDef arena_match3_selected
+			{
+				rect		1,1,144,38
+				visible		( "gui::arena_match3_selected" == 1 )
+				backcolor	0.95,0.49,0.06,0.23
+				noevents	1
+			}
+
+			windowDef arena_match3_boss_accent
+			{
+				rect		1,1,4,38
+				visible		( "gui::arena_match3_locked" == 0 && "gui::arena_match3_completed" == 0 )
+				backcolor	0.95,0.49,0.06,0.95
+				noevents	1
+			}
+
+			windowDef arena_match3_locked_accent
+			{
+				rect		1,1,4,38
+				visible		( "gui::arena_match3_locked" == 1 )
+				backcolor	0.42,0.3,0.12,0.8
+				noevents	1
+			}
+
+			windowDef arena_match3_completed
+			{
+				rect		1,1,4,38
+				visible		( "gui::arena_match3_completed" == 1 )
+				backcolor	0.55,0.82,0.3,0.95
+				noevents	1
+			}
+
+		windowDef arena_match3_name
+		{
+			rect		9,6,104,15
+			visible		( "gui::arena_match3_locked" == 0 )
+			forecolor	0.92,0.94,0.84,1
+			text		"#str_42024"
+			textscale	0.16
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match3_locked_name
+			{
+				rect		9,6,104,15
+				visible		( "gui::arena_match3_locked" == 1 )
+				forecolor	0.66,0.69,0.58,1
+				text		"#str_42024"
+				textscale	0.15
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match3_status
+			{
+				rect		9,23,124,12
+				forecolor	0.6,0.66,0.48,1
+				text		"gui::arena_match3_status"
+				textscale	0.13
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_match3_lock
+			{
+				rect		121,11,14,17
+				visible		( "gui::arena_match3_locked" == 1 )
+				background	"gfx/guis/mainmenu/icon_locked"
+				matcolor	0.78,0.8,0.7,0.85
+				noevents	1
+			}
+
+			windowDef arena_match3_check
+			{
+				rect		121,11,15,15
+				visible		( "gui::arena_match3_completed" == 1 && "gui::arena_match3_locked" == 0 )
+				background	"gfx/guis/mainmenu/box_check"
+				matcolor	0.64,0.92,0.38,0.95
+				noevents	1
+			}
+		}
+
+		// Tier context stays visible while the player compares its four matches.
+		windowDef arena_tier_briefing_panel
+		{
+			rect		18,279,286,143
+			backcolor	0.025,0.032,0.024,0.96
+			bordercolor	0.28,0.32,0.19,1
+			bordersize	1
+			noevents	1
+		}
+
+		windowDef arena_tier_briefing_heading
+		{
+			// Keep the localized section label separate from the tier name.  The
+			// previous single-line treatment only had room for English before the
+			// two labels ran together.
+			rect		27,287,268,13
+			forecolor	0.95,0.72,0.25,1
+			text		"#str_42070"
+			textscale	0.13
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_tier_briefing_title
+		{
+			rect		27,301,268,18
+			forecolor	0.92,0.94,0.84,1
+			text		"gui::arena_selectedTierName"
+			textscale	0.17
+			textalign	1
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_tier_briefing_rule
+		{
+			rect		27,322,268,1
+			backcolor	0.55,0.61,0.34,0.7
+			noevents	1
+		}
+
+		windowDef arena_tier_briefing_description
+		{
+			rect		27,328,268,42
+			forecolor	0.78,0.82,0.7,1
+			text		"gui::arena_selectedTierDescription"
+			textscale	0.14
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		windowDef arena_tier_briefing_path
+		{
+			rect		27,374,268,22
+			forecolor	0.95,0.72,0.25,1
+			text		"#str_42071"
+			textscale	0.13
+			textalign	1
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		windowDef arena_tier_briefing_gate
+		{
+			rect		27,400,268,18
+			forecolor	0.61,0.67,0.5,1
+			text		"#str_42049"
+			textscale	0.13
+			textalign	1
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		// Selected match details.
+		windowDef arena_detail_panel
+		{
+			rect		314,87,308,335
+			backcolor	0.025,0.032,0.024,0.96
+			bordercolor	0.28,0.32,0.19,1
+			bordersize	1
+			noevents	1
+		}
+
+		windowDef arena_levelshot_frame
+		{
+			rect		322,95,292,110
+			backcolor	0.015,0.018,0.015,1
+			bordercolor	0.55,0.61,0.34,0.85
+			bordersize	1
+			noevents	1
+		}
+
+		windowDef arena_levelshot
+		{
+			rect		324,97,288,106
+			background	"gui::arena_levelshot"
+			matcolor	1,1,1,1
+			noevents	1
+		}
+
+		windowDef arena_levelshot_scan
+		{
+			rect		324,97,288,106
+			background	"gfx/guis/mainmenu/screen"
+			matcolor	0.7,0.77,0.42,0.12
+			noevents	1
+		}
+
+		windowDef arena_selected_title
+		{
+			rect		322,211,292,25
+			forecolor	0.98,0.94,0.8,1
+			text		"gui::arena_selectedTitle"
+			textscale	0.3
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_selected_rule
+		{
+			rect		322,238,292,1
+			backcolor	0.95,0.49,0.06,0.75
+			noevents	1
+		}
+
+		windowDef arena_selected_description
+		{
+			rect		322,244,292,50
+			forecolor	0.72,0.76,0.63,1
+			text		"gui::arena_selectedDescription"
+			textscale	0.17
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		windowDef arena_map_label
+		{
+			rect		322,298,70,14
+			forecolor	0.57,0.63,0.45,1
+			text		"#str_42013"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_map_value
+		{
+			rect		397,298,217,14
+			forecolor	0.9,0.92,0.82,1
+			text		"gui::arena_selectedMap"
+			textscale	0.16
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_gametype_label
+		{
+			rect		322,316,70,14
+			forecolor	0.57,0.63,0.45,1
+			text		"#str_42014"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_gametype_value
+		{
+			rect		397,316,217,14
+			forecolor	0.9,0.92,0.82,1
+			text		"gui::arena_selectedGameType"
+			textscale	0.16
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_roster_label
+		{
+			rect		322,334,70,14
+			forecolor	0.57,0.63,0.45,1
+			text		"#str_42015"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_roster_value
+		{
+			rect		397,334,217,27
+			forecolor	0.9,0.92,0.82,1
+			text		"gui::arena_selectedRoster"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		windowDef arena_limits_label
+		{
+			rect		322,364,70,14
+			forecolor	0.57,0.63,0.45,1
+			text		"#str_42016"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_limits_value
+		{
+			rect		397,364,217,14
+			forecolor	0.9,0.92,0.82,1
+			text		"gui::arena_selectedLimits"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_difficulty_label
+		{
+			rect		322,383,79,14
+			forecolor	0.57,0.63,0.45,1
+			text		"#str_42009"
+			textscale	0.15
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_skill_label
+		{
+			rect		322,400,39,12
+			forecolor	0.57,0.63,0.45,1
+			text		"#str_42035"
+			textscale	0.13
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_skill_value
+		{
+			rect		364,400,34,12
+			forecolor	0.9,0.92,0.82,1
+			text		"gui::arena_selectedSkill"
+			textscale	0.14
+			textalign	2
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_difficulty_down
+		{
+			rect		402,383,32,25
+			backcolor	0.07,0.075,0.055,0.98
+			bordercolor	0.3,0.34,0.2,1
+			bordersize	1
+			forecolor	0.72,0.76,0.63,1
+			text		"#str_42020"
+			textscale	0.25
+			textalign	1
+			font		"fonts/lowpixel"
+
+			onMouseEnter {
+				set "backcolor" "0.27,0.15,0.04,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.07,0.075,0.055,0.98" ;
+				set "bordercolor" "0.3,0.34,0.2,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection ; arenaDifficulty -1" ;
+			}
+		}
+
+		windowDef arena_difficulty_name
+		{
+			rect		438,383,140,25
+			backcolor	0.035,0.045,0.032,0.98
+			bordercolor	0.45,0.5,0.27,1
+			bordersize	1
+			forecolor	0.95,0.72,0.25,1
+			text		"gui::arena_difficultyName"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_difficulty_up
+		{
+			rect		582,383,32,25
+			backcolor	0.07,0.075,0.055,0.98
+			bordercolor	0.3,0.34,0.2,1
+			bordersize	1
+			forecolor	0.72,0.76,0.63,1
+			text		"#str_42021"
+			textscale	0.25
+			textalign	1
+			font		"fonts/lowpixel"
+
+			onMouseEnter {
+				set "backcolor" "0.27,0.15,0.04,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.07,0.075,0.055,0.98" ;
+				set "bordercolor" "0.3,0.34,0.2,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection ; arenaDifficulty 1" ;
+			}
+		}
+
+		windowDef arena_browser_back
+		{
+			rect		18,429,104,27
+			background	"gfx/guis/mainmenu/b4_light"
+			matcolor	0.545,0.588,0.294,0.4
+			forecolor	0.84,0.87,0.76,1
+			text		"#str_42005"
+			textscale	0.18
+			textalign	1
+			font		"fonts/lowpixel"
+
+			onMouseEnter {
+				set "matcolor" "0.95,0.49,0.06,0.92" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "matcolor" "0.545,0.588,0.294,0.4" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				namedevent "arenaReturnToModes" ;
+			}
+		}
+
+		windowDef arena_browser_reset
+		{
+			rect		130,429,174,27
+			visible		( "gui::arenaCampaignProgress" != 0 )
+			backcolor	0.05,0.06,0.045,0.98
+			bordercolor	0.3,0.34,0.2,1
+			bordersize	1
+			forecolor	0.84,0.87,0.76,1
+			text		"#str_42011"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+
+			onMouseEnter {
+				set "backcolor" "0.22,0.09,0.04,0.98" ;
+				set "bordercolor" "0.9,0.32,0.1,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.05,0.06,0.045,0.98" ;
+				set "bordercolor" "0.3,0.34,0.2,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection ; arenaReset" ;
+			}
+		}
+
+		windowDef arena_browser_reset_disabled
+		{
+			rect		130,429,174,27
+			visible		( "gui::arenaCampaignProgress" == 0 )
+			backcolor	0.035,0.04,0.032,0.96
+			bordercolor	0.2,0.22,0.16,1
+			bordersize	1
+			forecolor	0.36,0.39,0.32,1
+			text		"#str_42011"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_start_enabled
+		{
+			rect		314,429,308,27
+			visible		( "gui::arena_canStart" == 1 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42010"
+			textscale	0.22
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection ; arenaStart" ;
+			}
+		}
+
+		windowDef arena_start_disabled
+		{
+			rect		314,429,308,27
+			visible		( "gui::arena_canStart" == 0 )
+			backcolor	0.045,0.05,0.04,0.96
+			bordercolor	0.22,0.24,0.17,1
+			bordersize	1
+			forecolor	0.38,0.4,0.33,1
+			text		"#str_42010"
+			textscale	0.22
+			textalign	1
+			font		"fonts/marine"
+			noevents	1
+		}
+	}
+
+	// A common black-frame handoff makes the Single Player hierarchy feel like a
+	// continuation of the stock main menu instead of a collection of hard GUI
+	// swaps.  It also gives keyboard/controller focus one safe owner throughout.
+	windowDef arena_navigation_curtain
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::arena_navigationAnimating" == 1 )
+		backcolor	0,0,0,0
+		noevents	1
+	}
+
+	windowDef arena_mode_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_navigation_curtain" ;
+			stopTransitions "arena_mode_selector" ;
+			set "arena_navigation_curtain::backcolor" "0,0,0,0.86" ;
+			set "arena_mode_selector::rect" "36,0,640,480" ;
+			transition "arena_navigation_curtain::backcolor" "0,0,0,0.86" "0,0,0,0" "360" ;
+			transition "arena_mode_selector::rect" "36,0,640,480" "0,0,640,480" "320" ;
+		}
+
+		onTime 380 {
+			set "Desktop::arena_navigationAnimating" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	windowDef arena_mode_exit_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_navigation_curtain" ;
+			stopTransitions "arena_mode_selector" ;
+			set "arena_navigation_curtain::backcolor" "0,0,0,0" ;
+			transition "arena_navigation_curtain::backcolor" "0,0,0,0" "0,0,0,1" "260" ;
+			transition "arena_mode_selector::rect" "0,0,640,480" "-36,0,640,480" "240" ;
+		}
+
+		onTime 280 {
+			if ( "Desktop::arena_navigationAction" == 1 ) {
+				set "cmd" "arenaBrowse" ;
+				resetTime "arena_browser_entry_timeline" "0" ;
+			} else if ( "Desktop::arena_navigationAction" == 2 ) {
+				set "cmd" "arenaMission" ;
+			} else {
+				set "cmd" "arenaClose" ;
+			}
+		}
+	}
+
+	windowDef arena_browser_entry_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_navigation_curtain" ;
+			stopTransitions "arena_browser" ;
+			set "Desktop::arena_navigationAnimating" "1" ;
+			set "arena_navigation_curtain::backcolor" "0,0,0,1" ;
+			set "arena_browser::rect" "36,0,640,480" ;
+			transition "arena_navigation_curtain::backcolor" "0,0,0,1" "0,0,0,0" "380" ;
+			transition "arena_browser::rect" "36,0,640,480" "0,0,640,480" "340" ;
+		}
+
+		onTime 400 {
+			set "Desktop::arena_navigationAnimating" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	windowDef arena_browser_exit_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_navigation_curtain" ;
+			stopTransitions "arena_browser" ;
+			set "arena_navigation_curtain::backcolor" "0,0,0,0" ;
+			transition "arena_navigation_curtain::backcolor" "0,0,0,0" "0,0,0,1" "260" ;
+			transition "arena_browser::rect" "0,0,640,480" "36,0,640,480" "240" ;
+		}
+
+		onTime 280 {
+			set "cmd" "arenaBackToModes" ;
+			resetTime "arena_mode_return_timeline" "0" ;
+		}
+	}
+
+	windowDef arena_mode_return_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_navigation_curtain" ;
+			stopTransitions "arena_mode_selector" ;
+			set "arena_navigation_curtain::backcolor" "0,0,0,1" ;
+			set "arena_mode_selector::rect" "-36,0,640,480" ;
+			transition "arena_navigation_curtain::backcolor" "0,0,0,1" "0,0,0,0" "380" ;
+			transition "arena_mode_selector::rect" "-36,0,640,480" "0,0,640,480" "340" ;
+		}
+
+		onTime 400 {
+			set "Desktop::arena_navigationAnimating" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	// Match launch: the selected card becomes a short ceremonial handoff before
+	// the server starts.  Framework timing owns the launch, so this animation is
+	// decorative and can never strand the player if a GUI fails to tick.
+	windowDef arena_launch_shade
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		"Desktop::arena_launchVisible"
+		backcolor	0,0,0,0
+		noevents	1
+	}
+
+	windowDef arena_launch_panel
+	{
+		rect		320,226,0,4
+		visible		"Desktop::arena_launchVisible"
+		backcolor	0.018,0.024,0.017,0.98
+		bordercolor	0.95,0.49,0.06,0.9
+		bordersize	1
+		noclip		0
+
+		windowDef arena_launch_levelshot
+		{
+			rect		1,1,494,218
+			background	"gui::arena_levelshot"
+			matcolor	0.3,0.34,0.24,0.52
+			noevents	1
+		}
+
+		windowDef arena_launch_inner_shade
+		{
+			rect		1,1,494,218
+			backcolor	0.01,0.015,0.01,0.68
+			noevents	1
+		}
+
+		windowDef arena_launch_kicker
+		{
+			rect		32,24,430,20
+			forecolor	0.95,0.72,0.25,1
+			text		"#str_42079"
+			textscale	0.2
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_launch_title
+		{
+			rect		24,56,446,48
+			forecolor	1,0.96,0.82,1
+			text		"gui::arena_selectedTitle"
+			textscale	0.44
+			textalign	1
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_launch_rule
+		{
+			rect		72,111,350,2
+			backcolor	0.95,0.49,0.06,0.9
+			noevents	1
+		}
+
+		windowDef arena_launch_gametype
+		{
+			rect		32,127,430,20
+			forecolor	0.86,0.9,0.76,1
+			text		"gui::arena_selectedGameType"
+			textscale	0.2
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_launch_map
+		{
+			rect		32,153,430,17
+			forecolor	0.63,0.69,0.52,1
+			text		"gui::arena_selectedMap"
+			textscale	0.16
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_launch_ready
+		{
+			rect		32,188,430,17
+			forecolor	0.95,0.49,0.06,1
+			text		"#str_42086"
+			textscale	0.16
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		// The panel grows from a pinpoint.  Hold its nested imagery and type
+		// behind this front layer until there is a real card to read, instead of
+		// clipping the title through the expanding edge.
+		windowDef arena_launch_entry_curtain
+		{
+			rect		1,1,494,218
+			backcolor	0,0,0,1
+			noevents	1
+		}
+
+		// This last child owns the exit, so nested title and levelshot content
+		// cannot outlive the panel's fade by a bright frame.
+		windowDef arena_launch_exit_curtain
+		{
+			rect		1,1,494,218
+			backcolor	0,0,0,0
+			noevents	1
+		}
+	}
+
+	windowDef arena_launch_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_launch_shade" ;
+			stopTransitions "arena_launch_panel" ;
+			stopTransitions "arena_launch_entry_curtain" ;
+			stopTransitions "arena_launch_exit_curtain" ;
+			set "arena_launch_panel::rect" "320,226,0,4" ;
+			set "arena_launch_panel::backcolor" "0.018,0.024,0.017,0.98" ;
+			set "arena_launch_panel::bordercolor" "0.95,0.49,0.06,0.9" ;
+			set "arena_launch_entry_curtain::backcolor" "0,0,0,1" ;
+			set "arena_launch_exit_curtain::backcolor" "0,0,0,0" ;
+			if ( "Desktop::arena_resultAction" == 2 ) {
+				set "arena_launch_shade::backcolor" "0,0,0,1" ;
+				transition "arena_launch_shade::backcolor" "0,0,0,1" "0,0,0,0.72" "320" ;
+			} else {
+				set "arena_launch_shade::backcolor" "0,0,0,0" ;
+				transition "arena_launch_shade::backcolor" "0,0,0,0" "0,0,0,0.72" "320" ;
+			}
+			transition "arena_launch_panel::rect" "320,226,0,4" "72,120,496,220" "480" ;
+		}
+
+		onTime 360 {
+			transition "arena_launch_entry_curtain::backcolor" "0,0,0,1" "0,0,0,0" "140" ;
+		}
+
+		onTime 760 {
+			transition "arena_launch_shade::backcolor" "0,0,0,0.72" "0,0,0,1" "500" ;
+			transition "arena_launch_exit_curtain::backcolor" "0,0,0,0" "0,0,0,1" "320" ;
+			transition "arena_launch_panel::backcolor" "0.018,0.024,0.017,0.98" "0.018,0.024,0.017,0" "380" ;
+			transition "arena_launch_panel::bordercolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "380" ;
+		}
+
+		onTime 1250 {
+			set "Desktop::arena_launchVisible" "0" ;
+		}
+	}
+
+	// Match result overlay.
+	windowDef arena_result_shade
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "gui::arena_result" != 0 )
+		backcolor	0,0,0,0
+	}
+
+	windowDef arena_result_panel
+	{
+		rect		320,240,0,0
+		visible		( "gui::arena_result" != 0 )
+		backcolor	0.025,0.032,0.024,0
+		bordercolor	0.48,0.53,0.29,0
+		bordersize	1
+		noclip		0
+
+		// Result reporting keeps its cinematic expansion, but now resolves into
+		// the same segmented stock shell used by the familiar confirmations.
+		windowDef arena_result_popup_bg
+		{
+			rect		0,0,396,298
+			visible		( "gui::arena_result" != 0 )
+			background	"gfx/guis/mainmenu/popup_bg"
+			matcolor	0.34,0.4,0.22,0.58
+			noevents	1
+		}
+
+		windowDef arena_result_popup_top
+		{
+			rect		0,0,396,19
+			visible		( "gui::arena_result" != 0 )
+			background	"gfx/guis/mainmenu/popup_top"
+			matcolor	0.6,0.68,0.34,0.76
+			noevents	1
+		}
+
+		windowDef arena_result_popup_mid
+		{
+			rect		0,19,396,79
+			visible		( "gui::arena_result" != 0 )
+			background	"gfx/guis/mainmenu/popup_mid"
+			matcolor	0.42,0.49,0.25,0.62
+			noevents	1
+		}
+
+		windowDef arena_result_popup_btm
+		{
+			rect		0,98,396,38
+			visible		( "gui::arena_result" != 0 )
+			background	"gfx/guis/mainmenu/popup_btm"
+			matcolor	0.6,0.68,0.34,0.76
+			noevents	1
+		}
+
+		windowDef arena_result_levelshot
+		{
+			rect		1,9,394,288
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			background	"gui::arena_levelshot"
+			matcolor	0.18,0.21,0.15,0.34
+			noevents	1
+		}
+
+		windowDef arena_result_levelshot_scan
+		{
+			rect		1,9,394,288
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			background	"gfx/guis/mainmenu/screen"
+			matcolor	0.42,0.48,0.29,0.12
+			noevents	1
+		}
+
+		windowDef arena_result_inner_shade
+		{
+			rect		1,9,394,288
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			backcolor	0.015,0.022,0.014,0.88
+			noevents	1
+		}
+
+		windowDef arena_result_win_accent
+		{
+			rect		1,1,394,8
+			visible		( "gui::arena_result" == 1 && "Desktop::arena_resultPhase" >= 1 )
+			backcolor	0.5,0.8,0.28,1
+			noevents	1
+		}
+
+		windowDef arena_result_loss_accent
+		{
+			rect		1,1,394,8
+			visible		( ( "gui::arena_result" == 2 || "gui::arena_result" == 3 ) && "Desktop::arena_resultPhase" >= 1 )
+			backcolor	0.82,0.2,0.07,1
+			noevents	1
+		}
+
+		windowDef arena_result_draw_accent
+		{
+			rect		1,1,394,8
+			visible		( "gui::arena_result" == 4 && "Desktop::arena_resultPhase" >= 1 )
+			backcolor	0.92,0.62,0.12,1
+			noevents	1
+		}
+
+		windowDef arena_result_kicker
+		{
+			rect		24,20,348,18
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			forecolor	0.62,0.68,0.51,1
+			text		"#str_42080"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_title
+		{
+			rect		24,42,348,37
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			forecolor	0.98,0.95,0.82,1
+			text		"gui::arena_resultTitle"
+			textscale	0.42
+			textalign	1
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_result_match_name
+		{
+			rect		32,79,332,17
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			forecolor	0.9,0.92,0.82,1
+			text		"gui::arena_resultMatchName"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_rule
+		{
+			rect		40,101,316,2
+			visible		( "Desktop::arena_resultPhase" >= 1 )
+			backcolor	0.95,0.49,0.06,0.9
+			noevents	1
+		}
+
+		windowDef arena_result_message
+		{
+			rect		36,112,324,48
+			visible		( "gui::arena_result" != 3 && "Desktop::arena_resultPhase" >= 2 )
+			forecolor	0.76,0.8,0.68,1
+			text		"gui::arena_resultMessage"
+			textscale	0.19
+			textalign	1
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		// A bot-population failure is the one result with long diagnostics and
+		// no score ledger.  Let that message use the freed lower panel space.
+		windowDef arena_result_abort_message
+		{
+			rect		36,112,324,92
+			visible		( "gui::arena_result" == 3 && "Desktop::arena_resultPhase" >= 2 )
+			forecolor	0.76,0.8,0.68,1
+			text		"gui::arena_resultMessage"
+			textscale	0.19
+			textalign	1
+			font		"fonts/lowpixel"
+			wrap		1
+			noevents	1
+		}
+
+		windowDef arena_result_score_label
+		{
+			rect		48,170,92,17
+			visible		( "gui::arena_resultHasScore" == 1 && "Desktop::arena_resultPhase" >= 2 )
+			forecolor	0.58,0.64,0.47,1
+			text		"#str_42018"
+			textscale	0.16
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_score
+		{
+			rect		145,168,203,20
+			visible		( "gui::arena_resultHasScore" == 1 && "Desktop::arena_resultPhase" >= 2 )
+			forecolor	0.95,0.72,0.25,1
+			text		"gui::arena_resultScore"
+			textscale	0.21
+			textalign	2
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_unlock_label
+		{
+			rect		48,194,92,17
+			visible		( "gui::arena_resultHasUnlock" == 1 && "Desktop::arena_resultPhase" >= 3 )
+			forecolor	0.58,0.64,0.47,1
+			text		"#str_42019"
+			textscale	0.16
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_unlock
+		{
+			rect		145,192,203,22
+			visible		( "gui::arena_resultHasUnlock" == 1 && "Desktop::arena_resultPhase" >= 3 )
+			forecolor	0.88,0.96,0.73,1
+			text		"gui::arena_resultUnlock"
+			textscale	0.18
+			textalign	2
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_campaign_complete
+		{
+			rect		48,221,300,21
+			visible		( "gui::arena_campaignComplete" == 1 && "Desktop::arena_resultPhase" >= 3 )
+			backcolor	0.12,0.24,0.08,0.95
+			bordercolor	0.5,0.74,0.28,1
+			bordersize	1
+			forecolor	0.88,1,0.7,1
+			text		"#str_42026"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_retry
+		{
+			rect		48,255,144,29
+			visible		( "gui::arena_result" == 2 && "gui::arena_resultCanRetry" == 1 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42033"
+			textscale	0.18
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "2" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+
+		windowDef arena_result_replay
+		{
+			rect		48,255,144,29
+			visible		( ( "gui::arena_result" == 1 || "gui::arena_result" == 4 ) && "gui::arena_resultCanRetry" == 1 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.2,0.16,0.055,0.98
+			bordercolor	0.66,0.5,0.18,1
+			bordersize	1
+			forecolor	0.94,0.9,0.76,1
+			text		"#str_42076"
+			textscale	0.18
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.4,0.25,0.055,1" ;
+				set "bordercolor" "0.95,0.65,0.18,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.2,0.16,0.055,0.98" ;
+				set "bordercolor" "0.66,0.5,0.18,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "2" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+
+		windowDef arena_result_next
+		{
+			rect		204,255,144,29
+			visible		( "gui::arena_result" == 1 && "gui::arena_campaignComplete" == 0 && "gui::arena_resultCanRetry" == 1 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42032"
+			textscale	0.18
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "1" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+
+		windowDef arena_result_return
+		{
+			rect		204,255,144,29
+			visible		( ( "gui::arena_result" == 2 || "gui::arena_result" == 4 || ( "gui::arena_result" == 1 && "gui::arena_campaignComplete" == 1 ) ) && "gui::arena_resultCanRetry" == 1 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42034"
+			textscale	0.16
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "1" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+
+		windowDef arena_result_next_full
+		{
+			rect		48,255,300,29
+			visible		( "gui::arena_result" == 1 && "gui::arena_campaignComplete" == 0 && "gui::arena_resultCanRetry" == 0 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42032"
+			textscale	0.22
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "1" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+
+		windowDef arena_result_return_full
+		{
+			rect		48,255,300,29
+			visible		( ( "gui::arena_result" == 2 || "gui::arena_result" == 4 || ( "gui::arena_result" == 1 && "gui::arena_campaignComplete" == 1 ) ) && "gui::arena_resultCanRetry" == 0 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42034"
+			textscale	0.2
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "1" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+
+		windowDef arena_result_continue_only
+		{
+			rect		48,255,300,29
+			visible		( "gui::arena_result" == 3 && "Desktop::arena_resultPhase" >= 4 )
+			backcolor	0.34,0.19,0.035,0.98
+			bordercolor	0.95,0.49,0.06,1
+			bordersize	1
+			forecolor	1,0.93,0.75,1
+			text		"#str_42025"
+			textscale	0.22
+			textalign	1
+			font		"fonts/marine"
+
+			onMouseEnter {
+				set "backcolor" "0.58,0.3,0.035,1" ;
+				set "bordercolor" "1,0.7,0.2,1" ;
+				set "cmd" "play main_menu_mouseover" ;
+			}
+
+			onMouseExit {
+				set "backcolor" "0.34,0.19,0.035,0.98" ;
+				set "bordercolor" "0.95,0.49,0.06,1" ;
+			}
+
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "Desktop::arena_resultAction" "1" ;
+				set "Desktop::arena_resultReady" "0" ;
+				resetTime "arena_result_exit_timeline" "0" ;
+			}
+		}
+	}
+
+	windowDef arena_result_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_result_curtain" ;
+			stopTransitions "arena_result_shade" ;
+			stopTransitions "arena_result_panel" ;
+			set "Desktop::arena_resultPhase" "0" ;
+			set "Desktop::arena_resultReady" "0" ;
+			set "arena_result_curtain::backcolor" "0,0,0,1" ;
+			set "arena_result_shade::backcolor" "0,0,0,0" ;
+			set "arena_result_panel::rect" "320,240,0,0" ;
+			set "arena_result_panel::backcolor" "0.025,0.032,0.024,0" ;
+			set "arena_result_panel::bordercolor" "0.48,0.53,0.29,0" ;
+			transition "arena_result_shade::backcolor" "0,0,0,0" "0,0,0,0.82" "420" ;
+			transition "arena_result_panel::rect" "320,240,0,0" "122,91,396,298" "520" ;
+			transition "arena_result_panel::backcolor" "0.025,0.032,0.024,0" "0.025,0.032,0.024,0.99" "420" ;
+			transition "arena_result_panel::bordercolor" "0.48,0.53,0.29,0" "0.48,0.53,0.29,1" "420" ;
+			transition "arena_result_curtain::backcolor" "0,0,0,1" "0,0,0,0" "720" ;
+		}
+
+		onTime 260 {
+			set "Desktop::arena_resultPhase" "1" ;
+		}
+
+		onTime 610 {
+			set "Desktop::arena_resultPhase" "2" ;
+		}
+
+		onTime 930 {
+			set "Desktop::arena_resultPhase" "3" ;
+		}
+
+		onTime 1260 {
+			set "Desktop::arena_resultPhase" "4" ;
+			set "Desktop::arena_resultReady" "1" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	windowDef arena_result_exit_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			set "Desktop::arena_resultReady" "0" ;
+			setfocus "arena_transition_blocker" ;
+			stopTransitions "arena_result_curtain" ;
+			transition "arena_result_curtain::backcolor" "$arena_result_curtain::backcolor" "0,0,0,1" "180" ;
+		}
+
+		onTime 180 {
+			set "Desktop::arena_resultPhase" "0" ;
+			transition "arena_result_panel::rect" "$arena_result_panel::rect" "320,240,0,0" "420" ;
+			transition "arena_result_panel::backcolor" "$arena_result_panel::backcolor" "0.025,0.032,0.024,0" "340" ;
+			transition "arena_result_panel::bordercolor" "$arena_result_panel::bordercolor" "0.48,0.53,0.29,0" "340" ;
+			transition "arena_result_shade::backcolor" "$arena_result_shade::backcolor" "0,0,0,1" "360" ;
+		}
+
+		onTime 620 {
+			if ( "Desktop::arena_resultAction" == 2 ) {
+				set "cmd" "arenaRetry" ;
+			} else {
+				set "cmd" "arenaDismissResult" ;
+			}
+		}
+	}
+
+	// Drawn after the report so the held engine wipe can be released into an
+	// identical black frame; the complete ledger is then revealed beneath it.
+	windowDef arena_result_curtain
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "gui::arena_result" != 0 )
+		backcolor	0,0,0,1
+		noevents	1
+	}
+
+	// After a newly recorded win the result panel gives way to the actual
+	// campaign board.  The exact completed match, tier gate, and progress delta
+	// are highlighted instead of silently appearing in their final state.
+	windowDef arena_progress_update_shade
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		"Desktop::arena_progressAnimating"
+		backcolor	0,0,0,0
+		noevents	1
+	}
+
+	windowDef arena_progress_tier_pulse
+	{
+		rect		18,( 87 + ( ( "gui::arena_resultTier" + "gui::arena_resultUnlockedTier" ) * 38 ) ),132,34
+		visible		( "Desktop::arena_progressAnimating" == 1 && "gui::arena_progressChanged" == 1 && "gui::arena_resultNewlyCompleted" == 1 )
+		backcolor	0.55,0.82,0.3,0
+		bordercolor	0.72,1,0.42,0
+		bordersize	2
+		noevents	1
+	}
+
+	windowDef arena_progress_match_pulse
+	{
+		rect		158,( 87 + ( "gui::arena_resultMatch" * 46 ) ),146,40
+		visible		( "Desktop::arena_progressAnimating" == 1 && "gui::arena_progressChanged" == 1 && "gui::arena_resultUnlockedTier" == 0 )
+		backcolor	0.55,0.82,0.3,0
+		bordercolor	0.72,1,0.42,0
+		bordersize	2
+		noevents	1
+	}
+
+	// When the third qualifier opens a boss fight, light the newly available
+	// boss card as a second beat after recording the completed qualifier.
+	windowDef arena_progress_boss_pulse
+	{
+		rect		158,225,146,40
+		visible		( "Desktop::arena_progressAnimating" == 1 && "gui::arena_resultUnlockedBoss" == 1 )
+		backcolor	0.95,0.49,0.06,0
+		bordercolor	1,0.74,0.24,0
+		bordersize	2
+		noevents	1
+	}
+
+	windowDef arena_progress_gain
+	{
+		rect		( 380 + ( "gui::arena_previousCampaignProgress" * 12 ) ),52,( ( "gui::arenaCampaignProgress" - "gui::arena_previousCampaignProgress" ) * 12 ),9
+		visible		( "Desktop::arena_progressAnimating" == 1 && "gui::arena_progressChanged" == 1 )
+		backcolor	0.72,1,0.42,0
+		noevents	1
+	}
+
+	windowDef arena_progress_update_panel
+	{
+		rect		320,231,0,0
+		visible		"Desktop::arena_progressAnimating"
+		backcolor	0.018,0.027,0.017,0
+		bordercolor	0.55,0.82,0.3,0
+		bordersize	1
+		noclip		0
+
+		// Progress remains a quick modern reveal, framed by the same legacy
+		// slices so every Arena modal belongs to one visual family.
+		windowDef arena_progress_popup_bg
+		{
+			rect		0,0,420,124
+			background	"gfx/guis/mainmenu/popup_bg"
+			matcolor	0.24,0.42,0.13,0.58
+			noevents	1
+		}
+
+		windowDef arena_progress_popup_top
+		{
+			rect		0,0,420,19
+			background	"gfx/guis/mainmenu/popup_top"
+			matcolor	0.48,0.78,0.27,0.72
+			noevents	1
+		}
+
+		windowDef arena_progress_popup_mid
+		{
+			rect		0,19,420,67
+			background	"gfx/guis/mainmenu/popup_mid"
+			matcolor	0.3,0.54,0.17,0.58
+			noevents	1
+		}
+
+		windowDef arena_progress_popup_btm
+		{
+			rect		0,86,420,38
+			background	"gfx/guis/mainmenu/popup_btm"
+			matcolor	0.48,0.78,0.27,0.72
+			noevents	1
+		}
+
+		windowDef arena_progress_update_accent
+		{
+			rect		1,1,418,7
+			backcolor	0.55,0.82,0.3,0.95
+			noevents	1
+		}
+
+		windowDef arena_progress_update_title
+		{
+			rect		24,22,372,22
+			forecolor	0.84,1,0.63,1
+			text		"#str_42081"
+			textscale	0.23
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_progress_update_match
+		{
+			rect		20,52,380,31
+			forecolor	1,0.96,0.82,1
+			text		"gui::arena_resultMatchName"
+			textscale	0.3
+			textalign	1
+			font		"fonts/marine"
+			noevents	1
+		}
+
+		windowDef arena_progress_update_recorded
+		{
+			rect		24,87,372,17
+			visible		( "gui::arena_resultUnlockedBoss" == 0 && "gui::arena_resultUnlockedTier" == 0 && "gui::arena_resultUnlockedCampaign" == 0 )
+			forecolor	0.72,0.8,0.62,1
+			text		"#str_42082"
+			textscale	0.17
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_progress_update_next
+		{
+			rect		24,105,372,14
+			visible		( "gui::arena_resultUnlockedBoss" == 0 && "gui::arena_resultUnlockedTier" == 0 && "gui::arena_resultUnlockedCampaign" == 0 )
+			forecolor	0.95,0.72,0.25,1
+			text		"#str_42083"
+			textscale	0.13
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_progress_update_boss
+		{
+			rect		24,91,372,18
+			visible		"gui::arena_resultUnlockedBoss"
+			forecolor	0.95,0.72,0.25,1
+			text		"#str_42045"
+			textscale	0.18
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_progress_update_tier
+		{
+			rect		24,91,372,18
+			visible		"gui::arena_resultUnlockedTier"
+			forecolor	0.95,0.72,0.25,1
+			text		"#str_42046"
+			textscale	0.18
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_progress_update_campaign
+		{
+			rect		24,91,372,18
+			visible		"gui::arena_resultUnlockedCampaign"
+			forecolor	0.84,1,0.63,1
+			text		"#str_42047"
+			textscale	0.18
+			textalign	1
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		// Like the launch card, the toast expands from its centre.  A short
+		// front layer keeps the copied text from being visibly clipped until the
+		// legacy shell has reached a readable size.
+		windowDef arena_progress_entry_curtain
+		{
+			rect		0,0,420,124
+			backcolor	0,0,0,1
+			noevents	1
+		}
+
+		// Like the result report, the small unlock card closes behind its own
+		// final black layer before its parent begins to collapse.
+		windowDef arena_progress_exit_curtain
+		{
+			rect		0,0,420,124
+			backcolor	0,0,0,0
+			noevents	1
+		}
+	}
+
+	windowDef arena_progress_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_progress_update_shade" ;
+			stopTransitions "arena_progress_update_panel" ;
+			stopTransitions "arena_progress_entry_curtain" ;
+			stopTransitions "arena_progress_tier_pulse" ;
+			stopTransitions "arena_progress_match_pulse" ;
+			stopTransitions "arena_progress_boss_pulse" ;
+			stopTransitions "arena_progress_gain" ;
+			stopTransitions "arena_progress_exit_curtain" ;
+			set "arena_progress_update_shade::backcolor" "0,0,0,1" ;
+			set "arena_progress_update_panel::rect" "320,231,0,0" ;
+			set "arena_progress_update_panel::backcolor" "0.018,0.027,0.017,0" ;
+			set "arena_progress_update_panel::bordercolor" "0.55,0.82,0.3,0" ;
+			set "arena_progress_tier_pulse::backcolor" "0.55,0.82,0.3,0" ;
+			set "arena_progress_tier_pulse::bordercolor" "0.72,1,0.42,0" ;
+			set "arena_progress_match_pulse::backcolor" "0.55,0.82,0.3,0" ;
+			set "arena_progress_match_pulse::bordercolor" "0.72,1,0.42,0" ;
+			set "arena_progress_boss_pulse::backcolor" "0.95,0.49,0.06,0" ;
+			set "arena_progress_boss_pulse::bordercolor" "1,0.74,0.24,0" ;
+			set "arena_progress_gain::backcolor" "0.72,1,0.42,0" ;
+			set "arena_progress_entry_curtain::backcolor" "0,0,0,1" ;
+			set "arena_progress_exit_curtain::backcolor" "0,0,0,0" ;
+			transition "arena_progress_update_shade::backcolor" "0,0,0,1" "0,0,0,0.48" "420" ;
+			transition "arena_progress_update_panel::rect" "320,231,0,0" "110,169,420,124" "480" ;
+			transition "arena_progress_update_panel::backcolor" "0.018,0.027,0.017,0" "0.018,0.027,0.017,0.98" "420" ;
+			transition "arena_progress_update_panel::bordercolor" "0.55,0.82,0.3,0" "0.55,0.82,0.3,1" "420" ;
+		}
+
+		onTime 360 {
+			transition "arena_progress_entry_curtain::backcolor" "0,0,0,1" "0,0,0,0" "140" ;
+		}
+
+		// Let the report be read before it clears.  The target card flashes only
+		// after the toast has folded away, so it cannot be hidden behind its own
+		// progress panel on later match rows.
+		onTime 900 {
+			transition "arena_progress_exit_curtain::backcolor" "0,0,0,0" "0,0,0,1" "140" ;
+		}
+
+		onTime 1040 {
+			transition "arena_progress_update_panel::backcolor" "$arena_progress_update_panel::backcolor" "0.018,0.027,0.017,0" "200" ;
+			transition "arena_progress_update_panel::bordercolor" "$arena_progress_update_panel::bordercolor" "0.55,0.82,0.3,0" "200" ;
+			transition "arena_progress_update_panel::rect" "$arena_progress_update_panel::rect" "320,231,0,0" "220" ;
+			transition "arena_progress_update_shade::backcolor" "$arena_progress_update_shade::backcolor" "0,0,0,0" "220" ;
+		}
+
+		onTime 1080 {
+			transition "arena_progress_tier_pulse::backcolor" "0.55,0.82,0.3,0" "0.55,0.82,0.3,0.28" "200" ;
+			transition "arena_progress_tier_pulse::bordercolor" "0.72,1,0.42,0" "0.72,1,0.42,1" "200" ;
+			transition "arena_progress_match_pulse::backcolor" "0.55,0.82,0.3,0" "0.55,0.82,0.3,0.28" "200" ;
+			transition "arena_progress_match_pulse::bordercolor" "0.72,1,0.42,0" "0.72,1,0.42,1" "200" ;
+			transition "arena_progress_gain::backcolor" "0.72,1,0.42,0" "0.72,1,0.42,1" "220" ;
+		}
+
+		onTime 1200 {
+			transition "arena_progress_boss_pulse::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.34" "160" ;
+			transition "arena_progress_boss_pulse::bordercolor" "1,0.74,0.24,0" "1,0.74,0.24,1" "160" ;
+		}
+
+		onTime 1360 {
+			transition "arena_progress_tier_pulse::backcolor" "0.55,0.82,0.3,0.28" "0.55,0.82,0.3,0" "180" ;
+			transition "arena_progress_tier_pulse::bordercolor" "0.72,1,0.42,1" "0.72,1,0.42,0" "180" ;
+			transition "arena_progress_match_pulse::backcolor" "0.55,0.82,0.3,0.28" "0.55,0.82,0.3,0" "180" ;
+			transition "arena_progress_match_pulse::bordercolor" "0.72,1,0.42,1" "0.72,1,0.42,0" "180" ;
+			transition "arena_progress_boss_pulse::backcolor" "0.95,0.49,0.06,0.34" "0.95,0.49,0.06,0" "180" ;
+			transition "arena_progress_boss_pulse::bordercolor" "1,0.74,0.24,1" "1,0.74,0.24,0" "180" ;
+			transition "arena_progress_gain::backcolor" "0.72,1,0.42,1" "0.72,1,0.42,0" "180" ;
+		}
+
+		onTime 1540 {
+			set "Desktop::arena_progressAnimating" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	// Losses, draws, and replays have no progression delta to celebrate, but
+	// still return through a deliberate black-to-browser reveal instead of
+	// dropping the result overlay in a single frame.
+	windowDef arena_browser_reveal_curtain
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		"Desktop::arena_browserRevealing"
+		backcolor	0,0,0,1
+		noevents	1
+	}
+
+	windowDef arena_browser_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_browser_reveal_curtain" ;
+			set "arena_browser_reveal_curtain::backcolor" "0,0,0,1" ;
+			transition "arena_browser_reveal_curtain::backcolor" "0,0,0,1" "0,0,0,0" "720" ;
+		}
+
+		onTime 760 {
+			set "Desktop::arena_browserRevealing" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	// Destructive progress reset keeps the familiar Quake 4 confirmation shell,
+	// then gives it a short modern frame-by-frame reveal.  The stock slices make
+	// the warning feel native to the menu while the red accent preserves its
+	// stronger campaign-specific meaning.
+	windowDef arena_reset_shade
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::arena_resetPresentation" != 0 )
+		backcolor	0,0,0,0
+		noevents	1
+	}
+
+	windowDef arena_reset_panel
+	{
+		rect		0,0,640,480
+		visible		( "Desktop::arena_resetPresentation" != 0 )
+		noclip		1
+
+		// The full stock shell expands from its own centre, so the warning grows
+		// across both axes without stretching the fixed campaign copy and buttons.
+		// Its smoked olive body belongs to the stock popup family; only the thin
+		// warning stripe and destructive action carry the Arena danger colour.
+		windowDef arena_reset_shell
+		{
+			rect		140,33,360,400
+			noclip		0
+
+			windowDef arena_reset_bg
+			{
+				rect		0,0,360,400
+				background	"gfx/guis/mainmenu/popup_bg"
+				matcolor	0.07,0.085,0.045,0
+				noevents	1
+			}
+
+			windowDef arena_reset_top
+			{
+				rect		0,118,360,19
+				background	"gfx/guis/mainmenu/popup_top"
+				matcolor	0.38,0.32,0.12,0
+				noevents	1
+			}
+
+			windowDef arena_reset_mid
+			{
+				rect		0,137,360,118
+				background	"gfx/guis/mainmenu/popup_mid"
+				matcolor	0.16,0.14,0.055,0
+				noevents	1
+			}
+
+			windowDef arena_reset_btm
+			{
+				rect		0,255,360,38
+				background	"gfx/guis/mainmenu/popup_btm"
+				matcolor	0.38,0.32,0.12,0
+				noevents	1
+			}
+
+			windowDef arena_reset_accent
+			{
+				rect		0,118,360,3
+				backcolor	0.95,0.31,0.08,0
+				noevents	1
+			}
+		}
+
+		windowDef arena_reset_content
+		{
+			rect		0,0,640,480
+			visible		( "Desktop::arena_resetContentVisible" == 1 )
+			noclip		1
+
+			windowDef arena_reset_kicker
+			{
+				rect		160,124,300,14
+				forecolor	0.76,0.7,0.55,1
+				text		"#str_42011"
+				textscale	0.16
+				font		"fonts/lowpixel"
+				noevents	1
+			}
+
+			windowDef arena_reset_title
+			{
+				rect		160,145,316,31
+				forecolor	1,0.9,0.78,1
+				text		"#str_42072"
+				textscale	0.24
+				font		"fonts/marine"
+				textspacing	-1
+				wrap		1
+				noevents	1
+			}
+
+			windowDef arena_reset_message
+			{
+				rect		162,191,312,58
+				forecolor	0.9,0.88,0.78,1
+				text		"#str_42073"
+				textscale	0.18
+				font		"fonts/lowpixel"
+				wrap		1
+				noevents	1
+			}
+
+			windowDef arena_reset_cancel
+			{
+				rect		160,259,132,30
+				background	"gfx/guis/mainmenu/b4_light"
+				matcolor	0.545,0.588,0.294,0.4
+				forecolor	0.95,0.95,0.88,1
+				text		"#str_42074"
+				textscale	0.23
+				textalign	1
+				font		"fonts/marine"
+
+				onMouseEnter {
+					set "matcolor" "0.95,0.49,0.06,0.92" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+
+				onMouseExit {
+					set "matcolor" "0.545,0.588,0.294,0.4" ;
+				}
+
+				onAction {
+					set "cmd" "play main_menu_selection" ;
+					namedevent "arenaResetCancelTransition" ;
+				}
+			}
+
+			windowDef arena_reset_cancel_corner
+			{
+				rect		170,267,11,11
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.564,0.603,0.286,0.65
+				noevents	1
+			}
+
+			windowDef arena_reset_confirm
+			{
+				rect		348,259,132,30
+				background	"gfx/guis/mainmenu/b4_light"
+				matcolor	0.82,0.24,0.07,0.72
+				forecolor	1,0.9,0.78,1
+				text		"#str_42075"
+				textscale	0.22
+				textalign	1
+				font		"fonts/marine"
+
+				onMouseEnter {
+					set "matcolor" "1,0.46,0.16,0.98" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+
+				onMouseExit {
+					set "matcolor" "0.82,0.24,0.07,0.72" ;
+				}
+
+				onAction {
+					set "cmd" "play main_menu_selection" ;
+					namedevent "arenaResetConfirmTransition" ;
+				}
+			}
+
+			windowDef arena_reset_confirm_corner
+			{
+				rect		358,267,11,11
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.95,0.38,0.1,0.8
+				noevents	1
+			}
+		}
+
+		// A late GUI tick must never let fixed copy outrun the expanding shell.
+		// This smoked-olive cover lifts only after the shell has reached its full
+		// legacy silhouette, then the existing content slide supplies the detail.
+		windowDef arena_reset_entry_curtain
+		{
+			rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+			visible		( "Desktop::arena_resetPresentation" == 1 && "Desktop::arena_resetAnimating" == 1 )
+			backcolor	0.018,0.026,0.014,0
+			noevents	1
+		}
+
+		// This is deliberately a full-panel final layer.  It reaches opaque black
+		// before the shell folds away, preventing the old empty-popup flash on
+		// cancel, confirm, and externally cleared reset requests.
+		windowDef arena_reset_exit_curtain
+		{
+			rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+			visible		( "Desktop::arena_resetAnimating" == 1 )
+			backcolor	0,0,0,0
+			noevents	1
+		}
+	}
+
+	windowDef arena_reset_reveal_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_reset_shade" ;
+			stopTransitions "arena_reset_shell" ;
+			stopTransitions "arena_reset_bg" ;
+			stopTransitions "arena_reset_top" ;
+			stopTransitions "arena_reset_mid" ;
+			stopTransitions "arena_reset_btm" ;
+			stopTransitions "arena_reset_accent" ;
+			stopTransitions "arena_reset_content" ;
+			stopTransitions "arena_reset_entry_curtain" ;
+			stopTransitions "arena_reset_exit_curtain" ;
+			set "arena_reset_shade::backcolor" "0,0,0,0" ;
+			set "arena_reset_shell::rect" "320,233,0,0" ;
+			set "arena_reset_bg::matcolor" "0.07,0.085,0.045,0" ;
+			set "arena_reset_top::matcolor" "0.38,0.32,0.12,0" ;
+			set "arena_reset_mid::matcolor" "0.16,0.14,0.055,0" ;
+			set "arena_reset_btm::matcolor" "0.38,0.32,0.12,0" ;
+			set "arena_reset_accent::backcolor" "0.95,0.31,0.08,0" ;
+			set "arena_reset_entry_curtain::backcolor" "0.018,0.026,0.014,1" ;
+			set "arena_reset_exit_curtain::backcolor" "0,0,0,0" ;
+			set "arena_reset_content::rect" "0,12,640,480" ;
+			set "Desktop::arena_resetContentVisible" "0" ;
+			transition "arena_reset_shade::backcolor" "0,0,0,0" "0,0,0,0.86" "180" ;
+			transition "arena_reset_shell::rect" "320,233,0,0" "140,33,360,400" "260" ;
+			transition "arena_reset_bg::matcolor" "0.07,0.085,0.045,0" "0.07,0.085,0.045,0.96" "240" ;
+			transition "arena_reset_top::matcolor" "0.38,0.32,0.12,0" "0.38,0.32,0.12,0.8" "210" ;
+			transition "arena_reset_mid::matcolor" "0.16,0.14,0.055,0" "0.16,0.14,0.055,0.82" "240" ;
+			transition "arena_reset_btm::matcolor" "0.38,0.32,0.12,0" "0.38,0.32,0.12,0.8" "270" ;
+			transition "arena_reset_accent::backcolor" "0.95,0.31,0.08,0" "0.95,0.31,0.08,1" "260" ;
+		}
+
+		onTime 260 {
+			set "Desktop::arena_resetContentVisible" "1" ;
+			transition "arena_reset_entry_curtain::backcolor" "0.018,0.026,0.014,1" "0.018,0.026,0.014,0" "150" ;
+			transition "arena_reset_content::rect" "0,12,640,480" "0,0,640,480" "140" ;
+		}
+
+		onTime 500 {
+			set "Desktop::arena_resetAnimating" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	windowDef arena_reset_exit_timeline
+	{
+		rect		0,0,1,1
+		visible		1
+		notime		1
+
+		onTime 0 {
+			stopTransitions "arena_reset_entry_curtain" ;
+			stopTransitions "arena_reset_exit_curtain" ;
+			set "arena_reset_entry_curtain::backcolor" "0.018,0.026,0.014,0" ;
+			set "arena_reset_exit_curtain::backcolor" "0,0,0,0" ;
+			transition "arena_reset_exit_curtain::backcolor" "0,0,0,0" "0,0,0,1" "120" ;
+		}
+
+		onTime 140 {
+			set "Desktop::arena_resetContentVisible" "0" ;
+			// State 2 keeps the shell and its final curtain alive while a C++ reset
+			// command clears gui::arena_resetConfirm below the opaque cover.
+			set "Desktop::arena_resetPresentation" "2" ;
+			transition "arena_reset_shell::rect" "$arena_reset_shell::rect" "320,233,0,0" "260" ;
+			transition "arena_reset_shade::backcolor" "$arena_reset_shade::backcolor" "0,0,0,0" "260" ;
+			transition "arena_reset_bg::matcolor" "$arena_reset_bg::matcolor" "0.07,0.085,0.045,0" "220" ;
+			transition "arena_reset_top::matcolor" "$arena_reset_top::matcolor" "0.38,0.32,0.12,0" "180" ;
+			transition "arena_reset_mid::matcolor" "$arena_reset_mid::matcolor" "0.16,0.14,0.055,0" "220" ;
+			transition "arena_reset_btm::matcolor" "$arena_reset_btm::matcolor" "0.38,0.32,0.12,0" "240" ;
+			transition "arena_reset_accent::backcolor" "$arena_reset_accent::backcolor" "0.95,0.31,0.08,0" "200" ;
+		}
+
+		onTime 400 {
+			if ( "Desktop::arena_resetRequested" == 1 ) {
+				set "Desktop::arena_resetAwaitingClear" "1" ;
+				set "cmd" "arenaResetCancel" ;
+			} else if ( "Desktop::arena_resetRequested" == 2 ) {
+				set "Desktop::arena_resetAwaitingClear" "1" ;
+				set "cmd" "arenaResetConfirm" ;
+			}
+			transition "arena_reset_exit_curtain::backcolor" "0,0,0,1" "0,0,0,0" "180" ;
+		}
+
+		onTime 600 {
+			set "Desktop::arena_resetPresentation" "0" ;
+			set "Desktop::arena_resetAnimating" "0" ;
+			set "Desktop::arena_resetRequested" "0" ;
+			set "Desktop::arena_focusContext" "-1" ;
+		}
+	}
+
+	// Sits above every actionable control while a cinematic transition owns the
+	// screen.  Keyboard/controller focus is parked here as well, preventing a
+	// held confirm key from skipping a reveal or accidentally replaying a match.
+	windowDef arena_transition_blocker
+	{
+		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
+		visible		( "Desktop::arena_navigationAnimating" == 1 || "Desktop::arena_resetAnimating" == 1 || "Desktop::arena_launchVisible" == 1 || "Desktop::arena_progressAnimating" == 1 || "Desktop::arena_browserRevealing" == 1 || ( "gui::arena_result" != 0 && "Desktop::arena_resultReady" == 0 ) )
+		backcolor	0,0,0,0
+
+		onAction {
+			set "Desktop::arena_focusContext" "12" ;
+		}
+
+		onESC {
+			set "Desktop::arena_focusContext" "12" ;
+		}
+	}
+}

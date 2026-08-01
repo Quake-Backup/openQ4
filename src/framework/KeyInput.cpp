@@ -56,7 +56,7 @@ keyname_t keynames[] =
 	{"RIGHTARROW",		K_RIGHTARROW,		"#str_07026"},
 
 	{"ALT",				K_ALT,				"#str_07027"},
-	{"RIGHTALT",		K_RIGHT_ALT,		"#str_07027"},
+	{"RIGHTALT",		K_RIGHT_ALT,		"#str_107651"},
 	{"LEFTALT",			K_ALT,				"#str_07027"},
 	{"CTRL",			K_CTRL,				"#str_07028"},
 	{"LEFTCTRL",		K_CTRL,				"#str_07028"},
@@ -199,6 +199,13 @@ public:
 
 bool		key_overstrikeMode = false;
 idKey *		keys = NULL;
+
+enum keyInputFamily_t {
+	KEY_INPUT_FAMILY_DESKTOP,
+	KEY_INPUT_FAMILY_CONTROLLER
+};
+
+static keyInputFamily_t key_lastInputFamily = KEY_INPUT_FAMILY_DESKTOP;
 
 static bool Key_IsValidKeyNum( int keynum ) {
 	return keys != NULL && keynum >= 0 && keynum < MAX_KEYS;
@@ -488,6 +495,33 @@ int idKeyInput::GetUsercmdAction( int keynum ) {
 	return keys[ keynum ].usercmdAction;
 }
 
+static bool Key_IsControllerKey( int keynum ) {
+	const char *keyCode = idKeyInput::KeyNumToString( keynum, false );
+	return idStr::Icmpn( keyCode, "JOY", 3 ) == 0 || idStr::Icmpn( keyCode, "AUX", 3 ) == 0;
+}
+
+static bool Key_IsMouseKey( int keynum ) {
+	return keynum >= K_MOUSE1 && keynum <= K_MWHEELUP;
+}
+
+static idStr &Key_NextBindingPresentationBuffer( void ) {
+	// Several shipped HUD strings request two bindings in one va() call.  A
+	// rotating set keeps those values independent while idStr avoids fixed-buffer
+	// truncation in both compact prompts and settings rows.
+	static idStr buffers[16];
+	static int bufferIndex = 0;
+	idStr &result = buffers[bufferIndex++ & 15];
+	result.Clear();
+	return result;
+}
+
+static void Key_AppendBindingPresentation( idStr &result, int keynum ) {
+	if ( result.Length() > 0 ) {
+		result.Append( common->GetLanguageDict()->GetString( "#str_07183" ) );
+	}
+	result.Append( va( "^ik%02x", keynum & 0xff ) );
+}
+
 /*
 ===================
 Key_Unbind_f
@@ -638,25 +672,88 @@ returns the localized name of the key for the binding
 ============
 */
 const char *idKeyInput::KeysFromBinding( const char *bind ) {
-	int i;
-	static char keyName[MAX_STRING_CHARS];
+	// GUI text understands ^ikHH as a procedural key presentation, where HH is
+	// the full eight-bit id key number.  Runtime hints deliberately show one key
+	// from the device family the player used most recently; presenting every
+	// persistent desktop and controller binding makes short HUD prompts noisy.
+	idStr &keyName = Key_NextBindingPresentationBuffer();
+	int firstKeyboard = -1;
+	int firstMouse = -1;
+	int firstController = -1;
 
-	keyName[0] = '\0';
 	if ( bind && *bind ) {
-		for ( i = 0; i < MAX_KEYS; i++ ) {
+		for ( int i = 0; i < MAX_KEYS; i++ ) {
 			if ( BindingsEquivalent( keys[i].binding.c_str(), bind ) ) {
-				if ( keyName[0] != '\0' ) {
-					idStr::Append( keyName, sizeof( keyName ), common->GetLanguageDict()->GetString( "#str_07183" ) );
-				} 
-				idStr::Append( keyName, sizeof( keyName ), KeyNumToString( i, true ) );
+				if ( Key_IsControllerKey( i ) ) {
+					if ( firstController < 0 ) {
+						firstController = i;
+					}
+				} else if ( Key_IsMouseKey( i ) ) {
+					if ( firstMouse < 0 ) {
+						firstMouse = i;
+					}
+				} else if ( firstKeyboard < 0 ) {
+					firstKeyboard = i;
+				}
 			}
 		}
 	}
-	if ( keyName[0] == '\0' ) {
-		idStr::Copynz( keyName, common->GetLanguageDict()->GetString( "#str_07133" ), sizeof( keyName ) );
+
+	int selected = -1;
+	if ( key_lastInputFamily == KEY_INPUT_FAMILY_CONTROLLER ) {
+		selected = firstController;
+		if ( selected < 0 ) {
+			selected = firstMouse >= 0 ? firstMouse : firstKeyboard;
+		}
+	} else {
+		selected = firstMouse >= 0 ? firstMouse : firstKeyboard;
+		if ( selected < 0 ) {
+			selected = firstController;
+		}
 	}
-	idStr::ToLower( keyName );
-	return keyName;
+
+	if ( selected >= 0 ) {
+		Key_AppendBindingPresentation( keyName, selected );
+	} else {
+		keyName = common->GetLanguageDict()->GetString( "#str_07133" );
+	}
+	return keyName.c_str();
+}
+
+/*
+============
+idKeyInput::KeysFromBindingForMenu
+
+The settings widget shows a broader, device-independent list than gameplay
+hints.  Bound pathological console-authored sets so the GUI's fixed line
+buffer and stock-width row remain deterministic; the +N suffix preserves an
+honest indication that additional bindings exist.
+============
+*/
+const char *idKeyInput::KeysFromBindingForMenu( const char *bind ) {
+	static const int MAX_MENU_BINDINGS = 6;
+	idStr &keyName = Key_NextBindingPresentationBuffer();
+	int shown = 0;
+	int omitted = 0;
+	if ( bind && *bind ) {
+		for ( int i = 0; i < MAX_KEYS; i++ ) {
+			if ( BindingsEquivalent( keys[i].binding.c_str(), bind ) ) {
+				if ( shown < MAX_MENU_BINDINGS ) {
+					Key_AppendBindingPresentation( keyName, i );
+					shown++;
+				} else {
+					omitted++;
+				}
+			}
+		}
+	}
+	if ( omitted > 0 ) {
+		keyName.Append( va( " +%d", omitted ) );
+	}
+	if ( keyName.IsEmpty() ) {
+		keyName = common->GetLanguageDict()->GetString( "#str_07133" );
+	}
+	return keyName.c_str();
 }
 
 /*
@@ -737,6 +834,9 @@ void idKeyInput::PreliminaryKeyEvent( int keynum, bool down ) {
 	}
 
 	keys[keynum].down = down;
+	if ( down ) {
+		key_lastInputFamily = Key_IsControllerKey( keynum ) ? KEY_INPUT_FAMILY_CONTROLLER : KEY_INPUT_FAMILY_DESKTOP;
+	}
 
 #ifdef ID_DOOM_LEGACY
 	if ( down ) {
@@ -753,6 +853,31 @@ void idKeyInput::PreliminaryKeyEvent( int keynum, bool down ) {
 		}
 	}
 #endif
+}
+
+/*
+===================
+idKeyInput::PreliminaryMouseEvent
+===================
+*/
+void idKeyInput::PreliminaryMouseEvent( int deltaX, int deltaY ) {
+	if ( deltaX != 0 || deltaY != 0 ) {
+		key_lastInputFamily = KEY_INPUT_FAMILY_DESKTOP;
+	}
+}
+
+/*
+===================
+idKeyInput::PreliminaryJoystickEvent
+
+System joystick axes use the normalized -127..127 range.  Ignore small values
+so a resting stick cannot continually steal hint ownership from the mouse.
+===================
+*/
+void idKeyInput::PreliminaryJoystickEvent( int value ) {
+	if ( idMath::Abs( value ) >= 16 ) {
+		key_lastInputFamily = KEY_INPUT_FAMILY_CONTROLLER;
+	}
 }
 
 /*
@@ -804,6 +929,7 @@ idKeyInput::Init
 ===================
 */
 void idKeyInput::Init( void ) {
+	key_lastInputFamily = KEY_INPUT_FAMILY_DESKTOP;
 
 	keys = new idKey[MAX_KEYS];
 
