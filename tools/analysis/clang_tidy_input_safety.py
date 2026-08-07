@@ -28,6 +28,14 @@ PRODUCTION_HEADER = ROOT / "src" / "idlib" / "NumericString.h"
 SAFETY_TEST_SOURCE = ROOT / "tools" / "tests" / "native" / "CoreSafetyTest.cpp"
 DEFAULT_OUTPUT_DIR = ROOT / ".tmp" / "clang-tidy-input-safety"
 MSVC_DRIVER_MODE = "--driver-mode=cl"
+MSVC_STYLE_FLAG_PREFIXES = (
+    "/nologo",
+    "/eh",
+    "/zc:",
+    "/permissive-",
+    "/std:c++",
+    "/showincludes",
+)
 
 CHECKS = (
     "-*",
@@ -127,7 +135,16 @@ def _is_msvc_driver(arguments: Sequence[str]) -> bool:
     if not arguments:
         return False
     executable = Path(arguments[0].strip('"')).name.lower()
-    return executable in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}
+    if executable in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}:
+        return True
+    # Fall back to the flags themselves. A compiler launcher (ccache/sccache)
+    # or any driver spelling we do not recognise would otherwise drop us into
+    # the gcc branch, which silently leaves the MSVC PCH/charset flags in place
+    # and clang-tidy in the wrong driver mode - the command then fails with
+    # "no such file or directory: '/EHsc'" instead of analysing anything.
+    # These prefixes have no POSIX-path meaning, so they cannot false-positive
+    # on a Unix compile command.
+    return any(argument.lower().startswith(MSVC_STYLE_FLAG_PREFIXES) for argument in arguments[1:])
 
 
 def _with_msvc_driver_mode(arguments: list[str]) -> list[str]:
@@ -321,20 +338,33 @@ def find_clang_tidy(requested: str) -> str:
     raise AnalysisError("clang-tidy was not found; install LLVM or pass --clang-tidy")
 
 
-def clang_tidy_command(executable: str, database_dir: Path, root: Path = ROOT) -> list[str]:
+def clang_tidy_command(
+    executable: str,
+    database_dir: Path,
+    root: Path = ROOT,
+    msvc: bool = False,
+) -> list[str]:
     production_source = root / "src" / "framework" / "UsercmdGen.cpp"
     safety_test_source = root / "tools" / "tests" / "native" / "CoreSafetyTest.cpp"
-    return [
+    command = [
         executable,
         str(production_source.resolve()),
         str(safety_test_source.resolve()),
         "-p",
         str(database_dir.resolve()),
+    ]
+    if msvc:
+        # Also force the driver mode on the command line. The database entries
+        # already carry it, but this keeps the gate correct even if clang-tidy
+        # resolves a command from somewhere other than our sanitized database.
+        command.append(f"--extra-arg-before={MSVC_DRIVER_MODE}")
+    command += [
         f"--checks={','.join(CHECKS)}",
         "--warnings-as-errors=*",
         f"--header-filter={HEADER_FILTER}",
         "--quiet",
     ]
+    return command
 
 
 def validate_enabled_checks(executable: str) -> None:
@@ -396,8 +426,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         database = build_analysis_database(build_dir)
         write_analysis_database(database, output_dir)
 
+        msvc = bool(database) and _is_msvc_driver(database[0]["arguments"])
+
         executable = (args.clang_tidy or "clang-tidy") if args.dry_run else find_clang_tidy(args.clang_tidy)
-        command = clang_tidy_command(executable, output_dir)
+        command = clang_tidy_command(executable, output_dir, msvc=msvc)
         if args.dry_run:
             print(display_command(command))
             return 0
@@ -408,6 +440,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         except OSError as exc:
             raise AnalysisError(f"could not launch clang-tidy: {exc}") from exc
         if result.returncode != 0:
+            # Echo what we actually asked for. A failure here is usually the
+            # analysis lane misreading the build's compile command rather than
+            # a real finding, and without this the log shows only the fallout.
+            print(f"driver: {'msvc' if msvc else 'gcc'}", file=sys.stderr)
+            print(f"command: {display_command(command)}", file=sys.stderr)
+            for entry in database:
+                print(f"entry {entry['file']}:", file=sys.stderr)
+                print(f"  {display_command(entry['arguments'])}", file=sys.stderr)
             if result.stdout:
                 print(result.stdout, end="", file=sys.stdout)
             if result.stderr:
