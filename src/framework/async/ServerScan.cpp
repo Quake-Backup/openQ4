@@ -36,11 +36,18 @@ idCVar gui_filter_idle( "gui_filter_idle", "0", CVAR_GUI | CVAR_INTEGER | CVAR_A
 idCVar gui_filter_game( "gui_filter_game", "0", CVAR_GUI | CVAR_INTEGER | CVAR_ARCHIVE, "Game filter" );
 
 const char* l_gameTypes[] = {
-	"Deathmatch",
+	"DM",
 	"Tourney",
 	"Team DM",
-	"Last Man",
 	"CTF",
+	"Arena CTF",
+	"DeadZone",
+	"Duel",
+	"Clan Arena",
+	"Freeze Tag",
+	"Red Rover",
+	"One Flag CTF",
+	"Arena One Flag CTF",
 	NULL
 };
 
@@ -506,7 +513,11 @@ bool idServerScan::IsFiltered( const networkServer_t server ) {
 	}
 	// gametype filter
 	keyval = server.serverInfo.FindKey( "si_gameType" );
-	if ( keyval && gui_filter_gameType.GetInteger() ) {
+	if ( gui_filter_gameType.GetInteger() ) {
+		if ( keyval == NULL ) {
+			return true;
+		}
+		const int requestedGameType = gui_filter_gameType.GetInteger() - 1;
 		i = 0;
 		while ( l_gameTypes[ i ] ) {
 			if ( !keyval->GetValue().Icmp( l_gameTypes[ i ] ) ) {
@@ -514,7 +525,9 @@ bool idServerScan::IsFiltered( const networkServer_t server ) {
 			}
 			i++;
 		}
-		if ( l_gameTypes[ i ] && i != gui_filter_gameType.GetInteger() -1 ) {
+		// Unknown/hidden tokens fail closed.  The inherited implementation let
+		// every unrecognized modern gametype bypass an active filter.
+		if ( l_gameTypes[ i ] == NULL || i != requestedGameType ) {
 			return true;
 		}
 	}

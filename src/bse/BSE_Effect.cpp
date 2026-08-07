@@ -40,10 +40,6 @@ void rvBSE::Init(const rvDeclEffect* declEffect, renderEffect_s* parms, float ti
 	float* v8; // eax
 	double v9; // st3
 	double v10; // st5
-	float* v11; // esi
-	float* v12; // eax
-	int v13; // ecx
-	double v14; // st5
 	//float v15; // [esp+18h] [ebp-30h]
 	//float v16; // [esp+1Ch] [ebp-2Ch]
 	//float v17; // [esp+20h] [ebp-28h]
@@ -596,24 +592,12 @@ void rvBSE::Destroy()
 void rvBSE::UpdateSegments(float time)
 {
 	int v3; // ebx
-	rvSegment* v4; // eax
-	rvParticle** v5; // esi
-	bool v6; // cc
-	int v7; // ecx
-	int* v8; // eax
-	rvSegment* v9; // esi
-	rvSegment* v10; // ecx
-	int v11; // edx
-	int v12; // eax
-	rvParticle** v13; // esi
 	int v14; // esi
 	int v15; // edi
 	int v16; // esi
 	int v17; // edi
 	int v18; // esi
 	int v19; // edi
-	rvSegment* ptr; // [esp+14h] [ebp-14h]
-
 	v3 = this->mDeclEffect->mSegmentTemplates.Num();
 	if (v3 > 0)
 	{

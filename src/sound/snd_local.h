@@ -353,6 +353,7 @@ public:
 
 	virtual void			SetSlowmoSpeed( float speed );
 	virtual void			SetEnviroSuit( bool active );
+	virtual void			SetUnderwater( bool active );
 
 	//=======================================
 
@@ -399,6 +400,7 @@ public:
 
 	float					slowmoSpeed;
 	bool					enviroSuitActive;
+	bool					underwaterActive;
 
 public:
 	struct soundPortalTrace_t

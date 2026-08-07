@@ -178,9 +178,9 @@ private:
 	void				SizeIcon( embeddedIcon_t &icon );
 	bool				FindIcon( const char *code, const embeddedIcon_t **icon );
 	float				GetIconDisplayWidth( const embeddedIcon_t &icon, float referenceHeight ) const;
-	float				GetKeyBindingIconHeight( float textScale );
-	float				GetKeyBindingIconWidth( int keyNum, float textScale );
-	void				DrawKeyBindingIcon( int keyNum, float x, float baselineY, float textScale, const idVec4 &color );
+	float				GetKeyBindingIconHeight( float textScale, float heightRatio = 0.99f );
+	float				GetKeyBindingIconWidth( int keyNum, float textScale, float heightRatio = 0.99f );
+	void				DrawKeyBindingIcon( int keyNum, float x, float baselineY, float textScale, const idVec4 &color, float heightRatio = 0.99f );
 	int					DrawText(float x, float y, float scale, idVec4 color, const char *text, float adjust, int limit, int style, int cursor = -1, bool resetEscapes = false, bool suppressBackground = false);
 	void				PaintChar(float x,float y,float width,float height,float scale,float	s,float	t,float	s2,float t2,const idMaterial *hShader);
 	void				PaintGlyph(float x,float y,float scale,const fontInfo_t *font,const glyphInfo_t *glyph,const idMaterial *hShader);

@@ -86,16 +86,6 @@ static fontInfo_t *R_FontSlotForIndex( fontInfoEx_t &font, q4FontSlotIndex_t slo
 	return &font.fontInfoLarge;
 }
 
-static const fontInfo_t *R_FontSlotForIndex( const fontInfoEx_t &font, q4FontSlotIndex_t slot ) {
-	if ( slot == Q4_FONT_SLOT_SMALL ) {
-		return &font.fontInfoSmall;
-	}
-	if ( slot == Q4_FONT_SLOT_MEDIUM ) {
-		return &font.fontInfoMedium;
-	}
-	return &font.fontInfoLarge;
-}
-
 static void R_ClearFontSlotExtents( q4FontSlotExtents_t &extents ) {
 	extents.maxWidth = 0.0f;
 	extents.maxHeight = 0.0f;

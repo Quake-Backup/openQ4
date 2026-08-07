@@ -215,6 +215,7 @@ public:
 	static int			NumBinds( const char *binding );
 	static bool			ExecKeyBinding( int keyNum );
 	static const char *	KeysFromBinding( const char *bind );
+	static const char *	KeysFromBindingForPrompt( const char *bind );
 	static const char *	KeysFromBindingForMenu( const char *bind );
 	static const char *	BindingFromKey( const char *key );
 	static bool			KeyIsBoundTo( int keyNum, const char *binding );

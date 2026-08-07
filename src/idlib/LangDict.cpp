@@ -448,7 +448,7 @@ bool idLangDict::ExcludeString( const char *str ) const {
 		return true;
 	}
 
-	int c = strlen( str );
+	int c = idLib::SizeToInt( strlen( str ), "idLangDict::ExcludeString" );
 	if ( c <= 1 ) {
 		return true;
 	}
@@ -457,7 +457,7 @@ bool idLangDict::ExcludeString( const char *str ) const {
 		return true;
 	}
 
-	if ( idStr::Icmpn( str, "gui::", strlen( "gui::" ) ) == 0 ) {
+	if ( idStr::Icmpn( str, "gui::", static_cast<int>( sizeof( "gui::" ) - 1 ) ) == 0 ) {
 		return true;
 	}
 

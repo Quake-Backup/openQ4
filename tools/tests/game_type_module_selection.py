@@ -40,6 +40,27 @@ def parse_string_array(source: str, declaration: str) -> list[str]:
     return re.findall(r'"([^"]*)"', body)
 
 
+def parse_gametype_table(source: str) -> list[tuple[str, bool]]:
+    declaration = "static const mpGameTypeInfo_t mpGameTypeInfoTable[] = {"
+    start = source.find(declaration)
+    if start == -1:
+        raise AssertionError(f"Missing table declaration {declaration!r}")
+    body = source[start + len(declaration) :]
+    end = body.find("\n};")
+    if end == -1:
+        raise AssertionError("Unterminated mpGameTypeInfoTable")
+    body = body[:end]
+
+    rows = re.findall(
+        r"\{\s*GAME_[A-Z0-9_]+,\s*\"([^\"]*)\".*?MP_GAMESTATE_[A-Z0-9_]+,\s*(true|false)\s*\}",
+        body,
+        re.DOTALL,
+    )
+    if not rows:
+        raise AssertionError("Could not parse any mpGameTypeInfoTable rows")
+    return [(name, flag == "true") for name, flag in rows]
+
+
 def validate_engine_mirror() -> None:
     common = read(ROOT / "src" / "framework" / "Common.cpp")
     engine_types = parse_string_array(common, "static const char *openQ4_multiplayerGameTypes[] = {")
@@ -53,19 +74,44 @@ def validate_engine_mirror() -> None:
             f"(no GameLibs checkout at {GAME_LIBS_ROOT})"
         )
     else:
-        game_types = parse_string_array(read(game_types_source), "const char *si_gameTypeArgs[] = {")
+        game_types_text = read(game_types_source)
+        game_types = parse_string_array(game_types_text, "const char *si_gameTypeArgs[] = {")
         if not game_types:
             raise AssertionError("GameLibs si_gameTypeArgs is empty")
         if game_types[0] != "singleplayer":
             raise AssertionError(
                 f"si_gameTypeArgs[0] is {game_types[0]!r}, expected 'singleplayer'"
             )
-        expected = game_types[1:]
+
+        # si_gameTypeArgs only lists modes a server may actually be configured
+        # into; the descriptor table additionally carries reserved wire tokens
+        # whose authoritative state does not exist yet. The engine allowlist
+        # mirrors the table, not the cvar completion list, so that a reserved
+        # token still routes to game_mp and is rejected by the validated
+        # descriptor there instead of silently booting game_sp.
+        table_types = parse_gametype_table(game_types_text)
+        expected = [name for name, _selectable in table_types if name != "singleplayer"]
         if engine_types != expected:
             raise AssertionError(
-                "openQ4_multiplayerGameTypes has drifted from si_gameTypeArgs:\n"
+                "openQ4_multiplayerGameTypes has drifted from mpGameTypeInfoTable:\n"
                 f"  engine:   {engine_types}\n"
                 f"  gamelibs: {expected}"
+            )
+
+        selectable = [
+            name for name, is_selectable in table_types
+            if is_selectable and name != "singleplayer"
+        ]
+        missing_selectable = [name for name in selectable if name not in engine_types]
+        if missing_selectable:
+            raise AssertionError(
+                "selectable multiplayer gametypes missing from the engine allowlist "
+                f"(they would boot game_sp): {missing_selectable}"
+            )
+        unlisted = [name for name in game_types[1:] if name not in engine_types]
+        if unlisted:
+            raise AssertionError(
+                f"si_gameTypeArgs entries missing from the engine allowlist: {unlisted}"
             )
 
     # An allowlist, not "anything that is not singleplayer".

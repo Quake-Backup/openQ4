@@ -567,48 +567,6 @@ static void makeNormalizeVectorCubeMap(idImage* image) {
 	Mem_Free(pixels[0]);
 }
 
-// the size determines how far away from the edge the blocks start fading
-static const int BORDER_CLAMP_SIZE = 32;
-static void R_BorderClampImage(idImage* image) {
-	byte	data[BORDER_CLAMP_SIZE][BORDER_CLAMP_SIZE][4];
-
-	// solid white texture with a single pixel black border
-	memset(data, 255, sizeof(data));
-	for (int i = 0; i < BORDER_CLAMP_SIZE; i++) {
-		data[i][0][0] =
-			data[i][0][1] =
-			data[i][0][2] =
-			data[i][0][3] =
-
-			data[i][BORDER_CLAMP_SIZE - 1][0] =
-			data[i][BORDER_CLAMP_SIZE - 1][1] =
-			data[i][BORDER_CLAMP_SIZE - 1][2] =
-			data[i][BORDER_CLAMP_SIZE - 1][3] =
-
-			data[0][i][0] =
-			data[0][i][1] =
-			data[0][i][2] =
-			data[0][i][3] =
-
-			data[BORDER_CLAMP_SIZE - 1][i][0] =
-			data[BORDER_CLAMP_SIZE - 1][i][1] =
-			data[BORDER_CLAMP_SIZE - 1][i][2] =
-			data[BORDER_CLAMP_SIZE - 1][i][3] = 0;
-	}
-
-	image->GenerateImage((byte*)data, BORDER_CLAMP_SIZE, BORDER_CLAMP_SIZE,
-		TF_LINEAR /* TF_NEAREST */, TR_CLAMP_TO_BORDER, TD_DEFAULT);
-
-	if (!glConfig.isInitialized) {
-		// can't call qglTexParameterfv yet
-		return;
-	}
-	// explicit zero border
-	float	color[4];
-	color[0] = color[1] = color[2] = color[3] = 0;
-	glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, color);
-}
-
 /*
 ================
 R_RampImage

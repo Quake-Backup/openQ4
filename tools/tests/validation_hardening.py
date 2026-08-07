@@ -552,6 +552,37 @@ def validate_windows_pdb_architecture_match() -> None:
     with_host_flags(True, False, False, lambda: VALIDATOR.validate_windows_symbols(root, install_root, game_dir, {"x64"}))
 
 
+def validate_python_test_failure_aggregation() -> None:
+    original_run_command = VALIDATOR.run_command
+    observed: list[str] = []
+    simulated_failures = {"arena_campaign.py", "vscode_fast_build.py"}
+
+    def fake_run_command(command, *, cwd, env, title, dry_run) -> None:
+        test_name = Path(command[1]).name
+        observed.append(test_name)
+        if test_name in simulated_failures:
+            raise VALIDATOR.ValidationError(f"simulated failure: {test_name}")
+
+    VALIDATOR.run_command = fake_run_command
+    try:
+        expect_validation_error(
+            lambda: VALIDATOR.run_python_tests(
+                argparse.Namespace(dry_run=False),
+                ROOT,
+                {},
+            ),
+            "2 Python validation check(s) failed",
+            "aggregated Python validation failures",
+        )
+    finally:
+        VALIDATOR.run_command = original_run_command
+
+    if not simulated_failures.issubset(observed):
+        raise AssertionError(
+            "Python validation stopped before reporting failures from both ends of the suite"
+        )
+
+
 def validate_validation_wiring() -> None:
     validator = (ROOT / "tools" / "validation" / "openq4_validate.py").read_text(encoding="utf-8")
     push = (ROOT / ".github" / "workflows" / "push-verification.yml").read_text(encoding="utf-8")
@@ -570,6 +601,9 @@ def validate_validation_wiring() -> None:
         "validate_linux_dedicated_runtime_dependencies",
         "validate_windows_symbols",
         "validate_no_non_runtime_artifacts",
+        "-Dbuild_native_tests=true",
+        "test_args",
+        "Meson native tests",
         "Install root must not be a symlink",
         "Staged game directory must not be a symlink",
     ):
@@ -636,6 +670,7 @@ def main() -> None:
         validate_game_module_distinctness_guard()
         validate_linux_runtime_dependency_guards()
         validate_windows_pdb_architecture_match()
+        validate_python_test_failure_aggregation()
         validate_validation_wiring()
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

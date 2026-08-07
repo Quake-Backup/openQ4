@@ -1,0 +1,144 @@
+/*
+	openQ4 liquid materials.
+
+	Retail Quake 4 has no liquids: everything that looks like water in the stock and community maps
+	is decoration with "nonsolid" on it and, where it is meant to hurt, a trigger_hurt floating
+	above. These three materials are the real thing - they carry CONTENTS_WATER, CONTENTS_LAVA and
+	CONTENTS_SLIME, so a brush textured with one of them is a liquid volume that the player wades
+	and swims in, that drowns and burns, that projectiles splash into and that objects sink through.
+
+	Three things matter if you author your own:
+
+	  - The "water" / "lava" / "slime" keyword both sets the content flag and clears the solid flag.
+	    Do not add "solid" after it, and do not bother with "nonsolid" before it.
+
+	  - Every liquid must be "translucent". dmap seals any brush whose sides are all opaque, and a
+	    sealed volume has no visleafs inside it, so an opaque lava brush produces a pool the player
+	    can never get into and none of the liquid code ever runs. Lava and slime look solid but must
+	    still be declared translucent.
+
+	  - "liquid" sets SURFTYPE_LIQUID for footsteps, and "materialType" picks the impact reaction.
+	    water is Quake 4's own; lava and slime come from materials/types/liquids_openq4.mtt.
+
+	Texture references are stock Quake 4 assets.
+*/
+
+table openq4LavaTable { snap { 0.72, 0.8, 0.88, 0.96, 1, 0.96, 0.88, 0.8 } }
+
+textures/openq4/liquids/water
+{
+	qer_editorimage		textures/q4x_q4xdm2/water01_d.tga
+
+	water
+	liquid
+	translucent
+	twosided
+	materialType		water
+
+	{
+		blend			diffusemap
+		map				textures/q4x_q4xdm2/water01_d.tga
+		translate		time * 0.03 , time * 0.02
+	}
+	{
+		blend			specularmap
+		map				textures/q4x_q4xdm2/water01_s.tga
+		translate		time * -0.05 , time * 0.06
+	}
+	{
+		vertexProgram	heatHaze.vfp
+		vertexParm		0		0 , time * 0.05		// texture scrolling
+		vertexParm		1		2					// magnitude of the distortion
+		fragmentProgram	heatHaze.vfp
+		fragmentMap		0		_currentRender
+		fragmentMap		1		textures/q4x_q4xdm2/lava1_local.tga
+	}
+}
+
+/*
+	A still pool. Same volume behaviour, no surface distortion - cheaper, and it suits small
+	puddles and tanks where the haze reads as noise.
+*/
+textures/openq4/liquids/water_calm
+{
+	qer_editorimage		textures/q4x_q4xdm2/water01_d.tga
+
+	water
+	liquid
+	translucent
+	twosided
+	materialType		water
+
+	{
+		blend			diffusemap
+		map				textures/q4x_q4xdm2/water01_d.tga
+		translate		time * 0.01 , time * 0.008
+	}
+	{
+		blend			specularmap
+		map				textures/q4x_q4xdm2/water01_s.tga
+		translate		time * -0.02 , time * 0.02
+	}
+}
+
+textures/openq4/liquids/lava
+{
+	qer_editorimage		textures/q4x_q4xdm2/lava2.tga
+
+	lava
+	liquid
+	translucent
+	twosided
+	materialType		lava
+
+	{
+		map				textures/q4x_q4xdm2/lava2.tga
+		scale			1 , 1
+		translate		time * 0.005, time * -0.01
+		rgb				openq4LavaTable[ time * 0.05 ]
+	}
+	{
+		blend			add
+		map				textures/q4x_q4xdm2/lava2.tga
+		scale			1.4, 1.5
+		translate		time * 0, time * -0.03
+		rgb				openq4LavaTable[ time * 0.04 ]
+	}
+	{
+		blend			add
+		map				textures/q4x_q4xdm2/lava2.tga
+		scale			0.8, 1.1
+		translate		time * -0.001, time * -0.02
+		rgb				openq4LavaTable[ time * 0.1 ]
+	}
+}
+
+textures/openq4/liquids/slime
+{
+	qer_editorimage		textures/decals/slime.tga
+
+	slime
+	liquid
+	translucent
+	twosided
+	materialType		slime
+
+	{
+		blend			diffusemap
+		map				textures/decals/slime.tga
+		scale			0.5, 0.5
+		translate		time * 0.012, time * -0.009
+	}
+	{
+		blend			add
+		map				textures/decals/slime.tga
+		scale			0.7, 0.65
+		translate		time * -0.008, time * -0.015
+		rgb				0.35
+	}
+	{
+		blend			specularmap
+		map				textures/decals/slime_s.tga
+		translate		time * 0.01 , time * -0.01
+	}
+}

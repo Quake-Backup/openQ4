@@ -1035,7 +1035,7 @@ static void GLCapabilityProbe_AddLegacyExtensions( const char *legacyExtensionsS
 		return;
 	}
 
-	idLexer lexer( legacyExtensionsString, strlen( legacyExtensionsString ), "OpenGL extensions" );
+	idLexer lexer( legacyExtensionsString, idLib::SizeToInt( strlen( legacyExtensionsString ), "GLCapabilityProbe_AddLegacyExtensions" ), "OpenGL extensions" );
 	lexer.SetFlags( LEXFL_NOERRORS | LEXFL_NOWARNINGS | LEXFL_ALLOWPATHNAMES );
 	idToken token;
 	while ( lexer.ReadToken( &token ) ) {

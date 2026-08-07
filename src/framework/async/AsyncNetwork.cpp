@@ -83,6 +83,64 @@ idAsyncNetwork::idAsyncNetwork( void ) {
 
 /*
 ==================
+AsyncNetwork_AppendDisplayText
+
+Network userinfo and remote disconnect reasons are display data, never command
+text. Preserve the legacy byte stream (including Quake color escapes), but fold
+ASCII control characters so one logical notification cannot create extra UI or
+console lines.
+==================
+*/
+static void AsyncNetwork_AppendDisplayText( idStr &output, const char *text, int maxBytes ) {
+	if ( text == NULL || maxBytes <= 0 ) {
+		return;
+	}
+
+	bool outputEndsInSpace = output.Length() > 0 && output[ output.Length() - 1 ] == ' ';
+	bool pendingSpace = false;
+	for ( int index = 0; index < maxBytes && text[ index ] != '\0'; index++ ) {
+		const unsigned char value = static_cast<unsigned char>( text[ index ] );
+		if ( value < 32 || value == 127 ) {
+			pendingSpace = output.Length() > 0 && !outputEndsInSpace;
+			continue;
+		}
+		if ( pendingSpace && text[ index ] != ' ' ) {
+			output.Append( ' ' );
+		}
+		pendingSpace = false;
+		output.Append( text[ index ] );
+		outputEndsInSpace = text[ index ] == ' ';
+	}
+}
+
+/*
+==================
+idAsyncNetwork::ShowClientDisconnectMessage
+
+Pass the completed display line as one already-tokenized argument. In
+particular, quotes, semicolons, and newlines originating in ui_name can never be
+reparsed as console syntax.
+==================
+*/
+void idAsyncNetwork::ShowClientDisconnectMessage( const char *clientName, const char *reason ) {
+	idStr displayName;
+	AsyncNetwork_AppendDisplayText( displayName, clientName, MAX_NICKLEN );
+	if ( displayName.IsEmpty() ) {
+		displayName = common->GetLanguageDict()->GetString( "#str_42461" );
+	}
+
+	idStr line = displayName;
+	line += "^0 ";
+	AsyncNetwork_AppendDisplayText( line, reason, MAX_STRING_CHARS - 1 );
+
+	idCmdArgs command;
+	command.AppendArg( "addChatLine" );
+	command.AppendArg( line.c_str() );
+	cmdSystem->BufferCommandArgs( CMD_EXEC_NOW, command );
+}
+
+/*
+==================
 idAsyncNetwork::Init
 ==================
 */

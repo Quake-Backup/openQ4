@@ -762,19 +762,33 @@ def test_held_weapon_effect_is_opponent_only_world_model_without_sweep():
             "weaponRenderEnt->flatDiffuseFlags=0;",
             f"{copy} must clear stale per-view weapon state before every early return",
         )
+        if "Player_VisibilityReference(" in player:
+            require(
+                visibility_compact,
+                "reference==this",
+                f"{copy} must exclude the player whose view a spectator is following",
+            )
+            require(
+                visibility_compact,
+                "instanceOwner->GetInstance()!=instance",
+                f"{copy} must exclude players outside the spectator-aware viewer instance",
+            )
+            opponent_classification = "!teamColor"
+        else:
+            require(
+                visibility_compact,
+                "viewer==this",
+                f"{copy} must exclude the local player's own held weapon",
+            )
+            require(
+                visibility_compact,
+                "viewer->GetInstance()!=instance",
+                f"{copy} must exclude players outside the viewer's multiplayer instance",
+            )
+            opponent_classification = "!teammate"
         require(
             visibility_compact,
-            "viewer==this",
-            f"{copy} must exclude the local player's own held weapon",
-        )
-        require(
-            visibility_compact,
-            "viewer->GetInstance()!=instance",
-            f"{copy} must exclude players outside the viewer's multiplayer instance",
-        )
-        require(
-            visibility_compact,
-            "g_mpFlatOpponentWeapons.GetBool()&&!teammate&&weaponRenderEnt!=NULL",
+            "g_mpFlatOpponentWeapons.GetBool()&&" + opponent_classification + "&&weaponRenderEnt!=NULL",
             f"{copy} must require both the client option and opponent classification",
         )
         require(

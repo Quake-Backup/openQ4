@@ -20,6 +20,8 @@ windowDef Desktop
 	float	"active"	0
 	float	"dest"	0
 	float	"curr"	0
+	float	"match_tab"	0
+	float	"match_confirm"	0
   	float	"team_strogg_offset"	"desktop::itemheight" * "gui::num_marine_players" + 16
   	float	"team_marine_offset"	"desktop::itemheight" * "gui::num_strogg_players" + 16
 	float	"strogg_offset"	0
@@ -52,6 +54,7 @@ windowDef Desktop
 		//18 = admin_set_rcon_password
 		//19 = admin_banlist
 		//20 = voice config
+		//21 = competitive match control
 	}
 
 	onNamedEvent gametype_explanation {
@@ -67,7 +70,10 @@ windowDef Desktop
 	}
 
 	onESC {
-		if ( "desktop::ingame" == 1 && "desktop::curr" <= 14) {
+		if ( "desktop::match_confirm" != 0 ) {
+			set "desktop::match_confirm" "0" ;
+		} else if ( "desktop::ingame" == 1 && ( "desktop::curr" <= 14 || "desktop::curr" == 21 ) ) {
+			set "gui::match_referee_credential" "" ;
 			resettime "anim_out" "0" ;
 			set "desktop::ingame" "0" ;
 		} else if ( "desktop::ingame" == 1 && "desktop::curr" == 15) {
@@ -157,6 +163,8 @@ windowDef Desktop
 	onActivate {
 		set "desktop::dest" "0" ;
 		set "desktop::curr" "0" ;
+		set "gui::match_referee_credential" "" ;
+		set "desktop::match_confirm" "0" ;
 		
 		namedevent "p_btns::hideMain" ;
 		namedevent "p_btns::hideJoin" ;
@@ -186,6 +194,7 @@ windowDef Desktop
 		set "p_settings::rect" "0,0,640,480" ;
 		set "p_info::rect" "0,0,640,480" ;
 		set "p_admin::rect" "0,0,640,480" ;
+		set "p_matchcontrol::rect" "0,0,640,480" ;
 		
 		set "p_join::visible" "1" ;
 
@@ -217,6 +226,7 @@ windowDef Desktop
 		set "p_settings::visible" "0" ;
 		set "p_info::visible" "0" ;
 		set "p_admin::visible" "0" ;
+		set "p_matchcontrol::visible" "0" ;
 		set "p_voiceconfig::visible" "0" ;
 		set "join_t_msg::visible" "0" ;
 
@@ -780,7 +790,34 @@ windowDef Desktop
 				background	"gfx/guis/mainmenu/corner"
 				matcolor	0.564,0.603,0.286,0.4
 			}
+			windowDef b10
+			{
+				rect	21,232,172,43
+				visible	1
+				background	"gfx/guis/mainmenu/b5_dark"
+				matcolor	1,1,1,0.4
+			}
+			windowDef t_b10
+			{
+				rect	37,242,144,19
+				visible	1
+				forecolor	1,1,1,0.8
+				text	"#str_41700"
+				textscale	.25
+				font	"fonts/marine"
+				textspacing	-1
+			}
+			windowDef b10_corner
+			{
+				rect	29,248,10,10
+				visible	1
+				background	"gfx/guis/mainmenu/corner"
+				matcolor	0.564,0.603,0.286,0.4
+			}
 		}
+
+#include "guis/matchcontrol.gui"
+
 		windowDef p_join
 		{
 			rect	0,0,640,480
@@ -1844,6 +1881,16 @@ windowDef Desktop
 		{
 			rect	0,0,640,480
 			visible	0
+			windowDef vote_managed_notice
+			{
+				rect	190,210,388,40
+				visible	"gui::si_managedMatch"
+				forecolor	1,0.745,0.137,0.8
+				text	"#str_41773"
+				textscale	0.25
+				textalign	1
+				font	"fonts/lowpixel"
+			}
 			windowDef p_callVote
 			{
 				rect	0,0,640,480
@@ -2074,7 +2121,7 @@ windowDef Desktop
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choices	"#str_200217"
-					values	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone"
+					values	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone;Duel;Clan Arena;Freeze Tag;Red Rover;One Flag CTF;Arena One Flag CTF"
 					textscale	0.24
 					font	"fonts/lowpixel"
 					choiceType	0
@@ -3776,7 +3823,7 @@ windowDef Desktop
 					visible	1
 					forecolor	1,0.745,0.137,0.8
 					choices	"#str_200217"
-					values	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone"
+					values	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone;Duel;Clan Arena;Freeze Tag;Red Rover;One Flag CTF;Arena One Flag CTF"
 					textscale	0.24
 					font	"fonts/lowpixel"
 					choiceType	0
@@ -4525,7 +4572,7 @@ windowDef Desktop
 			// --------------------------------------------------
 			//DM 0 ; Tourney 1 ; Team DM 2 ; CTF 3 ; Arena CTF 4; DeadZone 5
 				
-			if ( "gui::currentGametype" == 0 ) { // DM = 0
+			if ( "gui::currentGametype" == 0 || "gui::currentGametype" == 6 ) { // DM or Duel
 				set "vote_t_b6::forecolor" "$desktop::white_4" ;
 				set "vote_val6::forecolor" "$desktop::white_4" ;
 				set "vote_val6::noevents" "1" ;
@@ -4623,7 +4670,7 @@ windowDef Desktop
 				
 				// --------------------------------------------------
 				
-			} else if ( "gui::currentGametype" == 2) {
+			} else if ( "gui::currentGametype" == 2 || "gui::currentGametype" == 7 || "gui::currentGametype" == 8 || "gui::currentGametype" == 9 ) {
 				
 				if ( "gui::allowvote_3" == 0) {
 					set "vote_t_b6::forecolor" "$desktop::white_4" ;
@@ -4686,7 +4733,7 @@ windowDef Desktop
 				set "vote_val12::visible" "0" ;
 				// --------------------------------------------------
 				
-			} else if ( "gui::currentGametype" == 3 || "gui::currentGametype" == 4) {
+			} else if ( "gui::currentGametype" == 3 || "gui::currentGametype" == 4 || "gui::currentGametype" == 10 || "gui::currentGametype" == 11 ) {
 				if ( "gui::allowvote_3" == 0) {
 					set "vote_t_b6::forecolor" "$desktop::white_4" ;
 					set "vote_val6::forecolor" "$desktop::white_4" ;
@@ -4790,7 +4837,7 @@ windowDef Desktop
 		onNamedEvent admingametypeChange {	
 			//DM 0 ; Tourney 1 ; Team DM 2 ; CTF 3 ; Arena CTF 4
 			
-			if ( "gui::admincurrentGametype" == 0 ) {
+			if ( "gui::admincurrentGametype" == 0 || "gui::admincurrentGametype" == 6 ) {
 				set "admin_server_t_b5::forecolor" "$desktop::white_4" ;
 				set "admin_server_val5::forecolor" "$desktop::white_4" ;
 				set "admin_server_val5::noevents" "1" ;
@@ -4852,7 +4899,7 @@ windowDef Desktop
 				set "admin_server_val7a::visible" "0" ;
 				set "admin_server_val7a::noevents" "1" ;	
 				
-			} else if ( "gui::admincurrentGametype" == 2) {
+			} else if ( "gui::admincurrentGametype" == 2 || "gui::admincurrentGametype" == 7 || "gui::admincurrentGametype" == 8 || "gui::admincurrentGametype" == 9 ) {
 				set "admin_server_t_b5::forecolor" "$desktop::white_8" ;
 				set "admin_server_val5::forecolor" "$desktop::yellow_8" ;
 				set "admin_server_val5::noevents" "0" ;
@@ -4883,7 +4930,7 @@ windowDef Desktop
 				set "admin_server_val7a::visible" "1" ;
 				set "admin_server_val7a::noevents" "0" ;
 				
-			} else if ( "gui::admincurrentGametype" == 3 || "gui::admincurrentGametype" == 4) {
+			} else if ( "gui::admincurrentGametype" == 3 || "gui::admincurrentGametype" == 4 || "gui::admincurrentGametype" == 10 || "gui::admincurrentGametype" == 11 ) {
 				set "admin_server_t_b5::forecolor" "$desktop::white_8" ;
 				set "admin_server_val5::forecolor" "$desktop::yellow_8" ;
 				set "admin_server_val5::noevents" "0" ;
@@ -5002,6 +5049,7 @@ windowDef Desktop
 			set "p_settings::visible" "0" ;
 			set "p_info::visible" "0" ;
 			set "p_admin::visible" "0" ;
+			set "p_matchcontrol::visible" "0" ;
 			set "p_voiceconfig::visible" "0" ;
 			set "p_back::visible" "0" ;
 		}
@@ -5021,6 +5069,8 @@ windowDef Desktop
 				resettime "anim_infoIn" "0" ;
 			} else if ("desktop::dest" == 7) {
 				resettime "anim_adminIn" "0" ;
+			} else if ("desktop::dest" == 21) {
+				resettime "anim_matchcontrolIn" "0" ;
 			} else if ("desktop::dest" == 15) {
 				set "desktop::curr" "15" ;
 			} else if ("desktop::dest" == 16) {
@@ -5045,6 +5095,8 @@ windowDef Desktop
 				resettime "anim_infoOut" "0" ;
 			} else if ("desktop::curr" == 7 || "desktop::curr" == 12 || "desktop::curr" == 13 || "desktop::curr" == 14 ) {
 				resettime "anim_adminOut" "0" ;
+			} else if ("desktop::curr" == 21) {
+				resettime "anim_matchcontrolOut" "0" ;
 			} else if ("desktop::curr" == 15) {
 				resettime "anim_voteOut" "0" ;
 				set "vote_playerlist::visible" "0" ;
@@ -5113,7 +5165,12 @@ windowDef Desktop
 			set "b8::matcolor_w" "0.4" ;
 			set "t_b8::forecolor" "$desktop::white_8"  ; 
 			set "b8_corner::matcolor"  "$desktop::corner" ; 
-			set "t_b8::textscale" "0.25";			
+			set "t_b8::textscale" "0.25";
+
+			set "b10::matcolor_w" "0.4" ;
+			set "t_b10::forecolor" "$desktop::white_8" ;
+			set "b10_corner::matcolor" "$desktop::corner" ;
+			set "t_b10::textscale" "0.25";
 		}
 
 		onNamedEvent resetMp {
@@ -5201,6 +5258,9 @@ windowDef Desktop
 				transition "b8::matcolor_w" "0" "0.4" "150" ;
 				transition "t_b8::forecolor_w"  "0" "0.8" "150" ; 
 				transition "b8_corner::matcolor_w"  "0" "0.4" "150" ; 	
+				transition "b10::matcolor_w" "0" "0.4" "150" ;
+				transition "t_b10::forecolor_w" "0" "0.8" "150" ;
+				transition "b10_corner::matcolor_w" "0" "0.4" "150" ;
 				
 				transition "b2::matcolor_w" "0" "1" "150" ;
 				transition "t_b2::forecolor"  "$desktop::orange_0" "$desktop::orange" "150" ; 
@@ -5307,6 +5367,9 @@ windowDef Desktop
 				transition "b8::matcolor_w" "0.4" "0" "150" ;
 				transition "t_b8::forecolor_w"  "1" "0" "150" ; 
 				transition "b8_corner::matcolor_w"  "0.4" "0" "150" ;
+				transition "b10::matcolor_w" "0.4" "0" "150" ;
+				transition "t_b10::forecolor_w" "1" "0" "150" ;
+				transition "b10_corner::matcolor_w" "0.4" "0" "150" ;
 				
 				transition "back::matcolor_w" "0.4" "0" "150" ;
 				transition "t_back::forecolor_w"  "1" "0" "150" ; 
@@ -5386,6 +5449,10 @@ windowDef Desktop
 					
 					set "vote_playerlist::visible" "0" ;
 					set "vote_playerlist::rect" "405,84,183,1" ;
+				}
+				if ( "gui::si_managedMatch" == 1 ) {
+					set "p_submitVote::visible" "0" ;
+					set "p_callVote::visible" "0" ;
 				}
 			}
 
@@ -5604,6 +5671,45 @@ windowDef Desktop
 			}
 
 		}
+		windowDef anim_matchcontrolIn
+		{
+			rect	0,0,1,1
+			visible	1
+			notime	1
+
+			onTime 0 {
+				set "p_matchcontrol::rect" "0,0,640,480" ;
+				set "p_matchcontrol::visible" "1" ;
+				set "desktop::curr" "21" ;
+				set "desktop::match_tab" "0" ;
+				set "desktop::match_confirm" "0" ;
+				namedevent "p_btns::showMain" ;
+				set "main_b_matchcontrol::visible" "0" ;
+				set "match_action_reason::text" "#str_41770" ;
+				set "cmd" "matchControl refresh" ;
+				set "desktop::active" "0" ;
+			}
+		}
+
+		windowDef anim_matchcontrolOut
+		{
+			rect	0,0,1,1
+			visible	1
+			notime	1
+
+			onTime 0 {
+				transition "p_matchcontrol::rect" "$d_main::rect" "$d_main_r::rect" "150" ;
+			}
+
+			onTime 200 {
+				set "p_matchcontrol::visible" "0" ;
+				set "gui::match_referee_credential" "" ;
+				set "desktop::match_confirm" "0" ;
+				namedevent "p_anims::chooseDest" ;
+				set "desktop::active" "0" ;
+			}
+		}
+
 		windowDef anim_adminIn
 		{
 			rect	0,0,1,1
@@ -5809,6 +5915,9 @@ windowDef Desktop
 				transition "b8::matcolor_w" "0.4" "0" "150" ;
 				transition "t_b8::forecolor_w"  "1" "0" "150" ; 
 				transition "b8_corner::matcolor_w"  "0.4" "0" "150" ; 
+				transition "b10::matcolor_w" "0.4" "0" "150" ;
+				transition "t_b10::forecolor_w" "1" "0" "150" ;
+				transition "b10_corner::matcolor_w" "0.4" "0" "150" ;
 				
 				transition "back::matcolor_w" "0.4" "0" "150" ;
 				transition "t_back::forecolor_w"  "1" "0" "150" ; 
@@ -6047,7 +6156,7 @@ windowDef Desktop
 			set "main_b_mainmenu::visible" "1" ;
 			set "main_b_jointeam::visible" "1" ;
 			set "main_b_players::visible" "1" ;
-			if( "gui::si_allowVoting" == 1){
+			if( "gui::si_allowVoting" == 1 && "gui::si_managedMatch" == 0){
 				set "main_b_vote::visible" "1" ;
 			}
 			if( "gui::si_allowVoice" == 1){
@@ -6056,6 +6165,7 @@ windowDef Desktop
 			set "main_b_settings::visible" "1" ;			
 			set "main_b_serverinfo::visible" "1" ;
 			set "main_b_admin::visible" "1" ;
+			set "main_b_matchcontrol::visible" "1" ;
 			set "main_b_disconnect::visible" "1" ;
 			
 			set "main_b_back::visible" "1" ;
@@ -6070,6 +6180,7 @@ windowDef Desktop
 			set "main_b_voiceconfig::visible" "0" ;
 			set "main_b_serverinfo::visible" "0" ;
 			set "main_b_admin::visible" "0" ;
+			set "main_b_matchcontrol::visible" "0" ;
 			set "main_b_disconnect::visible" "0" ;
 			
 			set "main_b_back::visible" "0" ;
@@ -6783,6 +6894,45 @@ windowDef Desktop
 			}
 
 		}
+		windowDef main_b_matchcontrol
+		{
+			rect	24,242,139,21
+			visible	0
+
+			onMouseEnter {
+				if ( "desktop::active" == 0 ) {
+					stoptransitions "main_b_matchcontrol" ;
+					set "b10::matcolor_w" "1" ;
+					transition "t_b10::forecolor" "$desktop::white_8" "$desktop::orange" "0" ;
+					transition "b10_corner::matcolor" "$desktop::corner" "$desktop::orange" "0" ;
+					set "t_b10::textscale" "0.26" ;
+					set "cmd" "play main_menu_mouseover" ;
+				}
+			}
+
+			onMouseExit {
+				if ( "desktop::active" == 0 && "desktop::dest" != 21 ) {
+					transition "b10::matcolor_w" "1" "0.4" "300" ;
+					transition "t_b10::forecolor" "$desktop::orange" "$desktop::white_8" "300" ;
+					transition "b10_corner::matcolor" "$desktop::orange" "$desktop::corner" "300" ;
+					transition "t_b10::textscale" "0.26" "0.25" "300" ;
+				}
+			}
+
+			onAction {
+				set "desktop::active" "1" ;
+				set "desktop::dest" "21" ;
+				namedevent "p_btns::hideMain" ;
+				namedevent "p_anims::chooseCurr" ;
+				namedevent "p_anims::resetMain0" ;
+				set "b10::matcolor_w" "1" ;
+				set "t_b10::forecolor" "$desktop::orange" ;
+				set "b10_corner::matcolor" "$desktop::orange" ;
+				set "t_b10::textscale" "0.26" ;
+				set "cmd" "play main_menu_selection" ;
+			}
+		}
+
 		windowDef main_b_disconnect
 		{
 			rect	24,265,139,21

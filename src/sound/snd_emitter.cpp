@@ -57,6 +57,8 @@ static const float SOUND_FREQUENCY_SHIFT_MIN = 0.25f;
 static const float SOUND_FREQUENCY_SHIFT_MAX = 4.0f;
 static const float SOUND_OCCLUSION_PER_BLOCKED_PORTAL = 0.5f;
 static const float SOUND_ENVIROSUIT_OCCLUSION = 0.5f;
+// openQ4: heavier than the enviro suit - water swallows high frequencies far more than a helmet
+static const float SOUND_UNDERWATER_OCCLUSION = 0.75f;
 static const int SOUND_FADE_MAX_MSEC = 24 * 60 * 60 * 1000;
 static const float SOUND_FADE_MAX_DB = 24.0f;
 static const int SOUND_UNMUTABLE_PRIORITY_BOOST = 100000;
@@ -758,7 +760,14 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 		portalOcclusion = SoundCombineOcclusion( portalOcclusion, SOUND_OCCLUSION_PER_BLOCKED_PORTAL * emitter->occludingPortalCount );
 	}
 	hardwareVoice->SetOcclusion( portalOcclusion );
-	hardwareVoice->SetEnvironmentMuffle( soundWorld->enviroSuitActive ? SOUND_ENVIROSUIT_OCCLUSION : 0.0f );
+	// openQ4: the enviro suit and being underwater both muffle the mix; take whichever is heavier
+	// rather than letting one cancel the other out
+	float environmentMuffle = soundWorld->enviroSuitActive ? SOUND_ENVIROSUIT_OCCLUSION : 0.0f;
+	if( soundWorld->underwaterActive && SOUND_UNDERWATER_OCCLUSION > environmentMuffle )
+	{
+		environmentMuffle = SOUND_UNDERWATER_OCCLUSION;
+	}
+	hardwareVoice->SetEnvironmentMuffle( environmentMuffle );
 
 	if( issueStart )
 	{

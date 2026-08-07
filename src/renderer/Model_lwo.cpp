@@ -1363,7 +1363,7 @@ char *sgetS0( unsigned char **bp )
 
    if ( flen == FLEN_ERROR ) return NULL;
 
-   len = strlen( (const char*)buf ) + 1;
+   len = idLib::SizeToInt( strlen( (const char*)buf ) + 1, "sgetS0" );
    if ( len == 1 ) {
       flen += 2;
       *bp += 2;
@@ -2840,7 +2840,7 @@ int lwGetTags( idFile *fp, int cksize, lwTagList *tlist )
 	ntags = 0;
 	bp = buf;
 	while ( bp < buf + cksize ) {
-		len = strlen( bp ) + 1;
+		len = idLib::SizeToInt( strlen( bp ) + 1, "lwGetTags" );
 		len += len & 1;
 		bp += len;
 		++ntags;

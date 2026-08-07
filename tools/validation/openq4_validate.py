@@ -348,6 +348,7 @@ def setup_args(args: argparse.Namespace, root: Path, build_dir: Path) -> list[st
         base.append(f"-Dplatform_backend={args.platform_backend}")
 
     base.extend(args.extra_setup_arg or [])
+    base.append("-Dbuild_native_tests=true")
     return base
 
 
@@ -361,6 +362,10 @@ def compile_args(args: argparse.Namespace, build_dir: Path) -> list[str]:
 
 def install_args(build_dir: Path) -> list[str]:
     return ["install", "-C", str(build_dir), "--no-rebuild", "--skip-subprojects"]
+
+
+def test_args(build_dir: Path) -> list[str]:
+    return ["test", "-C", str(build_dir), "--print-errorlogs"]
 
 
 def validation_env(args: argparse.Namespace, root: Path) -> dict[str, str]:
@@ -389,16 +394,27 @@ def validate_game_libs_repo_path(game_libs_repo: Path) -> Path:
 def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) -> None:
     tests = [
         root / "tools" / "tests" / "arena_campaign.py",
+        root / "tools" / "tests" / "async_drop_client_contract.py",
         root / "tools" / "tests" / "campaign_split_state_transition.py",
+        root / "tools" / "tests" / "clang_tidy_input_safety.py",
+        root / "tools" / "tests" / "cmdargs_append_contract.py",
+        root / "tools" / "tests" / "competitive_match_layer.py",
+        root / "tools" / "tests" / "competitive_match_localization.py",
+        root / "tools" / "tests" / "decl_checksum_stability_contract.py",
+        root / "tools" / "tests" / "match_control_localization_bridge.py",
+        root / "tools" / "tests" / "match_control_ui_contract.py",
         root / "tools" / "tests" / "demo_playback.py",
         root / "tools" / "tests" / "docs_link_integrity.py",
         root / "tools" / "tests" / "filesystem_case_segments.py",
         root / "tools" / "tests" / "filesystem_mod_manifest.py",
+        root / "tools" / "tests" / "filesystem_write_qpath_safety.py",
         root / "tools" / "tests" / "game_class_allocator_alignment.py",
         root / "tools" / "tests" / "game_type_module_selection.py",
         root / "tools" / "tests" / "gamelibs_staging.py",
         root / "tools" / "tests" / "generated_animation_cache.py",
         root / "tools" / "tests" / "hdr_postprocess_math.py",
+        root / "tools" / "tests" / "idstr_input_safety.py",
+        root / "tools" / "tests" / "lexer_peek_contract.py",
         root / "tools" / "tests" / "key_bind_presentation.py",
         root / "tools" / "tests" / "linux_arm64_cross_compile.py",
         root / "tools" / "tests" / "linux_arm64_ci_coverage.py",
@@ -451,9 +467,11 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "macos_metal_bridge.py",
         root / "tools" / "tests" / "macos_moltenvk_policy.py",
         root / "tools" / "tests" / "mp_bot_characters.py",
+        root / "tools" / "tests" / "mp_bot_intelligence.py",
         root / "tools" / "tests" / "mp_bot_navigation.py",
         root / "tools" / "tests" / "mp_client_combat_effects.py",
         root / "tools" / "tests" / "multiview_demo.py",
+        root / "tools" / "tests" / "mvd_server_api_contract.py",
         root / "tools" / "tests" / "native_glx_shutdown.py",
         root / "tools" / "tests" / "openq4_pure_pack.py",
         root / "tools" / "tests" / "packaging_safety.py",
@@ -477,6 +495,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_vulkan_world_interaction_compatibility.py",
         root / "tools" / "tests" / "savegame_corruption_contract.py",
         root / "tools" / "tests" / "savegame_pointer_width_safety.py",
+        root / "tools" / "tests" / "savegame_v3_contract.py",
         root / "tools" / "tests" / "sdl3_input_parity.py",
         root / "tools" / "tests" / "sdl3_multidisplay_windowing.py",
         root / "tools" / "tests" / "settings_menu_coverage.py",
@@ -490,15 +509,26 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "vk_shader_header_pin.py",
         root / "tools" / "tests" / "vscode_fast_build.py",
     ]
+    failures: list[str] = []
     for test_script in tests:
         if not test_script.is_file():
-            raise ValidationError(f"Python validation test not found: {test_script}")
-        run_command(
-            [sys.executable, str(test_script)],
-            cwd=root,
-            env=env,
-            title=f"Python check: {rel(test_script, root)}",
-            dry_run=args.dry_run,
+            failures.append(f"{rel(test_script, root)}: test script was not found")
+            continue
+        try:
+            run_command(
+                [sys.executable, str(test_script)],
+                cwd=root,
+                env=env,
+                title=f"Python check: {rel(test_script, root)}",
+                dry_run=args.dry_run,
+            )
+        except ValidationError as exc:
+            failures.append(f"{rel(test_script, root)}: {exc}")
+
+    if failures:
+        formatted = "\n".join(f"  - {failure}" for failure in failures)
+        raise ValidationError(
+            f"{len(failures)} Python validation check(s) failed:\n{formatted}"
         )
 
 
@@ -1589,6 +1619,13 @@ def main(argv: list[str]) -> int:
                 cwd=root,
                 env=env,
                 title="Meson compile",
+                dry_run=args.dry_run,
+            )
+            run_command(
+                wrapper + test_args(build_dir),
+                cwd=root,
+                env=env,
+                title="Meson native tests",
                 dry_run=args.dry_run,
             )
             if args.install:

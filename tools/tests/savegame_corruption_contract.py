@@ -83,6 +83,12 @@ MAX_ASYNC_CLIENTS = parse_int_constant(
     "MAX_ASYNC_CLIENTS",
 )
 SESSION_MAX_SAVEGAME_DICT_KV = 16384
+MAX_EXPRESSION_REGISTERS = parse_int_constant(
+    "src/idlib/precompiled.h",
+    r"MAX_EXPRESSION_REGISTERS\s*=\s*(\d+)",
+    "MAX_EXPRESSION_REGISTERS",
+)
+REGISTER_REGCOUNTS = (4, 1, 1, 1, 0, 2, 3, 4)
 SSD_MAX_ASTEROIDS = parse_int_constant("src/ui/GameSSDWindow.h", r"#define\s+MAX_ASTEROIDS\s+(\d+)", "MAX_ASTEROIDS")
 SSD_MAX_ASTRONAUT = parse_int_constant("src/ui/GameSSDWindow.h", r"#define\s+MAX_ASTRONAUT\s+(\d+)", "MAX_ASTRONAUT")
 SSD_MAX_EXPLOSIONS = parse_int_constant("src/ui/GameSSDWindow.h", r"#define\s+MAX_EXPLOSIONS\s+(\d+)", "MAX_EXPLOSIONS")
@@ -114,6 +120,38 @@ SSD_MAX_SAVE_ENTITY_REFS = sum(SSD_ENTITY_POOL_LIMITS.values())
 
 class CorruptSave(ValueError):
     pass
+
+
+def validate_register_schema_model(
+    saved_enabled: int,
+    saved_type: int,
+    saved_count: int,
+    saved_name: str,
+    saved_regs: tuple[int, int, int, int],
+    live_type: int,
+    live_count: int,
+    live_name: str,
+    live_regs: tuple[int, int, int, int],
+) -> None:
+    if saved_enabled not in (0, 1):
+        raise CorruptSave("invalid register enabled flag")
+    if not 0 <= live_type < len(REGISTER_REGCOUNTS):
+        raise CorruptSave("invalid parsed register type")
+    if not 0 <= live_count <= 4 or live_count != REGISTER_REGCOUNTS[live_type]:
+        raise CorruptSave("invalid parsed register count")
+    if not 0 <= saved_type < len(REGISTER_REGCOUNTS):
+        raise CorruptSave("invalid saved register type")
+    if not 0 <= saved_count <= 4 or saved_count != REGISTER_REGCOUNTS[saved_type]:
+        raise CorruptSave("invalid saved register count")
+    if (saved_type, saved_count, saved_name.casefold()) != (live_type, live_count, live_name.casefold()):
+        raise CorruptSave("register schema mismatch")
+    if saved_type == 4 and saved_enabled != 0:
+        raise CorruptSave("string register cannot be enabled")
+    for i in range(saved_count):
+        if saved_regs[i] >= MAX_EXPRESSION_REGISTERS or live_regs[i] >= MAX_EXPRESSION_REGISTERS:
+            raise CorruptSave("register expression index out of range")
+        if saved_regs[i] != live_regs[i]:
+            raise CorruptSave("register expression index mismatch")
 
 
 class SaveHeaderReader:
@@ -425,6 +463,7 @@ def validate_session_source_contract() -> None:
         '#include "BuildVersion.h"',
         "static bool Session_WriteSaveGameBytes( idFile *file, const void *buffer, int len, const char *fieldName, const char *savePath )",
         "static bool Session_WriteSaveGameInt( idFile *file, int value, const char *fieldName, const char *savePath )",
+        "static bool Session_WriteSaveGameUnsignedInt( idFile *file, unsigned int value, const char *fieldName, const char *savePath )",
         "static bool Session_WriteSaveGameString( idFile *file, const char *string, int maxLength, const char *fieldName, const char *savePath )",
         "static bool Session_WriteSaveGameCString( idFile *file, const char *string, int maxLength, const char *fieldName, const char *savePath )",
         "static bool Session_WriteSaveGameDict( idFile *file, const idDict &dict, const char *fieldName, const char *savePath )",
@@ -432,6 +471,12 @@ def validate_session_source_contract() -> None:
         "SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_MAGIC",
         "SESSION_OPENQ4_SAVEGAME_FOOTER_MAGIC",
         "SESSION_OPENQ4_SAVEGAME_FOOTER_BYTES",
+        "SESSION_OPENQ4_SAVEGAME_INTEGRITY_MAGIC",
+        "SESSION_OPENQ4_SAVEGAME_INTEGRITY_BYTES",
+        "SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 3",
+        "SESSION_OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION = 2",
+        "static bool Session_IsSupportedSaveGameV2Snapshot( int build, const idStr &sourceHash, int sourceFileCount )",
+        "static const char *Session_GetSaveGameWireABI( void )",
         "SESSION_MAX_SAVE_DESCRIPTION_BYTES = 8192",
         "SESSION_MAX_SAVE_PREVIEW_BYTES = 64 * 1024 * 1024",
         "static bool Session_IsSafeSaveMaterialPath( const idStr &path )",
@@ -442,8 +487,12 @@ def validate_session_source_contract() -> None:
         "OPENQ4_SAVEGAME_COMPAT_SOURCE_HASH",
         "OPENQ4_SAVEGAME_COMPAT_SOURCE_FILE_COUNT",
         "if ( marker != SESSION_OPENQ4_SAVEGAME_COMPATIBILITY_MAGIC )",
-        "if ( valid && payloadBuild != BUILD_NUMBER )",
-        "const int footerOffset = fileLength - SESSION_OPENQ4_SAVEGAME_FOOTER_BYTES;",
+        "!Session_IsSupportedSaveGameV2Snapshot( payloadBuild, payloadSourceStamp, payloadSourceFileCount )",
+        "payloadWireABI.Icmp( Session_GetSaveGameWireABI() ) != 0",
+        "static bool Session_CalculateSaveGameChecksum( idFile *file, int protectedLength, unsigned int &checksum, const idStr &savePath )",
+        "static bool Session_AppendSaveGameIntegrityTrailer( const idStr &relativePath )",
+        "calculatedChecksum != savedChecksum",
+        "const int footerOffset = protectedLength - SESSION_OPENQ4_SAVEGAME_FOOTER_BYTES;",
         "if ( valid && footerMarker != SESSION_OPENQ4_SAVEGAME_FOOTER_MAGIC )",
         "if ( valid && savedFooterOffset != footerOffset )",
         "if ( valid && !Session_SaveDescriptionMatchesSlot( expectedSlotName, sidecarSaveName ) )",
@@ -457,6 +506,7 @@ def validate_session_source_contract() -> None:
         "if ( bytesWritten != sizeof( value ) )",
         "if ( count < 0 || count > SESSION_MAX_SAVEGAME_DICT_KV )",
         "static bool Session_ReadSaveGameInt( idFile *file, int &value, const char *fieldName, const char *savePath )",
+        "static bool Session_ReadSaveGameUnsignedInt( idFile *file, unsigned int &value, const char *fieldName, const char *savePath )",
         "if ( bytesRead != sizeof( value ) )",
         "static bool Session_ReadSaveGameString( idFile *file, idStr &string, int maxLength, const char *fieldName, const char *savePath )",
         "if ( len < 0 || len > maxLength || len > remainingBytes )",
@@ -474,6 +524,13 @@ def validate_session_source_contract() -> None:
         "loadingSaveGame = false;",
         "savegameFile = NULL;",
         "if ( headerValid && saveMap.IsEmpty() )",
+        "static bool Session_IsSafeNormalizedMapPath( const idStr &path )",
+        "static bool Session_SaveGameMapExists( const idStr &normalizedPath, const idStr &normalizedEntityFilter )",
+        "Session_RecoverInterruptedSaveFiles( in, descriptionPath, previewPath )",
+        "Session_IsCompatibleSaveGameVersion( loadedSavegameVersion )",
+        "Session_SaveGameMapExists( normalizedSaveMap, normalizedEntityFilter )",
+        "static bool Session_RecoverInterruptedSaveFiles( const idStr &gameFile, const idStr &descriptionFile, const idStr &previewFile )",
+        "The payload is committed last.",
         "mapSpawnData.persistentPlayerInfo[i] = loadedPersistentPlayerInfo[i];",
         "savegameFile = loadGameFile;",
         "inFileName[i] <= ' '",
@@ -505,8 +562,9 @@ def validate_session_source_contract() -> None:
         source,
         r"Session_ReadSaveGameDict\s*\(\s*loadGameFile,\s*loadedPersistentPlayerInfo.*?"
         r"Session_ValidateSaveGamePayload\s*\(\s*loadGameFile,\s*in,\s*true\s*\).*?"
+        r"Session_SaveGameMapExists\s*\(\s*normalizedSaveMap,\s*normalizedEntityFilter\s*\).*?"
         r"mapSpawnData\.persistentPlayerInfo.*?ExecuteMapChange",
-        "gameplay payload is preflighted before load state is committed or the map changes",
+        "payload integrity and target map are preflighted before load state is committed or the map changes",
     )
     require_regex(
         source,
@@ -529,6 +587,20 @@ def validate_session_source_contract() -> None:
         r"Session_WriteSaveGameDict\s*\(\s*fileOut,\s*mapSpawnData\.persistentPlayerInfo\s*\[\s*i\s*\].*?"
         r"if\s*\(\s*!headerWritten\s*\)",
         "staged save header write failure cleanup",
+    )
+    require_regex(
+        source,
+        r"game->SaveGame\s*\(\s*fileOut,\s*saveType\s*\).*?"
+        r"Session_AppendSaveGameIntegrityTrailer\s*\(\s*tempGameFile\s*\).*?"
+        r"Session_ValidateStagedSaveGameHeader\s*\(\s*tempGameFile\s*\)",
+        "integrity trailer is appended before staged payload validation",
+    )
+    require_regex(
+        source,
+        r"Session_InitStagedSaveFile\s*\([^;]+tempDescriptionFile[^;]+;.*?"
+        r"Session_InitStagedSaveFile\s*\([^;]+tempGameFile[^;]+;.*?"
+        r"Session_CommitStagedSaveFiles",
+        "sidecars are committed before the payload commit point",
     )
 
     for token in (
@@ -607,9 +679,11 @@ def validate_gamelibs_save_payload_contract() -> None:
 
         for token in (
             "OPENQ4_SAVEGAME_COMPATIBILITY_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'S' << 24 )",
-            "OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 2",
+            "OPENQ4_SAVEGAME_COMPATIBILITY_VERSION = 3",
+            "OPENQ4_SAVEGAME_PREVIOUS_COMPATIBILITY_VERSION = 2",
             "OPENQ4_SAVEGAME_SYNC_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'Y' << 24 )",
             "OPENQ4_SAVEGAME_FOOTER_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'F' << 24 )",
+            "OPENQ4_SAVEGAME_INTEGRITY_MAGIC = 'O' | ( 'Q' << 8 ) | ( '4' << 16 ) | ( 'I' << 24 )",
             '__has_include( "openq4_savegame_compat_generated.h" )',
             '#define OPENQ4_SAVEGAME_COMPAT_SOURCE_HASH "standalone-openq4-game"',
             "void\t\t\t\t\tWriteChecked( int bytesWritten, int expected, const char *detail, int offset );",
@@ -647,26 +721,31 @@ def validate_gamelibs_save_payload_contract() -> None:
             "WriteInt( OPENQ4_SAVEGAME_COMPATIBILITY_VERSION );",
             "WriteString( OPENQ4_SAVEGAME_COMPAT_SOURCE_HASH );",
             "WriteInt( OPENQ4_SAVEGAME_COMPAT_SOURCE_FILE_COUNT );",
+            "WriteString( OpenQ4SaveGameWireABI() );",
             "WriteInt( OPENQ4_SAVEGAME_SYNC_MAGIC );",
             "void idSaveGame::WriteSaveGameFooter( int numObjects )",
             "WriteInt( OPENQ4_SAVEGAME_FOOTER_MAGIC );",
             "ReadInt( marker );",
             "if ( marker != OPENQ4_SAVEGAME_COMPATIBILITY_MAGIC )",
-            "if ( buildNumber == BUILD_NUMBER )",
-            "legacy save payload build %d does not match current build %d",
+            "if ( buildNumber == BUILD_NUMBER &&",
+            "idStr::Icmp( OpenQ4SaveGameWireABI(), \"windows-msvcabi-x64-le-raw1\" ) == 0",
+            "legacy save payload build/ABI %d/%s is not supported by current build/ABI %d/%s",
             "ReadInt( openQ4SaveGameCompatibilityVersion );",
             "ReadString( openQ4SaveGameCompatibilityStamp );",
             "ReadInt( openQ4SaveGameCompatibilitySourceFileCount );",
             "openQ4SaveGameCompatibilityVersion != OPENQ4_SAVEGAME_COMPATIBILITY_VERSION",
-            "payload build %d does not match current build %d",
-            "openQ4SaveGameCompatibilityStamp.Icmp( OPENQ4_SAVEGAME_COMPAT_SOURCE_HASH ) != 0",
-            "source snapshot %s does not match current snapshot %s",
-            "openQ4SaveGameCompatibilitySourceFileCount != OPENQ4_SAVEGAME_COMPAT_SOURCE_FILE_COUNT",
+            "static bool SaveGame_IsSupportedV2Snapshot( int build, const idStr &sourceHash, int sourceFileCount )",
+            "!SaveGame_IsSupportedV2Snapshot( buildNumber, openQ4SaveGameCompatibilityStamp, openQ4SaveGameCompatibilitySourceFileCount )",
+            "ReadString( savedWireABI );",
+            "savedWireABI.Icmp( OpenQ4SaveGameWireABI() ) != 0",
+            "Schema-compatible save source differs",
             "void idRestoreGame::ReadSyncId( const char *detail, const char *classname )",
             "marker mismatch while reading %s%s%s",
             "sequence mismatch while reading %s%s%s",
             "void idRestoreGame::ReadSaveGameFooter( void )",
             "OPENQ4_SAVEGAME_FOOTER_MAGIC",
+            "OPENQ4_SAVEGAME_INTEGRITY_MAGIC",
+            "protectedLength != integrityOffset",
             "unexpected trailing bytes after savegame payload",
             "bool idRestoreGame::IsOpenQ4SaveGameCompatible( void ) const",
             "const char *idRestoreGame::GetOpenQ4SaveGameCompatibilityError( void ) const",
@@ -811,7 +890,7 @@ def validate_gamelibs_save_payload_contract() -> None:
 
     require(
         read("docs/dev/release-completion.md"),
-        "new saves carry a generated engine/GameLibs source snapshot stamp plus payload sync markers and an end footer",
+        "new saves carry a generated engine/GameLibs source snapshot stamp plus payload sync markers, an end footer, an exact wire-ABI stamp, and whole-file CRC protection",
         "release completion notes",
     )
 
@@ -851,13 +930,248 @@ def validate_savegame_compat_stamp_model() -> None:
             raise AssertionError("Savegame compatibility stamp did not track a relevant semantic source change")
 
 
+def validate_gui_register_restore_contract() -> None:
+    # Unused slots in legacy saves may contain indeterminate bytes. They are not
+    # consumed, while new writes zero-fill them to avoid disclosing process data.
+    for register_type, register_count in enumerate(REGISTER_REGCOUNTS):
+        active = tuple(range(100, 104))
+        saved = tuple(active[i] if i < register_count else 0xFFFF for i in range(4))
+        validate_register_schema_model(
+            0 if register_type == 4 else 1,
+            register_type,
+            register_count,
+            "windowColor",
+            saved,
+            register_type,
+            register_count,
+            "WindowColor",
+            active,
+        )
+
+    valid = (10, 11, 12, 13)
+    corrupt_cases = (
+        (2, 0, 4, "rect", valid, 0, 4, "rect", valid),
+        (1, -1, 4, "rect", valid, 0, 4, "rect", valid),
+        (1, len(REGISTER_REGCOUNTS), 4, "rect", valid, 0, 4, "rect", valid),
+        (1, 0, -1, "rect", valid, 0, 4, "rect", valid),
+        (1, 0, 5, "rect", valid, 0, 4, "rect", valid),
+        (1, 0, 3, "rect", valid, 0, 4, "rect", valid),
+        (1, 0, 4, "other", valid, 0, 4, "rect", valid),
+        (1, 4, 0, "text", valid, 4, 0, "text", valid),
+        (1, 0, 4, "rect", (MAX_EXPRESSION_REGISTERS, 11, 12, 13), 0, 4, "rect", valid),
+        (1, 0, 4, "rect", valid, 0, 4, "rect", (MAX_EXPRESSION_REGISTERS, 11, 12, 13)),
+        (1, 0, 4, "rect", (9, 11, 12, 13), 0, 4, "rect", valid),
+    )
+    for case in corrupt_cases:
+        try:
+            validate_register_schema_model(*case)
+        except CorruptSave:
+            pass
+        else:
+            raise AssertionError(f"Corrupt GUI register schema was accepted: {case!r}")
+
+    source = read("src/ui/RegExp.cpp")
+    contract_tokens = (
+        "savefile->WriteUnsignedChar( value )",
+        "savefile->WriteShort( value )",
+        "savefile->WriteInt( value )",
+        "savefile->WriteUnsignedShort( value )",
+        "savefile->ReadUnsignedChar( value )",
+        "savefile->ReadShort( value )",
+        "savefile->ReadInt( value )",
+        "savefile->ReadUnsignedShort( value )",
+        "const unsigned short savedReg = ( i < regCount ) ? regs[i] : 0;",
+        "type == STRING && enabled",
+        "unsigned short savedRegs[4] = { 0, 0, 0, 0 };",
+        "savedEnabled > 1",
+        "savedType < 0 || savedType >= NUMTYPES",
+        "savedRegCount < 0 || savedRegCount > 4 || savedRegCount != expectedSavedRegCount",
+        "savedType != type || savedRegCount != regCount || savedName.Icmp( name ) != 0",
+        "savedType == STRING && savedEnabled != 0",
+        "savedRegs[i] >= MAX_EXPRESSION_REGISTERS || regs[i] >= MAX_EXPRESSION_REGISTERS",
+        "savedRegs[i] != regs[i]",
+        "enabled = savedEnabled != 0;",
+        "RegExp_WriteSaveGameInt( savefile, num, \"register list count\" );",
+        "const int num = RegExp_ReadSaveGameInt( savefile, \"register list count\" );",
+    )
+    for token in contract_tokens:
+        require(source, token, "GUI register savegame schema validation")
+
+    read_start = source.index("void idRegister::ReadFromSaveGame( idFile *savefile )")
+    read_end = source.index("idRegisterList::AddReg", read_start)
+    read_block = source[read_start:read_end]
+    apply_offset = read_block.index("enabled = savedEnabled != 0;")
+    for token in (
+        "savedType < 0 || savedType >= NUMTYPES",
+        "savedRegCount < 0 || savedRegCount > 4",
+        "savedName.Icmp( name ) != 0",
+        "savedRegs[i] >= MAX_EXPRESSION_REGISTERS",
+        "savedRegs[i] != regs[i]",
+    ):
+        if read_block.index(token) >= apply_offset:
+            raise AssertionError(f"GUI register validation occurs after mutable state is applied: {token!r}")
+    if read_block.index("var->ReadFromSaveGame( savefile );") <= apply_offset:
+        raise AssertionError("GUI register variable payload is restored before schema validation")
+
+    raw_primitive_regressions = (
+        "savefile->Write( &enabled",
+        "savefile->Write( &type",
+        "savefile->Write( &regCount",
+        "savefile->Write( &regs[0]",
+        "RegExp_ReadSaveGameBytes( savefile, &enabled",
+        "RegExp_ReadSaveGameBytes( savefile, &type",
+        "RegExp_ReadSaveGameBytes( savefile, &regCount",
+        "RegExp_ReadSaveGameBytes( savefile, &regs[0]",
+    )
+    for needle in raw_primitive_regressions:
+        if needle in source:
+            raise AssertionError(f"GUI register primitive bypasses checked endian-safe I/O: {needle!r}")
+
+    header = read("src/ui/RegExp.h")
+    for token in ("regs[0] = 0;", "regs[1] = 0;", "regs[2] = 0;", "regs[3] = 0;"):
+        if header.count(token) < 2:
+            raise AssertionError(f"Both GUI register constructors must initialize unused slots: {token!r}")
+
+
+def validate_gui_stream_alignment_contract() -> None:
+    descendant_base = -2
+    max_descendants = 1024 * 1024
+
+    def decode_window_reference(
+        saved_reference: int,
+        direct_children: int,
+        descendant_children: int,
+        allow_descendant: bool,
+    ) -> tuple[str, int] | None:
+        if saved_reference == -1:
+            return None
+        if saved_reference >= 0:
+            if saved_reference >= direct_children:
+                raise CorruptSave("direct GUI child reference is out of range")
+            return ("direct", saved_reference)
+        if not allow_descendant or saved_reference > descendant_base:
+            raise CorruptSave("tagged GUI descendant reference is not allowed")
+        ordinal = descendant_base - saved_reference
+        if ordinal < 0 or ordinal >= descendant_children or ordinal >= max_descendants:
+            raise CorruptSave("GUI descendant ordinal is out of range")
+        return ("descendant", ordinal)
+
+    if decode_window_reference(-1, 3, 9, False) is not None:
+        raise AssertionError("Null GUI window reference did not remain null")
+    if decode_window_reference(1, 3, 9, False) != ("direct", 1):
+        raise AssertionError("Legacy direct GUI child reference changed meaning")
+    if decode_window_reference(-2, 3, 9, True) != ("descendant", 0):
+        raise AssertionError("First tagged GUI descendant reference decoded incorrectly")
+    if decode_window_reference(-10, 3, 9, True) != ("descendant", 8):
+        raise AssertionError("Tagged GUI descendant reference decoded incorrectly")
+
+    corrupt_window_references = (
+        (3, 3, 9, False),
+        (-2, 3, 9, False),
+        (-11, 3, 9, True),
+        (-(2**31), 3, 9, True),
+    )
+    for case in corrupt_window_references:
+        try:
+            decode_window_reference(*case)
+        except CorruptSave:
+            pass
+        else:
+            raise AssertionError(f"Corrupt GUI window reference was accepted: {case!r}")
+
+    ui_source = read("src/ui/UserInterface.cpp")
+    for token in (
+        "session != NULL && session->IsLoadingSaveGame()",
+        "aborting before its positional state payload can desynchronize the stream",
+        "UI_MAX_SAVEGAME_STATE_ENTRIES = 16384",
+        "UI_MAX_SAVEGAME_STATE_BYTES = 16 * 1024 * 1024",
+        "UI_ReadSaveGameInt( savefile, num, \"state count\" )",
+        "UI_ReadSaveGameBool( savefile, restoredActive, \"active flag\" )",
+        "savedValue > 1",
+        "restoredState.FindKey( key ) != NULL",
+        "savefile == NULL || desktop == NULL",
+        "desktop->ReadFromSaveGame( savefile );",
+    ):
+        require(ui_source, token, "top-level GUI positional restore validation")
+
+    window_source = read("src/ui/Window.cpp")
+    for token in (
+        "savedChildID != childID",
+        "const unsigned int structuralFlagMask = WIN_CHILD | WIN_DESKTOP;",
+        "savedName.Icmp( name ) != 0",
+        "SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE = -2",
+        "BuildSaveGameChildOrder( orderedChildren, \"idWindow::ReadFromSaveGame\" );",
+        "static_cast<int64>( SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE ) - static_cast<int64>( savedChildId )",
+        "focusedChild = ReadSaveGameChildReference( savefile, \"focused child id\", desktopTrackedDescendants, &hadSavedFocusReference );",
+        "captureChild = ReadSaveGameChildReference( savefile, \"capture child id\", desktopTrackedDescendants, &hadSavedCaptureReference );",
+        "overChild = ReadSaveGameChildReference( savefile, \"hovered child id\", false );",
+        "ValidateRestoredTrackedWindowPointers( hadSavedFocusReference, hadSavedCaptureReference );",
+        "if ( hadSavedFocusReference || focusedChild != NULL )",
+        "if ( hadSavedCaptureReference || captureChild != NULL )",
+        "if ( focusMatches > 1 )",
+        "if ( captureMatches > 1 )",
+        "have duplicate id",
+        "savefile->WriteInt( len )",
+        "could not resolve transition target for window",
+        "transition target '%s' for window '%s' in gui '%s' is missing or ambiguous",
+        "savefile->WriteInt( savedOffset )",
+        "if ( offset < 0 )",
+        "restore cannot continue without desynchronizing the stream",
+        "namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL",
+        "timeLineEvents[i] == NULL || timeLineEvents[i]->event == NULL",
+        "OpenQ4_WriteSaveGameBool( savefile, timeLineEvents[i]->pending",
+        "OpenQ4_ReadSaveGameBool( savefile, timeLineEvents[i]->pending",
+        "( window.simp == NULL ) == ( window.win == NULL )",
+        "could not resolve saved transition target",
+    ):
+        require(window_source, token, "window savegame structural alignment validation")
+
+    require_regex(
+        window_source,
+        r"if\s*\(\s*matchedIndex\s*==\s*-1\s*\)\s*\{\s*common->Error\(",
+        "missing named events fail instead of returning mid-stream",
+    )
+    missing_event_block = re.search(
+        r"if\s*\(\s*matchedIndex\s*==\s*-1\s*\)\s*\{(?P<body>.*?)\n\s*\}",
+        window_source,
+        re.MULTILINE | re.DOTALL,
+    )
+    if missing_event_block is None or "return;" in missing_event_block.group("body"):
+        raise AssertionError("Missing named-event restore may return with unread positional payload")
+
+    script_source = read("src/ui/GuiScript.cpp")
+    for token in (
+        "savefile->WriteInt( conditionReg )",
+        "savefile->ReadInt( savedConditionReg )",
+        "savedConditionReg < -1 || savedConditionReg >= MAX_EXPRESSION_REGISTERS",
+        "savedConditionReg != conditionReg",
+        "GUI script structure changed",
+        "parms[i].var == NULL",
+        "list[i] == NULL",
+    ):
+        require(script_source, token, "GUI script positional restore validation")
+    if "OpenQ4_ReadSaveGameField( savefile, conditionReg" in script_source:
+        raise AssertionError("GUI restore still overwrites parsed script structure from the save")
+
+
 def validate_minigame_restore_contract() -> None:
     ui_restore_contracts = {
         "src/ui/Winvar.h": (
+            "static ID_INLINE void OpenQ4_WriteSaveGameBytes( idFile *savefile, const void *buffer, int len, const char *context, const char *fieldName )",
             "static ID_INLINE void OpenQ4_ReadSaveGameBytes( idFile *savefile, void *buffer, int len, const char *context, const char *fieldName )",
+            "static ID_INLINE void OpenQ4_WriteSaveGameBool( idFile *savefile, bool value, const char *context, const char *fieldName )",
+            "static ID_INLINE void OpenQ4_ReadSaveGameBool( idFile *savefile, bool &value, const char *context, const char *fieldName )",
+            "savedValue > 1",
+            "static ID_INLINE void OpenQ4_WriteSaveGameInt( idFile *savefile, int value, const char *context, const char *fieldName )",
+            "static ID_INLINE void OpenQ4_ReadSaveGameInt( idFile *savefile, int &value, const char *context, const char *fieldName )",
+            "static ID_INLINE void OpenQ4_WriteSaveGameFloat( idFile *savefile, float value, const char *context, const char *fieldName )",
+            "static ID_INLINE void OpenQ4_ReadSaveGameFloat( idFile *savefile, float &value, const char *context, const char *fieldName )",
             "static ID_INLINE void OpenQ4_ReadSaveGameField( idFile *savefile, type &value, const char *context, const char *fieldName )",
             "common->Error( \"%s: truncated %s at offset %d (read %d of %d)\"",
-            "OpenQ4_ReadSaveGameBytes( savefile, &eval, sizeof( eval ), \"idWinBool::ReadFromSaveGame\", \"eval flag\" )",
+            "OpenQ4_ReadSaveGameBool( savefile, eval, \"idWinBool::ReadFromSaveGame\", \"eval flag\" )",
+            "OpenQ4_ReadSaveGameBool( savefile, data, \"idWinBool::ReadFromSaveGame\", \"value\" )",
+            "OpenQ4_ReadSaveGameInt( savefile, data, \"idWinInt::ReadFromSaveGame\", \"value\" )",
+            "OpenQ4_ReadSaveGameFloat( savefile, data, \"idWinFloat::ReadFromSaveGame\", \"value\" )",
             "OpenQ4_ReadSaveGameBytes( savefile, &data[0], len, \"idWinStr::ReadFromSaveGame\", \"string\" )",
             "OpenQ4_ReadSaveGameBytes( savefile, &data[0], len, \"idWinBackground::ReadFromSaveGame\", \"material name\" )",
         ),
@@ -866,10 +1180,11 @@ def validate_minigame_restore_contract() -> None:
             "OpenQ4_ReadSaveGameField( savefile, trans.interp, \"idWindow::ReadSaveGameTransition\", \"interpolate state\" )",
             "OpenQ4_ReadSaveGameBytes( savefile, &string[0], len, \"idWindow::ReadSaveGameString\", \"string\" )",
             "OpenQ4_ReadSaveGameField( savefile, actualX, \"idWindow::ReadFromSaveGame\", \"actualX\" )",
-            "focusedChild = NULL;",
-            "captureChild = NULL;",
-            "overChild = NULL;",
-            "OpenQ4_ReadSaveGameField( savefile, timeLineEvents[i]->pending, \"idWindow::ReadFromSaveGame\", \"timeline pending flag\" )",
+            "focusedChild = ReadSaveGameChildReference( savefile, \"focused child id\", desktopTrackedDescendants, &hadSavedFocusReference );",
+            "captureChild = ReadSaveGameChildReference( savefile, \"capture child id\", desktopTrackedDescendants, &hadSavedCaptureReference );",
+            "overChild = ReadSaveGameChildReference( savefile, \"hovered child id\", false );",
+            "OpenQ4_ReadSaveGameBool( savefile, timeLineEvents[i]->pending, \"idWindow::ReadFromSaveGame\", \"timeline pending flag\" )",
+            "OpenQ4_ReadSaveGameInt( savefile, timeLineEvents[i]->time, \"idWindow::ReadFromSaveGame\", \"timeline event time\" )",
             "OpenQ4_ReadSaveGameField( savefile, num, \"idWindow::ReadFromSaveGame\", \"transition count\" )",
         ),
         "src/ui/SimpleWindow.cpp": (
@@ -878,7 +1193,8 @@ def validate_minigame_restore_contract() -> None:
             "OpenQ4_ReadSaveGameBytes( savefile, &(backName)[0], stringLen, \"idSimpleWindow::ReadFromSaveGame\", \"background name\" )",
         ),
         "src/ui/GuiScript.cpp": (
-            "OpenQ4_ReadSaveGameField( savefile, conditionReg, \"idGuiScript::ReadFromSaveGame\", \"condition register\" )",
+            "const int conditionBytes = savefile->ReadInt( savedConditionReg );",
+            "savedConditionReg != conditionReg",
         ),
     }
     for relative_path, tokens in ui_restore_contracts.items():
@@ -912,6 +1228,17 @@ def validate_minigame_restore_contract() -> None:
         for needle in needles:
             if needle in source:
                 raise AssertionError(f"UI savegame restore field bypasses checked read helper: {needle!r} in {relative_path}")
+
+    winvar_source = read("src/ui/Winvar.h")
+    for needle in (
+        "savefile->Write( &eval",
+        "savefile->Write(&eval",
+        "savefile->Write( &data",
+        "savefile->Write(&data",
+        "OpenQ4_ReadSaveGameBytes( savefile, &eval",
+    ):
+        if needle in winvar_source:
+            raise AssertionError(f"WinVar primitive bypasses checked typed savegame I/O: {needle!r}")
 
     minigame_contracts = {
         "src/ui/GameBustOutWindow.cpp": (
@@ -1229,6 +1556,8 @@ def main() -> None:
     validate_session_source_contract()
     validate_gamelibs_save_payload_contract()
     validate_savegame_compat_stamp_model()
+    validate_gui_register_restore_contract()
+    validate_gui_stream_alignment_contract()
     validate_minigame_restore_contract()
     validate_validation_wiring()
     print("savegame_corruption_contract: ok")

@@ -444,29 +444,6 @@ static int Con_CompletionLower( int ch ) {
 	return tolower( static_cast<unsigned char>( ch ) );
 }
 
-static const char *Con_FindCompletionSegmentStart( const char *cmd ) {
-	const char *segmentStart = cmd;
-	for ( const char *scan = cmd; *scan != '\0'; ++scan ) {
-		if ( *scan == ';' ) {
-			segmentStart = scan + 1;
-		}
-	}
-	return segmentStart;
-}
-
-static void NormalizeCompletionCommandString( const char *cmd, char *normalized, size_t normalizedSize ) {
-	const char *segmentStart = Con_FindCompletionSegmentStart( cmd );
-
-	while ( *segmentStart != '\0' && *segmentStart <= ' ' ) {
-		++segmentStart;
-	}
-
-	idStr::Copynz( normalized, segmentStart, normalizedSize );
-	if ( normalized[0] == '/' || normalized[0] == '\\' ) {
-		memmove( normalized, normalized + 1, strlen( normalized ) );
-	}
-}
-
 static bool Con_IsCompletionWordChar( int ch ) {
 	ch = static_cast<unsigned char>( ch );
 	return ( ( ch >= 'a' && ch <= 'z' ) ||
@@ -483,7 +460,7 @@ static bool Con_IsCompletionBoundary( const char *match, int index ) {
 }
 
 static bool Con_FindSubstringCompletion( const char *match, const char *needle, int *outPos, bool *outBoundary ) {
-	const int needleLen = strlen( needle );
+	const int needleLen = idLib::SizeToInt( strlen( needle ), "Con_FindSubstringCompletion" );
 	int bestPos = -1;
 	bool bestBoundary = false;
 
@@ -629,8 +606,8 @@ static int Con_GetMaxCompletionDistance( int needleLen ) {
 }
 
 static int Con_FindBestCompletionDistance( const char *match, const char *needle, int maxDistance, int *outStart, bool *outBoundary ) {
-	const int needleLen = strlen( needle );
-	const int matchLen = strlen( match );
+	const int needleLen = idLib::SizeToInt( strlen( needle ), "Con_FindBestCompletionDistance" );
+	const int matchLen = idLib::SizeToInt( strlen( match ), "Con_FindBestCompletionDistance" );
 	const int minWindowLen = Max( 1, needleLen - maxDistance );
 	const int maxWindowLen = needleLen + maxDistance;
 	int bestDistance = maxDistance + 1;
@@ -686,7 +663,7 @@ static bool Con_BuildFuzzyCompletionMatch( const char *match, const char *needle
 	}
 
 	idStr::Copynz( outCandidate.match, match, sizeof( outCandidate.match ) );
-	outCandidate.secondary = strlen( match );
+	outCandidate.secondary = idLib::SizeToInt( strlen( match ), "Con_BuildFuzzyCompletionMatch" );
 	outCandidate.tertiary = 0;
 
 	if ( Con_FindSubstringCompletion( match, needle, &pos, &boundary ) ) {
@@ -703,7 +680,9 @@ static bool Con_BuildFuzzyCompletionMatch( const char *match, const char *needle
 		return true;
 	}
 
-	metric = Con_FindBestCompletionDistance( match, needle, Con_GetMaxCompletionDistance( strlen( needle ) ), &start, &boundary );
+	const int maxDistance = Con_GetMaxCompletionDistance(
+		idLib::SizeToInt( strlen( needle ), "Con_BuildFuzzyCompletionMatch" ) );
+	metric = Con_FindBestCompletionDistance( match, needle, maxDistance, &start, &boundary );
 	if ( metric >= 0 ) {
 		outCandidate.category = boundary ? 4 : 5;
 		outCandidate.primary = metric;
@@ -1502,7 +1481,7 @@ void idConsoleLocal::Dump( const char *fileName ) {
 		buffer[x+1] = '\r';
 		buffer[x+2] = '\n';
 		buffer[x+3] = 0;
-		f->Write( buffer.Ptr(), strlen( buffer.Ptr() ) );
+		f->Write( buffer.Ptr(), idLib::SizeToInt( strlen( buffer.Ptr() ), "idConsoleLocal::Dump" ) );
 	}
 
 	fileSystem->CloseFile( f );
@@ -1582,7 +1561,7 @@ void idConsoleLocal::SaveCommandHistory( void ) {
 	for ( int i = 0; i < historyCount; ++i ) {
 		const char *line = historyEditLines[( startLine + i ) % COMMAND_HISTORY].GetBuffer();
 		if ( line[0] != '\0' ) {
-			historyFile->Write( line, strlen( line ) );
+			historyFile->Write( line, idLib::SizeToInt( strlen( line ), "idConsoleLocal::SaveCommandHistory" ) );
 		}
 		historyFile->Write( "\n", 1 );
 	}
@@ -3448,10 +3427,11 @@ bool idConsoleLocal::GetCompletionPopupGeometry( float &popupX, float &popupY, f
 	for ( int i = 0; i < completionCount; ++i ) {
 		char cvarValue[MAX_EDIT_LINE];
 		bool modified;
-		int matchLen = strlen( completionMatches[i] );
+		size_t matchLength = strlen( completionMatches[i] );
 		if ( GetCompletionCvarInfo( completionMatches[i], cvarValue, sizeof( cvarValue ), &modified ) ) {
-			matchLen += 3 + strlen( cvarValue );
+			matchLength += 3 + strlen( cvarValue );
 		}
+		const int matchLen = idLib::SizeToInt( matchLength, "idConsoleLocal::GetCompletionPopupGeometry" );
 		if ( matchLen > longest ) {
 			longest = matchLen;
 		}

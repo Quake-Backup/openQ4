@@ -564,6 +564,9 @@ idGuiScript::WriteToSaveGame
 */
 void idGuiScript::WriteToSaveGame( idFile *savefile ) {
 	int i;
+	if ( savefile == NULL ) {
+		common->Error( "idGuiScript::WriteToSaveGame: NULL output file" );
+	}
 
 	if ( ifList ) {
 		ifList->WriteToSaveGame( savefile );
@@ -572,10 +575,21 @@ void idGuiScript::WriteToSaveGame( idFile *savefile ) {
 		elseList->WriteToSaveGame( savefile );
 	}
 
-	savefile->Write( &conditionReg, sizeof( conditionReg ) );
+	if ( conditionReg < -1 || conditionReg >= MAX_EXPRESSION_REGISTERS ) {
+		common->Error( "idGuiScript::WriteToSaveGame: invalid condition register %d", conditionReg );
+	}
+	const int conditionOffset = savefile->Tell();
+	const int conditionBytes = savefile->WriteInt( conditionReg );
+	if ( conditionBytes != static_cast<int>( sizeof( conditionReg ) ) ) {
+		common->Error( "idGuiScript::WriteToSaveGame: failed to write condition register at offset %d (%d of %d bytes)",
+			conditionOffset, conditionBytes, static_cast<int>( sizeof( conditionReg ) ) );
+	}
 
 	for ( i = 0; i < parms.Num(); i++ ) {
 		if ( parms[i].own ) {
+			if ( parms[i].var == NULL ) {
+				common->Error( "idGuiScript::WriteToSaveGame: owned parameter %d has no variable", i );
+			}
 			parms[i].var->WriteToSaveGame( savefile );
 		}
 	}
@@ -588,6 +602,9 @@ idGuiScript::ReadFromSaveGame
 */
 void idGuiScript::ReadFromSaveGame( idFile *savefile ) {
 	int i;
+	if ( savefile == NULL ) {
+		common->Error( "idGuiScript::ReadFromSaveGame: NULL input file" );
+	}
 
 	if ( ifList ) {
 		ifList->ReadFromSaveGame( savefile );
@@ -596,10 +613,30 @@ void idGuiScript::ReadFromSaveGame( idFile *savefile ) {
 		elseList->ReadFromSaveGame( savefile );
 	}
 
-	OpenQ4_ReadSaveGameField( savefile, conditionReg, "idGuiScript::ReadFromSaveGame", "condition register" );
+	int savedConditionReg = -1;
+	const int conditionOffset = savefile->Tell();
+	const int conditionBytes = savefile->ReadInt( savedConditionReg );
+	if ( conditionBytes != static_cast<int>( sizeof( savedConditionReg ) ) ) {
+		common->Error( "idGuiScript::ReadFromSaveGame: truncated condition register at offset %d (%d of %d bytes)",
+			conditionOffset, conditionBytes, static_cast<int>( sizeof( savedConditionReg ) ) );
+	}
+	if ( savedConditionReg < -1 || savedConditionReg >= MAX_EXPRESSION_REGISTERS ) {
+		common->Error( "idGuiScript::ReadFromSaveGame: invalid saved condition register %d at offset %d",
+			savedConditionReg, conditionOffset );
+	}
+	if ( conditionReg < -1 || conditionReg >= MAX_EXPRESSION_REGISTERS ) {
+		common->Error( "idGuiScript::ReadFromSaveGame: invalid parsed condition register %d", conditionReg );
+	}
+	if ( savedConditionReg != conditionReg ) {
+		common->Error( "idGuiScript::ReadFromSaveGame: saved condition register %d does not match parsed register %d; GUI script structure changed",
+			savedConditionReg, conditionReg );
+	}
 
 	for ( i = 0; i < parms.Num(); i++ ) {
 		if ( parms[i].own ) {
+			if ( parms[i].var == NULL ) {
+				common->Error( "idGuiScript::ReadFromSaveGame: owned parameter %d has no parsed variable", i );
+			}
 			parms[i].var->ReadFromSaveGame( savefile );
 		}
 	}
@@ -900,8 +937,14 @@ idGuiScriptList::WriteToSaveGame
 */
 void idGuiScriptList::WriteToSaveGame( idFile *savefile ) {
 	int i;
+	if ( savefile == NULL ) {
+		common->Error( "idGuiScriptList::WriteToSaveGame: NULL output file" );
+	}
 
 	for ( i = 0; i < list.Num(); i++ ) {
+		if ( list[i] == NULL ) {
+			common->Error( "idGuiScriptList::WriteToSaveGame: NULL script at index %d", i );
+		}
 		list[i]->WriteToSaveGame( savefile );
 	}
 }
@@ -913,8 +956,14 @@ idGuiScriptList::ReadFromSaveGame
 */
 void idGuiScriptList::ReadFromSaveGame( idFile *savefile ) {
 	int i;
+	if ( savefile == NULL ) {
+		common->Error( "idGuiScriptList::ReadFromSaveGame: NULL input file" );
+	}
 
 	for ( i = 0; i < list.Num(); i++ ) {
+		if ( list[i] == NULL ) {
+			common->Error( "idGuiScriptList::ReadFromSaveGame: NULL parsed script at index %d", i );
+		}
 		list[i]->ReadFromSaveGame( savefile );
 	}
 }

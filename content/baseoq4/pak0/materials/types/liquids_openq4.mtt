@@ -1,0 +1,20 @@
+/*
+	openQ4 liquid material types.
+
+	Quake 4 ships a "water" material type in materials/types/types.mtt but nothing for lava or
+	slime, because it has no lava or slime. These fill the set in, so impact effects and sounds can
+	be keyed per liquid the same way they are for every other surface - a weapon def that specifies
+	fx_impact_lava now resolves, and idGameLocal::LiquidTypeName lines up with these names.
+*/
+
+materialType lava
+{
+	description		"Molten rock. Lethal to swim in."
+	rgb				220,90,20
+}
+
+materialType slime
+{
+	description		"Corrosive sludge. Harmful to swim in."
+	rgb				110,160,60
+}

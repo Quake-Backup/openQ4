@@ -32,7 +32,13 @@ If you have questions concerning this license or the applicable additional terms
 #include "Unzip.h"
 #include "openq4_paks_generated.h"
 
+#include <errno.h>
 #include <stdint.h>
+
+#if defined( USE_SDL3 )
+	#include <SDL3/SDL_filesystem.h>
+	#include <SDL3/SDL_error.h>
+#endif
 
 #ifdef WIN32
 	#include <windows.h>
@@ -57,6 +63,127 @@ int Com_GetNumStartupCommandLines( void );
 const idCmdArgs *Com_GetStartupCommandLine( int index );
 
 /*
+========================
+FS_IsWindowsDeviceQPathSegment
+
+Windows resolves these names to devices even when an extension is present.
+Reject both the legacy single-byte and UTF-8 encodings of the superscript
+digits that Windows also treats as COM/LPT device numbers.
+========================
+*/
+static bool FS_IsWindowsDeviceQPathSegment( const char *segment, int segmentLength ) {
+	int stemLength = 0;
+	while ( stemLength < segmentLength && segment[ stemLength ] != '.' ) {
+		stemLength++;
+	}
+
+	if ( stemLength == 3 ) {
+		return idStr::Icmpn( segment, "con", 3 ) == 0 ||
+			idStr::Icmpn( segment, "prn", 3 ) == 0 ||
+			idStr::Icmpn( segment, "aux", 3 ) == 0 ||
+			idStr::Icmpn( segment, "nul", 3 ) == 0;
+	}
+
+	const bool portPrefix = stemLength >= 4 &&
+		( idStr::Icmpn( segment, "com", 3 ) == 0 || idStr::Icmpn( segment, "lpt", 3 ) == 0 );
+	if ( !portPrefix ) {
+		return false;
+	}
+
+	const unsigned char digit = static_cast<unsigned char>( segment[ 3 ] );
+	if ( stemLength == 4 ) {
+		return ( digit >= '1' && digit <= '9' ) || digit == 0xB9 || digit == 0xB2 || digit == 0xB3;
+	}
+
+	return stemLength == 5 && digit == 0xC2 &&
+		( static_cast<unsigned char>( segment[ 4 ] ) == 0xB9 ||
+		  static_cast<unsigned char>( segment[ 4 ] ) == 0xB2 ||
+		  static_cast<unsigned char>( segment[ 4 ] ) == 0xB3 );
+}
+
+/*
+========================
+FS_ValidateRelativeWritePath
+
+Mutation APIs accept portable qpaths, not OS paths.  Validate before joining
+the caller-controlled value to a writable root so platform normalization can
+never reinterpret a segment or escape the game directory.
+========================
+*/
+static bool FS_ValidateRelativeWritePath( const char *relativePath, const char **reason ) {
+	if ( reason != NULL ) {
+		*reason = NULL;
+	}
+
+	if ( relativePath == NULL || relativePath[ 0 ] == '\0' ) {
+		if ( reason != NULL ) {
+			*reason = "path is empty";
+		}
+		return false;
+	}
+	if ( relativePath[ 0 ] == '/' || relativePath[ 0 ] == '\\' ) {
+		if ( reason != NULL ) {
+			*reason = "path is rooted";
+		}
+		return false;
+	}
+
+	const char *segmentStart = relativePath;
+	for ( const char *scan = relativePath; ; scan++ ) {
+		const unsigned char c = static_cast<unsigned char>( *scan );
+		if ( c == '\\' || c == ':' ) {
+			if ( reason != NULL ) {
+				*reason = "path contains an OS path separator or volume marker";
+			}
+			return false;
+		}
+		if ( c != '\0' && ( c < 32 || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*' ) ) {
+			if ( reason != NULL ) {
+				*reason = "path contains a non-portable filename character";
+			}
+			return false;
+		}
+		if ( c != '/' && c != '\0' ) {
+			continue;
+		}
+
+		const int segmentLength = static_cast<int>( scan - segmentStart );
+		if ( segmentLength == 0 ) {
+			if ( reason != NULL ) {
+				*reason = "path contains an empty segment";
+			}
+			return false;
+		}
+		if ( ( segmentLength == 1 && segmentStart[ 0 ] == '.' ) ||
+			 ( segmentLength == 2 && segmentStart[ 0 ] == '.' && segmentStart[ 1 ] == '.' ) ) {
+			if ( reason != NULL ) {
+				*reason = "path contains a dot directory segment";
+			}
+			return false;
+		}
+		if ( segmentStart[ 0 ] == ' ' ||
+			 segmentStart[ segmentLength - 1 ] == '.' ||
+			 segmentStart[ segmentLength - 1 ] == ' ' ) {
+			if ( reason != NULL ) {
+				*reason = "path segment starts or ends in a character normalized by Windows";
+			}
+			return false;
+		}
+		if ( FS_IsWindowsDeviceQPathSegment( segmentStart, segmentLength ) ) {
+			if ( reason != NULL ) {
+				*reason = "path contains a Windows device name";
+			}
+			return false;
+		}
+
+		if ( c == '\0' ) {
+			return true;
+		}
+		segmentStart = scan + 1;
+	}
+}
+
+/*
 =============================================================================
 
 DOOM FILESYSTEM
@@ -65,8 +192,9 @@ All of Doom's data access is through a hierarchical file system, but the content
 the file system can be transparently merged from several sources.
 
 A "relativePath" is a reference to game file data, which must include a terminating zero.
-"..", "\\", and ":" are explicitly illegal in qpaths to prevent any references
-outside the Doom directory system.
+Dot directory segments, empty segments, OS separators and volume markers are
+illegal in qpaths used for mutation, preventing references outside the Doom
+directory system and platform-specific filename aliases.
 
 The "base path" is the path to the directory holding all the game directories and
 usually the executable. It defaults to the current directory, but can be overridden
@@ -1272,6 +1400,10 @@ public:
 	virtual int				ReadFile( const char *relativePath, void **buffer, ID_TIME_T *timestamp );
 	virtual void			FreeFile( void *buffer );
 	virtual int				WriteFile( const char *relativePath, const void *buffer, int size, const char *basePath = "fs_savepath" );
+	virtual bool			PromoteFile( const char *stagedRelativePath, const char *finalRelativePath,
+								const char *basePath = "fs_savepath" );
+	virtual bool			RemoveFileChecked( const char *relativePath,
+								const char *basePath = "fs_savepath" );
 	virtual void			RemoveFile( const char *relativePath, const char *basePath = "fs_savepath" );
 	virtual int				RemoveExplicitFile( const char *OSPath );
 	virtual void			SetIsFileLoadingAllowed( bool mode );
@@ -2093,11 +2225,68 @@ const char *idFileSystemLocal::RelativePathToOSPath( const char *relativePath, c
 
 /*
 =================
+idFileSystemLocal::RemoveFileChecked
+
+Removes a validated qpath from exactly one writable root.  An already-absent
+file is a successful cleanup; every other host error is reported to the caller.
+=================
+*/
+bool idFileSystemLocal::RemoveFileChecked( const char *relativePath,
+		const char *basePath ) {
+	if ( !searchPaths ) {
+		common->Warning( "idFileSystemLocal::RemoveFileChecked: filesystem is not initialized" );
+		return false;
+	}
+	const char *invalidReason = NULL;
+	if ( !FS_ValidateRelativeWritePath( relativePath, &invalidReason ) ) {
+		common->Warning( "idFileSystemLocal::RemoveFileChecked: refusing unsafe relative path (%s)",
+			invalidReason != NULL ? invalidReason : "invalid path" );
+		return false;
+	}
+	if ( basePath == NULL || basePath[ 0 ] == '\0' ) {
+		common->Warning( "idFileSystemLocal::RemoveFileChecked: writable root is empty" );
+		return false;
+	}
+
+	const char *root = cvarSystem->GetCVarString( basePath );
+	if ( root == NULL || root[ 0 ] == '\0' ) {
+		if ( idStr::Icmp( basePath, "fs_savepath" ) != 0 ) {
+			common->Warning( "idFileSystemLocal::RemoveFileChecked: writable root '%s' is unset",
+				basePath );
+			return false;
+		}
+		root = fs_savepath.GetString();
+	}
+	if ( root == NULL || root[ 0 ] == '\0' ) {
+		common->Warning( "idFileSystemLocal::RemoveFileChecked: fs_savepath is unset" );
+		return false;
+	}
+
+	const idStr OSPath = BuildOSPath( root, gameFolder, relativePath );
+	errno = 0;
+	const int removalResult = remove( OSPath.c_str() );
+	const int removalError = errno;
+	if ( removalResult == 0 || removalError == ENOENT ) {
+		ClearDirCache();
+		return true;
+	}
+	common->Warning( "Could not remove '%s' from '%s' (error %d)",
+		relativePath, basePath, removalError );
+	return false;
+}
+
+/*
+=================
 idFileSystemLocal::RemoveFile
 =================
 */
 void idFileSystemLocal::RemoveFile( const char *relativePath, const char *basePath ) {
 	idStr OSPath;
+	const char *invalidReason;
+	if ( !FS_ValidateRelativeWritePath( relativePath, &invalidReason ) ) {
+		common->Warning( "idFileSystemLocal::RemoveFile: refusing unsafe relative path (%s)", invalidReason );
+		return;
+	}
 
 	if ( idStr::Icmp( basePath, "fs_savepath" ) != 0 ) {
 		const char *path = cvarSystem->GetCVarString( basePath );
@@ -2344,6 +2533,11 @@ int idFileSystemLocal::WriteFile( const char *relativePath, const void *buffer, 
 	if ( !relativePath || !buffer ) {
 		common->FatalError( "idFileSystemLocal::WriteFile: NULL parameter" );
 	}
+	const char *invalidReason;
+	if ( !FS_ValidateRelativeWritePath( relativePath, &invalidReason ) ) {
+		common->Warning( "idFileSystemLocal::WriteFile: refusing unsafe relative path (%s)", invalidReason );
+		return -1;
+	}
 
 	f = idFileSystemLocal::OpenFileWrite( relativePath, basePath );
 	if ( !f ) {
@@ -2356,6 +2550,70 @@ int idFileSystemLocal::WriteFile( const char *relativePath, const void *buffer, 
 	CloseFile( f );
 
 	return size;
+}
+
+/*
+============
+idFileSystemLocal::PromoteFile
+
+Promotes a staged qpath with the host's atomic replace primitive.  Copying is
+deliberately not a fallback: an interrupted copy could destroy the prior final
+artifact and would violate the caller's transaction guarantee.
+============
+*/
+bool idFileSystemLocal::PromoteFile( const char *stagedRelativePath,
+		const char *finalRelativePath, const char *basePath ) {
+	if ( !searchPaths ) {
+		common->FatalError( "Filesystem call made without initialization\n" );
+	}
+
+	const char *stagedReason = NULL;
+	const char *finalReason = NULL;
+	if ( !FS_ValidateRelativeWritePath( stagedRelativePath, &stagedReason ) ||
+		 !FS_ValidateRelativeWritePath( finalRelativePath, &finalReason ) ) {
+		common->Warning( "idFileSystemLocal::PromoteFile: refusing unsafe qpath (%s)",
+			stagedReason != NULL ? stagedReason : ( finalReason != NULL ? finalReason : "invalid path" ) );
+		return false;
+	}
+	if ( idStr::Icmp( stagedRelativePath, finalRelativePath ) == 0 ) {
+		common->Warning( "idFileSystemLocal::PromoteFile: staged and final qpaths are identical" );
+		return false;
+	}
+
+	const char *root = cvarSystem->GetCVarString( basePath );
+	if ( root == NULL || root[ 0 ] == '\0' ) {
+		root = fs_savepath.GetString();
+	}
+	idStr stagedOS = BuildOSPath( root, gameFolder, stagedRelativePath );
+	idStr finalOS = BuildOSPath( root, gameFolder, finalRelativePath );
+	CreateOSPath( finalOS );
+
+	bool promoted = false;
+#if defined( USE_SDL3 )
+	promoted = SDL_RenamePath( stagedOS.c_str(), finalOS.c_str() );
+	if ( !promoted ) {
+		common->Warning( "Could not atomically promote '%s' to '%s': %s",
+			stagedRelativePath, finalRelativePath, SDL_GetError() );
+	}
+#elif defined( WIN32 )
+	promoted = MoveFileExA( stagedOS.c_str(), finalOS.c_str(),
+		MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH ) != FALSE;
+	if ( !promoted ) {
+		common->Warning( "Could not atomically promote '%s' to '%s' (error %lu)",
+			stagedRelativePath, finalRelativePath, static_cast<unsigned long>( GetLastError() ) );
+	}
+#else
+	promoted = rename( stagedOS.c_str(), finalOS.c_str() ) == 0;
+	if ( !promoted ) {
+		common->Warning( "Could not atomically promote '%s' to '%s' (error %d)",
+			stagedRelativePath, finalRelativePath, errno );
+	}
+#endif
+
+	if ( promoted ) {
+		ClearDirCache();
+	}
+	return promoted;
 }
 
 /*
@@ -2836,10 +3094,9 @@ int idFileSystemLocal::GetFileList( const char *relativePath, const idStrList &e
 	if ( !relativePath ) {
 		return 0;
 	}
-	pathLength = strlen( relativePath );
-	if ( pathLength ) {
-		pathLength++;	// for the trailing '/'
-	}
+	const size_t relativePathLength = strlen( relativePath );
+	pathLength = relativePathLength == 0 ? 0 :
+		idLib::SizeToInt( relativePathLength + 1, "idFileSystemLocal::GetFileList" ); // include the trailing '/'
 
 	// search through the path, one element at a time, adding to list
 	for( search = searchPaths; search != NULL; search = search->next ) {
@@ -4304,7 +4561,7 @@ void idFileSystemLocal::TouchFileList_f( const idCmdArgs &args ) {
 	const char *buffer = NULL;
 	idParser src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWMULTICHARLITERALS | LEXFL_ALLOWBACKSLASHSTRINGCONCAT );
 	if ( fileSystem->ReadFile( args.Argv( 1 ), ( void** )&buffer, NULL ) && buffer ) {
-		src.LoadMemory( buffer, strlen( buffer ), args.Argv( 1 ) );
+		src.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idFileSystemLocal::TouchFileList_f" ), args.Argv( 1 ) );
 		if ( src.IsLoaded() ) {
 			idToken token;
 			while( src.ReadToken( &token ) ) {
@@ -5810,7 +6067,7 @@ idFileSystemLocal::FileAllowedFromDir
 ===========
 */
 bool idFileSystemLocal::FileAllowedFromDir( const char *path ) {
-	unsigned int l;
+	size_t l;
 
 	if ( path == NULL ) {
 		return false;
@@ -6256,6 +6513,11 @@ idFile *idFileSystemLocal::OpenFileWrite( const char *relativePath, const char *
 	if ( !searchPaths ) {
 		common->FatalError( "Filesystem call made without initialization\n" );
 	}
+	const char *invalidReason;
+	if ( !FS_ValidateRelativeWritePath( relativePath, &invalidReason ) ) {
+		common->Warning( "idFileSystemLocal::OpenFileWrite: refusing unsafe relative path (%s)", invalidReason );
+		return NULL;
+	}
 
 	path = cvarSystem->GetCVarString( basePath );
 	if ( !path[0] ) {
@@ -6370,6 +6632,11 @@ idFile *idFileSystemLocal::OpenFileAppend( const char *relativePath, bool sync, 
 	if ( !searchPaths ) {
 		common->FatalError( "Filesystem call made without initialization\n" );
 	}
+	const char *invalidReason;
+	if ( !FS_ValidateRelativeWritePath( relativePath, &invalidReason ) ) {
+		common->Warning( "idFileSystemLocal::OpenFileAppend: refusing unsafe relative path (%s)", invalidReason );
+		return NULL;
+	}
 
 	path = cvarSystem->GetCVarString( basePath );
 	if ( !path[0] ) {
@@ -6443,12 +6710,38 @@ back ground loading
 idFileSystemLocal::CurlWriteFunction
 =================
 */
+struct curlDownloadContext_t {
+	backgroundDownload_t *download;
+	const size_t maximumBytes;
+	size_t bytesWritten;
+};
+
 size_t idFileSystemLocal::CurlWriteFunction( void *ptr, size_t size, size_t nmemb, void *stream ) {
-	backgroundDownload_t *bgl = (backgroundDownload_t *)stream;
-	if ( !bgl->f ) {
-		return size * nmemb;
+	curlDownloadContext_t *context = static_cast<curlDownloadContext_t *>( stream );
+	backgroundDownload_t *bgl = context->download;
+	const size_t maximumSize = static_cast<size_t>( -1 );
+	if ( size != 0 && nmemb > maximumSize / size ) {
+		idStr::Copynz( bgl->url.dlerror, "download byte count overflow", MAX_STRING_CHARS );
+		return 0;
 	}
-	return fwrite(ptr, size, nmemb, static_cast<idFile_Permanent*>(bgl->f)->GetFilePtr());
+
+	const size_t byteCount = size * nmemb;
+	if ( context->bytesWritten > maximumSize - byteCount ) {
+		idStr::Copynz( bgl->url.dlerror, "download byte count overflow", MAX_STRING_CHARS );
+		return 0;
+	}
+	if ( context->maximumBytes != 0 &&
+		 ( context->bytesWritten > context->maximumBytes || byteCount > context->maximumBytes - context->bytesWritten ) ) {
+		idStr::Copynz( bgl->url.dlerror, "download exceeds advertised size", MAX_STRING_CHARS );
+		return 0;
+	}
+	if ( !bgl->f ) {
+		return byteCount;
+	}
+
+	const size_t written = fwrite( ptr, 1, byteCount, static_cast<idFile_Permanent *>( bgl->f )->GetFilePtr() );
+	context->bytesWritten += written;
+	return written;
 }
 
 /*
@@ -6461,10 +6754,34 @@ int idFileSystemLocal::CurlProgressFunction( void *clientp, double dltotal, doub
 	if ( bgl->url.status == DL_ABORTING || Sys_IsCurrentThreadStopRequested() ) {
 		return 1;
 	}
-	bgl->url.dltotal = dltotal;
-	bgl->url.dlnow = dlnow;
+	const int reportedTotal = dltotal >= idMath::INT_MAX ? idMath::INT_MAX :
+		( dltotal > 0.0 ? static_cast<int>( dltotal ) : 0 );
+	const int reportedNow = dlnow >= idMath::INT_MAX ? idMath::INT_MAX :
+		( dlnow > 0.0 ? static_cast<int>( dlnow ) : 0 );
+	if ( bgl->url.expectedSize > 0 ) {
+		bgl->url.dltotal = bgl->url.expectedSize;
+		bgl->url.dlnow = Min( reportedNow, bgl->url.expectedSize );
+	} else {
+		bgl->url.dltotal = reportedTotal;
+		bgl->url.dlnow = reportedNow;
+	}
 	return 0;
 }
+
+#if ID_ENABLE_CURL
+class idScopedCurlEasySession {
+public:
+	explicit idScopedCurlEasySession( CURL *session ) : session( session ) {}
+	~idScopedCurlEasySession() {
+		curl_easy_cleanup( session );
+	}
+
+private:
+	idScopedCurlEasySession( const idScopedCurlEasySession & ) = delete;
+	idScopedCurlEasySession &operator=( const idScopedCurlEasySession & ) = delete;
+	CURL *session;
+};
+#endif
 
 /*
 ===================
@@ -6501,7 +6818,10 @@ dword BackgroundDownloadThread( void *parms ) {
 			// DLTYPE_URL
 			// use a local buffer for curl error since the size define is local
 			char error_buf[ CURL_ERROR_SIZE ];
+			error_buf[ 0 ] = '\0';
 			bgl->url.dlerror[ 0 ] = '\0';
+			const size_t maximumBytes = bgl->url.expectedSize > 0 ? static_cast<size_t>( bgl->url.expectedSize ) : 0;
+			curlDownloadContext_t downloadContext = { bgl, maximumBytes, 0 };
 			CURL *session = curl_easy_init();
 			CURLcode ret;
 			if ( !session ) {
@@ -6510,6 +6830,7 @@ dword BackgroundDownloadThread( void *parms ) {
 				bgl->completed = true;
 				continue;
 			}
+			idScopedCurlEasySession scopedSession( session );
 			ret = curl_easy_setopt( session, CURLOPT_ERRORBUFFER, error_buf );
 			if ( ret ) {
 				bgl->url.dlstatus = ret;
@@ -6538,7 +6859,7 @@ dword BackgroundDownloadThread( void *parms ) {
 				bgl->completed = true;
 				continue;
 			}
-			ret = curl_easy_setopt( session, CURLOPT_WRITEDATA, bgl );
+			ret = curl_easy_setopt( session, CURLOPT_WRITEDATA, &downloadContext );
 			if ( ret ) {
 				bgl->url.dlstatus = ret;
 				bgl->url.status = DL_FAILED;
@@ -6571,9 +6892,23 @@ dword BackgroundDownloadThread( void *parms ) {
 			bgl->url.status = DL_INPROGRESS;
 			ret = curl_easy_perform( session );
 			if ( ret ) {
-				Sys_Printf( "curl_easy_perform failed: %s\n", error_buf );
-				idStr::Copynz( bgl->url.dlerror, error_buf, MAX_STRING_CHARS );
+				const char *errorMessage = bgl->url.dlerror[ 0 ] != '\0' ? bgl->url.dlerror :
+					( error_buf[ 0 ] != '\0' ? error_buf : curl_easy_strerror( ret ) );
+				Sys_Printf( "curl_easy_perform failed: %s\n", errorMessage );
+				if ( bgl->url.dlerror[ 0 ] == '\0' ) {
+					idStr::Copynz( bgl->url.dlerror, errorMessage, MAX_STRING_CHARS );
+				}
 				bgl->url.dlstatus = ret;
+				bgl->url.status = DL_FAILED;
+				bgl->completed = true;
+				continue;
+			}
+			if ( downloadContext.maximumBytes != 0 && downloadContext.bytesWritten != downloadContext.maximumBytes ) {
+				idStr::snPrintf( bgl->url.dlerror, MAX_STRING_CHARS,
+					"download size mismatch: received %zu bytes, expected %zu",
+					downloadContext.bytesWritten, downloadContext.maximumBytes );
+				Sys_Printf( "%s\n", bgl->url.dlerror );
+				bgl->url.dlstatus = CURLE_PARTIAL_FILE;
 				bgl->url.status = DL_FAILED;
 				bgl->completed = true;
 				continue;
@@ -6885,7 +7220,9 @@ idFileSystemLocal::HasD3XP
 ===============
 */
 bool idFileSystemLocal::HasD3XP( void ) {
+#if ID_ALLOW_D3XP
 	int			i;
+#endif
 	idStrList	dirs, pk4s;
 	idStr		gamepath;
 

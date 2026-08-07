@@ -684,7 +684,6 @@ Sys_Sentry
 ==================
 */
 void Sys_Sentry() {
-	int j = 0;
 }
 
 /*
@@ -1507,7 +1506,7 @@ void Sys_GenerateEvents(void) {
 		char* b;
 		int		len;
 
-		len = strlen(s) + 1;
+		len = idLib::SizeToInt( strlen( s ) + 1, "Sys_GenerateEvents console command" );
 		b = (char*)Mem_Alloc(len);
 		strcpy(b, s);
 		Sys_QueEvent(0, SE_CONSOLE, 0, 0, len, b);
@@ -1636,7 +1635,7 @@ returns true if there is a copy of openQ4 running already
 bool Sys_AlreadyRunning(void) {
 #ifndef DEBUG
 	if (!win32.win_allowMultipleInstances.GetBool()) {
-		HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE, "openQ4");
+		::CreateMutex(NULL, FALSE, "openQ4");
 		if (::GetLastError() == ERROR_ALREADY_EXISTS || ::GetLastError() == ERROR_ACCESS_DENIED) {
 			return true;
 		}

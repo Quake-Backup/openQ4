@@ -47,6 +47,10 @@ along with Doom 3 Source Code.  If not, see <http://www.gnu.org/licenses/>.
 #include <cmath>
 #include <cstdint>
 
+#if defined(OPENQ4_SDL3_DARWIN_HOST)
+#include "../osx/macosx_common.h"
+#endif
+
 #if defined(OPENQ4_SDL3_POSIX_HOST)
 struct PosixSDL3Compat_t {
 	void *hWnd;
@@ -405,16 +409,19 @@ static bool SDL3_ShouldQueueMousePoll(int action, int value) {
 	return true;
 }
 
+#if defined(OPENQ4_SDL3_LINUX_HOST)
 static const char *SDL3_EnvString(const char *name) {
 	const char *value = getenv(name);
 	return (value != NULL && value[0] != '\0') ? value : "<unset>";
 }
+#endif
 
 static const char *SDL3_HintString(const char *name) {
 	const char *value = SDL_GetHint(name);
 	return (value != NULL && value[0] != '\0') ? value : "<unset>";
 }
 
+#if defined(OPENQ4_SDL3_LINUX_HOST)
 static bool SDL3_EnvHasValue(const char *name) {
 	const char *value = getenv(name);
 	return value != NULL && value[0] != '\0';
@@ -424,11 +431,13 @@ static bool SDL3_EnvFlagEnabled(const char *name) {
 	const char *value = getenv(name);
 	return value != NULL && value[0] != '\0' && idStr::Icmp(value, "0") != 0 && idStr::Icmp(value, "false") != 0;
 }
+#endif
 
 static bool SDL3_StringEquals(const char *a, const char *b) {
 	return a != NULL && b != NULL && idStr::Icmp(a, b) == 0;
 }
 
+#if defined(OPENQ4_SDL3_DARWIN_HOST)
 static void SDL3_SetHintDefaultLogged(const char *name, const char *value, const char *context) {
 	if (name == NULL || name[0] == '\0' || value == NULL) {
 		return;
@@ -439,6 +448,7 @@ static void SDL3_SetHintDefaultLogged(const char *name, const char *value, const
 		Sys_Printf("SDL3: failed to set %s hint %s=%s\n", context != NULL ? context : "default", name, value);
 	}
 }
+#endif
 
 static bool SDL3_IsMacOSMetalBridge(void) {
 #if defined(OPENQ4_SDL3_DARWIN_HOST) && defined(OPENQ4_MACOS_METAL_BRIDGE)
@@ -3051,6 +3061,7 @@ static sdl3DisplaySelection_t SDL3_ResolveTargetDisplay(bool warnOnInvalidScreen
 	return selection;
 }
 
+#if defined(OPENQ4_SDL3_POSIX_HOST)
 static bool SDL3_QueryDesktopResolution(int *width, int *height, const char *platformName) {
 	if (width == NULL || height == NULL) {
 		return false;
@@ -3087,6 +3098,7 @@ static bool SDL3_QueryDesktopResolution(int *width, int *height, const char *pla
 
 	return false;
 }
+#endif
 
 static bool SDL3_IsSteamDeckPlatformProfile(void) {
 	if (cvarSystem == NULL || !cvarSystem->IsInitialized()) {
@@ -3135,6 +3147,67 @@ static void SDL3_ApplySteamDeckPerformanceDefaults(void) {
 	const int deckFrameCap = SDL3_DetectSteamDeckFrameCap();
 	com_maxfps.SetInteger(deckFrameCap);
 	common->Printf("Steam Deck performance defaults: setting com_maxfps to %d.\n", deckFrameCap);
+}
+
+struct sdl3WindowBorders_t {
+	int top;
+	int left;
+	int bottom;
+	int right;
+};
+
+static int SDL3_SaturateWindowCoordinate(int64_t value) {
+	if (value <= static_cast<int64_t>(idMath::INT_MIN)) {
+		return idMath::INT_MIN;
+	}
+	if (value >= static_cast<int64_t>(idMath::INT_MAX)) {
+		return idMath::INT_MAX;
+	}
+	return static_cast<int>(value);
+}
+
+static sdl3WindowBorders_t SDL3_GetWindowBorders(void) {
+	sdl3WindowBorders_t borders = { 0, 0, 0, 0 };
+	if (s_sdlWindow == NULL) {
+		return borders;
+	}
+	if ((SDL_GetWindowFlags(s_sdlWindow) & SDL_WINDOW_BORDERLESS) != 0) {
+		return borders;
+	}
+
+	bool haveBorders = SDL_GetWindowBordersSize(
+		s_sdlWindow, &borders.top, &borders.left, &borders.bottom, &borders.right);
+#if defined(OPENQ4_SDL3_DARWIN_HOST)
+	if (!haveBorders) {
+		haveBorders = Sys_SDL_GetNativeWindowBorders(
+			s_sdlWindow, &borders.top, &borders.left, &borders.bottom, &borders.right);
+		if (haveBorders) {
+			SDL_ClearError();
+		}
+	}
+#endif
+	(void)haveBorders;
+
+	// A backend that cannot report decorations is required by SDL to return
+	// zeroes. Also reject negative or implausibly large values before any frame
+	// arithmetic, since these dimensions come from the window server.
+	borders.top = idMath::ClampInt(0, 16384, borders.top);
+	borders.left = idMath::ClampInt(0, 16384, borders.left);
+	borders.bottom = idMath::ClampInt(0, 16384, borders.bottom);
+	borders.right = idMath::ClampInt(0, 16384, borders.right);
+	return borders;
+}
+
+static void SDL3_ClientOriginToFrameOrigin(int clientX, int clientY, int &frameX, int &frameY) {
+	const sdl3WindowBorders_t borders = SDL3_GetWindowBorders();
+	frameX = SDL3_SaturateWindowCoordinate(static_cast<int64_t>(clientX) - borders.left);
+	frameY = SDL3_SaturateWindowCoordinate(static_cast<int64_t>(clientY) - borders.top);
+}
+
+static void SDL3_FrameOriginToClientOrigin(int frameX, int frameY, int &clientX, int &clientY) {
+	const sdl3WindowBorders_t borders = SDL3_GetWindowBorders();
+	clientX = SDL3_SaturateWindowCoordinate(static_cast<int64_t>(frameX) + borders.left);
+	clientY = SDL3_SaturateWindowCoordinate(static_cast<int64_t>(frameY) + borders.top);
 }
 
 static bool SDL3_GetDisplayWindowedPlacementBounds(SDL_DisplayID display, SDL_Rect &bounds) {
@@ -3186,23 +3259,30 @@ static bool SDL3_GetVirtualDisplayBounds(SDL_Rect &bounds) {
 }
 
 static bool SDL3_RectsOverlap(const SDL_Rect &a, const SDL_Rect &b) {
-	const int overlapLeft = (a.x > b.x) ? a.x : b.x;
-	const int overlapTop = (a.y > b.y) ? a.y : b.y;
-	const int overlapRight = ((a.x + a.w) < (b.x + b.w)) ? (a.x + a.w) : (b.x + b.w);
-	const int overlapBottom = ((a.y + a.h) < (b.y + b.h)) ? (a.y + a.h) : (b.y + b.h);
+	const int64_t aRight = static_cast<int64_t>(a.x) + a.w;
+	const int64_t aBottom = static_cast<int64_t>(a.y) + a.h;
+	const int64_t bRight = static_cast<int64_t>(b.x) + b.w;
+	const int64_t bBottom = static_cast<int64_t>(b.y) + b.h;
+	const int64_t overlapLeft = (a.x > b.x) ? a.x : b.x;
+	const int64_t overlapTop = (a.y > b.y) ? a.y : b.y;
+	const int64_t overlapRight = (aRight < bRight) ? aRight : bRight;
+	const int64_t overlapBottom = (aBottom < bBottom) ? aBottom : bBottom;
 	return overlapRight > overlapLeft && overlapBottom > overlapTop;
 }
 
-static bool SDL3_WindowRectIntersectsAnyDisplay(int x, int y, int width, int height) {
-	if (width <= 0 || height <= 0) {
+static bool SDL3_WindowRectIntersectsAnyDisplay(int frameX, int frameY, int clientWidth, int clientHeight) {
+	if (clientWidth <= 0 || clientHeight <= 0) {
 		return false;
 	}
 
+	const sdl3WindowBorders_t borders = SDL3_GetWindowBorders();
 	SDL_Rect windowRect;
-	windowRect.x = x;
-	windowRect.y = y;
-	windowRect.w = width;
-	windowRect.h = height;
+	windowRect.x = frameX;
+	windowRect.y = frameY;
+	windowRect.w = SDL3_SaturateWindowCoordinate(
+		static_cast<int64_t>(clientWidth) + borders.left + borders.right);
+	windowRect.h = SDL3_SaturateWindowCoordinate(
+		static_cast<int64_t>(clientHeight) + borders.top + borders.bottom);
 
 	int displayCount = 0;
 	SDL_DisplayID *displays = SDL_GetDisplays(&displayCount);
@@ -3228,35 +3308,46 @@ static bool SDL3_WindowRectIntersectsAnyDisplay(int x, int y, int width, int hei
 
 static int SDL3_ClampWindowDimension(int value, int minValue, int maxValue) {
 	if (maxValue <= 0) {
-		return minValue;
+		return 1;
 	}
 	const int effectiveMin = (minValue > maxValue) ? maxValue : minValue;
 	return idMath::ClampInt(effectiveMin, maxValue, value);
 }
 
-static void SDL3_ConstrainWindowRectToBounds(int &x, int &y, int &width, int &height, const SDL_Rect &bounds, bool recenterIfOutside) {
-	width = SDL3_ClampWindowDimension(width, 320, bounds.w);
-	height = SDL3_ClampWindowDimension(height, 240, bounds.h);
+static void SDL3_ConstrainWindowRectToBounds(int &frameX, int &frameY, int &clientWidth, int &clientHeight, const SDL_Rect &bounds, bool recenterIfOutside) {
+	const sdl3WindowBorders_t borders = SDL3_GetWindowBorders();
+	const int64_t availableClientWidth = static_cast<int64_t>(bounds.w) - borders.left - borders.right;
+	const int64_t availableClientHeight = static_cast<int64_t>(bounds.h) - borders.top - borders.bottom;
+	const int maxClientWidth = availableClientWidth > 1 ? static_cast<int>(availableClientWidth) : 1;
+	const int maxClientHeight = availableClientHeight > 1 ? static_cast<int>(availableClientHeight) : 1;
+	clientWidth = SDL3_ClampWindowDimension(clientWidth, 320, maxClientWidth);
+	clientHeight = SDL3_ClampWindowDimension(clientHeight, 240, maxClientHeight);
 
-	const int maxX = bounds.x + bounds.w - width;
-	const int maxY = bounds.y + bounds.h - height;
+	const int64_t frameWidth = static_cast<int64_t>(clientWidth) + borders.left + borders.right;
+	const int64_t frameHeight = static_cast<int64_t>(clientHeight) + borders.top + borders.bottom;
+	const int maxX = SDL3_SaturateWindowCoordinate(
+		static_cast<int64_t>(bounds.x) + bounds.w - frameWidth);
+	const int maxY = SDL3_SaturateWindowCoordinate(
+		static_cast<int64_t>(bounds.y) + bounds.h - frameHeight);
 
 	if (maxX < bounds.x) {
-		x = bounds.x;
+		frameX = bounds.x;
 	} else {
-		if (recenterIfOutside && (x < bounds.x || x > maxX)) {
-			x = bounds.x + ((bounds.w - width) / 2);
+		if (recenterIfOutside && (frameX < bounds.x || frameX > maxX)) {
+			frameX = SDL3_SaturateWindowCoordinate(
+				static_cast<int64_t>(bounds.x) + (static_cast<int64_t>(bounds.w) - frameWidth) / 2);
 		}
-		x = idMath::ClampInt(bounds.x, maxX, x);
+		frameX = idMath::ClampInt(bounds.x, maxX, frameX);
 	}
 
 	if (maxY < bounds.y) {
-		y = bounds.y;
+		frameY = bounds.y;
 	} else {
-		if (recenterIfOutside && (y < bounds.y || y > maxY)) {
-			y = bounds.y + ((bounds.h - height) / 2);
+		if (recenterIfOutside && (frameY < bounds.y || frameY > maxY)) {
+			frameY = SDL3_SaturateWindowCoordinate(
+				static_cast<int64_t>(bounds.y) + (static_cast<int64_t>(bounds.h) - frameHeight) / 2);
 		}
-		y = idMath::ClampInt(bounds.y, maxY, y);
+		frameY = idMath::ClampInt(bounds.y, maxY, frameY);
 	}
 }
 
@@ -3291,7 +3382,7 @@ static void SDL3_GetWindowPositionOnDisplay(SDL_DisplayID display, int width, in
 	}
 }
 
-static bool SDL3_SetWindowPositionCompat(int x, int y, SDL_DisplayID display, bool centerOnWayland, const char *description) {
+static bool SDL3_SetWindowPositionCompat(int frameX, int frameY, SDL_DisplayID display, bool centerOnWayland, const char *description) {
 	if (!s_sdlWindow) {
 		return false;
 	}
@@ -3310,7 +3401,10 @@ static bool SDL3_SetWindowPositionCompat(int x, int y, SDL_DisplayID display, bo
 		return true;
 	}
 
-	if (!SDL_SetWindowPosition(s_sdlWindow, x, y)) {
+	int clientX = frameX;
+	int clientY = frameY;
+	SDL3_FrameOriginToClientOrigin(frameX, frameY, clientX, clientY);
+	if (!SDL_SetWindowPosition(s_sdlWindow, clientX, clientY)) {
 		common->Printf("SDL3: failed to %s: %s\n",
 			description != NULL ? description : "move window", SDL_GetError());
 		return false;
@@ -3618,10 +3712,11 @@ static void SDL3_RecordWindowedPlacement(int x, int y, int width, int height) {
 }
 
 static void SDL3_SnapshotCurrentWindowedPlacement(void) {
-	if (!s_sdlWindow || win32.cdsFullscreen || r_borderless.GetBool() || !SDL3_UseAbsoluteWindowPlacement()) {
+	if (!s_sdlWindow || win32.cdsFullscreen || !SDL3_UseAbsoluteWindowPlacement()) {
 		return;
 	}
-	if ((SDL_GetWindowFlags(s_sdlWindow) & SDL_WINDOW_FULLSCREEN) != 0) {
+	const SDL_WindowFlags windowFlags = SDL_GetWindowFlags(s_sdlWindow);
+	if ((windowFlags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS)) != 0) {
 		// OS-initiated fullscreen (not tracked by win32.cdsFullscreen) must
 		// never be recorded as a windowed placement.
 		return;
@@ -3632,7 +3727,10 @@ static void SDL3_SnapshotCurrentWindowedPlacement(void) {
 	int width = 0;
 	int height = 0;
 	if (SDL_GetWindowPosition(s_sdlWindow, &x, &y) && SDL_GetWindowSize(s_sdlWindow, &width, &height)) {
-		SDL3_RecordWindowedPlacement(x, y, width, height);
+		int frameX = x;
+		int frameY = y;
+		SDL3_ClientOriginToFrameOrigin(x, y, frameX, frameY);
+		SDL3_RecordWindowedPlacement(frameX, frameY, width, height);
 	}
 }
 
@@ -3655,12 +3753,17 @@ static void SDL3_RefreshWindowPlacement(void) {
 	// space's forced move/resize would corrupt the saved windowed placement.
 	const bool windowIsFullscreen = (windowFlags & SDL_WINDOW_FULLSCREEN) != 0;
 	const bool canPersistWindowedPlacement = !windowIsHidden && !windowIsFullscreen && !win32.cdsFullscreen && !s_screenParmTransitionActive;
-	const bool isWindowedResizable = !r_borderless.GetBool();
+	const bool isWindowedResizable = (windowFlags & SDL_WINDOW_BORDERLESS) == 0;
 
 	const bool haveWindowPosition = SDL_GetWindowPosition(s_sdlWindow, &x, &y);
+	int frameX = x;
+	int frameY = y;
+	if (haveWindowPosition && SDL3_UseAbsoluteWindowPlacement()) {
+		SDL3_ClientOriginToFrameOrigin(x, y, frameX, frameY);
+	}
 	if (haveWindowPosition && canPersistWindowedPlacement && SDL3_UseAbsoluteWindowPlacement()) {
-		win32.win_xpos.SetInteger(x);
-		win32.win_ypos.SetInteger(y);
+		win32.win_xpos.SetInteger(frameX);
+		win32.win_ypos.SetInteger(frameY);
 		win32.win_xpos.ClearModified();
 		win32.win_ypos.ClearModified();
 	}
@@ -3676,7 +3779,7 @@ static void SDL3_RefreshWindowPlacement(void) {
 	}
 
 	if (canPersistWindowedPlacement && isWindowedResizable && haveWindowPosition && haveWindowSize && SDL3_UseAbsoluteWindowPlacement()) {
-		SDL3_RecordWindowedPlacement(x, y, width, height);
+		SDL3_RecordWindowedPlacement(frameX, frameY, width, height);
 	}
 
 	if (!SDL_GetWindowSizeInPixels(s_sdlWindow, &pixelWidth, &pixelHeight)) {
@@ -3888,6 +3991,12 @@ static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 	if (display == 0) {
 		display = SDL_GetPrimaryDisplay();
 	}
+	bool reapplyDecoratedWindowPlacement = false;
+	bool reapplyRecenterIfOutside = false;
+	int reapplyFrameX = 0;
+	int reapplyFrameY = 0;
+	int reapplyClientWidth = 0;
+	int reapplyClientHeight = 0;
 
 	if (spanDisplays && SDL3_IsNativeWaylandVideoDriver()) {
 		if (!s_waylandSpanWarningLogged) {
@@ -4042,6 +4151,12 @@ static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 				restoredWidth = idMath::ClampInt(320, 16384, restoredWidth);
 				restoredHeight = idMath::ClampInt(240, 16384, restoredHeight);
 			}
+			reapplyDecoratedWindowPlacement = !parms.hiddenWindow && SDL3_UseAbsoluteWindowPlacement();
+			reapplyRecenterIfOutside = (r_screen.GetInteger() >= 0) || needsRecoveryPlacement;
+			reapplyFrameX = restoredX;
+			reapplyFrameY = restoredY;
+			reapplyClientWidth = restoredWidth;
+			reapplyClientHeight = restoredHeight;
 
 			if (!SDL_SetWindowSize(s_sdlWindow, restoredWidth, restoredHeight)) {
 				common->Printf("SDL3: failed to resize window: %s\n", SDL_GetError());
@@ -4075,6 +4190,33 @@ static bool SDL3_ApplyScreenParms(glimpParms_t parms) {
 
 	if (!parms.hiddenWindow) {
 		SDL3_SyncWindowAfterScreenChange(parms.fullScreen ? "fullscreen change" : "windowed change");
+	}
+
+	// Some window servers cannot report decorations until the window has been
+	// shown and composited. Repeat decorated placement after the first sync so
+	// the requested frame origin and client size are corrected with the final
+	// title-bar/border extents before the renderer presents its first frame.
+	if (reapplyDecoratedWindowPlacement) {
+		SDL_Rect bounds;
+		if (display != 0 && SDL3_GetDisplayWindowedPlacementBounds(display, bounds)) {
+			SDL3_ConstrainWindowRectToBounds(
+				reapplyFrameX,
+				reapplyFrameY,
+				reapplyClientWidth,
+				reapplyClientHeight,
+				bounds,
+				reapplyRecenterIfOutside);
+		}
+		if (!SDL_SetWindowSize(s_sdlWindow, reapplyClientWidth, reapplyClientHeight)) {
+			common->Printf("SDL3: failed to apply chrome-aware client size: %s\n", SDL_GetError());
+		}
+		(void)SDL3_SetWindowPositionCompat(
+			reapplyFrameX,
+			reapplyFrameY,
+			display,
+			false,
+			"apply chrome-aware window placement");
+		SDL3_SyncWindowAfterScreenChange("chrome-aware window placement");
 	}
 	s_screenParmTransitionActive = false;
 	SDL3_RefreshWindowPlacement();

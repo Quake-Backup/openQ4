@@ -2444,17 +2444,6 @@ const modernGLShaderProgramInfo_t *R_ModernGLShaderLibrary_FindProgram( modernGL
 	return best;
 }
 
-static const modernGLShaderProgramInfo_t *R_ModernGLShaderLibrary_FindExactProgram( modernGLShaderProgramKind_t kind, int glslVersion ) {
-	for ( int i = 0; i < rg_modernGLShaderProgramCount; ++i ) {
-		const modernGLShaderProgramInfo_t &info = rg_modernGLShaderPrograms[i];
-		if ( info.kind == kind && info.glslVersion == glslVersion && info.linked ) {
-			return &info;
-		}
-	}
-	return NULL;
-}
-
-
 void R_ModernGLShaderLibrary_PrintGfxInfo( void ) {
 	common->Printf(
 		"Modern GL shader library: %s, programs=%d, kinds=%d/%d, permutations=%d, failed=%d, versions=%d [330=%d 410=%d 430=%d 450=%d], highestGLSL=%d, reloads=%d, reflection(ubo=%d ssbo=%d uniforms=%d samplers=%d images=%d attrs=%d), texturePrograms=%d, ready(depth=%d shadow=%d flat=%d lightGrid=%d fog=%d gbuf=%d/%d deferred=%d clustered=%d/%d transparent=%d gui=%d post=%d debug=%d)\n",

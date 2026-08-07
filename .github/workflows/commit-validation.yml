@@ -61,19 +61,32 @@ jobs:
             tools/build/windows_runtime.py \
             tools/build/write_pak_manifest.py \
             src/sys/linux/pk4/id_utils.py \
+            tools/analysis/clang_tidy_input_safety.py \
             tools/validation/openq4_validate.py \
             tools/tests/renderer_validation_matrix.py \
             tools/tests/arena_campaign.py \
+            tools/tests/async_drop_client_contract.py \
             tools/tests/campaign_split_state_transition.py \
+            tools/tests/clang_tidy_input_safety.py \
+            tools/tests/cmdargs_append_contract.py \
+            tools/tests/competitive_match_layer.py \
+            tools/tests/competitive_match_localization.py \
+            tools/tests/decl_checksum_stability_contract.py \
+            tools/tests/match_control_localization_bridge.py \
+            tools/tests/match_control_ui_contract.py \
             tools/tests/demo_playback.py \
             tools/tests/docs_link_integrity.py \
             tools/tests/filesystem_case_segments.py \
             tools/tests/filesystem_mod_manifest.py \
+            tools/tests/filesystem_write_qpath_safety.py \
             tools/tests/game_class_allocator_alignment.py \
             tools/tests/game_type_module_selection.py \
             tools/tests/gamelibs_staging.py \
             tools/tests/generated_animation_cache.py \
             tools/tests/hdr_postprocess_math.py \
+            tools/tests/idstr_input_safety.py \
+            tools/tests/lexer_peek_contract.py \
+            tools/tests/key_bind_presentation.py \
             tools/tests/linux_arm64_cross_compile.py \
             tools/tests/linux_arm64_ci_coverage.py \
             tools/tests/linux_arm64_release_evidence.py \
@@ -130,9 +143,11 @@ jobs:
             tools/tests/macos_metal_bridge.py \
             tools/tests/macos_moltenvk_policy.py \
             tools/tests/mp_bot_characters.py \
+            tools/tests/mp_bot_intelligence.py \
             tools/tests/mp_bot_navigation.py \
             tools/tests/mp_client_combat_effects.py \
             tools/tests/multiview_demo.py \
+            tools/tests/mvd_server_api_contract.py \
             tools/tests/native_glx_shutdown.py \
             tools/tests/openq4_pure_pack.py \
             tools/tests/packaging_safety.py \
@@ -143,6 +158,7 @@ jobs:
             tools/tests/posix_thread_shutdown.py \
             tools/tests/release_tooling_safety.py \
             tools/tests/renderer_cel_shading.py \
+            tools/tests/renderer_mp_flat_items.py \
             tools/tests/renderer_msaa_cvar_safety.py \
             tools/tests/renderer_picmip_policy.py \
             tools/tests/renderer_player_visibility.py \
@@ -155,6 +171,7 @@ jobs:
             tools/tests/renderer_vulkan_world_interaction_compatibility.py \
             tools/tests/savegame_corruption_contract.py \
             tools/tests/savegame_pointer_width_safety.py \
+            tools/tests/savegame_v3_contract.py \
             tools/tests/sdl3_input_parity.py \
             tools/tests/sdl3_multidisplay_windowing.py \
             tools/tests/settings_menu_coverage.py \
@@ -171,16 +188,28 @@ jobs:
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
           python tools/tests/arena_campaign.py
+          python tools/tests/async_drop_client_contract.py
           python tools/tests/campaign_split_state_transition.py
+          python tools/tests/clang_tidy_input_safety.py
+          python tools/tests/cmdargs_append_contract.py
+          python tools/tests/competitive_match_layer.py
+          python tools/tests/competitive_match_localization.py
+          python tools/tests/decl_checksum_stability_contract.py
+          python tools/tests/match_control_localization_bridge.py
+          python tools/tests/match_control_ui_contract.py
           python tools/tests/demo_playback.py
           python tools/tests/docs_link_integrity.py
           python tools/tests/filesystem_case_segments.py
           python tools/tests/filesystem_mod_manifest.py
+          python tools/tests/filesystem_write_qpath_safety.py
           python tools/tests/game_class_allocator_alignment.py
           python tools/tests/game_type_module_selection.py
           python tools/tests/gamelibs_staging.py
           python tools/tests/generated_animation_cache.py
           python tools/tests/hdr_postprocess_math.py
+          python tools/tests/idstr_input_safety.py
+          python tools/tests/lexer_peek_contract.py
+          python tools/tests/key_bind_presentation.py
           python tools/tests/linux_arm64_cross_compile.py
           python tools/tests/linux_arm64_ci_coverage.py
           python tools/tests/linux_arm64_release_evidence.py
@@ -233,9 +262,11 @@ jobs:
           python tools/tests/macos_metal_bridge.py
           python tools/tests/macos_moltenvk_policy.py
           python tools/tests/mp_bot_characters.py
+          python tools/tests/mp_bot_intelligence.py
           python tools/tests/mp_bot_navigation.py
           python tools/tests/mp_client_combat_effects.py
           python tools/tests/multiview_demo.py
+          python tools/tests/mvd_server_api_contract.py
           python tools/tests/native_glx_shutdown.py
           python tools/tests/openq4_pure_pack.py
           python tools/tests/packaging_safety.py
@@ -246,6 +277,7 @@ jobs:
           python tools/tests/posix_network_resolution.py
           python tools/tests/posix_thread_shutdown.py
           python tools/tests/renderer_cel_shading.py
+          python tools/tests/renderer_mp_flat_items.py
           python tools/tests/renderer_msaa_cvar_safety.py
           python tools/tests/renderer_picmip_policy.py
           python tools/tests/renderer_player_visibility.py
@@ -258,6 +290,7 @@ jobs:
           python tools/tests/renderer_vulkan_world_interaction_compatibility.py
           python tools/tests/savegame_corruption_contract.py
           python tools/tests/savegame_pointer_width_safety.py
+          python tools/tests/savegame_v3_contract.py
           python tools/tests/sdl3_input_parity.py
           python tools/tests/sdl3_multidisplay_windowing.py
           python tools/tests/settings_menu_coverage.py
@@ -315,6 +348,12 @@ jobs:
 
           Write-Host "Selected validation profile: pr"
           powershell -NoProfile -ExecutionPolicy Bypass -File tools/validation/validate_pr.ps1 --fail-on-dirty
+
+      - name: Run focused input-safety static analysis
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python tools/analysis/clang_tidy_input_safety.py --build-dir .tmp/validation/pr-builddir
 
   linux-arm64:
     name: Linux ARM64 Commit Validation

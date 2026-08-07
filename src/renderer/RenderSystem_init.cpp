@@ -2964,8 +2964,6 @@ void R_ScreenShot_f( const idCmdArgs &args ) {
 
 	int width = glConfig.vidWidth;
 	int height = glConfig.vidHeight;
-	int	x = 0;
-	int y = 0;
 	int	blends = 0;
 
 	switch ( args.Argc() ) {

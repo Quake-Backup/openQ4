@@ -597,7 +597,7 @@ idWindow::Size
 */
 size_t idWindow::Size() {
 	int c = children.Num();
-	int sz = 0;
+	size_t sz = 0;
 	for (int i = 0; i < c; i++) {
 		sz += children[i]->Size();
 	}
@@ -612,7 +612,7 @@ idWindow::Allocated
 */
 size_t idWindow::Allocated() {
 	int i, c;
-	int sz = name.Allocated();
+	size_t sz = name.Allocated();
 	sz += text.Size();
 	sz += backGroundName.Size();
 
@@ -4606,10 +4606,30 @@ idWindow::WriteString
 ===============
 */
 void idWindow::WriteSaveGameString( const char *string, idFile *savefile ) {
-	int len = strlen( string );
-
-	savefile->Write( &len, sizeof( len ) );
-	savefile->Write( string, len );
+	if ( savefile == NULL || string == NULL ) {
+		common->Error( "idWindow::WriteSaveGameString: invalid output file/string for window '%s'",
+			name.c_str() );
+	}
+	const int len = idLib::SizeToInt( strlen( string ), "idWindow::WriteSaveGameString" );
+	const int maxSavedStringLength = 64 * 1024;
+	if ( len > maxSavedStringLength ) {
+		common->Error( "idWindow::WriteSaveGameString: string for window '%s' in gui '%s' is too long (%d bytes)",
+			name.c_str(), gui ? gui->GetSourceFile() : "<null>", len );
+	}
+	const int lengthOffset = savefile->Tell();
+	const int lengthBytes = savefile->WriteInt( len );
+	if ( lengthBytes != static_cast<int>( sizeof( len ) ) ) {
+		common->Error( "idWindow::WriteSaveGameString: failed to write length for window '%s' at offset %d (%d of %d bytes)",
+			name.c_str(), lengthOffset, lengthBytes, static_cast<int>( sizeof( len ) ) );
+	}
+	if ( len > 0 ) {
+		const int stringOffset = savefile->Tell();
+		const int stringBytes = savefile->Write( string, len );
+		if ( stringBytes != len ) {
+			common->Error( "idWindow::WriteSaveGameString: failed to write string for window '%s' at offset %d (%d of %d bytes)",
+				name.c_str(), stringOffset, stringBytes, len );
+		}
+	}
 }
 
 /*
@@ -4618,22 +4638,37 @@ idWindow::WriteSaveGameTransition
 ===============
 */
 void idWindow::WriteSaveGameTransition( idTransitionData &trans, idFile *savefile ) {
-	drawWin_t dw, *fdw;
-	idStr winName("");
+	if ( savefile == NULL || gui == NULL || gui->GetDesktop() == NULL || trans.data == NULL ) {
+		common->Error( "idWindow::WriteSaveGameTransition: invalid transition context for window '%s'",
+			name.c_str() );
+	}
+	drawWin_t dw;
 	dw.simp = NULL;
 	dw.win = NULL;
-	int offset = gui->GetDesktop()->GetWinVarOffset( trans.data, &dw );
-	if ( dw.win || dw.simp ) {
-		winName = ( dw.win ) ? dw.win->GetName() : dw.simp->name.c_str();
+	const intptr_t transitionOffset = gui->GetDesktop()->GetWinVarOffset( trans.data, &dw );
+	if ( transitionOffset < 0 || transitionOffset > 0x7fffffff || ( dw.win == NULL ) == ( dw.simp == NULL ) ) {
+		common->Error( "idWindow::WriteSaveGameTransition: could not resolve transition target for window '%s' in gui '%s'",
+			name.c_str(), gui->GetSourceFile() );
 	}
-	fdw = gui->GetDesktop()->FindChildByName( winName );
-	if ( offset != -1 && fdw && ( fdw->win || fdw->simp ) ) {
-		savefile->Write( &offset, sizeof( offset ) );
-		WriteSaveGameString( winName, savefile );
-		savefile->Write( &trans.interp, sizeof( trans.interp ) );
-	} else {
-		offset = -1;
-		savefile->Write( &offset, sizeof( offset ) );
+	const idStr winName = ( dw.win != NULL ) ? dw.win->GetName() : dw.simp->name.c_str();
+	drawWin_t *foundWindow = gui->GetDesktop()->FindChildByName( winName );
+	if ( winName.IsEmpty() || foundWindow == NULL || foundWindow->win != dw.win || foundWindow->simp != dw.simp ) {
+		common->Error( "idWindow::WriteSaveGameTransition: transition target '%s' for window '%s' in gui '%s' is missing or ambiguous",
+			winName.c_str(), name.c_str(), gui->GetSourceFile() );
+	}
+	const int savedOffset = static_cast<int>( transitionOffset );
+	const int offsetPosition = savefile->Tell();
+	const int offsetBytes = savefile->WriteInt( savedOffset );
+	if ( offsetBytes != static_cast<int>( sizeof( savedOffset ) ) ) {
+		common->Error( "idWindow::WriteSaveGameTransition: failed to write target offset at %d (%d of %d bytes)",
+			offsetPosition, offsetBytes, static_cast<int>( sizeof( savedOffset ) ) );
+	}
+	WriteSaveGameString( winName, savefile );
+	const int interpolationPosition = savefile->Tell();
+	const int interpolationBytes = savefile->Write( &trans.interp, sizeof( trans.interp ) );
+	if ( interpolationBytes != static_cast<int>( sizeof( trans.interp ) ) ) {
+		common->Error( "idWindow::WriteSaveGameTransition: failed to write interpolate state at %d (%d of %d bytes)",
+			interpolationPosition, interpolationBytes, static_cast<int>( sizeof( trans.interp ) ) );
 	}
 }
 
@@ -4647,17 +4682,261 @@ void idWindow::ReadSaveGameTransition( idTransitionData &trans, idFile *savefile
 
 	OpenQ4_ReadSaveGameField( savefile, offset, "idWindow::ReadSaveGameTransition", "offset" );
 	if ( offset != -1 ) {
+		if ( offset < 0 ) {
+			common->Error( "idWindow::ReadSaveGameTransition: invalid target offset %d for window '%s' in gui '%s'",
+				offset, name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
 		idStr winName;
 		ReadSaveGameString( winName, savefile );
 		OpenQ4_ReadSaveGameField( savefile, trans.interp, "idWindow::ReadSaveGameTransition", "interpolate state" );
 		trans.data = NULL;
 		trans.offset = offset;
-		if ( winName.Length() ) {
-			idWinStr *strVar = new idWinStr();
-			strVar->Set( winName );
-			trans.data = dynamic_cast< idWinVar* >( strVar );
+		if ( winName.IsEmpty() ) {
+			common->Error( "idWindow::ReadSaveGameTransition: transition for window '%s' in gui '%s' has an empty target name",
+				name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
+		idWinStr *strVar = new idWinStr();
+		strVar->Set( winName );
+		trans.data = dynamic_cast< idWinVar* >( strVar );
+	}
+}
+
+static const int SAVEGAME_WINDOW_REFERENCE_NULL = -1;
+static const int SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE = -2;
+static const int SAVEGAME_MAX_WINDOW_DESCENDANTS = 1024 * 1024;
+static const int SAVEGAME_MAX_WINDOW_DEPTH = 1024;
+
+int idWindow::SaveGameChildIDCompare( idWindow * const *left, idWindow * const *right ) {
+	if ( ( *left )->childID < ( *right )->childID ) {
+		return -1;
+	}
+	if ( ( *left )->childID > ( *right )->childID ) {
+		return 1;
+	}
+	return 0;
+}
+
+void idWindow::BuildSaveGameChildOrder( idList<idWindow *> &orderedChildren, const char *operation ) const {
+	orderedChildren.SetNum( children.Num() );
+	for ( int i = 0; i < children.Num(); i++ ) {
+		idWindow *child = children[i];
+		if ( child == NULL ) {
+			common->Error( "%s: window '%s' in gui '%s' has a NULL child at index %d",
+				operation, name.c_str(), gui ? gui->GetSourceFile() : "<null>", i );
+		}
+		if ( child->parent != this ) {
+			common->Error( "%s: child '%s' of window '%s' in gui '%s' has an inconsistent parent",
+				operation, child->name.c_str(), name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
+		if ( child->childID < 0 ) {
+			common->Error( "%s: child '%s' of window '%s' in gui '%s' has invalid id %d",
+				operation, child->name.c_str(), name.c_str(), gui ? gui->GetSourceFile() : "<null>", child->childID );
+		}
+		orderedChildren[i] = child;
+	}
+	orderedChildren.Sort( SaveGameChildIDCompare );
+	for ( int i = 1; i < orderedChildren.Num(); i++ ) {
+		if ( orderedChildren[i - 1]->childID == orderedChildren[i]->childID ) {
+			common->Error( "%s: children '%s' and '%s' of window '%s' in gui '%s' have duplicate id %d",
+				operation, orderedChildren[i - 1]->name.c_str(), orderedChildren[i]->name.c_str(), name.c_str(),
+				gui ? gui->GetSourceFile() : "<null>", orderedChildren[i]->childID );
 		}
 	}
+}
+
+bool idWindow::FindSaveGameDescendantOrdinal( const idWindow *window, int &nextOrdinal, int &foundOrdinal, int depth ) const {
+	if ( depth > SAVEGAME_MAX_WINDOW_DEPTH ) {
+		common->Error( "idWindow::WriteToSaveGame: gui '%s' exceeds the maximum window nesting depth",
+			gui ? gui->GetSourceFile() : "<null>" );
+	}
+	idList<idWindow *> orderedChildren;
+	BuildSaveGameChildOrder( orderedChildren, "idWindow::WriteToSaveGame" );
+	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
+		if ( nextOrdinal >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
+			common->Error( "idWindow::WriteToSaveGame: gui '%s' exceeds the maximum descendant count",
+				gui ? gui->GetSourceFile() : "<null>" );
+		}
+		idWindow *child = orderedChildren[i];
+		const int childOrdinal = nextOrdinal++;
+		if ( child == window ) {
+			foundOrdinal = childOrdinal;
+			return true;
+		}
+		if ( child->FindSaveGameDescendantOrdinal( window, nextOrdinal, foundOrdinal, depth + 1 ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+idWindow *idWindow::FindSaveGameDescendantByOrdinal( int targetOrdinal, int &nextOrdinal, int depth ) {
+	if ( depth > SAVEGAME_MAX_WINDOW_DEPTH ) {
+		common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum window nesting depth",
+			gui ? gui->GetSourceFile() : "<null>" );
+	}
+	idList<idWindow *> orderedChildren;
+	BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" );
+	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
+		if ( nextOrdinal >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
+			common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum descendant count",
+				gui ? gui->GetSourceFile() : "<null>" );
+		}
+		idWindow *child = orderedChildren[i];
+		if ( nextOrdinal++ == targetOrdinal ) {
+			return child;
+		}
+		idWindow *resolved = child->FindSaveGameDescendantByOrdinal( targetOrdinal, nextOrdinal, depth + 1 );
+		if ( resolved != NULL ) {
+			return resolved;
+		}
+	}
+	return NULL;
+}
+
+void idWindow::FindSaveGameFlaggedDescendants( unsigned int flag, idWindow *&match, int &matches, int &visited, int depth ) {
+	if ( depth > SAVEGAME_MAX_WINDOW_DEPTH ) {
+		common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum window nesting depth",
+			gui ? gui->GetSourceFile() : "<null>" );
+	}
+	idList<idWindow *> orderedChildren;
+	BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" );
+	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
+		if ( visited++ >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
+			common->Error( "idWindow::ReadFromSaveGame: gui '%s' exceeds the maximum descendant count",
+				gui ? gui->GetSourceFile() : "<null>" );
+		}
+		idWindow *child = orderedChildren[i];
+		if ( ( child->flags & flag ) != 0 ) {
+			match = child;
+			matches++;
+		}
+		child->FindSaveGameFlaggedDescendants( flag, match, matches, visited, depth + 1 );
+	}
+}
+
+void idWindow::ValidateRestoredTrackedWindowPointers( bool hadSavedFocusReference, bool hadSavedCaptureReference ) {
+	if ( ( flags & WIN_DESKTOP ) == 0 ) {
+		return;
+	}
+
+	idWindow *flaggedFocus = NULL;
+	int focusMatches = 0;
+	int visited = 0;
+	FindSaveGameFlaggedDescendants( WIN_FOCUS, flaggedFocus, focusMatches, visited, 0 );
+	if ( focusMatches > 1 ) {
+		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored %d focused windows",
+			gui ? gui->GetSourceFile() : "<null>", focusMatches );
+	}
+	if ( focusMatches == 1 ) {
+		// Legacy v2 saves could serialize a nested window using only its parent-local
+		// child id. The focus flag identifies the intended descendant unambiguously.
+		focusedChild = flaggedFocus;
+	} else if ( hadSavedFocusReference || focusedChild != NULL ) {
+		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored a focused child reference without a focused window",
+			gui ? gui->GetSourceFile() : "<null>" );
+	}
+
+	idWindow *flaggedCapture = NULL;
+	int captureMatches = 0;
+	visited = 0;
+	FindSaveGameFlaggedDescendants( WIN_CAPTURE, flaggedCapture, captureMatches, visited, 0 );
+	if ( captureMatches > 1 ) {
+		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored %d captured windows",
+			gui ? gui->GetSourceFile() : "<null>", captureMatches );
+	}
+	if ( captureMatches == 1 ) {
+		captureChild = flaggedCapture;
+	} else if ( hadSavedCaptureReference || captureChild != NULL ) {
+		common->Error( "idWindow::ReadFromSaveGame: gui '%s' restored a capture child reference without a captured window",
+			gui ? gui->GetSourceFile() : "<null>" );
+	}
+}
+
+void idWindow::WriteSaveGameChildReference( idWindow *child, idFile *savefile, const char *fieldName, bool allowDescendant ) {
+	int childId = -1;
+	if ( child != NULL ) {
+		idList<idWindow *> orderedChildren;
+		BuildSaveGameChildOrder( orderedChildren, "idWindow::WriteToSaveGame" );
+		bool isDirectChild = false;
+		for ( int i = 0; i < orderedChildren.Num(); i++ ) {
+			if ( orderedChildren[i] == child ) {
+				isDirectChild = true;
+				break;
+			}
+		}
+		if ( isDirectChild ) {
+			childId = child->childID;
+		} else if ( allowDescendant ) {
+			int nextOrdinal = 0;
+			int foundOrdinal = -1;
+			if ( !FindSaveGameDescendantOrdinal( child, nextOrdinal, foundOrdinal, 0 ) ) {
+				common->Error( "idWindow::WriteToSaveGame: %s for window '%s' in gui '%s' is not a descendant",
+					fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+			}
+			childId = SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE - foundOrdinal;
+		} else {
+			common->Error( "idWindow::WriteToSaveGame: %s for window '%s' in gui '%s' is not a valid direct child",
+				fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
+	}
+	const int offset = savefile->Tell();
+	const int bytesWritten = savefile->WriteInt( childId );
+	if ( bytesWritten != static_cast<int>( sizeof( childId ) ) ) {
+		common->Error( "idWindow::WriteToSaveGame: failed to write %s for window '%s' at offset %d (%d of %d bytes)",
+			fieldName ? fieldName : "child reference", name.c_str(), offset, bytesWritten, static_cast<int>( sizeof( childId ) ) );
+	}
+}
+
+idWindow *idWindow::ReadSaveGameChildReference( idFile *savefile, const char *fieldName, bool allowDescendant, bool *hadSerializedReference ) {
+	int savedChildId = -1;
+	const int offset = savefile->Tell();
+	const int bytesRead = savefile->ReadInt( savedChildId );
+	if ( bytesRead != static_cast<int>( sizeof( savedChildId ) ) ) {
+		common->Error( "idWindow::ReadFromSaveGame: truncated %s for window '%s' at offset %d (%d of %d bytes)",
+			fieldName ? fieldName : "child reference", name.c_str(), offset, bytesRead, static_cast<int>( sizeof( savedChildId ) ) );
+	}
+	if ( hadSerializedReference != NULL ) {
+		*hadSerializedReference = savedChildId != SAVEGAME_WINDOW_REFERENCE_NULL;
+	}
+	if ( savedChildId == SAVEGAME_WINDOW_REFERENCE_NULL ) {
+		return NULL;
+	}
+	if ( savedChildId < 0 ) {
+		if ( !allowDescendant || savedChildId > SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE ) {
+			common->Error( "idWindow::ReadFromSaveGame: invalid %s %d for window '%s' in gui '%s'",
+				fieldName ? fieldName : "child reference", savedChildId, name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
+		const int64 targetOrdinal64 = static_cast<int64>( SAVEGAME_WINDOW_REFERENCE_DESCENDANT_BASE ) - static_cast<int64>( savedChildId );
+		if ( targetOrdinal64 < 0 || targetOrdinal64 >= SAVEGAME_MAX_WINDOW_DESCENDANTS ) {
+			common->Error( "idWindow::ReadFromSaveGame: invalid descendant ordinal %lld for %s in window '%s' in gui '%s'",
+				static_cast<long long>( targetOrdinal64 ), fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
+		const int targetOrdinal = static_cast<int>( targetOrdinal64 );
+		int nextOrdinal = 0;
+		idWindow *resolved = FindSaveGameDescendantByOrdinal( targetOrdinal, nextOrdinal, 0 );
+		if ( resolved == NULL ) {
+			common->Error( "idWindow::ReadFromSaveGame: descendant ordinal %d for %s in window '%s' in gui '%s' could not be resolved",
+				targetOrdinal, fieldName ? fieldName : "child reference", name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+		}
+		return resolved;
+	}
+
+	idList<idWindow *> orderedChildren;
+	BuildSaveGameChildOrder( orderedChildren, "idWindow::ReadFromSaveGame" );
+	for ( int i = 0; i < orderedChildren.Num(); i++ ) {
+		if ( orderedChildren[i]->childID == savedChildId ) {
+			return orderedChildren[i];
+		}
+	}
+	if ( allowDescendant ) {
+		// Legacy v2 wrote a nested desktop focus/capture target as its parent-local
+		// positive child id. It cannot be resolved here, but its restored flag can
+		// identify the intended descendant after the complete window tree is read.
+		return NULL;
+	}
+	common->Error( "idWindow::ReadFromSaveGame: %s %d for window '%s' in gui '%s' does not match a direct child",
+		fieldName ? fieldName : "child reference", savedChildId, name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
+	return NULL;
 }
 
 /*
@@ -4667,6 +4946,9 @@ idWindow::WriteToSaveGame
 */
 void idWindow::WriteToSaveGame( idFile *savefile ) {
 	int i;
+	if ( savefile == NULL || gui == NULL ) {
+		common->Error( "idWindow::WriteToSaveGame: invalid save context for window '%s'", name.c_str() );
+	}
 
 	WriteSaveGameString( cmd, savefile );
 
@@ -4719,22 +5001,20 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 
 	// Defined Vars
 	for ( i = 0; i < definedVars.Num(); i++ ) {
+		if ( definedVars[i] == NULL ) {
+			common->Error( "idWindow::WriteToSaveGame: NULL defined variable %d for window '%s' in gui '%s'",
+				i, name.c_str(), gui->GetSourceFile() );
+		}
 		definedVars[i]->WriteToSaveGame( savefile );
 	}
 
 	savefile->Write( &textRect, sizeof( textRect ) );
 
 	// Window pointers saved as the child ID of the window
-	int winID;
-
-	winID = focusedChild ? focusedChild->childID : -1 ;
-	savefile->Write( &winID, sizeof( winID ) );
-
-	winID = captureChild ? captureChild->childID : -1 ;
-	savefile->Write( &winID, sizeof( winID ) );
-
-	winID = overChild ? overChild->childID : -1 ;
-	savefile->Write( &winID, sizeof( winID ) );
+	const bool desktopTrackedDescendants = ( flags & WIN_DESKTOP ) != 0;
+	WriteSaveGameChildReference( focusedChild, savefile, "focused child id", desktopTrackedDescendants );
+	WriteSaveGameChildReference( captureChild, savefile, "capture child id", desktopTrackedDescendants );
+	WriteSaveGameChildReference( overChild, savefile, "hovered child id", false );
 
 
 	// Scripts
@@ -4746,13 +5026,13 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 
 	// TimeLine Events
 	for ( i = 0; i < timeLineEvents.Num(); i++ ) {
-		if ( timeLineEvents[i] ) {
-			savefile->Write( &timeLineEvents[i]->pending, sizeof( timeLineEvents[i]->pending ) );
-			savefile->Write( &timeLineEvents[i]->time, sizeof( timeLineEvents[i]->time ) );
-			if ( timeLineEvents[i]->event ) {
-				timeLineEvents[i]->event->WriteToSaveGame( savefile );
-			}
+		if ( timeLineEvents[i] == NULL || timeLineEvents[i]->event == NULL ) {
+			common->Error( "idWindow::WriteToSaveGame: incomplete timeline event %d for window '%s' in gui '%s'",
+				i, name.c_str(), gui->GetSourceFile() );
 		}
+		OpenQ4_WriteSaveGameBool( savefile, timeLineEvents[i]->pending, "idWindow::WriteToSaveGame", "timeline pending flag" );
+		OpenQ4_WriteSaveGameInt( savefile, timeLineEvents[i]->time, "idWindow::WriteToSaveGame", "timeline event time" );
+		timeLineEvents[i]->event->WriteToSaveGame( savefile );
 	}
 
 	// Transitions
@@ -4766,12 +5046,12 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 
 	// Named Events
 	for ( i = 0; i < namedEvents.Num(); i++ ) {
-		if ( namedEvents[i] ) {
-			WriteSaveGameString( namedEvents[i]->mName, savefile );
-			if ( namedEvents[i]->mEvent ) {
-				namedEvents[i]->mEvent->WriteToSaveGame( savefile );
-			}
+		if ( namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL || namedEvents[i]->mName.IsEmpty() ) {
+			common->Error( "idWindow::WriteToSaveGame: incomplete named event %d for window '%s' in gui '%s'",
+				i, name.c_str(), gui->GetSourceFile() );
 		}
+		WriteSaveGameString( namedEvents[i]->mName, savefile );
+		namedEvents[i]->mEvent->WriteToSaveGame( savefile );
 	}
 
 	// regList
@@ -4781,10 +5061,13 @@ void idWindow::WriteToSaveGame( idFile *savefile ) {
 	// Save children
 	for ( i = 0; i < drawWindows.Num(); i++ ) {
 		drawWin_t	window = drawWindows[i];
-
-		if ( window.simp ) {
+		if ( ( window.simp == NULL ) == ( window.win == NULL ) ) {
+			common->Error( "idWindow::WriteToSaveGame: draw window %d for '%s' in gui '%s' has invalid simple/full ownership",
+				i, name.c_str(), gui->GetSourceFile() );
+		}
+		if ( window.simp != NULL ) {
 			window.simp->WriteToSaveGame( savefile );
-		} else if ( window.win ) {
+		} else {
 			window.win->WriteToSaveGame( savefile );
 		}
 	}
@@ -4820,6 +5103,9 @@ idWindow::ReadFromSaveGame
 */
 void idWindow::ReadFromSaveGame( idFile *savefile ) {
 	int i;
+	if ( savefile == NULL || gui == NULL ) {
+		common->Error( "idWindow::ReadFromSaveGame: invalid restore context for parsed window '%s'", name.c_str() );
+	}
 
 	transitions.Clear();
 
@@ -4827,8 +5113,10 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 
 	OpenQ4_ReadSaveGameField( savefile, actualX, "idWindow::ReadFromSaveGame", "actualX" );
 	OpenQ4_ReadSaveGameField( savefile, actualY, "idWindow::ReadFromSaveGame", "actualY" );
-	OpenQ4_ReadSaveGameField( savefile, childID, "idWindow::ReadFromSaveGame", "childID" );
-	OpenQ4_ReadSaveGameField( savefile, flags, "idWindow::ReadFromSaveGame", "flags" );
+	int savedChildID = -1;
+	unsigned int savedFlags = 0;
+	OpenQ4_ReadSaveGameField( savefile, savedChildID, "idWindow::ReadFromSaveGame", "childID" );
+	OpenQ4_ReadSaveGameField( savefile, savedFlags, "idWindow::ReadFromSaveGame", "flags" );
 	OpenQ4_ReadSaveGameField( savefile, lastTimeRun, "idWindow::ReadFromSaveGame", "last time run" );
 	OpenQ4_ReadSaveGameField( savefile, drawRect, "idWindow::ReadFromSaveGame", "draw rect" );
 	OpenQ4_ReadSaveGameField( savefile, clientRect, "idWindow::ReadFromSaveGame", "client rect" );
@@ -4855,8 +5143,25 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 	OpenQ4_ReadSaveGameField( savefile, textShadow, "idWindow::ReadFromSaveGame", "text shadow" );
 	OpenQ4_ReadSaveGameField( savefile, shear, "idWindow::ReadFromSaveGame", "shear" );
 
-	ReadSaveGameString( name, savefile );
-	ReadSaveGameString( comment, savefile );
+	idStr savedName;
+	idStr savedComment;
+	ReadSaveGameString( savedName, savefile );
+	ReadSaveGameString( savedComment, savefile );
+	if ( savedChildID != childID ) {
+		common->Error( "idWindow::ReadFromSaveGame: saved child id %d for window '%s' does not match parsed id %d in gui '%s'",
+			savedChildID, savedName.c_str(), childID, gui->GetSourceFile() );
+	}
+	const unsigned int structuralFlagMask = WIN_CHILD | WIN_DESKTOP;
+	if ( ( savedFlags & structuralFlagMask ) != ( flags & structuralFlagMask ) ) {
+		common->Error( "idWindow::ReadFromSaveGame: saved structural flags 0x%08x for window '%s' do not match parsed flags 0x%08x in gui '%s'",
+			savedFlags & structuralFlagMask, savedName.c_str(), flags & structuralFlagMask, gui->GetSourceFile() );
+	}
+	if ( savedName.Icmp( name ) != 0 ) {
+		common->Error( "idWindow::ReadFromSaveGame: saved window '%s' does not match parsed window '%s' in gui '%s'",
+			savedName.c_str(), name.c_str(), gui->GetSourceFile() );
+	}
+	flags = savedFlags;
+	comment = savedComment;
 
 	// WinVars
 	noTime.ReadFromSaveGame( savefile );
@@ -4878,35 +5183,22 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 
 	// Defined Vars
 	for ( i = 0; i < definedVars.Num(); i++ ) {
+		if ( definedVars[i] == NULL ) {
+			common->Error( "idWindow::ReadFromSaveGame: NULL parsed defined variable %d for window '%s' in gui '%s'",
+				i, name.c_str(), gui->GetSourceFile() );
+		}
 		definedVars[i]->ReadFromSaveGame( savefile );
 	}
 
 	OpenQ4_ReadSaveGameField( savefile, textRect, "idWindow::ReadFromSaveGame", "text rect" );
 
 	// Window pointers saved as the child ID of the window
-	int winID = -1;
-	focusedChild = NULL;
-	captureChild = NULL;
-	overChild = NULL;
-
-	OpenQ4_ReadSaveGameField( savefile, winID, "idWindow::ReadFromSaveGame", "focused child id" );
-	for ( i = 0; i < children.Num(); i++ ) {
-		if ( children[i]->childID == winID ) {
-			focusedChild = children[i];
-		}
-	}
-	OpenQ4_ReadSaveGameField( savefile, winID, "idWindow::ReadFromSaveGame", "capture child id" );
-	for ( i = 0; i < children.Num(); i++ ) {
-		if ( children[i]->childID == winID ) {
-			captureChild = children[i];
-		}
-	}
-	OpenQ4_ReadSaveGameField( savefile, winID, "idWindow::ReadFromSaveGame", "over child id" );
-	for ( i = 0; i < children.Num(); i++ ) {
-		if ( children[i]->childID == winID ) {
-			overChild = children[i];
-		}
-	}
+	const bool desktopTrackedDescendants = ( flags & WIN_DESKTOP ) != 0;
+	bool hadSavedFocusReference = false;
+	bool hadSavedCaptureReference = false;
+	focusedChild = ReadSaveGameChildReference( savefile, "focused child id", desktopTrackedDescendants, &hadSavedFocusReference );
+	captureChild = ReadSaveGameChildReference( savefile, "capture child id", desktopTrackedDescendants, &hadSavedCaptureReference );
+	overChild = ReadSaveGameChildReference( savefile, "hovered child id", false );
 	
 	// Scripts
 	for ( i = 0; i < SCRIPT_COUNT; i++ ) {
@@ -4917,13 +5209,13 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 
 	// TimeLine Events
 	for ( i = 0; i < timeLineEvents.Num(); i++ ) {
-		if ( timeLineEvents[i] ) {
-			OpenQ4_ReadSaveGameField( savefile, timeLineEvents[i]->pending, "idWindow::ReadFromSaveGame", "timeline pending flag" );
-			OpenQ4_ReadSaveGameField( savefile, timeLineEvents[i]->time, "idWindow::ReadFromSaveGame", "timeline event time" );
-			if ( timeLineEvents[i]->event ) {
-				timeLineEvents[i]->event->ReadFromSaveGame( savefile );
-			}
+		if ( timeLineEvents[i] == NULL || timeLineEvents[i]->event == NULL ) {
+			common->Error( "idWindow::ReadFromSaveGame: incomplete parsed timeline event %d for window '%s' in gui '%s'",
+				i, name.c_str(), gui->GetSourceFile() );
 		}
+		OpenQ4_ReadSaveGameBool( savefile, timeLineEvents[i]->pending, "idWindow::ReadFromSaveGame", "timeline pending flag" );
+		OpenQ4_ReadSaveGameInt( savefile, timeLineEvents[i]->time, "idWindow::ReadFromSaveGame", "timeline event time" );
+		timeLineEvents[i]->event->ReadFromSaveGame( savefile );
 	}
 
 
@@ -4945,8 +5237,9 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 
 	// Named Events
 	for ( i = 0; i < namedEvents.Num(); i++ ) {
-		if ( namedEvents[i] == NULL ) {
-			continue;
+		if ( namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL ) {
+			common->Error( "idWindow::ReadFromSaveGame: incomplete parsed named event %d for window '%s' in gui '%s'",
+				i, name.c_str(), gui->GetSourceFile() );
 		}
 
 		idStr savedEventName;
@@ -4969,9 +5262,8 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 		}
 
 		if ( matchedIndex == -1 ) {
-			common->Warning( "idWindow::ReadFromSaveGame: missing named event '%s' for window '%s' in gui '%s'",
-				savedEventName.c_str(), name.c_str(), gui ? gui->GetSourceFile() : "<null>" );
-			return;
+			common->Error( "idWindow::ReadFromSaveGame: saved named event '%s' is missing from parsed window '%s' in gui '%s'; restore cannot continue without desynchronizing the stream",
+				savedEventName.c_str(), name.c_str(), gui->GetSourceFile() );
 		}
 
 		if ( matchedIndex != i ) {
@@ -4980,10 +5272,11 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 			namedEvents[matchedIndex] = swap;
 		}
 
-		namedEvents[i]->mName = savedEventName;
-		if ( namedEvents[i]->mEvent ) {
-			namedEvents[i]->mEvent->ReadFromSaveGame( savefile );
+		if ( namedEvents[i] == NULL || namedEvents[i]->mEvent == NULL ) {
+			common->Error( "idWindow::ReadFromSaveGame: named event '%s' for window '%s' in gui '%s' has no script payload target",
+				savedEventName.c_str(), name.c_str(), gui->GetSourceFile() );
 		}
+		namedEvents[i]->mEvent->ReadFromSaveGame( savefile );
 	}
 
 	// regList
@@ -4992,15 +5285,19 @@ void idWindow::ReadFromSaveGame( idFile *savefile ) {
 	// Read children
 	for ( i = 0; i < drawWindows.Num(); i++ ) {
 		drawWin_t	window = drawWindows[i];
-
-		if ( window.simp ) {
+		if ( ( window.simp == NULL ) == ( window.win == NULL ) ) {
+			common->Error( "idWindow::ReadFromSaveGame: draw window %d for '%s' in gui '%s' has invalid simple/full ownership",
+				i, name.c_str(), gui->GetSourceFile() );
+		}
+		if ( window.simp != NULL ) {
 			window.simp->ReadFromSaveGame( savefile );
-		} else if ( window.win ) {
+		} else {
 			window.win->ReadFromSaveGame( savefile );
 		}
 	}
 
 	if ( flags & WIN_DESKTOP ) {
+		ValidateRestoredTrackedWindowPointers( hadSavedFocusReference, hadSavedCaptureReference );
 		FixupTransitions();
 	}
 }
@@ -5025,11 +5322,23 @@ idWindow::FixupTransitions
 ===============
 */
 void idWindow::FixupTransitions() {
+	if ( gui == NULL || gui->GetDesktop() == NULL ) {
+		common->Error( "idWindow::FixupTransitions: window '%s' has no gui desktop during savegame restore", name.c_str() );
+	}
 	int i, c = transitions.Num();
 	for ( i = 0; i < c; i++ ) {
-		drawWin_t *dw = gui->GetDesktop()->FindChildByName( ( ( idWinStr* )transitions[i].data )->c_str() );
+		if ( transitions[i].data == NULL ) {
+			common->Error( "idWindow::FixupTransitions: transition %d for window '%s' in gui '%s' has no saved target",
+				i, name.c_str(), gui->GetSourceFile() );
+		}
+		const idStr transitionTarget = static_cast<idWinStr *>( transitions[i].data )->c_str();
+		drawWin_t *dw = gui->GetDesktop()->FindChildByName( transitionTarget );
 		delete transitions[i].data;
 		transitions[i].data = NULL;
+		if ( dw != NULL && ( ( dw->win == NULL ) == ( dw->simp == NULL ) ) ) {
+			common->Error( "idWindow::FixupTransitions: target '%s' for window '%s' in gui '%s' has invalid simple/full ownership",
+				transitionTarget.c_str(), name.c_str(), gui->GetSourceFile() );
+		}
 		if ( dw && ( dw->win || dw->simp ) ){
 			const intptr_t transitionOffset = (intptr_t)transitions[i].offset;
 			if ( dw->win ) {
@@ -5109,12 +5418,15 @@ void idWindow::FixupTransitions() {
 			}
 		}
 		if ( transitions[i].data == NULL ) {
-			transitions.RemoveIndex( i );
-			i--;
-			c--;
+			common->Error( "idWindow::FixupTransitions: could not resolve saved transition target '%s' offset %d for window '%s' in gui '%s'",
+				transitionTarget.c_str(), transitions[i].offset, name.c_str(), gui->GetSourceFile() );
 		}
 	}
 	for ( c = 0; c < children.Num(); c++ ) {
+		if ( children[c] == NULL ) {
+			common->Error( "idWindow::FixupTransitions: window '%s' in gui '%s' has a NULL child at index %d",
+				name.c_str(), gui->GetSourceFile(), c );
+		}
 		children[c]->FixupTransitions();
 	}
 }

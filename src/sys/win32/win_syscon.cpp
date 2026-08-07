@@ -628,7 +628,8 @@ static LRESULT CALLBACK ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 	case WM_CLOSE:
 		if (cvarSystem->IsInitialized() && com_skipRenderer.GetBool()) {
 			cmdString = Mem_CopyString("quit");
-			Sys_QueEvent(0, SE_CONSOLE, 0, 0, strlen(cmdString) + 1, cmdString);
+			Sys_QueEvent(0, SE_CONSOLE, 0, 0,
+				idLib::SizeToInt( strlen( cmdString ) + 1, "ConWndProc quit command" ), cmdString);
 		}
 		else if (s_wcd.quitOnClose) {
 			PostQuitMessage(0);
@@ -736,7 +737,8 @@ static LRESULT CALLBACK ConWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 			}
 			else {
 				cmdString = Mem_CopyString("quit");
-				Sys_QueEvent(0, SE_CONSOLE, 0, 0, strlen(cmdString) + 1, cmdString);
+				Sys_QueEvent(0, SE_CONSOLE, 0, 0,
+					idLib::SizeToInt( strlen( cmdString ) + 1, "ConWndProc quit button" ), cmdString);
 			}
 		}
 		else if (wParam == CLEAR_ID) {

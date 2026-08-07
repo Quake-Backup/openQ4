@@ -129,12 +129,6 @@ static idStr DemoFormatTime( int milliseconds, bool unknownAllowed = true ) {
 	return va( "%02d:%02d", minutes, seconds );
 }
 
-static idStr DemoFormatSize( int bytes ) {
-	idStr result;
-	result.BestUnit( "%.1f", static_cast<float>( Max( 0, bytes ) ), MEASURE_SIZE );
-	return result;
-}
-
 static int DemoCurrentRenderTimeMS( const idSessionLocal &session ) {
 	if ( session.readDemo == NULL ) {
 		return 0;
@@ -376,6 +370,7 @@ static void DemoProbeEntry( demoLibraryEntry_t &entry ) {
 	}
 }
 
+#ifndef ID_DEDICATED
 static void Session_DemoMenu_f( const idCmdArgs &args ) {
 	sessLocal.OpenDemoMenu( !sessLocal.IsDemoPlaybackActive() );
 }
@@ -431,6 +426,7 @@ static void Session_DemoFreeRoam_f( const idCmdArgs &args ) {
 static void Session_DemoStop_f( const idCmdArgs &args ) {
 	sessLocal.StopDemoPlayback();
 }
+#endif
 
 }
 

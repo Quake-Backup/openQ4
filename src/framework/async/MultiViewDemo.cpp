@@ -15,7 +15,6 @@ their layout, and corrupt/truncated streams fail at a bounded record.
 
 #include "../Session_local.h"
 
-#include <errno.h>
 #include <time.h>
 
 namespace {
@@ -448,6 +447,8 @@ idMultiViewDemo::idMultiViewDemo
 ==================
 */
 idMultiViewDemo::idMultiViewDemo() {
+	memset( &recordingResult, 0, sizeof( recordingResult ) );
+	recordingResultValid = false;
 	Clear();
 }
 
@@ -551,6 +552,84 @@ void idMultiViewDemo::SessionStop() {
 
 bool idMultiViewDemo::IsRecording() const {
 	return state == MVD_RECORDING;
+}
+
+/*
+==================
+idMultiViewDemo::StartNamedRecording
+==================
+*/
+bool idMultiViewDemo::StartNamedRecording( const char *name ) {
+	idCmdArgs args;
+	args.AppendArg( "recordMVD" );
+	if ( name != NULL && name[0] != '\0' ) {
+		args.AppendArg( name );
+	}
+	return StartRecording( args );
+}
+
+/*
+==================
+idMultiViewDemo::StopRecordingCleanly
+==================
+*/
+bool idMultiViewDemo::StopRecordingCleanly( const char *reason ) {
+	return StopRecording(
+		( reason != NULL && reason[0] != '\0' ) ? reason : "server request", true );
+}
+
+/*
+==================
+idMultiViewDemo::CopyRecordingQPath
+==================
+*/
+bool idMultiViewDemo::CopyRecordingQPath( char *buffer, int bufferSize ) const {
+	if ( buffer == NULL || bufferSize <= 0 ) {
+		return false;
+	}
+	buffer[0] = '\0';
+	if ( state != MVD_RECORDING || fileName.IsEmpty() || fileName.Length() >= bufferSize ) {
+		return false;
+	}
+	idStr::Copynz( buffer, fileName.c_str(), bufferSize );
+	return true;
+}
+
+/*
+==================
+idMultiViewDemo::CopyRecordingResult
+==================
+*/
+bool idMultiViewDemo::CopyRecordingResult(
+		serverMVDRecordingResult_t &result ) const {
+	if ( !recordingResultValid ) {
+		memset( &result, 0, sizeof( result ) );
+		return false;
+	}
+	result = recordingResult;
+	return true;
+}
+
+/*
+==================
+idMultiViewDemo::SetRecordingResult
+==================
+*/
+void idMultiViewDemo::SetRecordingResult( serverMVDResultState_t resultState,
+		serverMVDResultReason_t resultReason, const char *finalQPath,
+		const char *partialQPath ) {
+	memset( &recordingResult, 0, sizeof( recordingResult ) );
+	recordingResult.state = resultState;
+	recordingResult.reason = resultReason;
+	if ( finalQPath != NULL ) {
+		idStr::Copynz( recordingResult.finalQPath, finalQPath,
+			sizeof( recordingResult.finalQPath ) );
+	}
+	if ( partialQPath != NULL ) {
+		idStr::Copynz( recordingResult.partialQPath, partialQPath,
+			sizeof( recordingResult.partialQPath ) );
+	}
+	recordingResultValid = true;
 }
 
 bool idMultiViewDemo::IsPlaying() const {
@@ -1295,20 +1374,30 @@ bool idMultiViewDemo::StartRecording( const idCmdArgs &args ) {
 		return false;
 	}
 	if ( !idAsyncNetwork::server.IsActive() || !sessLocal.IsMapSpawned() || game == NULL || !game->IsMultiplayer() ) {
+		SetRecordingResult( SERVER_MVD_RESULT_FAILED,
+			SERVER_MVD_REASON_START_REJECTED, NULL, NULL );
 		common->Printf( "recordMVD requires an active multiplayer server map\n" );
 		return false;
 	}
 
 	fileName = BuildRecordingName( args );
-	if ( fileName.IsEmpty() ) {
+	if ( fileName.IsEmpty() ||
+		fileName.Length() + static_cast<int>( strlen( ".part" ) ) >
+			SERVER_MVD_RESULT_QPATH_BYTES ) {
+		SetRecordingResult( SERVER_MVD_RESULT_FAILED,
+			SERVER_MVD_REASON_NAME_UNAVAILABLE, NULL, NULL );
 		common->Warning( "No unused MVD filename is available" );
 		Clear();
 		return false;
 	}
 	tempFileName = fileName;
 	tempFileName += ".part";
+	SetRecordingResult( SERVER_MVD_RESULT_PENDING, SERVER_MVD_REASON_NONE,
+		NULL, tempFileName.c_str() );
 	file = fileSystem->OpenFileWrite( tempFileName.c_str(), "fs_savepath" );
 	if ( file == NULL ) {
+		SetRecordingResult( SERVER_MVD_RESULT_FAILED,
+			SERVER_MVD_REASON_OPEN_FAILED, NULL, NULL );
 		common->Warning( "Could not open '%s' for MVD recording", tempFileName.c_str() );
 		Clear();
 		return false;
@@ -1325,7 +1414,9 @@ bool idMultiViewDemo::StartRecording( const idCmdArgs &args ) {
 	int schemaMinor = 0;
 	game->GetMVDSchemaVersion( schemaMajor, schemaMinor );
 	if ( schemaMajor <= 0 || schemaMajor > 0xffff ||
-		 schemaMinor < 0 || schemaMinor > 0xffff ) {
+			schemaMinor < 0 || schemaMinor > 0xffff ) {
+		SetRecordingResult( SERVER_MVD_RESULT_FAILED,
+			SERVER_MVD_REASON_SCHEMA_INVALID, NULL, tempFileName.c_str() );
 		common->Warning( "Game module reported invalid MVD schema %d.%d",
 			schemaMajor, schemaMinor );
 		fileSystem->CloseFile( file );
@@ -1346,7 +1437,8 @@ bool idMultiViewDemo::StartRecording( const idCmdArgs &args ) {
 	game->SetDemoState( DEMO_RECORDING, true, false );
 	if ( !WriteHeader() || !WriteMetadataRecord() || !WriteMapStateRecord() || !WriteNetworkStateRecord() ) {
 		common->Warning( "Could not start MVD recording: %s", lastError.c_str() );
-		StopRecording( "initialization failed", false );
+		StopRecording( "initialization failed", false,
+			SERVER_MVD_REASON_INITIALIZATION_FAILED );
 		return false;
 	}
 
@@ -1360,13 +1452,12 @@ idMultiViewDemo::CommitRecording
 ==================
 */
 bool idMultiViewDemo::CommitRecording() {
-	idStr fromOS = fileSystem->RelativePathToOSPath( tempFileName.c_str(), "fs_savepath" );
-	idStr toOS = fileSystem->RelativePathToOSPath( fileName.c_str(), "fs_savepath" );
-	if ( rename( fromOS.c_str(), toOS.c_str() ) == 0 ) {
+	if ( fileSystem->PromoteFile( tempFileName.c_str(), fileName.c_str(),
+			"fs_savepath" ) ) {
 		return true;
 	}
-	common->Warning( "Could not finalize MVD '%s' (error %d); recoverable stream remains at '%s'",
-		fileName.c_str(), errno, tempFileName.c_str() );
+	common->Warning( "Could not finalize MVD '%s'; recoverable stream remains at '%s'",
+		fileName.c_str(), tempFileName.c_str() );
 	return false;
 }
 
@@ -1375,13 +1466,16 @@ bool idMultiViewDemo::CommitRecording() {
 idMultiViewDemo::StopRecording
 ==================
 */
-void idMultiViewDemo::StopRecording( const char *reason, bool finalize ) {
+bool idMultiViewDemo::StopRecording( const char *reason, bool finalize,
+		serverMVDResultReason_t failureReason ) {
 	if ( state != MVD_RECORDING || finalizing ) {
-		return;
+		return false;
 	}
 	finalizing = true;
 
 	bool clean = finalize;
+	serverMVDResultReason_t terminalReason = finalize ?
+		SERVER_MVD_REASON_NONE : failureReason;
 	if ( finalize && file != NULL ) {
 		clean = WriteIndexRecord();
 		idFile_Memory payload( "MVD end" );
@@ -1393,8 +1487,11 @@ void idMultiViewDemo::StopRecording( const char *reason, bool finalize ) {
 		if ( clean ) {
 			clean = WriteRecord( MVD_RECORD_END, 1, 0, payload.GetDataPtr(), payload.Length(), false );
 		}
-		if ( clean ) {
-			file->ForceFlush();
+		if ( !clean ) {
+			terminalReason = SERVER_MVD_REASON_FINALIZE_WRITE_FAILED;
+		} else if ( !file->Sync() ) {
+			clean = false;
+			terminalReason = SERVER_MVD_REASON_SYNC_FAILED;
 		}
 	}
 
@@ -1408,18 +1505,28 @@ void idMultiViewDemo::StopRecording( const char *reason, bool finalize ) {
 	bool committed = false;
 	if ( clean ) {
 		committed = CommitRecording();
+		if ( !committed ) {
+			terminalReason = SERVER_MVD_REASON_PROMOTE_FAILED;
+		}
 	}
 	if ( committed ) {
+		SetRecordingResult( SERVER_MVD_RESULT_COMMITTED,
+			SERVER_MVD_REASON_NONE, fileName.c_str(), NULL );
 		idStr size;
 		size.BestUnit( "%.2f", static_cast<float>( finalBytes ), MEASURE_SIZE );
 		common->Printf( "Stopped MVD recording (%s): '%s', %d snapshots, %s\n",
 			reason ? reason : "complete", fileName.c_str(), snapshotCount, size.c_str() );
-	} else if ( !clean ) {
+	} else {
+		SetRecordingResult( SERVER_MVD_RESULT_FAILED, terminalReason,
+			NULL, tempFileName.c_str() );
+	}
+	if ( !clean ) {
 		common->Warning( "MVD recording stopped without a clean end marker (%s); partial data remains at '%s'",
 			reason ? reason : "write failure", tempFileName.c_str() );
 	}
 
 	Clear();
+	return committed;
 }
 
 /*
@@ -1948,8 +2055,10 @@ bool idMultiViewDemo::ResetPlaybackStream() {
 		return false;
 	}
 
+#ifndef ID_DEDICATED
 	const bool restoreDemoMenu =
 		sessLocal.guiDemoMenu != NULL && sessLocal.guiActive == sessLocal.guiDemoMenu;
+#endif
 	const int restoreFollowClient = game->GetDemoFollowClient();
 	resettingPlayback = true;
 	game->SetDemoState( DEMO_NONE, false, false );

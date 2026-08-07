@@ -1852,7 +1852,7 @@ def validate_game_hooks() -> None:
     )
 
     schedule_round = function_body(
-        rounds, "void rvRoundGameState::ScheduleNextRound( void )"
+        rounds, "bool rvRoundGameState::ScheduleNextRound( void )"
     )
     prepare_round = schedule_round.find("PrepareNextRound();")
     reset_round = schedule_round.find("ResetRound();")

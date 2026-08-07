@@ -869,7 +869,7 @@ static bool R_IsPlainImageSourceName( const char *imageName ) {
 	}
 
 	idLexer src;
-	src.LoadMemory( imageName, strlen( imageName ), imageName );
+	src.LoadMemory( imageName, idLib::SizeToInt( strlen( imageName ), "R_IsPlainImageSourceName" ), imageName );
 	src.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 
 	idToken token;

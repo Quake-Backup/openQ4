@@ -1741,11 +1741,6 @@ static void RB_UpdateInteractionColorMode( bool forcePrint ) {
 	}
 }
 
-static void cg_error_callback( void ) {
-	CGerror i = cgGetError();
-	common->Printf( "Cg error (%d): %s\n", i, cgGetErrorString(i) );
-}
-
 /*
 =========================================================================================
 
@@ -2489,10 +2484,6 @@ static const char *RB_ShadowMapTimingPhaseName( const shadowMapTimingPhase_t pha
 
 static shadowMapLightClass_t RB_ShadowMapLightClass( const viewLight_t *vLight ) {
 	return R_ClassifyShadowMapLight( vLight ).lightClass;
-}
-
-static const char *RB_ShadowMapLightClassName( const viewLight_t *vLight ) {
-	return R_ShadowMapLightClassName( RB_ShadowMapLightClass( vLight ) );
 }
 
 static const char *RB_ShadowMapLightClassNameByClass( const int lightClass ) {
@@ -12282,7 +12273,7 @@ void R_LoadARBProgram( int progIndex ) {
 	glGetError();
 
 	glProgramStringARB( prog.target, GL_PROGRAM_FORMAT_ASCII_ARB,
-		strlen( start ), (unsigned char *)start );
+		idLib::SizeToInt( strlen( start ), "R_LoadARBProgram" ), (unsigned char *)start );
 
 	err = glGetError();
 	glGetIntegerv( GL_PROGRAM_ERROR_POSITION_ARB, (GLint *)&ofs );

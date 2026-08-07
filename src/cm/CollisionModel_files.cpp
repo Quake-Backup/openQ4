@@ -603,7 +603,8 @@ bool idCollisionModelManagerLocal::ParseCollisionModel( Lexer *src, const char *
 	model->fileTime = mapFileCRC;
 	model->refCount = 0;
 	
-	if ( newModel && model->name.Cmpn( PROC_CLIPMODEL_STRING_PRFX, strlen( PROC_CLIPMODEL_STRING_PRFX ) ) == 0 ) {
+	if ( newModel && model->name.Cmpn( PROC_CLIPMODEL_STRING_PRFX,
+		 static_cast<int>( sizeof( PROC_CLIPMODEL_STRING_PRFX ) - 1 ) ) == 0 ) {
 		numInlinedProcClipModels++;
 	}
 	model->numPrimitives = 0;

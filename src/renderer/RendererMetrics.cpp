@@ -691,35 +691,6 @@ static bool rg_gpuTimerQueryActive = false;
 static rendererGpuTimerQuery_t *rg_gpuTimerActiveQuery = NULL;
 static bool rg_gpuTimerOverflowThisFrame = false;
 
-static const char *R_RendererMetrics_GpuTimerSlotName( rendererGpuTimerSlot_t slot ) {
-	switch ( slot ) {
-	case RENDERER_GPU_TIMER_SET_BUFFER:
-		return "setbuf";
-	case RENDERER_GPU_TIMER_DRAW3D:
-		return "3d";
-	case RENDERER_GPU_TIMER_DRAW2D:
-		return "2d";
-	case RENDERER_GPU_TIMER_SPECIAL_EFFECTS:
-		return "special";
-	case RENDERER_GPU_TIMER_RENDER_TARGET:
-		return "rt";
-	case RENDERER_GPU_TIMER_COPY_RENDER:
-		return "copy";
-	case RENDERER_GPU_TIMER_SWAP_BUFFERS:
-		return "swap";
-	case RENDERER_GPU_TIMER_MODERN_DEFERRED:
-		return "modernDeferred";
-	case RENDERER_GPU_TIMER_MODERN_FORWARD:
-		return "modernForward";
-	case RENDERER_GPU_TIMER_MODERN_COMPOSITE:
-		return "modernComposite";
-	case RENDERER_GPU_TIMER_GPU_DRIVEN_INDIRECT:
-		return "gpuDrivenIndirect";
-	default:
-		return "unknown";
-	}
-}
-
 static const char *R_RendererMetrics_ModernExecutorModeName( rendererModernExecutorMetricsMode_t mode ) {
 	switch ( mode ) {
 	case RENDERER_MODERN_EXECUTOR_METRICS_OFF:

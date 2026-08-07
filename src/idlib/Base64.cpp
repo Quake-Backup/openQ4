@@ -177,7 +177,7 @@ int idBase64::Decode( byte *to ) const {
 		}
 		int sixtet = Base64_DecodeSixtet( *from );
 		if ( sixtet < 0 ) {
-			return n;
+			return idLib::SizeToInt( n, "idBase64::Decode" );
 		}
 		in[i] = (byte)sixtet;
 		++i;
@@ -203,7 +203,7 @@ int idBase64::Decode( byte *to ) const {
 			w >>= 8;
 		}
 	}
-	return n;
+	return idLib::SizeToInt( n, "idBase64::Decode" );
 }
 
 /*

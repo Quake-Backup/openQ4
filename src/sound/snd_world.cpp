@@ -356,6 +356,7 @@ idSoundWorldLocal::idSoundWorldLocal()
 
 	slowmoSpeed = 1.0f;
 	enviroSuitActive = false;
+	underwaterActive = false;
 }
 
 /*
@@ -1991,4 +1992,17 @@ idSoundWorldLocal::SetEnviroSuit
 void idSoundWorldLocal::SetEnviroSuit( bool active )
 {
 	enviroSuitActive = active;
+}
+
+/*
+=================
+idSoundWorldLocal::SetUnderwater
+
+Muffles the whole mix while the listener's head is below a liquid surface. The game re-derives this
+from the eye position every frame, so unlike the enviro suit it is not part of the savegame.
+=================
+*/
+void idSoundWorldLocal::SetUnderwater( bool active )
+{
+	underwaterActive = active;
 }

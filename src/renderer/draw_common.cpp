@@ -1293,10 +1293,6 @@ static bool RB_PostProcessMotionBlurRequested( const viewDef_t *viewDef ) {
 		&& r_motionBlurSamples.GetInteger() > 0;
 }
 
-static bool RB_PostProcessMotionBlurRequested( void ) {
-	return RB_PostProcessMotionBlurRequested( backEnd.viewDef );
-}
-
 static int RB_HDRDebugViewValue( void ) {
 	return idMath::ClampInt( 0, 2, r_hdrDebugView.GetInteger() );
 }
@@ -7434,7 +7430,6 @@ RB_STD_DrawShaderPasses
 Draw non-light dependent passes
 =====================
 */
-static bool RB_STD_LightGridInlinePassAvailable( void );
 static bool RB_STD_DrawLightGridInlineSurface( const drawSurf_t *surf );
 static bool RB_LightGridUseDepthTextureCompare( void );
 static bool rbLightGridInlineSubmittedThisView = false;
@@ -9384,10 +9379,6 @@ static bool RB_STD_DrawLightGridSurface( const drawSurf_t *surf, const LightGrid
 	}
 
 	return submitted;
-}
-
-static bool RB_STD_LightGridInlinePassAvailable( void ) {
-	return r_useLightGrid.GetBool() && glConfig.GLSLProgramAvailable && rbLightGridIndirectStage.glslProgramObject != 0;
 }
 
 static bool RB_LightGridUseDepthTextureCompare( void ) {

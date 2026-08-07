@@ -229,7 +229,7 @@ static bool DeclManager_IsopenQ4OverrideDeclFile( const idDeclFile *sourceFile )
 }
 
 static bool DeclManager_DeclNameHasPrefix( const idStr &name, const char *prefix ) {
-	return name.Icmpn( prefix, strlen( prefix ) ) == 0;
+	return name.Icmpn( prefix, idLib::SizeToInt( strlen( prefix ), "DeclManager_DeclNameHasPrefix" ) ) == 0;
 }
 
 static bool DeclManager_IsStockMaterialRedeclaration( declType_t type, const idStr &name, const idDeclFile *previousSourceFile, const idDeclFile *currentSourceFile ) {
@@ -3082,10 +3082,11 @@ void idDeclManagerLocal::ListDecls_f( const idCmdArgs &args ) {
 	int		i, j;
 	int		totalDecls = 0;
 	int		totalText = 0;
-	int		totalStructs = 0;
+	size_t	totalStructs = 0;
 
 	for ( i = 0; i < declManagerLocal.declTypes.Num(); i++ ) {
-		int size, num;
+		size_t size;
+		int num;
 
 		if ( declManagerLocal.declTypes[i] == NULL ) {
 			continue;
@@ -3103,7 +3104,7 @@ void idDeclManagerLocal::ListDecls_f( const idCmdArgs &args ) {
 		}
 		totalStructs += size;
 
-		common->Printf( "%4ik %4i %s\n", size >> 10, num, declManagerLocal.declTypes[i]->typeName.c_str() );
+		common->Printf( "%4zuk %4i %s\n", size >> 10, num, declManagerLocal.declTypes[i]->typeName.c_str() );
 	}
 
 	for ( i = 0 ; i < declManagerLocal.loadedFiles.Num() ; i++ ) {
@@ -3112,7 +3113,7 @@ void idDeclManagerLocal::ListDecls_f( const idCmdArgs &args ) {
 	}
 
 	common->Printf( "%i total decls is %i decl files\n", totalDecls, declManagerLocal.loadedFiles.Num() );
-	common->Printf( "%iKB in text, %iKB in structures\n", totalText >> 10, totalStructs >> 10 );
+	common->Printf( "%iKB in text, %zuKB in structures\n", totalText >> 10, totalStructs >> 10 );
 }
 
 /*
@@ -3720,7 +3721,7 @@ void idDeclLocal::MakeDefault() {
 	self->FreeData();
 
 	// parse
-	self->Parse( defaultText, strlen( defaultText ), false );
+	self->Parse( defaultText, idLib::SizeToInt( strlen( defaultText ), "idDeclLocal::MakeDefault" ), false );
 
 	// we could still eventually hit the recursion if we have enough Error() calls inside Parse...
 	--recursionLevel;
@@ -3845,6 +3846,12 @@ void idDeclLocal::ParseLocal( bool noCaching ) {
 	char *parseText = declText;
 
 	if ( idStr::Icmpn( parseText, "{ STUB:", 7 ) == 0 ) {
+		// The packed stub is the stable declaration identity shared by clients and
+		// dedicated servers.  Expanding it is a lazy cache operation: renderer and
+		// GUI startup touch different subsets of declarations, so replacing the
+		// checksum here would make the network checksum depend on process role and
+		// startup order rather than installed content.
+		const int packedStubChecksum = checksum;
 		idLexer stubLexer;
 		stubLexer.LoadMemory( parseText, parseTextLength, GetFileName(), GetLineNum() );
 		stubLexer.SetFlags( DECL_LEXER_FLAGS );
@@ -3885,6 +3892,7 @@ void idDeclLocal::ParseLocal( bool noCaching ) {
 					}
 
 					SetTextLocal( definition.c_str(), definition.Length() );
+					checksum = packedStubChecksum;
 					parseTextLength = definition.Length();
 					parseText = (char *)_alloca( parseTextLength + 1 );
 					memcpy( parseText, definition.c_str(), parseTextLength + 1 );

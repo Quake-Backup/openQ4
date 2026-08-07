@@ -281,7 +281,6 @@ bool idCollisionModelManagerLocal::LoadProcBSP( const char *name, unsigned int m
 	idStr filename;
 	idToken token;
 	Lexer *src;
-	bool isLegacyWorldFile = false;
 
 	// load it
 	filename = name;
@@ -783,7 +782,8 @@ void idCollisionModelManagerLocal::FreeProcClipModels( void ) {
 		if ( model == NULL ) {
 			continue;
 		}
-		if ( model->name.Cmpn( PROC_CLIPMODEL_STRING_PRFX, strlen( PROC_CLIPMODEL_STRING_PRFX ) ) != 0 ) {
+		if ( model->name.Cmpn( PROC_CLIPMODEL_STRING_PRFX,
+			 static_cast<int>( sizeof( PROC_CLIPMODEL_STRING_PRFX ) - 1 ) ) != 0 ) {
 			continue;
 		}
 		DestroyModel( model );
@@ -3701,7 +3701,8 @@ static bool CM_CanReuseModelSlot( const idCollisionModelLocal *model, bool allow
 		return false;
 	}
 	if ( !allowProcClipSlotReuse &&
-		 model->name.Cmpn( PROC_CLIPMODEL_STRING_PRFX, strlen( PROC_CLIPMODEL_STRING_PRFX ) ) == 0 ) {
+		 model->name.Cmpn( PROC_CLIPMODEL_STRING_PRFX,
+			 static_cast<int>( sizeof( PROC_CLIPMODEL_STRING_PRFX ) - 1 ) ) == 0 ) {
 		return false;
 	}
 	return true;
@@ -3904,7 +3905,8 @@ const char *idCollisionModelManagerLocal::GetFullModelName( const char *mapName,
 	if ( IsRenderModelName( resolvedModelName ) ) {
 		return fullName.c_str();
 	}
-	if ( idStr::Cmpn( resolvedModelName, PROC_CLIPMODEL_STRING_PRFX, strlen( PROC_CLIPMODEL_STRING_PRFX ) ) == 0 ) {
+	if ( idStr::Cmpn( resolvedModelName, PROC_CLIPMODEL_STRING_PRFX,
+		 static_cast<int>( sizeof( PROC_CLIPMODEL_STRING_PRFX ) - 1 ) ) == 0 ) {
 		return fullName.c_str();
 	}
 	if ( idStr::IcmpnPath( resolvedModelName, "maps/", 5 ) == 0 ) {

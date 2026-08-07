@@ -952,6 +952,20 @@ static bool MapSupportsStartServerGameType( const idDict *dict, const char *game
 			dict->GetBool( "Tourney" ) ||
 			dict->GetBool( "Arena CTF" );
 	}
+	if ( !idStr::Icmp( gameType, "Duel" ) ) {
+		return dict->GetBool( "DM" );
+	}
+	if ( !idStr::Icmp( gameType, "Clan Arena" ) ||
+		!idStr::Icmp( gameType, "Freeze Tag" ) ||
+		!idStr::Icmp( gameType, "Red Rover" ) ) {
+		return dict->GetBool( "Team DM" );
+	}
+	if ( !idStr::Icmp( gameType, "One Flag CTF" ) ) {
+		return dict->GetBool( "CTF" );
+	}
+	if ( !idStr::Icmp( gameType, "Arena One Flag CTF" ) ) {
+		return dict->GetBool( "Arena CTF" );
+	}
 
 	return dict->GetBool( gameType );
 }
@@ -1054,7 +1068,12 @@ static bool MainMenuIsTeamGame( void ) {
 	const char *gameType = cvarSystem->GetCVarString( "si_gameType" );
 	return !idStr::Icmp( gameType, "Team DM" ) ||
 		!idStr::Icmp( gameType, "CTF" ) ||
+		!idStr::Icmp( gameType, "One Flag CTF" ) ||
 		!idStr::Icmp( gameType, "Arena CTF" ) ||
+		!idStr::Icmp( gameType, "Arena One Flag CTF" ) ||
+		!idStr::Icmp( gameType, "Clan Arena" ) ||
+		!idStr::Icmp( gameType, "Freeze Tag" ) ||
+		!idStr::Icmp( gameType, "Red Rover" ) ||
 		!idStr::Icmp( gameType, "DeadZone" );
 }
 
@@ -1087,14 +1106,35 @@ static int MainMenuMPSettingsGameTypeState( void ) {
 	if ( !idStr::Icmp( gameType, "Tourney" ) ) {
 		return 2;
 	}
-	if ( !idStr::Icmp( gameType, "Team DM" ) || !idStr::Icmp( gameType, "DeadZone" ) ) {
+	if ( !idStr::Icmp( gameType, "Team DM" ) ) {
 		return 3;
 	}
-	if ( !idStr::Icmp( gameType, "CTF" ) || !idStr::Icmp( gameType, "Arena CTF" ) || !idStr::Icmp( gameType, "Arena One Flag CTF" ) ) {
+	if ( !idStr::Icmp( gameType, "CTF" ) ) {
 		return 4;
 	}
 	if ( !idStr::Icmp( gameType, "One Flag CTF" ) ) {
 		return 5;
+	}
+	if ( !idStr::Icmp( gameType, "Arena CTF" ) ) {
+		return 6;
+	}
+	if ( !idStr::Icmp( gameType, "Arena One Flag CTF" ) ) {
+		return 7;
+	}
+	if ( !idStr::Icmp( gameType, "DeadZone" ) ) {
+		return 8;
+	}
+	if ( !idStr::Icmp( gameType, "Duel" ) ) {
+		return 9;
+	}
+	if ( !idStr::Icmp( gameType, "Clan Arena" ) ) {
+		return 10;
+	}
+	if ( !idStr::Icmp( gameType, "Freeze Tag" ) ) {
+		return 11;
+	}
+	if ( !idStr::Icmp( gameType, "Red Rover" ) ) {
+		return 12;
 	}
 	return 1;
 }
@@ -1447,6 +1487,11 @@ ID_INLINE int idListSaveGameCompare( const fileTIME_T *a, const fileTIME_T *b ) 
 static const int SESSION_MENU_MAX_SAVE_DESCRIPTION_BYTES = 8192;
 static const int SESSION_MENU_MAX_SAVEGAME_DICT_KV = 16384;
 static const int SESSION_MENU_MAX_SAVEGAME_BASENAME = 96;
+static const float SESSION_MENU_SAVE_PREVIEW_X = 25.0f;
+static const float SESSION_MENU_SAVE_PREVIEW_Y = 78.0f;
+static const float SESSION_MENU_SAVE_PREVIEW_MAX_WIDTH = 183.0f;
+static const float SESSION_MENU_SAVE_PREVIEW_MAX_HEIGHT = 137.0f;
+static const float SESSION_MENU_GUI_ASPECT = 640.0f / 480.0f;
 
 typedef struct sessionMenuSaveDescription_s {
 	idStr	saveName;
@@ -1454,6 +1499,61 @@ typedef struct sessionMenuSaveDescription_s {
 	idStr	screenshot;
 	bool	noOverwrite;
 } sessionMenuSaveDescription_t;
+
+static idRectangle Session_MenuFitSaveGamePreviewRect( int imageWidth, int imageHeight ) {
+	float imageAspect = SESSION_MENU_GUI_ASPECT;
+	if ( imageWidth > 0 && imageHeight > 0 ) {
+		imageAspect = static_cast<float>( imageWidth ) / static_cast<float>( imageHeight );
+	}
+
+	// With aspect correction enabled, authored GUI units have a uniform physical
+	// scale.  In retail stretch mode, compensate for the viewport's non-uniform
+	// 640x480 mapping so the final on-screen rectangle still matches the image.
+	float logicalAspect = imageAspect;
+	if ( !cvarSystem->GetCVarBool( "ui_aspectCorrection" ) ) {
+		float viewportWidth = static_cast<float>( engineWindowState.uiViewportWidth );
+		float viewportHeight = static_cast<float>( engineWindowState.uiViewportHeight );
+		if ( viewportWidth <= 0.0f || viewportHeight <= 0.0f ) {
+			viewportWidth = static_cast<float>( engineWindowState.vidWidth );
+			viewportHeight = static_cast<float>( engineWindowState.vidHeight );
+		}
+		if ( viewportWidth > 0.0f && viewportHeight > 0.0f ) {
+			const float viewportStretch = ( viewportWidth / viewportHeight ) / SESSION_MENU_GUI_ASPECT;
+			if ( viewportStretch > 0.0f ) {
+				logicalAspect /= viewportStretch;
+			}
+		}
+	}
+
+	float width = SESSION_MENU_SAVE_PREVIEW_MAX_WIDTH;
+	float height = SESSION_MENU_SAVE_PREVIEW_MAX_HEIGHT;
+	const float availableAspect = width / height;
+	if ( logicalAspect > availableAspect ) {
+		height = width / logicalAspect;
+	} else {
+		width = height * logicalAspect;
+	}
+
+	return idRectangle(
+		SESSION_MENU_SAVE_PREVIEW_X + ( SESSION_MENU_SAVE_PREVIEW_MAX_WIDTH - width ) * 0.5f,
+		SESSION_MENU_SAVE_PREVIEW_Y + ( SESSION_MENU_SAVE_PREVIEW_MAX_HEIGHT - height ) * 0.5f,
+		width,
+		height );
+}
+
+static void Session_MenuSetSaveGamePreviewRect( idUserInterface *gui, const idMaterial *material ) {
+	if ( gui == NULL ) {
+		return;
+	}
+
+	const int imageWidth = material != NULL ? material->GetImageWidth() : 0;
+	const int imageHeight = material != NULL ? material->GetImageHeight() : 0;
+	const idRectangle previewRect = Session_MenuFitSaveGamePreviewRect( imageWidth, imageHeight );
+	gui->SetStateFloat( "loadgame_preview_x", previewRect.x );
+	gui->SetStateFloat( "loadgame_preview_y", previewRect.y );
+	gui->SetStateFloat( "loadgame_preview_w", previewRect.w );
+	gui->SetStateFloat( "loadgame_preview_h", previewRect.h );
+}
 
 static bool Session_MenuIsSafeSaveSlotName( const idStr &slotName ) {
 	if ( slotName.IsEmpty() || slotName.Length() > SESSION_MENU_MAX_SAVEGAME_BASENAME ) {
@@ -1813,7 +1913,11 @@ void idSessionLocal::SetSaveGameGuiVars( void ) {
 
 	guiActive->SetStateString( "loadgame_sel_0", "-1" );
 	guiActive->SetStateString( "loadgame_shot", "gfx/guis/loadscreens/generic" );
-	declManager->FindMaterial( "gfx/guis/loadscreens/generic" )->SetSort( SS_GUI );
+	const idMaterial *defaultPreview = declManager->FindMaterial( "gfx/guis/loadscreens/generic" );
+	if ( defaultPreview != NULL ) {
+		defaultPreview->SetSort( SS_GUI );
+	}
+	Session_MenuSetSaveGamePreviewRect( guiActive, defaultPreview );
 
 }
 
@@ -2084,6 +2188,7 @@ bool idSessionLocal::HandleSaveGameMenuCommand( idCmdArgs &args, int &icmd ) {
 				material->SetSort( SS_GUI );
 			}
 			guiActive->SetStateString( "loadgame_shot",  screenshot );
+			Session_MenuSetSaveGamePreviewRect( guiActive, material );
 
 			saveName.RemoveColors();
 			guiActive->SetStateString( "saveGameName", saveName );
@@ -3783,7 +3888,8 @@ void idSessionLocal::DownloadProgressBox( backgroundDownload_t *bgl, const char 
 					}
 				}
 				if ( dltotal ) {
-					guiMsg->SetStateString( "progress", va( "%d", progress_start + dlnow * ( progress_end - progress_start ) / dltotal ) );
+					const int64 progressNumerator = static_cast<int64>( dlnow ) * ( progress_end - progress_start );
+					guiMsg->SetStateString( "progress", va( "%d", progress_start + static_cast<int>( progressNumerator / dltotal ) ) );
 				} else {
 					guiMsg->SetStateString( "progress", "0" );
 				}
@@ -3931,7 +4037,6 @@ void idSessionLocal::HandleNoteCommands( const char *menuCommand ) {
 			workName = fileList[i];
 			workName += "/";
 			workName += p;
-			int workNote = noteNumber;
 		//	R_ScreenshotFilename( workNote, workName, shotName );
 
 			noteNum = shotName;

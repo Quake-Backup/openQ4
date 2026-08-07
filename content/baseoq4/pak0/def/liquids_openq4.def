@@ -1,0 +1,137 @@
+/*
+	openQ4 liquid damage definitions.
+
+	Damage values follow Quake 3 Arena. Lava and slime are scaled by the player's water level at the
+	call site, so feet-deep lava is a third of the punishment of being fully submerged, exactly as
+	Q3's "30 * waterlevel" and "10 * waterlevel" do. Drowning damage starts at "damage" and is
+	ramped up to drownDamageMax by the game as the player stays under.
+*/
+
+entityDef damage_openq4_drown
+{
+	"damage"					"2"
+	"noArmor"					"1"
+	"knockback"					"0"
+	"gib"						"0"
+}
+
+entityDef damage_openq4_lava
+{
+	"damage"					"30"
+	"knockback"					"0"
+	"burn"						"1"
+	"gib"						"0"
+}
+
+entityDef damage_openq4_slime
+{
+	"damage"					"10"
+	"knockback"					"0"
+	"gib"						"0"
+}
+
+/*
+	Liquid volumes that are not brushes.
+
+	A brush textured with one of the openQ4 liquid materials is the normal way to build a pool, but
+	Quake 4 ships no liquid-textured geometry at all, so there is no existing map with real water in
+	it. These let you box off a volume anywhere - including with the "spawn" console command in a
+	stock map, which is how the system gets tested.
+
+		spawn func_liquid_openq4_water
+		spawn func_liquid_openq4_lava
+		spawn func_liquid_openq4_slime
+
+	Set "size" for the box, which sits on the entity origin.
+*/
+entityDef func_liquid_openq4
+{
+	"spawnclass"		"idLiquidVolume"
+	"liquid"			"water"
+	"size"				"256 256 128"
+
+	"editor_color"		"0 0.5 1"
+	"editor_mins"		"-128 -128 0"
+	"editor_maxs"		"128 128 128"
+	"editor_usage"		"A liquid volume. Set 'liquid' to water, slime or lava."
+	"editor_var liquid"	"water, slime or lava"
+	"editor_var size"	"Box size, sitting on the entity origin."
+}
+
+entityDef func_liquid_openq4_water
+{
+	"inherit"			"func_liquid_openq4"
+	"liquid"			"water"
+}
+
+entityDef func_liquid_openq4_slime
+{
+	"inherit"			"func_liquid_openq4"
+	"liquid"			"slime"
+	"editor_color"		"0.3 0.6 0.1"
+}
+
+entityDef func_liquid_openq4_lava
+{
+	"inherit"			"func_liquid_openq4"
+	"liquid"			"lava"
+	"editor_color"		"0.9 0.3 0.05"
+}
+
+/*
+	Liquid presentation.
+
+	One def holds every liquid sound and effect so a mod can retarget the whole set without touching
+	code. Any key left out is simply silent: the game looks each one up with makeDefault off and
+	skips what it cannot find, so a partial set is a valid set.
+
+	Keys are "<what>_<liquid>", where liquid is water, lava or slime:
+		snd_enter_*   breaking the surface on the way in
+		snd_leave_*   leaving the volume entirely
+		snd_under_*   the head going under
+		snd_clear_*   the head coming back out
+		fx_splash_*   the splash at the surface, played on entry and exit
+
+	These reference stock Quake 4 assets. Quake 4 ships no lava or slime entry sounds of its own, so
+	those reuse the water set; the acid splash and slime pool effects give each liquid its own look.
+*/
+entityDef liquid_openq4
+{
+	"snd_enter_water"			"ambient_water_splash_big"
+	"snd_leave_water"			"ambient_water_splash_small"
+	"snd_under_water"			"player_sounds_water"
+	"snd_clear_water"			"player_sounds_medlabs_gasp"
+	"fx_splash_water"			"effects/ambient/splash_lrg.fx"
+
+	"snd_enter_lava"			"ambient_water_splash_big"
+	"snd_leave_lava"			"ambient_water_splash_small"
+	"snd_under_lava"			"player_sounds_water"
+	"snd_clear_lava"			"player_sounds_medlabs_gasp"
+	"fx_splash_lava"			"effects/levels/putra/acid_splash.fx"
+
+	"snd_enter_slime"			"ambient_water_splash_big"
+	"snd_leave_slime"			"ambient_water_splash_small"
+	"snd_under_slime"			"player_sounds_water"
+	"snd_clear_slime"			"player_sounds_medlabs_gasp"
+	"fx_splash_slime"			"effects/ambient/slime_pool.fx"
+
+	// drowning: a gasp each time the lungs give out
+	"snd_drown"					"player_sounds_medlabs_gasp"
+
+	// footsteps taken with the feet in a liquid, for anything whose own def does not set
+	// snd_water_wade - the retail player def does, most monsters do not
+	"snd_wade"					"player_sounds_water_wade"
+
+	// bubble trail from a submerged player's head, looping until they surface
+	"fx_bubbles_water"			"effects/levels/recomp_bubble.fx"
+	"fx_bubbles_lava"			"effects/levels/recomp_bubble.fx"
+	"fx_bubbles_slime"			"effects/levels/recomp_bubble.fx"
+
+	// smaller splash used for projectiles and thrown objects breaking the surface
+	"fx_impact_water"			"effects/ambient/splash_med.fx"
+	"fx_impact_lava"			"effects/levels/putra/acid_splash.fx"
+	"fx_impact_slime"			"effects/ambient/slime_pool.fx"
+	"snd_impact_water"			"bullet_impact_water"
+	"snd_impact_lava"			"bullet_impact_water"
+	"snd_impact_slime"			"bullet_impact_water"
+}

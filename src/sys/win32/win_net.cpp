@@ -918,8 +918,6 @@ InitForPort
 ==================
 */
 bool idPort::InitForPort( int portNumber ) {
-	int len = sizeof( struct sockaddr_in );
-
 	netSocket = NET_IPSocket( net_ip.GetString(), portNumber, &bound_to );
 	if ( netSocket <= 0 ) {
 		netSocket = 0;

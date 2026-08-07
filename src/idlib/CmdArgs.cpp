@@ -26,6 +26,9 @@ const char *idCmdArgs::Args(  int start, int end, bool escapeArgs ) const {
 	static idStr cmd_args;
 	int		i;
 
+	if ( start < 0 ) {
+		start = 0;
+	}
 	if ( end < 0 ) {
 		end = argc - 1;
 	} else if ( end >= argc ) {
@@ -86,7 +89,7 @@ void idCmdArgs::TokenizeString( const char *text, bool keepAsStrings ) {
 		return;
 	}
 
-	lex.LoadMemory( text, strlen( text ), "idCmdSystemLocal::TokenizeString" );
+	lex.LoadMemory( text, idLib::SizeToInt( strlen( text ), "idCmdArgs::TokenizeString" ), "idCmdSystemLocal::TokenizeString" );
 	lex.SetFlags( LEXFL_NOERRORS
 				| LEXFL_NOWARNINGS
 				| LEXFL_NOSTRINGCONCAT
@@ -171,8 +174,10 @@ void idCmdArgs::AppendArg( const char *text ) {
 		return;
 	}
 
+	const size_t used = static_cast<size_t>( next - tokenized );
+	const int remaining = idLib::SizeToInt( sizeof( tokenized ) - used, "idCmdArgs::AppendArg" );
 	argv[ argc ] = next;
-	idStr::Copynz( argv[ argc ], text, sizeof( tokenized ) - ( argv[ argc ] - tokenized ) );
+	idStr::Copynz( argv[ argc ], text, remaining );
 	argc++;
 }
 

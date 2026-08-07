@@ -938,27 +938,6 @@ static void CreateOptTri( optVertex_t *first, optEdge_t *e1, optEdge_t *e2, optI
 	LinkTriToEdge( optTri, opposite );
 }
 
-// debugging tool
-static void ReportNearbyVertexes( const optVertex_t *v, const optIsland_t *island ) {
-	const optVertex_t	*ov;
-	float		d;
-	idVec3		vec;
-
-	common->Printf( "verts near 0x%p (%f, %f)\n", v,  v->pv[0], v->pv[1] );
-	for ( ov = island->verts ; ov ; ov = ov->islandLink ) {
-		if ( ov == v ) {
-			continue;
-		}
-
-		vec = ov->pv - v->pv;
-
-		d = vec.Length();
-		if ( d < 1 ) {
-			common->Printf( "0x%p = (%f, %f)\n", ov, ov->pv[0], ov->pv[1] );
-		}
-	}
-}
-
 /*
 ====================
 BuildOptTriangles
@@ -1235,8 +1214,6 @@ DrawOriginalEdges
 =================
 */
 static void DrawOriginalEdges( int numOriginalEdges, originalEdges_t *originalEdges ) {
-	int		i;
-
 	// retired 'dmap -draw' visualization; see DrawAllEdges
 	if ( !dmapGlobals.drawflag ) {
 		return;
@@ -1614,6 +1591,7 @@ static void OptimizeIsland( optIsland_t *island ) {
 AddVertexToIsland_r
 ================
 */
+#if 0
 static void AddVertexToIsland_r( optVertex_t *vert, optIsland_t *island ) {
 	optEdge_t	*e;
 
@@ -1685,6 +1663,7 @@ static void SeparateIslands( optimizeGroup_t *opt ) {
 		common->Printf( "%6i islands\n", numIslands );
 	}
 }
+#endif
 
 static void DontSeparateIslands( optimizeGroup_t *opt ) {
 	int		i;
@@ -1709,38 +1688,6 @@ static void DontSeparateIslands( optimizeGroup_t *opt ) {
 	OptimizeIsland( &island );
 }
 
-
-/*
-====================
-PointInSourceTris
-
-This is a sloppy bounding box check
-====================
-*/
-static bool PointInSourceTris( float x, float y, float z, optimizeGroup_t *opt ) {
-	mapTri_t	*tri;
-	idBounds	b;
-	idVec3		p;
-
-	if ( !opt->material->IsDrawn() ) {
-		return false;
-	}
-
-	p[0] = x;
-	p[1] = y;
-	p[2] = z;
-	for ( tri = opt->triList ; tri ; tri = tri->next ) {
-		b.Clear();
-		b.AddPoint( tri->v[0].xyz );
-		b.AddPoint( tri->v[1].xyz );
-		b.AddPoint( tri->v[2].xyz );
-
-		if ( b.ContainsPoint( p ) ) {
-			return true;
-		}
-	}
-	return false;
-}
 
 /*
 ====================

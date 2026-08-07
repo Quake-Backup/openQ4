@@ -372,23 +372,6 @@ function Recreate-MesonBuildDirectory {
     return [int]$LASTEXITCODE
 }
 
-function Get-LatestFileWriteTimeUtc {
-    param([string]$DirectoryPath)
-
-    if ([string]::IsNullOrWhiteSpace($DirectoryPath) -or -not (Test-Path $DirectoryPath)) {
-        return $null
-    }
-
-    $latest = $null
-    foreach ($file in Get-ChildItem -Path $DirectoryPath -Recurse -File -ErrorAction SilentlyContinue) {
-        if ($null -eq $latest -or $file.LastWriteTimeUtc -gt $latest) {
-            $latest = $file.LastWriteTimeUtc
-        }
-    }
-
-    return $latest
-}
-
 function Get-openQ4GameLibsRepoPath {
     param(
         [string]$RepoRoot,
@@ -400,6 +383,84 @@ function Get-openQ4GameLibsRepoPath {
     }
 
     return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "..\openQ4-game"))
+}
+
+function Get-GamelibsFileMap {
+    param(
+        [string[]]$RootPaths,
+        [string[]]$DirectoryPaths
+    )
+
+    if ($RootPaths.Count -ne $DirectoryPaths.Count) {
+        throw "GameLibs refresh roots and input directories must have the same count."
+    }
+
+    $filesByRelativePath = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+    for ($directoryIndex = 0; $directoryIndex -lt $DirectoryPaths.Count; $directoryIndex++) {
+        $directoryPath = $DirectoryPaths[$directoryIndex]
+        if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) {
+            continue
+        }
+
+        $rootPrefix = [System.IO.Path]::GetFullPath($RootPaths[$directoryIndex])
+        if (-not $rootPrefix.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToString())) {
+            $rootPrefix += [System.IO.Path]::DirectorySeparatorChar
+        }
+
+        foreach ($item in Get-ChildItem -LiteralPath $directoryPath -Recurse -Force) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "GameLibs refresh input must not be a reparse point: '$($item.FullName)'."
+            }
+            if ($item.PSIsContainer) {
+                continue
+            }
+            if ($item -isnot [System.IO.FileInfo]) {
+                throw "GameLibs refresh input must be a regular file: '$($item.FullName)'."
+            }
+
+            $fullPath = [System.IO.Path]::GetFullPath($item.FullName)
+            if (-not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "GameLibs refresh input escaped its expected root: '$fullPath'."
+            }
+
+            $relativePath = $fullPath.Substring($rootPrefix.Length).Replace('\', '/')
+            if ($filesByRelativePath.ContainsKey($relativePath)) {
+                throw "GameLibs refresh input contains a duplicate relative path: '$relativePath'."
+            }
+            $filesByRelativePath[$relativePath] = $item
+        }
+    }
+
+    return $filesByRelativePath
+}
+
+function Get-GamelibsFileHashMap {
+    param([System.Collections.IDictionary]$FilesByRelativePath)
+
+    $hashes = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($relativePath in $FilesByRelativePath.Keys) {
+            $filePath = $FilesByRelativePath[$relativePath].FullName
+            $stream = [System.IO.File]::Open(
+                $filePath,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Read
+            )
+            try {
+                $sha256.Initialize()
+                $hashBytes = $sha256.ComputeHash($stream)
+            } finally {
+                $stream.Dispose()
+            }
+            $hashes[$relativePath] = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+
+    return $hashes
 }
 
 function Test-GamelibsStageRefreshNeeded {
@@ -420,13 +481,14 @@ function Test-GamelibsStageRefreshNeeded {
     }
 
     $resolvedGameLibsRepo = Get-openQ4GameLibsRepoPath -RepoRoot $RepoRoot -ConfiguredRepo $GameLibsRepo
+    $stageRoot = Join-Path $RepoRoot ".tmp\gamelibs_stage"
     $sourceGameDirs = @(
         (Join-Path $resolvedGameLibsRepo "src\game"),
         (Join-Path $resolvedGameLibsRepo "src\mpgame")
     )
     $stagedGameDirs = @(
-        (Join-Path $RepoRoot ".tmp\gamelibs_stage\src\game"),
-        (Join-Path $RepoRoot ".tmp\gamelibs_stage\src\mpgame")
+        (Join-Path $stageRoot "src\game"),
+        (Join-Path $stageRoot "src\mpgame")
     )
 
     if (@($sourceGameDirs | Where-Object { -not (Test-Path $_) }).Count -ne 0) {
@@ -437,22 +499,85 @@ function Test-GamelibsStageRefreshNeeded {
         return $true
     }
 
-    $sourceLatest = @(
-        $sourceGameDirs | ForEach-Object { Get-LatestFileWriteTimeUtc -DirectoryPath $_ }
-    ) | Where-Object { $null -ne $_ } | Sort-Object -Descending | Select-Object -First 1
-    $stageLatest = @(
-        $stagedGameDirs | ForEach-Object { Get-LatestFileWriteTimeUtc -DirectoryPath $_ }
-    ) | Where-Object { $null -ne $_ } | Sort-Object -Descending | Select-Object -First 1
+    try {
+        $supportDirNames = @("idlib", "renderer", "ui", "sys", "bse", "MayaImport")
+        $sourceRoots = @($resolvedGameLibsRepo, $resolvedGameLibsRepo)
+        $sourceDirs = @($sourceGameDirs)
+        $stagedRoots = @($stageRoot, $stageRoot)
+        $stagedDirs = @($stagedGameDirs)
+        foreach ($supportDirName in $supportDirNames) {
+            $sourceRoots += $RepoRoot
+            $sourceDirs += Join-Path $RepoRoot "src\$supportDirName"
+            $stagedRoots += $stageRoot
+            $stagedDirs += Join-Path $stageRoot "src\$supportDirName"
+        }
 
-    if ($null -eq $sourceLatest) {
-        return $false
-    }
+        $sourceFiles = Get-GamelibsFileMap -RootPaths $sourceRoots -DirectoryPaths $sourceDirs
+        $stagedFiles = Get-GamelibsFileMap -RootPaths $stagedRoots -DirectoryPaths $stagedDirs
 
-    if ($null -eq $stageLatest) {
+        if ($sourceFiles.Count -ne $stagedFiles.Count) {
+            return $true
+        }
+        foreach ($relativePath in $sourceFiles.Keys) {
+            if (-not $stagedFiles.ContainsKey($relativePath)) {
+                return $true
+            }
+        }
+
+        $manifestPath = Join-Path $stageRoot "openq4_gamelibs_stage_manifest.json"
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            return $true
+        }
+
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $formatIsInteger = ($manifest.format -is [int]) -or ($manifest.format -is [long])
+        $fileCountIsInteger = ($manifest.fileCount -is [int]) -or ($manifest.fileCount -is [long])
+        if (-not $formatIsInteger -or $manifest.format -ne 1 -or
+                $manifest.files -isnot [System.Array] -or -not $fileCountIsInteger -or
+                $manifest.fileCount -ne @($manifest.files).Count) {
+            return $true
+        }
+
+        $manifestHashes = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+        foreach ($entry in @($manifest.files)) {
+            $relativePath = [string]$entry.path
+            $expectedHash = [string]$entry.sha256
+            if ([string]::IsNullOrWhiteSpace($relativePath) -or
+                    $expectedHash -notmatch '^[0-9a-fA-F]{64}$' -or
+                    -not $sourceFiles.ContainsKey($relativePath) -or
+                    $manifestHashes.ContainsKey($relativePath)) {
+                return $true
+            }
+            $manifestHashes[$relativePath] = $expectedHash.ToLowerInvariant()
+        }
+
+        if ($manifestHashes.Count -ne $sourceFiles.Count) {
+            return $true
+        }
+
+        $sourceHashes = Get-GamelibsFileHashMap -FilesByRelativePath $sourceFiles
+        $stagedHashes = Get-GamelibsFileHashMap -FilesByRelativePath $stagedFiles
+        foreach ($relativePath in $sourceFiles.Keys) {
+            if (-not $manifestHashes.ContainsKey($relativePath)) {
+                return $true
+            }
+
+            $expectedHash = $manifestHashes[$relativePath]
+            $sourceHash = $sourceHashes[$relativePath]
+            $stagedHash = $stagedHashes[$relativePath]
+            if ($sourceHash -cne $expectedHash -or $stagedHash -cne $expectedHash) {
+                return $true
+            }
+        }
+    } catch {
+        Write-Warning (
+            "Could not verify the staged openQ4-game snapshot; forcing a Meson reconfigure. " +
+            "Details: $($_.Exception.Message)"
+        )
         return $true
     }
 
-    return $sourceLatest -gt $stageLatest
+    return $false
 }
 
 function Remove-BSEArtifacts {
@@ -704,12 +829,13 @@ if ($commandName -eq "compile" -and $buildGameLibs -and $env:OPENQ4_SKIP_GAMELIB
         throw "GameLibs build script not found: '$buildGameLibsScript'."
     }
 
-    $buildArgs = @()
-    if (-not [string]::IsNullOrWhiteSpace($gameLibsRepo)) {
-        $buildArgs += @("-GameLibsRepo", $gameLibsRepo)
+    if ([string]::IsNullOrWhiteSpace($gameLibsRepo)) {
+        & $buildGameLibsScript
+    } else {
+        # PowerShell array splatting binds strings positionally; it does not
+        # reinterpret a "-GameLibsRepo" array element as a named parameter.
+        & $buildGameLibsScript -GameLibsRepo $gameLibsRepo
     }
-
-    & $buildGameLibsScript @buildArgs
     $buildExit = [int]$LASTEXITCODE
     if ($buildExit -ne 0) {
         exit $buildExit
@@ -772,7 +898,7 @@ if ($effectiveArgs.Length -gt 0 -and ($effectiveArgs[0] -eq "compile" -or $effec
 
     $needsGameLibsRefresh = Test-GamelibsStageRefreshNeeded -BuildDir $buildInfo.BuildDir -RepoRoot $repoRoot -GameLibsRepo $gameLibsRepo
     if ($needsGameLibsRefresh) {
-        Write-Host "openQ4-game sources changed since the last staged snapshot. Reconfiguring '$($buildInfo.BuildDir)'..."
+        Write-Host "GameLibs staging inputs changed since the last snapshot. Reconfiguring '$($buildInfo.BuildDir)'..."
         $reconfigureReasons += "staged openQ4-game refresh"
     }
 

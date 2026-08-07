@@ -2036,7 +2036,9 @@ windowDef Desktop
 			}
 			windowDef load_mapshot
 			{
-				rect	25,78,183,137
+				// The session centers a selected preview's native aspect inside the
+				// stock 183x137 area, so the image and its border resize together.
+				rect	"gui::loadgame_preview_x","gui::loadgame_preview_y","gui::loadgame_preview_w","gui::loadgame_preview_h"
 				visible	1
 				background	"gui::loadgame_shot"
 				matcolor	1,1,1,1
@@ -3567,7 +3569,7 @@ windowDef Desktop
 			onNamedEvent gametypeChange {
 				//DM 0 ; Tourney 1 ; Team DM 2 ; CTF 3 ; Arena CTF 4 ; DeadZone 5
 			
-				if ( "gui::currentGametype" == 0 ) { // DM = 0
+				if ( "gui::currentGametype" == 0 || "gui::currentGametype" == 6 ) { // DM or Duel
 				
 					set "mp_create_val6::visible" "1" ;
 					set "mp_create_opt6::visible" "1" ;
@@ -3613,7 +3615,7 @@ windowDef Desktop
 					set "mp_create_val5::noevents" "1" ; // (Squirrel@Ritual) Fixed; Team DM and Tourney gametype #s were mixed up in some contexts previously
 					set "mp_b_create_5::noevents" "1" ; // (Squirrel@Ritual) Fixed; Team DM and Tourney gametype #s were mixed up in some contexts previously
 					
-				} else if ( "gui::currentGametype" == 2 ) { // Team DM = 2
+				} else if ( "gui::currentGametype" == 2 || "gui::currentGametype" == 7 || "gui::currentGametype" == 8 || "gui::currentGametype" == 9 ) { // Team DM or a round team mode
 				
 					set "mp_create_val6::visible" "1" ;
 					set "mp_create_opt6::visible" "1" ;
@@ -3636,7 +3638,7 @@ windowDef Desktop
 					set "mp_create_val5::noevents" "0" ; // (Squirrel@Ritual) Fixed; Team DM and Tourney gametype #s were mixed up in some contexts previously
 					set "mp_b_create_5::noevents" "0" ; // (Squirrel@Ritual) Fixed; Team DM and Tourney gametype #s were mixed up in some contexts previously
 					
-				} else if ( "gui::currentGametype" == 3 || "gui::currentGametype" == 4 ) { // CTF = 3, Arena CTF = 4
+				} else if ( "gui::currentGametype" == 3 || "gui::currentGametype" == 4 || "gui::currentGametype" == 10 || "gui::currentGametype" == 11 ) { // CTF families
 						
 					set "mp_create_val6::visible" "0" ;
 					set "mp_create_opt6::visible" "0" ;
@@ -3892,7 +3894,7 @@ windowDef Desktop
 				visible	1
 				forecolor	1,0.745,0.137,0.8
 				choices	"#str_200929"
-				values	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone"
+				values	"DM;Tourney;Team DM;CTF;Arena CTF;DeadZone;Duel;Clan Arena;Freeze Tag;Red Rover;One Flag CTF;Arena One Flag CTF"
 				textscale	0.24
 				font	"fonts/lowpixel"
 				cvar	si_gametype

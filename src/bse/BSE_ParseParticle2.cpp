@@ -340,10 +340,6 @@ bool rvParticleTemplate::ParseBlendParms(rvDeclEffect* effect, idParser* src)
 {
 	rvParticleTemplate* v3; // edi
 	char result; // al
-	idLexer* v5; // eax
-	int v6; // edi
-	idBitMsg** v7; // esi
-	int v8; // eax
 	idToken token; // [esp+0h] [ebp-60h]
 	short v10; // [esp+50h] [ebp-10h]
 	int v11; // [esp+5Ch] [ebp-4h]
@@ -378,14 +374,7 @@ bool rvParticleTemplate::ParseImpact(rvDeclEffect* effect, idParser* src)
 {
 	int v3; // ebp
 	rvParticleTemplate* v4; // esi
-	int v6; // edi
 	//sdDeclTypeHolder* v7; // eax
-	idLexer* v8; // eax
-	idBitMsg** v9; // edi
-	int v10; // ST0C_4
-	idLexer* v11; // eax
-	idBitMsg** v12; // edi
-	int v13; // ST0C_4
 	idToken token; // [esp+4h] [ebp-60h]
 	short v15; // [esp+54h] [ebp-10h]
 	int v16; // [esp+60h] [ebp-4h]
@@ -479,16 +468,7 @@ bool rvParticleTemplate::ParseTimeout(rvDeclEffect* effect, idParser* src)
 	rvParticleTemplate* v3; // edi
 	idParser* v4; // ebp
 	char result; // al
-	int v6; // esi
 	//sdDeclTypeHolder* v7; // eax
-	idLexer* v8; // eax
-	int v9; // ebp
-	idBitMsg** v10; // esi
-	int v11; // ST0C_4
-	idLexer* v12; // eax
-	int v13; // ebp
-	idBitMsg** v14; // esi
-	int v15; // ST0C_4
 	idToken token; // [esp+4h] [ebp-60h]
 	short v17; // [esp+54h] [ebp-10h]
 	int v18; // [esp+60h] [ebp-4h]
@@ -593,11 +573,7 @@ rvEnvParms* rvParticleTemplate::ParseMotionParms(idParser* src, int count, rvEnv
 	//sdDetails::sdPoolAlloc<rvEnvParms, 128>* v4; // ecx
 	//rvEnvParms* v5; // eax
 	rvEnvParms* v6; // esi
-	int v7; // ebp
 	//sdDeclTypeHolder* v8; // eax
-	idLexer* v9; // eax
-	int v10; // edx
-	idBitMsg** v11; // ecx
 	//sdDetails::sdPoolAlloc<rvEnvParms, 128>* v12; // eax
 	//sdDetails::sdPoolAlloc<rvEnvParms, 128>* v13; // eax
 	idToken token; // [esp+4h] [ebp-60h]
@@ -733,13 +709,9 @@ bool rvParticleTemplate::ParseMotionDomains(rvDeclEffect* effect, idParser* src)
 	rvParticleTemplate* v3; // esi
 	idParser* v4; // edi
 	char result; // al
-	idLexer* v6; // eax
-	idBitMsg** v7; // ebp
-	int v8; // eax
 	idToken token; // [esp+0h] [ebp-60h]
 	short v10; // [esp+50h] [ebp-10h]
 	int v11; // [esp+5Ch] [ebp-4h]
-	idParser* srca; // [esp+68h] [ebp+8h]
 
 	v3 = this;
 	v10 = 0;
@@ -927,7 +899,6 @@ bool rvParticleTemplate::CheckCommonParms(idParser* src, rvParticleParms& parms)
 {
 	bool result; // al
 	idToken token; // [esp+0h] [ebp-60h]
-	short v4; // [esp+50h] [ebp-10h]
 	int v5; // [esp+5Ch] [ebp-4h]
 
 	if (src->ReadToken(&token))
@@ -1613,7 +1584,6 @@ void  rvParticleTemplate::Finish()
 	const modelSurface_t* v7; // ebp
 	idTraceModel* v8; // eax
 	idTraceModel* v9; // edi
-	idBounds* v10; // ebp
 	rvTrailInfo* v11; // ecx
 	rvElectricityInfo* v12; // eax
 	float v13; // ST10_4
@@ -1797,7 +1767,6 @@ void  rvParticleTemplate::Finish()
 void rvParticleTemplate::InitStatic()
 {
 	//sdDeclTypeHolder* v0; // eax
-	int v1; // eax
 	//sdDeclTypeHolder* v2; // eax
 
 	if (!rvParticleTemplate::sInited)
@@ -1919,7 +1888,6 @@ void rvParticleTemplate::Init(void)
 {
 	rvParticleTemplate* v1; // esi
 	//sdDeclTypeHolder* v2; // eax
-	rvDeclEffect** v3; // eax
 	signed int v4; // ecx
 
 	v1 = this;

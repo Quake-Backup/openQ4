@@ -14,6 +14,7 @@ from types import ModuleType
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SIZE_T_MAX = (1 << (struct.calcsize("P") * 8)) - 1
 
 
 def read(relative_path: str) -> str:
@@ -82,12 +83,94 @@ def expect_runtime_error(message: str, callback, context: str) -> None:
     raise AssertionError(f"Expected RuntimeError for {context}")
 
 
+def is_safe_download_path_model(path: str) -> bool:
+    if not path or path.startswith(("/", "\\")) or "\\" in path or ":" in path:
+        return False
+    if any(ord(character) < 32 or character in '<>"|?*' for character in path):
+        return False
+    segments = path.split("/")
+    if not all(
+        segment not in ("", ".", "..")
+        and not segment.startswith(" ")
+        and not segment.endswith((".", " "))
+        and not is_windows_device_path_segment_model(segment)
+        for segment in segments
+    ):
+        return False
+    return len(segments[-1]) > 4 and segments[-1].lower().endswith(".pk4")
+
+
+def is_windows_device_path_segment_model(segment: str) -> bool:
+    stem = segment.split(".", 1)[0].lower()
+    if stem in ("con", "prn", "aux", "nul"):
+        return True
+    return len(stem) == 4 and stem[:3] in ("com", "lpt") and stem[3] in "123456789¹²³"
+
+
+def bounded_download_write_model(
+    bytes_written: int,
+    size: int,
+    nmemb: int,
+    maximum_bytes: int,
+) -> int | None:
+    if size and nmemb > SIZE_T_MAX // size:
+        return None
+    byte_count = size * nmemb
+    if bytes_written > SIZE_T_MAX - byte_count:
+        return None
+    if maximum_bytes and (
+        bytes_written > maximum_bytes
+        or byte_count > maximum_bytes - bytes_written
+    ):
+        return None
+    return bytes_written + byte_count
+
+
 def validate_filesystem_pure_pack_contract() -> None:
     source = read("src/framework/FileSystem.cpp")
+    file_system_header = read("src/framework/FileSystem.h")
     md5_header = read("src/idlib/hashing/MD5.h")
     md5_source = read("src/idlib/hashing/MD5.cpp")
     async_client = read("src/framework/async/AsyncClient.cpp")
     async_server = read("src/framework/async/AsyncServer.cpp")
+    session_menu = read("src/framework/Session_menu.cpp")
+    curl_write = function_body(
+        source,
+        "size_t idFileSystemLocal::CurlWriteFunction(",
+    )
+    curl_progress = function_body(
+        source,
+        "int idFileSystemLocal::CurlProgressFunction(",
+    )
+    download_progress_box = function_body(
+        session_menu,
+        "void idSessionLocal::DownloadProgressBox(",
+    )
+    background_download = function_body(source, "dword BackgroundDownloadThread(")
+    download_request = function_body(
+        async_server,
+        "void idAsyncServer::ProcessDownloadRequestMessage(",
+    )
+    download_path_helper = function_body(
+        async_client,
+        "static bool AsyncClient_IsSafeDownloadPath(",
+    )
+    download_device_helper = function_body(
+        async_client,
+        "static bool AsyncClient_IsWindowsDevicePathSegment(",
+    )
+    download_file_cleanup = function_body(
+        async_client,
+        "static void AsyncClient_CloseBackgroundDownloadFile(",
+    )
+    download_info = function_body(
+        async_client,
+        "void idAsyncClient::ProcessDownloadInfoMessage(",
+    )
+    download_handler = function_body(
+        async_client,
+        "void idAsyncClient::HandleDownloads(",
+    )
     helper = function_body(source, "bool idFileSystemLocal::IsOpenQ4PurePack(")
     checksum_validator = function_body(source, "bool idFileSystemLocal::ValidateOpenQ4Paks(")
     misplaced_validator = function_body(source, "bool idFileSystemLocal::FindMisplacedOfficialPaks(")
@@ -130,6 +213,117 @@ def validate_filesystem_pure_pack_contract() -> None:
     reject(md5_source, "unsigned long\tdigest[4];", "LP64-unsafe MD5 digest storage")
     reject(md5_source, "memset( ctx, 0, sizeof( ctx ) );", "pointer-sized MD5 context clearing")
 
+    require(file_system_header, "expectedSize;", "immutable URL download-size limit")
+    require(curl_write, "nmemb > maximumSize / size", "libcurl callback multiplication guard")
+    require(
+        curl_write,
+        "context->bytesWritten > maximumSize - byteCount",
+        "libcurl callback cumulative-size guard",
+    )
+    require(
+        curl_write,
+        "byteCount > context->maximumBytes - context->bytesWritten",
+        "libcurl callback advertised-size guard",
+    )
+    require(curl_write, '"download exceeds advertised size"', "oversized download diagnostic")
+    require(
+        curl_write,
+        "fwrite( ptr, 1, byteCount",
+        "libcurl byte-count write callback contract",
+    )
+    require(curl_write, "context->bytesWritten += written;", "download byte accounting")
+    require(curl_write, "return written;", "libcurl exact write-result contract")
+    require(curl_progress, "dltotal >= idMath::INT_MAX", "download-total progress narrowing guard")
+    require(curl_progress, "dlnow >= idMath::INT_MAX", "download-current progress narrowing guard")
+    require(curl_progress, "static_cast<int>( dltotal )", "checked download-total conversion")
+    require(curl_progress, "static_cast<int>( dlnow )", "checked download-current conversion")
+    require(
+        curl_progress,
+        "bgl->url.dltotal = bgl->url.expectedSize;",
+        "package progress uses its advertised total",
+    )
+    require(
+        curl_progress,
+        "Min( reportedNow, bgl->url.expectedSize )",
+        "package progress is capped at its advertised total",
+    )
+    reject(curl_progress, "bgl->url.dltotal = dltotal;", "unchecked download-total conversion")
+    reject(curl_progress, "bgl->url.dlnow = dlnow;", "unchecked download-current conversion")
+    require(
+        download_progress_box,
+        "static_cast<int64>( dlnow ) * ( progress_end - progress_start )",
+        "download progress percentage overflow guard",
+    )
+    require(source, "~idScopedCurlEasySession()", "libcurl session lifetime guard")
+    require(source, "curl_easy_cleanup( session );", "libcurl session cleanup")
+    require_order(
+        background_download,
+        "idScopedCurlEasySession scopedSession( session );",
+        "CURLOPT_ERRORBUFFER",
+        "libcurl session guard before fallible options",
+    )
+    require(background_download, "error_buf[ 0 ] = '\\0';", "initialized libcurl error buffer")
+    require(
+        background_download,
+        "bgl->url.expectedSize > 0 ? static_cast<size_t>( bgl->url.expectedSize ) : 0",
+        "immutable download limit capture",
+    )
+    require(
+        background_download,
+        "curlDownloadContext_t downloadContext = { bgl, maximumBytes, 0 };",
+        "per-transfer byte accounting context",
+    )
+    require(
+        background_download,
+        "CURLOPT_WRITEDATA, &downloadContext",
+        "libcurl bounded write context ownership",
+    )
+    require_order(
+        background_download,
+        "curlDownloadContext_t downloadContext = { bgl, maximumBytes, 0 };",
+        "bgl->url.dltotal = 0;",
+        "download limit capture before mutable progress reset",
+    )
+    require(
+        background_download,
+        "downloadContext.bytesWritten != downloadContext.maximumBytes",
+        "successful package transfer exact-size verification",
+    )
+    require(
+        background_download,
+        "bgl->url.dlstatus = CURLE_PARTIAL_FILE;",
+        "short package transfer failure status",
+    )
+    require(
+        background_download,
+        "error_buf[ 0 ] != '\\0' ? error_buf : curl_easy_strerror( ret )",
+        "libcurl fallback error diagnostic",
+    )
+
+    require(download_path_helper, "segmentStart[ 0 ] == ' '", "download path leading-space rejection")
+    require(
+        download_path_helper,
+        "AsyncClient_IsWindowsDevicePathSegment( segmentStart, segmentLength )",
+        "download path device-name rejection",
+    )
+    require(download_device_helper, 'idStr::Icmpn( segment, "con", 3 )', "CON device-name rejection")
+    require(download_device_helper, 'idStr::Icmpn( segment, "com", 3 )', "COM device-name rejection")
+    require(download_device_helper, "digit == 0xC2", "UTF-8 superscript device-name rejection")
+    require(download_device_helper, "digit == 0xB9", "Windows-1252 superscript device-name rejection")
+    require_order(
+        download_file_cleanup,
+        "idFile *file = download.f;",
+        "download.f = NULL;",
+        "background download file ownership transfer",
+    )
+    require_order(
+        download_file_cleanup,
+        "download.f = NULL;",
+        "fileSystem->CloseFile( file );",
+        "background download pointer detachment before file close",
+    )
+    require(download_file_cleanup, "if ( file != NULL )", "idempotent background download file cleanup")
+
     checksum_vectors = {
         b"": 0x3B75655E,
         b"abc": 0x275FA452,
@@ -148,6 +342,294 @@ def validate_filesystem_pure_pack_contract() -> None:
     require(async_server, "Server decl checksum: 0x%08x", "server decl checksum diagnostic")
     require(async_server, "client=0x%08x server=0x%08x (non-pure)", "non-pure mismatch diagnostic")
     require(async_server, "client=0x%08x server=0x%08x (pure)", "pure mismatch diagnostic")
+    require(
+        download_request,
+        "dlSize[ MAX_PURE_PAKS ] = {};",
+        "download response size initialization for the no-game-pak slot",
+    )
+    require(
+        download_request,
+        "totalDlSize > idMath::INT_MAX - dlSize[ i ]",
+        "download response total-size overflow guard",
+    )
+    require(
+        download_request,
+        "pakURLs.Num() > pakNames.Num()",
+        "download response URL-count bounds guard",
+    )
+    require_order(
+        download_request,
+        "pakURLs.Num() > pakNames.Num()",
+        "for ( i = 0; i < pakURLs.Num(); i++ )",
+        "download response URL-count validation before indexed access",
+    )
+    require(download_path_helper, "path[ 0 ] == '/'", "absolute server download path rejection")
+    require(download_path_helper, "path[ 0 ] == '\\\\'", "rooted backslash server download path rejection")
+    require(download_path_helper, "c == '\\\\' || c == ':'", "backslash and drive-path rejection")
+    require(download_path_helper, "static_cast<unsigned char>( c ) < 32", "control-character path rejection")
+    require(download_path_helper, "c == '<'", "Windows-reserved punctuation rejection")
+    require(download_path_helper, "c == '*'", "Windows-reserved punctuation rejection")
+    require(download_path_helper, "segmentLength == 0", "empty download path segment rejection")
+    require(download_path_helper, "segmentStart[ 0 ] == '.'", "dot download path segment rejection")
+    require(download_path_helper, "segmentStart[ 1 ] == '.'", "parent download path segment rejection")
+    require(
+        download_path_helper,
+        "segmentStart[ segmentLength - 1 ] == '.'",
+        "Windows trailing-dot path rejection",
+    )
+    require(
+        download_path_helper,
+        "segmentStart[ segmentLength - 1 ] == ' '",
+        "Windows trailing-space path rejection",
+    )
+    require(download_path_helper, "segmentLength > 4", "download package filename requirement")
+    require(
+        download_path_helper,
+        'idStr::Icmp( scan - 4, ".pk4" ) == 0',
+        "case-insensitive PK4 download extension requirement",
+    )
+
+    download_yes = download_info[
+        download_info.find("if ( pakDl == SERVER_PAK_YES )") :
+        download_info.find("} else if ( pakDl == SERVER_PAK_NO )")
+    ]
+    require(download_yes, "AsyncClient_IsSafeDownloadPath( buf )", "server download path validation")
+    require_order(
+        download_yes,
+        "msg.ReadString( buf, MAX_STRING_CHARS );",
+        "AsyncClient_IsSafeDownloadPath( buf )",
+        "server download path validation after decode",
+    )
+    require_order(
+        download_yes,
+        "AsyncClient_IsSafeDownloadPath( buf )",
+        "entry.filename = buf;",
+        "server download path validation before storage",
+    )
+    require(download_yes, "entry.size <= 0", "non-positive server download-size rejection")
+    require(
+        download_yes,
+        "totalDlSize > idMath::INT_MAX - entry.size",
+        "server download total-size overflow guard",
+    )
+    require_order(
+        download_yes,
+        "totalDlSize > idMath::INT_MAX - entry.size",
+        "totalDlSize += entry.size;",
+        "server download size validation before accumulation",
+    )
+    invalid_download_type = download_info[
+        download_info.find("} else if ( pakDl != SERVER_PAK_END )") :
+        download_info.find("} while ( pakDl != SERVER_PAK_END )")
+    ]
+    require(
+        invalid_download_type,
+        "server sent invalid download entry type",
+        "invalid download discriminator diagnostic",
+    )
+    require(invalid_download_type, "dlList.Clear();", "invalid download discriminator cleanup")
+    require(invalid_download_type, "return;", "invalid download discriminator fail-closed return")
+    reject(download_info, "assert( pakDl == SERVER_PAK_END );", "release-only download discriminator validation")
+
+    update_setup = download_handler[
+        download_handler.find("fileSystem->OpenFileWrite( updateFile )") :
+        download_handler.find("updateState = UPDATE_DLING;")
+    ]
+    require(update_setup, "backgroundDownload.url.expectedSize = 0;", "unrestricted updater download")
+    package_setup = download_handler[
+        download_handler.find("fileSystem->MakeTemporaryFile( )") :
+        download_handler.find("session->DownloadProgressBox( &backgroundDownload, dltitle")
+    ]
+    require(
+        package_setup,
+        "backgroundDownload.url.expectedSize = dlList[ 0 ].size;",
+        "package advertised-size limit",
+    )
+    require(package_setup, "backgroundDownload.url.dltotal = 0;", "progress total initialization")
+    reject(
+        package_setup,
+        "backgroundDownload.url.dltotal = dlList[ 0 ].size;",
+        "advertised-size limit stored in mutable progress",
+    )
+    require_order(
+        package_setup,
+        "backgroundDownload.url.expectedSize = dlList[ 0 ].size;",
+        "fileSystem->BackgroundDownload( &backgroundDownload );",
+        "package size limit set before worker handoff",
+    )
+
+    if bounded_download_write_model(0, 2, 5, 10) != 10:
+        raise AssertionError("Bounded download model rejected an exact-size write")
+    if bounded_download_write_model(9, 1, 2, 10) is not None:
+        raise AssertionError("Bounded download model accepted a body above its advertised size")
+    if bounded_download_write_model(0, 2, SIZE_T_MAX // 2 + 1, 0) is not None:
+        raise AssertionError("Bounded download model accepted overflowing callback dimensions")
+    if bounded_download_write_model(SIZE_T_MAX, 1, 1, 0) is not None:
+        raise AssertionError("Bounded download model accepted overflowing cumulative bytes")
+    if bounded_download_write_model(9, 1, 2, 0) != 11:
+        raise AssertionError("Updater download model unexpectedly applied a package-size limit")
+
+    require_order(
+        download_handler,
+        "existingDestination = fileSystem->OpenExplicitFileRead( finalPath );",
+        "fileSystem->CreateOSPath( finalPath );",
+        "existing download destination check before directory creation",
+    )
+    existing_destination_failure = download_handler[
+        download_handler.find("if ( existingDestination )") :
+        download_handler.find("fileSystem->CreateOSPath( finalPath );")
+    ]
+    require(
+        existing_destination_failure,
+        "fileSystem->CloseFile( existingDestination );",
+        "existing download destination probe cleanup",
+    )
+    require(
+        existing_destination_failure,
+        "refusing to replace existing download destination",
+        "existing download destination diagnostic",
+    )
+    require(
+        existing_destination_failure,
+        "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );",
+        "existing destination temporary-file cleanup",
+    )
+    require(existing_destination_failure, "dlList.Clear();", "existing destination download-list cleanup")
+
+    require_order(
+        download_handler,
+        "saveas = fileSystem->OpenExplicitFileWrite( finalPath );",
+        "if ( !saveas )",
+        "download destination open failure handling",
+    )
+    require_order(
+        download_handler,
+        "if ( !saveas )",
+        "saveas->Write( buf, readlen );",
+        "download destination null guard",
+    )
+    destination_failure = download_handler[
+        download_handler.find("if ( !saveas )") :
+        download_handler.find("buf = (byte*)Mem_Alloc( CHUNK_SIZE );")
+    ]
+    require(
+        destination_failure,
+        "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );",
+        "failed destination temporary-file cleanup",
+    )
+    require(destination_failure, "dlList.Clear();", "failed download-list cleanup")
+    require(destination_failure, '"#str_07215"', "localized download failure message")
+    require(
+        download_handler,
+        "fileSystem->RemoveExplicitFile( finalPath );",
+        "checksum failure removes only the verified download destination",
+    )
+
+    update_destination = download_handler[
+        download_handler.find("fileSystem->OpenFileWrite( updateFile )") :
+        download_handler.find("dltotal = 0;")
+    ]
+    require(update_destination, "if ( f == NULL )", "update destination null guard")
+    require(update_destination, "updateState = UPDATE_DONE;", "failed update state cleanup")
+    require(update_destination, "SendVersionDLUpdate( 2 );", "failed update telemetry")
+    require(update_destination, '"#str_04335"', "localized update failure message")
+    require(update_destination, "updateFallback.Length()", "failed update fallback")
+    require(update_destination, "return;", "failed update early return")
+
+    update_download_result = download_handler[
+        download_handler.find("if ( backgroundDownload.url.status == DL_DONE )") :
+        download_handler.find("} else if ( dlList.Num() )")
+    ]
+    if update_download_result.count("AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );") != 2:
+        raise AssertionError("Update download success and failure paths must each release their owned file")
+
+    successful_copy_cleanup = download_handler[
+        download_handler.find("while ( remainlen )") :
+        download_handler.find("fileSystem->CloseFile( saveas );")
+    ]
+    require(
+        successful_copy_cleanup,
+        "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );",
+        "successful package download temporary-file cleanup",
+    )
+
+    failed_download_cleanup = download_handler[
+        download_handler.find('common->Warning( "download failed:') :
+        download_handler.find("pakCount++;")
+    ]
+    require(
+        failed_download_cleanup,
+        "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );",
+        "failed or cancelled package download temporary-file cleanup",
+    )
+    require_order(
+        failed_download_cleanup,
+        "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );",
+        "dlList.Clear();",
+        "failed package download file cleanup before return",
+    )
+    reject(download_handler, "fileSystem->CloseFile( f );", "direct background download file close")
+    reject(
+        download_handler,
+        "fileSystem->CloseFile( backgroundDownload.f );",
+        "direct background download member close",
+    )
+    cleanup_call = "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );"
+    if download_handler.count(cleanup_call) != 6:
+        raise AssertionError("Every background download completion path must release its file exactly once")
+
+    valid_download_paths = (
+        "baseoq4/example.pk4",
+        "baseoq4/downloads/example.pk4",
+        "baseoq4/downloads/example.PK4",
+        "mods/example.pk4",
+        "example.pk4",
+    )
+    invalid_download_paths = (
+        "",
+        "/baseoq4/example.pk4",
+        "\\baseoq4\\example.pk4",
+        "C:/baseoq4/example.pk4",
+        "baseoq4\\example.pk4",
+        "baseoq4/mixed\\example.pk4",
+        ".",
+        "..",
+        "./example.pk4",
+        "../example.pk4",
+        "baseoq4/./example.pk4",
+        "baseoq4/../example.pk4",
+        "baseoq4/.. /example.pk4",
+        "baseoq4/trailing./example.pk4",
+        "baseoq4/trailing /example.pk4",
+        "baseoq4//example.pk4",
+        "baseoq4/example.pk4/",
+        "baseoq4/example.pk4.",
+        "baseoq4/example.pk4 ",
+        " baseoq4/example.pk4",
+        "baseoq4/ downloads/example.pk4",
+        "baseoq4/example:alternate.pk4",
+        "baseoq4/example?.pk4",
+        "baseoq4/example*.pk4",
+        "baseoq4/example|alternate.pk4",
+        "baseoq4/example\x01.pk4",
+        "baseoq4/example.zip",
+        "baseoq4/.pk4",
+        "CON.pk4",
+        "baseoq4/prn/example.pk4",
+        "baseoq4/AUX.txt/example.pk4",
+        "baseoq4/nul/example.pk4",
+        "baseoq4/COM1.pk4",
+        "baseoq4/lpt9/example.pk4",
+        "baseoq4/COM¹.pk4",
+        "baseoq4/LPT²/example.pk4",
+        "baseoq4/com³.txt/example.pk4",
+    )
+    for path in valid_download_paths:
+        if not is_safe_download_path_model(path):
+            raise AssertionError(f"Valid server download path rejected by model: {path!r}")
+    for path in invalid_download_paths:
+        if is_safe_download_path_model(path):
+            raise AssertionError(f"Unsafe server download path accepted by model: {path!r}")
 
     require(status, "IsOpenQ4PurePack( pak )", "GetPackStatus openQ4 pure-pack check")
     require_order(

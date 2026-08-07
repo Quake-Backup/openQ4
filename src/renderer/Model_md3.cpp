@@ -150,14 +150,14 @@ void idRenderModelMD3::InitFromFile( const char *fileName ) {
 		surf->ident = 0;	//SF_MD3;
 
 		// lowercase the surface name so skin compares are faster
-		int slen = (int)strlen( surf->name );
+		const int slen = idLib::SizeToInt( strlen( surf->name ), "idRenderModelMD3::InitFromFile" );
 		for( j = 0; j < slen; j++ ) {
 			surf->name[j] = (char)tolower( (unsigned char)surf->name[j] );
 		}
 
 		// strip off a trailing _1 or _2
 		// this is a crutch for q3data being a mess
-		j = strlen( surf->name );
+		j = slen;
 		if ( j > 2 && surf->name[j-2] == '_' ) {
 			surf->name[j-2] = 0;
 		}

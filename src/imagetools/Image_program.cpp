@@ -642,7 +642,7 @@ R_LoadImageProgram
 void R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamps, textureUsage_t* usage) {
 	idLexer src;
 
-	src.LoadMemory(name, strlen(name), name);
+	src.LoadMemory(name, idLib::SizeToInt(strlen(name), "R_LoadImageProgram"), name);
 	src.SetFlags(LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES);
 
 	parseBuffer[0] = 0;
@@ -665,4 +665,3 @@ const char* R_ParsePastImageProgram(idLexer& src) {
 	R_ParseImageProgram_r(src, NULL, NULL, NULL, NULL, NULL);
 	return parseBuffer;
 }
-

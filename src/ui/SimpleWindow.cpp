@@ -646,7 +646,7 @@ void idSimpleWindow::WriteToSaveGame( idFile *savefile ) {
 	int stringLen;
 
 	if ( background ) {
-		stringLen = strlen( background->GetName() );
+		stringLen = idLib::SizeToInt( strlen( background->GetName() ), "idSimpleWindow::WriteToSaveGame" );
 		savefile->Write( &stringLen, sizeof( stringLen ) );
 		savefile->Write( background->GetName(), stringLen );
 	} else {

@@ -82,6 +82,18 @@ The bot cvars are archived, so setting them once in your server config is
 enough. For the full command list, the character file format, and how to add
 your own characters, see [Multiplayer bots](../dev/mp-bots.md).
 
+## Competitive Match Management (Development Preview)
+
+Managed competitive profiles, server-owned readiness, tactical timeouts,
+structured match evidence and automatic multi-view recording are under active
+development. They are not tournament-qualified yet, and several captain,
+referee, series and spectator workflows do not have their finished interface.
+
+See [Competitive Matches](competitive-matches.md) for the currently usable
+profile and readiness path, the exact unfinished boundaries, and the operator
+test checklist. Casual servers do not opt into managed-match policy unless an
+operator selects a competitive profile.
+
 ## Multiplayer Tuning
 
 If you want to tune prediction or lag compensation behavior, see [Multiplayer Networking](multiplayer-networking.md).

@@ -620,6 +620,22 @@ void idHeap::Free16( void *p ) {
 //RAVEN END
 }
 
+#if USE_LIBC_MALLOC && defined( _WINDOWS )
+/*
+================
+HeapSizeToDword
+================
+*/
+static dword HeapSizeToDword( size_t allocationSize ) {
+	if ( allocationSize > static_cast<size_t>( UINT_MAX ) ) {
+		idLib::Error( "idHeap::Msize: allocation exceeds the supported dword range" );
+		return UINT_MAX;
+	}
+
+	return static_cast<dword>( allocationSize );
+}
+#endif
+
 /*
 ================
 idHeap::Msize
@@ -644,15 +660,15 @@ dword idHeap::Msize( void *p ) {
 			byte *ptr = ((byte *)p) - MALLOC_HEADER_SIZE;
 // jsinger: attempt to eliminate cross-DLL allocation issues
 			#ifdef RV_UNIFIED_ALLOCATOR
-						return Memory::MSize(ptr);
+						return HeapSizeToDword( Memory::MSize( ptr ) );
 			#else
-						return _msize(ptr);
+						return HeapSizeToDword( _msize( ptr ) );
 			#endif  // RV_UNIFIED_ALLOCATOR
 		#else
 			#ifdef RV_UNIFIED_ALLOCATOR
-						return Memory::MSize(p);
+						return HeapSizeToDword( Memory::MSize( p ) );
 			#else
-						return _msize(p);
+						return HeapSizeToDword( _msize( p ) );
 			#endif  // RV_UNIFIED_ALLOCATOR
 		#endif
 //RAVEN END

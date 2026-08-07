@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -15,7 +16,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE_SCRIPT = ROOT / "tools" / "build" / "stage_gamelibs.py"
+POWERSHELL_WRAPPER = ROOT / "tools" / "build" / "meson_setup.ps1"
+SHELL_WRAPPER = ROOT / "tools" / "build" / "meson_setup.sh"
 MANIFEST_NAME = "openq4_gamelibs_stage_manifest.json"
+SUPPORT_FIXTURES = {
+    "idlib/idlib_public.h": "// idlib\n",
+    "renderer/RenderWorld.h": "// renderer\n",
+    "ui/UserInterface.h": "// ui\n",
+    "sys/sys_public.h": "// sys\n",
+    "bse/BSE.h": "// bse\n",
+    "MayaImport/MayaImport.h": "// maya import\n",
+}
+
+
+def staged_support_dir_names() -> tuple[str, ...]:
+    tree = ast.parse(STAGE_SCRIPT.read_text(encoding="utf-8"), filename=str(STAGE_SCRIPT))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "OPENQ4_SUPPORT_DIRS" for target in node.targets):
+            continue
+        value = ast.literal_eval(node.value)
+        if isinstance(value, tuple) and all(isinstance(entry, str) for entry in value):
+            return value
+    raise AssertionError("could not read OPENQ4_SUPPORT_DIRS from stage_gamelibs.py")
 
 
 def sha256(path: Path) -> str:
@@ -44,8 +68,8 @@ def make_minimal_workspace(work: Path) -> tuple[Path, Path, Path]:
     gamelibs_root = work / "openQ4-game"
     stage_root = project_root / ".tmp" / "gamelibs_stage"
 
-    write_file(project_root / "src" / "idlib" / "idlib_public.h", "// idlib\n")
-    write_file(project_root / "src" / "renderer" / "RenderWorld.h", "// renderer\n")
+    for relative_path, contents in SUPPORT_FIXTURES.items():
+        write_file(project_root / "src" / relative_path, contents)
     write_file(gamelibs_root / "src" / "game" / "Game_local.cpp", "// game\n")
     write_file(gamelibs_root / "src" / "game" / "gamesys" / "SysCvar.cpp", "// cvar\n")
     write_file(gamelibs_root / "src" / "mpgame" / "Game_local.cpp", "// mpgame\n")
@@ -66,14 +90,14 @@ def validate_manifest(stage_root: Path) -> None:
         raise AssertionError("stage manifest file count mismatch")
 
     paths = {entry["path"]: entry["sha256"] for entry in files}
-    for rel in (
+    expected_paths = (
         "src/game/Game_local.cpp",
         "src/game/gamesys/SysCvar.cpp",
         "src/mpgame/Game_local.cpp",
         "src/mpgame/gamesys/SysCvar.cpp",
-        "src/idlib/idlib_public.h",
-        "src/renderer/RenderWorld.h",
-    ):
+        *(f"src/{relative_path}" for relative_path in SUPPORT_FIXTURES),
+    )
+    for rel in expected_paths:
         staged = stage_root / rel
         if not staged.is_file():
             raise AssertionError(f"missing staged file: {rel}")
@@ -114,6 +138,106 @@ def validate_stage_root_guard(work: Path) -> None:
         raise AssertionError("stage_gamelibs.py accepted a stage root outside openQ4/.tmp")
     if "stage root must be under openQ4 .tmp" not in result.stderr:
         raise AssertionError(f"unexpected stage-root guard message: {result.stderr}")
+
+
+def extract_posix_refresh_probe() -> str:
+    wrapper = SHELL_WRAPPER.read_text(encoding="utf-8")
+    begin_marker = "# OPENQ4_GAMELIBS_REFRESH_PROBE_BEGIN\n"
+    end_marker = "# OPENQ4_GAMELIBS_REFRESH_PROBE_END"
+    if wrapper.count(begin_marker) != 1 or wrapper.count(end_marker) != 1:
+        raise AssertionError("could not uniquely locate the POSIX GameLibs refresh probe")
+    return wrapper.split(begin_marker, 1)[1].split(end_marker, 1)[0]
+
+
+def run_posix_refresh_probe(project_root: Path, gamelibs_root: Path, stage_root: Path) -> bool:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            extract_posix_refresh_probe(),
+            str(gamelibs_root),
+            str(project_root),
+            str(stage_root),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 10:
+        return False
+    raise AssertionError(
+        "POSIX GameLibs refresh probe failed unexpectedly:\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+
+
+def validate_posix_support_refresh_probe(work: Path) -> None:
+    project_root, gamelibs_root, stage_root = make_minimal_workspace(work)
+
+    def restage() -> None:
+        completed = run_stage(project_root, gamelibs_root, stage_root)
+        if completed.returncode != 0:
+            raise AssertionError(f"GameLibs restage failed: {completed.stderr}")
+
+    restage()
+    if run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("fresh POSIX support stage requested an unnecessary refresh")
+
+    added_source = project_root / "src" / "ui" / "Added.h"
+    write_file(added_source, "// added\n")
+    if not run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("POSIX support-file addition did not request a refresh")
+    added_source.unlink()
+    restage()
+
+    deleted_source = project_root / "src" / "sys" / "sys_public.h"
+    deleted_source.unlink()
+    if not run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("POSIX support-file deletion did not request a refresh")
+    write_file(deleted_source, SUPPORT_FIXTURES["sys/sys_public.h"])
+    restage()
+
+    source = project_root / "src" / "bse" / "BSE.h"
+    rename_intermediate = source.with_name("BSE.rename-test")
+    renamed_source = source.with_name("bse.h")
+    source.rename(rename_intermediate)
+    rename_intermediate.rename(renamed_source)
+    if not run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("POSIX support-file rename did not request a refresh")
+    renamed_source.rename(rename_intermediate)
+    rename_intermediate.rename(source)
+    restage()
+
+    source = project_root / "src" / "MayaImport" / "MayaImport.h"
+    source_mtime_ns = source.stat().st_mtime_ns
+    write_file(source, "// MAYA import\n")
+    os.utime(source, ns=(source_mtime_ns, source_mtime_ns))
+    if not run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("same-timestamp POSIX support edit did not request a refresh")
+    restage()
+
+    staged = stage_root / "src" / "renderer" / "RenderWorld.h"
+    staged_mtime_ns = staged.stat().st_mtime_ns
+    write_file(staged, "// RENDERER\n")
+    os.utime(staged, ns=(staged_mtime_ns, staged_mtime_ns))
+    if not run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("same-timestamp staged POSIX support edit did not request a refresh")
+    restage()
+
+    manifest_path = stage_root / MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest["files"]:
+        if entry["path"] == "src/idlib/idlib_public.h":
+            entry["sha256"] = "0" * 64
+            break
+    else:
+        raise AssertionError("GameLibs manifest fixture is missing the idlib support file")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    if not run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("POSIX support manifest drift did not request a refresh")
 
 
 def validate_posix_wrapper_refresh(work: Path) -> None:
@@ -226,15 +350,226 @@ def validate_posix_wrapper_refresh(work: Path) -> None:
         raise AssertionError("mpgame source deletion did not trigger a Meson reconfigure")
 
 
+def validate_windows_wrapper_refresh(work: Path) -> None:
+    if os.name != "nt":
+        return
+
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        raise AssertionError("PowerShell was not found for the Windows GameLibs refresh regression test")
+
+    project_root, gamelibs_root, stage_root = make_minimal_workspace(work)
+    result = run_stage(project_root, gamelibs_root, stage_root)
+    if result.returncode != 0:
+        raise AssertionError(f"initial GameLibs stage failed: {result.stderr}")
+
+    build_dir = project_root / "builddir"
+    write_file(build_dir / "meson-private" / "coredata.dat", "test\n")
+    write_file(build_dir / "build.ninja", "# test\n")
+    write_file(
+        build_dir / "meson-info" / "intro-buildoptions.json",
+        json.dumps(
+            [
+                {"name": "build_engine", "value": True},
+                {"name": "build_games", "value": True},
+            ]
+        ),
+    )
+
+    probe = work / "probe-gamelibs-refresh.ps1"
+    write_file(
+        probe,
+        r'''param(
+    [Parameter(Mandatory = $true)][string]$WrapperPath,
+    [Parameter(Mandatory = $true)][string]$BuildDir,
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$GameLibsRepo
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+$parseTokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $WrapperPath,
+    [ref]$parseTokens,
+    [ref]$parseErrors
+)
+if ($parseErrors.Count -ne 0) {
+    throw "Could not parse meson_setup.ps1: $($parseErrors[0].Message)"
+}
+
+$functionNames = @(
+    "Test-MesonBuildDirectory",
+    "Get-MesonBuildOptionValue",
+    "Get-openQ4GameLibsRepoPath",
+    "Get-GamelibsFileMap",
+    "Get-GamelibsFileHashMap",
+    "Test-GamelibsStageRefreshNeeded"
+)
+foreach ($functionName in $functionNames) {
+    $functionAst = $ast.Find({
+        param($node)
+        return $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq $functionName
+    }, $true)
+    if ($null -eq $functionAst) {
+        throw "Could not find function '$functionName' in meson_setup.ps1."
+    }
+    Invoke-Expression $functionAst.Extent.Text
+}
+
+$refreshNeeded = Test-GamelibsStageRefreshNeeded `
+    -BuildDir $BuildDir `
+    -RepoRoot $RepoRoot `
+    -GameLibsRepo $GameLibsRepo
+Write-Output $refreshNeeded.ToString().ToLowerInvariant()
+''',
+    )
+
+    def refresh_needed() -> bool:
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(probe),
+                "-WrapperPath",
+                str(POWERSHELL_WRAPPER),
+                "-BuildDir",
+                str(build_dir),
+                "-RepoRoot",
+                str(project_root),
+                "-GameLibsRepo",
+                str(gamelibs_root),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                "PowerShell GameLibs refresh probe failed:\n"
+                f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+            )
+        output = [line.strip().lower() for line in completed.stdout.splitlines() if line.strip()]
+        if not output or output[-1] not in {"true", "false"}:
+            raise AssertionError(f"unexpected PowerShell GameLibs refresh result: {completed.stdout!r}")
+        return output[-1] == "true"
+
+    def restage() -> None:
+        completed = run_stage(project_root, gamelibs_root, stage_root)
+        if completed.returncode != 0:
+            raise AssertionError(f"GameLibs restage failed: {completed.stderr}")
+
+    if refresh_needed():
+        raise AssertionError("fresh Windows GameLibs stage caused an unnecessary Meson reconfigure")
+
+    deleted_source = gamelibs_root / "src" / "mpgame" / "gamesys" / "SysCvar.cpp"
+    deleted_source.unlink()
+    if not refresh_needed():
+        raise AssertionError("Windows GameLibs source deletion did not trigger a Meson reconfigure")
+
+    write_file(deleted_source, "// mp cvar\n")
+    restage()
+    source = gamelibs_root / "src" / "game" / "Game_local.cpp"
+    rename_intermediate = source.with_name("Game_local.rename-test")
+    renamed_source = source.with_name("game_local.cpp")
+    source.rename(rename_intermediate)
+    rename_intermediate.rename(renamed_source)
+    if not refresh_needed():
+        raise AssertionError("Windows GameLibs source rename did not trigger a Meson reconfigure")
+    renamed_source.rename(rename_intermediate)
+    rename_intermediate.rename(source)
+    restage()
+
+    source_mtime_ns = source.stat().st_mtime_ns
+    write_file(source, "// GAME\n")
+    os.utime(source, ns=(source_mtime_ns, source_mtime_ns))
+    if not refresh_needed():
+        raise AssertionError("same-timestamp Windows GameLibs source edit did not trigger a Meson reconfigure")
+
+    restage()
+    staged = stage_root / "src" / "game" / "Game_local.cpp"
+    staged_mtime_ns = staged.stat().st_mtime_ns
+    write_file(staged, "// EVIL\n")
+    os.utime(staged, ns=(staged_mtime_ns, staged_mtime_ns))
+    if not refresh_needed():
+        raise AssertionError("same-timestamp staged GameLibs edit did not trigger a Meson reconfigure")
+
+    restage()
+    added_support = project_root / "src" / "ui" / "Added.h"
+    write_file(added_support, "// added\n")
+    if not refresh_needed():
+        raise AssertionError("Windows support-file addition did not trigger a Meson reconfigure")
+    added_support.unlink()
+    restage()
+
+    deleted_support = project_root / "src" / "sys" / "sys_public.h"
+    deleted_support.unlink()
+    if not refresh_needed():
+        raise AssertionError("Windows support-file deletion did not trigger a Meson reconfigure")
+    write_file(deleted_support, SUPPORT_FIXTURES["sys/sys_public.h"])
+    restage()
+
+    support_source = project_root / "src" / "bse" / "BSE.h"
+    support_rename_intermediate = support_source.with_name("BSE.rename-test")
+    renamed_support = support_source.with_name("bse.h")
+    support_source.rename(support_rename_intermediate)
+    support_rename_intermediate.rename(renamed_support)
+    if not refresh_needed():
+        raise AssertionError("Windows support-file rename did not trigger a Meson reconfigure")
+    renamed_support.rename(support_rename_intermediate)
+    support_rename_intermediate.rename(support_source)
+    restage()
+
+    support_source = project_root / "src" / "MayaImport" / "MayaImport.h"
+    support_mtime_ns = support_source.stat().st_mtime_ns
+    write_file(support_source, "// MAYA import\n")
+    os.utime(support_source, ns=(support_mtime_ns, support_mtime_ns))
+    if not refresh_needed():
+        raise AssertionError("same-timestamp Windows support edit did not trigger a Meson reconfigure")
+    restage()
+
+    staged_support = stage_root / "src" / "renderer" / "RenderWorld.h"
+    staged_support_mtime_ns = staged_support.stat().st_mtime_ns
+    write_file(staged_support, "// RENDERER\n")
+    os.utime(staged_support, ns=(staged_support_mtime_ns, staged_support_mtime_ns))
+    if not refresh_needed():
+        raise AssertionError("same-timestamp staged Windows support edit did not trigger a Meson reconfigure")
+    restage()
+
+    manifest_path = stage_root / MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest["files"]:
+        if entry["path"] == "src/idlib/idlib_public.h":
+            entry["sha256"] = "0" * 64
+            break
+    else:
+        raise AssertionError("GameLibs manifest fixture is missing the idlib support file")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    if not refresh_needed():
+        raise AssertionError("Windows support manifest drift did not trigger a Meson reconfigure")
+
+
 def validate_source_contracts() -> None:
     script = STAGE_SCRIPT.read_text(encoding="utf-8")
     shell_wrapper = (ROOT / "tools" / "build" / "meson_setup.sh").read_text(encoding="utf-8")
+    powershell_wrapper = POWERSHELL_WRAPPER.read_text(encoding="utf-8")
     meson = (ROOT / "meson.build").read_text(encoding="utf-8")
     game_targets = (ROOT / "content" / "baseoq4" / "meson.build").read_text(encoding="utf-8")
     aas_file = (ROOT / "src" / "aas" / "AASFile.h").read_text(encoding="utf-8")
     precompiled = (ROOT / "src" / "idlib" / "precompiled.h").read_text(encoding="utf-8")
     validator = (ROOT / "tools" / "validation" / "openq4_validate.py").read_text(encoding="utf-8")
     building = (ROOT / "BUILDING.md").read_text(encoding="utf-8")
+
+    fixture_support_dirs = tuple(relative_path.split("/", 1)[0] for relative_path in SUPPORT_FIXTURES)
+    if fixture_support_dirs != staged_support_dir_names():
+        raise AssertionError("GameLibs wrapper fixtures do not cover every staged openQ4 support directory")
 
     required_script_tokens = (
         "MANIFEST_NAME",
@@ -254,17 +589,38 @@ def validate_source_contracts() -> None:
 
     for token in (
         "test_gamelibs_stage_refresh_needed",
-        '"${gamelibs_repo}/src/game"',
-        '"${gamelibs_repo}/src/mpgame"',
-        '"${repo_root}/.tmp/gamelibs_stage/src/game"',
-        '"${repo_root}/.tmp/gamelibs_stage/src/mpgame"',
-        "latest_file_mtime_ns",
+        "OPENQ4_GAMELIBS_REFRESH_PROBE_BEGIN",
+        'support_dir_names = ("idlib", "renderer", "ui", "sys", "bse", "MayaImport")',
+        "source_specs",
+        "staged_specs",
+        "regular_file_map",
+        "onerror=raise_walk_error",
         "manifest_hashes",
-        "if source_latest <= staged_latest:",
+        "file_sha256(source_path)",
+        "file_sha256(staged_files[relative_path])",
+        "raise SystemExit(0 if needs_refresh else 10)",
         "run_meson setup --reconfigure",
     ):
         if token not in shell_wrapper:
             raise AssertionError(f"missing POSIX GameLibs refresh token: {token}")
+
+    for token in (
+        "Get-GamelibsFileMap",
+        "Get-GamelibsFileHashMap",
+        "openq4_gamelibs_stage_manifest.json",
+        "System.Security.Cryptography.SHA256",
+        '@("idlib", "renderer", "ui", "sys", "bse", "MayaImport")',
+        "$sourceRoots += $RepoRoot",
+        "$stagedRoots += $stageRoot",
+        "Test-GamelibsStageRefreshNeeded",
+    ):
+        if token not in powershell_wrapper:
+            raise AssertionError(f"missing Windows GameLibs refresh token: {token}")
+
+    if "& $buildGameLibsScript -GameLibsRepo $gameLibsRepo" not in powershell_wrapper:
+        raise AssertionError("Windows wrapper does not bind the companion repository as a named parameter")
+    if '$buildArgs += @("-GameLibsRepo", $gameLibsRepo)' in powershell_wrapper:
+        raise AssertionError("Windows wrapper still uses positional array splatting for a named parameter")
 
     for token in (
         "openq4_gamelibs_stage_manifest.json",
@@ -326,7 +682,9 @@ def main() -> None:
         validate_successful_stage(work / "success")
         validate_symlink_rejection(work / "symlink")
         validate_stage_root_guard(work / "stage-root")
+        validate_posix_support_refresh_probe(work / "posix-support-refresh")
         validate_posix_wrapper_refresh(work / "posix-refresh")
+        validate_windows_wrapper_refresh(work / "windows-refresh")
         validate_source_contracts()
     finally:
         shutil.rmtree(work, ignore_errors=True)

@@ -4370,6 +4370,112 @@ windowDef Desktop
 		textscale	0.25
 		textalign	1
 	}
+
+	// Managed-match context is presentation-only.  The multiplayer adapter
+	// supplies complete, localized lines from the recipient-scoped match view.
+	// A single gate keeps the stock/casual presentation unchanged when no
+	// managed session is active.
+	windowDef oq4_match_context_hud
+	{
+		rect	400,8,232,106
+		screenalignx	right
+		screenaligny	top
+		visible	( "gui::match_context_visible" == 1 )
+		backcolor	0.015,0.022,0.014,0.72
+		bordercolor	0.95,0.49,0.06,0.55
+		bordersize	1
+		noevents	1
+
+		windowDef oq4_match_context_hud_phase
+		{
+			rect	8,5,216,15
+			visible	1
+			forecolor	1,0.94,0.76,1
+			text	"gui::match_context_phase"
+			font	"fonts/lowpixel"
+			textscale	0.23
+			textstyle	1
+		}
+
+		windowDef oq4_match_context_hud_rule
+		{
+			rect	8,20,216,1
+			visible	1
+			backcolor	0.95,0.49,0.06,0.55
+			noevents	1
+		}
+
+		windowDef oq4_match_context_hud_pause
+		{
+			rect	8,35,216,12
+			visible	1
+			forecolor	1,1,1,0.92
+			text	"gui::match_context_pause"
+			font	"fonts/lowpixel"
+			textscale	0.18
+		}
+
+		windowDef oq4_match_context_hud_role
+		{
+			rect	8,24,216,12
+			visible	1
+			forecolor	0.95,0.72,0.25,0.96
+			text	"gui::match_context_role"
+			font	"fonts/lowpixel"
+			textscale	0.18
+		}
+
+		windowDef oq4_match_context_hud_readiness
+		{
+			rect	8,46,216,12
+			visible	1
+			forecolor	0.78,0.84,0.69,0.92
+			text	"gui::match_context_readiness"
+			font	"fonts/lowpixel"
+			textscale	0.18
+		}
+
+		windowDef oq4_match_context_hud_timeouts
+		{
+			rect	8,57,216,12
+			visible	1
+			forecolor	0.78,0.84,0.69,0.92
+			text	"gui::match_context_timeouts"
+			font	"fonts/lowpixel"
+			textscale	0.18
+		}
+
+		windowDef oq4_match_context_hud_proposal
+		{
+			rect	8,68,216,12
+			visible	1
+			forecolor	0.78,0.84,0.69,0.92
+			text	"gui::match_context_proposal"
+			font	"fonts/lowpixel"
+			textscale	0.18
+		}
+
+		windowDef oq4_match_context_hud_series
+		{
+			rect	8,79,216,12
+			visible	1
+			forecolor	0.95,0.72,0.25,0.96
+			text	"gui::match_context_series"
+			font	"fonts/lowpixel"
+			textscale	0.18
+			textstyle	1
+		}
+
+		windowDef oq4_match_context_hud_items
+		{
+			rect	8,90,216,12
+			visible	1
+			forecolor	0.78,0.84,0.69,0.92
+			text	"gui::match_context_items"
+			font	"fonts/lowpixel"
+			textscale	0.18
+		}
+	}
 		
 	// ---------------------------------------------------------------------
 	// Single-player Arena presentation layer.  The world remains visible

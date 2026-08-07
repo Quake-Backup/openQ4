@@ -88,6 +88,9 @@ static const unsigned char Q4_OVERSTRIKE_CURSOR_GLYPH = '_';
 static const unsigned char Q4_EMBEDDED_ICON_REFERENCE_GLYPH = 'W';
 static const float Q4_KEY_BINDING_BASELINE_ASCENT = 0.84f;
 static const float Q4_KEY_BINDING_BASELINE_DESCENT = 1.0f - Q4_KEY_BINDING_BASELINE_ASCENT;
+static const float Q4_KEY_BINDING_INLINE_HEIGHT_RATIO = 0.99f;
+static const float Q4_KEY_BINDING_PROMPT_HEIGHT_RATIO = 1.50f;
+static const int Q4_KEY_BINDING_MAX_CURVE_BANDS = 16;
 
 enum q4EmbeddedIconMeasure_t {
 	Q4_EMBEDDED_ICON_DRAW_WIDTH,
@@ -186,6 +189,11 @@ struct q4KeyBindingIconInfo_t {
 	int detail;
 };
 
+static bool openQ4_IsKeyboardArrowKey( int keyNum ) {
+	return keyNum == K_UPARROW || keyNum == K_DOWNARROW ||
+		keyNum == K_LEFTARROW || keyNum == K_RIGHTARROW;
+}
+
 static int openQ4_HexDigitValue( char c ) {
 	if ( c >= '0' && c <= '9' ) {
 		return c - '0';
@@ -199,7 +207,7 @@ static int openQ4_HexDigitValue( char c ) {
 	return -1;
 }
 
-static bool openQ4_ExtractKeyBindingIcon( const char *escape, int &keyNum ) {
+static bool openQ4_ExtractKeyBindingIcon( const char *escape, int &keyNum, float *heightRatio = NULL ) {
 	char code[4];
 	if ( !openQ4_ExtractIconCode( escape, code ) || ( code[0] != 'k' && code[0] != 'K' ) ) {
 		return false;
@@ -211,6 +219,9 @@ static bool openQ4_ExtractKeyBindingIcon( const char *escape, int &keyNum ) {
 		return false;
 	}
 	keyNum = ( high << 4 ) | low;
+	if ( heightRatio != NULL ) {
+		*heightRatio = code[0] == 'K' ? Q4_KEY_BINDING_PROMPT_HEIGHT_RATIO : Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
+	}
 	return keyNum >= 0 && keyNum <= 0xff;
 }
 
@@ -221,14 +232,19 @@ static void openQ4_GetKeyBindingIconInfo( int keyNum, q4KeyBindingIconInfo_t &in
 	if ( info.label.Length() == 1 ) {
 		info.label.ToUpper();
 	}
+	if ( openQ4_IsKeyboardArrowKey( keyNum ) ) {
+		// The stock font pipeline is byte-oriented, so draw these familiar
+		// symbols procedurally instead of spelling out UPARROW/DOWNARROW.
+		info.label.Clear();
+		return;
+	}
 
 	if ( keyNum >= K_MOUSE1 && keyNum <= K_MOUSE8 ) {
 		info.kind = Q4_KEY_BINDING_MOUSE_BUTTON;
 		info.detail = keyNum - K_MOUSE1 + 1;
+		// The selected physical region identifies the button.  A bare number
+		// makes the mouse look like a keyboard key, especially in short prompts.
 		info.label.Clear();
-		if ( info.detail >= 4 ) {
-			info.label = va( "%d", info.detail );
-		}
 		return;
 	}
 	if ( keyNum == K_MWHEELUP || keyNum == K_MWHEELDOWN ) {
@@ -257,7 +273,7 @@ static void openQ4_GetKeyBindingIconInfo( int keyNum, q4KeyBindingIconInfo_t &in
 		case 3: case 4: case 5: case 6:
 			info.kind = Q4_KEY_BINDING_PAD_FACE; info.label.Clear(); break;
 		case 7:	info.kind = Q4_KEY_BINDING_PAD_MENU; info.label.Clear(); break;
-		case 8:	info.kind = Q4_KEY_BINDING_PAD_MENU; info.label.Clear(); break;
+		case 8:	info.kind = Q4_KEY_BINDING_PAD_MENU; info.label = common->GetLanguageDict()->GetString( "#str_200018" ); break;
 		case 9: case 10: case 11: case 12:
 			info.kind = Q4_KEY_BINDING_PAD_DPAD; info.label.Clear(); break;
 		case 13: case 14:
@@ -284,34 +300,113 @@ static idVec4 openQ4_KeyBindingAccent( const idVec4 &source, float alpha = 1.0f 
 		source.w * alpha );
 }
 
-static void openQ4_DrawChamferedFill( idDeviceContext *dc, float x, float y, float w, float h, float cut, const idVec4 &color ) {
-	if ( dc == NULL || w <= 0.0f || h <= 0.0f ) {
+static void openQ4_DrawRoundedFillCore( idDeviceContext *dc, float x, float y, float w, float h, float radius, const idVec4 &color ) {
+	if ( dc == NULL || w <= 0.0f || h <= 0.0f || color.w <= 0.0f ) {
 		return;
 	}
-	cut = idMath::ClampFloat( 0.0f, Min( w, h ) * 0.25f, cut );
-	dc->DrawFilledRect( x + cut, y, w - cut * 2.0f, h, color );
-	dc->DrawFilledRect( x, y + cut, w, h - cut * 2.0f, color );
+
+	radius = idMath::ClampFloat( 0.0f, Min( w, h ) * 0.5f, radius );
+	if ( radius < 0.25f ) {
+		dc->DrawFilledRect( x, y, w, h, color );
+		return;
+	}
+
+	const int bands = idMath::ClampInt( 6, Q4_KEY_BINDING_MAX_CURVE_BANDS,
+		static_cast<int>( idMath::Ceil( radius * 6.0f ) ) );
+	const float bandHeight = radius / static_cast<float>( bands );
+	const float radiusSquared = radius * radius;
+
+	if ( h > radius * 2.0f ) {
+		dc->DrawFilledRect( x, y + radius, w, h - radius * 2.0f, color );
+	}
+	for ( int band = 0; band < bands; ++band ) {
+		const float bandY = static_cast<float>( band ) * bandHeight;
+		const float sampleY = radius - ( bandY + bandHeight * 0.5f );
+		const float inset = radius - idMath::Sqrt( Max( 0.0f, radiusSquared - sampleY * sampleY ) );
+		const float bandWidth = Max( 0.0f, w - inset * 2.0f );
+		const float overlap = 0.02f;
+		dc->DrawFilledRect( x + inset, y + bandY, bandWidth, bandHeight + overlap, color );
+		dc->DrawFilledRect( x + inset, y + h - bandY - bandHeight - overlap, bandWidth, bandHeight + overlap, color );
+	}
+}
+
+static void openQ4_DrawSmoothRoundedFill( idDeviceContext *dc, float x, float y, float w, float h, float radius, const idVec4 &color ) {
+	if ( dc == NULL || w <= 0.0f || h <= 0.0f || color.w <= 0.0f ) {
+		return;
+	}
+
+	const float fringe = Min( 0.42f, Min( w, h ) * 0.08f );
+	idVec4 edgeColor = color;
+	edgeColor.w *= 0.38f;
+	openQ4_DrawRoundedFillCore( dc, x, y, w, h, radius, edgeColor );
+	if ( w > fringe * 2.0f && h > fringe * 2.0f ) {
+		openQ4_DrawRoundedFillCore( dc, x + fringe, y + fringe, w - fringe * 2.0f, h - fringe * 2.0f,
+			Max( 0.0f, radius - fringe ), color );
+	}
 }
 
 static void openQ4_DrawKeycapBase( idDeviceContext *dc, float x, float y, float w, float h, const idVec4 &sourceColor ) {
-	const float cut = Max( 1.0f, idMath::Floor( h * 0.12f ) );
-	openQ4_DrawChamferedFill( dc, x + 1.0f, y + 1.0f, w - 1.0f, h - 1.0f, cut,
+	const float radius = Max( 1.0f, h * 0.15f );
+	openQ4_DrawSmoothRoundedFill( dc, x + 1.0f, y + 1.0f, w - 1.0f, h - 1.0f, radius,
 		openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.48f, sourceColor.w ) );
-	openQ4_DrawChamferedFill( dc, x, y, w, h, cut, openQ4_KeyBindingAccent( sourceColor, 0.92f ) );
-	openQ4_DrawChamferedFill( dc, x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f, Max( 0.5f, cut - 0.5f ),
+	openQ4_DrawSmoothRoundedFill( dc, x, y, w, h, radius, openQ4_KeyBindingAccent( sourceColor, 0.92f ) );
+	openQ4_DrawSmoothRoundedFill( dc, x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f, Max( 0.5f, radius - 0.75f ),
 		openQ4_KeyBindingColor( 0.045f, 0.060f, 0.075f, 0.98f, sourceColor.w ) );
-	dc->DrawFilledRect( x + cut + 1.0f, y + 1.0f, Max( 0.0f, w - cut * 2.0f - 2.0f ), 1.0f,
+	dc->DrawFilledRect( x + radius + 1.0f, y + 1.0f, Max( 0.0f, w - radius * 2.0f - 2.0f ), 1.0f,
 		openQ4_KeyBindingColor( 0.42f, 0.50f, 0.56f, 0.58f, sourceColor.w ) );
-	dc->DrawFilledRect( x + cut, y + h - 2.0f, Max( 0.0f, w - cut * 2.0f ), 1.0f,
+	dc->DrawFilledRect( x + radius, y + h - 2.0f, Max( 0.0f, w - radius * 2.0f ), 1.0f,
 		openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.72f, sourceColor.w ) );
 }
 
 static void openQ4_DrawOctagonalBadge( idDeviceContext *dc, float x, float y, float size, const idVec4 &sourceColor, const idVec4 &faceColor ) {
-	const float cut = Max( 1.0f, idMath::Floor( size * 0.19f ) );
-	openQ4_DrawChamferedFill( dc, x + 1.0f, y + 1.0f, size - 1.0f, size - 1.0f, cut,
+	const float radius = Max( 1.0f, size * 0.30f );
+	openQ4_DrawSmoothRoundedFill( dc, x + 1.0f, y + 1.0f, size - 1.0f, size - 1.0f, radius,
 		openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.50f, sourceColor.w ) );
-	openQ4_DrawChamferedFill( dc, x, y, size, size, cut, openQ4_KeyBindingAccent( sourceColor, 0.95f ) );
-	openQ4_DrawChamferedFill( dc, x + 1.0f, y + 1.0f, size - 2.0f, size - 2.0f, Max( 0.5f, cut - 0.5f ), faceColor );
+	openQ4_DrawSmoothRoundedFill( dc, x, y, size, size, radius, openQ4_KeyBindingAccent( sourceColor, 0.95f ) );
+	openQ4_DrawSmoothRoundedFill( dc, x + 1.0f, y + 1.0f, size - 2.0f, size - 2.0f, Max( 0.5f, radius - 0.75f ), faceColor );
+}
+
+static void openQ4_DrawKeyboardArrowGlyph( idDeviceContext *dc, int keyNum, float x, float y, float size, const idVec4 &color ) {
+	if ( dc == NULL || !openQ4_IsKeyboardArrowKey( keyNum ) ) {
+		return;
+	}
+
+	const int bands = 6;
+	const float headLength = size * 0.28f;
+	const float headWidth = size * 0.48f;
+	const float shaftThickness = Max( 1.0f, size * 0.11f );
+	const float glyphMin = size * 0.23f;
+	const float glyphMax = size * 0.77f;
+	const float centerX = x + size * 0.5f;
+	const float centerY = y + size * 0.5f;
+
+	if ( keyNum == K_UPARROW || keyNum == K_DOWNARROW ) {
+		const float headTop = keyNum == K_UPARROW ? y + glyphMin : y + glyphMax - headLength;
+		const float bandHeight = headLength / static_cast<float>( bands );
+		for ( int band = 0; band < bands; ++band ) {
+			const int widthBand = keyNum == K_UPARROW ? band + 1 : bands - band;
+			const float bandWidth = headWidth * static_cast<float>( widthBand ) / static_cast<float>( bands );
+			dc->DrawFilledRect( centerX - bandWidth * 0.5f, headTop + band * bandHeight,
+				bandWidth, bandHeight + 0.04f, color );
+		}
+		const float shaftTop = keyNum == K_UPARROW ? headTop + headLength * 0.72f : y + glyphMin;
+		const float shaftBottom = keyNum == K_UPARROW ? y + glyphMax : headTop + headLength * 0.28f;
+		dc->DrawFilledRect( centerX - shaftThickness * 0.5f, shaftTop,
+			shaftThickness, Max( 0.0f, shaftBottom - shaftTop ), color );
+	} else {
+		const float headLeft = keyNum == K_LEFTARROW ? x + glyphMin : x + glyphMax - headLength;
+		const float bandWidth = headLength / static_cast<float>( bands );
+		for ( int band = 0; band < bands; ++band ) {
+			const int heightBand = keyNum == K_LEFTARROW ? band + 1 : bands - band;
+			const float bandHeight = headWidth * static_cast<float>( heightBand ) / static_cast<float>( bands );
+			dc->DrawFilledRect( headLeft + band * bandWidth, centerY - bandHeight * 0.5f,
+				bandWidth + 0.04f, bandHeight, color );
+		}
+		const float shaftLeft = keyNum == K_LEFTARROW ? headLeft + headLength * 0.72f : x + glyphMin;
+		const float shaftRight = keyNum == K_LEFTARROW ? x + glyphMax : headLeft + headLength * 0.28f;
+		dc->DrawFilledRect( shaftLeft, centerY - shaftThickness * 0.5f,
+			Max( 0.0f, shaftRight - shaftLeft ), shaftThickness, color );
+	}
 }
 
 static float openQ4_FontRenderScale( const fontInfo_t *font, float scale ) {
@@ -886,15 +981,17 @@ float idDeviceContext::GetIconDisplayWidth( const embeddedIcon_t &icon, float re
 	return static_cast<float>( openQ4_EmbeddedIconWidthUnits( icon.width, icon.height, referenceHeight, Q4_EMBEDDED_ICON_DRAW_WIDTH ) );
 }
 
-float idDeviceContext::GetKeyBindingIconHeight( float textScale ) {
+float idDeviceContext::GetKeyBindingIconHeight( float textScale, float heightRatio ) {
 	const float lineHeight = static_cast<float>( MaxCharHeight( textScale ) );
-	return Min( lineHeight, Max( 6.0f, lineHeight * 0.92f ) );
+	heightRatio = idMath::ClampFloat( 0.50f, 2.00f, heightRatio );
+	const float minimumHeight = 6.0f * Max( 1.0f, heightRatio / Q4_KEY_BINDING_INLINE_HEIGHT_RATIO );
+	return Max( minimumHeight, lineHeight * heightRatio );
 }
 
-float idDeviceContext::GetKeyBindingIconWidth( int keyNum, float textScale ) {
+float idDeviceContext::GetKeyBindingIconWidth( int keyNum, float textScale, float heightRatio ) {
 	q4KeyBindingIconInfo_t info;
 	openQ4_GetKeyBindingIconInfo( keyNum, info );
-	const float height = GetKeyBindingIconHeight( textScale );
+	const float height = GetKeyBindingIconHeight( textScale, heightRatio );
 	float width = height;
 
 	switch ( info.kind ) {
@@ -927,8 +1024,16 @@ float idDeviceContext::GetKeyBindingIconWidth( int keyNum, float textScale ) {
 			break;
 		}
 		case Q4_KEY_BINDING_MOUSE_BUTTON:
+			// Match the tall silhouette used by the rerelease device glyphs.  The
+			// old 1.30:1 shape read as a horizontal keycap rather than a mouse.
+			width = height * 0.74f;
+			break;
 		case Q4_KEY_BINDING_MOUSE_WHEEL:
-			width = height * 1.30f;
+			// Leave room beside the mouse for the wheel-direction arrow.
+			width = height * 0.98f;
+			break;
+		case Q4_KEY_BINDING_PAD_MENU:
+			width = info.label.Length() > 0 ? height * 1.60f : height;
 			break;
 		case Q4_KEY_BINDING_PAD_SHOULDER:
 			width = height * 1.52f;
@@ -958,11 +1063,12 @@ float idDeviceContext::GetKeyBindingIconWidth( int keyNum, float textScale ) {
 	// hint into a banner.  The draw path performs the final exact fit inside this
 	// bounded cap.
 	if ( info.label.Length() > 0 &&
-		( info.kind == Q4_KEY_BINDING_KEYBOARD || info.kind == Q4_KEY_BINDING_PAD_GENERIC ) ) {
-		const float labelScale = textScale * 0.54f;
+		( info.kind == Q4_KEY_BINDING_KEYBOARD || info.kind == Q4_KEY_BINDING_PAD_MENU || info.kind == Q4_KEY_BINDING_PAD_GENERIC ) ) {
+		const float presentationScale = Min( 1.25f, heightRatio / Q4_KEY_BINDING_INLINE_HEIGHT_RATIO );
+		const float labelScale = textScale * 0.54f * presentationScale;
 		const float sidePadding = Max( 3.0f, height * 0.24f );
 		const float labelWidth = static_cast<float>( TextWidth( info.label, labelScale, -1 ) );
-		const float maximumWidth = height * ( info.kind == Q4_KEY_BINDING_KEYBOARD ? 2.20f : 1.90f );
+		const float maximumWidth = height * ( info.kind == Q4_KEY_BINDING_PAD_GENERIC ? 1.90f : 2.20f );
 		width = Min( maximumWidth, Max( width, labelWidth + sidePadding * 2.0f ) );
 		SetFontByScale( textScale );
 	}
@@ -970,11 +1076,11 @@ float idDeviceContext::GetKeyBindingIconWidth( int keyNum, float textScale ) {
 	return idMath::Ceil( width );
 }
 
-void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, float textScale, const idVec4 &color ) {
+void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, float textScale, const idVec4 &color, float heightRatio ) {
 	q4KeyBindingIconInfo_t info;
 	openQ4_GetKeyBindingIconInfo( keyNum, info );
-	const float height = GetKeyBindingIconHeight( textScale );
-	const float width = GetKeyBindingIconWidth( keyNum, textScale );
+	const float height = GetKeyBindingIconHeight( textScale, heightRatio );
+	const float width = GetKeyBindingIconWidth( keyNum, textScale, heightRatio );
 	const float y = baselineY - height * Q4_KEY_BINDING_BASELINE_ASCENT;
 	const idVec4 darkFace = openQ4_KeyBindingColor( 0.045f, 0.060f, 0.075f, 0.98f, color.w );
 	const idVec4 midFace = openQ4_KeyBindingColor( 0.075f, 0.095f, 0.115f, 0.98f, color.w );
@@ -983,50 +1089,85 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 
 	switch ( info.kind ) {
 		case Q4_KEY_BINDING_KEYBOARD:
+			openQ4_DrawKeycapBase( this, x, y, width, height, color );
+			if ( openQ4_IsKeyboardArrowKey( keyNum ) ) {
+				openQ4_DrawKeyboardArrowGlyph( this, keyNum, x, y, height,
+					openQ4_KeyBindingColor( 0.94f, 0.97f, 1.0f, 1.0f, color.w ) );
+			}
+			break;
+
 		case Q4_KEY_BINDING_PAD_GENERIC:
 			openQ4_DrawKeycapBase( this, x, y, width, height, color );
 			break;
 
 		case Q4_KEY_BINDING_MOUSE_BUTTON:
 		case Q4_KEY_BINDING_MOUSE_WHEEL: {
-			const float cut = Max( 1.0f, idMath::Floor( height * 0.16f ) );
-			openQ4_DrawChamferedFill( this, x + 1.0f, y + 1.0f, width - 1.0f, height - 1.0f, cut,
-				openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.48f, color.w ) );
-			openQ4_DrawChamferedFill( this, x, y, width, height, cut, accent );
-			openQ4_DrawChamferedFill( this, x + 1.0f, y + 1.0f, width - 2.0f, height - 2.0f,
-				Max( 0.5f, cut - 0.5f ), darkFace );
-
-			const float splitY = y + height * 0.43f;
-			const float middleX = x + width * 0.5f;
-			DrawFilledRect( x + 1.0f, splitY, width - 2.0f, 1.0f,
-				openQ4_KeyBindingColor( 0.34f, 0.41f, 0.47f, 0.70f, color.w ) );
-			DrawFilledRect( middleX, y + 1.0f, 1.0f, height * 0.42f,
-				openQ4_KeyBindingColor( 0.34f, 0.41f, 0.47f, 0.70f, color.w ) );
-
-			if ( info.kind == Q4_KEY_BINDING_MOUSE_BUTTON && info.detail <= 2 ) {
-				const float buttonX = info.detail == 1 ? x + 1.0f : middleX + 1.0f;
-				const float buttonW = width * 0.5f - 2.0f;
-				DrawFilledRect( buttonX, y + 1.0f, buttonW, height * 0.38f,
-					openQ4_KeyBindingAccent( color, 0.52f ) );
+			const float mouseWidth = height * 0.68f;
+			float mouseX = x + ( width - mouseWidth ) * 0.5f;
+			if ( info.kind == Q4_KEY_BINDING_MOUSE_WHEEL ) {
+				mouseX = info.detail > 0 ? x + width - mouseWidth : x;
 			}
+			const float radius = Max( 1.0f, mouseWidth * 0.47f );
+			const idVec4 mouseFrame = openQ4_KeyBindingColor( 0.42f, 0.45f, 0.48f, 0.98f, color.w );
+			const idVec4 selectedButton = openQ4_KeyBindingAccent( color, 1.0f );
+			openQ4_DrawSmoothRoundedFill( this, mouseX + 1.0f, y + 1.0f, mouseWidth - 1.0f, height - 1.0f, radius,
+				openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.48f, color.w ) );
+			openQ4_DrawSmoothRoundedFill( this, mouseX, y, mouseWidth, height, radius, mouseFrame );
+			openQ4_DrawSmoothRoundedFill( this, mouseX + 1.0f, y + 1.0f, mouseWidth - 2.0f, height - 2.0f,
+				Max( 0.5f, radius - 0.75f ), darkFace );
 
-			const float wheelW = Max( 2.0f, idMath::Floor( width * 0.17f ) );
+			const float splitY = y + height * 0.46f;
+			const float middleX = mouseX + mouseWidth * 0.5f;
+			const float buttonInset = Max( 0.75f, height * 0.055f );
+			const float divider = Max( 0.75f, height * 0.025f );
+			const float buttonY = y + buttonInset;
+			const float buttonHeight = Max( 1.0f, splitY - buttonY - divider );
+			const float buttonWidth = Max( 1.0f, mouseWidth * 0.5f - buttonInset - divider * 0.5f );
+			const float rightButtonX = middleX + divider * 0.5f;
+			const float buttonRadius = Max( 0.75f, mouseWidth * 0.15f );
+			openQ4_DrawSmoothRoundedFill( this, mouseX + buttonInset, buttonY, buttonWidth, buttonHeight,
+				buttonRadius, info.kind == Q4_KEY_BINDING_MOUSE_BUTTON && info.detail == 1 ? selectedButton : midFace );
+			openQ4_DrawSmoothRoundedFill( this, rightButtonX, buttonY, buttonWidth, buttonHeight,
+				buttonRadius, info.kind == Q4_KEY_BINDING_MOUSE_BUTTON && info.detail == 2 ? selectedButton : midFace );
+
+			DrawFilledRect( mouseX + 1.0f, splitY, mouseWidth - 2.0f, 1.0f,
+				openQ4_KeyBindingColor( 0.34f, 0.41f, 0.47f, 0.70f, color.w ) );
+			DrawFilledRect( middleX - divider * 0.5f, y + buttonInset, divider, height * 0.38f,
+				openQ4_KeyBindingColor( 0.34f, 0.41f, 0.47f, 0.70f, color.w ) );
+
+			const float wheelW = Max( 2.0f, idMath::Floor( mouseWidth * 0.17f ) );
 			const float wheelX = middleX - wheelW * 0.5f;
-			const idVec4 wheelColor = ( info.kind == Q4_KEY_BINDING_MOUSE_WHEEL || info.detail == 3 ) ? accent : midFace;
-			openQ4_DrawChamferedFill( this, wheelX, y + height * 0.13f, wheelW, height * 0.22f, 0.7f, wheelColor );
+			const idVec4 wheelColor = ( info.kind == Q4_KEY_BINDING_MOUSE_WHEEL || info.detail == 3 ) ? selectedButton : inactiveFace;
+			openQ4_DrawSmoothRoundedFill( this, wheelX, y + height * 0.13f, wheelW, height * 0.22f, wheelW * 0.5f, wheelColor );
 
 			if ( info.kind == Q4_KEY_BINDING_MOUSE_WHEEL ) {
-				const float arrowY = info.detail > 0 ? y + height * 0.50f : y + height * 0.76f;
-				const float direction = info.detail > 0 ? -1.0f : 1.0f;
-				DrawFilledRect( middleX - 0.5f, arrowY + direction * height * 0.08f, 1.0f, height * 0.14f, accent );
-				DrawFilledRect( middleX - width * 0.12f, arrowY, width * 0.24f, 1.0f, accent );
-				DrawFilledRect( middleX - width * 0.08f, arrowY + direction * 1.5f, width * 0.16f, 1.0f, accent );
+				const float arrowCenterX = info.detail > 0
+					? x + ( width - mouseWidth ) * 0.42f
+					: x + mouseWidth + ( width - mouseWidth ) * 0.58f;
+				const float shaftWidth = Max( 1.0f, height * 0.045f );
+				const float shaftY = y + height * 0.34f;
+				const float shaftHeight = height * 0.34f;
+				DrawFilledRect( arrowCenterX - shaftWidth * 0.5f, shaftY, shaftWidth, shaftHeight, selectedButton );
+				const int arrowBands = 4;
+				for ( int band = 0; band < arrowBands; ++band ) {
+					const float bandWidth = height * ( 0.08f + 0.045f * band );
+					const float bandY = info.detail > 0
+						? y + height * ( 0.26f + 0.025f * band )
+						: y + height * ( 0.715f - 0.025f * band );
+					DrawFilledRect( arrowCenterX - bandWidth * 0.5f, bandY, bandWidth, Max( 1.0f, height * 0.028f ), selectedButton );
+				}
 			}
 
 			if ( info.kind == Q4_KEY_BINDING_MOUSE_BUTTON && info.detail >= 4 ) {
-				const bool rightSide = ( info.detail & 1 ) != 0;
-				const float sideX = rightSide ? x + width - 2.0f : x;
-				DrawFilledRect( sideX, y + height * 0.56f, 2.0f, height * 0.22f, accent );
+				const int selectedSideButton = idMath::ClampInt( 0, 4, info.detail - 4 );
+				const float sideButtonWidth = Max( 1.25f, mouseWidth * 0.12f );
+				const float sideButtonHeight = Max( 1.0f, height * 0.055f );
+				for ( int sideButton = 0; sideButton < 5; ++sideButton ) {
+					const float sideButtonY = y + height * ( 0.54f + 0.065f * sideButton );
+					openQ4_DrawSmoothRoundedFill( this, mouseX + mouseWidth * 0.06f, sideButtonY,
+						sideButtonWidth, sideButtonHeight, sideButtonHeight * 0.5f,
+						sideButton == selectedSideButton ? selectedButton : midFace );
+				}
 			}
 			break;
 		}
@@ -1055,8 +1196,8 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 			const int selectedButton = idMath::ClampInt( 0, 3, info.detail - 3 );
 			for ( int i = 0; i < 4; i++ ) {
 				const idVec4 buttonFace = i == selectedButton ? accent : inactiveFace;
-				openQ4_DrawChamferedFill( this, buttonX[i], buttonY[i], buttonSize, buttonSize,
-					Max( 0.6f, buttonSize * 0.22f ), buttonFace );
+				openQ4_DrawSmoothRoundedFill( this, buttonX[i], buttonY[i], buttonSize, buttonSize,
+					buttonSize * 0.5f, buttonFace );
 			}
 			break;
 		}
@@ -1069,9 +1210,9 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 			const float selectedX = right ? x + half : x + 1.0f;
 			const float shoulderY = trigger ? y + height * 0.48f : y + height * 0.18f;
 			const float shoulderH = trigger ? height * 0.30f : height * 0.24f;
-			DrawFilledRect( x + 2.0f, y + height * 0.18f, half - 3.0f, height * 0.18f, midFace );
-			DrawFilledRect( x + half + 1.0f, y + height * 0.18f, half - 3.0f, height * 0.18f, midFace );
-			DrawFilledRect( selectedX + 1.0f, shoulderY, half - 3.0f, shoulderH, accent );
+			openQ4_DrawSmoothRoundedFill( this, x + 2.0f, y + height * 0.18f, half - 3.0f, height * 0.18f, height * 0.08f, midFace );
+			openQ4_DrawSmoothRoundedFill( this, x + half + 1.0f, y + height * 0.18f, half - 3.0f, height * 0.18f, height * 0.08f, midFace );
+			openQ4_DrawSmoothRoundedFill( this, selectedX + 1.0f, shoulderY, half - 3.0f, shoulderH, shoulderH * 0.35f, accent );
 			break;
 		}
 
@@ -1079,20 +1220,21 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 			const float arm = Max( 3.0f, idMath::Floor( height * 0.34f ) );
 			const float centerX = x + height * 0.5f;
 			const float centerY = y + height * 0.5f;
-			DrawFilledRect( centerX - arm * 0.5f + 1.0f, y + 1.0f, arm, height - 1.0f, openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.48f, color.w ) );
-			DrawFilledRect( x + 1.0f, centerY - arm * 0.5f + 1.0f, height - 1.0f, arm, openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.48f, color.w ) );
-			DrawFilledRect( centerX - arm * 0.5f, y, arm, height, accent );
-			DrawFilledRect( x, centerY - arm * 0.5f, height, arm, accent );
-			DrawFilledRect( centerX - arm * 0.5f + 1.0f, y + 1.0f, arm - 2.0f, height - 2.0f, darkFace );
-			DrawFilledRect( x + 1.0f, centerY - arm * 0.5f + 1.0f, height - 2.0f, arm - 2.0f, darkFace );
+			const idVec4 shadow = openQ4_KeyBindingColor( 0.0f, 0.0f, 0.0f, 0.48f, color.w );
+			openQ4_DrawSmoothRoundedFill( this, centerX - arm * 0.5f + 1.0f, y + 1.0f, arm, height - 1.0f, arm * 0.30f, shadow );
+			openQ4_DrawSmoothRoundedFill( this, x + 1.0f, centerY - arm * 0.5f + 1.0f, height - 1.0f, arm, arm * 0.30f, shadow );
+			openQ4_DrawSmoothRoundedFill( this, centerX - arm * 0.5f, y, arm, height, arm * 0.30f, accent );
+			openQ4_DrawSmoothRoundedFill( this, x, centerY - arm * 0.5f, height, arm, arm * 0.30f, accent );
+			openQ4_DrawSmoothRoundedFill( this, centerX - arm * 0.5f + 1.0f, y + 1.0f, arm - 2.0f, height - 2.0f, Max( 0.4f, arm * 0.22f ), darkFace );
+			openQ4_DrawSmoothRoundedFill( this, x + 1.0f, centerY - arm * 0.5f + 1.0f, height - 2.0f, arm - 2.0f, Max( 0.4f, arm * 0.22f ), darkFace );
 			if ( info.detail == 9 ) {
-				DrawFilledRect( centerX - arm * 0.5f + 1.0f, y + 1.0f, arm - 2.0f, height * 0.38f, accent );
+				openQ4_DrawSmoothRoundedFill( this, centerX - arm * 0.5f + 1.0f, y + 1.0f, arm - 2.0f, height * 0.38f, arm * 0.20f, accent );
 			} else if ( info.detail == 10 ) {
-				DrawFilledRect( centerX - arm * 0.5f + 1.0f, centerY + arm * 0.5f, arm - 2.0f, height * 0.38f - 1.0f, accent );
+				openQ4_DrawSmoothRoundedFill( this, centerX - arm * 0.5f + 1.0f, centerY + arm * 0.5f, arm - 2.0f, height * 0.38f - 1.0f, arm * 0.20f, accent );
 			} else if ( info.detail == 11 ) {
-				DrawFilledRect( centerX + arm * 0.5f, centerY - arm * 0.5f + 1.0f, height * 0.38f - 1.0f, arm - 2.0f, accent );
+				openQ4_DrawSmoothRoundedFill( this, centerX + arm * 0.5f, centerY - arm * 0.5f + 1.0f, height * 0.38f - 1.0f, arm - 2.0f, arm * 0.20f, accent );
 			} else {
-				DrawFilledRect( x + 1.0f, centerY - arm * 0.5f + 1.0f, height * 0.38f, arm - 2.0f, accent );
+				openQ4_DrawSmoothRoundedFill( this, x + 1.0f, centerY - arm * 0.5f + 1.0f, height * 0.38f, arm - 2.0f, arm * 0.20f, accent );
 			}
 			break;
 		}
@@ -1103,14 +1245,18 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 			const float leftX = x + width * 0.28f - stickSize * 0.5f;
 			const float rightX = x + width * 0.72f - stickSize * 0.5f;
 			const float stickY = y + height * 0.50f - stickSize * 0.5f;
-			openQ4_DrawChamferedFill( this, leftX, stickY, stickSize, stickSize,
-				Max( 0.7f, stickSize * 0.18f ), info.detail == 13 ? accent : midFace );
-			openQ4_DrawChamferedFill( this, rightX, stickY, stickSize, stickSize,
-				Max( 0.7f, stickSize * 0.18f ), info.detail == 14 ? accent : midFace );
+			openQ4_DrawSmoothRoundedFill( this, leftX, stickY, stickSize, stickSize,
+				stickSize * 0.5f, info.detail == 13 ? accent : midFace );
+			openQ4_DrawSmoothRoundedFill( this, rightX, stickY, stickSize, stickSize,
+				stickSize * 0.5f, info.detail == 14 ? accent : midFace );
 			break;
 		}
 
 		case Q4_KEY_BINDING_PAD_MENU:
+			if ( info.label.Length() > 0 ) {
+				openQ4_DrawKeycapBase( this, x, y, width, height, color );
+				break;
+			}
 			openQ4_DrawOctagonalBadge( this, x, y, height, color, darkFace );
 			if ( info.detail == 7 ) {
 				for ( int i = 0; i < 3; i++ ) {
@@ -1124,15 +1270,15 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 
 		case Q4_KEY_BINDING_PAD_GUIDE:
 			openQ4_DrawOctagonalBadge( this, x, y, height, color, darkFace );
-			openQ4_DrawChamferedFill( this, x + height * 0.31f, y + height * 0.31f, height * 0.38f, height * 0.38f,
-				Max( 1.0f, height * 0.09f ), accent );
-			openQ4_DrawChamferedFill( this, x + height * 0.42f, y + height * 0.42f, height * 0.16f, height * 0.16f,
-				0.5f, darkFace );
+			openQ4_DrawSmoothRoundedFill( this, x + height * 0.31f, y + height * 0.31f, height * 0.38f, height * 0.38f,
+				height * 0.19f, accent );
+			openQ4_DrawSmoothRoundedFill( this, x + height * 0.42f, y + height * 0.42f, height * 0.16f, height * 0.16f,
+				height * 0.08f, darkFace );
 			break;
 
 		case Q4_KEY_BINDING_PAD_TOUCHPAD:
 			openQ4_DrawKeycapBase( this, x, y, width, height, color );
-			DrawFilledRect( x + width * 0.18f, y + height * 0.22f, width * 0.64f, height * 0.48f, midFace );
+			openQ4_DrawSmoothRoundedFill( this, x + width * 0.18f, y + height * 0.22f, width * 0.64f, height * 0.48f, height * 0.12f, midFace );
 			DrawFilledRect( x + width * 0.24f, y + height * 0.28f, width * 0.52f, 1.0f, accent );
 			DrawFilledRect( x + width * 0.24f, y + height * 0.48f, width * 0.52f, 1.0f, accent );
 			break;
@@ -1150,16 +1296,22 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 			};
 			const int selectedPaddle = idMath::ClampInt( 0, 3, info.detail - 19 );
 			for ( int i = 0; i < 4; i++ ) {
-				DrawFilledRect( paddleX[i], paddleY, paddleW, paddleH, i == selectedPaddle ? accent : midFace );
+				openQ4_DrawSmoothRoundedFill( this, paddleX[i], paddleY, paddleW, paddleH, paddleW * 0.5f,
+					i == selectedPaddle ? accent : midFace );
 			}
 			break;
 		}
 	}
 
 	if ( info.label.Length() > 0 ) {
-		float labelScale = textScale * 0.68f;
+		const float presentationScale = Min( 1.25f, heightRatio / Q4_KEY_BINDING_INLINE_HEIGHT_RATIO );
+		float labelRegionX = x;
+		float labelRegionY = y;
+		float labelRegionWidth = width;
+		float labelRegionHeight = height;
+		float labelScale = textScale * 0.68f * presentationScale;
 		const float sidePadding = Max( 3.0f, height * 0.24f );
-		const float availableWidth = Max( 1.0f, width - sidePadding * 2.0f );
+		const float availableWidth = Max( 1.0f, labelRegionWidth - sidePadding * 2.0f );
 		float labelWidth = static_cast<float>( TextWidth( info.label, labelScale, -1 ) );
 		if ( labelWidth > availableWidth && labelWidth > 0.0f ) {
 			// Fit exactly: custom language tables may use labels much longer than
@@ -1167,17 +1319,17 @@ void idDeviceContext::DrawKeyBindingIcon( int keyNum, float x, float baselineY, 
 			labelScale *= availableWidth / labelWidth;
 			labelWidth = static_cast<float>( TextWidth( info.label, labelScale, -1 ) );
 		}
-		const float labelX = x + ( width - labelWidth ) * 0.5f;
+		const float labelX = labelRegionX + ( labelRegionWidth - labelWidth ) * 0.5f;
 		SetFontByScale( labelScale );
 		q4TextInkExtents_t labelInk;
 		openQ4_FontInkExtents( useFont, labelInk );
 		const float labelRenderScale = openQ4_FontRenderScale( useFont, labelScale );
 		const float labelAscent = labelInk.ascent * labelRenderScale;
 		const float labelDescent = labelInk.descent * labelRenderScale;
-		const float centeredBaseline = y + height * 0.5f + ( labelAscent - labelDescent ) * 0.5f;
+		const float centeredBaseline = labelRegionY + labelRegionHeight * 0.5f + ( labelAscent - labelDescent ) * 0.5f;
 		const float labelBaseline = idMath::ClampFloat(
-			y + labelAscent,
-			Max( y + labelAscent, y + height - labelDescent - 1.0f ),
+			labelRegionY + labelAscent,
+			Max( labelRegionY + labelAscent, labelRegionY + labelRegionHeight - labelDescent - 0.5f ),
 			centeredBaseline );
 		const idVec4 savedDrawTextColor = drawTextColor;
 		const float savedDrawTextColorAdjust = drawTextColorAdjust;
@@ -1815,9 +1967,10 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 					openQ4_ResolveTextEscape( backgroundScan, scanLength, scanType, scanPayload,
 						scanPayloadLength, scanPayloadType, scanSourceLength, scanRepeats );
 					int scanKey = -1;
+					float scanHeightRatio = Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
 					if ( scanRepeats > 0 && scanPayloadType == S_ESCAPE_ICON &&
-						openQ4_ExtractKeyBindingIcon( scanPayload, scanKey ) ) {
-						maxBindingHeight = Max( maxBindingHeight, GetKeyBindingIconHeight( scale ) );
+						openQ4_ExtractKeyBindingIcon( scanPayload, scanKey, &scanHeightRatio ) ) {
+						maxBindingHeight = Max( maxBindingHeight, GetKeyBindingIconHeight( scale, scanHeightRatio ) );
 					}
 					backgroundScan += scanSourceLength;
 					backgroundIndex += scanSourceLength;
@@ -1843,7 +1996,7 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 	renderSystem->SetColor( currentColor );
 
 	const unsigned char *s = reinterpret_cast<const unsigned char *>( text );
-	int len = strlen( text );
+	int len = idLib::SizeToInt( strlen( text ), "idDeviceContext::DrawText" );
 	if ( limit > 0 && len > limit ) {
 		len = limit;
 	}
@@ -1875,9 +2028,10 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 			for ( int repeatIndex = 0; repeatIndex < repeats; ++repeatIndex ) {
 				if ( payloadType == S_ESCAPE_ICON ) {
 					int keyNum = -1;
-					if ( openQ4_ExtractKeyBindingIcon( reinterpret_cast<const char *>( payload ), keyNum ) ) {
-						const float bindingWidth = GetKeyBindingIconWidth( keyNum, scale );
-						DrawKeyBindingIcon( keyNum, x, y, scale, currentColor );
+					float bindingHeightRatio = Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
+					if ( openQ4_ExtractKeyBindingIcon( reinterpret_cast<const char *>( payload ), keyNum, &bindingHeightRatio ) ) {
+						const float bindingWidth = GetKeyBindingIconWidth( keyNum, scale, bindingHeightRatio );
+						DrawKeyBindingIcon( keyNum, x, y, scale, currentColor, bindingHeightRatio );
 						x += bindingWidth;
 						SetFontByScale( scale );
 						renderSystem->SetColor( currentColor );
@@ -2068,8 +2222,9 @@ int idDeviceContext::TextWidth( const char *text, float scale, int limit, int ad
 				payload, payloadLength, payloadType, sourceLength, repeats );
 			if ( payloadType == S_ESCAPE_ICON && repeats > 0 ) {
 				int keyNum = -1;
-				if ( openQ4_ExtractKeyBindingIcon( payload, keyNum ) ) {
-					const float bindingWidth = GetKeyBindingIconWidth( keyNum, scale ) * repeats;
+				float bindingHeightRatio = Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
+				if ( openQ4_ExtractKeyBindingIcon( payload, keyNum, &bindingHeightRatio ) ) {
+					const float bindingWidth = GetKeyBindingIconWidth( keyNum, scale, bindingHeightRatio ) * repeats;
 					visibleRight = Max( visibleRight, advanceX + bindingWidth );
 					advanceX += bindingWidth;
 					SetFontByScale( scale );
@@ -2131,8 +2286,9 @@ int idDeviceContext::TextHeight(const char *text, float scale, int limit, int ad
 				payloadType, sourceLength, repeats );
 			if ( payloadType == S_ESCAPE_ICON && repeats > 0 ) {
 				int keyNum = -1;
-				if ( openQ4_ExtractKeyBindingIcon( payload, keyNum ) ) {
-					maxKeyBindingHeight = Max( maxKeyBindingHeight, GetKeyBindingIconHeight( scale ) );
+				float bindingHeightRatio = Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
+				if ( openQ4_ExtractKeyBindingIcon( payload, keyNum, &bindingHeightRatio ) ) {
+					maxKeyBindingHeight = Max( maxKeyBindingHeight, GetKeyBindingIconHeight( scale, bindingHeightRatio ) );
 					SetFontByScale( scale );
 				} else {
 					const glyphInfo_t *referenceGlyph = &useFont->glyphs[Q4_EMBEDDED_ICON_REFERENCE_GLYPH];
@@ -2185,8 +2341,9 @@ bool idDeviceContext::GetMaxTextIndex( const char *text, int limit, float textSc
 
 		if ( payloadType == S_ESCAPE_ICON && repeats > 0 ) {
 			int keyNum = -1;
-			if ( openQ4_ExtractKeyBindingIcon( payload, keyNum ) ) {
-				const float bindingWidth = GetKeyBindingIconWidth( keyNum, textScale );
+			float bindingHeightRatio = Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
+			if ( openQ4_ExtractKeyBindingIcon( payload, keyNum, &bindingHeightRatio ) ) {
+				const float bindingWidth = GetKeyBindingIconWidth( keyNum, textScale, bindingHeightRatio );
 				tokenWidth = useScale > 0.0f ? static_cast<int>( idMath::Ceil( bindingWidth * repeats / useScale ) ) : 0;
 				SetFontByScale( textScale );
 			} else {
@@ -2336,7 +2493,9 @@ void idDeviceContext::DrawEditCursor( float x, float y, float scale ) {
 
 int idDeviceContext::DrawText( const char *text, float textScale, int textAlign, idVec4 color, idRectangle rectDraw, bool wrap, int cursor, bool calcOnly, idList<int> *breaks, int limit, int adjust, int style, bool chatWindow ) {
 	const float charSkip = MaxCharWidth( textScale ) + 1;
-	const float lineSkip = MaxCharHeight( textScale );
+	const float fontLineSkip = MaxCharHeight( textScale );
+	const float contentHeight = text != NULL ? static_cast<float>( TextHeight( text, textScale, limit, adjust ) ) : 0.0f;
+	const float lineSkip = Max( fontLineSkip, contentHeight );
 	const float cursorSkip = ( cursor >= 0 ? charSkip : 0 );
 	const int visibleCellCount = charSkip > 0.0f ? idMath::FtoiFast( rectDraw.w / charSkip ) : 0;
 
@@ -2407,8 +2566,9 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 		if ( chatWindow && !lineBreak ) {
 			if ( isIconEscape ) {
 				int keyNum = -1;
-				if ( openQ4_ExtractKeyBindingIcon( escapePayload, keyNum ) ) {
-					nextCharWidth = static_cast<int>( idMath::Ceil( GetKeyBindingIconWidth( keyNum, textScale ) * escapeRepeats ) );
+				float bindingHeightRatio = Q4_KEY_BINDING_INLINE_HEIGHT_RATIO;
+				if ( openQ4_ExtractKeyBindingIcon( escapePayload, keyNum, &bindingHeightRatio ) ) {
+					nextCharWidth = static_cast<int>( idMath::Ceil( GetKeyBindingIconWidth( keyNum, textScale, bindingHeightRatio ) * escapeRepeats ) );
 					SetFontByScale( textScale );
 				} else {
 					char iconCode[4];
@@ -2618,8 +2778,13 @@ bool UI_FontParity_RunSelfTest( void ) {
 	ok &= openQ4_CheckNear( "embedded icon registered dimension", static_cast<float>( openQ4_EmbeddedIconDimensionOrImageSize( 24, 64.0f ) ), 24.0f );
 
 	int keyBindingNumber = -1;
-	ok &= openQ4_CheckBool( "keyboard binding escape decoded", openQ4_ExtractKeyBindingIcon( "^ik20", keyBindingNumber ), true );
+	float keyBindingHeightRatio = 0.0f;
+	ok &= openQ4_CheckBool( "keyboard binding escape decoded", openQ4_ExtractKeyBindingIcon( "^ik20", keyBindingNumber, &keyBindingHeightRatio ), true );
 	ok &= openQ4_CheckNear( "keyboard binding escape value", static_cast<float>( keyBindingNumber ), static_cast<float>( K_SPACE ) );
+	ok &= openQ4_CheckNear( "inline binding height ratio", keyBindingHeightRatio, Q4_KEY_BINDING_INLINE_HEIGHT_RATIO );
+	ok &= openQ4_CheckBool( "prompt binding escape decoded", openQ4_ExtractKeyBindingIcon( "^iK20", keyBindingNumber, &keyBindingHeightRatio ), true );
+	ok &= openQ4_CheckNear( "prompt binding escape value", static_cast<float>( keyBindingNumber ), static_cast<float>( K_SPACE ) );
+	ok &= openQ4_CheckNear( "prompt binding height ratio", keyBindingHeightRatio, Q4_KEY_BINDING_PROMPT_HEIGHT_RATIO );
 	ok &= openQ4_CheckBool( "mouse binding escape decoded", openQ4_ExtractKeyBindingIcon( "^ikbb", keyBindingNumber ), true );
 	ok &= openQ4_CheckNear( "mouse binding escape value", static_cast<float>( keyBindingNumber ), static_cast<float>( K_MOUSE1 ) );
 	ok &= openQ4_CheckBool( "controller binding escape decoded", openQ4_ExtractKeyBindingIcon( "^ikc5", keyBindingNumber ), true );

@@ -199,6 +199,20 @@ if not build_engine and not build_games
   error('At least one build target must be enabled. Use -Dbuild_engine=true and/or -Dbuild_games=true.')
 endif
 
+if get_option('build_native_tests')
+  openq4_core_safety_test = executable(
+    'openq4-core-safety-test',
+    files('tools/tests/native/CoreSafetyTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-core-safety',
+    openq4_core_safety_test,
+    timeout: 30,
+  )
+endif
+
 openq4_pak_files = []
 openq4_paks_generated_header = []
 if build_engine or build_games
@@ -772,6 +786,7 @@ if build_engine
     deps += [
       cc.find_library('opengl32', required: true),
       cc.find_library('Dbghelp', required: true),
+      cc.find_library('bcrypt', required: true),
       cc.find_library('Iphlpapi', required: true),
       cc.find_library('Winmm', required: true),
       cc.find_library('ws2_32', required: true),
@@ -841,6 +856,7 @@ if renderer_module_only_client
   if host_system == 'windows'
     client_deps += [
       cc.find_library('Dbghelp', required: true),
+      cc.find_library('bcrypt', required: true),
       cc.find_library('Iphlpapi', required: true),
       cc.find_library('Winmm', required: true),
       cc.find_library('ws2_32', required: true),
@@ -868,6 +884,7 @@ if windows_gl_free_ded
     openal_dep,
     stb_vorbis_dep,
     cc.find_library('Dbghelp', required: true),
+    cc.find_library('bcrypt', required: true),
     cc.find_library('Iphlpapi', required: true),
     cc.find_library('Winmm', required: true),
     cc.find_library('ws2_32', required: true),
@@ -992,6 +1009,18 @@ if cpp.get_argument_syntax() == 'msvc'
     '/we4311', # pointer truncation through an integer
     '/we4312', # integer widened to a pointer
   ]
+  # MSVC warning numbers are not portable to clang-cl even though it accepts
+  # MSVC-style arguments. Keep this narrow gate on the validated MSVC x64 lane.
+  if is_msvc and host_cpu_family == 'x86_64'
+    cleaned_windows_x64_warning_errors = [
+      '/we4101', # unreferenced local variable
+      '/we4189', # local variable initialized but not referenced
+      '/we4267', # size_t conversion may lose data
+      '/we4324', # structure padded due to alignment
+      '/we4505', # unreferenced local function removed
+    ]
+    shared_cpp_args += cleaned_windows_x64_warning_errors
+  endif
   shared_c_args += ['/FS', '/source-charset:windows-1252', '/execution-charset:windows-1252']
 
   # Keep narrowly scoped suppressions for legacy C/C++ constructs. Pointer/

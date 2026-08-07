@@ -214,9 +214,19 @@ def validate_game_module_symbol_discipline() -> None:
     # companion build must not either.
     reject(companion_meson, "common_defines += ['_DEBUG']", "companion _DEBUG parity with the engine")
 
-    # Excluding the SSE sources on x86-64 left the archive without the
-    # idSIMD_SSE2 definition idSIMD::InitProcessor constructs there.
-    reject(companion_meson, "'idlib/math/Simd_SSE2.cpp',", "companion x86-64 SIMD source coverage")
+    # The SDK SIMD implementations use 32-bit MSVC inline assembly. Keep them
+    # available to the x86 build while excluding the complete legacy family
+    # everywhere Simd.cpp intentionally selects the generic processor.
+    legacy_x86_simd_exclusion = """if host_cpu_family != 'x86'
+  idlib_excludes += [
+    'idlib/math/Simd_3DNow.cpp',
+    'idlib/math/Simd_MMX.cpp',
+    'idlib/math/Simd_SSE.cpp',
+    'idlib/math/Simd_SSE2.cpp',
+    'idlib/math/Simd_SSE3.cpp',
+  ]
+endif"""
+    require(companion_meson, legacy_x86_simd_exclusion, "companion architecture-specific SIMD source selection")
 
     lib_header = read("src/idlib/Lib.h")
     require(

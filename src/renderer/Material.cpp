@@ -476,6 +476,8 @@ static infoParm_t	infoParms[] = {
 	// game relevant attributes
 	{"solid",		0,	0,	CONTENTS_SOLID },		// may need to override a clearSolid
 	{"water",		1,	0,	CONTENTS_WATER },		// used for water
+	{"lava",		1,	0,	CONTENTS_LAVA },		// used for lava, damages what swims in it
+	{"slime",		1,	0,	CONTENTS_SLIME },		// used for slime, damages what swims in it
 	{"playerclip",	0,	0,	CONTENTS_PLAYERCLIP },	// solid to players
 	{"monsterclip",	0,	0,	CONTENTS_MONSTERCLIP },	// solid to monsters
 	{"moveableclip",0,	0,	CONTENTS_MOVEABLECLIP },// solid to moveable entities
@@ -2602,7 +2604,7 @@ void idMaterial::AddImplicitStages( const textureRepeat_t trpDefault /* = TR_REP
 
 	if ( !hasBump ) {
 		idStr::snPrintf( buffer, sizeof( buffer ), "blend bumpmap\nmap _flat\n}\n" );
-		newSrc.LoadMemory( buffer, strlen(buffer), "bumpmap" );
+		newSrc.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idMaterial::AddImplicitStages" ), "bumpmap" );
 		newSrc.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 		ParseStage( newSrc, trpDefault );
 		newSrc.FreeSource();
@@ -2610,7 +2612,7 @@ void idMaterial::AddImplicitStages( const textureRepeat_t trpDefault /* = TR_REP
 
 	if ( !hasDiffuse && !hasSpecular && !hasReflection ) {
 		idStr::snPrintf( buffer, sizeof( buffer ), "blend diffusemap\nmap _white\n}\n" );
-		newSrc.LoadMemory( buffer, strlen(buffer), "diffusemap" );
+		newSrc.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idMaterial::AddImplicitStages" ), "diffusemap" );
 		newSrc.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 		ParseStage( newSrc, trpDefault );
 		newSrc.FreeSource();
@@ -2983,7 +2985,7 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 				continue;
 			}
 			idStr::snPrintf( buffer, sizeof( buffer ), "blend diffusemap\nmap %s\n}\n", str);
-			newSrc.LoadMemory( buffer, strlen(buffer), "diffusemap" );
+			newSrc.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idMaterial::ParseMaterial" ), "diffusemap" );
 			newSrc.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 			ParseStage( newSrc, trpDefault );
 			newSrc.FreeSource();
@@ -2997,7 +2999,7 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 				continue;
 			}
 			idStr::snPrintf( buffer, sizeof( buffer ), "blend specularmap\nmap %s\n}\n", str);
-			newSrc.LoadMemory( buffer, strlen(buffer), "specularmap" );
+			newSrc.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idMaterial::ParseMaterial" ), "specularmap" );
 			newSrc.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 			ParseStage( newSrc, trpDefault );
 			newSrc.FreeSource();
@@ -3011,7 +3013,7 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 				continue;
 			}
 			idStr::snPrintf( buffer, sizeof( buffer ), "blend bumpmap\nmap %s\n}\n", str );
-			newSrc.LoadMemory( buffer, strlen(buffer), "bumpmap" );
+			newSrc.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idMaterial::ParseMaterial" ), "bumpmap" );
 			newSrc.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
 			ParseStage( newSrc, trpDefault );
 			newSrc.FreeSource();

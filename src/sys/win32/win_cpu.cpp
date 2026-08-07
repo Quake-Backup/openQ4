@@ -83,6 +83,8 @@ double Sys_ClockTicksPerSecond(void) {
 ==============================================================
 */
 
+#if defined( _M_IX86 ) || defined( __i386__ )
+
 /*
 ================
 HasCPUID
@@ -170,6 +172,8 @@ static bool HasSSE3(void) {
 	return false;
 }
 
+#endif
+
 
 /*
 ================
@@ -191,6 +195,8 @@ int CPUCount(int& logicalNum, int& physicalNum) {
 	physicalNum = 4;
 	return 1;
 }
+
+#if defined( _M_IX86 ) || defined( __i386__ )
 
 /*
 ================
@@ -224,6 +230,8 @@ HasHTT
 static bool HasDAZ(void) {
 	return false;
 }
+
+#endif
 
 /*
 ================

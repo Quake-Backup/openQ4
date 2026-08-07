@@ -31,6 +31,12 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "Unzip.h"
 
+#if defined( _WIN32 )
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
 #define	MAX_PRINT_MSG		4096
 
 /*
@@ -262,6 +268,16 @@ idFile::Flush
 =================
 */
 void idFile::Flush( void ) {
+}
+
+/*
+=================
+idFile::Sync
+=================
+*/
+bool idFile::Sync( void ) {
+	Flush();
+	return true;
 }
 
 /*
@@ -607,7 +623,7 @@ int idFile::WriteString( const char *value ) {
 		value = "";
 	}
 	
-	len = strlen( value );
+	len = idLib::SizeToInt( strlen( value ), "idFile::WriteString" );
 	WriteInt( len );
     return Write( value, len );
 }
@@ -1179,7 +1195,7 @@ int idFile_Permanent::Read( void *buffer, int len ) {
 	tries = 0;
 	while( remaining ) {
 		block = Min( remaining, readChunkBytes );
-		read = fread( buf, 1, block, o );
+		read = idLib::SizeToInt( fread( buf, 1, block, o ), "idFile_Permanent::Read" );
 		if ( read == 0 ) {
 			// we might have been trying to read from a CD, which
 			// sometimes returns a 0 read on windows
@@ -1234,7 +1250,7 @@ int idFile_Permanent::Write( const void *buffer, int len ) {
 	tries = 0;
 	while( remaining ) {
 		block = remaining;
-		written = fwrite( buf, 1, block, o );
+		written = idLib::SizeToInt( fwrite( buf, 1, block, o ), "idFile_Permanent::Write" );
 		if ( written == 0 ) {
 			if ( !tries ) {
 				tries = 1;
@@ -1276,6 +1292,28 @@ idFile_Permanent::Flush
 */
 void idFile_Permanent::Flush( void ) {
 	fflush( o );
+}
+
+/*
+=================
+idFile_Permanent::Sync
+=================
+*/
+bool idFile_Permanent::Sync( void ) {
+	if ( o == NULL ) {
+		return false;
+	}
+	if ( fflush( o ) != 0 ) {
+		return false;
+	}
+	if ( !( mode & ( 1 << FS_WRITE ) ) ) {
+		return true;
+	}
+#if defined( _WIN32 )
+	return _commit( _fileno( o ) ) == 0;
+#else
+	return fsync( fileno( o ) ) == 0;
+#endif
 }
 
 /*

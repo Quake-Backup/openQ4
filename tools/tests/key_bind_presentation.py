@@ -89,10 +89,12 @@ def validate_binding_formatter() -> None:
 
     append = body_of(source, "static void Key_AppendBindingPresentation(", "KeyInput.cpp")
     require(append, '"#str_07183"', "localized multiple-binding separator")
-    require(append, '"^ik%02x"', "graphical binding token encoding")
+    require(append, '"^i%c%02x"', "graphical binding token encoding")
+    require(append, "emphasized ? 'K' : 'k'", "normal/emphasized binding token subtype")
 
-    compact = body_of(source, "const char *idKeyInput::KeysFromBinding(", "KeyInput.cpp")
+    compact = body_of(source, "static const char *Key_KeysFromBinding(", "KeyInput.cpp")
     require(compact, "BindingsEquivalent", "compact binding command matching")
+    require(compact, "idKeyInput::GetBinding( i )", "shared compact binding scan")
     require(compact, "firstKeyboard", "compact keyboard representative")
     require(compact, "firstMouse", "compact mouse representative")
     require(compact, "firstController", "compact controller representative")
@@ -101,10 +103,15 @@ def validate_binding_formatter() -> None:
     require(compact, "selected = firstController", "controller-family representative")
     require(compact, "selected = firstMouse >= 0 ? firstMouse : firstKeyboard", "desktop-family representative")
     require(compact, "if ( selected < 0 )", "other-family fallback")
-    require(compact, "Key_AppendBindingPresentation( keyName, selected )", "single compact token emission")
+    require(compact, "Key_AppendBindingPresentation( keyName, selected, emphasized )", "single compact token emission")
     require(compact, '"#str_07133"', "compact localized unbound fallback")
     if compact.count("Key_AppendBindingPresentation(") != 1:
         raise AssertionError("Compact HUD formatting must emit exactly one representative binding")
+
+    compact_entry = body_of(source, "const char *idKeyInput::KeysFromBinding(", "KeyInput.cpp")
+    require(compact_entry, "Key_KeysFromBinding( bind, false )", "normal compact binding entry point")
+    prompt_entry = body_of(source, "const char *idKeyInput::KeysFromBindingForPrompt(", "KeyInput.cpp")
+    require(prompt_entry, "Key_KeysFromBinding( bind, true )", "emphasized center-prompt entry point")
 
     menu = body_of(source, "const char *idKeyInput::KeysFromBindingForMenu(", "KeyInput.cpp")
     require(menu, "BindingsEquivalent", "bounded menu command matching")
@@ -203,6 +210,8 @@ def validate_procedural_device_presentation() -> None:
     require(decoder, "code[0] != 'k'", "reserved graphical binding token subtype")
     require(decoder, "openQ4_HexDigitValue", "graphical binding hexadecimal decoder")
     require(decoder, "0xff", "graphical binding eight-bit key-number bounds")
+    require(decoder, "Q4_KEY_BINDING_PROMPT_HEIGHT_RATIO", "emphasized center-prompt height decoding")
+    require(decoder, "Q4_KEY_BINDING_INLINE_HEIGHT_RATIO", "normal inline height decoding")
 
     register = body_of(source, "void idDeviceContext::RegisterIcon(", "DeviceContext.cpp")
     guard_high = register.find("code[1] != '\\0'")
@@ -239,10 +248,25 @@ def validate_procedural_device_presentation() -> None:
     ):
         require(info, token, "keyboard/mouse/controller binding classification")
 
+    arrow_key = body_of(source, "static bool openQ4_IsKeyboardArrowKey(", "DeviceContext.cpp")
+    for token in ("K_UPARROW", "K_DOWNARROW", "K_LEFTARROW", "K_RIGHTARROW"):
+        require(arrow_key, token, "directional keyboard-key classification")
+    arrow_classification = info[: info.find("if ( keyNum >= K_MOUSE1")]
+    require(arrow_classification, "openQ4_IsKeyboardArrowKey", "arrow-key presentation override")
+    require(arrow_classification, "info.label.Clear()", "word-free arrow-key legend")
+    mouse_classification = info[info.find("if ( keyNum >= K_MOUSE1") :]
+    mouse_classification = mouse_classification[: mouse_classification.find("if ( keyNum == K_MWHEELUP")]
+    require(mouse_classification, "info.label.Clear()", "word-free mouse-button presentation")
+    reject(mouse_classification, 'va( "%d"', "ambiguous numbered mouse-button presentation")
+    require(info, 'GetString( "#str_200018" )', "localized controller Back keycap")
+
     height = body_of(source, "float idDeviceContext::GetKeyBindingIconHeight(", "DeviceContext.cpp")
     require(height, "MaxCharHeight( textScale )", "font-relative keycap height")
-    require(height, "Min( lineHeight", "bounded keycap height")
-    require(height, "Max( 6.0f", "minimum legible keycap height")
+    require(height, "heightRatio = idMath::ClampFloat( 0.50f, 2.00f, heightRatio )", "bounded keycap height ratio")
+    require(height, "heightRatio / Q4_KEY_BINDING_INLINE_HEIGHT_RATIO", "scaled minimum keycap height")
+    require(height, "lineHeight * heightRatio", "requested line-relative keycap height")
+    require(source, "Q4_KEY_BINDING_INLINE_HEIGHT_RATIO = 0.99f", "near-line-height inline keycaps")
+    require(source, "Q4_KEY_BINDING_PROMPT_HEIGHT_RATIO = 1.50f", "150-percent center-prompt keycaps")
 
     width = body_of(source, "float idDeviceContext::GetKeyBindingIconWidth(", "DeviceContext.cpp")
     for token in (
@@ -256,6 +280,8 @@ def validate_procedural_device_presentation() -> None:
         "K_TAB",
         "K_CTRL",
         "Q4_KEY_BINDING_MOUSE_BUTTON",
+        "width = height * 0.74f",
+        "width = height * 0.98f",
         "Q4_KEY_BINDING_PAD_FACE",
         "Q4_KEY_BINDING_PAD_SHOULDER",
         "Q4_KEY_BINDING_PAD_STICK",
@@ -271,13 +297,13 @@ def validate_procedural_device_presentation() -> None:
     )
     require(
         width,
-        "info.kind == Q4_KEY_BINDING_KEYBOARD || info.kind == Q4_KEY_BINDING_PAD_GENERIC",
-        "keyboard/generic-only label-aware keycap growth",
+        "info.kind == Q4_KEY_BINDING_KEYBOARD || info.kind == Q4_KEY_BINDING_PAD_MENU || info.kind == Q4_KEY_BINDING_PAD_GENERIC",
+        "keyboard/menu/generic label-aware keycap growth",
     )
     for token in (
         "TextWidth( info.label, labelScale",
         "const float maximumWidth",
-        "info.kind == Q4_KEY_BINDING_KEYBOARD ? 2.20f : 1.90f",
+        "info.kind == Q4_KEY_BINDING_PAD_GENERIC ? 1.90f : 2.20f",
         "width = Min( maximumWidth, Max( width, labelWidth + sidePadding * 2.0f ) )",
         "SetFontByScale( textScale )",
     ):
@@ -295,6 +321,7 @@ def validate_procedural_device_presentation() -> None:
 
     draw = body_of(source, "void idDeviceContext::DrawKeyBindingIcon(", "DeviceContext.cpp")
     require(draw, "openQ4_DrawKeycapBase", "procedural keyboard keycap")
+    require(draw, "openQ4_DrawSmoothRoundedFill", "high-sample smooth device shapes")
     require(draw, "Q4_KEY_BINDING_MOUSE_BUTTON", "procedural mouse presentation")
     require(draw, "Q4_KEY_BINDING_MOUSE_WHEEL", "procedural mouse-wheel presentation")
     require(draw, "Q4_KEY_BINDING_PAD_FACE", "controller face-button presentation")
@@ -306,7 +333,15 @@ def validate_procedural_device_presentation() -> None:
     require(draw, "openQ4_FontInkExtents", "vertically centered key label")
     require(draw, "DrawText( labelX", "text over procedural keycap")
 
-    label_draw = body_of(draw, "if ( info.label.Length() > 0 )", "keycap label drawing")
+    arrow_draw = body_of(source, "static void openQ4_DrawKeyboardArrowGlyph(", "DeviceContext.cpp")
+    for token in ("const int bands = 6", "shaftThickness", "headWidth", "DrawFilledRect"):
+        require(arrow_draw, token, "procedural directional arrow character")
+    require(draw, "openQ4_DrawKeyboardArrowGlyph", "square keyboard arrow-key rendering")
+
+    label_draw_position = draw.rfind("if ( info.label.Length() > 0 )")
+    if label_draw_position < 0:
+        raise AssertionError("Missing final keycap label drawing block")
+    label_draw = draw[label_draw_position:]
     label_x_position = label_draw.find("const float labelX")
     if label_x_position < 0:
         raise AssertionError("Keycap label draw must center its final fitted measurement")
@@ -318,8 +353,21 @@ def validate_procedural_device_presentation() -> None:
     )
     if exact_fit.count("TextWidth( info.label") != 2:
         raise AssertionError("Exact keycap label fit must remeasure once after scaling")
-    for floor in ("labelScale = Max(", "Max( textScale", "0.46f"):
+    for floor in ("labelScale = Max(", "Max( textScale"):
         reject(exact_fit, floor, "floor-free exact keycap label fit")
+    reject(label_draw, "mouseButtonLabel", "text-free mouse-button drawing")
+
+    mouse_draw = body_of(draw, "case Q4_KEY_BINDING_MOUSE_BUTTON:", "mouse drawing")
+    for token in (
+        "const float mouseWidth = height * 0.68f",
+        "const float splitY = y + height * 0.46f",
+        "info.detail == 1 ? selectedButton : midFace",
+        "info.detail == 2 ? selectedButton : midFace",
+        "info.detail == 3",
+        "const int arrowBands = 4",
+        "selectedSideButton",
+    ):
+        require(mouse_draw, token, "upright physical mouse-button presentation")
 
     face_draw = body_of(draw, "case Q4_KEY_BINDING_PAD_FACE:", "controller face-button drawing")
     for token in (
@@ -328,6 +376,7 @@ def validate_procedural_device_presentation() -> None:
         "selectedButton",
         "info.detail - 3",
         "i == selectedButton ? accent : inactiveFace",
+        "buttonSize * 0.5f",
     ):
         require(face_draw, token, "neutral positional controller face-button cluster")
     require(
@@ -337,6 +386,18 @@ def validate_procedural_device_presentation() -> None:
     )
     reject(face_draw, "DrawText", "controller-neutral face-button legend")
     reject(face_draw, "openQ4_KeyBindingColor", "controller-neutral face-button colour mapping")
+
+    rounded = body_of(source, "static void openQ4_DrawRoundedFillCore(", "DeviceContext.cpp")
+    for token in (
+        "Q4_KEY_BINDING_MAX_CURVE_BANDS",
+        "radius * 6.0f",
+        "idMath::Sqrt",
+        "bandHeight",
+    ):
+        require(rounded, token, "high-resolution procedural curve sampling")
+    smooth = body_of(source, "static void openQ4_DrawSmoothRoundedFill(", "DeviceContext.cpp")
+    require(smooth, "edgeColor.w *= 0.38f", "soft procedural edge fringe")
+    require(smooth, "openQ4_DrawRoundedFillCore", "smooth rounded-fill composition")
 
 
 def validate_draw_and_measure_pipeline() -> None:
@@ -385,7 +446,7 @@ def validate_draw_and_measure_pipeline() -> None:
         "openQ4_ResolveTextEscape",
         "payloadType == S_ESCAPE_ICON && repeats > 0",
         "openQ4_ExtractKeyBindingIcon( payload",
-        "GetKeyBindingIconWidth( keyNum, scale ) * repeats",
+        "GetKeyBindingIconWidth( keyNum, scale, bindingHeightRatio ) * repeats",
         "s += sourceLength",
         "index += sourceLength",
     ):
@@ -396,7 +457,7 @@ def validate_draw_and_measure_pipeline() -> None:
         "openQ4_ResolveTextEscape",
         "payloadType == S_ESCAPE_ICON && repeats > 0",
         "openQ4_ExtractKeyBindingIcon( payload",
-        "GetKeyBindingIconHeight( scale )",
+        "GetKeyBindingIconHeight( scale, bindingHeightRatio )",
         "s += sourceLength",
         "index += sourceLength",
     ):
@@ -431,7 +492,7 @@ def validate_draw_and_measure_pipeline() -> None:
         "len + escapeSourceLength < static_cast<int>( sizeof( buff ) )",
         "idStr::Copynz( &buff[len], p, escapeSourceLength + 1 )",
         "openQ4_ExtractKeyBindingIcon( escapePayload",
-        "GetKeyBindingIconWidth( keyNum, textScale ) * escapeRepeats",
+        "GetKeyBindingIconWidth( keyNum, textScale, bindingHeightRatio ) * escapeRepeats",
         "escapeRepeats * openQ4_ScaledFontUnits",
         "!( isIconEscape && len == 0 )",
         "len += escapeSourceLength",
@@ -439,6 +500,11 @@ def validate_draw_and_measure_pipeline() -> None:
     ):
         require(wrapped_draw, token, "repeat-aware atomic chat lookahead")
     require(source, "static const int Q4_TEXT_LINE_BUFFER_SIZE = 1024", "fixed wrapped-text line buffer")
+    require(
+        wrapped_draw,
+        "const float lineSkip = Max( fontLineSkip, contentHeight )",
+        "emphasized prompt-aware line height",
+    )
 
 
 def validate_bind_widget_fit_and_capture() -> None:
@@ -527,6 +593,7 @@ def validate_localized_controls_hint() -> None:
         ("^ik1b", "^ikcc"),
     )
     entry_pattern = re.compile(r'^\s*"#str_200930"\s*"([^"\r\n]*)"\s*$', re.MULTILINE)
+    back_entry_pattern = re.compile(r'^\s*"#str_200018"\s*"([^"\r\n]+)"\s*$', re.MULTILINE)
     token_pattern = re.compile(r"\^ik[0-9a-fA-F]{2}")
 
     for language in languages:
@@ -548,6 +615,9 @@ def validate_localized_controls_hint() -> None:
             label = token_pattern.sub("", line).replace("/", "").strip()
             if not label:
                 raise AssertionError(f"#str_200930 line {line_number} in {path} needs a localized action label")
+        back_matches = back_entry_pattern.findall(read(path))
+        if len(back_matches) != 1 or not back_matches[0].strip():
+            raise AssertionError(f"Expected one localized controller Back label in {path}")
 
 
 def validate_bind_menu_and_spectator_consumers() -> None:
@@ -579,12 +649,20 @@ def validate_bind_menu_and_spectator_consumers() -> None:
         if not multiplayer.is_file():
             continue
         checked_tree = True
-        update_hud = body_of(read(multiplayer), "void idMultiplayerGame::UpdateHud(", str(multiplayer))
-        require(update_hud, 'KeysFromBinding( "_attack" )', f"{tree} spectator attack binding")
-        require(update_hud, 'KeysFromBinding( "_moveup" )', f"{tree} spectator exit-follow binding")
-        require(update_hud, 'KeysFromBinding( "_impulse14" )', f"{tree} previous-player binding")
-        require(update_hud, 'KeysFromBinding( "_impulse15" )', f"{tree} next-player binding")
+        multiplayer_source = read(multiplayer)
+        update_hud = body_of(multiplayer_source, "void idMultiplayerGame::UpdateHud(", str(multiplayer))
+        require(update_hud, 'KeysFromBindingForPrompt( "_attack" )', f"{tree} emphasized spectator attack binding")
+        require(update_hud, 'KeysFromBindingForPrompt( "_moveup" )', f"{tree} emphasized spectator exit-follow binding")
+        require(update_hud, 'KeysFromBindingForPrompt( "_impulse14" )', f"{tree} emphasized previous-player binding")
+        require(update_hud, 'KeysFromBindingForPrompt( "_impulse15" )', f"{tree} emphasized next-player binding")
         require(update_hud, 'SetStateString( "spectatetext1"', f"{tree} spectator HUD publication")
+        reject(update_hud, 'KeysFromBinding( "_attack" )', f"{tree} non-emphasized spectator attack binding")
+
+        all_ready = body_of(multiplayer_source, "bool idMultiplayerGame::AllPlayersReady(", str(multiplayer))
+        require(all_ready, 'KeysFromBindingForPrompt( "_impulse17" )', f"{tree} emphasized readiness prompt")
+        start_vote = body_of(multiplayer_source, "void idMultiplayerGame::ClientStartPackedVote(", str(multiplayer))
+        require(start_vote, 'KeysFromBindingForPrompt("_impulse28")', f"{tree} emphasized vote-yes prompt")
+        require(start_vote, 'KeysFromBindingForPrompt("_impulse29")', f"{tree} emphasized vote-no prompt")
 
     if not checked_tree:
         raise AssertionError(f"No companion game-library source trees found below {GAME_LIBS_ROOT}")

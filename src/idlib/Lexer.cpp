@@ -3291,15 +3291,8 @@ int idLexer::PeekTokenString(const char* string) {
 		return 0;
 	}
 
-	// unread token
-	script_p = lastScript_p;
-	line = lastline;
-
-	// if the given string is available
-	if (tok == string) {
-		return 1;
-	}
-	return 0;
+	UnreadToken( &tok );
+	return tok == string;
 }
 
 int Lexer::CheckTokenString(char const *string)

@@ -231,6 +231,9 @@ sources = []
 cdata.set('SDL_XKBCOMMON_VERSION_MAJOR', 0)
 cdata.set('SDL_XKBCOMMON_VERSION_MINOR', 0)
 cdata.set('SDL_XKBCOMMON_VERSION_PATCH', 0)
+cdata.set('SDL_LIBDECOR_VERSION_MAJOR', 0)
+cdata.set('SDL_LIBDECOR_VERSION_MINOR', 0)
+cdata.set('SDL_LIBDECOR_VERSION_PATCH', 0)
 
 if host_machine.system() == 'darwin'
   add_languages(

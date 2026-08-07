@@ -4377,12 +4377,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	p_simd = ( processor != NULL ) ? processor : generic;
 	p_generic = generic;
 
-	if ( idStr::Length( args.Argv( 1 ) ) != 0 ) {
-		cpuid_t cpuid = idLib::sys->GetProcessorId();
-		idStr argString = args.Args();
-
-		argString.Replace( " ", "" );
-	}
+	(void)args;
 
 	idLib::common->SetRefreshOnPrint( true );
 

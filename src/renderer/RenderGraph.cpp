@@ -864,28 +864,6 @@ static bool R_RenderGraph_CheckAccess( const idRenderGraph &graph, int passIndex
 	return false;
 }
 
-static bool R_RenderGraph_CheckNoCombinedAccess( const idRenderGraph &graph, int passIndex, const char *resourceName, unsigned int forbiddenAccess ) {
-	if ( passIndex < 0 || passIndex >= graph.NumPasses() ) {
-		return false;
-	}
-	const int resourceIndex = graph.FindResource( resourceName );
-	if ( resourceIndex < 0 ) {
-		return false;
-	}
-	const renderGraphPass_t &pass = graph.Pass( passIndex );
-	for ( int i = 0; i < pass.resourceAccessCount; ++i ) {
-		const int accessIndex = pass.firstResourceAccess + i;
-		if ( accessIndex < 0 || accessIndex >= graph.NumResourceAccesses() ) {
-			return false;
-		}
-		const renderGraphResourceAccess_t &access = graph.ResourceAccess( accessIndex );
-		if ( access.resourceIndex == resourceIndex && ( access.access & forbiddenAccess ) == forbiddenAccess ) {
-			return false;
-		}
-	}
-	return true;
-}
-
 static bool R_RenderGraph_RunWorldPacketSelfTest( void ) {
 	rendererGraphSelfTestSkipPostProcessRestore_t skipPostProcessRestore;
 

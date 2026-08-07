@@ -119,3 +119,10 @@ option(
   value: false,
   description: 'Compile idlib assert()/verify() into live checks on GCC/Clang. src/idlib/Lib.h keys them off _DEBUG, which no GCC/Clang openQ4 build defines, so every ownership and alignment assert is otherwise a no-op there. Enabled by the sanitizer lanes; note that AssertFailed raises SIGTRAP/SIGINT, so a firing assert stops the process.',
 )
+
+option(
+  'build_native_tests',
+  type: 'boolean',
+  value: false,
+  description: 'Build the small dependency-free native safety test executable used by validation profiles.',
+)

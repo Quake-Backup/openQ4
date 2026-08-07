@@ -46,6 +46,81 @@ static ID_INLINE int AsyncClient_ConfiguredPredictionMsec( int gameFrame ) {
 	return Max( 0, idAsyncNetwork::clientPrediction.GetInteger() );
 }
 
+static bool AsyncClient_IsWindowsDevicePathSegment( const char *segment, int segmentLength ) {
+	int stemLength = 0;
+	while ( stemLength < segmentLength && segment[ stemLength ] != '.' ) {
+		stemLength++;
+	}
+
+	if ( stemLength == 3 ) {
+		return idStr::Icmpn( segment, "con", 3 ) == 0 ||
+			idStr::Icmpn( segment, "prn", 3 ) == 0 ||
+			idStr::Icmpn( segment, "aux", 3 ) == 0 ||
+			idStr::Icmpn( segment, "nul", 3 ) == 0;
+	}
+
+	const bool portPrefix = stemLength >= 4 &&
+		( idStr::Icmpn( segment, "com", 3 ) == 0 || idStr::Icmpn( segment, "lpt", 3 ) == 0 );
+	if ( !portPrefix ) {
+		return false;
+	}
+
+	const unsigned char digit = static_cast<unsigned char>( segment[ 3 ] );
+	if ( stemLength == 4 ) {
+		return ( digit >= '1' && digit <= '9' ) || digit == 0xB9 || digit == 0xB2 || digit == 0xB3;
+	}
+
+	return stemLength == 5 && digit == 0xC2 &&
+		( static_cast<unsigned char>( segment[ 4 ] ) == 0xB9 ||
+		  static_cast<unsigned char>( segment[ 4 ] ) == 0xB2 ||
+		  static_cast<unsigned char>( segment[ 4 ] ) == 0xB3 );
+}
+
+static bool AsyncClient_IsSafeDownloadPath( const char *path ) {
+	if ( path == NULL || path[ 0 ] == '\0' || path[ 0 ] == '/' || path[ 0 ] == '\\' ) {
+		return false;
+	}
+
+	const char *segmentStart = path;
+	for ( const char *scan = path; ; scan++ ) {
+		const char c = *scan;
+		if ( c == '\\' || c == ':' ) {
+			return false;
+		}
+		if ( c != '\0' && ( static_cast<unsigned char>( c ) < 32 ||
+			 c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*' ) ) {
+			return false;
+		}
+		if ( c != '/' && c != '\0' ) {
+			continue;
+		}
+
+		const int segmentLength = static_cast<int>( scan - segmentStart );
+		if ( segmentLength == 0 ||
+			 ( segmentLength == 1 && segmentStart[ 0 ] == '.' ) ||
+			 ( segmentLength == 2 && segmentStart[ 0 ] == '.' && segmentStart[ 1 ] == '.' ) ||
+			 segmentStart[ 0 ] == ' ' ||
+			 segmentStart[ segmentLength - 1 ] == '.' || segmentStart[ segmentLength - 1 ] == ' ' ) {
+			return false;
+		}
+		if ( AsyncClient_IsWindowsDevicePathSegment( segmentStart, segmentLength ) ) {
+			return false;
+		}
+		if ( c == '\0' ) {
+			return segmentLength > 4 && idStr::Icmp( scan - 4, ".pk4" ) == 0;
+		}
+		segmentStart = scan + 1;
+	}
+}
+
+static void AsyncClient_CloseBackgroundDownloadFile( backgroundDownload_t &download ) {
+	idFile *file = download.f;
+	download.f = NULL;
+	if ( file != NULL ) {
+		fileSystem->CloseFile( file );
+	}
+}
+
 const int SETUP_CONNECTION_RESEND_TIME	= 1000;
 const int EMPTY_RESEND_TIME				= 500;
 const int PREDICTION_FAST_ADJUST		= 4;
@@ -101,6 +176,7 @@ void idAsyncClient::Clear( void ) {
 	gameTime = 0;
 	memset( userCmds, 0, sizeof( userCmds ) );
 	backgroundDownload.completed = true;
+	backgroundDownload.url.expectedSize = 0;
 	lastRconTime = 0;
 	showUpdateMessage = false;
 	lastFrameDelta = 0;
@@ -424,7 +500,13 @@ void idAsyncClient::GetNETServers( void ) {
 	msg.WriteString( cvarSystem->GetCVarString( "fs_game" ) );
 	msg.WriteBits( cvarSystem->GetCVarInteger( "gui_filter_password" ), 2 );
 	msg.WriteBits( cvarSystem->GetCVarInteger( "gui_filter_players" ), 2 );
-	msg.WriteBits( cvarSystem->GetCVarInteger( "gui_filter_gameType" ), 2 );
+	// The public master protocol has only two legacy gametype bits.  Request an
+	// unfiltered list for extended openQ4 modes and apply the full registry in
+	// idServerScan; truncating a larger value would ask the master for the wrong
+	// legacy mode and hide valid results.
+	const int localGameTypeFilter = cvarSystem->GetCVarInteger( "gui_filter_gameType" );
+	const int masterGameTypeFilter = ( localGameTypeFilter >= 0 && localGameTypeFilter <= 3 ) ? localGameTypeFilter : 0;
+	msg.WriteBits( masterGameTypeFilter, 2 );
 
 	netadr_t adr;
 	if ( idAsyncNetwork::GetMasterAddress( 0, adr ) ) {
@@ -1049,7 +1131,8 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 					session->StartMenu();
 				} else {
 					common->Printf( "client %d %s\n", clientNum, string );
-					cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "addChatLine \"%s^0 %s\"", sessLocal.mapSpawnData.userInfo[ clientNum ].GetString( "ui_name" ), string ) );
+					idAsyncNetwork::ShowClientDisconnectMessage(
+						sessLocal.mapSpawnData.userInfo[ clientNum ].GetString( "ui_name" ), string );
 					sessLocal.mapSpawnData.userInfo[ clientNum ].Clear();
 				}
 				break;
@@ -1963,6 +2046,18 @@ void idAsyncClient::HandleDownloads( void ) {
 					// we're just creating the file at toplevel inside fs_savepath
 					updateURL.ExtractFileName( updateFile );
 					idFile_Permanent *f = static_cast< idFile_Permanent *>( fileSystem->OpenFileWrite( updateFile ) );
+					if ( f == NULL ) {
+						common->Warning( "could not create update download destination '%s'", updateFile.c_str() );
+						updateState = UPDATE_DONE;
+						SendVersionDLUpdate( 2 );
+						session->MessageBox( MSG_OK, common->GetLanguageDict()->GetString ( "#str_04335" ), common->GetLanguageDict()->GetString ( "#str_04336" ), true );
+						if ( updateFallback.Length() ) {
+							sys->OpenURL( updateFallback.c_str(), true );
+						} else {
+							common->Printf( "no fallback URL\n" );
+						}
+						return;
+					}
 					dltotal = 0;
 					dlnow = 0;
 
@@ -1970,6 +2065,7 @@ void idAsyncClient::HandleDownloads( void ) {
 					backgroundDownload.opcode = DLTYPE_URL;
 					backgroundDownload.f = f;
 					backgroundDownload.url.status = DL_WAIT;
+					backgroundDownload.url.expectedSize = 0;
 					backgroundDownload.url.dlnow = 0;
 					backgroundDownload.url.dltotal = 0;
 					backgroundDownload.url.url = updateURL;
@@ -1982,7 +2078,7 @@ void idAsyncClient::HandleDownloads( void ) {
 					if ( backgroundDownload.url.status == DL_DONE ) {				
 						SendVersionDLUpdate( 1 );
 						idStr fullPath = f->GetFullPath();
-						fileSystem->CloseFile( f );
+						AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );
 						if ( session->MessageBox( MSG_YESNO, common->GetLanguageDict()->GetString ( "#str_04331" ), common->GetLanguageDict()->GetString ( "#str_04332" ), true, "yes" )[0] ) {
 							if ( updateMime == FILE_EXEC ) {
 								sys->StartProcess( fullPath, true );
@@ -1998,7 +2094,7 @@ void idAsyncClient::HandleDownloads( void ) {
 						}
 						SendVersionDLUpdate( 2 );
 						idStr name = f->GetName();
-						fileSystem->CloseFile( f );
+						AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );
 						fileSystem->RemoveFile( name );
 						session->MessageBox( MSG_OK, common->GetLanguageDict()->GetString ( "#str_04335" ), common->GetLanguageDict()->GetString ( "#str_04336" ), true );
 						if ( updateFallback.Length() ) {
@@ -2038,8 +2134,9 @@ void idAsyncClient::HandleDownloads( void ) {
 				backgroundDownload.opcode = DLTYPE_URL;
 				backgroundDownload.f = f;
 				backgroundDownload.url.status = DL_WAIT;
+				backgroundDownload.url.expectedSize = dlList[ 0 ].size;
 				backgroundDownload.url.dlnow = 0;
-				backgroundDownload.url.dltotal = dlList[ 0 ].size;
+				backgroundDownload.url.dltotal = 0;
 				backgroundDownload.url.url = dlList[ 0 ].url;
 				fileSystem->BackgroundDownload( &backgroundDownload );
 				idStr dltitle;
@@ -2078,9 +2175,25 @@ void idAsyncClient::HandleDownloads( void ) {
 					common->Printf( "file downloaded\n" );
 					idStr finalPath = cvarSystem->GetCVarString( "fs_savepath" );
 					finalPath.AppendPath( dlList[ 0 ].filename );
+					idFile *existingDestination = fileSystem->OpenExplicitFileRead( finalPath );
+					if ( existingDestination ) {
+						fileSystem->CloseFile( existingDestination );
+						common->Warning( "refusing to replace existing download destination '%s'", finalPath.c_str() );
+						AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );
+						dlList.Clear();
+						session->MessageBox( MSG_OK, common->GetLanguageDict()->GetString( "#str_07215" ), common->GetLanguageDict()->GetString( "#str_07216" ), true );
+						return;
+					}
 					fileSystem->CreateOSPath( finalPath );
 					// do the final copy ourselves so we do by small chunks in case the file is big
 					saveas = fileSystem->OpenExplicitFileWrite( finalPath );
+					if ( !saveas ) {
+						common->Warning( "could not open download destination '%s'", finalPath.c_str() );
+						AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );
+						dlList.Clear();
+						session->MessageBox( MSG_OK, common->GetLanguageDict()->GetString( "#str_07215" ), common->GetLanguageDict()->GetString( "#str_07216" ), true );
+						return;
+					}
 					buf = (byte*)Mem_Alloc( CHUNK_SIZE );
 					f->Seek( 0, FS_SEEK_END );
 					remainlen = f->Tell();
@@ -2097,7 +2210,7 @@ void idAsyncClient::HandleDownloads( void ) {
 						}
 						remainlen -= readlen;
 					}
-					fileSystem->CloseFile( f );
+					AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );
 					fileSystem->CloseFile( saveas );
 					common->Printf( "saved as %s\n", finalPath.c_str() );
 					Mem_Free( buf );
@@ -2109,7 +2222,7 @@ void idAsyncClient::HandleDownloads( void ) {
 					if ( !checksum || checksum != dlList[ 0 ].checksum ) {
 						// "pak is corrupted ( checksum 0x%x, expected 0x%x )"
 						session->MessageBox( MSG_OK, va( common->GetLanguageDict()->GetString( "#str_07214" ) , checksum, dlList[0].checksum ), "Download failed", true );
-						fileSystem->RemoveFile( dlList[ 0 ].filename );
+						fileSystem->RemoveExplicitFile( finalPath );
 						dlList.Clear();
 						return;
 					}
@@ -2121,6 +2234,7 @@ void idAsyncClient::HandleDownloads( void ) {
 					if ( backgroundDownload.url.dlerror[ 0 ] ) {
 						common->Warning( "curl error: %s", backgroundDownload.url.dlerror );
 					}
+					AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );
 					// "The download failed or was cancelled"
 					// "Download failed"
 					session->MessageBox( MSG_OK, common->GetLanguageDict()->GetString( "#str_07215" ), common->GetLanguageDict()->GetString( "#str_07216" ), true );
@@ -2223,10 +2337,20 @@ void idAsyncClient::ProcessDownloadInfoMessage( const netadr_t from, const idBit
 					gotGame = true;
 				}
 				msg.ReadString( buf, MAX_STRING_CHARS );
+				if ( !AsyncClient_IsSafeDownloadPath( buf ) ) {
+					common->Warning( "server sent unsafe download path '%s'; download list ignored", buf );
+					dlList.Clear();
+					return;
+				}
 				entry.filename = buf;
 				msg.ReadString( buf, MAX_STRING_CHARS );
 				entry.url = buf;
 				entry.size = msg.ReadLong();
+				if ( entry.size <= 0 || totalDlSize > idMath::INT_MAX - entry.size ) {
+					common->Warning( "server sent invalid download size %d for '%s'; download list ignored", entry.size, entry.filename.c_str() );
+					dlList.Clear();
+					return;
+				}
 				// checksums are not transmitted, we read them from the dl request we sent
 				entry.checksum = dlChecksums[ pakIndex ];
 				totalDlSize += entry.size;
@@ -2244,8 +2368,10 @@ void idAsyncClient::ProcessDownloadInfoMessage( const netadr_t from, const idBit
 					common->Printf( "no download offered for %s ( 0x%x )\n", entry.filename.c_str(), dlChecksums[ pakIndex ] );
 					gotAllFiles = false;
 				}
-			} else {
-				assert( pakDl == SERVER_PAK_END );
+			} else if ( pakDl != SERVER_PAK_END ) {
+				common->Warning( "server sent invalid download entry type %d", pakDl );
+				dlList.Clear();
+				return;
 			}			
 		} while ( pakDl != SERVER_PAK_END );
 		if ( dlList.Num() < dlCount ) {

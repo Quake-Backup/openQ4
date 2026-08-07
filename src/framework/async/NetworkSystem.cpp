@@ -116,6 +116,68 @@ void idNetworkSystem::ServerRecordInstanceReliableMessage( int instance, int exc
 
 /*
 ==================
+idNetworkSystem::ServerStartMVDRecording
+==================
+*/
+bool idNetworkSystem::ServerStartMVDRecording( const char *name ) {
+	return idAsyncNetwork::multiViewDemo.StartNamedRecording( name );
+}
+
+/*
+==================
+idNetworkSystem::ServerStopMVDRecording
+==================
+*/
+bool idNetworkSystem::ServerStopMVDRecording( const char *reason ) {
+	return idAsyncNetwork::multiViewDemo.StopRecordingCleanly( reason );
+}
+
+/*
+==================
+idNetworkSystem::ServerIsMVDRecording
+==================
+*/
+bool idNetworkSystem::ServerIsMVDRecording( void ) const {
+	return idAsyncNetwork::multiViewDemo.IsRecording();
+}
+
+/*
+==================
+idNetworkSystem::ServerCopyMVDRecordingQPath
+==================
+*/
+bool idNetworkSystem::ServerCopyMVDRecordingQPath( char *buffer, int bufferSize ) const {
+	return idAsyncNetwork::multiViewDemo.CopyRecordingQPath( buffer, bufferSize );
+}
+
+/*
+==================
+idNetworkSystem::ServerCopyMVDRecordingResult
+==================
+*/
+bool idNetworkSystem::ServerCopyMVDRecordingResult(
+		serverMVDRecordingResult_t &result ) const {
+	return idAsyncNetwork::multiViewDemo.CopyRecordingResult( result );
+}
+
+/*
+==================
+idNetworkSystem::ServerDropClient
+==================
+*/
+bool idNetworkSystem::ServerDropClient( int clientNum, const char *reason ) {
+	if ( !idAsyncNetwork::server.IsActive() || clientNum < 0 ||
+		clientNum >= MAX_ASYNC_CLIENTS ||
+		clientNum == idAsyncNetwork::server.GetLocalClientNum() ||
+		reason == NULL || reason[ 0 ] == '\0' ) {
+		return false;
+	}
+	idAsyncNetwork::server.DropClient( clientNum, reason );
+	return true;
+}
+
+/*
+==================
 idNetworkSystem::ServerGetClientPing
 ==================
 */

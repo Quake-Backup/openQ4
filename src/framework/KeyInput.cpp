@@ -515,11 +515,11 @@ static idStr &Key_NextBindingPresentationBuffer( void ) {
 	return result;
 }
 
-static void Key_AppendBindingPresentation( idStr &result, int keynum ) {
+static void Key_AppendBindingPresentation( idStr &result, int keynum, bool emphasized = false ) {
 	if ( result.Length() > 0 ) {
 		result.Append( common->GetLanguageDict()->GetString( "#str_07183" ) );
 	}
-	result.Append( va( "^ik%02x", keynum & 0xff ) );
+	result.Append( va( "^i%c%02x", emphasized ? 'K' : 'k', keynum & 0xff ) );
 }
 
 /*
@@ -671,9 +671,10 @@ idKeyInput::KeysFromBinding
 returns the localized name of the key for the binding
 ============
 */
-const char *idKeyInput::KeysFromBinding( const char *bind ) {
+static const char *Key_KeysFromBinding( const char *bind, bool emphasized ) {
 	// GUI text understands ^ikHH as a procedural key presentation, where HH is
-	// the full eight-bit id key number.  Runtime hints deliberately show one key
+	// the full eight-bit id key number.  ^iKHH carries the same key with the
+	// larger center-prompt presentation. Runtime hints deliberately show one key
 	// from the device family the player used most recently; presenting every
 	// persistent desktop and controller binding makes short HUD prompts noisy.
 	idStr &keyName = Key_NextBindingPresentationBuffer();
@@ -683,7 +684,7 @@ const char *idKeyInput::KeysFromBinding( const char *bind ) {
 
 	if ( bind && *bind ) {
 		for ( int i = 0; i < MAX_KEYS; i++ ) {
-			if ( BindingsEquivalent( keys[i].binding.c_str(), bind ) ) {
+			if ( BindingsEquivalent( idKeyInput::GetBinding( i ), bind ) ) {
 				if ( Key_IsControllerKey( i ) ) {
 					if ( firstController < 0 ) {
 						firstController = i;
@@ -713,11 +714,26 @@ const char *idKeyInput::KeysFromBinding( const char *bind ) {
 	}
 
 	if ( selected >= 0 ) {
-		Key_AppendBindingPresentation( keyName, selected );
+		Key_AppendBindingPresentation( keyName, selected, emphasized );
 	} else {
 		keyName = common->GetLanguageDict()->GetString( "#str_07133" );
 	}
 	return keyName.c_str();
+}
+
+const char *idKeyInput::KeysFromBinding( const char *bind ) {
+	return Key_KeysFromBinding( bind, false );
+}
+
+/*
+============
+idKeyInput::KeysFromBindingForPrompt
+
+Returns the active-family binding using the emphasized center-prompt token.
+============
+*/
+const char *idKeyInput::KeysFromBindingForPrompt( const char *bind ) {
+	return Key_KeysFromBinding( bind, true );
 }
 
 /*
@@ -844,7 +860,7 @@ void idKeyInput::PreliminaryKeyEvent( int keynum, bool down ) {
 		lastKeys[16 + ( lastKeyIndex & 15 )] = keynum;
 		lastKeyIndex = ( lastKeyIndex + 1 ) & 15;
 		for ( int i = 0; cheatCodes[i] != NULL; i++ ) {
-			int l = strlen( cheatCodes[i] );
+			int l = idLib::SizeToInt( strlen( cheatCodes[i] ), "idKeyInput::PreliminaryKeyEvent" );
 			assert( l <= 16 );
 			if ( idStr::Icmpn( lastKeys + 16 + ( lastKeyIndex & 15 ) - l, cheatCodes[i], l ) == 0 ) {
 				common->Printf( "your memory serves you well!\n" );

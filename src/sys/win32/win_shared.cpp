@@ -40,6 +40,23 @@ If you have questions concerning this license or the applicable additional terms
 #include <direct.h>
 #include <io.h>
 #include <dxgi.h>
+#include <bcrypt.h>
+
+/*
+================
+Sys_GetSecureRandomBytes
+================
+*/
+bool Sys_GetSecureRandomBytes( void *buffer, int bytes ) {
+	if ( bytes < 0 || ( bytes > 0 && buffer == NULL ) ) {
+		return false;
+	}
+	if ( bytes == 0 ) {
+		return true;
+	}
+	return BCryptGenRandom( NULL, static_cast<PUCHAR>( buffer ),
+		static_cast<ULONG>( bytes ), BCRYPT_USE_SYSTEM_PREFERRED_RNG ) == 0;
+}
 
 namespace {
 
@@ -147,6 +164,7 @@ bool Sys_ResolveDriveProbePath( const char *path, char *resolvedPath, size_t res
 	if ( path == NULL || path[0] == '\0' ) {
 		return false;
 	}
+	const int resolvedPathCapacity = idLib::SizeToInt( resolvedPathSize, "Sys_ResolveDriveProbePath" );
 
 	idStr::Copynz( normalizedPath, path, sizeof( normalizedPath ) );
 	Sys_NormalizeDriveProbePath( normalizedPath );
@@ -156,16 +174,16 @@ bool Sys_ResolveDriveProbePath( const char *path, char *resolvedPath, size_t res
 		Sys_NormalizeDriveProbePath( fullPath );
 
 		if ( ::GetVolumePathNameA( fullPath, volumePath, sizeof( volumePath ) ) ) {
-			idStr::Copynz( resolvedPath, volumePath, resolvedPathSize );
+			idStr::Copynz( resolvedPath, volumePath, resolvedPathCapacity );
 			return true;
 		}
 
-		idStr::Copynz( resolvedPath, fullPath, resolvedPathSize );
+		idStr::Copynz( resolvedPath, fullPath, resolvedPathCapacity );
 		return true;
 	}
 
 	if ( isalpha( (unsigned char)normalizedPath[0] ) && normalizedPath[1] == ':' ) {
-		idStr::snPrintf( resolvedPath, resolvedPathSize, "%c:\\", normalizedPath[0] );
+		idStr::snPrintf( resolvedPath, resolvedPathCapacity, "%c:\\", normalizedPath[0] );
 		return true;
 	}
 

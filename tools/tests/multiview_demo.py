@@ -218,7 +218,9 @@ def validate_container() -> None:
     # Recording is transactional: an interrupted stream remains visibly
     # partial, and only a clean end record is renamed to its final .mvd name.
     require(source, 'tempFileName += ".part";', "MVD staged recording")
-    stop_recording = source[source.index("void idMultiViewDemo::StopRecording") :]
+    stop_recording = source[
+        source.index("bool idMultiViewDemo::StopRecording( const char *reason, bool finalize,") :
+    ]
     stop_recording = stop_recording[: stop_recording.index(
         "void idMultiViewDemo::CaptureReliableMessage"
     )]
@@ -234,7 +236,14 @@ def validate_container() -> None:
         "CommitRecording()",
         "MVD clean finalization",
     )
-    require(source, "rename( fromOS.c_str(), toOS.c_str() )", "MVD atomic commit")
+    # The atomic rename itself lives in idFileSystemLocal::PromoteFile, which
+    # validates both qpaths against the writable root; see
+    # filesystem_write_qpath_safety.py and mvd_server_api_contract.py.
+    require(
+        source,
+        'fileSystem->PromoteFile( tempFileName.c_str(), fileName.c_str(),',
+        "MVD atomic commit",
+    )
 
     # Bounds and CRCs must be checked before game code receives a payload.
     require_order(

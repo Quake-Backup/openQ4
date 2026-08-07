@@ -166,6 +166,7 @@ public:
 	static void				ExecuteSessionCommand( const char *sessCmd );
 	static bool				AreCheatsEnabled( void );
 	static void				SetCheatsEnabled( bool enabled );
+	static void				ShowClientDisconnectMessage( const char *clientName, const char *reason );
 
 	static idAsyncServer	server;
 	static idAsyncClient	client;

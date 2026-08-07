@@ -82,7 +82,7 @@ static void Common_WriteLogIdentityBanner( idFile *file ) {
 
 	char line[sizeof( version.string ) + 2];
 	idStr::snPrintf( line, sizeof( line ), "%s\n", version.string );
-	file->Write( line, strlen( line ) );
+	file->Write( line, idLib::SizeToInt( strlen( line ), "Common_WriteLogIdentityBanner" ) );
 }
 
 idCVar com_version( "si_version", version.string, CVAR_SYSTEM|CVAR_ROM|CVAR_SERVERINFO, "engine version" );
@@ -487,6 +487,7 @@ static bool Common_IsEnvFlagTrue( const char *value ) {
 		  idStr::Icmp( value, "steamdeck" ) == 0 );
 }
 
+#if defined( __linux__ )
 static bool Common_FileContainsAnyToken( const char *path, const char **tokens, int numTokens ) {
 	FILE *file = fopen( path, "r" );
 	if ( file == NULL ) {
@@ -507,6 +508,7 @@ static bool Common_FileContainsAnyToken( const char *path, const char **tokens, 
 	fclose( file );
 	return false;
 }
+#endif
 
 static bool Common_HasSteamDeckHostSignal( void ) {
 	const char *explicitSignals[] = {
@@ -664,6 +666,7 @@ public:
 	virtual const idLangDict *	GetLanguageDict( void );
 
 	virtual const char *		KeysFromBinding( const char *bind );
+	virtual const char *		KeysFromBindingForPrompt( const char *bind );
 	virtual const char *		BindingFromKey( const char *key );
 
 	virtual int					ButtonState( int key );
@@ -826,7 +829,7 @@ BOOL CALLBACK EnumWindowsProc( HWND hwnd, LPARAM lParam ) {
 	char buff[1024];
 
 	::GetWindowText( hwnd, buff, sizeof( buff ) );
-	if ( idStr::Icmpn( buff, EDITOR_WINDOWTEXT, strlen( EDITOR_WINDOWTEXT ) ) == 0 ) {
+	if ( idStr::Icmpn( buff, EDITOR_WINDOWTEXT, idStr::Length( EDITOR_WINDOWTEXT ) ) == 0 ) {
 		com_hwndMsg = hwnd;
 		return FALSE;
 	}
@@ -893,7 +896,7 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 			t /= 1000;
 		}
 		sprintf( msg, "[%i]", t );
-		timeLength = strlen( msg );
+		timeLength = idLib::SizeToInt( strlen( msg ), "idCommonLocal::VPrintf timestamp" );
 	} else {
 		timeLength = 0;
 	}
@@ -907,7 +910,7 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 	if ( rd_buffer ) {
 		const char *text = msg;
 		while ( *text ) {
-			int used = strlen( rd_buffer );
+			int used = idLib::SizeToInt( strlen( rd_buffer ), "idCommonLocal::VPrintf redirect buffer" );
 			int available = rd_buffersize - used - 1;
 			if ( available <= 0 ) {
 				rd_flush( rd_buffer );
@@ -919,7 +922,7 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 				break;
 			}
 
-			const int remaining = strlen( text );
+			const int remaining = idLib::SizeToInt( strlen( text ), "idCommonLocal::VPrintf redirect text" );
 			const int copyLength = Min( available, remaining );
 			memcpy( rd_buffer + used, text, copyLength );
 			rd_buffer[used + copyLength] = '\0';
@@ -997,7 +1000,7 @@ void idCommonLocal::VPrintf( const char *fmt, va_list args ) {
 			Printf( "log file '%s' opened on %s\n", fileNameToOpen, asctime( newtime ) );
 		}
 		if ( logFile ) {
-			logFile->Write( msg, strlen( msg ) );
+			logFile->Write( msg, idLib::SizeToInt( strlen( msg ), "idCommonLocal::VPrintf log message" ) );
 			logFile->Flush();	// ForceFlush doesn't help a whole lot
 		}
 	}
@@ -2009,6 +2012,16 @@ Returns the key bound to the command
 */
 const char* idCommonLocal::KeysFromBinding( const char *bind ) {
 	return idKeyInput::KeysFromBinding( bind );
+}
+
+/*
+===============
+KeysFromBindingForPrompt()
+Returns the key bound to the command using the emphasized center-prompt form
+===============
+*/
+const char* idCommonLocal::KeysFromBindingForPrompt( const char *bind ) {
+	return idKeyInput::KeysFromBindingForPrompt( bind );
 }
 
 /*
@@ -3735,7 +3748,7 @@ void idCommonLocal::FilterLangList( idStrList* list, idStr lang ) {
 	idStr temp;
 	for( int i = 0; i < list->Num(); i++ ) {
 		temp = (*list)[i];
-		temp = temp.Right(temp.Length()-strlen("strings/"));
+		temp = temp.Right( temp.Length() - idStr::Length( "strings/" ) );
 		temp = temp.Left(lang.Length());
 		if(idStr::Icmp(temp, lang) != 0) {
 			list->RemoveIndex(i);
@@ -4094,7 +4107,7 @@ void idCommonLocal::LocalizeMapData( const char *fileName, idLangDict &langDict 
 	common->SetRefreshOnPrint( true );
 
 	if ( fileSystem->ReadFile( fileName, (void**)&buffer ) > 0 ) {
-		src.LoadMemory( buffer, strlen(buffer), fileName );
+		src.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idCommonLocal::LocalizeMapData" ), fileName );
 		if ( src.IsLoaded() ) {
 			common->Printf( "Processing %s\n", fileName );
 			idStr mapFileName;
@@ -4141,7 +4154,7 @@ void idCommonLocal::LocalizeGui( const char *fileName, idLangDict &langDict ) {
 	char nl = 'n';
 	idLexer src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWMULTICHARLITERALS | LEXFL_ALLOWBACKSLASHSTRINGCONCAT );
 	if ( fileSystem->ReadFile( fileName, (void**)&buffer ) > 0 ) {
-		src.LoadMemory( buffer, strlen(buffer), fileName );
+		src.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "idCommonLocal::LocalizeGui" ), fileName );
 		if ( src.IsLoaded() ) {
 			idFile *outFile = fileSystem->OpenFileWrite( fileName ); 
 			common->Printf( "Processing %s\n", fileName );
@@ -4254,7 +4267,7 @@ void LoadMapLocalizeData(ListHash& listHash) {
 	idLexer src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWMULTICHARLITERALS | LEXFL_ALLOWBACKSLASHSTRINGCONCAT );
 
 	if ( fileSystem->ReadFile( fileName, (void**)&buffer ) > 0 ) {
-		src.LoadMemory( buffer, strlen(buffer), fileName );
+		src.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "LoadMapLocalizeData" ), fileName );
 		if ( src.IsLoaded() ) {
 			idStr classname;
 			idToken token;
@@ -4288,7 +4301,7 @@ void LoadGuiParmExcludeList(idStrList& list) {
 	idLexer src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWMULTICHARLITERALS | LEXFL_ALLOWBACKSLASHSTRINGCONCAT );
 
 	if ( fileSystem->ReadFile( fileName, (void**)&buffer ) > 0 ) {
-		src.LoadMemory( buffer, strlen(buffer), fileName );
+		src.LoadMemory( buffer, idLib::SizeToInt( strlen( buffer ), "LoadGuiParmExcludeList" ), fileName );
 		if ( src.IsLoaded() ) {
 			idStr classname;
 			idToken token;
@@ -5292,6 +5305,7 @@ void idCommonLocal::Async( void ) {
 // multiplayer" meant a typo, a stale config or a mod-specific value booted
 // game_mp and then forced a full renderer-tearing module swap on the first
 // New Game.
+#ifndef ID_DEDICATED
 static const char *openQ4_multiplayerGameTypes[] = {
 	"DM",
 	"Tourney",
@@ -5305,6 +5319,9 @@ static const char *openQ4_multiplayerGameTypes[] = {
 	"Clan Arena",
 	"Freeze Tag",
 	"Red Rover",
+	// Reserved multiplayer wire tokens still route to game_mp so its validated
+	// descriptor can reject/fallback safely.  Public menus and browser filters
+	// intentionally do not advertise them.
 	"Overload",
 	"Harvester",
 	"Domination",
@@ -5323,6 +5340,7 @@ static bool openQ4_IsMultiplayerGameType( const char *gameType ) {
 	}
 	return false;
 }
+#endif
 
 static bool openQ4_IsValidGameModuleName( const char *moduleName ) {
 	return moduleName

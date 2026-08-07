@@ -1727,88 +1727,6 @@ static void RB_ShowNormals( drawSurf_t **drawSurfs, int numDrawSurfs ) {
 
 /*
 =====================
-RB_ShowNormals
-
-Debugging tool
-=====================
-*/
-static void RB_AltShowNormals( drawSurf_t **drawSurfs, int numDrawSurfs ) {
-	int			i, j, k;
-	drawSurf_t	*drawSurf;
-	idVec3		end;
-	const srfTriangles_t	*tri;
-
-	if ( r_showNormals.GetFloat() == 0.0f ) {
-		return;
-	}
-
-	GL_State( GLS_DEFAULT );
-	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-
-	globalImages->BindNull();
-	glDisable( GL_STENCIL_TEST );
-	glDisable( GL_DEPTH_TEST );
-
-	for ( i = 0 ; i < numDrawSurfs ; i++ ) {
-		drawSurf = drawSurfs[i];
-
-		RB_SimpleSurfaceSetup( drawSurf );
-
-		tri = drawSurf->geo;
-		const idDrawVert *verts = NULL;
-		const glIndex_t *indexes = NULL;
-		if ( !RB_RendertoolsGetTriDebugGeometry( tri, verts, indexes ) || tri->facePlanes == NULL ) {
-			continue;
-		}
-		glBegin( GL_LINES );
-		for ( j = 0 ; j < tri->numIndexes ; j += 3 ) {
-			const idDrawVert *v[3];
-			idVec3		mid;
-
-			v[0] = &verts[indexes[j+0]];
-			v[1] = &verts[indexes[j+1]];
-			v[2] = &verts[indexes[j+2]];
-
-			// make the midpoint slightly above the triangle
-			mid = ( v[0]->xyz + v[1]->xyz + v[2]->xyz ) * ( 1.0f / 3.0f );
-			mid += 0.1f * tri->facePlanes[ j / 3 ].Normal();
-
-			for ( k = 0 ; k < 3 ; k++ ) {
-				idVec3	pos;
-
-				pos = ( mid + v[k]->xyz * 3.0f ) * 0.25f;
-
-				glColor3f( 0, 0, 1 );
-				glVertex3fv( pos.ToFloatPtr() );
-				VectorMA( pos, r_showNormals.GetFloat(), v[k]->normal, end );
-				glVertex3fv( end.ToFloatPtr() );
-
-				glColor3f( 1, 0, 0 );
-				glVertex3fv( pos.ToFloatPtr() );
-				VectorMA( pos, r_showNormals.GetFloat(), v[k]->tangents[0], end );
-				glVertex3fv( end.ToFloatPtr() );
-
-				glColor3f( 0, 1, 0 );
-				glVertex3fv( pos.ToFloatPtr() );
-				VectorMA( pos, r_showNormals.GetFloat(), v[k]->tangents[1], end );
-				glVertex3fv( end.ToFloatPtr() );
-
-				glColor3f( 1, 1, 1 );
-				glVertex3fv( pos.ToFloatPtr() );
-				glVertex3fv( v[k]->xyz.ToFloatPtr() );
-			}
-		}
-		glEnd();
-	}
-
-	glEnable( GL_DEPTH_TEST );
-	glEnable( GL_STENCIL_TEST );
-}
-
-
-
-/*
-=====================
 RB_ShowTextureVectors
 
 Draw texture vectors in the center of each triangle
@@ -2306,7 +2224,7 @@ float RB_DrawTextLength( const char *text, float scale, int len ) {
 
 	if ( text && *text ) {
 		if ( !len ) {
-			len = strlen(text);
+			len = idLib::SizeToInt( strlen( text ), "RB_DrawTextLength" );
 		}
 		for ( i = 0; i < len; i++ ) {
 			charIndex = text[i] - 32;
@@ -2357,7 +2275,7 @@ static void RB_DrawText( const char *text, const idVec3 &origin, float scale, co
 			line = 0;
 		}
 
-		len = strlen( text );
+		len = idLib::SizeToInt( strlen( text ), "RB_DrawText" );
 		for ( i = 0; i < len; i++ ) {
 
 			if ( i == 0 || text[i] == '\n' ) {

@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "Session_local.h"
+#include "../idlib/NumericString.h"
 
 static const float MOUSE_CPI_INCHES_PER_CM = 2.5399999618530273f;
 static const float MOUSE_CPI_VIEW_SCALE = 45.45454545454546f;
@@ -281,18 +282,7 @@ static bool ParseImpulseCommand( const char *cmdString, const char *prefix, int 
 	}
 
 	const char *impulseSuffix = cmdString + strlen( prefix );
-	if ( impulseSuffix[0] == '\0' ) {
-		return false;
-	}
-
-	for ( const char *c = impulseSuffix; *c != '\0'; ++c ) {
-		if ( *c < '0' || *c > '9' ) {
-			return false;
-		}
-	}
-
-	impulseNum = atoi( impulseSuffix );
-	return impulseNum >= IMPULSE_0 && impulseNum <= IMPULSE_127;
+	return idNumericString::ParseUnsignedBounded( impulseSuffix, IMPULSE_127, impulseNum );
 }
 
 static int ResolveImpulseAction( const char *cmdString ) {

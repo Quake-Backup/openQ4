@@ -4733,7 +4733,7 @@ int rvRenderModelMD5R::Memory() const {
 	const idList<silEdge_t> &silEdges = GetSilhouetteEdges();
 	const bool ownsPackedBuffers = ( sharedVertexBuffers == NULL && sharedIndexBuffers == NULL && sharedSilEdges == NULL );
 
-	int total = idRenderModelStatic::Memory();
+	size_t total = static_cast<size_t>( idRenderModelStatic::Memory() );
 	total += lods.MemoryUsed();
 	total += allLODMeshes.MemoryUsed();
 	total += meshes.MemoryUsed();
@@ -4793,7 +4793,7 @@ int rvRenderModelMD5R::Memory() const {
 		}
 	}
 
-	return total;
+	return idLib::SizeToInt( total, "rvRenderModelMD5R::Memory" );
 }
 
 /*

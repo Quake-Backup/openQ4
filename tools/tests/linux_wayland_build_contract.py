@@ -59,6 +59,27 @@ def validate_build_machine_tools() -> None:
     require(sdl_meson, "find_program('wayland-scanner', native: true)", "build-machine Wayland scanner")
 
 
+def validate_cross_platform_sdl_config_defaults() -> None:
+    source = read("subprojects/packagefiles/sdl3/meson.build")
+    wrap = read("subprojects/sdl3.wrap")
+    first_host_branch = source.find("if host_machine.system() == 'darwin'")
+    if first_host_branch == -1:
+        raise AssertionError("SDL Meson overlay is missing its first host-system branch")
+    unconditional_config = source[:first_host_branch]
+
+    require(wrap, "patch_directory = sdl3", "SDL Meson packagefile overlay")
+    for variable in (
+        "SDL_LIBDECOR_VERSION_MAJOR",
+        "SDL_LIBDECOR_VERSION_MINOR",
+        "SDL_LIBDECOR_VERSION_PATCH",
+    ):
+        require(
+            unconditional_config,
+            f"cdata.set('{variable}', 0)",
+            "cross-platform SDL config defaults",
+        )
+
+
 def validate_wayland_dynamic_loading() -> None:
     source = read("subprojects/packagefiles/sdl3/meson.build")
 
@@ -264,6 +285,7 @@ def validate_multiple_instance_benchmark() -> None:
 
 def main() -> None:
     validate_build_machine_tools()
+    validate_cross_platform_sdl_config_defaults()
     validate_wayland_dynamic_loading()
     validate_linux_ime_support()
     validate_openal_device_event_threading()

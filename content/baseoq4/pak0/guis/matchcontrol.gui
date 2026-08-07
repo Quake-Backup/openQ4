@@ -1,0 +1,1577 @@
+// openQ4 competitive Match Control surface.
+//
+// This file is a windowDef fragment included by guis/mpmain.gui.  The game
+// adapter owns every gui::match_* state and handles only the fixed
+// "matchControl <token>" commands emitted below.  The GUI never constructs a
+// console command from a participant name, map token, credential, or list row.
+
+windowDef p_matchcontrol
+{
+	rect	0,0,640,480
+	visible	0
+
+	windowDef match_panel
+	{
+		rect	188,44,386,383
+		visible	1
+		background	"gfx/guis/mainmenu/screen"
+		matcolor	0.05,0.07,0.06,0.92
+	}
+	windowDef match_panel_grad
+	{
+		rect	188,44,386,383
+		visible	1
+		background	"gfx/guis/mainmenu/bg_darkgrad"
+		matcolor	0.545,0.588,0.294,0.24
+	}
+	windowDef match_title
+	{
+		rect	204,51,216,22
+		visible	1
+		text	"#str_41700"
+		textscale	0.32
+		font	"fonts/marine"
+		textspacing	-1
+		forecolor	1,1,1,0.9
+	}
+	windowDef match_phase_header
+	{
+		rect	420,54,138,18
+		visible	1
+		text	"gui::match_phase"
+		textscale	0.23
+		font	"fonts/lowpixel"
+		textalign	2
+		forecolor	1,0.745,0.137,0.9
+	}
+	windowDef match_header_line
+	{
+		rect	200,75,362,6
+		visible	1
+		background	"gfx/guis/mainmenu/horiz_line2"
+		matcolor	1,1,1,0.2
+	}
+
+	// Tabs remain local presentation state.  Refreshing a tab never mutates the
+	// authoritative match aggregates.
+	windowDef match_tab_status
+	{
+		rect	196,82,58,23
+		visible	1
+		text	"#str_41701"
+		textscale	0.21
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,( 0.55 + ( ( "desktop::match_tab" == 0 ) * 0.35 ) )
+		backcolor	0.08,0.10,0.08,0.75
+		bordercolor	0.545,0.588,0.294,0.45
+		bordersize	1
+		onAction {
+			set "desktop::match_tab" "0" ;
+			set "cmd" "play main_menu_selection" ;
+		}
+	}
+	windowDef match_tab_teams
+	{
+		rect	256,82,58,23
+		visible	1
+		text	"#str_41702"
+		textscale	0.21
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,( 0.55 + ( ( "desktop::match_tab" == 1 ) * 0.35 ) )
+		backcolor	0.08,0.10,0.08,0.75
+		bordercolor	0.545,0.588,0.294,0.45
+		bordersize	1
+		onAction {
+			set "desktop::match_tab" "1" ;
+			set "cmd" "play main_menu_selection" ;
+		}
+	}
+	windowDef match_tab_proposals
+	{
+		rect	316,82,58,23
+		visible	1
+		text	"#str_41703"
+		textscale	0.18
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,( 0.55 + ( ( "desktop::match_tab" == 2 ) * 0.35 ) )
+		backcolor	0.08,0.10,0.08,0.75
+		bordercolor	0.545,0.588,0.294,0.45
+		bordersize	1
+		onAction {
+			set "desktop::match_tab" "2" ;
+			set "cmd" "play main_menu_selection" ;
+		}
+	}
+	windowDef match_tab_rules
+	{
+		rect	376,82,58,23
+		visible	1
+		text	"#str_41704"
+		textscale	0.21
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,( 0.55 + ( ( "desktop::match_tab" == 3 ) * 0.35 ) )
+		backcolor	0.08,0.10,0.08,0.75
+		bordercolor	0.545,0.588,0.294,0.45
+		bordersize	1
+		onAction {
+			set "desktop::match_tab" "3" ;
+			set "cmd" "play main_menu_selection" ;
+		}
+	}
+	windowDef match_tab_series
+	{
+		rect	436,82,58,23
+		visible	1
+		text	"#str_41705"
+		textscale	0.21
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,( 0.55 + ( ( "desktop::match_tab" == 4 ) * 0.35 ) )
+		backcolor	0.08,0.10,0.08,0.75
+		bordercolor	0.545,0.588,0.294,0.45
+		bordersize	1
+		onAction {
+			set "desktop::match_tab" "4" ;
+			set "cmd" "play main_menu_selection" ;
+		}
+	}
+	windowDef match_tab_evidence
+	{
+		rect	496,82,62,23
+		visible	1
+		text	"#str_41706"
+		textscale	0.19
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,( 0.55 + ( ( "desktop::match_tab" == 5 ) * 0.35 ) )
+		backcolor	0.08,0.10,0.08,0.75
+		bordercolor	0.545,0.588,0.294,0.45
+		bordersize	1
+		onAction {
+			set "desktop::match_tab" "5" ;
+			set "cmd" "play main_menu_selection" ;
+		}
+	}
+
+	windowDef match_waiting
+	{
+		rect	205,132,350,54
+		visible	( "gui::match_surface_available" == 0 )
+		text	"#str_41774"
+		textscale	0.25
+		font	"fonts/lowpixel"
+		textalign	1
+		forecolor	1,1,1,0.72
+	}
+
+	// ----------------------------------------------------------------------
+	// Status, readiness, pause and referee session.
+	// ----------------------------------------------------------------------
+	windowDef match_status_page
+	{
+		rect	0,0,640,480
+		visible	( "gui::match_surface_available" == 1 && "desktop::match_tab" == 0 )
+
+		windowDef match_status_label { rect 204,116,120,18 visible 1 text "#str_41707" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_readiness_label { rect 204,134,120,18 visible 1 text "#str_41708" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_pause_label { rect 204,152,120,18 visible 1 text "#str_41709" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_recipient_label { rect 204,170,120,18 visible 1 text "#str_41710" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_timeout_budget_label { rect 204,188,120,18 visible 1 text "#str_41778" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_status_values
+		{
+			rect	318,116,240,93
+			visible	1
+			text	"gui::match_status_lines"
+			textscale	0.22
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+
+		// One explicit selector drives every side-scoped action.  The accepted
+		// recipient model supplies both labels and which choices are legal; the
+		// GUI emits only fixed selection tokens.
+		windowDef match_action_side_label
+		{
+			rect	202,212,116,18
+			visible	( "gui::match_action_side_visible" == 1 )
+			text	"gui::match_action_side_label"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.65
+		}
+		windowDef match_action_side_0_button
+		{
+			rect	322,210,116,20
+			visible	( "gui::match_action_side_visible" == 1 )
+			text	"gui::match_action_side_0_label"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.38 + ( "gui::match_action_side_0_enabled" * 0.22 ) + ( "gui::match_action_side_0_selected" * 0.30 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,( 0.35 + ( "gui::match_action_side_0_selected" * 0.45 ) )
+			bordersize	1
+			onAction {
+				if ( "gui::match_action_side_0_enabled" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl action_side_a" ;
+				}
+			}
+		}
+		windowDef match_action_side_1_button
+		{
+			rect	442,210,116,20
+			visible	( "gui::match_action_side_visible" == 1 )
+			text	"gui::match_action_side_1_label"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.38 + ( "gui::match_action_side_1_enabled" * 0.22 ) + ( "gui::match_action_side_1_selected" * 0.30 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,( 0.35 + ( "gui::match_action_side_1_selected" * 0.45 ) )
+			bordersize	1
+			onAction {
+				if ( "gui::match_action_side_1_enabled" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl action_side_b" ;
+				}
+			}
+		}
+
+		windowDef match_ready_button
+		{
+			rect	202,234,116,22
+			visible	1
+			text	"gui::match_ready_action"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_ready_set_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_ready_set_reason" ; }
+			onAction {
+				if ( "gui::match_op_ready_set_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl ready_toggle" ;
+				}
+			}
+		}
+		windowDef match_team_ready_button
+		{
+			rect	322,234,116,22
+			visible	1
+			text	"#str_41715"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_team_ready_set_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_team_ready_set_reason" ; }
+			onAction {
+				if ( "gui::match_op_team_ready_set_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl team_ready_toggle" ;
+				}
+			}
+		}
+		windowDef match_force_ready_button
+		{
+			rect	442,234,116,22
+			visible	1
+			text	"#str_41719"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_force_ready_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_force_ready_reason" ; }
+			onAction {
+				if ( "gui::match_op_force_ready_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl arm_force_ready" ;
+					set "match_confirm_body::text" "#str_41900" ;
+					set "desktop::match_confirm" "1" ;
+				}
+			}
+		}
+		windowDef match_timeout_button
+		{
+			rect	202,260,116,22
+			visible	1
+			text	"#str_41716"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_timeout_request_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_timeout_request_reason" ; }
+			onAction {
+				if ( "gui::match_op_timeout_request_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl timeout" ;
+				}
+			}
+		}
+		windowDef match_tech_pause_button
+		{
+			rect	322,260,116,22
+			visible	1
+			text	"#str_41717"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_tech_pause_request_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_tech_pause_request_reason" ; }
+			onAction {
+				if ( "gui::match_op_tech_pause_request_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl tech_pause" ;
+				}
+			}
+		}
+		windowDef match_resume_button
+		{
+			rect	442,260,116,22
+			visible	1
+			text	"#str_41718"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_resume_request_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_resume_request_reason" ; }
+			onAction {
+				if ( "gui::match_op_resume_request_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl resume" ;
+				}
+			}
+		}
+		windowDef match_forfeit_button
+		{
+			rect	202,286,176,22
+			visible	1
+			text	"#str_41783"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_forfeit_available" * 0.4 ) )
+			backcolor	0.10,0.06,0.04,0.85
+			bordercolor	0.890,0.537,0,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_forfeit_reason" ; }
+			onAction {
+				if ( "gui::match_op_forfeit_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl arm_forfeit" ;
+					set "match_confirm_body::text" "#str_41798" ;
+					set "desktop::match_confirm" "6" ;
+				}
+			}
+		}
+		windowDef match_abort_button
+		{
+			rect	382,286,176,22
+			visible	1
+			text	"#str_41784"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_abort_available" * 0.4 ) )
+			backcolor	0.10,0.06,0.04,0.85
+			bordercolor	0.890,0.537,0,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_abort_reason" ; }
+			onAction {
+				if ( "gui::match_op_abort_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl arm_abort" ;
+					set "match_confirm_body::text" "#str_41799" ;
+					set "desktop::match_confirm" "7" ;
+				}
+			}
+		}
+
+		windowDef match_referee_label
+		{
+			rect	204,320,92,18
+			visible	1
+			text	"#str_41779"
+			textscale	0.22
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.65
+		}
+		editDef match_referee_credential
+		{
+			rect	282,317,156,20
+			visible	( "gui::match_referee_authenticated" == 0 )
+			text	"gui::match_referee_credential"
+			password	1
+			maxchars	64
+			textscale	0.22
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.9
+			backcolor	0,0,0,0.6
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+		}
+		windowDef match_ref_login_button
+		{
+			rect	442,316,116,22
+			visible	( "gui::match_referee_authenticated" == 0 )
+			text	"#str_41781"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_ref_authenticate_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_ref_authenticate_reason" ; }
+			onAction {
+				if ( "gui::match_op_ref_authenticate_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl referee_login" ;
+				}
+			}
+		}
+		windowDef match_ref_logout_button
+		{
+			rect	442,316,116,22
+			visible	( "gui::match_referee_authenticated" == 1 )
+			text	"#str_41782"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_ref_logout_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_ref_logout_reason" ; }
+			onAction {
+				if ( "gui::match_op_ref_logout_available" == 1 ) {
+					set "cmd" "play main_menu_selection" ;
+					set "cmd" "matchControl referee_logout" ;
+				}
+			}
+		}
+	}
+
+	// ----------------------------------------------------------------------
+	// Teams, bounded queues, roster invitations and substitutions.
+	// ----------------------------------------------------------------------
+	windowDef match_teams_page
+	{
+		rect	0,0,640,480
+		visible	( "gui::match_surface_available" == 1 && "desktop::match_tab" == 1 )
+		windowDef match_teams_title
+		{
+			rect	202,112,218,18
+			visible	1
+			text	"#str_41736"
+			textscale	0.23
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.75
+		}
+		windowDef match_replacements_title
+		{
+			rect	430,112,130,18
+			visible	1
+			text	"#str_41785"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.75
+		}
+		listDef match_team_rows
+		{
+			rect	202,132,218,148
+			visible	1
+			listname	match_team_rows
+			textscale	0.19
+			itemheight	18
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			tabstops	"0,112,176,218"
+			tabaligns	"0,0,2"
+			onAction { set "cmd" "matchControl select_team_row" ; }
+		}
+		listDef match_replacement_rows
+		{
+			rect	430,132,128,116
+			visible	1
+			listname	match_replacement_rows
+			textscale	0.19
+			itemheight	18
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			onAction { set "cmd" "matchControl select_replacement_row" ; }
+		}
+		choiceDef match_role_choice
+		{
+			rect	430,254,128,22
+			visible	( "gui::match_op_series_contestant_bind_available" == 0 )
+			choices	"#str_41791"
+			values	"1;2;3;4"
+			// Store the protocol's explicit 1..4 wire value, not the
+			// presentation index of the localized choice.
+			choiceType	1
+			gui	match_role_choice
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		// Duel contestant binding reuses the typed action-side state.  These
+		// controls emit only fixed A/B tokens; the selected participant remains
+		// the stable ParticipantId behind match_team_rows.
+		windowDef match_contestant_side_a_button
+		{
+			rect	430,254,62,22
+			visible	( "gui::match_op_series_contestant_bind_available" == 1 )
+			text	"gui::match_action_side_0_label"
+			textscale	0.14
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.38 + ( "gui::match_action_side_0_enabled" * 0.22 ) + ( "gui::match_action_side_0_selected" * 0.30 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,( 0.35 + ( "gui::match_action_side_0_selected" * 0.45 ) )
+			bordersize	1
+			onAction {
+				if ( "gui::match_action_side_0_enabled" == 1 ) {
+					set "cmd" "matchControl action_side_a" ;
+				}
+			}
+		}
+		windowDef match_contestant_side_b_button
+		{
+			rect	496,254,62,22
+			visible	( "gui::match_op_series_contestant_bind_available" == 1 )
+			text	"gui::match_action_side_1_label"
+			textscale	0.14
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.38 + ( "gui::match_action_side_1_enabled" * 0.22 ) + ( "gui::match_action_side_1_selected" * 0.30 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,( 0.35 + ( "gui::match_action_side_1_selected" * 0.45 ) )
+			bordersize	1
+			onAction {
+				if ( "gui::match_action_side_1_enabled" == 1 ) {
+					set "cmd" "matchControl action_side_b" ;
+				}
+			}
+		}
+
+		windowDef match_join_marine_button
+		{
+			rect	202,286,86,19
+			visible	1
+			text	"#str_41723"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_team_join_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_team_join_reason" ; }
+			onAction { if ( "gui::match_op_team_join_available" == 1 ) { set "cmd" "matchControl team_join_marine" ; } }
+		}
+		windowDef match_join_strogg_button
+		{
+			rect	292,286,86,19
+			visible	1
+			text	"#str_41724"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_team_join_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_team_join_reason" ; }
+			onAction { if ( "gui::match_op_team_join_available" == 1 ) { set "cmd" "matchControl team_join_strogg" ; } }
+		}
+		windowDef match_spectate_button
+		{
+			rect	382,286,86,19
+			visible	1
+			text	"#str_41725"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_team_join_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_team_join_reason" ; }
+			onAction { if ( "gui::match_op_team_join_available" == 1 ) { set "cmd" "matchControl team_spectate" ; } }
+		}
+		windowDef match_queue_leave_button
+		{
+			rect	472,286,86,19
+			visible	1
+			text	"#str_41727"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_queue_leave_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_queue_leave_reason" ; }
+			onAction { if ( "gui::match_op_queue_leave_available" == 1 ) { set "cmd" "matchControl queue_leave" ; } }
+		}
+
+		// Queue admission is deliberately side-neutral in the authoritative
+		// protocol.  Team assignment happens when the queue is admitted.
+		windowDef match_queue_join_button
+		{
+			rect	202,309,86,19
+			visible	1
+			text	"#str_41726"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_queue_join_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_queue_join_reason" ; }
+			onAction { if ( "gui::match_op_queue_join_available" == 1 ) { set "cmd" "matchControl queue_join" ; } }
+		}
+		windowDef match_queue_defer_button
+		{
+			rect	292,309,86,19
+			visible	1
+			text	"#str_41728"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_queue_defer_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_queue_defer_reason" ; }
+			onAction { if ( "gui::match_op_queue_defer_available" == 1 ) { set "cmd" "matchControl queue_defer" ; } }
+		}
+		windowDef match_accept_invite_button
+		{
+			rect	382,309,86,19
+			visible	1
+			text	"#str_41729"
+			textscale	0.16
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_roster_accept_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_roster_accept_reason" ; }
+			onAction { if ( "gui::match_op_roster_accept_available" == 1 ) { set "cmd" "matchControl roster_accept" ; } }
+		}
+		windowDef match_contestant_bind_button
+		{
+			rect	472,309,86,19
+			visible	( "gui::match_op_series_contestant_bind_available" == 1 )
+			text	"#str_41909"
+			textscale	0.14
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_series_contestant_bind_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_series_contestant_bind_reason" ; }
+			onAction { if ( "gui::match_op_series_contestant_bind_available" == 1 ) { set "cmd" "matchControl series_contestant_bind" ; } }
+		}
+
+		windowDef match_invite_button
+		{
+			rect	202,332,86,19
+			visible	1
+			text	"#str_41730"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_roster_invite_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_roster_invite_reason" ; }
+			onAction { if ( "gui::match_op_roster_invite_available" == 1 ) { set "cmd" "matchControl roster_invite" ; } }
+		}
+		windowDef match_remove_button
+		{
+			rect	292,332,86,19
+			visible	1
+			text	"#str_41731"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_roster_remove_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_roster_remove_reason" ; }
+			onAction {
+				if ( "gui::match_op_roster_remove_available" == 1 ) {
+					set "cmd" "matchControl arm_roster_remove" ;
+					set "match_confirm_body::text" "#str_41902" ;
+					set "desktop::match_confirm" "3" ;
+				}
+			}
+		}
+		windowDef match_substitute_button
+		{
+			rect	382,332,86,19
+			visible	1
+			text	"#str_41732"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_roster_substitute_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_roster_substitute_reason" ; }
+			onAction {
+				if ( "gui::match_op_roster_substitute_available" == 1 ) {
+					set "cmd" "matchControl arm_roster_substitute" ;
+					set "match_confirm_body::text" "#str_41903" ;
+					set "desktop::match_confirm" "4" ;
+				}
+			}
+		}
+		windowDef match_assign_role_button
+		{
+			rect	472,332,86,19
+			visible	1
+			text	"#str_41733"
+			textscale	0.16
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_role_assign_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_role_assign_reason" ; }
+			onAction { if ( "gui::match_op_role_assign_available" == 1 ) { set "cmd" "matchControl role_assign" ; } }
+		}
+		windowDef match_team_lock_button
+		{
+			rect	292,355,86,19
+			visible	1
+			text	"gui::match_team_lock_action"
+			textscale	0.16
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_team_lock_set_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_team_lock_set_reason" ; }
+				onAction { if ( "gui::match_op_team_lock_set_available" == 1 ) { set "cmd" "matchControl team_lock_toggle" ; } }
+		}
+		windowDef match_roster_leave_button
+		{
+			rect	202,355,86,19
+			visible	1
+			text	"#str_42343"
+			textscale	0.16
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_roster_leave_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_roster_leave_reason" ; }
+			onAction { if ( "gui::match_op_roster_leave_available" == 1 ) { set "cmd" "matchControl roster_leave" ; } }
+		}
+		windowDef match_broadcaster_button
+		{
+			rect	382,355,86,19
+			visible	( "gui::match_broadcaster_control_visible" == 1 )
+			text	"gui::match_broadcaster_action"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_broadcaster_set_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_broadcaster_set_reason" ; }
+			onAction { if ( "gui::match_op_broadcaster_set_available" == 1 ) { set "cmd" "matchControl broadcaster_set" ; } }
+		}
+		windowDef match_participant_remove_button
+		{
+			rect	472,355,86,19
+			visible	1
+			text	"#str_41908"
+			textscale	0.14
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_participant_remove_available" * 0.4 ) )
+			backcolor	0.10,0.06,0.04,0.85
+			bordercolor	0.890,0.537,0,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_participant_remove_reason" ; }
+			onAction {
+				if ( "gui::match_op_participant_remove_available" == 1 ) {
+					set "cmd" "matchControl arm_participant_remove" ;
+					set "match_confirm_body::text" "#str_42349" ;
+					set "desktop::match_confirm" "11" ;
+				}
+			}
+		}
+	}
+
+	// ----------------------------------------------------------------------
+	// Recipient-authorized global and own-side proposals.
+	// ----------------------------------------------------------------------
+	windowDef match_proposals_page
+	{
+		rect	0,0,640,480
+		visible	( "gui::match_surface_available" == 1 && "desktop::match_tab" == 2 )
+		windowDef match_global_proposal_label
+		{
+			rect	202,114,112,18
+			visible	1
+			text	"#str_41738"
+			textscale	0.22
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.65
+		}
+		windowDef match_global_proposal_value
+		{
+			rect	314,114,244,36
+			visible	1
+			text	"gui::match_global_proposal"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		windowDef match_side_proposal_label
+		{
+			rect	202,153,112,18
+			visible	1
+			text	"#str_41739"
+			textscale	0.22
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.65
+		}
+		windowDef match_side_proposal_value
+		{
+			rect	314,153,244,36
+			visible	1
+			text	"gui::match_side_proposal"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		windowDef match_proposal_scope_label
+		{
+			rect	202,192,112,18
+			visible	1
+			text	"#str_41793"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.65
+		}
+		choiceDef match_proposal_scope_choice
+		{
+			rect	314,190,244,21
+			visible	1
+			choices	"#str_41794"
+			values	"global;side"
+			choiceType	1
+			gui	match_proposal_scope_choice
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		listDef match_proposal_rows
+		{
+			rect	202,216,356,89
+			visible	1
+			listname	match_proposal_rows
+			textscale	0.20
+			itemheight	19
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			onAction { set "cmd" "matchControl select_proposal_row" ; }
+		}
+		windowDef match_proposal_create_button
+		{
+			rect	202,311,116,22
+			visible	1
+			text	"#str_41740"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_proposal_create_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_proposal_create_reason" ; }
+			onAction { if ( "gui::match_op_proposal_create_available" == 1 ) { set "cmd" "matchControl proposal_create" ; } }
+		}
+		windowDef match_proposal_yes_button
+		{
+			rect	322,311,76,22
+			visible	1
+			text	"#str_41741"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_proposal_cast_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_proposal_cast_reason" ; }
+			onAction { if ( "gui::match_op_proposal_cast_available" == 1 ) { set "cmd" "matchControl proposal_yes" ; } }
+		}
+		windowDef match_proposal_no_button
+		{
+			rect	402,311,76,22
+			visible	1
+			text	"#str_41742"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_proposal_cast_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_proposal_cast_reason" ; }
+			onAction { if ( "gui::match_op_proposal_cast_available" == 1 ) { set "cmd" "matchControl proposal_no" ; } }
+		}
+		windowDef match_proposal_abstain_button
+		{
+			rect	482,311,76,22
+			visible	1
+			text	"#str_41743"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_proposal_cast_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_proposal_cast_reason" ; }
+			onAction { if ( "gui::match_op_proposal_cast_available" == 1 ) { set "cmd" "matchControl proposal_abstain" ; } }
+		}
+		windowDef match_proposal_cancel_button
+		{
+			rect	202,339,356,25
+			visible	1
+			text	"#str_41744"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_proposal_cancel_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_proposal_cancel_reason" ; }
+			onAction { if ( "gui::match_op_proposal_cancel_available" == 1 ) { set "cmd" "matchControl proposal_cancel" ; } }
+		}
+	}
+
+	// ----------------------------------------------------------------------
+	// Committed rules, private staged changes and profile selection.
+	// ----------------------------------------------------------------------
+	windowDef match_rules_page
+	{
+		rect	0,0,640,480
+		visible	( "gui::match_surface_available" == 1 && "desktop::match_tab" == 3 )
+		windowDef match_rules_summary
+		{
+			rect	202,111,356,34
+			visible	1
+			text	"gui::match_rules_summary"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		windowDef match_profile_title
+		{
+			rect	202,145,168,18
+			visible	1
+			text	"#str_41788"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.7
+		}
+		windowDef match_rule_title
+		{
+			rect	378,145,180,18
+			visible	1
+			text	"#str_41745"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.7
+		}
+		listDef match_profile_rows
+		{
+			rect	202,164,168,112
+			visible	1
+			listname	match_profile_rows
+			textscale	0.19
+			itemheight	19
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			onAction { set "cmd" "matchControl select_profile_row" ; }
+		}
+		listDef match_rule_rows
+		{
+			rect	378,164,180,112
+			visible	1
+			listname	match_rule_rows
+			textscale	0.18
+			itemheight	19
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			tabstops	"0,132,180"
+			tabaligns	"0,2"
+			onAction { set "cmd" "matchControl select_rule_row" ; }
+		}
+		windowDef match_rule_value_label
+		{
+			rect	202,284,80,19
+			visible	1
+			text	"#str_41789"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.7
+		}
+		editDef match_rule_value
+		{
+			rect	276,281,94,22
+			visible	1
+			text	"gui::match_rule_value"
+			maxchars	11
+			textscale	0.21
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.9
+			backcolor	0,0,0,0.6
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+		}
+		windowDef match_staged_summary
+		{
+			rect	378,282,180,32
+			visible	1
+			text	"gui::match_staged_summary"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.8
+		}
+		windowDef match_profile_select_button
+		{
+			rect	202,316,116,22
+			visible	1
+			text	"#str_41747"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_rules_select_profile_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_rules_select_profile_reason" ; }
+			onAction { if ( "gui::match_op_rules_select_profile_available" == 1 ) { set "cmd" "matchControl rules_select_profile" ; } }
+		}
+		windowDef match_rule_stage_button
+		{
+			rect	322,316,116,22
+			visible	1
+			text	"#str_41748"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_rules_stage_field_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_rules_stage_field_reason" ; }
+			onAction { if ( "gui::match_op_rules_stage_field_available" == 1 ) { set "cmd" "matchControl rules_stage_field" ; } }
+		}
+		windowDef match_rules_commit_button
+		{
+			rect	442,316,116,22
+			visible	1
+			text	"#str_41749"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_rules_commit_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_rules_commit_reason" ; }
+			onAction {
+				if ( "gui::match_op_rules_commit_available" == 1 ) {
+					set "cmd" "matchControl arm_rules_commit" ;
+					set "match_confirm_body::text" "#str_41901" ;
+					set "desktop::match_confirm" "2" ;
+				}
+			}
+		}
+		windowDef match_rules_discard_button
+		{
+			rect	202,343,356,22
+			visible	1
+			text	"#str_41750"
+			textscale	0.18
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_rules_discard_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_rules_discard_reason" ; }
+			onAction { if ( "gui::match_op_rules_discard_available" == 1 ) { set "cmd" "matchControl rules_discard" ; } }
+		}
+	}
+
+	// ----------------------------------------------------------------------
+	// Competition series, complete map pool and applied history.
+	// ----------------------------------------------------------------------
+	windowDef match_series_page
+	{
+		rect	0,0,640,480
+		visible	( "gui::match_surface_available" == 1 && "desktop::match_tab" == 4 )
+		windowDef match_series_summary
+		{
+			rect	202,109,356,31
+			visible	1
+			text	"gui::match_series_summary"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		choiceDef match_series_profile_choice
+		{
+			rect	202,140,168,21
+			visible	1
+			choices	"#str_41792"
+			values	"best_of_one;best_of_three;best_of_five"
+			choiceType	1
+			gui	match_series_profile_choice
+			textscale	0.19
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		windowDef match_series_history_title
+		{
+			rect	378,142,180,18
+			visible	1
+			text	"#str_41753"
+			textscale	0.19
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.7
+		}
+		listDef match_series_map_rows
+		{
+			rect	202,164,168,126
+			visible	1
+			listname	match_series_map_rows
+			textscale	0.18
+			itemheight	18
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			onAction { set "cmd" "matchControl select_series_map" ; }
+		}
+		listDef match_series_history_rows
+		{
+			rect	378,164,180,126
+			visible	1
+			listname	match_series_history_rows
+			textscale	0.17
+			itemheight	18
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+		}
+		windowDef match_series_stage_button
+		{
+			rect	202,296,86,19
+			visible	1
+			text	"#str_41754"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_series_stage_profile_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_series_stage_profile_reason" ; }
+			onAction { if ( "gui::match_op_series_stage_profile_available" == 1 ) { set "cmd" "matchControl series_stage" ; } }
+		}
+		windowDef match_series_start_button
+		{
+			rect	292,296,86,19
+			visible	1
+			text	"#str_41755"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_series_start_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_series_start_reason" ; }
+			onAction {
+				if ( "gui::match_op_series_start_available" == 1 ) {
+					set "cmd" "matchControl arm_series_start" ;
+					set "match_confirm_body::text" "#str_41905" ;
+					set "desktop::match_confirm" "8" ;
+				}
+			}
+		}
+		windowDef match_series_cancel_button
+		{
+			rect	382,296,86,19
+			visible	1
+			text	"#str_41756"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_series_cancel_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_series_cancel_reason" ; }
+			onAction {
+				if ( "gui::match_op_series_cancel_available" == 1 ) {
+					set "cmd" "matchControl arm_series_cancel" ;
+					set "match_confirm_body::text" "#str_41904" ;
+					set "desktop::match_confirm" "5" ;
+				}
+			}
+		}
+		windowDef match_series_advance_button
+		{
+			rect	472,296,86,19
+			visible	1
+			text	"#str_41757"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_series_advance_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_series_advance_reason" ; }
+			onAction {
+				if ( "gui::match_op_series_advance_available" == 1 ) {
+					set "cmd" "matchControl arm_series_advance" ;
+					set "match_confirm_body::text" "#str_41906" ;
+					set "desktop::match_confirm" "9" ;
+				}
+			}
+		}
+		windowDef match_veto_ban_button
+		{
+			rect	202,319,86,19
+			visible	1
+			text	"#str_41758"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_veto_select_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_veto_select_reason" ; }
+			onAction { if ( "gui::match_op_veto_select_available" == 1 ) { set "cmd" "matchControl arm_veto_ban" ; set "match_confirm_body::text" "#str_41907" ; set "desktop::match_confirm" "10" ; } }
+		}
+		windowDef match_veto_pick_button
+		{
+			rect	292,319,86,19
+			visible	1
+			text	"#str_41759"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_veto_select_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_veto_select_reason" ; }
+			onAction { if ( "gui::match_op_veto_select_available" == 1 ) { set "cmd" "matchControl arm_veto_pick" ; set "match_confirm_body::text" "#str_41907" ; set "desktop::match_confirm" "10" ; } }
+		}
+		windowDef match_veto_decider_button
+		{
+			rect	382,319,86,19
+			visible	1
+			text	"#str_41760"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_veto_select_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_veto_select_reason" ; }
+			onAction { if ( "gui::match_op_veto_select_available" == 1 ) { set "cmd" "matchControl arm_veto_decider" ; set "match_confirm_body::text" "#str_41907" ; set "desktop::match_confirm" "10" ; } }
+		}
+		windowDef match_veto_side_marine_button
+		{
+			rect	472,319,86,19
+			visible	1
+			text	"#str_41761"
+			textscale	0.15
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_veto_select_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_veto_select_reason" ; }
+			onAction { if ( "gui::match_op_veto_select_available" == 1 ) { set "cmd" "matchControl arm_veto_side_marine" ; set "match_confirm_body::text" "#str_41907" ; set "desktop::match_confirm" "10" ; } }
+		}
+		windowDef match_veto_side_strogg_button
+		{
+			rect	202,342,356,22
+			visible	1
+			text	"#str_41762"
+			textscale	0.17
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,( 0.4 + ( "gui::match_op_veto_select_available" * 0.4 ) )
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onMouseEnter { set "match_action_reason::text" "gui::match_op_veto_select_reason" ; }
+			onAction { if ( "gui::match_op_veto_select_available" == 1 ) { set "cmd" "matchControl arm_veto_side_strogg" ; set "match_confirm_body::text" "#str_41907" ; set "desktop::match_confirm" "10" ; } }
+		}
+	}
+
+	// ----------------------------------------------------------------------
+	// Evidence is read-only: the server owns report/MVD paths and persistence.
+	// ----------------------------------------------------------------------
+	windowDef match_evidence_page
+	{
+		rect	0,0,640,480
+		visible	( "gui::match_surface_available" == 1 && "desktop::match_tab" == 5 )
+		windowDef match_evidence_status_label { rect 202,116,112,18 visible 1 text "#str_41763" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_evidence_report_label { rect 202,140,112,18 visible 1 text "#str_41764" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_evidence_demo_label { rect 202,164,112,18 visible 1 text "#str_41765" textscale 0.22 font "fonts/lowpixel" forecolor 1,1,1,0.65 }
+		windowDef match_evidence_values
+		{
+			rect	314,116,244,72
+			visible	1
+			text	"gui::match_evidence_summary"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			forecolor	1,0.745,0.137,0.88
+		}
+		windowDef match_evidence_recent_title
+		{
+			rect	202,194,356,18
+			visible	1
+			text	"#str_41766"
+			textscale	0.22
+			font	"fonts/lowpixel"
+			forecolor	1,1,1,0.7
+		}
+		listDef match_evidence_rows
+		{
+			rect	202,214,356,112
+			visible	1
+			listname	match_evidence_rows
+			textscale	0.18
+			itemheight	18
+			scrollbar	1
+			backcolor	0,0,0,0.6
+			forecolor	1,1,1,0.8
+			font	"fonts/lowpixel"
+			backgroundHover	"gfx/guis/mainmenu/bg_hover2"
+			backgroundFocus	"gfx/guis/mainmenu/bg_focus2"
+			backgroundLine	"gfx/guis/mainmenu/bg_line2"
+			tabstops	"0,88,356"
+			tabaligns	"0,0"
+		}
+		windowDef match_evidence_refresh_button
+		{
+			rect	202,334,356,28
+			visible	1
+			text	"#str_41771"
+			textscale	0.20
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,0.8
+			backcolor	0.06,0.08,0.06,0.85
+			bordercolor	0.545,0.588,0.294,0.45
+			bordersize	1
+			onAction {
+				set "cmd" "play main_menu_selection" ;
+				set "cmd" "matchControl refresh" ;
+			}
+		}
+	}
+
+	// Persistent, localized feedback.  Hovering any operation replaces the
+	// upper line with its exact server-projected availability reason; operation
+	// results replace the lower line after the authoritative response arrives.
+	windowDef match_feedback_line
+	{
+		rect	200,375,362,4
+		visible	1
+		background	"gfx/guis/mainmenu/horiz_line2"
+		matcolor	1,1,1,0.18
+	}
+	windowDef match_action_reason_label
+	{
+		rect	202,381,76,16
+		visible	1
+		text	"#str_41767"
+		textscale	0.18
+		font	"fonts/lowpixel"
+		forecolor	1,1,1,0.55
+	}
+	windowDef match_action_reason
+	{
+		rect	276,381,282,16
+		visible	1
+		text	"#str_41770"
+		textscale	0.18
+		font	"fonts/lowpixel"
+		forecolor	1,1,1,0.72
+	}
+	windowDef match_result
+	{
+		rect	202,399,356,24
+		visible	1
+		text	"gui::match_result_message"
+		textscale	0.19
+		font	"fonts/lowpixel"
+		forecolor	1,0.745,0.137,0.88
+	}
+
+	// Every operation whose protocol descriptor advertises a confirmation
+	// localization requires this second, modal step.  The branch still emits
+	// fixed tokens; no display text becomes command data.
+	windowDef match_confirm_modal
+	{
+		rect	0,0,640,480
+		visible	( "desktop::match_confirm" != 0 )
+		modal	1
+		backcolor	0,0,0,0.48
+
+		windowDef match_confirm_panel
+		{
+			rect	244,151,274,150
+			visible	1
+			background	"gfx/guis/mainmenu/screen"
+			matcolor	0.05,0.07,0.06,0.98
+			bordercolor	0.890,0.537,0,0.7
+			bordersize	1
+		}
+		windowDef match_confirm_title
+		{
+			rect	260,165,242,24
+			visible	1
+			text	"#str_41797"
+			textscale	0.27
+			font	"fonts/marine"
+			textalign	1
+			forecolor	1,0.745,0.137,0.95
+		}
+		windowDef match_confirm_body
+		{
+			rect	263,199,236,45
+			visible	1
+			text	"#str_41798"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,0.82
+		}
+		windowDef match_confirm_accept
+		{
+			rect	263,257,110,26
+			visible	1
+			text	"#str_107703"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,0.85
+			backcolor	0.10,0.06,0.04,0.9
+			bordercolor	0.890,0.537,0,0.7
+			bordersize	1
+			onAction {
+				set "cmd" "matchControl confirm" ;
+				set "desktop::match_confirm" "0" ;
+			}
+		}
+		windowDef match_confirm_cancel
+		{
+			rect	389,257,110,26
+			visible	1
+			text	"#str_104340"
+			textscale	0.21
+			font	"fonts/lowpixel"
+			textalign	1
+			forecolor	1,1,1,0.85
+			backcolor	0.06,0.08,0.06,0.9
+			bordercolor	0.545,0.588,0.294,0.55
+			bordersize	1
+			onAction {
+				set "cmd" "matchControl cancel_confirm" ;
+				set "desktop::match_confirm" "0" ;
+			}
+		}
+	}
+}

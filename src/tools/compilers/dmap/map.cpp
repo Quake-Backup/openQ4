@@ -197,43 +197,6 @@ static uBrush_t *FinishBrush( void ) {
 }
 
 /*
-================
-AdjustEntityForOrigin
-================
-*/
-static void AdjustEntityForOrigin( uEntity_t *ent ) {
-	primitive_t	*prim;
-	uBrush_t	*b;
-	int			i;
-	side_t		*s;
-
-	for ( prim = ent->primitives ; prim ; prim = prim->next ) {
-		b = prim->brush;
-		if ( !b ) {
-			continue;
-		}
-		for ( i = 0; i < b->numsides; i++ ) {
-			idPlane plane;
-
-			s = &b->sides[i];
-
-			plane = dmapGlobals.mapPlanes[s->planenum];
-			plane[3] += plane.Normal() * ent->origin;
-				
-			s->planenum = FindFloatPlane( plane );
-
-			s->texVec.v[0][3] += DotProduct( ent->origin, s->texVec.v[0] );
-			s->texVec.v[1][3] += DotProduct( ent->origin, s->texVec.v[1] );
-
-			// remove any integral shift
-			s->texVec.v[0][3] -= floor( s->texVec.v[0][3] );
-			s->texVec.v[1][3] -= floor( s->texVec.v[1][3] );
-		}
-		CreateBrushWindings(b);
-	}
-}
-
-/*
 =================
 RemoveDuplicateBrushPlanes
 

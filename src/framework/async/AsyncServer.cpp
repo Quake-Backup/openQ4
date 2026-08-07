@@ -825,7 +825,13 @@ void idAsyncServer::DropClient( int clientNum, const char *reason ) {
 		return;
 	}
 
-	if ( client.clientState >= SCS_PUREWAIT && clientNum != localClientNum ) {
+	// Claim the transition before any reliable send or game callback. Either can
+	// discover another failed queue and recursively request a drop; the zombie
+	// state makes every slot's teardown an exactly-once operation.
+	const serverClientState_t priorState = client.clientState;
+	client.clientState = SCS_ZOMBIE;
+
+	if ( priorState >= SCS_PUREWAIT && clientNum != localClientNum ) {
 		msg.Init( msgBuf, sizeof( msgBuf ) );
 		msg.WriteByte( SERVER_RELIABLE_MESSAGE_DISCONNECT );
 		msg.WriteLong( clientNum );
@@ -840,12 +846,11 @@ void idAsyncServer::DropClient( int clientNum, const char *reason ) {
 
 	reason = common->GetLanguageDict()->GetString( reason );
 	common->Printf( "client %d %s\n", clientNum, reason );
-	cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "addChatLine \"%s^0 %s\"", sessLocal.mapSpawnData.userInfo[ clientNum ].GetString( "ui_name" ), reason ) );
+	idAsyncNetwork::ShowClientDisconnectMessage(
+		sessLocal.mapSpawnData.userInfo[ clientNum ].GetString( "ui_name" ), reason );
 
 	// remove the player from the game
 	game->ServerClientDisconnect( clientNum );
-
-	client.clientState = SCS_ZOMBIE;
 }
 
 /*
@@ -2760,7 +2765,7 @@ void idAsyncServer::ProcessDownloadRequestMessage( const netadr_t from, const id
 	int			challenge, clientId, iclient, numPaks, i;
 	int			dlGamePak;
 	int			dlPakChecksum;
-	int			dlSize[ MAX_PURE_PAKS ];	// sizes
+	int			dlSize[ MAX_PURE_PAKS ] = {};	// sizes; slot 0 is intentionally empty when no game pak is requested
 	idStrList	pakNames;					// relative path
 	idStrList	pakURLs;					// game URLs
 	char		pakbuf[ MAX_STRING_CHARS ];
@@ -2872,6 +2877,12 @@ void idAsyncServer::ProcessDownloadRequestMessage( const netadr_t from, const id
 	}
 
 	if ( type == SERVER_DL_LIST ) {
+		if ( pakURLs.Num() > pakNames.Num() ) {
+			common->Warning( "game returned %d download URLs for only %d requested paks", pakURLs.Num(), pakNames.Num() );
+			outMsg.WriteByte( SERVER_DL_NONE );
+			serverPort.SendPacket( from, outMsg.GetData(), outMsg.GetSize() );
+			return;
+		}
 		int totalDlSize = 0;
 		int numActualPaks = 0;
 		
@@ -2882,7 +2893,10 @@ void idAsyncServer::ProcessDownloadRequestMessage( const netadr_t from, const id
 
 		for ( i = 0; i < pakURLs.Num(); i++ ) {
 			tmpMsg.BeginWriting();
-			if ( !dlSize[ i ] || !pakURLs[ i ].Length() ) {
+			if ( dlSize[ i ] <= 0 || !pakURLs[ i ].Length() || totalDlSize > idMath::INT_MAX - dlSize[ i ] ) {
+				if ( dlSize[ i ] > 0 && pakURLs[ i ].Length() && totalDlSize > idMath::INT_MAX - dlSize[ i ] ) {
+					common->Warning( "download response exceeds the supported total size; omitting '%s'", pakNames[ i ].c_str() );
+				}
 				// still send the relative path so the client knows what it missed
 				tmpMsg.WriteByte( SERVER_PAK_NO );
 				tmpMsg.WriteString( pakNames[ i ] );

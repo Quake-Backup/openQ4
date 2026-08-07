@@ -9,6 +9,8 @@ openQ4 multi-view demo recording and playback.
 #ifndef __MULTIVIEWDEMO_H__
 #define __MULTIVIEWDEMO_H__
 
+#include "NetworkSystem.h"
+
 class idFile;
 class idBitMsg;
 class idCmdArgs;
@@ -45,6 +47,10 @@ public:
 	void					SessionStop();
 
 	bool					IsRecording() const;
+	bool					StartNamedRecording( const char *name );
+	bool					StopRecordingCleanly( const char *reason );
+	bool					CopyRecordingQPath( char *buffer, int bufferSize ) const;
+	bool					CopyRecordingResult( serverMVDRecordingResult_t &result ) const;
 	bool					IsPlaying() const;
 	bool					IsPaused() const;
 	bool					IsSeeking() const;
@@ -166,10 +172,14 @@ private:
 	record_t				playbackMapState;
 	record_t				playbackNetworkState;
 	idList<indexEntry_t>	recordingIndex;
+	serverMVDRecordingResult_t recordingResult;
+	bool					recordingResultValid;
 
 	void					Clear();
 	bool					StartRecording( const idCmdArgs &args );
-	void					StopRecording( const char *reason, bool finalize );
+	bool					StopRecording( const char *reason, bool finalize,
+							serverMVDResultReason_t failureReason =
+								SERVER_MVD_REASON_STREAM_WRITE_FAILED );
 	bool					StartPlayback( const idCmdArgs &args );
 	void					StopPlayback( const char *reason );
 	void					FinishPlayback( const char *reason, bool warning );
@@ -197,6 +207,9 @@ private:
 
 	idStr					BuildRecordingName( const idCmdArgs &args ) const;
 	idStr					BuildPlaybackName( const char *name ) const;
+	void					SetRecordingResult( serverMVDResultState_t resultState,
+							serverMVDResultReason_t resultReason,
+							const char *finalQPath, const char *partialQPath );
 	bool					CommitRecording();
 	bool					WouldExceedLimits( int additionalBytes ) const;
 };

@@ -41,9 +41,68 @@ If you have questions concerning this license or the applicable additional terms
 #import <unistd.h>
 #include "../sys_local.h"
 
+#if defined(USE_SDL3)
+#include <SDL3/SDL.h>
+#include <cmath>
+#include "macosx_common.h"
+#endif
+
 static const int MAX_OSX_PROCESS_ARGS = 32;
 static const int MAX_OSX_PROCESS_COMMAND = 4096;
 static const int MAX_OSX_URL_LENGTH = 4096;
+
+#if defined(USE_SDL3)
+static int OSX_WindowBorderExtent( CGFloat extent ) {
+	if ( !std::isfinite( extent ) || extent <= 0.0 ) {
+		return 0;
+	}
+	return static_cast<int>( std::ceil( extent ) );
+}
+
+bool Sys_SDL_GetNativeWindowBorders( SDL_Window *window, int *top, int *left, int *bottom, int *right ) {
+	if ( top != NULL ) {
+		*top = 0;
+	}
+	if ( left != NULL ) {
+		*left = 0;
+	}
+	if ( bottom != NULL ) {
+		*bottom = 0;
+	}
+	if ( right != NULL ) {
+		*right = 0;
+	}
+	if ( window == NULL ) {
+		return false;
+	}
+
+	@autoreleasepool {
+		const SDL_PropertiesID properties = SDL_GetWindowProperties( window );
+		NSWindow *nativeWindow = (__bridge NSWindow *)SDL_GetPointerProperty(
+			properties, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL ) );
+		if ( nativeWindow == nil ) {
+			return false;
+		}
+
+		const NSRect frameRect = [nativeWindow frame];
+		const NSRect contentRect = [nativeWindow contentRectForFrameRect:frameRect];
+		if ( top != NULL ) {
+			*top = OSX_WindowBorderExtent( NSMaxY( frameRect ) - NSMaxY( contentRect ) );
+		}
+		if ( left != NULL ) {
+			*left = OSX_WindowBorderExtent( NSMinX( contentRect ) - NSMinX( frameRect ) );
+		}
+		if ( bottom != NULL ) {
+			*bottom = OSX_WindowBorderExtent( NSMinY( contentRect ) - NSMinY( frameRect ) );
+		}
+		if ( right != NULL ) {
+			*right = OSX_WindowBorderExtent( NSMaxX( frameRect ) - NSMaxX( contentRect ) );
+		}
+	}
+
+	return true;
+}
+#endif
 
 static bool OSX_StringHasControlCharacters( const char *text ) {
 	if ( text == NULL ) {

@@ -1291,11 +1291,6 @@ static void LightGrid_HashInt( uint32_t &hash, int value ) {
 	LightGrid_HashBytes( hash, &value, sizeof( value ) );
 }
 
-static void LightGrid_HashBool( uint32_t &hash, bool value ) {
-	const int intValue = value ? 1 : 0;
-	LightGrid_HashInt( hash, intValue );
-}
-
 static void LightGrid_HashFloat( uint32_t &hash, float value ) {
 	LightGrid_HashBytes( hash, &value, sizeof( value ) );
 }

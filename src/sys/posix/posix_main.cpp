@@ -51,6 +51,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #if defined( __linux__ )
 #include <sys/sysinfo.h>
+#include <sys/random.h>
 #endif
 
 #if defined( MACOS_X )
@@ -277,6 +278,67 @@ int Sys_Milliseconds( void ) {
 
 	sys_lastMilliseconds = static_cast<int>( ( nowNs - sys_timeBaseNs ) / 1000000ull );
 	return sys_lastMilliseconds;
+}
+
+/*
+================
+Sys_GetSecureRandomBytes
+================
+*/
+bool Sys_GetSecureRandomBytes( void *buffer, int bytes ) {
+	if ( bytes < 0 || ( bytes > 0 && buffer == NULL ) ) {
+		return false;
+	}
+	if ( bytes == 0 ) {
+		return true;
+	}
+
+#if defined( __linux__ )
+	unsigned char *cursor = static_cast<unsigned char *>( buffer );
+	int remaining = bytes;
+	while ( remaining > 0 ) {
+		const ssize_t received = getrandom( cursor, static_cast<size_t>( remaining ), 0 );
+		if ( received > 0 ) {
+			cursor += received;
+			remaining -= static_cast<int>( received );
+			continue;
+		}
+		if ( received < 0 && errno == EINTR ) {
+			continue;
+		}
+		return false;
+	}
+	return true;
+#elif defined( MACOS_X )
+	arc4random_buf( buffer, static_cast<size_t>( bytes ) );
+	return true;
+#else
+	int descriptor;
+	do {
+		descriptor = open( "/dev/urandom", O_RDONLY );
+	} while ( descriptor < 0 && errno == EINTR );
+	if ( descriptor < 0 ) {
+		return false;
+	}
+	unsigned char *cursor = static_cast<unsigned char *>( buffer );
+	int remaining = bytes;
+	while ( remaining > 0 ) {
+		const ssize_t received = read( descriptor, cursor,
+			static_cast<size_t>( remaining ) );
+		if ( received > 0 ) {
+			cursor += received;
+			remaining -= static_cast<int>( received );
+			continue;
+		}
+		if ( received < 0 && errno == EINTR ) {
+			continue;
+		}
+		close( descriptor );
+		return false;
+	}
+	close( descriptor );
+	return true;
+#endif
 }
 
 /*
