@@ -27,6 +27,7 @@ PRODUCTION_SOURCE = ROOT / "src" / "framework" / "UsercmdGen.cpp"
 PRODUCTION_HEADER = ROOT / "src" / "idlib" / "NumericString.h"
 SAFETY_TEST_SOURCE = ROOT / "tools" / "tests" / "native" / "CoreSafetyTest.cpp"
 DEFAULT_OUTPUT_DIR = ROOT / ".tmp" / "clang-tidy-input-safety"
+MSVC_DRIVER_MODE = "--driver-mode=cl"
 
 CHECKS = (
     "-*",
@@ -129,6 +130,22 @@ def _is_msvc_driver(arguments: Sequence[str]) -> bool:
     return executable in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}
 
 
+def _with_msvc_driver_mode(arguments: list[str]) -> list[str]:
+    """clang-tidy only understands MSVC '/' flags in cl driver mode.
+
+    Meson records the driver as a bare 'cl', which clang's tooling does not map
+    to cl mode on its own, so without this every '/EHsc'-style flag is parsed as
+    an input path ("no such file or directory: '/EHsc'") and the forced include
+    of precompiled.h never happens.
+    """
+
+    if not arguments or not _is_msvc_driver(arguments):
+        return arguments
+    if any(argument.startswith("--driver-mode=") for argument in arguments):
+        return arguments
+    return [arguments[0], MSVC_DRIVER_MODE, *arguments[1:]]
+
+
 def sanitize_compile_arguments(arguments: Sequence[str], precompiled_header: Path) -> list[str]:
     """Remove only clang-incompatible PCH/charset state from real build flags."""
 
@@ -195,7 +212,7 @@ def sanitize_compile_arguments(arguments: Sequence[str], precompiled_header: Pat
         sanitized.append(argument)
         index += 1
 
-    return sanitized
+    return _with_msvc_driver_mode(sanitized)
 
 
 def safety_test_arguments(production_arguments: Sequence[str], source: Path, root: Path) -> list[str]:
@@ -205,7 +222,7 @@ def safety_test_arguments(production_arguments: Sequence[str], source: Path, roo
         raise AnalysisError("cannot derive the safety-test command without a compiler driver")
     compiler = production_arguments[0]
     if _is_msvc_driver(production_arguments):
-        return [
+        return _with_msvc_driver_mode([
             compiler,
             f"/I{root.resolve()}",
             "/std:c++17",
@@ -213,7 +230,7 @@ def safety_test_arguments(production_arguments: Sequence[str], source: Path, roo
             "/permissive-",
             "/c",
             str(source.resolve()),
-        ]
+        ])
     return [
         compiler,
         f"-I{root.resolve()}",

@@ -79,7 +79,7 @@ bool Sys_SDL_GetNativeWindowBorders( SDL_Window *window, int *top, int *left, in
 	@autoreleasepool {
 		const SDL_PropertiesID properties = SDL_GetWindowProperties( window );
 		NSWindow *nativeWindow = (__bridge NSWindow *)SDL_GetPointerProperty(
-			properties, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL ) );
+			properties, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL );
 		if ( nativeWindow == nil ) {
 			return false;
 		}
