@@ -297,6 +297,13 @@ def validate_posix_wrapper_refresh(work: Path) -> None:
             "OPENQ4_MESON": str(fake_meson),
             "OPENQ4_SKIP_ICON_SYNC": "1",
             "OPENQ4_FAKE_MESON_LOG": str(meson_log),
+            # The wrapper resolves the GameLibs repo from this variable and
+            # falls back to <repo_root>/../openQ4-game only when it is unset.
+            # CI exports it for the real checkout, which would otherwise make
+            # the wrapper diff this fixture's stage against the real game
+            # sources and always demand a reconfigure. Pin it to the fixture
+            # so the test means the same thing everywhere.
+            "OPENQ4_GAMELIBS_REPO": str(gamelibs_root),
         }
     )
 
