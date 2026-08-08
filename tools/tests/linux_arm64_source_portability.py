@@ -985,6 +985,14 @@ def main() -> None:
     require(sys_public, "uint32_t\t\tthreadId;", "fixed-width cross-platform thread id")
     require(win_main, "DWORD threadId = 0;", "Win32-native CreateThread id output")
     reject(win_main, "&info.threadId", "non-DWORD CreateThread id output")
+    # openQ4-game carried this pin too, but src/sys/win32/ is untracked there,
+    # so it could only ever run for developers with both checkouts. Enforce it
+    # here, against the file this repository actually owns.
+    require(
+        win_main,
+        "info.threadId = static_cast<uint32_t>( threadId );",
+        "fixed-width stored thread identifier",
+    )
     require(posix_threads, "static_assert( sizeof( pthread_t ) <= sizeof( uintptr_t )", "representable POSIX thread handle")
     require(posix_threads, "memcpy( &handle, &thread, sizeof( thread ) );", "complete POSIX thread-handle encoding")
     require(renderer_gl_module, "DWORD threadId = 0;", "renderer Win32-native CreateThread id output")
