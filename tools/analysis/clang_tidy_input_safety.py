@@ -178,6 +178,14 @@ def sanitize_compile_arguments(arguments: Sequence[str], precompiled_header: Pat
         lowered = argument.lower()
 
         if msvc:
+            # Object/PDB/exe outputs name a single artifact, so they are
+            # rejected outright once clang-tidy adds its own input file
+            # ("cannot specify '/Fo...' when compiling multiple source
+            # files"). This is the MSVC spelling of the -o stripping clang's
+            # own tooling already does for gcc-style commands.
+            if lowered.startswith(("/fo", "/fd", "/fe")):
+                index += 1
+                continue
             if lowered == "/yu":
                 index += 1
                 continue
