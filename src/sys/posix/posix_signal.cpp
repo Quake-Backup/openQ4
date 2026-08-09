@@ -181,6 +181,19 @@ static void sig_handler( int signum, siginfo_t *info, void *context ) {
 	Posix_WriteSignalText( " (" );
 	Posix_WriteSignalNumber( signum );
 	Posix_WriteSignalText( "), exiting without unsafe engine shutdown\n" );
+
+	// idCommonLocal::FatalError parks its message here before it runs engine
+	// teardown, and that teardown can fault long before Sys_Error gets to print
+	// it -- a renderer that fails to bring up its device tears the session down
+	// from a startup state the shutdown path never expected. Reporting the
+	// parked message turns an unexplained signal death back into the actionable
+	// cause (issue #96). Reading a static buffer stays async-signal-safe.
+	if ( fatalError[0] != '\0' ) {
+		Posix_WriteSignalText( "openQ4: fatal error being reported: " );
+		Posix_WriteSignalText( fatalError );
+		Posix_WriteSignalText( "\n" );
+	}
+
 	Posix_WriteSignalText( "openQ4: last renderer startup phase: " );
 	Posix_WriteSignalText( Posix_RendererStartupPhaseName() );
 	Posix_WriteSignalText( "\n" );
@@ -199,6 +212,17 @@ static void sig_handler( int signum, siginfo_t *info, void *context ) {
 	strcat( breadcrumb, "; last game module phase: " );
 	strcat( breadcrumb, Com_GameModuleLoadPhaseSignalName() );
 	Posix_AppendFatalBreadcrumbRaw( breadcrumb );
+
+	// Its own line so the fatal message keeps a bounded stack buffer of its own;
+	// every FatalError message in the engine is a single short line, and the
+	// untruncated text has already gone to stderr above.
+	if ( fatalError[0] != '\0' ) {
+		char fatalBreadcrumb[ 512 ];
+		strcpy( fatalBreadcrumb, "fatal error being reported: " );
+		strncat( fatalBreadcrumb, fatalError,
+			sizeof( fatalBreadcrumb ) - strlen( fatalBreadcrumb ) - 1 );
+		Posix_AppendFatalBreadcrumbRaw( fatalBreadcrumb );
+	}
 
 	_exit( 128 + signum );
 }

@@ -405,6 +405,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "match_control_ui_contract.py",
         root / "tools" / "tests" / "demo_playback.py",
         root / "tools" / "tests" / "docs_link_integrity.py",
+        root / "tools" / "tests" / "fatal_error_startup_safety.py",
         root / "tools" / "tests" / "filesystem_case_segments.py",
         root / "tools" / "tests" / "filesystem_mod_manifest.py",
         root / "tools" / "tests" / "filesystem_write_qpath_safety.py",

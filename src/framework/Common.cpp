@@ -1229,6 +1229,22 @@ void idCommonLocal::DumpWarnings( void ) {
 
 /*
 ==================
+Com_FlushBufferedOutput
+
+Sys_Printf reaches the terminal through stdio, which buffers. The error paths
+below finish in Sys_Error, and a fault raised by the teardown they run first
+kills the process through _exit(), which discards every buffered stream: the
+terminal ends mid-sentence several KB behind the message that explains the exit,
+pointing at whichever subsystem happened to be printing (issue #96). Push the
+buffers out before running teardown that could fault.
+==================
+*/
+static void Com_FlushBufferedOutput( void ) {
+	fflush( NULL );
+}
+
+/*
+==================
 idCommonLocal::Error
 ==================
 */
@@ -1280,6 +1296,7 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 
 			Sys_Printf( "FATAL: %s\n", errorMessage );
 			Sys_Printf( "FATAL: secondary error while shutting down: %s\n", secondary );
+			Com_FlushBufferedOutput();
 
 			Sys_Error( "%s (secondary error while shutting down: %s)", errorMessage, secondary );
 		}
@@ -1344,6 +1361,8 @@ void idCommonLocal::Error( const char *fmt, ... ) {
 		cmdSystem->BufferCommandText( CMD_EXEC_NOW, "vid_restart partial windowed\n" );
 	}
 
+	Com_FlushBufferedOutput();
+
 	Shutdown();
 
 	Sys_Error( "%s", errorMessage );
@@ -1375,6 +1394,7 @@ void idCommonLocal::FatalError( const char *fmt, ... ) {
 		errorMessage[sizeof(errorMessage)-1] = '\0';
 
 		Sys_Printf( "%s\n", errorMessage );
+		Com_FlushBufferedOutput();
 
 		// exit through the fatal path rather than Sys_Quit(): Sys_Quit() reports
 		// EXIT_SUCCESS and writes no durable record, so a recursed fatal used to
@@ -1401,6 +1421,12 @@ void idCommonLocal::FatalError( const char *fmt, ... ) {
 	}
 
 	Sys_SetFatalError( errorMessage );
+
+	// Shutdown() below runs the whole engine teardown, and FatalError can fire
+	// from anywhere in startup -- including before the session has allocated the
+	// state that teardown walks. Get the message out of the stdio buffers first
+	// so a fault in teardown cannot swallow it (issue #96).
+	Com_FlushBufferedOutput();
 
 	Shutdown();
 
