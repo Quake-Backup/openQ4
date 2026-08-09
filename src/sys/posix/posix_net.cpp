@@ -40,26 +40,46 @@ If you have questions concerning this license or the applicable additional terms
 #include <errno.h>
 #include <sys/select.h>
 #include <net/if.h>
-#if defined( MACOS_X ) || defined( __APPLE__ )
+// getifaddrs is the only portable way to see IPv6 interface addresses; there is
+// no SIOCGIFCONF equivalent for them.
 #include <ifaddrs.h>
-#endif
 
 #include "../../idlib/precompiled.h"
 #include "../NetworkEndpoint.h"
 
 idPort clientPort, serverPort;
 
-idCVar net_ip( "net_ip", "localhost", CVAR_SYSTEM, "local IP address" );
+idCVar net_ip( "net_ip", "localhost", CVAR_SYSTEM, "local IPv4 address" );
+idCVar net_ip6( "net_ip6", "", CVAR_SYSTEM, "local IPv6 address, empty binds every interface" );
 idCVar net_port( "net_port", "0", CVAR_SYSTEM | CVAR_INTEGER, "local IP port number" );
+idCVar net_enableIPv4( "net_enableIPv4", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "bind an IPv4 socket" );
+idCVar net_enableIPv6( "net_enableIPv6", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "bind an IPv6 socket" );
+idCVar net_mcast6addr( "net_mcast6addr", "ff02::1", CVAR_SYSTEM | CVAR_ARCHIVE, "IPv6 multicast group used for LAN server discovery" );
+idCVar net_mcast6iface( "net_mcast6iface", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "IPv6 interface index used for LAN server discovery, 0 selects the default route" );
 
 typedef struct {
 	uint32_t ip;
 	uint32_t mask;
 } net_interface;
 
+// IPv6 has no netmask on the wire. Every SLAAC capable link uses a 64 bit
+// interface identifier (RFC 4291), so the on-link prefix is the address'
+// leading 64 bits.
+#define			IPV6_ONLINK_PREFIX_BITS	64
+
+typedef struct {
+	unsigned char	ip6[16];
+	unsigned int	scopeId;
+} net_interface6;
+
 #define 		MAX_INTERFACES	32
 int				num_interfaces = 0;
 net_interface	netint[MAX_INTERFACES];
+// A separate table and counter: IPv6 hosts routinely carry several addresses
+// per link, and sharing the IPv4 array would let them evict IPv4 entries and
+// silently regress IPv4 LAN detection.
+int				num_interfaces6 = 0;
+net_interface6	netint6[MAX_INTERFACES];
 
 static unsigned int Sys_SockaddrIPv4HostOrder( const struct sockaddr *address ) {
 	const struct sockaddr_in *ipv4 = reinterpret_cast<const struct sockaddr_in *>( address );
@@ -120,15 +140,34 @@ static bool Sys_ResolveSockaddr( const char *s, bool doDNSResolve, int family, i
 	}
 	idStr::snPrintf( service, sizeof( service ), "%d", effectivePort );
 
+	// A host that has switched a family off has no socket for it, so an
+	// unconstrained lookup must not hand back an address it can never reach.
+	// Without this an IPv6-only client resolves every hostname to its A record
+	// and then silently drops the datagram.
+	if ( family == AF_UNSPEC ) {
+		const bool allowIPv4 = net_enableIPv4.GetBool();
+		const bool allowIPv6 = net_enableIPv6.GetBool();
+		if ( allowIPv4 != allowIPv6 ) {
+			family = allowIPv6 ? AF_INET6 : AF_INET;
+		}
+	}
+
 	struct addrinfo hints;
 	memset( &hints, 0, sizeof( hints ) );
 	hints.ai_family = family;
 	hints.ai_socktype = socktype;
-	hints.ai_flags = doDNSResolve ? 0 : AI_NUMERICHOST;
+	// The service text is always the decimal port built above, so keep the
+	// resolver out of /etc/services. AI_ADDRCONFIG belongs only on the DNS
+	// path: on the numeric path it would reject a literal ::1 on a host with no
+	// configured IPv6 interface, which is a legitimate address.
+	hints.ai_flags = AI_NUMERICSERV | ( doDNSResolve ? AI_ADDRCONFIG : AI_NUMERICHOST );
 
 	struct addrinfo *results = NULL;
 	const int error = getaddrinfo( host, service, &hints, &results );
 	if ( error != 0 ) {
+		// Without this the common "fe80::1%eth0:27650" mistake - an unbracketed
+		// scoped literal with a port - fails with no explanation at all.
+		common->DPrintf( "Sys_ResolveSockaddr: '%s' did not resolve: %s\n", host, gai_strerror( error ) );
 		return false;
 	}
 
@@ -165,11 +204,100 @@ static bool Sys_ResolveSockaddr( const char *s, bool doDNSResolve, int family, i
 }
 
 static bool Sys_IsAnyInterfaceName( const char *net_interface ) {
-	return net_interface == NULL || net_interface[0] == '\0' || !idStr::Icmp( net_interface, "localhost" );
+	return idNetworkEndpoint::IsAnyInterfaceName( net_interface );
+}
+
+/*
+====================
+Sys_MulticastGroupSockadr
+
+Resolves the configured LAN discovery group. IPv6 has no broadcast address, so
+a link-local all-nodes multicast send replaces the IPv4 broadcast scan.
+====================
+*/
+static bool Sys_MulticastGroupSockadr( unsigned short port, struct sockaddr_in6 *group ) {
+	if ( group == NULL ) {
+		return false;
+	}
+	memset( group, 0, sizeof( *group ) );
+
+	struct sockaddr_storage resolved;
+	socklen_t resolvedLen = 0;
+	if ( !Sys_ResolveSockaddr( net_mcast6addr.GetString(), false, AF_INET6, SOCK_DGRAM, 0, &resolved, &resolvedLen ) ) {
+		return false;
+	}
+	if ( resolved.ss_family != AF_INET6 ) {
+		return false;
+	}
+
+	memcpy( group, &resolved, sizeof( *group ) );
+	group->sin6_family = AF_INET6;
+	group->sin6_port = htons( port );
+
+	const int configuredInterface = net_mcast6iface.GetInteger();
+	if ( configuredInterface > 0 ) {
+		group->sin6_scope_id = static_cast<unsigned int>( configuredInterface );
+	}
+	return true;
 }
 
 static const char *Sys_SocketFamilyName( int family ) {
 	return family == AF_INET6 ? "IPv6" : "IPv4";
+}
+
+/*
+=============
+Sys_JoinDiscoveryGroup
+
+Membership in the link-local all-nodes group is automatic, but any other
+configured discovery group has to be joined explicitly on every link or a
+server never receives a LAN scan sent to it.
+=============
+*/
+static void Sys_JoinDiscoveryGroup( int newsocket ) {
+	struct sockaddr_in6 group;
+	if ( !Sys_MulticastGroupSockadr( 0, &group ) ) {
+		return;
+	}
+
+	unsigned char groupAddress[16];
+	memcpy( groupAddress, &group.sin6_addr, sizeof( groupAddress ) );
+	if ( !idNetworkEndpoint::IsIPv6Multicast( groupAddress ) || idNetworkEndpoint::IsIPv6AllNodes( groupAddress ) ) {
+		return;
+	}
+
+	struct ipv6_mreq request;
+	memset( &request, 0, sizeof( request ) );
+	memcpy( &request.ipv6mr_multiaddr, groupAddress, sizeof( groupAddress ) );
+
+	int joins = 0;
+	for ( int i = 0; i < num_interfaces6; i++ ) {
+		if ( netint6[i].scopeId == 0 ) {
+			continue;
+		}
+		bool duplicate = false;
+		for ( int previous = 0; previous < i; previous++ ) {
+			if ( netint6[previous].scopeId == netint6[i].scopeId ) {
+				duplicate = true;
+				break;
+			}
+		}
+		if ( duplicate ) {
+			continue;
+		}
+		request.ipv6mr_interface = netint6[i].scopeId;
+		if ( setsockopt( newsocket, IPPROTO_IPV6, IPV6_JOIN_GROUP, &request, sizeof( request ) ) != -1 ) {
+			joins++;
+		}
+	}
+
+	if ( joins == 0 ) {
+		// No enumerated link, so let the routing table choose one.
+		request.ipv6mr_interface = 0;
+		if ( setsockopt( newsocket, IPPROTO_IPV6, IPV6_JOIN_GROUP, &request, sizeof( request ) ) == -1 ) {
+			common->DPrintf( "IPSocketForFamily: could not join the discovery group '%s': %s\n", net_mcast6addr.GetString(), strerror( errno ) );
+		}
+	}
 }
 
 /*
@@ -209,6 +337,14 @@ static bool NetadrToSockadr( const netadr_t * a, struct sockaddr_storage *s, soc
 		ipv6->sin6_port = htons( static_cast<unsigned short>( a->port ) );
 		*slen = sizeof( *ipv6 );
 		return true;
+	} else if ( a->type == NA_MULTICAST6 ) {
+		struct sockaddr_in6 group;
+		if ( !Sys_MulticastGroupSockadr( a->port, &group ) ) {
+			return false;
+		}
+		memcpy( s, &group, sizeof( group ) );
+		*slen = sizeof( group );
+		return true;
 	}
 
 	return false;
@@ -242,6 +378,21 @@ static bool SockadrToNetadr( const struct sockaddr *s, netadr_t * a ) {
 		a->scopeId = ipv6->sin6_scope_id;
 		a->port = ntohs( ipv6->sin6_port );
 		a->type = NA_IP6;
+		// A dual-stack peer that reaches us through ::ffff:a.b.c.d is an IPv4
+		// peer. Normalizing here keeps address comparisons, bans, and server
+		// lists from holding two identities for one host, and stays correct on
+		// any platform whose IPV6_V6ONLY default differs.
+		if ( idNetworkEndpoint::IsIPv4Mapped( a->ip6 ) ) {
+			const unsigned short port = a->port;
+			unsigned char mapped[4];
+			memcpy( mapped, a->ip6 + 12, sizeof( mapped ) );
+			memset( a, 0, sizeof( *a ) );
+			memcpy( a->ip, mapped, sizeof( a->ip ) );
+			a->port = port;
+			unsigned int packedIP;
+			memcpy( &packedIP, a->ip, sizeof( packedIP ) );
+			a->type = ( ntohl( packedIP ) == INADDR_LOOPBACK ) ? NA_LOOPBACK : NA_IP;
+		}
 		return true;
 	}
 
@@ -290,26 +441,25 @@ const char *Sys_NetAdrToString( const netadr_t a ) {
 		idStr::snPrintf( buffer, sizeof( s[0] ), "%i.%i.%i.%i:%i",
 			a.ip[0], a.ip[1], a.ip[2], a.ip[3], a.port );
 	} else if ( a.type == NA_IP6 ) {
-		char addressText[INET6_ADDRSTRLEN];
-		if ( inet_ntop( AF_INET6, a.ip6, addressText, sizeof( addressText ) ) == NULL ) {
+		// The shared formatter, rather than inet_ntop, so a given address has
+		// exactly one spelling on every platform. That text is the identity key
+		// for the server browser and the game module's ban list.
+		char addressText[idNetworkEndpoint::IPV6_ENDPOINT_TEXT_SIZE];
+		if ( !idNetworkEndpoint::FormatIPv6Endpoint( a.ip6, a.scopeId, a.port, addressText, sizeof( addressText ) ) ) {
 			idStr::Copynz( addressText, "::", sizeof( addressText ) );
 		}
-		if ( a.port ) {
-			if ( a.scopeId ) {
-				idStr::snPrintf( buffer, sizeof( s[0] ), "[%s%%%u]:%i", addressText, a.scopeId, a.port );
-			} else {
-				idStr::snPrintf( buffer, sizeof( s[0] ), "[%s]:%i", addressText, a.port );
-			}
-		} else if ( a.scopeId ) {
-			idStr::snPrintf( buffer, sizeof( s[0] ), "%s%%%u", addressText, a.scopeId );
-		} else {
-			idStr::snPrintf( buffer, sizeof( s[0] ), "%s", addressText );
-		}
+		idStr::Copynz( buffer, addressText, sizeof( s[0] ) );
 	} else if ( a.type == NA_BROADCAST ) {
 		if ( a.port ) {
 			idStr::snPrintf( buffer, sizeof( s[0] ), "broadcast:%i", a.port );
 		} else {
 			idStr::Copynz( buffer, "broadcast", sizeof( s[0] ) );
+		}
+	} else if ( a.type == NA_MULTICAST6 ) {
+		if ( a.port ) {
+			idStr::snPrintf( buffer, sizeof( s[0] ), "multicast6:%i", a.port );
+		} else {
+			idStr::Copynz( buffer, "multicast6", sizeof( s[0] ) );
 		}
 	} else if ( a.type == NA_BOT ) {
 		idStr::Copynz( buffer, "bot", sizeof( s[0] ) );
@@ -338,17 +488,19 @@ bool Sys_IsLANAddress( const netadr_t adr ) {
 	}
 
 	if ( adr.type == NA_IP6 ) {
-		struct in6_addr ipv6;
-		memcpy( &ipv6, adr.ip6, sizeof( ipv6 ) );
-		if ( IN6_IS_ADDR_LOOPBACK( &ipv6 ) || IN6_IS_ADDR_LINKLOCAL( &ipv6 ) ) {
+		if ( idNetworkEndpoint::IsIPv6Loopback( adr.ip6 ) || idNetworkEndpoint::IsIPv6LinkLocal( adr.ip6 ) ||
+				idNetworkEndpoint::IsIPv6UniqueLocal( adr.ip6 ) || idNetworkEndpoint::IsIPv6SiteLocal( adr.ip6 ) ) {
 			return true;
 		}
-#ifdef IN6_IS_ADDR_SITELOCAL
-		if ( IN6_IS_ADDR_SITELOCAL( &ipv6 ) ) {
-			return true;
+		// The scope rules alone would reject the ordinary SLAAC case, where a
+		// neighbour on this very link carries a global unicast address. Match
+		// it against the on-link prefix of each local address instead.
+		for ( int scan = 0; scan < num_interfaces6; scan++ ) {
+			if ( idNetworkEndpoint::IPv6PrefixMatches( adr.ip6, netint6[scan].ip6, IPV6_ONLINK_PREFIX_BITS ) ) {
+				return true;
+			}
 		}
-#endif
-		return ( adr.ip6[0] & 0xfe ) == 0xfc;
+		return false;
 	}
 
 	if ( adr.type != NA_IP ) {
@@ -400,6 +552,67 @@ bool Sys_CompareNetAdrBase( const netadr_t a, const netadr_t b ) {
 
 	common->Printf( "Sys_CompareNetAdrBase: bad address type\n" );
 	return false;
+}
+
+/*
+====================
+Sys_InitIPv6Interfaces
+
+Records every local IPv6 unicast address so Sys_IsLANAddress can recognize a
+global-unicast neighbour on the same link, which the address scope rules alone
+cannot decide.
+====================
+*/
+static void Sys_InitIPv6Interfaces( void ) {
+	struct ifaddrs *ifap, *ifp;
+
+	num_interfaces6 = 0;
+
+	if ( getifaddrs( &ifap ) < 0 ) {
+		common->Printf( "Sys_InitNetworking: getifaddrs failed - %s\n", strerror( errno ) );
+		return;
+	}
+
+	for ( ifp = ifap; ifp; ifp = ifp->ifa_next ) {
+		if ( !( ifp->ifa_flags & IFF_UP ) ) {
+			continue;
+		}
+		if ( ifp->ifa_addr == NULL || ifp->ifa_addr->sa_family != AF_INET6 ) {
+			continue;
+		}
+		if ( num_interfaces6 >= MAX_INTERFACES ) {
+			common->Printf( "Sys_InitNetworking: MAX_INTERFACES(%d) hit for IPv6.\n", MAX_INTERFACES );
+			break;
+		}
+
+		const struct sockaddr_in6 *ipv6 = reinterpret_cast<const struct sockaddr_in6 *>( ifp->ifa_addr );
+		unsigned char address[16];
+		memcpy( address, &ipv6->sin6_addr, sizeof( address ) );
+		unsigned int scopeId = ipv6->sin6_scope_id;
+
+		// KAME derived stacks (Darwin and the BSDs) report a link-local address
+		// with the interface index embedded in bytes 2 and 3 and leave
+		// sin6_scope_id zero. Left in place those bytes make every fe80::
+		// prefix comparison against a kernel-normalized peer address fail.
+		if ( idNetworkEndpoint::IsIPv6LinkLocal( address ) && ( address[2] != 0 || address[3] != 0 ) ) {
+			if ( scopeId == 0 ) {
+				scopeId = ( static_cast<unsigned int>( address[2] ) << 8 ) | static_cast<unsigned int>( address[3] );
+			}
+			address[2] = 0;
+			address[3] = 0;
+		}
+
+		memcpy( netint6[num_interfaces6].ip6, address, sizeof( netint6[num_interfaces6].ip6 ) );
+		netint6[num_interfaces6].scopeId = scopeId;
+
+		char text[idNetworkEndpoint::IPV6_ENDPOINT_TEXT_SIZE];
+		if ( idNetworkEndpoint::FormatIPv6Endpoint( address, scopeId, 0, text, sizeof( text ) ) ) {
+			common->Printf( "IPv6: %s/%d\n", text, IPV6_ONLINK_PREFIX_BITS );
+		}
+		num_interfaces6++;
+	}
+
+	freeifaddrs( ifap );
 }
 
 /*
@@ -474,7 +687,10 @@ void Sys_InitNetworking(void)
 
 	s = socket( AF_INET, SOCK_DGRAM, 0 );
 	if ( s == -1 ) {
+		// An IPv6-only host may have no AF_INET support at all, so its IPv6
+		// interfaces still have to be enumerated.
 		common->Printf( "Sys_InitNetworking: socket failed - %s\n", strerror( errno ) );
+		Sys_InitIPv6Interfaces();
 		return;
 	}
 	ifc.ifc_len = MAX_INTERFACES*sizeof( ifreq );
@@ -528,6 +744,8 @@ void Sys_InitNetworking(void)
 	}
 	close( s );
 #endif
+
+	Sys_InitIPv6Interfaces();
 }
 
 /*
@@ -551,9 +769,21 @@ static int IPSocketForFamily( const char *net_interface, int port, int family,
 	}
 
 	const int bindPort = port == PORT_ANY ? 0 : port;
+	// An unbracketed IPv6 interface followed by ":port" reads as a longer
+	// address, and PORT_ANY is a sentinel rather than a port, so neither is
+	// printed raw.
+	char endpointText[idNetworkEndpoint::IPV6_ENDPOINT_TEXT_SIZE + NI_MAXHOST];
 	const char *interfaceText = Sys_IsAnyInterfaceName( net_interface ) ? "localhost" : net_interface;
+	const bool bracketInterface = family == AF_INET6 && interfaceText[0] != '[' && strchr( interfaceText, ':' ) != NULL;
+	if ( port == PORT_ANY ) {
+		idStr::snPrintf( endpointText, sizeof( endpointText ), "%s%s%s:auto",
+			bracketInterface ? "[" : "", interfaceText, bracketInterface ? "]" : "" );
+	} else {
+		idStr::snPrintf( endpointText, sizeof( endpointText ), "%s%s%s:%i",
+			bracketInterface ? "[" : "", interfaceText, bracketInterface ? "]" : "", port );
+	}
 	if ( !quiet ) {
-		common->Printf( "Opening %s UDP socket: %s:%i\n", Sys_SocketFamilyName( family ), interfaceText, port );
+		common->Printf( "Opening %s UDP socket: %s\n", Sys_SocketFamilyName( family ), endpointText );
 	}
 
 	struct sockaddr_storage address;
@@ -621,8 +851,13 @@ static int IPSocketForFamily( const char *net_interface, int port, int family,
 		}
 	}
 
-#ifdef IPV6_V6ONLY
 	if ( family == AF_INET6 ) {
+#ifdef IPV6_V6ONLY
+		// Keep the IPv6 socket off the IPv4 mapped range so both families can
+		// hold the same port and so an IPv4 peer always arrives on the socket
+		// whose broadcast and interface configuration matches it. A platform
+		// without the option is covered defensively by the IPv4-mapped
+		// normalization in SockadrToNetadr.
 		if ( setsockopt( newsocket, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<char *>( &on ), sizeof( on ) ) == -1 ) {
 			if ( !quiet ) {
 				common->Printf( "ERROR: IPSocketForFamily: setsockopt IPV6_V6ONLY: %s\n", strerror( errno ) );
@@ -630,8 +865,23 @@ static int IPSocketForFamily( const char *net_interface, int port, int family,
 			close( newsocket );
 			return 0;
 		}
-	}
 #endif
+		// Link-local discovery only ever needs one hop; a larger default would
+		// leak scan traffic past the local segment. Linux requires an int here,
+		// unlike the IPv4 IP_MULTICAST_TTL convention.
+		const int multicastHops = 1;
+		if ( setsockopt( newsocket, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &multicastHops, sizeof( multicastHops ) ) == -1 ) {
+			common->DPrintf( "IPSocketForFamily: setsockopt IPV6_MULTICAST_HOPS: %s\n", strerror( errno ) );
+		}
+		const int multicastInterface = net_mcast6iface.GetInteger();
+		if ( multicastInterface > 0 ) {
+			const unsigned int interfaceIndex = static_cast<unsigned int>( multicastInterface );
+			if ( setsockopt( newsocket, IPPROTO_IPV6, IPV6_MULTICAST_IF, &interfaceIndex, sizeof( interfaceIndex ) ) == -1 ) {
+				common->DPrintf( "IPSocketForFamily: setsockopt IPV6_MULTICAST_IF: %s\n", strerror( errno ) );
+			}
+		}
+		Sys_JoinDiscoveryGroup( newsocket );
+	}
 
 	if ( bind( newsocket, reinterpret_cast<const struct sockaddr *>( &address ), addressLen ) == -1 ) {
 		if ( !quiet ) {
@@ -642,7 +892,7 @@ static int IPSocketForFamily( const char *net_interface, int port, int family,
 	}
 
 	if ( quiet ) {
-		common->Printf( "Opening %s UDP socket: %s:%i\n", Sys_SocketFamilyName( family ), interfaceText, port );
+		common->Printf( "Opening %s UDP socket: %s\n", Sys_SocketFamilyName( family ), endpointText );
 	}
 
 	if ( bound_to ) {
@@ -662,6 +912,117 @@ static int IPSocketForFamily( const char *net_interface, int port, int family,
 	}
 
 	return newsocket;
+}
+
+/*
+====================
+Net_BindDualStack
+
+Opens the sockets an idPort should own. IPv4 stays the baseline transport for
+discovery, LAN scans, masters, and ordinary clients, so a resolved IPv4 bind
+failure fails the whole endpoint rather than silently handing the caller an
+IPv6-only port that its peers cannot reach.
+====================
+*/
+static bool Net_BindDualStack( const char *ipv4Text, const char *ipv6Text, int portNumber, int &socket4, int &socket6, netadr_t &bound_to ) {
+	socket4 = 0;
+	socket6 = 0;
+	memset( &bound_to, 0, sizeof( bound_to ) );
+
+	idNetworkEndpoint::bindPlan_t plan;
+	idNetworkEndpoint::PlanBind( ipv4Text, ipv6Text, net_enableIPv4.GetBool(), net_enableIPv6.GetBool(), plan );
+	// An IPv6 literal in net_ip suppresses the IPv4 socket, so this case has to
+	// be reported before the both-families-disabled test below or the only
+	// diagnostic would name net_enableIPv4, which the admin never touched.
+	if ( plan.legacyIPv6Interface && !plan.bindIPv6 ) {
+		common->Warning( "idPort::InitForPort: net_ip names an IPv6 interface but net_enableIPv6 is 0" );
+		return false;
+	}
+	if ( !plan.bindIPv4 && !plan.bindIPv6 ) {
+		common->Warning( "idPort::InitForPort: net_enableIPv4 and net_enableIPv6 are both disabled" );
+		return false;
+	}
+	if ( plan.legacyIPv6Interface ) {
+		common->DPrintf( "net_ip holds an IPv6 literal - binding it as the IPv6 interface, prefer net_ip6\n" );
+	}
+
+	netadr_t bound4;
+	netadr_t bound6;
+	memset( &bound4, 0, sizeof( bound4 ) );
+	memset( &bound6, 0, sizeof( bound6 ) );
+
+	const char *ipv6Interface = plan.ipv6Interface;
+
+	if ( plan.bindIPv4 ) {
+		bool ipv4Resolved = false;
+		socket4 = IPSocketForFamily( plan.ipv4Interface, portNumber, AF_INET, &bound4, true, &ipv4Resolved );
+		if ( socket4 <= 0 ) {
+			socket4 = 0;
+			// Once the interface resolved to an A record, a later setup or bind
+			// failure belongs to that endpoint - for example EADDRINUSE during
+			// a port scan - so fail closed instead of falling through.
+			if ( ipv4Resolved ) {
+				return false;
+			}
+			// The name produced no A record at all, so it may still name an
+			// IPv6-only interface. Reuse it unless net_ip6 already chose one.
+			if ( idNetworkEndpoint::IsAnyInterfaceName( ipv6Interface ) ) {
+				ipv6Interface = plan.ipv4Interface;
+			}
+		} else {
+			bound_to = bound4;
+		}
+	}
+
+	if ( plan.bindIPv6 ) {
+		// Both families share one port number so a dual-stack server is reached
+		// the same way over either transport.
+		const int ipv6Port = ( portNumber == PORT_ANY && socket4 > 0 ) ? bound4.port : portNumber;
+		socket6 = IPSocketForFamily( ipv6Interface, ipv6Port, AF_INET6, &bound6, true );
+		if ( socket6 <= 0 ) {
+			socket6 = 0;
+		}
+
+		// The kernel picked that ephemeral port for IPv4 alone, so another
+		// process may already hold it on IPv6. Clients bind with PORT_ANY, and
+		// accepting the half-bound result would leave them quietly unable to
+		// reach any IPv6 server. Try a few other ephemeral ports before
+		// settling for IPv4 only. An explicit port is the operator's choice and
+		// is never retried.
+		for ( int attempt = 0; socket6 <= 0 && attempt < 3 && portNumber == PORT_ANY &&
+				plan.bindIPv4 && socket4 > 0; attempt++ ) {
+			netadr_t retryBound;
+			memset( &retryBound, 0, sizeof( retryBound ) );
+			// Open the replacement before releasing the old socket so a failed
+			// retry cannot cost us the IPv4 socket we already hold.
+			const int retrySocket4 = IPSocketForFamily( plan.ipv4Interface, PORT_ANY, AF_INET, &retryBound, true );
+			if ( retrySocket4 <= 0 ) {
+				break;
+			}
+			const int retrySocket6 = IPSocketForFamily( ipv6Interface, retryBound.port, AF_INET6, &bound6, true );
+			if ( retrySocket6 <= 0 ) {
+				close( retrySocket4 );
+				continue;
+			}
+			close( socket4 );
+			socket4 = retrySocket4;
+			bound4 = retryBound;
+			bound_to = bound4;
+			socket6 = retrySocket6;
+		}
+
+		if ( socket6 > 0 && socket4 <= 0 ) {
+			bound_to = bound6;
+		}
+	}
+
+	if ( socket4 <= 0 && socket6 <= 0 ) {
+		socket4 = 0;
+		socket6 = 0;
+		memset( &bound_to, 0, sizeof( bound_to ) );
+		return false;
+	}
+	return true;
 }
 
 /*
@@ -771,8 +1132,19 @@ bool idPort::GetPacket( netadr_t &net_from, void *data, int &size, int maxSize )
 		return false;
 	}
 
-	if ( Net_GetPacketFromSocket( netSocket, "idPort::GetPacket IPv4", net_from, data, size, maxSize ) ||
-			Net_GetPacketFromSocket( netSocket6, "idPort::GetPacket IPv6", net_from, data, size, maxSize ) ) {
+	// Alternate which family is drained first. Callers loop until this returns
+	// false, so a flood that keeps one socket permanently readable would
+	// otherwise stop the other family from ever being read. Seeding from this
+	// port's own read counter keeps the rotation per-instance without widening
+	// idPort's shared layout.
+	const bool ipv6First = ( packetsRead & 1 ) != 0;
+	const int firstSocket = ipv6First ? netSocket6 : netSocket;
+	const int secondSocket = ipv6First ? netSocket : netSocket6;
+	const char *firstContext = ipv6First ? "idPort::GetPacket IPv6" : "idPort::GetPacket IPv4";
+	const char *secondContext = ipv6First ? "idPort::GetPacket IPv4" : "idPort::GetPacket IPv6";
+
+	if ( Net_GetPacketFromSocket( firstSocket, firstContext, net_from, data, size, maxSize ) ||
+			Net_GetPacketFromSocket( secondSocket, secondContext, net_from, data, size, maxSize ) ) {
 		packetsRead++;
 		bytesRead += size;
 		return true;
@@ -835,15 +1207,24 @@ bool idPort::GetPacketBlocking( netadr_t &net_from, void *data, int &size, int m
 		return false;
 	}
 
-	if ( netSocket && FD_ISSET( netSocket, &set ) ) {
-		if ( Net_GetPacketFromSocket( netSocket, "idPort::GetPacketBlocking IPv4", net_from, data, size, maxSize ) ) {
+	// Callers re-enter this in a loop, so it needs the same rotation GetPacket
+	// uses: reading IPv4 first every time lets a flood on one family keep the
+	// other from ever being serviced.
+	const bool ipv6First = ( packetsRead & 1 ) != 0;
+	const int firstSocket = ipv6First ? netSocket6 : netSocket;
+	const int secondSocket = ipv6First ? netSocket : netSocket6;
+	const char *firstContext = ipv6First ? "idPort::GetPacketBlocking IPv6" : "idPort::GetPacketBlocking IPv4";
+	const char *secondContext = ipv6First ? "idPort::GetPacketBlocking IPv4" : "idPort::GetPacketBlocking IPv6";
+
+	if ( firstSocket && FD_ISSET( firstSocket, &set ) ) {
+		if ( Net_GetPacketFromSocket( firstSocket, firstContext, net_from, data, size, maxSize ) ) {
 			packetsRead++;
 			bytesRead += size;
 			return true;
 		}
 	}
-	if ( netSocket6 && FD_ISSET( netSocket6, &set ) ) {
-		if ( Net_GetPacketFromSocket( netSocket6, "idPort::GetPacketBlocking IPv6", net_from, data, size, maxSize ) ) {
+	if ( secondSocket && FD_ISSET( secondSocket, &set ) ) {
+		if ( Net_GetPacketFromSocket( secondSocket, secondContext, net_from, data, size, maxSize ) ) {
 			packetsRead++;
 			bytesRead += size;
 			return true;
@@ -857,6 +1238,57 @@ bool idPort::GetPacketBlocking( netadr_t &net_from, void *data, int &size, int m
 idPort::SendPacket
 ==================
 */
+/*
+==================
+Net_SendMulticast6Packet
+
+A link-local multicast datagram leaves through exactly one interface. The
+kernel picks it from the routing table when the scope is zero, so a multi-homed
+host would only ever scan one link. Repeating the send once per local IPv6
+scope covers every attached link without touching socket options between sends.
+==================
+*/
+static void Net_SendMulticast6Packet( int socketFd, const void *data, int size, const netadr_t to ) {
+	struct sockaddr_in6 group;
+	if ( !Sys_MulticastGroupSockadr( to.port, &group ) ) {
+		common->DPrintf( "idPort::SendPacket: could not resolve the multicast group '%s'\n", net_mcast6addr.GetString() );
+		return;
+	}
+
+	// An explicit net_mcast6iface, or a group whose own scope is already set,
+	// names the one link the operator asked for.
+	if ( group.sin6_scope_id != 0 ) {
+		sendto( socketFd, data, size, 0, reinterpret_cast<struct sockaddr *>( &group ), sizeof( group ) );
+		return;
+	}
+
+	int sends = 0;
+	for ( int i = 0; i < num_interfaces6; i++ ) {
+		if ( netint6[i].scopeId == 0 ) {
+			continue;
+		}
+		bool duplicate = false;
+		for ( int previous = 0; previous < i; previous++ ) {
+			if ( netint6[previous].scopeId == netint6[i].scopeId ) {
+				duplicate = true;
+				break;
+			}
+		}
+		if ( duplicate ) {
+			continue;
+		}
+		group.sin6_scope_id = netint6[i].scopeId;
+		sendto( socketFd, data, size, 0, reinterpret_cast<struct sockaddr *>( &group ), sizeof( group ) );
+		sends++;
+	}
+
+	if ( sends == 0 ) {
+		// No enumerated scope, so let the routing table choose.
+		group.sin6_scope_id = 0;
+		sendto( socketFd, data, size, 0, reinterpret_cast<struct sockaddr *>( &group ), sizeof( group ) );
+	}
+}
+
 void idPort::SendPacket( const netadr_t to, const void *data, int size ) {
 	int ret;
 	struct sockaddr_storage addr;
@@ -874,6 +1306,19 @@ void idPort::SendPacket( const netadr_t to, const void *data, int size ) {
 	const char emptyPacket = '\0';
 	const void *packetData = data != NULL ? data : &emptyPacket;
 
+	// The discovery group fans out over every attached link, so it does not go
+	// through the single-destination path below.
+	if ( to.type == NA_MULTICAST6 ) {
+		if ( !netSocket6 ) {
+			common->DPrintf( "idPort::SendPacket: no IPv6 socket for %s - ignored\n", Sys_NetAdrToString( to ) );
+			return;
+		}
+		Net_SendMulticast6Packet( netSocket6, packetData, size, to );
+		packetsWritten++;
+		bytesWritten += size;
+		return;
+	}
+
 	if ( !NetadrToSockadr( &to, &addr, &addrLen ) ) {
 		common->Warning( "idPort::SendPacket: bad address type - ignored" );
 		return;
@@ -881,7 +1326,10 @@ void idPort::SendPacket( const netadr_t to, const void *data, int size ) {
 
 	const int socketFd = addr.ss_family == AF_INET6 ? netSocket6 : netSocket;
 	if ( !socketFd ) {
-		common->Warning( "idPort::SendPacket: no %s socket for %s - ignored", Sys_SocketFamilyName( addr.ss_family ), Sys_NetAdrToString( to ) );
+		// A disabled family is a supported configuration - net_enableIPv4 0
+		// makes every IPv4 broadcast and master heartbeat land here - so this
+		// is a developer diagnostic rather than a per-datagram warning.
+		common->DPrintf( "idPort::SendPacket: no %s socket for %s - ignored\n", Sys_SocketFamilyName( addr.ss_family ), Sys_NetAdrToString( to ) );
 		return;
 	}
 
@@ -906,84 +1354,14 @@ bool idPort::InitForPort( int portNumber ) {
 		return false;
 	}
 
-	const char *interfaceName = net_ip.GetString();
-	if ( Sys_IsAnyInterfaceName( interfaceName ) ) {
-		netadr_t bound4;
-		netadr_t bound6;
-		memset( &bound4, 0, sizeof( bound4 ) );
-		memset( &bound6, 0, sizeof( bound6 ) );
-
-		// IPv4 is the baseline transport for discovery, LAN scans, masters, and
-		// ordinary clients.  Do not accept an IPv6-only bind after the requested
-		// IPv4 port failed: callers would stop their port scan on an endpoint that
-		// IPv4 peers cannot reach.
-		netSocket = IPSocketForFamily( interfaceName, portNumber, AF_INET, &bound4, true );
-		if ( netSocket <= 0 ) {
-			netSocket = 0;
-			netSocket6 = 0;
-			memset( &bound_to, 0, sizeof( bound_to ) );
-			return false;
-		}
-
-		bound_to = bound4;
-		const int ipv6Port = portNumber == PORT_ANY ? bound4.port : portNumber;
-		// IPv6 augments the required IPv4 socket.  Its absence must neither make
-		// the IPv4 endpoint fail nor emit an error for a supported IPv4-only host.
-		netSocket6 = IPSocketForFamily( interfaceName, ipv6Port, AF_INET6, &bound6, true );
-		if ( netSocket6 <= 0 ) {
-			netSocket6 = 0;
-		}
-		return true;
-	}
-
-	const bool prefersIPv6 = strchr( interfaceName, ':' ) != NULL;
-	struct in_addr numericIPv4;
-	const bool isNumericIPv4 = inet_pton( AF_INET, interfaceName, &numericIPv4 ) == 1;
-	const bool isAddressLiteral = isNumericIPv4 || prefersIPv6;
-	const int firstFamily = prefersIPv6 ? AF_INET6 : AF_INET;
-	const int secondFamily = prefersIPv6 ? AF_INET : AF_INET6;
-
-	netadr_t explicitBound;
-	memset( &explicitBound, 0, sizeof( explicitBound ) );
-
-	bool firstFamilyResolved = false;
-	const int firstSocket = IPSocketForFamily( interfaceName, portNumber, firstFamily,
-		&explicitBound, true, &firstFamilyResolved );
-	if ( firstSocket > 0 ) {
-		if ( firstFamily == AF_INET6 ) {
-			netSocket6 = firstSocket;
-		} else {
-			netSocket = firstSocket;
-		}
-		bound_to = explicitBound;
-		return true;
-	}
-	// Once the preferred family resolved, a later setup or bind failure belongs
-	// to that endpoint (for example, EADDRINUSE during a port scan).  Falling
-	// through would silently turn a dual-stack hostname into an IPv6-only server.
-	// A literal likewise belongs to exactly one address family.
-	if ( isAddressLiteral || firstFamilyResolved ) {
+	if ( !Net_BindDualStack( net_ip.GetString(), net_ip6.GetString(), portNumber, netSocket, netSocket6, bound_to ) ) {
 		netSocket = 0;
 		netSocket6 = 0;
 		memset( &bound_to, 0, sizeof( bound_to ) );
 		return false;
 	}
 
-	const int secondSocket = IPSocketForFamily( interfaceName, portNumber, secondFamily, &explicitBound );
-	if ( secondSocket > 0 ) {
-		if ( secondFamily == AF_INET6 ) {
-			netSocket6 = secondSocket;
-		} else {
-			netSocket = secondSocket;
-		}
-		bound_to = explicitBound;
-		return true;
-	}
-
-	netSocket = 0;
-	netSocket6 = 0;
-	memset( &bound_to, 0, sizeof( bound_to ) );
-	return false;
+	return true;
 }
 
 //=============================================================================

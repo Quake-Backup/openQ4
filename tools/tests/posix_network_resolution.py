@@ -59,11 +59,14 @@ def validate_posix_resolver() -> None:
         "sockaddr_storage",
         "AF_INET6",
         "NA_IP6",
-        "inet_ntop",
+        # Address text comes from the shared formatter, not inet_ntop, so a
+        # given address has exactly one spelling on every platform.
+        "idNetworkEndpoint::FormatIPv6Endpoint(",
         "IPV6_V6ONLY",
         "netSocket6",
     ):
         require(source, required_symbol, "POSIX IPv6-capable network path")
+    reject(source, "inet_ntop(", "POSIX platform-specific IPv6 formatting")
 
     require(source, "idNetworkEndpoint::Split", "shared endpoint parsing")
     require(source, "SockadrToNetadr", "sockaddr-to-netadr conversion")
@@ -89,45 +92,44 @@ def validate_posix_resolver() -> None:
     require(socket_helper, "*addressResolved = true;", "POSIX successful address resolution")
 
     port_init = function_body(source, "bool idPort::InitForPort", "POSIX UDP initialization")
-    any_interface = function_body(
+    require(
         port_init,
-        "if ( Sys_IsAnyInterfaceName( interfaceName ) )",
-        "POSIX default dual-stack bind",
+        "Net_BindDualStack( net_ip.GetString(), net_ip6.GetString(), portNumber, netSocket, netSocket6, bound_to )",
+        "POSIX dual-stack bind entry",
     )
+
+    bind = function_body(source, "static bool Net_BindDualStack", "POSIX dual-stack bind")
     require_before(
-        any_interface,
-        "IPSocketForFamily( interfaceName, portNumber, AF_INET, &bound4, true )",
-        "if ( netSocket <= 0 )",
+        bind,
+        "AF_INET, &bound4, true, &ipv4Resolved",
+        "if ( ipv4Resolved )",
         "POSIX required default IPv4 bind",
     )
     require_before(
-        any_interface,
-        "if ( netSocket <= 0 )",
-        "IPSocketForFamily( interfaceName, ipv6Port, AF_INET6, &bound6, true )",
+        bind,
+        "if ( ipv4Resolved )",
+        "AF_INET6, &bound6, true )",
         "POSIX optional default IPv6 bind",
     )
-    ipv4_failure = function_body(any_interface, "if ( netSocket <= 0 )", "POSIX failed default IPv4 bind")
+    # A resolved IPv4 bind failure owns the outcome: falling through would hand
+    # a port scan an endpoint that IPv4 peers cannot reach.
+    ipv4_failure = function_body(bind, "if ( ipv4Resolved )", "POSIX failed default IPv4 bind")
     require(ipv4_failure, "return false;", "POSIX failed default IPv4 bind")
-    reject(any_interface, "bound_to = bound6;", "POSIX IPv6-only default bind")
+    reject(ipv4_failure, "ipv6Interface", "POSIX failed default IPv4 bind")
 
     for token in (
-        "const int firstFamily = prefersIPv6 ? AF_INET6 : AF_INET;",
-        "bool firstFamilyResolved = false;",
-        "&explicitBound, true, &firstFamilyResolved",
-        "if ( isAddressLiteral || firstFamilyResolved )",
+        "idNetworkEndpoint::PlanBind( ipv4Text, ipv6Text, net_enableIPv4.GetBool(), net_enableIPv6.GetBool(), plan );",
+        "bool ipv4Resolved = false;",
+        "if ( idNetworkEndpoint::IsAnyInterfaceName( ipv6Interface ) )",
+        "ipv6Interface = plan.ipv4Interface;",
     ):
-        require(port_init, token, "POSIX explicit hostname bind")
-    preferred_failure = function_body(
-        port_init,
-        "if ( isAddressLiteral || firstFamilyResolved )",
-        "POSIX resolved preferred-family bind failure",
-    )
-    require(preferred_failure, "return false;", "POSIX resolved preferred-family bind failure")
-    reject(preferred_failure, "secondSocket", "POSIX resolved preferred-family bind failure")
+        require(bind, token, "POSIX explicit hostname bind")
+    # A name with no A record may still name an IPv6-only interface, so the
+    # cross-family retry has to come after the fail-closed check, never before.
     require_before(
-        port_init,
-        "if ( isAddressLiteral || firstFamilyResolved )",
-        "IPSocketForFamily( interfaceName, portNumber, secondFamily",
+        bind,
+        "if ( ipv4Resolved )",
+        "ipv6Interface = plan.ipv4Interface;",
         "POSIX cross-family hostname fallback",
     )
 

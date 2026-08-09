@@ -146,6 +146,7 @@ def validate_cross_platform_network_cvar_defaults() -> None:
 def validate_network_contract_wiring() -> None:
     test_paths = (
         "tools/tests/network_ipv4_support.py",
+        "tools/tests/network_ipv6_support.py",
         "tools/tests/posix_network_resolution.py",
         "tools/tests/game_type_module_selection.py",
     )
@@ -176,6 +177,67 @@ def validate_network_contract_wiring() -> None:
         )
 
 
+def validate_dual_stack_bind_contract(body: str, platform: str) -> None:
+    """Keep a resolved IPv4 bind failure from silently becoming IPv6-only.
+
+    IPv4 is the baseline transport for discovery, LAN scans, masters, and
+    ordinary clients. Callers scan a port range and stop on the first success,
+    so handing them an IPv6-only endpoint after the requested IPv4 port failed
+    would strand every IPv4 peer on an address they cannot reach.
+    """
+    for token in (
+        "idNetworkEndpoint::PlanBind( ipv4Text, ipv6Text, net_enableIPv4.GetBool(), net_enableIPv6.GetBool(), plan );",
+        "if ( !plan.bindIPv4 && !plan.bindIPv6 )",
+        "bool ipv4Resolved = false;",
+        "AF_INET, &bound4, true, &ipv4Resolved",
+        "AF_INET6, &bound6, true )",
+        "if ( idNetworkEndpoint::IsAnyInterfaceName( ipv6Interface ) )",
+        "ipv6Interface = plan.ipv4Interface;",
+    ):
+        require(body, token, f"{platform} dual-stack bind plan")
+
+    fail_closed = function_body(body, "if ( ipv4Resolved )", f"{platform} resolved IPv4 bind failure")
+    require(fail_closed, "return false;", f"{platform} resolved IPv4 bind failure")
+    reject(fail_closed, "ipv6Interface", f"{platform} resolved IPv4 bind failure")
+
+    both_disabled = function_body(body, "if ( !plan.bindIPv4 && !plan.bindIPv6 )", f"{platform} disabled-family bind")
+    require(both_disabled, "return false;", f"{platform} disabled-family bind")
+
+    # Both families share one port number, so a dual-stack server is reached
+    # the same way over either transport.
+    require(body, "const int ipv6Port = ( portNumber == PORT_ANY && socket4", f"{platform} shared dual-stack port")
+
+    plan_index = body.index("idNetworkEndpoint::PlanBind(")
+    resolved_index = body.index("bool ipv4Resolved = false;")
+    first_bind = body.index("AF_INET, &bound4, true, &ipv4Resolved")
+    fail_closed_index = body.index("if ( ipv4Resolved )")
+    second_bind = body.index("AF_INET6, &bound6, true )")
+    if not (plan_index < resolved_index < first_bind < fail_closed_index < second_bind):
+        raise AssertionError(
+            f"{platform} resolved IPv4 bind failures must fail closed before the IPv6 socket is opened"
+        )
+
+
+def validate_windows_dual_stack_bind_contract(body: str) -> None:
+    validate_dual_stack_bind_contract(body, "Windows")
+    for token in (
+        "socket4 = INVALID_SOCKET;",
+        "socket6 = INVALID_SOCKET;",
+        "if ( socket4 == INVALID_SOCKET && socket6 == INVALID_SOCKET )",
+    ):
+        require(body, token, "Windows dual-stack bind sentinels")
+
+
+def validate_posix_dual_stack_bind_contract(body: str) -> None:
+    validate_dual_stack_bind_contract(body, "POSIX")
+    for token in (
+        "socket4 = 0;",
+        "socket6 = 0;",
+        "if ( socket4 <= 0 && socket6 <= 0 )",
+    ):
+        require(body, token, "POSIX dual-stack bind sentinels")
+
+
 def validate_windows_per_socket_lag_contract(source: str) -> None:
     """Keep latency queues private to the idPort instance that owns them."""
     if re.search(r"\bidUDPLag\s*\*\s*udpPorts\b|\budpPorts\s*\[", source):
@@ -189,13 +251,13 @@ def validate_windows_per_socket_lag_contract(source: str) -> None:
     require_before(port_init, "Close();", "platformData = new idUDPLag;", "Windows latency-state replacement")
     require_before(
         port_init,
-        "if ( netSocket == INVALID_SOCKET )",
+        "if ( !Net_BindDualStack(",
         "platformData = new idUDPLag;",
         "Windows latency allocation after successful bind",
     )
     failed_bind = function_body(
         port_init,
-        "if ( netSocket == INVALID_SOCKET )",
+        "if ( !Net_BindDualStack(",
         "Windows failed UDP initialization",
     )
     reject(failed_bind, "new idUDPLag", "Windows failed-bind latency allocation")
@@ -270,11 +332,25 @@ def validate_windows_networking() -> None:
         "idNetworkEndpoint::Split",
         "getaddrinfo",
         "freeaddrinfo",
-        "hints.ai_family = AF_INET;",
+        "hints.ai_family = family;",
         "hints.ai_socktype = socketType;",
-        "hints.ai_flags = doDNSResolve ? 0 : AI_NUMERICHOST;",
+        "hints.ai_flags = AI_NUMERICSERV | ( doDNSResolve ? AI_ADDRCONFIG : AI_NUMERICHOST );",
     ):
         require(resolver, token, "Windows IPv4 resolver")
+    # An explicit family must still take the first usable record, and AF_UNSPEC
+    # must keep preferring an A record so the legacy IPv4 transports behave
+    # exactly as before for a dual-stack hostname.
+    require(
+        resolver,
+        "if ( selected == NULL || ( family == AF_UNSPEC && selected->ai_family != AF_INET && result->ai_family == AF_INET ) )",
+        "Windows IPv4 A-record preference",
+    )
+    require(
+        resolver,
+        "if ( family != AF_UNSPEC || result->ai_family == AF_INET )",
+        "Windows IPv4 resolver selection break",
+    )
+    require(resolver, "result->ai_addrlen > sizeof( *address )", "Windows resolver copy bound")
     require(
         resolver,
         "endpoint.hasPort ? endpoint.port : defaultPort",
@@ -304,27 +380,41 @@ def validate_windows_networking() -> None:
     require_before(
         socket_body,
         "if ( port != PORT_ANY && ( port < 0 || port > 65535 ) )",
-        "socket( AF_INET",
+        "socket( family, SOCK_DGRAM, IPPROTO_UDP )",
         "Windows UDP bind port validation",
     )
     require(
         socket_body,
-        "htons( static_cast<unsigned short>( port ) )",
+        "const int bindPort = port == PORT_ANY ? 0 : port;",
+        "Windows automatic UDP bind port",
+    )
+    require(
+        socket_body,
+        "htons( static_cast<unsigned short>( bindPort ) )",
         "Windows unsigned UDP bind port conversion",
     )
+    # An interface string may carry its own port, which must never override the
+    # port the caller asked to bind.
+    for token in (
+        "reinterpret_cast<struct sockaddr_in6 *>( &address )->sin6_port = htons( static_cast<unsigned short>( bindPort ) );",
+        "reinterpret_cast<struct sockaddr_in *>( &address )->sin_port = htons( static_cast<unsigned short>( bindPort ) );",
+    ):
+        require(socket_body, token, "Windows explicit-interface bind port override")
+    require(socket_body, "if ( family != AF_INET && family != AF_INET6 )", "Windows UDP bind family guard")
 
     bind_failure = function_body(
         socket_body,
-        "else if ( !Net_StringToSockaddr( net_interface, &address, true ) )",
+        "} else if ( !Net_StringToSockaddr( net_interface, &address, &addressLen, true, family, bindPort ) )",
         "checked Windows explicit-interface bind",
     )
-    require(bind_failure, "closesocket( newsocket );", "failed Windows explicit-interface bind cleanup")
     require(bind_failure, "return INVALID_SOCKET;", "failed Windows explicit-interface bind result")
+    reject(bind_failure, "closesocket(", "Windows explicit-interface bind precedes socket creation")
 
     for condition, cleanup, context in (
-        ("if( ( newsocket = socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP ) ) == INVALID_SOCKET )", None, "Windows UDP socket creation failure"),
+        ("if( ( newsocket = socket( family, SOCK_DGRAM, IPPROTO_UDP ) ) == INVALID_SOCKET )", None, "Windows UDP socket creation failure"),
         ("if( ioctlsocket( newsocket, FIONBIO, &_true ) == SOCKET_ERROR )", "closesocket( newsocket );", "Windows UDP nonblocking setup failure"),
         ("if( setsockopt( newsocket, SOL_SOCKET, SO_BROADCAST", "closesocket( newsocket );", "Windows UDP broadcast setup failure"),
+        ("if( setsockopt( newsocket, IPPROTO_IPV6, IPV6_V6ONLY", "closesocket( newsocket );", "Windows UDP IPv6-only setup failure"),
         ("if( bind( newsocket", "closesocket( newsocket );", "Windows UDP bind failure"),
         ("if ( getsockname( newsocket", "closesocket( newsocket );", "Windows UDP bound-address query failure"),
     ):
@@ -343,7 +433,7 @@ def validate_windows_networking() -> None:
     require(packet_body, "memset( &net_from, 0, sizeof( net_from ) );", "Windows packet-address initialization")
     require(packet_body, "net_from.type = NA_BAD;", "Windows packet-address sentinel")
     message_too_large = function_body(packet_body, "if ( err == WSAEMSGSIZE )", "Windows truncated datagram")
-    require(message_too_large, "Net_SockadrToNetadr( &from, &net_from )", "Windows truncated-datagram source")
+    require(message_too_large, "Net_SockadrToNetadr(", "Windows truncated-datagram source")
     require(message_too_large, "memset( &net_from, 0, sizeof( net_from ) );", "Windows truncated source reset")
     require(message_too_large, "net_from.type = NA_BAD;", "Windows truncated source sentinel")
     require(message_too_large, "return false;", "Windows truncated-datagram result")
@@ -366,7 +456,7 @@ def validate_windows_networking() -> None:
     require(public_receive, "size = 0;", "Windows public packet-size initialization")
     require(public_receive, "memset( &from, 0, sizeof( from ) );", "Windows public packet-address initialization")
     require(public_receive, "from.type = NA_BAD;", "Windows public packet-address sentinel")
-    public_receive_guard = "if ( netSocket == INVALID_SOCKET || lag == NULL || data == NULL || maxSize <= 0 )"
+    public_receive_guard = "if ( ( netSocket == INVALID_SOCKET && netSocket6 == INVALID_SOCKET ) || lag == NULL || data == NULL || maxSize <= 0 )"
     require(public_receive, public_receive_guard, "Windows public packet input guard")
     if public_receive.index("from.type = NA_BAD;") > public_receive.index(public_receive_guard):
         raise AssertionError("Windows packet source must be initialized before early returns")
@@ -439,7 +529,7 @@ def validate_windows_networking() -> None:
     send_packet = function_body(source, "void idPort::SendPacket", "Windows public UDP send")
     public_send_socket_guard = function_body(
         send_packet,
-        "if ( netSocket == INVALID_SOCKET || lag == NULL )",
+        "if ( ( netSocket == INVALID_SOCKET && netSocket6 == INVALID_SOCKET ) || lag == NULL )",
         "Windows public UDP send socket guard",
     )
     require(public_send_socket_guard, "return;", "Windows public UDP send socket guard")
@@ -466,16 +556,25 @@ def validate_windows_networking() -> None:
     require_before(
         public_init,
         "if ( portNumber != PORT_ANY && ( portNumber < 0 || portNumber > 65535 ) )",
-        "NET_IPSocket(",
+        "Net_BindDualStack(",
         "Windows public UDP port validation",
     )
     public_init_failure = function_body(
         public_init,
-        "if ( netSocket == INVALID_SOCKET )",
+        "if ( !Net_BindDualStack(",
         "Windows public UDP initialization failure",
     )
-    require(public_init_failure, "netSocket = INVALID_SOCKET;", "Windows public UDP failure sentinel")
-    require(public_init_failure, "return false;", "Windows public UDP initialization failure")
+    for token in (
+        "netSocket = INVALID_SOCKET;",
+        "netSocket6 = INVALID_SOCKET;",
+        "memset( &bound_to, 0, sizeof( bound_to ) );",
+        "return false;",
+    ):
+        require(public_init_failure, token, "Windows public UDP failure sentinel")
+
+    validate_windows_dual_stack_bind_contract(
+        function_body(source, "static bool Net_BindDualStack", "Windows dual-stack bind")
+    )
 
     port_constructor = function_body(source, "idPort::idPort()", "Windows UDP socket construction")
     require(port_constructor, "netSocket = INVALID_SOCKET;", "Windows UDP socket construction")
@@ -521,7 +620,7 @@ def validate_windows_networking() -> None:
     require_before(
         blocking_receive,
         "if ( timeout < 0 )",
-        "Net_WaitForUDPPacket( netSocket, timeout );",
+        "Net_WaitForUDPPacket( netSocket, netSocket6, timeout );",
         "Windows nonblocking UDP poll",
     )
 
@@ -529,18 +628,18 @@ def validate_windows_networking() -> None:
     reject(tcp_init, "if ( port < 0 )", "Windows pre-parse TCP default-port rejection")
     require(
         tcp_init,
-        "!Net_StringToSockaddr( host, &sadr, true, port, SOCK_STREAM ) || !Net_SockadrToNetadr( &sadr, &address )",
+        "!Net_StringToSockaddr( host, &sadr, &sadrLen, true, AF_UNSPEC, port, SOCK_STREAM ) || !Net_SockadrToNetadr(",
         "Windows TCP checked resolver",
     )
-    require(tcp_init, "socket( AF_INET, SOCK_STREAM, IPPROTO_TCP )", "Windows TCP socket protocol")
-    require_before(tcp_init, "Net_StringToSockaddr(", "socket( AF_INET", "Windows TCP resolution")
+    require(tcp_init, "socket( sadr.ss_family, SOCK_STREAM, IPPROTO_TCP )", "Windows TCP socket protocol")
+    require_before(tcp_init, "Net_StringToSockaddr(", "socket( sadr.ss_family", "Windows TCP resolution")
     require_before(tcp_init, "Net_StringToSockaddr(", "if ( fd != INVALID_SOCKET )", "Windows TCP replacement validation")
     existing_connection = function_body(tcp_init, "if ( fd != INVALID_SOCKET )", "Windows TCP existing connection")
     require(existing_connection, "Close();", "Windows TCP existing-connection cleanup")
 
     tcp_socket_failure = function_body(
         tcp_init,
-        "if ( ( fd = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP ) ) == INVALID_SOCKET )",
+        "if ( ( fd = socket( sadr.ss_family, SOCK_STREAM, IPPROTO_TCP ) ) == INVALID_SOCKET )",
         "Windows TCP socket creation failure",
     )
     require(tcp_socket_failure, "fd = INVALID_SOCKET;", "Windows TCP socket creation sentinel")
@@ -548,7 +647,7 @@ def validate_windows_networking() -> None:
 
     tcp_connect_failure = function_body(
         tcp_init,
-        "if ( connect( fd, reinterpret_cast<const struct sockaddr *>( &sadr ), sizeof( sadr ) ) == SOCKET_ERROR )",
+        "if ( connect( fd, reinterpret_cast<const struct sockaddr *>( &sadr ), sadrLen ) == SOCKET_ERROR )",
         "Windows TCP connect failure",
     )
     for token in ("closesocket( fd );", "fd = INVALID_SOCKET;", "return false;"):
@@ -620,7 +719,7 @@ def validate_windows_networking() -> None:
     wait_body = function_body(source, "bool Net_WaitForUDPPacket", "Windows UDP wait")
     wait_socket_guard = function_body(
         wait_body,
-        "if ( netSocket == INVALID_SOCKET )",
+        "if ( netSocket == INVALID_SOCKET && netSocket6 == INVALID_SOCKET )",
         "Windows invalid UDP wait socket",
     )
     require(wait_socket_guard, "return false;", "Windows invalid UDP wait socket")
@@ -645,47 +744,6 @@ def validate_windows_networking() -> None:
         raise AssertionError("Windows SOCKS UDP initialization must have no enabled call sites")
 
 
-def validate_posix_hostname_bind_fallback_contract(port_init: str) -> None:
-    """Keep an A-record bind failure from silently becoming IPv6-only."""
-    for token in (
-        "const bool prefersIPv6 = strchr( interfaceName, ':' ) != NULL;",
-        "const bool isNumericIPv4 = inet_pton( AF_INET, interfaceName, &numericIPv4 ) == 1;",
-        "const bool isAddressLiteral = isNumericIPv4 || prefersIPv6;",
-        "const int firstFamily = prefersIPv6 ? AF_INET6 : AF_INET;",
-        "const int secondFamily = prefersIPv6 ? AF_INET : AF_INET6;",
-        "bool firstFamilyResolved = false;",
-        "&explicitBound, true, &firstFamilyResolved",
-    ):
-        require(port_init, token, "POSIX explicit-interface family selection")
-
-    preferred_failure = function_body(
-        port_init,
-        "if ( isAddressLiteral || firstFamilyResolved )",
-        "POSIX preferred-family bind failure",
-    )
-    for token in (
-        "netSocket = 0;",
-        "netSocket6 = 0;",
-        "memset( &bound_to, 0, sizeof( bound_to ) );",
-        "return false;",
-    ):
-        require(preferred_failure, token, "POSIX preferred-family bind failure")
-    reject(preferred_failure, "secondSocket", "POSIX preferred-family bind failure")
-
-    first_resolution = port_init.index("bool firstFamilyResolved = false;")
-    first_bind = port_init.index("IPSocketForFamily( interfaceName, portNumber, firstFamily")
-    fail_closed = port_init.index("if ( isAddressLiteral || firstFamilyResolved )")
-    second_bind = port_init.index("IPSocketForFamily( interfaceName, portNumber, secondFamily")
-    if not (
-        port_init.index("inet_pton( AF_INET, interfaceName, &numericIPv4 )")
-        < first_resolution
-        < first_bind
-        < fail_closed
-        < second_bind
-    ):
-        raise AssertionError("POSIX resolved preferred-family failures must fail closed before cross-family fallback")
-
-
 def validate_posix_networking() -> None:
     source = read("src/sys/posix/posix_net.cpp")
 
@@ -694,7 +752,7 @@ def validate_posix_networking() -> None:
     port_close = function_body(source, "void idPort::Close", "POSIX UDP socket close")
     require(port_close, "platformData = NULL;", "POSIX per-socket platform-state close sentinel")
 
-    network_init = function_body(source, "void Sys_InitNetworking", "POSIX interface discovery")
+    network_init = function_body(source, "void Sys_InitNetworking(void)", "POSIX interface discovery")
     mac_branch_start = network_init.index("#if defined( MACOS_X ) || defined( __APPLE__ )")
     mac_branch_end = network_init.index("#else", mac_branch_start)
     mac_branch = network_init[mac_branch_start:mac_branch_end]
@@ -765,7 +823,7 @@ def validate_posix_networking() -> None:
             "bool idPort::InitForPort",
             "if ( portNumber != PORT_ANY && ( portNumber < 0 || portNumber > 65535 ) )",
             "return false;",
-            "IPSocketForFamily(",
+            "Net_BindDualStack(",
             "POSIX public port guard",
         ),
     ):
@@ -775,15 +833,10 @@ def validate_posix_networking() -> None:
         require_before(port_body, guard, before, context)
 
     port_init = function_body(source, "bool idPort::InitForPort", "POSIX public UDP initialization")
-    any_interface = function_body(
+    port_init_failure = function_body(
         port_init,
-        "if ( Sys_IsAnyInterfaceName( interfaceName ) )",
-        "POSIX default-interface UDP initialization",
-    )
-    required_ipv4_failure = function_body(
-        any_interface,
-        "if ( netSocket <= 0 )",
-        "POSIX required IPv4 bind failure",
+        "if ( !Net_BindDualStack(",
+        "POSIX public UDP initialization failure",
     )
     for token in (
         "netSocket = 0;",
@@ -791,27 +844,11 @@ def validate_posix_networking() -> None:
         "memset( &bound_to, 0, sizeof( bound_to ) );",
         "return false;",
     ):
-        require(required_ipv4_failure, token, "POSIX required IPv4 bind failure")
-    require_before(
-        any_interface,
-        "IPSocketForFamily( interfaceName, portNumber, AF_INET, &bound4, true )",
-        "if ( netSocket <= 0 )",
-        "POSIX required IPv4 default bind",
-    )
-    require_before(
-        any_interface,
-        "if ( netSocket <= 0 )",
-        "IPSocketForFamily( interfaceName, ipv6Port, AF_INET6, &bound6, true )",
-        "POSIX optional IPv6 default bind",
-    )
-    reject(
-        any_interface,
-        "netSocket <= 0 && netSocket6 <= 0",
-        "POSIX IPv6-only default bind success",
-    )
-    reject(any_interface, "bound_to = bound6;", "POSIX IPv4-baseline default bind")
+        require(port_init_failure, token, "POSIX public UDP failure sentinel")
 
-    validate_posix_hostname_bind_fallback_contract(port_init)
+    validate_posix_dual_stack_bind_contract(
+        function_body(source, "static bool Net_BindDualStack", "POSIX dual-stack bind")
+    )
 
     sockaddr_conversion = function_body(source, "static bool SockadrToNetadr", "POSIX sockaddr conversion")
     require(sockaddr_conversion, "memset( a, 0, sizeof( *a ) );", "POSIX sockaddr output initialization")
@@ -1741,42 +1778,52 @@ def validate_critical_mutation_sensitivity() -> None:
         "Windows close does not release the calling idPort's latency state",
     )
 
-    receive_lag_guard = "netSocket == INVALID_SOCKET || lag == NULL || data == NULL"
+    receive_lag_guard = "( netSocket == INVALID_SOCKET && netSocket6 == INVALID_SOCKET ) || lag == NULL || data == NULL"
     if windows.count(receive_lag_guard) != 1:
         raise AssertionError("Windows closed-port receive mutation anchor is not unique")
     expect_contract_rejection(
         validate_windows_per_socket_lag_contract,
-        windows.replace(receive_lag_guard, "netSocket == INVALID_SOCKET || data == NULL", 1),
+        windows.replace(
+            receive_lag_guard,
+            "( netSocket == INVALID_SOCKET && netSocket6 == INVALID_SOCKET ) || data == NULL",
+            1,
+        ),
         "Windows delayed receive dereferences missing per-socket state",
     )
 
+    # The dual-stack bind policy is byte-identical on both platforms apart from
+    # its invalid-socket sentinel, so the same mutations must be caught twice.
     posix = read("src/sys/posix/posix_net.cpp")
-    port_init = function_body(posix, "bool idPort::InitForPort", "POSIX public UDP initialization")
     mutations = (
         (
-            "if ( isAddressLiteral || firstFamilyResolved )",
-            "if ( isAddressLiteral )",
+            "if ( ipv4Resolved ) {",
+            "if ( false ) {",
             "resolved IPv4 bind failure falls through to IPv6",
         ),
         (
-            "if ( isAddressLiteral || firstFamilyResolved )",
-            "if ( isAddressLiteral && firstFamilyResolved )",
-            "preferred-family failure guard requires both causes",
+            "AF_INET, &bound4, true, &ipv4Resolved",
+            "AF_INET, &bound4, true, NULL",
+            "IPv4 resolution result is discarded",
         ),
         (
-            "&explicitBound, true, &firstFamilyResolved",
-            "&explicitBound, true, NULL",
-            "preferred-family resolution result is discarded",
+            "idNetworkEndpoint::PlanBind( ipv4Text, ipv6Text, net_enableIPv4.GetBool(), net_enableIPv6.GetBool(), plan );",
+            "idNetworkEndpoint::PlanBind( ipv4Text, ipv6Text, true, true, plan );",
+            "the family enable cvars are ignored",
         ),
     )
-    for original, replacement, context in mutations:
-        if port_init.count(original) != 1:
-            raise AssertionError(f"Mutation anchor is not unique for {context}: {original!r}")
-        expect_contract_rejection(
-            validate_posix_hostname_bind_fallback_contract,
-            port_init.replace(original, replacement, 1),
-            context,
-        )
+    for platform_source, validator, platform in (
+        (windows, validate_windows_dual_stack_bind_contract, "Windows"),
+        (posix, validate_posix_dual_stack_bind_contract, "POSIX"),
+    ):
+        bind_body = function_body(platform_source, "static bool Net_BindDualStack", f"{platform} dual-stack bind")
+        for original, replacement, context in mutations:
+            if bind_body.count(original) != 1:
+                raise AssertionError(f"{platform} mutation anchor is not unique for {context}: {original!r}")
+            expect_contract_rejection(
+                validator,
+                bind_body.replace(original, replacement, 1),
+                f"{platform}: {context}",
+            )
 
     common = read("src/framework/Common.cpp")
     selftest = function_body(common, "static void Com_NetIPv4SelfTest_f", "runtime IPv4 self-test")

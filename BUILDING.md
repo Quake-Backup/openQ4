@@ -164,6 +164,34 @@ reachability, router NAT or firewall configuration, external DNS records,
 master-server availability, or end-to-end internet play; validate those
 separately when they are relevant to a change.
 
+### IPv6 Networking Self-Test
+
+Run the no-argument `netIPv6SelfTest` command from the openQ4 console:
+
+```text
+netIPv6SelfTest
+```
+
+This developer diagnostic checks bracketed and unbracketed IPv6 literals,
+rejected malformed endpoints, IPv4-mapped normalization, canonical RFC 5952
+text and its round-trip through the parser, and LAN classification of loopback
+and link-local addresses. It then binds an IPv6-only receiver and sender on
+`::1` so every datagram provably crosses the IPv6 socket, verifying initialized
+counters and bidirectional payloads, an exact-capacity datagram, rejection of an
+oversized datagram without losing the following marker, and socket
+close/reopen. A final dual-stack check binds one port and confirms it receives
+over both families. A successful run ends with
+`IPv6 network self-test: passed`; any failed check ends with
+`IPv6 network self-test: FAILED` and should be treated as a validation failure.
+
+A host with IPv6 disabled is a supported configuration: the parsing and
+formatting checks still run, and the transport section reports that it was
+skipped rather than failing.
+
+The same limitations apply as for IPv4: the IPv6 self-test is local and
+non-destructive, and does not prove public reachability, firewall
+configuration, external DNS records, or end-to-end internet play.
+
 ### macOS Static Validation
 
 Use this track for macOS support work when you do not have access to macOS. It runs static/policy tests, synthetic Apple GL 2.1 checks, synthetic macOS package/archive fixtures, shell syntax checks, and push/PR dry-run validation. It does not run openQ4 on macOS.

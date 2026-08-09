@@ -466,12 +466,34 @@ void idAsyncNetwork::NextMap_f( const idCmdArgs &args ) {
 idAsyncNetwork::Connect_f
 ==================
 */
+/*
+==================
+Net_AddressArgument
+
+The command tokenizer treats '[', ']' and '%' as punctuation, and only glues a
+":port" suffix onto a dotted quad, so an unquoted IPv6 endpoint reaches a
+command split across several arguments: "[2001:db8::1]:27650" arrives as
+'[' '2001' ':' 'db8' '::' '1' ']' ':' '27650'. A network address never contains
+a space, so concatenating the arguments recovers exactly what the user typed,
+and a quoted address - which arrives as a single token - passes through
+unchanged.
+==================
+*/
+static idStr Net_AddressArgument( const idCmdArgs &args ) {
+	idStr address;
+	for ( int i = 1; i < args.Argc(); i++ ) {
+		address += args.Argv( i );
+	}
+	return address;
+}
+
 void idAsyncNetwork::Connect_f( const idCmdArgs &args ) {
 	if ( server.IsActive() ) {
 		common->Printf( "already running a server\n" );
 		return;
 	}
-	if ( args.Argc() != 2 ) {
+	const idStr serverName = Net_AddressArgument( args );
+	if ( serverName.IsEmpty() ) {
 		common->Printf( "USAGE: connect <serverName>\n" );
 		return;
 	}
@@ -487,13 +509,14 @@ void idAsyncNetwork::Connect_f( const idCmdArgs &args ) {
 		cvarSystem->SetCVarString( "com_nextGameModule", "game_mp" );
 		idCmdArgs reloadArgs;
 		reloadArgs.AppendArg( "connect" );
-		reloadArgs.AppendArg( args.Argv( 1 ) );
+		// One argument, so the replayed command survives re-tokenization.
+		reloadArgs.AppendArg( serverName.c_str() );
 		cmdSystem->SetupReloadGameModule( reloadArgs );
 		return;
 	}
 
 	com_asyncInput.SetBool( false );
-	client.ConnectToServer( args.Argv( 1 ) );
+	client.ConnectToServer( serverName.c_str() );
 }
 
 /*
@@ -523,7 +546,7 @@ idAsyncNetwork::GetServerInfo_f
 ==================
 */
 void idAsyncNetwork::GetServerInfo_f( const idCmdArgs &args ) {
-	client.GetServerInfo( args.Argv( 1 ) );
+	client.GetServerInfo( Net_AddressArgument( args ).c_str() );
 }
 
 /*

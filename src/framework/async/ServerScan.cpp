@@ -208,7 +208,16 @@ void idServerScan::AddServer( int id, const char *srv ) {
 	if ( !s.adr.port ) {
 		s.adr.port = PORT_SERVER;
 	}
-	
+
+	// A master that answers both the legacy and the extended list request names
+	// the same server twice, and a dual-stack LAN host answers both sweeps.
+	// Listing an endpoint once keeps the ping accounting and the browser honest.
+	for ( int i = 0; i < net_servers.Num(); i++ ) {
+		if ( Sys_CompareNetAdrBase( net_servers[ i ].adr, s.adr ) && net_servers[ i ].adr.port == s.adr.port ) {
+			return;
+		}
+	}
+
 	net_servers.Append( s );
 }
 

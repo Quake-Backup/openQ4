@@ -34,6 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "AsyncNetwork.h"
 #ifndef ID_DEDICATED
 #include "../Session_local.h"
+#include "../../sys/NetworkEndpoint.h"
 #endif
 
 idNetworkSystem		networkSystemLocal;
@@ -403,12 +404,10 @@ void idNetworkSystem::SetLoadingText( const char *loadingText ) {
 
 		idStr serverAddress = GetServerAddress();
 		if ( !serverAddress.Length() ) {
-			const char *netIP = cvarSystem->GetCVarString( "net_ip" );
-			const int netPort = cvarSystem->GetCVarInteger( "net_port" );
-			if ( netIP && netIP[ 0 ] ) {
-				serverAddress = va( "%s:%d", idStr::Icmp( netIP, "0.0.0.0" ) ? netIP : "127.0.0.1", netPort );
-			} else if ( netPort > 0 ) {
-				serverAddress = va( "127.0.0.1:%d", netPort );
+			char localEndpoint[idNetworkEndpoint::LOCAL_ENDPOINT_TEXT_SIZE];
+			if ( idNetworkEndpoint::FormatLocalServerEndpoint( cvarSystem->GetCVarString( "net_ip" ),
+					cvarSystem->GetCVarInteger( "net_port" ), localEndpoint, sizeof( localEndpoint ) ) ) {
+				serverAddress = localEndpoint;
 			}
 		}
 		if ( serverAddress.Length() && !sessLocal.guiLoading->State().GetString( "server_ip", "" )[ 0 ] ) {

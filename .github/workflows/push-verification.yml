@@ -151,6 +151,7 @@ jobs:
             tools/tests/mvd_server_api_contract.py \
             tools/tests/native_glx_shutdown.py \
             tools/tests/network_ipv4_support.py \
+            tools/tests/network_ipv6_support.py \
             tools/tests/openq4_pure_pack.py \
             tools/tests/packaging_safety.py \
             tools/tests/preprocessor_macro_safety.py \
@@ -272,6 +273,7 @@ jobs:
           python tools/tests/mvd_server_api_contract.py
           python tools/tests/native_glx_shutdown.py
           python tools/tests/network_ipv4_support.py
+          python tools/tests/network_ipv6_support.py
           python tools/tests/openq4_pure_pack.py
           python tools/tests/packaging_safety.py
           python tools/tests/preprocessor_macro_safety.py

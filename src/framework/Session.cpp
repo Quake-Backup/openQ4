@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Session_local.h"
 #include "ArenaCampaign.h"
 #include "BuildVersion.h"
+#include "../sys/NetworkEndpoint.h"
 #if defined( __has_include )
 #if __has_include( "openq4_savegame_compat_generated.h" )
 #include "openq4_savegame_compat_generated.h"
@@ -5243,12 +5244,10 @@ void idSessionLocal::LoadLoadingGui( const char *mapName ) {
 			const char *serverName = mapSpawnData.serverInfo.GetString( "si_name", cvarSystem->GetCVarString( "si_name" ) );
 			idStr serverAddress = networkSystem->GetServerAddress();
 			if ( !serverAddress.Length() ) {
-				const char *netIP = cvarSystem->GetCVarString( "net_ip" );
-				const int netPort = cvarSystem->GetCVarInteger( "net_port" );
-				if ( netIP && netIP[ 0 ] ) {
-					serverAddress = va( "%s:%d", idStr::Icmp( netIP, "0.0.0.0" ) ? netIP : "127.0.0.1", netPort );
-				} else if ( netPort > 0 ) {
-					serverAddress = va( "127.0.0.1:%d", netPort );
+				char localEndpoint[idNetworkEndpoint::LOCAL_ENDPOINT_TEXT_SIZE];
+				if ( idNetworkEndpoint::FormatLocalServerEndpoint( cvarSystem->GetCVarString( "net_ip" ),
+						cvarSystem->GetCVarInteger( "net_port" ), localEndpoint, sizeof( localEndpoint ) ) ) {
+					serverAddress = localEndpoint;
 				}
 			}
 			const char *gameType = mapSpawnData.serverInfo.GetString( "si_gameType", cvarSystem->GetCVarString( "si_gameType" ) );

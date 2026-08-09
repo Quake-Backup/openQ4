@@ -1188,6 +1188,15 @@ void idArenaCampaign::OpenSelector() {
 		LoadCampaign();
 	}
 
+	// A result ledger belongs to the browser, and the browser is the only view
+	// that can dismiss one. Showing the mode selector underneath an undismissed
+	// result would leave its blocking overlay up with no way to clear it, so
+	// route an outstanding presentation to the view that owns it.
+	if ( state->result != 0 ) {
+		OpenBrowser();
+		return;
+	}
+
 	if ( sessLocal.guiActive != state->gui ) {
 		state->returnGui = sessLocal.guiActive != NULL ? sessLocal.guiActive : sessLocal.guiMainMenu;
 	}

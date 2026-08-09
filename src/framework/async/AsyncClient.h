@@ -195,6 +195,7 @@ private:
 	void				ProcessInfoResponseMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessPrintMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessServersListMessage( const netadr_t from, const idBitMsg &msg );
+	void				ProcessServersListExtMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessAuthKeyMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessVersionMessage( const netadr_t from, const idBitMsg &msg );
 	void				ConnectionlessMessage( const netadr_t from, const idBitMsg &msg );

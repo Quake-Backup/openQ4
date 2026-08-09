@@ -2660,7 +2660,9 @@ void idSessionLocal::HandleMainMenuCommands( const char *menuCommand ) {
 				continue;
 			}
 
-			cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "connect %s", s ) );
+			// Quote it: an unquoted IPv6 endpoint is split by the command
+			// tokenizer, which treats '[', ']' and '%' as punctuation.
+			cmdSystem->BufferCommandText( CMD_EXEC_NOW, va( "connect \"%s\"", s ) );
 			return;
 		}
 

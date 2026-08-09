@@ -50,7 +50,28 @@ All fragments will have the same sequence numbers.
 
 #define	MAX_PACKETLEN			1400		// max size of a network packet
 #define	FRAGMENT_SIZE			(MAX_PACKETLEN - 100)
+// IPv6 guarantees only a 1280 byte path MTU and forbids routers from
+// fragmenting in transit: an oversized datagram is dropped and answered with an
+// ICMPv6 Packet Too Big that a filtering path frequently never delivers. A
+// 1400 byte fragment would then be silently black-holed while small packets
+// kept flowing, which reads as "connects, then hangs awaiting snapshot".
+#define	MAX_PACKETLEN6			1232		// 1280 minus the 40 byte IPv6 and 8 byte UDP headers
+#define	FRAGMENT_SIZE6			(MAX_PACKETLEN6 - 100)
 #define	FRAGMENT_BIT			(1u<<31)
+
+/*
+===============
+Net_FragmentSize
+
+Both endpoints of a connection see the same remote address family, so they
+agree on the fragment size without negotiating it. That agreement is required:
+the receiver detects the final fragment by comparing its length against this
+value.
+===============
+*/
+static int Net_FragmentSize( const netadr_t &adr ) {
+	return adr.type == NA_IP6 ? FRAGMENT_SIZE6 : FRAGMENT_SIZE;
+}
 
 idCVar net_channelShowPackets( "net_channelShowPackets", "0", CVAR_SYSTEM | CVAR_BOOL, "show all packets" );
 idCVar net_channelShowDrop( "net_channelShowDrop", "0", CVAR_SYSTEM | CVAR_BOOL, "show dropped packets" );
@@ -256,7 +277,7 @@ void idMsgChannel::SendNextFragment( idPort &port, const int time ) {
 	msg.WriteShort( id );
 	msg.WriteLong( static_cast<int>( static_cast<unsigned int>( outgoingSequence ) | FRAGMENT_BIT ) );
 
-	fragLength = FRAGMENT_SIZE;
+	fragLength = Net_FragmentSize( remoteAddress );
 	if ( unsentFragmentStart + fragLength > unsentMsg.GetSize() ) {
 		fragLength = unsentMsg.GetSize() - unsentFragmentStart;
 	}
@@ -281,7 +302,7 @@ void idMsgChannel::SendNextFragment( idPort &port, const int time ) {
 	// that is exactly the fragment length still needs to send
 	// a second packet of zero length so that the other side
 	// can tell there aren't more to follow
-	if ( unsentFragmentStart == unsentMsg.GetSize() && fragLength != FRAGMENT_SIZE ) {
+	if ( unsentFragmentStart == unsentMsg.GetSize() && fragLength != Net_FragmentSize( remoteAddress ) ) {
 		outgoingSequence++;
 		unsentFragments = false;
 	}
@@ -331,7 +352,7 @@ int idMsgChannel::SendMessage( idPort &port, const int time, const idBitMsg &msg
 	unsentMsg.BeginWriting();
 
 	// fragment large messages
-	if ( totalLength >= FRAGMENT_SIZE ) {
+	if ( totalLength >= Net_FragmentSize( remoteAddress ) ) {
 		unsentFragments = true;
 		unsentFragmentStart = 0;
 
@@ -495,7 +516,7 @@ bool idMsgChannel::Process( const netadr_t from, int time, idBitMsg &msg, int &s
 		UpdatePacketLoss( time, 1, 0 );
 
 		// if this wasn't the last fragment, don't process anything
-		if ( fragLength == FRAGMENT_SIZE ) {
+		if ( fragLength == Net_FragmentSize( remoteAddress ) ) {
 			return false;
 		}
 

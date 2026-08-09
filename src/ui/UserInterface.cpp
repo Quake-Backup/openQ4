@@ -499,6 +499,12 @@ void idUserInterfaceLocal::Redraw( int _time, bool useAspectCorrection ) {
 		uiManagerLocal.dc.GetVirtualScreenExpansion( desktop->forceAspectWidth, desktop->forceAspectHeight, xExpand, yExpand );
 		SetStateFloat( "virtual_screen_x_expand", xExpand );
 		SetStateFloat( "virtual_screen_y_expand", yExpand );
+		// Physical aspect of the region the authored canvas covers.  The expanded
+		// logical area always maps onto the whole 2D viewport, so this is the only
+		// value a gui needs to size cinematic framing that has to look the same on
+		// every display, and it stays correct when aspect correction is disabled
+		// and the canvas is stretched instead of expanded.
+		SetStateFloat( "virtual_screen_aspect", uiManagerLocal.dc.GetCanvasAspect() );
 
 		idRectangle cinematicTopBar;
 		idRectangle cinematicBottomBar;

@@ -968,12 +968,23 @@ def main() -> None:
     reject(sys_public, "int\t\t\tnetSocket;", "Win64-truncated UDP socket storage")
     reject(sys_public, "int\t\t\tfd;", "Win64-truncated TCP socket storage")
     for signature in (
-        "SOCKET NET_IPSocket(",
-        "bool Net_WaitForUDPPacket( SOCKET netSocket",
+        "static SOCKET NET_IPSocketForFamily(",
+        "static bool Net_BindDualStack( const char *ipv4Text, const char *ipv6Text, int portNumber, SOCKET &socket4, SOCKET &socket6",
+        "static SOCKET Net_SocketForAddress( SOCKET netSocket, SOCKET netSocket6",
+        "static void Net_SendMulticast6Packet( SOCKET netSocket",
+        "bool Net_WaitForUDPPacket( SOCKET netSocket, SOCKET netSocket6",
         "bool Net_GetUDPPacket( SOCKET netSocket",
         "void Net_SendUDPPacket( SOCKET netSocket",
     ):
         require(win_net, signature, "Win64-safe Winsock helper signature")
+    # A socket handle is 64-bit on Win64, so nothing may narrow one to int.
+    for narrowing in (
+        "int NET_IPSocket",
+        "int Net_SocketForAddress",
+        "( int )netSocket",
+        "(int)netSocket",
+    ):
+        reject(win_net, narrowing, "Win64-truncated Winsock handle")
     require(win_local, "LRESULT CALLBACK MainWndProc", "pointer-sized main window result")
     # Splash, console, input-line and button-subclass procedures.
     if win_syscon.count("LRESULT CALLBACK") != 4:

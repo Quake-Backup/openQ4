@@ -57,6 +57,40 @@ connect play.example.net:28004
 
 Omitting the port selects `28004`. A literal `:0` also selects that default for direct connections; it does not connect to a server listening on port zero.
 
+## IPv6 Binding and Ports
+
+IPv6 is on by default. The server opens an IPv6 socket alongside the IPv4 one on the **same** `net_port`, so a dual-stack server publishes a single port number and clients of either family reach it there.
+
+| Variable | What it controls |
+|---|---|
+| `net_ip6` | Local IPv6 interface to bind. Empty, the default, binds every interface. Set a local IPv6 address to bind only that adapter. |
+| `net_enableIPv4` | `1` opens the IPv4 socket, `0` leaves it closed. |
+| `net_enableIPv6` | `1` opens the IPv6 socket, `0` leaves it closed. |
+| `net_mcast6addr` | IPv6 multicast group answered during a LAN scan. The default `ff02::1` is the link-local all-nodes group. |
+| `net_mcast6iface` | IPv6 interface index used for the LAN scan. `0`, the default, scans every attached link. |
+
+IPv4 remains the baseline transport: when both families are enabled, a failure to bind the requested IPv4 port fails the whole startup rather than quietly leaving an IPv6-only server that IPv4 players cannot reach. A failure to bind the IPv6 socket is not fatal, so a host without IPv6 keeps working unchanged.
+
+For an IPv6-only server, set `net_enableIPv4 0`. The IPv6 bind then owns the outcome and its failure stops startup the same way.
+
+Older configurations that put an IPv6 literal in `net_ip` keep working: openQ4 treats it as the IPv6 interface and opens no IPv4 socket, exactly as before. Prefer `net_ip6` for new configurations.
+
+## Connecting over IPv6
+
+Bracket the address whenever a port follows it, or the last colon is read as the port separator:
+
+```text
+connect [2001:db8::1]:28004
+connect [fe80::1%12]:28004
+connect 2001:db8::1
+```
+
+The zone index in the second form (`%12`) selects the network interface for a link-local `fe80::/10` address, and is required for those addresses. Omitting the port selects `28004`.
+
+A hostname with both A and AAAA records resolves to the IPv4 address; use the bracketed literal to force IPv6.
+
+Run `netIPv6SelfTest` on the server console to confirm IPv6 parsing and loopback transport before opening firewall rules. It prints `IPv6 network self-test: passed`, or reports that it skipped the transport checks if the host has no IPv6 configured.
+
 ## Firewall and NAT
 
 For predictable hosting, use direct IPv4 UDP with the firewall and port-forward
@@ -68,6 +102,7 @@ them does not route multiplayer traffic through a SOCKS proxy.
 - If the server is behind a router, forward the same external UDP port to the server's local IPv4 address and selected port. Give the host a stable DHCP reservation or static local address so that rule does not drift.
 - Players on the same LAN should connect to the server's local IPv4 address. Internet players should use the router's public IPv4 address or a hostname with an IPv4 DNS record.
 - Test public reachability from outside the server's LAN. Some routers do not support connecting back through their own public address.
+- For IPv6, allow inbound UDP on the same `net_port` for the server's IPv6 address. IPv6 hosts are usually globally routable with no NAT and no port forward, so the router's firewall rule is normally the only change required. Publish the server's global IPv6 address, not a `fe80::` link-local one, which only reaches the same physical link.
 - Carrier-grade NAT or another upstream NAT can prevent unsolicited inbound connections even when the local router is configured correctly; in that case, ask the network provider for a public IPv4 address or a suitable port-forwarding service.
 
 ## Common Server Variables

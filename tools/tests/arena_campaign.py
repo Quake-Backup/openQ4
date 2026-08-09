@@ -2019,6 +2019,237 @@ def validate_game_hooks() -> None:
     )
 
 
+CANVAS_WIDTH = 640.0
+CANVAS_HEIGHT = 480.0
+CANVAS_ASPECT = CANVAS_WIDTH / CANVAS_HEIGHT
+# Mirrors guis/mphud.gui: crop toward 16:9, floored at the authored 34/480 bar
+# and capped so the frame can never reach the stock HUD row at canvas y=57.
+LETTERBOX_TARGET_RECIPROCAL = 0.5625
+LETTERBOX_MIN_FRACTION = 0.0708333
+LETTERBOX_MAX_FRACTION = 0.11
+STOCK_HUD_TOP_ROW = 57.0
+
+
+def match_block(haystack: str, pattern: str, context: str) -> str:
+    found = re.search(pattern, haystack, re.DOTALL)
+    if found is None:
+        raise AssertionError(f"Missing /{pattern}/ in {context}")
+    return found.group(0)
+
+
+def letterbox_metrics(aspect: float, aspect_correction: bool = True) -> dict:
+    """Model the authored arena letterbox for one physical viewport aspect."""
+
+    x_expand = y_expand = 0.0
+    if aspect_correction:
+        if aspect > CANVAS_ASPECT:
+            x_expand = CANVAS_WIDTH * (aspect / CANVAS_ASPECT - 1.0) / 2.0
+        elif aspect < CANVAS_ASPECT:
+            y_expand = CANVAS_HEIGHT * (CANVAS_ASPECT / aspect - 1.0) / 2.0
+
+    screen_width = CANVAS_WIDTH + 2.0 * x_expand
+    screen_height = CANVAS_HEIGHT + 2.0 * y_expand
+
+    raw = (1.0 - aspect * LETTERBOX_TARGET_RECIPROCAL) * 0.5
+    fraction = (
+        LETTERBOX_MIN_FRACTION
+        + (raw - LETTERBOX_MIN_FRACTION) * (raw > LETTERBOX_MIN_FRACTION)
+        - (raw - LETTERBOX_MAX_FRACTION) * (raw > LETTERBOX_MAX_FRACTION)
+    )
+    bar = fraction * screen_height
+    return {
+        "x_expand": x_expand,
+        "y_expand": y_expand,
+        "screen_width": screen_width,
+        "screen_height": screen_height,
+        "fraction": fraction,
+        "bar": bar,
+        "screen_left": -x_expand,
+        "screen_right": CANVAS_WIDTH + x_expand,
+        "top": -y_expand + bar,
+        "bottom": CANVAS_HEIGHT + y_expand - bar,
+    }
+
+
+def validate_letterbox() -> None:
+    """The entrance and final-tableau framing must respect the real viewport.
+
+    Authoring the bars as a fixed slice of the 640x480 canvas is only correct at
+    4:3: on a wide display the canvas is expanded and the bars stop short of the
+    screen edges, and on a tall one the real screen edge is outside the canvas
+    entirely, so the world stays visible above and below the frame.
+    """
+
+    mp_hud = read(ROOT / "content" / "baseoq4" / "pak0" / "guis" / "mphud.gui")
+    user_interface = read(ROOT / "src" / "ui" / "UserInterface.cpp")
+
+    # The engine has to publish the physical aspect; expansion alone cannot
+    # describe the viewport when ui_aspectCorrection stretches the canvas.
+    require(
+        user_interface,
+        'SetStateFloat( "virtual_screen_aspect", uiManagerLocal.dc.GetCanvasAspect() );',
+        "published viewport aspect for cinematic gui framing",
+    )
+    require(mp_hud, '"gui::virtual_screen_aspect"', "aspect-driven Arena letterbox")
+
+    for window_name in (
+        "oq4_arena_frame_fit",
+        "oq4_arena_frame_metrics",
+        "oq4_arena_frame",
+    ):
+        require(mp_hud, f"windowDef {window_name}", "Arena letterbox geometry driver")
+
+    # Every full-bleed layer of the presentation must span the expanded canvas
+    # on both axes rather than the authored 640x480 rectangle.
+    full_bleed_x = (
+        '( 0 - "gui::virtual_screen_x_expand" )',
+        '( 640 + ( "gui::virtual_screen_x_expand" * 2 ) )',
+    )
+    for window_name in (
+        "oq4_arena_present_shade",
+        "oq4_arena_letterbox_top",
+        "oq4_arena_letterbox_bottom",
+    ):
+        block = match_block(
+            mp_hud,
+            rf"windowDef\s+{window_name}\s*\{{.*?\n\t\}}",
+            f"{window_name} definition",
+        )
+        for needle in full_bleed_x:
+            require(block, needle, f"{window_name} must span the expanded canvas")
+
+    # The bars have to hang off the physical screen edges, and the animation has
+    # to run through the shared reveal scalar instead of hard-coded rects.
+    require(
+        mp_hud,
+        '( "oq4_arena_frame::bar" * "oq4_arena_frame::open" )',
+        "Arena letterbox height driven by the animated frame",
+    )
+    require(
+        mp_hud,
+        '( ( 480 + "gui::virtual_screen_y_expand" ) - ( "oq4_arena_frame::bar" * "oq4_arena_frame::open" ) )',
+        "Arena bottom bar anchored to the physical screen edge",
+    )
+    if re.search(r'transition\s+"oq4_arena_letterbox_(top|bottom)::rect"', mp_hud):
+        raise AssertionError(
+            "Arena letterbox bars must not transition literal canvas rects"
+        )
+
+    # Content that can collide with a thicker bar hangs off the frame edges.
+    for needle in (
+        '( "oq4_arena_frame::top" + 6 )',
+        '( "oq4_arena_frame::bottom" - 7 )',
+        '( "oq4_arena_frame::top" + 32 )',
+        '( "oq4_arena_frame::top" + 60 )',
+        '( "oq4_arena_frame::top" + 119 )',
+        '( "oq4_arena_frame::bottom" - 118 )',
+        '( "oq4_arena_frame::bottom" - 107 )',
+        '( "oq4_arena_frame::bottom" - 84 )',
+        '( "oq4_arena_frame::bottom" - 31 )',
+    ):
+        require(mp_hud, needle, "Arena tableau anchored to the cinematic frame")
+
+    # Numeric contract for the authored policy.
+    wide = letterbox_metrics(16.0 / 9.0)
+    if abs(wide["bar"] - 34.0) > 0.05 or abs(wide["top"] - 34.0) > 0.05:
+        raise AssertionError(
+            f"16:9 must reproduce the authored 34-unit bar, got {wide['bar']:.3f}"
+        )
+
+    aspects = (32 / 9, 21 / 9, 16 / 9, 1.6, 1.5, 4 / 3, 1.25, 1.0, 0.75, 9 / 16)
+    for aspect in aspects:
+        for correction in (True, False):
+            m = letterbox_metrics(aspect, correction)
+            if m["bar"] <= 0.0:
+                raise AssertionError(
+                    f"aspect {aspect:.3f} would draw no letterbox at all"
+                )
+            # Bars always reach both horizontal screen edges.
+            if m["screen_left"] > 0.0 or m["screen_right"] < CANVAS_WIDTH:
+                raise AssertionError(f"aspect {aspect:.3f} leaves an uncovered edge")
+            # Bars always sit on the physical top and bottom of the screen.
+            if abs((m["top"] - m["bar"]) - (-m["y_expand"])) > 1e-6:
+                raise AssertionError(
+                    f"aspect {aspect:.3f} top bar is not anchored to the screen edge"
+                )
+            # And they never swallow the authored 4:3 content.
+            if m["top"] > STOCK_HUD_TOP_ROW - 4.0:
+                raise AssertionError(
+                    f"aspect {aspect:.3f} letterbox reaches the stock HUD row "
+                    f"(inner edge {m['top']:.2f})"
+                )
+            if m["bottom"] < CANVAS_HEIGHT - (STOCK_HUD_TOP_ROW - 4.0):
+                raise AssertionError(
+                    f"aspect {aspect:.3f} bottom letterbox intrudes too far"
+                )
+
+    # Narrower than 16:9 must actually thicken the frame, not stay put.
+    if not (
+        letterbox_metrics(4 / 3)["fraction"]
+        > letterbox_metrics(1.5)["fraction"]
+        > letterbox_metrics(16 / 9)["fraction"]
+    ):
+        raise AssertionError("Arena letterbox must thicken as the display narrows")
+
+    # A "$window::var" transition source resolves once at parse time, so it
+    # carries the authored value and silently turns a fade into a snap.
+    for gui_path in (ARENA_MENU, ROOT / "content" / "baseoq4" / "pak0" / "guis" / "mphud.gui"):
+        text = read(gui_path)
+        for match in re.finditer(r'transition\s+"(oq4_arena|arena)[^"]*"\s+"\$', text):
+            raise AssertionError(
+                f"{gui_path.name}: Arena transition sources a parse-time snapshot "
+                f"near offset {match.start()}"
+            )
+
+
+def validate_transition_ownership() -> None:
+    """stopTransitions only reaches the calling window's own subtree.
+
+    A transition belongs to the window whose script created it, so naming the
+    animated window instead of the timeline that owns the animation is silently
+    a no-op and lets a restarted timeline stack duplicate transitions.
+    """
+
+    for gui_path in (
+        ARENA_MENU,
+        ROOT / "content" / "baseoq4" / "pak0" / "guis" / "mphud.gui",
+    ):
+        text = read(gui_path)
+        for name, body in re.findall(
+            r"windowDef\s+((?:arena|oq4_arena)_[A-Za-z0-9_]*"
+            r"(?:timeline|entrance|victory|clear))\s*\{(.*?)\n\t\}",
+            text,
+            re.S,
+        ):
+            for target in re.findall(r'stopTransitions\s+"([^"]+)"', body):
+                if target != name:
+                    raise AssertionError(
+                        f"{gui_path.name}: {name} cannot stop transitions owned by "
+                        f"{target}; only the Desktop can reach a sibling"
+                    )
+
+    mp_hud = read(ROOT / "content" / "baseoq4" / "pak0" / "guis" / "mphud.gui")
+    for event_name, stopped in (
+        ("arenaCampaignEntrance", ("oq4_arena_present_victory", "oq4_arena_present_clear")),
+        ("arenaCampaignVictory", ("oq4_arena_present_entrance", "oq4_arena_present_clear")),
+        (
+            "arenaCampaignPresentationClear",
+            ("oq4_arena_present_entrance", "oq4_arena_present_victory"),
+        ),
+    ):
+        body = match_block(
+            mp_hud,
+            rf"onNamedEvent\s+{event_name}\s*\{{.*?\n\t\}}",
+            f"{event_name} handler",
+        )
+        for target in stopped:
+            require(
+                body,
+                f'stopTransitions "{target}"',
+                f"{event_name} must retire the presentation it replaces",
+            )
+
+
 def validate_docs() -> None:
     user_doc = read(ROOT / "docs" / "user" / "arena-campaign.md")
     readme = read(ROOT / "README.md")
@@ -2038,6 +2269,8 @@ def validate_docs() -> None:
         "Mission",
         "q4cmp",
         "do not yet pursue flags or map objectives",
+        "Its bars always reach every screen edge",
+        "The frame lifts\non **Fight**",
     ):
         require(user_doc, token, "Arena Campaign player guide")
     require(
@@ -2071,6 +2304,8 @@ def main() -> int:
     validate_manifest(campaign)
     validate_localization(campaign)
     validate_menu_hooks()
+    validate_letterbox()
+    validate_transition_ownership()
     validate_engine_hooks()
     validate_game_hooks()
     validate_docs()

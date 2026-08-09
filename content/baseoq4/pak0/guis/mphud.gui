@@ -73,19 +73,29 @@ windowDef Desktop
 		namedevent "event_arenaFocus::arenaFocus" ;
 	}
 
+	// Transitions belong to the window whose script created them, and
+	// stopTransitions can only reach the caller's own subtree.  Only the Desktop
+	// can therefore retire another presentation timeline's still-running fades,
+	// so each entry point clears the two it is replacing before restarting.
 	onNamedEvent arenaCampaignEntrance {
+		stopTransitions "oq4_arena_present_victory" ;
+		stopTransitions "oq4_arena_present_clear" ;
 		set "Desktop::arena_presentVisible" "1" ;
 		set "Desktop::arena_presentMode" "1" ;
 		resetTime "oq4_arena_present_entrance" "0" ;
 	}
 
 	onNamedEvent arenaCampaignVictory {
+		stopTransitions "oq4_arena_present_entrance" ;
+		stopTransitions "oq4_arena_present_clear" ;
 		set "Desktop::arena_presentVisible" "1" ;
 		set "Desktop::arena_presentMode" "2" ;
 		resetTime "oq4_arena_present_victory" "0" ;
 	}
 
 	onNamedEvent arenaCampaignPresentationClear {
+		stopTransitions "oq4_arena_present_entrance" ;
+		stopTransitions "oq4_arena_present_victory" ;
 		resetTime "oq4_arena_present_clear" "0" ;
 	}
 	
@@ -4358,19 +4368,6 @@ windowDef Desktop
 		textalign	1
 	}
 
-	windowDef oq4_readyCount
-	{
-		rect	170,76,300,20
-		screenalignx	left
-		screenaligny	top
-		visible	"gui::showready"
-		forecolor	1,1,1,1
-		text	"gui::readytext"
-		font	"fonts/lowpixel"
-		textscale	0.25
-		textalign	1
-	}
-
 	// Managed-match context is presentation-only.  The multiplayer adapter
 	// supplies complete, localized lines from the recipient-scoped match view.
 	// A single gate keeps the stock/casual presentation unchanged when no
@@ -4482,9 +4479,72 @@ windowDef Desktop
 	// beneath the translucent framing so the game-side camera can stage the
 	// combatants on entry and orbit the frozen victor after the final score.
 	// ---------------------------------------------------------------------
+
+	// Letterbox geometry.  A bar authored as a fixed slice of the 640x480
+	// canvas is wrong on every display that is not 4:3: it stops short of the
+	// left and right edges once the canvas is expanded for a wide screen, and
+	// it floats inside the picture on a tall one, where the real screen edge is
+	// above y=0 and below y=480.  Size the bars from the physical viewport
+	// aspect instead, so the framed window trends toward 16:9 - the same target
+	// retail guis/cinematic.gui used with its 640x360 view - on narrower
+	// displays, and keep a visible frame on wider ones.
+	//
+	// virtual_screen_aspect is the physical aspect of whatever region the
+	// authored canvas covers, so this stays correct with ui_aspectCorrection
+	// either way: expanded canvas or stretched canvas.
+
+	// Unclamped bar height as a fraction of the screen height, for a 16:9 frame.
+	// 0.5625 is 9/16, so this is ( 1 - aspect / (16/9) ) / 2 and goes negative on
+	// anything wider than 16:9.
+	windowDef oq4_arena_frame_fit
+	{
+		rect	0,0,1,1
+		visible	1
+		notime	1
+		noevents	1
+
+		float	"raw"	( ( 1 - ( "gui::virtual_screen_aspect" * 0.5625 ) ) * 0.5 )
+	}
+
+	// clamp( raw, 0.0708333, 0.11 ), written with comparisons because the gui
+	// expression language has no min/max.  A comparison yields 1 or 0, so each
+	// correction term only contributes past its own bound.
+	//
+	// The floor 34/480 reproduces the authored bar on 16:9 and wider, so those
+	// displays are unchanged.  The ceiling binds at 4:3 and below: 0.11 of the
+	// screen height is exactly as thick as a bar can be while the frame still
+	// clears the stock HUD row at canvas y=57, so the entrance clock is never
+	// clipped by the letterbox on any aspect.
+	windowDef oq4_arena_frame_metrics
+	{
+		rect	0,0,1,1
+		visible	1
+		notime	1
+		noevents	1
+
+		float	"frac"	( 0.0708333 + ( ( "oq4_arena_frame_fit::raw" - 0.0708333 ) * ( "oq4_arena_frame_fit::raw" > 0.0708333 ) ) - ( ( "oq4_arena_frame_fit::raw" - 0.11 ) * ( "oq4_arena_frame_fit::raw" > 0.11 ) ) )
+	}
+
+	// "open" is the animated 0..1 reveal of the frame.  The bars are driven from
+	// it rather than by transitioning their own rects, because a rect transition
+	// can only interpolate between literal corners and would therefore have to
+	// hard-code the very canvas-relative geometry this layer must derive.
+	windowDef oq4_arena_frame
+	{
+		rect	0,0,1,1
+		visible	1
+		notime	1
+		noevents	1
+
+		float	"open"		0
+		float	"bar"		( "oq4_arena_frame_metrics::frac" * ( 480 + ( "gui::virtual_screen_y_expand" * 2 ) ) )
+		float	"top"		( ( 0 - "gui::virtual_screen_y_expand" ) + ( "oq4_arena_frame_metrics::frac" * ( 480 + ( "gui::virtual_screen_y_expand" * 2 ) ) ) )
+		float	"bottom"	( ( 480 + "gui::virtual_screen_y_expand" ) - ( "oq4_arena_frame_metrics::frac" * ( 480 + ( "gui::virtual_screen_y_expand" * 2 ) ) ) )
+	}
+
 	windowDef oq4_arena_present_shade
 	{
-		rect	0,0,640,480
+		rect	( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
 		visible	"Desktop::arena_presentVisible"
 		backcolor	0,0,0,0
 		noevents	1
@@ -4492,7 +4552,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_letterbox_top
 	{
-		rect	0,0,640,0
+		rect	( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( "oq4_arena_frame::bar" * "oq4_arena_frame::open" )
 		visible	"Desktop::arena_presentVisible"
 		backcolor	0.005,0.008,0.005,0.98
 		noevents	1
@@ -4500,15 +4560,17 @@ windowDef Desktop
 
 	windowDef oq4_arena_letterbox_bottom
 	{
-		rect	0,480,640,0
+		rect	( 0 - "gui::virtual_screen_x_expand" ),( ( 480 + "gui::virtual_screen_y_expand" ) - ( "oq4_arena_frame::bar" * "oq4_arena_frame::open" ) ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( "oq4_arena_frame::bar" * "oq4_arena_frame::open" )
 		visible	"Desktop::arena_presentVisible"
 		backcolor	0.005,0.008,0.005,0.98
 		noevents	1
 	}
 
+	// The rules sit at the fully open frame edge and stay put while the bars
+	// grow out to meet them; their own fade carries the reveal.
 	windowDef oq4_arena_rule_top
 	{
-		rect	64,40,512,1
+		rect	64,( "oq4_arena_frame::top" + 6 ),512,1
 		visible	"Desktop::arena_presentVisible"
 		backcolor	0.95,0.49,0.06,0
 		noevents	1
@@ -4516,7 +4578,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_rule_bottom
 	{
-		rect	64,439,512,1
+		rect	64,( "oq4_arena_frame::bottom" - 7 ),512,1
 		visible	"Desktop::arena_presentVisible"
 		backcolor	0.95,0.49,0.06,0
 		noevents	1
@@ -4570,9 +4632,13 @@ windowDef Desktop
 		noevents	1
 	}
 
+	// The final tableau hangs off the frame rather than the 4:3 canvas, so a
+	// thicker letterbox on a narrow display pushes the copy inward instead of
+	// burying it, and a tall display spreads it out to fill the taller frame.
+	// Every offset below reproduces the authored 16:9 position exactly.
 	windowDef oq4_arena_victory_kicker
 	{
-		rect	80,66,480,22
+		rect	80,( "oq4_arena_frame::top" + 32 ),480,22
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
 		forecolor	0.95,0.72,0.25,0
 		text	"#str_42085"
@@ -4584,7 +4650,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_victory_title
 	{
-		rect	48,94,544,52
+		rect	48,( "oq4_arena_frame::top" + 60 ),544,52
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
 		forecolor	1,0.97,0.84,0
 		text	"gui::arena_presentTitle"
@@ -4596,7 +4662,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_victor_card
 	{
-		rect	160,328,320,76
+		rect	160,( "oq4_arena_frame::bottom" - 118 ),320,76
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
 		backcolor	0.015,0.022,0.014,0
 		bordercolor	0.95,0.49,0.06,0
@@ -4606,7 +4672,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_victor_label
 	{
-		rect	176,339,288,17
+		rect	176,( "oq4_arena_frame::bottom" - 107 ),288,17
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
 		forecolor	0.67,0.75,0.56,0
 		text	"#str_42084"
@@ -4618,7 +4684,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_victor_name
 	{
-		rect	176,362,288,28
+		rect	176,( "oq4_arena_frame::bottom" - 84 ),288,28
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
 		forecolor	1,0.94,0.76,0
 		text	"gui::arena_presentVictor"
@@ -4630,7 +4696,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_victory_score
 	{
-		rect	220,153,200,26
+		rect	220,( "oq4_arena_frame::top" + 119 ),200,26
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
 		forecolor	0.95,0.72,0.25,0
 		text	"gui::arena_presentScore"
@@ -4642,7 +4708,7 @@ windowDef Desktop
 
 	windowDef oq4_arena_recording_result
 	{
-		rect	160,415,320,18
+		rect	160,( "oq4_arena_frame::bottom" - 31 ),320,18
 		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 )
 		forecolor	0.67,0.75,0.56,0
 		text	"#str_42087"
@@ -4659,14 +4725,12 @@ windowDef Desktop
 		notime	1
 
 		onTime 0 {
-			stopTransitions "oq4_arena_present_shade" ;
-			stopTransitions "oq4_arena_letterbox_top" ;
-			stopTransitions "oq4_arena_letterbox_bottom" ;
-			stopTransitions "oq4_arena_rule_top" ;
-			stopTransitions "oq4_arena_rule_bottom" ;
+			// stopTransitions only reaches the calling window's own subtree, so a
+			// timeline can clear the transitions it owns and nothing else.  The
+			// Desktop event that starts this timeline stops the sibling ones.
+			stopTransitions "oq4_arena_present_entrance" ;
+			set "oq4_arena_frame::open" "0" ;
 			set "oq4_arena_present_shade::backcolor" "0,0,0,0" ;
-			set "oq4_arena_letterbox_top::rect" "0,0,640,0" ;
-			set "oq4_arena_letterbox_bottom::rect" "0,480,640,0" ;
 			set "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" ;
 			set "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" ;
 			set "oq4_arena_entrance_kicker::forecolor" "0.95,0.72,0.25,0" ;
@@ -4674,8 +4738,7 @@ windowDef Desktop
 			set "oq4_arena_entrance_subtitle::forecolor" "0.78,0.84,0.69,0" ;
 			set "oq4_arena_entrance_ready::forecolor" "0.95,0.49,0.06,0" ;
 			transition "oq4_arena_present_shade::backcolor" "0,0,0,0" "0,0,0,0.42" "400" ;
-			transition "oq4_arena_letterbox_top::rect" "0,0,640,0" "0,0,640,34" "400" ;
-			transition "oq4_arena_letterbox_bottom::rect" "0,480,640,0" "0,446,640,34" "400" ;
+			transition "oq4_arena_frame::open" "0" "1" "400" ;
 			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "500" ;
 			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "500" ;
 		}
@@ -4693,22 +4756,28 @@ windowDef Desktop
 			transition "oq4_arena_entrance_ready::forecolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,1" "250" ;
 		}
 
-		onTime 2450 {
+		// The arena countdown is max( 3000, si_countDown * 1000 ) and the campaign
+		// always launches with si_countDown 4, so the entrance owns 4000ms before
+		// FIGHT hands control back.  Land the frame lift on that beat instead of
+		// finishing at 3350 and leaving a dead 650ms of frozen, unframed camera.
+		// A shorter countdown simply runs into the presentation-clear event, which
+		// now retires this timeline and fades out from wherever it had reached.
+		onTime 3100 {
 			transition "oq4_arena_entrance_kicker::forecolor" "0.95,0.72,0.25,1" "0.95,0.72,0.25,0" "350" ;
 			transition "oq4_arena_entrance_title::forecolor" "1,0.97,0.84,1" "1,0.97,0.84,0" "350" ;
 			transition "oq4_arena_entrance_subtitle::forecolor" "0.78,0.84,0.69,1" "0.78,0.84,0.69,0" "350" ;
 			transition "oq4_arena_entrance_ready::forecolor" "0.95,0.49,0.06,1" "0.95,0.49,0.06,0" "350" ;
 		}
 
-		onTime 2850 {
+		onTime 3500 {
 			transition "oq4_arena_present_shade::backcolor" "0,0,0,0.42" "0,0,0,0" "450" ;
-			transition "oq4_arena_letterbox_top::rect" "0,0,640,34" "0,0,640,0" "450" ;
-			transition "oq4_arena_letterbox_bottom::rect" "0,446,640,34" "0,480,640,0" "450" ;
+			transition "oq4_arena_frame::open" "1" "0" "450" ;
 			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "350" ;
 			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "350" ;
 		}
 
-		onTime 3350 {
+		onTime 4000 {
+			set "oq4_arena_frame::open" "0" ;
 			set "Desktop::arena_presentVisible" "0" ;
 		}
 	}
@@ -4720,12 +4789,9 @@ windowDef Desktop
 		notime	1
 
 		onTime 0 {
-			stopTransitions "oq4_arena_present_shade" ;
-			stopTransitions "oq4_arena_letterbox_top" ;
-			stopTransitions "oq4_arena_letterbox_bottom" ;
+			stopTransitions "oq4_arena_present_victory" ;
+			set "oq4_arena_frame::open" "0" ;
 			set "oq4_arena_present_shade::backcolor" "0,0,0,0" ;
-			set "oq4_arena_letterbox_top::rect" "0,0,640,0" ;
-			set "oq4_arena_letterbox_bottom::rect" "0,480,640,0" ;
 			set "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" ;
 			set "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" ;
 			set "oq4_arena_victory_kicker::forecolor" "0.95,0.72,0.25,0" ;
@@ -4737,8 +4803,7 @@ windowDef Desktop
 			set "oq4_arena_victor_name::forecolor" "1,0.94,0.76,0" ;
 			set "oq4_arena_recording_result::forecolor" "0.67,0.75,0.56,0" ;
 			transition "oq4_arena_present_shade::backcolor" "0,0,0,0" "0,0,0,0.18" "500" ;
-			transition "oq4_arena_letterbox_top::rect" "0,0,640,0" "0,0,640,34" "450" ;
-			transition "oq4_arena_letterbox_bottom::rect" "0,480,640,0" "0,446,640,34" "450" ;
+			transition "oq4_arena_frame::open" "0" "1" "450" ;
 			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "550" ;
 			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" "0.95,0.49,0.06,0.9" "550" ;
 		}
@@ -4770,23 +4835,35 @@ windowDef Desktop
 		visible	1
 		notime	1
 
+		// A "$window::var" transition source is resolved once when the gui is
+		// parsed, so it carries the authored value, never the live one.  Every
+		// fade here would therefore snap instead of animating.  The clear only
+		// has anything to dissolve after the victory tableau has fully settled,
+		// so name that state explicitly.
 		onTime 0 {
-			transition "oq4_arena_present_shade::backcolor" "$oq4_arena_present_shade::backcolor" "0,0,0,0" "350" ;
-			transition "oq4_arena_letterbox_top::rect" "$oq4_arena_letterbox_top::rect" "0,0,640,0" "350" ;
-			transition "oq4_arena_letterbox_bottom::rect" "$oq4_arena_letterbox_bottom::rect" "0,480,640,0" "350" ;
-			transition "oq4_arena_rule_top::backcolor" "$oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0" "300" ;
-			transition "oq4_arena_rule_bottom::backcolor" "$oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0" "300" ;
-			transition "oq4_arena_victory_kicker::forecolor" "$oq4_arena_victory_kicker::forecolor" "0.95,0.72,0.25,0" "250" ;
-			transition "oq4_arena_victory_title::forecolor" "$oq4_arena_victory_title::forecolor" "1,0.97,0.84,0" "250" ;
-			transition "oq4_arena_victory_score::forecolor" "$oq4_arena_victory_score::forecolor" "0.95,0.72,0.25,0" "250" ;
-			transition "oq4_arena_victor_card::backcolor" "$oq4_arena_victor_card::backcolor" "0.015,0.022,0.014,0" "250" ;
-			transition "oq4_arena_victor_card::bordercolor" "$oq4_arena_victor_card::bordercolor" "0.95,0.49,0.06,0" "250" ;
-			transition "oq4_arena_victor_label::forecolor" "$oq4_arena_victor_label::forecolor" "0.67,0.75,0.56,0" "250" ;
-			transition "oq4_arena_victor_name::forecolor" "$oq4_arena_victor_name::forecolor" "1,0.94,0.76,0" "250" ;
-			transition "oq4_arena_recording_result::forecolor" "$oq4_arena_recording_result::forecolor" "0.67,0.75,0.56,0" "250" ;
+			stopTransitions "oq4_arena_present_clear" ;
+			// The entrance and the tableau settle on different shade depths, and a
+			// clear can arrive during either one.
+			if ( "Desktop::arena_presentMode" == 1 ) {
+				transition "oq4_arena_present_shade::backcolor" "0,0,0,0.42" "0,0,0,0" "350" ;
+			} else {
+				transition "oq4_arena_present_shade::backcolor" "0,0,0,0.18" "0,0,0,0" "350" ;
+			}
+			transition "oq4_arena_frame::open" "1" "0" "350" ;
+			transition "oq4_arena_rule_top::backcolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "300" ;
+			transition "oq4_arena_rule_bottom::backcolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "300" ;
+			transition "oq4_arena_victory_kicker::forecolor" "0.95,0.72,0.25,1" "0.95,0.72,0.25,0" "250" ;
+			transition "oq4_arena_victory_title::forecolor" "1,0.97,0.84,1" "1,0.97,0.84,0" "250" ;
+			transition "oq4_arena_victory_score::forecolor" "0.95,0.72,0.25,1" "0.95,0.72,0.25,0" "250" ;
+			transition "oq4_arena_victor_card::backcolor" "0.015,0.022,0.014,0.78" "0.015,0.022,0.014,0" "250" ;
+			transition "oq4_arena_victor_card::bordercolor" "0.95,0.49,0.06,0.9" "0.95,0.49,0.06,0" "250" ;
+			transition "oq4_arena_victor_label::forecolor" "0.67,0.75,0.56,1" "0.67,0.75,0.56,0" "250" ;
+			transition "oq4_arena_victor_name::forecolor" "1,0.94,0.76,1" "1,0.94,0.76,0" "250" ;
+			transition "oq4_arena_recording_result::forecolor" "0.67,0.75,0.56,0.9" "0.67,0.75,0.56,0" "250" ;
 		}
 
 		onTime 400 {
+			set "oq4_arena_frame::open" "0" ;
 			set "Desktop::arena_presentVisible" "0" ;
 			set "Desktop::arena_presentMode" "0" ;
 		}

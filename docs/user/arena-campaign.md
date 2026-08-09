@@ -61,6 +61,14 @@ ordinary multiplayer lobby and score-summary flow:
    segment, and pulses any new boss or tier gate. Control returns only after
    the update has settled, with the next useful selection ready.
 
+The cinematic framing used by the entrance and the final tableau is sized from
+the actual display. Its bars always reach every screen edge, and they thicken on
+narrower or taller displays so the framed picture stays close to a 16:9
+cinematic window instead of shrinking to a fixed slice of a 4:3 layout. On 16:9
+and wider displays the frame keeps its usual thin profile, and on every aspect
+it stops short of the match clock and the surrounding interface. The frame lifts
+on **Fight**, exactly as control returns.
+
 These ceremonies are exclusive to the single-player Arena Campaign. Private
 matches opened from the multiplayer menus retain their normal ready-up,
 scoreboard, and review behavior.

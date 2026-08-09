@@ -36,6 +36,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ArenaCampaign.h"
 #include "GameModuleDiagnostics.h"
 #include "RenderDoc.h"
+#include "../sys/NetworkEndpoint.h"
 
 #if defined( USE_SDL3 )
 #include <SDL3/SDL_locale.h>
@@ -3776,6 +3777,225 @@ static void Com_NetIPv4SelfTest_f( const idCmdArgs &args ) {
 	}
 }
 
+static void Common_NetIPv6SelfTestFailure( bool &passed, const char *reason ) {
+	common->Printf( "IPv6 network self-test failure: %s\n", reason );
+	passed = false;
+}
+
+static void Com_NetIPv6SelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	bool passed = true;
+
+	netadr_t address;
+	if ( !Sys_StringToNetAdr( "[::1]:65535", &address, false ) || address.type != NA_IP6 ||
+			!idNetworkEndpoint::IsIPv6Loopback( address.ip6 ) || address.port != 65535 ) {
+		Common_NetIPv6SelfTestFailure( passed, "bracketed IPv6 endpoint did not round-trip" );
+	}
+	if ( !Sys_StringToNetAdr( "::1", &address, false ) || address.type != NA_IP6 ||
+			!idNetworkEndpoint::IsIPv6Loopback( address.ip6 ) || address.port != 0 ) {
+		Common_NetIPv6SelfTestFailure( passed, "unbracketed IPv6 literal did not parse" );
+	}
+	if ( Sys_StringToNetAdr( "[::1]:65536", &address, false ) || address.type != NA_BAD ) {
+		Common_NetIPv6SelfTestFailure( passed, "out-of-range IPv6 port was accepted" );
+	}
+	if ( Sys_StringToNetAdr( "[::1", &address, false ) || address.type != NA_BAD ) {
+		Common_NetIPv6SelfTestFailure( passed, "unterminated IPv6 bracket was accepted" );
+	}
+	// An IPv4 peer arriving through the mapped range must resolve to one
+	// identity, not a second IPv6 shaped one.
+	if ( !Sys_StringToNetAdr( "[::ffff:127.0.0.1]:65535", &address, false ) || address.type != NA_LOOPBACK ||
+			address.ip[0] != 127 || address.ip[1] != 0 || address.ip[2] != 0 || address.ip[3] != 1 || address.port != 65535 ) {
+		Common_NetIPv6SelfTestFailure( passed, "IPv4-mapped address was not normalized" );
+	}
+
+	// The formatted text is the identity key for the server browser and for the
+	// game module's ban list, so it has to be canonical and re-parseable.
+	if ( !Sys_StringToNetAdr( "[2001:0db8:0000:0000:0000:0000:0000:0001]:27650", &address, false ) ||
+			idStr::Cmp( Sys_NetAdrToString( address ), "[2001:db8::1]:27650" ) != 0 ) {
+		Common_NetIPv6SelfTestFailure( passed, "IPv6 text was not canonicalized" );
+	}
+	netadr_t reparsed;
+	if ( !Sys_StringToNetAdr( "[2001:db8::1]:27650", &address, false ) ||
+			!Sys_StringToNetAdr( Sys_NetAdrToString( address ), &reparsed, false ) ||
+			!Sys_CompareNetAdrBase( address, reparsed ) || reparsed.port != address.port ) {
+		Common_NetIPv6SelfTestFailure( passed, "IPv6 address text did not survive a round-trip" );
+	}
+	netadr_t other;
+	if ( !Sys_StringToNetAdr( "[2001:db8::2]:27650", &other, false ) || Sys_CompareNetAdrBase( address, other ) ) {
+		Common_NetIPv6SelfTestFailure( passed, "distinct IPv6 addresses compared equal" );
+	}
+	if ( !Sys_StringToNetAdr( "[::1]:27650", &address, false ) || !Sys_IsLANAddress( address ) ) {
+		Common_NetIPv6SelfTestFailure( passed, "IPv6 loopback was not treated as a LAN address" );
+	}
+	if ( !Sys_StringToNetAdr( "[fe80::1]:27650", &address, false ) || !Sys_IsLANAddress( address ) ) {
+		Common_NetIPv6SelfTestFailure( passed, "IPv6 link-local was not treated as a LAN address" );
+	}
+
+	static const char * const testCVarNames[] = { "net_ip", "net_ip6", "net_enableIPv4", "net_enableIPv6", "net_forceLatency", "net_forceDrop" };
+	static const char * const testCVarValues[] = { "127.0.0.1", "::1", "1", "1", "0", "0" };
+	idStr savedCVarValues[ sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ];
+	int savedCVarFlags[ sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ] = {};
+	bool savedCVars[ sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ] = {};
+	const int savedModifiedFlags = cvarSystem->GetModifiedFlags();
+	for ( int i = 0; i < static_cast<int>( sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ); ++i ) {
+		idCVar *cvar = cvarSystem->Find( testCVarNames[i] );
+		if ( cvar == NULL ) {
+			continue;
+		}
+		savedCVars[i] = true;
+		savedCVarValues[i] = cvar->GetString();
+		savedCVarFlags[i] = cvar->GetFlags();
+		cvarSystem->SetCVarString( testCVarNames[i], testCVarValues[i] );
+	}
+
+	idPort invalidPort;
+	if ( invalidPort.InitForPort( -2 ) || invalidPort.GetPort() != 0 ) {
+		Common_NetIPv6SelfTestFailure( passed, "idPort accepted port -2" );
+	}
+	if ( invalidPort.InitForPort( 65536 ) || invalidPort.GetPort() != 0 ) {
+		Common_NetIPv6SelfTestFailure( passed, "idPort accepted port 65536" );
+	}
+
+	// Bind IPv6 alone for the transport checks so every datagram below provably
+	// travels over the IPv6 socket rather than falling back to IPv4.
+	cvarSystem->SetCVarString( "net_enableIPv4", "0" );
+
+	idPort sender;
+	idPort receiver;
+	int receiverPort = 0;
+	for ( int candidatePort = 65471; candidatePort >= 65408; --candidatePort ) {
+		if ( receiver.InitForPort( candidatePort ) ) {
+			receiverPort = candidatePort;
+			break;
+		}
+	}
+	if ( receiverPort == 0 || receiver.GetPort() != receiverPort || !sender.InitForPort( PORT_ANY ) ) {
+		// A host with IPv6 switched off is a supported configuration, so this
+		// reports an unavailable transport instead of a failed contract.
+		common->Printf( "IPv6 network self-test: skipped transport checks - the host bound no IPv6 socket\n" );
+	} else {
+		if ( sender.packetsWritten != 0 || sender.bytesWritten != 0 || receiver.packetsRead != 0 || receiver.bytesRead != 0 ) {
+			Common_NetIPv6SelfTestFailure( passed, "socket counters were not initialized" );
+		}
+
+		netadr_t destination;
+		if ( !Sys_StringToNetAdr( va( "[::1]:%d", receiverPort ), &destination, false ) || destination.type != NA_IP6 ) {
+			Common_NetIPv6SelfTestFailure( passed, "could not create the IPv6 loopback destination" );
+		} else {
+			static const char payload[] = "openQ4 IPv6 loopback";
+			sender.SendPacket( destination, payload, static_cast<int>( sizeof( payload ) ) );
+
+			char received[sizeof( payload )];
+			int receivedSize = 0;
+			netadr_t source;
+			if ( !receiver.GetPacketBlocking( source, received, receivedSize, sizeof( received ), 1000 ) ||
+					receivedSize != sizeof( payload ) || memcmp( received, payload, sizeof( payload ) ) != 0 ||
+					source.type != NA_IP6 || !Sys_CompareNetAdrBase( source, destination ) ) {
+				Common_NetIPv6SelfTestFailure( passed, "IPv6 UDP loopback payload did not round-trip" );
+			}
+
+			static const char reply[] = "openQ4 IPv6 reply";
+			receiver.SendPacket( source, reply, static_cast<int>( sizeof( reply ) ) );
+			netadr_t replySource;
+			receivedSize = 0;
+			if ( !sender.GetPacketBlocking( replySource, received, receivedSize, sizeof( received ), 1000 ) ||
+					receivedSize != sizeof( reply ) || memcmp( received, reply, sizeof( reply ) ) != 0 ||
+					!Sys_CompareNetAdrBase( replySource, destination ) || replySource.port != destination.port ) {
+				Common_NetIPv6SelfTestFailure( passed, "IPv6 UDP loopback reply did not round-trip" );
+			}
+
+			byte exactPacket[64];
+			for ( int i = 0; i < static_cast<int>( sizeof( exactPacket ) ); ++i ) {
+				exactPacket[i] = static_cast<byte>( i );
+			}
+			sender.SendPacket( destination, exactPacket, sizeof( exactPacket ) );
+			byte exactReceived[sizeof( exactPacket )];
+			receivedSize = 0;
+			if ( !receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) ||
+					receivedSize != sizeof( exactPacket ) || memcmp( exactReceived, exactPacket, sizeof( exactPacket ) ) != 0 ) {
+				Common_NetIPv6SelfTestFailure( passed, "exact-capacity IPv6 UDP datagram was rejected" );
+			}
+
+			byte oversizePacket[sizeof( exactPacket ) + 1];
+			memset( oversizePacket, 0x5a, sizeof( oversizePacket ) );
+			static const byte markerPacket[] = { 0x49, 0x50, 0x76, 0x36 };
+			sender.SendPacket( destination, oversizePacket, sizeof( oversizePacket ) );
+			sender.SendPacket( destination, markerPacket, sizeof( markerPacket ) );
+			receivedSize = -1;
+			if ( receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) || receivedSize != 0 ) {
+				Common_NetIPv6SelfTestFailure( passed, "oversized IPv6 UDP datagram was not rejected" );
+			}
+			receivedSize = 0;
+			if ( !receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) ||
+					receivedSize != sizeof( markerPacket ) || memcmp( exactReceived, markerPacket, sizeof( markerPacket ) ) != 0 ) {
+				Common_NetIPv6SelfTestFailure( passed, "packet after oversized IPv6 UDP datagram was not preserved" );
+			}
+		}
+
+		const int previousPort = receiver.GetPort();
+		receiver.Close();
+		if ( receiver.GetPort() != 0 || !receiver.InitForPort( PORT_ANY ) || receiver.GetPort() == 0 || previousPort == 0 ) {
+			Common_NetIPv6SelfTestFailure( passed, "IPv6 socket close/reopen lifecycle failed" );
+		}
+
+		// One endpoint must serve both families at the same port, which is what
+		// lets a dual-stack server publish a single address to every client.
+		cvarSystem->SetCVarString( "net_enableIPv4", "1" );
+		idPort dualStack;
+		if ( !dualStack.InitForPort( PORT_ANY ) || dualStack.GetPort() == 0 ) {
+			Common_NetIPv6SelfTestFailure( passed, "dual-stack port did not bind" );
+		} else {
+			netadr_t dualDestination;
+			static const char dualPayload[] = "openQ4 dual stack";
+			char dualReceived[sizeof( dualPayload )];
+			int dualSize = 0;
+			netadr_t dualSource;
+			if ( !Sys_StringToNetAdr( va( "[::1]:%d", dualStack.GetPort() ), &dualDestination, false ) ) {
+				Common_NetIPv6SelfTestFailure( passed, "could not address the dual-stack port over IPv6" );
+			} else {
+				sender.SendPacket( dualDestination, dualPayload, static_cast<int>( sizeof( dualPayload ) ) );
+				if ( !dualStack.GetPacketBlocking( dualSource, dualReceived, dualSize, sizeof( dualReceived ), 1000 ) ||
+						dualSize != sizeof( dualPayload ) || dualSource.type != NA_IP6 ) {
+					Common_NetIPv6SelfTestFailure( passed, "dual-stack port did not receive over IPv6" );
+				}
+			}
+			if ( !Sys_StringToNetAdr( va( "127.0.0.1:%d", dualStack.GetPort() ), &dualDestination, false ) ) {
+				Common_NetIPv6SelfTestFailure( passed, "could not address the dual-stack port over IPv4" );
+			} else {
+				idPort ipv4Sender;
+				if ( !ipv4Sender.InitForPort( PORT_ANY ) ) {
+					Common_NetIPv6SelfTestFailure( passed, "could not open an IPv4 sender for the dual-stack port" );
+				} else {
+					dualSize = 0;
+					ipv4Sender.SendPacket( dualDestination, dualPayload, static_cast<int>( sizeof( dualPayload ) ) );
+					if ( !dualStack.GetPacketBlocking( dualSource, dualReceived, dualSize, sizeof( dualReceived ), 1000 ) ||
+							dualSize != sizeof( dualPayload ) || dualSource.type == NA_IP6 ) {
+						Common_NetIPv6SelfTestFailure( passed, "dual-stack port did not receive over IPv4" );
+					}
+				}
+				ipv4Sender.Close();
+			}
+		}
+		dualStack.Close();
+	}
+
+	sender.Close();
+	receiver.Close();
+	for ( int i = 0; i < static_cast<int>( sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ); ++i ) {
+		if ( !savedCVars[i] ) {
+			continue;
+		}
+		cvarSystem->SetCVarString( testCVarNames[i], savedCVarValues[i].c_str() );
+		Common_RestorePerformancePresetCVarFlags( cvarSystem->Find( testCVarNames[i] ), savedCVarFlags[i] );
+	}
+	Common_RestorePerformancePresetModifiedFlags( savedModifiedFlags );
+	if ( passed ) {
+		common->Printf( "IPv6 network self-test: passed\n" );
+	} else {
+		common->Printf( "IPv6 network self-test: FAILED\n" );
+	}
+}
+
 /*
 =================
 Com_ReloadEngine_f
@@ -5011,6 +5231,7 @@ void idCommonLocal::InitCommands( void ) {
 	cmdSystem->AddCommand( "autoDetectPerformancePreset", Com_AutoDetectPerformancePreset_f, CMD_FL_SYSTEM, "detects and applies a conservative openQ4 performance preset" );
 	cmdSystem->AddCommand( "performancePresetSelfTest", Com_PerformancePresetSelfTest_f, CMD_FL_SYSTEM, "validates openQ4 performance preset commands and cvar mappings" );
 	cmdSystem->AddCommand( "netIPv4SelfTest", Com_NetIPv4SelfTest_f, CMD_FL_SYSTEM, "validates IPv4 parsing and UDP loopback transport" );
+	cmdSystem->AddCommand( "netIPv6SelfTest", Com_NetIPv6SelfTest_f, CMD_FL_SYSTEM, "validates IPv6 parsing and UDP loopback transport" );
 
 	cmdSystem->AddCommand("dmap", Dmap_f, CMD_FL_TOOL, "compiles a map", idCmdSystem::ArgCompletion_MapName);
 	//cmdSystem->AddCommand("runAAS", RunAAS_f, CMD_FL_TOOL, "compiles an AAS file for a map", idCmdSystem::ArgCompletion_MapName);

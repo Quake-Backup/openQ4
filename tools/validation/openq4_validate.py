@@ -475,6 +475,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "mvd_server_api_contract.py",
         root / "tools" / "tests" / "native_glx_shutdown.py",
         root / "tools" / "tests" / "network_ipv4_support.py",
+        root / "tools" / "tests" / "network_ipv6_support.py",
         root / "tools" / "tests" / "openq4_pure_pack.py",
         root / "tools" / "tests" / "packaging_safety.py",
         root / "tools" / "tests" / "preprocessor_macro_safety.py",

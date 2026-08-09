@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../ArenaCampaign.h"
 #include "../Session_local.h"
+#include "../../sys/NetworkEndpoint.h"
 
 static ID_INLINE int AsyncClient_NextGameFrameMsec( int gameFrame ) {
 	return common->GetUserCmdDeltaMsec( gameFrame + 1 );
@@ -470,10 +471,25 @@ void idAsyncClient::GetLANServers( void ) {
 	msg.WriteString( "getInfo" );
 	msg.WriteLong( serverList.GetChallenge() );
 
+	// Only .type and .port were ever assigned here, leaving the address bytes
+	// and the scope id holding stack garbage that the IPv6 sweep below reads.
+	memset( &broadcastAddress, 0, sizeof( broadcastAddress ) );
 	broadcastAddress.type = NA_BROADCAST;
 	for ( i = 0; i < MAX_SERVER_PORTS; i++ ) {
 		broadcastAddress.port = PORT_SERVER + i;
 		clientPort.SendPacket( broadcastAddress, msg.GetData(), msg.GetSize() );
+	}
+
+	// IPv6 has no broadcast address, so the same sweep goes to the link-local
+	// discovery group. The platform layer expands one send into one datagram
+	// per attached link. Without this an IPv6-only server is permanently
+	// invisible to the server browser.
+	netadr_t multicastAddress;
+	memset( &multicastAddress, 0, sizeof( multicastAddress ) );
+	multicastAddress.type = NA_MULTICAST6;
+	for ( i = 0; i < MAX_SERVER_PORTS; i++ ) {
+		multicastAddress.port = PORT_SERVER + i;
+		clientPort.SendPacket( multicastAddress, msg.GetData(), msg.GetSize() );
 	}
 }
 
@@ -511,6 +527,22 @@ void idAsyncClient::GetNETServers( void ) {
 	netadr_t adr;
 	if ( idAsyncNetwork::GetMasterAddress( 0, adr ) ) {
 		clientPort.SendPacket( adr, msg.GetData(), msg.GetSize() );
+
+		// Ask for the address-family tagged list as well. A master that does
+		// not implement it simply ignores the request, and the legacy reply
+		// above still arrives, so this costs one datagram and never regresses
+		// an IPv4-only deployment.
+		idBitMsg	extMsg;
+		byte		extMsgBuf[MAX_MESSAGE_SIZE];
+		extMsg.Init( extMsgBuf, sizeof( extMsgBuf ) );
+		extMsg.WriteShort( CONNECTIONLESS_MESSAGE_ID );
+		extMsg.WriteString( "getServersExt" );
+		extMsg.WriteLong( ASYNC_PROTOCOL_VERSION );
+		extMsg.WriteString( cvarSystem->GetCVarString( "fs_game" ) );
+		extMsg.WriteBits( cvarSystem->GetCVarInteger( "gui_filter_password" ), 2 );
+		extMsg.WriteBits( cvarSystem->GetCVarInteger( "gui_filter_players" ), 2 );
+		extMsg.WriteBits( masterGameTypeFilter, 2 );
+		clientPort.SendPacket( adr, extMsg.GetData(), extMsg.GetSize() );
 	}
 }
 
@@ -1418,6 +1450,82 @@ void idAsyncClient::ProcessServersListMessage( const netadr_t from, const idBitM
 
 /*
 ==================
+idAsyncClient::ProcessServersListExtMessage
+
+The legacy "servers" reply is an untagged stream of four octet IPv4 records, so
+it cannot carry an IPv6 address without desynchronizing every reader. This
+extended reply tags each record with the separator convention shared by the
+dpmaster family of master servers: '\' introduces a four byte IPv4 record and
+'/' a sixteen byte IPv6 record, each followed by a two byte port in network
+byte order. Note that idBitMsg::ReadUShort is little-endian, so the port is
+assembled from explicit bytes rather than read as a short.
+==================
+*/
+void idAsyncClient::ProcessServersListExtMessage( const netadr_t from, const idBitMsg &msg ) {
+	if ( !Sys_CompareNetAdrBase( idAsyncNetwork::GetMasterAddress(), from ) ) {
+		common->DPrintf( "received an extended server list from %s - not a valid master\n", Sys_NetAdrToString( from ) );
+		return;
+	}
+
+	bool malformed = false;
+	while ( msg.GetRemaingData() > 0 ) {
+		const int separator = msg.ReadByte();
+		int addressBytes;
+		if ( separator == '\\' ) {
+			addressBytes = 4;
+		} else if ( separator == '/' ) {
+			addressBytes = 16;
+		} else {
+			// dpmaster terminates the payload with "EOT\0\0\0"; anything else
+			// here means the stream is no longer record aligned, so stop rather
+			// than reinterpret the remainder as addresses.
+			malformed = ( separator != 'E' );
+			break;
+		}
+
+		// The port always follows the address, so a record that does not fit
+		// the remaining payload is truncated and must not be read.
+		if ( msg.GetRemaingData() < addressBytes + 2 ) {
+			malformed = true;
+			break;
+		}
+
+		netadr_t server;
+		memset( &server, 0, sizeof( server ) );
+		if ( addressBytes == 4 ) {
+			for ( int octet = 0; octet < 4; octet++ ) {
+				server.ip[octet] = msg.ReadByte();
+			}
+			server.type = NA_IP;
+		} else {
+			for ( int octet = 0; octet < 16; octet++ ) {
+				server.ip6[octet] = msg.ReadByte();
+			}
+			server.type = NA_IP6;
+		}
+		const int portHigh = msg.ReadByte();
+		const int portLow = msg.ReadByte();
+		server.port = static_cast<unsigned short>( ( portHigh << 8 ) | portLow );
+
+		// A record with no port cannot be pinged, and the unspecified address
+		// is the master's own padding rather than a reachable server.
+		if ( server.port == 0 ) {
+			continue;
+		}
+		if ( server.type == NA_IP6 && idNetworkEndpoint::IsIPv6Unspecified( server.ip6 ) ) {
+			continue;
+		}
+
+		serverList.AddServer( serverList.Num(), Sys_NetAdrToString( server ) );
+	}
+
+	if ( malformed ) {
+		common->DPrintf( "received a malformed extended server list from %s - trailing address data ignored\n", Sys_NetAdrToString( from ) );
+	}
+}
+
+/*
+==================
 idAsyncClient::ProcessAuthKeyMessage
 ==================
 */
@@ -1619,7 +1727,13 @@ void idAsyncClient::ConnectionlessMessage( const netadr_t from, const idBitMsg &
 			ProcessServersListMessage( from, msg );
 			return;
 		}
-	
+
+		// extended, address-family tagged server list
+		if ( idStr::Icmp( string, "serversExt" ) == 0 ) {
+			ProcessServersListExtMessage( from, msg );
+			return;
+		}
+
 		if ( idStr::Icmp( string, "authKey" ) == 0 ) {
 			ProcessAuthKeyMessage( from, msg );
 			return;
