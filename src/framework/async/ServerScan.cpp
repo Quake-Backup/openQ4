@@ -158,7 +158,7 @@ int idServerScan::InfoResponse( networkServer_t &server ) {
 
 		// check for duplicate servers
 		for ( int i = 0; i < Num() ; i++ ) {
-			if ( memcmp( &(*this)[ i ].adr, &server.adr, sizeof(netadr_t) ) == 0 ) {
+			if ( Sys_CompareNetAdrBase( (*this)[ i ].adr, server.adr ) && (*this)[ i ].adr.port == server.adr.port ) {
 				common->DPrintf( "idServerScan::InfoResponse LAN_SCAN: duplicate server %s\n", serv.c_str() );
 				return true;
 			}

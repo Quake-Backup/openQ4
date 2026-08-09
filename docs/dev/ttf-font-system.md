@@ -148,6 +148,15 @@ upscale of 1.5 on a 1440p display instead of 3.0, so every atlas was rasterised
 at half the resolution the display needed and text stayed softer than it should
 have been.
 
+Font atlases follow the renderer restart lifecycle. A full `vid_restart`
+releases cached TrueType faces before image purge, reallocates persistent atlas
+images with the new context, reinitialises the font reader, and immediately
+rebuilds the console sheet. A successful partial restart keeps the context,
+faces, and images alive, but still refreshes the resolution-dependent console
+sheet. Cached GUI fonts notice the renderer restart generation on their next
+lookup or selection and re-register in place, preserving the integer indices
+stored by parsed GUIs as well as the active font and size selection.
+
 Glyph area grows with the square of the scale, so a slot is capped at
 `Q4_TTF_MAX_PAGE_AREA` (2048x2048, 16MB at RGBA8). The required area is
 predicted from the glyph metrics, which needs no rasterising, and the slot's

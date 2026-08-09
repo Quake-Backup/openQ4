@@ -45,11 +45,12 @@ If you have questions concerning this license or the applicable additional terms
 #endif
 
 #include "../../idlib/precompiled.h"
+#include "../NetworkEndpoint.h"
 
 idPort clientPort, serverPort;
 
 idCVar net_ip( "net_ip", "localhost", CVAR_SYSTEM, "local IP address" );
-idCVar net_port( "net_port", "", CVAR_SYSTEM | CVAR_INTEGER, "local IP port number" );
+idCVar net_port( "net_port", "0", CVAR_SYSTEM | CVAR_INTEGER, "local IP port number" );
 
 typedef struct {
 	uint32_t ip;
@@ -89,79 +90,6 @@ static int Sys_KeepSocketFdOutOfStdioRange( int socketFd ) {
 	return duplicateFd;
 }
 
-static bool Sys_ParsePortText( const char *text, int *port ) {
-	if ( text == NULL || text[0] == '\0' || port == NULL ) {
-		return false;
-	}
-
-	char *end = NULL;
-	errno = 0;
-	const long parsedPort = strtol( text, &end, 10 );
-	if ( errno != 0 || end == text || *end != '\0' || parsedPort < 0 || parsedPort > 65535 ) {
-		return false;
-	}
-
-	*port = static_cast<int>( parsedPort );
-	return true;
-}
-
-static bool Sys_SplitHostAndPort( const char *src, char *host, size_t hostSize, char *service, size_t serviceSize ) {
-	if ( src == NULL || src[0] == '\0' || host == NULL || hostSize == 0 || service == NULL || serviceSize == 0 ) {
-		return false;
-	}
-
-	service[0] = '\0';
-
-	if ( src[0] == '[' ) {
-		const char *endBracket = strchr( src, ']' );
-		if ( endBracket == NULL || endBracket == src + 1 ) {
-			return false;
-		}
-
-		const size_t hostLength = static_cast<size_t>( endBracket - src - 1 );
-		if ( hostLength >= hostSize ) {
-			return false;
-		}
-		memcpy( host, src + 1, hostLength );
-		host[hostLength] = '\0';
-
-		if ( endBracket[1] == '\0' ) {
-			return true;
-		}
-		if ( endBracket[1] != ':' ) {
-			return false;
-		}
-
-		int port = 0;
-		if ( !Sys_ParsePortText( endBracket + 2, &port ) ) {
-			return false;
-		}
-		idStr::snPrintf( service, serviceSize, "%d", port );
-		return true;
-	}
-
-	const char *firstColon = strchr( src, ':' );
-	const char *lastColon = strrchr( src, ':' );
-	if ( firstColon != NULL && firstColon == lastColon ) {
-		const size_t hostLength = static_cast<size_t>( firstColon - src );
-		if ( hostLength == 0 || hostLength >= hostSize ) {
-			return false;
-		}
-		memcpy( host, src, hostLength );
-		host[hostLength] = '\0';
-
-		int port = 0;
-		if ( !Sys_ParsePortText( firstColon + 1, &port ) ) {
-			return false;
-		}
-		idStr::snPrintf( service, serviceSize, "%d", port );
-		return true;
-	}
-
-	idStr::Copynz( host, src, hostSize );
-	return true;
-}
-
 static void Sys_SetSockaddrPort( struct sockaddr *address, int port ) {
 	if ( address->sa_family == AF_INET ) {
 		reinterpret_cast<struct sockaddr_in *>( address )->sin_port = htons( static_cast<unsigned short>( port ) );
@@ -173,14 +101,24 @@ static void Sys_SetSockaddrPort( struct sockaddr *address, int port ) {
 static bool Sys_ResolveSockaddr( const char *s, bool doDNSResolve, int family, int socktype, int defaultPort, struct sockaddr_storage *sadr, socklen_t *sadrLen ) {
 	char host[NI_MAXHOST];
 	char service[NI_MAXSERV];
+	idNetworkEndpoint::endpointParts_t endpoint;
 
-	if ( sadr == NULL || sadrLen == NULL || !Sys_SplitHostAndPort( s, host, sizeof( host ), service, sizeof( service ) ) ) {
+	if ( sadr == NULL || sadrLen == NULL ) {
+		return false;
+	}
+	memset( sadr, 0, sizeof( *sadr ) );
+	*sadrLen = 0;
+	if ( !idNetworkEndpoint::Split( s, host, sizeof( host ), endpoint ) ) {
 		return false;
 	}
 
-	if ( service[0] == '\0' ) {
-		idStr::snPrintf( service, sizeof( service ), "%d", Max( 0, defaultPort ) );
+	// An explicit endpoint port owns the result. Validate the default only when
+	// it is actually used so host:port can safely override an unused sentinel.
+	const int effectivePort = endpoint.hasPort ? endpoint.port : defaultPort;
+	if ( effectivePort < 0 || effectivePort > 65535 ) {
+		return false;
 	}
+	idStr::snPrintf( service, sizeof( service ), "%d", effectivePort );
 
 	struct addrinfo hints;
 	memset( &hints, 0, sizeof( hints ) );
@@ -194,7 +132,7 @@ static bool Sys_ResolveSockaddr( const char *s, bool doDNSResolve, int family, i
 		return false;
 	}
 
-	bool resolved = false;
+	const struct addrinfo *selected = NULL;
 	for ( const struct addrinfo *result = results; result != NULL; result = result->ai_next ) {
 		if ( result->ai_addr == NULL ) {
 			continue;
@@ -206,12 +144,21 @@ static bool Sys_ResolveSockaddr( const char *s, bool doDNSResolve, int family, i
 			continue;
 		}
 
-		memset( sadr, 0, sizeof( *sadr ) );
-		memcpy( sadr, result->ai_addr, result->ai_addrlen );
-		*sadrLen = static_cast<socklen_t>( result->ai_addrlen );
-		resolved = true;
-		break;
+		if ( selected == NULL || ( family == AF_UNSPEC && selected->ai_family != AF_INET && result->ai_family == AF_INET ) ) {
+			selected = result;
+		}
+		// Quake 4's master and serialized-address protocols are IPv4. Prefer an
+		// available A record while retaining IPv6 literals and AAAA-only hosts.
+		if ( family != AF_UNSPEC || result->ai_family == AF_INET ) {
+			break;
+		}
 	}
+
+	if ( selected != NULL ) {
+		memcpy( sadr, selected->ai_addr, selected->ai_addrlen );
+		*sadrLen = static_cast<socklen_t>( selected->ai_addrlen );
+	}
+	const bool resolved = selected != NULL;
 
 	freeaddrinfo( results );
 	return resolved;
@@ -278,6 +225,7 @@ static bool SockadrToNetadr( const struct sockaddr *s, netadr_t * a ) {
 	}
 
 	memset( a, 0, sizeof( *a ) );
+	a->type = NA_BAD;
 
 	if ( s->sa_family == AF_INET ) {
 		const struct sockaddr_in *ipv4 = reinterpret_cast<const struct sockaddr_in *>( s );
@@ -306,6 +254,12 @@ Sys_StringToAdr
 =============
 */
 bool Sys_StringToNetAdr( const char *s, netadr_t * a, bool doDNSResolve ) {
+	if ( a == NULL ) {
+		return false;
+	}
+	memset( a, 0, sizeof( *a ) );
+	a->type = NA_BAD;
+
 	struct sockaddr_storage sadr;
 	socklen_t sadrLen;
 
@@ -351,8 +305,16 @@ const char *Sys_NetAdrToString( const netadr_t a ) {
 		} else {
 			idStr::snPrintf( buffer, sizeof( s[0] ), "%s", addressText );
 		}
+	} else if ( a.type == NA_BROADCAST ) {
+		if ( a.port ) {
+			idStr::snPrintf( buffer, sizeof( s[0] ), "broadcast:%i", a.port );
+		} else {
+			idStr::Copynz( buffer, "broadcast", sizeof( s[0] ) );
+		}
+	} else if ( a.type == NA_BOT ) {
+		idStr::Copynz( buffer, "bot", sizeof( s[0] ) );
 	} else {
-		idStr::snPrintf( buffer, sizeof( s[0] ), "bad" );
+		idStr::Copynz( buffer, "bad", sizeof( s[0] ) );
 	}
 	return buffer;
 }
@@ -476,6 +438,11 @@ void Sys_InitNetworking(void)
 		
 		ip = Sys_SockaddrIPv4HostOrder( ifp->ifa_addr );
 		mask = Sys_SockaddrIPv4HostOrder( ifp->ifa_netmask );
+		if ( mask == 0 ) {
+			common->Printf( "Sys_InitNetworking: interface %s has a zero IPv4 netmask - skipped\n",
+				ifp->ifa_name != NULL ? ifp->ifa_name : "<unnamed>" );
+			continue;
+		}
 		
 		if ( ip == INADDR_LOOPBACK ) {
 			common->Printf( "loopback\n" );
@@ -538,17 +505,21 @@ void Sys_InitNetworking(void)
 					common->Printf( " SIOCGIFNETMASK failed: %s\n", strerror( errno ) );
 				} else {
 					mask = Sys_SockaddrIPv4HostOrder( &ifr->ifr_addr );
-					if ( ip != INADDR_LOOPBACK ) {
-						common->Printf( "/" );
-						Sys_PrintSockaddrIPv4( &ifr->ifr_addr );
-						common->Printf( "\n" );
-					}
-					if ( num_interfaces < MAX_INTERFACES ) {
-						netint[ num_interfaces ].ip = ip;
-						netint[ num_interfaces ].mask = mask;
-						num_interfaces++;
+					if ( mask == 0 ) {
+						common->Printf( " zero IPv4 netmask - skipped\n" );
 					} else {
-						common->Printf( "Sys_InitNetworking: MAX_INTERFACES(%d) hit.\n", MAX_INTERFACES );
+						if ( ip != INADDR_LOOPBACK ) {
+							common->Printf( "/" );
+							Sys_PrintSockaddrIPv4( &ifr->ifr_addr );
+							common->Printf( "\n" );
+						}
+						if ( num_interfaces < MAX_INTERFACES ) {
+							netint[ num_interfaces ].ip = ip;
+							netint[ num_interfaces ].mask = mask;
+							num_interfaces++;
+						} else {
+							common->Printf( "Sys_InitNetworking: MAX_INTERFACES(%d) hit.\n", MAX_INTERFACES );
+						}
 					}
 				}
 			}
@@ -564,8 +535,18 @@ void Sys_InitNetworking(void)
 IPSocketForFamily
 ====================
 */
-static int IPSocketForFamily( const char *net_interface, int port, int family, netadr_t *bound_to = NULL, bool quiet = false ) {
+static int IPSocketForFamily( const char *net_interface, int port, int family,
+		netadr_t *bound_to = NULL, bool quiet = false, bool *addressResolved = NULL ) {
+	if ( addressResolved != NULL ) {
+		*addressResolved = false;
+	}
 	if ( family != AF_INET && family != AF_INET6 ) {
+		return 0;
+	}
+	if ( port != PORT_ANY && ( port < 0 || port > 65535 ) ) {
+		if ( !quiet ) {
+			common->Printf( "ERROR: IPSocketForFamily: invalid port %d\n", port );
+		}
 		return 0;
 	}
 
@@ -593,12 +574,18 @@ static int IPSocketForFamily( const char *net_interface, int port, int family, n
 			ipv6->sin6_port = htons( static_cast<unsigned short>( bindPort ) );
 			addressLen = sizeof( *ipv6 );
 		}
+		if ( addressResolved != NULL ) {
+			*addressResolved = true;
+		}
 	} else {
 		if ( !Sys_ResolveSockaddr( net_interface, true, family, SOCK_DGRAM, bindPort, &address, &addressLen ) ) {
 			if ( !quiet ) {
 				common->Printf( "ERROR: IPSocketForFamily: bad %s interface address '%s'\n", Sys_SocketFamilyName( family ), net_interface );
 			}
 			return 0;
+		}
+		if ( addressResolved != NULL ) {
+			*addressResolved = true;
 		}
 		Sys_SetSockaddrPort( reinterpret_cast<struct sockaddr *>( &address ), bindPort );
 	}
@@ -685,6 +672,7 @@ idPort::idPort
 idPort::idPort() {
 	netSocket = 0;
 	netSocket6 = 0;
+	platformData = NULL;
 	packetsRead = 0;
 	bytesRead = 0;
 	packetsWritten = 0;
@@ -715,6 +703,7 @@ void idPort::Close() {
 		close( netSocket6 );
 		netSocket6 = 0;
 	}
+	platformData = NULL;
 	memset( &bound_to, 0, sizeof( bound_to ) );
 }
 
@@ -724,36 +713,56 @@ idPort::GetPacket
 ==================
 */
 static bool Net_GetPacketFromSocket( int socketFd, const char *context, netadr_t &net_from, void *data, int &size, int maxSize ) {
-	int ret;
+	size = 0;
+	memset( &net_from, 0, sizeof( net_from ) );
+	net_from.type = NA_BAD;
 	struct sockaddr_storage from;
-	socklen_t fromlen = sizeof( from );
+	memset( &from, 0, sizeof( from ) );
 
-	if ( socketFd <= 0 ) {
+	if ( socketFd <= 0 || data == NULL || maxSize <= 0 ) {
 		return false;
 	}
 
-	ret = recvfrom( socketFd, data, maxSize, 0, reinterpret_cast<struct sockaddr *>( &from ), &fromlen );
+	struct iovec iov;
+	iov.iov_base = data;
+	iov.iov_len = static_cast<size_t>( maxSize );
+	struct msghdr message;
+	memset( &message, 0, sizeof( message ) );
+	message.msg_name = &from;
+	message.msg_namelen = sizeof( from );
+	message.msg_iov = &iov;
+	message.msg_iovlen = 1;
+
+	const ssize_t ret = recvmsg( socketFd, &message, 0 );
 
 	if ( ret == -1 ) {
-		if (errno == EWOULDBLOCK || errno == ECONNREFUSED) {
+		if ( errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNREFUSED ) {
 			// those commonly happen, don't verbose
 			return false;
 		}
-		common->DPrintf( "%s recvfrom(): %s\n", context, strerror( errno ) );
+		common->DPrintf( "%s recvmsg(): %s\n", context, strerror( errno ) );
 		return false;
 	}
-
-	assert( ret <= maxSize );
 
 	if ( !SockadrToNetadr( reinterpret_cast<const struct sockaddr *>( &from ), &net_from ) ) {
 		common->DPrintf( "%s: unsupported address family\n", context );
 		return false;
 	}
-	size = ret;
+	if ( ( message.msg_flags & MSG_TRUNC ) != 0 || ret > maxSize ) {
+		common->DPrintf( "%s: oversize packet from %s\n", context, Sys_NetAdrToString( net_from ) );
+		memset( &net_from, 0, sizeof( net_from ) );
+		net_from.type = NA_BAD;
+		return false;
+	}
+
+	size = static_cast<int>( ret );
 	return true;
 }
 
 bool idPort::GetPacket( netadr_t &net_from, void *data, int &size, int maxSize ) {
+	size = 0;
+	memset( &net_from, 0, sizeof( net_from ) );
+	net_from.type = NA_BAD;
 	if ( !netSocket && !netSocket6 ) {
 		return false;
 	}
@@ -781,6 +790,9 @@ bool idPort::GetPacketBlocking( netadr_t &net_from, void *data, int &size, int m
 	struct timeval		tv;
 	int					ret;
 	
+	size = 0;
+	memset( &net_from, 0, sizeof( net_from ) );
+	net_from.type = NA_BAD;
 	if ( !netSocket && !netSocket6 ) {
 		return false;
 	}
@@ -859,6 +871,8 @@ void idPort::SendPacket( const netadr_t to, const void *data, int size ) {
 		common->Warning( "idPort::SendPacket: invalid packet buffer - ignored" );
 		return;
 	}
+	const char emptyPacket = '\0';
+	const void *packetData = data != NULL ? data : &emptyPacket;
 
 	if ( !NetadrToSockadr( &to, &addr, &addrLen ) ) {
 		common->Warning( "idPort::SendPacket: bad address type - ignored" );
@@ -871,7 +885,7 @@ void idPort::SendPacket( const netadr_t to, const void *data, int size ) {
 		return;
 	}
 
-	ret = sendto( socketFd, data, size, 0, reinterpret_cast<struct sockaddr *>( &addr ), addrLen );
+	ret = sendto( socketFd, packetData, size, 0, reinterpret_cast<struct sockaddr *>( &addr ), addrLen );
 	if ( ret == -1 ) {
 		common->Printf( "idPort::SendPacket ERROR: to %s: %s\n", Sys_NetAdrToString( to ), strerror( errno ) );
 		return;
@@ -887,6 +901,10 @@ idPort::InitForPort
 */
 bool idPort::InitForPort( int portNumber ) {
 	Close();
+	if ( portNumber != PORT_ANY && ( portNumber < 0 || portNumber > 65535 ) ) {
+		common->Warning( "idPort::InitForPort: invalid network port %d", portNumber );
+		return false;
+	}
 
 	const char *interfaceName = net_ip.GetString();
 	if ( Sys_IsAnyInterfaceName( interfaceName ) ) {
@@ -895,37 +913,42 @@ bool idPort::InitForPort( int portNumber ) {
 		memset( &bound4, 0, sizeof( bound4 ) );
 		memset( &bound6, 0, sizeof( bound6 ) );
 
-		netSocket = IPSocketForFamily( interfaceName, portNumber, AF_INET, &bound4 );
-		int ipv6Port = portNumber;
-		if ( netSocket > 0 ) {
-			bound_to = bound4;
-			if ( portNumber == PORT_ANY ) {
-				ipv6Port = bound4.port;
-			}
-		}
-
-		netSocket6 = IPSocketForFamily( interfaceName, ipv6Port, AF_INET6, &bound6 );
-		if ( netSocket <= 0 && netSocket6 > 0 ) {
-			bound_to = bound6;
-		}
-
-		if ( netSocket <= 0 && netSocket6 <= 0 ) {
+		// IPv4 is the baseline transport for discovery, LAN scans, masters, and
+		// ordinary clients.  Do not accept an IPv6-only bind after the requested
+		// IPv4 port failed: callers would stop their port scan on an endpoint that
+		// IPv4 peers cannot reach.
+		netSocket = IPSocketForFamily( interfaceName, portNumber, AF_INET, &bound4, true );
+		if ( netSocket <= 0 ) {
 			netSocket = 0;
 			netSocket6 = 0;
 			memset( &bound_to, 0, sizeof( bound_to ) );
 			return false;
 		}
+
+		bound_to = bound4;
+		const int ipv6Port = portNumber == PORT_ANY ? bound4.port : portNumber;
+		// IPv6 augments the required IPv4 socket.  Its absence must neither make
+		// the IPv4 endpoint fail nor emit an error for a supported IPv4-only host.
+		netSocket6 = IPSocketForFamily( interfaceName, ipv6Port, AF_INET6, &bound6, true );
+		if ( netSocket6 <= 0 ) {
+			netSocket6 = 0;
+		}
 		return true;
 	}
 
 	const bool prefersIPv6 = strchr( interfaceName, ':' ) != NULL;
+	struct in_addr numericIPv4;
+	const bool isNumericIPv4 = inet_pton( AF_INET, interfaceName, &numericIPv4 ) == 1;
+	const bool isAddressLiteral = isNumericIPv4 || prefersIPv6;
 	const int firstFamily = prefersIPv6 ? AF_INET6 : AF_INET;
 	const int secondFamily = prefersIPv6 ? AF_INET : AF_INET6;
 
 	netadr_t explicitBound;
 	memset( &explicitBound, 0, sizeof( explicitBound ) );
 
-	const int firstSocket = IPSocketForFamily( interfaceName, portNumber, firstFamily, &explicitBound, true );
+	bool firstFamilyResolved = false;
+	const int firstSocket = IPSocketForFamily( interfaceName, portNumber, firstFamily,
+		&explicitBound, true, &firstFamilyResolved );
 	if ( firstSocket > 0 ) {
 		if ( firstFamily == AF_INET6 ) {
 			netSocket6 = firstSocket;
@@ -934,6 +957,16 @@ bool idPort::InitForPort( int portNumber ) {
 		}
 		bound_to = explicitBound;
 		return true;
+	}
+	// Once the preferred family resolved, a later setup or bind failure belongs
+	// to that endpoint (for example, EADDRINUSE during a port scan).  Falling
+	// through would silently turn a dual-stack hostname into an IPv6-only server.
+	// A literal likewise belongs to exactly one address family.
+	if ( isAddressLiteral || firstFamilyResolved ) {
+		netSocket = 0;
+		netSocket6 = 0;
+		memset( &bound_to, 0, sizeof( bound_to ) );
+		return false;
 	}
 
 	const int secondSocket = IPSocketForFamily( interfaceName, portNumber, secondFamily, &explicitBound );
@@ -979,7 +1012,7 @@ idTCP::~idTCP() {
 idTCP::Init
 ==================
 */
-bool idTCP::Init( const char *host, short port ) {
+bool idTCP::Init( const char *host, int port ) {
 	struct sockaddr_storage sadr;
 	socklen_t sadrLen;
 

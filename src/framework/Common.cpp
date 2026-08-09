@@ -748,6 +748,8 @@ static idStr Common_BuildPlatformProfileConfigName( const char *profileName ) {
 	idStrList					errorList;
 
 	intptr_t					gameDLL;
+	bool						gameShutdownCalled;
+	bool						gameShutdownAfterDeclsCalled;
 
 	idLangDict					languageDict;
 
@@ -781,6 +783,8 @@ idCommonLocal::idCommonLocal( void ) {
 	rd_flush = NULL;
 
 	gameDLL = 0;
+	gameShutdownCalled = false;
+	gameShutdownAfterDeclsCalled = false;
 
 #ifdef ID_WRITE_VERSION
 	config_compressor = NULL;
@@ -3595,6 +3599,157 @@ static void Com_PerformancePresetSelfTest_f( const idCmdArgs &args ) {
 	}
 }
 
+static void Common_NetIPv4SelfTestFailure( bool &passed, const char *reason ) {
+	common->Printf( "IPv4 network self-test failure: %s\n", reason );
+	passed = false;
+}
+
+static void Com_NetIPv4SelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	bool passed = true;
+
+	netadr_t address;
+	if ( !Sys_StringToNetAdr( "127.0.0.1:65535", &address, false ) ||
+			( address.type != NA_LOOPBACK && address.type != NA_IP ) ||
+			address.ip[0] != 127 || address.ip[1] != 0 || address.ip[2] != 0 || address.ip[3] != 1 || address.port != 65535 ) {
+		Common_NetIPv4SelfTestFailure( passed, "numeric IPv4 endpoint did not round-trip" );
+	}
+	if ( !Sys_StringToNetAdr( "255.255.255.255:65535", &address, false ) ||
+			address.type != NA_IP || address.ip[0] != 255 || address.ip[1] != 255 ||
+			address.ip[2] != 255 || address.ip[3] != 255 || address.port != 65535 ) {
+		Common_NetIPv4SelfTestFailure( passed, "IPv4 broadcast literal did not parse" );
+	}
+	if ( Sys_StringToNetAdr( "localhost", &address, false ) || address.type != NA_BAD ) {
+		Common_NetIPv4SelfTestFailure( passed, "numeric-only resolution accepted a hostname" );
+	}
+	if ( !Sys_StringToNetAdr( "localhost:65535", &address, true ) ||
+			( address.type != NA_LOOPBACK && address.type != NA_IP ) ||
+			address.port != 65535 ) {
+		Common_NetIPv4SelfTestFailure( passed, "DNS-enabled localhost did not resolve to IPv4" );
+	}
+	if ( Sys_StringToNetAdr( "127.0.0.1:65536", &address, false ) || address.type != NA_BAD ) {
+		Common_NetIPv4SelfTestFailure( passed, "out-of-range port was accepted" );
+	}
+
+	static const char * const testCVarNames[] = { "net_ip", "net_forceLatency", "net_forceDrop" };
+	static const char * const testCVarValues[] = { "127.0.0.1", "0", "0" };
+	idStr savedCVarValues[ sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ];
+	int savedCVarFlags[ sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ] = {};
+	bool savedCVars[ sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ] = {};
+	const int savedModifiedFlags = cvarSystem->GetModifiedFlags();
+	for ( int i = 0; i < static_cast<int>( sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ); ++i ) {
+		idCVar *cvar = cvarSystem->Find( testCVarNames[i] );
+		if ( cvar == NULL ) {
+			continue;
+		}
+		savedCVars[i] = true;
+		savedCVarValues[i] = cvar->GetString();
+		savedCVarFlags[i] = cvar->GetFlags();
+		cvarSystem->SetCVarString( testCVarNames[i], testCVarValues[i] );
+	}
+
+	idPort invalidPort;
+	if ( invalidPort.InitForPort( -2 ) || invalidPort.GetPort() != 0 ) {
+		Common_NetIPv4SelfTestFailure( passed, "idPort accepted port -2" );
+	}
+	if ( invalidPort.InitForPort( 65536 ) || invalidPort.GetPort() != 0 ) {
+		Common_NetIPv4SelfTestFailure( passed, "idPort accepted port 65536" );
+	}
+
+	idPort sender;
+	idPort receiver;
+	int receiverPort = 0;
+	for ( int candidatePort = 65535; candidatePort >= 65472; --candidatePort ) {
+		if ( receiver.InitForPort( candidatePort ) ) {
+			receiverPort = candidatePort;
+			break;
+		}
+	}
+	if ( receiverPort == 0 || receiver.GetPort() != receiverPort || !sender.InitForPort( PORT_ANY ) ) {
+		Common_NetIPv4SelfTestFailure( passed, "could not open IPv4 loopback sockets" );
+	} else {
+		if ( sender.packetsWritten != 0 || sender.bytesWritten != 0 || receiver.packetsRead != 0 || receiver.bytesRead != 0 ) {
+			Common_NetIPv4SelfTestFailure( passed, "socket counters were not initialized" );
+		}
+
+		netadr_t destination;
+		if ( !Sys_StringToNetAdr( va( "127.0.0.1:%d", receiverPort ), &destination, false ) ) {
+			Common_NetIPv4SelfTestFailure( passed, "could not create the loopback destination" );
+		} else {
+			static const char payload[] = "openQ4 IPv4 loopback";
+			sender.SendPacket( destination, payload, static_cast<int>( sizeof( payload ) ) );
+
+			char received[sizeof( payload )];
+			int receivedSize = 0;
+			netadr_t source;
+			if ( !receiver.GetPacketBlocking( source, received, receivedSize, sizeof( received ), 1000 ) ||
+					receivedSize != sizeof( payload ) || memcmp( received, payload, sizeof( payload ) ) != 0 ||
+					!Sys_CompareNetAdrBase( source, destination ) ) {
+				Common_NetIPv4SelfTestFailure( passed, "UDP loopback payload did not round-trip" );
+			}
+
+			static const char reply[] = "openQ4 IPv4 reply";
+			receiver.SendPacket( source, reply, static_cast<int>( sizeof( reply ) ) );
+			netadr_t replySource;
+			receivedSize = 0;
+			if ( !sender.GetPacketBlocking( replySource, received, receivedSize, sizeof( received ), 1000 ) ||
+					receivedSize != sizeof( reply ) || memcmp( received, reply, sizeof( reply ) ) != 0 ||
+					!Sys_CompareNetAdrBase( replySource, destination ) || replySource.port != destination.port ) {
+				Common_NetIPv4SelfTestFailure( passed, "UDP loopback reply did not round-trip" );
+			}
+
+			byte exactPacket[64];
+			for ( int i = 0; i < static_cast<int>( sizeof( exactPacket ) ); ++i ) {
+				exactPacket[i] = static_cast<byte>( i );
+			}
+			sender.SendPacket( destination, exactPacket, sizeof( exactPacket ) );
+			byte exactReceived[sizeof( exactPacket )];
+			receivedSize = 0;
+			if ( !receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) ||
+					receivedSize != sizeof( exactPacket ) || memcmp( exactReceived, exactPacket, sizeof( exactPacket ) ) != 0 ) {
+				Common_NetIPv4SelfTestFailure( passed, "exact-capacity UDP datagram was rejected" );
+			}
+
+			byte oversizePacket[sizeof( exactPacket ) + 1];
+			memset( oversizePacket, 0x5a, sizeof( oversizePacket ) );
+			static const byte markerPacket[] = { 0x49, 0x50, 0x76, 0x34 };
+			sender.SendPacket( destination, oversizePacket, sizeof( oversizePacket ) );
+			sender.SendPacket( destination, markerPacket, sizeof( markerPacket ) );
+			receivedSize = -1;
+			if ( receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) || receivedSize != 0 ) {
+				Common_NetIPv4SelfTestFailure( passed, "oversized UDP datagram was not rejected" );
+			}
+			receivedSize = 0;
+			if ( !receiver.GetPacketBlocking( source, exactReceived, receivedSize, sizeof( exactReceived ), 1000 ) ||
+					receivedSize != sizeof( markerPacket ) || memcmp( exactReceived, markerPacket, sizeof( markerPacket ) ) != 0 ) {
+				Common_NetIPv4SelfTestFailure( passed, "packet after oversized UDP datagram was not preserved" );
+			}
+		}
+
+		const int previousPort = receiver.GetPort();
+		receiver.Close();
+		if ( receiver.GetPort() != 0 || !receiver.InitForPort( PORT_ANY ) || receiver.GetPort() == 0 || previousPort == 0 ) {
+			Common_NetIPv4SelfTestFailure( passed, "socket close/reopen lifecycle failed" );
+		}
+	}
+
+	sender.Close();
+	receiver.Close();
+	for ( int i = 0; i < static_cast<int>( sizeof( testCVarNames ) / sizeof( testCVarNames[0] ) ); ++i ) {
+		if ( !savedCVars[i] ) {
+			continue;
+		}
+		cvarSystem->SetCVarString( testCVarNames[i], savedCVarValues[i].c_str() );
+		Common_RestorePerformancePresetCVarFlags( cvarSystem->Find( testCVarNames[i] ), savedCVarFlags[i] );
+	}
+	Common_RestorePerformancePresetModifiedFlags( savedModifiedFlags );
+	if ( passed ) {
+		common->Printf( "IPv4 network self-test: passed\n" );
+	} else {
+		common->Printf( "IPv4 network self-test: FAILED\n" );
+	}
+}
+
 /*
 =================
 Com_ReloadEngine_f
@@ -3641,12 +3796,15 @@ void Com_ReloadGameModule_f( const idCmdArgs &args ) {
 		return;
 	}
 
-	const char *nextModule = cvarSystem->GetCVarString( "com_nextGameModule" );
-	if ( !openQ4_IsValidGameModuleName( nextModule ) ) {
+	// Copy CVar-backed strings before teardown. Config replay and module unload
+	// can replace their backing storage while this command is still running.
+	const idStr requestedModule = cvarSystem->GetCVarString( "com_nextGameModule" );
+	if ( !openQ4_IsValidGameModuleName( requestedModule.c_str() ) ) {
 		common->Printf( "reloadGameModule requested without a valid com_nextGameModule; falling back to reloadEngine\n" );
 		Com_ReloadEngine_f( args );
 		return;
 	}
+	const idStr previousModule = cvarSystem->GetCVarString( "com_activeGameModule" );
 
 	common->Printf( "============= ReloadGameModule start =============\n" );
 	fileSystem->SetIsFileLoadingAllowed( true );
@@ -3663,26 +3821,81 @@ void Com_ReloadGameModule_f( const idCmdArgs &args ) {
 	// which swallows it silently and leaves a half-built engine with no clue in
 	// the log about which half failed.
 	idStr swapError;
+	idStr cleanupError;
+	idStr rollbackError;
+	gameModuleLoadPhase_t failedPhase = GAME_MODULE_PHASE_IDLE;
 	bool swapFailed = false;
+	bool oldShutdownComplete = false;
+	bool newInitStarted = false;
 	try {
 		GLimp_PreserveWindowOnShutdown( true );
 		commonLocal.ShutdownGame( true );
+		oldShutdownComplete = true;
 		GLimp_PreserveWindowOnShutdown( false );
+		newInitStarted = true;
 		commonLocal.InitGame();
 	}
 	catch( idException &ex ) {
 		GLimp_PreserveWindowOnShutdown( false );
 		swapFailed = true;
 		swapError = ex.error;
+		failedPhase = Com_GetGameModuleLoadPhase();
+
+		// If the replacement InitGame started, its decls, renderer, UI or game
+		// object may be only partly initialized. Tear that attempt back down
+		// before trying to restore the previously active module.
+		if ( newInitStarted ) {
+			try {
+				commonLocal.ShutdownGame( true );
+			}
+			catch( idException &cleanupException ) {
+				cleanupError = cleanupException.error;
+			}
+		}
 	}
 
 	if ( swapFailed ) {
 		cvarSystem->SetCVarString( "com_nextGameModule", "" );
 		common->Warning(
 			"game module swap to '%s' failed at phase '%s': %s",
-			nextModule,
-			Com_GameModuleLoadPhaseName( Com_GetGameModuleLoadPhase() ),
+			requestedModule.c_str(),
+			Com_GameModuleLoadPhaseName( failedPhase ),
 			swapError.c_str() );
+
+		bool rollbackSucceeded = false;
+		if ( oldShutdownComplete && cleanupError.IsEmpty() && openQ4_IsValidGameModuleName( previousModule.c_str() ) ) {
+			// The requested si_gameType already names the new module by this point.
+			// Restore a safe canonical mode for the old module before declarations
+			// are rebuilt; the user's archived settings replay normally afterwards.
+			cvarSystem->SetCVarString(
+				"si_gameType",
+				idStr::Icmp( previousModule.c_str(), "game_mp" ) == 0 ? "DM" : "singleplayer" );
+			cvarSystem->SetCVarString( "com_nextGameModule", previousModule.c_str() );
+			try {
+				commonLocal.InitGame();
+				rollbackSucceeded = true;
+			}
+			catch( idException &rollbackException ) {
+				rollbackError = rollbackException.error;
+			}
+		} else if ( !cleanupError.IsEmpty() ) {
+			rollbackError = va( "partial replacement cleanup failed: %s", cleanupError.c_str() );
+		} else if ( !oldShutdownComplete ) {
+			rollbackError = "the previous module did not finish shutting down";
+		} else {
+			rollbackError = "the previously active module name was unavailable";
+		}
+
+		if ( !rollbackSucceeded ) {
+			common->FatalError(
+				"game module swap to '%s' failed (%s), and rollback to '%s' failed (%s)",
+				requestedModule.c_str(),
+				swapError.c_str(),
+				previousModule.c_str(),
+				rollbackError.c_str() );
+			return;
+		}
+
 		common->Printf( "============= ReloadGameModule failed ============\n" );
 		// Whatever was queued to run after the swap assumed the new module
 		// came up. Do not run it; the next successful swap overwrites it.
@@ -4771,6 +4984,7 @@ void idCommonLocal::InitCommands( void ) {
 	cmdSystem->AddCommand( "applyPerformancePreset", Com_ApplyPerformancePreset_f, CMD_FL_SYSTEM, "applies the selected openQ4 performance preset", idCmdSystem::ArgCompletion_String<com_performancePresetArgs> );
 	cmdSystem->AddCommand( "autoDetectPerformancePreset", Com_AutoDetectPerformancePreset_f, CMD_FL_SYSTEM, "detects and applies a conservative openQ4 performance preset" );
 	cmdSystem->AddCommand( "performancePresetSelfTest", Com_PerformancePresetSelfTest_f, CMD_FL_SYSTEM, "validates openQ4 performance preset commands and cvar mappings" );
+	cmdSystem->AddCommand( "netIPv4SelfTest", Com_NetIPv4SelfTest_f, CMD_FL_SYSTEM, "validates IPv4 parsing and UDP loopback transport" );
 
 	cmdSystem->AddCommand("dmap", Dmap_f, CMD_FL_TOOL, "compiles a map", idCmdSystem::ArgCompletion_MapName);
 	//cmdSystem->AddCommand("runAAS", RunAAS_f, CMD_FL_TOOL, "compiles an AAS file for a map", idCmdSystem::ArgCompletion_MapName);
@@ -5296,51 +5510,86 @@ void idCommonLocal::Async( void ) {
 	}
 }
 
-// Mirror of si_gameTypeArgs in the GameLibs repo (src/mpgame/mp/GameTypes.cpp),
-// minus its leading "singleplayer" entry. The engine has to choose a game module
-// before any module is loaded, so it cannot ask the game for its own table;
-// tools/tests/game_type_module_selection.py cross-checks the two lists.
+// Mirror of the multiplayer rows in the GameLibs descriptor table
+// (src/mpgame/mp/GameTypes.cpp), including whether each row is selectable. The
+// engine has to choose a game module before any module is loaded, so it cannot
+// ask the game for its own table; tools/tests/game_type_module_selection.py
+// cross-checks the two tables.
 //
 // This is an allowlist on purpose. "anything that is not singleplayer is
 // multiplayer" meant a typo, a stale config or a mod-specific value booted
 // game_mp and then forced a full renderer-tearing module swap on the first
 // New Game.
-#ifndef ID_DEDICATED
-static const char *openQ4_multiplayerGameTypes[] = {
-	"DM",
-	"Tourney",
-	"Team DM",
-	"CTF",
-	"One Flag CTF",
-	"Arena CTF",
-	"Arena One Flag CTF",
-	"DeadZone",
-	"Duel",
-	"Clan Arena",
-	"Freeze Tag",
-	"Red Rover",
-	// Reserved multiplayer wire tokens still route to game_mp so its validated
-	// descriptor can reject/fallback safely.  Public menus and browser filters
-	// intentionally do not advertise them.
-	"Overload",
-	"Harvester",
-	"Domination",
-	"Attack Defend",
-	NULL
+struct openQ4GameTypeRoute_t {
+	const char *name;
+	bool selectable;
 };
 
-static bool openQ4_IsMultiplayerGameType( const char *gameType ) {
+static const openQ4GameTypeRoute_t openQ4_multiplayerGameTypes[] = {
+	{ "DM", true },
+	{ "Tourney", true },
+	{ "Team DM", true },
+	{ "CTF", true },
+	{ "One Flag CTF", true },
+	{ "Arena CTF", true },
+	{ "Arena One Flag CTF", true },
+	{ "DeadZone", true },
+	{ "Duel", true },
+	{ "Clan Arena", true },
+	{ "Freeze Tag", true },
+	{ "Red Rover", true },
+	// Reserved multiplayer wire tokens still route to game_mp so its validated
+	// descriptor table remains append-only. They are normalized to DM before
+	// game_mp registers its public si_gameType value list.
+	{ "Overload", false },
+	{ "Harvester", false },
+	{ "Domination", false },
+	{ "Attack Defend", false },
+	{ NULL, false }
+};
+
+static const char *openQ4_CanonicalMultiplayerGameType( const char *gameType, const bool selectableOnly ) {
 	if ( gameType == NULL || gameType[0] == '\0' ) {
-		return false;
+		return NULL;
 	}
-	for ( int i = 0; openQ4_multiplayerGameTypes[i] != NULL; i++ ) {
-		if ( idStr::Icmp( gameType, openQ4_multiplayerGameTypes[i] ) == 0 ) {
-			return true;
+	for ( int i = 0; openQ4_multiplayerGameTypes[i].name != NULL; i++ ) {
+		const openQ4GameTypeRoute_t &route = openQ4_multiplayerGameTypes[i];
+		if ( idStr::Icmp( gameType, route.name ) == 0 && ( !selectableOnly || route.selectable ) ) {
+			return route.name;
 		}
 	}
-	return false;
+	return NULL;
+}
+
+#ifndef ID_DEDICATED
+static bool openQ4_IsMultiplayerGameType( const char *gameType ) {
+	return openQ4_CanonicalMultiplayerGameType( gameType, false ) != NULL;
 }
 #endif
+
+static void openQ4_NormalizeGameTypeForModule( const char *moduleName ) {
+	if ( idStr::Icmp( moduleName, "game_mp" ) != 0 ) {
+		return;
+	}
+
+	const char *currentGameType = cvarSystem->GetCVarString( "si_gameType" );
+	const char *canonicalGameType = openQ4_CanonicalMultiplayerGameType( currentGameType, true );
+	if ( canonicalGameType != NULL ) {
+		if ( idStr::Cmp( currentGameType, canonicalGameType ) != 0 ) {
+			// CVar values use a case-insensitive early-out, so a direct "dm" ->
+			// "DM" write is ignored. Cross a different valid value to make the
+			// canonical spelling observable before declarations are rebuilt.
+			cvarSystem->SetCVarString( "si_gameType", "singleplayer" );
+			cvarSystem->SetCVarString( "si_gameType", canonicalGameType );
+		}
+		return;
+	}
+
+	// game_mp cannot initialize against an unsupported or single-player mode.
+	// This covers joins, listen servers, and dedicated startup alike.
+	common->Printf( "Selected game_mp with unsupported si_gameType '%s'; using DM for multiplayer module initialization.\n", currentGameType );
+	cvarSystem->SetCVarString( "si_gameType", "DM" );
+}
 
 static bool openQ4_IsValidGameModuleName( const char *moduleName ) {
 	return moduleName
@@ -5473,6 +5722,8 @@ const char *Com_GameModuleLoadPhaseName( gameModuleLoadPhase_t phase ) {
 		return "game module ready";
 	case GAME_MODULE_PHASE_GAME_SHUTDOWN:
 		return "game->Shutdown()";
+	case GAME_MODULE_PHASE_GAME_FINALIZE:
+		return "game->ShutdownAfterDecls()";
 	case GAME_MODULE_PHASE_BINARY_UNLOAD:
 		return "unloading game module binary";
 	default:
@@ -5506,7 +5757,10 @@ idCommonLocal::LoadGameDLL
 */
 void idCommonLocal::LoadGameDLL( void ) {
 	openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );
+	gameShutdownCalled = false;
+	gameShutdownAfterDeclsCalled = false;
 	const char *gameModuleBaseName = openQ4_SelectGameModuleBaseName();
+	openQ4_NormalizeGameTypeForModule( gameModuleBaseName );
 
 #ifdef __DOOM_DLL__
 	char			dllPath[ MAX_OSPATH ];
@@ -5633,16 +5887,6 @@ idCommonLocal::UnloadGameDLL
 =================
 */
 void idCommonLocal::UnloadGameDLL( void ) {
-	// Stop advertising a ready single-player module before shutdown can mutate
-	// game-owned state or unloading can unregister module-owned static CVars.
-	openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );
-
-	// shut down the game object
-	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_SHUTDOWN );
-	if ( game != NULL ) {
-		game->Shutdown();
-	}
-
 #ifdef __DOOM_DLL__
 
 	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_BINARY_UNLOAD );
@@ -5990,6 +6234,12 @@ idCommonLocal::InitGame
 =================
 */
 void idCommonLocal::InitGame( void ) {
+	// A game-module reload rebuilds declarations before it replays archived cfgs.
+	// Canonicalize the pending multiplayer mode at the start of that rebuild;
+	// doing this only in LoadGameDLL is too late for the decl checksum.
+	const idStr pendingGameModule = openQ4_SelectGameModuleBaseName();
+	openQ4_NormalizeGameTypeForModule( pendingGameModule.c_str() );
+
 	// initialize the file system
 	fileSystem->Init();
 
@@ -6182,6 +6432,9 @@ idCommonLocal::ShutdownGame
 =================
 */
 void idCommonLocal::ShutdownGame( bool reloading ) {
+	// Stop advertising a ready single-player module before any shutdown work can
+	// race the async thread or mutate game-owned state.
+	openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );
 
 	// kill sound first
 	//idSoundWorld *sw = soundSystem->GetPlayingSoundWorld();
@@ -6197,6 +6450,18 @@ void idCommonLocal::ShutdownGame( bool reloading ) {
 
 	// shut down the session
 	session->Shutdown();
+
+	// The game owns GUI list handlers and may clear GUI, HUD, renderer, sound and
+	// network state during Shutdown.  Run it while those engine services are
+	// still alive, but keep the DLL loaded until game-owned decl instances with
+	// module-local vtables have been released below.
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_SHUTDOWN );
+	if ( game != NULL && !gameShutdownCalled ) {
+		// Set this before entering module code so a fatal error raised by game
+		// teardown cannot recursively invoke the same half of the lifecycle.
+		gameShutdownCalled = true;
+		game->Shutdown();
+	}
 
 	// shut down the user interfaces
 	uiManager->Shutdown();
@@ -6222,6 +6487,16 @@ void idCommonLocal::ShutdownGame( bool reloading ) {
 	// shutdown the decl manager while the game DLL is still loaded, because
 	// game-owned decl types (e.g. entity/fx decls) can have module-local vtables.
 	declManager->Shutdown();
+
+	// Model decl destructors release idAnim references into the module animation
+	// manager, and all module decl destructors depend on the module idLib.  Those
+	// support resources therefore have a separate late teardown phase.
+	Com_SetGameModuleLoadPhase( GAME_MODULE_PHASE_GAME_FINALIZE );
+	if ( game != NULL && !gameShutdownAfterDeclsCalled ) {
+		// As above, publish the one-shot state before crossing the module boundary.
+		gameShutdownAfterDeclsCalled = true;
+		game->ShutdownAfterDecls();
+	}
 
 	// unload the game dll after game-owned decl instances are released
 	UnloadGameDLL();

@@ -113,12 +113,17 @@ idAsyncServer::InitPort
 */
 bool idAsyncServer::InitPort( void ) {
 	int lastPort;
+	const int configuredPort = cvarSystem->GetCVarInteger( "net_port" );
+	if ( configuredPort < 0 || configuredPort > 65535 ) {
+		common->Printf( "Invalid net_port %d; expected 0 (automatic) or 1..65535\n", configuredPort );
+		return false;
+	}
 
 	// if this is the first time we have spawned a server, open the UDP port
 	if ( !serverPort.GetPort() ) {
-		if ( cvarSystem->GetCVarInteger( "net_port" ) != 0 ) {
-			if ( !serverPort.InitForPort( cvarSystem->GetCVarInteger( "net_port" ) ) ) {
-				common->Printf( "Unable to open server on port %d (net_port)\n", cvarSystem->GetCVarInteger( "net_port" ) );
+		if ( configuredPort != 0 ) {
+			if ( !serverPort.InitForPort( configuredPort ) ) {
+				common->Printf( "Unable to open server on port %d (net_port)\n", configuredPort );
 				return false;
 			}
 		} else {

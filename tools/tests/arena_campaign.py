@@ -1104,6 +1104,7 @@ def validate_engine_hooks() -> None:
         )
     load_game_dll = function_body(common, "void idCommonLocal::LoadGameDLL( void )")
     unload_game_dll = function_body(common, "void idCommonLocal::UnloadGameDLL( void )")
+    shutdown_game = function_body(common, "void idCommonLocal::ShutdownGame( bool reloading )")
     require(
         load_game_dll,
         "openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );",
@@ -1115,10 +1116,12 @@ def validate_engine_hooks() -> None:
         "Arena-safe module ready transition",
     )
     require(
-        unload_game_dll,
+        shutdown_game,
         "openQ4_singleplayerGameModuleReady.store( false, std::memory_order_release );",
-        "Arena-safe module unload transition",
+        "Arena-safe module shutdown transition",
     )
+    if "game->Shutdown();" in unload_game_dll:
+        raise AssertionError("Arena binary-only module unload still shuts down the game object")
 
     for token in (
         'ARENA_CAMPAIGN_FILE = "arena/openq4_campaign.cfg"',

@@ -202,6 +202,24 @@ def braced_body(source: str, start: int, context: str) -> str:
     raise AssertionError(f"Unterminated brace section for {context}")
 
 
+def void_method_body(source: str, qualified_name: str, context: str) -> str:
+    """Return a void method body, including sources with #ifdef signatures."""
+
+    definitions = list(
+        re.finditer(
+            rf"\bvoid\s+{re.escape(qualified_name)}\s*\([^;{{}}]*\)\s*\{{",
+            source,
+        )
+    )
+    if not definitions:
+        raise AssertionError(f"Missing definition for {context}")
+
+    # RV_UNIFIED_ALLOCATOR selects between two adjacent Init signatures.  The
+    # final textual definition owns the shared body and therefore has balanced
+    # braces when the inactive preprocessor branch is still present.
+    return braced_body(source, definitions[-1].start(), context)
+
+
 # ----------------------------------------------------------------------------
 # An independent reader for the .style / .bot / .chat formats, so a bug in the
 # game's parser and a bug in the content cannot agree with each other.
@@ -596,6 +614,33 @@ def chat_event_enum(header: str) -> list[str]:
     return [name for name in re.findall(r"\b(BOTCHAT_\w+)\b", body) if name != "BOTCHAT_NUM"]
 
 
+def validate_bot_manager_lifecycle(game_local: str) -> None:
+    init = void_method_body(game_local, "idGameLocal::Init", "idGameLocal::Init")
+    require(init, "botCharacterManager.Init();", "idGameLocal::Init")
+
+    shutdown = void_method_body(
+        game_local,
+        "idGameLocal::Shutdown",
+        "idGameLocal::Shutdown",
+    )
+    require(shutdown, "botCharacterManager.Shutdown();", "idGameLocal::Shutdown")
+
+
+def require_bot_lifecycle_mutation_rejected(
+    game_local: str,
+    removed_call: str,
+    context: str,
+) -> None:
+    mutant = game_local.replace(removed_call, "", 1)
+    if mutant == game_local:
+        raise AssertionError(f"Mutation setup could not remove {removed_call!r}")
+    try:
+        validate_bot_manager_lifecycle(mutant)
+    except AssertionError:
+        return
+    raise AssertionError(f"Bot lifecycle validator accepted missing {context}")
+
+
 def validate_wiring() -> None:
     mp = GAME_LIBS_ROOT / "src" / "mpgame"
     if not mp.is_dir():
@@ -615,10 +660,17 @@ def validate_wiring() -> None:
     # rvBotManager::Init has been defined and uncalled since the bots landed.
     # The character manager owns heap memory, so this one has to be wired.
     game_local = read(mp / "Game_local.cpp")
-    init = game_local[game_local.index("void idGameLocal::Init") :][:6000]
-    require(init, "botCharacterManager.Init();", "idGameLocal::Init")
-    shutdown = game_local[game_local.index("void idGameLocal::Shutdown") :][:6000]
-    require(shutdown, "botCharacterManager.Shutdown();", "idGameLocal::Shutdown")
+    validate_bot_manager_lifecycle(game_local)
+    require_bot_lifecycle_mutation_rejected(
+        game_local,
+        "botCharacterManager.Init();",
+        "bot character initialization",
+    )
+    require_bot_lifecycle_mutation_rejected(
+        game_local,
+        "botCharacterManager.Shutdown();",
+        "bot character shutdown",
+    )
 
     # A bot speaks through the same call the server makes for a human's say, so
     # the line is indistinguishable from a player's.  It ships private.

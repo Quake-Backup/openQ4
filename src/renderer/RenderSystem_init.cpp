@@ -3790,6 +3790,12 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	// Input is tied to the native window/context lifecycle.
 	Sys_ShutdownInput();
 
+	// Scalable GUI fonts are backed by scratch images.  Release their cached
+	// faces and reset the one-shot console-atlas guard before those images lose
+	// their device storage; the UI refresh below will rasterise them for the new
+	// viewport instead of retaining stale metrics and empty texture objects.
+	R_DoneFreeType();
+
 	// Force image/object handles to rebuild against the new context.
 	globalImages->PurgeAllImages();
 	R_ShutdownFrameData();
@@ -3814,6 +3820,9 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_ClearActiveRenderTextures();
 
 	globalImages->ReloadImages( true );
+
+	R_InitFreeType();
+	R_RefreshConsoleFontAtlas();
 }
 
 static GLenum R_ClearPendingGLErrors( void ) {
@@ -3884,6 +3893,10 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 			R_PerformFullVidRestart( forceWindow );
 		} else {
 			(void)R_ClearPendingGLErrors();
+			// The context survived, but a mode change can alter the UI viewport.
+			// Re-rasterise the fixed-cell sheet at the new display scale; cached
+			// GUI fonts refresh lazily from videoRestartCount below.
+			R_RefreshConsoleFontAtlas();
 		}
 	}
 

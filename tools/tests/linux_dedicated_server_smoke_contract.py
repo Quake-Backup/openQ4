@@ -54,6 +54,13 @@ def main() -> None:
         '"si_gameType", "dm"',
         '"s_noSound", "1"',
         '"net_serverDedicated", "1"',
+        'IPV4_SELF_TEST_MARKER = "IPv4 network self-test: passed"',
+        'CANONICAL_GAMETYPE_MARKER = \'"si_gameType" is:"DM"\'',
+        "IPV4_SELF_TEST_MARKER,",
+        "CANONICAL_GAMETYPE_MARKER,",
+        '"+netIPv4SelfTest"',
+        '"+si_gameType"',
+        '"IPv4 network self-test: FAILED"',
         '"+wait", "1"',
         '"Selected game module: logical=\'game_mp\'"',
         '"game initialized."',
@@ -64,6 +71,14 @@ def main() -> None:
         "subprocess.TimeoutExpired",
     ):
         require(runner, token, "Linux dedicated-server smoke runner")
+    command = runner[runner.index("    command = [") : runner.index("\n    ]", runner.index("    command = ["))]
+    if not (
+        command.index('"si_gameType", "dm"')
+        < command.index('"+netIPv4SelfTest"')
+        < command.index('"+si_gameType"')
+        < command.index('"+echo", READY_MARKER')
+    ):
+        raise AssertionError("Linux dedicated smoke must test IPv4 and canonical DM before its ready marker")
     reject(runner, "Program Files", "asset-free Linux dedicated-server smoke runner")
     reject(runner, "steamapps", "asset-free Linux dedicated-server smoke runner")
     require(

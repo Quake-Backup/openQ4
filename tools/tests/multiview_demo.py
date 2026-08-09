@@ -52,6 +52,34 @@ def require_order(text: str, first: str, second: str, context: str) -> None:
         raise AssertionError(f"{first!r} must precede {second!r} in {context}")
 
 
+def expect_contract_rejection(validator, candidate: str, context: str) -> None:
+    try:
+        validator(candidate)
+    except AssertionError:
+        return
+    raise AssertionError(f"Validation contract accepted mutation: {context}")
+
+
+def validate_legacy_game_api_compatibility(source: str) -> None:
+    for token, context in (
+        ("MVD_LEGACY_GAME_API_1_0_1_1 = 39u", "retail-compatible MVD API"),
+        ("MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT = 42u", "pre-shutdown-split MVD API"),
+    ):
+        require(source, token, context)
+    legacy_compatibility = between(
+        source,
+        "static bool MVD_IsLegacyGameAPICompatible",
+        "static bool MVD_ReadCString",
+        "known-compatible MVD 1.0/1.1 API allowlist",
+    )
+    for token in (
+        "version == MVD_LEGACY_GAME_API_1_0_1_1",
+        "version == MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT",
+        "version == static_cast<unsigned int>( GAME_API_VERSION )",
+    ):
+        require(legacy_compatibility, token, "known-compatible MVD 1.0/1.1 API allowlist")
+
+
 def validate_container() -> None:
     source = read(ROOT / "src/framework/async/MultiViewDemo.cpp")
     header = read(ROOT / "src/framework/async/MultiViewDemo.h")
@@ -174,26 +202,14 @@ def validate_container() -> None:
         "MVD_SchemaMinor( header.gameSchemaVersion )",
     ):
         require(start_playback, needle, "MVD playback compatibility gates")
-    require(
-        source,
-        "MVD_LEGACY_GAME_API_1_0_1_1 = 39u",
-        "known-compatible MVD 1.0/1.1 API allowlist",
-    )
-    legacy_compatibility = between(
-        source,
-        "static bool MVD_IsLegacyGameAPICompatible",
-        "static bool MVD_ReadCString",
-        "known-compatible MVD 1.0/1.1 API allowlist",
-    )
-    require(
-        legacy_compatibility,
-        "version == MVD_LEGACY_GAME_API_1_0_1_1",
-        "known-compatible MVD 1.0/1.1 API allowlist",
-    )
-    require(
-        legacy_compatibility,
-        "version == static_cast<unsigned int>( GAME_API_VERSION )",
-        "current legacy MVD API compatibility",
+    validate_legacy_game_api_compatibility(source)
+    api42_allow = "\t\tversion == MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT ||\n"
+    if source.count(api42_allow) != 1:
+        raise AssertionError("MVD API-42 compatibility mutation anchor is not unique")
+    expect_contract_rejection(
+        validate_legacy_game_api_compatibility,
+        source.replace(api42_allow, "", 1),
+        "legacy MVDs recorded by game API 42 are rejected after the shutdown-only API bump",
     )
 
     require_order(

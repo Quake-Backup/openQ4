@@ -1482,6 +1482,7 @@ void R_InitOpenGL( void );
 // copy; every backend that fills glConfig must call it
 void R_PublishCompressionCapsToImageTools( void );
 
+void R_InitFreeType( void );
 void R_DoneFreeType( void );
 
 // Scalable font path: rasterises the shipped .ttf faces at the display's own
@@ -1491,6 +1492,7 @@ bool R_RegisterTrueTypeFont( const char *fontName, fontInfoEx_t &font );
 // Rebuilds the fixed-cell 'bigchars' console sheet at display resolution and
 // retargets its material, so the console and loading screen sharpen too.
 bool R_BuildConsoleFontAtlas( void );
+void R_RefreshConsoleFontAtlas( void );
 void R_ShutdownTrueTypeFonts( void );
 
 void R_SetColorMappings( void );

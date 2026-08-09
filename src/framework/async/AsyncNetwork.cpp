@@ -405,7 +405,7 @@ void idAsyncNetwork::SpawnServer_f( const idCmdArgs &args ) {
 
 	// don't let a server spawn with singleplayer game type - it will crash
 	if ( idStr::Icmp( cvarSystem->GetCVarString( "si_gameType" ), "singleplayer" ) == 0 ) {
-		cvarSystem->SetCVarString( "si_gameType", "dm" );
+		cvarSystem->SetCVarString( "si_gameType", "DM" );
 	}
 
 	const char *activeModule = cvarSystem->GetCVarString( "com_activeGameModule" );
@@ -475,10 +475,15 @@ void idAsyncNetwork::Connect_f( const idCmdArgs &args ) {
 		common->Printf( "USAGE: connect <serverName>\n" );
 		return;
 	}
+	// Select a deterministic provisional mode before any required game-module
+	// reload. LoadGameDLL repeats this guard after archived config replay so the
+	// client and server agree before serverInfo arrives.
+	if ( idStr::Icmp( cvarSystem->GetCVarString( "si_gameType" ), "singleplayer" ) == 0 ) {
+		cvarSystem->SetCVarString( "si_gameType", "DM" );
+	}
 
 	const char *activeModule = cvarSystem->GetCVarString( "com_activeGameModule" );
 	if ( idStr::Icmp( activeModule, "game_mp" ) != 0 ) {
-		cvarSystem->SetCVarString( "si_gameType", "dm" );
 		cvarSystem->SetCVarString( "com_nextGameModule", "game_mp" );
 		idCmdArgs reloadArgs;
 		reloadArgs.AppendArg( "connect" );
@@ -497,9 +502,11 @@ idAsyncNetwork::Reconnect_f
 ==================
 */
 void idAsyncNetwork::Reconnect_f( const idCmdArgs &args ) {
+	if ( idStr::Icmp( cvarSystem->GetCVarString( "si_gameType" ), "singleplayer" ) == 0 ) {
+		cvarSystem->SetCVarString( "si_gameType", "DM" );
+	}
 	const char *activeModule = cvarSystem->GetCVarString( "com_activeGameModule" );
 	if ( idStr::Icmp( activeModule, "game_mp" ) != 0 ) {
-		cvarSystem->SetCVarString( "si_gameType", "dm" );
 		cvarSystem->SetCVarString( "com_nextGameModule", "game_mp" );
 		idCmdArgs reloadArgs;
 		reloadArgs.AppendArg( "reconnect" );

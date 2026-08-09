@@ -553,7 +553,11 @@ void idAsyncClient::RemoteConsole( const char *command ) {
 	if ( active ) {
 		adr = serverAddress;
 	} else {
-		Sys_StringToNetAdr( idAsyncNetwork::clientRemoteConsoleAddress.GetString(), &adr, true );
+		const char *address = idAsyncNetwork::clientRemoteConsoleAddress.GetString();
+		if ( !Sys_StringToNetAdr( address, &adr, true ) ) {
+			common->Printf( "Couldn't resolve remote console address \"%s\"\n", address );
+			return;
+		}
 	}
 	
 	if ( !adr.port ) {
@@ -1402,10 +1406,13 @@ void idAsyncClient::ProcessServersListMessage( const netadr_t from, const idBitM
 		common->DPrintf( "received a server list from %s - not a valid master\n", Sys_NetAdrToString( from ) );
 		return;
 	}
-	while ( msg.GetRemaingData() ) {
+	while ( msg.GetRemaingData() >= 6 ) {
 		int a,b,c,d;
 		a = msg.ReadByte(); b = msg.ReadByte(); c = msg.ReadByte(); d = msg.ReadByte();
-		serverList.AddServer( serverList.Num(), va( "%i.%i.%i.%i:%i", a, b, c, d, msg.ReadShort() ) );
+		serverList.AddServer( serverList.Num(), va( "%i.%i.%i.%i:%i", a, b, c, d, msg.ReadUShort() ) );
+	}
+	if ( msg.GetRemaingData() != 0 ) {
+		common->DPrintf( "received a malformed server list from %s - trailing address data ignored\n", Sys_NetAdrToString( from ) );
 	}
 }
 

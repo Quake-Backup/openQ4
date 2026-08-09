@@ -31,6 +31,9 @@ SAFE_TIERS = ("auto", "legacy", "gl33", "gl41", "gl43", "gl45", "gl46")
 PRESENTATION_MAXFPS = ("0", "120", "240")
 PRESENTATION_SWAP_INTERVALS = ("0", "1")
 DISPLAY_MODES = ("windowed", "fullscreen")
+POSTINIT_CONNECT_WAIT_FRAMES = 30
+POSTINIT_RECONNECT_WAIT_FRAMES = 30
+POSTINIT_SERVER_GRACE_MSEC = 90000
 
 REQUIRED_SCENES: dict[str, dict[str, Any]] = {
     "sp-storage1": {
@@ -74,6 +77,12 @@ REQUIRED_SCENES: dict[str, dict[str, Any]] = {
         "map": "mp/q4dm1",
         "purpose": "listen server plus local loopback client renderer parity",
         "path": "spawn-static",
+    },
+    "mp-q4dm1-postinit-connect": {
+        "mode": "MP",
+        "map": "mp/q4dm1",
+        "purpose": "delayed IPv4 loopback connect after initial SP module startup, reconnect, and second-map gameplay capture",
+        "path": "postinit-connect",
     },
 }
 
@@ -196,6 +205,14 @@ PROFILE_DEFAULTS = {
     },
     "required": {
         "cases": tuple(REQUIRED_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+    },
+    "mp-postinit-connect": {
+        "cases": ("mp-q4dm1-postinit-connect",),
         "tiers": ("auto",),
         "maxfps": ("240",),
         "swap": ("0",),
@@ -643,6 +660,37 @@ def write_autoexec_cfg(
         screenshot_path = savepath / game_dir / screenshot_rel
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
     return cfg_rel, shot_name
+
+
+def write_postinit_connect_cfg(savepath: Path, port: int) -> str:
+    """Queue loopback connect after the client has finished its initial SP startup."""
+    cfg_rel = "renderer-bench/postinit_connect.cfg"
+    payload = f"wait {POSTINIT_CONNECT_WAIT_FRAMES}\nconnect 127.0.0.1:{port}\n"
+    for game_dir in ("baseoq4", "q4base"):
+        cfg_path = savepath / game_dir / Path(cfg_rel)
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(payload, encoding="utf-8")
+    return cfg_rel
+
+
+def write_postinit_reconnect_cfg(
+    savepath: Path,
+    capture_cfg: str,
+    autoexec_delay_ms: int,
+) -> str:
+    """Reconnect from active MP play, then arm capture for the second map."""
+    cfg_rel = "renderer-bench/postinit_reconnect.cfg"
+    payload = (
+        f"wait {POSTINIT_RECONNECT_WAIT_FRAMES}\n"
+        f'set g_autoExecAfterMapLoad "{capture_cfg}"\n'
+        f"set g_autoExecAfterMapLoadDelayMs {max(0, autoexec_delay_ms)}\n"
+        "reconnect\n"
+    )
+    for game_dir in ("baseoq4", "q4base"):
+        cfg_path = savepath / game_dir / Path(cfg_rel)
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(payload, encoding="utf-8")
+    return cfg_rel
 
 
 def find_log(savepath: Path, log_name: str) -> Path | None:
@@ -1166,16 +1214,20 @@ def run_mp_spec(
     client_stdout = output_dir / f"{spec.id}_client.out.txt"
     client_stderr = output_dir / f"{spec.id}_client.err.txt"
 
+    server_settle_frames = args.settle_frames + args.mp_client_delay_frames
+    server_exec_commands = args.exec_commands
+    if spec.path_name == "postinit-connect":
+        server_exec_commands += (f"waitMsec {POSTINIT_SERVER_GRACE_MSEC}",)
     server_autoexec_cfg, server_screenshot = write_autoexec_cfg(
         server_savepath,
         spec,
         "server",
         run_id,
-        args.settle_frames + args.mp_client_delay_frames,
+        server_settle_frames,
         args.sample_frames,
         args.sample_msec,
         args.extra_cvars,
-        args.exec_commands,
+        server_exec_commands,
         args.gpu_timers,
         not args.pacing_only,
     )
@@ -1200,6 +1252,7 @@ def run_mp_spec(
     append_set(server_args, "si_gameType", "DM")
     append_command(server_args, "spawnServer", spec.map_name)
 
+    client_capture_index = 1 if spec.path_name == "postinit-connect" else 0
     client_autoexec_cfg, client_screenshot = write_autoexec_cfg(
         client_savepath,
         spec,
@@ -1212,7 +1265,17 @@ def run_mp_spec(
         args.exec_commands,
         args.gpu_timers,
         not args.pacing_only,
+        client_capture_index,
     )
+    client_reconnect_cfg = ""
+    client_initial_autoexec_cfg = client_autoexec_cfg
+    if spec.path_name == "postinit-connect":
+        client_reconnect_cfg = write_postinit_reconnect_cfg(
+            client_savepath,
+            client_autoexec_cfg,
+            args.autoexec_delay_ms,
+        )
+        client_initial_autoexec_cfg = client_reconnect_cfg
     client_args = common_args(
         root,
         client_savepath,
@@ -1223,11 +1286,17 @@ def run_mp_spec(
         args.modern_executor,
         args.show_fps_overlay,
         args.launch_cvars,
-        client_autoexec_cfg,
+        client_initial_autoexec_cfg,
         args.autoexec_delay_ms,
     )
     append_set(client_args, "ui_name", "RendererBenchClient")
-    append_command(client_args, "connect", f"127.0.0.1:{port}")
+    client_postinit_connect_cfg = ""
+    if spec.path_name == "postinit-connect":
+        append_set(client_args, "si_gameType", "singleplayer")
+        client_postinit_connect_cfg = write_postinit_connect_cfg(client_savepath, port)
+        append_command(client_args, "exec", client_postinit_connect_cfg)
+    else:
+        append_command(client_args, "connect", f"127.0.0.1:{port}")
 
     if args.dry_run:
         return {
@@ -1239,6 +1308,9 @@ def run_mp_spec(
             "clientArgs": client_args,
             "serverAutoexecCfg": server_autoexec_cfg,
             "clientAutoexecCfg": client_autoexec_cfg,
+            "clientInitialAutoexecCfg": client_initial_autoexec_cfg,
+            "clientReconnectCfg": client_reconnect_cfg,
+            "clientPostInitConnectCfg": client_postinit_connect_cfg,
             "serverScreenshotRequest": server_screenshot,
             "clientScreenshotRequest": client_screenshot,
             "roles": [],
@@ -1319,6 +1391,38 @@ def run_mp_spec(
         args.max_p95_ms,
         args.max_p99_ms,
     )
+    postinit_connect_responses: dict[str, int] = {}
+    postinit_ttf_rebuilds: dict[str, int] = {}
+    if spec.path_name == "postinit-connect":
+        server_log_text = read_text(find_log(server_savepath, server_log))
+        client_log_text = read_text(find_log(client_savepath, client_log))
+        server_text = server_log_text or "\n".join(
+            read_text(path) for path in (server_stdout, server_stderr)
+        )
+        client_text = client_log_text or "\n".join(
+            read_text(path) for path in (client_stdout, client_stderr)
+        )
+        server_response_count = server_text.count("sending connect response to ")
+        client_response_count = client_text.count("received connect response from ")
+        postinit_connect_responses = {
+            "serverSent": server_response_count,
+            "clientReceived": client_response_count,
+        }
+        client_ttf_rebuild_count = client_text.count("TTF font: console sheet rebuilt at ")
+        postinit_ttf_rebuilds = {"clientAfterReload": client_ttf_rebuild_count}
+        if server_response_count < 2:
+            server_result["missing"].append(
+                f"post-init connect/reconnect responses={server_response_count}<2"
+            )
+            server_result["status"] = "fail"
+        if client_response_count < 2:
+            client_result["missing"].append(
+                f"post-init connect/reconnect responses={client_response_count}<2"
+            )
+            client_result["status"] = "fail"
+        if client_ttf_rebuild_count < 1:
+            client_result["missing"].append("post-reload TTF console atlas rebuild")
+            client_result["status"] = "fail"
     ok = server_result["status"] == "pass" and client_result["status"] == "pass"
     return {
         "id": spec.id,
@@ -1333,6 +1437,8 @@ def run_mp_spec(
         "renderer": spec.renderer,
         "status": "pass" if ok else "fail",
         "port": port,
+        "postInitConnectResponses": postinit_connect_responses,
+        "postInitTTFRebuilds": postinit_ttf_rebuilds,
         "roles": [server_result, client_result],
     }
 

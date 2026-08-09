@@ -3077,7 +3077,7 @@ static void Session_BuildLightGridBakeResumeArgs( const lightGridBakeOptions_t &
 
 static void Session_ReloadLightGridBakeBatch( const lightGridBakeOptions_t &options, const idList<idStr> &mapTargets,
 	bool bakeAll, bool bakeAllMultiplayer, bool forceBake, bool autoQuit, int resumeIndex, bool useMultiplayerModule ) {
-	cvarSystem->SetCVarString( "si_gameType", useMultiplayerModule ? "dm" : "singleplayer" );
+	cvarSystem->SetCVarString( "si_gameType", useMultiplayerModule ? "DM" : "singleplayer" );
 	cvarSystem->SetCVarString( "com_nextGameModule", useMultiplayerModule ? "game_mp" : "game_sp" );
 
 	idCmdArgs reloadArgs;
@@ -3120,7 +3120,7 @@ static bool Session_LoadLightGridBakeMap( const idStr &mapName ) {
 			cvarSystem->SetCVarInteger( "net_serverDedicated", 0 );
 		}
 
-		cvarSystem->SetCVarString( "si_gameType", "dm" );
+		cvarSystem->SetCVarString( "si_gameType", "DM" );
 		cvarSystem->SetCVarString( "si_map", mapName.c_str() );
 
 		idCmdArgs spawnArgs;

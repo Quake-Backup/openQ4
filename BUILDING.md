@@ -142,6 +142,28 @@ Pull requests also run Linux Sanitizer Validation on x64 with ASan+UBSan enabled
 
 Experimental manual macOS release artifacts are Apple Silicon/arm64 only. The detailed matrix policy lives in `docs/dev/macos-support-matrix-policy.md`: current packages are `arm64 only`, target macOS 11 or later, and require separate oldest-floor plus latest-public-macOS signoff evidence before macOS support can be promoted beyond experimental. Credentialed runs publish signed/notarized DMGs, while runs without Apple Developer ID signing and notarization credentials publish clearly labeled unsigned/unnotarized `-unsigned.tar.gz` archives. The manual release workflow defaults to `macos_support_tier=experimental`; selecting `macos_support_tier=first-class` fails the release matrix instead of publishing unsigned fallback packages when signing/notarization secrets are missing. Hosted `macos-15-intel` jobs now provide experimental x86_64 engine/GameLib compile, stage, architecture, assetless renderer, and dedicated-module-loader coverage for both bridge variants, but Intel Mac and universal2 packages are not published until physical Intel gameplay/package/signing evidence or a fully validated universal packaging lane exists. Rosetta is not a supported release target.
 
+### IPv4 Networking Self-Test
+
+After building the engine, run the no-argument `netIPv4SelfTest` command from the openQ4 console:
+
+```text
+netIPv4SelfTest
+```
+
+This developer diagnostic checks strict numeric IPv4 parsing, DNS-enabled
+`localhost`, invalid ports, and isolated network-CVar handling. It binds an
+explicit `127.0.0.1` high port plus an ephemeral sender, verifies initialized
+counters and bidirectional payloads, accepts an exact-capacity datagram, rejects
+an oversized datagram without losing the following marker, and exercises socket
+close/reopen. A successful run ends with `IPv4 network self-test: passed`; any
+failed check ends with `IPv4 network self-test: FAILED` and should be treated as
+a validation failure.
+
+The self-test is local and non-destructive. It does not prove public
+reachability, router NAT or firewall configuration, external DNS records,
+master-server availability, or end-to-end internet play; validate those
+separately when they are relevant to a change.
+
 ### macOS Static Validation
 
 Use this track for macOS support work when you do not have access to macOS. It runs static/policy tests, synthetic Apple GL 2.1 checks, synthetic macOS package/archive fixtures, shell syntax checks, and push/PR dry-run validation. It does not run openQ4 on macOS.

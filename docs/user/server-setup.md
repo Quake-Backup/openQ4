@@ -25,8 +25,50 @@ For light testing, plan on a modern 64-bit host with at least 2 GB RAM available
 Example startup flow:
 
 ```text
-openQ4-ded_x64 +set si_name "My openQ4 Server" +set si_map mp/q4dm1 +set si_gameType dm +spawnServer
+openQ4-ded_x64 +set net_ip 0.0.0.0 +set net_port 28004 +set si_name "My openQ4 Server" +set si_map mp/q4dm1 +set si_gameType DM +spawnServer
 ```
+
+## IPv4 Binding and Ports
+
+For predictable hosting, set the interface and UDP port before starting the server:
+
+| Variable | What it controls |
+|---|---|
+| `net_ip` | Local interface to bind. The default `localhost` value means all local interfaces for compatibility. Use `0.0.0.0` to state the IPv4 wildcard explicitly, or use a local IPv4 address such as `192.168.1.50` to bind only that adapter. |
+| `net_port` | Server UDP port. `0` asks openQ4 to try the default server range, `28004` through `28007`; a value from `1` through `65535` selects that exact port. |
+
+`net_ip` is a local bind address, not the public address reported by your router. Do not put a public WAN address here unless that address is actually assigned to an interface on the server host.
+
+An explicit `net_ip` that cannot be resolved or bound now stops network startup instead of silently opening the server on every interface. Correct the address or select `0.0.0.0`, then start the server again.
+
+Network endpoint ports use the full unsigned 16-bit range, `0` through `65535`. Port `0` has a special server configuration meaning: openQ4 selects an available default port rather than listening on literal port zero. The internal `PORT_ANY` value asks the operating system for an ephemeral port; clients and developer diagnostics use it, but it is not a normal public-server setting.
+
+If `net_port` is `0`, check the server console or log to learn which port was selected before configuring a firewall or router.
+
+## Connecting over IPv4
+
+Clients can connect to a numeric IPv4 address or a hostname with an IPv4 DNS record. Include the port when the server is not using `28004`:
+
+```text
+connect 192.168.1.50:28004
+connect 203.0.113.25:28004
+connect play.example.net:28004
+```
+
+Omitting the port selects `28004`. A literal `:0` also selects that default for direct connections; it does not connect to a server listening on port zero.
+
+## Firewall and NAT
+
+For predictable hosting, use direct IPv4 UDP with the firewall and port-forward
+rules below. The legacy `net_socks*` CVars remain visible for configuration
+compatibility, but openQ4 does not enable or support SOCKS UDP relay; setting
+them does not route multiplayer traffic through a SOCKS proxy.
+
+- Allow inbound UDP on the selected `net_port` in the server host's firewall. Normal gameplay connections do not require an inbound TCP port forward.
+- If the server is behind a router, forward the same external UDP port to the server's local IPv4 address and selected port. Give the host a stable DHCP reservation or static local address so that rule does not drift.
+- Players on the same LAN should connect to the server's local IPv4 address. Internet players should use the router's public IPv4 address or a hostname with an IPv4 DNS record.
+- Test public reachability from outside the server's LAN. Some routers do not support connecting back through their own public address.
+- Carrier-grade NAT or another upstream NAT can prevent unsolicited inbound connections even when the local router is configured correctly; in that case, ask the network provider for a public IPv4 address or a suitable port-forwarding service.
 
 ## Common Server Variables
 
@@ -96,7 +138,7 @@ operator selects a competitive profile.
 
 ## Multiplayer Tuning
 
-If you want to tune prediction or lag compensation behavior, see [Multiplayer Networking](multiplayer-networking.md).
+For IPv4 connection behavior and prediction or lag compensation tuning, see [Multiplayer Networking](multiplayer-networking.md).
 
 ## Notes
 

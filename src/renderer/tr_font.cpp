@@ -76,6 +76,10 @@ static const int QUAKE4_FONTDAT_SIZE =
 	Q4_FONTDAT_SCALAR_FLOAT_COUNT * sizeof( float ) +
 	Q4_FONTDAT_SERIALIZED_MATERIAL_PTR_BYTES;
 
+// Renderer reloads keep this module mapped, so the console-atlas lifecycle
+// guard must be reset explicitly when FreeType/font resources are released.
+static bool consoleFontChecked = false;
+
 static fontInfo_t *R_FontSlotForIndex( fontInfoEx_t &font, q4FontSlotIndex_t slot ) {
 	if ( slot == Q4_FONT_SLOT_SMALL ) {
 		return &font.fontInfoSmall;
@@ -228,6 +232,11 @@ static bool R_LoadFontSlot( fontInfoEx_t &font, const char *fontName, const q4Fo
 
 }
 
+void R_RefreshConsoleFontAtlas( void ) {
+	consoleFontChecked = true;
+	R_BuildConsoleFontAtlas();
+}
+
 /*
 ============
 RegisterFont
@@ -240,7 +249,6 @@ bool idRenderSystemLocal::RegisterFont( const char *fontName, fontInfoEx_t &font
 
 	// The console sheet is not registered through here, so piggyback on the
 	// first font registration to rebuild it once the renderer is up.
-	static bool consoleFontChecked = false;
 	if ( !consoleFontChecked ) {
 		consoleFontChecked = true;
 		R_BuildConsoleFontAtlas();
@@ -292,5 +300,6 @@ R_DoneFreeType
 ============
 */
 void R_DoneFreeType( void ) {
-//	registeredFontCount = 0;
+	R_ShutdownTrueTypeFonts();
+	consoleFontChecked = false;
 }

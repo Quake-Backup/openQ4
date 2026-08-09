@@ -58,6 +58,7 @@ idCVar gui_textBackgroundPadding( "gui_textBackgroundPadding", "2", CVAR_GUI | C
 
 
 idList<fontInfoEx_t> idDeviceContext::fonts;
+int idDeviceContext::fontsVideoRestartCount = -1;
 
 namespace {
 
@@ -874,9 +875,26 @@ static void openQ4_SetGuiSortForFont( fontInfoEx_t &font ) {
 	}
 }
 
+static void openQ4_NormalizeFontLanguage( idStr &language ) {
+	// Western European language packs share the English font artwork.
+	if ( language == "french" || language == "german" || language == "spanish" || language == "italian" ) {
+		language = "english";
+	}
+}
+
+static void openQ4_ResolveFontFileName( const char *name, const idStr &language, idStr &fileName ) {
+	fileName = name;
+	if ( idStr::Icmp( fileName.c_str(), "fonts" ) == 0 ) {
+		fileName = "fonts/chain";
+	}
+	fileName.Replace( "fonts", va( "fonts/%s", language.c_str() ) );
+}
+
 }
 
 int idDeviceContext::FindFont( const char *name ) {
+	EnsureFontsCurrent();
+
 	int c = fonts.Num();
 
 	for (int i = 0; i < c; i++) {
@@ -887,11 +905,8 @@ int idDeviceContext::FindFont( const char *name ) {
 	}
 
 	// If the font was not found, try to register it
-	idStr fileName = name;
-	if ( idStr::Icmp( fileName.c_str(), "fonts" ) == 0 ) {
-		fileName = "fonts/chain";
-	}
-	fileName.Replace("fonts", va("fonts/%s", fontLang.c_str()) );
+	idStr fileName;
+	openQ4_ResolveFontFileName( name, fontLang, fileName );
 
 	fontInfoEx_t fontInfo;
 	int index = fonts.Append( fontInfo );
@@ -908,17 +923,112 @@ void idDeviceContext::SetupFonts() {
 	fonts.SetGranularity( 1 );
 
 	fontLang = cvarSystem->GetCVarString( "sys_lang" );
-	
-	// western european languages can use the english font
-	if ( fontLang == "french" || fontLang == "german" || fontLang == "spanish" || fontLang == "italian" ) {
-		fontLang = "english";
-	}
+	openQ4_NormalizeFontLanguage( fontLang );
 
 	// Default font has to be added first.
 	FindFont( "fonts/chain" );
 }
 
+/*
+================
+idDeviceContext::ReloadFonts
+
+A full vid_restart preserves GUI objects and their integer font indices while
+destroying every GPU image; a partial mode change preserves the images but can
+still change their required rasterisation scale. Re-register each cached
+logical font in place so the TrueType scratch atlases, resolution-dependent
+glyph UVs and metrics match the current viewport in either case. Keeping the
+list allocation and order stable is important: parsed windows store font
+indices, while this device context keeps pointers into the selected list entry.
+================
+*/
+bool idDeviceContext::ReloadFonts() {
+	if ( fonts.Num() == 0 ) {
+		SetupFonts();
+		SetFont( 0 );
+		useFont = NULL;
+		return fonts.Num() > 0 && fonts[0].name[0] != '\0';
+	}
+
+	int activeFontIndex = 0;
+	int useFontSlot = -1;
+	for ( int i = 0; i < fonts.Num(); ++i ) {
+		if ( activeFont != &fonts[i] ) {
+			continue;
+		}
+		activeFontIndex = i;
+		if ( useFont == &fonts[i].fontInfoSmall ) {
+			useFontSlot = 0;
+		} else if ( useFont == &fonts[i].fontInfoMedium ) {
+			useFontSlot = 1;
+		} else if ( useFont == &fonts[i].fontInfoLarge ) {
+			useFontSlot = 2;
+		}
+		break;
+	}
+
+	fontLang = cvarSystem->GetCVarString( "sys_lang" );
+	openQ4_NormalizeFontLanguage( fontLang );
+
+	bool allFontsReloaded = true;
+	for ( int i = 0; i < fonts.Num(); ++i ) {
+		char logicalName[sizeof( fonts[i].name )];
+		idStr::Copynz( logicalName, fonts[i].name, sizeof( logicalName ) );
+		if ( logicalName[0] == '\0' ) {
+			allFontsReloaded = false;
+			continue;
+		}
+
+		idStr fileName;
+		openQ4_ResolveFontFileName( logicalName, fontLang, fileName );
+		fontInfoEx_t replacement;
+		if ( !renderSystem->RegisterFont( fileName.c_str(), replacement ) ) {
+			common->Warning( "Could not reload font %s [%s] after renderer restart", logicalName, fileName.c_str() );
+			allFontsReloaded = false;
+			continue;
+		}
+
+		idStr::Copynz( replacement.name, logicalName, sizeof( replacement.name ) );
+		fonts[i] = replacement;
+	}
+
+	SetFont( activeFontIndex );
+	if ( activeFont == NULL ) {
+		useFont = NULL;
+	} else if ( useFontSlot == 0 ) {
+		useFont = &activeFont->fontInfoSmall;
+	} else if ( useFontSlot == 1 ) {
+		useFont = &activeFont->fontInfoMedium;
+	} else if ( useFontSlot == 2 ) {
+		useFont = &activeFont->fontInfoLarge;
+	} else {
+		useFont = NULL;
+	}
+
+	return allFontsReloaded;
+}
+
+void idDeviceContext::EnsureFontsCurrent() {
+	if ( !initialized || renderSystem == NULL || !renderSystem->IsOpenGLRunning() ) {
+		return;
+	}
+
+	const int currentRestartCount = renderSystem->GetVideoRestartCount();
+	if ( fontsVideoRestartCount == currentRestartCount ) {
+		return;
+	}
+
+	// Record the generation before rebuilding so any registration path that
+	// consults this context cannot recursively begin the same refresh.
+	fontsVideoRestartCount = currentRestartCount;
+	if ( !ReloadFonts() ) {
+		common->Warning( "vid_restart could not rebuild every GUI font" );
+	}
+}
+
 void idDeviceContext::SetFont( int num ) {
+	EnsureFontsCurrent();
+
 	if ( fonts.Num() == 0 ) {
 		activeFont = NULL;
 		return;
@@ -1403,6 +1513,9 @@ void idDeviceContext::Init() {
 	whiteImage = declManager->FindMaterial("gfx/guis/white");
 	whiteImage->SetSort( SS_GUI );
 	mbcs = false;
+	if ( fonts.Num() == 0 && renderSystem != NULL ) {
+		fontsVideoRestartCount = renderSystem->GetVideoRestartCount();
+	}
 	SetupFonts();
 	activeFont = fonts.Num() > 0 ? &fonts[0] : NULL;
 	icons.Clear();
@@ -1450,6 +1563,7 @@ void idDeviceContext::Shutdown() {
 	fontLang.Clear();
 	clipRects.Clear();
 	fonts.Clear();
+	fontsVideoRestartCount = -1;
 	Clear();
 }
 
@@ -1899,6 +2013,8 @@ void idDeviceContext::PaintGlyph( float x, float y, float scale, const fontInfo_
 
 
 void idDeviceContext::SetFontByScale(float scale) {
+	EnsureFontsCurrent();
+
 	if ( activeFont == NULL ) {
 		useFont = NULL;
 		return;

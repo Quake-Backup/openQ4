@@ -74,6 +74,7 @@ public:
 
 	int					FindFont( const char *name );
 	void				SetupFonts();
+	bool				ReloadFonts();
 
 	idRegion			*GetTextRegion(const char *text, float textScale, idRectangle rectDraw, float xStart, float yStart);
 
@@ -185,6 +186,7 @@ private:
 	void				PaintChar(float x,float y,float width,float height,float scale,float	s,float	t,float	s2,float t2,const idMaterial *hShader);
 	void				PaintGlyph(float x,float y,float scale,const fontInfo_t *font,const glyphInfo_t *glyph,const idMaterial *hShader);
 	void				SetFontByScale( float scale );
+	void				EnsureFontsCurrent();
 	void				Clear( void );
 
 	const idMaterial	*cursorImages[CURSOR_COUNT];
@@ -207,6 +209,7 @@ private:
 	idHashTable<embeddedIcon_t> icons;
 	
 	static idList<fontInfoEx_t> fonts;
+	static int			fontsVideoRestartCount;
 	idStr fontLang;
 
 	bool				enableClipping;

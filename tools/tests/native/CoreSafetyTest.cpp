@@ -1,5 +1,6 @@
 #include "src/idlib/NumericString.h"
 #include "src/idlib/StrAllocation.h"
+#include "src/sys/NetworkEndpoint.h"
 
 #include <climits>
 #include <cstdio>
@@ -37,6 +38,36 @@ static void ExpectBounded( const char *text, const int maximum, const bool expec
 static void ExpectAllocation( const bool condition, const char *label ) {
 	if ( !condition ) {
 		std::fprintf( stderr, "String allocation arithmetic failed for %s\n", label );
+		failures++;
+	}
+}
+
+static void ExpectEndpoint( const char *text, const bool expected, const char *expectedHost,
+		const bool expectedHasPort, const unsigned short expectedPort, const char *label ) {
+	char host[256] = "untouched";
+	idNetworkEndpoint::endpointParts_t parts;
+	const bool actual = idNetworkEndpoint::Split( text, host, sizeof( host ), parts );
+	if ( actual != expected ) {
+		std::fprintf( stderr, "Network endpoint split failed for %s: expected %d, got %d\n", label, expected, actual );
+		failures++;
+		return;
+	}
+	if ( !actual ) {
+		if ( host[0] != '\0' || parts.hasPort || parts.port != 0 ) {
+			std::fprintf( stderr, "Network endpoint split left output on failure for %s\n", label );
+			failures++;
+		}
+		return;
+	}
+	if ( std::strcmp( host, expectedHost ) != 0 || parts.hasPort != expectedHasPort || parts.port != expectedPort ) {
+		std::fprintf(
+			stderr,
+			"Network endpoint split value failed for %s: got host='%s', hasPort=%d, port=%u\n",
+			label,
+			host,
+			parts.hasPort,
+			static_cast<unsigned int>( parts.port )
+		);
 		failures++;
 	}
 }
@@ -87,6 +118,27 @@ int main() {
 	ExpectAllocation( !TryRoundUpToInt( static_cast<size_t>( INT_MAX ), 32, roundedAmount ), "INT_MAX round-up" );
 	ExpectAllocation( !TryRoundUpToInt( sizeMaximum, 32, roundedAmount ), "SIZE_MAX round-up" );
 	ExpectAllocation( !TryRoundUpToInt( 1, 0, roundedAmount ), "zero granularity" );
+
+	ExpectEndpoint( "127.0.0.1", true, "127.0.0.1", false, 0, "numeric IPv4" );
+	ExpectEndpoint( "127.0.0.1:65535", true, "127.0.0.1", true, 65535, "maximum IPv4 port" );
+	ExpectEndpoint( "4.example.com:27960", true, "4.example.com", true, 27960, "digit-leading hostname" );
+	ExpectEndpoint( "255.255.255.255", true, "255.255.255.255", false, 0, "IPv4 broadcast literal" );
+	ExpectEndpoint( "hostname:0", true, "hostname", true, 0, "explicit zero port" );
+	ExpectEndpoint( "::1", true, "::1", false, 0, "unbracketed IPv6 literal" );
+	ExpectEndpoint( "[::1]:27960", true, "::1", true, 27960, "bracketed IPv6 endpoint" );
+	ExpectEndpoint( "[fe80::1%3]", true, "fe80::1%3", false, 0, "scoped IPv6 literal" );
+
+	ExpectEndpoint( nullptr, false, "", false, 0, "null endpoint" );
+	ExpectEndpoint( "", false, "", false, 0, "empty endpoint" );
+	ExpectEndpoint( ":27960", false, "", false, 0, "missing host" );
+	ExpectEndpoint( "host:", false, "", false, 0, "missing port" );
+	ExpectEndpoint( "host:-1", false, "", false, 0, "negative port" );
+	ExpectEndpoint( "host:65536", false, "", false, 0, "out-of-range port" );
+	ExpectEndpoint( "host:184467440737095516160", false, "", false, 0, "overflowing decimal port" );
+	ExpectEndpoint( "host:12x", false, "", false, 0, "non-numeric port" );
+	ExpectEndpoint( "[::1", false, "", false, 0, "missing close bracket" );
+	ExpectEndpoint( "[]:27960", false, "", false, 0, "empty bracketed host" );
+	ExpectEndpoint( "[::1]junk", false, "", false, 0, "text after close bracket" );
 
 	if ( failures != 0 ) {
 		std::fprintf( stderr, "core safety native test: %d failure(s)\n", failures );

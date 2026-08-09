@@ -220,6 +220,14 @@ private:
 
 static q4TTFFontManager ttfFonts;
 
+// The console material is authored by the shipped assets.  The scalable path
+// only retargets its image pointer at runtime, so retain the authored image and
+// put it back before a renderer shutdown/restart.  This also makes changing
+// r_useTrueTypeFonts from on to off across vid_restart restore the retail sheet
+// instead of leaving the material attached to a purged scratch image.
+static idMaterial *ttfConsoleMaterial = NULL;
+static idImage *ttfConsoleOriginalImage = NULL;
+
 /*
 ================
 q4TTFFontManager::FindFace
@@ -314,11 +322,17 @@ static const idMaterial *R_TTFCreateAtlasMaterial( const char *imageName, const 
 	source += "\t}\n";
 	source += "}\n";
 
-	idMaterial *material = static_cast<idMaterial *>( declManager->CreateNewDecl( DECL_MATERIAL, materialName, "openq4_ttf_fonts.mtr" ) );
+	// Renderer-generated atlas materials are process-local implementation
+	// details. Keep them implicit so a graphical client does not add decls to
+	// the network checksum that a dedicated server can never create.
+	idMaterial *material = const_cast<idMaterial *>( declManager->FindMaterial( materialName, true ) );
 	if ( material == NULL ) {
 		return NULL;
 	}
-	material->SetText( source.c_str() );
+	// FindMaterial creates and default-parses an implicit declaration. Direct
+	// Parse callers must honor the declaration-manager contract and release that
+	// default data before replacing it with the runtime atlas stage.
+	material->FreeData();
 	material->Parse( source.c_str(), source.Length() );
 	material->SetSort( SS_GUI );
 	return material;
@@ -541,6 +555,7 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	opts.width = pageWidth;
 	opts.height = pageHeight;
 	opts.numLevels = 1;
+	opts.isPersistant = true;
 
 	idImage *image = globalImages->ScratchImage( imageName.c_str(), &opts, TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
 	if ( image == NULL ) {
@@ -739,6 +754,7 @@ bool R_BuildConsoleFontAtlas( void ) {
 	opts.width = pageSize;
 	opts.height = pageSize;
 	opts.numLevels = 1;
+	opts.isPersistant = true;
 
 	idImage *image = globalImages->ScratchImage( Q4_CONSOLE_ATLAS_IMAGE, &opts, TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
 	if ( image == NULL ) {
@@ -779,21 +795,16 @@ bool R_BuildConsoleFontAtlas( void ) {
 		return false;
 	}
 
-	idStr source;
-	source += va( "%s\n", Q4_CONSOLE_FONT_MATERIAL );
-	source += "{\n";
-	source += "\t{\n";
-	source += "\t\tblend blend\n";
-	source += "\t\tmaskDepth\n";
-	source += "\t\tcolored\n";
-	source += "\t\tnopicmip\n";
-	source += "\t\tlinear\n";
-	source += "\t\tclamp\n";
-	source += va( "\t\tmap %s\n", Q4_CONSOLE_ATLAS_IMAGE );
-	source += "\t}\n";
-	source += "}\n";
-	material->SetText( source.c_str() );
-	material->Parse( source.c_str(), source.Length() );
+	const shaderStage_t *originalStage = ( material->GetNumStages() > 0 ) ? material->GetStage( 0 ) : NULL;
+	idImage *originalImage = ( originalStage != NULL ) ? originalStage->texture.image : NULL;
+	if ( !material->OverrideStageImageForRuntime( 0, image ) ) {
+		common->Warning( "TTF font: console material has no image stage to retarget" );
+		return false;
+	}
+	if ( ttfConsoleMaterial == NULL ) {
+		ttfConsoleMaterial = material;
+		ttfConsoleOriginalImage = originalImage;
+	}
 	material->SetSort( SS_GUI );
 
 	const shaderStage_t *stage = ( material->GetNumStages() > 0 ) ? material->GetStage( 0 ) : NULL;
@@ -814,5 +825,12 @@ R_ShutdownTrueTypeFonts
 ============
 */
 void R_ShutdownTrueTypeFonts( void ) {
+	if ( ttfConsoleMaterial != NULL && ttfConsoleOriginalImage != NULL ) {
+		if ( !ttfConsoleMaterial->OverrideStageImageForRuntime( 0, ttfConsoleOriginalImage ) ) {
+			common->Warning( "TTF font: could not restore the authored console material image" );
+		}
+	}
+	ttfConsoleMaterial = NULL;
+	ttfConsoleOriginalImage = NULL;
 	ttfFonts.Shutdown();
 }
