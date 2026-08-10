@@ -480,11 +480,13 @@ void R_CheckStaticTriSurfMemory( const srfTriangles_t *tri ) {
 		return;
 	}
 
+	// verify() rather than a local plus assert(): a release build compiles the
+	// assert away and leaves the local unreferenced, which /we4189 makes a hard
+	// error on the MSVC x64 lane. The heap walk itself still runs either way.
 	if ( tri->verts != NULL ) {
 		// R_CreateLightTris points tri->verts at the verts of the ambient surface
 		if ( tri->ambientSurface == NULL || tri->verts != tri->ambientSurface->verts ) {
-			const char *error = triVertexAllocator.CheckMemory( tri->verts );
-			assert( error == NULL );
+			verify( triVertexAllocator.CheckMemory( tri->verts ) == NULL );
 		}
 	}
 
@@ -492,15 +494,13 @@ void R_CheckStaticTriSurfMemory( const srfTriangles_t *tri ) {
 		if ( tri->indexes != NULL ) {
 			// if a surface is completely inside a light volume R_CreateLightTris points tri->indexes at the indexes of the ambient surface
 			if ( tri->ambientSurface == NULL || tri->indexes != tri->ambientSurface->indexes ) {
-				const char *error = triIndexAllocator.CheckMemory( tri->indexes );
-				assert( error == NULL );
+				verify( triIndexAllocator.CheckMemory( tri->indexes ) == NULL );
 			}
 		}
 	}
 
 	if ( tri->shadowVertexes != NULL ) {
-		const char *error = triShadowVertexAllocator.CheckMemory( tri->shadowVertexes );
-		assert( error == NULL );
+		verify( triShadowVertexAllocator.CheckMemory( tri->shadowVertexes ) == NULL );
 	}
 }
 
