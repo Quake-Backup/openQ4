@@ -195,13 +195,18 @@ windowDef Desktop
 		
 		// RITUAL BEGIN
 		// squirrel: added DeadZone multiplayer mode
+		// Every team mode, and only the team modes: 9 is Duel, which is one on
+		// one and has no sides to colour, while 10/11/12 are the openQ4 team
+		// modes that were missing from this list.
 		if( "gui::gametype" == 3 ||
 			"gui::gametype" == 4 ||
 			"gui::gametype" == 5 ||
 			"gui::gametype" == 6 ||
 			"gui::gametype" == 7 ||
 			"gui::gametype" == 8 ||
-			"gui::gametype" == 9  ) {
+			"gui::gametype" == 10 ||
+			"gui::gametype" == 11 ||
+			"gui::gametype" == 12 ) {
 			// RITUAL END
 			if( "gui::aim_player_team" == 0 ) {
 				set "desktop::aim_text_color" "0.627,0.862,0.317,0.8";
@@ -329,7 +334,14 @@ windowDef Desktop
 			set "p_onectf::visible" "1";
 			set "p_ffa::visible" "0";
 			set "p_tourntop::visible" "0";
-		} else if ( "gui::gametype" == 3 ) {
+		// 3 Team DM, 10 Clan Arena, 11 Freeze Tag - the two-team score panel.
+		// Red Rover (12) belongs here after all. Leaving it out did not hide a
+		// noisy team bar - it fell through to the free-for-all leader panel, whose
+		// player1_*/player2_* keys UpdateHud never writes for a team mode, so the
+		// panel drew blank and no team score appeared anywhere. The sides do change
+		// constantly, but there are still exactly two of them and UpdateHud feeds
+		// marine_score/strogg_score unconditionally.
+		} else if ( "gui::gametype" == 3 || "gui::gametype" == 10 || "gui::gametype" == 11 || "gui::gametype" == 12 ) {
 			set "p_ctf::visible" "1";
 			set "p_ctf_2::visible" "0";
 			set "p_onectf::visible" "0";
@@ -4355,9 +4367,12 @@ windowDef Desktop
 		textalign	1
 	}
 
+	// Offset from oq4_roundTime, which shares this column. Both are visible at
+	// once whenever a round mode reaches overtime and a round clock drops under
+	// 30 seconds, and at an identical rect they drew straight through each other.
 	windowDef oq4_overtime
 	{
-		rect	170,58,300,20
+		rect	170,80,300,20
 		screenalignx	left
 		screenaligny	top
 		visible	"gui::overtime"

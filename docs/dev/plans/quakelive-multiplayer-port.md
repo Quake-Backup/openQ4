@@ -159,9 +159,9 @@ New HUD state keys written by `UpdateHud`: `overtime`, `overtimecount`,
 | Mode | Status | Notes |
 | --- | --- | --- |
 | Duel | Implemented | 1v1 with a spectator queue, winner stays on. Kept separate from Quake 4's Tourney, which is a multi-arena elimination bracket and a genuinely different game sharing a name. |
-| Clan Arena | Implemented | Round based team elimination, full arsenal each round, personal score from damage dealt. |
-| Freeze Tag | Implemented | Death freezes; a team mate standing within `si_freezeThawRadius` for `si_freezeThawTime` thaws you back in where you fell. The body is the dead player themselves — Quake 4 already leaves the corpse in place and already replicates it, so no new entity is needed. |
-| Red Rover | Implemented | A kill moves the victim to the killer's team; the round ends when one side has absorbed everybody. Round limit counts total rounds played, as in Quake Live. The infection variant is not ported. |
+| Clan Arena | Implemented | Round based team elimination. The loadout is granted on spawn from `GTF_FULLARSENAL`, not on the round-live edge, so a player is armed through the countdown; map pickups are suppressed for the same flag, because a mode where everyone starts with everything is not played over the item layout. Personal score is damage dealt plus frags, exactly as Quake Live's `PERS_SCORE` is. |
+| Freeze Tag | Implemented | Death freezes; a team mate standing within `si_freezeThawRadius` for `si_freezeThawTime`, **with line of sight** (`si_freezeThawThroughSurface`), thaws you back in where you fell. Frozen bodies are invulnerable and thaw on their own after `si_freezeAutoThawTime`, or `si_freezeWorldDeathDelay` when the world killed you rather than an enemy. The body is the dead player themselves — Quake 4 already leaves the corpse in place and already replicates it, so no new entity is needed. |
+| Red Rover | Implemented | Dying puts you on the other side — any death, including suicides and world deaths, which is what Quake Live's `G_RRHandlePlayerDeath` does. The round ends when one side has absorbed everybody. Round limit counts total rounds played, as in Quake Live. The infection variant is not ported. |
 | One Flag CTF | Activated | Was already implemented and parseable but missing from `si_gameTypeArgs`, so it could not be selected or voted. Arena One Flag CTF likewise. |
 | Overload | Not implemented | Needs a damageable team obelisk. |
 | Harvester | Not implemented | Needs the obelisk plus a carryable skull item and a carried-count field. `teamFragCount` is already triple-purpose and must not take a fourth meaning. |
@@ -187,6 +187,75 @@ place.
 - `english_openq4.lang` and its three mirrors had a stray entry after the
   closing brace that the lexer never read.
 
+## Second pass, audited against Quake Live
+
+A later audit read every mode back against `QuakeLive-SRP` and found that the
+port's *structure* was right but several of its *rules* were not, and that some
+Quake 4 machinery the round layer leans on does the wrong thing for a mode that
+was never in Quake 4. What that pass changed:
+
+**Ending the match by accident.** `SwitchToTeam` calls `CheckAbortGame`, and
+`EnoughClientsToPlay` fails a team game the moment one side is empty — which in
+Red Rover is the win condition. Red Rover therefore ended the whole match on its
+first completed round. `EnoughClientsToPlay` and `ForfeitTeam` now exempt
+`GTF_TEAMSWAP`. `VerifyTeamSwitch` does too: with `si_autoBalance` on (its
+default) it was rewriting every conversion to the *smaller* side, inverting the
+mode's only rule.
+
+**Leaving a round you were losing.** `AllowRespawn` only refused a player who had
+been eliminated, so joining mid-round, or changing sides while cornered, put a
+fully armed body into a round that was already half decided.
+`rvRoundGameState::SealRound` now closes the roster at the RS_ACTIVE edge —
+every slot that is not a live participant, empty slots included, so a client
+connecting into a free slot inherits the seal — and a new `PlayerWithdrew` hook
+tells the game state about the nodamage kill that `SwitchToTeam` uses, which
+never reaches `idPlayer::Killed` and so was invisible to `PlayerDeath`.
+
+**Corpses that counted as survivors.** `GiveStuffToPlayer` writes health with no
+death test, so Clan Arena's round-start top-up resurrected anyone who had died
+during the countdown into an unplayable body that `PlayerIsAlive` counted for
+its team — a wiped-out side that could not lose the round. The top-up now skips
+the dead, and `ReviveForRound` forces a real respawn for anyone dead but not
+eliminated, so a round never opens with a body on the field.
+
+**Freeze Tag.** Thawing ran a full `SelectSpawnPoint` and *then* teleported the
+player to the body, firing an unrelated spawn point's targets, playing the spawn
+effect over there, and kill-boxing twice — the second time on top of the team
+mate who had just spent two seconds thawing. It is now one placement, at an
+occupancy-tested spot near the body, falling back to an ordinary spawn point
+when the body is somewhere nobody can stand. Thawing also required no line of
+sight (through floors and walls), there was no auto-thaw of any kind so a body
+in a pit removed a player for the whole round, and the 1 Hz progress notice was
+an instruction sent to the player already following it.
+
+**Duel.** The warmup ready gate counted the waiting queue as players who had to
+ready up, and queued players cannot ready — so a duel with four or more
+connected clients could never start. The queue also propped up the population
+check, so a contender walking out left the server running an abandoned 1v0
+instead of forfeiting and seating the next challenger. Queued players were being
+fully spawned and re-spectated every respawn cycle, one spawn point and one kill
+box at a time; `rvDuelGameState::AllowRespawn` now vetoes them instead.
+
+**Presentation.** `mpmain.gui` offered no team buttons in Clan Arena, Freeze Tag
+or Red Rover and routed Duel to the Tourney panel; `mphud.gui` showed no team
+score in the round modes and coloured names by team in Duel but not in the three
+modes that have teams. The scoreboard labelled Clan Arena's column "Damage" for
+a number that has never been damage alone. The in-game server info line reported
+`si_fragLimit` for modes scored by rounds.
+
+**A server-driven announcer.** `ScheduleAnnouncerSound` queues into a client
+local list and needs a local player, so every cue decided by server-only game
+logic was silent on a dedicated server and played for the host regardless of who
+it was about. `GAME_RELIABLE_MESSAGE_ANNOUNCER` (append only, like the rest)
+gives the round layer a real channel; the last-one-standing cue uses it.
+
+**Rule corrections read back out of Quake Live.** Clan Arena credits
+`take + asave` capped at what the target had left, not the raw damage roll
+(`G_CAHandleDamageScore`). Red Rover converts on every death, not just enemy
+kills (`G_RRHandlePlayerDeath`), and its between-round reshuffle now runs for the
+first round too. `GTF_BUYING` is finally tested rather than being dead metadata,
+so the buy menu no longer appears in the four modes added since.
+
 ## Validation
 
 - Dedicated server load on stock maps: Clan Arena (q4dm1), Duel (q4dm1),
@@ -196,3 +265,21 @@ place.
   no errors and no unresolved `#str_` ids.
 - Two-player round progression has not been exercised; openQ4 has no bot
   support in the game module, so it needs the two-instance harness.
+- The second pass above is compile-verified only. Every change is server-side
+  game logic or gui state, and none of it has been played.
+
+## Known remaining
+
+- **Round reset rebuilds the client game state.** `ResetRound` broadcasts
+  `GAME_RELIABLE_MESSAGE_RESTART`, which makes every remote client tear down and
+  reallocate `gameState` and replay the base `GAMEON` transition once per round.
+  The obvious fix — a flag bit on that message — collides with the existing
+  meaning of the one spare bit (`idGameLocal::MapRestart` uses it for "a
+  serverInfo delta follows"), so it needs its own encoding.
+- **Red Rover under a managed match.** `mpMatchTeams` hardcodes
+  `allowLiveJoin = false`, so the authoritative team core denies every
+  conversion and writes the old side back over `ui_team`. Red Rover is unplayable
+  on a managed profile; it needs the team core to understand a mode whose rule
+  *is* a live side change.
+- `#str_41693`–`#str_41698`, referenced by the match-series profile table, exist
+  in no language file and render as raw tokens.

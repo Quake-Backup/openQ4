@@ -248,8 +248,12 @@ windowDef Desktop
 		// 7 = arena one flag CTF
 		// 8 = DeadZone
 		
-		if ( "gui::gametype" == 3 || "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8 ) {
-			
+		// openQ4 additions: 10 = Clan Arena, 11 = Freeze Tag, 12 = Red Rover.
+		// All three are two-team modes and need the team pick and the team
+		// player lists; without them the Join panel offered no way to choose a
+		// side and listed nobody.
+		if ( "gui::gametype" == 3 || "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8 || "gui::gametype" == 10 || "gui::gametype" == 11 || "gui::gametype" == 12 ) {
+
 			set "t_b2::text" "#str_200186" ;
 			set "join_options_title::text" "#str_200186" ;
 			
@@ -320,8 +324,10 @@ windowDef Desktop
 				set "p_playerlist_spectator::visible" "0";
 			}
 			
-		} else if ( "gui::gametype" == 1 ) {
-			
+		// 1 = DM, 9 = Duel.  Duel is one-on-one with a waiting queue, so it takes
+		// the free-for-all join panel rather than the Tourney bracket one.
+		} else if ( "gui::gametype" == 1 || "gui::gametype" == 9 ) {
+
 			set "t_b2::text" "#str_200187" ;
 			set "join_options_title::text" "#str_200187" ;
 			
@@ -6188,7 +6194,7 @@ windowDef Desktop
 
 		onNamedEvent showJoin {
 			
-			if( "gui::gametype" == 3 || "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8) {
+			if( "gui::gametype" == 3 || "gui::gametype" == 4 || "gui::gametype" == 5 || "gui::gametype" == 6 || "gui::gametype" == 8 || "gui::gametype" == 10 || "gui::gametype" == 11 || "gui::gametype" == 12 ) {
 				set "join_b_autojoin::visible" "1" ;
 				set "join_b_marine::visible" "1" ;
 				set "join_b_strogg::visible" "1" ;

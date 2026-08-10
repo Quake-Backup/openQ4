@@ -190,6 +190,9 @@
 	"#str_41352"	"%s thawed you out"
 	"#str_41353"	"%s thawed %s"
 	"#str_41354"	"Stand next to a frozen team mate to thaw them"
+	"#str_41355"	"Thawing %s"
+	"#str_41356"	"%s is thawing you out"
+	"#str_41357"	"Nobody reached you - you thawed out on your own"
 
 // Red Rover
 	"#str_41360"	"You have joined the %s team"
