@@ -3148,6 +3148,21 @@ def validate_packaging_and_release_contract() -> None:
     require(release, '"package_suffix": f"-metal{macos_unsigned_suffix}"', "manual release Metal package suffix")
     require(release, "-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }}", "manual release setup")
     require(release, "-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}", "manual release OpenAL setup")
+    # Meson never installs MoltenVK - openQ4 does not build it - so without an
+    # explicit staging step resolve_macos_moltenvk_source aborts the macOS
+    # package and the whole release skips publishing. The release lane went out
+    # without this once already.
+    require(
+        release,
+        "bash tools/build/prepare_macos_moltenvk.sh --output-dir .install",
+        "manual release MoltenVK staging",
+    )
+    require_before(
+        release,
+        "bash tools/build/prepare_macos_moltenvk.sh --output-dir .install",
+        "name: Prepare package",
+        "manual release MoltenVK staged before packaging",
+    )
     require(release, "Import macOS Developer ID certificate", "manual release Developer ID setup")
     require(release, "matrix.macos_release_mode == 'signed'", "manual release conditional Developer ID setup")
     require(release, "MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64", "manual release Developer ID certificate secret")

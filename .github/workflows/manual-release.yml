@@ -1199,6 +1199,20 @@ jobs:
           echo "keychain_path=${keychain_path}" >> "$GITHUB_OUTPUT"
           echo "notary_profile=${notary_profile}" >> "$GITHUB_OUTPUT"
 
+      - name: Stage macOS MoltenVK runtime
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # macOS has no native Vulkan driver: the renderer module reaches the
+          # GPU through MoltenVK, a Vulkan-on-Metal translation layer openQ4
+          # does not build, so Meson never installs it and package_nightly.py
+          # refuses to package without it. Pinned and checksum-verified; see
+          # docs/dev/macos-moltenvk-provider-policy.md. macos-debug.yml stages
+          # it the same way.
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
+
       - name: Prepare package
         id: package
         shell: bash
