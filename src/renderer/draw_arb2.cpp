@@ -12119,6 +12119,27 @@ static void RB_ErrorIfDriverRequiredSimpleInteractionFailed( void ) {
 		return;
 	}
 
+	// Absent is not the same as broken. SimpleInteraction.vfp is stock Quake 4
+	// content, so a startup with no game assets installed - the renderer
+	// validation harnesses, the packaged-app smoke, a first run before the
+	// retail data is pointed at - reaches here with nothing to load rather than
+	// with something wrong. Refusing to start there turns "you have not
+	// installed the game data yet" into a fatal driver diagnostic, and the
+	// interaction rescue path below already exists to render without these.
+	// A program that IS present and fails to compile or validate still ends the
+	// run: that is a real driver or content fault worth refusing.
+	const bool vertexAbsent = vertexRecord == NULL ||
+		idStr::Icmp( vertexRecord->failureReason, "file not found" ) == 0;
+	const bool fragmentAbsent = fragmentRecord == NULL ||
+		idStr::Icmp( fragmentRecord->failureReason, "file not found" ) == 0;
+	if ( vertexAbsent && fragmentAbsent ) {
+		common->Warning(
+			"Apple OpenGL 2.1 compatibility path: SimpleInteraction.vfp is not installed, so interaction "
+			"rendering is unavailable. This is expected without game assets; install the game data for "
+			"lit rendering on this driver path." );
+		return;
+	}
+
 	common->Error(
 		"Unsupported Apple OpenGL 2.1 compatibility path: required SimpleInteraction.vfp ARB programs failed to load "
 		"(vertex: %s, fragment: %s). The ARB2 interaction renderer cannot safely continue on this driver path.",

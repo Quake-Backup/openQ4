@@ -1587,6 +1587,24 @@ void Posix_ConsoleFatalErrorWait( void ) {
 		return;
 	}
 
+	// The window below waits for a human to close it, and the loop has no other
+	// exit. Under an automation harness there is no human, so a fatal error
+	// stops being a failure and becomes a hang: the harness kills the process
+	// on its own timeout and reports that, while the actual message sits in a
+	// window nobody ever saw. That is exactly how a missing-asset error on the
+	// macOS release runner presented as an unexplained 90 second timeout.
+	//
+	// CI is the near-universal convention for "no interactive session" and
+	// every harness this project runs under sets it. The diagnostics are not
+	// lost by skipping the window: the message has already gone to stdout, the
+	// engine log and the fatal breadcrumb before this is called.
+	const char *ciEnvironment = getenv( "CI" );
+	if ( ciEnvironment != NULL && ciEnvironment[0] != '\0' &&
+		 idStr::Icmp( ciEnvironment, "0" ) != 0 && idStr::Icmp( ciEnvironment, "false" ) != 0 ) {
+		Sys_Printf( "CI environment detected; skipping the interactive fatal error window\n" );
+		return;
+	}
+
 	s_consoleWindow.forceFatalWindow = true;
 	// An earlier transient console-window failure must not permanently
 	// suppress the forced fatal-error window; give it one fresh attempt.
