@@ -1,5 +1,10 @@
 # Competitive Matches
 
+> **Experimental.** Multiplayer and the single-player Arena Campaign are
+> under active development and are not yet considered stable. Expect rough
+> edges, changing behaviour between builds, and bugs. They are not
+> representative of the finished feature.
+
 ## Current status
 
 openQ4's managed competitive-match framework is implemented in the current

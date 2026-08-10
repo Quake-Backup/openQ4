@@ -53,7 +53,7 @@ It is designed for players who want the original Quake 4 experience with a clean
 - **OpenAL audio** restored to the pre-plan compatibility path by default, with newer voice handling revalidated behind an opt-in gate.
 - **Improved input and quality-of-life features** including controller support, better console UX, and modern settings behavior.
 - **Single-player and multiplayer in one install** with active compatibility work aimed at the stock game.
-- **A stock-map Arena Campaign** with five escalating bot tiers, varied combat game types, boss matches, and persistent ladder progress beside the original story.
+- **A stock-map Arena Campaign** (experimental) with five escalating bot tiers, varied combat game types, boss matches, and persistent ladder progress beside the original story.
 - **A unified demo library and player** with pause, speed, stepping, rewind/fast-forward controls, honest legacy-format status, and full-world free-fly/player-follow playback for server-side multi-view recordings.
 - **Cross-platform support** with Windows packages, directly executable Linux AppImages and archives for x86_64 plus preview aarch64, Steam Deck support on Linux, and experimental Apple Silicon/arm64 macOS OpenGL/Metal bridge packages through the signed/notarized DMG lane for credentialed release runs.
 - **Open development** with releases, issue tracking, and community feedback all happening in public.
@@ -123,9 +123,9 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - [Display Settings](docs/user/display-settings.md) - fullscreen, windowed mode, resolution scale, and multi-monitor behavior
 - [Input Settings](docs/user/input-settings.md) - keyboard, mouse, controller, and binding help
 - [Gameplay Settings](docs/user/gameplay-settings.md) - gameplay and audio toggles for everyday play
-- [Arena Campaign](docs/user/arena-campaign.md) - single-player arena tiers, unlock rules, maps, game types, and bot rosters
+- [Arena Campaign](docs/user/arena-campaign.md) (experimental) - single-player arena tiers, unlock rules, maps, game types, and bot rosters
 - [Steam Deck](docs/user/steam-deck.md) - launcher, controls, and Linux handheld notes
-- [Multiplayer Networking](docs/user/multiplayer-networking.md) - multiplayer tuning and lag-comp behavior
+- [Multiplayer Networking](docs/user/multiplayer-networking.md) (experimental) - multiplayer tuning and lag-comp behavior
 - [Demo Library and Multi-View Demos](docs/user/multiview-demos.md) - browse formats, use playback controls, and record or replay complete multiplayer matches
 - [Shadow Mapping](docs/user/shadow-mapping.md) - optional shadow-map settings and troubleshooting
 - [Light Grids](docs/user/light-grids.md) - advanced lighting guide for players and testers

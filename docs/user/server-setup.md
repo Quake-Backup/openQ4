@@ -1,5 +1,10 @@
 # Server Setup Guide
 
+> **Experimental.** Multiplayer and the single-player Arena Campaign are
+> under active development and are not yet considered stable. Expect rough
+> edges, changing behaviour between builds, and bugs. They are not
+> representative of the finished feature.
+
 This guide covers a simple way to host an openQ4 dedicated server.
 
 ## What You Need

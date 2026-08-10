@@ -1,5 +1,10 @@
 # Arena Campaign
 
+> **Experimental.** Multiplayer and the single-player Arena Campaign are
+> under active development and are not yet considered stable. Expect rough
+> edges, changing behaviour between builds, and bugs. They are not
+> representative of the finished feature.
+
 The Arena Campaign is a single-player ladder built from Quake 4's stock
 multiplayer maps and openQ4's character bots. It sits beside the original story:
 choose **Single Player**, then choose **Mission** for the Quake 4 campaign or
