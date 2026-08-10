@@ -569,14 +569,20 @@ def validate_weapons_aim_and_fire(bot: str, combat: str) -> None:
             "gameLocal.time < nextSingleShotTime",
             "self->weapon->IsReady()",
             "BotWeaponSplashRadius( self )",
-            "BotCombatLineOfFireIsSafe( self, foe, eye, aimPoint, splashRadius,",
+            # The safety proof runs down the vector the weapon actually fires
+            # along - the view axis, which is what rvWeapon takes its muzzle
+            # axis from - and not toward aimPoint.  The cone gate above lets
+            # those two differ by the whole effective fire cone, so a proof run
+            # against the aim ray says nothing about where the round goes.
+            "const idVec3 firePoint = eye + aimAngles.ToForward() * shotRange;",
+            "BotCombatLineOfFireIsSafe( self, foe, eye, firePoint, splashRadius,",
             "!suppressing",
         ),
         "rvBot::UpdateFire settle, cadence and safety gates",
     )
     require_before(
         fire,
-        "BotCombatLineOfFireIsSafe( self, foe, eye, aimPoint, splashRadius,",
+        "BotCombatLineOfFireIsSafe( self, foe, eye, firePoint, splashRadius,",
         "cmd.buttons |= BUTTON_ATTACK;",
         "rvBot::UpdateFire final safety",
     )
@@ -615,7 +621,16 @@ def validate_weapons_aim_and_fire(bot: str, combat: str) -> None:
             "BotCombatSplashThreatensTeamMate( shooter, splashIgnore, actualImpact",
             "hitPlayer == intendedFoe",
             "if ( requireUsefulImpact )",
-            "BotCombatSplashThreatensPlayer( intendedFoe, splashTargetIgnore",
+            # The usefulness proof must let an unobstructed shot through before
+            # it reaches the splash test.  A weapon with no splash carries a
+            # zero radius, and BotCombatSplashThreatensPlayer answers false for
+            # a zero radius unconditionally, so routing every hitscan weapon
+            # and every splash-free projectile through it makes the bot hold
+            # fire unless the trace happens to terminate on the target hull -
+            # which the deliberate aim error usually prevents.
+            "if ( !hit )",
+            "if ( hitPlayer )",
+            "BotCombatSplashThreatensPlayer( intendedFoe, hit,",
         ),
         "BotCombatLineOfFireIsSafe trajectory, safety and usefulness contract",
     )

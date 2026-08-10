@@ -131,6 +131,44 @@ def validate_game_wiring() -> None:
         "idGameLocal::ServerClientDisconnect",
     )
 
+    # The manager's own lifecycle. rvBotManager::Shutdown is what hands every
+    # bot's character back, so it has to run before the roster is freed or each
+    # live bot is left pointing at released memory.
+    require(game_local, "botManager.Init();", "idGameLocal::Init")
+    require(game_local, "botManager.Shutdown();", "idGameLocal::Shutdown")
+    require_order(
+        game_local,
+        "botManager.Shutdown();",
+        "botCharacterManager.Shutdown();",
+        "idGameLocal::Shutdown character release ordering",
+    )
+
+    multiplayer_game = read(mp / "MultiplayerGame.cpp")
+
+    # Kill and death reactions - chat, kill streaks, grudges - hang off this one
+    # call, and it went unwired once already. Scores are committed by the time
+    # statManager->Kill returns, so a bot reacting here sees the post-frag board.
+    require(
+        multiplayer_game,
+        "botManager.OnPlayerDeath( dead, killer, methodOfDeath );",
+        "idMultiplayerGame::PlayerDeath",
+    )
+    require_order(
+        multiplayer_game,
+        "statManager->Kill( dead, killer, methodOfDeath );",
+        "botManager.OnPlayerDeath( dead, killer, methodOfDeath );",
+        "bot death reaction reads a committed scoreboard",
+    )
+
+    # idGameLocal::RunFrame keeps advancing gameLocal.time through a competitive
+    # pause while it skips rvBotManager::Think, so every absolute bot deadline
+    # has to be carried forward with the clock exactly as the players' are.
+    require(
+        multiplayer_game,
+        "botManager.ShiftMatchTime( deltaMsec );",
+        "idMultiplayerGame::RebaseCompetitivePauseFrame",
+    )
+
     bot = read(mp / "bots" / "Bot.cpp")
 
     # Without ui_autoJoin a spawning idPlayer parks itself in the join menu.

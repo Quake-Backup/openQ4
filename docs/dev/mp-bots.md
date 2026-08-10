@@ -120,8 +120,12 @@ or enemy carrier, can still replace the route immediately.
 *How well* and *in what manner* a bot executes those decisions - how far it
 notices you, how long it takes to react, how steadily it holds an aim, how close
 it wants to fight and what it wants to fight with - comes from its resolved
-personality, which is the next section. Dead or spectating, it holds attack,
-which is how `idPlayer` takes a respawn.
+personality, which is the next section. Dead, it holds attack, which is how
+`idPlayer` takes a respawn. Spectating is deliberately not the same thing:
+attack cycles the spectator's view target rather than rejoining, so a
+spectating bot clears `wantSpectate` and sets `forceRespawn` instead - the same
+request a human makes on leaving the spectate menu - and lets the game type
+decide when it gets in.
 
 ### Mode objectives
 
@@ -171,6 +175,10 @@ the top movement priority except at the edge of death.
 
 ### Perception and combat
 
+Bots honour `fl.notarget` like every other thing in the game that acquires a
+target, so a developer can watch them navigate on a listen server without being
+shot at.
+
 Perception is bounded by the bot's range and field of view, then traces exposed
 chest, head and pelvis points plus lateral body samples so a visible shoulder at
 cover can be acquired without granting vision through the wall. Invisible
@@ -212,6 +220,18 @@ point. Safety projects moving teammates into those future segments, rejects
 their future splash exposure (including the shooter), and accounts for world
 cover around a predicted impact; safe world impacts can still support doorway
 suppression. Single-shot weapons also respect readiness and cadence.
+
+That sweep runs down the axis the weapon actually fires along - the view - and
+not toward the aim point. The trigger gate deliberately allows the two to differ
+by up to the whole fire cone, which is 18 degrees at skill 1, so a proof run
+against the aim ray would clear a trajectory the bot never takes. The
+usefulness half of the same query is answered before the splash test rather than
+through it: an unobstructed shot and one that stops on another hostile are
+useful by construction, and only an impact on the world has to put the target
+inside the resulting splash. Weapons with no splash carry a zero radius, and
+routing those through a splash test would make every hitscan weapon hold fire
+unless the trace happened to land on the target hull - which the deliberate aim
+error is designed to prevent.
 
 ### Navigation and progress
 
@@ -824,6 +844,22 @@ to Arena still requires a deliberate card, roster, limit, progression and
 result-flow pass for that mode.
 
 ## Known limits
+
+- `heuristicScale` is one number for the whole map: the smallest
+  cost-to-distance ratio over every edge. Jump pads and teleporters carry a flat
+  cost over an arbitrary span, so a single long transport drives that ratio down
+  for every node on the map and A* degrades toward a Dijkstra flood on exactly
+  the maps that have one. The heuristic stays admissible and routes stay
+  optimal - this is a search-cost problem, not a correctness one - but a
+  differential or landmark heuristic would recover the guidance.
+- `FindNearestNode` spends at most `NAV_MAX_WALKABLE_PROBES` collision probes
+  when asked to prove walkability. A bot standing somewhere that genuinely needs
+  more than that to escape falls back to wandering rather than stalling the
+  server frame.
+- Generation past `NAV_MAX_NODES` stops adding ground but still finishes linking
+  what it has, so the graph is smaller rather than broken. A cell size fine
+  enough to trip the limit still leaves part of the map unnavigable, and the
+  warning says so.
 
 - Deliberate objective play currently covers Standard CTF, One Flag, Arena CTF,
   Arena One Flag, Freeze Tag rescue and DeadZone. Attack & Defend, Overload,

@@ -652,6 +652,17 @@ int idAsyncServer::GetNumIdleClients( void ) const {
 	int ret = 0;
 	for ( int i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
 		if ( clients[ i ].clientState >= SCS_CONNECTED ) {
+			// A bot supplies a user command every server frame, but it does so
+			// by writing the game's own array rather than by sending a packet,
+			// and receiving a packet is the only thing that refreshes
+			// lastInputTime.  Ageing a bot out as idle would flip si_idleServer
+			// on any server kept populated by bot_minPlayers, and the server
+			// browser filters idle servers out by default - so the setting whose
+			// entire purpose is to stop a server looking empty would be what
+			// removed it from the list.
+			if ( clients[ i ].channel.GetRemoteAddress().type == NA_BOT ) {
+				continue;
+			}
 			if ( serverTime - clients[ i ].lastInputTime > NOINPUT_IDLE_TIME ) {
 				ret++;
 			}
