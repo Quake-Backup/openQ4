@@ -611,6 +611,8 @@ def validate_localization(campaign: Campaign) -> None:
     required_ids = (
         {f"#str_{value}" for value in range(42000, 42096)}
         | {f"#str_{value}" for value in range(42100, 42140)}
+        # Arena launch and handoff failure reporting.
+        | {f"#str_{value}" for value in range(42150, 42154)}
         | {f"#str_{value}" for value in range(42200, 42205)}
     )
     referenced_ids = {
@@ -958,10 +960,21 @@ def validate_menu_hooks() -> None:
         "arena_presentTitle",
         "arena_presentSubtitle",
         "arena_presentVictor",
-        "arena_presentOutcome",
+        "arena_presentHasVictor",
         "arena_presentScore",
     ):
         require(mp_hud, state_name, "Arena in-world presentation HUD state")
+    # A tie for the lead leaves no unique victor even though the outcome is not
+    # a draw, so the champion card must follow the name and not the outcome or
+    # it renders "ARENA CHAMPION" over an empty line.
+    if '"gui::arena_presentOutcome"' in mp_hud:
+        raise AssertionError(
+            "Arena champion card must gate on arena_presentHasVictor, not the outcome"
+        )
+    if mp_hud.count('"gui::arena_presentHasVictor" == 1') != 3:
+        raise AssertionError(
+            "Arena champion card, label and name must all gate on a named victor"
+        )
     require(mp_hud, "oq4_arena_present_victory", "Arena victory presentation timeline")
     for timer_rect in ("23,59,200,20", "23,96,200,20", "23,94,200,20"):
         require(mp_hud, timer_rect, "readable localized Arena entrance clock")
@@ -1022,6 +1035,29 @@ def function_body(source: str, signature: str) -> str:
             if depth == 0:
                 return source[brace + 1 : index]
     raise AssertionError(f"Unterminated function {signature!r}")
+
+
+def gui_window_body(source: str, name: str) -> str:
+    """Return one windowDef's own text, brace-matched.
+
+    A regex with a lazy wildcard silently runs past the closing brace and
+    matches the next window's properties instead, which makes the assertion
+    pass when the property was deleted.
+    """
+
+    match = re.search(rf"windowDef\s+{re.escape(name)}\s*(?=\{{)", source)
+    if match is None:
+        raise AssertionError(f"Missing windowDef {name!r}")
+    brace = source.find("{", match.end())
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace + 1 : index]
+    raise AssertionError(f"Unterminated windowDef {name!r}")
 
 
 def validate_engine_hooks() -> None:
@@ -1169,7 +1205,8 @@ def validate_engine_hooks() -> None:
         "clientsBeforePopulation != 1",
         "idAsyncNetwork::server.GetNumClients()",
         "botsAdded != match->bots.Num()",
-        'state->result = showBotFailure ? 3 : 0',
+        'state->result = report ? 3 : 0',
+        'state->resultFailure = report ? failure : ARENA_FAILURE_NONE;',
         '"si_minPlayers"',
         'ArenaSetMatchCVar( "si_minPlayers", 2 )',
         'cvarSystem->SetCVarBool( "si_isBuyingEnabled", false )',
@@ -1422,10 +1459,15 @@ def validate_engine_hooks() -> None:
         arena, "bool idArenaCampaign::QueueCompletion( const idCmdArgs &args )"
     )
     for token in (
-        "args.Argc() != 5",
+        # The awards argument is optional on purpose: a game_mp that sends it
+        # against a framework that did not expect it would otherwise take the
+        # malformed-command path, which fails closed by fabricating a token-0
+        # loss and destroying a legitimate result.
+        "args.Argc() == 5 || args.Argc() == 6",
         "ArenaParseBoundedInteger",
         "ARENA_OUTCOME_DRAW",
         "state->pendingOutcome = outcome",
+        "ARENA_AWARD_MASK, awards",
     ):
         require(queue_body, token, "strict Arena completion handoff")
     if "atoi(" in queue_body:
@@ -1588,7 +1630,10 @@ def validate_engine_hooks() -> None:
         "#str_42066",
         "#str_42067",
         "#str_42068",
-        "#str_42069",
+        # The abandoned-match body is chosen by reason in ArenaFailureMessageKey
+        # rather than inlined here; validate_failure_reporting pins each one.
+        "#str_42077",
+        "#str_42078",
     ):
         require(update_body, string_id, "Arena Campaign GUI state mapping")
     require(
@@ -1629,12 +1674,12 @@ def validate_engine_hooks() -> None:
     require(
         update_body,
         'state->result == 3 ? ArenaLocalized( "#str_42068" )',
-        "Arena bot-population failure title",
+        "Arena abandoned-match title",
     )
     require(
         update_body,
-        'state->result == 3 ? ArenaLocalized( "#str_42069" )',
-        "Arena bot-population failure message",
+        'state->result == 3 ? ArenaLocalized( ArenaFailureMessageKey( state->resultFailure ) )',
+        "Arena failure message selected by reason",
     )
 
     for token in (
@@ -1820,7 +1865,7 @@ def validate_game_hooks() -> None:
         "ARENA_SCORE_UNAVAILABLE",
         "arenaResultOutcome",
         "arenaResultOpponentScore = 0;",
-        'gameLocal.sessionCommand = va( "arenaComplete %d %d %d %d"',
+        'gameLocal.sessionCommand = va( "arenaComplete %d %d %d %d %d"',
         "currentState == GAMEREVIEW",
         '"arena campaign: queued result token %d',
         '"arena campaign: reporting result token %d',
@@ -1953,7 +1998,7 @@ def validate_game_hooks() -> None:
         "arenaResultPending = false;", unrelated_handoff
     )
     result_report = result_update.find(
-        'gameLocal.sessionCommand = va( "arenaComplete %d %d %d %d"'
+        'gameLocal.sessionCommand = va( "arenaComplete %d %d %d %d %d"'
     )
     if not (
         0
@@ -2270,7 +2315,15 @@ def validate_docs() -> None:
         "q4cmp",
         "do not yet pursue flags or map objectives",
         "Its bars always reach every screen edge",
-        "The frame lifts\non **Fight**",
+        "The frame lifts\nas control returns.",
+        # The ordered ceremony the guide promises, in order.
+        "**Introductions.**",
+        "**Countdown.**",
+        "**Spawn-in.**",
+        "**Final tableau.**",
+        "**Scoreboard.**",
+        "**Match stats.**",
+        "no spectator mode and no team picker",
     ):
         require(user_doc, token, "Arena Campaign player guide")
     require(
@@ -2299,6 +2352,654 @@ def validate_docs() -> None:
         require(release_notes, token, "Arena Campaign release notes")
 
 
+def validate_failure_reporting() -> None:
+    """Every abandoned Arena transaction must name a reason on screen.
+
+    Returning to the browser in silence is indistinguishable from the menu
+    ignoring the button, and the only other diagnostic is a console warning
+    behind a fullscreen menu.
+    """
+
+    arena = read(ROOT / "src" / "framework" / "ArenaCampaign.cpp")
+    arena_header = read(ROOT / "src" / "framework" / "ArenaCampaign.h")
+    async_network = read(ROOT / "src" / "framework" / "async" / "AsyncNetwork.cpp")
+    arena_menu = read(ARENA_MENU)
+
+    for token in (
+        "enum arenaFailure_t {",
+        "ARENA_FAILURE_NONE = 0,",
+        "ARENA_FAILURE_SERVER,",
+        "ARENA_FAILURE_BOTS,",
+        "ARENA_FAILURE_RESULT",
+        "static const char *ArenaFailureMessageKey( int failure )",
+        'case ARENA_FAILURE_SERVER:\treturn "#str_42150";',
+        'case ARENA_FAILURE_BOTS:\treturn "#str_42069";',
+        'case ARENA_FAILURE_RESULT:\treturn "#str_42151";',
+        "void idArenaCampaign::ReturnToBrowserAfterStartFailure( int failure )",
+        "void idArenaCampaign::ReportStartFailure()",
+    ):
+        require(arena, token, "Arena failure reporting")
+    require(
+        arena_header, "void\t\t\t\t\tReportStartFailure();", "Arena failure reporting entry point"
+    )
+
+    # A bare bool reintroduces the silent bounce this replaced.
+    if "ReturnToBrowserAfterStartFailure( false )" in arena:
+        raise AssertionError("Arena start failures must report a reason, not bounce silently")
+    if "ReturnToBrowserAfterStartFailure( true )" in arena:
+        raise AssertionError("Arena start failures must use a named arenaFailure_t reason")
+    # Three PopulateBots launch failures and the spawnServer relay report a
+    # server failure, partial bot population reports a bot failure, and both
+    # FinishPendingCompletion discards report a lost result.
+    reasons = re.findall(r"ReturnToBrowserAfterStartFailure\(\s*(ARENA_FAILURE_\w+)\s*\)", arena)
+    expected_reasons = {
+        "ARENA_FAILURE_SERVER": 4,
+        "ARENA_FAILURE_BOTS": 1,
+        "ARENA_FAILURE_RESULT": 2,
+    }
+    actual_reasons = {name: reasons.count(name) for name in set(reasons)}
+    if actual_reasons != expected_reasons:
+        raise AssertionError(
+            f"Arena failure returns are {actual_reasons}, expected {expected_reasons}"
+        )
+
+    # SpawnServer fails before any listen server exists, so it cannot go through
+    # PopulateBots.  It must still raise the same report.
+    require(
+        async_network,
+        "arenaCampaign.ReportStartFailure();",
+        "Arena spawnServer failure reporting",
+    )
+    if "session->StartMenu( false );\n\t\tarenaCampaign.OpenBrowser();" in async_network:
+        raise AssertionError("spawnServer must not return to the Arena browser in silence")
+
+    # A campaign that failed to parse is not a missing map.
+    require(arena, 'ArenaLocalized( "#str_42153" )', "Arena campaign-load failure copy")
+    require(arena, 'ArenaLocalized( "#str_42152" )', "Arena campaign-load failure title")
+    # The unloaded branch has to publish a whole board: the per-slot keys below
+    # it are never written on this path, and an unset arena_tier%d_locked reads
+    # as 0, drawing every tier and match as unlocked over blank rows.
+    unloaded = function_body(arena, "void idArenaCampaign::UpdateGui()")
+    unloaded = unloaded.split("if ( !state->loaded ) {", 1)[1].split("\n\t\treturn;", 1)[0]
+    for token in (
+        'va( "arena_tier%d_locked", tierIndex ), true',
+        'va( "arena_match%d_locked", matchIndex ), true',
+        'va( "arena_tier%d_name", tierIndex ), ""',
+        'va( "arena_match%d_name", matchIndex ), ""',
+        'SetStateBool( "arena_canStart", false )',
+        'ArenaLocalized( "#str_42153" )',
+    ):
+        require(unloaded, token, "Arena browser must lock every row when the campaign is unavailable")
+
+    # The overlays own the screen while they are up.  They block by returning a
+    # command, not with "modal": idWindow::BringToTop reorders modal windows to
+    # the end of the child list, which is the first entry the reverse event walk
+    # visits, so a modal shade would jump above its own panel on the first stray
+    # click and swallow that panel's buttons from then on.
+    for window in ("arena_result_shade", "arena_reset_shade", "arena_transition_blocker"):
+        body = gui_window_body(arena_menu, window)
+        require(
+            body,
+            'set "cmd" "arenaBlockInput"',
+            f"{window} must absorb clicks so they cannot reach the browser behind it",
+        )
+        if re.search(r"\b(modal|noevents)\s+1", body):
+            raise AssertionError(
+                f"{window} must stop events by returning a command, not with modal/noevents"
+            )
+    require(
+        read(ROOT / "src" / "framework" / "ArenaCampaign.cpp"),
+        'if ( !idStr::Icmp( cmd, "arenaBlockInput" ) ) {',
+        "Arena overlay input blocker must be a handled command",
+    )
+
+    # arena_campaignComplete tracks live progress, so a later replay would show
+    # the banner on a defeat, draw or aborted match without this gate.
+    require_regex(
+        arena_menu,
+        r"windowDef\s+arena_result_campaign_complete\s*\{[^}]*?"
+        r'"gui::arena_campaignComplete"\s*==\s*1\s*&&\s*"gui::arena_result"\s*==\s*1',
+        "campaign-complete banner must be gated on a victory",
+    )
+
+    # The real seat ceiling is game_mp's si_maxPlayers range, not MAX_ASYNC_CLIENTS.
+    # A full engine reload replays a bare spawnServer after session shutdown has
+    # already aborted the campaign transaction, landing the player in an ordinary
+    # multiplayer match on the campaign map.
+    require(
+        arena,
+        'cvarSystem->SetCVarInteger( "net_serverReloadEngine", 0 );',
+        "Arena launch must suppress the full engine reload",
+    )
+    require(
+        arena,
+        '\t"net_serverReloadEngine",\n',
+        "Arena must hand net_serverReloadEngine back after the match",
+    )
+
+    require(arena, "static const int ARENA_MAX_SEATS = 16;", "Arena seat ceiling")
+    require(arena, "match.bots.Num() + 1 > ARENA_MAX_SEATS", "Arena seat ceiling validation")
+    code = re.sub(r"//[^\n]*|/\*.*?\*/", "", arena, flags=re.DOTALL)
+    if "MAX_ASYNC_CLIENTS" in code:
+        raise AssertionError(
+            "Arena roster size must be validated against the si_maxPlayers ceiling"
+        )
+
+
+def validate_result_contract() -> None:
+    """Pin the numeric result contract that crosses the engine/game boundary.
+
+    game_mp sends `arenaComplete <token> <outcome> <player> <opponent>` and the
+    framework parses the outcome by value, so reordering either enum silently
+    turns draws into wins.
+    """
+
+    arena = read(ROOT / "src" / "framework" / "ArenaCampaign.cpp")
+    game = read(GAME_LIBS_ROOT / "src" / "mpgame" / "MultiplayerGame.cpp")
+
+    engine_outcomes = dict(
+        re.findall(r"(ARENA_OUTCOME_\w+)\s*=\s*(\d+)", arena)
+    )
+    game_outcomes = dict(
+        re.findall(r"(ARENA_RESULT_\w+)\s*=\s*(\d+)", game)
+    )
+    expected = {"LOSS": "0", "WIN": "1", "DRAW": "2"}
+    for suffix, value in expected.items():
+        if engine_outcomes.get(f"ARENA_OUTCOME_{suffix}") != value:
+            raise AssertionError(
+                f"ARENA_OUTCOME_{suffix} must be {value}, found "
+                f"{engine_outcomes.get(f'ARENA_OUTCOME_{suffix}')}"
+            )
+        if game_outcomes.get(f"ARENA_RESULT_{suffix}") != value:
+            raise AssertionError(
+                f"ARENA_RESULT_{suffix} must be {value}, found "
+                f"{game_outcomes.get(f'ARENA_RESULT_{suffix}')}"
+            )
+
+    require(
+        game,
+        'gameLocal.sessionCommand = va( "arenaComplete %d %d %d %d %d",',
+        "Arena result command shape",
+    )
+    require(
+        arena,
+        'const bool arity = args.Argc() == 5 || args.Argc() == 6;',
+        "Arena result command arity",
+    )
+    # Awards ride a single bounded bit mask so they fit one command argument and
+    # one ArenaParseBoundedInteger range. The framework must accept the wider
+    # arity before any game build starts sending it.
+    require(arena, "static const int ARENA_AWARD_COUNT = 11;", "Arena award mask width")
+    require(
+        arena,
+        "static const int ARENA_AWARD_MASK = ( 1 << ARENA_AWARD_COUNT ) - 1;",
+        "Arena award mask",
+    )
+    stat_header = read(
+        GAME_LIBS_ROOT / "src" / "mpgame" / "mp" / "stats" / "StatManager.h"
+    )
+    stat_manager_source = read(
+        GAME_LIBS_ROOT / "src" / "mpgame" / "mp" / "stats" / "StatManager.cpp"
+    )
+    award_enum = re.search(r"enum endGameAward_t \{(.*?)\}", stat_header, re.DOTALL)
+    if award_enum is None:
+        raise AssertionError("Missing endGameAward_t in game_mp")
+    award_names = re.findall(r"\bEGA_\w+", award_enum.group(1))
+    # EGA_INVALID .. EGA_PERFECT are the ids that ride the mask; EGA_NUM_AWARDS is
+    # the sentinel. ARENA_AWARD_COUNT must equal the sentinel's value, so the mask
+    # width has to move whenever an award is added.
+    if (
+        award_names[0] != "EGA_INVALID"
+        or award_names[-1] != "EGA_NUM_AWARDS"
+        or len(award_names) - 1 != 11
+    ):
+        raise AssertionError(
+            f"endGameAward_t shape changed ({award_names}); "
+            "ARENA_AWARD_COUNT in ArenaCampaign.cpp must follow"
+        )
+    # rvStatManager::EndGame computes the awards on the GAMEREVIEW enter edge,
+    # which is AFTER BeginArenaCampaignResult queues the result but BEFORE the
+    # tableau elapses and the command is written. Packing them anywhere but at
+    # emission time silently ships an empty mask.
+    require(game, "static int ArenaCampaignAwardMask( int clientNum )", "Arena award packing")
+    require(game, "mask |= 1 << award;", "Arena award mask packing")
+    report_body = function_body(
+        game, "void idMultiplayerGame::UpdateArenaCampaignResult( void )"
+    )
+    require(report_body, "ArenaCampaignAwardMask(", "awards must be packed when the result is emitted")
+    begin_body = function_body(
+        game, "void idMultiplayerGame::BeginArenaCampaignResult( void )"
+    )
+    if "ArenaCampaignAwardMask" in begin_body:
+        raise AssertionError(
+            "awards are not computed yet when the result is queued; pack them at emission"
+        )
+    require(
+        read(ROOT / "src" / "framework" / "ArenaCampaign.cpp"),
+        'gui->SetStateString( "arena_resultAwardLine", awardLine );',
+        "Arena award line must reach the result ledger",
+    )
+    require(read(ARENA_MENU), '"gui::arena_resultAwardLine"', "result ledger must render awards")
+
+    # The framework renders award names from the stock contiguous string block.
+    require(
+        arena,
+        "static const int ARENA_AWARD_FIRST_STRING = 107259;",
+        "Arena award name base",
+    )
+    for award_index, award in enumerate(award_names[1:-1], start=1):
+        expected = '"#str_%d"' % (107259 + award_index)
+        if expected not in stat_manager_source:
+            raise AssertionError(
+                f"{award} no longer uses {expected}; the framework award name base is wrong"
+            )
+
+    # game_mp derives the entrance title from the manifest's #str numbering, so
+    # the stride lives in two repositories at once: validate_manifest pins the
+    # .cfg to 42100 + index * 2, and this pins game_mp to the same arithmetic.
+    require(
+        game,
+        "static const int ARENA_MATCH_TITLE_FIRST_STRING = 42100;",
+        "Arena match title base shared with the campaign manifest",
+    )
+    require(
+        game,
+        "ARENA_MATCH_TITLE_FIRST_STRING + Max( 0, token - 1 ) * 2",
+        "Arena match title stride shared with the campaign manifest",
+    )
+
+    # The final tableau must resolve a collision-safe camera exactly like the
+    # entrance; without it a blocked orbit angle hard-cuts to first person and
+    # pops the depth of field off mid-ceremony.
+    presentation = function_body(
+        game,
+        "bool idMultiplayerGame::BuildArenaCampaignPresentationView( idPlayer *viewer, renderView_t *view )",
+    )
+    for token in (
+        "const bool cameraLatched =",
+        "arenaEntranceCameraIsEntrance == entrance",
+        "reviewProbeAngles",
+        "if ( !cameraLatched ) {",
+        "arenaEntranceCameraIsEntrance = entrance;",
+    ):
+        require(presentation, token, "Arena tableau camera resolution")
+    for token in (
+        "if ( entrance && !arenaEntranceCameraResolved )",
+        "if ( entrance && arenaEntranceCameraFallback )",
+        "if ( entrance && !arenaEntranceCameraValid )",
+    ):
+        if token in presentation:
+            raise AssertionError(
+                f"Arena camera resolution must cover the final tableau too: {token!r}"
+            )
+
+    # Single player: no spectating, no side switching. si_spectators false is the
+    # authoritative server-side block (idPlayer::UserInfoChanged forces ui_spectate
+    # back to "Play"); the menu entry points refuse an arena request on top of it.
+    require(
+        read(ROOT / "src" / "framework" / "ArenaCampaign.cpp"),
+        'cvarSystem->SetCVarBool( "si_spectators", false );',
+        "Arena must disable spectators",
+    )
+    for entry in (
+        "void idMultiplayerGame::JoinTeam( const char* team )",
+        "void idMultiplayerGame::ToggleSpectate( void )",
+        "void idMultiplayerGame::ToggleTeam( void )",
+    ):
+        body = function_body(game, entry)
+        require(body, "if ( IsArenaCampaignMatch() ) {", f"{entry} must refuse an Arena request")
+
+    # The final tableau is steered by the player, so look input has to keep
+    # arriving there while the bodies stay frozen where the match ended.
+    free_look = function_body(
+        game, "bool idMultiplayerGame::ArenaCampaignAllowsFreeLook( void ) const"
+    )
+    require(free_look, "GAMEREVIEW", "free look belongs to the final tableau only")
+    require(free_look, "ArenaCampaignLocksPlayers()", "free look is a locked-phase concession")
+    player_source = read(GAME_LIBS_ROOT / "src" / "mpgame" / "Player.cpp")
+    update_view = function_body(player_source, "void idPlayer::UpdateViewAngles( void )")
+    require(update_view, "ArenaCampaignAllowsFreeLook()", "Arena free look must reach view angles")
+    require(
+        update_view,
+        "if ( !arenaFreeLook ) {\n\t\t// orient the model towards the direction we're looking\n\t\tSetAngles(",
+        "Arena free look must not turn the frozen player model",
+    )
+
+    # si_arenaCampaign is replicated serverinfo; the ceremony is listen-server only.
+    is_arena_match = function_body(
+        game, "bool idMultiplayerGame::IsArenaCampaignMatch( void ) const"
+    )
+    for token in (
+        "gameLocal.isListenServer",
+        "gameLocal.isClient",
+        "gameLocal.isServer",
+    ):
+        require(is_arena_match, token, "Arena ceremony must be confined to the local listen server")
+
+
+def validate_ceremony_flow() -> None:
+    """Pin the ordered SP Arena match ceremony.
+
+    The flow is: introduce the opponents in warmup, count down, hold control for
+    a match-start camera move that lands in first person, play the match, freeze
+    the world and let the player orbit the victor, then scoreboard, then match
+    stats, then hand off to the framework.
+    """
+
+    game = read(GAME_LIBS_ROOT / "src" / "mpgame" / "MultiplayerGame.cpp")
+    header = read(GAME_LIBS_ROOT / "src" / "mpgame" / "MultiplayerGame.h")
+    state = read(GAME_LIBS_ROOT / "src" / "mpgame" / "mp" / "GameState.cpp")
+    game_local = read(GAME_LIBS_ROOT / "src" / "mpgame" / "Game_local.cpp")
+
+    # The ceremony is host-local on purpose. An Arena match is one human on a
+    # listen server with no remote clients, so adding mpGameState_t values (wire
+    # bytes every gametype branches on) or an mpMatchSession pause kind would be
+    # far more invasive than the flow needs.
+    for phase in (
+        "ARENA_CEREMONY_NONE = 0,",
+        "ARENA_CEREMONY_INTRO,",
+        "ARENA_CEREMONY_SPAWN_IN,",
+        "ARENA_CEREMONY_TABLEAU,",
+        "ARENA_CEREMONY_SCOREBOARD,",
+        "ARENA_CEREMONY_STATS,",
+        "ARENA_CEREMONY_DONE",
+    ):
+        require(header, phase, "Arena ceremony phases")
+    match_phase = read(GAME_LIBS_ROOT / "src" / "mpgame" / "mp" / "MatchPhase.h")
+    if "ARENA" in match_phase:
+        raise AssertionError(
+            "the Arena ceremony must stay host-local; mpGameState_t values are replicated wire bytes"
+        )
+
+    # No gametype may bench the human. game_mp's Duel is a queue-based tournament
+    # mode that holds every non-contender in spectator, so the campaign runs its
+    # one-on-one matches as plain deathmatch and only presents them as Duels.
+    arena = read(ROOT / "src" / "framework" / "ArenaCampaign.cpp")
+    require(arena, "static const char *ArenaEffectiveGameType(", "Duel must run as deathmatch")
+    effective = function_body(arena, "static const char *ArenaEffectiveGameType( const idStr &gameType )")
+    require(effective, 'gameType.Icmp( "Duel" ) == 0', "Duel must be remapped")
+    require(effective, 'return "DM";', "Duel must run as deathmatch")
+    require(
+        arena,
+        'cvarSystem->SetCVarString( "si_gameType", ArenaEffectiveGameType( match->gameType ) );',
+        "the server must run the effective gametype",
+    )
+    # The browser still advertises Duel, so the authored type must survive.
+    require(arena, 'gameType.Icmp( "Duel" ) == 0 ) {\n\t\treturn "#str_42201";', "Duel keeps its label")
+
+    # The competitive managed-match layer must never own a campaign match. Its
+    # join evaluator takes over participation, and idPlayer::UserInfoChanged's
+    # managed arm only sets forceRespawn when the requested intent CHANGES - the
+    # campaign launches with ui_spectate already "Play", so it never does, and
+    # the player sits in spectator all match while the bots fight.
+    managed = function_body(game, "bool idMultiplayerGame::IsManagedMatch( void ) const")
+    require(managed, "if ( IsArenaCampaignMatch() ) {", "the campaign is never a managed match")
+    require(
+        game,
+        '!IsArenaCampaignMatch() && rules.GetBool( MP_RULE_MANAGED_MATCH ) );',
+        "si_managedMatch must agree with IsManagedMatch for the campaign",
+    )
+    # A declared-seat roster has nobody to declare it in single player, so the
+    # arena arm must clear it after the profile has been applied - not merely
+    # rely on the default it was initialised with.
+    require_regex(
+        game,
+        r"if \( IsArenaCampaignMatch\(\) \) \{[^}]*?policy\.requireDeclaredRosterSeats = false;"
+        r"[^}]*?rosterSize = 0;",
+        "the campaign must clear the declared-seat roster requirement",
+    )
+
+    # Belt and braces: several independent layers can bench the human and each
+    # fails silently. Put them back rather than trusting every guard.
+    require(
+        game,
+        "if ( IsArenaCampaignMatch() && p->spectating && !p->wantSpectate &&",
+        "the campaign player must be restored to play if anything benches them",
+    )
+
+    # Sudden death benches everyone who is not the frag leader. In a campaign
+    # match that hands the win to a bot and leaves the human watching.
+    # Asserted against the whole file rather than the function body: CheckRespawns
+    # contains a commented-out `{` that a brace matcher cannot see past.
+    require(
+        game,
+        "if ( gameLocal.IsTeamGame() || p->IsLeader() || IsArenaCampaignMatch() ) {",
+        "sudden death must not bench the campaign player",
+    )
+    require_regex(
+        state,
+        r"static_cast<\s*idPlayer\s*\*>\(\s*ent\s*\)->IsLeader\(\)\s*\|\|\s*"
+        r"gameLocal\.mpGame\.IsArenaCampaignMatch\(\)",
+        "the sudden-death edge must not bench campaign players",
+    )
+
+    # Round modes announce their own Fight when the round goes active.
+    ceremony_fight = function_body(game, "void idMultiplayerGame::AdvanceArenaCampaignCeremony( void )")
+    require(
+        ceremony_fight,
+        "!gameLocal.IsRoundGameType()",
+        "spawn-in must not double up the round modes' own Fight",
+    )
+
+    player_source = read(GAME_LIBS_ROOT / "src" / "mpgame" / "Player.cpp")
+
+    # Impulses drive reload and weapon selection in multiplayer; default.cfg
+    # binds them. The stale Raven assert fired on every one of those.
+    if "assert( false ); // unused in multiplayer?" in player_source:
+        raise AssertionError("EvaluateControls must not assert on multiplayer impulses")
+
+    # PM_FREEZE returns from MovePlayer before gravity and the ground trace, so
+    # a player frozen mid-fall hangs in the air in a falling pose - which is
+    # what the match-start shot circles.
+    require(
+        player_source,
+        "physicsObj.SetMovementType( physicsObj.OnGround() ? PM_FREEZE : PM_NORMAL );",
+        "an Arena-locked player must land before being frozen",
+    )
+    require(
+        player_source,
+        "physicsObj.SetPlayerInput( held, viewAngles );",
+        "an Arena-locked player must be input-neutralised, not physics-frozen mid-air",
+    )
+
+    # Warmup arms the player with the map's arsenal. Nothing clears
+    # inventory.weapons on an MP respawn, so it has to be taken back explicitly
+    # or it lasts the whole match.
+    require(game, "int idMultiplayerGame::GetMapWeaponMask( void )", "map-limited warmup arsenal")
+    require(game, 'ent->spawnArgs.GetString( "inv_weapon", "" )', "warmup arsenal comes from map pickups")
+    require(
+        player_source,
+        "inventory.weapons |= gameLocal.mpGame.GetMapWeaponMask();",
+        "warmup must grant only the weapons the map contains",
+    )
+    if 'GiveStuffToPlayer( this, "weapons", "" );\n\t\t\tGiveStuffToPlayer' in player_source:
+        raise AssertionError("warmup must not grant every weapon in the game")
+    require(player_source, "void idPlayer::RevokeWarmupArsenal( void )", "warmup arsenal must be revocable")
+    require(state, "p->RevokeWarmupArsenal();", "the warmup arsenal must be taken back when the match starts")
+
+    # The ceremony must arm on the same predicate everything else uses. The raw
+    # serverinfo token is replicated and archivable, so a server merely carrying
+    # it would stall its map rotation and emit a stray arenaComplete.
+    require(
+        game,
+        "if ( !IsArenaCampaignMatch() || arenaResultPending || arenaResultReported ) {",
+        "the result ceremony must arm on IsArenaCampaignMatch, not the raw token",
+    )
+
+    round_modes = read(GAME_LIBS_ROOT / "src" / "mpgame" / "mp" / "RoundModes.cpp")
+    round_state = read(GAME_LIBS_ROOT / "src" / "mpgame" / "mp" / "RoundGameState.cpp")
+    mp_hud = read(ROOT / "content" / "baseoq4" / "pak0" / "guis" / "mphud.gui")
+
+    # Freeze Tag: an unattended thaw is the timer giving up, usually because the
+    # body is somewhere lethal. Respawning onto it loops the player to death.
+    require(
+        round_modes,
+        "if ( thawer != NULL && FindThawSpot( frozen, thawer, origin ) ) {",
+        "an unattended thaw must take a spawn point, not the body",
+    )
+    # Red Rover converts the victim's side before the warning is sent.
+    require(round_modes, "const int oldTeam = dead->team;", "the last-on-side warning must use the side left")
+    require(round_modes, "NotifyLastOnSide( oldTeam );", "the last-on-side warning must use the side left")
+    # Non-elimination round modes have nobody to eliminate.
+    require(
+        round_state,
+        "player->wantSpectate &&\n\t\t IsEliminationMode() ) {",
+        "only elimination modes may mark a spectate toggle as eliminated",
+    )
+    # Fixed-loadout modes must not leave scavengeable pickups or stale magazines.
+    require(
+        player_source,
+        "memset( inventory.clip, -1, sizeof( inventory.clip ) );",
+        "a fixed-loadout respawn must reset magazines",
+    )
+    require_regex(
+        player_source,
+        r"MPGameTypeHasAny\( gameLocal\.gameType, GTF_FULLARSENAL \) \) \{\s*return;",
+        "fixed-loadout modes must not drop weapons",
+    )
+    # Red Rover is a two-sided mode and needs the team panel, not the FFA one.
+    require(
+        mp_hud,
+        '"gui::gametype" == 11 || "gui::gametype" == 12 ) {',
+        "Red Rover must use the two-team HUD panel",
+    )
+    if mp_hud.count("rect\t170,58,300,20") > 1:
+        raise AssertionError("the overtime banner and the round clock must not share a rect")
+
+    # Warmup introduction. Arena warmup otherwise has zero dwell: the roster is
+    # populated before the first game frame and AllPlayersReady short-circuits.
+    require(
+        state,
+        "if ( gameLocal.mpGame.ArenaCampaignIntroBlocksCountdown() ) {",
+        "the introduction must hold warmup open",
+    )
+    require(game, "ShowArenaCampaignIntroCard", "opponents must be introduced by name")
+    lock = function_body(game, "bool idMultiplayerGame::ArenaCampaignLocksPlayers( void ) const")
+    for phase in ("ARENA_CEREMONY_SPAWN_IN", "ARENA_CEREMONY_INTRO"):
+        require(lock, phase, "introduction and spawn-in must lock the combatants")
+
+    # Match start: the shot has to converge on the real first-person view, or the
+    # hand-off back to control is a visible cut.
+    spawn_in = function_body(
+        game,
+        "bool idMultiplayerGame::BuildArenaCampaignSpawnInView( idPlayer *viewer, renderView_t *view )",
+    )
+    for token in ("firstPersonViewOrigin", "firstPersonViewAxis", "ARENA_SPAWN_IN_BLEND_START"):
+        require(spawn_in, token, "spawn-in must land exactly on the first-person view")
+
+    # "Fight" belongs with control, not with the camera move.
+    if "!gameLocal.mpGame.IsArenaCampaignMatch()" not in state:
+        raise AssertionError("the Arena campaign must not shout Fight over its spawn-in shot")
+
+    # Freeze everything, not just the combatants.
+    freeze = function_body(game, "bool idMultiplayerGame::ArenaCampaignFreezesWorld( void ) const")
+    for phase in ("ARENA_CEREMONY_TABLEAU", "ARENA_CEREMONY_SCOREBOARD", "ARENA_CEREMONY_STATS"):
+        require(freeze, phase, "the world must stay frozen for the whole review")
+    if "ARENA_CEREMONY_SPAWN_IN" in freeze:
+        raise AssertionError("spawn-in holds control but must not stop the world")
+    require(
+        game_local,
+        "arenaCeremonyFrozen = mpGame.ArenaCampaignFreezesWorld();",
+        "the Arena freeze must reach the entity think loop",
+    )
+    # No entity is exempt from the paused think, not even the viewer.
+    # idPlayer::ThinkMatchPaused already consumes the usercmd, zeroes movement and
+    # impulses and calls UpdateViewAngles(), which is where the tableau's
+    # free-look orbit is honoured. Exempting the viewer left their own body
+    # animating, their powerups expiring and their corpse dissolving inside a
+    # world that had visibly stopped.
+    if "ent == player ) {\n\t\t\t\t\tent->Think();" in game_local:
+        raise AssertionError(
+            "the frozen ceremony must not exempt the viewer from ThinkMatchPaused"
+        )
+    paused_think = function_body(player_source, "void idPlayer::ThinkMatchPaused( int deltaMsec )")
+    for token in ("usercmd.impulse = 0;", "UpdateViewAngles();"):
+        require(
+            paused_think,
+            token,
+            "ThinkMatchPaused must neutralise input and still integrate look",
+        )
+
+    # Ordered scoreboard then stats, drawn without ever spending the session
+    # command the Arena handoff owns.
+    ceremony = function_body(game, "void idMultiplayerGame::AdvanceArenaCampaignCeremony( void )")
+    for token in ("ForceScoreboard( true, 0 )", "SetupArenaCampaignStatSummary();", "currentMenu = 3;"):
+        require(ceremony, token, "the ceremony must play the scoreboard then the stats")
+    if "sessionCommand" in ceremony:
+        raise AssertionError(
+            "the ceremony must not touch gameLocal.sessionCommand; the arenaComplete handoff owns it"
+        )
+    stat_setup = function_body(game, "void idMultiplayerGame::SetupArenaCampaignStatSummary( void )")
+    if "sessionCommand" in stat_setup:
+        raise AssertionError("the stat summary must be populated without a menu session command")
+
+    # The fade has to draw over the scoreboard and the summary. idPlayerView's
+    # own fade runs inside RenderPlayerView, which is before both.
+    require(game, "void idMultiplayerGame::DrawArenaCampaignCeremonyFade( void )", "ceremony fade")
+    draw = function_body(game, "bool idMultiplayerGame::Draw( int clientNum )")
+    fade_at = draw.find("DrawArenaCampaignCeremonyFade();")
+    if fade_at < 0:
+        raise AssertionError("the ceremony fade must be drawn from Draw")
+    for earlier in ("DrawScoreBoard( player );", "DrawStatSummary();"):
+        if draw.find(earlier) > fade_at:
+            raise AssertionError(
+                f"the ceremony fade must draw after {earlier!r} or it cannot fade between screens"
+            )
+
+
+def validate_doc_circuit_table(campaign: Campaign) -> None:
+    """The player guide's circuit table is the only human-readable manifest.
+
+    Retargeting a match updates the .cfg and this file's expectation tuples, and
+    nothing else notices that the guide still advertises the old map or roster.
+    """
+
+    user_doc = read(ROOT / "docs" / "user" / "arena-campaign.md")
+    english = parse_language(STRINGS_DIR / "english_openq4.lang")
+
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in user_doc.splitlines()
+        if line.startswith("| ") and "`mp/" in line
+    ]
+    if len(rows) != 20:
+        raise AssertionError(f"circuit table has {len(rows)} match rows, expected 20")
+
+    doc_game_types = {
+        "Duel": "Duel",
+        "Deathmatch": "DM",
+        "Team Deathmatch": "Team DM",
+        "Clan Arena": "Clan Arena",
+        "Red Rover": "Red Rover",
+    }
+
+    index = 0
+    for tier in campaign.tiers:
+        tier_name = english[tier.name].strip()
+        for match in tier.matches:
+            row = rows[index]
+            index += 1
+            where = f"circuit table row {index}"
+            if row[0].upper() != tier_name.upper():
+                raise AssertionError(f"{where}: tier {row[0]!r} != manifest {tier_name!r}")
+            match_name = english[match.name].strip()
+            if row[1].upper() != match_name.upper():
+                raise AssertionError(f"{where}: match {row[1]!r} != manifest {match_name!r}")
+            doc_map = re.search(r"`([^`]+)`", row[2])
+            if doc_map is None or doc_map.group(1) != match.map:
+                raise AssertionError(f"{where}: map {row[2]!r} != manifest {match.map!r}")
+            if doc_game_types.get(row[3]) != match.game_type:
+                raise AssertionError(
+                    f"{where}: game type {row[3]!r} != manifest {match.game_type!r}"
+                )
+            doc_roster = [name.strip() for name in row[4].split(",")]
+            manifest_roster = [bot.name for bot in match.bots]
+            if doc_roster != manifest_roster:
+                raise AssertionError(
+                    f"{where}: roster {doc_roster} != manifest {manifest_roster}"
+                )
+
+
 def main() -> int:
     campaign = parse_campaign()
     validate_manifest(campaign)
@@ -2308,7 +3009,11 @@ def main() -> int:
     validate_transition_ownership()
     validate_engine_hooks()
     validate_game_hooks()
+    validate_failure_reporting()
+    validate_result_contract()
+    validate_ceremony_flow()
     validate_docs()
+    validate_doc_circuit_table(campaign)
     print("arena_campaign: ok")
     return 0
 

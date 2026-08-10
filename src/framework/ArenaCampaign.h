@@ -42,6 +42,10 @@ public:
 	bool					PrepareServer();
 	void					PopulateBots();
 
+	// Presents the shared "match aborted" report for a launch that failed
+	// outside this class, before any listen server existed.
+	void					ReportStartFailure();
+
 	// Queues the narrow, strictly parsed game_mp -> framework result handoff.
 	// Outcome values are 0 = loss, 1 = win, and 2 = draw.
 	bool					QueueCompletion( const idCmdArgs &args );
@@ -59,7 +63,7 @@ private:
 	void					CancelResetProgress();
 	void					ResetProgress();
 	void					DismissResult();
-	void					ReturnToBrowserAfterStartFailure( bool showBotFailure );
+	void					ReturnToBrowserAfterStartFailure( int failure );
 
 	arenaCampaignState_t *	state;
 

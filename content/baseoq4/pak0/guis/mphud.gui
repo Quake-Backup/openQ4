@@ -4678,7 +4678,7 @@ windowDef Desktop
 	windowDef oq4_arena_victor_card
 	{
 		rect	160,( "oq4_arena_frame::bottom" - 118 ),320,76
-		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentHasVictor" == 1 )
 		backcolor	0.015,0.022,0.014,0
 		bordercolor	0.95,0.49,0.06,0
 		bordersize	1
@@ -4688,7 +4688,7 @@ windowDef Desktop
 	windowDef oq4_arena_victor_label
 	{
 		rect	176,( "oq4_arena_frame::bottom" - 107 ),288,17
-		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentHasVictor" == 1 )
 		forecolor	0.67,0.75,0.56,0
 		text	"#str_42084"
 		textscale	0.17
@@ -4700,7 +4700,7 @@ windowDef Desktop
 	windowDef oq4_arena_victor_name
 	{
 		rect	176,( "oq4_arena_frame::bottom" - 84 ),288,28
-		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentOutcome" != 2 )
+		visible	( "Desktop::arena_presentVisible" == 1 && "Desktop::arena_presentMode" == 2 && "gui::arena_presentHasVictor" == 1 )
 		forecolor	1,0.94,0.76,0
 		text	"gui::arena_presentVictor"
 		textscale	0.31

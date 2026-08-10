@@ -444,6 +444,14 @@
 	"#str_42138"	"THE MAKRON"
 	"#str_42139"	"The Makron awaits in Stroggenomenon. End the circuit on his own ground."
 
+	// Arena campaign failure reporting
+	"#str_42150"	"The arena server could not be started. Another program may be using the network port."
+	"#str_42151"	"The match result could not be recorded. Your campaign progress is unchanged."
+	"#str_42152"	"CAMPAIGN MISSING"
+	"#str_42153"	"Arena campaign data could not be loaded. Verify your openQ4 content installation."
+	"#str_42154"	"AWARDS"
+	"#str_42155"	"CHALLENGER"
+
 	// Competitive match rules and profiles
 	"#str_41600"	"Game Type"
 	"#str_41601"	"Selects the rules and scoring used for the match."

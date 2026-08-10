@@ -26,6 +26,29 @@ static const int ARENA_PROGRESS_MASK = ( 1 << ARENA_TOTAL_MATCHES ) - 1;
 static const int ARENA_SCORE_UNAVAILABLE = -9999;
 static const int ARENA_ENTRANCE_MSEC = 1250;
 
+// The real seat ceiling is game_mp's si_maxPlayers range (1..16), not the
+// engine's MAX_ASYNC_CLIENTS of 32.  Validating against 32 let a match author
+// more bots than the server can seat: PrepareServer's si_maxPlayers write was
+// silently clamped, PopulateBots then ran out of slots part way through the
+// roster, and the launch aborted with a bot-population failure instead of the
+// campaign load rejecting the match up front.
+static const int ARENA_MAX_SEATS = 16;
+
+// End-game awards travel from game_mp as a bit mask, one bit per endGameAward_t
+// id, so the whole set fits a single bounded integer argument. Bit 0 is
+// EGA_INVALID and is never set. The names are stock Quake 4 strings, contiguous
+// from EGA_LEMMING, so the framework can render them without a second channel.
+static const int ARENA_AWARD_COUNT = 11;
+static const int ARENA_AWARD_MASK = ( 1 << ARENA_AWARD_COUNT ) - 1;
+static const int ARENA_AWARD_FIRST_STRING = 107259;
+
+static const char *ArenaAwardStringKey( int award ) {
+	if ( award < 1 || award >= ARENA_AWARD_COUNT ) {
+		return "";
+	}
+	return va( "#str_%d", ARENA_AWARD_FIRST_STRING + award );
+}
+
 // GUI contract. Ordinary multiplayer never observes these states because the
 // framework only advances them for a validated si_arenaCampaign transaction.
 enum arenaTransitionPhase_t {
@@ -41,6 +64,27 @@ enum arenaOutcome_t {
 	ARENA_OUTCOME_WIN = 1,
 	ARENA_OUTCOME_DRAW = 2
 };
+
+// Why an Arena launch or result handoff was abandoned.  Every abandoned
+// transaction reports one of these on the shared "MATCH ABORTED" card: bouncing
+// the player back to the browser with no explanation is indistinguishable from
+// the menu ignoring the button, and the only other diagnostic is a console
+// warning behind a fullscreen menu.
+enum arenaFailure_t {
+	ARENA_FAILURE_NONE = 0,
+	ARENA_FAILURE_SERVER,
+	ARENA_FAILURE_BOTS,
+	ARENA_FAILURE_RESULT
+};
+
+static const char *ArenaFailureMessageKey( int failure ) {
+	switch ( failure ) {
+		case ARENA_FAILURE_SERVER:	return "#str_42150";
+		case ARENA_FAILURE_BOTS:	return "#str_42069";
+		case ARENA_FAILURE_RESULT:	return "#str_42151";
+		default:					return "";
+	}
+}
 
 static idCVar ui_arenaProgressVersion(
 	"ui_arenaProgressVersion", "1",
@@ -121,6 +165,7 @@ struct arenaTier_t {
 static const char *ARENA_SAVED_CVARS[] = {
 	"net_serverDedicated",
 	"net_LANServer",
+	"net_serverReloadEngine",
 	"si_map",
 	"si_mapCycle",
 	"si_gameType",
@@ -136,6 +181,7 @@ static const char *ARENA_SAVED_CVARS[] = {
 	"si_roundTimeLimit",
 	"si_roundWarmupDelay",
 	"si_roundEndDelay",
+	"g_gameReviewPause",
 	"si_tourneyLimit",
 	"si_useReady",
 	"si_allowVoting",
@@ -227,6 +273,19 @@ static bool ArenaGameTypeIsTeam( const idStr &gameType ) {
 	return gameType.Icmp( "Team DM" ) == 0 ||
 		gameType.Icmp( "Clan Arena" ) == 0 ||
 		gameType.Icmp( "Red Rover" ) == 0;
+}
+
+// The rules the server actually runs, which are not always the rules the
+// campaign advertises. A Duel in the arena is simply a one-on-one deathmatch:
+// game_mp's Duel is a queue-based tournament mode that seats two contenders and
+// holds everyone else in spectator, and with an authored one-bot roster there is
+// nothing for that machinery to arbitrate - it can only ever take the player out
+// of their own match. The browser still presents these as Duels.
+static const char *ArenaEffectiveGameType( const idStr &gameType ) {
+	if ( gameType.Icmp( "Duel" ) == 0 ) {
+		return "DM";
+	}
+	return gameType.c_str();
 }
 
 static const char *ArenaGameTypeMapKey( const idStr &gameType ) {
@@ -621,9 +680,12 @@ struct arenaCampaignState_t {
 	int						pendingOutcome;
 	int						pendingPlayerScore;
 	int						pendingOpponentScore;
+	int						pendingAwards;
 	int						result;
+	int						resultFailure;
 	int						resultPlayerScore;
 	int						resultOpponentScore;
+	int						resultAwards;
 	int						resultToken;
 	bool					resultWon;
 	int					resultPreviousProgress;
@@ -658,9 +720,12 @@ struct arenaCampaignState_t {
 		pendingOutcome( ARENA_OUTCOME_LOSS ),
 		pendingPlayerScore( 0 ),
 		pendingOpponentScore( 0 ),
+		pendingAwards( 0 ),
 		result( 0 ),
+		resultFailure( ARENA_FAILURE_NONE ),
 		resultPlayerScore( 0 ),
 		resultOpponentScore( 0 ),
+		resultAwards( 0 ),
 		resultToken( 0 ),
 		resultWon( false ),
 		resultPreviousProgress( 0 ),
@@ -684,8 +749,10 @@ static void ArenaClearResultMetadata( arenaCampaignState_t *state ) {
 	}
 
 	state->result = 0;
+	state->resultFailure = ARENA_FAILURE_NONE;
 	state->resultPlayerScore = 0;
 	state->resultOpponentScore = 0;
+	state->resultAwards = 0;
 	state->resultToken = 0;
 	state->resultWon = false;
 	state->resultPreviousProgress = 0;
@@ -1087,7 +1154,7 @@ bool idArenaCampaign::LoadCampaign() {
 				 match.timeLimit < 0 || match.timeLimit > 60 ||
 				 match.roundLimit < 1 || match.roundLimit > 99 ||
 				 match.scoreLimit < 1 || match.scoreLimit > 9999 ||
-				 match.bots.Num() < 1 || match.bots.Num() + 1 > MAX_ASYNC_CLIENTS ||
+				 match.bots.Num() < 1 || match.bots.Num() + 1 > ARENA_MAX_SEATS ||
 				 ( match.gameType.Icmp( "Duel" ) == 0 && match.bots.Num() != 1 ) ||
 				 ( ArenaGameTypeIsTeam( match.gameType ) && ( match.bots.Num() & 1 ) == 0 ) ) {
 				common->Warning(
@@ -1318,8 +1385,51 @@ void idArenaCampaign::UpdateGui() {
 			: 0 );
 
 	if ( !state->loaded ) {
+		// Publish a fully locked, empty board rather than returning early. The
+		// per-slot keys below are never written on this path, so an unset
+		// arena_tier%d_locked reads as 0 and the browser would otherwise draw
+		// every tier and match as unlocked and selectable over blank rows.
+		// #str_42048 is specifically "missing required map"; a campaign that
+		// failed to parse is a different failure and gets its own line.
+		for ( int tierIndex = 0; tierIndex < ARENA_TIER_COUNT; tierIndex++ ) {
+			gui->SetStateString( va( "arena_tier%d_name", tierIndex ), "" );
+			gui->SetStateString( va( "arena_tier%d_status", tierIndex ), ArenaLocalized( "#str_42022" ) );
+			gui->SetStateBool( va( "arena_tier%d_locked", tierIndex ), true );
+			gui->SetStateBool( va( "arena_tier%d_selected", tierIndex ), false );
+			gui->SetStateBool( va( "arena_tier%d_completed", tierIndex ), false );
+		}
+		for ( int matchIndex = 0; matchIndex < ARENA_MATCHES_PER_TIER; matchIndex++ ) {
+			gui->SetStateString( va( "arena_match%d_name", matchIndex ), "" );
+			gui->SetStateString( va( "arena_match%d_status", matchIndex ), ArenaLocalized( "#str_42022" ) );
+			gui->SetStateBool( va( "arena_match%d_locked", matchIndex ), true );
+			gui->SetStateBool( va( "arena_match%d_selected", matchIndex ), false );
+			gui->SetStateBool( va( "arena_match%d_completed", matchIndex ), false );
+		}
+		gui->SetStateInt( "arenaCampaignProgress", 0 );
+		gui->SetStateInt( "arena_previousCampaignProgress", 0 );
+		gui->SetStateBool( "arena_progressChanged", false );
+		gui->SetStateBool( "arena_campaignComplete", false );
+		gui->SetStateBool( "arena_resetConfirm", false );
+		gui->SetStateInt( "arena_result", 0 );
+		gui->SetStateBool( "arena_resultCanRetry", false );
+		gui->SetStateBool( "arena_resultHasScore", false );
+		gui->SetStateBool( "arena_resultHasUnlock", false );
+		gui->SetStateString( "arena_selectedTierName", "" );
+		gui->SetStateString( "arena_selectedTierDescription", "" );
+		gui->SetStateString( "arena_selectedTitle", ArenaLocalized( "#str_42152" ) );
+		gui->SetStateString( "arena_selectedMap", "" );
+		gui->SetStateString( "arena_selectedGameType", "" );
+		gui->SetStateString( "arena_selectedRoster", "" );
+		gui->SetStateString( "arena_selectedLimits", "" );
+		gui->SetStateString( "arena_selectedSkill", "" );
+		declManager->FindMaterial( "gfx/guis/loadscreens/generic" )->SetSort( SS_GUI );
+		gui->SetStateString( "arena_levelshot", "gfx/guis/loadscreens/generic" );
+		gui->SetStateString( "arena_difficultyName", "" );
+		gui->SetStateString(
+			"arena_progress",
+			va( "%s  0 / %d", ArenaLocalized( "#str_42012" ), ARENA_TOTAL_MATCHES ) );
 		gui->SetStateBool( "arena_canStart", false );
-		gui->SetStateString( "arena_selectedDescription", ArenaLocalized( "#str_42048" ) );
+		gui->SetStateString( "arena_selectedDescription", ArenaLocalized( "#str_42153" ) );
 		gui->StateChanged( common->GetPresentationTime() );
 		return;
 	}
@@ -1442,7 +1552,7 @@ void idArenaCampaign::UpdateGui() {
 		"arena_resultMessage",
 		state->result == 1 ? ArenaLocalized( "#str_42066" ) :
 		( state->result == 2 ? ArenaLocalized( "#str_42067" ) :
-		  ( state->result == 3 ? ArenaLocalized( "#str_42069" ) :
+		  ( state->result == 3 ? ArenaLocalized( ArenaFailureMessageKey( state->resultFailure ) ) :
 		    ( state->result == 4 ? ArenaLocalized( "#str_42078" ) : "" ) ) ) );
 	const bool resultHasScore =
 		state->resultToken >= 1 && state->resultToken <= ARENA_TOTAL_MATCHES &&
@@ -1458,6 +1568,30 @@ void idArenaCampaign::UpdateGui() {
 		state->resultUnlock.IsEmpty() ? "" : ArenaLocalized( state->resultUnlock ) );
 	gui->SetStateBool( "arena_resultHasScore", resultHasScore );
 	gui->SetStateBool( "arena_resultHasUnlock", !state->resultUnlock.IsEmpty() );
+
+	// End-game awards earned in the completed match, packed one bit per
+	// endGameAward_t id. Published as an ordered, compacted list so the ledger
+	// can lay out rows without knowing the award ids.
+	int awardsShown = 0;
+	idStr awardLine;
+	for ( int award = 1; award < ARENA_AWARD_COUNT; award++ ) {
+		if ( ( state->resultAwards & ( 1 << award ) ) == 0 ) {
+			continue;
+		}
+		const char *awardName = ArenaLocalized( ArenaAwardStringKey( award ) );
+		gui->SetStateString( va( "arena_resultAward%d", awardsShown ), awardName );
+		if ( awardsShown > 0 ) {
+			awardLine += "   ";
+		}
+		awardLine += awardName;
+		awardsShown++;
+	}
+	gui->SetStateString( "arena_resultAwardLine", awardLine );
+	for ( int slot = awardsShown; slot < ARENA_AWARD_COUNT - 1; slot++ ) {
+		gui->SetStateString( va( "arena_resultAward%d", slot ), "" );
+	}
+	gui->SetStateInt( "arena_resultAwardCount", awardsShown );
+	gui->SetStateBool( "arena_resultHasAwards", awardsShown > 0 );
 	const arenaMatch_t *retryMatch = ArenaMatchForToken( state, state->resultToken );
 	gui->SetStateBool(
 		"arena_resultCanRetry",
@@ -1508,6 +1642,15 @@ bool idArenaCampaign::HandleGuiCommand( const char *menuCommand ) {
 			}
 			handled = true;
 			continue;
+		}
+
+		// The result ledger, the reset prompt and the transition curtain cover
+		// the browser and return this so idWindow stops walking their siblings.
+		// Without a returned command the event falls through to whatever control
+		// happens to sit underneath, which could start a match from behind an
+		// open overlay.
+		if ( !idStr::Icmp( cmd, "arenaBlockInput" ) ) {
+			return true;
 		}
 
 		// The entrance is deliberately short and framework-timed. Ignore menu
@@ -1870,9 +2013,15 @@ bool idArenaCampaign::PrepareServer() {
 
 	cvarSystem->SetCVarInteger( "net_serverDedicated", 0 );
 	cvarSystem->SetCVarBool( "net_LANServer", true );
+	// A full engine reload during ExecuteMapChange replays a bare "spawnServer"
+	// after session shutdown has already aborted this transaction, which would
+	// drop the player into an ordinary multiplayer match on the campaign map.
+	// The campaign's own launch never needs that reload, so suppress it for the
+	// duration and hand the player's setting back with the rest.
+	cvarSystem->SetCVarInteger( "net_serverReloadEngine", 0 );
 	cvarSystem->SetCVarString( "si_map", match->map );
 	cvarSystem->SetCVarString( "si_mapCycle", "" );
-	cvarSystem->SetCVarString( "si_gameType", match->gameType );
+	cvarSystem->SetCVarString( "si_gameType", ArenaEffectiveGameType( match->gameType ) );
 	cvarSystem->SetCVarBool( "si_pure", false );
 	ArenaSetMatchCVar( "si_maxPlayers", match->bots.Num() + 1 );
 	ArenaSetMatchCVar( "si_minPlayers", 2 );
@@ -1885,6 +2034,11 @@ bool idArenaCampaign::PrepareServer() {
 	ArenaSetMatchCVar( "si_roundTimeLimit", 120 );
 	ArenaSetMatchCVar( "si_roundWarmupDelay", 4 );
 	ArenaSetMatchCVar( "si_roundEndDelay", 3 );
+	// g_gameReviewPause is the player's archived multiplayer value and its range
+	// floor is 2 seconds.  The Arena ceremony owns the whole review beat, so pin
+	// it well beyond the ceremony rather than letting a user setting decide when
+	// NEXTGAME restarts the map out from under the presentation.
+	ArenaSetMatchCVar( "g_gameReviewPause", 60 );
 	ArenaSetMatchCVar( "si_tourneyLimit", 1 );
 	cvarSystem->SetCVarBool( "si_useReady", false );
 	cvarSystem->SetCVarBool( "si_allowVoting", false );
@@ -1909,7 +2063,11 @@ bool idArenaCampaign::PrepareServer() {
 	cvarSystem->SetCVarBool( "si_autoShuffle", false );
 	cvarSystem->SetCVarBool( "si_shuffle", false );
 	cvarSystem->SetCVarBool( "si_autobalance", true );
-	cvarSystem->SetCVarBool( "si_spectators", true );
+	// Single player: there is nobody to spectate and no side to pick. With this
+	// false, idPlayer::UserInfoChanged forces ui_spectate back to "Play" and
+	// clears wantSpectate on the server, which is the authoritative block; the
+	// game_mp menu entry points refuse an Arena request on top of it.
+	cvarSystem->SetCVarBool( "si_spectators", false );
 	ArenaSetMatchCVar( "si_fps", 60 );
 	cvarSystem->SetCVarBool( "ui_autoJoin", true );
 	cvarSystem->SetCVarBool( "ui_joined", true );
@@ -1929,7 +2087,7 @@ bool idArenaCampaign::PrepareServer() {
 idArenaCampaign::ReturnToBrowserAfterStartFailure
 ================
 */
-void idArenaCampaign::ReturnToBrowserAfterStartFailure( bool showBotFailure ) {
+void idArenaCampaign::ReturnToBrowserAfterStartFailure( int failure ) {
 	if ( state == NULL ) {
 		return;
 	}
@@ -1939,13 +2097,31 @@ void idArenaCampaign::ReturnToBrowserAfterStartFailure( bool showBotFailure ) {
 	sessLocal.Stop();
 	AbortMatch();
 	ArenaClearResultMetadata( state );
-	state->result = showBotFailure ? 3 : 0;
+	const bool report = failure != ARENA_FAILURE_NONE;
+	state->result = report ? 3 : 0;
+	state->resultFailure = report ? failure : ARENA_FAILURE_NONE;
 	state->resultPreviousProgress = ui_arenaProgress.GetInteger();
-	state->resultRevealPending = showBotFailure;
-	state->transitionPhase = showBotFailure ? ARENA_TRANSITION_RESULT : ARENA_TRANSITION_IDLE;
+	state->resultRevealPending = report;
+	state->transitionPhase = report ? ARENA_TRANSITION_RESULT : ARENA_TRANSITION_IDLE;
 	state->resetConfirmation = false;
 	sessLocal.StartMenu( false );
 	OpenBrowser();
+}
+
+/*
+================
+idArenaCampaign::ReportStartFailure
+
+The spawnServer path fails outside this class, before any listen server exists.
+Route it through the same presentation instead of returning to the browser in
+silence: a taken UDP port is the one launch failure an ordinary player hits.
+================
+*/
+void idArenaCampaign::ReportStartFailure() {
+	if ( state == NULL ) {
+		return;
+	}
+	ReturnToBrowserAfterStartFailure( ARENA_FAILURE_SERVER );
 }
 
 /*
@@ -1968,7 +2144,7 @@ void idArenaCampaign::PopulateBots() {
 			ui_arenaActiveMatch.GetInteger(),
 			cvarSystem->GetCVarString( "com_activeGameModule" ),
 			idAsyncNetwork::server.IsActive() ? 1 : 0 );
-		ReturnToBrowserAfterStartFailure( false );
+		ReturnToBrowserAfterStartFailure( ARENA_FAILURE_SERVER );
 		return;
 	}
 
@@ -1977,7 +2153,7 @@ void idArenaCampaign::PopulateBots() {
 		common->Warning(
 			"arena campaign: active match token %d disappeared before bot population",
 			ui_arenaActiveMatch.GetInteger() );
-		ReturnToBrowserAfterStartFailure( false );
+		ReturnToBrowserAfterStartFailure( ARENA_FAILURE_SERVER );
 		return;
 	}
 
@@ -1987,7 +2163,7 @@ void idArenaCampaign::PopulateBots() {
 		common->Warning(
 			"arena campaign: expected one local player before bot population, found %d",
 			clientsBeforePopulation );
-		ReturnToBrowserAfterStartFailure( false );
+		ReturnToBrowserAfterStartFailure( ARENA_FAILURE_SERVER );
 		return;
 	}
 	int botsAdded = 0;
@@ -2010,7 +2186,7 @@ void idArenaCampaign::PopulateBots() {
 			"arena campaign: match %d added only %d of %d authored bots",
 			ui_arenaActiveMatch.GetInteger(), botsAdded, match->bots.Num() );
 
-		ReturnToBrowserAfterStartFailure( true );
+		ReturnToBrowserAfterStartFailure( ARENA_FAILURE_BOTS );
 		return;
 	}
 
@@ -2054,11 +2230,21 @@ bool idArenaCampaign::QueueCompletion( const idCmdArgs &args ) {
 	int outcome = ARENA_OUTCOME_LOSS;
 	int playerScore = 0;
 	int opponentScore = 0;
-	if ( args.Argc() != 5 || idStr::Icmp( args.Argv( 0 ), "arenaComplete" ) != 0 ||
+	int awards = 0;
+	// The optional sixth argument is a bit mask of the end-game awards the player
+	// earned.  It is accepted as optional on purpose: a game_mp built before the
+	// framework learned about awards must keep working, and more importantly a
+	// game_mp built after it must not be able to trip the malformed-command path
+	// below, which fails closed by fabricating a token-0 loss and destroying a
+	// legitimate result.  Absent means "no awards", never "reject".
+	const bool arity = args.Argc() == 5 || args.Argc() == 6;
+	if ( !arity || idStr::Icmp( args.Argv( 0 ), "arenaComplete" ) != 0 ||
 		 !ArenaParseBoundedInteger( args.Argv( 1 ), 1, ARENA_TOTAL_MATCHES, token ) ||
 		 !ArenaParseBoundedInteger( args.Argv( 2 ), ARENA_OUTCOME_LOSS, ARENA_OUTCOME_DRAW, outcome ) ||
 		 !ArenaParseBoundedInteger( args.Argv( 3 ), -9999, 9999, playerScore ) ||
-		 !ArenaParseBoundedInteger( args.Argv( 4 ), -9999, 9999, opponentScore ) ) {
+		 !ArenaParseBoundedInteger( args.Argv( 4 ), -9999, 9999, opponentScore ) ||
+		 ( args.Argc() == 6 &&
+		   !ArenaParseBoundedInteger( args.Argv( 5 ), 0, ARENA_AWARD_MASK, awards ) ) ) {
 		common->Warning( "arena campaign: rejected malformed completion command" );
 		QueueFailedCompletionCleanup();
 		return false;
@@ -2080,6 +2266,7 @@ bool idArenaCampaign::QueueCompletion( const idCmdArgs &args ) {
 	state->pendingOutcome = outcome;
 	state->pendingPlayerScore = playerScore;
 	state->pendingOpponentScore = opponentScore;
+	state->pendingAwards = awards & ARENA_AWARD_MASK;
 	state->transitionPhase = ARENA_TRANSITION_RETURN;
 	state->transitionDeadlineMsec = 0;
 	const char *outcomeName = outcome == ARENA_OUTCOME_WIN ? "win" :
@@ -2108,7 +2295,7 @@ void idArenaCampaign::FinishPendingCompletion() {
 	}
 	if ( !IsActive() || state->pendingToken != ui_arenaActiveMatch.GetInteger() ) {
 		common->Warning( "arena campaign: discarded a completion with inconsistent match state" );
-		ReturnToBrowserAfterStartFailure( false );
+		ReturnToBrowserAfterStartFailure( ARENA_FAILURE_RESULT );
 		return;
 	}
 
@@ -2117,7 +2304,7 @@ void idArenaCampaign::FinishPendingCompletion() {
 	const arenaMatch_t *completedMatch = ArenaMatchForToken( state, state->pendingToken, &tier, &match );
 	if ( completedMatch == NULL ) {
 		common->Warning( "arena campaign: completed match token no longer exists" );
-		ReturnToBrowserAfterStartFailure( false );
+		ReturnToBrowserAfterStartFailure( ARENA_FAILURE_RESULT );
 		return;
 	}
 
@@ -2143,6 +2330,7 @@ void idArenaCampaign::FinishPendingCompletion() {
 	state->resultWon = won;
 	state->resultPlayerScore = state->pendingPlayerScore;
 	state->resultOpponentScore = state->pendingOpponentScore;
+	state->resultAwards = state->pendingAwards;
 	state->resultPreviousProgress = previousProgress;
 	state->resultTier = tier;
 	state->resultMatch = match;
@@ -2171,6 +2359,7 @@ void idArenaCampaign::FinishPendingCompletion() {
 	state->pendingOutcome = ARENA_OUTCOME_LOSS;
 	state->pendingPlayerScore = 0;
 	state->pendingOpponentScore = 0;
+	state->pendingAwards = 0;
 	state->botsPopulated = false;
 	state->transitionPhase = ARENA_TRANSITION_RESULT;
 	state->transitionDeadlineMsec = 0;

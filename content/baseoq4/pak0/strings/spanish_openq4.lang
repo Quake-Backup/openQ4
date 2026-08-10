@@ -444,6 +444,14 @@
 	"#str_42138"	"EL MAKRON"
 	"#str_42139"	"El Makron te espera en Stroggenomenon. Completa el circuito en su propio terreno."
 
+	// Arena campaign failure reporting
+	"#str_42150"	"No se pudo iniciar el servidor de la arena. Puede que otro programa esté usando el puerto de red."
+	"#str_42151"	"No se pudo registrar el resultado de la partida. Tu progreso de campaña no ha cambiado."
+	"#str_42152"	"CAMPAÑA AUSENTE"
+	"#str_42153"	"No se pudieron cargar los datos de la campaña de arena. Verifica la instalación de contenido de openQ4."
+	"#str_42154"	"DISTINCIONES"
+	"#str_42155"	"RETADOR"
+
 	// Reglas y perfiles de partidas competitivas
 	"#str_41600"	"Tipo de partida"
 	"#str_41601"	"Selecciona las reglas y el sistema de puntuación usados en la partida."

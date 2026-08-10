@@ -42,24 +42,35 @@ ordinary multiplayer lobby and score-summary flow:
 1. **Challenge launch.** Confirming a match expands its challenge card over the
    selected map and then fades into the arena. Input is held during this short
    transition so one confirm press cannot accidentally perform two actions.
-2. **Arena entrance.** As soon as the authored roster is present, the match
-   begins a four-second cinematic countdown automatically. There is no Ready
-   button or warmup vote. Combatants are locked in place while a
+2. **Introductions.** Each opponent on the authored roster is presented in turn,
+   named over a slow shot of the fighter themselves. Combatants are locked for
+   the whole introduction, so nobody opens fire behind it.
+3. **Countdown.** A four-second cinematic countdown follows automatically. There
+   is no Ready button and no warmup vote. Combatants stay locked while a
    collision-aware camera sweeps in toward the player, with the match name and
-   rules framed over the world. Normal control returns on **Fight**.
-3. **Final tableau.** The terminal score freezes every combatant where the
-   match ended. For six seconds the camera makes a slow, collision-aware orbit
-   around the unique victor while a restrained depth-of-field effect keeps that
-   character sharp. The score and champion are staged over the live arena; a
-   draw uses a neutral presentation and does not declare a victor.
-4. **Match report.** A dramatic fade takes the arena down before a dedicated
-   result ledger expands in the Arena browser. Outcome, final score, unlocks,
-   and the recommended replay, retry, or next action appear in deliberate
-   stages instead of all at once.
-5. **Campaign update.** Leaving a newly won report reveals the campaign board
-   beneath it, then visibly records the completed match, fills the progress
-   segment, and pulses any new boss or tier gate. Control returns only after
-   the update has settled, with the next useful selection ready.
+   rules framed over the world.
+4. **Spawn-in.** Control is held a moment longer while the camera circles your
+   own body where it spawned, swings in behind your head, and settles exactly
+   onto your first-person view. **Fight** sounds as control returns, not over the
+   camera move.
+5. **The match.** Normal play, with the arena rules the match panel listed.
+6. **Final tableau.** The exit condition freezes the whole arena — combatants,
+   projectiles, movers and effects all stop where the match ended. The camera
+   moves to the unique victor and hands the look controls back: **you** orbit the
+   frozen victor freely while the winner is announced, with a restrained
+   depth-of-field effect keeping that character sharp. Nothing moves no matter
+   where you look. A draw uses a neutral presentation and does not declare a
+   victor.
+7. **Scoreboard.** The arena fades down and the full scoreboard takes the screen.
+8. **Match stats.** The scoreboard fades to the detailed end-of-match statistics.
+9. **Match report.** The arena disconnects and a dedicated result ledger expands
+   in the Arena browser. Outcome, final score, awards earned, unlocks, and the
+   recommended replay, retry, or next action appear in deliberate stages instead
+   of all at once.
+10. **Campaign update.** Leaving a newly won report reveals the campaign board
+    beneath it, then visibly records the completed match, fills the progress
+    segment, and pulses any new boss or tier gate. Control returns only after
+    the update has settled, with the next useful selection ready.
 
 The cinematic framing used by the entrance and the final tableau is sized from
 the actual display. Its bars always reach every screen edge, and they thicken on
@@ -67,11 +78,34 @@ narrower or taller displays so the framed picture stays close to a 16:9
 cinematic window instead of shrinking to a fixed slice of a 4:3 layout. On 16:9
 and wider displays the frame keeps its usual thin profile, and on every aspect
 it stops short of the match clock and the surrounding interface. The frame lifts
-on **Fight**, exactly as control returns.
+as control returns.
+
+The match is reported to the campaign at the end of the statistics screen, not
+the moment the score freezes. Quitting or disconnecting during the tableau, the
+scoreboard or the statistics abandons the match: nothing is recorded, and a win
+taken that way does not count. Let the report reach the Arena browser before
+leaving.
+
+If a match cannot be started or its result cannot be recorded, the browser
+raises a **Match Aborted** report naming the reason instead of returning
+silently. The usual cause is another program — often a second copy of openQ4 —
+already holding the network port the local server needs.
 
 These ceremonies are exclusive to the single-player Arena Campaign. Private
 matches opened from the multiplayer menus retain their normal ready-up,
 scoreboard, and review behavior.
+
+Arena matches have no spectator mode and no team picker. The roster, the sides
+and the seat count are authored by the campaign, so the join, spectate, and team
+controls are refused for the whole match, and no game rule can bench you either:
+a campaign Duel is simply a one-on-one deathmatch rather than the multiplayer
+tournament mode, and a tied match never puts the trailing fighter out to
+sudden-death spectator. In Clan Arena you still sit out the remainder of a round
+after being eliminated, which is that mode's own rule, and you return with the
+next round.
+
+Any end-of-match awards you earn are listed on the match report beside the score
+and any unlock.
 
 **Reset Progress** is unavailable until at least one match has been won. It
 clears every Arena win and tier unlock, but asks for confirmation before
@@ -80,11 +114,15 @@ settings, or achievements.
 
 Each tier raises the base bot skill from 1 to 5. Individual opponents may be
 one step easier or harder than the tier baseline to preserve their
-personalities and make a roster feel less uniform. The **Easier** and **Harder**
-controls adjust the campaign challenge while keeping that relative spread,
-with effective bot skill kept inside the normal 1-to-5 range. The match panel
-shows the resulting bot skill or skill range, so the selected tier, campaign
-difficulty, and opponent offsets are visible before the match starts.
+personalities and make a roster feel less uniform. The **−** and **+** controls
+on the **DIFFICULTY** row shift the campaign challenge while keeping that
+relative spread, stepping through **TRAINING**, **ROOKIE**, **VETERAN** (the
+default), **NIGHTMARE**, and **IMPOSSIBLE**. Effective bot skill is kept inside
+the normal 1-to-5 range, so the lower settings make no further difference in
+Boot Camp and the higher ones make none in the Final Gauntlet — those tiers are
+already at the ends of the scale. The match panel shows the resulting bot skill
+or skill range, so the selected tier, campaign difficulty, and opponent offsets
+are visible before the match starts.
 
 ## The circuit
 
@@ -94,10 +132,10 @@ difficulty, and opponent offsets are visible before the match starts.
 | Boot Camp | Crossfire | Sandstorm (`mp/q4dm2`) | Deathmatch | Anderson, Bagby, Tetzlaff |
 | Boot Camp | Fireteam | The Lost Fleet (`mp/q4dm3`) | Team Deathmatch | Anderson, Bagby, Tetzlaff, Sorg, Strauss |
 | Boot Camp | Transfer Test | Bloodwork (`mp/q4dm4`) | Duel | Sorg |
-| The Ironworks | Thorns | The Rose (`mp/q4dm5`) | Deathmatch | Sorg, Strauss, Hollenbeck |
-| The Ironworks | Shifting Lines | No Doctors (`mp/q4dm6`) | Red Rover | Sorg, Strauss, Hollenbeck, Marsh, Anderson |
-| The Ironworks | Last Squad Standing | Over The Edge (`mp/q4dm7`) | Clan Arena | Sorg, Strauss, Hollenbeck, Marsh, Tetzlaff |
-| The Ironworks | The Marshal | Railed (`mp/q4tourney1`) | Duel | Marsh |
+| Ironworks | Thorns | The Rose (`mp/q4dm5`) | Deathmatch | Sorg, Strauss, Hollenbeck |
+| Ironworks | Shifting Lines | No Doctors (`mp/q4dm6`) | Red Rover | Sorg, Strauss, Hollenbeck, Marsh, Anderson |
+| Ironworks | Last Squad Standing | Over The Edge (`mp/q4dm7`) | Clan Arena | Sorg, Strauss, Hollenbeck, Marsh, Tetzlaff |
+| Ironworks | The Marshal | Railed (`mp/q4tourney1`) | Duel | Marsh |
 | Blood Circuit | Longest Odds | The Longest Day (`mp/q4dm8`) | Deathmatch | Bidwell, Cortez, Morris, Rhodes |
 | Blood Circuit | Campground Clash | Campgrounds Redux (`mp/q4dm9`) | Team Deathmatch | Bidwell, Cortez, Morris, Rhodes, Voss |
 | Blood Circuit | Skeleton Crew | Skeleton Crew (`mp/q4dm11`) | Clan Arena | Bidwell, Cortez, Morris, Rhodes, Voss |

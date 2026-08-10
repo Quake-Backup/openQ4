@@ -398,8 +398,7 @@ void idAsyncNetwork::SpawnServer_f( const idCmdArgs &args ) {
 	// here so late CVAR_GAME registration during the game_mp swap cannot lose
 	// them.
 	if ( !arenaCampaign.PrepareServer() ) {
-		session->StartMenu( false );
-		arenaCampaign.OpenBrowser();
+		arenaCampaign.ReportStartFailure();
 		return;
 	}
 

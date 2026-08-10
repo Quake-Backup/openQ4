@@ -444,6 +444,14 @@
 	"#str_42138"	"IL MAKRON"
 	"#str_42139"	"Il Makron ti aspetta in Stroggenomenon. Completa il circuito sul suo terreno."
 
+	// Arena campaign failure reporting
+	"#str_42150"	"Impossibile avviare il server dell'arena. Un altro programma potrebbe usare la porta di rete."
+	"#str_42151"	"Impossibile registrare il risultato dell'incontro. I progressi della campagna sono invariati."
+	"#str_42152"	"CAMPAGNA ASSENTE"
+	"#str_42153"	"Impossibile caricare i dati della campagna arena. Verifica l'installazione dei contenuti di openQ4."
+	"#str_42154"	"RICONOSCIMENTI"
+	"#str_42155"	"SFIDANTE"
+
 	// Regole e profili delle partite competitive
 	"#str_41600"	"Tipo di partita"
 	"#str_41601"	"Seleziona le regole e il sistema di punteggio usati nella partita."

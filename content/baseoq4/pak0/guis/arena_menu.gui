@@ -2171,11 +2171,26 @@ windowDef Desktop
 	}
 
 	// Match result overlay.
+	// The ledger owns the screen while it is up.  idWindow::HandleEvent walks
+	// children in reverse, so arena_result_panel still gets its own buttons and
+	// this full-screen shade absorbs everything that misses them; without it the
+	// browser's back and reset controls stay clickable behind the report.
+	// Blocking is done by returning a command rather than with "modal", because
+	// BringToTop reorders modal windows to the front of the event walk and this
+	// shade would then swallow the report's own buttons after one stray click.
 	windowDef arena_result_shade
 	{
 		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
 		visible		( "gui::arena_result" != 0 )
 		backcolor	0,0,0,0
+
+		// Absorbing the click also takes keyboard focus, and the onEvent focus
+		// machine above only re-focuses when the context changes.  Clear it so
+		// the recommended action is refocused instead of being stranded.
+		onAction {
+			set "Desktop::arena_focusContext" "-1" ;
+			set "cmd" "arenaBlockInput" ;
+		}
 	}
 
 	windowDef arena_result_panel
@@ -2393,10 +2408,39 @@ windowDef Desktop
 			noevents	1
 		}
 
+		// End-game awards earned in the match just played.  This shares its band
+		// with the campaign-complete banner below and the two gates are mutually
+		// exclusive by construction, so they can never draw over each other.
+		windowDef arena_result_awards_label
+		{
+			rect		48,221,92,17
+			visible		( "gui::arena_resultHasAwards" == 1 && ( "gui::arena_campaignComplete" == 0 || "gui::arena_result" != 1 ) && "Desktop::arena_resultPhase" >= 3 )
+			forecolor	0.58,0.64,0.47,1
+			text		"#str_42154"
+			textscale	0.16
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		windowDef arena_result_awards
+		{
+			rect		145,219,203,22
+			visible		( "gui::arena_resultHasAwards" == 1 && ( "gui::arena_campaignComplete" == 0 || "gui::arena_result" != 1 ) && "Desktop::arena_resultPhase" >= 3 )
+			forecolor	0.95,0.87,0.6,1
+			text		"gui::arena_resultAwardLine"
+			textscale	0.15
+			textalign	2
+			font		"fonts/lowpixel"
+			noevents	1
+		}
+
+		// arena_campaignComplete tracks live progress, not this result, so it stays
+		// set on every later replay.  Gate it on a victory as well or a defeat, a
+		// draw or an aborted match reads as if it had completed the campaign.
 		windowDef arena_result_campaign_complete
 		{
 			rect		48,221,300,21
-			visible		( "gui::arena_campaignComplete" == 1 && "Desktop::arena_resultPhase" >= 3 )
+			visible		( "gui::arena_campaignComplete" == 1 && "gui::arena_result" == 1 && "Desktop::arena_resultPhase" >= 3 )
 			backcolor	0.12,0.24,0.08,0.95
 			bordercolor	0.5,0.74,0.28,1
 			bordersize	1
@@ -3032,12 +3076,23 @@ windowDef Desktop
 	// then gives it a short modern frame-by-frame reveal.  The stock slices make
 	// the warning feel native to the menu while the red accent preserves its
 	// stronger campaign-specific meaning.
+	// Blocking rather than noevents: a destructive prompt must not let a stray
+	// click reach the browser underneath, and noevents made this shade invisible
+	// to the event walk instead of stopping it.  arena_reset_panel is a later
+	// sibling, so the confirm and cancel buttons are still reached first.
 	windowDef arena_reset_shade
 	{
 		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
 		visible		( "Desktop::arena_resetPresentation" != 0 )
 		backcolor	0,0,0,0
-		noevents	1
+
+		// Absorbing the click also takes keyboard focus, and the onEvent focus
+		// machine above only re-focuses when the context changes.  Clear it so
+		// the recommended action is refocused instead of being stranded.
+		onAction {
+			set "Desktop::arena_focusContext" "-1" ;
+			set "cmd" "arenaBlockInput" ;
+		}
 	}
 
 	windowDef arena_reset_panel
@@ -3320,6 +3375,8 @@ windowDef Desktop
 	// Sits above every actionable control while a cinematic transition owns the
 	// screen.  Keyboard/controller focus is parked here as well, preventing a
 	// held confirm key from skipping a reveal or accidentally replaying a match.
+	// It must return a command to stop the mouse: its onAction parks a focus
+	// context, and the event walk only halts on a returned cmd.
 	windowDef arena_transition_blocker
 	{
 		rect		( 0 - "gui::virtual_screen_x_expand" ),( 0 - "gui::virtual_screen_y_expand" ),( 640 + ( "gui::virtual_screen_x_expand" * 2 ) ),( 480 + ( "gui::virtual_screen_y_expand" * 2 ) )
@@ -3328,6 +3385,7 @@ windowDef Desktop
 
 		onAction {
 			set "Desktop::arena_focusContext" "12" ;
+			set "cmd" "arenaBlockInput" ;
 		}
 
 		onESC {
