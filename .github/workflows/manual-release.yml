@@ -1911,6 +1911,7 @@ jobs:
           smoke_console="${smoke_root}/console.log"
           smoke_timeout_marker="${smoke_root}/timed-out"
           smoke_exit_status="${smoke_root}/app-exit-status"
+          smoke_sample="${smoke_root}/hang-sample.txt"
           rm -rf "${smoke_root}"
           mkdir -p "${smoke_cwd}" "${smoke_save}"
 
@@ -1937,6 +1938,11 @@ jobs:
               if kill -0 "${app_pid}" 2>/dev/null; then
                 echo "macOS app-bundle smoke timed out after 90 seconds" >&2
                 touch "${smoke_timeout_marker}"
+                # Sample the live process before killing it. A hung startup on a
+                # headless runner is not reproducible off Apple hardware, and
+                # without this the step exits 124 having printed nothing at all
+                # about where it stopped.
+                /usr/bin/sample "${app_pid}" 2 -file "${smoke_sample}" >/dev/null 2>&1 || true
                 kill -TERM "${app_pid}" 2>/dev/null || true
                 sleep 5
                 kill -KILL "${app_pid}" 2>/dev/null || true
@@ -1950,6 +1956,12 @@ jobs:
             kill "${watchdog_pid}" 2>/dev/null || true
             wait "${watchdog_pid}" 2>/dev/null || true
             if [ -f "${smoke_timeout_marker}" ]; then
+              echo "----- console output at timeout -----"
+              tail -n 120 "${smoke_console}" 2>/dev/null || echo "(no console output)"
+              echo "----- engine log at timeout -----"
+              tail -n 120 "${smoke_log}" 2>/dev/null || echo "(no engine log)"
+              echo "----- main-thread sample at timeout -----"
+              sed -n '1,120p' "${smoke_sample}" 2>/dev/null || echo "(no sample captured)"
               exit 124
             fi
             printf '%s\n' "${app_status}" > "${smoke_exit_status}"
