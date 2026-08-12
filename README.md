@@ -44,6 +44,12 @@ It is designed for players who want the original Quake 4 experience with a clean
 > [!NOTE]
 > openQ4 does **not** include Quake 4 assets. You still need a legitimate Quake 4 copy from Steam or GOG.
 
+> [!IMPORTANT]
+> I am getting the question a lot - particularly in the past week or two (Aug 2026) - so I feel I need to emphasise this point now: **openQ4 is not compatible with legacy Quake 4 game code**. This includes the recent Awakening leak by Justin Marshall. This position won't (and cannot) change. An Awakening mod for openQ4 isn't off the cards, however.
+
+> [!IMPORTANT]
+> Another point to make, as sadly luddites have become more common rather than less in 2026 and certainly more vocal than ever. Yes, this software is mostly vibe coded. That does not mean it isn't thoroughly checked and tested by multiple people, it also doesn't mean it is unsafe for use, nor does it mean we don't understand the codebase. It does have a few remaining issues to iron out - remaining macOS support being the main one - but as feedback will show it is otherwise stable. Whether you choose to follow unsubstantiated claims by luddites is entirely up to you, but I would first take a moment to examine their track records before presuming their expertise and credibility on the matter.
+
 ---
 
 ## Why players use openQ4
