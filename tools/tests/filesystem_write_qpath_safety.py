@@ -213,6 +213,10 @@ def validate_generated_loadscreen_publication() -> None:
     image_files = read("src/imagetools/Image_files.cpp")
     image_header = read("src/renderer/Image.h")
     image_tools_header = read("src/imagetools/ImageTools.h")
+    sys_header = read("src/sys/sys_public.h")
+    sys_windows = read("src/sys/win32/win_shared.cpp")
+    sys_posix = read("src/sys/posix/posix_main.cpp")
+    sys_stub = read("src/sys/stub/sys_stub.cpp")
 
     prepare = function_body(
         session,
@@ -224,12 +228,19 @@ def validate_generated_loadscreen_publication() -> None:
             "TGA writer reports short writes")
     require(image_header, "bool\tR_WriteTGA(", "renderer TGA writer result contract")
     require(image_tools_header, "bool\tR_WriteTGA(", "imagetools TGA writer result contract")
+    require(sys_header, "uint64\t\t\tSys_GetProcessId( void );", "process-ID system API")
+    require(sys_windows, "GetCurrentProcessId()", "Windows process-ID implementation")
+    require(sys_posix, "getpid()", "POSIX process-ID implementation")
+    require(sys_stub, "uint64 Sys_GetProcessId( void )", "stub process-ID implementation")
+    require(sys_stub, "getpid()", "stub process-ID source")
 
     require(prepare, "static uint32 stagingSequence = 0;",
             "generated loadscreen per-process staging sequence")
+    require(prepare, "Sys_GetProcessId()",
+            "generated loadscreen cross-process staging token")
     require(prepare, "Sys_GetClockTicks()",
             "generated loadscreen high-resolution staging token")
-    require(prepare, 'const idStr stagingPath = va( "%s.%llx.%u.partial"',
+    require(prepare, 'const idStr stagingPath = va( "%s.%llu.%llx.%u.partial"',
             "generated loadscreen unique staging path")
     require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
     require(prepare, "fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str()",

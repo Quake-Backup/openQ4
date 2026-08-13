@@ -103,39 +103,61 @@ def validate_language_reload_contract() -> None:
 def validate_language_media_diagnostic() -> None:
     source = read("src/framework/FileSystem.cpp")
     startup = function_body(source, "void idFileSystemLocal::Startup( void ) {")
+    parser = function_body(
+        source,
+        "static bool FS_ParseLanguagePackName( const char *pakFilename, idStr &language, bool allowPatchArchives = true ) {",
+    )
+    base_media = function_body(source, "bool idFileSystemLocal::HasBaseLanguageMediaPack( void ) {")
+    available_media = function_body(source, "void idFileSystemLocal::ListAvailableLanguagePacks( idStrList &languages ) {")
 
     require(
-        startup,
-        "ListAvailableLanguagePacks( availableLanguagePacks );",
-        "client language-media discovery",
+        available_media,
+        "FS_ParseLanguagePackName( search->pack->pakFilename.c_str(), language )",
+        "language selection continues to recognize numbered patch archives",
+    )
+
+    require(
+        parser,
+        "if ( !allowPatchArchives )",
+        "numbered language-patch rejection",
+    )
+    require(
+        base_media,
+        "FS_ParseLanguagePackName( search->pack->pakFilename.c_str(), language, false )",
+        "base language-media discovery excludes patch archives",
     )
     require(
         startup,
-        "availableLanguagePacks.Num() == 0",
-        "empty language-media guard",
+        "if ( !HasBaseLanguageMediaPack() )",
+        "missing base language-media guard",
     )
     require(
         startup,
-        "No recognized Quake 4 language media pack (zpak_<language>.pk4)",
+        "No recognized base Quake 4 language media archive (zpak_<language>.pk4, without a numeric suffix)",
         "actionable language-media warning",
     )
     require(
         startup,
-        "character dialogue will be silent",
+        "character dialogue will be incomplete or silent",
         "language-media warning symptom",
+    )
+    require(
+        startup,
+        "Numbered patch archives such as zpak_english_01.pk4 do not replace the base archive",
+        "patch-only install guidance",
     )
     require_regex(
         startup,
         r"if\s*\(\s*fs_validateOfficialPaks\.GetBool\(\)\s*\)\s*\{[\s\S]*"
         r"#ifndef\s+ID_DEDICATED[\s\S]*"
-        r"ListAvailableLanguagePacks\(\s*availableLanguagePacks\s*\);[\s\S]*"
+        r"HasBaseLanguageMediaPack\(\)[\s\S]*"
         r"#endif[\s\S]*\n\s*\}",
         "official-media and client-only warning gates",
     )
     require_order(
         startup,
         "ValidateRequiredOfficialPaks( validationErrors )",
-        "ListAvailableLanguagePacks( availableLanguagePacks );",
+        "HasBaseLanguageMediaPack()",
         "required core validation before optional language-media diagnostic",
     )
 

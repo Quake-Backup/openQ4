@@ -8,6 +8,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAN_PATH = "docs/dev/plans/2026-06-30-apple-support-no-macos-access.md"
+HISTORICAL_ISSUE_73_RELEASES = {
+    "v0.6.5.md",
+    "v0.8.1.md",
+    "v0.9.0.md",
+    "v0.10.000.md",
+}
 
 
 def read(relative_path: str) -> str:
@@ -122,9 +128,10 @@ def validate_curated_release_notes() -> None:
         require(text, "not a native Metal renderer", context)
         require(text, "platform_backend=native", context)
         require_any(text, ("comparison-only", "diagnostic infrastructure"), context)
-        # Preserve the limitation cited by historical releases while allowing
-        # current release notes to follow the live visual-parity tracker.
-        require_any(text, ("issue #73", "issue #98"), f"{context} macOS limitation tracking")
+        if release_path.name in HISTORICAL_ISSUE_73_RELEASES:
+            require(text, "issue #73", f"{context} historical macOS limitation tracking")
+        else:
+            require(text, "issue #98", f"{context} current macOS limitation tracking")
         require(text, "docs/dev/macos-signoff-evidence.md", context)
 
         lowered = text.lower()

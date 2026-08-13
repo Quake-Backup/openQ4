@@ -133,6 +133,16 @@ def validate_policy_docs() -> None:
         require(source, "docs/dev/macos-openal-provider-policy.md", context)
 
     require(building, "current macOS packages do not bundle OpenAL Soft", "build documentation")
+    require(
+        building,
+        "dependency('openal', method: 'pkg-config')",
+        "build documentation pkg-config dependency",
+    )
+    reject(
+        building,
+        "with `dependency('openal')`",
+        "build documentation generic OpenAL dependency",
+    )
     require(platform, "current macOS packages do not bundle OpenAL Soft", "platform support documentation")
     require(workflow_doc, "not release evidence that macOS packages bundle OpenAL Soft", "macOS workflow documentation")
 

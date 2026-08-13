@@ -42,6 +42,10 @@ If you have questions concerning this license or the applicable additional terms
 #include <dxgi.h>
 #include <bcrypt.h>
 
+uint64 Sys_GetProcessId( void ) {
+	return static_cast<uint64>( GetCurrentProcessId() );
+}
+
 /*
 ================
 Sys_GetSecureRandomBytes
