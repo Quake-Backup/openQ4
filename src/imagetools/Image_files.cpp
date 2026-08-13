@@ -98,7 +98,7 @@ void jpg_Printf( const char *fmt, ... ) {
 R_WriteTGA
 ================
 */
-void R_WriteTGA( const char *filename, const byte *data, int width, int height, bool flipVertical, const char * basePath ) {
+bool R_WriteTGA( const char *filename, const byte *data, int width, int height, bool flipVertical, const char * basePath ) {
 	byte	*buffer;
 	int		i;
 	int		bufferSize = width*height*4 + 18;
@@ -125,7 +125,7 @@ void R_WriteTGA( const char *filename, const byte *data, int width, int height, 
 		buffer[i+3] = data[i-imgStart+3];		// alpha
 	}
 
-	fileSystem->WriteFile( filename, buffer, bufferSize, basePath );
+	return fileSystem->WriteFile( filename, buffer, bufferSize, basePath ) == bufferSize;
 }
 
 static void LoadTGA( const char *name, byte **pic, int *width, int *height, ID_TIME_T *timestamp );

@@ -8,6 +8,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAN_PATH = "docs/dev/plans/2026-06-30-apple-support-no-macos-access.md"
+HISTORICAL_ISSUE_73_RELEASES = {
+    "v0.6.5.md",
+    "v0.8.1.md",
+    "v0.9.0.md",
+    "v0.10.000.md",
+}
 
 
 def read(relative_path: str) -> str:
@@ -86,8 +92,8 @@ def validate_release_completion_guard() -> None:
         "Intel Mac, universal2, and Rosetta appear only as unsupported, not-published, or future-policy items",
         "`macos_graphics_bridge=metal` is described as a Metal bridge around the OpenGL renderer",
         "`platform_backend=native` on macOS is described as comparison-only diagnostic infrastructure",
-        "Until GitHub issue #73 is closed",
-        "known experimental macOS Apple OpenGL 2.1/ARB2 startup limitation",
+        "GitHub issue #98 as the current visual-parity limitation",
+        "closing the original issue #73 startup crash does not satisfy the macOS Evidence Gate",
     ):
         require(release_completion, token, "macOS support claim guard")
 
@@ -122,7 +128,10 @@ def validate_curated_release_notes() -> None:
         require(text, "not a native Metal renderer", context)
         require(text, "platform_backend=native", context)
         require_any(text, ("comparison-only", "diagnostic infrastructure"), context)
-        require(text, "issue #73", context)
+        if release_path.name in HISTORICAL_ISSUE_73_RELEASES:
+            require(text, "issue #73", f"{context} historical macOS limitation tracking")
+        else:
+            require(text, "issue #98", f"{context} current macOS limitation tracking")
         require(text, "docs/dev/macos-signoff-evidence.md", context)
 
         lowered = text.lower()

@@ -2305,8 +2305,6 @@ def validate_macos_signing_keeps_standalone_client_signature_runtime() -> None:
 def validate_macos_install_name_normalization_runtime() -> None:
     package = load_package_module()
     work = ROOT / ".tmp" / "macos-install-name-contract"
-    package_root = work / "openq4-v0.2.000-macos-arm64-opengl"
-    arch = "arm64"
 
     original_platform = package.sys.platform
     original_which = package.shutil.which
@@ -2315,49 +2313,99 @@ def validate_macos_install_name_normalization_runtime() -> None:
 
     shutil.rmtree(work, ignore_errors=True)
     try:
-        sp_module, mp_module = package.macos_embedded_game_module_paths(package_root, arch)
-        write_test_file(sp_module, b"sp\n", 0o755)
-        write_test_file(mp_module, b"mp\n", 0o755)
-
-        install_names = {
-            sp_module: "/tmp/openq4/.install/baseoq4/game-sp_arm64.dylib",
-            mp_module: f"@loader_path/game-mp_{arch}.dylib",
-        }
+        install_names: dict[tuple[Path, str], str] = {}
         calls = []
+        active_arch = ""
 
         def fake_which(tool_name):
             if tool_name == "install_name_tool":
                 return "/usr/bin/install_name_tool"
             return original_which(tool_name)
 
-        def fake_otool_install_name(binary_path):
-            return install_names[Path(binary_path)]
+        def fake_otool_install_name(binary_path, *, macho_arch=None):
+            if macho_arch is None:
+                raise AssertionError("install-name normalization did not select a Mach-O slice")
+            return install_names[(Path(binary_path), macho_arch)]
 
         def fake_run_macos_command(command, *, label):
             calls.append((command, label))
-            install_names[Path(command[3])] = command[2]
+            module = Path(command[3])
+            for macho_arch in package.macos_expected_lipo_arches(active_arch):
+                install_names[(module, macho_arch)] = command[2]
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         package.sys.platform = "darwin"
         package.shutil.which = fake_which
         package.macos_otool_install_name = fake_otool_install_name
         package.run_macos_command = fake_run_macos_command
-        package.normalize_macos_game_module_install_names(package_root, arch)
 
-        expected_call = (
-            [
-                "/usr/bin/install_name_tool",
-                "-id",
-                f"@loader_path/game-sp_{arch}.dylib",
-                str(sp_module),
-            ],
-            f"setting macOS game module install name for {sp_module}",
+        def run_case(
+            package_root: Path,
+            arch: str,
+            stale_ids: dict[tuple[str, str], str],
+            expected_updated_keys: tuple[str, ...],
+        ) -> None:
+            nonlocal active_arch
+            active_arch = arch
+            calls.clear()
+            install_names.clear()
+            modules = package.macos_loadable_module_install_names(package_root, arch)
+            module_keys = {
+                "game-sp": package.macos_embedded_game_module_paths(package_root, arch)[0],
+                "game-mp": package.macos_embedded_game_module_paths(package_root, arch)[1],
+                "renderer-vk": package.macos_embedded_renderer_module_path(package_root, arch),
+            }
+            explicit_modules = {
+                module_keys["game-sp"]: f"@loader_path/game-sp_{arch}.dylib",
+                module_keys["game-mp"]: f"@loader_path/game-mp_{arch}.dylib",
+                module_keys["renderer-vk"]: f"@loader_path/renderer-vk_{arch}.dylib",
+            }
+            if modules != explicit_modules:
+                raise AssertionError(f"Unexpected macOS loadable module install-name map: {modules!r}")
+            for module in modules:
+                write_test_file(module, b"module\n", 0o755)
+            for key, module in module_keys.items():
+                expected = modules[module]
+                for macho_arch in package.macos_expected_lipo_arches(arch):
+                    install_names[(module, macho_arch)] = stale_ids.get((key, macho_arch), expected)
+
+            package.normalize_macos_loadable_module_install_names(package_root, arch)
+
+            expected_calls = [
+                (
+                    ["/usr/bin/install_name_tool", "-id", modules[module_keys[key]], str(module_keys[key])],
+                    f"setting macOS loadable module install name for {module_keys[key]}",
+                )
+                for key in expected_updated_keys
+            ]
+            if calls != expected_calls:
+                raise AssertionError(f"Unexpected macOS install-name normalization calls: {calls!r}")
+            for module, expected in modules.items():
+                for macho_arch in package.macos_expected_lipo_arches(arch):
+                    actual = install_names[(module, macho_arch)]
+                    if actual != expected:
+                        raise AssertionError(
+                            f"macOS loadable module install name was not normalized for {macho_arch}: "
+                            f"{module} has {actual!r}, expected {expected!r}"
+                        )
+
+        run_case(
+            work / "openq4-v0.2.000-macos-arm64-opengl",
+            "arm64",
+            {
+                ("game-sp", "arm64"): "/tmp/openq4/.install/baseoq4/game-sp_arm64.dylib",
+                ("renderer-vk", "arm64"): "/tmp/openq4/.install/renderer-vk_arm64.dylib",
+            },
+            ("game-sp", "renderer-vk"),
         )
-        if calls != [expected_call]:
-            raise AssertionError(f"Unexpected macOS install-name normalization calls: {calls!r}")
-        expected_install_names = package.macos_game_module_install_names(package_root, arch)
-        if install_names != expected_install_names:
-            raise AssertionError(f"macOS game module install names were not normalized: {install_names!r}")
+        run_case(
+            work / "openq4-v0.2.000-macos-universal2-metal",
+            "universal2",
+            {
+                ("renderer-vk", "x86_64"): "/tmp/openq4/.install/renderer-vk_universal2.dylib",
+            },
+            ("renderer-vk",),
+        )
     finally:
         package.sys.platform = original_platform
         package.shutil.which = original_which
@@ -2666,7 +2714,7 @@ def validate_meson_contract() -> None:
     require(meson, "macos_graphics_bridge == 'metal' and platform_backend_requested != 'sdl3'", "SDL3 bridge guard")
     require(meson, "use_macos_metal_bridge", "Metal bridge build predicate")
     require(meson, "dependency('appleframeworks', modules: ['OpenAL'], required: true)", "macOS Apple OpenAL provider")
-    require(meson, "dependency('openal', required: true)", "macOS system OpenAL provider")
+    require(meson, "dependency('openal', required: true, method: 'pkg-config')", "macOS system OpenAL provider")
     require(meson, "-DUSE_OPENAL_SOFT_INCLUDES=1", "macOS system OpenAL include mode")
     require(meson, "modules: ['Metal', 'QuartzCore']", "Metal bridge framework dependency")
     require(meson, "macos_framework_modules = ['Cocoa', 'OpenGL', 'ApplicationServices']", "macOS SDL3 framework list")
@@ -2819,12 +2867,12 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "MACOS_ALLOWED_RUNTIME_DEPENDENCY_PREFIXES", "macOS binary dependency validation")
     require(package, "macos_otool_dependencies", "macOS binary dependency validation")
     require(package, "macos_otool_install_name", "macOS game module install-name validation")
-    require(package, "normalize_macos_game_module_install_names", "macOS game module install-name normalization")
+    require(package, "normalize_macos_loadable_module_install_names", "macOS loadable module install-name normalization")
     require(package, "install_name_tool", "macOS game module install-name normalization")
-    require(package, "setting macOS game module install name", "macOS game module install-name normalization")
+    require(package, "setting macOS loadable module install name", "macOS loadable module install-name normalization")
     require_before(
         package,
-        "normalize_macos_game_module_install_names(package_root, args.arch)",
+        "normalize_macos_loadable_module_install_names(package_root, args.arch)",
         "sign_macos_payload(package_root, args.arch, macos_signing)",
         "macOS install-name normalization before signing",
     )
@@ -2832,7 +2880,7 @@ def validate_packaging_and_release_contract() -> None:
     require(package, "otool_path, \"-L\"", "macOS binary dependency validation")
     require(package, "otool_path, \"-D\"", "macOS game module install-name validation")
     require(package, "macOS binary has unbundled non-system dependencies", "macOS binary dependency validation")
-    require(package, "macOS game module install name is not package-relative", "macOS game module install-name validation")
+    require(package, "macOS loadable module install name is not package-relative", "macOS loadable module install-name validation")
     require(package, "MACOS_FORBIDDEN_XATTRS", "macOS package quarantine validation")
     require(package, "strip_macos_forbidden_xattrs", "macOS package quarantine validation")
     require(package, "validate_no_macos_forbidden_xattrs", "macOS package quarantine validation")
@@ -3108,6 +3156,47 @@ def validate_packaging_and_release_contract() -> None:
     require(commit, "runs-on: macos-15", "commit validation macOS job")
     require(commit, "bash tools/validation/validate_pr.sh \\", "commit validation macOS job")
     require(commit, "--fail-on-dirty \\", "commit validation macOS job")
+    arm64_commit_job = commit[
+        commit.index("\n  macos-arm64:") : commit.index("\n  macos-x64:")
+    ]
+    x64_commit_job = commit[
+        commit.index("\n  macos-x64:") : commit.index("\n  macos-universal2:")
+    ]
+    thin_normalize = "python tools/build/assemble_macos_universal2.py prepare"
+    moltenvk_stage = "bash tools/build/prepare_macos_moltenvk.sh --output-dir .install"
+    moltenvk_verify = "bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install"
+    for job, normalize_step_name, arch_token, record_step, context in (
+        (
+            arm64_commit_job,
+            "- name: Normalize ARM64 thin payload",
+            "--arch arm64",
+            "name: Record macOS ARM64 thin-build provenance",
+            "ARM64 thin payload",
+        ),
+        (
+            x64_commit_job,
+            "- name: Normalize Intel thin payload",
+            "--arch x64",
+            "name: Record macOS Intel thin-build provenance",
+            "Intel thin payload",
+        ),
+    ):
+        if job.count(normalize_step_name) != 1:
+            raise AssertionError(f"Expected exactly one {normalize_step_name!r} in {context}")
+        normalize_start = job.index(normalize_step_name)
+        normalize_end = job.index("\n      - name:", normalize_start + len(normalize_step_name))
+        normalize_step = job[normalize_start:normalize_end]
+        require(normalize_step, thin_normalize, f"{context} install-name normalization")
+        require(normalize_step, "--install-root .install", f"{context} normalization install root")
+        require(normalize_step, arch_token, f"{context} normalization architecture")
+        reject(normalize_step, "\n        if:", f"{context} unconditional normalization")
+        require(job, moltenvk_stage, f"{context} MoltenVK staging")
+        require(job, moltenvk_verify, f"{context} MoltenVK verification")
+        require_before(job, "name: Run selected validation profile", normalize_step_name, f"{context} build normalization order")
+        require_before(job, normalize_step_name, "name: Run macOS dedicated server smoke", f"{context} smoke normalization order")
+        require_before(job, normalize_step_name, record_step, f"{context} normalization order")
+        require_before(job, moltenvk_stage, record_step, f"{context} MoltenVK stage order")
+        require_before(job, moltenvk_verify, record_step, f"{context} MoltenVK verification order")
     require(push, "macOS OpenGL Push Verification", "push verification macOS OpenGL job")
     require(push, "macOS Metal Push Verification", "push verification macOS Metal job")
     if push.count("runtime_smoke: true") < 3:
@@ -3205,6 +3294,7 @@ def validate_packaging_and_release_contract() -> None:
     require(release, "spctl --assess --type execute", "manual release Gatekeeper validation")
     require(release, "check_macos_install_name", "manual release macOS install-name validation")
     require(release, "@loader_path/game-sp_${{ matrix.binary_arch }}.dylib", "manual release macOS install-name validation")
+    require(release, "@loader_path/renderer-vk_${{ matrix.binary_arch }}.dylib", "manual release renderer install-name validation")
     require(release, "check_macos_binary_dependencies", "manual release macOS dependency validation")
     require(release, 'otool -arch "${macho_arch}" -L', "manual release macOS dependency validation")
     require(release, "unbundled non-system dependency", "manual release macOS dependency validation")
@@ -3747,7 +3837,7 @@ def validate_docs_and_ci_hooks() -> None:
     require(building, "Intel Mac and universal2 packages are not published", "macOS architecture policy documentation")
     require(building, "SDL3 is the default platform path and does not link Carbon", "macOS Carbon isolation documentation")
     require(building, "macos_openal_provider", "macOS OpenAL provider documentation")
-    require(building, "system/OpenAL Soft dependency", "macOS OpenAL provider documentation")
+    require(building, "dependency('openal', method: 'pkg-config')", "macOS OpenAL provider documentation")
     require(getting_started, "signed/notarized OpenGL and Metal bridge DMGs", "getting started guide")
     require(getting_started, "drag `openQ4.app` to `/Applications`", "getting started guide")
     require(getting_started, "signed SP/MP modules", "getting started self-contained app guide")

@@ -44,12 +44,13 @@ COMMON_BUILD_FIELDS = (
 )
 # libMoltenVK.dylib is a third-party Vulkan-on-Metal translation layer that
 # openQ4 does not build. It ships as a genuinely universal (arm64 + x86_64)
-# binary, so the arm64 and x64 thin trees stage byte-identical copies of it and
-# it flows through as ordinary shared payload. It is deliberately NOT a
+# binary and flows through as shared payload. It is deliberately NOT a
 # CODE_KEY: lipo must not touch it, its install name must not be rewritten, and
-# it has no openQ4 entry point to check. Treating it as shared payload also
-# means validate_matching_inputs() rejects two thin trees that staged different
-# MoltenVK builds, and copy_shared_payload() reproduces it byte-for-byte.
+# it has no openQ4 entry point to check. Apple's ad-hoc signer can emit different
+# signature envelopes on Intel and Apple Silicon hosts, so assembly validates
+# both signed inputs and compares temporary signature-stripped copies. All
+# unsigned MoltenVK bytes must still match exactly, and copy_shared_payload()
+# reproduces the validated ARM64-host copy before final package signing.
 MOLTENVK_DYLIB_NAME = "libMoltenVK.dylib"
 REQUIRED_SHARED_PATHS = (
     "openQ4.icns",
@@ -108,6 +109,48 @@ def expected_install_name(code_key: str, arch: str) -> str:
     if code_key not in MODULE_ENTRY_POINT_EXPORTS:
         return ""
     return f"@loader_path/{code_key}_{arch}.dylib"
+
+
+def prepare_thin_payload(root: Path, arch: str) -> None:
+    """Normalize and re-sign loadable thin modules before provenance recording."""
+    if arch not in THIN_MACHO_ARCHES:
+        raise Universal2Error(f"unsupported thin macOS architecture: {arch}")
+    root = require_directory(root, "thin macOS install root")
+    install_name_tool = require_tool("install_name_tool")
+    codesign = require_tool("codesign")
+    expected_arches = THIN_MACHO_ARCHES[arch]
+    macho_arch = next(iter(expected_arches))
+
+    for code_key, relative in thin_code_paths(arch).items():
+        expected_id = expected_install_name(code_key, arch)
+        if not expected_id:
+            continue
+
+        path = require_regular_file(root / relative, f"thin macOS {code_key} binary", executable=True)
+        validate_exact_arches(path, expected_arches)
+        if install_name(path, macho_arch=macho_arch) != expected_id:
+            run_command(
+                [install_name_tool, "-id", expected_id, str(path)],
+                f"normalizing thin {arch} {code_key} install name",
+            )
+        # Meson install may rewrite the load command, invalidating a linker-
+        # produced ad-hoc signature. Sign and verify every loadable module so an
+        # already-correct ID cannot conceal an invalid signature. Universal
+        # assembly fuses these signed inputs unchanged, then normalizes and
+        # re-signs the fused output; packaging applies its final signature later.
+        run_command(
+            [codesign, "--force", "--sign", "-", str(path)],
+            f"ad-hoc signing normalized thin {arch} {code_key}",
+        )
+        run_command(
+            [codesign, "--verify", "--strict", str(path)],
+            f"verifying normalized thin {arch} {code_key} signature",
+        )
+        actual_id = install_name(path, macho_arch=macho_arch)
+        if actual_id != expected_id:
+            raise Universal2Error(
+                f"install name normalization failed for {path}: expected {expected_id!r}, found {actual_id!r}"
+            )
 
 
 def file_sha256(path: Path) -> str:
@@ -582,39 +625,67 @@ def validate_matching_inputs(
             raise Universal2Error(f"thin {key} dependency sets differ between arm64 and x64")
 
 
-def remove_signature_if_present(path: Path) -> None:
+def signature_normalized_shared_records(
+    root: Path,
+    shared: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Return matching records with only MoltenVK's host signature removed.
+
+    Both recorded files remain immutable and retain their independently valid
+    signatures. The temporary copy makes a strict underlying-byte comparison
+    possible without accepting two different MoltenVK builds merely because
+    both have valid ad-hoc signatures.
+    """
+
+    normalized = {relative: dict(record) for relative, record in shared.items()}
+    if MOLTENVK_DYLIB_NAME not in normalized:
+        raise Universal2Error(f"thin macOS payload is missing required {MOLTENVK_DYLIB_NAME}")
+
+    source = require_regular_file(root / MOLTENVK_DYLIB_NAME, "host-signed MoltenVK shared payload")
+    validate_exact_arches(source, UNIVERSAL_MACHO_ARCHES)
     codesign = require_tool("codesign")
-    inspected = subprocess.run(
-        [codesign, "--display", str(path)],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    run_command(
+        [codesign, "--verify", "--strict", "--all-architectures", str(source)],
+        f"verifying all MoltenVK signature slices for {source}",
     )
-    if inspected.returncode == 0:
-        run_command([codesign, "--remove-signature", str(path)], f"removing thin code signature from {path}")
+    with tempfile.TemporaryDirectory(prefix="openq4-moltenvk-signature-") as temporary:
+        unsigned = Path(temporary) / MOLTENVK_DYLIB_NAME
+        shutil.copy2(source, unsigned)
+        run_command(
+            [codesign, "--remove-signature", str(unsigned)],
+            f"normalizing host-dependent MoltenVK signature for {source}",
+        )
+        normalized[MOLTENVK_DYLIB_NAME] = {
+            "path": MOLTENVK_DYLIB_NAME,
+            "sha256": file_sha256(unsigned),
+            "size": unsigned.stat().st_size,
+            "mode": stat.S_IMODE(unsigned.stat().st_mode),
+        }
+    return normalized
 
 
 def merge_binary(arm_path: Path, x64_path: Path, output_path: Path, code_key: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="openq4-universal2-code-", dir=output_path.parent) as temporary:
-        temporary_root = Path(temporary)
-        arm_copy = temporary_root / "arm64"
-        x64_copy = temporary_root / "x64"
-        shutil.copy2(arm_path, arm_copy)
-        shutil.copy2(x64_path, x64_copy)
-        remove_signature_if_present(arm_copy)
-        remove_signature_if_present(x64_copy)
-        expected_id = expected_install_name(code_key, UNIVERSAL_ARCH)
-        if expected_id:
-            install_name_tool = require_tool("install_name_tool")
-            run_command([install_name_tool, "-id", expected_id, str(arm_copy)], f"normalizing arm64 {code_key} install name")
-            run_command([install_name_tool, "-id", expected_id, str(x64_copy)], f"normalizing x64 {code_key} install name")
-        run_command(
-            [require_tool("lipo"), "-create", str(arm_copy), str(x64_copy), "-output", str(output_path)],
-            f"merging universal2 {code_key}",
-        )
+    run_command(
+        [require_tool("lipo"), "-create", str(arm_path), str(x64_path), "-output", str(output_path)],
+        f"merging universal2 {code_key}",
+    )
     output_path.chmod(stat.S_IMODE(arm_path.stat().st_mode) | 0o111)
+    expected_id = expected_install_name(code_key, UNIVERSAL_ARCH)
+    if expected_id:
+        run_command(
+            [require_tool("install_name_tool"), "-id", expected_id, str(output_path)],
+            f"normalizing universal2 {code_key} install name",
+        )
+    codesign = require_tool("codesign")
+    run_command(
+        [codesign, "--force", "--sign", "-", str(output_path)],
+        f"ad-hoc signing universal2 {code_key}",
+    )
+    run_command(
+        [codesign, "--verify", "--strict", "--all-architectures", str(output_path)],
+        f"verifying universal2 {code_key} signature",
+    )
     validate_exact_arches(output_path, UNIVERSAL_MACHO_ARCHES)
     if expected_id:
         for macho_arch in sorted(UNIVERSAL_MACHO_ARCHES):
@@ -723,7 +794,14 @@ def assemble(args: argparse.Namespace) -> None:
     x64_manifest = load_thin_manifest(x64_root, "x64")
     arm_shared = validate_recorded_tree(arm_root, "arm64", arm_manifest)
     x64_shared = validate_recorded_tree(x64_root, "x64", x64_manifest)
-    validate_matching_inputs(arm_manifest, x64_manifest, arm_shared, x64_shared)
+    arm_shared_for_matching = signature_normalized_shared_records(arm_root, arm_shared)
+    x64_shared_for_matching = signature_normalized_shared_records(x64_root, x64_shared)
+    validate_matching_inputs(
+        arm_manifest,
+        x64_manifest,
+        arm_shared_for_matching,
+        x64_shared_for_matching,
+    )
 
     temporary_root = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_parent))
     try:
@@ -744,6 +822,9 @@ def assemble(args: argparse.Namespace) -> None:
         "machoArchitectures": sorted(UNIVERSAL_MACHO_ARCHES),
         **{field: arm_manifest[field] for field in COMMON_BUILD_FIELDS},
         "sharedPayloadSha256": arm_manifest["sharedPayloadSha256"],
+        "signatureNormalizedSharedPayloadSha256": canonical_json_sha256(
+            list(arm_shared_for_matching.values())
+        ),
         "sharedFileCount": arm_manifest["sharedFileCount"],
         "thinManifestSha256": {
             "arm64": file_sha256(arm_root / THIN_MANIFEST_NAME),
@@ -768,6 +849,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     record_parser.add_argument("--build-type", default="debug", choices=BUILD_TYPES)
     record_parser.add_argument("--replace", action="store_true")
 
+    prepare_parser = subparsers.add_parser(
+        "prepare",
+        help="normalize and ad-hoc sign one staged thin macOS payload before recording",
+    )
+    prepare_parser.add_argument("--install-root", required=True)
+    prepare_parser.add_argument("--arch", required=True, choices=sorted(THIN_MACHO_ARCHES))
+
     assemble_parser = subparsers.add_parser("assemble", help="merge validated arm64 and x64 staging trees")
     assemble_parser.add_argument("--arm64-root", required=True)
     assemble_parser.add_argument("--x64-root", required=True)
@@ -782,6 +870,8 @@ def main(argv: list[str]) -> int:
         args = parse_args(argv)
         if args.command == "record":
             record_thin(args)
+        elif args.command == "prepare":
+            prepare_thin_payload(Path(args.install_root), args.arch)
         else:
             assemble(args)
     except (OSError, Universal2Error, ValueError) as exc:

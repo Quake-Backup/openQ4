@@ -5584,8 +5584,8 @@ rvRenderModelMD5R::WriteFile
 ========================
 */
 bool rvRenderModelMD5R::WriteFile( const char *fileName, bool compressed ) const {
-	idAutoPtr<idFile> outFile( fileSystem->OpenFileWrite( fileName, "fs_savepath" ) );
-	if ( outFile.get() == NULL ) {
+	idFile *outFile = fileSystem->OpenFileWrite( fileName, "fs_savepath" );
+	if ( outFile == NULL ) {
 		common->Warning(
 			"rvRenderModelMD5R::WriteFile: couldn't open '%s' for MD5R export from '%s'",
 			fileName,
@@ -5595,7 +5595,7 @@ bool rvRenderModelMD5R::WriteFile( const char *fileName, bool compressed ) const
 
 	common->Printf( "writing %s\n", fileName );
 	WriteModel( *outFile );
-	outFile.reset( NULL );
+	fileSystem->CloseFile( outFile );
 
 	if ( compressed ) {
 		const idStr savePathFileName = fileSystem->RelativePathToOSPath( fileName, "fs_savepath" );

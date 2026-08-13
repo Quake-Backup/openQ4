@@ -131,7 +131,7 @@ Tasks:
 - [x] Extend package validation to check every executable and dylib slice with `lipo -archs`.
 - [x] Add a universal2 runtime module fallback so both executable slices can load one trusted merged SP/MP module pair without changing thin-package behavior.
 - [x] Document the universal2 merge, exact-slice, symbol, install-name, inside-out signing, notarization, and dual-architecture evidence contract.
-- [x] Implement the fail-closed universal2 merge/assembly job and final-package validator: matched thin provenance, mode-preserving thin artifact transfer, byte-identical shared payloads, exact dual Mach-O slices, per-slice metadata, final dSYMs, and native assetless dedicated-server smoke are required before CI uploads its evidence.
+- [x] Implement the fail-closed universal2 merge/assembly job and final-package validator: matched thin provenance, mode-preserving thin artifact transfer, byte-identical shared payloads after validating and normalizing host-dependent MoltenVK ad-hoc signatures, exact dual Mach-O slices, per-slice metadata, final dSYMs, and native assetless dedicated-server smoke are required before CI uploads its evidence.
 - [x] Add a non-publishing universal2 candidate gate that can re-run code signing, notarization, stapling, `spctl`, and install-name validation after `lipo` creation when Developer ID mode is selected; hosted and hardware evidence remains pending.
 - [ ] Update release artifact naming to distinguish `macos-arm64`, `macos-x64`, and `macos-universal2`.
 - [ ] Record clean hosted results for the new openQ4 and `openQ4-game` Intel jobs.

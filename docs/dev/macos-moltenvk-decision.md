@@ -398,8 +398,9 @@ Left alone, the two halves would disagree on a normal package.
 Both halves therefore follow the same precedence:
 
 1. `SDL_VULKAN_LIBRARY` (the environment backing of `SDL_HINT_VULKAN_LIBRARY`).
-2. The bundled MoltenVK, bundle-relative (`../Frameworks/libMoltenVK.dylib`)
-   then adjacent to the executable (`libMoltenVK.dylib`).
+2. The bundled MoltenVK, bundle-relative (`../Frameworks/libMoltenVK.dylib`),
+   then in a `Frameworks/` directory beneath a loose package root, then
+   adjacent to the executable (`libMoltenVK.dylib`).
 3. Whatever the system loader provides (`volkInitialize()`).
 
 `SDL3_PinBundledMoltenVKLibrary()` in `src/sys/sdl3/sdl3_backend.cpp` pins

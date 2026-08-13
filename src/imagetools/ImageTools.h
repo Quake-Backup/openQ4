@@ -36,7 +36,7 @@ byte *	R_ResampleTexture( const byte *in, int inwidth, int inheight, int outwidt
 
 // default arguments stay on the renderer-internal declaration in Image.h
 // until the module split completes; callers of this header pass all arguments
-void	R_WriteTGA( const char *filename, const byte *data, int width, int height, bool flipVertical, const char *basePath );
+bool	R_WriteTGA( const char *filename, const byte *data, int width, int height, bool flipVertical, const char *basePath );
 
 // malloc with error checking; pairs with R_StaticFree
 void *	R_StaticAlloc( size_t bytes );

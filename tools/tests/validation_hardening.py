@@ -652,6 +652,28 @@ def validate_validation_wiring() -> None:
         if build_script not in push or build_script not in commit:
             raise AssertionError(f"{build_script} is not covered by workflow py_compile smoke checks")
 
+    windows_start = commit.index("\n  windows-x64:")
+    windows_end = commit.index("\n  linux-arm64:", windows_start)
+    windows_job = commit[windows_start:windows_end]
+    openal_step_name = "- name: Prepare OpenAL Soft (Windows)"
+    if windows_job.count(openal_step_name) != 1:
+        raise AssertionError(f"Expected exactly one {openal_step_name!r} in Windows commit validation")
+    openal_start = windows_job.index(openal_step_name)
+    openal_end = windows_job.index("\n      - name:", openal_start + len(openal_step_name))
+    openal_step = windows_job[openal_start:openal_end]
+    for token in (
+        "tools/build/prepare_windows_openal.ps1",
+        '$env:OPENQ4_VS_TARGET_ARCH = "x64"',
+        '-Architecture "x64" -OutputRoot $outputRoot',
+        "OPENQ4_OPENAL_ROOT=$outputRoot",
+    ):
+        if token not in openal_step:
+            raise AssertionError(f"Windows commit validation is missing OpenAL runtime preparation token {token!r}")
+    if "\n        if:" in openal_step:
+        raise AssertionError("Windows commit validation conditionally skips OpenAL runtime preparation")
+    if windows_job.index(openal_step_name) >= windows_job.index("Run selected validation profile"):
+        raise AssertionError("Windows commit validation prepares OpenAL after the build/staging profile")
+
     if "Validation runs now fail earlier" not in release_notes:
         raise AssertionError("release notes do not mention validation hardening")
 

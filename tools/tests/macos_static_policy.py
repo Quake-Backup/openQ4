@@ -190,7 +190,7 @@ def validate_deprecated_api_boundaries() -> None:
     require(meson, "if not use_sdl3_backend\n      macos_framework_modules += ['Carbon']", "macOS Carbon native-only policy")
     reject(meson, "modules: ['Cocoa', 'OpenGL', 'ApplicationServices', 'Carbon']", "macOS unconditional Carbon framework policy")
     require_before(meson, "if macos_openal_provider == 'apple_framework'", "dependency('appleframeworks', modules: ['OpenAL'], required: true)", "macOS OpenAL provider policy")
-    require(meson, "dependency('openal', required: true)", "macOS system OpenAL migration policy")
+    require(meson, "dependency('openal', required: true, method: 'pkg-config')", "macOS system OpenAL migration policy")
 
 
 def validate_release_distribution_policy() -> None:

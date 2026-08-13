@@ -88,6 +88,7 @@ jobs:
             tools/tests/idstr_input_safety.py \
             tools/tests/lexer_peek_contract.py \
             tools/tests/key_bind_presentation.py \
+            tools/tests/levelshot_inventory.py \
             tools/tests/linux_arm64_cross_compile.py \
             tools/tests/linux_arm64_ci_coverage.py \
             tools/tests/linux_arm64_release_evidence.py \
@@ -215,6 +216,7 @@ jobs:
           python tools/tests/idstr_input_safety.py
           python tools/tests/lexer_peek_contract.py
           python tools/tests/key_bind_presentation.py
+          python tools/tests/levelshot_inventory.py
           python tools/tests/linux_arm64_cross_compile.py
           python tools/tests/linux_arm64_ci_coverage.py
           python tools/tests/linux_arm64_release_evidence.py
@@ -348,6 +350,15 @@ jobs:
           $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
           python -m pip install meson ninja
+
+      - name: Prepare OpenAL Soft (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/openal-soft-x64"
+          $env:OPENQ4_VS_TARGET_ARCH = "x64"
+          powershell -ExecutionPolicy Bypass -File tools/build/prepare_windows_openal.ps1 -Architecture "x64" -OutputRoot $outputRoot
+          "OPENQ4_OPENAL_ROOT=$outputRoot" >> $env:GITHUB_ENV
 
       - name: Run selected validation profile
         shell: pwsh
@@ -1021,12 +1032,27 @@ jobs:
             --extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }} \
             --extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}
 
+      - name: Normalize ARM64 thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build/assemble_macos_universal2.py prepare \
+            --install-root .install \
+            --arch arm64
+
       - name: Run macOS dedicated server smoke
         shell: bash
         run: |
           set -euo pipefail
           python tools/tests/macos_dedicated_server_smoke.py \
             --output-root .tmp/macos-dedicated-smoke/${{ matrix.artifact_suffix }}
+
+      - name: Stage pinned MoltenVK for ARM64 thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
 
       - name: Record macOS ARM64 thin-build provenance
         shell: bash
@@ -1135,6 +1161,14 @@ jobs:
             --extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }} \
             --extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}
 
+      - name: Normalize Intel thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build/assemble_macos_universal2.py prepare \
+            --install-root .install \
+            --arch x64
+
       - name: Run macOS dedicated server smoke
         shell: bash
         run: |
@@ -1142,6 +1176,13 @@ jobs:
           python tools/tests/macos_dedicated_server_smoke.py \
             --arch x64 \
             --output-root .tmp/macos-dedicated-smoke/x64-${{ matrix.artifact_suffix }}
+
+      - name: Stage pinned MoltenVK for Intel thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
 
       - name: Record macOS Intel thin-build provenance
         shell: bash
@@ -1214,6 +1255,9 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Install release documentation dependency
+        run: python -m pip install markdown
+
       - name: Download macOS ARM64 thin payload
         uses: actions/download-artifact@v5
         with:
@@ -1280,7 +1324,7 @@ jobs:
             --install-dir "${corridor_root}/universal2" \
             --output-dir "${corridor_root}/package-output" \
             --archive-format tar.xz \
-            --package-suffix "-${{ matrix.artifact_suffix }}" \
+            --package-suffix=-${{ matrix.artifact_suffix }} \
             --macos-signing-mode ad-hoc
 
       - name: Publish universal2 assembly evidence

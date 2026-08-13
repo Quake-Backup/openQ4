@@ -1615,6 +1615,7 @@ jobs:
           module_dir="${app_root}/Contents/Frameworks"
           sp_module="${module_dir}/game-sp_${{ matrix.binary_arch }}.dylib"
           mp_module="${module_dir}/game-mp_${{ matrix.binary_arch }}.dylib"
+          renderer_module="${module_dir}/renderer-vk_${{ matrix.binary_arch }}.dylib"
 
           if [ ! -f "${app_plist}" ]; then
             echo "Missing macOS app Info.plist: ${app_plist}"
@@ -1729,7 +1730,7 @@ jobs:
             echo "macOS package must not duplicate baseoq4 beside the self-contained app bundle."
             exit 1
           fi
-          for module in "${sp_module}" "${mp_module}"; do
+          for module in "${sp_module}" "${mp_module}" "${renderer_module}"; do
             if [ ! -x "${module}" ]; then
               echo "Missing or non-executable macOS package game module: ${module}"
               exit 1
@@ -1810,7 +1811,7 @@ jobs:
             for macho_arch in ${expected_lipo_arches}; do
               actual="$(otool -arch "${macho_arch}" -D "${binary}" | sed -n '2p' | tr -d '[:space:]')"
               if [ "${actual}" != "${expected}" ]; then
-                echo "macOS game module install name mismatch: ${binary} (${macho_arch}); expected ${expected}, found ${actual:-<empty>}."
+                echo "macOS loadable module install name mismatch: ${binary} (${macho_arch}); expected ${expected}, found ${actual:-<empty>}."
                 exit 1
               fi
             done
@@ -1841,7 +1842,7 @@ jobs:
               done
             done
           }
-          for binary in "${app_exec}" "${client_binary}" "${dedicated_binary}" "${sp_module}" "${mp_module}"; do
+          for binary in "${app_exec}" "${client_binary}" "${dedicated_binary}" "${sp_module}" "${mp_module}" "${renderer_module}"; do
             check_macos_binary_architecture "${binary}"
             check_macos_binary_dependencies "${binary}"
             check_macos_codesignature "${binary}"
@@ -1862,6 +1863,7 @@ jobs:
           fi
           check_macos_install_name "${sp_module}" "@loader_path/game-sp_${{ matrix.binary_arch }}.dylib"
           check_macos_install_name "${mp_module}" "@loader_path/game-mp_${{ matrix.binary_arch }}.dylib"
+          check_macos_install_name "${renderer_module}" "@loader_path/renderer-vk_${{ matrix.binary_arch }}.dylib"
           check_plist_value() {
             key="$1"
             expected="$2"

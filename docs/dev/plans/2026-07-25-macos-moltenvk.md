@@ -112,9 +112,10 @@ which dyld resolves against DYLD paths and `/usr/local/lib` but never against
 the app bundle, so a bundled MoltenVK is invisible to it; SDL, meanwhile, starts
 at `@executable_path/../Frameworks/libMoltenVK.dylib`. `VK_Device_InitLoader()`
 now mirrors SDL's precedence exactly — `SDL_VULKAN_LIBRARY`, then the bundled
-dylib bundle-relative, then adjacent to the executable, then `volkInitialize()` —
-and `SDL3_PinBundledMoltenVKLibrary()` pins `SDL_HINT_VULKAN_LIBRARY` to the
-same bundled path before the Vulkan window is created, deferring to any existing
+dylib bundle-relative, in a loose package's `Frameworks/` child, or adjacent to
+the executable, then `volkInitialize()` — and
+`SDL3_PinBundledMoltenVKLibrary()` pins `SDL_HINT_VULKAN_LIBRARY` to the same
+bundled path before the Vulkan window is created, deferring to any existing
 pin. The adopted library is logged as `Vulkan: loader <path>`.
 
 ### M4 — MoltenVK acquisition and provider policy — IN PROGRESS

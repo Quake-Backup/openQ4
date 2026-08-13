@@ -236,6 +236,7 @@ gamelibs_root = pathlib.Path(sys.argv[1])
 project_root = pathlib.Path(sys.argv[2])
 stage_root = pathlib.Path(sys.argv[3])
 support_dir_names = ("idlib", "renderer", "ui", "sys", "bse", "MayaImport")
+python_bytecode_suffixes = (".pyc", ".pyo")
 
 
 def raise_walk_error(error):
@@ -268,6 +269,9 @@ def regular_file_map(specs):
                     raise ValueError(f"GameLibs refresh input must be a regular file: {path}")
                 resolved_path = path.resolve()
                 relative_path = resolved_path.relative_to(resolved_root).as_posix()
+                relative_parts = pathlib.PurePosixPath(relative_path).parts
+                if "__pycache__" in relative_parts or path.suffix.lower() in python_bytecode_suffixes:
+                    continue
                 if relative_path in files:
                     raise ValueError(f"duplicate GameLibs refresh input: {relative_path}")
                 files[relative_path] = resolved_path

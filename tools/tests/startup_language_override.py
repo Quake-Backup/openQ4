@@ -100,6 +100,68 @@ def validate_language_reload_contract() -> None:
     require_order(init_game, "InitLanguageDict( false, false );", "fileSystem->SetIsFileLoadingAllowed( wasFileLoadingAllowed );", "file-loading flag restored after final language reload")
 
 
+def validate_language_media_diagnostic() -> None:
+    source = read("src/framework/FileSystem.cpp")
+    startup = function_body(source, "void idFileSystemLocal::Startup( void ) {")
+    parser = function_body(
+        source,
+        "static bool FS_ParseLanguagePackName( const char *pakFilename, idStr &language, bool allowPatchArchives = true ) {",
+    )
+    base_media = function_body(source, "bool idFileSystemLocal::HasBaseLanguageMediaPack( void ) {")
+    available_media = function_body(source, "void idFileSystemLocal::ListAvailableLanguagePacks( idStrList &languages ) {")
+
+    require(
+        available_media,
+        "FS_ParseLanguagePackName( search->pack->pakFilename.c_str(), language )",
+        "language selection continues to recognize numbered patch archives",
+    )
+
+    require(
+        parser,
+        "if ( !allowPatchArchives )",
+        "numbered language-patch rejection",
+    )
+    require(
+        base_media,
+        "FS_ParseLanguagePackName( search->pack->pakFilename.c_str(), language, false )",
+        "base language-media discovery excludes patch archives",
+    )
+    require(
+        startup,
+        "if ( !HasBaseLanguageMediaPack() )",
+        "missing base language-media guard",
+    )
+    require(
+        startup,
+        "No recognized base Quake 4 language media archive (zpak_<language>.pk4, without a numeric suffix)",
+        "actionable language-media warning",
+    )
+    require(
+        startup,
+        "character dialogue will be incomplete or silent",
+        "language-media warning symptom",
+    )
+    require(
+        startup,
+        "Numbered patch archives such as zpak_english_01.pk4 do not replace the base archive",
+        "patch-only install guidance",
+    )
+    require_regex(
+        startup,
+        r"if\s*\(\s*fs_validateOfficialPaks\.GetBool\(\)\s*\)\s*\{[\s\S]*"
+        r"#ifndef\s+ID_DEDICATED[\s\S]*"
+        r"HasBaseLanguageMediaPack\(\)[\s\S]*"
+        r"#endif[\s\S]*\n\s*\}",
+        "official-media and client-only warning gates",
+    )
+    require_order(
+        startup,
+        "ValidateRequiredOfficialPaks( validationErrors )",
+        "HasBaseLanguageMediaPack()",
+        "required core validation before optional language-media diagnostic",
+    )
+
+
 def validate_ci_smoke() -> None:
     push = read(".github/workflows/push-verification.yml")
     commit = read(".github/workflows/commit-validation.yml")
@@ -115,6 +177,7 @@ def validate_ci_smoke() -> None:
 
 def main() -> None:
     validate_language_reload_contract()
+    validate_language_media_diagnostic()
     validate_ci_smoke()
     print("startup_language_override: ok")
 

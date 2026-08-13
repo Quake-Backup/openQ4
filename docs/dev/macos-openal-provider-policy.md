@@ -3,8 +3,8 @@
 Updated: 2026-06-30
 
 This document records the current macOS audio-provider decision for openQ4.
-It is intentionally conservative while macOS remains experimental and issue
-#73-style startup reports are still being collected.
+It is intentionally conservative while macOS remains experimental, visual
+parity issue #98 is open, and complete Apple-hardware signoff is outstanding.
 
 ## Current Release Decision
 
@@ -20,9 +20,18 @@ workflows, package docs, and user-facing release notes must describe current
 macOS audio as Apple's OpenAL framework, not bundled OpenAL Soft.
 
 `-Dmacos_openal_provider=system` is migration-only. It is available for local
-developer experiments that intentionally use a system `openal` dependency plus
-OpenAL Soft-style `AL/...` headers. It is not a release packaging target, not a
-support claim, and not evidence that macOS packages bundle OpenAL Soft.
+developer experiments that intentionally use a pkg-config-visible OpenAL Soft
+dependency plus OpenAL Soft-style `AL/...` headers. The lookup is deliberately
+pkg-config-only: if OpenAL Soft is not visible, configuration fails instead of
+silently falling back to Apple's framework while compiling for the incompatible
+`AL/...` header layout. Homebrew's keg-only installation normally needs:
+
+```sh
+export PKG_CONFIG_PATH="$(brew --prefix openal-soft)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+```
+
+This provider is not a release packaging target, not a support claim, and not
+evidence that macOS packages bundle OpenAL Soft.
 
 ## Future OpenAL Soft Package Policy
 

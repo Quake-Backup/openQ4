@@ -248,114 +248,39 @@ Interaction notes from current validation:
 
 Repeated-state rendering is not enough for "true" high-framerate support. Motion smoothness requires interpolation.
 
-Status: `Implementation complete; final manual validation in progress` as of `2026-04-17`.
+Status: `Narrow first-person slice implemented on the current companion game-library branch; broader Phase 3 work and release qualification remain in progress` as of `2026-08-13`.
 
-Tasks:
+Implemented scope:
 
-- Add interpolation state between previous and current simulation snapshots.
-- Start with the local player and camera path:
-  - `Player.cpp`
-  - `Camera.cpp`
-  - render view generation
-- Then expand to common entity presentation paths:
-  - entity transforms
-  - view weapon / first-person presentation
-  - projectiles and effects that visually stutter at `60 Hz`
-- Use interpolation only for presentation state.
-- Do not feed interpolated state back into gameplay, collision, prediction, or networking logic.
+- SP and MP keep transient previous/current samples for first-person camera origin, camera axis, and FOV, plus the complete first-person viewmodel origin and axis. The local player, or the currently spectated player in MP, consumes those samples while preparing each `Draw()`.
+- The presentation fraction is clamped from `0` to `1` across one authoritative `60 Hz` usercmd interval. This is previous-to-current interpolation, not extrapolation: it deliberately accepts at most one simulation tic of visual latency (about `16.7 ms`) rather than predicting a camera pose through collision or correction boundaries.
+- Repeated-state draw preparation recalculates the render view and resubmits a copied viewmodel render entity only. It does not rerun player or weapon `Think()`, scripts, physics, networking, sound, or other gameplay work.
+- Presentation samples and clock anchors are transient. The SP and MP `Save()` paths do not write them, and restore/map initialization reseeds them instead of changing the save-game or network contract.
+- Live first-person `renderView.time` uses the presentation clock, while demo playback and timedemo remain on authoritative simulation time.
+- Cadence/discontinuity checks snap instead of blending across missing tics, teleports, or other large changes. MP also disables interpolation while active prediction-error smoothing is correcting the viewed player.
 
-Initial interpolation scope:
+Validation recorded for this slice:
 
-- camera origin and axis
-- FOV transitions
-- first-person weapon placement
-- local player body / entity transform presentation
+- The SP/MP static parity and draw-boundary contract in `openQ4-game/tools/tests/presentation_interpolation_contract.py` passes.
+- Both SP and MP GameLib builds pass.
+- A windowed active-gameplay SP pass measured `86.2 Hz` presentation while simulation remained at `60 Hz`.
+- An MP listen-server pass loaded the game module and map and produced an engine-side screenshot. The auxiliary loopback-client harness did not complete its requested client capture, although no fatal engine error was observed; this is not evidence of a successful two-client or remote-client validation pass.
 
-Follow-up interpolation scope:
+Explicitly deferred:
 
-- moving entities
-- projectiles
-- client effects / BSE-bound visual elements
-- remote players in MP
+- generic entity, mover, AI, local world-body, remote-player, projectile, dynamic-light, BSE/client-effect, trail, fracture, ragdoll, vehicle, and other bespoke visual-owner interpolation
+- moving-platform-relative first-person special cases and alternate camera, security-camera, portal-sky, and cinematic-camera interpolation
+- same-fire-frame weapon FX/tracer compensation and other presentation-time gameplay-adjacent cosmetic retraces
+- raw-input compensation or presentation bias/extrapolation; the engine's optional presentation-input sampler is not consumed by the current game-library slice
+- a successful full loopback-client capture, human SP/MP feel testing, cut-heavy cinematic coverage, Apple-platform testing, and dedicated high-refresh display/hardware qualification
 
-Exit criteria:
-
-- Camera and first-person motion are visibly smoother above `60 FPS`.
-- Input feel remains tied to the real authoritative simulation, not a fake smoothing layer.
-
-Current progress:
-
-- Started the first local-player interpolation slice in the SP and MP game libs.
-- `idGameLocal::Draw()` and `idMultiplayerGame::Draw()` now recalculate the active player's render view on each presentation frame instead of only reusing the last game-tic render view.
-- Added previous/current first-person presentation snapshots in `Player.cpp` / `Player.h` for SP and MP, then blended:
-  - camera origin
-  - camera axis
-  - player FOV
-  on repeated-state presentation frames.
-- Added a presentation-only `rvViewWeapon` refresh path so the first-person weapon/viewmodel follows the interpolated camera between game tics without advancing weapon scripts or gameplay state again.
-- Moved simple camera-view FOV evaluation in `Camera.cpp` onto presentation time so FOV blends on static/attached cameras no longer quantize to the `60 Hz` game-tic cadence.
-- Extended `idCameraView::GetViewParms()` in the SP and MP game libs to read attached/static camera origins and axes from presentation-space entity transforms, so camera entities bound to moving actors or props no longer step once per simulation tic on repeated-state frames.
-- Added presentation snapshot blending to `idCameraAnim::GetViewParms()` for exact-`60 Hz` cinematic camera defs in the SP and MP game libs, so camera origin/axis/FOV now interpolate between simulation snapshots on repeated-state frames while frame commands, cut handling, and loop/stop transitions remain driven by the authoritative game-tic path.
-- Added per-entity previous/current render-transform snapshots in the SP and MP `idEntity` base class, then used a repeated-state render-only update path to interpolate selected entity origins/axes without feeding that state back into gameplay or prediction.
-- The active viewed player now refreshes their player body, head attachment, and world-weapon model through that presentation-only entity-transform path during `Draw()`, so those local player-world visuals no longer stay hard-locked to the last `60 Hz` simulation snapshot on repeated-state frames.
-- Extended the MP `Draw()` path to refresh the same presentation-only entity interpolation for every in-scene player in the viewed instance, so remote player bodies now ride the repeated-state render path too instead of only the actively viewed player receiving transform smoothing.
-- Added a projectile presentation refresh path in the SP and MP draw loops that walks spawned in-instance projectiles on repeated-state frames and updates their interpolated render transform without advancing projectile gameplay again.
-- Added projectile light snapshots alongside the render-transform path so attached projectile dynamic lights now follow the same repeated-state interpolation instead of jumping once per `60 Hz` simulation tick.
-- Added a broader repeated-state active-entity presentation pass in the SP and MP draw loops that walks non-player active entities in the viewed instance and refreshes their interpolated render transform, extending transform smoothing to movers, AI-driven entities, and other active scene objects that already ride the normal entity presentation path.
-- Kept the generic active-entity pass clear of the bespoke player, projectile, and first-person view-weapon paths so those earlier phase-3 presentation hooks remain authoritative for their special cases.
-- Expanded the repeated-state client-entity presentation pass in the SP and MP draw loops beyond `rvClientEffect`, so active `rvClientEntity` instances can now refresh presentation-only render state on repeated frames without re-running their gameplay `Think()` path.
-- Bridged `rvClientEffect` / `rvClientCrawlEffect` onto that generic presentation pass, keeping presentation-time bind/joint sampling for attached effects and crawl trails so those visuals no longer stay locked to pure game-tic servicing.
-- Added repeated-state `rvClientModel` presentation refresh in SP and MP, so bound client models now resample their bind/joint placement on presentation frames and update their render defs between `60 Hz` simulation tics.
-- Added presentation transform snapshots to `rvClientMoveable` in SP and MP, then used them to interpolate repeated-state origin/axis updates, presentation-time scale, sound-emitter origin, and trail-effect follow transforms without feeding the blended state back into gameplay.
-- Added a weapon-level repeated-state presentation hook and used it for the SP/MP lightning gun, so its manually owned beam/trail endpoints and tube-joint offsets now refresh on presentation frames instead of staying quantized to the authoritative game-tic path.
-- Extended that same weapon-level repeated-state path through the SP/MP rocket launcher and nailgun guide visuals, so zoomed guide markers, lock cursors, and guide-effect placement now follow presentation-time view updates and target motion instead of stepping only on simulation ticks.
-- Extended the weapon-owned manual-effect coverage through the SP/MP gauntlet contact effect, so an existing wall/flesh impact effect now re-traces from the presentation-time view and follows repeated-state camera motion instead of waiting for the next simulation tick to move or clear.
-- Extended the repeated-state non-model hook through the SP/MP hover-enemy ground-contact effects, so Strogg Hover and Heavy Hover Tank dust/contact visuals now resample their presentation-time hover joints and ground traces instead of keeping those looping effects pinned to the last simulation-tic sample.
-- Extended that same active-entity non-model path through the SP/MP Repair Bot repair visuals, so the repair beam end-point and impact effect now resample their presentation-time arm trace and moving-owner basis instead of waiting for the next simulation tick.
-- Extended the SP/MP Makron lightning-sweep servicing onto repeated-state presentation frames, so the sweep bolt/impact/muzzle effects now follow presentation-time joint motion and in-flight sweep interpolation without re-running damage or advancing the sweep state machine off the authoritative tick.
-- Extended the repeated-state vehicle-part presentation coverage through the SP/MP vehicle-weapon guide effect and hoverpad dust effect, so those bespoke vehicle-owned visuals now resample presentation-time target motion, driver view axis, and hover traces instead of staying pinned to the last simulation tick.
-- Extended repeated-state presentation through SP/MP `func_fx` look-at-target servicing, so looped effect entities that continually aim at `target_null` targets now refresh their beam/end-origin direction from presentation-time entity transforms instead of only retargeting on simulation ticks.
-- Split BSE render servicing between authoritative owner time and presentation time, so BSE-managed particle updates, lifetime checks, and looping now advance on repeated-state render frames while owner interpolation/spawn timing still keys off simulation snapshots instead of feeding presentation time back into gameplay-facing effect state.
-- Added a repeated-state non-model-visual hook for active entities and used it to refresh several entity-owned dynamic lights on presentation frames, including `idLight` transforms, actor flashlights, and the Strogg Hover headlight attachment so those lights follow interpolated motion instead of stepping once per simulation tic.
-- Extended the repeated-state non-model-visual coverage through `rvVehicle` position/part ownership so vehicle lights and vehicle-weapon muzzle-flash lights now refresh against interpolated vehicle/joint presentation in SP and MP instead of only moving on post-physics game ticks.
-- Added repeated-state `idExplodingBarrel` non-model-visual refresh for the burn light / IPS attachment path so those temporary visuals follow the interpolated barrel presentation instead of staying quantized to the last simulation snapshot.
-- Added `pm_presentViewBias` in the SP and MP player view paths so the first-person camera/FOV/viewmodel interpolation can bias toward the latest authoritative snapshot on repeated-state frames, reducing the visible one-tic local-view lag without extrapolating gameplay state or remote entity presentation.
-- Added a same-fire-frame presentation refresh path for SP/MP first-person view-weapon client effects and moved local/spectated hitscan cosmetic origin sampling onto the presentation-space weapon transform, so muzzle flashes and tracer/path starts no longer stay pinned to the last authoritative weapon pose while the camera is moving.
-- Extended the repeated-state light-side coverage through the MP special-carrier halo lights owned by `idMultiplayerGame`, so CTF/powerup render lights now resample their carrier from presentation-space player transforms on repeated-state frames instead of stepping only when `CheckSpecialLights()` runs on the simulation tic.
-- Extended the repeated-state effect-side coverage through the SP/MP vehicle crash/scrape effect owner, so persistent world-space crash FX now interpolate their contact origin/axis/attenuation between collision snapshots on repeated-state frames instead of stepping only when the next `60 Hz` collision update rewrites the effect.
-- Extended the repeated-state effect-side coverage through the SP/MP projectile fly/trail attenuation path plus the player haste/flag/arena powerup-effect parameters, so projectile trails and bound powerup visuals now refresh their attenuation/local-origin presentation state on repeated-state frames instead of stepping only when gameplay ticks rewrite those effect parameters.
-- Extended the repeated-state light-side coverage through SP/MP weapon-owned render lights, so active muzzle-flash, world muzzle-flash, flashlight, and GUI light defs now refresh from presentation-space weapon/player transforms on repeated-state frames instead of remaining pinned to the last simulation-tic weapon pose.
-- Added SP/MP discontinuity guards to first-person presentation snapshots and moved view-weapon child-effect refresh onto repeated-state presentation frames, so listen-server prediction corrections, teleports, and other large one-tic local-view jumps now snap cleanly instead of slinging the client view weapon, muzzle effects, or tracer starts across the screen while moving.
-- Tightened the MP first-person presentation path so active prediction-error decay now disables one-tic first-person interpolation for the affected view snapshot, preventing listen-server clients from blending the view weapon against a moving correction target while local prediction smoothing is still settling.
-- Reworked the MP first-person view-weapon presentation path to capture per-tic player-view and full viewmodel transforms, then interpolate that captured weapon pose directly on draw frames instead of rebuilding the weapon from an interpolated camera plus live weapon-lag inputs, eliminating the mixed-state listen-server wobble path that could still show up while moving.
-- Hardened the MP listen-server first-person weapon path against prediction reruns by keying presentation continuity to real sim-time deltas instead of `framenum` churn, moving view-angle weapon-lag history onto a dedicated sim-frame log, and collapsing duplicate same-tic weapon-acceleration samples, preventing rerun-induced history corruption from exaggerating or jittering the local view gun while moving or when movement input first changes.
-- Finished tightening that MP view-weapon boundary so `rvWeapon::Think()` now only recaptures the authoritative viewmodel transform on real simulation frames, leaving repeated-state render frames to the presentation-only draw hook instead of letting the weapon rebuild a fresh live transform and reintroduce forward shove/jitter while the client is walking.
-- Retuned the SP/MP `pm_presentViewBias` behavior so the default path falls back to straight interpolation again and any optional bias now eases toward the newest snapshot without reaching it early and stalling mid-tic, addressing the remaining “surge forward then jitter” first-person feel reported on listen-server clients at high presentation rates.
-- Tightened that MP first-person view-weapon presentation boundary again so repeated-state draw refresh now applies the interpolated viewmodel transform to the render entity and view-light joints without writing that presentation-space pose back into the shared weapon state, preventing the listen-server local view gun from inheriting render-only forward offsets and reintroducing the lunge while moving.
-- Unified the MP draw path with the SP render-prep sequence so `idMultiplayerGame::Draw()` now recalculates the render view, refreshes presentation-space player/world/view-weapon transforms, and only then calls `RenderPlayerView()`, closing the last listen-server gap where the local view gun could still render from a stale simulation pose and lunge forward while walking.
-- Extended that unified first-person draw refresh to bound view-weapon client effects on both new and repeated frames, so muzzle flashes and related firing FX now follow the corrected presentation-space gun immediately instead of lingering at the pre-correction pose for the fire frame.
-- Narrowed the lightning-gun follow-up to the local first-person beam only: the draw-time presentation path now refreshes `trailEffectView` from the corrected presentation-space muzzle/chest joint and a presentation-time local beam trace on both simulation and repeated-state render frames, while the authoritative world/chain-lightning effects stay on the normal gameplay update path.
-- Extended the bespoke visual-owner follow-up through SP/MP gib skeleton side-models and the custom `idSecurityCamera::Present()` path, so repeated-state render frames now resample those visuals from presentation-space transforms instead of leaving them pinned to the last `60 Hz` simulation update.
-- Extended the camera-side follow-up through remote entity render views, security-camera feeds, portal-sky/playback camera sources, and the SP/MP steam-pipe side model, so repeated-state render frames now sample presentation-space camera origins/axes or interpolate playback/body-side transforms instead of stepping those views and side visuals on the last simulation tic.
-- Continued the bespoke visual/effect audit through SP/MP `idMultiModelAF` side-model ownership plus the MP jump-pad activation effect origin path, so repeated-state frames now interpolate those extra AF body render defs and the MP jump-pad FX now spawn from the same centered physics-space origin the SP path already uses instead of an older render-entity sample.
-- Continued the bespoke render-owner audit through SP/MP `idBrittleFracture`, so repeated-state frames now rebuild the dynamic fracture callback model from per-shard presentation snapshots instead of pinning dropped shard geometry to the last simulation tic, and the fracture entity stays scene-active through the last interpolation interval so settling shards do not snap on their final step.
-- Fixed the MP non-predicted projectile terminal-snapshot path so remote clients now reconstruct late-arriving authoritative `EXPLODED` / `IMPACTED` projectile snapshots into visible client-side detonate/impact effects instead of simply hiding the projectile, restoring host-fired projectile hit visuals for joiners even when the projectile ends before they ever saw a launched state.
-- Reworked the MP remote hitscan cosmetic path so the legacy hitscan trace message now stays narrow and clients keep using it only for path/tracer replay, while the server mirrors the authoritative impact effect through a separate unreliable impact packet to all relevant remote viewers, including the firing client, and the replay path bypasses local impact-rate throttling while applying hitscan tint only for defs that explicitly request it, restoring sustained host-fired and self-fired bullet/shotgun surface impacts and keeping railgun-class impact coloring intact without depending on a late retrace to rediscover the same hit.
-- Closed the remaining code-side bespoke owner audit after the final MP `rvViewWeapon` child-FX parity fix: the surviving persistent effect and render-light owners now either refresh through the generic `rvClientEntity`, entity non-model, projectile, weapon/view-weapon, or vehicle-part presentation paths, or were already covered by the earlier bespoke hooks, so no additional Phase-3-only render/effect/light code gaps remain in the current SP/MP game-lib surface.
-- Revalidated an automated staged SP run on `game/airdefense1` with `r_swapInterval 0`, `com_maxfps 240`, `com_skipLoadingContinue 1`, and `g_autoSkipCinematics 0`; the map still enters the opening cinematic on the repeated-state presentation path and the live pacing logs settle into roughly `191-232 Hz` presentation while the simulation remains at `60 Hz`, confirming the current Phase 3 build still survives real in-map cinematic entry after the late bespoke-owner fixes.
-- Revalidated an automated staged listen-server bring-up on `mp/q4dm1` with `r_swapInterval 0` and `com_maxfps 240`; both the host and the local joiner reach in-map multiplayer play from the current Phase 3 build, and the settled pacing logs on both sides hold near the requested `240 Hz` presentation target while the simulation remains at `60 Hz`.
-
-Manual validation still needed before Phase 3 sign-off:
-
-- Complete a human gameplay feel pass for the new view interpolation in SP and MP at `com_maxfps 240`, especially while moving, taking abrupt camera kicks, teleporting, and recovering from other large one-tic first-person deltas.
-- Decide whether any non-zero default for `pm_presentViewBias` is still desirable after the current fixes; if so, tune it from gameplay feel rather than static analysis so the view remains responsive without regaining the earlier lunge/jitter behavior.
-- Finish a manual cut-heavy / looping-cinematic pass beyond the automated opening-cinematic bring-up, confirming that presentation-time camera interpolation still snaps cleanly across authored cuts and stays stable through loop/stop/hand-off transitions.
+Phase 3 exit criteria remain unmet until the first-person path passes those manual and platform checks and the broader visual scope is either implemented or deliberately scoped out for release.
 
 ## Phase 4: High-Refresh Compatibility Pass
 
 Once decoupled presentation and interpolation are working, audit systems that can break at high presentation rates.
 
-Status: `Complete` as of `2026-04-19`.
+Status: `Engine-side compatibility groundwork landed; end-to-end game compatibility and release qualification remain in progress` as of `2026-08-13`.
 
 Systems to verify:
 
@@ -376,21 +301,15 @@ Special attention:
 - `src/renderer/tr_light.cpp`
 - any render path using `renderView.time`
 
-Current progress:
+Landed engine-side progress:
 
-- Moved live SP/MP player `renderView.time` stamping onto presentation time for normal gameplay while keeping demo playback and timedemo paths on `gameLocal.time`, so render-view-time-driven materials and HUD/camera consumers can animate between simulation tics without destabilizing deterministic capture/playback modes.
-- Moved SP/MP entity-owned `GetRenderView()` timing onto the same live presentation-time source outside demos and timedemos, covering remote-camera feeds, portal-style subviews, and other entity render views that were still hard-stamped to the last authoritative game tic.
-- Corrected that presentation-time source to stay in the same game-time domain as effect start times and other simulation-timestamped consumers, fixing a regression where raw wall-clock `renderView.time` values caused BSE effect lifetime checks to treat many effects as already expired.
-- Relaxed the SP/MP `idCameraAnim::Start()` same-frame render-view refresh check from equality to `>= gameLocal.time`, so camera handoff paths still force a redraw when the already-built local player view is presentation-stamped later than the current simulation tic.
+- The engine provides presentation cadence, timing diagnostics, caps, repeated-state session/network draw behavior, and modal GUI timing independently of the fixed `60 Hz` simulation described in Phases 1 and 2.
 - Added an explicit renderer-side non-world 2D shader-time stamp and routed fullscreen GUI/material timing through it, so menu/loading/test-GUI passes no longer inherit a stale `tr.primaryRenderView.time` when they redraw outside the main 3D scene path.
 - Fixed `idMaterial::UpdateCinematic()` to honor the caller-provided time instead of silently sampling cinematics from `tr.primaryRenderView.time`, closing a high-refresh compatibility gap for GUI/video-backed materials.
 - Revalidated the staged timed modal GUI harness on the menu path with `r_swapInterval 0` and `com_maxfps 240`; the timed message-box snapshot reports `present=4.27 ms (234.1 Hz)`, confirming the focused Phase 4 UI timing cleanup still sustains repeated-state high-refresh presentation.
 - Restored fixed-rate AVI capture to the exact-tic wait path in `idSessionLocal::Frame()`, so `aviGame` / other `aviCaptureMode` flows no longer rerun capture work on repeated-state presentation frames at the uncapped render rate.
 - Revalidated a staged `aviGame` pass on `game/storage2` with `r_swapInterval 0`, `com_maxfps 240`, and the default `com_aviDemoTics 2`; the captured run reports `bound=simulation`, `ticDelta/frame=2.00`, `gameTics/frame=2.00`, and `present=32.38 ms (30.9 Hz)`, confirming the fixed-rate capture path now advances on the intended two-tic cadence instead of free-running at presentation speed.
-- Suppressed mover-backed stair-bob smoothing in the SP/MP `idPlayer::BobCycle()` paths whenever the current support resolves to a mover assembly, preventing bound clip helpers and parent elevator bodies from generating fake step-up/step-down camera jolts while walking on the opening `game/storage2` lift at high presentation rates without changing gameplay collision or mover push behavior.
-- Tightened mover carry and first-person presentation on the `game/storage2` lift path: player push handling now preserves downward mover velocity while riding mover-backed ground, small mover-seam support gaps no longer trigger landing jolts, and first-person presentation snapshots on movers now interpolate in mover-local space so the camera stays locked to the interpolated platform instead of vibrating against discrete support changes.
-- Mirrored the mover-relative presentation and downward-carry fixes through the MP player path as well, so high-refresh mover riding no longer depends on the older per-frame presentation clock or non-mover downward-push assumptions in multiplayer/listen-server builds.
-- Audited the SP/MP sound-listener timing path and confirmed the high-level `gameTime` argument passed into `soundSystem->PlaceListener()` is currently a no-op in the engine sound world; live gameplay already feeds presentation-space listener poses, so this phase does not need an additional engine-side sound time split beyond that pose update.
+- Audited the sound-listener timing boundary and confirmed that the high-level `gameTime` argument passed into `soundSystem->PlaceListener()` is currently a no-op in the engine sound world. Perceptual sound synchronization still needs the same manual qualification as the current first-person slice.
 - Synced renderer subview `floatTime` setup to the subview's own `renderView.time` when secondary `viewDef`s are built from copied parent views, closing a stale-clock gap for remote camera/monitor renders and any subview material, cinematic, or BSE path that evaluates against `tr.viewDef->floatTime`.
 - Reworked render-demo render-view/entity serialization to stop persisting raw `globalMaterial` / `remoteRenderView` pointers: new render demos now store render-view decl names plus full remote subview state, while playback of older demos safely clears those stale pointer fields instead of dereferencing process-local addresses, closing a compatibility gap for camera monitors, remote views, and other subview-driven material paths.
 - Fixed renderer cinematic resets to honor the explicit caller-supplied millisecond timestamp instead of sampling the currently bound backend view clock, keeping GUI/video-backed material restarts aligned with presentation-time and render-demo-safe timing paths.
@@ -401,11 +320,9 @@ Current progress:
 - Restored render-demo BSE/effect serialization as pointer-free v7 effect packets and added explicit renderer demo update/stop/delete effect commands, so recorded demos can recreate visible effect defs with their owner-time and stopped-state data instead of depending on process-local pointers or the current `renderView.time`.
 - Revalidated a staged local MP `recordDemo` / `playDemo` pass on `mp/q4dm1` with `r_showDemo 1`; the resulting `phase4_effects.demo` now logs `write DC_UPDATE_EFFECTDEF` during capture, `reading a v7 render demo`, `DC_LOADMAP: maps/mp/q4dm1`, and repeated `DC_UPDATE_EFFECTDEF` entries during playback, confirming idle jump-pad, teleporter, item-hologram, and ambient steam BSE packets survive round-trip render-demo replay.
 - Completed a second staged local MP render-demo lifecycle pass on `mp/q4dm1` that forces both effect-stop and effect-delete traffic; the resulting `phase4_effects_lifecycle.demo` logs `write DC_STOP_EFFECTDEF`, `write DC_DELETE_EFFECTDEF`, `reading a v7 render demo`, and matching playback-side `DC_STOP_EFFECTDEF` / `DC_DELETE_EFFECTDEF` entries, closing the remaining explicit Phase 4 render-demo effect-lifecycle validation gap.
-- Split client-predicted projectile simulation from presentation-only redraws in both SP and MP so repeated-state high-refresh frames now rely on the dedicated projectile interpolation path instead of rerunning `Think()`/collision work; this prevents impact-side regressions where rockets could linger and weapon-hit scorch/impact FX could replay every render frame after a hit.
 - Corrected renderer effect-def lifetime handling so expired one-shot BSE effects now remain terminal until their owning `rvClientEffect` frees the handle, instead of being silently recreated by `UpdateEffectDef()` and replaying impact decals/sounds every frame after a bullet, shotgun, or projectile hit.
-- Trimmed the repeated-state SP/MP scene-refresh hot path so it no longer walks every spawned entity just to find projectiles, and so non-projectile active entities only refresh repeated-state transforms/secondary visual defs when they actually changed presentation transform or own interpolation-sensitive side visuals; this removes a broad Phase 4 redraw inefficiency that could drag `agame/airdefense1` well below earlier high-refresh framerates.
-- Corrected repeated-state client-effect timing so interpolated `rvClientEffect` refreshes no longer stamp renderer effect defs with wall-clock presentation time as their authoritative owner/update time, preventing looping ambient BSE effects from promoting segment spawn/service cadence to render rate on high-refresh maps such as `agame/airdefense1`; renderer-side effect servicing is also now deduplicated per rendered frame across multiple views.
-- Pruned the repeated-state SP/MP client-entity redraw pass so static client effects and client models no longer rerun presentation work every rendered frame by default: bound client models/effects now only refresh when their bind master actually has an interpolated presentation transform delta, crawl effects key off their crawl owner the same way, and client moveables stay on the repeated-state path only while their own transform or scale interpolation is still active.
+- Deduplicated renderer-side BSE servicing per rendered frame across multiple views. Broader game-side client-effect owner-time and entity-refresh behavior is not claimed by the current branch.
+- Added renderer support for retaining model-space dynamic snapshots across transform-only entity-definition updates (`r_useRepeatedStateReuse`). This is compatible groundwork and does not imply that generic game entities are currently interpolated.
 - Replaced the Linux `Sys_GetClockTicks()` / `Sys_ClockTicksPerSecond()` implementation (raw `rdtsc` calibrated against the momentary `/proc/cpuinfo` "cpu MHz" reading) with `CLOCK_MONOTONIC` nanoseconds, fixing a frequency-scaling skew that made the `com_showFPS` readout and the `com_maxfps` presentation throttle disagree with external present-rate monitors such as MangoHud on modern CPUs; CPU frequency for the processor summary and `SetMachineSpec()` now comes from a dedicated display-only `Sys_GetApproximateProcessorFrequencyHz()` on all platforms.
 - Throttled the `com_showFPS` overlay to a 250 ms display-update window (frames counted against the wall clock) so the readout stays legible at uncapped rates instead of re-rounding a 4-frame average every presented frame; validated against the gameplay benchmark's independent pacing snapshot (`60.0 Hz` measured, `59-60fps` drawn under `com_maxfps 60`).
 
@@ -413,6 +330,8 @@ Exit criteria:
 
 - No obvious time-base desync between presentation, demos, and special effects.
 - High-refresh mode is stable across normal gameplay systems.
+
+These exit criteria are not yet signed off. The engine-side items above remain valid, but broader game-side entity/projectile/FX compatibility and the manual/platform validation listed in Phase 3 are still outstanding.
 
 ## Phase 5: Supported Cap And User Exposure
 

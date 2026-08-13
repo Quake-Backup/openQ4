@@ -253,6 +253,14 @@ jobs:
             --expected-project-commit "${{ needs.metadata.outputs.source_sha }}" \
             --expected-gamelibs-commit "${{ needs.metadata.outputs.game_sha }}"
 
+      - name: Normalize thin universal2 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build/assemble_macos_universal2.py prepare \
+            --install-root .install \
+            --arch "${{ matrix.binary_arch }}"
+
       - name: Run thin dedicated-server smoke
         shell: bash
         run: |
@@ -260,6 +268,13 @@ jobs:
           python tools/tests/macos_dedicated_server_smoke.py \
             --arch "${{ matrix.binary_arch }}" \
             --output-root ".tmp/macos-universal2-candidate/${{ matrix.bridge }}/${{ matrix.binary_arch }}/dedicated-smoke"
+
+      - name: Stage pinned MoltenVK for thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
 
       - name: Record thin universal2 provenance
         shell: bash
@@ -315,6 +330,9 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+
+      - name: Install release documentation dependency
+        run: python -m pip install markdown
 
       - name: Download ARM64 thin payload
         uses: actions/download-artifact@v5
@@ -434,7 +452,7 @@ jobs:
             --arch universal2
             --version "${{ needs.metadata.outputs.version }}"
             --version-tag "${{ needs.metadata.outputs.version_tag }}"
-            --package-suffix "${package_suffix}"
+            "--package-suffix=${package_suffix}"
             --archive-format "${archive_format}"
             --source-root "${GITHUB_WORKSPACE}"
             --install-dir "${corridor_root}/universal2"
@@ -448,7 +466,7 @@ jobs:
               --arch universal2
               --version "${{ needs.metadata.outputs.version }}"
               --version-tag "${{ needs.metadata.outputs.version_tag }}"
-              --package-suffix "${package_suffix}"
+              "--package-suffix=${package_suffix}"
               --archive-format "${archive_format}"
               --source-root "${GITHUB_WORKSPACE}"
               --install-dir "${corridor_root}/universal2"
@@ -543,13 +561,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_dir="${{ steps.package.outputs.package_dir }}"
+          package_dir="${GITHUB_WORKSPACE}/${{ steps.package.outputs.package_dir }}"
           app_exec="${package_dir}/openQ4.app/Contents/MacOS/openQ4"
           smoke_root="${RUNNER_TEMP}/openq4-universal2-candidate-${{ matrix.bridge }}"
           smoke_cwd="${smoke_root}/finder-style-cwd"
           smoke_save="${smoke_root}/save"
           smoke_log="${smoke_save}/baseoq4/logs/macos_universal2_candidate_app_smoke.log"
+          smoke_console="${smoke_root}/console.log"
           smoke_timeout_marker="${smoke_root}/timed-out"
+          smoke_exit_status="${smoke_root}/app-exit-status"
           rm -rf "${smoke_root}"
           mkdir -p "${smoke_cwd}" "${smoke_save}"
           (
@@ -564,7 +584,7 @@ jobs:
               +set r_fullscreen 0 \
               +set r_ignoreGLErrors 0 \
               +rendererDefaultSafetySelfTest \
-              +quit &
+              +quit > "${smoke_console}" 2>&1 &
             app_pid=$!
             (
               sleep 90
@@ -586,12 +606,44 @@ jobs:
             if [ -f "${smoke_timeout_marker}" ]; then
               exit 124
             fi
-            exit "${app_status}"
+            printf '%s\n' "${app_status}" > "${smoke_exit_status}"
           )
-          grep -F "RendererDefaultSafety self-test passed" "${smoke_log}" >/dev/null
-          grep -F "Filesystem paths:" "${smoke_log}" >/dev/null
-          grep -F "fs_cdpath='${package_dir}/openQ4.app/Contents/Resources'" "${smoke_log}" >/dev/null
-          grep -F "game-sp_universal2.dylib" "${smoke_log}" >/dev/null
+          if [ ! -f "${smoke_log}" ]; then
+            echo "Universal2 app smoke log was not created: ${smoke_log}"
+            exit 1
+          fi
+          if [ ! -f "${smoke_exit_status}" ]; then
+            echo "Universal2 app smoke did not record the application exit status."
+            exit 1
+          fi
+          if [ ! -f "${smoke_console}" ]; then
+            echo "Universal2 app smoke console output was not created: ${smoke_console}"
+            exit 1
+          fi
+          app_status="$(tr -d '[:space:]' < "${smoke_exit_status}")"
+          if ! [[ "${app_status}" =~ ^[0-9]+$ ]] || [ "${app_status}" -gt 127 ]; then
+            echo "Universal2 app smoke ended abnormally with status '${app_status}'."
+            exit 1
+          fi
+          require_smoke_output() {
+            local expected="$1"
+            if ! grep -Fq "${expected}" "${smoke_console}"; then
+              echo "Universal2 app smoke console output is missing: ${expected}"
+              tail -n 160 "${smoke_console}" || true
+              exit 1
+            fi
+          }
+          require_smoke_output "RendererDefaultSafety self-test passed"
+          require_smoke_output "Filesystem paths:"
+          require_smoke_output "fs_cdpath='${package_dir}/openQ4.app/Contents/Resources'"
+          require_smoke_output "Selected game module: logical='game_sp' binary='game-sp_universal2'"
+          if grep -Eiq '(^|[[:space:]])(FATAL|Sys_Error):' "${smoke_console}" "${smoke_log}"; then
+            echo "Universal2 app smoke output contains a fatal startup diagnostic."
+            exit 1
+          fi
+          if [ "${app_status}" -ne 0 ]; then
+            echo "Universal2 app smoke completed its startup and shutdown checks with SDL launcher status ${app_status}."
+          fi
 
       - name: Upload universal2 candidate evidence
         if: always()

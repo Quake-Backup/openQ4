@@ -162,6 +162,10 @@ tools/build/prepare_macos_moltenvk.sh --output-dir .install
 # Re-run every assertion against an already-staged copy.
 tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
 
+# A loose development package may also keep dylibs grouped here. Both the SDL
+# surface path and Vulkan module probe this layout as well as .install itself.
+tools/build/prepare_macos_moltenvk.sh --output-dir .install/Frameworks
+
 # Validate the copy inside an assembled app bundle.
 tools/build/prepare_macos_moltenvk.sh --verify-only \
   --dylib openQ4.app/Contents/Frameworks/libMoltenVK.dylib

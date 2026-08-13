@@ -620,7 +620,7 @@ static void FS_AppendUniqueLanguage( idStrList &languages, const char *language 
 	languages.Append( language );
 }
 
-static bool FS_ParseLanguagePackName( const char *pakFilename, idStr &language ) {
+static bool FS_ParseLanguagePackName( const char *pakFilename, idStr &language, bool allowPatchArchives = true ) {
 	idStr fileName;
 	int suffix;
 
@@ -642,6 +642,9 @@ static bool FS_ParseLanguagePackName( const char *pakFilename, idStr &language )
 		return false;
 	}
 	if ( suffix > 0 ) {
+		if ( !allowPatchArchives ) {
+			return false;
+		}
 		language.CapLength( suffix );
 	}
 
@@ -1384,6 +1387,7 @@ public:
 	virtual idFileList *	ListFilesTree( const char *relativePath, const char *extension, bool sort = false, const char* gamedir = NULL );
 	virtual void			FreeFileList( idFileList *fileList );
 	virtual void			ListAvailableLanguagePacks( idStrList &languages );
+	bool					HasBaseLanguageMediaPack( void );
 	virtual const char *	OSPathToRelativePath( const char *OSPath );
 	virtual const char *	RelativePathToOSPath( const char *relativePath, const char *basePath );
 	virtual const char *	BuildOSPath( const char *base, const char *game, const char *relativePath );
@@ -3334,6 +3338,33 @@ void idFileSystemLocal::ListAvailableLanguagePacks( idStrList &languages ) {
 	}
 
 	FS_OrderLanguagePackList( languages );
+}
+
+/*
+===============
+idFileSystemLocal::HasBaseLanguageMediaPack
+
+The numbered zpak_<language>_NN.pk4 archives are patches. They can identify a
+language for dictionary selection, but they do not replace the unsuffixed base
+archive that carries the retail campaign dialogue.
+===============
+*/
+bool idFileSystemLocal::HasBaseLanguageMediaPack( void ) {
+	idStr language;
+
+	for ( searchpath_t *search = searchPaths; search != NULL; search = search->next ) {
+		if ( search->pack == NULL ) {
+			continue;
+		}
+		if ( !FS_PakPathIsInGameDir( search->pack->pakFilename.c_str(), BASE_GAMEDIR ) ) {
+			continue;
+		}
+		if ( FS_ParseLanguagePackName( search->pack->pakFilename.c_str(), language, false ) ) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 static const char *OPENQ4_MOD_MANIFEST_FILENAME = "mod.json";
@@ -5296,6 +5327,21 @@ void idFileSystemLocal::Startup( void ) {
 				"Do not put retail pk4 files in '%s'; that directory is reserved for openQ4 runtime files.",
 				BASE_GAMEDIR, validationErrors.c_str(), BASE_GAMEDIR, OPENQ4_GAMEDIR );
 		}
+
+#ifndef ID_DEDICATED
+		// The core pak001-pak022 media set is shared by every retail language and
+		// deliberately remains the only fatal validation baseline. Character VO is
+		// different: it lives in the edition-specific zpak_<language>.pk4 archives,
+		// so a partial copy can pass that baseline while every conversation is
+		// silent. Keep alternate physical/localized editions valid, but make the
+		// missing media actionable on clients instead of failing one sample at a time.
+		if ( !HasBaseLanguageMediaPack() ) {
+			common->Warning(
+				"No recognized base Quake 4 language media archive (zpak_<language>.pk4, without a numeric suffix) was found in '%s'; character dialogue will be incomplete or silent. "
+				"Numbered patch archives such as zpak_english_01.pk4 do not replace the base archive. Install or verify the unsuffixed retail language archive in '<Quake 4 install root>/%s', or launch with +set fs_basepath pointing at the install root that contains it.",
+				BASE_GAMEDIR, BASE_GAMEDIR );
+		}
+#endif
 	}
 
 	// Startup map commands run after initialization, but addon filtering happens here.

@@ -2220,6 +2220,16 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 		return false;
 	}
 
+	// Never use a shared, predictable staging name. If the platform cannot
+	// provide a secure nonce, keep the stock source levelshot instead of risking
+	// another client truncating this client's in-progress publication.
+	uint64 stagingNonce[2] = { 0, 0 };
+	if ( !Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) ) ) {
+		common->Warning( "Could not create a secure expanded-loadscreen staging path for '%s'; using the source levelshot",
+			backgroundPath.c_str() );
+		return false;
+	}
+
 	idStr resolvedCenterPath;
 	if ( !Session_ResolveImageFilePath( backgroundPath, resolvedCenterPath ) ) {
 		return false;
@@ -2380,7 +2390,26 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 	}
 
 	generatedPath = Session_MakeExpandedLoadingBackgroundPath( mapName, outputWidth, outputHeight );
-	R_WriteTGA( generatedPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
+	// Multiple isolated clients may generate the same resolution at once. Give
+	// every publication a CSPRNG-backed staging qpath so one client cannot
+	// truncate another client's in-progress TGA before either atomic rename.
+	static uint32 stagingSequence = 0;
+	const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial", generatedPath.c_str(),
+		static_cast<unsigned long long>( stagingNonce[0] ),
+		static_cast<unsigned long long>( stagingNonce[1] ), ++stagingSequence );
+	bool published = R_WriteTGA( stagingPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
+	if ( published ) {
+		published = fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str(), "fs_savepath" );
+	}
+	if ( !published ) {
+		// A short or interrupted direct write used to leave a truncated final TGA.
+		// Loading that generated file raises a fatal "incomplete file" error on
+		// the next material lookup. Keep the old final intact and fall back to the
+		// source levelshot whenever publication cannot complete (GitHub issue #102).
+		fileSystem->RemoveFileChecked( stagingPath.c_str(), "fs_savepath" );
+		common->Warning( "Could not publish expanded loading background '%s'; using the source levelshot",
+			generatedPath.c_str() );
+	}
 
 	R_StaticFree( centerPic );
 	if ( leftPic ) {
@@ -2396,7 +2425,7 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 		R_StaticFree( bottomPic );
 	}
 
-	return true;
+	return published;
 }
 
 void idSessionLocal::SetMainMenuBackgroundMontageGuiVars( void ) {
