@@ -37,6 +37,7 @@ typedef struct rendererUploadStats_s {
 	bool	dynamicFrameBridge;
 	bool	staticBufferAllocator;
 	bool	fenceSyncAvailable;
+	bool	driverQuirkPersistentDisabled;
 } rendererUploadStats_t;
 
 typedef struct rendererUploadAllocation_s {

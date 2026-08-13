@@ -30,6 +30,22 @@ static const rendererDriverQuirkRule_t rg_driverQuirkRules[] = {
 		RENDERER_DRIVER_QUIRK_FORCE_LEGACY,
 		"Microsoft OpenGL-D3D translation path is limited to the legacy compatibility renderer"
 	},
+#if defined( _WIN32 )
+	{
+		"ATI Technologies",
+		"",
+		"Compatibility Profile Context",
+		RENDERER_DRIVER_QUIRK_DISABLE_PERSISTENT_UPLOADS,
+		"AMD Windows OpenGL uses the capture-safe map-range upload stream"
+	},
+	{
+		"Advanced Micro Devices",
+		"",
+		"Compatibility Profile Context",
+		RENDERER_DRIVER_QUIRK_DISABLE_PERSISTENT_UPLOADS,
+		"AMD Windows OpenGL uses the capture-safe map-range upload stream"
+	},
+#endif
 	{
 		"openQ4Test",
 		"Missing UBO",
@@ -230,7 +246,8 @@ static void RendererDriverQuirks_FormatFlags( unsigned int flags, char *buffer, 
 		{ RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT, "rejectDebugContext" },
 		{ RENDERER_DRIVER_QUIRK_DISABLE_VBO, "disableVBO" },
 		{ RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION, "preferSimpleInteraction" },
-		{ RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, "disableARB2Interactions" }
+		{ RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, "disableARB2Interactions" },
+		{ RENDERER_DRIVER_QUIRK_DISABLE_PERSISTENT_UPLOADS, "disablePersistentUploads" }
 	};
 
 	if ( flags == RENDERER_DRIVER_QUIRK_NONE ) {
@@ -1695,6 +1712,10 @@ bool RendererCompatibilityGates_RunSelfTest( void ) {
 		{ "openQ4Test", "Missing Timer Query", "1.0", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_TIMER_QUERY, RENDERER_TIER_TOP_GL46, false, true, true },
 		{ "openQ4Test", "Missing Buffer Storage", "1.0", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_BUFFER_STORAGE, RENDERER_TIER_GPU_DRIVEN_GL43, true, true, true },
 		{ "openQ4Test", "Rejected Debug Context", "1.0", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_REJECT_DEBUG_CONTEXT, RENDERER_TIER_TOP_GL46, true, false, true },
+#if defined( _WIN32 )
+		{ "ATI Technologies Inc.", "AMD Radeon RX 7900 XTX", "4.6.0 Compatibility Profile Context 26.8.1", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_PERSISTENT_UPLOADS, RENDERER_TIER_TOP_GL46, true, true, true },
+		{ "Advanced Micro Devices, Inc.", "AMD Radeon RX 9070 XT", "4.6.0 Compatibility Profile Context", 4, 6, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_PERSISTENT_UPLOADS, RENDERER_TIER_TOP_GL46, true, true, true },
+#endif
 		{ "Apple", "Apple M4 Max", "2.1 Metal", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false },
 		{ "Apple", "Apple M5", "2.1 Metal", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false },
 		{ "Apple", "Apple M4 Max macOS 15.x", "OpenGL 2.1 Metal", 2, 1, RENDERER_CONTEXT_PROFILE_COMPATIBILITY, true, RENDERER_DRIVER_QUIRK_DISABLE_VBO | RENDERER_DRIVER_QUIRK_PREFER_SIMPLE_INTERACTION | RENDERER_DRIVER_QUIRK_DISABLE_ARB2_INTERACTIONS, RENDERER_TIER_LEGACY_GL2_COMPAT, true, true, false },

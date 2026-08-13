@@ -97,6 +97,13 @@ synced, and rollback after a rename failure is best effort. The code therefore
 does not claim database-style ACID behavior or a fully power-loss-atomic/durable
 three-file commit across every filesystem.
 
+The GameLib serializer closes successful writes explicitly. Its destructor does
+not attempt to finish serialization: a gameplay error may unwind the save only
+after map shutdown has begun, when the registered object pointers are no longer
+safe to visit. This keeps the original diagnostic intact and prevents a second
+access violation from masking it. `Close()` is also harmless when called again
+after a completed write.
+
 ## Load Preflight Before Map Teardown
 
 Loading first recovers an interrupted slot, then reads into temporary state. Before
@@ -155,8 +162,11 @@ Reference validation includes:
 - object indices must be in range; every nonzero reference must resolve, and the
   restored runtime type must derive from the type expected by the receiving
   field;
-- non-null objects must already be registered when saved instead of silently
-  becoming null; event targets receive the same type validation;
+- registered objects serialize by stable index. A transient runtime pointer
+  outside the saved object graph is diagnosed in developer output and written
+  as the null index, matching the retail serializer; this includes area-location
+  references outside the registry in some stock-map states. Event targets
+  receive the same restore-time type validation as other nonzero references;
 - class names, object counts, sync sequences, script state, enum values, and
   variable-size structures are checked before use;
 - a serialized GUI must load before its positional state is consumed;

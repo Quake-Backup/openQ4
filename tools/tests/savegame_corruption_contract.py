@@ -707,6 +707,7 @@ def validate_gamelibs_save_payload_contract() -> None:
             "static int SaveGame_ObjectHashKey( const idClass *obj )",
             "static int SaveGame_FindObjectIndex( const idList<const idClass *> &objects, const idHashIndex &objectHash, const idClass *obj )",
             "objectHash.Add( SaveGame_ObjectHashKey( obj ), index );",
+            "if ( objects.Num() == 0 )",
             "const float boundsMin = bounds[0][i];",
             "const float boundsMax = bounds[1][i];",
             "FLOAT_IS_NAN( boundsMin ) || FLOAT_IS_NAN( boundsMax )",
@@ -753,6 +754,34 @@ def validate_gamelibs_save_payload_contract() -> None:
             "idRestoreGame::ReadRenderEntity: invalid render bounds",
         ):
             require(save_source, token, f"{module} savegame compatibility source")
+
+        destructor_start = save_source.index("idSaveGame::~idSaveGame( void )")
+        destructor_end = save_source.index("/*", destructor_start)
+        destructor_block = save_source[destructor_start:destructor_end]
+        if "Close();" in destructor_block:
+            raise AssertionError(
+                f"{module} idSaveGame destructor must not serialize while unwinding a failed save"
+            )
+
+        write_object_start = save_source.index(
+            "void idSaveGame::WriteObject( const idClass *obj )"
+        )
+        write_object_end = save_source.index("/*", write_object_start)
+        write_object_block = save_source[write_object_start:write_object_end]
+        for token in (
+            "SaveGame_FindObjectIndex( objects, objectHash, obj )",
+            "WriteObject FindIndex failed; writing NULL reference",
+            "index = 0;",
+            "WriteInt( index );",
+        ):
+            require(write_object_block, token, f"{module} transient save reference fallback")
+        if "gameLocal.Error" in write_object_block or "obj->GetClassname()" in write_object_block:
+            raise AssertionError(
+                f"{module} transient save reference fallback must not abort or dereference an unregistered object"
+            )
+
+        require(game_local, "savegame.Close();", f"{module} primary save explicitly closes its writer")
+        require(save_source, "sg.Close();", f"{module} checkSave explicitly closes its writer")
 
         require_regex(
             game_local,

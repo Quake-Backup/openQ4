@@ -200,6 +200,49 @@ static bool Sys_GetExecutableDir(char* outDir, size_t outDirSize) {
 
 /*
 ====================
+Sys_GetAddressModuleInfo
+
+Resolve an instruction address without loading a new module or taking a
+reference on an existing one. This stays deliberately small and loader-safe so
+the crash path can identify driver and injected-hook faults even when symbol
+files are unavailable.
+====================
+*/
+static bool Sys_GetAddressModuleInfo(
+	const void* address,
+	char* outModulePath,
+	size_t outModulePathSize,
+	uintptr_t& outModuleBase,
+	uintptr_t& outModuleOffset
+) {
+	outModuleBase = 0;
+	outModuleOffset = 0;
+	if (!address || !outModulePath || outModulePathSize < 2) {
+		return false;
+	}
+
+	outModulePath[0] = '\0';
+	MEMORY_BASIC_INFORMATION memoryInfo;
+	memset(&memoryInfo, 0, sizeof(memoryInfo));
+	if (VirtualQuery(address, &memoryInfo, sizeof(memoryInfo)) != sizeof(memoryInfo) || !memoryInfo.AllocationBase) {
+		return false;
+	}
+
+	const HMODULE module = (HMODULE)memoryInfo.AllocationBase;
+	const DWORD pathLength = GetModuleFileNameA(module, outModulePath, (DWORD)outModulePathSize);
+	if (pathLength == 0 || pathLength >= outModulePathSize) {
+		outModulePath[0] = '\0';
+		return false;
+	}
+
+	outModuleBase = (uintptr_t)module;
+	const uintptr_t instruction = (uintptr_t)address;
+	outModuleOffset = instruction >= outModuleBase ? instruction - outModuleBase : 0;
+	return true;
+}
+
+/*
+====================
 Sys_GetCrashBaseName
 ====================
 */
@@ -350,6 +393,15 @@ static void Sys_WriteCrashLog(
 
 	DWORD exceptionCode = er ? er->ExceptionCode : 0;
 	const void* exceptionAddress = er ? er->ExceptionAddress : NULL;
+	char exceptionModulePath[MAX_PATH];
+	uintptr_t exceptionModuleBase = 0;
+	uintptr_t exceptionModuleOffset = 0;
+	const bool exceptionModuleResolved = Sys_GetAddressModuleInfo(
+		exceptionAddress,
+		exceptionModulePath,
+		ARRAYSIZE(exceptionModulePath),
+		exceptionModuleBase,
+		exceptionModuleOffset);
 
 	Sys_StringPrintf(
 		logBuffer,
@@ -382,6 +434,19 @@ static void Sys_WriteCrashLog(
 		dumpPath,
 		(unsigned long)dumpError
 	);
+
+	if (exceptionModuleResolved) {
+		Sys_StringAppendf(
+			logBuffer,
+			ARRAYSIZE(logBuffer),
+			"ExceptionModule: %s\r\n"
+			"ExceptionModuleBase: 0x%p\r\n"
+			"ExceptionModuleOffset: 0x%llX\r\n",
+			exceptionModulePath,
+			(void*)exceptionModuleBase,
+			(unsigned long long)exceptionModuleOffset
+		);
+	}
 
 	if (er && er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
 		const char* accessType = "unknown";

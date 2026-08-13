@@ -342,7 +342,12 @@ idUploadManager::idUploadManager() {
 void idUploadManager::Init( const renderBackendCaps_t &caps ) {
 	Shutdown();
 
-	const bool lowOverheadPersistentDefault = glConfig.renderFeatures.persistentMappedUploads && r_rendererUploadPersistent.GetBool();
+	const bool driverQuirkPersistentDisabled =
+		( RendererDriverQuirks_LastReport().flags & RENDERER_DRIVER_QUIRK_DISABLE_PERSISTENT_UPLOADS ) != 0;
+	const bool lowOverheadPersistentDefault =
+		glConfig.renderFeatures.persistentMappedUploads &&
+		r_rendererUploadPersistent.GetBool() &&
+		!driverQuirkPersistentDisabled;
 	const bool syncAvailable = caps.hasSync && glFenceSync != NULL && glClientWaitSync != NULL && glDeleteSync != NULL;
 	// Persistent mappings reuse the same storage.  Without a complete fence
 	// contract the CPU can overwrite bytes that the GPU is still consuming.
@@ -380,8 +385,19 @@ void idUploadManager::Init( const renderBackendCaps_t &caps ) {
 	stats.legacyBridge = true;
 	stats.dynamicFrameBridge = false;
 	stats.staticBufferAllocator = requestedPath != UPLOAD_PATH_DISABLED;
-	hasSync = requestedPath != UPLOAD_PATH_DISABLED && syncAvailable;
+	// Only persistent storage reuses the same mapped backing and therefore
+	// needs explicit proof that the GPU has released a frame slot.  The
+	// map-range and subdata paths orphan their storage before reuse; carrying
+	// persistent-path fences into those fallbacks can turn a recoverable busy
+	// GPU (for example, while a capture application is sharing it) into an
+	// unbounded driver wait.
+	hasSync = requestedPath == UPLOAD_PATH_PERSISTENT && syncAvailable;
 	stats.fenceSyncAvailable = hasSync;
+	stats.driverQuirkPersistentDisabled = driverQuirkPersistentDisabled;
+	if ( driverQuirkPersistentDisabled && glConfig.renderFeatures.persistentMappedUploads && r_rendererUploadPersistent.GetBool() ) {
+		common->Printf(
+			"Renderer upload manager: persistent mapped uploads disabled by driver quirk; using the orphaned map-range stream without persistent-path fences for capture interoperability\n" );
+	}
 
 	if ( requestedPath != UPLOAD_PATH_DISABLED ) {
 		if ( !CreateFrameBuffers( requestedPath ) && requestedPath == UPLOAD_PATH_PERSISTENT ) {
