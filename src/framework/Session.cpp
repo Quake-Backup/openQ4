@@ -2380,7 +2380,20 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 	}
 
 	generatedPath = Session_MakeExpandedLoadingBackgroundPath( mapName, outputWidth, outputHeight );
-	R_WriteTGA( generatedPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
+	const idStr stagingPath = generatedPath + ".partial";
+	bool published = R_WriteTGA( stagingPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
+	if ( published ) {
+		published = fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str(), "fs_savepath" );
+	}
+	if ( !published ) {
+		// A short or interrupted direct write used to leave a truncated final TGA.
+		// Loading that generated file raises a fatal "incomplete file" error on
+		// the next material lookup. Keep the old final intact and fall back to the
+		// source levelshot whenever publication cannot complete (GitHub issue #102).
+		fileSystem->RemoveFileChecked( stagingPath.c_str(), "fs_savepath" );
+		common->Warning( "Could not publish expanded loading background '%s'; using the source levelshot",
+			generatedPath.c_str() );
+	}
 
 	R_StaticFree( centerPic );
 	if ( leftPic ) {
@@ -2396,7 +2409,7 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 		R_StaticFree( bottomPic );
 	}
 
-	return true;
+	return published;
 }
 
 void idSessionLocal::SetMainMenuBackgroundMontageGuiVars( void ) {

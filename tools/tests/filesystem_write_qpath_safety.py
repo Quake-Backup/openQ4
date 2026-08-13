@@ -208,9 +208,41 @@ def validate_source_contract() -> None:
             "checked cleanup missing-file semantics")
 
 
+def validate_generated_loadscreen_publication() -> None:
+    session = read("src/framework/Session.cpp")
+    image_files = read("src/imagetools/Image_files.cpp")
+    image_header = read("src/renderer/Image.h")
+    image_tools_header = read("src/imagetools/ImageTools.h")
+
+    prepare = function_body(
+        session,
+        "static bool Session_PrepareExpandedLoadingBackground(",
+    )
+    writer = function_body(image_files, "bool R_WriteTGA(")
+
+    require(writer, "return fileSystem->WriteFile( filename, buffer, bufferSize, basePath ) == bufferSize;",
+            "TGA writer reports short writes")
+    require(image_header, "bool\tR_WriteTGA(", "renderer TGA writer result contract")
+    require(image_tools_header, "bool\tR_WriteTGA(", "imagetools TGA writer result contract")
+
+    require(prepare, 'const idStr stagingPath = generatedPath + ".partial";',
+            "generated loadscreen staging path")
+    require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
+    require(prepare, "fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str()",
+            "generated loadscreen atomic publication")
+    require(prepare, "fileSystem->RemoveFileChecked( stagingPath.c_str()",
+            "generated loadscreen failed-stage cleanup")
+    require(prepare, "return published;", "generated loadscreen failure falls back to source")
+    require_order(prepare, "R_WriteTGA( stagingPath.c_str()", "fileSystem->PromoteFile(",
+                  "generated loadscreen write-before-publish order")
+    reject(prepare, "R_WriteTGA( generatedPath.c_str()",
+           "generated loadscreen must never truncate the live file in place")
+
+
 def main() -> int:
     validate_behavior_model()
     validate_source_contract()
+    validate_generated_loadscreen_publication()
     print("filesystem relative mutation qpath safety checks passed")
     return 0
 
