@@ -1321,7 +1321,7 @@ jobs:
             --install-dir "${corridor_root}/universal2" \
             --output-dir "${corridor_root}/package-output" \
             --archive-format tar.xz \
-            --package-suffix "-${{ matrix.artifact_suffix }}" \
+            --package-suffix=-${{ matrix.artifact_suffix }} \
             --macos-signing-mode ad-hoc
 
       - name: Publish universal2 assembly evidence

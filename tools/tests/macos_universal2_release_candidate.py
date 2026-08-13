@@ -119,6 +119,18 @@ def validate_candidate_workflow() -> None:
     require_before(thin_job, stage_step_name, record_step, preparation_context)
     reject(stage_step, "\n        if:", preparation_context)
 
+    package_step_name = "- name: Package universal2 release candidate"
+    package_start = workflow.index(package_step_name, assemble_start)
+    package_end = workflow.index("\n      - name:", package_start + len(package_step_name))
+    package_step = workflow[package_start:package_end]
+    package_suffix_argument = '"--package-suffix=${package_suffix}"'
+    if package_step.count(package_suffix_argument) != 2:
+        raise AssertionError(
+            "Expected common and Developer-ID candidate package arrays to pass "
+            "the leading-hyphen package suffix as one argv token"
+        )
+    reject(package_step, '--package-suffix "${package_suffix}"', "universal2 candidate package argument safety")
+
 
 def validate_docs_and_wiring() -> None:
     design = read("docs/dev/macos-universal2-design.md")
@@ -159,6 +171,20 @@ def validate_docs_and_wiring() -> None:
     commit_universal = commit[commit_universal_start:]
     require(commit_universal, "Restore mode-preserving thin payloads", "commit-validation universal2 restore")
     require(commit_universal, "tar -xzf", "commit-validation universal2 restore")
+    commit_package_step_name = "- name: Package and validate universal2 app"
+    commit_package_start = commit_universal.index(commit_package_step_name)
+    commit_package_end = commit_universal.index(
+        "\n      - name:", commit_package_start + len(commit_package_step_name)
+    )
+    commit_package_step = commit_universal[commit_package_start:commit_package_end]
+    commit_suffix_argument = "--package-suffix=-${{ matrix.artifact_suffix }}"
+    if commit_package_step.count(commit_suffix_argument) != 1:
+        raise AssertionError("Commit universal2 packaging must pass its leading-hyphen suffix as one argv token")
+    reject(
+        commit_package_step,
+        '--package-suffix "-${{ matrix.artifact_suffix }}"',
+        "commit-validation universal2 package argument safety",
+    )
 
 
 def main() -> None:

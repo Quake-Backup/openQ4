@@ -449,7 +449,7 @@ jobs:
             --arch universal2
             --version "${{ needs.metadata.outputs.version }}"
             --version-tag "${{ needs.metadata.outputs.version_tag }}"
-            --package-suffix "${package_suffix}"
+            "--package-suffix=${package_suffix}"
             --archive-format "${archive_format}"
             --source-root "${GITHUB_WORKSPACE}"
             --install-dir "${corridor_root}/universal2"
@@ -463,7 +463,7 @@ jobs:
               --arch universal2
               --version "${{ needs.metadata.outputs.version }}"
               --version-tag "${{ needs.metadata.outputs.version_tag }}"
-              --package-suffix "${package_suffix}"
+              "--package-suffix=${package_suffix}"
               --archive-format "${archive_format}"
               --source-root "${GITHUB_WORKSPACE}"
               --install-dir "${corridor_root}/universal2"
