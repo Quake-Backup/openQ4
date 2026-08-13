@@ -354,6 +354,103 @@ def test_exact_slice_contracts() -> None:
         raise AssertionError("singleton compatibility mapping accepted universal2")
 
 
+def test_merge_binary_normalizes_and_signs_fused_output() -> None:
+    if set(ASSEMBLER.universal_code_paths()) != set(ASSEMBLER.CODE_KEYS):
+        raise AssertionError("universal2 output map does not cover every required code binary")
+
+    work = ROOT / ".tmp" / "macos-universal2-merge-order-contract"
+    original_require_tool = ASSEMBLER.require_tool
+    original_run_command = ASSEMBLER.run_command
+    original_validate_arches = ASSEMBLER.validate_exact_arches
+    original_install_name = ASSEMBLER.install_name
+    original_require_export = ASSEMBLER.require_module_entry_export
+    observed: list[tuple[str, ...]] = []
+    arch_checks: list[tuple[Path, frozenset[str]]] = []
+    install_name_checks: list[tuple[Path, str]] = []
+    export_checks: list[tuple[Path, str, str]] = []
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        work.mkdir(parents=True)
+        arm_path = work / "game-mp-arm64"
+        x64_path = work / "game-mp-x64"
+        module_output = work / "game-mp-universal2.dylib"
+        dedicated_output = work / "openQ4-ded-universal2"
+        write_file(arm_path, b"immutable-arm\n", 0o755)
+        write_file(x64_path, b"immutable-x64\n", 0o755)
+        source_bytes = (arm_path.read_bytes(), x64_path.read_bytes())
+
+        ASSEMBLER.require_tool = lambda name: name
+
+        def fake_run(command: list[str], label: str):
+            observed.append(tuple(command))
+            if command[0] == "lipo":
+                output = Path(command[command.index("-output") + 1])
+                output.write_bytes(b"fused\n")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ASSEMBLER.run_command = fake_run
+        ASSEMBLER.validate_exact_arches = lambda path, expected: arch_checks.append((Path(path), expected))
+
+        def fake_install_name(path: Path, *, macho_arch: str) -> str:
+            install_name_checks.append((Path(path), macho_arch))
+            return ASSEMBLER.expected_install_name("game-mp", ASSEMBLER.UNIVERSAL_ARCH)
+
+        ASSEMBLER.install_name = fake_install_name
+        ASSEMBLER.require_module_entry_export = (
+            lambda path, *, macho_arch, code_key: export_checks.append((Path(path), macho_arch, code_key))
+        )
+
+        ASSEMBLER.merge_binary(arm_path, x64_path, module_output, "game-mp")
+        universal_id = ASSEMBLER.expected_install_name("game-mp", ASSEMBLER.UNIVERSAL_ARCH)
+        expected_module_commands = [
+            ("lipo", "-create", str(arm_path), str(x64_path), "-output", str(module_output)),
+            ("install_name_tool", "-id", universal_id, str(module_output)),
+            ("codesign", "--force", "--sign", "-", str(module_output)),
+            ("codesign", "--verify", "--strict", "--all-architectures", str(module_output)),
+        ]
+        if observed != expected_module_commands:
+            raise AssertionError(f"unexpected universal2 module merge command order: {observed!r}")
+        if any("--remove-signature" in command for command in observed):
+            raise AssertionError("universal2 merge removed a thin or fused signature before Mach-O rewriting")
+        if any(command[-1] in {str(arm_path), str(x64_path)} for command in observed[1:]):
+            raise AssertionError("universal2 module normalization or signing mutated a thin input")
+        if (arm_path.read_bytes(), x64_path.read_bytes()) != source_bytes:
+            raise AssertionError("universal2 module merge changed a recorded thin input")
+        expected_slices = sorted(ASSEMBLER.UNIVERSAL_MACHO_ARCHES)
+        if install_name_checks != [(module_output, macho_arch) for macho_arch in expected_slices]:
+            raise AssertionError(f"universal2 module IDs were not checked per slice: {install_name_checks!r}")
+        if export_checks != [(module_output, macho_arch, "game-mp") for macho_arch in expected_slices]:
+            raise AssertionError(f"universal2 module exports were not checked per slice: {export_checks!r}")
+        if arch_checks != [(module_output, ASSEMBLER.UNIVERSAL_MACHO_ARCHES)]:
+            raise AssertionError(f"universal2 module exact slices were not checked: {arch_checks!r}")
+
+        observed.clear()
+        arch_checks.clear()
+        install_name_checks.clear()
+        export_checks.clear()
+        ASSEMBLER.merge_binary(arm_path, x64_path, dedicated_output, "dedicated")
+        expected_dedicated_commands = [
+            ("lipo", "-create", str(arm_path), str(x64_path), "-output", str(dedicated_output)),
+            ("codesign", "--force", "--sign", "-", str(dedicated_output)),
+            ("codesign", "--verify", "--strict", "--all-architectures", str(dedicated_output)),
+        ]
+        if observed != expected_dedicated_commands:
+            raise AssertionError(f"unexpected universal2 executable merge command order: {observed!r}")
+        if install_name_checks or export_checks:
+            raise AssertionError("universal2 executable merge applied loadable-module metadata checks")
+        if arch_checks != [(dedicated_output, ASSEMBLER.UNIVERSAL_MACHO_ARCHES)]:
+            raise AssertionError(f"universal2 executable exact slices were not checked: {arch_checks!r}")
+        if (arm_path.read_bytes(), x64_path.read_bytes()) != source_bytes:
+            raise AssertionError("universal2 executable merge changed a recorded thin input")
+    finally:
+        ASSEMBLER.require_tool = original_require_tool
+        ASSEMBLER.run_command = original_run_command
+        ASSEMBLER.validate_exact_arches = original_validate_arches
+        ASSEMBLER.install_name = original_install_name
+        ASSEMBLER.require_module_entry_export = original_require_export
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_thin_payload_preparation_contract() -> None:
     expected_paths = ASSEMBLER.thin_code_paths("arm64")
     original_require_directory = ASSEMBLER.require_directory
@@ -588,6 +685,7 @@ def main() -> int:
     test_thin_manifest_metadata_reinspection_contract()
     test_source_provenance_validation()
     test_exact_slice_contracts()
+    test_merge_binary_normalizes_and_signs_fused_output()
     test_thin_payload_preparation_contract()
     test_universal_symbol_manifest_contract()
     test_universal_dsym_uuid_pair_contract()

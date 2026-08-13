@@ -136,8 +136,8 @@ def prepare_thin_payload(root: Path, arch: str) -> None:
         # Meson install may rewrite the load command, invalidating a linker-
         # produced ad-hoc signature. Sign and verify every loadable module so an
         # already-correct ID cannot conceal an invalid signature. Universal
-        # assembly removes this signature before lipo and packaging applies the
-        # final package signature afterward.
+        # assembly fuses these signed inputs unchanged, then normalizes and
+        # re-signs the fused output; packaging applies its final signature later.
         run_command(
             [codesign, "--force", "--sign", "-", str(path)],
             f"ad-hoc signing normalized thin {arch} {code_key}",
@@ -664,39 +664,28 @@ def signature_normalized_shared_records(
     return normalized
 
 
-def remove_signature_if_present(path: Path) -> None:
-    codesign = require_tool("codesign")
-    inspected = subprocess.run(
-        [codesign, "--display", str(path)],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if inspected.returncode == 0:
-        run_command([codesign, "--remove-signature", str(path)], f"removing thin code signature from {path}")
-
-
 def merge_binary(arm_path: Path, x64_path: Path, output_path: Path, code_key: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="openq4-universal2-code-", dir=output_path.parent) as temporary:
-        temporary_root = Path(temporary)
-        arm_copy = temporary_root / "arm64"
-        x64_copy = temporary_root / "x64"
-        shutil.copy2(arm_path, arm_copy)
-        shutil.copy2(x64_path, x64_copy)
-        remove_signature_if_present(arm_copy)
-        remove_signature_if_present(x64_copy)
-        expected_id = expected_install_name(code_key, UNIVERSAL_ARCH)
-        if expected_id:
-            install_name_tool = require_tool("install_name_tool")
-            run_command([install_name_tool, "-id", expected_id, str(arm_copy)], f"normalizing arm64 {code_key} install name")
-            run_command([install_name_tool, "-id", expected_id, str(x64_copy)], f"normalizing x64 {code_key} install name")
-        run_command(
-            [require_tool("lipo"), "-create", str(arm_copy), str(x64_copy), "-output", str(output_path)],
-            f"merging universal2 {code_key}",
-        )
+    run_command(
+        [require_tool("lipo"), "-create", str(arm_path), str(x64_path), "-output", str(output_path)],
+        f"merging universal2 {code_key}",
+    )
     output_path.chmod(stat.S_IMODE(arm_path.stat().st_mode) | 0o111)
+    expected_id = expected_install_name(code_key, UNIVERSAL_ARCH)
+    if expected_id:
+        run_command(
+            [require_tool("install_name_tool"), "-id", expected_id, str(output_path)],
+            f"normalizing universal2 {code_key} install name",
+        )
+    codesign = require_tool("codesign")
+    run_command(
+        [codesign, "--force", "--sign", "-", str(output_path)],
+        f"ad-hoc signing universal2 {code_key}",
+    )
+    run_command(
+        [codesign, "--verify", "--strict", "--all-architectures", str(output_path)],
+        f"verifying universal2 {code_key} signature",
+    )
     validate_exact_arches(output_path, UNIVERSAL_MACHO_ARCHES)
     if expected_id:
         for macho_arch in sorted(UNIVERSAL_MACHO_ARCHES):
