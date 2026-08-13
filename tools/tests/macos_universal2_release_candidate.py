@@ -120,6 +120,8 @@ def validate_candidate_workflow() -> None:
     reject(stage_step, "\n        if:", preparation_context)
 
     package_step_name = "- name: Package universal2 release candidate"
+    candidate_dependency_step = "- name: Install release documentation dependency"
+    candidate_setup_step = "- name: Setup Python"
     package_start = workflow.index(package_step_name, assemble_start)
     package_end = workflow.index("\n      - name:", package_start + len(package_step_name))
     package_step = workflow[package_start:package_end]
@@ -130,6 +132,18 @@ def validate_candidate_workflow() -> None:
             "the leading-hyphen package suffix as one argv token"
         )
     reject(package_step, '--package-suffix "${package_suffix}"', "universal2 candidate package argument safety")
+    candidate_assemble_job = workflow[assemble_start:]
+    if candidate_assemble_job.count(candidate_dependency_step) != 1:
+        raise AssertionError("Expected exactly one release documentation dependency step in the candidate assembler")
+    require_before(candidate_assemble_job, candidate_setup_step, candidate_dependency_step, "candidate packaging dependency")
+    require_before(candidate_assemble_job, candidate_dependency_step, package_step_name, "candidate packaging dependency")
+    candidate_dependency_start = workflow.index(candidate_dependency_step, assemble_start)
+    candidate_dependency_end = workflow.index(
+        "\n      - name:", candidate_dependency_start + len(candidate_dependency_step)
+    )
+    candidate_dependency = workflow[candidate_dependency_start:candidate_dependency_end]
+    require(candidate_dependency, "python -m pip install markdown", "candidate packaging dependency")
+    reject(candidate_dependency, "\n        if:", "candidate packaging dependency")
 
 
 def validate_docs_and_wiring() -> None:
@@ -172,6 +186,8 @@ def validate_docs_and_wiring() -> None:
     require(commit_universal, "Restore mode-preserving thin payloads", "commit-validation universal2 restore")
     require(commit_universal, "tar -xzf", "commit-validation universal2 restore")
     commit_package_step_name = "- name: Package and validate universal2 app"
+    commit_dependency_step = "- name: Install release documentation dependency"
+    commit_setup_step = "- name: Setup Python"
     commit_package_start = commit_universal.index(commit_package_step_name)
     commit_package_end = commit_universal.index(
         "\n      - name:", commit_package_start + len(commit_package_step_name)
@@ -185,6 +201,17 @@ def validate_docs_and_wiring() -> None:
         '--package-suffix "-${{ matrix.artifact_suffix }}"',
         "commit-validation universal2 package argument safety",
     )
+    if commit_universal.count(commit_dependency_step) != 1:
+        raise AssertionError("Expected exactly one release documentation dependency step in commit universal2 packaging")
+    require_before(commit_universal, commit_setup_step, commit_dependency_step, "commit packaging dependency")
+    require_before(commit_universal, commit_dependency_step, commit_package_step_name, "commit packaging dependency")
+    commit_dependency_start = commit_universal.index(commit_dependency_step)
+    commit_dependency_end = commit_universal.index(
+        "\n      - name:", commit_dependency_start + len(commit_dependency_step)
+    )
+    commit_dependency = commit_universal[commit_dependency_start:commit_dependency_end]
+    require(commit_dependency, "python -m pip install markdown", "commit packaging dependency")
+    reject(commit_dependency, "\n        if:", "commit packaging dependency")
 
 
 def main() -> None:
