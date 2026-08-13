@@ -217,6 +217,10 @@ def validate_generated_loadscreen_publication() -> None:
         session,
         "static bool Session_PrepareExpandedLoadingBackground(",
     )
+    secure_staging_failure = function_body(
+        prepare,
+        "if ( !Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) ) )",
+    )
     writer = function_body(image_files, "bool R_WriteTGA(")
 
     require(writer, "return fileSystem->WriteFile( filename, buffer, bufferSize, basePath ) == bufferSize;",
@@ -229,8 +233,10 @@ def validate_generated_loadscreen_publication() -> None:
             "generated loadscreen 128-bit staging nonce")
     require(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
             "generated loadscreen cross-process CSPRNG token")
-    require(prepare, "Could not create a secure expanded-loadscreen staging path",
+    require(secure_staging_failure, "Could not create a secure expanded-loadscreen staging path",
             "generated loadscreen no-CSPRNG source fallback")
+    require(secure_staging_failure, "return false;",
+            "generated loadscreen no-CSPRNG early return")
     require(prepare, 'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
             "generated loadscreen unique staging path")
     require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
@@ -241,6 +247,12 @@ def validate_generated_loadscreen_publication() -> None:
     require(prepare, "return published;", "generated loadscreen failure falls back to source")
     require_order(prepare, "R_WriteTGA( stagingPath.c_str()", "fileSystem->PromoteFile(",
                   "generated loadscreen write-before-publish order")
+    require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
+                  'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
+                  "generated loadscreen secure-token-before-path order")
+    require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
+                  "R_WriteTGA( stagingPath.c_str()",
+                  "generated loadscreen secure-token-before-write order")
     reject(prepare, "R_WriteTGA( generatedPath.c_str()",
            "generated loadscreen must never truncate the live file in place")
     reject(prepare, "Sys_GetClockTicks()",

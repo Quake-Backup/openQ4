@@ -3747,7 +3747,7 @@ def validate_docs_and_ci_hooks() -> None:
     require(building, "Intel Mac and universal2 packages are not published", "macOS architecture policy documentation")
     require(building, "SDL3 is the default platform path and does not link Carbon", "macOS Carbon isolation documentation")
     require(building, "macos_openal_provider", "macOS OpenAL provider documentation")
-    require(building, "system/OpenAL Soft dependency", "macOS OpenAL provider documentation")
+    require(building, "dependency('openal', method: 'pkg-config')", "macOS OpenAL provider documentation")
     require(getting_started, "signed/notarized OpenGL and Metal bridge DMGs", "getting started guide")
     require(getting_started, "drag `openQ4.app` to `/Applications`", "getting started guide")
     require(getting_started, "signed SP/MP modules", "getting started self-contained app guide")
