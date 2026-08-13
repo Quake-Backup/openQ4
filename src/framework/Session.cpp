@@ -2220,6 +2220,16 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 		return false;
 	}
 
+	// Never use a shared, predictable staging name. If the platform cannot
+	// provide a secure nonce, keep the stock source levelshot instead of risking
+	// another client truncating this client's in-progress publication.
+	uint64 stagingNonce[2] = { 0, 0 };
+	if ( !Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) ) ) {
+		common->Warning( "Could not create a secure expanded-loadscreen staging path for '%s'; using the source levelshot",
+			backgroundPath.c_str() );
+		return false;
+	}
+
 	idStr resolvedCenterPath;
 	if ( !Session_ResolveImageFilePath( backgroundPath, resolvedCenterPath ) ) {
 		return false;
@@ -2381,15 +2391,12 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 
 	generatedPath = Session_MakeExpandedLoadingBackgroundPath( mapName, outputWidth, outputHeight );
 	// Multiple isolated clients may generate the same resolution at once. Give
-	// every live process and every publication within it a distinct staging
-	// qpath so one client cannot truncate another client's in-progress TGA
-	// before either atomic rename.
+	// every publication a CSPRNG-backed staging qpath so one client cannot
+	// truncate another client's in-progress TGA before either atomic rename.
 	static uint32 stagingSequence = 0;
-	const uint64 stagingProcess = Sys_GetProcessId();
-	const uint64 stagingToken = static_cast<uint64>( Sys_GetClockTicks() );
-	const idStr stagingPath = va( "%s.%llu.%llx.%u.partial", generatedPath.c_str(),
-		static_cast<unsigned long long>( stagingProcess ),
-		static_cast<unsigned long long>( stagingToken ), ++stagingSequence );
+	const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial", generatedPath.c_str(),
+		static_cast<unsigned long long>( stagingNonce[0] ),
+		static_cast<unsigned long long>( stagingNonce[1] ), ++stagingSequence );
 	bool published = R_WriteTGA( stagingPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
 	if ( published ) {
 		published = fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str(), "fs_savepath" );

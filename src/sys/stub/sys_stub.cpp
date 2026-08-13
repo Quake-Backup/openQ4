@@ -46,10 +46,6 @@ int Sys_Milliseconds( void ) {
 	return common->GetUserCmdTime( frameNum );
 }
 
-uint64 Sys_GetProcessId( void ) {
-	return static_cast<uint64>( getpid() );
-}
-
 bool Sys_GetSecureRandomBytes( void *buffer, int bytes ) {
 	(void)buffer;
 	(void)bytes;

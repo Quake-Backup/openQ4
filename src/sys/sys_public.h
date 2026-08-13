@@ -317,10 +317,6 @@ void			Sys_Sleep( int msec );
 // any game related timing information should come from event timestamps
 int				Sys_Milliseconds( void );
 
-// Stable for the lifetime of this process and distinct from other live
-// processes on the same host.
-uint64			Sys_GetProcessId( void );
-
 // Fill a caller-owned buffer from the operating system CSPRNG. Gameplay
 // random generators and timing entropy are never substitutes for this API.
 // Implementations leave the buffer untouched when validation fails.

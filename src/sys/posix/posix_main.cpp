@@ -280,10 +280,6 @@ int Sys_Milliseconds( void ) {
 	return sys_lastMilliseconds;
 }
 
-uint64 Sys_GetProcessId( void ) {
-	return static_cast<uint64>( getpid() );
-}
-
 /*
 ================
 Sys_GetSecureRandomBytes
