@@ -561,7 +561,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_dir="${{ steps.package.outputs.package_dir }}"
+          package_dir="${GITHUB_WORKSPACE}/${{ steps.package.outputs.package_dir }}"
           app_exec="${package_dir}/openQ4.app/Contents/MacOS/openQ4"
           smoke_root="${RUNNER_TEMP}/openq4-universal2-candidate-${{ matrix.bridge }}"
           smoke_cwd="${smoke_root}/finder-style-cwd"

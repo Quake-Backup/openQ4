@@ -145,6 +145,19 @@ def validate_candidate_workflow() -> None:
     require(candidate_dependency, "python -m pip install markdown", "candidate packaging dependency")
     reject(candidate_dependency, "\n        if:", "candidate packaging dependency")
 
+    finder_smoke_step_name = "- name: Smoke universal2 app runtime from a Finder-style directory"
+    finder_smoke_start = workflow.index(finder_smoke_step_name, package_end)
+    finder_smoke_end = workflow.index("\n      - name:", finder_smoke_start + len(finder_smoke_step_name))
+    finder_smoke = workflow[finder_smoke_start:finder_smoke_end]
+    canonical_package_dir = 'package_dir="${GITHUB_WORKSPACE}/${{ steps.package.outputs.package_dir }}"'
+    require(finder_smoke, canonical_package_dir, "candidate Finder-style package path")
+    require_before(finder_smoke, canonical_package_dir, 'cd "${smoke_cwd}"', "candidate Finder-style package path")
+    reject(
+        finder_smoke,
+        'package_dir="${{ steps.package.outputs.package_dir }}"',
+        "candidate Finder-style relative package path",
+    )
+
 
 def validate_docs_and_wiring() -> None:
     design = read("docs/dev/macos-universal2-design.md")
