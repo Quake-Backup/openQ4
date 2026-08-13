@@ -3,8 +3,8 @@
 Updated: 2026-06-30
 
 This document records the current macOS audio-provider decision for openQ4.
-It is intentionally conservative while macOS remains experimental and issue
-#73-style startup reports are still being collected.
+It is intentionally conservative while macOS remains experimental, visual
+parity issue #98 is open, and complete Apple-hardware signoff is outstanding.
 
 ## Current Release Decision
 
