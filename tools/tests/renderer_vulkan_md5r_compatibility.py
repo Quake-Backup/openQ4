@@ -79,6 +79,17 @@ def parenthesized_body(source: str, marker: str, context: str) -> str:
 
 def validate_vulkan_module_build_contract() -> None:
     meson = read("meson.build")
+    require(
+        meson,
+        "renderer_gl_module_args = engine_cpp_args + [",
+        "OpenGL renderer module build",
+    )
+    gl_target = parenthesized_body(
+        meson,
+        "renderer_gl_module_target = shared_module",
+        "OpenGL renderer module target",
+    )
+    require(gl_target, "cpp_args: renderer_gl_module_args", "OpenGL renderer module target")
     require_order(
         meson,
         (
@@ -104,22 +115,23 @@ def validate_vulkan_module_build_contract() -> None:
     if "cpp_args: engine_cpp_args" in target:
         raise AssertionError("renderer-vk must consume renderer_vk_module_args, not the shared engine argument list")
 
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "tools" / "build" / "meson_sources.py"), "--emit", "renderer_vk"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            "renderer-vk source discovery failed:\n"
-            f"{result.stdout}{result.stderr}"
+    for emitter in ("renderer_gl", "renderer_vk"):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "build" / "meson_sources.py"), "--emit", emitter],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"{emitter} source discovery failed:\n"
+                f"{result.stdout}{result.stderr}"
+            )
 
-    sources = result.stdout.splitlines()
-    if sources.count("src/renderer/Model_md5r.cpp") != 1:
-        raise AssertionError("renderer-vk must compile exactly one src/renderer/Model_md5r.cpp")
+        sources = result.stdout.splitlines()
+        if sources.count("src/renderer/Model_md5r.cpp") != 1:
+            raise AssertionError(f"{emitter} must compile exactly one src/renderer/Model_md5r.cpp")
 
 
 def validate_runtime_gate_helpers() -> None:
@@ -519,6 +531,23 @@ def validate_native_file_loading() -> None:
         "bool rvRenderModelMD5R::WriteFile(",
         "MD5R file writer",
     )
+    require_order(
+        model_file_writer,
+        (
+            'idFile *outFile = fileSystem->OpenFileWrite( fileName, "fs_savepath" );',
+            "if ( outFile == NULL )",
+            "WriteModel( *outFile );",
+            "fileSystem->CloseFile( outFile );",
+            "if ( compressed )",
+        ),
+        "MD5R engine-owned file lifetime",
+    )
+    if "idAutoPtr<idFile>" in model_file_writer:
+        raise AssertionError("Renderer modules must close engine-owned files through idFileSystem")
+    if "outFile.reset" in model_file_writer or "delete outFile" in model_file_writer:
+        raise AssertionError("Renderer modules must not destroy engine-owned files directly")
+    if model_file_writer.count("fileSystem->CloseFile( outFile );") != 1:
+        raise AssertionError("MD5R export must close its engine-owned file exactly once")
     model_compressed = braced_body(
         model_file_writer,
         "if ( compressed )",
