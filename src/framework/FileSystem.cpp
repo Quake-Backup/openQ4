@@ -5296,6 +5296,23 @@ void idFileSystemLocal::Startup( void ) {
 				"Do not put retail pk4 files in '%s'; that directory is reserved for openQ4 runtime files.",
 				BASE_GAMEDIR, validationErrors.c_str(), BASE_GAMEDIR, OPENQ4_GAMEDIR );
 		}
+
+#ifndef ID_DEDICATED
+		// The core pak001-pak022 media set is shared by every retail language and
+		// deliberately remains the only fatal validation baseline. Character VO is
+		// different: it lives in the edition-specific zpak_<language>.pk4 archives,
+		// so a partial copy can pass that baseline while every conversation is
+		// silent. Keep alternate physical/localized editions valid, but make the
+		// missing media actionable on clients instead of failing one sample at a time.
+		idStrList availableLanguagePacks;
+		ListAvailableLanguagePacks( availableLanguagePacks );
+		if ( availableLanguagePacks.Num() == 0 ) {
+			common->Warning(
+				"No recognized Quake 4 language media pack (zpak_<language>.pk4) was found in '%s'; character dialogue will be silent. "
+				"Install or verify at least one complete retail language pack in '<Quake 4 install root>/%s', or launch with +set fs_basepath pointing at the install root that contains it.",
+				BASE_GAMEDIR, BASE_GAMEDIR );
+		}
+#endif
 	}
 
 	// Startup map commands run after initialization, but addon filtering happens here.

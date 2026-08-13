@@ -100,6 +100,46 @@ def validate_language_reload_contract() -> None:
     require_order(init_game, "InitLanguageDict( false, false );", "fileSystem->SetIsFileLoadingAllowed( wasFileLoadingAllowed );", "file-loading flag restored after final language reload")
 
 
+def validate_language_media_diagnostic() -> None:
+    source = read("src/framework/FileSystem.cpp")
+    startup = function_body(source, "void idFileSystemLocal::Startup( void ) {")
+
+    require(
+        startup,
+        "ListAvailableLanguagePacks( availableLanguagePacks );",
+        "client language-media discovery",
+    )
+    require(
+        startup,
+        "availableLanguagePacks.Num() == 0",
+        "empty language-media guard",
+    )
+    require(
+        startup,
+        "No recognized Quake 4 language media pack (zpak_<language>.pk4)",
+        "actionable language-media warning",
+    )
+    require(
+        startup,
+        "character dialogue will be silent",
+        "language-media warning symptom",
+    )
+    require_regex(
+        startup,
+        r"if\s*\(\s*fs_validateOfficialPaks\.GetBool\(\)\s*\)\s*\{[\s\S]*"
+        r"#ifndef\s+ID_DEDICATED[\s\S]*"
+        r"ListAvailableLanguagePacks\(\s*availableLanguagePacks\s*\);[\s\S]*"
+        r"#endif[\s\S]*\n\s*\}",
+        "official-media and client-only warning gates",
+    )
+    require_order(
+        startup,
+        "ValidateRequiredOfficialPaks( validationErrors )",
+        "ListAvailableLanguagePacks( availableLanguagePacks );",
+        "required core validation before optional language-media diagnostic",
+    )
+
+
 def validate_ci_smoke() -> None:
     push = read(".github/workflows/push-verification.yml")
     commit = read(".github/workflows/commit-validation.yml")
@@ -115,6 +155,7 @@ def validate_ci_smoke() -> None:
 
 def main() -> None:
     validate_language_reload_contract()
+    validate_language_media_diagnostic()
     validate_ci_smoke()
     print("startup_language_override: ok")
 
