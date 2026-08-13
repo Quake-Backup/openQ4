@@ -90,7 +90,8 @@ through volk, so the two MUST resolve to the same image; two libraries behind
 one VkInstance is undefined behavior. This mirrors SDL's precedence exactly:
 
   1. SDL_VULKAN_LIBRARY (the environment backing of SDL_HINT_VULKAN_LIBRARY)
-  2. the bundled MoltenVK, bundle-relative then beside the executable
+  2. the bundled MoltenVK in an app bundle, a loose Frameworks directory,
+     then beside the executable
   3. whatever volk finds on its own (a system Vulkan loader)
 
 so every case lands on one library. Developers who want validation layers point
@@ -126,9 +127,13 @@ static bool VK_Device_InitLoader( void ) {
 	exeDir.StripFilename();
 
 	// openQ4.app/Contents/MacOS/openQ4 -> openQ4.app/Contents/Frameworks, then
-	// the loose package layout where the dylib sits beside the executable
+	// either supported loose package layout: Frameworks/ or executable-adjacent.
 	const idStr bundled = exeDir + "/../Frameworks/libMoltenVK.dylib";
 	if ( VK_Device_AdoptLoaderAt( bundled.c_str() ) ) {
+		return true;
+	}
+	const idStr looseFramework = exeDir + "/Frameworks/libMoltenVK.dylib";
+	if ( VK_Device_AdoptLoaderAt( looseFramework.c_str() ) ) {
 		return true;
 	}
 	const idStr adjacent = exeDir + "/libMoltenVK.dylib";

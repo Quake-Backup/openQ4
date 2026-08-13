@@ -5749,11 +5749,11 @@ static int s_sdlWindowSurfaceKind = RENDER_SURFACE_GL;
 // macOS has no system Vulkan driver; the renderer runs on MoltenVK, a
 // Vulkan-on-Metal translation layer shipped inside the package. SDL's own
 // search list already starts at @executable_path/../Frameworks/libMoltenVK.dylib,
-// but the loose (non-app-bundle) binaries beside the package root would miss it,
-// and the renderer module must end up on the SAME image SDL creates the surface
-// with. Pinning the resolved path removes both hazards. A system Vulkan loader,
-// when the user has the SDK installed, still wins: the hint is only set when the
-// bundled dylib is actually present.
+// but loose (non-app-bundle) binaries may stage the library either beside the
+// executable or in a Frameworks child directory. The renderer module must end
+// up on the SAME image SDL creates the surface with. Pinning the resolved path
+// removes both hazards. A system Vulkan loader, when the user has the SDK
+// installed, still wins: the hint is only set when a bundled dylib is present.
 static void SDL3_PinBundledMoltenVKLibrary(void) {
 	if (SDL_GetHint(SDL_HINT_VULKAN_LIBRARY) != NULL) {
 		return;
@@ -5764,6 +5764,7 @@ static void SDL3_PinBundledMoltenVKLibrary(void) {
 
 	const char *relativeCandidates[] = {
 		"/../Frameworks/libMoltenVK.dylib",
+		"/Frameworks/libMoltenVK.dylib",
 		"/libMoltenVK.dylib",
 	};
 	for (int i = 0; i < (int)(sizeof(relativeCandidates) / sizeof(relativeCandidates[0])); i++) {
