@@ -975,10 +975,10 @@ if host_system == 'linux'
   shared_c_args += linux_compile_hardening_args
 
   if cpp.has_argument('-fno-sanitize=vptr')
-    # Engine and game translation units consume polymorphic interfaces whose
-    # key functions and RTTI live on the opposite side of the runtime-loaded
-    # game-module boundary. UBSan's vptr metadata cannot be resolved while
-    # preserving the executable/module ABI and each module's -z defs contract.
+    # Engine, game, and in-process BSE translation units consume polymorphic
+    # interfaces whose key functions and RTTI live on the opposite side of a
+    # runtime-loaded module boundary. UBSan's vptr metadata cannot be resolved
+    # while preserving the executable/module ABI and each module's -z defs contract.
     # Keep AddressSanitizer and every other requested UBSan check enabled.
     linux_cross_dso_sanitizer_cpp_args += ['-fno-sanitize=vptr']
   endif
@@ -1141,7 +1141,7 @@ if renderer_module_only_client
 endif
 engine_objcpp_args = shared_objcpp_args + ['-D__DOOM_DLL__']
 engine_objc_args = shared_objc_args
-bse_cpp_args = shared_cpp_args + common_header_cpp_args
+bse_cpp_args = shared_cpp_args + common_header_cpp_args + linux_cross_dso_sanitizer_cpp_args
 bse_c_args = shared_c_args
 bse_library = disabler()
 

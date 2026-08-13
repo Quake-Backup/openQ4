@@ -628,8 +628,8 @@ def main() -> None:
     )
     require(
         meson,
-        "bse_cpp_args = shared_cpp_args + common_header_cpp_args",
-        "BSE keeps full UBSan vptr coverage",
+        "bse_cpp_args = shared_cpp_args + common_header_cpp_args + linux_cross_dso_sanitizer_cpp_args",
+        "Linux BSE cross-DSO sanitizer scope",
     )
     reject(
         meson,

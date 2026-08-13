@@ -159,8 +159,8 @@ def validate_cross_dso_sanitizer_boundary() -> None:
     )
     require(
         meson,
-        "bse_cpp_args = shared_cpp_args + common_header_cpp_args",
-        "BSE vptr sanitizer coverage",
+        "bse_cpp_args = shared_cpp_args + common_header_cpp_args + linux_cross_dso_sanitizer_cpp_args",
+        "BSE cross-DSO sanitizer scope",
     )
     reject(meson, "shared_cpp_args += ['-fno-sanitize=vptr']", "over-broad UBSan vptr exclusion")
     require(meson, "dedicated_engine_cpp_args = engine_cpp_args", "dedicated sanitizer inheritance")
