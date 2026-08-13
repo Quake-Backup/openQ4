@@ -417,6 +417,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "idstr_input_safety.py",
         root / "tools" / "tests" / "lexer_peek_contract.py",
         root / "tools" / "tests" / "key_bind_presentation.py",
+        root / "tools" / "tests" / "levelshot_inventory.py",
         root / "tools" / "tests" / "linux_arm64_cross_compile.py",
         root / "tools" / "tests" / "linux_arm64_ci_coverage.py",
         root / "tools" / "tests" / "linux_arm64_release_evidence.py",

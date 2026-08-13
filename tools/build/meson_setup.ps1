@@ -424,6 +424,16 @@ function Get-GamelibsFileMap {
             }
 
             $relativePath = $fullPath.Substring($rootPrefix.Length).Replace('\', '/')
+            $relativeParts = $relativePath.Split(
+                @([char]'/', [char]'\'),
+                [System.StringSplitOptions]::RemoveEmptyEntries
+            )
+            $extension = [System.IO.Path]::GetExtension($item.Name)
+            if ($relativeParts -ccontains "__pycache__" -or
+                $extension -ieq ".pyc" -or
+                $extension -ieq ".pyo") {
+                continue
+            }
             if ($filesByRelativePath.ContainsKey($relativePath)) {
                 throw "GameLibs refresh input contains a duplicate relative path: '$relativePath'."
             }

@@ -22,6 +22,7 @@ OPENQ4_SUPPORT_DIRS = (
 )
 
 MANIFEST_NAME = "openq4_gamelibs_stage_manifest.json"
+PYTHON_BYTECODE_SUFFIXES = (".pyc", ".pyo")
 
 
 def repo_git_value(root: Path, *args: str) -> str:
@@ -61,6 +62,9 @@ def iter_regular_source_files(source_dir: Path) -> list[Path]:
             continue
         if not path.is_file():
             raise RuntimeError(f"refusing to stage non-regular file: {path}")
+        relative = path.relative_to(source_dir)
+        if "__pycache__" in relative.parts or path.suffix.lower() in PYTHON_BYTECODE_SUFFIXES:
+            continue
         files.append(path)
     return files
 

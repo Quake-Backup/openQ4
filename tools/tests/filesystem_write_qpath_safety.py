@@ -208,9 +208,61 @@ def validate_source_contract() -> None:
             "checked cleanup missing-file semantics")
 
 
+def validate_generated_loadscreen_publication() -> None:
+    session = read("src/framework/Session.cpp")
+    image_files = read("src/imagetools/Image_files.cpp")
+    image_header = read("src/renderer/Image.h")
+    image_tools_header = read("src/imagetools/ImageTools.h")
+    prepare = function_body(
+        session,
+        "static bool Session_PrepareExpandedLoadingBackground(",
+    )
+    secure_staging_failure = function_body(
+        prepare,
+        "if ( !Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) ) )",
+    )
+    writer = function_body(image_files, "bool R_WriteTGA(")
+
+    require(writer, "return fileSystem->WriteFile( filename, buffer, bufferSize, basePath ) == bufferSize;",
+            "TGA writer reports short writes")
+    require(image_header, "bool\tR_WriteTGA(", "renderer TGA writer result contract")
+    require(image_tools_header, "bool\tR_WriteTGA(", "imagetools TGA writer result contract")
+    require(prepare, "static uint32 stagingSequence = 0;",
+            "generated loadscreen per-process staging sequence")
+    require(prepare, "uint64 stagingNonce[2] = { 0, 0 };",
+            "generated loadscreen 128-bit staging nonce")
+    require(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
+            "generated loadscreen cross-process CSPRNG token")
+    require(secure_staging_failure, "Could not create a secure expanded-loadscreen staging path",
+            "generated loadscreen no-CSPRNG source fallback")
+    require(secure_staging_failure, "return false;",
+            "generated loadscreen no-CSPRNG early return")
+    require(prepare, 'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
+            "generated loadscreen unique staging path")
+    require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
+    require(prepare, "fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str()",
+            "generated loadscreen atomic publication")
+    require(prepare, "fileSystem->RemoveFileChecked( stagingPath.c_str()",
+            "generated loadscreen failed-stage cleanup")
+    require(prepare, "return published;", "generated loadscreen failure falls back to source")
+    require_order(prepare, "R_WriteTGA( stagingPath.c_str()", "fileSystem->PromoteFile(",
+                  "generated loadscreen write-before-publish order")
+    require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
+                  'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
+                  "generated loadscreen secure-token-before-path order")
+    require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
+                  "R_WriteTGA( stagingPath.c_str()",
+                  "generated loadscreen secure-token-before-write order")
+    reject(prepare, "R_WriteTGA( generatedPath.c_str()",
+           "generated loadscreen must never truncate the live file in place")
+    reject(prepare, "Sys_GetClockTicks()",
+           "generated loadscreen staging token must not use a cross-process clock fallback")
+
+
 def main() -> int:
     validate_behavior_model()
     validate_source_contract()
+    validate_generated_loadscreen_publication()
     print("filesystem relative mutation qpath safety checks passed")
     return 0
 

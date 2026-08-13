@@ -122,11 +122,12 @@ def validate_loader_agreement() -> None:
     # instance through volk. If they resolve different Vulkan libraries the
     # VkInstance is handed across two images, which is undefined. They agree
     # because both consult SDL_VULKAN_LIBRARY first, then the bundled dylib at
-    # the same two bundle-relative paths, then the system loader.
+    # the same app-bundle and two loose-package paths, then the system loader.
     device = read("src/renderer/Vulkan/VulkanDevice.cpp")
     loader = function_body(device, "static bool VK_Device_InitLoader( void ) {")
     require(loader, 'getenv( "SDL_VULKAN_LIBRARY" )', "module honors the SDL Vulkan library pin")
     require(loader, '"/../Frameworks/libMoltenVK.dylib"', "module bundle-relative MoltenVK path")
+    require(loader, '"/Frameworks/libMoltenVK.dylib"', "module loose Frameworks MoltenVK path")
     require(loader, '"/libMoltenVK.dylib"', "module adjacent MoltenVK path")
     require(loader, "return volkInitialize() == VK_SUCCESS;", "module falls back to the system Vulkan loader")
     require(device, "volkInitializeCustom( getInstanceProcAddr );", "module adopts the resolved loader through volk")
@@ -135,6 +136,7 @@ def validate_loader_agreement() -> None:
     pin = function_body(backend, "static void SDL3_PinBundledMoltenVKLibrary(void) {")
     require(pin, "SDL_GetHint(SDL_HINT_VULKAN_LIBRARY)", "engine defers to an existing Vulkan library pin")
     require(pin, '"/../Frameworks/libMoltenVK.dylib"', "engine bundle-relative MoltenVK path")
+    require(pin, '"/Frameworks/libMoltenVK.dylib"', "engine loose Frameworks MoltenVK path")
     require(pin, '"/libMoltenVK.dylib"', "engine adjacent MoltenVK path")
     require(pin, "SDL_SetHint(SDL_HINT_VULKAN_LIBRARY", "engine pins the bundled MoltenVK for SDL")
 

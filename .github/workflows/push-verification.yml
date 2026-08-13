@@ -88,6 +88,7 @@ jobs:
             tools/tests/idstr_input_safety.py \
             tools/tests/lexer_peek_contract.py \
             tools/tests/key_bind_presentation.py \
+            tools/tests/levelshot_inventory.py \
             tools/tests/linux_arm64_cross_compile.py \
             tools/tests/linux_arm64_ci_coverage.py \
             tools/tests/linux_arm64_release_evidence.py \
@@ -215,6 +216,7 @@ jobs:
           python tools/tests/idstr_input_safety.py
           python tools/tests/lexer_peek_contract.py
           python tools/tests/key_bind_presentation.py
+          python tools/tests/levelshot_inventory.py
           python tools/tests/linux_arm64_cross_compile.py
           python tools/tests/linux_arm64_ci_coverage.py
           python tools/tests/linux_arm64_release_evidence.py
