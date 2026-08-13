@@ -86,8 +86,8 @@ def validate_release_completion_guard() -> None:
         "Intel Mac, universal2, and Rosetta appear only as unsupported, not-published, or future-policy items",
         "`macos_graphics_bridge=metal` is described as a Metal bridge around the OpenGL renderer",
         "`platform_backend=native` on macOS is described as comparison-only diagnostic infrastructure",
-        "Until GitHub issue #73 is closed",
-        "known experimental macOS Apple OpenGL 2.1/ARB2 startup limitation",
+        "GitHub issue #98 as the current visual-parity limitation",
+        "closing the original issue #73 startup crash does not satisfy the macOS Evidence Gate",
     ):
         require(release_completion, token, "macOS support claim guard")
 
