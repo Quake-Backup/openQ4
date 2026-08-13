@@ -149,6 +149,7 @@ def validate_candidate_workflow() -> None:
     finder_smoke_start = workflow.index(finder_smoke_step_name, package_end)
     finder_smoke_end = workflow.index("\n      - name:", finder_smoke_start + len(finder_smoke_step_name))
     finder_smoke = workflow[finder_smoke_start:finder_smoke_end]
+    reject(finder_smoke, "\n        if:", "candidate Finder-style smoke execution")
     canonical_package_dir = 'package_dir="${GITHUB_WORKSPACE}/${{ steps.package.outputs.package_dir }}"'
     require(finder_smoke, canonical_package_dir, "candidate Finder-style package path")
     require_before(finder_smoke, canonical_package_dir, 'cd "${smoke_cwd}"', "candidate Finder-style package path")
@@ -156,6 +157,25 @@ def validate_candidate_workflow() -> None:
         finder_smoke,
         'package_dir="${{ steps.package.outputs.package_dir }}"',
         "candidate Finder-style relative package path",
+    )
+    for token in (
+        'smoke_exit_status="${smoke_root}/app-exit-status"',
+        "printf '%s\\n' \"${app_status}\" > \"${smoke_exit_status}\"",
+        'app_status="$(tr -d \'[:space:]\' < "${smoke_exit_status}")"',
+        'if ! [[ "${app_status}" =~ ^[0-9]+$ ]] || [ "${app_status}" -gt 127 ]; then',
+        "RendererDefaultSafety self-test passed",
+        "Universal2 app smoke log contains a fatal startup diagnostic.",
+        'if [ "${app_status}" -ne 0 ]; then',
+        'if [ -f "${smoke_timeout_marker}" ]; then',
+        "exit 124",
+    ):
+        require(finder_smoke, token, "candidate Finder-style launcher status policy")
+    reject(finder_smoke, 'exit "${app_status}"', "candidate Finder-style launcher status propagation")
+    require_before(
+        finder_smoke,
+        'app_status="$(tr -d \'[:space:]\' < "${smoke_exit_status}")"',
+        'grep -F "RendererDefaultSafety self-test passed"',
+        "candidate Finder-style marker validation",
     )
 
 
