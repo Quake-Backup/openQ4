@@ -87,19 +87,34 @@ def validate_candidate_workflow() -> None:
     assemble_start = workflow.index("\n  assemble:", thin_start)
     thin_job = workflow[thin_start:assemble_start]
     install_command = "bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subprojects"
+    normalize_step_name = "- name: Normalize thin universal2 payload"
+    smoke_step = "name: Run thin dedicated-server smoke"
     stage_step_name = "- name: Stage pinned MoltenVK for thin payload"
     record_step = "name: Record thin universal2 provenance"
     preparation_context = "macOS universal2 candidate thin payload preparation"
     if thin_job.count(stage_step_name) != 1:
         raise AssertionError(f"Expected exactly one {stage_step_name!r} in {preparation_context}")
 
+    if thin_job.count(normalize_step_name) != 1:
+        raise AssertionError(f"Expected exactly one {normalize_step_name!r} in {preparation_context}")
+    normalize_start = thin_job.index(normalize_step_name)
+    normalize_end = thin_job.index("\n      - name:", normalize_start + len(normalize_step_name))
+    normalize_step = thin_job[normalize_start:normalize_end]
+
     stage_start = thin_job.index(stage_step_name)
     stage_end = thin_job.index("\n      - name:", stage_start + len(stage_step_name))
     stage_step = thin_job[stage_start:stage_end]
+    normalize_command = "python tools/build/assemble_macos_universal2.py prepare"
     prepare_command = "bash tools/build/prepare_macos_moltenvk.sh --output-dir .install"
     verify_command = "bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install"
 
-    require_before(thin_job, install_command, stage_step_name, preparation_context)
+    require_before(thin_job, install_command, normalize_step_name, preparation_context)
+    require(normalize_step, normalize_command, preparation_context)
+    require(normalize_step, "--install-root .install", preparation_context)
+    require(normalize_step, '--arch "${{ matrix.binary_arch }}"', preparation_context)
+    reject(normalize_step, "\n        if:", preparation_context)
+    require_before(thin_job, normalize_step_name, smoke_step, preparation_context)
+    require_before(thin_job, smoke_step, stage_step_name, preparation_context)
     require_before(stage_step, prepare_command, verify_command, preparation_context)
     require_before(thin_job, stage_step_name, record_step, preparation_context)
     reject(stage_step, "\n        if:", preparation_context)

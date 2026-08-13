@@ -110,6 +110,48 @@ def expected_install_name(code_key: str, arch: str) -> str:
     return f"@loader_path/{code_key}_{arch}.dylib"
 
 
+def prepare_thin_payload(root: Path, arch: str) -> None:
+    """Normalize and re-sign loadable thin modules before provenance recording."""
+    if arch not in THIN_MACHO_ARCHES:
+        raise Universal2Error(f"unsupported thin macOS architecture: {arch}")
+    root = require_directory(root, "thin macOS install root")
+    install_name_tool = require_tool("install_name_tool")
+    codesign = require_tool("codesign")
+    expected_arches = THIN_MACHO_ARCHES[arch]
+    macho_arch = next(iter(expected_arches))
+
+    for code_key, relative in thin_code_paths(arch).items():
+        expected_id = expected_install_name(code_key, arch)
+        if not expected_id:
+            continue
+
+        path = require_regular_file(root / relative, f"thin macOS {code_key} binary", executable=True)
+        validate_exact_arches(path, expected_arches)
+        if install_name(path, macho_arch=macho_arch) != expected_id:
+            run_command(
+                [install_name_tool, "-id", expected_id, str(path)],
+                f"normalizing thin {arch} {code_key} install name",
+            )
+        # Meson install may rewrite the load command, invalidating a linker-
+        # produced ad-hoc signature. Sign and verify every loadable module so an
+        # already-correct ID cannot conceal an invalid signature. Universal
+        # assembly removes this signature before lipo and packaging applies the
+        # final package signature afterward.
+        run_command(
+            [codesign, "--force", "--sign", "-", str(path)],
+            f"ad-hoc signing normalized thin {arch} {code_key}",
+        )
+        run_command(
+            [codesign, "--verify", "--strict", str(path)],
+            f"verifying normalized thin {arch} {code_key} signature",
+        )
+        actual_id = install_name(path, macho_arch=macho_arch)
+        if actual_id != expected_id:
+            raise Universal2Error(
+                f"install name normalization failed for {path}: expected {expected_id!r}, found {actual_id!r}"
+            )
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -768,6 +810,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     record_parser.add_argument("--build-type", default="debug", choices=BUILD_TYPES)
     record_parser.add_argument("--replace", action="store_true")
 
+    prepare_parser = subparsers.add_parser(
+        "prepare",
+        help="normalize and ad-hoc sign one staged thin macOS payload before recording",
+    )
+    prepare_parser.add_argument("--install-root", required=True)
+    prepare_parser.add_argument("--arch", required=True, choices=sorted(THIN_MACHO_ARCHES))
+
     assemble_parser = subparsers.add_parser("assemble", help="merge validated arm64 and x64 staging trees")
     assemble_parser.add_argument("--arm64-root", required=True)
     assemble_parser.add_argument("--x64-root", required=True)
@@ -782,6 +831,8 @@ def main(argv: list[str]) -> int:
         args = parse_args(argv)
         if args.command == "record":
             record_thin(args)
+        elif args.command == "prepare":
+            prepare_thin_payload(Path(args.install_root), args.arch)
         else:
             assemble(args)
     except (OSError, Universal2Error, ValueError) as exc:

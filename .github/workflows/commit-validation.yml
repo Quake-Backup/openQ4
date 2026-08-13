@@ -351,6 +351,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install meson ninja
 
+      - name: Prepare OpenAL Soft (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $outputRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/openal-soft-x64"
+          $env:OPENQ4_VS_TARGET_ARCH = "x64"
+          powershell -ExecutionPolicy Bypass -File tools/build/prepare_windows_openal.ps1 -Architecture "x64" -OutputRoot $outputRoot
+          "OPENQ4_OPENAL_ROOT=$outputRoot" >> $env:GITHUB_ENV
+
       - name: Run selected validation profile
         shell: pwsh
         run: |
@@ -1023,6 +1032,14 @@ jobs:
             --extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }} \
             --extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}
 
+      - name: Normalize ARM64 thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build/assemble_macos_universal2.py prepare \
+            --install-root .install \
+            --arch arm64
+
       - name: Run macOS dedicated server smoke
         shell: bash
         run: |
@@ -1143,6 +1160,14 @@ jobs:
             --platform-backend=sdl3 \
             --extra-setup-arg=-Dmacos_graphics_bridge=${{ matrix.macos_graphics_bridge }} \
             --extra-setup-arg=-Dmacos_openal_provider=${{ matrix.macos_openal_provider }}
+
+      - name: Normalize Intel thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build/assemble_macos_universal2.py prepare \
+            --install-root .install \
+            --arch x64
 
       - name: Run macOS dedicated server smoke
         shell: bash

@@ -1190,28 +1190,33 @@ def macos_signable_targets(package_root: Path, arch: str) -> list[Path]:
     ]
 
 
-def macos_game_module_install_names(package_root: Path, arch: str) -> dict[Path, str]:
+def macos_loadable_module_install_names(package_root: Path, arch: str) -> dict[Path, str]:
     sp_module, mp_module = macos_embedded_game_module_paths(package_root, arch)
-    # Scope note: this map drives install_name_tool rewriting. The renderer
-    # module already links with -Wl,-install_name,@loader_path/renderer-vk_<arch>
-    # .dylib from meson, and libMoltenVK's package-relative install name is set
-    # and asserted by tools/build/prepare_macos_moltenvk.sh before it is staged,
-    # so neither is rewritten here.
+    renderer_module = macos_embedded_renderer_module_path(package_root, arch)
+    # Meson's Darwin install depfixer may replace linker-authored IDs with the
+    # absolute staging destination for every installed dylib. Normalize every
+    # openQ4 loadable module after it enters the app bundle. libMoltenVK's
+    # package-relative ID is set and asserted by its pinned provider script and
+    # remains deliberately outside this openQ4-built module map.
     return {
         sp_module: f"@loader_path/game-sp_{arch}.dylib",
         mp_module: f"@loader_path/game-mp_{arch}.dylib",
+        renderer_module: f"@loader_path/renderer-vk_{arch}.dylib",
     }
 
 
-def normalize_macos_game_module_install_names(package_root: Path, arch: str) -> None:
+def normalize_macos_loadable_module_install_names(package_root: Path, arch: str) -> None:
     if sys.platform != "darwin":
         return
 
+    expected_arches = sorted(macos_expected_lipo_arches(arch))
     pending_updates: list[tuple[Path, str]] = []
-    for binary_path, expected_install_name in macos_game_module_install_names(package_root, arch).items():
-        require_packaged_executable(binary_path, "macOS game module install-name normalization binary")
-        actual_install_name = macos_otool_install_name(binary_path)
-        if actual_install_name != expected_install_name:
+    for binary_path, expected_install_name in macos_loadable_module_install_names(package_root, arch).items():
+        require_packaged_executable(binary_path, "macOS loadable module install-name normalization binary")
+        if any(
+            macos_otool_install_name(binary_path, macho_arch=macho_arch) != expected_install_name
+            for macho_arch in expected_arches
+        ):
             pending_updates.append((binary_path, expected_install_name))
 
     if not pending_updates:
@@ -1224,7 +1229,7 @@ def normalize_macos_game_module_install_names(package_root: Path, arch: str) -> 
     for binary_path, expected_install_name in pending_updates:
         run_macos_command(
             [install_name_tool_path, "-id", expected_install_name, str(binary_path)],
-            label=f"setting macOS game module install name for {binary_path}",
+            label=f"setting macOS loadable module install name for {binary_path}",
         )
 
 
@@ -3135,13 +3140,13 @@ def validate_macos_binary_dependencies(package_root: Path, arch: str) -> None:
                     f"{binary_path} ({macho_arch}): {joined}"
                 )
 
-    expected_install_names = macos_game_module_install_names(package_root, arch)
+    expected_install_names = macos_loadable_module_install_names(package_root, arch)
     for binary_path, expected_install_name in expected_install_names.items():
         for macho_arch in sorted(macos_expected_lipo_arches(arch)):
             actual_install_name = macos_otool_install_name(binary_path, macho_arch=macho_arch)
             if actual_install_name != expected_install_name:
                 raise RuntimeError(
-                    "macOS game module install name is not package-relative: "
+                    "macOS loadable module install name is not package-relative: "
                     f"{binary_path} ({macho_arch}): {actual_install_name!r}; expected {expected_install_name!r}"
                 )
 
@@ -3750,7 +3755,7 @@ def main(argv: list[str]) -> int:
             strip_macos_forbidden_xattrs(package_root)
             validate_no_macos_forbidden_xattrs(package_root)
             validate_macos_package_root_engine_binaries(package_root, args.arch)
-            normalize_macos_game_module_install_names(package_root, args.arch)
+            normalize_macos_loadable_module_install_names(package_root, args.arch)
             macos_signing = resolve_macos_signing_config(args)
             sign_macos_payload(package_root, args.arch, macos_signing)
             write_macos_symbol_manifest(

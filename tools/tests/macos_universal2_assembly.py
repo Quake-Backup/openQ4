@@ -249,6 +249,75 @@ def test_exact_slice_contracts() -> None:
         raise AssertionError("singleton compatibility mapping accepted universal2")
 
 
+def test_thin_payload_preparation_contract() -> None:
+    expected_paths = ASSEMBLER.thin_code_paths("arm64")
+    original_require_directory = ASSEMBLER.require_directory
+    original_require_regular_file = ASSEMBLER.require_regular_file
+    original_require_tool = ASSEMBLER.require_tool
+    original_validate_arches = ASSEMBLER.validate_exact_arches
+    original_install_name = ASSEMBLER.install_name
+    original_run_command = ASSEMBLER.run_command
+    observed: list[tuple[str, ...]] = []
+    install_names = {
+        expected_paths["game-sp"]: "/absolute/game-sp_arm64.dylib",
+        expected_paths["game-mp"]: ASSEMBLER.expected_install_name("game-mp", "arm64"),
+        expected_paths["renderer-vk"]: "/absolute/renderer-vk_arm64.dylib",
+    }
+    try:
+        ASSEMBLER.require_directory = lambda path, label: Path(path)
+        ASSEMBLER.require_regular_file = lambda path, label, executable=False: Path(path)
+        ASSEMBLER.require_tool = lambda name: name
+        ASSEMBLER.validate_exact_arches = lambda path, expected: None
+
+        def fake_install_name(path: Path, *, macho_arch: str) -> str:
+            relative = Path(path).relative_to("/thin")
+            return install_names[relative]
+
+        def fake_run(command: list[str], label: str):
+            observed.append(tuple(command))
+            if command[0] == "install_name_tool":
+                relative = Path(command[-1]).relative_to("/thin")
+                install_names[relative] = command[2]
+            return None
+
+        ASSEMBLER.install_name = fake_install_name
+        ASSEMBLER.run_command = fake_run
+        ASSEMBLER.prepare_thin_payload(Path("/thin"), "arm64")
+
+        sp_path = str(Path("/thin") / expected_paths["game-sp"])
+        mp_path = str(Path("/thin") / expected_paths["game-mp"])
+        renderer_path = str(Path("/thin") / expected_paths["renderer-vk"])
+        expected_commands = [
+            (
+                "install_name_tool",
+                "-id",
+                ASSEMBLER.expected_install_name("game-sp", "arm64"),
+                sp_path,
+            ),
+            ("codesign", "--force", "--sign", "-", sp_path),
+            ("codesign", "--verify", "--strict", sp_path),
+            ("codesign", "--force", "--sign", "-", mp_path),
+            ("codesign", "--verify", "--strict", mp_path),
+            (
+                "install_name_tool",
+                "-id",
+                ASSEMBLER.expected_install_name("renderer-vk", "arm64"),
+                renderer_path,
+            ),
+            ("codesign", "--force", "--sign", "-", renderer_path),
+            ("codesign", "--verify", "--strict", renderer_path),
+        ]
+        if observed != expected_commands:
+            raise AssertionError(f"unexpected thin preparation commands: {observed!r}")
+    finally:
+        ASSEMBLER.require_directory = original_require_directory
+        ASSEMBLER.require_regular_file = original_require_regular_file
+        ASSEMBLER.require_tool = original_require_tool
+        ASSEMBLER.validate_exact_arches = original_validate_arches
+        ASSEMBLER.install_name = original_install_name
+        ASSEMBLER.run_command = original_run_command
+
+
 def make_universal_symbol_manifest() -> bytes:
     version = "0.1.10"
     version_tag = "universal2-ci"
@@ -411,6 +480,7 @@ def main() -> int:
     test_thin_manifest_metadata_reinspection_contract()
     test_source_provenance_validation()
     test_exact_slice_contracts()
+    test_thin_payload_preparation_contract()
     test_universal_symbol_manifest_contract()
     test_universal_dsym_uuid_pair_contract()
     test_static_fail_closed_contract()

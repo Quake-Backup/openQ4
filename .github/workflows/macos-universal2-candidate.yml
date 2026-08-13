@@ -253,6 +253,14 @@ jobs:
             --expected-project-commit "${{ needs.metadata.outputs.source_sha }}" \
             --expected-gamelibs-commit "${{ needs.metadata.outputs.game_sha }}"
 
+      - name: Normalize thin universal2 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build/assemble_macos_universal2.py prepare \
+            --install-root .install \
+            --arch "${{ matrix.binary_arch }}"
+
       - name: Run thin dedicated-server smoke
         shell: bash
         run: |
