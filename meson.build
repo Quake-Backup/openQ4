@@ -731,7 +731,13 @@ if build_engine
     if macos_openal_provider == 'apple_framework'
       openal_dep = dependency('appleframeworks', modules: ['OpenAL'], required: true)
     else
-      openal_dep = dependency('openal', required: true)
+      # The migration provider specifically means an OpenAL Soft-style system
+      # package. Meson's generic OpenAL lookup may otherwise fall back to
+      # Apple's framework when pkg-config cannot see a keg-only Homebrew
+      # install, while the compile defines below still select AL/... headers.
+      # Fail during configure instead of combining framework libraries with
+      # incompatible OpenAL Soft headers (GitHub issue #94).
+      openal_dep = dependency('openal', required: true, method: 'pkg-config')
     endif
   else
     if host_system == 'windows' and openal_root_override != ''

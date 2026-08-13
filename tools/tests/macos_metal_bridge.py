@@ -2666,7 +2666,7 @@ def validate_meson_contract() -> None:
     require(meson, "macos_graphics_bridge == 'metal' and platform_backend_requested != 'sdl3'", "SDL3 bridge guard")
     require(meson, "use_macos_metal_bridge", "Metal bridge build predicate")
     require(meson, "dependency('appleframeworks', modules: ['OpenAL'], required: true)", "macOS Apple OpenAL provider")
-    require(meson, "dependency('openal', required: true)", "macOS system OpenAL provider")
+    require(meson, "dependency('openal', required: true, method: 'pkg-config')", "macOS system OpenAL provider")
     require(meson, "-DUSE_OPENAL_SOFT_INCLUDES=1", "macOS system OpenAL include mode")
     require(meson, "modules: ['Metal', 'QuartzCore']", "Metal bridge framework dependency")
     require(meson, "macos_framework_modules = ['Cocoa', 'OpenGL', 'ApplicationServices']", "macOS SDL3 framework list")

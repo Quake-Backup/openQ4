@@ -39,7 +39,7 @@ def validate_meson_provider_switch() -> None:
         "choices: ['apple_framework', 'system']",
         "value: 'apple_framework'",
         "apple_framework is the release default",
-        "system uses dependency(\"openal\") plus OpenAL Soft-style AL/... headers for migration testing",
+        "system requires a pkg-config OpenAL Soft dependency plus OpenAL Soft-style AL/... headers for migration testing",
     ):
         require(options, token, "macOS OpenAL provider Meson option")
 
@@ -48,12 +48,18 @@ def validate_meson_provider_switch() -> None:
         "macos_openal_provider=' + macos_openal_provider + ' is only valid on macOS hosts.",
         "if macos_openal_provider == 'apple_framework'",
         "dependency('appleframeworks', modules: ['OpenAL'], required: true)",
-        "dependency('openal', required: true)",
+        "dependency('openal', required: true, method: 'pkg-config')",
         "if macos_openal_provider == 'system'",
         "-DUSE_OPENAL_SOFT_INCLUDES=1",
         "'macOS OpenAL provider': macos_openal_provider",
     ):
         require(meson, token, "macOS OpenAL provider Meson wiring")
+
+    reject(
+        meson,
+        "openal_dep = dependency('openal', required: true)\n",
+        "macOS system OpenAL provider must not fall back to Apple's framework",
+    )
 
 
 def validate_release_workflow_pin() -> None:
@@ -96,6 +102,8 @@ def validate_policy_docs() -> None:
         "Apple's OpenAL framework",
         "not bundled OpenAL Soft",
         "`-Dmacos_openal_provider=system` is migration-only",
+        "pkg-config-only",
+        "PKG_CONFIG_PATH",
         "Library location",
         "openQ4.app/Contents/Frameworks/",
         "Install names",
