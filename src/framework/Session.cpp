@@ -2380,7 +2380,13 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 	}
 
 	generatedPath = Session_MakeExpandedLoadingBackgroundPath( mapName, outputWidth, outputHeight );
-	const idStr stagingPath = generatedPath + ".partial";
+	// Multiple isolated clients may generate the same resolution at once.  Give
+	// every publication its own staging qpath so one process cannot truncate a
+	// second process's in-progress TGA before either atomic rename.
+	static uint32 stagingSequence = 0;
+	const uint64 stagingToken = static_cast<uint64>( Sys_GetClockTicks() );
+	const idStr stagingPath = va( "%s.%llx.%u.partial", generatedPath.c_str(),
+		static_cast<unsigned long long>( stagingToken ), ++stagingSequence );
 	bool published = R_WriteTGA( stagingPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
 	if ( published ) {
 		published = fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str(), "fs_savepath" );

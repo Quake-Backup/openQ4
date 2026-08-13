@@ -225,8 +225,12 @@ def validate_generated_loadscreen_publication() -> None:
     require(image_header, "bool\tR_WriteTGA(", "renderer TGA writer result contract")
     require(image_tools_header, "bool\tR_WriteTGA(", "imagetools TGA writer result contract")
 
-    require(prepare, 'const idStr stagingPath = generatedPath + ".partial";',
-            "generated loadscreen staging path")
+    require(prepare, "static uint32 stagingSequence = 0;",
+            "generated loadscreen per-process staging sequence")
+    require(prepare, "Sys_GetClockTicks()",
+            "generated loadscreen high-resolution staging token")
+    require(prepare, 'const idStr stagingPath = va( "%s.%llx.%u.partial"',
+            "generated loadscreen unique staging path")
     require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
     require(prepare, "fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str()",
             "generated loadscreen atomic publication")
