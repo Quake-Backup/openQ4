@@ -122,7 +122,9 @@ def validate_curated_release_notes() -> None:
         require(text, "not a native Metal renderer", context)
         require(text, "platform_backend=native", context)
         require_any(text, ("comparison-only", "diagnostic infrastructure"), context)
-        require(text, "issue #73", context)
+        # Preserve the limitation cited by historical releases while allowing
+        # current release notes to follow the live visual-parity tracker.
+        require_any(text, ("issue #73", "issue #98"), f"{context} macOS limitation tracking")
         require(text, "docs/dev/macos-signoff-evidence.md", context)
 
         lowered = text.lower()
