@@ -233,7 +233,7 @@
 	"#str_41409"	"Points"
 
 // Demo browser and playback
-	"#str_41500"	"Demos"
+	"#str_41500"	"DEMOS"
 	"#str_41501"	"Biblioteca de demos"
 	"#str_41502"	"Todas"
 	"#str_41503"	"Multivista"
@@ -553,7 +553,7 @@
 	"#str_41697"	"Al mejor de cinco"
 	"#str_41698"	"Gana quien logre tres mapas. Los vetos se alternan entre bandos."
 
-	"#str_41700"	"Control de partida"
+	"#str_41700"	"CONTROL DE PARTIDA"
 	"#str_41701"	"Estado"
 	"#str_41702"	"Equipos"
 	"#str_41703"	"Propuestas"

@@ -233,7 +233,7 @@
 	"#str_41409"	"Points"
 
 // Demo browser and playback
-	"#str_41500"	"Démos"
+	"#str_41500"	"DÉMOS"
 	"#str_41501"	"Bibliothèque de démos"
 	"#str_41502"	"Toutes"
 	"#str_41503"	"Multivue"
@@ -553,7 +553,7 @@
 	"#str_41697"	"Au meilleur des cinq"
 	"#str_41698"	"Le premier camp à trois cartes gagnées l'emporte. Les vetos alternent."
 
-	"#str_41700"	"Gestion du match"
+	"#str_41700"	"GESTION DU MATCH"
 	"#str_41701"	"État"
 	"#str_41702"	"Équipes"
 	"#str_41703"	"Propositions"

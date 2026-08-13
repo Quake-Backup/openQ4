@@ -233,7 +233,7 @@
 	"#str_41409"	"Points"
 
 // Demo browser and playback
-	"#str_41500"	"Demo"
+	"#str_41500"	"DEMO"
 	"#str_41501"	"Raccolta demo"
 	"#str_41502"	"Tutte"
 	"#str_41503"	"Multivista"
@@ -553,7 +553,7 @@
 	"#str_41697"	"Al meglio di cinque"
 	"#str_41698"	"Vince chi arriva a tre mappe. I veti si alternano tra le squadre."
 
-	"#str_41700"	"Controllo partita"
+	"#str_41700"	"CONTROLLO PARTITA"
 	"#str_41701"	"Stato"
 	"#str_41702"	"Squadre"
 	"#str_41703"	"Proposte"

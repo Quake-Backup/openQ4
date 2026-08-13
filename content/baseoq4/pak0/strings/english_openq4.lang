@@ -233,7 +233,7 @@
 	"#str_41409"	"Points"
 
 // Demo browser and playback
-	"#str_41500"	"Demos"
+	"#str_41500"	"DEMOS"
 	"#str_41501"	"Demo Library"
 	"#str_41502"	"All"
 	"#str_41503"	"Multi-view"
@@ -553,7 +553,7 @@
 	"#str_41697"	"Best of Five"
 	"#str_41698"	"First side to three map wins. Sides alternate vetoes across the pool."
 
-	"#str_41700"	"Match Control"
+	"#str_41700"	"MATCH CONTROL"
 	"#str_41701"	"Status"
 	"#str_41702"	"Teams"
 	"#str_41703"	"Proposals"
