@@ -27,6 +27,13 @@ SUPPORT_FIXTURES = {
     "bse/BSE.h": "// bse\n",
     "MayaImport/MayaImport.h": "// maya import\n",
 }
+TRACKED_PYTHON_FIXTURE = "sys/linux/pk4/id_utils.py"
+BYTECODE_FIXTURES = (
+    "src/sys/linux/pk4/__pycache__/id_utils.cpython-314.pyc",
+    "src/sys/linux/pk4/id_utils.pyc",
+    "src/game/__pycache__/Game_local.cpython-314.pyc",
+    "src/mpgame/generated.pyo",
+)
 
 
 def staged_support_dir_names() -> tuple[str, ...]:
@@ -70,10 +77,16 @@ def make_minimal_workspace(work: Path) -> tuple[Path, Path, Path]:
 
     for relative_path, contents in SUPPORT_FIXTURES.items():
         write_file(project_root / "src" / relative_path, contents)
+    write_file(project_root / "src" / TRACKED_PYTHON_FIXTURE, "# tracked Python source\n")
     write_file(gamelibs_root / "src" / "game" / "Game_local.cpp", "// game\n")
     write_file(gamelibs_root / "src" / "game" / "gamesys" / "SysCvar.cpp", "// cvar\n")
     write_file(gamelibs_root / "src" / "mpgame" / "Game_local.cpp", "// mpgame\n")
     write_file(gamelibs_root / "src" / "mpgame" / "gamesys" / "SysCvar.cpp", "// mp cvar\n")
+    for relative_path in BYTECODE_FIXTURES:
+        destination_root = project_root if relative_path.startswith("src/sys/") else gamelibs_root
+        bytecode_path = destination_root / relative_path
+        bytecode_path.parent.mkdir(parents=True, exist_ok=True)
+        bytecode_path.write_bytes(b"transient python bytecode\x00")
     return project_root, gamelibs_root, stage_root
 
 
@@ -96,6 +109,7 @@ def validate_manifest(stage_root: Path) -> None:
         "src/mpgame/Game_local.cpp",
         "src/mpgame/gamesys/SysCvar.cpp",
         *(f"src/{relative_path}" for relative_path in SUPPORT_FIXTURES),
+        f"src/{TRACKED_PYTHON_FIXTURE}",
     )
     for rel in expected_paths:
         staged = stage_root / rel
@@ -103,6 +117,9 @@ def validate_manifest(stage_root: Path) -> None:
             raise AssertionError(f"missing staged file: {rel}")
         if paths.get(rel) != sha256(staged):
             raise AssertionError(f"manifest hash mismatch for {rel}")
+    for rel in BYTECODE_FIXTURES:
+        if (stage_root / rel).exists() or rel in paths:
+            raise AssertionError(f"generated Python bytecode was staged: {rel}")
 
 
 def validate_successful_stage(work: Path) -> None:
@@ -185,6 +202,13 @@ def validate_posix_support_refresh_probe(work: Path) -> None:
     restage()
     if run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
         raise AssertionError("fresh POSIX support stage requested an unnecessary refresh")
+
+    for relative_path in BYTECODE_FIXTURES:
+        source_root = project_root if relative_path.startswith("src/sys/") else gamelibs_root
+        bytecode_path = source_root / relative_path
+        bytecode_path.write_bytes(bytecode_path.read_bytes() + b"changed")
+    if run_posix_refresh_probe(project_root, gamelibs_root, stage_root):
+        raise AssertionError("generated Python bytecode change requested a POSIX refresh")
 
     added_source = project_root / "src" / "ui" / "Added.h"
     write_file(added_source, "// added\n")
@@ -476,6 +500,13 @@ Write-Output $refreshNeeded.ToString().ToLowerInvariant()
     if refresh_needed():
         raise AssertionError("fresh Windows GameLibs stage caused an unnecessary Meson reconfigure")
 
+    for relative_path in BYTECODE_FIXTURES:
+        source_root = project_root if relative_path.startswith("src/sys/") else gamelibs_root
+        bytecode_path = source_root / relative_path
+        bytecode_path.write_bytes(bytecode_path.read_bytes() + b"changed")
+    if refresh_needed():
+        raise AssertionError("generated Python bytecode change requested a Windows refresh")
+
     deleted_source = gamelibs_root / "src" / "mpgame" / "gamesys" / "SysCvar.cpp"
     deleted_source.unlink()
     if not refresh_needed():
@@ -588,6 +619,8 @@ def validate_source_contracts() -> None:
         "gameLibsGitCommit",
         "gameLibsGitDirty",
         "validate_stage_manifest",
+        "PYTHON_BYTECODE_SUFFIXES",
+        '"__pycache__" in relative.parts',
         '"mpgame": gamelibs_root / "src" / "mpgame"',
     )
     for token in required_script_tokens:
@@ -601,6 +634,8 @@ def validate_source_contracts() -> None:
         "source_specs",
         "staged_specs",
         "regular_file_map",
+        "python_bytecode_suffixes",
+        '"__pycache__" in relative_parts',
         "onerror=raise_walk_error",
         "manifest_hashes",
         "file_sha256(source_path)",
@@ -620,6 +655,7 @@ def validate_source_contracts() -> None:
         "$sourceRoots += $RepoRoot",
         "$stagedRoots += $stageRoot",
         "Test-GamelibsStageRefreshNeeded",
+        '$relativeParts -ccontains "__pycache__"',
     ):
         if token not in powershell_wrapper:
             raise AssertionError(f"missing Windows GameLibs refresh token: {token}")
