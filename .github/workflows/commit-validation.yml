@@ -1030,6 +1030,13 @@ jobs:
           python tools/tests/macos_dedicated_server_smoke.py \
             --output-root .tmp/macos-dedicated-smoke/${{ matrix.artifact_suffix }}
 
+      - name: Stage pinned MoltenVK for ARM64 thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
+
       - name: Record macOS ARM64 thin-build provenance
         shell: bash
         run: |
@@ -1144,6 +1151,13 @@ jobs:
           python tools/tests/macos_dedicated_server_smoke.py \
             --arch x64 \
             --output-root .tmp/macos-dedicated-smoke/x64-${{ matrix.artifact_suffix }}
+
+      - name: Stage pinned MoltenVK for Intel thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
 
       - name: Record macOS Intel thin-build provenance
         shell: bash

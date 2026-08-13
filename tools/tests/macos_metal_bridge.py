@@ -3108,6 +3108,22 @@ def validate_packaging_and_release_contract() -> None:
     require(commit, "runs-on: macos-15", "commit validation macOS job")
     require(commit, "bash tools/validation/validate_pr.sh \\", "commit validation macOS job")
     require(commit, "--fail-on-dirty \\", "commit validation macOS job")
+    arm64_commit_job = commit[
+        commit.index("\n  macos-arm64:") : commit.index("\n  macos-x64:")
+    ]
+    x64_commit_job = commit[
+        commit.index("\n  macos-x64:") : commit.index("\n  macos-universal2:")
+    ]
+    moltenvk_stage = "bash tools/build/prepare_macos_moltenvk.sh --output-dir .install"
+    moltenvk_verify = "bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install"
+    for job, record_step, context in (
+        (arm64_commit_job, "name: Record macOS ARM64 thin-build provenance", "ARM64 thin payload"),
+        (x64_commit_job, "name: Record macOS Intel thin-build provenance", "Intel thin payload"),
+    ):
+        require(job, moltenvk_stage, f"{context} MoltenVK staging")
+        require(job, moltenvk_verify, f"{context} MoltenVK verification")
+        require_before(job, moltenvk_stage, record_step, f"{context} MoltenVK stage order")
+        require_before(job, moltenvk_verify, record_step, f"{context} MoltenVK verification order")
     require(push, "macOS OpenGL Push Verification", "push verification macOS OpenGL job")
     require(push, "macOS Metal Push Verification", "push verification macOS Metal job")
     if push.count("runtime_smoke: true") < 3:
