@@ -261,6 +261,13 @@ jobs:
             --arch "${{ matrix.binary_arch }}" \
             --output-root ".tmp/macos-universal2-candidate/${{ matrix.bridge }}/${{ matrix.binary_arch }}/dedicated-smoke"
 
+      - name: Stage pinned MoltenVK for thin payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/build/prepare_macos_moltenvk.sh --output-dir .install
+          bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install
+
       - name: Record thin universal2 provenance
         shell: bash
         run: |

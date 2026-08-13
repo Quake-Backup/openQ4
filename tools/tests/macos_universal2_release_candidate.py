@@ -23,6 +23,13 @@ def reject(source: str, needle: str, context: str) -> None:
         raise AssertionError(f"Unexpected {needle!r} in {context}")
 
 
+def require_before(source: str, first: str, second: str, context: str) -> None:
+    require(source, first, context)
+    require(source, second, context)
+    if source.index(first) >= source.index(second):
+        raise AssertionError(f"Expected {first!r} before {second!r} in {context}")
+
+
 def validate_candidate_workflow() -> None:
     workflow = read(".github/workflows/macos-universal2-candidate.yml")
 
@@ -75,6 +82,27 @@ def validate_candidate_workflow() -> None:
     reject(workflow, "gh release", "macOS universal2 candidate workflow publication")
     reject(workflow, "softprops/action-gh-release", "macOS universal2 candidate workflow publication")
     reject(workflow, "path: .install", "macOS universal2 candidate thin artifact transfer")
+
+    thin_start = workflow.index("\n  thin_build:")
+    assemble_start = workflow.index("\n  assemble:", thin_start)
+    thin_job = workflow[thin_start:assemble_start]
+    install_command = "bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subprojects"
+    stage_step_name = "- name: Stage pinned MoltenVK for thin payload"
+    record_step = "name: Record thin universal2 provenance"
+    preparation_context = "macOS universal2 candidate thin payload preparation"
+    if thin_job.count(stage_step_name) != 1:
+        raise AssertionError(f"Expected exactly one {stage_step_name!r} in {preparation_context}")
+
+    stage_start = thin_job.index(stage_step_name)
+    stage_end = thin_job.index("\n      - name:", stage_start + len(stage_step_name))
+    stage_step = thin_job[stage_start:stage_end]
+    prepare_command = "bash tools/build/prepare_macos_moltenvk.sh --output-dir .install"
+    verify_command = "bash tools/build/prepare_macos_moltenvk.sh --verify-only --output-dir .install"
+
+    require_before(thin_job, install_command, stage_step_name, preparation_context)
+    require_before(stage_step, prepare_command, verify_command, preparation_context)
+    require_before(thin_job, stage_step_name, record_step, preparation_context)
+    reject(stage_step, "\n        if:", preparation_context)
 
 
 def validate_docs_and_wiring() -> None:
