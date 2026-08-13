@@ -149,6 +149,111 @@ def test_tree_classification_and_shared_matching() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_host_signed_moltenvk_matching() -> None:
+    work = ROOT / ".tmp" / "macos-universal2-moltenvk-signature-contract"
+    arm_root = work / "arm64"
+    x64_root = work / "x64"
+    original_require_tool = ASSEMBLER.require_tool
+    original_run_command = ASSEMBLER.run_command
+    original_validate_arches = ASSEMBLER.validate_exact_arches
+    observed: list[tuple[str, ...]] = []
+    arch_checks: list[tuple[Path, frozenset[str]]] = []
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        populate_staging(arm_root, "arm64")
+        populate_staging(x64_root, "x64")
+        unsigned_payload = b"identical-unsigned-moltenvk\n"
+        signature_marker = b"HOST-SIGNATURE:"
+        write_file(
+            arm_root / ASSEMBLER.MOLTENVK_DYLIB_NAME,
+            unsigned_payload + signature_marker + b"arm\n",
+            0o755,
+        )
+        write_file(
+            x64_root / ASSEMBLER.MOLTENVK_DYLIB_NAME,
+            unsigned_payload + signature_marker + b"x64\n",
+            0o755,
+        )
+        _, arm_shared = ASSEMBLER.classify_staged_tree(arm_root, "arm64")
+        _, x64_shared = ASSEMBLER.classify_staged_tree(x64_root, "x64")
+        if arm_shared == x64_shared:
+            raise AssertionError("host-specific MoltenVK signatures unexpectedly produced equal raw records")
+
+        ASSEMBLER.require_tool = lambda name: name
+        ASSEMBLER.validate_exact_arches = lambda path, expected: arch_checks.append((Path(path), expected))
+
+        def fake_run(command: list[str], label: str):
+            observed.append(tuple(command))
+            if "--remove-signature" in command:
+                temporary_copy = Path(command[-1])
+                signed_bytes = temporary_copy.read_bytes()
+                unsigned_bytes, marker, _signature = signed_bytes.rpartition(signature_marker)
+                if not marker:
+                    raise AssertionError("fake MoltenVK input had no host-signature marker")
+                temporary_copy.write_bytes(unsigned_bytes)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ASSEMBLER.run_command = fake_run
+        normalized_arm = ASSEMBLER.signature_normalized_shared_records(arm_root, arm_shared)
+        normalized_x64 = ASSEMBLER.signature_normalized_shared_records(x64_root, x64_shared)
+        if normalized_arm != normalized_x64:
+            raise AssertionError("signature-stripped MoltenVK shared records did not match")
+        ASSEMBLER.validate_matching_inputs(
+            thin_manifest("arm64", arm_shared),
+            thin_manifest("x64", x64_shared),
+            normalized_arm,
+            normalized_x64,
+        )
+        expected_sources = (
+            arm_root / ASSEMBLER.MOLTENVK_DYLIB_NAME,
+            x64_root / ASSEMBLER.MOLTENVK_DYLIB_NAME,
+        )
+        if arch_checks != [
+            (source, ASSEMBLER.UNIVERSAL_MACHO_ARCHES) for source in expected_sources
+        ]:
+            raise AssertionError(f"MoltenVK exact-slice validation was not applied: {arch_checks!r}")
+        expected_shapes = (
+            ("codesign", "--verify", "--strict", "--all-architectures"),
+            ("codesign", "--remove-signature"),
+            ("codesign", "--verify", "--strict", "--all-architectures"),
+            ("codesign", "--remove-signature"),
+        )
+        observed_shapes = tuple(
+            command[:-1] for command in observed
+        )
+        if observed_shapes != expected_shapes:
+            raise AssertionError(f"unexpected MoltenVK signature-normalization command order: {observed!r}")
+        if observed[0][-1] != str(expected_sources[0]) or observed[2][-1] != str(expected_sources[1]):
+            raise AssertionError("MoltenVK signatures were not verified against both recorded inputs")
+        if observed[1][-1] in {str(source) for source in expected_sources} or observed[3][-1] in {
+            str(source) for source in expected_sources
+        }:
+            raise AssertionError("MoltenVK signature normalization mutated a recorded thin input")
+
+        write_file(
+            expected_sources[1],
+            b"different-unsigned-moltenvk\n" + signature_marker + b"x64\n",
+            0o755,
+        )
+        _, changed_x64_shared = ASSEMBLER.classify_staged_tree(x64_root, "x64")
+        changed_x64_normalized = ASSEMBLER.signature_normalized_shared_records(x64_root, changed_x64_shared)
+        expect_error(
+            "different content/mode: ['libMoltenVK.dylib']",
+            lambda: ASSEMBLER.validate_matching_inputs(
+                thin_manifest("arm64", arm_shared),
+                thin_manifest("x64", changed_x64_shared),
+                normalized_arm,
+                changed_x64_normalized,
+            ),
+            "different unsigned MoltenVK payloads",
+        )
+    finally:
+        ASSEMBLER.require_tool = original_require_tool
+        ASSEMBLER.run_command = original_run_command
+        ASSEMBLER.validate_exact_arches = original_validate_arches
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_thin_manifest_metadata_reinspection_contract() -> None:
     work = ROOT / ".tmp" / "macos-universal2-metadata-contract"
     arm_root = work / "arm64"
@@ -437,6 +542,7 @@ def test_static_fail_closed_contract() -> None:
         "deploymentTarget",
         "buildType",
         "sharedPayloadSha256",
+        "signatureNormalizedSharedPayloadSha256",
         "validate_exact_arches",
         "minimum_os_version(path, macho_arch=macho_arch)",
         "dependencies(path, macho_arch=macho_arch",
@@ -444,6 +550,7 @@ def test_static_fail_closed_contract() -> None:
         'require_tool("otool")',
         'require_tool("install_name_tool")',
         'require_tool("codesign")',
+        '"--all-architectures"',
         'require_tool("nm")',
         '"-create"',
         '"--remove-signature"',
@@ -477,6 +584,7 @@ def test_static_fail_closed_contract() -> None:
 
 def main() -> int:
     test_tree_classification_and_shared_matching()
+    test_host_signed_moltenvk_matching()
     test_thin_manifest_metadata_reinspection_contract()
     test_source_provenance_validation()
     test_exact_slice_contracts()

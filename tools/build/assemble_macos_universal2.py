@@ -44,12 +44,13 @@ COMMON_BUILD_FIELDS = (
 )
 # libMoltenVK.dylib is a third-party Vulkan-on-Metal translation layer that
 # openQ4 does not build. It ships as a genuinely universal (arm64 + x86_64)
-# binary, so the arm64 and x64 thin trees stage byte-identical copies of it and
-# it flows through as ordinary shared payload. It is deliberately NOT a
+# binary and flows through as shared payload. It is deliberately NOT a
 # CODE_KEY: lipo must not touch it, its install name must not be rewritten, and
-# it has no openQ4 entry point to check. Treating it as shared payload also
-# means validate_matching_inputs() rejects two thin trees that staged different
-# MoltenVK builds, and copy_shared_payload() reproduces it byte-for-byte.
+# it has no openQ4 entry point to check. Apple's ad-hoc signer can emit different
+# signature envelopes on Intel and Apple Silicon hosts, so assembly validates
+# both signed inputs and compares temporary signature-stripped copies. All
+# unsigned MoltenVK bytes must still match exactly, and copy_shared_payload()
+# reproduces the validated ARM64-host copy before final package signing.
 MOLTENVK_DYLIB_NAME = "libMoltenVK.dylib"
 REQUIRED_SHARED_PATHS = (
     "openQ4.icns",
@@ -624,6 +625,45 @@ def validate_matching_inputs(
             raise Universal2Error(f"thin {key} dependency sets differ between arm64 and x64")
 
 
+def signature_normalized_shared_records(
+    root: Path,
+    shared: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Return matching records with only MoltenVK's host signature removed.
+
+    Both recorded files remain immutable and retain their independently valid
+    signatures. The temporary copy makes a strict underlying-byte comparison
+    possible without accepting two different MoltenVK builds merely because
+    both have valid ad-hoc signatures.
+    """
+
+    normalized = {relative: dict(record) for relative, record in shared.items()}
+    if MOLTENVK_DYLIB_NAME not in normalized:
+        raise Universal2Error(f"thin macOS payload is missing required {MOLTENVK_DYLIB_NAME}")
+
+    source = require_regular_file(root / MOLTENVK_DYLIB_NAME, "host-signed MoltenVK shared payload")
+    validate_exact_arches(source, UNIVERSAL_MACHO_ARCHES)
+    codesign = require_tool("codesign")
+    run_command(
+        [codesign, "--verify", "--strict", "--all-architectures", str(source)],
+        f"verifying all MoltenVK signature slices for {source}",
+    )
+    with tempfile.TemporaryDirectory(prefix="openq4-moltenvk-signature-") as temporary:
+        unsigned = Path(temporary) / MOLTENVK_DYLIB_NAME
+        shutil.copy2(source, unsigned)
+        run_command(
+            [codesign, "--remove-signature", str(unsigned)],
+            f"normalizing host-dependent MoltenVK signature for {source}",
+        )
+        normalized[MOLTENVK_DYLIB_NAME] = {
+            "path": MOLTENVK_DYLIB_NAME,
+            "sha256": file_sha256(unsigned),
+            "size": unsigned.stat().st_size,
+            "mode": stat.S_IMODE(unsigned.stat().st_mode),
+        }
+    return normalized
+
+
 def remove_signature_if_present(path: Path) -> None:
     codesign = require_tool("codesign")
     inspected = subprocess.run(
@@ -765,7 +805,14 @@ def assemble(args: argparse.Namespace) -> None:
     x64_manifest = load_thin_manifest(x64_root, "x64")
     arm_shared = validate_recorded_tree(arm_root, "arm64", arm_manifest)
     x64_shared = validate_recorded_tree(x64_root, "x64", x64_manifest)
-    validate_matching_inputs(arm_manifest, x64_manifest, arm_shared, x64_shared)
+    arm_shared_for_matching = signature_normalized_shared_records(arm_root, arm_shared)
+    x64_shared_for_matching = signature_normalized_shared_records(x64_root, x64_shared)
+    validate_matching_inputs(
+        arm_manifest,
+        x64_manifest,
+        arm_shared_for_matching,
+        x64_shared_for_matching,
+    )
 
     temporary_root = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_parent))
     try:
@@ -786,6 +833,9 @@ def assemble(args: argparse.Namespace) -> None:
         "machoArchitectures": sorted(UNIVERSAL_MACHO_ARCHES),
         **{field: arm_manifest[field] for field in COMMON_BUILD_FIELDS},
         "sharedPayloadSha256": arm_manifest["sharedPayloadSha256"],
+        "signatureNormalizedSharedPayloadSha256": canonical_json_sha256(
+            list(arm_shared_for_matching.values())
+        ),
         "sharedFileCount": arm_manifest["sharedFileCount"],
         "thinManifestSha256": {
             "arm64": file_sha256(arm_root / THIN_MANIFEST_NAME),
