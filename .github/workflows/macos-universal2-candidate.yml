@@ -567,6 +567,7 @@ jobs:
           smoke_cwd="${smoke_root}/finder-style-cwd"
           smoke_save="${smoke_root}/save"
           smoke_log="${smoke_save}/baseoq4/logs/macos_universal2_candidate_app_smoke.log"
+          smoke_console="${smoke_root}/console.log"
           smoke_timeout_marker="${smoke_root}/timed-out"
           smoke_exit_status="${smoke_root}/app-exit-status"
           rm -rf "${smoke_root}"
@@ -583,7 +584,7 @@ jobs:
               +set r_fullscreen 0 \
               +set r_ignoreGLErrors 0 \
               +rendererDefaultSafetySelfTest \
-              +quit &
+              +quit > "${smoke_console}" 2>&1 &
             app_pid=$!
             (
               sleep 90
@@ -615,17 +616,29 @@ jobs:
             echo "Universal2 app smoke did not record the application exit status."
             exit 1
           fi
+          if [ ! -f "${smoke_console}" ]; then
+            echo "Universal2 app smoke console output was not created: ${smoke_console}"
+            exit 1
+          fi
           app_status="$(tr -d '[:space:]' < "${smoke_exit_status}")"
           if ! [[ "${app_status}" =~ ^[0-9]+$ ]] || [ "${app_status}" -gt 127 ]; then
             echo "Universal2 app smoke ended abnormally with status '${app_status}'."
             exit 1
           fi
-          grep -F "RendererDefaultSafety self-test passed" "${smoke_log}" >/dev/null
-          grep -F "Filesystem paths:" "${smoke_log}" >/dev/null
-          grep -F "fs_cdpath='${package_dir}/openQ4.app/Contents/Resources'" "${smoke_log}" >/dev/null
-          grep -F "game-sp_universal2.dylib" "${smoke_log}" >/dev/null
-          if grep -Eiq '(^|[[:space:]])(FATAL|Sys_Error):' "${smoke_log}"; then
-            echo "Universal2 app smoke log contains a fatal startup diagnostic."
+          require_smoke_output() {
+            local expected="$1"
+            if ! grep -Fq "${expected}" "${smoke_console}"; then
+              echo "Universal2 app smoke console output is missing: ${expected}"
+              tail -n 160 "${smoke_console}" || true
+              exit 1
+            fi
+          }
+          require_smoke_output "RendererDefaultSafety self-test passed"
+          require_smoke_output "Filesystem paths:"
+          require_smoke_output "fs_cdpath='${package_dir}/openQ4.app/Contents/Resources'"
+          require_smoke_output "Selected game module: logical='game_sp' binary='game-sp_universal2'"
+          if grep -Eiq '(^|[[:space:]])(FATAL|Sys_Error):' "${smoke_console}" "${smoke_log}"; then
+            echo "Universal2 app smoke output contains a fatal startup diagnostic."
             exit 1
           fi
           if [ "${app_status}" -ne 0 ]; then

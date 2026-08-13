@@ -160,11 +160,17 @@ def validate_candidate_workflow() -> None:
     )
     for token in (
         'smoke_exit_status="${smoke_root}/app-exit-status"',
+        'smoke_console="${smoke_root}/console.log"',
+        '+quit > "${smoke_console}" 2>&1 &',
         "printf '%s\\n' \"${app_status}\" > \"${smoke_exit_status}\"",
         'app_status="$(tr -d \'[:space:]\' < "${smoke_exit_status}")"',
         'if ! [[ "${app_status}" =~ ^[0-9]+$ ]] || [ "${app_status}" -gt 127 ]; then',
-        "RendererDefaultSafety self-test passed",
-        "Universal2 app smoke log contains a fatal startup diagnostic.",
+        'require_smoke_output "RendererDefaultSafety self-test passed"',
+        'require_smoke_output "Filesystem paths:"',
+        'require_smoke_output "fs_cdpath=\'${package_dir}/openQ4.app/Contents/Resources\'"',
+        'require_smoke_output "Selected game module: logical=\'game_sp\' binary=\'game-sp_universal2\'"',
+        'grep -Eiq \'(^|[[:space:]])(FATAL|Sys_Error):\' "${smoke_console}" "${smoke_log}"',
+        "Universal2 app smoke output contains a fatal startup diagnostic.",
         'if [ "${app_status}" -ne 0 ]; then',
         'if [ -f "${smoke_timeout_marker}" ]; then',
         "exit 124",
@@ -174,9 +180,10 @@ def validate_candidate_workflow() -> None:
     require_before(
         finder_smoke,
         'app_status="$(tr -d \'[:space:]\' < "${smoke_exit_status}")"',
-        'grep -F "RendererDefaultSafety self-test passed"',
+        'require_smoke_output "RendererDefaultSafety self-test passed"',
         "candidate Finder-style marker validation",
     )
+    reject(finder_smoke, 'grep -F "Filesystem paths:" "${smoke_log}"', "candidate pre-log marker source")
 
 
 def validate_docs_and_wiring() -> None:
