@@ -268,6 +268,17 @@ idCVar r_crtScanlineStrength( "r_crtScanlineStrength", "0.55", CVAR_RENDERER | C
 idCVar r_crtMaskStrength( "r_crtMaskStrength", "0.35", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "phosphor mask intensity for the CRT monitor post-process", 0.0f, 1.0f );
 idCVar r_crtCurvature( "r_crtCurvature", "0.01", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "screen curvature amount for the CRT monitor post-process", 0.0f, 0.25f );
 idCVar r_crtChromatic( "r_crtChromatic", "0.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "optional channel convergence offset in pixel units for the CRT monitor post-process", 0.0f, 0.35f );
+
+// openQ4 underwater view
+idCVar r_underwater( "r_underwater", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable the underwater view post-process" );
+idCVar r_underwaterWarp( "r_underwaterWarp", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "refraction strength of the underwater view, 0 disables the warp", 0.0f, 4.0f );
+idCVar r_underwaterBlur( "r_underwaterBlur", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "soft focus strength of the underwater view, 0 keeps the image sharp", 0.0f, 4.0f );
+idCVar r_underwaterEdgeSoften( "r_underwaterEdgeSoften", "0.8", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "how much the underwater view loses focus toward its edges - a soft focus mask, it never darkens the image", 0.0f, 2.0f );
+idCVar r_underwaterCaustics( "r_underwaterCaustics", "0.06", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "strength of the moving light pattern in the underwater view", 0.0f, 0.5f );
+idCVar r_underwaterBloom( "r_underwaterBloom", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "halo suspended particulate throws around lights underwater", 0.0f, 4.0f );
+idCVar r_underwaterAberration( "r_underwaterAberration", "0.35", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "channel separation toward the edges of the underwater view", 0.0f, 4.0f );
+idCVar r_underwaterParticles( "r_underwaterParticles", "0.25", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "marine snow drifting past the underwater view", 0.0f, 2.0f );
+idCVar r_underwaterVisibility( "r_underwaterVisibility", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "scales how far you can see through a liquid before it fogs out", 0.01f, 8.0f );
 idCVar r_celShading( "r_celShading", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "cel shade model entities: quantized lighting plus silhouette outlines on players, monsters, moveables and the view weapon" );
 idCVar r_celShadingWorld( "r_celShadingWorld", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "extend cel shading to BSP world geometry, adding banded lighting and screen-space edge outlines" );
 idCVar r_celShadingBands( "r_celShadingBands", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "quantize interaction lighting into cel bands; disable to keep smooth lighting and use outlines alone" );
@@ -4286,6 +4297,13 @@ idRenderSystemLocal::BeginLevelLoad
 ========================
 */
 void idRenderSystemLocal::BeginLevelLoad( void ) {
+	// SetUnderwaterView is the only writer of this state, and it is driven by the game
+	// each frame. A map change started while the player was submerged would otherwise
+	// leave the effect live across the whole loading screen and into the first frames
+	// of the new map, costing a full-screen copy per loading-screen present.
+	underwaterAmount = 0.0f;
+	underwaterTint.Zero();
+
 	renderModelManager->BeginLevelLoad();
 	globalImages->BeginLevelLoad();
 }

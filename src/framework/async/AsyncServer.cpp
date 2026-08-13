@@ -715,6 +715,7 @@ void idAsyncServer::ClearClient( int clientNum ) {
 	client.lastEmptyTime = 0;
 	client.lastPingTime = 0;
 	client.lastSnapshotTime = 0;
+	client.lastSnapshotGameFrame = 0;
 	client.lastPacketTime = 0;
 	client.lastInputTime = 0;
 	client.snapshotSequence = 0;
@@ -750,6 +751,10 @@ void idAsyncServer::InitClient( int clientNum, int clientId, int clientRate ) {
 	client.lastEmptyTime = serverTime;
 	client.lastPingTime = serverTime;
 	client.lastSnapshotTime = serverTime;
+	// openQ4: gameFrame restarts at 0 on a map change, so a frame number carried over
+	// from the previous map would sit in the future and suppress everything the game
+	// gates on it until the new map caught up.
+	client.lastSnapshotGameFrame = gameFrame;
 	client.lastPacketTime = serverTime;
 	client.lastInputTime = serverTime;
 	client.acknowledgeSnapshotSequence = 0;
@@ -834,6 +839,13 @@ void idAsyncServer::DropClient( int clientNum, const char *reason ) {
 	int			i;
 	idBitMsg	msg;
 	byte		msgBuf[MAX_MESSAGE_SIZE];
+
+	// openQ4: this is reachable from console commands and from the game, so validate
+	// before the array access rather than trusting every caller to have done it.
+	if ( clientNum < 0 || clientNum >= MAX_ASYNC_CLIENTS ) {
+		common->DWarning( "idAsyncServer::DropClient: client %d out of range", clientNum );
+		return;
+	}
 
 	serverClient_t &client = clients[clientNum];
 
@@ -1252,7 +1264,10 @@ bool idAsyncServer::SendSnapshotToClient( int clientNum ) {
 	idBitMsg	msg;
 	byte		msgBuf[MAX_MESSAGE_SIZE];
 	usercmd_t *	last;
-	dword		clientInPVS[MAX_ASYNC_CLIENTS >> 3];
+	// openQ4: the game fills this dword-packed - one bit per client, ( n >> 5 ) / ( n & 31 ) -
+	// and only writes ( numPVSClients + 31 ) >> 5 dwords.  It used to be sized and read as if
+	// it were byte-packed, so clients 8 and up were gated on dwords the game never touched.
+	dword		clientInPVS[( MAX_ASYNC_CLIENTS + 31 ) >> 5];
 
 	serverClient_t &client = clients[clientNum];
 
@@ -1291,7 +1306,13 @@ bool idAsyncServer::SendSnapshotToClient( int clientNum ) {
 	msg.WriteShort( idMath::ClampShort( client.clientAheadTime ) );
 
 	// write the game snapshot
-	game->ServerWriteSnapshot( clientNum, client.snapshotSequence, msg, clientInPVS, MAX_ASYNC_CLIENTS, 0 );
+	// openQ4: the game only fills the dwords it needs, so start from a known state rather
+	// than whatever happened to be on the stack.  lastSnapshotGameFrame used to be a
+	// literal 0, which made every "did this happen since your last snapshot" test in the
+	// game true forever - the hit confirm bit latched on and the client retriggered the
+	// hit feedback on every single snapshot for the rest of the life.
+	memset( clientInPVS, 0, sizeof( clientInPVS ) );
+	game->ServerWriteSnapshot( clientNum, client.snapshotSequence, msg, clientInPVS, MAX_ASYNC_CLIENTS, client.lastSnapshotGameFrame );
 
 	// write the latest user commands from the other clients in the PVS to the snapshot
 	for ( last = NULL, i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
@@ -1302,7 +1323,7 @@ bool idAsyncServer::SendSnapshotToClient( int clientNum ) {
 		}
 
 		// if the client is not in the PVS
-		if ( !( clientInPVS[i >> 3] & ( 1 << ( i & 7 ) ) ) ) {
+		if ( !( clientInPVS[i >> 5] & ( 1 << ( i & 31 ) ) ) ) {
 			continue;
 		}
 
@@ -1329,6 +1350,7 @@ bool idAsyncServer::SendSnapshotToClient( int clientNum ) {
 	}
 
 	client.lastSnapshotTime = serverTime;
+	client.lastSnapshotGameFrame = gameFrame;
 	client.snapshotSequence++;
 	client.numDuplicatedUsercmds = 0;
 

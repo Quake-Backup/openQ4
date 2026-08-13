@@ -294,6 +294,10 @@ public:
 	// we don't want to redraw the loading screen for every single
 	// console print that happens
 	int					lastPacifierTime;
+	// Measured cost of the last blocking-load redraw. The pacifier interval backs
+	// off to a multiple of this so loading-screen presentation can never consume an
+	// unbounded share of the load's wall clock on a slow present path.
+	int					lastPacifierDrawMsec;
 	bool				loadingAssetQueueActive;
 	int					loadingAssetQueueTotal;
 	int					loadingAssetQueueLoaded;

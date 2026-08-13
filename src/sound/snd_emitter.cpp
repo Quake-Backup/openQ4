@@ -59,6 +59,11 @@ static const float SOUND_OCCLUSION_PER_BLOCKED_PORTAL = 0.5f;
 static const float SOUND_ENVIROSUIT_OCCLUSION = 0.5f;
 // openQ4: heavier than the enviro suit - water swallows high frequencies far more than a helmet
 static const float SOUND_UNDERWATER_OCCLUSION = 0.75f;
+// openQ4: sound crossing the water surface. Most of the energy hitting an air/water boundary is
+// reflected rather than transmitted, which is why a world above the surface goes distant and dull
+// the moment your head goes under - and why a pump running underwater is suddenly the loudest
+// thing you can hear.
+static const float SOUND_LIQUID_BOUNDARY_OCCLUSION = 0.65f;
 static const int SOUND_FADE_MAX_MSEC = 24 * 60 * 60 * 1000;
 static const float SOUND_FADE_MAX_DB = 24.0f;
 static const int SOUND_UNMUTABLE_PRIORITY_BOOST = 100000;
@@ -759,6 +764,12 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	{
 		portalOcclusion = SoundCombineOcclusion( portalOcclusion, SOUND_OCCLUSION_PER_BLOCKED_PORTAL * emitter->occludingPortalCount );
 	}
+	// openQ4: a surface between the emitter and the ear is a far stronger barrier than a doorway
+	if( emitter->crossesLiquidBoundary && ( parms.soundShaderFlags & SSF_NO_OCCLUSION ) == 0 )
+	{
+		portalOcclusion = SoundCombineOcclusion( portalOcclusion, SOUND_LIQUID_BOUNDARY_OCCLUSION );
+	}
+
 	hardwareVoice->SetOcclusion( portalOcclusion );
 	// openQ4: the enviro suit and being underwater both muffle the mix; take whichever is heavier
 	// rather than letting one cancel the other out
@@ -846,6 +857,7 @@ void idSoundEmitterLocal::Init( int i, idSoundWorldLocal* sw )
 	spatializedDistance = 0.0f;
 	spatializedOrigin.Zero();
 	occludingPortalCount = 0;
+	crossesLiquidBoundary = false;
 
 	memset( &parms, 0, sizeof( parms ) );
 
@@ -1002,6 +1014,7 @@ void idSoundEmitterLocal::Update( int currentTime )
 	spatializedDistance = directDistance;
 	spatializedOrigin = origin;
 	occludingPortalCount = 0;
+	crossesLiquidBoundary = false;
 
 	// Initialize all channels to silence
 	for( int i = 0; i < channels.Num(); i++ )
@@ -1067,6 +1080,18 @@ void idSoundEmitterLocal::Update( int currentTime )
 				spatializedDistance = maxDistance * METERS_TO_DOOM;
 				soundWorld->ResolveOrigin( 0, NULL, soundInArea, 0.0f, 0, origin, this );
 				spatializedDistance *= DOOM_TO_METERS;
+			}
+
+			// openQ4: does this sound have to cross a liquid surface to reach the ear? Asked here
+			// because this is already the per-emitter geometry step, and it is the same thread.
+			if( soundWorld->liquidTest != NULL )
+			{
+				const bool emitterSubmerged = soundWorld->liquidTest( origin );
+				crossesLiquidBoundary = ( emitterSubmerged != soundWorld->underwaterActive );
+			}
+			else
+			{
+				crossesLiquidBoundary = false;
 			}
 		}
 	}

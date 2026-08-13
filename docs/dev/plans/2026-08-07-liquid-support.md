@@ -122,6 +122,23 @@ in a stock Quake 4 map — see "Testing" for what was verified and what that tur
 - Drowning folded into `UpdateAir`, reusing the vacuum air reservoir, its HUD readout and its
   sounds, draining `pm_air / pm_waterAir` times faster while submerged. Q3's rising damage ramp,
   capped by `g_drownDamageMax`.
+- **Swimming revised.** Jump and crouch are the vertical axis and now work while stood on the
+  bottom: `CmdScale` zeroed `upmove` whenever `walking` was set, and a swimmer resting on the floor
+  of a pool is still "walking", so neither key did anything. `CmdScale` takes an `allowVertical`
+  flag and `WaterMove` passes it.
+- **Swimming is its own gait.** `MovePlayer` substitutes `swimSpeed` for `playerSpeed` once above
+  `WATERLEVEL_FEET`, after `CheckDuck`. Without that, holding crouch to descend dropped the swimmer
+  to `crouchSpeed` — descending was half the speed of ascending — and swimming straight up with no
+  other key held counted as "not running" in `AdjustSpeed` and fell to `pm_walkspeed`.
+- **Swim speed matches Quake 3.** `pm_swimSpeed` 160, which is Q3's 320 run speed times its
+  `pm_swimScale` 0.5. openQ4 runs at 160, so parity puts swimming at the same number as running —
+  a consequence of Quake 4's slower footspeed. `pm_swimSpeedFast` 200 applies in multiplayer and
+  once `isStrogg` is set, which the campaign flips when the player's model changes to a strogg-team
+  one. `idPlayer::OpenQ4_SwimSpeed` picks between them and applies the same haste/influence/turbo
+  modifiers the run speed gets; `PM_SWIMSCALE` survives only as the wading clamp it also feeds.
+- **`PM_WATERFRICTION` 2.0 → 1.0**, Quake 3's value. Doom 3 doubled it, and that extra drag was
+  eating the acceleration before it ever reached the speed cap — most of why id Tech 4 swimming
+  feels like treacle.
 - Looping bubble trail from the head while submerged.
 - Wade footsteps, finally reading the `snd_water_wade` key that retail `player.def` has carried
   since 2005 and that nothing had ever looked at.
@@ -148,11 +165,43 @@ in a stock Quake 4 map — see "Testing" for what was verified and what that tur
 
 **View and audio**
 
-- `idPlayerView::LiquidAtEye` drives the audio muffle, and `LiquidOverlay` draws a per-liquid full
-  screen tint under the HUD. Both key off the **eye position**, not `waterLevel`: `WATERLEVEL_HEAD`
-  needs the whole bounding box under, and the camera sits 8 units below the top of that box
-  standing and 16 crouched, so keying off water level would leave the screen clear and the audio
-  dry while the view was visibly submerged.
+- `idPlayerView::LiquidAtEye` drives the audio muffle and the view treatment. Both key off the
+  **eye position**, not `waterLevel`: `WATERLEVEL_HEAD` needs the whole bounding box under, and the
+  camera sits 8 units below the top of that box standing and 16 crouched, so keying off water level
+  would leave the screen clear and the audio dry while the view was visibly submerged.
+- **Underwater view post-process** (`glprogs/underwater.{vs,fs}`, `RB_STD_Underwater` in
+  `draw_common.cpp`): crossed dual-frequency sine refraction, a rotated six-tap soft focus whose
+  radius grows toward the view edge, per-liquid absorption with chroma loss, vignette and faint
+  caustics.
+- It is a **scene pass, not a back-buffer one**. It runs inside `RB_STD_DrawView` after the world's
+  own `_currentRender` overlays and before `RB_RenderDebugTools`, confined to
+  `backEnd.viewDef->viewport` and `->scissor`, and gated on `RB_IsMainScenePostProcessView()`. So
+  the HUD, menus, debug tools, mirrors, portal skies and in-world monitors are all left dry — only
+  the 3D view is under the water. Verified by screenshot: the crosshair stays crisp and white while
+  the world behind it is tinted, warped and soft at the edges.
+- The scene texture is larger than the viewport, so texture coordinates arrive as `0..texScale`
+  rather than `0..1`. The shader takes `texScale` as a uniform and normalises before doing anything
+  positional; getting this wrong puts the focus mask centre in the wrong place and samples outside
+  the view.
+- **It is depth-aware.** The pass copies the depth buffer alongside the scene (the same way
+  `RB_STD_CelWorldOutline` does) and reconstructs view-space Z from `projectionMatrix[10]/[14]`.
+  Absorption is Beer-Lambert per channel, in-scattering fills back what absorption removes, and
+  scattering blur and bloom radius both grow with travelled distance. This is what separates a
+  volume from a tint, and none of it works without depth.
+- The tint the game sends is **the transmittance at `fogDistance`**, so `pow( tint, travel )` is
+  the extinction: a designer picks a colour and a range and the physics falls out. Water 1400
+  units, slime 420, lava 110.
+- **The edge treatment is a focus mask, not a vignette.** It never darkens; it drives the soft
+  focus and the chromatic aberration. Classic corner darkening was tried first and rejected — it
+  reads as a black frame rather than as water, and it disappears entirely in a dark scene.
+- The state reaches the renderer through `idRenderSystem::SetUnderwaterView( amount, tint )`, which
+  **returns whether the backend will actually draw it**. The Vulkan module supports only a fixed set
+  of natively reimplemented material program families and no arbitrary GLSL, so it answers false
+  (`vk_GLStubs.cpp`) and `idPlayerView` falls back to a flat colour wash. `r_underwater 0` produces
+  the same fallback on GL. The amount eases in and out over ~1/6 s so breaking the surface does not
+  cut.
+- The tint the game publishes is an **absorption filter** — what the liquid lets through — not a
+  wash laid over the top, because the shader multiplies the scene by it.
 
 **Monsters and NPCs**
 
@@ -165,6 +214,19 @@ in a stock Quake 4 map — see "Testing" for what was verified and what that tur
   point query for anything that is dry, which is the normal case.
 - `idGameLocal::PlayLiquidSoundOn` / `PlayLiquidEffectAt` — the shared presentation path; `idPlayer`
   now delegates to these rather than carrying its own copies.
+
+**Trails and sound**
+
+- Smoke does not survive underwater. `idGameLocal::PlayLiquidTrail` draws the liquid's own wake
+  effect along a segment, and both the projectile fly trail (`idProjectile::Think`, which swaps the
+  effect on the liquid transition and restores `fx_fly` on the way out) and the hitscan tracers in
+  `HitScan` fall back to it when the shot starts inside a liquid.
+- **Sound occlusion across the surface.** The global muffle was not enough: an air/water boundary
+  reflects most of the energy that hits it. `idSoundWorld::SetLiquidTest` takes a callback from the
+  game — liquid lives in the collision world, which the sound system cannot reach — and the
+  per-emitter spatialisation step that already does portal tracing uses it to mark emitters that
+  are in a different medium from the listener. Those get `SOUND_LIQUID_BOUNDARY_OCCLUSION` on top
+  of any portal occlusion.
 
 **Bots**
 
@@ -219,6 +281,10 @@ Verified in `game/mcc_1`, reading `qconsole.log`:
 | monster lava/slime | every AI in the map burns; JUDD/EVANS 125 → 95 → 65 |
 | monster drowning | JUDD/EVANS/PAULSON/DUNNIGAN 125 → 110 → 95 after twelve seconds under |
 | invulnerable NPCs | Quake 4's story marines correctly ignore both, no special case needed |
+| swim up | holding jump underwater rises through level 3 → 2 → 1 → 0, air refilling as it goes |
+| swim speed | ~155-160 u/s measured with forward held, against Quake 3's 160 (was capped at 80) |
+| underwater view | shader compiles and loads; water reads blue with edge vignette and soft focus |
+| lava view | same pass, warm amber - red kept, blue cut - visibly distinct from water |
 
 Getting a level to actually simulate unattended is its own problem. A loaded Quake 4 map can sit
 waiting on input, and with no input the session never runs a game tic — the player spawns, one
@@ -275,8 +341,6 @@ the window foreground from a script makes it worse, not better.
   `TFL_SWIM` and `TFL_WATERJUMP` can never be produced. SP bot water navigation is limited to the
   runtime behaviour above. The MP navmesh is generated at runtime and was fixable, which is why it
   was.
-- **No underwater screen warp**, only a tint. A warp needs a distortion material and a pass hooked
-  into `_currentRender`.
 - **No moving liquid volumes.** `KeepContents` exists on `idStaticEntity` and `idDamagable` only;
   every mover hardcodes its contents, so a rising pool or a lava flow would need new code.
 - **`trigger_hurt` overlap.** Maps that faked lava with a trigger over decorative water will

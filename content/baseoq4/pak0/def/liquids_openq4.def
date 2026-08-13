@@ -127,6 +127,14 @@ entityDef liquid_openq4
 	"fx_bubbles_lava"			"effects/levels/recomp_bubble.fx"
 	"fx_bubbles_slime"			"effects/levels/recomp_bubble.fx"
 
+	// The wake something leaves crossing the liquid. Smoke does not survive underwater, so a
+	// projectile's fly trail and a hitscan tracer are both replaced by this while they are in it.
+	// Point these at a beam-style effect if you have one: the game passes an end origin, so an
+	// effect authored with a trail segment will stretch along the shot.
+	"fx_trail_water"			"effects/levels/recomp_bubble.fx"
+	"fx_trail_lava"				"effects/levels/recomp_bubble.fx"
+	"fx_trail_slime"			"effects/levels/recomp_bubble.fx"
+
 	// smaller splash used for projectiles and thrown objects breaking the surface
 	"fx_impact_water"			"effects/ambient/splash_med.fx"
 	"fx_impact_lava"			"effects/levels/putra/acid_splash.fx"

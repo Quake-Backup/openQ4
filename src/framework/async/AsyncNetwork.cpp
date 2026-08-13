@@ -608,7 +608,14 @@ void idAsyncNetwork::Kick_f( const idCmdArgs &args ) {
 		return;
 	}
 	iclient = atoi( clientId );
-	
+
+	// openQ4: DropClient indexes the client array before it validates anything, so a
+	// typo'd client number used to be an out of bounds access rather than a usage error.
+	if ( iclient < 0 || iclient >= MAX_ASYNC_CLIENTS ) {
+		common->Printf( "usage: kick <client number>, must be in the range 0 - %d\n", MAX_ASYNC_CLIENTS - 1 );
+		return;
+	}
+
 	if ( server.GetLocalClientNum() == iclient ) {
 		common->Printf( "can't kick the host\n" );
 		return;

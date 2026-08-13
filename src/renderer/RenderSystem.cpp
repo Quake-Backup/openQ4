@@ -2140,6 +2140,27 @@ const glconfig_t &idRenderSystemLocal::GetGLConfig( void ) const {
 
 /*
 ===============
+idRenderSystemLocal::SetUnderwaterView
+
+Publishes the underwater state for this frame and reports whether the effect will actually be
+drawn. Only the GL back end has the post-process pass; the Vulkan module supports a fixed set of
+material programs and no arbitrary GLSL, so it answers false and the caller falls back.
+===============
+*/
+bool idRenderSystemLocal::SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance ) {
+	underwaterAmount = idMath::ClampFloat( 0.0f, 1.0f, amount );
+	underwaterTint = tint;
+	underwaterFogDistance = Max( 1.0f, fogDistance );
+
+	if ( underwaterAmount <= 0.0f ) {
+		return true;		// nothing to draw, and nothing for the caller to fall back to either
+	}
+
+	return RB_UnderwaterViewAvailable();
+}
+
+/*
+===============
 idRenderSystemLocal::GetRenderTextureSize
 ===============
 */

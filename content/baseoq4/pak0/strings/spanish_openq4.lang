@@ -546,6 +546,12 @@
 	"#str_41690"	"Reglas de control de zona gestionadas con fuego amigo, preparación unánime y tiempos muertos tácticos."
 	"#str_41691"	"Juego por rondas competitivo"
 	"#str_41692"	"Reglas por rondas gestionadas para Clan Arena, Freeze Tag y Red Rover."
+	"#str_41693"	"Partida única"
+	"#str_41694"	"Un solo mapa decisivo. Ambos bandos reducen el grupo a uno."
+	"#str_41695"	"Al mejor de tres"
+	"#str_41696"	"Gana quien logre dos mapas. Los vetos se alternan entre bandos."
+	"#str_41697"	"Al mejor de cinco"
+	"#str_41698"	"Gana quien logre tres mapas. Los vetos se alternan entre bandos."
 
 	"#str_41700"	"Control de partida"
 	"#str_41701"	"Estado"
@@ -898,4 +904,5 @@
 	"#str_42747"	"Armadura"
 	"#str_42748"	"Objeto"
 	"#str_42749"	"Este comando de servidor heredado está desactivado durante una partida gestionada. Usa Match Control."
+	"#str_42750"	"Debes esperar %d segundos más antes de convocar otra votación."
 }

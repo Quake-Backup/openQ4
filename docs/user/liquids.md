@@ -19,9 +19,25 @@ meant to be dangerous — so liquids are something you author, and this page is 
 Water level is the Quake ladder: feet, waist, head. Damage scales with it, so standing ankle-deep
 in lava is a third of the punishment of being under it — and being under it kills in about a second.
 
-Movement matches Quake 3. Wading clamps your ground speed, swimming runs at half speed, and pushing
-into a ledge while waist-deep does the water jump that pops you out of the pool. Falling damage is
-halved at feet depth, quartered at waist depth, and gone entirely once your head is under.
+Movement matches Quake 3. Wading clamps your ground speed, and pushing into a ledge while waist-deep
+does the water jump that pops you out of the pool. Falling damage is halved at feet depth, quartered
+at waist depth, and gone entirely once your head is under.
+
+**Swimming.** Jump swims up, crouch swims down, and they keep working while you are stood on the
+bottom of a pool. With no input at all you sink, as you always did in Quake.
+
+Quake 3 swims at 160 units a second — its 320 run speed times a swim scale of 0.5. openQ4 runs at
+160, so matching Quake 3 puts swimming at the same number as running here; that is a consequence of
+Quake 4's slower footspeed rather than a mistake. Multiplayer and a stroggified player swim faster
+still:
+
+| | swim speed |
+| --- | --- |
+| singleplayer, before stroggification | 160 (`pm_swimSpeed`, Quake 3's figure) |
+| multiplayer, or after stroggification | 200 (`pm_swimSpeedFast`) |
+
+Swimming is its own gait: it is not slowed by holding crouch to descend, and not dropped to walk
+speed for swimming straight up with no other key held.
 
 ## Building a liquid volume
 
@@ -74,6 +90,45 @@ pool will be a solid block.
 ships with Quake 4; `lava` and `slime` are added by openQ4 in
 `materials/types/liquids_openq4.mtt`.
 
+## Under the surface
+
+Putting your head under changes how the world looks and sounds.
+
+What makes water read as a *volume* rather than a colour filter is that everything it does gets
+stronger with distance, so the view effect is built around the depth buffer:
+
+- **Absorption.** Light loses red first, then green, exponentially with how far it travelled — the
+  single fact that most makes underwater look underwater. Each liquid states what it still lets
+  through at its own visibility range, so clear water carries a long way and lava barely a metre.
+- **In-scattering.** What the water absorbs it puts back as its own colour, which is why distance
+  goes pale and flat rather than simply dark. With absorption, this is the pair that turns a tint
+  into a volume.
+- **Bloom.** Suspended particulate throws light sideways, so every bright source grows a halo that
+  widens with the water between it and you. It is the most recognisable single cue in the set.
+- **Scattering blur.** Distance softens while near surfaces stay sharp.
+- **Soft focus toward the edges.** A vignette in shape only — it never darkens anything. The centre
+  of the view stays readable and the periphery loses its edges, the way a dive mask behaves.
+- **Refraction.** Two crossed sine layers at different scales and speeds, so the wobble never reads
+  as a repeating pattern.
+- **Chromatic aberration** toward the edges, **caustics** from the surface overhead, and **marine
+  snow** drifting past.
+
+It eases in and out over about a sixth of a second, so breaking the surface does not cut.
+
+Only the 3D view is affected. The HUD, the crosshair and any menu stay sharp and untinted — the
+effect runs inside the world render, not over the finished frame.
+
+**Sound.** Everything muffles while your head is under, and anything on the other side of the
+surface is occluded on top of that: the world above goes distant and dull the moment you go under,
+and a machine running in the water with you becomes the loudest thing you can hear.
+
+**Trails.** Smoke does not survive underwater, so a projectile's trail and a weapon's tracer are
+both replaced by bubbles while they are in a liquid, and put back when they leave it.
+
+The effect needs the OpenGL renderer. On Vulkan — which supports only a fixed set of material
+programs, not arbitrary shaders — the game falls back to a flat colour wash so you still know you
+are under something. Setting `r_underwater 0` gives you the same fallback everywhere.
+
 ## A liquid volume without a brush
 
 If you just want a box of liquid — or you are adding one to a map you cannot recompile — there is an
@@ -99,8 +154,19 @@ spawn func_liquid_openq4_lava size "512 512 256"
 | `pm_waterAir` | 720 | frames underwater before drowning starts — 720 is Quake 3's twelve seconds |
 | `g_drownDamageMax` | 15 | ceiling on the rising drown damage |
 | `g_liquidDamageInterval` | 500 | milliseconds between lava and slime damage ticks |
-| `g_liquidScreenTint` | 1 | strength of the underwater screen tint, `0` turns it off |
-| `g_debugLiquid` | 0 | log water level changes, the air reservoir and every damage tick |
+| `g_liquidScreenTint` | 1 | overall strength of the underwater view, `0` turns it off |
+| `r_underwater` | 1 | the underwater view post-process; `0` falls back to a flat colour wash |
+| `r_underwaterWarp` | 1.0 | refraction strength |
+| `r_underwaterBlur` | 1.0 | how much distance softens the image |
+| `r_underwaterEdgeSoften` | 0.8 | soft focus toward the edges — a focus mask, it never darkens |
+| `r_underwaterBloom` | 1.0 | halo around lights |
+| `r_underwaterAberration` | 0.35 | channel separation toward the edges |
+| `r_underwaterParticles` | 0.25 | marine snow |
+| `r_underwaterVisibility` | 1.0 | scales how far you can see through any liquid |
+| `r_underwaterCaustics` | 0.06 | strength of the moving light pattern |
+| `pm_swimSpeed` | 160 | swim speed, Quake 3's figure |
+| `pm_swimSpeedFast` | 200 | swim speed in multiplayer and after stroggification |
+| `g_debugLiquid` | 0 | log water level changes, the air reservoir, speed and every damage tick |
 | `g_liquidTestVolume` | "" | dev aid: drop a `water`/`slime`/`lava` volume around the player on spawn |
 | `g_liquidTestVolumeSize` | 640 | cube size of that test volume |
 

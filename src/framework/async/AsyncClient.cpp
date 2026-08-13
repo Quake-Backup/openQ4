@@ -377,8 +377,11 @@ void idAsyncClient::DisconnectFromServer( void ) {
 		msg.WriteByte( CLIENT_RELIABLE_MESSAGE_DISCONNECT );
 		msg.WriteString( "disconnect" );
 
+		// openQ4: a full reliable queue is ordinary backpressure, not a programming
+		// error, and here the connection is already being torn down - there is nothing
+		// left to salvage by killing the process.  Drop the backlog and carry on.
 		if ( !channel.SendReliableMessage( msg ) ) {
-			common->Error( "client->server reliable messages overflow\n" );
+			common->Warning( "client->server reliable message queue is full, disconnecting without notifying the server" );
 		}
 
 		SendEmptyToServer( true );
@@ -737,8 +740,20 @@ void idAsyncClient::SendUserInfoToServer( void ) {
 	msg.WriteByte( CLIENT_RELIABLE_MESSAGE_CLIENTINFO );
 	msg.WriteDeltaDict( info, &sessLocal.mapSpawnData.userInfo[ clientNum ] );
 
+	// openQ4: a full reliable queue is backpressure, not a programming error, so it
+	// must not bring the whole process down through common->Error.  Warn and take the
+	// ordinary disconnect path, the way idAsyncServer::SendReliableMessage drops a
+	// client it can no longer talk to.  Unlike the server we deliberately leave the
+	// queue intact - see below.
 	if ( !channel.SendReliableMessage( msg ) ) {
-		common->Error( "client->server reliable messages overflow\n" );
+		common->Warning( "client->server reliable message queue overflowed, disconnecting" );
+		// Deliberately NOT ClearReliableMessages(): that re-inits reliableSend to
+		// sequence 1 while the server still expects the next sequence after the one
+		// it last accepted, so every later message - including the disconnect notice
+		// itself - would be silently discarded and the server would hold a ghost slot
+		// until the client timeout.  The queue dies with the channel a moment later.
+		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "disconnect\n" );
+		return;
 	}
 
 	sessLocal.mapSpawnData.userInfo[clientNum] = info;
@@ -1070,8 +1085,15 @@ void idAsyncClient::ProcessReliableMessagePure( const idBitMsg &msg ) {
 	outMsg.WriteLong( 0 );
 	outMsg.WriteLong( gamePakChecksum );
 
+	// openQ4: backpressure, not a programming error - see SendUserInfoToServer.
 	if ( !channel.SendReliableMessage( outMsg ) ) {
-		common->Error( "client->server reliable messages overflow\n" );
+		common->Warning( "client->server reliable message queue overflowed, disconnecting" );
+		// Deliberately NOT ClearReliableMessages(): that re-inits reliableSend to
+		// sequence 1 while the server still expects the next sequence after the one
+		// it last accepted, so every later message - including the disconnect notice
+		// itself - would be silently discarded and the server would hold a ghost slot
+		// until the client timeout.  The queue dies with the channel a moment later.
+		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "disconnect\n" );
 	}
 }
 
@@ -1108,6 +1130,13 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 			case SERVER_RELIABLE_MESSAGE_CLIENTINFO: {
 				int clientNum;
 				clientNum = msg.ReadByte();
+
+				// openQ4: wire value, so it indexes nothing until it is known to be a
+				// client slot.  userInfo only has MAX_ASYNC_CLIENTS entries.
+				if ( clientNum < 0 || clientNum >= MAX_ASYNC_CLIENTS ) {
+					common->Warning( "SERVER_RELIABLE_MESSAGE_CLIENTINFO: bad client number %d, ignored", clientNum );
+					break;
+				}
 
 				idDict &info = sessLocal.mapSpawnData.userInfo[ clientNum ];
 				bool haveBase = ( msg.ReadBits( 1 ) != 0 );
@@ -1158,6 +1187,11 @@ void idAsyncClient::ProcessReliableServerMessages( void ) {
 				char string[MAX_STRING_CHARS];
 				clientNum = msg.ReadLong( );
 				ReadLocalizedServerString( msg, string, MAX_STRING_CHARS );
+				// openQ4: wire value - see SERVER_RELIABLE_MESSAGE_CLIENTINFO above.
+				if ( clientNum < 0 || clientNum >= MAX_ASYNC_CLIENTS ) {
+					common->Warning( "SERVER_RELIABLE_MESSAGE_DISCONNECT: bad client number %d, ignored", clientNum );
+					break;
+				}
 				if ( clientNum == idAsyncClient::clientNum ) {
 					// Server-directed disconnects bypass the console disconnect command.
 					// Restore any Arena transaction before tearing down its listen session.
@@ -1301,8 +1335,18 @@ void idAsyncClient::ProcessConnectResponseMessage( const netadr_t from, const id
 
 	common->Printf( "received connect response from %s\n", Sys_NetAdrToString( from ) );
 
+	const int serverClientNum = msg.ReadLong();
+
+	// openQ4: this wire value ends up indexing userInfo and userCmds for the whole
+	// session, so refuse the connection outright rather than accept a bad slot.
+	if ( serverClientNum < 0 || serverClientNum >= MAX_ASYNC_CLIENTS ) {
+		common->Warning( "connect response assigned client number %d, out of range - aborting the connection", serverClientNum );
+		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "disconnect\n" );
+		return;
+	}
+
 	channel.Init( from, clientId );
-	clientNum = msg.ReadLong();
+	clientNum = serverClientNum;
 	clientState = CS_CONNECTED;
 	lastPacketTime = -9999;
 
@@ -1900,8 +1944,16 @@ void idAsyncClient::SendReliableGameMessage( const idBitMsg &msg ) {
 	outMsg.Init( msgBuf, sizeof( msgBuf ) );
 	outMsg.WriteByte( CLIENT_RELIABLE_MESSAGE_GAME );
 	outMsg.WriteData( msg.GetData(), msg.GetSize() );
+	// openQ4: backpressure, not a programming error - see SendUserInfoToServer.  The
+	// disconnect is buffered rather than immediate because this runs from game code.
 	if ( !channel.SendReliableMessage( outMsg ) ) {
-		common->Error( "client->server reliable messages overflow\n" );
+		common->Warning( "client->server reliable message queue overflowed, disconnecting" );
+		// Deliberately NOT ClearReliableMessages(): that re-inits reliableSend to
+		// sequence 1 while the server still expects the next sequence after the one
+		// it last accepted, so every later message - including the disconnect notice
+		// itself - would be silently discarded and the server would hold a ghost slot
+		// until the client timeout.  The queue dies with the channel a moment later.
+		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "disconnect\n" );
 	}
 }
 

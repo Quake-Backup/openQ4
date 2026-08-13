@@ -140,6 +140,50 @@ and coverage in alpha, matching the retail atlases so the GUI blend path is
 unchanged. Each glyph gets a transparent gutter wide enough to absorb the
 bleed guard `DeviceContext` applies when sampling.
 
+### Matching the bitmap fonts' size
+
+The point of the exercise is text that is *sharper*, not text that is bigger,
+smaller or differently spaced, so the sizing is held to the retail atlases in
+two separate places.
+
+**The ink.** Measured against the retail coverage, traced glyph extents land
+within a few percent of the atlas they model across all six faces and all three
+point sizes — the residual is the retail bitmap's own texel quantisation, which
+is 4 visual units per texel at 12 point. Advances are exact: every printable
+ASCII codepoint in every face reproduces the retail advance to the unit, so a
+string occupies the same width either way. The single exception is `chain`'s
+space, covered above.
+
+**The rect.** A retail `.fontdat` records each glyph as its ink plus a one texel
+border on every side, and one retail texel is one metric unit. The GUI reads
+those rects back as `glyph.width`/`glyph.height`, and they are not merely the
+drawn quad: `DrawText` derives its line spacing from `maxHeight`, the character
+cell it fits text into from `maxWidth`, and `TextHeight` from the tallest glyph
+in the string. So the border has to be one *metric unit*, which is `upscale`
+texels here, not the one texel the rasteriser leaves. Reporting the rasteriser's
+border instead makes the metrics shrink as the rasterisation scale rises — the
+same font reports a different cell at 1080p and at 1440p — and put GUI text a
+few pixels above where the bitmap path puts it. The atlas gutter covers this
+border as well as the bleed guard.
+
+`maxWidth`/`maxHeight` also skip the Windows-1252 punctuation band, 0x80–0x9F.
+The retail atlases leave much of it blank — `chain` and `profont` carry an empty
+2x2 rect for the florin, per mille, em dash and ellipsis, and `chain` gives them
+a zero advance as well — so the generator fills those slots from a donor face.
+Those donor glyphs are wider and taller than anything the retail font could
+draw: letting the per mille sign set `profont`'s layout cell inflated it by 62%.
+Measuring the repertoire the GUIs were authored against brings both extents to
+within 6% of retail for every face and size at 1080p and above, tightening as
+resolution rises. What is left is the rasteriser rounding the ink out to whole
+texels, which is the same quantisation the retail bitmaps carry.
+
+Two size divergences are left on purpose. `chain`'s repaired space makes any
+string containing one about 10% wider than the retail atlas draws it, which is
+the point of the repair. And the faces declare real `ascender`/`descender`
+values where several retail fonts declare wrong ones — `marine` reports a font
+height 66% larger — which is harmless because GUI layout reads neither field;
+see the text-background section for what does use them.
+
 That display height comes from **`glConfig`, not `engineWindowState`**. The
 latter is the engine-owned window mirror the module polls at present time: at
 font-registration time it still holds the pre-mode logical window size, and its

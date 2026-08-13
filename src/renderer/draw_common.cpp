@@ -4372,6 +4372,261 @@ static void RB_InitCRTStage( void ) {
 	rbCRTStageInitialized = true;
 }
 
+// openQ4 BEGIN
+/*
+=====================
+Underwater view
+
+A back-buffer pass, run before the CRT filter so a CRT look still sits on top of the water rather
+than under it. The state comes from the game via idRenderSystem::SetUnderwaterView, not from a
+render command, because by the time this runs the view has already been resolved.
+=====================
+*/
+enum rbUnderwaterUniformIndex_t {
+	RB_UNDERWATER_UNIFORM_INV_TEX_SIZE = 0,
+	RB_UNDERWATER_UNIFORM_TEX_SCALE,
+	RB_UNDERWATER_UNIFORM_DEPTH_PROJECTION,
+	RB_UNDERWATER_UNIFORM_AMOUNT,
+	RB_UNDERWATER_UNIFORM_TINT,
+	RB_UNDERWATER_UNIFORM_FOG_PARAMS,
+	RB_UNDERWATER_UNIFORM_EFFECT_PARAMS0,
+	RB_UNDERWATER_UNIFORM_EFFECT_PARAMS1,
+	RB_UNDERWATER_UNIFORM_TIME_SECONDS,
+	RB_UNDERWATER_UNIFORM_COUNT
+};
+
+static idImage *rbUnderwaterDepthImage = NULL;
+
+static newShaderStage_t rbUnderwaterStage;
+static bool rbUnderwaterStageInitialized = false;
+
+static void RB_InitUnderwaterStage( void ) {
+	if ( rbUnderwaterStageInitialized ) {
+		return;
+	}
+
+	memset( &rbUnderwaterStage, 0, sizeof( rbUnderwaterStage ) );
+	rbUnderwaterStage.glslProgram = true;
+	idStr::Copynz( rbUnderwaterStage.glslProgramName, "underwater.fs", sizeof( rbUnderwaterStage.glslProgramName ) );
+
+	static const rbBuiltinUniformDef_t uniforms[RB_UNDERWATER_UNIFORM_COUNT] = {
+		{ "invTexSize", 2 },
+		{ "texScale", 2 },
+		{ "depthProjection", 2 },
+		{ "underwaterAmount", 1 },
+		{ "underwaterTint", 3 },
+		{ "fogParams", 4 },
+		{ "effectParams0", 4 },
+		{ "effectParams1", 4 },
+		{ "timeSeconds", 1 }
+	};
+
+	rbUnderwaterStage.numShaderParms = RB_UNDERWATER_UNIFORM_COUNT;
+	for ( int i = 0; i < RB_UNDERWATER_UNIFORM_COUNT; i++ ) {
+		idStr::Copynz( rbUnderwaterStage.shaderParmNames[i], uniforms[i].name, sizeof( rbUnderwaterStage.shaderParmNames[i] ) );
+		rbUnderwaterStage.shaderParmNumRegisters[i] = uniforms[i].components;
+	}
+
+	rbUnderwaterStage.numShaderTextures = 2;
+	idStr::Copynz( rbUnderwaterStage.shaderTextureNames[0], "Scene", sizeof( rbUnderwaterStage.shaderTextureNames[0] ) );
+	idStr::Copynz( rbUnderwaterStage.shaderTextureNames[1], "SceneDepth", sizeof( rbUnderwaterStage.shaderTextureNames[1] ) );
+
+	rbUnderwaterStageInitialized = true;
+}
+
+/*
+=====================
+RB_UnderwaterViewAvailable
+
+Whether this back end can actually render the underwater view. The game asks so it can fall back to
+a plain tint instead of showing nothing at all.
+=====================
+*/
+bool RB_UnderwaterViewAvailable( void ) {
+	if ( r_skipPostProcess.GetBool() || !r_underwater.GetBool() ) {
+		return false;
+	}
+	if ( !glConfig.GLSLProgramAvailable ) {
+		return false;
+	}
+
+	RB_InitUnderwaterStage();
+	return R_ValidateGLSLProgram( &rbUnderwaterStage );
+}
+
+/*
+=====================
+RB_STD_Underwater
+
+A scene pass, not a back-buffer one: it has to land on the finished world and nothing else, so it
+runs inside the 3D view before the HUD, any menu, or the debug tools are drawn, and it is confined
+to the view's own viewport and scissor. RB_IsMainScenePostProcessView keeps it off subviews, portal
+skies and 2D passes, so a mirror or an in-world monitor is not dunked along with the player.
+=====================
+*/
+static void RB_STD_Underwater( void ) {
+	const GLfloat amount = idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterAmount );
+	if ( amount <= 0.001f ) {
+		return;
+	}
+
+	if ( !RB_UnderwaterViewAvailable() ) {
+		return;
+	}
+
+	if ( !RB_IsMainScenePostProcessView() ) {
+		return;
+	}
+
+	const int viewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+	const int viewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 ) {
+		return;
+	}
+
+	idImage *sceneImage = globalImages->currentRenderImage;
+	if ( sceneImage == NULL ) {
+		return;
+	}
+
+	RB_LogComment( "---------- RB_STD_Underwater ----------\n" );
+
+	sceneImage->CopyFramebuffer(
+		backEnd.viewDef->viewport.x1,
+		backEnd.viewDef->viewport.y1,
+		viewportWidth,
+		viewportHeight );
+
+	const int textureWidth = sceneImage->GetOpts().width;
+	const int textureHeight = sceneImage->GetOpts().height;
+	if ( textureWidth <= 0 || textureHeight <= 0 ) {
+		return;
+	}
+
+	backEnd.currentScissor = backEnd.viewDef->scissor;
+
+	RB_BeginFullscreenPostProcessPass(
+		backEnd.viewDef->viewport.x1 + backEnd.viewDef->scissor.x1,
+		backEnd.viewDef->viewport.y1 + backEnd.viewDef->scissor.y1,
+		backEnd.viewDef->scissor.x2 - backEnd.viewDef->scissor.x1 + 1,
+		backEnd.viewDef->scissor.y2 - backEnd.viewDef->scissor.y1 + 1 );
+
+	// The depth buffer is what turns this from a colour filter into a volume: everything below
+	// scales with how far the light actually travelled through the liquid.
+	idImage *depthImage = RB_EnsureSSAODepthScratchImage( rbUnderwaterDepthImage, "_underwaterDepth", viewportWidth, viewportHeight );
+	if ( depthImage != NULL ) {
+		depthImage->CopyDepthbuffer(
+			backEnd.viewDef->viewport.x1,
+			backEnd.viewDef->viewport.y1,
+			viewportWidth,
+			viewportHeight );
+	}
+
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+	GL_SelectTexture( 1 );
+	if ( depthImage != NULL ) {
+		depthImage->Bind();
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+		glTexParameteri( GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE );
+	} else {
+		// no depth scratch available: the shader falls back to a fixed mid-range distance, which
+		// degrades to the old flat look rather than to nothing
+		sceneImage->Bind();
+	}
+
+	glUseProgramObjectARB( (GLhandleARB)rbUnderwaterStage.glslProgramObject );
+
+	const int sceneLocation = rbUnderwaterStage.shaderTextureLocations[0];
+	if ( sceneLocation >= 0 ) {
+		glUniform1iARB( sceneLocation, 0 );
+	}
+	const int depthLocation = rbUnderwaterStage.shaderTextureLocations[1];
+	if ( depthLocation >= 0 ) {
+		glUniform1iARB( depthLocation, 1 );
+	}
+
+	const GLfloat invTexSize[2] = {
+		1.0f / static_cast<GLfloat>( textureWidth ),
+		1.0f / static_cast<GLfloat>( textureHeight )
+	};
+	// the scene texture is normally larger than the view, so the shader needs to know how much of
+	// it the view actually owns before it can talk about screen position
+	const GLfloat texScale[2] = {
+		static_cast<GLfloat>( viewportWidth ) / static_cast<GLfloat>( textureWidth ),
+		static_cast<GLfloat>( viewportHeight ) / static_cast<GLfloat>( textureHeight )
+	};
+	const GLfloat tint[3] = {
+		idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterTint.x ),
+		idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterTint.y ),
+		idMath::ClampFloat( 0.0f, 1.0f, tr.underwaterTint.z )
+	};
+	const GLfloat depthProjection[2] = {
+		backEnd.viewDef->projectionMatrix[10],
+		backEnd.viewDef->projectionMatrix[14]
+	};
+	const GLfloat fogParams[4] = {
+		Max( 1.0f, tr.underwaterFogDistance * Max( 0.01f, r_underwaterVisibility.GetFloat() ) ),
+		( depthImage != NULL ) ? 1.0f : 0.0f,
+		( viewportHeight > 0 ) ? ( static_cast<GLfloat>( viewportWidth ) / static_cast<GLfloat>( viewportHeight ) ) : 1.0f,
+		0.0f
+	};
+	// warp is authored in normalised view space, so it stays the same size on screen at any resolution
+	const GLfloat effectParams0[4] = {
+		idMath::ClampFloat( 0.0f, 4.0f, r_underwaterWarp.GetFloat() ) * 0.0035f,
+		idMath::ClampFloat( 0.0f, 4.0f, r_underwaterBlur.GetFloat() ),
+		idMath::ClampFloat( 0.0f, 2.0f, r_underwaterEdgeSoften.GetFloat() ),
+		idMath::ClampFloat( 0.0f, 0.5f, r_underwaterCaustics.GetFloat() )
+	};
+	const GLfloat effectParams1[4] = {
+		idMath::ClampFloat( 0.0f, 4.0f, r_underwaterBloom.GetFloat() ),
+		idMath::ClampFloat( 0.0f, 4.0f, r_underwaterAberration.GetFloat() ),
+		idMath::ClampFloat( 0.0f, 2.0f, r_underwaterParticles.GetFloat() ),
+		0.0f
+	};
+	const GLfloat timeSeconds = static_cast<GLfloat>( backEnd.frameCount ) * ( 1.0f / 60.0f );
+
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_INV_TEX_SIZE] >= 0 ) {
+		glUniform2fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_TEX_SCALE] >= 0 ) {
+		glUniform2fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_TEX_SCALE], 1, texScale );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_AMOUNT] >= 0 ) {
+		glUniform1fARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_AMOUNT], amount );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_TINT] >= 0 ) {
+		glUniform3fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_TINT], 1, tint );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_DEPTH_PROJECTION] >= 0 ) {
+		glUniform2fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_DEPTH_PROJECTION], 1, depthProjection );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_FOG_PARAMS] >= 0 ) {
+		glUniform4fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_FOG_PARAMS], 1, fogParams );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_EFFECT_PARAMS0] >= 0 ) {
+		glUniform4fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_EFFECT_PARAMS0], 1, effectParams0 );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_EFFECT_PARAMS1] >= 0 ) {
+		glUniform4fvARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_EFFECT_PARAMS1], 1, effectParams1 );
+	}
+	if ( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_TIME_SECONDS] >= 0 ) {
+		glUniform1fARB( rbUnderwaterStage.shaderParmLocations[RB_UNDERWATER_UNIFORM_TIME_SECONDS], timeSeconds );
+	}
+
+	RB_DrawFullscreenPostProcessQuad( viewportWidth, viewportHeight, textureWidth, textureHeight );
+
+	glUseProgramObjectARB( 0 );
+	GL_SelectTexture( 1 );
+	globalImages->BindNull();
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	RB_EndFullscreenPostProcessPass();
+
+	backEnd.currentRenderCopied = false;
+}
+// openQ4 END
+
 void RB_ApplyCRTToBackBuffer( void ) {
 	if ( r_skipPostProcess.GetBool() || !r_crt.GetBool() ) {
 		return;
@@ -10820,6 +11075,12 @@ void	RB_STD_DrawView( void ) {
 	if ( processed < numDrawSurfs ) {
 		RB_STD_DrawShaderPasses( drawSurfs+processed, numDrawSurfs-processed );
 	}
+
+// openQ4 BEGIN
+	// Last thing that touches the world, so everything in it is seen through the water - but still
+	// inside the 3D view, so the HUD, menus and debug tools stay dry.
+	RB_STD_Underwater();
+// openQ4 END
 
 	RB_RenderDebugTools( drawSurfs, numDrawSurfs );
 

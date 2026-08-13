@@ -50,14 +50,28 @@ namespace {
 const int Q4_TTF_FIRST_CODE = 32;
 const int Q4_TTF_LAST_CODE = 255;
 
-// Transparent gutter around every glyph.  DeviceContext widens each glyph's
-// UV rect by a bleed guard expressed in retail atlas texels, and because these
-// atlases are rasterised at 'upscale' times that resolution the guard covers
-// that many real texels here.  The gutter has to be at least that wide or the
-// guard reads into the neighbouring glyph.
+// The retail atlases record each glyph's rect as its ink plus a one texel
+// border on every side, and one retail texel is one metric unit.  The GUI reads
+// those rects back as glyph.width/height, so they set line spacing, the
+// character cell DrawText fits text into, and TextHeight.  Matching that border
+// exactly - one *metric unit*, which is 'upscale' texels here - is what keeps
+// text laid out the same as the bitmap path at every display resolution.
+// Kept fractional: rounding it to whole texels would leave up to half a texel
+// of error, which is 0.5/upscale of a metric unit and shows up as several
+// percent on the 12 point slots.  Nothing needs it to be integral - the blit
+// still lands on whole texels, only the recorded rect and its UVs move.
+static float R_TTFGlyphBorder( float upscale ) {
+	return Max( 1.0f, upscale );
+}
+
+// Transparent gutter around every glyph.  It has to cover the metric border
+// above plus the bleed guard DeviceContext applies: the guard is expressed in
+// retail atlas texels, and because these atlases are rasterised at 'upscale'
+// times that resolution it covers that many real texels here.  Anything less
+// and the guard reads into the neighbouring glyph.
 static int R_TTFGlyphPadding( int pointSize, float upscale ) {
 	const float guardTexels = ( pointSize <= 12 ) ? 1.0f : 0.5f;
-	return (int)idMath::Ceil( guardTexels * upscale ) + 1;
+	return (int)idMath::Ceil( R_TTFGlyphBorder( upscale ) ) + (int)idMath::Ceil( guardTexels * upscale );
 }
 
 const int Q4_TTF_MIN_PAGE = 128;
@@ -388,6 +402,11 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	if ( scale <= 0.0f ) {
 		return false;
 	}
+	// The rasteriser already leaves one texel of slack around the ink, so only
+	// the remainder of the retail one-unit border has to be added here.  The
+	// gutter is sized from the requested upscale, which is never below the
+	// slot's own, so the widened rect always stays inside the packed cell.
+	const float extraBorder = R_TTFGlyphBorder( slotUpscale ) - 1.0f;
 	// Converts font design units straight to the slot's metric units.
 	const float unitsToPoint = (float)slot.pointSize / (float)face.UnitsPerEm();
 	const float pixelsToPoint = 1.0f / slotUpscale;
@@ -522,17 +541,36 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 			memcpy( page + ( destY + row ) * pageWidth + destX, bitmap.pixels + row * bitmap.width, bitmap.width );
 		}
 
-		glyph.width = bitmap.width * pixelsToPoint;
-		glyph.height = bitmap.height * pixelsToPoint;
-		glyph.horiBearingX = bitmap.left * pixelsToPoint;
-		glyph.horiBearingY = -bitmap.top * pixelsToPoint;
-		glyph.s = (float)destX / (float)pageWidth;
-		glyph.t = (float)destY / (float)pageHeight;
-		glyph.s2 = (float)( destX + bitmap.width ) / (float)pageWidth;
-		glyph.t2 = (float)( destY + bitmap.height ) / (float)pageHeight;
+		// Report the rect with the retail one-unit border.  The extra texels are
+		// transparent gutter and the UV rect grows with them, so the ink still
+		// lands at exactly the same size and place; what changes is that the
+		// metrics the GUI lays out with now mean the same thing they do in the
+		// bitmap path, at any rasterisation scale.
+		const float rectX = (float)destX - extraBorder;
+		const float rectY = (float)destY - extraBorder;
+		const float rectWidth = (float)bitmap.width + extraBorder * 2.0f;
+		const float rectHeight = (float)bitmap.height + extraBorder * 2.0f;
 
-		outMaxWidth = Max( outMaxWidth, glyph.width );
-		outMaxHeight = Max( outMaxHeight, glyph.height );
+		glyph.width = rectWidth * pixelsToPoint;
+		glyph.height = rectHeight * pixelsToPoint;
+		glyph.horiBearingX = ( (float)bitmap.left - extraBorder ) * pixelsToPoint;
+		glyph.horiBearingY = -( (float)bitmap.top - extraBorder ) * pixelsToPoint;
+		glyph.s = rectX / (float)pageWidth;
+		glyph.t = rectY / (float)pageHeight;
+		glyph.s2 = ( rectX + rectWidth ) / (float)pageWidth;
+		glyph.t2 = ( rectY + rectHeight ) / (float)pageHeight;
+
+		// The retail atlases leave most of the Windows-1252 punctuation band
+		// blank - chain and profont carry an empty 2x2 rect for the florin,
+		// per mille, em dash and ellipsis - so the generator fills those from a
+		// donor face.  Those donor glyphs are wider and taller than anything the
+		// retail font could draw, and letting one set the layout cell inflates
+		// line spacing and shrinks the character count DrawText fits into a
+		// rect.  Measure the repertoire the GUIs were actually authored against.
+		if ( code < 0x80 || code > 0x9F ) {
+			outMaxWidth = Max( outMaxWidth, glyph.width );
+			outMaxHeight = Max( outMaxHeight, glyph.height );
+		}
 	}
 
 	for ( int i = 0; i < count; i++ ) {

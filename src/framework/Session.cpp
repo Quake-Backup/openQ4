@@ -94,18 +94,37 @@ static int Session_FindPresentationCap( void ) {
 		return 0;
 	}
 
-	return Max( 0, cvarSystem->GetCVarInteger( "com_maxfps" ) );
+	// Must match the cap Common_ThrottlePresentationFrame actually paces to, not raw
+	// com_maxfps: when the two disagree the pacifier admits frames faster than the
+	// throttle will release them and each one sleeps away the difference.
+	return openQ4_GetRequestedPresentationCap();
 }
 
+// A blocking-load progress animation gains nothing from redrawing at the gameplay
+// presentation cap, and every redraw is wall clock stolen from the load itself.
+// Never redraw the loading screen faster than this, however high com_maxfps goes.
+static const float SESSION_MAX_BLOCKING_LOAD_REDRAW_HZ = 60.0f;
+
+// Back the pacifier interval off to at least this multiple of the last redraw's
+// measured cost, bounding loading-screen presentation at 1/(1+ratio) of load wall
+// clock on any present path.
+static const float SESSION_PACIFIER_DRAW_BUDGET_RATIO = 4.0f;
+
 static float Session_GetBlockingLoadFrameIntervalMsec( void ) {
+	// Honour a *lower* gameplay cap - the user asked for fewer frames - but never let
+	// a high cap drive the loading screen faster than the ceiling above. Tying this
+	// directly to com_maxfps made load wall clock scale as W / (1 - R/P), which
+	// diverges as the cap rises and stops converging entirely once one redraw costs
+	// more than the interval it is throttled by.
+	const float ceilingMsec = 1000.0f / SESSION_MAX_BLOCKING_LOAD_REDRAW_HZ;
 	const int presentationCap = Session_FindPresentationCap();
 	if ( presentationCap > 0 ) {
-		return 1000.0f / static_cast<float>( presentationCap );
+		return Max( ceilingMsec, 1000.0f / static_cast<float>( presentationCap ) );
 	}
 
 	// Uncapped blocking load hooks can fire extremely often during asset I/O.
 	// Keep the legacy one-tic pacing as the conservative fallback in that mode.
-	return common->GetUserCmdMsecFloat();
+	return Max( ceilingMsec, common->GetUserCmdMsecFloat() );
 }
 
 static void Session_BeginBlockingLoadPresentationFrame( void ) {
@@ -3578,6 +3597,7 @@ void idSessionLocal::Clear() {
 	timeDemo = TD_NO;
 	waitingOnBind = false;
 	lastPacifierTime = 0;
+	lastPacifierDrawMsec = 0;
 	loadingAssetQueueActive = false;
 	loadingAssetQueueTotal = 0;
 	loadingAssetQueueLoaded = 0;
@@ -5375,6 +5395,10 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	loadingAssetQueueLoaded = 0;
 	loadingAssetQueueStartPct = 0.0f;
 
+	// Start each load from a clean pacifier budget so a hitch recorded during the
+	// previous map change cannot keep throttling this one.
+	lastPacifierDrawMsec = 0;
+
 	// close console and remove any prints from the notify lines
 	console->Close();
 
@@ -6883,8 +6907,18 @@ void idSessionLocal::PacifierUpdate() {
 
 	const int time = Sys_Milliseconds();
 	const float minPacifierIntervalMs = Session_GetBlockingLoadFrameIntervalMsec();
+
+	// Charge the previous redraw's own cost against the interval. lastPacifierTime is
+	// stamped after the redraw completes, so this gate measures loading work only; a
+	// slow present path therefore stretches the gap between redraws instead of
+	// consuming the load. Without both halves the gate is already satisfied the
+	// instant a redraw finishes whenever a redraw outlasts its interval, and every
+	// asset read then presents a full frame.
+	const float pacifierIntervalMs = Max( minPacifierIntervalMs,
+		static_cast<float>( lastPacifierDrawMsec ) * SESSION_PACIFIER_DRAW_BUDGET_RATIO );
+
 	int elapsedMs = time - lastPacifierTime;
-	if ( lastPacifierTime != 0 && static_cast<float>( elapsedMs ) < minPacifierIntervalMs ) {
+	if ( lastPacifierTime != 0 && static_cast<float>( elapsedMs ) < pacifierIntervalMs ) {
 		return;
 	}
 
@@ -6892,10 +6926,9 @@ void idSessionLocal::PacifierUpdate() {
 
 	const int presentationTime = common->GetPresentationTime();
 	elapsedMs = presentationTime - lastPacifierTime;
-	if ( static_cast<float>( elapsedMs ) < minPacifierIntervalMs ) {
-		elapsedMs = static_cast<int>( idMath::Ceil( minPacifierIntervalMs ) );
+	if ( static_cast<float>( elapsedMs ) < pacifierIntervalMs ) {
+		elapsedMs = static_cast<int>( idMath::Ceil( pacifierIntervalMs ) );
 	}
-	lastPacifierTime = presentationTime;
 
 	if ( guiLoading ) {
 		float shownPct = idMath::ClampFloat( 0.0f, 1.0f, guiLoading->State().GetFloat( "map_loading" ) );
@@ -6946,7 +6979,13 @@ void idSessionLocal::PacifierUpdate() {
 
 	Sys_GenerateEvents();
 
+	const int drawStartMsec = Sys_Milliseconds();
 	UpdateScreen();
+	lastPacifierDrawMsec = Max( 0, Sys_Milliseconds() - drawStartMsec );
+
+	// Stamp after the redraw, on the same clock the gate above reads, so the redraw's
+	// own cost is never counted as part of the interval it is throttled by.
+	lastPacifierTime = Sys_Milliseconds();
 
 	idAsyncNetwork::client.PacifierUpdate();
 	idAsyncNetwork::server.PacifierUpdate();

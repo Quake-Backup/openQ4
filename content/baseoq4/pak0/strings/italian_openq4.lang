@@ -546,6 +546,12 @@
 	"#str_41690"	"Regole di controllo della zona gestite con fuoco amico, prontezza unanime e timeout tattici."
 	"#str_41691"	"Round competitivi"
 	"#str_41692"	"Regole a round gestite per Clan Arena, Freeze Tag e Red Rover."
+	"#str_41693"	"Partita secca"
+	"#str_41694"	"Una sola mappa decisiva. Entrambe le squadre riducono il pool a una."
+	"#str_41695"	"Al meglio di tre"
+	"#str_41696"	"Vince chi arriva a due mappe. I veti si alternano tra le squadre."
+	"#str_41697"	"Al meglio di cinque"
+	"#str_41698"	"Vince chi arriva a tre mappe. I veti si alternano tra le squadre."
 
 	"#str_41700"	"Controllo partita"
 	"#str_41701"	"Stato"
@@ -898,4 +904,5 @@
 	"#str_42747"	"Armatura"
 	"#str_42748"	"Oggetto"
 	"#str_42749"	"Questo comando server legacy è disabilitato durante una partita gestita. Usa Match Control."
+	"#str_42750"	"Devi attendere altri %d secondi prima di indire un altro voto."
 }

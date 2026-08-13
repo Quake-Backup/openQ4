@@ -546,6 +546,12 @@
 	"#str_41690"	"Règles de contrôle de zone encadrées avec tir allié, préparation unanime et temps morts tactiques."
 	"#str_41691"	"Manches compétitives"
 	"#str_41692"	"Règles par manches encadrées pour Clan Arena, Freeze Tag et Red Rover."
+	"#str_41693"	"Match unique"
+	"#str_41694"	"Une seule carte décisive. Les deux camps réduisent le pool à une carte."
+	"#str_41695"	"Au meilleur des trois"
+	"#str_41696"	"Le premier camp à deux cartes gagnées l'emporte. Les vetos alternent."
+	"#str_41697"	"Au meilleur des cinq"
+	"#str_41698"	"Le premier camp à trois cartes gagnées l'emporte. Les vetos alternent."
 
 	"#str_41700"	"Gestion du match"
 	"#str_41701"	"État"
@@ -898,4 +904,5 @@
 	"#str_42747"	"Armure"
 	"#str_42748"	"Objet"
 	"#str_42749"	"Cette commande serveur héritée est désactivée pendant un match géré. Utilisez Match Control."
+	"#str_42750"	"Vous devez attendre encore %d secondes avant de lancer un autre vote."
 }

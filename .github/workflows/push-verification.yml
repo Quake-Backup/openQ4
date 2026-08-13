@@ -112,6 +112,7 @@ jobs:
             tools/tests/linux_vsync_support.py \
             tools/tests/linux_wayland_build_contract.py \
             tools/tests/loading_continue_input.py \
+            tools/tests/loading_pacifier_pacing.py \
             tools/tests/map_entity_strings.py \
             tools/tests/macos_apple_gl21_arb2_corridor.py \
             tools/tests/macos_dedicated_server_smoke.py \
@@ -235,6 +236,7 @@ jobs:
           python tools/tests/linux_vsync_support.py
           python tools/tests/linux_wayland_build_contract.py
           python tools/tests/loading_continue_input.py
+          python tools/tests/loading_pacifier_pacing.py
           python tools/tests/map_entity_strings.py
           python tools/tests/macos_apple_gl21_arb2_corridor.py
           python tools/tests/macos_dedicated_server_smoke_contract.py

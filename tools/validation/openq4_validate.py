@@ -437,6 +437,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "linux_vsync_support.py",
         root / "tools" / "tests" / "linux_wayland_build_contract.py",
         root / "tools" / "tests" / "loading_continue_input.py",
+        root / "tools" / "tests" / "loading_pacifier_pacing.py",
         root / "tools" / "tests" / "map_entity_strings.py",
         root / "tools" / "tests" / "macos_apple_gl21_arb2_corridor.py",
         root / "tools" / "tests" / "macos_dedicated_server_smoke_contract.py",

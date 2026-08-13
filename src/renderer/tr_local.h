@@ -821,6 +821,7 @@ public:
 	virtual void			GetImageSize(idImage* image, int& imageWidth, int& imageHeight);
 	virtual int				GetImageMSAASamples(idImage* image);
 	virtual const glconfig_t &	GetGLConfig( void ) const;
+	virtual bool			SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance );
 public:
 	// internal functions
 							idRenderSystemLocal( void );
@@ -917,6 +918,13 @@ public:
 	class idGuiModel *		demoGuiModel;
 	idList<idRenderTexture*> pendingRenderTextureDeletes;
 	bool					useUIViewportFor2D;
+
+	// openQ4: underwater view state, published by the game each frame and consumed by the GL
+	// post-process pass. Not part of any render command, because the pass runs on the back buffer
+	// after the view has already been resolved.
+	float					underwaterAmount;
+	idVec3					underwaterTint;
+	float					underwaterFogDistance;
 	idRenderTexture *		activeRenderTexture;
 	renderPortalSkyCaptureViewCallback_t portalSkyCaptureViewCallback;
 	bool					suppressLevelshotViewModels;
@@ -1021,6 +1029,15 @@ extern idCVar r_crtScanlineStrength;	// scanline intensity
 extern idCVar r_crtMaskStrength;		// phosphor mask intensity
 extern idCVar r_crtCurvature;			// screen curvature
 extern idCVar r_crtChromatic;			// chromatic offset in pixel units
+extern idCVar r_underwater;				// underwater view post-process
+extern idCVar r_underwaterWarp;
+extern idCVar r_underwaterBlur;
+extern idCVar r_underwaterEdgeSoften;
+extern idCVar r_underwaterCaustics;
+extern idCVar r_underwaterBloom;
+extern idCVar r_underwaterAberration;
+extern idCVar r_underwaterParticles;
+extern idCVar r_underwaterVisibility;
 extern idCVar r_msaaResolveDepth;		// include depth when resolving MSAA render targets
 extern idCVar r_msaaAlphaToCoverage;	// alpha-to-coverage for perforated materials on MSAA targets
 extern idCVar r_celShading;				// cel shading on model entities
@@ -1798,6 +1815,7 @@ void RB_DrawView( const void *data );
 void RB_DrawSpecialEffects( const void *data );
 void RB_ApplyResolutionScaleToBackBuffer( void );
 void RB_ApplyCRTToBackBuffer( void );
+bool RB_UnderwaterViewAvailable( void );
 
 void RB_DetermineLightScale( void );
 void RB_STD_LightScale( void );

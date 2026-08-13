@@ -223,13 +223,19 @@ static int Common_GetRequestedPresentationCap( void ) {
 	int cap = Max( 0, com_maxfps.GetInteger() );
 
 #if defined( _WIN32 )
-	// Hidden/minimized windows should not spin uncapped when presentation is decoupled.
+	// Hidden windows should not spin uncapped when presentation is decoupled. Note
+	// Win32 IsWindowVisible() reports TRUE for minimized windows, so in practice this
+	// only fires for genuinely hidden ones (r_hiddenWindow, the light-grid bake).
 	if ( !Sys_IsWindowVisible() && ( cap == 0 || cap > 60 ) ) {
 		cap = 60;
 	}
 #endif
 
 	return cap;
+}
+
+int openQ4_GetRequestedPresentationCap( void ) {
+	return Common_GetRequestedPresentationCap();
 }
 
 static void Common_ThrottlePresentationFrame( void ) {
@@ -267,10 +273,25 @@ static void Common_ThrottlePresentationFrame( void ) {
 	// Sleep away the bulk of the frame period, then use the high-resolution counter
 	// for the last slice so low frame caps don't pick up an extra scheduler quantum.
 	const double sleepSlackMsec = idMath::ClampFloat( 0.5f, 1.5f, static_cast<float>( frameMsec * 0.125f ) );
+
+	// Never wait longer than a few frame periods here however the clock behaves. The
+	// tail of this loop is a deliberate busy-spin for sub-millisecond precision, so a
+	// counter that stalls or runs backwards would otherwise wedge the process with no
+	// way out.
+	const double waitDeadlineClock = Common_GetPresentationClockNow() + frameClockUnits * 4.0;
 	while ( true ) {
-		const double remainingClockUnits = commonNextPresentationFrameClock - Common_GetPresentationClockNow();
+		const double spinNowClock = Common_GetPresentationClockNow();
+		const double remainingClockUnits = commonNextPresentationFrameClock - spinNowClock;
 		if ( remainingClockUnits <= 0.0 ) {
 			break;
+		}
+
+		if ( spinNowClock >= waitDeadlineClock ) {
+			// The clock is not behaving; drop the backlog and resynchronise next frame
+			// rather than spinning against a target we can never reach.
+			Common_ResetPresentationThrottle();
+			commonLastPresentationCap = cap;
+			return;
 		}
 
 		const double remainingMsec = ( remainingClockUnits * 1000.0 ) / clockUnitsPerSecond;

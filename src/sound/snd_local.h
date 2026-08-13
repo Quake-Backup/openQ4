@@ -354,6 +354,7 @@ public:
 	virtual void			SetSlowmoSpeed( float speed );
 	virtual void			SetEnviroSuit( bool active );
 	virtual void			SetUnderwater( bool active );
+	virtual void			SetLiquidTest( liquidTest_t test );
 
 	//=======================================
 
@@ -401,6 +402,7 @@ public:
 	float					slowmoSpeed;
 	bool					enviroSuitActive;
 	bool					underwaterActive;
+	liquidTest_t			liquidTest;
 
 public:
 	struct soundPortalTrace_t
@@ -475,6 +477,7 @@ public:
 	float		spatializedDistance;
 	idVec3		spatializedOrigin;
 	int			occludingPortalCount;
+	bool		crossesLiquidBoundary;	// openQ4: emitter and listener are in different media
 
 	// sound emitters are only allocated by the soundWorld block allocator
 	idSoundEmitterLocal();

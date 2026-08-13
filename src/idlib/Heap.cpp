@@ -1628,7 +1628,10 @@ void *Mem_ClearedAlloc( const size_t size, byte tag ) {
 	void *mem = Mem_Alloc( size, tag );
 // RAVEN END
 	if ( mem ) {
-		SIMDProcessor->Memset( mem, 0, static_cast<int>( size ) );
+		// Plain memset rather than SIMDProcessor->Memset: allocations happen before
+		// idSIMD::Init and after idSIMD::Shutdown, when SIMDProcessor is NULL, and the
+		// int cast the SIMD signature forces would truncate allocations over 2 GB.
+		memset( mem, 0, size );
 	}
 	return mem;
 }
@@ -2269,7 +2272,9 @@ Mem_ClearedAlloc
 void *Mem_ClearedAlloc( const size_t size, const char *fileName, const int lineNumber, byte tag ) {
 	void *mem = Mem_Alloc( size, fileName, lineNumber, tag );
 	if ( mem ) {
-		SIMDProcessor->Memset( mem, 0, static_cast<int>( size ) );
+		// See the shipping Mem_ClearedAlloc above: SIMDProcessor is NULL outside the
+		// idSIMD lifetime and the int cast truncates allocations over 2 GB.
+		memset( mem, 0, size );
 	}
 	return mem;
 }

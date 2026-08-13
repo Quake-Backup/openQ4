@@ -422,4 +422,11 @@ bool QGL_Init( const char *dllname ) {
 void QGL_Shutdown( void ) {
 }
 
+// openQ4: the underwater view is a GL back-end post-process pass built on an arbitrary GLSL
+// program. The Vulkan module only supports a fixed set of natively reimplemented material program
+// families, so it reports the effect as unavailable and the game falls back to a flat wash.
+bool RB_UnderwaterViewAvailable( void ) {
+	return false;
+}
+
 #endif /* OPENQ4_RENDERER_VK_MODULE */

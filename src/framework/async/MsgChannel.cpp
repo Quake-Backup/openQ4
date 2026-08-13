@@ -332,7 +332,10 @@ idMsgChannel::SendMessage
 int idMsgChannel::SendMessage( idPort &port, const int time, const idBitMsg &msg ) {
 	int totalLength;
 
-	if ( remoteAddress.type == NA_BAD ) {
+	// openQ4: a bot slot has a channel but no remote end.  Without this every
+	// unreliable send aimed at one reached idPort::SendPacket and produced an
+	// "unsupported address type" warning - a wall of them on every map load.
+	if ( remoteAddress.type == NA_BAD || remoteAddress.type == NA_BOT ) {
 		return -1;
 	}
 

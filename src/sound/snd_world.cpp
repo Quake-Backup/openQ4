@@ -357,6 +357,7 @@ idSoundWorldLocal::idSoundWorldLocal()
 	slowmoSpeed = 1.0f;
 	enviroSuitActive = false;
 	underwaterActive = false;
+	liquidTest = NULL;
 }
 
 /*
@@ -2005,4 +2006,14 @@ from the eye position every frame, so unlike the enviro suit it is not part of t
 void idSoundWorldLocal::SetUnderwater( bool active )
 {
 	underwaterActive = active;
+}
+
+/*
+=================
+idSoundWorldLocal::SetLiquidTest
+=================
+*/
+void idSoundWorldLocal::SetLiquidTest( liquidTest_t test )
+{
+	liquidTest = test;
 }

@@ -117,6 +117,7 @@ typedef struct serverClient_s {
 	int					lastEmptyTime;
 	int					lastPingTime;
 	int					lastSnapshotTime;
+	int					lastSnapshotGameFrame;	// game frame of the previous snapshot sent to this client
 	int					lastPacketTime;
 	int					lastInputTime;
 	int					snapshotSequence;

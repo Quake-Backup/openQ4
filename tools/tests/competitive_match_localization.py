@@ -20,11 +20,15 @@ LANGUAGE_FILES = (
     "italian_openq4.lang",
     "spanish_openq4.lang",
 )
-EXPECTED_IDS = tuple(f"#str_{value}" for value in range(41600, 41693))
+# 41693-41698 are the three built-in match-series profiles (label, description)
+# consumed by seriesProfileDescriptors in mp/match/MatchSeries.cpp.
+EXPECTED_IDS = tuple(f"#str_{value}" for value in range(41600, 41699))
 EXPECTED_SET = set(EXPECTED_IDS)
-DESCRIPTION_IDS = {
-    f"#str_{value}" for value in range(41601, 41666, 2)
-} | {f"#str_{value}" for value in range(41678, 41693, 2)}
+DESCRIPTION_IDS = (
+    {f"#str_{value}" for value in range(41601, 41666, 2)}
+    | {f"#str_{value}" for value in range(41678, 41693, 2)}
+    | {f"#str_{value}" for value in range(41694, 41699, 2)}
+)
 ENTRY_RE = re.compile(r'^\s*"(?P<id>#str_\d+)"\s+"(?P<value>.*)"\s*$')
 RULE_ID_RE = re.compile(r'"(?P<id>#str_416\d{2})"')
 PLACEHOLDER_RE = re.compile(
@@ -83,20 +87,27 @@ def parse_language_table(path: Path) -> dict[str, str]:
 
 
 def validate_rule_references() -> None:
-    source_path = GAME_ROOT / "src" / "mpgame" / "mp" / "match" / "MatchRules.cpp"
-    references = RULE_ID_RE.findall(read(source_path))
+    # The rule table owns most of the range; the three built-in series profiles
+    # are declared next to the profiles themselves in MatchSeries.cpp.  Both are
+    # checked together so every string in the range has exactly one consumer.
+    match_dir = GAME_ROOT / "src" / "mpgame" / "mp" / "match"
+    sources = ("MatchRules.cpp", "MatchSeries.cpp")
+    references: list[str] = []
+    for source in sources:
+        references.extend(RULE_ID_RE.findall(read(match_dir / source)))
+    label = " + ".join(sources)
     counts = Counter(references)
     if set(counts) != EXPECTED_SET:
         missing = sorted(EXPECTED_SET - set(counts))
         unexpected = sorted(set(counts) - EXPECTED_SET)
         raise AssertionError(
-            f"MatchRules.cpp localization ID mismatch; missing={missing}, "
+            f"{label} localization ID mismatch; missing={missing}, "
             f"unexpected={unexpected}"
         )
     repeated = sorted(identifier for identifier, count in counts.items() if count != 1)
     if repeated:
         raise AssertionError(
-            "MatchRules.cpp must reference each competitive localization ID exactly once: "
+            f"{label} must reference each competitive localization ID exactly once: "
             + ", ".join(repeated)
         )
 

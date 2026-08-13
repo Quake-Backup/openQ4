@@ -546,6 +546,12 @@
 	"#str_41690"	"Managed control-point rules with friendly fire, unanimous readiness, and tactical timeouts."
 	"#str_41691"	"Competitive Round Play"
 	"#str_41692"	"Managed round rules for Clan Arena, Freeze Tag, and Red Rover."
+	"#str_41693"	"Best of One"
+	"#str_41694"	"A single decisive map. Both sides veto the pool down to one."
+	"#str_41695"	"Best of Three"
+	"#str_41696"	"First side to two map wins. Sides alternate vetoes across the pool."
+	"#str_41697"	"Best of Five"
+	"#str_41698"	"First side to three map wins. Sides alternate vetoes across the pool."
 
 	"#str_41700"	"Match Control"
 	"#str_41701"	"Status"
@@ -898,4 +904,5 @@
 	"#str_42747"	"Armor"
 	"#str_42748"	"Item"
 	"#str_42749"	"This legacy server command is disabled during a managed match. Use Match Control."
+	"#str_42750"	"You must wait %d more seconds before calling another vote."
 }

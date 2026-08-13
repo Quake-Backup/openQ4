@@ -1424,7 +1424,7 @@ public:
 	virtual idFile *		OpenExplicitFileWrite( const char *OSPath );
 	virtual void			CloseFile( idFile *f );
 	virtual void			BackgroundDownload( backgroundDownload_t *bgl );
-	virtual void			ResetReadCount( void ) { readCount = 0; }
+	virtual void			ResetReadCount( void ) { readCount = 0; readCountPacifierBytes = 0; }
 	virtual void			AddToReadCount( int c ) {
 		if ( c <= 0 ) {
 			return;
@@ -1432,7 +1432,19 @@ public:
 
 		readCount += c;
 
-		// Keep loading progress responsive on PC as data is read.
+		// Keep loading progress responsive on PC as data is read, but offer the redraw
+		// per megabyte rather than per 64 KiB read chunk. Both callers read in 64 KiB
+		// chunks, so offering every call put thousands of redraw opportunities per map
+		// load in the middle of asset decode. The pacifier is clock-throttled anyway;
+		// this just keeps the offer at asset-sized granularity. Progress accuracy is
+		// unaffected - readCount above still advances on every chunk, and that is what
+		// the loading bar's byte target reads.
+		readCountPacifierBytes += c;
+		if ( readCountPacifierBytes < READCOUNT_PACIFIER_INTERVAL_BYTES ) {
+			return;
+		}
+		readCountPacifierBytes = 0;
+
 		// idSessionLocal::PacifierUpdate is internally throttled and no-ops outside map load.
 		session->PacifierUpdate();
 	}
@@ -1462,6 +1474,9 @@ private:
 
 	searchpath_t *			searchPaths;
 	int						readCount;			// total bytes read
+	// bytes read since the last loading-pacifier offer, see AddToReadCount
+	static const int		READCOUNT_PACIFIER_INTERVAL_BYTES = 1024 * 1024;
+	int						readCountPacifierBytes;
 	int						loadCount;			// total files read
 	int						loadStack;			// total files in memory
 	idStr					gameFolder;			// this will be a single name without separators
@@ -1589,6 +1604,7 @@ idFileSystemLocal::idFileSystemLocal
 idFileSystemLocal::idFileSystemLocal( void ) {
 	searchPaths = NULL;
 	readCount = 0;
+	readCountPacifierBytes = 0;
 	loadCount = 0;
 	loadStack = 0;
 	dir_cache_index = 0;
