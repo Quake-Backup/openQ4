@@ -789,6 +789,8 @@ if build_engine
   deps = [glew_dep, openal_dep, stb_vorbis_dep]
 
   if host_system == 'windows'
+    windows_shell_dep = cc.find_library('shell32', required: true)
+    windows_ole_dep = cc.find_library('ole32', required: true)
     deps += [
       cc.find_library('opengl32', required: true),
       cc.find_library('Dbghelp', required: true),
@@ -796,6 +798,8 @@ if build_engine
       cc.find_library('Iphlpapi', required: true),
       cc.find_library('Winmm', required: true),
       cc.find_library('ws2_32', required: true),
+      windows_shell_dep,
+      windows_ole_dep,
     ]
 
     if use_sdl3_backend
@@ -866,6 +870,8 @@ if renderer_module_only_client
       cc.find_library('Iphlpapi', required: true),
       cc.find_library('Winmm', required: true),
       cc.find_library('ws2_32', required: true),
+      windows_shell_dep,
+      windows_ole_dep,
       sdl3_dep,
     ]
   else
@@ -894,6 +900,8 @@ if windows_gl_free_ded
     cc.find_library('Iphlpapi', required: true),
     cc.find_library('Winmm', required: true),
     cc.find_library('ws2_32', required: true),
+    windows_shell_dep,
+    windows_ole_dep,
     sdl3_dep,
   ]
 endif

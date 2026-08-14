@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <conio.h>
 #include <mapi.h>
 #include <ShellAPI.h>
+#include <ShlObj.h>
 
 #ifndef __MRC__
 #include <sys/types.h>
@@ -504,6 +505,82 @@ static bool Sys_ConvertWideToUtf8( const wchar_t *wideText, idStr &utf8Text ) {
 
 	utf8Text = utf8Buffer;
 	delete[] utf8Buffer;
+	return true;
+}
+
+static bool Sys_ConvertWideToWindowsPath( const wchar_t *widePath, idStr &path ) {
+	int requiredBytes;
+	char *pathBuffer;
+
+	path.Clear();
+	if ( widePath == NULL || widePath[0] == L'\0' ) {
+		return false;
+	}
+
+	// The filesystem still reaches the Windows CRT through narrow path APIs.
+	// Keep the Known Folder result in that API's active code page until those
+	// callers are migrated together to wide-character or UTF-8-aware I/O.
+	requiredBytes = WideCharToMultiByte( CP_ACP, 0, widePath, -1, NULL, 0, NULL, NULL );
+	if ( requiredBytes <= 0 ) {
+		return false;
+	}
+
+	pathBuffer = new char[ requiredBytes ];
+	if ( WideCharToMultiByte( CP_ACP, 0, widePath, -1, pathBuffer, requiredBytes, NULL, NULL ) <= 0 ) {
+		delete[] pathBuffer;
+		return false;
+	}
+
+	path = pathBuffer;
+	delete[] pathBuffer;
+	path.SlashesToBackSlashes();
+	return !path.IsEmpty();
+}
+
+static bool Sys_GetKnownFolderPath( REFKNOWNFOLDERID folderId, idStr &path ) {
+	PWSTR widePath = NULL;
+	const HRESULT result = SHGetKnownFolderPath( folderId, KF_FLAG_DEFAULT, NULL, &widePath );
+	if ( FAILED( result ) || widePath == NULL ) {
+		if ( widePath != NULL ) {
+			CoTaskMemFree( widePath );
+		}
+		path.Clear();
+		return false;
+	}
+
+	const bool converted = Sys_ConvertWideToWindowsPath( widePath, path );
+	CoTaskMemFree( widePath );
+	return converted;
+}
+
+static bool Sys_IsAbsoluteWindowsPath( const idStr &path ) {
+	if ( path.Length() < 3 ) {
+		return false;
+	}
+
+	const char *text = path.c_str();
+	const bool drivePath =
+		( ( text[0] >= 'A' && text[0] <= 'Z' ) || ( text[0] >= 'a' && text[0] <= 'z' ) ) &&
+		text[1] == ':' && text[2] == '\\';
+	const bool uncPath = text[0] == '\\' && text[1] == '\\' && text[2] != '\0';
+	return drivePath || uncPath;
+}
+
+static bool Sys_BuildWindowsProductSavePath( const char *root, idStr &savePath ) {
+	if ( root == NULL || root[0] == '\0' ) {
+		savePath.Clear();
+		return false;
+	}
+
+	savePath = root;
+	savePath.SlashesToBackSlashes();
+	if ( !Sys_IsAbsoluteWindowsPath( savePath ) ) {
+		savePath.Clear();
+		return false;
+	}
+	savePath.StripTrailing( '\\' );
+	savePath.AppendPath( "openQ4" );
+	savePath.SlashesToBackSlashes();
 	return true;
 }
 
@@ -1131,23 +1208,41 @@ Sys_DefaultSavePath
 */
 const char* Sys_DefaultSavePath(void) {
 	static idStr savePath;
+	idStr knownFolderPath;
 	const char *localAppData = getenv( "LOCALAPPDATA" );
 	const char *userProfile = getenv( "USERPROFILE" );
 
-	if ( localAppData && localAppData[0] ) {
-		savePath = localAppData;
-		savePath.AppendPath( "openQ4" );
+	if ( Sys_GetKnownFolderPath( FOLDERID_LocalAppData, knownFolderPath ) &&
+			Sys_BuildWindowsProductSavePath( knownFolderPath.c_str(), savePath ) ) {
+		return savePath.c_str();
+	}
+
+	// Preserve the environment fallback for unusual stripped-down Windows
+	// sessions where the Shell Known Folder query is unavailable.
+	if ( Sys_BuildWindowsProductSavePath( localAppData, savePath ) ) {
+		return savePath.c_str();
+	}
+
+	if ( Sys_GetKnownFolderPath( FOLDERID_SavedGames, knownFolderPath ) &&
+			Sys_BuildWindowsProductSavePath( knownFolderPath.c_str(), savePath ) ) {
 		return savePath.c_str();
 	}
 
 	if ( userProfile && userProfile[0] ) {
-		savePath = userProfile;
-		savePath.AppendPath( "Saved Games" );
-		savePath.AppendPath( "openQ4" );
+		knownFolderPath = userProfile;
+		knownFolderPath.AppendPath( "Saved Games" );
+		if ( Sys_BuildWindowsProductSavePath( knownFolderPath.c_str(), savePath ) ) {
+			return savePath.c_str();
+		}
+	}
+
+	savePath = Sys_Cwd();
+	savePath.SlashesToBackSlashes();
+	if ( Sys_IsAbsoluteWindowsPath( savePath ) ) {
 		return savePath.c_str();
 	}
 
-	return Sys_Cwd();
+	return ".";
 }
 
 /*
