@@ -378,7 +378,7 @@ def validate_upload_and_vertex_cache_static_coverage() -> None:
         "if ( requestedPath == UPLOAD_PATH_DISABLED )",
         "frameBufferCount = 0;",
         "activeRingBytes = requestedPath == UPLOAD_PATH_DISABLED ? 0 : ringBytes",
-        "hasSync = requestedPath != UPLOAD_PATH_DISABLED",
+        "hasSync = requestedPath == UPLOAD_PATH_PERSISTENT && syncAvailable",
     ):
         require(upload_init, token, "disabled renderer upload bridge state")
 

@@ -196,7 +196,7 @@ def validate_disabled_upload_bridge_state() -> None:
         "const int activeRingBytes = requestedPath == UPLOAD_PATH_DISABLED ? 0 : ringBytes;",
         "allocator.Init( activeRingBytes, requestedPath == UPLOAD_PATH_PERSISTENT )",
         "ring.Init( activeRingBytes, requestedPath == UPLOAD_PATH_PERSISTENT )",
-        "hasSync = requestedPath != UPLOAD_PATH_DISABLED",
+        "hasSync = requestedPath == UPLOAD_PATH_PERSISTENT && syncAvailable",
         'const char *bridgeMode = "disabled"',
         'bridgeMode = "streaming"',
         "activeRingBytes / 1024",
