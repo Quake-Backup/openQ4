@@ -1267,6 +1267,45 @@ def validate_engine_hooks() -> None:
         raise AssertionError("Could not inspect Arena overridden-CVar snapshot list")
     saved_cvars = set(re.findall(r'"([A-Za-z0-9_]+)"', saved_cvars_match.group("body")))
     prepare_body = function_body(arena, "bool idArenaCampaign::PrepareServer()")
+    for saved_rule_cvar in ("g_matchProfile", "si_warmupReadyPercentage"):
+        if saved_rule_cvar not in saved_cvars:
+            raise AssertionError(
+                f"Arena must restore the rule-boundary CVar {saved_rule_cvar!r}"
+            )
+
+    save_current_cvars = prepare_body.find("ArenaSaveCurrentCVars( state );")
+    casual_profile = prepare_body.find(
+        'cvarSystem->SetCVarString( "g_matchProfile", "casual" );'
+    )
+    find_profile = prepare_body.find(
+        'idCVar *matchProfile = cvarSystem->Find( "g_matchProfile" );'
+    )
+    refresh_profile = prepare_body.find("matchProfile->SetModified();")
+    first_match_override = prepare_body.find(
+        'cvarSystem->SetCVarInteger( "net_serverDedicated", 0 );'
+    )
+    if not (
+        0
+        <= save_current_cvars
+        < casual_profile
+        < find_profile
+        < refresh_profile
+        < first_match_override
+    ):
+        raise AssertionError(
+            "Arena must save, force, and explicitly refresh its casual match profile "
+            "before importing per-card rules"
+        )
+    readiness_disabled = prepare_body.find(
+        'cvarSystem->SetCVarBool( "si_useReady", false );'
+    )
+    readiness_threshold_zeroed = prepare_body.find(
+        'ArenaSetMatchCVar( "si_warmupReadyPercentage", 0 );'
+    )
+    if not 0 <= readiness_disabled < readiness_threshold_zeroed:
+        raise AssertionError(
+            "Arena must pair disabled readiness with a zero ready threshold before rule import"
+        )
     overridden_cvars = set(
         re.findall(
             r'(?:ArenaSetMatchCVar|cvarSystem->SetCVar(?:Bool|Float|Integer|String))'
