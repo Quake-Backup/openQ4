@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 //#include "../renderer/Image.h"
 #include "../bse/BSE_API.h"
 #include "../imagetools/ImageTools.h"
+#include "../render_geo/RenderGeometry.h"
 #include "../renderer/RendererModule.h"
 #include "ArenaCampaign.h"
 #include "GameModuleDiagnostics.h"
@@ -6460,6 +6461,10 @@ void idCommonLocal::Shutdown( void ) {
 	// game specific shut down
 	ShutdownGame( false );
 
+	// Release the engine/tool-side render-geometry copy after renderer teardown.
+	// This is a no-op on static-renderer builds whose shared copy already stopped.
+	R_ShutdownTriSurfData();
+
 	// shut down non-portable system services
 	Sys_Shutdown();
 	RenderDoc_Shutdown();
@@ -6544,6 +6549,13 @@ void idCommonLocal::InitGame( void ) {
 
 	// initialize the renderSystem data structures, but don't start OpenGL yet
 	renderSystem->Init();
+
+	// The render-geometry library is linked independently into module-only
+	// renderers and the engine. Initialize the engine copy for dmap and the
+	// other in-process tools after the renderer has installed its allocation
+	// hooks, but before startup scripts can invoke a tool command. On static
+	// renderer builds the shared copy is already initialized, so this is a no-op.
+	R_InitTriSurfData();
 
 	// initialize string database right off so we can use it for loading messages
 	const idStr startupLanguageBeforeAutoSelect = cvarSystem->GetCVarString( "sys_lang" );
