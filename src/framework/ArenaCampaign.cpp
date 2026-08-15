@@ -182,8 +182,10 @@ static const char *ARENA_SAVED_CVARS[] = {
 	"si_roundWarmupDelay",
 	"si_roundEndDelay",
 	"g_gameReviewPause",
+	"g_matchProfile",
 	"si_tourneyLimit",
 	"si_useReady",
+	"si_warmupReadyPercentage",
 	"si_allowVoting",
 	"si_isBuyingEnabled",
 	"si_dropWeaponsInBuyingModes",
@@ -2011,6 +2013,17 @@ bool idArenaCampaign::PrepareServer() {
 	// so this incremental save also captures settings unavailable in game_sp.
 	ArenaSaveCurrentCVars( state );
 
+	// Arena authors its limits through the casual legacy-CVar adapter. Force a
+	// fresh import for every match: the multiplayer object survives MapShutdown,
+	// and otherwise two consecutive DM-backed cards can reuse the first card's
+	// committed rules. The player's archived profile is restored with the other
+	// transactional overrides after the match.
+	cvarSystem->SetCVarString( "g_matchProfile", "casual" );
+	idCVar *matchProfile = cvarSystem->Find( "g_matchProfile" );
+	if ( matchProfile != NULL ) {
+		matchProfile->SetModified();
+	}
+
 	cvarSystem->SetCVarInteger( "net_serverDedicated", 0 );
 	cvarSystem->SetCVarBool( "net_LANServer", true );
 	// A full engine reload during ExecuteMapChange replays a bare "spawnServer"
@@ -2041,6 +2054,10 @@ bool idArenaCampaign::PrepareServer() {
 	ArenaSetMatchCVar( "g_gameReviewPause", 60 );
 	ArenaSetMatchCVar( "si_tourneyLimit", 1 );
 	cvarSystem->SetCVarBool( "si_useReady", false );
+	// The typed match-rule adapter requires a zero threshold when readiness is
+	// disabled. Leaving the archived 0.51 default in place rejects the complete
+	// rule draft and strands Arena play in non-scoring WARMUP forever.
+	ArenaSetMatchCVar( "si_warmupReadyPercentage", 0 );
 	cvarSystem->SetCVarBool( "si_allowVoting", false );
 	cvarSystem->SetCVarBool( "si_isBuyingEnabled", false );
 	cvarSystem->SetCVarBool( "si_dropWeaponsInBuyingModes", false );
