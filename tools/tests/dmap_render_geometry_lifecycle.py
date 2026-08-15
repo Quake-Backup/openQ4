@@ -90,9 +90,20 @@ def validate_engine_tool_lifetime() -> None:
     init = braced_body(common, "void idCommonLocal::Init(", "Common initialization")
     require_order(
         init,
-        ("InitSIMD();", "R_InitTriSurfData();", "InitCommands();", "InitGame();"),
+        ("InitSIMD();", "InitCommands();", "InitGame();"),
+        "Common initialization",
+    )
+    if "R_InitTriSurfData();" in init:
+        raise AssertionError("Common must not initialize render geometry before renderer allocation hooks")
+
+    init_game = braced_body(common, "void idCommonLocal::InitGame( void )", "game initialization")
+    require_order(
+        init_game,
+        ("renderSystem->Init();", "R_InitTriSurfData();", "cmdSystem->ExecuteCommandBuffer();"),
         "engine-side render-geometry initialization",
     )
+    if init_game.count("R_InitTriSurfData();") != 1:
+        raise AssertionError("game initialization must initialize the engine/tool TriSurf copy exactly once")
 
     shutdown = braced_body(common, "void idCommonLocal::Shutdown( void )", "Common shutdown")
     require_order(
@@ -102,11 +113,18 @@ def validate_engine_tool_lifetime() -> None:
     )
 
     renderer = read("src/renderer/RenderSystem_init.cpp")
+    renderer_init = braced_body(renderer, "void idRenderSystemLocal::Init( void )", "renderer initialization")
     require_order(
-        renderer,
-        ("R_InitTriSurfData();", "R_ShutdownTriSurfData();"),
-        "renderer-owned render-geometry lifetime",
+        renderer_init,
+        ("R_InstallImageToolsHooks();", "R_InstallRenderGeoHooks();", "R_InitTriSurfData();"),
+        "renderer-owned render-geometry initialization",
     )
+    if renderer_init.count("R_InitTriSurfData();") != 1:
+        raise AssertionError("renderer initialization must initialize its TriSurf copy exactly once")
+
+    renderer_shutdown = braced_body(renderer, "void idRenderSystemLocal::Shutdown( void )", "renderer shutdown")
+    if renderer_shutdown.count("R_ShutdownTriSurfData();") != 1:
+        raise AssertionError("renderer shutdown must release its TriSurf copy exactly once")
 
 
 def validate_build_and_ci_wiring() -> None:

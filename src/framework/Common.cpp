@@ -6386,11 +6386,6 @@ void idCommonLocal::Init( int argc, const char **argv, const char *cmdline ) {
 		// initialize processor specific SIMD implementation
 		InitSIMD();
 
-		// The render-geometry library is linked independently into module-only
-		// renderers and the engine. Initialize the engine copy for dmap and the
-		// other in-process tools; each renderer initializes its own copy.
-		R_InitTriSurfData();
-
 		// init commands
 		InitCommands();
 
@@ -6554,6 +6549,13 @@ void idCommonLocal::InitGame( void ) {
 
 	// initialize the renderSystem data structures, but don't start OpenGL yet
 	renderSystem->Init();
+
+	// The render-geometry library is linked independently into module-only
+	// renderers and the engine. Initialize the engine copy for dmap and the
+	// other in-process tools after the renderer has installed its allocation
+	// hooks, but before startup scripts can invoke a tool command. On static
+	// renderer builds the shared copy is already initialized, so this is a no-op.
+	R_InitTriSurfData();
 
 	// initialize string database right off so we can use it for loading messages
 	const idStr startupLanguageBeforeAutoSelect = cvarSystem->GetCVarString( "sys_lang" );
