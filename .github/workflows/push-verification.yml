@@ -76,6 +76,7 @@ jobs:
             tools/tests/match_control_ui_contract.py \
             tools/tests/demo_playback.py \
             tools/tests/docs_link_integrity.py \
+            tools/tests/dmap_render_geometry_lifecycle.py \
             tools/tests/fatal_error_startup_safety.py \
             tools/tests/filesystem_case_segments.py \
             tools/tests/filesystem_mod_manifest.py \
@@ -204,6 +205,7 @@ jobs:
           python tools/tests/match_control_ui_contract.py
           python tools/tests/demo_playback.py
           python tools/tests/docs_link_integrity.py
+          python tools/tests/dmap_render_geometry_lifecycle.py
           python tools/tests/fatal_error_startup_safety.py
           python tools/tests/filesystem_case_segments.py
           python tools/tests/filesystem_mod_manifest.py
