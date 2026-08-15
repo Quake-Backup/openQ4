@@ -213,6 +213,7 @@ public:
 	virtual void		DownloadProgressBox( backgroundDownload_t *bgl, const char *title, int progress_start = 0, int progress_end = 100 );
 	virtual void		SetPlayingSoundWorld();
 	void				SetPlayingSoundWorld( idSoundWorld *soundWorld );
+	void				UpdateSoundWorldFocus();
 
 	virtual void		TimeHitch( int msec );
 
@@ -289,6 +290,11 @@ public:
 
 	bool				insideExecuteMapChange;	// draw loading screen and update
 												// screen on prints
+
+	// The sound world the session wants playing, before the unfocused-silence
+	// filter is applied. Kept so focus changes can be re-derived every frame
+	// instead of being latched into what the sound system was last told.
+	idSoundWorld *		requestedSoundWorld;
 	int					bytesNeededForMapLoad;	// 
 
 	// we don't want to redraw the loading screen for every single

@@ -3588,6 +3588,7 @@ void idSessionLocal::Clear() {
 	rw = NULL;
 	sw = NULL;
 	menuSoundWorld = NULL;
+	requestedSoundWorld = NULL;
 	readDemo = NULL;
 	writeDemo = NULL;
 	renderdemoVersion = 0;
@@ -7270,7 +7271,12 @@ void idSessionLocal::UpdateScreen( bool outOfSequence ) {
 idSessionLocal::Frame
 ===============
 */
-void idSessionLocal::Frame() {	
+void idSessionLocal::Frame() {
+	// Re-derive the playing sound world from the current focus state before the
+	// mix runs, so s_muteUnfocused can never leave audio switched off once the
+	// window is back.
+	UpdateSoundWorldFocus();
+
 	soundSystem->Render();
 
 	// Editors that completely take over the game
@@ -7794,7 +7800,32 @@ idSessionLocal::SetPlayingSoundWorld
 ===============
 */
 void idSessionLocal::SetPlayingSoundWorld( idSoundWorld *soundWorld ) {
-	idSoundWorld *targetSoundWorld = soundWorld;
+	// Record what the session actually wants playing and let
+	// UpdateSoundWorldFocus() decide what reaches the sound system. Folding the
+	// focus test straight into the stored world used to latch: a call made while
+	// the window happened to be unfocused - most importantly the one that ends
+	// ExecuteMapChange() - handed the sound system NULL, and nothing re-derived
+	// it afterwards, so the level played out in silence.
+	requestedSoundWorld = soundWorld;
+	UpdateSoundWorldFocus();
+}
+
+/*
+===============
+idSessionLocal::UpdateSoundWorldFocus
+
+Applies the unfocused-silence preference on top of the world the session asked
+for. Called every frame so audio always comes back with the window, even when no
+focus event is delivered (the window was never focused to begin with, the video
+reference was being re-acquired when the world was selected, and so on).
+===============
+*/
+void idSessionLocal::UpdateSoundWorldFocus() {
+	if ( soundSystem == NULL ) {
+		return;
+	}
+
+	idSoundWorld *targetSoundWorld = requestedSoundWorld;
 
 	if ( targetSoundWorld != NULL && Session_ShouldSilenceAudioWhenUnfocused() ) {
 		targetSoundWorld = NULL;
