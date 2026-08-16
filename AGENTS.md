@@ -6,7 +6,7 @@ This file describes project goals, rules, and upstream credits for anyone workin
 - Name: openQ4
 - Author: themuffinator
 - Company: DarkMatter Productions
-- Version: 0.1.010
+- Version: 0.11.0
 - Website: `www.darkmatter-quake.com`
 - Repository: `https://github.com/themuffinator/openQ4`
 - Companion GameLibs Repo (local): `E:\Repositories\openQ4-game`

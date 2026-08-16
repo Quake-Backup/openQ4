@@ -430,7 +430,7 @@ Generated on 2026-04-19.
 | `s_useOcclusion` | flags | `1` | `1` | `SND ST AR` | `ST CH` | `bool` | `bool` |
 | `s_useOpenAL` | default, flags | `0` | `1` | `SND ST AR` | `ST AR` | `bool` | `bool` |
 | `s_volume` | flags, type/range | `0.5` | `0.5` | `SND ST AR` | `ST AR` | `float` | `float [0, 1]` |
-| `si_version` | default | `Quake4  V1.4.3 win-x86 Oct 20 2010` | `openQ4 0.1.010-nightly.20260319.1+g47f946e3.dirty` | `SYS SI ST RO` | `SYS SI ST RO` | `string` | `string` |
+| `si_version` | default | `Quake4  V1.4.3 win-x86 Oct 20 2010` | `openQ4 0.11.0-nightly.20260319.1+g47f946e3.dirty` | `SYS SI ST RO` | `SYS SI ST RO` | `string` | `string` |
 | `timescale` | type/range | `1` | `1` | `SYS ST CH` | `SYS ST CH` | `string` | `float [0.1, 10]` |
 
 ## Unresolved Retail Symbols

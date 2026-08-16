@@ -1,7 +1,7 @@
 project(
   'openQ4',
   ['c', 'cpp'],
-  version: '0.1.010',
+  version: '0.11.0',
   meson_version: '>=1.6.0',
   default_options: ['c_std=c11', 'cpp_std=c++20', 'b_vscrt=static_from_buildtype'],
 )
@@ -119,10 +119,12 @@ version_metadata_command = [
   '--header-out',
   generated_version_header,
 ]
+# Release builds pin the exact version. Everything else lets the helper resolve
+# it: project(version:) above is only a floor, raised to the newest published v*
+# tag when git history is available, so an unpinned build never advertises a
+# version that was never released.
 if version_base_override != ''
   version_metadata_command += ['--base-version', version_base_override]
-else
-  version_metadata_command += ['--base-version', meson.project_version()]
 endif
 if version_iteration != ''
   version_metadata_command += ['--iteration', version_iteration]
@@ -133,6 +135,7 @@ openq4_version_base = meson.project_version()
 openq4_version_short = meson.project_version()
 openq4_version_full = meson.project_version()
 openq4_version_tag = meson.project_version()
+openq4_version_date = ''
 openq4_product_version = meson.project_name() + ' ' + meson.project_version()
 openq4_product_version_full = openq4_product_version
 openq4_version_resource_dotted = meson.project_version() + '.0'
@@ -161,6 +164,8 @@ foreach version_line : version_metadata_result.stdout().strip().split('\n')
     openq4_version_full = version_value
   elif version_key == 'version_tag'
     openq4_version_tag = version_value
+  elif version_key == 'version_date'
+    openq4_version_date = version_value
   elif version_key == 'product_version'
     openq4_product_version = version_value
   elif version_key == 'product_version_full'
@@ -1780,6 +1785,7 @@ summary(
     'Version short': openq4_version_short,
     'Version full': openq4_version_full,
     'Version tag': openq4_version_tag,
+    'Version date': openq4_version_date,
     'Version resource': openq4_version_resource_dotted,
     'Git short SHA': openq4_git_sha_summary,
     'Git dirty': openq4_git_dirty,

@@ -5819,7 +5819,7 @@ static bool SDL3_WindowServices_CreateWindowForFramebuffer(const renderFramebuff
 			flags |= SDL_WINDOW_BORDERLESS;
 		}
 
-		s_sdlWindow = SDL_CreateWindow(GAME_NAME, parms->width, parms->height, flags);
+		s_sdlWindow = SDL_CreateWindow(GAME_WINDOW_TITLE, parms->width, parms->height, flags);
 		if (!s_sdlWindow) {
 			return false;
 		}
