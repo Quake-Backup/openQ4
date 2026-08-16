@@ -255,6 +255,7 @@ Implemented scope:
 - SP and MP keep transient previous/current samples for first-person camera origin, camera axis, and FOV, plus the complete first-person viewmodel origin and axis. The local player, or the currently spectated player in MP, consumes those samples while preparing each `Draw()`.
 - The presentation fraction is clamped from `0` to `1` across one authoritative `60 Hz` usercmd interval. This is previous-to-current interpolation, not extrapolation: it deliberately accepts at most one simulation tic of visual latency (about `16.7 ms`) rather than predicting a camera pose through collision or correction boundaries.
 - Repeated-state draw preparation recalculates the render view and resubmits a copied viewmodel render entity only. It does not rerun player or weapon `Think()`, scripts, physics, networking, sound, or other gameplay work.
+- Client entities bound to view model joints — muzzle-flash and beam BSE effects, attached weapon models — are re-anchored in the same pass through `rvViewWeapon::UpdatePresentationClientEntities()`. Their bind transform resolves through the view model's physics pose, so leaving them out made them sit on the last authoritative pose while the gun itself was drawn interpolated, and they visibly unstuck from the muzzle during view rotation. Only the transform is re-pushed: BSE spawns and ages only when a def's game time advances past its service time, so repeating the authoritative time moves an effect without respawning or double-ageing its particles, and effect lifetime stays in `rvClientEffect::Think()`.
 - Presentation samples and clock anchors are transient. The SP and MP `Save()` paths do not write them, and restore/map initialization reseeds them instead of changing the save-game or network contract.
 - Live first-person `renderView.time` uses the presentation clock, while demo playback and timedemo remain on authoritative simulation time.
 - Cadence/discontinuity checks snap instead of blending across missing tics, teleports, or other large changes. MP also disables interpolation while active prediction-error smoothing is correcting the viewed player.
@@ -268,7 +269,7 @@ Validation recorded for this slice:
 
 Explicitly deferred:
 
-- generic entity, mover, AI, local world-body, remote-player, projectile, dynamic-light, BSE/client-effect, trail, fracture, ragdoll, vehicle, and other bespoke visual-owner interpolation
+- generic entity, mover, AI, local world-body, remote-player, projectile, dynamic-light, world-space BSE/client-effect, trail, fracture, ragdoll, vehicle, and other bespoke visual-owner interpolation (client entities bound to the first-person view model are covered above; the weapon's own muzzle-flash `renderLight_t` is not, and still moves on the simulation clock)
 - moving-platform-relative first-person special cases and alternate camera, security-camera, portal-sky, and cinematic-camera interpolation
 - same-fire-frame weapon FX/tracer compensation and other presentation-time gameplay-adjacent cosmetic retraces
 - raw-input compensation or presentation bias/extrapolation; the engine's optional presentation-input sampler is not consumed by the current game-library slice
