@@ -4272,6 +4272,51 @@ static void Common_AppendUniqueLanguage( idStrList &languages, const char *langu
 	languages.Append( language );
 }
 
+/*
+===============
+Common_AppendLanguagesWithStringTables
+
+ListAvailableLanguagePacks only sees the retail zpak_<language> media archives,
+because those are what carry a language's recorded dialogue. That is the right
+test for a retail localisation, but it is the wrong one for a language whose
+text ships in the base paks with no media pack of its own - openQ4 translates
+its own strings for languages id never recorded VO for, and gating on the media
+pack rejected them before the tables were ever consulted.
+
+Take the union instead: a language is selectable if it has a media pack or a
+string table. The dictionary loads English first and overlays the selected
+language, so a text-only language still renders, just with English audio.
+===============
+*/
+static void Common_AppendLanguagesWithStringTables( const idStrList &langFiles, idStrList &languages ) {
+	const int prefixLength = idStr::Length( "strings/" );
+
+	for ( int i = 0; i < langFiles.Num(); ++i ) {
+		idStr fileName = langFiles[ i ];
+		if ( fileName.Length() <= prefixLength ) {
+			continue;
+		}
+		fileName = fileName.Right( fileName.Length() - prefixLength );
+
+		// "<language>_<category>.lang"
+		const int separator = fileName.Find( '_' );
+		if ( separator <= 0 ) {
+			continue;
+		}
+		fileName.CapLength( separator );
+		fileName.ToLower();
+
+		// Only names the engine actually knows, so a stray file cannot invent a
+		// language the rest of the system has no font or codepage policy for.
+		for ( int name = 0; sysLanguageNames[ name ] != NULL; ++name ) {
+			if ( !fileName.Icmp( sysLanguageNames[ name ] ) ) {
+				Common_AppendUniqueLanguage( languages, sysLanguageNames[ name ] );
+				break;
+			}
+		}
+	}
+}
+
 static const char *Common_MapLocaleLanguageCode( const char *languageCode ) {
 	struct languageMap_t {
 		const char *code;
@@ -4473,6 +4518,7 @@ void idCommonLocal::InitLanguageDict( bool applyStartupSysLang, bool allowAutoLa
 	idStrList langList = langFiles->GetList();
 	idStrList availableLanguagePacks;
 	fileSystem->ListAvailableLanguagePacks( availableLanguagePacks );
+	Common_AppendLanguagesWithStringTables( langList, availableLanguagePacks );
 	const bool hasStartupSysLang = Common_HasStartupVariable( "sys_lang" );
 
 	if ( applyStartupSysLang ) {
@@ -4527,6 +4573,12 @@ void idCommonLocal::InitLanguageDict( bool applyStartupSysLang, bool allowAutoLa
 		currentLangList = langList;
 		FilterLangList( &currentLangList, langName );
 	}
+
+	// Both the string tables and the byte-indexed fonts are 8-bit, so the
+	// codepage has to be chosen before anything is loaded and it applies to the
+	// English fallback tables as well - one dictionary cannot hold two
+	// codepages. Polish selects Windows-1250; everything else Windows-1252.
+	LangDict_SetActiveCodePage( LangDict_CodePageForLanguage( langName.c_str() ) );
 
 	if ( idStr::Icmp( langName.c_str(), "english" ) != 0 ) {
 		idStrList englishLangList = langList;

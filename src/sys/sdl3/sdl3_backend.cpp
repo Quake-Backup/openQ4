@@ -5041,11 +5041,14 @@ void Sys_InitScanTable(void) {
 	}
 
 	// Keep legacy Win32 behavior: English maps RightAlt to K_ALT for bind compatibility.
+	// Polish joins the list because "Polish (Programmers)" carries the whole
+	// accented alphabet on the AltGr layer.
 	s_rightAltKey = K_ALT;
 	if (lang.Icmp("spanish") == 0 ||
 		lang.Icmp("french") == 0 ||
 		lang.Icmp("german") == 0 ||
-		lang.Icmp("italian") == 0) {
+		lang.Icmp("italian") == 0 ||
+		lang.Icmp("polish") == 0) {
 		s_rightAltKey = K_RIGHT_ALT;
 	}
 }

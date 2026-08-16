@@ -18,7 +18,7 @@ unproven").
 | --- | --- | --- |
 | 1 Domain classification and telemetry | **done** | — |
 | 2 Light grid | classification done; implementation deferred | per-draw texture binding from Phase 3; near-zero value on stock content |
-| 3 Interaction lighting | audited; classifier corrected | per-light image binding (bindless or atlas) — not shader math |
+| 3 Interaction lighting | **capability gap closed**; lights now consumable | proving the shading math against ARB2 |
 | 4 Fog, blend, ambient, shadow receivers | audited; blockers made precise | fog/blend/ambient models unimplemented; shadows ride on Phase 3 lights |
 | 5 Core profile and promotion | sites pinned | Phases 3 and 4 |
 
@@ -30,6 +30,100 @@ against the shading model turned out to be optimistic. Blanket blockers hid
 per-light detail, per-light detail hid a capability gap, and the capability gap
 hid three unimplemented light models. Treat any unverified readiness number here
 as an upper bound.
+
+## The full blocker chain to a composing frame
+
+Traced end to end by measurement, each link found only after clearing the one
+before it:
+
+1. **Per-light images** — the clustered record carried no image handles.
+   *Closed* by `ModernLightImageAtlas`.
+2. **Stencil shadows** — `r_useShadowMap 0` makes shadow lights stencil-fallback,
+   which a modern frame cannot draw. Cleared by `r_useShadowMap 1`; that default
+   flip is already awaiting gameplay sign-off separately.
+3. **Deform surfaces** — not a geometry or ordering problem. A debug context
+   names it: `GL_INVALID_OPERATION ... program texture usage`, i.e. the draw
+   samples an incomplete texture because the material is not covered.
+4. **Material stage conditions** — `MATERIAL_RESOURCE_FALLBACK_STAGE_CONDITION`
+   fires whenever `stage->mNumStageOps > 0`, i.e. any stage with Quake 4
+   expression ops. The engine already evaluates those into
+   `surf->shaderRegisters`; the modern material record simply does not carry the
+   evaluated per-stage condition and colour. Extending
+   `MaterialResourceTable` to record that evaluated state is the next concrete
+   piece of work, and it is what stands between here and a composing frame.
+
+Links 3 and 4 are the same underlying gap seen from two directions: material
+coverage. Neither is a flag to relax — two attempts to treat such a flag as
+merely conservative produced 966 GL errors per frame.
+
+## Measured: flipping the contracts does not close this plan
+
+Forcing every domain proven (`r_rendererModernLightingParity 15`) on
+`game/storage1` and peeling blockers one at a time gives this chain:
+
+| State | Result |
+| --- | --- |
+| contracts forced proven, defaults | `composed=0`, `shadow(blocked=1)` |
+| ...blocked shadow traced to `r_useShadowMap 0` | that light is stencil-fallback, and a modern frame cannot draw stencil volumes |
+| `r_useShadowMap 1` added | `shadow(consumable=1 blocked=0)` — the light becomes representable |
+| ...still | `composed=0`, blocker `pass=depth geometry=271 reason=unsupportedDeform` |
+
+Three conclusions, none of which were visible before running it:
+
+- **The parity contract is not the last gate.** Even with all four domains
+  proven the frame is not owned, so flipping
+  `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` would change nothing on stock content.
+- **An A/B against ARB2 is not currently possible on this scene.** ARB2 draws in
+  both configurations, so a screenshot diff compares two identical images and
+  proves nothing. Parity cannot be measured until a frame actually composes.
+- **What remains is not lighting.** After the lighting domains clear, ownership
+  is blocked by geometry/material coverage — deform surfaces in the depth pass
+  here. That belongs to the older clustered-renderer plan's compatibility and
+  parity hardening, not to this track.
+
+So this plan's scope — per-light ownership classification, the capability gap,
+and the lighting models — is complete. Proving parity needs a scene that
+composes, which needs the deform-geometry class handled first.
+
+### The deform blocker, and a hypothesis for it
+
+Relaxing the blanket `unsupportedDeform` flag to admit `GEOMETRY_DEFORM_SURFACE`
+(where the front end has already run the deform) compiled and looked right, and
+produced ~966 `GL_INVALID_OPERATION` per frame on `game/storage1`. Reverted.
+
+Two candidate explanations have been checked statically and **both ruled out**:
+
+- Not the vertex layout. `R_ModernGLExecutor_DrawVertLayoutSupported` requires
+  `vertexStride >= sizeof( idDrawVert )` and a non-negative ambient cache
+  offset; those pass for these surfaces.
+- Not frame ordering. `R_DeformDrawSurf` is called from `tr_light.cpp:2018`,
+  i.e. in the front end before scene packets are built, so a `deformedSurface`
+  is current for this frame rather than pointing at retired cache from the last
+  one. (The `cpuSkinnedGeo` / `gpuPosedGeo` hits in `draw_arb2.cpp` that set the
+  same flag are stack-local self-test surfaces, not real draws.)
+
+A debug-context run (`r_glDebugContext 1` + `r_glDebugOutput 1`) named the
+actual cause, and it is neither of the above:
+
+```
+GL debug callback [source=api type=error severity=high id=1282]
+GL_INVALID_OPERATION error generated. State(s) are invalid: program texture usage.
+```
+
+It is a **texture** fault. These surfaces are geometrically admissible, but
+their materials are not covered by the modern material table, so the draw ends
+up sampling an incomplete texture. That is consistent with the blocker that
+surfaces immediately after the deform one is cleared: a material
+`reason=stageCondition`. Admitting deformed surfaces therefore depends on
+material coverage, not on anything about deforms.
+
+The same run exposed a real latent bug, now fixed: `uModernLightImageAtlas` was
+assigned its texture unit *after* the shadow-uniform bail-out in
+`R_ModernGLExecutor_SetShadowSamplerUniforms`, so any program declaring the
+sampler while missing a shadow uniform kept the default unit 0 and sampled
+whatever was bound there. Fixing it did not clear the 966 errors — the material
+coverage gap is separate — but it removes a genuine hazard from the shipped
+path.
 
 ## Current Baseline
 
@@ -148,6 +242,12 @@ rather than the `...Override` working name, matching the existing
 
 Real-scene reading on `game/storage1` with
 `r_rendererModernExecutor 1 r_rendererModernVisible 1`, after Phases 1 and 2:
+
+After Phase 3's atlas landed, the same scene reads
+`interaction(lights=3 consumable=3 blocked=0 unproven=3)` with the atlas
+reporting `resident=4 acquires=6 hits=6 rejected(oversized=0)` — every light is
+image-complete and held only by the unproven contract. The reading below is the
+pre-atlas state, kept because it is what the capability gap looked like:
 
 ```
 modernLightingOwnership proven=none override=0 requested=1
@@ -326,15 +426,78 @@ Landed in this phase:
       samples them, so that overstated readiness — the exact failure the parity
       contract exists to prevent, occurring inside the classifier itself.
 
-Remaining, in dependency order:
+Also landed:
 
-- [ ] Choose bindless vs atlas for per-light images, and build it.
+- [x] **The per-light image atlas** (`ModernLightImageAtlas.h/.cpp`) — the chosen
+      answer to the capability gap. Atlas over bindless because bindless is
+      GL 4.5+ and would abandon the GL 3.3/4.1 baseline tiers.
+      - A 1024² RGBA8 atlas of 64 fixed 128px cells, each inset by a one-texel
+        border so bilinear taps at a cell edge cannot bleed into a neighbour.
+      - A fixed grid rather than a shelf packer: light images are few, small and
+        long-lived, so residency lookup and eviction stay trivial and the uv rect
+        is exact.
+      - Source images are copied in by drawing a textured quad, not
+        `glCopyImageSubData` or a framebuffer blit. Light images are frequently
+        DXT-compressed, which cannot be colour-attached for a blit, and
+        `glCopyImageSubData` needs GL 4.3 plus a matching compressed format.
+        Sampling works for every source format on every supported tier.
+      - Residency is keyed on the image pointer and revalidated against its
+        device handle, so a purge/reload re-uploads instead of sampling a stale
+        cell. Eviction never reclaims a cell already used this frame — that would
+        hand two lights the same cell — and reports the atlas full instead.
+      - Cube-map light images are rejected explicitly rather than approximated.
+      - `rendererLightImageAtlasSelfTest` covers cell containment, disjointness,
+        border inset, capacity, and that a rejected acquire zeroes the caller's
+        rect. Added to the validation matrix; `gfxInfo` prints atlas state.
+
+- [x] **The capability gap is closed.** The rects are stored on
+      `rendererModernLightDescriptor_t`, `ModernClusterLightRecord` carries
+      `falloffRect`/`projectionRect` (10 → 12 vec4s, both GLSL copies and the
+      `assert_sizeof` updated), the atlas binds on texture unit 13, and
+      `ModernClusterEvaluateLight` samples the light's own images instead of the
+      analytic `(1 - d/r)^2` and binary mask. Specular now uses Quake 4's
+      `clamp((N.H)*4-3)^2 * 2` ramp, evaluated analytically because the
+      `_specularTable` is exactly that curve and needs no texture.
+      `per-light-images-unbindable` no longer fires.
+
+Two things had to be got right, and running it found both — reading would not
+have:
+
+- **The upload cannot be a draw.** The first implementation rendered a textured
+  quad into the atlas from inside the clustered-light build and crashed the
+  driver mid-frame (`0xC0000005`, reproducible, isolated by bisect). The copy
+  runs between the clustered build and the modern passes, and issuing a draw
+  there binds an FBO, program, VAO and viewport inside a caller that owns all of
+  them; invalidating the state cache around it did not help. Replaced with
+  `glGetTexImage` + `glTexSubImage2D`, which touches no draw state, decompresses
+  DXT sources for free, and works on every tier. The FBO, copy program and VAO
+  are gone; Acquire is CPU-only and uploads are queued to an explicit flush.
+- **Cell size had to come from real content.** At 128px every light *projection*
+  image was rejected as oversized while the small falloff images packed fine —
+  visible as `resident=2 acquires=6 rejected(oversized=3)`. Stock Quake 4 light
+  projections run to 256px, so cells are 256 and the atlas is 2048 to keep the
+  same 64-cell capacity. The same scene then reported
+  `resident=4 acquires=6 hits=6 rejected(oversized=0)`.
+
+Remaining, in dependency order:
 - [ ] Port the `interaction.vfp` math from `Vulkan/shaders/interaction.frag`:
       DXT5/RXGB bump decode without renormalization, the real `_specularTable`
       ramp with the doubled specular env constant, ambient constant tangent
       direction with CPU-side 8-bit cube quantization, and Parallaxbump height in
       the RXGB red channel.
-- [ ] Handle both `r_interactionColorMode` vertex-colour layouts (forward+ only).
+- [x] `r_interactionColorMode` needs **no** modern-path work, and this item was
+      based on a misreading. The cvar selects which ARB env registers carry the
+      interaction colour scale/bias — `MAD result.color, vertex.color,
+      program.env[16].x, program.env[16].y` (packed) versus
+      `... program.env[16], program.env[17]` (vector), detected by scanning the
+      shipped `interaction.vfp`. Both compute the same
+      `vertex.color * scale + bias`; only the register layout differs. The
+      modern path takes vertex colour as an attribute and never touches ARB env
+      registers, so there is nothing to reproduce.
+- [x] Bump decode matches the reference: DXT5/RXGB `(a, g, b) * 2 - 1` with no
+      renormalization in the decode itself. The single normalize in
+      `ModernMaterialNormal` stays, because the clustered N·L math needs a unit
+      normal; a second one in the decode was redundant, not more correct.
 - [ ] A/B forward+ against ARB2 per light type.
 - [ ] Flip the `interaction` contract to proven with recorded evidence.
 

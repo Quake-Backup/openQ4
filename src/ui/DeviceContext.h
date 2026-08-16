@@ -210,6 +210,7 @@ private:
 	
 	static idList<fontInfoEx_t> fonts;
 	static int			fontsVideoRestartCount;
+	static int			fontsCodePageGeneration;
 	idStr fontLang;
 
 	bool				enableClipping;

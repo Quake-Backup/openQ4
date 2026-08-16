@@ -597,7 +597,22 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 		record.indexCacheBytes = geo->indexCache->size;
 		record.hasIndexBuffer = geo->indexCache->vbo != 0 && geo->indexCache->indexBuffer;
 	}
-	if ( record.deformMode != GEOMETRY_DEFORM_NONE ) {
+	// GEOMETRY_DEFORM_SURFACE is admitted: the front end already ran the deform,
+	// so the cache holds finished geometry at the normal idDrawVert stride and
+	// the ordinary vertex/index binding covers it. Only GEOMETRY_DEFORM_MATERIAL
+	// (a deform the material still has to execute) stays unsupported.
+	//
+	// Admitting it originally produced ~966 GL_INVALID_OPERATION per frame on
+	// game/storage1, which read like a vertex-binding problem but was not. With
+	// a debug context the driver named it: "State(s) are invalid: program
+	// texture usage". These surfaces are the first to reach the transparent-
+	// forward and clustered shadow-sampling programs, whose samplerCube shadow
+	// uniforms sat on the same texture units as the sampler2D material texture
+	// table. GL fails any draw whose active samplers disagree on a unit's type,
+	// so the fix was to make those unit ranges disjoint (see
+	// MODERN_GL_SHADOW_TEXTURE_UNIT_FIRST in ModernGLShaderLibrary.h), not to
+	// change anything about the geometry these records describe.
+	if ( record.deformMode == GEOMETRY_DEFORM_MATERIAL ) {
 		R_ScenePackets_AddGeometryFallback(
 			record,
 			GEOMETRY_RESOURCE_FALLBACK_UNSUPPORTED_DEFORM,

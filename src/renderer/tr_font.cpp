@@ -79,6 +79,7 @@ static const int QUAKE4_FONTDAT_SIZE =
 // Renderer reloads keep this module mapped, so the console-atlas lifecycle
 // guard must be reset explicitly when FreeType/font resources are released.
 static bool consoleFontChecked = false;
+static int consoleFontCodePageGeneration = -1;
 
 static fontInfo_t *R_FontSlotForIndex( fontInfoEx_t &font, q4FontSlotIndex_t slot ) {
 	if ( slot == Q4_FONT_SLOT_SMALL ) {
@@ -232,8 +233,30 @@ static bool R_LoadFontSlot( fontInfoEx_t &font, const char *fontName, const q4Fo
 
 }
 
+/*
+============
+R_SyncFontCodePage
+
+The renderer is a module with its own copy of idlib, so the active codepage the
+engine selects in idCommonLocal::InitLanguageDict does not reach this side -
+that static lives in the engine's copy. Without this the string tables would be
+Windows-1250 while the glyph atlas was still rasterised through Windows-1252,
+which is not a missing glyph but a wrong one: Polish "GRE-ogonek" came out as
+"GRE-circumflex" and "WYJSCIE" as "WYJOECIE".
+
+sys_lang is a cvar, and cvars do cross the module boundary, so derive it here
+from the same language name rather than trying to push the value across.
+============
+*/
+void R_SyncFontCodePage( void ) {
+	LangDict_SetActiveCodePage(
+		LangDict_CodePageForLanguage( cvarSystem->GetCVarString( "sys_lang" ) ) );
+}
+
 void R_RefreshConsoleFontAtlas( void ) {
+	R_SyncFontCodePage();
 	consoleFontChecked = true;
+	consoleFontCodePageGeneration = LangDict_GetCodePageGeneration();
 	R_BuildConsoleFontAtlas();
 }
 
@@ -247,10 +270,19 @@ Loads 3 point sizes, 12, 24, and 48
 bool idRenderSystemLocal::RegisterFont( const char *fontName, fontInfoEx_t &font ) {
 	memset( &font, 0, sizeof( font ) );
 
+	// Every atlas below is rasterised through the active codepage, so this
+	// module's copy of it has to agree with the string tables before any glyph
+	// is baked.
+	R_SyncFontCodePage();
+
 	// The console sheet is not registered through here, so piggyback on the
-	// first font registration to rebuild it once the renderer is up.
-	if ( !consoleFontChecked ) {
+	// first font registration to rebuild it once the renderer is up. It is
+	// byte-indexed like the GUI atlases, so a sys_lang change that moves the
+	// string tables between Windows-1252 and Windows-1250 also invalidates it.
+	const int codePageGeneration = LangDict_GetCodePageGeneration();
+	if ( !consoleFontChecked || consoleFontCodePageGeneration != codePageGeneration ) {
 		consoleFontChecked = true;
+		consoleFontCodePageGeneration = codePageGeneration;
 		R_BuildConsoleFontAtlas();
 	}
 

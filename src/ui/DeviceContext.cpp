@@ -59,6 +59,7 @@ idCVar gui_textBackgroundPadding( "gui_textBackgroundPadding", "2", CVAR_GUI | C
 
 idList<fontInfoEx_t> idDeviceContext::fonts;
 int idDeviceContext::fontsVideoRestartCount = -1;
+int idDeviceContext::fontsCodePageGeneration = -1;
 
 namespace {
 
@@ -890,6 +891,42 @@ static void openQ4_ResolveFontFileName( const char *name, const idStr &language,
 	fileName.Replace( "fonts", va( "fonts/%s", language.c_str() ) );
 }
 
+/*
+================
+openQ4_RegisterFontForLanguage
+
+Languages outside the Western European set are not folded onto the English
+artwork, because a localised release can ship its own atlases with the right
+alphabet in them - the retail Polish build did. But openQ4's own content
+directory only carries the shared faces, so a language whose folder is absent
+would otherwise fail to register a single font and leave every menu blank.
+
+Try the language folder first so a localised install still wins, then fall back
+to English. The scalable path does the equivalent internally (a .ttf is looked
+up under the language folder and then at the shared location), so this only
+really bites the bitmap atlases, which is exactly where it used to break.
+================
+*/
+static bool openQ4_RegisterFontForLanguage( const char *logicalName, const idStr &language, fontInfoEx_t &font, idStr &resolvedFileName ) {
+	openQ4_ResolveFontFileName( logicalName, language, resolvedFileName );
+	if ( renderSystem->RegisterFont( resolvedFileName, font ) ) {
+		return true;
+	}
+	if ( idStr::Icmp( language.c_str(), "english" ) == 0 ) {
+		return false;
+	}
+
+	idStr englishFileName;
+	openQ4_ResolveFontFileName( logicalName, idStr( "english" ), englishFileName );
+	if ( !renderSystem->RegisterFont( englishFileName, font ) ) {
+		return false;
+	}
+	common->DPrintf( "No '%s' font artwork for %s; using %s\n",
+					 language.c_str(), resolvedFileName.c_str(), englishFileName.c_str() );
+	resolvedFileName = englishFileName;
+	return true;
+}
+
 }
 
 int idDeviceContext::FindFont( const char *name ) {
@@ -906,11 +943,9 @@ int idDeviceContext::FindFont( const char *name ) {
 
 	// If the font was not found, try to register it
 	idStr fileName;
-	openQ4_ResolveFontFileName( name, fontLang, fileName );
-
 	fontInfoEx_t fontInfo;
 	int index = fonts.Append( fontInfo );
-	if ( renderSystem->RegisterFont( fileName, fonts[index] ) ) {
+	if ( openQ4_RegisterFontForLanguage( name, fontLang, fonts[index], fileName ) ) {
 		idStr::Copynz( fonts[index].name, name, sizeof( fonts[index].name ) );
 		return index;
 	} else {
@@ -980,9 +1015,8 @@ bool idDeviceContext::ReloadFonts() {
 		}
 
 		idStr fileName;
-		openQ4_ResolveFontFileName( logicalName, fontLang, fileName );
 		fontInfoEx_t replacement;
-		if ( !renderSystem->RegisterFont( fileName.c_str(), replacement ) ) {
+		if ( !openQ4_RegisterFontForLanguage( logicalName, fontLang, replacement, fileName ) ) {
 			common->Warning( "Could not reload font %s [%s] after renderer restart", logicalName, fileName.c_str() );
 			allFontsReloaded = false;
 			continue;
@@ -1014,15 +1048,21 @@ void idDeviceContext::EnsureFontsCurrent() {
 	}
 
 	const int currentRestartCount = renderSystem->GetVideoRestartCount();
-	if ( fontsVideoRestartCount == currentRestartCount ) {
+	// The glyph a byte maps to is fixed at rasterisation time, so switching
+	// sys_lang between a Western and a Central European language invalidates
+	// every atlas even though the renderer never restarted.
+	const int currentCodePageGeneration = LangDict_GetCodePageGeneration();
+	if ( fontsVideoRestartCount == currentRestartCount &&
+		 fontsCodePageGeneration == currentCodePageGeneration ) {
 		return;
 	}
 
 	// Record the generation before rebuilding so any registration path that
 	// consults this context cannot recursively begin the same refresh.
 	fontsVideoRestartCount = currentRestartCount;
+	fontsCodePageGeneration = currentCodePageGeneration;
 	if ( !ReloadFonts() ) {
-		common->Warning( "vid_restart could not rebuild every GUI font" );
+		common->Warning( "could not rebuild every GUI font" );
 	}
 }
 
@@ -1515,6 +1555,7 @@ void idDeviceContext::Init() {
 	mbcs = false;
 	if ( fonts.Num() == 0 && renderSystem != NULL ) {
 		fontsVideoRestartCount = renderSystem->GetVideoRestartCount();
+		fontsCodePageGeneration = LangDict_GetCodePageGeneration();
 	}
 	SetupFonts();
 	activeFont = fonts.Num() > 0 ? &fonts[0] : NULL;
@@ -1564,6 +1605,7 @@ void idDeviceContext::Shutdown() {
 	clipRects.Clear();
 	fonts.Clear();
 	fontsVideoRestartCount = -1;
+	fontsCodePageGeneration = -1;
 	Clear();
 }
 
@@ -3045,13 +3087,17 @@ bool UI_FontParity_RunSelfTest( void ) {
 	}
 
 	idStr fontAtlasLang = cvarSystem->GetCVarString( "sys_lang" );
-	if ( fontAtlasLang == "french" || fontAtlasLang == "german" || fontAtlasLang == "spanish" || fontAtlasLang == "italian" ) {
-		fontAtlasLang = "english";
-	}
+	openQ4_NormalizeFontLanguage( fontAtlasLang );
 	// The TrueType path never touches the retail .fontdat atlas, so this only
 	// means anything while the bitmap fonts are in charge.
 	if ( retailAtlasActive ) {
 		const idMaterial *fontAtlasMaterial = declManager->FindMaterial( va( "fonts/%s/marine_12.fontdat", fontAtlasLang.c_str() ), false );
+		if ( fontAtlasMaterial == NULL && idStr::Icmp( fontAtlasLang.c_str(), "english" ) != 0 ) {
+			// A language with no atlases of its own falls back to the English
+			// artwork, the same way openQ4_RegisterFontForLanguage does.
+			fontAtlasLang = "english";
+			fontAtlasMaterial = declManager->FindMaterial( va( "fonts/%s/marine_12.fontdat", fontAtlasLang.c_str() ), false );
+		}
 		ok &= openQ4_CheckBool( "hud radio marine atlas material", fontAtlasMaterial != NULL, true );
 		if ( fontAtlasMaterial != NULL && fontAtlasMaterial->GetNumStages() > 0 ) {
 			materialImageInfo_t fontAtlasInfo;

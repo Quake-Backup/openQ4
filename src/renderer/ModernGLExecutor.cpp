@@ -10,6 +10,7 @@
 #include "ModernClusteredLighting.h"
 #include "ModernGLShaderLibrary.h"
 #include "ModernGLSubmitPlan.h"
+#include "ModernLightImageAtlas.h"
 #include "ModernShadowPlanner.h"
 #include "RenderGraphResources.h"
 #include "RendererBootstrap.h"
@@ -2026,13 +2027,13 @@ projection planes but no image handles, and nothing in the clustered path binds
 those images, so ModernClusterEvaluateLight substitutes an analytic
 `(1 - d/r)^2` response and a binary in-frustum projection mask.
 
-Until a light record can reference its own images - through bindless handles on
-GL 4.5+ or a shared falloff/projection atlas indexed per record - the clustered
-path cannot express a stock light, no matter how complete the descriptor is.
-Flipping this constant is a reviewed change that must land with that plumbing.
+ModernLightImageAtlas closes that gap: it packs those images into a shared atlas
+and the light record carries a uv rect per image, so the clustered shader can
+sample them per record.  A light is image-complete only when the atlas actually
+took both of its images, which is a per-light, per-frame answer rather than a
+build-time constant.
 ==================
 */
-static const bool MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES = false;
 
 /*
 ==================
@@ -2050,18 +2051,17 @@ static const char *R_ModernGLExecutor_LightDescriptorBlockReason( const renderer
 	case RENDERER_MODERN_LIGHT_PROJECTED:
 		break;
 	case RENDERER_MODERN_LIGHT_AMBIENT:
-		// ModernClusterEvaluateLight zeroes attenuation for every type except
-		// point and projected, so an ambient light contributes nothing at all.
-		// Quake 4 ambient lights are real lights evaluated against a constant
-		// tangent-space direction (see Vulkan/shaders/interaction.frag).
-		return "ambient-light-unevaluated";
+		// evaluated with no N.L shaping and no specular, matching the constant
+		// tangent-space direction Quake 4 ambient normal cubes decode to
+		break;
 	case RENDERER_MODERN_LIGHT_FOG:
 	case RENDERER_MODERN_LIGHT_BLEND:
-		// The fog/blend program is literally the clustered transparent-forward
-		// shader, which accumulates only type 0/1 lights. Quake 4 fog is a
-		// distance-driven projective fog-image lookup and blend lights modulate
-		// the framebuffer; neither is a clustered light contribution.
-		return "fog-blend-model-unimplemented";
+		// Composited rather than accumulated: fog mixes toward its colour by a
+		// density driven from the light's own projection axis, and a blend light
+		// modulates what is already there. ModernClusterApplyFogAndBlend applies
+		// both over the accumulated result, which is why they need no separate
+		// GL blend state.
+		break;
 	case RENDERER_MODERN_LIGHT_SPECIAL:
 	default:
 		// parallel/sun lights, and anything the classifier could not identify,
@@ -2078,7 +2078,7 @@ static const char *R_ModernGLExecutor_LightDescriptorBlockReason( const renderer
 	// Having the images is not the same as being able to sample them. Reporting
 	// such a light "consumable" would claim readiness the shading model cannot
 	// deliver - the precise overstatement the parity contract exists to stop.
-	if ( !MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES ) {
+	if ( !( R_ModernLightImageAtlas_Ready() && light.atlasReady ) ) {
 		return "per-light-images-unbindable";
 	}
 	return NULL;
@@ -5213,7 +5213,10 @@ static int R_ModernGLExecutor_ShadowTextureUnitLimit( void ) {
 }
 
 static bool R_ModernGLExecutor_ShadowTextureUnitsReady( void ) {
-	return R_ModernGLExecutor_ShadowTextureUnitLimit() >= MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS + MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT;
+	// the light-image atlas sits on the unit directly above the shadow set, so
+	// it has to fit under the same limit or its binding would be dropped while
+	// the shader still declares the sampler
+	return R_ModernGLExecutor_ShadowTextureUnitLimit() > MODERN_GL_LIGHT_IMAGE_ATLAS_TEXTURE_UNIT;
 }
 
 static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program ) {
@@ -5227,11 +5230,32 @@ static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program ) {
 	const GLint resourceState = glGetUniformLocation( program, "uModernShadowResourceState" );
 	const GLint samplerState = glGetUniformLocation( program, "uModernShadowSamplerState" );
 	const GLint momentState = glGetUniformLocation( program, "uModernShadowMomentState" );
-	if ( projectedAtlas < 0 || pointAtlas < 0 || projectedMoments < 0 || pointMoments < 0 || resourceState < 0 || samplerState < 0 || momentState < 0 ) {
-		return false;
+	// The light-image atlas sampler is independent of the shadow set and must be
+	// assigned before the shadow bail-out below. A program that declares it but
+	// is missing any shadow uniform would otherwise keep the default unit 0 and
+	// sample whatever happens to be bound there, which the driver reports as
+	// "State(s) are invalid: program texture usage".
+	const GLint lightImageAtlas = glGetUniformLocation( program, "uModernLightImageAtlas" );
+	if ( lightImageAtlas >= 0 ) {
+		glUniform1i( lightImageAtlas, MODERN_GL_LIGHT_IMAGE_ATLAS_TEXTURE_UNIT );
 	}
-	glUniform1i( projectedAtlas, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS );
-	glUniform1i( pointAtlas, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS );
+	// Same rule as the light-image atlas above, for the shadow set itself: a
+	// sampler this program actually declares has to be pointed at its own unit
+	// whether or not the rest of the set survived compilation. GLSL drops
+	// uniforms a variant never statically uses, so a partially-used shadow set
+	// used to skip every assignment below, leaving the surviving samplers on the
+	// default unit 0 -- where uModernPointShadowAtlas (samplerCube) would alias
+	// the material sampler2D bound there. GL validates every active sampler at
+	// draw time and fails the draw with GL_INVALID_OPERATION "State(s) are
+	// invalid: program texture usage" when two of them disagree on a unit's
+	// type, whether or not the shader ever samples them. Assign each sampler
+	// that exists, then report whether the full set was present.
+	if ( projectedAtlas >= 0 ) {
+		glUniform1i( projectedAtlas, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS );
+	}
+	if ( pointAtlas >= 0 ) {
+		glUniform1i( pointAtlas, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_ATLAS );
+	}
 	if ( glUniform1iv != NULL ) {
 		GLint projectedMomentUnits[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
 		GLint pointMomentUnits[RENDERER_SHADOW_TEXTURE_MOMENT_COUNT];
@@ -5239,8 +5263,15 @@ static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program ) {
 			projectedMomentUnits[i] = MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_MOMENTS + i;
 			pointMomentUnits[i] = MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS + i;
 		}
-		glUniform1iv( projectedMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, projectedMomentUnits );
-		glUniform1iv( pointMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, pointMomentUnits );
+		if ( projectedMoments >= 0 ) {
+			glUniform1iv( projectedMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, projectedMomentUnits );
+		}
+		if ( pointMoments >= 0 ) {
+			glUniform1iv( pointMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, pointMomentUnits );
+		}
+	}
+	if ( projectedAtlas < 0 || pointAtlas < 0 || projectedMoments < 0 || pointMoments < 0 || resourceState < 0 || samplerState < 0 || momentState < 0 ) {
+		return false;
 	}
 	return true;
 }
@@ -5264,9 +5295,35 @@ static int R_ModernGLExecutor_CountActualShadowTextures( const rendererShadowTex
 	return count;
 }
 
+// An unready shadow slot still has a sampler declared in the clustered/
+// transparent forward programs. Binding 0 there leaves that sampler pointing at
+// the default texture object, which is incomplete, and the draw fails with
+// GL_INVALID_OPERATION "program texture usage" even though uModernShadowResourceState
+// tells the shader never to sample it -- GL validates every active sampler at
+// draw time regardless of dynamic branching. Bind a complete placeholder of the
+// matching target instead; the resource-state uniform still gates the reads.
+static GLuint R_ModernGLExecutor_ShadowSlotPlaceholderTexture( GLenum target ) {
+	if ( globalImages == NULL ) {
+		return 0;
+	}
+	idImage *placeholder = ( target == GL_TEXTURE_CUBE_MAP )
+		? globalImages->normalCubeMapImage
+		: globalImages->blackImage;
+	if ( placeholder == NULL || !placeholder->IsLoaded() ) {
+		return 0;
+	}
+	return static_cast<GLuint>( placeholder->GetDeviceHandle() );
+}
+
 static void R_ModernGLExecutor_BindShadowTextureSlot( const rendererShadowTextureBinding_t &binding, const unsigned int fallbackTarget, const int unit, modernGLExecutorStats_t &stats ) {
 	const GLenum target = binding.target != 0 ? static_cast<GLenum>( binding.target ) : static_cast<GLenum>( fallbackTarget );
-	const GLuint texture = binding.ready ? binding.texture : 0;
+	const GLuint boundTexture = binding.ready ? binding.texture : 0;
+	// A slot with nothing ready still has its sampler declared by the program,
+	// and an unbound unit leaves that sampler on the incomplete default texture
+	// object -- the same "program texture usage" draw failure the unit layout
+	// above avoids. Substitute a complete texture of the matching target;
+	// uModernShadowResourceState still tells the shader not to read it.
+	const GLuint texture = boundTexture != 0 ? boundTexture : R_ModernGLExecutor_ShadowSlotPlaceholderTexture( target );
 	R_GLStateCache().ActiveTextureUnit( unit );
 	if ( R_GLStateCache().BindTexture( unit, target, texture ) ) {
 		stats.lowOverheadClassicTextureBinds++;
@@ -5274,7 +5331,9 @@ static void R_ModernGLExecutor_BindShadowTextureSlot( const rendererShadowTextur
 	if ( glBindSampler != NULL ) {
 		R_GLStateCache().BindSampler( unit, 0 );
 	}
-	if ( texture != 0 && ( target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP ) ) {
+	// only reset compare mode on a real shadow texture; the placeholder is a
+	// shared global image and must not have its sampler state rewritten
+	if ( boundTexture != 0 && ( target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP ) ) {
 		glTexParameteri( target, GL_TEXTURE_COMPARE_MODE, GL_NONE );
 	}
 }
@@ -5353,6 +5412,22 @@ static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernG
 		R_ModernGLExecutor_BindShadowTextureSlot( bindings.pointMoments[i], GL_TEXTURE_CUBE_MAP, MODERN_GL_SHADOW_TEXTURE_UNIT_POINT_MOMENTS + i, stats );
 	}
 	stats.shadowTextureBoundTextures += actualTextures;
+
+	// The clustered light shaders sample each light's own falloff/projection
+	// cell out of the shared atlas, so it rides along on the next free unit.
+	// Same completeness rule as the shadow slots above applies: the sampler is
+	// declared whether or not the atlas exists, so an unready atlas still needs
+	// a complete texture bound rather than nothing.
+	{
+		const GLuint atlasTexture = R_ModernLightImageAtlas_Ready()
+			? static_cast<GLuint>( R_ModernLightImageAtlas_Texture() )
+			: R_ModernGLExecutor_ShadowSlotPlaceholderTexture( GL_TEXTURE_2D );
+		if ( atlasTexture != 0 ) {
+			R_GLStateCache().ActiveTextureUnit( MODERN_GL_LIGHT_IMAGE_ATLAS_TEXTURE_UNIT );
+			R_GLStateCache().BindTexture( MODERN_GL_LIGHT_IMAGE_ATLAS_TEXTURE_UNIT, GL_TEXTURE_2D, atlasTexture );
+		}
+	}
+
 	R_GLStateCache().ActiveTextureUnit( 0 );
 	return samplerReady;
 }
@@ -6794,6 +6869,7 @@ void R_ModernGLExecutor_Init( const renderBackendCaps_t &caps, const renderFeatu
 	R_GLStateCache_Init( caps );
 	R_ModernShadowPlanner_Init( caps, features );
 	R_ModernClusteredLighting_Init( caps, features );
+	R_ModernLightImageAtlas_Init( caps, features );
 	rg_modernGLExecutorLowOverheadReady = R_ModernGLExecutor_CanUseLowOverhead( caps, features );
 	rg_modernGLExecutorVertexBindingReady = R_ModernGLExecutor_CanUseVertexBinding( caps, features );
 	rg_modernGLExecutorVertexInputFormatSetups = 0;
@@ -6957,6 +7033,7 @@ void R_ModernGLExecutor_Shutdown( void ) {
 	R_ModernGLExecutor_ResetVertexInputCache();
 	memset( &rg_modernGLExecutorCaps, 0, sizeof( rg_modernGLExecutorCaps ) );
 	memset( &rg_modernGLExecutorFeatures, 0, sizeof( rg_modernGLExecutorFeatures ) );
+	R_ModernLightImageAtlas_Shutdown();
 	R_ModernClusteredLighting_Shutdown();
 	R_ModernShadowPlanner_Shutdown();
 	R_GLStateCache_Shutdown();
@@ -7150,12 +7227,16 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 		r_shadows.GetBool() &&
 		( clusteredLightingRequested || rg_modernGLExecutorStats.visibleDepthRequested || R_ModernGLExecutor_ShadowMapSidecarRequested() );
 
+	R_ModernLightImageAtlas_BeginFrame();
 	R_ModernShadowPlanner_PrepareFrame( packetFrame, shadowPlanningRequested );
 	const modernShadowPlannerStats_t &shadowStats = R_ModernShadowPlanner_Stats();
 	rg_modernGLExecutorStats.visibilityShadowCasterTested += shadowStats.visibilityCasterTests;
 	rg_modernGLExecutorStats.visibilityShadowCasterRejected += shadowStats.visibilityCasterRejected;
 	rg_modernGLExecutorStats.visibilityShadowCasterSavedDraws += shadowStats.visibilityCasterSavedDraws;
 	R_ModernClusteredLighting_PrepareFrame( packetFrame, clusteredLightingRequested );
+	// the clustered build only reserved atlas cells; copy them in here, where
+	// binding textures is safe
+	R_ModernLightImageAtlas_FlushUploads();
 	R_ModernGLExecutor_ClassifyModernVisibleLighting( packetFrame, rg_modernGLExecutorStats );
 	R_ModernGLExecutor_UpdateFrameUBO( rg_modernGLExecutorStats );
 	{
@@ -8484,6 +8565,7 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.modernVisibleBSEMaterialFallbacks,
 		rg_modernGLExecutorStats.modernVisibleCinematicCompatibilityPasses );
 	R_ModernGLExecutor_PrintLightingOwnership( rg_modernGLExecutorStats );
+	R_ModernLightImageAtlas_PrintGfxInfo();
 	R_GLStateCache_PrintGfxInfo();
 	R_ModernGLShaderLibrary_PrintGfxInfo();
 }

@@ -149,16 +149,20 @@ def validate_font_resource_reset_contract(font_source: str, font_header: str) ->
     if font_source.count("static bool consoleFontChecked = false;") != 1:
         raise AssertionError("console font lifecycle guard must have one file-scope definition")
     reject(register, "static bool consoleFontChecked", "function-static console font guard")
+    # The console sheet is byte-indexed, so besides the once-per-renderer guard it
+    # also has to rebuild when sys_lang moves the string tables between the
+    # Western and Central European codepages.
     for token in (
-        "if ( !consoleFontChecked )",
+        "if ( !consoleFontChecked || consoleFontCodePageGeneration != codePageGeneration )",
         "consoleFontChecked = true;",
         "R_BuildConsoleFontAtlas();",
     ):
         require(register, token, "once-per-renderer console font rebuild")
+    require(register, "LangDict_GetCodePageGeneration()", "codepage-aware console font rebuild")
     for token in ("consoleFontChecked = true;", "R_BuildConsoleFontAtlas();"):
         require(refresh, token, "console font refresh")
     if not (
-        register.index("if ( !consoleFontChecked )")
+        register.index("if ( !consoleFontChecked ||")
         < register.index("consoleFontChecked = true;")
         < register.index("R_BuildConsoleFontAtlas();")
         and refresh.index("consoleFontChecked = true;") < refresh.index("R_BuildConsoleFontAtlas();")
@@ -257,9 +261,10 @@ def validate_ui_font_reload_contract(
         "openQ4_NormalizeFontLanguage( fontLang );",
         "for ( int i = 0; i < fonts.Num(); ++i )",
         "idStr::Copynz( logicalName, fonts[i].name, sizeof( logicalName ) );",
-        "openQ4_ResolveFontFileName( logicalName, fontLang, fileName );",
+        # registration goes through the helper so a language without its own font
+        # artwork falls back to English instead of failing every font
+        "openQ4_RegisterFontForLanguage( logicalName, fontLang, replacement, fileName )",
         "fontInfoEx_t replacement;",
-        "renderSystem->RegisterFont( fileName.c_str(), replacement )",
         "idStr::Copynz( replacement.name, logicalName, sizeof( replacement.name ) );",
         "fonts[i] = replacement;",
         "SetFont( activeFontIndex );",
@@ -272,23 +277,49 @@ def validate_ui_font_reload_contract(
     reject(reload_fonts, "fonts.Append", "stable UI font indices across vid_restart")
     if not (
         reload_fonts.index("idStr::Copynz( logicalName, fonts[i].name")
-        < reload_fonts.index("renderSystem->RegisterFont( fileName.c_str(), replacement )")
+        < reload_fonts.index("openQ4_RegisterFontForLanguage( logicalName, fontLang, replacement, fileName )")
         < reload_fonts.index("fonts[i] = replacement;")
         < reload_fonts.index("SetFont( activeFontIndex );")
     ):
         raise AssertionError("UI font reload must replace cached entries in place before restoring selection")
 
+    register_for_language = function_body(
+        device_source,
+        "static bool openQ4_RegisterFontForLanguage(",
+        "language font fallback",
+    )
+    for token in (
+        "openQ4_ResolveFontFileName( logicalName, language, resolvedFileName );",
+        "renderSystem->RegisterFont( resolvedFileName, font )",
+        "idStr::Icmp( language.c_str(), \"english\" ) == 0",
+        "openQ4_ResolveFontFileName( logicalName, idStr( \"english\" ), englishFileName );",
+    ):
+        require(register_for_language, token, "language font fallback")
+    if not (
+        register_for_language.index("renderSystem->RegisterFont( resolvedFileName, font )")
+        < register_for_language.index("openQ4_ResolveFontFileName( logicalName, idStr( \"english\" ), englishFileName );")
+    ):
+        raise AssertionError(
+            "the language-specific font must be tried before the English fallback, so a "
+            "localised release keeps its own atlases"
+        )
+
     ensure = function_body(device_source, "void idDeviceContext::EnsureFontsCurrent()", "lazy UI font refresh")
     for token in (
         "!initialized || renderSystem == NULL || !renderSystem->IsOpenGLRunning()",
         "const int currentRestartCount = renderSystem->GetVideoRestartCount();",
-        "if ( fontsVideoRestartCount == currentRestartCount )",
+        # a sys_lang change that swaps the 8-bit codepage invalidates every glyph
+        # atlas even though the renderer never restarted
+        "const int currentCodePageGeneration = LangDict_GetCodePageGeneration();",
+        "if ( fontsVideoRestartCount == currentRestartCount &&",
+        "fontsCodePageGeneration == currentCodePageGeneration )",
         "fontsVideoRestartCount = currentRestartCount;",
+        "fontsCodePageGeneration = currentCodePageGeneration;",
         "if ( !ReloadFonts() )",
     ):
         require(ensure, token, "lazy UI font refresh")
     if not (
-        ensure.index("if ( fontsVideoRestartCount == currentRestartCount )")
+        ensure.index("if ( fontsVideoRestartCount == currentRestartCount &&")
         < ensure.index("fontsVideoRestartCount = currentRestartCount;")
         < ensure.index("if ( !ReloadFonts() )")
     ):
@@ -888,11 +919,13 @@ def validate_lifecycle_mutation_sensitivity() -> None:
     public_header = read(ROOT / "src" / "ui" / "UserInterface.h")
     generation_before_reload = (
         "\tfontsVideoRestartCount = currentRestartCount;\n"
+        "\tfontsCodePageGeneration = currentCodePageGeneration;\n"
         "\tif ( !ReloadFonts() )"
     )
     generation_after_reload = (
         "\tif ( !ReloadFonts() )"
         "\n\tfontsVideoRestartCount = currentRestartCount;"
+        "\n\tfontsCodePageGeneration = currentCodePageGeneration;"
     )
     if device_source.count(generation_before_reload) != 1:
         raise AssertionError("Lazy font-generation mutation anchor is not unique")

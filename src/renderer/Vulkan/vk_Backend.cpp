@@ -31,6 +31,7 @@
 #include "../ModernGLShaderLibrary.h"
 #include "../RendererUpload.h"
 #include "../ModernGLExecutor.h"
+#include "../ModernLightImageAtlas.h"
 #include "../RenderGraphResources.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
@@ -1164,6 +1165,16 @@ void R_GLDebugOutput_Shutdown( void ) {
 void R_GLDebugOutput_FlushMessages( void ) {
 }
 
+// The shared clustered-lighting TU acquires per-light atlas cells; the atlas
+// itself is a GL-backend TU, so the Vulkan module reports no residency.
+modernLightAtlasReject_t R_ModernLightImageAtlas_Acquire( const idImage *image, float rect[4] ) {
+	(void)image;
+	if ( rect != NULL ) {
+		rect[0] = rect[1] = rect[2] = rect[3] = 0.0f;
+	}
+	return MODERN_LIGHT_ATLAS_REJECT_UNAVAILABLE;
+}
+
 // modern GL executor (the Vulkan executor replaces it from Phase E)
 void R_ModernGLExecutor_Init( const renderBackendCaps_t &caps, const renderFeatureSet_t &features ) {
 	(void)caps; (void)features;
@@ -1328,6 +1339,7 @@ VK_GL_SELFTEST_STUB( RendererForwardPlus_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGBuffer_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGLStateCache_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGpuDriven_RunSelfTest )
+VK_GL_SELFTEST_STUB( RendererLightImageAtlas_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererLowOverhead_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererModernCompatibility_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererModernGLExecutor_RunSelfTest )

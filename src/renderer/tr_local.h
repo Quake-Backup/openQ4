@@ -1511,6 +1511,7 @@ bool R_RegisterTrueTypeFont( const char *fontName, fontInfoEx_t &font );
 // retargets its material, so the console and loading screen sharpen too.
 bool R_BuildConsoleFontAtlas( void );
 void R_RefreshConsoleFontAtlas( void );
+void R_SyncFontCodePage( void );
 void R_ShutdownTrueTypeFonts( void );
 
 void R_SetColorMappings( void );

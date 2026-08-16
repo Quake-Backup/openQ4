@@ -5,6 +5,7 @@
 #include "ModernClusteredLighting.h"
 #include "GLDebugScope.h"
 #include "GLStateCache.h"
+#include "ModernLightImageAtlas.h"
 #include "ModernShadowPlanner.h"
 #include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
@@ -131,11 +132,16 @@ typedef struct modernClusterLightGpuRecord_s {
 	float				projectS[4];
 	float				projectT[4];
 	float				projectQ[4];
+	// atlas cells for this light's own falloff and projection images, as
+	// { uOffset, vOffset, uScale, vScale }. Zero scale means the image is not
+	// resident and the shader must not sample it.
+	float				falloffRect[4];
+	float				projectionRect[4];
 } modernClusterLightGpuRecord_t;
 
 // hand-synced with GLSL struct ModernClusterLightRecord; all-vec4 layout
 // keeps tight C packing identical to std140/std430
-assert_sizeof( modernClusterLightGpuRecord_t, 10 * 4 * sizeof( float ) );
+assert_sizeof( modernClusterLightGpuRecord_t, 12 * 4 * sizeof( float ) );
 assert_offsetof( modernClusterLightGpuRecord_t, flags, 64 );
 assert_offsetof( modernClusterLightGpuRecord_t, projectQ, 144 );
 
@@ -1190,6 +1196,19 @@ static void R_ModernClusteredLighting_FillDescriptor( modernClusterLightRecord_t
 	descriptor.projectionRepeat = projectionImage != NULL ? projectionImage->GetRepeat() : TR_CLAMP;
 	descriptor.falloffFilter = falloffImage != NULL ? falloffImage->GetFilter() : TF_DEFAULT;
 	descriptor.falloffRepeat = falloffImage != NULL ? falloffImage->GetRepeat() : TR_CLAMP;
+
+	// Pack this light's own falloff and projection images into the shared atlas
+	// so the clustered shader can sample them per record instead of needing a
+	// texture pair bound per light. Both must land, or the light is not
+	// shadeable from the atlas and stays on the ARB2 bridge.
+	const modernLightAtlasReject_t falloffReject =
+		R_ModernLightImageAtlas_Acquire( falloffImage, descriptor.falloffAtlasRect );
+	const modernLightAtlasReject_t projectionReject =
+		R_ModernLightImageAtlas_Acquire( projectionImage, descriptor.projectionAtlasRect );
+	descriptor.atlasReady =
+		falloffReject == MODERN_LIGHT_ATLAS_REJECT_NONE &&
+		projectionReject == MODERN_LIGHT_ATLAS_REJECT_NONE;
+
 	idStr::Copynz( descriptor.debugName, record.debugName, sizeof( descriptor.debugName ) );
 }
 
@@ -1632,6 +1651,8 @@ static GLuint R_ModernClusteredLighting_CompileComputeBinningProgram( void ) {
 		"	vec4 projectS;\n"
 		"	vec4 projectT;\n"
 		"	vec4 projectQ;\n"
+		"	vec4 falloffRect;\n"
+		"	vec4 projectionRect;\n"
 		"};\n"
 		"layout(std140, binding = 3) uniform ModernClusterGridParams {\n"
 		"	vec4 grid;\n"
@@ -1957,6 +1978,8 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 		memcpy( dst.projectS, src.descriptor.projectS, sizeof( dst.projectS ) );
 		memcpy( dst.projectT, src.descriptor.projectT, sizeof( dst.projectT ) );
 		memcpy( dst.projectQ, src.descriptor.projectQ, sizeof( dst.projectQ ) );
+		memcpy( dst.falloffRect, src.descriptor.falloffAtlasRect, sizeof( dst.falloffRect ) );
+		memcpy( dst.projectionRect, src.descriptor.projectionAtlasRect, sizeof( dst.projectionRect ) );
 	}
 
 	idList<modernClusterShadowDescriptorGpuRecord_t> &shadowRecords = rg_clusteredLightingFrame.shadowGpuRecords;

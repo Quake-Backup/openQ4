@@ -119,6 +119,7 @@ RENDERER_VK_EXCLUDED_SOURCES = (
     "src/renderer/tr_rendertools.cpp",
     "src/renderer/ModernGLExecutor.cpp",
     "src/renderer/ModernGLShaderLibrary.cpp",
+    "src/renderer/ModernLightImageAtlas.cpp",
     "src/renderer/RenderGraphResources.cpp",
     "src/renderer/GLStateCache.cpp",
     "src/renderer/GLDebugScope.cpp",

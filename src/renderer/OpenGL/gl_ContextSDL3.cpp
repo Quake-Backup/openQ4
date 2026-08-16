@@ -197,9 +197,23 @@ static void SDL3_MoveCompatibilityFallbacksToFront(rendererContextCandidate_t *c
 	}
 }
 
+// Declared in RendererBootstrap.h; forward-declared here because this TU is
+// textually included from the platform backends, where the renderer include
+// path differs.
+bool RendererBootstrap_ShouldAutoPromoteModernVisible( void );
+
 static int SDL3_BuildGLContextCandidates(rendererContextCandidate_t *candidates, int maxCandidates) {
 	const rendererTierPreference_t preference = RendererTierPreference_FromString(r_glTier.GetString());
-	const bool keepAutoCompatibility = preference == RENDERER_TIER_PREF_AUTO;
+	// r_glTier auto asks for a compatibility profile because the ARB2 bridge is
+	// what actually draws, and it needs fixed-function state. Once the modern
+	// visible path is promoted it no longer does, and the ladder's modern-auto
+	// mode (covered by rendererContextLadderSelfTest) takes over. This is
+	// deliberately driven by the promotion state rather than hardcoded, so the
+	// profile request follows the renderer that will really be used; while no
+	// parity contract is proven the promotion state is false and this is exactly
+	// the previous behaviour.
+	const bool keepAutoCompatibility = preference == RENDERER_TIER_PREF_AUTO
+			&& !RendererBootstrap_ShouldAutoPromoteModernVisible();
 	const int candidateCount = RendererContextLadder_Build(
 		candidates,
 		maxCandidates,

@@ -49,6 +49,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ModernGLDrawPlan.h"
 #include "ModernGLShaderLibrary.h"
 #include "ModernGLSubmitPlan.h"
+#include "ModernLightImageAtlas.h"
 #include "ModernShadowPlanner.h"
 #include "../framework/RenderDoc.h"
 #include "../framework/declEntityDef.h"
@@ -857,6 +858,13 @@ static void R_RendererClusterGridSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererClusterGrid_RunSelfTest() ) {
 		common->Warning( "Renderer clustered light-grid self-test failed" );
+	}
+}
+
+static void R_RendererLightImageAtlasSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererLightImageAtlas_RunSelfTest() ) {
+		common->Warning( "Renderer light image atlas self-test failed" );
 	}
 }
 
@@ -1798,7 +1806,12 @@ void R_InitOpenGL( void ) {
 	RendererBootstrap_FinalizeLegacyBridge( glConfig.allowARB2Path );
 	glConfig.rendererTier = RendererBootstrap_GetState().selectedTier;
 	glConfig.renderFeatures = RendererBootstrap_GetState().features;
-	if ( !glConfig.allowARB2Path ) {
+	// ARB2 is only *required* while it is the renderer that draws. Once the
+	// modern visible path is promoted it can own the frame without the
+	// compatibility bridge, so a context that cannot host ARB2 stops being
+	// fatal. While no parity contract is proven the promotion state is false,
+	// which keeps this exactly as strict as before.
+	if ( !glConfig.allowARB2Path && !RendererBootstrap_ShouldAutoPromoteModernVisible() ) {
 		R_ErrorForMissingRequiredOpenGLFeatures();
 	}
 	R_RenderGraphResources_Init( glConfig.backendCaps, glConfig.renderFeatures );
@@ -4074,6 +4087,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererVisiblePathSelfTest", R_RendererVisiblePathSelfTest_f, CMD_FL_RENDERER, "run renderer visible modern depth-path self tests" );
 	cmdSystem->AddCommand( "rendererGBufferSelfTest", R_RendererGBufferSelfTest_f, CMD_FL_RENDERER, "run renderer modern opaque G-buffer self tests" );
 	cmdSystem->AddCommand( "rendererClusterGridSelfTest", R_RendererClusterGridSelfTest_f, CMD_FL_RENDERER, "run renderer clustered light-grid self tests" );
+	cmdSystem->AddCommand( "rendererLightImageAtlasSelfTest", R_RendererLightImageAtlasSelfTest_f, CMD_FL_RENDERER, "run renderer modern light falloff/projection atlas self tests" );
 	cmdSystem->AddCommand( "rendererShadowPlannerSelfTest", R_RendererShadowPlannerSelfTest_f, CMD_FL_RENDERER, "run renderer modern shadow-planner self tests" );
 	cmdSystem->AddCommand( "rendererShadowProjectedDiagnosticSelfTest", R_RendererShadowProjectedDiagnosticSelfTest_f, CMD_FL_RENDERER, "run renderer projected shadow diagnostic scene self tests" );
 	cmdSystem->AddCommand( "rendererDeferredResolveSelfTest", R_RendererDeferredResolveSelfTest_f, CMD_FL_RENDERER, "run renderer deferred light resolve self tests" );

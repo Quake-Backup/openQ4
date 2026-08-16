@@ -107,8 +107,37 @@ from a falloff image, both sampled projectively per pixel.
 binary projection mask. `MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES` records
 that gap; while it is false, every otherwise-eligible light is blocked as
 `per-light-images-unbindable`, because holding the images on the CPU descriptor
-is not the same as being able to sample them. Closing it needs either bindless
-light images on GL 4.5+ or a shared falloff/projection atlas indexed per record.
+is not the same as being able to sample them.
+
+`ModernLightImageAtlas` is the answer to that gap — an atlas rather than
+bindless handles, because bindless is GL 4.5+ and would abandon the GL 3.3/4.1
+baseline tiers. It packs per-light 2D falloff and projection images into a 1024²
+atlas of 64 fixed 128px cells, each inset by a one-texel border so bilinear taps
+cannot bleed between cells, and hands back a uv rect per image. Sources are
+copied in by drawing a textured quad rather than by blit or
+`glCopyImageSubData`: light images are frequently DXT-compressed, which cannot
+be colour-attached for a blit, and `glCopyImageSubData` needs GL 4.3 and a
+matching compressed format. Residency is keyed on the image and revalidated
+against its device handle so a reload re-uploads; eviction never reclaims a cell
+already used this frame. Cube-map light images are rejected explicitly rather
+than approximated. `gfxInfo` prints the atlas state and
+`rendererLightImageAtlasSelfTest` covers the packing contract.
+
+The light record now carries `falloffRect` and `projectionRect` alongside its
+planes, the atlas binds on texture unit 13, and `ModernClusterEvaluateLight`
+samples the light's own images rather than substituting an analytic response.
+Specular follows Quake 4's `clamp((N·H)·4−3)²·2` ramp, evaluated analytically
+because the `_specularTable` is exactly that curve. A point or projected light
+whose images the atlas accepted is therefore image-complete, and
+`per-light-images-unbindable` no longer fires for it.
+
+Two constraints are worth knowing before touching this. The atlas upload must
+not be a draw: rendering into the atlas from inside the clustered-light build
+binds an FBO, program, VAO and viewport in the middle of a caller that owns all
+of them and faults the driver, so uploads use `glGetTexImage` +
+`glTexSubImage2D` and are queued to an explicit flush. And cell size is set from
+real content — 128px cells rejected every stock light projection image as
+oversized, so cells are 256 and the atlas is 2048.
 
 That third bucket is the point. Being representable is not the same as being
 correct: shipping a descriptor-complete light whose shading math was never

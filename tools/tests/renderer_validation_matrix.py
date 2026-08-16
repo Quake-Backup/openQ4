@@ -618,6 +618,22 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
             ],
         },
         {
+            "id": "renderer-light-image-atlas-selftest",
+            "category": "selftest",
+            "description": "Shared per-light falloff/projection atlas packing, residency, and rejection self-test.",
+            "args": [
+                "+set",
+                "r_rendererModernExecutor",
+                "1",
+                "+rendererLightImageAtlasSelfTest",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["RendererLightImageAtlas self-test passed"],
+                ["Modern light image atlas:"],
+            ],
+        },
+        {
             "id": "renderer-cluster-grid-selftest",
             "category": "selftest",
             "description": "Modern clustered light CPU binning and UBO fallback self-test.",

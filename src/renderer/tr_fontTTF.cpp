@@ -95,21 +95,20 @@ const float Q4_TTF_REFERENCE_HEIGHT = 480.0f;
 const float Q4_TTF_MIN_UPSCALE = 1.0f;
 const float Q4_TTF_MAX_UPSCALE = 6.0f;
 
-// The retail atlases index glyphs by Windows-1252 byte, so the 0x80..0x9F band
-// is real typography rather than control codes.  The shipped .ttf files map the
-// proper Unicode codepoints, so the byte has to be translated on the way in.
-static const unsigned short Q4_CP1252_HIGH[32] = {
-	0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
-	0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
-	0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
-	0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
-};
-
+// The atlases index glyphs by string-table byte, so the 0x80..0x9F band is real
+// typography rather than control codes.  The shipped .ttf files map the proper
+// Unicode codepoints, so the byte has to be translated on the way in, through
+// whichever codepage the active sys_lang put the string tables in - Windows-1250
+// for Polish, Windows-1252 otherwise.  Getting this wrong is not a missing glyph
+// but a confidently wrong one: 0xB9 is a-ogonek in CP1250 and superscript one in
+// CP1252.
+//
+// The codepage leaves a few slots unassigned.  Those keep their raw byte value,
+// which is in the C1 control block and so is covered by no face - that yields
+// glyph 0 and the blank-with-advance path below, rather than a .notdef box.
 static int R_TTFCodepointForByte( int code ) {
-	if ( code >= 0x80 && code <= 0x9F ) {
-		return Q4_CP1252_HIGH[code - 0x80];
-	}
-	return code;
+	const unsigned int unicode = LangDict_UnicodeForByte( code );
+	return ( unicode != 0 ) ? (int)unicode : code;
 }
 
 // The three point sizes the GUI selects between, matching the retail atlases.

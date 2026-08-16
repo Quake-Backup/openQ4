@@ -125,6 +125,12 @@ typedef struct rendererModernLightDescriptor_s {
 	unsigned int projectionImageHandle;
 	unsigned int falloffImageHandle;
 	unsigned int cubeImageHandle;
+	// cells in the shared light-image atlas, { uOffset, vOffset, uScale, vScale }.
+	// A zero scale means the image is not resident and must not be sampled;
+	// atlasReady is the single "this light can be shaded from the atlas" answer.
+	float		falloffAtlasRect[4];
+	float		projectionAtlasRect[4];
+	bool		atlasReady;
 	int		projectionFilter;
 	int		projectionRepeat;
 	int		falloffFilter;
