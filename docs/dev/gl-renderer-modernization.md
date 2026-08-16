@@ -82,15 +82,33 @@ per pass. `R_ModernGLExecutor_ClassifyModernVisibleLighting` runs after
 can consult the descriptor set the modern shaders actually consume. Every
 contributing light lands in one of three buckets:
 
-- **consumable** — the modern descriptor set can represent it: a point,
-  projected, ambient, fog, or blend light whose falloff and projection images
-  are live, and whose shadow descriptor is either absent or consumable per the
-  per-light receiver walk.
-- **blocked** — genuinely unrepresentable. Parallel/special lights, missing
-  falloff or projection images, and shadow descriptors that would silently drop
-  shadows (including every stencil-shadow light).
+- **consumable** — the modern path can both describe *and* shade it: a point or
+  projected light whose falloff and projection images are live and reachable by
+  the shader, and whose shadow descriptor is either absent or consumable per the
+  per-light receiver walk. No light currently reaches this bucket; see the
+  capability gate below.
+- **blocked** — genuinely unrepresentable, with a specific reason. Parallel and
+  unidentified lights (`special-light-unrepresentable`); fog and blend lights,
+  which the clustered light loop ignores entirely
+  (`fog-blend-model-unimplemented`); ambient lights, which
+  `ModernClusterEvaluateLight` zeroes (`ambient-light-unevaluated`); missing
+  falloff or projection images; shadow descriptors that would silently drop
+  shadows, including every stencil-shadow light; and — currently every remaining
+  point and projected light — `per-light-images-unbindable`, described below.
 - **unproven** — consumable, but its domain's parity contract has not been
   satisfied, so it stays on the ARB2 bridge and is counted.
+
+One capability gate sits above all of this. A Quake 4 light is *textured*: its
+shape and colour come from a light projection image and its distance response
+from a falloff image, both sampled projectively per pixel.
+`ModernClusterLightRecord` carries positions, colours and projection planes but
+**no image handles**, and nothing in the clustered path binds them, so
+`ModernClusterEvaluateLight` substitutes an analytic `(1 - d/r)^2` response and a
+binary projection mask. `MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES` records
+that gap; while it is false, every otherwise-eligible light is blocked as
+`per-light-images-unbindable`, because holding the images on the CPU descriptor
+is not the same as being able to sample them. Closing it needs either bindless
+light images on GL 4.5+ or a shared falloff/projection atlas indexed per record.
 
 That third bucket is the point. Being representable is not the same as being
 correct: shipping a descriptor-complete light whose shading math was never

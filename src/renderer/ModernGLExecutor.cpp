@@ -2017,6 +2017,25 @@ static void R_ModernGLExecutor_PrintLightingOwnership( const modernGLExecutorSta
 
 /*
 ==================
+Modern cluster light-record image capability
+
+A Quake 4 light is *textured*: its shape and colour come from the light
+projection image and its distance response from the falloff image, both sampled
+projectively per pixel.  ModernClusterLightRecord carries positions, colours and
+projection planes but no image handles, and nothing in the clustered path binds
+those images, so ModernClusterEvaluateLight substitutes an analytic
+`(1 - d/r)^2` response and a binary in-frustum projection mask.
+
+Until a light record can reference its own images - through bindless handles on
+GL 4.5+ or a shared falloff/projection atlas indexed per record - the clustered
+path cannot express a stock light, no matter how complete the descriptor is.
+Flipping this constant is a reviewed change that must land with that plumbing.
+==================
+*/
+static const bool MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES = false;
+
+/*
+==================
 R_ModernGLExecutor_LightDescriptorBlockReason
 
 Returns the reason this clustered-light descriptor can never be represented by
@@ -2029,10 +2048,20 @@ static const char *R_ModernGLExecutor_LightDescriptorBlockReason( const renderer
 	switch ( light.type ) {
 	case RENDERER_MODERN_LIGHT_POINT:
 	case RENDERER_MODERN_LIGHT_PROJECTED:
+		break;
 	case RENDERER_MODERN_LIGHT_AMBIENT:
+		// ModernClusterEvaluateLight zeroes attenuation for every type except
+		// point and projected, so an ambient light contributes nothing at all.
+		// Quake 4 ambient lights are real lights evaluated against a constant
+		// tangent-space direction (see Vulkan/shaders/interaction.frag).
+		return "ambient-light-unevaluated";
 	case RENDERER_MODERN_LIGHT_FOG:
 	case RENDERER_MODERN_LIGHT_BLEND:
-		break;
+		// The fog/blend program is literally the clustered transparent-forward
+		// shader, which accumulates only type 0/1 lights. Quake 4 fog is a
+		// distance-driven projective fog-image lookup and blend lights modulate
+		// the framebuffer; neither is a clustered light contribution.
+		return "fog-blend-model-unimplemented";
 	case RENDERER_MODERN_LIGHT_SPECIAL:
 	default:
 		// parallel/sun lights, and anything the classifier could not identify,
@@ -2043,11 +2072,14 @@ static const char *R_ModernGLExecutor_LightDescriptorBlockReason( const renderer
 	if ( light.falloffImageHandle == 0 ) {
 		return "missing-falloff-image";
 	}
-	if ( light.type == RENDERER_MODERN_LIGHT_PROJECTED && light.projectionImageHandle == 0 ) {
-		return "missing-projection-image";
+	if ( light.projectionImageHandle == 0 ) {
+		return light.type == RENDERER_MODERN_LIGHT_PROJECTED ? "missing-projection-image" : "missing-point-projection-image";
 	}
-	if ( light.type == RENDERER_MODERN_LIGHT_POINT && light.projectionImageHandle == 0 ) {
-		return "missing-point-projection-image";
+	// Having the images is not the same as being able to sample them. Reporting
+	// such a light "consumable" would claim readiness the shading model cannot
+	// deliver - the precise overstatement the parity contract exists to stop.
+	if ( !MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES ) {
+		return "per-light-images-unbindable";
 	}
 	return NULL;
 }

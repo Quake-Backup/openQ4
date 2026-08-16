@@ -12,6 +12,25 @@ ladder ("this frame has 37 contributing lights, 34 are modern-consumable, 3 are
 genuinely unrepresentable, and the lighting domain's parity contract is still
 unproven").
 
+## Status
+
+| Phase | State | Blocked on |
+| --- | --- | --- |
+| 1 Domain classification and telemetry | **done** | — |
+| 2 Light grid | classification done; implementation deferred | per-draw texture binding from Phase 3; near-zero value on stock content |
+| 3 Interaction lighting | audited; classifier corrected | per-light image binding (bindless or atlas) — not shader math |
+| 4 Fog, blend, ambient, shadow receivers | audited; blockers made precise | fog/blend/ambient models unimplemented; shadows ride on Phase 3 lights |
+| 5 Core profile and promotion | sites pinned | Phases 3 and 4 |
+
+No parity contract is proven. `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` is still 0,
+ARB2 still owns every lit frame, and the default renderer is unchanged.
+
+The through-line of phases 2–4: every readiness signal that had not been checked
+against the shading model turned out to be optimistic. Blanket blockers hid
+per-light detail, per-light detail hid a capability gap, and the capability gap
+hid three unimplemented light models. Treat any unverified readiness number here
+as an upper bound.
+
 ## Current Baseline
 
 `R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness` runs twice per frame
@@ -132,7 +151,7 @@ Real-scene reading on `game/storage1` with
 
 ```
 modernLightingOwnership proven=none override=0 requested=1
-  interaction(pass=1 lights=3 consumable=3 blocked=0 unproven=3 ready=0)
+  interaction(pass=1 lights=3 consumable=0 blocked=3 unproven=0 ready=0)
   fogBlend(pass=0 lights=0 consumable=0 blocked=0 unproven=0)
   lightGrid(pass=1 draws=0 consumable=0 blocked=0 unproven=0 unprovenPass=0 ready=1)
   shadow(consumable=0 blocked=1 unproven=0 pointConstraint=0 ready=0)
@@ -143,9 +162,12 @@ modernLightingOwnership proven=none override=0 requested=1
 
 What that says, none of which was observable before this track:
 
-- All three contributing lights are already representable by the modern
-  descriptor set. Nothing about their kind or resources blocks ownership — only
-  the unproven interaction contract does. Phase 3 is shading math, not plumbing.
+- All three contributing lights are **unrepresentable**, not merely unproven.
+  Phase 1 read this line as `consumable=3 unproven=3` and concluded the
+  interaction remainder was shading math. That was wrong: the classifier was
+  checking that the light's images *existed*, while the clustered shading model
+  never samples them. Phase 3 corrected it. The remainder is plumbing —
+  per-light image binding — and only then shading math.
 - The light-grid domain is **vacuously ready**: the pass exists but carries no
   draws, because stock maps have no baked grids. It is not what is holding this
   frame, and proving it would change nothing here.
@@ -155,6 +177,11 @@ What that says, none of which was observable before this track:
   rather than `lighting-parity-incomplete`. Note it changed once light grid
   stopped falsely claiming the blocker slot — accurate domain verdicts make the
   reported blocker more useful, not just shorter.
+
+The lesson worth keeping: each phase found that the previous phase's readiness
+signal was optimistic, and each correction moved a domain from "nearly ready" to
+"needs real work". Treat any *unverified* readiness number in this track as an
+upper bound.
 
 Re-measure this line on the same map after each contract flip. Take it from the
 `gfxInfo` dump of a default-paced run: `r_rendererMetrics 2` prints the same
@@ -238,24 +265,149 @@ The contract stays unproven. Nothing about the visible frame changed.
 
 ## Phase 3: Interaction Lighting Parity
 
-Goal: the real work. Reproduce Quake 4 interaction lighting in the modern path.
+**This phase is blocked on an architectural gap, not on shader math.** It was
+scoped as "port the `interaction.vfp` math from the Vulkan Phase F1 shader".
+That port is necessary but nowhere near sufficient, and it cannot be written
+against the current clustered light model at all.
 
-- [ ] Port the documented `interaction.vfp` parity math from the Vulkan Phase F1
-      shader (`src/renderer/Vulkan/shaders/interaction.frag`): DXT5/RXGB bump
-      decode without renormalization, the real `_specularTable` ramp including the
-      doubled specular env constant, ambient constant tangent direction with
-      CPU-side 8-bit cube quantization, and Parallaxbump height in the RXGB red
-      channel.
-- [ ] Handle both `r_interactionColorMode` vertex-color layouts.
-- [ ] A/B the deferred and forward+ paths against ARB2 per light type.
+A Quake 4 light is **textured**. Its shape and colour come from a light
+projection image and its distance response from a falloff image, both sampled
+projectively per pixel:
+
+```glsl
+light *= textureProj(lightFalloffMap, vLightFalloffTexCoord).rgb;
+light *= textureProj(lightProjectionMap, vLightProjectionTexCoord).rgb;
+```
+
+The modern clustered model has neither. `ModernClusterLightRecord` carries
+`positionRadius`, `worldOriginRadius`, `colorType`, `scissorDepth`, `flags`,
+`depthRange`, `falloff`, and the `projectS/T/Q` planes — **no image handles**.
+The CPU-side `rendererModernLightDescriptor_t` does record
+`falloffImageHandle`, `projectionImageHandle` and `cubeImageHandle`, but nothing
+in the executor ever binds them; the only references anywhere are the ownership
+classifier's presence checks. `ModernClusterEvaluateLight` therefore substitutes:
+
+```glsl
+float radial = clamp(1.0 - dist / radius, 0.0, 1.0); radial *= radial;
+float spec   = pow(clamp(dot(normal, halfDir), 0.0, 1.0), 24.0) * specular * fresnel;
+attenuation  = radial * (ndotl + spec) * projectMask;   // projectMask is binary
+```
+
+That is a generic clustered-lighting model, not Quake 4's. Beyond the missing
+images it also uses `pow(N·H, 24)` where Quake 4 uses the `_specularTable` ramp
+`clamp((N·H)·4−3)²` with the specular env constant doubled.
+
+The root problem is structural: **a clustered loop samples many lights per
+pixel, but each Quake 4 light needs its own two textures.** A single bound
+texture pair cannot serve N lights. The viable implementations are:
+
+1. **Bindless light images** on GL 4.5+ — store the falloff/projection handles in
+   the light record. `r_rendererBindless` and the capability plumbing already
+   exist. Does not cover the GL 3.3/4.1 baseline tiers.
+2. **A shared falloff/projection atlas** — pack the images and store atlas rects
+   per record. Works on every tier; needs residency management and bleed control
+   at tile edges, much like the shadow atlas already does.
+
+The deferred path has two further losses that the G-buffer layout makes
+unrecoverable, independent of the above: vertex colour is never written (so
+`r_interactionColorMode`'s two layouts cannot be reproduced), and specular is
+collapsed to a scalar `dot(specular, vec3(0.333333))`, discarding specular
+colour. Forward+ retains both because it draws the surface, so **forward+ is the
+only credible route to interaction parity** and the deferred resolve should be
+scoped out of it.
+
+Landed in this phase:
+
+- [x] `MODERN_CLUSTER_LIGHT_RECORD_CARRIES_IMAGES`, a reviewed capability
+      constant recording that the light record cannot reference its images, and
+      the blocker reason `per-light-images-unbindable`.
+- [x] Corrected the Phase 1 classifier, which reported a light "consumable"
+      whenever its image handles were merely *present*. The shading model never
+      samples them, so that overstated readiness — the exact failure the parity
+      contract exists to prevent, occurring inside the classifier itself.
+
+Remaining, in dependency order:
+
+- [ ] Choose bindless vs atlas for per-light images, and build it.
+- [ ] Port the `interaction.vfp` math from `Vulkan/shaders/interaction.frag`:
+      DXT5/RXGB bump decode without renormalization, the real `_specularTable`
+      ramp with the doubled specular env constant, ambient constant tangent
+      direction with CPU-side 8-bit cube quantization, and Parallaxbump height in
+      the RXGB red channel.
+- [ ] Handle both `r_interactionColorMode` vertex-colour layouts (forward+ only).
+- [ ] A/B forward+ against ARB2 per light type.
 - [ ] Flip the `interaction` contract to proven with recorded evidence.
 
-## Phase 4: Fog, Blend, And Shadow Receivers
+## Phase 4: Fog, Blend, Ambient, And Shadow Receivers
 
-- [ ] Fog and blend light parity against the ARB2 fog/blend pass.
-- [ ] Modern shadow receiver sampling parity for projected and point lights.
+The two halves of this phase are in very different states, and one extra gap
+turned up that belongs to the interaction domain rather than this one.
+
+**Fog and blend are not implemented.** `MODERN_GL_SHADER_FOG_BLEND` is literally
+the same source as `MODERN_GL_SHADER_TRANSPARENT_FORWARD` — a clustered
+transparent-forward shader whose light loop accumulates only
+`type == 0 || type == 1`. Fog (type 2) and blend (type 4) lights contribute
+nothing whatsoever. That is not an approximation to tighten: Quake 4 fog is a
+distance-driven projective fog-image lookup with its own blend state, and blend
+lights modulate the framebuffer through the light's blend image. Neither is
+expressible as "a clustered light contribution added to a transparent surface".
+
+**Ambient lights are also unevaluated**, and this one belongs to `interaction`,
+not `fog-blend`. `ModernClusterEvaluateLight` zeroes attenuation for every type
+except point and projected, so an ambient light contributes nothing. Quake 4
+ambient lights are real lights evaluated against the constant tangent-space
+direction the ambient normal cube decodes to — the Vulkan Phase F1 shader
+handles this explicitly.
+
+**Shadow receivers are genuinely implemented**, and this is the one place the
+modern path is further along than the classifier suggested.
+`ModernClusterShadowVisibility` fetches the shadow descriptor, validates policy,
+freshness against `uModernShadowContractState`, atlas readiness, the
+receiver-blocked and sampling-ready flags, and then samples the real point or
+projected atlas. That matches the shadow-mapping track being complete through
+5d/6. The shadow domain's remaining blocker is not its own sampling — it is that
+shadows ride on lights, and the lights are blocked upstream.
+
+Landed in this phase:
+
+- [x] Precise per-type blockers instead of one collapsed reason:
+      `fog-blend-model-unimplemented` for fog and blend lights,
+      `ambient-light-unevaluated` for ambient lights, `per-light-images-unbindable`
+      only for point/projected lights that are otherwise complete.
+- [x] Confirmed the shadow receiver path samples the real atlas, so no shadow
+      capability constant is warranted.
+
+Remaining:
+
+- [ ] Implement the Quake 4 fog model (projective fog image, own blend state) as
+      its own pass rather than a clustered light contribution.
+- [ ] Implement blend lights as a framebuffer-modulating pass.
+- [ ] Evaluate ambient lights against the constant tangent-space direction.
 - [ ] Keep stencil-shadow lights permanently on the per-light legacy fallback.
-- [ ] Flip the `fog-blend` and `shadow` contracts to proven with evidence.
+- [ ] Flip the `fog-blend` and `shadow` contracts to proven with evidence, after
+      Phase 3 unblocks the lights the shadows ride on.
+
+## Phase 5: Core Profile And Promotion
+
+Fully gated on Phases 3 and 4: none of it can land while the modern path cannot
+own a lit frame. The exact sites are identified so the change is mechanical when
+the gate opens.
+
+- [ ] `gl_ContextSDL3.cpp:202` — `keepAutoCompatibility` is hardcoded
+      `preference == RENDERER_TIER_PREF_AUTO`, which is what forces a
+      compatibility profile on the default path. It must become conditional on
+      the modern path being able to own the frame. The shared ladder already has
+      a modern-auto mode and it is covered by `rendererContextLadderSelfTest`, so
+      this half is prepared.
+- [ ] `RendererCaps.cpp:450` — `compatibilityOnly` follows from the same flag.
+- [ ] `RenderSystem_init.cpp:1800` — `R_ErrorForMissingRequiredOpenGLFeatures`
+      must become fatal only when the modern path is *also* unavailable, instead
+      of whenever `glConfig.allowARB2Path` is false.
+- [ ] `draw_arb2.cpp:12468` — `R_ARB2_Init` requires
+      `hasFixedFunctionCompatibility`; the bridge stays optional rather than
+      required.
+- [ ] Satisfy the Phase 8 evidence token honestly and revisit
+      `r_rendererModernAutoPromote`.
 
 ## Phase 5: Core Profile And Promotion
 
