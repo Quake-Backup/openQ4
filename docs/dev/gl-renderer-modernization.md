@@ -57,6 +57,7 @@ r_renderer arb2
 r_glTier legacy
 r_rendererModernAutoPromote 0
 r_rendererPromotionEvidence ""
+r_rendererModernLightingParity 0
 r_rendererModernExecutor 0
 r_rendererModernSubmit 0
 r_rendererModernVisible 0
@@ -72,6 +73,81 @@ r_rendererGpuValidation 0
 r_rendererBindless 0
 r_rendererShaderReload 0
 ```
+
+## Lighting Ownership And Parity Contracts
+
+Whether the modern visible path may own a lit frame is decided per light, not
+per pass. `R_ModernGLExecutor_ClassifyModernVisibleLighting` runs after
+`ModernShadowPlanner` and `ModernClusteredLighting` have built the frame, so it
+can consult the descriptor set the modern shaders actually consume. Every
+contributing light lands in one of three buckets:
+
+- **consumable** — the modern descriptor set can represent it: a point,
+  projected, ambient, fog, or blend light whose falloff and projection images
+  are live, and whose shadow descriptor is either absent or consumable per the
+  per-light receiver walk.
+- **blocked** — genuinely unrepresentable. Parallel/special lights, missing
+  falloff or projection images, and shadow descriptors that would silently drop
+  shadows (including every stencil-shadow light).
+- **unproven** — consumable, but its domain's parity contract has not been
+  satisfied, so it stays on the ARB2 bridge and is counted.
+
+That third bucket is the point. Being representable is not the same as being
+correct: shipping a descriptor-complete light whose shading math was never
+compared against ARB2 would silently change what the player sees. Each domain
+therefore carries an explicit parity contract in
+`MODERN_LIGHTING_PARITY_PROVEN_DOMAINS`, a reviewed source constant flipped one
+domain at a time with recorded evidence. The four domains are `interaction`,
+`fog-blend`, `light-grid`, and `shadow`. All four are currently unproven, so the
+default verdict is the same as it has always been — ARB2 owns lit frames — but
+the remaining work is now a measurable count instead of a boolean.
+
+The light grid is the exception to per-light classification: its contribution is
+baked per portal area and selected by the receiving surface, so it is classified
+**per draw** through `RB_LightGridSurfaceModernRepresentable`. A light-grid draw
+is blocked when the surface has no usable area grid (`no-area-light-grid`), when
+its atlases are absent (`light-grid-atlas-missing`), or when the surface sits
+within `r_lightGridPortalBlend` of a portal into another grid
+(`portal-blend-multi-grid`) — portal blending resubmits the surface once per
+contributing grid, and the modern pipeline binds one atlas set per draw. That
+proximity test deliberately omits the per-view visibility checks the backend
+uses, so it is conservative in the safe direction: a surface it clears never
+blends in any view.
+
+The front end declares the light-grid pass unconditionally and filters eligible
+surfaces into it afterwards, so a pass with zero draws carries no work and is
+vacuously ownable rather than blocking. On stock Quake 4 content that is the
+normal case: retail maps ship no baked irradiance volumes, so no surface is
+light-grid eligible and the domain has nothing to own.
+
+`r_rendererModernLightingParity` is a diagnostic bitmask (`1` interaction, `2`
+fog/blend, `4` light grid, `8` shadow, default `0`, not archived) that forces
+domains proven so bring-up can execute the modern path and capture A/B
+comparisons. It is covered by `rendererDefaultSafetySelfTest`, so a non-zero
+value is reported as a non-conservative default.
+
+`gfxInfo` and `r_rendererMetrics 2` print `modernLightingOwnership`, which
+reports the effective contract, per-domain light totals, consumable, blocked and
+unproven counts, the shadow single-cube point-light constraint, each domain's
+readiness, and the first specific blocker (naming the view, pass, light def, and
+reason). `rendererModernCompatibilitySelfTest` covers the default all-unproven
+verdict and asserts the contract is genuinely per-domain.
+
+Shadows are decided solely by the per-light receiver walk in
+`R_ModernGLExecutor_ModernVisibleShadowReceiversReady` plus the `shadow`
+contract; there is no longer a whole-frame shadow-presence gate masking that
+verdict. That walk stays in `ModernVisiblePrecomposeReady` rather than moving
+into the classifier with the other three domains, because it also consults
+deferred/forward+/visible-depth shadow fallback counters that the submit stage
+has not produced yet when the classifier runs. Its verdict therefore reaches
+`modernVisibleHandoffReady` directly instead of through
+`modernVisibleBlockedByLegacy`.
+
+Opting into `r_rendererModernVisible 1` now also builds the clustered-light and
+shadow descriptor sets on frames the modern path cannot own, because that
+descriptor set is the only thing that can explain what is still legacy-bound.
+Visible output is unchanged: composition still fails closed, and pass ownership
+stays legacy while the handoff is not ready.
 
 ## Cross-Platform Context Ladder
 

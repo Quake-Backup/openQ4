@@ -417,6 +417,28 @@ typedef struct modernGLExecutorStats_s {
 	int		modernVisibleLightingFallbackPasses;
 	int		modernVisibleLightGridFallbackPasses;
 	int		modernVisibleShadowOwnershipFallbackPasses;
+	// per-domain ownership classification: how many contributing lights the
+	// modern descriptor set can represent, how many are genuinely
+	// unrepresentable, and how many are held back only because the domain's
+	// parity contract has not been proven against the ARB2 bridge yet
+	int		modernVisibleLightingParityContract;
+	int		modernVisibleInteractionPasses;
+	int		modernVisibleFogBlendPasses;
+	int		modernVisibleLightingLights;
+	int		modernVisibleLightingConsumableLights;
+	int		modernVisibleLightingBlockedLights;
+	int		modernVisibleLightingUnprovenLights;
+	int		modernVisibleFogBlendLights;
+	int		modernVisibleFogBlendConsumableLights;
+	int		modernVisibleFogBlendBlockedLights;
+	int		modernVisibleFogBlendUnprovenLights;
+	int		modernVisibleLightGridPasses;
+	int		modernVisibleLightGridUnprovenPasses;
+	int		modernVisibleLightGridDraws;
+	int		modernVisibleLightGridConsumableDraws;
+	int		modernVisibleLightGridBlockedDraws;
+	int		modernVisibleLightGridUnprovenDraws;
+	int		modernVisibleShadowUnprovenLights;
 	int		modernVisibleDroppedByModern;
 	int		modernVisibleGuiLegacyPasses;
 	int		modernVisiblePostLegacyPasses;

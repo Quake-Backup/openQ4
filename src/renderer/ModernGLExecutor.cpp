@@ -137,6 +137,10 @@ enum modernGLGpuDrivenCounter_t {
 	MODERN_GL_GPU_COUNTER_COMPACTED,
 	MODERN_GL_GPU_COUNTER_INVALID_BUCKET,
 	MODERN_GL_GPU_COUNTER_INDIRECT_OVERFLOW,
+	MODERN_GL_GPU_COUNTER_DEBUG_MAXDEPTH,
+	MODERN_GL_GPU_COUNTER_DEBUG_NEARDEPTH,
+	MODERN_GL_GPU_COUNTER_DEBUG_COORD,
+	MODERN_GL_GPU_COUNTER_DEBUG_COORD_FLIPPED,
 	MODERN_GL_GPU_COUNTER_COUNT
 };
 
@@ -477,6 +481,7 @@ static int rg_modernGLExecutorVertexInputFormatSetups = 0;
 static modernGLVertexInputCache_t rg_modernGLVertexInputCache;
 static modernGLGpuDrivenBucket_t rg_modernGLGpuDrivenBuckets[MODERN_GL_DRAW_PLAN_MAX_ENTRIES];
 static int rg_modernGLGpuDrivenBucketCount = 0;
+static bool rg_modernGLGpuDrivenDebugDump = false;
 static modernGLStreamBufferBinding_t rg_modernGLFrameUBOStream;
 static modernGLGpuDrivenStreamBindings_t rg_modernGLGpuDrivenStreamBindings;
 static modernGLPendingGpuValidationReadback_t rg_modernGLPendingValidationReadbacks[MODERN_GL_GPU_VALIDATION_PENDING_READBACKS];
@@ -822,7 +827,7 @@ static GLuint R_ModernGLExecutor_CompileGpuDrivenComputeProgram( void ) {
 		"uniform sampler2D u_hiZTexture;\n"
 		"uniform vec4 u_hiZParams;\n"
 		"layout(std430, binding = 1) readonly buffer ModernSceneRecords { SceneRecord records[]; };\n"
-		"layout(std430, binding = 2) buffer ModernValidation { uint counters[12]; };\n"
+		"layout(std430, binding = 2) buffer ModernValidation { uint counters[16]; };\n"
 		"layout(std430, binding = 3) buffer ModernIndirectCommands { DrawElementsIndirectCommand commands[]; };\n"
 		"layout(std430, binding = 5) buffer ModernBucketRecords { BucketRecord buckets[]; };\n"
 		"float FetchHiZRectMax(vec4 bounds, int mip, bool flipY) {\n"
@@ -853,8 +858,20 @@ static GLuint R_ModernGLExecutor_CompileGpuDrivenComputeProgram( void ) {
 		"	}\n"
 		"	float extent = max( bounds.z - bounds.x + 1.0, bounds.w - bounds.y + 1.0 );\n"
 		"	int mip = clamp( int( ceil( log2( max( extent, 1.0 ) ) ) ), 0, int( u_hiZParams.z ) - 1 );\n"
-		"	float maxDepth = max( FetchHiZRectMax( bounds, mip, false ), FetchHiZRectMax( bounds, mip, true ) );\n"
+		"	float dNonFlipped = FetchHiZRectMax( bounds, mip, false );\n"
+		"	float dFlipped = FetchHiZRectMax( bounds, mip, true );\n"
+		"	float maxDepth = max( dNonFlipped, dFlipped );\n"
 		"	float nearDepth = clamp( record.depthBounds.x, 0.0, 1.0 );\n"
+		"	if ( mip == 0 ) {\n"
+		"		ivec2 dbgSize = textureSize( u_hiZTexture, mip );\n"
+		"		vec2 dbgScale = vec2( float( dbgSize.x ) / max( u_hiZParams.x, 1.0 ), float( dbgSize.y ) / max( u_hiZParams.y, 1.0 ) );\n"
+		"		float dbgScaleY = float( dbgSize.y ) / max( u_hiZParams.y, 1.0 );\n"
+		"		float dbgScaleX = float( dbgSize.x ) / max( u_hiZParams.x, 1.0 );\n"
+		"		atomicMax( counters[12], uint( dNonFlipped * 100000.0 ) + 1u );\n"
+		"		atomicMax( counters[13], uint( dFlipped * 100000.0 ) + 1u );\n"
+		"		atomicMax( counters[14], floatBitsToUint( dbgScaleX ) );\n"
+		"		atomicMax( counters[15], floatBitsToUint( bounds.y * dbgScaleY ) );\n"
+		"	}\n"
 		"	return nearDepth > maxDepth + 0.0005;\n"
 		"}\n"
 		"void main() {\n"
@@ -1793,35 +1810,6 @@ static int R_ModernGLExecutor_CountPassDraws( const idScenePacketFrame &packetFr
 	return count;
 }
 
-static int R_ModernGLExecutor_FirstContributingLightIndex( const idScenePacketFrame &packetFrame, renderPassCategory_t category, int &viewIndex ) {
-	viewIndex = -1;
-	const int sceneCount = packetFrame.NumScenes();
-	for ( int sceneIndex = 0; sceneIndex < sceneCount; ++sceneIndex ) {
-		const viewDef_t *viewDef = packetFrame.Scene( sceneIndex ).viewDef;
-		if ( viewDef == NULL || R_ModernGLExecutor_ViewDefUsesLegacySidecar( viewDef ) ) {
-			continue;
-		}
-		for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-			if ( vLight->lightShader == NULL ) {
-				continue;
-			}
-			const bool fogOrBlend = vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight();
-			if ( category == RENDER_PASS_ARB2_INTERACTION && fogOrBlend ) {
-				continue;
-			}
-			if ( category == RENDER_PASS_FOG_BLEND && !fogOrBlend ) {
-				continue;
-			}
-			if ( vLight->localInteractions == NULL && vLight->globalInteractions == NULL && vLight->translucentInteractions == NULL ) {
-				continue;
-			}
-			viewIndex = sceneIndex;
-			return vLight->lightDef != NULL ? vLight->lightDef->index : -1;
-		}
-	}
-	return -1;
-}
-
 static bool R_ModernGLExecutor_DrawPacketUsesLegacyFeedbackSurface( const drawPacket_t &draw ) {
 	if ( R_ModernGLExecutor_DrawPacketUsesLegacySidecarView( draw ) ) {
 		return true;
@@ -1940,6 +1928,330 @@ static void R_ModernGLExecutor_RecordPacketFallbackBlockers( const idScenePacket
 	}
 }
 
+/*
+==================
+Modern lighting ownership parity contract
+
+The modern visible path may only own a lighting domain once that domain's
+output has been demonstrated equal to the ARB2 bridge.  Being *representable*
+by the modern descriptor set is necessary but not sufficient: shipping a
+descriptor-complete light whose shading math was never compared would silently
+change what the player sees.
+
+MODERN_LIGHTING_PARITY_PROVEN_DOMAINS is therefore a reviewed source constant,
+flipped one domain at a time with evidence recorded in
+docs/dev/plans/2026-08-16-modern-visible-lighting-ownership.md.  Until then a
+consumable light is counted as "unproven" rather than owned, which is what turns
+this gate from an opaque boolean into a measurable remainder.
+r_rendererModernLightingParity forces domains proven for bring-up capture only.
+==================
+*/
+enum modernLightingParityDomain_t {
+	MODERN_LIGHTING_PARITY_INTERACTION	= 1 << 0,
+	MODERN_LIGHTING_PARITY_FOG_BLEND	= 1 << 1,
+	MODERN_LIGHTING_PARITY_LIGHT_GRID	= 1 << 2,
+	MODERN_LIGHTING_PARITY_SHADOW		= 1 << 3
+};
+
+static const int MODERN_LIGHTING_PARITY_PROVEN_DOMAINS = 0;
+
+static int R_ModernGLExecutor_LightingParityContract( void ) {
+	return MODERN_LIGHTING_PARITY_PROVEN_DOMAINS | r_rendererModernLightingParity.GetInteger();
+}
+
+static bool R_ModernGLExecutor_LightingParityProven( int domain ) {
+	return ( R_ModernGLExecutor_LightingParityContract() & domain ) != 0;
+}
+
+static void R_ModernGLExecutor_FormatLightingParityContract( char *buffer, int bufferSize ) {
+	const int contract = R_ModernGLExecutor_LightingParityContract();
+	idStr::snPrintf(
+		buffer,
+		bufferSize,
+		"%s%s%s%s",
+		( contract & MODERN_LIGHTING_PARITY_INTERACTION ) != 0 ? "interaction," : "",
+		( contract & MODERN_LIGHTING_PARITY_FOG_BLEND ) != 0 ? "fog-blend," : "",
+		( contract & MODERN_LIGHTING_PARITY_LIGHT_GRID ) != 0 ? "light-grid," : "",
+		( contract & MODERN_LIGHTING_PARITY_SHADOW ) != 0 ? "shadow," : "" );
+	const int length = static_cast<int>( strlen( buffer ) );
+	if ( length == 0 ) {
+		idStr::Copynz( buffer, "none", bufferSize );
+	} else {
+		buffer[length - 1] = '\0';
+	}
+}
+
+/*
+==================
+R_ModernGLExecutor_PrintLightingOwnership
+
+One readable line answering "how much of this frame could the modern path own,
+and what is holding the rest back": total contributing lights per domain, how
+many the modern descriptor set can represent, how many are unrepresentable, and
+how many are consumable but held by an unproven parity contract.
+==================
+*/
+static void R_ModernGLExecutor_PrintLightingOwnership( const modernGLExecutorStats_t &stats ) {
+	char contract[96];
+	R_ModernGLExecutor_FormatLightingParityContract( contract, sizeof( contract ) );
+	common->Printf(
+		"modernLightingOwnership proven=%s override=%d requested=%d interaction(pass=%d lights=%d consumable=%d blocked=%d unproven=%d ready=%d) fogBlend(pass=%d lights=%d consumable=%d blocked=%d unproven=%d) lightGrid(pass=%d draws=%d consumable=%d blocked=%d unproven=%d unprovenPass=%d ready=%d) shadow(consumable=%d blocked=%d unproven=%d pointConstraint=%d ready=%d) blocker='%s'\n",
+		contract,
+		r_rendererModernLightingParity.GetInteger(),
+		stats.modernVisibleRequested ? 1 : 0,
+		stats.modernVisibleInteractionPasses,
+		stats.modernVisibleLightingLights,
+		stats.modernVisibleLightingConsumableLights,
+		stats.modernVisibleLightingBlockedLights,
+		stats.modernVisibleLightingUnprovenLights,
+		stats.modernVisibleLightingReady ? 1 : 0,
+		stats.modernVisibleFogBlendPasses,
+		stats.modernVisibleFogBlendLights,
+		stats.modernVisibleFogBlendConsumableLights,
+		stats.modernVisibleFogBlendBlockedLights,
+		stats.modernVisibleFogBlendUnprovenLights,
+		stats.modernVisibleLightGridPasses,
+		stats.modernVisibleLightGridDraws,
+		stats.modernVisibleLightGridConsumableDraws,
+		stats.modernVisibleLightGridBlockedDraws,
+		stats.modernVisibleLightGridUnprovenDraws,
+		stats.modernVisibleLightGridUnprovenPasses,
+		stats.modernVisibleLightGridReady ? 1 : 0,
+		stats.modernVisibleShadowConsumableLights,
+		stats.modernVisibleShadowBlockedLights,
+		stats.modernVisibleShadowUnprovenLights,
+		stats.modernVisibleShadowPointConstraintLights,
+		stats.modernVisibleShadowOwnershipReady ? 1 : 0,
+		stats.modernVisibleOwnershipBlocker );
+}
+
+/*
+==================
+R_ModernGLExecutor_LightDescriptorBlockReason
+
+Returns the reason this clustered-light descriptor can never be represented by
+the modern deferred/forward+ path, or NULL when the modern path could consume
+it.  This is a resource/kind question only; whether the resulting shading
+matches ARB2 is the separate parity-contract question above.
+==================
+*/
+static const char *R_ModernGLExecutor_LightDescriptorBlockReason( const rendererModernLightDescriptor_t &light ) {
+	switch ( light.type ) {
+	case RENDERER_MODERN_LIGHT_POINT:
+	case RENDERER_MODERN_LIGHT_PROJECTED:
+	case RENDERER_MODERN_LIGHT_AMBIENT:
+	case RENDERER_MODERN_LIGHT_FOG:
+	case RENDERER_MODERN_LIGHT_BLEND:
+		break;
+	case RENDERER_MODERN_LIGHT_SPECIAL:
+	default:
+		// parallel/sun lights, and anything the classifier could not identify,
+		// have no modern descriptor shape yet
+		return "special-light-unrepresentable";
+	}
+
+	if ( light.falloffImageHandle == 0 ) {
+		return "missing-falloff-image";
+	}
+	if ( light.type == RENDERER_MODERN_LIGHT_PROJECTED && light.projectionImageHandle == 0 ) {
+		return "missing-projection-image";
+	}
+	if ( light.type == RENDERER_MODERN_LIGHT_POINT && light.projectionImageHandle == 0 ) {
+		return "missing-point-projection-image";
+	}
+	return NULL;
+}
+
+static bool R_ModernGLExecutor_LightDescriptorIsFogBlend( const rendererModernLightDescriptor_t &light ) {
+	return light.type == RENDERER_MODERN_LIGHT_FOG || light.type == RENDERER_MODERN_LIGHT_BLEND;
+}
+
+/*
+==================
+R_ModernGLExecutor_ClassifyModernVisibleLighting
+
+Late ownership classification.  Runs after ModernShadowPlanner and
+ModernClusteredLighting have built this frame's descriptors, so it can decide
+the interaction, fog/blend and light-grid domains from the descriptor set the
+modern shaders actually consume rather than from raw front-end pass presence.
+==================
+*/
+static void R_ModernGLExecutor_ClassifyModernVisibleLighting( const idScenePacketFrame &packetFrame, modernGLExecutorStats_t &stats ) {
+	if ( !stats.modernVisibleRequested ) {
+		return;
+	}
+
+	// this function owns the interaction, fog/blend and light-grid verdicts, so
+	// it re-derives them from scratch every time it runs
+	stats.modernVisibleLightingReady = true;
+	stats.modernVisibleLightGridReady = true;
+	stats.modernVisibleLightingParityContract = R_ModernGLExecutor_LightingParityContract();
+	stats.modernVisibleLightingLights = 0;
+	stats.modernVisibleLightingConsumableLights = 0;
+	stats.modernVisibleLightingBlockedLights = 0;
+	stats.modernVisibleLightingUnprovenLights = 0;
+	stats.modernVisibleFogBlendLights = 0;
+	stats.modernVisibleFogBlendConsumableLights = 0;
+	stats.modernVisibleFogBlendBlockedLights = 0;
+	stats.modernVisibleFogBlendUnprovenLights = 0;
+	stats.modernVisibleLightGridUnprovenPasses = 0;
+	stats.modernVisibleLightGridDraws = 0;
+	stats.modernVisibleLightGridConsumableDraws = 0;
+	stats.modernVisibleLightGridBlockedDraws = 0;
+	stats.modernVisibleLightGridUnprovenDraws = 0;
+	stats.modernVisibleLightingFallbackPasses = 0;
+	stats.modernVisibleLightGridFallbackPasses = 0;
+
+	const bool interactionProven = R_ModernGLExecutor_LightingParityProven( MODERN_LIGHTING_PARITY_INTERACTION );
+	const bool fogBlendProven = R_ModernGLExecutor_LightingParityProven( MODERN_LIGHTING_PARITY_FOG_BLEND );
+	const bool lightGridProven = R_ModernGLExecutor_LightingParityProven( MODERN_LIGHTING_PARITY_LIGHT_GRID );
+
+	const int lightDescriptorCount = R_ModernClusteredLighting_NumLightDescriptors();
+	const bool interactionPassPresent = stats.modernVisibleInteractionPasses > 0;
+	const bool fogBlendPassPresent = stats.modernVisibleFogBlendPasses > 0;
+
+	for ( int i = 0; i < lightDescriptorCount; ++i ) {
+		const rendererModernLightDescriptor_t *light = R_ModernClusteredLighting_LightDescriptor( i );
+		if ( light == NULL ) {
+			continue;
+		}
+
+		const bool fogBlend = R_ModernGLExecutor_LightDescriptorIsFogBlend( *light );
+		const char *blockReason = R_ModernGLExecutor_LightDescriptorBlockReason( *light );
+		const bool proven = fogBlend ? fogBlendProven : interactionProven;
+		const renderPassCategory_t pass = fogBlend ? RENDER_PASS_FOG_BLEND : RENDER_PASS_ARB2_INTERACTION;
+		const char *resource = fogBlend ? "fogBlendEvaluation" : "modernLightDescriptor";
+
+		if ( fogBlend ) {
+			stats.modernVisibleFogBlendLights++;
+		} else {
+			stats.modernVisibleLightingLights++;
+		}
+
+		if ( blockReason != NULL ) {
+			if ( fogBlend ) {
+				stats.modernVisibleFogBlendBlockedLights++;
+			} else {
+				stats.modernVisibleLightingBlockedLights++;
+			}
+			R_ModernGLExecutor_SetOwnershipBlocker(
+				stats, "light", light->sceneIndex, pass, light->lightDefIndex, resource, blockReason );
+			continue;
+		}
+
+		if ( fogBlend ) {
+			stats.modernVisibleFogBlendConsumableLights++;
+		} else {
+			stats.modernVisibleLightingConsumableLights++;
+		}
+		if ( proven ) {
+			continue;
+		}
+		if ( fogBlend ) {
+			stats.modernVisibleFogBlendUnprovenLights++;
+		} else {
+			stats.modernVisibleLightingUnprovenLights++;
+		}
+		R_ModernGLExecutor_SetOwnershipBlocker(
+			stats,
+			"light",
+			light->sceneIndex,
+			pass,
+			light->lightDefIndex,
+			resource,
+			fogBlend ? "fog-blend-parity-unproven" : "lighting-parity-unproven" );
+	}
+
+	// A lit pass the descriptor set does not account for must not read as
+	// "ready with zero blocked lights": the front end asked for lighting the
+	// clustered builder could not describe, which is precisely the case where
+	// silently taking ownership would drop light from the frame.
+	// Verdicts only apply to domains that actually have work this frame. A
+	// domain with work but no descriptors must not read as "ready with zero
+	// blocked lights": the front end asked for lighting the clustered builder
+	// could not describe, which is exactly where silently taking ownership
+	// would drop light from the frame.
+	const int interactionFallbackLights = stats.modernVisibleLightingBlockedLights + stats.modernVisibleLightingUnprovenLights;
+	const int fogBlendFallbackLights = stats.modernVisibleFogBlendBlockedLights + stats.modernVisibleFogBlendUnprovenLights;
+	if ( interactionPassPresent ) {
+		if ( stats.modernVisibleLightingLights == 0 ) {
+			stats.modernVisibleLightingReady = false;
+			stats.modernVisibleLightingFallbackPasses++;
+			R_ModernGLExecutor_SetOwnershipBlocker(
+				stats, "light", -1, RENDER_PASS_ARB2_INTERACTION, -1, "modernLightDescriptor", "light-descriptors-unavailable" );
+		} else if ( interactionFallbackLights > 0 ) {
+			stats.modernVisibleLightingReady = false;
+			stats.modernVisibleLightingFallbackPasses++;
+		}
+	}
+	if ( fogBlendPassPresent ) {
+		if ( stats.modernVisibleFogBlendLights == 0 ) {
+			stats.modernVisibleLightingReady = false;
+			stats.modernVisibleLightingFallbackPasses++;
+			R_ModernGLExecutor_SetOwnershipBlocker(
+				stats, "light", -1, RENDER_PASS_FOG_BLEND, -1, "fogBlendEvaluation", "light-descriptors-unavailable" );
+		} else if ( fogBlendFallbackLights > 0 ) {
+			stats.modernVisibleLightingReady = false;
+			stats.modernVisibleLightingFallbackPasses++;
+		}
+	}
+
+	// Light grid is classified per draw rather than per light: its contribution
+	// is baked per portal area and selected by the receiving surface, so
+	// representability is a property of the surface, not of any view light.
+	const int drawPacketCount = packetFrame.NumDrawPackets();
+	for ( int i = 0; i < drawPacketCount; ++i ) {
+		const drawPacket_t &draw = packetFrame.DrawPacket( i );
+		if ( draw.passCategory != RENDER_PASS_LIGHT_GRID || R_ModernGLExecutor_DrawPacketUsesLegacySidecarView( draw ) ) {
+			continue;
+		}
+
+		stats.modernVisibleLightGridDraws++;
+		const char *blockReason = NULL;
+		if ( !RB_LightGridSurfaceModernRepresentable( draw.legacyDrawSurf, draw.viewDef, &blockReason ) ) {
+			stats.modernVisibleLightGridBlockedDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker(
+				stats,
+				"draw",
+				R_ModernGLExecutor_ViewIndexForViewDef( packetFrame, draw.viewDef ),
+				RENDER_PASS_LIGHT_GRID,
+				i,
+				"lightGridContribution",
+				blockReason != NULL ? blockReason : "light-grid-unrepresentable" );
+			continue;
+		}
+
+		stats.modernVisibleLightGridConsumableDraws++;
+		if ( lightGridProven ) {
+			continue;
+		}
+		stats.modernVisibleLightGridUnprovenDraws++;
+		R_ModernGLExecutor_SetOwnershipBlocker(
+			stats,
+			"draw",
+			R_ModernGLExecutor_ViewIndexForViewDef( packetFrame, draw.viewDef ),
+			RENDER_PASS_LIGHT_GRID,
+			i,
+			"lightGridContribution",
+			"light-grid-parity-unproven" );
+	}
+
+	// The front end declares the light-grid pass unconditionally and only then
+	// filters eligible surfaces into it, so a pass with zero draws carries no
+	// work and is vacuously ownable. Only real draws can block the domain.
+	const int lightGridFallbackDraws = stats.modernVisibleLightGridBlockedDraws + stats.modernVisibleLightGridUnprovenDraws;
+	if ( lightGridFallbackDraws > 0 ) {
+		stats.modernVisibleLightGridReady = false;
+		stats.modernVisibleLightGridUnprovenPasses = stats.modernVisibleLightGridUnprovenDraws > 0 ? stats.modernVisibleLightGridPasses : 0;
+		stats.modernVisibleLightGridFallbackPasses++;
+	}
+
+	// every not-ready verdict above also incremented a fallback counter, and
+	// RecomputeModernVisibleFallbacks is the single source of truth deriving
+	// modernVisibleBlockedByLegacy from those counters
+	R_ModernGLExecutor_RecomputeModernVisibleFallbacks( stats );
+}
+
 static void R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( const idScenePacketFrame &packetFrame, const idRenderGraph &graph, modernGLExecutorStats_t &stats ) {
 	if ( !stats.modernVisibleRequested ) {
 		return;
@@ -1957,45 +2269,20 @@ static void R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( const idS
 
 	R_ModernGLExecutor_RecordPacketFallbackBlockers( packetFrame, stats );
 
-	const int interactionDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_ARB2_INTERACTION );
-	if ( interactionDraws > 0 ) {
-		int viewIndex = -1;
-		const int lightIndex = R_ModernGLExecutor_FirstContributingLightIndex( packetFrame, RENDER_PASS_ARB2_INTERACTION, viewIndex );
-		stats.modernVisibleLightingReady = false;
-		stats.modernVisibleLightingFallbackPasses++;
-		R_ModernGLExecutor_SetOwnershipBlocker( stats, "light", viewIndex, RENDER_PASS_ARB2_INTERACTION, lightIndex, "modernLightDescriptor", "lighting-parity-incomplete" );
+	// This runs before ModernShadowPlanner and ModernClusteredLighting have
+	// built the frame, so it can only record which lighting domains the front
+	// end is asking for.  The verdicts themselves are decided per light in
+	// R_ModernGLExecutor_ClassifyModernVisibleLighting once descriptors exist.
+	stats.modernVisibleInteractionPasses = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_ARB2_INTERACTION ) > 0 ? 1 : 0;
+	stats.modernVisibleFogBlendPasses = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_FOG_BLEND ) > 0 ? 1 : 0;
+	stats.modernVisibleLightGridPasses = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_LIGHT_GRID ) > 0 ? 1 : 0;
+	if ( graph.FindPass( RENDER_PASS_ARB2_INTERACTION ) >= 0 ) {
+		stats.modernVisibleInteractionPasses = Max( stats.modernVisibleInteractionPasses, 1 );
+	}
+	if ( graph.FindPass( RENDER_PASS_LIGHT_GRID ) >= 0 ) {
+		stats.modernVisibleLightGridPasses = Max( stats.modernVisibleLightGridPasses, 1 );
 	}
 
-	const int fogBlendDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_FOG_BLEND );
-	if ( fogBlendDraws > 0 ) {
-		int viewIndex = -1;
-		const int lightIndex = R_ModernGLExecutor_FirstContributingLightIndex( packetFrame, RENDER_PASS_FOG_BLEND, viewIndex );
-		stats.modernVisibleLightingReady = false;
-		stats.modernVisibleLightingFallbackPasses++;
-		R_ModernGLExecutor_SetOwnershipBlocker( stats, "light", viewIndex, RENDER_PASS_FOG_BLEND, lightIndex, "fogBlendEvaluation", "fog-blend-parity-incomplete" );
-	}
-
-	const int lightGridDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_LIGHT_GRID );
-	if ( lightGridDraws > 0 ) {
-		stats.modernVisibleLightGridReady = false;
-		stats.modernVisibleLightGridFallbackPasses++;
-		R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", 0, RENDER_PASS_LIGHT_GRID, lightGridDraws, "lightGridContribution", "light-grid-parity-incomplete" );
-	}
-
-	const int shadowMapDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_SHADOW_MAP );
-	const int stencilShadowDraws = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_STENCIL_SHADOW );
-	if ( shadowMapDraws > 0 || stencilShadowDraws > 0 ) {
-		stats.modernVisibleShadowOwnershipReady = false;
-		stats.modernVisibleShadowOwnershipFallbackPasses += ( shadowMapDraws > 0 ? 1 : 0 ) + ( stencilShadowDraws > 0 ? 1 : 0 );
-		R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", 0, shadowMapDraws > 0 ? RENDER_PASS_SHADOW_MAP : RENDER_PASS_STENCIL_SHADOW, shadowMapDraws > 0 ? shadowMapDraws : stencilShadowDraws, "shadowReceiverSampling", "shadow-ownership-parity-incomplete" );
-	}
-
-	if ( graph.FindPass( RENDER_PASS_ARB2_INTERACTION ) >= 0 && !stats.modernVisibleLightingReady ) {
-		stats.modernVisibleBlockedByLegacy = true;
-	}
-	if ( graph.FindPass( RENDER_PASS_LIGHT_GRID ) >= 0 && !stats.modernVisibleLightGridReady ) {
-		stats.modernVisibleBlockedByLegacy = true;
-	}
 	R_ModernGLExecutor_RecomputeModernVisibleFallbacks( stats );
 }
 
@@ -3430,6 +3717,29 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 		record.indirect[1] = static_cast<GLuint>( indirectCommand.indexCacheOffset >= 0 ? indirectCommand.indexCacheOffset / static_cast<int>( sizeof( glIndex_t ) ) : 0 );
 		record.indirect[2] = indirectCommand.vertexStride > 0 && indirectCommand.ambientCacheOffset >= 0 ? static_cast<GLuint>( indirectCommand.ambientCacheOffset / indirectCommand.vertexStride ) : 0u;
 		record.indirect[3] = static_cast<GLuint>( i );
+		if ( rg_modernGLGpuDrivenDebugDump ) {
+			common->Printf(
+				"GPUDRIVENDBG rec=%d bucket=%d flags=0x%x pipeline=%d pass=%d visible=%d eligible=%d hiZ=%d scissor=(%d,%d,%d,%d) bounds=(%g,%g,%g,%g) depth=(%g,%g) clipped=%d\n",
+				i,
+				bucketIndex,
+				flags,
+				static_cast<int>( indirectCommand.pipeline ),
+				static_cast<int>( indirectCommand.passCategory ),
+				visible ? 1 : 0,
+				indirectEligible ? 1 : 0,
+				hiZCandidate ? 1 : 0,
+				indirectCommand.scissorX1,
+				indirectCommand.scissorY1,
+				indirectCommand.scissorX2,
+				indirectCommand.scissorY2,
+				record.screenBounds[0],
+				record.screenBounds[1],
+				record.screenBounds[2],
+				record.screenBounds[3],
+				record.depthBounds[0],
+				record.depthBounds[1],
+				screenClipped ? 1 : 0 );
+		}
 	}
 
 	for ( int i = 0; i < rg_modernGLGpuDrivenBucketCount; ++i ) {
@@ -3536,6 +3846,68 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 			R_GLStateCache().ActiveTextureUnit( 1 );
 			R_GLStateCache().BindTexture( 1, GL_TEXTURE_2D, sceneHiZ->texture );
 		}
+		if ( rg_modernGLGpuDrivenDebugDump && useHiZForIndirect ) {
+			GLint boundTex = 0;
+			GLint boundSampler = -1;
+			GLint compareMode = 0;
+			GLint minFilter = 0;
+			GLint baseLevel = 0;
+			GLint maxLevel = 0;
+			GLint level0Width = 0;
+			GLint level0Height = 0;
+			GLint activeUnit = 0;
+			glGetIntegerv( GL_ACTIVE_TEXTURE, &activeUnit );
+			glGetIntegerv( GL_TEXTURE_BINDING_2D, &boundTex );
+			glGetIntegerv( GL_SAMPLER_BINDING, &boundSampler );
+			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, &compareMode );
+			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minFilter );
+			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &baseLevel );
+			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, &maxLevel );
+			glGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &level0Width );
+			glGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &level0Height );
+			float lateProbe = -1.0f;
+			float lateFlippedProbe = -1.0f;
+			if ( rg_modernGLExecutorHiZFBO != 0 && glFramebufferTexture2D != NULL ) {
+				R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorHiZFBO );
+				R_GLStateCache().SetScissorTestEnabled( false );
+				glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, sceneHiZ->texture, 0 );
+				glReadPixels( 64, 64, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &lateProbe );
+				glReadPixels( 64, sceneHiZ->height - 1 - 64, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &lateFlippedProbe );
+				glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0 );
+			}
+			R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, 0 );
+			common->Printf( "GPUDRIVENDBG lateProbe=%g lateFlipped=%g\n", lateProbe, lateFlippedProbe );
+			GLint samplerUnit = -1;
+			GLfloat paramValues[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+			GLint unit0Tex = 0;
+			glGetUniformiv( rg_modernGLExecutorComputeProgram, rg_modernGLExecutorComputeHiZTextureLocation, &samplerUnit );
+			glGetUniformfv( rg_modernGLExecutorComputeProgram, rg_modernGLExecutorComputeHiZParamsLocation, paramValues );
+			R_GLStateCache().ActiveTextureUnit( 0 );
+			glGetIntegerv( GL_TEXTURE_BINDING_2D, &unit0Tex );
+			R_GLStateCache().ActiveTextureUnit( 1 );
+			common->Printf(
+				"GPUDRIVENDBG dispatch samplerUnit=%d params=(%g,%g,%g,%g) unit0=%d\n",
+				samplerUnit,
+				paramValues[0],
+				paramValues[1],
+				paramValues[2],
+				paramValues[3],
+				unit0Tex );
+			common->Printf(
+				"GPUDRIVENDBG dispatch activeUnit=0x%x unit1=%d expect=%u sampler=%d compareMode=0x%x minFilter=0x%x levels=[%d,%d] level0=%dx%d loc(tex=%d params=%d)\n",
+				activeUnit,
+				boundTex,
+				sceneHiZ->texture,
+				boundSampler,
+				compareMode,
+				minFilter,
+				baseLevel,
+				maxLevel,
+				level0Width,
+				level0Height,
+				static_cast<int>( rg_modernGLExecutorComputeHiZTextureLocation ),
+				static_cast<int>( rg_modernGLExecutorComputeHiZParamsLocation ) );
+		}
 		glDispatchCompute( static_cast<GLuint>( ( sceneRecordCount + MODERN_GL_GPU_DRIVEN_WORKGROUP_SIZE - 1 ) / MODERN_GL_GPU_DRIVEN_WORKGROUP_SIZE ), 1, 1 );
 		glMemoryBarrier( GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT );
 		if ( useHiZForIndirect ) {
@@ -3553,6 +3925,14 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 				const GLuint validationBuffer = streamedValidation ? rg_modernGLGpuDrivenStreamBindings.validationCounters.allocation.vbo : rg_modernGLExecutorValidationSSBO;
 				const GLintptr validationOffset = streamedValidation ? static_cast<GLintptr>( rg_modernGLGpuDrivenStreamBindings.validationCounters.allocation.offset ) : 0;
 				if ( R_ModernGLExecutor_ReadGpuDrivenCounters( validationBuffer, validationOffset, gpuCounters ) ) {
+					if ( rg_modernGLGpuDrivenDebugDump ) {
+						common->Printf(
+							"GPUDRIVENDBG counters processed=%u eligible=%u generated=%u culled=%u visible=%u clusters=%u sig=%u hizTested=%u hizRejected=%u compacted=%u invalidBucket=%u overflow=%u dbgNonFlipped=%u dbgFlipped=%u scaleXbits=0x%08x scaledYbits=0x%08x\n",
+							gpuCounters[0], gpuCounters[1], gpuCounters[2], gpuCounters[3],
+							gpuCounters[4], gpuCounters[5], gpuCounters[6], gpuCounters[7],
+							gpuCounters[8], gpuCounters[9], gpuCounters[10], gpuCounters[11],
+							gpuCounters[12], gpuCounters[13], gpuCounters[14], gpuCounters[15] );
+					}
 					R_ModernGLExecutor_ApplyGpuDrivenValidationCounters( stats, cpuReference, gpuCounters );
 				} else {
 					stats.gpuDrivenValidationSkippedReadbacks++;
@@ -4433,6 +4813,30 @@ static bool R_ModernGLExecutor_PrimeGpuDrivenSelfTestHiZ( modernGLExecutorStats_
 		glTexSubImage2D( GL_TEXTURE_2D, 0, x, flippedY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &occluderDepth );
 	}
 	glMemoryBarrier( GL_TEXTURE_FETCH_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT );
+
+	if ( rg_modernGLGpuDrivenDebugDump ) {
+		float probe = -1.0f;
+		float flippedProbe = -1.0f;
+		if ( R_ModernGLExecutor_AttachHiZReductionMip( *sceneHiZ, 0 ) ) {
+			R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorHiZFBO );
+			R_GLStateCache().SetScissorTestEnabled( false );
+			glReadPixels( x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &probe );
+			glReadPixels( x, flippedY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &flippedProbe );
+		}
+		R_ModernGLExecutor_DetachHiZReductionMip();
+		common->Printf(
+			"GPUDRIVENDBG hizPrime tex=%u size=%dx%d mips=%d write=(%d,%d)/(%d,%d) probe=%g flippedProbe=%g\n",
+			sceneHiZ->texture,
+			sceneHiZ->width,
+			sceneHiZ->height,
+			sceneHiZ->mipLevels,
+			x,
+			y,
+			x,
+			flippedY,
+			probe,
+			flippedProbe );
+	}
 
 	R_ModernGLExecutor_RestoreAfterHiZBuild( stats, "modern gpu-driven self-test hiz prime" );
 	stats.visibilityHiZResourceReady = true;
@@ -5952,6 +6356,19 @@ static bool R_ModernGLExecutor_ModernVisibleShadowReceiversReady( const modernSh
 	stats.modernVisibleShadowBlockedLights = blockedLights;
 	stats.modernVisibleShadowConsumableLights = consumableLights;
 	if ( blockedLights > 0 ) {
+		stats.modernVisibleShadowOwnershipFallbackPasses++;
+		R_ModernGLExecutor_SetOwnershipBlocker(
+			stats, "light", -1, RENDER_PASS_SHADOW_MAP, blockedLights, "shadowReceiverSampling", "shadow-receivers-unrepresentable" );
+		return false;
+	}
+	// Representable is not the same as proven: modern receiver sampling has not
+	// been shown equal to the ARB2 shadow path, so consumable lights are held
+	// back and counted until the shadow parity contract is satisfied.
+	if ( consumableLights > 0 && !R_ModernGLExecutor_LightingParityProven( MODERN_LIGHTING_PARITY_SHADOW ) ) {
+		stats.modernVisibleShadowUnprovenLights = consumableLights;
+		stats.modernVisibleShadowOwnershipFallbackPasses++;
+		R_ModernGLExecutor_SetOwnershipBlocker(
+			stats, "light", -1, RENDER_PASS_SHADOW_MAP, consumableLights, "shadowReceiverSampling", "shadow-parity-unproven" );
 		return false;
 	}
 	// resource checks key on consumable lights: in the designed steady state
@@ -5986,9 +6403,11 @@ static bool R_ModernGLExecutor_ModernVisiblePrecomposeReady( modernGLExecutorSta
 	stats.modernVisibleShadowFallbackLights = shadowStats.fallbackLights;
 	stats.modernVisibleShadowSkippedLights = shadowStats.skippedLights;
 	stats.modernVisibleShadowDescriptors = shadowStats.descriptorCount;
-	stats.modernVisibleShadowReady =
-		stats.modernVisibleShadowOwnershipReady &&
-		R_ModernGLExecutor_ModernVisibleShadowReceiversReady( shadowStats, stats );
+	// The shadow domain is decided entirely by the per-light receiver walk plus
+	// its parity contract; there is no separate whole-frame shadow presence
+	// gate masking that verdict any more.
+	stats.modernVisibleShadowOwnershipReady = R_ModernGLExecutor_ModernVisibleShadowReceiversReady( shadowStats, stats );
+	stats.modernVisibleShadowReady = stats.modernVisibleShadowOwnershipReady;
 	stats.modernVisibleSourceReady = deferredReady || forwardReady;
 	stats.modernVisibleBackBufferReady = backBuffer != NULL && backBuffer->presentable;
 	stats.modernVisibleHybridTargetReady = hybridReady;
@@ -6817,6 +7236,10 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 		rg_modernGLExecutorStats.deferredResolveRequested ||
 		rg_modernGLExecutorStats.forwardPlusRequested ||
 		gpuDrivenValidationRequested ||
+		// modern-visible bring-up needs the descriptor set even on frames it
+		// cannot own, because per-light ownership classification is the only
+		// thing that can say how much of the frame is still legacy-bound
+		modernVisibleRequested ||
 		r_rendererClusterDebug.GetInteger() > 0;
 	const bool shadowPlanningRequested =
 		r_shadows.GetBool() &&
@@ -6828,6 +7251,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 	rg_modernGLExecutorStats.visibilityShadowCasterRejected += shadowStats.visibilityCasterRejected;
 	rg_modernGLExecutorStats.visibilityShadowCasterSavedDraws += shadowStats.visibilityCasterSavedDraws;
 	R_ModernClusteredLighting_PrepareFrame( packetFrame, clusteredLightingRequested );
+	R_ModernGLExecutor_ClassifyModernVisibleLighting( packetFrame, rg_modernGLExecutorStats );
 	R_ModernGLExecutor_UpdateFrameUBO( rg_modernGLExecutorStats );
 	{
 		modernGLExecutorSoftPassHandoffScope_t softHandoffs;
@@ -7144,6 +7568,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 			rg_modernGLExecutorStats.modernVisiblePresentPasses,
 			rg_modernGLExecutorStats.modernVisibleClearOps,
 			rg_modernGLExecutorStats.modernVisibleOwnershipBlocker );
+		R_ModernGLExecutor_PrintLightingOwnership( rg_modernGLExecutorStats );
 		common->Printf(
 			"modernPassGate mode=%s canReplace=%d depth(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d) gbuffer(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d) deferred(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d) forward(would=%d exec=%d skipBlocked=%d skipNoConsumer=%d dupLegacy=%d)\n",
 			R_ModernGLExecutor_FrameModeName( rg_modernGLExecutorStats.frameMode ),
@@ -8153,6 +8578,7 @@ void R_ModernGLExecutor_PrintGfxInfo( void ) {
 		rg_modernGLExecutorStats.modernVisibleBSEDecalFallbacks,
 		rg_modernGLExecutorStats.modernVisibleBSEMaterialFallbacks,
 		rg_modernGLExecutorStats.modernVisibleCinematicCompatibilityPasses );
+	R_ModernGLExecutor_PrintLightingOwnership( rg_modernGLExecutorStats );
 	R_GLStateCache_PrintGfxInfo();
 	R_ModernGLShaderLibrary_PrintGfxInfo();
 }
@@ -8832,7 +9258,9 @@ bool RendererGpuDriven_RunSelfTest( void ) {
 	R_ModernGLExecutor_CopyDrawPlanStats( stats, rg_modernGLDrawPlan.Stats() );
 	rg_modernGLSubmitPlan.Build( rg_modernGLDrawPlan );
 	R_ModernGLExecutor_CopySubmitPlanStats( stats, rg_modernGLSubmitPlan.Stats() );
+	rg_modernGLGpuDrivenDebugDump = true;
 	if ( !R_ModernGLExecutor_PrimeGpuDrivenSelfTestHiZ( stats, hiZSelfTestPixelX, hiZSelfTestPixelY ) ) {
+		rg_modernGLGpuDrivenDebugDump = false;
 		if ( glDeleteBuffers != NULL ) {
 			glDeleteBuffers( 1, &vertexBuffer );
 			glDeleteBuffers( 1, &indexBuffer );
@@ -8841,6 +9269,7 @@ bool RendererGpuDriven_RunSelfTest( void ) {
 		return false;
 	}
 	R_ModernGLExecutor_UpdateGpuDrivenBuffers( stats, true );
+	rg_modernGLGpuDrivenDebugDump = false;
 	R_ModernGLExecutor_UpdateFrameUBO( stats );
 	R_ModernGLExecutor_SubmitGpuDrivenIndirect( stats );
 	R_ModernGLExecutor_RecordMetrics( stats );
@@ -10322,6 +10751,9 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 	R_ModernGLExecutor_CopySubmitPlanStats( rg_modernGLExecutorStats, rg_modernGLSubmitPlan.Stats() );
 	R_ModernGLExecutor_FinalizeModernVisibleCompatibility( packetFrame, rg_modernGLSubmitPlan, rg_modernGLExecutorStats );
 	R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( packetFrame, graph, rg_modernGLExecutorStats );
+	R_ModernShadowPlanner_PrepareFrame( packetFrame, true );
+	R_ModernClusteredLighting_PrepareFrame( packetFrame, true );
+	R_ModernGLExecutor_ClassifyModernVisibleLighting( packetFrame, rg_modernGLExecutorStats );
 
 	const modernGLExecutorStats_t &stats = rg_modernGLExecutorStats;
 	if ( !stats.modernVisibleCompatibilityReady || stats.modernVisibleCompatibilityPasses < 17 || stats.modernVisiblePresentPasses <= 0 ) {
@@ -10371,29 +10803,95 @@ bool RendererModernCompatibility_RunSelfTest( void ) {
 			stats.modernVisibleBSEMaterialFallbacks );
 		return false;
 	}
+	// Ownership is decided per light and per domain now, so the fallback
+	// contract is: the front end recorded the lit domains, the default parity
+	// contract is empty, and every lit domain therefore fails closed with a
+	// specific named blocker rather than a bare boolean.
 	if ( !stats.modernVisibleBlockedByLegacy
 		|| stats.modernVisibleOwnerFallbacks <= 0
 		|| stats.modernVisibleLightGridModernPasses != 0
+		|| stats.modernVisibleLightingParityContract != 0
+		|| stats.modernVisibleInteractionPasses <= 0
+		|| stats.modernVisibleLightGridPasses <= 0
 		|| stats.modernVisibleLightingReady
 		|| stats.modernVisibleLightGridReady
-		|| stats.modernVisibleShadowOwnershipReady
 		|| stats.modernVisibleLightingFallbackPasses <= 0
 		|| stats.modernVisibleLightGridFallbackPasses <= 0
-		|| stats.modernVisibleShadowOwnershipFallbackPasses <= 0
 		|| stats.modernVisibleOwnershipBlocker[0] == '\0' ) {
 		common->Printf(
-			"RendererModernCompatibility self-test failed: fallback policy mismatch (blocked=%d ownerFallback=%d lightGrid=%d ready(light=%d grid=%d shadow=%d) fallback(light=%d grid=%d shadow=%d) blocker='%s')\n",
+			"RendererModernCompatibility self-test failed: fallback policy mismatch (blocked=%d ownerFallback=%d lightGridModern=%d contract=%d pass(interaction=%d grid=%d) ready(light=%d grid=%d) fallback(light=%d grid=%d) blocker='%s')\n",
 			stats.modernVisibleBlockedByLegacy ? 1 : 0,
 			stats.modernVisibleOwnerFallbacks,
 			stats.modernVisibleLightGridModernPasses,
+			stats.modernVisibleLightingParityContract,
+			stats.modernVisibleInteractionPasses,
+			stats.modernVisibleLightGridPasses,
 			stats.modernVisibleLightingReady ? 1 : 0,
 			stats.modernVisibleLightGridReady ? 1 : 0,
-			stats.modernVisibleShadowOwnershipReady ? 1 : 0,
 			stats.modernVisibleLightingFallbackPasses,
 			stats.modernVisibleLightGridFallbackPasses,
-			stats.modernVisibleShadowOwnershipFallbackPasses,
 			stats.modernVisibleOwnershipBlocker );
 		return false;
+	}
+
+	// Light grid is classified per receiving surface. The synthetic scene's
+	// surfaces carry no portal area, so its light-grid draw must be reported as
+	// genuinely unrepresentable rather than merely contract-blocked - proving
+	// the domain would not make this frame ownable.
+	if ( stats.modernVisibleLightGridDraws <= 0
+		|| stats.modernVisibleLightGridBlockedDraws != stats.modernVisibleLightGridDraws
+		|| stats.modernVisibleLightGridConsumableDraws != 0
+		|| stats.modernVisibleLightGridUnprovenDraws != 0 ) {
+		common->Printf(
+			"RendererModernCompatibility self-test failed: light-grid draw classification mismatch (draws=%d consumable=%d blocked=%d unproven=%d)\n",
+			stats.modernVisibleLightGridDraws,
+			stats.modernVisibleLightGridConsumableDraws,
+			stats.modernVisibleLightGridBlockedDraws,
+			stats.modernVisibleLightGridUnprovenDraws );
+		return false;
+	}
+
+	// The parity contract must resolve per domain, and must restore cleanly.
+	{
+		const int restoreParity = r_rendererModernLightingParity.GetInteger();
+		static const int parityDomains[] = {
+			MODERN_LIGHTING_PARITY_INTERACTION,
+			MODERN_LIGHTING_PARITY_FOG_BLEND,
+			MODERN_LIGHTING_PARITY_LIGHT_GRID,
+			MODERN_LIGHTING_PARITY_SHADOW
+		};
+		const int domainCount = static_cast<int>( sizeof( parityDomains ) / sizeof( parityDomains[0] ) );
+		bool contractOk = true;
+		for ( int i = 0; i < domainCount && contractOk; ++i ) {
+			r_rendererModernLightingParity.SetInteger( parityDomains[i] );
+			for ( int j = 0; j < domainCount; ++j ) {
+				const bool expected = i == j;
+				if ( R_ModernGLExecutor_LightingParityProven( parityDomains[j] ) != expected ) {
+					common->Printf(
+						"RendererModernCompatibility self-test failed: parity contract is not per-domain (set=%d queried=%d expected=%d)\n",
+						parityDomains[i],
+						parityDomains[j],
+						expected ? 1 : 0 );
+					contractOk = false;
+					break;
+				}
+			}
+		}
+		r_rendererModernLightingParity.SetInteger( restoreParity );
+		if ( !contractOk ) {
+			return false;
+		}
+		R_ModernGLExecutor_ClassifyModernVisibleLighting( packetFrame, rg_modernGLExecutorStats );
+		if ( stats.modernVisibleLightingParityContract != 0
+			|| stats.modernVisibleLightGridReady
+			|| stats.modernVisibleLightingReady ) {
+			common->Printf(
+				"RendererModernCompatibility self-test failed: parity contract did not restore (contract=%d grid=%d lighting=%d)\n",
+				stats.modernVisibleLightingParityContract,
+				stats.modernVisibleLightGridReady ? 1 : 0,
+				stats.modernVisibleLightingReady ? 1 : 0 );
+			return false;
+		}
 	}
 
 	modernGLExecutorStats_t &gateStats = rg_modernGLExecutorStats;

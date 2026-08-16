@@ -8840,6 +8840,90 @@ static bool RB_SurfaceHasLightGridPortalBlend( const drawSurf_t *surf, rbLightGr
 	return blend.neighborLightGrid != NULL;
 }
 
+static bool RB_LightGridSurfaceNearBlendingPortal( const drawSurf_t *surf, const viewDef_t *viewDef ) {
+	const float blendDistance = r_lightGridPortalBlend.GetFloat();
+	if ( blendDistance <= 0.0f || surf == NULL || surf->area == NULL ) {
+		return false;
+	}
+
+	idBounds surfaceBounds;
+	if ( !RB_LightGridSurfaceWorldBounds( surf, surfaceBounds ) ) {
+		// cannot bound the surface, so the blend cannot be ruled out
+		return true;
+	}
+
+	// Deliberately omits RB_SurfaceHasLightGridPortalBlend's viewCount and
+	// connectedAreas tests: those are per-view, and this query has to answer
+	// for a packet before any view is current.  Dropping them only widens the
+	// result, so a surface flagged here may not blend in every view, but a
+	// surface cleared here never blends in any of them.
+	idRenderWorldLocal *world = viewDef != NULL ? viewDef->renderWorld : NULL;
+	for ( const portal_t *portal = surf->area->portals; portal != NULL; portal = portal->next ) {
+		if ( portal->w == NULL || portal->w->GetNumPoints() < 3 ) {
+			continue;
+		}
+		if ( portal->doublePortal != NULL && ( portal->doublePortal->blockingBits & PS_BLOCK_VIEW ) ) {
+			continue;
+		}
+		if ( world != NULL ) {
+			if ( portal->intoArea < 0 || portal->intoArea >= world->numPortalAreas ) {
+				continue;
+			}
+			if ( !RB_LightGridIsUsable( world->portalAreas[ portal->intoArea ].lightGrid ) ) {
+				continue;
+			}
+		}
+
+		idBounds portalBounds;
+		portal->w->GetBounds( portalBounds );
+		portalBounds.ExpandSelf( blendDistance );
+		if ( !surfaceBounds.IntersectsBounds( portalBounds ) ) {
+			continue;
+		}
+		if ( idMath::Fabs( surfaceBounds.PlaneDistance( portal->plane ) ) > blendDistance ) {
+			continue;
+		}
+		return true;
+	}
+
+	return false;
+}
+
+/*
+==================
+RB_LightGridSurfaceModernRepresentable
+
+Ownership query for the modern renderer: can the modern light-grid pipeline
+represent this surface's indirect contribution at all, or must the ARB2 bridge
+keep it?
+
+This answers representability only - whether the modern shading would *match*
+ARB2 is the separate parity-contract question owned by ModernGLExecutor.  It is
+deliberately free of per-view state so the executor can call it while
+classifying packets, before the backend has established a current view.
+==================
+*/
+bool RB_LightGridSurfaceModernRepresentable( const drawSurf_t *surf, const viewDef_t *viewDef, const char **reason ) {
+	const char *blockReason = NULL;
+	const LightGrid *lightGrid = NULL;
+
+	if ( !RB_SurfaceHasLightGrid( surf, lightGrid ) || lightGrid == NULL ) {
+		blockReason = "no-area-light-grid";
+	} else if ( lightGrid->irradianceImage == NULL || lightGrid->visibilityImage == NULL || lightGrid->probeImage == NULL ) {
+		blockReason = "light-grid-atlas-missing";
+	} else if ( RB_LightGridSurfaceNearBlendingPortal( surf, viewDef ) ) {
+		// Portal blending resubmits the surface once per contributing area grid
+		// with complementary weights.  The modern pipeline binds one atlas set
+		// per draw and has no multi-grid submission, so these stay legacy.
+		blockReason = "portal-blend-multi-grid";
+	}
+
+	if ( reason != NULL ) {
+		*reason = blockReason;
+	}
+	return blockReason == NULL;
+}
+
 static bool RB_SurfaceHasViewWeaponLightGrid( const drawSurf_t *surf, const LightGrid *&lightGrid ) {
 	lightGrid = NULL;
 

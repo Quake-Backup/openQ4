@@ -1108,6 +1108,7 @@ extern idCVar r_rendererGpuValidation;	// compare GL43 GPU-driven compute result
 extern idCVar r_rendererGpuValidationReadbackDelay;	// defer opt-in GL43 validation readback polling
 extern idCVar r_rendererBindless;	// opt-in experimental bindless texture diagnostics, disabled by default
 extern idCVar r_rendererModernVisible;	// opt-in modern hybrid visible-frame composition
+extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lighting-ownership parity contracts proven
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion
 extern idCVar r_rendererPromotionEvidence;	// Phase 8 evidence token required before auto-promotion
 extern idCVar r_rendererShaderReload;	// allow runtime reload of the internal modern GL shader library
@@ -1805,6 +1806,9 @@ void RB_CreateSingleDrawInteractionsFiltered( const drawSurf_t *surf, void (*Dra
 void R_SetDrawInteraction( const shaderStage_t *surfaceStage, const float *surfaceRegs,
 						  idImage **image, idVec4 matrix[2], float color[4] );
 bool RB_FlatDiffuseSurfaceActive( const drawSurf_t *surf );
+// representability of a surface's baked indirect contribution for the modern
+// light-grid pipeline; sets *reason to a stable blocker token when false
+bool RB_LightGridSurfaceModernRepresentable( const drawSurf_t *surf, const viewDef_t *viewDef, const char **reason );
 bool RB_FlatDiffuseSweepActive( const drawSurf_t *surf );
 void RB_GetFlatDiffuseParams( const drawSurf_t *surf, idVec4 &params );
 void RB_ApplyFlatDiffuseStage( const drawSurf_t *surf, idImage **diffuseImage, float diffuseColor[4], idVec4 &params );
