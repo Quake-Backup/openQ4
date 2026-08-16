@@ -137,10 +137,6 @@ enum modernGLGpuDrivenCounter_t {
 	MODERN_GL_GPU_COUNTER_COMPACTED,
 	MODERN_GL_GPU_COUNTER_INVALID_BUCKET,
 	MODERN_GL_GPU_COUNTER_INDIRECT_OVERFLOW,
-	MODERN_GL_GPU_COUNTER_DEBUG_MAXDEPTH,
-	MODERN_GL_GPU_COUNTER_DEBUG_NEARDEPTH,
-	MODERN_GL_GPU_COUNTER_DEBUG_COORD,
-	MODERN_GL_GPU_COUNTER_DEBUG_COORD_FLIPPED,
 	MODERN_GL_GPU_COUNTER_COUNT
 };
 
@@ -481,7 +477,6 @@ static int rg_modernGLExecutorVertexInputFormatSetups = 0;
 static modernGLVertexInputCache_t rg_modernGLVertexInputCache;
 static modernGLGpuDrivenBucket_t rg_modernGLGpuDrivenBuckets[MODERN_GL_DRAW_PLAN_MAX_ENTRIES];
 static int rg_modernGLGpuDrivenBucketCount = 0;
-static bool rg_modernGLGpuDrivenDebugDump = false;
 static modernGLStreamBufferBinding_t rg_modernGLFrameUBOStream;
 static modernGLGpuDrivenStreamBindings_t rg_modernGLGpuDrivenStreamBindings;
 static modernGLPendingGpuValidationReadback_t rg_modernGLPendingValidationReadbacks[MODERN_GL_GPU_VALIDATION_PENDING_READBACKS];
@@ -827,21 +822,28 @@ static GLuint R_ModernGLExecutor_CompileGpuDrivenComputeProgram( void ) {
 		"uniform sampler2D u_hiZTexture;\n"
 		"uniform vec4 u_hiZParams;\n"
 		"layout(std430, binding = 1) readonly buffer ModernSceneRecords { SceneRecord records[]; };\n"
-		"layout(std430, binding = 2) buffer ModernValidation { uint counters[16]; };\n"
+		"layout(std430, binding = 2) buffer ModernValidation { uint counters[12]; };\n"
 		"layout(std430, binding = 3) buffer ModernIndirectCommands { DrawElementsIndirectCommand commands[]; };\n"
 		"layout(std430, binding = 5) buffer ModernBucketRecords { BucketRecord buckets[]; };\n"
 		"float FetchHiZRectMax(vec4 bounds, int mip, bool flipY) {\n"
 		"	ivec2 texSize = textureSize( u_hiZTexture, mip );\n"
 		"	ivec2 maxCoord = max( texSize - ivec2( 1 ), ivec2( 0 ) );\n"
-		"	vec2 scale = vec2( float( texSize.x ) / max( u_hiZParams.x, 1.0 ), float( texSize.y ) / max( u_hiZParams.y, 1.0 ) );\n"
+		"	ivec2 refSize = max( ivec2( u_hiZParams.xy ), ivec2( 1 ) );\n"
 		"	float y0 = bounds.y;\n"
 		"	float y1 = bounds.w;\n"
 		"	if ( flipY ) {\n"
 		"		y0 = u_hiZParams.y - 1.0 - bounds.w;\n"
 		"		y1 = u_hiZParams.y - 1.0 - bounds.y;\n"
 		"	}\n"
-		"	ivec2 p0 = clamp( ivec2( floor( vec2( bounds.x, y0 ) * scale ) ), ivec2( 0 ), maxCoord );\n"
-		"	ivec2 p1 = clamp( ivec2( floor( vec2( bounds.z, y1 ) * scale ) ), ivec2( 0 ), maxCoord );\n"
+		// Map reference-resolution pixels onto the mip with integer math. A float
+		// texSize/refSize ratio is not exactly 1.0 even when the two are equal:
+		// drivers lower the divide to a reciprocal multiply, 1/refSize is inexact
+		// in binary32, and floor() then drops every coordinate a whole texel, so
+		// the probe reads a neighbouring texel instead of the occluder.
+		"	ivec2 c0 = max( ivec2( floor( vec2( bounds.x, y0 ) ) ), ivec2( 0 ) );\n"
+		"	ivec2 c1 = max( ivec2( floor( vec2( bounds.z, y1 ) ) ), ivec2( 0 ) );\n"
+		"	ivec2 p0 = clamp( ( c0 * texSize ) / refSize, ivec2( 0 ), maxCoord );\n"
+		"	ivec2 p1 = clamp( ( c1 * texSize ) / refSize, ivec2( 0 ), maxCoord );\n"
 		"	float d0 = texelFetch( u_hiZTexture, p0, mip ).r;\n"
 		"	float d1 = texelFetch( u_hiZTexture, ivec2( p1.x, p0.y ), mip ).r;\n"
 		"	float d2 = texelFetch( u_hiZTexture, ivec2( p0.x, p1.y ), mip ).r;\n"
@@ -858,20 +860,8 @@ static GLuint R_ModernGLExecutor_CompileGpuDrivenComputeProgram( void ) {
 		"	}\n"
 		"	float extent = max( bounds.z - bounds.x + 1.0, bounds.w - bounds.y + 1.0 );\n"
 		"	int mip = clamp( int( ceil( log2( max( extent, 1.0 ) ) ) ), 0, int( u_hiZParams.z ) - 1 );\n"
-		"	float dNonFlipped = FetchHiZRectMax( bounds, mip, false );\n"
-		"	float dFlipped = FetchHiZRectMax( bounds, mip, true );\n"
-		"	float maxDepth = max( dNonFlipped, dFlipped );\n"
+		"	float maxDepth = max( FetchHiZRectMax( bounds, mip, false ), FetchHiZRectMax( bounds, mip, true ) );\n"
 		"	float nearDepth = clamp( record.depthBounds.x, 0.0, 1.0 );\n"
-		"	if ( mip == 0 ) {\n"
-		"		ivec2 dbgSize = textureSize( u_hiZTexture, mip );\n"
-		"		vec2 dbgScale = vec2( float( dbgSize.x ) / max( u_hiZParams.x, 1.0 ), float( dbgSize.y ) / max( u_hiZParams.y, 1.0 ) );\n"
-		"		float dbgScaleY = float( dbgSize.y ) / max( u_hiZParams.y, 1.0 );\n"
-		"		float dbgScaleX = float( dbgSize.x ) / max( u_hiZParams.x, 1.0 );\n"
-		"		atomicMax( counters[12], uint( dNonFlipped * 100000.0 ) + 1u );\n"
-		"		atomicMax( counters[13], uint( dFlipped * 100000.0 ) + 1u );\n"
-		"		atomicMax( counters[14], floatBitsToUint( dbgScaleX ) );\n"
-		"		atomicMax( counters[15], floatBitsToUint( bounds.y * dbgScaleY ) );\n"
-		"	}\n"
 		"	return nearDepth > maxDepth + 0.0005;\n"
 		"}\n"
 		"void main() {\n"
@@ -3717,29 +3707,6 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 		record.indirect[1] = static_cast<GLuint>( indirectCommand.indexCacheOffset >= 0 ? indirectCommand.indexCacheOffset / static_cast<int>( sizeof( glIndex_t ) ) : 0 );
 		record.indirect[2] = indirectCommand.vertexStride > 0 && indirectCommand.ambientCacheOffset >= 0 ? static_cast<GLuint>( indirectCommand.ambientCacheOffset / indirectCommand.vertexStride ) : 0u;
 		record.indirect[3] = static_cast<GLuint>( i );
-		if ( rg_modernGLGpuDrivenDebugDump ) {
-			common->Printf(
-				"GPUDRIVENDBG rec=%d bucket=%d flags=0x%x pipeline=%d pass=%d visible=%d eligible=%d hiZ=%d scissor=(%d,%d,%d,%d) bounds=(%g,%g,%g,%g) depth=(%g,%g) clipped=%d\n",
-				i,
-				bucketIndex,
-				flags,
-				static_cast<int>( indirectCommand.pipeline ),
-				static_cast<int>( indirectCommand.passCategory ),
-				visible ? 1 : 0,
-				indirectEligible ? 1 : 0,
-				hiZCandidate ? 1 : 0,
-				indirectCommand.scissorX1,
-				indirectCommand.scissorY1,
-				indirectCommand.scissorX2,
-				indirectCommand.scissorY2,
-				record.screenBounds[0],
-				record.screenBounds[1],
-				record.screenBounds[2],
-				record.screenBounds[3],
-				record.depthBounds[0],
-				record.depthBounds[1],
-				screenClipped ? 1 : 0 );
-		}
 	}
 
 	for ( int i = 0; i < rg_modernGLGpuDrivenBucketCount; ++i ) {
@@ -3846,68 +3813,6 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 			R_GLStateCache().ActiveTextureUnit( 1 );
 			R_GLStateCache().BindTexture( 1, GL_TEXTURE_2D, sceneHiZ->texture );
 		}
-		if ( rg_modernGLGpuDrivenDebugDump && useHiZForIndirect ) {
-			GLint boundTex = 0;
-			GLint boundSampler = -1;
-			GLint compareMode = 0;
-			GLint minFilter = 0;
-			GLint baseLevel = 0;
-			GLint maxLevel = 0;
-			GLint level0Width = 0;
-			GLint level0Height = 0;
-			GLint activeUnit = 0;
-			glGetIntegerv( GL_ACTIVE_TEXTURE, &activeUnit );
-			glGetIntegerv( GL_TEXTURE_BINDING_2D, &boundTex );
-			glGetIntegerv( GL_SAMPLER_BINDING, &boundSampler );
-			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, &compareMode );
-			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minFilter );
-			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, &baseLevel );
-			glGetTexParameteriv( GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, &maxLevel );
-			glGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &level0Width );
-			glGetTexLevelParameteriv( GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &level0Height );
-			float lateProbe = -1.0f;
-			float lateFlippedProbe = -1.0f;
-			if ( rg_modernGLExecutorHiZFBO != 0 && glFramebufferTexture2D != NULL ) {
-				R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorHiZFBO );
-				R_GLStateCache().SetScissorTestEnabled( false );
-				glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, sceneHiZ->texture, 0 );
-				glReadPixels( 64, 64, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &lateProbe );
-				glReadPixels( 64, sceneHiZ->height - 1 - 64, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &lateFlippedProbe );
-				glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0 );
-			}
-			R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, 0 );
-			common->Printf( "GPUDRIVENDBG lateProbe=%g lateFlipped=%g\n", lateProbe, lateFlippedProbe );
-			GLint samplerUnit = -1;
-			GLfloat paramValues[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
-			GLint unit0Tex = 0;
-			glGetUniformiv( rg_modernGLExecutorComputeProgram, rg_modernGLExecutorComputeHiZTextureLocation, &samplerUnit );
-			glGetUniformfv( rg_modernGLExecutorComputeProgram, rg_modernGLExecutorComputeHiZParamsLocation, paramValues );
-			R_GLStateCache().ActiveTextureUnit( 0 );
-			glGetIntegerv( GL_TEXTURE_BINDING_2D, &unit0Tex );
-			R_GLStateCache().ActiveTextureUnit( 1 );
-			common->Printf(
-				"GPUDRIVENDBG dispatch samplerUnit=%d params=(%g,%g,%g,%g) unit0=%d\n",
-				samplerUnit,
-				paramValues[0],
-				paramValues[1],
-				paramValues[2],
-				paramValues[3],
-				unit0Tex );
-			common->Printf(
-				"GPUDRIVENDBG dispatch activeUnit=0x%x unit1=%d expect=%u sampler=%d compareMode=0x%x minFilter=0x%x levels=[%d,%d] level0=%dx%d loc(tex=%d params=%d)\n",
-				activeUnit,
-				boundTex,
-				sceneHiZ->texture,
-				boundSampler,
-				compareMode,
-				minFilter,
-				baseLevel,
-				maxLevel,
-				level0Width,
-				level0Height,
-				static_cast<int>( rg_modernGLExecutorComputeHiZTextureLocation ),
-				static_cast<int>( rg_modernGLExecutorComputeHiZParamsLocation ) );
-		}
 		glDispatchCompute( static_cast<GLuint>( ( sceneRecordCount + MODERN_GL_GPU_DRIVEN_WORKGROUP_SIZE - 1 ) / MODERN_GL_GPU_DRIVEN_WORKGROUP_SIZE ), 1, 1 );
 		glMemoryBarrier( GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT );
 		if ( useHiZForIndirect ) {
@@ -3925,14 +3830,6 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 				const GLuint validationBuffer = streamedValidation ? rg_modernGLGpuDrivenStreamBindings.validationCounters.allocation.vbo : rg_modernGLExecutorValidationSSBO;
 				const GLintptr validationOffset = streamedValidation ? static_cast<GLintptr>( rg_modernGLGpuDrivenStreamBindings.validationCounters.allocation.offset ) : 0;
 				if ( R_ModernGLExecutor_ReadGpuDrivenCounters( validationBuffer, validationOffset, gpuCounters ) ) {
-					if ( rg_modernGLGpuDrivenDebugDump ) {
-						common->Printf(
-							"GPUDRIVENDBG counters processed=%u eligible=%u generated=%u culled=%u visible=%u clusters=%u sig=%u hizTested=%u hizRejected=%u compacted=%u invalidBucket=%u overflow=%u dbgNonFlipped=%u dbgFlipped=%u scaleXbits=0x%08x scaledYbits=0x%08x\n",
-							gpuCounters[0], gpuCounters[1], gpuCounters[2], gpuCounters[3],
-							gpuCounters[4], gpuCounters[5], gpuCounters[6], gpuCounters[7],
-							gpuCounters[8], gpuCounters[9], gpuCounters[10], gpuCounters[11],
-							gpuCounters[12], gpuCounters[13], gpuCounters[14], gpuCounters[15] );
-					}
 					R_ModernGLExecutor_ApplyGpuDrivenValidationCounters( stats, cpuReference, gpuCounters );
 				} else {
 					stats.gpuDrivenValidationSkippedReadbacks++;
@@ -4813,30 +4710,6 @@ static bool R_ModernGLExecutor_PrimeGpuDrivenSelfTestHiZ( modernGLExecutorStats_
 		glTexSubImage2D( GL_TEXTURE_2D, 0, x, flippedY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &occluderDepth );
 	}
 	glMemoryBarrier( GL_TEXTURE_FETCH_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT );
-
-	if ( rg_modernGLGpuDrivenDebugDump ) {
-		float probe = -1.0f;
-		float flippedProbe = -1.0f;
-		if ( R_ModernGLExecutor_AttachHiZReductionMip( *sceneHiZ, 0 ) ) {
-			R_GLStateCache().BindFramebuffer( GL_FRAMEBUFFER, rg_modernGLExecutorHiZFBO );
-			R_GLStateCache().SetScissorTestEnabled( false );
-			glReadPixels( x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &probe );
-			glReadPixels( x, flippedY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &flippedProbe );
-		}
-		R_ModernGLExecutor_DetachHiZReductionMip();
-		common->Printf(
-			"GPUDRIVENDBG hizPrime tex=%u size=%dx%d mips=%d write=(%d,%d)/(%d,%d) probe=%g flippedProbe=%g\n",
-			sceneHiZ->texture,
-			sceneHiZ->width,
-			sceneHiZ->height,
-			sceneHiZ->mipLevels,
-			x,
-			y,
-			x,
-			flippedY,
-			probe,
-			flippedProbe );
-	}
 
 	R_ModernGLExecutor_RestoreAfterHiZBuild( stats, "modern gpu-driven self-test hiz prime" );
 	stats.visibilityHiZResourceReady = true;
@@ -9258,9 +9131,7 @@ bool RendererGpuDriven_RunSelfTest( void ) {
 	R_ModernGLExecutor_CopyDrawPlanStats( stats, rg_modernGLDrawPlan.Stats() );
 	rg_modernGLSubmitPlan.Build( rg_modernGLDrawPlan );
 	R_ModernGLExecutor_CopySubmitPlanStats( stats, rg_modernGLSubmitPlan.Stats() );
-	rg_modernGLGpuDrivenDebugDump = true;
 	if ( !R_ModernGLExecutor_PrimeGpuDrivenSelfTestHiZ( stats, hiZSelfTestPixelX, hiZSelfTestPixelY ) ) {
-		rg_modernGLGpuDrivenDebugDump = false;
 		if ( glDeleteBuffers != NULL ) {
 			glDeleteBuffers( 1, &vertexBuffer );
 			glDeleteBuffers( 1, &indexBuffer );
@@ -9269,7 +9140,6 @@ bool RendererGpuDriven_RunSelfTest( void ) {
 		return false;
 	}
 	R_ModernGLExecutor_UpdateGpuDrivenBuffers( stats, true );
-	rg_modernGLGpuDrivenDebugDump = false;
 	R_ModernGLExecutor_UpdateFrameUBO( stats );
 	R_ModernGLExecutor_SubmitGpuDrivenIndirect( stats );
 	R_ModernGLExecutor_RecordMetrics( stats );
@@ -9290,7 +9160,25 @@ bool RendererGpuDriven_RunSelfTest( void ) {
 		return false;
 	}
 	if ( !stats.gpuDrivenHiZCullingReady || stats.gpuDrivenHiZRejected <= 0 || stats.gpuDrivenHiZCandidates <= 0 || !stats.gpuDrivenIndirectExecuted || stats.gpuDrivenMultiDrawBatches <= 0 || stats.gpuDrivenIndirectDrawCalls != stats.gpuDrivenGeneratedCommands || stats.gpuDrivenDrawRecords != stats.gpuDrivenSceneRecords || stats.gpuDrivenIndirectBucketedCommands != stats.gpuDrivenGeneratedCommands || stats.gpuDrivenIndirectCompactedCommands != stats.gpuDrivenGpuGeneratedCommands || stats.gpuDrivenIndirectBuckets < 2 ) {
-		common->Printf( "RendererGpuDriven self-test failed: indirect multi-draw execution mismatch\n" );
+		// name the failing terms: the bare message is indistinguishable between a
+		// dead Hi-Z probe, a bucketing change, and a submit-side fallback
+		common->Printf(
+			"RendererGpuDriven self-test failed: indirect multi-draw execution mismatch (hiZReady=%d hiZCandidates=%d hiZRejected=%d indirectExec=%d multiDrawBatches=%d indirectCalls=%d/%d drawRecords=%d/%d bucketed=%d/%d compacted=%d/%d buckets=%d fallbacks=%d)\n",
+			stats.gpuDrivenHiZCullingReady ? 1 : 0,
+			stats.gpuDrivenHiZCandidates,
+			stats.gpuDrivenHiZRejected,
+			stats.gpuDrivenIndirectExecuted ? 1 : 0,
+			stats.gpuDrivenMultiDrawBatches,
+			stats.gpuDrivenIndirectDrawCalls,
+			stats.gpuDrivenGeneratedCommands,
+			stats.gpuDrivenDrawRecords,
+			stats.gpuDrivenSceneRecords,
+			stats.gpuDrivenIndirectBucketedCommands,
+			stats.gpuDrivenGeneratedCommands,
+			stats.gpuDrivenIndirectCompactedCommands,
+			stats.gpuDrivenGpuGeneratedCommands,
+			stats.gpuDrivenIndirectBuckets,
+			stats.gpuDrivenIndirectFallbacks );
 		return false;
 	}
 	if ( !R_ModernGLExecutor_RunGpuDrivenBoundsSelfTest() ) {
