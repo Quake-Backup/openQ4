@@ -810,6 +810,27 @@ server config can set them once. That is not cosmetic: a command-line `+set`
 never reaches a `CVAR_GAME` cvar, because the game module registers it after
 the engine has parsed the command line, so only archived values survive.
 
+## The create-server menu
+
+`bot_minPlayers` and `bot_skill` are the two settings a listen-server host is
+expected to touch, so both are rows in **Advanced Server Options** on the
+multiplayer create-server screen - `pop_createAdv_botFill_val` and
+`pop_createAdv_botSkill_val` in `guis/mainmenu.gui`. Both are `choiceType 1`
+widgets, which write the raw string from their `values` list rather than an
+index, so the list has to stay inside the range the cvar declares.
+
+That menu is reachable while `game_sp` is loaded - the module is not swapped
+until `spawnServer` - and `idChoiceWindow::InitVars` resolves its cvar exactly
+once, when the gui is parsed. A `CVAR_GAME` cvar the loaded module never
+declared is simply absent, and the widget warns and then does nothing for the
+rest of the session. `Session_DeclareMultiplayerMenuGameCVars` in
+`src/framework/Session.cpp` therefore declares both, with `game_mp`'s own
+defaults, immediately before the main menu gui is loaded. `idInternalCVar::Update`
+keeps the current value when a static declaration arrives later and only adopts
+its reset value and range, so the module swap at `spawnServer` inherits whatever
+the host picked. Anything else added to that popup that lives in `game_mp` needs
+the same treatment; `tools/tests/mp_bot_server_menu.py` pins it.
+
 ## Arena Campaign orchestration
 
 The single-player Arena Campaign drives the multiplayer bot runtime through a

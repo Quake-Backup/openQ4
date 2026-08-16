@@ -7664,6 +7664,44 @@ void idSessionLocal::RunGameTic() {
 	}
 }
 
+#ifndef ID_DEDICATED
+/*
+===============
+Session_DeclareMultiplayerMenuGameCVars
+
+The create-server menu edits multiplayer settings that only game_mp declares,
+but it is reachable while game_sp is loaded - the module is not swapped until
+spawnServer. A GUI widget resolves its cvar once, when the gui is parsed, and
+idChoiceWindow::InitVars warns and then does nothing at all when the name is
+absent, so those rows would be inert for anyone who reaches multiplayer from a
+cold start or straight out of single player.
+
+Declare them here instead, with the same defaults game_mp uses so its later
+static registration matches. That registration keeps the current value and only
+adopts the reset value and range, so whatever the player picked in the menu is
+what the match starts with.
+===============
+*/
+static void Session_DeclareMultiplayerMenuGameCVars( void ) {
+	struct menuGameCVar_t {
+		const char *name;
+		const char *value;
+	};
+	static const menuGameCVar_t menuGameCVars[] = {
+		{ "bot_minPlayers",	"0" },
+		{ "bot_skill",		"3" }
+	};
+
+	for ( int i = 0; i < (int)( sizeof( menuGameCVars ) / sizeof( menuGameCVars[0] ) ); i++ ) {
+		if ( cvarSystem->Find( menuGameCVars[i].name ) != NULL ) {
+			continue;
+		}
+		cvarSystem->SetCVarString( menuGameCVars[i].name, menuGameCVars[i].value,
+			CVAR_GAME | CVAR_INTEGER | CVAR_ARCHIVE );
+	}
+}
+#endif
+
 /*
 ===============
 idSessionLocal::Init
@@ -7742,6 +7780,7 @@ void idSessionLocal::Init() {
 #ifdef ID_DEDICATED
 	common->Printf( "Dedicated server: skipping client GUI preload.\n" );
 #else
+	Session_DeclareMultiplayerMenuGameCVars();
 #ifndef ID_DEMO_BUILD
 	guiMainMenu = uiManager->FindGui( "guis/mainmenu.gui", true, false, true );
 #else

@@ -674,6 +674,11 @@
 	"#str_42203"	"Red Rover"
 	"#str_42204"	"Clan Arena"
 
+	"#str_42210"	"Compléter avec des bots"
+	"#str_42211"	"Non;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16"
+	"#str_42212"	"Niveau des bots"
+	"#str_42213"	"Entraînement;Recrue;Vétéran;Cauchemar;Impossible"
+
 	// Pont de localisation fermé de Match Control. Garder cette plage
 	// synchronisée dans toutes les langues openQ4 fournies.
 	"#str_42301"	"Valeur de match inconnue"

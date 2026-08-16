@@ -151,6 +151,12 @@ server can stay populated while it is quiet. Set `bot_minPlayers` to the player
 count you want the match held at and the server fills the rest, releasing the
 slots again as real players connect.
 
+Both settings are also on the multiplayer create-server screen, under **Advanced
+Server Options**: **Fill With Bots** is `bot_minPlayers` and **Bot Skill** is
+`bot_skill`, named with the same ladder the Arena campaign uses - Training,
+Rookie, Veteran, Nightmare, Impossible. They are archived like every other bot
+cvar, so a value picked in the menu is still there the next time you host.
+
 Bots are entirely server-side; clients need nothing installed and see them as
 ordinary players. Each one gets a name, a play style and its own chat lines.
 They can answer common conversational phrases from people or other bots, and

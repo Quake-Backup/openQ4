@@ -4311,21 +4311,21 @@ windowDef Desktop
 				}
 				windowDef pop_createAdv_top
 				{
-					rect	106,47,428,28
+					rect	106,23,428,28
 					visible	1
 					background	"gfx/guis/mainmenu/popup_top"
 					matcolor	0,0,0,0
 				}
 				windowDef pop_createAdv_mid
 				{
-					rect	106,75,428,316
+					rect	106,51,428,364
 					visible	1
 					background	"gfx/guis/mainmenu/popup_mid"
 					matcolor	0,0,0,0
 				}
 				windowDef pop_createAdv_btm
 				{
-					rect	106,391,428,56
+					rect	106,415,428,56
 					visible	1
 					background	"gfx/guis/mainmenu/popup_btm"
 					matcolor	0,0,0,0
@@ -4337,7 +4337,7 @@ windowDef Desktop
 					noclip	1
 					windowDef pop_createAdv_title
 					{
-						rect	131,46,286,17
+						rect	131,22,286,17
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200066"
@@ -4347,105 +4347,105 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_b1
 					{
-						rect	105,72,377,25
+						rect	105,48,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b2
 					{
-						rect	105,96,377,25
+						rect	105,72,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b3
 					{
-						rect	105,120,377,25
+						rect	105,96,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b4
 					{
-						rect	105,144,377,25
+						rect	105,120,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b5
 					{
-						rect	105,168,377,25
+						rect	105,144,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b6
 					{
-						rect	105,192,377,25
+						rect	105,168,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b7
 					{
-						rect	105,216,377,25
+						rect	105,192,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b8
 					{
-						rect	105,240,377,25
+						rect	105,216,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b9
 					{
-						rect	105,264,377,25
+						rect	105,240,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b10
 					{
-						rect	105,384,377,25
+						rect	105,408,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b11
 					{
-						rect	105,288,377,25
+						rect	105,264,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b12
 					{
-						rect	105,312,377,25
+						rect	105,288,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b13
 					{
-						rect	105,336,377,25
+						rect	105,312,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_b14
 					{
-						rect	105,360,377,25
+						rect	105,336,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_usepass
 					{
-						rect	132,74,236,18
+						rect	132,50,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200067"
@@ -4454,7 +4454,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_setpass
 					{
-						rect	132,98,236,18
+						rect	132,74,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200068"
@@ -4463,7 +4463,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_rconpass
 					{
-						rect	132,122,236,18
+						rect	132,98,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200069"
@@ -4472,7 +4472,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_mods
 					{
-						rect	132,146,236,18
+						rect	132,122,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200071"
@@ -4481,7 +4481,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_mapcycle
 					{
-						rect	132,170,236,18
+						rect	132,146,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200072"
@@ -4490,7 +4490,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_weapstay
 					{
-						rect	132,194,236,18
+						rect	132,170,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200967"
@@ -4499,7 +4499,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_pure
 					{
-						rect	132,218,236,18
+						rect	132,194,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200073"
@@ -4508,7 +4508,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_rate
 					{
-						rect	132,242,236,18
+						rect	132,218,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200074"
@@ -4517,7 +4517,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_ready
 					{
-						rect	132,266,236,18
+						rect	132,242,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200975"
@@ -4526,7 +4526,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_allowSpec
 					{
-						rect	132,290,236,18
+						rect	132,266,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200064"
@@ -4535,7 +4535,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_allowWarmup
 					{
-						rect	132,314,236,18
+						rect	132,290,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200062"
@@ -4544,7 +4544,7 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_allowBuying
 					{
-						rect	132,362,236,18
+						rect	132,338,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_222000" // Squirrel@Ritual - Localized for 1.2 Patch
@@ -4553,7 +4553,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_usepass_val
 					{
-						rect	380,74,142,18
+						rect	380,50,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4589,7 +4589,7 @@ windowDef Desktop
 					}
 					editDef pop_createAdv_setpass_val
 					{
-						rect	380,98,142,18
+						rect	380,74,142,18
 						visible	0
 						forecolor	1,0.745,0.137,0.8
 						maxchars	16
@@ -4613,7 +4613,7 @@ windowDef Desktop
 					}
 					editDef pop_createAdv_rconpass_val
 					{
-						rect	380,122,142,18
+						rect	380,98,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						maxchars	16
@@ -4633,7 +4633,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_mods_val
 					{
-						rect	380,146,142,18
+						rect	380,122,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4649,7 +4649,7 @@ windowDef Desktop
 					}
 					editDef pop_createAdv_mapcycle_val
 					{
-						rect	380,170,142,18
+						rect	380,146,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						maxchars	200
@@ -4664,7 +4664,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_weapstay_val
 					{
-						rect	380,194,142,18
+						rect	380,170,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4680,7 +4680,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_pure_val
 					{
-						rect	380,218,142,18
+						rect	380,194,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4696,7 +4696,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_rate_val
 					{
-						rect	380,242,142,18
+						rect	380,218,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	1
@@ -4713,7 +4713,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_ready_val
 					{
-						rect	380,266,142,18
+						rect	380,242,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4729,7 +4729,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_allowSpec_val
 					{
-						rect	380,290,142,18
+						rect	380,266,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4745,7 +4745,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_allowWarmup_val
 					{
-						rect	380,314,142,18
+						rect	380,290,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4761,7 +4761,7 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_allowBuying_val
 					{
-						rect	380,362,142,18
+						rect	380,338,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
@@ -4777,7 +4777,7 @@ windowDef Desktop
 					}					
 					windowDef pop_createAdv_t_banlist
 					{
-						rect	137,384,389,18
+						rect	137,408,389,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200948"
@@ -4786,21 +4786,21 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_banlist_corner
 					{
-						rect	127,390,11,11
+						rect	127,414,11,11
 						visible	1
 						background	"gfx/guis/mainmenu/corner"
 						matcolor	0.564,0.603,0.286,0.4
 					}
 					windowDef pop_createAdv_close
 					{
-						rect	136,408,377,25
+						rect	136,432,377,25
 						visible	1
 						background	"gfx/guis/mainmenu/b3_light"
 						matcolor	0.545,0.588,0.294,0.4
 					}
 					windowDef pop_createAdv_t_close
 					{
-						rect	168,408,354,17
+						rect	168,432,354,17
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_200075"
@@ -4809,14 +4809,14 @@ windowDef Desktop
 					}
 					windowDef pop_createAdv_close_corner
 					{
-						rect	159,414,11,11
+						rect	159,438,11,11
 						visible	1
 						background	"gfx/guis/mainmenu/corner"
 						matcolor	0.564,0.603,0.286,0.4
 					}
 					windowDef pop_createAdv_allowVoice
 					{
-						rect	132,338,236,18
+						rect	132,314,236,18
 						visible	1
 						forecolor	1,1,1,0.8
 						text	"#str_201021"
@@ -4825,12 +4825,78 @@ windowDef Desktop
 					}
 					choiceDef pop_createAdv_allowVoice_val
 					{
-						rect	380,338,142,18
+						rect	380,314,142,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
 						choiceType	0
 						choices	"#str_200059"
 						cvar	si_voiceChat
+						textscale	0.24
+						font	"fonts/lowpixel"
+
+						onAction {
+							set "cmd" "play main_menu_selection" ;
+						}
+
+					}
+					windowDef pop_createAdv_b15
+					{
+						rect	105,360,377,25
+						visible	1
+						background	"gfx/guis/mainmenu/b3_light"
+						matcolor	0.545,0.588,0.294,0.4
+					}
+					windowDef pop_createAdv_b16
+					{
+						rect	105,384,377,25
+						visible	1
+						background	"gfx/guis/mainmenu/b3_light"
+						matcolor	0.545,0.588,0.294,0.4
+					}
+					windowDef pop_createAdv_botFill
+					{
+						rect	132,362,236,18
+						visible	1
+						forecolor	1,1,1,0.8
+						text	"#str_42210"
+						textscale	0.24
+						font	"fonts/lowpixel"
+					}
+					choiceDef pop_createAdv_botFill_val
+					{
+						rect	380,362,142,18
+						visible	1
+						forecolor	1,0.745,0.137,0.8
+						choiceType	1
+						choices	"#str_42211"
+						cvar	bot_minPlayers
+						values	"0;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16"
+						textscale	0.24
+						font	"fonts/lowpixel"
+
+						onAction {
+							set "cmd" "play main_menu_selection" ;
+						}
+
+					}
+					windowDef pop_createAdv_botSkill
+					{
+						rect	132,386,236,18
+						visible	1
+						forecolor	1,1,1,0.8
+						text	"#str_42212"
+						textscale	0.24
+						font	"fonts/lowpixel"
+					}
+					choiceDef pop_createAdv_botSkill_val
+					{
+						rect	380,386,142,18
+						visible	1
+						forecolor	1,0.745,0.137,0.8
+						choiceType	1
+						choices	"#str_42213"
+						cvar	bot_skill
+						values	"1;2;3;4;5"
 						textscale	0.24
 						font	"fonts/lowpixel"
 
@@ -17260,6 +17326,8 @@ windowDef Desktop
 				set "pop_b_createAdv_14::visible" "1" ;	
 				set "pop_createAdv_allowBuying_val::visible" "1";		
 			}
+			set "pop_b_createAdv_15::visible" "1" ;
+			set "pop_b_createAdv_16::visible" "1" ;
 			set "pop_b_createAdv_close::visible" "1" ;	
 			set "pop_createAdv_usepass_val::noevents" "0" ;
 			set "pop_createAdv_setpass_val::noevents" "0" ;
@@ -17274,6 +17342,8 @@ windowDef Desktop
 			set "pop_createAdv_allowWarmup_val::noevents" "0" ;
 			set "pop_createAdv_allowVoice_val::noevents" "0" ;
 			set "pop_createAdv_allowBuying_val::noevents" "0" ;
+			set "pop_createAdv_botFill_val::noevents" "0" ;
+			set "pop_createAdv_botSkill_val::noevents" "0" ;
 		}
 
 		onNamedEvent hidePop_createAdv {
@@ -17291,6 +17361,8 @@ windowDef Desktop
 			set "pop_b_createAdv_12::visible" "0" ;
 			set "pop_b_createAdv_13::visible" "0" ;
 			set "pop_b_createAdv_14::visible" "0" ;
+			set "pop_b_createAdv_15::visible" "0" ;
+			set "pop_b_createAdv_16::visible" "0" ;
 			set "pop_b_createAdv_close::visible" "0" ;	
 			set "pop_createAdv_usepass_val::noevents" "1" ;
 			set "pop_createAdv_setpass_val::noevents" "1" ;
@@ -17305,6 +17377,8 @@ windowDef Desktop
 			set "pop_createAdv_allowWarmup_val::noevents" "1" ;
 			set "pop_createAdv_allowVoice_val::noevents" "1" ;
 			set "pop_createAdv_allowBuying_val::noevents" "1" ;
+			set "pop_createAdv_botFill_val::noevents" "1" ;
+			set "pop_createAdv_botSkill_val::noevents" "1" ;
 		}
 
 		onNamedEvent showPop_setAdv {
@@ -22212,7 +22286,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_1
 		{
-			rect	122,74,408,20
+			rect	122,50,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22234,7 +22308,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_2
 		{
-			rect	122,98,408,20
+			rect	122,74,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22256,7 +22330,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_3
 		{
-			rect	122,122,408,20
+			rect	122,98,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22278,7 +22352,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_4
 		{
-			rect	122,146,408,20
+			rect	122,122,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22300,7 +22374,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_5
 		{
-			rect	122,170,408,20
+			rect	122,146,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22322,7 +22396,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_6
 		{
-			rect	122,194,408,20
+			rect	122,170,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22344,7 +22418,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_7
 		{
-			rect	122,218,408,20
+			rect	122,194,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22366,7 +22440,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_8
 		{
-			rect	122,242,408,20
+			rect	122,218,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22388,7 +22462,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_9
 		{
-			rect	122,266,408,20
+			rect	122,242,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22410,7 +22484,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_11
 		{
-			rect	122,290,408,20
+			rect	122,266,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22432,7 +22506,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_12
 		{
-			rect	122,314,408,20
+			rect	122,290,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22454,7 +22528,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_13
 		{
-			rect	122,338,408,20
+			rect	122,314,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22476,7 +22550,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_14
 		{
-			rect	122,362,408,20
+			rect	122,338,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22496,9 +22570,53 @@ windowDef Desktop
 			}
 
 		}	
-		windowDef pop_b_createAdv_10
+		windowDef pop_b_createAdv_15
+		{
+			rect	122,362,408,20
+			visible	0
+
+			onMouseEnter {
+				if ("desktop::active" == 0) {
+					stoptransitions "pop_b_createAdv_15" ;
+					
+					set "pop_createAdv_b15::matcolor_w" "1" ;
+					
+					set "cmd" "play main_menu_mouseover" ;	
+				}
+			}
+
+			onMouseExit {
+				if ("desktop::active" == 0) {
+					transition "pop_createAdv_b15::matcolor_w" "1" "0.4" "300" ;
+				}
+			}
+
+		}
+		windowDef pop_b_createAdv_16
 		{
 			rect	122,386,408,20
+			visible	0
+
+			onMouseEnter {
+				if ("desktop::active" == 0) {
+					stoptransitions "pop_b_createAdv_16" ;
+					
+					set "pop_createAdv_b16::matcolor_w" "1" ;
+					
+					set "cmd" "play main_menu_mouseover" ;	
+				}
+			}
+
+			onMouseExit {
+				if ("desktop::active" == 0) {
+					transition "pop_createAdv_b16::matcolor_w" "1" "0.4" "300" ;
+				}
+			}
+
+		}
+		windowDef pop_b_createAdv_10
+		{
+			rect	122,410,408,20
 			visible	0
 
 			onMouseEnter {
@@ -22535,7 +22653,7 @@ windowDef Desktop
 		}
 		windowDef pop_b_createAdv_close
 		{
-			rect	151,410,373,20
+			rect	151,434,373,20
 			visible	0
 
 			onMouseEnter {
