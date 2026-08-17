@@ -1512,6 +1512,9 @@ bool R_RegisterTrueTypeFont( const char *fontName, fontInfoEx_t &font );
 bool R_BuildConsoleFontAtlas( void );
 void R_RefreshConsoleFontAtlas( void );
 void R_SyncFontCodePage( void );
+// The generated atlas materials have no file behind them, so a level load purge
+// would otherwise leave every glyph sampling the transparent default image.
+void R_TTFRestoreAtlasMaterials( void );
 void R_ShutdownTrueTypeFonts( void );
 
 void R_SetColorMappings( void );

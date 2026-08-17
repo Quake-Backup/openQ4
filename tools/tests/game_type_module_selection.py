@@ -339,6 +339,20 @@ def validate_ui_font_reload_contract(
     shutdown = function_body(device_source, "void idDeviceContext::Shutdown()", "UI device-context shutdown")
     require(shutdown, "fontsVideoRestartCount = -1;", "UI font generation reset")
 
+    # activeFont and useFont point into the fonts list, which reallocates on
+    # every append because its granularity is 1. Registering a face a later map
+    # is the first to name would otherwise leave the current selection reading a
+    # freed allocation, which is a font that lays text out from garbage metrics.
+    find_font = function_body(device_source, "int idDeviceContext::FindFont", "device-context font lookup")
+    require(find_font, "fonts.Append( fontInfo )", "device-context font lookup")
+    for token in (
+        "activeFont = ( selectedFont >= 0 ) ? &fonts[selectedFont] : NULL;",
+        "useFont = ( selectedSize == 0 ) ? &sized.fontInfoSmall",
+    ):
+        require(find_font, token, "font selection reseat across list growth")
+    if find_font.index("fonts.Append( fontInfo )") > find_font.index("activeFont = ( selectedFont >= 0 )"):
+        raise AssertionError("font selection must be reseated after the fonts list grows, not before")
+
     require(device_header, "bool\t\t\t\tReloadFonts();", "device-context font reload declaration")
     require(device_header, "void\t\t\t\tEnsureFontsCurrent();", "lazy UI font refresh declaration")
     require(device_header, "static int\t\t\tfontsVideoRestartCount;", "UI font restart generation declaration")
@@ -346,7 +360,10 @@ def validate_ui_font_reload_contract(
 
 
 def validate_ttf_persistent_atlas_contract(ttf_source: str) -> None:
-    slot = function_body(ttf_source, "static bool R_TTFBuildSlot", "GUI TrueType atlas")
+    # The GUI upload lives in R_TTFPackAtlas rather than R_TTFBuildSlot: the base
+    # Latin-1 slots and the extended code-point pages are two atlases now, and
+    # both go through the one packer so they cannot diverge.
+    slot = function_body(ttf_source, "static bool R_TTFPackAtlas", "GUI TrueType atlas")
     console = function_body(ttf_source, "bool R_BuildConsoleFontAtlas", "console TrueType atlas")
     for body, context in ((slot, "GUI TrueType atlas"), (console, "console TrueType atlas")):
         require(body, "opts.isPersistant = true;", context)
@@ -374,6 +391,55 @@ def validate_ttf_persistent_atlas_contract(ttf_source: str) -> None:
         < shutdown.index("ttfFonts.Shutdown();")
     ):
         raise AssertionError("TrueType shutdown must restore the authored console image before releasing state")
+
+    # The generated atlas materials have no file behind them. If a declaration
+    # purge is ever allowed to reset one, the implicit text the manager
+    # regenerates maps an image that does not exist, so every glyph samples the
+    # transparent default and GUI text silently disappears for the rest of the
+    # session. Two things keep that from happening: the declaration carries the
+    # generated source itself, and the level-load purge is followed by a restore.
+    install = function_body(
+        ttf_source, "static void R_TTFInstallAtlasStage", "TrueType atlas stage install"
+    )
+    for token in ("SetText(", "FreeData();", "Parse(", "SetSort( SS_GUI );"):
+        require(install, token, "TrueType atlas stage install")
+    if install.index("SetText(") > install.index("Parse("):
+        raise AssertionError("TrueType atlas material must carry its source text before it is parsed")
+
+    create = function_body(
+        ttf_source, "static const idMaterial *R_TTFCreateAtlasMaterial", "TrueType atlas material creation"
+    )
+    require(create, "R_TTFMaterialSamplesAtlas(", "TrueType atlas material creation")
+    require(create, "R_TTFInstallAtlasStage(", "TrueType atlas material creation")
+    require(create, "ttfAtlasMaterials.Append(", "TrueType atlas material registry")
+
+    restore = function_body(
+        ttf_source, "void R_TTFRestoreAtlasMaterials( void )", "TrueType atlas material restore"
+    )
+    require(restore, "FindDeclWithoutParsing(", "TrueType atlas material restore")
+    require(restore, "R_TTFInstallAtlasStage(", "TrueType atlas material restore")
+    require(
+        function_body(ttf_source, "void R_ShutdownTrueTypeFonts( void )", "TrueType font shutdown"),
+        "ttfAtlasMaterials.DeleteContents( true );",
+        "TrueType atlas material registry release",
+    )
+
+
+def validate_ttf_level_load_restore_contract() -> None:
+    render_init = read(ROOT / "src" / "renderer" / "RenderSystem_init.cpp")
+    begin = function_body(
+        render_init, "void idRenderSystemLocal::BeginLevelLoad( void )", "renderer level-load begin"
+    )
+    require(begin, "R_TTFRestoreAtlasMaterials();", "renderer level-load begin")
+    if begin.index("R_TTFRestoreAtlasMaterials();") > begin.index("globalImages->BeginLevelLoad();"):
+        raise AssertionError(
+            "purged glyph atlas materials must be restored before the level-load image purge runs"
+        )
+    require(
+        read(ROOT / "src" / "renderer" / "tr_local.h"),
+        "void R_TTFRestoreAtlasMaterials( void );",
+        "TrueType atlas restore declaration",
+    )
 
 
 def validate_font_restart_documentation() -> None:
@@ -825,6 +891,7 @@ def validate_async_module_state() -> None:
         read(ROOT / "src" / "ui" / "UserInterface.h"),
     )
     validate_ttf_persistent_atlas_contract(read(ROOT / "src" / "renderer" / "tr_fontTTF.cpp"))
+    validate_ttf_level_load_restore_contract()
 
 
 def validate_lifecycle_mutation_sensitivity() -> None:

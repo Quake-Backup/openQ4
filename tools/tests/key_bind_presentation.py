@@ -466,7 +466,10 @@ def validate_draw_and_measure_pipeline() -> None:
     max_index = body_of(source, "bool idDeviceContext::GetMaxTextIndex(", "DeviceContext.cpp")
     for token in (
         "openQ4_ResolveTextEscape",
-        "const int tokenLength = escapeLength > 0 ? sourceLength : 1",
+        # A character is one to four UTF-8 bytes, and maxIndex is consumed as a
+        # string length, so a plain 1 here would hand the caller a truncated
+        # lead byte on any non-ASCII character.
+        "const int tokenLength = escapeLength > 0 ? sourceLength : Max( 1, next.bytes )",
         "payloadType == S_ESCAPE_ICON && repeats > 0",
         "openQ4_ExtractKeyBindingIcon( payload",
         "bindingWidth * repeats / useScale",

@@ -84,14 +84,47 @@ static const unsigned short LANGDICT_CP1250_HIGH[128] = {
 
 /*
 ============
+LANGDICT_CP1251_HIGH
+
+Windows-1251 0x80-0xFF, the codepage the retail Russian releases of the id
+engines used. Like CP1250 it diverges from Latin-1 across the whole upper half.
+0 marks the one unassigned slot, 0x98 - CP1252 and CP1250 leave five each.
+
+Note 0xA0 is a non-breaking space and 0xB0-0xBF is a mix of punctuation and
+Cyrillic letters; the alphabet proper is the contiguous 0xC0-0xFF run, which is
+U+0410-U+044F - the reason a byte-indexed Russian font was ever workable.
+============
+*/
+static const unsigned short LANGDICT_CP1251_HIGH[128] = {
+	0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021,
+	0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
+	0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+	0x0000, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
+	0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7,
+	0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+	0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7,
+	0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457,
+	0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+	0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F,
+	0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+	0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+	0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437,
+	0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+	0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+	0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F
+};
+
+/*
+============
 LangDict_CodePageForLanguage
 ============
 */
 langCodePage_t LangDict_CodePageForLanguage( const char *language ) {
-	// sys_lang values whose string tables are Central European rather than
-	// Western. Czech is not a shipped sys_lang, but the tables cover it and the
+	// sys_lang values whose legacy 8-bit tables are not Windows-1252. Czech is
+	// not a shipped sys_lang, but the Central European tables cover it and the
 	// retail Central European fonts carried both alphabets.
 	static const char * const centralEuropean[] = { "polish", "czech", NULL };
+	static const char * const cyrillic[] = { "russian", NULL };
 
 	if ( language == NULL || language[0] == '\0' ) {
 		return LANGCP_WESTERN;
@@ -101,7 +134,51 @@ langCodePage_t LangDict_CodePageForLanguage( const char *language ) {
 			return LANGCP_CENTRAL_EUROPEAN;
 		}
 	}
+	for ( int i = 0; cyrillic[i] != NULL; i++ ) {
+		if ( idStr::Icmp( language, cyrillic[i] ) == 0 ) {
+			return LANGCP_CYRILLIC;
+		}
+	}
 	return LANGCP_WESTERN;
+}
+
+/*
+============
+LangDict_ExtendedRangesForLanguage
+
+Whole Unicode blocks rather than the exact set a string table happens to use,
+so text that never came from a table - a player name, a server name, a console
+line - draws in the same alphabet as the menus around it.
+============
+*/
+const unsigned int *LangDict_ExtendedRangesForLanguage( const char *language ) {
+	// Cyrillic (U+0400-U+04FF) covers Russian, Ukrainian, Belarusian, Serbian
+	// and Bulgarian in one block; the shipped faces carry all 256 of it.
+	static const unsigned int cyrillicRanges[] = { 0x0400, 0x04FF, 0 };
+
+	// Only non-Latin scripts appear here. The Latin extensions are built for
+	// every language regardless - see Q4_TTF_UNIVERSAL_RANGES - because the
+	// Western codepage itself reaches into them, so they are not something a
+	// language gets to opt out of. Polish and Czech therefore need nothing of
+	// their own even though their alphabets live above U+00FF.
+	if ( LangDict_CodePageForLanguage( language ) == LANGCP_CYRILLIC ) {
+		return cyrillicRanges;
+	}
+	return NULL;
+}
+
+/*
+============
+LangDict_LanguageNeedsScalableFonts
+============
+*/
+bool LangDict_LanguageNeedsScalableFonts( const char *language ) {
+	// A retail atlas has 256 byte-indexed slots, so it can draw a language only
+	// if some 8-bit codepage covers the whole alphabet. That is true of the
+	// Latin codepages, whose art the retail atlases actually carry. It is not
+	// true of Cyrillic: Windows-1251 exists, but no shipped .fontdat has the
+	// glyphs, so the byte would land on a blank slot.
+	return LangDict_CodePageForLanguage( language ) == LANGCP_CYRILLIC;
 }
 
 static langCodePage_t	langDictActiveCodePage = LANGCP_WESTERN;
@@ -143,6 +220,9 @@ unsigned int LangDict_UnicodeForByte( int byte ) {
 	if ( langDictActiveCodePage == LANGCP_CENTRAL_EUROPEAN ) {
 		return LANGDICT_CP1250_HIGH[byte - 0x80];
 	}
+	if ( langDictActiveCodePage == LANGCP_CYRILLIC ) {
+		return LANGDICT_CP1251_HIGH[byte - 0x80];
+	}
 	if ( byte <= 0x9F ) {
 		return LANGDICT_CP1252_HIGH[byte - 0x80];
 	}
@@ -160,25 +240,48 @@ every shipped Latin font. These codes land on a 2x2 .notdef cell with zero
 horizontal advance, so a non-breaking space would not merely draw nothing, it
 would delete the word gap. Fold them to ASCII equivalents that do have art.
 
-Windows-1250 puts this same punctuation at the same byte values as Windows-1252
-- only the letters differ between the two - so one table serves both.
+Keyed by code point rather than by byte, because a code point is what the
+engine carries now. All three Windows codepages agree on this punctuation - they
+differ only in their letters - so the byte column is unambiguous and one table
+serves every legacy table and every byte-indexed atlas.
+
+Only the legacy paths need this. A scalable face has real art for all of it.
 ============
 */
 typedef struct langDictGlyphFold_s {
-	unsigned char	cp1252;
+	unsigned char	byte;
+	unsigned short	codePoint;
 	const char *	ascii;
 } langDictGlyphFold_t;
 
 static const langDictGlyphFold_t LANGDICT_GLYPH_FOLD[] = {
-	{ 0x82, "," },  { 0x84, "\"" }, { 0x85, "..." },
-	{ 0x91, "'" },  { 0x92, "'" },  { 0x93, "\"" }, { 0x94, "\"" },
-	{ 0x96, "-" },  { 0x97, "-" },  { 0xA0, " " },
-	{ 0x00, NULL }
+	{ 0x82, 0x201A, "," },  { 0x84, 0x201E, "\"" }, { 0x85, 0x2026, "..." },
+	{ 0x91, 0x2018, "'" },  { 0x92, 0x2019, "'" },  { 0x93, 0x201C, "\"" },
+	{ 0x94, 0x201D, "\"" }, { 0x96, 0x2013, "-" },  { 0x97, 0x2014, "-" },
+	{ 0xA0, 0x00A0, " " },
+	{ 0x00, 0x0000, NULL }
 };
 
 static const char *LangDict_FoldForByte( unsigned char c ) {
 	for ( int i = 0; LANGDICT_GLYPH_FOLD[i].ascii != NULL; i++ ) {
-		if ( LANGDICT_GLYPH_FOLD[i].cp1252 == c ) {
+		if ( LANGDICT_GLYPH_FOLD[i].byte == c ) {
+			return LANGDICT_GLYPH_FOLD[i].ascii;
+		}
+	}
+	return NULL;
+}
+
+/*
+============
+LangDict_AsciiFoldForCodePoint
+============
+*/
+const char *LangDict_AsciiFoldForCodePoint( unsigned int codePoint ) {
+	if ( codePoint < 0x80 ) {
+		return NULL;
+	}
+	for ( int i = 0; LANGDICT_GLYPH_FOLD[i].ascii != NULL; i++ ) {
+		if ( LANGDICT_GLYPH_FOLD[i].codePoint == codePoint ) {
 			return LANGDICT_GLYPH_FOLD[i].ascii;
 		}
 	}
@@ -193,8 +296,9 @@ Returns the number of bytes consumed, or 0 if the sequence is not well-formed
 shortest-form UTF-8.
 ============
 */
-static int LangDict_DecodeUtf8( const unsigned char *p, int available, unsigned int &codePoint ) {
-	if ( available <= 0 ) {
+int LangDict_DecodeUtf8( const char *buffer, int available, unsigned int &codePoint ) {
+	const unsigned char *p = (const unsigned char *)buffer;
+	if ( p == NULL || available <= 0 ) {
 		return 0;
 	}
 
@@ -234,14 +338,109 @@ static int LangDict_DecodeUtf8( const unsigned char *p, int available, unsigned 
 	return extra + 1;
 }
 
-static bool LangDict_ByteForCodePoint( unsigned int codePoint, unsigned char &out ) {
+/*
+============
+LangDict_EncodeUtf8
+============
+*/
+int LangDict_EncodeUtf8( unsigned int codePoint, char out[UTF8_MAX_BYTES] ) {
+	if ( out == NULL || codePoint > 0x10FFFF || ( codePoint >= 0xD800 && codePoint <= 0xDFFF ) ) {
+		return 0;
+	}
+	if ( codePoint < 0x80 ) {
+		out[0] = (char)codePoint;
+		return 1;
+	}
+	if ( codePoint < 0x800 ) {
+		out[0] = (char)( 0xC0 | ( codePoint >> 6 ) );
+		out[1] = (char)( 0x80 | ( codePoint & 0x3F ) );
+		return 2;
+	}
+	if ( codePoint < 0x10000 ) {
+		out[0] = (char)( 0xE0 | ( codePoint >> 12 ) );
+		out[1] = (char)( 0x80 | ( ( codePoint >> 6 ) & 0x3F ) );
+		out[2] = (char)( 0x80 | ( codePoint & 0x3F ) );
+		return 3;
+	}
+	out[0] = (char)( 0xF0 | ( codePoint >> 18 ) );
+	out[1] = (char)( 0x80 | ( ( codePoint >> 12 ) & 0x3F ) );
+	out[2] = (char)( 0x80 | ( ( codePoint >> 6 ) & 0x3F ) );
+	out[3] = (char)( 0x80 | ( codePoint & 0x3F ) );
+	return 4;
+}
+
+/*
+============
+LangDict_NextCodePoint
+
+The text layer cannot stall on a byte it does not understand: a GUI, a cvar or
+a network name can hold anything, and a draw loop that refuses to advance hangs
+the frame. Anything that is not well-formed UTF-8 is therefore read as a single
+byte, which is a guaranteed one byte of progress.
+
+That byte is decoded through the *active codepage* rather than as Latin-1,
+because a buffer that is not valid UTF-8 is by definition legacy 8-bit text, and
+the codepage is this session's best statement about which one. It matters both
+ways round: a stray Windows-1252 smart quote becomes U+201C, which every face
+has art for, instead of U+0093, which is a control code no face covers; and a
+stray Windows-1251 byte in a Russian session becomes the Cyrillic letter it
+stands for instead of an unrelated accented Latin one. For a Western session
+outside the 0x80-0x9F band this is Latin-1 anyway.
+============
+*/
+int LangDict_NextCodePoint( const char *p, int available, unsigned int &codePoint ) {
+	if ( p == NULL || available <= 0 ) {
+		codePoint = 0;
+		return 0;
+	}
+	const int used = LangDict_DecodeUtf8( p, available, codePoint );
+	if ( used > 0 ) {
+		return used;
+	}
+
+	const unsigned char byte = (unsigned char)p[0];
+	const unsigned int mapped = LangDict_UnicodeForByte( byte );
+	// A slot the codepage leaves unassigned has no character at all; keep the
+	// raw byte rather than returning 0, which callers read as end of string.
+	codePoint = ( mapped != 0 ) ? mapped : byte;
+	return 1;
+}
+
+/*
+============
+LangDict_IsUtf8
+============
+*/
+bool LangDict_IsUtf8( const char *buffer, int length ) {
+	if ( buffer == NULL ) {
+		return false;
+	}
+	for ( int i = 0; i < length; ) {
+		unsigned int cp = 0;
+		const int used = LangDict_DecodeUtf8( buffer + i, length - i, cp );
+		if ( used == 0 ) {
+			return false;
+		}
+		i += used;
+	}
+	return true;
+}
+
+/*
+============
+LangDict_ByteForCodePoint
+============
+*/
+bool LangDict_ByteForCodePoint( unsigned int codePoint, unsigned char &out ) {
 	if ( codePoint < 0x80 ) {
 		out = (unsigned char)codePoint;
 		return true;
 	}
-	if ( LangDict_GetActiveCodePage() == LANGCP_CENTRAL_EUROPEAN ) {
+	const langCodePage_t active = LangDict_GetActiveCodePage();
+	if ( active == LANGCP_CENTRAL_EUROPEAN || active == LANGCP_CYRILLIC ) {
+		const unsigned short *table = ( active == LANGCP_CENTRAL_EUROPEAN ) ? LANGDICT_CP1250_HIGH : LANGDICT_CP1251_HIGH;
 		for ( int i = 0; i < 128; i++ ) {
-			if ( LANGDICT_CP1250_HIGH[i] != 0 && LANGDICT_CP1250_HIGH[i] == codePoint ) {
+			if ( table[i] != 0 && table[i] == codePoint ) {
 				out = (unsigned char)( 0x80 + i );
 				return true;
 			}
@@ -263,73 +462,87 @@ static bool LangDict_ByteForCodePoint( unsigned int codePoint, unsigned char &ou
 
 /*
 ============
-LangDict_ConvertUtf8ToCodePage
+LangDict_ConvertCodePageToUtf8
 
-Quake 4 string tables are an 8-bit codepage and the fonts are 256 byte-indexed
-glyphs, so a UTF-8 table draws two wrong glyphs per accent - "MENUS" comes out
-as "MENA S". Convert only when the WHOLE buffer is well-formed UTF-8, every
-multi-byte code point round-trips to the active codepage, and at least one
-multi-byte sequence is present. A table already in the 8-bit codepage is never
-valid UTF-8 end to end (0xE9 followed by an ASCII letter fails the
-continuation-byte test), so 8-bit and pure-ASCII inputs are left byte-identical.
+Normalises a legacy 8-bit string table to UTF-8, which is the encoding the rest
+of the engine works in. Retail Quake 4 tables are an 8-bit codepage - Western
+for the shipped languages, Central European for the retail Polish release - and
+a table like that is never valid UTF-8 end to end, because a byte in the
+0xC0-0xFF range is read as a lead byte and the ASCII letter after it fails the
+continuation-byte test. So "is this well-formed UTF-8?" is a reliable test for
+which of the two a file is, and a pure-ASCII table answers yes and is passed
+through untouched.
 
-Which codepage that is follows sys_lang: Polish tables round-trip through
-Windows-1250, everything else through Windows-1252. Reading a Polish table
-while Western is active fails the round-trip on the first Polish letter and
-leaves the buffer alone, which is the right outcome - the fonts could not have
-drawn those letters either.
+Which codepage a legacy table is read as follows sys_lang, and it has to,
+because the byte values overlap completely: 0xB9 is superscript one in
+Windows-1252, a-ogonek in Windows-1250 and a soft-hyphen-adjacent punctuation
+mark in Windows-1251. There is no way to tell from the bytes.
+
+This is the inverse of what the engine used to do. Converting the other way -
+UTF-8 down to a codepage - was forced by 256 byte-indexed font glyphs, and it
+capped the engine at whatever one 8-bit page could express. Going up instead
+means a table can hold any script the fonts have art for.
 ============
 */
-static bool LangDict_ConvertUtf8ToCodePage( const char *buffer, int length, idStr &converted ) {
+static bool LangDict_ConvertCodePageToUtf8( const char *buffer, int length, idStr &converted ) {
 	const unsigned char *p = (const unsigned char *)buffer;
-	bool sawMultiByte = false;
 
-	for ( int i = 0; i < length; ) {
-		unsigned int cp = 0;
-		const int used = LangDict_DecodeUtf8( p + i, length - i, cp );
-		if ( used == 0 ) {
-			return false;
-		}
-		if ( used > 1 ) {
-			unsigned char mapped;
-			if ( !LangDict_ByteForCodePoint( cp, mapped ) ) {
-				return false;
-			}
-			sawMultiByte = true;
-		}
-		i += used;
-	}
-	if ( !sawMultiByte ) {
+	if ( LangDict_IsUtf8( buffer, length ) ) {
+		// Already UTF-8, or pure ASCII, which is the same thing.
 		return false;
 	}
 
-	// The output can never be longer than the input: every multi-byte sequence
-	// collapses to a single byte, and the one expanding fold (U+2026 -> "...")
-	// is three bytes in and three bytes out.
-	converted.Fill( ' ', length );
+	bool sawHighByte = false;
+	for ( int i = 0; i < length; i++ ) {
+		if ( p[i] >= 0x80 ) {
+			sawHighByte = true;
+			break;
+		}
+	}
+	if ( !sawHighByte ) {
+		// Not valid UTF-8 yet has no high bytes at all: nothing this function
+		// knows how to repair. Leave it alone rather than guess.
+		return false;
+	}
+
+	converted.Clear();
+	converted.Fill( ' ', length * UTF8_MAX_BYTES );
 
 	int outIndex = 0;
-	for ( int i = 0; i < length; ) {
-		unsigned int cp = 0;
-		const int used = LangDict_DecodeUtf8( p + i, length - i, cp );
-		if ( used == 0 ) {
-			// cannot happen after the validation pass above; fail closed
-			return false;
+	for ( int i = 0; i < length; i++ ) {
+		const unsigned char c = p[i];
+		if ( c < 0x80 ) {
+			converted[outIndex++] = (char)c;
+			continue;
 		}
 
-		unsigned char mapped = '?';
-		LangDict_ByteForCodePoint( cp, mapped );
+		// A slot the codepage leaves unassigned has no character to encode.
+		// Substitute rather than emit U+0000, which would truncate the table.
+		unsigned int cp = LangDict_UnicodeForByte( c );
+		if ( cp == 0 ) {
+			cp = UNICODE_REPLACEMENT;
+		}
 
-		const char *fold = ( used > 1 ) ? LangDict_FoldForByte( mapped ) : NULL;
+		// The retail atlases have no art for most of the 0x80-0x9F punctuation
+		// band, so those code points were historically folded to ASCII on the way
+		// in. Keep the fold: it is the difference between a non-breaking space
+		// drawing as a word gap and drawing as a zero-advance blank that deletes
+		// the gap entirely.
+		const char *fold = LangDict_FoldForByte( c );
 		if ( fold != NULL ) {
 			for ( int k = 0; fold[k] != '\0'; k++ ) {
 				converted[outIndex++] = fold[k];
 			}
-		} else {
-			converted[outIndex++] = (char)mapped;
+			continue;
 		}
-		i += used;
+
+		char encoded[UTF8_MAX_BYTES];
+		const int used = LangDict_EncodeUtf8( cp, encoded );
+		for ( int k = 0; k < used; k++ ) {
+			converted[outIndex++] = encoded[k];
+		}
 	}
+
 	converted.CapLength( outIndex );
 	return true;
 }
@@ -364,8 +577,8 @@ bool idLangDict::Load( const char *fileName, bool clear ) {
 		parseText += 3;
 		parseLength -= 3;
 	}
-	if ( LangDict_ConvertUtf8ToCodePage( parseText, parseLength, transcoded ) ) {
-		idLib::common->DPrintf( "%s: converted UTF-8 string table to the 8-bit font codepage\n", fileName );
+	if ( LangDict_ConvertCodePageToUtf8( parseText, parseLength, transcoded ) ) {
+		idLib::common->DPrintf( "%s: converted legacy 8-bit string table to UTF-8\n", fileName );
 		parseText = transcoded.c_str();
 		parseLength = transcoded.Length();
 	}

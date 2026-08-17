@@ -223,6 +223,11 @@ static bool R_LoadFontSlot( fontInfoEx_t &font, const char *fontName, const q4Fo
 	}
 
 	idStr::Copynz( fontSlot->name, fontDataName.c_str(), sizeof( fontSlot->name ) );
+	// A .fontdat is 256 slots of art for one 8-bit codepage - which one is
+	// whatever language the atlas shipped with, and the text layer maps code
+	// points onto it. There is no room for anything above U+00FF, so no
+	// extended pages either; the memset in RegisterFont already left them NULL.
+	fontSlot->glyphIndexing = GLYPH_INDEX_CODEPAGE;
 	fontSlot->material = declManager->FindMaterial( fontDataName.c_str() );
 	if ( fontSlot->material != NULL ) {
 		fontSlot->material->SetSort( SS_GUI );

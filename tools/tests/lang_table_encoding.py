@@ -1,38 +1,72 @@
 #!/usr/bin/env python3
-"""Regression checks for language-table encoding and the engine-side transcode.
+"""Regression checks for text encoding and the code-point font path.
 
-openQ4 authors its string tables in UTF-8, but the stock Quake 4 fonts are a
-fixed 256-glyph atlas indexed by a raw byte, so the engine transcodes UTF-8
-tables to an 8-bit codepage at load time (idLangDict::Load).  Which codepage
-depends on sys_lang: Polish is Windows-1250, everything else Windows-1252.
-Three things therefore have to stay true:
+openQ4 text is UTF-8 end to end.  String tables are authored in it, the loader
+normalises a legacy 8-bit table *up* to it (idLangDict::Load), and the GUI draws
+by Unicode code point rather than by byte, so a language is limited by what the
+fonts have art for rather than by what one 8-bit codepage can express.
 
-  * every repo-authored ``.lang`` file must be valid UTF-8 whose code points are
-    all representable in *its own* codepage, otherwise the transcode silently
-    declines and the accents render as two wrong glyphs (GitHub issue #89);
-  * the codepage tables in the engine must match the real Windows codepages -
-    a wrong entry is not a missing glyph but a confidently wrong one, e.g. 0xB9
-    is a-ogonek in CP1250 and superscript one in CP1252;
-  * the transcode, and the font side that has to agree with it, must stay in
-    place in both idlib copies.
+Four things therefore have to stay true:
+
+  * every repo-authored ``.lang`` file is valid UTF-8, and every code point in it
+    is one the engine actually builds a glyph for - anything else draws as a
+    question mark;
+  * the codepage tables in the engine match the real Windows codepages.  They
+    are no longer the rendering path, but they still decode retail tables and
+    still index the retail bitmap atlases, and a wrong entry is not a missing
+    glyph but a confidently wrong one - 0xB9 is superscript one in CP1252,
+    a-ogonek in CP1250 and a soft hyphen in CP1251;
+  * the code-point glyph lookup, the extended pages that back it, and the
+    UTF-8 iteration in the text layer all stay in place;
+  * a language the 256-glyph bitmap atlases cannot draw at all does not silently
+    honour r_useTrueTypeFonts 0.
 """
 
 import re
+import struct
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 STRINGS_DIR = ROOT / "content" / "baseoq4" / "pak0" / "strings"
+FONTS_DIR = ROOT / "content" / "baseoq4" / "pak0" / "fonts"
 
-# sys_lang values whose tables are Central European rather than Western.  Keep
-# in step with LangDict_CodePageForLanguage.
-CENTRAL_EUROPEAN_LANGUAGES = ("polish", "czech")
+# sys_lang values whose legacy 8-bit tables and retail atlases are not
+# Windows-1252.  Keep in step with LangDict_CodePageForLanguage.
+CODEPAGE_LANGUAGES = {
+    "polish": "cp1250",
+    "czech": "cp1250",
+    "russian": "cp1251",
+}
+
+# Unicode blocks above U+00FF the font rasteriser always builds pages for.
+# Keep in step with Q4_TTF_UNIVERSAL_RANGES in src/renderer/tr_fontTTF.cpp.
+# The Latin extensions are here rather than per-language because Windows-1252
+# itself reaches into them - the shipped French tables spell "coeur" with a real
+# o-e ligature - so no language gets to opt out.
+UNIVERSAL_RANGES = (
+    (0x0100, 0x017F),   # Latin Extended-A
+    (0x0180, 0x024F),   # Latin Extended-B
+    (0x02B0, 0x02FF),   # Spacing Modifier Letters
+    (0x2000, 0x20FF),   # General Punctuation, Currency Symbols
+    (0x2100, 0x21FF),   # Letterlike Symbols, Arrows
+)
+
+# Non-Latin scripts a language additionally needs.  Keep in step with
+# LangDict_ExtendedRangesForLanguage.
+LANGUAGE_RANGES = {
+    "cp1251": ((0x0400, 0x04FF),),
+}
+
+# 'strogg' is a decorative alien face used for hardcoded credits text, and is
+# Latin-only by design; it is never asked to draw a string table.
+LATIN_ONLY_FACES = {"strogg"}
 
 # Codes that land on a .notdef cell in every stock Quake 4 font.  The engine
-# folds these to ASCII rather than drawing nothing; 0xA0 in particular has a
-# zero advance, so leaving it alone would delete the word gap entirely.
-# Windows-1250 puts the same punctuation at the same byte values, so one fold
-# table serves both codepages.
+# folds these to ASCII rather than drawing nothing; U+00A0 in particular has a
+# zero advance, so leaving it alone would delete the word gap entirely.  All
+# three Windows codepages put this punctuation at the same byte values, so one
+# fold table serves every one of them.
 FOLDED_BYTES = {0x82, 0x84, 0x85, 0x91, 0x92, 0x93, 0x94, 0x96, 0x97, 0xA0}
 
 
@@ -47,9 +81,7 @@ def require(haystack: str, needle: str, context: str) -> None:
 
 def codepage_for_lang_file(path: Path) -> str:
     language = path.stem.split("_", 1)[0].lower()
-    if language in CENTRAL_EUROPEAN_LANGUAGES:
-        return "cp1250"
-    return "cp1252"
+    return CODEPAGE_LANGUAGES.get(language, "cp1252")
 
 
 def parse_hex_table(source: str, name: str, expected_length: int) -> list:
@@ -85,6 +117,64 @@ def validate_codepage_table(source: str, name: str, codec: str, first_byte: int,
             )
 
 
+def font_code_points(path: Path) -> set:
+    """The code points a .ttf covers, read straight out of its cmap.
+
+    Deliberately dependency-free: this test guards the shipped content and has
+    to run wherever CI does, without fontTools.  Formats 4 and 12 are the only
+    two the generator emits.
+    """
+    data = path.read_bytes()
+    if len(data) < 12:
+        raise AssertionError(f"{path.name} is too short to be a font")
+
+    num_tables = struct.unpack_from(">H", data, 4)[0]
+    cmap_offset = None
+    for i in range(num_tables):
+        tag, _checksum, offset, _length = struct.unpack_from(">4sIII", data, 12 + i * 16)
+        if tag == b"cmap":
+            cmap_offset = offset
+            break
+    if cmap_offset is None:
+        raise AssertionError(f"{path.name} has no cmap table")
+
+    num_subtables = struct.unpack_from(">H", data, cmap_offset + 2)[0]
+    covered = set()
+    for i in range(num_subtables):
+        _platform, _encoding, sub_offset = struct.unpack_from(">HHI", data, cmap_offset + 4 + i * 8)
+        table = cmap_offset + sub_offset
+        fmt = struct.unpack_from(">H", data, table)[0]
+
+        if fmt == 4:
+            seg_x2 = struct.unpack_from(">H", data, table + 6)[0]
+            segments = seg_x2 // 2
+            ends = table + 14
+            starts = ends + seg_x2 + 2
+            for seg in range(segments):
+                end = struct.unpack_from(">H", data, ends + seg * 2)[0]
+                start = struct.unpack_from(">H", data, starts + seg * 2)[0]
+                if start > end or end == 0xFFFF and start == 0xFFFF:
+                    continue
+                covered.update(range(start, end + 1))
+        elif fmt == 12:
+            groups = struct.unpack_from(">I", data, table + 12)[0]
+            for group in range(groups):
+                start, end, _glyph = struct.unpack_from(">III", data, table + 16 + group * 12)
+                covered.update(range(start, min(end, 0xFFFF) + 1))
+
+    if not covered:
+        raise AssertionError(f"{path.name}: no usable cmap subtable")
+    return covered
+
+
+def in_ranges(code_point: int, ranges) -> bool:
+    return any(first <= code_point <= last for first, last in ranges)
+
+
+def drawable_ranges(codepage: str):
+    return UNIVERSAL_RANGES + LANGUAGE_RANGES.get(codepage, ())
+
+
 def validate_lang_files() -> None:
     lang_files = sorted(STRINGS_DIR.glob("*.lang"))
     if not lang_files:
@@ -93,7 +183,7 @@ def validate_lang_files() -> None:
     for path in lang_files:
         data = path.read_bytes()
         rel = path.relative_to(ROOT).as_posix()
-        codec = codepage_for_lang_file(path)
+        codepage = codepage_for_lang_file(path)
 
         if data.startswith(b"\xef\xbb\xbf"):
             raise AssertionError(
@@ -106,19 +196,56 @@ def validate_lang_files() -> None:
         except UnicodeDecodeError as exc:
             raise AssertionError(
                 f"{rel} is not valid UTF-8 at byte {exc.start} ({exc.reason}). "
-                "Repo-authored string tables are UTF-8; the engine transcodes them "
-                "to the 8-bit font codepage at load time."
+                "Repo-authored string tables are UTF-8; only *retail* tables are "
+                "8-bit, and those are normalised to UTF-8 as they load."
             ) from exc
 
+        allowed = drawable_ranges(codepage)
         for index, char in enumerate(text):
-            try:
-                char.encode(codec)
-            except UnicodeEncodeError:
+            code_point = ord(char)
+            # The base 256 glyph slots are Latin-1, so anything there is always
+            # addressable whichever font path is active.
+            if code_point <= 0xFF:
+                continue
+            if not in_ranges(code_point, allowed):
                 raise AssertionError(
-                    f"{rel}: U+{ord(char):04X} ({char!r}) at character {index} cannot be "
-                    f"represented in {codec}, which is the codepage this language loads "
-                    "under, so the 256-glyph fonts cannot draw it."
-                ) from None
+                    f"{rel}: U+{code_point:04X} ({char!r}) at character {index} is outside "
+                    "every Unicode block the font rasteriser builds pages for, so it would "
+                    "draw as a question mark. Either use a character in an existing block or "
+                    "add the block to LangDict_ExtendedRangesForLanguage and to "
+                    "LANGUAGE_RANGES in this test."
+                )
+
+
+def validate_font_coverage() -> None:
+    """Every face that draws a string table must have art for what the tables
+    actually say, plus the whole of any non-Latin script a language declares -
+    text typed at runtime never passed through a table but still has to draw."""
+    faces = sorted(FONTS_DIR.glob("*.ttf"))
+    if not faces:
+        raise AssertionError(f"No .ttf faces found under {FONTS_DIR}")
+
+    required = set()
+    for path in STRINGS_DIR.glob("*.lang"):
+        for first, last in LANGUAGE_RANGES.get(codepage_for_lang_file(path), ()):
+            required.update(range(first, last + 1))
+        for char in path.read_text(encoding="utf-8"):
+            if ord(char) > 0xFF:
+                required.add(ord(char))
+    if not required:
+        return
+
+    for path in faces:
+        if path.stem in LATIN_ONLY_FACES:
+            continue
+        missing = sorted(required - font_code_points(path))
+        if missing:
+            raise AssertionError(
+                f"{path.relative_to(ROOT).as_posix()} is missing {len(missing)} code points a "
+                f"shipped string table needs, starting at U+{missing[0]:04X}. Rebuild the faces "
+                "with tools/assets/fonts/build.py, or add the face to LATIN_ONLY_FACES if it is "
+                "decorative and never draws a string table."
+            )
 
 
 def validate_transcode_contract() -> None:
@@ -127,15 +254,27 @@ def validate_transcode_contract() -> None:
         # the game repo builds its own idlib; keep the two copies in lockstep
     ):
         source = read(relative_path)
-        context = f"{relative_path} language-table transcode"
-        require(source, "LangDict_ConvertUtf8ToCodePage", context)
+        context = f"{relative_path} language-table normalisation"
+        # The direction matters: converting the other way, UTF-8 down to a
+        # codepage, is what capped the engine at one 8-bit page per language.
+        require(source, "LangDict_ConvertCodePageToUtf8", context)
+        if "LangDict_ConvertUtf8ToCodePage" in source:
+            raise AssertionError(
+                f"{relative_path} still transcodes UTF-8 down to an 8-bit codepage; "
+                "string tables are kept in UTF-8 now and the font path is code-point keyed"
+            )
         require(source, "LANGDICT_CP1252_HIGH", context)
         require(source, "LANGDICT_CP1250_HIGH", context)
+        require(source, "LANGDICT_CP1251_HIGH", context)
         require(source, "LANGDICT_GLYPH_FOLD", context)
         require(source, "LangDict_DecodeUtf8", context)
+        require(source, "LangDict_EncodeUtf8", context)
+        require(source, "LangDict_NextCodePoint", context)
         require(source, "LangDict_ByteForCodePoint", context)
         require(source, "LangDict_CodePageForLanguage", context)
         require(source, "LangDict_UnicodeForByte", context)
+        require(source, "LangDict_ExtendedRangesForLanguage", context)
+        require(source, "LangDict_LanguageNeedsScalableFonts", context)
         require(
             source,
             "idStr transcoded;",
@@ -144,7 +283,7 @@ def validate_transcode_contract() -> None:
         require(
             source,
             "src.LoadMemory( parseText, parseLength, fileName );",
-            f"{context} (lexer must parse the transcoded text)",
+            f"{context} (lexer must parse the normalised text)",
         )
 
         # CP1252 only tabulates 0x80-0x9F because it agrees with Latin-1 above
@@ -156,11 +295,12 @@ def validate_transcode_contract() -> None:
                     f"cp1252 does not map 0x{byte:02X} to itself, so LangDict's Latin-1 "
                     "pass-through above 0x9F is wrong"
                 )
-        # CP1250 diverges from Latin-1 across the whole upper half.
+        # CP1250 and CP1251 diverge from Latin-1 across the whole upper half.
         validate_codepage_table(source, "LANGDICT_CP1250_HIGH", "cp1250", 0x80, 128)
+        validate_codepage_table(source, "LANGDICT_CP1251_HIGH", "cp1251", 0x80, 128)
 
-        for language in CENTRAL_EUROPEAN_LANGUAGES:
-            require(source, f'"{language}"', f"{context} (Central European language list)")
+        for language in CODEPAGE_LANGUAGES:
+            require(source, f'"{language}"', f"{context} (codepage language list)")
 
         declaration = source.index("idStr transcoded;")
         lexer = source.index("idLexer src(")
@@ -172,7 +312,7 @@ def validate_transcode_contract() -> None:
             )
 
         # every folded code must be one the engine can actually produce
-        for match in re.finditer(r"\{\s*0x([0-9A-Fa-f]{2}),\s*\"", source):
+        for match in re.finditer(r"\{\s*0x([0-9A-Fa-f]{2}),\s*0x[0-9A-Fa-f]{4},\s*\"", source):
             code = int(match.group(1), 16)
             if code not in FOLDED_BYTES:
                 raise AssertionError(
@@ -181,10 +321,95 @@ def validate_transcode_contract() -> None:
                 )
 
 
+def validate_code_point_font_path() -> None:
+    """Text is UTF-8, so glyphs are found by code point and everything above
+    U+00FF lives in the extended pages."""
+    render_system = read("src/renderer/RenderSystem.h")
+    for needle in (
+        "R_GlyphForCodePoint",
+        "GLYPH_INDEX_CODEPAGE",
+        "GLYPH_INDEX_UNICODE",
+        "fontGlyphPage_t",
+        "extendedPages",
+        "glyphIndexing",
+    ):
+        require(render_system, needle, "src/renderer/RenderSystem.h code-point glyph lookup")
+
+    ttf = read("src/renderer/tr_fontTTF.cpp")
+    for needle in (
+        "R_TTFBuildExtendedPages",
+        "R_TTFCollectExtendedCodePoints",
+        "Q4_TTF_UNIVERSAL_RANGES",
+        "LangDict_ExtendedRangesForLanguage",
+        "GLYPH_INDEX_UNICODE",
+    ):
+        require(ttf, needle, "src/renderer/tr_fontTTF.cpp extended glyph pages")
+    if "R_TTFCodepointForByte" in ttf:
+        raise AssertionError(
+            "src/renderer/tr_fontTTF.cpp still maps GUI atlas slots through the active "
+            "codepage; the base slots are Latin-1 now and everything above U+00FF is an "
+            "extended page, or one atlas can still only express one 8-bit page"
+        )
+    # The console sheet is deliberately still byte-indexed, and so still has to
+    # be rasterised through the active codepage.
+    require(
+        ttf,
+        "LangDict_UnicodeForByte",
+        "R_BuildConsoleFontAtlas (the console sheet is a codepage, not Latin-1)",
+    )
+
+    bitmap = read("src/renderer/tr_font.cpp")
+    require(
+        bitmap,
+        "GLYPH_INDEX_CODEPAGE",
+        "src/renderer/tr_font.cpp (a .fontdat is art for one 8-bit codepage)",
+    )
+
+    device_context = read("src/ui/DeviceContext.cpp")
+    for needle in (
+        "openQ4_NextTextGlyph",
+        "LangDict_NextCodePoint",
+        "R_GlyphForCodePoint",
+        "CharWidthForCodePoint",
+        "openQ4_CodePointIsPrintable",
+    ):
+        require(device_context, needle, "src/ui/DeviceContext.cpp UTF-8 text iteration")
+    if re.search(r"font->glyphs\[\s*\*s\s*\]", device_context):
+        raise AssertionError(
+            "src/ui/DeviceContext.cpp still indexes glyphs by raw byte; a multi-byte "
+            "character would draw as two wrong glyphs"
+        )
+
+    console = read("src/framework/Console.cpp")
+    for needle in ("Con_ConsoleCellForCodePoint", "LangDict_NextCodePoint"):
+        require(console, needle, "src/framework/Console.cpp UTF-8 console text")
+
+
+def validate_bitmap_font_policy() -> None:
+    """A language the retail atlases cannot draw must not honour
+    r_useTrueTypeFonts 0 - it would produce a menu of question marks with
+    nothing to explain it."""
+    ttf = read("src/renderer/tr_fontTTF.cpp")
+    require(ttf, "R_UseScalableFonts", "src/renderer/tr_fontTTF.cpp bitmap-font policy")
+    require(
+        ttf,
+        "LangDict_LanguageNeedsScalableFonts",
+        "R_UseScalableFonts (the language has to be able to override the cvar)",
+    )
+    for function in ("bool R_RegisterTrueTypeFont(", "bool R_BuildConsoleFontAtlas("):
+        start = ttf.index(function)
+        body = ttf[start : start + 400]
+        if "R_UseScalableFonts()" not in body:
+            raise AssertionError(
+                f"src/renderer/tr_fontTTF.cpp: {function.strip()} reads r_useTrueTypeFonts "
+                "directly; it must go through R_UseScalableFonts so a Cyrillic language "
+                "cannot end up on the bitmap atlases"
+            )
+
+
 def validate_codepage_selection() -> None:
-    """The codepage has to be chosen before any table is read, and the fonts have
-    to be rasterised through the same mapping - otherwise the tables and the
-    atlas disagree about what a byte means."""
+    """The codepage still has to be chosen before any table is read: it decides
+    how a legacy 8-bit table is decoded, and which cells the console sheet gets."""
     common = read("src/framework/Common.cpp")
     require(
         common,
@@ -199,23 +424,8 @@ def validate_codepage_selection() -> None:
             "first languageDict.Load() - one dictionary cannot hold two codepages"
         )
 
-    ttf = read("src/renderer/tr_fontTTF.cpp")
-    require(
-        ttf,
-        "LangDict_UnicodeForByte",
-        "R_TTFCodepointForByte (glyph lookup must use the active codepage)",
-    )
-    if "Q4_CP1252_HIGH" in ttf:
-        raise AssertionError(
-            "src/renderer/tr_fontTTF.cpp still carries its own CP1252 table; the font "
-            "side must go through LangDict_UnicodeForByte or Polish text rasterises as "
-            "Western punctuation"
-        )
-
     # The renderer is a module with its own copy of idlib, so the codepage the
-    # engine selects does not reach the glyph rasteriser on its own. Without the
-    # sync the tables are CP1250 while the atlas is baked through CP1252, which
-    # draws a confidently wrong glyph rather than a missing one.
+    # engine selects does not reach the glyph rasteriser on its own.
     font = read("src/renderer/tr_font.cpp")
     require(font, "void R_SyncFontCodePage( void )", "renderer-module codepage sync")
     require(
@@ -256,17 +466,18 @@ def validate_language_menu() -> None:
                 "fall back to English"
             )
 
-    english_choices = re.search(
-        r'"#str_229908"\s+"([^"]+)"', read("content/baseoq4/pak0/strings/english_openq4.lang")
-    )
-    if english_choices is None:
-        raise AssertionError("english_openq4.lang: #str_229908 (language names) is missing")
-    if len(english_choices.group(1).split(";")) != len(offered):
-        raise AssertionError(
-            f"#str_229908 lists {len(english_choices.group(1).split(';'))} language names "
-            f"but the chooser offers {len(offered)} values; a choiceDef silently "
-            "mismatches when the two disagree"
-        )
+    # choiceDef lists are positional, so the names and the values must agree in
+    # every language - a short list silently mismatches every entry after it.
+    for path in sorted(STRINGS_DIR.glob("*.lang")):
+        names = re.search(r'"#str_229908"\s+"([^"]+)"', path.read_text(encoding="utf-8"))
+        if names is None:
+            continue
+        if len(names.group(1).split(";")) != len(offered):
+            raise AssertionError(
+                f"{path.relative_to(ROOT).as_posix()}: #str_229908 lists "
+                f"{len(names.group(1).split(';'))} language names but the chooser offers "
+                f"{len(offered)} values; a choiceDef silently mismatches when they disagree"
+            )
 
 
 def validate_ci_smoke() -> None:
@@ -284,7 +495,10 @@ def validate_ci_smoke() -> None:
 
 def main() -> None:
     validate_lang_files()
+    validate_font_coverage()
     validate_transcode_contract()
+    validate_code_point_font_path()
+    validate_bitmap_font_policy()
     validate_codepage_selection()
     validate_language_menu()
     validate_ci_smoke()

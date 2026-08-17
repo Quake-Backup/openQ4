@@ -127,12 +127,15 @@ is under `0`.
   yields zeroes rather than reading past the end.
   The rasteriser accumulates exact per-pixel signed area per edge and integrates
   along each scanline, so coverage is analytically correct without supersampling.
-- `src/renderer/tr_fontTTF.cpp` — rasterises codepoints 32–255 for each of the
-  three point sizes, packs them into a glyph atlas and fills the same
-  `fontInfo_t` the bitmap loader produces. Because the metric units and UV
-  conventions are identical, nothing downstream needs to know which path
-  produced the font, and `fontInfo_t`'s layout is untouched (it is mirrored into
-  `openQ4-game`).
+- `src/renderer/tr_fontTTF.cpp` — rasterises U+0020–U+00FF into the 256 base
+  glyph slots for each of the three point sizes, packs them into a glyph atlas
+  and fills the same `fontInfo_t` the bitmap loader produces. Because the metric
+  units and UV conventions are identical, nothing downstream needs to know which
+  path produced the font. Everything above U+00FF goes into a second atlas of
+  sparse code-point pages hung off the same `fontInfo_t`; see
+  [text-encoding-and-localization.md](text-encoding-and-localization.md). The
+  struct gained an indexing tag and a page pointer for that, and is mirrored
+  into `openQ4-game`.
 
 The atlas is rasterised at the display's own upscale factor
 (`displayHeight / 480`), clamped to 6x. Atlas pages are RGBA8 with white colour
@@ -237,6 +240,51 @@ advance would be fiction — which is what the donor-imported scripts arrive
 carrying. Note that the console still indexes by byte, so the extended coverage
 is present in the file but not reachable from the console itself.
 
+### Keeping the atlas materials alive
+
+Each atlas is bound through a material this module generates at registration
+time. Those declarations have no `.mtr` behind them, which makes them fragile in
+a way a shipped material is not.
+
+`idDeclManagerLocal::BeginLevelLoad` purges every declaration that is not marked
+as parsed outside a level load, and `FindType` clears that mark on anything it
+resolves *during* a load. A face a map's own GUIs are the first to name — the
+Strogg terminal font is one, and it first appears partway through the campaign —
+is registered inside that window, so it ends up classified as level media. For a
+shipped material that costs nothing: the next reference reparses it from its
+file. For a generated one there is no file, and the implicit text the manager
+synthesises for a declaration with no source maps an image named after the
+material itself, which nothing is registered under. That resolves to the default
+image, which is **fully transparent outside developer builds**, so the failure
+is not a missing-texture box — every glyph in the face silently draws nothing,
+with no warning, and nothing short of a restart brings it back.
+
+Two things close that off:
+
+- `R_TTFInstallAtlasStage` calls `SetText` before parsing, so the declaration
+  carries the generated source itself and a purge becomes recoverable. Implicit
+  declarations are excluded from the network decl checksum, so this stays
+  process local — a graphical client does not gain a declaration a dedicated
+  server can never create.
+- `idRenderSystemLocal::BeginLevelLoad` calls `R_TTFRestoreAtlasMaterials`,
+  which runs immediately after the declaration purge and before the loading
+  screen draws its first frame of text. It looks each material up *without*
+  parsing first, so a healthy declaration costs nothing and is not demoted by
+  the lookup itself.
+
+Registration is also self-healing now: `R_TTFCreateAtlasMaterial` reinstalls the
+stage whenever the declaration it finds is not already sampling the atlas,
+instead of handing back whatever the manager last left there.
+
+A related hazard sits on the GUI side. `idDeviceContext` holds `activeFont` and
+`useFont` as pointers into its `fonts` list, and that list has granularity 1, so
+`FindFont` reallocates it on every registration. `idWindow::SetFont` re-points
+`activeFont` before each draw, but nothing re-points `useFont`, and `DrawText`
+reads it through `MaxCharWidth`/`MaxCharHeight` *before* `SetFontByScale`
+reselects it — so the character cell and line skip the whole layout is built
+from would be read out of a freed allocation. `FindFont` reseats both pointers
+by index across the append.
+
 ### Cvars
 
 | Cvar | Default | Meaning |
@@ -280,14 +328,16 @@ the rect placement.
 
 ## Known limitations
 
-- **Only codepoints 32–255 are reachable from the text path.** The font files
-  carry the full extended coverage, and `r_ttfFontDebug` will show it, but
-  `idDeviceContext` still indexes glyphs by byte, so Greek, Cyrillic, Arabic and
-  Hebrew cannot be displayed yet. Reaching them needs UTF-8 decoding and a
-  codepoint-keyed glyph query in the text path.
+- **Text input above ASCII is not wired up.** Display is complete — engine text
+  is UTF-8 and the text path draws by code point — but `idEditField` and the
+  platform scan tables are still byte-oriented, so typing Cyrillic into the
+  console or a chat box does not work.
 - **No Arabic shaping or bidi.** The faces include the Presentation Forms-B
   joined shapes precisely so a shaper can use them, but no shaper exists yet.
   Until one does, Arabic coverage is not usable text.
+- **The code-point page directory stops at the BMP.** Nothing the GUI draws
+  lives above U+FFFF, and stopping there keeps the directory to 256 pointers per
+  font size.
 - Atlases are rebuilt only when fonts are registered; a resolution change does
   not currently re-rasterise them at the new upscale factor, so changing
   resolution wants a restart for text to be pixel-exact again.

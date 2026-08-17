@@ -235,8 +235,9 @@ static void openQ4_GetKeyBindingIconInfo( int keyNum, q4KeyBindingIconInfo_t &in
 		info.label.ToUpper();
 	}
 	if ( openQ4_IsKeyboardArrowKey( keyNum ) ) {
-		// The stock font pipeline is byte-oriented, so draw these familiar
-		// symbols procedurally instead of spelling out UPARROW/DOWNARROW.
+		// Drawn procedurally rather than as U+2190..U+2193, so these read the
+		// same whichever font path is active: the retail bitmap atlases have no
+		// arrow art at all, and no byte of any codepage reaches one.
 		info.label.Clear();
 		return;
 	}
@@ -416,6 +417,103 @@ static float openQ4_FontRenderScale( const fontInfo_t *font, float scale ) {
 		return 0.0f;
 	}
 	return scale / font->pointSize * Q4_GUI_FONT_BASE_POINT_SIZE;
+}
+
+/*
+===============================================================================
+
+	Walking UTF-8 text.
+
+	Engine text is UTF-8, so a character is one to four bytes and the glyph that
+	draws it is found by code point rather than by array index. Every pass over
+	text - drawing, measuring, wrapping - steps through openQ4_NextTextGlyph, so
+	they cannot disagree about where one character ends and the next begins. A
+	measure pass and a draw pass that split a two-byte character differently
+	would put the ink, the wrap point and the edit cursor in three places.
+
+	Byte offsets stay byte offsets throughout. The cursor positions and limits
+	the GUI passes in are indices into the string it handed over, and quietly
+	reinterpreting them as character counts would move every caller's cursor.
+
+===============================================================================
+*/
+struct q4TextGlyph_t {
+	unsigned int		codePoint;
+	const glyphInfo_t *	glyph;			// NULL when nothing drawable was found
+	const idMaterial *	material;		// the atlas 'glyph' lives in
+	int					bytes;			// always the real width of the sequence
+};
+
+// Drawn in place of a code point the font has no art for. A question mark is
+// deliberate: leaving the glyph empty would give it a zero advance, so the
+// character would vanish rather than show up as unavailable.
+static const unsigned int Q4_TEXT_MISSING_GLYPH = '?';
+
+/*
+================
+openQ4_NextTextGlyph
+
+Reads one character. Returns false when there is nothing drawable, but 'bytes'
+is filled in either way, so a caller can always make progress.
+================
+*/
+static bool openQ4_NextTextGlyph( const fontInfo_t *font, const char *s, int available, q4TextGlyph_t &out ) {
+	out.codePoint = 0;
+	out.glyph = NULL;
+	out.material = ( font != NULL ) ? font->material : NULL;
+	out.bytes = LangDict_NextCodePoint( s, available, out.codePoint );
+	if ( out.bytes <= 0 ) {
+		return false;
+	}
+
+	out.glyph = R_GlyphForCodePoint( font, out.codePoint, &out.material );
+	if ( out.glyph != NULL ) {
+		return true;
+	}
+
+	// Nothing for that code point. Punctuation the byte-indexed retail atlases
+	// never carried folds to its ASCII stand-in first, so an em dash drawn
+	// through a retail font comes out a hyphen rather than a hole. Only the
+	// first character of a fold is used - the multi-character folds are applied
+	// whole when a legacy string table is read, and this is the last resort for
+	// text that never went through one.
+	const char *fold = LangDict_AsciiFoldForCodePoint( out.codePoint );
+	const unsigned int substitute = ( fold != NULL && fold[0] != '\0' )
+		? (unsigned int)(unsigned char)fold[0] : Q4_TEXT_MISSING_GLYPH;
+	out.glyph = R_GlyphForCodePoint( font, substitute, &out.material );
+	return out.glyph != NULL;
+}
+
+/*
+================
+openQ4_CodePointIsPrintable
+
+idStr::CharIsPrintable answers for a byte of an 8-bit codepage, which is the
+wrong question once text is UTF-8 - it would be asked about continuation bytes
+rather than about characters. The ranges that are not printable are the same
+either way: the C0 controls, DEL, and the C1 block.
+================
+*/
+static bool openQ4_CodePointIsPrintable( unsigned int codePoint ) {
+	if ( codePoint < 0x20 ) {
+		return false;
+	}
+	return codePoint < 0x7F || codePoint > 0x9F;
+}
+
+/*
+================
+openQ4_TextGlyphAt
+
+The same step, for callers that have a NUL-terminated pointer rather than a
+known remaining length.
+================
+*/
+static bool openQ4_TextGlyphAt( const fontInfo_t *font, const char *s, q4TextGlyph_t &out ) {
+	// Four is the longest UTF-8 sequence, and a terminator is never a valid
+	// continuation byte, so the decoder always stops on it - reading up to four
+	// bytes here cannot run past the end of the string.
+	return openQ4_NextTextGlyph( font, s, UTF8_MAX_BYTES, out );
 }
 
 static int openQ4_ScaledFontUnits( float fontScale, float units ) {
@@ -941,10 +1039,51 @@ int idDeviceContext::FindFont( const char *name ) {
 		}
 	}
 
+	// activeFont and useFont are pointers into the fonts list, and the list is
+	// granularity 1, so the append below reallocates it every single time. A map
+	// whose GUIs name a face nothing has asked for yet - the Strogg terminal font
+	// is one, and it first appears partway through the campaign - would otherwise
+	// leave both pointing at freed memory. activeFont is re-pointed by the next
+	// idWindow::SetFont, but useFont is not: DrawText reads it through
+	// MaxCharWidth and MaxCharHeight before SetFontByScale reselects it, so the
+	// character cell and line skip the whole layout is built from would come out
+	// of a freed allocation. SetFont and SetFontByScale move independently, so
+	// the two can be on different entries; record each one on its own rather
+	// than assuming they agree.
+	int selectedFont = -1;
+	int selectedSizeFont = -1;
+	int selectedSize = -1;
+	for ( int i = 0; i < c; i++ ) {
+		if ( activeFont == &fonts[i] ) {
+			selectedFont = i;
+		}
+		if ( useFont == &fonts[i].fontInfoSmall ) {
+			selectedSizeFont = i;
+			selectedSize = 0;
+		} else if ( useFont == &fonts[i].fontInfoMedium ) {
+			selectedSizeFont = i;
+			selectedSize = 1;
+		} else if ( useFont == &fonts[i].fontInfoLarge ) {
+			selectedSizeFont = i;
+			selectedSize = 2;
+		}
+	}
+
 	// If the font was not found, try to register it
 	idStr fileName;
 	fontInfoEx_t fontInfo;
 	int index = fonts.Append( fontInfo );
+
+	activeFont = ( selectedFont >= 0 ) ? &fonts[selectedFont] : NULL;
+	if ( selectedSizeFont >= 0 ) {
+		fontInfoEx_t &sized = fonts[selectedSizeFont];
+		useFont = ( selectedSize == 0 ) ? &sized.fontInfoSmall
+				: ( selectedSize == 1 ) ? &sized.fontInfoMedium
+				: &sized.fontInfoLarge;
+	} else {
+		useFont = NULL;
+	}
+
 	if ( openQ4_RegisterFontForLanguage( name, fontLang, fonts[index], fileName ) ) {
 		idStr::Copynz( fonts[index].name, name, sizeof( fonts[index].name ) );
 		return index;
@@ -2256,14 +2395,27 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 			continue;
 		}
 
-		const glyphInfo_t *glyph = &scaledFont.font->glyphs[*s];
+		q4TextGlyph_t next;
+		const bool drawable = openQ4_NextTextGlyph( scaledFont.font, reinterpret_cast<const char *>( s ),
+													len - count, next );
+		if ( !drawable ) {
+			// No art anywhere for this character, not even a substitute. Skip it
+			// rather than dereference nothing, but still consume its bytes so the
+			// loop cannot stall on it.
+			s += Max( 1, next.bytes );
+			count += Max( 1, next.bytes );
+			continue;
+		}
+
+		const glyphInfo_t *glyph = next.glyph;
+		const idMaterial *glyphMaterial = next.material;
 		const float drawX = openQ4_GlyphDrawX( x, scaledFont.renderScale, glyph );
 		const float drawY = openQ4_GlyphDrawY( y, scaledFont.renderScale, glyph );
 
 		if ( style == Q4_TEXT_STYLE_SHADOW ) {
 			idVec4 shadowColor( 0.0f, 0.0f, 0.0f, currentColor[3] );
 			renderSystem->SetColor( shadowColor );
-			PaintGlyph( drawX + Q4_TEXT_STYLE_OFFSET, drawY + Q4_TEXT_STYLE_OFFSET, scaledFont.renderScale, scaledFont.font, glyph, scaledFont.font->material );
+			PaintGlyph( drawX + Q4_TEXT_STYLE_OFFSET, drawY + Q4_TEXT_STYLE_OFFSET, scaledFont.renderScale, scaledFont.font, glyph, glyphMaterial );
 			renderSystem->SetColor( currentColor );
 		} else if ( style == Q4_TEXT_STYLE_OUTLINE ) {
 			const bool darkOutline = currentColor[0] >= Q4_TEXT_OUTLINE_DARK_THRESHOLD || currentColor[1] >= Q4_TEXT_OUTLINE_DARK_THRESHOLD || currentColor[2] >= Q4_TEXT_OUTLINE_DARK_THRESHOLD;
@@ -2276,20 +2428,20 @@ int idDeviceContext::DrawText(float x, float y, float scale, idVec4 color, const
 			};
 			renderSystem->SetColor( outlineColor );
 			for ( int i = 0; i < 4; ++i ) {
-				PaintGlyph( drawX + offsets[i][0], drawY + offsets[i][1], scaledFont.renderScale, scaledFont.font, glyph, scaledFont.font->material );
+				PaintGlyph( drawX + offsets[i][0], drawY + offsets[i][1], scaledFont.renderScale, scaledFont.font, glyph, glyphMaterial );
 			}
 			renderSystem->SetColor( currentColor );
 		}
 
-		PaintGlyph( drawX, drawY, scaledFont.renderScale, scaledFont.font, glyph, scaledFont.font->material );
+		PaintGlyph( drawX, drawY, scaledFont.renderScale, scaledFont.font, glyph, glyphMaterial );
 
 		if ( openQ4_TextCursorReached( cursor, count ) ) {
 			DrawEditCursor( x, y, scale );
 			cursor = Q4_TEXT_CURSOR_NONE;
 		}
 		x += openQ4_ScaledGlyphAdvance( scaledFont.renderScale, glyph, adjust );
-		s++;
-		count++;
+		s += next.bytes;
+		count += next.bytes;
 	}
 	if ( openQ4_TextCursorReached( cursor, count ) ) {
 		DrawEditCursor( x, y, scale );
@@ -2346,14 +2498,30 @@ void idDeviceContext::SetSize(float width, float height) {
 	CalcVirtualScaleOffset( width, height, xScale, yScale, xOffset, yOffset );
 }
 
-int idDeviceContext::CharWidth( const char c, float scale, int adjust ) {
+int idDeviceContext::CharWidthForCodePoint( unsigned int codePoint, float scale, int adjust ) {
 	SetFontByScale( scale );
 	const float useScale = openQ4_FontRenderScale( useFont, scale );
 	if ( useFont == NULL || useScale == 0.0f ) {
 		return 0;
 	}
-	const glyphInfo_t *glyph = &useFont->glyphs[(const unsigned char)c];
+
+	const idMaterial *material = NULL;
+	const glyphInfo_t *glyph = R_GlyphForCodePoint( useFont, codePoint, &material );
+	if ( glyph == NULL ) {
+		glyph = R_GlyphForCodePoint( useFont, Q4_TEXT_MISSING_GLYPH, &material );
+	}
+	if ( glyph == NULL ) {
+		return 0;
+	}
 	return static_cast<int>( openQ4_ScaledGlyphAdvance( useScale, glyph, static_cast<float>( adjust ) ) );
+}
+
+// A single byte, read as Latin-1. Callers that step through text one byte at a
+// time are measuring bytes rather than characters, so this cannot be given
+// UTF-8 semantics without changing what those callers mean; the text layer
+// itself uses CharWidthForCodePoint.
+int idDeviceContext::CharWidth( const char c, float scale, int adjust ) {
+	return CharWidthForCodePoint( (unsigned int)(unsigned char)c, scale, adjust );
 }
 
 int idDeviceContext::TextWidth( const char *text, float scale, int limit, int adjust ) {
@@ -2409,11 +2577,13 @@ int idDeviceContext::TextWidth( const char *text, float scale, int limit, int ad
 			continue;
 		}
 
-		const glyphInfo_t *glyph = &useFont->glyphs[*s];
-		visibleRight = Max( visibleRight, openQ4_GlyphVisibleRightEdge( advanceX, useFont, useScale, glyph ) );
-		advanceX += openQ4_ScaledGlyphAdvance( useScale, glyph, static_cast<float>( adjust ) );
-		s++;
-		index++;
+		q4TextGlyph_t next;
+		if ( openQ4_NextTextGlyph( useFont, reinterpret_cast<const char *>( s ), UTF8_MAX_BYTES, next ) ) {
+			visibleRight = Max( visibleRight, openQ4_GlyphVisibleRightEdge( advanceX, useFont, useScale, next.glyph ) );
+			advanceX += openQ4_ScaledGlyphAdvance( useScale, next.glyph, static_cast<float>( adjust ) );
+		}
+		s += Max( 1, next.bytes );
+		index += Max( 1, next.bytes );
 	}
 	return static_cast<int>( idMath::Ceil( Max( advanceX, visibleRight ) ) );
 }
@@ -2461,13 +2631,15 @@ int idDeviceContext::TextHeight(const char *text, float scale, int limit, int ad
 			continue;
 		}
 
-		const glyphInfo_t *glyph = &useFont->glyphs[*(const unsigned char *)s];
-		const int glyphHeight = openQ4_GlyphHeightUnits( glyph );
-		if ( maxHeight < glyphHeight ) {
-			maxHeight = glyphHeight;
+		q4TextGlyph_t next;
+		if ( openQ4_TextGlyphAt( useFont, s, next ) ) {
+			const int glyphHeight = openQ4_GlyphHeightUnits( next.glyph );
+			if ( maxHeight < glyphHeight ) {
+				maxHeight = glyphHeight;
+			}
 		}
-		s++;
-		index++;
+		s += Max( 1, next.bytes );
+		index += Max( 1, next.bytes );
 	}
 
 	return static_cast<int>( idMath::Ceil( Max( static_cast<float>( openQ4_ScaledFontUnits( useScale, maxHeight ) ), maxKeyBindingHeight ) ) );
@@ -2494,7 +2666,18 @@ bool idDeviceContext::GetMaxTextIndex( const char *text, int limit, float textSc
 			openQ4_ResolveTextEscape( &text[index], escapeLength, escapeType, payload, payloadLength,
 				payloadType, sourceLength, repeats );
 		}
-		const int tokenLength = escapeLength > 0 ? sourceLength : 1;
+
+		// A character is one to four bytes, and maxIndex below is consumed as a
+		// string length, so the step has to be the real width of the sequence -
+		// splitting one would hand the caller a truncated lead byte.
+		q4TextGlyph_t next;
+		next.bytes = 1;
+		next.glyph = NULL;
+		next.codePoint = 0;
+		if ( escapeLength == 0 ) {
+			openQ4_TextGlyphAt( useFont, &text[index], next );
+		}
+		const int tokenLength = escapeLength > 0 ? sourceLength : Max( 1, next.bytes );
 		int tokenWidth = 0;
 
 		if ( payloadType == S_ESCAPE_ICON && repeats > 0 ) {
@@ -2516,8 +2699,8 @@ bool idDeviceContext::GetMaxTextIndex( const char *text, int limit, float textSc
 					tokenWidth = repeats * openQ4_EmbeddedIconWidthUnits( icon->width, icon->height, referenceGlyph->height, Q4_EMBEDDED_ICON_REGISTERED_WIDTH );
 				}
 			}
-		} else if ( escapeLength == 0 ) {
-			tokenWidth = openQ4_GlyphAdvanceUnits( &useFont->glyphs[static_cast<unsigned char>( text[index] )], 0 );
+		} else if ( escapeLength == 0 && next.glyph != NULL ) {
+			tokenWidth = openQ4_GlyphAdvanceUnits( next.glyph, 0 );
 		}
 
 		width += tokenWidth;
@@ -2720,6 +2903,19 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 			}
 		}
 
+		// The line buffer is copied into a character at a time below, so the
+		// whole sequence has to be read here; wrapping in the middle of one
+		// would put a lead byte at the end of a line and a continuation byte at
+		// the start of the next.
+		q4TextGlyph_t charGlyph;
+		charGlyph.bytes = 1;
+		charGlyph.codePoint = (unsigned int)(unsigned char)*p;
+		charGlyph.glyph = NULL;
+		if ( escapeLength == 0 ) {
+			openQ4_TextGlyphAt( useFont, p, charGlyph );
+		}
+		const int charBytes = Max( 1, charGlyph.bytes );
+
 		int nextCharWidth = 0;
 		if ( chatWindow && !lineBreak ) {
 			if ( isIconEscape ) {
@@ -2739,8 +2935,8 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 						nextCharWidth = escapeRepeats * openQ4_ScaledFontUnits( useScale, openQ4_EmbeddedIconWidthUnits( icon->width, icon->height, referenceGlyph->height, Q4_EMBEDDED_ICON_DRAW_WIDTH ) );
 					}
 				}
-			} else if ( idStr::CharIsPrintable( *p ) ) {
-				nextCharWidth = CharWidth( *p, textScale, adjust );
+			} else if ( openQ4_CodePointIsPrintable( charGlyph.codePoint ) ) {
+				nextCharWidth = CharWidthForCodePoint( charGlyph.codePoint, textScale, adjust );
 			} else {
 				nextCharWidth = static_cast<int>( cursorSkip );
 			}
@@ -2811,11 +3007,13 @@ int idDeviceContext::DrawText( const char *text, float textScale, int textAlign,
 			len += escapeSourceLength;
 			p += escapeSourceLength;
 		} else {
-			if ( len + 1 < static_cast<int>( sizeof( buff ) ) ) {
-				buff[len++] = *p;
+			if ( len + charBytes < static_cast<int>( sizeof( buff ) ) ) {
+				for ( int i = 0; i < charBytes; i++ ) {
+					buff[len++] = p[i];
+				}
 				buff[len] = '\0';
 			}
-			p++;
+			p += charBytes;
 		}
 
 		textWidth = static_cast<float>( TextWidth( buff, textScale, -1, adjust ) );

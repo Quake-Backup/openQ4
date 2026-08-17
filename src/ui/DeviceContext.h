@@ -66,6 +66,7 @@ public:
 	void				DrawStretchPicRotated(float x, float y, float w, float h, float s0, float t0, float s1, float t1, const idMaterial *mat, float angle = 0.0f);
 
 	int					CharWidth( const char c, float scale, int adjust = 0 );
+	int					CharWidthForCodePoint( unsigned int codePoint, float scale, int adjust = 0 );
 	int					TextWidth(const char *text, float scale, int limit, int adjust = 0);
 	int					TextHeight(const char *text, float scale, int limit, int adjust = 0);
 	int					MaxCharHeight(float scale);

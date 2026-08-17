@@ -754,6 +754,36 @@ static bool Con_CollectFuzzyCompletionMatchCallback( const char *match, void *co
 	return true;
 }
 
+/*
+================
+Con_ConsoleCellForCodePoint
+
+The console sheet is 256 cells indexed by codepage byte, not by code point - see
+R_BuildConsoleFontAtlas for why that stayed. Text reaching the console is UTF-8,
+so a code point has to be mapped onto a cell of whichever codepage the sheet was
+last built for; the sheet is rebuilt whenever that changes, so a Russian session
+gets Cyrillic cells and a Polish one gets Polish cells.
+
+Returns false for a character the active codepage cannot express. Callers draw a
+question mark for those rather than nothing: a silently dropped character in a
+console line reads as a bug in whatever printed it.
+================
+*/
+static bool Con_ConsoleCellForCodePoint( unsigned int codePoint, int &cell ) {
+	unsigned char mapped = 0;
+	if ( LangDict_ByteForCodePoint( codePoint, mapped ) ) {
+		cell = mapped;
+		return true;
+	}
+
+	const char *fold = LangDict_AsciiFoldForCodePoint( codePoint );
+	if ( fold != NULL && fold[0] != '\0' ) {
+		cell = (unsigned char)fold[0];
+		return true;
+	}
+	return false;
+}
+
 void idConsoleLocal::PrintToBuffer( const char *txt, bool markNotifyTime ) {
 	int c, l;
 	int color = idStr::ColorIndex( C_COLOR_CONSOLE );
@@ -774,14 +804,32 @@ void idConsoleLocal::PrintToBuffer( const char *txt, bool markNotifyTime ) {
 			continue;
 		}
 
+		// One cell per character. A buffer cell has eight bits for the character
+		// and eight for the colour, which is no room for a code point, so what
+		// goes in is the console sheet's cell index - see
+		// Con_ConsoleCellForCodePoint. Doing the mapping here rather than at draw
+		// time is what keeps the column arithmetic below honest: a two-byte
+		// Cyrillic letter takes one column, and word wrap counts columns.
+		unsigned int codePoint = 0;
+		const int codePointBytes = Max( 1, LangDict_NextCodePoint( txt, UTF8_MAX_BYTES, codePoint ) );
+		int cell = '?';
+		Con_ConsoleCellForCodePoint( codePoint, cell );
+
 		// if we are about to print a new word, check to see if we should wrap
 		// to the new line
 		if ( c > ' ' && ( x == 0 || ( line[x - 1] & 0xff ) <= ' ' ) ) {
-			// count word length
+			// count word length, in columns rather than bytes
+			const char *scan = txt;
 			for ( l = 0; l < width; l++ ) {
-				if ( txt[l] <= ' ' ) {
+				unsigned int scanned = 0;
+				const int scannedBytes = LangDict_NextCodePoint( scan, UTF8_MAX_BYTES, scanned );
+				// Unsigned: a plain char is signed here, so every byte of a
+				// multi-byte sequence would compare below a space and end the
+				// word on its first character.
+				if ( scannedBytes <= 0 || scanned <= (unsigned int)' ' ) {
 					break;
 				}
+				scan += scannedBytes;
 			}
 
 			// word wrap
@@ -791,7 +839,7 @@ void idConsoleLocal::PrintToBuffer( const char *txt, bool markNotifyTime ) {
 			}
 		}
 
-		txt++;
+		txt += codePointBytes;
 
 		switch ( c ) {
 			case '\n':
@@ -811,7 +859,7 @@ void idConsoleLocal::PrintToBuffer( const char *txt, bool markNotifyTime ) {
 				x = 0;
 				break;
 			default:	// display character and advance
-				line[x] = ( color << 8 ) | c;
+				line[x] = ( color << 8 ) | cell;
 				x++;
 				if ( x >= width ) {
 					Linefeed();
@@ -878,6 +926,12 @@ static void Con_DrawSizedChar( float x, float y, float charWidth, float charHeig
 	renderSystem->DrawStretchPic( x, y, charWidth, charHeight, fcol, frow, fcol + size, frow + size, material );
 }
 
+static void Con_DrawSizedCodePoint( float x, float y, float charWidth, float charHeight, unsigned int codePoint, const idMaterial *material ) {
+	int cell = '?';
+	Con_ConsoleCellForCodePoint( codePoint, cell );
+	Con_DrawSizedChar( x, y, charWidth, charHeight, cell, material );
+}
+
 static void Con_DrawSmallChar( float x, float y, int ch ) {
 	Con_DrawSizedChar( x, y, localConsole.GetSmallCharWidth(), SMALLCHAR_HEIGHT, ch, localConsole.charSetShader );
 }
@@ -909,9 +963,13 @@ static void Con_DrawSizedStringExt( float x, float y, float charWidth, float cha
 			continue;
 		}
 
-		Con_DrawSizedChar( xx, y, charWidth, charHeight, *s, localConsole.charSetShader );
+		// One cell per character, not per byte: the console is fixed pitch, so a
+		// two-byte Cyrillic letter still occupies exactly one cell.
+		unsigned int codePoint = 0;
+		const int used = LangDict_NextCodePoint( reinterpret_cast<const char *>( s ), UTF8_MAX_BYTES, codePoint );
+		Con_DrawSizedCodePoint( xx, y, charWidth, charHeight, codePoint, localConsole.charSetShader );
 		xx += charWidth;
-		s++;
+		s += Max( 1, used );
 	}
 
 	renderSystem->SetColor( colorWhite );

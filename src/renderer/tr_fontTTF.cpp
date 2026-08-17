@@ -84,6 +84,14 @@ const int Q4_TTF_MAX_PAGE_AREA = 2048 * 2048;
 const double Q4_TTF_PACKING_HEADROOM = 1.25;
 
 // The console sheet: a 16x16 grid of 16x16 pixel cells indexed by byte.
+//
+// Unlike the GUI atlases this one stays byte-indexed, because 256 cells is what
+// the console and loading screen slice out of it and reworking those draw paths
+// buys nothing - so its 256 cells are a codepage rather than Latin-1, and the
+// console draw path maps a code point onto one. The sheet is rebuilt whenever
+// the active codepage changes, which is what lets a Russian session get a
+// Cyrillic console. The cost is that the console shows one script at a time;
+// the GUI, which is where localised text actually lives, has no such limit.
 const int Q4_CONSOLE_GRID = 16;
 const int Q4_CONSOLE_CELL_SIZE = 16;
 const char * const Q4_CONSOLE_ATLAS_IMAGE = "_ttfconsolefont";
@@ -95,21 +103,42 @@ const float Q4_TTF_REFERENCE_HEIGHT = 480.0f;
 const float Q4_TTF_MIN_UPSCALE = 1.0f;
 const float Q4_TTF_MAX_UPSCALE = 6.0f;
 
-// The atlases index glyphs by string-table byte, so the 0x80..0x9F band is real
-// typography rather than control codes.  The shipped .ttf files map the proper
-// Unicode codepoints, so the byte has to be translated on the way in, through
-// whichever codepage the active sys_lang put the string tables in - Windows-1250
-// for Polish, Windows-1252 otherwise.  Getting this wrong is not a missing glyph
-// but a confidently wrong one: 0xB9 is a-ogonek in CP1250 and superscript one in
-// CP1252.
+// The base 256 slots are Latin-1: slot i holds U+00<i>, whatever sys_lang is.
+// They used to be indexed by string-table byte through the active codepage,
+// which meant one atlas could only ever express one 8-bit page and had to be
+// rebuilt whenever the language moved between codepages. Engine text is UTF-8
+// now, so a slot means the same character in every language and anything above
+// U+00FF lives in the extended pages built below.
 //
-// The codepage leaves a few slots unassigned.  Those keep their raw byte value,
-// which is in the C1 control block and so is covered by no face - that yields
-// glyph 0 and the blank-with-advance path below, rather than a .notdef box.
-static int R_TTFCodepointForByte( int code ) {
-	const unsigned int unicode = LangDict_UnicodeForByte( code );
-	return ( unicode != 0 ) ? (int)unicode : code;
-}
+// The 0x80-0x9F band stays real typography rather than control codes: those
+// code points have no art in any face, but the generator fills them from a
+// donor so a legacy table folded into that band still draws.
+
+// Code points above U+00FF that every language needs, whatever it is.
+//
+// The Latin blocks are not optional. Windows-1252 reaches outside Latin-1 in
+// its 0x80-0x9F band - o-e ligature, s-caron, z-caron, florin, y-diaeresis -
+// and the shipped French, Spanish and Italian tables use those characters. As
+// single bytes they used to land in the base 256 slots; as UTF-8 they are code
+// points above U+00FF and need real pages, or French would lose every "coeur"
+// it spells properly. Latin Extended-A also covers the Central European
+// alphabets, so Polish and Czech need nothing of their own.
+//
+// The rest is typography a UTF-8 authored table writes directly rather than
+// folding to ASCII: General Punctuation and Currency Symbols for em dashes,
+// curly quotes and the euro, and Letterlike Symbols for the numero sign
+// Russian uses where English writes "No.".
+//
+// Only the code points a face actually covers are rasterised, so asking for a
+// whole block costs nothing on a face that carries none of it.
+static const unsigned int Q4_TTF_UNIVERSAL_RANGES[] = {
+	0x0100, 0x017F,		// Latin Extended-A
+	0x0180, 0x024F,		// Latin Extended-B
+	0x02B0, 0x02FF,		// Spacing Modifier Letters (circumflex, small tilde)
+	0x2000, 0x20FF,		// General Punctuation, Currency Symbols
+	0x2100, 0x21FF,		// Letterlike Symbols, Arrows
+	0
+};
 
 // The three point sizes the GUI selects between, matching the retail atlases.
 struct q4TTFSlotSpec_t {
@@ -173,6 +202,142 @@ struct q4TTFRaster_t {
 	ttGlyphBitmap_t	bitmap;
 	int				advance;
 	bool			valid;
+	bool			covered;
+};
+
+/*
+================
+R_TTFCollectExtendedCodePoints
+
+Which code points above U+00FF the atlases have to carry, as a sorted list.
+
+Three sources, unioned. The Unicode blocks the active language declares, so
+text that never passed through a string table - a player name, a server name, a
+line typed at the console - draws in the same alphabet as the menus around it.
+The universal punctuation and symbol blocks above. And a sweep of the loaded
+string tables, which catches whatever a language needs that nobody declared;
+that sweep is what makes adding a language a matter of authoring its tables
+rather than of editing this file.
+
+Bounded by construction: the declared blocks are a few hundred code points, the
+sweep can only surface characters that are actually in the shipped text, and
+the face filters both down to what it has art for.
+================
+*/
+static void R_TTFAppendRangeCodePoints( idList<unsigned int> &out, const unsigned int *ranges ) {
+	if ( ranges == NULL ) {
+		return;
+	}
+	for ( int i = 0; ranges[i] != 0; i += 2 ) {
+		for ( unsigned int cp = ranges[i]; cp <= ranges[i + 1]; cp++ ) {
+			out.Append( cp );
+		}
+	}
+}
+
+static int R_TTFCompareCodePoints( const void *a, const void *b ) {
+	const unsigned int left = *(const unsigned int *)a;
+	const unsigned int right = *(const unsigned int *)b;
+	if ( left < right ) {
+		return -1;
+	}
+	return ( left > right ) ? 1 : 0;
+}
+
+static void R_TTFCollectExtendedCodePoints( idList<unsigned int> &out ) {
+	out.Clear();
+	out.SetGranularity( 256 );
+
+	R_TTFAppendRangeCodePoints( out, Q4_TTF_UNIVERSAL_RANGES );
+	R_TTFAppendRangeCodePoints( out,
+		LangDict_ExtendedRangesForLanguage( cvarSystem->GetCVarString( "sys_lang" ) ) );
+
+	// The string tables are already normalised to UTF-8 by the loader, so this
+	// reads code points straight out of them.
+	const idLangDict *dict = ( common != NULL ) ? common->GetLanguageDict() : NULL;
+	if ( dict != NULL ) {
+		for ( int i = 0; i < dict->GetNumKeyVals(); i++ ) {
+			const idLangKeyValue *kv = dict->GetKeyVal( i );
+			if ( kv == NULL ) {
+				continue;
+			}
+			const char *value = kv->value.c_str();
+			const int length = kv->value.Length();
+			for ( int at = 0; at < length; ) {
+				unsigned int cp = 0;
+				const int used = LangDict_NextCodePoint( value + at, length - at, cp );
+				if ( used <= 0 ) {
+					break;
+				}
+				at += used;
+				if ( cp > 0xFF && cp <= GLYPH_MAX_CODEPOINT ) {
+					out.Append( cp );
+				}
+			}
+		}
+	}
+
+	if ( out.Num() < 2 ) {
+		return;
+	}
+	qsort( out.Ptr(), out.Num(), sizeof( unsigned int ), R_TTFCompareCodePoints );
+
+	int unique = 1;
+	for ( int i = 1; i < out.Num(); i++ ) {
+		if ( out[i] != out[unique - 1] ) {
+			out[unique++] = out[i];
+		}
+	}
+	out.SetNum( unique, false );
+}
+
+/*
+================
+q4TTFPageSet
+
+The extended glyph pages for one face at one point size.
+
+Allocated once per (face, point size) and refilled in place when that font is
+re-registered, never freed before renderer shutdown. A fontInfo_t is copied by
+value all over the GUI - into idDeviceContext's font list, into the GUI windows
+that cache one - and freeing a set would strand every copy still pointing at it
+with no way to tell which those are.
+================
+*/
+class q4TTFPageSet {
+public:
+					q4TTFPageSet() { memset( pages, 0, sizeof( pages ) ); }
+					~q4TTFPageSet() {
+						for ( int i = 0; i < GLYPH_MAX_PAGES; i++ ) {
+							if ( pages[i] != NULL ) {
+								Mem_Free( pages[i] );
+							}
+						}
+					}
+
+	fontGlyphPage_t *Page( int index, bool create ) {
+						if ( index < 0 || index >= GLYPH_MAX_PAGES ) {
+							return NULL;
+						}
+						if ( pages[index] == NULL && create ) {
+							pages[index] = (fontGlyphPage_t *)Mem_ClearedAlloc( sizeof( fontGlyphPage_t ) );
+						}
+						return pages[index];
+					}
+
+						// Drops the art but keeps the allocation, so a refill after a
+						// language change cannot leave last language's glyphs behind
+						// in a page the new one does not touch.
+	void			ClearArt( void ) {
+						for ( int i = 0; i < GLYPH_MAX_PAGES; i++ ) {
+							if ( pages[i] != NULL ) {
+								memset( pages[i], 0, sizeof( fontGlyphPage_t ) );
+							}
+						}
+					}
+
+	idStr			key;
+	fontGlyphPage_t *pages[GLYPH_MAX_PAGES];
 };
 
 /*
@@ -240,6 +405,102 @@ static q4TTFFontManager ttfFonts;
 // instead of leaving the material attached to a purged scratch image.
 static idMaterial *ttfConsoleMaterial = NULL;
 static idImage *ttfConsoleOriginalImage = NULL;
+
+// Every atlas material this module generates, with the source text that
+// produces it.  These are runtime declarations with no file behind them, so
+// the declaration manager cannot rebuild one on its own; see
+// R_TTFRestoreAtlasMaterials for what that costs and how it is repaired.
+class q4TTFAtlasMaterial {
+public:
+	idStr	materialName;
+	idStr	imageName;
+	idStr	source;
+};
+
+static idList<q4TTFAtlasMaterial *> ttfAtlasMaterials;
+
+static idList<q4TTFPageSet *> ttfPageSets;
+
+/*
+================
+R_TTFFindPageSet
+
+Keyed by the atlas name, which already encodes face and point size.
+================
+*/
+static q4TTFPageSet *R_TTFFindPageSet( const char *key ) {
+	for ( int i = 0; i < ttfPageSets.Num(); i++ ) {
+		if ( ttfPageSets[i]->key.Icmp( key ) == 0 ) {
+			ttfPageSets[i]->ClearArt();
+			return ttfPageSets[i];
+		}
+	}
+	q4TTFPageSet *set = new q4TTFPageSet();
+	set->key = key;
+	ttfPageSets.Append( set );
+	return set;
+}
+
+/*
+================
+R_TTFAtlasMaterialSource
+
+The atlas lives in a generated image whose name starts with an underscore, so
+the image manager hands the same object to every reference regardless of the
+sampler parameters asked for.
+================
+*/
+static void R_TTFAtlasMaterialSource( const char *imageName, const char *materialName, idStr &source ) {
+	source = "";
+	source += va( "%s\n", materialName );
+	source += "{\n";
+	source += "\t{\n";
+	source += "\t\tblend blend\n";
+	source += "\t\tcolored\n";
+	source += "\t\tnopicmip\n";
+	source += "\t\tlinear\n";
+	source += "\t\tclamp\n";
+	source += va( "\t\tmap %s\n", imageName );
+	source += "\t}\n";
+	source += "}\n";
+}
+
+/*
+================
+R_TTFMaterialSamplesAtlas
+
+A material that still carries the generated stage needs no work.  Anything else
+- no stages at all, or a stage pointing at the default image - means the
+declaration was reset behind our back and has to be rebuilt.
+================
+*/
+static bool R_TTFMaterialSamplesAtlas( const idMaterial *material, const char *imageName ) {
+	if ( material == NULL || material->GetNumStages() < 1 ) {
+		return false;
+	}
+	const shaderStage_t *stage = material->GetStage( 0 );
+	const idImage *bound = ( stage != NULL ) ? stage->texture.image : NULL;
+	return bound != NULL && idStr::Icmp( bound->GetName(), imageName ) == 0;
+}
+
+/*
+================
+R_TTFInstallAtlasStage
+
+Installs the generated stage on a declaration the manager has already created.
+SetText is what makes the declaration self-describing: without it the only copy
+of the atlas stage is the parsed data this call produces, and anything that
+resets that data - a level load purge, a reloadDecls - destroys the font for the
+rest of the session.  Implicit declarations are excluded from the network decl
+checksum, so giving one text stays process local.
+================
+*/
+static void R_TTFInstallAtlasStage( idMaterial *material, const idStr &source ) {
+	material->SetText( source.c_str() );
+	material->FreeData();
+	material->Parse( source.c_str(), source.Length() );
+	material->SetSort( SS_GUI );
+}
 
 /*
 ================
@@ -314,26 +575,8 @@ than shipped as a .mtr, which keeps this feature inside the executable.
 ================
 */
 static const idMaterial *R_TTFCreateAtlasMaterial( const char *imageName, const char *materialName ) {
-	// Only ever created here, so finding one means a previous registration
-	// already built it; makeDefault is off so a miss really is a miss.
-	const idMaterial *existing = declManager->FindMaterial( materialName, false );
-	if ( existing != NULL ) {
-		existing->SetSort( SS_GUI );
-		return existing;
-	}
-
 	idStr source;
-	source += va( "%s\n", materialName );
-	source += "{\n";
-	source += "\t{\n";
-	source += "\t\tblend blend\n";
-	source += "\t\tcolored\n";
-	source += "\t\tnopicmip\n";
-	source += "\t\tlinear\n";
-	source += "\t\tclamp\n";
-	source += va( "\t\tmap %s\n", imageName );
-	source += "\t}\n";
-	source += "}\n";
+	R_TTFAtlasMaterialSource( imageName, materialName, source );
 
 	// Renderer-generated atlas materials are process-local implementation
 	// details. Keep them implicit so a graphical client does not add decls to
@@ -342,43 +585,88 @@ static const idMaterial *R_TTFCreateAtlasMaterial( const char *imageName, const 
 	if ( material == NULL ) {
 		return NULL;
 	}
-	// FindMaterial creates and default-parses an implicit declaration. Direct
-	// Parse callers must honor the declaration-manager contract and release that
-	// default data before replacing it with the runtime atlas stage.
-	material->FreeData();
-	material->Parse( source.c_str(), source.Length() );
-	material->SetSort( SS_GUI );
+
+	// Reinstall unconditionally when the declaration is not already sampling the
+	// atlas. Returning an existing declaration untouched would hand back a
+	// material the manager had reset to the implicit default, which samples a
+	// name no image is registered under and therefore draws nothing at all.
+	if ( !R_TTFMaterialSamplesAtlas( material, imageName ) ) {
+		R_TTFInstallAtlasStage( material, source );
+	} else {
+		material->SetSort( SS_GUI );
+	}
+
+	for ( int i = 0; i < ttfAtlasMaterials.Num(); i++ ) {
+		if ( ttfAtlasMaterials[i]->materialName.Icmp( materialName ) == 0 ) {
+			return material;
+		}
+	}
+
+	q4TTFAtlasMaterial *entry = new q4TTFAtlasMaterial();
+	entry->materialName = materialName;
+	entry->imageName = imageName;
+	entry->source = source;
+	ttfAtlasMaterials.Append( entry );
 	return material;
 }
 
 /*
 ================
-R_TTFBuildSlot
+R_TTFPackAtlas
 
-Rasterises codepoints 32..255 for one point size, packs them into a page and
-fills in the fontInfo_t the GUI will read.
+Rasterises one list of code points at one point size, packs them into a single
+page, uploads it, and reports each one's metrics.
+
+Both the base Latin-1 slots and the extended pages come through here, so a
+glyph above U+00FF gets exactly the same border, gutter and metric treatment as
+one below it. The layout rules the retail atlases set are not something an
+extended page may quietly diverge from.
+
+'requestedUpscale' is a ceiling rather than a promise - see the area cap below -
+and what it settled on comes back in result.usedUpscale. Metrics are recorded in
+point units either way, so a reduced scale costs sharpness and never layout.
+
+outCovered is optional: the base slots are always addressable, blank or not,
+while an extended page has to be able to say "this face has no art here" so the
+text layer can substitute rather than draw a zero-advance hole.
 ================
 */
-static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4TTFSlotSpec_t &slot,
-							float upscale, fontInfo_t &out, float &outMaxWidth, float &outMaxHeight ) {
-	memset( &out, 0, sizeof( out ) );
-	outMaxWidth = 0.0f;
-	outMaxHeight = 0.0f;
+struct q4TTFAtlasResult_t {
+	const idMaterial *	material;
+	float				maxWidth;
+	float				maxHeight;
+	int					rendered;
+	float				usedUpscale;
+};
 
-	const int padding = R_TTFGlyphPadding( slot.pointSize, upscale );
+static bool R_TTFPackAtlas( idTrueTypeFont &face, const char *fontName, int pointSize, float requestedUpscale,
+							const unsigned int *codePoints, int count, bool measureLayout,
+							const char *imageName, const char *materialName,
+							glyphInfo_t *outGlyphs, bool *outCovered, q4TTFAtlasResult_t &result ) {
+	result.material = NULL;
+	result.maxWidth = 0.0f;
+	result.maxHeight = 0.0f;
+	result.rendered = 0;
+	result.usedUpscale = requestedUpscale;
+
+	if ( count <= 0 ) {
+		return false;
+	}
+
+	const int padding = R_TTFGlyphPadding( pointSize, requestedUpscale );
 	// Glyph area grows with the square of the rasterisation scale, so at 4K the
 	// large slot would otherwise want a 4096x4096 page - 64MB for one size of
 	// one face. Predict the area from the glyph metrics, which needs no
 	// rasterising, and pull this slot's scale back until it fits the cap. The
 	// clamp only ever engages above 1440p, where 3x is already well past the
 	// point of visible return.
-	float slotUpscale = upscale;
+	float slotUpscale = requestedUpscale;
 	{
 		double requiredArea = 0.0;
-		const float probeScale = face.ScaleForPixelHeight( (float)slot.pointSize * upscale );
-		for ( int code = Q4_TTF_FIRST_CODE; code <= Q4_TTF_LAST_CODE; code++ ) {
+		const float probeScale = face.ScaleForPixelHeight( (float)pointSize * requestedUpscale );
+		for ( int i = 0; i < count; i++ ) {
 			ttGlyphMetrics_t metrics;
-			const int glyphIndex = face.GlyphForCodepoint( R_TTFCodepointForByte( code ) );
+			const int glyphIndex = face.GlyphForCodepoint( (int)codePoints[i] );
 			if ( glyphIndex == 0 || !face.GetGlyphMetrics( glyphIndex, metrics ) ) {
 				continue;
 			}
@@ -391,12 +679,13 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 		}
 		const double capArea = (double)Q4_TTF_MAX_PAGE_AREA;
 		if ( requiredArea * Q4_TTF_PACKING_HEADROOM > capArea ) {
-			slotUpscale = upscale * (float)sqrt( capArea / ( requiredArea * Q4_TTF_PACKING_HEADROOM ) );
+			slotUpscale = requestedUpscale * (float)sqrt( capArea / ( requiredArea * Q4_TTF_PACKING_HEADROOM ) );
 			slotUpscale = Max( Q4_TTF_MIN_UPSCALE, slotUpscale );
 		}
 	}
+	result.usedUpscale = slotUpscale;
 
-	const float pixelEm = (float)slot.pointSize * slotUpscale;
+	const float pixelEm = (float)pointSize * slotUpscale;
 	const float scale = face.ScaleForPixelHeight( pixelEm );
 	if ( scale <= 0.0f ) {
 		return false;
@@ -407,10 +696,9 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	// slot's own, so the widened rect always stays inside the packed cell.
 	const float extraBorder = R_TTFGlyphBorder( slotUpscale ) - 1.0f;
 	// Converts font design units straight to the slot's metric units.
-	const float unitsToPoint = (float)slot.pointSize / (float)face.UnitsPerEm();
+	const float unitsToPoint = (float)pointSize / (float)face.UnitsPerEm();
 	const float pixelsToPoint = 1.0f / slotUpscale;
 
-	const int count = Q4_TTF_LAST_CODE - Q4_TTF_FIRST_CODE + 1;
 	q4TTFRaster_t *rasters = (q4TTFRaster_t *)Mem_ClearedAlloc( count * sizeof( q4TTFRaster_t ) );
 
 	int totalArea = 0;
@@ -419,8 +707,7 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	int rendered = 0;
 
 	for ( int i = 0; i < count; i++ ) {
-		const int code = Q4_TTF_FIRST_CODE + i;
-		const int codepoint = R_TTFCodepointForByte( code );
+		const int codepoint = (int)codePoints[i];
 		const int glyphIndex = face.GlyphForCodepoint( codepoint );
 
 		ttGlyphMetrics_t metrics;
@@ -429,6 +716,7 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 		}
 		rasters[i].advance = metrics.advance;
 		rasters[i].valid = true;
+		rasters[i].covered = ( glyphIndex != 0 );
 
 		if ( glyphIndex == 0 && codepoint != 0 ) {
 			// Not covered by this face; leave a blank slot but keep the advance.
@@ -450,6 +738,9 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	}
 
 	if ( rendered == 0 ) {
+		for ( int i = 0; i < count; i++ ) {
+			idTrueTypeFont::FreeGlyphBitmap( rasters[i].bitmap );
+		}
 		Mem_Free( rasters );
 		return false;
 	}
@@ -504,7 +795,7 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	}
 
 	if ( !packed ) {
-		common->Warning( "TTF font: '%s' %ipt does not fit a %ix%i atlas", fontName, slot.pointSize, pageWidth, pageHeight );
+		common->Warning( "TTF font: '%s' %ipt does not fit a %ix%i atlas", fontName, pointSize, pageWidth, pageHeight );
 		for ( int i = 0; i < count; i++ ) {
 			idTrueTypeFont::FreeGlyphBitmap( rasters[i].bitmap );
 		}
@@ -517,13 +808,16 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	// Re-run the packer, this time actually blitting and recording the layout.
 	packer.Init( pageWidth, pageHeight );
 	for ( int i = 0; i < count; i++ ) {
-		const int code = Q4_TTF_FIRST_CODE + i;
-		glyphInfo_t &glyph = out.glyphs[code];
+		const unsigned int code = codePoints[i];
+		glyphInfo_t &glyph = outGlyphs[i];
 
 		if ( !rasters[i].valid ) {
 			continue;
 		}
 		glyph.horiAdvance = rasters[i].advance * unitsToPoint;
+		if ( outCovered != NULL ) {
+			outCovered[i] = rasters[i].covered;
+		}
 
 		if ( rasters[i].bitmap.pixels == NULL ) {
 			continue;
@@ -566,9 +860,14 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 		// retail font could draw, and letting one set the layout cell inflates
 		// line spacing and shrinks the character count DrawText fits into a
 		// rect.  Measure the repertoire the GUIs were actually authored against.
-		if ( code < 0x80 || code > 0x9F ) {
-			outMaxWidth = Max( outMaxWidth, glyph.width );
-			outMaxHeight = Max( outMaxHeight, glyph.height );
+		//
+		// Extended pages are excluded for the same reason and pass measureLayout
+		// false: line spacing and the character cell are properties of the font
+		// as the GUIs were laid out against it, and must not move because a
+		// language happened to pull in a tall Cyrillic capital or a wide arrow.
+		if ( measureLayout && ( code < 0x80 || code > 0x9F ) ) {
+			result.maxWidth = Max( result.maxWidth, glyph.width );
+			result.maxHeight = Max( result.maxHeight, glyph.height );
 		}
 	}
 
@@ -580,11 +879,6 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	// Upload.  The retail atlases are white RGB with coverage in alpha, and the
 	// GUI blend path is built around exactly that, so the page is expanded to
 	// the same layout rather than relying on a single-channel swizzle.
-	idStr safeName = fontName;
-	safeName.Replace( "/", "_" );
-	const idStr imageName = va( "_ttfatlas_%s_%i", safeName.c_str(), slot.pointSize );
-	const idStr materialName = va( "openq4/ttffont/%s_%i", safeName.c_str(), slot.pointSize );
-
 	idImageOpts opts;
 	opts.textureType = TT_2D;
 	opts.format = FMT_RGBA8;
@@ -594,7 +888,7 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	opts.numLevels = 1;
 	opts.isPersistant = true;
 
-	idImage *image = globalImages->ScratchImage( imageName.c_str(), &opts, TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
+	idImage *image = globalImages->ScratchImage( imageName, &opts, TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
 	if ( image == NULL ) {
 		Mem_Free( page );
 		return false;
@@ -621,15 +915,15 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 			rgba[i * 4 + 2] = page[i];
 			rgba[i * 4 + 3] = 255;
 		}
-		R_WriteTGA( va( "ttfatlas/%s.tga", imageName.c_str() ), rgba, pageWidth, pageHeight, false, "fs_savepath" );
+		R_WriteTGA( va( "ttfatlas/%s.tga", imageName ), rgba, pageWidth, pageHeight, false, "fs_savepath" );
 		Mem_Free( rgba );
 		common->Printf( "TTF font: %s atlas %ix%i, %i glyphs, format=%i levels=%i\n",
-						imageName.c_str(), pageWidth, pageHeight, rendered, (int)opts.format, opts.numLevels );
+						imageName, pageWidth, pageHeight, rendered, (int)opts.format, opts.numLevels );
 	}
 
 	Mem_Free( page );
 
-	const idMaterial *material = R_TTFCreateAtlasMaterial( imageName.c_str(), materialName.c_str() );
+	const idMaterial *material = R_TTFCreateAtlasMaterial( imageName, materialName );
 	if ( material == NULL ) {
 		return false;
 	}
@@ -639,23 +933,243 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 		const shaderStage_t *stage = ( stages > 0 ) ? material->GetStage( 0 ) : NULL;
 		const idImage *bound = ( stage != NULL ) ? stage->texture.image : NULL;
 		common->Printf( "TTF font: material '%s' stages=%i boundImage=%s %ix%i (atlas image %ix%i)\n",
-						materialName.c_str(), stages,
+						materialName, stages,
 						bound != NULL ? bound->GetName() : "<none>",
 						bound != NULL ? bound->GetUploadWidth() : -1,
 						bound != NULL ? bound->GetUploadHeight() : -1,
 						image->GetUploadWidth(), image->GetUploadHeight() );
 	}
 
-	out.material = material;
+	result.material = material;
+	result.rendered = rendered;
+	return true;
+}
+
+/*
+================
+R_TTFBuildExtendedPages
+
+Everything the face has art for above U+00FF, packed into one atlas per point
+size and scattered into the sparse page directory the text layer reads.
+
+Asking the face last is what keeps this cheap: the requested list is whole
+Unicode blocks, but a face that covers none of a block contributes nothing to
+the atlas, and 'strogg' - which is Latin-only by design - ends up with no
+extended pages at all rather than a page full of blanks.
+================
+*/
+static void R_TTFBuildExtendedPages( idTrueTypeFont &face, const char *fontName, const idStr &safeName,
+									 int pointSize, float upscale, const idList<unsigned int> &requested,
+									 fontInfo_t &out ) {
+	if ( requested.Num() == 0 ) {
+		return;
+	}
+
+	idList<unsigned int> covered;
+	covered.SetGranularity( 256 );
+	for ( int i = 0; i < requested.Num(); i++ ) {
+		if ( face.GlyphForCodepoint( (int)requested[i] ) != 0 ) {
+			covered.Append( requested[i] );
+		}
+	}
+	if ( covered.Num() == 0 ) {
+		return;
+	}
+
+	const idStr imageName = va( "_ttfatlasx_%s_%i", safeName.c_str(), pointSize );
+	const idStr materialName = va( "openq4/ttffontx/%s_%i", safeName.c_str(), pointSize );
+
+	glyphInfo_t *glyphs = (glyphInfo_t *)Mem_ClearedAlloc( covered.Num() * sizeof( glyphInfo_t ) );
+	bool *isCovered = (bool *)Mem_ClearedAlloc( covered.Num() * sizeof( bool ) );
+
+	q4TTFAtlasResult_t result;
+	const bool packed = R_TTFPackAtlas( face, fontName, pointSize, upscale, covered.Ptr(), covered.Num(),
+										false, imageName.c_str(), materialName.c_str(),
+										glyphs, isCovered, result );
+	if ( !packed || result.material == NULL ) {
+		Mem_Free( glyphs );
+		Mem_Free( isCovered );
+		return;
+	}
+
+	q4TTFPageSet *set = R_TTFFindPageSet( imageName.c_str() );
+	int installed = 0;
+	for ( int i = 0; i < covered.Num(); i++ ) {
+		if ( !isCovered[i] ) {
+			continue;
+		}
+		const unsigned int codePoint = covered[i];
+		fontGlyphPage_t *page = set->Page( (int)( codePoint >> GLYPH_PAGE_SHIFT ), true );
+		if ( page == NULL ) {
+			continue;
+		}
+		const int index = (int)( codePoint & ( GLYPH_PAGE_SIZE - 1 ) );
+		page->material = result.material;
+		page->glyphs[index] = glyphs[i];
+		page->covered[index] = true;
+		installed++;
+	}
+
+	Mem_Free( glyphs );
+	Mem_Free( isCovered );
+
+	out.extendedPages = set->pages;
+
+	if ( r_ttfFontDebug.GetBool() ) {
+		common->Printf( "TTF font: '%s' %ipt extended atlas, %i of %i requested code points\n",
+						fontName, pointSize, installed, requested.Num() );
+	}
+}
+
+/*
+================
+R_TTFBuildSlot
+
+Builds one point size of one face: the Latin-1 base slots, then whatever the
+active language and the loaded string tables need above them.
+================
+*/
+static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4TTFSlotSpec_t &slot,
+							float upscale, const idList<unsigned int> &extendedCodePoints,
+							fontInfo_t &out, float &outMaxWidth, float &outMaxHeight ) {
+	memset( &out, 0, sizeof( out ) );
+	outMaxWidth = 0.0f;
+	outMaxHeight = 0.0f;
+
+	// Slot i is U+00<i>. The list is contiguous, so the base glyph array can be
+	// written straight through rather than scattered.
+	const int count = Q4_TTF_LAST_CODE - Q4_TTF_FIRST_CODE + 1;
+	unsigned int *codePoints = (unsigned int *)Mem_Alloc( count * sizeof( unsigned int ) );
+	for ( int i = 0; i < count; i++ ) {
+		codePoints[i] = (unsigned int)( Q4_TTF_FIRST_CODE + i );
+	}
+
+	idStr safeName = fontName;
+	safeName.Replace( "/", "_" );
+	const idStr imageName = va( "_ttfatlas_%s_%i", safeName.c_str(), slot.pointSize );
+	const idStr materialName = va( "openq4/ttffont/%s_%i", safeName.c_str(), slot.pointSize );
+
+	q4TTFAtlasResult_t result;
+	const bool packed = R_TTFPackAtlas( face, fontName, slot.pointSize, upscale, codePoints, count, true,
+										imageName.c_str(), materialName.c_str(),
+										&out.glyphs[Q4_TTF_FIRST_CODE], NULL, result );
+	Mem_Free( codePoints );
+
+	if ( !packed || result.material == NULL ) {
+		return false;
+	}
+
+	const float unitsToPoint = (float)slot.pointSize / (float)face.UnitsPerEm();
+
+	outMaxWidth = result.maxWidth;
+	outMaxHeight = result.maxHeight;
+	out.material = result.material;
+	out.glyphIndexing = GLYPH_INDEX_UNICODE;
 	out.pointSize = (float)slot.pointSize;
 	out.ascender = face.Ascender() * unitsToPoint;
 	out.descender = -face.Descender() * unitsToPoint;
 	out.fontHeight = out.ascender + out.descender;
 	idStr::Copynz( out.name, va( "ttf/%s_%i", safeName.c_str(), slot.pointSize ), sizeof( out.name ) );
 
+	// Built at the scale the base atlas settled on, so both halves of one point
+	// size are rasterised alike even when the area cap pulled the base back.
+	R_TTFBuildExtendedPages( face, fontName, safeName, slot.pointSize, result.usedUpscale,
+							 extendedCodePoints, out );
+
 	return true;
 }
 
+}
+
+/*
+============
+R_TTFRestoreAtlasMaterials
+
+idDeclManagerLocal::BeginLevelLoad purges every declaration that is not marked
+as parsed outside a level load, and idDeclManagerLocal::FindType clears that
+mark on anything it resolves while a level is loading.  A face first registered
+during a load - or any face re-registered during one, which is what a lazy font
+refresh after a vid_restart does - therefore ends up classified as level media.
+
+For a shipped material that is harmless: the next reference reparses it from its
+.mtr text.  These atlas materials have no file, and the implicit text the
+manager generates for a nameless declaration maps an image called after the
+material itself, which does not exist.  That resolves to the default image,
+which is fully transparent outside developer builds, so a purged atlas material
+draws every glyph as nothing at all - silently, with no warning and no way back
+inside the session.
+
+The stage is now carried in the declaration's own text, so a purge is
+recoverable; this reasserts it immediately after the purge, before the loading
+screen or anything else draws with a font.
+============
+*/
+void R_TTFRestoreAtlasMaterials( void ) {
+	for ( int i = 0; i < ttfAtlasMaterials.Num(); i++ ) {
+		const q4TTFAtlasMaterial *entry = ttfAtlasMaterials[i];
+
+		// Look without parsing first. A healthy declaration then costs nothing,
+		// and in particular is not resolved through FindType, which would clear
+		// its parsed-outside-level-load mark and make it purgeable next time.
+		const idMaterial *current = static_cast<const idMaterial *>(
+			declManager->FindDeclWithoutParsing( DECL_MATERIAL, entry->materialName.c_str(), false ) );
+		if ( R_TTFMaterialSamplesAtlas( current, entry->imageName.c_str() ) ) {
+			continue;
+		}
+		if ( r_ttfFontDebug.GetBool() ) {
+			common->Printf( "TTF font: restoring purged atlas material '%s'\n", entry->materialName.c_str() );
+		}
+
+		// FindMaterial reparses the declaration from the text installed at
+		// registration, which is normally all it takes; reinstall directly if
+		// something still left it pointing somewhere else.
+		idMaterial *material = const_cast<idMaterial *>( declManager->FindMaterial( entry->materialName.c_str(), false ) );
+		if ( material == NULL ) {
+			continue;
+		}
+		if ( !R_TTFMaterialSamplesAtlas( material, entry->imageName.c_str() ) ) {
+			R_TTFInstallAtlasStage( material, entry->source );
+		}
+		material->SetSort( SS_GUI );
+	}
+}
+
+/*
+============
+R_UseScalableFonts
+
+Whether to draw from the .ttf faces, which is r_useTrueTypeFonts except when the
+active language leaves no choice.
+
+The retail .fontdat atlases are 256 byte-indexed glyphs of Latin art, so the
+most a byte-indexed font can express is one 8-bit codepage - and for Cyrillic
+not even that, because no shipped atlas has the glyphs whatever byte you index
+it with. Honouring r_useTrueTypeFonts 0 under Russian would produce a menu of
+question marks with nothing to explain it, so the language wins and says so
+once.
+
+The cvar is deliberately not written back. It is archived, and quietly
+rewriting a user's setting because they tried a language would leave the bitmap
+path off after they switched away again.
+============
+*/
+static bool R_UseScalableFonts( void ) {
+	if ( r_useTrueTypeFonts.GetBool() ) {
+		return true;
+	}
+
+	const char *language = cvarSystem->GetCVarString( "sys_lang" );
+	if ( !LangDict_LanguageNeedsScalableFonts( language ) ) {
+		return false;
+	}
+
+	static idStr reportedLanguage;
+	if ( reportedLanguage.Icmp( language ) != 0 ) {
+		reportedLanguage = language;
+		common->Printf( "TTF font: '%s' needs code points the bitmap atlases cannot address; "
+						"ignoring r_useTrueTypeFonts 0 for this language\n", language );
+	}
+	return true;
 }
 
 /*
@@ -668,7 +1182,7 @@ back to the retail atlases.
 ============
 */
 bool R_RegisterTrueTypeFont( const char *fontName, fontInfoEx_t &font ) {
-	if ( !r_useTrueTypeFonts.GetBool() ) {
+	if ( !R_UseScalableFonts() ) {
 		return false;
 	}
 
@@ -679,13 +1193,19 @@ bool R_RegisterTrueTypeFont( const char *fontName, fontInfoEx_t &font ) {
 
 	const float upscale = R_TTFUpscale();
 
+	// The same for every face and size, and the string table sweep inside it is
+	// not free, so collect it once here rather than three times per face.
+	idList<unsigned int> extendedCodePoints;
+	R_TTFCollectExtendedCodePoints( extendedCodePoints );
+
 	fontInfo_t *slots[3] = { &font.fontInfoSmall, &font.fontInfoMedium, &font.fontInfoLarge };
 	float *maxWidths[3] = { &font.maxWidthSmall, &font.maxWidthMedium, &font.maxWidthLarge };
 	float *maxHeights[3] = { &font.maxHeightSmall, &font.maxHeightMedium, &font.maxHeightLarge };
 
 	int built = 0;
 	for ( int i = 0; i < 3; i++ ) {
-		if ( R_TTFBuildSlot( *face, fontName, Q4_TTF_SLOTS[i], upscale, *slots[i], *maxWidths[i], *maxHeights[i] ) ) {
+		if ( R_TTFBuildSlot( *face, fontName, Q4_TTF_SLOTS[i], upscale, extendedCodePoints,
+							 *slots[i], *maxWidths[i], *maxHeights[i] ) ) {
 			built++;
 		}
 	}
@@ -715,7 +1235,7 @@ unchanged because the UV maths is purely fractional.
 ============
 */
 bool R_BuildConsoleFontAtlas( void ) {
-	if ( !r_useTrueTypeFonts.GetBool() ) {
+	if ( !R_UseScalableFonts() ) {
 		return false;
 	}
 
@@ -739,7 +1259,16 @@ bool R_BuildConsoleFontAtlas( void ) {
 	int rendered = 0;
 
 	for ( int code = 32; code <= 255; code++ ) {
-		const int codepoint = R_TTFCodepointForByte( code );
+		// The cells are codepage bytes, so the character a cell stands for
+		// depends on the active language. Getting this wrong is not a missing
+		// glyph but a confidently wrong one: 0xB9 is a-ogonek in Windows-1250,
+		// superscript one in Windows-1252 and a soft hyphen in Windows-1251.
+		//
+		// A slot the codepage leaves unassigned keeps its raw byte value, which
+		// lands in the C1 control block that no face covers - so it yields glyph
+		// 0 and an empty cell, rather than a .notdef box.
+		const unsigned int unicode = LangDict_UnicodeForByte( code );
+		const int codepoint = ( unicode != 0 ) ? (int)unicode : code;
 		const int glyphIndex = face->GlyphForCodepoint( codepoint );
 		if ( glyphIndex == 0 ) {
 			continue;
@@ -869,5 +1398,10 @@ void R_ShutdownTrueTypeFonts( void ) {
 	}
 	ttfConsoleMaterial = NULL;
 	ttfConsoleOriginalImage = NULL;
+	ttfAtlasMaterials.DeleteContents( true );
+	// Nothing may still be drawing by this point: every fontInfo_t that shares a
+	// page set is dead with the renderer, and idDeviceContext re-registers its
+	// fonts from scratch after a restart.
+	ttfPageSets.DeleteContents( true );
 	ttfFonts.Shutdown();
 }
