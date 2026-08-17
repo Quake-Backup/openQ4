@@ -259,6 +259,11 @@ Implemented scope:
 - Presentation samples and clock anchors are transient. The SP and MP `Save()` paths do not write them, and restore/map initialization reseeds them instead of changing the save-game or network contract.
 - Live first-person `renderView.time` uses the presentation clock, while demo playback and timedemo remain on authoritative simulation time.
 - Cadence/discontinuity checks snap instead of blending across missing tics, teleports, or other large changes. MP also disables interpolation while active prediction-error smoothing is correcting the viewed player.
+- World entities that moved during the last authoritative tic are re-anchored onto the same presentation time as the camera (`g_presentationInterpolation`, default on). `idGameLocal::SamplePresentationEntityPoses()` takes one transform sample per tic across `spawnedEntities` and lists the ones that moved; `UpdatePresentationEntityPoses()` re-pushes those render entities from the interpolated transform on each draw frame. Only the transform is re-pushed — physics, clip models, scripts, animation and sound are untouched, and the authoritative render entity is restored before anything gameplay-facing can read it through `GetPosition()`. `idLight` also carries its `renderLight`, and client entities bound to an interpolated entity follow through the same `UpdatePresentationTransform()` walk the view model uses.
+
+  This closes the mover-relative case. The camera reaches the current authoritative pose one tic late, so a lift or tram drawn at its authoritative pose separated from the rider's eye by a whole tic of its own travel and snapped back every tic. The result was a 60 Hz sawtooth of everything the player was riding — invisible against static geometry at any speed, and filling the entire view inside a tram car (`game/storage2`, `game/tram1b`).
+
+  Two rules keep the scene on one clock rather than trading one mismatch for another. `idPlayer::CanInterpolatePresentationView()` refuses to interpolate the eye when its carrier — bind master, or the entity under its feet — moved but cannot be interpolated this frame. `idPlayer::IsPresentationViewInterpolated()` gates the entity pass on the drawn camera actually being the interpolated first-person pose, so cinematic, private-camera and third-person frames put the whole scene back on the authoritative clock together. The view model opts out because `UpdatePresentationWeapon()` already owns it, and actors opt out in multiplayer so remote players keep being drawn where the server rewinds them to.
 
 Validation recorded for this slice:
 
@@ -269,8 +274,11 @@ Validation recorded for this slice:
 
 Explicitly deferred:
 
-- generic entity, mover, AI, local world-body, remote-player, projectile, dynamic-light, world-space BSE/client-effect, trail, fracture, ragdoll, vehicle, and other bespoke visual-owner interpolation (client entities bound to the first-person view model are covered above; the weapon's own muzzle-flash `renderLight_t` is not, and still moves on the simulation clock)
-- moving-platform-relative first-person special cases and alternate camera, security-camera, portal-sky, and cinematic-camera interpolation
+- remote-player and AI interpolation in multiplayer, deliberately excluded so drawn positions keep matching what lag compensation rewinds to
+- entities whose visuals are not driven by the render entity transform: multi-body AF presenters that own their own `modelDefHandles[]`, and the weapon's own muzzle-flash `renderLight_t`, which still moves on the simulation clock
+- world-space BSE effects that are not client entities bound to an interpolated entity, plus trail, fracture and other bespoke visual owners that rebuild geometry per tic rather than moving a transform
+- alternate camera, security-camera, portal-sky and cinematic-camera interpolation. These are not vibration sources today because `IsPresentationViewInterpolated()` puts the whole scene back on the authoritative clock whenever one of them is the drawn view, but it does mean high-refresh smoothing is unavailable in those modes
+- animated interpolated entities still drop their cached dynamic model on every draw frame, because the renderer's `r_useRepeatedStateReuse` transform-only path requires `renderEntity.callback == NULL`. This is a CPU cost on a small set of entities, not a correctness gap; extending the reuse path to callback entities would need a way to prove the callback is time-only
 - same-fire-frame weapon FX/tracer compensation and other presentation-time gameplay-adjacent cosmetic retraces
 - raw-input compensation or presentation bias/extrapolation; the engine's optional presentation-input sampler is not consumed by the current game-library slice
 - a successful full loopback-client capture, human SP/MP feel testing, cut-heavy cinematic coverage, Apple-platform testing, and dedicated high-refresh display/hardware qualification
