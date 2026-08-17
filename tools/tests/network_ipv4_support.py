@@ -1675,25 +1675,49 @@ def validate_generated_font_decl_checksum_stability() -> None:
         "static const idMaterial *R_TTFCreateAtlasMaterial",
         "generated TTF atlas material",
     )
+    require(atlas, "declManager->FindMaterial( materialName, true )", "implicit generated TTF atlas material")
+    # CreateNewDecl would give the declaration a real source file, which is what
+    # puts it in the network checksum. FindMaterial keeps it implicit, and
+    # GetChecksum skips implicit declarations outright, so the runtime text the
+    # install below gives it stays process local.
+    reject(atlas, "CreateNewDecl(", "generated TTF atlas declaration checksum")
+
+    install = function_body(
+        source,
+        "static void R_TTFInstallAtlasStage",
+        "generated TTF atlas stage install",
+    )
     for token in (
-        "declManager->FindMaterial( materialName, true )",
+        "material->SetText( source.c_str() );",
         "material->FreeData();",
         "material->Parse( source.c_str(), source.Length() );",
     ):
-        require(atlas, token, "implicit generated TTF atlas material")
-    for token in ("CreateNewDecl(", "SetText("):
-        reject(atlas, token, "generated TTF atlas declaration checksum")
+        require(install, token, "implicit generated TTF atlas material")
+    reject(install, "CreateNewDecl(", "generated TTF atlas declaration checksum")
     require_before(
-        atlas,
-        "declManager->FindMaterial( materialName, true )",
-        "material->FreeData();",
-        "implicit generated TTF atlas material cleanup",
-    )
-    require_before(
-        atlas,
+        install,
         "material->FreeData();",
         "material->Parse( source.c_str(), source.Length() );",
         "implicit generated TTF atlas material",
+    )
+    require_before(
+        atlas,
+        "declManager->FindMaterial( materialName, true )",
+        "R_TTFInstallAtlasStage(",
+        "implicit generated TTF atlas material cleanup",
+    )
+
+    checksum = function_body(
+        read("src/framework/DeclManager.cpp"),
+        "int idDeclManagerLocal::GetChecksum( void ) const",
+        "declaration checksum",
+    )
+    require(checksum, "if ( decl->sourceFile == &implicitDecls )", "implicit declaration checksum exemption")
+    require_before(
+        checksum,
+        "if ( decl->sourceFile == &implicitDecls )",
+        "checksumData[total*2+1] = decl->checksum;",
+        "implicit declaration checksum exemption",
     )
 
     console = function_body(source, "bool R_BuildConsoleFontAtlas", "runtime console font retarget")
