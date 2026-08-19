@@ -1297,6 +1297,7 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	if ( !glConfig.isInitialized ) {
 		return;
 	}
+	R_RendererMetrics_MarkCpuFrameBegin();
 
 	// determine which back end we will use
 	SetBackEndRenderer();
@@ -2255,6 +2256,22 @@ idRenderSystemLocal::GetGLConfig
 */
 const glconfig_t &idRenderSystemLocal::GetGLConfig( void ) const {
 	return glConfig;
+}
+
+/*
+====================
+idRenderSystemLocal::GetGpuFrameTiming
+
+The query objects stay backend-private. This POD snapshot is the sole
+cross-module timing surface and is safe to consume from engine/game code.
+====================
+*/
+void idRenderSystemLocal::GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const {
+	R_RendererMetrics_GetGpuFrameTiming( timing );
+}
+
+void idRenderSystemLocal::ResetGpuFrameTiming( const char *reason ) {
+	R_RendererMetrics_ResetGpuFrameTiming( reason );
 }
 
 /*

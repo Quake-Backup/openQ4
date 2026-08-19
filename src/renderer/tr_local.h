@@ -823,6 +823,8 @@ public:
 	virtual int				GetImageMSAASamples(idImage* image);
 	virtual const glconfig_t &	GetGLConfig( void ) const;
 	virtual bool			SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance );
+	virtual void			GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const;
+	virtual void			ResetGpuFrameTiming( const char *reason );
 public:
 	// internal functions
 							idRenderSystemLocal( void );
@@ -1095,7 +1097,7 @@ extern idCVar r_glDebugContext;			// request a debug GL context when the platfor
 extern idCVar r_glDebugOutput;			// report driver debug messages when a debug context is active
 extern idCVar r_glDebugSynchronous;		// synchronously deliver GL debug callbacks for diagnostics
 extern idCVar r_rendererMetrics;			// 0 off, 1 summary, 2 verbose per-frame/pass metrics
-extern idCVar r_rendererGpuTimers;		// sample GL timer queries when renderer metrics are enabled
+extern idCVar r_rendererGpuTimers;		// delayed whole-frame GPU timing; GL pass detail also requires renderer metrics
 extern idCVar r_rendererBenchmarkPreset;	// benchmark budget preset
 extern idCVar r_rendererPerfThresholdP95;	// custom P95 benchmark threshold in milliseconds
 extern idCVar r_rendererPerfThresholdP99;	// custom P99 benchmark threshold in milliseconds

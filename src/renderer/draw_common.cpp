@@ -7915,7 +7915,11 @@ static void RB_T_Shadow( const drawSurf_t *surf ) {
 
 	// set depth bounds
 	if( glConfig.depthBoundsTestAvailable && r_useDepthBoundsTest.GetBool() ) {
-		glDepthBoundsEXT( surf->scissorRect.zmin, surf->scissorRect.zmax );
+		const float minDepth = idMath::ClampFloat( 0.0f, 1.0f,
+				surf->scissorRect.zmin );
+		const float maxDepth = idMath::ClampFloat( minDepth, 1.0f,
+				surf->scissorRect.zmax );
+		glDepthBoundsEXT( minDepth, maxDepth );
 	}
 
 	// debug visualization

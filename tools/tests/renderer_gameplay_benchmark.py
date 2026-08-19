@@ -18,13 +18,26 @@ import math
 import os
 import platform
 import re
+import stat
 import struct
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
+
+VALIDATION_DIR = Path(__file__).resolve().parents[1] / "validation"
+if str(VALIDATION_DIR) not in sys.path:
+    sys.path.insert(0, str(VALIDATION_DIR))
+
+from renderer_budget_contract import (  # noqa: E402
+    DEFAULT_CONTRACT_PATH,
+    evaluate_timing_evidence,
+    load_contract,
+    verify_contract_binding,
+    verify_recorded_evidence,
+)
 
 
 SAFE_TIERS = ("auto", "legacy", "gl33", "gl41", "gl43", "gl45", "gl46")
@@ -33,7 +46,21 @@ PRESENTATION_SWAP_INTERVALS = ("0", "1")
 DISPLAY_MODES = ("windowed", "fullscreen")
 POSTINIT_CONNECT_WAIT_FRAMES = 30
 POSTINIT_RECONNECT_WAIT_FRAMES = 30
-POSTINIT_SERVER_GRACE_MSEC = 90000
+MP_SERVER_CLIENT_GRACE_MSEC = 90000
+REPORT_SCHEMA_VERSION = 3
+GIT_PROVENANCE_POLICY = "current-openq4-head-and-dirty-state-v1"
+BUDGET_DISPLAY_CONTRACT_ID = "bordered-window-1280x720-v1"
+BUDGET_WIDTH = 1280
+BUDGET_HEIGHT = 720
+# Each role already owns an isolated save path. Keep the engine-side log name
+# deliberately short so the complete fs_savepath/baseoq4/logs path remains
+# below the legacy Windows MAX_PATH boundary even for descriptive MP case IDs.
+ROLE_LOG_NAME = "openq4_gameplay.log"
+RUNTIME_DISPLAY_MODE_PATTERN = re.compile(
+    r"^MODE:\s*([^,\r\n]+),\s*(\d+)\s+x\s+(\d+)\s+"
+    r"(windowed|borderless|fullscreen)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 REQUIRED_SCENES: dict[str, dict[str, Any]] = {
     "sp-storage1": {
@@ -131,6 +158,7 @@ CAMPAIGN_TRANSITION_SCENES: dict[str, dict[str, Any]] = {
         "map": "game/mcc_2",
         "purpose": "scripted campaign transition chain from MCC 2 through Storage 1 first/second state handling into Tram 1",
         "path": "triggered-campaign-transition",
+        "budgetMap": "game/tram1",
     },
 }
 
@@ -382,6 +410,7 @@ class RunSpec:
     case_id: str
     mode: str
     map_name: str
+    budget_map_name: str
     purpose: str
     path_name: str
     tier: str
@@ -390,10 +419,15 @@ class RunSpec:
     display_mode: str
     shadow_preset: str
     renderer: str
+    render_api: str
 
     @property
     def fullscreen(self) -> bool:
         return self.display_mode == "fullscreen"
+
+    @property
+    def expected_backend(self) -> str:
+        return "vulkan" if self.render_api == "vk" else "opengl"
 
     @property
     def id(self) -> str:
@@ -424,19 +458,18 @@ def host_arch() -> str:
     return machine
 
 
-def find_client_executable(root: Path) -> Path:
-    install_dir = root / ".install"
+def find_client_executable(runtime_dir: Path) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     candidate_prefixes = ("openQ4-client", "openQ4-client")
     for prefix in candidate_prefixes:
-        preferred = install_dir / f"{prefix}_{host_arch()}{suffix}"
+        preferred = runtime_dir / f"{prefix}_{host_arch()}{suffix}"
         if preferred.exists():
             return preferred
 
     candidates: list[Path] = []
     seen: set[Path] = set()
     for prefix in candidate_prefixes:
-        for candidate in sorted(install_dir.glob(f"{prefix}_*{suffix}")):
+        for candidate in sorted(runtime_dir.glob(f"{prefix}_*{suffix}")):
             if candidate not in seen:
                 candidates.append(candidate)
                 seen.add(candidate)
@@ -447,13 +480,165 @@ def find_client_executable(root: Path) -> Path:
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    raise FileNotFoundError(f"openQ4 client executable not found under {install_dir}")
+    raise FileNotFoundError(f"openQ4 client executable not found under {runtime_dir}")
+
+
+def is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    if path.is_symlink() or bool(is_junction and is_junction()):
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    except OSError:
+        return False
+
+
+def validate_runtime_dir(runtime_dir: Path, root: Path) -> Path:
+    """Require canonical .install or a named ordinary package below .tmp."""
+    root_absolute = root.absolute()
+    candidate = runtime_dir.absolute()
+    if is_link_or_junction(root_absolute):
+        raise ValueError(f"source root must not be a link or junction: {root_absolute}")
+    try:
+        relative = candidate.relative_to(root_absolute)
+    except ValueError as exc:
+        raise ValueError(
+            f"runtime directory must stay below source root {root_absolute}: {candidate}"
+        ) from exc
+    current = root_absolute
+    for part in relative.parts:
+        current /= part
+        if current.exists() and is_link_or_junction(current):
+            raise ValueError(
+                f"runtime directory ancestry must not contain a link or junction: {current}"
+            )
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"runtime directory does not exist: {resolved}")
+    canonical = (root / ".install").resolve()
+    temporary_parent = (root / ".tmp" / "stock-runtime").resolve()
+    if resolved != canonical:
+        try:
+            isolated_name = resolved.relative_to(temporary_parent)
+        except ValueError as exc:
+            raise ValueError(
+                f"alternate runtime directory must stay below {temporary_parent}: {resolved}"
+            ) from exc
+        if not isolated_name.parts:
+            raise ValueError(
+                f"alternate runtime directory must be a named child below {temporary_parent}"
+            )
+    return resolved
+
+
+def prepare_output_directory(output_dir: Path) -> None:
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise ValueError(f"benchmark output path is not a directory: {output_dir}")
+        if any(output_dir.iterdir()):
+            raise ValueError(
+                f"benchmark output directory must be new or empty: {output_dir}"
+            )
+    else:
+        output_dir.mkdir(parents=True)
+
+
+def file_record(path: Path, root: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "size": path.stat().st_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def collect_runtime_files(runtime_dir: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for path in sorted(runtime_dir.rglob("*")):
+        if is_link_or_junction(path):
+            raise ValueError(f"runtime package must not contain links or junctions: {path}")
+        if path.is_file():
+            records.append(file_record(path, runtime_dir))
+    if not records:
+        raise ValueError(f"runtime package is empty: {runtime_dir}")
+    return records
+
+
+def git_state(root: Path) -> dict[str, Any]:
+    def run(*arguments: str) -> str:
+        completed = subprocess.run(
+            ["git", *arguments], cwd=root, capture_output=True, text=True, check=False
+        )
+        return completed.stdout.strip() if completed.returncode == 0 else ""
+
+    return {
+        "policy": GIT_PROVENANCE_POLICY,
+        "revision": run("rev-parse", "HEAD"),
+        "dirty": bool(run("status", "--porcelain")),
+    }
+
+
+def path_hint(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return f"external:{path.name}"
+
+
+def attach_result_artifacts(output_dir: Path, results: list[dict[str, Any]]) -> None:
+    for result in results:
+        for role in result.get("roles", []):
+            artifacts: list[dict[str, Any]] = []
+            for kind, field in (
+                ("engineLog", "log"),
+                ("processStdout", "stdout"),
+                ("processStderr", "stderr"),
+                ("screenshot", "screenshot"),
+            ):
+                value = role.get(field)
+                if not value:
+                    continue
+                path = Path(value)
+                if path.is_file():
+                    artifacts.append({"kind": kind, **file_record(path, output_dir)})
+            role["artifacts"] = artifacts
+
+
+def compare_file_records(
+    expected: Any, actual: list[dict[str, Any]], description: str
+) -> list[str]:
+    if not isinstance(expected, list):
+        return [f"recorded {description} inventory is missing or malformed"]
+    expected_by_path = {
+        item.get("path"): item
+        for item in expected
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    actual_by_path = {item["path"]: item for item in actual}
+    failures: list[str] = []
+    if len(expected_by_path) != len(expected) or set(expected_by_path) != set(actual_by_path):
+        failures.append(f"{description} path inventory differs")
+    for path in sorted(set(expected_by_path) & set(actual_by_path)):
+        if expected_by_path[path] != actual_by_path[path]:
+            failures.append(f"{description} differs: {path}")
+    return failures
 
 
 def default_basepath() -> str:
     if os.name == "nt":
         return r"C:\Program Files (x86)\Steam\steamapps\common\Quake 4"
     return ""
+
+
+def resolve_basepath(value: str) -> str:
+    if not value:
+        return ""
+    path = Path(value)
+    return str(path.resolve()) if path.exists() else ""
 
 
 def sanitize_case_id(case_id: str) -> str:
@@ -510,12 +695,61 @@ def append_command(args: list[str], name: str, *values: Any) -> None:
     args.extend(str(value) for value in values)
 
 
+def display_launch_contract(spec: RunSpec, width: int, height: int) -> dict[str, Any]:
+    """Return the exact, reportable display contract applied before startup."""
+    promotable = (
+        not spec.fullscreen and (width, height) == (BUDGET_WIDTH, BUDGET_HEIGHT)
+    )
+    return {
+        "contractId": (
+            BUDGET_DISPLAY_CONTRACT_ID
+            if promotable
+            else "non-promotable-diagnostic-display-v1"
+        ),
+        "width": width,
+        "height": height,
+        "cvars": {
+            "r_fullscreen": "1" if spec.fullscreen else "0",
+            "r_borderless": "0",
+            "r_borderlessDefaultMigrated": "1",
+            "r_fullscreenDesktop": "0",
+            "r_windowWidth": str(width),
+            "r_windowHeight": str(height),
+            "r_mode": "-1",
+            "r_customWidth": str(width),
+            "r_customHeight": str(height),
+        },
+    }
+
+
+def budget_display_contract() -> dict[str, Any]:
+    spec = RunSpec(
+        case_id="budget-display-contract",
+        mode="SP",
+        map_name="game/storage1",
+        budget_map_name="game/storage1",
+        purpose="budget display contract",
+        path_name="spawn-static",
+        tier="auto",
+        maxfps="240",
+        swap_interval="0",
+        display_mode="windowed",
+        shadow_preset="default",
+        renderer="best",
+        render_api="gl",
+    )
+    return display_launch_contract(spec, BUDGET_WIDTH, BUDGET_HEIGHT)
+
+
 def common_args(
     root: Path,
+    runtime_dir: Path,
     savepath: Path,
     log_name: str,
     basepath: str,
     spec: RunSpec,
+    width: int,
+    height: int,
     benchmark_preset: str,
     modern_executor: bool,
     show_fps_overlay: bool,
@@ -530,7 +764,6 @@ def common_args(
     append_set(args, "logFileName", f"logs/{log_name}")
     append_set(args, "developer", "1")
     append_set(args, "r_ignoreGLErrors", "0")
-    append_set(args, "r_fullscreen", "1" if spec.fullscreen else "0")
     append_set(args, "r_swapInterval", spec.swap_interval)
     append_set(args, "com_maxfps", spec.maxfps)
     append_set(args, "com_showFPS", "1" if show_fps_overlay else "0")
@@ -549,13 +782,23 @@ def common_args(
     append_set(args, "r_rendererModernAutoPromote", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
-    append_set(args, "fs_devpath", str(root / ".install"))
+    # Keep generated cache/config output in the isolated evidence root.  The
+    # package itself is mounted by the locked fs_cdpath derived from cwd.
+    append_set(args, "fs_devpath", str(savepath))
     append_set(args, "fs_game", "baseoq4")
     if basepath:
         append_set(args, "fs_basepath", basepath)
 
     for name, value in launch_cvars:
         append_set(args, name, value)
+
+    # These startup-sensitive values are deliberately appended after optional
+    # launch CVars.  Archived configs and ad-hoc A/B knobs therefore cannot
+    # change the framebuffer size, presentation mode, or selected backend used
+    # by replay-verifiable budget evidence.
+    for name, value in display_launch_contract(spec, width, height)["cvars"].items():
+        append_set(args, name, value)
+    append_set(args, "r_renderApi", "vulkan" if spec.render_api == "vk" else "gl")
 
     for name, value in SHADOW_PRESETS[spec.shadow_preset].items():
         append_set(args, name, value)
@@ -597,6 +840,14 @@ def build_scripted_capture_lines(
         "getviewpos",
     ]
     lines.extend(exec_commands)
+    if renderer_metrics:
+        # A client can reload the game module while connecting and re-exec an
+        # archived config after the launch arguments were applied. Reassert
+        # the promotion display contract immediately before sampling; actual
+        # drawable dimensions are still verified independently from gfxInfo
+        # and the engine-written TGA.
+        for name, value in budget_display_contract()["cvars"].items():
+            lines.append(f"{name} {value}")
     lines.append("framePacingReset")
     sample_wait = f"waitMsec {max(1, sample_msec)}" if sample_msec > 0 else f"wait {max(1, sample_frames)}"
     if renderer_metrics:
@@ -901,6 +1152,71 @@ def compare_tga(actual: Path, reference: Path) -> dict[str, Any]:
     }
 
 
+def evaluate_display_evidence(
+    sources: Iterable[str],
+    screenshot: Path | None,
+    expected_width: int = BUDGET_WIDTH,
+    expected_height: int = BUDGET_HEIGHT,
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind budget evidence to the renderer's actual mode and TGA dimensions."""
+    expected = {
+        "modeSelector": "-1",
+        "width": expected_width,
+        "height": expected_height,
+        "presentation": "windowed",
+    }
+    evidence: dict[str, Any] = {
+        "expected": expected,
+        "runtime": None,
+        "screenshot": None,
+    }
+    failures: list[str] = []
+    runtime_values = {
+        (selector.strip(), int(width), int(height), presentation.casefold())
+        for source in sources
+        for selector, width, height, presentation in RUNTIME_DISPLAY_MODE_PATTERN.findall(source)
+    }
+    if not runtime_values:
+        failures.append("runtime MODE evidence is missing")
+    elif len(runtime_values) != 1:
+        failures.append("runtime MODE evidence is conflicting")
+    else:
+        selector, width, height, presentation = next(iter(runtime_values))
+        runtime = {
+            "modeSelector": selector,
+            "width": width,
+            "height": height,
+            "presentation": presentation,
+        }
+        evidence["runtime"] = runtime
+        if runtime != expected:
+            failures.append(
+                "runtime MODE is "
+                f"{selector}, {width}x{height} {presentation}; expected -1, "
+                f"{expected_width}x{expected_height} windowed"
+            )
+
+    if screenshot is None:
+        failures.append("engine screenshot is missing for display verification")
+    else:
+        try:
+            width, height, _ = load_tga_rgb(screenshot)
+        except (OSError, ValueError) as exc:
+            failures.append(f"engine screenshot is not a valid TGA: {exc}")
+        else:
+            screenshot_evidence = {"width": width, "height": height}
+            evidence["screenshot"] = screenshot_evidence
+            if screenshot_evidence != {
+                "width": expected_width,
+                "height": expected_height,
+            }:
+                failures.append(
+                    f"engine screenshot is {width}x{height}; expected "
+                    f"{expected_width}x{expected_height}"
+                )
+    return evidence, failures
+
+
 def screenshot_reference_candidates(
     reference_dir: Path, screenshot: Path, savepath: Path, case_id: str | None = None
 ) -> list[Path]:
@@ -973,6 +1289,8 @@ def evaluate_role_result(
     min_pacing_hz: float = 0.0,
     max_p95_ms: float = 0.0,
     max_p99_ms: float = 0.0,
+    budget_contract: dict[str, Any] | None = None,
+    budget_profile: str = "baseline",
 ) -> dict[str, Any]:
     log_path = find_log(savepath, log_name)
     diagnostic_sources = (
@@ -995,6 +1313,8 @@ def evaluate_role_result(
         spec.id,
     )
     missing: list[str] = []
+    budget_evidence: dict[str, Any] = {}
+    display_evidence: dict[str, Any] = {}
     if timed_out:
         missing.append("timeout")
     if log_path is None:
@@ -1034,6 +1354,20 @@ def evaluate_role_result(
         missing += [f"{name}={count}" for name, count in warnings.items() if count > 0]
     if image.get("pass") is False:
         missing.append(f"image comparison {image.get('status')}")
+    if require_benchmark:
+        display_evidence, display_failures = evaluate_display_evidence(
+            (item[1] for item in diagnostic_sources), screenshot
+        )
+        missing.extend(f"display evidence: {failure}" for failure in display_failures)
+    if require_benchmark and budget_contract is not None:
+        budget_evidence, budget_failures = evaluate_timing_evidence(
+            (item[1] for item in diagnostic_sources),
+            budget_contract,
+            spec.budget_map_name,
+            spec.expected_backend,
+            budget_profile,
+        )
+        missing.extend(f"renderer budget: {failure}" for failure in budget_failures)
 
     ok = exit_code == 0 and not timed_out and not missing
     return {
@@ -1054,6 +1388,8 @@ def evaluate_role_result(
         "missing": missing,
         "summary": summary,
         "image": image,
+        "displayEvidence": display_evidence,
+        "budgetEvidence": budget_evidence,
     }
 
 
@@ -1095,7 +1431,7 @@ def run_sp_spec(
 ) -> dict[str, Any]:
     savepath = output_dir / "savepaths" / spec.id
     savepath.mkdir(parents=True, exist_ok=True)
-    log_name = f"openq4_gameplay_{spec.id}.log"
+    log_name = ROLE_LOG_NAME
     log_path = find_log(savepath, log_name)
     if log_path is not None:
         log_path.unlink()
@@ -1116,10 +1452,13 @@ def run_sp_spec(
     )
     game_args = common_args(
         root,
+        args.runtime_dir_path,
         savepath,
         log_name,
         basepath,
         spec,
+        args.width,
+        args.height,
         args.benchmark_preset,
         args.modern_executor,
         args.show_fps_overlay,
@@ -1135,6 +1474,10 @@ def run_sp_spec(
             "id": spec.id,
             "mode": spec.mode,
             "map": spec.map_name,
+            "budgetMap": spec.budget_map_name,
+            "expectedBackend": spec.expected_backend,
+            "renderApi": spec.render_api,
+            "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "args": game_args,
             "autoexecCfg": autoexec_cfg,
@@ -1145,7 +1488,7 @@ def run_sp_spec(
     exit_code, timed_out, elapsed = launch_and_wait(
         executable,
         game_args,
-        root / ".install",
+        args.runtime_dir_path,
         stdout_path,
         stderr_path,
         args.timeout,
@@ -1169,11 +1512,17 @@ def run_sp_spec(
         args.min_pacing_hz,
         args.max_p95_ms,
         args.max_p99_ms,
+        args.budget_contract,
+        args.benchmark_preset,
     )
     return {
         "id": spec.id,
         "mode": spec.mode,
         "map": spec.map_name,
+        "budgetMap": spec.budget_map_name,
+        "expectedBackend": spec.expected_backend,
+        "renderApi": spec.render_api,
+        "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
         "maxfps": spec.maxfps,
@@ -1202,8 +1551,8 @@ def run_mp_spec(
     server_savepath.mkdir(parents=True, exist_ok=True)
     client_savepath.mkdir(parents=True, exist_ok=True)
 
-    server_log = f"openq4_gameplay_{spec.id}_server.log"
-    client_log = f"openq4_gameplay_{spec.id}_client.log"
+    server_log = ROLE_LOG_NAME
+    client_log = ROLE_LOG_NAME
     for savepath, log_name in ((server_savepath, server_log), (client_savepath, client_log)):
         log_path = find_log(savepath, log_name)
         if log_path is not None:
@@ -1215,9 +1564,12 @@ def run_mp_spec(
     client_stderr = output_dir / f"{spec.id}_client.err.txt"
 
     server_settle_frames = args.settle_frames + args.mp_client_delay_frames
-    server_exec_commands = args.exec_commands
-    if spec.path_name == "postinit-connect":
-        server_exec_commands += (f"waitMsec {POSTINIT_SERVER_GRACE_MSEC}",)
+    # Keep the listen server alive while a fresh client initializes and builds
+    # its local caches. A frame-count grace collapses to only a few seconds at
+    # the 240 FPS budget workload and can let the server quit mid-connect.
+    server_exec_commands = args.exec_commands + (
+        f"waitMsec {MP_SERVER_CLIENT_GRACE_MSEC}",
+    )
     server_autoexec_cfg, server_screenshot = write_autoexec_cfg(
         server_savepath,
         spec,
@@ -1233,10 +1585,13 @@ def run_mp_spec(
     )
     server_args = common_args(
         root,
+        args.runtime_dir_path,
         server_savepath,
         server_log,
         basepath,
         spec,
+        args.width,
+        args.height,
         args.benchmark_preset,
         args.modern_executor,
         args.show_fps_overlay,
@@ -1247,8 +1602,8 @@ def run_mp_spec(
     append_set(server_args, "net_serverDedicated", "0")
     append_set(server_args, "net_port", str(port))
     append_set(server_args, "ui_autoJoin", "1")
-    server_args += ["+seta", "si_pure", "0"]
-    append_set(server_args, "net_serverAllowServerMod", "1")
+    server_args += ["+seta", "si_pure", "1"]
+    append_set(server_args, "net_serverAllowServerMod", "0")
     append_set(server_args, "sv_cheats", "1")
     append_set(server_args, "si_gameType", "DM")
     append_command(server_args, "spawnServer", spec.map_name)
@@ -1279,10 +1634,13 @@ def run_mp_spec(
         client_initial_autoexec_cfg = client_reconnect_cfg
     client_args = common_args(
         root,
+        args.runtime_dir_path,
         client_savepath,
         client_log,
         basepath,
         spec,
+        args.width,
+        args.height,
         args.benchmark_preset,
         args.modern_executor,
         args.show_fps_overlay,
@@ -1305,6 +1663,10 @@ def run_mp_spec(
             "id": spec.id,
             "mode": spec.mode,
             "map": spec.map_name,
+            "budgetMap": spec.budget_map_name,
+            "expectedBackend": spec.expected_backend,
+            "renderApi": spec.render_api,
+            "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "serverArgs": server_args,
             "clientArgs": client_args,
@@ -1324,7 +1686,7 @@ def run_mp_spec(
     with server_stdout.open("w", encoding="utf-8", errors="replace") as server_out, server_stderr.open("w", encoding="utf-8", errors="replace") as server_err:
         server_process = subprocess.Popen(
             [str(executable)] + server_args,
-            cwd=str(root / ".install"),
+            cwd=str(args.runtime_dir_path),
             stdout=server_out,
             stderr=server_err,
         )
@@ -1332,7 +1694,7 @@ def run_mp_spec(
     with client_stdout.open("w", encoding="utf-8", errors="replace") as client_out, client_stderr.open("w", encoding="utf-8", errors="replace") as client_err:
         client_process = subprocess.Popen(
             [str(executable)] + client_args,
-            cwd=str(root / ".install"),
+            cwd=str(args.runtime_dir_path),
             stdout=client_out,
             stderr=client_err,
         )
@@ -1372,6 +1734,8 @@ def run_mp_spec(
         args.min_pacing_hz,
         args.max_p95_ms,
         args.max_p99_ms,
+        args.budget_contract,
+        args.benchmark_preset,
     )
     client_result = evaluate_role_result(
         spec,
@@ -1392,6 +1756,8 @@ def run_mp_spec(
         args.min_pacing_hz,
         args.max_p95_ms,
         args.max_p99_ms,
+        args.budget_contract,
+        args.benchmark_preset,
     )
     postinit_connect_responses: dict[str, int] = {}
     postinit_ttf_rebuilds: dict[str, int] = {}
@@ -1430,6 +1796,10 @@ def run_mp_spec(
         "id": spec.id,
         "mode": spec.mode,
         "map": spec.map_name,
+        "budgetMap": spec.budget_map_name,
+        "expectedBackend": spec.expected_backend,
+        "renderApi": spec.render_api,
+        "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
         "maxfps": spec.maxfps,
@@ -1471,6 +1841,9 @@ def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
         "id": spec.id,
         "mode": spec.mode,
         "map": spec.map_name,
+        "budgetMap": spec.budget_map_name,
+        "expectedBackend": spec.expected_backend,
+        "renderApi": spec.render_api,
         "purpose": spec.purpose,
         "tier": spec.tier,
         "maxfps": spec.maxfps,
@@ -1492,6 +1865,11 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
     swap_values = split_csv(args.swap_intervals, defaults["swap"])
     display_values = split_csv(args.display_modes, defaults["display"])
     shadow_values = split_csv(args.shadow_presets, defaults["shadows"])
+    if not args.pacing_only and any(display != "windowed" for display in display_values):
+        raise ValueError(
+            "per-map CPU/GPU budget evidence requires windowed display; "
+            "fullscreen profiles are pacing-only"
+        )
 
     specs: list[RunSpec] = []
     for case_id in case_ids:
@@ -1514,6 +1892,7 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                                     case_id=case_id,
                                     mode=scene["mode"],
                                     map_name=scene["map"],
+                                    budget_map_name=scene.get("budgetMap", scene["map"]),
                                     purpose=scene["purpose"],
                                     path_name=scene["path"],
                                     tier=tier,
@@ -1522,6 +1901,7 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                                     display_mode=display,
                                     shadow_preset=shadow,
                                     renderer=args.renderer,
+                                    render_api=args.render_api,
                                 )
                             )
     if args.limit > 0:
@@ -1532,8 +1912,37 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
 def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dict[str, Any]) -> tuple[Path, Path]:
     report_json = output_dir / "renderer_gameplay_benchmark_report.json"
     report_md = output_dir / "renderer_gameplay_benchmark_report.md"
+    report_metadata = {
+        key: value
+        for key, value in metadata.items()
+        if key not in {
+            "git",
+            "runtime",
+            "runtimeVerificationFailures",
+            "budgetContract",
+            "budgetEnforced",
+        }
+    }
     payload = {
-        "metadata": metadata,
+        "schemaVersion": REPORT_SCHEMA_VERSION,
+        "status": (
+            "planned"
+            if metadata["dryRun"]
+            else (
+                "pass"
+                if results
+                and all(item["status"] == "pass" for item in results)
+                and not metadata.get("runtimeVerificationFailures", [])
+                else "fail"
+            )
+        ),
+        "dryRun": metadata["dryRun"],
+        "git": metadata["git"],
+        "runtime": metadata["runtime"],
+        "runtimeVerificationFailures": metadata.get("runtimeVerificationFailures", []),
+        "budgetContract": metadata["budgetContract"],
+        "budgetEnforced": metadata["budgetEnforced"],
+        "metadata": report_metadata,
         "requiredScenes": REQUIRED_SCENES,
         "shadowScenes": SHADOW_SCENES,
         "campaignTransitionScenes": CAMPAIGN_TRANSITION_SCENES,
@@ -1551,8 +1960,14 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         f"- Generated: {metadata['generated']}",
         f"- Host: {metadata['host']}",
         f"- Executable: `{metadata['executable']}`",
+        f"- Runtime: `{metadata['runtime']['path']}` ({len(metadata['runtime']['files'])} hashed files)",
+        f"- Runtime remained immutable: `{str(not metadata.get('runtimeVerificationFailures', [])).lower()}`",
         f"- Base path: `{metadata['basepath'] or 'not set'}`",
         f"- Profile: `{metadata['profile']}`",
+        f"- Benchmark preset: `{metadata['benchmarkPreset']}`",
+        f"- Per-map budget contract: `{metadata['budgetContract']['contractId']}` (`{metadata['budgetContract']['sha256']}`)",
+        f"- Per-map budgets enforced: `{str(metadata['budgetEnforced']).lower()}`",
+        f"- Budget display contract: `{metadata.get('budgetDisplayContract', {}).get('contractId', 'not enforced') if metadata.get('budgetDisplayContract') else 'not enforced'}`",
         f"- Sample: `{metadata['sampleMsec']} ms`" if metadata.get("sampleMsec", 0) > 0 else f"- Sample: `{metadata['sampleFrames']} frames`",
         f"- Cases: {passed} passed, {failed} failed, {planned} planned",
         "",
@@ -1593,6 +2008,38 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
                 lines.append(
                     f"|  | `{role_result['role']}` missing |  |  |  |  |  |  |  | {'; '.join(role_result['missing'])} |  |  |  |  |"
                 )
+
+    budget_roles = [
+        (result, role)
+        for result in results
+        for role in result.get("roles", [])
+        if role.get("budgetEvidence")
+    ]
+    if budget_roles:
+        lines += [
+            "",
+            "## Per-Map CPU/GPU Budget Evidence",
+            "",
+            "| Status | Case / role | Map | Backend | Profile | CPU samples / P95 / P99 | GPU samples / P95 / P99 | Budget |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for result, role in budget_roles:
+            evidence = role["budgetEvidence"]
+            measurement = evidence.get("measurement", {})
+            cpu = measurement.get("cpu", {})
+            gpu = measurement.get("gpu", {})
+            gpu_summary = (
+                f"{gpu.get('samples', '?')} / {gpu.get('p95Us', '?')} / {gpu.get('p99Us', '?')} us"
+                if gpu.get("available")
+                else "unavailable"
+            )
+            lines.append(
+                f"| {evidence.get('status', 'fail')} | `{result['id']}` / `{role['role']}` | "
+                f"`{measurement.get('map', 'missing')}` | `{measurement.get('backend', 'missing')}` | "
+                f"`{measurement.get('profile', 'missing')}` | {cpu.get('samples', '?')} / "
+                f"{cpu.get('p95Us', '?')} / {cpu.get('p99Us', '?')} us | {gpu_summary} | "
+                f"`{evidence.get('budgetId', 'missing')}` |"
+            )
 
     diagnostic_roles = [
         (result, role_result)
@@ -1655,6 +2102,162 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
     return report_json, report_md
 
 
+def _verified_artifact(
+    report_dir: Path, record: Any, kind: str
+) -> tuple[Path | None, list[str]]:
+    if not isinstance(record, dict) or record.get("kind") != kind:
+        return None, [f"recorded {kind} artifact is missing or malformed"]
+    raw_path = record.get("path")
+    if not isinstance(raw_path, str) or not raw_path or Path(raw_path).is_absolute():
+        return None, [f"recorded {kind} artifact path is not a safe relative path"]
+    path = (report_dir / Path(raw_path)).resolve()
+    try:
+        path.relative_to(report_dir.resolve())
+    except ValueError:
+        return None, [f"recorded {kind} artifact escapes the report directory"]
+    if not path.is_file():
+        return None, [f"recorded {kind} artifact is missing: {raw_path}"]
+    actual = {"kind": kind, **file_record(path, report_dir)}
+    return path, ([] if actual == record else [f"recorded {kind} artifact differs: {raw_path}"])
+
+
+def verify_benchmark_report(
+    report: Any,
+    report_dir: Path,
+    root: Path,
+    runtime_dir: Path,
+    executable: Path,
+    contract: dict[str, Any],
+    contract_binding: dict[str, Any],
+) -> list[str]:
+    if not isinstance(report, dict):
+        return ["benchmark report root is not an object"]
+    failures: list[str] = []
+    if report.get("schemaVersion") != REPORT_SCHEMA_VERSION:
+        failures.append(f"unsupported benchmark report schema: {report.get('schemaVersion')!r}")
+    if report.get("status") != "pass":
+        failures.append(f"benchmark report status is {report.get('status')!r}, not 'pass'")
+    if report.get("dryRun") is not False:
+        failures.append("passing benchmark evidence must record dryRun=false")
+    if report.get("budgetEnforced") is not True:
+        failures.append("benchmark report did not enforce the per-map CPU/GPU budget contract")
+    if report.get("runtimeVerificationFailures") != []:
+        failures.append("benchmark report recorded runtime mutation during capture")
+    failures.extend(
+        verify_contract_binding(report.get("budgetContract"), contract, contract_binding)
+    )
+
+    current_git = git_state(root)
+    if report.get("git") != current_git:
+        failures.append("benchmark Git provenance differs from the current checkout")
+    current_files = collect_runtime_files(runtime_dir)
+    runtime = report.get("runtime")
+    if not isinstance(runtime, dict):
+        failures.append("benchmark runtime binding is missing or malformed")
+    else:
+        if runtime.get("path") != path_hint(runtime_dir, root):
+            failures.append("benchmark runtime path binding differs")
+        try:
+            executable_path = executable.relative_to(runtime_dir).as_posix()
+        except ValueError:
+            executable_path = ""
+        if runtime.get("executable") != executable_path:
+            failures.append("benchmark executable binding differs")
+        failures.extend(compare_file_records(runtime.get("files"), current_files, "runtime file"))
+
+    metadata = report.get("metadata")
+    expected_display_contract = budget_display_contract()
+    if not isinstance(metadata, dict):
+        failures.append("benchmark metadata is missing or malformed")
+        metadata = {}
+    if metadata.get("budgetDisplayContract") != expected_display_contract:
+        failures.append("benchmark budget display contract differs from bordered 1280x720")
+    benchmark_profile = metadata.get("benchmarkPreset")
+    if not isinstance(benchmark_profile, str) or not benchmark_profile:
+        failures.append("benchmark preset provenance is missing")
+        benchmark_profile = ""
+    results = report.get("results")
+    if not isinstance(results, list) or not results:
+        return [*failures, "benchmark results are missing or empty"]
+    for result in results:
+        if not isinstance(result, dict):
+            failures.append("benchmark result is malformed")
+            continue
+        case_id = str(result.get("id", "unknown"))
+        if result.get("status") != "pass":
+            failures.append(f"{case_id}: result is not a pass")
+        expected_map = result.get("budgetMap")
+        if not isinstance(expected_map, str) or not expected_map:
+            failures.append(f"{case_id}: budgetMap identity is missing")
+            continue
+        expected_backend = result.get("expectedBackend")
+        render_api = result.get("renderApi")
+        derived_backend = "vulkan" if render_api == "vk" else (
+            "opengl" if render_api == "gl" else ""
+        )
+        if expected_backend not in ("opengl", "vulkan") or expected_backend != derived_backend:
+            failures.append(f"{case_id}: expected backend/launch render API binding differs")
+            continue
+        if result.get("display") != "windowed":
+            failures.append(f"{case_id}: budget evidence was not captured windowed")
+        if result.get("displayContract") != expected_display_contract:
+            failures.append(f"{case_id}: launch display contract differs from bordered 1280x720")
+        roles = result.get("roles")
+        if not isinstance(roles, list) or not roles:
+            failures.append(f"{case_id}: role evidence is missing")
+            continue
+        for role in roles:
+            if not isinstance(role, dict):
+                failures.append(f"{case_id}: role evidence is malformed")
+                continue
+            role_name = str(role.get("role", "unknown"))
+            if role.get("status") != "pass" or role.get("missing") != []:
+                failures.append(f"{case_id}/{role_name}: role is not a clean pass")
+            artifact_values = role.get("artifacts")
+            artifacts = {
+                item.get("kind"): item
+                for item in artifact_values
+                if isinstance(item, dict) and item.get("kind")
+            } if isinstance(artifact_values, list) else {}
+            sources: list[str] = []
+            for kind in ("engineLog", "processStdout", "processStderr"):
+                path, artifact_failures = _verified_artifact(
+                    report_dir, artifacts.get(kind), kind
+                )
+                failures.extend(f"{case_id}/{role_name}: {item}" for item in artifact_failures)
+                if path is not None:
+                    sources.append(path.read_text(encoding="utf-8", errors="replace"))
+            screenshot_path, screenshot_failures = _verified_artifact(
+                report_dir, artifacts.get("screenshot"), "screenshot"
+            )
+            failures.extend(
+                f"{case_id}/{role_name}: {item}" for item in screenshot_failures
+            )
+            display_evidence, display_failures = evaluate_display_evidence(
+                sources, screenshot_path
+            )
+            failures.extend(
+                f"{case_id}/{role_name}: display evidence: {item}"
+                for item in display_failures
+            )
+            if role.get("displayEvidence") != display_evidence:
+                failures.append(
+                    f"{case_id}/{role_name}: recorded display evidence differs"
+                )
+            failures.extend(
+                f"{case_id}/{role_name}: {item}"
+                for item in verify_recorded_evidence(
+                    role.get("budgetEvidence"),
+                    sources,
+                    contract,
+                    expected_map,
+                    expected_backend,
+                    benchmark_profile,
+                )
+            )
+    return failures
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=tuple(PROFILE_DEFAULTS.keys()), default="smoke", help="Preset case/dimension profile.")
@@ -1663,11 +2266,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--maxfps", default="", help="Comma-separated com_maxfps values. Overrides profile values.")
     parser.add_argument("--swap-intervals", default="", help="Comma-separated r_swapInterval values. Overrides profile values.")
     parser.add_argument("--display-modes", default="", help="Comma-separated display modes: windowed,fullscreen.")
+    parser.add_argument("--width", type=int, default=BUDGET_WIDTH, help=f"Drawable width. Budget evidence requires {BUDGET_WIDTH}.")
+    parser.add_argument("--height", type=int, default=BUDGET_HEIGHT, help=f"Drawable height. Budget evidence requires {BUDGET_HEIGHT}.")
     parser.add_argument("--shadow-presets", default="", help="Comma-separated shadow presets. Use --list to inspect values.")
     parser.add_argument("--renderer", default="best", help="Value for r_renderer, usually best or arb2.")
+    parser.add_argument("--render-api", choices=("gl", "vk"), default="gl", help="Exact renderer backend launch contract: gl or vk.")
     parser.add_argument("--benchmark-preset", default="baseline", help="Value for r_rendererBenchmarkPreset.")
     parser.add_argument("--modern-executor", action="store_true", help="Opt into r_rendererModernExecutor for gameplay benchmarking. Defaults off so ARB2/high-FPS baselines are not polluted by side-path work.")
-    parser.add_argument("--gpu-timers", action="store_true", help="Enable GL timer queries during the sampled benchmark window. Defaults off for acceptance FPS runs because timer queries can perturb frame pacing.")
+    parser.add_argument("--gpu-timers", action=argparse.BooleanOptionalAction, default=True, help="Enable backend-neutral whole-frame GPU timestamps during sampled budget runs. Enabled by default; --no-gpu-timers is only valid with --pacing-only.")
     parser.add_argument("--show-fps-overlay", action="store_true", help="Draw the in-game FPS overlay during the run. Defaults off so acceptance timings measure renderer/gameplay cost, not diagnostic text drawing.")
     parser.add_argument("--pacing-only", action="store_true", help="Measure frame pacing without enabling r_rendererMetrics or rendererBenchmarkCapture. Use this for high-FPS acceptance runs after diagnostic captures are clean.")
     parser.add_argument("--min-pacing-hz", type=float, default=0.0, help="Fail when the parsed frame-pacing snapshot falls below this average presentation rate.")
@@ -1682,6 +2288,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--sample-msec", type=int, default=0, help="Real milliseconds to sample before dumping metrics and screenshots. Overrides --sample-frames when positive.")
     parser.add_argument("--timeout", type=int, default=180, help="Per-case process timeout in seconds.")
     parser.add_argument("--basepath", default=default_basepath(), help="Quake 4 install/base path. Omit or set empty to skip fs_basepath.")
+    parser.add_argument("--runtime-dir", default="", help="Staged runtime package. Defaults to .install; alternates must be named ordinary directories below .tmp/stock-runtime/.")
+    parser.add_argument("--budget-contract", default=str(DEFAULT_CONTRACT_PATH), help="Versioned per-map CPU/GPU budget JSON. Its stable id and SHA-256 are bound into the report.")
+    parser.add_argument("--verify-report", default="", help="Replay-verify a prior real benchmark report, runtime, artifacts, timing marker, and budget contract without launching openQ4.")
     parser.add_argument("--output-dir", default="", help="Report/output directory. Defaults to <repo>/.tmp/renderer-gameplay/<timestamp>.")
     parser.add_argument("--reference-dir", default="", help="Optional TGA reference screenshot root for deterministic image comparison.")
     parser.add_argument("--require-references", action="store_true", help="Fail captures when --reference-dir has no matching reference image.")
@@ -1694,6 +2303,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Write the planned command lines without launching openQ4.")
     parser.add_argument("--list", action="store_true", help="List profiles, cases, and shadow presets without running.")
     parsed = parser.parse_args(argv)
+    if not parsed.pacing_only and not parsed.gpu_timers:
+        parser.error("--no-gpu-timers is only valid with --pacing-only; budget evidence requires GPU timing")
+    if not (320 <= parsed.width <= 16384) or not (240 <= parsed.height <= 16384):
+        parser.error("--width/--height must stay within the engine's 320x240 to 16384x16384 range")
+    if not parsed.pacing_only and (parsed.width, parsed.height) != (BUDGET_WIDTH, BUDGET_HEIGHT):
+        parser.error(
+            f"budget evidence requires the canonical bordered {BUDGET_WIDTH}x{BUDGET_HEIGHT} display contract"
+        )
+    selected_displays = split_csv(
+        parsed.display_modes, tuple(PROFILE_DEFAULTS[parsed.profile]["display"])
+    )
+    if not parsed.pacing_only and any(display != "windowed" for display in selected_displays):
+        parser.error(
+            "budget evidence requires windowed display; use --pacing-only for fullscreen presentation tests"
+        )
     try:
         profile_cvars = tuple(PROFILE_DEFAULTS[parsed.profile].get("cvars", ()))
         profile_launch_cvars = tuple(PROFILE_DEFAULTS[parsed.profile].get("launchCvars", ()))
@@ -1703,6 +2327,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parsed.exec_commands = profile_exec_commands + parse_exec_commands(parsed.exec_command)
     except ValueError as exc:
         parser.error(str(exc))
+    if not parsed.pacing_only:
+        protected_launch_cvars = {
+            name.casefold() for name in budget_display_contract()["cvars"]
+        } | {"r_renderapi"}
+        conflicting = sorted(
+            name for name, _ in parsed.launch_cvars if name.casefold() in protected_launch_cvars
+        )
+        if conflicting:
+            parser.error(
+                "budget evidence launch CVars may not override the display/backend contract: "
+                + ", ".join(conflicting)
+            )
     parsed.reference_dir_path = Path(parsed.reference_dir).resolve() if parsed.reference_dir else None
     return parsed
 
@@ -1748,18 +2384,42 @@ def main(argv: list[str]) -> int:
         return 0
 
     root = repo_root()
-    executable = find_client_executable(root)
-    basepath = args.basepath
-    if basepath and not Path(basepath).exists():
-        print(f"warning: basepath does not exist, omitting fs_basepath: {basepath}", file=sys.stderr)
-        basepath = ""
+    runtime_dir = validate_runtime_dir(
+        Path(args.runtime_dir) if args.runtime_dir else root / ".install", root
+    )
+    args.runtime_dir_path = runtime_dir
+    executable = find_client_executable(runtime_dir)
+    runtime_files_before = collect_runtime_files(runtime_dir)
+    budget_contract_path = Path(args.budget_contract)
+    args.budget_contract, budget_binding = load_contract(budget_contract_path)
+    if args.verify_report:
+        report_path = Path(args.verify_report).resolve()
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        failures = verify_benchmark_report(
+            report,
+            report_path.parent,
+            root,
+            runtime_dir,
+            executable,
+            args.budget_contract,
+            budget_binding,
+        )
+        for failure in failures:
+            print(f"error: {failure}", file=sys.stderr)
+        if not failures:
+            print("renderer gameplay benchmark verification: pass")
+        return 1 if failures else 0
+    requested_basepath = args.basepath
+    basepath = resolve_basepath(requested_basepath)
+    if requested_basepath and not basepath:
+        print(f"warning: basepath does not exist, omitting fs_basepath: {requested_basepath}", file=sys.stderr)
     if args.reference_dir_path is not None and not args.reference_dir_path.exists():
         raise FileNotFoundError(f"reference directory does not exist: {args.reference_dir_path}")
 
     specs = build_specs(args)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     output_dir = Path(args.output_dir).resolve() if args.output_dir else root / ".tmp" / "renderer-gameplay" / timestamp
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_directory(output_dir)
     run_id = output_dir.name
 
     results: list[dict[str, Any]] = []
@@ -1777,12 +2437,39 @@ def main(argv: list[str]) -> int:
             print(f"  {result['status']}", flush=True)
         results.append(result)
 
+    runtime_files_after = collect_runtime_files(runtime_dir)
+    runtime_verification_failures = compare_file_records(
+        runtime_files_before, runtime_files_after, "runtime file"
+    )
+    if runtime_verification_failures:
+        for result in results:
+            result["status"] = "fail"
+            for role in result.get("roles", []):
+                role["status"] = "fail"
+                role.setdefault("missing", []).extend(
+                    f"runtime mutation: {failure}"
+                    for failure in runtime_verification_failures
+                )
+    attach_result_artifacts(output_dir, results)
+
     metadata = {
         "generated": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "host": f"{platform.system()} {platform.release()} {platform.machine()}",
         "executable": str(executable),
+        "runtime": {
+            "path": path_hint(runtime_dir, root),
+            "executable": executable.relative_to(runtime_dir).as_posix(),
+            "files": runtime_files_before,
+        },
+        "runtimeVerificationFailures": runtime_verification_failures,
+        "git": git_state(root),
+        "budgetContract": budget_binding,
+        "budgetEnforced": not args.pacing_only,
+        "budgetDisplayContract": budget_display_contract() if not args.pacing_only else None,
         "basepath": basepath,
         "profile": args.profile,
+        "benchmarkPreset": args.benchmark_preset,
+        "renderApi": args.render_api,
         "dryRun": args.dry_run,
         "autoexecDelayMs": args.autoexec_delay_ms,
         "settleFrames": args.settle_frames,

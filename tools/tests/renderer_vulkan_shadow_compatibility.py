@@ -195,6 +195,7 @@ def validate_runtime_failure_gates() -> None:
             case_id="vulkan-shadow-contract",
             mode="SP",
             map_name="game/contract",
+            budget_map_name="game/contract",
             purpose="synthetic failure-gate coverage",
             path_name="spawn-static",
             tier="auto",
@@ -203,6 +204,7 @@ def validate_runtime_failure_gates() -> None:
             display_mode="windowed",
             shadow_preset="mapped",
             renderer="vk",
+            render_api="vk",
         )
 
         def evaluate(log_body: str) -> dict[str, object]:

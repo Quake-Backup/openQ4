@@ -26,8 +26,18 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-SCHEMA_VERSION = 8
+from renderer_budget_contract import (  # noqa: E402
+    DEFAULT_CONTRACT_PATH,
+    evaluate_timing_evidence,
+    load_contract,
+    verify_contract_binding,
+    verify_recorded_evidence,
+)
+
+SCHEMA_VERSION = 10
 RETAIL_MANIFEST_SCHEMA_VERSION = 1
 RUNTIME_MANIFEST_SCHEMA_VERSION = 2
 ASSET_COMPATIBILITY_MODEL = "retail-pk4-fallback-with-packaged-openq4-overlays-v1"
@@ -44,6 +54,7 @@ SP_DEMO_NAME = "stock_baseline_sp"
 BASELINE_DIR = "stock-baseline"
 DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 720
+DISPLAY_CONTRACT_ID = "bordered-window-1280x720-v1"
 SP_SAVE_PREVIEW_DIMENSIONS = (320, 240)
 SP_SAVE_PREVIEW_ANALYSIS_DIMENSIONS = (80, 60)
 SP_SAVE_PREVIEW_MIN_LUMA_CORRELATION = 0.75
@@ -77,19 +88,37 @@ FATAL_PATTERNS = {
     "graphicsError": re.compile(r"\bGL_(?:INVALID_[A-Z_]+|OUT_OF_MEMORY|CONTEXT_LOST)\b|OpenGL\s+error", re.IGNORECASE),
 }
 RUNTIME_WINDOW_MODE_PATTERN = re.compile(
-    r"^MODE:\s*[^,\r\n]+,\s*(\d+)\s+x\s+(\d+)\s+(windowed|borderless|fullscreen)\b",
+    r"^MODE:\s*([^,\r\n]+),\s*(\d+)\s+x\s+(\d+)\s+"
+    r"(windowed|borderless|fullscreen)\b",
     re.IGNORECASE | re.MULTILINE,
 )
-ACTIVE_DISPLAY_SCALE_PATTERN = re.compile(
-    r"^\s*\[\d+\]\s+\*[^\r\n]*\bcontentScale\s+([0-9]+(?:\.[0-9]+)?)\b",
-    re.IGNORECASE | re.MULTILINE,
-)
+
+
+def display_contract() -> dict[str, Any]:
+    return {
+        "contractId": DISPLAY_CONTRACT_ID,
+        "width": DEFAULT_WIDTH,
+        "height": DEFAULT_HEIGHT,
+        "cvars": {
+            "r_fullscreen": "0",
+            "r_borderless": "0",
+            "r_borderlessDefaultMigrated": "1",
+            "r_fullscreenDesktop": "0",
+            "r_windowWidth": str(DEFAULT_WIDTH),
+            "r_windowHeight": str(DEFAULT_HEIGHT),
+            "r_mode": "-1",
+            "r_customWidth": str(DEFAULT_WIDTH),
+            "r_customHeight": str(DEFAULT_HEIGHT),
+        },
+    }
+
 
 ROLE_EVIDENCE_CONTRACT: dict[str, dict[str, Any]] = {
     "sp-capture": {
         "marker": "OPENQ4_STOCK_BASELINE_SP_SAVE_LOAD_COMPLETE",
         "saveDir": "sp",
         "logName": "stock_baseline_sp.log",
+        "budget": {"map": SP_MAP, "backend": "opengl", "profile": "baseline"},
         "expected": {
             "screenshot": f"baseoq4/screenshots/{BASELINE_DIR}/sp_after_load.tga",
             "saveReferenceScreenshot": (
@@ -111,6 +140,7 @@ ROLE_EVIDENCE_CONTRACT: dict[str, dict[str, Any]] = {
         "marker": "OPENQ4_STOCK_BASELINE_MP_SERVER_COMPLETE",
         "saveDir": "mp-server",
         "logName": "stock_baseline_server.log",
+        "budget": {"map": MP_MAP, "backend": "opengl", "profile": "baseline"},
         "expected": {
             "screenshot": f"baseoq4/screenshots/{BASELINE_DIR}/mp_server.tga",
             "renderDemo": f"baseoq4/demos/stock_baseline_mp_server.demo",
@@ -121,6 +151,7 @@ ROLE_EVIDENCE_CONTRACT: dict[str, dict[str, Any]] = {
         "requiredMarkers": [MP_CLIENT_ACTIVE_MARKER, MP_CLIENT_VIEW_MARKER],
         "saveDir": "mp-client",
         "logName": "stock_baseline_client.log",
+        "budget": {"map": MP_MAP, "backend": "opengl", "profile": "baseline"},
         "expected": {
             "screenshot": f"baseoq4/screenshots/{BASELINE_DIR}/mp_client.tga",
             "renderDemo": f"baseoq4/demos/stock_baseline_mp_client.demo",
@@ -585,6 +616,21 @@ def write_cfg(savepath: Path, relative: str, lines: list[str]) -> None:
         path.write_text(payload, encoding="utf-8")
 
 
+def display_cfg_lines(width: int, height: int) -> list[str]:
+    """Reassert the measured display contract after any game-module reload."""
+    return [
+        "r_fullscreen 0",
+        "r_borderless 0",
+        "r_borderlessDefaultMigrated 1",
+        "r_fullscreenDesktop 0",
+        f"r_windowWidth {width}",
+        f"r_windowHeight {height}",
+        "r_mode -1",
+        f"r_customWidth {width}",
+        f"r_customHeight {height}",
+    ]
+
+
 def common_args(
     runtime_dir: Path,
     asset_root: Path,
@@ -614,6 +660,9 @@ def common_args(
     add_set(args, "r_customHeight", height)
     add_set(args, "r_swapInterval", 0)
     add_set(args, "r_renderApi", "gl")
+    add_set(args, "r_rendererBenchmarkPreset", "baseline")
+    add_set(args, "r_rendererMetrics", 0)
+    add_set(args, "r_rendererGpuTimers", 1)
     add_set(args, "com_maxfps", 240)
     add_set(args, "com_skipLoadingContinue", 1)
     add_set(args, "com_loadingContinueAutoAdvance", 1)
@@ -729,6 +778,7 @@ def prepare_plans(
         [
             "echo OPENQ4_STOCK_BASELINE_SP_SAVE_LOAD_COMPLETE",
             "waitMsec 2500",
+            *display_cfg_lines(width, height),
             "framePacingReset",
             "r_rendererMetrics 1",
             "waitMsec 2500",
@@ -793,7 +843,13 @@ def prepare_plans(
         cfg = f"{BASELINE_DIR}/{role_name}.cfg"
         marker = f"OPENQ4_STOCK_BASELINE_MP_{role_name.upper()}_COMPLETE"
         demo_name = f"stock_baseline_mp_{role_name}"
-        role_commands = [f"waitMsec {wait_msec}"]
+        role_commands = [
+            *display_cfg_lines(width, height),
+            "framePacingReset",
+            "r_rendererMetrics 1",
+            "r_rendererGpuTimers 1",
+            f"waitMsec {wait_msec}",
+        ]
         if role_name == "client":
             role_commands.extend(
                 (
@@ -806,6 +862,8 @@ def prepare_plans(
                 f"recordDemo {demo_name}",
                 "waitMsec 2500",
                 "stopRecording",
+                "rendererBenchmarkCapture",
+                "r_rendererMetrics 0",
                 "framePacingSnapshot",
                 "gfxInfo",
             )
@@ -978,12 +1036,12 @@ def collect_role_diagnostics(
     return engine_log, all_diagnostics
 
 
-def runtime_window_evidence(diagnostics: str) -> tuple[int, int, str] | None:
+def runtime_window_evidence(diagnostics: str) -> tuple[str, int, int, str] | None:
     modes = RUNTIME_WINDOW_MODE_PATTERN.findall(diagnostics)
     if not modes:
         return None
-    width, height, mode = modes[-1]
-    return int(width), int(height), mode.casefold()
+    selector, width, height, mode = modes[-1]
+    return selector.strip(), int(width), int(height), mode.casefold()
 
 
 def mp_client_active_proof_failure(diagnostics: str) -> str | None:
@@ -1030,20 +1088,16 @@ def runtime_window_failure(
     evidence = runtime_window_evidence(diagnostics)
     if evidence is None:
         return "runtime display mode evidence missing"
-    actual_width, actual_height, actual_mode = evidence
+    selector, actual_width, actual_height, actual_mode = evidence
     if actual_mode != "windowed":
         return f"runtime display mode is {actual_mode}, not bordered windowed"
+    if selector != "-1":
+        return f"runtime display mode selector is {selector}, not canonical -1"
     if requested_width is not None and requested_height is not None:
-        allowed_sizes = {(requested_width, requested_height)}
-        scales = ACTIVE_DISPLAY_SCALE_PATTERN.findall(diagnostics)
-        if scales:
-            scale = float(scales[-1])
-            allowed_sizes.add((round(requested_width * scale), round(requested_height * scale)))
-        if (actual_width, actual_height) not in allowed_sizes:
-            expected = " or ".join(f"{width}x{height}" for width, height in sorted(allowed_sizes))
+        if (actual_width, actual_height) != (requested_width, requested_height):
             return (
                 f"runtime window/render size is {actual_width}x{actual_height}, "
-                f"expected {expected} from the requested logical size and active display scale"
+                f"expected exact budget workload {requested_width}x{requested_height}"
             )
     return None
 
@@ -1469,6 +1523,7 @@ def evaluate_role(
     output_dir: Path,
     exit_code: int,
     timed_out: bool,
+    budget_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     log_path = find_log(plan)
     authoritative_diagnostics, all_diagnostics = collect_role_diagnostics(
@@ -1504,6 +1559,24 @@ def evaluate_role(
         if count:
             failures.append(f"{name} diagnostics={count}")
 
+    budget_evidence: dict[str, Any] = {}
+    budget_identity = ROLE_EVIDENCE_CONTRACT[plan.role_id].get("budget")
+    if budget_identity is not None:
+        if budget_contract is None:
+            budget_contract, _ = load_contract(DEFAULT_CONTRACT_PATH)
+        budget_evidence, budget_failures = evaluate_timing_evidence(
+            (
+                read_text(log_path),
+                read_text(plan.stdout_path),
+                read_text(plan.stderr_path),
+            ),
+            budget_contract,
+            budget_identity["map"],
+            budget_identity["backend"],
+            budget_identity["profile"],
+        )
+        failures.extend(f"renderer budget: {failure}" for failure in budget_failures)
+
     artifacts: list[dict[str, Any]] = []
     if log_path is not None:
         artifacts.append({"kind": "engineLog", **file_record(log_path, output_dir)})
@@ -1520,7 +1593,7 @@ def evaluate_role(
         if kind in ("screenshot", "saveReferenceScreenshot", "savePreview"):
             runtime_evidence = runtime_window_evidence(authoritative_diagnostics)
             expected_dimensions = SP_SAVE_PREVIEW_DIMENSIONS if kind == "savePreview" else (
-                (runtime_evidence[0], runtime_evidence[1]) if runtime_evidence is not None else None
+                (runtime_evidence[1], runtime_evidence[2]) if runtime_evidence is not None else None
             )
             tga_failure = validate_tga(path, expected_dimensions)
             if tga_failure:
@@ -1535,6 +1608,7 @@ def evaluate_role(
         "timedOut": timed_out,
         "failures": failures,
         "artifacts": artifacts,
+        "budgetEvidence": budget_evidence,
     }
     if plan.role_id == "sp-capture":
         expected_by_kind = {kind: plan.savepath / Path(relative) for kind, relative in plan.expected}
@@ -1569,18 +1643,19 @@ def run_capture(
     plans: dict[str, RolePlan],
     timeout: int,
     mp_client_delay: int,
+    budget_contract: dict[str, Any],
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     sp_plan = plans["sp-capture"]
     sp_process = launch(executable, sp_plan, runtime_dir)
     exit_code, timed_out = wait_process(sp_process, timeout)
-    results.append(evaluate_role(sp_plan, output_dir, exit_code, timed_out))
+    results.append(evaluate_role(sp_plan, output_dir, exit_code, timed_out, budget_contract))
     if results[-1]["status"] == "pass":
         playback_plan = plans["sp-demo-playback"]
         playback_process = launch(executable, playback_plan, runtime_dir)
         exit_code, timed_out = wait_process(playback_process, timeout)
-        results.append(evaluate_role(playback_plan, output_dir, exit_code, timed_out))
+        results.append(evaluate_role(playback_plan, output_dir, exit_code, timed_out, budget_contract))
     else:
         results.append({
             "role": "sp-demo-playback",
@@ -1603,8 +1678,8 @@ def run_capture(
     )
     server_exit, server_timeout = mp_results["server"]
     client_exit, client_timeout = mp_results["client"]
-    results.append(evaluate_role(server_plan, output_dir, server_exit, server_timeout))
-    results.append(evaluate_role(client_plan, output_dir, client_exit, client_timeout))
+    results.append(evaluate_role(server_plan, output_dir, server_exit, server_timeout, budget_contract))
+    results.append(evaluate_role(client_plan, output_dir, client_exit, client_timeout, budget_contract))
     return results
 
 
@@ -1626,8 +1701,12 @@ def verify_recorded_files(
     report_dir: Path,
     asset_root: Path,
     runtime_dir: Path | None = None,
+    budget_contract: dict[str, Any] | None = None,
+    budget_binding: dict[str, Any] | None = None,
 ) -> list[str]:
     failures: list[str] = []
+    if budget_contract is None or budget_binding is None:
+        budget_contract, budget_binding = load_contract(DEFAULT_CONTRACT_PATH)
     if report.get("status") != "pass":
         failures.append(f"baseline report status is {report.get('status')!r}, not 'pass'")
     if report.get("dryRun") is not False:
@@ -1638,6 +1717,11 @@ def verify_recorded_files(
             failures.append(f"baseline {field_name} field is missing or is not an array")
         elif field_value:
             failures.append(f"baseline {field_name} field is nonempty")
+    failures.extend(
+        verify_contract_binding(
+            report.get("budgetContract"), budget_contract, budget_binding
+        )
+    )
 
     current_git = git_state(repo_root())
     recorded_git = report.get("git")
@@ -1832,13 +1916,14 @@ def verify_recorded_files(
         not isinstance(safety, dict)
         or safety.get("windowedOnly") is not True
         or safety.get("borderless") is not False
+        or safety.get("displayContract") != display_contract()
         or safety.get("engineScreenshotOnly") is not True
         or safety.get("operatingSystemCapture") is not False
         or safety.get("inputInjection") is not False
         or not isinstance(width, int)
         or not isinstance(height, int)
-        or width < 640
-        or height < 480
+        or width != DEFAULT_WIDTH
+        or height != DEFAULT_HEIGHT
     ):
         failures.append("baseline safety/window contract differs")
 
@@ -2028,6 +2113,26 @@ def verify_recorded_files(
             report_dir / Path(str(artifact_by_kind["processStdout"].get("path", ""))),
             report_dir / Path(str(artifact_by_kind["processStderr"].get("path", ""))),
         )
+        budget_identity = contract.get("budget")
+        if budget_identity is not None:
+            budget_sources = (
+                read_text(report_dir / Path(str(artifact_by_kind["engineLog"].get("path", "")))),
+                read_text(report_dir / Path(str(artifact_by_kind["processStdout"].get("path", "")))),
+                read_text(report_dir / Path(str(artifact_by_kind["processStderr"].get("path", "")))),
+            )
+            failures.extend(
+                f"{role}: {failure}"
+                for failure in verify_recorded_evidence(
+                    result.get("budgetEvidence"),
+                    budget_sources,
+                    budget_contract,
+                    budget_identity["map"],
+                    budget_identity["backend"],
+                    budget_identity["profile"],
+                )
+            )
+        elif result.get("budgetEvidence") not in ({}, None):
+            failures.append(f"{role}: unexpected renderer budget evidence")
         if contract["marker"].casefold() not in authoritative_diagnostics.casefold():
             failures.append(f"{role}: completion marker is absent from verified diagnostics")
         for marker in contract.get("requiredMarkers", []):
@@ -2055,7 +2160,7 @@ def verify_recorded_files(
                 if not screenshot_path.is_file():
                     continue
                 tga_failure = validate_tga(
-                    screenshot_path, (runtime_evidence[0], runtime_evidence[1])
+                    screenshot_path, (runtime_evidence[1], runtime_evidence[2])
                 )
                 if tga_failure:
                     failures.append(f"{role}: {screenshot_kind}: {tga_failure}")
@@ -2148,6 +2253,7 @@ def write_reports(output_dir: Path, payload: dict[str, Any]) -> tuple[Path, Path
         f"- Compatibility model: `{payload['assets']['compatibilityModel']}`",
         f"- Git revision: `{payload['git']['revision'] or 'unavailable'}` (dirty: `{str(payload['git']['dirty']).lower()}`)",
         f"- Git provenance policy: `{payload['git']['policy']}`",
+        f"- Per-map renderer budget contract: `{payload.get('budgetContract', {}).get('contractId', 'missing')}` (`{payload.get('budgetContract', {}).get('sha256', 'missing')}`)",
         f"- Retail fallback asset root: `{payload['assets']['root']}`",
         f"- Linked q4base/q4mp view allowed: `{str(payload['assets']['allowLinkedGameDirectories']).lower()}`",
         f"- Retail PK4s: {len(payload['assets']['stockPk4s'])}",
@@ -2164,7 +2270,7 @@ def write_reports(output_dir: Path, payload: dict[str, Any]) -> tuple[Path, Path
         "- Retail virtual-path namespace untouched: "
         f"`{str(payload['assets']['retailPathNamespaceUntouched']).lower()}`",
         f"- MP loopback port: {payload['mpPort']}",
-        "- Display: forced windowed",
+        f"- Display: `{payload.get('safety', {}).get('displayContract', {}).get('contractId', 'not promotable') if payload.get('safety', {}).get('displayContract') else 'not promotable'}`",
         "- Screenshots: engine `screenshot` command only",
         "- Input automation: none",
         "",
@@ -2214,6 +2320,34 @@ def write_reports(output_dir: Path, payload: dict[str, Any]) -> tuple[Path, Path
             f"| {result.get('status')} | `{result.get('role')}` | {result.get('mode')} | "
             f"{len(result.get('artifacts', []))} | {failures} |"
         )
+    budget_results = [
+        result for result in results if result.get("budgetEvidence")
+    ]
+    if budget_results:
+        lines += [
+            "",
+            "## Per-map CPU/GPU budget evidence",
+            "",
+            "| Status | Role | Map | Backend | Profile | CPU samples / P95 / P99 | GPU samples / P95 / P99 | Budget |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for result in budget_results:
+            evidence = result["budgetEvidence"]
+            measurement = evidence.get("measurement", {})
+            cpu = measurement.get("cpu", {})
+            gpu = measurement.get("gpu", {})
+            gpu_summary = (
+                f"{gpu.get('samples', '?')} / {gpu.get('p95Us', '?')} / {gpu.get('p99Us', '?')} us"
+                if gpu.get("available")
+                else "unavailable"
+            )
+            lines.append(
+                f"| {evidence.get('status', 'fail')} | `{result.get('role')}` | "
+                f"`{measurement.get('map', 'missing')}` | `{measurement.get('backend', 'missing')}` | "
+                f"`{measurement.get('profile', 'missing')}` | {cpu.get('samples', '?')} / "
+                f"{cpu.get('p95Us', '?')} / {cpu.get('p99Us', '?')} us | {gpu_summary} | "
+                f"`{evidence.get('budgetId', 'missing')}` |"
+            )
     sp_capture = next(
         (result for result in results if result.get("role") == "sp-capture"), None
     )
@@ -2274,6 +2408,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default="", help="Evidence directory; defaults to .tmp/stock-baseline/<UTC timestamp>.")
     parser.add_argument("--expected-assets", default="", help="Optional prior stock_pk4_manifest.json or baseline report. Any mismatch fails before launch.")
+    parser.add_argument("--budget-contract", default=str(DEFAULT_CONTRACT_PATH), help="Versioned per-map CPU/GPU budget JSON bound by stable id and SHA-256.")
     parser.add_argument(
         "--allow-asset-dir-links",
         action="store_true",
@@ -2295,6 +2430,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.width < 640 or args.height < 480:
         parser.error("baseline window must be at least 640x480")
+    if (
+        not args.dry_run
+        and not args.verify_report
+        and (args.width, args.height) != (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    ):
+        parser.error(
+            f"passing baseline budget evidence requires the exact bordered "
+            f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT} display contract"
+        )
     if not (1024 <= args.mp_port <= 65535):
         parser.error("--mp-port must be between 1024 and 65535")
     if args.timeout < 30:
@@ -2321,6 +2465,7 @@ def main(argv: list[str]) -> int:
         raise ValueError("--asset-root is required on this platform")
     asset_root = Path(args.asset_root).resolve()
     source_root = repo_root()
+    budget_contract, budget_binding = load_contract(Path(args.budget_contract))
     requested_runtime_dir = Path(args.runtime_dir).absolute() if args.runtime_dir else None
 
     if args.verify_report:
@@ -2329,7 +2474,12 @@ def main(argv: list[str]) -> int:
         if report.get("schemaVersion") != SCHEMA_VERSION:
             raise ValueError(f"unsupported baseline report schema: {report.get('schemaVersion')!r}")
         failures = verify_recorded_files(
-            report, report_path.parent, asset_root, requested_runtime_dir
+            report,
+            report_path.parent,
+            asset_root,
+            requested_runtime_dir,
+            budget_contract,
+            budget_binding,
         )
         for failure in failures:
             print(f"error: {failure}", file=sys.stderr)
@@ -2390,7 +2540,7 @@ def main(argv: list[str]) -> int:
         results: list[dict[str, Any]] = []
     elif args.dry_run:
         results = [
-            {"role": plan.role_id, "mode": plan.mode, "status": "planned", "failures": [], "artifacts": []}
+            {"role": plan.role_id, "mode": plan.mode, "status": "planned", "failures": [], "artifacts": [], "budgetEvidence": {}}
             for plan in plans.values()
         ]
     else:
@@ -2401,6 +2551,7 @@ def main(argv: list[str]) -> int:
             plans,
             args.timeout,
             args.mp_client_delay,
+            budget_contract,
         )
 
     passed = bool(results) and all(result["status"] == "pass" for result in results)
@@ -2415,6 +2566,7 @@ def main(argv: list[str]) -> int:
         "status": status,
         "dryRun": args.dry_run,
         "git": git_state(source_root),
+        "budgetContract": budget_binding,
         "mpPort": args.mp_port,
         "runtimeRoot": str(runtime_dir),
         "host": {
@@ -2450,6 +2602,7 @@ def main(argv: list[str]) -> int:
             "windowedOnly": True,
             "borderless": False,
             "windowSize": {"width": args.width, "height": args.height},
+            "displayContract": display_contract() if not args.dry_run else None,
             "engineScreenshotOnly": True,
             "operatingSystemCapture": False,
             "inputInjection": False,
@@ -2463,7 +2616,12 @@ def main(argv: list[str]) -> int:
         # through an incorrectly mounted package path as well as any concurrent
         # or stale-file mutation during the run.
         post_capture_failures = verify_recorded_files(
-            payload, output_dir, asset_root, runtime_dir
+            payload,
+            output_dir,
+            asset_root,
+            runtime_dir,
+            budget_contract,
+            budget_binding,
         )
         payload["postCaptureVerificationFailures"] = post_capture_failures
         if post_capture_failures:

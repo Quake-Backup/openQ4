@@ -20,8 +20,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+VALIDATION_DIR = Path(__file__).resolve().parents[1] / "validation"
+if str(VALIDATION_DIR) not in sys.path:
+    sys.path.insert(0, str(VALIDATION_DIR))
+
+from renderer_budget_contract import DEFAULT_CONTRACT_PATH, load_contract  # noqa: E402
+
 
 SAFE_TIERS = ("auto", "legacy", "gl33", "gl41", "gl43", "gl45", "gl46")
+PER_MAP_BUDGET_CONTRACT, PER_MAP_BUDGET_BINDING = load_contract(DEFAULT_CONTRACT_PATH)
 
 # Keep in sync with MAX_CONSOLE_LINES in src/framework/Common.cpp. The engine
 # silently ignores any "+command" beyond this limit, which would drop "+quit"
@@ -217,7 +224,7 @@ GAMEPLAY_BENCHMARK_HARNESS = [
     },
     {
         "profile": "presentation",
-        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile presentation",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile presentation --pacing-only",
         "coverage": "windowed/fullscreen coverage for r_swapInterval 0/1 and com_maxfps 0/120/240 while preserving uncapped high-refresh presentation behavior",
     },
     {
@@ -1828,6 +1835,8 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "shaderLibraryTierMatrix": SHADER_LIBRARY_TIER_MATRIX,
         "longRunValidationMatrix": LONG_RUN_VALIDATION_MATRIX,
         "perfRegressionThresholds": PERF_REGRESSION_THRESHOLDS,
+        "perMapBudgetContract": PER_MAP_BUDGET_BINDING,
+        "perMapBudgets": PER_MAP_BUDGET_CONTRACT["budgets"],
         "promotionEvidenceGate": {
             "cvar": "r_rendererPromotionEvidence",
             "requiredTokens": PROMOTION_EVIDENCE_REQUIRED_TOKENS,
@@ -1985,6 +1994,23 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
 
     lines += [
         "",
+        "## Per-Map CPU/GPU Budget Contract",
+        "",
+        f"Contract `{PER_MAP_BUDGET_BINDING['contractId']}` / `{PER_MAP_BUDGET_BINDING['sha256']}` uses integer microseconds and exact map/backend/profile selection. These are target ceilings; measured values are retained by the gameplay and stock evidence reports.",
+        "",
+        "| Budget | Map | Backend | Profile | Minimum CPU/GPU samples | CPU P95/P99 | GPU P95/P99 |",
+        "|---|---|---|---|---:|---:|---:|",
+    ]
+    for item in PER_MAP_BUDGET_CONTRACT["budgets"]:
+        lines.append(
+            f"| `{item['id']}` | `{item['map']}` | `{item['backend']}` | `{item['profile']}` | "
+            f"{item['minimumSamples']['cpu']}/{item['minimumSamples']['gpu']} | "
+            f"{item['cpu']['p95Us']}/{item['cpu']['p99Us']} us | "
+            f"{item['gpu']['p95Us']}/{item['gpu']['p99Us']} us |"
+        )
+
+    lines += [
+        "",
         "## Promotion Evidence Gate",
         "",
         "`r_rendererModernAutoPromote 1` is ignored by the engine unless `r_rendererPromotionEvidence` carries a complete Phase 8 evidence token.",
@@ -2093,6 +2119,16 @@ def main(argv: list[str]) -> int:
         print("\nPerformance regression thresholds:")
         for item in PERF_REGRESSION_THRESHOLDS:
             print(f"  {item['preset']}: P95 <= {item['p95Ms']} ms, P99 <= {item['p99Ms']} ms - {item['budget']}")
+        print(
+            "\nPer-map CPU/GPU budget contract: "
+            f"{PER_MAP_BUDGET_BINDING['contractId']} ({PER_MAP_BUDGET_BINDING['sha256']})"
+        )
+        for item in PER_MAP_BUDGET_CONTRACT["budgets"]:
+            print(
+                f"  {item['id']}: {item['map']} {item['backend']} {item['profile']} "
+                f"CPU {item['cpu']['p95Us']}/{item['cpu']['p99Us']} us, "
+                f"GPU {item['gpu']['p95Us']}/{item['gpu']['p99Us']} us"
+            )
         print("\nDefault promotion criteria:")
         for item in DEFAULT_PROMOTION_CRITERIA:
             print(f"  {item['criterion']}: {item['required']}")

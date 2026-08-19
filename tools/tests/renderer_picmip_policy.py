@@ -215,8 +215,8 @@ def test_exact_halvings_reuse_the_mip_chain_filter():
         "the shrink filter should follow the same gamma choice DeriveOpts makes",
     )
     assert_true(
-        "return usage == TD_FONT || usage == TD_LIGHT;" in image_load,
-        "gamma mips are only used for the font and light buckets",
+        "return usage == TD_FONT || usage == TD_LIGHT || usage == TD_PBR_COLOR;" in image_load,
+        "gamma mips are used for font, light, and explicitly color-managed PBR buckets",
     )
     assert_true(
         image_load.count("return R_ResampleTexture( pic, width, height, scaledWidth, scaledHeight );") >= 3,

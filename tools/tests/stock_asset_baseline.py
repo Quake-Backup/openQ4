@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import struct
@@ -33,6 +35,14 @@ def cvar_value(arguments: list[str], name: str) -> str | None:
         if arguments[index] == "+set" and arguments[index + 1] == name:
             return arguments[index + 2]
     return None
+
+
+def timing_marker(map_name: str) -> str:
+    return (
+        f"OPENQ4_FRAME_TIMING_V1 map={map_name} backend=opengl profile=baseline "
+        "cpuSamples=256 cpuP50Us=7000 cpuP95Us=11000 cpuP99Us=14000 "
+        "gpuAvailable=1 gpuSamples=252 gpuP50Us=5000 gpuP95Us=8000 gpuP99Us=10000"
+    )
 
 
 def patterned_rgb(width: int, height: int) -> bytes:
@@ -525,6 +535,9 @@ def test_plan_is_windowed_and_engine_only(tool: ModuleType, base: Path) -> None:
         assert cvar_value(plan.args, "r_customWidth") == "1280"
         assert cvar_value(plan.args, "r_customHeight") == "720"
         assert cvar_value(plan.args, "r_renderApi") == "gl"
+        assert cvar_value(plan.args, "r_rendererBenchmarkPreset") == "baseline"
+        assert cvar_value(plan.args, "r_rendererMetrics") == "0"
+        assert cvar_value(plan.args, "r_rendererGpuTimers") == "1"
         assert cvar_value(plan.args, "fs_devpath") == str(plan.savepath)
         assert cvar_value(plan.args, "fs_cdpath") is None
         assert plan.args.count("+vid_restart") == 1
@@ -560,6 +573,21 @@ def test_plan_is_windowed_and_engine_only(tool: ModuleType, base: Path) -> None:
     mp_server_cfg = (output / "savepaths" / "mp-server" / "baseoq4" / "stock-baseline" / "server.cfg").read_text(encoding="utf-8")
     mp_client_cfg = (output / "savepaths" / "mp-client" / "baseoq4" / "stock-baseline" / "client.cfg").read_text(encoding="utf-8")
     assert "waitMsec 60000" in mp_server_cfg
+    assert "rendererBenchmarkCapture" in mp_server_cfg
+    assert "rendererBenchmarkCapture" in mp_client_cfg
+    assert "r_rendererMetrics 1" in mp_server_cfg
+    assert "r_rendererMetrics 0" in mp_server_cfg
+
+    def assert_canonical_display_before_sampling(payload: str) -> None:
+        lines = payload.splitlines()
+        reset_index = lines.index("framePacingReset")
+        for name, value in tool.display_contract()["cvars"].items():
+            matches = [line for line in lines[:reset_index] if line.startswith(f"{name} ")]
+            assert matches == [f"{name} {value}"]
+
+    assert_canonical_display_before_sampling(sp_stage2)
+    assert_canonical_display_before_sampling(mp_server_cfg)
+    assert_canonical_display_before_sampling(mp_client_cfg)
     assert "openq4_joinGame" not in mp_client_cfg
     assert "openq4_assertMPClientActive" in mp_client_cfg
     assert "openq4_assertMPGameplayView" in mp_client_cfg
@@ -578,11 +606,17 @@ def test_plan_is_windowed_and_engine_only(tool: ModuleType, base: Path) -> None:
     assert mp_client_lines[view_assertion_lines[-1] + 1] == (
         "echo OPENQ4_STOCK_BASELINE_MP_CLIENT_COMPLETE"
     )
-    assert tool.runtime_window_failure(
+    assert "expected exact budget workload" in tool.runtime_window_failure(
         "  [0] * Test Display (contentScale 1.50)\nMODE: -1, 1920 x 1080 windowed hz:N/A\n",
         1280,
         720,
+    )
+    assert tool.runtime_window_failure(
+        "MODE: -1, 1280 x 720 windowed hz:N/A\n", 1280, 720
     ) is None
+    assert "selector" in tool.runtime_window_failure(
+        "MODE: 5, 1280 x 720 windowed hz:N/A\n", 1280, 720
+    )
     assert "borderless" in tool.runtime_window_failure(
         "MODE: 5, 2560 x 1440 borderless hz:N/A\n", 1280, 720
     )
@@ -623,6 +657,26 @@ def test_plan_is_windowed_and_engine_only(tool: ModuleType, base: Path) -> None:
         1280,
         720,
     )
+
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            tool.parse_args(["--asset-root", str(asset_root), "--width", "640", "--height", "480"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("noncanonical real baseline dimensions must fail")
+    dry_custom = tool.parse_args(
+        [
+            "--asset-root",
+            str(asset_root),
+            "--dry-run",
+            "--width",
+            "640",
+            "--height",
+            "480",
+        ]
+    )
+    assert dry_custom.dry_run and (dry_custom.width, dry_custom.height) == (640, 480)
 
     source = TOOL_PATH.read_text(encoding="utf-8")
     for forbidden in ("pyautogui", "ImageGrab", "BitBlt", "PrintWindow", "mss.mss", "pynput"):
@@ -763,7 +817,7 @@ def test_tga_and_report_verification(tool: ModuleType, base: Path) -> None:
     runtime_executable, runtime_records = make_runtime_package(tool, runtime_dir)
     overlay_loose, unexpected = tool.collect_overlay_loose_files(runtime_dir, runtime_records)
     assert unexpected == []
-    report_width, report_height = 640, 480
+    report_width, report_height = tool.DEFAULT_WIDTH, tool.DEFAULT_HEIGHT
     expected_assets_path = base / "expected-assets.json"
     expected_assets_path.write_text(
         json.dumps(
@@ -779,11 +833,13 @@ def test_tga_and_report_verification(tool: ModuleType, base: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    budget_contract, budget_binding = tool.load_contract(tool.DEFAULT_CONTRACT_PATH)
     report: dict[str, object] = {
         "schemaVersion": tool.SCHEMA_VERSION,
         "status": "pass",
         "dryRun": False,
         "git": tool.git_state(ROOT),
+        "budgetContract": budget_binding,
         "mpPort": 28140,
         "runtimeRoot": str(runtime_dir.resolve()),
         "expectedAssets": {
@@ -796,6 +852,7 @@ def test_tga_and_report_verification(tool: ModuleType, base: Path) -> None:
             "windowedOnly": True,
             "borderless": False,
             "windowSize": {"width": report_width, "height": report_height},
+            "displayContract": tool.display_contract(),
             "engineScreenshotOnly": True,
             "operatingSystemCapture": False,
             "inputInjection": False,
@@ -849,6 +906,11 @@ def test_tga_and_report_verification(tool: ModuleType, base: Path) -> None:
             "  [0] * Test Display (contentScale 1.00)\n"
             f"MODE: -1, {report_width} x {report_height} windowed hz:N/A\n"
             + active_proofs
+            + (
+                timing_marker(contract["budget"]["map"]) + "\n"
+                if contract.get("budget")
+                else ""
+            )
             + contract["marker"]
             + "\n",
             encoding="utf-8",
@@ -912,7 +974,19 @@ def test_tga_and_report_verification(tool: ModuleType, base: Path) -> None:
             "timedOut": False,
             "failures": [],
             "artifacts": artifacts,
+            "budgetEvidence": {},
         }
+        if contract.get("budget"):
+            identity = contract["budget"]
+            evidence, evidence_failures = tool.evaluate_timing_evidence(
+                (log.read_text(encoding="utf-8"), "", ""),
+                budget_contract,
+                identity["map"],
+                identity["backend"],
+                identity["profile"],
+            )
+            assert evidence_failures == []
+            result["budgetEvidence"] = evidence
         if role == "sp-capture":
             reference_path = (
                 base
@@ -939,8 +1013,147 @@ def test_tga_and_report_verification(tool: ModuleType, base: Path) -> None:
     assert live_sp_result["savePreviewComparison"] == next(
         result for result in results if result["role"] == "sp-capture"
     )["savePreviewComparison"]
+
+    # Report replay is intentionally exercised through many independent
+    # mutations below. Cache the expensive full-pixel TGA policy result by
+    # exact bytes so the canonical 1280x720 fixture does not turn each
+    # unrelated provenance mutation into another full image decode. Any image
+    # byte mutation receives a different digest and is validated afresh.
+    uncached_validate_tga = tool.validate_tga
+    tga_validation_cache: dict[tuple[str, tuple[int, int] | None], str | None] = {}
+
+    def cached_validate_tga(
+        path: Path, expected_dimensions: tuple[int, int] | None = None
+    ) -> str | None:
+        key = (tool.sha256_file(path), expected_dimensions)
+        if key not in tga_validation_cache:
+            tga_validation_cache[key] = uncached_validate_tga(path, expected_dimensions)
+        return tga_validation_cache[key]
+
+    tool.validate_tga = cached_validate_tga
+    uncached_save_preview_comparison = tool.save_preview_comparison
+    preview_comparison_cache: dict[
+        tuple[str, str], tuple[dict[str, object] | None, str | None]
+    ] = {}
+
+    def cached_save_preview_comparison(
+        reference_path: Path, preview_path: Path
+    ) -> tuple[dict[str, object] | None, str | None]:
+        key = (
+            tool.sha256_file(reference_path),
+            tool.sha256_file(preview_path),
+        )
+        if key not in preview_comparison_cache:
+            preview_comparison_cache[key] = uncached_save_preview_comparison(
+                reference_path, preview_path
+            )
+        return preview_comparison_cache[key]
+
+    tool.save_preview_comparison = cached_save_preview_comparison
     assert tool.verify_recorded_files(report, base, asset_root, runtime_dir) == []
     assert tool.verify_recorded_files(report, base, asset_root) == []
+
+    wrong_display_contract = json.loads(json.dumps(report))
+    wrong_display_contract["safety"]["displayContract"]["width"] = 1279
+    assert any(
+        "safety/window contract differs" in failure
+        for failure in tool.verify_recorded_files(
+            wrong_display_contract, base, asset_root, runtime_dir
+        )
+    )
+    wrong_window_size = json.loads(json.dumps(report))
+    wrong_window_size["safety"]["windowSize"]["width"] = 640
+    assert any(
+        "safety/window contract differs" in failure
+        for failure in tool.verify_recorded_files(
+            wrong_window_size, base, asset_root, runtime_dir
+        )
+    )
+
+    for field, value in (
+        ("contractId", "wrong-contract-v1"),
+        ("path", "tools/validation/wrong.json"),
+        ("sha256", "0" * 64),
+    ):
+        wrong_budget_binding = json.loads(json.dumps(report))
+        wrong_budget_binding["budgetContract"][field] = value
+        assert any(
+            "budget contract binding differs" in failure
+            for failure in tool.verify_recorded_files(
+                wrong_budget_binding, base, asset_root, runtime_dir
+            )
+        )
+    stock_sp_result = next(
+        result for result in results if result["role"] == "sp-capture"
+    )
+    stock_sp_log_artifact = next(
+        artifact
+        for artifact in stock_sp_result["artifacts"]  # type: ignore[union-attr]
+        if artifact["kind"] == "engineLog"
+    )
+    stock_sp_log = base / str(stock_sp_log_artifact["path"])
+    stock_sp_log_text = stock_sp_log.read_text(encoding="utf-8")
+    stock_sp_log.write_text(
+        stock_sp_log_text.replace("backend=opengl", "backend=vulkan"),
+        encoding="utf-8",
+    )
+    stock_sp_log_artifact.update(tool.file_record(stock_sp_log, base))
+    mutated_marker_failures = tool.verify_recorded_files(
+        report, base, asset_root, runtime_dir
+    )
+    assert any("timing backend" in failure for failure in mutated_marker_failures)
+    assert any(
+        "recorded renderer budget evidence differs" in failure
+        for failure in mutated_marker_failures
+    )
+    stock_sp_log.write_text(stock_sp_log_text, encoding="utf-8")
+    stock_sp_log_artifact.update(tool.file_record(stock_sp_log, base))
+    assert tool.verify_recorded_files(report, base, asset_root, runtime_dir) == []
+
+    stock_sp_log.write_text(
+        stock_sp_log_text.replace(
+            "MODE: -1, 1280 x 720 windowed",
+            "MODE: -1, 1279 x 720 windowed",
+        ),
+        encoding="utf-8",
+    )
+    stock_sp_log_artifact.update(tool.file_record(stock_sp_log, base))
+    assert any(
+        "expected exact budget workload 1280x720" in failure
+        for failure in tool.verify_recorded_files(report, base, asset_root, runtime_dir)
+    )
+    stock_sp_log.write_text(stock_sp_log_text, encoding="utf-8")
+    stock_sp_log_artifact.update(tool.file_record(stock_sp_log, base))
+    assert tool.verify_recorded_files(report, base, asset_root, runtime_dir) == []
+
+    stock_sp_screenshot_artifact = next(
+        artifact
+        for artifact in stock_sp_result["artifacts"]  # type: ignore[union-attr]
+        if artifact["kind"] == "screenshot"
+    )
+    stock_sp_screenshot = base / str(stock_sp_screenshot_artifact["path"])
+    stock_sp_screenshot_bytes = stock_sp_screenshot.read_bytes()
+    changed_screenshot = bytearray(stock_sp_screenshot_bytes)
+    struct.pack_into("<H", changed_screenshot, 12, 1279)
+    del changed_screenshot[-3 * 720 :]
+    stock_sp_screenshot.write_bytes(changed_screenshot)
+    stock_sp_screenshot_artifact.update(tool.file_record(stock_sp_screenshot, base))
+    assert any(
+        "TGA dimensions 1279x720 differ from expected 1280x720" in failure
+        for failure in tool.verify_recorded_files(report, base, asset_root, runtime_dir)
+    )
+    stock_sp_screenshot.write_bytes(stock_sp_screenshot_bytes)
+    stock_sp_screenshot_artifact.update(tool.file_record(stock_sp_screenshot, base))
+    assert tool.verify_recorded_files(report, base, asset_root, runtime_dir) == []
+
+    wrong_budget_measurement = json.loads(json.dumps(report))
+    wrong_budget_measurement["results"][0]["budgetEvidence"]["measurement"]["cpu"]["p95Us"] = 1
+    assert any(
+        "recorded renderer budget evidence differs" in failure
+        for failure in tool.verify_recorded_files(
+            wrong_budget_measurement, base, asset_root, runtime_dir
+        )
+    )
 
     missing_expected_binding = json.loads(json.dumps(report))
     missing_expected_binding["expectedAssets"]["path"] = str(

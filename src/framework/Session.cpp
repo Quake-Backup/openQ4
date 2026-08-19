@@ -5200,6 +5200,9 @@ Exits with mapSpawned = false
 ===============
 */
 void idSessionLocal::UnloadMap() {
+	if ( renderSystem != NULL ) {
+		renderSystem->ResetGpuFrameTiming( "session unload" );
+	}
 	StopPlayingRenderDemo();
 
 	if ( com_showFramePacing.GetInteger() >= 2 && framePacingStats.valid ) {

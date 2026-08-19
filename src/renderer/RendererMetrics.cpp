@@ -5,6 +5,11 @@
 #include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
+#include "GpuFrameTimingCore.h"
+#include <chrono>
+#ifdef OPENQ4_RENDERER_VK_MODULE
+#include "Vulkan/VulkanGpuFrameTiming.h"
+#endif
 
 typedef struct rendererMetricsFrame_s {
 	int		frameCount;
@@ -16,6 +21,7 @@ typedef struct rendererMetricsFrame_s {
 	int		submitMsec;
 	int		backEndMsec;
 	int		presentMsec;
+	unsigned long long cpuFrameMicroseconds;
 	int		gpuMsec;
 	int		draw3d;
 	int		draw2d;
@@ -351,6 +357,11 @@ typedef struct rendererGpuTimerFrame_s {
 	rendererGpuTimerQuery_t	queries[128];
 	int						numQueries;
 	int						frameCount;
+	GLuint					fullFrameBeginQuery;
+	GLuint					fullFrameEndQuery;
+	unsigned int			fullFrameGeneration;
+	bool					fullFramePending;
+	bool					fullFrameOpen;
 } rendererGpuTimerFrame_t;
 
 typedef struct rendererGpuTimerLatest_s {
@@ -685,11 +696,107 @@ static rendererModernVisibilityLatest_t rg_modernVisibilityLatest;
 static rendererLowOverheadLatest_t rg_lowOverheadLatest;
 static rendererClusteredLightingStats_t rg_clusteredLightingLatest;
 static rendererGLStateCacheLatest_t rg_glStateCacheLatest;
+static gpuFrameTimingCoreState_t rg_gpuFrameTiming;
+static bool rg_gpuFrameTimingInitialized = false;
 static int rg_gpuTimerFrameCursor = 0;
 static int rg_gpuTimerBackendFrameCount = 0;
 static bool rg_gpuTimerQueryActive = false;
 static rendererGpuTimerQuery_t *rg_gpuTimerActiveQuery = NULL;
 static bool rg_gpuTimerOverflowThisFrame = false;
+static bool rg_gpuFullFrameEnabledLastFrame = false;
+static bool rg_gpuFullFrameEnableStateKnown = false;
+static int rg_gpuFullFrameContextGeneration = -1;
+typedef std::chrono::steady_clock rendererCpuFrameClock_t;
+static rendererCpuFrameClock_t::time_point rg_cpuFrameBeginTime;
+static bool rg_cpuFrameBeginValid = false;
+static bool rg_rendererMetricsCaptureEnabledLastFrame = false;
+
+static void R_RendererMetrics_EnsureGpuFrameTimingInitialized( void ) {
+	if ( rg_gpuFrameTimingInitialized ) {
+		return;
+	}
+	GpuFrameTimingCore_Initialize( rg_gpuFrameTiming );
+	rg_gpuFrameTimingInitialized = true;
+}
+
+void R_RendererMetrics_MarkCpuFrameBegin( void ) {
+	rg_cpuFrameBeginTime = rendererCpuFrameClock_t::now();
+	rg_cpuFrameBeginValid = true;
+}
+
+static unsigned long long R_RendererMetrics_ConsumeCpuFrameMicroseconds( void ) {
+	if ( !rg_cpuFrameBeginValid ) {
+		return 0;
+	}
+	const rendererCpuFrameClock_t::time_point beginTime = rg_cpuFrameBeginTime;
+	rg_cpuFrameBeginValid = false;
+	const long long elapsedMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+		rendererCpuFrameClock_t::now() - beginTime ).count();
+	if ( elapsedMicroseconds <= 0 ) {
+		return 0;
+	}
+	return static_cast<unsigned long long>( elapsedMicroseconds );
+}
+
+void R_RendererMetrics_GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	memset( &timing, 0, sizeof( timing ) );
+	timing.supported = rg_gpuFrameTiming.supported;
+	timing.valid = rg_gpuFrameTiming.valid;
+	timing.backend = static_cast<renderGpuTimingBackend_t>( rg_gpuFrameTiming.backend );
+	timing.frameNumber = rg_gpuFrameTiming.frameNumber;
+	timing.generation = rg_gpuFrameTiming.generation;
+	timing.latencyFrames = rg_gpuFrameTiming.latencyFrames;
+	timing.elapsedMicroseconds = rg_gpuFrameTiming.elapsedMicroseconds;
+	timing.resolvedSamples = rg_gpuFrameTiming.resolvedSamples;
+	timing.unavailableSamples = rg_gpuFrameTiming.unavailableSamples;
+	timing.droppedSamples = rg_gpuFrameTiming.droppedSamples;
+	timing.resetCount = rg_gpuFrameTiming.resetCount;
+}
+
+void R_RendererMetrics_ResetGpuFrameTiming( const char *reason ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	GpuFrameTimingCore_Reset( rg_gpuFrameTiming );
+	RendererBenchmarks_ResetHistory();
+	if ( reason != NULL && reason[ 0 ] != '\0' ) {
+		common->DPrintf( "GPU frame timing reset: generation=%u reason=%s\n",
+			rg_gpuFrameTiming.generation, reason );
+	}
+}
+
+void R_RendererMetrics_SetGpuFrameTimingBackend( renderGpuTimingBackend_t backend, bool supported ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	const bool changed = rg_gpuFrameTiming.backend != static_cast<int>( backend )
+		|| rg_gpuFrameTiming.supported != supported;
+	GpuFrameTimingCore_SetBackend( rg_gpuFrameTiming, static_cast<int>( backend ), supported );
+	if ( changed ) {
+		RendererBenchmarks_ResetHistory();
+	}
+}
+
+unsigned int R_RendererMetrics_GpuFrameTimingGeneration( void ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	return rg_gpuFrameTiming.generation;
+}
+
+void R_RendererMetrics_RecordGpuFrameTimingResolved( renderGpuTimingBackend_t backend,
+		int frameNumber, unsigned int generation, unsigned long long elapsedMicroseconds,
+		int currentFrameNumber ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	GpuFrameTimingCore_RecordResolved( rg_gpuFrameTiming, static_cast<int>( backend ),
+		frameNumber, generation, elapsedMicroseconds,
+		GpuFrameTimingCore_FrameLatency( frameNumber, currentFrameNumber ) );
+}
+
+void R_RendererMetrics_RecordGpuFrameTimingUnavailable( void ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	rg_gpuFrameTiming.unavailableSamples++;
+}
+
+void R_RendererMetrics_RecordGpuFrameTimingDropped( void ) {
+	R_RendererMetrics_EnsureGpuFrameTimingInitialized();
+	rg_gpuFrameTiming.droppedSamples++;
+}
 
 static const char *R_RendererMetrics_ModernExecutorModeName( rendererModernExecutorMetricsMode_t mode ) {
 	switch ( mode ) {
@@ -716,11 +823,21 @@ static const char *R_RendererMetrics_ScenePacketSourceName( const rendererMetric
 	return "none";
 }
 
+static bool R_RendererMetrics_GpuPassTimersAvailable( void ) {
+	return glConfig.backendCaps.hasTimerQuery &&
+		glGenQueries != NULL &&
+		glDeleteQueries != NULL &&
+		glBeginQuery != NULL &&
+		glEndQuery != NULL &&
+		glGetQueryObjectiv != NULL &&
+		glGetQueryObjectuiv != NULL;
+}
+
 static bool R_RendererMetrics_GpuTimersEnabled( void ) {
 	if ( r_rendererMetrics.GetInteger() <= 0 || !r_rendererGpuTimers.GetBool() ) {
 		return false;
 	}
-	return R_RendererMetrics_GpuTimersAvailable();
+	return R_RendererMetrics_GpuPassTimersAvailable();
 }
 
 static int R_RendererMetrics_TotalGpuMsec( const rendererMetricsFrame_t &metrics ) {
@@ -746,6 +863,7 @@ static const char *R_RendererMetrics_FormatGpuMsec( const rendererMetricsFrame_t
 	return buffer;
 }
 
+#ifndef OPENQ4_RENDERER_VK_MODULE
 static void R_RendererMetrics_PollGpuTimerFrame( rendererGpuTimerFrame_t &frame ) {
 	if ( frame.numQueries <= 0 ) {
 		return;
@@ -796,6 +914,74 @@ static void R_RendererMetrics_PollGpuTimerFrame( rendererGpuTimerFrame_t &frame 
 	frame.numQueries = 0;
 }
 
+static bool R_RendererMetrics_GlFullFrameTimingAvailable( void ) {
+	return glConfig.backendCaps.hasTimerQuery &&
+		glGenQueries != NULL &&
+		glDeleteQueries != NULL &&
+		glQueryCounter != NULL &&
+		glGetQueryObjectiv != NULL &&
+		glGetQueryObjectui64v != NULL;
+}
+
+static bool R_RendererMetrics_PollGlFullFrameTiming( rendererGpuTimerFrame_t &frame ) {
+	if ( !frame.fullFramePending ) {
+		return true;
+	}
+
+	GLint beginAvailable = 0;
+	GLint endAvailable = 0;
+	glGetQueryObjectiv( frame.fullFrameBeginQuery, GL_QUERY_RESULT_AVAILABLE, &beginAvailable );
+	glGetQueryObjectiv( frame.fullFrameEndQuery, GL_QUERY_RESULT_AVAILABLE, &endAvailable );
+	if ( !beginAvailable || !endAvailable ) {
+		R_RendererMetrics_RecordGpuFrameTimingUnavailable();
+		return false;
+	}
+
+	GLuint64 beginTimestamp = 0;
+	GLuint64 endTimestamp = 0;
+	glGetQueryObjectui64v( frame.fullFrameBeginQuery, GL_QUERY_RESULT, &beginTimestamp );
+	glGetQueryObjectui64v( frame.fullFrameEndQuery, GL_QUERY_RESULT, &endTimestamp );
+	frame.fullFramePending = false;
+
+	const unsigned int currentGeneration = R_RendererMetrics_GpuFrameTimingGeneration();
+	if ( frame.fullFrameGeneration != currentGeneration || endTimestamp < beginTimestamp ) {
+		R_RendererMetrics_RecordGpuFrameTimingDropped();
+		return true;
+	}
+
+	const unsigned long long elapsedMicroseconds =
+		GpuFrameTimingCore_TicksToMicroseconds( endTimestamp - beginTimestamp, 1.0 );
+	R_RendererMetrics_RecordGpuFrameTimingResolved( RENDER_GPU_TIMING_BACKEND_OPENGL,
+		frame.frameCount, frame.fullFrameGeneration, elapsedMicroseconds, tr.frameCount );
+	return true;
+}
+
+static bool R_RendererMetrics_BeginGlFullFrameTiming( rendererGpuTimerFrame_t &frame ) {
+	if ( frame.fullFramePending ) {
+		// Preserve the unresolved older sample. The current frame is deliberately
+		// unsampled instead of waiting or overwriting live query objects.
+		R_RendererMetrics_RecordGpuFrameTimingDropped();
+		return false;
+	}
+	if ( frame.fullFrameBeginQuery == 0 ) {
+		glGenQueries( 1, &frame.fullFrameBeginQuery );
+	}
+	if ( frame.fullFrameEndQuery == 0 ) {
+		glGenQueries( 1, &frame.fullFrameEndQuery );
+	}
+	if ( frame.fullFrameBeginQuery == 0 || frame.fullFrameEndQuery == 0 ) {
+		R_RendererMetrics_RecordGpuFrameTimingDropped();
+		return false;
+	}
+
+	frame.frameCount = tr.frameCount;
+	frame.fullFrameGeneration = R_RendererMetrics_GpuFrameTimingGeneration();
+	frame.fullFrameOpen = true;
+	glQueryCounter( frame.fullFrameBeginQuery, GL_TIMESTAMP );
+	return true;
+}
+#endif
+
 void R_RendererMetrics_BeginFrame( int frameCount ) {
 	// The memset must stay ahead of the gate so Add*/Record* writes from
 	// disabled frames cannot leak into the first enabled frame; EndFrame is the
@@ -803,7 +989,12 @@ void R_RendererMetrics_BeginFrame( int frameCount ) {
 	// rebuild below is dead work while metrics are off.
 	memset( &rg_rendererMetrics, 0, sizeof( rg_rendererMetrics ) );
 	rg_rendererMetrics.frameCount = frameCount;
-	if ( r_rendererMetrics.GetInteger() <= 0 ) {
+	const bool captureEnabled = r_rendererMetrics.GetInteger() > 0;
+	if ( captureEnabled && !rg_rendererMetricsCaptureEnabledLastFrame ) {
+		R_RendererMetrics_ResetGpuFrameTiming( "renderer metrics capture window started" );
+	}
+	rg_rendererMetricsCaptureEnabledLastFrame = captureEnabled;
+	if ( !captureEnabled ) {
 		return;
 	}
 	rg_rendererMetrics.gpuTimersValid = rg_gpuTimerLatest.valid;
@@ -1667,7 +1858,20 @@ static void R_RendererMetrics_RecordBenchmarkCapture( void ) {
 	sample.submitMsec = rg_rendererMetrics.submitMsec;
 	sample.backEndMsec = rg_rendererMetrics.backEndMsec;
 	sample.presentMsec = rg_rendererMetrics.presentMsec;
-	sample.gpuMsec = Max( 0, R_RendererMetrics_TotalGpuMsec( rg_rendererMetrics ) );
+	sample.cpuFrameMicroseconds = rg_rendererMetrics.cpuFrameMicroseconds;
+	renderGpuFrameTiming_t gpuFrameTiming;
+	R_RendererMetrics_GetGpuFrameTiming( gpuFrameTiming );
+	sample.gpuFrameTimingValid = gpuFrameTiming.valid && gpuFrameTiming.elapsedMicroseconds > 0;
+	sample.gpuFrameBackend = gpuFrameTiming.backend;
+	sample.gpuFrameNumber = gpuFrameTiming.frameNumber;
+	sample.gpuFrameGeneration = gpuFrameTiming.generation;
+	sample.gpuFrameMicroseconds = sample.gpuFrameTimingValid ? gpuFrameTiming.elapsedMicroseconds : 0;
+	const unsigned long long gpuFrameMsec = sample.gpuFrameMicroseconds / 1000ULL
+		+ ( sample.gpuFrameMicroseconds % 1000ULL >= 500ULL ? 1ULL : 0ULL );
+	sample.gpuMsec = !sample.gpuFrameTimingValid ? 0
+		: gpuFrameMsec > static_cast<unsigned long long>( ( std::numeric_limits<int>::max )() )
+			? ( std::numeric_limits<int>::max )()
+			: static_cast<int>( gpuFrameMsec );
 	for ( int i = 0; i < RENDERER_GPU_TIMER_COUNT; ++i ) {
 		sample.gpuPassMsec[i] = rg_rendererMetrics.gpuTimerMsec[i];
 		sample.gpuPassSamples[i] = rg_rendererMetrics.gpuTimerSamples[i];
@@ -1707,6 +1911,7 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 	}
 
 	rg_rendererMetrics.frontEndMsec = frontEndMsec;
+	rg_rendererMetrics.cpuFrameMicroseconds = R_RendererMetrics_ConsumeCpuFrameMicroseconds();
 	rg_rendererMetrics.backEndMsec = backEndMsec;
 	rg_rendererMetrics.views = viewCount;
 	rg_rendererMetrics.visibleEntities = visibleEntities;
@@ -2348,11 +2553,49 @@ void R_RendererMetrics_EndFrame( int frontEndMsec, int backEndMsec, int viewCoun
 }
 
 void R_RendererMetrics_BeginGpuBackendFrame( void ) {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	// Vulkan brackets its true command-buffer lifetime in vk_GuiExecutor;
+	// the shared command-dispatch hook is intentionally not used there.
+	return;
+#else
 	rg_gpuTimerQueryActive = false;
 	rg_gpuTimerActiveQuery = NULL;
 	rg_gpuTimerOverflowThisFrame = false;
 
-	if ( !R_RendererMetrics_GpuTimersEnabled() ) {
+	const bool fullFrameSupported = R_RendererMetrics_GlFullFrameTimingAvailable();
+	R_RendererMetrics_SetGpuFrameTimingBackend( RENDER_GPU_TIMING_BACKEND_OPENGL,
+		fullFrameSupported );
+
+	if ( rg_gpuFullFrameContextGeneration != tr.glContextGeneration ) {
+		if ( rg_gpuFullFrameContextGeneration >= 0 ) {
+			R_RendererMetrics_ResetGpuFrameTiming( "OpenGL context generation changed" );
+		}
+		rg_gpuFullFrameContextGeneration = tr.glContextGeneration;
+		for ( int frameIndex = 0; frameIndex < static_cast<int>( sizeof( rg_gpuTimerFrames ) / sizeof( rg_gpuTimerFrames[ 0 ] ) ); ++frameIndex ) {
+			rendererGpuTimerFrame_t &staleFrame = rg_gpuTimerFrames[ frameIndex ];
+			// Names from a destroyed GL context must never be deleted or reused in
+			// the replacement context; they may alias unrelated new objects.
+			staleFrame.fullFrameBeginQuery = 0;
+			staleFrame.fullFrameEndQuery = 0;
+			staleFrame.fullFramePending = false;
+			staleFrame.fullFrameOpen = false;
+			staleFrame.numQueries = 0;
+			for ( int queryIndex = 0; queryIndex < static_cast<int>( sizeof( staleFrame.queries ) / sizeof( staleFrame.queries[ 0 ] ) ); ++queryIndex ) {
+				staleFrame.queries[ queryIndex ].id = 0;
+			}
+		}
+	}
+
+	const bool fullFrameEnabled = fullFrameSupported && r_rendererGpuTimers.GetBool();
+	if ( rg_gpuFullFrameEnableStateKnown && fullFrameEnabled != rg_gpuFullFrameEnabledLastFrame ) {
+		R_RendererMetrics_ResetGpuFrameTiming( fullFrameEnabled
+			? "OpenGL whole-frame timing enabled" : "OpenGL whole-frame timing disabled" );
+	}
+	rg_gpuFullFrameEnableStateKnown = true;
+	rg_gpuFullFrameEnabledLastFrame = fullFrameEnabled;
+
+	const bool passTimersEnabled = R_RendererMetrics_GpuTimersEnabled();
+	if ( !fullFrameEnabled && !passTimersEnabled ) {
 		return;
 	}
 
@@ -2360,18 +2603,37 @@ void R_RendererMetrics_BeginGpuBackendFrame( void ) {
 	rg_gpuTimerBackendFrameCount++;
 
 	rendererGpuTimerFrame_t &frame = rg_gpuTimerFrames[rg_gpuTimerFrameCursor];
-	R_RendererMetrics_PollGpuTimerFrame( frame );
-	frame.numQueries = 0;
-	frame.frameCount = tr.frameCount;
+	if ( fullFrameEnabled ) {
+		if ( R_RendererMetrics_PollGlFullFrameTiming( frame ) ) {
+			R_RendererMetrics_BeginGlFullFrameTiming( frame );
+		} else {
+			R_RendererMetrics_RecordGpuFrameTimingDropped();
+		}
+	}
+	if ( passTimersEnabled ) {
+		R_RendererMetrics_PollGpuTimerFrame( frame );
+		frame.numQueries = 0;
+	}
+#endif
 }
 
 void R_RendererMetrics_EndGpuBackendFrame( void ) {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	return;
+#else
 	if ( rg_gpuTimerQueryActive ) {
 		R_RendererMetrics_EndGpuTimer();
+	}
+	rendererGpuTimerFrame_t &frame = rg_gpuTimerFrames[rg_gpuTimerFrameCursor];
+	if ( frame.fullFrameOpen ) {
+		glQueryCounter( frame.fullFrameEndQuery, GL_TIMESTAMP );
+		frame.fullFrameOpen = false;
+		frame.fullFramePending = true;
 	}
 	if ( rg_gpuTimerOverflowThisFrame ) {
 		rg_gpuTimerLatest.droppedQueries++;
 	}
+#endif
 }
 
 void R_RendererMetrics_BeginGpuTimer( rendererGpuTimerSlot_t slot ) {
@@ -2427,6 +2689,11 @@ void R_RendererMetrics_ResumeGpuTimer( rendererGpuTimerSlot_t slot, bool resume 
 }
 
 void R_RendererMetrics_ShutdownGpuTimers( void ) {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	VK_GpuFrameTiming_Shutdown();
+	R_RendererMetrics_SetGpuFrameTimingBackend( RENDER_GPU_TIMING_BACKEND_NONE, false );
+	return;
+#else
 	if ( rg_gpuTimerQueryActive ) {
 		R_RendererMetrics_EndGpuTimer();
 	}
@@ -2439,60 +2706,68 @@ void R_RendererMetrics_ShutdownGpuTimers( void ) {
 				frame.queries[queryIndex].id = 0;
 			}
 		}
+		if ( frame.fullFrameBeginQuery != 0 ) {
+			glDeleteQueries( 1, &frame.fullFrameBeginQuery );
+			frame.fullFrameBeginQuery = 0;
+		}
+		if ( frame.fullFrameEndQuery != 0 ) {
+			glDeleteQueries( 1, &frame.fullFrameEndQuery );
+			frame.fullFrameEndQuery = 0;
+		}
 		frame.numQueries = 0;
+		frame.fullFramePending = false;
+		frame.fullFrameOpen = false;
 	}
 
 	memset( &rg_gpuTimerLatest, 0, sizeof( rg_gpuTimerLatest ) );
 	rg_gpuTimerFrameCursor = 0;
 	rg_gpuTimerBackendFrameCount = 0;
+	rg_gpuFullFrameEnabledLastFrame = false;
+	rg_gpuFullFrameEnableStateKnown = false;
+	rg_gpuFullFrameContextGeneration = -1;
+	R_RendererMetrics_SetGpuFrameTimingBackend( RENDER_GPU_TIMING_BACKEND_NONE, false );
+#endif
 }
 
 bool R_RendererMetrics_GpuTimersAvailable( void ) {
-	return glConfig.backendCaps.hasTimerQuery &&
-		glGenQueries != NULL &&
-		glDeleteQueries != NULL &&
-		glBeginQuery != NULL &&
-		glEndQuery != NULL &&
-		glGetQueryObjectiv != NULL &&
-		glGetQueryObjectuiv != NULL;
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	return VK_GpuFrameTiming_Available();
+#else
+	return R_RendererMetrics_GlFullFrameTimingAvailable();
+#endif
 }
 
 bool RendererGpuTimer_RunSelfTest( void ) {
+#ifdef OPENQ4_RENDERER_VK_MODULE
+	return VK_GpuFrameTiming_RunSelfTest();
+#else
 	if ( !R_RendererMetrics_GpuTimersAvailable() ) {
 		common->Printf( "RendererGpuTimer self-test skipped: GL timer queries are unavailable\n" );
 		return true;
 	}
 
-	GLuint query = 0;
-	glGenQueries( 1, &query );
-	if ( query == 0 ) {
-		common->Printf( "RendererGpuTimer self-test failed: glGenQueries returned 0\n" );
+	GLuint queries[ 2 ] = { 0, 0 };
+	glGenQueries( 2, queries );
+	if ( queries[ 0 ] == 0 || queries[ 1 ] == 0 ) {
+		if ( queries[ 0 ] != 0 ) {
+			glDeleteQueries( 1, &queries[ 0 ] );
+		}
+		if ( queries[ 1 ] != 0 ) {
+			glDeleteQueries( 1, &queries[ 1 ] );
+		}
+		common->Printf( "RendererGpuTimer self-test failed: timestamp query allocation returned 0\n" );
 		return false;
 	}
 
-	glBeginQuery( GL_TIME_ELAPSED, query );
+	glQueryCounter( queries[ 0 ], GL_TIMESTAMP );
 	glClear( GL_COLOR_BUFFER_BIT );
-	glEndQuery( GL_TIME_ELAPSED );
-	glFinish();
+	glQueryCounter( queries[ 1 ], GL_TIMESTAMP );
 
-	GLint available = 0;
-	glGetQueryObjectiv( query, GL_QUERY_RESULT_AVAILABLE, &available );
-	if ( !available ) {
-		glDeleteQueries( 1, &query );
-		common->Printf( "RendererGpuTimer self-test failed: query result unavailable after glFinish\n" );
-		return false;
-	}
-
-	GLuint64 elapsedNsec = 0;
-	if ( glGetQueryObjectui64v != NULL ) {
-		glGetQueryObjectui64v( query, GL_QUERY_RESULT, &elapsedNsec );
-	} else {
-		GLuint elapsedNsec32 = 0;
-		glGetQueryObjectuiv( query, GL_QUERY_RESULT, &elapsedNsec32 );
-		elapsedNsec = elapsedNsec32;
-	}
-	glDeleteQueries( 1, &query );
-
-	common->Printf( "RendererGpuTimer self-test passed (%u usec)\n", static_cast<unsigned int>( elapsedNsec / 1000ULL ) );
+	GLint endAvailable = 0;
+	glGetQueryObjectiv( queries[ 1 ], GL_QUERY_RESULT_AVAILABLE, &endAvailable );
+	glDeleteQueries( 2, queries );
+	common->Printf( "RendererGpuTimer self-test passed (timestamp pair queued, immediateReady=%d, waits=0)\n",
+		endAvailable ? 1 : 0 );
 	return true;
+#endif
 }

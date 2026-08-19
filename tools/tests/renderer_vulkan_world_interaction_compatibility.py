@@ -298,6 +298,22 @@ def validate_scissor_and_depth_bounds_state() -> None:
         "stencil shadow depth-bounds lifetime",
     )
 
+    classic_draw = read("src/renderer/draw_common.cpp")
+    classic_shadow = braced_body(
+        classic_draw,
+        "static void RB_T_Shadow(",
+        "OpenGL stencil shadow pass",
+    )
+    require_compact(
+        classic_shadow,
+        """const float minDepth = idMath::ClampFloat( 0.0f, 1.0f,
+            surf->scissorRect.zmin );
+        const float maxDepth = idMath::ClampFloat( minDepth, 1.0f,
+            surf->scissorRect.zmax );
+        glDepthBoundsEXT( minDepth, maxDepth );""",
+        "OpenGL ordered depth-bounds clamp",
+    )
+
 
 def validate_ci_registration() -> None:
     validator = read("tools/validation/openq4_validate.py")

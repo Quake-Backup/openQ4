@@ -570,7 +570,7 @@ def test_render_entity_render_demo_and_module_abi_are_versioned():
     require(gate, "ent.flatDiffuseFlags", "version 10 demos must restore flat flags")
 
     api = read(RENDERER / "RenderModuleAPI.h")
-    require(api, "#define RENDER_API_VERSION\t\t\t8", "the resized-capture renderer ABI must be version 8")
+    require(api, "#define RENDER_API_VERSION\t\t\t9", "the whole-frame timing renderer ABI must be version 9")
 
     loader = read(RENDERER / "RendererModule.cpp")
     require(

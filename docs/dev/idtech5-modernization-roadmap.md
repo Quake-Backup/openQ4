@@ -77,18 +77,22 @@ when a status differs or a narrower qualification is needed.
 | Stock-compatibility and security foundation | **Implemented** | Protocol 2.41 preservation, pure-MP game-module containment, bounded malformed-input handling with immediate session teardown, challenge entropy, rcon2, private-CVar redaction/remote authority, HTTP(S)-only transfer policy, source-provenance auditing, archived MP auto-join test policy, and the four-role retail-PK4 evidence harness are present. Release promotion still requires a clean source pair, final-package capture, and retained human review. |
 | Audited BFG-lineage image, sound, and idlib work | **Implemented** | The existing 37-file BFG inventory is tracked with source lineage and Additional Terms. Further imports must update the same manifest and notices. |
 | PBR material authoring/resource foundation | **Implemented foundation; visible capability missing** | Namespaced parsing, typed color/data image usage, classic ARB2 fallbacks, scene-packet metadata, resource-table diagnostics, and fail-closed exclusion from unsupported modern-visible paths cover Phases 0-3 of the PBR plan. PBR shaders, direct lighting, visible ownership, IBL, and specular probes do not exist yet. |
-| GPU measurement and dynamic resolution | **Partial** | OpenGL has a delayed four-frame non-blocking timer-query ring and the engine has manual render scaling. A backend-neutral full-frame result, Vulkan timestamp ring, automatic controller, discontinuity resets, and promotion evidence remain Milestones A/E. |
-| General job system | **Planned** | Local workers do not provide a bounded dependency/job-list substrate. Milestone A begins with portable sleepable synchronization, cancellation, deterministic synchronous execution, and dedicated-server-safe ownership. |
+| GPU measurement and dynamic resolution | **Partial** | OpenGL and Vulkan publish the same delayed, non-blocking whole-frame microsecond result through renderer ABI v9, including frame/generation identity and availability/drop/reset counters. Map loads, context/device changes, swapchain recreation, capture discontinuities, and shutdown invalidate the timing generation. High-resolution CPU and unique GPU samples feed the versioned benchmark marker, and the gameplay/stock tools enforce and replay exact map/backend/profile CPU/GPU budgets under a fixed bordered-window 1280x720 promotion contract. Current-build storage, repeated-map, and complete required-profile captures have exercised both timing backends; all eight OpenGL and all eight Vulkan cases pass and replay-verify. The initial target rows still need release-candidate/platform qualification before they support universal performance claims. The automatic controller remains Milestone E. |
+| General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. No production loading or renderer consumer has migrated yet; clean final-package recapture remains a separate release-promotion gate. |
 | Generated caches, streaming, and learned preload manifests | **Partial** | Binary images and generated-animation patterns exist, but model/world/collision caches and a cancellable read -> decompress -> decode -> upload pipeline do not. Retail PK4 resolution remains authoritative. |
 | Shared renderer contracts and GPU skinning | **Partial** | Scene packets, resource tables, upload infrastructure, and CPU skinning provide inputs, but there is no backend-neutral material/pass IR or supported joint-buffer/GPU deformation path. CPU deformation remains authoritative. |
 | Modern classic-frame ownership | **Experimental** | Render-graph, modern OpenGL submission, clustered/MDI infrastructure, shadow maps, light grids, and Vulkan coverage exist, but no complete stock visible-lighting domain is promoted. ARB2 remains the supported/default owner. |
 | Temporal presentation | **Planned** | Complete motion vectors, history ownership, TAA/TAAU, reactive/disocclusion handling, and dynamic-resolution integration are absent. SMAA remains the compatibility path. |
 | Modern PBR lighting and idTech 6-like follow-ons | **Planned** | GGX/IBL, reflection probes, clustered decals/probes, froxel volumetrics, SSR/SSGI, GPU-driven visible ownership, and optional sparse residency all remain after the shared-contract and temporal gates. |
 
-The practical next target is **Milestone A**. It unlocks safe parallel loading,
-cache generation, renderer-front-end work, and trustworthy GPU-budget feedback
-without changing stock content interpretation. The PBR Phase 0-3 foundation is
-intentionally not a reason to skip ahead to visible PBR lighting.
+Milestone A's implementation and local integration gate are complete. The next
+recommended implementation target is **Milestone B**, beginning with
+immutable-input loading and cache consumers. Release qualification remains a
+separate track: repeat and retain the Milestone A acceptance set from clean
+committed source and a freshly staged final package, with the required platform
+and driver coverage. Later renderer-front-end consumers still require the
+module boundary described below. The PBR Phase 0-3 foundation is intentionally
+not a reason to skip ahead to visible PBR lighting.
 
 ## Best official Doom 3 BFG candidates
 
@@ -99,7 +103,7 @@ snapshot.
 |---|---|---|---|---|
 | Parallel job substrate | `idlib/ParallelJobList.*`, `idlib/Thread.*`, renderer consumers in `tr_frontend_addmodels.cpp` and `tr_frontend_addlights.cpp` | A bounded, dependency-aware worker pool for renderer front-end work, archive/decode jobs, animation work, and cache generation | Adapt architecture; replace platform primitives and spin waits with SDL3/portable C++, and retain deterministic single-thread fallback | **P1** |
 | GPU skeletal skinning | `renderer/BufferObject.*`, `VertexCache.*`, `Model_md5.cpp`, `tr_frontend_addmodels.cpp`, `tr_backend_draw.cpp`, `RenderProgs*` | Joint-buffer uploads and optional four-weight GPU deformation for rendered MD5/MD5R draw surfaces and shadow-map casters while preserving CPU consumers | Port the algorithm into dedicated backend-neutral skin attributes and buffers; do not import BFG's GL backend or blindly reuse its vertex-color packing | **P1** |
-| GPU timing and automatic resolution scaling | `renderer/ResolutionScale.*`, the timer query in `RenderSystem.cpp`, CPU profiling blocks in `RenderLog.*` | Feed a backend-neutral full-frame result from openQ4's existing non-blocking GL query ring and a new Vulkan timestamp path into a bounded controller | Reuse the controller logic, not BFG's single-query blocking readback | **P1** |
+| GPU timing and automatic resolution scaling | `renderer/ResolutionScale.*`, the timer query in `RenderSystem.cpp`, CPU profiling blocks in `RenderLog.*` | Feed openQ4's implemented backend-neutral, non-blocking GL/Vulkan whole-frame timing result into a bounded controller | Reuse the controller logic, not BFG's single-query blocking readback | **P1** |
 | Generated model, render-world, and collision caches | `renderer/Model.cpp`, `Model_md5.cpp`, `ModelManager.cpp`, `RenderWorld_load.cpp`, `cm/CollisionModel_files.cpp` | Cache parsed static/MD5 geometry, `.proc` world data, and collision data after first trusted-source load | Design a hardened openQ4 format; follow the generated-animation cache contract and include Quake 4 MD5R/source-PK4 identity | **P1** |
 | Preload manifests | `framework/File_Manifest.*` and resource-type discovery in `FileSystem.cpp` | Record actual per-map image/model/animation/sample/collision use and replay it through a cancellable preload queue | Reuse the manifest concept, not BFG's retail manifest contents | **P1** |
 | Resource containers | `framework/File_Resource.*` | Optional developer-generated, sequential cache containers for derived data | Reuse the access-order concept only; BFG uses 32-bit offsets and trusted tables, so prefer individual cache files or a new bounded 64-bit format and never require a BFG `.resources` package | **P2** |
@@ -118,19 +122,26 @@ boundary. Its real BFG renderer users are deliberately coarse: add visible
 models, add lights, and build shadow work. That is a better starting point than
 spawning ad-hoc threads throughout openQ4.
 
-The API should be adapted, not copied blindly:
+The landed openQ4 service adapts that architecture rather than copying it:
 
-- back it with SDL3 threads/condition variables or a small portable C++ core;
-- replace BFG's spinning `Wait()` behavior and fixed platform processing-unit
-  assumptions with blocking waits and explicit worker limits;
-- make cancellation and shutdown explicit;
-- make job payload ownership and lifetime visible in the type/API contract;
-- provide a synchronous implementation used by dedicated builds, tests, and
-  deterministic debugging;
-- bound queues and allocations; report saturation instead of silently growing;
-- collect queue, execution, wait, and critical-path timings;
-- prohibit renderer API calls from arbitrary workers unless the backend
-  explicitly owns that queue.
+- portable C++ threads and condition variables provide bounded workers and
+  blocking waits instead of BFG's spinning `Wait()` behavior and fixed
+  processing-unit assumptions;
+- cancellation, shutdown, payload ownership, and lifetime are explicit in the
+  service contract;
+- deterministic synchronous mode is available for dedicated builds, tests,
+  and debugging;
+- list, job, and dependency admission is bounded, and saturation is reported
+  instead of growing or dropping work silently;
+- queue, execution, wait, high-water, rejection, and starvation-aging metrics
+  are observable; dependency critical-path aggregation remains for real
+  consumer graphs;
+- arbitrary worker-side renderer calls remain prohibited unless a future
+  backend-owned queue defines that boundary.
+
+The production contract, controls, saturation behavior, native coverage, and
+remaining consumer/promotion boundary are documented in the
+[portable job-system guide](parallel-job-system.md).
 
 First consumers should be work that already has a clean join point: learned
 preload discovery, image decode/transcode, generated-cache writes, and then
@@ -201,14 +212,17 @@ BFG's resolution controller is compact and readily adaptable. It lowers
 resolution quickly when GPU time exceeds a threshold and raises it more slowly
 after several under-budget frames, avoiding constant oscillation. openQ4 already
 has render scaling, renderer metrics, high-refresh presentation, and a
-four-frame, non-blocking GL timer-query ring. What is missing is a
-backend-neutral total-frame timing result, an equivalent Vulkan timestamp path,
-the feedback controller, and complete promotion evidence.
+four-slot, non-blocking GL timestamp ring. Milestone A exposes that ring
+as a backend-neutral whole-frame result and provides the equivalent Vulkan
+timestamp-query path. Both backends resolve only retired/available slots, reset
+their generation at workload discontinuities, and feed high-resolution CPU plus
+de-duplicated GPU samples into `OPENQ4_FRAME_TIMING_V1`. What remains is the
+feedback controller and complete promotion evidence.
 
-The production version should improve on the 2012 implementation:
+The future controller should build on this implemented timing foundation:
 
-- extend the existing delayed GL query ring and add a Vulkan timestamp-query
-  ring; never wait on the current frame's result;
+- preserve the non-blocking GL/Vulkan timestamp contract and never wait on a
+  current-frame result;
 - target a user/display frame budget and account for VRR;
 - quantize dimensions to backend-friendly alignments;
 - expose minimum scale, response rate, and a conservative default-off rollout;
@@ -295,24 +309,65 @@ temporal or PBR work multiplies the parity surface.
 
 | Milestone | Current state | Dependency that prevents promotion |
 |---|---|---|
-| A. Foundation and measurement | **Partial** | The GL timing ring exists; the portable job substrate, backend-neutral timing, Vulkan timestamps, and recorded budgets do not. |
+| A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
 | B. Loading and cache modernization | **Partial** | Existing binary-image/generated-animation patterns do not yet form learned manifests, bounded pipeline stages, or model/world/collision caches. |
 | C. Shared renderer contracts and GPU animation | **Partial** | Packet/resource infrastructure exists, but shared GL/Vulkan pass semantics and GPU skinning parity are missing. |
 | D. Modern classic-frame ownership | **Experimental** | Individual modern paths exist; no complete classic-visible domain has satisfied the cross-backend parity exit gate. |
-| E. Temporal presentation | **Planned** | Depends on Milestones A, C, and D for timing, motion/resource contracts, and complete frame ownership. |
+| E. Temporal presentation | **Planned** | Milestone A now supplies the timing prerequisite; incomplete Milestones C and D still block motion/resource contracts and complete frame ownership. |
 | F. Modern materials and advanced lighting | **Foundation only** | PBR authoring/resource Phases 0-3 exist, but visible PBR/IBL and advanced-lighting ownership must wait for Milestones C-E. |
 
 ### Milestone A: foundation and measurement
 
-1. Land a portable bounded job manager with synchronous mode, dependency tests,
+1. **Implemented:** the engine-owned portable bounded job manager provides
+   synchronous mode, starvation-safe priorities, dependency tests,
    shutdown/cancellation tests, and timing counters.
-2. Expose the existing delayed GL timer ring through a backend-neutral
-   total-frame timing result and add the equivalent Vulkan timestamp-query ring.
-3. Establish per-map CPU/GPU budgets in the existing benchmark and stock
-   evidence tools.
+2. **Implemented:** the delayed GL timestamp result is exposed through a
+   backend-neutral whole-frame timing contract, and the equivalent Vulkan
+   timestamp path is integrated; both are generation-aware and never wait for a
+   current-frame result.
+3. **Implemented and locally validated; release promotion pending:** enforce versioned,
+   configurable map/backend/profile CPU and GPU percentile budgets in the
+   gameplay benchmark and stock baseline; bind contract/runtime/artifact
+   provenance and replay measurements fail-closed. The initial repeated 20/28
+   ms rows are target ceilings until complete GL/Vulkan captures calibrate and,
+   where justified, tighten each explicit identity.
 
-Exit gate: identical stock screenshots/game state with jobs on/off, clean
-shutdown under repeated map changes, and trustworthy non-blocking timing.
+The 2026-08-19 current-build evidence snapshot closes the local job lifecycle
+portion of this gate:
+
+- jobs-on and jobs-off `game/storage1` runs produced identical engine TGA bytes
+  and matching game-state evidence;
+- jobs-on and jobs-off OpenGL campaigns, plus a jobs-on Vulkan campaign, crossed
+  `game/mcc_2` -> `game/storage1` -> `game/storage2` -> `game/storage1` ->
+  `game/tram1` and ended with
+  `jobsShutdown PASS v1 initialized=0 queued=0 running=0`;
+- five dedicated-server runs exited normally with one synchronous self-test and
+  one clean shutdown marker each;
+- the schema-10 four-role retail-PK4 baseline passed capture and immediate
+  replay under the canonical display/budget contract, and its engine screenshots
+  and save preview passed local human review;
+- storage and repeated-map runs exercised nonblocking OpenGL and Vulkan timing;
+  the final immutable development runtime then passed and replay-verified all
+  eight OpenGL and all eight Vulkan required-profile cases. The earlier
+  `game/medlabs` failure was fixed by ordering and clamping depth bounds before
+  the OpenGL call; its debug-context rerun records zero GL errors.
+
+This evidence set culminated in the immutable development runtime
+`milestone-a-20260819-final3`; its complete required-profile reports are
+`ma-a-gl3` and `ma-a-vk3`. It came from an uncommitted current source tree and is
+not a retained release artifact. It does not replace clean-source provenance, a
+freshly staged final package, platform/driver qualification, or retained release
+review.
+
+Exit gate: replay-valid exact bordered-window 1280x720 GL/Vulkan captures for
+the required budget identities; identical stock screenshots and game state with
+jobs on/off; repeated map changes ending in
+`jobsShutdown PASS v1 initialized=0 queued=0 running=0`; deterministic
+dedicated-server exit; and the general four-role retail-PK4 and human-review
+promotion evidence. The current-build job, lifecycle, timing-path, required-map,
+and stock-baseline checks above satisfy the local implementation gate. Only the
+general clean-source, final-package, retained-review, and platform/driver gates
+keep release promotion open.
 
 ### Milestone B: loading and cache modernization
 

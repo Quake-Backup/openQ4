@@ -164,13 +164,16 @@ jobs:
             tools/tests/openq4_pure_pack.py \
             tools/tests/p0_governance_evidence.py \
             tools/tests/packaging_safety.py \
+            tools/tests/parallel_job_system.py \
             tools/tests/preprocessor_macro_safety.py \
             tools/tests/posix_memory_management.py \
             tools/tests/posix_monotonic_time.py \
             tools/tests/posix_network_resolution.py \
             tools/tests/posix_thread_shutdown.py \
             tools/tests/release_tooling_safety.py \
+            tools/tests/renderer_budget_contract.py \
             tools/tests/renderer_cel_shading.py \
+            tools/tests/renderer_gpu_frame_timing.py \
             tools/tests/renderer_mp_flat_items.py \
             tools/tests/renderer_pbr_materials.py \
             tools/tests/renderer_msaa_cvar_safety.py \
@@ -297,13 +300,16 @@ jobs:
           python tools/tests/openq4_pure_pack.py
           python tools/tests/p0_governance_evidence.py
           python tools/tests/packaging_safety.py
+          python tools/tests/parallel_job_system.py
           python tools/tests/preprocessor_macro_safety.py
           python tools/tests/release_tooling_safety.py
           python tools/tests/posix_memory_management.py
           python tools/tests/posix_monotonic_time.py
           python tools/tests/posix_network_resolution.py
           python tools/tests/posix_thread_shutdown.py
+          python tools/tests/renderer_budget_contract.py
           python tools/tests/renderer_cel_shading.py
+          python tools/tests/renderer_gpu_frame_timing.py
           python tools/tests/renderer_mp_flat_items.py
           python tools/tests/renderer_pbr_materials.py
           python tools/tests/renderer_msaa_cvar_safety.py

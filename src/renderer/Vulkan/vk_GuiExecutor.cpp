@@ -47,6 +47,8 @@
 #include "vk_mem_alloc.h"
 
 #include "VulkanDevice.h"
+#include "VulkanGpuFrameTiming.h"
+#include "../RendererMetrics.h"
 #include "vk_Image.h"
 // vk_ShadowMap.h: VK_ShadowMap_Shutdown + the point cube pool size the
 // descriptor pool budgets for (Phase F2a/F2b)
@@ -2463,7 +2465,13 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	vkCtx.frameSlot = ( vkCtx.frameSlot + 1 ) % VK_FRAMES_IN_FLIGHT;
 	vkCtx.recordingSlot = slot;
 
-	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ], VK_TRUE, UINT64_MAX );
+	const VkResult frameFenceResult = vkWaitForFences( vkCtx.device, 1,
+		&vkCtx.frameFences[ slot ], VK_TRUE, UINT64_MAX );
+	if ( frameFenceResult != VK_SUCCESS ) {
+		common->Warning( "Vulkan: frame-slot %d fence wait failed (%d)", slot,
+			static_cast<int>( frameFenceResult ) );
+		return false;
+	}
 	VK_Device_FlushDeferredDestroys( slot );
 	if ( vkExec.numRetiredSets[ slot ] > 0 ) {
 		vkFreeDescriptorSets( vkCtx.device, vkExec.descriptorPool,
@@ -2494,6 +2502,9 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer( cmd, &cbbi );
+	// The slot fence above is the sole retirement wait. Timestamp results are
+	// polled here without VK_QUERY_RESULT_WAIT_BIT before this slot is reset.
+	VK_GpuFrameTiming_BeginFrame( cmd, slot, tr.frameCount );
 
 	VkImageMemoryBarrier2 toAttachment[ 2 ];
 	memset( toAttachment, 0, sizeof( toAttachment ) );
@@ -3653,11 +3664,20 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 	// the synchronous readback, then resume recording against this acquired
 	// swapchain image for the actual frame.
 	const bool resumeAfterReadback = tr.takingScreenshot;
+	R_RendererMetrics_ResetGpuFrameTiming( "Vulkan synchronous screenshot readback" );
 	if ( !VK_GuiExecutor_SubmitFrame( !resumeAfterReadback ) ) {
 		vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
 		return false;
 	}
-	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ submittedSlot ], VK_TRUE, UINT64_MAX );
+	const VkResult readbackFenceResult = vkWaitForFences( vkCtx.device, 1,
+		&vkCtx.frameFences[ submittedSlot ], VK_TRUE, UINT64_MAX );
+	if ( readbackFenceResult != VK_SUCCESS ) {
+		VK_GpuFrameTiming_SubmitFailed( submittedSlot );
+		common->Warning( "Vulkan: screenshot readback fence wait failed (%d)",
+			static_cast<int>( readbackFenceResult ) );
+		vmaDestroyBuffer( vkCtx.allocator, readbackBuffer, readbackAllocation );
+		return false;
+	}
 	vmaInvalidateAllocation( vkCtx.allocator, readbackAllocation, 0, VK_WHOLE_SIZE );
 
 	const byte *source = (const byte *)allocationInfo.pMappedData;
@@ -3692,6 +3712,9 @@ bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixel
 		}
 		vkExec.frameOpen = true;
 		vkExec.mainScopeOpen = false;
+		// The screenshot path explicitly retired this same slot; start a fresh
+		// timing epoch for the real frame recorded after the crop.
+		VK_GpuFrameTiming_BeginFrame( vkExec.cmd, submittedSlot, tr.frameCount );
 		VK_Exec_BeginMainRendering( true );
 	}
 	return true;
@@ -3729,6 +3752,7 @@ static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 		vkCmdPipelineBarrier2( cmd, &dep );
 	}
 
+	VK_GpuFrameTiming_EndFrame( cmd, slot );
 	vkEndCommandBuffer( cmd );
 
 	VkSemaphoreSubmitInfo waitInfo;
@@ -3755,6 +3779,7 @@ static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 	si.signalSemaphoreInfoCount = present ? 1 : 0;
 	si.pSignalSemaphoreInfos = present ? &signalInfo : NULL;
 	if ( vkQueueSubmit2( vkCtx.graphicsQueue, 1, &si, vkCtx.frameFences[ slot ] ) != VK_SUCCESS ) {
+		VK_GpuFrameTiming_SubmitFailed( slot );
 		return false;
 	}
 	vkExec.acquireWaitPending = false;

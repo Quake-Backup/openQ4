@@ -460,7 +460,7 @@ idCVar r_glDebugContext( "r_glDebugContext", "0", CVAR_RENDERER | CVAR_ARCHIVE |
 idCVar r_glDebugOutput( "r_glDebugOutput", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "report OpenGL driver debug messages when a debug context is active" );
 idCVar r_glDebugSynchronous( "r_glDebugSynchronous", "0", CVAR_RENDERER | CVAR_BOOL, "deliver OpenGL debug callbacks synchronously (diagnostic; may reduce performance)" );
 idCVar r_rendererMetrics( "r_rendererMetrics", "0", CVAR_RENDERER | CVAR_INTEGER, "renderer metrics: 0 = off, 1 = periodic summary, 2 = per-frame/pass detail", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
-idCVar r_rendererGpuTimers( "r_rendererGpuTimers", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "sample GL timer queries when r_rendererMetrics is enabled and supported" );
+idCVar r_rendererGpuTimers( "r_rendererGpuTimers", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "sample delayed whole-frame GPU timestamps on supported backends; OpenGL pass detail additionally requires r_rendererMetrics" );
 idCVar r_rendererBenchmarkPreset( "r_rendererBenchmarkPreset", "baseline", CVAR_RENDERER | CVAR_ARCHIVE, "renderer benchmark budget preset: low, baseline, modern, high-end", r_rendererBenchmarkPresetArgs, idCmdSystem::ArgCompletion_String<r_rendererBenchmarkPresetArgs> );
 idCVar r_rendererPerfThresholdP95( "r_rendererPerfThresholdP95", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P95 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
 idCVar r_rendererPerfThresholdP99( "r_rendererPerfThresholdP99", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P99 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
@@ -762,6 +762,7 @@ static void R_RendererDefaultSafetySelfTest_f( const idCmdArgs &args ) {
 static void R_RendererBenchmarkCapture_f( const idCmdArgs &args ) {
 	(void)args;
 	RendererBenchmarks_PrintLatestCapture();
+	RendererBenchmarks_PrintTimingMarker();
 }
 
 static void R_RendererUploadSelfTest_f( const idCmdArgs &args ) {
@@ -3680,11 +3681,32 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	RendererTierContract_PrintGfxInfo();
 	RendererBootstrap_PrintGfxInfo();
 	RendererBenchmarks_PrintGfxInfo();
+	renderGpuFrameTiming_t gpuFrameTiming;
+	R_RendererMetrics_GetGpuFrameTiming( gpuFrameTiming );
+	const char *gpuTimingBackend = "none";
+	if ( gpuFrameTiming.backend == RENDER_GPU_TIMING_BACKEND_OPENGL ) {
+		gpuTimingBackend = "opengl";
+	} else if ( gpuFrameTiming.backend == RENDER_GPU_TIMING_BACKEND_VULKAN ) {
+		gpuTimingBackend = "vulkan";
+	}
 	common->Printf(
-		"Renderer GPU timers: %s, cvar=%d, timerQuery=%d\n",
+		"Renderer GPU timers: %s, cvar=%d, glPassTimerQuery=%d\n",
 		R_RendererMetrics_GpuTimersAvailable() ? "available" : "unavailable",
 		r_rendererGpuTimers.GetBool() ? 1 : 0,
 		glConfig.backendCaps.hasTimerQuery ? 1 : 0 );
+	common->Printf(
+		"Renderer whole-frame GPU timing: backend=%s supported=%d valid=%d frame=%d generation=%u elapsed=%lluus latency=%u resolved=%llu unavailable=%llu dropped=%llu resets=%llu nonblocking=1\n",
+		gpuTimingBackend,
+		gpuFrameTiming.supported ? 1 : 0,
+		gpuFrameTiming.valid ? 1 : 0,
+		gpuFrameTiming.frameNumber,
+		gpuFrameTiming.generation,
+		gpuFrameTiming.elapsedMicroseconds,
+		gpuFrameTiming.latencyFrames,
+		gpuFrameTiming.resolvedSamples,
+		gpuFrameTiming.unavailableSamples,
+		gpuFrameTiming.droppedSamples,
+		gpuFrameTiming.resetCount );
 	common->Printf(
 		"Renderer scene packets: legacy bridge V2, maxScenes=%d, maxPasses=%d, maxDrawPackets=%d, maxMaterialRecords=%d, maxGeometryRecords=%d, maxInstanceRecords=%d\n",
 		SCENE_PACKET_MAX_SCENES,
@@ -3885,6 +3907,7 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 	if ( !glConfig.isInitialized ) {
 		return;
 	}
+	R_RendererMetrics_ResetGpuFrameTiming( "vid_restart" );
 
 	bool full = true;
 	bool forceWindow = false;
@@ -4213,6 +4236,7 @@ idRenderSystemLocal::Init
 void idRenderSystemLocal::Init( void ) {
 
 	common->Printf( "------- Initializing renderSystem --------\n" );
+	R_RendererMetrics_ResetGpuFrameTiming( "renderer init" );
 
 	// route imagetools static-allocation counters into tr.pc before any
 	// image or model loading can call R_StaticAlloc
@@ -4279,6 +4303,7 @@ idRenderSystemLocal::Shutdown
 */
 void idRenderSystemLocal::Shutdown( void ) {	
 	common->Printf( "idRenderSystem::Shutdown()\n" );
+	R_RendererMetrics_ResetGpuFrameTiming( "renderer shutdown" );
 
 	R_DoneFreeType( );
 
@@ -4332,6 +4357,7 @@ idRenderSystemLocal::BeginLevelLoad
 ========================
 */
 void idRenderSystemLocal::BeginLevelLoad( void ) {
+	R_RendererMetrics_ResetGpuFrameTiming( "begin level load" );
 	// SetUnderwaterView is the only writer of this state, and it is driven by the game
 	// each frame. A map change started while the player was submerged would otherwise
 	// leave the effect live across the whole loading screen and into the first frames
@@ -4369,6 +4395,10 @@ void idRenderSystemLocal::EndLevelLoad( void ) {
 	if ( r_forceLoadImages.GetBool() ) {
 		RB_ShowImages();
 	}
+
+	// Loading-screen work belongs to the old timing epoch. Start gameplay with
+	// an empty delayed ring so budget capture cannot mix the two workloads.
+	R_RendererMetrics_ResetGpuFrameTiming( "end level load" );
 }
 
 /*

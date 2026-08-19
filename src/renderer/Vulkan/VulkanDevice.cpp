@@ -40,6 +40,7 @@
 #include "vk_mem_alloc.h"
 
 #include "VulkanDevice.h"
+#include "../RendererMetrics.h"
 
 vkDeviceContext_t vkCtx;
 
@@ -623,6 +624,7 @@ bool VK_Device_RecreateSwapchain( void ) {
 		return false;
 	}
 	vkDeviceWaitIdle( vkCtx.device );
+	R_RendererMetrics_ResetGpuFrameTiming( "Vulkan swapchain recreation" );
 	return VK_Device_CreateSwapchain();
 }
 
@@ -748,6 +750,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	const int forcedDevice = r_vkDevice.GetInteger();
 	int chosenDevice = -1;
 	uint32_t chosenQueueFamily = 0;
+	uint32_t chosenTimestampValidBits = 0;
 
 	for ( uint32_t d = 0; d < deviceCount; d++ ) {
 		if ( forcedDevice >= 0 && (int)d != forcedDevice ) {
@@ -769,6 +772,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 			if ( presentable ) {
 				chosenDevice = (int)d;
 				chosenQueueFamily = f;
+				chosenTimestampValidBits = families[ f ].timestampValidBits;
 				break;
 			}
 		}
@@ -784,9 +788,11 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	}
 	vkCtx.physicalDevice = devices[ chosenDevice ];
 	vkCtx.graphicsQueueFamily = chosenQueueFamily;
+	vkCtx.graphicsTimestampValidBits = chosenTimestampValidBits;
 	vkGetPhysicalDeviceProperties( vkCtx.physicalDevice, &vkCtx.deviceProperties );
-	common->Printf( "Vulkan: device %d '%s' (queue family %u)\n",
-			chosenDevice, vkCtx.deviceProperties.deviceName, chosenQueueFamily );
+	common->Printf( "Vulkan: device %d '%s' (queue family %u, timestampValidBits=%u, timestampPeriod=%.6fns)\n",
+			chosenDevice, vkCtx.deviceProperties.deviceName, chosenQueueFamily,
+			chosenTimestampValidBits, vkCtx.deviceProperties.limits.timestampPeriod );
 
 	// Hard API floor. The back end calls ~135 core-1.3 entry points
 	// (vkCmdBeginRendering, vkCmdPipelineBarrier2, vkQueueSubmit2 and the

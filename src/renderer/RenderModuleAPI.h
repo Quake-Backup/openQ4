@@ -50,7 +50,9 @@
 //      and sweep flags)
 //  8 - Append-only idRenderSystem slot for coherent full-frame capture with
 //      CPU center-crop/resampling to caller-selected output dimensions
-#define RENDER_API_VERSION			8
+//  9 - Append-only idRenderSystem slots for backend-neutral delayed whole-frame
+//      GPU timing and session-discontinuity resets (OpenGL and Vulkan)
+#define RENDER_API_VERSION			9
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;

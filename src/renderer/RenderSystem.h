@@ -341,6 +341,30 @@ typedef enum
 } ESpecialEffectType;
 // RAVEN END
 
+// Backend-neutral, delayed GPU duration for one complete submitted renderer
+// frame. The sample is intentionally POD because idRenderSystem may cross the
+// renderer-module boundary. A valid result always belongs to the reported
+// timing generation; resets invalidate the previous generation immediately.
+typedef enum {
+	RENDER_GPU_TIMING_BACKEND_NONE = 0,
+	RENDER_GPU_TIMING_BACKEND_OPENGL,
+	RENDER_GPU_TIMING_BACKEND_VULKAN
+} renderGpuTimingBackend_t;
+
+typedef struct renderGpuFrameTiming_s {
+	bool				supported;
+	bool				valid;
+	renderGpuTimingBackend_t backend;
+	int				frameNumber;
+	unsigned int		generation;
+	unsigned int		latencyFrames;
+	unsigned long long	elapsedMicroseconds;
+	unsigned long long	resolvedSamples;
+	unsigned long long	unavailableSamples;
+	unsigned long long	droppedSamples;
+	unsigned long long	resetCount;
+} renderGpuFrameTiming_t;
+
 class idRenderWorld;
 
 
@@ -640,6 +664,15 @@ public:
 	// Capture the coherent current crop, then center-crop and resample it on the CPU.
 	// Kept at the end of the interface so existing render-system vtable slots remain stable.
 	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha, int outputWidth, int outputHeight ) = 0;
+
+	// Returns the newest resolved whole-frame GPU duration. Resolution is
+	// delayed and never waits for the current frame; valid=false is an expected
+	// warm-up, reset, disabled, or query-not-ready state.
+	virtual void			GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const = 0;
+
+	// Invalidates delayed samples at a non-renderer session discontinuity. The
+	// renderer owns the generation change and backend query retirement.
+	virtual void			ResetGpuFrameTiming( const char *reason ) = 0;
 };
 
 extern idRenderSystem *		renderSystem;

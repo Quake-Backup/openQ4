@@ -1,6 +1,6 @@
 # Renderer Validation Matrix
 
-This matrix is the validation source of truth for the staged GL renderer work. It separates safe automated startup/self-test coverage from gameplay smoke coverage that must be run manually with the mode-specific SP/MP launch tasks.
+This matrix is the validation source of truth for staged renderer work. The safe tier and self-test matrix remains GL-focused, while replayable budget evidence covers both OpenGL and Vulkan. Supervised gameplay can use the mode-specific SP/MP launch tasks or the noninteractive gameplay harness described below.
 
 For cross-engine feature status, use the [engine capability matrix](engine-capability-matrix.md). This document owns renderer acceptance evidence and promotion gates; it does not turn an experimental renderer capability into a supported/default one by itself.
 
@@ -180,6 +180,56 @@ These are manual long-run sign-off loops. They are intentionally outside the saf
 | `modern` | 16 ms | 24 ms | 100% | 8x6x16 | 96 | 64 | 1024 px / every frame | 2 |
 | `high-end` | 12 ms | 18 ms | 100% | 8x6x16 | 128 | 96 | 2048 px / every frame | 3 |
 
+These preset values are renderer workload/scalability defaults, not per-map
+measurements. Promotion evidence uses the separate, versioned
+`tools/validation/renderer_per_map_budgets.json` contract. Each row is selected
+by the exact active map, launch-derived backend (`opengl` or `vulkan`), and
+benchmark profile, and carries minimum sample counts plus independent CPU and
+whole-frame GPU P95/P99 ceilings in integer microseconds. The initial v1 rows
+deliberately apply the baseline 20/28 ms target to every listed stock scene on
+both backends. They are cross-map target ceilings, not a claim that every row
+was measured at those values; a captured report retains each row's actual
+samples and percentiles so confirmed target-machine results can tighten a row
+without changing the schema.
+
+`rendererBenchmarkCapture` supplies the budget tools with one backend-neutral
+line of this exact shape:
+
+```text
+OPENQ4_FRAME_TIMING_V1 map=game/storage1 backend=opengl profile=baseline cpuSamples=256 cpuP50Us=7000 cpuP95Us=11000 cpuP99Us=14000 gpuAvailable=1 gpuSamples=252 gpuP50Us=5000 gpuP95Us=8000 gpuP99Us=10000
+```
+
+CPU and GPU percentiles must be monotonic. GPU values come from nonblocking
+whole-frame backend timestamps rather than a sum of overlapping pass timers.
+An unsupported/unresolved backend reports `gpuAvailable=0`, zero samples, and
+`-1` for all three GPU percentiles; because promotion rows require GPU timing,
+that representation fails closed. The verifier rejects malformed lines,
+multiple markers in one source, conflicting mirrored sources, identity or
+sample-count mismatches, missing exact budget rows, exceeded ceilings, changed
+contract hashes, altered runtime/artifact bytes, and recorded measurements that
+do not recompute from the retained log streams.
+
+### Milestone A current-build evidence snapshot
+
+The 2026-08-19 development snapshot verifies that the implementation works as
+an integrated system, but it is not final-package or universal performance
+evidence:
+
+| Gate | Current development-build result |
+|---|---|
+| Job parity | PASS: jobs-on and jobs-off `game/storage1` produced identical engine TGA bytes and matching game-state evidence. |
+| Repeated lifecycle | PASS: jobs-on/off OpenGL and jobs-on Vulkan completed the five-map campaign through `game/tram1`; each run ended with zero initialized, queued, or running jobs. |
+| Dedicated lifecycle | PASS: five independent dedicated-server runs exited normally, each with one synchronous job self-test and one clean shutdown marker. |
+| Backend timing | PASS for the exercised storage and campaign captures: OpenGL and Vulkan returned delayed whole-frame GPU samples without a current-frame wait. |
+| Retail baseline | PASS locally: the schema-10 four-role OpenGL capture and its immediate replay retained pure MP, `ui_autoJoin 1`, canonical display/budget evidence, artifacts, and source/runtime identities; engine screenshots and the save preview also passed local human review. |
+| Required map budgets | PASS locally: the immutable `milestone-a-20260819-final3` runtime passes and replay-verifies all eight OpenGL cases in `ma-a-gl3` and all eight Vulkan cases in `ma-a-vk3`. The corrected `game/medlabs` debug-context run records zero GL errors after depth bounds are ordered and clamped before submission. |
+
+The renderer sweep uses the immutable current-build runtime named above, staged
+from an uncommitted development tree. Promotion still requires clean committed
+source provenance, a freshly staged final package, retained reports/artifacts
+and release review, and separate platform/driver qualification. The local 8/8
+results do not establish a universal performance level.
+
 ## Manual Gameplay Matrix
 
 Gameplay validation remains mandatory before renderer release sign-off, but it is not run by the safe matrix by default because map loads need target-hardware supervision. Use the SP launch task for single-player maps, the MP launch task or `tools\debug\start_listen_server_client.ps1` for multiplayer, or the opt-in gameplay benchmark harness below when you want a repeatable logged capture set.
@@ -209,26 +259,51 @@ After each gameplay smoke, inspect the configured log file under `fs_savepath\<g
 
 ## Gameplay Benchmark Harness
 
-`tools\tests\renderer_gameplay_benchmark.py` is the Phase 12 map-loading runner. It launches the staged client from `.install`, uses isolated save paths under `.tmp\renderer-gameplay\`, enters SP maps or an MP listen server plus loopback client, waits for streaming, runs a fixed static spawn camera path unless a case is later extended with authored poses, captures screenshots, emits `rendererBenchmarkCapture`, `framePacingSnapshot`, and `gfxInfo`, and writes Markdown/JSON reports.
+`tools\tests\renderer_gameplay_benchmark.py` is the Phase 12 map-loading runner. It launches the staged client from `.install` or a named ordinary package below `.tmp\stock-runtime\`, uses isolated save paths under `.tmp\renderer-gameplay\`, enters SP maps or a pure MP listen server plus auto-joining loopback client, waits for streaming, runs a fixed static spawn camera path unless a case is later extended with authored poses, captures screenshots, emits `rendererBenchmarkCapture`, `framePacingSnapshot`, and `gfxInfo`, and writes Markdown/JSON reports. The alternate root deliberately matches `stage_fast_install.py --temporary-runtime` and the stock-baseline harness, so one immutable staged package can be hashed and exercised by both evidence tools. The report binds the selected runtime path, executable, every runtime-file hash, current Git state, budget-contract id/hash, launch-derived backend, thresholds, and measured CPU/GPU percentiles.
+
+Capture output directories must be new or empty. The runner hashes the complete
+runtime before launch and again after every case; any package mutation fails the
+run, while later `--verify-report` replay requires the same runtime and retained
+log/stdout/stderr/screenshot bytes. Generated configs, caches, and screenshots
+stay below each role's isolated save path rather than writing into the staged
+package.
+
+Per-map CPU/GPU budget evidence has one comparable display contract:
+`r_fullscreen 0`, `r_borderless 0`, `r_borderlessDefaultMigrated 1`,
+`r_fullscreenDesktop 0`, and a 1280x720 drawable selected through both
+`r_windowWidth`/`r_windowHeight` and `r_mode -1` plus `r_customWidth`/
+`r_customHeight`. The harness applies those startup values after optional
+launch CVars, records the exact contract in every result, and replay rejects a
+different size, border policy, or fullscreen result. A passing role must also
+contain `gfxInfo` runtime evidence equivalent to `MODE: -1, 1280 x 720
+windowed`, and its engine-written TGA must decode at exactly 1280x720; replay
+recomputes both from the hashed artifacts instead of trusting report fields.
+`--width` and `--height`
+are available for pacing-only diagnostics; non-pacing budget runs reject any
+size other than 1280x720. Fullscreen coverage remains a presentation/pacing
+test and is not promotable CPU/GPU budget evidence.
 
 The runner uses the SP/MP `g_autoExecAfterMapLoad` hook to execute its generated cfg after the map is active, not during loading UI. Renderer metrics are enabled only inside the gameplay capture window, which keeps load-screen logs quiet while still producing benchmark samples, GPU timing where available, frame-pacing output, and a screenshot artifact.
 
-Use `--pacing-only` for high-FPS acceptance after a diagnostic metrics pass is already clean. This keeps `r_rendererMetrics`, GL timer queries, and the FPS overlay out of the timed window, still emits `framePacingSnapshot`, and can fail the run with parsed thresholds such as `--min-pacing-hz 120 --max-p95-ms 12`. The `game/storage1` acceptance run should start sampling two seconds after the active map draw with `r_swapInterval 0` and `com_maxfps 0` so the result measures renderer throughput rather than the old low-FPS plan cap.
+Use `--pacing-only` for high-FPS presentation acceptance after a diagnostic metrics pass is already clean. This keeps renderer metrics, GPU timestamps, and the FPS overlay out of the timed window, still emits `framePacingSnapshot`, and can fail the run with presentation-only thresholds such as `--min-pacing-hz 120 --max-p95-ms 12`. A pacing-only report explicitly records that per-map CPU/GPU budgets were not enforced and cannot pass budget-evidence replay. The `game/storage1` acceptance run should start sampling two seconds after the active map draw with `r_swapInterval 0` and `com_maxfps 0` so the result measures renderer throughput rather than the old low-FPS plan cap.
 
 Common runs:
 
 ```powershell
 python tools\tests\renderer_gameplay_benchmark.py --list
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke
+python tools\tests\renderer_gameplay_benchmark.py --profile smoke --render-api gl --runtime-dir .tmp\stock-runtime\current-build
+python tools\tests\renderer_gameplay_benchmark.py --profile smoke --render-api vk --runtime-dir .tmp\stock-runtime\current-build
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke --pacing-only --autoexec-delay-ms 2000 --min-pacing-hz 120 --max-p95-ms 12
 python tools\tests\renderer_gameplay_benchmark.py --profile required
 python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360
 python tools\tests\renderer_gameplay_benchmark.py --profile tiers
-python tools\tests\renderer_gameplay_benchmark.py --profile presentation
+python tools\tests\renderer_gameplay_benchmark.py --profile presentation --pacing-only
 python tools\tests\renderer_gameplay_benchmark.py --profile shadows
+python tools\tests\renderer_gameplay_benchmark.py --runtime-dir .tmp\stock-runtime\current-build --verify-report .tmp\renderer-gameplay\candidate\renderer_gameplay_benchmark_report.json
 ```
 
-The runner fails a case when the process times out, no gameplay screenshot is produced, the benchmark/gfxInfo lines are missing, image comparison fails when references are required, or renderer warning markers such as `idStr::snPrintf: overflow`, `WARNING: idStr`, shader compile failures, program link failures, or fatal OpenGL startup failures appear in the log.
+The runner fails a case when the process times out, no gameplay screenshot is produced, the benchmark/gfxInfo/timing lines are missing, the exact map/backend/profile budget is absent, required CPU/GPU samples are unavailable or over budget, image comparison fails when references are required, or renderer warning markers such as `idStr::snPrintf: overflow`, `WARNING: idStr`, shader compile failures, program link failures, or fatal graphics startup failures appear in the log. MP benchmark roles always use `ui_autoJoin 1`, `si_pure 1`, and `net_serverAllowServerMod 0`.
 
 | Profile | Coverage |
 |---|---|
@@ -236,7 +311,7 @@ The runner fails a case when the process times out, no gameplay screenshot is pr
 | `required` | `game/storage1`, `game/airdefense1`, `game/airdefense2`, `game/storage2`, `game/medlabs`, `game/mcc_landing`, and `mp/q4dm1` listen server plus local client |
 | `campaign-split-state-transition` | triggers the real SP end-level targets from `game/mcc_2` through `game/storage1 first`, `game/storage2`, `game/storage1 second`, and into `game/tram1`, asserting the active `si_entityFilter` after each load |
 | `tiers` | forced `r_glTier auto`, `legacy`, `gl33`, `gl41`, `gl43`, `gl45`, and `gl46` gameplay probes |
-| `presentation` | `r_swapInterval 0/1`, `com_maxfps 0/120/240`, windowed, and fullscreen coverage for uncapped/high-refresh validation |
+| `presentation` | pacing-only `r_swapInterval 0/1`, `com_maxfps 0/120/240`, windowed, and fullscreen coverage for uncapped/high-refresh validation; never budget-promotion evidence |
 | `shadows` | stencil fallback, mapped shadows, CSM, translucent moments, and debug-overlay modes `1..6` over the shadow correctness scenes |
 Optional deterministic image comparison uses TGA references:
 

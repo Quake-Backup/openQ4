@@ -220,6 +220,34 @@ if get_option('build_native_tests')
     openq4_core_safety_test,
     timeout: 30,
   )
+
+  openq4_job_system_test = executable(
+    'openq4-job-system-test',
+    files(
+      'tools/tests/native/ParallelJobSystemTest.cpp',
+      'src/framework/ParallelJobSystem.cpp',
+    ),
+    include_directories: root_include_dir,
+    dependencies: dependency('threads', required: true),
+    install: false,
+  )
+  test(
+    'openq4-job-system',
+    openq4_job_system_test,
+    timeout: 30,
+  )
+
+  openq4_gpu_frame_timing_test = executable(
+    'openq4-gpu-frame-timing-test',
+    files('tools/tests/native/GpuFrameTimingTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-gpu-frame-timing',
+    openq4_gpu_frame_timing_test,
+    timeout: 30,
+  )
 endif
 
 openq4_pak_files = []

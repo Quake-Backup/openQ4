@@ -75,6 +75,7 @@ typedef struct vkDeviceContext_s {
 	bool				packed565Supported;
 	VkDevice			device;
 	uint32_t			graphicsQueueFamily;	// also the present family (required)
+	uint32_t			graphicsTimestampValidBits;
 	VkQueue				graphicsQueue;
 
 	VkSwapchainKHR		swapchain;

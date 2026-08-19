@@ -33,6 +33,7 @@
 #include "../ModernGLExecutor.h"
 #include "../ModernLightImageAtlas.h"
 #include "../RenderGraphResources.h"
+#include "../RendererMetrics.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
 
@@ -227,6 +228,7 @@ VK_ShutdownRenderDevice
 ====================
 */
 void VK_ShutdownRenderDevice( void ) {
+	R_RendererMetrics_ShutdownGpuTimers();
 	VK_Device_Shutdown();
 	if ( vkBackendServices != NULL ) {
 		vkBackendServices->BeginWindowTeardown();
