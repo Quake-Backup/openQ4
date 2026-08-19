@@ -1,0 +1,676 @@
+Version 3
+// A compact multiplayer laboratory for openQ4 liquid-volume testing.
+// North row: deep swimming water, shallow swimming water, and wading water.
+// South row: recessed lava and slime pools.
+// entity 0
+{
+"classname" "worldspawn"
+"name" "world"
+// primitive 0 - structural base and deep-pool floor
+{
+ brushDef3
+ {
+  ( 0 0 -1 -352 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor02"
+  ( 0 0 1 320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor02"
+  ( 0 -1 0 -832 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 1 0 0 -1232 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 1 0 -832 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( -1 0 0 -1232 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+ }
+}
+// primitive 1 - sky ceiling
+{
+ brushDef3
+ {
+  ( 0 0 -1 640 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/q1sky"
+  ( 0 0 1 -672 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/q1sky"
+  ( 0 -1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/q1sky"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/q1sky"
+  ( 0 1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/q1sky"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/q1sky"
+ }
+}
+// primitive 2 - west wall
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 0 1 -640 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 -1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 1 0 0 1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( -1 0 0 -1232 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+ }
+}
+// primitive 3 - east wall
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 0 1 -640 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 -1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 1 0 0 -1232 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( -1 0 0 1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+ }
+}
+// primitive 4 - south wall
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 0 1 -640 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 -1 0 -832 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 1 0 800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+ }
+}
+// primitive 5 - north wall
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 0 1 -640 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 -1 0 800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( 0 1 0 -832 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/brick05"
+ }
+}
+// primitive 6 - safe central aisle
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 -180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 7 - north perimeter walkway
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 8 - south perimeter walkway
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 -800 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 9 - west perimeter walkway and retaining wall
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 1050 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 10 - east perimeter walkway and retaining wall
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 1050 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 11 - north pool divider west
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 330 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -390 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 12 - north pool divider east
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -390 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 330 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 13 - south hazard divider
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 0 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor01"
+  ( 0 -1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -40 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -40 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 14 - shallow-swim raised pool floor
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 128 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor02"
+  ( 0 -1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -330 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -330 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 15 - wading-pool raised floor
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 40 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor02"
+  ( 0 -1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1050 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 390 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 16 - lava-pool raised floor
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 80 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor02"
+  ( 0 -1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 40 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1050 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 17 - slime-pool raised floor
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 80 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/floor02"
+  ( 0 -1 0 -650 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1050 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 180 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 40 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+// primitive 18 - deep swimming water, 304 units deep
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water"
+  ( 0 0 1 16 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water"
+  ( 0 -1 0 180 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water"
+  ( 1 0 0 390 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water"
+  ( 0 1 0 -650 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water"
+  ( -1 0 0 -1050 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water"
+ }
+}
+// primitive 19 - shallow swimming water, 112 units deep
+{
+ brushDef3
+ {
+  ( 0 0 -1 -128 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 0 0 1 16 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 0 -1 0 180 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 1 0 0 -330 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 0 1 0 -650 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( -1 0 0 -330 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+ }
+}
+// primitive 20 - wading water, 24 units deep
+{
+ brushDef3
+ {
+  ( 0 0 -1 -40 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 0 0 1 16 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 0 -1 0 180 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 1 0 0 -1050 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( 0 1 0 -650 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+  ( -1 0 0 390 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/water_calm"
+ }
+}
+// primitive 21 - recessed lava
+{
+ brushDef3
+ {
+  ( 0 0 -1 -80 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/lava"
+  ( 0 0 1 16 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/lava"
+  ( 0 -1 0 -650 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/lava"
+  ( 1 0 0 40 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/lava"
+  ( 0 1 0 180 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/lava"
+  ( -1 0 0 -1050 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/lava"
+ }
+}
+// primitive 22 - recessed slime
+{
+ brushDef3
+ {
+  ( 0 0 -1 -80 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/slime"
+  ( 0 0 1 16 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/slime"
+  ( 0 -1 0 -650 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/slime"
+  ( 1 0 0 -1050 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/slime"
+  ( 0 1 0 180 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/slime"
+  ( -1 0 0 40 ) ( ( 0.0078125 0 0 ) ( 0 0.0078125 0 ) ) "textures/openq4/liquids/slime"
+ }
+}
+// primitives 23-27 - overhead shadow beams
+{
+ brushDef3
+ {
+  ( 0 0 -1 430 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 -462 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 -1 0 -580 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 540 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+{
+ brushDef3
+ {
+  ( 0 0 -1 430 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 -462 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 -1 0 -310 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 270 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+{
+ brushDef3
+ {
+  ( 0 0 -1 430 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 -462 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 -1 0 -20 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -20 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+{
+ brushDef3
+ {
+  ( 0 0 -1 430 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 -462 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 -1 0 270 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -310 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+{
+ brushDef3
+ {
+  ( 0 0 -1 430 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 0 1 -462 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 -1 0 540 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( 0 1 0 -580 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+  ( -1 0 0 -1200 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/metal_rivet"
+ }
+}
+}
+// entity 1 - every MP spawn targets this complete arsenal grant
+{
+"classname" "target_give"
+"name" "give_all_weapons"
+"onSpawn" "0"
+"item1" "weapon_gauntlet"
+"item2" "weapon_machinegun"
+"item3" "weapon_shotgun"
+"item4" "weapon_hyperblaster"
+"item5" "weapon_grenadelauncher"
+"item6" "weapon_nailgun"
+"item7" "weapon_rocketlauncher"
+"item8" "weapon_railgun"
+"item9" "weapon_lightninggun"
+"item10" "weapon_dmg"
+"item11" "weapon_napalmgun"
+"origin" "0 0 96"
+}
+// entities 2-9 - safe multiplayer starts along the central aisle
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_1"
+"target" "give_all_weapons"
+"origin" "-900 0 0"
+"angle" "90"
+"initial" "1"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_2"
+"target" "give_all_weapons"
+"origin" "-640 0 0"
+"angle" "270"
+"initial" "1"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_3"
+"target" "give_all_weapons"
+"origin" "-380 0 0"
+"angle" "90"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_4"
+"target" "give_all_weapons"
+"origin" "-120 0 0"
+"angle" "270"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_5"
+"target" "give_all_weapons"
+"origin" "120 0 0"
+"angle" "90"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_6"
+"target" "give_all_weapons"
+"origin" "380 0 0"
+"angle" "270"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_7"
+"target" "give_all_weapons"
+"origin" "640 0 0"
+"angle" "90"
+}
+{
+"classname" "info_player_deathmatch"
+"name" "info_player_deathmatch_8"
+"target" "give_all_weapons"
+"origin" "900 0 0"
+"angle" "270"
+}
+// entity 10 - ambient fill keeps materials readable while preserving direct shadows
+{
+"classname" "light"
+"name" "light_ambient_room"
+"origin" "0 0 272"
+"texture" "lights/ambientlight_nofall"
+"_color" "0.24 0.26 0.30"
+"light_radius" "1240 840 640"
+"falloff" "0"
+"noshadows" "1"
+"nodynamicshadows" "1"
+}
+// entities 11-12 - broad shadow-casting key lights above the beams
+{
+"classname" "light"
+"name" "light_key_north"
+"origin" "0 390 570"
+"texture" "lights/round2"
+"_color" "0.82 0.90 1"
+"light_radius" "1220 700 700"
+"noshadows" "0"
+"nodynamicshadows" "0"
+}
+{
+"classname" "light"
+"name" "light_key_south"
+"origin" "0 -390 570"
+"texture" "lights/round2"
+"_color" "1 0.78 0.60"
+"light_radius" "1220 700 700"
+"noshadows" "0"
+"nodynamicshadows" "0"
+}
+// entities 13-17 - restrained liquid accents
+{
+"classname" "light"
+"name" "light_deep_water"
+"origin" "-720 400 210"
+"texture" "lights/round2"
+"_color" "0.16 0.38 1"
+"light_radius" "360 310 330"
+"noshadows" "1"
+}
+{
+"classname" "light"
+"name" "light_shallow_water"
+"origin" "0 400 210"
+"texture" "lights/round2"
+"_color" "0.18 0.72 1"
+"light_radius" "360 310 330"
+"noshadows" "1"
+}
+{
+"classname" "light"
+"name" "light_wading_water"
+"origin" "720 400 210"
+"texture" "lights/round2"
+"_color" "0.28 0.72 0.92"
+"light_radius" "360 310 330"
+"noshadows" "1"
+}
+{
+"classname" "light"
+"name" "light_lava"
+"origin" "-540 -410 190"
+"texture" "lights/round2"
+"_color" "1 0.20 0.03"
+"light_radius" "540 330 300"
+"noshadows" "1"
+}
+// deep-pool floor fixtures: visible emissive pads with underwater light volumes
+{
+"classname" "func_static"
+"name" "deep_pool_fixture_1"
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 0 1 312 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 -1 0 380 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 1 0 0 850 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 1 0 -460 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( -1 0 0 -930 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+ }
+}
+}
+{
+"classname" "func_static"
+"name" "deep_pool_fixture_2"
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 0 1 312 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 -1 0 380 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 1 0 0 680 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 1 0 -460 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( -1 0 0 -760 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+ }
+}
+}
+{
+"classname" "func_static"
+"name" "deep_pool_fixture_3"
+{
+ brushDef3
+ {
+  ( 0 0 -1 -320 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 0 1 312 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 -1 0 380 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 1 0 0 510 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( 0 1 0 -460 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+  ( -1 0 0 -590 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) "textures/q4x_q4xdm2/light_whitecross01"
+ }
+}
+}
+{
+"classname" "light"
+"name" "light_deep_floor_1"
+"origin" "-890 420 -280"
+"texture" "lights/round2"
+"_color" "0.12 0.56 1"
+"light_radius" "250 250 230"
+"noshadows" "0"
+}
+{
+"classname" "light"
+"name" "light_deep_floor_2"
+"origin" "-720 420 -280"
+"texture" "lights/round2"
+"_color" "0.18 0.72 1"
+"light_radius" "250 250 230"
+"noshadows" "0"
+}
+{
+"classname" "light"
+"name" "light_deep_floor_3"
+"origin" "-550 420 -280"
+"texture" "lights/round2"
+"_color" "0.12 0.56 1"
+"light_radius" "250 250 230"
+"noshadows" "0"
+}
+{
+"classname" "light"
+"name" "light_slime"
+"origin" "540 -410 190"
+"texture" "lights/round2"
+"_color" "0.18 0.92 0.10"
+"light_radius" "540 330 300"
+"noshadows" "1"
+}
+// liquid ambience: stock recordings are routed through openQ4 sound shaders
+{
+"classname" "speaker"
+"name" "speaker_deep_water"
+"origin" "-720 420 -220"
+"s_shader" "openq4_liquid_water_loop"
+"s_looping" "1"
+"s_waitfortrigger" "0"
+"s_omni" "1"
+"s_occlusion" "0"
+"s_mindistance" "80"
+"s_maxdistance" "580"
+}
+{
+"classname" "speaker"
+"name" "speaker_lava"
+"origin" "-540 -415 -8"
+"s_shader" "openq4_liquid_lava_loop"
+"s_looping" "1"
+"s_waitfortrigger" "0"
+"s_omni" "1"
+"s_occlusion" "0"
+"s_mindistance" "80"
+"s_maxdistance" "620"
+}
+{
+"classname" "speaker"
+"name" "speaker_slime"
+"origin" "540 -415 -8"
+"s_shader" "openq4_liquid_slime_loop"
+"s_looping" "1"
+"s_waitfortrigger" "0"
+"s_omni" "1"
+"s_occlusion" "0"
+"s_mindistance" "80"
+"s_maxdistance" "620"
+}
+// boiling patches make the hazardous surfaces visibly alive
+{
+"classname" "func_fx"
+"name" "fx_lava_bubbles_west"
+"origin" "-790 -425 -14"
+"fx" "effects/openq4/liquids/surface_bubbles_lava"
+"fx_precache" "effects/openq4/liquids/surface_bubbles_lava"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}
+{
+"classname" "func_fx"
+"name" "fx_lava_bubbles_east"
+"origin" "-295 -405 -14"
+"fx" "effects/openq4/liquids/surface_bubbles_lava"
+"fx_precache" "effects/openq4/liquids/surface_bubbles_lava"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}
+{
+"classname" "func_fx"
+"name" "fx_slime_bubbles_west"
+"origin" "295 -405 -14"
+"fx" "effects/openq4/liquids/surface_bubbles_slime"
+"fx_precache" "effects/openq4/liquids/surface_bubbles_slime"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}
+{
+"classname" "func_fx"
+"name" "fx_slime_bubbles_east"
+"origin" "790 -425 -14"
+"fx" "effects/openq4/liquids/surface_bubbles_slime"
+"fx_precache" "effects/openq4/liquids/surface_bubbles_slime"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}
+// rising steam reinforces the lava heat haze and gives its movement a taller silhouette
+{
+"classname" "func_fx"
+"name" "fx_lava_steam_west"
+"origin" "-880 -330 -12"
+"fx" "effects/levels/waste/wastepitsteam.fx"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}
+{
+"classname" "func_fx"
+"name" "fx_lava_steam_mid"
+"origin" "-545 -520 -12"
+"fx" "effects/levels/waste/wastepitsteam.fx"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}
+{
+"classname" "func_fx"
+"name" "fx_lava_steam_east"
+"origin" "-205 -330 -12"
+"fx" "effects/levels/waste/wastepitsteam.fx"
+"start_on" "1"
+"loop" "1"
+"angle" "-1"
+}

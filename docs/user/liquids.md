@@ -19,9 +19,12 @@ meant to be dangerous — so liquids are something you author, and this page is 
 Water level is the Quake ladder: feet, waist, head. Damage scales with it, so standing ankle-deep
 in lava is a third of the punishment of being under it — and being under it kills in about a second.
 
-Movement matches Quake 3. Wading clamps your ground speed, and pushing into a ledge while waist-deep
-does the water jump that pops you out of the pool. Falling damage is halved at feet depth, quartered
-at waist depth, and gone entirely once your head is under.
+Movement matches Quake 3. Wading clamps your ground speed, and pushing into a clear-topped ledge
+while waist- or head-deep does the water jump that pops you out of the pool. The ledge and clearance
+probes are taken at the Quake 4 player's waist and just above their head, and the launch height
+scales with player size and gravity, so looking up or down cannot make a valid pool exit fail.
+Falling damage is halved at feet depth, quartered at waist depth, and gone entirely once your head
+is under.
 
 **Swimming.** Jump swims up, crouch swims down, and they keep working while you are stood on the
 bottom of a pool. With no input at all you sink, as you always did in Quake.
@@ -55,6 +58,24 @@ need to also mark it non-solid, and you must not add `solid` afterwards.
 
 If you had been faking lava with a `trigger_hurt` over a decorative brush, delete the trigger when
 you convert it. The two damage sources do not know about each other and you will take both.
+
+## Trying the liquid lab
+
+`mp/liquid_lab` is a compact multiplayer showcase built from the same materials. Its north row has
+deep swimming water, shallow swimming water, and wading water; the south row has lava and slime.
+Every liquid sits in a separate recessed basin, while a sky ceiling, shadow-casting overhead beams,
+and submerged lights in the deep pool make the different surfaces easy to inspect. Lava has a
+bright animated molten body, heat haze, steam and boiling patches; slime is a vivid cellular green
+fluid with its own bubbling surface. Local water, lava and slime loops make each basin audible, with
+the water bed placed below the surface so it behaves naturally from either side. Every spawn
+receives the complete multiplayer arsenal and ammunition again on each respawn, which makes the map
+useful for projectile-entry, impact, trail, and splash testing as well as movement.
+
+Start it from the multiplayer map list or from the console:
+
+```
+spawnServer mp/liquid_lab
+```
 
 ## Writing your own liquid material
 
@@ -118,12 +139,18 @@ It eases in and out over about a sixth of a second, so breaking the surface does
 Only the 3D view is affected. The HUD, the crosshair and any menu stay sharp and untinted — the
 effect runs inside the world render, not over the finished frame.
 
-**Sound.** Everything muffles while your head is under, and anything on the other side of the
-surface is occluded on top of that: the world above goes distant and dull the moment you go under,
-and a machine running in the water with you becomes the loudest thing you can hear.
+**Sound.** Non-global world sounds muffle while your head is under, and anything on the other side
+of the surface is occluded on top of that: the world above goes distant and dull the moment you go
+under, while music, announcements and interface sounds remain clear. Generic room-reverb tails are
+suppressed for submerged and cross-surface audio so the result sounds enclosed by water rather than
+like a large hall. Entry and exit visuals still happen at every crossing, but their shared surface
+sound has a 600 ms debounce so a single jump in shallow water cannot play it twice.
 
-**Trails.** Smoke does not survive underwater, so a projectile's trail and a weapon's tracer are
-both replaced by bubbles while they are in a liquid, and put back when they leave it.
+**Shots and trails.** A liquid surface is a presentation boundary, not a bulletproof wall.
+Projectiles and hitscan shots continue through it, play a splash and an explicit impact sound at the
+crossing, and can still hit geometry or actors inside the pool. A moving projectile swaps its smoke
+for local bubbles while it is submerged. A hitscan shot draws a one-shot bubble wake over only the
+part of the ray inside the volume, even when both its muzzle and eventual hit are in air.
 
 The effect needs the OpenGL renderer. On Vulkan — which supports only a fixed set of material
 programs, not arbitrary shaders — the game falls back to a flat colour wash so you still know you
@@ -174,6 +201,10 @@ Drowning shares the air reservoir and HUD readout with Quake 4's vacuum areas. U
 reservoir drains faster, so a full bar is twelve seconds of swimming but still the full `pm_air`
 worth of vacuum.
 
+Drowning, slime and lava each have their own multiplayer death method, localized obituary text and
+colored graphical death-feed icon. Mods can replace the `dm2`, `dm3` and `dm4` icon/text entries in
+`liquid_openq4` without changing game code.
+
 ## Retargeting the sounds and effects
 
 Every liquid sound and splash is keyed off a single def, `liquid_openq4` in
@@ -181,10 +212,14 @@ Every liquid sound and splash is keyed off a single def, `liquid_openq4` in
 leave out is simply silent, so a partial set is fine.
 
 Keys are `<what>_<liquid>`: `snd_enter_water`, `snd_under_lava`, `fx_splash_slime`,
-`fx_impact_water`, `fx_bubbles_water`, and so on, plus `snd_drown` and `snd_wade`.
+`fx_impact_water`, `fx_bubbles_water`, `fx_projectile_trail_slime`, and
+`fx_trace_trail_water`, plus `snd_drown` and `snd_wade`. Projectile trails are local looping
+effects; trace trails receive an end origin and should use a line distribution with
+`useEndOrigin linearSpacing`.
 
-A weapon that defines its own `fx_impact_water` keeps it — the shared def only fills in for things
-that specify nothing.
+A weapon that defines its own collision `fx_impact_water` keeps it. A projectile crossing a volume
+uses the shared liquid splash and explicit `snd_impact_*` entry so its sound cannot disappear with
+an unreliable visual-effect message.
 
 ## Monsters and NPCs
 

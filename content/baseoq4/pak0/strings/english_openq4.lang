@@ -910,4 +910,9 @@
 	"#str_42748"	"Item"
 	"#str_42749"	"This legacy server command is disabled during a managed match. Use Match Control."
 	"#str_42750"	"You must wait %d more seconds before calling another vote."
+
+	"#str_42800"	"Liquid Volume Lab"
+	"#str_42801"	"%s drowned"
+	"#str_42802"	"%s dissolved in slime"
+	"#str_42803"	"%s burned in lava"
 }

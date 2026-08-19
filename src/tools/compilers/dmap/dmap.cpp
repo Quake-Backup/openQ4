@@ -358,7 +358,9 @@ void Dmap( const idCmdArgs &args ) {
 			// create the collision map
 			start = Sys_Milliseconds();
 
-			collisionModelManager->LoadMap( dmapGlobals.dmapFile );
+			// A dmap compile must refresh collision data even when this map's
+			// previous .cm has already been cached by the running engine.
+			collisionModelManager->LoadMap( dmapGlobals.dmapFile, true );
 			collisionModelManager->FreeMap(NULL);
 
 			end = Sys_Milliseconds();
