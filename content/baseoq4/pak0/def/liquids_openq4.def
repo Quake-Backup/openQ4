@@ -96,29 +96,30 @@ entityDef func_liquid_openq4_lava
 		snd_clear_*   the head coming back out
 		fx_splash_*   the splash at the surface, played on entry and exit
 
-	The openQ4 shaders and effects below are assembled entirely from stock Quake 4 samples and
-	particle materials. Projectile loops and trace segments have separate keys because the former
-	follows a moving entity while the latter stretches once between two fixed points.
+	The production defaults below point directly at stock Quake 4 media. Showcase-only presentation
+	belongs to the map that uses it rather than this shared definition. Projectile loops and trace
+	segments have separate keys because the former follows a moving entity while the latter is given
+	two fixed points.
 */
 entityDef liquid_openq4
 {
-	"snd_enter_water"			"openq4_liquid_splash"
-	"snd_leave_water"			"openq4_liquid_splash"
+	"snd_enter_water"			"ambient_water_splash_big"
+	"snd_leave_water"			"ambient_water_splash_small"
 	"snd_under_water"			"player_sounds_water"
 	"snd_clear_water"			"player_sounds_medlabs_gasp"
-	"fx_splash_water"			"effects/openq4/liquids/splash_water.fx"
+	"fx_splash_water"			"effects/ambient/splash_lrg.fx"
 
-	"snd_enter_lava"			"openq4_liquid_lava_sizzle"
-	"snd_leave_lava"			"openq4_liquid_lava_sizzle"
+	"snd_enter_lava"			"ambient_water_splash_big"
+	"snd_leave_lava"			"ambient_water_splash_small"
 	"snd_under_lava"			"player_sounds_water"
 	"snd_clear_lava"			"player_sounds_medlabs_gasp"
-	"fx_splash_lava"			"effects/openq4/liquids/splash_lava.fx"
+	"fx_splash_lava"			"effects/levels/putra/acid_splash.fx"
 
-	"snd_enter_slime"			"openq4_liquid_splash"
-	"snd_leave_slime"			"openq4_liquid_splash"
+	"snd_enter_slime"			"ambient_water_splash_big"
+	"snd_leave_slime"			"ambient_water_splash_small"
 	"snd_under_slime"			"player_sounds_water"
 	"snd_clear_slime"			"player_sounds_medlabs_gasp"
-	"fx_splash_slime"			"effects/openq4/liquids/splash_slime.fx"
+	"fx_splash_slime"			"effects/ambient/slime_pool.fx"
 
 	// drowning: a gasp each time the lungs give out
 	"snd_drown"					"player_sounds_medlabs_gasp"
@@ -128,27 +129,31 @@ entityDef liquid_openq4
 	"snd_wade"					"player_sounds_water_wade"
 
 	// bubble trail from a submerged player's head, looping until they surface
-	"fx_bubbles_water"			"effects/openq4/liquids/bubbles_local_water.fx"
-	"fx_bubbles_lava"			"effects/openq4/liquids/bubbles_local_lava.fx"
-	"fx_bubbles_slime"			"effects/openq4/liquids/bubbles_local_slime.fx"
+	"fx_bubbles_water"			"effects/levels/recomp_bubble.fx"
+	"fx_bubbles_lava"			"effects/levels/recomp_bubble.fx"
+	"fx_bubbles_slime"			"effects/levels/recomp_bubble.fx"
 
-	// A moving projectile receives a local looping cloud while it is submerged.
-	"fx_projectile_trail_water"	"effects/openq4/liquids/bubbles_local_water.fx"
-	"fx_projectile_trail_lava"	"effects/openq4/liquids/bubbles_local_lava.fx"
-	"fx_projectile_trail_slime"	"effects/openq4/liquids/bubbles_local_slime.fx"
+	// A moving projectile receives a local looping cloud while it is submerged. Keep the legacy
+	// fx_trail keys as aliases for older game modules and mods.
+	"fx_projectile_trail_water"	"effects/levels/recomp_bubble.fx"
+	"fx_projectile_trail_lava"	"effects/levels/recomp_bubble.fx"
+	"fx_projectile_trail_slime"	"effects/levels/recomp_bubble.fx"
+	"fx_trail_water"			"effects/levels/recomp_bubble.fx"
+	"fx_trail_lava"				"effects/levels/recomp_bubble.fx"
+	"fx_trail_slime"			"effects/levels/recomp_bubble.fx"
 
-	// Hitscan wakes are one-shot line effects stretching over only the submerged trace segment.
-	"fx_trace_trail_water"		"effects/openq4/liquids/bubble_trail_water.fx"
-	"fx_trace_trail_lava"		"effects/openq4/liquids/bubble_trail_lava.fx"
-	"fx_trace_trail_slime"		"effects/openq4/liquids/bubble_trail_slime.fx"
+	// Hitscan wakes receive the submerged trace segment's start and end points.
+	"fx_trace_trail_water"		"effects/levels/recomp_bubble.fx"
+	"fx_trace_trail_lava"		"effects/levels/recomp_bubble.fx"
+	"fx_trace_trail_slime"		"effects/levels/recomp_bubble.fx"
 
 	// smaller splash used for projectiles and thrown objects breaking the surface
-	"fx_impact_water"			"effects/openq4/liquids/splash_water.fx"
-	"fx_impact_lava"			"effects/openq4/liquids/splash_lava.fx"
-	"fx_impact_slime"			"effects/openq4/liquids/splash_slime.fx"
+	"fx_impact_water"			"effects/ambient/splash_med.fx"
+	"fx_impact_lava"			"effects/levels/putra/acid_splash.fx"
+	"fx_impact_slime"			"effects/ambient/slime_pool.fx"
 	"snd_impact_water"			"bullet_impact_water"
-	"snd_impact_lava"			"openq4_liquid_lava_sizzle"
-	"snd_impact_slime"			"openq4_liquid_splash"
+	"snd_impact_lava"			"bullet_impact_water"
+	"snd_impact_slime"			"bullet_impact_water"
 
 	// Dedicated environmental obituary methods: MAX_WEAPONS + 2/3/4.
 	"icon dm2"					"gfx/guis/hud/icons/kill_drown_openq4"

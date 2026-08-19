@@ -202,14 +202,16 @@ reservoir drains faster, so a full bar is twelve seconds of swimming but still t
 worth of vacuum.
 
 Drowning, slime and lava each have their own multiplayer death method, localized obituary text and
-colored graphical death-feed icon. Mods can replace the `dm2`, `dm3` and `dm4` icon/text entries in
-`liquid_openq4` without changing game code.
+colored graphical death-feed icon built from stock images. Mods can replace the `dm2`, `dm3` and
+`dm4` icon/text entries in `liquid_openq4` without changing game code.
 
 ## Retargeting the sounds and effects
 
 Every liquid sound and splash is keyed off a single def, `liquid_openq4` in
 `def/liquids_openq4.def`. Override that def in your mod to change the whole set at once. Any key you
-leave out is simply silent, so a partial set is fine.
+leave out is simply silent, so a partial set is fine. The shipped defaults point directly at stock
+Quake 4 sounds and effects; the Liquid Volume Lab keeps its custom ambience and hazardous-surface
+bubbling scoped to the showcase map.
 
 Keys are `<what>_<liquid>`: `snd_enter_water`, `snd_under_lava`, `fx_splash_slime`,
 `fx_impact_water`, `fx_bubbles_water`, `fx_projectile_trail_slime`, and
@@ -218,8 +220,8 @@ effects; trace trails receive an end origin and should use a line distribution w
 `useEndOrigin linearSpacing`.
 
 A weapon that defines its own collision `fx_impact_water` keeps it. A projectile crossing a volume
-uses the shared liquid splash and explicit `snd_impact_*` entry so its sound cannot disappear with
-an unreliable visual-effect message.
+uses the shared stock liquid impact and explicit `snd_impact_*` entry so its sound cannot disappear
+with an unreliable visual-effect message.
 
 ## Monsters and NPCs
 

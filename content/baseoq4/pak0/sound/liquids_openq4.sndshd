@@ -1,25 +1,4 @@
-/* Liquid audio assembled from sound samples shipped with Quake 4. */
-
-sound openq4_liquid_splash
-{
-	minDistance 80
-	maxDistance 900
-	volumeDb 4
-	soundClass 1
-
-	sound/ambience/water/splash_small02
-}
-
-sound openq4_liquid_lava_sizzle
-{
-	minDistance 80
-	maxDistance 900
-	volumeDb -2
-	soundClass 1
-
-	sound/effects/generic/acid_burn
-	sound/effects/generic/acid_burn2
-}
+/* Liquid Lab ambience assembled from sound samples shipped with Quake 4. */
 
 sound openq4_liquid_water_loop
 {
