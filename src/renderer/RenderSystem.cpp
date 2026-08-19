@@ -1755,11 +1755,111 @@ CaptureRenderToFile
 ==============
 */
 void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlpha ) {
+	CaptureRenderToFile( fileName, fixAlpha, 0, 0 );
+}
+
+static const int MAX_CAPTURE_DIMENSION = 16384;
+static const int64 MAX_CAPTURE_PIXELS = 33554432;
+
+/*
+==============
+R_ResampleCaptureToAspectRGBA
+
+Preserves the bottom-up row order returned by glReadPixels.  R_WriteTGA's
+flipVertical argument then describes those rows exactly as it does for an
+unscaled capture.
+==============
+*/
+static byte *R_ResampleCaptureToAspectRGBA( const byte *source, int sourceWidth, int sourceHeight,
+	int outputWidth, int outputHeight ) {
+	int cropX = 0;
+	int cropY = 0;
+	int cropWidth = sourceWidth;
+	int cropHeight = sourceHeight;
+
+	const int64 sourceAspectProduct = (int64)sourceWidth * outputHeight;
+	const int64 outputAspectProduct = (int64)sourceHeight * outputWidth;
+	if ( sourceAspectProduct > outputAspectProduct ) {
+		cropWidth = (int)( (int64)sourceHeight * outputWidth / outputHeight );
+		cropWidth = Max( cropWidth, 1 );
+		cropX = ( sourceWidth - cropWidth ) / 2;
+	} else if ( sourceAspectProduct < outputAspectProduct ) {
+		cropHeight = (int)( (int64)sourceWidth * outputHeight / outputWidth );
+		cropHeight = Max( cropHeight, 1 );
+		cropY = ( sourceHeight - cropHeight ) / 2;
+	}
+
+	const size_t outputPixels = (size_t)outputWidth * (size_t)outputHeight;
+	byte *output = (byte *)R_StaticAlloc( outputPixels * 4 );
+	const int cropMaxX = cropX + cropWidth - 1;
+	const int cropMaxY = cropY + cropHeight - 1;
+
+	for ( int y = 0; y < outputHeight; y++ ) {
+		const double sourceY = cropY + ( ( y + 0.5 ) * cropHeight / outputHeight ) - 0.5;
+		int y0 = (int)floor( sourceY );
+		double yFraction = sourceY - y0;
+		if ( y0 < cropY ) {
+			y0 = cropY;
+			yFraction = 0.0;
+		} else if ( y0 >= cropMaxY ) {
+			y0 = cropMaxY;
+			yFraction = 0.0;
+		}
+		const int y1 = Min( y0 + 1, cropMaxY );
+		byte *outputRow = output + (size_t)y * (size_t)outputWidth * 4;
+
+		for ( int x = 0; x < outputWidth; x++ ) {
+			const double sourceX = cropX + ( ( x + 0.5 ) * cropWidth / outputWidth ) - 0.5;
+			int x0 = (int)floor( sourceX );
+			double xFraction = sourceX - x0;
+			if ( x0 < cropX ) {
+				x0 = cropX;
+				xFraction = 0.0;
+			} else if ( x0 >= cropMaxX ) {
+				x0 = cropMaxX;
+				xFraction = 0.0;
+			}
+			const int x1 = Min( x0 + 1, cropMaxX );
+
+			const byte *topLeft = source + ( (size_t)y0 * sourceWidth + x0 ) * 4;
+			const byte *topRight = source + ( (size_t)y0 * sourceWidth + x1 ) * 4;
+			const byte *bottomLeft = source + ( (size_t)y1 * sourceWidth + x0 ) * 4;
+			const byte *bottomRight = source + ( (size_t)y1 * sourceWidth + x1 ) * 4;
+			byte *destination = outputRow + x * 4;
+
+			for ( int channel = 0; channel < 4; channel++ ) {
+				const double top = topLeft[channel] + ( topRight[channel] - topLeft[channel] ) * xFraction;
+				const double bottom = bottomLeft[channel] + ( bottomRight[channel] - bottomLeft[channel] ) * xFraction;
+				destination[channel] = (byte)( top + ( bottom - top ) * yFraction + 0.5 );
+			}
+		}
+	}
+
+	return output;
+}
+
+void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlpha,
+	int outputWidth, int outputHeight ) {
 	if ( !glConfig.isInitialized ) {
 		return;
 	}
 
 	renderCrop_t *rc = &renderCrops[currentRenderCrop];
+	const bool resample = outputWidth != 0 || outputHeight != 0;
+	const int64 sourcePixelCount = (int64)rc->width * rc->height;
+	if ( rc->width < 1 || rc->height < 1 ||
+			rc->width > MAX_CAPTURE_DIMENSION || rc->height > MAX_CAPTURE_DIMENSION ||
+			sourcePixelCount > MAX_CAPTURE_PIXELS ) {
+		common->Warning( "CaptureRenderToFile: invalid source dimensions %d x %d", rc->width, rc->height );
+		return;
+	}
+	const int64 outputPixelCount = (int64)outputWidth * outputHeight;
+	if ( resample && ( outputWidth < 1 || outputHeight < 1 ||
+			outputWidth > MAX_CAPTURE_DIMENSION || outputHeight > MAX_CAPTURE_DIMENSION ||
+			outputPixelCount > MAX_CAPTURE_PIXELS ) ) {
+		common->Warning( "CaptureRenderToFile: invalid output dimensions %d x %d", outputWidth, outputHeight );
+		return;
+	}
 
 	guiModel->EmitFullScreen();
 	guiModel->Clear();
@@ -1769,26 +1869,45 @@ void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlp
 
 	glReadBuffer( GL_BACK );
 
-	// include extra space for OpenGL padding to word boundaries
-	int	c = ( rc->width + 3 ) * rc->height;
-	byte *data = (byte *)R_StaticAlloc( c * 3 );
+	// GL_RGB readback rows use the default four-byte pack alignment.  Convert
+	// each row independently so the padding never becomes pixel data.
+	const int sourceStride = ( rc->width * 3 + 3 ) & ~3;
+	const size_t sourceBytes = (size_t)sourceStride * (size_t)rc->height;
+	byte *data = (byte *)R_StaticAlloc( sourceBytes );
+	memset( data, 0, sourceBytes );
 	
 	glReadPixels( rc->x, rc->y, rc->width, rc->height, GL_RGB, GL_UNSIGNED_BYTE, data ); 
 	tr.takingScreenshot = wasTakingScreenshot;
 
-	byte *data2 = (byte *)R_StaticAlloc( c * 4 );
+	byte *data2 = (byte *)R_StaticAlloc( (size_t)sourcePixelCount * 4 );
 
-	for ( int i = 0 ; i < c ; i++ ) {
-		data2[ i * 4 ] = data[ i * 3 ];
-		data2[ i * 4 + 1 ] = data[ i * 3 + 1 ];
-		data2[ i * 4 + 2 ] = data[ i * 3 + 2 ];
-		data2[ i * 4 + 3 ] = 0xff;
+	for ( int y = 0; y < rc->height; y++ ) {
+		const byte *sourceRow = data + (size_t)y * sourceStride;
+		byte *destinationRow = data2 + (size_t)y * rc->width * 4;
+		for ( int x = 0; x < rc->width; x++ ) {
+			destinationRow[ x * 4 ] = sourceRow[ x * 3 ];
+			destinationRow[ x * 4 + 1 ] = sourceRow[ x * 3 + 1 ];
+			destinationRow[ x * 4 + 2 ] = sourceRow[ x * 3 + 2 ];
+			destinationRow[ x * 4 + 3 ] = 0xff;
+		}
+	}
+	R_StaticFree( data );
+	data = NULL;
+
+	byte *outputData = data2;
+	int capturedWidth = rc->width;
+	int capturedHeight = rc->height;
+	if ( resample ) {
+		outputData = R_ResampleCaptureToAspectRGBA( data2, rc->width, rc->height,
+			outputWidth, outputHeight );
+		R_StaticFree( data2 );
+		data2 = NULL;
+		capturedWidth = outputWidth;
+		capturedHeight = outputHeight;
 	}
 
-	R_WriteTGA( fileName, data2, rc->width, rc->height, true );
-
-	R_StaticFree( data );
-	R_StaticFree( data2 );
+	R_WriteTGA( fileName, outputData, capturedWidth, capturedHeight, true );
+	R_StaticFree( outputData );
 }
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import struct
 from pathlib import Path
 
@@ -20,6 +21,30 @@ OPENAL_RUNTIME_OVERRIDES = {
 }
 WINDOWS_ROOT_RUNTIME_PATTERNS = (
     "OpenAL32.dll",
+)
+# Meson installs overlay their destination and deliberately do not remove files
+# from an earlier build.  Keep the Windows cleanup policy as an explicit,
+# narrow manifest: these names can only be foreign POSIX engine binaries or
+# obsolete renderer-validation backups in a Windows runtime tree.
+WINDOWS_STALE_STAGE_FILE_MANIFEST = (
+    "openQ4-client_x86",
+    "openQ4-client_x64",
+    "openQ4-client_arm64",
+    "openQ4-ded_x86",
+    "openQ4-ded_x64",
+    "openQ4-ded_arm64",
+    "renderer-gl_x86.dll.mainbak",
+    "renderer-gl_x64.dll.mainbak",
+    "renderer-gl_arm64.dll.mainbak",
+    "renderer-vk_x86.dll.mainbak",
+    "renderer-vk_x64.dll.mainbak",
+    "renderer-vk_arm64.dll.mainbak",
+)
+# These directories were emitted by older content staging.  They are removed
+# only when empty; populated directories may contain intentional local content
+# and are therefore left untouched.
+WINDOWS_EMPTY_STAGE_DIRECTORY_MANIFEST = (
+    "baseoq4/skins",
 )
 RUNTIME_BINARY_PATTERNS = (
     f"{PRODUCT_NAME}-client_*.exe",
@@ -256,6 +281,85 @@ def clear_staged_runtime_files(root_dir: Path) -> None:
         path.unlink()
 
 
+def _manifest_path(root_dir: Path, relative_name: str) -> Path:
+    relative_path = Path(relative_name)
+    if relative_path.is_absolute() or not relative_path.parts or ".." in relative_path.parts:
+        raise RuntimeError(f"invalid Windows stage cleanup manifest path: {relative_name!r}")
+    parent = root_dir
+    for part in relative_path.parts[:-1]:
+        parent /= part
+        if _is_link_or_junction(parent):
+            raise RuntimeError(f"Windows stage cleanup parent is a link or junction: {parent}")
+        if parent.exists() and not parent.is_dir():
+            raise RuntimeError(f"Windows stage cleanup parent is not a directory: {parent}")
+    candidate = root_dir.joinpath(*relative_path.parts)
+    if not _is_relative_to(candidate, root_dir):
+        raise RuntimeError(f"Windows stage cleanup path escapes its runtime target: {relative_name!r}")
+    return candidate
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    if path.is_symlink() or bool(is_junction and is_junction()):
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    except OSError:
+        return False
+
+
+def cleanup_windows_stage_target(root_dir: Path) -> dict[str, list[str]]:
+    """Remove only explicitly known stale entries from a Windows stage root."""
+
+    root_dir = validate_runtime_directory(root_dir, "Windows runtime target", must_exist=False)
+    removed_files: list[str] = []
+    removed_directories: list[str] = []
+
+    if not root_dir.exists():
+        return {
+            "removed_stale_files": removed_files,
+            "removed_empty_directories": removed_directories,
+        }
+
+    for relative_name in WINDOWS_STALE_STAGE_FILE_MANIFEST:
+        candidate = _manifest_path(root_dir, relative_name)
+        if _is_link_or_junction(candidate):
+            # Unlinking a known stale leaf is safe and does not follow its
+            # target.  Directory links are rejected rather than recursively
+            # traversed or removed.
+            if candidate.is_dir():
+                raise RuntimeError(f"stale Windows runtime file is a directory link or junction: {candidate}")
+            candidate.unlink()
+            removed_files.append(relative_name)
+            continue
+        if not candidate.exists():
+            continue
+        if not candidate.is_file():
+            raise RuntimeError(f"stale Windows runtime file path is not a regular file: {candidate}")
+        candidate.unlink()
+        removed_files.append(relative_name)
+
+    for relative_name in WINDOWS_EMPTY_STAGE_DIRECTORY_MANIFEST:
+        candidate = _manifest_path(root_dir, relative_name)
+        if _is_link_or_junction(candidate):
+            raise RuntimeError(f"empty Windows runtime directory is a link or junction: {candidate}")
+        if not candidate.exists():
+            continue
+        if not candidate.is_dir():
+            raise RuntimeError(f"empty Windows runtime directory path is not a directory: {candidate}")
+        try:
+            next(candidate.iterdir())
+        except StopIteration:
+            candidate.rmdir()
+            removed_directories.append(relative_name)
+
+    return {
+        "removed_stale_files": removed_files,
+        "removed_empty_directories": removed_directories,
+    }
+
+
 
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
@@ -294,6 +398,8 @@ def _copy_runtime_tree(source_dir: Path, destination_dir: Path, ignore_patterns:
 def validate_runtime_directory(path: Path, label: str, *, must_exist: bool) -> Path:
     if path.is_symlink():
         raise RuntimeError(f"{label} must not be a symlink: {path}")
+    if _is_link_or_junction(path):
+        raise RuntimeError(f"{label} must not be a junction or reparse point: {path}")
     if path.exists() and not path.is_dir():
         raise RuntimeError(f"{label} exists but is not a directory: {path}")
     if must_exist and not path.is_dir():
@@ -390,6 +496,10 @@ def stage_runtime_payloads(
     ]
 
     staged_build_game = stage_build_game_directory(source_root, build_root)
+    cleanup_results: dict[str, dict[str, list[str]]] = {}
+    for target in targets:
+        cleanup_results[str(target)] = cleanup_windows_stage_target(target)
+
     binaries = collect_runtime_binaries(build_root)
     if not binaries:
         return {
@@ -397,6 +507,7 @@ def stage_runtime_payloads(
             "runtime_flavor": RuntimeFlavor.NONE,
             "targets": [str(target) for target in targets],
             "copied_files": [],
+            "stage_cleanup": cleanup_results,
             "staged_build_game": staged_build_game,
             "validated_binaries": [],
         }
@@ -438,6 +549,7 @@ def stage_runtime_payloads(
         "runtime_flavor": flavor,
         "targets": [str(target) for target in targets],
         "copied_files": sorted(set(copied_files)),
+        "stage_cleanup": cleanup_results,
         "staged_build_game": staged_build_game,
         "validated_binaries": [str(path) for path in binaries],
     }

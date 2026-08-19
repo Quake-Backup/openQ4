@@ -501,6 +501,29 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 	}
 	record.normalImage = R_ScenePackets_FirstStageImage( material, SL_BUMP );
 	record.specularImage = R_ScenePackets_FirstStageImage( material, SL_SPECULAR );
+	if ( material->HasPBR() ) {
+		const pbrMaterialInfo_t &pbr = material->GetPBRInfo();
+		record.hasPBR = true;
+		record.pbrWorkflow = static_cast<int>( pbr.workflow );
+		record.pbrNormalFormat = static_cast<int>( pbr.normalFormat );
+		record.pbrAlbedoImage = pbr.albedo.present ? pbr.albedo.image : NULL;
+		record.pbrNormalImage = pbr.normal.present ? pbr.normal.image : NULL;
+		record.pbrORMImage = pbr.orm.present ? pbr.orm.image : NULL;
+		record.pbrMetallicImage = pbr.metallic.present ? pbr.metallic.image : NULL;
+		record.pbrRoughnessImage = pbr.roughness.present ? pbr.roughness.image : NULL;
+		record.pbrAOImage = pbr.ao.present ? pbr.ao.image : NULL;
+		record.pbrEmissiveImage = pbr.emissive.present ? pbr.emissive.image : NULL;
+		record.pbrHasAuthoredClassicFallback = pbr.hasAuthoredClassicFallback;
+		record.pbrHasExplicitLegacyFallback = pbr.hasExplicitLegacyFallback;
+		record.pbrUsesGeneratedLegacyFallback = pbr.usesGeneratedLegacyFallback;
+		record.pbrUsesApproximateLegacyFallback = pbr.usesApproximateLegacyFallback;
+		record.pbrLegacyFallbackMissing = pbr.legacyFallbackMissing;
+		record.pbrMetallicRegister = pbr.metallicRegister;
+		record.pbrRoughnessRegister = pbr.roughnessRegister;
+		record.pbrAORegister = pbr.aoRegister;
+		record.pbrNormalScaleRegister = pbr.normalScaleRegister;
+		memcpy( record.pbrEmissiveColorRegisters, pbr.emissiveColorRegisters, sizeof( record.pbrEmissiveColorRegisters ) );
+	}
 	record.resourceTableIndex = material->Index();
 	record.permutation.materialClass = R_ScenePackets_MaterialClassForDrawSurf( drawSurf );
 	record.permutation.lightingMode =
@@ -1818,13 +1841,15 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 	for ( int i = 0; i < materialRecordLogCount; ++i ) {
 		const materialResourceRecord_t &record = packetFrame.MaterialRecord( i );
 		common->Printf(
-			"scenePackets material[%d]=%s class=%s diffuse=%s normal=%s specular=%s table=%d\n",
+			"scenePackets material[%d]=%s class=%s diffuse=%s normal=%s specular=%s pbr=%d workflow=%d table=%d\n",
 			i,
 			record.material ? record.material->GetName() : "<null>",
 			RendererMaterialClass_Name( static_cast<rendererMaterialClass_t>( record.permutation.materialClass ) ),
 			record.diffuseImage ? record.diffuseImage->GetName() : "<none>",
 			record.normalImage ? record.normalImage->GetName() : "<none>",
 			record.specularImage ? record.specularImage->GetName() : "<none>",
+			record.hasPBR ? 1 : 0,
+			record.pbrWorkflow,
 			record.resourceTableIndex );
 	}
 	const int geometryRecordLogCount = Min( packetFrame.NumGeometryRecords(), 8 );
@@ -2045,6 +2070,73 @@ bool RendererScenePacket_RunSelfTest( void ) {
 		return false;
 	}
 
-	common->Printf( "RendererScenePacket self-test passed (backend, frontend, post commands)\n" );
+	// Exercise the actual material-record capture path with opt-in PBR metadata.
+	// The ambient stage makes this a drawable synthetic surface while the absent
+	// bump+diffuse interaction deliberately proves the missing-fallback bit.
+	static const char pbrPacketDeclaration[] =
+		"material _pbr_scene_packet_selftest {\n"
+		" {\n"
+		"  map _white\n"
+		" }\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  metallic 0.35\n"
+		"  roughness 0.65\n"
+		"  ao 0.85\n"
+		"  autoLegacyFallback 0\n"
+		" }\n"
+		"}\n";
+	idDecl *pbrPacketDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( pbrPacketDecl == NULL ) {
+		common->Printf( "RendererScenePacket self-test failed: PBR declaration allocation\n" );
+		return false;
+	}
+	idMaterial *pbrPacketMaterial = static_cast<idMaterial *>( pbrPacketDecl );
+	bool pbrPacketValid = pbrPacketMaterial->Parse(
+		pbrPacketDeclaration,
+		idLib::SizeToInt( sizeof( pbrPacketDeclaration ) - 1, "RendererScenePacket PBR self-test" ) );
+	if ( pbrPacketValid ) {
+		drawSurf_t pbrDrawSurf;
+		memset( &pbrDrawSurf, 0, sizeof( pbrDrawSurf ) );
+		pbrDrawSurf.material = pbrPacketMaterial;
+		pbrDrawSurf.sort = pbrPacketMaterial->GetSort();
+		{
+			idScenePacketFrame pbrPacketFrame;
+			pbrPacketValid = pbrPacketFrame.AddDrawPacket( &pbrDrawSurf, RENDER_PASS_AMBIENT, 0 );
+			const drawPacket_t *pbrDrawPacket = pbrPacketValid && pbrPacketFrame.NumDrawPackets() == 1
+				? &pbrPacketFrame.DrawPacket( 0 )
+				: NULL;
+			const materialResourceRecord_t *pbrRecord = pbrDrawPacket != NULL && pbrDrawPacket->materialRecordIndex >= 0
+				? &pbrPacketFrame.MaterialRecord( pbrDrawPacket->materialRecordIndex )
+				: NULL;
+			const pbrMaterialInfo_t &pbr = pbrPacketMaterial->GetPBRInfo();
+			const int registerCount = pbrPacketMaterial->GetNumRegisters();
+			auto validRegister = [&]( int index ) -> bool { return index >= 0 && index < registerCount; };
+			pbrPacketValid = pbrRecord != NULL
+				&& pbrDrawPacket->materialRecord == pbrRecord
+				&& pbrRecord->material == pbrPacketMaterial
+				&& pbrRecord->hasPBR
+				&& pbrRecord->pbrWorkflow == static_cast<int>( pbr.workflow )
+				&& pbrRecord->pbrAlbedoImage == pbr.albedo.image
+				&& pbrRecord->pbrLegacyFallbackMissing
+				&& pbrRecord->pbrLegacyFallbackMissing == pbr.legacyFallbackMissing
+				&& pbrRecord->pbrMetallicRegister == pbr.metallicRegister
+				&& pbrRecord->pbrRoughnessRegister == pbr.roughnessRegister
+				&& pbrRecord->pbrAORegister == pbr.aoRegister
+				&& pbrRecord->pbrNormalScaleRegister == pbr.normalScaleRegister
+				&& validRegister( pbrRecord->pbrMetallicRegister )
+				&& validRegister( pbrRecord->pbrRoughnessRegister )
+				&& validRegister( pbrRecord->pbrAORegister )
+				&& validRegister( pbrRecord->pbrNormalScaleRegister );
+		}
+	}
+	DeclManager_FreeAllocatedDecl( pbrPacketDecl );
+	if ( !pbrPacketValid ) {
+		common->Printf( "RendererScenePacket self-test failed: PBR packet metadata propagation\n" );
+		return false;
+	}
+
+	common->Printf( "RendererScenePacket self-test passed (backend, frontend, post commands, PBR metadata)\n" );
 	return true;
 }

@@ -734,11 +734,16 @@ bool idModernGLSubmitPlan::AddCommand( const modernGLDrawPlanEntry_t &entry ) {
 		stats.fallbackDraws++;
 		return false;
 	}
+	const materialResourceTableRecord_t *materialRecord = R_MaterialResourceTable_RecordForIndex( entry.materialTableIndex );
+	if ( materialRecord != NULL && !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord ) ) {
+		stats.fallbackDraws++;
+		return false;
+	}
 
 	modernGLSubmitCommand_t &command = commands[numCommands];
 	memset( &command, 0, sizeof( command ) );
 	command.drawPlanEntry = &entry;
-	command.materialRecord = R_MaterialResourceTable_RecordForIndex( entry.materialTableIndex );
+	command.materialRecord = materialRecord;
 	command.viewDef = draw->viewDef;
 	command.passCategory = entry.passCategory;
 	command.pipeline = entry.pipeline;
@@ -774,7 +779,6 @@ bool idModernGLSubmitPlan::AddCommand( const modernGLDrawPlanEntry_t &entry ) {
 	command.instanceRecordIndex = entry.instanceRecordIndex;
 	command.originalSubmitOrder = numCommands;
 	command.sortBucket = -1;
-	const materialResourceTableRecord_t *materialRecord = command.materialRecord;
 	command.blendMode = materialRecord != NULL ? materialRecord->blendMode : MATERIAL_RESOURCE_BLEND_OPAQUE;
 	command.cullType = materialRecord != NULL ? materialRecord->cullType : CT_FRONT_SIDED;
 	command.materialStableId = entry.materialStableId;

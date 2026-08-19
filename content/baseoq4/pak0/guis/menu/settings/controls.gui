@@ -1052,7 +1052,7 @@
 						rect	452,215,149,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
-						bind	voteyes
+						bind	_impulse28
 						textscale	0.24
 						font	"fonts/lowpixel"
 
@@ -1066,7 +1066,7 @@
 						rect	452,239,149,18
 						visible	1
 						forecolor	1,0.745,0.137,0.8
-						bind	voteno
+						bind	_impulse29
 						textscale	0.24
 						font	"fonts/lowpixel"
 
@@ -1094,7 +1094,7 @@
 						rect	452,287,149,17
 						visible	1
 						forecolor	1,0.745,0.137,0.8
-						bind	ready
+						bind	_impulse17
 						textscale	0.24
 						font	"fonts/lowpixel"
 

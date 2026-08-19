@@ -1576,6 +1576,10 @@ idCommonLocal::ClearCommandLine
 ==================
 */
 void idCommonLocal::ClearCommandLine( void ) {
+	for ( int i = 0; i < com_numConsoleLines; ++i ) {
+		com_consoleLines[ i ].ClearSensitive();
+	}
+	idCmdArgs::ClearArgsScratch();
 	com_numConsoleLines = 0;
 }
 
@@ -6453,6 +6457,12 @@ void idCommonLocal::Init( int argc, const char **argv, const char *cmdline ) {
 			Printf( "Command line (parsed):\n" );
 			for ( int i = 0; i < com_numConsoleLines; ++i ) {
 				if ( !com_consoleLines[ i ].Argc() ) {
+					continue;
+				}
+				const char *lineText = com_consoleLines[ i ].Args( 0, com_consoleLines[ i ].Argc() - 1 );
+				if ( cvarSystem->CommandContainsPrivateCVar( lineText ) ) {
+					idCmdArgs::ClearArgsScratch();
+					Printf( "  %d: <private command redacted>\n", i );
 					continue;
 				}
 				Printf( "  %d:", i );

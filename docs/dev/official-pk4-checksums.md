@@ -7,7 +7,15 @@ This table captures the PK4 checksums loaded from official installed game direct
 - Log source: `logs/openq4.log` startup lines (`Loaded pk4 ... with checksum ...`) under `fs_savepath\<gameDir>\`
 - Checksum format: engine PK4 checksum (`MD4` of zip-entry CRC list, as computed in `src/framework/FileSystem.cpp`)
 
-openQ4 ignores the retail game-binary PK4 archives (`game000.pk4` through `game300.pk4`, plus `gamex*.pk4` variants) because it ships its own game modules. They are not required and are not verified.
+openQ4 ignores the retail game-binary PK4 archives (`game000.pk4` through `game300.pk4`, plus `gamex*.pk4` variants) as loadable content because it ships its own game modules. They are not required, mounted, or content-verified. The one retained checksum value described below is a network compatibility token, not a requirement to install or trust the archive.
+
+## Pure multiplayer game-module token
+
+Quake 4 protocol 2.41 carries a game-code PK4 checksum after the ordered pure asset list. openQ4 preserves that field by sending the official Quake 4 1.4.2 `q4base/game300.pk4` engine checksum, `0x68fb90b1`, for the legacy Windows, Linux, and macOS OS IDs. The same value is used on every platform, so an openQ4 client and server do not need identical executable formats to complete the asset handshake.
+
+The value is only a protocol compatibility token. openQ4 does not open, extract, download, restart into, or execute `game300.pk4`. It accepts the token only when a game module has already been resolved from the trusted local openQ4 package/module roots; a missing local module or any other token fails the pure handshake as unavailable game code. The ordered retail/openQ4 asset PK4 list is still checked separately.
+
+`0x68fb90b1` is not a hash of the loaded openQ4 module, cryptographic attestation, or an anti-cheat guarantee. It preserves the stock 1.4.2 wire meaning while executable trust remains a local packaging decision.
 
 ## Required official baseline
 

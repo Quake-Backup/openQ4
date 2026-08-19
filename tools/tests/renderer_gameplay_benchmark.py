@@ -1246,6 +1246,7 @@ def run_mp_spec(
     )
     append_set(server_args, "net_serverDedicated", "0")
     append_set(server_args, "net_port", str(port))
+    append_set(server_args, "ui_autoJoin", "1")
     server_args += ["+seta", "si_pure", "0"]
     append_set(server_args, "net_serverAllowServerMod", "1")
     append_set(server_args, "sv_cheats", "1")
@@ -1289,6 +1290,7 @@ def run_mp_spec(
         client_initial_autoexec_cfg,
         args.autoexec_delay_ms,
     )
+    append_set(client_args, "ui_autoJoin", "1")
     append_set(client_args, "ui_name", "RendererBenchClient")
     client_postinit_connect_cfg = ""
     if spec.path_name == "postinit-connect":

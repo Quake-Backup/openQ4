@@ -1899,6 +1899,11 @@ static void R_ModernGLExecutor_RecordPacketFallbackBlockers( const idScenePacket
 			R_ModernGLExecutor_SetOwnershipBlocker( stats, "draw", viewIndex, draw.passCategory, i, "material", "missing-material-record" );
 			continue;
 		}
+		if ( !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord ) ) {
+			stats.modernVisibleMaterialFallbackDraws++;
+			R_ModernGLExecutor_SetOwnershipBlocker( stats, "material", viewIndex, draw.passCategory, materialRecord->materialId, materialRecord->materialName, "pbr-dedicated-pipeline-unavailable" );
+			continue;
+		}
 		if ( R_ModernGLExecutor_DrawPacketNeedsLegacySceneGui( draw, *materialRecord ) && !legacyFeedbackSurface ) {
 			stats.modernVisibleMaterialFallbackDraws++;
 			R_ModernGLExecutor_SetOwnershipBlocker( stats, "material", viewIndex, draw.passCategory, materialRecord->materialId, materialRecord->materialName, "legacy-scene-gui" );
@@ -4464,7 +4469,9 @@ static void R_ModernGLExecutor_CountVisibleDepthFallback( const modernGLSubmitCo
 
 static bool R_ModernGLExecutor_VisibleDepthMaterialSupported( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats ) {
 	const materialResourceTableRecord_t *materialRecord = R_ModernGLExecutor_MaterialRecordForCommand( command );
-	if ( materialRecord == NULL || materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
+	if ( materialRecord == NULL
+		|| !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord )
+		|| materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
 		stats.visibleDepthMaterialFallbackDraws++;
 		return false;
 	}
@@ -5030,7 +5037,9 @@ static bool R_ModernGLExecutor_MaterialContractPromotable( const materialResourc
 
 static bool R_ModernGLExecutor_GBufferMaterialSupported( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats ) {
 	const materialResourceTableRecord_t *materialRecord = R_ModernGLExecutor_MaterialRecordForCommand( command );
-	if ( materialRecord == NULL || materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
+	if ( materialRecord == NULL
+		|| !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord )
+		|| materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
 		stats.opaqueGBufferMaterialFallbackDraws++;
 		return false;
 	}
@@ -5684,6 +5693,10 @@ static bool R_ModernGLExecutor_ForwardPlusCommandRequested( const modernGLExecut
 static bool R_ModernGLExecutor_ForwardPlusMaterialSupported( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats ) {
 	const materialResourceTableRecord_t *materialRecord = R_ModernGLExecutor_MaterialRecordForCommand( command );
 	if ( materialRecord == NULL ) {
+		stats.forwardPlusMaterialFallbackDraws++;
+		return false;
+	}
+	if ( !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord ) ) {
 		stats.forwardPlusMaterialFallbackDraws++;
 		return false;
 	}

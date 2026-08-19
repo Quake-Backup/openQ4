@@ -53,12 +53,14 @@ idCVar				idAsyncNetwork::serverZombieTimeout( "net_serverZombieTimeout", "5", C
 idCVar				idAsyncNetwork::serverClientTimeout( "net_serverClientTimeout", "40", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "client time out in seconds" );
 idCVar				idAsyncNetwork::clientServerTimeout( "net_clientServerTimeout", "40", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "server time out in seconds" );
 idCVar				idAsyncNetwork::serverDrawClient( "net_serverDrawClient", "-1", CVAR_SYSTEM | CVAR_INTEGER, "number of client for which to draw view on server" );
-idCVar				idAsyncNetwork::serverRemoteConsolePassword( "net_serverRemoteConsolePassword", "", CVAR_SYSTEM | CVAR_NOCHEAT, "remote console password" );
+idCVar				idAsyncNetwork::serverRemoteConsolePassword( "net_serverRemoteConsolePassword", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private remote console password (rcon2 requires at least 12 bytes)" );
+idCVar				idAsyncNetwork::serverAllowLegacyRcon( "net_serverAllowLegacyRcon", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_NOCHEAT, "allow the insecure legacy plaintext rcon protocol" );
 idCVar				idAsyncNetwork::clientPrediction( "net_clientPrediction", "16", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "additional client side prediction in milliseconds (legacy value 16 follows one exact base tic)" );
 idCVar				idAsyncNetwork::clientMaxPrediction( "net_clientMaxPrediction", "1000", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "maximum number of milliseconds a client can predict ahead of server." );
 idCVar				idAsyncNetwork::clientUsercmdBackup( "net_clientUsercmdBackup", "5", CVAR_SYSTEM | CVAR_INTEGER | CVAR_NOCHEAT, "number of usercmds to resend" );
 idCVar				idAsyncNetwork::clientRemoteConsoleAddress( "net_clientRemoteConsoleAddress", "localhost", CVAR_SYSTEM | CVAR_NOCHEAT, "remote console address" );
-idCVar				idAsyncNetwork::clientRemoteConsolePassword( "net_clientRemoteConsolePassword", "", CVAR_SYSTEM | CVAR_NOCHEAT, "remote console password" );
+idCVar				idAsyncNetwork::clientRemoteConsolePassword( "net_clientRemoteConsolePassword", "", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_PRIVATE | CVAR_CASE_SENSITIVE, "private remote console password" );
+idCVar				idAsyncNetwork::clientUseLegacyRcon( "net_clientUseLegacyRcon", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_NOCHEAT, "send the insecure legacy plaintext rcon protocol" );
 idCVar				idAsyncNetwork::master0( "net_master0", IDNET_HOST ":" IDNET_MASTER_PORT, CVAR_SYSTEM | CVAR_ROM, "idnet master server address" );
 idCVar				idAsyncNetwork::master1( "net_master1", "", CVAR_SYSTEM | CVAR_ARCHIVE, "1st master server address" );
 idCVar				idAsyncNetwork::master2( "net_master2", "", CVAR_SYSTEM | CVAR_ARCHIVE, "2nd master server address" );
@@ -164,7 +166,7 @@ void idAsyncNetwork::Init( void ) {
 	cmdSystem->AddCommand( "serverInfo", GetServerInfo_f, CMD_FL_SYSTEM, "shows server info" );
 	cmdSystem->AddCommand( "LANScan", GetLANServers_f, CMD_FL_SYSTEM, "scans LAN for servers" );
 	cmdSystem->AddCommand( "listServers", ListServers_f, CMD_FL_SYSTEM, "lists scanned servers" );
-	cmdSystem->AddCommand( "rcon", RemoteConsole_f, CMD_FL_SYSTEM, "sends remote console command to server" );
+	cmdSystem->AddCommand( "rcon", RemoteConsole_f, CMD_FL_SYSTEM, "sends an authenticated remote console command to the server" );
 	cmdSystem->AddCommand( "heartbeat", Heartbeat_f, CMD_FL_SYSTEM, "send a heartbeat to the the master servers" );
 	cmdSystem->AddCommand( "kick", Kick_f, CMD_FL_SYSTEM, "kick a client by connection number" );
 	cmdSystem->AddCommand( "checkNewVersion", CheckNewVersion_f, CMD_FL_SYSTEM, "check if a new version of the game is available" );
@@ -293,33 +295,93 @@ void idAsyncNetwork::WriteUserCmdDelta( idBitMsg &msg, const usercmd_t &cmd, con
 idAsyncNetwork::ReadUserCmdDelta
 ==================
 */
-void idAsyncNetwork::ReadUserCmdDelta( const idBitMsg &msg, usercmd_t &cmd, const usercmd_t *base ) {
-	memset( &cmd, 0, sizeof( cmd ) );
+static bool AsyncNetwork_ProbeDeltaField( idBitMsg &probe, const int valueBits ) {
+	if ( probe.GetRemainingReadBits() < 1 ) {
+		return false;
+	}
+	const bool changed = probe.ReadBits( 1 ) != 0;
+	if ( changed ) {
+		if ( probe.GetRemainingReadBits() < valueBits ) {
+			return false;
+		}
+		probe.ReadBits( valueBits );
+	}
+	return true;
+}
 
-	if ( base ) {
-		cmd.gameTime = msg.ReadDeltaLongCounter( base->gameTime );
-		cmd.buttons = msg.ReadDeltaShort( base->buttons );
-		cmd.mx = msg.ReadDeltaShort( base->mx );
-		cmd.my = msg.ReadDeltaShort( base->my );
-		cmd.forwardmove = msg.ReadDeltaChar( base->forwardmove );
-		cmd.rightmove = msg.ReadDeltaChar( base->rightmove );
-		cmd.upmove = msg.ReadDeltaChar( base->upmove );
-		cmd.angles[0] = msg.ReadDeltaShort( base->angles[0] );
-		cmd.angles[1] = msg.ReadDeltaShort( base->angles[1] );
-		cmd.angles[2] = msg.ReadDeltaShort( base->angles[2] );
-		return;
+static bool AsyncNetwork_ProbeDeltaLongCounter( idBitMsg &probe ) {
+	if ( probe.GetRemainingReadBits() < 5 ) {
+		return false;
+	}
+	const int valueBits = probe.ReadBits( 5 );
+	if ( valueBits < 0 || valueBits > 31 ) {
+		return false;
+	}
+	if ( probe.GetRemainingReadBits() < valueBits ) {
+		return false;
+	}
+	if ( valueBits > 0 ) {
+		probe.ReadBits( valueBits );
+	}
+	return true;
+}
+
+static bool AsyncNetwork_CanReadUserCmdDelta( const idBitMsg &msg, const bool hasBase ) {
+	idBitMsg probe = msg;
+	if ( !hasBase ) {
+		// long + three shorts + three chars + three angle shorts
+		return probe.GetRemainingReadBits() >= 152;
 	}
 
-	cmd.gameTime = msg.ReadLong();
-    cmd.buttons = msg.ReadShort();
-    cmd.mx = msg.ReadShort();
-	cmd.my = msg.ReadShort();
-	cmd.forwardmove = msg.ReadChar();
-	cmd.rightmove = msg.ReadChar();
-	cmd.upmove = msg.ReadChar();
-	cmd.angles[0] = msg.ReadShort();
-	cmd.angles[1] = msg.ReadShort();
-	cmd.angles[2] = msg.ReadShort();
+	return AsyncNetwork_ProbeDeltaLongCounter( probe ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 16 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 16 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 16 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 8 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 8 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 8 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 16 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 16 ) &&
+		AsyncNetwork_ProbeDeltaField( probe, 16 );
+}
+
+bool idAsyncNetwork::ReadUserCmdDelta( const idBitMsg &msg, usercmd_t &cmd, const usercmd_t *base ) {
+	if ( !AsyncNetwork_CanReadUserCmdDelta( msg, base != NULL ) ) {
+		return false;
+	}
+
+	usercmd_t decoded;
+	memset( &decoded, 0, sizeof( decoded ) );
+
+	if ( base ) {
+		decoded.gameTime = msg.ReadDeltaLongCounter( base->gameTime );
+		decoded.buttons = msg.ReadDeltaShort( base->buttons );
+		decoded.mx = msg.ReadDeltaShort( base->mx );
+		decoded.my = msg.ReadDeltaShort( base->my );
+		decoded.forwardmove = msg.ReadDeltaChar( base->forwardmove );
+		decoded.rightmove = msg.ReadDeltaChar( base->rightmove );
+		decoded.upmove = msg.ReadDeltaChar( base->upmove );
+		decoded.angles[0] = msg.ReadDeltaShort( base->angles[0] );
+		decoded.angles[1] = msg.ReadDeltaShort( base->angles[1] );
+		decoded.angles[2] = msg.ReadDeltaShort( base->angles[2] );
+	} else {
+		decoded.gameTime = msg.ReadLong();
+		decoded.buttons = msg.ReadShort();
+		decoded.mx = msg.ReadShort();
+		decoded.my = msg.ReadShort();
+		decoded.forwardmove = msg.ReadChar();
+		decoded.rightmove = msg.ReadChar();
+		decoded.upmove = msg.ReadChar();
+		decoded.angles[0] = msg.ReadShort();
+		decoded.angles[1] = msg.ReadShort();
+		decoded.angles[2] = msg.ReadShort();
+	}
+
+	if ( msg.IsReadOverflowed() ) {
+		return false;
+	}
+	cmd = decoded;
+	return true;
 }
 
 /*

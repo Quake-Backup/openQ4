@@ -82,9 +82,52 @@ const char *MaterialResourceTextureSemantic_Name( materialResourceTextureSemanti
 		return "gui";
 	case MATERIAL_RESOURCE_TEXTURE_POST_PROCESS:
 		return "post";
+	case MATERIAL_RESOURCE_TEXTURE_ALBEDO:
+		return "pbrAlbedo";
+	case MATERIAL_RESOURCE_TEXTURE_NORMAL:
+		return "pbrNormal";
+	case MATERIAL_RESOURCE_TEXTURE_ORM:
+		return "pbrORM";
+	case MATERIAL_RESOURCE_TEXTURE_METALLIC:
+		return "pbrMetallic";
+	case MATERIAL_RESOURCE_TEXTURE_ROUGHNESS:
+		return "pbrRoughness";
+	case MATERIAL_RESOURCE_TEXTURE_AO:
+		return "pbrAO";
+	case MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR:
+		return "pbrEmissive";
 	case MATERIAL_RESOURCE_TEXTURE_NONE:
 	default:
 		return "none";
+	}
+}
+
+const char *MaterialResourcePBRFallbackReason_Name( materialResourcePBRFallbackReason_t reason ) {
+	switch ( reason ) {
+	case MATERIAL_RESOURCE_PBR_FALLBACK_NONE:
+		return "none";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_DISABLED:
+		return "disabled";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_WORKFLOW:
+		return "unsupportedWorkflow";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_MATERIAL_CLASS:
+		return "unsupportedMaterialClass";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_ALBEDO:
+		return "missingAlbedo";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_NORMAL_FORMAT:
+		return "missingNormalFormat";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_CONFLICTING_LAYOUT:
+		return "conflictingLayout";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE:
+		return "missingImage";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_CLASSIC_FEATURE:
+		return "classicFeature";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_TOO_MANY_TEXTURES:
+		return "tooManyTextures";
+	case MATERIAL_RESOURCE_PBR_FALLBACK_SHADER_PATH_UNAVAILABLE:
+		return "shaderPathUnavailable";
+	default:
+		return "unknown";
 	}
 }
 
@@ -191,6 +234,12 @@ static void R_MaterialResourceTable_AddFallback( materialResourceTableRecord_t &
 	}
 }
 
+static void R_MaterialResourceTable_AddPBRFallback( materialResourceTableRecord_t &record, materialResourcePBRFallbackReason_t reason ) {
+	if ( record.pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_NONE ) {
+		record.pbrFallbackReason = reason;
+	}
+}
+
 static bool R_MaterialResourceTable_ImageIsPostProcess( const idImage *image ) {
 	if ( image == NULL ) {
 		return false;
@@ -206,21 +255,7 @@ static bool R_MaterialResourceTable_ImageIsPostProcess( const idImage *image ) {
 }
 
 static bool R_MaterialResourceTable_ImageIsSceneCapture( const idImage *image ) {
-	if ( image == NULL ) {
-		return false;
-	}
-	if ( globalImages != NULL
-		&& ( image == globalImages->currentRenderImage
-			|| image == globalImages->originalCurrentRenderImage
-			|| image == globalImages->currentDepthImage ) ) {
-		return true;
-	}
-	const char *name = image->GetName();
-	if ( name == NULL ) {
-		return false;
-	}
-	return idStr::Icmpn( name, "_currentRender", 14 ) == 0
-		|| idStr::Icmpn( name, "_currentDepth", 13 ) == 0;
+	return R_IsMutableRenderImage( image );
 }
 
 static bool R_MaterialResourceTable_TexgenIsScreenSpace( texgen_t texgen ) {
@@ -372,6 +407,16 @@ static int R_MaterialResourceTable_SemanticSlot( materialResourceTextureSemantic
 		return 4;
 	case MATERIAL_RESOURCE_TEXTURE_POST_PROCESS:
 		return 5;
+	case MATERIAL_RESOURCE_TEXTURE_ALBEDO:
+	case MATERIAL_RESOURCE_TEXTURE_NORMAL:
+	case MATERIAL_RESOURCE_TEXTURE_ORM:
+	case MATERIAL_RESOURCE_TEXTURE_METALLIC:
+	case MATERIAL_RESOURCE_TEXTURE_ROUGHNESS:
+	case MATERIAL_RESOURCE_TEXTURE_AO:
+	case MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR:
+		// Phase 3 records PBR handles but does not allocate visible shader units.
+		// The existing classic and shadow bindings therefore remain untouched.
+		return -1;
 	default:
 		return -1;
 	}
@@ -552,6 +597,27 @@ static void R_MaterialResourceTable_UpdateRecordSemanticFlags( materialResourceT
 	case MATERIAL_RESOURCE_TEXTURE_POST_PROCESS:
 		record.hasPostProcess |= present;
 		break;
+	case MATERIAL_RESOURCE_TEXTURE_ALBEDO:
+		record.hasPBRAlbedo |= present;
+		break;
+	case MATERIAL_RESOURCE_TEXTURE_NORMAL:
+		record.hasPBRNormal |= present;
+		break;
+	case MATERIAL_RESOURCE_TEXTURE_ORM:
+		record.hasPBRORM |= present;
+		break;
+	case MATERIAL_RESOURCE_TEXTURE_METALLIC:
+		record.hasPBRMetallic |= present;
+		break;
+	case MATERIAL_RESOURCE_TEXTURE_ROUGHNESS:
+		record.hasPBRRoughness |= present;
+		break;
+	case MATERIAL_RESOURCE_TEXTURE_AO:
+		record.hasPBRAO |= present;
+		break;
+	case MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR:
+		record.hasPBREmissive |= present;
+		break;
 	default:
 		break;
 	}
@@ -630,6 +696,10 @@ static bool R_MaterialResourceTable_HasSemanticBinding( const materialResourceTa
 	return R_MaterialResourceTable_FindTextureBindingIndex( record, semantic ) >= 0;
 }
 
+static bool R_MaterialResourceTable_IsPBRSemantic( materialResourceTextureSemantic_t semantic ) {
+	return semantic >= MATERIAL_RESOURCE_TEXTURE_ALBEDO && semantic < MATERIAL_RESOURCE_TEXTURE_COUNT;
+}
+
 static void R_MaterialResourceTable_AddTextureBinding(
 	materialResourceTableRecord_t &record,
 	materialResourceTextureSemantic_t semantic,
@@ -637,8 +707,12 @@ static void R_MaterialResourceTable_AddTextureBinding(
 	const shaderStage_t *stage,
 	int stageIndex ) {
 	if ( semantic <= MATERIAL_RESOURCE_TEXTURE_NONE || semantic >= MATERIAL_RESOURCE_TEXTURE_COUNT || image == NULL ) {
-		record.hasMissingImage = true;
-		R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_MISSING_IMAGE, MATERIAL_RESOURCE_FALLBACK_FLAG_MISSING_IMAGE );
+		if ( R_MaterialResourceTable_IsPBRSemantic( semantic ) ) {
+			R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE );
+		} else {
+			record.hasMissingImage = true;
+			R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_MISSING_IMAGE, MATERIAL_RESOURCE_FALLBACK_FLAG_MISSING_IMAGE );
+		}
 		rg_materialResourceTable.stats.missingImages++;
 		return;
 	}
@@ -647,7 +721,11 @@ static void R_MaterialResourceTable_AddTextureBinding(
 		return;
 	}
 	if ( record.textureBindingCount >= MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS ) {
-		R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_TOO_MANY_TEXTURES, MATERIAL_RESOURCE_FALLBACK_FLAG_TOO_MANY_TEXTURES );
+		if ( R_MaterialResourceTable_IsPBRSemantic( semantic ) ) {
+			R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_TOO_MANY_TEXTURES );
+		} else {
+			R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_TOO_MANY_TEXTURES, MATERIAL_RESOURCE_FALLBACK_FLAG_TOO_MANY_TEXTURES );
+		}
 		rg_materialResourceTable.stats.unsupportedFeatures++;
 		return;
 	}
@@ -662,7 +740,11 @@ static void R_MaterialResourceTable_AddTextureBinding(
 	binding.repeat = image->GetRepeat();
 	binding.classicUnit = R_MaterialResourceTable_SemanticSlot( semantic );
 	if ( binding.classicUnit >= rg_materialResourceTable.maxClassicTextureUnits ) {
-		R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_TOO_MANY_TEXTURES, MATERIAL_RESOURCE_FALLBACK_FLAG_TOO_MANY_TEXTURES );
+		if ( R_MaterialResourceTable_IsPBRSemantic( semantic ) ) {
+			R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_TOO_MANY_TEXTURES );
+		} else {
+			R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_TOO_MANY_TEXTURES, MATERIAL_RESOURCE_FALLBACK_FLAG_TOO_MANY_TEXTURES );
+		}
 		binding.classicUnit = -1;
 	}
 	binding.stageIndex = stageIndex;
@@ -719,7 +801,9 @@ static void R_MaterialResourceTable_AddTextureBinding(
 		if ( semantic == MATERIAL_RESOURCE_TEXTURE_DIFFUSE
 			|| semantic == MATERIAL_RESOURCE_TEXTURE_EMISSIVE
 			|| semantic == MATERIAL_RESOURCE_TEXTURE_GUI
-			|| semantic == MATERIAL_RESOURCE_TEXTURE_POST_PROCESS ) {
+			|| semantic == MATERIAL_RESOURCE_TEXTURE_POST_PROCESS
+			|| semantic == MATERIAL_RESOURCE_TEXTURE_ALBEDO
+			|| semantic == MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR ) {
 			record.renderableColorTextureMask |= semanticBit;
 		}
 	}
@@ -748,6 +832,16 @@ static void R_MaterialResourceTable_BuildTextureArrayTable( void ) {
 	R_MaterialResourceTable_SeedTextureArrayFallbacks();
 	for ( int recordIndex = 0; recordIndex < rg_materialResourceTable.stats.records; ++recordIndex ) {
 		materialResourceTableRecord_t &record = rg_materialResourceTable.records[recordIndex];
+		// PBR records stay on the legacy/classic owner until a dedicated PBR
+		// shader path exists.  Do not let their bindings consume the shared
+		// classic-modern texture table and perturb unrelated classic records.
+		if ( record.hasPBR ) {
+			for ( int bindingIndex = 0; bindingIndex < record.textureBindingCount; ++bindingIndex ) {
+				record.textures[bindingIndex].textureArrayCandidate = false;
+				record.textures[bindingIndex].textureArrayLayer = -1;
+			}
+			continue;
+		}
 		for ( int bindingIndex = 0; bindingIndex < record.textureBindingCount; ++bindingIndex ) {
 			materialResourceTextureBinding_t &binding = record.textures[bindingIndex];
 			if ( !binding.loaded || binding.textureHandle == 0 ) {
@@ -1023,6 +1117,169 @@ static void R_MaterialResourceTable_AddSourceImages( materialResourceTableRecord
 	}
 }
 
+static void R_MaterialResourceTable_CountPBR( const materialResourceTableRecord_t &record ) {
+	if ( !record.hasPBR ) {
+		rg_materialResourceTable.stats.classicRecords++;
+		return;
+	}
+	materialResourceTableStats_t &stats = rg_materialResourceTable.stats;
+	stats.pbrRecords++;
+	stats.pbrResourceReadyRecords += record.pbrResourceReady ? 1 : 0;
+	stats.pbrModernReadyRecords += record.pbrModernReady ? 1 : 0;
+	stats.pbrPackedMapRecords += record.pbrPackedMaterialData ? 1 : 0;
+	stats.pbrSeparateMapRecords += record.pbrSeparateMaterialData ? 1 : 0;
+	stats.pbrAuthoredClassicFallbackRecords += record.pbrHasAuthoredClassicFallback ? 1 : 0;
+	stats.pbrExplicitGeneratedFallbackRecords += record.pbrHasExplicitLegacyFallback && record.pbrUsesGeneratedLegacyFallback ? 1 : 0;
+	stats.pbrGeneratedFallbackRecords += record.pbrUsesGeneratedLegacyFallback ? 1 : 0;
+	stats.pbrApproximateFallbackRecords += record.pbrUsesApproximateLegacyFallback ? 1 : 0;
+	stats.pbrMissingLegacyFallbackRecords += record.pbrLegacyFallbackMissing ? 1 : 0;
+	stats.pbrMissingAlbedoMapRecords += record.hasPBRAlbedo ? 0 : 1;
+	stats.pbrMissingNormalMapRecords += record.hasPBRNormal ? 0 : 1;
+	stats.pbrMissingORMMapRecords += record.hasPBRORM ? 0 : 1;
+	if ( record.pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_NONE ) {
+		return;
+	}
+	stats.pbrFallbackRecords++;
+	switch ( record.pbrFallbackReason ) {
+	case MATERIAL_RESOURCE_PBR_FALLBACK_DISABLED:
+		stats.pbrFallbackDisabled++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_WORKFLOW:
+		stats.pbrFallbackUnsupportedWorkflow++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_MATERIAL_CLASS:
+		stats.pbrFallbackUnsupportedMaterialClass++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_ALBEDO:
+		stats.pbrFallbackMissingAlbedo++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_NORMAL_FORMAT:
+		stats.pbrFallbackMissingNormalFormat++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_CONFLICTING_LAYOUT:
+		stats.pbrFallbackConflictingLayout++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE:
+		stats.pbrFallbackMissingImage++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_CLASSIC_FEATURE:
+		stats.pbrFallbackClassicFeature++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_TOO_MANY_TEXTURES:
+		stats.pbrFallbackTooManyTextures++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_SHADER_PATH_UNAVAILABLE:
+		stats.pbrFallbackShaderPathUnavailable++;
+		break;
+	case MATERIAL_RESOURCE_PBR_FALLBACK_NONE:
+	default:
+		break;
+	}
+}
+
+static void R_MaterialResourceTable_AddPBRSourceImages( materialResourceTableRecord_t &record, const materialResourceRecord_t &sourceRecord ) {
+	if ( !sourceRecord.hasPBR ) {
+		return;
+	}
+	record.hasPBR = true;
+	record.pbrWorkflow = sourceRecord.pbrWorkflow;
+	record.pbrNormalFormat = sourceRecord.pbrNormalFormat;
+	record.pbrHasAuthoredClassicFallback = sourceRecord.pbrHasAuthoredClassicFallback;
+	record.pbrHasExplicitLegacyFallback = sourceRecord.pbrHasExplicitLegacyFallback;
+	record.pbrUsesGeneratedLegacyFallback = sourceRecord.pbrUsesGeneratedLegacyFallback;
+	record.pbrUsesApproximateLegacyFallback = sourceRecord.pbrUsesApproximateLegacyFallback;
+	record.pbrLegacyFallbackMissing = sourceRecord.pbrLegacyFallbackMissing;
+	record.pbrMetallicRegister = sourceRecord.pbrMetallicRegister;
+	record.pbrRoughnessRegister = sourceRecord.pbrRoughnessRegister;
+	record.pbrAORegister = sourceRecord.pbrAORegister;
+	record.pbrNormalScaleRegister = sourceRecord.pbrNormalScaleRegister;
+	memcpy( record.pbrEmissiveColorRegisters, sourceRecord.pbrEmissiveColorRegisters, sizeof( record.pbrEmissiveColorRegisters ) );
+
+	if ( sourceRecord.pbrAlbedoImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_ALBEDO, sourceRecord.pbrAlbedoImage, NULL, -1 );
+	}
+	if ( sourceRecord.pbrNormalImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_NORMAL, sourceRecord.pbrNormalImage, NULL, -1 );
+	}
+	if ( sourceRecord.pbrORMImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_ORM, sourceRecord.pbrORMImage, NULL, -1 );
+	}
+	if ( sourceRecord.pbrMetallicImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_METALLIC, sourceRecord.pbrMetallicImage, NULL, -1 );
+	}
+	if ( sourceRecord.pbrRoughnessImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_ROUGHNESS, sourceRecord.pbrRoughnessImage, NULL, -1 );
+	}
+	if ( sourceRecord.pbrAOImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_AO, sourceRecord.pbrAOImage, NULL, -1 );
+	}
+	if ( sourceRecord.pbrEmissiveImage != NULL ) {
+		R_MaterialResourceTable_AddTextureBinding( record, MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR, sourceRecord.pbrEmissiveImage, NULL, -1 );
+	}
+	record.pbrPackedMaterialData = sourceRecord.pbrORMImage != NULL;
+	record.pbrSeparateMaterialData = sourceRecord.pbrMetallicImage != NULL
+		|| sourceRecord.pbrRoughnessImage != NULL
+		|| sourceRecord.pbrAOImage != NULL;
+}
+
+static bool R_MaterialResourceTable_PBRBindingReady( const materialResourceTableRecord_t &record, materialResourceTextureSemantic_t semantic, bool required ) {
+	const int index = R_MaterialResourceTable_FindTextureBindingIndex( record, semantic );
+	if ( index < 0 ) {
+		return !required;
+	}
+	const materialResourceTextureBinding_t &binding = record.textures[index];
+	return binding.image != NULL
+		&& binding.loaded
+		&& !binding.defaulted
+		&& !R_IsMutableRenderImage( binding.image );
+}
+
+static void R_MaterialResourceTable_FinalizePBRContract( materialResourceTableRecord_t &record ) {
+	if ( !record.hasPBR ) {
+		return;
+	}
+
+	if ( !record.hasPBRAlbedo ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_ALBEDO );
+	}
+	if ( record.hasPBRNormal && record.pbrNormalFormat == PBR_NORMAL_UNSPECIFIED ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_NORMAL_FORMAT );
+	}
+	if ( record.pbrPackedMaterialData && record.pbrSeparateMaterialData ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_CONFLICTING_LAYOUT );
+	}
+	if ( record.pbrWorkflow != PBR_WORKFLOW_METALLIC_ROUGHNESS ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_WORKFLOW );
+	}
+	if ( record.materialClass != RENDER_MATERIAL_OPAQUE && record.materialClass != RENDER_MATERIAL_PERFORATED ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_MATERIAL_CLASS );
+	}
+	if ( !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_ALBEDO, true )
+		|| !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_NORMAL, record.hasPBRNormal )
+		|| !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_ORM, record.hasPBRORM )
+		|| !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_METALLIC, record.hasPBRMetallic )
+		|| !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_ROUGHNESS, record.hasPBRRoughness )
+		|| !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_AO, record.hasPBRAO )
+		|| !R_MaterialResourceTable_PBRBindingReady( record, MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR, record.hasPBREmissive ) ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE );
+	}
+	if ( record.fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_CLASSIC_FEATURE );
+	}
+
+	record.pbrResourceReady = record.pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_NONE;
+	if ( record.pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_NONE && !r_pbrMaterials.GetBool() ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_DISABLED );
+	}
+	// Phase 3 publishes complete resource ownership but deliberately does not
+	// claim a visible PBR shader path. Phase 4 replaces this reason only after
+	// G-buffer and forward/deferred program readiness are proven.
+	if ( record.pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_NONE ) {
+		R_MaterialResourceTable_AddPBRFallback( record, MATERIAL_RESOURCE_PBR_FALLBACK_SHADER_PATH_UNAVAILABLE );
+	}
+	record.pbrModernReady = false;
+}
+
 static void R_MaterialResourceTable_FinalizeShadowContract( materialResourceTableRecord_t &record ) {
 	record.shadowFallbackFlags |= record.fallbackFlags;
 	record.shadowCasterSupported = record.castsShadow && record.fallbackReason == MATERIAL_RESOURCE_FALLBACK_NONE;
@@ -1054,7 +1311,10 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	}
 	record.tableIndex = rg_materialResourceTable.stats.records;
 	record.sourceMaterialRecordIndex = sourceIndex;
-	record.materialId = sourceRecord.material != NULL ? sourceRecord.material->Index() : -1;
+	// The scene-packet record owns the stable decl index. Synthetic validation
+	// decls allocated through declManager intentionally have no idDeclBase and
+	// therefore must never be asked for Index() directly.
+	record.materialId = sourceRecord.material != NULL ? sourceRecord.resourceTableIndex : -1;
 	record.material = sourceRecord.material;
 	if ( !R_MaterialResourceTable_CopyDebugString( record.materialName, sizeof( record.materialName ), sourceRecord.material != NULL ? sourceRecord.material->GetName() : "<missing>" ) ) {
 		R_MaterialResourceTable_RecordDebugStringTruncation( "material record name" );
@@ -1097,6 +1357,7 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	} else {
 		R_MaterialResourceTable_AddSourceImages( record, sourceRecord );
 	}
+	R_MaterialResourceTable_AddPBRSourceImages( record, sourceRecord );
 	if ( R_MaterialResourceTable_RecordNeedsSurfaceImage( record )
 		&& !record.hasDiffuse
 		&& !record.hasEmissive
@@ -1108,6 +1369,7 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	}
 	R_MaterialResourceTable_ValidateStageColorContract( record );
 	R_MaterialResourceTable_ValidateAmbientOverlayContract( record );
+	R_MaterialResourceTable_FinalizePBRContract( record );
 	if ( !scanMaterialStages ) {
 		record.shadowCasterSupported = record.castsShadow && record.fallbackReason == MATERIAL_RESOURCE_FALLBACK_NONE;
 		record.shadowFallbackFlags = record.fallbackFlags;
@@ -1116,6 +1378,7 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	R_MaterialResourceTable_FinalizeRegisterRange( record );
 	R_MaterialResourceTable_CountClass( record );
 	R_MaterialResourceTable_CountFallbacks( record );
+	R_MaterialResourceTable_CountPBR( record );
 
 	R_MaterialResourceTable_HashInsert( record.material, rg_materialResourceTable.stats.records );
 	rg_materialResourceTable.stats.records++;
@@ -1237,11 +1500,12 @@ int R_MaterialResourceTable_TextureArrayTableIndexForHandle( unsigned int textur
 void R_MaterialResourceTable_PrintGfxInfo( void ) {
 	const materialResourceTableStats_t &stats = R_MaterialResourceTable_Stats();
 	common->Printf(
-		"Material resource table: initialized=%d available=%d prepared=%d records=%d source=%d draws=%d textures=%d classic=%d arrays=%d table=%d/%d desc=%d overflow=%d views=%d bindless=%d/%d fallback=%d missing=%d unsupported=%d custom=%d/%d dynamic=%d current=%d texgen=%d(screen=%d sky=%d) condition=%d stageColor=%d matrix=%d vertexColor=%d offset=%d debugTrunc=%d source='%s' status='%s'\n",
+		"Material resource table: initialized=%d available=%d prepared=%d records=%d classicRecords=%d source=%d draws=%d textures=%d classicTextures=%d arrays=%d table=%d/%d desc=%d overflow=%d views=%d bindless=%d/%d fallback=%d missing=%d unsupported=%d custom=%d/%d dynamic=%d current=%d texgen=%d(screen=%d sky=%d) condition=%d stageColor=%d matrix=%d vertexColor=%d offset=%d debugTrunc=%d source='%s' status='%s'\n",
 		stats.initialized ? 1 : 0,
 		stats.available ? 1 : 0,
 		stats.prepared ? 1 : 0,
 		stats.records,
+		stats.classicRecords,
 		stats.sourceMaterialRecords,
 		stats.drawPacketReferences,
 		stats.textureBindings,
@@ -1272,15 +1536,49 @@ void R_MaterialResourceTable_PrintGfxInfo( void ) {
 		stats.debugStringTruncations,
 		stats.debugStringTruncationSource,
 		stats.lastFailure );
+	common->Printf(
+		"PBR material resources: records=%d resourceReady=%d modernReady=%d packed=%d separate=%d fallback=%d disabled=%d workflow=%d class=%d albedo=%d normalFormat=%d layout=%d image=%d classic=%d units=%d shader=%d authored=%d explicitGenerated=%d generated=%d approximate=%d missingFallback=%d mapsMissing=%d/%d/%d\n",
+		stats.pbrRecords,
+		stats.pbrResourceReadyRecords,
+		stats.pbrModernReadyRecords,
+		stats.pbrPackedMapRecords,
+		stats.pbrSeparateMapRecords,
+		stats.pbrFallbackRecords,
+		stats.pbrFallbackDisabled,
+		stats.pbrFallbackUnsupportedWorkflow,
+		stats.pbrFallbackUnsupportedMaterialClass,
+		stats.pbrFallbackMissingAlbedo,
+		stats.pbrFallbackMissingNormalFormat,
+		stats.pbrFallbackConflictingLayout,
+		stats.pbrFallbackMissingImage,
+		stats.pbrFallbackClassicFeature,
+		stats.pbrFallbackTooManyTextures,
+		stats.pbrFallbackShaderPathUnavailable,
+		stats.pbrAuthoredClassicFallbackRecords,
+		stats.pbrExplicitGeneratedFallbackRecords,
+		stats.pbrGeneratedFallbackRecords,
+		stats.pbrApproximateFallbackRecords,
+		stats.pbrMissingLegacyFallbackRecords,
+		stats.pbrMissingAlbedoMapRecords,
+		stats.pbrMissingNormalMapRecords,
+		stats.pbrMissingORMMapRecords );
+}
+
+bool R_MaterialResourceTable_ClassicModernPathEligible( const materialResourceTableRecord_t &record ) {
+	// The current modern-visible programs implement the classic Quake 4 stage
+	// contract.  PBR metadata must remain on the compatible legacy owner until a
+	// dedicated PBR pipeline explicitly consumes pbrModernReady and its bindings.
+	return !record.hasPBR;
 }
 
 void R_MaterialResourceTable_DumpLatest( void ) {
 	const materialResourceTableStats_t &stats = R_MaterialResourceTable_Stats();
 	common->Printf(
-		"MaterialResourceTable dump: prepared=%d available=%d records=%d source=%d draws=%d textures=%d table=%d/%d desc=%d overflow=%d fallback=%d missing=%d defaulted=%d unsupported=%d debugTrunc=%d source='%s' status='%s'\n",
+		"MaterialResourceTable dump: prepared=%d available=%d records=%d classicRecords=%d source=%d draws=%d textures=%d table=%d/%d desc=%d overflow=%d fallback=%d missing=%d defaulted=%d unsupported=%d debugTrunc=%d source='%s' status='%s'\n",
 		stats.prepared ? 1 : 0,
 		stats.available ? 1 : 0,
 		stats.records,
+		stats.classicRecords,
 		stats.sourceMaterialRecords,
 		stats.drawPacketReferences,
 		stats.textureBindings,
@@ -1295,6 +1593,19 @@ void R_MaterialResourceTable_DumpLatest( void ) {
 		stats.debugStringTruncations,
 		stats.debugStringTruncationSource,
 		stats.lastFailure );
+	common->Printf(
+		"PBR summary: records=%d resourceReady=%d modernReady=%d packed=%d separate=%d fallback=%d approximate=%d missingFallback=%d mapsMissing=%d/%d/%d\n",
+		stats.pbrRecords,
+		stats.pbrResourceReadyRecords,
+		stats.pbrModernReadyRecords,
+		stats.pbrPackedMapRecords,
+		stats.pbrSeparateMapRecords,
+		stats.pbrFallbackRecords,
+		stats.pbrApproximateFallbackRecords,
+		stats.pbrMissingLegacyFallbackRecords,
+		stats.pbrMissingAlbedoMapRecords,
+		stats.pbrMissingNormalMapRecords,
+		stats.pbrMissingORMMapRecords );
 	for ( int i = 0; i < stats.records; ++i ) {
 		const materialResourceTableRecord_t &record = rg_materialResourceTable.records[i];
 		common->Printf(
@@ -1336,6 +1647,36 @@ void R_MaterialResourceTable_DumpLatest( void ) {
 			record.twoSided ? 1 : 0,
 			record.shouldCreateBackSides ? 1 : 0,
 			record.shadowFallbackFlags );
+		if ( record.hasPBR ) {
+			common->Printf(
+				"    pbr workflow=%d normalFormat=%d resourceReady=%d modernReady=%d fallback=%s packed=%d separate=%d maps=a%d n%d orm%d m%d r%d ao%d e%d authored=%d explicit=%d generated=%d approximate=%d missingFallback=%d regs=%d/%d/%d/%d emit=%d,%d,%d\n",
+				record.pbrWorkflow,
+				record.pbrNormalFormat,
+				record.pbrResourceReady ? 1 : 0,
+				record.pbrModernReady ? 1 : 0,
+				MaterialResourcePBRFallbackReason_Name( record.pbrFallbackReason ),
+				record.pbrPackedMaterialData ? 1 : 0,
+				record.pbrSeparateMaterialData ? 1 : 0,
+				record.hasPBRAlbedo ? 1 : 0,
+				record.hasPBRNormal ? 1 : 0,
+				record.hasPBRORM ? 1 : 0,
+				record.hasPBRMetallic ? 1 : 0,
+				record.hasPBRRoughness ? 1 : 0,
+				record.hasPBRAO ? 1 : 0,
+				record.hasPBREmissive ? 1 : 0,
+				record.pbrHasAuthoredClassicFallback ? 1 : 0,
+				record.pbrHasExplicitLegacyFallback ? 1 : 0,
+				record.pbrUsesGeneratedLegacyFallback ? 1 : 0,
+				record.pbrUsesApproximateLegacyFallback ? 1 : 0,
+				record.pbrLegacyFallbackMissing ? 1 : 0,
+				record.pbrMetallicRegister,
+				record.pbrRoughnessRegister,
+				record.pbrAORegister,
+				record.pbrNormalScaleRegister,
+				record.pbrEmissiveColorRegisters[0],
+				record.pbrEmissiveColorRegisters[1],
+				record.pbrEmissiveColorRegisters[2] );
+		}
 		for ( int bindingIndex = 0; bindingIndex < record.textureBindingCount; ++bindingIndex ) {
 			const materialResourceTextureBinding_t &binding = record.textures[bindingIndex];
 			common->Printf(
@@ -1366,6 +1707,249 @@ void R_MaterialResourceTable_DumpLatest( void ) {
 				binding.bindlessEnabled ? 1 : 0 );
 		}
 	}
+}
+
+static bool R_MaterialResourceTable_RunPBRContractSelfTest( void ) {
+	if ( globalImages == NULL ) {
+		common->Printf( "RendererMaterialResourceTable PBR self-test skipped: images unavailable\n" );
+		return true;
+	}
+	static const char declaration[] =
+		"material _pbr_resource_table_selftest {\n"
+		" bumpmap _flat\n"
+		" diffusemap _white\n"
+		" specularmap _black\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  normalMap _flat\n"
+		"  normalFormat tangentRG\n"
+		"  ormMap _white\n"
+		"  metallic 0.2\n"
+		"  roughness 0.7\n"
+		"  ao 1.0\n"
+		" }\n"
+		"}\n";
+
+	idDecl *materialDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( materialDecl == NULL ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: PBR declaration allocation\n" );
+		return false;
+	}
+	idMaterial *material = static_cast<idMaterial *>( materialDecl );
+	if ( !material->Parse( declaration, idLib::SizeToInt( sizeof( declaration ) - 1, "PBR resource-table self-test" ) ) ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: PBR declaration parse\n" );
+		DeclManager_FreeAllocatedDecl( materialDecl );
+		return false;
+	}
+	const int savedMaxClassicTextureUnits = rg_materialResourceTable.maxClassicTextureUnits;
+	// Vulkan can invoke this CPU-only contract before the classic material table
+	// is initialized. Scope the same minimum unit budget used by this synthetic
+	// bump/diffuse/specular material, then restore the live backend state.
+	rg_materialResourceTable.maxClassicTextureUnits = Max( savedMaxClassicTextureUnits, 3 );
+	const pbrMaterialInfo_t &pbr = material->GetPBRInfo();
+	materialResourceRecord_t source;
+	memset( &source, 0, sizeof( source ) );
+	source.material = material;
+	source.diffuseImage = globalImages->whiteImage;
+	source.normalImage = globalImages->flatNormalMap;
+	source.specularImage = globalImages->blackImage;
+	source.hasPBR = true;
+	source.pbrWorkflow = static_cast<int>( pbr.workflow );
+	source.pbrNormalFormat = static_cast<int>( pbr.normalFormat );
+	source.pbrAlbedoImage = pbr.albedo.image;
+	source.pbrNormalImage = pbr.normal.image;
+	source.pbrORMImage = pbr.orm.image;
+	source.pbrHasAuthoredClassicFallback = pbr.hasAuthoredClassicFallback;
+	source.pbrHasExplicitLegacyFallback = pbr.hasExplicitLegacyFallback;
+	source.pbrUsesGeneratedLegacyFallback = pbr.usesGeneratedLegacyFallback;
+	source.pbrUsesApproximateLegacyFallback = pbr.usesApproximateLegacyFallback;
+	source.pbrLegacyFallbackMissing = pbr.legacyFallbackMissing;
+	source.pbrMetallicRegister = pbr.metallicRegister;
+	source.pbrRoughnessRegister = pbr.roughnessRegister;
+	source.pbrAORegister = pbr.aoRegister;
+	source.pbrNormalScaleRegister = pbr.normalScaleRegister;
+	memcpy( source.pbrEmissiveColorRegisters, pbr.emissiveColorRegisters, sizeof( source.pbrEmissiveColorRegisters ) );
+	source.permutation.materialClass = RENDER_MATERIAL_OPAQUE;
+	source.permutation.alphaMode = MC_OPAQUE;
+	source.resourceTableIndex = 200;
+
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.stats.prepared = true;
+	const bool added = R_MaterialResourceTable_AddRecordFromSource( source, 200, true );
+
+	materialResourceRecord_t separateSource = source;
+	separateSource.pbrORMImage = NULL;
+	separateSource.pbrMetallicImage = globalImages->whiteImage;
+	separateSource.pbrRoughnessImage = globalImages->whiteImage;
+	separateSource.pbrAOImage = globalImages->whiteImage;
+	separateSource.resourceTableIndex = 201;
+	const bool separateAdded = R_MaterialResourceTable_AddRecordFromSource( separateSource, 201, true );
+
+	materialResourceRecord_t scalarSource = source;
+	scalarSource.pbrNormalImage = NULL;
+	scalarSource.pbrNormalFormat = PBR_NORMAL_UNSPECIFIED;
+	scalarSource.pbrORMImage = NULL;
+	scalarSource.resourceTableIndex = 202;
+	const bool scalarAdded = R_MaterialResourceTable_AddRecordFromSource( scalarSource, 202, true );
+
+	materialResourceRecord_t explicitSource = source;
+	explicitSource.pbrHasAuthoredClassicFallback = false;
+	explicitSource.pbrHasExplicitLegacyFallback = true;
+	explicitSource.pbrUsesGeneratedLegacyFallback = true;
+	explicitSource.pbrUsesApproximateLegacyFallback = false;
+	explicitSource.resourceTableIndex = 203;
+	const bool explicitAdded = R_MaterialResourceTable_AddRecordFromSource( explicitSource, 203, true );
+
+	materialResourceRecord_t unsupportedSource = source;
+	unsupportedSource.pbrWorkflow = PBR_WORKFLOW_SPECULAR_GLOSSINESS;
+	unsupportedSource.resourceTableIndex = 204;
+	const bool unsupportedAdded = R_MaterialResourceTable_AddRecordFromSource( unsupportedSource, 204, true );
+
+	materialResourceRecord_t missingFallbackSource = source;
+	missingFallbackSource.pbrHasAuthoredClassicFallback = false;
+	missingFallbackSource.pbrLegacyFallbackMissing = true;
+	missingFallbackSource.resourceTableIndex = 205;
+	const bool missingFallbackAdded = R_MaterialResourceTable_AddRecordFromSource( missingFallbackSource, 205, true );
+
+	materialResourceRecord_t missingAlbedoSource = source;
+	missingAlbedoSource.pbrAlbedoImage = NULL;
+	missingAlbedoSource.resourceTableIndex = 206;
+	const bool missingAlbedoAdded = R_MaterialResourceTable_AddRecordFromSource( missingAlbedoSource, 206, true );
+
+	idImageOpts mutableImageOpts = globalImages->whiteImage->GetOpts();
+	idImage *mutableImage = globalImages->ScratchImage(
+		"_pbr_resource_table_mutable_selftest",
+		&mutableImageOpts,
+		TF_DEFAULT,
+		TR_REPEAT,
+		TD_PBR_COLOR );
+	materialResourceRecord_t mutableImageSource = source;
+	mutableImageSource.pbrAlbedoImage = mutableImage;
+	mutableImageSource.resourceTableIndex = 207;
+	const bool mutableImageAdded = mutableImage != NULL
+		&& R_MaterialResourceTable_AddRecordFromSource( mutableImageSource, 207, true );
+
+	// Authored legacy-map metadata is not an explicit-generated fallback when
+	// the complete classic interaction already made stage generation redundant.
+	materialResourceRecord_t redundantExplicitSource = source;
+	redundantExplicitSource.pbrHasExplicitLegacyFallback = true;
+	redundantExplicitSource.pbrUsesGeneratedLegacyFallback = false;
+	redundantExplicitSource.resourceTableIndex = 208;
+	const bool redundantExplicitAdded = R_MaterialResourceTable_AddRecordFromSource( redundantExplicitSource, 208, true );
+
+	R_MaterialResourceTable_BuildTextureArrayTable();
+	const materialResourceTableRecord_t *record = R_MaterialResourceTable_RecordForIndex( 0 );
+	const materialResourceTableRecord_t *separateRecord = R_MaterialResourceTable_RecordForIndex( 1 );
+	const materialResourceTableRecord_t *scalarRecord = R_MaterialResourceTable_RecordForIndex( 2 );
+	const materialResourceTableRecord_t *explicitRecord = R_MaterialResourceTable_RecordForIndex( 3 );
+	const materialResourceTableRecord_t *unsupportedRecord = R_MaterialResourceTable_RecordForIndex( 4 );
+	const materialResourceTableRecord_t *missingFallbackRecord = R_MaterialResourceTable_RecordForIndex( 5 );
+	const materialResourceTableRecord_t *missingAlbedoRecord = R_MaterialResourceTable_RecordForIndex( 6 );
+	const materialResourceTableRecord_t *mutableImageRecord = R_MaterialResourceTable_RecordForIndex( 7 );
+	const materialResourceTableRecord_t *redundantExplicitRecord = R_MaterialResourceTable_RecordForIndex( 8 );
+	const materialResourceTableStats_t &stats = R_MaterialResourceTable_Stats();
+	const materialResourcePBRFallbackReason_t expectedReason = r_pbrMaterials.GetBool()
+		? MATERIAL_RESOURCE_PBR_FALLBACK_SHADER_PATH_UNAVAILABLE
+		: MATERIAL_RESOURCE_PBR_FALLBACK_DISABLED;
+	bool pbrBindingsExcludedFromClassicTable = stats.records == 9;
+	for ( int recordIndex = 0; recordIndex < stats.records; ++recordIndex ) {
+		const materialResourceTableRecord_t *testRecord = R_MaterialResourceTable_RecordForIndex( recordIndex );
+		pbrBindingsExcludedFromClassicTable &= testRecord != NULL && testRecord->hasPBR;
+		if ( testRecord != NULL ) {
+			for ( int i = 0; i < testRecord->textureBindingCount; ++i ) {
+				pbrBindingsExcludedFromClassicTable &= !testRecord->textures[i].textureArrayCandidate
+					&& testRecord->textures[i].textureArrayLayer == -1;
+			}
+		}
+	}
+	const bool ok = added && separateAdded && scalarAdded && explicitAdded
+		&& unsupportedAdded && missingFallbackAdded && missingAlbedoAdded && mutableImageAdded && redundantExplicitAdded
+		&& record != NULL
+		&& record->hasPBR
+		&& record->pbrResourceReady
+		&& !record->pbrModernReady
+		&& !R_MaterialResourceTable_ClassicModernPathEligible( *record )
+		&& record->pbrFallbackReason == expectedReason
+		&& record->pbrPackedMaterialData
+		&& !record->pbrSeparateMaterialData
+		&& record->pbrHasAuthoredClassicFallback
+		&& R_MaterialResourceTable_TextureBindingForSemantic( *record, MATERIAL_RESOURCE_TEXTURE_ALBEDO ) != NULL
+		&& R_MaterialResourceTable_TextureBindingForSemantic( *record, MATERIAL_RESOURCE_TEXTURE_NORMAL ) != NULL
+		&& R_MaterialResourceTable_TextureBindingForSemantic( *record, MATERIAL_RESOURCE_TEXTURE_ORM ) != NULL
+		&& separateRecord != NULL && separateRecord->pbrResourceReady
+		&& !separateRecord->pbrPackedMaterialData && separateRecord->pbrSeparateMaterialData
+		&& scalarRecord != NULL && scalarRecord->pbrResourceReady
+		&& !scalarRecord->pbrPackedMaterialData && !scalarRecord->pbrSeparateMaterialData
+		&& !scalarRecord->hasPBRNormal && !scalarRecord->hasPBRORM
+		&& explicitRecord != NULL && explicitRecord->pbrHasExplicitLegacyFallback
+		&& explicitRecord->pbrUsesGeneratedLegacyFallback
+		&& !explicitRecord->pbrUsesApproximateLegacyFallback
+		&& unsupportedRecord != NULL
+		&& unsupportedRecord->pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_WORKFLOW
+		&& missingFallbackRecord != NULL && missingFallbackRecord->pbrLegacyFallbackMissing
+		&& missingAlbedoRecord != NULL && !missingAlbedoRecord->hasPBRAlbedo
+		&& missingAlbedoRecord->pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_ALBEDO
+		&& mutableImageRecord != NULL && mutableImageRecord->hasPBRAlbedo
+		&& !mutableImageRecord->pbrResourceReady
+		&& mutableImageRecord->pbrFallbackReason == MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE
+		&& redundantExplicitRecord != NULL && redundantExplicitRecord->pbrHasExplicitLegacyFallback
+		&& !redundantExplicitRecord->pbrUsesGeneratedLegacyFallback
+		&& stats.pbrRecords == 9
+		&& stats.classicRecords == 0
+		&& stats.pbrResourceReadyRecords == 6
+		&& stats.pbrModernReadyRecords == 0
+		&& stats.pbrPackedMapRecords == 7
+		&& stats.pbrSeparateMapRecords == 1
+		&& stats.pbrAuthoredClassicFallbackRecords == 7
+		&& stats.pbrExplicitGeneratedFallbackRecords == 1
+		&& stats.pbrGeneratedFallbackRecords == 1
+		&& stats.pbrApproximateFallbackRecords == 0
+		&& stats.pbrMissingLegacyFallbackRecords == 1
+		&& stats.pbrMissingAlbedoMapRecords == 1
+		&& stats.pbrMissingNormalMapRecords == 1
+		&& stats.pbrMissingORMMapRecords == 2
+		&& stats.pbrFallbackMissingImage == 1
+		&& stats.pbrFallbackRecords == 9
+		&& pbrBindingsExcludedFromClassicTable
+		&& stats.textureArrayTableDescriptors == 0;
+	if ( !ok ) {
+		common->Printf(
+			"RendererMaterialResourceTable self-test failed: PBR contract added=%d/%d/%d/%d/%d/%d/%d/%d/%d record=%d resource=%d modern=%d fallback=%s records=%d packed=%d separate=%d missingFallback=%d mapsMissing=%d/%d/%d\n",
+			added ? 1 : 0,
+			separateAdded ? 1 : 0,
+			scalarAdded ? 1 : 0,
+			explicitAdded ? 1 : 0,
+			unsupportedAdded ? 1 : 0,
+			missingFallbackAdded ? 1 : 0,
+			missingAlbedoAdded ? 1 : 0,
+			mutableImageAdded ? 1 : 0,
+			redundantExplicitAdded ? 1 : 0,
+			record != NULL ? 1 : 0,
+			record != NULL && record->pbrResourceReady ? 1 : 0,
+			record != NULL && record->pbrModernReady ? 1 : 0,
+			record != NULL ? MaterialResourcePBRFallbackReason_Name( record->pbrFallbackReason ) : "missing",
+			stats.pbrRecords,
+			stats.pbrPackedMapRecords,
+			stats.pbrSeparateMapRecords,
+			stats.pbrMissingLegacyFallbackRecords,
+			stats.pbrMissingAlbedoMapRecords,
+			stats.pbrMissingNormalMapRecords,
+			stats.pbrMissingORMMapRecords );
+	}
+	// The table owns no declaration lifetime. Remove every retained synthetic
+	// pointer and invalidate the hash before releasing the temporary material,
+	// including failure exits that callers may inspect afterward.
+	for ( int i = 0; i < stats.records; ++i ) {
+		rg_materialResourceTable.records[i].material = NULL;
+	}
+	DeclManager_FreeAllocatedDecl( materialDecl );
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.maxClassicTextureUnits = savedMaxClassicTextureUnits;
+	if ( ok ) {
+		common->Printf( "RendererMaterialResourceTable PBR contract self-test passed\n" );
+	}
+	return ok;
 }
 
 static bool R_MaterialResourceTable_RunSyntheticRecordSelfTest( void ) {
@@ -1409,6 +1993,7 @@ static bool R_MaterialResourceTable_RunSyntheticRecordSelfTest( void ) {
 
 	const materialResourceTableStats_t &stats = R_MaterialResourceTable_Stats();
 	if ( stats.records != 6
+		|| stats.classicRecords != 6
 		|| stats.opaqueRecords != 2
 		|| stats.perforatedRecords != 1
 		|| stats.translucentRecords != 1
@@ -1417,8 +2002,9 @@ static bool R_MaterialResourceTable_RunSyntheticRecordSelfTest( void ) {
 		|| stats.alphaTestRecords != 1
 		|| stats.fallbackMissingImage <= 0 ) {
 		common->Printf(
-			"RendererMaterialResourceTable self-test failed: synthetic counts records=%d opaque=%d perforated=%d translucent=%d gui=%d post=%d alpha=%d missingFallback=%d\n",
+			"RendererMaterialResourceTable self-test failed: synthetic counts records=%d classic=%d opaque=%d perforated=%d translucent=%d gui=%d post=%d alpha=%d missingFallback=%d\n",
 			stats.records,
+			stats.classicRecords,
 			stats.opaqueRecords,
 			stats.perforatedRecords,
 			stats.translucentRecords,
@@ -1459,8 +2045,15 @@ static bool R_MaterialResourceTable_RunSyntheticRecordSelfTest( void ) {
 }
 
 bool RendererMaterialResourceTable_RunSelfTest( void ) {
-	if ( !rg_materialResourceTable.stats.initialized || !rg_materialResourceTable.stats.available ) {
-		common->Printf( "RendererMaterialResourceTable self-test skipped: material resource table unavailable\n" );
+	if ( !R_MaterialResourceTable_RunPBRContractSelfTest() ) {
+		return false;
+	}
+	if ( !rg_materialResourceTable.stats.initialized ) {
+		common->Printf( "RendererMaterialResourceTable full self-test skipped: material resource table uninitialized\n" );
+		return true;
+	}
+	if ( !rg_materialResourceTable.stats.available ) {
+		common->Printf( "RendererMaterialResourceTable full self-test skipped: scene packets unavailable\n" );
 		return true;
 	}
 
@@ -1511,13 +2104,15 @@ bool RendererMaterialResourceTable_RunSelfTest( void ) {
 	const int expectedRecords = tr.defaultMaterial != NULL ? 1 : 0;
 	if ( stats.sourceMaterialRecords != materialRecordCount
 		|| stats.records != expectedRecords
+		|| stats.classicRecords != expectedRecords
 		|| stats.drawPacketReferences != ( tr.defaultMaterial != NULL ? drawPacketCount : 0 )
 		|| stats.overflow ) {
 		common->Printf(
-			"RendererMaterialResourceTable self-test failed: packet build mismatch source=%d/%d records=%d expected=%d drawRefs=%d overflow=%d\n",
+			"RendererMaterialResourceTable self-test failed: packet build mismatch source=%d/%d records=%d classic=%d expected=%d drawRefs=%d overflow=%d\n",
 			stats.sourceMaterialRecords,
 			materialRecordCount,
 			stats.records,
+			stats.classicRecords,
 			expectedRecords,
 			stats.drawPacketReferences,
 			stats.overflow ? 1 : 0 );

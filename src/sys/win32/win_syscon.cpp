@@ -827,6 +827,8 @@ LRESULT CALLBACK InputLineWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		// enter the line
 		if (key == K_ENTER || key == K_KP_ENTER) {
 			const char *inputText = s_wcd.consoleField.GetBuffer();
+			const bool privateCommand = cvarSystem != NULL && cvarSystem->IsInitialized() &&
+				cvarSystem->CommandContainsPrivateCVar( inputText );
 			size_t used = strlen( s_wcd.consoleText );
 			if ( used < sizeof( s_wcd.consoleText ) - 1 ) {
 				const size_t available = sizeof( s_wcd.consoleText ) - used - 1;
@@ -841,12 +843,18 @@ LRESULT CALLBACK InputLineWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			}
 			SetWindowText(s_wcd.hwndInputLine, "");
 
-			Sys_Printf("]%s\n", s_wcd.consoleField.GetBuffer());
+			if ( privateCommand ) {
+				Sys_Printf("]<private command redacted>\n");
+			} else {
+				Sys_Printf("]%s\n", s_wcd.consoleField.GetBuffer());
+			}
 
 			// copy line to history buffer
-			s_wcd.historyEditLines[s_wcd.nextHistoryLine % COMMAND_HISTORY] = s_wcd.consoleField;
-			s_wcd.nextHistoryLine++;
-			s_wcd.historyLine = s_wcd.nextHistoryLine;
+			if ( !privateCommand ) {
+				s_wcd.historyEditLines[s_wcd.nextHistoryLine % COMMAND_HISTORY] = s_wcd.consoleField;
+				s_wcd.nextHistoryLine++;
+				s_wcd.historyLine = s_wcd.nextHistoryLine;
+			}
 
 			s_wcd.consoleField.Clear();
 
@@ -1147,7 +1155,7 @@ char* Sys_ConsoleInput(void) {
 	}
 
 	idStr::Copynz( s_wcd.returnedText, s_wcd.consoleText, sizeof( s_wcd.returnedText ) );
-	s_wcd.consoleText[0] = 0;
+	memset( s_wcd.consoleText, 0, sizeof( s_wcd.consoleText ) );
 
 	return s_wcd.returnedText;
 }

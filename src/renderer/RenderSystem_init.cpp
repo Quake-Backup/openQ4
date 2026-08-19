@@ -219,6 +219,10 @@ idCVar r_useLightPortalFlow( "r_useLightPortalFlow", "1", CVAR_RENDERER | CVAR_B
 idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "MSAA sample count: 0 = off, 2/4/8/16 = supported quality steps", 0, 16, idCmdSystem::ArgCompletion_String<r_multiSamplesArgs> );
 idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "post AA mode: 0 = off, 1 = SMAA 1x medium, 2 = SMAA 1x high, 3 = SMAA 1x ultra, 4 = SMAA 1x colour-edge prototype", 0, 4, idCmdSystem::ArgCompletion_Integer<0,4> );
 idCVar r_postAAStatePoisonTest( "r_postAAStatePoisonTest", "0", CVAR_RENDERER | CVAR_BOOL, "intentionally dirty GL texture/client state before SMAA post-AA draws for validation" );
+idCVar r_pbrMaterials( "r_pbrMaterials", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow explicitly PBR-authored materials on supported modern renderer paths" );
+idCVar r_pbrGeneratedLegacyFallback( "r_pbrGeneratedLegacyFallback", "1", CVAR_RENDERER | CVAR_BOOL, "allow development-only classic fallback generation for PBR-only materials" );
+idCVar r_pbrDebug( "r_pbrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "PBR debug view: 0=off, 1=albedo, 2=normal, 3=metallic, 4=roughness, 5=AO, 6=emissive, 7=fallback", 0, 7, idCmdSystem::ArgCompletion_Integer<0,7> );
+idCVar r_pbrInferFromLegacyMaterials( "r_pbrInferFromLegacyMaterials", "0", CVAR_RENDERER | CVAR_BOOL, "research-only legacy material reinterpretation; never used for stock rendering by default" );
 idCVar r_bloom( "r_bloom", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable bloom post-process" );
 idCVar r_bloomThreshold( "r_bloomThreshold", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "bloom bright-pass threshold in scene-referred units", 0.0f, 16.0f );
 idCVar r_bloomSoftKnee( "r_bloomSoftKnee", "0.15", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "relative bloom soft-threshold knee", 0.0f, 1.0f );
@@ -805,6 +809,15 @@ static void R_RendererMaterialResourceTableSelfTest_f( const idCmdArgs &args ) {
 	if ( !RendererMaterialResourceTable_RunSelfTest() ) {
 		common->Warning( "Renderer material resource-table self-test failed" );
 	}
+}
+
+static void R_RendererPBRMaterialSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !R_PBRMaterialParserSelfTest() ) {
+		common->Warning( "Renderer PBR material parser self-test failed" );
+		return;
+	}
+	common->Printf( "RendererPBRMaterial self-test passed\n" );
 }
 
 static void R_RendererMaterialResourceTableDump_f( const idCmdArgs &args ) {
@@ -3688,6 +3701,12 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		RENDER_GRAPH_MAX_RESOURCE_ACCESSES );
 	R_RenderGraphResources_PrintGfxInfo();
 	R_MaterialResourceTable_PrintGfxInfo();
+	common->Printf(
+		"PBR materials: parser=1 modernLighting=0 enabled=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
+		r_pbrMaterials.GetBool() ? 1 : 0,
+		r_pbrGeneratedLegacyFallback.GetBool() ? 1 : 0,
+		r_pbrInferFromLegacyMaterials.GetBool() ? 1 : 0,
+		r_pbrDebug.GetInteger() );
 	R_ModernGLExecutor_PrintGfxInfo();
 	R_ModernClusteredLighting_PrintGfxInfo();
 	R_ModernShadowPlanner_PrintGfxInfo();
@@ -4079,6 +4098,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererRenderGraphResourceSelfTest", R_RendererRenderGraphResourceSelfTest_f, CMD_FL_RENDERER, "run renderer graph resource owner self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceDump", R_RendererRenderGraphResourceDump_f, CMD_FL_RENDERER, "dump the latest renderer graph resource handles" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableSelfTest", R_RendererMaterialResourceTableSelfTest_f, CMD_FL_RENDERER, "run renderer material resource-table self tests" );
+	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
 	cmdSystem->AddCommand( "rendererGeometryResourceSelfTest", R_RendererGeometryResourceSelfTest_f, CMD_FL_RENDERER, "run renderer geometry and instance packet self tests" );
 	cmdSystem->AddCommand( "rendererGLStateCacheSelfTest", R_RendererGLStateCacheSelfTest_f, CMD_FL_RENDERER, "run renderer GL state-cache self tests" );

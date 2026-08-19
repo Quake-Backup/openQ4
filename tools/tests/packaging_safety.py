@@ -350,6 +350,7 @@ def validate_fast_stage_guards_and_copy() -> None:
     build_dir = source_root / "builddir"
     install_dir = source_root / ".install"
     write_file(build_dir / "openQ4-client_x64.exe", b"client\n")
+    write_file(build_dir / "renderer-gl_x64.dll", b"renderer\n")
     write_file(build_dir / "baseoq4" / "game-sp_x64.dll", b"game\n")
     write_file(build_dir / "baseoq4" / "pak0.pk4", b"pak0\n")
 
@@ -394,7 +395,7 @@ def validate_fast_stage_guards_and_copy() -> None:
             "--install-dir",
             symlink_install_dir,
         )
-        if symlink_result.returncode == 0 or "build directory must not be a symlink" not in symlink_result.stderr:
+        if symlink_result.returncode == 0 or "build directory must not be a link or junction" not in symlink_result.stderr:
             raise AssertionError(f"stage_fast_install.py accepted a symlinked build dir: {symlink_result.stderr}")
 
     result = run_script(
@@ -412,6 +413,58 @@ def validate_fast_stage_guards_and_copy() -> None:
         raise AssertionError("fast stage did not copy root runtime binary")
     if not (install_dir / "baseoq4" / "game-sp_x64.dll").is_file():
         raise AssertionError("fast stage did not copy game runtime binary")
+    if not (install_dir / "renderer-gl_x64.dll").is_file():
+        raise AssertionError("fast stage did not copy renderer runtime binary")
+
+    escaped_temporary = source_root / ".tmp" / "other-runtime" / "capture"
+    escaped_result = run_script(
+        BUILD_DIR / "stage_fast_install.py",
+        "--source-root",
+        source_root,
+        "--build-dir",
+        build_dir,
+        "--install-dir",
+        escaped_temporary,
+        "--temporary-runtime",
+    )
+    if escaped_result.returncode == 0 or "must stay below" not in escaped_result.stderr:
+        raise AssertionError(
+            f"stage_fast_install.py accepted an escaped temporary runtime: {escaped_result.stderr}"
+        )
+
+    temporary_runtime = source_root / ".tmp" / "stock-runtime" / "capture"
+    temporary_result = run_script(
+        BUILD_DIR / "stage_fast_install.py",
+        "--source-root",
+        source_root,
+        "--build-dir",
+        build_dir,
+        "--install-dir",
+        temporary_runtime,
+        "--temporary-runtime",
+    )
+    if temporary_result.returncode != 0:
+        raise AssertionError(
+            f"stage_fast_install.py failed isolated temporary staging: {temporary_result.stderr}"
+        )
+    if not (temporary_runtime / "openQ4-client_x64.exe").is_file():
+        raise AssertionError("temporary fast stage did not copy root runtime binary")
+    if not (temporary_runtime / "renderer-gl_x64.dll").is_file():
+        raise AssertionError("temporary fast stage did not copy renderer runtime binary")
+    repeated_result = run_script(
+        BUILD_DIR / "stage_fast_install.py",
+        "--source-root",
+        source_root,
+        "--build-dir",
+        build_dir,
+        "--install-dir",
+        temporary_runtime,
+        "--temporary-runtime",
+    )
+    if repeated_result.returncode == 0 or "must be new" not in repeated_result.stderr:
+        raise AssertionError(
+            f"stage_fast_install.py reused a temporary runtime: {repeated_result.stderr}"
+        )
 
 
 def validate_stale_content_prune_symlink_handling() -> None:
@@ -901,6 +954,98 @@ def validate_meson_source_symlink_guards() -> None:
 
 
 def validate_windows_runtime_staging_guards() -> None:
+    expected_stale_stage_files = {
+        f"openQ4-{kind}_{arch}"
+        for kind in ("client", "ded")
+        for arch in ("x86", "x64", "arm64")
+    } | {
+        f"renderer-{renderer}_{arch}.dll.mainbak"
+        for renderer in ("gl", "vk")
+        for arch in ("x86", "x64", "arm64")
+    }
+    if set(WINDOWS_RUNTIME.WINDOWS_STALE_STAGE_FILE_MANIFEST) != expected_stale_stage_files:
+        raise AssertionError("Windows stage cleanup must remain an exact stale-file allowlist")
+    if WINDOWS_RUNTIME.WINDOWS_EMPTY_STAGE_DIRECTORY_MANIFEST != ("baseoq4/skins",):
+        raise AssertionError("Windows stage cleanup must only prune the known empty skins directory")
+
+    hygiene_root = WORK / "windows-runtime" / "stage-hygiene"
+    stale_client = hygiene_root / "openQ4-client_x64"
+    stale_dedicated = hygiene_root / "openQ4-ded_x64"
+    stale_backup = hygiene_root / "renderer-vk_x64.dll.mainbak"
+    current_client = hygiene_root / "openQ4-client_x64.exe"
+    current_renderer = hygiene_root / "renderer-vk_x64.dll"
+    unlisted_extensionless = hygiene_root / "openQ4-client_custom"
+    empty_skins = hygiene_root / "baseoq4" / "skins"
+    for path in (stale_client, stale_dedicated, stale_backup, current_client, current_renderer, unlisted_extensionless):
+        write_file(path)
+    empty_skins.mkdir(parents=True)
+
+    hygiene_result = WINDOWS_RUNTIME.cleanup_windows_stage_target(hygiene_root)
+    if set(hygiene_result["removed_stale_files"]) != {
+        "openQ4-client_x64",
+        "openQ4-ded_x64",
+        "renderer-vk_x64.dll.mainbak",
+    }:
+        raise AssertionError(f"unexpected Windows stale-stage cleanup result: {hygiene_result!r}")
+    if hygiene_result["removed_empty_directories"] != ["baseoq4/skins"]:
+        raise AssertionError(f"empty Windows stage directory was not pruned: {hygiene_result!r}")
+    for removed_path in (stale_client, stale_dedicated, stale_backup, empty_skins):
+        if removed_path.exists() or removed_path.is_symlink():
+            raise AssertionError(f"known stale Windows stage entry was retained: {removed_path}")
+    for preserved_path in (current_client, current_renderer, unlisted_extensionless):
+        if not preserved_path.is_file():
+            raise AssertionError(f"Windows stage cleanup removed an unlisted runtime entry: {preserved_path}")
+
+    populated_root = WORK / "windows-runtime" / "stage-hygiene-populated"
+    populated_skin = populated_root / "baseoq4" / "skins" / "custom.skin"
+    write_file(populated_skin)
+    populated_result = WINDOWS_RUNTIME.cleanup_windows_stage_target(populated_root)
+    if populated_result["removed_empty_directories"] or not populated_skin.is_file():
+        raise AssertionError("Windows stage cleanup must preserve a populated baseoq4/skins directory")
+
+    stale_directory_root = WORK / "windows-runtime" / "stage-hygiene-stale-directory"
+    (stale_directory_root / "openQ4-client_x64").mkdir(parents=True)
+    expect_runtime_error(
+        lambda: WINDOWS_RUNTIME.cleanup_windows_stage_target(stale_directory_root),
+        "not a regular file",
+        "Windows stage stale-file directory guard",
+    )
+
+    empty_path_file_root = WORK / "windows-runtime" / "stage-hygiene-empty-path-file"
+    write_file(empty_path_file_root / "baseoq4" / "skins")
+    expect_runtime_error(
+        lambda: WINDOWS_RUNTIME.cleanup_windows_stage_target(empty_path_file_root),
+        "is not a directory",
+        "Windows stage empty-directory path guard",
+    )
+
+    stale_link_root = WORK / "windows-runtime" / "stage-hygiene-stale-link"
+    stale_link_root.mkdir(parents=True)
+    stale_link_target = WORK / "windows-runtime" / "stage-hygiene-link-target"
+    write_file(stale_link_target, b"outside\n")
+    stale_link = stale_link_root / "renderer-vk_x64.dll.mainbak"
+    if make_symlink(stale_link_target, stale_link):
+        link_result = WINDOWS_RUNTIME.cleanup_windows_stage_target(stale_link_root)
+        if link_result["removed_stale_files"] != ["renderer-vk_x64.dll.mainbak"]:
+            raise AssertionError("Windows stage cleanup did not report the known stale symlink")
+        if stale_link.exists() or stale_link.is_symlink():
+            raise AssertionError("Windows stage cleanup did not unlink the known stale symlink")
+        if stale_link_target.read_bytes() != b"outside\n":
+            raise AssertionError("Windows stage cleanup followed a known stale symlink target")
+
+    linked_game_root = WORK / "windows-runtime" / "stage-hygiene-linked-game-root"
+    linked_game_target = WORK / "windows-runtime" / "stage-hygiene-linked-game-target"
+    linked_game_root.mkdir(parents=True)
+    (linked_game_target / "skins").mkdir(parents=True)
+    if make_symlink(linked_game_target, linked_game_root / "baseoq4", target_is_directory=True):
+        expect_runtime_error(
+            lambda: WINDOWS_RUNTIME.cleanup_windows_stage_target(linked_game_root),
+            "cleanup parent is a link or junction",
+            "Windows stage cleanup linked game-root guard",
+        )
+        if not (linked_game_target / "skins").is_dir():
+            raise AssertionError("Windows stage cleanup followed a linked baseoq4 directory")
+
     malformed_pe = WORK / "windows-runtime" / "truncated.exe"
     malformed_pe.parent.mkdir(parents=True, exist_ok=True)
     data = bytearray(0x48)

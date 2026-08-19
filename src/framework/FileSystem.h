@@ -29,6 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __FILESYSTEM_H__
 #define __FILESYSTEM_H__
 
+#include <atomic>
+
 /*
 ===============================================================================
 
@@ -55,6 +57,7 @@ If you have questions concerning this license or the applicable additional terms
 static const ID_TIME_T		FILE_NOT_FOUND_TIMESTAMP	= static_cast<ID_TIME_T>( -1 );
 static const int		MAX_PURE_PAKS				= 128;
 static const int		MAX_OSPATH					= 256;
+static const int		MAX_GAME_OS					= 6;
 
 // modes for OpenFileByMode. used as bit mask internally
 typedef enum {
@@ -84,11 +87,6 @@ typedef enum {
 } dlStatus_t;
 
 typedef enum {
-	FILE_EXEC,
-	FILE_OPEN
-} dlMime_t;
-
-typedef enum {
 	FIND_NO,
 	FIND_YES,
 	FIND_ADDON
@@ -98,10 +96,10 @@ typedef struct urlDownload_s {
 	idStr				url;
 	char				dlerror[ MAX_STRING_CHARS ];
 	int					expectedSize;	// immutable transfer limit; zero permits an unrestricted download
-	int					dltotal;
-	int					dlnow;
-	int					dlstatus;
-	dlStatus_t			status;
+	std::atomic<int>	dltotal;
+	std::atomic<int>	dlnow;
+	std::atomic<int>	dlstatus;
+	std::atomic<dlStatus_t> status;
 } urlDownload_t;
 
 typedef struct fileDownload_s {
@@ -116,7 +114,7 @@ typedef struct backgroundDownload_s {
 	idFile *			f;
 	fileDownload_t		file;
 	urlDownload_t		url;
-	volatile bool		completed;
+	std::atomic<bool>	completed;
 } backgroundDownload_t;
 
 // file list for directory listings

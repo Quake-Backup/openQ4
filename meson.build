@@ -207,7 +207,11 @@ endif
 if get_option('build_native_tests')
   openq4_core_safety_test = executable(
     'openq4-core-safety-test',
-    files('tools/tests/native/CoreSafetyTest.cpp'),
+    files(
+      'tools/tests/native/CoreSafetyTest.cpp',
+      'src/idlib/CryptoHash.cpp',
+      'src/framework/async/Rcon2Protocol.cpp',
+    ),
     include_directories: root_include_dir,
     install: false,
   )

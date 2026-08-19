@@ -39,6 +39,7 @@ SELFTEST_CHECKS = [
     ["RendererRenderGraph self-test passed"],
     ["RendererRenderGraphResource self-test passed", "RendererRenderGraphResource self-test skipped"],
     ["RendererMaterialResourceTable self-test passed", "RendererMaterialResourceTable self-test skipped"],
+    ["RendererPBRMaterial self-test passed"],
     ["RendererGeometryResource self-test passed"],
     ["RendererGLStateCache self-test passed", "RendererGLStateCache self-test skipped"],
     ["RendererModernGLShaderLibrary self-test passed"],
@@ -456,7 +457,7 @@ def sanitize_case_id(case_id: str) -> str:
 
 
 def common_args(
-    root: Path,
+    runtime_dir: Path,
     case_id: str,
     basepath: str,
     savepath: Path,
@@ -499,7 +500,7 @@ def common_args(
         str(savepath),
         "+set",
         "fs_devpath",
-        str(root / ".install"),
+        str(runtime_dir),
         "+set",
         "fs_game",
         "baseoq4",
@@ -546,6 +547,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+rendererRenderGraphSelfTest",
         "+rendererRenderGraphResourceSelfTest",
         "+rendererMaterialResourceTableSelfTest",
+        "+rendererPBRMaterialSelfTest",
         "+rendererGeometryResourceSelfTest",
         "+rendererGLStateCacheSelfTest",
         "+rendererModernGLExecutorSelfTest",
@@ -1567,23 +1569,23 @@ def filter_driver_specific_cases(cases: list[dict[str, Any]]) -> list[dict[str, 
     ]
 
 
-def vk_module_path(root: Path) -> Path:
+def vk_module_path(runtime_dir: Path) -> Path:
     if os.name == "nt":
         suffix = ".dll"
     elif sys.platform == "darwin":
         suffix = ".dylib"
     else:
         suffix = ".so"
-    return root / ".install" / f"renderer-vk_{host_arch()}{suffix}"
+    return runtime_dir / f"renderer-vk_{host_arch()}{suffix}"
 
 
-def filter_vulkan_module_cases(cases: list[dict[str, Any]], root: Path) -> list[dict[str, Any]]:
+def filter_vulkan_module_cases(cases: list[dict[str, Any]], runtime_dir: Path) -> list[dict[str, Any]]:
     # the Vulkan cases need a staged renderer-vk module and a live Vulkan
     # driver. Headless Linux legs (Xvfb/WSL) offer neither, so they stay
     # dropped there. Windows has a native driver; macOS runs the module on
     # MoltenVK, which is bundled with the package, so both hosts qualify once
     # the module is staged next to the executable.
-    if (os.name == "nt" or sys.platform == "darwin") and vk_module_path(root).exists():
+    if (os.name == "nt" or sys.platform == "darwin") and vk_module_path(runtime_dir).exists():
         return cases
     dropped = [case["id"] for case in cases if case.get("requiresVulkanModule")]
     if dropped:
@@ -1705,6 +1707,7 @@ def print_failure_details(result: dict[str, Any]) -> None:
 def run_case(
     root: Path,
     executable: Path,
+    runtime_dir: Path,
     output_dir: Path,
     savepath: Path,
     basepath: str,
@@ -1723,7 +1726,7 @@ def run_case(
     case_assetless = bool(case.get("assetless", False))
     case_basepath = "" if case_assetless else basepath
     case_skip_official_pak_validation = skip_official_pak_validation or case_assetless
-    args = common_args(root, case_id, case_basepath, savepath, case_skip_official_pak_validation) + case["args"] + ["+quit"]
+    args = common_args(runtime_dir, case_id, case_basepath, savepath, case_skip_official_pak_validation) + case["args"] + ["+quit"]
     startup_commands = sum(1 for arg in args if arg.startswith("+"))
     if startup_commands > ENGINE_MAX_STARTUP_COMMANDS:
         raise RuntimeError(
@@ -1732,7 +1735,7 @@ def run_case(
         )
     # drill lever: hide the staged renderer-vk module so the loader's
     # fallback ladder is exercised for real, restoring it afterwards
-    module_path = vk_module_path(root)
+    module_path = vk_module_path(runtime_dir)
     hidden_module_path = module_path.with_name(module_path.name + ".drill-hidden")
     hide_vk_module = bool(case.get("hideVkModule", False))
     # cvars set on the command line are archived on exit; cases that opt
@@ -1750,7 +1753,7 @@ def run_case(
         with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_file, stderr_path.open("w", encoding="utf-8", errors="replace") as stderr_file:
             process = subprocess.Popen(
                 [str(executable)] + args,
-                cwd=str(root / ".install"),
+                cwd=str(runtime_dir),
                 stdout=stdout_file,
                 stderr=stderr_file,
             )
@@ -2031,6 +2034,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Explicit client or launcher to test. Defaults to the host-matching staged client.",
     )
     parser.add_argument(
+        "--runtime-dir",
+        default="",
+        help="Runtime root for working directory, renderer modules, and fs_devpath. Defaults to <repo>/.install.",
+    )
+    parser.add_argument(
         "--skip-official-pak-validation",
         action="store_true",
         help="Disable official q4base PK4 validation for assetless engine-startup smoke checks.",
@@ -2054,10 +2062,6 @@ def main(argv: list[str]) -> int:
             return 2
         requested = set(requested_cases)
         safe_cases = [case for case in safe_cases if case["id"] in requested]
-    elif not args.list:
-        safe_cases = filter_driver_specific_cases(safe_cases)
-        safe_cases = filter_vulkan_module_cases(safe_cases, root)
-
     if args.list:
         print("Automated safe cases:")
         for case in safe_cases:
@@ -2104,6 +2108,13 @@ def main(argv: list[str]) -> int:
             return 2
     else:
         executable = find_client_executable(root)
+    runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else root / ".install"
+    if not runtime_dir.is_dir():
+        print(f"runtime directory does not exist: {runtime_dir}", file=sys.stderr)
+        return 2
+    if not requested_cases:
+        safe_cases = filter_driver_specific_cases(safe_cases)
+        safe_cases = filter_vulkan_module_cases(safe_cases, runtime_dir)
     savepath = Path(args.savepath).resolve() if args.savepath else root / ".home"
     savepath.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -2121,6 +2132,7 @@ def main(argv: list[str]) -> int:
         result = run_case(
             root,
             executable,
+            runtime_dir,
             output_dir,
             savepath,
             basepath,
@@ -2137,6 +2149,7 @@ def main(argv: list[str]) -> int:
         "generated": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "host": f"{platform.system()} {platform.release()} {platform.machine()}",
         "executable": str(executable),
+        "runtimeDir": str(runtime_dir),
         "savepath": str(savepath),
         "basepath": basepath,
         "skipOfficialPakValidation": args.skip_official_pak_validation,

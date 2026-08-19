@@ -58,6 +58,19 @@ static unsigned int R_GetImageDownsizeSignature( const char *name, textureUsage_
 static void R_DownsizeLoadedImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height );
 static void R_DownsizeLoadedCubeImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size );
 
+static void R_LoadImageProgramForDeclaredUsage( const char *name, byte **pic, int *width, int *height,
+	ID_TIME_T *timestamp, textureUsage_t &usage ) {
+	// Classic image programs infer TD_BUMP for normal-producing operations.
+	// PBR semantics are explicit authoring contracts and form part of the image
+	// cache key, so decoding must not mutate them after lookup/name generation.
+	const textureUsage_t declaredUsage = usage;
+	textureUsage_t inferredUsage = usage;
+	R_LoadImageProgram( name, pic, width, height, timestamp, &inferredUsage );
+	if ( declaredUsage != TD_PBR_COLOR && declaredUsage != TD_MATERIAL_DATA ) {
+		usage = inferredUsage;
+	}
+}
+
 /*
 ========================
 idImage::DeriveOpts
@@ -113,6 +126,16 @@ ID_INLINE void idImage::DeriveOpts() {
 			// Preserve Quake 4's distinct "uncompressed/highquality" image bucket,
 			// but keep it on openQ4's modern uncompressed RGBA8 path rather than
 			// reviving older compressed-driver behavior.
+			opts.gammaMips = false;
+			opts.colorFormat = CFM_DEFAULT;
+			opts.format = FMT_RGBA8;
+			break;
+		case TD_PBR_COLOR:
+			opts.gammaMips = true;
+			opts.colorFormat = CFM_DEFAULT;
+			opts.format = FMT_RGBA8;
+			break;
+		case TD_MATERIAL_DATA:
 			opts.gammaMips = false;
 			opts.colorFormat = CFM_DEFAULT;
 			opts.format = FMT_RGBA8;
@@ -453,7 +476,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		R_ResolvePreferredDDSImageSource( GetName(), preferredDDSName, &preferredDDSFileTime, true, &preferredDDSPrecompressed );
 	if ( preferredDDSImage && !fileSystem->InProductionMode() ) {
 		ID_TIME_T originalSourceTime = FILE_NOT_FOUND_TIMESTAMP;
-		R_LoadImageProgram( GetName(), NULL, NULL, NULL, &originalSourceTime, &usage );
+		R_LoadImageProgramForDeclaredUsage( GetName(), NULL, NULL, NULL, &originalSourceTime, usage );
 		if ( R_IsPreferredDDSStale( preferredDDSName, preferredDDSFileTime, originalSourceTime ) ) {
 			if ( cvarSystem->GetCVarBool( "image_showPrecompressedTextures" ) ) {
 				common->Printf( "Ignoring stale DDS replacement %s for %s\n", preferredDDSName.c_str(), GetName() );
@@ -541,7 +564,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			} else if ( preferredDDSImage ) {
 				sourceFileTime = preferredDDSFileTime;
 			} else {
-				R_LoadImageProgram( GetName(), NULL, NULL, NULL, &sourceFileTime, &usage );
+				R_LoadImageProgramForDeclaredUsage( GetName(), NULL, NULL, NULL, &sourceFileTime, usage );
 			}
 			sourceFileTimeKnown = true;
 		}
@@ -653,12 +676,12 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 				}
 
 				// load the full specification, and perform any image program calculations
-				R_LoadImageProgram( fallbackLoadSourceName, &pic, &width, &height, &sourceFileTime, &usage );
+				R_LoadImageProgramForDeclaredUsage( fallbackLoadSourceName, &pic, &width, &height, &sourceFileTime, usage );
 				if ( pic == NULL && preferredDDSImage && !preferredDDSPrecompressed ) {
 					common->Warning( "Couldn't decode preferred DDS replacement %s for %s; falling back to original source", loadSourceName, GetName() );
 					selectedSourceName = GetName();
 					sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
-					R_LoadImageProgram( GetName(), &pic, &width, &height, &sourceFileTime, &usage );
+					R_LoadImageProgramForDeclaredUsage( GetName(), &pic, &width, &height, &sourceFileTime, usage );
 				}
 				sourceFileTimeKnown = true;
 
@@ -857,7 +880,7 @@ been; anything else falls back to a general resample.
 */
 static bool R_ImageUsageUsesGammaMips( textureUsage_t usage ) {
 	// mirrors the gammaMips choices DeriveOpts makes for each usage
-	return usage == TD_FONT || usage == TD_LIGHT;
+	return usage == TD_FONT || usage == TD_LIGHT || usage == TD_PBR_COLOR;
 }
 
 static int R_CountExactHalvings( int width, int height, int scaledWidth, int scaledHeight ) {

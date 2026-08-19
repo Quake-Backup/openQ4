@@ -6,6 +6,12 @@ Add physically based material support to openQ4 without changing how shipped Qua
 
 The short version: stock materials stay stock; PBR materials get a modern material model; every unsupported case has a visible fallback reason and a legacy rendering path.
 
+## Implementation Status
+
+As of 2026-08-19, the compatibility-safe Phase 0-3 foundation is present: opt-in controls and capability reporting, namespaced parser metadata, typed PBR image usage and lifecycle handling, classic fallback generation, scene-packet propagation, and material-resource-table records, metrics, dumps, and fail-closed ownership checks. These are authoring and renderer-infrastructure contracts, not user-visible PBR rendering.
+
+Phase 4-6 PBR G-buffer shaders, direct lighting, and visible ownership remain unimplemented, as do Phase 8 IBL and specular environment probes. The cross-engine capability therefore remains **Missing** in the [engine capability matrix](../engine-capability-matrix.md). A checked item below means current source and an automated source or engine self-test directly cover that item; runtime, visual, gameplay, and promotion acceptances remain unchecked until their own evidence exists.
+
 ## Suitability Review
 
 This plan is suitable for openQ4 only if legacy fallback is treated as a first-class authoring contract, not as a nice-to-have conversion step. openQ4's shipped-content compatibility still comes from the classic material parser and the `SL_BUMP`/`SL_DIFFUSE`/`SL_SPECULAR` interaction model, so PBR metadata must never be the only runtime description for a material that can ship in `baseoq4/`.
@@ -299,37 +305,38 @@ Add separate PBR controls instead of overloading enhanced materials:
 ### Phase 0: Baseline And Gates
 
 - [ ] Record stock-material baseline with PBR code absent or fully disabled.
-- [ ] Add `r_pbrMaterials`, `r_pbrGeneratedLegacyFallback`, `r_pbrDebug`, and `r_pbrInferFromLegacyMaterials`.
-- [ ] Add `gfxInfo` lines that show PBR parser support, PBR modern support, and fallback status.
-- [ ] Add empty metrics counters with zero values on stock startup.
+- [x] Add `r_pbrMaterials`, `r_pbrGeneratedLegacyFallback`, `r_pbrDebug`, and `r_pbrInferFromLegacyMaterials`.
+- [x] Add `gfxInfo` lines that show PBR parser support, PBR modern support, and fallback status.
+- [x] Add PBR metrics counters to the material-resource table.
+- [ ] Confirm those counters remain zero on stock startup.
 - [ ] Acceptance: safe validation matrix passes, stock startup logs do not gain material warnings, and `r_pbrMaterials 0/1` changes nothing when no PBR materials are loaded.
 
 ### Phase 1: Parser Metadata Only
 
-- [ ] Add `pbrMaterialInfo_t` to `idMaterial`.
-- [ ] Parse `pbr { ... }` tokens into metadata without changing classic stages.
-- [ ] Add image loading for PBR maps with correct texture usage classes.
-- [ ] Update material lifecycle methods for PBR images.
-- [ ] Add parser validation tests through material decl validation.
-- [ ] Acceptance: PBR sample declarations parse, stock declarations compile identically, and no renderer path consumes PBR metadata yet.
+- [x] Add `pbrMaterialInfo_t` to `idMaterial`.
+- [x] Parse `pbr { ... }` tokens into metadata without changing classic stages.
+- [x] Add image loading for PBR maps with correct texture usage classes.
+- [x] Update material lifecycle methods for PBR images.
+- [x] Add parser validation tests through material decl validation.
+- [ ] Acceptance: PBR sample declarations parse, stock declarations compile identically, and no visible/shader path consumes PBR metadata yet.
 
 ### Phase 2: Legacy Fallback For PBR Authored Materials
 
-- [ ] Detect whether a PBR material already has classic interaction stages.
-- [ ] Add explicit `legacyBumpMap`/`legacyDiffuseMap`/`legacySpecularMap`/`legacyEmissiveMap` support.
-- [ ] Add generated fallback stages for PBR-only materials as development fallback, not as release-quality fallback.
-- [ ] Report approximate fallback warnings once per material.
-- [ ] Track authored, explicit-generated, approximate, and missing fallback counts.
+- [x] Detect whether a PBR material already has classic interaction stages.
+- [x] Add explicit `legacyBumpMap`/`legacyDiffuseMap`/`legacySpecularMap`/`legacyEmissiveMap` support.
+- [x] Add generated fallback stages for PBR-only materials as development fallback, not as release-quality fallback.
+- [x] Report one aggregate approximate-fallback warning per material parse.
+- [x] Track authored, explicit-generated, approximate, and missing fallback counts.
 - [ ] Add a self-test that creates a PBR-only material and verifies ARB2 sees bump/diffuse/specular interaction stages.
 - [ ] Acceptance: PBR materials render something sane under the default ARB2 path, explicit fallback maps generate the expected classic stages, approximate fallback is visible in metrics, and stock materials remain unchanged.
 
 ### Phase 3: Material Resource Table Integration
 
-- [ ] Extend packet material records with PBR flags and first PBR texture handles.
-- [ ] Extend `MaterialResourceTable` semantics, records, fallback reasons, and metrics.
-- [ ] Dump PBR metadata in `rendererMaterialResourceTableDump`.
-- [ ] Update draw/submit plan fallback checks to understand PBR-ready versus legacy-ready materials.
-- [ ] Acceptance: modern side paths can identify PBR materials and explain why they are or are not renderable.
+- [x] Extend packet material records with PBR flags and first PBR texture handles.
+- [x] Extend `MaterialResourceTable` semantics, records, fallback reasons, and metrics.
+- [x] Dump PBR metadata in `rendererMaterialResourceTableDump`.
+- [x] Update draw/submit plan fallback checks to understand PBR-ready versus legacy-ready materials.
+- [x] Acceptance: modern side paths can identify PBR materials and explain why they are or are not renderable.
 
 ### Phase 4: PBR G-buffer Side Path
 
@@ -384,12 +391,12 @@ Add separate PBR controls instead of overloading enhanced materials:
 
 Add safe tests:
 
-- `renderer-pbr-parser-selftest`: parser metadata, scalar registers, image usage classes, normal format enum, and error cases.
-- `renderer-pbr-legacy-fallback-selftest`: generated classic stage fallback and explicit fallback maps.
-- `renderer-pbr-material-table-selftest`: PBR semantics, texture binding counts, packed/separate maps, fallback reasons.
-- `renderer-pbr-gbuffer-selftest`: G-buffer packing and debug overlays.
-- `renderer-pbr-lighting-selftest`: deferred/forward PBR shader readiness and BRDF sanity.
-- `renderer-pbr-visible-selftest`: guarded visible ownership on a synthetic packet frame.
+- [x] Parser metadata, scalar registers, image usage classes, normal format enum, and error cases through `rendererPBRMaterialSelfTest`.
+- [x] Generated classic-stage fallback and explicit fallback maps through `rendererPBRMaterialSelfTest`.
+- [x] Packet propagation plus PBR semantics, texture binding counts, packed/separate maps, and fallback reasons through `rendererScenePacketSelfTest` and `rendererMaterialResourceTableSelfTest`.
+- [ ] PBR G-buffer packing and debug overlays.
+- [ ] Deferred/forward PBR shader readiness and BRDF sanity.
+- [ ] Guarded visible PBR ownership on a synthetic packet frame.
 
 Add gameplay/manual coverage:
 

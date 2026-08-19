@@ -45,6 +45,7 @@ If you have questions concerning this license or the applicable additional terms
 #endif
 
 #include "../sys_local.h"
+#include "../URLPolicy.h"
 #include "win_local.h"
 #include "win_crash.h"
 #include "rc/CreateResourceIDs.h"
@@ -1600,10 +1601,15 @@ void Sys_GenerateEvents(void) {
 	if (s) {
 		char* b;
 		int		len;
+		const bool privateCommand = cvarSystem != NULL && cvarSystem->IsInitialized() &&
+			cvarSystem->CommandContainsPrivateCVar( s );
 
 		len = idLib::SizeToInt( strlen( s ) + 1, "Sys_GenerateEvents console command" );
 		b = (char*)Mem_Alloc(len);
 		strcpy(b, s);
+		if ( privateCommand ) {
+			memset( s, 0, len );
+		}
 		Sys_QueEvent(0, SE_CONSOLE, 0, 0, len, b);
 	}
 
@@ -2198,15 +2204,21 @@ void idSysLocal::OpenURL(const char* url, bool doexit) {
 	static bool doexit_spamguard = false;
 	HWND wnd;
 
+	if ( !idURLPolicy::IsAllowedHTTPURL( url ) ) {
+		common->Printf( "OpenURL rejected: expected a bounded HTTP or HTTPS URL with a host\n" );
+		return;
+	}
+
 	if (doexit_spamguard) {
-		common->DPrintf("OpenURL: already in an exit sequence, ignoring %s\n", url);
+		common->DPrintf("OpenURL: already in an exit sequence, ignoring request\n");
 		return;
 	}
 
 	common->Printf("Open URL: %s\n", url);
 
-	if (!ShellExecute(NULL, "open", url, NULL, NULL, SW_RESTORE)) {
-		common->Error("Could not open url: '%s' ", url);
+	const HINSTANCE result = ShellExecute(NULL, "open", url, NULL, NULL, SW_RESTORE);
+	if (reinterpret_cast<INT_PTR>(result) <= 32) {
+		common->Printf("OpenURL failed after validation\n");
 		return;
 	}
 

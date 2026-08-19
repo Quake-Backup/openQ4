@@ -2003,7 +2003,7 @@ bool idMultiViewDemo::StartPlayback( const idCmdArgs &args ) {
 		return false;
 	}
 
-	cvarSystem->SetCVarsFromDict( sessLocal.mapSpawnData.syncedCVars );
+	cvarSystem->SetCVarsFromDictByFlags( sessLocal.mapSpawnData.syncedCVars, CVAR_NETWORKSYNC );
 	sessLocal.ExecuteMapChange();
 	game->SetDemoState( DEMO_PLAYING, true, false );
 	for ( int i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {
@@ -2072,7 +2072,7 @@ bool idMultiViewDemo::ResetPlaybackStream() {
 		return false;
 	}
 
-	cvarSystem->SetCVarsFromDict( sessLocal.mapSpawnData.syncedCVars );
+	cvarSystem->SetCVarsFromDictByFlags( sessLocal.mapSpawnData.syncedCVars, CVAR_NETWORKSYNC );
 	sessLocal.ExecuteMapChange();
 	game->SetDemoState( DEMO_PLAYING, true, false );
 	for ( int i = 0; i < MAX_ASYNC_CLIENTS; i++ ) {

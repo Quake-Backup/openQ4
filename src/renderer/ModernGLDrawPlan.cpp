@@ -401,6 +401,11 @@ bool idModernGLDrawPlan::Build( const idScenePacketFrame &packetFrame, const idR
 			stats.missingMaterialTableDraws++;
 			continue;
 		}
+		if ( !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord ) ) {
+			stats.fallbackDraws++;
+			stats.materialFallbackDraws++;
+			continue;
+		}
 		const bool forwardPlusCandidate = R_ModernGLDrawPlan_ShouldUseForwardPlus( context, draw, *materialRecord, pipeline, shaderKind );
 		if ( materialRecord->fallbackReason != MATERIAL_RESOURCE_FALLBACK_NONE
 			&& ( !forwardPlusCandidate || !R_ModernGLDrawPlan_MaterialFallbackAllowedForForwardPlus( draw, *materialRecord ) ) ) {

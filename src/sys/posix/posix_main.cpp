@@ -1214,20 +1214,26 @@ char *Posix_ConsoleInput( void ) {
 					const char *inputBuffer = tty_InputState( inputLength, inputCursor );
 					idStr::Copynz( input_ret, inputBuffer, sizeof( input_ret ) );
 				}
-				assert( hidden );
-				tty_Show();
-				write( STDOUT_FILENO, &key, 1 );
-				input_field.Clear();
-				if ( history_count < COMMAND_HISTORY ) {
-					history[ history_count ] = input_ret;
-					history_count++;
-				} else {
-					history[ history_start ] = input_ret;
-					history_start++;
-					history_start %= COMMAND_HISTORY;
+				{
+					const bool privateCommand = cvarSystem != NULL && cvarSystem->IsInitialized() &&
+						cvarSystem->CommandContainsPrivateCVar( input_ret );
+					assert( hidden );
+					tty_Show();
+					write( STDOUT_FILENO, &key, 1 );
+					input_field.Clear();
+					if ( !privateCommand ) {
+						if ( history_count < COMMAND_HISTORY ) {
+							history[ history_count ] = input_ret;
+							history_count++;
+						} else {
+							history[ history_start ] = input_ret;
+							history_start++;
+							history_start %= COMMAND_HISTORY;
+						}
+					}
+					history_current = 0;
+					return input_ret;
 				}
-				history_current = 0;
-				return input_ret;
 			case '\t':
 				input_field.AutoComplete();
 				break;
@@ -1488,6 +1494,10 @@ void Sys_GenerateEvents( void ) {
 			return;
 		}
 		idStr::Copynz( b, s, len );
+		if ( cvarSystem != NULL && cvarSystem->IsInitialized() &&
+			cvarSystem->CommandContainsPrivateCVar( s ) ) {
+			memset( s, 0, len );
+		}
 		Posix_QueEvent( SE_CONSOLE, 0, 0, len, b );
 	}
 }

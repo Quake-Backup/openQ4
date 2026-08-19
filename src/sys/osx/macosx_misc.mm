@@ -40,6 +40,7 @@ If you have questions concerning this license or the applicable additional terms
 #import <sys/stat.h>
 #import <unistd.h>
 #include "../sys_local.h"
+#include "../URLPolicy.h"
 
 #if defined(USE_SDL3)
 #include <SDL3/SDL.h>
@@ -49,7 +50,6 @@ If you have questions concerning this license or the applicable additional terms
 
 static const int MAX_OSX_PROCESS_ARGS = 32;
 static const int MAX_OSX_PROCESS_COMMAND = 4096;
-static const int MAX_OSX_URL_LENGTH = 4096;
 
 #if defined(USE_SDL3)
 static int OSX_WindowBorderExtent( CGFloat extent ) {
@@ -206,61 +206,6 @@ static bool OSX_ParseProcessCommandLine( const char *command, char *buffer, size
 	return argc > 0 && argv[0][0] != '\0';
 }
 
-static bool OSX_URLHasSafeSchemeSyntax( const char *url ) {
-	if ( url == NULL || url[0] == '\0' || OSX_StringHasControlCharacters( url ) ) {
-		return false;
-	}
-	if ( strlen( url ) >= MAX_OSX_URL_LENGTH ) {
-		return false;
-	}
-	if ( !isalpha( static_cast<unsigned char>( url[0] ) ) ) {
-		return false;
-	}
-	for ( const char *scan = url + 1; *scan != '\0'; ++scan ) {
-		if ( *scan == ':' ) {
-			return true;
-		}
-		if ( !( isalnum( static_cast<unsigned char>( *scan ) ) || *scan == '+' || *scan == '-' || *scan == '.' ) ) {
-			return false;
-		}
-	}
-	return false;
-}
-
-static bool OSX_ResolvedPathIsUnderDirectory( const char *path, const char *directory ) {
-	if ( path == NULL || path[0] == '\0' || directory == NULL || directory[0] == '\0' ) {
-		return false;
-	}
-
-	char resolvedPath[PATH_MAX];
-	char resolvedDirectory[PATH_MAX];
-	if ( realpath( path, resolvedPath ) == NULL || realpath( directory, resolvedDirectory ) == NULL ) {
-		return false;
-	}
-
-	const size_t directoryLength = strlen( resolvedDirectory );
-	if ( directoryLength == 0 || idStr::Cmpn( resolvedPath, resolvedDirectory, static_cast<int>( directoryLength ) ) != 0 ) {
-		return false;
-	}
-	return resolvedPath[directoryLength] == '\0' || resolvedPath[directoryLength] == '/';
-}
-
-static bool OSX_FileURLIsLocalRuntimeFile( NSURL *url ) {
-	if ( url == nil || ![url isFileURL] ) {
-		return false;
-	}
-
-	NSString *pathString = [url path];
-	const char *path = pathString != nil ? [pathString fileSystemRepresentation] : NULL;
-	if ( path == NULL || OSX_StringHasControlCharacters( path ) || !OSX_IsAbsolutePath( path ) || !OSX_IsRegularFile( path ) ) {
-		return false;
-	}
-
-	const char *savePath = cvarSystem != NULL ? cvarSystem->GetCVarString( "fs_savepath" ) : NULL;
-	const char *basePath = cvarSystem != NULL ? cvarSystem->GetCVarString( "fs_basepath" ) : NULL;
-	return OSX_ResolvedPathIsUnderDirectory( path, savePath ) || OSX_ResolvedPathIsUnderDirectory( path, basePath );
-}
-
 static bool OSX_IsAllowedURL( NSURL *url ) {
 	if ( url == nil ) {
 		return false;
@@ -273,9 +218,6 @@ static bool OSX_IsAllowedURL( NSURL *url ) {
 	if ( [scheme caseInsensitiveCompare:@"https"] == NSOrderedSame || [scheme caseInsensitiveCompare:@"http"] == NSOrderedSame ) {
 		NSString *host = [url host];
 		return host != nil && [host length] > 0;
-	}
-	if ( [scheme caseInsensitiveCompare:@"file"] == NSOrderedSame ) {
-		return OSX_FileURLIsLocalRuntimeFile( url );
 	}
 	return false;
 }
@@ -378,15 +320,16 @@ idSysLocal::OpenURL
 void idSysLocal::OpenURL( const char *url, bool doexit ) {
 	static bool	quit_spamguard = false;
 
+	if ( !idURLPolicy::IsAllowedHTTPURL( url ) ) {
+		common->Printf( "OpenURL rejected: expected a bounded HTTP or HTTPS URL with a host\n" );
+		return;
+	}
+
 	if ( quit_spamguard ) {
 		common->DPrintf( "Sys_OpenURL: already in a doexit sequence, ignoring request\n" );
 		return;
 	}
 
-	if ( !OSX_URLHasSafeSchemeSyntax( url ) ) {
-		common->Printf( "OpenURL rejected: expected a bounded URL with a safe scheme\n" );
-		return;
-	}
 	NSString *urlString = [ NSString stringWithUTF8String: url ];
 	if ( urlString == nil ) {
 		common->Printf( "OpenURL rejected: URL is not valid UTF-8\n" );
@@ -399,7 +342,7 @@ void idSysLocal::OpenURL( const char *url, bool doexit ) {
 		return;
 	}
 	if ( !OSX_IsAllowedURL( nsURL ) ) {
-		common->Printf( "OpenURL rejected: scheme is not allowed\n" );
+		common->Printf( "OpenURL rejected: Foundation did not preserve the required HTTP(S) host\n" );
 		return;
 	}
 

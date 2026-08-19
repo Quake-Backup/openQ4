@@ -21,7 +21,11 @@
 */
 
 const int MATERIAL_RESOURCE_TABLE_MAX_RECORDS = SCENE_PACKET_MAX_MATERIAL_RECORDS;
-const int MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS = 8;
+// GL 3.3 guarantees at least 16 fragment texture units. Keep enough record
+// slots for a dual-authored material's classic fallback plus the initial PBR
+// semantics. The descriptor-array capacity remains 12 so units 12..15 stay
+// reserved for the existing shadow contract.
+const int MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS = 16;
 const int MATERIAL_RESOURCE_TABLE_TEXTURE_ARRAY_CAPACITY = 12;
 
 enum materialResourceBlendMode_t {
@@ -42,7 +46,28 @@ enum materialResourceTextureSemantic_t {
 	MATERIAL_RESOURCE_TEXTURE_EMISSIVE,
 	MATERIAL_RESOURCE_TEXTURE_GUI,
 	MATERIAL_RESOURCE_TEXTURE_POST_PROCESS,
+	MATERIAL_RESOURCE_TEXTURE_ALBEDO,
+	MATERIAL_RESOURCE_TEXTURE_NORMAL,
+	MATERIAL_RESOURCE_TEXTURE_ORM,
+	MATERIAL_RESOURCE_TEXTURE_METALLIC,
+	MATERIAL_RESOURCE_TEXTURE_ROUGHNESS,
+	MATERIAL_RESOURCE_TEXTURE_AO,
+	MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR,
 	MATERIAL_RESOURCE_TEXTURE_COUNT
+};
+
+enum materialResourcePBRFallbackReason_t {
+	MATERIAL_RESOURCE_PBR_FALLBACK_NONE = 0,
+	MATERIAL_RESOURCE_PBR_FALLBACK_DISABLED,
+	MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_WORKFLOW,
+	MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_MATERIAL_CLASS,
+	MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_ALBEDO,
+	MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_NORMAL_FORMAT,
+	MATERIAL_RESOURCE_PBR_FALLBACK_CONFLICTING_LAYOUT,
+	MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE,
+	MATERIAL_RESOURCE_PBR_FALLBACK_CLASSIC_FEATURE,
+	MATERIAL_RESOURCE_PBR_FALLBACK_TOO_MANY_TEXTURES,
+	MATERIAL_RESOURCE_PBR_FALLBACK_SHADER_PATH_UNAVAILABLE
 };
 
 enum materialResourceSortGroup_t {
@@ -173,6 +198,31 @@ typedef struct materialResourceTableRecord_s {
 	bool								hasSpecular;
 	bool								hasEmissive;
 	bool								hasPostProcess;
+	bool								hasPBR;
+	bool								pbrResourceReady;
+	bool								pbrModernReady;
+	int								pbrWorkflow;
+	int								pbrNormalFormat;
+	materialResourcePBRFallbackReason_t pbrFallbackReason;
+	bool								hasPBRAlbedo;
+	bool								hasPBRNormal;
+	bool								hasPBRORM;
+	bool								hasPBRMetallic;
+	bool								hasPBRRoughness;
+	bool								hasPBRAO;
+	bool								hasPBREmissive;
+	bool								pbrPackedMaterialData;
+	bool								pbrSeparateMaterialData;
+	bool								pbrHasAuthoredClassicFallback;
+	bool								pbrHasExplicitLegacyFallback;
+	bool								pbrUsesGeneratedLegacyFallback;
+	bool								pbrUsesApproximateLegacyFallback;
+	bool								pbrLegacyFallbackMissing;
+	int								pbrMetallicRegister;
+	int								pbrRoughnessRegister;
+	int								pbrAORegister;
+	int								pbrNormalScaleRegister;
+	int								pbrEmissiveColorRegisters[3];
 	bool								hasConditionRegisters;
 	bool								hasTextureMatrix;
 	bool								hasVertexColor;
@@ -215,6 +265,7 @@ typedef struct materialResourceTableStats_s {
 	int		sourceMaterialRecords;
 	int		drawPacketReferences;
 	int		records;
+	int		classicRecords;
 	int		opaqueRecords;
 	int		perforatedRecords;
 	int		translucentRecords;
@@ -254,6 +305,30 @@ typedef struct materialResourceTableStats_s {
 	int		fallbackVertexColor;
 	int		fallbackPolygonOffset;
 	int		fallbackTooManyTextures;
+	int		pbrRecords;
+	int		pbrResourceReadyRecords;
+	int		pbrModernReadyRecords;
+	int		pbrPackedMapRecords;
+	int		pbrSeparateMapRecords;
+	int		pbrAuthoredClassicFallbackRecords;
+	int		pbrExplicitGeneratedFallbackRecords;
+	int		pbrGeneratedFallbackRecords;
+	int		pbrApproximateFallbackRecords;
+	int		pbrMissingLegacyFallbackRecords;
+	int		pbrMissingAlbedoMapRecords;
+	int		pbrMissingNormalMapRecords;
+	int		pbrMissingORMMapRecords;
+	int		pbrFallbackRecords;
+	int		pbrFallbackDisabled;
+	int		pbrFallbackUnsupportedWorkflow;
+	int		pbrFallbackUnsupportedMaterialClass;
+	int		pbrFallbackMissingAlbedo;
+	int		pbrFallbackMissingNormalFormat;
+	int		pbrFallbackConflictingLayout;
+	int		pbrFallbackMissingImage;
+	int		pbrFallbackClassicFeature;
+	int		pbrFallbackTooManyTextures;
+	int		pbrFallbackShaderPathUnavailable;
 	int		debugStringTruncations;
 	char	debugStringTruncationSource[64];
 	char	lastFailure[96];
@@ -265,6 +340,7 @@ void R_MaterialResourceTable_PrepareFrame( const idScenePacketFrame &packetFrame
 const materialResourceTableStats_t &R_MaterialResourceTable_Stats( void );
 const materialResourceTableRecord_t *R_MaterialResourceTable_RecordForIndex( int tableIndex );
 const materialResourceTableRecord_t *R_MaterialResourceTable_FindRecordForMaterial( const idMaterial *material );
+bool R_MaterialResourceTable_ClassicModernPathEligible( const materialResourceTableRecord_t &record );
 const unsigned int *R_MaterialResourceTable_TextureArrayTable( int &count );
 int R_MaterialResourceTable_TextureArrayTableIndexForHandle( unsigned int textureHandle );
 const char *MaterialResourceBlendMode_Name( materialResourceBlendMode_t blendMode );
@@ -272,6 +348,7 @@ const char *MaterialResourceTextureSemantic_Name( materialResourceTextureSemanti
 unsigned int MaterialResourceTextureSemantic_Bit( materialResourceTextureSemantic_t semantic );
 const materialResourceTextureBinding_t *R_MaterialResourceTable_TextureBindingForSemantic( const materialResourceTableRecord_t &record, materialResourceTextureSemantic_t semantic );
 const char *MaterialResourceFallbackReason_Name( materialResourceFallbackReason_t reason );
+const char *MaterialResourcePBRFallbackReason_Name( materialResourcePBRFallbackReason_t reason );
 void R_MaterialResourceTable_PrintGfxInfo( void );
 void R_MaterialResourceTable_DumpLatest( void );
 bool RendererMaterialResourceTable_RunSelfTest( void );

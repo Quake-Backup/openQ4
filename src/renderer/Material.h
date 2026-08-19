@@ -41,6 +41,61 @@ class idImage;
 class idCinematic;
 class idUserInterface;
 
+// openQ4-only, opt-in physically based material metadata.  This is kept
+// separate from the classic stage list so retail Quake 4 materials retain
+// their exact bump/diffuse/specular parsing and rendering contract.
+typedef enum {
+	PBR_WORKFLOW_NONE = 0,
+	PBR_WORKFLOW_METALLIC_ROUGHNESS,
+	PBR_WORKFLOW_SPECULAR_GLOSSINESS
+} pbrWorkflow_t;
+
+typedef enum {
+	PBR_NORMAL_UNSPECIFIED = -1,
+	PBR_NORMAL_QUAKE4_AGB = 0,
+	PBR_NORMAL_TANGENT_RG,
+	PBR_NORMAL_TANGENT_XYZ
+} pbrNormalFormat_t;
+
+typedef struct {
+	idImage *	image;
+	bool		present;
+	int			filter;			// textureFilter_t, retained for classic fallback generation
+	int			repeat;			// textureRepeat_t, retained for classic fallback generation
+	bool		allowPicmip;
+	bool		noMips;
+	bool		highQuality;
+	bool		forceHighQuality;
+} pbrMaterialTexture_t;
+
+typedef struct {
+	bool				enabled;
+	pbrWorkflow_t		workflow;
+	pbrNormalFormat_t	normalFormat;
+	pbrMaterialTexture_t albedo;
+	pbrMaterialTexture_t normal;
+	pbrMaterialTexture_t orm;
+	pbrMaterialTexture_t metallic;
+	pbrMaterialTexture_t roughness;
+	pbrMaterialTexture_t ao;
+	pbrMaterialTexture_t emissive;
+	pbrMaterialTexture_t legacyBump;
+	pbrMaterialTexture_t legacyDiffuse;
+	pbrMaterialTexture_t legacySpecular;
+	pbrMaterialTexture_t legacyEmissive;
+	int					metallicRegister;
+	int					roughnessRegister;
+	int					aoRegister;
+	int					normalScaleRegister;
+	int					emissiveColorRegisters[3];
+	bool				autoLegacyFallback;
+	bool				hasAuthoredClassicFallback;
+	bool				hasExplicitLegacyFallback;
+	bool				usesGeneratedLegacyFallback;
+	bool				usesApproximateLegacyFallback;
+	bool				legacyFallbackMissing;
+} pbrMaterialInfo_t;
+
 // moved from image.h for default parm
 typedef enum {
 	TF_LINEAR,
@@ -505,6 +560,11 @@ public:
 	// get a specific stage
 	const shaderStage_t* GetStage(const int index) const { assert(index >= 0 && index < numStages); return &stages[index]; }
 
+	// PBR metadata is consumed only by explicitly enabled modern renderer paths.
+	// Classic callers continue to use the unchanged stage list.
+	bool				HasPBR(void) const { return pbrInfo.enabled; }
+	const pbrMaterialInfo_t& GetPBRInfo(void) const { return pbrInfo; }
+
 	// Retarget a parsed stage without rewriting authored declaration text.
 	// Runtime-generated images (for example the scalable console font atlas)
 	// must not change the declaration checksum used by multiplayer handshakes.
@@ -801,6 +861,9 @@ private:
 	void				ParseShaderParm(idLexer& src, newShaderStage_t* newStage);
 	void				ParseShaderTexture(idLexer& src, newShaderStage_t* newStage);
 	void				ParseStage(idLexer& src, const textureRepeat_t trpDefault = TR_REPEAT);
+	bool				ParsePBRBlock(idLexer& src, const textureRepeat_t trpDefault);
+	bool				ParsePBRImage(idLexer& src, pbrMaterialTexture_t& target, const int usage, const textureRepeat_t trpDefault);
+	void				AddPBRLegacyFallbackStages(const textureRepeat_t trpDefault);
 	void				ParseDeform(idLexer& src);
 	void				ParseDecalInfo(idLexer& src);
 	bool				CheckSurfaceParm(idToken* token);
@@ -906,11 +969,13 @@ private:
 
 	bool				suppressInSubview;
 	bool				portalSky;
+	pbrMaterialInfo_t	pbrInfo;
 	int					refCount;
 };
 
 // Parser-free regression hook for custom GLSL receiver compatibility helpers.
 bool R_MaterialCustomGLSLReceiverHelperSelfTest( void );
+bool R_PBRMaterialParserSelfTest( void );
 
 typedef idList<const idMaterial*> idMatList;
 

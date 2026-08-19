@@ -1423,6 +1423,25 @@ private:
 	int previousLastCheckPoint;
 	bool complete;
 };
+
+class sessionRenderCropGuard_t {
+public:
+	sessionRenderCropGuard_t( int width, int height ) : active( false ) {
+		if ( renderSystem != NULL && renderSystem->IsOpenGLRunning() && width > 0 && height > 0 ) {
+			renderSystem->CropRenderSize( width, height, false, true );
+			active = true;
+		}
+	}
+
+	~sessionRenderCropGuard_t() {
+		if ( active && renderSystem != NULL ) {
+			renderSystem->UnCrop();
+		}
+	}
+
+private:
+	bool active;
+};
 #endif
 
 void idSessionLocal::ResetFramePacingStats( void ) {
@@ -2409,6 +2428,22 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 		fileSystem->RemoveFileChecked( stagingPath.c_str(), "fs_savepath" );
 		common->Warning( "Could not publish expanded loading background '%s'; using the source levelshot",
 			generatedPath.c_str() );
+	} else if ( !Session_FileExistsInSearchPaths( generatedPath.c_str() ) ) {
+		// A pure server deliberately excludes loose image files even when this
+		// client just authored them under fs_savepath.  Publication alone is not
+		// permission to consume the file: require the active VFS policy to expose
+		// it before handing its name to the loading GUI/material system.  Keeping
+		// published=false leaves the caller's stock levelshot selected.
+		common->DPrintf( "Expanded loading background '%s' is unavailable through the active VFS; using the source levelshot\n",
+			generatedPath.c_str() );
+		published = false;
+	} else {
+		const idMaterial *generatedMaterial = declManager->FindMaterial( generatedPath.c_str() );
+		if ( generatedMaterial == NULL || generatedMaterial->TestMaterialFlag( MF_DEFAULTED ) ) {
+			common->DPrintf( "Expanded loading background '%s' has no usable material; using the source levelshot\n",
+				generatedPath.c_str() );
+			published = false;
+		}
 	}
 
 	R_StaticFree( centerPic );
@@ -3518,6 +3553,24 @@ static void Session_openQ4AssertMapState_f( const idCmdArgs &args ) {
 			actualMap.c_str(),
 			actualEntityFilter.c_str() );
 	}
+}
+
+/*
+==================
+Session_openQ4AssertMPGameplayView_f
+==================
+*/
+static void Session_openQ4AssertMPGameplayView_f( const idCmdArgs &args ) {
+	if ( !sessLocal.IsMapSpawned() || !sessLocal.IsMultiplayer() ||
+			sessLocal.GetActiveGUI() != NULL ) {
+		common->Error( "openq4_assertMPGameplayView failed: map=%d multiplayer=%d gui=%d",
+			sessLocal.IsMapSpawned() ? 1 : 0,
+			sessLocal.IsMultiplayer() ? 1 : 0,
+			sessLocal.GetActiveGUI() != NULL ? 1 : 0 );
+		return;
+	}
+
+	common->Printf( "OPENQ4_STOCK_BASELINE_MP_CLIENT_VIEW gui=0\n" );
 }
 #endif
 
@@ -6133,14 +6186,17 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 
 	// Write screenshot
 	if ( saveType != ST_AUTO ) {
-		renderSystem->CropRenderSize( 320, 240, false );
 		if ( rw ) {
 			rw->PushMarkedDefs();
 		}
+		// The current crop can be smaller than the drawable in legacy
+		// r_screenFraction mode.  Push a physical-size crop so all screen-space
+		// feedback targets see one coherent frame, then restore the prior crop.
+		sessionRenderCropGuard_t previewCrop( renderSystem->GetScreenWidth(), renderSystem->GetScreenHeight() );
 		common->SetRenderableGameFrame( true );
 		game->Draw( 0 );
-		renderSystem->CaptureRenderToFile( tempPreviewFile, true );
-		renderSystem->UnCrop();
+		// The renderer reduces the coherent physical frame after readback.
+		renderSystem->CaptureRenderToFile( tempPreviewFile, true, 320, 240 );
 	}
 
 	mapName = mapSpawnData.serverInfo.GetString( "si_map" );
@@ -7719,6 +7775,7 @@ void idSessionLocal::Init() {
 #ifndef	ID_DEDICATED
 	cmdSystem->AddCommand( "openq4_startSingleplayer", Session_openQ4StartSingleplayer_f, CMD_FL_SYSTEM, "internal helper to start singleplayer after game-module switches" );
 	cmdSystem->AddCommand( "openq4_assertMapState", Session_openQ4AssertMapState_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts the active map and entity filter for validation harnesses" );
+	cmdSystem->AddCommand( "openq4_assertMPGameplayView", Session_openQ4AssertMPGameplayView_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts that multiplayer rendering is not covered by an active session GUI" );
 	cmdSystem->AddCommand( "openq4_resumeBakeLightGrids", Session_openQ4ResumeBakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "internal helper to continue light-grid baking after game-module switches" );
 	cmdSystem->AddCommand( "iamtheduke", Session_IAmTheDuke_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "toggles the SP-only iamtheduke cheat text overlay" );
 	cmdSystem->AddCommand( "bakeLightGrids", Session_BakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "bakes openQ4-compatible lightgrid metadata and irradiance atlases for the current map or a batch of maps" );

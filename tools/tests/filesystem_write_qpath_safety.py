@@ -242,11 +242,25 @@ def validate_generated_loadscreen_publication() -> None:
     require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
     require(prepare, "fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str()",
             "generated loadscreen atomic publication")
+    require(prepare, "else if ( !Session_FileExistsInSearchPaths( generatedPath.c_str() ) )",
+            "generated loadscreen active-VFS visibility gate")
+    require(prepare, "declManager->FindMaterial( generatedPath.c_str() )",
+            "generated loadscreen material preflight")
+    require(prepare, "generatedMaterial->TestMaterialFlag( MF_DEFAULTED )",
+            "generated loadscreen default-material rejection")
+    require(prepare, "using the source levelshot",
+            "generated loadscreen unavailable-path source fallback")
     require(prepare, "fileSystem->RemoveFileChecked( stagingPath.c_str()",
             "generated loadscreen failed-stage cleanup")
     require(prepare, "return published;", "generated loadscreen failure falls back to source")
     require_order(prepare, "R_WriteTGA( stagingPath.c_str()", "fileSystem->PromoteFile(",
                   "generated loadscreen write-before-publish order")
+    require_order(prepare, "fileSystem->PromoteFile(",
+                  "Session_FileExistsInSearchPaths( generatedPath.c_str() )",
+                  "generated loadscreen publish-before-VFS-validation order")
+    require_order(prepare, "Session_FileExistsInSearchPaths( generatedPath.c_str() )",
+                  "declManager->FindMaterial( generatedPath.c_str() )",
+                  "generated loadscreen VFS-before-material-validation order")
     require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
                   'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
                   "generated loadscreen secure-token-before-path order")

@@ -198,6 +198,7 @@ public:
 	void				Empty( void );
 	bool				IsEmpty( void ) const;
 	void				Clear( void );
+	void				SecureClear( void );
 	void				Append( const char a );
 	void				Append( const idStr &text );
 	void				Append( const char *text );
@@ -827,6 +828,18 @@ ID_INLINE bool idStr::IsEmpty( void ) const {
 }
 
 ID_INLINE void idStr::Clear( void ) {
+	FreeData();
+	Init();
+}
+
+ID_INLINE void idStr::SecureClear( void ) {
+	if ( data != NULL ) {
+		const int bytes = data != baseBuffer ? alloced : static_cast<int>( sizeof( baseBuffer ) );
+		volatile char *cursor = data;
+		for ( int remaining = bytes; remaining > 0; --remaining ) {
+			*cursor++ = 0;
+		}
+	}
 	FreeData();
 	Init();
 }

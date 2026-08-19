@@ -1011,7 +1011,8 @@ def validate_manual_release_linux_runtime_gate() -> None:
         '["created OpenGL context"]',
         '["Shutting down OpenGL subsystem (SDL3 backend)"]',
         "executable = find_client_executable(root)",
-        "cwd=str(root / \".install\")",
+        'runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else root / ".install"',
+        "cwd=str(runtime_dir)",
         "exit_code == 0 and not timed_out",
     ):
         if token not in renderer:

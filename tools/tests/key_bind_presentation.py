@@ -645,6 +645,21 @@ def validate_bind_menu_and_spectator_consumers() -> None:
 
     mphud = read(ROOT / "content" / "baseoq4" / "pak0" / "guis" / "mphud.gui")
     require(mphud, '"gui::spectatetext1"', "multiplayer spectator HUD binding prompt")
+    ready_prompt_window = body_of(mphud, "windowDef Spectate1", "mphud.gui Spectate1")
+    if re.search(r"\brect\s+0\s*,\s*141\s*,\s*640\s*,\s*40\b", ready_prompt_window) is None:
+        raise AssertionError("The stock non-tourney readiness prompt must retain its 640x40 HUD window")
+    require(ready_prompt_window, "textscale\t0.31", "stock readiness prompt text scale")
+
+    code_strings = read(
+        ROOT / "content" / "baseoq4" / "pak0" / "strings" / "english_code.lang"
+    )
+    for localized_string in ("#str_107710", "#str_107711"):
+        if re.search(
+            rf'^\s*"{localized_string}"\s*"[^"\r\n]*\\nPress %s to [^"\r\n]+"\s*$',
+            code_strings,
+            re.MULTILINE,
+        ) is None:
+            raise AssertionError(f"{localized_string} must retain its explicit two-line readiness layout")
 
     checked_tree = False
     for tree in ("mpgame", "game"):
@@ -662,13 +677,110 @@ def validate_bind_menu_and_spectator_consumers() -> None:
         reject(update_hud, 'KeysFromBinding( "_attack" )', f"{tree} non-emphasized spectator attack binding")
 
         all_ready = body_of(multiplayer_source, "bool idMultiplayerGame::AllPlayersReady(", str(multiplayer))
-        require(all_ready, 'KeysFromBindingForPrompt( "_impulse17" )', f"{tree} emphasized readiness prompt")
+        for localized_string in ("#str_110017", "#str_110018"):
+            require(
+                all_ready,
+                f'GetLocalizedString( "{localized_string}" ), common->KeysFromBindingForPrompt( "_impulse17" )',
+                f"{tree} emphasized single-line tourney readiness prompt",
+            )
+        for localized_string in ("#str_107710", "#str_107711"):
+            require(
+                all_ready,
+                f'GetLocalizedString( "{localized_string}" ), common->KeysFromBinding( "_impulse17" )',
+                f"{tree} inline two-line readiness prompt",
+            )
+        require(
+            all_ready,
+            "stock non-tourney HUD fits two normal-height lines",
+            f"{tree} stock readiness prompt height rationale",
+        )
         start_vote = body_of(multiplayer_source, "void idMultiplayerGame::ClientStartPackedVote(", str(multiplayer))
         require(start_vote, 'KeysFromBindingForPrompt("_impulse28")', f"{tree} emphasized vote-yes prompt")
         require(start_vote, 'KeysFromBindingForPrompt("_impulse29")', f"{tree} emphasized vote-no prompt")
 
     if not checked_tree:
         raise AssertionError(f"No companion game-library source trees found below {GAME_LIBS_ROOT}")
+
+
+def validate_ready_binding_contract() -> None:
+    default_cfg = read(ROOT / "content" / "baseoq4" / "pak0" / "default.cfg")
+    controls = read(
+        ROOT
+        / "content"
+        / "baseoq4"
+        / "pak0"
+        / "guis"
+        / "menu"
+        / "settings"
+        / "controls.gui"
+    )
+    if re.search(r"(?m)^\s*bind\s+F3\s+_impulse17(?:\s+//.*)?$", default_cfg) is None:
+        raise AssertionError("The shipped F3 ready default must use stock _impulse17")
+    for key, impulse in (("F1", "_impulse28"), ("F2", "_impulse29"), ("F6", "_impulse20"), ("F7", "_impulse22")):
+        if re.search(rf"(?m)^\s*bind\s+{key}\s+{impulse}(?:\s+//.*)?$", default_cfg) is None:
+            raise AssertionError(f"The shipped {key} default must use stock {impulse}")
+    if re.search(
+        r"bindDef\s+set_ctrls_other_ready_key\s*\{.*?\bbind\s+_impulse17\b",
+        controls,
+        re.DOTALL,
+    ) is None:
+        raise AssertionError("The controls-menu ready row must edit stock _impulse17")
+    for widget, impulse in (("voteyes", "_impulse28"), ("voteno", "_impulse29")):
+        if re.search(
+            rf"bindDef\s+set_ctrls_other_{widget}_key\s*\{{.*?\bbind\s+{impulse}\b",
+            controls,
+            re.DOTALL,
+        ) is None:
+            raise AssertionError(f"The controls-menu {widget} row must edit stock {impulse}")
+
+    multiplayer_path = GAME_LIBS_ROOT / "src" / "mpgame" / "MultiplayerGame.cpp"
+    multiplayer = read(multiplayer_path)
+    toggle_ready = body_of(
+        multiplayer,
+        "void idMultiplayerGame::ToggleReady(",
+        str(multiplayer_path),
+    )
+    require(toggle_ready, "MPSendReady( !ready );", "reliable impulse-17 ready toggle")
+    reject(toggle_ready, "SetCVarString", "userinfo-only impulse-17 ready toggle")
+
+    send_ready = body_of(multiplayer, "static void MPSendReady(", str(multiplayer_path))
+    require(
+        send_ready,
+        "GAME_RELIABLE_MESSAGE_READY",
+        "casual client ready reliable message",
+    )
+    require(
+        send_ready,
+        "ServerSetPlayerReady",
+        "listen-server authoritative ready path",
+    )
+    ready_command = body_of(
+        multiplayer,
+        "void idMultiplayerGame::Ready_f(",
+        str(multiplayer_path),
+    )
+    require(ready_command, "MPSendReady( true );", "idempotent ready command")
+
+    reset = body_of(multiplayer, "void idMultiplayerGame::Reset(", str(multiplayer_path))
+    require(
+        reset,
+        'common->BindingFromKey( "F3" )',
+        "exact legacy F3 ready migration lookup",
+    )
+    require(
+        reset,
+        '"bind F3 _impulse17\\n"',
+        "exact legacy F3 ready migration update",
+    )
+    for key, legacy, impulse in (
+        ("F1", "voteyes", "_impulse28"),
+        ("F2", "voteno", "_impulse29"),
+        ("F6", "toggleteam", "_impulse20"),
+        ("F7", "spectate", "_impulse22"),
+    ):
+        require(reset, f'common->BindingFromKey( "{key}" )', f"exact legacy {key} migration lookup")
+        require(reset, f'"{legacy}"', f"exact legacy {key} binding match")
+        require(reset, f'"bind {key} {impulse}\\n"', f"exact legacy {key} migration update")
 
 
 def main() -> int:
@@ -680,6 +792,7 @@ def main() -> int:
         validate_bind_widget_fit_and_capture()
         validate_localized_controls_hint()
         validate_bind_menu_and_spectator_consumers()
+        validate_ready_binding_contract()
     except AssertionError as error:
         print(f"key_bind_presentation: FAILED - {error}")
         return 1

@@ -264,6 +264,11 @@ void idCmdSystemLocal::Vstr_f( const idCmdArgs &args ) {
 		return;
 	}
 
+	idCVar *cvar = cvarSystem->Find( args.Argv( 1 ) );
+	if ( cvar != NULL && ( cvar->GetFlags() & CVAR_PRIVATE ) ) {
+		common->Printf( "vstr is unavailable for private CVar %s\n", cvar->GetName() );
+		return;
+	}
 	v = cvarSystem->GetCVarString( args.Argv( 1 ) );
 
 	cmdSystemLocal.BufferCommandText( CMD_EXEC_APPEND, va( "%s\n", v ) );
@@ -744,9 +749,25 @@ void idCmdSystemLocal::ExecuteCommandBuffer( void ) {
 			
 		text[i] = 0;
 
+		bool privateCommand = cvarSystem != NULL && cvarSystem->IsInitialized() &&
+			cvarSystem->CommandContainsPrivateCVar( text );
 		if ( !idStr::Cmp( text, "_execTokenized" ) ) {
-			args = tokenizedCmds[ 0 ];
-			tokenizedCmds.RemoveIndex( 0 );
+			if ( tokenizedCmds.Num() == 0 ) {
+				common->Warning( "ignored unmatched internal tokenized-command marker" );
+				// args is reused across loop iterations.  An unmatched marker must
+				// not execute the preceding command a second time.
+				args.ClearSensitive();
+			} else {
+				args = tokenizedCmds[ 0 ];
+				for ( int argIndex = 0; argIndex < args.Argc() && !privateCommand; ++argIndex ) {
+					privateCommand = cvarSystem != NULL && cvarSystem->IsInitialized() &&
+						cvarSystem->CommandContainsPrivateCVar( args.Argv( argIndex ) );
+				}
+				if ( privateCommand ) {
+					tokenizedCmds[ 0 ].ClearSensitive();
+				}
+				tokenizedCmds.RemoveIndex( 0 );
+			}
 		} else {
 			args.TokenizeString( text, false );
 		}
@@ -755,6 +776,7 @@ void idCmdSystemLocal::ExecuteCommandBuffer( void ) {
 		// this is necessary because commands (exec) can insert data at the
 		// beginning of the text buffer
 
+		const int previousTextLength = textLength;
 		if ( i == textLength ) {
 			textLength = 0;
 		} else {
@@ -762,9 +784,16 @@ void idCmdSystemLocal::ExecuteCommandBuffer( void ) {
 			textLength -= i;
 			memmove( text, text+i, textLength );
 		}
+		// Do not leave consumed command arguments (which can include private
+		// CVar assignments) in the unused tail of this long-lived buffer.
+		memset( textBuf + textLength, 0, previousTextLength - textLength );
 
 		// execute the command line that we have already tokenized
 		ExecuteTokenizedString( args );
+		if ( privateCommand ) {
+			args.ClearSensitive();
+			idCmdArgs::ClearArgsScratch();
+		}
 	}
 }
 

@@ -825,12 +825,20 @@ static void Posix_ConsoleSubmitInput( void ) {
 		return;
 	}
 
-	Sys_Printf( "]%s\n", command );
+	const bool privateCommand = cvarSystem != NULL && cvarSystem->IsInitialized() &&
+		cvarSystem->CommandContainsPrivateCVar( command );
+	if ( privateCommand ) {
+		Sys_Printf( "]<private command redacted>\n" );
+	} else {
+		Sys_Printf( "]%s\n", command );
+	}
 	Posix_ConsoleQueueCommand( command );
 
-	s_consoleWindow.history[ s_consoleWindow.nextHistoryLine % POSIX_CONSOLE_HISTORY ] = s_consoleWindow.inputField;
-	s_consoleWindow.nextHistoryLine++;
-	s_consoleWindow.historyLine = s_consoleWindow.nextHistoryLine;
+	if ( !privateCommand ) {
+		s_consoleWindow.history[ s_consoleWindow.nextHistoryLine % POSIX_CONSOLE_HISTORY ] = s_consoleWindow.inputField;
+		s_consoleWindow.nextHistoryLine++;
+		s_consoleWindow.historyLine = s_consoleWindow.nextHistoryLine;
+	}
 	s_consoleWindow.inputField.Clear();
 	s_consoleWindow.scrollLines = 0;
 }

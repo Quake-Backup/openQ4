@@ -62,7 +62,9 @@ jobs:
             tools/build/write_pak_manifest.py \
             src/sys/linux/pk4/id_utils.py \
             tools/analysis/clang_tidy_input_safety.py \
+            tools/validation/audit_source_provenance.py \
             tools/validation/openq4_validate.py \
+            tools/validation/stock_asset_baseline.py \
             tools/tests/renderer_validation_matrix.py \
             tools/tests/arena_campaign.py \
             tools/tests/async_drop_client_contract.py \
@@ -157,7 +159,10 @@ jobs:
             tools/tests/native_glx_shutdown.py \
             tools/tests/network_ipv4_support.py \
             tools/tests/network_ipv6_support.py \
+            tools/tests/network_security.py \
+            tools/tests/openurl_security.py \
             tools/tests/openq4_pure_pack.py \
+            tools/tests/p0_governance_evidence.py \
             tools/tests/packaging_safety.py \
             tools/tests/preprocessor_macro_safety.py \
             tools/tests/posix_memory_management.py \
@@ -167,6 +172,7 @@ jobs:
             tools/tests/release_tooling_safety.py \
             tools/tests/renderer_cel_shading.py \
             tools/tests/renderer_mp_flat_items.py \
+            tools/tests/renderer_pbr_materials.py \
             tools/tests/renderer_msaa_cvar_safety.py \
             tools/tests/renderer_picmip_policy.py \
             tools/tests/renderer_player_visibility.py \
@@ -186,6 +192,7 @@ jobs:
             tools/tests/steam_deck_support.py \
             tools/tests/system_console_presentation.py \
             tools/tests/startup_language_override.py \
+            tools/tests/stock_asset_baseline.py \
             tools/tests/ui_embedded_icons.py \
             tools/tests/validation_hardening.py \
             tools/tests/vk_shader_header_pin.py \
@@ -195,6 +202,7 @@ jobs:
           bash -n tools/validation/validate_macos_static.sh
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
+          python tools/validation/audit_source_provenance.py --check
           python tools/tests/arena_campaign.py
           python tools/tests/async_drop_client_contract.py
           python tools/tests/campaign_split_state_transition.py
@@ -284,7 +292,10 @@ jobs:
           python tools/tests/native_glx_shutdown.py
           python tools/tests/network_ipv4_support.py
           python tools/tests/network_ipv6_support.py
+          python tools/tests/network_security.py
+          python tools/tests/openurl_security.py
           python tools/tests/openq4_pure_pack.py
+          python tools/tests/p0_governance_evidence.py
           python tools/tests/packaging_safety.py
           python tools/tests/preprocessor_macro_safety.py
           python tools/tests/release_tooling_safety.py
@@ -294,6 +305,7 @@ jobs:
           python tools/tests/posix_thread_shutdown.py
           python tools/tests/renderer_cel_shading.py
           python tools/tests/renderer_mp_flat_items.py
+          python tools/tests/renderer_pbr_materials.py
           python tools/tests/renderer_msaa_cvar_safety.py
           python tools/tests/renderer_picmip_policy.py
           python tools/tests/renderer_player_visibility.py
@@ -313,6 +325,7 @@ jobs:
           python tools/tests/steam_deck_support.py
           python tools/tests/system_console_presentation.py
           python tools/tests/startup_language_override.py
+          python tools/tests/stock_asset_baseline.py
           python tools/tests/ui_embedded_icons.py
           python tools/tests/validation_hardening.py
           python tools/tests/vk_shader_header_pin.py

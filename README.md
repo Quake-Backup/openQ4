@@ -154,6 +154,8 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - It is **not** a drop-in runtime for the original proprietary Quake 4 DLL mods.
 - The project is still in **beta development**, so compatibility work is ongoing.
 
+Developers and testers should use the [engine capability matrix](docs/dev/engine-capability-matrix.md) for authoritative implemented/experimental/missing status, the [idTech 5-level modernization roadmap](docs/dev/idtech5-modernization-roadmap.md) for the compatibility-safe implementation order, and the [stock-asset baseline](docs/dev/stock-asset-baseline.md) for reproducible PK4, SP/MP, save/load, demo, log, and engine-screenshot evidence.
+
 If you run into problems, please use the [issue tracker](https://github.com/themuffinator/openQ4/issues) and include crash logs or setup details when possible. For experimental macOS crashes, use the [macOS support-data guide](docs/user/macos-support-data.md) before filing or updating an issue.
 
 ---
@@ -170,6 +172,7 @@ Bug reports, compatibility reports, testing feedback, and code contributions are
 - **DarkMatter Productions** - project stewardship and website
 - **Justin Marshall** - Quake4Doom and early BSE reverse engineering reference work
 - **Robert Beckebans** - renderer modernization reference work, including RBDOOM-3-BFG inspiration
+- **id Software's official Doom 3 and Doom 3 BFG source releases** - retained idTech 4 source lineage; see the [audited provenance inventory](docs/dev/source-provenance.md)
 - **id Software** and **Raven Software** - Quake 4 and the underlying technology
 - **akacross** (Discord user) - Thorough playtesting on Linux and Windows, a huge help moving the project forward!
 
@@ -177,7 +180,7 @@ Bug reports, compatibility reports, testing feedback, and code contributions are
 
 ## License and disclaimer
 
-openQ4 engine code is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). See [LICENSE](LICENSE) for details.
+openQ4 engine code is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). See [LICENSE](LICENSE) for details. Files retaining Doom 3 or Doom 3 BFG Edition headers also retain their upstream notices and are accompanied by the corresponding published Additional Terms; the [source-provenance inventory](docs/dev/source-provenance.md) records their scope, pinned audit references, and intermediate lineage without offering a legal conclusion.
 
 The game-library code in [openQ4-game](https://github.com/themuffinator/openQ4-game) is derived from the Quake 4 SDK and remains subject to id Software's SDK EULA. Quake 4 assets remain the property of id Software and ZeniMax Media.
 

@@ -71,16 +71,95 @@ def validate_wrapper() -> None:
 
     stager = read("tools/build/stage_fast_install.py")
     require(stager, "copy_file_if_changed", "fast install copy-if-changed behavior")
+    require(
+        stager,
+        "from windows_runtime import cleanup_windows_stage_target, is_windows_host",
+        "shared Windows stage hygiene helper",
+    )
+    require(
+        stager,
+        "cleanup_windows_stage_target(install_dir)",
+        "fast-build Windows stale-runtime cleanup",
+    )
+    require(stager, '"renderer-gl_*.dll"', "fast install renderer staging")
+    require(stager, '"--temporary-runtime"', "isolated compatibility runtime staging")
+    require(stager, 'source_root / ".tmp" / "stock-runtime"', "temporary runtime containment")
     require(stager, '"pak0.pk4"', "fast install stages pak0")
     require(stager, '"pak1.pk4"', "fast install stages pak1")
     reject(stager, '"*.lib",\n    "pak0.pk4"', "fast install must not copy linker artifacts as runtime content")
 
+    windows_runtime = read("tools/build/windows_runtime.py")
+    require(
+        windows_runtime,
+        "WINDOWS_STALE_STAGE_FILE_MANIFEST",
+        "narrow Windows stale-runtime cleanup manifest",
+    )
+    require(
+        windows_runtime,
+        '"baseoq4/skins"',
+        "known empty Windows stage directory manifest",
+    )
+    require(
+        windows_runtime,
+        "cleanup_results[str(target)] = cleanup_windows_stage_target(target)",
+        "full-install Windows stale-runtime cleanup",
+    )
+
 
 def validate_launch_configs() -> None:
     launch = json.loads(read(".vscode/launch.json"))
+    mp_configs = []
     for config in launch.get("configurations", []):
         if "preLaunchTask" in config:
             raise AssertionError(f"Launch config {config.get('name')!r} must not define preLaunchTask")
+        if "(MP)" in str(config.get("name", "")):
+            mp_configs.append(config)
+            args = config.get("args", [])
+            values = [
+                str(args[index + 2])
+                for index, token in enumerate(args[:-2])
+                if token in ("+set", "+seta") and args[index + 1] == "ui_autoJoin"
+            ]
+            if values != ["1"]:
+                raise AssertionError(
+                    f"MP launch config {config.get('name')!r} must set ui_autoJoin exactly once to 1"
+                )
+    if not mp_configs:
+        raise AssertionError("Expected at least one VS Code MP launch configuration")
+
+
+def validate_mp_autojoin_policy() -> None:
+    listen_script = read("tools/debug/start_listen_server_client.ps1")
+    if listen_script.count('"+set", "ui_autoJoin", "1"') != 2:
+        raise AssertionError("MP listen-server helper must enable auto-join for host and client")
+
+    renderdoc_script = read("tools/debug/renderdoc_capture.ps1")
+    if renderdoc_script.count('"+set", "ui_autoJoin", "1"') != 1:
+        raise AssertionError("MP RenderDoc helper must enable auto-join for its listen host")
+
+    benchmark = read("tools/tests/renderer_gameplay_benchmark.py")
+    for target in ("server_args", "client_args"):
+        require(
+            benchmark,
+            f'append_set({target}, "ui_autoJoin", "1")',
+            f"MP renderer benchmark {target}",
+        )
+
+    baseline = read("tools/validation/stock_asset_baseline.py")
+    require(
+        baseline,
+        'args[restart_index:restart_index] = ("+set", "ui_autoJoin", "1")',
+        "stock baseline MP roles",
+    )
+    require(
+        baseline,
+        'launch_contract["ui_autoJoin"] = "1"',
+        "recorded stock baseline MP contract",
+    )
+
+    guide = read("AGENTS.md")
+    require(guide, "Keep `ui_autoJoin 1` enabled for multiplayer testing", "agent MP test policy")
+    require(guide, "explicit `+set ui_autoJoin 0`", "join-menu test exception")
 
 
 def validate_validation_coverage() -> None:
@@ -99,6 +178,7 @@ def main() -> None:
     validate_tasks()
     validate_wrapper()
     validate_launch_configs()
+    validate_mp_autojoin_policy()
     validate_validation_coverage()
     print("vscode_fast_build: ok")
 

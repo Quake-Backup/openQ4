@@ -636,6 +636,10 @@ public:
 	// fogDistance is how far light travels through this liquid before it is fully absorbed, in
 	// world units - the knob that separates clear water from lava you cannot see a foot into.
 	virtual bool			SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance ) = 0;
+
+	// Capture the coherent current crop, then center-crop and resample it on the CPU.
+	// Kept at the end of the interface so existing render-system vtable slots remain stable.
+	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha, int outputWidth, int outputHeight ) = 0;
 };
 
 extern idRenderSystem *		renderSystem;

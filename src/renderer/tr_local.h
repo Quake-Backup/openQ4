@@ -794,6 +794,7 @@ public:
 	virtual void			CropRenderSize( int width, int height, bool makePowerOfTwo = false, bool forceDimensions = false );
 	virtual void			CaptureRenderToImage( const char *imageName );
 	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha );
+	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha, int outputWidth, int outputHeight );
 	virtual void			SetPortalSkyCaptureViewCallback( renderPortalSkyCaptureViewCallback_t callback );
 	virtual void			UnCrop();
 	virtual void			GetCardCaps( bool &oldCard, bool &nv10or20 );
@@ -980,6 +981,10 @@ extern idCVar r_windowHeight;				// windowed mode height
 extern idCVar r_multiSamples;			// number of antialiasing samples
 extern idCVar r_postAA;					// post AA mode: 0 = off, 1/2/3 = SMAA medium/high/ultra, 4 = colour-edge prototype
 extern idCVar r_postAAStatePoisonTest;	// intentionally dirty GL texture/client state before SMAA draws
+extern idCVar r_pbrMaterials;			// allow explicitly PBR-authored materials on modern paths
+extern idCVar r_pbrGeneratedLegacyFallback;	// allow development-only generated classic fallbacks
+extern idCVar r_pbrDebug;				// PBR attachment/fallback debug view
+extern idCVar r_pbrInferFromLegacyMaterials;	// research-only classic-material inference
 extern idCVar r_bloom;					// enable bloom post-process
 extern idCVar r_bloomThreshold;			// bloom bright-pass threshold
 extern idCVar r_bloomSoftKnee;			// relative bloom soft threshold knee
