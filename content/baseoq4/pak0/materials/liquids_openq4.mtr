@@ -23,8 +23,6 @@
 	Texture references are stock Quake 4 assets.
 */
 
-table openq4LavaTable { snap { 0.72, 0.8, 0.88, 0.96, 1, 0.96, 0.88, 0.8 } }
-
 textures/openq4/liquids/water
 {
 	qer_editorimage		textures/q4x_q4xdm2/water01_d.tga
@@ -91,31 +89,49 @@ textures/openq4/liquids/lava
 	twosided
 	materialType		lava
 
+	// Distort the already-rendered basin first. If this pass comes last its _currentRender sample
+	// replaces the colour stages and makes the lava look like a dark metal floor.
 	{
-		map				textures/q4x_q4xdm2/lava2.tga
-		scale			1 , 1
-		translate		time * 0.005, time * -0.01
-		rgb				openq4LavaTable[ time * 0.05 ]
+		vertexProgram	heatHaze.vfp
+		vertexParm		0		0 , time * 0.035
+		vertexParm		1		1.4
+		fragmentProgram	heatHaze.vfp
+		fragmentMap		0		_currentRender
+		fragmentMap		1		textures/q4x_q4xdm2/lava1_local.tga
+	}
+	// A bright, nearly opaque body sits over the distortion. Two independently moving stock lava
+	// layers then provide hot yellow-orange molten structure.
+	{
+		blend			blend
+		map				_white
+		red				0.70
+		green			0.10
+		blue			0.005
+		alpha			0.92
 	}
 	{
 		blend			add
 		map				textures/q4x_q4xdm2/lava2.tga
-		scale			1.4, 1.5
-		translate		time * 0, time * -0.03
-		rgb				openq4LavaTable[ time * 0.04 ]
+		scale			0.72, 0.82
+		translate		time * 0.007, time * -0.016
+		red				1.0
+		green			0.72
+		blue			0.42
 	}
 	{
 		blend			add
 		map				textures/q4x_q4xdm2/lava2.tga
-		scale			0.8, 1.1
-		translate		time * -0.001, time * -0.02
-		rgb				openq4LavaTable[ time * 0.1 ]
+		scale			1.55, 1.34
+		translate		time * -0.012, time * -0.027
+		red				0.42
+		green			0.18
+		blue			0.035
 	}
 }
 
 textures/openq4/liquids/slime
 {
-	qer_editorimage		textures/decals/slime.tga
+	qer_editorimage		textures/decals/goopool2_d.tga
 
 	slime
 	liquid
@@ -123,22 +139,88 @@ textures/openq4/liquids/slime
 	twosided
 	materialType		slime
 
+	// Put the distortion behind the colour stages so it cannot replace them with the dark basin.
 	{
-		blend			diffusemap
-		map				textures/decals/slime.tga
-		scale			0.5, 0.5
-		translate		time * 0.012, time * -0.009
+		vertexProgram	heatHaze.vfp
+		vertexParm		0		0 , time * 0.025
+		vertexParm		1		0.7
+		fragmentProgram	heatHaze.vfp
+		fragmentMap		0		_currentRender
+		fragmentMap		1		textures/q4x_q4xdm2/lava1_local.tga
+	}
+	// Dense toxic-green body plus two cellular intensity layers. The old stock slime decal is red
+	// wall grime, not a fluid surface, and made the pool look like a dark metal floor.
+	{
+		blend			blend
+		map				_white
+		red				0.025
+		green			0.58
+		blue			0.018
+		alpha			0.93
 	}
 	{
 		blend			add
-		map				textures/decals/slime.tga
-		scale			0.7, 0.65
-		translate		time * -0.008, time * -0.015
-		rgb				0.35
+		map				makeIntensity( textures/q4x_q4xdm2/lava2.tga )
+		scale			0.68, 0.78
+		translate		time * 0.010, time * -0.014
+		red				0.055
+		green			0.80
+		blue			0.025
 	}
 	{
-		blend			specularmap
-		map				textures/decals/slime_s.tga
-		translate		time * 0.01 , time * -0.01
+		blend			add
+		map				makeIntensity( textures/q4x_q4xdm2/lava2.tga )
+		scale			1.43, 1.27
+		translate		time * -0.008, time * -0.025
+		red				0.018
+		green			0.34
+		blue			0.008
+	}
+}
+
+// Distinct death-feed glyphs built directly from stock images. These explicit materials also work
+// in asset-free validation, where the retail icon_shader_colored guide is intentionally absent.
+gfx/guis/hud/icons/kill_drown_openq4
+{
+	noShadows
+	translucent
+	{
+		blend		blend
+		map			gfx/guis/hud/icons/kill_self.tga
+		red			.2
+		green		.65
+		blue		1
+		alpha		parm3
+		clamp
+	}
+}
+
+gfx/guis/hud/icons/kill_slime_openq4
+{
+	noShadows
+	translucent
+	{
+		blend		blend
+		map			gfx/guis/hud/icons/kill_self.tga
+		red			.2
+		green		1
+		blue		.1
+		alpha		parm3
+		clamp
+	}
+}
+
+gfx/guis/hud/icons/kill_lava_openq4
+{
+	noShadows
+	translucent
+	{
+		blend		blend
+		map			gfx/guis/hud/icons/item_fire.tga
+		red			1
+		green		.35
+		blue		.05
+		alpha		parm3
+		clamp
 	}
 }

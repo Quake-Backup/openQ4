@@ -754,7 +754,13 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	const float frequencyShift = SoundChannelFrequencyShift( this );
 	const float wetLevel = SoundSanitizeUnitValue( parms.wetLevel, 0.0f );
 	const float dryLevel = SoundSanitizeUnitValue( parms.dryLevel, 1.0f );
-	hardwareVoice->SetWetLevel( wetLevel );
+	// A generic room tail surviving more strongly than the muffled direct path makes submerged
+	// audio read as a large hall. Suppress only liquid-related wet sends; ordinary portal
+	// occlusion, room acoustics, global announcements, UI and music retain their authored mix.
+	const bool liquidAcoustics = !global &&
+		( soundWorld->underwaterActive ||
+		  ( emitter->crossesLiquidBoundary && ( parms.soundShaderFlags & SSF_NO_OCCLUSION ) == 0 ) );
+	hardwareVoice->SetWetLevel( wetLevel * ( liquidAcoustics ? 0.125f : 1.0f ) );
 	hardwareVoice->SetDryLevel( dryLevel );
 	hardwareVoice->SetPitch( SoundSanitizePositiveValue( soundWorld->slowmoSpeed, 1.0f ) * pitchScale * frequencyShift );
 
@@ -774,7 +780,7 @@ void idSoundChannel::UpdateHardware( float volumeAdd, int currentTime )
 	// openQ4: the enviro suit and being underwater both muffle the mix; take whichever is heavier
 	// rather than letting one cancel the other out
 	float environmentMuffle = soundWorld->enviroSuitActive ? SOUND_ENVIROSUIT_OCCLUSION : 0.0f;
-	if( soundWorld->underwaterActive && SOUND_UNDERWATER_OCCLUSION > environmentMuffle )
+	if( !global && soundWorld->underwaterActive && SOUND_UNDERWATER_OCCLUSION > environmentMuffle )
 	{
 		environmentMuffle = SOUND_UNDERWATER_OCCLUSION;
 	}

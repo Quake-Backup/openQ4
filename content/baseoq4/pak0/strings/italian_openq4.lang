@@ -910,4 +910,9 @@
 	"#str_42748"	"Oggetto"
 	"#str_42749"	"Questo comando server legacy è disabilitato durante una partita gestita. Usa Match Control."
 	"#str_42750"	"Devi attendere altri %d secondi prima di indire un altro voto."
+
+	"#str_42800"	"Laboratorio dei volumi liquidi"
+	"#str_42801"	"%s è annegato"
+	"#str_42802"	"%s si è dissolto nella melma"
+	"#str_42803"	"%s è bruciato nella lava"
 }
