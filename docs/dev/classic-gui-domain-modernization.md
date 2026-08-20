@@ -3,7 +3,9 @@
 ## Status
 
 The first Milestone D classic-frame domain is implemented as an experimental,
-default-off path for complete fixed-function 2D GUI views. OpenGL and Vulkan
+default-off path for complete fixed-function 2D GUI views. It is now joined by
+the separate [shared world ambient/material domain](classic-world-ambient-domain-modernization.md).
+OpenGL and Vulkan
 consume the same ordered, per-draw evaluated material records. The established
 classic view remains the supported default and the whole-view rollback.
 
@@ -145,13 +147,16 @@ results, not clean-package or cross-platform release-promotion evidence.
 ## Remaining Milestone D work
 
 This domain meets Milestone D's first complete-domain implementation gate; it
-does not make the whole classic frame modern. World ambient/material,
-interaction, fog/blend, deform, subview, in-world GUI, render-demo, cinematic,
-and authored post-process ownership remain explicit classic or experimental
-domains.
+does not make the whole classic frame modern. The second complete-domain
+implementation now covers eligible ambient-only 3D world views behind its own
+default-off setting, established depth prerequisite, pre-fog/post-fog split,
+and whole-view rollback. Stock `maps/tools/mv2` option-off/on engine captures
+now match exactly on GL and Vulkan, and a stock deform override proves named
+zero-draw whole-view fallback on both backends; see
+[Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md).
 
-The next recommended implementation target is the complete classic world
-ambient/material domain: reuse the same ordered evaluated pass corridor for all
-eligible ambient surfaces in one 3D view, retain interaction/fog/deform/subview
-islands as explicit rollback blockers, and promote ownership only after both
-backends pass complete-view image and coverage evidence.
+Interaction lighting, fog/blend, deform, subview, in-world GUI, render-demo,
+cinematic, and authored post-process ownership remain explicit classic or
+experimental domains. The next recommended implementation target is
+**interaction-lighting ownership and parity** on both backends. Temporal and
+PBR/advanced-lighting milestones remain downstream of that classic-frame work.

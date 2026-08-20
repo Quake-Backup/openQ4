@@ -32,6 +32,9 @@ const int MATERIAL_RESOURCE_TABLE_TEXTURE_ARRAY_CAPACITY = 12;
 // than embedding MAX_SHADER_STAGES in every table record.  Exhaustion rejects
 // the affected GUI domain atomically and leaves the classic renderer in charge.
 const int MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES = SCENE_PACKET_MAX_DRAWS;
+// World ambient stages use a distinct pool so preparing an eligible 3D view
+// cannot consume or expose any part of the generated-2D GUI pass domain.
+const int MATERIAL_RESOURCE_TABLE_MAX_WORLD_PASSES = SCENE_PACKET_MAX_DRAWS;
 
 enum materialResourceBlendMode_t {
 	MATERIAL_RESOURCE_BLEND_OPAQUE = 0,
@@ -151,6 +154,11 @@ enum materialResourceGuiPassFailure_t {
 	MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE,
 	MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_PASS
 };
+
+// GUI and world ambient compilation reject the same authored fixed-function
+// features.  Keep one failure vocabulary while publishing a domain-specific
+// type and name helper to prevent consumers from depending on GUI ownership.
+typedef materialResourceGuiPassFailure_t materialResourceWorldPassFailure_t;
 
 typedef struct materialResourceTextureBinding_s {
 	materialResourceTextureSemantic_t	semantic;
@@ -286,6 +294,12 @@ typedef struct materialResourceTableRecord_s {
 	bool								guiPassEligible;
 	materialResourceGuiPassFailure_t	guiPassFailure;
 	int									guiPassFailureStage;
+	int									firstWorldPass;
+	int									worldPassCount;
+	bool								worldDomainReferenced;
+	bool								worldPassEligible;
+	materialResourceWorldPassFailure_t	worldPassFailure;
+	int									worldPassFailureStage;
 	int									semanticBindingIndex[MATERIAL_RESOURCE_TEXTURE_COUNT];
 	int									textureBindingCount;
 	materialResourceTextureBinding_t	textures[MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS];
@@ -349,6 +363,11 @@ typedef struct materialResourceTableStats_s {
 	int		guiPassEligibleRecords;
 	int		guiPassFallbackRecords;
 	int		guiPassPoolOverflows;
+	int		worldPasses;
+	int		worldDomainReferencedRecords;
+	int		worldPassEligibleRecords;
+	int		worldPassFallbackRecords;
+	int		worldPassPoolOverflows;
 	int		pbrRecords;
 	int		pbrResourceReadyRecords;
 	int		pbrModernReadyRecords;
@@ -394,10 +413,14 @@ const materialResourceTextureBinding_t *R_MaterialResourceTable_TextureBindingFo
 bool R_MaterialResourceTable_GuiPassEligible( const materialResourceTableRecord_t &record );
 const rendererMaterialPass_t *R_MaterialResourceTable_GuiPasses( const materialResourceTableRecord_t &record, int &count );
 bool R_MaterialResourceTable_CopyGuiPassList( const materialResourceTableRecord_t &record, rendererMaterialPassList_t &destination );
+bool R_MaterialResourceTable_WorldPassEligible( const materialResourceTableRecord_t &record );
+const rendererMaterialPass_t *R_MaterialResourceTable_WorldPasses( const materialResourceTableRecord_t &record, int &count );
+bool R_MaterialResourceTable_CopyWorldPassList( const materialResourceTableRecord_t &record, rendererMaterialPassList_t &destination );
 const materialResourceTextureBinding_t *R_MaterialResourceTable_ResolveTextureResource( std::uint64_t textureResourceId );
 const char *MaterialResourceFallbackReason_Name( materialResourceFallbackReason_t reason );
 const char *MaterialResourcePBRFallbackReason_Name( materialResourcePBRFallbackReason_t reason );
 const char *MaterialResourceGuiPassFailure_Name( materialResourceGuiPassFailure_t reason );
+const char *MaterialResourceWorldPassFailure_Name( materialResourceWorldPassFailure_t reason );
 void R_MaterialResourceTable_PrintGfxInfo( void );
 void R_MaterialResourceTable_DumpLatest( void );
 bool RendererMaterialResourceTable_RunSelfTest( void );

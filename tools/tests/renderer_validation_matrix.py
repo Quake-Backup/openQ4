@@ -47,6 +47,7 @@ SELFTEST_CHECKS = [
     ["RendererRenderGraphResource self-test passed", "RendererRenderGraphResource self-test skipped"],
     ["RendererMaterialResourceTable self-test passed", "RendererMaterialResourceTable self-test skipped"],
     ["RendererClassicGuiDomain self-test passed"],
+    ["RendererClassicWorldAmbientDomain self-test passed"],
     ["RendererContracts self-test passed"],
     ["RendererGpuSkinning self-test passed"],
     ["RendererPBRMaterial self-test passed"],
@@ -99,6 +100,12 @@ MANUAL_GAMEPLAY_MATRIX = [
         "mode": "SP",
         "map": "game/mcc_landing",
         "purpose": "subviews, remote cameras, cinematic and GUI interaction",
+    },
+    {
+        "id": "sp-mv2-ambient",
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock fixed-function world-ambient ownership and whole-view rollback",
     },
     {
         "id": "mp-q4dm1-listen",
@@ -219,6 +226,11 @@ GAMEPLAY_BENCHMARK_HARNESS = [
         "profile": "campaign-split-state-transition",
         "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360",
         "coverage": "real SP end-level target chain from game/mcc_2 through storage1 first, storage2, storage1 second, and game/tram1 with active map/filter assertions after each load",
+    },
+    {
+        "profile": "world-ambient",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers",
+        "coverage": "bordered stock maps/tools/mv2 capture with light, subview, GUI, post, portal-fade, and overlay islands disabled for shared world-ambient A/B ownership and explicit-blocker rollback evidence",
     },
     {
         "profile": "tiers",
@@ -558,6 +570,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+rendererRenderGraphResourceSelfTest",
         "+rendererMaterialResourceTableSelfTest",
         "+rendererClassicGuiDomainSelfTest",
+        "+rendererClassicWorldAmbientDomainSelfTest",
         "+rendererContractsSelfTest",
         "+rendererGpuSkinningSelfTest",
         "+rendererPBRMaterialSelfTest",
@@ -1400,6 +1413,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 "1",
                 "+rendererContractsSelfTest",
                 "+rendererGpuSkinningSelfTest",
+                "+rendererClassicWorldAmbientDomainSelfTest",
                 "+gfxInfo",
             ],
             "checks": [
@@ -1410,6 +1424,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["Vulkan renderer initialized"],
                 ["RendererContracts self-test passed"],
                 ["RendererGpuSkinning self-test passed"],
+                ["RendererClassicWorldAmbientDomain self-test passed"],
                 ["GPU skinning:"],
             ],
         },

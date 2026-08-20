@@ -1,6 +1,6 @@
 # Renderer Validation Matrix
 
-This matrix is the validation source of truth for staged renderer work. Most safe tier probes remain GL-focused, while shared renderer-contract and GPU-animation self-tests plus replayable budget evidence cover both OpenGL and Vulkan. Supervised gameplay can use the mode-specific SP/MP launch tasks or the noninteractive gameplay harness described below.
+This matrix is the validation source of truth for staged renderer work. Most safe tier probes remain GL-focused, while shared renderer-contract, classic-domain, and GPU-animation self-tests plus replayable budget evidence cover both OpenGL and Vulkan. Supervised gameplay can use the mode-specific SP/MP launch tasks or the noninteractive gameplay harness described below.
 
 For cross-engine feature status, use the [engine capability matrix](engine-capability-matrix.md). This document owns renderer acceptance evidence and promotion gates; it does not turn an experimental renderer capability into a supported/default one by itself.
 
@@ -41,8 +41,8 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI domain, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
-| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI and classic-world-ambient domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic-world-ambient domain, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
 | `renderer-cluster-grid-selftest` | opt-in modern clustered-light preparation coverage for point/projected/fog/ambient/special light classification, budgeted dynamic grid slicing, cluster reference packing, spill/overflow accounting, GL 3.3 UBO fallback readiness, GL 4.3+ SSBO upload readiness, cluster debug-overlay texture generation, and `gfxInfo` reporting |
@@ -53,7 +53,7 @@ Automated coverage:
 | `renderer-modern-compatibility-selftest` | Phase 14 modern-visible compatibility coverage for command-category ownership inventory, modern fullscreen GUI readiness, light-grid ownership, explicit post/copy/subview/render-demo/BSE fallback buckets, deterministic render-demo accounting, and `gfxInfo` reporting |
 | `renderer-compatibility-gates-selftest` | Phase 15 fallback-gate coverage for missing UBO, broken MRT, missing timer query, missing buffer storage, rejected debug-context fallback, and synthetic driver-quirk downgrades |
 | `renderer-default-promotion-selftest` | Phase 8 evidence-gated default-promotion coverage for `r_glTier auto`, explicit `r_renderer arb2` escape behavior, compatibility gates, modern-executor readiness, ARB2 rollback availability, missing/incomplete/complete `r_rendererPromotionEvidence`, and `r_rendererModernAutoPromote` sign-off control |
-| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
+| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared GUI/world-ambient, modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
 | `renderer-benchmark-selftest` | Phase 16 benchmark coverage for rolling P50/P95/P99 frame-time capture, CPU front-end/visibility/packet/graph/submit/present timings, GPU pass timing fields, upload/draw/light/cluster/fallback counters, benchmark presets, and performance-threshold reporting |
 | `renderer-gpu-driven-selftest` | forced `r_glTier gl43` coverage for GL 4.3 SSBO submit records, compute scissor culling, clustered-bin validation, compacted indirect command generation, CPU/GPU readback comparison, masked multi-draw indirect execution, GPU timer coverage, and `gfxInfo` reporting |
 | `renderer-low-overhead-selftest` | forced `r_glTier gl45` coverage for GL 4.5 DSA graph texture/FBO allocation, DSA sampler creation, named buffer/FBO updates, UBO/SSBO/texture/sampler multi-bind batches, submit-batch compaction, bindless experiment reporting, persistent upload defaults, fence diagnostics, and `gfxInfo` reporting |
@@ -78,13 +78,29 @@ The forced tier cases pass when startup succeeds and the selected tier is report
 
 Automated safe cases also fail if their logs contain renderer warning signatures such as `idStr::snPrintf` overflow, `WARNING: idStr`, shader compile/program link failures, or OpenGL error markers. The generated Markdown/JSON report records per-case warning-signature counts so the Phase 8 `warnings=0` promotion token cannot be inferred from expected-line checks alone.
 
-The foundation case runs the dependency-light classic-GUI contract self-test. The
-separate `tools/tests/renderer_classic_gui_domain.py` static regression check
-guards packet-derived material admission, ordered evaluation, opaque resource
-ids, GL/Vulkan whole-view handoff ordering, source no-op accounting, and
-suppression of the older aggregate GL GUI replay. Enabled-path image evidence is
-the supervised GL/Vulkan capture pair below; there is no standalone automated
-`renderer-classic-gui-domain` runtime case.
+The foundation case runs the dependency-light classic-GUI and
+classic-world-ambient contract self-tests. The Vulkan startup case also requires
+the world-ambient self-test marker so that module registration and the shared
+domain contract are exercised through both renderer APIs.
+
+The separate `tools/tests/renderer_classic_gui_domain.py` static regression
+guards packet-derived GUI material admission, ordered evaluation, opaque
+resource ids, GL/Vulkan whole-view handoff ordering, source no-op accounting,
+and suppression of the older aggregate GL GUI replay.
+`tools/tests/renderer_classic_world_ambient_domain.py` guards the distinct
+packet-derived world-pass pool, fixed surface/program/depth semantics,
+transactional source/depth matching, explicit non-owned blockers, pre-fog/fog/
+post-fog ordering, complete GL/Vulkan preflight before commit, and sealed
+consumer bodies with no material-stage or raw-register reinterpretation. It also
+checks conservative default/bootstrap state, benchmark/baseline isolation, and
+validation workflow registration. Enabled-path image evidence for either domain
+is the supervised GL/Vulkan capture pair below; there is no standalone automated
+map-loading runtime case for these shared domains.
+
+The focused safe-matrix run retained at
+`.tmp/renderer-validation/world-ambient-final-2` passed all three selected
+cases: `renderer-foundation-selftests`, `renderer-default-safety-selftest`, and
+`renderer-vk-clear-startup`.
 
 The visible-depth, G-buffer, clustered-light, deferred-resolve, forward+, modern-visible, modern-compatibility, compatibility-gates, default-promotion, default-safety, benchmark, GPU-driven, low-overhead, and shader-library tier self-tests intentionally run as their own safe cases instead of being appended to the foundation self-test startup command, because the engine command parser has a fixed startup command list budget.
 
@@ -131,7 +147,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --maxfps 0 --s
 | renderer escape | `r_renderer best` leaves promotion available; explicit `r_renderer arb2` keeps the ARB2 bridge |
 | compatibility gates | modern baseline features, UBOs, MRT, scene packets, render graph, and Shader Library V2 readiness are available |
 | fallback escape | the ARB2 compatibility bridge remains selectable through `r_renderer arb2` and `r_glTier legacy` |
-| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
+| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
 | validation evidence | `r_rendererPromotionEvidence` carries the complete Phase 8 token after zero-warning visual, gameplay, RenderDoc, performance, presentation, rollback, and debug-off checks pass |
 | manual sign-off | `r_rendererModernAutoPromote 1` is used only together with a complete `r_rendererPromotionEvidence` token |
 
@@ -150,6 +166,8 @@ These image captures are the comparison set for scenes where deterministic outpu
 | `capture-startup-mainmenu` | SP | main menu after logo skip | deterministic GUI composition, font/material atlas, and widescreen expansion |
 | `capture-shared-gui-mainmenu` | SP | same static main-menu view with `r_rendererSharedGui 0` then `1`, separately on GL and Vulkan | engine-TGA equivalence, identical stable domain coverage/hash for the same authored view, backend-owned count, and zero mixed/dropped pass accounting |
 | `capture-shared-gui-rollback` | SP | loading/logo/camera-preview view containing a cinematic, dynamic, current-render, or otherwise unsupported stage | one explicit whole-view fallback, zero shared draws for that view, and classic screenshot equivalence |
+| `capture-shared-world-ambient-owned` | SP | `sp-mv2-ambient` on stock `maps/tools/mv2`, using the `world-ambient` profile with `r_rendererSharedWorldAmbient 0` then `1`, separately on GL and Vulkan | **Passed locally:** exact engine-TGA equivalence, stable domain hash `dc18ed8c0539bbfc`, view hash `bad7344c6394edf8`, one backend-owned pre-fog draw, and zero mixed/dropped pass accounting |
+| `capture-shared-world-ambient-rollback` | SP | same `sp-mv2-ambient` view with stock `r_materialOverride shaderDemos/move` to force a deform blocker | **Passed locally:** exact engine-TGA equivalence, `failure=sourceSurfaceFallback detail=13 sourceClass=fallbackDeform`, zero shared draws, and complete classic fallback on GL and Vulkan |
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |
@@ -261,6 +279,7 @@ Gameplay validation remains mandatory before renderer release sign-off, but it i
 | `sp-storage2` | SP | `game/storage2` | indoor materials and post-process coverage |
 | `sp-bse-heavy` | SP | `game/medlabs` | stress BSE effects without replacement content |
 | `sp-cinematic-subview` | SP | `game/mcc_landing` | subviews, remote cameras, cinematic and GUI interaction |
+| `sp-mv2-ambient` | SP | `maps/tools/mv2` | controlled stock fixed-function world-ambient ownership and whole-view rollback evidence |
 | `mp-q4dm1-listen` | MP | `mp/q4dm1` | listen-server and local-client MP parity |
 
 For each gameplay case, validate the matrix variants that the hardware supports:
@@ -330,6 +349,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --render-api v
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke --pacing-only --autoexec-delay-ms 2000 --min-pacing-hz 120 --max-p95-ms 12
 python tools\tests\renderer_gameplay_benchmark.py --profile required
 python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360
+python tools\tests\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers
 python tools\tests\renderer_gameplay_benchmark.py --profile tiers
 python tools\tests\renderer_gameplay_benchmark.py --profile presentation --pacing-only
 python tools\tests\renderer_gameplay_benchmark.py --profile shadows
@@ -343,6 +363,7 @@ The runner fails a case when the process times out, no gameplay screenshot is pr
 | `smoke` | bounded `game/storage1` SP gameplay smoke with screenshot, metrics, frame-pacing snapshot, and zero-warning log gates |
 | `required` | `game/storage1`, `game/airdefense1`, `game/airdefense2`, `game/storage2`, `game/medlabs`, `game/mcc_landing`, and `mp/q4dm1` listen server plus local client |
 | `campaign-split-state-transition` | triggers the real SP end-level targets from `game/mcc_2` through `game/storage1 first`, `game/storage2`, `game/storage1 second`, and into `game/tram1`, asserting the active `si_entityFilter` after each load |
+| `world-ambient` | controlled bordered 1280x720 `maps/tools/mv2` stock capture; launch sets `ui_showGun 0`, `g_showHud 0`, and `r_multiSamples 0`, then normal spawn runs `noclip` and `setviewpos 0 0 256 80 0 0`; the exact post-map isolation set is recorded in the world-ambient guide and keeps ambient/deform/render enabled while disabling direct-light, subview, light-grid, player-overlay, portal-fade, cel, and debug islands through their structural controls. It does not set `r_skipPostProcess` or `r_skipGuiShaders`. Run with `--pacing-only --no-gpu-timers`, so it is not CPU/GPU budget evidence. |
 | `tiers` | forced `r_glTier auto`, `legacy`, `gl33`, `gl41`, `gl43`, `gl45`, and `gl46` gameplay probes |
 | `presentation` | pacing-only `r_swapInterval 0/1`, `com_maxfps 0/120/240`, windowed, and fullscreen coverage for uncapped/high-refresh validation; never budget-promotion evidence |
 | `shadows` | stencil fallback, mapped shadows, CSM, translucent moments, and debug-overlay modes `1..6` over the shadow correctness scenes |
@@ -381,3 +402,4 @@ Nondeterministic BSE, cinematic, and MP scenes need human review in addition to 
 - Benchmark captures report P50/P95/P99 frame pacing, active preset budgets, and threshold pass/fail status before any claim that the modern visible path matches or beats ARB2 on target scenes.
 - `rendererDefaultSafetySelfTest` and `rendererDefaultPromotionSelfTest` pass before any default-promotion discussion.
 - `r_rendererModernAutoPromote 1` is used only with the complete `r_rendererPromotionEvidence` token after the default-promotion criteria pass; `r_renderer arb2`, `r_glTier legacy`, and the modern-disable cvar set remain documented rollback paths.
+- Shared world-ambient local runtime qualification passed: retained GL and Vulkan option-off/on engine screenshots for the same eligible stock `maps/tools/mv2` view match at RMS `0` / maximum delta `0`, enabled diagnostics report one owned pre-fog draw with stable domain/view hashes, and the stock `shaderDemos/move` deform override reports zero shared draws plus the same named complete-view fallback on both backends. Vulkan validation gates are clean. Exact directories and SHA-256 values are recorded in [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md). The domain remains experimental/default-off pending clean committed-package and target-platform/driver promotion evidence.

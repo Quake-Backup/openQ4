@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 #include "CelShading.h"
 #include "ClassicGuiDomain.h"
+#include "ClassicWorldAmbientDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernGLShaderLibrary.h"
 #include "RendererMetrics.h"
@@ -5579,6 +5580,8 @@ static bool rbRVSpecialBlurPrepared = false;
 static bool rbRVSpecialALPrepared = false;
 static bool rbRVSpecialCaptureUsesDiffuseImage = false;
 static int rbRVSpecialActiveMask = 0;
+static const viewDef_t *rbRVSpecialCommandView = NULL;
+static int rbRVSpecialCommandFrame = -1;
 
 static void RB_InitRVSpecialStages( void ) {
 	if ( rbRVSpecialStagesInitialized ) {
@@ -6360,6 +6363,8 @@ void RB_DrawSpecialEffects( const void *data ) {
 	const drawSurfsCommand_t *cmd = (const drawSurfsCommand_t *)data;
 
 	backEnd.viewDef = cmd->viewDef;
+	rbRVSpecialCommandView = cmd->viewDef;
+	rbRVSpecialCommandFrame = backEnd.frameCount;
 	rbRVSpecialBlurPrepared = false;
 	rbRVSpecialALPrepared = false;
 	rbRVSpecialActiveMask = tr.specialEffectsEnabled;
@@ -8040,6 +8045,680 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 }
 
 /*
+===============================================================================
+
+	Backend-neutral classic world ambient/material consumer
+
+	ClassicWorldAmbientDomain seals material interpretation and complete-view
+	coverage before either backend sees the view.  This adapter retains only the
+	legacy geometry bridge.  Every fallible cache, texture, and state check is
+	completed before the first shared ambient draw; after commit the pre-fog and
+	post-fog ranges execute without a path back to the classic walker.
+
+===============================================================================
+*/
+
+enum rbSharedWorldAmbientGLReject_t {
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_VIEW = 1,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_MUTATED_VIEW,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_SPECIAL_EFFECTS,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_TARGET,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_CAPACITY,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_DRAW_RANGE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_GEOMETRY,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_VERTEX_CACHE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_INDEX_CACHE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_PASS_RANGE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_PASS_STATE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_TEXTURE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_TEXTURE_CAPACITY,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_COVERAGE,
+	RB_SHARED_WORLD_AMBIENT_GL_REJECT_PHASE
+};
+
+static float RB_STD_ForceAmbientValue( void );
+
+typedef struct rbSharedWorldAmbientGLPreparedPass_s {
+	const rendererEvaluatedMaterialPass_t *pass;
+	idImage *image;
+	textureFilter_t filter;
+	textureRepeat_t repeat;
+	int stateBits;
+	int cullType;
+	GLenum alphaFunction;
+} rbSharedWorldAmbientGLPreparedPass_t;
+
+typedef struct rbSharedWorldAmbientGLPreparedDraw_s {
+	const classicWorldAmbientDomainDraw_t *draw;
+	const drawSurf_t *surf;
+	const srfTriangles_t *tri;
+	int firstPass;
+	int passCount;
+} rbSharedWorldAmbientGLPreparedDraw_t;
+
+typedef struct rbSharedWorldAmbientGLPreparedView_s {
+	const classicWorldAmbientDomainView_t *view;
+	const viewDef_t *viewDef;
+	int drawCount;
+	int passCount;
+	int drawablePasses;
+	int noopPasses;
+	int submittedPasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
+	int submittedNoops;
+	bool ready;
+	bool committed;
+	bool completedPhase[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
+	bool seenSourceSurfaces[ SCENE_PACKET_MAX_DRAWS ];
+	rbSharedWorldAmbientGLPreparedDraw_t draws[ CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_DRAWS ];
+	rbSharedWorldAmbientGLPreparedPass_t passes[ CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES ];
+} rbSharedWorldAmbientGLPreparedView_t;
+
+static rbSharedWorldAmbientGLPreparedView_t rbSharedWorldAmbientGLPreparedView;
+
+static int RB_SharedWorldAmbientGLFailureDetail(
+		rbSharedWorldAmbientGLReject_t reason, int drawIndex = -1,
+		int passIndex = -1 ) {
+	const int drawDetail = drawIndex >= 0 ? Min( drawIndex + 1, 9999 ) : 0;
+	const int passDetail = passIndex >= 0 ? Min( passIndex + 1, 255 ) : 0;
+	return static_cast<int>( reason ) * 1000000 + drawDetail * 256 + passDetail;
+}
+
+static bool RB_SharedWorldAmbientGLFail( const viewDef_t *viewDef,
+		classicWorldAmbientDomainFailure_t failure, int detail ) {
+	R_ClassicWorldAmbientDomain_RecordBackendFallback( viewDef,
+		CLASSIC_WORLD_AMBIENT_BACKEND_GL, failure, detail );
+	return false;
+}
+
+static bool RB_SharedWorldAmbientGLSourceNoopValid(
+		const classicWorldAmbientDomainDraw_t &draw ) {
+	switch ( draw.sourceSurface ) {
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_NULL_SURFACE:
+		if ( draw.legacyDrawSurf != NULL ) {
+			return false;
+		}
+		break;
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_MISSING_MATERIAL:
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_NO_AMBIENT:
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_EMPTY_GEOMETRY:
+		if ( draw.legacyDrawSurf == NULL ) {
+			return false;
+		}
+		break;
+	default:
+		return false;
+	}
+	return !draw.packetBacked && draw.drawPacketIndex == -1
+		&& draw.depthDrawPacketIndex == -1 && !draw.depthPrerequisite
+		&& draw.firstEvaluatedPass == -1 && draw.evaluatedPassCount == 0
+		&& draw.activePassCount == 0 && draw.drawablePassCount == 0
+		&& draw.inactivePassCount == 0 && draw.activeNoopPassCount == 0
+		&& draw.noopPassCount == 0;
+}
+
+static bool RB_SharedWorldAmbientGLMapDepth(
+		const rendererDepthState_t &depth, int &stateBits ) {
+	if ( !depth.testEnabled ) {
+		return false;
+	}
+	if ( !depth.writeEnabled ) {
+		stateBits |= GLS_DEPTHMASK;
+	}
+	switch ( depth.compareOperation ) {
+	case RENDERER_COMPARE_LESS_OR_EQUAL:
+		stateBits |= GLS_DEPTHFUNC_LESS;
+		return true;
+	case RENDERER_COMPARE_EQUAL:
+		stateBits |= GLS_DEPTHFUNC_EQUAL;
+		return true;
+	case RENDERER_COMPARE_ALWAYS:
+		stateBits |= GLS_DEPTHFUNC_ALWAYS;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedWorldAmbientGLBuildState(
+		const rendererEvaluatedMaterialPass_t &pass,
+		rbSharedWorldAmbientGLPreparedPass_t &prepared ) {
+	prepared.stateBits = 0;
+	prepared.alphaFunction = GL_ALWAYS;
+	prepared.cullType = CT_FRONT_SIDED;
+	if ( pass.kind != RENDERER_MATERIAL_PASS_SURFACE
+			|| pass.programFamily != RENDERER_PROGRAM_FIXED
+			|| pass.programKey != 0
+			|| pass.texgen != RENDERER_TEXGEN_EXPLICIT
+			|| pass.textureSemantic != RENDERER_TEXTURE_DIFFUSE
+			|| pass.textureResourceId == 0
+			|| pass.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.sourceAlpha != pass.blend.sourceColor
+			|| pass.blend.destinationAlpha != pass.blend.destinationColor ) {
+		return false;
+	}
+	const bool replacementBlend = pass.blend.sourceColor == RENDERER_BLEND_ONE
+		&& pass.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( pass.blend.enabled == replacementBlend
+			|| !RB_SharedGuiGLMapSourceBlend(
+				pass.blend.sourceColor, prepared.stateBits )
+			|| !RB_SharedGuiGLMapDestinationBlend(
+				pass.blend.destinationColor, prepared.stateBits )
+			|| !RB_SharedWorldAmbientGLMapDepth(
+				pass.depth, prepared.stateBits )
+			|| !RB_SharedGuiGLMapCull( pass.cull, prepared.cullType ) ) {
+		return false;
+	}
+	if ( ( pass.colorWriteMask
+			& ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RGBA ) ) != 0 ) {
+		return false;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		prepared.stateBits |= GLS_REDMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		prepared.stateBits |= GLS_GREENMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		prepared.stateBits |= GLS_BLUEMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		prepared.stateBits |= GLS_ALPHAMASK;
+	}
+	return RB_SharedGuiGLMapAlphaCompare(
+		pass.alphaTestCompareOperation, prepared.alphaFunction );
+}
+
+static bool RB_SharedWorldAmbientGLPreflight( const viewDef_t *viewDef,
+		const classicWorldAmbientDomainView_t &view, int &failureDetail ) {
+	rbSharedWorldAmbientGLPreparedView_t &prepared =
+		rbSharedWorldAmbientGLPreparedView;
+	std::memset( &prepared, 0, sizeof( prepared ) );
+	prepared.view = &view;
+	prepared.viewDef = viewDef;
+
+	if ( viewDef == NULL || view.viewDef != viewDef || !view.ready
+			|| viewDef->viewEntitys == NULL
+			|| view.sourceSurfaceCount != viewDef->numDrawSurfs
+			|| view.sourceSurfaceCount < 0
+			|| view.sourceSurfaceCount > SCENE_PACKET_MAX_DRAWS
+			|| view.drawableSurfaceCount < 0
+			|| view.drawableSurfaceCount > view.sourceSurfaceCount
+			|| view.noopSurfaceCount
+				!= view.sourceSurfaceCount - view.drawableSurfaceCount
+			|| view.drawCount < 0
+			|| view.drawCount > CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_DRAWS
+			|| view.evaluatedPassCount < 0
+			|| view.evaluatedPassCount
+				> CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES
+			|| ( viewDef->numDrawSurfs > 0 && viewDef->drawSurfs == NULL ) ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_VIEW );
+		return false;
+	}
+
+	const int allowedRenderFlags =
+		RF_NO_GUI | RF_PENUMBRA_MAP | RF_PRIMARY_VIEW;
+	if ( viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
+			|| viewDef->isEditor || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
+			|| viewDef->renderWorld == NULL || viewDef->viewLights != NULL
+			|| viewDef->renderView.viewID < 0
+			|| ( viewDef->renderFlags & ~allowedRenderFlags ) != 0
+			|| viewDef->numOutlineDrawSurfs != 0
+			|| viewDef->renderView.globalMaterial != NULL
+			|| r_showOverDraw.GetInteger() != 0 || r_singleTriangle.GetBool()
+			|| r_skipAmbient.GetBool() || r_skipRender.GetBool()
+			|| r_skipRenderContext.GetBool()
+			|| r_portalsDistanceCull.GetBool()
+			|| r_celShading.GetBool() || r_celShadingWorld.GetBool()
+			|| RB_STD_ForceAmbientValue() > 0.0f ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+	const int supportedSpecialEffects = rbRVSpecialActiveMask
+		& ( SPECIAL_EFFECT_BLUR | SPECIAL_EFFECT_AL );
+	if ( rbRVSpecialCommandFrame == backEnd.frameCount
+			&& rbRVSpecialCommandView == viewDef
+			&& ( supportedSpecialEffects != 0 || rbRVSpecialBlurPrepared
+				|| rbRVSpecialALPrepared ) ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_SPECIAL_EFFECTS );
+		return false;
+	}
+	if ( backEnd.renderTexture != NULL || backEnd.feedbackRenderTexture != NULL ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_TARGET );
+		return false;
+	}
+	if ( !glConfig.isInitialized || globalImages == NULL
+			|| glConfig.maxTextureUnits < 1
+			|| glConfig.maxTextureImageUnits < 1
+			|| glConfig.maxTextureCoords < 1 ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_CAPACITY );
+		return false;
+	}
+	if ( view.viewportX1 != viewDef->viewport.x1
+			|| view.viewportY1 != viewDef->viewport.y1
+			|| view.viewportX2 != viewDef->viewport.x2
+			|| view.viewportY2 != viewDef->viewport.y2
+			|| view.scissorX1 != viewDef->scissor.x1
+			|| view.scissorY1 != viewDef->scissor.y1
+			|| view.scissorX2 != viewDef->scissor.x2
+			|| view.scissorY2 != viewDef->scissor.y2
+			|| std::memcmp( view.projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view.projectionMatrix ) ) != 0
+			|| !RB_SharedGuiGLMatrixValid( view.projectionMatrix, 16 ) ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+
+	int previousSourceSurface = -1;
+	int evaluatedPasses = 0;
+	int drawablePasses = 0;
+	int activePasses = 0;
+	int inactivePasses = 0;
+	int activeNoopPasses = 0;
+	int noopPasses = 0;
+	int sourceNoopSurfaces = 0;
+	int phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ] = { 0, 0 };
+	int phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ] = { 0, 0 };
+	for ( int drawIndex = 0; drawIndex < view.drawCount; ++drawIndex ) {
+		const classicWorldAmbientDomainDraw_t *draw =
+			R_ClassicWorldAmbientDomain_ViewDraw( view, drawIndex );
+		if ( draw == NULL || draw->sourceSurfaceIndex < 0
+				|| draw->sourceSurfaceIndex >= viewDef->numDrawSurfs
+				|| draw->sourceSurfaceIndex <= previousSourceSurface
+				|| prepared.seenSourceSurfaces[ draw->sourceSurfaceIndex ]
+				|| viewDef->drawSurfs[ draw->sourceSurfaceIndex ]
+					!= draw->legacyDrawSurf ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_DRAW_RANGE, drawIndex );
+			return false;
+		}
+		prepared.seenSourceSurfaces[ draw->sourceSurfaceIndex ] = true;
+		previousSourceSurface = draw->sourceSurfaceIndex;
+		if ( draw->sourceSurface
+				!= CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_DRAWABLE ) {
+			if ( !RB_SharedWorldAmbientGLSourceNoopValid( *draw ) ) {
+				failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+					RB_SHARED_WORLD_AMBIENT_GL_REJECT_DRAW_RANGE, drawIndex );
+				return false;
+			}
+			sourceNoopSurfaces++;
+			continue;
+		}
+		if ( !draw->packetBacked || draw->legacyDrawSurf == NULL
+				|| draw->phase < CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG
+				|| draw->phase >= CLASSIC_WORLD_AMBIENT_PHASE_COUNT ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_PHASE, drawIndex );
+			return false;
+		}
+
+		const drawSurf_t *surf = draw->legacyDrawSurf;
+		const srfTriangles_t *tri = surf->geo;
+		if ( tri == NULL || draw->firstIndex != 0 || draw->vertexOffset != 0
+				|| draw->tableGeneration != view.tableGeneration
+				|| draw->hasAmbientCache != ( tri->ambientCache != NULL )
+				|| draw->hasIndexCache != ( tri->indexCache != NULL )
+				|| draw->vertexCount <= 0 || draw->indexCount <= 0
+				|| draw->indexCount % 3 != 0
+				|| tri->numVerts != draw->vertexCount
+				|| tri->numIndexes != draw->indexCount
+				|| draw->vertexCount > idMath::INT_MAX
+					/ static_cast<int>( sizeof( idDrawVert ) )
+				|| draw->indexCount > idMath::INT_MAX
+					/ static_cast<int>( sizeof( glIndex_t ) )
+				|| surf->decalColorCache != NULL
+				|| !RB_SharedGuiGLMatrixValid( draw->modelViewMatrix, 16 ) ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_GEOMETRY, drawIndex );
+			return false;
+		}
+		const long long scissorWidth = static_cast<long long>( draw->scissorX2 )
+			- draw->scissorX1 + 1;
+		const long long scissorHeight = static_cast<long long>( draw->scissorY2 )
+			- draw->scissorY1 + 1;
+		if ( scissorWidth <= 0 || scissorHeight <= 0
+				|| scissorWidth > idMath::INT_MAX
+				|| scissorHeight > idMath::INT_MAX ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_GEOMETRY, drawIndex );
+			return false;
+		}
+		if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true )
+				|| !RB_SharedGuiGLCacheValid( tri->ambientCache, false,
+					draw->vertexCount * static_cast<int>( sizeof( idDrawVert ) ) ) ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_VERTEX_CACHE, drawIndex );
+			return false;
+		}
+		R_TouchVertexCache( tri->ambientCache );
+		if ( tri->indexCache != NULL ) {
+			if ( !RB_SharedGuiGLCacheValid( tri->indexCache, true,
+					draw->indexCount * static_cast<int>( sizeof( glIndex_t ) ) ) ) {
+				failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+					RB_SHARED_WORLD_AMBIENT_GL_REJECT_INDEX_CACHE, drawIndex );
+				return false;
+			}
+			R_TouchVertexCache( tri->indexCache );
+		}
+		if ( ( !r_useIndexBuffers.GetBool() || tri->indexCache == NULL )
+				&& tri->indexes == NULL ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_INDEX_CACHE, drawIndex );
+			return false;
+		}
+		if ( draw->evaluatedPassCount < 0
+				|| draw->evaluatedPassCount
+					> static_cast<int>( RENDERER_CONTRACT_MAX_MATERIAL_PASSES )
+				|| prepared.passCount
+					> CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES
+						- draw->evaluatedPassCount ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_PASS_RANGE, drawIndex );
+			return false;
+		}
+
+		rbSharedWorldAmbientGLPreparedDraw_t &preparedDraw =
+			prepared.draws[ prepared.drawCount++ ];
+		preparedDraw.draw = draw;
+		preparedDraw.surf = surf;
+		preparedDraw.tri = tri;
+		preparedDraw.firstPass = prepared.passCount;
+		preparedDraw.passCount = draw->evaluatedPassCount;
+
+		int drawDrawablePasses = 0;
+		int drawActivePasses = 0;
+		int drawInactivePasses = 0;
+		int drawActiveNoopPasses = 0;
+		for ( int passIndex = 0; passIndex < draw->evaluatedPassCount;
+				++passIndex ) {
+			const rendererEvaluatedMaterialPass_t *pass =
+				R_ClassicWorldAmbientDomain_DrawPass( *draw, passIndex );
+			const materialResourceTextureBinding_t *binding =
+				R_ClassicWorldAmbientDomain_DrawPassTexture( *draw, passIndex );
+			if ( pass == NULL || pass->order != static_cast<std::uint32_t>( passIndex )
+					|| pass->sourceStageIndex < 0
+					|| pass->vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+					|| pass->vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+					|| !RB_SharedGuiGLPassDispositionValid( *pass )
+					|| !RB_SharedGuiGLFloatValid( pass->condition )
+					|| !RB_SharedGuiGLMatrixValid( pass->color, 4 )
+					|| !RB_SharedGuiGLMatrixValid( pass->textureMatrix, 6 )
+					|| !RB_SharedGuiGLFloatValid( pass->alphaTest )
+					|| !RB_SharedGuiGLFloatValid( pass->polygonOffsetFactor )
+					|| !RB_SharedGuiGLFloatValid( pass->polygonOffsetUnits )
+					|| static_cast<double>( pass->textureMatrix[2] )
+						< -static_cast<double>( idMath::INT_MAX ) - 1.0
+					|| static_cast<double>( pass->textureMatrix[2] )
+						> static_cast<double>( idMath::INT_MAX )
+					|| static_cast<double>( pass->textureMatrix[5] )
+						< -static_cast<double>( idMath::INT_MAX ) - 1.0
+					|| static_cast<double>( pass->textureMatrix[5] )
+						> static_cast<double>( idMath::INT_MAX ) ) {
+				failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+					RB_SHARED_WORLD_AMBIENT_GL_REJECT_PASS_STATE,
+					drawIndex, passIndex );
+				return false;
+			}
+			rbSharedWorldAmbientGLPreparedPass_t &preparedPass =
+				prepared.passes[ prepared.passCount++ ];
+			std::memset( &preparedPass, 0, sizeof( preparedPass ) );
+			preparedPass.pass = pass;
+			if ( !RB_SharedWorldAmbientGLBuildState( *pass, preparedPass ) ) {
+				failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+					RB_SHARED_WORLD_AMBIENT_GL_REJECT_PASS_STATE,
+					drawIndex, passIndex );
+				return false;
+			}
+			if ( !RB_SharedGuiGLTextureBindingValid(
+					*pass, binding, preparedPass.image ) ) {
+				failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+					RB_SHARED_WORLD_AMBIENT_GL_REJECT_TEXTURE,
+					drawIndex, passIndex );
+				return false;
+			}
+			preparedPass.filter = binding->filter;
+			preparedPass.repeat = binding->repeat;
+			if ( pass->disposition == RENDERER_MATERIAL_PASS_DRAW ) {
+				drawDrawablePasses++;
+				drawablePasses++;
+				phaseDrawablePasses[ draw->phase ]++;
+			}
+			if ( pass->active ) {
+				drawActivePasses++;
+				activePasses++;
+				if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+					drawActiveNoopPasses++;
+					activeNoopPasses++;
+				}
+			} else {
+				drawInactivePasses++;
+				inactivePasses++;
+			}
+			if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				noopPasses++;
+				phaseNoopPasses[ draw->phase ]++;
+			}
+			if ( pass->disposition == RENDERER_MATERIAL_PASS_DRAW
+					&& pass->vertexColor != RENDERER_VERTEX_COLOR_IGNORE
+					&& ( glConfig.maxTextureUnits < 2
+						|| glConfig.maxTextureImageUnits < 2
+						|| glConfig.maxTextureCoords < 2
+						|| globalImages->whiteImage == NULL
+						|| !globalImages->whiteImage->IsLoaded()
+						|| globalImages->whiteImage->IsDefaulted()
+						|| globalImages->whiteImage->GetOpts().textureType != TT_2D
+						|| globalImages->whiteImage->GetDeviceHandle() == 0 ) ) {
+				failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+					RB_SHARED_WORLD_AMBIENT_GL_REJECT_TEXTURE_CAPACITY,
+					drawIndex, passIndex );
+				return false;
+			}
+			evaluatedPasses++;
+		}
+		if ( drawActivePasses != draw->activePassCount
+				|| drawDrawablePasses != draw->drawablePassCount
+				|| drawInactivePasses != draw->inactivePassCount
+				|| drawActiveNoopPasses != draw->activeNoopPassCount
+				|| drawInactivePasses + drawActiveNoopPasses
+					!= draw->noopPassCount ) {
+			failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_COVERAGE, drawIndex );
+			return false;
+		}
+	}
+
+	if ( prepared.drawCount != view.drawableSurfaceCount
+			|| sourceNoopSurfaces != view.noopSurfaceCount
+			|| evaluatedPasses != view.evaluatedPassCount
+			|| activePasses != view.activePassCount
+			|| drawablePasses != view.drawablePassCount
+			|| inactivePasses != view.inactivePassCount
+			|| activeNoopPasses != view.activeNoopPassCount
+			|| noopPasses != view.noopPassCount
+			|| phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+				!= view.phaseDrawablePassCount[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+			|| phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ]
+				!= view.phaseDrawablePassCount[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ]
+			|| phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+				!= view.phaseNoopPassCount[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+			|| phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ]
+				!= view.phaseNoopPassCount[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ] ) {
+		failureDetail = RB_SharedWorldAmbientGLFailureDetail(
+			RB_SHARED_WORLD_AMBIENT_GL_REJECT_COVERAGE );
+		return false;
+	}
+	prepared.drawablePasses = drawablePasses;
+	prepared.noopPasses = noopPasses;
+	prepared.ready = true;
+	return true;
+}
+
+static bool RB_PrepareSharedWorldAmbientView( const viewDef_t *viewDef ) {
+	std::memset( &rbSharedWorldAmbientGLPreparedView, 0,
+		sizeof( rbSharedWorldAmbientGLPreparedView ) );
+	const classicWorldAmbientDomainView_t *view =
+		R_ClassicWorldAmbientDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		return RB_SharedWorldAmbientGLFail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_NOT_READY,
+			RB_SharedWorldAmbientGLFailureDetail(
+				RB_SHARED_WORLD_AMBIENT_GL_REJECT_VIEW ) );
+	}
+	if ( view->backendOutcome[ CLASSIC_WORLD_AMBIENT_BACKEND_GL ]
+			== CLASSIC_WORLD_AMBIENT_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return RB_SharedWorldAmbientGLFail( viewDef,
+			view->failure != CLASSIC_WORLD_AMBIENT_FAILURE_NONE
+				? view->failure : CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	int failureDetail = 0;
+	if ( !RB_SharedWorldAmbientGLPreflight( viewDef, *view, failureDetail ) ) {
+		return RB_SharedWorldAmbientGLFail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED, failureDetail );
+	}
+	return true;
+}
+
+static void RB_SharedWorldAmbientGLRestoreState( void ) {
+	glDisable( GL_ALPHA_TEST );
+	glDisable( GL_POLYGON_OFFSET_FILL );
+	glDisable( GL_SAMPLE_ALPHA_TO_COVERAGE );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glMatrixMode( GL_TEXTURE );
+	glLoadIdentity();
+	glMatrixMode( GL_MODELVIEW );
+	GL_TexEnv( GL_MODULATE );
+	globalImages->BindNull();
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBlendEquation( GL_FUNC_ADD );
+	glEnable( GL_BLEND );
+	glEnable( GL_SCISSOR_TEST );
+	glEnable( GL_DEPTH_TEST );
+	GL_Cull( CT_FRONT_SIDED );
+	backEnd.currentSpace = NULL;
+}
+
+static void RB_DrawSharedWorldAmbientPhase(
+		classicWorldAmbientPhase_t phase ) {
+	rbSharedWorldAmbientGLPreparedView_t &prepared =
+		rbSharedWorldAmbientGLPreparedView;
+	if ( !prepared.ready || prepared.view == NULL || prepared.viewDef == NULL
+			|| phase < CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG
+			|| phase >= CLASSIC_WORLD_AMBIENT_PHASE_COUNT
+			|| prepared.completedPhase[ phase ] ) {
+		return;
+	}
+	// Commit begins with the first phase. All fallible work completed during the
+	// complete-view preflight, so neither phase can return to classic rendering.
+	prepared.committed = true;
+	prepared.completedPhase[ phase ] = true;
+	RB_LogComment( "---------- RB_DrawSharedWorldAmbientPhase ----------\n" );
+	if ( glConfig.GLSLProgramAvailable ) {
+		glUseProgramObjectARB( 0 );
+	}
+	if ( glConfig.ARBVertexProgramAvailable ) {
+		glDisable( GL_VERTEX_PROGRAM_ARB );
+	}
+	if ( glConfig.ARBFragmentProgramAvailable ) {
+		glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	}
+	glEnable( GL_DEPTH_TEST );
+	glEnable( GL_BLEND );
+	glBlendEquation( GL_FUNC_ADD );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glDisable( GL_ALPHA_TEST );
+	glDisable( GL_POLYGON_OFFSET_FILL );
+
+	for ( int drawIndex = 0; drawIndex < prepared.drawCount; ++drawIndex ) {
+		const rbSharedWorldAmbientGLPreparedDraw_t &preparedDraw =
+			prepared.draws[ drawIndex ];
+		const classicWorldAmbientDomainDraw_t &draw = *preparedDraw.draw;
+		if ( draw.phase != phase ) {
+			continue;
+		}
+		const drawSurf_t *surf = preparedDraw.surf;
+		const srfTriangles_t *tri = preparedDraw.tri;
+		glLoadMatrixf( draw.modelViewMatrix );
+		if ( r_useScissor.GetBool() ) {
+			backEnd.currentScissor.x1 = draw.scissorX1;
+			backEnd.currentScissor.y1 = draw.scissorY1;
+			backEnd.currentScissor.x2 = draw.scissorX2;
+			backEnd.currentScissor.y2 = draw.scissorY2;
+			glScissor( prepared.viewDef->viewport.x1 + draw.scissorX1,
+				prepared.viewDef->viewport.y1 + draw.scissorY1,
+				draw.scissorX2 + 1 - draw.scissorX1,
+				draw.scissorY2 + 1 - draw.scissorY1 );
+		}
+		idDrawVert *ambientVertices = static_cast<idDrawVert *>(
+			vertexCache.Position( tri->ambientCache ) );
+		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ambientVertices,
+				offsetof( idDrawVert, xyz ) ) );
+		glTexCoordPointer( 2, GL_FLOAT, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ambientVertices,
+				offsetof( idDrawVert, st ) ) );
+		for ( int passIndex = 0; passIndex < preparedDraw.passCount;
+				++passIndex ) {
+			const rbSharedWorldAmbientGLPreparedPass_t &preparedPass =
+				prepared.passes[ preparedDraw.firstPass + passIndex ];
+			const rendererEvaluatedMaterialPass_t &pass = *preparedPass.pass;
+			if ( pass.disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				prepared.submittedNoops++;
+				continue;
+			}
+			GL_Cull( preparedPass.cullType );
+			RB_SharedGuiGLPrepareVertexColor( surf, ambientVertices, pass );
+			GL_SelectTexture( 0 );
+			preparedPass.image->SetSamplerState(
+				preparedPass.filter, preparedPass.repeat );
+			preparedPass.image->Bind();
+			GL_State( preparedPass.stateBits );
+			glBlendEquation( GL_FUNC_ADD );
+			if ( pass.alphaTestEnabled ) {
+				glEnable( GL_ALPHA_TEST );
+				glAlphaFunc( preparedPass.alphaFunction, pass.alphaTest );
+			}
+			if ( pass.polygonOffsetEnabled ) {
+				glPolygonOffset(
+					pass.polygonOffsetFactor, pass.polygonOffsetUnits );
+				glEnable( GL_POLYGON_OFFSET_FILL );
+			}
+			RB_SharedGuiGLLoadTextureMatrix( pass );
+			RB_DrawElementsWithCounters( tri );
+			prepared.submittedPasses[ phase ]++;
+			RB_SharedGuiGLFinishPass( pass );
+		}
+	}
+	RB_SharedWorldAmbientGLRestoreState();
+	if ( phase == CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ) {
+		const bool coverageRecorded = R_ClassicWorldAmbientDomain_RecordOwned(
+			prepared.viewDef, CLASSIC_WORLD_AMBIENT_BACKEND_GL,
+			prepared.submittedPasses[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ],
+			prepared.submittedPasses[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ],
+			prepared.submittedNoops );
+		if ( !coverageRecorded ) {
+			common->Warning( "OpenGL: shared world ambient coverage rejected after committed view" );
+		}
+	}
+}
+
+/*
 ==================
 RB_STD_T_RenderShaderPasses
 
@@ -9462,7 +10141,7 @@ RB_STD_ForceAmbient
 Lift the final scene toward a minimum brightness floor.
 ==================
 */
-static void RB_STD_ForceAmbient( void ) {
+static float RB_STD_ForceAmbientValue( void ) {
 	const bool useSimpleInteraction = !r_testARBProgram.GetBool() &&
 		( r_useSimpleInteraction.GetBool() || glConfig.preferSimpleInteraction );
 	const GLuint interactionVertexProgram = r_testARBProgram.GetBool() ? VPROG_TEST : ( useSimpleInteraction ? VPROG_SIMPLE_INTERACTION : VPROG_INTERACTION );
@@ -9473,7 +10152,12 @@ static void RB_STD_ForceAmbient( void ) {
 			!R_IsARBProgramValid( GL_VERTEX_PROGRAM_ARB, interactionVertexProgram ) ||
 			!R_IsARBProgramValid( GL_FRAGMENT_PROGRAM_ARB, interactionFragmentProgram ) );
 	const float ambientFloor = interactionRescueActive ? 0.20f : 0.0f;
-	const float ambient = idMath::ClampFloat( 0.0f, 1.0f, Max( r_forceAmbient.GetFloat(), ambientFloor ) );
+	return idMath::ClampFloat( 0.0f, 1.0f,
+		Max( r_forceAmbient.GetFloat(), ambientFloor ) );
+}
+
+static void RB_STD_ForceAmbient( void ) {
+	const float ambient = RB_STD_ForceAmbientValue();
 	if ( ambient <= 0.0f || !backEnd.viewDef->viewEntitys ) {
 		return;
 	}
@@ -11986,15 +12670,27 @@ void	RB_STD_DrawView( void ) {
 		backEnd.viewDef->renderWorld->RenderPortalFades();
 	}
 
+	// Decide complete ambient/material ownership once, before either authored
+	// phase changes the framebuffer. A rejected view retains both untouched
+	// classic walks; a committed view can no longer fall back between phases.
+	const bool sharedWorldAmbientOwned =
+		r_rendererSharedWorldAmbient.GetBool()
+		&& RB_PrepareSharedWorldAmbientView( backEnd.viewDef );
+
 	// Draw the non-light dependent base shading that retail Q4 submits before
 	// fog: opaque, decal, and far-sort surfaces. Medium/close translucent
 	// surfaces are held until after fog so additive BSE layers are not painted
 	// over by fog volumes that only owned the opaque scene depth.
 	const int processed = RB_STD_FindPostProcessStart( drawSurfs, numDrawSurfs );
-	const bool ambientLegacySkipped = R_ModernGLExecutor_LegacyPassCanSkipForView( RENDER_PASS_AMBIENT, backEnd.viewDef );
+	const bool ambientLegacySkipped = !sharedWorldAmbientOwned
+		&& R_ModernGLExecutor_LegacyPassCanSkipForView(
+			RENDER_PASS_AMBIENT, backEnd.viewDef );
 	const bool preFogFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsPreFogMaterialPass );
 	const bool postFogFeedback = ambientLegacySkipped && RB_HasLegacyFeedbackDrawSurfs( drawSurfs, processed, RB_DrawSurfIsPostFogMaterialPass );
-	if ( ambientLegacySkipped ) {
+	if ( sharedWorldAmbientOwned ) {
+		RB_DrawSharedWorldAmbientPhase(
+			CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG );
+	} else if ( ambientLegacySkipped ) {
 		if ( preFogFeedback || postFogFeedback ) {
 			R_ModernGLExecutor_ComposeVisibleSceneForPost();
 			backEnd.currentRenderCopied = false;
@@ -12054,7 +12750,10 @@ void	RB_STD_DrawView( void ) {
 		backEnd.currentDepthCopied = false;
 	}
 
-	if ( ambientLegacySkipped ) {
+	if ( sharedWorldAmbientOwned ) {
+		RB_DrawSharedWorldAmbientPhase(
+			CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG );
+	} else if ( ambientLegacySkipped ) {
 		if ( postFogFeedback ) {
 			backEnd.currentRenderCopied = false;
 			backEnd.currentDepthCopied = false;

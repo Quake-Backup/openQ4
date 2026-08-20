@@ -81,18 +81,21 @@ when a status differs or a narrower qualification is needed.
 | General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Its first production consumer is the learned level-load read/PK4-inflate and framing/integrity pipeline; live asset parsing, renderer/audio upload, and renderer-front-end work remain with their established owners. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. Clean final-package recapture remains a separate release-promotion gate. |
 | Generated caches, streaming, and learned preload manifests | **Implemented and locally validated; release promotion pending** | Successful loads produce exact map/mode/entity-filter/search/PK4/settings manifests. Matching loads use bounded cancellable read/PK4 inflation followed by worker-safe typed framing and integrity validation, publish an immutable generation/source-identity DTO, and let the established main owner parse, adopt, and upload. Transactional static/MD5/MD5R model, classic-proc world, collision, and animation-v3 caches are private to `fs_savepath` and fall back to authoritative VFS sources. This is learned level-load preparation, not general asynchronous asset decode/upload streaming or portal-aware live reprioritization. Local Windows runtime evidence is recorded; clean committed-package performance, broader cancellation/failure campaigns, and release-platform evidence remain open. |
 | Shared renderer contracts and GPU skinning | **Implemented; opt-in and release promotion pending** | Ordered material/pass, clip-space, semantic vertex-layout, typed buffer-slice, exact four-weight, and joint-palette contracts are shared by OpenGL and Vulkan. `r_gpuSkinning` remains default-off; admitted MD5/MD5R surfaces produce the ordinary `idDrawVert` stream through backend compute while CPU positions and complete fallback remain authoritative for gameplay consumers and stencil volumes. Clean-package visual/performance and platform/driver promotion evidence remains open. |
-| Modern classic-frame ownership | **Experimental; first complete domain implemented** | Fixed-function root 2D GUI views now have a default-off, whole-view shared ownership corridor: OpenGL and Vulkan consume the same ordered evaluated stage records, and any unsupported surface/stage/resource/backend condition executes the untouched classic view. This satisfies the first complete-domain implementation gate without claiming modern world lighting; ambient/material, interaction, fog/blend, deform, subview, in-world GUI, and post domains remain classic or experimental. |
+| Modern classic-frame ownership | **Experimental; two complete domains implemented and locally validated** | Fixed-function root 2D GUI views and eligible ambient-only 3D world views now have separate default-off, whole-view shared ownership corridors. OpenGL and Vulkan consume the same ordered evaluated stage records, and any unsupported view/surface/stage/resource/backend condition executes the untouched classic view. The world corridor preserves the established depth prerequisite and pre-fog/post-fog ordering; stock `maps/tools/mv2` option-off/on captures matched exactly on both backends, and a stock deform override proved zero-draw whole-view fallback. This does not claim interaction-lighting parity; clean-package/platform promotion evidence remains open. |
 | Temporal presentation | **Planned** | Complete motion vectors, history ownership, TAA/TAAU, reactive/disocclusion handling, and dynamic-resolution integration are absent. SMAA remains the compatibility path. |
 | Modern PBR lighting and idTech 6-like follow-ons | **Planned** | GGX/IBL, reflection probes, clustered decals/probes, froxel volumetrics, SSR/SSGI, GPU-driven visible ownership, and optional sparse residency all remain after the shared-contract and temporal gates. |
 
 Milestones A, B, and C have completed their implementation and local integration
-gates. Milestone D now has its first complete domain: eligible fixed-function
-root 2D GUI views use the same ordered evaluated records on both backends, with
-one-setting, whole-view classic rollback. The next recommended implementation
-target is **Milestone D world ambient/material ownership**, extending that
-corridor to a complete eligible 3D-view domain without skipping ahead to
-temporal or PBR lighting. Release qualification remains a separate
-track: repeat and retain the Milestone A-C acceptance sets from clean committed
+gates. Milestone D now has two implemented complete domains: eligible
+fixed-function root 2D GUI views and eligible ambient-only 3D world views use
+the same ordered evaluated records on both backends, with independent settings
+and whole-view classic rollback. Runtime qualification for the new world
+ambient/material corridor now passes locally on both backends with exact
+eligible-view output and named deform fallback. The next recommended
+implementation target is **Milestone D interaction-lighting ownership and
+parity**, without skipping ahead to temporal or PBR lighting. Release
+qualification remains a separate track: repeat and retain the Milestone A-D
+acceptance sets from clean committed
 source and a freshly staged final package, with the required platform and driver
 coverage. The PBR Phase 0-3 foundation is intentionally not a reason to skip
 ahead to visible PBR lighting.
@@ -323,7 +326,7 @@ temporal or PBR work multiplies the parity surface.
 | A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
 | B. Loading and cache modernization | **Implemented and locally validated; release promotion pending** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. Promotion still requires retained final committed-package campaigns, measurements, and release-platform qualification recorded in the loading/cache evidence tables. General asynchronous owner decode/upload and portal-aware live reprioritization remain future work rather than part of this completed slice. |
 | C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
-| D. Modern classic-frame ownership | **Experimental; first complete domain implemented** | Eligible fixed-function root 2D GUI views are transactionally evaluated and consumed from the same ordered records by GL and Vulkan, with complete-view classic rollback. World ambient/material, interaction, fog/blend, deform, subview, in-world GUI, and post ownership remain the next dependencies. |
+| D. Modern classic-frame ownership | **Experimental; two complete domains implemented and locally validated** | Eligible fixed-function root 2D GUI views and eligible ambient-only 3D world views are transactionally evaluated and consumed from the same ordered records by GL and Vulkan, with complete-view classic rollback. The world corridor keeps the established depth prepass and pre-fog/post-fog split; retained development-worktree GL/Vulkan captures prove exact eligible output and deform-blocker fallback. Interaction-lighting ownership/parity is the next dependency, followed by fog/blend, deform, subview, in-world GUI, and post ownership; clean-package/platform promotion evidence remains open. |
 | E. Temporal presentation | **Planned** | Milestones A and C now supply the timing and shared-contract prerequisites; incomplete Milestone D still blocks complete frame ownership and the visible motion-vector corridor. |
 | F. Modern materials and advanced lighting | **Foundation only** | PBR authoring/resource Phases 0-3 exist, but visible PBR/IBL and advanced-lighting ownership must wait for Milestones C-E. |
 
@@ -430,16 +433,21 @@ default-off capability can be promoted; the exact procedure is recorded in
 
 ### Milestone D: modern classic-frame ownership
 
-1. **In progress:** fixed-function root 2D GUI stage conditions, colors,
-   repeated order, matrices, images, samplers, and render state are expressed
-   through the shared contracts. World ambient/material, interaction, fog,
-   blend, deform, subview, in-world GUI, cinematic, and post behavior remains.
-2. **Implemented for the first complete domain:** GL and Vulkan consume the same
-   per-draw evaluated semantic records, with backend-specific execution and an
-   untouched whole-view classic rollback.
-3. **Implemented for the first complete domain:** scene packets and the material
-   resource table promote a GUI view only after transactional preparation and
-   complete backend preflight; all other domains retain their established owner.
+1. **In progress:** fixed-function root 2D GUI and world ambient/material stage
+   conditions, colors, repeated order, matrices, images, samplers, and render
+   state are expressed through the shared contracts. Interaction lighting,
+   fog/blend, deform, subview, in-world GUI, cinematic, and post behavior remain.
+2. **Implemented for the first two complete domains:** GL and Vulkan consume the
+   same per-draw evaluated semantic records, with backend-specific execution and
+   an untouched whole-view classic rollback.
+3. **Implemented for the first two complete domains:** scene packets and the
+   material resource table promote a GUI or eligible ambient-only world view
+   only after transactional preparation and complete backend preflight; all
+   other domains retain their established owner.
+4. **Implemented for world ambient/material:** opaque and perforated draws must
+   match an established depth packet, translucent draws retain their classic
+   depth behavior, and ordered material work is split into pre-fog and post-fog
+   phases without taking ownership of depth or fog.
 
 Exit gate: at least one complete stock-frame domain is modern-owned on both
 backends, no visible light or surface is silently dropped, and rollback produces
@@ -450,7 +458,16 @@ procedure, and remaining boundaries are recorded in
 a claim that modern visible lighting or all of Milestone D is complete. Local
 Windows stock `game/storage1` engine captures passed with the corridor both off
 and on for GL and Vulkan; enabled diagnostics recorded complete owned views and
-explicit whole-view fallbacks on both backends.
+explicit whole-view fallbacks on both backends. The second complete-domain
+implementation is documented in
+[Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md);
+its bordered 1280x720 stock `maps/tools/mv2` option-off/on engine captures match
+exactly on GL and Vulkan, enabled diagnostics report one owned pre-fog draw with
+domain hash `dc18ed8c0539bbfc`, and the stock `shaderDemos/move` deform override
+reports a named zero-draw whole-view fallback on both backends. These are local
+development-worktree results, not clean-package or platform promotion. The next
+implementation target is interaction-lighting ownership/parity, not Milestone E
+temporal presentation or Milestone F PBR/advanced lighting.
 
 ### Milestone E: temporal presentation
 

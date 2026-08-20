@@ -49,6 +49,7 @@
 #include "VulkanDevice.h"
 #include "VulkanGpuFrameTiming.h"
 #include "../ClassicGuiDomain.h"
+#include "../ClassicWorldAmbientDomain.h"
 #include "../GpuSkinning.h"
 #include "../MaterialResourceTable.h"
 #include "../RendererContracts.h"
@@ -7846,6 +7847,709 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 }
 
 /*
+===============================================================================
+
+	Backend-neutral classic world ambient/material whole-view consumer
+
+	Every descriptor, strict pipeline key, geometry upload, state mapping, and
+	coverage count is validated before commit.  The two ordered authored ranges
+	then execute at the established pre-fog and post-fog points without reading
+	legacy material stages or shader registers.
+
+===============================================================================
+*/
+
+enum vkClassicWorldAmbientRejectDetail_t {
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_NONE = 0,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEW_MUTATION,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_OFFSCREEN_TARGET,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_RENDER_SCOPE,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEWPORT,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_DOMAIN_COUNTS,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_DRAW_RECORD,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_GEOMETRY,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_RECORD,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_STATE,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_TEXTURE_BINDING,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_TEXTURE_RESIDENCY,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_DESCRIPTOR,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_PIPELINE,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_COVERAGE,
+	VK_CLASSIC_WORLD_AMBIENT_REJECT_PHASE
+};
+
+typedef struct vkClassicWorldAmbientDrawPlan_s {
+	const classicWorldAmbientDomainDraw_t *draw;
+	const srfTriangles_t *tri;
+	int vertexOffset;
+	int indexOffset;
+	int firstPass;
+	int passCount;
+	VkRect2D scissor;
+	float mvp[ 16 ];
+} vkClassicWorldAmbientDrawPlan_t;
+
+typedef struct vkClassicWorldAmbientPassPlan_s {
+	const rendererEvaluatedMaterialPass_t *pass;
+	VkPipeline pipeline;
+	VkDescriptorSet descriptor;
+	int stateBits;
+	float alphaTestMode;
+	VkCompareOp depthCompare;
+	VkCullModeFlags cullMode;
+} vkClassicWorldAmbientPassPlan_t;
+
+typedef struct vkClassicWorldAmbientPreparedView_s {
+	const classicWorldAmbientDomainView_t *view;
+	const viewDef_t *viewDef;
+	VkViewport viewport;
+	int drawCount;
+	int passCount;
+	int drawablePasses;
+	int noopPasses;
+	int submittedPasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
+	int submittedNoops;
+	bool ready;
+	bool committed;
+	bool completedPhase[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
+	vkClassicWorldAmbientDrawPlan_t draws[ CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_DRAWS ];
+	vkClassicWorldAmbientPassPlan_t passes[ CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES ];
+} vkClassicWorldAmbientPreparedView_t;
+
+static vkClassicWorldAmbientPreparedView_t vkClassicWorldAmbientPreparedView;
+
+static bool VK_ClassicWorldAmbient_Fail( const viewDef_t *viewDef,
+		classicWorldAmbientDomainFailure_t failure, int detail ) {
+	R_ClassicWorldAmbientDomain_RecordBackendFallback( viewDef,
+		CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN, failure, detail );
+	return false;
+}
+
+static bool VK_ClassicWorldAmbient_SourceNoopValid(
+		const classicWorldAmbientDomainDraw_t &draw ) {
+	switch ( draw.sourceSurface ) {
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_NULL_SURFACE:
+		if ( draw.legacyDrawSurf != NULL ) {
+			return false;
+		}
+		break;
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_MISSING_MATERIAL:
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_NO_AMBIENT:
+	case CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_EMPTY_GEOMETRY:
+		if ( draw.legacyDrawSurf == NULL ) {
+			return false;
+		}
+		break;
+	default:
+		return false;
+	}
+	return !draw.packetBacked && draw.drawPacketIndex == -1
+		&& draw.depthDrawPacketIndex == -1 && !draw.depthPrerequisite
+		&& draw.firstEvaluatedPass == -1 && draw.evaluatedPassCount == 0
+		&& draw.activePassCount == 0 && draw.drawablePassCount == 0
+		&& draw.inactivePassCount == 0 && draw.activeNoopPassCount == 0
+		&& draw.noopPassCount == 0;
+}
+
+static bool VK_ClassicWorldAmbient_MapState(
+		const rendererEvaluatedMaterialPass_t &pass,
+		vkClassicWorldAmbientPassPlan_t &plan ) {
+	if ( pass.kind != RENDERER_MATERIAL_PASS_SURFACE
+			|| pass.programFamily != RENDERER_PROGRAM_FIXED
+			|| pass.programKey != 0
+			|| pass.texgen != RENDERER_TEXGEN_EXPLICIT
+			|| pass.textureSemantic != RENDERER_TEXTURE_DIFFUSE
+			|| pass.textureResourceId == 0
+			|| ( pass.colorWriteMask
+				& ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RGBA ) ) != 0
+			|| pass.vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+			|| pass.vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+			|| pass.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.sourceAlpha != pass.blend.sourceColor
+			|| pass.blend.destinationAlpha != pass.blend.destinationColor
+			|| !pass.depth.testEnabled
+			|| ( pass.depth.compareOperation != RENDERER_COMPARE_LESS_OR_EQUAL
+				&& pass.depth.compareOperation != RENDERER_COMPARE_EQUAL
+				&& pass.depth.compareOperation != RENDERER_COMPARE_ALWAYS ) ) {
+		return false;
+	}
+	const bool replacementBlend = pass.blend.sourceColor == RENDERER_BLEND_ONE
+		&& pass.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( pass.blend.enabled == replacementBlend ) {
+		return false;
+	}
+	int sourceBits = 0;
+	int destinationBits = 0;
+	if ( !VK_ClassicGui_MapSourceBlend( pass.blend.sourceColor, sourceBits )
+			|| !VK_ClassicGui_MapDestinationBlend(
+				pass.blend.destinationColor, destinationBits )
+			|| !VK_ClassicGui_MapDepthCompare(
+				pass.depth.compareOperation, plan.depthCompare )
+			|| !VK_ClassicGui_MapAlphaTest( pass, plan.alphaTestMode )
+			|| !VK_ClassicGui_MapCull( pass.cull, plan.cullMode ) ) {
+		return false;
+	}
+	plan.stateBits = sourceBits | destinationBits;
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		plan.stateBits |= GLS_REDMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		plan.stateBits |= GLS_GREENMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		plan.stateBits |= GLS_BLUEMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		plan.stateBits |= GLS_ALPHAMASK;
+	}
+	if ( !std::isfinite( pass.condition ) || !std::isfinite( pass.alphaTest )
+			|| !std::isfinite( pass.polygonOffsetFactor )
+			|| !std::isfinite( pass.polygonOffsetUnits ) ) {
+		return false;
+	}
+	for ( int i = 0; i < 4; ++i ) {
+		if ( !std::isfinite( pass.color[i] ) ) {
+			return false;
+		}
+	}
+	for ( int i = 0; i < 6; ++i ) {
+		if ( !std::isfinite( pass.textureMatrix[i] ) ) {
+			return false;
+		}
+	}
+	return static_cast<double>( pass.textureMatrix[2] ) >= INT_MIN
+		&& static_cast<double>( pass.textureMatrix[2] ) <= INT_MAX
+		&& static_cast<double>( pass.textureMatrix[5] ) >= INT_MIN
+		&& static_cast<double>( pass.textureMatrix[5] ) <= INT_MAX;
+}
+
+static bool VK_ClassicWorldAmbient_BuildScissor(
+		const classicWorldAmbientDomainView_t &view,
+		const classicWorldAmbientDomainDraw_t &draw, int framebufferHeight,
+		VkRect2D &scissor ) {
+	const int viewportWidth = view.viewportX2 - view.viewportX1 + 1;
+	const int viewportHeight = view.viewportY2 - view.viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 || framebufferHeight <= 0 ) {
+		return false;
+	}
+	const bool useDrawScissor = r_useScissor.GetBool();
+	const int requestedX1 = useDrawScissor ? draw.scissorX1 : view.scissorX1;
+	const int requestedY1 = useDrawScissor ? draw.scissorY1 : view.scissorY1;
+	const int requestedX2 = useDrawScissor ? draw.scissorX2 : view.scissorX2;
+	const int requestedY2 = useDrawScissor ? draw.scissorY2 : view.scissorY2;
+	if ( requestedX2 < requestedX1 || requestedY2 < requestedY1 ) {
+		return false;
+	}
+	int x0 = Max( view.viewportX1,
+		view.viewportX1 + requestedX1 );
+	int x1 = Min( view.viewportX1 + viewportWidth,
+		view.viewportX1 + requestedX2 + 1 );
+	int y0GL = Max( view.viewportY1,
+		view.viewportY1 + requestedY1 );
+	int y1GL = Min( view.viewportY1 + viewportHeight,
+		view.viewportY1 + requestedY2 + 1 );
+	x0 = Max( 0, x0 );
+	x1 = Min( VK_Exec_ActiveFramebufferWidth(), x1 );
+	y0GL = Max( 0, y0GL );
+	y1GL = Min( framebufferHeight, y1GL );
+	if ( x1 <= x0 || y1GL <= y0GL ) {
+		return false;
+	}
+	const int y0 = framebufferHeight - y1GL;
+	const int y1 = framebufferHeight - y0GL;
+	scissor.offset.x = x0;
+	scissor.offset.y = y0;
+	scissor.extent.width = static_cast<std::uint32_t>( x1 - x0 );
+	scissor.extent.height = static_cast<std::uint32_t>( y1 - y0 );
+	return true;
+}
+
+static bool VK_ClassicWorldAmbient_Preflight( const viewDef_t *viewDef ) {
+	std::memset( &vkClassicWorldAmbientPreparedView, 0,
+		sizeof( vkClassicWorldAmbientPreparedView ) );
+	vkClassicWorldAmbientPreparedView_t &prepared =
+		vkClassicWorldAmbientPreparedView;
+	const classicWorldAmbientDomainView_t *view =
+		R_ClassicWorldAmbientDomain_FindView( viewDef );
+	prepared.view = view;
+	prepared.viewDef = viewDef;
+	if ( view == NULL ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEW_MUTATION );
+	}
+	if ( view->backendOutcome[ CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN ]
+			== CLASSIC_WORLD_AMBIENT_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			view->failure != CLASSIC_WORLD_AMBIENT_FAILURE_NONE
+				? view->failure : CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	if ( viewDef == NULL || view->viewDef != viewDef
+			|| viewDef->viewEntitys == NULL
+			|| view->sourceSurfaceCount != viewDef->numDrawSurfs
+			|| view->sourceSurfaceCount < 0
+			|| view->sourceSurfaceCount > SCENE_PACKET_MAX_DRAWS
+			|| view->drawableSurfaceCount < 0
+			|| view->drawableSurfaceCount > view->sourceSurfaceCount
+			|| view->noopSurfaceCount
+				!= view->sourceSurfaceCount - view->drawableSurfaceCount
+			|| view->drawCount < 0
+			|| view->drawCount > CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_DRAWS
+			|| view->evaluatedPassCount < 0
+			|| view->evaluatedPassCount
+				> CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES
+			|| ( viewDef->numDrawSurfs > 0 && viewDef->drawSurfs == NULL ) ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_DOMAIN_COUNTS );
+	}
+	const int allowedRenderFlags =
+		RF_NO_GUI | RF_PENUMBRA_MAP | RF_PRIMARY_VIEW;
+	if ( viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
+			|| viewDef->isEditor || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
+			|| viewDef->renderWorld == NULL || viewDef->viewLights != NULL
+			|| viewDef->renderView.viewID < 0
+			|| ( viewDef->renderFlags & ~allowedRenderFlags ) != 0
+			|| viewDef->numOutlineDrawSurfs != 0
+			|| viewDef->renderView.globalMaterial != NULL
+			|| r_showOverDraw.GetInteger() != 0 || r_singleTriangle.GetBool()
+			|| r_skipAmbient.GetBool() || r_skipRender.GetBool()
+			|| r_skipRenderContext.GetBool()
+			|| r_portalsDistanceCull.GetBool()
+			|| r_celShading.GetBool() || r_celShadingWorld.GetBool()
+			|| r_forceAmbient.GetFloat() > 0.0f ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEW_MUTATION );
+	}
+	if ( vkExec.activeRenderTexture != NULL || vkExec.activeColorEntry != NULL
+			|| vkExec.activeDepthEntry != NULL || backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_OFFSCREEN_TARGET );
+	}
+	if ( !vkExec.frameOpen || !vkExec.mainScopeOpen
+			|| vkExec.cmd == VK_NULL_HANDLE
+			|| vkExec.pendingSpecialEffectsView != NULL
+			|| vkExec.pendingSpecialEffectsMask != 0
+			|| vkExec.pendingSpecialEffectsSource != NULL
+			|| vkExec.pendingSpecialEffectsNeedsResolve
+			|| !VK_Exec_PipelineTargetsMatch( vkExec.activePipelineTarget,
+				VK_Exec_SwapchainPipelineTarget() ) ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_RENDER_SCOPE );
+	}
+
+	const int framebufferWidth = VK_Exec_ActiveFramebufferWidth();
+	const int framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	const int viewportWidth = view->viewportX2 - view->viewportX1 + 1;
+	const int viewportHeight = view->viewportY2 - view->viewportY1 + 1;
+	if ( view->viewportX1 != viewDef->viewport.x1
+			|| view->viewportY1 != viewDef->viewport.y1
+			|| view->viewportX2 != viewDef->viewport.x2
+			|| view->viewportY2 != viewDef->viewport.y2
+			|| view->scissorX1 != viewDef->scissor.x1
+			|| view->scissorY1 != viewDef->scissor.y1
+			|| view->scissorX2 != viewDef->scissor.x2
+			|| view->scissorY2 != viewDef->scissor.y2
+			|| std::memcmp( view->projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view->projectionMatrix ) ) != 0
+			|| viewportWidth <= 0 || viewportHeight <= 0
+			|| view->viewportX1 < 0 || view->viewportY1 < 0
+			|| view->viewportX2 >= framebufferWidth
+			|| view->viewportY2 >= framebufferHeight
+			|| !VK_BuildCanonicalViewport( prepared.viewport,
+				static_cast<float>( view->viewportX1 ),
+				static_cast<float>( view->viewportY1 ),
+				static_cast<float>( viewportWidth ),
+				static_cast<float>( viewportHeight ),
+				static_cast<float>( framebufferHeight ) ) ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEWPORT );
+	}
+	for ( int matrixIndex = 0; matrixIndex < 16; ++matrixIndex ) {
+		if ( !std::isfinite( view->projectionMatrix[matrixIndex] ) ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEW_MUTATION );
+		}
+	}
+
+	int previousSourceSurface = -1;
+	int sourceNoopSurfaces = 0;
+	int drawablePasses = 0;
+	int activePasses = 0;
+	int inactivePasses = 0;
+	int activeNoopPasses = 0;
+	int noopPasses = 0;
+	int phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ] = { 0, 0 };
+	int phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ] = { 0, 0 };
+	for ( int drawIndex = 0; drawIndex < view->drawCount; ++drawIndex ) {
+		const classicWorldAmbientDomainDraw_t *draw =
+			R_ClassicWorldAmbientDomain_ViewDraw( *view, drawIndex );
+		if ( draw == NULL || draw->sourceSurfaceIndex <= previousSourceSurface
+				|| draw->sourceSurfaceIndex < 0
+				|| draw->sourceSurfaceIndex >= view->sourceSurfaceCount
+				|| viewDef->drawSurfs[ draw->sourceSurfaceIndex ]
+					!= draw->legacyDrawSurf ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_DRAW_RECORD );
+		}
+		previousSourceSurface = draw->sourceSurfaceIndex;
+		if ( draw->sourceSurface
+				!= CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_DRAWABLE ) {
+			if ( !VK_ClassicWorldAmbient_SourceNoopValid( *draw ) ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_DRAW_RECORD );
+			}
+			sourceNoopSurfaces++;
+			continue;
+		}
+		if ( draw->legacyDrawSurf == NULL || !draw->packetBacked
+				|| draw->firstIndex != 0 || draw->vertexOffset != 0
+				|| draw->phase < CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG
+				|| draw->phase >= CLASSIC_WORLD_AMBIENT_PHASE_COUNT
+				|| draw->evaluatedPassCount < 0
+				|| prepared.passCount
+					> CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES
+						- draw->evaluatedPassCount ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_DRAW_RECORD );
+		}
+
+		vkClassicWorldAmbientDrawPlan_t &drawPlan =
+			prepared.draws[ prepared.drawCount++ ];
+		std::memset( &drawPlan, 0, sizeof( drawPlan ) );
+		drawPlan.draw = draw;
+		drawPlan.tri = draw->legacyDrawSurf->geo;
+		drawPlan.vertexOffset = -1;
+		drawPlan.indexOffset = -1;
+		drawPlan.firstPass = prepared.passCount;
+		drawPlan.passCount = draw->evaluatedPassCount;
+		const srfTriangles_t *tri = drawPlan.tri;
+		if ( tri == NULL || tri->ambientCache == NULL
+				|| draw->tableGeneration != view->tableGeneration
+				|| tri->numVerts <= 0 || tri->numIndexes <= 0
+				|| tri->numIndexes % 3 != 0
+				|| tri->numVerts != draw->vertexCount
+				|| tri->numIndexes != draw->indexCount
+				|| !draw->hasAmbientCache
+				|| draw->hasIndexCache != ( tri->indexCache != NULL )
+				|| ( tri->indexes == NULL && tri->indexCache == NULL )
+				|| draw->legacyDrawSurf->decalColorCache != NULL ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_GEOMETRY );
+		}
+		if ( !VK_ClassicWorldAmbient_BuildScissor(
+				*view, *draw, framebufferHeight, drawPlan.scissor ) ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_VIEWPORT );
+		}
+		float mvpGL[ 16 ];
+		myGlMultMatrix( draw->modelViewMatrix, view->projectionMatrix, mvpGL );
+		VK_FixupClipSpaceZ( drawPlan.mvp, mvpGL );
+		for ( int matrixIndex = 0; matrixIndex < 16; ++matrixIndex ) {
+			if ( !std::isfinite( drawPlan.mvp[matrixIndex] ) ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_DRAW_RECORD );
+			}
+		}
+
+		int drawDrawablePasses = 0;
+		int drawActivePasses = 0;
+		int drawInactivePasses = 0;
+		int drawActiveNoopPasses = 0;
+		for ( int passIndex = 0; passIndex < draw->evaluatedPassCount;
+				++passIndex ) {
+			const rendererEvaluatedMaterialPass_t *pass =
+				R_ClassicWorldAmbientDomain_DrawPass( *draw, passIndex );
+			const materialResourceTextureBinding_t *binding =
+				R_ClassicWorldAmbientDomain_DrawPassTexture( *draw, passIndex );
+			if ( pass == NULL || binding == NULL
+					|| pass->order != static_cast<std::uint32_t>( passIndex )
+					|| pass->sourceStageIndex < 0
+					|| pass->sourceStageIndex != binding->stageIndex
+					|| pass->textureResourceId != binding->textureResourceId
+					|| binding->image == NULL || binding->textureResourceId == 0
+					|| pass->active != ( pass->condition != 0.0f ) ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_RECORD );
+			}
+			vkClassicWorldAmbientPassPlan_t &passPlan =
+				prepared.passes[ prepared.passCount++ ];
+			std::memset( &passPlan, 0, sizeof( passPlan ) );
+			passPlan.pass = pass;
+			if ( !VK_ClassicWorldAmbient_MapState( *pass, passPlan ) ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_STATE );
+			}
+			switch ( pass->disposition ) {
+			case RENDERER_MATERIAL_PASS_DRAW:
+				if ( !pass->active ) {
+					return VK_ClassicWorldAmbient_Fail( viewDef,
+						CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_RECORD );
+				}
+				drawDrawablePasses++;
+				drawActivePasses++;
+				drawablePasses++;
+				activePasses++;
+				phaseDrawablePasses[ draw->phase ]++;
+				break;
+			case RENDERER_MATERIAL_PASS_INACTIVE_CONDITION:
+				if ( pass->active ) {
+					return VK_ClassicWorldAmbient_Fail( viewDef,
+						CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_RECORD );
+				}
+				drawInactivePasses++;
+				inactivePasses++;
+				noopPasses++;
+				phaseNoopPasses[ draw->phase ]++;
+				break;
+			case RENDERER_MATERIAL_PASS_NOOP_ZERO_ONE_BLEND:
+			case RENDERER_MATERIAL_PASS_NOOP_BLACK_ADDITIVE:
+			case RENDERER_MATERIAL_PASS_NOOP_TRANSPARENT_ALPHA:
+				if ( !pass->active ) {
+					return VK_ClassicWorldAmbient_Fail( viewDef,
+						CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_RECORD );
+				}
+				drawActiveNoopPasses++;
+				drawActivePasses++;
+				activeNoopPasses++;
+				activePasses++;
+				noopPasses++;
+				phaseNoopPasses[ draw->phase ]++;
+				break;
+			default:
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_PASS_RECORD );
+			}
+
+			const materialResourceTextureBinding_t *resolved =
+				R_MaterialResourceTable_ResolveTextureResource(
+					pass->textureResourceId );
+			if ( resolved != binding || resolved->image != binding->image
+					|| resolved->textureHandle != binding->textureHandle ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_TEXTURE_BINDING );
+			}
+			idImage *image = const_cast<idImage *>( binding->image );
+			const idImageOpts &imageOptions = image->GetOpts();
+			if ( !binding->loaded || binding->defaulted || binding->missing
+					|| binding->filter < TF_LINEAR
+					|| binding->filter > TF_DEFAULT
+					|| binding->repeat < TR_REPEAT
+					|| binding->repeat > TR_CLAMP_TO_ZERO_ALPHA
+					|| !image->IsLoaded() || image->IsDefaulted()
+					|| image->GetDeviceHandle() != binding->textureHandle
+					|| binding->textureHandle == 0
+					|| imageOptions.textureType != TT_2D
+					|| imageOptions.width <= 0 || imageOptions.height <= 0 ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_TEXTURE_RESIDENCY );
+			}
+			if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				continue;
+			}
+			if ( image->GetFilter() != binding->filter
+					|| image->GetRepeat() != binding->repeat ) {
+				image->SetSamplerState( binding->filter, binding->repeat );
+			}
+			const vkImageEntry_t *imageEntry =
+				VK_Image_GetEntry( binding->textureHandle );
+			if ( imageEntry == NULL || imageEntry->isCube
+					|| imageEntry->view == VK_NULL_HANDLE
+					|| imageEntry->sampler == VK_NULL_HANDLE
+					|| imageEntry->layout
+						!= VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_TEXTURE_RESIDENCY );
+			}
+			passPlan.descriptor = VK_GuiExecutor_GetImageDescriptor(
+				binding->textureHandle );
+			if ( passPlan.descriptor == VK_NULL_HANDLE ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_DESCRIPTOR );
+			}
+			passPlan.pipeline =
+				VK_GuiExecutor_GetPipelineStrict( passPlan.stateBits );
+			if ( passPlan.pipeline == VK_NULL_HANDLE ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_PIPELINE );
+			}
+		}
+		if ( drawActivePasses != draw->activePassCount
+				|| drawDrawablePasses != draw->drawablePassCount
+				|| drawInactivePasses != draw->inactivePassCount
+				|| drawActiveNoopPasses != draw->activeNoopPassCount
+				|| drawInactivePasses + drawActiveNoopPasses
+					!= draw->noopPassCount ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_COVERAGE );
+		}
+	}
+
+	if ( prepared.drawCount != view->drawableSurfaceCount
+			|| sourceNoopSurfaces != view->noopSurfaceCount
+			|| prepared.passCount != view->evaluatedPassCount
+			|| activePasses != view->activePassCount
+			|| drawablePasses != view->drawablePassCount
+			|| inactivePasses != view->inactivePassCount
+			|| activeNoopPasses != view->activeNoopPassCount
+			|| noopPasses != view->noopPassCount
+			|| phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+				!= view->phaseDrawablePassCount[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+			|| phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ]
+				!= view->phaseDrawablePassCount[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ]
+			|| phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+				!= view->phaseNoopPassCount[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ]
+			|| phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ]
+				!= view->phaseNoopPassCount[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ] ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_DOMAIN_COUNTS );
+	}
+
+	// Final preflight stage: upload and retain exact geometry offsets before any
+	// framebuffer-affecting command in the shared domain.
+	for ( int drawIndex = 0; drawIndex < prepared.drawCount; ++drawIndex ) {
+		vkClassicWorldAmbientDrawPlan_t &drawPlan = prepared.draws[drawIndex];
+		if ( !VK_ClassicGui_PrepareGeometry( vkExec.cmd, vkExec.frameSlot,
+				drawPlan.tri, drawPlan.vertexOffset, drawPlan.indexOffset ) ) {
+			return VK_ClassicWorldAmbient_Fail( viewDef,
+				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_WORLD_AMBIENT_REJECT_GEOMETRY );
+		}
+	}
+	prepared.drawablePasses = drawablePasses;
+	prepared.noopPasses = noopPasses;
+	prepared.ready = true;
+	return true;
+}
+
+static void VK_ClassicWorldAmbient_DrawPhase(
+		classicWorldAmbientPhase_t phase ) {
+	vkClassicWorldAmbientPreparedView_t &prepared =
+		vkClassicWorldAmbientPreparedView;
+	if ( !prepared.ready || prepared.view == NULL || prepared.viewDef == NULL
+			|| phase < CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG
+			|| phase >= CLASSIC_WORLD_AMBIENT_PHASE_COUNT
+			|| prepared.completedPhase[phase] ) {
+		return;
+	}
+	prepared.committed = true;
+	prepared.completedPhase[phase] = true;
+	VkCommandBuffer cmd = vkExec.cmd;
+	const int slot = vkExec.frameSlot;
+	vkCmdSetViewport( cmd, 0, 1, &prepared.viewport );
+	vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+	vkCmdSetFrontFace( cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	for ( int drawIndex = 0; drawIndex < prepared.drawCount; ++drawIndex ) {
+		const vkClassicWorldAmbientDrawPlan_t &drawPlan =
+			prepared.draws[drawIndex];
+		if ( drawPlan.draw->phase != phase ) {
+			continue;
+		}
+		const VkBuffer vertexBuffer = vkExec.vertexRings[slot].buffer;
+		const VkDeviceSize vertexOffset =
+			static_cast<VkDeviceSize>( drawPlan.vertexOffset );
+		vkCmdBindVertexBuffers( cmd, 0, 1, &vertexBuffer, &vertexOffset );
+		vkCmdBindIndexBuffer( cmd, vkExec.indexRings[slot].buffer,
+			static_cast<VkDeviceSize>( drawPlan.indexOffset ),
+			VK_INDEX_TYPE_UINT32 );
+		vkCmdSetScissor( cmd, 0, 1, &drawPlan.scissor );
+		for ( int localPass = 0; localPass < drawPlan.passCount; ++localPass ) {
+			const vkClassicWorldAmbientPassPlan_t &passPlan =
+				prepared.passes[ drawPlan.firstPass + localPass ];
+			const rendererEvaluatedMaterialPass_t &pass = *passPlan.pass;
+			if ( pass.disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				prepared.submittedNoops++;
+				continue;
+			}
+			vkCmdSetDepthTestEnable( cmd, VK_TRUE );
+			vkCmdSetDepthWriteEnable( cmd,
+				pass.depth.writeEnabled ? VK_TRUE : VK_FALSE );
+			vkCmdSetDepthCompareOp( cmd, passPlan.depthCompare );
+			vkCmdSetCullMode( cmd, passPlan.cullMode );
+			vkCmdSetDepthBiasEnable( cmd,
+				pass.polygonOffsetEnabled ? VK_TRUE : VK_FALSE );
+			if ( pass.polygonOffsetEnabled ) {
+				vkCmdSetDepthBias( cmd, pass.polygonOffsetUnits, 0.0f,
+					pass.polygonOffsetFactor );
+			}
+			vkGuiPushConstants_t push;
+			std::memset( &push, 0, sizeof( push ) );
+			std::memcpy( push.mvp, drawPlan.mvp, sizeof( push.mvp ) );
+			std::memcpy( push.stageColor, pass.color,
+				sizeof( push.stageColor ) );
+			VK_ClassicGui_SetPushTextureMatrix( pass, push );
+			switch ( pass.vertexColor ) {
+			case RENDERER_VERTEX_COLOR_MODULATE: push.params[0] = 1.0f; break;
+			case RENDERER_VERTEX_COLOR_INVERSE_MODULATE: push.params[0] = 2.0f; break;
+			default: push.params[0] = 0.0f; break;
+			}
+			push.params[1] = passPlan.alphaTestMode;
+			push.params[2] = pass.alphaTest;
+			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				passPlan.pipeline );
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkExec.pipelineLayout, 0, 1, &passPlan.descriptor, 0, NULL );
+			vkCmdPushConstants( cmd, vkExec.pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof( push ), &push );
+			vkCmdDrawIndexed( cmd,
+				static_cast<std::uint32_t>( drawPlan.draw->indexCount ), 1,
+				static_cast<std::uint32_t>( drawPlan.draw->firstIndex ),
+				drawPlan.draw->vertexOffset, 0 );
+			prepared.submittedPasses[phase]++;
+		}
+	}
+	vkCmdSetDepthTestEnable( cmd, VK_TRUE );
+	vkCmdSetDepthWriteEnable( cmd, VK_FALSE );
+	vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_LESS_OR_EQUAL );
+	vkCmdSetCullMode( cmd, VK_CULL_MODE_FRONT_BIT );
+	vkCmdSetFrontFace( cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+	if ( phase == CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ) {
+		const bool coverageRecorded = R_ClassicWorldAmbientDomain_RecordOwned(
+			prepared.viewDef, CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN,
+			prepared.submittedPasses[ CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG ],
+			prepared.submittedPasses[ CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG ],
+			prepared.submittedNoops );
+		if ( !coverageRecorded ) {
+			common->Warning( "Vulkan: shared world ambient coverage rejected after committed view" );
+		}
+	}
+}
+
+/*
 ====================
 VK_GuiExecutor_Draw2DView
 
@@ -7975,6 +8679,12 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	if ( !VK_GpuSkinning_PrepareView( viewDef ) ) {
 		return;
 	}
+	// Seal the complete shared ambient plan before the depth clear or any
+	// other framebuffer-affecting command.  A failed preflight leaves the
+	// established Vulkan world walker completely untouched.
+	const bool sharedWorldAmbientOwned =
+		r_rendererSharedWorldAmbient.GetBool()
+		&& VK_ClassicWorldAmbient_Preflight( viewDef );
 
 	// GL bottom-left viewport -> Vulkan negative-height viewport
 	const int vpX = viewDef->viewport.x1;
@@ -8234,6 +8944,13 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			vkCmdSetViewport( cmd, 0, 1, &viewport );
 		}
 		if ( !r_skipAmbient.GetBool() ) {
+			if ( sharedWorldAmbientOwned && pass < 2 ) {
+				VK_ClassicWorldAmbient_DrawPhase(
+					pass == 0
+						? CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG
+						: CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG );
+				continue;
+			}
 			if ( pass == 2 ) {
 				if ( processed >= numDrawSurfs || r_skipPostProcess.GetBool() ) {
 					break;

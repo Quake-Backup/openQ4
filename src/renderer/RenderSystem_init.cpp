@@ -44,6 +44,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
 #include "ClassicGuiDomain.h"
+#include "ClassicWorldAmbientDomain.h"
 #include "GeometryResources.h"
 #include "ScenePackets.h"
 #include "ModernClusteredLighting.h"
@@ -480,6 +481,7 @@ idCVar r_rendererGpuValidationReadbackDelay( "r_rendererGpuValidationReadbackDel
 idCVar r_rendererBindless( "r_rendererBindless", "0", CVAR_RENDERER | CVAR_BOOL, "enable experimental GL 4.5 bindless texture diagnostics without changing visible output" );
 idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | CVAR_BOOL, "execute the opt-in modern hybrid visible-frame composition when all required pass owners are modern-safe" );
 idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
@@ -822,6 +824,15 @@ static void R_RendererClassicGuiDomainSelfTest_f( const idCmdArgs &args ) {
 		common->Printf( "RendererClassicGuiDomain self-test passed\n" );
 	} else {
 		common->Warning( "RendererClassicGuiDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicWorldAmbientDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicWorldAmbientDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicWorldAmbientDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicWorldAmbientDomain self-test failed" );
 	}
 }
 
@@ -3780,6 +3791,83 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_VULKAN].ownedViews,
 			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_VULKAN].fallbackViews );
 	}
+	{
+		const classicWorldAmbientDomainStats_t &worldAmbient =
+			R_ClassicWorldAmbientDomain_Stats();
+		common->Printf(
+			"Renderer shared world ambient: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d passes=%d draw=%d pre=%d post=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			r_rendererSharedWorldAmbient.GetBool() ? 1 : 0,
+			worldAmbient.prepared ? 1 : 0,
+			worldAmbient.frameValid ? 1 : 0,
+			worldAmbient.worldViews,
+			worldAmbient.readyViews,
+			worldAmbient.fallbackViews,
+			worldAmbient.drawableSurfaces,
+			worldAmbient.sourceSurfaces,
+			worldAmbient.noopSurfaces,
+			worldAmbient.evaluatedPasses,
+			worldAmbient.drawablePasses,
+			worldAmbient.phaseDrawablePasses[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
+			worldAmbient.phaseDrawablePasses[CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG],
+			worldAmbient.inactivePasses,
+			worldAmbient.activeNoopPasses,
+			static_cast<unsigned long long>( worldAmbient.hash ),
+			worldAmbient.status,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_GL].ownedViews,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_GL].fallbackViews,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN].ownedViews,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN].fallbackViews );
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicWorldAmbientDomain_NumViews(); ++viewIndex ) {
+			const classicWorldAmbientDomainView_t *view =
+				R_ClassicWorldAmbientDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			const char *sourceClass = "none";
+			if ( view->failure
+					== CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_SURFACE_FALLBACK
+					&& view->failureDetail >= 0
+					&& view->failureDetail
+						< CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_COUNT ) {
+				sourceClass = ClassicWorldAmbientDomainSourceSurface_Name(
+					static_cast<classicWorldAmbientDomainSourceSurface_t>(
+						view->failureDetail ) );
+			}
+			common->Printf(
+				"Renderer shared world ambient view[%d]: scene=%d ready=%d failure=%s detail=%d sourceClass=%s surface=%d stage=%d worldPass=%s eval=%d hash=%016llx GL=%d/%s/%d/%d+%d/%d VK=%d/%s/%d/%d+%d/%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->ready ? 1 : 0,
+				ClassicWorldAmbientDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				sourceClass,
+				view->failureSourceSurfaceIndex,
+				view->failureSourceStageIndex,
+				MaterialResourceWorldPassFailure_Name(
+					view->worldPassFailure ),
+				view->evaluationStatus,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[CLASSIC_WORLD_AMBIENT_BACKEND_GL],
+				ClassicWorldAmbientDomainFailure_Name(
+					view->backendFailure[CLASSIC_WORLD_AMBIENT_BACKEND_GL] ),
+				view->backendFailureDetail[CLASSIC_WORLD_AMBIENT_BACKEND_GL],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_GL]
+					[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_GL]
+					[CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG],
+				view->backendNoopPasses[CLASSIC_WORLD_AMBIENT_BACKEND_GL],
+				view->backendOutcome[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN],
+				ClassicWorldAmbientDomainFailure_Name(
+					view->backendFailure[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN] ),
+				view->backendFailureDetail[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN]
+					[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN]
+					[CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG],
+				view->backendNoopPasses[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN] );
+		}
+	}
 	common->Printf(
 		"PBR materials: parser=1 modernLighting=0 enabled=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
 		r_pbrMaterials.GetBool() ? 1 : 0,
@@ -3924,6 +4012,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_ShutdownFrameData();
 	R_RendererMetrics_ShutdownGpuTimers();
 	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_MaterialResourceTable_Shutdown();
 	R_RenderGraphResources_Shutdown();
 	R_ModernGLExecutor_Shutdown();
@@ -4183,6 +4272,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererRenderGraphResourceDump", R_RendererRenderGraphResourceDump_f, CMD_FL_RENDERER, "dump the latest renderer graph resource handles" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableSelfTest", R_RendererMaterialResourceTableSelfTest_f, CMD_FL_RENDERER, "run renderer material resource-table self tests" );
 	cmdSystem->AddCommand( "rendererClassicGuiDomainSelfTest", R_RendererClassicGuiDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic GUI whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicWorldAmbientDomainSelfTest", R_RendererClassicWorldAmbientDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic world ambient whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
 	cmdSystem->AddCommand( "rendererGeometryResourceSelfTest", R_RendererGeometryResourceSelfTest_f, CMD_FL_RENDERER, "run renderer geometry and instance packet self tests" );
@@ -4534,6 +4624,7 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	R_ShutdownFrameData();
 	R_GpuSkinning_ContractShutdown();
 	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan backend seam (Phase C): the GL executor/upload/graph/debug
 	// subsystems never initialized; device + window teardown is GLimp_Shutdown

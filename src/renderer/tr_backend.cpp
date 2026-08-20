@@ -35,6 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
 #include "ClassicGuiDomain.h"
+#include "ClassicWorldAmbientDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernClusteredLighting.h"
 #include "RendererMetrics.h"
@@ -739,6 +740,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// Clear frame-local pointers and ownership before every command stream,
 	// including the empty-frame fast path below.
 	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}
@@ -793,6 +795,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		R_RendererMetrics_RecordMaterialResourceTable( R_MaterialResourceTable_Stats() );
 		if ( r_rendererSharedGui.GetBool() ) {
 			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldAmbient.GetBool() ) {
+			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
 		}
 		R_ModernGLExecutor_PrepareFrame( *scenePackets, legacyGraph );
 		rg_modernStatMirrorsZeroed = false;	// active frame wrote real stats; re-zero on next dormant frame

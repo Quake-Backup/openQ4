@@ -1117,6 +1117,7 @@ extern idCVar r_rendererGpuValidationReadbackDelay;	// defer opt-in GL43 validat
 extern idCVar r_rendererBindless;	// opt-in experimental bindless texture diagnostics, disabled by default
 extern idCVar r_rendererModernVisible;	// opt-in modern hybrid visible-frame composition
 extern idCVar r_rendererSharedGui;	// opt-in backend-neutral fixed-function 2D GUI ownership
+extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
 extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lighting-ownership parity contracts proven
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion
 extern idCVar r_rendererPromotionEvidence;	// Phase 8 evidence token required before auto-promotion

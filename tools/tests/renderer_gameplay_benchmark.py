@@ -162,6 +162,15 @@ CAMPAIGN_TRANSITION_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
+WORLD_AMBIENT_SCENES: dict[str, dict[str, Any]] = {
+    "sp-mv2-ambient": {
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock fixed-function world-ambient ownership and whole-view rollback evidence",
+        "path": "spawn-static",
+    },
+}
+
 CAMPAIGN_MCC2_TO_TRAM1_COMMANDS = (
     "openq4_assertMapState game/mcc_2",
     "trigger mcc2_endlevel",
@@ -178,7 +187,12 @@ CAMPAIGN_MCC2_TO_TRAM1_COMMANDS = (
     "openq4_assertMapState game/tram1",
 )
 
-ALL_SCENES = {**REQUIRED_SCENES, **SHADOW_SCENES, **CAMPAIGN_TRANSITION_SCENES}
+FULL_BUDGET_SCENES = {
+    **REQUIRED_SCENES,
+    **SHADOW_SCENES,
+    **CAMPAIGN_TRANSITION_SCENES,
+}
+ALL_SCENES = {**FULL_BUDGET_SCENES, **WORLD_AMBIENT_SCENES}
 
 SHADOW_PRESETS: dict[str, dict[str, str]] = {
     "default": {},
@@ -255,6 +269,45 @@ PROFILE_DEFAULTS = {
         "display": ("windowed",),
         "shadows": ("default",),
         "execCommands": CAMPAIGN_MCC2_TO_TRAM1_COMMANDS,
+    },
+    "world-ambient": {
+        "cases": tuple(WORLD_AMBIENT_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "launchCvars": (
+            ("ui_showGun", "0"),
+            ("g_showHud", "0"),
+            ("r_multiSamples", "0"),
+        ),
+        # The tools-map spawn looks into an all-caulk horizon.  After normal
+        # spawn settles, lock the player in noclip and place the engine view
+        # over the static stock floor for a repeatable authored-surface capture.
+        "execCommands": (
+            "noclip",
+            "setviewpos 0 0 256 80 0 0",
+        ),
+        "cvars": (
+            ("g_renderFastNoPost", "1"),
+            ("g_renderFastNoPostDirect", "1"),
+            ("r_postAA", "0"),
+            ("r_singleLight", "2147483647"),
+            ("r_skipSubviews", "1"),
+            ("r_useLightGrid", "0"),
+            ("r_skipPlayerVisibilityEffects", "1"),
+            ("r_portalsDistanceCull", "0"),
+            ("r_forceAmbient", "0"),
+            ("r_celShading", "0"),
+            ("r_celShadingWorld", "0"),
+            ("r_showOverDraw", "0"),
+            ("r_singleTriangle", "0"),
+            ("r_skipAmbient", "0"),
+            ("r_skipNewAmbient", "0"),
+            ("r_skipDeforms", "0"),
+            ("r_skipRender", "0"),
+        ),
     },
     "tiers": {
         "cases": ("sp-airdefense1",),
@@ -352,7 +405,7 @@ PROFILE_DEFAULTS = {
         ),
     },
     "full": {
-        "cases": tuple(ALL_SCENES.keys()),
+        "cases": tuple(FULL_BUDGET_SCENES.keys()),
         "tiers": SAFE_TIERS,
         "maxfps": PRESENTATION_MAXFPS,
         "swap": PRESENTATION_SWAP_INTERVALS,
@@ -781,6 +834,7 @@ def common_args(
     append_set(args, "r_rendererModernExecutor", "1" if modern_executor and spec.tier != "legacy" else "0")
     append_set(args, "r_rendererModernAutoPromote", "0")
     append_set(args, "r_rendererSharedGui", "0")
+    append_set(args, "r_rendererSharedWorldAmbient", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
     # Keep generated cache/config output in the isolated evidence root.  The
@@ -823,6 +877,7 @@ def build_scripted_capture_lines(
     shot_name = f"screenshots/renderer-bench/{role}_{capture_index}.tga"
     lines: list[str] = [
         "r_rendererSharedGui 0",
+        "r_rendererSharedWorldAmbient 0",
         "r_rendererModernVisible 0",
         "r_rendererModernVisibleDepth 0",
         "r_rendererModernOpaque 0",
@@ -1946,6 +2001,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "budgetEnforced": metadata["budgetEnforced"],
         "metadata": report_metadata,
         "requiredScenes": REQUIRED_SCENES,
+        "worldAmbientScenes": WORLD_AMBIENT_SCENES,
         "shadowScenes": SHADOW_SCENES,
         "campaignTransitionScenes": CAMPAIGN_TRANSITION_SCENES,
         "shadowPresets": SHADOW_PRESETS,
@@ -2087,6 +2143,16 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "|---|---|---|---|",
     ]
     for case_id, scene in SHADOW_SCENES.items():
+        lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
+
+    lines += [
+        "",
+        "## World Ambient Ownership Coverage",
+        "",
+        "| Case | Mode | Map | Purpose |",
+        "|---|---|---|---|",
+    ]
+    for case_id, scene in WORLD_AMBIENT_SCENES.items():
         lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
 
     lines += [
@@ -2373,6 +2439,9 @@ def print_list() -> None:
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nCampaign transition cases:")
     for case_id, scene in CAMPAIGN_TRANSITION_SCENES.items():
+        print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nWorld ambient ownership cases (run with --pacing-only):")
+    for case_id, scene in WORLD_AMBIENT_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nShadow presets:")
     for preset, cvars in SHADOW_PRESETS.items():

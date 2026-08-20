@@ -36,6 +36,7 @@
 #include "../RendererMetrics.h"
 #include "../MaterialResourceTable.h"
 #include "../ClassicGuiDomain.h"
+#include "../ClassicWorldAmbientDomain.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
 
@@ -50,7 +51,7 @@ static float vkClearColor[ 4 ] = { 0.0f, 0.0f, 0.0f, 1.0f };
 // The Vulkan backend does not otherwise build the GL render graph.  Keep one
 // backend-owned packet frame for the shared classic-GUI domain when front-end
 // capture was not requested for metrics.
-static idScenePacketFrame vkClassicGuiPacketFrame;
+static idScenePacketFrame vkClassicDomainPacketFrame;
 
 // vk_GuiExecutor.cpp
 void VK_GuiExecutor_SetClearColor( const float color[ 4 ] );
@@ -377,16 +378,23 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	}
 
 	R_ClassicGuiDomain_ResetFrame();
-	if ( r_rendererSharedGui.GetBool() ) {
+	R_ClassicWorldAmbientDomain_ResetFrame();
+	if ( r_rendererSharedGui.GetBool()
+			|| r_rendererSharedWorldAmbient.GetBool() ) {
 		const idScenePacketFrame *scenePackets = NULL;
 		if ( R_ScenePackets_FrontEndFrameAvailable() ) {
 			scenePackets = &R_ScenePackets_FrontEndFrame();
 		} else {
-			R_ScenePackets_BuildLegacyCommandStream( cmds, vkClassicGuiPacketFrame );
-			scenePackets = &vkClassicGuiPacketFrame;
+			R_ScenePackets_BuildLegacyCommandStream( cmds, vkClassicDomainPacketFrame );
+			scenePackets = &vkClassicDomainPacketFrame;
 		}
 		R_MaterialResourceTable_PrepareFrame( *scenePackets );
-		R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		if ( r_rendererSharedGui.GetBool() ) {
+			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldAmbient.GetBool() ) {
+			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
+		}
 	}
 
 	backEnd.renderTexture = NULL;

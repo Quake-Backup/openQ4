@@ -214,6 +214,7 @@ static bool R_ModernGLExecutor_ModernVisibleRequested( void ) {
 	// classic 2D drawing.  Never let the side pipeline recreate or later compose
 	// a world frame over that GUI, including when shared GUI ownership is enabled.
 	return !r_skipRender.GetBool() && !r_skipRenderContext.GetBool()
+		&& !r_rendererSharedWorldAmbient.GetBool()
 		&& ( r_rendererModernVisible.GetBool()
 			|| RendererBootstrap_ShouldAutoPromoteModernVisible() );
 }
@@ -7740,6 +7741,13 @@ bool R_ModernGLExecutor_LegacyPassCanSkip( renderPassCategory_t category ) {
 }
 
 bool R_ModernGLExecutor_LegacyPassCanSkipForView( renderPassCategory_t category, const viewDef_t *viewDef ) {
+	// Shared world-ambient ownership is decided transactionally at the source
+	// view.  The older aggregate executor must never suppress that classic
+	// rollback before the shared domain has completed backend preflight.
+	if ( r_rendererSharedWorldAmbient.GetBool()
+			&& category == RENDER_PASS_AMBIENT ) {
+		return false;
+	}
 	if ( !R_ModernGLExecutor_LegacyPassCanSkip( category ) ) {
 		return false;
 	}
