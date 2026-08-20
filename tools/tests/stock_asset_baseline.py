@@ -572,7 +572,8 @@ def test_plan_is_windowed_and_engine_only(tool: ModuleType, base: Path) -> None:
     assert 'screenshot "screenshots/stock-baseline/sp_after_load.tga"' in sp_stage2
     mp_server_cfg = (output / "savepaths" / "mp-server" / "baseoq4" / "stock-baseline" / "server.cfg").read_text(encoding="utf-8")
     mp_client_cfg = (output / "savepaths" / "mp-client" / "baseoq4" / "stock-baseline" / "client.cfg").read_text(encoding="utf-8")
-    assert "waitMsec 60000" in mp_server_cfg
+    assert "waitMsec 120000" in mp_server_cfg
+    assert "waitMsec 10000" in mp_client_cfg
     assert "rendererBenchmarkCapture" in mp_server_cfg
     assert "rendererBenchmarkCapture" in mp_client_cfg
     assert "r_rendererMetrics 1" in mp_server_cfg

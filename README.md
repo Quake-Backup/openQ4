@@ -59,6 +59,7 @@ It is designed for players who want the original Quake 4 experience with a clean
 - **OpenAL audio** restored to the pre-plan compatibility path by default, with newer voice handling revalidated behind an opt-in gate.
 - **Improved input and quality-of-life features** including controller support, better console UX, and modern settings behavior.
 - **Single-player and multiplayer in one install** with active compatibility work aimed at the stock game.
+- **Smarter repeat level loads** with exact-match learned source preparation and validated local model, world, collision, and animation caches that fall back safely to the installed assets.
 - **A stock-map Arena Campaign** (experimental) with five escalating bot tiers, varied combat game types, boss matches, and persistent ladder progress beside the original story.
 - **A unified demo library and player** with pause, speed, stepping, rewind/fast-forward controls, honest legacy-format status, and full-world free-fly/player-follow playback for server-side multi-view recordings.
 - **Cross-platform support** with Windows packages, directly executable Linux AppImages and archives for x86_64 plus preview aarch64, Steam Deck support on Linux, and experimental Apple Silicon/arm64 macOS OpenGL/Metal bridge packages through the signed/notarized DMG lane for credentialed release runs.
@@ -137,7 +138,7 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - [Light Grids](docs/user/light-grids.md) - advanced lighting guide for players and testers
 - [Cel Shading](docs/user/cel-shading.md) - banded lighting and outline settings for the cel-shaded look
 - [DDS Texture Replacements](docs/user/texture-replacements.md) - install and diagnose DXT/BC7 texture packs
-- [Level-Load Cache](docs/user/level-load-cache.md) - generated animation cache behavior, controls, and cleanup
+- [Level-Load Cache](docs/user/level-load-cache.md) - learned preload and generated model, world, collision, and animation cache behavior, controls, rollback, and cleanup
 
 ### Build and technical docs
 
@@ -154,7 +155,7 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - It is **not** a drop-in runtime for the original proprietary Quake 4 DLL mods.
 - The project is still in **beta development**, so compatibility work is ongoing.
 
-Developers and testers should use the [engine capability matrix](docs/dev/engine-capability-matrix.md) for authoritative implemented/experimental/missing status, the [idTech 5-level modernization roadmap](docs/dev/idtech5-modernization-roadmap.md) for the compatibility-safe implementation order, and the [stock-asset baseline](docs/dev/stock-asset-baseline.md) for reproducible PK4, SP/MP, save/load, demo, log, and engine-screenshot evidence.
+Developers and testers should use the [engine capability matrix](docs/dev/engine-capability-matrix.md) for authoritative implemented/experimental/missing status, the [idTech 5-level modernization roadmap](docs/dev/idtech5-modernization-roadmap.md) for the compatibility-safe implementation order, the [loading/cache contract](docs/dev/loading-cache-modernization.md) for the source-authoritative preload and generated-cache boundary plus pending evidence, and the [stock-asset baseline](docs/dev/stock-asset-baseline.md) for reproducible PK4, SP/MP, save/load, demo, log, and engine-screenshot evidence.
 
 If you run into problems, please use the [issue tracker](https://github.com/themuffinator/openQ4/issues) and include crash logs or setup details when possible. For experimental macOS crashes, use the [macOS support-data guide](docs/user/macos-support-data.md) before filing or updating an issue.
 

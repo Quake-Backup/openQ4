@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Keep the engine's shared File/FileSystem ABI locked to the companion
+  # revision that implements GAME_API 44 and generated-animation cache v3.
+  OPENQ4_GAMELIBS_SHA: c32a3858b30139ddb850c3cec4f1274cd93bb98c
+
 concurrency:
   group: openq4-push-verification-${{ github.ref }}
   cancel-in-progress: true
@@ -26,7 +31,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -87,6 +96,7 @@ jobs:
             tools/tests/game_type_module_selection.py \
             tools/tests/gamelibs_staging.py \
             tools/tests/generated_animation_cache.py \
+            tools/tests/level_load_cache.py \
             tools/tests/hdr_postprocess_math.py \
             tools/tests/idstr_input_safety.py \
             tools/tests/lexer_peek_contract.py \
@@ -227,6 +237,7 @@ jobs:
           python tools/tests/game_type_module_selection.py
           python tools/tests/gamelibs_staging.py
           python tools/tests/generated_animation_cache.py
+          python tools/tests/level_load_cache.py
           python tools/tests/hdr_postprocess_math.py
           python tools/tests/idstr_input_safety.py
           python tools/tests/lexer_peek_contract.py
@@ -398,7 +409,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -572,7 +587,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "$env:OPENQ4_GAMELIBS_REPO"
+          git init "$env:OPENQ4_GAMELIBS_REPO"
+          git -C "$env:OPENQ4_GAMELIBS_REPO" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "$env:OPENQ4_GAMELIBS_REPO" fetch --depth 1 origin "$env:OPENQ4_GAMELIBS_SHA"
+          git -C "$env:OPENQ4_GAMELIBS_REPO" checkout --detach "$env:OPENQ4_GAMELIBS_SHA"
+          if ( ( git -C "$env:OPENQ4_GAMELIBS_REPO" rev-parse HEAD ).Trim() -ne $env:OPENQ4_GAMELIBS_SHA ) {
+            throw "openQ4-game checkout did not resolve to $env:OPENQ4_GAMELIBS_SHA"
+          }
 
       - name: Setup Python
         uses: actions/setup-python@v6

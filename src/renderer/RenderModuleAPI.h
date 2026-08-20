@@ -52,7 +52,9 @@
 //      CPU center-crop/resampling to caller-selected output dimensions
 //  9 - Append-only idRenderSystem slots for backend-neutral delayed whole-frame
 //      GPU timing and session-discontinuity resets (OpenGL and Vulkan)
-#define RENDER_API_VERSION			9
+// 10 - Shared idFile/idFileSystem ABI adds engine-owned memory staging,
+//      semantic preload records, and source-authoritative generated caches
+#define RENDER_API_VERSION			10
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;

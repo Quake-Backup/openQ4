@@ -81,6 +81,10 @@ bool Sys_IsGameWindowFocused( void );
 idSessionLocal		sessLocal;
 idSession			*session = &sessLocal;
 
+// Implemented by FileSystem.cpp as an engine-only coordinator hook; this is
+// intentionally not part of the public module-facing idFileSystem ABI.
+void FS_ReleaseLevelLoadCache( void );
+
 static float Session_UpdateMetricAverage( float currentAverage, float sample, int sampleCount ) {
 	const int averagingWindow = idMath::ClampInt( 1, 120, sampleCount );
 	if ( averagingWindow <= 1 ) {
@@ -5200,6 +5204,10 @@ Exits with mapSpawned = false
 ===============
 */
 void idSessionLocal::UnloadMap() {
+	// A level-load generation owns worker-visible file handles and immutable
+	// staging buffers. Join it before any game, render-world, renderer-module,
+	// or filesystem state used by the outgoing map can be destroyed.
+	fileSystem->CancelLevelLoadCache();
 	if ( renderSystem != NULL ) {
 		renderSystem->ResetGpuFrameTiming( "session unload" );
 	}
@@ -5243,6 +5251,54 @@ void idSessionLocal::UnloadMap() {
 	iamTheDukeActive = false;
 	objectiveFailed = false;
 	mapSpawned = false;
+}
+
+/*
+===============
+Session_BuildLevelLoadCacheSettings
+
+Only settings that can alter source selection, decoded CPU data, image/sample
+policy, or renderer-owned cache payloads belong here.  Display-only settings
+must not cause manifest churn.
+===============
+*/
+static void Session_BuildLevelLoadCacheSettings( idStr &settings ) {
+	static const char *const settingNames[] = {
+		"com_binaryRead",
+		"r_renderer",
+		"r_actualRenderer",
+		"r_mergeModelSurfaces",
+		"r_slopVertex",
+		"r_slopTexCoord",
+		"r_slopNormal",
+		"r_useNewSkinning",
+		"r_useFastSkinning",
+		"r_forceConvertMD5R",
+		"r_convertMD5toMD5R",
+		"r_convertStaticToMD5R",
+		"r_convertProcToMD5R",
+		"r_pbrMaterials",
+		"image_downSize",
+		"image_downSizeLimit",
+		"image_downSizeSpecular",
+		"image_downSizeSpecularLimit",
+		"image_downSizeBump",
+		"image_downSizeBumpLimit",
+		"image_ignoreHighQuality",
+		"image_picmip",
+		"image_picmipFilter",
+		"image_picmipMinSize",
+		"image_usePrecompressedTextures",
+		"s_useCompression",
+		"sys_lang"
+	};
+	settings = "level-load-settings-v2;";
+	for ( unsigned int i = 0; i < sizeof( settingNames ) / sizeof( settingNames[ 0 ] ); i++ ) {
+		settings += settingNames[ i ];
+		settings += '=';
+		settings += cvarSystem->GetCVarString( settingNames[ i ] );
+		settings += ';';
+	}
 }
 
 /*
@@ -5537,6 +5593,19 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		lastCheckPoint = -1;
 	}
 	fileSystem->SetAssetLogName( fullMapName.c_str() );
+	// Reset before BeginLevelLoadCache can publish work.  Preload workers add
+	// their reads to this counter, so resetting after the generation starts can
+	// nondeterministically discard bytes already read by a worker.
+	fileSystem->ResetReadCount();
+	idStr levelLoadCacheSettings;
+	Session_BuildLevelLoadCacheSettings( levelLoadCacheSettings );
+#ifdef ID_DEDICATED
+	const char *levelLoadGameMode = "dedicated";
+#else
+	const char *levelLoadGameMode = IsMultiplayer() ? "multiplayer" : "singleplayer";
+#endif
+	fileSystem->BeginLevelLoadCache( fullMapName.c_str(), levelLoadGameMode,
+		filterString.c_str(), levelLoadCacheSettings.c_str() );
 
 	if ( !reloadingSameMap && com_SingleDeclFile.GetBool() ) {
 		declManager->FlushDecls();
@@ -5568,7 +5637,6 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 
 	// if this works out we will probably want all the sizes in a def file although this solution will 
 	// work for new maps etc. after the first load. we can also drop the sizes into the default.cfg
-	fileSystem->ResetReadCount();
 	if ( !reloadingSameMap  ) {
 		bytesNeededForMapLoad = GetBytesNeededForMapLoad( mapString.c_str() );
 	} else {
@@ -5597,6 +5665,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	int renderWorldMsec = 0;
 	int gameInitMsec = 0;
 	int playerSpawnMsec = 0;
+	int cacheJoinMsec = 0;
 	int mediaFinishMsec = 0;
 	int mediaRenderMsec = 0;
 	int mediaSoundMsec = 0;
@@ -5654,6 +5723,9 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	}
 	playerSpawnMsec = Sys_Milliseconds() - phaseStart;
 	phaseStart = Sys_Milliseconds();
+	fileSystem->FinishLevelLoadCache( true );
+	cacheJoinMsec = Sys_Milliseconds() - phaseStart;
+	phaseStart = Sys_Milliseconds();
 
 	// actually purge/load the media
 	int mediaPhaseStart = phaseStart;
@@ -5678,6 +5750,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	}
 	uiManager->EndLevelLoad();
 	mediaUiMsec = Sys_Milliseconds() - mediaPhaseStart;
+	FS_ReleaseLevelLoadCache();
 	mediaFinishMsec = Sys_Milliseconds() - phaseStart;
 	phaseStart = Sys_Milliseconds();
 
@@ -5697,10 +5770,11 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	common->Printf( "%6d msec to load %s\n", msec, mapString.c_str() );
 	if ( com_showLevelLoadTimes.GetBool() ) {
 		common->Printf(
-			"Map load phases: renderWorld=%d gameInit=%d playerSpawn=%d mediaFinish=%d settle=%d total=%d msec\n",
+			"Map load phases: renderWorld=%d gameInit=%d playerSpawn=%d cacheJoin=%d mediaFinish=%d settle=%d total=%d msec\n",
 			renderWorldMsec,
 			gameInitMsec,
 			playerSpawnMsec,
+			cacheJoinMsec,
 			mediaFinishMsec,
 			settleMsec,
 			msec );

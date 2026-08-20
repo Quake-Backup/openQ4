@@ -89,7 +89,7 @@ def main() -> int:
         require(public_header, token, "public whole-frame timing ABI")
 
     module_api = read(RENDERER / "RenderModuleAPI.h")
-    require(module_api, "#define RENDER_API_VERSION\t\t\t9", "renderer module ABI v9")
+    require(module_api, "#define RENDER_API_VERSION\t\t\t10", "renderer module ABI v10")
 
     core = read(RENDERER / "GpuFrameTimingCore.h")
     require(core, "elapsedMicroseconds == 0", "zero-duration rejection")

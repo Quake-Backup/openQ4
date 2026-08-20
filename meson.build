@@ -221,6 +221,37 @@ if get_option('build_native_tests')
     timeout: 30,
   )
 
+  openq4_level_load_cache_format_test = executable(
+    'openq4-level-load-cache-format-test',
+    files(
+      'tools/tests/native/LevelLoadCacheFormatTest.cpp',
+      'src/framework/LevelLoadCacheFormat.cpp',
+    ),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-level-load-cache-format',
+    openq4_level_load_cache_format_test,
+    timeout: 30,
+  )
+
+  openq4_level_load_pipeline_test = executable(
+    'openq4-level-load-pipeline-test',
+    files(
+      'tools/tests/native/LevelLoadPipelineTest.cpp',
+      'src/framework/LevelLoadPipeline.cpp',
+      'src/framework/ParallelJobSystem.cpp',
+    ),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-level-load-pipeline',
+    openq4_level_load_pipeline_test,
+    timeout: 30,
+  )
+
   openq4_job_system_test = executable(
     'openq4-job-system-test',
     files(

@@ -684,6 +684,11 @@ idImage	*idImageManager::ImageFromFile( const char *_name, textureFilter_t filte
 		return globalImages->defaultImage;
 	}
 	usage = R_ImageUsageForName( _name, usage );
+	fileSystem->RecordLevelLoadResource( LEVEL_LOAD_RESOURCE_IMAGE, _name,
+		va( "filter=%d;repeat=%d;usage=%d;cube=%d;downsize=%d;flags=%u",
+			static_cast<int>( filter ), static_cast<int>( repeat ),
+			static_cast<int>( usage ), static_cast<int>( cubeMap ),
+			allowDownSize ? 1 : 0, flags ), 0, 1 );
 
 	// strip any .tga file extensions from anywhere in the _name, including image program parameters
 	idStr name = _name;

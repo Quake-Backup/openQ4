@@ -13,6 +13,24 @@ The two Additional-Terms files preserve the wording published in the correspondi
 
 The official Doom 3 BFG repository describes its release as GPL source with omissions for Steam integration, Bink playback, and the depth-fail stencil-shadow implementation. Those omissions are a boundary on what can be copied from that release; they are not an invitation to reconstruct excluded code from non-source binaries. Quake 4 retail assets are not included in either source release and are not relicensed by openQ4.
 
+## Milestone B loading/cache reference boundary
+
+The level-load manifest/envelope format, bounded read/framing pipeline and
+immutable DTO, cache manager and filesystem substitution, render-model payloads,
+and collision-model payload are original openQ4 designs and implementations. No
+cache format, serializer, validation algorithm, pipeline code, or
+collision/model codec was copied or adapted from Doom 3 BFG.
+
+During the render-world payload work, the official GPLv3
+[`neo/renderer/RenderWorld_load.cpp` at `1caba1979589971b5ed44e315d9ead30b278d8b4`](https://github.com/id-Software/DOOM-3-BFG/blob/1caba1979589971b5ed44e315d9ead30b278d8b4/neo/renderer/RenderWorld_load.cpp)
+was consulted only as a field inventory for the finalized classic proc-world CPU
+representation: inline world models, inter-area portals, and area BSP nodes.
+The openQ4 wire format, bounds, graph and finite-value checks, transaction,
+source-authoritative envelope, failure behavior, and finalization integration
+were written independently; no BFG code or algorithm was copied or adapted.
+Because no BFG-headered source file was added or changed for this work, the
+audited Doom 3 BFG header-family inventory remains 37 files.
+
 ## Reproducible inventory
 
 Run the offline audit from the repository root:

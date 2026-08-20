@@ -92,6 +92,30 @@ typedef enum {
 	FIND_ADDON
 } findFile_t;
 
+// Typed scheduling records used by the learned, per-map preload manifest.
+// These values are part of the engine/game and renderer-module ABI; append new
+// values instead of reordering existing ones.
+typedef enum {
+	LEVEL_LOAD_RESOURCE_RENDER_MODEL = 1,
+	LEVEL_LOAD_RESOURCE_IMAGE,
+	LEVEL_LOAD_RESOURCE_ANIMATION,
+	LEVEL_LOAD_RESOURCE_SOUND,
+	LEVEL_LOAD_RESOURCE_COLLISION,
+	LEVEL_LOAD_RESOURCE_WORLD,
+	LEVEL_LOAD_RESOURCE_MATERIAL,
+	LEVEL_LOAD_RESOURCE_GUI,
+	LEVEL_LOAD_RESOURCE_EFFECT,
+	LEVEL_LOAD_RESOURCE_SKIN,
+	LEVEL_LOAD_RESOURCE_DECL,
+	LEVEL_LOAD_RESOURCE_RAW
+} levelLoadResourceType_t;
+
+typedef enum {
+	GENERATED_CACHE_RENDER_MODEL = 1,
+	GENERATED_CACHE_RENDER_WORLD,
+	GENERATED_CACHE_COLLISION_MODEL
+} generatedCacheKind_t;
+
 typedef struct urlDownload_s {
 	idStr				url;
 	char				dlerror[ MAX_STRING_CHARS ];
@@ -330,6 +354,27 @@ public:
 	virtual bool			FilenameCompare( const char *s1, const char *s2 ) const = 0;
 
 	virtual bool			InProductionMode() = 0;
+
+	// Milestone B extensions are append-only at the end of the shared
+	// engine/game vtable.  Older game modules retain the complete historical
+	// prefix, while API v44 modules can opt into these coordinator services.
+	virtual void			BeginLevelLoadCache( const char *mapKey, const char *gameMode,
+								const char *entityFilter, const char *settingsKey ) = 0;
+	virtual void			FinishLevelLoadCache( bool successful ) = 0;
+	virtual void			CancelLevelLoadCache( void ) = 0;
+	virtual void			RecordLevelLoadResource( levelLoadResourceType_t type,
+								const char *name, const char *options = "",
+								unsigned int flags = 0, unsigned int priority = 1 ) = 0;
+	virtual idFile *		OpenGeneratedCacheRead( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey = "" ) = 0;
+	virtual bool			WriteGeneratedCache( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey, const void *payload,
+								unsigned int payloadBytes ) = 0;
+	virtual void			DiscardGeneratedCache( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey = "" ) = 0;
 };
 
 extern idFileSystem *		fileSystem;

@@ -309,8 +309,12 @@ def validate_allocation_guards() -> None:
     if bodies["engine idStr"] != bodies["GameLibs idStr"]:
         raise AssertionError("Engine and GameLibs idStr allocation implementations have drifted")
 
-    engine_helper = (ROOT / "src" / "idlib" / "StrAllocation.h").read_bytes()
-    gamelibs_helper = (GAME_LIBS_ROOT / "src" / "idlib" / "StrAllocation.h").read_bytes()
+    # Source parity is textual.  Universal-newline decoding avoids treating a
+    # Windows CRLF checkout and a Linux LF checkout as different helpers.
+    engine_helper = (ROOT / "src" / "idlib" / "StrAllocation.h").read_text(encoding="utf-8")
+    gamelibs_helper = (GAME_LIBS_ROOT / "src" / "idlib" / "StrAllocation.h").read_text(
+        encoding="utf-8"
+    )
     if engine_helper != gamelibs_helper:
         raise AssertionError("Engine and GameLibs string-allocation helpers have drifted")
 

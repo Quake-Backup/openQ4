@@ -35,6 +35,85 @@ If you have questions concerning this license or the applicable additional terms
 static const char *MD5_SnapshotName = "_MD5_Snapshot_";
 static const int MD5_BackSideSurfaceIdOffset = 1000;
 
+namespace {
+	static const unsigned int MD5_MODEL_CACHE_MAGIC = 0x4d34514fU; // "OQ4M"
+	static const int MD5_MODEL_CACHE_VERSION = 1;
+	static const unsigned int MD5_MODEL_GENERATED_CACHE_PARSER_VERSION = 0x00020002U;
+	static const int MD5_CACHE_MAX_JOINTS = 65536;
+	static const int MD5_CACHE_MAX_MESHES = 65536;
+	static const int MD5_CACHE_MAX_VERTS = 1 << 20;
+	static const int MD5_CACHE_MAX_WEIGHTS = 1 << 24;
+	static const int MD5_CACHE_MAX_INDEXES = 1 << 24;
+	static const int MD5_CACHE_MAX_SIL_EDGES = 1 << 23;
+	static const int MD5_CACHE_MAX_NAME = 4096;
+	static const int MD5_CACHE_MAX_MATERIALIZED_VERTS = 1 << 18;
+	static const int MD5_CACHE_MAX_MATERIALIZED_WEIGHTS = 1 << 20;
+	static const int MD5_CACHE_MAX_MATERIALIZED_INDEXES = 1 << 20;
+
+	struct md5CacheDeformStage_t {
+		int numSourceVerts;
+		int numOutputVerts;
+		idList<glIndex_t> indexes;
+		idList<glIndex_t> silIndexes;
+		idList<int> mirroredVerts;
+		idList<int> dupVerts;
+		idList<silEdge_t> silEdges;
+		idList<dominantTri_t> dominantTris;
+
+		md5CacheDeformStage_t() : numSourceVerts( 0 ), numOutputVerts( 0 ) {}
+	};
+
+	struct md5CacheMeshStage_t {
+		idStr materialName;
+		idList<idVec2> texCoords;
+		int numWeights;
+		idList<jointWeight_t> weights;
+		idList<idVec4> scaledBaseVectors;
+		idList<idVec4> baseVectors;
+		idList<idVec4> scaledWeights;
+		idList<int> weightIndex;
+		int numTris;
+		int surfaceNum;
+		md5CacheDeformStage_t deform;
+
+		md5CacheMeshStage_t() : numWeights( 0 ), numTris( 0 ), surfaceNum( 0 ) {}
+	};
+
+	static bool R_MD5CacheWriteJointQuat( idRenderModelCacheWriter &writer, const idJointQuat &pose ) {
+		return writer.WriteFloat( pose.q.x ) && writer.WriteFloat( pose.q.y )
+			&& writer.WriteFloat( pose.q.z ) && writer.WriteFloat( pose.q.w )
+			&& writer.WriteVec3( pose.t );
+	}
+
+	static bool R_MD5CacheReadJointQuat( idRenderModelCacheReader &reader, idJointQuat &pose ) {
+		pose.w = 0.0f;
+		return reader.ReadFloat( pose.q.x ) && reader.ReadFloat( pose.q.y )
+			&& reader.ReadFloat( pose.q.z ) && reader.ReadFloat( pose.q.w )
+			&& reader.ReadVec3( pose.t );
+	}
+
+	static bool R_MD5CacheWriteJointMat( idRenderModelCacheWriter &writer, const idJointMat &mat ) {
+		const float *values = mat.ToFloatPtr();
+		for ( int i = 0; i < 12; ++i ) {
+			if ( !writer.WriteFloat( values[i] ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	static bool R_MD5CacheReadJointMat( idRenderModelCacheReader &reader, idJointMat &mat ) {
+		float *values = mat.ToFloatPtr();
+		for ( int i = 0; i < 12; ++i ) {
+			if ( !reader.ReadFloat( values[i] ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+}
+
 /*
 ====================
 R_CopyAndReverseTriangles
@@ -110,6 +189,595 @@ idRenderModelMD5::idRenderModelMD5
 */
 idRenderModelMD5::idRenderModelMD5() {
 	viewEnt = NULL;
+}
+
+renderModelCacheType_t idRenderModelMD5::LevelLoadCachePayloadType() const {
+	return RENDER_MODEL_CACHE_MD5;
+}
+
+bool idRenderModelMD5::WriteLevelLoadCachePayload( idFile &file ) const {
+	if ( purged || defaulted || joints.Num() < 0 || joints.Num() > MD5_CACHE_MAX_JOINTS
+		|| defaultPose.Num() != joints.Num() || skinSpaceToLocalMats.Num() != joints.Num()
+		|| meshes.Num() < 0 || meshes.Num() > MD5_CACHE_MAX_MESHES ) {
+		return false;
+	}
+
+	idRenderModelCacheWriter writer( file );
+	if ( !writer.WriteUnsignedInt( MD5_MODEL_CACHE_MAGIC ) || !writer.WriteInt( MD5_MODEL_CACHE_VERSION )
+		|| !idRenderModelStatic::WriteLevelLoadCachePayload( file ) || !writer.WriteInt( joints.Num() ) ) {
+		return false;
+	}
+
+	for ( int i = 0; i < joints.Num(); ++i ) {
+		int parentIndex = -1;
+		if ( joints[i].parent != NULL ) {
+			parentIndex = static_cast<int>( joints[i].parent - joints.Ptr() );
+		}
+		if ( joints[i].name.IsEmpty() || parentIndex < -1 || parentIndex >= i
+			|| !writer.WriteString( joints[i].name.c_str(), MD5_CACHE_MAX_NAME )
+			|| !writer.WriteInt( parentIndex ) ) {
+			return false;
+		}
+	}
+
+	if ( !writer.WriteInt( defaultPose.Num() ) ) {
+		return false;
+	}
+	for ( int i = 0; i < defaultPose.Num(); ++i ) {
+		if ( !R_MD5CacheWriteJointQuat( writer, defaultPose[i] ) ) {
+			return false;
+		}
+	}
+	if ( !writer.WriteInt( skinSpaceToLocalMats.Num() ) ) {
+		return false;
+	}
+	for ( int i = 0; i < skinSpaceToLocalMats.Num(); ++i ) {
+		if ( !R_MD5CacheWriteJointMat( writer, skinSpaceToLocalMats[i] ) ) {
+			return false;
+		}
+	}
+
+	if ( !writer.WriteInt( meshes.Num() ) ) {
+		return false;
+	}
+	for ( int meshIndex = 0; meshIndex < meshes.Num(); ++meshIndex ) {
+		const idMD5Mesh &mesh = meshes[meshIndex];
+		if ( mesh.shader == NULL || mesh.shader->GetName() == NULL || mesh.texCoords.Num() <= 0
+			|| mesh.texCoords.Num() > MD5_CACHE_MAX_MATERIALIZED_VERTS || mesh.numWeights <= 0
+			|| mesh.numWeights > MD5_CACHE_MAX_MATERIALIZED_WEIGHTS || mesh.weights == NULL
+			|| mesh.scaledBaseVectors == NULL || mesh.scaledWeights == NULL || mesh.weightIndex == NULL
+			|| mesh.baseVectors == NULL || mesh.deformInfo == NULL || mesh.numTris < 0
+			|| mesh.numTris > MD5_CACHE_MAX_MATERIALIZED_INDEXES / 3 || mesh.surfaceNum < -1
+			|| mesh.surfaceNum > MD5_CACHE_MAX_MESHES
+			|| ( mesh.deformInfo->numMirroredVerts > 0 && mesh.deformInfo->mirroredVerts == NULL ) ) {
+			return false;
+		}
+
+		idList<int> firstWeight;
+		idList<int> weightsPerVert;
+		firstWeight.SetNum( mesh.texCoords.Num() );
+		weightsPerVert.SetNum( mesh.texCoords.Num() );
+		int weightCursor = 0;
+		for ( int vertIndex = 0; vertIndex < mesh.texCoords.Num(); ++vertIndex ) {
+			if ( weightCursor >= mesh.numWeights ) {
+				return false;
+			}
+			const int nextBytes = mesh.weights[weightCursor].nextVertexOffset;
+			if ( nextBytes <= 0 || ( nextBytes % static_cast<int>( sizeof( jointWeight_t ) ) ) != 0 ) {
+				return false;
+			}
+			const int vertexWeightCount = nextBytes / sizeof( jointWeight_t );
+			if ( vertexWeightCount <= 0 || vertexWeightCount > mesh.numWeights - weightCursor ) {
+				return false;
+			}
+			firstWeight[vertIndex] = weightCursor;
+			weightsPerVert[vertIndex] = vertexWeightCount;
+			for ( int j = 0; j < vertexWeightCount; ++j ) {
+				if ( mesh.weights[weightCursor + j].nextVertexOffset != ( vertexWeightCount - j ) * sizeof( jointWeight_t ) ) {
+					return false;
+				}
+			}
+			weightCursor += vertexWeightCount;
+		}
+		if ( weightCursor != mesh.numWeights || mesh.deformInfo->numSourceVerts != mesh.texCoords.Num()
+			|| mesh.deformInfo->numOutputVerts < mesh.deformInfo->numSourceVerts
+			|| mesh.deformInfo->numOutputVerts > MD5_CACHE_MAX_MATERIALIZED_VERTS
+			|| mesh.deformInfo->numMirroredVerts < 0
+			|| mesh.deformInfo->numMirroredVerts != mesh.deformInfo->numOutputVerts - mesh.deformInfo->numSourceVerts ) {
+			return false;
+		}
+
+		int storedWeightCount = mesh.numWeights;
+		for ( int mirrorIndex = 0; mirrorIndex < mesh.deformInfo->numMirroredVerts; ++mirrorIndex ) {
+			const int sourceVert = mesh.deformInfo->mirroredVerts[mirrorIndex];
+			if ( sourceVert < 0 || sourceVert >= weightsPerVert.Num()
+				|| weightsPerVert[sourceVert] > MD5_CACHE_MAX_WEIGHTS - storedWeightCount ) {
+				return false;
+			}
+			storedWeightCount += weightsPerVert[sourceVert];
+		}
+		if ( storedWeightCount > MD5_CACHE_MAX_MATERIALIZED_WEIGHTS * 2 ) {
+			return false;
+		}
+
+		if ( !writer.WriteString( mesh.shader->GetName(), MD5_CACHE_MAX_NAME )
+			|| !writer.WriteInt( mesh.texCoords.Num() ) ) {
+			return false;
+		}
+		for ( int i = 0; i < mesh.texCoords.Num(); ++i ) {
+			if ( !writer.WriteVec2( mesh.texCoords[i] ) ) {
+				return false;
+			}
+		}
+		if ( !writer.WriteInt( mesh.numWeights ) || !writer.WriteInt( storedWeightCount ) ) {
+			return false;
+		}
+		for ( int i = 0; i < storedWeightCount; ++i ) {
+			const jointWeight_t &weight = mesh.weights[i];
+			if ( weight.weight < 0.0f || weight.jointMatOffset < 0
+				|| ( weight.jointMatOffset % static_cast<int>( sizeof( idJointMat ) ) ) != 0
+				|| weight.jointMatOffset / static_cast<int>( sizeof( idJointMat ) ) >= joints.Num()
+				|| weight.nextVertexOffset <= 0
+				|| !writer.WriteFloat( weight.weight ) || !writer.WriteInt( weight.jointMatOffset )
+				|| !writer.WriteInt( weight.nextVertexOffset ) || !writer.WriteVec4( mesh.scaledBaseVectors[i] ) ) {
+				return false;
+			}
+		}
+		for ( int i = 0; i < mesh.numWeights; ++i ) {
+			if ( !writer.WriteVec4( mesh.scaledWeights[i] )
+				|| !writer.WriteInt( mesh.weightIndex[i * 2 + 0] )
+				|| !writer.WriteInt( mesh.weightIndex[i * 2 + 1] ) ) {
+				return false;
+			}
+		}
+
+		const deformInfo_t &deform = *mesh.deformInfo;
+		if ( deform.numIndexes != mesh.numTris * 3 || deform.numIndexes < 0 || deform.numIndexes > MD5_CACHE_MAX_INDEXES
+			|| deform.numMirroredVerts < 0 || deform.numMirroredVerts > deform.numOutputVerts
+			|| deform.numDupVerts < 0 || deform.numDupVerts > deform.numOutputVerts
+			|| deform.numSilEdges < 0 || deform.numSilEdges > MD5_CACHE_MAX_SIL_EDGES
+			|| ( deform.numIndexes > 0 && ( deform.indexes == NULL || deform.silIndexes == NULL ) )
+			|| ( deform.numMirroredVerts > 0 && deform.mirroredVerts == NULL )
+			|| ( deform.numDupVerts > 0 && deform.dupVerts == NULL )
+			|| ( deform.numSilEdges > 0 && deform.silEdges == NULL )
+			|| !writer.WriteInt( mesh.numTris ) || !writer.WriteInt( mesh.surfaceNum )
+			|| !writer.WriteInt( deform.numSourceVerts ) || !writer.WriteInt( deform.numOutputVerts )
+			|| !writer.WriteInt( deform.numIndexes ) ) {
+			return false;
+		}
+		for ( int i = 0; i < deform.numIndexes; ++i ) {
+			if ( deform.indexes[i] < 0 || deform.indexes[i] >= deform.numOutputVerts
+				|| deform.silIndexes[i] < 0 || deform.silIndexes[i] >= deform.numOutputVerts
+				|| !writer.WriteInt( deform.indexes[i] ) || !writer.WriteInt( deform.silIndexes[i] ) ) {
+				return false;
+			}
+		}
+		if ( !writer.WriteInt( deform.numMirroredVerts ) ) {
+			return false;
+		}
+		for ( int i = 0; i < deform.numMirroredVerts; ++i ) {
+			if ( deform.mirroredVerts[i] < 0 || deform.mirroredVerts[i] >= deform.numSourceVerts
+				|| !writer.WriteInt( deform.mirroredVerts[i] ) ) {
+				return false;
+			}
+		}
+		if ( !writer.WriteInt( deform.numDupVerts ) ) {
+			return false;
+		}
+		for ( int i = 0; i < deform.numDupVerts * 2; ++i ) {
+			if ( deform.dupVerts[i] < 0 || deform.dupVerts[i] >= deform.numOutputVerts
+				|| !writer.WriteInt( deform.dupVerts[i] ) ) {
+				return false;
+			}
+		}
+		if ( !writer.WriteInt( deform.numSilEdges ) ) {
+			return false;
+		}
+		const int planeCount = deform.numIndexes / 3;
+		for ( int i = 0; i < deform.numSilEdges; ++i ) {
+			const silEdge_t &edge = deform.silEdges[i];
+			if ( edge.p1 < 0 || edge.p1 >= planeCount || edge.p2 < 0 || edge.p2 > planeCount
+				|| edge.v1 < 0 || edge.v1 >= deform.numOutputVerts || edge.v2 < 0 || edge.v2 >= deform.numOutputVerts
+				|| !writer.WriteInt( edge.p1 ) || !writer.WriteInt( edge.p2 )
+				|| !writer.WriteInt( edge.v1 ) || !writer.WriteInt( edge.v2 ) ) {
+				return false;
+			}
+		}
+		if ( !writer.WriteBool( deform.dominantTris != NULL ) ) {
+			return false;
+		}
+		if ( deform.dominantTris != NULL ) {
+			for ( int i = 0; i < deform.numOutputVerts; ++i ) {
+				const dominantTri_t &dominant = deform.dominantTris[i];
+				if ( dominant.v2 < 0 || dominant.v2 >= deform.numOutputVerts
+					|| dominant.v3 < 0 || dominant.v3 >= deform.numOutputVerts
+					|| !writer.WriteInt( dominant.v2 ) || !writer.WriteInt( dominant.v3 )
+					|| !writer.WriteFloat( dominant.normalizationScale[0] )
+					|| !writer.WriteFloat( dominant.normalizationScale[1] )
+					|| !writer.WriteFloat( dominant.normalizationScale[2] ) ) {
+					return false;
+				}
+			}
+		}
+		if ( deform.numOutputVerts > 0x1fffffff || !writer.WriteInt( deform.numOutputVerts * 4 ) ) {
+			return false;
+		}
+		for ( int i = 0; i < deform.numOutputVerts * 4; ++i ) {
+			if ( !writer.WriteVec4( mesh.baseVectors[i] ) ) {
+				return false;
+			}
+		}
+	}
+	return writer.IsValid();
+}
+
+bool idRenderModelMD5::ReadLevelLoadCachePayload( idFile &file ) {
+	idRenderModelCacheReader reader( file );
+	unsigned int magic = 0;
+	int version = 0;
+	if ( !reader.ReadUnsignedInt( magic ) || magic != MD5_MODEL_CACHE_MAGIC
+		|| !reader.ReadInt( version ) || version != MD5_MODEL_CACHE_VERSION ) {
+		return false;
+	}
+
+	idRenderModelMD5 staged;
+	if ( !staged.idRenderModelStatic::ReadLevelLoadCachePayload( file ) || staged.surfaces.Num() != 0 ) {
+		return false;
+	}
+
+	int jointCount = 0;
+	if ( !reader.ReadCount( jointCount, MD5_CACHE_MAX_JOINTS )
+		|| !reader.Reserve( jointCount, sizeof( idStr ) + sizeof( int ) + sizeof( idJointQuat ) + sizeof( idJointMat ) ) ) {
+		return false;
+	}
+	idList<idStr> jointNames;
+	idList<int> jointParents;
+	idList<idJointQuat> decodedPose;
+	idList<idJointMat> decodedSkinMats;
+	jointNames.SetNum( jointCount );
+	jointParents.SetNum( jointCount );
+	for ( int i = 0; i < jointCount; ++i ) {
+		if ( !reader.ReadString( jointNames[i], MD5_CACHE_MAX_NAME ) || jointNames[i].IsEmpty()
+			|| !reader.ReadInt( jointParents[i] ) || jointParents[i] < -1 || jointParents[i] >= i ) {
+			return false;
+		}
+	}
+
+	int poseCount = 0;
+	if ( !reader.ReadCount( poseCount, MD5_CACHE_MAX_JOINTS ) || poseCount != jointCount ) {
+		return false;
+	}
+	decodedPose.SetNum( poseCount );
+	for ( int i = 0; i < poseCount; ++i ) {
+		if ( !R_MD5CacheReadJointQuat( reader, decodedPose[i] ) ) {
+			return false;
+		}
+	}
+	int skinMatCount = 0;
+	if ( !reader.ReadCount( skinMatCount, MD5_CACHE_MAX_JOINTS ) || skinMatCount != jointCount ) {
+		return false;
+	}
+	decodedSkinMats.SetNum( skinMatCount );
+	for ( int i = 0; i < skinMatCount; ++i ) {
+		if ( !R_MD5CacheReadJointMat( reader, decodedSkinMats[i] ) ) {
+			return false;
+		}
+	}
+
+	int meshCount = 0;
+	if ( !reader.ReadCount( meshCount, MD5_CACHE_MAX_MESHES, sizeof( md5CacheMeshStage_t ) ) ) {
+		return false;
+	}
+	idList<md5CacheMeshStage_t> decodedMeshes;
+	decodedMeshes.SetNum( meshCount );
+	for ( int meshIndex = 0; meshIndex < meshCount; ++meshIndex ) {
+		md5CacheMeshStage_t &mesh = decodedMeshes[meshIndex];
+		int texCoordCount = 0;
+		int storedWeightCount = 0;
+		if ( !reader.ReadString( mesh.materialName, MD5_CACHE_MAX_NAME ) || mesh.materialName.IsEmpty()
+			|| !reader.ReadCount( texCoordCount, MD5_CACHE_MAX_VERTS, sizeof( idVec2 ) ) || texCoordCount <= 0
+			|| texCoordCount > MD5_CACHE_MAX_MATERIALIZED_VERTS ) {
+			return false;
+		}
+		mesh.texCoords.SetNum( texCoordCount );
+		for ( int i = 0; i < texCoordCount; ++i ) {
+			if ( !reader.ReadVec2( mesh.texCoords[i] ) ) {
+				return false;
+			}
+		}
+		if ( !reader.ReadCount( mesh.numWeights, MD5_CACHE_MAX_WEIGHTS ) || mesh.numWeights <= 0
+			|| mesh.numWeights > MD5_CACHE_MAX_MATERIALIZED_WEIGHTS
+			|| !reader.ReadCount( storedWeightCount, MD5_CACHE_MAX_WEIGHTS ) || storedWeightCount < mesh.numWeights
+			|| storedWeightCount > MD5_CACHE_MAX_MATERIALIZED_WEIGHTS * 2
+			|| !reader.Reserve( storedWeightCount, sizeof( jointWeight_t ) + sizeof( idVec4 ) ) ) {
+			return false;
+		}
+		mesh.weights.SetNum( storedWeightCount );
+		mesh.scaledBaseVectors.SetNum( storedWeightCount );
+		for ( int i = 0; i < storedWeightCount; ++i ) {
+			jointWeight_t &weight = mesh.weights[i];
+			if ( !reader.ReadFloat( weight.weight ) || weight.weight < 0.0f
+				|| !reader.ReadInt( weight.jointMatOffset ) || weight.jointMatOffset < 0
+				|| ( weight.jointMatOffset % static_cast<int>( sizeof( idJointMat ) ) ) != 0
+				|| weight.jointMatOffset / static_cast<int>( sizeof( idJointMat ) ) >= jointCount
+				|| !reader.ReadInt( weight.nextVertexOffset ) || weight.nextVertexOffset <= 0
+				|| ( weight.nextVertexOffset % static_cast<int>( sizeof( jointWeight_t ) ) ) != 0
+				|| !reader.ReadVec4( mesh.scaledBaseVectors[i] ) ) {
+				return false;
+			}
+		}
+
+		if ( mesh.numWeights > 0x3fffffff || !reader.Reserve( mesh.numWeights, sizeof( idVec4 ) + sizeof( int ) * 2 ) ) {
+			return false;
+		}
+		mesh.scaledWeights.SetNum( mesh.numWeights );
+		mesh.weightIndex.SetNum( mesh.numWeights * 2 );
+		for ( int i = 0; i < mesh.numWeights; ++i ) {
+			if ( !reader.ReadVec4( mesh.scaledWeights[i] )
+				|| !reader.ReadInt( mesh.weightIndex[i * 2 + 0] )
+				|| mesh.weightIndex[i * 2 + 0] < 0
+				|| ( mesh.weightIndex[i * 2 + 0] % static_cast<int>( sizeof( idJointMat ) ) ) != 0
+				|| mesh.weightIndex[i * 2 + 0] / static_cast<int>( sizeof( idJointMat ) ) >= jointCount
+				|| !reader.ReadInt( mesh.weightIndex[i * 2 + 1] )
+				|| ( mesh.weightIndex[i * 2 + 1] != 0 && mesh.weightIndex[i * 2 + 1] != 1 ) ) {
+				return false;
+			}
+		}
+
+		if ( !reader.ReadCount( mesh.numTris, MD5_CACHE_MAX_INDEXES / 3 )
+			|| !reader.ReadInt( mesh.surfaceNum ) || mesh.surfaceNum < -1 || mesh.surfaceNum > MD5_CACHE_MAX_MESHES
+			|| !reader.ReadCount( mesh.deform.numSourceVerts, MD5_CACHE_MAX_VERTS )
+			|| mesh.deform.numSourceVerts != texCoordCount
+			|| !reader.ReadCount( mesh.deform.numOutputVerts, MD5_CACHE_MAX_VERTS )
+			|| mesh.deform.numOutputVerts < mesh.deform.numSourceVerts
+			|| mesh.deform.numOutputVerts > MD5_CACHE_MAX_MATERIALIZED_VERTS ) {
+			return false;
+		}
+
+		int deformIndexCount = 0;
+		if ( !reader.ReadCount( deformIndexCount, MD5_CACHE_MAX_INDEXES )
+			|| deformIndexCount != mesh.numTris * 3
+			|| deformIndexCount > MD5_CACHE_MAX_MATERIALIZED_INDEXES
+			|| !reader.Reserve( deformIndexCount, sizeof( glIndex_t ) * 2 ) ) {
+			return false;
+		}
+		mesh.deform.indexes.SetNum( deformIndexCount );
+		mesh.deform.silIndexes.SetNum( deformIndexCount );
+		for ( int i = 0; i < deformIndexCount; ++i ) {
+			if ( !reader.ReadInt( mesh.deform.indexes[i] ) || mesh.deform.indexes[i] < 0
+				|| mesh.deform.indexes[i] >= mesh.deform.numOutputVerts
+				|| !reader.ReadInt( mesh.deform.silIndexes[i] ) || mesh.deform.silIndexes[i] < 0
+				|| mesh.deform.silIndexes[i] >= mesh.deform.numOutputVerts ) {
+				return false;
+			}
+		}
+
+		int mirroredCount = 0;
+		if ( !reader.ReadCount( mirroredCount, mesh.deform.numOutputVerts, sizeof( int ) )
+			|| mirroredCount != mesh.deform.numOutputVerts - mesh.deform.numSourceVerts ) {
+			return false;
+		}
+		mesh.deform.mirroredVerts.SetNum( mirroredCount );
+		for ( int i = 0; i < mirroredCount; ++i ) {
+			if ( !reader.ReadInt( mesh.deform.mirroredVerts[i] ) || mesh.deform.mirroredVerts[i] < 0
+				|| mesh.deform.mirroredVerts[i] >= mesh.deform.numSourceVerts ) {
+				return false;
+			}
+		}
+
+		int dupCount = 0;
+		if ( !reader.ReadCount( dupCount, mesh.deform.numOutputVerts ) || dupCount > 0x3fffffff
+			|| !reader.Reserve( dupCount * 2, sizeof( int ) ) ) {
+			return false;
+		}
+		mesh.deform.dupVerts.SetNum( dupCount * 2 );
+		for ( int i = 0; i < mesh.deform.dupVerts.Num(); ++i ) {
+			if ( !reader.ReadInt( mesh.deform.dupVerts[i] ) || mesh.deform.dupVerts[i] < 0
+				|| mesh.deform.dupVerts[i] >= mesh.deform.numOutputVerts ) {
+				return false;
+			}
+		}
+
+		int silEdgeCount = 0;
+		if ( !reader.ReadCount( silEdgeCount, MD5_CACHE_MAX_SIL_EDGES, sizeof( silEdge_t ) ) ) {
+			return false;
+		}
+		mesh.deform.silEdges.SetNum( silEdgeCount );
+		const int planeCount = deformIndexCount / 3;
+		for ( int i = 0; i < silEdgeCount; ++i ) {
+			silEdge_t &edge = mesh.deform.silEdges[i];
+			if ( !reader.ReadInt( edge.p1 ) || !reader.ReadInt( edge.p2 )
+				|| !reader.ReadInt( edge.v1 ) || !reader.ReadInt( edge.v2 )
+				|| edge.p1 < 0 || edge.p1 >= planeCount || edge.p2 < 0 || edge.p2 > planeCount
+				|| edge.v1 < 0 || edge.v1 >= mesh.deform.numOutputVerts
+				|| edge.v2 < 0 || edge.v2 >= mesh.deform.numOutputVerts ) {
+				return false;
+			}
+		}
+
+		bool hasDominantTris = false;
+		if ( !reader.ReadBool( hasDominantTris ) ) {
+			return false;
+		}
+		if ( hasDominantTris ) {
+			if ( !reader.Reserve( mesh.deform.numOutputVerts, sizeof( dominantTri_t ) ) ) {
+				return false;
+			}
+			mesh.deform.dominantTris.SetNum( mesh.deform.numOutputVerts );
+			for ( int i = 0; i < mesh.deform.numOutputVerts; ++i ) {
+				dominantTri_t &dominant = mesh.deform.dominantTris[i];
+				if ( !reader.ReadInt( dominant.v2 ) || !reader.ReadInt( dominant.v3 )
+					|| dominant.v2 < 0 || dominant.v2 >= mesh.deform.numOutputVerts
+					|| dominant.v3 < 0 || dominant.v3 >= mesh.deform.numOutputVerts
+					|| !reader.ReadFloat( dominant.normalizationScale[0] )
+					|| !reader.ReadFloat( dominant.normalizationScale[1] )
+					|| !reader.ReadFloat( dominant.normalizationScale[2] ) ) {
+					return false;
+				}
+			}
+		}
+
+		int baseVectorCount = 0;
+		if ( mesh.deform.numOutputVerts > 0x1fffffff
+			|| !reader.ReadCount( baseVectorCount, MD5_CACHE_MAX_VERTS * 4, sizeof( idVec4 ) )
+			|| baseVectorCount != mesh.deform.numOutputVerts * 4 ) {
+			return false;
+		}
+		mesh.baseVectors.SetNum( baseVectorCount );
+		for ( int i = 0; i < baseVectorCount; ++i ) {
+			if ( !reader.ReadVec4( mesh.baseVectors[i] ) ) {
+				return false;
+			}
+		}
+
+		idList<int> weightsPerVert;
+		weightsPerVert.SetNum( texCoordCount );
+		int cursor = 0;
+		for ( int vertIndex = 0; vertIndex < texCoordCount; ++vertIndex ) {
+			if ( cursor >= mesh.numWeights ) {
+				return false;
+			}
+			const int groupCount = mesh.weights[cursor].nextVertexOffset / sizeof( jointWeight_t );
+			if ( groupCount <= 0 || groupCount > mesh.numWeights - cursor ) {
+				return false;
+			}
+			weightsPerVert[vertIndex] = groupCount;
+			for ( int j = 0; j < groupCount; ++j ) {
+				if ( mesh.weights[cursor + j].nextVertexOffset != ( groupCount - j ) * sizeof( jointWeight_t ) ) {
+					return false;
+				}
+			}
+			cursor += groupCount;
+		}
+		if ( cursor != mesh.numWeights ) {
+			return false;
+		}
+		int expectedStoredWeights = mesh.numWeights;
+		for ( int i = 0; i < mirroredCount; ++i ) {
+			const int groupCount = weightsPerVert[mesh.deform.mirroredVerts[i]];
+			if ( groupCount > MD5_CACHE_MAX_WEIGHTS - expectedStoredWeights ) {
+				return false;
+			}
+			expectedStoredWeights += groupCount;
+			if ( cursor + groupCount > mesh.weights.Num() ) {
+				return false;
+			}
+			for ( int j = 0; j < groupCount; ++j ) {
+				if ( mesh.weights[cursor + j].nextVertexOffset != ( groupCount - j ) * sizeof( jointWeight_t ) ) {
+					return false;
+				}
+			}
+			cursor += groupCount;
+		}
+		if ( expectedStoredWeights != mesh.weights.Num() || cursor != mesh.weights.Num() ) {
+			return false;
+		}
+
+		int completedWeightVertices = 0;
+		for ( int i = 0; i < mesh.numWeights; ++i ) {
+			completedWeightVertices += mesh.weightIndex[i * 2 + 1];
+		}
+		if ( completedWeightVertices != texCoordCount || mesh.weightIndex[mesh.numWeights * 2 - 1] != 1 ) {
+			return false;
+		}
+	}
+	if ( !reader.IsValid() ) {
+		return false;
+	}
+
+	staged.joints.SetNum( jointCount );
+	for ( int i = 0; i < jointCount; ++i ) {
+		staged.joints[i].name = jointNames[i];
+		staged.joints[i].parent = ( jointParents[i] >= 0 ) ? &staged.joints[jointParents[i]] : NULL;
+	}
+	staged.defaultPose.Swap( decodedPose );
+	staged.skinSpaceToLocalMats.Swap( decodedSkinMats );
+	staged.meshes.SetNum( meshCount );
+	for ( int meshIndex = 0; meshIndex < meshCount; ++meshIndex ) {
+		const md5CacheMeshStage_t &source = decodedMeshes[meshIndex];
+		idMD5Mesh &mesh = staged.meshes[meshIndex];
+		mesh.shader = declManager->FindMaterial( source.materialName.c_str() );
+		if ( mesh.shader == NULL || idStr::Icmp( mesh.shader->GetName(), source.materialName.c_str() ) != 0
+			|| mesh.shader->UseUnsmoothedTangents() != ( source.deform.dominantTris.Num() > 0 ) ) {
+			return false;
+		}
+
+		idList<idDrawVert> buildVerts;
+		buildVerts.SetNum( source.deform.numSourceVerts );
+		for ( int i = 0; i < buildVerts.Num(); ++i ) {
+			buildVerts[i].Clear();
+			buildVerts[i].xyz = source.baseVectors[i * 4 + 0].ToVec3();
+			buildVerts[i].st = source.texCoords[i];
+		}
+		idList<int> buildIndexes;
+		buildIndexes.SetNum( source.deform.indexes.Num() );
+		for ( int i = 0; i < buildIndexes.Num(); ++i ) {
+			const int finalIndex = source.deform.indexes[i];
+			if ( finalIndex < source.deform.numSourceVerts ) {
+				buildIndexes[i] = finalIndex;
+			} else {
+				const int mirrorIndex = finalIndex - source.deform.numSourceVerts;
+				if ( mirrorIndex < 0 || mirrorIndex >= source.deform.mirroredVerts.Num() ) {
+					return false;
+				}
+				buildIndexes[i] = source.deform.mirroredVerts[mirrorIndex];
+			}
+		}
+
+		deformInfo_t *deform = R_BuildDeformInfo( source.deform.numSourceVerts, buildVerts.Ptr(),
+			buildIndexes.Num(), buildIndexes.Ptr(), source.deform.dominantTris.Num() > 0 );
+		if ( deform == NULL || deform->numSourceVerts != source.deform.numSourceVerts
+			|| deform->numOutputVerts != source.deform.numOutputVerts
+			|| deform->numIndexes != source.deform.indexes.Num()
+			|| deform->numMirroredVerts != source.deform.mirroredVerts.Num()
+			|| deform->numDupVerts * 2 != source.deform.dupVerts.Num()
+			|| deform->numSilEdges != source.deform.silEdges.Num()
+			|| ( deform->dominantTris != NULL ) != ( source.deform.dominantTris.Num() > 0 ) ) {
+			if ( deform != NULL ) {
+				R_FreeDeformInfo( deform );
+			}
+			return false;
+		}
+		memcpy( deform->indexes, source.deform.indexes.Ptr(), deform->numIndexes * sizeof( deform->indexes[0] ) );
+		memcpy( deform->silIndexes, source.deform.silIndexes.Ptr(), deform->numIndexes * sizeof( deform->silIndexes[0] ) );
+		if ( deform->numMirroredVerts > 0 ) {
+			memcpy( deform->mirroredVerts, source.deform.mirroredVerts.Ptr(), deform->numMirroredVerts * sizeof( deform->mirroredVerts[0] ) );
+		}
+		if ( deform->numDupVerts > 0 ) {
+			memcpy( deform->dupVerts, source.deform.dupVerts.Ptr(), deform->numDupVerts * 2 * sizeof( deform->dupVerts[0] ) );
+		}
+		if ( deform->numSilEdges > 0 ) {
+			memcpy( deform->silEdges, source.deform.silEdges.Ptr(), deform->numSilEdges * sizeof( deform->silEdges[0] ) );
+		}
+		if ( deform->dominantTris != NULL ) {
+			memcpy( deform->dominantTris, source.deform.dominantTris.Ptr(), deform->numOutputVerts * sizeof( deform->dominantTris[0] ) );
+		}
+
+		mesh.texCoords = source.texCoords;
+		mesh.numWeights = source.numWeights;
+		mesh.weights = static_cast<jointWeight_t *>( Mem_Alloc16( source.weights.Num() * sizeof( mesh.weights[0] ) ) );
+		mesh.scaledBaseVectors = static_cast<idVec4 *>( Mem_Alloc16( source.scaledBaseVectors.Num() * sizeof( mesh.scaledBaseVectors[0] ) ) );
+		mesh.baseVectors = static_cast<idVec4 *>( Mem_Alloc16( source.baseVectors.Num() * sizeof( mesh.baseVectors[0] ) ) );
+		mesh.scaledWeights = static_cast<idVec4 *>( Mem_Alloc16( source.scaledWeights.Num() * sizeof( mesh.scaledWeights[0] ) ) );
+		mesh.weightIndex = static_cast<int *>( Mem_Alloc16( source.weightIndex.Num() * sizeof( mesh.weightIndex[0] ) ) );
+		memcpy( mesh.weights, source.weights.Ptr(), source.weights.Num() * sizeof( mesh.weights[0] ) );
+		memcpy( mesh.scaledBaseVectors, source.scaledBaseVectors.Ptr(), source.scaledBaseVectors.Num() * sizeof( mesh.scaledBaseVectors[0] ) );
+		memcpy( mesh.baseVectors, source.baseVectors.Ptr(), source.baseVectors.Num() * sizeof( mesh.baseVectors[0] ) );
+		memcpy( mesh.scaledWeights, source.scaledWeights.Ptr(), source.scaledWeights.Num() * sizeof( mesh.scaledWeights[0] ) );
+		memcpy( mesh.weightIndex, source.weightIndex.Ptr(), source.weightIndex.Num() * sizeof( mesh.weightIndex[0] ) );
+		mesh.numTris = source.numTris;
+		mesh.surfaceNum = source.surfaceNum;
+		mesh.currentTime = 0.0f;
+		mesh.deformInfo = deform;
+	}
+
+	SwapLevelLoadCacheState( staged );
+	joints.Swap( staged.joints );
+	defaultPose.Swap( staged.defaultPose );
+	skinSpaceToLocalMats.Swap( staged.skinSpaceToLocalMats );
+	meshes.Swap( staged.meshes );
+	viewEnt = NULL;
+	return true;
 }
 
 /*
@@ -685,13 +1353,33 @@ void idRenderModelMD5::LoadModel() {
 	idJointQuat	*pose;
 	idMD5Joint	*joint;
 	idJointMat *poseMat3;
+	const idStr sourceName = name;
 
 	if ( !purged ) {
 		PurgeModel();
 	}
 	purged = false;
+	char cacheSettingsBuffer[1024];
+	idStr::snPrintf( cacheSettingsBuffer, sizeof( cacheSettingsBuffer ),
+		"md5-payload=2;merge=%s;slopv=%s;slopt=%s;slopn=%s;silremap=%s;binary=%s;force-md5r=%s;convert-md5=%s",
+		r_mergeModelSurfaces.GetString(), r_slopVertex.GetString(), r_slopTexCoord.GetString(),
+		r_slopNormal.GetString(), cvarSystem->GetCVarString( "r_useSilRemap" ),
+		cvarSystem->GetCVarString( "com_binaryRead" ), cvarSystem->GetCVarString( "r_forceConvertMD5R" ),
+		cvarSystem->GetCVarString( "r_convertMD5toMD5R" ) );
+	const idStr cacheSettings = cacheSettingsBuffer;
+	if ( R_TryReadGeneratedRenderModelCache( *this, sourceName.c_str(),
+			MD5_MODEL_GENERATED_CACHE_PARSER_VERSION, cacheSettings.c_str() ) ) {
+		if ( name.Icmp( sourceName ) == 0 ) {
+			return;
+		}
+		fileSystem->DiscardGeneratedCache( GENERATED_CACHE_RENDER_MODEL, sourceName.c_str(),
+			MD5_MODEL_GENERATED_CACHE_PARSER_VERSION, cacheSettings.c_str() );
+		PurgeModel();
+		name = sourceName;
+		purged = false;
+	}
 
-	if ( !parser.LoadFile( name ) ) {
+	if ( !parser.LoadFile( sourceName ) ) {
 		MakeDefaultModel();
 		return;
 	}
@@ -764,7 +1452,9 @@ void idRenderModelMD5::LoadModel() {
 	CalculateBounds( poseMat3 );
 
 	// set the timestamp for reloadmodels
-	fileSystem->ReadFile( name, NULL, &timeStamp );
+	fileSystem->ReadFile( sourceName, NULL, &timeStamp );
+	R_WriteGeneratedRenderModelCache( *this, sourceName.c_str(),
+		MD5_MODEL_GENERATED_CACHE_PARSER_VERSION, cacheSettings.c_str() );
 }
 
 /*

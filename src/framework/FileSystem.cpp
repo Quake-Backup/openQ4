@@ -31,11 +31,16 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "Unzip.h"
 #include "GameDirPolicy.h"
+#include "LevelLoadCacheManager.h"
 #include "openq4_paks_generated.h"
 #include "../sys/URLPolicy.h"
 
 #include <errno.h>
 #include <stdint.h>
+#include <limits>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #if defined( USE_SDL3 )
 	#include <SDL3/SDL_filesystem.h>
@@ -1387,6 +1392,8 @@ typedef enum modManifestStatus_s {
 	MOD_MANIFEST_INVALID
 } modManifestStatus_t;
 
+class idLevelLoadCacheManager;
+
 class idFileSystemLocal : public idFileSystem {
 public:
 							idFileSystemLocal( void );
@@ -1434,6 +1441,24 @@ public:
 	virtual void			WriteAssetLog();
 	virtual void			ClearAssetLog();
 	virtual const char *	GetAssetLogName();
+	virtual void			BeginLevelLoadCache( const char *mapKey, const char *gameMode,
+								const char *entityFilter, const char *settingsKey );
+	virtual void			FinishLevelLoadCache( bool successful );
+	void					ReleaseLevelLoadCache( void );
+	virtual void			CancelLevelLoadCache( void );
+	virtual void			RecordLevelLoadResource( levelLoadResourceType_t type,
+								const char *name, const char *options,
+								unsigned int flags, unsigned int priority );
+	virtual idFile *		OpenGeneratedCacheRead( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey );
+	virtual bool			WriteGeneratedCache( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey, const void *payload,
+								unsigned int payloadBytes );
+	virtual void			DiscardGeneratedCache( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey );
 	virtual idFile *		GetNewFileMemory( void );
 	virtual idFile *		GetNewFilePermanent( void );
 	virtual idFile *		OpenFileReadFlags( const char *relativePath, int searchFlags, pack_t **foundInPak = NULL, bool allowCopyFiles = true, const char* gamedir = NULL );
@@ -1446,31 +1471,9 @@ public:
 	virtual idFile *		OpenExplicitFileWrite( const char *OSPath );
 	virtual void			CloseFile( idFile *f );
 	virtual void			BackgroundDownload( backgroundDownload_t *bgl );
-	virtual void			ResetReadCount( void ) { readCount = 0; readCountPacifierBytes = 0; }
-	virtual void			AddToReadCount( int c ) {
-		if ( c <= 0 ) {
-			return;
-		}
-
-		readCount += c;
-
-		// Keep loading progress responsive on PC as data is read, but offer the redraw
-		// per megabyte rather than per 64 KiB read chunk. Both callers read in 64 KiB
-		// chunks, so offering every call put thousands of redraw opportunities per map
-		// load in the middle of asset decode. The pacifier is clock-throttled anyway;
-		// this just keeps the offer at asset-sized granularity. Progress accuracy is
-		// unaffected - readCount above still advances on every chunk, and that is what
-		// the loading bar's byte target reads.
-		readCountPacifierBytes += c;
-		if ( readCountPacifierBytes < READCOUNT_PACIFIER_INTERVAL_BYTES ) {
-			return;
-		}
-		readCountPacifierBytes = 0;
-
-		// idSessionLocal::PacifierUpdate is internally throttled and no-ops outside map load.
-		session->PacifierUpdate();
-	}
-	virtual int				GetReadCount( void ) { return readCount; }
+	virtual void			ResetReadCount( void );
+	virtual void			AddToReadCount( int c );
+	virtual int				GetReadCount( void );
 	virtual void			FindDLL( const char *basename, char dllPath[ MAX_OSPATH ], bool updateChecksum );
 	virtual void			ClearDirCache( void );
 	virtual bool			HasD3XP( void );
@@ -1499,6 +1502,8 @@ private:
 	// bytes read since the last loading-pacifier offer, see AddToReadCount
 	static const int		READCOUNT_PACIFIER_INTERVAL_BYTES = 1024 * 1024;
 	int						readCountPacifierBytes;
+	std::mutex				readCountMutex;
+	std::thread::id			fileSystemMainThread;
 	int						loadCount;			// total files read
 	int						loadStack;			// total files in memory
 	idStr					gameFolder;			// this will be a single name without separators
@@ -1536,6 +1541,7 @@ private:
 	idStr					currentAssetLog;
 	idStr					currentAssetLogUnfiltered;
 	idStrList				assetLog;
+	idLevelLoadCacheManager *levelLoadCache;
 
 	int						gamePakForOS[ MAX_GAME_OS ];
 
@@ -1556,6 +1562,9 @@ private:
 	int						DirectFileLength( FILE *o );
 	void					CopyFile( idFile *src, const char *toOSPath );
 	void					AddAssetLogEntry( const char *relativePath );
+	void					BuildLevelLoadContentKey( idStr &key ) const;
+	void					RecordOpenedLevelLoadSource( const char *relativePath, idFile *file );
+	idFile *				UsePreloadedLevelLoadSource( const char *relativePath, idFile *file );
 	int						AddUnique( const char *name, idStrList &list, idHashIndex &hashIndex ) const;
 	void					GetExtensionList( const char *extension, idStrList &extensionList ) const;
 	int						GetFileList( const char *relativePath, const idStrList &extensions, idStrList &list, idHashIndex &hashIndex, bool fullRelativePath, const char* gamedir = NULL );
@@ -1626,6 +1635,7 @@ idFileSystemLocal::idFileSystemLocal
 */
 idFileSystemLocal::idFileSystemLocal( void ) {
 	searchPaths = NULL;
+	fileSystemMainThread = std::this_thread::get_id();
 	readCount = 0;
 	readCountPacifierBytes = 0;
 	loadCount = 0;
@@ -1643,6 +1653,7 @@ idFileSystemLocal::idFileSystemLocal( void ) {
 	currentAssetLog.Clear();
 	currentAssetLogUnfiltered.Clear();
 	assetLog.Clear();
+	levelLoadCache = NULL;
 	backgroundDownloads = NULL;
 	defaultBackgroundDownload.next = NULL;
 	defaultBackgroundDownload.opcode = DLTYPE_FILE;
@@ -1660,6 +1671,177 @@ idFileSystemLocal::idFileSystemLocal( void ) {
 	defaultBackgroundDownload.completed = true;
 	memset( &backgroundThread, 0, sizeof( backgroundThread ) );
 	addonPaks = NULL;
+}
+
+/*
+================
+idFileSystemLocal::BuildLevelLoadContentKey
+
+Produces an installation-root-independent fingerprint input for the exact
+ordered active PK4/search set.  Per-file loose-source timestamps are still
+validated separately by each manifest/cache source identity.
+================
+*/
+void idFileSystemLocal::BuildLevelLoadContentKey( idStr &key ) const {
+	key = va( "game=%s|base=%s|", fs_game.GetString(), fs_game_base.GetString() );
+	int order = 0;
+	for ( const searchpath_t *search = searchPaths; search != NULL; search = search->next, order++ ) {
+		if ( search->pack != NULL ) {
+			idStr fileName;
+			search->pack->pakFilename.ExtractFileName( fileName );
+			fileName.ToLower();
+			key += va( "p%d=%s:%08x:%d:%d:%d|", order, fileName.c_str(),
+				static_cast<unsigned int>( search->pack->checksum ),
+				search->pack->length, search->pack->numfiles,
+				search->pack->addon_search ? 1 : 0 );
+		} else if ( search->dir != NULL ) {
+			idStr gameDir = search->dir->gamedir;
+			gameDir.ToLower();
+			key += va( "d%d=%s|", order, gameDir.c_str() );
+		}
+	}
+	key += "pure=";
+	for ( int i = 0; i < serverPaks.Num(); i++ ) {
+		key += va( "%08x,", static_cast<unsigned int>( serverPaks[ i ]->checksum ) );
+	}
+}
+
+void idFileSystemLocal::RecordOpenedLevelLoadSource( const char *relativePath, idFile *file ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->RecordOpenedSource( relativePath, file );
+	}
+}
+
+idFile *idFileSystemLocal::UsePreloadedLevelLoadSource( const char *relativePath, idFile *file ) {
+	if ( levelLoadCache == NULL || file == NULL ) {
+		return file;
+	}
+	idFile *preloaded = levelLoadCache->OpenPreloadedSource( relativePath, file );
+	if ( preloaded == NULL ) {
+		return file;
+	}
+	CloseFile( file );
+	return preloaded;
+}
+
+void idFileSystemLocal::BeginLevelLoadCache( const char *mapKey, const char *gameMode,
+		const char *entityFilter, const char *settingsKey ) {
+	if ( levelLoadCache == NULL ) {
+		return;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	levelLoadCache->Begin( mapKey, gameMode, entityFilter, contentKey.c_str(), settingsKey );
+}
+
+void idFileSystemLocal::FinishLevelLoadCache( const bool successful ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Finish( successful );
+	}
+}
+
+void idFileSystemLocal::ReleaseLevelLoadCache( void ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Release();
+	}
+}
+
+// Engine-only lifecycle hook. Keeping this outside the public filesystem ABI
+// lets Session retain replay bytes through all EndLevelLoad consumers without
+// exposing coordinator internals to renderer or game modules.
+void FS_ReleaseLevelLoadCache( void ) {
+	fileSystemLocal.ReleaseLevelLoadCache();
+}
+
+void idFileSystemLocal::CancelLevelLoadCache( void ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Cancel();
+	}
+}
+
+void idFileSystemLocal::RecordLevelLoadResource( const levelLoadResourceType_t type,
+		const char *name, const char *options, const unsigned int flags,
+		const unsigned int priority ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->RecordSemantic( type, name, options, flags, priority );
+	}
+}
+
+idFile *idFileSystemLocal::OpenGeneratedCacheRead( const generatedCacheKind_t kind,
+		const char *sourcePath, const unsigned int parserVersion, const char *settingsKey ) {
+	if ( levelLoadCache == NULL ) {
+		return NULL;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	return levelLoadCache->OpenGeneratedCacheRead( kind, sourcePath, parserVersion,
+		settingsKey, contentKey.c_str() );
+}
+
+bool idFileSystemLocal::WriteGeneratedCache( const generatedCacheKind_t kind,
+		const char *sourcePath, const unsigned int parserVersion, const char *settingsKey,
+		const void *payload, const unsigned int payloadBytes ) {
+	if ( levelLoadCache == NULL ) {
+		return false;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	return levelLoadCache->WriteGeneratedCache( kind, sourcePath, parserVersion,
+		settingsKey, payload, payloadBytes, contentKey.c_str() );
+}
+
+void idFileSystemLocal::DiscardGeneratedCache( const generatedCacheKind_t kind,
+		const char *sourcePath, const unsigned int parserVersion, const char *settingsKey ) {
+	if ( levelLoadCache == NULL ) {
+		return;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	levelLoadCache->DiscardGeneratedCache( kind, sourcePath, parserVersion,
+		settingsKey, contentKey.c_str() );
+}
+
+/*
+================
+idFileSystemLocal::ResetReadCount
+
+Level-load workers may inflate independently opened PK4 streams. Protect the
+shared progress counter, but keep presentation calls on the main thread.
+================
+*/
+void idFileSystemLocal::ResetReadCount( void ) {
+	std::lock_guard<std::mutex> lock( readCountMutex );
+	readCount = 0;
+	readCountPacifierBytes = 0;
+}
+
+int idFileSystemLocal::GetReadCount( void ) {
+	std::lock_guard<std::mutex> lock( readCountMutex );
+	return readCount;
+}
+
+void idFileSystemLocal::AddToReadCount( const int count ) {
+	if ( count <= 0 ) {
+		return;
+	}
+
+	bool offerPacifier = false;
+	{
+		std::lock_guard<std::mutex> lock( readCountMutex );
+		const int maxCount = ( std::numeric_limits<int>::max )();
+		readCount = count > maxCount - readCount ? maxCount : readCount + count;
+		readCountPacifierBytes = count > maxCount - readCountPacifierBytes
+			? maxCount
+			: readCountPacifierBytes + count;
+		if ( readCountPacifierBytes >= READCOUNT_PACIFIER_INTERVAL_BYTES ) {
+			readCountPacifierBytes = 0;
+			offerPacifier = true;
+		}
+	}
+
+	if ( offerPacifier && std::this_thread::get_id() == fileSystemMainThread && session != NULL ) {
+		session->PacifierUpdate();
+	}
 }
 
 /*
@@ -5908,6 +6090,7 @@ is resetting due to a game change
 ================
 */
 void idFileSystemLocal::Init( void ) {
+	fileSystemMainThread = std::this_thread::get_id();
 	// allow command line parms to override our defaults
 	// we have to specially handle this, because normal command
 	// line variable sets don't happen until after the filesystem
@@ -5979,6 +6162,9 @@ void idFileSystemLocal::Init( void ) {
 
 	// see if we are going to allow add-ons
 	SetRestrictions();
+	if ( levelLoadCache == NULL ) {
+		levelLoadCache = new idLevelLoadCacheManager( this );
+	}
 
 	// spawn a thread to handle background file reads
 	StartBackgroundDownloadThread();
@@ -6011,6 +6197,9 @@ void idFileSystemLocal::Restart( void ) {
 
 	// see if we are going to allow add-ons
 	SetRestrictions();
+	if ( levelLoadCache == NULL ) {
+		levelLoadCache = new idLevelLoadCacheManager( this );
+	}
 
 	// Shutdown( true ) stops the worker, so filesystem restarts must restore it
 	// before another background file read or pure-pack download is queued.
@@ -6036,6 +6225,13 @@ Frees all resources and closes all files
 */
 void idFileSystemLocal::Shutdown( bool reloading ) {
 	searchpath_t *sp, *next, *loop;
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Cancel();
+		if ( !reloading ) {
+			delete levelLoadCache;
+			levelLoadCache = NULL;
+		}
+	}
 
 	StopBackgroundDownloadThread();
 
@@ -6431,7 +6627,8 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 			}
 
 			AddAssetLogEntry( relativePath );
-			return file;
+			RecordOpenedLevelLoadSource( relativePath, file );
+			return UsePreloadedLevelLoadSource( relativePath, file );
 		} else if ( search->pack && ( searchFlags & FSFLAG_SEARCH_PAKS ) ) {
 
 			if ( !search->pack->hashTable[hash] ) {
@@ -6492,7 +6689,8 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 						common->Printf( "idFileSystem::OpenFileRead: %s (found in '%s')\n", relativePath, pak->pakFilename.c_str() );
 					}
 					AddAssetLogEntry( relativePath );
-					return file;
+					RecordOpenedLevelLoadSource( relativePath, file );
+					return UsePreloadedLevelLoadSource( relativePath, file );
 				}
 			}
 		}
@@ -6517,7 +6715,8 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 						common->Printf( "idFileSystem::OpenFileRead: %s (found in addon pk4 '%s')\n", relativePath, search->pack->pakFilename.c_str() );
 					}
 					AddAssetLogEntry( relativePath );
-					return file;
+					RecordOpenedLevelLoadSource( relativePath, file );
+					return UsePreloadedLevelLoadSource( relativePath, file );
 				}
 			}
 		}

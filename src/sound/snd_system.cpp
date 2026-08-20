@@ -715,6 +715,8 @@ idSoundSystemLocal::LoadSample
 */
 idSoundSample* idSoundSystemLocal::LoadSample( const char* name )
 {
+	fileSystem->RecordLevelLoadResource( LEVEL_LOAD_RESOURCE_SOUND, name,
+		va( "language=%s", cvarSystem->GetCVarString( "sys_lang" ) ), 0, 1 );
 	idStr canonical = name;
 	canonical.ToLower();
 	canonical.BackSlashesToSlashes();

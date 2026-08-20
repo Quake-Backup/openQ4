@@ -666,6 +666,12 @@ def common_args(
     add_set(args, "com_maxfps", 240)
     add_set(args, "com_skipLoadingContinue", 1)
     add_set(args, "com_loadingContinueAutoAdvance", 1)
+    # Milestone B evidence records the exact cache/preload mode and its bounded
+    # per-generation counters in every role log.
+    add_set(args, "com_levelLoadCache", 1)
+    add_set(args, "com_levelLoadCacheWrite", 1)
+    add_set(args, "com_levelLoadPreload", 1)
+    add_set(args, "com_levelLoadCacheReport", 1)
     add_set(args, "g_autoSkipCinematics", 1)
     add_set(args, "g_autoScreenshot", 0)
     add_set(args, "sv_cheats", 1)
@@ -835,9 +841,14 @@ def prepare_plans(
     for role_id, role_name, wait_msec in (
         # Leave enough headroom for a completely cold loopback client to build
         # its isolated binary image/animation and collision caches before the
-        # listen server records its own evidence and exits.
-        ("mp-server", "server", 60000),
-        ("mp-client", "client", 5000),
+        # listen server records its own evidence and exits. The server still
+        # finishes inside the shared four-minute default role timeout after a
+        # representative cold q4dm1 load.
+        ("mp-server", "server", 120000),
+        # At roughly 48-50 fps, five seconds does not replace all 256 timing
+        # samples retained across the first active post-load frame. Give the
+        # client a full steady-state window before enforcing renderer budgets.
+        ("mp-client", "client", 10000),
     ):
         savepath = output_dir / "savepaths" / role_id
         cfg = f"{BASELINE_DIR}/{role_name}.cfg"

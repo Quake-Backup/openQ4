@@ -2,9 +2,13 @@
 
 openQ4 now owns a portable bounded job service for coarse engine work. It is
 available in client, tool, and dedicated builds without changing Quake 4 asset,
-save, demo, or network formats. The service is a foundation for later loading,
-cache, animation, and renderer-front-end consumers; no stock asset work has
-been moved off-thread yet.
+save, demo, or network formats. Its first production consumer is the learned
+level-load read/decode pipeline: workers read independently opened,
+identity-checked source handles, perform the PK4 inflation reached by those
+reads, validate supported source framing plus whole-buffer integrity, and
+publish a sealed immutable DTO. Resource owners still perform asset-specific
+parse/decode, validation, adoption, and upload on their established main path;
+no live renderer, audio, archive, or game state is mutated by those jobs.
 
 The architecture was informed by id Software's GPLv3
 [Doom 3 BFG `idParallelJobList`](https://github.com/id-Software/DOOM-3-BFG/blob/1caba1979589971b5ed44e315d9ead30b278d8b4/neo/idlib/ParallelJobList.h).
@@ -39,6 +43,34 @@ threaded work. A concurrent `CancelAll`, `WaitAll`, or shutdown therefore sees
 and joins an inline list running on another submitting thread. Concurrent inline
 submissions sleep until their submit sequence reaches the front rather than
 spinning.
+
+### Level-load read/decode consumer
+
+The level-load manager validates an exact learned manifest and applies its own
+entry, per-file, staging/decode aggregate-byte, and read/decode chunk budgets
+before creating one high-priority list. Every candidate file is opened through
+ordinary VFS and pure-PK4 policy on the main thread, and its current path, size,
+loose timestamp, and PK4 checksum must match before admission. Workers perform
+bounded reads, PK4 inflation, typed framing validation for supported RIFF/WAVE,
+Ogg, PNG, and JPEG sources, and whole-buffer transport/SHA-256 integrity walks with
+cooperative cancellation. DDS and other owner-specific formats remain opaque.
+Complete results become sealed immutable DTOs backed by shared byte arrays;
+partial, malformed, late, failed, or cancelled results are never published.
+
+When an owner later opens a resource, the normal VFS lookup runs first. Only an
+already-ready exact-identity result may replace the bytes behind that authorized
+handle, without waiting. Image, sound, model, world, collision, declaration,
+GUI, effect, skin, animation, and raw-file owners therefore keep their ordinary
+asset-specific parse/decode/adopt/upload behavior and source fallback. Map
+failure, unload, filesystem restart, module reload, and shutdown cancel and join
+the generation before dependent state is released.
+
+`com_levelLoadPreload 0` disables this consumer without disabling validated
+generated model/world/collision payloads. If the scheduler is deterministic,
+disabled, saturated, or unavailable, the admitted bounded batch runs inline;
+unadmitted sources continue through ordinary VFS reads. The exact campaign key,
+budgets, controls, rollback, and still-pending promotion evidence are documented
+in [Level-Load Cache Modernization](loading-cache-modernization.md).
 
 ## Submission contract
 
@@ -112,22 +144,29 @@ validation suite.
 
 ## Consumer boundary and promotion evidence
 
-The first consumers should have immutable inputs, caller-owned result storage,
-and an explicit main-thread join point: learned preload discovery, decode or
-transcode stages, and generated-cache preparation are suitable candidates.
-Archive mutation, live game-state mutation, and renderer API calls from arbitrary
-workers are not.
+Production consumers must have immutable inputs, caller-owned result storage,
+and an explicit main-thread join point. The learned preload consumer meets that
+contract with a worker-produced framing/integrity DTO whose generation, semantic
+type, authoritative source identity, frame metadata, transport checksum,
+SHA-256 integrity, and backing bytes are sealed before publication. This is a
+real decode stage, but it deliberately stops before asset-specific owner parsing
+or transformation. Future image/audio/model decode, transcode, upload, or
+generated-cache preparation jobs require their own detached result and
+main-owner adoption contract. Archive mutation, live game-state mutation, and
+renderer API calls from arbitrary workers remain out of bounds.
 
 The current light-grid CPU integration lives inside a dynamically loaded renderer
 module. That module does not import the engine's `jobSystem` through
 `RenderModuleAPI`, so wiring it directly would create an unresolved/duplicate
 service boundary and unclear shutdown ownership. Light-grid work should adopt
 the service only after a narrow renderer job import or engine-owned work packet
-contract is designed; it is not a safe first consumer in this change.
+contract is designed; it remains outside this consumer migration.
 
-Because no production consumer has migrated yet, `jobs_enable 1` and
-`jobs_enable 0` execute the same stock workload outside the self-test. The
-2026-08-19 current-build validation closed the local Milestone A lifecycle gate:
+The learned level-load read/framing pipeline is the first production migration.
+`jobs_enable 1` and `jobs_enable 0` must still produce identical owner-visible
+results even though one may stage reads concurrently and the other runs the
+same bounded work inline. The 2026-08-19 current-build validation closed the
+earlier local Milestone A lifecycle gate:
 jobs-on and jobs-off `game/storage1` produced identical engine TGA bytes and
 matching game state; both OpenGL modes and jobs-on Vulkan completed the repeated
 `game/mcc_2` -> `game/storage1` -> `game/storage2` -> `game/storage1` ->
@@ -138,4 +177,8 @@ shutdown marker.
 Those runs used an immutable development runtime built from an uncommitted
 source tree. Release promotion still requires the same evidence to be retained
 from clean source and a freshly staged final package. Multiplayer evidence must
-retain `ui_autoJoin 1` unless the join flow itself is under test.
+retain `ui_autoJoin 1` unless the join flow itself is under test. Milestone B's
+new consumer parity, cancellation, corruption, memory, and timing evidence is
+also still pending in
+[loading-cache-modernization.md](loading-cache-modernization.md); the integrated
+consumer is not itself a final performance or platform claim.

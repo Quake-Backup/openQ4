@@ -62,7 +62,7 @@ engineering. It does not mean drop-in: several paths assume Win32, PS3/SPU,
 trusted pre-generated data, 32-bit offsets, or assert-only validation. New code
 must use openQ4's portable interfaces and fail-closed input rules.
 
-## Current implementation state (2026-08-19)
+## Current implementation state (2026-08-20)
 
 This table is the dated delivery snapshot for this roadmap. **Implemented**
 means the compatibility-safe foundation is present and covered by the cited
@@ -78,21 +78,22 @@ when a status differs or a narrower qualification is needed.
 | Audited BFG-lineage image, sound, and idlib work | **Implemented** | The existing 37-file BFG inventory is tracked with source lineage and Additional Terms. Further imports must update the same manifest and notices. |
 | PBR material authoring/resource foundation | **Implemented foundation; visible capability missing** | Namespaced parsing, typed color/data image usage, classic ARB2 fallbacks, scene-packet metadata, resource-table diagnostics, and fail-closed exclusion from unsupported modern-visible paths cover Phases 0-3 of the PBR plan. PBR shaders, direct lighting, visible ownership, IBL, and specular probes do not exist yet. |
 | GPU measurement and dynamic resolution | **Partial** | OpenGL and Vulkan publish the same delayed, non-blocking whole-frame microsecond result through renderer ABI v9, including frame/generation identity and availability/drop/reset counters. Map loads, context/device changes, swapchain recreation, capture discontinuities, and shutdown invalidate the timing generation. High-resolution CPU and unique GPU samples feed the versioned benchmark marker, and the gameplay/stock tools enforce and replay exact map/backend/profile CPU/GPU budgets under a fixed bordered-window 1280x720 promotion contract. Current-build storage, repeated-map, and complete required-profile captures have exercised both timing backends; all eight OpenGL and all eight Vulkan cases pass and replay-verify. The initial target rows still need release-candidate/platform qualification before they support universal performance claims. The automatic controller remains Milestone E. |
-| General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. No production loading or renderer consumer has migrated yet; clean final-package recapture remains a separate release-promotion gate. |
-| Generated caches, streaming, and learned preload manifests | **Partial** | Binary images and generated-animation patterns exist, but model/world/collision caches and a cancellable read -> decompress -> decode -> upload pipeline do not. Retail PK4 resolution remains authoritative. |
+| General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Its first production consumer is the learned level-load read/PK4-inflate and framing/integrity pipeline; live asset parsing, renderer/audio upload, and renderer-front-end work remain with their established owners. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. Clean final-package recapture remains a separate release-promotion gate. |
+| Generated caches, streaming, and learned preload manifests | **Implemented and locally validated; release promotion pending** | Successful loads produce exact map/mode/entity-filter/search/PK4/settings manifests. Matching loads use bounded cancellable read/PK4 inflation followed by worker-safe typed framing and integrity validation, publish an immutable generation/source-identity DTO, and let the established main owner parse, adopt, and upload. Transactional static/MD5/MD5R model, classic-proc world, collision, and animation-v3 caches are private to `fs_savepath` and fall back to authoritative VFS sources. This is learned level-load preparation, not general asynchronous asset decode/upload streaming or portal-aware live reprioritization. Local Windows runtime evidence is recorded; clean committed-package performance, broader cancellation/failure campaigns, and release-platform evidence remain open. |
 | Shared renderer contracts and GPU skinning | **Partial** | Scene packets, resource tables, upload infrastructure, and CPU skinning provide inputs, but there is no backend-neutral material/pass IR or supported joint-buffer/GPU deformation path. CPU deformation remains authoritative. |
 | Modern classic-frame ownership | **Experimental** | Render-graph, modern OpenGL submission, clustered/MDI infrastructure, shadow maps, light grids, and Vulkan coverage exist, but no complete stock visible-lighting domain is promoted. ARB2 remains the supported/default owner. |
 | Temporal presentation | **Planned** | Complete motion vectors, history ownership, TAA/TAAU, reactive/disocclusion handling, and dynamic-resolution integration are absent. SMAA remains the compatibility path. |
 | Modern PBR lighting and idTech 6-like follow-ons | **Planned** | GGX/IBL, reflection probes, clustered decals/probes, froxel volumetrics, SSR/SSGI, GPU-driven visible ownership, and optional sparse residency all remain after the shared-contract and temporal gates. |
 
-Milestone A's implementation and local integration gate are complete. The next
-recommended implementation target is **Milestone B**, beginning with
-immutable-input loading and cache consumers. Release qualification remains a
-separate track: repeat and retain the Milestone A acceptance set from clean
+Milestones A and B have completed their implementation and local integration
+gates. The next recommended implementation target is **Milestone C**, beginning
+with the minimum backend-neutral renderer contracts and an independently
+reversible GPU-animation corridor. Release qualification remains a separate
+track: repeat and retain the Milestone A and B acceptance sets from clean
 committed source and a freshly staged final package, with the required platform
-and driver coverage. Later renderer-front-end consumers still require the
-module boundary described below. The PBR Phase 0-3 foundation is intentionally
-not a reason to skip ahead to visible PBR lighting.
+and driver coverage. Renderer-front-end consumers still require the module
+boundary described below. The PBR Phase 0-3 foundation is intentionally not a
+reason to skip ahead to visible PBR lighting.
 
 ## Best official Doom 3 BFG candidates
 
@@ -143,10 +144,11 @@ The production contract, controls, saturation behavior, native coverage, and
 remaining consumer/promotion boundary are documented in the
 [portable job-system guide](parallel-job-system.md).
 
-First consumers should be work that already has a clean join point: learned
-preload discovery, image decode/transcode, generated-cache writes, and then
-renderer model/light preparation. PK4 archive mutation and game-state mutation
-should not be the first consumers.
+The first production consumer is now the learned level-load read/PK4-inflate and
+source-framing pipeline. Further consumers should still require a clean join
+point and detached output: asset-specific image/audio/model decode or transcode,
+generated-cache preparation, and only then renderer model/light preparation.
+PK4 archive mutation and game-state mutation remain outside the worker contract.
 
 ### 2. GPU skinning: a concrete idTech 5-class capability
 
@@ -186,9 +188,9 @@ coupled to PBR, TAA, or a renderer-default switch.
 ### 3. Generated assets and learned preloading
 
 BFG assumes generated BFG resources exist. Stock Quake 4 installations do not,
-so its packaged manifests and resource containers cannot be required. The safe
-adaptation is the pattern openQ4 already uses for generated animation and binary
-image caches:
+so its packaged manifests and resource containers cannot be required. The landed
+Milestone B adaptation extends openQ4's generated-animation and binary-image
+pattern:
 
 1. Load the original PK4 asset normally.
 2. Record the resolved source path, containing PK4 checksum, parser/build
@@ -199,12 +201,16 @@ image caches:
    before use.
 5. Delete or ignore an invalid cache and fall back to the original asset.
 
-Useful next cache targets are parsed static/MD5/MD5R render models, `.proc`
-render-world data, collision models, and a learned per-map preload manifest.
-BFG's serializers are useful field inventories, but their timestamp checks and
-trusted-data assumptions are not sufficient for a PK4-backed, fail-closed
-runtime. A preload manifest should schedule work; it should not override VFS
-resolution or become a second source of asset truth.
+Parsed static/MD5/MD5R render models, classic `.proc` render-world data,
+collision models, animation v3, and an exact learned per-map preload manifest
+now follow that contract. BFG's serializers remain useful field inventories,
+but their timestamp checks and trusted-data assumptions are not sufficient for
+a PK4-backed, fail-closed runtime. The openQ4 manifest schedules a bounded
+deterministic subset and never overrides VFS resolution or becomes a second
+source of asset truth. Asset-specific asynchronous owner decode/upload and
+portal-aware live reprioritization remain future work. The exact format,
+ownership, limits, rollback, and promotion-evidence boundary are documented in
+[Level-Load Cache Modernization](loading-cache-modernization.md).
 
 ### 4. Dynamic resolution from real GPU time
 
@@ -284,10 +290,13 @@ temporal or PBR work multiplies the parity surface.
 
 ### Streaming and CPU scalability
 
-- A staged read -> decompress -> decode -> upload pipeline with cancellation,
-  per-stage budgets, and map-generation ownership tokens.
-- Learned preload manifests and priority changes driven by portal visibility,
-  not unconditional whole-level preloads.
+- Extend the implemented bounded read/PK4-inflate -> framing/integrity DTO ->
+  main-owner adoption corridor into asset-specific decode/transcode/upload only
+  where detached results and per-stage budgets make ownership safe.
+- Add portal-aware live priority changes to the current exact-match learned
+  manifest. The implemented replay is a bounded, deterministically ordered
+  subset rather than an unconditional whole-level preload, but it does not
+  reprioritize dynamically from portal visibility.
 - Optional virtual-texture/sparse-residency support for high-resolution community
   content, after ordinary streaming is reliable. The official BFG drop does not
   provide idTech 5's virtual-texturing implementation, and stock Quake 4 assets
@@ -310,7 +319,7 @@ temporal or PBR work multiplies the parity surface.
 | Milestone | Current state | Dependency that prevents promotion |
 |---|---|---|
 | A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
-| B. Loading and cache modernization | **Partial** | Existing binary-image/generated-animation patterns do not yet form learned manifests, bounded pipeline stages, or model/world/collision caches. |
+| B. Loading and cache modernization | **Implemented and locally validated; release promotion pending** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. Promotion still requires retained final committed-package campaigns, measurements, and release-platform qualification recorded in the loading/cache evidence tables. General asynchronous owner decode/upload and portal-aware live reprioritization remain future work rather than part of this completed slice. |
 | C. Shared renderer contracts and GPU animation | **Partial** | Packet/resource infrastructure exists, but shared GL/Vulkan pass semantics and GPU skinning parity are missing. |
 | D. Modern classic-frame ownership | **Experimental** | Individual modern paths exist; no complete classic-visible domain has satisfied the cross-backend parity exit gate. |
 | E. Temporal presentation | **Planned** | Milestone A now supplies the timing prerequisite; incomplete Milestones C and D still block motion/resource contracts and complete frame ownership. |
@@ -371,14 +380,29 @@ keep release promotion open.
 
 ### Milestone B: loading and cache modernization
 
-1. Add a learned preload manifest keyed to the exact stock PK4 set and renderer
-   settings.
-2. Move read/decompress/decode work into cancellable stages.
-3. Add versioned binary render-model, render-world, and collision caches under
-   `fs_savepath`.
+1. **Implemented:** a learned manifest is keyed to the exact normalized map,
+   full SHA-256 runtime-role and entity-filter identities, ordered VFS/search and
+   pure-PK4 state, individual source identities, and load-affecting settings.
+2. **Implemented:** bounded cancellable workers read independently opened
+   sources, perform the PK4 inflation reached by those reads, validate supported
+   source framing and whole-buffer integrity, and publish a sealed immutable DTO.
+   The ordinary VFS lookup runs again before substitution; format-specific asset
+   parsing, adoption, and renderer/audio upload remain with the main owner.
+3. **Implemented:** versioned binary render-model, classic render-world, and
+   collision caches under `fs_savepath`, plus the companion SP/MP animation-v3
+   cache, validate detached state and publish atomically or fall back to source.
 
 Exit gate: cold and warm load measurements, bounded memory, cancellation during
 map/restart/disconnect, corrupt-cache fallback, and zero required loose assets.
+Focused native/static tests, Windows integration builds, and current-build
+stock compatibility checks satisfy the local implementation gate. Local
+development cold/warm and bounded-memory measurements, focused
+corruption/rollback, dedicated teardown, and engine-screenshot review are now
+recorded; the staged stock report remains failed on its unchanged MP CPU budget.
+Exact committed source/package identity, a clean-package budget pass, broader
+cancellation/failure campaigns, and release-platform coverage remain required
+for promotion. Their authoritative status is recorded in
+[Level-Load Cache Modernization](loading-cache-modernization.md).
 
 ### Milestone C: shared renderer contracts and GPU animation
 
