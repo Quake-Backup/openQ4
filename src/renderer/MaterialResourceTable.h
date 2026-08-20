@@ -5,6 +5,7 @@
 #define __MATERIAL_RESOURCE_TABLE_H__
 
 #include "RendererCaps.h"
+#include "RendererContracts.h"
 #include "ScenePackets.h"
 
 /*
@@ -27,6 +28,10 @@ const int MATERIAL_RESOURCE_TABLE_MAX_RECORDS = SCENE_PACKET_MAX_MATERIAL_RECORD
 // reserved for the existing shadow contract.
 const int MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS = 16;
 const int MATERIAL_RESOURCE_TABLE_TEXTURE_ARRAY_CAPACITY = 12;
+// Authored fixed-function GUI stages are pooled once per material record rather
+// than embedding MAX_SHADER_STAGES in every table record.  Exhaustion rejects
+// the affected GUI domain atomically and leaves the classic renderer in charge.
+const int MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES = SCENE_PACKET_MAX_DRAWS;
 
 enum materialResourceBlendMode_t {
 	MATERIAL_RESOURCE_BLEND_OPAQUE = 0,
@@ -121,9 +126,36 @@ enum materialResourceFallbackFlags_t {
 	MATERIAL_RESOURCE_FALLBACK_FLAG_STAGE_COLOR = 1 << 16
 };
 
+enum materialResourceGuiPassFailure_t {
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE = 0,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_REFERENCED,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_COMPILED,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_MATERIAL,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_DRAWN,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_NO_AMBIENT_STAGES,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_NEEDS_CURRENT_RENDER,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_DECAL_SORT,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_POST_PROCESS_SORT,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_DYNAMIC_IMAGE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_CINEMATIC_IMAGE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_CURRENT_RENDER_IMAGE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_CUSTOM_PROGRAM,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_TEXGEN,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_ALPHA_TEST,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_IMAGE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_DEFAULTED_IMAGE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNLOADED_IMAGE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_TEXTURE_BINDING_OVERFLOW,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_PASS_POOL_OVERFLOW,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_REGISTER,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE,
+	MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_PASS
+};
+
 typedef struct materialResourceTextureBinding_s {
 	materialResourceTextureSemantic_t	semantic;
 	const idImage						*image;
+	std::uint64_t						textureResourceId;
 	unsigned int						textureHandle;
 	textureFilter_t						filter;
 	textureRepeat_t						repeat;
@@ -161,6 +193,7 @@ typedef struct materialResourceTextureBinding_s {
 
 typedef struct materialResourceTableRecord_s {
 	int									tableIndex;
+	unsigned int						tableGeneration;
 	int									sourceMaterialRecordIndex;
 	int									materialId;
 	const idMaterial						*material;
@@ -247,6 +280,12 @@ typedef struct materialResourceTableRecord_s {
 	unsigned int						textureSemanticMask;
 	unsigned int						loadedTextureSemanticMask;
 	unsigned int						renderableColorTextureMask;
+	int									firstGuiPass;
+	int									guiPassCount;
+	bool								guiDomainReferenced;
+	bool								guiPassEligible;
+	materialResourceGuiPassFailure_t	guiPassFailure;
+	int									guiPassFailureStage;
 	int									semanticBindingIndex[MATERIAL_RESOURCE_TEXTURE_COUNT];
 	int									textureBindingCount;
 	materialResourceTextureBinding_t	textures[MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS];
@@ -305,6 +344,11 @@ typedef struct materialResourceTableStats_s {
 	int		fallbackVertexColor;
 	int		fallbackPolygonOffset;
 	int		fallbackTooManyTextures;
+	int		guiPasses;
+	int		guiDomainReferencedRecords;
+	int		guiPassEligibleRecords;
+	int		guiPassFallbackRecords;
+	int		guiPassPoolOverflows;
 	int		pbrRecords;
 	int		pbrResourceReadyRecords;
 	int		pbrModernReadyRecords;
@@ -347,8 +391,13 @@ const char *MaterialResourceBlendMode_Name( materialResourceBlendMode_t blendMod
 const char *MaterialResourceTextureSemantic_Name( materialResourceTextureSemantic_t semantic );
 unsigned int MaterialResourceTextureSemantic_Bit( materialResourceTextureSemantic_t semantic );
 const materialResourceTextureBinding_t *R_MaterialResourceTable_TextureBindingForSemantic( const materialResourceTableRecord_t &record, materialResourceTextureSemantic_t semantic );
+bool R_MaterialResourceTable_GuiPassEligible( const materialResourceTableRecord_t &record );
+const rendererMaterialPass_t *R_MaterialResourceTable_GuiPasses( const materialResourceTableRecord_t &record, int &count );
+bool R_MaterialResourceTable_CopyGuiPassList( const materialResourceTableRecord_t &record, rendererMaterialPassList_t &destination );
+const materialResourceTextureBinding_t *R_MaterialResourceTable_ResolveTextureResource( std::uint64_t textureResourceId );
 const char *MaterialResourceFallbackReason_Name( materialResourceFallbackReason_t reason );
 const char *MaterialResourcePBRFallbackReason_Name( materialResourcePBRFallbackReason_t reason );
+const char *MaterialResourceGuiPassFailure_Name( materialResourceGuiPassFailure_t reason );
 void R_MaterialResourceTable_PrintGfxInfo( void );
 void R_MaterialResourceTable_DumpLatest( void );
 bool RendererMaterialResourceTable_RunSelfTest( void );

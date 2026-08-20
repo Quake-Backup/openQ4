@@ -74,7 +74,8 @@ enum rendererBlendFactor_t {
 	RENDERER_BLEND_SRC_ALPHA,
 	RENDERER_BLEND_ONE_MINUS_SRC_ALPHA,
 	RENDERER_BLEND_DST_ALPHA,
-	RENDERER_BLEND_ONE_MINUS_DST_ALPHA
+	RENDERER_BLEND_ONE_MINUS_DST_ALPHA,
+	RENDERER_BLEND_SRC_ALPHA_SATURATE
 };
 
 enum rendererBlendOp_t {
@@ -158,6 +159,14 @@ enum rendererMaterialProgramFamily_t {
 	RENDERER_PROGRAM_CUSTOM
 };
 
+enum rendererMaterialPassDisposition_t {
+	RENDERER_MATERIAL_PASS_DRAW = 0,
+	RENDERER_MATERIAL_PASS_INACTIVE_CONDITION,
+	RENDERER_MATERIAL_PASS_NOOP_ZERO_ONE_BLEND,
+	RENDERER_MATERIAL_PASS_NOOP_BLACK_ADDITIVE,
+	RENDERER_MATERIAL_PASS_NOOP_TRANSPARENT_ALPHA
+};
+
 typedef struct rendererMaterialPass_s {
 	std::uint32_t				order;
 	std::int32_t				sourceStageIndex;
@@ -172,6 +181,7 @@ typedef struct rendererMaterialPass_s {
 	rendererCullMode_t			cull;
 	std::uint32_t				colorWriteMask;
 	bool					alphaTestEnabled;
+	rendererCompareOp_t			alphaTestCompareOperation;
 	rendererRegisterRef_t			alphaTest;
 	rendererTexGen_t			texgen;
 	rendererVertexColorMode_t		vertexColor;
@@ -193,6 +203,74 @@ void RendererContracts_ResetMaterialPassList( rendererMaterialPassList_t &list )
 bool RendererContracts_ValidateMaterialPass( const rendererMaterialPass_t &pass );
 bool RendererContracts_AppendMaterialPass( rendererMaterialPassList_t &list,
 	const rendererMaterialPass_t &pass );
+
+/*
+ * Per-draw material state after register references have been resolved.  This
+ * deliberately retains the source identity and immutable render state from the
+ * authored pass while replacing register references with compact scalar data.
+ * Inactive and recognized no-op passes remain in the ordered list so backends
+ * cannot disagree about which source stage occupied a given position.  The
+ * active flag reflects only the authored condition; disposition determines
+ * whether an active pass can affect the framebuffer.
+ */
+typedef struct rendererEvaluatedMaterialPass_s {
+	std::uint32_t				order;
+	std::int32_t				sourceStageIndex;
+	rendererMaterialPassKind_t		kind;
+	rendererMaterialTextureSemantic_t	textureSemantic;
+	std::uint64_t				textureResourceId;
+	float					condition;
+	bool					active;
+	rendererMaterialPassDisposition_t	disposition;
+	float					color[ 4 ];
+	float					textureMatrix[ 6 ];
+	rendererBlendState_t			blend;
+	rendererDepthState_t			depth;
+	rendererCullMode_t			cull;
+	std::uint32_t				colorWriteMask;
+	bool					alphaTestEnabled;
+	rendererCompareOp_t			alphaTestCompareOperation;
+	float					alphaTest;
+	rendererTexGen_t			texgen;
+	rendererVertexColorMode_t		vertexColor;
+	bool					polygonOffsetEnabled;
+	float					polygonOffsetFactor;
+	float					polygonOffsetUnits;
+	rendererMaterialProgramFamily_t	programFamily;
+	std::uint32_t				programKey;
+} rendererEvaluatedMaterialPass_t;
+
+typedef struct rendererEvaluatedMaterialPassList_s {
+	std::uint32_t			count;
+	std::uint32_t			activeCount;
+	rendererEvaluatedMaterialPass_t	passes[ RENDERER_CONTRACT_MAX_MATERIAL_PASSES ];
+} rendererEvaluatedMaterialPassList_t;
+
+enum rendererMaterialPassEvaluationStatus_t {
+	RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS = 0,
+	RENDERER_MATERIAL_PASS_EVALUATION_SOURCE_OVERFLOW,
+	RENDERER_MATERIAL_PASS_EVALUATION_INVALID_PASS,
+	RENDERER_MATERIAL_PASS_EVALUATION_REGISTERS_UNAVAILABLE,
+	RENDERER_MATERIAL_PASS_EVALUATION_REGISTER_OUT_OF_RANGE,
+	RENDERER_MATERIAL_PASS_EVALUATION_NONFINITE_VALUE
+};
+
+void RendererContracts_ResetEvaluatedMaterialPassList(
+	rendererEvaluatedMaterialPassList_t &list );
+
+/*
+ * Resolves one ordered material list against a bounded per-draw register array.
+ * An exactly zero condition produces a valid inactive pass, while recognized
+ * classic blend/color no-ops receive an explicit disposition.  Any malformed
+ * pass, unavailable/out-of-range register, non-finite value, or overflow
+ * rejects the complete list and resets destination, so consumers never see
+ * partial state.  Constant-only and empty lists may be evaluated with no
+ * register array.
+ */
+rendererMaterialPassEvaluationStatus_t RendererContracts_EvaluateMaterialPassList(
+	rendererEvaluatedMaterialPassList_t &destination,
+	const rendererMaterialPassList_t &source,
+	const float *registers, std::uint32_t registerCount );
 
 enum rendererClipDepthRange_t {
 	RENDERER_CLIP_DEPTH_NEGATIVE_ONE_TO_ONE = 0,

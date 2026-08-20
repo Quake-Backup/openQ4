@@ -30,6 +30,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 #include "CelShading.h"
+#include "ClassicGuiDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernGLShaderLibrary.h"
 #include "RendererMetrics.h"
@@ -7117,6 +7118,925 @@ void RB_SetProgramEnvironmentSpace( void ) {
 	parm[2] = space->modelMatrix[10];
 	parm[3] = space->modelMatrix[14];
 	glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, 8, parm );
+}
+
+/*
+===============================================================================
+
+	Shared classic GUI OpenGL consumer
+
+	The shared domain is view-atomic.  Nothing below may issue a draw until every
+	drawable surface and every evaluated pass has been copied into the prepared
+	plan.  The legacy draw-surface pointer is used only for vertex/index caches and
+	optional baked stage-color data; material stages and shader registers are not
+	consulted here.
+
+===============================================================================
+*/
+
+enum rbSharedGuiGLReject_t {
+	RB_SHARED_GUI_GL_REJECT_VIEW = 1,
+	RB_SHARED_GUI_GL_REJECT_MUTATED_VIEW,
+	RB_SHARED_GUI_GL_REJECT_CAPACITY,
+	RB_SHARED_GUI_GL_REJECT_DRAW_RANGE,
+	RB_SHARED_GUI_GL_REJECT_GEOMETRY,
+	RB_SHARED_GUI_GL_REJECT_VERTEX_CACHE,
+	RB_SHARED_GUI_GL_REJECT_INDEX_CACHE,
+	RB_SHARED_GUI_GL_REJECT_PASS_RANGE,
+	RB_SHARED_GUI_GL_REJECT_PASS_STATE,
+	RB_SHARED_GUI_GL_REJECT_TEXTURE,
+	RB_SHARED_GUI_GL_REJECT_TEXTURE_CAPACITY,
+	RB_SHARED_GUI_GL_REJECT_COVERAGE
+};
+
+typedef struct rbSharedGuiGLPreparedPass_s {
+	const rendererEvaluatedMaterialPass_t	*pass;
+	idImage					*image;
+	textureFilter_t				filter;
+	textureRepeat_t				repeat;
+	int					stateBits;
+	int					cullType;
+	GLenum					alphaFunction;
+} rbSharedGuiGLPreparedPass_t;
+
+typedef struct rbSharedGuiGLPreparedDraw_s {
+	const classicGuiDomainDraw_t	*draw;
+	const drawSurf_t			*surf;
+	const srfTriangles_t		*tri;
+	int				firstPass;
+	int				passCount;
+} rbSharedGuiGLPreparedDraw_t;
+
+typedef struct rbSharedGuiGLPreparedView_s {
+	const classicGuiDomainView_t	*view;
+	int				drawCount;
+	int				passCount;
+	int				drawablePasses;
+	int				noopPasses;
+	bool				seenSourceSurfaces[ SCENE_PACKET_MAX_DRAWS ];
+	rbSharedGuiGLPreparedDraw_t	draws[ CLASSIC_GUI_DOMAIN_MAX_DRAWS ];
+	rbSharedGuiGLPreparedPass_t	passes[ CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES ];
+} rbSharedGuiGLPreparedView_t;
+
+// The renderer backend is single-threaded.  Keeping this plan out of the stack
+// also makes the fixed domain capacities explicit at the backend boundary.
+static rbSharedGuiGLPreparedView_t rbSharedGuiGLPreparedView;
+
+static int RB_SharedGuiGLFailureDetail( rbSharedGuiGLReject_t reason,
+		int drawIndex = -1, int passIndex = -1 ) {
+	const int drawDetail = drawIndex >= 0 ? Min( drawIndex + 1, 9999 ) : 0;
+	const int passDetail = passIndex >= 0 ? Min( passIndex + 1, 255 ) : 0;
+	return static_cast<int>( reason ) * 1000000 + drawDetail * 256 + passDetail;
+}
+
+static bool RB_SharedGuiGLFloatValid( float value ) {
+	return value == value && value >= -FLT_MAX && value <= FLT_MAX;
+}
+
+static bool RB_SharedGuiGLMatrixValid( const float *matrix, int count ) {
+	if ( matrix == NULL || count <= 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !RB_SharedGuiGLFloatValid( matrix[i] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool RB_SharedGuiGLCacheValid( const vertCache_t *cache,
+		bool indexBuffer, int requiredBytes ) {
+	if ( cache == NULL || requiredBytes <= 0 || cache->tag == TAG_FREE
+			|| cache->indexBuffer != indexBuffer || cache->offset < 0
+			|| cache->size < requiredBytes ) {
+		return false;
+	}
+	if ( cache->vbo != 0 ) {
+		return glConfig.ARBVertexBufferObjectAvailable && cache->virtMem == NULL;
+	}
+	return cache->virtMem != NULL;
+}
+
+static bool RB_SharedGuiGLMapSourceBlend( rendererBlendFactor_t factor,
+		int &stateBits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO:
+		stateBits |= GLS_SRCBLEND_ZERO;
+		return true;
+	case RENDERER_BLEND_ONE:
+		stateBits |= GLS_SRCBLEND_ONE;
+		return true;
+	case RENDERER_BLEND_SRC_COLOR:
+		stateBits |= GLS_SRCBLEND_SRC_COLOR;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR:
+		stateBits |= GLS_SRCBLEND_ONE_MINUS_SRC_COLOR;
+		return true;
+	case RENDERER_BLEND_DST_COLOR:
+		stateBits |= GLS_SRCBLEND_DST_COLOR;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_COLOR:
+		stateBits |= GLS_SRCBLEND_ONE_MINUS_DST_COLOR;
+		return true;
+	case RENDERER_BLEND_SRC_ALPHA:
+		stateBits |= GLS_SRCBLEND_SRC_ALPHA;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA:
+		stateBits |= GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA;
+		return true;
+	case RENDERER_BLEND_DST_ALPHA:
+		stateBits |= GLS_SRCBLEND_DST_ALPHA;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA:
+		stateBits |= GLS_SRCBLEND_ONE_MINUS_DST_ALPHA;
+		return true;
+	case RENDERER_BLEND_SRC_ALPHA_SATURATE:
+		stateBits |= GLS_SRCBLEND_ALPHA_SATURATE;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedGuiGLMapDestinationBlend( rendererBlendFactor_t factor,
+		int &stateBits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO:
+		stateBits |= GLS_DSTBLEND_ZERO;
+		return true;
+	case RENDERER_BLEND_ONE:
+		stateBits |= GLS_DSTBLEND_ONE;
+		return true;
+	case RENDERER_BLEND_SRC_COLOR:
+		stateBits |= GLS_DSTBLEND_SRC_COLOR;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR:
+		stateBits |= GLS_DSTBLEND_ONE_MINUS_SRC_COLOR;
+		return true;
+	case RENDERER_BLEND_SRC_ALPHA:
+		stateBits |= GLS_DSTBLEND_SRC_ALPHA;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA:
+		stateBits |= GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
+		return true;
+	case RENDERER_BLEND_DST_ALPHA:
+		stateBits |= GLS_DSTBLEND_DST_ALPHA;
+		return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA:
+		stateBits |= GLS_DSTBLEND_ONE_MINUS_DST_ALPHA;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedGuiGLMapDepth( const rendererDepthState_t &depth,
+		int &stateBits ) {
+	// A generated classic GUI view disables depth testing as a view-domain rule.
+	if ( depth.testEnabled ) {
+		return false;
+	}
+	if ( !depth.writeEnabled ) {
+		stateBits |= GLS_DEPTHMASK;
+	}
+	switch ( depth.compareOperation ) {
+	case RENDERER_COMPARE_LESS_OR_EQUAL:
+		stateBits |= GLS_DEPTHFUNC_LESS;
+		return true;
+	case RENDERER_COMPARE_EQUAL:
+		stateBits |= GLS_DEPTHFUNC_EQUAL;
+		return true;
+	case RENDERER_COMPARE_ALWAYS:
+		stateBits |= GLS_DEPTHFUNC_ALWAYS;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedGuiGLMapCull( rendererCullMode_t cull, int &cullType ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE:
+		cullType = CT_TWO_SIDED;
+		return true;
+	case RENDERER_CULL_FRONT:
+		cullType = CT_FRONT_SIDED;
+		return true;
+	case RENDERER_CULL_BACK:
+		cullType = CT_BACK_SIDED;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedGuiGLMapAlphaCompare( rendererCompareOp_t compare,
+		GLenum &alphaFunction ) {
+	switch ( compare ) {
+	case RENDERER_COMPARE_NEVER:
+		alphaFunction = GL_NEVER;
+		return true;
+	case RENDERER_COMPARE_LESS:
+		alphaFunction = GL_LESS;
+		return true;
+	case RENDERER_COMPARE_EQUAL:
+		alphaFunction = GL_EQUAL;
+		return true;
+	case RENDERER_COMPARE_LESS_OR_EQUAL:
+		alphaFunction = GL_LEQUAL;
+		return true;
+	case RENDERER_COMPARE_GREATER:
+		alphaFunction = GL_GREATER;
+		return true;
+	case RENDERER_COMPARE_NOT_EQUAL:
+		alphaFunction = GL_NOTEQUAL;
+		return true;
+	case RENDERER_COMPARE_GREATER_OR_EQUAL:
+		alphaFunction = GL_GEQUAL;
+		return true;
+	case RENDERER_COMPARE_ALWAYS:
+		alphaFunction = GL_ALWAYS;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedGuiGLBuildState( const rendererEvaluatedMaterialPass_t &pass,
+		int &stateBits, GLenum &alphaFunction, int &cullType ) {
+	stateBits = 0;
+	alphaFunction = GL_ALWAYS;
+	cullType = CT_FRONT_SIDED;
+
+	if ( pass.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.sourceAlpha != pass.blend.sourceColor
+			|| pass.blend.destinationAlpha != pass.blend.destinationColor ) {
+		return false;
+	}
+	const bool replacementBlend = pass.blend.sourceColor == RENDERER_BLEND_ONE
+		&& pass.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( pass.blend.enabled == replacementBlend ) {
+		return false;
+	}
+	if ( !RB_SharedGuiGLMapSourceBlend( pass.blend.sourceColor, stateBits )
+			|| !RB_SharedGuiGLMapDestinationBlend(
+				pass.blend.destinationColor, stateBits )
+			|| !RB_SharedGuiGLMapDepth( pass.depth, stateBits )
+			|| !RB_SharedGuiGLMapCull( pass.cull, cullType ) ) {
+		return false;
+	}
+
+	if ( ( pass.colorWriteMask
+			& ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RGBA ) ) != 0 ) {
+		return false;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		stateBits |= GLS_REDMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		stateBits |= GLS_GREENMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		stateBits |= GLS_BLUEMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		stateBits |= GLS_ALPHAMASK;
+	}
+
+	return RB_SharedGuiGLMapAlphaCompare(
+		pass.alphaTestCompareOperation, alphaFunction );
+}
+
+static bool RB_SharedGuiGLPassDispositionValid(
+		const rendererEvaluatedMaterialPass_t &pass ) {
+	if ( pass.active != ( pass.condition != 0.0f ) ) {
+		return false;
+	}
+	switch ( pass.disposition ) {
+	case RENDERER_MATERIAL_PASS_DRAW:
+	case RENDERER_MATERIAL_PASS_NOOP_ZERO_ONE_BLEND:
+	case RENDERER_MATERIAL_PASS_NOOP_BLACK_ADDITIVE:
+	case RENDERER_MATERIAL_PASS_NOOP_TRANSPARENT_ALPHA:
+		return pass.active;
+	case RENDERER_MATERIAL_PASS_INACTIVE_CONDITION:
+		return !pass.active;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedGuiGLSourceNoopValid(
+		const classicGuiDomainDraw_t &draw ) {
+	switch ( draw.sourceSurface ) {
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_NULL_SURFACE:
+		if ( draw.legacyDrawSurf != NULL ) {
+			return false;
+		}
+		break;
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_MISSING_MATERIAL:
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_NO_AMBIENT:
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_PORTAL_SKY:
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_EMPTY_GEOMETRY:
+		if ( draw.legacyDrawSurf == NULL ) {
+			return false;
+		}
+		break;
+	default:
+		return false;
+	}
+	return !draw.packetBacked && draw.drawPacketIndex == -1
+		&& draw.firstEvaluatedPass == -1 && draw.evaluatedPassCount == 0
+		&& draw.activePassCount == 0 && draw.drawablePassCount == 0
+		&& draw.inactivePassCount == 0 && draw.activeNoopPassCount == 0
+		&& draw.noopPassCount == 0;
+}
+
+static bool RB_SharedGuiGLTextureBindingValid(
+		const rendererEvaluatedMaterialPass_t &pass,
+		const materialResourceTextureBinding_t *binding, idImage *&image ) {
+	image = NULL;
+	if ( binding == NULL || pass.textureResourceId == 0
+			|| binding != R_MaterialResourceTable_ResolveTextureResource(
+				pass.textureResourceId )
+			|| binding->textureResourceId != pass.textureResourceId
+			|| binding->image == NULL || binding->stageIndex != pass.sourceStageIndex
+			|| binding->textureHandle == 0 || !binding->loaded
+			|| binding->defaulted || binding->missing
+			|| binding->filter < TF_LINEAR || binding->filter > TF_DEFAULT
+			|| binding->repeat < TR_REPEAT || binding->repeat > TR_CLAMP_TO_ZERO_ALPHA ) {
+		return false;
+	}
+
+	image = const_cast<idImage *>( binding->image );
+	const idImageOpts &opts = image->GetOpts();
+	return image->IsLoaded() && !image->IsDefaulted()
+		&& image->GetDeviceHandle() == binding->textureHandle
+		&& opts.textureType == TT_2D && opts.width > 0 && opts.height > 0;
+}
+
+static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
+		const classicGuiDomainView_t &view, int &failureDetail ) {
+	rbSharedGuiGLPreparedView_t &prepared = rbSharedGuiGLPreparedView;
+	memset( &prepared, 0, sizeof( prepared ) );
+	prepared.view = &view;
+
+	if ( view.viewDef != viewDef || !view.ready || viewDef->viewEntitys != NULL
+			|| view.sourceSurfaceCount != viewDef->numDrawSurfs
+			|| view.sourceSurfaceCount < 0
+			|| view.sourceSurfaceCount > SCENE_PACKET_MAX_DRAWS
+			|| view.drawableSurfaceCount < 0
+			|| view.drawableSurfaceCount > view.sourceSurfaceCount
+			|| view.noopSurfaceCount
+				!= view.sourceSurfaceCount - view.drawableSurfaceCount
+			|| view.drawCount < 0 || view.drawCount > CLASSIC_GUI_DOMAIN_MAX_DRAWS
+			|| view.evaluatedPassCount < 0
+			|| view.evaluatedPassCount > CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES
+			|| ( viewDef->numDrawSurfs > 0 && viewDef->drawSurfs == NULL ) ) {
+		failureDetail = RB_SharedGuiGLFailureDetail( RB_SHARED_GUI_GL_REJECT_VIEW );
+		return false;
+	}
+
+	if ( viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
+			|| viewDef->isEditor || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
+			|| viewDef->renderWorld != NULL || viewDef->viewLights != NULL
+			|| viewDef->numOutlineDrawSurfs != 0 || backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| r_showOverDraw.GetInteger() != 0 || r_singleTriangle.GetBool() ) {
+		failureDetail = RB_SharedGuiGLFailureDetail(
+			RB_SHARED_GUI_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+
+	if ( glConfig.maxTextureUnits < 1 || glConfig.maxTextureImageUnits < 1
+			|| glConfig.maxTextureCoords < 1 || !glConfig.isInitialized
+			|| globalImages == NULL ) {
+		failureDetail = RB_SharedGuiGLFailureDetail( RB_SHARED_GUI_GL_REJECT_CAPACITY );
+		return false;
+	}
+
+	if ( view.viewportX1 != viewDef->viewport.x1
+			|| view.viewportY1 != viewDef->viewport.y1
+			|| view.viewportX2 != viewDef->viewport.x2
+			|| view.viewportY2 != viewDef->viewport.y2
+			|| view.scissorX1 != viewDef->scissor.x1
+			|| view.scissorY1 != viewDef->scissor.y1
+			|| view.scissorX2 != viewDef->scissor.x2
+			|| view.scissorY2 != viewDef->scissor.y2
+			|| memcmp( view.projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view.projectionMatrix ) ) != 0
+			|| !RB_SharedGuiGLMatrixValid( view.projectionMatrix, 16 ) ) {
+		failureDetail = RB_SharedGuiGLFailureDetail(
+			RB_SHARED_GUI_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+
+	int sourceSurfacePrevious = -1;
+	int evaluatedPasses = 0;
+	int activePasses = 0;
+	int inactivePasses = 0;
+	int activeNoopPasses = 0;
+	int sourceNoopSurfaces = 0;
+	for ( int drawIndex = 0; drawIndex < view.drawCount; ++drawIndex ) {
+		const classicGuiDomainDraw_t *draw = R_ClassicGuiDomain_ViewDraw(
+			view, drawIndex );
+		if ( draw == NULL || draw->sourceSurfaceIndex < 0
+				|| draw->sourceSurfaceIndex >= viewDef->numDrawSurfs
+				|| draw->sourceSurfaceIndex <= sourceSurfacePrevious
+				|| prepared.seenSourceSurfaces[draw->sourceSurfaceIndex]
+				|| viewDef->drawSurfs[draw->sourceSurfaceIndex] != draw->legacyDrawSurf ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_DRAW_RANGE, drawIndex );
+			return false;
+		}
+		prepared.seenSourceSurfaces[draw->sourceSurfaceIndex] = true;
+		sourceSurfacePrevious = draw->sourceSurfaceIndex;
+		if ( draw->sourceSurface != CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_DRAWABLE ) {
+			if ( !RB_SharedGuiGLSourceNoopValid( *draw ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_DRAW_RANGE, drawIndex );
+				return false;
+			}
+			sourceNoopSurfaces++;
+			continue;
+		}
+		if ( !draw->packetBacked || draw->legacyDrawSurf == NULL ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_DRAW_RANGE, drawIndex );
+			return false;
+		}
+
+		const drawSurf_t *surf = draw->legacyDrawSurf;
+		const srfTriangles_t *tri = surf->geo;
+		if ( tri == NULL || draw->firstIndex != 0 || draw->vertexOffset != 0
+				|| draw->tableGeneration != view.tableGeneration
+				|| draw->hasAmbientCache != ( tri->ambientCache != NULL )
+				|| draw->hasIndexCache != ( tri->indexCache != NULL )
+				|| draw->vertexCount <= 0 || draw->indexCount <= 0
+				|| draw->indexCount % 3 != 0
+				|| tri->numVerts != draw->vertexCount
+				|| tri->numIndexes != draw->indexCount
+				|| draw->vertexCount > idMath::INT_MAX / static_cast<int>( sizeof( idDrawVert ) )
+				|| draw->indexCount > idMath::INT_MAX / static_cast<int>( sizeof( glIndex_t ) )
+				|| !RB_SharedGuiGLMatrixValid( draw->modelViewMatrix, 16 ) ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_GEOMETRY, drawIndex );
+			return false;
+		}
+		const long long scissorWidth = static_cast<long long>( draw->scissorX2 )
+			- draw->scissorX1 + 1;
+		const long long scissorHeight = static_cast<long long>( draw->scissorY2 )
+			- draw->scissorY1 + 1;
+		if ( scissorWidth <= 0 || scissorHeight <= 0
+				|| scissorWidth > idMath::INT_MAX || scissorHeight > idMath::INT_MAX ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_GEOMETRY, drawIndex );
+			return false;
+		}
+
+		if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true )
+				|| !RB_SharedGuiGLCacheValid( tri->ambientCache, false,
+					draw->vertexCount * static_cast<int>( sizeof( idDrawVert ) ) ) ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_VERTEX_CACHE, drawIndex );
+			return false;
+		}
+		R_TouchVertexCache( tri->ambientCache );
+
+		if ( tri->indexCache != NULL ) {
+			if ( !RB_SharedGuiGLCacheValid( tri->indexCache, true,
+					draw->indexCount * static_cast<int>( sizeof( glIndex_t ) ) ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_INDEX_CACHE, drawIndex );
+				return false;
+			}
+			R_TouchVertexCache( tri->indexCache );
+		}
+		if ( ( !r_useIndexBuffers.GetBool() || tri->indexCache == NULL )
+				&& tri->indexes == NULL ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_INDEX_CACHE, drawIndex );
+			return false;
+		}
+
+		if ( surf->decalColorCache != NULL ) {
+			const long long decalBytes = static_cast<long long>( surf->decalColorOffset )
+				+ static_cast<long long>( surf->decalColorStride )
+					* surf->decalColorStageCount;
+			if ( surf->decalColorOffset < 0 || surf->decalColorStride < draw->vertexCount * 4
+					|| surf->decalColorStageCount <= 0 || decalBytes <= 0
+					|| decalBytes > idMath::INT_MAX
+					|| !RB_SharedGuiGLCacheValid( surf->decalColorCache, false,
+						static_cast<int>( decalBytes ) ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_VERTEX_CACHE, drawIndex );
+				return false;
+			}
+			R_TouchVertexCache( surf->decalColorCache );
+		}
+
+		if ( draw->evaluatedPassCount < 0
+				|| draw->evaluatedPassCount > static_cast<int>(
+					RENDERER_CONTRACT_MAX_MATERIAL_PASSES )
+				|| prepared.passCount > CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES
+					- draw->evaluatedPassCount ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_PASS_RANGE, drawIndex );
+			return false;
+		}
+
+		rbSharedGuiGLPreparedDraw_t &preparedDraw = prepared.draws[prepared.drawCount++];
+		preparedDraw.draw = draw;
+		preparedDraw.surf = surf;
+		preparedDraw.tri = tri;
+		preparedDraw.firstPass = prepared.passCount;
+		preparedDraw.passCount = draw->evaluatedPassCount;
+
+		int drawActivePasses = 0;
+		int drawInactivePasses = 0;
+		int drawDrawablePasses = 0;
+		int drawActiveNoopPasses = 0;
+		for ( int passIndex = 0; passIndex < draw->evaluatedPassCount; ++passIndex ) {
+			const rendererEvaluatedMaterialPass_t *pass =
+				R_ClassicGuiDomain_DrawPass( *draw, passIndex );
+			const materialResourceTextureBinding_t *binding =
+				R_ClassicGuiDomain_DrawPassTexture( *draw, passIndex );
+			if ( pass == NULL || pass->order != static_cast<std::uint32_t>( passIndex )
+					|| pass->sourceStageIndex < 0
+					|| pass->kind != RENDERER_MATERIAL_PASS_GUI
+					|| pass->textureSemantic != RENDERER_TEXTURE_DIFFUSE
+					|| pass->texgen != RENDERER_TEXGEN_EXPLICIT
+					|| ( pass->programFamily != RENDERER_PROGRAM_GUI
+						&& pass->programFamily != RENDERER_PROGRAM_FIXED )
+					|| pass->programKey != 0
+					|| pass->vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+					|| pass->vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+					|| !RB_SharedGuiGLPassDispositionValid( *pass )
+					|| !RB_SharedGuiGLFloatValid( pass->condition )
+					|| !RB_SharedGuiGLMatrixValid( pass->color, 4 )
+					|| !RB_SharedGuiGLMatrixValid( pass->textureMatrix, 6 )
+					|| !RB_SharedGuiGLFloatValid( pass->alphaTest )
+					|| !RB_SharedGuiGLFloatValid( pass->polygonOffsetFactor )
+					|| !RB_SharedGuiGLFloatValid( pass->polygonOffsetUnits )
+					|| static_cast<double>( pass->textureMatrix[2] )
+						< -static_cast<double>( idMath::INT_MAX ) - 1.0
+					|| static_cast<double>( pass->textureMatrix[2] )
+						> static_cast<double>( idMath::INT_MAX )
+					|| static_cast<double>( pass->textureMatrix[5] )
+						< -static_cast<double>( idMath::INT_MAX ) - 1.0
+					|| static_cast<double>( pass->textureMatrix[5] )
+						> static_cast<double>( idMath::INT_MAX ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_PASS_STATE, drawIndex, passIndex );
+				return false;
+			}
+
+			rbSharedGuiGLPreparedPass_t &preparedPass =
+				prepared.passes[prepared.passCount];
+			if ( !RB_SharedGuiGLBuildState( *pass, preparedPass.stateBits,
+					preparedPass.alphaFunction, preparedPass.cullType ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_PASS_STATE, drawIndex, passIndex );
+				return false;
+			}
+
+			if ( !RB_SharedGuiGLTextureBindingValid(
+					*pass, binding, preparedPass.image ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_TEXTURE, drawIndex, passIndex );
+				return false;
+			}
+			preparedPass.pass = pass;
+			preparedPass.filter = binding->filter;
+			preparedPass.repeat = binding->repeat;
+
+			if ( pass->disposition == RENDERER_MATERIAL_PASS_DRAW ) {
+				drawDrawablePasses++;
+				prepared.drawablePasses++;
+			}
+			if ( pass->active ) {
+				drawActivePasses++;
+				activePasses++;
+				if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+					drawActiveNoopPasses++;
+					activeNoopPasses++;
+				}
+			} else {
+				drawInactivePasses++;
+				inactivePasses++;
+			}
+			if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				prepared.noopPasses++;
+			}
+			if ( pass->disposition == RENDERER_MATERIAL_PASS_DRAW
+					&& pass->vertexColor != RENDERER_VERTEX_COLOR_IGNORE
+					&& ( glConfig.maxTextureUnits < 2
+						|| glConfig.maxTextureImageUnits < 2
+						|| glConfig.maxTextureCoords < 2
+						|| globalImages->whiteImage == NULL
+						|| !globalImages->whiteImage->IsLoaded()
+						|| globalImages->whiteImage->IsDefaulted()
+						|| globalImages->whiteImage->GetOpts().textureType != TT_2D
+						|| globalImages->whiteImage->GetDeviceHandle() == 0 ) ) {
+				failureDetail = RB_SharedGuiGLFailureDetail(
+					RB_SHARED_GUI_GL_REJECT_TEXTURE_CAPACITY,
+					drawIndex, passIndex );
+				return false;
+			}
+
+			prepared.passCount++;
+			evaluatedPasses++;
+		}
+
+		if ( drawActivePasses != draw->activePassCount
+				|| drawInactivePasses != draw->inactivePassCount
+				|| drawDrawablePasses != draw->drawablePassCount
+				|| drawActiveNoopPasses != draw->activeNoopPassCount
+				|| draw->noopPassCount != drawInactivePasses + drawActiveNoopPasses ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_COVERAGE, drawIndex );
+			return false;
+		}
+	}
+
+	if ( prepared.drawCount != view.drawableSurfaceCount
+			|| sourceNoopSurfaces != view.noopSurfaceCount
+			|| evaluatedPasses != view.evaluatedPassCount
+			|| activePasses != view.activePassCount
+			|| inactivePasses != view.inactivePassCount
+			|| prepared.drawablePasses != view.drawablePassCount
+			|| activeNoopPasses != view.activeNoopPassCount
+			|| prepared.noopPasses != view.noopPassCount ) {
+		failureDetail = RB_SharedGuiGLFailureDetail(
+			RB_SHARED_GUI_GL_REJECT_COVERAGE );
+		return false;
+	}
+
+	return true;
+}
+
+static void RB_SharedGuiGLLoadTextureMatrix(
+		const rendererEvaluatedMaterialPass_t &pass ) {
+	float matrix[16] = {
+		pass.textureMatrix[0], pass.textureMatrix[3], 0.0f, 0.0f,
+		pass.textureMatrix[1], pass.textureMatrix[4], 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		pass.textureMatrix[2], pass.textureMatrix[5], 0.0f, 1.0f
+	};
+	// Match RB_GetShaderTextureMatrix exactly so large scrolling offsets retain
+	// classic fixed-function precision and wrapping behavior.
+	if ( matrix[12] < -40.0f || matrix[12] > 40.0f ) {
+		matrix[12] -= static_cast<int>( matrix[12] );
+	}
+	if ( matrix[13] < -40.0f || matrix[13] > 40.0f ) {
+		matrix[13] -= static_cast<int>( matrix[13] );
+	}
+	glMatrixMode( GL_TEXTURE );
+	glLoadMatrixf( matrix );
+	glMatrixMode( GL_MODELVIEW );
+}
+
+static bool RB_SharedGuiGLHasBakedStageColor( const drawSurf_t *surf,
+		int sourceStageIndex ) {
+	return surf->decalColorCache != NULL && sourceStageIndex >= 0
+		&& sourceStageIndex < surf->decalColorStageCount
+		&& surf->decalColorStride > 0;
+}
+
+static void RB_SharedGuiGLPrepareVertexColor( const drawSurf_t *surf,
+		idDrawVert *ambientVertices, const rendererEvaluatedMaterialPass_t &pass ) {
+	if ( pass.vertexColor == RENDERER_VERTEX_COLOR_IGNORE ) {
+		glDisableClientState( GL_COLOR_ARRAY );
+		glColor4fv( pass.color );
+		return;
+	}
+
+	RB_SetStageVertexColorPointer( surf, pass.sourceStageIndex, ambientVertices );
+	glEnableClientState( GL_COLOR_ARRAY );
+	if ( pass.vertexColor == RENDERER_VERTEX_COLOR_INVERSE_MODULATE ) {
+		GL_TexEnv( GL_COMBINE_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_COMBINE_RGB_ARB, GL_MODULATE );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE0_RGB_ARB, GL_TEXTURE );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE1_RGB_ARB, GL_PRIMARY_COLOR_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND0_RGB_ARB, GL_SRC_COLOR );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND1_RGB_ARB, GL_ONE_MINUS_SRC_COLOR );
+		glTexEnvi( GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 1 );
+		glTexEnvi( GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_MODULATE );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_ARB, GL_TEXTURE );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE1_ALPHA_ARB, GL_PRIMARY_COLOR_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_ARB, GL_SRC_ALPHA );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND1_ALPHA_ARB, GL_SRC_ALPHA );
+		glTexEnvi( GL_TEXTURE_ENV, GL_ALPHA_SCALE, 1 );
+	}
+
+	if ( !RB_SharedGuiGLHasBakedStageColor( surf, pass.sourceStageIndex )
+			&& ( pass.color[0] != 1.0f || pass.color[1] != 1.0f
+				|| pass.color[2] != 1.0f || pass.color[3] != 1.0f ) ) {
+		GL_SelectTexture( 1 );
+		globalImages->whiteImage->Bind();
+		GL_TexEnv( GL_COMBINE_ARB );
+		glTexEnvfv( GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, pass.color );
+		glTexEnvi( GL_TEXTURE_ENV, GL_COMBINE_RGB_ARB, GL_MODULATE );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE0_RGB_ARB, GL_PREVIOUS_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE1_RGB_ARB, GL_CONSTANT_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND0_RGB_ARB, GL_SRC_COLOR );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND1_RGB_ARB, GL_SRC_COLOR );
+		glTexEnvi( GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 1 );
+		glTexEnvi( GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_MODULATE );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE0_ALPHA_ARB, GL_PREVIOUS_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE1_ALPHA_ARB, GL_CONSTANT_ARB );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND0_ALPHA_ARB, GL_SRC_ALPHA );
+		glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND1_ALPHA_ARB, GL_SRC_ALPHA );
+		glTexEnvi( GL_TEXTURE_ENV, GL_ALPHA_SCALE, 1 );
+		GL_SelectTexture( 0 );
+	}
+}
+
+static void RB_SharedGuiGLFinishPass(
+		const rendererEvaluatedMaterialPass_t &pass ) {
+	glMatrixMode( GL_TEXTURE );
+	glLoadIdentity();
+	glMatrixMode( GL_MODELVIEW );
+	if ( pass.alphaTestEnabled ) {
+		glDisable( GL_ALPHA_TEST );
+	}
+	if ( pass.polygonOffsetEnabled ) {
+		glDisable( GL_POLYGON_OFFSET_FILL );
+	}
+	if ( pass.vertexColor != RENDERER_VERTEX_COLOR_IGNORE ) {
+		glDisableClientState( GL_COLOR_ARRAY );
+		GL_SelectTexture( 1 );
+		GL_TexEnv( GL_MODULATE );
+		globalImages->BindNull();
+		GL_SelectTexture( 0 );
+		GL_TexEnv( GL_MODULATE );
+	}
+}
+
+static void RB_SharedGuiGLRestoreState( void ) {
+	glDisable( GL_ALPHA_TEST );
+	glDisable( GL_POLYGON_OFFSET_FILL );
+	glDisable( GL_SAMPLE_ALPHA_TO_COVERAGE );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glMatrixMode( GL_TEXTURE );
+	glLoadIdentity();
+	glMatrixMode( GL_MODELVIEW );
+	GL_TexEnv( GL_MODULATE );
+	globalImages->BindNull();
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBlendEquation( GL_FUNC_ADD );
+	glEnable( GL_BLEND );
+	glEnable( GL_SCISSOR_TEST );
+	glDisable( GL_DEPTH_TEST );
+	glDisable( GL_STENCIL_TEST );
+	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	GL_Cull( CT_FRONT_SIDED );
+	backEnd.currentSpace = NULL;
+}
+
+bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL ) {
+		R_ClassicGuiDomain_RecordBackendFallback( NULL,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+			RB_SharedGuiGLFailureDetail( RB_SHARED_GUI_GL_REJECT_VIEW ) );
+		return false;
+	}
+
+	const classicGuiDomainView_t *view = R_ClassicGuiDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		R_ClassicGuiDomain_RecordBackendFallback( viewDef,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+			RB_SharedGuiGLFailureDetail( RB_SHARED_GUI_GL_REJECT_VIEW ) );
+		return false;
+	}
+	if ( view->backendOutcome[ CLASSIC_GUI_DOMAIN_BACKEND_GL ]
+			== CLASSIC_GUI_DOMAIN_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		R_ClassicGuiDomain_RecordBackendFallback( viewDef,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL,
+			view->failure != CLASSIC_GUI_DOMAIN_FAILURE_NONE
+				? view->failure : CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+		return false;
+	}
+
+	int failureDetail = 0;
+	if ( !RB_SharedGuiGLPreflight( viewDef, *view, failureDetail ) ) {
+		R_ClassicGuiDomain_RecordBackendFallback( viewDef,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED, failureDetail );
+		return false;
+	}
+
+	// No return below this point may hand the view back to the legacy aggregate
+	// path: the complete view has passed preflight and drawing is now committed.
+	backEnd.viewDef = viewDef;
+	backEnd.currentRenderCopied = false;
+	backEnd.currentDepthCopied = false;
+	backEnd.pc.c_surfaces += viewDef->numDrawSurfs;
+	backEnd.depthFunc = GLS_DEPTHFUNC_EQUAL;
+	RB_LogComment( "---------- RB_DrawSharedGuiView ----------\n" );
+	RB_BeginDrawingView();
+	if ( glConfig.GLSLProgramAvailable ) {
+		glUseProgramObjectARB( 0 );
+	}
+	if ( glConfig.ARBVertexProgramAvailable ) {
+		glDisable( GL_VERTEX_PROGRAM_ARB );
+	}
+	if ( glConfig.ARBFragmentProgramAvailable ) {
+		glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	}
+	glEnable( GL_BLEND );
+	glBlendEquation( GL_FUNC_ADD );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glDisable( GL_ALPHA_TEST );
+	glDisable( GL_POLYGON_OFFSET_FILL );
+	backEnd.currentSpace = NULL;
+
+	int drawnPasses = 0;
+	int noopPasses = 0;
+	for ( int drawIndex = 0; drawIndex < rbSharedGuiGLPreparedView.drawCount;
+			drawIndex++ ) {
+		const rbSharedGuiGLPreparedDraw_t &preparedDraw =
+			rbSharedGuiGLPreparedView.draws[drawIndex];
+		const classicGuiDomainDraw_t &draw = *preparedDraw.draw;
+		const drawSurf_t *surf = preparedDraw.surf;
+		const srfTriangles_t *tri = preparedDraw.tri;
+
+		glLoadMatrixf( draw.modelViewMatrix );
+		if ( r_useScissor.GetBool() ) {
+			backEnd.currentScissor.x1 = draw.scissorX1;
+			backEnd.currentScissor.y1 = draw.scissorY1;
+			backEnd.currentScissor.x2 = draw.scissorX2;
+			backEnd.currentScissor.y2 = draw.scissorY2;
+			glScissor( viewDef->viewport.x1 + draw.scissorX1,
+				viewDef->viewport.y1 + draw.scissorY1,
+				draw.scissorX2 + 1 - draw.scissorX1,
+				draw.scissorY2 + 1 - draw.scissorY1 );
+		}
+
+		idDrawVert *ambientVertices = static_cast<idDrawVert *>(
+			vertexCache.Position( tri->ambientCache ) );
+		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ambientVertices,
+				offsetof( idDrawVert, xyz ) ) );
+		glTexCoordPointer( 2, GL_FLOAT, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ambientVertices,
+				offsetof( idDrawVert, st ) ) );
+
+		for ( int passIndex = 0; passIndex < preparedDraw.passCount; ++passIndex ) {
+			const rbSharedGuiGLPreparedPass_t &preparedPass =
+				rbSharedGuiGLPreparedView.passes[
+					preparedDraw.firstPass + passIndex];
+			const rendererEvaluatedMaterialPass_t &pass = *preparedPass.pass;
+			if ( pass.disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				noopPasses++;
+				continue;
+			}
+
+			GL_Cull( preparedPass.cullType );
+			RB_SharedGuiGLPrepareVertexColor( surf, ambientVertices, pass );
+			GL_SelectTexture( 0 );
+			preparedPass.image->SetSamplerState(
+				preparedPass.filter, preparedPass.repeat );
+			preparedPass.image->Bind();
+			GL_State( preparedPass.stateBits );
+			glBlendEquation( GL_FUNC_ADD );
+			if ( pass.alphaTestEnabled ) {
+				glEnable( GL_ALPHA_TEST );
+				glAlphaFunc( preparedPass.alphaFunction, pass.alphaTest );
+			}
+			if ( pass.polygonOffsetEnabled ) {
+				glPolygonOffset( pass.polygonOffsetFactor, pass.polygonOffsetUnits );
+				glEnable( GL_POLYGON_OFFSET_FILL );
+			}
+			RB_SharedGuiGLLoadTextureMatrix( pass );
+			RB_DrawElementsWithCounters( tri );
+			drawnPasses++;
+			RB_SharedGuiGLFinishPass( pass );
+		}
+	}
+
+	RB_SharedGuiGLRestoreState();
+	const bool coverageRecorded = R_ClassicGuiDomain_RecordOwned( viewDef,
+		CLASSIC_GUI_DOMAIN_BACKEND_GL, drawnPasses, noopPasses );
+	if ( !coverageRecorded ) {
+		// Drawing is already committed, so never return false and double-render.
+		common->Warning( "RB_DrawSharedGuiView: GL ownership coverage rejected after committed draw" );
+	}
+	return true;
 }
 
 /*

@@ -34,6 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraph.h"
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
+#include "ClassicGuiDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernClusteredLighting.h"
 #include "RendererMetrics.h"
@@ -735,6 +736,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	int	c_draw3d = 0, c_draw2d = 0, c_setBuffers = 0, c_swapBuffers = 0, c_copyRenders = 0, c_specialEffects = 0, c_renderTargetOps = 0;
 
 	R_GLDebugOutput_FlushMessages();
+	// Clear frame-local pointers and ownership before every command stream,
+	// including the empty-frame fast path below.
+	R_ClassicGuiDomain_ResetFrame();
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}
@@ -743,7 +747,6 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// The legacy backend issues raw GL between the last modern pass of the previous
 	// frame and this frame's modern submits; cached state from last frame is stale.
 	R_GLStateCache_InvalidateAll( "backend frame begin" );
-
 	if ( R_ScenePackets_SidePipelineRequired() ) {
 		const int packetBuildStart = Sys_Milliseconds();
 		const idScenePacketFrame *scenePackets = NULL;
@@ -788,6 +791,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		R_RendererMetrics_RecordRenderGraphResources( R_RenderGraphResources_Stats() );
 		R_MaterialResourceTable_PrepareFrame( *scenePackets );
 		R_RendererMetrics_RecordMaterialResourceTable( R_MaterialResourceTable_Stats() );
+		if ( r_rendererSharedGui.GetBool() ) {
+			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		}
 		R_ModernGLExecutor_PrepareFrame( *scenePackets, legacyGraph );
 		rg_modernStatMirrorsZeroed = false;	// active frame wrote real stats; re-zero on next dormant frame
 	} else {
@@ -833,7 +839,15 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			break;
 		case RC_DRAW_VIEW:
 			R_RendererMetrics_BeginGpuTimer( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
-			if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys && R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ) {
+			if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys
+					&& r_rendererSharedGui.GetBool() ) {
+				// The shared owner is view-atomic.  If its complete preflight or
+				// execution gate rejects this view, execute the untouched classic
+				// view immediately; never mix shared and aggregate GUI stages.
+				if ( !RB_DrawSharedGuiView( ((const drawSurfsCommand_t *)cmds)->viewDef ) ) {
+					RB_DrawView( cmds );
+				}
+			} else if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys && R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ) {
 				R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_GUI );
 			} else {
 				RB_DrawView( cmds );

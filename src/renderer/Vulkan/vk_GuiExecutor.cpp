@@ -48,7 +48,9 @@
 
 #include "VulkanDevice.h"
 #include "VulkanGpuFrameTiming.h"
+#include "../ClassicGuiDomain.h"
 #include "../GpuSkinning.h"
+#include "../MaterialResourceTable.h"
 #include "../RendererContracts.h"
 #include "../RendererMetrics.h"
 #include "vk_Image.h"
@@ -760,6 +762,48 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits, bool separateColor 
 	vkExec.pipelines[ vkExec.numPipelines ].pipeline = pipeline;
 	vkExec.numPipelines++;
 	return pipeline;
+}
+
+/*
+====================
+VK_GuiExecutor_GetPipelineStrict
+
+The legacy material walker historically tolerates GUI-pipeline allocation or
+cache exhaustion by returning the first cached pipeline.  Whole-view shared
+ownership cannot: accepting a different blend/write-mask pipeline would make
+the backend claim a view whose framebuffer result is known to be wrong.  Ask
+the normal cache to populate the exact key, then prove that the returned
+object is backed by that key before exposing it to the transactional path.
+====================
+*/
+static VkPipeline VK_GuiExecutor_GetPipelineStrict( int stateBits ) {
+	const int pipelineBits = stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_COLORMASK | GLS_ALPHAMASK );
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	for ( int i = 0; i < vkExec.numPipelines; ++i ) {
+		const vkGuiPipeline_t &entry = vkExec.pipelines[ i ];
+		if ( entry.stateBits == pipelineBits && !entry.separateColor
+				&& VK_Exec_PipelineTargetsMatch( entry.target, target ) ) {
+			return entry.pipeline;
+		}
+	}
+	if ( vkExec.numPipelines >= VK_MAX_GUI_PIPELINES ) {
+		return VK_NULL_HANDLE;
+	}
+
+	const VkPipeline candidate = VK_GuiExecutor_GetPipeline( stateBits, false );
+	if ( candidate == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	for ( int i = 0; i < vkExec.numPipelines; ++i ) {
+		const vkGuiPipeline_t &entry = vkExec.pipelines[ i ];
+		if ( entry.pipeline == candidate && entry.stateBits == pipelineBits
+				&& !entry.separateColor
+				&& VK_Exec_PipelineTargetsMatch( entry.target, target ) ) {
+			return candidate;
+		}
+	}
+	return VK_NULL_HANDLE;
 }
 
 static VkPipeline VK_GuiExecutor_GetScreenPipeline( int stateBits,
@@ -6982,6 +7026,826 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 }
 
 /*
+===============================================================================
+
+	Backend-neutral classic GUI whole-view consumer
+
+	The preparation contract in ClassicGuiDomain owns material interpretation.
+	This adapter is deliberately limited to geometry upload from legacyDrawSurf;
+	all material state, register results, texture identity, transforms, and
+	scissors come from immutable domain records.  Every fallible resource lookup
+	and upload completes before the first indexed draw, so a rejection can still
+	return to the untouched classic walker for the complete view.
+
+===============================================================================
+*/
+
+enum vkClassicGuiRejectDetail_t {
+	VK_CLASSIC_GUI_REJECT_NONE = 0,
+	VK_CLASSIC_GUI_REJECT_VIEW_MUTATION,
+	VK_CLASSIC_GUI_REJECT_OFFSCREEN_TARGET,
+	VK_CLASSIC_GUI_REJECT_RENDER_SCOPE,
+	VK_CLASSIC_GUI_REJECT_VIEWPORT,
+	VK_CLASSIC_GUI_REJECT_DOMAIN_COUNTS,
+	VK_CLASSIC_GUI_REJECT_DRAW_RECORD,
+	VK_CLASSIC_GUI_REJECT_GEOMETRY,
+	VK_CLASSIC_GUI_REJECT_PASS_RECORD,
+	VK_CLASSIC_GUI_REJECT_PASS_STATE,
+	VK_CLASSIC_GUI_REJECT_TEXTURE_BINDING,
+	VK_CLASSIC_GUI_REJECT_TEXTURE_RESIDENCY,
+	VK_CLASSIC_GUI_REJECT_DESCRIPTOR,
+	VK_CLASSIC_GUI_REJECT_PIPELINE,
+	VK_CLASSIC_GUI_REJECT_COVERAGE
+};
+
+typedef struct vkClassicGuiDrawPlan_s {
+	const classicGuiDomainDraw_t *draw;
+	const srfTriangles_t *tri;
+	int vertexOffset;
+	int indexOffset;
+	int firstPass;
+	int passCount;
+	VkRect2D scissor;
+	float mvp[ 16 ];
+} vkClassicGuiDrawPlan_t;
+
+typedef struct vkClassicGuiPassPlan_s {
+	const rendererEvaluatedMaterialPass_t *pass;
+	VkPipeline pipeline;
+	VkDescriptorSet descriptor;
+	int stateBits;
+	float alphaTestMode;
+	VkCompareOp depthCompare;
+	VkCullModeFlags cullMode;
+} vkClassicGuiPassPlan_t;
+
+static vkClassicGuiDrawPlan_t vkClassicGuiDrawPlans[ CLASSIC_GUI_DOMAIN_MAX_DRAWS ];
+static vkClassicGuiPassPlan_t vkClassicGuiPassPlans[ CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES ];
+
+static bool VK_ClassicGui_Fail( const viewDef_t *viewDef,
+		classicGuiDomainFailure_t failure, int detail ) {
+	R_ClassicGuiDomain_RecordBackendFallback( viewDef,
+		CLASSIC_GUI_DOMAIN_BACKEND_VULKAN, failure, detail );
+	return false;
+}
+
+static bool VK_ClassicGui_SourceNoopValid(
+		const classicGuiDomainDraw_t &draw ) {
+	switch ( draw.sourceSurface ) {
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_NULL_SURFACE:
+		if ( draw.legacyDrawSurf != NULL ) {
+			return false;
+		}
+		break;
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_MISSING_MATERIAL:
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_NO_AMBIENT:
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_PORTAL_SKY:
+	case CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_EMPTY_GEOMETRY:
+		if ( draw.legacyDrawSurf == NULL ) {
+			return false;
+		}
+		break;
+	default:
+		return false;
+	}
+	return !draw.packetBacked && draw.drawPacketIndex == -1
+		&& draw.firstEvaluatedPass == -1 && draw.evaluatedPassCount == 0
+		&& draw.activePassCount == 0 && draw.drawablePassCount == 0
+		&& draw.inactivePassCount == 0 && draw.activeNoopPassCount == 0
+		&& draw.noopPassCount == 0;
+}
+
+static bool VK_ClassicGui_MapSourceBlend( rendererBlendFactor_t factor, int &bits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO: bits = GLS_SRCBLEND_ZERO; return true;
+	case RENDERER_BLEND_ONE: bits = GLS_SRCBLEND_ONE; return true;
+	case RENDERER_BLEND_SRC_COLOR: bits = GLS_SRCBLEND_SRC_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR: bits = GLS_SRCBLEND_ONE_MINUS_SRC_COLOR; return true;
+	case RENDERER_BLEND_DST_COLOR: bits = GLS_SRCBLEND_DST_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_COLOR: bits = GLS_SRCBLEND_ONE_MINUS_DST_COLOR; return true;
+	case RENDERER_BLEND_SRC_ALPHA: bits = GLS_SRCBLEND_SRC_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA: bits = GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA; return true;
+	case RENDERER_BLEND_DST_ALPHA: bits = GLS_SRCBLEND_DST_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA: bits = GLS_SRCBLEND_ONE_MINUS_DST_ALPHA; return true;
+	case RENDERER_BLEND_SRC_ALPHA_SATURATE: bits = GLS_SRCBLEND_ALPHA_SATURATE; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicGui_MapDestinationBlend( rendererBlendFactor_t factor, int &bits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO: bits = GLS_DSTBLEND_ZERO; return true;
+	case RENDERER_BLEND_ONE: bits = GLS_DSTBLEND_ONE; return true;
+	case RENDERER_BLEND_SRC_COLOR: bits = GLS_DSTBLEND_SRC_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR: bits = GLS_DSTBLEND_ONE_MINUS_SRC_COLOR; return true;
+	case RENDERER_BLEND_SRC_ALPHA: bits = GLS_DSTBLEND_SRC_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA: bits = GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA; return true;
+	case RENDERER_BLEND_DST_ALPHA: bits = GLS_DSTBLEND_DST_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA: bits = GLS_DSTBLEND_ONE_MINUS_DST_ALPHA; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicGui_MapDepthCompare( rendererCompareOp_t operation,
+		VkCompareOp &compare ) {
+	switch ( operation ) {
+	case RENDERER_COMPARE_NEVER: compare = VK_COMPARE_OP_NEVER; return true;
+	case RENDERER_COMPARE_LESS: compare = VK_COMPARE_OP_LESS; return true;
+	case RENDERER_COMPARE_EQUAL: compare = VK_COMPARE_OP_EQUAL; return true;
+	case RENDERER_COMPARE_LESS_OR_EQUAL: compare = VK_COMPARE_OP_LESS_OR_EQUAL; return true;
+	case RENDERER_COMPARE_GREATER: compare = VK_COMPARE_OP_GREATER; return true;
+	case RENDERER_COMPARE_NOT_EQUAL: compare = VK_COMPARE_OP_NOT_EQUAL; return true;
+	case RENDERER_COMPARE_GREATER_OR_EQUAL: compare = VK_COMPARE_OP_GREATER_OR_EQUAL; return true;
+	case RENDERER_COMPARE_ALWAYS: compare = VK_COMPARE_OP_ALWAYS; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicGui_MapAlphaTest( const rendererEvaluatedMaterialPass_t &pass,
+		float &mode ) {
+	if ( !pass.alphaTestEnabled
+			|| pass.alphaTestCompareOperation == RENDERER_COMPARE_ALWAYS ) {
+		mode = 0.0f;
+		return true;
+	}
+	switch ( pass.alphaTestCompareOperation ) {
+	case RENDERER_COMPARE_LESS: mode = -1.0f; return true;
+	case RENDERER_COMPARE_EQUAL: mode = 2.0f; return true;
+	case RENDERER_COMPARE_GREATER: mode = 1.0f; return true;
+	default:
+		// gui.frag intentionally exposes only these three exact classic tests.
+		// Other neutral compare operations keep whole-view ownership classic.
+		return false;
+	}
+}
+
+static bool VK_ClassicGui_MapCull( rendererCullMode_t cull,
+		VkCullModeFlags &mode ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE: mode = VK_CULL_MODE_NONE; return true;
+	case RENDERER_CULL_FRONT: mode = VK_CULL_MODE_FRONT_BIT; return true;
+	case RENDERER_CULL_BACK: mode = VK_CULL_MODE_BACK_BIT; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicGui_MapState( const rendererEvaluatedMaterialPass_t &pass,
+		vkClassicGuiPassPlan_t &plan ) {
+	if ( pass.kind != RENDERER_MATERIAL_PASS_GUI
+			|| ( pass.programFamily != RENDERER_PROGRAM_GUI
+				&& pass.programFamily != RENDERER_PROGRAM_FIXED )
+			|| pass.programKey != 0
+			|| pass.texgen != RENDERER_TEXGEN_EXPLICIT
+			|| pass.textureSemantic != RENDERER_TEXTURE_DIFFUSE
+			|| pass.textureResourceId == 0
+			|| ( pass.colorWriteMask
+				& ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RGBA ) ) != 0
+			|| pass.vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+			|| pass.vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+			|| pass.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| pass.blend.sourceAlpha != pass.blend.sourceColor
+			|| pass.blend.destinationAlpha != pass.blend.destinationColor
+			|| pass.depth.testEnabled
+			|| ( pass.depth.compareOperation != RENDERER_COMPARE_LESS_OR_EQUAL
+				&& pass.depth.compareOperation != RENDERER_COMPARE_EQUAL
+				&& pass.depth.compareOperation != RENDERER_COMPARE_ALWAYS ) ) {
+		return false;
+	}
+	const bool replacementBlend = pass.blend.sourceColor == RENDERER_BLEND_ONE
+		&& pass.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( pass.blend.enabled == replacementBlend ) {
+		return false;
+	}
+
+	int sourceBits = 0;
+	int destinationBits = 0;
+	if ( !VK_ClassicGui_MapSourceBlend( pass.blend.sourceColor, sourceBits )
+			|| !VK_ClassicGui_MapDestinationBlend(
+				pass.blend.destinationColor, destinationBits )
+			|| !VK_ClassicGui_MapDepthCompare(
+				pass.depth.compareOperation, plan.depthCompare )
+			|| !VK_ClassicGui_MapAlphaTest( pass, plan.alphaTestMode )
+			|| !VK_ClassicGui_MapCull( pass.cull, plan.cullMode ) ) {
+		return false;
+	}
+
+	plan.stateBits = sourceBits | destinationBits;
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		plan.stateBits |= GLS_REDMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		plan.stateBits |= GLS_GREENMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		plan.stateBits |= GLS_BLUEMASK;
+	}
+	if ( ( pass.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		plan.stateBits |= GLS_ALPHAMASK;
+	}
+
+	if ( !std::isfinite( pass.condition ) || !std::isfinite( pass.alphaTest )
+			|| !std::isfinite( pass.polygonOffsetFactor )
+			|| !std::isfinite( pass.polygonOffsetUnits ) ) {
+		return false;
+	}
+	for ( int i = 0; i < 4; ++i ) {
+		if ( !std::isfinite( pass.color[ i ] ) ) {
+			return false;
+		}
+	}
+	for ( int i = 0; i < 6; ++i ) {
+		if ( !std::isfinite( pass.textureMatrix[ i ] ) ) {
+			return false;
+		}
+	}
+	if ( static_cast<double>( pass.textureMatrix[ 2 ] )
+			< static_cast<double>( INT_MIN )
+			|| static_cast<double>( pass.textureMatrix[ 2 ] )
+				> static_cast<double>( INT_MAX )
+			|| static_cast<double>( pass.textureMatrix[ 5 ] )
+				< static_cast<double>( INT_MIN )
+			|| static_cast<double>( pass.textureMatrix[ 5 ] )
+				> static_cast<double>( INT_MAX ) ) {
+		return false;
+	}
+	return true;
+}
+
+static bool VK_ClassicGui_BuildScissor( const classicGuiDomainView_t &view,
+		const classicGuiDomainDraw_t &draw, int framebufferHeight,
+		VkRect2D &scissor ) {
+	const int viewportWidth = view.viewportX2 - view.viewportX1 + 1;
+	const int viewportHeight = view.viewportY2 - view.viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0 || framebufferHeight <= 0 ) {
+		return false;
+	}
+
+	const bool drawScissorEmpty = draw.scissorX2 < draw.scissorX1
+			|| draw.scissorY2 < draw.scissorY1;
+	const bool useDrawScissor = r_useScissor.GetBool() && !drawScissorEmpty;
+	int requestedX1 = useDrawScissor ? draw.scissorX1 : view.scissorX1;
+	int requestedY1 = useDrawScissor ? draw.scissorY1 : view.scissorY1;
+	int requestedX2 = useDrawScissor ? draw.scissorX2 : view.scissorX2;
+	int requestedY2 = useDrawScissor ? draw.scissorY2 : view.scissorY2;
+	const bool requestedEmpty = requestedX2 < requestedX1
+			|| requestedY2 < requestedY1;
+
+	int x0 = view.viewportX1;
+	int x1 = view.viewportX1 + viewportWidth;
+	int y0GL = view.viewportY1;
+	int y1GL = view.viewportY1 + viewportHeight;
+	if ( !requestedEmpty ) {
+		x0 = Max( x0, view.viewportX1 + requestedX1 );
+		x1 = Min( x1, view.viewportX1 + requestedX2 + 1 );
+		y0GL = Max( y0GL, view.viewportY1 + requestedY1 );
+		y1GL = Min( y1GL, view.viewportY1 + requestedY2 + 1 );
+	}
+	x0 = Min( view.viewportX1 + viewportWidth, Max( 0, x0 ) );
+	x1 = Max( x0, x1 );
+	y0GL = Min( view.viewportY1 + viewportHeight,
+		Max( view.viewportY1, y0GL ) );
+	y1GL = Max( y0GL, y1GL );
+	const int y0 = Max( 0, framebufferHeight - y1GL );
+	const int y1 = Max( y0, Min( framebufferHeight,
+		framebufferHeight - y0GL ) );
+
+	scissor.offset.x = x0;
+	scissor.offset.y = y0;
+	scissor.extent.width = static_cast<std::uint32_t>( x1 - x0 );
+	scissor.extent.height = static_cast<std::uint32_t>( y1 - y0 );
+	return true;
+}
+
+static bool VK_ClassicGui_PrepareGeometry( VkCommandBuffer cmd, int slot,
+		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset ) {
+	if ( !VK_Exec_BindTriGeometry( cmd, slot, tri ) ) {
+		return false;
+	}
+	vertexOffset = vkExec.boundVertexOffset;
+	const void *indexKey = tri->indexes != NULL
+			? static_cast<const void *>( tri->indexes )
+			: ( tri->indexCache != NULL
+				? static_cast<const void *>( tri->indexCache )
+				: static_cast<const void *>( tri ) );
+	const unsigned int memoIndex = static_cast<unsigned int>(
+		( reinterpret_cast<uintptr_t>( indexKey ) >> 4 )
+		& ( VK_TRI_MEMO_SIZE - 1 ) );
+	const vkIdxUpload_t &memo = vkExec.idxMemo[ memoIndex ];
+	if ( memo.idxKey != indexKey || vertexOffset < 0 || memo.indexOffset < 0 ) {
+		return false;
+	}
+	indexOffset = memo.indexOffset;
+	return true;
+}
+
+static void VK_ClassicGui_BindPreparedGeometry( VkCommandBuffer cmd, int slot,
+		const vkClassicGuiDrawPlan_t &plan ) {
+	const VkBuffer vertexBuffer = vkExec.vertexRings[ slot ].buffer;
+	const VkDeviceSize vertexOffset = static_cast<VkDeviceSize>( plan.vertexOffset );
+	vkCmdBindVertexBuffers( cmd, 0, 1, &vertexBuffer, &vertexOffset );
+	vkCmdBindIndexBuffer( cmd, vkExec.indexRings[ slot ].buffer,
+		static_cast<VkDeviceSize>( plan.indexOffset ), VK_INDEX_TYPE_UINT32 );
+}
+
+static void VK_ClassicGui_SetPushTextureMatrix(
+		const rendererEvaluatedMaterialPass_t &pass,
+		vkGuiPushConstants_t &push ) {
+	float offsetS = pass.textureMatrix[ 2 ];
+	float offsetT = pass.textureMatrix[ 5 ];
+	// Match RB_GetShaderTextureMatrix exactly: only large translations wrap,
+	// retaining center-rotation/scale offsets in the ordinary range.
+	if ( offsetS < -40.0f || offsetS > 40.0f ) {
+		offsetS -= static_cast<int>( offsetS );
+	}
+	if ( offsetT < -40.0f || offsetT > 40.0f ) {
+		offsetT -= static_cast<int>( offsetT );
+	}
+	push.texMatrixS[ 0 ] = pass.textureMatrix[ 0 ];
+	push.texMatrixS[ 1 ] = pass.textureMatrix[ 1 ];
+	push.texMatrixS[ 2 ] = 0.0f;
+	push.texMatrixS[ 3 ] = offsetS;
+	push.texMatrixT[ 0 ] = pass.textureMatrix[ 3 ];
+	push.texMatrixT[ 1 ] = pass.textureMatrix[ 4 ];
+	push.texMatrixT[ 2 ] = 0.0f;
+	push.texMatrixT[ 3 ] = offsetT;
+	push.params[ 3 ] =
+		pass.textureMatrix[ 0 ] != 1.0f || pass.textureMatrix[ 1 ] != 0.0f
+		|| offsetS != 0.0f || pass.textureMatrix[ 3 ] != 0.0f
+		|| pass.textureMatrix[ 4 ] != 1.0f || offsetT != 0.0f
+			? 1.0f : 0.0f;
+}
+
+static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
+	const classicGuiDomainView_t *view =
+		R_ClassicGuiDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY, -1 );
+	}
+	if ( !view->ready ) {
+		return VK_ClassicGui_Fail( viewDef,
+			view->failure != CLASSIC_GUI_DOMAIN_FAILURE_NONE
+				? view->failure : CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	// The same immutable view pointer may legitimately appear in more than one
+	// RC_DRAW_VIEW command.  An earlier owned outcome must not suppress that
+	// later command's draw.  A recorded fallback remains classic for every
+	// occurrence; duplicate ownership reporting after commit is diagnostic.
+	if ( view->backendOutcome[ CLASSIC_GUI_DOMAIN_BACKEND_VULKAN ]
+			== CLASSIC_GUI_DOMAIN_BACKEND_FALLBACK ) {
+		return false;
+	}
+
+	if ( view->viewDef != viewDef
+			|| view->sourceSurfaceCount != viewDef->numDrawSurfs
+			|| view->sourceSurfaceCount < 0
+			|| view->sourceSurfaceCount > SCENE_PACKET_MAX_DRAWS
+			|| view->drawableSurfaceCount < 0
+			|| view->drawableSurfaceCount > view->sourceSurfaceCount
+			|| view->noopSurfaceCount
+				!= view->sourceSurfaceCount - view->drawableSurfaceCount
+			|| ( viewDef->numDrawSurfs > 0 && viewDef->drawSurfs == NULL ) ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_GUI_REJECT_DOMAIN_COUNTS );
+	}
+	if ( viewDef->viewEntitys != NULL || viewDef->viewLights != NULL
+			|| viewDef->renderWorld != NULL || viewDef->isSubview
+			|| viewDef->isMirror || viewDef->isXraySubview || viewDef->isEditor
+			|| viewDef->superView != NULL || viewDef->subviewSurface != NULL
+			|| viewDef->numClipPlanes != 0 || viewDef->renderFlags != 0
+			|| viewDef->numOutlineDrawSurfs != 0
+			|| viewDef->renderView.globalMaterial != NULL
+			|| r_showOverDraw.GetInteger() != 0
+			|| r_singleTriangle.GetBool() ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_GUI_REJECT_VIEW_MUTATION );
+	}
+	if ( vkExec.activeRenderTexture != NULL || vkExec.activeColorEntry != NULL
+			|| vkExec.activeDepthEntry != NULL || backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_GUI_REJECT_OFFSCREEN_TARGET );
+	}
+	if ( !vkExec.frameOpen || !vkExec.mainScopeOpen
+			|| vkExec.cmd == VK_NULL_HANDLE
+			|| vkExec.pendingSpecialEffectsView != NULL
+			|| vkExec.pendingSpecialEffectsMask != 0
+			|| vkExec.pendingSpecialEffectsSource != NULL
+			|| vkExec.pendingSpecialEffectsNeedsResolve
+			|| !VK_Exec_PipelineTargetsMatch( vkExec.activePipelineTarget,
+				VK_Exec_SwapchainPipelineTarget() ) ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_GUI_REJECT_RENDER_SCOPE );
+	}
+
+	const int framebufferWidth = VK_Exec_ActiveFramebufferWidth();
+	const int framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	const int viewportWidth = view->viewportX2 - view->viewportX1 + 1;
+	const int viewportHeight = view->viewportY2 - view->viewportY1 + 1;
+	if ( view->viewportX1 != viewDef->viewport.x1
+			|| view->viewportY1 != viewDef->viewport.y1
+			|| view->viewportX2 != viewDef->viewport.x2
+			|| view->viewportY2 != viewDef->viewport.y2
+			|| view->scissorX1 != viewDef->scissor.x1
+			|| view->scissorY1 != viewDef->scissor.y1
+			|| view->scissorX2 != viewDef->scissor.x2
+			|| view->scissorY2 != viewDef->scissor.y2
+			|| memcmp( view->projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view->projectionMatrix ) ) != 0
+			|| viewportWidth <= 0 || viewportHeight <= 0
+			|| view->viewportX1 < 0 || view->viewportY1 < 0
+			|| view->viewportX2 >= framebufferWidth
+			|| view->viewportY2 >= framebufferHeight
+			|| view->drawCount < 0
+			|| view->drawCount > CLASSIC_GUI_DOMAIN_MAX_DRAWS
+			|| view->evaluatedPassCount < 0
+			|| view->evaluatedPassCount
+				> CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_GUI_REJECT_VIEWPORT );
+	}
+	VkViewport viewport;
+	if ( !VK_BuildCanonicalViewport( viewport,
+			static_cast<float>( view->viewportX1 ),
+			static_cast<float>( view->viewportY1 ),
+			static_cast<float>( viewportWidth ),
+			static_cast<float>( viewportHeight ),
+			static_cast<float>( framebufferHeight ) ) ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_GUI_REJECT_VIEWPORT );
+	}
+	for ( int matrixIndex = 0; matrixIndex < 16; ++matrixIndex ) {
+		if ( !std::isfinite( view->projectionMatrix[ matrixIndex ] ) ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_VIEW_MUTATION );
+		}
+	}
+
+	int planDrawCount = 0;
+	int planPassCount = 0;
+	int drawablePasses = 0;
+	int activePasses = 0;
+	int noopPasses = 0;
+	int inactivePasses = 0;
+	int activeNoopPasses = 0;
+	int sourceNoopSurfaces = 0;
+	int previousSourceSurface = -1;
+	for ( int drawIndex = 0; drawIndex < view->drawCount; ++drawIndex ) {
+		const classicGuiDomainDraw_t *draw =
+			R_ClassicGuiDomain_ViewDraw( *view, drawIndex );
+		if ( draw == NULL || draw->sourceSurfaceIndex <= previousSourceSurface
+				|| draw->sourceSurfaceIndex < 0
+				|| draw->sourceSurfaceIndex >= view->sourceSurfaceCount
+				|| viewDef->drawSurfs[ draw->sourceSurfaceIndex ]
+					!= draw->legacyDrawSurf
+				) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_DRAW_RECORD );
+		}
+		previousSourceSurface = draw->sourceSurfaceIndex;
+		if ( draw->sourceSurface != CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_DRAWABLE ) {
+			if ( !VK_ClassicGui_SourceNoopValid( *draw ) ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_DRAW_RECORD );
+			}
+			sourceNoopSurfaces++;
+			continue;
+		}
+		if ( draw->legacyDrawSurf == NULL || !draw->packetBacked
+				|| draw->firstIndex != 0 || draw->vertexOffset != 0
+				|| draw->evaluatedPassCount < 0
+				|| planPassCount > CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES
+					- draw->evaluatedPassCount ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_DRAW_RECORD );
+		}
+
+		vkClassicGuiDrawPlan_t &drawPlan = vkClassicGuiDrawPlans[ planDrawCount++ ];
+		memset( &drawPlan, 0, sizeof( drawPlan ) );
+		drawPlan.draw = draw;
+		drawPlan.tri = draw->legacyDrawSurf->geo;
+		drawPlan.vertexOffset = -1;
+		drawPlan.indexOffset = -1;
+		drawPlan.firstPass = planPassCount;
+		drawPlan.passCount = draw->evaluatedPassCount;
+		const srfTriangles_t *tri = drawPlan.tri;
+		if ( tri == NULL || tri->ambientCache == NULL
+				|| tri->numVerts <= 0 || tri->numIndexes <= 0
+				|| tri->numIndexes % 3 != 0
+				|| tri->numVerts != draw->vertexCount
+				|| tri->numIndexes != draw->indexCount
+				|| draw->vertexCount > INT_MAX
+					/ static_cast<int>( sizeof( idDrawVert ) )
+				|| draw->indexCount > INT_MAX
+					/ static_cast<int>( sizeof( glIndex_t ) )
+				|| !draw->hasAmbientCache
+				|| draw->hasIndexCache != ( tri->indexCache != NULL )
+				|| ( tri->indexes == NULL && tri->indexCache == NULL )
+				|| draw->legacyDrawSurf->decalColorCache != NULL ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_GEOMETRY );
+		}
+		const long long scissorWidth = static_cast<long long>( draw->scissorX2 )
+			- draw->scissorX1 + 1;
+		const long long scissorHeight = static_cast<long long>( draw->scissorY2 )
+			- draw->scissorY1 + 1;
+		if ( scissorWidth <= 0 || scissorHeight <= 0
+				|| scissorWidth > INT_MAX || scissorHeight > INT_MAX ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_GEOMETRY );
+		}
+		if ( !VK_ClassicGui_BuildScissor( *view, *draw,
+				framebufferHeight, drawPlan.scissor ) ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_VIEWPORT );
+		}
+		float mvpGL[ 16 ];
+		myGlMultMatrix( draw->modelViewMatrix, view->projectionMatrix, mvpGL );
+		VK_FixupClipSpaceZ( drawPlan.mvp, mvpGL );
+		for ( int matrixIndex = 0; matrixIndex < 16; ++matrixIndex ) {
+			if ( !std::isfinite( drawPlan.mvp[ matrixIndex ] ) ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_DRAW_RECORD );
+			}
+		}
+
+		int drawDrawablePasses = 0;
+		int drawActivePasses = 0;
+		int drawInactivePasses = 0;
+		int drawActiveNoopPasses = 0;
+		for ( int passIndex = 0; passIndex < draw->evaluatedPassCount;
+				++passIndex ) {
+			const rendererEvaluatedMaterialPass_t *pass =
+				R_ClassicGuiDomain_DrawPass( *draw, passIndex );
+			const materialResourceTextureBinding_t *binding =
+				R_ClassicGuiDomain_DrawPassTexture( *draw, passIndex );
+			if ( pass == NULL || binding == NULL
+					|| pass->order != static_cast<std::uint32_t>( passIndex )
+					|| pass->sourceStageIndex < 0
+					|| pass->sourceStageIndex != binding->stageIndex
+					|| pass->textureResourceId != binding->textureResourceId
+					|| binding->image == NULL || binding->textureResourceId == 0
+					|| pass->active != ( pass->condition != 0.0f ) ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_PASS_RECORD );
+			}
+
+			vkClassicGuiPassPlan_t &passPlan =
+				vkClassicGuiPassPlans[ planPassCount++ ];
+			memset( &passPlan, 0, sizeof( passPlan ) );
+			passPlan.pass = pass;
+			if ( !VK_ClassicGui_MapState( *pass, passPlan ) ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_PASS_STATE );
+			}
+
+			switch ( pass->disposition ) {
+			case RENDERER_MATERIAL_PASS_DRAW:
+				if ( !pass->active ) {
+					return VK_ClassicGui_Fail( viewDef,
+						CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_GUI_REJECT_PASS_RECORD );
+				}
+				drawDrawablePasses++;
+				drawActivePasses++;
+				drawablePasses++;
+				activePasses++;
+				break;
+			case RENDERER_MATERIAL_PASS_INACTIVE_CONDITION:
+				if ( pass->active ) {
+					return VK_ClassicGui_Fail( viewDef,
+						CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_GUI_REJECT_PASS_RECORD );
+				}
+				drawInactivePasses++;
+				inactivePasses++;
+				noopPasses++;
+				break;
+			case RENDERER_MATERIAL_PASS_NOOP_ZERO_ONE_BLEND:
+			case RENDERER_MATERIAL_PASS_NOOP_BLACK_ADDITIVE:
+			case RENDERER_MATERIAL_PASS_NOOP_TRANSPARENT_ALPHA:
+				if ( !pass->active ) {
+					return VK_ClassicGui_Fail( viewDef,
+						CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_GUI_REJECT_PASS_RECORD );
+				}
+				drawActiveNoopPasses++;
+				drawActivePasses++;
+				activeNoopPasses++;
+				activePasses++;
+				noopPasses++;
+				break;
+			default:
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_PASS_RECORD );
+			}
+
+			// The opaque resource must resolve for every ordered pass, including
+			// inactive/no-op entries.  Only framebuffer-affecting passes spend
+			// descriptor and pipeline capacity.
+			const materialResourceTextureBinding_t *resolved =
+				R_MaterialResourceTable_ResolveTextureResource(
+					pass->textureResourceId );
+			if ( resolved != binding || resolved->image != binding->image
+					|| resolved->textureHandle != binding->textureHandle ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_TEXTURE_BINDING );
+			}
+			idImage *image = const_cast<idImage *>( binding->image );
+			const idImageOpts &imageOptions = image->GetOpts();
+			if ( !binding->loaded || binding->defaulted || binding->missing
+					|| binding->filter < TF_LINEAR
+					|| binding->filter > TF_DEFAULT
+					|| binding->repeat < TR_REPEAT
+					|| binding->repeat > TR_CLAMP_TO_ZERO_ALPHA
+					|| !image->IsLoaded() || image->IsDefaulted()
+					|| image->GetDeviceHandle() != binding->textureHandle
+					|| binding->textureHandle == 0
+					|| binding->textureHandle
+						>= static_cast<unsigned int>(
+							sizeof( vkExec.descriptorCache )
+							/ sizeof( vkExec.descriptorCache[ 0 ] ) )
+					|| imageOptions.textureType != TT_2D
+					|| imageOptions.width <= 0 || imageOptions.height <= 0 ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_TEXTURE_RESIDENCY );
+			}
+			if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				continue;
+			}
+
+			if ( image->GetFilter() != binding->filter
+					|| image->GetRepeat() != binding->repeat ) {
+				image->SetSamplerState( binding->filter, binding->repeat );
+			}
+			const vkImageEntry_t *imageEntry =
+				VK_Image_GetEntry( binding->textureHandle );
+			if ( imageEntry == NULL || imageEntry->isCube
+					|| imageEntry->view == VK_NULL_HANDLE
+					|| imageEntry->sampler == VK_NULL_HANDLE
+					|| imageEntry->layout
+						!= VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_TEXTURE_RESIDENCY );
+			}
+			passPlan.descriptor = VK_GuiExecutor_GetImageDescriptor(
+				binding->textureHandle );
+			if ( passPlan.descriptor == VK_NULL_HANDLE ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_DESCRIPTOR );
+			}
+			passPlan.pipeline =
+				VK_GuiExecutor_GetPipelineStrict( passPlan.stateBits );
+			if ( passPlan.pipeline == VK_NULL_HANDLE ) {
+				return VK_ClassicGui_Fail( viewDef,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_GUI_REJECT_PIPELINE );
+			}
+		}
+		if ( drawActivePasses != draw->activePassCount
+				|| drawDrawablePasses != draw->drawablePassCount
+				|| drawInactivePasses != draw->inactivePassCount
+				|| drawActiveNoopPasses != draw->activeNoopPassCount
+				|| drawInactivePasses + drawActiveNoopPasses
+					!= draw->noopPassCount ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_GUI_REJECT_COVERAGE );
+		}
+	}
+
+	if ( planDrawCount != view->drawableSurfaceCount
+			|| sourceNoopSurfaces != view->noopSurfaceCount
+			|| planPassCount != view->evaluatedPassCount
+			|| activePasses != view->activePassCount
+			|| drawablePasses != view->drawablePassCount
+			|| inactivePasses != view->inactivePassCount
+			|| activeNoopPasses != view->activeNoopPassCount
+			|| noopPasses != view->noopPassCount ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_GUI_REJECT_DOMAIN_COUNTS );
+	}
+
+	// Geometry upload is the final preflight phase.  It emits only non-visible
+	// bind commands and leaves memoized offsets reusable by the classic walker
+	// if any later upload in this phase rejects the view.
+	VkCommandBuffer cmd = vkExec.cmd;
+	const int slot = vkExec.frameSlot;
+	for ( int drawIndex = 0; drawIndex < planDrawCount; ++drawIndex ) {
+		vkClassicGuiDrawPlan_t &drawPlan = vkClassicGuiDrawPlans[ drawIndex ];
+		if ( !VK_ClassicGui_PrepareGeometry( cmd, slot, drawPlan.tri,
+				drawPlan.vertexOffset, drawPlan.indexOffset ) ) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_GEOMETRY );
+		}
+	}
+
+	// Commit: every command below is infallible command-buffer recording over
+	// prevalidated handles and offsets.  Preserve source-surface/pass order.
+	vkCmdSetViewport( cmd, 0, 1, &viewport );
+	vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+	vkCmdSetFrontFace( cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	int submittedPasses = 0;
+	int submittedNoops = 0;
+	for ( int drawIndex = 0; drawIndex < planDrawCount; ++drawIndex ) {
+		const vkClassicGuiDrawPlan_t &drawPlan =
+			vkClassicGuiDrawPlans[ drawIndex ];
+		VK_ClassicGui_BindPreparedGeometry( cmd, slot, drawPlan );
+		vkCmdSetScissor( cmd, 0, 1, &drawPlan.scissor );
+		for ( int localPass = 0; localPass < drawPlan.passCount; ++localPass ) {
+			const vkClassicGuiPassPlan_t &passPlan =
+				vkClassicGuiPassPlans[ drawPlan.firstPass + localPass ];
+			const rendererEvaluatedMaterialPass_t &pass = *passPlan.pass;
+			if ( pass.disposition != RENDERER_MATERIAL_PASS_DRAW ) {
+				submittedNoops++;
+				continue;
+			}
+
+			vkCmdSetDepthTestEnable( cmd,
+				pass.depth.testEnabled ? VK_TRUE : VK_FALSE );
+			vkCmdSetDepthWriteEnable( cmd,
+				pass.depth.writeEnabled ? VK_TRUE : VK_FALSE );
+			vkCmdSetDepthCompareOp( cmd, passPlan.depthCompare );
+			vkCmdSetCullMode( cmd, passPlan.cullMode );
+			vkCmdSetDepthBiasEnable( cmd,
+				pass.polygonOffsetEnabled ? VK_TRUE : VK_FALSE );
+			if ( pass.polygonOffsetEnabled ) {
+				vkCmdSetDepthBias( cmd, pass.polygonOffsetUnits, 0.0f,
+					pass.polygonOffsetFactor );
+			}
+
+			vkGuiPushConstants_t push;
+			memset( &push, 0, sizeof( push ) );
+			memcpy( push.mvp, drawPlan.mvp, sizeof( push.mvp ) );
+			memcpy( push.stageColor, pass.color, sizeof( push.stageColor ) );
+			VK_ClassicGui_SetPushTextureMatrix( pass, push );
+			switch ( pass.vertexColor ) {
+			case RENDERER_VERTEX_COLOR_MODULATE: push.params[ 0 ] = 1.0f; break;
+			case RENDERER_VERTEX_COLOR_INVERSE_MODULATE: push.params[ 0 ] = 2.0f; break;
+			default: push.params[ 0 ] = 0.0f; break;
+			}
+			push.params[ 1 ] = passPlan.alphaTestMode;
+			push.params[ 2 ] = pass.alphaTest;
+
+			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				passPlan.pipeline );
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				vkExec.pipelineLayout, 0, 1, &passPlan.descriptor, 0, NULL );
+			vkCmdPushConstants( cmd, vkExec.pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, sizeof( push ), &push );
+			vkCmdDrawIndexed( cmd,
+				static_cast<std::uint32_t>( drawPlan.draw->indexCount ),
+				1, static_cast<std::uint32_t>( drawPlan.draw->firstIndex ),
+				drawPlan.draw->vertexOffset, 0 );
+			submittedPasses++;
+		}
+	}
+	vkCmdSetDepthTestEnable( cmd, VK_FALSE );
+	vkCmdSetDepthWriteEnable( cmd, VK_FALSE );
+	vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_ALWAYS );
+	vkCmdSetCullMode( cmd, VK_CULL_MODE_NONE );
+	vkCmdSetFrontFace( cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+
+	const bool coverageRecorded = R_ClassicGuiDomain_RecordOwned( viewDef,
+		CLASSIC_GUI_DOMAIN_BACKEND_VULKAN,
+		submittedPasses, submittedNoops );
+	if ( !coverageRecorded ) {
+		// The framebuffer work is already committed.  Never compound a
+		// bookkeeping fault by replaying the complete classic view over it.
+		common->Warning( "Vulkan: shared classic GUI coverage record rejected after committed view" );
+	}
+	return true;
+}
+
+/*
 ====================
 VK_GuiExecutor_Draw2DView
 
@@ -6995,13 +7859,34 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 	backEnd.currentRenderCopied = false;
 	backEnd.currentDepthCopied = false;
 	if ( viewDef->numDrawSurfs <= 0 ) {
+		if ( r_rendererSharedGui.GetBool() ) {
+			if ( !VK_GuiExecutor_BeginFrame() ) {
+				R_ClassicGuiDomain_RecordBackendFallback( viewDef,
+					CLASSIC_GUI_DOMAIN_BACKEND_VULKAN,
+					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+					VK_CLASSIC_GUI_REJECT_RENDER_SCOPE );
+				return;
+			}
+			backEnd.viewDef = const_cast<viewDef_t *>( viewDef );
+			(void)VK_ClassicGui_DrawOwnedView( viewDef );
+		}
 		return;
 	}
 	if ( !VK_GuiExecutor_BeginFrame() ) {
+		if ( r_rendererSharedGui.GetBool() ) {
+			R_ClassicGuiDomain_RecordBackendFallback( viewDef,
+				CLASSIC_GUI_DOMAIN_BACKEND_VULKAN,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+				VK_CLASSIC_GUI_REJECT_RENDER_SCOPE );
+		}
 		return;
 	}
 
 	backEnd.viewDef = (viewDef_t *)viewDef;
+	if ( r_rendererSharedGui.GetBool()
+			&& VK_ClassicGui_DrawOwnedView( viewDef ) ) {
+		return;
+	}
 
 	VkCommandBuffer cmd = vkExec.cmd;
 	const int slot = vkExec.frameSlot;

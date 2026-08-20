@@ -72,6 +72,7 @@ rendererMaterialPass_t RendererContracts_DefaultMaterialPass( void ) {
 	pass.depth.compareOperation = RENDERER_COMPARE_LESS_OR_EQUAL;
 	pass.cull = RENDERER_CULL_BACK;
 	pass.colorWriteMask = RENDERER_COLOR_WRITE_RGBA;
+	pass.alphaTestCompareOperation = RENDERER_COMPARE_GREATER;
 	pass.alphaTest = RendererContracts_Constant( 0.5f );
 	pass.texgen = RENDERER_TEXGEN_EXPLICIT;
 	pass.vertexColor = RENDERER_VERTEX_COLOR_IGNORE;
@@ -92,19 +93,21 @@ bool RendererContracts_ValidateMaterialPass( const rendererMaterialPass_t &pass 
 			|| pass.textureSemantic < RENDERER_TEXTURE_NONE
 			|| pass.textureSemantic > RENDERER_TEXTURE_CUSTOM
 			|| pass.blend.sourceColor < RENDERER_BLEND_ZERO
-			|| pass.blend.sourceColor > RENDERER_BLEND_ONE_MINUS_DST_ALPHA
+			|| pass.blend.sourceColor > RENDERER_BLEND_SRC_ALPHA_SATURATE
 			|| pass.blend.destinationColor < RENDERER_BLEND_ZERO
-			|| pass.blend.destinationColor > RENDERER_BLEND_ONE_MINUS_DST_ALPHA
+			|| pass.blend.destinationColor > RENDERER_BLEND_SRC_ALPHA_SATURATE
 			|| pass.blend.sourceAlpha < RENDERER_BLEND_ZERO
-			|| pass.blend.sourceAlpha > RENDERER_BLEND_ONE_MINUS_DST_ALPHA
+			|| pass.blend.sourceAlpha > RENDERER_BLEND_SRC_ALPHA_SATURATE
 			|| pass.blend.destinationAlpha < RENDERER_BLEND_ZERO
-			|| pass.blend.destinationAlpha > RENDERER_BLEND_ONE_MINUS_DST_ALPHA
+			|| pass.blend.destinationAlpha > RENDERER_BLEND_SRC_ALPHA_SATURATE
 			|| pass.blend.colorOperation < RENDERER_BLEND_OP_ADD
 			|| pass.blend.colorOperation > RENDERER_BLEND_OP_MAX
 			|| pass.blend.alphaOperation < RENDERER_BLEND_OP_ADD
 			|| pass.blend.alphaOperation > RENDERER_BLEND_OP_MAX
 			|| pass.depth.compareOperation < RENDERER_COMPARE_NEVER
 			|| pass.depth.compareOperation > RENDERER_COMPARE_ALWAYS
+			|| pass.alphaTestCompareOperation < RENDERER_COMPARE_NEVER
+			|| pass.alphaTestCompareOperation > RENDERER_COMPARE_ALWAYS
 			|| pass.cull < RENDERER_CULL_NONE || pass.cull > RENDERER_CULL_BACK
 			|| ( pass.colorWriteMask & ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RGBA ) ) != 0
 			|| pass.texgen < RENDERER_TEXGEN_EXPLICIT || pass.texgen > RENDERER_TEXGEN_GLASS_WARP
@@ -146,6 +149,197 @@ bool RendererContracts_AppendMaterialPass( rendererMaterialPassList_t &list,
 	list.passes[ list.count ].order = list.count;
 	list.count++;
 	return true;
+}
+
+static_assert( sizeof( rendererEvaluatedMaterialPass_t ) < sizeof( rendererMaterialPass_t ),
+	"evaluated material passes must remain smaller than register-reference records" );
+
+void RendererContracts_ResetEvaluatedMaterialPassList(
+		rendererEvaluatedMaterialPassList_t &list ) {
+	std::memset( &list, 0, sizeof( list ) );
+}
+
+static bool RendererContracts_RegisterRefHasNonFiniteConstant(
+		const rendererRegisterRef_t &reference ) {
+	return reference.source == RENDERER_REGISTER_CONSTANT
+		&& !std::isfinite( reference.constantValue );
+}
+
+static bool RendererContracts_MaterialPassHasNonFiniteConstant(
+		const rendererMaterialPass_t &pass ) {
+	if ( RendererContracts_RegisterRefHasNonFiniteConstant( pass.condition )
+			|| RendererContracts_RegisterRefHasNonFiniteConstant( pass.alphaTest )
+			|| RendererContracts_RegisterRefHasNonFiniteConstant( pass.polygonOffsetFactor )
+			|| RendererContracts_RegisterRefHasNonFiniteConstant( pass.polygonOffsetUnits ) ) {
+		return true;
+	}
+	for ( int i = 0; i < 4; ++i ) {
+		if ( RendererContracts_RegisterRefHasNonFiniteConstant( pass.color[ i ] ) ) {
+			return true;
+		}
+	}
+	for ( int i = 0; i < 6; ++i ) {
+		if ( RendererContracts_RegisterRefHasNonFiniteConstant( pass.textureMatrix[ i ] ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static rendererMaterialPassEvaluationStatus_t RendererContracts_ResolveRegisterRef(
+		float &destination, const rendererRegisterRef_t &reference,
+		const float *registers, std::uint32_t registerCount, float unusedValue ) {
+	switch ( reference.source ) {
+	case RENDERER_REGISTER_UNUSED:
+		destination = unusedValue;
+		return RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS;
+	case RENDERER_REGISTER_CONSTANT:
+		if ( !std::isfinite( reference.constantValue ) ) {
+			return RENDERER_MATERIAL_PASS_EVALUATION_NONFINITE_VALUE;
+		}
+		destination = reference.constantValue;
+		return RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS;
+	case RENDERER_REGISTER_INDEX:
+		if ( reference.index < 0 ) {
+			return RENDERER_MATERIAL_PASS_EVALUATION_INVALID_PASS;
+		}
+		if ( registers == NULL || registerCount == 0 ) {
+			return RENDERER_MATERIAL_PASS_EVALUATION_REGISTERS_UNAVAILABLE;
+		}
+		if ( static_cast<std::uint32_t>( reference.index ) >= registerCount ) {
+			return RENDERER_MATERIAL_PASS_EVALUATION_REGISTER_OUT_OF_RANGE;
+		}
+		destination = registers[ reference.index ];
+		if ( !std::isfinite( destination ) ) {
+			return RENDERER_MATERIAL_PASS_EVALUATION_NONFINITE_VALUE;
+		}
+		return RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS;
+	default:
+		return RENDERER_MATERIAL_PASS_EVALUATION_INVALID_PASS;
+	}
+}
+
+static rendererMaterialPassEvaluationStatus_t RendererContracts_EvaluateMaterialPass(
+		rendererEvaluatedMaterialPass_t &destination,
+		const rendererMaterialPass_t &source,
+		const float *registers, std::uint32_t registerCount ) {
+	if ( RendererContracts_MaterialPassHasNonFiniteConstant( source ) ) {
+		return RENDERER_MATERIAL_PASS_EVALUATION_NONFINITE_VALUE;
+	}
+	if ( !RendererContracts_ValidateMaterialPass( source ) ) {
+		return RENDERER_MATERIAL_PASS_EVALUATION_INVALID_PASS;
+	}
+
+	rendererEvaluatedMaterialPass_t evaluated;
+	std::memset( &evaluated, 0, sizeof( evaluated ) );
+	evaluated.order = source.order;
+	evaluated.sourceStageIndex = source.sourceStageIndex;
+	evaluated.kind = source.kind;
+	evaluated.textureSemantic = source.textureSemantic;
+	evaluated.textureResourceId = source.textureResourceId;
+	evaluated.blend = source.blend;
+	evaluated.depth = source.depth;
+	evaluated.cull = source.cull;
+	evaluated.colorWriteMask = source.colorWriteMask;
+	evaluated.alphaTestEnabled = source.alphaTestEnabled;
+	evaluated.alphaTestCompareOperation = source.alphaTestCompareOperation;
+	evaluated.texgen = source.texgen;
+	evaluated.vertexColor = source.vertexColor;
+	evaluated.polygonOffsetEnabled = source.polygonOffsetEnabled;
+	evaluated.programFamily = source.programFamily;
+	evaluated.programKey = source.programKey;
+
+	rendererMaterialPassEvaluationStatus_t status = RendererContracts_ResolveRegisterRef(
+		evaluated.condition, source.condition, registers, registerCount, 1.0f );
+	if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+		return status;
+	}
+	for ( int i = 0; i < 4; ++i ) {
+		status = RendererContracts_ResolveRegisterRef(
+			evaluated.color[ i ], source.color[ i ], registers, registerCount, 1.0f );
+		if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+			return status;
+		}
+	}
+	static const float unusedTextureMatrix[ 6 ] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
+	for ( int i = 0; i < 6; ++i ) {
+		status = RendererContracts_ResolveRegisterRef(
+			evaluated.textureMatrix[ i ], source.textureMatrix[ i ], registers,
+			registerCount, unusedTextureMatrix[ i ] );
+		if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+			return status;
+		}
+	}
+	status = RendererContracts_ResolveRegisterRef(
+		evaluated.alphaTest, source.alphaTest, registers, registerCount, 0.5f );
+	if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+		return status;
+	}
+	status = RendererContracts_ResolveRegisterRef(
+		evaluated.polygonOffsetFactor, source.polygonOffsetFactor,
+		registers, registerCount, 0.0f );
+	if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+		return status;
+	}
+	status = RendererContracts_ResolveRegisterRef(
+		evaluated.polygonOffsetUnits, source.polygonOffsetUnits,
+		registers, registerCount, 0.0f );
+	if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+		return status;
+	}
+
+	evaluated.active = evaluated.condition != 0.0f;
+	if ( !evaluated.active ) {
+		evaluated.disposition = RENDERER_MATERIAL_PASS_INACTIVE_CONDITION;
+	} else if ( evaluated.blend.enabled
+			&& evaluated.blend.sourceColor == RENDERER_BLEND_ZERO
+			&& evaluated.blend.destinationColor == RENDERER_BLEND_ONE ) {
+		evaluated.disposition = RENDERER_MATERIAL_PASS_NOOP_ZERO_ONE_BLEND;
+	} else if ( evaluated.blend.enabled
+			&& evaluated.blend.sourceColor == RENDERER_BLEND_ONE
+			&& evaluated.blend.destinationColor == RENDERER_BLEND_ONE
+			&& evaluated.color[ 0 ] <= 0.0f
+			&& evaluated.color[ 1 ] <= 0.0f
+			&& evaluated.color[ 2 ] <= 0.0f ) {
+		evaluated.disposition = RENDERER_MATERIAL_PASS_NOOP_BLACK_ADDITIVE;
+	} else if ( evaluated.blend.enabled
+			&& evaluated.blend.sourceColor == RENDERER_BLEND_SRC_ALPHA
+			&& evaluated.blend.destinationColor == RENDERER_BLEND_ONE_MINUS_SRC_ALPHA
+			&& evaluated.color[ 3 ] <= 0.0f ) {
+		evaluated.disposition = RENDERER_MATERIAL_PASS_NOOP_TRANSPARENT_ALPHA;
+	} else {
+		evaluated.disposition = RENDERER_MATERIAL_PASS_DRAW;
+	}
+	destination = evaluated;
+	return RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS;
+}
+
+rendererMaterialPassEvaluationStatus_t RendererContracts_EvaluateMaterialPassList(
+		rendererEvaluatedMaterialPassList_t &destination,
+		const rendererMaterialPassList_t &source,
+		const float *registers, std::uint32_t registerCount ) {
+	RendererContracts_ResetEvaluatedMaterialPassList( destination );
+	if ( source.overflowed || source.count > RENDERER_CONTRACT_MAX_MATERIAL_PASSES ) {
+		return RENDERER_MATERIAL_PASS_EVALUATION_SOURCE_OVERFLOW;
+	}
+	if ( registers == NULL && registerCount != 0 ) {
+		return RENDERER_MATERIAL_PASS_EVALUATION_REGISTERS_UNAVAILABLE;
+	}
+
+	for ( std::uint32_t i = 0; i < source.count; ++i ) {
+		const rendererMaterialPassEvaluationStatus_t status =
+			RendererContracts_EvaluateMaterialPass(
+				destination.passes[ i ], source.passes[ i ], registers, registerCount );
+		if ( status != RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS ) {
+			RendererContracts_ResetEvaluatedMaterialPassList( destination );
+			return status;
+		}
+		destination.count++;
+		if ( destination.passes[ i ].active ) {
+			destination.activeCount++;
+		}
+	}
+	return RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS;
 }
 
 rendererClipSpaceConvention_t RendererContracts_GLClipSpace( void ) {

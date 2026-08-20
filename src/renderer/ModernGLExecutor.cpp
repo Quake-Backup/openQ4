@@ -210,7 +210,12 @@ static const char *R_ModernGLExecutor_FrameModeName( int mode ) {
 }
 
 static bool R_ModernGLExecutor_ModernVisibleRequested( void ) {
-	return r_rendererModernVisible.GetBool() || RendererBootstrap_ShouldAutoPromoteModernVisible();
+	// These diagnostics intentionally remove the 3D backend work while retaining
+	// classic 2D drawing.  Never let the side pipeline recreate or later compose
+	// a world frame over that GUI, including when shared GUI ownership is enabled.
+	return !r_skipRender.GetBool() && !r_skipRenderContext.GetBool()
+		&& ( r_rendererModernVisible.GetBool()
+			|| RendererBootstrap_ShouldAutoPromoteModernVisible() );
 }
 
 bool R_ModernGLExecutor_ModernVisibleRequestedForPost( void ) {
@@ -6182,6 +6187,10 @@ static void R_ModernGLExecutor_SubmitPlan( modernGLExecutorStats_t &stats ) {
 		if ( command.pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GBUFFER || R_ModernGLExecutor_IsForwardPlusPipeline( command.pipeline ) ) {
 			continue;
 		}
+		if ( r_rendererSharedGui.GetBool()
+				&& command.pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GUI ) {
+			continue;
+		}
 		if ( !R_ModernGLExecutor_CommandVisibleForModernPath( command, &stats, false ) ) {
 			continue;
 		}
@@ -6196,7 +6205,12 @@ static void R_ModernGLExecutor_SubmitPlan( modernGLExecutorStats_t &stats ) {
 }
 
 static void R_ModernGLExecutor_SubmitModernGui( modernGLExecutorStats_t &stats ) {
-	if ( !stats.modernVisibleRequested || stats.modernVisibleGuiReadyDraws <= 0 || !stats.submitPlanReady || rg_modernGLExecutorVAO == 0 ) {
+	// The shared classic-GUI domain executes at the source RC_DRAW_VIEW handoff.
+	// Never replay the older aggregate GUI commands as well: they flatten stage
+	// ordering and would double-submit a view that the shared owner consumed.
+	if ( r_rendererSharedGui.GetBool()
+			|| !stats.modernVisibleRequested || stats.modernVisibleGuiReadyDraws <= 0
+			|| !stats.submitPlanReady || rg_modernGLExecutorVAO == 0 ) {
 		return;
 	}
 
@@ -8018,7 +8032,8 @@ static bool R_ModernGLExecutor_ComposeVisibleSceneToTarget(
 	bool useGpuTimer,
 	const char *status ) {
 	modernGLExecutorStats_t &stats = rg_modernGLExecutorStats;
-	if ( !stats.modernVisibleRequested ) {
+	if ( !stats.modernVisibleRequested
+			|| !R_ModernGLExecutor_ModernVisibleRequested() ) {
 		return false;
 	}
 

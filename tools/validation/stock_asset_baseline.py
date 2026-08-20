@@ -619,6 +619,7 @@ def write_cfg(savepath: Path, relative: str, lines: list[str]) -> None:
 def display_cfg_lines(width: int, height: int) -> list[str]:
     """Reassert the measured display contract after any game-module reload."""
     return [
+        "r_rendererSharedGui 0",
         "r_fullscreen 0",
         "r_borderless 0",
         "r_borderlessDefaultMigrated 1",
@@ -660,6 +661,7 @@ def common_args(
     add_set(args, "r_customHeight", height)
     add_set(args, "r_swapInterval", 0)
     add_set(args, "r_renderApi", "gl")
+    add_set(args, "r_rendererSharedGui", 0)
     add_set(args, "r_rendererBenchmarkPreset", "baseline")
     add_set(args, "r_rendererMetrics", 0)
     add_set(args, "r_rendererGpuTimers", 1)
@@ -1979,6 +1981,7 @@ def verify_recorded_files(
         if plan.get("windowed") is not True or plan.get("captureMethod") != "engine screenshot command":
             failures.append(f"{role}: plan safety/capture contract differs")
         launch_contract = {
+            "r_rendererSharedGui": "0",
             "r_fullscreen": "0",
             "r_borderless": "0",
             "r_borderlessDefaultMigrated": "1",
@@ -2033,6 +2036,7 @@ def verify_recorded_files(
                 "r_windowWidth",
                 "r_windowHeight",
                 "r_renderApi",
+                "r_rendererSharedGui",
                 "fs_basepath",
                 "fs_savepath",
                 "fs_devpath",

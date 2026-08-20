@@ -41,7 +41,7 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, material resource table, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI domain, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
 | `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
@@ -77,6 +77,14 @@ Automated coverage:
 The forced tier cases pass when startup succeeds and the selected tier is reported. If a machine cannot support the forced tier, the log must show the selected fallback tier and `Renderer tier contract:` must report `degraded=1`, `failClosed=1`, and a concise `missing=` reason.
 
 Automated safe cases also fail if their logs contain renderer warning signatures such as `idStr::snPrintf` overflow, `WARNING: idStr`, shader compile/program link failures, or OpenGL error markers. The generated Markdown/JSON report records per-case warning-signature counts so the Phase 8 `warnings=0` promotion token cannot be inferred from expected-line checks alone.
+
+The foundation case runs the dependency-light classic-GUI contract self-test. The
+separate `tools/tests/renderer_classic_gui_domain.py` static regression check
+guards packet-derived material admission, ordered evaluation, opaque resource
+ids, GL/Vulkan whole-view handoff ordering, source no-op accounting, and
+suppression of the older aggregate GL GUI replay. Enabled-path image evidence is
+the supervised GL/Vulkan capture pair below; there is no standalone automated
+`renderer-classic-gui-domain` runtime case.
 
 The visible-depth, G-buffer, clustered-light, deferred-resolve, forward+, modern-visible, modern-compatibility, compatibility-gates, default-promotion, default-safety, benchmark, GPU-driven, low-overhead, and shader-library tier self-tests intentionally run as their own safe cases instead of being appended to the foundation self-test startup command, because the engine command parser has a fixed startup command list budget.
 
@@ -140,6 +148,8 @@ These image captures are the comparison set for scenes where deterministic outpu
 | Case | Mode | Scene | Purpose |
 |---|---|---|---|
 | `capture-startup-mainmenu` | SP | main menu after logo skip | deterministic GUI composition, font/material atlas, and widescreen expansion |
+| `capture-shared-gui-mainmenu` | SP | same static main-menu view with `r_rendererSharedGui 0` then `1`, separately on GL and Vulkan | engine-TGA equivalence, identical stable domain coverage/hash for the same authored view, backend-owned count, and zero mixed/dropped pass accounting |
+| `capture-shared-gui-rollback` | SP | loading/logo/camera-preview view containing a cinematic, dynamic, current-render, or otherwise unsupported stage | one explicit whole-view fallback, zero shared draws for that view, and classic screenshot equivalence |
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |

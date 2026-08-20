@@ -34,6 +34,8 @@
 #include "../ModernLightImageAtlas.h"
 #include "../RenderGraphResources.h"
 #include "../RendererMetrics.h"
+#include "../MaterialResourceTable.h"
+#include "../ClassicGuiDomain.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
 
@@ -45,6 +47,10 @@ bool R_GetInitialWindowSize( bool fullScreen, int *width, int *height );
 
 static const renderWindowServices_t *vkBackendServices = NULL;
 static float vkClearColor[ 4 ] = { 0.0f, 0.0f, 0.0f, 1.0f };
+// The Vulkan backend does not otherwise build the GL render graph.  Keep one
+// backend-owned packet frame for the shared classic-GUI domain when front-end
+// capture was not requested for metrics.
+static idScenePacketFrame vkClassicGuiPacketFrame;
 
 // vk_GuiExecutor.cpp
 void VK_GuiExecutor_SetClearColor( const float color[ 4 ] );
@@ -368,6 +374,19 @@ views arrive with Phase E; RC_SWAP_BUFFERS closes and presents the frame.
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	if ( !glConfig.isInitialized ) {
 		return;
+	}
+
+	R_ClassicGuiDomain_ResetFrame();
+	if ( r_rendererSharedGui.GetBool() ) {
+		const idScenePacketFrame *scenePackets = NULL;
+		if ( R_ScenePackets_FrontEndFrameAvailable() ) {
+			scenePackets = &R_ScenePackets_FrontEndFrame();
+		} else {
+			R_ScenePackets_BuildLegacyCommandStream( cmds, vkClassicGuiPacketFrame );
+			scenePackets = &vkClassicGuiPacketFrame;
+		}
+		R_MaterialResourceTable_PrepareFrame( *scenePackets );
+		R_ClassicGuiDomain_PrepareFrame( *scenePackets );
 	}
 
 	backEnd.renderTexture = NULL;

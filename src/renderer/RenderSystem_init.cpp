@@ -43,6 +43,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraph.h"
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
+#include "ClassicGuiDomain.h"
 #include "GeometryResources.h"
 #include "ScenePackets.h"
 #include "ModernClusteredLighting.h"
@@ -478,6 +479,7 @@ idCVar r_rendererGpuValidation( "r_rendererGpuValidation", "0", CVAR_RENDERER | 
 idCVar r_rendererGpuValidationReadbackDelay( "r_rendererGpuValidationReadbackDelay", "2", CVAR_RENDERER | CVAR_INTEGER, "frames to defer opt-in GL 4.3 GPU validation readbacks before polling without a sync wait", 1, 8, idCmdSystem::ArgCompletion_Integer<1,8> );
 idCVar r_rendererBindless( "r_rendererBindless", "0", CVAR_RENDERER | CVAR_BOOL, "enable experimental GL 4.5 bindless texture diagnostics without changing visible output" );
 idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | CVAR_BOOL, "execute the opt-in modern hybrid visible-frame composition when all required pass owners are modern-safe" );
+idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
@@ -811,6 +813,15 @@ static void R_RendererMaterialResourceTableSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererMaterialResourceTable_RunSelfTest() ) {
 		common->Warning( "Renderer material resource-table self-test failed" );
+	}
+}
+
+static void R_RendererClassicGuiDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicGuiDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicGuiDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicGuiDomain self-test failed" );
 	}
 }
 
@@ -3745,6 +3756,30 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		RENDER_GRAPH_MAX_RESOURCE_ACCESSES );
 	R_RenderGraphResources_PrintGfxInfo();
 	R_MaterialResourceTable_PrintGfxInfo();
+	{
+		const classicGuiDomainStats_t &guiDomain = R_ClassicGuiDomain_Stats();
+		common->Printf(
+			"Renderer shared classic GUI: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d passes=%d draw=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			r_rendererSharedGui.GetBool() ? 1 : 0,
+			guiDomain.prepared ? 1 : 0,
+			guiDomain.frameValid ? 1 : 0,
+			guiDomain.guiViews,
+			guiDomain.readyViews,
+			guiDomain.fallbackViews,
+			guiDomain.drawableSurfaces,
+			guiDomain.sourceSurfaces,
+			guiDomain.noopSurfaces,
+			guiDomain.evaluatedPasses,
+			guiDomain.drawablePasses,
+			guiDomain.inactivePasses,
+			guiDomain.activeNoopPasses,
+			static_cast<unsigned long long>( guiDomain.hash ),
+			guiDomain.status,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_GL].ownedViews,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_GL].fallbackViews,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_VULKAN].ownedViews,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_VULKAN].fallbackViews );
+	}
 	common->Printf(
 		"PBR materials: parser=1 modernLighting=0 enabled=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
 		r_pbrMaterials.GetBool() ? 1 : 0,
@@ -3888,6 +3923,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	globalImages->PurgeAllImages();
 	R_ShutdownFrameData();
 	R_RendererMetrics_ShutdownGpuTimers();
+	R_ClassicGuiDomain_ResetFrame();
 	R_MaterialResourceTable_Shutdown();
 	R_RenderGraphResources_Shutdown();
 	R_ModernGLExecutor_Shutdown();
@@ -4146,6 +4182,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererRenderGraphResourceSelfTest", R_RendererRenderGraphResourceSelfTest_f, CMD_FL_RENDERER, "run renderer graph resource owner self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceDump", R_RendererRenderGraphResourceDump_f, CMD_FL_RENDERER, "dump the latest renderer graph resource handles" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableSelfTest", R_RendererMaterialResourceTableSelfTest_f, CMD_FL_RENDERER, "run renderer material resource-table self tests" );
+	cmdSystem->AddCommand( "rendererClassicGuiDomainSelfTest", R_RendererClassicGuiDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic GUI whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
 	cmdSystem->AddCommand( "rendererGeometryResourceSelfTest", R_RendererGeometryResourceSelfTest_f, CMD_FL_RENDERER, "run renderer geometry and instance packet self tests" );
@@ -4441,6 +4478,14 @@ void idRenderSystemLocal::InitOpenGL( void ) {
 		if ( !VK_InitRenderDevice() ) {
 			common->FatalError( "Vulkan renderer device initialization failed" );
 		}
+		// The Vulkan module does not run the OpenGL tier/bootstrap tail that
+		// normally initializes shared scene resources.  The classic-GUI domain
+		// only needs the backend-neutral scene-packet/material contract, so make
+		// that one conservative feature explicit without advertising any GL
+		// modern-visible capability.
+		renderFeatureSet_t vkSharedFeatures = glConfig.renderFeatures;
+		vkSharedFeatures.scenePackets = true;
+		R_MaterialResourceTable_Init( glConfig.backendCaps, vkSharedFeatures );
 		R_GpuSkinning_ContractInit( glConfig.backendCaps );
 		// mirror the R_InitOpenGL tail the seam skips: the front-end needs
 		// the vertex cache, a resolved back end, frame data, and gamma
@@ -4488,9 +4533,11 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	// free the context and close the window
 	R_ShutdownFrameData();
 	R_GpuSkinning_ContractShutdown();
+	R_ClassicGuiDomain_ResetFrame();
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan backend seam (Phase C): the GL executor/upload/graph/debug
 	// subsystems never initialized; device + window teardown is GLimp_Shutdown
+	R_MaterialResourceTable_Shutdown();
 	GLimp_Shutdown();
 #else
 	R_RendererMetrics_ShutdownGpuTimers();

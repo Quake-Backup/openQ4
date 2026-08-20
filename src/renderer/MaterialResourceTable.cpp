@@ -11,6 +11,9 @@ const int MATERIAL_RESOURCE_TABLE_HASH_SIZE = MATERIAL_RESOURCE_TABLE_MAX_RECORD
 
 typedef struct materialResourceTableState_s {
 	materialResourceTableRecord_t	records[MATERIAL_RESOURCE_TABLE_MAX_RECORDS];
+	rendererMaterialPass_t			guiPasses[MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES];
+	int								guiPassCount;
+	unsigned int					tableGeneration;
 	materialResourceTableStats_t		stats;
 	renderBackendCaps_t				caps;
 	renderFeatureSet_t				features;
@@ -21,6 +24,18 @@ typedef struct materialResourceTableState_s {
 } materialResourceTableState_t;
 
 static materialResourceTableState_t rg_materialResourceTable;
+
+static std::uint64_t R_MaterialResourceTable_MakeTextureResourceId(
+		int recordIndex, int bindingIndex ) {
+	if ( rg_materialResourceTable.tableGeneration == 0
+			|| recordIndex < 0 || recordIndex >= MATERIAL_RESOURCE_TABLE_MAX_RECORDS
+			|| bindingIndex < 0 || bindingIndex >= MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS ) {
+		return 0;
+	}
+	return ( static_cast<std::uint64_t>( rg_materialResourceTable.tableGeneration ) << 32 )
+		| ( static_cast<std::uint64_t>( recordIndex + 1 ) << 16 )
+		| static_cast<std::uint64_t>( bindingIndex + 1 );
+}
 
 static int R_MaterialResourceTable_HashMaterial( const idMaterial *material ) {
 	size_t key = reinterpret_cast<size_t>( material ) >> 4;
@@ -231,6 +246,59 @@ static void R_MaterialResourceTable_AddFallback( materialResourceTableRecord_t &
 	record.fallbackFlags |= flag;
 	if ( record.fallbackReason == MATERIAL_RESOURCE_FALLBACK_NONE ) {
 		record.fallbackReason = reason;
+	}
+}
+
+const char *MaterialResourceGuiPassFailure_Name( materialResourceGuiPassFailure_t reason ) {
+	switch ( reason ) {
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE:
+		return "none";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_REFERENCED:
+		return "notReferenced";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_COMPILED:
+		return "notCompiled";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_MATERIAL:
+		return "missingMaterial";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_DRAWN:
+		return "notDrawn";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_NO_AMBIENT_STAGES:
+		return "noAmbientStages";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_NEEDS_CURRENT_RENDER:
+		return "needsCurrentRender";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_DECAL_SORT:
+		return "decalSort";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_POST_PROCESS_SORT:
+		return "postProcessSort";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_DYNAMIC_IMAGE:
+		return "dynamicImage";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_CINEMATIC_IMAGE:
+		return "cinematicImage";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_CURRENT_RENDER_IMAGE:
+		return "currentRenderImage";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_CUSTOM_PROGRAM:
+		return "customProgram";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_TEXGEN:
+		return "unsupportedTexgen";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_ALPHA_TEST:
+		return "unsupportedAlphaTest";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_IMAGE:
+		return "missingImage";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_DEFAULTED_IMAGE:
+		return "defaultedImage";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNLOADED_IMAGE:
+		return "unloadedImage";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_TEXTURE_BINDING_OVERFLOW:
+		return "textureBindingOverflow";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_PASS_POOL_OVERFLOW:
+		return "passPoolOverflow";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_REGISTER:
+		return "invalidRegister";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE:
+		return "unsupportedState";
+	case MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_PASS:
+		return "invalidPass";
+	default:
+		return "unknown";
 	}
 }
 
@@ -700,7 +768,7 @@ static bool R_MaterialResourceTable_IsPBRSemantic( materialResourceTextureSemant
 	return semantic >= MATERIAL_RESOURCE_TEXTURE_ALBEDO && semantic < MATERIAL_RESOURCE_TEXTURE_COUNT;
 }
 
-static void R_MaterialResourceTable_AddTextureBinding(
+static int R_MaterialResourceTable_AddTextureBinding(
 	materialResourceTableRecord_t &record,
 	materialResourceTextureSemantic_t semantic,
 	const idImage *image,
@@ -714,11 +782,14 @@ static void R_MaterialResourceTable_AddTextureBinding(
 			R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_MISSING_IMAGE, MATERIAL_RESOURCE_FALLBACK_FLAG_MISSING_IMAGE );
 		}
 		rg_materialResourceTable.stats.missingImages++;
-		return;
+		return -1;
 	}
-	if ( R_MaterialResourceTable_HasSemanticBinding( record, semantic ) ) {
+	// Source-record convenience images remain one-per-semantic. Authored stage
+	// bindings do not: two GUI stages sampling the same semantic are distinct
+	// ordered operations and must retain their own image/state identity.
+	if ( stage == NULL && R_MaterialResourceTable_HasSemanticBinding( record, semantic ) ) {
 		R_MaterialResourceTable_UpdateRecordSemanticFlags( record, semantic, image );
-		return;
+		return R_MaterialResourceTable_FindTextureBindingIndex( record, semantic );
 	}
 	if ( record.textureBindingCount >= MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS ) {
 		if ( R_MaterialResourceTable_IsPBRSemantic( semantic ) ) {
@@ -727,7 +798,7 @@ static void R_MaterialResourceTable_AddTextureBinding(
 			R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_TOO_MANY_TEXTURES, MATERIAL_RESOURCE_FALLBACK_FLAG_TOO_MANY_TEXTURES );
 		}
 		rg_materialResourceTable.stats.unsupportedFeatures++;
-		return;
+		return -1;
 	}
 
 	const int bindingIndex = record.textureBindingCount++;
@@ -735,6 +806,8 @@ static void R_MaterialResourceTable_AddTextureBinding(
 	memset( &binding, 0, sizeof( binding ) );
 	binding.semantic = semantic;
 	binding.image = image;
+	binding.textureResourceId = R_MaterialResourceTable_MakeTextureResourceId(
+		record.tableIndex, bindingIndex );
 	binding.textureHandle = image->IsLoaded() ? const_cast<idImage *>( image )->GetDeviceHandle() : 0;
 	binding.filter = image->GetFilter();
 	binding.repeat = image->GetRepeat();
@@ -760,7 +833,8 @@ static void R_MaterialResourceTable_AddTextureBinding(
 	binding.vertexColorMode = stage != NULL ? static_cast<int>( stage->vertexColor ) : static_cast<int>( SVC_IGNORE );
 	binding.privatePolygonOffset = stage != NULL ? stage->privatePolygonOffset : 0.0f;
 	binding.blendEnabled = stage != NULL && R_MaterialResourceTable_BlendBits( stage->drawStateBits ) != 0;
-	binding.depthWrite = stage != NULL && ( stage->drawStateBits & GLS_DEPTHMASK ) != 0;
+	// GLS_DEPTHMASK is an inverse mask: set means depth writes are disabled.
+	binding.depthWrite = stage != NULL && ( stage->drawStateBits & GLS_DEPTHMASK ) == 0;
 	binding.colorMasked = stage != NULL && ( stage->drawStateBits & GLS_COLORMASK ) != 0;
 	for ( int i = 0; i < 4; ++i ) {
 		binding.colorRegisters[i] = -1;
@@ -793,7 +867,9 @@ static void R_MaterialResourceTable_AddTextureBinding(
 		R_MaterialResourceTable_RecordDebugStringTruncation( "texture binding semantic" );
 	}
 
-	record.semanticBindingIndex[semantic] = bindingIndex;
+	if ( record.semanticBindingIndex[semantic] < 0 ) {
+		record.semanticBindingIndex[semantic] = bindingIndex;
+	}
 	const unsigned int semanticBit = MaterialResourceTextureSemantic_Bit( semantic );
 	record.textureSemanticMask |= semanticBit;
 	if ( binding.textureHandle != 0 ) {
@@ -819,6 +895,7 @@ static void R_MaterialResourceTable_AddTextureBinding(
 	if ( binding.textureViewCandidate ) {
 		rg_materialResourceTable.stats.textureViewDescriptors++;
 	}
+	return bindingIndex;
 }
 
 static void R_MaterialResourceTable_BuildTextureArrayTable( void ) {
@@ -981,6 +1058,430 @@ static void R_MaterialResourceTable_FinalizeRegisterRange( materialResourceTable
 	}
 }
 
+static void R_MaterialResourceTable_SetGuiPassFailure(
+		materialResourceTableRecord_t &record,
+		materialResourceGuiPassFailure_t failure,
+		int sourceStageIndex ) {
+	record.firstGuiPass = -1;
+	record.guiPassCount = 0;
+	record.guiPassEligible = false;
+	record.guiPassFailure = failure;
+	record.guiPassFailureStage = sourceStageIndex;
+}
+
+static int R_MaterialResourceTable_FindStageBindingIndex(
+		const materialResourceTableRecord_t &record, int sourceStageIndex ) {
+	for ( int i = 0; i < record.textureBindingCount; ++i ) {
+		if ( record.textures[i].stageIndex == sourceStageIndex ) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool R_MaterialResourceTable_GuiRegisterValid(
+		const materialResourceTableRecord_t &record, int registerIndex ) {
+	return registerIndex >= 0 && registerIndex < record.registerCount;
+}
+
+static bool R_MaterialResourceTable_MapSourceBlendFactor(
+		int drawStateBits, rendererBlendFactor_t &factor ) {
+	switch ( drawStateBits & GLS_SRCBLEND_BITS ) {
+	case GLS_SRCBLEND_ZERO:
+		factor = RENDERER_BLEND_ZERO;
+		return true;
+	case GLS_SRCBLEND_ONE:
+		factor = RENDERER_BLEND_ONE;
+		return true;
+	case GLS_SRCBLEND_DST_COLOR:
+		factor = RENDERER_BLEND_DST_COLOR;
+		return true;
+	case GLS_SRCBLEND_ONE_MINUS_DST_COLOR:
+		factor = RENDERER_BLEND_ONE_MINUS_DST_COLOR;
+		return true;
+	case GLS_SRCBLEND_SRC_ALPHA:
+		factor = RENDERER_BLEND_SRC_ALPHA;
+		return true;
+	case GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA:
+		factor = RENDERER_BLEND_ONE_MINUS_SRC_ALPHA;
+		return true;
+	case GLS_SRCBLEND_DST_ALPHA:
+		factor = RENDERER_BLEND_DST_ALPHA;
+		return true;
+	case GLS_SRCBLEND_ONE_MINUS_DST_ALPHA:
+		factor = RENDERER_BLEND_ONE_MINUS_DST_ALPHA;
+		return true;
+	case GLS_SRCBLEND_ALPHA_SATURATE:
+		factor = RENDERER_BLEND_SRC_ALPHA_SATURATE;
+		return true;
+	case GLS_SRCBLEND_SRC_COLOR:
+		factor = RENDERER_BLEND_SRC_COLOR;
+		return true;
+	case GLS_SRCBLEND_ONE_MINUS_SRC_COLOR:
+		factor = RENDERER_BLEND_ONE_MINUS_SRC_COLOR;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool R_MaterialResourceTable_MapDestinationBlendFactor(
+		int drawStateBits, rendererBlendFactor_t &factor ) {
+	switch ( drawStateBits & GLS_DSTBLEND_BITS ) {
+	case GLS_DSTBLEND_ZERO:
+		factor = RENDERER_BLEND_ZERO;
+		return true;
+	case GLS_DSTBLEND_ONE:
+		factor = RENDERER_BLEND_ONE;
+		return true;
+	case GLS_DSTBLEND_SRC_COLOR:
+		factor = RENDERER_BLEND_SRC_COLOR;
+		return true;
+	case GLS_DSTBLEND_ONE_MINUS_SRC_COLOR:
+		factor = RENDERER_BLEND_ONE_MINUS_SRC_COLOR;
+		return true;
+	case GLS_DSTBLEND_SRC_ALPHA:
+		factor = RENDERER_BLEND_SRC_ALPHA;
+		return true;
+	case GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA:
+		factor = RENDERER_BLEND_ONE_MINUS_SRC_ALPHA;
+		return true;
+	case GLS_DSTBLEND_DST_ALPHA:
+		factor = RENDERER_BLEND_DST_ALPHA;
+		return true;
+	case GLS_DSTBLEND_ONE_MINUS_DST_ALPHA:
+		factor = RENDERER_BLEND_ONE_MINUS_DST_ALPHA;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool R_MaterialResourceTable_MapGuiDepthState(
+		int drawStateBits, rendererDepthState_t &depth ) {
+	const int depthFunction = drawStateBits & ( GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHFUNC_EQUAL );
+	depth.testEnabled = false; // generated 2D views disable depth testing as a domain rule
+	depth.writeEnabled = ( drawStateBits & GLS_DEPTHMASK ) == 0;
+	switch ( depthFunction ) {
+	case GLS_DEPTHFUNC_LESS:
+		depth.compareOperation = RENDERER_COMPARE_LESS_OR_EQUAL;
+		return true;
+	case GLS_DEPTHFUNC_EQUAL:
+		depth.compareOperation = RENDERER_COMPARE_EQUAL;
+		return true;
+	case GLS_DEPTHFUNC_ALWAYS:
+		depth.compareOperation = RENDERER_COMPARE_ALWAYS;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool R_MaterialResourceTable_MapCullMode(
+		int cullType, rendererCullMode_t &cull ) {
+	switch ( cullType ) {
+	case CT_FRONT_SIDED:
+		cull = RENDERER_CULL_FRONT;
+		return true;
+	case CT_BACK_SIDED:
+		cull = RENDERER_CULL_BACK;
+		return true;
+	case CT_TWO_SIDED:
+		cull = RENDERER_CULL_NONE;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool R_MaterialResourceTable_MapVertexColor(
+		stageVertexColor_t source, rendererVertexColorMode_t &destination ) {
+	switch ( source ) {
+	case SVC_IGNORE:
+		destination = RENDERER_VERTEX_COLOR_IGNORE;
+		return true;
+	case SVC_MODULATE:
+		destination = RENDERER_VERTEX_COLOR_MODULATE;
+		return true;
+	case SVC_INVERSE_MODULATE:
+		destination = RENDERER_VERTEX_COLOR_INVERSE_MODULATE;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static std::uint32_t R_MaterialResourceTable_ColorWriteMask( int drawStateBits ) {
+	std::uint32_t mask = RENDERER_COLOR_WRITE_RGBA;
+	if ( ( drawStateBits & GLS_REDMASK ) != 0 ) {
+		mask &= ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RED );
+	}
+	if ( ( drawStateBits & GLS_GREENMASK ) != 0 ) {
+		mask &= ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_GREEN );
+	}
+	if ( ( drawStateBits & GLS_BLUEMASK ) != 0 ) {
+		mask &= ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_BLUE );
+	}
+	if ( ( drawStateBits & GLS_ALPHAMASK ) != 0 ) {
+		mask &= ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_ALPHA );
+	}
+	return mask;
+}
+
+static bool R_MaterialResourceTable_CompileGuiPasses(
+		materialResourceTableRecord_t &record ) {
+	R_MaterialResourceTable_SetGuiPassFailure(
+		record, record.guiDomainReferenced
+			? MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_COMPILED
+			: MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_REFERENCED, -1 );
+	if ( !record.guiDomainReferenced ) {
+		return false;
+	}
+	const idMaterial *material = record.material;
+	if ( material == NULL ) {
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_MATERIAL, -1 );
+		return false;
+	}
+	if ( !material->IsDrawn() ) {
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_DRAWN, -1 );
+		return false;
+	}
+	if ( material->TestMaterialFlag( MF_NEED_CURRENT_RENDER ) ) {
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_NEEDS_CURRENT_RENDER, -1 );
+		return false;
+	}
+	// Decal-sorted surfaces are conditionally removed by r_skipDecals before
+	// the classic ambient walker.  This first sealed contract deliberately
+	// carries no mutable debug-CVar disposition, so retain the whole view on
+	// the classic path for every sort value in the decal corridor.
+	if ( material->GetSort() >= SS_DECAL && material->GetSort() < SS_FAR ) {
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_DECAL_SORT, -1 );
+		return false;
+	}
+	// The classic walker splits post-process-sorted materials around scene
+	// capture and r_skipPostProcess handling.  This first shared domain owns no
+	// part of that sequencing, so retain the complete view on the classic path.
+	if ( material->GetSort() >= SS_POST_PROCESS ) {
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_POST_PROCESS_SORT, -1 );
+		return false;
+	}
+
+	rendererMaterialPassList_t compiled;
+	RendererContracts_ResetMaterialPassList( compiled );
+	const int stageCount = material->GetNumStages();
+	for ( int stageIndex = 0; stageIndex < stageCount; ++stageIndex ) {
+		const shaderStage_t *stage = material->GetStage( stageIndex );
+		if ( stage == NULL || stage->lighting != SL_AMBIENT ) {
+			continue;
+		}
+		if ( stage->newStage != NULL ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_CUSTOM_PROGRAM, stageIndex );
+			return false;
+		}
+		if ( stage->texture.cinematic != NULL ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_CINEMATIC_IMAGE, stageIndex );
+			return false;
+		}
+		if ( stage->texture.dynamic != DI_STATIC ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_DYNAMIC_IMAGE, stageIndex );
+			return false;
+		}
+		if ( stage->texture.texgen != TG_EXPLICIT ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_TEXGEN, stageIndex );
+			return false;
+		}
+		// Classic fixed-function state carries a private stage offset into later
+		// stages when the material-level offset remains enabled.  The sealed
+		// per-pass model restores each pass independently, so reject this combined
+		// authored state until the carry-forward transition is represented.
+		if ( record.hasMaterialPolygonOffset
+				&& stage->privatePolygonOffset != 0.0f ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE,
+				stageIndex );
+			return false;
+		}
+		// shaderStage_t::hasAlphaTest controls the classic depth/coverage pass;
+		// RB_STD_T_RenderShaderPasses does not apply it again to ambient color.
+		// Until the shared domain also owns that paired coverage operation, adding
+		// an alpha test here would change the classic color result.  Keep the
+		// complete view on its established backend walker instead.
+		if ( stage->hasAlphaTest ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_ALPHA_TEST,
+				stageIndex );
+			return false;
+		}
+		if ( stage->texture.image == NULL ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_IMAGE, stageIndex );
+			return false;
+		}
+		if ( R_MaterialResourceTable_ImageIsPostProcess( stage->texture.image )
+				|| R_MaterialResourceTable_ImageIsSceneCapture( stage->texture.image ) ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_CURRENT_RENDER_IMAGE, stageIndex );
+			return false;
+		}
+		if ( stage->texture.image->IsDefaulted() ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_DEFAULTED_IMAGE, stageIndex );
+			return false;
+		}
+		if ( !stage->texture.image->IsLoaded() ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNLOADED_IMAGE, stageIndex );
+			return false;
+		}
+		const int bindingIndex = R_MaterialResourceTable_FindStageBindingIndex(
+			record, stageIndex );
+		if ( bindingIndex < 0 || bindingIndex >= record.textureBindingCount
+				|| record.textures[bindingIndex].textureResourceId == 0 ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_TEXTURE_BINDING_OVERFLOW, stageIndex );
+			return false;
+		}
+
+		rendererMaterialPass_t pass = RendererContracts_DefaultMaterialPass();
+		pass.sourceStageIndex = stageIndex;
+		pass.kind = RENDERER_MATERIAL_PASS_GUI;
+		pass.textureSemantic = RENDERER_TEXTURE_DIFFUSE;
+		pass.textureResourceId = record.textures[bindingIndex].textureResourceId;
+		if ( !R_MaterialResourceTable_GuiRegisterValid( record, stage->conditionRegister ) ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_REGISTER, stageIndex );
+			return false;
+		}
+		pass.condition = RendererContracts_Register( stage->conditionRegister );
+		for ( int i = 0; i < 4; ++i ) {
+			if ( !R_MaterialResourceTable_GuiRegisterValid( record, stage->color.registers[i] ) ) {
+				R_MaterialResourceTable_SetGuiPassFailure(
+					record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_REGISTER, stageIndex );
+				return false;
+			}
+			pass.color[i] = RendererContracts_Register( stage->color.registers[i] );
+		}
+		if ( stage->texture.hasMatrix ) {
+			for ( int row = 0; row < 2; ++row ) {
+				for ( int column = 0; column < 3; ++column ) {
+					const int matrixRegister = stage->texture.matrix[row][column];
+					if ( !R_MaterialResourceTable_GuiRegisterValid( record, matrixRegister ) ) {
+						R_MaterialResourceTable_SetGuiPassFailure(
+							record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_REGISTER, stageIndex );
+						return false;
+					}
+					pass.textureMatrix[row * 3 + column] =
+						RendererContracts_Register( matrixRegister );
+				}
+			}
+		}
+
+		const int supportedStateBits = GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS
+			| GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK
+			| GLS_DEPTHFUNC_ALWAYS | GLS_DEPTHFUNC_EQUAL | GLS_ATEST_BITS;
+		if ( ( stage->drawStateBits & ~supportedStateBits ) != 0
+				|| !R_MaterialResourceTable_MapSourceBlendFactor(
+					stage->drawStateBits, pass.blend.sourceColor )
+				|| !R_MaterialResourceTable_MapDestinationBlendFactor(
+					stage->drawStateBits, pass.blend.destinationColor )
+				|| !R_MaterialResourceTable_MapGuiDepthState(
+					stage->drawStateBits, pass.depth )
+				|| !R_MaterialResourceTable_MapCullMode( record.cullType, pass.cull )
+				|| !R_MaterialResourceTable_MapVertexColor(
+					stage->vertexColor, pass.vertexColor ) ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE, stageIndex );
+			return false;
+		}
+		pass.blend.enabled = R_MaterialResourceTable_BlendBits(
+			stage->drawStateBits ) != 0;
+		pass.blend.destinationAlpha = pass.blend.destinationColor;
+		pass.blend.sourceAlpha = pass.blend.sourceColor;
+		pass.blend.colorOperation = RENDERER_BLEND_OP_ADD;
+		pass.blend.alphaOperation = RENDERER_BLEND_OP_ADD;
+		pass.colorWriteMask = R_MaterialResourceTable_ColorWriteMask(
+			stage->drawStateBits );
+
+		pass.alphaTestEnabled = false;
+		switch ( stage->drawStateBits & GLS_ATEST_BITS ) {
+			case 0:
+				break;
+			case GLS_ATEST_EQ_255:
+				pass.alphaTestEnabled = true;
+				pass.alphaTestCompareOperation = RENDERER_COMPARE_EQUAL;
+				pass.alphaTest = RendererContracts_Constant( 1.0f );
+				break;
+			case GLS_ATEST_LT_128:
+				pass.alphaTestEnabled = true;
+				pass.alphaTestCompareOperation = RENDERER_COMPARE_LESS;
+				pass.alphaTest = RendererContracts_Constant( 0.5f );
+				break;
+			case GLS_ATEST_GE_128:
+				pass.alphaTestEnabled = true;
+				pass.alphaTestCompareOperation = RENDERER_COMPARE_GREATER_OR_EQUAL;
+				pass.alphaTest = RendererContracts_Constant( 0.5f );
+				break;
+			default:
+				R_MaterialResourceTable_SetGuiPassFailure(
+					record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE, stageIndex );
+				return false;
+		}
+		pass.texgen = RENDERER_TEXGEN_EXPLICIT;
+		const float offsetScale = stage->privatePolygonOffset != 0.0f
+			? stage->privatePolygonOffset
+			: ( record.hasMaterialPolygonOffset ? record.polygonOffset : 0.0f );
+		pass.polygonOffsetEnabled = offsetScale != 0.0f;
+		if ( pass.polygonOffsetEnabled ) {
+			pass.polygonOffsetFactor = RendererContracts_Constant(
+				r_offsetFactor.GetFloat() );
+			pass.polygonOffsetUnits = RendererContracts_Constant(
+				r_offsetUnits.GetFloat() * offsetScale );
+		}
+		pass.programFamily = RENDERER_PROGRAM_GUI;
+		pass.programKey = 0;
+		if ( !RendererContracts_AppendMaterialPass( compiled, pass ) ) {
+			R_MaterialResourceTable_SetGuiPassFailure(
+				record, compiled.overflowed
+					? MATERIAL_RESOURCE_GUI_PASS_FAILURE_PASS_POOL_OVERFLOW
+					: MATERIAL_RESOURCE_GUI_PASS_FAILURE_INVALID_PASS,
+				stageIndex );
+			return false;
+		}
+	}
+
+	if ( compiled.count == 0 ) {
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_NO_AMBIENT_STAGES, -1 );
+		return false;
+	}
+	if ( compiled.count > static_cast<std::uint32_t>(
+			MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES - rg_materialResourceTable.guiPassCount ) ) {
+		rg_materialResourceTable.stats.guiPassPoolOverflows++;
+		R_MaterialResourceTable_SetGuiPassFailure(
+			record, MATERIAL_RESOURCE_GUI_PASS_FAILURE_PASS_POOL_OVERFLOW, -1 );
+		return false;
+	}
+
+	record.firstGuiPass = rg_materialResourceTable.guiPassCount;
+	record.guiPassCount = static_cast<int>( compiled.count );
+	memcpy( &rg_materialResourceTable.guiPasses[record.firstGuiPass],
+		compiled.passes, sizeof( compiled.passes[0] ) * compiled.count );
+	rg_materialResourceTable.guiPassCount += record.guiPassCount;
+	record.guiPassEligible = true;
+	record.guiPassFailure = MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE;
+	record.guiPassFailureStage = -1;
+	return true;
+}
+
 static void R_MaterialResourceTable_ScanMaterialStages( materialResourceTableRecord_t &record, const materialResourceRecord_t &sourceRecord ) {
 	const idMaterial *material = sourceRecord.material;
 	if ( material == NULL ) {
@@ -1072,11 +1573,10 @@ static void R_MaterialResourceTable_ScanMaterialStages( materialResourceTableRec
 		}
 
 		const materialResourceTextureSemantic_t semantic = R_MaterialResourceTable_StageSemantic( *stage, record.materialClass, record.needsCurrentRender );
-		if ( !R_MaterialResourceTable_HasSemanticBinding( record, semantic ) ) {
-			R_MaterialResourceTable_AddTextureBinding( record, semantic, stage->texture.image, stage, i );
-		}
+		const int stageBindingIndex = R_MaterialResourceTable_AddTextureBinding(
+			record, semantic, stage->texture.image, stage, i );
 		if ( stage->hasAlphaTest && record.shadowAlphaBindingIndex < 0 ) {
-			record.shadowAlphaBindingIndex = R_MaterialResourceTable_FindTextureBindingIndex( record, semantic );
+			record.shadowAlphaBindingIndex = stageBindingIndex;
 		}
 	}
 
@@ -1297,7 +1797,9 @@ static void R_MaterialResourceTable_FinalizeShadowContract( materialResourceTabl
 	}
 }
 
-static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceRecord_t &sourceRecord, int sourceIndex, bool scanMaterialStages ) {
+static bool R_MaterialResourceTable_AddRecordFromSource(
+		const materialResourceRecord_t &sourceRecord, int sourceIndex,
+		bool scanMaterialStages, bool guiDomainReferenced = false ) {
 	if ( rg_materialResourceTable.stats.records >= MATERIAL_RESOURCE_TABLE_MAX_RECORDS ) {
 		rg_materialResourceTable.stats.overflow = true;
 		R_MaterialResourceTable_SetStatus( "material table overflow" );
@@ -1310,6 +1812,7 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 		record.semanticBindingIndex[i] = -1;
 	}
 	record.tableIndex = rg_materialResourceTable.stats.records;
+	record.tableGeneration = rg_materialResourceTable.tableGeneration;
 	record.sourceMaterialRecordIndex = sourceIndex;
 	// The scene-packet record owns the stable decl index. Synthetic validation
 	// decls allocated through declManager intentionally have no idDeclBase and
@@ -1340,6 +1843,12 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	record.hasMaterialPolygonOffset = sourceRecord.material != NULL && sourceRecord.material->TestMaterialFlag( MF_POLYGONOFFSET );
 	record.polygonOffset = sourceRecord.material != NULL ? sourceRecord.material->GetPolygonOffset() : 0.0f;
 	record.shadowAlphaBindingIndex = -1;
+	record.firstGuiPass = -1;
+	record.guiDomainReferenced = guiDomainReferenced;
+	record.guiPassFailure = guiDomainReferenced
+		? MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_COMPILED
+		: MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_REFERENCED;
+	record.guiPassFailureStage = -1;
 	record.registerStart = 0;
 	record.registerCount = sourceRecord.material != NULL ? sourceRecord.material->GetNumRegisters() : 0;
 	record.fallbackReason = MATERIAL_RESOURCE_FALLBACK_NONE;
@@ -1351,6 +1860,9 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	if ( scanMaterialStages ) {
 		R_MaterialResourceTable_ScanMaterialStages( record, sourceRecord );
 		R_MaterialResourceTable_AddSourceImages( record, sourceRecord );
+		if ( record.guiDomainReferenced ) {
+			R_MaterialResourceTable_CompileGuiPasses( record );
+		}
 	} else if ( sourceRecord.material == NULL ) {
 		R_MaterialResourceTable_AddSourceImages( record, sourceRecord );
 		R_MaterialResourceTable_AddFallback( record, MATERIAL_RESOURCE_FALLBACK_MISSING_MATERIAL, MATERIAL_RESOURCE_FALLBACK_FLAG_MISSING_MATERIAL );
@@ -1376,6 +1888,15 @@ static bool R_MaterialResourceTable_AddRecordFromSource( const materialResourceR
 	}
 	R_MaterialResourceTable_FinalizeShadowContract( record );
 	R_MaterialResourceTable_FinalizeRegisterRange( record );
+	if ( record.guiDomainReferenced ) {
+		rg_materialResourceTable.stats.guiDomainReferencedRecords++;
+		if ( record.guiPassEligible ) {
+			rg_materialResourceTable.stats.guiPassEligibleRecords++;
+			rg_materialResourceTable.stats.guiPasses += record.guiPassCount;
+		} else {
+			rg_materialResourceTable.stats.guiPassFallbackRecords++;
+		}
+	}
 	R_MaterialResourceTable_CountClass( record );
 	R_MaterialResourceTable_CountFallbacks( record );
 	R_MaterialResourceTable_CountPBR( record );
@@ -1397,6 +1918,12 @@ static void R_MaterialResourceTable_ResetFrameStats( void ) {
 	memset( rg_materialResourceTable.textureArrayTable, 0, sizeof( rg_materialResourceTable.textureArrayTable ) );
 	memset( rg_materialResourceTable.materialHash, 0, sizeof( rg_materialResourceTable.materialHash ) );
 	rg_materialResourceTable.textureArrayTableCount = 0;
+	rg_materialResourceTable.guiPassCount = 0;
+	rg_materialResourceTable.tableGeneration++;
+	if ( rg_materialResourceTable.tableGeneration == 0 ) {
+		// Resource id zero and generation zero are both permanently invalid.
+		rg_materialResourceTable.tableGeneration = 1;
+	}
 	memset( &rg_materialResourceTable.stats, 0, sizeof( rg_materialResourceTable.stats ) );
 	rg_materialResourceTable.stats.initialized = initialized;
 	rg_materialResourceTable.stats.available = available;
@@ -1409,6 +1936,7 @@ static void R_MaterialResourceTable_ResetFrameStats( void ) {
 
 void R_MaterialResourceTable_Init( const renderBackendCaps_t &caps, const renderFeatureSet_t &features ) {
 	memset( &rg_materialResourceTable, 0, sizeof( rg_materialResourceTable ) );
+	rg_materialResourceTable.tableGeneration = 1;
 	rg_materialResourceTable.caps = caps;
 	rg_materialResourceTable.features = features;
 	rg_materialResourceTable.maxClassicTextureUnits = caps.maxTextureImageUnits > 0 ? Min( caps.maxTextureImageUnits, MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS ) : MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS;
@@ -1433,17 +1961,25 @@ void R_MaterialResourceTable_PrepareFrame( const idScenePacketFrame &packetFrame
 	rg_materialResourceTable.stats.prepared = true;
 	const int materialRecordCount = packetFrame.NumMaterialRecords();
 	const int drawPacketCount = packetFrame.NumDrawPackets();
+	bool guiDomainReferenced[SCENE_PACKET_MAX_MATERIAL_RECORDS];
+	memset( guiDomainReferenced, 0, sizeof( guiDomainReferenced ) );
 	rg_materialResourceTable.stats.sourceMaterialRecords = materialRecordCount;
 	for ( int i = 0; i < drawPacketCount; ++i ) {
-		if ( packetFrame.DrawPacket( i ).materialRecordIndex >= 0 ) {
+		const drawPacket_t &drawPacket = packetFrame.DrawPacket( i );
+		if ( drawPacket.materialRecordIndex >= 0 ) {
 			rg_materialResourceTable.stats.drawPacketReferences++;
+			if ( drawPacket.passCategory == RENDER_PASS_GUI
+					&& drawPacket.materialRecordIndex < materialRecordCount ) {
+				guiDomainReferenced[drawPacket.materialRecordIndex] = true;
+			}
 		}
 	}
 	if ( !rg_materialResourceTable.stats.available ) {
 		return;
 	}
 	for ( int i = 0; i < materialRecordCount; ++i ) {
-		R_MaterialResourceTable_AddRecordFromSource( packetFrame.MaterialRecord( i ), i, true );
+		R_MaterialResourceTable_AddRecordFromSource(
+			packetFrame.MaterialRecord( i ), i, true, guiDomainReferenced[i] );
 	}
 	R_MaterialResourceTable_BuildTextureArrayTable();
 	if ( rg_materialResourceTable.stats.overflow ) {
@@ -1467,6 +2003,76 @@ const materialResourceTableRecord_t *R_MaterialResourceTable_RecordForIndex( int
 const materialResourceTextureBinding_t *R_MaterialResourceTable_TextureBindingForSemantic( const materialResourceTableRecord_t &record, materialResourceTextureSemantic_t semantic ) {
 	const int bindingIndex = R_MaterialResourceTable_FindTextureBindingIndex( record, semantic );
 	return bindingIndex >= 0 ? &record.textures[bindingIndex] : NULL;
+}
+
+bool R_MaterialResourceTable_GuiPassEligible(
+		const materialResourceTableRecord_t &record ) {
+	return record.guiDomainReferenced
+		&& record.guiPassEligible
+		&& record.guiPassFailure == MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE
+		&& record.tableGeneration == rg_materialResourceTable.tableGeneration
+		&& record.tableIndex >= 0
+		&& record.tableIndex < rg_materialResourceTable.stats.records
+		&& &rg_materialResourceTable.records[record.tableIndex] == &record
+		&& record.firstGuiPass >= 0
+		&& record.guiPassCount > 0
+		&& record.firstGuiPass <= rg_materialResourceTable.guiPassCount
+		&& record.guiPassCount <= rg_materialResourceTable.guiPassCount - record.firstGuiPass;
+}
+
+const rendererMaterialPass_t *R_MaterialResourceTable_GuiPasses(
+		const materialResourceTableRecord_t &record, int &count ) {
+	count = 0;
+	if ( !R_MaterialResourceTable_GuiPassEligible( record ) ) {
+		return NULL;
+	}
+	count = record.guiPassCount;
+	return &rg_materialResourceTable.guiPasses[record.firstGuiPass];
+}
+
+bool R_MaterialResourceTable_CopyGuiPassList(
+		const materialResourceTableRecord_t &record,
+		rendererMaterialPassList_t &destination ) {
+	RendererContracts_ResetMaterialPassList( destination );
+	int count = 0;
+	const rendererMaterialPass_t *passes = R_MaterialResourceTable_GuiPasses(
+		record, count );
+	if ( passes == NULL || count <= 0
+			|| count > static_cast<int>( RENDERER_CONTRACT_MAX_MATERIAL_PASSES ) ) {
+		return false;
+	}
+	memcpy( destination.passes, passes, sizeof( destination.passes[0] ) * count );
+	destination.count = static_cast<std::uint32_t>( count );
+	return true;
+}
+
+const materialResourceTextureBinding_t *R_MaterialResourceTable_ResolveTextureResource(
+		std::uint64_t textureResourceId ) {
+	if ( textureResourceId == 0 ) {
+		return NULL;
+	}
+	const unsigned int generation = static_cast<unsigned int>( textureResourceId >> 32 );
+	const unsigned int encodedRecord = static_cast<unsigned int>(
+		( textureResourceId >> 16 ) & 0xffffu );
+	const unsigned int encodedBinding = static_cast<unsigned int>(
+		textureResourceId & 0xffffu );
+	if ( generation == 0 || generation != rg_materialResourceTable.tableGeneration
+			|| encodedRecord == 0 || encodedBinding == 0 ) {
+		return NULL;
+	}
+	const int recordIndex = static_cast<int>( encodedRecord - 1 );
+	const int bindingIndex = static_cast<int>( encodedBinding - 1 );
+	if ( recordIndex < 0 || recordIndex >= rg_materialResourceTable.stats.records ) {
+		return NULL;
+	}
+	const materialResourceTableRecord_t &record =
+		rg_materialResourceTable.records[recordIndex];
+	if ( record.tableGeneration != generation || record.tableIndex != recordIndex
+			|| bindingIndex < 0 || bindingIndex >= record.textureBindingCount ) {
+		return NULL;
+	}
+	const materialResourceTextureBinding_t &binding = record.textures[bindingIndex];
+	return binding.textureResourceId == textureResourceId ? &binding : NULL;
 }
 
 const materialResourceTableRecord_t *R_MaterialResourceTable_FindRecordForMaterial( const idMaterial *material ) {
@@ -1562,6 +2168,14 @@ void R_MaterialResourceTable_PrintGfxInfo( void ) {
 		stats.pbrMissingAlbedoMapRecords,
 		stats.pbrMissingNormalMapRecords,
 		stats.pbrMissingORMMapRecords );
+	common->Printf(
+		"GUI material passes: referenced=%d eligible=%d fallback=%d passes=%d/%d poolOverflow=%d\n",
+		stats.guiDomainReferencedRecords,
+		stats.guiPassEligibleRecords,
+		stats.guiPassFallbackRecords,
+		stats.guiPasses,
+		MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES,
+		stats.guiPassPoolOverflows );
 }
 
 bool R_MaterialResourceTable_ClassicModernPathEligible( const materialResourceTableRecord_t &record ) {
@@ -1606,6 +2220,14 @@ void R_MaterialResourceTable_DumpLatest( void ) {
 		stats.pbrMissingAlbedoMapRecords,
 		stats.pbrMissingNormalMapRecords,
 		stats.pbrMissingORMMapRecords );
+	common->Printf(
+		"GUI pass summary: referenced=%d eligible=%d fallback=%d passes=%d/%d poolOverflow=%d\n",
+		stats.guiDomainReferencedRecords,
+		stats.guiPassEligibleRecords,
+		stats.guiPassFallbackRecords,
+		stats.guiPasses,
+		MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES,
+		stats.guiPassPoolOverflows );
 	for ( int i = 0; i < stats.records; ++i ) {
 		const materialResourceTableRecord_t &record = rg_materialResourceTable.records[i];
 		common->Printf(
@@ -1645,8 +2267,18 @@ void R_MaterialResourceTable_DumpLatest( void ) {
 			record.hasCustomGLSL ? 1 : 0,
 			record.polygonOffset,
 			record.twoSided ? 1 : 0,
-			record.shouldCreateBackSides ? 1 : 0,
-			record.shadowFallbackFlags );
+				record.shouldCreateBackSides ? 1 : 0,
+				record.shadowFallbackFlags );
+		if ( record.guiDomainReferenced ) {
+			common->Printf(
+				"    guiPass eligible=%d span=%d+%d failure=%s stage=%d generation=%u\n",
+				record.guiPassEligible ? 1 : 0,
+				record.firstGuiPass,
+				record.guiPassCount,
+				MaterialResourceGuiPassFailure_Name( record.guiPassFailure ),
+				record.guiPassFailureStage,
+				record.tableGeneration );
+		}
 		if ( record.hasPBR ) {
 			common->Printf(
 				"    pbr workflow=%d normalFormat=%d resourceReady=%d modernReady=%d fallback=%s packed=%d separate=%d maps=a%d n%d orm%d m%d r%d ao%d e%d authored=%d explicit=%d generated=%d approximate=%d missingFallback=%d regs=%d/%d/%d/%d emit=%d,%d,%d\n",
@@ -1707,6 +2339,333 @@ void R_MaterialResourceTable_DumpLatest( void ) {
 				binding.bindlessEnabled ? 1 : 0 );
 		}
 	}
+}
+
+static bool R_MaterialResourceTable_RunGuiPassContractSelfTest( void ) {
+	if ( globalImages == NULL ) {
+		common->Printf( "RendererMaterialResourceTable GUI pass self-test skipped: images unavailable\n" );
+		return true;
+	}
+	static const char declaration[] =
+		"material _gui_resource_table_selftest {\n"
+		" twoSided\n"
+		" polygonOffset 2\n"
+		" {\n"
+		"  if parm0\n"
+		"  blend gl_src_alpha, gl_one_minus_src_alpha\n"
+		"  map _white\n"
+		"  color parm0, parm1, parm2, parm3\n"
+		"  translate parm4, parm5\n"
+		"  scale parm6, parm7\n"
+		"  vertexColor\n"
+		"  maskRed\n"
+		"  maskAlpha\n"
+		"  maskDepth\n"
+		" }\n"
+		" {\n"
+		"  blend gl_dst_alpha, gl_one\n"
+		"  map _black\n"
+		"  inverseVertexColor\n"
+		"  maskGreen\n"
+		" }\n"
+		"}\n";
+
+	idDecl *materialDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( materialDecl == NULL ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: GUI declaration allocation\n" );
+		return false;
+	}
+	idMaterial *material = static_cast<idMaterial *>( materialDecl );
+	if ( !material->Parse( declaration,
+			idLib::SizeToInt( sizeof( declaration ) - 1,
+				"GUI resource-table self-test" ) ) ) {
+		common->Printf( "RendererMaterialResourceTable self-test failed: GUI declaration parse\n" );
+		DeclManager_FreeAllocatedDecl( materialDecl );
+		return false;
+	}
+	// The parser assigns decal sort to material-level polygon offset by default.
+	// This fixture isolates the supported offset state from the separately tested
+	// decal-sort exclusion, as a 2D draw can reference an otherwise opaque
+	// material regardless of where that material was first classified.
+	const float parsedSort = material->GetSort();
+	material->SetSort( SS_OPAQUE );
+
+	const int savedMaxClassicTextureUnits = rg_materialResourceTable.maxClassicTextureUnits;
+	rg_materialResourceTable.maxClassicTextureUnits = Max(
+		savedMaxClassicTextureUnits, MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS );
+	materialResourceRecord_t source;
+	memset( &source, 0, sizeof( source ) );
+	source.material = material;
+	source.diffuseImage = globalImages->whiteImage;
+	source.resourceTableIndex = 300;
+	// A material can be deduplicated from a world draw before a GUI draw. The
+	// packet reference, not the first observed material class, owns this domain.
+	source.permutation.materialClass = RENDER_MATERIAL_OPAQUE;
+	source.permutation.alphaMode = MC_PERFORATED;
+
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.stats.prepared = true;
+	const bool unreferencedAdded = R_MaterialResourceTable_AddRecordFromSource(
+		source, 299, true, false );
+	const materialResourceTableRecord_t *unreferencedRecord =
+		R_MaterialResourceTable_RecordForIndex( 0 );
+	const bool unreferencedRejected = unreferencedAdded
+		&& unreferencedRecord != NULL
+		&& !unreferencedRecord->guiDomainReferenced
+		&& !unreferencedRecord->guiPassEligible
+		&& unreferencedRecord->firstGuiPass == -1
+		&& unreferencedRecord->guiPassCount == 0
+		&& unreferencedRecord->guiPassFailure
+			== MATERIAL_RESOURCE_GUI_PASS_FAILURE_NOT_REFERENCED
+		&& rg_materialResourceTable.guiPassCount == 0
+		&& rg_materialResourceTable.stats.guiDomainReferencedRecords == 0
+		&& rg_materialResourceTable.stats.guiPassEligibleRecords == 0
+		&& rg_materialResourceTable.stats.guiPassFallbackRecords == 0;
+
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.stats.prepared = true;
+	const bool added = R_MaterialResourceTable_AddRecordFromSource(
+		source, 300, true, true );
+	const materialResourceTableRecord_t *record =
+		R_MaterialResourceTable_RecordForIndex( 0 );
+	int passCount = 0;
+	const rendererMaterialPass_t *passes = record != NULL
+		? R_MaterialResourceTable_GuiPasses( *record, passCount ) : NULL;
+	rendererMaterialPassList_t copiedPasses;
+	const bool copied = record != NULL
+		&& R_MaterialResourceTable_CopyGuiPassList( *record, copiedPasses );
+	const materialResourceTextureBinding_t *firstBinding =
+		passes != NULL && passCount > 0
+			? R_MaterialResourceTable_ResolveTextureResource(
+				passes[0].textureResourceId ) : NULL;
+	const materialResourceTextureBinding_t *secondBinding =
+		passes != NULL && passCount > 1
+			? R_MaterialResourceTable_ResolveTextureResource(
+				passes[1].textureResourceId ) : NULL;
+	const std::uint64_t staleResourceId = passes != NULL && passCount > 0
+		? passes[0].textureResourceId : 0;
+	const std::uint32_t expectedFirstColorMask = RENDERER_COLOR_WRITE_GREEN
+		| RENDERER_COLOR_WRITE_BLUE;
+	const bool recordContract = added && record != NULL
+		&& record->guiDomainReferenced
+		&& R_MaterialResourceTable_GuiPassEligible( *record )
+		&& record->guiPassFailure == MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE
+		&& record->firstGuiPass == 0 && record->guiPassCount == 2
+		&& record->textureBindingCount == 3
+		&& record->materialClass == RENDER_MATERIAL_OPAQUE
+		&& record->semanticBindingIndex[MATERIAL_RESOURCE_TEXTURE_EMISSIVE] == 0
+		&& R_MaterialResourceTable_TextureBindingForSemantic(
+			*record, MATERIAL_RESOURCE_TEXTURE_EMISSIVE ) == &record->textures[0];
+	const bool orderedResourceContract = recordContract && passes != NULL
+		&& passCount == 2 && copied && copiedPasses.count == 2
+		&& passes[0].order == 0 && passes[1].order == 1
+		&& passes[0].sourceStageIndex == 0 && passes[1].sourceStageIndex == 1
+		&& passes[0].kind == RENDERER_MATERIAL_PASS_GUI
+		&& passes[1].kind == RENDERER_MATERIAL_PASS_GUI
+		&& passes[0].textureSemantic == RENDERER_TEXTURE_DIFFUSE
+		&& passes[1].textureSemantic == RENDERER_TEXTURE_DIFFUSE
+		&& passes[0].textureResourceId != passes[1].textureResourceId
+		&& firstBinding == &record->textures[0]
+		&& secondBinding == &record->textures[1]
+		&& firstBinding->stageIndex == 0 && secondBinding->stageIndex == 1
+		&& !firstBinding->depthWrite;
+	const bool registerContract = orderedResourceContract
+		&& passes[0].condition.source == RENDERER_REGISTER_INDEX
+		&& passes[0].condition.index == material->GetStage( 0 )->conditionRegister
+		&& passes[0].color[0].source == RENDERER_REGISTER_INDEX
+		&& passes[0].color[0].index == material->GetStage( 0 )->color.registers[0]
+		&& passes[0].textureMatrix[0].source == RENDERER_REGISTER_INDEX
+		&& passes[0].textureMatrix[5].source == RENDERER_REGISTER_INDEX;
+	const bool blendDepthContract = registerContract && passes[0].blend.enabled
+		&& passes[0].blend.sourceColor == RENDERER_BLEND_SRC_ALPHA
+		&& passes[0].blend.destinationColor == RENDERER_BLEND_ONE_MINUS_SRC_ALPHA
+		&& !passes[0].depth.testEnabled && !passes[0].depth.writeEnabled
+		&& passes[0].depth.compareOperation == RENDERER_COMPARE_LESS_OR_EQUAL
+		&& passes[0].cull == RENDERER_CULL_NONE;
+	const bool colorAlphaContract = blendDepthContract
+		&& passes[0].colorWriteMask == expectedFirstColorMask
+		&& !passes[0].alphaTestEnabled
+		&& passes[0].alphaTestCompareOperation == RENDERER_COMPARE_GREATER
+		&& passes[0].alphaTest.source == RENDERER_REGISTER_CONSTANT
+		&& passes[0].alphaTest.constantValue == 0.5f;
+	const bool firstStateContract = colorAlphaContract
+		&& passes[0].vertexColor == RENDERER_VERTEX_COLOR_MODULATE
+		&& passes[0].polygonOffsetEnabled
+		&& passes[0].polygonOffsetFactor.source == RENDERER_REGISTER_CONSTANT
+		&& passes[0].polygonOffsetUnits.source == RENDERER_REGISTER_CONSTANT
+		&& passes[0].programFamily == RENDERER_PROGRAM_GUI
+		&& RendererContracts_ValidateMaterialPass( passes[0] );
+	const bool secondStateContract = firstStateContract && passes[1].blend.enabled
+		&& passes[1].blend.sourceColor == RENDERER_BLEND_DST_ALPHA
+		&& passes[1].blend.destinationColor == RENDERER_BLEND_ONE
+		&& passes[1].vertexColor == RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+		&& RendererContracts_ValidateMaterialPass( passes[1] );
+	const bool statsContract = secondStateContract
+		&& rg_materialResourceTable.stats.guiPasses == 2
+		&& rg_materialResourceTable.stats.guiDomainReferencedRecords == 1
+		&& rg_materialResourceTable.stats.guiPassEligibleRecords == 1
+		&& rg_materialResourceTable.stats.guiPassFallbackRecords == 0;
+	bool ok = unreferencedRejected && statsContract;
+	const bool initialEligible = record != NULL && record->guiPassEligible;
+	const materialResourceGuiPassFailure_t initialFailure = record != NULL
+		? record->guiPassFailure : MATERIAL_RESOURCE_GUI_PASS_FAILURE_MISSING_MATERIAL;
+	const int initialBindingCount = record != NULL ? record->textureBindingCount : -1;
+
+	// The authored alpha-test flag belongs to the separate classic depth/coverage
+	// walk, not this ambient color walk. Prove that it rejects the complete GUI
+	// material rather than changing the color pass on either shared backend.
+	shaderStage_t *alphaStage = material->GetNumStages() > 0
+		? const_cast<shaderStage_t *>( material->GetStage( 0 ) ) : NULL;
+	bool alphaRejected = false;
+	if ( alphaStage != NULL ) {
+		alphaStage->hasAlphaTest = true;
+		R_MaterialResourceTable_ResetFrameStats();
+		rg_materialResourceTable.stats.prepared = true;
+		const bool alphaAdded = R_MaterialResourceTable_AddRecordFromSource(
+			source, 301, true, true );
+		const materialResourceTableRecord_t *alphaRecord =
+			R_MaterialResourceTable_RecordForIndex( 0 );
+		alphaRejected = alphaAdded && alphaRecord != NULL
+			&& !alphaRecord->guiPassEligible
+			&& alphaRecord->firstGuiPass == -1
+			&& alphaRecord->guiPassCount == 0
+			&& alphaRecord->guiPassFailure
+				== MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_ALPHA_TEST
+			&& alphaRecord->guiPassFailureStage == 0;
+		alphaStage->hasAlphaTest = false;
+	}
+
+	// A private offset layered over a material offset has classic carry-forward
+	// semantics that this first independent-pass contract does not encode.
+	bool combinedPolygonOffsetRejected = false;
+	if ( alphaStage != NULL ) {
+		alphaStage->privatePolygonOffset = 3.0f;
+		R_MaterialResourceTable_ResetFrameStats();
+		rg_materialResourceTable.stats.prepared = true;
+		const bool combinedOffsetAdded = R_MaterialResourceTable_AddRecordFromSource(
+			source, 305, true, true );
+		const materialResourceTableRecord_t *combinedOffsetRecord =
+			R_MaterialResourceTable_RecordForIndex( 0 );
+		combinedPolygonOffsetRejected = combinedOffsetAdded
+			&& combinedOffsetRecord != NULL
+			&& !combinedOffsetRecord->guiPassEligible
+			&& combinedOffsetRecord->firstGuiPass == -1
+			&& combinedOffsetRecord->guiPassCount == 0
+			&& combinedOffsetRecord->guiPassFailure
+				== MATERIAL_RESOURCE_GUI_PASS_FAILURE_UNSUPPORTED_STATE
+			&& combinedOffsetRecord->guiPassFailureStage == 0;
+		alphaStage->privatePolygonOffset = 0.0f;
+	}
+
+	// Post-process sorting is coupled to scene capture and skip controls in the
+	// classic walker.  Prove it cannot leak a partially compiled shared list.
+	const float initialSort = material->GetSort();
+	material->SetSort( SS_POST_PROCESS );
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.stats.prepared = true;
+	const bool postProcessAdded = R_MaterialResourceTable_AddRecordFromSource(
+		source, 303, true, true );
+	const materialResourceTableRecord_t *postProcessRecord =
+		R_MaterialResourceTable_RecordForIndex( 0 );
+	const bool postProcessRejected = postProcessAdded && postProcessRecord != NULL
+		&& !postProcessRecord->guiPassEligible
+		&& postProcessRecord->firstGuiPass == -1
+		&& postProcessRecord->guiPassCount == 0
+		&& postProcessRecord->guiPassFailure
+			== MATERIAL_RESOURCE_GUI_PASS_FAILURE_POST_PROCESS_SORT
+		&& postProcessRecord->guiPassFailureStage == -1
+		&& rg_materialResourceTable.guiPassCount == 0;
+	material->SetSort( initialSort );
+
+	// Decal-sort admission would bypass r_skipDecals in the shared consumers.
+	// Reject it atomically until that cvar is part of the sealed view contract.
+	material->SetSort( SS_DECAL );
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.stats.prepared = true;
+	const bool decalAdded = R_MaterialResourceTable_AddRecordFromSource(
+		source, 304, true, true );
+	const materialResourceTableRecord_t *decalRecord =
+		R_MaterialResourceTable_RecordForIndex( 0 );
+	const bool decalRejected = decalAdded && decalRecord != NULL
+		&& !decalRecord->guiPassEligible
+		&& decalRecord->firstGuiPass == -1
+		&& decalRecord->guiPassCount == 0
+		&& decalRecord->guiPassFailure
+			== MATERIAL_RESOURCE_GUI_PASS_FAILURE_DECAL_SORT
+		&& decalRecord->guiPassFailureStage == -1
+		&& rg_materialResourceTable.guiPassCount == 0;
+	material->SetSort( initialSort );
+
+	// A new frame generation invalidates every old opaque resource id. Leave one
+	// slot free and prove that a two-stage material fails without committing its
+	// first pass or exposing a partially eligible record.
+	const bool staleRejected = staleResourceId != 0
+		&& R_MaterialResourceTable_ResolveTextureResource( staleResourceId ) == NULL;
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.stats.prepared = true;
+	rg_materialResourceTable.guiPassCount = MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES - 1;
+	const bool overflowAdded = R_MaterialResourceTable_AddRecordFromSource(
+		source, 302, true, true );
+	const materialResourceTableRecord_t *overflowRecord =
+		R_MaterialResourceTable_RecordForIndex( 0 );
+	int overflowPassCount = -1;
+	const rendererMaterialPass_t *overflowPasses = overflowRecord != NULL
+		? R_MaterialResourceTable_GuiPasses( *overflowRecord, overflowPassCount ) : NULL;
+	ok &= alphaRejected && combinedPolygonOffsetRejected
+		&& postProcessRejected && decalRejected && staleRejected
+		&& overflowAdded && overflowRecord != NULL
+		&& !overflowRecord->guiPassEligible
+		&& overflowRecord->firstGuiPass == -1
+		&& overflowRecord->guiPassCount == 0
+		&& overflowRecord->guiPassFailure == MATERIAL_RESOURCE_GUI_PASS_FAILURE_PASS_POOL_OVERFLOW
+		&& overflowPasses == NULL && overflowPassCount == 0
+		&& rg_materialResourceTable.guiPassCount == MATERIAL_RESOURCE_TABLE_MAX_GUI_PASSES - 1
+		&& rg_materialResourceTable.stats.guiPasses == 0
+		&& rg_materialResourceTable.stats.guiPassEligibleRecords == 0
+		&& rg_materialResourceTable.stats.guiPassFallbackRecords == 1
+		&& rg_materialResourceTable.stats.guiPassPoolOverflows == 1;
+
+	if ( !ok ) {
+		common->Printf(
+			"RendererMaterialResourceTable self-test failed: GUI pass contract unreferenced=%d added=%d record=%d eligible=%d failure=%s passes=%d bindings=%d copied=%d resolved=%d/%d groups=%d/%d/%d/%d/%d/%d/%d/%d alphaRejected=%d combinedOffsetRejected=%d postProcessRejected=%d decalRejected=%d stale=%d overflow=%d/%s pool=%d\n",
+			unreferencedRejected ? 1 : 0,
+			added ? 1 : 0,
+			record != NULL ? 1 : 0,
+			initialEligible ? 1 : 0,
+			MaterialResourceGuiPassFailure_Name( initialFailure ),
+			passCount,
+			initialBindingCount,
+			copied ? 1 : 0,
+			firstBinding != NULL ? 1 : 0,
+			secondBinding != NULL ? 1 : 0,
+			recordContract ? 1 : 0,
+			orderedResourceContract ? 1 : 0,
+			registerContract ? 1 : 0,
+			blendDepthContract ? 1 : 0,
+			colorAlphaContract ? 1 : 0,
+			firstStateContract ? 1 : 0,
+			secondStateContract ? 1 : 0,
+			statsContract ? 1 : 0,
+			alphaRejected ? 1 : 0,
+			combinedPolygonOffsetRejected ? 1 : 0,
+			postProcessRejected ? 1 : 0,
+			decalRejected ? 1 : 0,
+			staleRejected ? 1 : 0,
+			overflowAdded ? 1 : 0,
+			overflowRecord != NULL ? MaterialResourceGuiPassFailure_Name( overflowRecord->guiPassFailure ) : "missing",
+			rg_materialResourceTable.guiPassCount );
+	}
+	for ( int i = 0; i < rg_materialResourceTable.stats.records; ++i ) {
+		rg_materialResourceTable.records[i].material = NULL;
+	}
+	material->SetSort( parsedSort );
+	DeclManager_FreeAllocatedDecl( materialDecl );
+	R_MaterialResourceTable_ResetFrameStats();
+	rg_materialResourceTable.maxClassicTextureUnits = savedMaxClassicTextureUnits;
+	if ( ok ) {
+		common->Printf( "RendererMaterialResourceTable GUI pass contract self-test passed\n" );
+	}
+	return ok;
 }
 
 static bool R_MaterialResourceTable_RunPBRContractSelfTest( void ) {
@@ -2057,6 +3016,9 @@ bool RendererMaterialResourceTable_RunSelfTest( void ) {
 		return true;
 	}
 
+	if ( !R_MaterialResourceTable_RunGuiPassContractSelfTest() ) {
+		return false;
+	}
 	if ( !R_MaterialResourceTable_RunSyntheticRecordSelfTest() ) {
 		return false;
 	}

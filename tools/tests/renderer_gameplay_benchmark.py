@@ -780,6 +780,7 @@ def common_args(
     append_set(args, "r_rendererGpuTimers", "0")
     append_set(args, "r_rendererModernExecutor", "1" if modern_executor and spec.tier != "legacy" else "0")
     append_set(args, "r_rendererModernAutoPromote", "0")
+    append_set(args, "r_rendererSharedGui", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
     # Keep generated cache/config output in the isolated evidence root.  The
@@ -821,6 +822,7 @@ def build_scripted_capture_lines(
 ) -> tuple[list[str], str]:
     shot_name = f"screenshots/renderer-bench/{role}_{capture_index}.tga"
     lines: list[str] = [
+        "r_rendererSharedGui 0",
         "r_rendererModernVisible 0",
         "r_rendererModernVisibleDepth 0",
         "r_rendererModernOpaque 0",
