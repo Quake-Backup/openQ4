@@ -80,20 +80,19 @@ when a status differs or a narrower qualification is needed.
 | GPU measurement and dynamic resolution | **Partial** | OpenGL and Vulkan publish the same delayed, non-blocking whole-frame microsecond result through renderer ABI v9, including frame/generation identity and availability/drop/reset counters. Map loads, context/device changes, swapchain recreation, capture discontinuities, and shutdown invalidate the timing generation. High-resolution CPU and unique GPU samples feed the versioned benchmark marker, and the gameplay/stock tools enforce and replay exact map/backend/profile CPU/GPU budgets under a fixed bordered-window 1280x720 promotion contract. Current-build storage, repeated-map, and complete required-profile captures have exercised both timing backends; all eight OpenGL and all eight Vulkan cases pass and replay-verify. The initial target rows still need release-candidate/platform qualification before they support universal performance claims. The automatic controller remains Milestone E. |
 | General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Its first production consumer is the learned level-load read/PK4-inflate and framing/integrity pipeline; live asset parsing, renderer/audio upload, and renderer-front-end work remain with their established owners. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. Clean final-package recapture remains a separate release-promotion gate. |
 | Generated caches, streaming, and learned preload manifests | **Implemented and locally validated; release promotion pending** | Successful loads produce exact map/mode/entity-filter/search/PK4/settings manifests. Matching loads use bounded cancellable read/PK4 inflation followed by worker-safe typed framing and integrity validation, publish an immutable generation/source-identity DTO, and let the established main owner parse, adopt, and upload. Transactional static/MD5/MD5R model, classic-proc world, collision, and animation-v3 caches are private to `fs_savepath` and fall back to authoritative VFS sources. This is learned level-load preparation, not general asynchronous asset decode/upload streaming or portal-aware live reprioritization. Local Windows runtime evidence is recorded; clean committed-package performance, broader cancellation/failure campaigns, and release-platform evidence remain open. |
-| Shared renderer contracts and GPU skinning | **Partial** | Scene packets, resource tables, upload infrastructure, and CPU skinning provide inputs, but there is no backend-neutral material/pass IR or supported joint-buffer/GPU deformation path. CPU deformation remains authoritative. |
+| Shared renderer contracts and GPU skinning | **Implemented; opt-in and release promotion pending** | Ordered material/pass, clip-space, semantic vertex-layout, typed buffer-slice, exact four-weight, and joint-palette contracts are shared by OpenGL and Vulkan. `r_gpuSkinning` remains default-off; admitted MD5/MD5R surfaces produce the ordinary `idDrawVert` stream through backend compute while CPU positions and complete fallback remain authoritative for gameplay consumers and stencil volumes. Clean-package visual/performance and platform/driver promotion evidence remains open. |
 | Modern classic-frame ownership | **Experimental** | Render-graph, modern OpenGL submission, clustered/MDI infrastructure, shadow maps, light grids, and Vulkan coverage exist, but no complete stock visible-lighting domain is promoted. ARB2 remains the supported/default owner. |
 | Temporal presentation | **Planned** | Complete motion vectors, history ownership, TAA/TAAU, reactive/disocclusion handling, and dynamic-resolution integration are absent. SMAA remains the compatibility path. |
 | Modern PBR lighting and idTech 6-like follow-ons | **Planned** | GGX/IBL, reflection probes, clustered decals/probes, froxel volumetrics, SSR/SSGI, GPU-driven visible ownership, and optional sparse residency all remain after the shared-contract and temporal gates. |
 
-Milestones A and B have completed their implementation and local integration
-gates. The next recommended implementation target is **Milestone C**, beginning
-with the minimum backend-neutral renderer contracts and an independently
-reversible GPU-animation corridor. Release qualification remains a separate
-track: repeat and retain the Milestone A and B acceptance sets from clean
-committed source and a freshly staged final package, with the required platform
-and driver coverage. Renderer-front-end consumers still require the module
-boundary described below. The PBR Phase 0-3 foundation is intentionally not a
-reason to skip ahead to visible PBR lighting.
+Milestones A, B, and C have completed their implementation and local integration
+gates. The next recommended implementation target is **Milestone D**, promoting
+one complete classic-frame domain through the shared records on both backends
+while retaining per-domain rollback. Release qualification remains a separate
+track: repeat and retain the Milestone A-C acceptance sets from clean committed
+source and a freshly staged final package, with the required platform and driver
+coverage. The PBR Phase 0-3 foundation is intentionally not a reason to skip
+ahead to visible PBR lighting.
 
 ## Best official Doom 3 BFG candidates
 
@@ -154,8 +153,9 @@ PK4 archive mutation and game-state mutation remain outside the worker contract.
 
 BFG converts MD5 vertices to four normalized byte weights and four joint
 indices, uploads joint matrices through an aligned joint buffer, and keeps a CPU
-path for unsupported or special surfaces. That is a strong reference for
-openQ4, where CPU deformation remains authoritative today.
+path for unsupported or special surfaces. openQ4 now adapts that architecture
+through its own full-precision, backend-neutral and fail-closed contract rather
+than adopting BFG's packed vertex ABI.
 
 The packed layout is not itself a safe compatibility contract. BFG asserts that
 a model has fewer than 256 joints, stores joint indices in `color`, stores
@@ -164,23 +164,22 @@ than four influences. Its own source notes residual weights above 25 percent in
 some assets. Quake 4's packed MD5R path can also carry diffuse vertex colors, so
 openQ4 must not silently repurpose those channels.
 
-An openQ4 implementation needs additional compatibility work:
+The landed corridor applies the required compatibility rules:
 
-- inventory joint counts and influence counts, then validate the top-four
-  reduction against stock Quake 4 MD5 and packed MD5R meshes; retain the CPU
-  path whenever a joint-index limit or residual-error threshold is exceeded;
-- use dedicated skin-index/weight attributes, or prove that an existing packed
-  channel is semantically unused, so MD5R diffuse colors remain intact;
+- validate joint and influence counts and retain the CPU path rather than
+  truncating any MD5 vertex with more than four meaningful influences;
+- use dedicated `uint32[4]` joint indices and `float32[4]` weights so packed
+  MD5R diffuse colors and signed implicit residual-weight behavior remain intact;
 - preserve CPU deformation for collision, traces, deforms, software-only debug
   tools, decals/overlays that need current positions, stencil shadow-volume
   construction, and any shader/material path lacking the skinning contract;
 - carry joint data through ambient surfaces, light interactions, shadow-map
   casters, subviews, and view models, while explicitly routing incompatible
   surfaces to CPU deformation;
-- use one backend-neutral joint-buffer handle represented consistently in GL
-  and Vulkan;
-- compare bounds, positions, normals/tangents, silhouettes, and screenshots
-  against the CPU path before enabling it by default.
+- use one typed, generational joint-buffer/slice contract represented
+  consistently in GL and Vulkan;
+- keep the capability default-off while clean-package bounds, vertex,
+  silhouette, screenshot, and performance promotion evidence is accumulated.
 
 This should land as capability and parity infrastructure first. It should not be
 coupled to PBR, TAA, or a renderer-default switch.
@@ -320,9 +319,9 @@ temporal or PBR work multiplies the parity surface.
 |---|---|---|
 | A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
 | B. Loading and cache modernization | **Implemented and locally validated; release promotion pending** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. Promotion still requires retained final committed-package campaigns, measurements, and release-platform qualification recorded in the loading/cache evidence tables. General asynchronous owner decode/upload and portal-aware live reprioritization remain future work rather than part of this completed slice. |
-| C. Shared renderer contracts and GPU animation | **Partial** | Packet/resource infrastructure exists, but shared GL/Vulkan pass semantics and GPU skinning parity are missing. |
+| C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
 | D. Modern classic-frame ownership | **Experimental** | Individual modern paths exist; no complete classic-visible domain has satisfied the cross-backend parity exit gate. |
-| E. Temporal presentation | **Planned** | Milestone A now supplies the timing prerequisite; incomplete Milestones C and D still block motion/resource contracts and complete frame ownership. |
+| E. Temporal presentation | **Planned** | Milestones A and C now supply the timing and shared-contract prerequisites; incomplete Milestone D still blocks complete frame ownership and the visible motion-vector corridor. |
 | F. Modern materials and advanced lighting | **Foundation only** | PBR authoring/resource Phases 0-3 exist, but visible PBR/IBL and advanced-lighting ownership must wait for Milestones C-E. |
 
 ### Milestone A: foundation and measurement
@@ -406,16 +405,25 @@ for promotion. Their authoritative status is recorded in
 
 ### Milestone C: shared renderer contracts and GPU animation
 
-1. Define the minimum backend-neutral material/pass, clip-space, vertex-layout,
-   and buffer-handle contracts needed by both GL and Vulkan.
-2. Add backend-neutral joint-buffer rings and dedicated four-weight vertex data.
-3. Prove the rigid/MD5/MD5R CPU-vs-GPU parity corridor, including diffuse vertex
-   colors, residual weights, and joint-count fallbacks.
-4. Extend coverage to interactions, decals, subviews, shadow-map paths, view
-   models, and explicit CPU stencil-volume fallback.
+1. **Implemented:** define the minimum backend-neutral material/pass,
+   clip-space, vertex-layout, and typed buffer-slice contracts needed by both GL
+   and Vulkan.
+2. **Implemented:** add bounded backend joint-buffer rings and dedicated
+   full-precision four-weight vertex data.
+3. **Implemented:** establish the rigid/MD5/MD5R CPU-vs-GPU parity corridor,
+   including preserved diffuse vertex colors, signed MD5R residual weights,
+   exact-only MD5 admission, and joint/data/capability fallbacks.
+4. **Implemented:** feed an ordinary deformed `idDrawVert` stream to depth,
+   ambient, interaction, subview, shadow-map, and view-model consumers while
+   decals/overlays keep CPU positions and stencil volumes remain explicitly CPU.
 
 Exit gate: stock SP/MP visual equivalence, CPU fallback parity, no collision or
 hit-detection changes, and measured CPU-frame reduction in animation-heavy maps.
+The implementation and deterministic contract gate is complete. Clean committed
+package screenshots, pure-MP collision/hit digests, repeated animation-heavy
+measurements, and target-platform/driver coverage remain required before the
+default-off capability can be promoted; the exact procedure is recorded in
+[Shared Renderer Contracts and GPU Animation](gpu-skinning-modernization.md).
 
 ### Milestone D: modern classic-frame ownership
 

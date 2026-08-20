@@ -279,6 +279,21 @@ if get_option('build_native_tests')
     openq4_gpu_frame_timing_test,
     timeout: 30,
   )
+
+  openq4_renderer_contracts_test = executable(
+    'openq4-renderer-contracts-test',
+    files(
+      'tools/tests/native/RendererContractsTest.cpp',
+      'src/renderer/RendererContracts.cpp',
+    ),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-renderer-contracts',
+    openq4_renderer_contracts_test,
+    timeout: 30,
+  )
 endif
 
 openq4_pak_files = []

@@ -183,6 +183,7 @@ static void R_MD5R_CopyAndReverseTriangles( const srfTriangles_t *src, srfTriang
 	for ( int i = 0; i < tri->numVerts; ++i ) {
 		tri->verts[ i ].normal = vec3_origin - tri->verts[ i ].normal;
 	}
+	R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_UNSUPPORTED_PASS );
 
 	for ( int i = 0; i < tri->numIndexes; i += 3 ) {
 		tri->indexes[ i + 0 ] = src->indexes[ i + 1 ];
@@ -4712,7 +4713,6 @@ static int R_MD5R_GetDominantBlendJoint(
 R_MD5R_GetPackedTransformCount
 ========================
 */
-#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 static int R_MD5R_GetPackedTransformCount( const rvMD5RMesh &mesh ) {
 	int totalTransformCount = 0;
 
@@ -4722,6 +4722,8 @@ static int R_MD5R_GetPackedTransformCount( const rvMD5RMesh &mesh ) {
 
 	return totalTransformCount;
 }
+
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 
 /*
 ========================
@@ -4827,7 +4829,8 @@ static bool R_MD5R_UpdatePackedDynamicSurface(
 	const idList<silEdge_t> &silEdges,
 	int numJoints,
 	modelSurface_t &surface,
-	bool calculateTangents ) {
+	bool calculateTangents,
+	bool skipCpuTangents ) {
 	if ( entJoints == NULL || !R_MD5R_CanUsePackedDynamicSurface( mesh, vertexBuffers, indexBuffers ) ) {
 		return false;
 	}
@@ -4960,7 +4963,8 @@ static bool R_MD5R_UpdatePackedDynamicSurface(
 
 	tri->bounds = bounds;
 
-	if ( calculateTangents && !tri->tangentsCalculated && !r_useDeferredTangents.GetBool() ) {
+	if ( calculateTangents && !skipCpuTangents
+		&& !tri->tangentsCalculated && !r_useDeferredTangents.GetBool() ) {
 		R_DeriveTangents( tri );
 	}
 
@@ -5018,20 +5022,199 @@ bool rvRenderModelMD5R::BuildDynamicMeshTemplate( rvMD5RMesh &mesh ) {
 	return true;
 }
 
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+static bool R_MD5R_UpdateSkinToModelTransforms( const rvMD5RMesh &mesh,
+	const idJointMat *entJoints, int numJoints, srfTriangles_t *tri ) {
+	if ( entJoints == NULL || tri == NULL ) {
+		return false;
+	}
+	const int totalTransformCount = R_MD5R_GetPackedTransformCount( mesh );
+	if ( totalTransformCount <= 0 || totalTransformCount > GPU_SKINNING_MAX_JOINTS ) {
+		return false;
+	}
+	R_AllocStaticSkinToModelTransforms( tri, totalTransformCount );
+	if ( tri->skinToModelTransforms == NULL ) {
+		return false;
+	}
+
+	int transformBase = 0;
+	for ( int primBatchIndex = 0; primBatchIndex < mesh.primBatches.Num(); ++primBatchIndex ) {
+		const rvMD5RPrimBatch &primBatch = mesh.primBatches[primBatchIndex];
+		const int primBatchTransformCount = Max( primBatch.numTransforms, 1 );
+		for ( int transformIndex = 0; transformIndex < primBatchTransformCount; ++transformIndex ) {
+			int jointIndex = 0;
+			if ( !R_MD5R_ResolveBlendJoint( primBatch, transformIndex, numJoints, jointIndex ) ) {
+				return false;
+			}
+			R_MD5R_WriteSkinToModelTransform( entJoints[jointIndex],
+				tri->skinToModelTransforms + ( transformBase + transformIndex ) * 16 );
+		}
+		transformBase += primBatchTransformCount;
+	}
+	return transformBase == totalTransformCount;
+}
+
+static bool R_MD5R_AttachGpuSkinningContract( const rvMD5RMesh &mesh,
+	srfTriangles_t *tri, float skinScale, bool allowGpuSkinning ) {
+	if ( tri == NULL ) {
+		return false;
+	}
+	if ( skinScale != 0.0f ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_SKIN_SCALE );
+		return false;
+	}
+	if ( !allowGpuSkinning ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_UNSUPPORTED_PASS );
+		return false;
+	}
+	if ( !r_gpuSkinning.GetBool() ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_DISABLED );
+		return false;
+	}
+
+	int sidecarVertexCount = mesh.gpuBindPoseVerts.Num();
+	if ( tri->numVerts == mesh.gpuSkinningSourceVerts ) {
+		sidecarVertexCount = mesh.gpuSkinningSourceVerts;
+	}
+	return R_GpuSkinning_AttachSurfaceContract( tri, mesh.gpuBindPoseVerts.Ptr(),
+		mesh.gpuSkinningVerts.Ptr(), sidecarVertexCount,
+		tri->skinToModelTransforms, tri->numSkinToModelTransforms, 16, true,
+		mesh.gpuSkinningFallback );
+}
+#endif
+
+/*
+========================
+rvRenderModelMD5R::BuildGpuSkinningSidecar
+
+Normalize retail per-primitive local blend indices into one immutable surface
+stream. Signed implicit weights are intentionally preserved.
+========================
+*/
+void rvRenderModelMD5R::BuildGpuSkinningSidecar( rvMD5RMesh &mesh ) const {
+	mesh.gpuBindPoseVerts.Clear();
+	mesh.gpuSkinningVerts.Clear();
+	mesh.gpuSkinningSourceVerts = 0;
+	mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_NONE;
+
+	const idList<rvMD5RVertexBufferDesc> &vertexBuffers = GetVertexBuffers();
+	if ( mesh.deformInfo == NULL || mesh.baseDrawVerts.Num() != mesh.deformInfo->numSourceVerts
+		|| mesh.drawVertexBuffer < 0 || mesh.drawVertexBuffer >= vertexBuffers.Num() ) {
+		mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_MISSING_BIND_POSE;
+		return;
+	}
+	const rvMD5RVertexBufferDesc &drawVertexBuffer = vertexBuffers[mesh.drawVertexBuffer];
+	const int totalTransformCount = R_MD5R_GetPackedTransformCount( mesh );
+	if ( totalTransformCount <= 0 || totalTransformCount > GPU_SKINNING_MAX_JOINTS ) {
+		mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_JOINT_COUNT;
+		return;
+	}
+
+	mesh.gpuSkinningSourceVerts = mesh.deformInfo->numSourceVerts;
+	mesh.gpuBindPoseVerts.SetNum( mesh.deformInfo->numOutputVerts );
+	mesh.gpuSkinningVerts.SetNum( mesh.deformInfo->numOutputVerts );
+	for ( int vertexIndex = 0; vertexIndex < mesh.gpuSkinningSourceVerts; ++vertexIndex ) {
+		mesh.gpuBindPoseVerts[vertexIndex] = mesh.baseDrawVerts[vertexIndex];
+	}
+
+	int destVertexBase = 0;
+	int transformBase = 0;
+	for ( int primBatchIndex = 0; primBatchIndex < mesh.primBatches.Num(); ++primBatchIndex ) {
+		const rvMD5RPrimBatch &primBatch = mesh.primBatches[primBatchIndex];
+		const int primBatchTransformCount = Max( primBatch.numTransforms, 1 );
+		if ( primBatch.hasDrawGeoSpec ) {
+			for ( int localVertexIndex = 0; localVertexIndex < primBatch.drawGeoSpec.vertexCount; ++localVertexIndex ) {
+				const int destVertexIndex = destVertexBase + localVertexIndex;
+				const int sourceVertexIndex = primBatch.drawGeoSpec.vertexStart + localVertexIndex;
+				if ( destVertexIndex < 0 || destVertexIndex >= mesh.gpuSkinningSourceVerts
+					|| sourceVertexIndex < 0 || sourceVertexIndex >= drawVertexBuffer.numVertices ) {
+					mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_VERTEX_COUNT;
+					return;
+				}
+
+				const bool hasBlendIndices = drawVertexBuffer.blendIndices.Num() == drawVertexBuffer.numVertices;
+				const bool hasBlendWeights = drawVertexBuffer.blendWeights.Num() == drawVertexBuffer.numVertices;
+				const dword packedBlendIndices = hasBlendIndices
+					? drawVertexBuffer.blendIndices[sourceVertexIndex] : 0u;
+				idVec4 blendWeights;
+				blendWeights.Zero();
+				blendWeights.x = 1.0f;
+				if ( hasBlendWeights ) {
+					blendWeights = drawVertexBuffer.blendWeights[sourceVertexIndex];
+				}
+				const int implicitWeightIndex = R_MD5R_GetImplicitBlendWeightIndex( drawVertexBuffer );
+				gpuSkinningInfluence_t influences[GPU_SKINNING_INFLUENCES];
+				for ( int influenceIndex = 0; influenceIndex < GPU_SKINNING_INFLUENCES; ++influenceIndex ) {
+					const int localTransformIndex = hasBlendIndices
+						? R_MD5R_GetBlendIndex( packedBlendIndices, influenceIndex ) : 0;
+					influences[influenceIndex].jointIndex = transformBase + Max( localTransformIndex, 0 );
+					influences[influenceIndex].weight = R_MD5R_GetSkinningBlendWeight(
+						blendWeights, influenceIndex, implicitWeightIndex );
+					if ( influences[influenceIndex].weight != 0.0f
+						&& ( localTransformIndex < 0 || localTransformIndex >= primBatchTransformCount ) ) {
+						mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_JOINT_INDEX;
+						return;
+					}
+				}
+
+				gpuSkinningPackResult_t packResult;
+				if ( !R_GpuSkinning_PackVertexExact( influences, GPU_SKINNING_INFLUENCES,
+					totalTransformCount, true, mesh.gpuSkinningVerts[destVertexIndex], packResult )
+					&& mesh.gpuSkinningFallback == GPU_SKINNING_FALLBACK_NONE ) {
+					mesh.gpuSkinningFallback = packResult.reason;
+				}
+			}
+			destVertexBase += primBatch.drawGeoSpec.vertexCount;
+		}
+		transformBase += primBatchTransformCount;
+	}
+
+	if ( destVertexBase != mesh.gpuSkinningSourceVerts || transformBase != totalTransformCount ) {
+		mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_VERTEX_COUNT;
+		return;
+	}
+
+	for ( int mirrorIndex = 0; mirrorIndex < mesh.deformInfo->numMirroredVerts; ++mirrorIndex ) {
+		const int destVertexIndex = mesh.gpuSkinningSourceVerts + mirrorIndex;
+		const int sourceVertexIndex = mesh.deformInfo->mirroredVerts[mirrorIndex];
+		if ( destVertexIndex < 0 || destVertexIndex >= mesh.gpuBindPoseVerts.Num()
+			|| sourceVertexIndex < 0 || sourceVertexIndex >= mesh.gpuSkinningSourceVerts ) {
+			mesh.gpuSkinningFallback = GPU_SKINNING_FALLBACK_VERTEX_COUNT;
+			return;
+		}
+		mesh.gpuBindPoseVerts[destVertexIndex] = mesh.gpuBindPoseVerts[sourceVertexIndex];
+		mesh.gpuSkinningVerts[destVertexIndex] = mesh.gpuSkinningVerts[sourceVertexIndex];
+	}
+}
+
 /*
 ========================
 rvRenderModelMD5R::UpdateDynamicSurface
 ========================
 */
-bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJointMat *entJoints, modelSurface_t &surface, bool calculateTangents, float skinScale ) const {
+bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJointMat *entJoints, modelSurface_t &surface, bool calculateTangents, float skinScale, bool allowGpuSkinning ) const {
 	const idList<rvMD5RVertexBufferDesc> &vertexBuffers = GetVertexBuffers();
 	const idList<rvMD5RIndexBufferDesc> &indexBuffers = GetIndexBuffers();
 	const idList<silEdge_t> &silEdges = GetSilhouetteEdges();
+	const uint64 cpuSkinStart = R_GpuSkinning_ReadMicroseconds();
 
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	const bool skipPackedCpuTangents = allowGpuSkinning && r_gpuSkinning.GetBool()
+		&& mesh.gpuSkinningFallback == GPU_SKINNING_FALLBACK_NONE
+		&& mesh.gpuBindPoseVerts.Num() == mesh.numDrawVertices
+		&& mesh.gpuSkinningVerts.Num() == mesh.numDrawVertices;
 	if ( skinScale == 0.0f
 		&& R_MD5R_UsePackedRuntimeSurfaces()
-		&& R_MD5R_UpdatePackedDynamicSurface( mesh, entJoints, vertexBuffers, indexBuffers, silEdges, joints.Num(), surface, calculateTangents ) ) {
+		&& R_MD5R_UpdatePackedDynamicSurface( mesh, entJoints, vertexBuffers,
+			indexBuffers, silEdges, joints.Num(), surface, calculateTangents,
+			skipPackedCpuTangents ) ) {
+		const bool gpuContractAttached = R_MD5R_AttachGpuSkinningContract(
+			mesh, surface.geometry, skinScale, allowGpuSkinning );
+		const uint64 cpuSkinEnd = R_GpuSkinning_ReadMicroseconds();
+		const uint64 elapsedMicroseconds = cpuSkinEnd >= cpuSkinStart
+			? cpuSkinEnd - cpuSkinStart : 0;
+		R_GpuSkinning_RecordCpuSkinning( elapsedMicroseconds,
+			surface.geometry != NULL ? surface.geometry->numVerts : 0, gpuContractAttached );
 		return true;
 	}
 #endif
@@ -5071,6 +5254,7 @@ bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJo
 		tri = R_AllocStaticTriSurf();
 		surface.geometry = tri;
 	}
+	R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_NONE );
 
 	tri->deformedSurface = true;
 	tri->generateNormals = true;
@@ -5091,6 +5275,18 @@ bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJo
 	if ( tri->verts == NULL ) {
 		R_AllocStaticTriSurfVerts( tri, tri->numVerts );
 	}
+
+	bool gpuContractAttached = false;
+#if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
+	if ( R_MD5R_UpdateSkinToModelTransforms( mesh, entJoints, joints.Num(), tri ) ) {
+		gpuContractAttached = R_MD5R_AttachGpuSkinningContract(
+			mesh, tri, skinScale, allowGpuSkinning );
+	} else {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_JOINT_COUNT );
+	}
+#else
+	R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+#endif
 
 	int destVertexBase = 0;
 	for ( int primBatchIndex = 0; primBatchIndex < mesh.primBatches.Num(); ++primBatchIndex ) {
@@ -5135,8 +5331,15 @@ bool rvRenderModelMD5R::UpdateDynamicSurface( const rvMD5RMesh &mesh, const idJo
 	R_BoundTriSurf( tri );
 
 	if ( calculateTangents && !R_MD5R_DeferDynamicTangents() ) {
-		R_DeriveTangents( tri );
+		if ( !gpuContractAttached ) {
+			R_DeriveTangents( tri );
+		}
 	}
+
+	const uint64 cpuSkinEnd = R_GpuSkinning_ReadMicroseconds();
+	const uint64 elapsedMicroseconds = cpuSkinEnd >= cpuSkinStart
+		? cpuSkinEnd - cpuSkinStart : 0;
+	R_GpuSkinning_RecordCpuSkinning( elapsedMicroseconds, tri->numVerts, gpuContractAttached );
 
 	return true;
 }
@@ -5205,6 +5408,11 @@ bool rvRenderModelMD5R::GenerateDynamicSurface( idRenderModelStatic &staticModel
 			return false;
 		}
 	}
+	if ( mesh.deformInfo != NULL
+		&& ( mesh.gpuBindPoseVerts.Num() != mesh.deformInfo->numOutputVerts
+			|| mesh.gpuSkinningVerts.Num() != mesh.deformInfo->numOutputVerts ) ) {
+		BuildGpuSkinningSidecar( mesh );
+	}
 
 	modelSurface_t *surface = NULL;
 	int surfaceNum = -1;
@@ -5222,7 +5430,7 @@ bool rvRenderModelMD5R::GenerateDynamicSurface( idRenderModelStatic &staticModel
 		surface->mOriginalSurfaceName = NULL;
 	}
 
-	if ( !UpdateDynamicSurface( mesh, entJoints, *surface, !collisionOnly, skinScale ) ) {
+	if ( !UpdateDynamicSurface( mesh, entJoints, *surface, !collisionOnly, skinScale, !collisionOnly ) ) {
 		staticModel.DeleteSurfaceWithId( mesh.meshIdentifier );
 		staticModel.DeleteSurfaceWithId( mesh.meshIdentifier + MD5R_BackSideSurfaceIdOffset );
 		mesh.surfaceNum = -1;
@@ -5542,6 +5750,10 @@ void rvRenderModelMD5R::PurgeModel() {
 			meshes[ meshIndex ].deformInfo = NULL;
 		}
 		meshes[ meshIndex ].baseDrawVerts.Clear();
+		meshes[ meshIndex ].gpuBindPoseVerts.Clear();
+		meshes[ meshIndex ].gpuSkinningVerts.Clear();
+		meshes[ meshIndex ].gpuSkinningSourceVerts = 0;
+		meshes[ meshIndex ].gpuSkinningFallback = GPU_SKINNING_FALLBACK_MISSING_SKIN_VERTICES;
 	}
 	vertexBuffers.Clear();
 	indexBuffers.Clear();

@@ -246,6 +246,10 @@ bool R_CreateAmbientCache( srfTriangles_t *tri, bool needsLighting ) {
 	if ( tri->ambientCache ) {
 		return true;
 	}
+	if ( R_GpuSkinning_IsCandidate( tri )
+		&& R_GpuSkinning_PrepareAmbientCache( tri, needsLighting ) ) {
+		return true;
+	}
 	// we are going to use it for drawing, so make sure we have the tangents and normals
 	if ( needsLighting && !tri->tangentsCalculated ) {
 		R_DeriveTangents( tri );
@@ -272,6 +276,9 @@ bool R_CreatePackedSurfaceFrameCaches( srfTriangles_t *tri, bool needsLighting, 
 	if ( tri == NULL || tri->numVerts <= 0 ) {
 		return false;
 	}
+	const bool gpuPrepared = tri->ambientCache == NULL
+		&& R_GpuSkinning_IsCandidate( tri )
+		&& R_GpuSkinning_PrepareAmbientCache( tri, needsLighting );
 
 	idDrawVert *sourceVerts = tri->verts;
 	glIndex_t *sourceIndexes = tri->indexes;
@@ -289,18 +296,21 @@ bool R_CreatePackedSurfaceFrameCaches( srfTriangles_t *tri, bool needsLighting, 
 	}
 #endif
 
-	if ( sourceVerts == NULL ) {
+	if ( sourceVerts == NULL && !gpuPrepared ) {
 		return false;
 	}
 
-	if ( needsLighting && !tri->tangentsCalculated && sourceVerts == tri->verts ) {
+	if ( !gpuPrepared && needsLighting && !tri->tangentsCalculated && sourceVerts == tri->verts ) {
 		R_DeriveTangents( tri );
 		sourceVerts = tri->verts;
 	}
 
-	tri->ambientCache = vertexCache.AllocFrameTemp( sourceVerts, tri->numVerts * sizeof( sourceVerts[0] ) );
-	if ( !tri->ambientCache ) {
-		return false;
+	if ( !gpuPrepared ) {
+		tri->ambientCache = vertexCache.AllocFrameTemp( sourceVerts,
+			tri->numVerts * sizeof( sourceVerts[0] ) );
+		if ( !tri->ambientCache ) {
+			return false;
+		}
 	}
 
 	if ( r_useIndexBuffers.GetBool() && createIndexCache && tri->numIndexes > 0 && sourceIndexes != NULL ) {
@@ -349,6 +359,10 @@ static srfTriangles_t *R_CreateFrameSubmitTri( srfTriangles_t *tri, bool needsLi
 
 	srfTriangles_t *submitTri = (srfTriangles_t *)R_FrameAlloc( sizeof( *submitTri ) );
 	*submitTri = *tri;
+	// The frame snapshot borrows immutable sidecars and the palette from the
+	// dynamic-model snapshot. It must never free the source allocation.
+	submitTri->gpuSkinningJointPaletteAlloc = NULL;
+	submitTri->numGpuSkinningJointPaletteAllocJoints = 0;
 	submitTri->verts = sourceVerts;
 	submitTri->indexes = sourceIndexes;
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )

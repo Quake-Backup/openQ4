@@ -34,6 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Image.h"
 #include "RendererStartupDiagnostics.h"
 #include "RenderTexture.h"
+#include "GpuSkinning.h"
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 #include "../idlib/geometry/rvVertex.h"
 #endif

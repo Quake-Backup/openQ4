@@ -3,6 +3,7 @@
 
 #include "tr_local.h"
 #include "ModernGLSubmitPlan.h"
+#include "RendererContracts.h"
 
 idModernGLSubmitPlan::idModernGLSubmitPlan()
 	: numCommands( 0 ) {
@@ -61,7 +62,11 @@ void R_ModernGLSubmitCommand_BuildModelViewProjection( modernGLSubmitCommand_t &
 		}
 		projectionMatrix[14] *= 0.25f;
 	}
-	myGlMultMatrix( command.modelViewMatrix, projectionMatrix, command.modelViewProjectionMatrix );
+	float canonicalModelViewProjection[ 16 ];
+	myGlMultMatrix( command.modelViewMatrix, projectionMatrix, canonicalModelViewProjection );
+	RendererContracts_ConvertClipMatrix( command.modelViewProjectionMatrix,
+		canonicalModelViewProjection, RendererContracts_GLClipSpace(),
+		RendererContracts_GLClipSpace() );
 }
 
 static bool R_ModernGLSubmitPlan_ScissorEquals( const modernGLSubmitCommand_t &a, const modernGLSubmitCommand_t &b ) {

@@ -39,6 +39,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
+#include "RendererContracts.h"
 #include "RenderGraph.h"
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
@@ -383,6 +384,7 @@ idCVar r_useDeferredTangents( "r_useDeferredTangents", "1", CVAR_RENDERER | CVAR
 idCVar r_useCachedDynamicModels( "r_useCachedDynamicModels", "1", CVAR_RENDERER | CVAR_BOOL, "cache snapshots of dynamic models" );
 idCVar r_useRepeatedStateReuse( "r_useRepeatedStateReuse", "1", CVAR_RENDERER | CVAR_BOOL, "keep model-space dynamic snapshots across transform-only entity updates so repeated-state presentation frames skip CPU re-skinning" );
 idCVar r_useNewSkinning( "r_useNewSkinning", "1", CVAR_RENDERER | CVAR_BOOL, "use retail-style SIMD MD5 skinning data" );
+idCVar r_gpuSkinning( "r_gpuSkinning", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use exact four-weight GPU deformation for eligible animated surfaces" );
 idCVar r_useFastSkinning( "r_useFastSkinning", "0", CVAR_RENDERER | CVAR_BOOL, "approximate MD5 tangent skinning with the dominant joint only" );
 idCVar r_deriveBiTangents( "r_deriveBiTangents", "0", CVAR_RENDERER | CVAR_BOOL, "derive bitangents from skinned normals and tangents" );
 idCVar r_forceConvertMD5R( "r_forceConvertMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "prefer source md5/proc assets over any future prebuilt MD5R companions" );
@@ -809,6 +811,24 @@ static void R_RendererMaterialResourceTableSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererMaterialResourceTable_RunSelfTest() ) {
 		common->Warning( "Renderer material resource-table self-test failed" );
+	}
+}
+
+static void R_RendererGpuSkinningSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( R_GpuSkinning_RunSelfTest() ) {
+		common->Printf( "RendererGpuSkinning self-test passed\n" );
+	} else {
+		common->Warning( "RendererGpuSkinning self-test failed" );
+	}
+}
+
+static void R_RendererContractsSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererContracts_RunSelfTest() ) {
+		common->Printf( "RendererContracts self-test passed\n" );
+	} else {
+		common->Warning( "RendererContracts self-test failed" );
 	}
 }
 
@@ -1836,6 +1856,7 @@ void R_InitOpenGL( void ) {
 	R_GLDebugOutput_FlushMessages();
 
 	R_RendererUpload_Init( glConfig.backendCaps );
+	R_GpuSkinning_ContractInit( glConfig.backendCaps );
 
 	// allocate the vertex array range or vertex objects
 	R_RecordRendererStartupPhase( RENDERER_STARTUP_PHASE_VERTEX_CACHE_INIT );
@@ -3677,6 +3698,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		common->Printf( "Renderer caps: %s\n", capsSummary );
 	}
 	RendererModule_PrintGfxInfo();
+	R_GpuSkinning_PrintGfxInfo();
 	RendererCompatibilityGates_PrintGfxInfo();
 	RendererTierContract_PrintGfxInfo();
 	RendererBootstrap_PrintGfxInfo();
@@ -3869,6 +3891,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_MaterialResourceTable_Shutdown();
 	R_RenderGraphResources_Shutdown();
 	R_ModernGLExecutor_Shutdown();
+	R_GpuSkinning_ContractShutdown();
 	R_RendererUpload_Shutdown();
 	RendererBootstrap_Shutdown();
 	R_PurgeFramebufferCopyFBOs();
@@ -4115,6 +4138,8 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererDefaultSafetySelfTest", R_RendererDefaultSafetySelfTest_f, CMD_FL_RENDERER, "run renderer conservative-default safety self tests" );
 	cmdSystem->AddCommand( "rendererBenchmarkCapture", R_RendererBenchmarkCapture_f, CMD_FL_RENDERER, "print the latest renderer benchmark capture summary" );
 	cmdSystem->AddCommand( "rendererUploadSelfTest", R_RendererUploadSelfTest_f, CMD_FL_RENDERER, "run renderer upload stream self tests" );
+	cmdSystem->AddCommand( "rendererGpuSkinningSelfTest", R_RendererGpuSkinningSelfTest_f, CMD_FL_RENDERER, "run renderer GPU skinning contract self tests" );
+	cmdSystem->AddCommand( "rendererContractsSelfTest", R_RendererContractsSelfTest_f, CMD_FL_RENDERER, "run renderer layout and buffer contract self tests" );
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphSelfTest", R_RendererRenderGraphSelfTest_f, CMD_FL_RENDERER, "run renderer resource-graph self tests" );
@@ -4416,6 +4441,7 @@ void idRenderSystemLocal::InitOpenGL( void ) {
 		if ( !VK_InitRenderDevice() ) {
 			common->FatalError( "Vulkan renderer device initialization failed" );
 		}
+		R_GpuSkinning_ContractInit( glConfig.backendCaps );
 		// mirror the R_InitOpenGL tail the seam skips: the front-end needs
 		// the vertex cache, a resolved back end, frame data, and gamma
 		// tables before the first BeginFrame
@@ -4461,6 +4487,7 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 
 	// free the context and close the window
 	R_ShutdownFrameData();
+	R_GpuSkinning_ContractShutdown();
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan backend seam (Phase C): the GL executor/upload/graph/debug
 	// subsystems never initialized; device + window teardown is GLimp_Shutdown

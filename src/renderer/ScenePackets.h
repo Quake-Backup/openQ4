@@ -4,6 +4,8 @@
 #ifndef __SCENE_PACKETS_H__
 #define __SCENE_PACKETS_H__
 
+#include "GpuSkinning.h"
+
 /*
 ===============================================================================
 
@@ -181,11 +183,13 @@ typedef struct geometryResourceRecord_s {
 	unsigned int			fallbackFlags;
 	int						skinningPaletteOffset;
 	int						skinningPaletteCount;
+	gpuSkinningSurface_t	gpuSkinningSurface;
 	const glIndex_t			*legacyIndexData;
 	bool					hasAmbientVertexBuffer;
 	bool					hasIndexBuffer;
 	bool					hasClientIndexData;
 	bool					hasPrimBatchMesh;
+	bool					hasGpuSkinningContract;
 	bool					hasBounds;
 } geometryResourceRecord_t;
 

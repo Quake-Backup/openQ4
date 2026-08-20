@@ -14,6 +14,7 @@
 #include "ModernShadowPlanner.h"
 #include "RenderGraphResources.h"
 #include "RendererBootstrap.h"
+#include "RendererContracts.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
 
@@ -173,23 +174,6 @@ const GLuint MODERN_GL_DRAW_RECORD_BINDING_INDEX = 1;
 const GLuint MODERN_GL_DRAW_RECORD_ATTR_INDEX = 12;
 const GLuint MODERN_GL_DRAW_RECORD_SSBO_BINDING = 4;
 const GLuint MODERN_GL_GPU_BUCKET_SSBO_BINDING = 5;
-
-typedef struct modernGLDrawVertAttributeDesc_s {
-	modernGLDrawVertAttribute_t	attribute;
-	GLint						components;
-	GLenum						type;
-	GLboolean					normalized;
-	GLuint						relativeOffset;
-} modernGLDrawVertAttributeDesc_t;
-
-static const modernGLDrawVertAttributeDesc_t rg_modernGLDrawVertAttributes[] = {
-	{ MODERN_GL_DRAWVERT_ATTR_POSITION, 3, GL_FLOAT, GL_FALSE, DRAWVERT_XYZ_OFFSET },
-	{ MODERN_GL_DRAWVERT_ATTR_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_COLOR_OFFSET },
-	{ MODERN_GL_DRAWVERT_ATTR_TEXCOORD0, 2, GL_FLOAT, GL_FALSE, DRAWVERT_ST_OFFSET },
-	{ MODERN_GL_DRAWVERT_ATTR_TANGENT0, 3, GL_FLOAT, GL_FALSE, DRAWVERT_TANGENT0_OFFSET },
-	{ MODERN_GL_DRAWVERT_ATTR_TANGENT1, 3, GL_FLOAT, GL_FALSE, DRAWVERT_TANGENT1_OFFSET },
-	{ MODERN_GL_DRAWVERT_ATTR_NORMAL, 3, GL_FLOAT, GL_FALSE, DRAWVERT_NORMAL_OFFSET }
-};
 
 typedef struct modernGLVertexBindingSourceCache_s {
 	bool		valid;
@@ -2668,9 +2652,63 @@ static const GLvoid *R_ModernGLExecutor_BufferOffset( int offset ) {
 	return reinterpret_cast<const GLvoid *>( static_cast<uintptr_t>( offset ) );
 }
 
+static bool R_ModernGLExecutor_TranslateLegacyVertexAttribute(
+		const rendererVertexAttributeDesc_t &source, GLuint &attribute,
+		GLint &components, GLenum &type, GLboolean &normalized ) {
+	switch ( source.semantic ) {
+	case RENDERER_VERTEX_SEMANTIC_POSITION:
+		attribute = MODERN_GL_DRAWVERT_ATTR_POSITION;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_COLOR0:
+		attribute = MODERN_GL_DRAWVERT_ATTR_COLOR;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_TEXCOORD0:
+		attribute = MODERN_GL_DRAWVERT_ATTR_TEXCOORD0;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_TANGENT0:
+		attribute = MODERN_GL_DRAWVERT_ATTR_TANGENT0;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_TANGENT1:
+		attribute = MODERN_GL_DRAWVERT_ATTR_TANGENT1;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_NORMAL:
+		attribute = MODERN_GL_DRAWVERT_ATTR_NORMAL;
+		break;
+	default:
+		return false;
+	}
+	switch ( source.format ) {
+	case RENDERER_VERTEX_FORMAT_FLOAT32X2:
+		components = 2;
+		type = GL_FLOAT;
+		normalized = GL_FALSE;
+		return true;
+	case RENDERER_VERTEX_FORMAT_FLOAT32X3:
+		components = 3;
+		type = GL_FLOAT;
+		normalized = GL_FALSE;
+		return true;
+	case RENDERER_VERTEX_FORMAT_FLOAT32X4:
+		components = 4;
+		type = GL_FLOAT;
+		normalized = GL_FALSE;
+		return true;
+	case RENDERER_VERTEX_FORMAT_UNORM8X4:
+		components = 4;
+		type = GL_UNSIGNED_BYTE;
+		normalized = GL_TRUE;
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool R_ModernGLExecutor_DrawVertLayoutSupported( int vertexStride, int ambientCacheOffset ) {
-	return vertexStride >= static_cast<int>( sizeof( idDrawVert ) )
-		&& vertexStride >= DRAWVERT_SIZE
+	const rendererVertexLayoutDesc_t &layout = RendererContracts_LegacyDrawVertLayout();
+	return RendererContracts_ValidateVertexLayout( layout )
+		&& layout.bindingCount == 1
+		&& vertexStride >= static_cast<int>( layout.bindings[ 0 ].stride )
+		&& vertexStride >= static_cast<int>( sizeof( idDrawVert ) )
 		&& ambientCacheOffset >= 0;
 }
 
@@ -2688,11 +2726,22 @@ static bool R_ModernGLExecutor_ConfigureDrawVertVertexBindingFormat( modernGLExe
 	if ( glEnableVertexAttribArray == NULL || glVertexAttribFormat == NULL || glVertexAttribBinding == NULL ) {
 		return false;
 	}
-	for ( int i = 0; i < static_cast<int>( sizeof( rg_modernGLDrawVertAttributes ) / sizeof( rg_modernGLDrawVertAttributes[0] ) ); ++i ) {
-		const modernGLDrawVertAttributeDesc_t &desc = rg_modernGLDrawVertAttributes[i];
-		const GLuint attribute = static_cast<GLuint>( desc.attribute );
+	const rendererVertexLayoutDesc_t &layout = RendererContracts_LegacyDrawVertLayout();
+	if ( !RendererContracts_ValidateVertexLayout( layout ) ) {
+		return false;
+	}
+	for ( std::uint32_t i = 0; i < layout.attributeCount; ++i ) {
+		const rendererVertexAttributeDesc_t &desc = layout.attributes[ i ];
+		GLuint attribute = 0;
+		GLint components = 0;
+		GLenum type = GL_NONE;
+		GLboolean normalized = GL_FALSE;
+		if ( !R_ModernGLExecutor_TranslateLegacyVertexAttribute(
+				desc, attribute, components, type, normalized ) ) {
+			return false;
+		}
 		glEnableVertexAttribArray( attribute );
-		glVertexAttribFormat( attribute, desc.components, desc.type, desc.normalized, desc.relativeOffset );
+		glVertexAttribFormat( attribute, components, type, normalized, desc.offset );
 		glVertexAttribBinding( attribute, MODERN_GL_DRAWVERT_BINDING_INDEX );
 	}
 	if ( glVertexBindingDivisor != NULL ) {
@@ -2705,17 +2754,6 @@ static bool R_ModernGLExecutor_ConfigureDrawVertVertexBindingFormat( modernGLExe
 		stats->vertexInputFormatSetups = rg_modernGLExecutorVertexInputFormatSetups;
 	}
 	return true;
-}
-
-static void R_ModernGLExecutor_SetDrawVertFloatAttrib( modernGLDrawVertAttribute_t attribute, int components, int vertexStride, int offset ) {
-	glEnableVertexAttribArray( static_cast<GLuint>( attribute ) );
-	glVertexAttribPointer(
-		static_cast<GLuint>( attribute ),
-		components,
-		GL_FLOAT,
-		GL_FALSE,
-		vertexStride,
-		R_ModernGLExecutor_BufferOffset( offset ) );
 }
 
 static bool R_ModernGLExecutor_BindDrawVertVertexBindingSource( const modernGLSubmitCommand_t &command, modernGLExecutorStats_t &stats, GLintptr baseOffsetOverride ) {
@@ -2752,19 +2790,22 @@ static bool R_ModernGLExecutor_BindDrawVertLegacyLayout( const modernGLSubmitCom
 
 	R_GLStateCache().BindBuffer( GL_ARRAY_BUFFER, command.vertexBuffer );
 	const int baseOffset = command.ambientCacheOffset;
-	R_ModernGLExecutor_SetDrawVertFloatAttrib( MODERN_GL_DRAWVERT_ATTR_POSITION, 3, command.vertexStride, baseOffset + DRAWVERT_XYZ_OFFSET );
-	glEnableVertexAttribArray( MODERN_GL_DRAWVERT_ATTR_COLOR );
-	glVertexAttribPointer(
-		MODERN_GL_DRAWVERT_ATTR_COLOR,
-		4,
-		GL_UNSIGNED_BYTE,
-		GL_TRUE,
-		command.vertexStride,
-		R_ModernGLExecutor_BufferOffset( baseOffset + DRAWVERT_COLOR_OFFSET ) );
-	R_ModernGLExecutor_SetDrawVertFloatAttrib( MODERN_GL_DRAWVERT_ATTR_TEXCOORD0, 2, command.vertexStride, baseOffset + DRAWVERT_ST_OFFSET );
-	R_ModernGLExecutor_SetDrawVertFloatAttrib( MODERN_GL_DRAWVERT_ATTR_TANGENT0, 3, command.vertexStride, baseOffset + DRAWVERT_TANGENT0_OFFSET );
-	R_ModernGLExecutor_SetDrawVertFloatAttrib( MODERN_GL_DRAWVERT_ATTR_TANGENT1, 3, command.vertexStride, baseOffset + DRAWVERT_TANGENT1_OFFSET );
-	R_ModernGLExecutor_SetDrawVertFloatAttrib( MODERN_GL_DRAWVERT_ATTR_NORMAL, 3, command.vertexStride, baseOffset + DRAWVERT_NORMAL_OFFSET );
+	const rendererVertexLayoutDesc_t &layout = RendererContracts_LegacyDrawVertLayout();
+	for ( std::uint32_t i = 0; i < layout.attributeCount; ++i ) {
+		const rendererVertexAttributeDesc_t &desc = layout.attributes[ i ];
+		GLuint attribute = 0;
+		GLint components = 0;
+		GLenum type = GL_NONE;
+		GLboolean normalized = GL_FALSE;
+		if ( !R_ModernGLExecutor_TranslateLegacyVertexAttribute(
+				desc, attribute, components, type, normalized ) ) {
+			return false;
+		}
+		glEnableVertexAttribArray( attribute );
+		glVertexAttribPointer( attribute, components, type, normalized,
+			command.vertexStride, R_ModernGLExecutor_BufferOffset(
+				baseOffset + static_cast<int>( desc.offset ) ) );
+	}
 	rg_modernGLVertexInputCache.legacyLayoutValid = true;
 	rg_modernGLVertexInputCache.legacyVertexBuffer = static_cast<GLuint>( command.vertexBuffer );
 	rg_modernGLVertexInputCache.legacyVertexStride = command.vertexStride;

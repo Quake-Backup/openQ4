@@ -48,6 +48,8 @@
 
 #include "VulkanDevice.h"
 #include "VulkanGpuFrameTiming.h"
+#include "../GpuSkinning.h"
+#include "../RendererContracts.h"
 #include "../RendererMetrics.h"
 #include "vk_Image.h"
 // vk_ShadowMap.h: VK_ShadowMap_Shutdown + the point cube pool size the
@@ -85,6 +87,8 @@ Executor state
 // (the vertex cache is CPU-backed); sized for q4dm2-scale 3D views
 static const int VK_VERTEX_RING_BYTES = 32 * 1024 * 1024;
 static const int VK_INDEX_RING_BYTES = 8 * 1024 * 1024;
+static const int VK_GPU_SKINNING_WORKGROUP_SIZE = 64;
+static const int VK_GPU_SKINNING_MEMO_SIZE = 2048; // power of two
 static const int VK_MAX_GUI_PIPELINES = 64;
 static const int VK_MAX_SCREEN_PIPELINES = 64;
 static const int VK_MAX_CUBE_PIPELINES = 32;
@@ -193,6 +197,37 @@ typedef struct vkIdxUpload_s {
 	int				indexOffset;
 } vkIdxUpload_t;
 
+// GPU-skinned output is retained separately from the ordinary direct-mapped
+// upload memo. Stencil volumes deliberately use the CPU shadow cache and must
+// not evict a compute result that later ambient/interaction passes still need.
+typedef struct vkGpuSkinningMemo_s {
+	const void *	ambientKey;
+	int				vertexOffset;
+} vkGpuSkinningMemo_t;
+
+typedef struct vkGpuSkinningPushConstants_s {
+	uint32_t	sourceWordOffset;
+	uint32_t	skinWordOffset;
+	uint32_t	jointWordOffset;
+	uint32_t	outputWordOffset;
+	uint32_t	vertexCount;
+	uint32_t	jointCount;
+} vkGpuSkinningPushConstants_t;
+
+typedef struct vkGpuSkinningDispatch_s {
+	int				memoIndex;
+	int				sourceOffset;
+	int				skinOffset;
+	int				jointOffset;
+	int				outputOffset;
+	int				sourceBytes;
+	int				skinBytes;
+	int				jointBytes;
+	int				outputBytes;
+	uint32_t	vertexCount;
+	uint32_t	jointCount;
+} vkGpuSkinningDispatch_t;
+
 typedef struct vkGuiExecutor_s {
 	bool				initialized;
 
@@ -235,13 +270,17 @@ typedef struct vkGuiExecutor_s {
 	VkShaderModule		fogFragModule;
 	VkShaderModule		blendLightVertModule;
 	VkShaderModule		blendLightFragModule;
+	VkShaderModule		gpuSkinningModule;
 	VkDescriptorSetLayout setLayout;
 	VkDescriptorSetLayout uboSetLayout;		// one dynamic uniform buffer (interaction block ring)
 	// shadow receiver set: binding 0 = atlas + compare sampler (fragment),
 	// binding 1 = dynamic uniform buffer (per-space shadow block ring slice)
 	VkDescriptorSetLayout shadowSetLayout;
+	VkDescriptorSetLayout gpuSkinningSetLayout;
 	VkDescriptorPool	descriptorPool;
 	VkPipelineLayout	pipelineLayout;
+	VkPipelineLayout	gpuSkinningPipelineLayout;
+	VkPipeline			gpuSkinningPipeline;
 	// interactions: 6 single-combined-sampler sets (0=specTable, 1=bump,
 	// 2=falloff, 3=lightProjection, 4=diffuse, 5=specular) + set 6 dynamic UBO
 	VkPipelineLayout	interactionPipelineLayout;
@@ -273,7 +312,9 @@ typedef struct vkGuiExecutor_s {
 	vkRing_t			uniformRings[ VK_FRAMES_IN_FLIGHT ];
 	VkDescriptorSet		uniformRingSets[ VK_FRAMES_IN_FLIGHT ];
 	VkDescriptorSet		shadowSets[ VK_FRAMES_IN_FLIGHT ];
+	VkDescriptorSet		gpuSkinningSets[ VK_FRAMES_IN_FLIGHT ];
 	bool				shadowSetsHaveAtlas;	// compare + raw bindings written with a live atlas view
+	bool				gpuSkinningAvailable;
 
 	vkDescriptorCacheEntry_t descriptorCache[ 4096 ];	// parallel to the image table
 	VkDescriptorSet		retiredSets[ VK_FRAMES_IN_FLIGHT ][ VK_MAX_RETIRED_SETS ];
@@ -304,9 +345,16 @@ typedef struct vkGuiExecutor_s {
 
 	vkVertUpload_t		vertMemo[ VK_TRI_MEMO_SIZE ];
 	vkIdxUpload_t		idxMemo[ VK_TRI_MEMO_SIZE ];
+	vkGpuSkinningMemo_t gpuSkinningMemo[ VK_GPU_SKINNING_MEMO_SIZE ];
+	uint64				gpuSkinningDispatches;
+	uint64				gpuSkinningVertices;
+	uint64				gpuSkinningRingFallbacks;
+	uint64				gpuSkinningMemoFallbacks;
+	uint64				gpuSkinningValidationFallbacks;
 } vkGuiExecutor_t;
 
 static vkGuiExecutor_t vkExec;
+static bool vkGpuSkinningBackendRequested = true;
 
 static vkPipelineTarget_t VK_Exec_SwapchainPipelineTarget( void ) {
 	vkPipelineTarget_t target;
@@ -345,12 +393,28 @@ world passes. Column-major float[16]: row2 = elements 2,6,10,14.
 ====================
 */
 void VK_FixupClipSpaceZ( float dst[ 16 ], const float src[ 16 ] ) {
-	if ( dst != src ) {
-		memcpy( dst, src, 16 * sizeof( float ) );
+	RendererContracts_ConvertClipMatrix( dst, src,
+		RendererContracts_GLClipSpace(), RendererContracts_VulkanClipSpace() );
+}
+
+static bool VK_BuildCanonicalViewport( VkViewport &destination, float x, float y,
+		float width, float height, float framebufferHeight,
+		float minDepth = 0.0f, float maxDepth = 1.0f ) {
+	const rendererCanonicalViewport_t source = {
+		x, y, width, height, minDepth, maxDepth
+	};
+	rendererBackendViewport_t backend;
+	if ( !RendererContracts_BuildViewport( backend, source, framebufferHeight,
+			RendererContracts_VulkanClipSpace() ) ) {
+		return false;
 	}
-	for ( int col = 0; col < 4; col++ ) {
-		dst[ col * 4 + 2 ] = 0.5f * ( src[ col * 4 + 2 ] + src[ col * 4 + 3 ] );
-	}
+	destination.x = backend.x;
+	destination.y = backend.y;
+	destination.width = backend.width;
+	destination.height = backend.height;
+	destination.minDepth = backend.minDepth;
+	destination.maxDepth = backend.maxDepth;
+	return true;
 }
 
 /*
@@ -403,6 +467,29 @@ static int VK_Ring_Alloc( vkRing_t &ring, const void *data, size_t bytes, int al
 	if ( flushResult != VK_SUCCESS ) {
 		common->Warning( "Vulkan: frame geometry ring flush failed (%d)",
 				(int)flushResult );
+		return -1;
+	}
+	ring.cursor = static_cast<int>( offset + bytes );
+	return static_cast<int>( offset );
+}
+
+// Reserve device-written output without spending host bandwidth initializing
+// it. The same bounds and power-of-two alignment contract as VK_Ring_Alloc is
+// retained; the frame-slot fence protects the range until the next reuse.
+static int VK_Ring_Reserve( vkRing_t &ring, size_t bytes, int alignment ) {
+	if ( ring.mapped == NULL || bytes == 0 || ring.capacity <= 0
+			|| ring.cursor < 0 || ring.cursor > ring.capacity || alignment <= 0
+			|| ( alignment & ( alignment - 1 ) ) != 0 ) {
+		common->Warning( "Vulkan: invalid frame geometry ring reservation" );
+		return -1;
+	}
+
+	const size_t capacity = static_cast<size_t>( ring.capacity );
+	const size_t alignmentMask = static_cast<size_t>( alignment - 1 );
+	const size_t offset = ( static_cast<size_t>( ring.cursor ) + alignmentMask ) & ~alignmentMask;
+	if ( offset > capacity || bytes > capacity - offset ) {
+		common->Warning( "Vulkan: frame geometry ring reservation overflow (%zu + %zu > %zu)",
+			offset, bytes, capacity );
 		return -1;
 	}
 	ring.cursor = static_cast<int>( offset + bytes );
@@ -880,37 +967,85 @@ static VkPipeline VK_GuiExecutor_GetEnvironmentPipeline( int stateBits, bool bum
 // full idDrawVert vertex input shared by the interaction pipelines:
 // xyz@0, color ubyte4@12, normal@16, tangent0@32, tangent1@44, st@56
 // (64-byte stride, one binding)
+static bool VK_Exec_TranslateInteractionVertexAttribute(
+		const rendererVertexAttributeDesc_t &source, std::uint32_t &location,
+		VkFormat &format ) {
+	switch ( source.semantic ) {
+	case RENDERER_VERTEX_SEMANTIC_POSITION:
+		location = 0;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_COLOR0:
+		location = 1;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_NORMAL:
+		location = 2;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_TANGENT0:
+		location = 3;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_TANGENT1:
+		location = 4;
+		break;
+	case RENDERER_VERTEX_SEMANTIC_TEXCOORD0:
+		location = 5;
+		break;
+	default:
+		return false;
+	}
+	switch ( source.format ) {
+	case RENDERER_VERTEX_FORMAT_FLOAT32X2:
+		format = VK_FORMAT_R32G32_SFLOAT;
+		return true;
+	case RENDERER_VERTEX_FORMAT_FLOAT32X3:
+		format = VK_FORMAT_R32G32B32_SFLOAT;
+		return true;
+	case RENDERER_VERTEX_FORMAT_FLOAT32X4:
+		format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		return true;
+	case RENDERER_VERTEX_FORMAT_UNORM8X4:
+		format = VK_FORMAT_R8G8B8A8_UNORM;
+		return true;
+	case RENDERER_VERTEX_FORMAT_UINT32X4:
+		format = VK_FORMAT_R32G32B32A32_UINT;
+		return true;
+	default:
+		return false;
+	}
+}
+
 static void VK_Exec_InteractionVertexInput( VkVertexInputBindingDescription &binding,
 		VkVertexInputAttributeDescription attrs[ 6 ], VkPipelineVertexInputStateCreateInfo &vertexInput ) {
 	memset( &binding, 0, sizeof( binding ) );
-	binding.stride = sizeof( idDrawVert );
-	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
 	memset( attrs, 0, 6 * sizeof( attrs[ 0 ] ) );
-	attrs[ 0 ].location = 0;
-	attrs[ 0 ].format = VK_FORMAT_R32G32B32_SFLOAT;
-	attrs[ 0 ].offset = (uint32_t)offsetof( idDrawVert, xyz );
-	attrs[ 1 ].location = 1;
-	attrs[ 1 ].format = VK_FORMAT_R8G8B8A8_UNORM;
-	attrs[ 1 ].offset = (uint32_t)offsetof( idDrawVert, color );
-	attrs[ 2 ].location = 2;
-	attrs[ 2 ].format = VK_FORMAT_R32G32B32_SFLOAT;
-	attrs[ 2 ].offset = (uint32_t)offsetof( idDrawVert, normal );
-	attrs[ 3 ].location = 3;
-	attrs[ 3 ].format = VK_FORMAT_R32G32B32_SFLOAT;
-	attrs[ 3 ].offset = (uint32_t)offsetof( idDrawVert, tangents );
-	attrs[ 4 ].location = 4;
-	attrs[ 4 ].format = VK_FORMAT_R32G32B32_SFLOAT;
-	attrs[ 4 ].offset = (uint32_t)( offsetof( idDrawVert, tangents ) + sizeof( idVec3 ) );
-	attrs[ 5 ].location = 5;
-	attrs[ 5 ].format = VK_FORMAT_R32G32_SFLOAT;
-	attrs[ 5 ].offset = (uint32_t)offsetof( idDrawVert, st );
-
 	memset( &vertexInput, 0, sizeof( vertexInput ) );
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	const rendererVertexLayoutDesc_t &layout = RendererContracts_LegacyDrawVertLayout();
+	if ( !RendererContracts_ValidateVertexLayout( layout )
+			|| layout.bindingCount != 1 || layout.attributeCount != 6 ) {
+		common->Warning( "Vulkan: shared idDrawVert layout contract is invalid" );
+		return;
+	}
+	binding.binding = layout.bindings[ 0 ].binding;
+	binding.stride = layout.bindings[ 0 ].stride;
+	binding.inputRate = layout.bindings[ 0 ].inputRate == RENDERER_VERTEX_RATE_PER_INSTANCE
+		? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+	for ( std::uint32_t i = 0; i < layout.attributeCount; ++i ) {
+		const rendererVertexAttributeDesc_t &source = layout.attributes[ i ];
+		std::uint32_t location = 0;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		if ( !VK_Exec_TranslateInteractionVertexAttribute( source, location, format ) ) {
+			common->Warning( "Vulkan: shared idDrawVert attribute cannot be translated" );
+			return;
+		}
+		attrs[ i ].location = location;
+		attrs[ i ].binding = source.binding;
+		attrs[ i ].format = format;
+		attrs[ i ].offset = source.offset;
+	}
 	vertexInput.vertexBindingDescriptionCount = 1;
 	vertexInput.pVertexBindingDescriptions = &binding;
-	vertexInput.vertexAttributeDescriptionCount = 6;
+	vertexInput.vertexAttributeDescriptionCount = layout.attributeCount;
 	vertexInput.pVertexAttributeDescriptions = attrs;
 }
 
@@ -1611,6 +1746,176 @@ static VkDescriptorSet VK_GuiExecutor_GetResidentImageDescriptor( idImage *image
 
 /*
 ====================
+VK_GpuSkinning_DestroyResources
+====================
+*/
+static void VK_GpuSkinning_DestroyResources( void ) {
+	vkExec.gpuSkinningAvailable = false;
+	if ( vkCtx.device == VK_NULL_HANDLE ) {
+		vkExec.gpuSkinningPipeline = VK_NULL_HANDLE;
+		vkExec.gpuSkinningPipelineLayout = VK_NULL_HANDLE;
+		vkExec.gpuSkinningSetLayout = VK_NULL_HANDLE;
+		vkExec.gpuSkinningModule = VK_NULL_HANDLE;
+		memset( vkExec.gpuSkinningSets, 0, sizeof( vkExec.gpuSkinningSets ) );
+		return;
+	}
+	if ( vkExec.gpuSkinningPipeline != VK_NULL_HANDLE ) {
+		vkDestroyPipeline( vkCtx.device, vkExec.gpuSkinningPipeline, NULL );
+		vkExec.gpuSkinningPipeline = VK_NULL_HANDLE;
+	}
+	if ( vkExec.gpuSkinningPipelineLayout != VK_NULL_HANDLE ) {
+		vkDestroyPipelineLayout( vkCtx.device, vkExec.gpuSkinningPipelineLayout, NULL );
+		vkExec.gpuSkinningPipelineLayout = VK_NULL_HANDLE;
+	}
+	if ( vkExec.gpuSkinningSetLayout != VK_NULL_HANDLE ) {
+		vkDestroyDescriptorSetLayout( vkCtx.device, vkExec.gpuSkinningSetLayout, NULL );
+		vkExec.gpuSkinningSetLayout = VK_NULL_HANDLE;
+	}
+	if ( vkExec.gpuSkinningModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device, vkExec.gpuSkinningModule, NULL );
+		vkExec.gpuSkinningModule = VK_NULL_HANDLE;
+	}
+	memset( vkExec.gpuSkinningSets, 0, sizeof( vkExec.gpuSkinningSets ) );
+}
+
+/*
+====================
+VK_GpuSkinning_InitResources
+
+GPU skinning is optional. Any unsupported limit or object-creation failure
+leaves the existing CPU deformation/cache path authoritative without taking
+down the Vulkan renderer.
+====================
+*/
+static bool VK_GpuSkinning_InitResources( void ) {
+	VK_GpuSkinning_DestroyResources();
+
+	const VkPhysicalDeviceLimits &limits = vkCtx.deviceProperties.limits;
+	if ( sizeof( idDrawVert ) != 64
+			|| offsetof( idDrawVert, xyz ) != 0
+			|| offsetof( idDrawVert, color ) != 12
+			|| offsetof( idDrawVert, normal ) != 16
+			|| offsetof( idDrawVert, color2 ) != 28
+			|| offsetof( idDrawVert, tangents ) != 32
+			|| offsetof( idDrawVert, st ) != 56
+			|| sizeof( gpuSkinningVertex_t ) != 32
+			|| offsetof( gpuSkinningVertex_t, jointIndices ) != 0
+			|| offsetof( gpuSkinningVertex_t, jointWeights ) != 16
+			|| limits.maxStorageBufferRange < static_cast<uint32_t>( VK_VERTEX_RING_BYTES )
+			|| limits.maxPushConstantsSize < sizeof( vkGpuSkinningPushConstants_t )
+			|| limits.maxComputeWorkGroupInvocations < VK_GPU_SKINNING_WORKGROUP_SIZE
+			|| limits.maxComputeWorkGroupSize[ 0 ] < VK_GPU_SKINNING_WORKGROUP_SIZE ) {
+		common->Warning( "Vulkan: GPU skinning unavailable because device/ABI limits are insufficient" );
+		return false;
+	}
+
+	VkShaderModuleCreateInfo smci;
+	memset( &smci, 0, sizeof( smci ) );
+	smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	smci.codeSize = vk_gpu_skinning_comp_spv_size;
+	smci.pCode = reinterpret_cast<const uint32_t *>( vk_gpu_skinning_comp_spv );
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+			&vkExec.gpuSkinningModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: GPU skinning compute shader module creation failed" );
+		VK_GpuSkinning_DestroyResources();
+		return false;
+	}
+
+	VkDescriptorSetLayoutBinding bindings[ 4 ];
+	memset( bindings, 0, sizeof( bindings ) );
+	for ( uint32_t binding = 0; binding < 4; ++binding ) {
+		bindings[ binding ].binding = binding;
+		bindings[ binding ].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		bindings[ binding ].descriptorCount = 1;
+		bindings[ binding ].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+	VkDescriptorSetLayoutCreateInfo dslci;
+	memset( &dslci, 0, sizeof( dslci ) );
+	dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	dslci.bindingCount = 4;
+	dslci.pBindings = bindings;
+	if ( vkCreateDescriptorSetLayout( vkCtx.device, &dslci, NULL,
+			&vkExec.gpuSkinningSetLayout ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: GPU skinning descriptor layout creation failed" );
+		VK_GpuSkinning_DestroyResources();
+		return false;
+	}
+
+	VkPushConstantRange pushRange;
+	memset( &pushRange, 0, sizeof( pushRange ) );
+	pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pushRange.size = sizeof( vkGpuSkinningPushConstants_t );
+	VkPipelineLayoutCreateInfo plci;
+	memset( &plci, 0, sizeof( plci ) );
+	plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	plci.setLayoutCount = 1;
+	plci.pSetLayouts = &vkExec.gpuSkinningSetLayout;
+	plci.pushConstantRangeCount = 1;
+	plci.pPushConstantRanges = &pushRange;
+	if ( vkCreatePipelineLayout( vkCtx.device, &plci, NULL,
+			&vkExec.gpuSkinningPipelineLayout ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: GPU skinning pipeline layout creation failed" );
+		VK_GpuSkinning_DestroyResources();
+		return false;
+	}
+
+	VkPipelineShaderStageCreateInfo stage;
+	memset( &stage, 0, sizeof( stage ) );
+	stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	stage.module = vkExec.gpuSkinningModule;
+	stage.pName = "main";
+	VkComputePipelineCreateInfo cpci;
+	memset( &cpci, 0, sizeof( cpci ) );
+	cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	cpci.stage = stage;
+	cpci.layout = vkExec.gpuSkinningPipelineLayout;
+	if ( vkCreateComputePipelines( vkCtx.device, VK_NULL_HANDLE, 1, &cpci, NULL,
+			&vkExec.gpuSkinningPipeline ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: GPU skinning compute pipeline creation failed" );
+		VK_GpuSkinning_DestroyResources();
+		return false;
+	}
+
+	for ( int slot = 0; slot < VK_FRAMES_IN_FLIGHT; ++slot ) {
+		VkDescriptorSetAllocateInfo dsai;
+		memset( &dsai, 0, sizeof( dsai ) );
+		dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		dsai.descriptorPool = vkExec.descriptorPool;
+		dsai.descriptorSetCount = 1;
+		dsai.pSetLayouts = &vkExec.gpuSkinningSetLayout;
+		if ( vkAllocateDescriptorSets( vkCtx.device, &dsai,
+				&vkExec.gpuSkinningSets[ slot ] ) != VK_SUCCESS ) {
+			common->Warning( "Vulkan: GPU skinning frame descriptor allocation failed" );
+			VK_GpuSkinning_DestroyResources();
+			return false;
+		}
+
+		VkDescriptorBufferInfo bufferInfos[ 4 ];
+		VkWriteDescriptorSet writes[ 4 ];
+		memset( bufferInfos, 0, sizeof( bufferInfos ) );
+		memset( writes, 0, sizeof( writes ) );
+		for ( uint32_t binding = 0; binding < 4; ++binding ) {
+			bufferInfos[ binding ].buffer = vkExec.vertexRings[ slot ].buffer;
+			bufferInfos[ binding ].range = static_cast<VkDeviceSize>(
+					vkExec.vertexRings[ slot ].capacity );
+			writes[ binding ].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[ binding ].dstSet = vkExec.gpuSkinningSets[ slot ];
+			writes[ binding ].dstBinding = binding;
+			writes[ binding ].descriptorCount = 1;
+			writes[ binding ].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[ binding ].pBufferInfo = &bufferInfos[ binding ];
+		}
+		vkUpdateDescriptorSets( vkCtx.device, 4, writes, 0, NULL );
+	}
+
+	vkExec.gpuSkinningAvailable = true;
+	common->Printf( "Vulkan: GPU skinning compute initialized\n" );
+	return true;
+}
+
+/*
+====================
 Init / Shutdown
 ====================
 */
@@ -2040,17 +2345,19 @@ static bool VK_GuiExecutor_Init( void ) {
 	const int shadowSetBudget = ( 1 + VK_SHADOW_MAX_POINT_CUBES
 			+ VK_SHADOW_MAX_CACHE_SLOTS ) * VK_FRAMES_IN_FLIGHT;
 	const int retiredSetBudget = VK_MAX_RETIRED_SETS * VK_FRAMES_IN_FLIGHT;
-	VkDescriptorPoolSize poolSizes[ 2 ];
+	VkDescriptorPoolSize poolSizes[ 3 ];
 	poolSizes[ 0 ].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	poolSizes[ 0 ].descriptorCount = VK_MAX_DESCRIPTOR_SETS + 2 * shadowSetBudget + retiredSetBudget;
 	poolSizes[ 1 ].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 	poolSizes[ 1 ].descriptorCount = VK_FRAMES_IN_FLIGHT + shadowSetBudget;
+	poolSizes[ 2 ].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	poolSizes[ 2 ].descriptorCount = 4 * VK_FRAMES_IN_FLIGHT;
 	VkDescriptorPoolCreateInfo dpci;
 	memset( &dpci, 0, sizeof( dpci ) );
 	dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	dpci.maxSets = VK_MAX_DESCRIPTOR_SETS + VK_FRAMES_IN_FLIGHT + shadowSetBudget + retiredSetBudget;
-	dpci.poolSizeCount = 2;
+	dpci.maxSets = VK_MAX_DESCRIPTOR_SETS + 2 * VK_FRAMES_IN_FLIGHT + shadowSetBudget + retiredSetBudget;
+	dpci.poolSizeCount = 3;
 	dpci.pPoolSizes = poolSizes;
 	if ( vkCreateDescriptorPool( vkCtx.device, &dpci, NULL, &vkExec.descriptorPool ) != VK_SUCCESS ) {
 		common->Warning( "Vulkan: descriptor pool creation failed" );
@@ -2116,7 +2423,8 @@ static bool VK_GuiExecutor_Init( void ) {
 	}
 
 	for ( int i = 0; i < VK_FRAMES_IN_FLIGHT; i++ ) {
-		if ( !VK_Ring_Create( vkExec.vertexRings[ i ], VK_VERTEX_RING_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT )
+		if ( !VK_Ring_Create( vkExec.vertexRings[ i ], VK_VERTEX_RING_BYTES,
+				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT )
 				|| !VK_Ring_Create( vkExec.indexRings[ i ], VK_INDEX_RING_BYTES, VK_BUFFER_USAGE_INDEX_BUFFER_BIT )
 				|| !VK_Ring_Create( vkExec.uniformRings[ i ], VK_UNIFORM_RING_BYTES, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT ) ) {
 			return false;
@@ -2160,6 +2468,12 @@ static bool VK_GuiExecutor_Init( void ) {
 		vkUpdateDescriptorSets( vkCtx.device, 1, &write, 0, NULL );
 	}
 
+	// Optional: failures leave the authoritative CPU deformation/cache path in
+	// place and do not prevent the Vulkan renderer from starting.
+	if ( !VK_GpuSkinning_InitResources() ) {
+		R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+	}
+
 	vkExec.pipelineTargetFormat = vkCtx.swapchainFormat;
 	vkExec.clearColor[ 0 ] = 0.0f;
 	vkExec.clearColor[ 1 ] = 0.0f;
@@ -2177,6 +2491,7 @@ void VK_GuiExecutor_Shutdown( void ) {
 		return;
 	}
 	VK_ShadowMap_Shutdown();
+	VK_GpuSkinning_DestroyResources();
 	for ( int i = 0; i < vkExec.numPipelines; i++ ) {
 		if ( vkExec.pipelines[ i ].pipeline != VK_NULL_HANDLE ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.pipelines[ i ].pipeline, NULL );
@@ -2553,6 +2868,7 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	vkExec.uniformRings[ slot ].cursor = 0;
 	memset( vkExec.vertMemo, 0, sizeof( vkExec.vertMemo ) );
 	memset( vkExec.idxMemo, 0, sizeof( vkExec.idxMemo ) );
+	memset( vkExec.gpuSkinningMemo, 0, sizeof( vkExec.gpuSkinningMemo ) );
 	return true;
 }
 
@@ -3984,6 +4300,284 @@ static bool VK_Exec_FlattenPackedAmbientIndexes( const srfTriangles_t *tri,
 }
 #endif
 
+static int VK_GpuSkinning_FindMemo( const void *ambientKey, bool reserve,
+		bool &existing ) {
+	existing = false;
+	if ( ambientKey == NULL ) {
+		return -1;
+	}
+	const unsigned int first = static_cast<unsigned int>(
+			( reinterpret_cast<uintptr_t>( ambientKey ) >> 4 )
+			& ( VK_GPU_SKINNING_MEMO_SIZE - 1 ) );
+	for ( int probe = 0; probe < VK_GPU_SKINNING_MEMO_SIZE; ++probe ) {
+		const int index = static_cast<int>( ( first + static_cast<unsigned int>( probe ) )
+				& ( VK_GPU_SKINNING_MEMO_SIZE - 1 ) );
+		vkGpuSkinningMemo_t &memo = vkExec.gpuSkinningMemo[ index ];
+		if ( memo.ambientKey == ambientKey ) {
+			existing = true;
+			return index;
+		}
+		if ( memo.ambientKey == NULL ) {
+			if ( reserve ) {
+				memo.ambientKey = ambientKey;
+				memo.vertexOffset = -1;
+			}
+			return index;
+		}
+	}
+	return -1;
+}
+
+/*
+====================
+VK_GpuSkinning_PrepareView
+
+The front end cannot dispatch while building dynamic models, so Vulkan keeps
+its CPU ambient cache as a correctness fallback. Immediately before a 3D view
+starts issuing caller state, gather each unique eligible surface, interrupt
+the active dynamic-rendering scope once, and materialize ordinary idDrawVert
+output in the frame vertex ring. The ambient-cache handle remains the draw
+memo key, so depth, interactions, ambient passes, shadow maps, subviews, and
+view models all consume the same result without learning a skinning ABI.
+====================
+*/
+static bool VK_GpuSkinning_PrepareView( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || viewDef->drawSurfs == NULL || viewDef->numDrawSurfs <= 0
+			|| !r_gpuSkinning.GetBool() || !vkGpuSkinningBackendRequested
+			|| !vkExec.gpuSkinningAvailable || !vkExec.frameOpen
+			|| !vkExec.mainScopeOpen || vkExec.cmd == VK_NULL_HANDLE
+			|| vkExec.frameSlot < 0 || vkExec.frameSlot >= VK_FRAMES_IN_FLIGHT ) {
+		return true;
+	}
+
+	const int slot = vkExec.frameSlot;
+	vkRing_t &ring = vkExec.vertexRings[ slot ];
+	const VkDeviceSize nonCoherentAtomSize =
+			vkCtx.deviceProperties.limits.nonCoherentAtomSize;
+	if ( nonCoherentAtomSize == 0 || nonCoherentAtomSize > static_cast<VkDeviceSize>( INT_MAX )
+			|| ( nonCoherentAtomSize & ( nonCoherentAtomSize - 1 ) ) != 0 ) {
+		R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+		return true;
+	}
+	const int deviceWriteAlignment = Max( 64, static_cast<int>( nonCoherentAtomSize ) );
+	idTempArray<vkGpuSkinningDispatch_t> dispatches(
+			static_cast<unsigned int>( viewDef->numDrawSurfs ) );
+	int dispatchCount = 0;
+	int firstHostWrite = INT_MAX;
+	int lastHostWrite = 0;
+	int firstOutput = INT_MAX;
+	int lastOutput = 0;
+
+	drawSurf_t **drawSurfs = reinterpret_cast<drawSurf_t **>( viewDef->drawSurfs );
+	for ( int surfNum = 0; surfNum < viewDef->numDrawSurfs; ++surfNum ) {
+		const drawSurf_t *drawSurf = drawSurfs[ surfNum ];
+		const srfTriangles_t *tri = drawSurf != NULL ? drawSurf->geo : NULL;
+		if ( tri == NULL || tri->ambientCache == NULL || tri->numVerts <= 0
+				|| !R_GpuSkinning_IsCandidate( tri ) ) {
+			continue;
+		}
+		bool existing = false;
+		if ( VK_GpuSkinning_FindMemo( tri->ambientCache, false, existing ) < 0 ) {
+			R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+			vkExec.gpuSkinningMemoFallbacks++;
+			continue;
+		}
+		if ( existing ) {
+			continue;
+		}
+
+		gpuSkinningSurface_t surface;
+		if ( !R_GpuSkinning_GetSurface( tri, surface ) ) {
+			R_GpuSkinning_RecordFallback( surface.fallbackReason );
+			vkExec.gpuSkinningValidationFallbacks++;
+			continue;
+		}
+		const gpuSkinningFallbackReason_t validation =
+				R_GpuSkinning_ValidateSurface( surface );
+		if ( validation != GPU_SKINNING_FALLBACK_NONE
+				|| surface.fallbackReason != GPU_SKINNING_FALLBACK_NONE
+				|| surface.numVerts != tri->numVerts
+				|| surface.palette.matrixStrideFloats != GPU_SKINNING_JOINT_FLOATS ) {
+			const gpuSkinningFallbackReason_t reason =
+					validation != GPU_SKINNING_FALLBACK_NONE ? validation
+					: ( surface.fallbackReason != GPU_SKINNING_FALLBACK_NONE
+						? surface.fallbackReason
+						: ( surface.numVerts != tri->numVerts
+							? GPU_SKINNING_FALLBACK_VERTEX_COUNT
+							: GPU_SKINNING_FALLBACK_STALE_PALETTE ) );
+			R_GpuSkinning_RecordFallback( reason );
+			vkExec.gpuSkinningValidationFallbacks++;
+			continue;
+		}
+
+		const size_t sourceBytes = static_cast<size_t>( surface.numVerts )
+				* sizeof( idDrawVert );
+		const size_t skinBytes = static_cast<size_t>( surface.numVerts )
+				* sizeof( gpuSkinningVertex_t );
+		const size_t jointBytes = static_cast<size_t>( surface.palette.numJoints )
+				* GPU_SKINNING_JOINT_FLOATS * sizeof( float );
+		if ( sourceBytes == 0 || sourceBytes > static_cast<size_t>( INT_MAX )
+				|| skinBytes == 0 || skinBytes > static_cast<size_t>( INT_MAX )
+				|| jointBytes == 0 || jointBytes > static_cast<size_t>( INT_MAX ) ) {
+			R_GpuSkinning_RecordFallback( sourceBytes == 0
+					|| sourceBytes > static_cast<size_t>( INT_MAX )
+					|| skinBytes == 0 || skinBytes > static_cast<size_t>( INT_MAX )
+						? GPU_SKINNING_FALLBACK_VERTEX_COUNT
+						: GPU_SKINNING_FALLBACK_JOINT_COUNT );
+			vkExec.gpuSkinningValidationFallbacks++;
+			continue;
+		}
+		const size_t deviceWriteMask = static_cast<size_t>( deviceWriteAlignment - 1 );
+		if ( sourceBytes > static_cast<size_t>( INT_MAX ) - deviceWriteMask ) {
+			R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_VERTEX_COUNT );
+			vkExec.gpuSkinningValidationFallbacks++;
+			continue;
+		}
+		const size_t outputReserveBytes = ( sourceBytes + deviceWriteMask )
+				& ~deviceWriteMask;
+		const uint32_t groupCount = static_cast<uint32_t>(
+				( surface.numVerts + VK_GPU_SKINNING_WORKGROUP_SIZE - 1 )
+				/ VK_GPU_SKINNING_WORKGROUP_SIZE );
+		if ( groupCount == 0
+				|| groupCount > vkCtx.deviceProperties.limits.maxComputeWorkGroupCount[ 0 ] ) {
+			R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_VERTEX_COUNT );
+			vkExec.gpuSkinningValidationFallbacks++;
+			continue;
+		}
+
+		const int savedCursor = ring.cursor;
+		const int sourceOffset = VK_Ring_Alloc( ring, surface.bindPoseVerts,
+				sourceBytes, 64 );
+		const int skinOffset = sourceOffset >= 0
+				? VK_Ring_Alloc( ring, surface.skinVerts, skinBytes, 16 ) : -1;
+		const int jointOffset = skinOffset >= 0
+				? VK_Ring_Alloc( ring, surface.palette.matrices, jointBytes, 16 ) : -1;
+		const int outputOffset = jointOffset >= 0
+				? VK_Ring_Reserve( ring, outputReserveBytes,
+						deviceWriteAlignment ) : -1;
+		if ( sourceOffset < 0 || skinOffset < 0 || jointOffset < 0 || outputOffset < 0 ) {
+			ring.cursor = savedCursor;
+			R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_PALETTE_ALLOCATION );
+			vkExec.gpuSkinningRingFallbacks++;
+			continue;
+		}
+		bool insertedExisting = false;
+		const int memoIndex = VK_GpuSkinning_FindMemo(
+				tri->ambientCache, true, insertedExisting );
+		if ( memoIndex < 0 || insertedExisting ) {
+			ring.cursor = savedCursor;
+			R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+			vkExec.gpuSkinningMemoFallbacks++;
+			continue;
+		}
+
+		vkGpuSkinningDispatch_t &dispatch = dispatches[ dispatchCount++ ];
+		dispatch.memoIndex = memoIndex;
+		dispatch.sourceOffset = sourceOffset;
+		dispatch.skinOffset = skinOffset;
+		dispatch.jointOffset = jointOffset;
+		dispatch.outputOffset = outputOffset;
+		dispatch.sourceBytes = static_cast<int>( sourceBytes );
+		dispatch.skinBytes = static_cast<int>( skinBytes );
+		dispatch.jointBytes = static_cast<int>( jointBytes );
+		dispatch.outputBytes = static_cast<int>( sourceBytes );
+		dispatch.vertexCount = static_cast<uint32_t>( surface.numVerts );
+		dispatch.jointCount = static_cast<uint32_t>( surface.palette.numJoints );
+		firstHostWrite = Min( firstHostWrite, sourceOffset );
+		lastHostWrite = Max( lastHostWrite, jointOffset + dispatch.jointBytes );
+		firstOutput = Min( firstOutput, outputOffset );
+		lastOutput = Max( lastOutput, outputOffset + dispatch.outputBytes );
+	}
+
+	if ( dispatchCount == 0 ) {
+		return true;
+	}
+
+	VK_Exec_EndMainRendering();
+
+	VkBufferMemoryBarrier2 hostToCompute;
+	memset( &hostToCompute, 0, sizeof( hostToCompute ) );
+	hostToCompute.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+	hostToCompute.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+	hostToCompute.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+	hostToCompute.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	hostToCompute.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+	hostToCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	hostToCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	hostToCompute.buffer = ring.buffer;
+	hostToCompute.offset = static_cast<VkDeviceSize>( firstHostWrite );
+	hostToCompute.size = static_cast<VkDeviceSize>( lastHostWrite - firstHostWrite );
+	VkDependencyInfo dependency;
+	memset( &dependency, 0, sizeof( dependency ) );
+	dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dependency.bufferMemoryBarrierCount = 1;
+	dependency.pBufferMemoryBarriers = &hostToCompute;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
+
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+			vkExec.gpuSkinningPipeline );
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+			vkExec.gpuSkinningPipelineLayout, 0, 1,
+			&vkExec.gpuSkinningSets[ slot ], 0, NULL );
+	for ( int dispatchIndex = 0; dispatchIndex < dispatchCount; ++dispatchIndex ) {
+		const vkGpuSkinningDispatch_t &dispatch = dispatches[ dispatchIndex ];
+		vkGpuSkinningPushConstants_t push;
+		push.sourceWordOffset = static_cast<uint32_t>( dispatch.sourceOffset / 4 );
+		push.skinWordOffset = static_cast<uint32_t>( dispatch.skinOffset / 4 );
+		push.jointWordOffset = static_cast<uint32_t>( dispatch.jointOffset / 4 );
+		push.outputWordOffset = static_cast<uint32_t>( dispatch.outputOffset / 4 );
+		push.vertexCount = dispatch.vertexCount;
+		push.jointCount = dispatch.jointCount;
+		vkCmdPushConstants( vkExec.cmd, vkExec.gpuSkinningPipelineLayout,
+				VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+		vkCmdDispatch( vkExec.cmd,
+				( dispatch.vertexCount + VK_GPU_SKINNING_WORKGROUP_SIZE - 1 )
+				/ VK_GPU_SKINNING_WORKGROUP_SIZE, 1, 1 );
+	}
+
+	VkBufferMemoryBarrier2 computeToVertex;
+	memset( &computeToVertex, 0, sizeof( computeToVertex ) );
+	computeToVertex.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+	computeToVertex.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	computeToVertex.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+	computeToVertex.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+	computeToVertex.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+	computeToVertex.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	computeToVertex.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	computeToVertex.buffer = ring.buffer;
+	computeToVertex.offset = static_cast<VkDeviceSize>( firstOutput );
+	computeToVertex.size = static_cast<VkDeviceSize>( lastOutput - firstOutput );
+	dependency.pBufferMemoryBarriers = &computeToVertex;
+	vkCmdPipelineBarrier2( vkExec.cmd, &dependency );
+
+	if ( !VK_Exec_BeginMainRendering( false ) ) {
+		for ( int dispatchIndex = 0; dispatchIndex < dispatchCount; ++dispatchIndex ) {
+			R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+		}
+		common->Warning( "Vulkan: GPU skinning could not resume main rendering; view skipped" );
+		return false;
+	}
+
+	for ( int dispatchIndex = 0; dispatchIndex < dispatchCount; ++dispatchIndex ) {
+		const vkGpuSkinningDispatch_t &dispatch = dispatches[ dispatchIndex ];
+		vkExec.gpuSkinningMemo[ dispatch.memoIndex ].vertexOffset = dispatch.outputOffset;
+		vkExec.gpuSkinningDispatches++;
+		vkExec.gpuSkinningVertices += dispatch.vertexCount;
+		R_GpuSkinning_RecordBackendPrepared(
+				static_cast<int>( dispatch.vertexCount ),
+				static_cast<int>( dispatch.jointCount ),
+				static_cast<uint64>( dispatch.jointBytes ) );
+	}
+
+	static bool loggedFirstDispatch = false;
+	if ( !loggedFirstDispatch ) {
+		loggedFirstDispatch = true;
+		common->Printf( "Vulkan: GPU skinning dispatched %d surfaces (%llu vertices)\n",
+			dispatchCount, static_cast<unsigned long long>( vkExec.gpuSkinningVertices ) );
+	}
+	return true;
+}
+
 // memoized ring upload + bind: the depth fill and both ambient walks visit
 // the same tris; a hit re-binds without re-copying. Also serves the
 // interaction pass, where the light-tris chains carry their own index
@@ -4008,20 +4602,28 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 	// re-upload the full vertex payload once per light per surface
 	int vertexOffset;
 	{
-		const unsigned int memoIndex = (unsigned int)( ( ( (uintptr_t)vertKey ) >> 4 ) & ( VK_TRI_MEMO_SIZE - 1 ) );
-		vkVertUpload_t &memo = vkExec.vertMemo[ memoIndex ];
-		if ( memo.vertKey == vertKey && vertKey != NULL ) {
-			vertexOffset = memo.vertexOffset;
+		bool gpuMemoExisting = false;
+		const int gpuMemoIndex = VK_GpuSkinning_FindMemo(
+				vertKey, false, gpuMemoExisting );
+		if ( gpuMemoExisting && gpuMemoIndex >= 0
+				&& vkExec.gpuSkinningMemo[ gpuMemoIndex ].vertexOffset >= 0 ) {
+			vertexOffset = vkExec.gpuSkinningMemo[ gpuMemoIndex ].vertexOffset;
 		} else {
-			const idDrawVert *verts = (const idDrawVert *)vertexCache.Position( tri->ambientCache );
-			vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts,
-				static_cast<size_t>( tri->numVerts ) * sizeof( idDrawVert ), 64 );
-			if ( vertexOffset < 0 ) {
-				return false;
-			}
-			if ( vertKey != NULL ) {
-				memo.vertKey = vertKey;
-				memo.vertexOffset = vertexOffset;
+			const unsigned int memoIndex = (unsigned int)( ( ( (uintptr_t)vertKey ) >> 4 ) & ( VK_TRI_MEMO_SIZE - 1 ) );
+			vkVertUpload_t &memo = vkExec.vertMemo[ memoIndex ];
+			if ( memo.vertKey == vertKey && vertKey != NULL ) {
+				vertexOffset = memo.vertexOffset;
+			} else {
+				const idDrawVert *verts = (const idDrawVert *)vertexCache.Position( tri->ambientCache );
+				vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts,
+					static_cast<size_t>( tri->numVerts ) * sizeof( idDrawVert ), 64 );
+				if ( vertexOffset < 0 ) {
+					return false;
+				}
+				if ( vertKey != NULL ) {
+					memo.vertKey = vertKey;
+					memo.vertexOffset = vertexOffset;
+				}
 			}
 		}
 	}
@@ -4100,6 +4702,9 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 	if ( tri == NULL ) {
 		return false;
 	}
+	// Explicit GPU_SKINNING_FALLBACK_STENCIL_VOLUME: silhouette extrusion,
+	// caps, and the trace-visible shadow topology remain CPU authoritative.
+	// Never consult the compute-output memo here; only tri->shadowCache is admissible.
 
 	const void *vertKey = tri->shadowCache;
 	const void *idxKey = tri->indexes;
@@ -5254,12 +5859,11 @@ static void VK_Exec_SetSpecialEffectsViewport( const viewDef_t *viewDef ) {
 			viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
 
 	VkViewport viewport;
-	viewport.x = (float)viewDef->viewport.x1;
-	viewport.y = (float)( framebufferHeight - viewDef->viewport.y1 );
-	viewport.width = (float)viewportWidth;
-	viewport.height = -(float)viewportHeight;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
+	if ( !VK_BuildCanonicalViewport( viewport,
+			(float)viewDef->viewport.x1, (float)viewDef->viewport.y1,
+			(float)viewportWidth, (float)viewportHeight, (float)framebufferHeight ) ) {
+		return;
+	}
 	vkCmdSetViewport( vkExec.cmd, 0, 1, &viewport );
 
 	VkRect2D scissor;
@@ -6419,12 +7023,10 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 	const int vpH = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
 
 	VkViewport viewport;
-	viewport.x = (float)vpX;
-	viewport.y = (float)( fbHeight - vpYGL );
-	viewport.width = (float)vpW;
-	viewport.height = -(float)vpH;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
+	if ( !VK_BuildCanonicalViewport( viewport, (float)vpX, (float)vpYGL,
+			(float)vpW, (float)vpH, (float)fbHeight ) ) {
+		return;
+	}
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
 
 	// the front-end ortho projection is the whole-view MVP
@@ -6482,6 +7084,12 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 
 	drawSurf_t **drawSurfs = (drawSurf_t **)viewDef->drawSurfs;
 	const int numDrawSurfs = viewDef->numDrawSurfs;
+	// This is deliberately before any viewport/depth/cull state owned by the
+	// caller. Compute ends and resumes dynamic rendering exactly once, then the
+	// ordinary 3D walk establishes all graphics state from scratch.
+	if ( !VK_GpuSkinning_PrepareView( viewDef ) ) {
+		return;
+	}
 
 	// GL bottom-left viewport -> Vulkan negative-height viewport
 	const int vpX = viewDef->viewport.x1;
@@ -6490,12 +7098,10 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	const int vpH = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
 
 	VkViewport viewport;
-	viewport.x = (float)vpX;
-	viewport.y = (float)( fbHeight - vpYGL );
-	viewport.width = (float)vpW;
-	viewport.height = -(float)vpH;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
+	if ( !VK_BuildCanonicalViewport( viewport, (float)vpX, (float)vpYGL,
+			(float)vpW, (float)vpH, (float)fbHeight ) ) {
+		return;
+	}
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
 
 	// every 3D view starts from clean depth/stencil, exactly like
@@ -6906,6 +7512,53 @@ bool VK_GuiExecutor_EnsureFrameOpen( void ) {
 
 bool VK_GuiExecutor_FrameIsOpen( void ) {
 	return vkExec.frameOpen;
+}
+
+/*
+====================
+Backend-neutral GPU skinning seam
+
+Vulkan cannot record compute while dynamic models are being built on the
+front end. Returning false from PrepareAmbientCache intentionally requests
+the established CPU cache as the fail-closed fallback; Draw3D can later
+replace its ring upload with compute output while a command buffer is active.
+====================
+*/
+void R_BackendGpuSkinning_Init( const renderBackendCaps_t &caps ) {
+	(void)caps;
+	// Compute and storage buffers are Vulkan core capabilities. Exact device
+	// limits and shader/pipeline creation are validated by the lazy executor.
+	vkGpuSkinningBackendRequested = true;
+}
+
+void R_BackendGpuSkinning_Shutdown( void ) {
+	vkGpuSkinningBackendRequested = false;
+}
+
+bool R_BackendGpuSkinning_PrepareAmbientCache( srfTriangles_t *tri,
+		bool needsLighting ) {
+	(void)tri;
+	(void)needsLighting;
+	if ( vkExec.initialized
+			&& ( !vkGpuSkinningBackendRequested || !vkExec.gpuSkinningAvailable ) ) {
+		R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_BACKEND_UNAVAILABLE );
+	}
+	return false;
+}
+
+void R_BackendGpuSkinning_PrintGfxInfo( void ) {
+	const char *status = vkExec.gpuSkinningAvailable
+			? "available"
+			: ( vkExec.initialized ? "unavailable" : "pending executor initialization" );
+	common->Printf(
+			"GPU skinning compute (Vulkan): %s, dispatches=%llu vertices=%llu "
+			"fallbacks(validation=%llu ring=%llu memo=%llu)\n",
+			status,
+			static_cast<unsigned long long>( vkExec.gpuSkinningDispatches ),
+			static_cast<unsigned long long>( vkExec.gpuSkinningVertices ),
+			static_cast<unsigned long long>( vkExec.gpuSkinningValidationFallbacks ),
+			static_cast<unsigned long long>( vkExec.gpuSkinningRingFallbacks ),
+			static_cast<unsigned long long>( vkExec.gpuSkinningMemoFallbacks ) );
 }
 
 #endif /* OPENQ4_RENDERER_VK_MODULE */

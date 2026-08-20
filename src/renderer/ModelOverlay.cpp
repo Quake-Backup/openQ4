@@ -411,6 +411,7 @@ void idRenderModelOverlay::AddOverlaySurfacesToModel( idRenderModel *baseModel )
 		}
 
 		newTri = newSurf->geometry;
+		R_GpuSkinning_ClearSurfaceContract( newTri, GPU_SKINNING_FALLBACK_NONE );
 		numVerts = numIndexes = 0;
 
 		for ( i = 0; i < materials[k]->surfaces.Num(); i++ ) {

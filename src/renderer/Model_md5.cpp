@@ -156,6 +156,7 @@ static void R_CopyAndReverseTriangles( const srfTriangles_t *src, srfTriangles_t
 	for ( int i = 0; i < tri->numVerts; ++i ) {
 		tri->verts[i].normal = vec3_origin - tri->verts[i].normal;
 	}
+	R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_UNSUPPORTED_PASS );
 
 	for ( int i = 0; i < tri->numIndexes; i += 3 ) {
 		tri->indexes[i + 0] = src->indexes[i + 1];
@@ -769,6 +770,7 @@ bool idRenderModelMD5::ReadLevelLoadCachePayload( idFile &file ) {
 		mesh.surfaceNum = source.surfaceNum;
 		mesh.currentTime = 0.0f;
 		mesh.deformInfo = deform;
+		mesh.BuildGpuSkinningSidecar( jointCount );
 	}
 
 	SwapLevelLoadCacheState( staged );
@@ -796,6 +798,8 @@ idMD5Mesh::idMD5Mesh() {
 	deformInfo		= NULL;
 	surfaceNum		= 0;
 	currentTime		= 0.0f;
+	gpuSkinningNumJoints = 0;
+	gpuSkinningFallback = GPU_SKINNING_FALLBACK_MISSING_SKIN_VERTICES;
 }
 
 /*
@@ -1024,7 +1028,7 @@ void idMD5Mesh::ParseMesh( idLexer &parser, int numJoints, const idJointMat *joi
 	baseVectors = (idVec4 *)Mem_Alloc16( deformInfo->numOutputVerts * 4 * sizeof( baseVectors[0] ) );
 	modelSurface_t tempSurf;
 	memset( &tempSurf, 0, sizeof( tempSurf ) );
-	UpdateSurface( NULL, joints, &tempSurf, false );
+	UpdateSurface( NULL, joints, &tempSurf, false, false );
 	R_DeriveTangents( tempSurf.geometry, true );
 
 	for ( i = 0; i < deformInfo->numOutputVerts; ++i ) {
@@ -1036,6 +1040,76 @@ void idMD5Mesh::ParseMesh( idLexer &parser, int numJoints, const idJointMat *joi
 	}
 
 	R_FreeStaticTriSurf( tempSurf.geometry );
+	BuildGpuSkinningSidecar( numJoints );
+}
+
+/*
+====================
+idMD5Mesh::BuildGpuSkinningSidecar
+
+Build an immutable output-vertex stream. More than four non-zero influences is
+an exactness failure, not an invitation to silently truncate retail content.
+====================
+*/
+void idMD5Mesh::BuildGpuSkinningSidecar( int numJoints ) {
+	gpuBindPoseVerts.Clear();
+	gpuSkinningVerts.Clear();
+	gpuSkinningNumJoints = numJoints;
+	gpuSkinningFallback = GPU_SKINNING_FALLBACK_NONE;
+	if ( deformInfo == NULL || baseVectors == NULL || weights == NULL
+		|| deformInfo->numOutputVerts <= 0 ) {
+		gpuSkinningFallback = GPU_SKINNING_FALLBACK_MISSING_BIND_POSE;
+		return;
+	}
+
+	gpuBindPoseVerts.SetNum( deformInfo->numOutputVerts );
+	gpuSkinningVerts.SetNum( deformInfo->numOutputVerts );
+	idList<gpuSkinningInfluence_t> influences;
+	int weightCursor = 0;
+	for ( int vertexIndex = 0; vertexIndex < deformInfo->numOutputVerts; ++vertexIndex ) {
+		idDrawVert &bindPose = gpuBindPoseVerts[vertexIndex];
+		bindPose.Clear();
+		memset( bindPose.color2, 0, sizeof( bindPose.color2 ) );
+		bindPose.xyz = baseVectors[vertexIndex * 4 + 0].ToVec3();
+		bindPose.normal = baseVectors[vertexIndex * 4 + 1].ToVec3();
+		bindPose.tangents[0] = baseVectors[vertexIndex * 4 + 2].ToVec3();
+		bindPose.tangents[1] = baseVectors[vertexIndex * 4 + 3].ToVec3();
+		int textureVertex = vertexIndex;
+		if ( textureVertex >= texCoords.Num() ) {
+			const int mirrorIndex = textureVertex - texCoords.Num();
+			textureVertex = mirrorIndex >= 0 && mirrorIndex < deformInfo->numMirroredVerts
+				? deformInfo->mirroredVerts[mirrorIndex] : -1;
+		}
+		if ( textureVertex >= 0 && textureVertex < texCoords.Num() ) {
+			bindPose.st = texCoords[textureVertex];
+		}
+
+		const int groupCount = weights[weightCursor].nextVertexOffset / sizeof( weights[0] );
+		if ( groupCount <= 0 ) {
+			gpuSkinningFallback = GPU_SKINNING_FALLBACK_MALFORMED_WEIGHTS;
+			break;
+		}
+		influences.SetNum( groupCount );
+		for ( int influenceIndex = 0; influenceIndex < groupCount; ++influenceIndex ) {
+			const jointWeight_t &weight = weights[weightCursor + influenceIndex];
+			influences[influenceIndex].jointIndex = weight.jointMatOffset / sizeof( idJointMat );
+			influences[influenceIndex].weight = weight.weight;
+		}
+
+		gpuSkinningPackResult_t result;
+		if ( !R_GpuSkinning_PackVertexExact( influences.Ptr(), influences.Num(), numJoints,
+			false, gpuSkinningVerts[vertexIndex], result )
+			&& gpuSkinningFallback == GPU_SKINNING_FALLBACK_NONE ) {
+			gpuSkinningFallback = result.reason;
+		}
+		weightCursor += groupCount;
+	}
+
+	if ( gpuSkinningFallback != GPU_SKINNING_FALLBACK_NONE ) {
+		// Keep immutable source arrays for diagnostics, but admission remains
+		// fail-closed for the whole mesh.
+		return;
+	}
 }
 
 /*
@@ -1088,7 +1162,7 @@ bool idMD5Mesh::UpdateLod( const struct renderEntity_s *ent, const struct viewEn
 idMD5Mesh::UpdateSurface
 ====================
 */
-void idMD5Mesh::UpdateSurface( const struct renderEntity_s *ent, const idJointMat *entJoints, modelSurface_t *surf, bool calculateTangents ) {
+void idMD5Mesh::UpdateSurface( const struct renderEntity_s *ent, const idJointMat *entJoints, modelSurface_t *surf, bool calculateTangents, bool allowGpuSkinning ) {
 	int i, base;
 	srfTriangles_t *tri;
 
@@ -1112,6 +1186,7 @@ void idMD5Mesh::UpdateSurface( const struct renderEntity_s *ent, const idJointMa
 	}
 
 	tri = surf->geometry;
+	R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_NONE );
 
 	// note that some of the data is references, and should not be freed
 	tri->deformedSurface = true;
@@ -1143,12 +1218,33 @@ void idMD5Mesh::UpdateSurface( const struct renderEntity_s *ent, const idJointMa
 	}
 
 	const bool useLegacySkinScale = ( ent != NULL && ent->shaderParms[ SHADERPARM_MD5_SKINSCALE ] != 0.0f );
+	bool gpuSkinningContractAttached = false;
+	if ( useLegacySkinScale ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_SKIN_SCALE );
+	} else if ( !allowGpuSkinning ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_UNSUPPORTED_PASS );
+	} else if ( !r_gpuSkinning.GetBool() ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_DISABLED );
+	} else if ( !r_useNewSkinning.GetBool() ) {
+		R_GpuSkinning_ClearSurfaceContract( tri, GPU_SKINNING_FALLBACK_UNSUPPORTED_PASS );
+	} else {
+		gpuSkinningContractAttached = R_GpuSkinning_AttachSurfaceContract(
+			tri, gpuBindPoseVerts.Ptr(), gpuSkinningVerts.Ptr(), gpuBindPoseVerts.Num(),
+			entJoints != NULL ? entJoints[0].ToFloatPtr() : NULL, gpuSkinningNumJoints,
+			GPU_SKINNING_JOINT_FLOATS, false, gpuSkinningFallback );
+	}
+
+	const uint64 cpuSkinStart = R_GpuSkinning_ReadMicroseconds();
 
 	if ( useLegacySkinScale ) {
 		TransformScaledVerts( tri->verts, entJoints, ent->shaderParms[ SHADERPARM_MD5_SKINSCALE ] );
 		tri->tangentsCalculated = false;
 	} else if ( scaledBaseVectors != NULL && weights != NULL ) {
-		if ( r_useNewSkinning.GetBool() && calculateTangents && baseVectors != NULL ) {
+		if ( gpuSkinningContractAttached ) {
+			SIMDProcessor->TransformVertsNew( tri->verts, deformInfo->numOutputVerts, tri->bounds,
+				entJoints, scaledBaseVectors, weights, numWeights );
+			tri->tangentsCalculated = false;
+		} else if ( r_useNewSkinning.GetBool() && calculateTangents && baseVectors != NULL ) {
 			if ( r_useFastSkinning.GetBool() ) {
 				SIMDProcessor->TransformVertsAndTangentsFast( tri->verts, deformInfo->numOutputVerts, tri->bounds,
 					entJoints, baseVectors, weights, numWeights );
@@ -1191,10 +1287,16 @@ void idMD5Mesh::UpdateSurface( const struct renderEntity_s *ent, const idJointMa
 	// R_DeriveTangents() to get normals, tangents, and face planes.  If it only
 	// needs shadows generated, it will only have to generate face planes.  If it only
 	// has ambient drawing, or is culled, no additional work will be necessary
-	if ( !tri->tangentsCalculated && !r_useDeferredTangents.GetBool() ) {
+	if ( !tri->tangentsCalculated && !r_useDeferredTangents.GetBool() && !gpuSkinningContractAttached ) {
 		// set face planes, vertex normals, tangents
 		R_DeriveTangents( tri );
 	}
+
+	const uint64 cpuSkinEnd = R_GpuSkinning_ReadMicroseconds();
+	const uint64 elapsedMicroseconds = cpuSkinEnd >= cpuSkinStart
+		? cpuSkinEnd - cpuSkinStart : 0;
+	R_GpuSkinning_RecordCpuSkinning( elapsedMicroseconds, tri->numVerts,
+		gpuSkinningContractAttached );
 }
 
 /*
@@ -1636,6 +1738,7 @@ idRenderModel *idRenderModelMD5::InstantiateDynamicModel( const struct renderEnt
 	idRenderModelStatic	*staticModel;
 	const bool			collisionOnly = ( surfMask & SURF_COLLISION ) != 0;
 	const idJointMat *	entJoints = ent->joints;
+	bool				gpuJointPaletteReady = false;
 
 	if ( cachedModel && !r_useCachedDynamicModels.GetBool() ) {
 		delete cachedModel;
@@ -1663,6 +1766,7 @@ idRenderModel *idRenderModelMD5::InstantiateDynamicModel( const struct renderEnt
 		idJointMat *transformedJoints = (idJointMat *)_alloca16( joints.Num() * sizeof( transformedJoints[0] ) );
 		SIMDProcessor->MultiplyJoints( transformedJoints, ent->joints, skinSpaceToLocalMats.Ptr(), joints.Num() );
 		entJoints = transformedJoints;
+		gpuJointPaletteReady = true;
 	}
 
 	if ( cachedModel ) {
@@ -1737,7 +1841,8 @@ idRenderModel *idRenderModelMD5::InstantiateDynamicModel( const struct renderEnt
 		}
 
 		if ( collisionOnly || mesh->UpdateLod( ent, viewEnt, surf ) ) {
-			mesh->UpdateSurface( ent, entJoints, surf, !collisionOnly );
+			mesh->UpdateSurface( ent, entJoints, surf, !collisionOnly,
+				!collisionOnly && gpuJointPaletteReady );
 		}
 		srfTriangles_t *frontTri = surf->geometry;
 

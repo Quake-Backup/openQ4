@@ -497,6 +497,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_budget_contract.py",
         root / "tools" / "tests" / "renderer_cel_shading.py",
         root / "tools" / "tests" / "renderer_gpu_frame_timing.py",
+        root / "tools" / "tests" / "renderer_gpu_skinning.py",
         root / "tools" / "tests" / "renderer_mp_flat_items.py",
         root / "tools" / "tests" / "renderer_pbr_materials.py",
         root / "tools" / "tests" / "renderer_msaa_cvar_safety.py",

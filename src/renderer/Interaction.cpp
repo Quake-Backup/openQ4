@@ -1986,6 +1986,8 @@ void idInteraction::AddActiveInteraction( void ) {
 								// surface's live cache when the interaction is later freed
 								srfTriangles_t *frameTris = (srfTriangles_t *)R_FrameAlloc( sizeof( *frameTris ) );
 								*frameTris = *lightTris;
+								frameTris->gpuSkinningJointPaletteAlloc = NULL;
+								frameTris->numGpuSkinningJointPaletteAllocJoints = 0;
 								lightTris->ambientCache = NULL;
 								lightTris->tempAmbientCache = false;
 								lightTris->indexCache = NULL;

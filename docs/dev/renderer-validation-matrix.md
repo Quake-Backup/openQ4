@@ -1,6 +1,6 @@
 # Renderer Validation Matrix
 
-This matrix is the validation source of truth for staged renderer work. The safe tier and self-test matrix remains GL-focused, while replayable budget evidence covers both OpenGL and Vulkan. Supervised gameplay can use the mode-specific SP/MP launch tasks or the noninteractive gameplay harness described below.
+This matrix is the validation source of truth for staged renderer work. Most safe tier probes remain GL-focused, while shared renderer-contract and GPU-animation self-tests plus replayable budget evidence cover both OpenGL and Vulkan. Supervised gameplay can use the mode-specific SP/MP launch tasks or the noninteractive gameplay harness described below.
 
 For cross-engine feature status, use the [engine capability matrix](engine-capability-matrix.md). This document owns renderer acceptance evidence and promotion gates; it does not turn an experimental renderer capability into a supported/default one by itself.
 
@@ -41,7 +41,8 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, material resource table, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, material resource table, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
 | `renderer-cluster-grid-selftest` | opt-in modern clustered-light preparation coverage for point/projected/fog/ambient/special light classification, budgeted dynamic grid slicing, cluster reference packing, spill/overflow accounting, GL 3.3 UBO fallback readiness, GL 4.3+ SSBO upload readiness, cluster debug-overlay texture generation, and `gfxInfo` reporting |
@@ -82,6 +83,14 @@ The visible-depth, G-buffer, clustered-light, deferred-resolve, forward+, modern
 The shader-library tier cases force `r_glTier gl33`, `gl41`, `gl43`, `gl45`, and `gl46`, run `rendererShaderLibrarySelfTest`, and require `gfxInfo` to report `Modern GL shader library: available` with program, kind, permutation, and sampler-reflection coverage. The runner marks these cases as assetless startup probes, because they only need renderer initialization and should not load game scripts just to validate internal shader variants.
 
 The foundation self-test case also runs `rendererPBRMaterialSelfTest`, while `rendererScenePacketSelfTest` and `rendererMaterialResourceTableSelfTest` include the matching PBR packet/resource cases. Together these assetless contracts verify that opt-in `pbr {}` metadata leaves classic Quake 4 stages untouched, image usage and scalar registers survive parsing, explicit and approximate classic fallbacks are classified deterministically, packet records preserve PBR metadata, and packed, separate, scalar-only, unsupported-workflow, and missing-map resource records fail closed with observable reasons. They also require `pbrModernReady=0` and exclude PBR bindings from current classic-modern submission. They do not exercise PBR G-buffer shaders, direct lighting, visible ownership, IBL, or specular environment probes.
+
+The same foundation case requires `rendererContractsSelfTest` and
+`rendererGpuSkinningSelfTest` to pass without a skip. The Vulkan startup case
+runs those commands through the Vulkan module and requires the identical
+semantic markers plus `GPU skinning:` diagnostics. The dependency-light
+`openq4-renderer-contracts` native test covers ordered/repeated material passes,
+GL/Vulkan depth and viewport conversion, legacy and exact-skinned layouts, and
+typed stale/expired/overflowing buffer slices on every native-test platform.
 
 Gameplay benchmark acceptance should use wall-clock sampling for FPS claims. The `--sample-msec` option emits `waitMsec` into the generated cfg so the measurement window is a real duration rather than a frame count:
 
@@ -252,10 +261,24 @@ For each gameplay case, validate the matrix variants that the hardware supports:
 | renderer escape | `r_renderer best`, `r_renderer arb2`, `r_glTier legacy` |
 | `r_swapInterval` | `0`, `1` |
 | `com_maxfps` | `120`, `240`, `0` |
+| GPU animation | paired `r_gpuSkinning 0` CPU reference and `r_gpuSkinning 1` exact-contract run on each backend; require admitted vertices and a classified CPU stencil fallback |
 | display mode | windowed, fullscreen |
 | renderer diagnostics | `r_rendererMetrics 1`, `r_rendererMetrics 2`, `r_rendererModernAutoPromote 0`, and one signed `r_rendererModernAutoPromote 1` candidate run with the complete `r_rendererPromotionEvidence` token after the other rows are clean |
 
 After each gameplay smoke, inspect the configured log file under `fs_savepath\<gameDir>\logs\openq4.log` or the case-specific log emitted by the launch tool. Fix errors and warnings, then repeat the loop until the case is clean.
+
+Milestone C GPU-animation captures follow the stricter backend-local A/B
+procedure in [Shared Renderer Contracts and GPU Animation](gpu-skinning-modernization.md):
+freeze the pose from launch with `g_stopTime 1`, compare each GPU run only with
+its own backend's CPU reference, use engine-written screenshots, retain pure
+auto-joined MP evidence, and repeat the animation-heavy
+`evaluateMPPerformance` workload at least three times. CPU-frame improvement is
+not accepted unless the diagnostics prove that eligible vertices were actually
+admitted and every fallback has a named reason.
+Validate each retained backend-local CPU/GPU JSON pair with the
+`tools/validation/gpu_skinning_evidence.py` verifier at the default one-percent
+CPU-P95 gate; the complete command, launch identity, and artifact contract is
+documented in the GPU-animation guide.
 
 ## Gameplay Benchmark Harness
 

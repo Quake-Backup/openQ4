@@ -269,12 +269,32 @@ static const idImage *R_ScenePackets_FirstAmbientImage( const idMaterial *materi
 	return firstAmbientImage;
 }
 
-static bool R_ScenePackets_DrawSurfUsesSkinning( const drawSurf_t *drawSurf ) {
+static geometrySkinningMode_t R_ScenePackets_DrawSurfSkinningMode(
+	const drawSurf_t *drawSurf, gpuSkinningSurface_t *surface = NULL ) {
+	if ( surface != NULL ) {
+		memset( surface, 0, sizeof( *surface ) );
+	}
+	if ( drawSurf == NULL || drawSurf->geo == NULL ) {
+		return GEOMETRY_SKINNING_NONE;
+	}
+	gpuSkinningSurface_t candidate;
+	if ( R_GpuSkinning_GetSurface( drawSurf->geo, candidate ) ) {
+		if ( surface != NULL ) {
+			*surface = candidate;
+		}
+		return GEOMETRY_SKINNING_GPU_PALETTE;
+	}
+	// A source-side exactness or eligibility rejection means the ordinary
+	// deformed idDrawVert stream is authoritative for this snapshot.
+	if ( R_GpuSkinning_IsCandidate( drawSurf->geo ) ) {
+		return GEOMETRY_SKINNING_CPU;
+	}
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
-	return drawSurf != NULL && drawSurf->geo != NULL && drawSurf->geo->numSkinToModelTransforms > 0;
-#else
-	return false;
+	if ( drawSurf->geo->numSkinToModelTransforms > 0 ) {
+		return GEOMETRY_SKINNING_GPU_PALETTE;
+	}
 #endif
+	return GEOMETRY_SKINNING_NONE;
 }
 
 static bool R_ScenePackets_MaterialUsesRemoteRender( const idMaterial *material ) {
@@ -537,7 +557,8 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 		( material->TestMaterialFlag( MF_NOSELFSHADOW ) ? 2u : 0u ) |
 		( material->TestMaterialFlag( MF_FORCESHADOWS ) ? 4u : 0u );
 	record.permutation.alphaMode = material->Coverage();
-	record.permutation.skinningMode = R_ScenePackets_DrawSurfUsesSkinning( drawSurf ) ? 1u : 0u;
+	record.permutation.skinningMode =
+		R_ScenePackets_DrawSurfSkinningMode( drawSurf ) != GEOMETRY_SKINNING_NONE ? 1u : 0u;
 	record.permutation.deformMode =
 		( drawSurf != NULL && drawSurf->geo != NULL && drawSurf->geo->deformedSurface ) ? 2u :
 		( material->Deform() != DFRM_NONE ? 1u : 0u );
@@ -592,14 +613,20 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 	record.firstIndex = 0;
 	record.vertexStride = sizeof( idDrawVert );
 	record.indexType = GL_INDEX_TYPE;
-	record.skinningMode = R_ScenePackets_DrawSurfUsesSkinning( drawSurf ) ? GEOMETRY_SKINNING_GPU_PALETTE : GEOMETRY_SKINNING_NONE;
+	record.skinningMode = R_ScenePackets_DrawSurfSkinningMode(
+		drawSurf, &record.gpuSkinningSurface );
+	record.hasGpuSkinningContract = record.skinningMode == GEOMETRY_SKINNING_GPU_PALETTE
+		&& record.gpuSkinningSurface.fallbackReason == GPU_SKINNING_FALLBACK_NONE
+		&& record.gpuSkinningSurface.bindPoseVerts != NULL;
 	record.deformMode = geo->deformedSurface ? GEOMETRY_DEFORM_SURFACE :
 		( drawSurf->material != NULL && drawSurf->material->Deform() != DFRM_NONE ? GEOMETRY_DEFORM_MATERIAL : GEOMETRY_DEFORM_NONE );
 	record.uploadLifetime = R_ScenePackets_UploadLifetimeForCache( geo->ambientCache, geo->indexCache, geo );
 	record.fallbackReason = GEOMETRY_RESOURCE_FALLBACK_NONE;
-	record.skinningPaletteOffset = 0;
+	record.skinningPaletteOffset = record.hasGpuSkinningContract
+		? static_cast<int>( record.gpuSkinningSurface.palette.buffer.offsetBytes ) : 0;
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
-	record.skinningPaletteCount = geo->numSkinToModelTransforms;
+	record.skinningPaletteCount = record.hasGpuSkinningContract
+		? record.gpuSkinningSurface.palette.numJoints : geo->numSkinToModelTransforms;
 	record.hasPrimBatchMesh = geo->primBatchMesh != NULL;
 #else
 	record.skinningPaletteCount = 0;
@@ -641,7 +668,8 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 			GEOMETRY_RESOURCE_FALLBACK_UNSUPPORTED_DEFORM,
 			GEOMETRY_RESOURCE_FALLBACK_FLAG_UNSUPPORTED_DEFORM );
 	}
-	if ( record.skinningMode == GEOMETRY_SKINNING_GPU_PALETTE ) {
+	if ( record.skinningMode == GEOMETRY_SKINNING_GPU_PALETTE
+		&& !record.hasGpuSkinningContract ) {
 		R_ScenePackets_AddGeometryFallback(
 			record,
 			GEOMETRY_RESOURCE_FALLBACK_UNSUPPORTED_GPU_SKINNING,

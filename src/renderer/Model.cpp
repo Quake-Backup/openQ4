@@ -498,6 +498,12 @@ namespace {
 		const bool hasDerivedTopology = tri.silIndexes != NULL || tri.numMirroredVerts > 0
 			|| tri.numDupVerts > 0 || tri.numSilEdges > 0 || tri.dominantTris != NULL;
 		if ( !R_ModelCacheBoundsCanWrite( tri.bounds )
+			|| tri.gpuSkinningBindPoseVerts != NULL || tri.gpuSkinningVerts != NULL
+			|| tri.numGpuSkinningVerts != 0 || tri.gpuSkinningJointPalette != NULL
+			|| tri.gpuSkinningJointPaletteAlloc != NULL || tri.numGpuSkinningJoints != 0
+			|| tri.numGpuSkinningJointPaletteAllocJoints != 0
+			|| tri.gpuSkinningPaletteGeneration != 0 || tri.gpuSkinningFallbackReason != 0
+			|| tri.gpuSkinningSignedWeights
 			|| tri.surfaceFlags < 0 || ( tri.surfaceFlags & ~STF_SOFT_PARTICLE_CANDIDATE ) != 0
 			|| tri.numVerts < 0 || tri.numVerts > MODEL_CACHE_MAX_SURFACE_VERTS
 			|| ( tri.numVerts > 0 && tri.verts == NULL )

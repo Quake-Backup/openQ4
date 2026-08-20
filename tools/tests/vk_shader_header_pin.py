@@ -18,6 +18,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "tools" / "build" / "spirv_to_header.py"
 COMMITTED = REPO_ROOT / "src" / "renderer" / "Vulkan" / "shaders" / "gui_shaders_spv.h"
 SHADERS = [
+    REPO_ROOT / "src" / "renderer" / "Vulkan" / "shaders" / "gpu_skinning.comp",
     REPO_ROOT / "src" / "renderer" / "Vulkan" / "shaders" / "gui.vert",
     REPO_ROOT / "src" / "renderer" / "Vulkan" / "shaders" / "gui.frag",
     REPO_ROOT / "src" / "renderer" / "Vulkan" / "shaders" / "screen.vert",

@@ -671,17 +671,26 @@ geometry and should never be fed packed surfaces directly.
 */
 srfTriangles_t *R_CreateTurboShadowVolumeForSurface( const idRenderEntityLocal *ent,
 		const srfTriangles_t *tri, const idRenderLightLocal *light, srfCullInfo_t &cullInfo ) {
+	gpuSkinningSurface_t gpuSurface;
+	const bool gpuStencilFallback = r_gpuSkinning.GetBool()
+		&& R_GpuSkinning_IsCandidate( tri )
+		&& R_GpuSkinning_GetSurface( tri, gpuSurface );
+	srfTriangles_t *shadowTri = NULL;
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 	if ( tri->primBatchMesh != NULL ) {
-		if ( srfTriangles_t *packedShadowTri = R_CreatePackedTurboShadowVolume( ent, tri, light, cullInfo ) ) {
-			return packedShadowTri;
-		}
+		shadowTri = R_CreatePackedTurboShadowVolume( ent, tri, light, cullInfo );
 	}
 #endif
 
-	if ( tr.backEndRendererHasVertexPrograms && r_useShadowVertexProgram.GetBool() ) {
-		return R_CreateVertexProgramTurboShadowVolume( ent, tri, light, cullInfo );
+	if ( shadowTri == NULL && tr.backEndRendererHasVertexPrograms
+		&& r_useShadowVertexProgram.GetBool() ) {
+		shadowTri = R_CreateVertexProgramTurboShadowVolume( ent, tri, light, cullInfo );
 	}
-
-	return R_CreateTurboShadowVolume( ent, tri, light, cullInfo );
+	if ( shadowTri == NULL ) {
+		shadowTri = R_CreateTurboShadowVolume( ent, tri, light, cullInfo );
+	}
+	if ( shadowTri != NULL && gpuStencilFallback ) {
+		R_GpuSkinning_RecordFallback( GPU_SKINNING_FALLBACK_STENCIL_VOLUME );
+	}
+	return shadowTri;
 }
