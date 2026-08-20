@@ -268,22 +268,48 @@ these files in PK4s or treat them as authored content.
 
 ## Controls and rollback
 
-All framework controls are archived and default to the values shown:
+The experiment is now protected by a default-off archived master control. The
+individual controls retain their prior values so an explicit opt-in needs only
+one additional switch:
 
 | Control | Default | Effect |
 |---|---:|---|
+| `com_levelLoadModernization` | `0` | Master admission gate for every framework and SP/MP animation cache/preload path |
 | `com_levelLoadCache` | `1` | Enables learned manifests and generated model/world/collision cache reads |
 | `com_levelLoadCacheWrite` | `1` | Enables atomic manifest and generated-cache writes |
 | `com_levelLoadPreload` | `1` | Replays a matching manifest through the bounded read/framing pipeline |
 | `com_levelLoadCacheReport` | `0` | Prints per-generation replay, read/decode, cancellation, memory, and generated-cache counters |
 
 The six replay-budget controls are listed above. Animation cache reads and
-writes are controlled separately by `g_useGeneratedAnimCache 1` and
+writes additionally require `g_useGeneratedAnimCache 1` and
 `g_writeGeneratedAnimCache 1` in both game modules. Scheduler behavior is
 controlled by the startup settings documented in
 [parallel-job-system.md](parallel-job-system.md).
 
-Rollback choices are intentionally independent:
+This default was corrected on 2026-08-20 after stock MP evidence showed the
+experimental path dominating a 32.3-second map load (16.5 seconds in game init
+and 15.2 seconds in media finish), with repeated generated-cache publication.
+The retained Milestone B cold/warm campaign proved boundedness and reuse, but
+did not justify changing the player baseline: 69.3 seconds cold and 53.3 seconds
+warm remained materially slower than the expected classic experience.
+
+A controlled 2026-08-20 Vulkan `mp/q4dm9` pair used the same staged runtime,
+retail base path, bordered 1280x720 mode, and isolated save roots. The new
+default-off run completed the client map load in 9,449 ms (`gameInit=3,107`,
+`mediaFinish=6,000`) with no generated-cache writes. Explicitly setting
+`com_levelLoadModernization 1` took 21,935 ms (`gameInit=5,093`,
+`mediaFinish=16,224`) and published 35 framework cache records on the client;
+the paired server published 103. The opt-in cold path was therefore 132% slower
+than the classic default in this case. Artifacts are retained under
+`.tmp/regression-q4dm9-fixed/` and `.tmp/regression-q4dm9-cache-on/`.
+
+The master rollback is immediate and takes precedence over older archived
+individual settings:
+
+- Keep `com_levelLoadModernization 0` for ordinary play and baseline or
+  benchmark runs. No framework or animation cache is read or written.
+- Set `com_levelLoadModernization 1` only for focused cache evaluation; the
+  individual rollback choices below then apply.
 
 - Set `com_levelLoadPreload 0` before loading a map to disable learned source
   preparation while retaining validated generated model/world/collision

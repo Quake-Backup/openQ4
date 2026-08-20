@@ -324,7 +324,7 @@ temporal or PBR work multiplies the parity surface.
 | Milestone | Current state | Dependency that prevents promotion |
 |---|---|---|
 | A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
-| B. Loading and cache modernization | **Implemented and locally validated; release promotion pending** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. Promotion still requires retained final committed-package campaigns, measurements, and release-platform qualification recorded in the loading/cache evidence tables. General asynchronous owner decode/upload and portal-aware live reprioritization remain future work rather than part of this completed slice. |
+| B. Loading and cache modernization | **Implemented but default-off; performance requalification required** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. A 2026-08-20 regression audit found that the prior default-on experiment could materially lengthen stock map loads, so `com_levelLoadModernization 0` now restores the classic baseline and gates every framework/animation cache read and write. Promotion requires a clean committed-package campaign that beats or matches classic cold and warm loads without rewrite churn, plus release-platform qualification. |
 | C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
 | D. Modern classic-frame ownership | **Experimental; two complete domains implemented and locally validated** | Eligible fixed-function root 2D GUI views and eligible ambient-only 3D world views are transactionally evaluated and consumed from the same ordered records by GL and Vulkan, with complete-view classic rollback. The world corridor keeps the established depth prepass and pre-fog/post-fog split; retained development-worktree GL/Vulkan captures prove exact eligible output and deform-blocker fallback. Interaction-lighting ownership/parity is the next dependency, followed by fog/blend, deform, subview, in-world GUI, and post ownership; clean-package/platform promotion evidence remains open. |
 | E. Temporal presentation | **Planned** | Milestones A and C now supply the timing and shared-contract prerequisites; incomplete Milestone D still blocks complete frame ownership and the visible motion-vector corridor. |
@@ -396,17 +396,23 @@ keep release promotion open.
 3. **Implemented:** versioned binary render-model, classic render-world, and
    collision caches under `fs_savepath`, plus the companion SP/MP animation-v3
    cache, validate detached state and publish atomically or fall back to source.
+4. **Corrected after regression audit:** all Milestone B cache, preload, and
+   animation-cache paths now require the default-off
+   `com_levelLoadModernization` master gate. Archived individual controls from
+   earlier builds cannot silently retain the slower path.
 
 Exit gate: cold and warm load measurements, bounded memory, cancellation during
 map/restart/disconnect, corrupt-cache fallback, and zero required loose assets.
 Focused native/static tests, Windows integration builds, and current-build
-stock compatibility checks satisfy the local implementation gate. Local
-development cold/warm and bounded-memory measurements, focused
+stock compatibility checks satisfy the implementation/safety gate, but not the
+performance gate. Local development cold/warm and bounded-memory measurements, focused
 corruption/rollback, dedicated teardown, and engine-screenshot review are now
 recorded; the staged stock report remains failed on its unchanged MP CPU budget.
 Exact committed source/package identity, a clean-package budget pass, broader
 cancellation/failure campaigns, and release-platform coverage remain required
-for promotion. Their authoritative status is recorded in
+for promotion. Requalification must also demonstrate that both cold and warm
+opt-in loads are no slower than the classic default before any default change.
+Their authoritative status is recorded in
 [Level-Load Cache Modernization](loading-cache-modernization.md).
 
 ### Milestone C: shared renderer contracts and GPU animation

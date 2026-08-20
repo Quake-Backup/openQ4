@@ -65,8 +65,9 @@ asset-specific parse/decode/adopt/upload behavior and source fallback. Map
 failure, unload, filesystem restart, module reload, and shutdown cancel and join
 the generation before dependent state is released.
 
-`com_levelLoadPreload 0` disables this consumer without disabling validated
-generated model/world/collision payloads. If the scheduler is deterministic,
+`com_levelLoadModernization 0` disables the complete experimental consumer;
+when explicitly enabled, `com_levelLoadPreload 0` disables preload without
+disabling validated generated model/world/collision payloads. If the scheduler is deterministic,
 disabled, saturated, or unavailable, the admitted bounded batch runs inline;
 unadmitted sources continue through ordinary VFS reads. The exact campaign key,
 budgets, controls, rollback, and still-pending promotion evidence are documented

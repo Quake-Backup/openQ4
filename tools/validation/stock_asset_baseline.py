@@ -672,6 +672,7 @@ def common_args(
     add_set(args, "com_loadingContinueAutoAdvance", 1)
     # Milestone B evidence records the exact cache/preload mode and its bounded
     # per-generation counters in every role log.
+    add_set(args, "com_levelLoadModernization", 1)
     add_set(args, "com_levelLoadCache", 1)
     add_set(args, "com_levelLoadCacheWrite", 1)
     add_set(args, "com_levelLoadPreload", 1)

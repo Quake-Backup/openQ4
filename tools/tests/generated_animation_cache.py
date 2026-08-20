@@ -189,9 +189,27 @@ def validate_game_cache_contract() -> None:
 
     require_order(
         sp,
+        'cvarSystem->GetCVarBool( "com_levelLoadModernization" )',
+        "g_useGeneratedAnimCache.GetBool() && LoadGeneratedAnim( filename )",
+        "cache-before-source load order",
+    )
+    require_order(
+        sp,
         "g_useGeneratedAnimCache.GetBool() && LoadGeneratedAnim( filename )",
         "parser.LoadFile( filename )",
         "cache-before-source load order",
+    )
+    require_order(
+        sp,
+        'cvarSystem->GetCVarBool( "com_levelLoadModernization" )',
+        "g_writeGeneratedAnimCache.GetBool()",
+        "default-off animation-cache write gate",
+    )
+    require_order(
+        sp,
+        "g_writeGeneratedAnimCache.GetBool()",
+        "WriteGeneratedAnim( filename );",
+        "source-parse cache write control",
     )
     require_order(
         sp,

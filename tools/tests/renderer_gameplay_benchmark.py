@@ -162,6 +162,15 @@ CAMPAIGN_TRANSITION_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
+LOAD_REGRESSION_SCENES: dict[str, dict[str, Any]] = {
+    "mp-q4dm9-listen": {
+        "mode": "MP",
+        "map": "mp/q4dm9",
+        "purpose": "listen-server load-time and Vulkan shadow-fallback regression coverage",
+        "path": "spawn-static",
+    },
+}
+
 WORLD_AMBIENT_SCENES: dict[str, dict[str, Any]] = {
     "sp-mv2-ambient": {
         "mode": "SP",
@@ -192,7 +201,11 @@ FULL_BUDGET_SCENES = {
     **SHADOW_SCENES,
     **CAMPAIGN_TRANSITION_SCENES,
 }
-ALL_SCENES = {**FULL_BUDGET_SCENES, **WORLD_AMBIENT_SCENES}
+ALL_SCENES = {
+    **FULL_BUDGET_SCENES,
+    **WORLD_AMBIENT_SCENES,
+    **LOAD_REGRESSION_SCENES,
+}
 
 SHADOW_PRESETS: dict[str, dict[str, str]] = {
     "default": {},
@@ -822,6 +835,7 @@ def common_args(
     append_set(args, "com_showFPS", "1" if show_fps_overlay else "0")
     append_set(args, "com_skipLoadingContinue", "1")
     append_set(args, "com_loadingContinueAutoAdvance", "1")
+    append_set(args, "com_levelLoadModernization", "0")
     append_set(args, "g_autoSkipCinematics", "1")
     append_set(args, "g_autoScreenshot", "0")
     if autoexec_cfg:
@@ -2002,6 +2016,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "metadata": report_metadata,
         "requiredScenes": REQUIRED_SCENES,
         "worldAmbientScenes": WORLD_AMBIENT_SCENES,
+        "loadRegressionScenes": LOAD_REGRESSION_SCENES,
         "shadowScenes": SHADOW_SCENES,
         "campaignTransitionScenes": CAMPAIGN_TRANSITION_SCENES,
         "shadowPresets": SHADOW_PRESETS,
@@ -2153,6 +2168,16 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "|---|---|---|---|",
     ]
     for case_id, scene in WORLD_AMBIENT_SCENES.items():
+        lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
+
+    lines += [
+        "",
+        "## Load/Shadow Regression Coverage",
+        "",
+        "| Case | Mode | Map | Purpose |",
+        "|---|---|---|---|",
+    ]
+    for case_id, scene in LOAD_REGRESSION_SCENES.items():
         lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
 
     lines += [

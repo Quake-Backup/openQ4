@@ -46,6 +46,9 @@ any cached payload can be accepted.
 
 namespace {
 
+static idCVar com_levelLoadModernization(
+	"com_levelLoadModernization", "0", CVAR_BOOL | CVAR_ARCHIVE | CVAR_SYSTEM,
+	"enable the experimental level-load cache, preload, and generated-animation paths" );
 static idCVar com_levelLoadCache(
 	"com_levelLoadCache", "1", CVAR_BOOL | CVAR_ARCHIVE | CVAR_SYSTEM,
 	"enable versioned source-authoritative level-load caches and learned manifests" );
@@ -552,7 +555,8 @@ struct idLevelLoadCacheManager::Impl {
 	}
 
 	bool WriteLearnedManifest() {
-		if ( !com_levelLoadCache.GetBool() || !com_levelLoadCacheWrite.GetBool() ||
+		if ( !com_levelLoadModernization.GetBool() || !com_levelLoadCache.GetBool() ||
+			!com_levelLoadCacheWrite.GetBool() ||
 			learned.mapKey.empty() ) {
 			return false;
 		}
@@ -596,7 +600,8 @@ idLevelLoadCacheManager::~idLevelLoadCacheManager() {
 void idLevelLoadCacheManager::Begin( const char *mapKey, const char *gameMode,
 		const char *entityFilter, const char *contentKey, const char *settingsKey ) {
 	Cancel();
-	if ( impl->fileSystem == nullptr || !com_levelLoadCache.GetBool() ) {
+	if ( impl->fileSystem == nullptr || !com_levelLoadModernization.GetBool() ||
+			!com_levelLoadCache.GetBool() ) {
 		return;
 	}
 
@@ -922,7 +927,8 @@ idFile *idLevelLoadCacheManager::OpenGeneratedCacheRead(
 		const generatedCacheKind_t kind, const char *sourcePath,
 		const unsigned int parserVersion, const char *settingsKey,
 		const char *contentKey ) {
-	if ( impl == nullptr || !com_levelLoadCache.GetBool() || !IsValidCacheKind( kind ) ||
+	if ( impl == nullptr || !com_levelLoadModernization.GetBool() ||
+		!com_levelLoadCache.GetBool() || !IsValidCacheKind( kind ) ||
 		parserVersion == 0 ) {
 		return nullptr;
 	}
@@ -990,7 +996,8 @@ bool idLevelLoadCacheManager::WriteGeneratedCache( const generatedCacheKind_t ki
 		const char *sourcePath, const unsigned int parserVersion,
 		const char *settingsKey, const void *payload, const unsigned int payloadBytes,
 		const char *contentKey ) {
-	if ( impl == nullptr || !com_levelLoadCache.GetBool() || !com_levelLoadCacheWrite.GetBool() ||
+	if ( impl == nullptr || !com_levelLoadModernization.GetBool() ||
+		!com_levelLoadCache.GetBool() || !com_levelLoadCacheWrite.GetBool() ||
 		!IsValidCacheKind( kind ) || parserVersion == 0 ||
 		( payload == nullptr && payloadBytes != 0 ) || payloadBytes > idLevelLoadCache::DEFAULT_MAX_PAYLOAD_BYTES ) {
 		return false;

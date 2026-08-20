@@ -147,7 +147,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --maxfps 0 --s
 | renderer escape | `r_renderer best` leaves promotion available; explicit `r_renderer arb2` keeps the ARB2 bridge |
 | compatibility gates | modern baseline features, UBOs, MRT, scene packets, render graph, and Shader Library V2 readiness are available |
 | fallback escape | the ARB2 compatibility bridge remains selectable through `r_renderer arb2` and `r_glTier legacy` |
-| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
+| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
 | validation evidence | `r_rendererPromotionEvidence` carries the complete Phase 8 token after zero-warning visual, gameplay, RenderDoc, performance, presentation, rollback, and debug-off checks pass |
 | manual sign-off | `r_rendererModernAutoPromote 1` is used only together with a complete `r_rendererPromotionEvidence` token |
 
@@ -281,6 +281,7 @@ Gameplay validation remains mandatory before renderer release sign-off, but it i
 | `sp-cinematic-subview` | SP | `game/mcc_landing` | subviews, remote cameras, cinematic and GUI interaction |
 | `sp-mv2-ambient` | SP | `maps/tools/mv2` | controlled stock fixed-function world-ambient ownership and whole-view rollback evidence |
 | `mp-q4dm1-listen` | MP | `mp/q4dm1` | listen-server and local-client MP parity |
+| `mp-q4dm9-listen` | MP | `mp/q4dm9` | default-off load-cache timing and forced Vulkan shadow-ownership fallback regression |
 
 For each gameplay case, validate the matrix variants that the hardware supports:
 
@@ -350,6 +351,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --pacing-only 
 python tools\tests\renderer_gameplay_benchmark.py --profile required
 python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360
 python tools\tests\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers
+python tools\tests\renderer_gameplay_benchmark.py --profile smoke --cases mp-q4dm9-listen --render-api vk --shadow-presets mapped --pacing-only --no-gpu-timers
 python tools\tests\renderer_gameplay_benchmark.py --profile tiers
 python tools\tests\renderer_gameplay_benchmark.py --profile presentation --pacing-only
 python tools\tests\renderer_gameplay_benchmark.py --profile shadows
@@ -380,6 +382,7 @@ Nondeterministic BSE, cinematic, and MP scenes need human review in addition to 
 | `sp-bse-heavy` | BSE-heavy effects in `game/medlabs` | effect sprites/trails animate at the expected cadence, no black quads, no missing additive passes, no warning spam |
 | `sp-cinematic-subview` | cinematic/subview flow in `game/mcc_landing` | remote-camera/subview content is visible, GUI overlays composite in the right order, cinematic handoff keeps frame pacing stable |
 | `mp-q4dm1-listen` | local MP listen server plus loopback client | client reaches the map, player/world lighting matches host expectations, frame pacing remains uncapped when requested |
+| `mp-q4dm9-listen` | local MP q4dm9 load and Vulkan mapped-shadow fallback | ordinary runs force `com_levelLoadModernization 0` and must show no generated-cache writes; explicit cache-on A/B evidence records map phases. A focused run with `r_vkShadowFallbackTest 1` must retain a lit engine TGA, log `affected light receivers fall back unshadowed`, omit the former `receivers are skipped fail-closed` diagnostic, and remain free of Vulkan validation/VUID/call failures. |
 
 ## Shadow Correctness Matrix
 

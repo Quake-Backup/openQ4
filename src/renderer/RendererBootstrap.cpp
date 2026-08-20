@@ -46,6 +46,7 @@ static bool RendererBootstrap_BuildDefaultSafetyReport( idStr &report, idStr &is
 		{ "r_rendererModernVisible", &r_rendererModernVisible, 0 },
 		{ "r_rendererSharedGui", &r_rendererSharedGui, 0 },
 		{ "r_rendererSharedWorldAmbient", &r_rendererSharedWorldAmbient, 0 },
+		{ "r_vkShadowFallbackTest", &r_vkShadowFallbackTest, 0 },
 		{ "r_rendererModernLightingParity", &r_rendererModernLightingParity, 0 },
 		{ "r_rendererModernVisibleDepth", &r_rendererModernVisibleDepth, 0 },
 		{ "r_rendererModernDepthDebug", &r_rendererModernDepthDebug, 0 },
@@ -88,7 +89,7 @@ static bool RendererBootstrap_BuildDefaultSafetyReport( idStr &report, idStr &is
 	}
 
 	report = va(
-		"renderer=%s glTier=%s executor=%d submit=%d autoPromote=%d promotionEvidence=%d visible=%d sharedGui=%d sharedWorldAmbient=%d lightingParity=%d visibleDepth=%d depthDebug=%d opaque=%d gbufferDebug=%d deferred=%d deferredDebug=%d forwardPlus=%d clusterDebug=%d gpuValidation=%d bindless=%d shaderReload=%d rollback=%s issues=%s",
+		"renderer=%s glTier=%s executor=%d submit=%d autoPromote=%d promotionEvidence=%d visible=%d sharedGui=%d sharedWorldAmbient=%d vkShadowFallbackTest=%d lightingParity=%d visibleDepth=%d depthDebug=%d opaque=%d gbufferDebug=%d deferred=%d deferredDebug=%d forwardPlus=%d clusterDebug=%d gpuValidation=%d bindless=%d shaderReload=%d rollback=%s issues=%s",
 		r_renderer.GetString(),
 		r_glTier.GetString(),
 		r_rendererModernExecutor.GetInteger(),
@@ -98,6 +99,7 @@ static bool RendererBootstrap_BuildDefaultSafetyReport( idStr &report, idStr &is
 		r_rendererModernVisible.GetInteger(),
 		r_rendererSharedGui.GetInteger(),
 		r_rendererSharedWorldAmbient.GetInteger(),
+		r_vkShadowFallbackTest.GetInteger(),
 		r_rendererModernLightingParity.GetInteger(),
 		r_rendererModernVisibleDepth.GetInteger(),
 		r_rendererModernDepthDebug.GetInteger(),

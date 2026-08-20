@@ -132,6 +132,8 @@ def validate_pipeline_and_lifecycle() -> None:
         raise AssertionError("level-load coordinator must be created by initial startup and restart")
 
     for token in (
+        '"com_levelLoadModernization", "0"',
+        "!com_levelLoadModernization.GetBool()",
         '"generated/manifests/"',
         'subdirectory = "models"',
         'subdirectory = "worlds"',

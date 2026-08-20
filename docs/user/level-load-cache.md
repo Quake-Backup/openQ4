@@ -7,11 +7,12 @@ hand immutable bytes back to the normal owner. openQ4 also keeps validated local
 binary caches for parsed models, classic map worlds, collision data, and MD5
 animations.
 
-The first visit still uses the installed Quake 4 or mod sources and may take a
-little longer while private cache files are written. A later visit can reuse
-work only when the map, game mode, entity filter, active search/PK4 set, source
-identity, and load-affecting settings still match. Actual load-time improvement
-depends on the map, storage, processor, and which data was already resident.
+The experimental cache is disabled by default because current stock-map
+measurements do not yet prove a reliable improvement over classic loading. If
+enabled, the first visit still uses the installed Quake 4 or mod sources and may
+take longer while private cache files are written. A later visit can reuse work
+only when the map, game mode, entity filter, active search/PK4 set, source
+identity, and load-affecting settings still match.
 
 ## Safety and compatibility
 
@@ -71,16 +72,23 @@ PK4 members remain tied to the containing archive checksum.
 
 ## Controls
 
-The cache read, write, and preload paths default to enabled; reporting defaults
-to off:
+The master switch defaults off. The individual controls retain their enabled
+defaults so an intentional experiment needs only the master switch:
 
 ```text
+com_levelLoadModernization 0
 com_levelLoadCache 1
 com_levelLoadCacheWrite 1
 com_levelLoadPreload 1
 com_levelLoadCacheReport 0
 ```
 
+- Set `com_levelLoadModernization 1` before loading a map to opt into all
+  individually enabled cache paths. This also permits the SP/MP animation-cache
+  controls below to take effect.
+- Set `com_levelLoadModernization 0` for the classic loading path. This master
+  rollback overrides archived values from builds that previously enabled the
+  individual controls by default.
 - Set `com_levelLoadPreload 0` before loading a map to disable learned source
   preparation while retaining valid generated model/world/collision caches.
 - Set `com_levelLoadCacheWrite 0` to stop new manifests and generated
@@ -102,8 +110,9 @@ normal owner can allocate its parsed representation in addition to the retained
 source bytes, so these controls are pipeline limits rather than a cap on total
 level-load memory.
 
-Animation caches are owned separately by the SP and MP game modules. Both
-controls also default to enabled:
+Animation caches are owned separately by the SP and MP game modules. Their
+individual controls default to enabled, but reads and writes occur only while
+`com_levelLoadModernization 1`:
 
 ```text
 g_useGeneratedAnimCache 1
@@ -119,10 +128,9 @@ To force a clean rebuild, close openQ4 and delete one or more of the
 `generated/` subdirectories listed above under the active `fs_savepath`. openQ4
 will recreate needed private data from the installed sources.
 
-For a complete source-path comparison, start openQ4 with
-`com_levelLoadCache 0`, `g_useGeneratedAnimCache 0`, and
-`g_writeGeneratedAnimCache 0`. Leave `com_levelLoadCacheWrite 0` set as well if
-you do not want the comparison run to publish any new framework cache files.
+For a complete source-path comparison, leave `com_levelLoadModernization 0`.
+No framework or animation cache is read or written in that mode, regardless of
+older archived values for the individual controls.
 
 Never delete the original `.proc`, `.cm`, model, image, sound, or
 `models/**/*.md5anim` files from the Quake 4 installation. If a map still fails

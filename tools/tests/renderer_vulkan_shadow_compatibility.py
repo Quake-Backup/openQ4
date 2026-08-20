@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression contracts for Vulkan shadow ownership and fail-closed safety."""
+"""Regression contracts for Vulkan shadow ownership and graceful fallback."""
 
 from __future__ import annotations
 
@@ -2056,6 +2056,17 @@ def validate_packed_shadow_geometry() -> None:
 
 
 def validate_fail_closed_target_and_stencil_behavior() -> None:
+    render_init = read("src/renderer/RenderSystem_init.cpp")
+    require(
+        render_init,
+        'idCVar r_vkShadowFallbackTest( "r_vkShadowFallbackTest", "0"',
+        "default-off Vulkan shadow fallback injection",
+    )
+    require(
+        read("src/renderer/RendererBootstrap.cpp"),
+        '{ "r_vkShadowFallbackTest", &r_vkShadowFallbackTest, 0 }',
+        "default-safety Vulkan shadow fallback injection",
+    )
     executor = read("src/renderer/Vulkan/vk_GuiExecutor.cpp")
     target_has_stencil = braced_body(
         executor,
@@ -2071,6 +2082,11 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
     )
 
     interactions = read("src/renderer/Vulkan/vk_Interactions.cpp")
+    require(
+        interactions,
+        "!r_vkShadowFallbackTest.GetBool()",
+        "forced missing-stencil fallback coverage",
+    )
     draw_lights = braced_body(
         interactions,
         "void VK_Interactions_DrawLights(",
@@ -2122,8 +2138,11 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
             "VK_StencilShadowPass( globalGlobalVolumes );",
             "VK_StencilShadowPass( globalLocalVolumes );",
             "VK_DrawInteractionChain( vLight->globalInteractions );",
+            "if ( !localReceiverDrawn && vLight->localInteractions != NULL )",
+            "if ( !globalOpaqueReceiverDrawn && vLight->globalInteractions != NULL )",
             "const bool translucentUsesStencilFallback =",
             "const bool translucentUsesEmptyFallback =",
+            "const bool translucentUsesUnshadowedFallback =",
             "const bool drawTranslucentReceiver =",
             "if ( drawTranslucentReceiver )",
             "VK_DrawInteractionChain( vLight->translucentInteractions );",
@@ -2139,7 +2158,8 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
         (
             """const bool stencilResourcesReady =
                 activeTargetHasStencil &&
-                interPass.pipelineStencilShadow != VK_NULL_HANDLE;""",
+				interPass.pipelineStencilShadow != VK_NULL_HANDLE &&
+				!r_vkShadowFallbackTest.GetBool();""",
             "stencil target and pipeline readiness",
         ),
         (
@@ -2185,18 +2205,18 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
                     !localReceiverDrewWithStencil )
                 || ( globalStencilFallback &&
                     !globalStencilPassComplete );""",
-            "late stencil submission fail-closed gate",
+            "late stencil submission degradation gate",
         ),
     ):
         require_compact(draw_lights, snippet, label)
     require(
         draw_lights,
-        "stencil shadow volume submission incomplete; affected light receivers are skipped fail-closed",
+        "stencil shadow volume submission incomplete; affected light receivers fall back unshadowed",
         "late stencil submission diagnostic",
     )
     expected_draw_counts = {
-        "VK_DrawInteractionChain( vLight->localInteractions );": 3,
-        "VK_DrawInteractionChain( vLight->globalInteractions );": 3,
+        "VK_DrawInteractionChain( vLight->localInteractions );": 4,
+        "VK_DrawInteractionChain( vLight->globalInteractions );": 4,
         "VK_DrawInteractionChain( vLight->translucentInteractions );": 1,
     }
     for call, expected_count in expected_draw_counts.items():
@@ -2220,8 +2240,8 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
     )
     require(
         draw_lights,
-        "required shadow resource unavailable; affected light receivers are skipped fail-closed",
-        "fail-closed shadow diagnostic",
+        "required shadow resource unavailable; affected light receivers fall back unshadowed",
+        "unshadowed shadow-degradation diagnostic",
     )
 
     shared = read("src/renderer/tr_local.h")

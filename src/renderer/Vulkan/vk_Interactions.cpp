@@ -61,6 +61,8 @@
 #include "../tr_local.h"
 #include "../Model_local.h"
 
+extern idCVar r_vkShadowFallbackTest;
+
 #undef snprintf
 #undef vsnprintf
 #ifndef INT_MAX
@@ -1979,12 +1981,20 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				}
 			}
 		}
+		if ( r_vkShadowFallbackTest.GetBool() &&
+				( localShadowState != NULL || globalShadowState != NULL ) ) {
+			VK_ShadowMap_MarkStencilFallbackSticky( vLight );
+			shadowState = NULL;
+			localShadowState = NULL;
+			globalShadowState = NULL;
+		}
 
 		// Determine shadow need per retail ownership chain. A LOCAL receiver
 		// only sees global casters; a GLOBAL receiver sees both. This matters
 		// when a map resource failed or a target lacks stencil: receivers that
-		// genuinely need unavailable shadow data must fail closed instead of
-		// silently receiving an unshadowed light.
+		// genuinely need unavailable shadow data prefer the retained stencil
+		// path. If neither ownership path can be submitted, preserve the direct
+		// light unshadowed for this frame instead of visibly dropping the light.
 		const int incompleteMapMask =
 				vLight->shadowMapIncompleteMapMask
 				| vLight->shadowMapPrelightMapMissingMask;
@@ -2096,7 +2106,8 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				vLight->localShadows == NULL;
 		const bool stencilResourcesReady =
 				activeTargetHasStencil &&
-				interPass.pipelineStencilShadow != VK_NULL_HANDLE;
+				interPass.pipelineStencilShadow != VK_NULL_HANDLE &&
+				!r_vkShadowFallbackTest.GetBool();
 		const bool localStencilFallback =
 				localReceiverNeedsStencil &&
 				!localEmptyFallback &&
@@ -2118,14 +2129,15 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					!globalEmptyFallback &&
 					!globalStencilFallback );
 		if ( missingRequiredShadow && unresolvedBeforeSubmit ) {
-			static bool warnedFailClosedShadow = false;
-			if ( !warnedFailClosedShadow ) {
-				warnedFailClosedShadow = true;
-				common->Warning( "Vulkan: required shadow resource unavailable; affected light receivers are skipped fail-closed" );
+			static bool warnedUnshadowedFallback = false;
+			if ( !warnedUnshadowedFallback ) {
+				warnedUnshadowedFallback = true;
+				common->Warning( "Vulkan: required shadow resource unavailable; affected light receivers fall back unshadowed" );
 			}
 		}
 
 		bool globalOpaqueReceiverDrawn = false;
+		bool localReceiverDrawn = false;
 		bool localReceiverDrewWithStencil = false;
 		bool globalStencilPassComplete = false;
 		if ( anyStencilFallback ) {
@@ -2164,6 +2176,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					vkCmdSetStencilTestEnable( cmd, VK_TRUE );
 					VK_DrawInteractionChain( vLight->localInteractions );
 					localReceiverDrewWithStencil = true;
+					localReceiverDrawn = true;
 				}
 			}
 
@@ -2175,6 +2188,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					localEmptyFallback ? NULL : shadowState,
 					localEmptyFallback ? NULL : localShadowState );
 				VK_DrawInteractionChain( vLight->localInteractions );
+				localReceiverDrawn = true;
 			}
 
 			if ( globalStencilFallback ) {
@@ -2227,7 +2241,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 			// ownership accumulated so far. Never consume a partial stencil
 			// buffer: keep any already-complete receiver draw, then use a
 			// valid ownership map, an independently proven empty fallback, or
-			// skip only the affected receiver chain fail-closed.
+			// preserve direct illumination without a shadow for this frame.
 			vkCmdSetStencilTestEnable( cmd, VK_FALSE );
 			if ( !globalOpaqueReceiverDrawn &&
 					( globalEmptyFallback ||
@@ -2248,7 +2262,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				static bool warnedIncompleteStencilSubmission = false;
 				if ( !warnedIncompleteStencilSubmission ) {
 					warnedIncompleteStencilSubmission = true;
-					common->Warning( "Vulkan: stencil shadow volume submission incomplete; affected light receivers are skipped fail-closed" );
+					common->Warning( "Vulkan: stencil shadow volume submission incomplete; affected light receivers fall back unshadowed" );
 				}
 			}
 		} else {
@@ -2263,6 +2277,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					localEmptyFallback ? NULL : shadowState,
 					localEmptyFallback ? NULL : localShadowState );
 				VK_DrawInteractionChain( vLight->localInteractions );
+				localReceiverDrawn = true;
 			}
 			if ( globalEmptyFallback ||
 					!globalOpaqueReceiverNeedsStencil ) {
@@ -2274,6 +2289,23 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 			}
 		}
 
+		// Shadow allocation/admission and late stencil streaming failures are
+		// recoverable presentation failures. A transient loss of shadowing is
+		// preferable to dropping the light contribution for a complete frame.
+		if ( !localReceiverDrawn && vLight->localInteractions != NULL ) {
+			vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+			vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_EQUAL );
+			VK_Inter_SelectShadowMode( NULL, NULL );
+			VK_DrawInteractionChain( vLight->localInteractions );
+		}
+		if ( !globalOpaqueReceiverDrawn && vLight->globalInteractions != NULL ) {
+			vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+			vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_EQUAL );
+			VK_Inter_SelectShadowMode( NULL, NULL );
+			VK_DrawInteractionChain( vLight->globalInteractions );
+			globalOpaqueReceiverDrawn = true;
+		}
+
 		if ( !r_skipTranslucent.GetBool() ) {
 			const bool translucentUsesStencilFallback =
 					translucentReceiverNeedsStencil &&
@@ -2282,10 +2314,15 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 			const bool translucentUsesEmptyFallback =
 					translucentReceiverNeedsFallback &&
 					globalEmptyFallback;
+			const bool translucentUsesUnshadowedFallback =
+					translucentReceiverNeedsStencil &&
+					!translucentUsesStencilFallback &&
+					!translucentUsesEmptyFallback;
 			const bool drawTranslucentReceiver =
 					!translucentReceiverNeedsStencil ||
 					translucentUsesStencilFallback ||
-					translucentUsesEmptyFallback;
+					translucentUsesEmptyFallback ||
+					translucentUsesUnshadowedFallback;
 			// Translucent receivers keep the GLOBAL pass state, matching the
 			// GL pair where the global opaque pass is the last mapped state.
 			if ( translucentUsesStencilFallback ) {
@@ -2295,6 +2332,9 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					translucentMapNeedsSupplement
 						? globalShadowState : NULL );
 				vkCmdSetStencilTestEnable( cmd, VK_TRUE );
+			} else if ( translucentUsesUnshadowedFallback ) {
+				VK_Inter_SelectShadowMode( NULL, NULL );
+				vkCmdSetStencilTestEnable( cmd, VK_FALSE );
 			} else if ( drawTranslucentReceiver &&
 					translucentReceiverNeedsShadow &&
 					globalShadowState != NULL ) {

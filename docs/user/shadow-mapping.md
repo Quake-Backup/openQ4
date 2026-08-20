@@ -289,6 +289,11 @@ Practical advice:
 | `r_shadowMapGpuSyncTimings` | `0` | Diagnostic-only GPU-synchronized pass timing using `glFinish`; leave off during normal play. |
 | `reportShaderPrograms` | n/a | Prints current ARB/GLSL shader validity, including shadow programs. |
 
+If Vulkan cannot submit either a required shadow map or the matching stencil
+ownership for one frame, it keeps that receiver's direct light unshadowed and
+logs the degradation. This avoids a complete light pop-out; the sticky fallback
+requests stencil ownership for later frames.
+
 `r_shadowMapDebugMode` values:
 - `0`: Off
 - `1`: Projected shadow atlas/depth
