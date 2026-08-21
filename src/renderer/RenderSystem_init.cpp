@@ -3884,7 +3884,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		const classicInteractionDomainStats_t &interaction =
 			R_ClassicInteractionDomain_Stats();
 		common->Printf(
-			"Renderer shared interaction: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d lights=%d surfaces=%d primitives=%d draw=%d noop=%d stages=%d/%d+%d/%d receivers=%d/%d/%d hash=%016llx status=%s GL=%d/%d/%d VK=%d/%d/%d\n",
+			"Renderer shared interaction: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d lights=%d surfaces=%d primitives=%d draw=%d noop=%d shadow=%d/%d/%d+%d volumes=%d+%d maps=%d+%d modes=%d+%d csm=%d stages=%d/%d+%d/%d receivers=%d/%d/%d hash=%016llx status=%s GL=%d/%d/%d VK=%d/%d/%d\n",
 			r_rendererSharedWorldInteraction.GetBool() ? 1 : 0,
 			interaction.prepared ? 1 : 0,
 			interaction.frameValid ? 1 : 0,
@@ -3896,6 +3896,17 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			interaction.primitives,
 			interaction.drawablePrimitives,
 			interaction.noopPrimitives,
+			interaction.shadowLights,
+			interaction.shadowCasters,
+			interaction.drawableShadowCasters,
+			interaction.noopShadowCasters,
+			interaction.logicalVolumeDraws,
+			interaction.preloadVolumeDraws,
+			interaction.shadowMapPasses,
+			interaction.hybridShadowPasses,
+			interaction.projectedShadowMapPasses,
+			interaction.pointShadowMapPasses,
+			interaction.csmShadowMapPasses,
 			interaction.activeLightStages,
 			interaction.inactiveLightStages,
 			interaction.activeSurfaceStages,
@@ -3919,10 +3930,13 @@ void GfxInfo_f( const idCmdArgs &args ) {
 				continue;
 			}
 			common->Printf(
-				"Renderer shared interaction view[%d]: scene=%d pass=%d ready=%d failure=%s detail=%d drawPacket=%d light=%d receiver=%d stage=%d lights=%d surfaces=%d primitives=%d/%d noop=%d hash=%016llx GL=%d/%s/%d/%d+%d VK=%d/%s/%d/%d+%d\n",
+				"Renderer shared interaction view[%d]: scene=%d pass=%d shadowPass=%d/%d mode=%s ready=%d failure=%s detail=%d drawPacket=%d light=%d receiver=%d stage=%d lights=%d surfaces=%d primitives=%d/%d noop=%d shadow=%d/%d/%d+%d volumes=%d+%d maps=%d+%d modes=%d+%d csm=%d hash=%016llx GL=%d/%s/%d/%d+%d/%d+%d+%d+%d/%d+%d VK=%d/%s/%d/%d+%d/%d+%d+%d+%d/%d+%d\n",
 				viewIndex,
 				view->scenePacketIndex,
 				view->interactionPassPacketIndex,
+				view->stencilShadowPassPacketIndex,
+				view->shadowMapPassPacketIndex,
+				ClassicInteractionDomainShadowMode_Name( view->shadowMode ),
 				view->ready ? 1 : 0,
 				ClassicInteractionDomainFailure_Name( view->failure ),
 				view->failureDetail,
@@ -3935,6 +3949,17 @@ void GfxInfo_f( const idCmdArgs &args ) {
 				view->primitiveCount,
 				view->drawablePrimitiveCount,
 				view->noopPrimitiveCount,
+				view->shadowLightCount,
+				view->shadowCasterCount,
+				view->drawableShadowCasterCount,
+				view->noopShadowCasterCount,
+				view->logicalVolumeDrawCount,
+				view->preloadVolumeDrawCount,
+				view->shadowMapPassCount,
+				view->hybridShadowPassCount,
+				view->projectedShadowMapPassCount,
+				view->pointShadowMapPassCount,
+				view->csmShadowMapPassCount,
 				static_cast<unsigned long long>( view->hash ),
 				view->backendOutcome[CLASSIC_INTERACTION_BACKEND_GL],
 				ClassicInteractionDomainFailure_Name(
@@ -3942,12 +3967,65 @@ void GfxInfo_f( const idCmdArgs &args ) {
 				view->backendFailureDetail[CLASSIC_INTERACTION_BACKEND_GL],
 				view->backendDrawnPrimitives[CLASSIC_INTERACTION_BACKEND_GL],
 				view->backendNoopPrimitives[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendShadowCasters[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendNoopShadowCasters[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendLogicalVolumeDraws[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendPreloadVolumeDraws[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendShadowMapPasses[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendHybridPasses[CLASSIC_INTERACTION_BACKEND_GL],
 				view->backendOutcome[CLASSIC_INTERACTION_BACKEND_VULKAN],
 				ClassicInteractionDomainFailure_Name(
 					view->backendFailure[CLASSIC_INTERACTION_BACKEND_VULKAN] ),
 				view->backendFailureDetail[CLASSIC_INTERACTION_BACKEND_VULKAN],
 				view->backendDrawnPrimitives[CLASSIC_INTERACTION_BACKEND_VULKAN],
-				view->backendNoopPrimitives[CLASSIC_INTERACTION_BACKEND_VULKAN] );
+				view->backendNoopPrimitives[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendShadowCasters[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendNoopShadowCasters[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendLogicalVolumeDraws[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendPreloadVolumeDraws[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendShadowMapPasses[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendHybridPasses[CLASSIC_INTERACTION_BACKEND_VULKAN] );
+			for ( int lightIndex = 0; lightIndex < view->lightCount;
+					++lightIndex ) {
+				const classicInteractionDomainLight_t *light =
+					R_ClassicInteractionDomain_ViewLight( *view, lightIndex );
+				if ( light == NULL ) {
+					continue;
+				}
+				for ( int receiverIndex = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+						receiverIndex <= CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+						++receiverIndex ) {
+					const classicInteractionDomainReceiver_t receiver =
+						static_cast<classicInteractionDomainReceiver_t>(
+							receiverIndex );
+					const classicInteractionDomainShadowMapPass_t *mapPass =
+						R_ClassicInteractionDomain_LightShadowMapPass(
+							*light, receiver );
+					if ( mapPass == NULL ) {
+						continue;
+					}
+					common->Printf(
+						"Renderer shared interaction map view[%d] light=%d receiver=%s mode=%s class=%s cascades=%d alias=%d plan=%016llx generation=%u casters=%d+%d features=%d+%d+%d+%d hash=%016llx\n",
+						viewIndex, lightIndex,
+						ClassicInteractionDomainReceiver_Name( receiver ),
+						ClassicInteractionDomainShadowMode_Name(
+							mapPass->mode ),
+						R_ShadowMapLightClassName( mapPass->lightClass ),
+						mapPass->lightClass == SHADOWMAP_LIGHT_POINT
+							? 6 : mapPass->projected.state.cascadeCount,
+						mapPass->resourceAlias ? 1 : 0,
+						static_cast<unsigned long long>(
+							mapPass->resourcePlanId ),
+						mapPass->resourceGeneration,
+						mapPass->mappedCasterCount,
+						mapPass->supplementCasterCount,
+						mapPass->hasStaticCasters ? 1 : 0,
+						mapPass->hasDynamicCasters ? 1 : 0,
+						mapPass->hasAlphaCasters ? 1 : 0,
+						mapPass->hasTranslucentCasters ? 1 : 0,
+						static_cast<unsigned long long>( mapPass->hash ) );
+				}
+			}
 		}
 	}
 	common->Printf(

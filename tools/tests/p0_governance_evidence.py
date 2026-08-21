@@ -141,12 +141,12 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     )
     require(
         matrix,
-        "locally validated eligible world ambient/material and unshadowed fixed-classic interaction domains are the second and third",
+        "eligible world ambient/material is the second, and fixed-classic interaction is the third",
         "three locally validated shared domains",
     )
     require(
         matrix,
-        "shadow-coupled interaction, fog/blend, deform, and other special-view domains still need migration",
+        "fog/blend, deform, and other special-view domains still need migration",
         "remaining shared-domain boundary",
     )
     require(
@@ -158,12 +158,12 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     roadmap = read("docs/dev/idtech5-modernization-roadmap.md")
     require(
         roadmap,
-        "three complete domains implemented and locally validated",
+        "three complete domains implemented; controlled local validation passed",
         "roadmap local domain status",
     )
     require(
         roadmap,
-        "clean-package and platform promotion evidence remain open",
+        "Stock camera/reference qualification, clean-package evidence, and platform promotion remain open",
         "roadmap promotion boundary",
     )
 

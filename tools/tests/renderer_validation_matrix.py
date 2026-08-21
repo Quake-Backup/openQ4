@@ -109,6 +109,12 @@ MANUAL_GAMEPLAY_MATRIX = [
         "purpose": "controlled stock fixed-function world-ambient ownership and whole-view rollback",
     },
     {
+        "id": "sp-mv2-interaction",
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock fixed-classic interaction and shadow ownership parity",
+    },
+    {
         "id": "mp-q4dm1-listen",
         "mode": "MP",
         "map": "mp/q4dm1",
@@ -232,6 +238,30 @@ GAMEPLAY_BENCHMARK_HARNESS = [
         "profile": "world-ambient",
         "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers",
         "coverage": "bordered stock maps/tools/mv2 capture with light, subview, GUI, post, portal-fade, and overlay islands disabled for shared world-ambient A/B ownership and explicit-blocker rollback evidence",
+    },
+    {
+        "profile": "interaction",
+        "renderApi": "gl",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction\\gl\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction\\gl\\shadows-off\\savepaths",
+        "coverage": "OpenGL controlled unshadowed, stencil, projected-plus-point mapped, mixed mapped/stencil, and named map-admission fallback ownership with exact shared/classic TGA parity and a required shadows-on/off image delta",
+    },
+    {
+        "profile": "interaction",
+        "renderApi": "vk",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction\\vk\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction\\vk\\shadows-off\\savepaths",
+        "coverage": "Vulkan controlled unshadowed, stencil, projected-plus-point mapped, mixed mapped/stencil, and named map-admission fallback ownership with exact shared/classic TGA parity and a required shadows-on/off image delta",
+    },
+    {
+        "profile": "interaction-shadow-stock",
+        "renderApi": "gl",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\gl\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\gl\\shadows-off\\savepaths",
+        "coverage": "OpenGL stock projected, point, CSM/parallel, dynamic, perforated, same-light hybrid, and exact translucent-moment fallback ownership with exact shared/classic TGA parity and required shadows-on/off image deltas",
+    },
+    {
+        "profile": "interaction-shadow-stock",
+        "renderApi": "vk",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\vk\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\vk\\shadows-off\\savepaths",
+        "coverage": "Vulkan stock projected, point, CSM/parallel, dynamic, perforated, same-light hybrid, and exact translucent-moment fallback ownership with exact shared/classic TGA parity and required shadows-on/off image deltas",
     },
     {
         "profile": "tiers",
@@ -545,6 +575,9 @@ def common_args(
 def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
     selftest_commands = [
         "+set",
+        "r_renderApi",
+        "gl",
+        "+set",
         "r_rendererMetrics",
         "2",
         "+set",
@@ -589,6 +622,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
             "id": "renderer-foundation-selftests",
             "category": "selftest",
             "description": "Renderer foundation, shared contracts, GPU-animation, upload, metrics, packet, graph, material, geometry, shader, draw, submit, and executor self-tests.",
+            "preservesConfig": True,
             "args": selftest_commands,
             "checks": SELFTEST_CHECKS + [["Selected renderer tier:"], ["GL context request:"], ["Renderer API: requested="]],
         },

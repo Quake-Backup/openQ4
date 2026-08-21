@@ -250,14 +250,15 @@ or target-platform/driver qualification before promotion.
 
 ## Remaining Milestone D work
 
-The GUI and world ambient/material corridors are joined by the separate
-[unshadowed fixed-classic interaction domain](classic-interaction-domain-modernization.md)
-as the first three complete shared classic-frame domains. They do not make the
-whole classic frame modern or establish shadowed visible-lighting parity.
+The GUI and world ambient/material corridors are joined by the
+[fixed-classic interaction domain](classic-interaction-domain-modernization.md)
+as the first three complete shared classic-frame domains. The interaction
+domain now accepts eligible unshadowed and shadow-coupled views; its shadow
+extension covers stencil, projected/CSM/parallel, point, mixed, and hybrid
+ownership with dynamic/perforated mapped casters and atomic translucent-moment
+fallback. They still do not make the whole classic frame modern.
 
-The next recommended implementation target is **shadow-coupled interaction-
-lighting ownership and parity**: extend the complete GL/Vulkan interaction
-transaction without weakening its explicit light, shadow, material, resource,
-and fallback accounting, then proceed to fog/blend, deform, subview, in-world
-GUI, render-demo, cinematic, or authored post ownership. Do not skip ahead to
+The next recommended implementation target is **fog/blend ownership and
+parity** on both backends, followed by deform, subview, in-world GUI,
+render-demo, cinematic, or authored post ownership. Do not skip ahead to
 temporal presentation or PBR/advanced-lighting Milestones E/F.

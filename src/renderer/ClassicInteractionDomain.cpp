@@ -19,6 +19,12 @@ typedef struct classicInteractionDomainState_s {
 	classicInteractionDomainLight_t lights[ CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS ];
 	classicInteractionDomainSurface_t surfaces[ CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES ];
 	classicInteractionDomainPrimitive_t primitives[ CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+	classicInteractionDomainShadowCaster_t shadowCasters[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ];
+	classicInteractionDomainShadowAlphaStage_t shadowAlphaStages[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES ];
+	classicInteractionDomainShadowMapPass_t shadowMapPasses[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES ];
 	classicInteractionDomainTexture_t textures[ CLASSIC_INTERACTION_DOMAIN_MAX_TEXTURES ];
 	classicInteractionDomainStats_t stats;
 	std::uint32_t generation;
@@ -26,6 +32,9 @@ typedef struct classicInteractionDomainState_s {
 	int lightCount;
 	int surfaceCount;
 	int primitiveCount;
+	int shadowCasterCount;
+	int shadowAlphaStageCount;
+	int shadowMapPassCount;
 	int textureCount;
 } classicInteractionDomainState_t;
 
@@ -33,6 +42,9 @@ typedef struct classicInteractionCheckpoint_s {
 	int lightCount;
 	int surfaceCount;
 	int primitiveCount;
+	int shadowCasterCount;
+	int shadowAlphaStageCount;
+	int shadowMapPassCount;
 	int textureCount;
 } classicInteractionCheckpoint_t;
 
@@ -225,11 +237,56 @@ static void InitSurface( classicInteractionDomainSurface_t &surface ) {
 	surface.firstPrimitive = -1;
 }
 
+static void InitShadowAlphaStage(
+		classicInteractionDomainShadowAlphaStage_t &stage ) {
+	std::memset( &stage, 0, sizeof( stage ) );
+	stage.casterIndex = -1;
+	stage.stageIndex = -1;
+	InitTextureMatrix( stage.textureMatrix );
+}
+
+static void InitShadowCaster(
+		classicInteractionDomainShadowCaster_t &caster ) {
+	std::memset( &caster, 0, sizeof( caster ) );
+	caster.drawPacketIndex = -1;
+	caster.lightIndex = -1;
+	caster.sourceOrdinal = -1;
+	caster.chainOrdinal = -1;
+	caster.geometryRecordIndex = -1;
+	caster.instanceRecordIndex = -1;
+	caster.materialTableRecordIndex = -1;
+	caster.materialId = -1;
+	caster.chain = CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+	caster.disposition = CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY;
+	caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_FULL;
+	caster.cull = RENDERER_CULL_FRONT;
+	caster.firstAlphaStage = -1;
+}
+
+static void InitShadowMapPass(
+		classicInteractionDomainShadowMapPass_t &pass ) {
+	std::memset( &pass, 0, sizeof( pass ) );
+	pass.lightIndex = -1;
+	pass.receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	pass.resourceOwner = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	pass.disposition = CLASSIC_INTERACTION_SHADOW_MAP_PASS_UNUSED;
+	pass.mode = CLASSIC_INTERACTION_SHADOW_NONE;
+	pass.lightClass = SHADOWMAP_LIGHT_PROJECTED;
+	R_ShadowMapResetProjectedLightState( pass.projected.state );
+	pass.point.faceCount = 6;
+}
+
 static void InitLight( classicInteractionDomainLight_t &light ) {
 	std::memset( &light, 0, sizeof( light ) );
 	light.sourceOrdinal = -1;
 	light.firstSurface = -1;
 	light.firstPrimitive = -1;
+	for ( int chain = 0; chain < CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT;
+			++chain ) {
+		light.firstShadowCaster[ chain ] = -1;
+	}
+	light.shadowMapPassIndex[ CLASSIC_INTERACTION_RECEIVER_LOCAL ] = -1;
+	light.shadowMapPassIndex[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ] = -1;
 }
 
 static void InitView( classicInteractionDomainView_t &view,
@@ -238,9 +295,15 @@ static void InitView( classicInteractionDomainView_t &view,
 	view.viewDef = viewDef;
 	view.scenePacketIndex = scenePacketIndex;
 	view.interactionPassPacketIndex = -1;
+	view.stencilShadowPassPacketIndex = -1;
+	view.shadowMapPassPacketIndex = -1;
 	view.firstLight = -1;
 	view.firstSurface = -1;
 	view.firstPrimitive = -1;
+	view.firstShadowCaster = -1;
+	view.firstShadowMapPass = -1;
+	view.stencilReference = 128;
+	view.shadowMode = CLASSIC_INTERACTION_SHADOW_NONE;
 	view.failurePassPacketIndex = -1;
 	view.failureDrawPacketIndex = -1;
 	view.failureLightOrdinal = -1;
@@ -267,6 +330,9 @@ static bool FailureIsOverflow( classicInteractionDomainFailure_t failure ) {
 		|| failure == CLASSIC_INTERACTION_FAILURE_LIGHT_POOL_OVERFLOW
 		|| failure == CLASSIC_INTERACTION_FAILURE_SURFACE_POOL_OVERFLOW
 		|| failure == CLASSIC_INTERACTION_FAILURE_PRIMITIVE_POOL_OVERFLOW
+		|| failure == CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW
+		|| failure
+			== CLASSIC_INTERACTION_FAILURE_SHADOW_ALPHA_STAGE_POOL_OVERFLOW
 		|| failure == CLASSIC_INTERACTION_FAILURE_TEXTURE_POOL_OVERFLOW;
 }
 
@@ -276,6 +342,9 @@ static bool FailView( classicInteractionDomainView_t &view,
 	domain.lightCount = checkpoint.lightCount;
 	domain.surfaceCount = checkpoint.surfaceCount;
 	domain.primitiveCount = checkpoint.primitiveCount;
+	domain.shadowCasterCount = checkpoint.shadowCasterCount;
+	domain.shadowAlphaStageCount = checkpoint.shadowAlphaStageCount;
+	domain.shadowMapPassCount = checkpoint.shadowMapPassCount;
 	domain.textureCount = checkpoint.textureCount;
 	view.ready = false;
 	view.failure = error.failure == CLASSIC_INTERACTION_FAILURE_NONE
@@ -294,6 +363,23 @@ static bool FailView( classicInteractionDomainView_t &view,
 	view.primitiveCount = 0;
 	view.drawablePrimitiveCount = 0;
 	view.noopPrimitiveCount = 0;
+	view.firstShadowCaster = -1;
+	view.shadowCasterCount = 0;
+	view.firstShadowMapPass = -1;
+	view.shadowMapPassCount = 0;
+	view.drawableShadowCasterCount = 0;
+	view.noopShadowCasterCount = 0;
+	view.logicalVolumeDrawCount = 0;
+	view.preloadVolumeDrawCount = 0;
+	view.shadowLightCount = 0;
+	view.hybridShadowPassCount = 0;
+	view.projectedShadowMapPassCount = 0;
+	view.csmShadowMapPassCount = 0;
+	view.pointShadowMapPassCount = 0;
+	view.projectedShadowLightCount = 0;
+	view.pointShadowLightCount = 0;
+	view.shadowPacketDrawCount = 0;
+	view.shadowMode = CLASSIC_INTERACTION_SHADOW_NONE;
 	view.activeLightStageCount = 0;
 	view.inactiveLightStageCount = 0;
 	view.activeSurfaceStageCount = 0;
@@ -625,6 +711,7 @@ static std::uint64_t HashPrimitive(
 		}
 	}
 	for ( int i = 0; i < 16; ++i ) {
+		HashFloat( hash, primitive.modelMatrix[ i ] );
 		HashFloat( hash, primitive.modelViewMatrix[ i ] );
 	}
 	return hash;
@@ -659,6 +746,189 @@ static std::uint64_t HashSurface(
 	return hash;
 }
 
+static std::uint64_t HashShadowAlphaStage(
+		const classicInteractionDomainShadowAlphaStage_t &stage ) {
+	std::uint64_t hash = HASH_OFFSET;
+	HashInt( hash, stage.stageIndex );
+	HashInt( hash, stage.alphaTestMode );
+	HashFloat( hash, stage.alphaTestValue );
+	HashFloat( hash, stage.alphaScale );
+	HashFloat( hash, stage.alphaHashMode );
+	HashU64( hash, StableTextureHash( stage.textureResourceId ) );
+	for ( int row = 0; row < 2; ++row ) {
+		for ( int component = 0; component < 4; ++component ) {
+			HashFloat( hash, stage.textureMatrix[ row ][ component ] );
+		}
+	}
+	return hash;
+}
+
+static std::uint64_t HashShadowCaster(
+		const classicInteractionDomainShadowCaster_t &caster,
+		int lightArenaBase ) {
+	std::uint64_t hash = HASH_OFFSET;
+	HashInt( hash, caster.lightIndex - lightArenaBase );
+	HashInt( hash, caster.sourceOrdinal );
+	HashInt( hash, caster.chainOrdinal );
+	HashInt( hash, caster.chain );
+	HashInt( hash, caster.disposition );
+	HashInt( hash, caster.indexSelection );
+	HashInt( hash, caster.cull );
+	HashInt( hash, caster.materialCoverage );
+	HashInt( hash, caster.materialId );
+	HashInt( hash, caster.alphaStageCount );
+	HashInt( hash, caster.vertexCount );
+	HashInt( hash, caster.totalIndexCount );
+	HashInt( hash, caster.selectedIndexCount );
+	HashInt( hash, caster.scissorX1 );
+	HashInt( hash, caster.scissorY1 );
+	HashInt( hash, caster.scissorX2 );
+	HashInt( hash, caster.scissorY2 );
+	HashFloat( hash, caster.depthMin );
+	HashFloat( hash, caster.depthMax );
+	for ( int component = 0; component < 4; ++component ) {
+		HashFloat( hash, caster.localLightOrigin[ component ] );
+	}
+	for ( int i = 0; i < 16; ++i ) {
+		HashFloat( hash, caster.modelMatrix[ i ] );
+		HashFloat( hash, caster.modelViewMatrix[ i ] );
+	}
+	for ( int component = 0; component < 3; ++component ) {
+		HashFloat( hash, caster.boundsMin[ component ] );
+		HashFloat( hash, caster.boundsMax[ component ] );
+	}
+	HashBool( hash, caster.external );
+	HashBool( hash, caster.preload );
+	HashBool( hash, caster.ambientGeometry );
+	HashBool( hash, caster.dynamicCaster );
+	HashBool( hash, caster.translucentCaster );
+	for ( int i = 0; i < caster.alphaStageCount; ++i ) {
+		HashU64( hash,
+			domain.shadowAlphaStages[ caster.firstAlphaStage + i ].hash );
+	}
+	return hash;
+}
+
+static void HashProjectedShadowState( std::uint64_t &hash,
+		const classicInteractionDomainShadowProjectedState_t &projected ) {
+	const shadowMapProjectedLightState_t &state = projected.state;
+	HashBool( hash, state.valid );
+	HashBool( hash, state.cascadeFallback );
+	HashFloat( hash, state.projectionPad );
+	HashFloat( hash, state.projectionScale );
+	HashInt( hash, state.fallbackReason );
+	HashInt( hash, state.requestedCascadeCount );
+	HashInt( hash, state.fallbackCascade );
+	HashInt( hash, state.cascadeCount );
+	HashInt( hash, state.atlasDiv );
+	HashInt( hash, state.tileSize );
+	for ( int plane = 0; plane < 4; ++plane ) {
+		for ( int component = 0; component < 4; ++component ) {
+			HashFloat( hash, state.baseClipPlanes[ plane ][ component ] );
+		}
+	}
+	for ( int i = 0; i < 16; ++i ) {
+		HashFloat( hash, state.baseShadowMatrix[ i ] );
+	}
+	for ( int cascade = 0; cascade < SHADOWMAP_PROJECTED_MAX_CASCADES;
+			++cascade ) {
+		HashFloat( hash, state.splitDepths[ cascade ] );
+		HashFloat( hash, state.biasScale[ cascade ] );
+		HashFloat( hash, state.texelDepthBias[ cascade ] );
+		HashFloat( hash, state.worldTexelSize[ cascade ] );
+		HashFloat( hash, state.sliceNear[ cascade ] );
+		HashFloat( hash, state.sliceFar[ cascade ] );
+		HashFloat( hash, state.depthRange[ cascade ] );
+		HashFloat( hash, state.clipZExtent[ cascade ] );
+		for ( int plane = 0; plane < 4; ++plane ) {
+			for ( int component = 0; component < 4; ++component ) {
+				HashFloat( hash,
+					state.clipPlanes[ cascade ][ plane ][ component ] );
+			}
+		}
+		for ( int component = 0; component < 4; ++component ) {
+			HashFloat( hash, state.atlasRect[ cascade ][ component ] );
+		}
+	}
+	HashBool( hash, projected.filter.distantSource );
+	HashFloat( hash, projected.filter.filterScale );
+	HashFloat( hash, projected.filter.filterRadius );
+	HashInt( hash, projected.filter.filterTaps );
+	HashInt( hash, projected.filter.filterMode );
+	HashFloat( hash, projected.filter.pcssLightRadius );
+	HashFloat( hash, projected.filter.pcssMaxRadius );
+	HashFloat( hash, projected.filter.effectiveFilterRadius );
+	HashFloat( hash, projected.constantBias );
+	HashFloat( hash, projected.normalBias );
+	HashFloat( hash, projected.normalOffsetScale );
+	HashFloat( hash, projected.cascadeBlend );
+	HashFloat( hash, projected.texelBiasScale );
+	HashBool( hash, projected.depthCompare );
+	HashBool( hash, projected.receiverPlaneBias );
+}
+
+static std::uint64_t HashShadowMapPass(
+		const classicInteractionDomainShadowMapPass_t &pass ) {
+	std::uint64_t hash = HASH_OFFSET;
+	HashInt( hash, pass.receiver );
+	HashInt( hash, pass.resourceOwner );
+	HashInt( hash, pass.disposition );
+	HashInt( hash, pass.mode );
+	HashInt( hash, pass.lightClass );
+	HashInt( hash, pass.receiverMask );
+	HashInt( hash, pass.mappedCasterCount );
+	HashInt( hash, pass.supplementCasterCount );
+	HashInt( hash, pass.drawableMappedCasters );
+	HashInt( hash, pass.noopMappedCasters );
+	HashInt( hash, pass.drawableSupplementCasters );
+	HashInt( hash, pass.noopSupplementCasters );
+	HashInt( hash, pass.casterSignature );
+	HashInt( hash, pass.incompleteMapMask );
+	HashInt( hash, pass.incompleteStencilMask );
+	HashInt( hash, pass.hybridIncompleteMask );
+	HashInt( hash, pass.prelightMapMissingMask );
+	HashInt( hash, pass.prelightStencilRequiredMask );
+	HashInt( hash, pass.prelightStencilReadyMask );
+	HashBool( hash, pass.resourceAlias );
+	HashBool( hash, pass.mapRequired );
+	HashBool( hash, pass.mapComplete );
+	HashBool( hash, pass.stencilComplete );
+	HashBool( hash, pass.hybridComplete );
+	HashBool( hash, pass.hasStaticCasters );
+	HashBool( hash, pass.hasDynamicCasters );
+	HashBool( hash, pass.hasAlphaCasters );
+	HashBool( hash, pass.hasTranslucentCasters );
+	HashBool( hash, pass.allowCacheReuse );
+	HashBool( hash, pass.allowCacheUpdate );
+	HashBool( hash, pass.allowScratch );
+	HashBool( hash, pass.hashedAlpha );
+	HashBool( hash, pass.stableAlphaHash );
+	HashInt( hash, pass.casterCullMode );
+	HashFloat( hash, pass.polygonFactor );
+	HashFloat( hash, pass.polygonOffset );
+	if ( pass.lightClass == SHADOWMAP_LIGHT_POINT ) {
+		HashBool( hash, pass.point.valid );
+		HashInt( hash, pass.point.faceCount );
+		HashInt( hash, pass.point.faceSize );
+		for ( int i = 0; i < 4; ++i ) {
+			HashFloat( hash, pass.point.lightOrigin[ i ] );
+		}
+		HashFloat( hash, pass.point.farDistance );
+		HashFloat( hash, pass.point.constantBias );
+		HashFloat( hash, pass.point.normalBias );
+		HashFloat( hash, pass.point.normalOffsetScale );
+		HashFloat( hash, pass.point.texelBiasScale );
+		HashFloat( hash, pass.point.filterRadius );
+		HashInt( hash, pass.point.filterTaps );
+		HashInt( hash, pass.point.filterMode );
+		HashBool( hash, pass.point.depthCompare );
+		HashBool( hash, pass.point.highPrecision );
+	} else {
+		HashProjectedShadowState( hash, pass.projected );
+	}
+	return hash;
+}
+
 static std::uint64_t HashLight(
 		const classicInteractionDomainLight_t &light ) {
 	std::uint64_t hash = HASH_OFFSET;
@@ -674,7 +944,21 @@ static std::uint64_t HashLight(
 			receiver++ ) {
 		HashInt( hash, light.receiverSurfaceCount[ receiver ] );
 		HashInt( hash, light.receiverPrimitiveCount[ receiver ] );
+		HashInt( hash, light.receiverShadowMode[ receiver ] );
+		if ( receiver < 2 && light.shadowMapPassIndex[ receiver ] >= 0 ) {
+			HashU64( hash, domain.shadowMapPasses[
+				light.shadowMapPassIndex[ receiver ] ].hash );
+		}
 	}
+	for ( int chain = 0; chain < CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT;
+			++chain ) {
+		HashInt( hash, light.shadowCasterCount[ chain ] );
+	}
+	HashInt( hash, light.shadowCasterTotal );
+	HashInt( hash, light.drawableShadowCasters );
+	HashInt( hash, light.noopShadowCasters );
+	HashInt( hash, light.logicalVolumeDraws );
+	HashInt( hash, light.preloadVolumeDraws );
 	HashInt( hash, light.scissorX1 );
 	HashInt( hash, light.scissorY1 );
 	HashInt( hash, light.scissorX2 );
@@ -692,6 +976,14 @@ static std::uint64_t HashLight(
 	HashBool( hash, light.parallel );
 	HashBool( hash, light.ambientLight );
 	HashBool( hash, light.shadowClassified );
+	HashBool( hash, light.clearStencil );
+	for ( int chain = 0; chain < CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT;
+			++chain ) {
+		for ( int i = 0; i < light.shadowCasterCount[ chain ]; ++i ) {
+			HashU64( hash, domain.shadowCasters[
+				light.firstShadowCaster[ chain ] + i ].hash );
+		}
+	}
 	for ( int i = 0; i < light.surfaceCount; ++i ) {
 		HashU64( hash, domain.surfaces[ light.firstSurface + i ].hash );
 	}
@@ -705,7 +997,21 @@ static std::uint64_t HashView( const classicInteractionDomainView_t &view ) {
 	HashInt( hash, view.primitiveCount );
 	HashInt( hash, view.drawablePrimitiveCount );
 	HashInt( hash, view.noopPrimitiveCount );
+	HashInt( hash, view.shadowCasterCount );
+	HashInt( hash, view.drawableShadowCasterCount );
+	HashInt( hash, view.noopShadowCasterCount );
+	HashInt( hash, view.logicalVolumeDrawCount );
+	HashInt( hash, view.preloadVolumeDrawCount );
+	HashInt( hash, view.shadowLightCount );
+	HashInt( hash, view.shadowMapPassCount );
+	HashInt( hash, view.hybridShadowPassCount );
+	HashInt( hash, view.projectedShadowMapPassCount );
+	HashInt( hash, view.csmShadowMapPassCount );
+	HashInt( hash, view.pointShadowMapPassCount );
+	HashInt( hash, view.projectedShadowLightCount );
+	HashInt( hash, view.pointShadowLightCount );
 	HashInt( hash, view.packetDrawCount );
+	HashInt( hash, view.shadowPacketDrawCount );
 	HashInt( hash, view.activeLightStageCount );
 	HashInt( hash, view.inactiveLightStageCount );
 	HashInt( hash, view.activeSurfaceStageCount );
@@ -729,6 +1035,15 @@ static std::uint64_t HashView( const classicInteractionDomainView_t &view ) {
 	HashFloat( hash, view.maxLightValue );
 	HashFloat( hash, view.lightScale );
 	HashFloat( hash, view.overBright );
+	HashFloat( hash, view.shadowPolygonFactor );
+	HashFloat( hash, view.shadowPolygonUnits );
+	HashInt( hash, view.stencilReference );
+	HashInt( hash, view.shadowMode );
+	HashBool( hash, view.useScissor );
+	HashBool( hash, view.useShadowVertexProgram );
+	HashBool( hash, view.preferTwoSidedStencil );
+	HashBool( hash, view.useDepthBounds );
+	HashBool( hash, view.stencilTranslucentShadows );
 	for ( int i = 0; i < view.lightCount; ++i ) {
 		HashU64( hash, domain.lights[ view.firstLight + i ].hash );
 	}
@@ -741,6 +1056,24 @@ static bool SurfacePacketEligible( const drawSurf_t *drawSurf ) {
 		&& drawSurf->material != NULL
 		&& drawSurf->material->ReceivesLighting()
 		&& !drawSurf->material->IsPortalSky();
+}
+
+static bool ShadowPacketSurfaceEligible( const drawSurf_t *drawSurf ) {
+	if ( drawSurf == NULL || drawSurf->geo == NULL
+			|| drawSurf->geo->numVerts <= 0
+			|| drawSurf->geo->numIndexes <= 0 ) {
+		return false;
+	}
+	const idMaterial *material = drawSurf->material;
+	if ( material == NULL ) {
+		return true;
+	}
+	if ( material->IsDedicatedCollisionSurface()
+			|| material->HasGui() || material->HasSubview() ) {
+		return false;
+	}
+	return material->Coverage() == MC_TRANSLUCENT
+		|| material->SurfaceCastsShadow();
 }
 
 static bool ViewLightHasInteractions( const viewLight_t *viewLight ) {
@@ -774,27 +1107,1054 @@ static bool AccumulateClassicLightScaleValue( float authoredScale,
 	return true;
 }
 
-static bool ViewLightHasShadowState( const viewLight_t &viewLight ) {
-	return viewLight.globalShadows != NULL || viewLight.localShadows != NULL
-		|| viewLight.globalShadowMapStencilSupplements != NULL
+static bool ViewLightHasMappedShadowState( const viewLight_t &viewLight ) {
+	return viewLight.globalShadowMapStencilSupplements != NULL
 		|| viewLight.localShadowMapStencilSupplements != NULL
 		|| viewLight.localShadowMapCasters != NULL
 		|| viewLight.globalShadowMapCasters != NULL
 		|| viewLight.localShadowMapDynamicCasters != NULL
 		|| viewLight.globalShadowMapDynamicCasters != NULL
 		|| viewLight.localTranslucentShadowMapCasters != NULL
-		|| viewLight.globalTranslucentShadowMapCasters != NULL
-		|| viewLight.shadowMapCasterCount != 0
-		|| viewLight.shadowMapAlphaCasterCount != 0
-		|| viewLight.shadowMapTranslucentCasterCount != 0
-		|| viewLight.shadowMapStaticCasterCount != 0
-		|| viewLight.shadowMapDynamicCasterCount != 0
-		|| viewLight.shadowMapIncompleteMapMask != 0
-		|| viewLight.shadowMapIncompleteStencilMask != 0
-		|| viewLight.shadowMapHybridIncompleteMask != 0
-		|| viewLight.shadowMapPrelightMapMissingMask != 0
-		|| viewLight.shadowMapPrelightStencilRequiredMask != 0
-		|| viewLight.shadowMapPrelightStencilReadyMask != 0;
+		|| viewLight.globalTranslucentShadowMapCasters != NULL;
+}
+
+static bool SceneShadowChainToDomain( sceneShadowCasterClass_t source,
+		classicInteractionDomainShadowChain_t &destination ) {
+	switch ( source ) {
+	case SCENE_SHADOW_CASTER_STENCIL_GLOBAL:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+		return true;
+	case SCENE_SHADOW_CASTER_STENCIL_LOCAL:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+		return true;
+	case SCENE_SHADOW_CASTER_MAP_GLOBAL_STATIC:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC;
+		return true;
+	case SCENE_SHADOW_CASTER_MAP_LOCAL_STATIC:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC;
+		return true;
+	case SCENE_SHADOW_CASTER_MAP_GLOBAL_DYNAMIC:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC;
+		return true;
+	case SCENE_SHADOW_CASTER_MAP_LOCAL_DYNAMIC:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC;
+		return true;
+	case SCENE_SHADOW_CASTER_MAP_GLOBAL_TRANSLUCENT:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_TRANSLUCENT;
+		return true;
+	case SCENE_SHADOW_CASTER_MAP_LOCAL_TRANSLUCENT:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_TRANSLUCENT;
+		return true;
+	case SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL;
+		return true;
+	case SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL:
+		destination = CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL;
+		return true;
+	case SCENE_SHADOW_CASTER_NONE:
+	case SCENE_SHADOW_CASTER_COUNT:
+	default:
+		return false;
+	}
+}
+
+static bool ValidateShadowPacket( const idScenePacketFrame &packetFrame,
+		const drawPacket_t &packet, int packetIndex, const viewDef_t *viewDef,
+		const viewLight_t *viewLight, int lightOrdinal,
+		renderPassCategory_t passCategory,
+		sceneShadowCasterClass_t casterClass, int chainOrdinal,
+		int sourceOrdinal, const drawSurf_t *drawSurf,
+		classicInteractionBuildError_t &error ) {
+	if ( packet.passCategory != passCategory
+			|| packet.packetCategory != SCENE_PACKET_CATEGORY_WORLD
+			|| packet.viewDef != viewDef || packet.legacyDrawSurf != drawSurf
+			|| packet.shadowLight != viewLight
+			|| packet.shadowLightOrdinal != lightOrdinal
+			|| packet.shadowCasterClass != casterClass
+			|| packet.shadowChainOrdinal != chainOrdinal
+			|| packet.shadowSourceOrdinal != sourceOrdinal ) {
+		SetError( error,
+			CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+			sourceOrdinal, -1, packetIndex, lightOrdinal, chainOrdinal );
+		return false;
+	}
+	if ( drawSurf == NULL || drawSurf->geo == NULL || drawSurf->space == NULL
+			|| packet.geometryRecordIndex < 0
+			|| packet.geometryRecordIndex >= packetFrame.NumGeometryRecords()
+			|| packet.geometryRecord == NULL
+			|| packet.geometryRecord
+				!= &packetFrame.GeometryRecord( packet.geometryRecordIndex )
+			|| packet.geometryRecord->legacyGeometry != drawSurf->geo
+			|| packet.instanceRecordIndex < 0
+			|| packet.instanceRecordIndex >= packetFrame.NumInstanceRecords()
+			|| packet.instanceRecord == NULL
+			|| packet.instanceRecord
+				!= &packetFrame.InstanceRecord( packet.instanceRecordIndex )
+			|| packet.instanceRecord->legacySpace != drawSurf->space ) {
+		SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+			packet.geometryRecordIndex, -1, packetIndex, lightOrdinal,
+			chainOrdinal );
+		return false;
+	}
+	const geometryResourceRecord_t &geometry = *packet.geometryRecord;
+	const instanceRecord_t &instance = *packet.instanceRecord;
+	const bool stencilPacket = passCategory == RENDER_PASS_STENCIL_SHADOW
+		|| casterClass == SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL
+		|| casterClass == SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL;
+	const srfTriangles_t *tri = drawSurf->geo;
+	const srfTriangles_t *casterTri = !stencilPacket
+		&& tri->ambientSurface != NULL ? tri->ambientSurface : tri;
+	if ( !packet.hasGeometry || geometry.legacyGeometry == NULL
+			|| geometry.deformMode != GEOMETRY_DEFORM_NONE
+			|| ( geometry.skinningMode != GEOMETRY_SKINNING_NONE
+				&& geometry.skinningMode != GEOMETRY_SKINNING_CPU )
+			|| geometry.hasPrimBatchMesh || tri->deformedSurface
+			|| casterTri == NULL || casterTri->numVerts <= 0
+			|| casterTri->numIndexes <= 0 || casterTri->numIndexes % 3 != 0
+			|| instance.weaponDepthHack || instance.modelDepthHack != 0.0f
+			|| instance.negativeScale
+			|| MatrixHasNegativeScale( instance.modelMatrix )
+			|| !FloatsAreFinite( instance.modelMatrix, 16 )
+			|| !FloatsAreFinite( instance.modelViewMatrix, 16 )
+			|| !FloatIsFinite( drawSurf->scissorRect.zmin )
+			|| !FloatIsFinite( drawSurf->scissorRect.zmax )
+			|| !FloatsAreFinite( casterTri->bounds[0].ToFloatPtr(), 3 )
+			|| !FloatsAreFinite( casterTri->bounds[1].ToFloatPtr(), 3 ) ) {
+		SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+			casterTri != NULL ? casterTri->numIndexes : 0, -1, packetIndex,
+			lightOrdinal, chainOrdinal );
+		return false;
+	}
+	if ( stencilPacket ) {
+		if ( tri->shadowCache == NULL || tri->indexes == NULL
+				|| tri->numShadowIndexesNoFrontCaps < 0
+				|| tri->numShadowIndexesNoFrontCaps > tri->numIndexes
+				|| tri->numShadowIndexesNoCaps < 0
+				|| tri->numShadowIndexesNoCaps > tri->numIndexes
+				|| tri->numShadowIndexesNoFrontCaps % 3 != 0
+				|| tri->numShadowIndexesNoCaps % 3 != 0 ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+				tri->numIndexes, -1, packetIndex, lightOrdinal,
+				chainOrdinal );
+			return false;
+		}
+	} else {
+		if ( casterTri->ambientCache == NULL
+				|| ( casterTri->indexCache == NULL
+					&& casterTri->indexes == NULL )
+				|| drawSurf->material == NULL
+				|| drawSurf->shaderRegisters == NULL
+				|| packet.materialRecordIndex < 0
+				|| packet.materialRecordIndex
+					>= packetFrame.NumMaterialRecords()
+				|| packet.materialRecord == NULL
+				|| packet.materialRecord
+					!= &packetFrame.MaterialRecord(
+						packet.materialRecordIndex )
+				|| packet.materialRecord->material != drawSurf->material
+				|| !packet.hasShaderRegisters
+				|| !instance.hasShaderRegisters
+				|| instance.legacyShaderRegisters
+					!= drawSurf->shaderRegisters ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+				casterTri->numIndexes, -1, packetIndex, lightOrdinal,
+				chainOrdinal );
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool PrepareStencilShadowChain(
+		const idScenePacketFrame &packetFrame,
+		const classicInteractionDomainView_t &view,
+		classicInteractionDomainLight_t &light, const drawSurf_t *chain,
+		sceneShadowCasterClass_t packetClass,
+		classicInteractionDomainShadowChain_t domainChain,
+		renderPassCategory_t passCategory, int passPacketIndex,
+		int &packetCursor, int packetEnd,
+		int lightArenaBase, classicInteractionBuildError_t &error ) {
+	if ( chain == NULL ) {
+		return true;
+	}
+	light.firstShadowCaster[ domainChain ] = domain.shadowCasterCount;
+	int chainOrdinal = 0;
+	for ( const drawSurf_t *drawSurf = chain; drawSurf != NULL;
+			drawSurf = drawSurf->nextOnLight, ++chainOrdinal ) {
+		if ( !ShadowPacketSurfaceEligible( drawSurf ) ) {
+			continue;
+		}
+		if ( packetCursor < 0 || packetCursor >= packetEnd ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+				packetCursor, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+		const drawPacket_t &packet = packetFrame.DrawPacket( packetCursor );
+		classicInteractionDomainShadowChain_t packetDomainChain;
+		if ( !SceneShadowChainToDomain( packet.shadowCasterClass,
+				packetDomainChain ) || packetDomainChain != domainChain ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+				packet.shadowCasterClass, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+		const int sourceOrdinal = packetCursor
+			- packetFrame.Pass( passPacketIndex ).firstDrawPacket;
+		if ( !ValidateShadowPacket( packetFrame, packet, packetCursor,
+				view.viewDef, light.legacyViewLight, light.sourceOrdinal,
+				passCategory,
+				packetClass, chainOrdinal, sourceOrdinal, drawSurf, error ) ) {
+			return false;
+		}
+		if ( domain.shadowCasterCount
+				>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW,
+				domain.shadowCasterCount, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+
+		classicInteractionDomainShadowCaster_t caster;
+		InitShadowCaster( caster );
+		caster.legacyDrawSurf = drawSurf;
+		caster.legacyViewLight = light.legacyViewLight;
+		caster.legacyCasterGeometry = drawSurf->geo;
+		caster.drawPacketIndex = packetCursor;
+		caster.lightIndex = static_cast<int>( &light - domain.lights );
+		caster.sourceOrdinal = sourceOrdinal;
+		caster.chainOrdinal = chainOrdinal;
+		caster.geometryRecordIndex = packet.geometryRecordIndex;
+		caster.instanceRecordIndex = packet.instanceRecordIndex;
+		caster.chain = domainChain;
+		caster.vertexCount = drawSurf->geo->numVerts;
+		caster.totalIndexCount = drawSurf->geo->numIndexes;
+		caster.scissorX1 = drawSurf->scissorRect.x1;
+		caster.scissorY1 = drawSurf->scissorRect.y1;
+		caster.scissorX2 = drawSurf->scissorRect.x2;
+		caster.scissorY2 = drawSurf->scissorRect.y2;
+		caster.depthMin = idMath::ClampFloat( 0.0f, 1.0f,
+			drawSurf->scissorRect.zmin );
+		caster.depthMax = idMath::ClampFloat( caster.depthMin, 1.0f,
+			drawSurf->scissorRect.zmax );
+		std::memcpy( caster.modelMatrix, packet.instanceRecord->modelMatrix,
+			sizeof( caster.modelMatrix ) );
+		std::memcpy( caster.modelViewMatrix,
+			packet.instanceRecord->modelViewMatrix,
+			sizeof( caster.modelViewMatrix ) );
+		std::memcpy( caster.boundsMin,
+			drawSurf->geo->bounds[0].ToFloatPtr(), sizeof( caster.boundsMin ) );
+		std::memcpy( caster.boundsMax,
+			drawSurf->geo->bounds[1].ToFloatPtr(), sizeof( caster.boundsMax ) );
+		if ( view.useShadowVertexProgram ) {
+			idVec4 localLight;
+			R_GlobalPointToLocal( drawSurf->space->modelMatrix,
+				light.legacyViewLight->globalLightOrigin,
+				localLight.ToVec3() );
+			localLight.w = 0.0f;
+			std::memcpy( caster.localLightOrigin, localLight.ToFloatPtr(),
+				sizeof( caster.localLightOrigin ) );
+		}
+
+		const srfTriangles_t *tri = drawSurf->geo;
+		const int externalSetting = r_useExternalShadows.GetInteger();
+		if ( externalSetting == 0 ) {
+			caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_FULL;
+			caster.selectedIndexCount = tri->numIndexes;
+		} else if ( externalSetting == 2
+				|| !( drawSurf->dsFlags & DSF_VIEW_INSIDE_SHADOW ) ) {
+			caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS;
+			caster.selectedIndexCount = tri->numShadowIndexesNoCaps;
+			caster.external = externalSetting != 2;
+		} else if ( !light.legacyViewLight->viewInsideLight
+				&& !( tri->shadowCapPlaneBits & SHADOW_CAP_INFINITE ) ) {
+			if ( light.legacyViewLight->viewSeesShadowPlaneBits
+					& tri->shadowCapPlaneBits ) {
+				caster.indexSelection =
+					CLASSIC_INTERACTION_SHADOW_INDEX_NO_FRONT_CAPS;
+				caster.selectedIndexCount =
+					tri->numShadowIndexesNoFrontCaps;
+			} else {
+				caster.indexSelection =
+					CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS;
+				caster.selectedIndexCount = tri->numShadowIndexesNoCaps;
+			}
+			caster.external = true;
+		} else {
+			caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_FULL;
+			caster.selectedIndexCount = tri->numIndexes;
+		}
+		if ( caster.selectedIndexCount == tri->numIndexes ) {
+			caster.external = false;
+			caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_FULL;
+		}
+		caster.preload = !caster.external && caster.selectedIndexCount > 0;
+		caster.disposition = caster.selectedIndexCount > 0
+			? CLASSIC_INTERACTION_SHADOW_CASTER_DRAW
+			: CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY;
+		caster.hash = HashShadowCaster( caster, lightArenaBase );
+		domain.shadowCasters[ domain.shadowCasterCount++ ] = caster;
+		light.shadowCasterCount[ domainChain ]++;
+		light.shadowCasterTotal++;
+		if ( caster.disposition == CLASSIC_INTERACTION_SHADOW_CASTER_DRAW ) {
+			light.drawableShadowCasters++;
+			light.logicalVolumeDraws++;
+			if ( caster.preload ) {
+				light.preloadVolumeDraws++;
+			}
+		} else {
+			light.noopShadowCasters++;
+		}
+		packetCursor++;
+	}
+	return true;
+}
+
+static float ShadowMapAlphaHashMode( const float modelMatrix[ 16 ] ) {
+	if ( !r_shadowMapHashedAlpha.GetBool() ) {
+		return 0.0f;
+	}
+	if ( !r_shadowMapStableAlphaHash.GetBool() ) {
+		return 1.0f;
+	}
+	const float seedBase =
+		idMath::Floor( modelMatrix[ 12 ] * 0.5f ) * 0.06711056f
+		+ idMath::Floor( modelMatrix[ 13 ] * 0.5f ) * 0.00583715f
+		+ idMath::Floor( modelMatrix[ 14 ] * 0.5f ) * 0.01327111f;
+	return 2.0f + seedBase - idMath::Floor( seedBase );
+}
+
+static bool PrepareMappedShadowChain(
+		const idScenePacketFrame &packetFrame,
+		classicInteractionDomainView_t &view,
+		classicInteractionDomainLight_t &light, const drawSurf_t *chain,
+		sceneShadowCasterClass_t packetClass,
+		classicInteractionDomainShadowChain_t domainChain,
+		int passPacketIndex, int &packetCursor, int packetEnd,
+		int lightArenaBase, classicInteractionBuildError_t &error ) {
+	if ( chain == NULL ) {
+		return true;
+	}
+	if ( domainChain == CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_TRANSLUCENT
+			|| domainChain
+				== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_TRANSLUCENT ) {
+		// Moment-map caster ownership remains outside this fixed-classic
+		// corridor. Reject the whole view instead of turning blended coverage
+		// into opaque depth or silently omitting it.
+		SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+			domainChain, passPacketIndex, packetCursor,
+			light.sourceOrdinal );
+		return false;
+	}
+
+	light.firstShadowCaster[ domainChain ] = domain.shadowCasterCount;
+	int chainOrdinal = 0;
+	for ( const drawSurf_t *drawSurf = chain; drawSurf != NULL;
+			drawSurf = drawSurf->nextOnLight, ++chainOrdinal ) {
+		if ( !ShadowPacketSurfaceEligible( drawSurf ) ) {
+			continue;
+		}
+		if ( packetCursor < 0 || packetCursor >= packetEnd ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+				packetCursor, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+		const drawPacket_t &packet = packetFrame.DrawPacket( packetCursor );
+		classicInteractionDomainShadowChain_t packetDomainChain;
+		if ( !SceneShadowChainToDomain( packet.shadowCasterClass,
+				packetDomainChain ) || packetDomainChain != domainChain ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+				packet.shadowCasterClass, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+		const int sourceOrdinal = packetCursor
+			- packetFrame.Pass( passPacketIndex ).firstDrawPacket;
+		if ( !ValidateShadowPacket( packetFrame, packet, packetCursor,
+				view.viewDef, light.legacyViewLight, light.sourceOrdinal,
+				RENDER_PASS_SHADOW_MAP, packetClass, chainOrdinal,
+				sourceOrdinal, drawSurf, error ) ) {
+			return false;
+		}
+		if ( domain.shadowCasterCount
+				>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW,
+				domain.shadowCasterCount, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+
+		const idMaterial *material = drawSurf->material;
+		const materialCoverage_t coverage = material->Coverage();
+		if ( coverage != MC_OPAQUE && coverage != MC_PERFORATED
+				|| material->Deform() != DFRM_NONE
+				|| material->HasGui() || material->HasSubview()
+				|| drawSurf->dynamicTexCoords != NULL
+				|| drawSurf->texGenTransformAndViewOrg != NULL
+				|| drawSurf->decalColorCache != NULL
+				|| drawSurf->decalColorStageCount != 0 ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_UNSUPPORTED_MATERIAL,
+				coverage, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+		const materialResourceTableRecord_t *tableRecord =
+			R_MaterialResourceTable_RecordForIndex(
+				packet.materialRecordIndex );
+		if ( tableRecord == NULL || tableRecord->material != material
+				|| tableRecord->sourceMaterialRecordIndex
+					!= packet.materialRecordIndex
+				|| tableRecord->tableGeneration == 0
+				|| ( view.tableGeneration != 0
+					&& view.tableGeneration
+						!= tableRecord->tableGeneration )
+				|| packet.instanceRecord->shaderRegisterCount
+					!= material->GetNumRegisters()
+				|| tableRecord->registerCount
+					!= material->GetNumRegisters() ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_MISSING_MATERIAL_RECORD,
+				packet.materialRecordIndex, passPacketIndex, packetCursor,
+				light.sourceOrdinal, chainOrdinal );
+			return false;
+		}
+		view.tableGeneration = tableRecord->tableGeneration;
+
+		const srfTriangles_t *casterGeometry =
+			drawSurf->geo->ambientSurface != NULL
+				? drawSurf->geo->ambientSurface : drawSurf->geo;
+		classicInteractionDomainShadowCaster_t caster;
+		InitShadowCaster( caster );
+		caster.legacyDrawSurf = drawSurf;
+		caster.legacyViewLight = light.legacyViewLight;
+		caster.legacyCasterGeometry = casterGeometry;
+		caster.drawPacketIndex = packetCursor;
+		caster.lightIndex = static_cast<int>( &light - domain.lights );
+		caster.sourceOrdinal = sourceOrdinal;
+		caster.chainOrdinal = chainOrdinal;
+		caster.geometryRecordIndex = packet.geometryRecordIndex;
+		caster.instanceRecordIndex = packet.instanceRecordIndex;
+		caster.materialTableRecordIndex = packet.materialRecordIndex;
+		caster.materialId = tableRecord->materialId;
+		caster.tableGeneration = tableRecord->tableGeneration;
+		caster.chain = domainChain;
+		caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_AMBIENT;
+		caster.cull = ConvertCull( material->GetCullType(), error );
+		if ( error.failure != CLASSIC_INTERACTION_FAILURE_NONE ) {
+			return false;
+		}
+		caster.materialCoverage = coverage;
+		caster.vertexCount = casterGeometry->numVerts;
+		caster.totalIndexCount = casterGeometry->numIndexes;
+		caster.selectedIndexCount = casterGeometry->numIndexes;
+		caster.scissorX1 = drawSurf->scissorRect.x1;
+		caster.scissorY1 = drawSurf->scissorRect.y1;
+		caster.scissorX2 = drawSurf->scissorRect.x2;
+		caster.scissorY2 = drawSurf->scissorRect.y2;
+		caster.depthMin = idMath::ClampFloat( 0.0f, 1.0f,
+			drawSurf->scissorRect.zmin );
+		caster.depthMax = idMath::ClampFloat( caster.depthMin, 1.0f,
+			drawSurf->scissorRect.zmax );
+		std::memcpy( caster.modelMatrix,
+			packet.instanceRecord->modelMatrix, sizeof( caster.modelMatrix ) );
+		std::memcpy( caster.modelViewMatrix,
+			packet.instanceRecord->modelViewMatrix,
+			sizeof( caster.modelViewMatrix ) );
+		std::memcpy( caster.boundsMin,
+			casterGeometry->bounds[0].ToFloatPtr(),
+			sizeof( caster.boundsMin ) );
+		std::memcpy( caster.boundsMax,
+			casterGeometry->bounds[1].ToFloatPtr(),
+			sizeof( caster.boundsMax ) );
+		caster.ambientGeometry = true;
+		caster.dynamicCaster = domainChain
+			== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC
+			|| domainChain
+				== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC;
+
+		bool activeAlphaStage = false;
+		bool drawableAlphaStage = false;
+		if ( coverage == MC_PERFORATED ) {
+			caster.firstAlphaStage = domain.shadowAlphaStageCount;
+			const float *registers = drawSurf->shaderRegisters;
+			const int registerCount = material->GetNumRegisters();
+			for ( int stageIndex = 0;
+					stageIndex < material->GetNumStages(); ++stageIndex ) {
+				const shaderStage_t *stage = material->GetStage( stageIndex );
+				if ( stage == NULL || !stage->hasAlphaTest ) {
+					continue;
+				}
+				bool active = false;
+				if ( !EvaluateCondition( *stage, registers, registerCount,
+						active, error, stageIndex ) ) {
+					return false;
+				}
+				if ( !active ) {
+					continue;
+				}
+				activeAlphaStage = true;
+				float alphaScale = 0.0f;
+				if ( !ReadRegister( registers, registerCount,
+						stage->color.registers[3], alphaScale, error,
+						stageIndex ) ) {
+					return false;
+				}
+				if ( alphaScale <= 0.0f ) {
+					continue;
+				}
+				if ( stage->alphaTestMode != GL_LESS
+						&& stage->alphaTestMode != GL_EQUAL
+						&& stage->alphaTestMode != GL_GREATER
+						|| !TextureStageFixed( *stage, error, stageIndex ) ) {
+					if ( error.failure == CLASSIC_INTERACTION_FAILURE_NONE ) {
+						SetError( error,
+							CLASSIC_INTERACTION_FAILURE_UNSUPPORTED_STATE,
+							stage->alphaTestMode, passPacketIndex,
+							packetCursor, light.sourceOrdinal,
+							chainOrdinal, stageIndex );
+					}
+					return false;
+				}
+				if ( domain.shadowAlphaStageCount
+						>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES ) {
+					SetError( error,
+						CLASSIC_INTERACTION_FAILURE_SHADOW_ALPHA_STAGE_POOL_OVERFLOW,
+						domain.shadowAlphaStageCount, passPacketIndex,
+						packetCursor, light.sourceOrdinal,
+						chainOrdinal, stageIndex );
+					return false;
+				}
+				classicInteractionDomainShadowAlphaStage_t alpha;
+				InitShadowAlphaStage( alpha );
+				alpha.casterIndex = domain.shadowCasterCount;
+				alpha.stageIndex = stageIndex;
+				alpha.alphaTestMode = stage->alphaTestMode;
+				if ( !ReadRegister( registers, registerCount,
+						stage->alphaTestRegister, alpha.alphaTestValue,
+						error, stageIndex )
+						|| !EvaluateTextureMatrix( stage->texture,
+							registers, registerCount, alpha.textureMatrix,
+							error, stageIndex )
+						|| !AddTexture( stage->texture.image,
+							alpha.textureResourceId, error, stageIndex ) ) {
+					return false;
+				}
+				alpha.alphaScale = alphaScale;
+				alpha.alphaHashMode = ShadowMapAlphaHashMode(
+					caster.modelMatrix );
+				alpha.hash = HashShadowAlphaStage( alpha );
+				domain.shadowAlphaStages[
+					domain.shadowAlphaStageCount++ ] = alpha;
+				caster.alphaStageCount++;
+				drawableAlphaStage = true;
+			}
+		}
+		caster.disposition = coverage != MC_PERFORATED
+				|| !activeAlphaStage || drawableAlphaStage
+			? CLASSIC_INTERACTION_SHADOW_CASTER_DRAW
+			: CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY;
+		if ( caster.disposition
+				== CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
+			// Match the classic perforated caster loop: an active alpha-test
+			// stage whose evaluated alpha scale is zero emits no indexes. Keep
+			// the full geometry identity in totalIndexCount, but seal the work
+			// count as zero so both backends consume the deliberate no-op.
+			caster.selectedIndexCount = 0;
+		}
+		caster.hash = HashShadowCaster( caster, lightArenaBase );
+		domain.shadowCasters[ domain.shadowCasterCount++ ] = caster;
+		light.shadowCasterCount[ domainChain ]++;
+		light.shadowCasterTotal++;
+		if ( caster.disposition == CLASSIC_INTERACTION_SHADOW_CASTER_DRAW ) {
+			light.drawableShadowCasters++;
+		} else {
+			light.noopShadowCasters++;
+		}
+		packetCursor++;
+	}
+	return true;
+}
+
+static int ShadowChainDrawableCount(
+		const classicInteractionDomainLight_t &light,
+		classicInteractionDomainShadowChain_t chain ) {
+	int count = 0;
+	for ( int i = 0; i < light.shadowCasterCount[ chain ]; ++i ) {
+		const classicInteractionDomainShadowCaster_t &caster =
+			domain.shadowCasters[ light.firstShadowCaster[ chain ] + i ];
+		if ( caster.disposition == CLASSIC_INTERACTION_SHADOW_CASTER_DRAW ) {
+			count++;
+		}
+	}
+	return count;
+}
+
+static int ShadowMapReceiverMask(
+		classicInteractionDomainReceiver_t receiver ) {
+	return receiver == CLASSIC_INTERACTION_RECEIVER_LOCAL
+		? SHADOWMAP_RECEIVER_MASK_LOCAL : SHADOWMAP_RECEIVER_MASK_GLOBAL;
+}
+
+static float ShadowMapPointFarDistance( const viewLight_t &viewLight ) {
+	idVec3 adjustedRadius = viewLight.lightRadius;
+	if ( viewLight.lightDef != NULL ) {
+		const renderLight_t &parms = viewLight.lightDef->parms;
+		for ( int component = 0; component < 3; ++component ) {
+			adjustedRadius[ component ] = parms.lightRadius[ component ]
+				+ idMath::Fabs( parms.lightCenter[ component ] );
+		}
+	}
+	return Max( adjustedRadius.Length()
+		* r_shadowMapPointFarScale.GetFloat(), 1.0f );
+}
+
+static int ShadowMapProjectedTileSize(
+		const shadowMapLightClassification_t &classification ) {
+	const int atlasDiv = Max( 1, classification.atlasDiv );
+	const int maxTextureSize = glConfig.maxTextureSize > 0
+		? glConfig.maxTextureSize : 4096;
+	const int atlasSize = idMath::ClampInt( 2048, 8192,
+		r_shadowMapAtlasSize.GetInteger() );
+	const int maxTileSize = Min( maxTextureSize, atlasSize ) / atlasDiv;
+	return maxTileSize >= 128
+		? idMath::ClampInt( 128, maxTileSize,
+			r_shadowMapSize.GetInteger() ) : 0;
+}
+
+static std::uint64_t MakeShadowMapResourcePlanId( int passIndex ) {
+	return domain.generation != 0 && passIndex >= 0
+		? ( static_cast<std::uint64_t>( domain.generation ) << 32 )
+			| static_cast<std::uint64_t>( passIndex + 1 )
+		: 0;
+}
+
+static bool BuildShadowMapPasses(
+		classicInteractionDomainView_t &view,
+		classicInteractionDomainLight_t &light,
+		classicInteractionBuildError_t &error ) {
+	const viewLight_t *viewLight = light.legacyViewLight;
+	if ( viewLight == NULL || !r_useShadowMap.GetBool()
+			|| !r_shadows.GetBool() || light.ambientLight
+			|| !viewLight->lightShader->LightCastsShadows() ) {
+		return true;
+	}
+
+	const shadowMapLightClassification_t classification =
+		R_ClassifyShadowMapLight( viewLight );
+	const bool classSupported = !classification.pointLight
+		|| r_shadowMapPointLights.GetBool();
+	classicInteractionDomainShadowProjectedState_t projected;
+	std::memset( &projected, 0, sizeof( projected ) );
+	R_ShadowMapResetProjectedLightState( projected.state );
+	classicInteractionDomainShadowPointState_t point;
+	std::memset( &point, 0, sizeof( point ) );
+
+	if ( classSupported && classification.pointLight ) {
+		point.valid = true;
+		point.faceCount = 6;
+		const int maxTextureSize = glConfig.maxTextureSize > 0
+			? glConfig.maxTextureSize : 2048;
+		point.faceSize = idMath::ClampInt( 128,
+			Min( maxTextureSize, 2048 ),
+			r_shadowMapPointSize.GetInteger() );
+		point.lightOrigin[0] = viewLight->globalLightOrigin[0];
+		point.lightOrigin[1] = viewLight->globalLightOrigin[1];
+		point.lightOrigin[2] = viewLight->globalLightOrigin[2];
+		point.lightOrigin[3] = 1.0f;
+		point.farDistance = ShadowMapPointFarDistance( *viewLight );
+		point.constantBias = r_shadowMapPointBias.GetFloat();
+		point.normalBias = r_shadowMapPointNormalBias.GetFloat();
+		point.normalOffsetScale =
+			Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() );
+		point.texelBiasScale =
+			Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() );
+		point.filterRadius =
+			Max( 0.0f, r_shadowMapPointFilterRadius.GetFloat() );
+		point.filterTaps = idMath::ClampInt( 1, 13,
+			r_shadowMapPointFilterTaps.GetInteger() );
+		point.filterMode = idMath::ClampInt( 0, 1,
+			r_shadowMapPointFilterMode.GetInteger() );
+		point.depthCompare = r_shadowMapPointDepthCompare.GetBool();
+		point.highPrecision = r_shadowMapPointHighPrecision.GetBool();
+	} else if ( classSupported ) {
+		const int tileSize = ShadowMapProjectedTileSize( classification );
+		if ( tileSize <= 0 ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+				tileSize, view.shadowMapPassPacketIndex, -1,
+				light.sourceOrdinal );
+			return false;
+		}
+		R_BuildShadowMapProjectedLightState( viewLight, view.viewDef,
+			tileSize, projected.state );
+		if ( !projected.state.valid
+				|| projected.state.cascadeCount < 1
+				|| projected.state.cascadeCount
+					> SHADOWMAP_PROJECTED_MAX_CASCADES
+				|| projected.state.atlasDiv < 1
+				|| projected.state.atlasDiv > 2 ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+				projected.state.fallbackReason,
+				view.shadowMapPassPacketIndex, -1,
+				light.sourceOrdinal );
+			return false;
+		}
+		projected.filter = R_ShadowMapProjectedFilterSettings( viewLight );
+		projected.constantBias = r_shadowMapBias.GetFloat();
+		projected.normalBias = r_shadowMapNormalBias.GetFloat();
+		projected.normalOffsetScale =
+			Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() );
+		projected.cascadeBlend =
+			Max( 0.0f, r_shadowMapCascadeBlend.GetFloat() );
+		projected.texelBiasScale =
+			Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() );
+		projected.depthCompare = r_shadowMapDepthCompare.GetBool();
+		projected.receiverPlaneBias =
+			r_shadowMapReceiverPlaneBias.GetBool();
+	}
+	if ( classification.pointLight ) {
+		const float pointValues[] = {
+			point.lightOrigin[0], point.lightOrigin[1], point.lightOrigin[2],
+			point.farDistance, point.constantBias, point.normalBias,
+			point.normalOffsetScale, point.texelBiasScale,
+			point.filterRadius
+		};
+		if ( !FloatsAreFinite( pointValues,
+				static_cast<int>( sizeof( pointValues ) / sizeof( pointValues[0] ) ) ) ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_NONFINITE_VALUE,
+				21, view.shadowMapPassPacketIndex, -1,
+				light.sourceOrdinal );
+			return false;
+		}
+	} else if ( classSupported ) {
+		const float projectedValues[] = {
+			projected.filter.filterScale,
+			projected.filter.filterRadius,
+			projected.filter.pcssLightRadius,
+			projected.filter.pcssMaxRadius,
+			projected.filter.effectiveFilterRadius,
+			projected.constantBias, projected.normalBias,
+			projected.normalOffsetScale, projected.cascadeBlend,
+			projected.texelBiasScale
+		};
+		if ( !FloatsAreFinite( projectedValues,
+				static_cast<int>( sizeof( projectedValues )
+					/ sizeof( projectedValues[0] ) ) ) ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_NONFINITE_VALUE,
+				22, view.shadowMapPassPacketIndex, -1,
+				light.sourceOrdinal );
+			return false;
+		}
+	}
+
+	const int globalStaticMapCount = light.shadowCasterCount[
+		CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC ];
+	const int localStaticMapCount = light.shadowCasterCount[
+		CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC ];
+	const int globalDynamicMapCount = light.shadowCasterCount[
+		CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC ];
+	const int localDynamicMapCount = light.shadowCasterCount[
+		CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ];
+	const int globalMapCount = globalStaticMapCount
+		+ globalDynamicMapCount;
+	const int localMapCount = localStaticMapCount
+		+ localDynamicMapCount;
+	const int globalSupplementCount =
+		light.shadowCasterCount[
+			CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL ];
+	const int localSupplementCount =
+		light.shadowCasterCount[
+			CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL ];
+	const int globalStencilCount =
+		light.shadowCasterCount[
+			CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL ];
+	const int localStencilCount =
+		light.shadowCasterCount[
+			CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL ];
+
+	for ( int receiverIndex = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+			receiverIndex <= CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+			++receiverIndex ) {
+		const classicInteractionDomainReceiver_t receiver =
+			static_cast<classicInteractionDomainReceiver_t>( receiverIndex );
+		const bool receiverNeeded = receiver
+			== CLASSIC_INTERACTION_RECEIVER_LOCAL
+			? viewLight->localInteractions != NULL
+			: viewLight->globalInteractions != NULL
+				|| ( r_shadowMapTranslucentReceivers.GetBool()
+					&& viewLight->translucentInteractions != NULL );
+		if ( !receiverNeeded ) {
+			continue;
+		}
+		const int receiverMask = ShadowMapReceiverMask( receiver );
+		const int mappedCasterCount = globalMapCount
+			+ ( receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL
+				? localMapCount : 0 );
+		const int supplementCount = globalSupplementCount
+			+ ( receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL
+				? localSupplementCount : 0 );
+		const int fullStencilCount = globalStencilCount
+			+ ( receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL
+				? localStencilCount : 0 );
+		const int incompleteMapMask =
+			viewLight->shadowMapIncompleteMapMask
+			| viewLight->shadowMapPrelightMapMissingMask;
+		const int incompleteStencilMask =
+			viewLight->shadowMapIncompleteStencilMask
+			| ( viewLight->shadowMapPrelightStencilRequiredMask
+				& ~viewLight->shadowMapPrelightStencilReadyMask );
+		const int hybridIncompleteMask =
+			viewLight->shadowMapHybridIncompleteMask
+			| viewLight->shadowMapPrelightMapMissingMask;
+		const bool mapComplete =
+			( incompleteMapMask & receiverMask ) == 0;
+		const bool stencilComplete = fullStencilCount > 0
+			&& ( incompleteStencilMask & receiverMask ) == 0;
+		const bool hybridComplete = !mapComplete
+			&& supplementCount > 0
+			&& ( hybridIncompleteMask & receiverMask ) == 0;
+
+		if ( mappedCasterCount <= 0 || !classSupported
+				|| ( !mapComplete && !hybridComplete ) ) {
+			if ( !stencilComplete && mappedCasterCount > 0 ) {
+				SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+					receiverMask, view.shadowMapPassPacketIndex, -1,
+					light.sourceOrdinal, receiverIndex );
+				return false;
+			}
+			continue;
+		}
+		if ( domain.shadowMapPassCount
+				>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES ) {
+			SetError( error,
+				CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW,
+				domain.shadowMapPassCount,
+				view.shadowMapPassPacketIndex, -1,
+				light.sourceOrdinal, receiverIndex );
+			return false;
+		}
+
+		const int passIndex = domain.shadowMapPassCount++;
+		classicInteractionDomainShadowMapPass_t &pass =
+			domain.shadowMapPasses[ passIndex ];
+		InitShadowMapPass( pass );
+		pass.legacyViewLight = viewLight;
+		pass.lightIndex = static_cast<int>( &light - domain.lights );
+		pass.receiver = receiver;
+		pass.resourceOwner = receiver;
+		pass.disposition = hybridComplete
+			? CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID
+			: CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED;
+		pass.mode = hybridComplete
+			? CLASSIC_INTERACTION_SHADOW_HYBRID
+			: ( classification.pointLight
+				? CLASSIC_INTERACTION_SHADOW_POINT
+				: CLASSIC_INTERACTION_SHADOW_PROJECTED );
+		pass.lightClass = classification.lightClass;
+		pass.receiverMask = receiverMask;
+		pass.mappedCasterCount = mappedCasterCount;
+		pass.supplementCasterCount = supplementCount;
+		pass.casterSignature = viewLight->shadowMapCasterSignature;
+		pass.incompleteMapMask = viewLight->shadowMapIncompleteMapMask;
+		pass.incompleteStencilMask =
+			viewLight->shadowMapIncompleteStencilMask;
+		pass.hybridIncompleteMask =
+			viewLight->shadowMapHybridIncompleteMask;
+		pass.prelightMapMissingMask =
+			viewLight->shadowMapPrelightMapMissingMask;
+		pass.prelightStencilRequiredMask =
+			viewLight->shadowMapPrelightStencilRequiredMask;
+		pass.prelightStencilReadyMask =
+			viewLight->shadowMapPrelightStencilReadyMask;
+		pass.resourcePlanId = MakeShadowMapResourcePlanId( passIndex );
+		pass.resourceGeneration = domain.generation;
+		// Publication itself selects mapped ownership for this receiver. A
+		// complete retained volume is rollback capability, not permission for a
+		// backend to silently substitute stencil under the same settings.
+		pass.mapRequired = true;
+		pass.mapComplete = mapComplete;
+		pass.stencilComplete = stencilComplete;
+		pass.hybridComplete = mapComplete || hybridComplete;
+		pass.hasStaticCasters = globalStaticMapCount
+			+ ( receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL
+				? localStaticMapCount : 0 ) > 0;
+		pass.hasDynamicCasters = globalDynamicMapCount
+			+ ( receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL
+				? localDynamicMapCount : 0 ) > 0;
+		pass.hasAlphaCasters = false;
+		for ( int chainIndex =
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC;
+				chainIndex
+					<= CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC;
+				++chainIndex ) {
+			const classicInteractionDomainShadowChain_t chain =
+				static_cast<classicInteractionDomainShadowChain_t>(
+					chainIndex );
+			if ( receiver == CLASSIC_INTERACTION_RECEIVER_LOCAL
+					&& ( chain
+						== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC
+						|| chain
+							== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ) ) {
+				continue;
+			}
+			pass.drawableMappedCasters +=
+				ShadowChainDrawableCount( light, chain );
+			pass.noopMappedCasters +=
+				light.shadowCasterCount[ chain ]
+				- ShadowChainDrawableCount( light, chain );
+			for ( int casterIndex = 0;
+					casterIndex < light.shadowCasterCount[ chain ];
+					++casterIndex ) {
+				if ( domain.shadowCasters[
+						light.firstShadowCaster[ chain ]
+							+ casterIndex ].alphaStageCount > 0 ) {
+					pass.hasAlphaCasters = true;
+				}
+			}
+		}
+		const classicInteractionDomainShadowChain_t supplementChains[2] = {
+			CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL,
+			CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+		};
+		for ( int supplementIndex = 0;
+				supplementIndex < ( receiver
+					== CLASSIC_INTERACTION_RECEIVER_GLOBAL ? 2 : 1 );
+				++supplementIndex ) {
+			const classicInteractionDomainShadowChain_t chain =
+				supplementChains[ supplementIndex ];
+			pass.drawableSupplementCasters +=
+				ShadowChainDrawableCount( light, chain );
+			pass.noopSupplementCasters +=
+				light.shadowCasterCount[ chain ]
+				- ShadowChainDrawableCount( light, chain );
+		}
+		pass.allowCacheReuse = r_shadowMapStaticCache.GetBool()
+			&& !pass.hasDynamicCasters && !pass.hasAlphaCasters
+			&& ( classification.cascadeCount == 1
+				|| r_shadowMapCacheCSM.GetBool() );
+		pass.allowCacheUpdate = true;
+		pass.allowScratch = true;
+		pass.hashedAlpha = r_shadowMapHashedAlpha.GetBool();
+		pass.stableAlphaHash = r_shadowMapStableAlphaHash.GetBool();
+		pass.casterCullMode = idMath::ClampInt( 0, 2,
+			r_shadowMapCasterCulling.GetInteger() );
+		pass.polygonFactor = r_shadowMapPolygonFactor.GetFloat();
+		pass.polygonOffset = r_shadowMapPolygonOffset.GetFloat();
+		pass.projected = projected;
+		pass.point = point;
+
+		if ( receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL
+				&& localMapCount == 0
+				&& light.shadowMapPassIndex[
+					CLASSIC_INTERACTION_RECEIVER_LOCAL ] >= 0 ) {
+			pass.resourceAlias = true;
+			pass.resourceOwner = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+		}
+		pass.hash = HashShadowMapPass( pass );
+		light.shadowMapPassIndex[ receiverIndex ] = passIndex;
+		light.receiverShadowMode[ receiverIndex ] = pass.mode;
+	}
+
+	const int globalPassIndex = light.shadowMapPassIndex[
+		CLASSIC_INTERACTION_RECEIVER_GLOBAL ];
+	if ( r_shadowMapTranslucentReceivers.GetBool()
+			&& viewLight->translucentInteractions != NULL
+			&& globalPassIndex >= 0 ) {
+		light.receiverShadowMode[
+			CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ] =
+			domain.shadowMapPasses[ globalPassIndex ].mode;
+	}
+	return true;
+}
+
+static void RecomputePlannedStencilWork(
+		classicInteractionDomainLight_t &light ) {
+	light.logicalVolumeDraws = 0;
+	light.preloadVolumeDraws = 0;
+	const auto volumeMode = []( classicInteractionDomainShadowMode_t mode ) {
+		return mode == CLASSIC_INTERACTION_SHADOW_STENCIL
+			|| mode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+	};
+	const auto chainFor = []( classicInteractionDomainShadowMode_t mode,
+			bool local ) {
+		if ( mode == CLASSIC_INTERACTION_SHADOW_HYBRID ) {
+			return local
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL;
+		}
+		return local ? CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL
+			: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+	};
+	const auto addChain = [&light](
+			classicInteractionDomainShadowChain_t chain ) {
+		for ( int casterIndex = 0;
+				casterIndex < light.shadowCasterCount[ chain ];
+				++casterIndex ) {
+			const classicInteractionDomainShadowCaster_t &caster =
+				domain.shadowCasters[ light.firstShadowCaster[ chain ]
+					+ casterIndex ];
+			if ( caster.disposition
+					!= CLASSIC_INTERACTION_SHADOW_CASTER_DRAW ) {
+				continue;
+			}
+			light.logicalVolumeDraws++;
+			if ( caster.preload ) {
+				light.preloadVolumeDraws++;
+			}
+		}
+	};
+
+	// Model the exact classic receiver order rather than counting each selected
+	// chain only once. Switching between full stencil and hybrid supplements
+	// clears the stencil state and can require a deliberate resubmission; both
+	// backends reconcile their committed logical/preload submissions to this
+	// backend-neutral plan.
+	classicInteractionDomainShadowMode_t preparedMode =
+		CLASSIC_INTERACTION_SHADOW_NONE;
+	bool preparedIncludesLocal = false;
+	const classicInteractionDomainShadowMode_t localMode =
+		light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_LOCAL ];
+	if ( volumeMode( localMode ) ) {
+		addChain( chainFor( localMode, false ) );
+		preparedMode = localMode;
+		preparedIncludesLocal = false;
+	}
+	const classicInteractionDomainShadowMode_t globalMode =
+		light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ];
+	if ( volumeMode( globalMode ) ) {
+		if ( preparedMode != globalMode ) {
+			addChain( chainFor( globalMode, false ) );
+		}
+		if ( preparedMode != globalMode || !preparedIncludesLocal ) {
+			addChain( chainFor( globalMode, true ) );
+		}
+		preparedMode = globalMode;
+		preparedIncludesLocal = true;
+	}
+	const classicInteractionDomainShadowMode_t translucentMode =
+		light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ];
+	if ( volumeMode( translucentMode ) ) {
+		if ( preparedMode != translucentMode ) {
+			addChain( chainFor( translucentMode, false ) );
+			addChain( chainFor( translucentMode, true ) );
+		} else if ( !preparedIncludesLocal ) {
+			addChain( chainFor( translucentMode, true ) );
+		}
+	}
+	// An admitted shadow chain can contain only empty/no-op records. The
+	// classic path still clears before testing that receiver, otherwise stencil
+	// values left by the previous light could darken an otherwise unshadowed
+	// contribution. Keep clear ownership tied to the selected mode, not only to
+	// drawable volume count.
+	light.clearStencil = volumeMode( localMode ) || volumeMode( globalMode )
+		|| volumeMode( translucentMode );
 }
 
 static bool ValidateDrawPacket( const idScenePacketFrame &packetFrame,
@@ -865,7 +2225,11 @@ static bool ValidateDrawPacket( const idScenePacketFrame &packetFrame,
 			geometry.deformMode, -1, packetIndex, lightOrdinal, receiverOrdinal );
 		return false;
 	}
-	if ( geometry.skinningMode != GEOMETRY_SKINNING_NONE ) {
+	// CPU-skinned surfaces already expose the authoritative deformed idDrawVert
+	// stream in the sealed ambient cache.  GPU-palette surfaces require a
+	// different vertex contract and remain an atomic whole-view boundary.
+	if ( geometry.skinningMode != GEOMETRY_SKINNING_NONE
+			&& geometry.skinningMode != GEOMETRY_SKINNING_CPU ) {
 		SetError( error, CLASSIC_INTERACTION_FAILURE_SKINNING,
 			geometry.skinningMode, -1, packetIndex, lightOrdinal, receiverOrdinal );
 		return false;
@@ -984,13 +2348,6 @@ static bool ValidateLight( const viewLight_t &viewLight, int lightOrdinal,
 			|| !shader->IsDrawn() || shader->GetNumStages() <= 0 ) {
 		SetError( error, CLASSIC_INTERACTION_FAILURE_UNSUPPORTED_MATERIAL,
 			0, -1, -1, lightOrdinal );
-		return false;
-	}
-	if ( ViewLightHasShadowState( viewLight )
-			|| ( r_shadows.GetBool() && shader->LightCastsShadows() ) ) {
-		SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOWS,
-			ViewLightHasShadowState( viewLight ) ? 1 : 2, -1, -1,
-			lightOrdinal );
 		return false;
 	}
 	if ( viewLight.shaderRegisters == NULL || shader->GetNumRegisters() <= 0 ) {
@@ -1174,6 +2531,8 @@ static bool BuildBasePrimitive( classicInteractionDomainPrimitive_t &base,
 		* drawSurf->material->GetPolygonOffset();
 	base.lightImageResourceId = lightImageResourceId;
 	base.lightFalloffImageResourceId = falloffImageResourceId;
+	std::memcpy( base.modelMatrix, packet.instanceRecord->modelMatrix,
+		sizeof( base.modelMatrix ) );
 	std::memcpy( base.modelViewMatrix, packet.instanceRecord->modelViewMatrix,
 		sizeof( base.modelViewMatrix ) );
 
@@ -1223,9 +2582,12 @@ static bool SubmitPrimitive( const classicInteractionDomainPrimitive_t &base,
 		int lightArenaBase, int surfaceArenaBase,
 		classicInteractionBuildError_t &error ) {
 	if ( domain.primitiveCount >= CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ) {
+		const int lightOrdinal = base.lightIndex >= 0
+				&& base.lightIndex < domain.lightCount
+			? domain.lights[ base.lightIndex ].sourceOrdinal : -1;
 		SetError( error, CLASSIC_INTERACTION_FAILURE_PRIMITIVE_POOL_OVERFLOW,
 			domain.primitiveCount, -1, surface.drawPacketIndex,
-			base.legacyViewLight != NULL ? base.legacyViewLight->lightDef != NULL : 0,
+			lightOrdinal,
 			surface.receiverOrdinal, base.lightStageIndex );
 		return false;
 	}
@@ -1603,12 +2965,23 @@ static int SurfaceIndex( const classicInteractionDomainSurface_t *surface ) {
 	return -1;
 }
 
+static int ShadowCasterIndex(
+		const classicInteractionDomainShadowCaster_t *caster ) {
+	for ( int i = 0; i < domain.shadowCasterCount; ++i ) {
+		if ( caster == &domain.shadowCasters[ i ] ) {
+			return i;
+		}
+	}
+	return -1;
+}
+
 static bool R_ClassicInteractionDomain_PrepareView(
 		const idScenePacketFrame &packetFrame, const scenePacket_t &scene,
 		classicInteractionDomainView_t &view ) {
 	const classicInteractionCheckpoint_t arenaCheckpoint = {
 		domain.lightCount, domain.surfaceCount, domain.primitiveCount,
-		domain.textureCount
+		domain.shadowCasterCount, domain.shadowAlphaStageCount,
+		domain.shadowMapPassCount, domain.textureCount
 	};
 	classicInteractionBuildError_t error;
 	InitError( error );
@@ -1671,10 +3044,29 @@ static bool R_ClassicInteractionDomain_PrepareView(
 		return FailView( view, arenaCheckpoint, error );
 	}
 	if ( !FloatIsFinite( r_offsetFactor.GetFloat() )
-			|| !FloatIsFinite( r_offsetUnits.GetFloat() ) ) {
+			|| !FloatIsFinite( r_offsetUnits.GetFloat() )
+			|| !FloatIsFinite( r_shadowPolygonFactor.GetFloat() )
+			|| !FloatIsFinite( r_shadowPolygonOffset.GetFloat() ) ) {
 		SetError( error, CLASSIC_INTERACTION_FAILURE_NONFINITE_VALUE, 3 );
 		return FailView( view, arenaCheckpoint, error );
 	}
+	if ( r_showShadows.GetInteger() != 0
+			|| r_useExternalShadows.GetInteger() < 0
+			|| r_useExternalShadows.GetInteger() > 2 ) {
+		SetError( error, CLASSIC_INTERACTION_FAILURE_UNSUPPORTED_STATE,
+			r_showShadows.GetInteger() != 0
+				? r_showShadows.GetInteger()
+				: 100 + r_useExternalShadows.GetInteger() );
+		return FailView( view, arenaCheckpoint, error );
+	}
+	view.useScissor = r_useScissor.GetBool();
+	view.useShadowVertexProgram = r_useShadowVertexProgram.GetBool();
+	view.preferTwoSidedStencil = r_useTwoSidedStencil.GetBool();
+	view.useDepthBounds = r_useDepthBoundsTest.GetBool();
+	view.stencilTranslucentShadows =
+		r_stencilTranslucentShadows.GetBool();
+	view.shadowPolygonFactor = r_shadowPolygonFactor.GetFloat();
+	view.shadowPolygonUnits = -r_shadowPolygonOffset.GetFloat();
 	if ( !RangeFits( scene.firstPassPacket, scene.passPacketCount,
 			packetFrame.NumPasses() )
 			|| !RangeFits( scene.firstDrawPacket, scene.drawPacketCount,
@@ -1685,6 +3077,8 @@ static bool R_ClassicInteractionDomain_PrepareView(
 	}
 
 	const passPacket_t *interactionPass = NULL;
+	const passPacket_t *stencilShadowPass = NULL;
+	const passPacket_t *shadowMapPass = NULL;
 	for ( int localPass = 0; localPass < scene.passPacketCount; ++localPass ) {
 		const int passPacketIndex = scene.firstPassPacket + localPass;
 		const passPacket_t &pass = packetFrame.Pass( passPacketIndex );
@@ -1714,12 +3108,27 @@ static bool R_ClassicInteractionDomain_PrepareView(
 			view.interactionPassPacketIndex = passPacketIndex;
 			continue;
 		}
-		if ( ( pass.passCategory == RENDER_PASS_STENCIL_SHADOW
-				|| pass.passCategory == RENDER_PASS_SHADOW_MAP )
-				&& ( pass.drawPacketCount > 0 || pass.commandOnly ) ) {
-			SetError( error, CLASSIC_INTERACTION_FAILURE_SHADOWS,
-				pass.passCategory, passPacketIndex );
-			return FailView( view, arenaCheckpoint, error );
+		if ( pass.passCategory == RENDER_PASS_STENCIL_SHADOW
+				|| pass.passCategory == RENDER_PASS_SHADOW_MAP ) {
+			const bool stencilPass =
+				pass.passCategory == RENDER_PASS_STENCIL_SHADOW;
+			const passPacket_t *&selected = stencilPass
+				? stencilShadowPass : shadowMapPass;
+			if ( selected != NULL || !pass.enabled || pass.commandOnly
+					|| pass.packetCategory != SCENE_PACKET_CATEGORY_WORLD ) {
+				SetError( error,
+					stencilPass
+						? CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH
+						: CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+					pass.passCategory, passPacketIndex );
+				return FailView( view, arenaCheckpoint, error );
+			}
+			selected = &pass;
+			if ( stencilPass ) {
+				view.stencilShadowPassPacketIndex = passPacketIndex;
+			} else {
+				view.shadowMapPassPacketIndex = passPacketIndex;
+			}
 		}
 	}
 	if ( interactionPass == NULL ) {
@@ -1728,6 +3137,11 @@ static bool R_ClassicInteractionDomain_PrepareView(
 		return FailView( view, arenaCheckpoint, error );
 	}
 	view.packetDrawCount = interactionPass->drawPacketCount;
+	view.shadowPacketDrawCount = stencilShadowPass != NULL
+		? stencilShadowPass->drawPacketCount : 0;
+	if ( shadowMapPass != NULL ) {
+		view.shadowPacketDrawCount += shadowMapPass->drawPacketCount;
+	}
 	if ( !DetermineLightScale( *viewDef, view, error ) ) {
 		return FailView( view, arenaCheckpoint, error );
 	}
@@ -1736,6 +3150,16 @@ static bool R_ClassicInteractionDomain_PrepareView(
 	const int packetEnd = interactionPass->firstDrawPacket
 		+ interactionPass->drawPacketCount;
 	int expectedSourceOrdinal = 0;
+	int shadowPacketCursor = stencilShadowPass != NULL
+		? stencilShadowPass->firstDrawPacket : -1;
+	const int shadowPacketEnd = stencilShadowPass != NULL
+		? stencilShadowPass->firstDrawPacket
+			+ stencilShadowPass->drawPacketCount : -1;
+	int mapPacketCursor = shadowMapPass != NULL
+		? shadowMapPass->firstDrawPacket : -1;
+	const int mapPacketEnd = shadowMapPass != NULL
+		? shadowMapPass->firstDrawPacket
+			+ shadowMapPass->drawPacketCount : -1;
 	int sourceLightOrdinal = 0;
 	for ( const viewLight_t *viewLight = viewDef->viewLights; viewLight != NULL;
 			viewLight = viewLight->next, ++sourceLightOrdinal ) {
@@ -1758,6 +3182,135 @@ static bool R_ClassicInteractionDomain_PrepareView(
 		if ( !PopulateLightRecord( light, *viewLight, sourceLightOrdinal,
 				error ) ) {
 			return FailView( view, arenaCheckpoint, error );
+		}
+
+		const bool stencilShadowing = r_shadows.GetBool()
+			&& viewLight->lightShader->LightCastsShadows()
+			&& !viewLight->lightShader->IsAmbientLight()
+			&& ( viewLight->globalShadows != NULL
+				|| viewLight->localShadows != NULL );
+		if ( stencilShadowing ) {
+			if ( stencilShadowPass == NULL ) {
+				SetError( error,
+					CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+					0, -1, -1, sourceLightOrdinal );
+				return FailView( view, arenaCheckpoint, error );
+			}
+			if ( !PrepareStencilShadowChain( packetFrame, view, light,
+					viewLight->globalShadows,
+					SCENE_SHADOW_CASTER_STENCIL_GLOBAL,
+					CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL,
+					RENDER_PASS_STENCIL_SHADOW,
+					view.stencilShadowPassPacketIndex,
+					shadowPacketCursor, shadowPacketEnd,
+					arenaCheckpoint.lightCount, error )
+					|| !PrepareStencilShadowChain( packetFrame, view, light,
+						viewLight->localShadows,
+						SCENE_SHADOW_CASTER_STENCIL_LOCAL,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL,
+						RENDER_PASS_STENCIL_SHADOW,
+						view.stencilShadowPassPacketIndex,
+						shadowPacketCursor, shadowPacketEnd,
+						arenaCheckpoint.lightCount, error ) ) {
+				return FailView( view, arenaCheckpoint, error );
+			}
+			light.clearStencil = true;
+			light.receiverShadowMode[
+				CLASSIC_INTERACTION_RECEIVER_LOCAL ] =
+				viewLight->globalShadows != NULL
+					? CLASSIC_INTERACTION_SHADOW_STENCIL
+					: CLASSIC_INTERACTION_SHADOW_NONE;
+			light.receiverShadowMode[
+				CLASSIC_INTERACTION_RECEIVER_GLOBAL ] =
+				CLASSIC_INTERACTION_SHADOW_STENCIL;
+			light.receiverShadowMode[
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ] =
+				view.stencilTranslucentShadows
+					? CLASSIC_INTERACTION_SHADOW_STENCIL
+					: CLASSIC_INTERACTION_SHADOW_NONE;
+			view.shadowMode = CLASSIC_INTERACTION_SHADOW_STENCIL;
+		}
+
+		const bool mappedShadowing = shadowMapPass != NULL
+			&& r_useShadowMap.GetBool()
+			&& r_shadows.GetBool()
+			&& viewLight->lightShader->LightCastsShadows()
+			&& !viewLight->lightShader->IsAmbientLight()
+			&& ViewLightHasMappedShadowState( *viewLight );
+		if ( mappedShadowing ) {
+			if ( !PrepareMappedShadowChain( packetFrame, view, light,
+					viewLight->globalShadowMapCasters,
+					SCENE_SHADOW_CASTER_MAP_GLOBAL_STATIC,
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC,
+					view.shadowMapPassPacketIndex, mapPacketCursor,
+					mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareMappedShadowChain( packetFrame, view, light,
+						viewLight->localShadowMapCasters,
+						SCENE_SHADOW_CASTER_MAP_LOCAL_STATIC,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareMappedShadowChain( packetFrame, view, light,
+						viewLight->globalShadowMapDynamicCasters,
+						SCENE_SHADOW_CASTER_MAP_GLOBAL_DYNAMIC,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareMappedShadowChain( packetFrame, view, light,
+						viewLight->localShadowMapDynamicCasters,
+						SCENE_SHADOW_CASTER_MAP_LOCAL_DYNAMIC,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareMappedShadowChain( packetFrame, view, light,
+						viewLight->globalTranslucentShadowMapCasters,
+						SCENE_SHADOW_CASTER_MAP_GLOBAL_TRANSLUCENT,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_TRANSLUCENT,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareMappedShadowChain( packetFrame, view, light,
+						viewLight->localTranslucentShadowMapCasters,
+						SCENE_SHADOW_CASTER_MAP_LOCAL_TRANSLUCENT,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_TRANSLUCENT,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareStencilShadowChain( packetFrame, view, light,
+						viewLight->globalShadowMapStencilSupplements,
+						SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL,
+						RENDER_PASS_SHADOW_MAP,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error )
+					|| !PrepareStencilShadowChain( packetFrame, view, light,
+						viewLight->localShadowMapStencilSupplements,
+						SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL,
+						CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL,
+						RENDER_PASS_SHADOW_MAP,
+						view.shadowMapPassPacketIndex, mapPacketCursor,
+						mapPacketEnd, arenaCheckpoint.lightCount, error ) ) {
+				return FailView( view, arenaCheckpoint, error );
+			}
+		}
+		if ( !BuildShadowMapPasses( view, light, error ) ) {
+			return FailView( view, arenaCheckpoint, error );
+		}
+		RecomputePlannedStencilWork( light );
+		if ( light.shadowMapPassIndex[
+				CLASSIC_INTERACTION_RECEIVER_LOCAL ] >= 0
+				|| light.shadowMapPassIndex[
+					CLASSIC_INTERACTION_RECEIVER_GLOBAL ] >= 0 ) {
+			const bool anyHybrid =
+				light.receiverShadowMode[
+					CLASSIC_INTERACTION_RECEIVER_LOCAL ]
+					== CLASSIC_INTERACTION_SHADOW_HYBRID
+				|| light.receiverShadowMode[
+					CLASSIC_INTERACTION_RECEIVER_GLOBAL ]
+					== CLASSIC_INTERACTION_SHADOW_HYBRID;
+			view.shadowMode = anyHybrid
+				? CLASSIC_INTERACTION_SHADOW_HYBRID
+				: ( light.pointLight
+					? CLASSIC_INTERACTION_SHADOW_POINT
+					: CLASSIC_INTERACTION_SHADOW_PROJECTED );
 		}
 
 		const drawSurf_t *chains[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = {
@@ -1875,6 +3428,21 @@ static bool R_ClassicInteractionDomain_PrepareView(
 			packetCursor );
 		return FailView( view, arenaCheckpoint, error );
 	}
+	if ( stencilShadowPass != NULL
+			&& shadowPacketCursor != shadowPacketEnd ) {
+		SetError( error,
+			CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+			shadowPacketEnd - shadowPacketCursor,
+			view.stencilShadowPassPacketIndex, shadowPacketCursor );
+		return FailView( view, arenaCheckpoint, error );
+	}
+	if ( shadowMapPass != NULL && mapPacketCursor != mapPacketEnd ) {
+		SetError( error,
+			CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+			mapPacketEnd - mapPacketCursor,
+			view.shadowMapPassPacketIndex, mapPacketCursor );
+		return FailView( view, arenaCheckpoint, error );
+	}
 
 	// Publish only after the full light/receiver/stage walk reconciles exactly.
 	// Until ready becomes true, accessors reject every staged arena range.
@@ -1884,11 +3452,54 @@ static bool R_ClassicInteractionDomain_PrepareView(
 	view.surfaceCount = domain.surfaceCount - arenaCheckpoint.surfaceCount;
 	view.firstPrimitive = arenaCheckpoint.primitiveCount;
 	view.primitiveCount = domain.primitiveCount - arenaCheckpoint.primitiveCount;
+	view.firstShadowCaster = arenaCheckpoint.shadowCasterCount;
+	view.shadowCasterCount = domain.shadowCasterCount
+		- arenaCheckpoint.shadowCasterCount;
+	view.firstShadowMapPass = arenaCheckpoint.shadowMapPassCount;
+	view.shadowMapPassCount = domain.shadowMapPassCount
+		- arenaCheckpoint.shadowMapPassCount;
 	for ( int i = 0; i < view.lightCount; ++i ) {
 		const classicInteractionDomainLight_t &light =
 			domain.lights[ view.firstLight + i ];
 		view.drawablePrimitiveCount += light.drawablePrimitiveCount;
 		view.noopPrimitiveCount += light.noopPrimitiveCount;
+		view.drawableShadowCasterCount += light.drawableShadowCasters;
+		view.noopShadowCasterCount += light.noopShadowCasters;
+		view.logicalVolumeDrawCount += light.logicalVolumeDraws;
+		view.preloadVolumeDrawCount += light.preloadVolumeDraws;
+		if ( light.shadowCasterTotal > 0 ) {
+			view.shadowLightCount++;
+		}
+		bool mappedLight = false;
+		for ( int receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+				receiver <= CLASSIC_INTERACTION_RECEIVER_GLOBAL; ++receiver ) {
+			const int passIndex = light.shadowMapPassIndex[ receiver ];
+			if ( passIndex < 0 ) {
+				continue;
+			}
+			mappedLight = true;
+			if ( domain.shadowMapPasses[ passIndex ].disposition
+					== CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID ) {
+				view.hybridShadowPassCount++;
+			}
+			const classicInteractionDomainShadowMapPass_t &mapPass =
+				domain.shadowMapPasses[ passIndex ];
+			if ( mapPass.lightClass == SHADOWMAP_LIGHT_POINT ) {
+				view.pointShadowMapPassCount++;
+			} else {
+				view.projectedShadowMapPassCount++;
+				if ( mapPass.projected.state.cascadeCount > 1 ) {
+					view.csmShadowMapPassCount++;
+				}
+			}
+		}
+		if ( mappedLight ) {
+			if ( light.pointLight ) {
+				view.pointShadowLightCount++;
+			} else {
+				view.projectedShadowLightCount++;
+			}
+		}
 		view.activeLightStageCount += light.activeLightStageCount;
 		view.inactiveLightStageCount += light.inactiveLightStageCount;
 		for ( int receiver = 0;
@@ -1905,8 +3516,51 @@ static bool R_ClassicInteractionDomain_PrepareView(
 		view.activeSurfaceStageCount += surface.activeSurfaceStageCount;
 		view.inactiveSurfaceStageCount += surface.inactiveSurfaceStageCount;
 	}
+	bool anyStencilMode = false;
+	bool anyProjectedMode = false;
+	bool anyPointMode = false;
+	bool anyHybridMode = false;
+	for ( int lightIndex = 0; lightIndex < view.lightCount; ++lightIndex ) {
+		const classicInteractionDomainLight_t &light =
+			domain.lights[ view.firstLight + lightIndex ];
+		for ( int receiver = 0;
+				receiver < CLASSIC_INTERACTION_RECEIVER_COUNT; ++receiver ) {
+			switch ( light.receiverShadowMode[ receiver ] ) {
+			case CLASSIC_INTERACTION_SHADOW_STENCIL:
+				anyStencilMode = true;
+				break;
+			case CLASSIC_INTERACTION_SHADOW_PROJECTED:
+				anyProjectedMode = true;
+				break;
+			case CLASSIC_INTERACTION_SHADOW_POINT:
+				anyPointMode = true;
+				break;
+			case CLASSIC_INTERACTION_SHADOW_HYBRID:
+				anyHybridMode = true;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+	const int distinctShadowModes = ( anyStencilMode ? 1 : 0 )
+		+ ( anyProjectedMode ? 1 : 0 ) + ( anyPointMode ? 1 : 0 )
+		+ ( anyHybridMode ? 1 : 0 );
+	if ( anyHybridMode || distinctShadowModes > 1 ) {
+		view.shadowMode = CLASSIC_INTERACTION_SHADOW_HYBRID;
+	} else if ( anyPointMode ) {
+		view.shadowMode = CLASSIC_INTERACTION_SHADOW_POINT;
+	} else if ( anyProjectedMode ) {
+		view.shadowMode = CLASSIC_INTERACTION_SHADOW_PROJECTED;
+	} else if ( anyStencilMode ) {
+		view.shadowMode = CLASSIC_INTERACTION_SHADOW_STENCIL;
+	} else {
+		view.shadowMode = CLASSIC_INTERACTION_SHADOW_NONE;
+	}
 	if ( view.drawablePrimitiveCount + view.noopPrimitiveCount
-			!= view.primitiveCount ) {
+			!= view.primitiveCount
+			|| view.drawableShadowCasterCount
+				+ view.noopShadowCasterCount != view.shadowCasterCount ) {
 		SetError( error,
 			CLASSIC_INTERACTION_FAILURE_SOURCE_PACKET_MISMATCH,
 			view.primitiveCount );
@@ -1921,6 +3575,20 @@ static bool R_ClassicInteractionDomain_PrepareView(
 	domain.stats.primitives += view.primitiveCount;
 	domain.stats.drawablePrimitives += view.drawablePrimitiveCount;
 	domain.stats.noopPrimitives += view.noopPrimitiveCount;
+	domain.stats.shadowCasters += view.shadowCasterCount;
+	domain.stats.drawableShadowCasters += view.drawableShadowCasterCount;
+	domain.stats.noopShadowCasters += view.noopShadowCasterCount;
+	domain.stats.logicalVolumeDraws += view.logicalVolumeDrawCount;
+	domain.stats.preloadVolumeDraws += view.preloadVolumeDrawCount;
+	domain.stats.shadowLights += view.shadowLightCount;
+	domain.stats.shadowMapPasses += view.shadowMapPassCount;
+	domain.stats.hybridShadowPasses += view.hybridShadowPassCount;
+	domain.stats.projectedShadowMapPasses
+		+= view.projectedShadowMapPassCount;
+	domain.stats.csmShadowMapPasses += view.csmShadowMapPassCount;
+	domain.stats.pointShadowMapPasses += view.pointShadowMapPassCount;
+	domain.stats.projectedShadowLights += view.projectedShadowLightCount;
+	domain.stats.pointShadowLights += view.pointShadowLightCount;
 	domain.stats.activeLightStages += view.activeLightStageCount;
 	domain.stats.inactiveLightStages += view.inactiveLightStageCount;
 	domain.stats.activeSurfaceStages += view.activeSurfaceStageCount;
@@ -1938,7 +3606,10 @@ static bool R_ClassicInteractionDomain_PrepareView(
 static void RecordFallback( classicInteractionDomainView_t *view,
 		classicInteractionDomainBackend_t backend,
 		classicInteractionDomainFailure_t failure, int detail,
-		int drawnPrimitives, int noopPrimitives ) {
+		int drawnPrimitives, int noopPrimitives,
+		int submittedShadowCasters, int noopShadowCasters,
+		int logicalVolumeDraws, int preloadVolumeDraws,
+		int shadowMapPasses, int hybridPasses ) {
 	classicInteractionDomainBackendCoverage_t &coverage =
 		domain.stats.backend[ backend ];
 	if ( view == NULL ) {
@@ -1957,12 +3628,24 @@ static void RecordFallback( classicInteractionDomainView_t *view,
 	view->backendFailureDetail[ backend ] = detail;
 	view->backendDrawnPrimitives[ backend ] = drawnPrimitives;
 	view->backendNoopPrimitives[ backend ] = noopPrimitives;
+	view->backendShadowCasters[ backend ] = submittedShadowCasters;
+	view->backendNoopShadowCasters[ backend ] = noopShadowCasters;
+	view->backendLogicalVolumeDraws[ backend ] = logicalVolumeDraws;
+	view->backendPreloadVolumeDraws[ backend ] = preloadVolumeDraws;
+	view->backendShadowMapPasses[ backend ] = shadowMapPasses;
+	view->backendHybridPasses[ backend ] = hybridPasses;
 	coverage.fallbackViewMask |= 1ull << viewIndex;
 	coverage.fallbackViews++;
 	coverage.fallbackLights += view->lightCount;
 	coverage.fallbackSurfaces += view->surfaceCount;
 	coverage.fallbackDrawablePrimitives += view->drawablePrimitiveCount;
 	coverage.fallbackNoopPrimitives += view->noopPrimitiveCount;
+	coverage.fallbackShadowCasters += view->drawableShadowCasterCount;
+	coverage.fallbackNoopShadowCasters += view->noopShadowCasterCount;
+	coverage.fallbackLogicalVolumeDraws += view->logicalVolumeDrawCount;
+	coverage.fallbackPreloadVolumeDraws += view->preloadVolumeDrawCount;
+	coverage.fallbackShadowMapPasses += view->shadowMapPassCount;
+	coverage.fallbackHybridPasses += view->hybridShadowPassCount;
 	if ( failure == CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH ) {
 		coverage.coverageMismatches++;
 	}
@@ -1981,6 +3664,9 @@ void R_ClassicInteractionDomain_ResetFrame( void ) {
 	domain.lightCount = 0;
 	domain.surfaceCount = 0;
 	domain.primitiveCount = 0;
+	domain.shadowCasterCount = 0;
+	domain.shadowAlphaStageCount = 0;
+	domain.shadowMapPassCount = 0;
 	domain.textureCount = 0;
 	domain.generation++;
 	if ( domain.generation == 0 ) {
@@ -2020,6 +3706,7 @@ void R_ClassicInteractionDomain_PrepareFrame(
 	}
 
 	domain.stats.textures = domain.textureCount;
+	domain.stats.shadowAlphaStages = domain.shadowAlphaStageCount;
 	domain.stats.frameValid = !domain.stats.overflow
 		&& domain.stats.fallbackViews == 0;
 	std::uint64_t frameHash = HASH_OFFSET;
@@ -2110,6 +3797,62 @@ const classicInteractionDomainPrimitive_t *R_ClassicInteractionDomain_ViewPrimit
 	return &domain.primitives[ view.firstPrimitive + primitiveIndex ];
 }
 
+const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_ViewShadowCaster(
+		const classicInteractionDomainView_t &view, int casterIndex ) {
+	if ( !view.ready || ViewIndex( &view ) < 0 || casterIndex < 0
+			|| casterIndex >= view.shadowCasterCount
+			|| !RangeFits( view.firstShadowCaster, view.shadowCasterCount,
+				domain.shadowCasterCount ) ) {
+		return NULL;
+	}
+	return &domain.shadowCasters[ view.firstShadowCaster + casterIndex ];
+}
+
+const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_LightShadowCaster(
+		const classicInteractionDomainLight_t &light,
+		classicInteractionDomainShadowChain_t chain, int casterIndex ) {
+	if ( LightIndex( &light ) < 0
+			|| chain < CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL
+			|| chain >= CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT
+			|| casterIndex < 0 || casterIndex >= light.shadowCasterCount[ chain ]
+			|| !RangeFits( light.firstShadowCaster[ chain ],
+				light.shadowCasterCount[ chain ], domain.shadowCasterCount ) ) {
+		return NULL;
+	}
+	return &domain.shadowCasters[
+		light.firstShadowCaster[ chain ] + casterIndex ];
+}
+
+const classicInteractionDomainShadowAlphaStage_t *R_ClassicInteractionDomain_ShadowAlphaStage(
+		const classicInteractionDomainShadowCaster_t &caster, int stageIndex ) {
+	const int casterIndex = ShadowCasterIndex( &caster );
+	if ( casterIndex < 0 || casterIndex >= domain.shadowCasterCount
+			|| stageIndex < 0 || stageIndex >= caster.alphaStageCount
+			|| !RangeFits( caster.firstAlphaStage, caster.alphaStageCount,
+				domain.shadowAlphaStageCount ) ) {
+		return NULL;
+	}
+	return &domain.shadowAlphaStages[ caster.firstAlphaStage + stageIndex ];
+}
+
+const classicInteractionDomainShadowMapPass_t *R_ClassicInteractionDomain_LightShadowMapPass(
+		const classicInteractionDomainLight_t &light,
+		classicInteractionDomainReceiver_t receiver ) {
+	if ( LightIndex( &light ) < 0
+			|| receiver < CLASSIC_INTERACTION_RECEIVER_LOCAL
+			|| receiver > CLASSIC_INTERACTION_RECEIVER_GLOBAL ) {
+		return NULL;
+	}
+	const int passIndex = light.shadowMapPassIndex[ receiver ];
+	if ( passIndex < 0 || passIndex >= domain.shadowMapPassCount ) {
+		return NULL;
+	}
+	const classicInteractionDomainShadowMapPass_t &pass =
+		domain.shadowMapPasses[ passIndex ];
+	return pass.lightIndex == LightIndex( &light )
+		&& pass.receiver == receiver ? &pass : NULL;
+}
+
 const classicInteractionDomainSurface_t *R_ClassicInteractionDomain_LightSurface(
 		const classicInteractionDomainLight_t &light, int surfaceIndex ) {
 	if ( LightIndex( &light ) < 0 || surfaceIndex < 0
@@ -2152,7 +3895,10 @@ const classicInteractionDomainTexture_t *R_ClassicInteractionDomain_ResolveTextu
 
 bool R_ClassicInteractionDomain_RecordOwned( const viewDef_t *viewDef,
 		classicInteractionDomainBackend_t backend, int drawnPrimitives,
-		int noopPrimitives ) {
+		int noopPrimitives, int submittedShadowCasters,
+		int noopShadowCasters, int logicalVolumeDraws,
+		int preloadVolumeDraws, int shadowMapPasses,
+		int hybridPasses ) {
 	if ( backend < CLASSIC_INTERACTION_BACKEND_GL
 			|| backend >= CLASSIC_INTERACTION_BACKEND_COUNT ) {
 		return false;
@@ -2169,32 +3915,66 @@ bool R_ClassicInteractionDomain_RecordOwned( const viewDef_t *viewDef,
 		return view->backendOutcome[ backend ]
 				== CLASSIC_INTERACTION_BACKEND_OWNED
 			&& view->backendDrawnPrimitives[ backend ] == drawnPrimitives
-			&& view->backendNoopPrimitives[ backend ] == noopPrimitives;
+			&& view->backendNoopPrimitives[ backend ] == noopPrimitives
+			&& view->backendShadowCasters[ backend ]
+				== submittedShadowCasters
+			&& view->backendNoopShadowCasters[ backend ]
+				== noopShadowCasters
+			&& view->backendLogicalVolumeDraws[ backend ]
+				== logicalVolumeDraws
+			&& view->backendPreloadVolumeDraws[ backend ]
+				== preloadVolumeDraws
+			&& view->backendShadowMapPasses[ backend ]
+				== shadowMapPasses
+			&& view->backendHybridPasses[ backend ] == hybridPasses;
 	}
 	if ( !view->ready ) {
 		RecordFallback( view, backend,
 			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
-			view->failure, drawnPrimitives, noopPrimitives );
+			view->failure, drawnPrimitives, noopPrimitives,
+			submittedShadowCasters, noopShadowCasters,
+			logicalVolumeDraws, preloadVolumeDraws,
+			shadowMapPasses, hybridPasses );
 		return false;
 	}
 	if ( drawnPrimitives != view->drawablePrimitiveCount
-			|| noopPrimitives != view->noopPrimitiveCount ) {
+			|| noopPrimitives != view->noopPrimitiveCount
+			|| submittedShadowCasters != view->drawableShadowCasterCount
+			|| noopShadowCasters != view->noopShadowCasterCount
+			|| logicalVolumeDraws != view->logicalVolumeDrawCount
+			|| preloadVolumeDraws != view->preloadVolumeDrawCount
+			|| shadowMapPasses != view->shadowMapPassCount
+			|| hybridPasses != view->hybridShadowPassCount ) {
 		RecordFallback( view, backend,
 			CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
 			drawnPrimitives + noopPrimitives, drawnPrimitives,
-			noopPrimitives );
+			noopPrimitives, submittedShadowCasters, noopShadowCasters,
+			logicalVolumeDraws, preloadVolumeDraws,
+			shadowMapPasses, hybridPasses );
 		return false;
 	}
 	const int viewIndex = ViewIndex( view );
 	view->backendOutcome[ backend ] = CLASSIC_INTERACTION_BACKEND_OWNED;
 	view->backendDrawnPrimitives[ backend ] = drawnPrimitives;
 	view->backendNoopPrimitives[ backend ] = noopPrimitives;
+	view->backendShadowCasters[ backend ] = submittedShadowCasters;
+	view->backendNoopShadowCasters[ backend ] = noopShadowCasters;
+	view->backendLogicalVolumeDraws[ backend ] = logicalVolumeDraws;
+	view->backendPreloadVolumeDraws[ backend ] = preloadVolumeDraws;
+	view->backendShadowMapPasses[ backend ] = shadowMapPasses;
+	view->backendHybridPasses[ backend ] = hybridPasses;
 	coverage.ownedViewMask |= 1ull << viewIndex;
 	coverage.ownedViews++;
 	coverage.ownedLights += view->lightCount;
 	coverage.ownedSurfaces += view->surfaceCount;
 	coverage.ownedDrawablePrimitives += drawnPrimitives;
 	coverage.ownedNoopPrimitives += noopPrimitives;
+	coverage.ownedShadowCasters += submittedShadowCasters;
+	coverage.ownedNoopShadowCasters += noopShadowCasters;
+	coverage.ownedLogicalVolumeDraws += logicalVolumeDraws;
+	coverage.ownedPreloadVolumeDraws += preloadVolumeDraws;
+	coverage.ownedShadowMapPasses += shadowMapPasses;
+	coverage.ownedHybridPasses += hybridPasses;
 	return true;
 }
 
@@ -2205,7 +3985,8 @@ void R_ClassicInteractionDomain_RecordBackendFallback(
 			|| backend >= CLASSIC_INTERACTION_BACKEND_COUNT ) {
 		return;
 	}
-	RecordFallback( FindMutableView( viewDef ), backend, failure, detail, 0, 0 );
+	RecordFallback( FindMutableView( viewDef ), backend, failure, detail,
+		0, 0, 0, 0, 0, 0, 0, 0 );
 }
 
 const classicInteractionDomainBackendCoverage_t &R_ClassicInteractionDomain_BackendCoverage(
@@ -2253,6 +4034,47 @@ const char *ClassicInteractionDomainDepth_Name(
 	}
 }
 
+const char *ClassicInteractionDomainShadowMode_Name(
+		classicInteractionDomainShadowMode_t mode ) {
+	switch ( mode ) {
+	case CLASSIC_INTERACTION_SHADOW_NONE: return "none";
+	case CLASSIC_INTERACTION_SHADOW_STENCIL: return "stencil";
+	case CLASSIC_INTERACTION_SHADOW_PROJECTED: return "projected";
+	case CLASSIC_INTERACTION_SHADOW_POINT: return "point";
+	case CLASSIC_INTERACTION_SHADOW_HYBRID: return "hybrid";
+	case CLASSIC_INTERACTION_SHADOW_MODE_COUNT:
+	default: return "unknown";
+	}
+}
+
+const char *ClassicInteractionDomainShadowChain_Name(
+		classicInteractionDomainShadowChain_t chain ) {
+	switch ( chain ) {
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL:
+		return "stencilGlobal";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL:
+		return "stencilLocal";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC:
+		return "mapGlobalStatic";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC:
+		return "mapLocalStatic";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC:
+		return "mapGlobalDynamic";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC:
+		return "mapLocalDynamic";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_TRANSLUCENT:
+		return "mapGlobalTranslucent";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_TRANSLUCENT:
+		return "mapLocalTranslucent";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL:
+		return "supplementGlobal";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL:
+		return "supplementLocal";
+	case CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT:
+	default: return "unknown";
+	}
+}
+
 const char *ClassicInteractionDomainFailure_Name(
 		classicInteractionDomainFailure_t failure ) {
 	switch ( failure ) {
@@ -2272,6 +4094,10 @@ const char *ClassicInteractionDomainFailure_Name(
 		return "surfacePoolOverflow";
 	case CLASSIC_INTERACTION_FAILURE_PRIMITIVE_POOL_OVERFLOW:
 		return "primitivePoolOverflow";
+	case CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW:
+		return "shadowCasterPoolOverflow";
+	case CLASSIC_INTERACTION_FAILURE_SHADOW_ALPHA_STAGE_POOL_OVERFLOW:
+		return "shadowAlphaStagePoolOverflow";
 	case CLASSIC_INTERACTION_FAILURE_TEXTURE_POOL_OVERFLOW:
 		return "texturePoolOverflow";
 	case CLASSIC_INTERACTION_FAILURE_UNSUPPORTED_VIEW:
@@ -2301,6 +4127,11 @@ const char *ClassicInteractionDomainFailure_Name(
 	case CLASSIC_INTERACTION_FAILURE_NONFINITE_VALUE:
 		return "nonfiniteValue";
 	case CLASSIC_INTERACTION_FAILURE_SHADOWS: return "shadows";
+	case CLASSIC_INTERACTION_FAILURE_SHADOW_MAP: return "shadowMap";
+	case CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH:
+		return "shadowPacketMismatch";
+	case CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY:
+		return "shadowGeometry";
 	case CLASSIC_INTERACTION_FAILURE_CUSTOM_LIGHTING:
 		return "customLighting";
 	case CLASSIC_INTERACTION_FAILURE_DEFORM: return "deform";
@@ -2355,6 +4186,9 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 			|| CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES != 4096
 			|| CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES != 16384
 			|| CLASSIC_INTERACTION_DOMAIN_MAX_TEXTURES != 8192
+			|| CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS != 4096
+			|| CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES != 8192
+			|| CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES != 8192
 			|| !RangeFits( 16383, 1, 16384 )
 			|| RangeFits( 16384, 1, 16384 )
 			|| RangeFits( -1, 1, 16384 )
@@ -2364,8 +4198,18 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ), "translucent" )
 			|| idStr::Cmp( ClassicInteractionDomainDepth_Name(
 				CLASSIC_INTERACTION_DEPTH_LESS_OR_EQUAL ), "lessOrEqual" )
+			|| idStr::Cmp( ClassicInteractionDomainShadowMode_Name(
+				CLASSIC_INTERACTION_SHADOW_STENCIL ), "stencil" )
+			|| idStr::Cmp( ClassicInteractionDomainShadowMode_Name(
+				CLASSIC_INTERACTION_SHADOW_HYBRID ), "hybrid" )
+			|| idStr::Cmp( ClassicInteractionDomainShadowChain_Name(
+				CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL ),
+				"supplementLocal" )
 			|| idStr::Cmp( ClassicInteractionDomainFailure_Name(
 				CLASSIC_INTERACTION_FAILURE_SHADOWS ), "shadows" )
+			|| idStr::Cmp( ClassicInteractionDomainFailure_Name(
+				CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH ),
+				"shadowPacketMismatch" )
 			|| idStr::Cmp( ClassicInteractionDomainFailure_Name(
 				CLASSIC_INTERACTION_FAILURE_CUSTOM_LIGHTING ),
 				"customLighting" )
@@ -2465,6 +4309,9 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	const int savedLightCount = domain.lightCount;
 	const int savedSurfaceCount = domain.surfaceCount;
 	const int savedPrimitiveCount = domain.primitiveCount;
+	const int savedShadowCasterCount = domain.shadowCasterCount;
+	const int savedShadowAlphaStageCount = domain.shadowAlphaStageCount;
+	const int savedShadowMapPassCount = domain.shadowMapPassCount;
 	const int savedTextureCount = domain.textureCount;
 	const classicInteractionDomainView_t savedView = domain.views[ 0 ];
 	const classicInteractionDomainLight_t savedLight = domain.lights[ 0 ];
@@ -2480,6 +4327,24 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 		domain.surfaces[ 5 ];
 	const classicInteractionDomainPrimitive_t savedShiftedPrimitive =
 		domain.primitives[ 7 ];
+	classicInteractionDomainShadowCaster_t savedShadowCasters[ 4 ];
+	for ( int i = 0; i < 4; ++i ) {
+		savedShadowCasters[ i ] = domain.shadowCasters[ i ];
+	}
+	classicInteractionDomainShadowMapPass_t savedMapPasses[ 4 ];
+	for ( int i = 0; i < 4; ++i ) {
+		savedMapPasses[ i ] = domain.shadowMapPasses[ i ];
+	}
+	classicInteractionDomainShadowAlphaStage_t alphaStageContract;
+	InitShadowAlphaStage( alphaStageContract );
+	alphaStageContract.stageIndex = 3;
+	alphaStageContract.alphaTestMode = GL_GREATER;
+	alphaStageContract.alphaTestValue = 0.5f;
+	alphaStageContract.alphaScale = 1.0f;
+	alphaStageContract.hash = HashShadowAlphaStage( alphaStageContract );
+	if ( alphaStageContract.hash == 0 ) {
+		return false;
+	}
 
 	// Stable hashes exclude generation-scoped resource-id high bits.
 	domain.generation = 7;
@@ -2658,12 +4523,234 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 		return false;
 	}
 
+	// Mixed receiver modes can require a deliberate volume resubmission after
+	// switching the stencil buffer between full volumes and hybrid supplements.
+	// The shared plan counts that exact LOCAL -> GLOBAL -> TRANSLUCENT sequence,
+	// while identical consecutive modes reuse the already prepared global half.
+	domain.shadowCasterCount = 4;
+	InitLight( domain.lights[ 0 ] );
+	const classicInteractionDomainShadowChain_t planChains[ 4 ] = {
+		CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL,
+		CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL,
+		CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL,
+		CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+	};
+	for ( int i = 0; i < 4; ++i ) {
+		InitShadowCaster( domain.shadowCasters[ i ] );
+		domain.shadowCasters[ i ].disposition =
+			CLASSIC_INTERACTION_SHADOW_CASTER_DRAW;
+		domain.shadowCasters[ i ].preload = ( i & 1 ) == 0;
+		domain.lights[ 0 ].firstShadowCaster[ planChains[ i ] ] = i;
+		domain.lights[ 0 ].shadowCasterCount[ planChains[ i ] ] = 1;
+	}
+	domain.lights[ 0 ].receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_LOCAL ] =
+		CLASSIC_INTERACTION_SHADOW_STENCIL;
+	domain.lights[ 0 ].receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_GLOBAL ] =
+		CLASSIC_INTERACTION_SHADOW_HYBRID;
+	domain.lights[ 0 ].receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ] =
+		CLASSIC_INTERACTION_SHADOW_STENCIL;
+	RecomputePlannedStencilWork( domain.lights[ 0 ] );
+	const bool mixedStencilPlan = domain.lights[ 0 ].logicalVolumeDraws == 5
+		&& domain.lights[ 0 ].preloadVolumeDraws == 3
+		&& domain.lights[ 0 ].clearStencil;
+	domain.lights[ 0 ].receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_LOCAL ] =
+		CLASSIC_INTERACTION_SHADOW_HYBRID;
+	domain.lights[ 0 ].receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_GLOBAL ] =
+		CLASSIC_INTERACTION_SHADOW_HYBRID;
+	domain.lights[ 0 ].receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ] =
+		CLASSIC_INTERACTION_SHADOW_HYBRID;
+	RecomputePlannedStencilWork( domain.lights[ 0 ] );
+	const bool reusedHybridPlan = domain.lights[ 0 ].logicalVolumeDraws == 2
+		&& domain.lights[ 0 ].preloadVolumeDraws == 1;
+	for ( int i = 0; i < 4; ++i ) {
+		domain.shadowCasters[ i ].disposition =
+			CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY;
+	}
+	RecomputePlannedStencilWork( domain.lights[ 0 ] );
+	const bool noopStencilClearPlan =
+		domain.lights[ 0 ].logicalVolumeDraws == 0
+		&& domain.lights[ 0 ].preloadVolumeDraws == 0
+		&& domain.lights[ 0 ].clearStencil;
+	domain.shadowCasterCount = savedShadowCasterCount;
+	domain.lights[ 0 ] = savedLight;
+	for ( int i = 0; i < 4; ++i ) {
+		domain.shadowCasters[ i ] = savedShadowCasters[ i ];
+	}
+	if ( !mixedStencilPlan || !reusedHybridPlan || !noopStencilClearPlan ) {
+		domain.stats = savedStats;
+		domain.generation = savedGeneration;
+		domain.viewCount = savedViewCount;
+		domain.lightCount = savedLightCount;
+		domain.surfaceCount = savedSurfaceCount;
+		domain.primitiveCount = savedPrimitiveCount;
+		domain.shadowAlphaStageCount = savedShadowAlphaStageCount;
+		domain.shadowMapPassCount = savedShadowMapPassCount;
+		domain.textureCount = savedTextureCount;
+		domain.views[ 0 ] = savedView;
+		domain.surfaces[ 0 ] = savedSurface;
+		domain.primitives[ 0 ] = savedPrimitive;
+		domain.textures[ 0 ] = savedTexture;
+		return false;
+	}
+
+	// Mapped ownership records distinguish projected-single, CSM/parallel,
+	// point-cube and hybrid supplement semantics without backend handles.
+	domain.lightCount = 1;
+	domain.shadowMapPassCount = 4;
+	InitLight( domain.lights[ 0 ] );
+	classicInteractionDomainShadowMapPass_t &projectedPass =
+		domain.shadowMapPasses[ 0 ];
+	InitShadowMapPass( projectedPass );
+	projectedPass.lightIndex = 0;
+	projectedPass.receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	projectedPass.resourceOwner = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	projectedPass.disposition = CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED;
+	projectedPass.mode = CLASSIC_INTERACTION_SHADOW_PROJECTED;
+	projectedPass.lightClass = SHADOWMAP_LIGHT_PROJECTED;
+	projectedPass.receiverMask = SHADOWMAP_RECEIVER_MASK_LOCAL;
+	projectedPass.mappedCasterCount = 1;
+	projectedPass.drawableMappedCasters = 1;
+	projectedPass.resourcePlanId = 0x0000000700000001ull;
+	projectedPass.resourceGeneration = 7;
+	projectedPass.mapComplete = true;
+	projectedPass.hybridComplete = true;
+	projectedPass.mapRequired = true;
+	projectedPass.projected.state.valid = true;
+	projectedPass.projected.state.cascadeCount = 1;
+	projectedPass.projected.state.atlasDiv = 1;
+	projectedPass.projected.state.tileSize = 1024;
+	projectedPass.hash = HashShadowMapPass( projectedPass );
+
+	classicInteractionDomainShadowMapPass_t &csmParallelPass =
+		domain.shadowMapPasses[ 1 ];
+	csmParallelPass = projectedPass;
+	csmParallelPass.receiver = CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+	csmParallelPass.resourceOwner = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	csmParallelPass.resourceAlias = true;
+	csmParallelPass.lightClass = SHADOWMAP_LIGHT_PARALLEL;
+	csmParallelPass.receiverMask = SHADOWMAP_RECEIVER_MASK_GLOBAL;
+	csmParallelPass.projected.state.cascadeCount = 4;
+	csmParallelPass.projected.state.atlasDiv = 2;
+	csmParallelPass.hash = HashShadowMapPass( csmParallelPass );
+
+	classicInteractionDomainShadowMapPass_t &pointCubePass =
+		domain.shadowMapPasses[ 2 ];
+	InitShadowMapPass( pointCubePass );
+	pointCubePass.lightIndex = 0;
+	pointCubePass.receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	pointCubePass.disposition = CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED;
+	pointCubePass.mode = CLASSIC_INTERACTION_SHADOW_POINT;
+	pointCubePass.lightClass = SHADOWMAP_LIGHT_POINT;
+	pointCubePass.point.valid = true;
+	pointCubePass.point.faceCount = 6;
+	pointCubePass.point.faceSize = 512;
+	pointCubePass.point.farDistance = 256.0f;
+	pointCubePass.mapComplete = true;
+	pointCubePass.hybridComplete = true;
+	pointCubePass.hash = HashShadowMapPass( pointCubePass );
+
+	classicInteractionDomainShadowMapPass_t &hybridPass =
+		domain.shadowMapPasses[ 3 ];
+	hybridPass = pointCubePass;
+	hybridPass.receiver = CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+	hybridPass.disposition = CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID;
+	hybridPass.mode = CLASSIC_INTERACTION_SHADOW_HYBRID;
+	hybridPass.mapComplete = false;
+	hybridPass.supplementCasterCount = 1;
+	hybridPass.drawableSupplementCasters = 1;
+	hybridPass.hash = HashShadowMapPass( hybridPass );
+	domain.lights[ 0 ].shadowMapPassIndex[
+		CLASSIC_INTERACTION_RECEIVER_LOCAL ] = 0;
+	domain.lights[ 0 ].shadowMapPassIndex[
+		CLASSIC_INTERACTION_RECEIVER_GLOBAL ] = 1;
+	classicInteractionDomainShadowMapPass_t changedPass = projectedPass;
+	changedPass.projected.filter.filterRadius = 2.0f;
+	classicInteractionDomainShadowMapPass_t identityChangedPass =
+		projectedPass;
+	identityChangedPass.resourcePlanId = 0x0000006300000011ull;
+	identityChangedPass.resourceGeneration = 99;
+	classicInteractionDomainShadowMapPass_t supplementChangedPass =
+		projectedPass;
+	supplementChangedPass.supplementCasterCount = 1;
+	supplementChangedPass.drawableSupplementCasters = 1;
+	classicInteractionDomainShadowMapPass_t dynamicChangedPass = projectedPass;
+	dynamicChangedPass.hasDynamicCasters = true;
+	classicInteractionDomainShadowMapPass_t alphaChangedPass = projectedPass;
+	alphaChangedPass.hasAlphaCasters = true;
+	classicInteractionDomainShadowMapPass_t completenessChangedPass =
+		projectedPass;
+	completenessChangedPass.mapComplete = false;
+	completenessChangedPass.hybridComplete = false;
+	classicInteractionDomainView_t mappedViewContract;
+	InitView( mappedViewContract, NULL, -1 );
+	mappedViewContract.shadowMapPassCount = 4;
+	mappedViewContract.hybridShadowPassCount = 1;
+	mappedViewContract.projectedShadowMapPassCount = 2;
+	mappedViewContract.csmShadowMapPassCount = 1;
+	mappedViewContract.pointShadowMapPassCount = 2;
+	const std::uint64_t mappedViewHash = HashView( mappedViewContract );
+	const bool mappedContractOk = projectedPass.hash != 0
+		&& csmParallelPass.hash != 0 && pointCubePass.hash != 0
+		&& hybridPass.hash != 0
+		&& projectedPass.hash == HashShadowMapPass( projectedPass )
+		&& projectedPass.hash != HashShadowMapPass( changedPass )
+		&& projectedPass.hash == HashShadowMapPass( identityChangedPass )
+		&& projectedPass.hash != HashShadowMapPass( supplementChangedPass )
+		&& projectedPass.hash != HashShadowMapPass( dynamicChangedPass )
+		&& projectedPass.hash != HashShadowMapPass( alphaChangedPass )
+		&& projectedPass.hash != HashShadowMapPass(
+			completenessChangedPass )
+		&& R_ClassicInteractionDomain_LightShadowMapPass(
+			domain.lights[ 0 ], CLASSIC_INTERACTION_RECEIVER_LOCAL )
+			== &projectedPass
+		&& R_ClassicInteractionDomain_LightShadowMapPass(
+			domain.lights[ 0 ], CLASSIC_INTERACTION_RECEIVER_GLOBAL )
+			== &csmParallelPass
+		&& csmParallelPass.resourceAlias
+		&& csmParallelPass.resourceOwner
+			== CLASSIC_INTERACTION_RECEIVER_LOCAL
+		&& csmParallelPass.projected.state.cascadeCount == 4
+		&& pointCubePass.point.faceCount == 6
+		&& mappedViewHash != 0
+		&& hybridPass.disposition
+			== CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID;
+	domain.lightCount = savedLightCount;
+	domain.shadowMapPassCount = savedShadowMapPassCount;
+	domain.lights[ 0 ] = savedLight;
+	for ( int i = 0; i < 4; ++i ) {
+		domain.shadowMapPasses[ i ] = savedMapPasses[ i ];
+	}
+	if ( !mappedContractOk ) {
+		domain.stats = savedStats;
+		domain.generation = savedGeneration;
+		domain.viewCount = savedViewCount;
+		domain.surfaceCount = savedSurfaceCount;
+		domain.primitiveCount = savedPrimitiveCount;
+		domain.shadowCasterCount = savedShadowCasterCount;
+		domain.shadowAlphaStageCount = savedShadowAlphaStageCount;
+		domain.textureCount = savedTextureCount;
+		domain.views[ 0 ] = savedView;
+		domain.surfaces[ 0 ] = savedSurface;
+		domain.primitives[ 0 ] = savedPrimitive;
+		domain.textures[ 0 ] = savedTexture;
+		return false;
+	}
+
 	// A failed preparation rewinds every arena and publishes no partial range.
 	std::memset( &domain.stats, 0, sizeof( domain.stats ) );
 	domain.lightCount = 5;
 	domain.surfaceCount = 7;
 	domain.primitiveCount = 11;
-	domain.textureCount = 13;
+	domain.shadowCasterCount = 13;
+	domain.shadowAlphaStageCount = 17;
+	domain.shadowMapPassCount = 19;
+	domain.textureCount = 23;
 	classicInteractionDomainView_t rollbackView;
 	InitView( rollbackView, NULL, -1 );
 	rollbackView.ready = true;
@@ -2674,7 +4761,9 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	rollbackView.firstPrimitive = 5;
 	rollbackView.primitiveCount = 6;
 	rollbackView.hash = 1;
-	const classicInteractionCheckpoint_t checkpoint = { 2, 3, 5, 7 };
+	const classicInteractionCheckpoint_t checkpoint = {
+		2, 3, 5, 7, 11, 13, 17
+	};
 	classicInteractionBuildError_t rollbackError;
 	SetError( rollbackError,
 		CLASSIC_INTERACTION_FAILURE_SOURCE_PACKET_MISMATCH,
@@ -2696,7 +4785,11 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 		&& rollbackView.firstPrimitive == -1
 		&& rollbackView.primitiveCount == 0 && rollbackView.hash == 0
 		&& domain.lightCount == 2 && domain.surfaceCount == 3
-		&& domain.primitiveCount == 5 && domain.textureCount == 7;
+		&& domain.primitiveCount == 5
+		&& domain.shadowCasterCount == 7
+		&& domain.shadowAlphaStageCount == 11
+		&& domain.shadowMapPassCount == 13
+		&& domain.textureCount == 17;
 	if ( !rollbackOk ) {
 		domain.stats = savedStats;
 		domain.generation = savedGeneration;
@@ -2704,6 +4797,9 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 		domain.lightCount = savedLightCount;
 		domain.surfaceCount = savedSurfaceCount;
 		domain.primitiveCount = savedPrimitiveCount;
+		domain.shadowCasterCount = savedShadowCasterCount;
+		domain.shadowAlphaStageCount = savedShadowAlphaStageCount;
+		domain.shadowMapPassCount = savedShadowMapPassCount;
 		domain.textureCount = savedTextureCount;
 		domain.views[ 0 ] = savedView;
 		domain.lights[ 0 ] = savedLight;
@@ -2720,6 +4816,9 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	domain.lightCount = 1;
 	domain.surfaceCount = 1;
 	domain.primitiveCount = 2;
+	domain.shadowCasterCount = 4;
+	domain.shadowAlphaStageCount = 0;
+	domain.shadowMapPassCount = 2;
 	InitView( domain.views[ 0 ], &coverageView, 0 );
 	domain.views[ 0 ].ready = true;
 	domain.views[ 0 ].firstLight = 0;
@@ -2730,6 +4829,18 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	domain.views[ 0 ].primitiveCount = 2;
 	domain.views[ 0 ].drawablePrimitiveCount = 1;
 	domain.views[ 0 ].noopPrimitiveCount = 1;
+	domain.views[ 0 ].firstShadowCaster = 0;
+	domain.views[ 0 ].shadowCasterCount = 4;
+	domain.views[ 0 ].drawableShadowCasterCount = 3;
+	domain.views[ 0 ].noopShadowCasterCount = 1;
+	domain.views[ 0 ].logicalVolumeDrawCount = 1;
+	domain.views[ 0 ].preloadVolumeDrawCount = 1;
+	domain.views[ 0 ].firstShadowMapPass = 0;
+	domain.views[ 0 ].shadowMapPassCount = 2;
+	domain.views[ 0 ].hybridShadowPassCount = 1;
+	domain.views[ 0 ].projectedShadowMapPassCount = 1;
+	domain.views[ 0 ].pointShadowMapPassCount = 1;
+	domain.views[ 0 ].shadowMode = CLASSIC_INTERACTION_SHADOW_HYBRID;
 	InitLight( domain.lights[ 0 ] );
 	domain.lights[ 0 ].firstSurface = 0;
 	domain.lights[ 0 ].surfaceCount = 1;
@@ -2743,6 +4854,25 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	domain.primitives[ 0 ].surfaceIndex = 0;
 	domain.primitives[ 1 ].lightIndex = 0;
 	domain.primitives[ 1 ].surfaceIndex = 0;
+	InitShadowMapPass( domain.shadowMapPasses[ 0 ] );
+	domain.shadowMapPasses[ 0 ].lightIndex = 0;
+	domain.shadowMapPasses[ 0 ].receiver =
+		CLASSIC_INTERACTION_RECEIVER_LOCAL;
+	domain.shadowMapPasses[ 0 ].disposition =
+		CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED;
+	domain.shadowMapPasses[ 0 ].mode =
+		CLASSIC_INTERACTION_SHADOW_PROJECTED;
+	InitShadowMapPass( domain.shadowMapPasses[ 1 ] );
+	domain.shadowMapPasses[ 1 ].lightIndex = 0;
+	domain.shadowMapPasses[ 1 ].receiver =
+		CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+	domain.shadowMapPasses[ 1 ].disposition =
+		CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID;
+	domain.shadowMapPasses[ 1 ].mode = CLASSIC_INTERACTION_SHADOW_HYBRID;
+	domain.lights[ 0 ].shadowMapPassIndex[
+		CLASSIC_INTERACTION_RECEIVER_LOCAL ] = 0;
+	domain.lights[ 0 ].shadowMapPassIndex[
+		CLASSIC_INTERACTION_RECEIVER_GLOBAL ] = 1;
 	std::memset( &domain.stats, 0, sizeof( domain.stats ) );
 	const bool ordered = R_ClassicInteractionDomain_ViewLight(
 		domain.views[ 0 ], 0 ) == &domain.lights[ 0 ]
@@ -2755,11 +4885,14 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 		&& R_ClassicInteractionDomain_SurfacePrimitive(
 			domain.surfaces[ 0 ], 2 ) == NULL;
 	const bool firstOwned = R_ClassicInteractionDomain_RecordOwned(
-		&coverageView, CLASSIC_INTERACTION_BACKEND_GL, 1, 1 );
+		&coverageView, CLASSIC_INTERACTION_BACKEND_GL, 1, 1,
+		3, 1, 1, 1, 2, 1 );
 	const bool repeatedOwned = R_ClassicInteractionDomain_RecordOwned(
-		&coverageView, CLASSIC_INTERACTION_BACKEND_GL, 1, 1 );
+		&coverageView, CLASSIC_INTERACTION_BACKEND_GL, 1, 1,
+		3, 1, 1, 1, 2, 1 );
 	const bool mismatchRejected = !R_ClassicInteractionDomain_RecordOwned(
-		&coverageView, CLASSIC_INTERACTION_BACKEND_VULKAN, 0, 1 );
+		&coverageView, CLASSIC_INTERACTION_BACKEND_VULKAN, 1, 1,
+		3, 1, 1, 1, 1, 0 );
 	const bool coverageOk = ordered && firstOwned && repeatedOwned
 		&& mismatchRejected
 		&& domain.views[ 0 ].backendOutcome[
@@ -2773,9 +4906,17 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 		&& domain.stats.backend[
 			CLASSIC_INTERACTION_BACKEND_GL ].duplicateReports == 1
 		&& domain.stats.backend[
+			CLASSIC_INTERACTION_BACKEND_GL ].ownedShadowMapPasses == 2
+		&& domain.stats.backend[
+			CLASSIC_INTERACTION_BACKEND_GL ].ownedHybridPasses == 1
+		&& domain.stats.backend[
 			CLASSIC_INTERACTION_BACKEND_VULKAN ].fallbackViews == 1
 		&& domain.stats.backend[
-			CLASSIC_INTERACTION_BACKEND_VULKAN ].coverageMismatches == 1;
+			CLASSIC_INTERACTION_BACKEND_VULKAN ].coverageMismatches == 1
+		&& domain.stats.backend[
+			CLASSIC_INTERACTION_BACKEND_VULKAN ].fallbackShadowMapPasses == 2
+		&& domain.stats.backend[
+			CLASSIC_INTERACTION_BACKEND_VULKAN ].fallbackHybridPasses == 1;
 
 	domain.stats = savedStats;
 	domain.generation = savedGeneration;
@@ -2783,12 +4924,21 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	domain.lightCount = savedLightCount;
 	domain.surfaceCount = savedSurfaceCount;
 	domain.primitiveCount = savedPrimitiveCount;
+	domain.shadowCasterCount = savedShadowCasterCount;
+	domain.shadowAlphaStageCount = savedShadowAlphaStageCount;
+	domain.shadowMapPassCount = savedShadowMapPassCount;
 	domain.textureCount = savedTextureCount;
 	domain.views[ 0 ] = savedView;
 	domain.lights[ 0 ] = savedLight;
 	domain.surfaces[ 0 ] = savedSurface;
 	domain.primitives[ 0 ] = savedPrimitive;
 	domain.primitives[ 1 ] = savedCoveragePrimitive;
+	for ( int i = 0; i < 4; ++i ) {
+		domain.shadowCasters[ i ] = savedShadowCasters[ i ];
+	}
+	for ( int i = 0; i < 4; ++i ) {
+		domain.shadowMapPasses[ i ] = savedMapPasses[ i ];
+	}
 	domain.textures[ 0 ] = savedTexture;
 	return coverageOk;
 }

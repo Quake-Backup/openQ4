@@ -237,6 +237,25 @@ enum sceneInteractionReceiverClass_t {
 	SCENE_INTERACTION_RECEIVER_TRANSLUCENT
 };
 
+// Shadow packet identity is deliberately separate from the render-pass
+// category.  One light can contribute the same surface to several ownership
+// chains, and a flat RENDER_PASS_* list cannot prove which receiver-visible
+// shadow contribution a packet represents.
+enum sceneShadowCasterClass_t {
+	SCENE_SHADOW_CASTER_NONE = 0,
+	SCENE_SHADOW_CASTER_STENCIL_GLOBAL,
+	SCENE_SHADOW_CASTER_STENCIL_LOCAL,
+	SCENE_SHADOW_CASTER_MAP_GLOBAL_STATIC,
+	SCENE_SHADOW_CASTER_MAP_LOCAL_STATIC,
+	SCENE_SHADOW_CASTER_MAP_GLOBAL_DYNAMIC,
+	SCENE_SHADOW_CASTER_MAP_LOCAL_DYNAMIC,
+	SCENE_SHADOW_CASTER_MAP_GLOBAL_TRANSLUCENT,
+	SCENE_SHADOW_CASTER_MAP_LOCAL_TRANSLUCENT,
+	SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL,
+	SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL,
+	SCENE_SHADOW_CASTER_COUNT
+};
+
 typedef struct drawPacket_s {
 	const drawSurf_t			*legacyDrawSurf;
 	const viewDef_t			*viewDef;
@@ -262,6 +281,11 @@ typedef struct drawPacket_s {
 	int						interactionReceiverOrdinal;
 	int						interactionSourceOrdinal;
 	sceneInteractionReceiverClass_t interactionReceiverClass;
+	const viewLight_t		*shadowLight;
+	int						shadowLightOrdinal;
+	int						shadowChainOrdinal;
+	int						shadowSourceOrdinal;
+	sceneShadowCasterClass_t shadowCasterClass;
 	int						scissorX1;
 	int						scissorY1;
 	int						scissorX2;
@@ -338,6 +362,10 @@ public:
 	bool AddInteractionDrawPacket( const drawSurf_t *drawSurf, int drawIndex,
 		const viewLight_t *viewLight, int lightOrdinal,
 		sceneInteractionReceiverClass_t receiverClass, int receiverOrdinal );
+	bool AddShadowDrawPacket( const drawSurf_t *drawSurf,
+		renderPassCategory_t category, int drawIndex,
+		const viewLight_t *viewLight, int lightOrdinal,
+		sceneShadowCasterClass_t casterClass, int chainOrdinal );
 	void FinishScene( void );
 	void AddCommandPacket( scenePacketCategory_t category = SCENE_PACKET_CATEGORY_COMMAND );
 	void AddLegacyDrawView( void );

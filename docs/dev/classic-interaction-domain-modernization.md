@@ -2,18 +2,28 @@
 
 ## Status
 
-The third Milestone D classic-frame domain is implemented as an experimental,
-default-off path for complete eligible unshadowed fixed-classic interaction
-views. `r_rendererSharedWorldInteraction 1` asks OpenGL and Vulkan to consume
-the same sealed light, receiver, and primitive stream. The established
-interaction renderer remains the supported default and the whole-view rollback.
+The fixed-classic interaction transaction now contains two complete Milestone D
+ownership corridors behind the default-off
+`r_rendererSharedWorldInteraction 1` setting:
+
+- the previously completed unshadowed interaction corridor; and
+- shadow-coupled interaction ownership for classic stencil volumes, projected
+  single-map and CSM/parallel shadows, point-light cube maps, mixed mapped and
+  stencil lights, and same-light mapped-plus-stencil supplements.
+
+Together with shared root 2D GUI and world ambient/material ownership, this is
+the expanded third complete shared classic-frame domain. OpenGL and Vulkan
+consume the same backend-neutral sealed light, receiver,
+interaction-primitive, shadow-caster, and mapped-pass contract. The established interaction renderer remains the
+supported default and the whole-view rollback.
 
 This is a complete interaction-phase ownership boundary for an accepted view,
 not a claim that the complete frame or every Quake 4 lighting feature is shared.
-Any shadow requirement, custom lighting program, unsupported surface, resource
-failure, or backend-preflight failure keeps every interaction in the view on the
-untouched classic path. Ambient/material, fog/blend, GUI, subview, and post work
-retain their existing owners.
+Fog/blend lights, custom lighting programs, unsupported receiver geometry,
+translucent moment-map casters, special views, and any incomplete resource or
+backend transaction leave every interaction in the view on the untouched
+classic path. Ambient/material, fog/blend, GUI, subview, and post work retain
+their existing owners.
 
 The implementation is original openQ4 work. It incorporates no external source
 code and changes no stock Quake 4 asset.
@@ -23,8 +33,11 @@ code and changes no stock Quake 4 asset.
 An idTech 4 interaction is not one material draw. Each contributing light
 multiplies its active light stages by an ordered bump/diffuse/specular surface
 decomposition. One surface can occur under multiple lights and in local,
-global, or translucent receiver chains. A partial handoff can therefore draw a
-receiver twice, omit a contribution, or apply a different depth/shadow rule.
+global, or translucent receiver chains. Stencil receivers additionally depend
+on ordered global/local volume families, while mapped receivers depend on a
+complete per-light map and may require same-light stencil supplements. A partial
+handoff can therefore draw a receiver twice, omit a contribution, sample an
+incomplete map, or apply a different stencil state.
 
 The shared domain accepts or rejects the entire interaction contribution of one
 ordinary root 3D view:
@@ -32,180 +45,271 @@ ordinary root 3D view:
 - every non-fog/non-blend light with material interactions;
 - every local, global, and translucent receiver in classic order;
 - every active light stage and decomposed surface interaction;
-- every draw and no-op disposition; and
-- exact light, surface, primitive, resource, and stable-hash accounting.
+- every draw and no-op disposition;
+- every stencil-volume, mapped-caster, alpha-stage, and supplement record;
+- every mapped receiver pass and its sealed projected or point state; and
+- exact light, surface, primitive, shadow, map, resource, and stable-hash
+  accounting.
 
-If any part cannot be represented, no shared record from that view is published
-and neither backend submits a shared interaction draw.
+If any part cannot be represented, no shared record from that view is published.
+If backend preflight cannot retain the complete plan, that backend records one
+named whole-view fallback and performs zero shared main-target draws.
 
 ## Packet identity and sealed records
 
-The interaction pass no longer relies on an ambiguous flat surface list.
-Interaction draw packets carry the source `viewLight_t`, light ordinal,
-receiver class, receiver ordinal, and global interaction source ordinal.
-Preparation verifies those identities while walking the original light and
-receiver chains. This distinguishes the same surface under two lights and
-proves that no receiver was reordered or silently dropped.
+Interaction packets carry the source `viewLight_t`, light ordinal, receiver
+class, receiver ordinal, and global interaction source ordinal. Shadow packets
+carry the source light, light ordinal, caster class, chain ordinal, and source
+ordinal. Preparation verifies these identities while walking the original
+light, receiver, stencil, and shadow-map chains. This distinguishes the same
+surface under two lights and proves that no receiver or caster was reordered or
+silently dropped.
 
 `ClassicInteractionDomain` prepares bounded frame-local arenas for:
 
-- views, including packet/pass identity, expected ranges, computed light scale,
-  readiness, fallback detail, and per-backend outcomes;
-- lights, including source order, ambient classification, shadow disposition,
-  receiver spans, primitive spans, and a stable hash;
-- receiver surfaces, including packet/material/geometry/instance identity,
-  local/global/translucent class, scissor/state data, and a primitive span; and
-- interaction primitives, including the five authored/intrinsic images,
-  projection planes, texture matrices, local light/view origins, evaluated
-  diffuse/specular colors, vertex-color mode, ambient flag, and disposition.
+- views, including packet/pass identity, shadow mode, expected ranges,
+  readiness, fallback detail, semantic hash, and per-backend outcomes;
+- lights, including source order, receiver spans, interaction spans, exact
+  shadow-chain ranges, mapped-pass indices for LOCAL and GLOBAL receivers, and
+  the physical stencil work implied by LOCAL -> GLOBAL -> TRANSLUCENT order;
+- receiver surfaces and interaction primitives, including packet/material/
+  geometry/instance identity, scissor/state, images, projections, matrices,
+  evaluated colors, vertex-color mode, and explicit no-op disposition;
+- stencil and supplement casters, including selected classic volume geometry,
+  cap/preload choice, depth bounds, scissor, cull, transforms, and draw/no-op
+  disposition;
+- mapped casters and perforated alpha stages, including static/dynamic and
+  GLOBAL/LOCAL chain identity, ambient geometry, texture transform, alpha
+  comparison, hashed-alpha policy, and generation-checked image identity; and
+- mapped passes, including receiver/resource-owner identity, map and supplement
+  counts, resource alias, plan/generation diagnostics, cache/update/scratch
+  policy, projected single-map or CSM state, point-cube state, filter/bias
+  policy, completeness masks, and a backend-independent semantic hash.
 
-The retained legacy draw-surface pointer is a sealed geometry bridge only.
-Backend consumers do not reinterpret authored stages or reread shader
-registers after the transaction is published.
+The semantic map hash deliberately ignores backend allocation identity such as
+the resource plan id and generation, while remaining sensitive to mapped and
+supplement caster coverage, dynamic/alpha state, completeness, class, cascade,
+filter, and bias semantics. Backend consumers do not reinterpret authored
+material stages or reread shader registers after publication. Retained legacy
+pointers are sealed geometry/resource bridges only.
 
-## Exact classic decomposition
+## Exact classic interaction and shadow order
 
 Preparation mirrors the fixed-classic interaction rules once for both
 backends:
 
-- light-stage order and local, global, then translucent receiver order;
+- light-stage order and LOCAL, GLOBAL, then TRANSLUCENT receiver order;
 - condition-register handling with checked finite register access;
 - bump-stage flushes, repeated diffuse/specular flushes, and the final flush;
 - surface-color clamping and light-color multiplication using the view's
   classic light scale;
 - texture-translation wrapping outside the classic `+/-40` range;
-- missing or skipped diffuse/specular replacement with the black image;
-- missing or skipped bump replacement with the flat normal image;
-- ambient-light specular suppression and ambient normal-cube selection;
-- `IGNORE`, `MODULATE`, and `INVERSE_MODULATE` vertex-color semantics; and
-- explicit no-op records where an authored combination produces no visible
-  diffuse or specular contribution.
+- black and flat-normal substitution, ambient-light specular suppression,
+  vertex-color semantics, and explicit no-op records; and
+- exact shadow mode per receiver: `NONE`, `STENCIL`, `PROJECTED`, `POINT`, or
+  `HYBRID`.
 
-No-op work is counted. It is never used as a reason to publish a clipped view.
+Stencil work is planned as physical receiver-order submission rather than as a
+unique-caster count. A mode transition clears and rebuilds the required family.
+For example, with one caster in each full/supplement GLOBAL/LOCAL chain,
+`STENCIL -> HYBRID -> STENCIL` plans five logical volume submissions and three
+preloads; `HYBRID -> HYBRID -> HYBRID` reuses the prepared family and plans two
+logical submissions and one preload. Both backends reconcile these exact totals
+after drawing.
+
+Mapped passes reconcile the exact `MAP_GLOBAL_STATIC`, `MAP_GLOBAL_DYNAMIC`,
+`MAP_LOCAL_STATIC`, and `MAP_LOCAL_DYNAMIC` ranges. A `HYBRID` receiver also
+requires complete `SUPPLEMENT_GLOBAL` and, where GLOBAL ownership requires it,
+`SUPPLEMENT_LOCAL` ranges. LOCAL and GLOBAL receivers carry explicit
+`shadowMapPassIndex` values; a compatible GLOBAL resource alias must name and
+match its LOCAL owner exactly. Point maps always expose six faces. Projected
+passes distinguish one-map projection from multi-cascade parallel/CSM state.
 
 ## Eligibility and whole-view fallback
 
-The initial shared corridor admits ordinary root world views containing static
-fixed-classic receiver geometry and unshadowed point, projected, parallel, or
-ambient lights. Opaque local/global receivers retain depth-equal submission;
-translucent receivers retain the classic less-or-equal depth rule. Scissor,
-culling, and represented polygon-offset state remain part of the sealed plan.
+The shared corridor admits ordinary root fixed-classic interaction views with:
 
-Preparation rejects the complete view for any of these conditions:
+- no shadows, classic stencil volumes, mapped projected/parallel/CSM lights,
+  mapped point lights, mixed per-light modes, or complete hybrid supplements;
+- static and dynamic opaque mapped casters, including authoritative CPU-skinned
+  `idDrawVert` streams;
+- perforated/alpha-tested mapped casters with sealed alpha stages;
+- exact cache reuse, cache update, or bounded non-cacheable scratch resources;
+  and
+- fixed-classic receiver primitives that both backends can preflight in full.
 
-- effective stencil-shadow or shadow-map caster/receiver work;
+Preparation or backend preflight rejects the complete view for any of these
+conditions:
+
+- translucent moment-map casters, incomplete mapped or supplement chains, a
+  stale/signature-mismatched resource, an invalid alias, or a map admission/
+  allocation/update failure;
 - fog/blend lights inside the interaction pass;
-- custom/new-style GLSL lighting, parallax, enhanced-material, cel, flat-
+- GPU-palette skinning, custom/new-style GLSL lighting, parallax,
+  enhanced-material, cel, flat-
   diffuse, simple/test, or other alternate interaction modes;
-- deformed, skinned, packed-MD5R, primitive-batch, missing-cache, depth-hack,
-  negative-scale, or otherwise unsupported receiver geometry;
+- unsupported deformed, GPU-palette-skinned, packed, primitive-batch, missing-
+  cache, depth-hack, negative-scale, or otherwise unsealed receiver geometry;
 - subview, mirror, x-ray, editor, offscreen, render-demo, global-material, or
   other non-root view ownership;
-- cinematic, dynamic, defaulted, unloaded, unbound, or invalid image resources;
+- cinematic, defaulted, unloaded, unbound, or invalid image resources;
 - out-of-range/non-finite registers or derived values;
 - packet/light/receiver/material/geometry/instance identity mismatch;
-- bounded arena overflow or an incomplete interaction pass; or
-- any backend program, descriptor, geometry, or transient-capacity preflight
-  failure.
+- bounded arena, geometry, descriptor, uniform, cache, atlas, or scratch
+  overflow; or
+- any backend program, target, resource, or transaction-preflight failure.
 
-Fallback is decided before the first shared framebuffer write. After the first
-owned draw, an unexpected mismatch is recorded as a diagnostic and the classic
-path is not layered over partially submitted shared work.
+Fallback is decided before the first shared main-framebuffer write. Shadow-map
+preparation may write only retained backend-private cache/scratch resources; a
+failure restores or abandons those reservations and leaves the classic visible
+path untouched. After ownership commits, an unexpected coverage mismatch is a
+diagnostic fault and the classic interaction stream is never layered over the
+partially submitted shared result.
 
 ## Backend execution
 
-OpenGL performs complete-view preflight inside the ARB2 interaction slot. It
-checks the required programs, texture-unit contract, intrinsic and authored
-images, vertex/index caches, and sealed geometry before drawing. Accepted
-records use the existing ARB2 interaction math and state conventions; rejected
-views continue through the unchanged classic interaction walker.
+OpenGL preflights the complete interaction view inside the ARB2 interaction
+slot. It retains all interaction, volume, mapped-caster, and perforated-alpha
+geometry; reserves cache or scratch resources for every non-aliased mapped
+pass; renders projected/CSM and point-cube maps from sealed caster chains; then
+revalidates texture handle, storage generation, render target, dimensions,
+atlas region, signatures, and physical aliasing for every pass. Failure restores
+the main target and GL state before the classic walker is selected. Commit binds
+the retained projected or point resource, draws mapped receivers, and rebuilds
+stencil/supplement families only when receiver order requires it.
+Cache allocation during one sealed schedule never evicts a map prepared earlier
+in that same transaction; excess projected or point work uses the bounded
+scratch policy instead.
 
-Vulkan performs the equivalent preflight before selecting interaction
-ownership. It checks pipelines/layouts, all required image descriptors,
-light-triangle geometry, scissors, and uniform-ring capacity for the complete
-sealed stream. Accepted records use the existing Vulkan interaction pipeline.
-Rejected views continue through `VK_Interactions_DrawLights`, including its
-established shadow and compatibility behavior.
+Vulkan snapshots its shared-geometry and uniform cursors before mapped
+preflight. The shadow transaction reserves scheduler/cache/atlas/point-cube
+resources, retains every mapped caster and alpha descriptor, builds projected
+or point receiver blocks, and records the complete command plan without an
+attachment write. Failure aborts shadow reservations and restores both cursors.
+Commit occurs before any shared main-target interaction write, renders the
+retained maps, binds the mapped receiver pipeline/descriptor set, and executes
+the same receiver-order stencil/supplement plan. Projected single-map,
+parallel/CSM, point cube, cache hit/update, scratch/non-cacheable, static,
+dynamic, and perforated paths are included.
 
-The option also disables aggregate modern-visible interaction/shadow skipping
-for the view so an older experimental owner cannot suppress or duplicate the
-transactional rollback.
+Both backends report ownership only when drawable/no-op primitives,
+drawable/no-op shadow casters, physical logical/preload volume submissions,
+mapped passes, and hybrid passes exactly match the shared view.
 
 ## Controls and diagnostics
 
-- `r_rendererSharedWorldInteraction 0|1` controls the domain and defaults to
-  `0`.
-- `rendererClassicInteractionDomainSelfTest` exercises the backend-neutral
-  transaction and coverage contract.
-- `gfxInfo` reports frame readiness, accepted/fallback view counts, light,
-  receiver, primitive/no-op counts, stable hashes, named failure details, and
-  OpenGL/Vulkan ownership outcomes.
+- `r_rendererSharedWorldInteraction 0|1` controls both interaction corridors
+  and defaults to `0`.
+- `rendererClassicInteractionDomainSelfTest` exercises bounded publication,
+  semantic hashing, mapped coverage, duplicate reporting, coverage mismatch,
+  atomic rewind, and receiver-order stencil planning.
+- `gfxInfo` aggregate and view lines report
+  `shadow=L/C/D+N volumes=V+P maps=total+hybrid
+  modes=projected+point csm=passes`, plus exact GL/Vulkan
+  `draw+noop/shadow+shadowNoop+logical+preload/maps+hybrid` outcomes.
+- Per-map diagnostics report view, light, LOCAL/GLOBAL receiver, shadow mode,
+  light class, cascade count, alias, plan id, generation, mapped+supplement
+  caster counts, `features=static+dynamic+alpha+translucent`, and semantic hash.
 
 The setting participates in renderer default-safety reporting. Unrelated stock
-baseline, gameplay benchmark, and startup profiles force it off. The dedicated
-`interaction` gameplay-benchmark profile supplies a bordered 1280x720,
-windowed, stock-assets-only, fixed-camera, shadows-off capture corridor.
+baseline, gameplay benchmark, and startup profiles force it off.
 
 ## Validation contract
 
-Automated coverage includes:
+Automated native and static coverage proves:
 
-- multi-light packet identity and all three receiver classes;
-- light/surface stage ordering, inactive stages, repeated-stage flushes, and
-  black/no-op classification;
-- checked register math, translation wrapping, colors, vertex modes, and stable
-  hashes;
-- explicit shadow/custom/deform/resource blockers and atomic arena rewind;
-- duplicate, mismatched, and incomplete backend coverage rejection;
-- complete backend preflight before ownership, with the classic fallback kept
-  intact; and
-- default-off isolation in renderer bootstrap, baseline, benchmark, validation,
-  and CI entry points.
+- multi-light packet identity and all receiver/caster chain identities;
+- exact primitive, map, supplement, no-op, and physical stencil reconciliation;
+- projected single-map, parallel/CSM, point-cube, mixed, and hybrid sealed state;
+- semantic-hash stability across plan/generation changes and sensitivity to
+  caster, supplement, dynamic, alpha, completeness, filter, and bias changes;
+- static/dynamic and opaque/perforated caster preparation;
+- cache reuse/update, projected/point scratch resources, exact aliases, and
+  resource revalidation;
+- GL and Vulkan preflight/commit/abort ordering before visible ownership;
+- atomic named fallback with zero committed backend counters and no shared
+  main-target draw; and
+- default-off isolation plus direct CI registration.
 
-Runtime qualification uses only the engine's registered `screenshot` command.
-For each backend, the controlled owned case must report a ready domain with
-nonzero lights, receivers, and primitives, zero mixed ownership, and an exact
-option-off/on engine TGA match. A shadow-enabled blocker case must report the
-named whole-view fallback, zero shared draws, and an exact match to the classic
-reference. All game launches remain bordered/windowed.
+Runtime qualification uses only the engine's registered `screenshot` command
+in a bordered/windowed 1280x720 run. The `interaction` profile creates a
+controlled stock `maps/tools/mv2` scene with a fixed camera, stock crate, one
+projected test light, and one point test light. Its five cases are:
 
-## Local runtime evidence
+- unshadowed ownership;
+- stencil ownership;
+- projected plus point mapped ownership;
+- projected-map plus point-stencil mixed ownership; and
+- a constrained map-update budget that must produce one named atomic backend
+  fallback with zero committed ownership counters and no shared main-target
+  draw.
 
-The 2026-08-21 Windows development-worktree run used the stock
-`maps/tools/mv2` room plus the stock
-`models/mapobjects/strogg/crates/crate1_small.lwo` test model at the profile's
-fixed view. Every capture was produced by the engine at bordered/windowed
-1280x720; no operating-system capture path was used.
+The `interaction-shadow-stock` profile is the stock-map release-qualification
+set for projected, point, CSM/parallel, dynamic mapped-caster,
+perforated/cutout, same-light hybrid-supplement, and translucent-moment fallback
+coverage. Its scene entries are candidates, not proof by label: each final run
+must retain the sampled six-component `viewpos`, and every owned frame must have
+nonzero, exactly reconciled backend counters plus one valid diagnostic record
+per mapped pass. The projected target requires an actual single-map
+`class=projected` record; the ordinary `game/airdefense2` point candidate must
+report a six-face point record; dynamic and perforated targets require their
+explicit feature bit; the hybrid target requires a nonzero supplement and
+physical volume submission; and the translucent-moment target must fall back
+atomically.
 
-- OpenGL and Vulkan each reported one ready owned view with two lights, four
-  global receiver surfaces, eight sealed primitives, four submitted draws,
-  four explicit no-ops, and no fallback or coverage mismatch. Both backends
-  reported domain hash `931c507bb531224b` and view hash
-  `990026ba7a164782`.
-- The OpenGL option-off/on TGAs matched exactly at RMS `0`, maximum delta `0`,
-  and zero differing channels; the shared/classic image SHA-256 is
-  `ddee1696c70d6eb482e9ea36fc744d9d047c7d3d0739a8ccbb7cd5b7eff02177`.
-- The Vulkan option-off/on TGAs were byte-identical with SHA-256
-  `39ceb4ad035c1b6576f006d86ab90fe62df554dd88e33b42392997c74c672019`.
-- Enabling shadows on both backends produced failure `shadows`, domain status
-  `fallback`, zero shared lights/surfaces/primitives/draws, backend coverage
-  `0/1/0`, and fallback hash `f6751ea3f1fd3a7b`. Each fallback TGA matched its
-  same-settings classic reference exactly.
+The controlled test lights do not form a real CSM case: enabling the CSM preset
+there still produces only a single projected map. CSM acceptance therefore
+belongs to a retained stock multi-cascade projected/parallel view; the current
+`shadow-csm-airdefense1` entry remains fail-closed until its final camera reports
+a nonzero multi-cascade record.
 
-The gameplay harness now derives an owned, disabled, or shadow-fallback
-expectation from the effective interaction cvars and fails empty ownership,
-mixed/fallback coverage, mismatches, or missing counts. These results qualify
-the controlled local implementation boundary. Clean committed-package reruns
-and target-platform/driver coverage remain required for promotion.
+For each supported owned shadow setting, compare shared off/on under identical
+settings and require the engine TGA to match the classic reference. Separately
+compare the shadowed result with its shadows-off engine TGA and require a
+material image difference; an identical shadows-on/off image is not acceptable
+shadow evidence. Every intentional fallback must match the same-settings
+classic TGA exactly. No operating-system screen capture is permitted.
+
+## Retained local evidence and promotion boundary
+
+The earlier two-light unshadowed `maps/tools/mv2` capture and its old
+shadows-enabled rollback remain historical development evidence only. The
+current controlled profile adds a second crate plus projected and point test
+lights, so its five-case capture below supersedes those older counts and hashes.
+
+The completed controlled shadow corridor also passed locally on 2026-08-21:
+all five OpenGL cases and all five Vulkan cases passed from the staged
+development worktree. Shared-off/on engine TGAs matched exactly (`RMS 0`,
+maximum channel delta `0`) for unshadowed, stencil, mapped, mixed, and
+map-budget fallback. Stencil, mapped, and mixed captures were materially
+different from their shadows-off references: OpenGL recorded RMS deltas
+`5.5301`, `5.4817`, and `5.5313`; Vulkan recorded `5.5613`, `5.5625`, and
+`5.5625`. Enabled diagnostics reconciled nonzero casters, physical stencil
+work, projected and six-face point maps, and mixed ownership; the constrained
+budget cases recorded one named backend fallback with zero committed ownership
+counters and no shared main-target draw.
+Private map preflight/cache/scratch work may occur before that decision; the
+evidence proves zero committed ownership counters and no shared main-target
+draw.
+
+The controlled and stock profiles above remain the authoritative release
+runtime acceptance set. Every stock-profile case still requires fixed-camera
+and reference qualification, including projected, point, CSM/parallel, dynamic,
+perforated, hybrid, and translucent-moment fallback. Clean committed-source
+recapture, a freshly staged final package, target-platform coverage, and driver coverage are still required
+before the default-off experimental option can be promoted. Retain reports,
+logs, engine screenshots, image hashes/deltas, exact per-map records, final
+poses, and Vulkan validation results with that release evidence.
 
 ## Remaining Milestone D work
 
-The shared GUI, world ambient/material, and unshadowed fixed-classic interaction
-corridors are three independently guarded complete domains. They do not yet
-make an ordinary shadowed stock frame fully shared.
+The shared root GUI, world ambient/material, and fixed-classic interaction
+corridors are three independently guarded complete domains. The interaction
+domain now admits both unshadowed and shadow-coupled eligible views. They do not
+make the whole classic frame modern.
 
-The next ownership increment is shadow-coupled interaction parity, followed by
-fog/blend. Deform, subview, in-world GUI, render-demo, cinematic, authored post,
-and other special domains remain downstream. Temporal presentation and
-PBR/advanced-lighting work must continue to wait for coherent classic-frame
-ownership.
+The next recommended implementation target is **fog/blend ownership and
+parity** on OpenGL and Vulkan. Deform, subview, in-world GUI, render-demo,
+cinematic, authored post, and other special domains remain downstream. Temporal
+presentation and PBR/advanced-lighting work must continue to wait for coherent
+classic-frame ownership.

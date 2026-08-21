@@ -195,7 +195,7 @@ typedef enum {
 
 bool R_ShadowMapCasterAdmissionSelfTest( void );
 bool R_ShadowMapLODAdmissionSelfTest( void );
-bool R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+bool R_ShadowMapsNeedPerSurfaceStencilVolumes(
 		const idRenderLightLocal *lightDef );
 
 // viewLights are allocated on the frame temporary stack memory

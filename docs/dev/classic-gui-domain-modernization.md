@@ -156,10 +156,13 @@ now match exactly on GL and Vulkan, and a stock deform override proves named
 zero-draw whole-view fallback on both backends; see
 [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md).
 
-Eligible unshadowed fixed-classic interaction lighting now has its own complete,
-default-off shared domain with whole-view rollback. Shadow-coupled interaction,
-fog/blend, deform, subview, in-world GUI, render-demo, cinematic, and authored
-post-process ownership remain explicit classic or experimental domains. The next
-recommended implementation target is **shadow-coupled interaction ownership and
-parity** on both backends, followed by fog/blend. Temporal and PBR/advanced-
-lighting milestones remain downstream of that classic-frame work.
+Eligible unshadowed and shadow-coupled fixed-classic interaction lighting now
+form the expanded third complete default-off shared domain with whole-view
+rollback. Its shadow corridor covers stencil volumes, projected/CSM/parallel
+maps, point cubes, mixed and same-light hybrid ownership, dynamic/perforated
+mapped casters, and named atomic translucent-moment fallback. Fog/blend,
+deform, subview, in-world GUI, render-demo, cinematic, and authored post-process
+ownership remain explicit classic or experimental domains. The next recommended
+implementation target is **fog/blend ownership and parity** on both backends.
+Temporal and PBR/advanced-lighting milestones remain downstream of that
+classic-frame work.

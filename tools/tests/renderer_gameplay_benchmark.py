@@ -184,8 +184,52 @@ INTERACTION_SCENES: dict[str, dict[str, Any]] = {
     "sp-mv2-interaction": {
         "mode": "SP",
         "map": "maps/tools/mv2",
-        "purpose": "controlled stock crate with unshadowed fixed-classic interaction ownership and whole-view rollback evidence",
+        "purpose": "controlled stock caster/receiver crates, projected light, and side point light for fixed-classic interaction/shadow ownership evidence",
         "path": "spawn-static",
+    },
+}
+
+# Stock-map qualification candidates complement the tightly controlled
+# tools-map case.  The ordinary shadow-regression scenes do not by themselves
+# establish a fixed camera or feature-bearing interaction view, so every target
+# remains fail-closed until its exact map records prove the advertised class or
+# caster feature.  Release evidence must retain the final camera pose together
+# with matching classic/shadows-off references.
+INTERACTION_SHADOW_SCENES: dict[str, dict[str, Any]] = {
+    "shadow-projected-airdefense2": {
+        **SHADOW_SCENES["shadow-projected-airdefense2"],
+        "purpose": "projected-map qualification candidate requiring a retained authored-projector camera",
+        "interactionShadowTarget": "projected",
+    },
+    "shadow-point-airdefense2": {
+        **SHADOW_SCENES["shadow-projected-airdefense2"],
+        "purpose": "ordinary stock spawn candidate for point-cube interaction ownership",
+        "interactionShadowTarget": "point",
+    },
+    "shadow-csm-airdefense1": {
+        **SHADOW_SCENES["shadow-csm-airdefense1"],
+        "purpose": "multi-cascade projected/parallel qualification candidate requiring a retained camera",
+        "interactionShadowTarget": "csm",
+    },
+    "shadow-character-airdefense2": {
+        **SHADOW_SCENES["shadow-character-airdefense2"],
+        "purpose": "dynamic mapped-caster qualification candidate; the gate does not assume character eligibility",
+        "interactionShadowTarget": "dynamic",
+    },
+    "shadow-cutout-storage2": {
+        **SHADOW_SCENES["shadow-cutout-storage2"],
+        "purpose": "perforated mapped-caster qualification candidate requiring a retained cutout view",
+        "interactionShadowTarget": "perforated",
+    },
+    "shadow-hybrid-storage2": {
+        **SHADOW_SCENES["shadow-point-storage2"],
+        "purpose": "same-light mapped/stencil-supplement qualification candidate requiring a retained hybrid view",
+        "interactionShadowTarget": "hybrid",
+    },
+    "shadow-translucent-medlabs": {
+        **SHADOW_SCENES["shadow-translucent-medlabs"],
+        "purpose": "translucent-moment atomic-fallback qualification candidate",
+        "interactionShadowTarget": "fallback",
     },
 }
 
@@ -214,11 +258,16 @@ ALL_SCENES = {
     **FULL_BUDGET_SCENES,
     **WORLD_AMBIENT_SCENES,
     **INTERACTION_SCENES,
+    **INTERACTION_SHADOW_SCENES,
     **LOAD_REGRESSION_SCENES,
 }
 
 SHADOW_PRESETS: dict[str, dict[str, str]] = {
     "default": {},
+    "unshadowed": {
+        "r_shadows": "0",
+        "r_useShadowMap": "0",
+    },
     "stencil": {
         "r_shadows": "1",
         "r_useShadowMap": "0",
@@ -227,6 +276,14 @@ SHADOW_PRESETS: dict[str, dict[str, str]] = {
         "r_shadows": "1",
         "r_useShadowMap": "1",
         "r_shadowMapCSM": "0",
+        "r_shadowMapHashedAlpha": "1",
+        "r_shadowMapTranslucentMoments": "0",
+    },
+    "mixed": {
+        "r_shadows": "1",
+        "r_useShadowMap": "1",
+        "r_shadowMapCSM": "0",
+        "r_shadowMapPointLights": "0",
         "r_shadowMapHashedAlpha": "1",
         "r_shadowMapTranslucentMoments": "0",
     },
@@ -243,6 +300,18 @@ SHADOW_PRESETS: dict[str, dict[str, str]] = {
         "r_shadowMapCSM": "1",
         "r_shadowMapHashedAlpha": "1",
         "r_shadowMapTranslucentMoments": "1",
+    },
+    "map-budget-fallback": {
+        "r_shadows": "1",
+        "r_useShadowMap": "1",
+        "r_shadowMapCSM": "0",
+        "r_shadowMapHashedAlpha": "1",
+        "r_shadowMapTranslucentMoments": "0",
+        # The controlled scene contains multiple ownership passes. With no
+        # resident reuse and one admitted update, both backends must reject
+        # the whole shared view before its first interaction write.
+        "r_shadowMapStaticCache": "0",
+        "r_shadowMapMaxUpdatesPerView": "1",
     },
 }
 
@@ -338,7 +407,13 @@ PROFILE_DEFAULTS = {
         "maxfps": ("240",),
         "swap": ("0",),
         "display": ("windowed",),
-        "shadows": ("stencil",),
+        "shadows": (
+            "unshadowed",
+            "stencil",
+            "mapped",
+            "mixed",
+            "map-budget-fallback",
+        ),
         "launchCvars": (
             ("ui_showGun", "0"),
             ("g_showHud", "0"),
@@ -348,14 +423,22 @@ PROFILE_DEFAULTS = {
             "noclip",
             "setviewpos 0 -192 96 20 90 0",
             "testModel models/mapobjects/strogg/crates/crate1_small.lwo",
+            'spawn func_static model models/mapobjects/strogg/crates/crate1_medium.lwo origin "-90 -70 -5.7"',
+            'testPointLight 300 origin "96 -128 0"',
+            "testLight",
         ),
         "cvars": (
             ("r_rendererSharedWorldInteraction", "1"),
-            ("r_shadows", "0"),
-            ("r_useShadowMap", "0"),
             ("g_renderFastNoPost", "1"),
             ("g_renderFastNoPostDirect", "1"),
+            ("g_renderCasUpscale", "0"),
             ("r_postAA", "0"),
+            ("r_screenFraction", "100"),
+            ("r_bloom", "0"),
+            ("r_motionBlur", "0"),
+            ("r_ssao", "0"),
+            ("r_hdrToneMap", "0"),
+            ("r_hdrDebugView", "0"),
             ("r_skipSubviews", "1"),
             ("r_useLightGrid", "0"),
             ("r_skipPlayerVisibilityEffects", "1"),
@@ -367,6 +450,60 @@ PROFILE_DEFAULTS = {
             ("r_singleTriangle", "0"),
             ("r_skipAmbient", "1"),
             ("r_skipNewAmbient", "1"),
+            ("r_skipDeforms", "0"),
+            ("r_skipRender", "0"),
+        ),
+    },
+    "interaction-shadow-stock": {
+        "cases": tuple(INTERACTION_SHADOW_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("unshadowed", "mapped", "csm", "translucent"),
+        "caseShadows": {
+            "shadow-projected-airdefense2": ("unshadowed", "mapped"),
+            "shadow-point-airdefense2": ("unshadowed", "mapped"),
+            "shadow-csm-airdefense1": ("unshadowed", "csm"),
+            "shadow-character-airdefense2": ("unshadowed", "csm"),
+            "shadow-cutout-storage2": ("unshadowed", "csm"),
+            "shadow-hybrid-storage2": ("unshadowed", "mapped"),
+            "shadow-translucent-medlabs": ("translucent",),
+        },
+        "launchCvars": (
+            ("g_stopTime", "1"),
+            ("ui_showGun", "0"),
+            ("r_multiSamples", "0"),
+        ),
+        # Start deterministic at tic zero, then advance the real SP scene
+        # through the normal settle interval before freezing it again for
+        # sampling.  Keeping tic zero frozen only captures dark/empty spawn
+        # state; leaving the viewmodel visible turns the aggregate interaction
+        # packet into an unsupported weapon-depth-hack pass.
+        "execCommands": (
+            "g_stopTime 1",
+        ),
+        "cvars": (
+            ("r_rendererSharedWorldInteraction", "1"),
+            ("g_stopTime", "0"),
+            ("g_renderFastNoPost", "1"),
+            ("g_renderFastNoPostDirect", "1"),
+            ("g_renderCasUpscale", "0"),
+            ("r_postAA", "0"),
+            ("r_screenFraction", "100"),
+            ("r_bloom", "0"),
+            ("r_motionBlur", "0"),
+            ("r_ssao", "0"),
+            ("r_hdrToneMap", "0"),
+            ("r_hdrDebugView", "0"),
+            ("r_skipSubviews", "1"),
+            ("r_useLightGrid", "0"),
+            ("r_skipPlayerVisibilityEffects", "1"),
+            ("r_portalsDistanceCull", "0"),
+            ("r_celShading", "0"),
+            ("r_celShadingWorld", "0"),
+            ("r_showOverDraw", "0"),
+            ("r_singleTriangle", "0"),
             ("r_skipDeforms", "0"),
             ("r_skipRender", "0"),
         ),
@@ -536,6 +673,7 @@ class RunSpec:
     renderer: str
     render_api: str
     interaction_expectation: str = "none"
+    interaction_shadow_expectation: str = "none"
 
     @property
     def fullscreen(self) -> bool:
@@ -547,13 +685,16 @@ class RunSpec:
 
     @property
     def id(self) -> str:
+        return self.id_for_shadow_preset(self.shadow_preset)
+
+    def id_for_shadow_preset(self, shadow_preset: str) -> str:
         parts = [
             self.case_id,
             self.tier,
             f"fps{self.maxfps}",
             f"vsync{self.swap_interval}",
             self.display_mode,
-            self.shadow_preset,
+            shadow_preset,
         ]
         parts.append(self.renderer)
         return sanitize_case_id("_".join(parts))
@@ -960,9 +1101,12 @@ def build_scripted_capture_lines(
         f"wait {max(1, settle_frames)}",
         "god",
         "notarget",
-        "getviewpos",
     ]
     lines.extend(exec_commands)
+    # Record the pose that is actually sampled.  In particular, profile scene
+    # commands may move the player after the initial map settle; getviewpos
+    # before those commands described the wrong camera and omitted pitch/roll.
+    lines.append("viewpos")
     if renderer_metrics:
         # A client can reload the game module while connecting and re-exec an
         # archived config after the launch arguments were applied. Reassert
@@ -1170,6 +1314,10 @@ def parse_frame_pacing(line: str) -> dict[str, str]:
 
 
 def extract_summary(text: str) -> dict[str, str]:
+    interaction_summary_offset = text.rfind("Renderer shared interaction:")
+    interaction_tail = (
+        text[interaction_summary_offset:] if interaction_summary_offset >= 0 else ""
+    )
     summary: dict[str, str] = {
         "benchmarkCapture": extract_last_line(text, "rendererBenchmark capture("),
         "benchmarkInfo": extract_last_line(text, "Renderer benchmark:"),
@@ -1177,6 +1325,17 @@ def extract_summary(text: str) -> dict[str, str]:
         "selectedTier": extract_last_line(text, "Selected renderer tier:"),
         "tierContract": extract_last_line(text, "Renderer tier contract:"),
         "sharedInteraction": extract_last_line(text, "Renderer shared interaction:"),
+        "sharedInteractionView": extract_last_line(
+            text, "Renderer shared interaction view["
+        ),
+        # Keep only the per-map records emitted by the latest gfxInfo block.
+        # Earlier samples may contain a different frame/generation and must not
+        # be reconciled with the final aggregate counters.
+        "sharedInteractionMaps": "\n".join(
+            line.strip()
+            for line in interaction_tail.splitlines()
+            if "Renderer shared interaction map view[" in line
+        ),
     }
     matches = re.findall(
         r"rendererBenchmark capture\(.*?samples=(\d+).*?p50=(\d+).*?p95=(\d+).*?p99=(\d+)"
@@ -1223,6 +1382,133 @@ def shared_interaction_fields(summary: dict[str, str]) -> dict[str, str]:
     }
 
 
+def shared_interaction_shadow_counts(
+    fields: dict[str, str]
+) -> tuple[int, int, int, int, int, int] | None:
+    shadow = re.fullmatch(r"(\d+)/(\d+)/(\d+)\+(\d+)", fields.get("shadow", ""))
+    volumes = re.fullmatch(r"(\d+)\+(\d+)", fields.get("volumes", ""))
+    if shadow is None or volumes is None:
+        return None
+    return tuple(int(value) for value in (*shadow.groups(), *volumes.groups()))
+
+
+def shared_interaction_map_counts(
+    fields: dict[str, str]
+) -> tuple[int, int, int, int, int] | None:
+    maps = re.fullmatch(r"(\d+)\+(\d+)", fields.get("maps", ""))
+    modes = re.fullmatch(r"(\d+)\+(\d+)", fields.get("modes", ""))
+    csm = re.fullmatch(r"\d+", fields.get("csm", ""))
+    if maps is None or modes is None or csm is None:
+        return None
+    return tuple(
+        int(value) for value in (*maps.groups(), *modes.groups(), csm.group())
+    )
+
+
+def shared_interaction_map_records(text: str) -> list[dict[str, int | str]]:
+    pattern = re.compile(
+        r"^Renderer shared interaction map view\[(\d+)\] light=(\d+) "
+        r"receiver=(local|global) mode=(none|stencil|projected|point|hybrid) "
+        r"class=(point|parallel|global|projected) cascades=(\d+) "
+        r"alias=(\d+) plan=([0-9a-fA-F]{16}) generation=(\d+) "
+        r"casters=(\d+)\+(\d+) features=(\d+)\+(\d+)\+(\d+)\+(\d+) "
+        r"hash=([0-9a-fA-F]{16})$"
+    )
+    records: list[dict[str, int | str]] = []
+    for line in text.splitlines():
+        match = pattern.fullmatch(line.strip())
+        if match is None:
+            continue
+        (
+            view,
+            light,
+            receiver,
+            mode,
+            light_class,
+            cascades,
+            alias,
+            plan,
+            generation,
+            casters,
+            supplements,
+            static_casters,
+            dynamic_casters,
+            alpha_casters,
+            translucent_casters,
+            semantic_hash,
+        ) = match.groups()
+        records.append(
+            {
+                "view": int(view),
+                "light": int(light),
+                "receiver": receiver,
+                "mode": mode,
+                "class": light_class,
+                "cascades": int(cascades),
+                "alias": int(alias),
+                "plan": int(plan, 16),
+                "generation": int(generation),
+                "casters": int(casters),
+                "supplements": int(supplements),
+                "static": int(static_casters),
+                "dynamic": int(dynamic_casters),
+                "alpha": int(alpha_casters),
+                "translucent": int(translucent_casters),
+                "hash": int(semantic_hash, 16),
+            }
+        )
+    return records
+
+
+def shared_interaction_backend_counts(
+    value: str,
+) -> tuple[int, str, int, int, int, int, int, int, int, int, int] | None:
+    match = re.fullmatch(
+        r"(\d+)/([^/]+)/(-?\d+)/(\d+)\+(\d+)/"
+        r"(\d+)\+(\d+)\+(\d+)\+(\d+)/(\d+)\+(\d+)",
+        value,
+    )
+    if match is None:
+        return None
+    (
+        outcome,
+        failure,
+        detail,
+        drawn_primitives,
+        noop_primitives,
+        submitted_shadow_casters,
+        noop_shadow_casters,
+        logical_volume_draws,
+        preload_volume_draws,
+        shadow_map_passes,
+        hybrid_passes,
+    ) = match.groups()
+    return (
+        int(outcome),
+        failure,
+        int(detail),
+        int(drawn_primitives),
+        int(noop_primitives),
+        int(submitted_shadow_casters),
+        int(noop_shadow_casters),
+        int(logical_volume_draws),
+        int(preload_volume_draws),
+        int(shadow_map_passes),
+        int(hybrid_passes),
+    )
+
+
+# The controlled map-budget scene exposes four shadow lights: one projected
+# pass followed by three point-light passes. Its one-update admission limit
+# rejects the second light in the GL map transaction: reason 24, one-based
+# light detail 2,
+# and no surface/primitive detail.
+GL_MAP_BUDGET_FALLBACK_DETAIL = 2_402_000_000
+CONTROLLED_MAP_BUDGET_COUNTS = (4, 0, 1, 3, 0)
+VK_SHADOW_STATE_REJECT = 7
+TRANSLUCENT_SHADOW_CHAIN_DETAILS = (6, 7)
+
+
 def evaluate_shared_interaction_evidence(
     spec: RunSpec, summary: dict[str, str]
 ) -> list[str]:
@@ -1231,6 +1517,17 @@ def evaluate_shared_interaction_evidence(
         return []
 
     fields = shared_interaction_fields(summary)
+    view_fields = {
+        key: value
+        for key, value in re.findall(
+            r"\b([A-Za-z]+)=([^\s]+)", summary.get("sharedInteractionView", "")
+        )
+    }
+    shadow_counts = shared_interaction_shadow_counts(fields)
+    map_counts = shared_interaction_map_counts(fields)
+    map_records = shared_interaction_map_records(
+        summary.get("sharedInteractionMaps", "")
+    )
     failures: list[str] = []
     if not fields:
         return ["shared interaction evidence line"]
@@ -1262,6 +1559,19 @@ def evaluate_shared_interaction_evidence(
                 failures.append(
                     f"shared interaction {name}={fields.get(name, 'missing')}"
                 )
+        if shadow_counts != (0, 0, 0, 0, 0, 0):
+            failures.append(
+                "shared interaction disabled shadow accounting="
+                f"{fields.get('shadow', 'missing')}/"
+                f"{fields.get('volumes', 'missing')}"
+            )
+        if map_counts != (0, 0, 0, 0, 0) or map_records:
+            failures.append(
+                "shared interaction disabled map accounting="
+                f"{fields.get('maps', 'missing')}/"
+                f"{fields.get('modes', 'missing')}/"
+                f"{fields.get('csm', 'missing')} records={len(map_records)}"
+            )
         if fields.get("status") != "empty":
             failures.append(
                 f"shared interaction status={fields.get('status', 'missing')}"
@@ -1287,6 +1597,34 @@ def evaluate_shared_interaction_evidence(
     else:
         owned_views, fallback_views, mismatches = (
             int(value) for value in backend_match.groups()
+        )
+    inactive_backend_name = "GL" if backend_name == "VK" else "VK"
+    inactive_backend_value = fields.get(inactive_backend_name, "")
+    if inactive_backend_value != "0/0/0":
+        failures.append(
+            "shared interaction inactive backend coverage="
+            f"{inactive_backend_name}:{inactive_backend_value or 'missing'}"
+        )
+    inactive_backend_counts = shared_interaction_backend_counts(
+        view_fields.get(inactive_backend_name, "")
+    )
+    expected_inactive_backend_counts = (
+        0,
+        "none",
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    if inactive_backend_counts != expected_inactive_backend_counts:
+        failures.append(
+            "shared interaction inactive backend execution="
+            f"{inactive_backend_name}:{view_fields.get(inactive_backend_name, 'missing')}"
         )
 
     if expectation == "owned":
@@ -1333,37 +1671,642 @@ def evaluate_shared_interaction_evidence(
             or mismatches != 0
         ):
             failures.append(f"shared interaction {backend_name} coverage={backend_value}")
+        shadow_expectation = spec.interaction_shadow_expectation
+        drawable_shadow_casters = None
+        noop_shadow_casters = None
+        logical_volume_draws = None
+        preload_volume_draws = None
+        if shadow_counts is None:
+            failures.append("shared interaction shadow/volume counters=missing")
+        else:
+            (
+                shadow_lights,
+                shadow_casters,
+                drawable_shadow_casters,
+                noop_shadow_casters,
+                logical_volume_draws,
+                preload_volume_draws,
+            ) = shadow_counts
+            if shadow_casters != drawable_shadow_casters + noop_shadow_casters:
+                failures.append(
+                    "shared interaction shadow caster reconciliation="
+                    f"{shadow_casters}/{drawable_shadow_casters}+"
+                    f"{noop_shadow_casters}"
+                )
+            if preload_volume_draws > logical_volume_draws:
+                failures.append(
+                    "shared interaction volume preload reconciliation="
+                    f"{logical_volume_draws}+{preload_volume_draws}"
+                )
+            light_count = integer("lights")
+            if light_count is None or shadow_lights > light_count:
+                failures.append(
+                    "shared interaction shadow light reconciliation="
+                    f"{shadow_lights}/{fields.get('lights', 'missing')}"
+                )
+            if shadow_expectation == "none":
+                if shadow_counts != (0, 0, 0, 0, 0, 0):
+                    failures.append(
+                        "shared interaction unshadowed accounting="
+                        f"{fields.get('shadow', 'missing')}/"
+                        f"{fields.get('volumes', 'missing')}"
+                    )
+            elif shadow_expectation == "stencil":
+                if (
+                    shadow_lights <= 0
+                    or shadow_casters <= 0
+                    or drawable_shadow_casters <= 0
+                    or logical_volume_draws <= 0
+                ):
+                    failures.append(
+                        "shared interaction stencil ownership="
+                        f"{fields.get('shadow', 'missing')}/"
+                        f"{fields.get('volumes', 'missing')}"
+                    )
+                if view_fields.get("mode") != "stencil":
+                    failures.append(
+                        "shared interaction stencil view mode="
+                        f"{view_fields.get('mode', 'missing')}"
+                    )
+                if view_fields.get("failure") != "none":
+                    failures.append(
+                        "shared interaction stencil view failure="
+                        f"{view_fields.get('failure', 'missing')}"
+                    )
+        if map_counts is None:
+            failures.append("shared interaction map/mode counters=missing")
+            map_passes = hybrid_passes = projected_passes = point_passes = csm_passes = -1
+        else:
+            (
+                map_passes,
+                hybrid_passes,
+                projected_passes,
+                point_passes,
+                csm_passes,
+            ) = map_counts
+            if projected_passes + point_passes != map_passes:
+                failures.append(
+                    "shared interaction map class reconciliation="
+                    f"{map_passes}/{projected_passes}+{point_passes}"
+                )
+            if hybrid_passes > map_passes or csm_passes > projected_passes:
+                failures.append(
+                    "shared interaction map subtype reconciliation="
+                    f"hybrid={hybrid_passes}/{map_passes} "
+                    f"csm={csm_passes}/{projected_passes}"
+                )
+
+            record_keys = {
+                (record["view"], record["light"], record["receiver"])
+                for record in map_records
+            }
+            if len(map_records) != map_passes or len(record_keys) != map_passes:
+                failures.append(
+                    "shared interaction per-map reconciliation="
+                    f"records={len(map_records)} unique={len(record_keys)} "
+                    f"passes={map_passes}"
+                )
+            record_projected = sum(
+                record["class"] != "point" for record in map_records
+            )
+            record_point = sum(
+                record["class"] == "point" for record in map_records
+            )
+            record_csm = sum(
+                record["class"] != "point" and int(record["cascades"]) > 1
+                for record in map_records
+            )
+            record_hybrid = sum(
+                record["mode"] == "hybrid" for record in map_records
+            )
+            if (
+                record_projected,
+                record_point,
+                record_csm,
+                record_hybrid,
+            ) != (
+                projected_passes,
+                point_passes,
+                csm_passes,
+                hybrid_passes,
+            ):
+                failures.append(
+                    "shared interaction per-map subtype evidence="
+                    f"{record_projected}+{record_point}/csm={record_csm}/"
+                    f"hybrid={record_hybrid} expected="
+                    f"{projected_passes}+{point_passes}/csm={csm_passes}/"
+                    f"hybrid={hybrid_passes}"
+                )
+            for record in map_records:
+                cascades = int(record["cascades"])
+                feature_values = tuple(
+                    int(record[name])
+                    for name in ("static", "dynamic", "alpha", "translucent")
+                )
+                if (
+                    int(record["casters"]) <= 0
+                    or int(record["generation"]) <= 0
+                    or int(record["plan"]) == 0
+                    or int(record["hash"]) == 0
+                    or int(record["alias"]) not in (0, 1)
+                    or any(value not in (0, 1) for value in feature_values)
+                    or not (int(record["static"]) or int(record["dynamic"]))
+                    or int(record["translucent"]) != 0
+                    or (record["class"] == "point" and cascades != 6)
+                    or (record["class"] != "point" and not 1 <= cascades <= 4)
+                    or (
+                        record["mode"] == "hybrid"
+                        and int(record["supplements"]) <= 0
+                    )
+                ):
+                    failures.append(
+                        "shared interaction invalid per-map record="
+                        f"{record}"
+                    )
+                if int(record["alias"]) == 1:
+                    owner_key = (record["view"], record["light"], "local")
+                    if record["receiver"] != "global" or owner_key not in record_keys:
+                        failures.append(
+                            "shared interaction invalid map alias="
+                            f"{record}"
+                        )
+
+            if map_passes > 0:
+                if shadow_counts is None:
+                    failures.append(
+                        "shared interaction mapped caster accounting=missing"
+                    )
+                else:
+                    per_light_record_casters: dict[tuple[int, int], int] = {}
+                    for record in map_records:
+                        light_key = (int(record["view"]), int(record["light"]))
+                        per_light_record_casters[light_key] = max(
+                            per_light_record_casters.get(light_key, 0),
+                            int(record["casters"])
+                            + int(record["supplements"]),
+                        )
+                    record_caster_floor = sum(per_light_record_casters.values())
+                    if (
+                        shadow_counts[0] <= 0
+                        or shadow_counts[1] <= 0
+                        or len(per_light_record_casters) > shadow_counts[0]
+                        or record_caster_floor > shadow_counts[1]
+                    ):
+                        failures.append(
+                            "shared interaction mapped caster accounting="
+                            f"recordsMin={record_caster_floor} lights="
+                            f"{len(per_light_record_casters)} shadow="
+                            f"{fields.get('shadow', 'missing')}"
+                        )
+
+            if shadow_expectation == "dynamic" and not any(
+                int(record["dynamic"]) == 1 for record in map_records
+            ):
+                failures.append(
+                    "shared interaction dynamic caster feature missing="
+                    f"{map_records}"
+                )
+            if shadow_expectation == "perforated" and not any(
+                int(record["alpha"]) == 1 for record in map_records
+            ):
+                failures.append(
+                    "shared interaction perforated caster feature missing="
+                    f"{map_records}"
+                )
+
+            allowed_modes = {
+                "none": {"none"},
+                "stencil": {"stencil"},
+                "projected": {"projected", "hybrid"},
+                "point": {"point", "hybrid"},
+                "csm": {"projected", "hybrid"},
+                "mapped": {"hybrid"},
+                "mixed": {"hybrid"},
+                "dynamic": {"projected", "point", "hybrid"},
+                "perforated": {"projected", "point", "hybrid"},
+                "hybrid": {"hybrid"},
+            }.get(shadow_expectation)
+            if (
+                allowed_modes is not None
+                and view_fields.get("mode") not in allowed_modes
+            ):
+                failures.append(
+                    "shared interaction shadow view mode="
+                    f"{view_fields.get('mode', 'missing')} "
+                    f"expected={sorted(allowed_modes)}"
+                )
+            if view_fields.get("failure") != "none":
+                failures.append(
+                    "shared interaction shadow view failure="
+                    f"{view_fields.get('failure', 'missing')}"
+                )
+
+            expected_map_shape = {
+                "none": (0, 0, 0, 0, 0),
+                "stencil": (0, 0, 0, 0, 0),
+            }.get(shadow_expectation)
+            if expected_map_shape is not None and map_counts != expected_map_shape:
+                failures.append(
+                    "shared interaction unexpected mapped work="
+                    f"{map_counts} expected={expected_map_shape}"
+                )
+            elif shadow_expectation == "projected" and not (
+                map_passes > 0
+                and projected_passes > 0
+                and csm_passes == 0
+                and any(
+                    record["class"] == "projected"
+                    and int(record["cascades"]) == 1
+                    for record in map_records
+                )
+            ):
+                failures.append(f"shared interaction projected map shape={map_counts}")
+            elif shadow_expectation == "point" and not (
+                map_passes > 0
+                and point_passes > 0
+            ):
+                failures.append(f"shared interaction point map shape={map_counts}")
+            elif shadow_expectation == "csm" and not (
+                map_passes > 0
+                and projected_passes > 0
+                and csm_passes > 0
+            ):
+                failures.append(f"shared interaction CSM map shape={map_counts}")
+            elif shadow_expectation == "mapped" and not (
+                map_passes > 0
+                and hybrid_passes == 0
+                and projected_passes > 0
+                and point_passes > 0
+                and csm_passes == 0
+            ):
+                failures.append(f"shared interaction mapped-light shape={map_counts}")
+            elif shadow_expectation == "mixed" and not (
+                map_passes > 0
+                and hybrid_passes == 0
+                and projected_passes > 0
+                and point_passes == 0
+                and csm_passes == 0
+                and shadow_counts is not None
+                and shadow_counts[4] > 0
+                and shadow_counts[0]
+                > len({int(record["light"]) for record in map_records})
+            ):
+                failures.append(
+                    "shared interaction map/stencil mix="
+                    f"maps={map_counts} volumes="
+                    f"{fields.get('volumes', 'missing')} shadowLights="
+                    f"{fields.get('shadow', 'missing')} mappedLights="
+                    f"{len({int(record['light']) for record in map_records})}"
+                )
+            elif shadow_expectation in ("dynamic", "perforated") and not (
+                map_passes > 0 and projected_passes + point_passes > 0
+            ):
+                failures.append(
+                    f"shared interaction {shadow_expectation} mapped ownership="
+                    f"{map_counts}"
+                )
+            elif shadow_expectation == "hybrid" and not (
+                map_passes > 0
+                and hybrid_passes > 0
+                and shadow_counts is not None
+                and shadow_counts[4] > 0
+            ):
+                failures.append(
+                    "shared interaction same-light hybrid="
+                    f"maps={map_counts} volumes="
+                    f"{fields.get('volumes', 'missing')}"
+                )
+            backend_counts = shared_interaction_backend_counts(
+                view_fields.get(backend_name, "")
+            )
+            if backend_counts is None:
+                failures.append(
+                    f"shared interaction {backend_name} view coverage="
+                    f"{view_fields.get(backend_name, 'missing')}"
+                )
+            else:
+                (
+                    backend_outcome,
+                    backend_failure,
+                    backend_detail,
+                    backend_drawn_primitives,
+                    backend_noop_primitives,
+                    backend_shadow_casters,
+                    backend_noop_shadow_casters,
+                    backend_logical_volume_draws,
+                    backend_preload_volume_draws,
+                    backend_shadow_map_passes,
+                    backend_hybrid_passes,
+                ) = backend_counts
+                if (
+                    backend_outcome != 1
+                    or backend_failure != "none"
+                    or backend_detail != 0
+                ):
+                    failures.append(
+                        f"shared interaction {backend_name} view outcome="
+                        f"{view_fields.get(backend_name, 'missing')}"
+                    )
+                expected_backend_counts = (
+                    draw_count,
+                    noop_count,
+                    drawable_shadow_casters,
+                    noop_shadow_casters,
+                    logical_volume_draws,
+                    preload_volume_draws,
+                    map_passes,
+                    hybrid_passes,
+                )
+                actual_backend_counts = (
+                    backend_drawn_primitives,
+                    backend_noop_primitives,
+                    backend_shadow_casters,
+                    backend_noop_shadow_casters,
+                    backend_logical_volume_draws,
+                    backend_preload_volume_draws,
+                    backend_shadow_map_passes,
+                    backend_hybrid_passes,
+                )
+                if actual_backend_counts != expected_backend_counts:
+                    failures.append(
+                        f"shared interaction {backend_name} execution="
+                        f"{actual_backend_counts} expected={expected_backend_counts}"
+                    )
     elif expectation == "fallback":
-        if integer("valid") != 0:
+        valid = integer("valid")
+        ready_count = integer("ready")
+        core_fallback_count = integer("fallback")
+        view_count = integer("views")
+        if valid == 0:
+            if ready_count != 0 or (core_fallback_count or 0) <= 0:
+                failures.append(
+                    "shared interaction whole-view core fallback accounting="
+                    f"{fields.get('ready', 'missing')}/"
+                    f"{fields.get('fallback', 'missing')}"
+                )
+            if fields.get("status") != "fallback":
+                failures.append(
+                    f"shared interaction status={fields.get('status', 'missing')}"
+                )
+            for name in ("lights", "surfaces", "primitives", "draw", "noop"):
+                if integer(name) != 0:
+                    failures.append(
+                        f"shared interaction rollback {name}="
+                        f"{fields.get(name, 'missing')}"
+                    )
+            if shadow_counts != (0, 0, 0, 0, 0, 0):
+                failures.append(
+                    "shared interaction rollback shadow accounting="
+                    f"{fields.get('shadow', 'missing')}/"
+                    f"{fields.get('volumes', 'missing')}"
+                )
+            if map_counts != (0, 0, 0, 0, 0) or map_records:
+                failures.append(
+                    "shared interaction rollback map accounting="
+                    f"{fields.get('maps', 'missing')}/"
+                    f"{fields.get('modes', 'missing')}/"
+                    f"{fields.get('csm', 'missing')} records={len(map_records)}"
+                )
+            if view_count != core_fallback_count:
+                failures.append(
+                    "shared interaction complete-view fallback="
+                    f"{fields.get('fallback', 'missing')}/"
+                    f"{fields.get('views', 'missing')}"
+                )
+        elif valid == 1:
+            if (
+                ready_count is None
+                or ready_count <= 0
+                or core_fallback_count != 0
+                or view_count != ready_count
+            ):
+                failures.append(
+                    "shared interaction backend fallback preparation="
+                    f"{fields.get('ready', 'missing')}/"
+                    f"{fields.get('fallback', 'missing')}/"
+                    f"{fields.get('views', 'missing')}"
+                )
+            if fields.get("status") != "ready":
+                failures.append(
+                    f"shared interaction status={fields.get('status', 'missing')}"
+                )
+            primitive_count = integer("primitives")
+            draw_count = integer("draw")
+            noop_count = integer("noop")
+            if (
+                primitive_count is None
+                or draw_count is None
+                or noop_count is None
+                or primitive_count != draw_count + noop_count
+            ):
+                failures.append(
+                    "shared interaction fallback primitive plan="
+                    f"{fields.get('primitives', 'missing')}/"
+                    f"{fields.get('draw', 'missing')}+"
+                    f"{fields.get('noop', 'missing')}"
+                )
+            if shadow_counts is None:
+                failures.append("shared interaction fallback shadow plan=missing")
+            else:
+                _, casters, drawable, noop, logical, preload = shadow_counts
+                if casters != drawable + noop or preload > logical:
+                    failures.append(
+                        "shared interaction fallback shadow plan="
+                        f"{fields.get('shadow', 'missing')}/"
+                        f"{fields.get('volumes', 'missing')}"
+                    )
+            if map_counts is None:
+                failures.append("shared interaction fallback map plan=missing")
+            else:
+                maps, hybrid, projected, point, csm = map_counts
+                fallback_record_keys = {
+                    (record["view"], record["light"], record["receiver"])
+                    for record in map_records
+                }
+                fallback_record_shape = (
+                    sum(record["class"] != "point" for record in map_records),
+                    sum(record["class"] == "point" for record in map_records),
+                    sum(
+                        record["class"] != "point"
+                        and int(record["cascades"]) > 1
+                        for record in map_records
+                    ),
+                    sum(record["mode"] == "hybrid" for record in map_records),
+                )
+                if (
+                    projected + point != maps
+                    or hybrid > maps
+                    or csm > projected
+                    or len(map_records) != maps
+                    or len(fallback_record_keys) != maps
+                    or fallback_record_shape != (projected, point, csm, hybrid)
+                ):
+                    failures.append(
+                        "shared interaction fallback mapped plan="
+                        f"{map_counts} records={len(map_records)}/"
+                        f"{len(fallback_record_keys)} shape={fallback_record_shape}"
+                    )
+                fallback_light_count = integer("lights")
+                fallback_view_count = integer("views")
+                for record in map_records:
+                    cascades = int(record["cascades"])
+                    feature_values = tuple(
+                        int(record[name])
+                        for name in ("static", "dynamic", "alpha", "translucent")
+                    )
+                    if (
+                        int(record["casters"]) <= 0
+                        or int(record["generation"]) <= 0
+                        or int(record["plan"]) == 0
+                        or int(record["hash"]) == 0
+                        or int(record["alias"]) not in (0, 1)
+                        or any(value not in (0, 1) for value in feature_values)
+                        or not (int(record["static"]) or int(record["dynamic"]))
+                        or int(record["translucent"]) != 0
+                        or (record["class"] == "point" and cascades != 6)
+                        or (record["class"] != "point" and not 1 <= cascades <= 4)
+                        or (
+                            record["mode"] == "hybrid"
+                            and int(record["supplements"]) <= 0
+                        )
+                        or fallback_light_count is None
+                        or not 0 <= int(record["light"]) < fallback_light_count
+                        or fallback_view_count is None
+                        or not 0 <= int(record["view"]) < fallback_view_count
+                    ):
+                        failures.append(
+                            "shared interaction invalid fallback per-map record="
+                            f"{record}"
+                        )
+                    if int(record["alias"]) == 1:
+                        owner_key = (record["view"], record["light"], "local")
+                        if (
+                            record["receiver"] != "global"
+                            or owner_key not in fallback_record_keys
+                        ):
+                            failures.append(
+                                "shared interaction invalid fallback map alias="
+                                f"{record}"
+                            )
+                if maps > 0:
+                    fallback_per_light_casters: dict[tuple[int, int], int] = {}
+                    for record in map_records:
+                        light_key = (int(record["view"]), int(record["light"]))
+                        fallback_per_light_casters[light_key] = max(
+                            fallback_per_light_casters.get(light_key, 0),
+                            int(record["casters"])
+                            + int(record["supplements"]),
+                        )
+                    fallback_record_caster_floor = sum(
+                        fallback_per_light_casters.values()
+                    )
+                    if (
+                        shadow_counts is None
+                        or shadow_counts[0] < len(fallback_per_light_casters)
+                        or shadow_counts[1] <= 0
+                        or fallback_record_caster_floor > shadow_counts[1]
+                    ):
+                        failures.append(
+                            "shared interaction fallback mapped caster accounting="
+                            f"recordsMin={fallback_record_caster_floor} lights="
+                            f"{len(fallback_per_light_casters)} shadow="
+                            f"{fields.get('shadow', 'missing')}"
+                        )
+        else:
             failures.append(
                 f"shared interaction valid={fields.get('valid', 'missing')}"
             )
-        if integer("ready") != 0 or (integer("fallback") or 0) <= 0:
+
+        backend_counts = shared_interaction_backend_counts(
+            view_fields.get(backend_name, "")
+        )
+        if backend_counts is None:
             failures.append(
-                "shared interaction whole-view fallback accounting="
-                f"{fields.get('ready', 'missing')}/{fields.get('fallback', 'missing')}"
+                f"shared interaction {backend_name} fallback detail="
+                f"{view_fields.get(backend_name, 'missing')}"
             )
-        if fields.get("status") != "fallback":
-            failures.append(
-                f"shared interaction status={fields.get('status', 'missing')}"
-            )
-        for name in ("lights", "surfaces", "primitives", "draw", "noop"):
-            if integer(name) != 0:
+        else:
+            (
+                backend_outcome,
+                backend_failure,
+                backend_detail,
+                backend_drawn,
+                backend_noop,
+                backend_shadow,
+                backend_shadow_noop,
+                backend_logical,
+                backend_preload,
+                backend_maps,
+                backend_hybrid,
+            ) = backend_counts
+            if backend_outcome != 2 or backend_failure in ("none", "unknown"):
                 failures.append(
-                    f"shared interaction rollback {name}="
-                    f"{fields.get(name, 'missing')}"
+                    f"shared interaction {backend_name} named fallback="
+                    f"{view_fields.get(backend_name, 'missing')}"
                 )
-        fallback_count = integer("fallback")
-        if integer("views") != fallback_count:
-            failures.append(
-                "shared interaction complete-view fallback="
-                f"{fields.get('fallback', 'missing')}/"
-                f"{fields.get('views', 'missing')}"
-            )
+            shadow_expectation = spec.interaction_shadow_expectation
+            if shadow_expectation == "translucent-fallback":
+                try:
+                    view_failure_detail = int(view_fields.get("detail", ""))
+                except ValueError:
+                    view_failure_detail = -1
+                if (
+                    valid != 0
+                    or view_fields.get("failure") != "shadowMap"
+                    or view_failure_detail not in TRANSLUCENT_SHADOW_CHAIN_DETAILS
+                    or backend_failure != "shadowMap"
+                    or backend_detail != view_failure_detail
+                ):
+                    failures.append(
+                        "shared interaction translucent-moment fallback="
+                        f"view={view_fields.get('failure', 'missing')}/"
+                        f"{view_fields.get('detail', 'missing')} backend="
+                        f"{backend_name}:{backend_failure}/{backend_detail}"
+                    )
+            elif shadow_expectation == "map-budget-fallback":
+                expected_backend_failure = (
+                    backend_failure == "backendRejected"
+                    and (backend_detail & 0xFFFFFFFF)
+                    == GL_MAP_BUDGET_FALLBACK_DETAIL
+                    if backend_name == "GL"
+                    else backend_failure == "shadowMap"
+                    and backend_detail == VK_SHADOW_STATE_REJECT
+                )
+                if (
+                    valid != 1
+                    or view_fields.get("failure") != "none"
+                    or view_fields.get("detail") != "0"
+                    or map_counts is None
+                    or map_counts != CONTROLLED_MAP_BUDGET_COUNTS
+                    or not expected_backend_failure
+                ):
+                    failures.append(
+                        "shared interaction map-budget admission fallback="
+                        f"view={view_fields.get('failure', 'missing')}/"
+                        f"{view_fields.get('detail', 'missing')} maps={map_counts} "
+                        f"backend={backend_name}:{backend_failure}/{backend_detail}"
+                    )
+            if any(
+                value != 0
+                for value in (
+                    backend_drawn,
+                    backend_noop,
+                    backend_shadow,
+                    backend_shadow_noop,
+                    backend_logical,
+                    backend_preload,
+                    backend_maps,
+                    backend_hybrid,
+                )
+            ):
+                failures.append(
+                    f"shared interaction {backend_name} atomic fallback="
+                    f"{view_fields.get(backend_name, 'missing')}"
+                )
         if (
-            fallback_count is None
+            view_count is None
             or owned_views != 0
-            or fallback_views != fallback_count
+            or fallback_views != view_count
             or mismatches != 0
         ):
             failures.append(f"shared interaction {backend_name} coverage={backend_value}")
@@ -1514,6 +2457,10 @@ def screenshot_reference_candidates(
             candidates.insert(0, reference_dir / rel)
             if case_id:
                 candidates.insert(0, reference_dir / case_id / rel)
+                # A reference tree produced by this runner retains both the
+                # case savepath and game-directory components:
+                # savepaths/<case>/baseoq4/screenshots/...
+                candidates.insert(0, reference_dir / case_id / game_dir / rel)
         except ValueError:
             pass
     return candidates
@@ -1551,6 +2498,51 @@ def compare_screenshot_if_requested(
     return result
 
 
+def compare_screenshot_difference_if_requested(
+    screenshot: Path | None,
+    savepath: Path,
+    reference_dir: Path | None,
+    min_rms: float,
+    min_differing_channels: int,
+    case_id: str | None = None,
+) -> dict[str, Any]:
+    """Require a material image delta from a second engine-TGA reference.
+
+    Equivalence and effectiveness are separate claims.  The ordinary reference
+    comparison proves shared-off/shared-on parity under identical renderer
+    settings; this comparison proves that the controlled shadows-on scene is
+    actually different from its shadows-off capture.
+    """
+    if screenshot is None:
+        return {"status": "missing-screenshot", "pass": False}
+    if reference_dir is None:
+        return {"status": "not-requested"}
+    for candidate in screenshot_reference_candidates(
+        reference_dir, screenshot, savepath, case_id
+    ):
+        if not candidate.exists():
+            continue
+        comparison = compare_tga(screenshot, candidate)
+        comparison["actual"] = str(screenshot)
+        comparison["reference"] = str(candidate)
+        comparison["minimumRms"] = min_rms
+        comparison["minimumDifferingChannels"] = min_differing_channels
+        if comparison["status"] == "compared":
+            comparison["status"] = "difference-compared"
+            comparison["pass"] = (
+                comparison["rms"] >= min_rms
+                and comparison["differingChannels"] >= min_differing_channels
+            )
+        else:
+            comparison["pass"] = False
+        return comparison
+    return {
+        "status": "missing-difference-reference",
+        "referenceDir": str(reference_dir),
+        "pass": False,
+    }
+
+
 def evaluate_role_result(
     spec: RunSpec,
     role: str,
@@ -1572,6 +2564,9 @@ def evaluate_role_result(
     max_p99_ms: float = 0.0,
     budget_contract: dict[str, Any] | None = None,
     budget_profile: str = "baseline",
+    difference_reference_dir: Path | None = None,
+    difference_min_rms: float = 0.1,
+    difference_min_channels: int = 1000,
 ) -> dict[str, Any]:
     log_path = find_log(savepath, log_name)
     diagnostic_sources = (
@@ -1592,6 +2587,29 @@ def evaluate_role_result(
         max_threshold,
         require_reference,
         spec.id,
+    )
+    image_difference = (
+        compare_screenshot_difference_if_requested(
+            screenshot,
+            savepath,
+            difference_reference_dir,
+            difference_min_rms,
+            difference_min_channels,
+            spec.id_for_shadow_preset("unshadowed"),
+        )
+        if spec.interaction_shadow_expectation
+        in (
+            "stencil",
+            "projected",
+            "point",
+            "mapped",
+            "csm",
+            "mixed",
+            "dynamic",
+            "perforated",
+            "hybrid",
+        )
+        else {"status": "not-requested"}
     )
     missing: list[str] = []
     budget_evidence: dict[str, Any] = {}
@@ -1636,6 +2654,13 @@ def evaluate_role_result(
         missing += [f"{name}={count}" for name, count in warnings.items() if count > 0]
     if image.get("pass") is False:
         missing.append(f"image comparison {image.get('status')}")
+    if image_difference.get("pass") is False:
+        missing.append(
+            "image difference "
+            f"{image_difference.get('status')} rms="
+            f"{image_difference.get('rms', 'missing')} channels="
+            f"{image_difference.get('differingChannels', 'missing')}"
+        )
     if require_benchmark:
         display_evidence, display_failures = evaluate_display_evidence(
             (item[1] for item in diagnostic_sources), screenshot
@@ -1670,6 +2695,7 @@ def evaluate_role_result(
         "missing": missing,
         "summary": summary,
         "image": image,
+        "imageDifference": image_difference,
         "displayEvidence": display_evidence,
         "budgetEvidence": budget_evidence,
     }
@@ -1760,6 +2786,7 @@ def run_sp_spec(
             "expectedBackend": spec.expected_backend,
             "renderApi": spec.render_api,
             "interactionExpectation": spec.interaction_expectation,
+            "interactionShadowExpectation": spec.interaction_shadow_expectation,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "args": game_args,
@@ -1791,12 +2818,15 @@ def run_sp_spec(
         args.image_rms_threshold,
         args.image_max_threshold,
         args.require_references,
-        not args.pacing_only,
-        args.min_pacing_hz,
-        args.max_p95_ms,
-        args.max_p99_ms,
-        args.budget_contract,
-        args.benchmark_preset,
+        require_benchmark=not args.pacing_only,
+        min_pacing_hz=args.min_pacing_hz,
+        max_p95_ms=args.max_p95_ms,
+        max_p99_ms=args.max_p99_ms,
+        budget_contract=args.budget_contract,
+        budget_profile=args.benchmark_preset,
+        difference_reference_dir=args.difference_reference_dir_path,
+        difference_min_rms=args.image_difference_min_rms,
+        difference_min_channels=args.image_difference_min_channels,
     )
     return {
         "id": spec.id,
@@ -1806,6 +2836,7 @@ def run_sp_spec(
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
         "interactionExpectation": spec.interaction_expectation,
+        "interactionShadowExpectation": spec.interaction_shadow_expectation,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -1951,6 +2982,7 @@ def run_mp_spec(
             "expectedBackend": spec.expected_backend,
             "renderApi": spec.render_api,
             "interactionExpectation": spec.interaction_expectation,
+            "interactionShadowExpectation": spec.interaction_shadow_expectation,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "serverArgs": server_args,
@@ -2015,12 +3047,15 @@ def run_mp_spec(
         args.image_rms_threshold,
         args.image_max_threshold,
         args.require_references,
-        not args.pacing_only,
-        args.min_pacing_hz,
-        args.max_p95_ms,
-        args.max_p99_ms,
-        args.budget_contract,
-        args.benchmark_preset,
+        require_benchmark=not args.pacing_only,
+        min_pacing_hz=args.min_pacing_hz,
+        max_p95_ms=args.max_p95_ms,
+        max_p99_ms=args.max_p99_ms,
+        budget_contract=args.budget_contract,
+        budget_profile=args.benchmark_preset,
+        difference_reference_dir=args.difference_reference_dir_path,
+        difference_min_rms=args.image_difference_min_rms,
+        difference_min_channels=args.image_difference_min_channels,
     )
     client_result = evaluate_role_result(
         spec,
@@ -2037,12 +3072,15 @@ def run_mp_spec(
         args.image_rms_threshold,
         args.image_max_threshold,
         args.require_references,
-        not args.pacing_only,
-        args.min_pacing_hz,
-        args.max_p95_ms,
-        args.max_p99_ms,
-        args.budget_contract,
-        args.benchmark_preset,
+        require_benchmark=not args.pacing_only,
+        min_pacing_hz=args.min_pacing_hz,
+        max_p95_ms=args.max_p95_ms,
+        max_p99_ms=args.max_p99_ms,
+        budget_contract=args.budget_contract,
+        budget_profile=args.benchmark_preset,
+        difference_reference_dir=args.difference_reference_dir_path,
+        difference_min_rms=args.image_difference_min_rms,
+        difference_min_channels=args.image_difference_min_channels,
     )
     postinit_connect_responses: dict[str, int] = {}
     postinit_ttf_rebuilds: dict[str, int] = {}
@@ -2085,6 +3123,7 @@ def run_mp_spec(
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
         "interactionExpectation": spec.interaction_expectation,
+        "interactionShadowExpectation": spec.interaction_shadow_expectation,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -2131,6 +3170,7 @@ def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
         "interactionExpectation": spec.interaction_expectation,
+        "interactionShadowExpectation": spec.interaction_shadow_expectation,
         "purpose": spec.purpose,
         "tier": spec.tier,
         "maxfps": spec.maxfps,
@@ -2152,11 +3192,9 @@ def cvar_value_enabled(value: str) -> bool:
     return match is not None and int(match.group(1)) != 0
 
 
-def interaction_expectation(
-    args: argparse.Namespace, case_id: str, shadow_preset: str
-) -> str:
-    if case_id not in INTERACTION_SCENES:
-        return "none"
+def effective_interaction_cvars(
+    args: argparse.Namespace, shadow_preset: str
+) -> dict[str, str]:
     effective = {
         "r_renderersharedworldinteraction": "0",
         **{
@@ -2166,13 +3204,95 @@ def interaction_expectation(
     }
     for name, value in args.extra_cvars:
         effective[name.casefold()] = value
+    return effective
+
+
+def interaction_expectation(
+    args: argparse.Namespace, case_id: str, shadow_preset: str
+) -> str:
+    scene = ALL_SCENES.get(case_id, {})
+    if case_id not in INTERACTION_SCENES and "interactionShadowTarget" not in scene:
+        return "none"
+    effective = effective_interaction_cvars(args, shadow_preset)
     if not cvar_value_enabled(
         effective.get("r_renderersharedworldinteraction", "0")
     ):
         return "disabled"
-    if cvar_value_enabled(effective.get("r_shadows", "0")):
+    shadows_enabled = cvar_value_enabled(effective.get("r_shadows", "0"))
+    maps_enabled = shadows_enabled and cvar_value_enabled(
+        effective.get("r_useshadowmap", "0")
+    )
+    if shadow_preset == "map-budget-fallback" and maps_enabled:
+        return "fallback"
+    # Debug overlays and translucent moment-map caster updates intentionally
+    # stay outside the shared fixed-classic receiver corridor. Ordinary
+    # stencil, projected/CSM, point-cube, and mixed map/stencil presets are
+    # expected to retain whole-view shared ownership once their shadow state
+    # has settled.
+    if (
+        maps_enabled
+        and (
+            cvar_value_enabled(effective.get("r_shadowmapdebugoverlay", "0"))
+            or cvar_value_enabled(
+                effective.get("r_shadowmaptranslucentmoments", "0")
+            )
+        )
+    ):
+        return "fallback"
+    if (
+        scene.get("interactionShadowTarget") == "fallback"
+        and maps_enabled
+    ):
         return "fallback"
     return "owned"
+
+
+def interaction_shadow_expectation(
+    args: argparse.Namespace, case_id: str, shadow_preset: str
+) -> str:
+    scene = ALL_SCENES.get(case_id, {})
+    if case_id not in INTERACTION_SCENES and "interactionShadowTarget" not in scene:
+        return "none"
+    effective = effective_interaction_cvars(args, shadow_preset)
+    if (
+        not cvar_value_enabled(
+            effective.get("r_renderersharedworldinteraction", "0")
+        )
+        or not cvar_value_enabled(effective.get("r_shadows", "0"))
+    ):
+        return "none"
+    maps_enabled = cvar_value_enabled(effective.get("r_useshadowmap", "0"))
+    if shadow_preset == "map-budget-fallback" and maps_enabled:
+        return "map-budget-fallback"
+    target = scene.get("interactionShadowTarget")
+    if target == "fallback" and maps_enabled:
+        return "translucent-fallback"
+    if (
+        maps_enabled
+        and (
+            cvar_value_enabled(effective.get("r_shadowmapdebugoverlay", "0"))
+            or cvar_value_enabled(
+                effective.get("r_shadowmaptranslucentmoments", "0")
+            )
+        )
+    ):
+        return "fallback"
+    if not maps_enabled:
+        return "stencil"
+    if target in (
+        "projected",
+        "point",
+        "csm",
+        "dynamic",
+        "perforated",
+        "hybrid",
+    ):
+        return target
+    if not cvar_value_enabled(effective.get("r_shadowmappointlights", "1")):
+        return "mixed"
+    if cvar_value_enabled(effective.get("r_shadowmapcsm", "0")):
+        return "csm"
+    return "mapped"
 
 
 def build_specs(args: argparse.Namespace) -> list[RunSpec]:
@@ -2183,6 +3303,7 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
     swap_values = split_csv(args.swap_intervals, defaults["swap"])
     display_values = split_csv(args.display_modes, defaults["display"])
     shadow_values = split_csv(args.shadow_presets, defaults["shadows"])
+    case_shadow_values = defaults.get("caseShadows", {})
     if not args.pacing_only and any(display != "windowed" for display in display_values):
         raise ValueError(
             "per-map CPU/GPU budget evidence requires windowed display; "
@@ -2202,7 +3323,12 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                     for display in display_values:
                         if display not in DISPLAY_MODES:
                             raise ValueError(f"unknown display mode '{display}'")
-                        for shadow in shadow_values:
+                        selected_shadow_values = (
+                            case_shadow_values.get(case_id, shadow_values)
+                            if not args.shadow_presets
+                            else shadow_values
+                        )
+                        for shadow in selected_shadow_values:
                             if shadow not in SHADOW_PRESETS:
                                 raise ValueError(f"unknown shadow preset '{shadow}'")
                             specs.append(
@@ -2221,6 +3347,9 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                                     renderer=args.renderer,
                                     render_api=args.render_api,
                                     interaction_expectation=interaction_expectation(
+                                        args, case_id, shadow
+                                    ),
+                                    interaction_shadow_expectation=interaction_shadow_expectation(
                                         args, case_id, shadow
                                     ),
                                 )
@@ -2322,6 +3451,13 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
             image_status = f"compared rms={image.get('rms', '?')} max={image.get('maxDelta', '?')} pass={int(bool(image.get('pass', False)))}"
         elif image_status in ("not-requested", "reference-not-found"):
             image_status = f"{image_status} {image.get('sha256', '')[:12]}".strip()
+        difference = role.get("imageDifference", {}) or {}
+        if difference.get("status") != "not-requested":
+            image_status += (
+                f"; shadow-delta rms={difference.get('rms', '?')} "
+                f"channels={difference.get('differingChannels', '?')} "
+                f"pass={int(bool(difference.get('pass', False)))}"
+            )
         screenshot = role.get("screenshot", "")
         log = role.get("log", "")
         lines.append(
@@ -2430,6 +3566,19 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
     ]
     for case_id, scene in INTERACTION_SCENES.items():
         lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
+
+    lines += [
+        "",
+        "## Stock Interaction-Shadow Ownership Coverage",
+        "",
+        "| Case | Mode | Map | Target | Purpose |",
+        "|---|---|---|---|---|",
+    ]
+    for case_id, scene in INTERACTION_SHADOW_SCENES.items():
+        lines.append(
+            f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | "
+            f"`{scene['interactionShadowTarget']}` | {scene['purpose']} |"
+        )
 
     lines += [
         "",
@@ -2650,6 +3799,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-references", action="store_true", help="Fail captures when --reference-dir has no matching reference image.")
     parser.add_argument("--image-rms-threshold", type=float, default=2.0, help="Allowed RMS channel delta for TGA comparisons.")
     parser.add_argument("--image-max-threshold", type=int, default=24, help="Allowed maximum channel delta for TGA comparisons.")
+    parser.add_argument("--difference-reference-dir", default="", help="Optional engine-TGA reference root that every shadow-owning interaction capture must differ from; use a shadows-off capture to prove the controlled scene has visible shadows.")
+    parser.add_argument("--image-difference-min-rms", type=float, default=0.1, help="Minimum RMS channel delta required by --difference-reference-dir.")
+    parser.add_argument("--image-difference-min-channels", type=int, default=1000, help="Minimum changed RGB-channel count required by --difference-reference-dir.")
     parser.add_argument("--mp-port", type=int, default=28110, help="Base listen-server port for MP runs.")
     parser.add_argument("--mp-client-delay", type=int, default=12, help="Seconds to wait before launching the MP loopback client.")
     parser.add_argument("--mp-client-delay-frames", type=int, default=480, help="Extra server frames before server-side capture in MP runs.")
@@ -2661,6 +3813,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--no-gpu-timers is only valid with --pacing-only; budget evidence requires GPU timing")
     if not (320 <= parsed.width <= 16384) or not (240 <= parsed.height <= 16384):
         parser.error("--width/--height must stay within the engine's 320x240 to 16384x16384 range")
+    if parsed.image_difference_min_rms < 0.0:
+        parser.error("--image-difference-min-rms must be non-negative")
+    if parsed.image_difference_min_channels < 1:
+        parser.error("--image-difference-min-channels must be positive")
     if not parsed.pacing_only and (parsed.width, parsed.height) != (BUDGET_WIDTH, BUDGET_HEIGHT):
         parser.error(
             f"budget evidence requires the canonical bordered {BUDGET_WIDTH}x{BUDGET_HEIGHT} display contract"
@@ -2694,19 +3850,31 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                 + ", ".join(conflicting)
             )
     parsed.reference_dir_path = Path(parsed.reference_dir).resolve() if parsed.reference_dir else None
+    if parsed.require_references and parsed.reference_dir_path is None:
+        parser.error("--require-references requires --reference-dir")
+    parsed.difference_reference_dir_path = (
+        Path(parsed.difference_reference_dir).resolve()
+        if parsed.difference_reference_dir
+        else None
+    )
     return parsed
 
 
 def print_list() -> None:
     print("Profiles:")
     for profile, defaults in PROFILE_DEFAULTS.items():
+        case_shadows = defaults.get("caseShadows")
+        case_shadow_count = (
+            sum(len(case_shadows.get(case_id, defaults["shadows"])) for case_id in defaults["cases"])
+            if case_shadows
+            else len(defaults["cases"]) * len(defaults["shadows"])
+        )
         count = (
-            len(defaults["cases"])
+            case_shadow_count
             * len(defaults["tiers"])
             * len(defaults["maxfps"])
             * len(defaults["swap"])
             * len(defaults["display"])
-            * len(defaults["shadows"])
         )
         profile_cvars = defaults.get("cvars", ())
         profile_exec_commands = defaults.get("execCommands", ())
@@ -2732,6 +3900,12 @@ def print_list() -> None:
     print("\nInteraction ownership cases (run with --pacing-only):")
     for case_id, scene in INTERACTION_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nStock interaction-shadow cases (run with --pacing-only):")
+    for case_id, scene in INTERACTION_SHADOW_SCENES.items():
+        print(
+            f"  {case_id}: {scene['mode']} {scene['map']} "
+            f"[{scene['interactionShadowTarget']}] - {scene['purpose']}"
+        )
     print("\nShadow presets:")
     for preset, cvars in SHADOW_PRESETS.items():
         cvar_text = ", ".join(f"{key}={value}" for key, value in cvars.items()) or "stock defaults"
@@ -2775,6 +3949,14 @@ def main(argv: list[str]) -> int:
         print(f"warning: basepath does not exist, omitting fs_basepath: {requested_basepath}", file=sys.stderr)
     if args.reference_dir_path is not None and not args.reference_dir_path.exists():
         raise FileNotFoundError(f"reference directory does not exist: {args.reference_dir_path}")
+    if (
+        args.difference_reference_dir_path is not None
+        and not args.difference_reference_dir_path.exists()
+    ):
+        raise FileNotFoundError(
+            "difference reference directory does not exist: "
+            f"{args.difference_reference_dir_path}"
+        )
 
     specs = build_specs(args)
     timestamp = time.strftime("%Y%m%d-%H%M%S")

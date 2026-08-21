@@ -129,17 +129,17 @@ static bool R_TranslucentShadowMapMomentsSupportedForLight( const idRenderLightL
 
 /*
 =================
-R_VulkanShadowMapsNeedPerSurfaceStencilVolumes
+R_ShadowMapsNeedPerSurfaceStencilVolumes
 
 Optimized prelights combine every static-world caster for a light into one
 volume. A partial filtered shadow map needs only S\M as its stencil
 supplement, so the combined volume cannot be used without hardening casters
 already represented in the map. Keep the stock per-surface volume path for
-Vulkan lights that can actually use mapped shadows; stencil-only and OpenGL
-paths retain the optimized prelight behavior.
+every backend light that can actually use mapped shadows; stencil-only paths
+retain the optimized prelight behavior.
 =================
 */
-bool R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+bool R_ShadowMapsNeedPerSurfaceStencilVolumes(
 		const idRenderLightLocal *lightDef ) {
 	if ( lightDef == NULL || !r_shadows.GetBool() ||
 		!r_useShadowMap.GetBool() ) {
@@ -149,11 +149,7 @@ bool R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
 		!r_shadowMapPointLights.GetBool() ) {
 		return false;
 	}
-	const char *activeRenderApi =
-		cvarSystem != NULL
-			? cvarSystem->GetCVarString( "r_actualRenderApi" )
-			: "";
-	return idStr::Icmp( activeRenderApi, "vulkan" ) == 0;
+	return true;
 }
 
 typedef struct {
@@ -1652,7 +1648,7 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 			R_LightHasRealPrelightModel( lightDef->parms ) &&
 			model->IsStaticWorldModel() &&
 			r_useOptimizedShadows.GetBool() &&
-			!R_VulkanShadowMapsNeedPerSurfaceStencilVolumes( lightDef );
+			!R_ShadowMapsNeedPerSurfaceStencilVolumes( lightDef );
 
 		// A thin panel surrounding its owning point-light origin is excluded
 		// from the point depth map. Probe its retail stencil path even when

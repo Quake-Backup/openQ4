@@ -319,6 +319,7 @@ def validate_scissor_and_depth_bounds_state() -> None:
 def validate_shared_interaction_consumer() -> None:
     source = read("src/renderer/Vulkan/vk_Interactions.cpp")
     executor = read("src/renderer/Vulkan/vk_GuiExecutor.cpp")
+    shadow_map = read("src/renderer/Vulkan/vk_ShadowMap.cpp")
     require(
         source,
         '#include "../ClassicInteractionDomain.h"',
@@ -342,8 +343,11 @@ def validate_shared_interaction_consumer() -> None:
         "VK_ClassicInteraction_ResolveDescriptor(",
         "VK_Exec_InteractionUniformCheckpoint(",
         "VK_Exec_InteractionUniformAlloc(",
-        "VK_Exec_InteractionUniformRestore(",
+        "VK_Exec_ShadowUniformAlloc(",
         "VK_Exec_SharedInteractionGeometryCommit()",
+        "VK_ShadowMap_PreflightClassicInteractionView( view )",
+        "R_ClassicInteractionDomain_LightShadowCaster(",
+        "VK_Exec_PrepareShadowGeometry(",
         "prepared.ready = true;",
     ):
         require(preflight, token, "Vulkan shared interaction preflight")
@@ -379,8 +383,18 @@ def validate_shared_interaction_consumer() -> None:
     )
     require(
         fail,
+        "VK_ShadowMap_AbortClassicInteractionView(",
+        "Vulkan shared mapped-shadow rollback",
+    )
+    require(
+        fail,
         "VK_Exec_SharedInteractionGeometryRestore();",
         "Vulkan shared interaction geometry rollback",
+    )
+    require(
+        fail,
+        "VK_Exec_InteractionUniformRestore(",
+        "Vulkan shared interaction uniform rollback",
     )
 
     geometry_checkpoint = braced_body(
@@ -439,14 +453,132 @@ def validate_shared_interaction_consumer() -> None:
         "void VK_ClassicInteraction_DrawOwnedView(",
         "Vulkan sealed shared interaction draw",
     )
+    receiver_draw = braced_body(
+        source,
+        "static void VK_ClassicInteraction_DrawReceiverRange(",
+        "Vulkan sealed shared receiver draw",
+    )
+    shadow_draw = braced_body(
+        source,
+        "static void VK_ClassicInteraction_DrawShadowRange(",
+        "Vulkan sealed shared stencil draw",
+    )
+    planned_shadow_work = braced_body(
+        source,
+        "static void VK_ClassicInteraction_CountPlannedShadowWork(",
+        "Vulkan receiver-order physical stencil plan",
+    )
     for token in (
         "VK_Exec_BindPreparedTriGeometry(",
         "vkCmdBindDescriptorSets(",
         "vkCmdPushConstants(",
         "vkCmdDrawIndexed(",
-        "R_ClassicInteractionDomain_RecordOwned(",
+        "prepared.projectedInteractionPipeline",
+        "prepared.pointInteractionPipeline",
+        "prepared.mappedInteractionLayout",
+        "setCount = plan.mappedShadowMode != 0 ? 8u : 7u",
+        "plan.mappedShadowMode != 0 ? 2u : 1u",
     ):
-        require(owned, token, "Vulkan sealed shared interaction draw")
+        require(receiver_draw, token, "Vulkan sealed shared receiver draw")
+    for token in (
+        "prepared.shadows[",
+        "VK_Exec_BindPreparedTriGeometry(",
+        "vkCmdSetStencilOp(",
+        "vkCmdDrawIndexed(",
+        "submittedShadowCasters",
+        "submittedLogicalVolumeDraws",
+        "submittedPreloadVolumeDraws",
+    ):
+        require(shadow_draw, token, "Vulkan sealed shared stencil draw")
+    for token in (
+        "CLASSIC_INTERACTION_RECEIVER_LOCAL",
+        "CLASSIC_INTERACTION_RECEIVER_GLOBAL",
+        "CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT",
+        "VK_ClassicInteraction_VolumeMode(",
+        "preparedMode != globalMode",
+        "preparedMode != globalMode || !preparedIncludesLocal",
+        "preparedMode != translucentMode",
+        "else if ( !preparedIncludesLocal )",
+        "VK_ClassicInteraction_CountShadowRange(",
+    ):
+        require(
+            planned_shadow_work,
+            token,
+            "Vulkan receiver-order physical stencil plan",
+        )
+    for token in (
+        "VK_ClassicInteraction_CountPlannedShadowWork( prepared, lightPlan",
+        "lightLogicalVolumeDraws != light->logicalVolumeDraws",
+        "lightPreloadVolumeDraws != light->preloadVolumeDraws",
+        "prepared.logicalVolumeDrawCount != view->logicalVolumeDrawCount",
+        "prepared.preloadVolumeDrawCount != view->preloadVolumeDrawCount",
+    ):
+        require(preflight, token, "Vulkan physical stencil-plan reconciliation")
+    for forbidden in ("logicalSubmitted", "preloadSubmitted"):
+        if forbidden in source:
+            raise AssertionError(
+                "Vulkan physical replay coverage must not collapse receiver-order "
+                f"submissions through {forbidden}"
+            )
+    require_order(
+        shadow_draw,
+        (
+            "if ( caster.preload )",
+            "vkCmdDrawIndexed(",
+            "prepared.submittedPreloadVolumeDraws++",
+            "prepared.submittedLogicalVolumeDraws++",
+        ),
+        "Vulkan physical volume counters follow draw submission",
+    )
+    require(
+        owned,
+        "modeChanged || !preparedVolumeIncludesLocal",
+        "Vulkan GLOBAL receiver rebuild after mode switch or missing LOCAL family",
+    )
+    require_order(
+        owned,
+        (
+            "preparedVolumeMode != translucentMode",
+            "VK_ClassicInteraction_ClearStencil( prepared, lightPlan )",
+            "lightPlan.firstShadow[ globalChain ]",
+            "lightPlan.firstShadow[ localChain ]",
+        ),
+        "Vulkan translucent receiver physical replay after shadow-mode switch",
+    )
+    require(
+        owned,
+        "R_ClassicInteractionDomain_RecordOwned(",
+        "Vulkan sealed ownership reconciliation",
+    )
+    require_order(
+        owned,
+        (
+            "VK_ShadowMap_CommitClassicInteractionView( prepared.view )",
+            "vkCmdSetViewport(",
+            "R_ClassicInteractionDomain_RecordOwned(",
+        ),
+        "Vulkan mapped commit before visible shared interaction writes",
+    )
+    for token in (
+        "CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL",
+        "CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL",
+        "prepared.view->shadowMapPassCount",
+        "prepared.view->hybridShadowPassCount",
+    ):
+        require(owned, token, "Vulkan mapped/hybrid ownership submission")
+    require_order(
+        owned,
+        (
+            "VK_ClassicInteraction_ClearStencil( prepared, lightPlan );",
+            "CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL",
+            "CLASSIC_INTERACTION_RECEIVER_LOCAL",
+            "CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL",
+            "CLASSIC_INTERACTION_RECEIVER_GLOBAL",
+            "CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT",
+            "R_ClassicInteractionDomain_RecordOwned(",
+        ),
+        "Vulkan sealed stencil/receiver ownership order",
+    )
     for forbidden in (
         "GetStage(",
         "shaderRegisters",
@@ -456,9 +588,32 @@ def validate_shared_interaction_consumer() -> None:
         "VK_Exec_InteractionUniformAlloc(",
         "R_ClassicInteractionDomain_ResolveTexture(",
     ):
-        if forbidden in owned:
+        if forbidden in owned or forbidden in receiver_draw or forbidden in shadow_draw:
             raise AssertionError(
                 f"Shared Vulkan draw must consume sealed plans, not {forbidden}"
+            )
+
+    map_preflight = braced_body(
+        shadow_map,
+        "bool VK_ShadowMap_PreflightClassicInteractionView(",
+        "Vulkan mapped-shadow transaction preflight",
+    )
+    for token in (
+        "R_ClassicInteractionDomain_LightShadowMapPass(",
+        "CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC",
+        "CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC",
+        "CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC",
+        "CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC",
+        "sealed->mappedCasterCount",
+        "sealed->drawableMappedCasters",
+        "sealed->noopMappedCasters",
+        "transaction.ready = true",
+    ):
+        require(map_preflight, token, "Vulkan mapped-shadow transaction preflight")
+    for forbidden in ("vkCmdDraw", "vkCmdClear", "VK_ShadowMap_RenderAtlas("):
+        if forbidden in map_preflight:
+            raise AssertionError(
+                f"Mapped-shadow preflight must not mutate attachments via {forbidden}"
             )
 
     draw_view = braced_body(

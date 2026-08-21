@@ -2328,6 +2328,23 @@ typedef struct {
 	idRenderTexture *			renderTexture;
 } pointShadowMapCacheEntry_t;
 
+// Shared-domain ownership prepares every mapped pass before the first write to
+// the main framebuffer.  The legacy scratch images are intentionally singular,
+// so they cannot retain two non-cacheable (dynamic or perforated) maps until
+// the later receiver commit.  These transaction-local slots provide the same
+// scratch semantics with a distinct physical image per live pass.  Slots are
+// reused across views and only allocate images which a view actually needs.
+typedef struct {
+	idImage *					depthImage;
+	idRenderTexture *			renderTexture;
+} sharedInteractionProjectedScratch_t;
+
+typedef struct {
+	idImage *					colorImage;
+	idImage *					depthImage;
+	idRenderTexture *			renderTexture;
+} sharedInteractionPointScratch_t;
+
 typedef struct {
 	bool						valid;
 	int							lightIndex;
@@ -2347,6 +2364,10 @@ typedef struct {
 
 static projectedShadowMapCacheEntry_t	g_projectedShadowMapCache[SHADOWMAP_CACHE_MAX_SLOTS];
 static pointShadowMapCacheEntry_t		g_pointShadowMapCache[SHADOWMAP_CACHE_MAX_SLOTS];
+static sharedInteractionProjectedScratch_t
+	g_sharedInteractionProjectedScratch[SHADOWMAP_CACHE_MAX_SLOTS];
+static sharedInteractionPointScratch_t
+	g_sharedInteractionPointScratch[SHADOWMAP_CACHE_MAX_SLOTS];
 static shadowMapLightHistory_t			g_shadowMapLightHistory[SHADOWMAP_LIGHT_HISTORY_SLOTS];
 static projectedShadowMapCacheEntry_t *	g_activeProjectedShadowMapCache = NULL;
 static pointShadowMapCacheEntry_t *		g_activePointShadowMapCache = NULL;
@@ -3607,7 +3628,8 @@ static bool RB_ShadowMapAtlasFindFreeBlock( const int span, int &cellX, int &cel
 	return false;
 }
 
-static projectedShadowMapCacheEntry_t *RB_ShadowMapAllocProjectedCacheEntry( const int cellSpan ) {
+static projectedShadowMapCacheEntry_t *RB_ShadowMapAllocProjectedCacheEntry(
+		const int cellSpan, const bool allowEviction = true ) {
 	const int slotLimit = RB_ShadowMapProjectedCacheSlotLimit();
 	if ( slotLimit <= 0 || g_shadowMapAtlasCellSize <= 0 ) {
 		return NULL;
@@ -3638,6 +3660,9 @@ static projectedShadowMapCacheEntry_t *RB_ShadowMapAllocProjectedCacheEntry( con
 			freeEntry->atlasCellSpan = cellSpan;
 			return freeEntry;
 		}
+		if ( !allowEviction ) {
+			return NULL;
+		}
 		// no record or no free block: evict the least recently used entry and retry
 		if ( oldest == NULL ) {
 			return NULL;
@@ -3648,7 +3673,8 @@ static projectedShadowMapCacheEntry_t *RB_ShadowMapAllocProjectedCacheEntry( con
 	return NULL;
 }
 
-static pointShadowMapCacheEntry_t *RB_ShadowMapAllocPointCacheEntry( void ) {
+static pointShadowMapCacheEntry_t *RB_ShadowMapAllocPointCacheEntry(
+		const bool allowEviction = true ) {
 	const int slotLimit = RB_ShadowMapPointCacheSlotLimit();
 	if ( slotLimit <= 0 ) {
 		return NULL;
@@ -3662,6 +3688,9 @@ static pointShadowMapCacheEntry_t *RB_ShadowMapAllocPointCacheEntry( void ) {
 		if ( entry->lastUsedFrame < oldest->lastUsedFrame ) {
 			oldest = entry;
 		}
+	}
+	if ( !allowEviction ) {
+		return NULL;
 	}
 	oldest->valid = false;
 	g_shadowMapStats.cacheEvictions++;
@@ -4564,6 +4593,10 @@ void RB_ShutdownShadowMapResources( void ) {
 	for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; i++ ) {
 		
 		RB_ShadowMapDestroyRenderTexture( g_pointShadowMapCache[i].renderTexture );
+		RB_ShadowMapDestroyRenderTexture(
+			g_sharedInteractionProjectedScratch[i].renderTexture );
+		RB_ShadowMapDestroyRenderTexture(
+			g_sharedInteractionPointScratch[i].renderTexture );
 	}
 
 	if ( glConfig.isInitialized && glDeleteQueries != NULL ) {
@@ -4602,6 +4635,10 @@ void RB_ShutdownShadowMapResources( void ) {
 	g_shadowMapDebugOverlayState.lightDefIndex = -1;
 	memset( g_projectedShadowMapCache, 0, sizeof( g_projectedShadowMapCache ) );
 	memset( g_pointShadowMapCache, 0, sizeof( g_pointShadowMapCache ) );
+	memset( g_sharedInteractionProjectedScratch, 0,
+		sizeof( g_sharedInteractionProjectedScratch ) );
+	memset( g_sharedInteractionPointScratch, 0,
+		sizeof( g_sharedInteractionPointScratch ) );
 	memset( g_shadowMapLightHistory, 0, sizeof( g_shadowMapLightHistory ) );
 	g_activeProjectedShadowMapCache = NULL;
 	g_activePointShadowMapCache = NULL;
@@ -6057,7 +6094,9 @@ static bool RB_ShadowMapAnyResidentResources( void ) {
 		return true;
 	}
 	for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; i++ ) {
-		if ( g_pointShadowMapCache[i].renderTexture != NULL ) {
+		if ( g_pointShadowMapCache[i].renderTexture != NULL
+				|| g_sharedInteractionProjectedScratch[i].renderTexture != NULL
+				|| g_sharedInteractionPointScratch[i].renderTexture != NULL ) {
 			return true;
 		}
 	}
@@ -6080,6 +6119,12 @@ static void RB_ShadowMapPurgeIdleResources( void ) {
 		
 		RB_ShadowMapPurgeImage( g_pointShadowMapCache[i].colorImage );
 		RB_ShadowMapPurgeImage( g_pointShadowMapCache[i].depthImage );
+		RB_ShadowMapPurgeImage(
+			g_sharedInteractionProjectedScratch[i].depthImage );
+		RB_ShadowMapPurgeImage(
+			g_sharedInteractionPointScratch[i].colorImage );
+		RB_ShadowMapPurgeImage(
+			g_sharedInteractionPointScratch[i].depthImage );
 		
 		g_pointShadowMapCache[i].colorImage = NULL;
 		g_pointShadowMapCache[i].depthImage = NULL;
@@ -11683,6 +11728,17 @@ enum rbSharedWorldInteractionGLReject_t {
 	RB_SHARED_WORLD_INTERACTION_GL_REJECT_INDEX_CACHE,
 	RB_SHARED_WORLD_INTERACTION_GL_REJECT_TEXTURE,
 	RB_SHARED_WORLD_INTERACTION_GL_REJECT_INTRINSIC_TEXTURE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MODE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_RANGE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_STATE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_GEOMETRY,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_VERTEX_CACHE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_INDEX_CACHE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_PASS,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_CASTER,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_ALPHA,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_RESOURCE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_TRANSACTION,
 	RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE
 };
 
@@ -11707,6 +11763,70 @@ typedef struct rbSharedWorldInteractionGLPreparedPrimitive_s {
 	int cullType;
 } rbSharedWorldInteractionGLPreparedPrimitive_t;
 
+typedef struct rbSharedWorldInteractionGLPreparedShadowCaster_s {
+	const classicInteractionDomainShadowCaster_t *caster;
+	unsigned int vertexBuffer;
+	const void *vertexPointer;
+	unsigned int indexBuffer;
+	const void *indexPointer;
+	int vertexCount;
+	int indexCount;
+	bool indexCacheBacked;
+} rbSharedWorldInteractionGLPreparedShadowCaster_t;
+
+typedef struct rbSharedWorldInteractionGLPreparedShadowAlphaStage_s {
+	const classicInteractionDomainShadowAlphaStage_t *stage;
+	idImage *image;
+} rbSharedWorldInteractionGLPreparedShadowAlphaStage_t;
+
+typedef struct rbSharedWorldInteractionGLPreparedMapCaster_s {
+	const classicInteractionDomainShadowCaster_t *caster;
+	unsigned int vertexBuffer;
+	const void *vertexPointer;
+	unsigned int indexBuffer;
+	const void *indexPointer;
+	int vertexCount;
+	int indexCount;
+	int firstAlphaStage;
+	int alphaStageCount;
+	bool indexCacheBacked;
+} rbSharedWorldInteractionGLPreparedMapCaster_t;
+
+typedef struct rbSharedWorldInteractionGLPreparedMapPass_s {
+	const classicInteractionDomainShadowMapPass_t *pass;
+	projectedShadowMapCacheEntry_t *projectedEntry;
+	pointShadowMapCacheEntry_t *pointEntry;
+	idImage *projectedDepthImage;
+	idImage *pointColorImage;
+	idImage *pointDepthImage;
+	idRenderTexture *renderTexture;
+	std::uint64_t sampleStorageGeneration;
+	unsigned int sampleTextureHandle;
+	int resourceWidth;
+	int resourceHeight;
+	int projectedOriginX;
+	int projectedOriginY;
+	int projectedSpanPixels;
+	int cacheLightIndex;
+	int cachePassKind;
+	int signature;
+	bool pointLight;
+	bool scratchResource;
+	bool cacheUpdated;
+	bool prepared;
+} rbSharedWorldInteractionGLPreparedMapPass_t;
+
+typedef struct rbSharedWorldInteractionGLPreparedLight_s {
+	const classicInteractionDomainLight_t *light;
+	int firstPrimitive[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
+	int primitiveCount[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
+	int firstShadowCaster[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	int shadowCasterCount[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	int firstMapCaster[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	int mapCasterCount[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	int shadowMapPass[ 2 ];
+} rbSharedWorldInteractionGLPreparedLight_t;
+
 typedef struct rbSharedWorldInteractionGLPreparedView_s {
 	const classicInteractionDomainView_t *view;
 	const viewDef_t *viewDef;
@@ -11716,13 +11836,47 @@ typedef struct rbSharedWorldInteractionGLPreparedView_s {
 	int primitiveCount;
 	int drawablePrimitiveCount;
 	int noopPrimitiveCount;
+	int shadowCasterCount;
+	int drawableShadowCasterCount;
+	int noopShadowCasterCount;
+	int logicalVolumeDrawCount;
+	int preloadVolumeDrawCount;
+	int mapCasterCount;
+	int shadowAlphaStageCount;
+	int shadowMapPassCount;
+	int hybridShadowPassCount;
+	int projectedScratchCount;
+	int pointScratchCount;
+	bool twoSidedStencil;
+	bool mapTransactionPrepared;
+	bool mapGLStateCaptured;
+	bool mapBlendWasEnabled;
+	bool mapDepthWasEnabled;
+	bool mapScissorWasEnabled;
+	bool mapStencilWasEnabled;
+	bool mapCullWasEnabled;
+	bool mapDepthWriteWasEnabled;
+	bool mapColorWriteWasEnabled[ 4 ];
+	int mapSavedFaceCulling;
+	float mapSavedClearColor[ 4 ];
 	bool ready;
 	bool committed;
 	bool seenLights[ CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS ];
 	bool seenSurfaces[ CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES ];
 	bool seenPrimitives[ CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+	bool seenShadowCasters[ CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ];
+	rbSharedWorldInteractionGLPreparedLight_t lights[
+		CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS ];
 	rbSharedWorldInteractionGLPreparedPrimitive_t primitives[
 		CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+	rbSharedWorldInteractionGLPreparedShadowCaster_t shadowCasters[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ];
+	rbSharedWorldInteractionGLPreparedMapCaster_t mapCasters[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ];
+	rbSharedWorldInteractionGLPreparedShadowAlphaStage_t shadowAlphaStages[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES ];
+	rbSharedWorldInteractionGLPreparedMapPass_t shadowMapPasses[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES ];
 } rbSharedWorldInteractionGLPreparedView_t;
 
 static rbSharedWorldInteractionGLPreparedView_t
@@ -11887,12 +12041,1422 @@ static bool RB_SharedWorldInteractionGLPrimitiveValuesValid(
 			|| !RB_SharedWorldInteractionGLFiniteArray(
 				&primitive.specularMatrix[0][0], 8 )
 			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.modelMatrix, 16 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
 				primitive.modelViewMatrix, 16 ) ) {
 		return false;
 	}
 	return ( primitive.receiver == CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT )
 		? primitive.depth == CLASSIC_INTERACTION_DEPTH_LESS_OR_EQUAL
 		: primitive.depth == CLASSIC_INTERACTION_DEPTH_EQUAL;
+}
+
+static bool RB_SharedWorldInteractionGLShadowCasterValuesValid(
+		const classicInteractionDomainShadowCaster_t &caster,
+		classicInteractionDomainShadowChain_t expectedChain ) {
+	if ( caster.legacyDrawSurf == NULL || caster.legacyViewLight == NULL
+			|| caster.legacyCasterGeometry == NULL || caster.lightIndex < 0
+			|| caster.sourceOrdinal < 0 || caster.chainOrdinal < 0
+			|| caster.chain != expectedChain
+			|| caster.disposition < CLASSIC_INTERACTION_SHADOW_CASTER_DRAW
+			|| caster.disposition
+				>= CLASSIC_INTERACTION_SHADOW_CASTER_DISPOSITION_COUNT
+			|| caster.indexSelection < CLASSIC_INTERACTION_SHADOW_INDEX_FULL
+			|| caster.indexSelection > CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS
+			|| caster.alphaStageCount != 0 || caster.firstAlphaStage != -1
+			|| caster.vertexCount < 0 || caster.totalIndexCount < 0
+			|| caster.selectedIndexCount < 0
+			|| caster.selectedIndexCount > caster.totalIndexCount
+			|| caster.selectedIndexCount % 3 != 0
+			|| caster.ambientGeometry || caster.dynamicCaster
+			|| caster.translucentCaster ) {
+		return false;
+	}
+	const long long scissorWidth = static_cast<long long>( caster.scissorX2 )
+		- caster.scissorX1 + 1;
+	const long long scissorHeight = static_cast<long long>( caster.scissorY2 )
+		- caster.scissorY1 + 1;
+	if ( scissorWidth <= 0 || scissorHeight <= 0
+			|| scissorWidth > idMath::INT_MAX
+			|| scissorHeight > idMath::INT_MAX
+			|| !RB_SharedWorldInteractionGLFinite( caster.depthMin )
+			|| !RB_SharedWorldInteractionGLFinite( caster.depthMax )
+			|| caster.depthMin < 0.0f || caster.depthMin > 1.0f
+			|| caster.depthMax < caster.depthMin || caster.depthMax > 1.0f
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				caster.localLightOrigin, 4 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				caster.modelMatrix, 16 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				caster.modelViewMatrix, 16 )
+			|| !RB_SharedWorldInteractionGLFiniteArray( caster.boundsMin, 3 )
+			|| !RB_SharedWorldInteractionGLFiniteArray( caster.boundsMax, 3 ) ) {
+		return false;
+	}
+	if ( caster.disposition == CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
+		return !caster.preload
+			&& ( caster.vertexCount == 0 || caster.selectedIndexCount == 0 );
+	}
+	return caster.vertexCount > 0 && caster.totalIndexCount > 0
+		&& caster.selectedIndexCount > 0
+		&& caster.preload != caster.external;
+}
+
+static bool RB_SharedWorldInteractionGLIsMapCasterChain(
+		classicInteractionDomainShadowChain_t chain ) {
+	return chain >= CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC
+		&& chain <= CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_TRANSLUCENT;
+}
+
+static bool RB_SharedWorldInteractionGLIsVolumeChain(
+		classicInteractionDomainShadowChain_t chain ) {
+	return chain == CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL
+		|| chain == CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL
+		|| chain == CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+		|| chain == CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL;
+}
+
+static bool RB_SharedWorldInteractionGLMapCasterValuesValid(
+		const classicInteractionDomainShadowCaster_t &caster,
+		classicInteractionDomainShadowChain_t expectedChain ) {
+	if ( caster.legacyDrawSurf == NULL || caster.legacyViewLight == NULL
+			|| caster.legacyCasterGeometry == NULL || caster.lightIndex < 0
+			|| caster.sourceOrdinal < 0 || caster.chainOrdinal < 0
+			|| caster.chain != expectedChain
+			|| !RB_SharedWorldInteractionGLIsMapCasterChain( expectedChain )
+			|| caster.disposition < CLASSIC_INTERACTION_SHADOW_CASTER_DRAW
+			|| caster.disposition
+				>= CLASSIC_INTERACTION_SHADOW_CASTER_DISPOSITION_COUNT
+			|| caster.indexSelection
+				!= CLASSIC_INTERACTION_SHADOW_INDEX_AMBIENT
+			|| !caster.ambientGeometry || caster.external || caster.preload
+			|| caster.vertexCount < 0 || caster.totalIndexCount < 0
+			|| caster.selectedIndexCount < 0
+			|| caster.selectedIndexCount % 3 != 0
+			|| ( caster.materialCoverage != MC_OPAQUE
+				&& caster.materialCoverage != MC_PERFORATED )
+			|| caster.alphaStageCount < 0
+			|| ( caster.alphaStageCount == 0
+				&& caster.firstAlphaStage != -1 )
+			|| ( caster.alphaStageCount > 0
+				&& caster.firstAlphaStage < 0 )
+			|| caster.translucentCaster
+			|| caster.dynamicCaster != (
+				expectedChain
+					== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC
+				|| expectedChain
+					== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ) ) {
+		return false;
+	}
+	if ( caster.cull < RENDERER_CULL_NONE
+			|| caster.cull > RENDERER_CULL_BACK
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				caster.modelMatrix, 16 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				caster.modelViewMatrix, 16 )
+			|| !RB_SharedWorldInteractionGLFiniteArray( caster.boundsMin, 3 )
+			|| !RB_SharedWorldInteractionGLFiniteArray( caster.boundsMax, 3 ) ) {
+		return false;
+	}
+	if ( caster.disposition == CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
+		return caster.materialCoverage == MC_PERFORATED
+			&& caster.vertexCount > 0 && caster.totalIndexCount > 0
+			&& caster.selectedIndexCount == 0
+			&& caster.alphaStageCount == 0;
+	}
+	// A perforated material with no active alpha-test stage follows the classic
+	// opaque-depth fallback; active zero-alpha stages are normalized above to a
+	// no-op, while drawable stages carry explicit sealed alpha records.
+	return caster.vertexCount > 0 && caster.selectedIndexCount > 0
+		&& caster.selectedIndexCount == caster.totalIndexCount;
+}
+
+static bool RB_SharedWorldInteractionGLShadowAlphaStageValuesValid(
+		const classicInteractionDomainShadowAlphaStage_t &stage,
+		int expectedCasterIndex ) {
+	return stage.casterIndex == expectedCasterIndex && stage.stageIndex >= 0
+		&& ( stage.alphaTestMode == GL_LESS
+			|| stage.alphaTestMode == GL_EQUAL
+			|| stage.alphaTestMode == GL_GREATER )
+		&& RB_SharedWorldInteractionGLFinite( stage.alphaTestValue )
+		&& RB_SharedWorldInteractionGLFinite( stage.alphaScale )
+		&& stage.alphaScale > 0.0f
+		&& RB_SharedWorldInteractionGLFinite( stage.alphaHashMode )
+		&& RB_SharedWorldInteractionGLFiniteArray(
+			&stage.textureMatrix[0][0], 8 )
+		&& stage.textureResourceId != 0;
+}
+
+static bool RB_SharedWorldInteractionGLMapPassValuesValid(
+		const classicInteractionDomainLight_t &light,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		classicInteractionDomainReceiver_t receiver, int domainLightIndex ) {
+	const bool pointLight = light.pointLight;
+	const bool hybrid = pass.disposition
+		== CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID;
+	if ( pass.legacyViewLight != light.legacyViewLight
+			|| pass.lightIndex != domainLightIndex
+			|| pass.receiver != receiver
+			|| pass.resourceOwner < CLASSIC_INTERACTION_RECEIVER_LOCAL
+			|| pass.resourceOwner > CLASSIC_INTERACTION_RECEIVER_GLOBAL
+			|| pass.disposition
+				< CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED
+			|| pass.disposition
+				>= CLASSIC_INTERACTION_SHADOW_MAP_PASS_DISPOSITION_COUNT
+			|| pass.mode != ( hybrid ? CLASSIC_INTERACTION_SHADOW_HYBRID
+				: ( pointLight ? CLASSIC_INTERACTION_SHADOW_POINT
+					: CLASSIC_INTERACTION_SHADOW_PROJECTED ) )
+			|| pass.receiverMask != ( receiver
+				== CLASSIC_INTERACTION_RECEIVER_LOCAL
+					? SHADOWMAP_RECEIVER_MASK_LOCAL
+					: SHADOWMAP_RECEIVER_MASK_GLOBAL )
+			|| pass.mappedCasterCount <= 0
+			|| pass.supplementCasterCount < 0
+			|| pass.drawableMappedCasters < 0
+			|| pass.noopMappedCasters < 0
+			|| pass.drawableMappedCasters + pass.noopMappedCasters
+				!= pass.mappedCasterCount
+			|| pass.drawableSupplementCasters < 0
+			|| pass.noopSupplementCasters < 0
+			|| pass.drawableSupplementCasters + pass.noopSupplementCasters
+				!= pass.supplementCasterCount
+			|| pass.resourcePlanId == 0 || pass.resourceGeneration == 0
+			|| pass.hash == 0
+			|| !pass.mapRequired || !pass.hybridComplete
+			|| ( hybrid && ( pass.mapComplete
+				|| pass.supplementCasterCount <= 0 ) )
+			|| ( !hybrid && !pass.mapComplete )
+			|| ( !pass.hasStaticCasters && !pass.hasDynamicCasters )
+			|| pass.hasTranslucentCasters
+			|| ( ( pass.hasDynamicCasters || pass.hasAlphaCasters )
+				&& pass.allowCacheReuse )
+			|| ( !pass.allowCacheReuse && !pass.allowScratch )
+			|| ( !pass.allowCacheReuse && !pass.allowCacheUpdate )
+			|| pass.casterSignature
+				!= light.legacyViewLight->shadowMapCasterSignature
+			|| pass.casterCullMode
+				!= idMath::ClampInt( 0, 2,
+					r_shadowMapCasterCulling.GetInteger() )
+			|| idMath::Fabs( pass.polygonFactor
+				- RB_ShadowMapPolygonFactor() ) > 0.00001f
+			|| idMath::Fabs( pass.polygonOffset
+				- RB_ShadowMapPolygonOffset() ) > 0.00001f
+			|| pass.hashedAlpha != RB_ShadowMapHashedAlphaEnabled()
+			|| pass.stableAlphaHash
+				!= r_shadowMapStableAlphaHash.GetBool() ) {
+		return false;
+	}
+	if ( pointLight ) {
+		return pass.point.valid && pass.point.faceCount == 6
+			&& pass.point.faceSize == RB_ShadowMapPointSizeValue()
+			&& pass.point.filterTaps >= 1 && pass.point.filterTaps <= 13
+			&& pass.point.filterMode >= 0 && pass.point.filterMode <= 1
+			&& pass.point.depthCompare
+				== RB_PointShadowMapDepthCompareEnabled()
+			&& pass.point.highPrecision
+				== RB_PointShadowMapHighPrecisionEnabled()
+			&& idMath::Fabs( pass.point.farDistance
+				- RB_PointShadowMapLightFar( light.legacyViewLight ) )
+					<= 0.0001f
+			&& RB_SharedWorldInteractionGLFiniteArray(
+				pass.point.lightOrigin, 4 );
+	}
+	const char *projectedReason = NULL;
+	return pass.projected.state.valid
+		&& RB_ShadowMapValidateProjectedStateContract(
+			light.legacyViewLight, pass.projected.state, &projectedReason )
+		&& pass.projected.depthCompare == RB_ShadowMapDepthCompareEnabled();
+}
+
+static void RB_SharedWorldInteractionGLAbortMapTransaction(
+		const viewDef_t *viewDef ) {
+	const rbSharedWorldInteractionGLPreparedView_t &prepared =
+		rbSharedWorldInteractionGLPreparedView;
+	if ( backEnd.renderTexture != NULL ) {
+		backEnd.renderTexture->MakeCurrent();
+	} else {
+		idRenderTexture::BindNull();
+		glDrawBuffer( GL_BACK );
+		glReadBuffer( GL_BACK );
+	}
+	if ( viewDef != NULL ) {
+		glViewport( viewDef->viewport.x1, viewDef->viewport.y1,
+			viewDef->viewport.x2 + 1 - viewDef->viewport.x1,
+			viewDef->viewport.y2 + 1 - viewDef->viewport.y1 );
+		glScissor( viewDef->viewport.x1, viewDef->viewport.y1,
+			viewDef->viewport.x2 + 1 - viewDef->viewport.x1,
+			viewDef->viewport.y2 + 1 - viewDef->viewport.y1 );
+		glMatrixMode( GL_PROJECTION );
+		glLoadMatrixf( viewDef->projectionMatrix );
+		glMatrixMode( GL_MODELVIEW );
+	}
+	glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+	glDepthMask( GL_TRUE );
+	glUseProgramObjectARB( 0 );
+	if ( prepared.mapGLStateCaptured ) {
+		prepared.mapBlendWasEnabled
+			? glEnable( GL_BLEND ) : glDisable( GL_BLEND );
+		prepared.mapDepthWasEnabled
+			? glEnable( GL_DEPTH_TEST ) : glDisable( GL_DEPTH_TEST );
+		prepared.mapScissorWasEnabled
+			? glEnable( GL_SCISSOR_TEST ) : glDisable( GL_SCISSOR_TEST );
+		prepared.mapStencilWasEnabled
+			? glEnable( GL_STENCIL_TEST ) : glDisable( GL_STENCIL_TEST );
+		prepared.mapCullWasEnabled
+			? glEnable( GL_CULL_FACE ) : glDisable( GL_CULL_FACE );
+		glDepthMask( prepared.mapDepthWriteWasEnabled ? GL_TRUE : GL_FALSE );
+		glColorMask( prepared.mapColorWriteWasEnabled[0] ? GL_TRUE : GL_FALSE,
+			prepared.mapColorWriteWasEnabled[1] ? GL_TRUE : GL_FALSE,
+			prepared.mapColorWriteWasEnabled[2] ? GL_TRUE : GL_FALSE,
+			prepared.mapColorWriteWasEnabled[3] ? GL_TRUE : GL_FALSE );
+		glClearColor( prepared.mapSavedClearColor[0],
+			prepared.mapSavedClearColor[1], prepared.mapSavedClearColor[2],
+			prepared.mapSavedClearColor[3] );
+	}
+	backEnd.currentSpace = NULL;
+	backEnd.currentScissor.Clear();
+	backEnd.glState.faceCulling = -1;
+	if ( prepared.mapGLStateCaptured && prepared.mapCullWasEnabled
+			&& prepared.mapSavedFaceCulling >= CT_FRONT_SIDED
+			&& prepared.mapSavedFaceCulling <= CT_TWO_SIDED ) {
+		GL_Cull( prepared.mapSavedFaceCulling );
+	}
+	backEnd.glState.currenttmu = -1;
+	GL_ClearStateDelta();
+	GL_SelectTexture( 0 );
+}
+
+static void RB_SharedWorldInteractionGLActivateMapResource(
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	if ( preparedPass.pointLight ) {
+		g_activePointShadowMapCache = preparedPass.pointEntry;
+		g_pointShadowMapColorImage = preparedPass.pointColorImage;
+		g_pointShadowMapDepthImage = preparedPass.pointDepthImage;
+		g_pointShadowMapRenderTexture = preparedPass.renderTexture;
+		return;
+	}
+	g_activeProjectedShadowMapCache = preparedPass.projectedEntry;
+	g_shadowMapDepthImage = preparedPass.projectedDepthImage;
+	g_shadowMapRenderTexture = preparedPass.renderTexture;
+	g_shadowMapActiveSlotOriginX = preparedPass.projectedOriginX;
+	g_shadowMapActiveSlotOriginY = preparedPass.projectedOriginY;
+}
+
+static bool RB_SharedWorldInteractionGLCaptureMapResource(
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	idImage *sampleImage = preparedPass.pointLight
+		? ( pass.point.depthCompare ? preparedPass.pointDepthImage
+			: preparedPass.pointColorImage )
+		: preparedPass.projectedDepthImage;
+	const textureType_t expectedType = preparedPass.pointLight
+		? TT_CUBIC : TT_2D;
+	if ( sampleImage == NULL || !sampleImage->IsLoaded()
+			|| sampleImage->IsDefaulted()
+			|| sampleImage->GetDeviceHandle() == 0
+			|| sampleImage->GetOpts().textureType != expectedType
+			|| preparedPass.renderTexture == NULL
+			|| preparedPass.renderTexture->GetWidth() <= 0
+			|| preparedPass.renderTexture->GetHeight() <= 0 ) {
+		return false;
+	}
+	preparedPass.sampleTextureHandle = sampleImage->GetDeviceHandle();
+	preparedPass.sampleStorageGeneration =
+		sampleImage->GetStorageGeneration();
+	preparedPass.resourceWidth = preparedPass.renderTexture->GetWidth();
+	preparedPass.resourceHeight = preparedPass.renderTexture->GetHeight();
+	return true;
+}
+
+static bool RB_SharedWorldInteractionGLAssignProjectedCacheResource(
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass,
+		projectedShadowMapCacheEntry_t *entry ) {
+	if ( entry == NULL || g_shadowMapAtlasDepthImage == NULL
+			|| g_shadowMapAtlasRenderTexture == NULL ) {
+		return false;
+	}
+	preparedPass.projectedEntry = entry;
+	preparedPass.pointEntry = NULL;
+	preparedPass.pointLight = false;
+	preparedPass.scratchResource = false;
+	preparedPass.projectedDepthImage = g_shadowMapAtlasDepthImage;
+	preparedPass.pointColorImage = NULL;
+	preparedPass.pointDepthImage = NULL;
+	preparedPass.renderTexture = g_shadowMapAtlasRenderTexture;
+	preparedPass.projectedOriginX = entry->atlasCellX
+		* g_shadowMapAtlasCellSize;
+	preparedPass.projectedOriginY = entry->atlasCellY
+		* g_shadowMapAtlasCellSize;
+	preparedPass.projectedSpanPixels = preparedPass.pass->projected.state.tileSize
+		* preparedPass.pass->projected.state.atlasDiv;
+	return RB_SharedWorldInteractionGLCaptureMapResource( preparedPass );
+}
+
+static bool RB_SharedWorldInteractionGLAssignPointCacheResource(
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass,
+		pointShadowMapCacheEntry_t *entry ) {
+	if ( entry == NULL || entry->colorImage == NULL
+			|| entry->depthImage == NULL || entry->renderTexture == NULL ) {
+		return false;
+	}
+	preparedPass.projectedEntry = NULL;
+	preparedPass.pointEntry = entry;
+	preparedPass.pointLight = true;
+	preparedPass.scratchResource = false;
+	preparedPass.projectedDepthImage = NULL;
+	preparedPass.pointColorImage = entry->colorImage;
+	preparedPass.pointDepthImage = entry->depthImage;
+	preparedPass.renderTexture = entry->renderTexture;
+	preparedPass.projectedOriginX = 0;
+	preparedPass.projectedOriginY = 0;
+	preparedPass.projectedSpanPixels = 0;
+	return RB_SharedWorldInteractionGLCaptureMapResource( preparedPass );
+}
+
+static bool RB_SharedWorldInteractionGLReserveProjectedScratch(
+		rbSharedWorldInteractionGLPreparedView_t &prepared,
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	if ( !preparedPass.pass->allowScratch
+			|| prepared.projectedScratchCount >= SHADOWMAP_CACHE_MAX_SLOTS ) {
+		return false;
+	}
+	const int slotIndex = prepared.projectedScratchCount++;
+	sharedInteractionProjectedScratch_t &slot =
+		g_sharedInteractionProjectedScratch[slotIndex];
+	const int size = preparedPass.pass->projected.state.tileSize
+		* preparedPass.pass->projected.state.atlasDiv;
+	if ( size <= 0 || size > glConfig.maxTextureSize ) {
+		return false;
+	}
+	idImageOpts opts;
+	opts.textureType = TT_2D;
+	opts.format = FMT_DEPTH;
+	opts.width = size;
+	opts.height = size;
+	opts.numLevels = 1;
+	opts.isPersistant = true;
+	slot.depthImage = globalImages->ScratchImage(
+		va( "_sharedInteractionShadowMapDepth%d", slotIndex ), &opts,
+		TF_NEAREST, TR_CLAMP, TD_DEPTH );
+	if ( slot.depthImage == NULL ) {
+		return false;
+	}
+	if ( slot.renderTexture == NULL ) {
+		slot.renderTexture = tr.CreateRenderTexture( NULL, slot.depthImage );
+		if ( slot.renderTexture != NULL ) {
+			slot.renderTexture->SetAllowIncomplete();
+		}
+	} else if ( slot.renderTexture->GetWidth() != size
+			|| slot.renderTexture->GetHeight() != size ) {
+		tr.ResizeRenderTexture( slot.renderTexture, size, size );
+	}
+	preparedPass.projectedEntry = NULL;
+	preparedPass.pointEntry = NULL;
+	preparedPass.pointLight = false;
+	preparedPass.scratchResource = true;
+	preparedPass.projectedDepthImage = slot.depthImage;
+	preparedPass.pointColorImage = NULL;
+	preparedPass.pointDepthImage = NULL;
+	preparedPass.renderTexture = slot.renderTexture;
+	preparedPass.projectedOriginX = 0;
+	preparedPass.projectedOriginY = 0;
+	preparedPass.projectedSpanPixels = size;
+	return RB_SharedWorldInteractionGLCaptureMapResource( preparedPass );
+}
+
+static bool RB_SharedWorldInteractionGLReservePointScratch(
+		rbSharedWorldInteractionGLPreparedView_t &prepared,
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	if ( !preparedPass.pass->allowScratch
+			|| prepared.pointScratchCount >= SHADOWMAP_CACHE_MAX_SLOTS ) {
+		return false;
+	}
+	const int slotIndex = prepared.pointScratchCount++;
+	sharedInteractionPointScratch_t &slot =
+		g_sharedInteractionPointScratch[slotIndex];
+	const classicInteractionDomainShadowPointState_t &point =
+		preparedPass.pass->point;
+	if ( point.faceSize <= 0 || point.faceSize > glConfig.maxTextureSize ) {
+		return false;
+	}
+	idImageOpts colorOpts;
+	colorOpts.textureType = TT_CUBIC;
+	colorOpts.format = point.highPrecision ? FMT_RGBA16F : FMT_RGBA8;
+	colorOpts.width = point.faceSize;
+	colorOpts.height = point.faceSize;
+	colorOpts.numLevels = 1;
+	colorOpts.isPersistant = true;
+	slot.colorImage = globalImages->ScratchImage(
+		va( "_sharedInteractionPointShadowColor%d", slotIndex ),
+		&colorOpts, TF_NEAREST, TR_CLAMP, TD_DEFAULT );
+	idImageOpts depthOpts;
+	depthOpts.textureType = TT_CUBIC;
+	depthOpts.format = FMT_DEPTH;
+	depthOpts.width = point.faceSize;
+	depthOpts.height = point.faceSize;
+	depthOpts.numLevels = 1;
+	depthOpts.isPersistant = true;
+	slot.depthImage = globalImages->ScratchImage(
+		va( "_sharedInteractionPointShadowDepth%d", slotIndex ),
+		&depthOpts, TF_NEAREST, TR_CLAMP, TD_DEPTH );
+	if ( slot.colorImage == NULL || slot.depthImage == NULL ) {
+		return false;
+	}
+	if ( slot.renderTexture == NULL ) {
+		slot.renderTexture = tr.CreateRenderTexture(
+			slot.colorImage, slot.depthImage );
+		if ( slot.renderTexture != NULL ) {
+			slot.renderTexture->SetAllowIncomplete();
+		}
+	} else if ( slot.renderTexture->GetWidth() != point.faceSize
+			|| slot.renderTexture->GetHeight() != point.faceSize ) {
+		tr.ResizeRenderTexture( slot.renderTexture,
+			point.faceSize, point.faceSize );
+	}
+	preparedPass.projectedEntry = NULL;
+	preparedPass.pointEntry = NULL;
+	preparedPass.pointLight = true;
+	preparedPass.scratchResource = true;
+	preparedPass.projectedDepthImage = NULL;
+	preparedPass.pointColorImage = slot.colorImage;
+	preparedPass.pointDepthImage = slot.depthImage;
+	preparedPass.renderTexture = slot.renderTexture;
+	preparedPass.projectedOriginX = 0;
+	preparedPass.projectedOriginY = 0;
+	preparedPass.projectedSpanPixels = 0;
+	return RB_SharedWorldInteractionGLCaptureMapResource( preparedPass );
+}
+
+static bool RB_SharedWorldInteractionGLMapUpdateAdmitted( void ) {
+	const int updateBudget = r_shadowMapMaxUpdatesPerView.GetInteger();
+	if ( updateBudget > 0
+			&& g_shadowMapStats.shadowMapUpdates >= updateBudget ) {
+		return false;
+	}
+	if ( updateBudget > 0 && g_shadowMapAdmissionsActive
+			&& !RB_ShadowMapUpdateAdmitted(
+				RB_ShadowMapLightIndex( backEnd.vLight ) ) ) {
+		return false;
+	}
+	return true;
+}
+
+static int RB_SharedWorldInteractionGLSealedMapSignature(
+		const classicInteractionDomainShadowMapPass_t &pass ) {
+	const std::uint64_t folded = pass.hash ^ ( pass.hash >> 32 );
+	int signature = static_cast<int>(
+		static_cast<std::uint32_t>( folded ) );
+	if ( signature == 0 ) {
+		signature = static_cast<int>( 0x6d617001u );
+	}
+	return signature;
+}
+
+static bool RB_SharedWorldInteractionGLEnsurePointCacheResource(
+		pointShadowMapCacheEntry_t *entry,
+		const classicInteractionDomainShadowMapPass_t &pass ) {
+	if ( entry == NULL || !pass.point.valid ) {
+		return false;
+	}
+	const int slotIndex = static_cast<int>( entry - g_pointShadowMapCache );
+	if ( slotIndex < 0 || slotIndex >= SHADOWMAP_CACHE_MAX_SLOTS ) {
+		return false;
+	}
+	idImageOpts colorOpts;
+	colorOpts.textureType = TT_CUBIC;
+	colorOpts.format = pass.point.highPrecision ? FMT_RGBA16F : FMT_RGBA8;
+	colorOpts.width = pass.point.faceSize;
+	colorOpts.height = pass.point.faceSize;
+	colorOpts.numLevels = 1;
+	colorOpts.isPersistant = true;
+	entry->colorImage = globalImages->ScratchImage(
+		va( "_pointShadowMapColorCache%d", slotIndex ), &colorOpts,
+		TF_NEAREST, TR_CLAMP, TD_DEFAULT );
+	idImageOpts depthOpts;
+	depthOpts.textureType = TT_CUBIC;
+	depthOpts.format = FMT_DEPTH;
+	depthOpts.width = pass.point.faceSize;
+	depthOpts.height = pass.point.faceSize;
+	depthOpts.numLevels = 1;
+	depthOpts.isPersistant = true;
+	entry->depthImage = globalImages->ScratchImage(
+		va( "_pointShadowMapDepthCache%d", slotIndex ), &depthOpts,
+		TF_NEAREST, TR_CLAMP, TD_DEPTH );
+	if ( entry->colorImage == NULL || entry->depthImage == NULL ) {
+		return false;
+	}
+	if ( entry->renderTexture == NULL ) {
+		entry->renderTexture = tr.CreateRenderTexture(
+			entry->colorImage, entry->depthImage );
+		if ( entry->renderTexture != NULL ) {
+			entry->renderTexture->SetAllowIncomplete();
+		}
+	} else if ( entry->renderTexture->GetWidth() != pass.point.faceSize
+			|| entry->renderTexture->GetHeight() != pass.point.faceSize ) {
+		tr.ResizeRenderTexture( entry->renderTexture,
+			pass.point.faceSize, pass.point.faceSize );
+	}
+	return entry->renderTexture != NULL;
+}
+
+static bool RB_SharedWorldInteractionGLScheduleSealedMapPass(
+		const classicInteractionDomainShadowMapPass_t &pass,
+		int cacheLightIndex, shadowMapPassKind_t passKind,
+		shadowMapSchedule_t &schedule ) {
+	memset( &schedule, 0, sizeof( schedule ) );
+	schedule.action = SHADOWMAP_SCHEDULE_UPDATE;
+	schedule.signature =
+		RB_SharedWorldInteractionGLSealedMapSignature( pass );
+	if ( !pass.allowCacheReuse || cacheLightIndex < 0 ) {
+		return RB_SharedWorldInteractionGLMapUpdateAdmitted();
+	}
+
+	schedule.cacheable = true;
+	if ( pass.point.valid ) {
+		schedule.pointEntry = RB_ShadowMapFindPointCacheEntry(
+			cacheLightIndex, passKind, schedule.signature );
+		if ( schedule.pointEntry != NULL ) {
+			schedule.cacheHit = true;
+			schedule.action = SHADOWMAP_SCHEDULE_REUSE;
+			schedule.budgetReuse = r_shadowMapMaxUpdatesPerView.GetInteger() > 0
+				&& g_shadowMapStats.shadowMapUpdates
+					>= r_shadowMapMaxUpdatesPerView.GetInteger();
+			g_shadowMapStats.cacheHitPasses++;
+			g_shadowMapStats.cacheReusePasses++;
+			g_shadowMapStats.cacheBudgetReusePasses +=
+				schedule.budgetReuse ? 1 : 0;
+			return true;
+		}
+	} else {
+		schedule.projectedEntry = RB_ShadowMapFindProjectedCacheEntry(
+			cacheLightIndex, passKind, schedule.signature );
+		if ( schedule.projectedEntry != NULL ) {
+			schedule.cacheHit = true;
+			schedule.action = SHADOWMAP_SCHEDULE_REUSE;
+			schedule.budgetReuse = r_shadowMapMaxUpdatesPerView.GetInteger() > 0
+				&& g_shadowMapStats.shadowMapUpdates
+					>= r_shadowMapMaxUpdatesPerView.GetInteger();
+			g_shadowMapStats.cacheHitPasses++;
+			g_shadowMapStats.cacheReusePasses++;
+			g_shadowMapStats.cacheBudgetReusePasses +=
+				schedule.budgetReuse ? 1 : 0;
+			return true;
+		}
+	}
+	g_shadowMapStats.cacheMissPasses++;
+	if ( !RB_SharedWorldInteractionGLMapUpdateAdmitted() ) {
+		schedule.action = SHADOWMAP_SCHEDULE_FALLBACK;
+		return false;
+	}
+	if ( pass.point.valid ) {
+		schedule.pointEntry = RB_ShadowMapAllocPointCacheEntry( false );
+		if ( schedule.pointEntry != NULL
+				&& !RB_SharedWorldInteractionGLEnsurePointCacheResource(
+					schedule.pointEntry, pass ) ) {
+			schedule.pointEntry = NULL;
+		}
+	} else {
+		schedule.projectedEntry = RB_ShadowMapAllocProjectedCacheEntry(
+			pass.projected.state.atlasDiv, false );
+	}
+	if ( pass.point.valid ? schedule.pointEntry == NULL
+			: schedule.projectedEntry == NULL ) {
+		// Cache capacity is an optimization limit.  The sealed scratch plan can
+		// still own the pass without changing its rendered semantics.
+		schedule.cacheable = false;
+	}
+	return true;
+}
+
+static void RB_SharedWorldInteractionGLCompleteSealedCacheUpdate(
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass,
+		const shadowMapSchedule_t &schedule, bool renderOk ) {
+	if ( !schedule.cacheable ) {
+		return;
+	}
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	if ( preparedPass.pointLight ) {
+		pointShadowMapCacheEntry_t *entry = schedule.pointEntry;
+		if ( entry == NULL ) {
+			return;
+		}
+		if ( !renderOk ) {
+			entry->valid = false;
+			return;
+		}
+		entry->valid = true;
+		entry->lightIndex = preparedPass.cacheLightIndex;
+		entry->passKind = preparedPass.cachePassKind;
+		entry->lightClass = static_cast<int>( pass.lightClass );
+		entry->signature = schedule.signature;
+		entry->size = pass.point.faceSize;
+		entry->highPrecision = pass.point.highPrecision;
+		entry->depthCompare = pass.point.depthCompare;
+		entry->lastUsedFrame = tr.frameCount;
+		entry->lastUpdatedFrame = tr.frameCount;
+		entry->colorImage = preparedPass.pointColorImage;
+		entry->depthImage = preparedPass.pointDepthImage;
+		entry->renderTexture = preparedPass.renderTexture;
+		return;
+	}
+	projectedShadowMapCacheEntry_t *entry = schedule.projectedEntry;
+	if ( entry == NULL ) {
+		return;
+	}
+	if ( !renderOk ) {
+		entry->valid = false;
+		return;
+	}
+	entry->valid = true;
+	entry->lightIndex = preparedPass.cacheLightIndex;
+	entry->passKind = preparedPass.cachePassKind;
+	entry->lightClass = static_cast<int>( pass.lightClass );
+	entry->signature = schedule.signature;
+	entry->tileSize = pass.projected.state.tileSize;
+	entry->atlasDiv = pass.projected.state.atlasDiv;
+	entry->cascadeCount = pass.projected.state.cascadeCount;
+	entry->lastUsedFrame = tr.frameCount;
+	entry->lastUpdatedFrame = tr.frameCount;
+	entry->state = pass.projected.state;
+}
+
+static bool RB_SharedWorldInteractionGLProjectedEntryMatches(
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	const projectedShadowMapCacheEntry_t *entry = preparedPass.projectedEntry;
+	if ( preparedPass.pointLight || preparedPass.projectedDepthImage == NULL
+			|| !preparedPass.projectedDepthImage->IsLoaded()
+			|| preparedPass.projectedDepthImage->IsDefaulted()
+			|| preparedPass.projectedDepthImage->GetDeviceHandle()
+				!= preparedPass.sampleTextureHandle
+			|| preparedPass.projectedDepthImage->GetStorageGeneration()
+				!= preparedPass.sampleStorageGeneration
+			|| preparedPass.projectedDepthImage->GetOpts().textureType != TT_2D
+			|| preparedPass.projectedDepthImage->GetOpts().format != FMT_DEPTH
+			|| preparedPass.renderTexture == NULL
+			|| preparedPass.renderTexture->GetWidth()
+				!= preparedPass.resourceWidth
+			|| preparedPass.renderTexture->GetHeight()
+				!= preparedPass.resourceHeight
+			|| preparedPass.projectedSpanPixels
+				!= pass.projected.state.tileSize
+					* pass.projected.state.atlasDiv ) {
+		return false;
+	}
+	if ( preparedPass.scratchResource ) {
+		return entry == NULL && preparedPass.projectedOriginX == 0
+			&& preparedPass.projectedOriginY == 0
+			&& preparedPass.resourceWidth
+				== preparedPass.projectedSpanPixels
+			&& preparedPass.resourceHeight
+				== preparedPass.projectedSpanPixels;
+	}
+	return entry != NULL && entry->valid
+		&& entry->lightIndex == preparedPass.cacheLightIndex
+		&& entry->passKind == preparedPass.cachePassKind
+		&& entry->lightClass == static_cast<int>( pass.lightClass )
+		&& entry->signature == preparedPass.signature
+		&& entry->state.valid
+		&& entry->tileSize == pass.projected.state.tileSize
+		&& entry->atlasDiv == pass.projected.state.atlasDiv
+		&& entry->cascadeCount == pass.projected.state.cascadeCount
+		&& std::memcmp( &entry->state, &pass.projected.state,
+			sizeof( entry->state ) ) == 0
+		&& preparedPass.projectedDepthImage == g_shadowMapAtlasDepthImage
+		&& preparedPass.renderTexture == g_shadowMapAtlasRenderTexture
+		&& entry->atlasCellSpan == pass.projected.state.atlasDiv
+		&& preparedPass.projectedOriginX
+			== entry->atlasCellX * g_shadowMapAtlasCellSize
+		&& preparedPass.projectedOriginY
+			== entry->atlasCellY * g_shadowMapAtlasCellSize;
+}
+
+static bool RB_SharedWorldInteractionGLPointEntryMatches(
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	const pointShadowMapCacheEntry_t *entry = preparedPass.pointEntry;
+	idImage *sampleImage = pass.point.depthCompare
+		? preparedPass.pointDepthImage : preparedPass.pointColorImage;
+	if ( !preparedPass.pointLight || sampleImage == NULL
+			|| preparedPass.pointColorImage == NULL
+			|| !preparedPass.pointColorImage->IsLoaded()
+			|| preparedPass.pointColorImage->IsDefaulted()
+			|| preparedPass.pointColorImage->GetDeviceHandle() == 0
+			|| preparedPass.pointColorImage->GetOpts().textureType != TT_CUBIC
+			|| preparedPass.pointColorImage->GetOpts().format
+				!= ( pass.point.highPrecision ? FMT_RGBA16F : FMT_RGBA8 )
+			|| preparedPass.pointDepthImage == NULL
+			|| !preparedPass.pointDepthImage->IsLoaded()
+			|| preparedPass.pointDepthImage->IsDefaulted()
+			|| preparedPass.pointDepthImage->GetDeviceHandle() == 0
+			|| preparedPass.pointDepthImage->GetOpts().textureType != TT_CUBIC
+			|| preparedPass.pointDepthImage->GetOpts().format != FMT_DEPTH
+			|| !sampleImage->IsLoaded() || sampleImage->IsDefaulted()
+			|| sampleImage->GetDeviceHandle()
+				!= preparedPass.sampleTextureHandle
+			|| sampleImage->GetStorageGeneration()
+				!= preparedPass.sampleStorageGeneration
+			|| sampleImage->GetOpts().textureType != TT_CUBIC
+			|| preparedPass.renderTexture == NULL
+			|| preparedPass.renderTexture->GetWidth()
+				!= pass.point.faceSize
+			|| preparedPass.renderTexture->GetHeight()
+				!= pass.point.faceSize
+			|| preparedPass.resourceWidth != pass.point.faceSize
+			|| preparedPass.resourceHeight != pass.point.faceSize ) {
+		return false;
+	}
+	if ( preparedPass.scratchResource ) {
+		return entry == NULL && preparedPass.pointColorImage != NULL
+			&& preparedPass.pointDepthImage != NULL;
+	}
+	return entry != NULL && entry->valid
+		&& entry->lightIndex == preparedPass.cacheLightIndex
+		&& entry->passKind == preparedPass.cachePassKind
+		&& entry->lightClass == static_cast<int>( pass.lightClass )
+		&& entry->signature == preparedPass.signature
+		&& entry->size == pass.point.faceSize
+		&& entry->highPrecision == pass.point.highPrecision
+		&& entry->depthCompare == pass.point.depthCompare
+		&& entry->colorImage == preparedPass.pointColorImage
+		&& entry->depthImage == preparedPass.pointDepthImage
+		&& entry->renderTexture == preparedPass.renderTexture;
+}
+
+static void RB_SharedWorldInteractionGLApplyMapCasterCull(
+		const classicInteractionDomainShadowMapPass_t &pass,
+		const classicInteractionDomainShadowCaster_t &caster ) {
+	int desired = 0;
+	if ( pass.casterCullMode != 0 && caster.cull != RENDERER_CULL_NONE ) {
+		GLenum face = pass.casterCullMode == 1 ? GL_FRONT : GL_BACK;
+		if ( caster.cull == RENDERER_CULL_BACK ) {
+			face = face == GL_FRONT ? GL_BACK : GL_FRONT;
+		}
+		desired = static_cast<int>( face );
+	}
+	if ( desired == 0 ) {
+		glDisable( GL_CULL_FACE );
+	} else {
+		glEnable( GL_CULL_FACE );
+		glCullFace( static_cast<GLenum>( desired ) );
+	}
+}
+
+static void RB_SharedWorldInteractionGLSubmitMapCaster(
+		const rbSharedWorldInteractionGLPreparedMapCaster_t &caster ) {
+	idVertexCache::BindArrayBuffer( caster.vertexBuffer );
+	glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( caster.vertexPointer,
+			DRAWVERT_XYZ_OFFSET ) );
+	idVertexCache::BindIndexBuffer( caster.indexBuffer );
+	backEnd.pc.c_drawElements++;
+	backEnd.pc.c_drawIndexes += caster.indexCount;
+	backEnd.pc.c_drawVertexes += caster.vertexCount;
+	if ( caster.indexCacheBacked ) {
+		backEnd.pc.c_vboIndexes += caster.indexCount;
+	}
+	glDrawElements( GL_TRIANGLES, caster.indexCount, GL_INDEX_TYPE,
+		caster.indexPointer );
+}
+
+static void RB_SharedWorldInteractionGLDrawProjectedMapCaster(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedMapCaster_t &preparedCaster,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		int cascadeIndex ) {
+	const classicInteractionDomainShadowCaster_t &caster =
+		*preparedCaster.caster;
+	glLoadMatrixf( caster.modelMatrix );
+	float row0[4];
+	float row1[4];
+	float row2[4];
+	RB_ShadowMapModelMatrixRows( caster.modelMatrix, row0, row1, row2 );
+	if ( g_shadowMapCasterProgram.modelMatrixRow0 >= 0 ) {
+		glUniform4fvARB( g_shadowMapCasterProgram.modelMatrixRow0, 1, row0 );
+		glUniform4fvARB( g_shadowMapCasterProgram.modelMatrixRow1, 1, row1 );
+		glUniform4fvARB( g_shadowMapCasterProgram.modelMatrixRow2, 1, row2 );
+	}
+	if ( g_shadowMapCasterProgram.shadowDepthRow >= 0 ) {
+		idPlane localDepth;
+		R_GlobalPlaneToLocal( caster.modelMatrix,
+			pass.projected.state.clipPlanes[cascadeIndex][2], localDepth );
+		glUniform4fvARB( g_shadowMapCasterProgram.shadowDepthRow, 1,
+			localDepth.ToFloatPtr() );
+	}
+	RB_SharedWorldInteractionGLApplyMapCasterCull( pass, caster );
+	if ( preparedCaster.alphaStageCount <= 0 ) {
+		RB_ShadowMapDisableCasterAlphaTest();
+		RB_SharedWorldInteractionGLSubmitMapCaster( preparedCaster );
+		return;
+	}
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	idVertexCache::BindArrayBuffer( preparedCaster.vertexBuffer );
+	glTexCoordPointer( 2, GL_FLOAT, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( preparedCaster.vertexPointer,
+			DRAWVERT_ST_OFFSET ) );
+	if ( g_shadowMapCasterProgram.alphaTestEnabled >= 0 ) {
+		glUniform1fARB( g_shadowMapCasterProgram.alphaTestEnabled, 1.0f );
+	}
+	if ( g_shadowMapCasterProgram.alphaHashEnabled >= 0 ) {
+		glUniform1fARB( g_shadowMapCasterProgram.alphaHashEnabled,
+			pass.hashedAlpha ? 1.0f : 0.0f );
+	}
+	if ( g_shadowMapCasterProgram.alphaHashStable >= 0 ) {
+		glUniform1fARB( g_shadowMapCasterProgram.alphaHashStable,
+			pass.stableAlphaHash ? 1.0f : 0.0f );
+	}
+	for ( int i = 0; i < preparedCaster.alphaStageCount; ++i ) {
+		const rbSharedWorldInteractionGLPreparedShadowAlphaStage_t &preparedStage =
+			prepared.shadowAlphaStages[preparedCaster.firstAlphaStage + i];
+		const classicInteractionDomainShadowAlphaStage_t &stage =
+			*preparedStage.stage;
+		if ( g_shadowMapCasterProgram.alphaRef >= 0 ) {
+			glUniform1fARB( g_shadowMapCasterProgram.alphaRef,
+				stage.alphaTestValue );
+			glUniform1fARB( g_shadowMapCasterProgram.alphaTestMode,
+				RB_ShadowMapAlphaTestModeValue( stage.alphaTestMode ) );
+			glUniform1fARB( g_shadowMapCasterProgram.alphaScale,
+				stage.alphaScale );
+		}
+		glUniform4fvARB( g_shadowMapCasterProgram.alphaTexCoordS, 1,
+			stage.textureMatrix[0] );
+		glUniform4fvARB( g_shadowMapCasterProgram.alphaTexCoordT, 1,
+			stage.textureMatrix[1] );
+		GL_SelectTexture( 0 );
+		preparedStage.image->Bind();
+		RB_SharedWorldInteractionGLSubmitMapCaster( preparedCaster );
+	}
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	RB_ShadowMapDisableCasterAlphaTest();
+}
+
+static void RB_SharedWorldInteractionGLDrawPointMapCaster(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedMapCaster_t &preparedCaster,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		const float lightModelViewMatrix[16] ) {
+	const classicInteractionDomainShadowCaster_t &caster =
+		*preparedCaster.caster;
+	float modelViewMatrix[16];
+	myGlMultMatrix( caster.modelMatrix, lightModelViewMatrix,
+		modelViewMatrix );
+	glLoadMatrixf( modelViewMatrix );
+	float row0[4];
+	float row1[4];
+	float row2[4];
+	RB_ShadowMapModelMatrixRows( caster.modelMatrix, row0, row1, row2 );
+	glUniform4fvARB( g_pointShadowCasterProgram.modelMatrixRow0, 1, row0 );
+	glUniform4fvARB( g_pointShadowCasterProgram.modelMatrixRow1, 1, row1 );
+	glUniform4fvARB( g_pointShadowCasterProgram.modelMatrixRow2, 1, row2 );
+	RB_SharedWorldInteractionGLApplyMapCasterCull( pass, caster );
+	if ( preparedCaster.alphaStageCount <= 0 ) {
+		if ( g_pointShadowCasterProgram.alphaTestEnabled >= 0 ) {
+			glUniform1fARB( g_pointShadowCasterProgram.alphaTestEnabled, 0.0f );
+		}
+		RB_SharedWorldInteractionGLSubmitMapCaster( preparedCaster );
+		return;
+	}
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	idVertexCache::BindArrayBuffer( preparedCaster.vertexBuffer );
+	glTexCoordPointer( 2, GL_FLOAT, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( preparedCaster.vertexPointer,
+			DRAWVERT_ST_OFFSET ) );
+	glUniform1fARB( g_pointShadowCasterProgram.alphaTestEnabled, 1.0f );
+	glUniform1fARB( g_pointShadowCasterProgram.alphaHashEnabled,
+		pass.hashedAlpha ? 1.0f : 0.0f );
+	glUniform1fARB( g_pointShadowCasterProgram.alphaHashStable,
+		pass.stableAlphaHash ? 1.0f : 0.0f );
+	for ( int i = 0; i < preparedCaster.alphaStageCount; ++i ) {
+		const rbSharedWorldInteractionGLPreparedShadowAlphaStage_t &preparedStage =
+			prepared.shadowAlphaStages[preparedCaster.firstAlphaStage + i];
+		const classicInteractionDomainShadowAlphaStage_t &stage =
+			*preparedStage.stage;
+		glUniform1fARB( g_pointShadowCasterProgram.alphaRef,
+			stage.alphaTestValue );
+		glUniform1fARB( g_pointShadowCasterProgram.alphaTestMode,
+			RB_ShadowMapAlphaTestModeValue( stage.alphaTestMode ) );
+		glUniform1fARB( g_pointShadowCasterProgram.alphaScale,
+			stage.alphaScale );
+		glUniform4fvARB( g_pointShadowCasterProgram.alphaTexCoordS, 1,
+			stage.textureMatrix[0] );
+		glUniform4fvARB( g_pointShadowCasterProgram.alphaTexCoordT, 1,
+			stage.textureMatrix[1] );
+		GL_SelectTexture( 0 );
+		preparedStage.image->Bind();
+		RB_SharedWorldInteractionGLSubmitMapCaster( preparedCaster );
+	}
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	glUniform1fARB( g_pointShadowCasterProgram.alphaTestEnabled, 0.0f );
+}
+
+static int RB_SharedWorldInteractionGLDrawMapCasterChain(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedLight_t &light,
+		classicInteractionDomainShadowChain_t chain,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		int cascadeIndex, const float *pointLightModelView ) {
+	const int first = light.firstMapCaster[chain];
+	const int count = light.mapCasterCount[chain];
+	for ( int i = 0; i < count; ++i ) {
+		const rbSharedWorldInteractionGLPreparedMapCaster_t &caster =
+			prepared.mapCasters[first + i];
+		if ( pointLightModelView != NULL ) {
+			RB_SharedWorldInteractionGLDrawPointMapCaster(
+				prepared, caster, pass, pointLightModelView );
+		} else {
+			RB_SharedWorldInteractionGLDrawProjectedMapCaster(
+				prepared, caster, pass, cascadeIndex );
+		}
+	}
+	return count;
+}
+
+static bool RB_SharedWorldInteractionGLRenderProjectedMap(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedLight_t &light,
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	RB_SharedWorldInteractionGLActivateMapResource( preparedPass );
+	if ( preparedPass.renderTexture == NULL
+			|| preparedPass.projectedDepthImage == NULL ) {
+		return false;
+	}
+	g_projectedShadowMapState = pass.projected.state;
+	preparedPass.renderTexture->MakeCurrent();
+	if ( preparedPass.renderTexture->IsKnownIncomplete() ) {
+		RB_SharedWorldInteractionGLAbortMapTransaction( prepared.viewDef );
+		return false;
+	}
+	glUseProgramObjectARB( g_shadowMapCasterProgram.programObject );
+	glDisable( GL_VERTEX_PROGRAM_ARB );
+	glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	const float oneDepthStep = 1.0f / 16777216.0f;
+	glUniform2fARB( g_shadowMapCasterProgram.casterDepthOffset,
+		pass.polygonFactor, pass.polygonOffset * oneDepthStep );
+	glUniform1iARB( g_shadowMapCasterProgram.alphaMap, 0 );
+	RB_ShadowMapDisableCasterAlphaTest();
+	glColorMask( GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE );
+	glEnable( GL_DEPTH_TEST );
+	glDepthMask( GL_TRUE );
+	glDepthFunc( GL_LEQUAL );
+	glDisable( GL_BLEND );
+	glDisable( GL_STENCIL_TEST );
+	glEnable( GL_SCISSOR_TEST );
+	int drawn = 0;
+	for ( int cascade = 0; cascade < pass.projected.state.cascadeCount;
+			++cascade ) {
+		const int tileX = g_shadowMapActiveSlotOriginX
+			+ ( pass.projected.state.atlasDiv > 1
+				? cascade % pass.projected.state.atlasDiv
+					* pass.projected.state.tileSize : 0 );
+		const int tileY = g_shadowMapActiveSlotOriginY
+			+ ( pass.projected.state.atlasDiv > 1
+				? cascade / pass.projected.state.atlasDiv
+					* pass.projected.state.tileSize : 0 );
+		float clipMatrix[16];
+		R_ShadowMapClipPlanesToGLMatrix(
+			pass.projected.state.clipPlanes[cascade], clipMatrix );
+		glViewport( tileX, tileY, pass.projected.state.tileSize,
+			pass.projected.state.tileSize );
+		glScissor( tileX, tileY, pass.projected.state.tileSize,
+			pass.projected.state.tileSize );
+		glClear( GL_DEPTH_BUFFER_BIT );
+		glMatrixMode( GL_PROJECTION );
+		glLoadMatrixf( clipMatrix );
+		glMatrixMode( GL_MODELVIEW );
+		drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+			prepared, light,
+			CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC,
+			pass, cascade, NULL );
+		drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+			prepared, light,
+			CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC,
+			pass, cascade, NULL );
+		if ( pass.receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL ) {
+			drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+				prepared, light,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC,
+				pass, cascade, NULL );
+			drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+				prepared, light,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC,
+				pass, cascade, NULL );
+		}
+	}
+	glEnable( GL_CULL_FACE );
+	glUseProgramObjectARB( 0 );
+	g_shadowMapStats.shadowMapUpdates++;
+	g_shadowMapStats.projectedAtlasTilesRendered +=
+		pass.projected.state.cascadeCount;
+	RB_SharedWorldInteractionGLAbortMapTransaction( prepared.viewDef );
+	return drawn == pass.drawableMappedCasters
+		* pass.projected.state.cascadeCount;
+}
+
+static bool RB_SharedWorldInteractionGLRenderPointMap(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedLight_t &light,
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	RB_SharedWorldInteractionGLActivateMapResource( preparedPass );
+	if ( preparedPass.renderTexture == NULL
+			|| preparedPass.pointColorImage == NULL
+			|| preparedPass.pointDepthImage == NULL ) {
+		return false;
+	}
+	preparedPass.renderTexture->MakeCurrent( 0 );
+	if ( preparedPass.renderTexture->IsKnownIncomplete() ) {
+		RB_SharedWorldInteractionGLAbortMapTransaction( prepared.viewDef );
+		return false;
+	}
+	glUseProgramObjectARB( g_pointShadowCasterProgram.programObject );
+	glDisable( GL_VERTEX_PROGRAM_ARB );
+	glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	glUniform4fvARB( g_pointShadowCasterProgram.globalLightOrigin, 1,
+		pass.point.lightOrigin );
+	glUniform1fARB( g_pointShadowCasterProgram.pointShadowFar,
+		pass.point.farDistance );
+	glUniform1fARB( g_pointShadowCasterProgram.pointShadowDepthMode,
+		pass.point.highPrecision ? 1.0f : 0.0f );
+	const float oneDepthStep = 1.0f / 16777216.0f;
+	glUniform2fARB( g_pointShadowCasterProgram.casterDepthOffset,
+		pass.polygonFactor, pass.polygonOffset * oneDepthStep );
+	glUniform1iARB( g_pointShadowCasterProgram.alphaMap, 0 );
+	glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+	glEnable( GL_DEPTH_TEST );
+	glDepthMask( GL_TRUE );
+	glDepthFunc( GL_LEQUAL );
+	glDisable( GL_BLEND );
+	glDisable( GL_STENCIL_TEST );
+	const bool depthClamp = RB_ShadowMapDepthClampAvailable();
+	if ( depthClamp ) {
+		glEnable( GL_DEPTH_CLAMP_NV );
+	}
+	glClearColor( 1.0f, 1.0f, 1.0f, 1.0f );
+	const float nearClip = idMath::ClampFloat( 0.5f,
+		depthClamp ? 16.0f : 4.0f,
+		pass.point.farDistance * 0.01f );
+	float projectionMatrix[16];
+	RB_PointShadowMapBuildProjectionMatrix( nearClip,
+		pass.point.farDistance, projectionMatrix );
+	glMatrixMode( GL_PROJECTION );
+	glLoadMatrixf( projectionMatrix );
+	glMatrixMode( GL_MODELVIEW );
+	int drawn = 0;
+	const idVec3 sealedLightOrigin( pass.point.lightOrigin[0],
+		pass.point.lightOrigin[1], pass.point.lightOrigin[2] );
+	for ( int face = 0; face < pass.point.faceCount; ++face ) {
+		float lightModelView[16];
+		RB_PointShadowMapBuildModelViewMatrix(
+			sealedLightOrigin, face, lightModelView );
+		preparedPass.renderTexture->MakeCurrent( face );
+		glViewport( 0, 0, pass.point.faceSize, pass.point.faceSize );
+		glScissor( 0, 0, pass.point.faceSize, pass.point.faceSize );
+		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+		drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+			prepared, light,
+			CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC,
+			pass, 0, lightModelView );
+		drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+			prepared, light,
+			CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC,
+			pass, 0, lightModelView );
+		if ( pass.receiver == CLASSIC_INTERACTION_RECEIVER_GLOBAL ) {
+			drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+				prepared, light,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC,
+				pass, 0, lightModelView );
+			drawn += RB_SharedWorldInteractionGLDrawMapCasterChain(
+				prepared, light,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC,
+				pass, 0, lightModelView );
+		}
+	}
+	if ( depthClamp ) {
+		glDisable( GL_DEPTH_CLAMP_NV );
+	}
+	glEnable( GL_CULL_FACE );
+	glUseProgramObjectARB( 0 );
+	g_shadowMapStats.shadowMapUpdates++;
+	g_shadowMapStats.pointFacesRendered += pass.point.faceCount;
+	g_shadowMapStats.pointHighPrecisionPasses +=
+		pass.point.highPrecision ? 1 : 0;
+	g_shadowMapStats.pointDepthComparePasses +=
+		pass.point.depthCompare ? 1 : 0;
+	RB_SharedWorldInteractionGLAbortMapTransaction( prepared.viewDef );
+	return drawn == pass.drawableMappedCasters * pass.point.faceCount;
+}
+
+static bool RB_SharedWorldInteractionGLAliasMappedPass(
+		const rbSharedWorldInteractionGLPreparedLight_t &preparedLight,
+		rbSharedWorldInteractionGLPreparedView_t &prepared,
+		rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	if ( !pass.resourceAlias
+			|| pass.resourceOwner < CLASSIC_INTERACTION_RECEIVER_LOCAL
+			|| pass.resourceOwner > CLASSIC_INTERACTION_RECEIVER_GLOBAL ) {
+		return false;
+	}
+	const int ownerIndex = preparedLight.shadowMapPass[pass.resourceOwner];
+	if ( ownerIndex < 0 || ownerIndex >= prepared.shadowMapPassCount
+			|| &prepared.shadowMapPasses[ownerIndex] == &preparedPass ) {
+		return false;
+	}
+	const rbSharedWorldInteractionGLPreparedMapPass_t &owner =
+		prepared.shadowMapPasses[ownerIndex];
+	if ( !owner.prepared || owner.pass == NULL
+			|| owner.pass->legacyViewLight != pass.legacyViewLight
+			|| owner.pointLight != pass.point.valid
+			|| owner.pass->drawableMappedCasters
+				!= pass.drawableMappedCasters
+			|| owner.pass->noopMappedCasters != pass.noopMappedCasters
+			|| ( owner.pointLight
+				? std::memcmp( &owner.pass->point, &pass.point,
+					sizeof( pass.point ) ) != 0
+				: std::memcmp( &owner.pass->projected, &pass.projected,
+					sizeof( pass.projected ) ) != 0 ) ) {
+		return false;
+	}
+	preparedPass.projectedEntry = owner.projectedEntry;
+	preparedPass.pointEntry = owner.pointEntry;
+	preparedPass.projectedDepthImage = owner.projectedDepthImage;
+	preparedPass.pointColorImage = owner.pointColorImage;
+	preparedPass.pointDepthImage = owner.pointDepthImage;
+	preparedPass.renderTexture = owner.renderTexture;
+	preparedPass.sampleStorageGeneration = owner.sampleStorageGeneration;
+	preparedPass.sampleTextureHandle = owner.sampleTextureHandle;
+	preparedPass.resourceWidth = owner.resourceWidth;
+	preparedPass.resourceHeight = owner.resourceHeight;
+	preparedPass.projectedOriginX = owner.projectedOriginX;
+	preparedPass.projectedOriginY = owner.projectedOriginY;
+	preparedPass.projectedSpanPixels = owner.projectedSpanPixels;
+	preparedPass.cacheLightIndex = owner.cacheLightIndex;
+	preparedPass.cachePassKind = owner.cachePassKind;
+	preparedPass.signature = owner.signature;
+	preparedPass.pointLight = owner.pointLight;
+	preparedPass.scratchResource = owner.scratchResource;
+	preparedPass.cacheUpdated = owner.cacheUpdated;
+	preparedPass.prepared = owner.pointLight
+		? RB_SharedWorldInteractionGLPointEntryMatches( preparedPass )
+		: RB_SharedWorldInteractionGLProjectedEntryMatches( preparedPass );
+	return preparedPass.prepared;
+}
+
+static bool RB_SharedWorldInteractionGLPrepareMappedPass(
+		rbSharedWorldInteractionGLPreparedView_t &prepared,
+		rbSharedWorldInteractionGLPreparedLight_t &preparedLight,
+		classicInteractionDomainReceiver_t receiver ) {
+	rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass =
+		prepared.shadowMapPasses[preparedLight.shadowMapPass[receiver]];
+	const classicInteractionDomainLight_t &light = *preparedLight.light;
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	viewLight_t *viewLight = const_cast<viewLight_t *>( light.legacyViewLight );
+	const bool pointLight = light.pointLight;
+	const shadowMapPassKind_t passKind = receiver
+		== CLASSIC_INTERACTION_RECEIVER_LOCAL
+			? SHADOWMAP_PASS_LOCAL : SHADOWMAP_PASS_GLOBAL;
+	if ( viewLight == NULL || pass.hasTranslucentCasters
+			|| RB_ShadowMapLightSupportReason( viewLight )
+				!= SHADOWMAP_SUPPORT_OK ) {
+		return false;
+	}
+
+	backEnd.vLight = viewLight;
+	preparedPass.pointLight = pointLight;
+	preparedPass.cacheLightIndex = RB_ShadowMapLightIndex( viewLight );
+	preparedPass.cachePassKind = static_cast<int>( passKind );
+	if ( pass.resourceAlias ) {
+		return RB_SharedWorldInteractionGLAliasMappedPass(
+			preparedLight, prepared, preparedPass );
+	}
+	if ( !pass.allowCacheUpdate ) {
+		return false;
+	}
+
+	shadowMapSchedule_t schedule;
+	if ( !RB_SharedWorldInteractionGLScheduleSealedMapPass( pass,
+			preparedPass.cacheLightIndex, passKind, schedule ) ) {
+		return false;
+	}
+	if ( schedule.action == SHADOWMAP_SCHEDULE_REUSE ) {
+		preparedPass.signature = schedule.signature;
+		const bool assigned = pointLight
+			? RB_SharedWorldInteractionGLAssignPointCacheResource(
+				preparedPass, schedule.pointEntry )
+			: RB_SharedWorldInteractionGLAssignProjectedCacheResource(
+				preparedPass, schedule.projectedEntry );
+		if ( !assigned ) {
+			return false;
+		}
+		preparedPass.prepared = pointLight
+			? RB_SharedWorldInteractionGLPointEntryMatches( preparedPass )
+			: RB_SharedWorldInteractionGLProjectedEntryMatches(
+				preparedPass );
+		return preparedPass.prepared;
+	}
+	const bool useCacheResource = schedule.cacheable
+		&& ( pointLight ? schedule.pointEntry != NULL
+			: schedule.projectedEntry != NULL );
+
+	preparedPass.signature = schedule.signature;
+	const bool resourceReady = useCacheResource
+		? ( pointLight
+			? RB_SharedWorldInteractionGLAssignPointCacheResource(
+				preparedPass, schedule.pointEntry )
+			: RB_SharedWorldInteractionGLAssignProjectedCacheResource(
+				preparedPass, schedule.projectedEntry ) )
+		: ( pointLight
+			? RB_SharedWorldInteractionGLReservePointScratch(
+				prepared, preparedPass )
+			: RB_SharedWorldInteractionGLReserveProjectedScratch(
+				prepared, preparedPass ) );
+	if ( !resourceReady ) {
+		return false;
+	}
+	const bool renderOk = pointLight
+		? RB_SharedWorldInteractionGLRenderPointMap(
+			prepared, preparedLight, preparedPass )
+		: RB_SharedWorldInteractionGLRenderProjectedMap(
+			prepared, preparedLight, preparedPass );
+	if ( useCacheResource ) {
+		RB_SharedWorldInteractionGLCompleteSealedCacheUpdate(
+			preparedPass, schedule, renderOk );
+	}
+	if ( !renderOk
+			|| !RB_SharedWorldInteractionGLCaptureMapResource( preparedPass ) ) {
+		return false;
+	}
+	preparedPass.cacheUpdated = useCacheResource;
+	preparedPass.prepared = pointLight
+		? RB_SharedWorldInteractionGLPointEntryMatches( preparedPass )
+		: RB_SharedWorldInteractionGLProjectedEntryMatches( preparedPass );
+	return preparedPass.prepared;
+}
+
+static bool RB_SharedWorldInteractionGLPreflightMapTransaction(
+		const viewDef_t *viewDef,
+		rbSharedWorldInteractionGLPreparedView_t &prepared,
+		int &failureDetail ) {
+	if ( !prepared.mapTransactionPrepared ) {
+		RB_ShadowMapStatsReset();
+		RB_ShadowMapDebugOverlayReset();
+	}
+	if ( prepared.shadowMapPassCount <= 0 ) {
+		prepared.mapTransactionPrepared = true;
+		return true;
+	}
+	if ( !prepared.mapGLStateCaptured ) {
+		prepared.mapGLStateCaptured = true;
+		prepared.mapBlendWasEnabled = glIsEnabled( GL_BLEND ) != 0;
+		prepared.mapDepthWasEnabled = glIsEnabled( GL_DEPTH_TEST ) != 0;
+		prepared.mapScissorWasEnabled =
+			glIsEnabled( GL_SCISSOR_TEST ) != 0;
+		prepared.mapStencilWasEnabled =
+			glIsEnabled( GL_STENCIL_TEST ) != 0;
+		prepared.mapCullWasEnabled = glIsEnabled( GL_CULL_FACE ) != 0;
+		GLboolean depthWrite = GL_TRUE;
+		GLboolean colorWrite[4] = {
+			GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE
+		};
+		glGetBooleanv( GL_DEPTH_WRITEMASK, &depthWrite );
+		glGetBooleanv( GL_COLOR_WRITEMASK, colorWrite );
+		prepared.mapDepthWriteWasEnabled = depthWrite != 0;
+		for ( int component = 0; component < 4; ++component ) {
+			prepared.mapColorWriteWasEnabled[component] =
+				colorWrite[component] != 0;
+		}
+		prepared.mapSavedFaceCulling = backEnd.glState.faceCulling;
+		glGetFloatv( GL_COLOR_CLEAR_VALUE, prepared.mapSavedClearColor );
+	}
+	RB_ShadowMapBuildUpdateAdmissions();
+	for ( int lightIndex = 0; lightIndex < prepared.lightCount;
+			++lightIndex ) {
+		rbSharedWorldInteractionGLPreparedLight_t &preparedLight =
+			prepared.lights[lightIndex];
+		for ( int receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+				receiver <= CLASSIC_INTERACTION_RECEIVER_GLOBAL; ++receiver ) {
+			const int mapPassIndex = preparedLight.shadowMapPass[receiver];
+			if ( mapPassIndex < 0 ) {
+				continue;
+			}
+			if ( mapPassIndex >= prepared.shadowMapPassCount
+					|| !RB_SharedWorldInteractionGLPrepareMappedPass(
+						prepared, preparedLight,
+						static_cast<classicInteractionDomainReceiver_t>(
+							receiver ) ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_TRANSACTION,
+					lightIndex );
+				RB_SharedWorldInteractionGLAbortMapTransaction( viewDef );
+				return false;
+			}
+		}
+	}
+
+	// A later allocation may have evicted a pass prepared earlier in the same
+	// view. Revalidate every exact signature only after all reservations and
+	// renders have completed; no main-framebuffer mutation has happened yet.
+	for ( int passIndex = 0; passIndex < prepared.shadowMapPassCount;
+			++passIndex ) {
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass =
+			prepared.shadowMapPasses[passIndex];
+		if ( !preparedPass.prepared
+				|| ( preparedPass.pointLight
+					? !RB_SharedWorldInteractionGLPointEntryMatches( preparedPass )
+					: !RB_SharedWorldInteractionGLProjectedEntryMatches(
+						preparedPass ) ) ) {
+			failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+				RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_RESOURCE );
+			RB_SharedWorldInteractionGLAbortMapTransaction( viewDef );
+			return false;
+		}
+		for ( int earlierIndex = 0; earlierIndex < passIndex;
+				++earlierIndex ) {
+			const rbSharedWorldInteractionGLPreparedMapPass_t &earlier =
+				prepared.shadowMapPasses[earlierIndex];
+			const bool physicalAlias = preparedPass.pointLight
+				? earlier.pointLight
+					&& preparedPass.sampleTextureHandle
+						== earlier.sampleTextureHandle
+				: !earlier.pointLight
+					&& preparedPass.projectedDepthImage
+						== earlier.projectedDepthImage
+					&& preparedPass.projectedOriginX
+						< earlier.projectedOriginX
+							+ earlier.projectedSpanPixels
+					&& earlier.projectedOriginX
+						< preparedPass.projectedOriginX
+							+ preparedPass.projectedSpanPixels
+					&& preparedPass.projectedOriginY
+						< earlier.projectedOriginY
+							+ earlier.projectedSpanPixels
+					&& earlier.projectedOriginY
+						< preparedPass.projectedOriginY
+							+ preparedPass.projectedSpanPixels;
+			const auto exactOwnerAlias = [](
+					const rbSharedWorldInteractionGLPreparedMapPass_t &alias,
+					const rbSharedWorldInteractionGLPreparedMapPass_t &owner ) {
+				return alias.pass->resourceAlias
+					&& alias.pass->legacyViewLight
+						== owner.pass->legacyViewLight
+					&& alias.pass->lightIndex == owner.pass->lightIndex
+					&& alias.pass->resourceOwner == owner.pass->receiver
+					&& !owner.pass->resourceAlias;
+			};
+			const bool permittedAlias = exactOwnerAlias(
+				preparedPass, earlier ) || exactOwnerAlias(
+				earlier, preparedPass );
+			if ( physicalAlias && !permittedAlias ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_RESOURCE );
+				RB_SharedWorldInteractionGLAbortMapTransaction( viewDef );
+				return false;
+			}
+		}
+	}
+	RB_SharedWorldInteractionGLAbortMapTransaction( viewDef );
+	prepared.mapTransactionPrepared = true;
+	return true;
 }
 
 static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
@@ -11917,10 +13481,28 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 			|| view.surfaceCount > CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES
 			|| view.primitiveCount < 0
 			|| view.primitiveCount > CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES
+			|| view.shadowCasterCount < 0
+			|| view.shadowCasterCount
+				> CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS
 			|| view.drawablePrimitiveCount < 0
 			|| view.drawablePrimitiveCount > view.primitiveCount
 			|| view.noopPrimitiveCount
-				!= view.primitiveCount - view.drawablePrimitiveCount ) {
+				!= view.primitiveCount - view.drawablePrimitiveCount
+			|| view.drawableShadowCasterCount < 0
+			|| view.drawableShadowCasterCount > view.shadowCasterCount
+			|| view.noopShadowCasterCount != view.shadowCasterCount
+				- view.drawableShadowCasterCount
+			|| view.logicalVolumeDrawCount < 0
+			|| view.preloadVolumeDrawCount < 0
+			|| view.preloadVolumeDrawCount > view.logicalVolumeDrawCount
+			|| view.shadowMapPassCount < 0
+			|| view.shadowMapPassCount
+				> CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES
+			|| view.hybridShadowPassCount < 0
+			|| view.hybridShadowPassCount > view.shadowMapPassCount
+			|| view.shadowMode < CLASSIC_INTERACTION_SHADOW_NONE
+			|| view.shadowMode >= CLASSIC_INTERACTION_SHADOW_MODE_COUNT
+			|| view.stencilReference != RB_ShadowMapSafeStencilClearValue() ) {
 		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
 			RB_SHARED_WORLD_INTERACTION_GL_REJECT_VIEW );
 		return false;
@@ -11940,7 +13522,13 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 			|| r_skipInteractions.GetBool() || r_skipBump.GetBool()
 			|| r_skipDiffuse.GetBool() || r_skipSpecular.GetBool()
 			|| r_skipTranslucent.GetBool() || r_singleTriangle.GetBool()
-			|| r_showOverDraw.GetInteger() != 0 || r_shadows.GetBool()
+			|| r_showOverDraw.GetInteger() != 0
+			|| r_showShadows.GetInteger() != 0
+			|| RB_ShadowMapDebugMode() != 0
+			|| RB_ShadowMapReceiverDebugMode()
+			|| ( view.shadowMapPassCount > 0
+				&& !r_useShadowMap.GetBool() )
+			|| ( view.shadowCasterCount > 0 && !r_shadows.GetBool() )
 			|| r_celShading.GetBool() || r_celShadingWorld.GetBool()
 			|| RB_EnhancedMaterialShadingActive()
 			|| RB_AppleGL21AutomaticInteractionPath()
@@ -11965,8 +13553,21 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 				view.projectionMatrix, 16 )
 			|| !RB_SharedWorldInteractionGLFinite( view.lightScale )
 			|| !RB_SharedWorldInteractionGLFinite( view.overBright )
+			|| !RB_SharedWorldInteractionGLFinite( view.shadowPolygonFactor )
+			|| !RB_SharedWorldInteractionGLFinite( view.shadowPolygonUnits )
 			|| idMath::Fabs( view.lightScale - backEnd.lightScale ) > 0.00001f
-			|| idMath::Fabs( view.overBright - backEnd.overBright ) > 0.00001f ) {
+			|| idMath::Fabs( view.overBright - backEnd.overBright ) > 0.00001f
+			|| view.useScissor != r_useScissor.GetBool()
+			|| view.useShadowVertexProgram
+				!= r_useShadowVertexProgram.GetBool()
+			|| view.preferTwoSidedStencil != r_useTwoSidedStencil.GetBool()
+			|| view.useDepthBounds != r_useDepthBoundsTest.GetBool()
+			|| view.stencilTranslucentShadows
+				!= r_stencilTranslucentShadows.GetBool()
+			|| idMath::Fabs( view.shadowPolygonFactor
+				- r_shadowPolygonFactor.GetFloat() ) > 0.00001f
+			|| idMath::Fabs( view.shadowPolygonUnits
+				+ r_shadowPolygonOffset.GetFloat() ) > 0.00001f ) {
 		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
 			RB_SHARED_WORLD_INTERACTION_GL_REJECT_MUTATED_VIEW );
 		return false;
@@ -11980,7 +13581,10 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 			|| glBindProgramARB == NULL || glProgramEnvParameter4fvARB == NULL
 			|| glEnableVertexAttribArrayARB == NULL
 			|| glDisableVertexAttribArrayARB == NULL
-			|| glVertexAttribPointerARB == NULL ) {
+			|| glVertexAttribPointerARB == NULL
+			|| ( view.useDepthBounds
+				&& ( !glConfig.depthBoundsTestAvailable
+					|| glDepthBoundsEXT == NULL ) ) ) {
 		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
 			RB_SHARED_WORLD_INTERACTION_GL_REJECT_CAPACITY );
 		return false;
@@ -11994,6 +13598,14 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 			|| !R_IsARBProgramValid( GL_VERTEX_PROGRAM_ARB, vertexProgram )
 			|| !R_IsARBProgramValid( GL_FRAGMENT_PROGRAM_ARB,
 				fragmentProgram ) ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_PROGRAM );
+		return false;
+	}
+	if ( view.useShadowVertexProgram
+			&& ( !tr.backEndRendererHasVertexPrograms
+				|| !R_IsARBProgramValid( GL_VERTEX_PROGRAM_ARB,
+					VPROG_STENCIL_SHADOW ) ) ) {
 		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
 			RB_SHARED_WORLD_INTERACTION_GL_REJECT_PROGRAM );
 		return false;
@@ -12013,6 +13625,16 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 	int primitiveCursor = 0;
 	int drawablePrimitives = 0;
 	int noopPrimitives = 0;
+	int shadowCasterCursor = 0;
+	int drawableShadowCasters = 0;
+	int noopShadowCasters = 0;
+	int logicalVolumeDraws = 0;
+	int preloadVolumeDraws = 0;
+	int drawableMapCasters = 0;
+	int shadowAlphaStages = 0;
+	int shadowMapPasses = 0;
+	int hybridShadowPasses = 0;
+	int shadowLights = 0;
 	int receiverSurfaces[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
 	int receiverPrimitives[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
 	for ( int lightIndex = 0; lightIndex < view.lightCount; ++lightIndex ) {
@@ -12031,6 +13653,21 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 			return false;
 		}
 		prepared.seenLights[lightIndex] = true;
+		rbSharedWorldInteractionGLPreparedLight_t &preparedLight =
+			prepared.lights[lightIndex];
+		std::memset( &preparedLight, 0, sizeof( preparedLight ) );
+		preparedLight.light = light;
+		for ( int receiver = 0;
+				receiver < CLASSIC_INTERACTION_RECEIVER_COUNT; ++receiver ) {
+			preparedLight.firstPrimitive[receiver] = -1;
+		}
+		for ( int chain = 0;
+				chain < CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT; ++chain ) {
+			preparedLight.firstShadowCaster[chain] = -1;
+			preparedLight.firstMapCaster[chain] = -1;
+		}
+		preparedLight.shadowMapPass[0] = -1;
+		preparedLight.shadowMapPass[1] = -1;
 		int lightDrawablePrimitives = 0;
 		int lightNoopPrimitives = 0;
 		int lightReceiverSurfaces[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
@@ -12148,6 +13785,12 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 						|| primitive->scissorY1 != surface->scissorY1
 						|| primitive->scissorX2 != surface->scissorX2
 						|| primitive->scissorY2 != surface->scissorY2
+						|| std::memcmp( primitive->modelMatrix,
+							surf->space->modelMatrix,
+							sizeof( primitive->modelMatrix ) ) != 0
+						|| std::memcmp( primitive->modelViewMatrix,
+							surf->space->modelViewMatrix,
+							sizeof( primitive->modelViewMatrix ) ) != 0
 						|| !RB_SharedWorldInteractionGLPrimitiveValuesValid(
 							*primitive ) ) {
 					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
@@ -12224,6 +13867,18 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 				preparedPrimitive.normalImage = primitive->ambientLight
 					? globalImages->ambientNormalMap
 					: globalImages->normalCubeMapImage;
+				const int receiver = static_cast<int>( primitive->receiver );
+				if ( preparedLight.firstPrimitive[receiver] < 0 ) {
+					preparedLight.firstPrimitive[receiver] = drawablePrimitives;
+				} else if ( preparedLight.firstPrimitive[receiver]
+						+ preparedLight.primitiveCount[receiver]
+						!= drawablePrimitives ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE,
+						lightIndex, surfaceCursor, primitiveCursor );
+					return false;
+				}
+				preparedLight.primitiveCount[receiver]++;
 				surfaceDrawablePrimitives++;
 				lightDrawablePrimitives++;
 				drawablePrimitives++;
@@ -12256,13 +13911,480 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 					lightIndex );
 				return false;
 			}
+			if ( light->receiverShadowMode[receiver]
+					< CLASSIC_INTERACTION_SHADOW_NONE
+					|| light->receiverShadowMode[receiver]
+						>= CLASSIC_INTERACTION_SHADOW_MODE_COUNT ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MODE,
+					lightIndex );
+				return false;
+			}
+		}
+
+		int lightDrawableShadowCasters = 0;
+		int lightNoopShadowCasters = 0;
+		int lightLogicalVolumeDraws = 0;
+		int lightPreloadVolumeDraws = 0;
+		int lightShadowCasterTotal = 0;
+		int lightDrawableByChain[
+			CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ] = {};
+		int lightPreloadByChain[
+			CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ] = {};
+		for ( int chain = 0; chain < CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT;
+				++chain ) {
+			const int chainCount = light->shadowCasterCount[chain];
+			if ( chainCount < 0
+					|| chainCount > view.shadowCasterCount - shadowCasterCursor ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_RANGE,
+					lightIndex );
+				return false;
+			}
+			lightShadowCasterTotal += chainCount;
+			if ( chainCount <= 0 ) {
+				continue;
+			}
+			const classicInteractionDomainShadowChain_t shadowChain =
+				static_cast<classicInteractionDomainShadowChain_t>( chain );
+			const bool mapCasterChain =
+				RB_SharedWorldInteractionGLIsMapCasterChain( shadowChain );
+			const bool volumeChain =
+				RB_SharedWorldInteractionGLIsVolumeChain( shadowChain );
+			if ( !mapCasterChain && !volumeChain ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_RANGE,
+					lightIndex );
+				return false;
+			}
+			if ( mapCasterChain ) {
+				preparedLight.firstMapCaster[chain] = drawableMapCasters;
+			} else {
+				preparedLight.firstShadowCaster[chain] =
+					drawableShadowCasters;
+			}
+			for ( int chainCasterIndex = 0; chainCasterIndex < chainCount;
+					++chainCasterIndex ) {
+				const int viewCasterIndex = shadowCasterCursor;
+				const classicInteractionDomainShadowCaster_t *caster =
+					R_ClassicInteractionDomain_LightShadowCaster(
+						*light, shadowChain, chainCasterIndex );
+				const classicInteractionDomainShadowCaster_t *viewCaster =
+					R_ClassicInteractionDomain_ViewShadowCaster(
+						view, shadowCasterCursor );
+				if ( caster == NULL || caster != viewCaster
+						|| prepared.seenShadowCasters[shadowCasterCursor]
+						|| caster->legacyViewLight != light->legacyViewLight
+						|| caster->lightIndex != domainLightIndex
+						|| caster->legacyDrawSurf == NULL
+						|| caster->legacyDrawSurf->space == NULL
+						|| std::memcmp( caster->modelMatrix,
+							caster->legacyDrawSurf->space->modelMatrix,
+							sizeof( caster->modelMatrix ) ) != 0
+						|| std::memcmp( caster->modelViewMatrix,
+							caster->legacyDrawSurf->space->modelViewMatrix,
+							sizeof( caster->modelViewMatrix ) ) != 0
+						|| ( mapCasterChain
+							? !RB_SharedWorldInteractionGLMapCasterValuesValid(
+								*caster, shadowChain )
+							: !RB_SharedWorldInteractionGLShadowCasterValuesValid(
+								*caster, shadowChain ) ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_STATE,
+						lightIndex, -1, shadowCasterCursor );
+					return false;
+				}
+				prepared.seenShadowCasters[shadowCasterCursor] = true;
+				shadowCasterCursor++;
+				if ( caster->disposition
+						!= CLASSIC_INTERACTION_SHADOW_CASTER_DRAW ) {
+					lightNoopShadowCasters++;
+					noopShadowCasters++;
+					continue;
+				}
+
+				const drawSurf_t *shadowSurf = caster->legacyDrawSurf;
+				const srfTriangles_t *tri = mapCasterChain
+					? caster->legacyCasterGeometry : shadowSurf->geo;
+				if ( mapCasterChain ) {
+					const srfTriangles_t *sourceTri = shadowSurf->geo;
+					const srfTriangles_t *expectedTri = sourceTri != NULL
+						&& sourceTri->ambientSurface != NULL
+							? sourceTri->ambientSurface : sourceTri;
+					if ( tri == NULL || expectedTri != tri
+							|| shadowSurf->space == NULL
+							|| R_TriHasPrimBatchMesh( tri )
+							|| tri->numVerts != caster->vertexCount
+							|| tri->numIndexes != caster->selectedIndexCount
+							|| tri->numIndexes != caster->totalIndexCount
+							|| caster->vertexCount > idMath::INT_MAX
+								/ static_cast<int>( sizeof( idDrawVert ) )
+							|| caster->selectedIndexCount > idMath::INT_MAX
+								/ static_cast<int>( sizeof( glIndex_t ) )
+							|| !RB_SharedWorldInteractionGLCacheValid(
+								tri->ambientCache, false,
+								caster->vertexCount
+									* static_cast<int>( sizeof( idDrawVert ) ) ) ) {
+						failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+							RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_CASTER,
+							lightIndex, -1, viewCasterIndex );
+						return false;
+					}
+					R_TouchVertexCache( tri->ambientCache );
+					if ( tri->indexCache != NULL
+							&& !RB_SharedWorldInteractionGLCacheValid(
+								tri->indexCache, true,
+								caster->selectedIndexCount
+									* static_cast<int>( sizeof( glIndex_t ) ) ) ) {
+						failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+							RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_INDEX_CACHE,
+							lightIndex, -1, viewCasterIndex );
+						return false;
+					}
+					if ( tri->indexCache != NULL ) {
+						R_TouchVertexCache( tri->indexCache );
+					}
+					const bool useIndexCache = r_useIndexBuffers.GetBool()
+						&& tri->indexCache != NULL;
+					if ( !useIndexCache && tri->indexes == NULL ) {
+						failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+							RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_INDEX_CACHE,
+							lightIndex, -1, viewCasterIndex );
+						return false;
+					}
+
+					rbSharedWorldInteractionGLPreparedMapCaster_t &preparedCaster =
+						prepared.mapCasters[drawableMapCasters];
+					std::memset( &preparedCaster, 0, sizeof( preparedCaster ) );
+					preparedCaster.caster = caster;
+					preparedCaster.vertexBuffer = tri->ambientCache->vbo;
+					preparedCaster.vertexPointer =
+						RB_SharedWorldInteractionGLCachePointer( *tri->ambientCache );
+					preparedCaster.indexBuffer = useIndexCache
+						? tri->indexCache->vbo : 0;
+					preparedCaster.indexPointer = useIndexCache
+						? RB_SharedWorldInteractionGLCachePointer( *tri->indexCache )
+						: static_cast<const void *>( tri->indexes );
+					preparedCaster.vertexCount = caster->vertexCount;
+					preparedCaster.indexCount = caster->selectedIndexCount;
+					preparedCaster.indexCacheBacked = useIndexCache;
+					preparedCaster.firstAlphaStage = shadowAlphaStages;
+					for ( int alphaIndex = 0;
+							alphaIndex < caster->alphaStageCount; ++alphaIndex ) {
+						const classicInteractionDomainShadowAlphaStage_t *alpha =
+							R_ClassicInteractionDomain_ShadowAlphaStage(
+								*caster, alphaIndex );
+						idImage *alphaImage = NULL;
+						if ( alpha == NULL
+								|| shadowAlphaStages
+									>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES
+								|| !RB_SharedWorldInteractionGLShadowAlphaStageValuesValid(
+									*alpha, view.firstShadowCaster + viewCasterIndex )
+								|| !resolveTexture( alpha->textureResourceId,
+									alphaImage ) ) {
+							failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+								RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_ALPHA,
+								lightIndex, -1, viewCasterIndex );
+							return false;
+						}
+						prepared.shadowAlphaStages[shadowAlphaStages].stage = alpha;
+						prepared.shadowAlphaStages[shadowAlphaStages].image = alphaImage;
+						shadowAlphaStages++;
+						preparedCaster.alphaStageCount++;
+					}
+					preparedLight.mapCasterCount[chain]++;
+					drawableMapCasters++;
+					lightDrawableShadowCasters++;
+					lightDrawableByChain[chain]++;
+					drawableShadowCasters++;
+					continue;
+				}
+
+				int sealedIndexCount = -1;
+				if ( caster->indexSelection
+						== CLASSIC_INTERACTION_SHADOW_INDEX_FULL ) {
+					sealedIndexCount = tri != NULL ? tri->numIndexes : -1;
+				} else if ( caster->indexSelection
+						== CLASSIC_INTERACTION_SHADOW_INDEX_NO_FRONT_CAPS ) {
+					sealedIndexCount = tri != NULL
+						? tri->numShadowIndexesNoFrontCaps : -1;
+				} else if ( caster->indexSelection
+						== CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS ) {
+					sealedIndexCount = tri != NULL
+						? tri->numShadowIndexesNoCaps : -1;
+				}
+				if ( tri == NULL || shadowSurf->space == NULL
+						|| caster->legacyCasterGeometry != tri
+						|| R_TriHasPrimBatchMesh( tri )
+						|| tri->numVerts != caster->vertexCount
+						|| tri->numIndexes != caster->totalIndexCount
+						|| sealedIndexCount != caster->selectedIndexCount
+						|| caster->vertexCount > idMath::INT_MAX
+							/ static_cast<int>( sizeof( shadowCache_t ) )
+						|| caster->selectedIndexCount > idMath::INT_MAX
+							/ static_cast<int>( sizeof( glIndex_t ) ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_GEOMETRY,
+						lightIndex, -1, shadowCasterCursor - 1 );
+					return false;
+				}
+				// Vertex-program turbo volumes seal numVerts as the paired
+				// front/back stream already, while private projected volumes seal
+				// their explicit stream. In both cases numVerts is the exact cache
+				// record count consumed by the index buffer.
+				if ( !RB_SharedWorldInteractionGLCacheValid( tri->shadowCache,
+						false, caster->vertexCount
+							* static_cast<int>( sizeof( shadowCache_t ) ) ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_VERTEX_CACHE,
+						lightIndex, -1, shadowCasterCursor - 1 );
+					return false;
+				}
+				R_TouchVertexCache( tri->shadowCache );
+				if ( tri->indexCache != NULL
+						&& !RB_SharedWorldInteractionGLCacheValid( tri->indexCache,
+							true, caster->selectedIndexCount
+								* static_cast<int>( sizeof( glIndex_t ) ) ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_INDEX_CACHE,
+						lightIndex, -1, shadowCasterCursor - 1 );
+					return false;
+				}
+				if ( tri->indexCache != NULL ) {
+					R_TouchVertexCache( tri->indexCache );
+				}
+				const bool useIndexCache = r_useIndexBuffers.GetBool()
+					&& tri->indexCache != NULL;
+				if ( !useIndexCache && tri->indexes == NULL ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_INDEX_CACHE,
+						lightIndex, -1, shadowCasterCursor - 1 );
+					return false;
+				}
+
+				rbSharedWorldInteractionGLPreparedShadowCaster_t &preparedCaster =
+					prepared.shadowCasters[drawableShadowCasters];
+				std::memset( &preparedCaster, 0, sizeof( preparedCaster ) );
+				preparedCaster.caster = caster;
+				preparedCaster.vertexBuffer = tri->shadowCache->vbo;
+				preparedCaster.vertexPointer =
+					RB_SharedWorldInteractionGLCachePointer( *tri->shadowCache );
+				preparedCaster.indexBuffer = useIndexCache
+					? tri->indexCache->vbo : 0;
+				preparedCaster.indexPointer = useIndexCache
+					? RB_SharedWorldInteractionGLCachePointer( *tri->indexCache )
+					: static_cast<const void *>( tri->indexes );
+				preparedCaster.vertexCount = caster->vertexCount;
+				preparedCaster.indexCount = caster->selectedIndexCount;
+				preparedCaster.indexCacheBacked = useIndexCache;
+				preparedLight.shadowCasterCount[chain]++;
+				lightDrawableShadowCasters++;
+				lightDrawableByChain[chain]++;
+				drawableShadowCasters++;
+				if ( caster->preload ) {
+					lightPreloadByChain[chain]++;
+				}
+			}
+		}
+
+		for ( int receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+				receiver <= CLASSIC_INTERACTION_RECEIVER_GLOBAL; ++receiver ) {
+			const classicInteractionDomainShadowMapPass_t *mapPass =
+				R_ClassicInteractionDomain_LightShadowMapPass(
+					*light,
+					static_cast<classicInteractionDomainReceiver_t>( receiver ) );
+			const classicInteractionDomainShadowMode_t receiverMode =
+				light->receiverShadowMode[receiver];
+			const bool mappedReceiver =
+				receiverMode == CLASSIC_INTERACTION_SHADOW_PROJECTED
+				|| receiverMode == CLASSIC_INTERACTION_SHADOW_POINT
+				|| receiverMode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+			if ( mappedReceiver != ( mapPass != NULL ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_PASS,
+					lightIndex );
+				return false;
+			}
+			if ( mapPass == NULL ) {
+				continue;
+			}
+			if ( shadowMapPasses
+					>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES
+					|| !RB_SharedWorldInteractionGLMapPassValuesValid(
+						*light, *mapPass,
+						static_cast<classicInteractionDomainReceiver_t>( receiver ),
+						domainLightIndex ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SHADOW_MAP_PASS,
+					lightIndex );
+				return false;
+			}
+			const bool globalReceiver = receiver
+				== CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+			const bool expectedHasStatic =
+				light->shadowCasterCount[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC ]
+					+ ( globalReceiver ? light->shadowCasterCount[
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC ]
+						: 0 ) > 0;
+			const bool expectedHasDynamic =
+				light->shadowCasterCount[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC ]
+					+ ( globalReceiver ? light->shadowCasterCount[
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ]
+						: 0 ) > 0;
+			bool expectedHasAlpha = false;
+			for ( int chainIndex =
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC;
+					chainIndex
+						<= CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC;
+					++chainIndex ) {
+				const classicInteractionDomainShadowChain_t mapChain =
+					static_cast<classicInteractionDomainShadowChain_t>(
+						chainIndex );
+				if ( !globalReceiver
+						&& ( mapChain
+							== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC
+							|| mapChain
+								== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ) ) {
+					continue;
+				}
+				for ( int casterIndex = 0;
+						casterIndex < light->shadowCasterCount[mapChain];
+						++casterIndex ) {
+					const classicInteractionDomainShadowCaster_t *mapCaster =
+						R_ClassicInteractionDomain_LightShadowCaster(
+							*light, mapChain, casterIndex );
+					expectedHasAlpha = expectedHasAlpha
+						|| ( mapCaster != NULL
+							&& mapCaster->alphaStageCount > 0 );
+				}
+			}
+			const int expectedMapped =
+				light->shadowCasterCount[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC ]
+				+ light->shadowCasterCount[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC ]
+				+ ( globalReceiver
+					? light->shadowCasterCount[
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC ]
+						+ light->shadowCasterCount[
+							CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ]
+					: 0 );
+			const int expectedDrawableMapped =
+				lightDrawableByChain[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC ]
+				+ lightDrawableByChain[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC ]
+				+ ( globalReceiver
+					? lightDrawableByChain[
+						CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC ]
+						+ lightDrawableByChain[
+							CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC ]
+					: 0 );
+			const int expectedSupplement =
+				light->shadowCasterCount[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL ]
+				+ ( globalReceiver
+					? light->shadowCasterCount[
+						CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL ]
+					: 0 );
+			const int expectedDrawableSupplement =
+				lightDrawableByChain[
+					CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL ]
+				+ ( globalReceiver
+					? lightDrawableByChain[
+						CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL ]
+					: 0 );
+			if ( mapPass->hasStaticCasters != expectedHasStatic
+					|| mapPass->hasDynamicCasters != expectedHasDynamic
+					|| mapPass->hasAlphaCasters != expectedHasAlpha
+					|| mapPass->mappedCasterCount != expectedMapped
+					|| mapPass->drawableMappedCasters
+						!= expectedDrawableMapped
+					|| mapPass->noopMappedCasters
+						!= expectedMapped - expectedDrawableMapped
+					|| mapPass->supplementCasterCount
+						!= expectedSupplement
+					|| mapPass->drawableSupplementCasters
+						!= expectedDrawableSupplement
+					|| mapPass->noopSupplementCasters
+						!= expectedSupplement
+							- expectedDrawableSupplement ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE,
+					lightIndex );
+				return false;
+			}
+			preparedLight.shadowMapPass[receiver] = shadowMapPasses;
+			prepared.shadowMapPasses[shadowMapPasses].pass = mapPass;
+			if ( mapPass->disposition
+					== CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID ) {
+				hybridShadowPasses++;
+			}
+			shadowMapPasses++;
+		}
+		classicInteractionDomainShadowMode_t plannedVolumeMode =
+			CLASSIC_INTERACTION_SHADOW_NONE;
+		bool plannedVolumeIncludesLocal = false;
+		bool plannedVolumeSelected = false;
+		for ( int receiver = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+				receiver < CLASSIC_INTERACTION_RECEIVER_COUNT; ++receiver ) {
+			const classicInteractionDomainShadowMode_t mode =
+				light->receiverShadowMode[receiver];
+			const bool hybrid = mode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+			if ( mode != CLASSIC_INTERACTION_SHADOW_STENCIL && !hybrid ) {
+				continue;
+			}
+			plannedVolumeSelected = true;
+			const int globalChain = hybrid
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+			const int localChain = hybrid
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+			if ( plannedVolumeMode != mode ) {
+				lightLogicalVolumeDraws += lightDrawableByChain[globalChain];
+				lightPreloadVolumeDraws += lightPreloadByChain[globalChain];
+				plannedVolumeMode = mode;
+				plannedVolumeIncludesLocal = false;
+			}
+			if ( receiver != CLASSIC_INTERACTION_RECEIVER_LOCAL
+					&& !plannedVolumeIncludesLocal ) {
+				lightLogicalVolumeDraws += lightDrawableByChain[localChain];
+				lightPreloadVolumeDraws += lightPreloadByChain[localChain];
+				plannedVolumeIncludesLocal = true;
+			}
+		}
+		logicalVolumeDraws += lightLogicalVolumeDraws;
+		preloadVolumeDraws += lightPreloadVolumeDraws;
+		if ( lightShadowCasterTotal != light->shadowCasterTotal
+				|| lightDrawableShadowCasters != light->drawableShadowCasters
+				|| lightNoopShadowCasters != light->noopShadowCasters
+				|| lightLogicalVolumeDraws != light->logicalVolumeDraws
+				|| lightPreloadVolumeDraws != light->preloadVolumeDraws
+				|| light->clearStencil != plannedVolumeSelected ) {
+			failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+				RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE, lightIndex );
+			return false;
+		}
+		if ( lightShadowCasterTotal > 0 ) {
+			shadowLights++;
 		}
 	}
 
 	if ( surfaceCursor != view.surfaceCount
 			|| primitiveCursor != view.primitiveCount
 			|| drawablePrimitives != view.drawablePrimitiveCount
-			|| noopPrimitives != view.noopPrimitiveCount ) {
+			|| noopPrimitives != view.noopPrimitiveCount
+			|| shadowCasterCursor != view.shadowCasterCount
+			|| drawableShadowCasters != view.drawableShadowCasterCount
+			|| noopShadowCasters != view.noopShadowCasterCount
+			|| logicalVolumeDraws != view.logicalVolumeDrawCount
+			|| preloadVolumeDraws != view.preloadVolumeDrawCount
+			|| shadowLights != view.shadowLightCount
+			|| shadowMapPasses != view.shadowMapPassCount
+			|| hybridShadowPasses != view.hybridShadowPassCount ) {
 		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
 			RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE );
 		return false;
@@ -12283,6 +14405,21 @@ static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
 	prepared.primitiveCount = view.primitiveCount;
 	prepared.drawablePrimitiveCount = drawablePrimitives;
 	prepared.noopPrimitiveCount = noopPrimitives;
+	prepared.shadowCasterCount = view.shadowCasterCount;
+	prepared.drawableShadowCasterCount = drawableShadowCasters;
+	prepared.noopShadowCasterCount = noopShadowCasters;
+	prepared.logicalVolumeDrawCount = logicalVolumeDraws;
+	prepared.preloadVolumeDrawCount = preloadVolumeDraws;
+	prepared.mapCasterCount = drawableMapCasters;
+	prepared.shadowAlphaStageCount = shadowAlphaStages;
+	prepared.shadowMapPassCount = shadowMapPasses;
+	prepared.hybridShadowPassCount = hybridShadowPasses;
+	prepared.twoSidedStencil = view.preferTwoSidedStencil
+		&& glStencilOpSeparate != NULL && tr.stencilIncr == GL_INCR_WRAP_EXT;
+	if ( !RB_SharedWorldInteractionGLPreflightMapTransaction(
+			viewDef, prepared, failureDetail ) ) {
+		return false;
+	}
 	prepared.ready = true;
 	return true;
 }
@@ -12349,11 +14486,644 @@ static void RB_SharedWorldInteractionGLLoadPrimitiveParameters(
 	RB_ARB2_SetFragmentEnvParm( 1, specularColorX2 );
 }
 
-static void RB_SharedWorldInteractionGLRestoreState( void ) {
-	glDisable( GL_POLYGON_OFFSET_FILL );
+static void RB_SharedWorldInteractionGLBeginInteractionState( void ) {
+	RB_ARB2_InvalidateEnvParamCache();
+	glBindProgramARB( GL_VERTEX_PROGRAM_ARB, VPROG_INTERACTION );
+	glBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, FPROG_INTERACTION );
+	glEnable( GL_VERTEX_PROGRAM_ARB );
+	glEnable( GL_FRAGMENT_PROGRAM_ARB );
+	glDisableVertexAttribArrayARB( 1 );
+	glDisableVertexAttribArrayARB( 2 );
+	glDisableVertexAttribArrayARB( 5 );
+	glDisableVertexAttribArrayARB( 6 );
+	glDisableVertexAttribArrayARB( 7 );
+	glEnableVertexAttribArrayARB( 8 );
+	glEnableVertexAttribArrayARB( 9 );
+	glEnableVertexAttribArrayARB( 10 );
+	glEnableVertexAttribArrayARB( 11 );
+	glEnableClientState( GL_COLOR_ARRAY );
+	GL_SelectTextureNoClient( 6 );
+	globalImages->specularTableImage->Bind();
+}
+
+static void RB_SharedWorldInteractionGLDrawPrimitive(
+		const rbSharedWorldInteractionGLPreparedPrimitive_t &preparedPrimitive,
+		const classicInteractionDomainView_t &view,
+		const viewDef_t *viewDef ) {
+	const classicInteractionDomainPrimitive_t &primitive =
+		*preparedPrimitive.primitive;
+	backEnd.currentSpace = NULL;
+	glLoadMatrixf( primitive.modelViewMatrix );
+	if ( view.useScissor ) {
+		backEnd.currentScissor.x1 = primitive.scissorX1;
+		backEnd.currentScissor.y1 = primitive.scissorY1;
+		backEnd.currentScissor.x2 = primitive.scissorX2;
+		backEnd.currentScissor.y2 = primitive.scissorY2;
+		glScissor( viewDef->viewport.x1 + primitive.scissorX1,
+			viewDef->viewport.y1 + primitive.scissorY1,
+			primitive.scissorX2 + 1 - primitive.scissorX1,
+			primitive.scissorY2 + 1 - primitive.scissorY1 );
+	}
+	GL_State( preparedPrimitive.stateBits );
+	GL_Cull( preparedPrimitive.cullType );
+	idVertexCache::BindArrayBuffer( preparedPrimitive.vertexBuffer );
+	const void *ac = preparedPrimitive.vertexPointer;
+	glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_COLOR_OFFSET ) );
+	glVertexAttribPointerARB( 11, 3, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_NORMAL_OFFSET ) );
+	glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT1_OFFSET ) );
+	glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT0_OFFSET ) );
+	glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
+	glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
+
+	RB_SharedWorldInteractionGLLoadPrimitiveParameters( primitive );
+	GL_SelectTextureNoClient( 0 );
+	preparedPrimitive.normalImage->Bind();
+	GL_SelectTextureNoClient( 1 );
+	preparedPrimitive.bumpImage->Bind();
+	GL_SelectTextureNoClient( 2 );
+	preparedPrimitive.lightFalloffImage->Bind();
+	GL_SelectTextureNoClient( 3 );
+	preparedPrimitive.lightImage->Bind();
+	GL_SelectTextureNoClient( 4 );
+	preparedPrimitive.diffuseImage->Bind();
+	GL_SelectTextureNoClient( 5 );
+	preparedPrimitive.specularImage->Bind();
+
+	if ( primitive.polygonOffsetEnabled ) {
+		glPolygonOffset( primitive.polygonOffsetFactor,
+			primitive.polygonOffsetUnits );
+		glEnable( GL_POLYGON_OFFSET_FILL );
+	}
+	idVertexCache::BindIndexBuffer( preparedPrimitive.indexBuffer );
+	backEnd.pc.c_drawElements++;
+	backEnd.pc.c_drawIndexes += preparedPrimitive.indexCount;
+	backEnd.pc.c_drawVertexes += preparedPrimitive.vertexCount;
+	if ( preparedPrimitive.referencedIndexes ) {
+		backEnd.pc.c_drawRefIndexes += preparedPrimitive.indexCount;
+	}
+	if ( preparedPrimitive.referencedVertexes ) {
+		backEnd.pc.c_drawRefVertexes += preparedPrimitive.vertexCount;
+	}
+	if ( preparedPrimitive.indexCacheBacked ) {
+		backEnd.pc.c_vboIndexes += preparedPrimitive.indexCount;
+	}
+	glDrawElements( GL_TRIANGLES, preparedPrimitive.indexCount,
+		GL_INDEX_TYPE, preparedPrimitive.indexPointer );
+	if ( primitive.polygonOffsetEnabled ) {
+		glDisable( GL_POLYGON_OFFSET_FILL );
+	}
+}
+
+static int RB_SharedWorldInteractionGLDrawPrimitiveRange(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedLight_t &light,
+		classicInteractionDomainReceiver_t receiver,
+		const classicInteractionDomainView_t &view,
+		const viewDef_t *viewDef ) {
+	const int first = light.firstPrimitive[receiver];
+	const int count = light.primitiveCount[receiver];
+	for ( int i = 0; i < count; ++i ) {
+		RB_SharedWorldInteractionGLDrawPrimitive(
+			prepared.primitives[first + i], view, viewDef );
+	}
+	return count;
+}
+
+static void RB_SharedWorldInteractionGLSelectMapPass(
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	RB_SharedWorldInteractionGLActivateMapResource( preparedPass );
+	if ( !preparedPass.pointLight ) {
+		g_projectedShadowMapState = pass.projected.state;
+	}
+}
+
+static void RB_SharedWorldInteractionGLBeginMappedReceiver(
+		const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
+	const bool pointLight = preparedPass.pointLight;
+	glDisable( GL_VERTEX_PROGRAM_ARB );
+	glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	glUseProgramObjectARB( pointLight
+		? g_pointShadowMapProgram.programObject
+		: g_shadowMapProgram.programObject );
+	const GLint bumpMap = pointLight ? g_pointShadowMapProgram.bumpMap
+		: g_shadowMapProgram.bumpMap;
+	const GLint falloffMap = pointLight
+		? g_pointShadowMapProgram.lightFalloffMap
+		: g_shadowMapProgram.lightFalloffMap;
+	const GLint projectionMap = pointLight
+		? g_pointShadowMapProgram.lightProjectionMap
+		: g_shadowMapProgram.lightProjectionMap;
+	const GLint diffuseMap = pointLight ? g_pointShadowMapProgram.diffuseMap
+		: g_shadowMapProgram.diffuseMap;
+	const GLint specularMap = pointLight
+		? g_pointShadowMapProgram.specularMap
+		: g_shadowMapProgram.specularMap;
+	glUniform1iARB( bumpMap, 0 );
+	glUniform1iARB( falloffMap, 1 );
+	glUniform1iARB( projectionMap, 2 );
+	glUniform1iARB( diffuseMap, 3 );
+	glUniform1iARB( specularMap, 4 );
+	// The shared domain intentionally rejects translucent moment casters, but
+	// both mapped receiver programs still declare their three non-comparison
+	// moment samplers.  Keep them on a neutral unit distinct from the depth
+	// comparison sampler; leaving their default binding at unit zero makes the
+	// point program's sampler types conflict once unit five enables comparison.
+	for ( int i = 0; i < 3; ++i ) {
+		const GLint momentMap = pointLight
+			? g_pointShadowMapProgram.translucentShadowMap[i]
+			: g_shadowMapProgram.translucentShadowMap[i];
+		if ( momentMap >= 0 ) {
+			glUniform1iARB( momentMap, 6 );
+		}
+	}
+
+	if ( pointLight ) {
+		glUniform1iARB( g_pointShadowMapProgram.pointShadowMap, 5 );
+		float bias = pass.point.constantBias;
+		if ( !pass.point.depthCompare ) {
+			const float storageStep = pass.point.highPrecision
+				? 1.0f / 2048.0f : 1.0f / 65025.0f;
+			bias = Max( bias, storageStep * 1.5f );
+		}
+		glUniform1fARB( g_pointShadowMapProgram.shadowBias, bias );
+		glUniform1fARB( g_pointShadowMapProgram.shadowNormalBias,
+			pass.point.normalBias );
+		glUniform1fARB(
+			g_pointShadowMapProgram.pointShadowTexelDepthBias,
+			pass.point.texelBiasScale / Max( 1, pass.point.faceSize ) );
+		glUniform1fARB(
+			g_pointShadowMapProgram.pointShadowNormalOffsetWorld,
+			2.0f * pass.point.normalOffsetScale
+				/ Max( 1, pass.point.faceSize ) );
+		glUniform1fARB( g_pointShadowMapProgram.shadowFilterRadius,
+			pass.point.filterRadius );
+		glUniform1fARB( g_pointShadowMapProgram.shadowFilterTaps,
+			static_cast<float>( pass.point.filterTaps ) );
+		glUniform1fARB( g_pointShadowMapProgram.shadowFilterMode,
+			static_cast<float>( pass.point.filterMode ) );
+		glUniform1fARB( g_pointShadowMapProgram.shadowDebugMode, 0.0f );
+		glUniform1fARB(
+			g_pointShadowMapProgram.shadowReceiverDebugReason, 0.0f );
+		glUniform4fvARB( g_pointShadowMapProgram.globalLightOrigin, 1,
+			pass.point.lightOrigin );
+		glUniform1fARB( g_pointShadowMapProgram.pointShadowFar,
+			pass.point.farDistance );
+		glUniform1fARB( g_pointShadowMapProgram.pointShadowTexelScale,
+			2.0f / Max( 1, pass.point.faceSize ) );
+		glUniform1fARB( g_pointShadowMapProgram.pointShadowDepthMode,
+			pass.point.highPrecision ? 1.0f : 0.0f );
+		glUniform1fARB( g_pointShadowMapProgram.translucentShadowEnabled,
+			0.0f );
+		GL_SelectTextureNoClient( 5 );
+		idImage *sample = pass.point.depthCompare
+			? preparedPass.pointDepthImage
+			: preparedPass.pointColorImage;
+		sample->Bind();
+		glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE,
+			pass.point.depthCompare ? GL_COMPARE_R_TO_TEXTURE : GL_NONE );
+		if ( pass.point.depthCompare ) {
+			glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC,
+				GL_LEQUAL );
+			glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
+				GL_LINEAR );
+			glTexParameteri( GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER,
+				GL_LINEAR );
+		}
+	} else {
+		glUniform1iARB( g_shadowMapProgram.shadowMap, 5 );
+		const int atlasWidth = preparedPass.resourceWidth;
+		const int atlasHeight = preparedPass.resourceHeight;
+		const float texelSize[2] = {
+			1.0f / Max( 1, atlasWidth ),
+			1.0f / Max( 1, atlasHeight )
+		};
+		glUniform2fvARB( g_shadowMapProgram.shadowTexelSize, 1,
+			texelSize );
+		glUniform1fARB( g_shadowMapProgram.shadowBias,
+			pass.projected.constantBias );
+		glUniform1fARB( g_shadowMapProgram.shadowNormalBias,
+			pass.projected.normalBias );
+		glUniform1fvARB( g_shadowMapProgram.shadowTexelDepthBias,
+			SHADOWMAP_MAX_CASCADES,
+			pass.projected.state.texelDepthBias );
+		float normalOffsets[SHADOWMAP_MAX_CASCADES] = {};
+		for ( int i = 0; i < SHADOWMAP_MAX_CASCADES; ++i ) {
+			normalOffsets[i] = pass.projected.state.worldTexelSize[i]
+				* pass.projected.normalOffsetScale;
+		}
+		glUniform1fvARB( g_shadowMapProgram.shadowNormalOffsetWorld,
+			SHADOWMAP_MAX_CASCADES, normalOffsets );
+		glUniform1fARB( g_shadowMapProgram.shadowReceiverPlaneBias,
+			pass.projected.receiverPlaneBias ? 1.0f : 0.0f );
+		glUniform1fARB( g_shadowMapProgram.shadowFilterRadius,
+			pass.projected.filter.filterRadius );
+		glUniform1fARB( g_shadowMapProgram.shadowFilterTaps,
+			static_cast<float>( pass.projected.filter.filterTaps ) );
+		glUniform1fARB( g_shadowMapProgram.shadowFilterMode,
+			static_cast<float>( pass.projected.filter.filterMode ) );
+		glUniform1fARB( g_shadowMapProgram.shadowPCSSLightRadius,
+			pass.projected.filter.pcssLightRadius );
+		glUniform1fARB( g_shadowMapProgram.shadowPCSSMaxRadius,
+			pass.projected.filter.pcssMaxRadius );
+		const float slotU0 = preparedPass.projectedOriginX
+			/ static_cast<float>( atlasWidth );
+		const float slotV0 = preparedPass.projectedOriginY
+			/ static_cast<float>( atlasHeight );
+		const float slotSpanU = preparedPass.projectedSpanPixels
+			/ static_cast<float>( atlasWidth );
+		const float slotSpanV = preparedPass.projectedSpanPixels
+			/ static_cast<float>( atlasHeight );
+		float composedRects[SHADOWMAP_MAX_CASCADES][4] = {};
+		for ( int i = 0; i < SHADOWMAP_MAX_CASCADES; ++i ) {
+			const idVec4 &rect = pass.projected.state.atlasRect[i];
+			composedRects[i][0] = slotU0 + rect.x * slotSpanU;
+			composedRects[i][1] = slotV0 + rect.y * slotSpanV;
+			composedRects[i][2] = slotU0 + rect.z * slotSpanU;
+			composedRects[i][3] = slotV0 + rect.w * slotSpanV;
+		}
+		glUniform4fvARB( g_shadowMapProgram.shadowAtlasRect,
+			SHADOWMAP_MAX_CASCADES, composedRects[0] );
+		glUniform1fvARB( g_shadowMapProgram.shadowSplitDepths,
+			SHADOWMAP_MAX_CASCADES, pass.projected.state.splitDepths );
+		glUniform1fvARB( g_shadowMapProgram.shadowCascadeBiasScale,
+			SHADOWMAP_MAX_CASCADES, pass.projected.state.biasScale );
+		glUniform1iARB( g_shadowMapProgram.shadowCascadeCount,
+			pass.projected.state.cascadeCount );
+		glUniform1fARB( g_shadowMapProgram.shadowCascadeBlend,
+			pass.projected.cascadeBlend );
+		glUniform1fARB( g_shadowMapProgram.shadowDebugMode, 0.0f );
+		glUniform1fARB( g_shadowMapProgram.shadowReceiverDebugReason, 0.0f );
+		glUniform1fARB( g_shadowMapProgram.translucentShadowEnabled,
+			0.0f );
+		GL_SelectTextureNoClient( 5 );
+		preparedPass.projectedDepthImage->Bind();
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE,
+			pass.projected.depthCompare
+				? GL_COMPARE_R_TO_TEXTURE : GL_NONE );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+			pass.projected.depthCompare ? GL_LINEAR : GL_NEAREST );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+			pass.projected.depthCompare ? GL_LINEAR : GL_NEAREST );
+	}
+
+	for ( int unit = 6; unit <= 8 && unit < glConfig.maxTextureUnits;
+			++unit ) {
+		GL_SelectTextureNoClient( unit );
+		globalImages->BindNull();
+	}
+	const float neutralCel[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
+	if ( pointLight ) {
+		glUniform1fARB( g_pointShadowMapProgram.materialEnhanced, 0.0f );
+		glUniform1fARB( g_pointShadowMapProgram.materialNormalScale, 1.0f );
+		glUniform1fARB( g_pointShadowMapProgram.materialSpecularBoost, 1.0f );
+		glUniform1fARB( g_pointShadowMapProgram.materialFresnel, 0.0f );
+		glUniform4fvARB( g_pointShadowMapProgram.celParams, 1, neutralCel );
+	} else {
+		glUniform1fARB( g_shadowMapProgram.materialEnhanced, 0.0f );
+		glUniform1fARB( g_shadowMapProgram.materialNormalScale, 1.0f );
+		glUniform1fARB( g_shadowMapProgram.materialSpecularBoost, 1.0f );
+		glUniform1fARB( g_shadowMapProgram.materialFresnel, 0.0f );
+		glUniform4fvARB( g_shadowMapProgram.celParams, 1, neutralCel );
+	}
+	glStencilMask( 255 );
+	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
+	glEnableVertexAttribArrayARB( 8 );
+	glEnableVertexAttribArrayARB( 9 );
+	glEnableVertexAttribArrayARB( 10 );
+	glEnableVertexAttribArrayARB( 11 );
+	glEnableClientState( GL_COLOR_ARRAY );
+}
+
+static void RB_SharedWorldInteractionGLDrawMappedPrimitive(
+		const rbSharedWorldInteractionGLPreparedPrimitive_t &preparedPrimitive,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		const classicInteractionDomainView_t &view,
+		const viewDef_t *viewDef ) {
+	const classicInteractionDomainPrimitive_t &primitive =
+		*preparedPrimitive.primitive;
+	const bool pointLight = pass.point.valid;
+	glLoadMatrixf( primitive.modelViewMatrix );
+	if ( view.useScissor ) {
+		glScissor( viewDef->viewport.x1 + primitive.scissorX1,
+			viewDef->viewport.y1 + primitive.scissorY1,
+			primitive.scissorX2 + 1 - primitive.scissorX1,
+			primitive.scissorY2 + 1 - primitive.scissorY1 );
+	}
+	GL_State( preparedPrimitive.stateBits );
+	GL_Cull( preparedPrimitive.cullType );
+	idVertexCache::BindArrayBuffer( preparedPrimitive.vertexBuffer );
+	const void *ac = preparedPrimitive.vertexPointer;
+	glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_COLOR_OFFSET ) );
+	glVertexAttribPointerARB( 11, 3, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_NORMAL_OFFSET ) );
+	glVertexAttribPointerARB( 10, 3, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT1_OFFSET ) );
+	glVertexAttribPointerARB( 9, 3, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT0_OFFSET ) );
+	glVertexAttribPointerARB( 8, 2, GL_FLOAT, false, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
+	glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+		RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
+
+#define RB_SHARED_MAP_UNIFORM4( member, value ) \
+	glUniform4fvARB( pointLight ? g_pointShadowMapProgram.member \
+		: g_shadowMapProgram.member, 1, value )
+	RB_SHARED_MAP_UNIFORM4( localLightOrigin, primitive.localLightOrigin );
+	RB_SHARED_MAP_UNIFORM4( localViewOrigin, primitive.localViewOrigin );
+	RB_SHARED_MAP_UNIFORM4( lightProjectionS, primitive.lightProjection[0] );
+	RB_SHARED_MAP_UNIFORM4( lightProjectionT, primitive.lightProjection[1] );
+	RB_SHARED_MAP_UNIFORM4( lightProjectionQ, primitive.lightProjection[2] );
+	RB_SHARED_MAP_UNIFORM4( lightFalloffS, primitive.lightProjection[3] );
+	RB_SHARED_MAP_UNIFORM4( bumpMatrixS, primitive.bumpMatrix[0] );
+	RB_SHARED_MAP_UNIFORM4( bumpMatrixT, primitive.bumpMatrix[1] );
+	RB_SHARED_MAP_UNIFORM4( diffuseMatrixS, primitive.diffuseMatrix[0] );
+	RB_SHARED_MAP_UNIFORM4( diffuseMatrixT, primitive.diffuseMatrix[1] );
+	RB_SHARED_MAP_UNIFORM4( specularMatrixS, primitive.specularMatrix[0] );
+	RB_SHARED_MAP_UNIFORM4( specularMatrixT, primitive.specularMatrix[1] );
+	RB_SHARED_MAP_UNIFORM4( diffuseColor, primitive.diffuseColor );
+	RB_SHARED_MAP_UNIFORM4( specularColor, primitive.specularColor );
+	RB_SHARED_MAP_UNIFORM4( flatDiffuseParams, primitive.flatDiffuseParams );
+#undef RB_SHARED_MAP_UNIFORM4
+	float modulate = 0.0f;
+	float add = 1.0f;
+	if ( primitive.vertexColor == RENDERER_VERTEX_COLOR_MODULATE ) {
+		modulate = 1.0f;
+		add = 0.0f;
+	} else if ( primitive.vertexColor
+			== RENDERER_VERTEX_COLOR_INVERSE_MODULATE ) {
+		modulate = -1.0f;
+	}
+	const float vertexColorParams[2] = { modulate, add };
+	glUniform2fvARB( pointLight
+		? g_pointShadowMapProgram.vertexColorParams
+		: g_shadowMapProgram.vertexColorParams, 1, vertexColorParams );
+	if ( pointLight ) {
+		float row0[4];
+		float row1[4];
+		float row2[4];
+		RB_ShadowMapModelMatrixRows( primitive.modelMatrix,
+			row0, row1, row2 );
+		glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow0, 1, row0 );
+		glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow1, 1, row1 );
+		glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow2, 1, row2 );
+	} else {
+		float shadowRows[4][SHADOWMAP_MAX_CASCADES * 4] = {};
+		for ( int cascade = 0;
+				cascade < pass.projected.state.cascadeCount; ++cascade ) {
+			for ( int plane = 0; plane < 4; ++plane ) {
+				idPlane localPlane;
+				R_GlobalPlaneToLocal( primitive.modelMatrix,
+					pass.projected.state.clipPlanes[cascade][plane],
+					localPlane );
+				std::memcpy( &shadowRows[plane][cascade * 4],
+					localPlane.ToFloatPtr(), sizeof( float ) * 4 );
+			}
+		}
+		for ( int row = 0; row < 4; ++row ) {
+			glUniform4fvARB( g_shadowMapProgram.shadowRow[row],
+				pass.projected.state.cascadeCount, shadowRows[row] );
+		}
+	}
+	GL_SelectTextureNoClient( 0 );
+	preparedPrimitive.bumpImage->Bind();
+	GL_SelectTextureNoClient( 1 );
+	preparedPrimitive.lightFalloffImage->Bind();
+	GL_SelectTextureNoClient( 2 );
+	preparedPrimitive.lightImage->Bind();
+	GL_SelectTextureNoClient( 3 );
+	preparedPrimitive.diffuseImage->Bind();
+	GL_SelectTextureNoClient( 4 );
+	preparedPrimitive.specularImage->Bind();
+	if ( primitive.polygonOffsetEnabled ) {
+		glPolygonOffset( primitive.polygonOffsetFactor,
+			primitive.polygonOffsetUnits );
+		glEnable( GL_POLYGON_OFFSET_FILL );
+	}
+	idVertexCache::BindIndexBuffer( preparedPrimitive.indexBuffer );
+	backEnd.pc.c_drawElements++;
+	backEnd.pc.c_drawIndexes += preparedPrimitive.indexCount;
+	backEnd.pc.c_drawVertexes += preparedPrimitive.vertexCount;
+	if ( preparedPrimitive.referencedIndexes ) {
+		backEnd.pc.c_drawRefIndexes += preparedPrimitive.indexCount;
+	}
+	if ( preparedPrimitive.referencedVertexes ) {
+		backEnd.pc.c_drawRefVertexes += preparedPrimitive.vertexCount;
+	}
+	if ( preparedPrimitive.indexCacheBacked ) {
+		backEnd.pc.c_vboIndexes += preparedPrimitive.indexCount;
+	}
+	glDrawElements( GL_TRIANGLES, preparedPrimitive.indexCount,
+		GL_INDEX_TYPE, preparedPrimitive.indexPointer );
+	if ( primitive.polygonOffsetEnabled ) {
+		glDisable( GL_POLYGON_OFFSET_FILL );
+	}
+}
+
+static int RB_SharedWorldInteractionGLCommitMappedPass(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedLight_t &light,
+		classicInteractionDomainReceiver_t receiver,
+		const classicInteractionDomainView_t &view,
+		const viewDef_t *viewDef ) {
+	const int mapPassIndex = light.shadowMapPass[receiver ==
+		CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT
+			? CLASSIC_INTERACTION_RECEIVER_GLOBAL : receiver];
+	const rbSharedWorldInteractionGLPreparedMapPass_t &preparedPass =
+		prepared.shadowMapPasses[mapPassIndex];
+	RB_SharedWorldInteractionGLSelectMapPass( preparedPass );
+	RB_SharedWorldInteractionGLBeginMappedReceiver( preparedPass );
+	const int first = light.firstPrimitive[receiver];
+	const int count = light.primitiveCount[receiver];
+	for ( int i = 0; i < count; ++i ) {
+		RB_SharedWorldInteractionGLDrawMappedPrimitive(
+			prepared.primitives[first + i], *preparedPass.pass,
+			view, viewDef );
+	}
+	glDisableVertexAttribArrayARB( 8 );
+	glDisableVertexAttribArrayARB( 9 );
+	glDisableVertexAttribArrayARB( 10 );
+	glDisableVertexAttribArrayARB( 11 );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glUseProgramObjectARB( 0 );
+	// Exact shared-domain cache hits must count as live presentation just like
+	// the established ARB2 path.  Refresh residency only after the mapped pass
+	// has committed so a later whole-view preflight rejection cannot pin an
+	// entry which was never consumed.
+	if ( preparedPass.pointEntry != NULL ) {
+		preparedPass.pointEntry->lastUsedFrame = tr.frameCount;
+	} else if ( preparedPass.projectedEntry != NULL ) {
+		preparedPass.projectedEntry->lastUsedFrame = tr.frameCount;
+	}
+	return count;
+}
+
+static void RB_SharedWorldInteractionGLBeginShadowState(
+		const classicInteractionDomainView_t &view ) {
+	glDisableVertexAttribArrayARB( 8 );
+	glDisableVertexAttribArrayARB( 9 );
+	glDisableVertexAttribArrayARB( 10 );
+	glDisableVertexAttribArrayARB( 11 );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glDisable( GL_FRAGMENT_PROGRAM_ARB );
 	GL_SelectTextureNoClient( 6 );
 	globalImages->BindNull();
-	for ( int unit = 5; unit >= 1; --unit ) {
+	backEnd.glState.currenttmu = -1;
+	GL_SelectTexture( 0 );
+	globalImages->BindNull();
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	GL_State( GLS_DEPTHMASK | GLS_COLORMASK | GLS_ALPHAMASK
+		| GLS_DEPTHFUNC_LESS );
+	if ( view.shadowPolygonFactor != 0.0f
+			|| view.shadowPolygonUnits != 0.0f ) {
+		glPolygonOffset( view.shadowPolygonFactor, view.shadowPolygonUnits );
+		glEnable( GL_POLYGON_OFFSET_FILL );
+	}
+	glStencilMask( 255 );
+	glStencilFunc( GL_ALWAYS, 1, 255 );
+	if ( view.useDepthBounds ) {
+		glEnable( GL_DEPTH_BOUNDS_TEST_EXT );
+	}
+	if ( view.useShadowVertexProgram ) {
+		glBindProgramARB( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW );
+		glEnable( GL_VERTEX_PROGRAM_ARB );
+	} else {
+		glDisable( GL_VERTEX_PROGRAM_ARB );
+	}
+}
+
+static void RB_SharedWorldInteractionGLSubmitShadowElements(
+		const rbSharedWorldInteractionGLPreparedShadowCaster_t &preparedCaster ) {
+	backEnd.pc.c_shadowElements++;
+	backEnd.pc.c_shadowIndexes += preparedCaster.indexCount;
+	backEnd.pc.c_shadowVertexes += preparedCaster.vertexCount;
+	if ( preparedCaster.indexCacheBacked ) {
+		backEnd.pc.c_vboIndexes += preparedCaster.indexCount;
+	}
+	glDrawElements( GL_TRIANGLES, preparedCaster.indexCount, GL_INDEX_TYPE,
+		preparedCaster.indexPointer );
+}
+
+static void RB_SharedWorldInteractionGLDrawShadowCaster(
+		const rbSharedWorldInteractionGLPreparedShadowCaster_t &preparedCaster,
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const classicInteractionDomainView_t &view,
+		const viewDef_t *viewDef ) {
+	const classicInteractionDomainShadowCaster_t &caster =
+		*preparedCaster.caster;
+	backEnd.currentSpace = NULL;
+	glLoadMatrixf( caster.modelViewMatrix );
+	if ( view.useScissor ) {
+		backEnd.currentScissor.x1 = caster.scissorX1;
+		backEnd.currentScissor.y1 = caster.scissorY1;
+		backEnd.currentScissor.x2 = caster.scissorX2;
+		backEnd.currentScissor.y2 = caster.scissorY2;
+		glScissor( viewDef->viewport.x1 + caster.scissorX1,
+			viewDef->viewport.y1 + caster.scissorY1,
+			caster.scissorX2 + 1 - caster.scissorX1,
+			caster.scissorY2 + 1 - caster.scissorY1 );
+	}
+	if ( view.useDepthBounds ) {
+		glDepthBoundsEXT( caster.depthMin, caster.depthMax );
+	}
+	if ( view.useShadowVertexProgram ) {
+		glProgramEnvParameter4fvARB( GL_VERTEX_PROGRAM_ARB, PP_LIGHT_ORIGIN,
+			caster.localLightOrigin );
+	}
+	idVertexCache::BindArrayBuffer( preparedCaster.vertexBuffer );
+	glVertexPointer( 4, GL_FLOAT, sizeof( shadowCache_t ),
+		preparedCaster.vertexPointer );
+	idVertexCache::BindIndexBuffer( preparedCaster.indexBuffer );
+
+	if ( prepared.twoSidedStencil ) {
+		const GLenum frontSidedFace = viewDef->isMirror ? GL_FRONT : GL_BACK;
+		const GLenum backSidedFace = viewDef->isMirror ? GL_BACK : GL_FRONT;
+		GL_Cull( CT_TWO_SIDED );
+		if ( caster.preload ) {
+			glStencilOpSeparate( frontSidedFace, GL_KEEP,
+				tr.stencilDecr, tr.stencilDecr );
+			glStencilOpSeparate( backSidedFace, GL_KEEP,
+				tr.stencilIncr, tr.stencilIncr );
+			RB_SharedWorldInteractionGLSubmitShadowElements( preparedCaster );
+		}
+		glStencilOpSeparate( frontSidedFace, GL_KEEP, GL_KEEP,
+			tr.stencilIncr );
+		glStencilOpSeparate( backSidedFace, GL_KEEP, GL_KEEP,
+			tr.stencilDecr );
+		RB_SharedWorldInteractionGLSubmitShadowElements( preparedCaster );
+		return;
+	}
+
+	if ( caster.preload ) {
+		glStencilOp( GL_KEEP, tr.stencilDecr, tr.stencilDecr );
+		GL_Cull( CT_FRONT_SIDED );
+		RB_SharedWorldInteractionGLSubmitShadowElements( preparedCaster );
+		glStencilOp( GL_KEEP, tr.stencilIncr, tr.stencilIncr );
+		GL_Cull( CT_BACK_SIDED );
+		RB_SharedWorldInteractionGLSubmitShadowElements( preparedCaster );
+	}
+	glStencilOp( GL_KEEP, GL_KEEP, tr.stencilIncr );
+	GL_Cull( CT_FRONT_SIDED );
+	RB_SharedWorldInteractionGLSubmitShadowElements( preparedCaster );
+	glStencilOp( GL_KEEP, GL_KEEP, tr.stencilDecr );
+	GL_Cull( CT_BACK_SIDED );
+	RB_SharedWorldInteractionGLSubmitShadowElements( preparedCaster );
+}
+
+static void RB_SharedWorldInteractionGLEndShadowState(
+		const classicInteractionDomainView_t &view ) {
+	GL_Cull( CT_FRONT_SIDED );
+	if ( view.shadowPolygonFactor != 0.0f
+			|| view.shadowPolygonUnits != 0.0f ) {
+		glDisable( GL_POLYGON_OFFSET_FILL );
+	}
+	if ( view.useDepthBounds ) {
+		glDisable( GL_DEPTH_BOUNDS_TEST_EXT );
+	}
+	glStencilFunc( GL_GEQUAL, view.stencilReference, 255 );
+	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
+}
+
+static void RB_SharedWorldInteractionGLDrawShadowRange(
+		const rbSharedWorldInteractionGLPreparedView_t &prepared,
+		const rbSharedWorldInteractionGLPreparedLight_t &light,
+		int chain, const classicInteractionDomainView_t &view,
+		const viewDef_t *viewDef, int &logicalVolumeDraws,
+		int &preloadVolumeDraws ) {
+	const int count = light.shadowCasterCount[chain];
+	if ( count <= 0 ) {
+		return;
+	}
+	RB_SharedWorldInteractionGLBeginShadowState( view );
+	const int first = light.firstShadowCaster[chain];
+	for ( int i = 0; i < count; ++i ) {
+		const rbSharedWorldInteractionGLPreparedShadowCaster_t &caster =
+			prepared.shadowCasters[first + i];
+		RB_SharedWorldInteractionGLDrawShadowCaster(
+			caster, prepared, view, viewDef );
+		logicalVolumeDraws++;
+		preloadVolumeDraws += caster.caster->preload ? 1 : 0;
+	}
+	RB_SharedWorldInteractionGLEndShadowState( view );
+}
+
+static void RB_SharedWorldInteractionGLRestoreState( void ) {
+	glDisable( GL_POLYGON_OFFSET_FILL );
+	if ( glConfig.depthBoundsTestAvailable ) {
+		glDisable( GL_DEPTH_BOUNDS_TEST_EXT );
+	}
+	const int maxUnit = Min( 8, Min( glConfig.maxTextureUnits,
+		glConfig.maxTextureImageUnits ) - 1 );
+	for ( int unit = maxUnit; unit >= 1; --unit ) {
 		GL_SelectTextureNoClient( unit );
 		globalImages->BindNull();
 	}
@@ -12361,6 +15131,7 @@ static void RB_SharedWorldInteractionGLRestoreState( void ) {
 	GL_SelectTexture( 0 );
 	glDisable( GL_VERTEX_PROGRAM_ARB );
 	glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	glUseProgramObjectARB( 0 );
 	glDisableVertexAttribArrayARB( 8 );
 	glDisableVertexAttribArrayARB( 9 );
 	glDisableVertexAttribArrayARB( 10 );
@@ -12369,6 +15140,9 @@ static void RB_SharedWorldInteractionGLRestoreState( void ) {
 	glEnableClientState( GL_VERTEX_ARRAY );
 	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 	glStencilFunc( GL_ALWAYS, 128, 255 );
+	glStencilMask( 255 );
+	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
+	GL_Cull( CT_FRONT_SIDED );
 	backEnd.depthFunc = GLS_DEPTHFUNC_EQUAL;
 	backEnd.currentSpace = NULL;
 }
@@ -12391,111 +15165,148 @@ static bool RB_ARB2_DrawSharedInteractionView( const viewDef_t *viewDef,
 			RENDERER_STARTUP_PHASE_FIRST_ARB2_INTERACTION_HANDOFF );
 	}
 	RB_LogComment( "---------- RB_ARB2_DrawSharedInteractionView ----------\n" );
-	RB_ShadowMapStatsReset();
-	RB_ShadowMapDebugOverlayReset();
 	RB_ARB2_InvalidateEnvParamCache();
 	GL_SelectTexture( 0 );
 	glEnableClientState( GL_VERTEX_ARRAY );
 	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
-	glStencilFunc( GL_ALWAYS, 128, 255 );
-	glBindProgramARB( GL_VERTEX_PROGRAM_ARB, VPROG_INTERACTION );
-	glBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, FPROG_INTERACTION );
-	glEnable( GL_VERTEX_PROGRAM_ARB );
-	glEnable( GL_FRAGMENT_PROGRAM_ARB );
-	glDisableVertexAttribArrayARB( 1 );
-	glDisableVertexAttribArrayARB( 2 );
-	glDisableVertexAttribArrayARB( 5 );
-	glDisableVertexAttribArrayARB( 6 );
-	glDisableVertexAttribArrayARB( 7 );
-	glEnableVertexAttribArrayARB( 8 );
-	glEnableVertexAttribArrayARB( 9 );
-	glEnableVertexAttribArrayARB( 10 );
-	glEnableVertexAttribArrayARB( 11 );
-	glEnableClientState( GL_COLOR_ARRAY );
-	GL_SelectTextureNoClient( 6 );
-	globalImages->specularTableImage->Bind();
+	glClearStencil( view.stencilReference );
+	glStencilMask( 255 );
+	glStencilOp( GL_KEEP, GL_KEEP, GL_KEEP );
+	glStencilFunc( GL_ALWAYS, view.stencilReference, 255 );
 
 	int drawnPrimitives = 0;
-	for ( int primitiveIndex = 0;
-			primitiveIndex < prepared.drawablePrimitiveCount; ++primitiveIndex ) {
-		const rbSharedWorldInteractionGLPreparedPrimitive_t &preparedPrimitive =
-			prepared.primitives[primitiveIndex];
-		const classicInteractionDomainPrimitive_t &primitive =
-			*preparedPrimitive.primitive;
-		backEnd.currentSpace = NULL;
-		glLoadMatrixf( primitive.modelViewMatrix );
-		if ( r_useScissor.GetBool() ) {
-			backEnd.currentScissor.x1 = primitive.scissorX1;
-			backEnd.currentScissor.y1 = primitive.scissorY1;
-			backEnd.currentScissor.x2 = primitive.scissorX2;
-			backEnd.currentScissor.y2 = primitive.scissorY2;
-			glScissor( viewDef->viewport.x1 + primitive.scissorX1,
-				viewDef->viewport.y1 + primitive.scissorY1,
-				primitive.scissorX2 + 1 - primitive.scissorX1,
-				primitive.scissorY2 + 1 - primitive.scissorY1 );
-		}
-		GL_State( preparedPrimitive.stateBits );
-		GL_Cull( preparedPrimitive.cullType );
-		// Preflight sealed both the backing buffer and byte position.  Rebind
-		// those retained values directly; the committed draw never follows the
-		// legacy cache/material graph or repeats a fallible Position() lookup.
-		idVertexCache::BindArrayBuffer( preparedPrimitive.vertexBuffer );
-		const void *ac = preparedPrimitive.vertexPointer;
-		glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( idDrawVert ),
-			RB_DrawVertAttributePointer( ac, DRAWVERT_COLOR_OFFSET ) );
-		glVertexAttribPointerARB( 11, 3, GL_FLOAT, false,
-			sizeof( idDrawVert ),
-			RB_DrawVertAttributePointer( ac, DRAWVERT_NORMAL_OFFSET ) );
-		glVertexAttribPointerARB( 10, 3, GL_FLOAT, false,
-			sizeof( idDrawVert ),
-			RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT1_OFFSET ) );
-		glVertexAttribPointerARB( 9, 3, GL_FLOAT, false,
-			sizeof( idDrawVert ),
-			RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT0_OFFSET ) );
-		glVertexAttribPointerARB( 8, 2, GL_FLOAT, false,
-			sizeof( idDrawVert ),
-			RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
-		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
-			RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
+	const int submittedShadowCasters = prepared.drawableShadowCasterCount;
+	int logicalVolumeDraws = 0;
+	int preloadVolumeDraws = 0;
+	for ( int lightIndex = 0; lightIndex < prepared.lightCount; ++lightIndex ) {
+		const rbSharedWorldInteractionGLPreparedLight_t &preparedLight =
+			prepared.lights[lightIndex];
+		const classicInteractionDomainLight_t &light = *preparedLight.light;
+		backEnd.vLight = const_cast<viewLight_t *>( light.legacyViewLight );
+		classicInteractionDomainShadowMode_t preparedVolumeMode =
+			CLASSIC_INTERACTION_SHADOW_NONE;
+		bool preparedVolumeIncludesLocal = false;
+		const auto clearLightStencil = [&]() {
+			backEnd.currentScissor.x1 = light.scissorX1;
+			backEnd.currentScissor.y1 = light.scissorY1;
+			backEnd.currentScissor.x2 = light.scissorX2;
+			backEnd.currentScissor.y2 = light.scissorY2;
+			if ( view.useScissor ) {
+				glScissor( viewDef->viewport.x1 + light.scissorX1,
+					viewDef->viewport.y1 + light.scissorY1,
+					light.scissorX2 + 1 - light.scissorX1,
+					light.scissorY2 + 1 - light.scissorY1 );
+			}
+			glClear( GL_STENCIL_BUFFER_BIT );
+		};
+		const auto drawOrdinaryReceiver = [&](
+				classicInteractionDomainReceiver_t receiver ) {
+			if ( preparedLight.primitiveCount[receiver] <= 0 ) {
+				return;
+			}
+			RB_SharedWorldInteractionGLBeginInteractionState();
+			drawnPrimitives += RB_SharedWorldInteractionGLDrawPrimitiveRange(
+				prepared, preparedLight, receiver, view, viewDef );
+		};
+		const auto mappedMode = []( classicInteractionDomainShadowMode_t mode ) {
+			return mode == CLASSIC_INTERACTION_SHADOW_PROJECTED
+				|| mode == CLASSIC_INTERACTION_SHADOW_POINT
+				|| mode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+		};
+		const auto prepareVolumeState = [&] (
+				classicInteractionDomainShadowMode_t mode,
+				bool includeLocal ) {
+			const bool hybrid = mode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+			if ( mode != CLASSIC_INTERACTION_SHADOW_STENCIL && !hybrid ) {
+				return;
+			}
+			if ( preparedVolumeMode != mode ) {
+				clearLightStencil();
+				RB_SharedWorldInteractionGLDrawShadowRange( prepared,
+					preparedLight, hybrid
+						? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+						: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL,
+					view, viewDef, logicalVolumeDraws,
+					preloadVolumeDraws );
+				preparedVolumeMode = mode;
+				preparedVolumeIncludesLocal = false;
+			}
+			if ( includeLocal && !preparedVolumeIncludesLocal ) {
+				RB_SharedWorldInteractionGLDrawShadowRange( prepared,
+					preparedLight, hybrid
+						? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+						: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL,
+					view, viewDef, logicalVolumeDraws,
+					preloadVolumeDraws );
+				preparedVolumeIncludesLocal = true;
+			}
+		};
 
-		RB_SharedWorldInteractionGLLoadPrimitiveParameters( primitive );
-		GL_SelectTextureNoClient( 0 );
-		preparedPrimitive.normalImage->Bind();
-		GL_SelectTextureNoClient( 1 );
-		preparedPrimitive.bumpImage->Bind();
-		GL_SelectTextureNoClient( 2 );
-		preparedPrimitive.lightFalloffImage->Bind();
-		GL_SelectTextureNoClient( 3 );
-		preparedPrimitive.lightImage->Bind();
-		GL_SelectTextureNoClient( 4 );
-		preparedPrimitive.diffuseImage->Bind();
-		GL_SelectTextureNoClient( 5 );
-		preparedPrimitive.specularImage->Bind();
+		const classicInteractionDomainShadowMode_t localMode =
+			light.receiverShadowMode[CLASSIC_INTERACTION_RECEIVER_LOCAL];
+		if ( localMode == CLASSIC_INTERACTION_SHADOW_STENCIL ) {
+			prepareVolumeState( localMode, false );
+			glStencilFunc( GL_GEQUAL, view.stencilReference, 255 );
+			drawOrdinaryReceiver( CLASSIC_INTERACTION_RECEIVER_LOCAL );
+		} else if ( mappedMode( localMode ) ) {
+			if ( localMode == CLASSIC_INTERACTION_SHADOW_HYBRID ) {
+				prepareVolumeState( localMode, false );
+				glStencilFunc( GL_GEQUAL, view.stencilReference, 255 );
+			} else {
+				glStencilFunc( GL_ALWAYS, view.stencilReference, 255 );
+			}
+			drawnPrimitives += RB_SharedWorldInteractionGLCommitMappedPass(
+				prepared, preparedLight,
+				CLASSIC_INTERACTION_RECEIVER_LOCAL, view, viewDef );
+		} else {
+			glStencilFunc( GL_ALWAYS, view.stencilReference, 255 );
+			drawOrdinaryReceiver( CLASSIC_INTERACTION_RECEIVER_LOCAL );
+		}
 
-		if ( primitive.polygonOffsetEnabled ) {
-			glPolygonOffset( primitive.polygonOffsetFactor,
-				primitive.polygonOffsetUnits );
-			glEnable( GL_POLYGON_OFFSET_FILL );
+		const classicInteractionDomainShadowMode_t globalMode =
+			light.receiverShadowMode[CLASSIC_INTERACTION_RECEIVER_GLOBAL];
+		if ( globalMode == CLASSIC_INTERACTION_SHADOW_STENCIL ) {
+			prepareVolumeState( globalMode, true );
+			glStencilFunc( GL_GEQUAL, view.stencilReference, 255 );
+			drawOrdinaryReceiver( CLASSIC_INTERACTION_RECEIVER_GLOBAL );
+		} else if ( mappedMode( globalMode ) ) {
+			if ( globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID ) {
+				prepareVolumeState( globalMode, true );
+				glStencilFunc( GL_GEQUAL, view.stencilReference, 255 );
+			} else {
+				glStencilFunc( GL_ALWAYS, view.stencilReference, 255 );
+			}
+			drawnPrimitives += RB_SharedWorldInteractionGLCommitMappedPass(
+				prepared, preparedLight,
+				CLASSIC_INTERACTION_RECEIVER_GLOBAL, view, viewDef );
+		} else {
+			glStencilFunc( GL_ALWAYS, view.stencilReference, 255 );
+			drawOrdinaryReceiver( CLASSIC_INTERACTION_RECEIVER_GLOBAL );
 		}
-		idVertexCache::BindIndexBuffer( preparedPrimitive.indexBuffer );
-		backEnd.pc.c_drawElements++;
-		backEnd.pc.c_drawIndexes += preparedPrimitive.indexCount;
-		backEnd.pc.c_drawVertexes += preparedPrimitive.vertexCount;
-		if ( preparedPrimitive.referencedIndexes ) {
-			backEnd.pc.c_drawRefIndexes += preparedPrimitive.indexCount;
+
+		const classicInteractionDomainShadowMode_t translucentMode =
+			light.receiverShadowMode[
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT];
+		if ( mappedMode( translucentMode ) ) {
+			if ( translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID ) {
+				prepareVolumeState( translucentMode, true );
+			}
+			glStencilFunc( translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? GL_GEQUAL : GL_ALWAYS,
+				view.stencilReference, 255 );
+			drawnPrimitives += RB_SharedWorldInteractionGLCommitMappedPass(
+				prepared, preparedLight,
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT, view, viewDef );
+		} else if ( translucentMode == CLASSIC_INTERACTION_SHADOW_STENCIL ) {
+			prepareVolumeState( translucentMode, true );
+			glStencilFunc( GL_GEQUAL, view.stencilReference, 255 );
+			drawOrdinaryReceiver(
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT );
+		} else {
+			glStencilFunc( GL_ALWAYS, view.stencilReference, 255 );
+			drawOrdinaryReceiver(
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT );
 		}
-		if ( preparedPrimitive.referencedVertexes ) {
-			backEnd.pc.c_drawRefVertexes += preparedPrimitive.vertexCount;
-		}
-		if ( preparedPrimitive.indexCacheBacked ) {
-			backEnd.pc.c_vboIndexes += preparedPrimitive.indexCount;
-		}
-		glDrawElements( GL_TRIANGLES, preparedPrimitive.indexCount,
-			GL_INDEX_TYPE, preparedPrimitive.indexPointer );
-		if ( primitive.polygonOffsetEnabled ) {
-			glDisable( GL_POLYGON_OFFSET_FILL );
-		}
-		drawnPrimitives++;
 	}
 
 	RB_SharedWorldInteractionGLRestoreState();
@@ -12503,13 +15314,18 @@ static bool RB_ARB2_DrawSharedInteractionView( const viewDef_t *viewDef,
 	RB_ShadowMapDebugOverlayDraw();
 	const bool coverageRecorded = R_ClassicInteractionDomain_RecordOwned(
 		viewDef, CLASSIC_INTERACTION_BACKEND_GL, drawnPrimitives,
-		prepared.noopPrimitiveCount );
+		prepared.noopPrimitiveCount, submittedShadowCasters,
+		prepared.noopShadowCasterCount, logicalVolumeDraws,
+		preloadVolumeDraws, prepared.shadowMapPassCount,
+		prepared.hybridShadowPassCount );
 	if ( !coverageRecorded ) {
 		// The framebuffer is already committed.  Report the contract violation,
 		// but never render the classic stream too.
-		common->Warning( "RB_ARB2_DrawSharedInteractionView: GL ownership coverage rejected after committed draw (lights=%d surfaces=%d primitives=%d drawn=%d noop=%d hash=%llu)",
+		common->Warning( "RB_ARB2_DrawSharedInteractionView: GL ownership coverage rejected after committed draw (lights=%d surfaces=%d primitives=%d drawn=%d noop=%d shadowCasters=%d shadowNoop=%d volumes=%d preloads=%d hash=%llu)",
 			prepared.lightCount, prepared.surfaceCount, prepared.primitiveCount,
 			drawnPrimitives, prepared.noopPrimitiveCount,
+			submittedShadowCasters, prepared.noopShadowCasterCount,
+			logicalVolumeDraws, preloadVolumeDraws,
 			static_cast<unsigned long long>( prepared.hash ) );
 	}
 	return true;

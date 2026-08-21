@@ -5,6 +5,7 @@
 #define __CLASSIC_INTERACTION_DOMAIN_H__
 
 #include "MaterialResourceTable.h"
+#include "ShadowMapProjected.h"
 
 /*
 ===============================================================================
@@ -12,15 +13,17 @@
 	Shared whole-view ownership contract for classic fixed interaction lighting.
 
 	Preparation is transactional per ordinary root 3D view.  A ready view owns
-	the complete unshadowed fixed-classic light -> local/global/translucent
+	the complete fixed-classic light -> shadow caster -> local/global/translucent
 	receiver -> primitive stream in source order.  Every value needed by a
-	backend is sealed here; the retained drawSurf pointer is a geometry bridge,
-	not permission to reread material stages or shader registers.
+	backend is sealed here; retained legacy pointers are geometry/identity
+	bridges, not permission to reread material stages or shader registers.
 
-	Shadows, custom lighting, deforms, skinning, depth hacks, mutable resources,
-	and renderer-specific interaction variants are explicit whole-view rollback
-	boundaries.  A failed view publishes no light, surface, primitive, or texture
-	range, so the unchanged classic renderer can execute it exactly once.
+	Unsupported shadow-map caster variants (currently translucent moments),
+	custom lighting, deforms, GPU-palette skinning, depth hacks, mutable resources, and
+	renderer-specific interaction variants are explicit whole-view rollback
+	boundaries. A failed view publishes no light, shadow,
+	surface, primitive, alpha-stage, or texture range, so the unchanged classic
+	renderer can execute it exactly once.
 
 ===============================================================================
 */
@@ -30,6 +33,11 @@ const int CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS = SCENE_PACKET_MAX_DRAWS;
 const int CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES = SCENE_PACKET_MAX_DRAWS;
 const int CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES = SCENE_PACKET_MAX_DRAWS * 4;
 const int CLASSIC_INTERACTION_DOMAIN_MAX_TEXTURES = SCENE_PACKET_MAX_DRAWS * 2;
+const int CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS = SCENE_PACKET_MAX_DRAWS;
+const int CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES =
+	SCENE_PACKET_MAX_DRAWS * 2;
+const int CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES =
+	CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS * 2;
 
 enum classicInteractionDomainReceiver_t {
 	CLASSIC_INTERACTION_RECEIVER_LOCAL = 0,
@@ -53,6 +61,50 @@ enum classicInteractionDomainDepth_t {
 	CLASSIC_INTERACTION_DEPTH_COUNT
 };
 
+enum classicInteractionDomainShadowMode_t {
+	CLASSIC_INTERACTION_SHADOW_NONE = 0,
+	CLASSIC_INTERACTION_SHADOW_STENCIL,
+	CLASSIC_INTERACTION_SHADOW_PROJECTED,
+	CLASSIC_INTERACTION_SHADOW_POINT,
+	CLASSIC_INTERACTION_SHADOW_HYBRID,
+	CLASSIC_INTERACTION_SHADOW_MODE_COUNT
+};
+
+enum classicInteractionDomainShadowChain_t {
+	CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL = 0,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_TRANSLUCENT,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_TRANSLUCENT,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL,
+	CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT
+};
+
+enum classicInteractionDomainShadowDisposition_t {
+	CLASSIC_INTERACTION_SHADOW_CASTER_DRAW = 0,
+	CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY,
+	CLASSIC_INTERACTION_SHADOW_CASTER_DISPOSITION_COUNT
+};
+
+enum classicInteractionDomainShadowIndexSelection_t {
+	CLASSIC_INTERACTION_SHADOW_INDEX_FULL = 0,
+	CLASSIC_INTERACTION_SHADOW_INDEX_NO_FRONT_CAPS,
+	CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS,
+	CLASSIC_INTERACTION_SHADOW_INDEX_AMBIENT,
+	CLASSIC_INTERACTION_SHADOW_INDEX_SELECTION_COUNT
+};
+
+enum classicInteractionDomainShadowMapPassDisposition_t {
+	CLASSIC_INTERACTION_SHADOW_MAP_PASS_UNUSED = 0,
+	CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED,
+	CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID,
+	CLASSIC_INTERACTION_SHADOW_MAP_PASS_DISPOSITION_COUNT
+};
+
 enum classicInteractionDomainFailure_t {
 	CLASSIC_INTERACTION_FAILURE_NONE = 0,
 	CLASSIC_INTERACTION_FAILURE_UNAVAILABLE,
@@ -63,6 +115,8 @@ enum classicInteractionDomainFailure_t {
 	CLASSIC_INTERACTION_FAILURE_LIGHT_POOL_OVERFLOW,
 	CLASSIC_INTERACTION_FAILURE_SURFACE_POOL_OVERFLOW,
 	CLASSIC_INTERACTION_FAILURE_PRIMITIVE_POOL_OVERFLOW,
+	CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW,
+	CLASSIC_INTERACTION_FAILURE_SHADOW_ALPHA_STAGE_POOL_OVERFLOW,
 	CLASSIC_INTERACTION_FAILURE_TEXTURE_POOL_OVERFLOW,
 	CLASSIC_INTERACTION_FAILURE_UNSUPPORTED_VIEW,
 	CLASSIC_INTERACTION_FAILURE_INVALID_SCENE_RANGE,
@@ -78,6 +132,9 @@ enum classicInteractionDomainFailure_t {
 	CLASSIC_INTERACTION_FAILURE_REGISTER_OUT_OF_RANGE,
 	CLASSIC_INTERACTION_FAILURE_NONFINITE_VALUE,
 	CLASSIC_INTERACTION_FAILURE_SHADOWS,
+	CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+	CLASSIC_INTERACTION_FAILURE_SHADOW_PACKET_MISMATCH,
+	CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
 	CLASSIC_INTERACTION_FAILURE_CUSTOM_LIGHTING,
 	CLASSIC_INTERACTION_FAILURE_DEFORM,
 	CLASSIC_INTERACTION_FAILURE_SKINNING,
@@ -125,6 +182,141 @@ typedef struct classicInteractionDomainTexture_s {
 	bool			mutableImage;
 } classicInteractionDomainTexture_t;
 
+typedef struct classicInteractionDomainShadowAlphaStage_s {
+	int			casterIndex;
+	int			stageIndex;
+	int			alphaTestMode;
+	float			alphaTestValue;
+	float			alphaScale;
+	float			alphaHashMode;
+	float			textureMatrix[ 2 ][ 4 ];
+	std::uint64_t	textureResourceId;
+	std::uint64_t	hash;
+} classicInteractionDomainShadowAlphaStage_t;
+
+typedef struct classicInteractionDomainShadowCaster_s {
+	// Identity/geometry bridges only after publication.
+	const drawSurf_t		*legacyDrawSurf;
+	const viewLight_t	*legacyViewLight;
+	const srfTriangles_t	*legacyCasterGeometry;
+	int			drawPacketIndex;
+	int			lightIndex;
+	int			sourceOrdinal;
+	int			chainOrdinal;
+	int			geometryRecordIndex;
+	int			instanceRecordIndex;
+	int			materialTableRecordIndex;
+	int			materialId;
+	std::uint32_t		tableGeneration;
+	classicInteractionDomainShadowChain_t chain;
+	classicInteractionDomainShadowDisposition_t disposition;
+	classicInteractionDomainShadowIndexSelection_t indexSelection;
+	rendererCullMode_t	cull;
+	int			materialCoverage;
+	int			firstAlphaStage;
+	int			alphaStageCount;
+	int			vertexCount;
+	int			totalIndexCount;
+	int			selectedIndexCount;
+	int			scissorX1;
+	int			scissorY1;
+	int			scissorX2;
+	int			scissorY2;
+	float			depthMin;
+	float			depthMax;
+	float			localLightOrigin[ 4 ];
+	float			modelMatrix[ 16 ];
+	float			modelViewMatrix[ 16 ];
+	float			boundsMin[ 3 ];
+	float			boundsMax[ 3 ];
+	bool			external;
+	bool			preload;
+	bool			ambientGeometry;
+	bool			dynamicCaster;
+	bool			translucentCaster;
+	std::uint64_t		hash;
+} classicInteractionDomainShadowCaster_t;
+
+// The shared classifier and fitter build projected state exactly once. Both
+// backends consume these sealed clip, crop, split, filtering and bias values.
+typedef struct classicInteractionDomainShadowProjectedState_s {
+	shadowMapProjectedLightState_t state;
+	shadowMapProjectedFilterSettings_t filter;
+	float		constantBias;
+	float		normalBias;
+	float		normalOffsetScale;
+	float		cascadeBlend;
+	float		texelBiasScale;
+	bool		depthCompare;
+	bool		receiverPlaneBias;
+} classicInteractionDomainShadowProjectedState_t;
+
+typedef struct classicInteractionDomainShadowPointState_s {
+	bool		valid;
+	int		faceCount;
+	int		faceSize;
+	float		lightOrigin[ 4 ];
+	float		farDistance;
+	float		constantBias;
+	float		normalBias;
+	float		normalOffsetScale;
+	float		texelBiasScale;
+	float		filterRadius;
+	int		filterTaps;
+	int		filterMode;
+	bool		depthCompare;
+	bool		highPrecision;
+} classicInteractionDomainShadowPointState_t;
+
+// A semantic resource plan is immutable and backend-neutral. resourcePlanId
+// is a frame identity rather than an API texture handle: GL and Vulkan reserve
+// their own physical image only after proving that it implements this record.
+typedef struct classicInteractionDomainShadowMapPass_s {
+	const viewLight_t	*legacyViewLight;
+	int			lightIndex;
+	classicInteractionDomainReceiver_t receiver;
+	classicInteractionDomainReceiver_t resourceOwner;
+	classicInteractionDomainShadowMapPassDisposition_t disposition;
+	classicInteractionDomainShadowMode_t mode;
+	shadowMapLightClass_t	lightClass;
+	int			receiverMask;
+	int			mappedCasterCount;
+	int			supplementCasterCount;
+	int			drawableMappedCasters;
+	int			noopMappedCasters;
+	int			drawableSupplementCasters;
+	int			noopSupplementCasters;
+	int			casterSignature;
+	int			incompleteMapMask;
+	int			incompleteStencilMask;
+	int			hybridIncompleteMask;
+	int			prelightMapMissingMask;
+	int			prelightStencilRequiredMask;
+	int			prelightStencilReadyMask;
+	std::uint64_t		resourcePlanId;
+	std::uint32_t		resourceGeneration;
+	bool			resourceAlias;
+	bool			mapRequired;
+	bool			mapComplete;
+	bool			stencilComplete;
+	bool			hybridComplete;
+	bool			hasStaticCasters;
+	bool			hasDynamicCasters;
+	bool			hasAlphaCasters;
+	bool			hasTranslucentCasters;
+	bool			allowCacheReuse;
+	bool			allowCacheUpdate;
+	bool			allowScratch;
+	bool			hashedAlpha;
+	bool			stableAlphaHash;
+	int			casterCullMode;
+	float			polygonFactor;
+	float			polygonOffset;
+	classicInteractionDomainShadowProjectedState_t projected;
+	classicInteractionDomainShadowPointState_t point;
+	std::uint64_t		hash;
+} classicInteractionDomainShadowMapPass_t;
+
 typedef struct classicInteractionDomainPrimitive_s {
 	// Geometry/identity bridges only.  Backends must not follow these to stages
 	// or register arrays.
@@ -168,6 +360,7 @@ typedef struct classicInteractionDomainPrimitive_s {
 	float			bumpMatrix[ 2 ][ 4 ];
 	float			diffuseMatrix[ 2 ][ 4 ];
 	float			specularMatrix[ 2 ][ 4 ];
+	float			modelMatrix[ 16 ];
 	float			modelViewMatrix[ 16 ];
 	std::uint64_t		hash;
 } classicInteractionDomainPrimitive_t;
@@ -215,6 +408,18 @@ typedef struct classicInteractionDomainLight_s {
 	int			inactiveLightStageCount;
 	int			receiverSurfaceCount[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
 	int			receiverPrimitiveCount[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
+	int			firstShadowCaster[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	int			shadowCasterCount[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	// LOCAL and GLOBAL own physical map resources. TRANSLUCENT, when enabled,
+	// samples the sealed GLOBAL pass and therefore has no third allocation.
+	int			shadowMapPassIndex[ 2 ];
+	classicInteractionDomainShadowMode_t receiverShadowMode[
+		CLASSIC_INTERACTION_RECEIVER_COUNT ];
+	int			shadowCasterTotal;
+	int			drawableShadowCasters;
+	int			noopShadowCasters;
+	int			logicalVolumeDraws;
+	int			preloadVolumeDraws;
 	int			scissorX1;
 	int			scissorY1;
 	int			scissorX2;
@@ -226,6 +431,7 @@ typedef struct classicInteractionDomainLight_s {
 	bool			parallel;
 	bool			ambientLight;
 	bool			shadowClassified;
+	bool			clearStencil;
 	std::uint64_t		hash;
 } classicInteractionDomainLight_t;
 
@@ -241,7 +447,19 @@ typedef struct classicInteractionDomainBackendCoverage_s {
 	int		ownedDrawablePrimitives;
 	int		fallbackDrawablePrimitives;
 	int		ownedNoopPrimitives;
+	int		ownedShadowCasters;
+	int		ownedNoopShadowCasters;
+	int		ownedLogicalVolumeDraws;
+	int		ownedPreloadVolumeDraws;
+	int		ownedShadowMapPasses;
+	int		ownedHybridPasses;
 	int		fallbackNoopPrimitives;
+	int		fallbackShadowCasters;
+	int		fallbackNoopShadowCasters;
+	int		fallbackLogicalVolumeDraws;
+	int		fallbackPreloadVolumeDraws;
+	int		fallbackShadowMapPasses;
+	int		fallbackHybridPasses;
 	int		coverageMismatches;
 	int		duplicateReports;
 	int		untrackedFallbacks;
@@ -251,6 +469,8 @@ typedef struct classicInteractionDomainView_s {
 	const viewDef_t		*viewDef;
 	int			scenePacketIndex;
 	int			interactionPassPacketIndex;
+	int			stencilShadowPassPacketIndex;
+	int			shadowMapPassPacketIndex;
 	std::uint32_t		tableGeneration;
 	int			firstLight;
 	int			lightCount;
@@ -260,7 +480,23 @@ typedef struct classicInteractionDomainView_s {
 	int			primitiveCount;
 	int			drawablePrimitiveCount;
 	int			noopPrimitiveCount;
+	int			firstShadowCaster;
+	int			shadowCasterCount;
+	int			firstShadowMapPass;
+	int			drawableShadowCasterCount;
+	int			noopShadowCasterCount;
+	int			logicalVolumeDrawCount;
+	int			preloadVolumeDrawCount;
+	int			shadowLightCount;
+	int			shadowMapPassCount;
+	int			hybridShadowPassCount;
+	int			projectedShadowMapPassCount;
+	int			csmShadowMapPassCount;
+	int			pointShadowMapPassCount;
+	int			projectedShadowLightCount;
+	int			pointShadowLightCount;
 	int			packetDrawCount;
+	int			shadowPacketDrawCount;
 	int			activeLightStageCount;
 	int			inactiveLightStageCount;
 	int			activeSurfaceStageCount;
@@ -279,6 +515,15 @@ typedef struct classicInteractionDomainView_s {
 	float			maxLightValue;
 	float			lightScale;
 	float			overBright;
+	float			shadowPolygonFactor;
+	float			shadowPolygonUnits;
+	int			stencilReference;
+	classicInteractionDomainShadowMode_t shadowMode;
+	bool			useScissor;
+	bool			useShadowVertexProgram;
+	bool			preferTwoSidedStencil;
+	bool			useDepthBounds;
+	bool			stencilTranslucentShadows;
 	bool			ready;
 	classicInteractionDomainFailure_t failure;
 	int			failureDetail;
@@ -293,6 +538,12 @@ typedef struct classicInteractionDomainView_s {
 	int			backendFailureDetail[ CLASSIC_INTERACTION_BACKEND_COUNT ];
 	int			backendDrawnPrimitives[ CLASSIC_INTERACTION_BACKEND_COUNT ];
 	int			backendNoopPrimitives[ CLASSIC_INTERACTION_BACKEND_COUNT ];
+	int			backendShadowCasters[ CLASSIC_INTERACTION_BACKEND_COUNT ];
+	int			backendNoopShadowCasters[ CLASSIC_INTERACTION_BACKEND_COUNT ];
+	int			backendLogicalVolumeDraws[ CLASSIC_INTERACTION_BACKEND_COUNT ];
+	int			backendPreloadVolumeDraws[ CLASSIC_INTERACTION_BACKEND_COUNT ];
+	int			backendShadowMapPasses[ CLASSIC_INTERACTION_BACKEND_COUNT ];
+	int			backendHybridPasses[ CLASSIC_INTERACTION_BACKEND_COUNT ];
 } classicInteractionDomainView_t;
 
 typedef struct classicInteractionDomainStats_s {
@@ -308,6 +559,20 @@ typedef struct classicInteractionDomainStats_s {
 	int		primitives;
 	int		drawablePrimitives;
 	int		noopPrimitives;
+	int		shadowCasters;
+	int		drawableShadowCasters;
+	int		noopShadowCasters;
+	int		logicalVolumeDraws;
+	int		preloadVolumeDraws;
+	int		shadowAlphaStages;
+	int		shadowLights;
+	int		shadowMapPasses;
+	int		hybridShadowPasses;
+	int		projectedShadowMapPasses;
+	int		csmShadowMapPasses;
+	int		pointShadowMapPasses;
+	int		projectedShadowLights;
+	int		pointShadowLights;
 	int		textures;
 	int		activeLightStages;
 	int		inactiveLightStages;
@@ -334,6 +599,16 @@ const classicInteractionDomainSurface_t *R_ClassicInteractionDomain_ViewSurface(
 	const classicInteractionDomainView_t &view, int surfaceIndex );
 const classicInteractionDomainPrimitive_t *R_ClassicInteractionDomain_ViewPrimitive(
 	const classicInteractionDomainView_t &view, int primitiveIndex );
+const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_ViewShadowCaster(
+	const classicInteractionDomainView_t &view, int casterIndex );
+const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_LightShadowCaster(
+	const classicInteractionDomainLight_t &light,
+	classicInteractionDomainShadowChain_t chain, int casterIndex );
+const classicInteractionDomainShadowAlphaStage_t *R_ClassicInteractionDomain_ShadowAlphaStage(
+	const classicInteractionDomainShadowCaster_t &caster, int stageIndex );
+const classicInteractionDomainShadowMapPass_t *R_ClassicInteractionDomain_LightShadowMapPass(
+	const classicInteractionDomainLight_t &light,
+	classicInteractionDomainReceiver_t receiver );
 const classicInteractionDomainSurface_t *R_ClassicInteractionDomain_LightSurface(
 	const classicInteractionDomainLight_t &light, int surfaceIndex );
 const classicInteractionDomainPrimitive_t *R_ClassicInteractionDomain_SurfacePrimitive(
@@ -342,7 +617,10 @@ const classicInteractionDomainTexture_t *R_ClassicInteractionDomain_ResolveTextu
 	std::uint64_t textureResourceId );
 bool R_ClassicInteractionDomain_RecordOwned( const viewDef_t *viewDef,
 	classicInteractionDomainBackend_t backend, int drawnPrimitives,
-	int noopPrimitives );
+	int noopPrimitives, int submittedShadowCasters = 0,
+	int noopShadowCasters = 0, int logicalVolumeDraws = 0,
+	int preloadVolumeDraws = 0, int shadowMapPasses = 0,
+	int hybridPasses = 0 );
 void R_ClassicInteractionDomain_RecordBackendFallback( const viewDef_t *viewDef,
 	classicInteractionDomainBackend_t backend,
 	classicInteractionDomainFailure_t failure, int detail );
@@ -352,6 +630,10 @@ const char *ClassicInteractionDomainReceiver_Name( classicInteractionDomainRecei
 const char *ClassicInteractionDomainPrimitiveDisposition_Name(
 	classicInteractionDomainPrimitiveDisposition_t disposition );
 const char *ClassicInteractionDomainDepth_Name( classicInteractionDomainDepth_t depth );
+const char *ClassicInteractionDomainShadowMode_Name(
+	classicInteractionDomainShadowMode_t mode );
+const char *ClassicInteractionDomainShadowChain_Name(
+	classicInteractionDomainShadowChain_t chain );
 const char *ClassicInteractionDomainFailure_Name( classicInteractionDomainFailure_t failure );
 const char *ClassicInteractionDomainBackend_Name( classicInteractionDomainBackend_t backend );
 bool RendererClassicInteractionDomain_RunSelfTest( void );

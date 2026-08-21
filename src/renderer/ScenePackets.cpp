@@ -917,6 +917,26 @@ bool idScenePacketFrame::AddInteractionDrawPacket( const drawSurf_t *drawSurf,
 	return true;
 }
 
+bool idScenePacketFrame::AddShadowDrawPacket( const drawSurf_t *drawSurf,
+		renderPassCategory_t category, int drawIndex,
+		const viewLight_t *viewLight, int lightOrdinal,
+		sceneShadowCasterClass_t casterClass, int chainOrdinal ) {
+	if ( ( category != RENDER_PASS_STENCIL_SHADOW
+			&& category != RENDER_PASS_SHADOW_MAP )
+			|| casterClass <= SCENE_SHADOW_CASTER_NONE
+			|| casterClass >= SCENE_SHADOW_CASTER_COUNT
+			|| !AddDrawPacket( drawSurf, category, drawIndex ) ) {
+		return false;
+	}
+	drawPacket_t &packet = drawPackets[stats.drawPackets - 1];
+	packet.shadowLight = viewLight;
+	packet.shadowLightOrdinal = lightOrdinal;
+	packet.shadowCasterClass = casterClass;
+	packet.shadowChainOrdinal = chainOrdinal;
+	packet.shadowSourceOrdinal = drawIndex;
+	return true;
+}
+
 void idScenePacketFrame::FinishScene( void ) {
 	activeScene = -1;
 	activePass = -1;
@@ -1482,22 +1502,28 @@ static bool R_ScenePackets_AppendInteractionChain( idScenePacketFrame &packetFra
 	return true;
 }
 
-static bool R_ScenePackets_AppendDrawSurfChainLazyPass( idScenePacketFrame &packetFrame, const drawSurf_t *drawSurf, renderPassCategory_t category, bool ( *filter )( const drawSurf_t *drawSurf ), int &drawIndex, bool &passAdded ) {
-	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL; cursor = cursor->nextOnLight ) {
+static bool R_ScenePackets_AppendShadowChainLazyPass(
+		idScenePacketFrame &packetFrame, const viewLight_t *viewLight,
+		int lightOrdinal, const drawSurf_t *drawSurf,
+		renderPassCategory_t category, sceneShadowCasterClass_t casterClass,
+		bool ( *filter )( const drawSurf_t *drawSurf ), int &drawIndex,
+		bool &passAdded ) {
+	int chainOrdinal = 0;
+	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL;
+			cursor = cursor->nextOnLight, ++chainOrdinal ) {
 		if ( filter != NULL && !filter( cursor ) ) {
 			continue;
 		}
-		// Pass existence drives executor ownership and legacy-skip decisions,
-		// so the pass is only opened once a surf actually passes the filter;
-		// AddDrawPacket would otherwise append into the previously open pass.
 		if ( !passAdded ) {
 			if ( !packetFrame.AddPass( category, true ) ) {
 				return false;
 			}
 			passAdded = true;
 		}
-		if ( !packetFrame.AddDrawPacket( cursor, category, drawIndex++ ) ) {
-			packetFrame.AddClippedDrawPackets( R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, filter ) );
+		if ( !packetFrame.AddShadowDrawPacket( cursor, category, drawIndex++,
+				viewLight, lightOrdinal, casterClass, chainOrdinal ) ) {
+			packetFrame.AddClippedDrawPackets(
+				R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, filter ) );
 			return false;
 		}
 	}
@@ -1545,10 +1571,20 @@ static bool R_ScenePackets_ViewLightCanCastShadows( const viewLight_t *vLight ) 
 	if ( !r_shadows.GetBool() || !vLight->lightShader->LightCastsShadows() ) {
 		return false;
 	}
-	if ( vLight->lightDef != NULL && ( vLight->lightDef->parms.noShadows || vLight->lightDef->parms.noDynamicShadows ) ) {
+	if ( vLight->lightDef != NULL && vLight->lightDef->parms.noShadows ) {
 		return false;
 	}
 	return true;
+}
+
+static bool R_ScenePackets_ViewLightCanUseShadowMaps( const viewLight_t *vLight ) {
+	if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
+		return false;
+	}
+	// noDynamicShadows still permits dmap's optimized static/prelight stencil
+	// volumes. It only excludes the dynamic/map caster path.
+	return vLight->lightDef == NULL
+		|| !vLight->lightDef->parms.noDynamicShadows;
 }
 
 static bool R_ScenePackets_ViewLightIsFogOrBlend( const viewLight_t *vLight ) {
@@ -1608,26 +1644,57 @@ static void R_ScenePackets_AddShadowMapPass( idScenePacketFrame &packetFrame, co
 
 	bool passAdded = false;
 	int drawIndex = 0;
-	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-		if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
+	int lightOrdinal = 0;
+	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL;
+			vLight = vLight->next, ++lightOrdinal ) {
+		if ( !R_ScenePackets_ViewLightHasMaterialInteractions( vLight )
+				|| !R_ScenePackets_ViewLightCanUseShadowMaps( vLight ) ) {
 			continue;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->globalShadowMapCasters,
+				RENDER_PASS_SHADOW_MAP, SCENE_SHADOW_CASTER_MAP_GLOBAL_STATIC,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->localShadowMapCasters,
+				RENDER_PASS_SHADOW_MAP, SCENE_SHADOW_CASTER_MAP_LOCAL_STATIC,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->globalShadowMapDynamicCasters,
+				RENDER_PASS_SHADOW_MAP, SCENE_SHADOW_CASTER_MAP_GLOBAL_DYNAMIC,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localTranslucentShadowMapCasters, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->localShadowMapDynamicCasters,
+				RENDER_PASS_SHADOW_MAP, SCENE_SHADOW_CASTER_MAP_LOCAL_DYNAMIC,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->globalTranslucentShadowMapCasters,
+				RENDER_PASS_SHADOW_MAP,
+				SCENE_SHADOW_CASTER_MAP_GLOBAL_TRANSLUCENT,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localShadows, RENDER_PASS_SHADOW_MAP, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->localTranslucentShadowMapCasters,
+				RENDER_PASS_SHADOW_MAP,
+				SCENE_SHADOW_CASTER_MAP_LOCAL_TRANSLUCENT,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded )
+				|| !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+					lightOrdinal, vLight->globalShadowMapStencilSupplements,
+					RENDER_PASS_SHADOW_MAP, SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL,
+					R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded )
+				|| !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+					lightOrdinal, vLight->localShadowMapStencilSupplements,
+					RENDER_PASS_SHADOW_MAP, SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL,
+					R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
 	}
@@ -1640,14 +1707,23 @@ static void R_ScenePackets_AddStencilShadowPass( idScenePacketFrame &packetFrame
 
 	bool passAdded = false;
 	int drawIndex = 0;
-	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-		if ( !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
+	int lightOrdinal = 0;
+	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL;
+			vLight = vLight->next, ++lightOrdinal ) {
+		if ( !R_ScenePackets_ViewLightHasMaterialInteractions( vLight )
+				|| !R_ScenePackets_ViewLightCanCastShadows( vLight ) ) {
 			continue;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->globalShadows, RENDER_PASS_STENCIL_SHADOW, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->globalShadows, RENDER_PASS_STENCIL_SHADOW,
+				SCENE_SHADOW_CASTER_STENCIL_GLOBAL,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChainLazyPass( packetFrame, vLight->localShadows, RENDER_PASS_STENCIL_SHADOW, R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
+		if ( !R_ScenePackets_AppendShadowChainLazyPass( packetFrame, vLight,
+				lightOrdinal, vLight->localShadows, RENDER_PASS_STENCIL_SHADOW,
+				SCENE_SHADOW_CASTER_STENCIL_LOCAL,
+				R_ScenePackets_DrawSurfShadowEligible, drawIndex, passAdded ) ) {
 			return;
 		}
 	}

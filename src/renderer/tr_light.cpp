@@ -1377,25 +1377,6 @@ idScreenRect	R_CalcLightScissorRectangle( viewLight_t *vLight ) {
 	return r;
 }
 
-/*
-=================
-R_ViewLightHasStaticWorldLocalInteractions
-=================
-*/
-static bool R_ViewLightHasStaticWorldLocalInteractions( const viewLight_t *vLight ) {
-	for ( const drawSurf_t *surf = vLight->localInteractions; surf != NULL; surf = surf->nextOnLight ) {
-		const viewEntity_t *space = surf->space;
-		if ( space == NULL || space->entityDef == NULL || space->entityDef->parms.hModel == NULL ) {
-			continue;
-		}
-		if ( space->entityDef->parms.hModel->IsStaticWorldModel() ) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
 static bool R_IsUsablePrelightModel( idRenderModel *model ) {
 	if ( model == NULL ) {
 		return false;
@@ -1464,6 +1445,15 @@ bool R_ShadowMapLightWillUseShadowMaps( const idRenderLightLocal *lightDef ) {
 	if ( lightDef == NULL || lightDef->shadowMapStencilFallbackSticky ) {
 		return false;
 	}
+	// Optimized prelights replace every static-world per-surface volume with
+	// one combined volume.  Whether every such surface is representable in a
+	// shadow map is known only after the light's complete interaction list is
+	// walked.  Keep entity/dynamic volumes resident for these lights so a later
+	// prelight map miss can still select a complete whole-light stencil path.
+	if ( r_useOptimizedShadows.GetBool()
+			&& R_LightHasRealPrelightModel( lightDef->parms ) ) {
+		return false;
+	}
 	if ( lightDef->parms.noShadows || lightDef->parms.noDynamicShadows ) {
 		return false;
 	}
@@ -1490,11 +1480,11 @@ R_AddOptimizedPrelightShadows
 =================
 */
 static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
-	// Vulkan mapped lights retain per-surface volumes so a partial filtered
-	// map can stamp only its genuinely missing casters. The combined prelight
-	// remains available for stencil-only Vulkan lights and the OpenGL path.
+	// Mapped lights retain per-surface volumes so a partial filtered map can
+	// stamp only its genuinely missing casters. The combined prelight remains
+	// available for stencil-only lights.
 	if ( vLight != NULL &&
-		R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+		R_ShadowMapsNeedPerSurfaceStencilVolumes(
 			vLight->lightDef ) ) {
 		return;
 	}
@@ -1583,21 +1573,21 @@ static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
 	}
 #endif
 
-	const bool protectStaticWorldNoSelfReceivers = R_ViewLightHasStaticWorldLocalInteractions( vLight );
+	// dmap combines every static-world caster into one prelight volume.  It
+	// cannot preserve per-material no-self ownership, so retain the retail
+	// global-shadow routing: the combined volume must protect both LOCAL and
+	// GLOBAL receivers.  Static surfaces that genuinely need no-self behavior
+	// remain entities and therefore use their separate local volume.
 	const bool linkedPrelightVolume = R_LinkLightSurf(
-		protectStaticWorldNoSelfReceivers ? &vLight->localShadows : &vLight->globalShadows,
+		&vLight->globalShadows,
 		tri, NULL, light, NULL, vLight->scissorRect, true /* FIXME? */ );
 	vLight->shadowMapIncompleteMapMask |=
 		vLight->shadowMapPrelightMapMissingMask;
-	const int prelightStencilOwnershipMask =
-		protectStaticWorldNoSelfReceivers
-			? SHADOWMAP_RECEIVER_MASK_GLOBAL
-			: ( SHADOWMAP_RECEIVER_MASK_LOCAL |
-				SHADOWMAP_RECEIVER_MASK_GLOBAL );
 	if ( linkedPrelightVolume ) {
 		vLight->shadowMapPrelightStencilReadyMask |=
 			vLight->shadowMapPrelightStencilRequiredMask &
-			prelightStencilOwnershipMask;
+			( SHADOWMAP_RECEIVER_MASK_LOCAL |
+				SHADOWMAP_RECEIVER_MASK_GLOBAL );
 	}
 }
 

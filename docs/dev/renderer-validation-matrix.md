@@ -97,6 +97,19 @@ validation workflow registration. Enabled-path image evidence for either domain
 is the supervised GL/Vulkan capture pair below; there is no standalone automated
 map-loading runtime case for these shared domains.
 
+`tools/tests/renderer_classic_interaction_domain.py`,
+`renderer_vulkan_world_interaction_compatibility.py`, and
+`renderer_vulkan_shadow_compatibility.py` guard the unshadowed and
+shadow-coupled interaction contracts. They require exact packet receiver/caster
+identity, stencil physical-replay counts, projected single-map and CSM/parallel
+state, point cubes, mapped/static/dynamic/perforated casters, complete hybrid
+supplements, semantic map hashes, GL cache/update/scratch retention, Vulkan
+reservation/commit/abort ordering, exact backend reconciliation, and atomic
+fallback with zero committed ownership counters and no shared main-target draw.
+The gameplay harness parser also fails a dynamic or
+perforated stock target unless a per-map line explicitly reports the matching
+sealed feature.
+
 The focused safe-matrix run retained at
 `.tmp/renderer-validation/world-ambient-final-2` passed all three selected
 cases: `renderer-foundation-selftests`, `renderer-default-safety-selftest`, and
@@ -168,8 +181,12 @@ These image captures are the comparison set for scenes where deterministic outpu
 | `capture-shared-gui-rollback` | SP | loading/logo/camera-preview view containing a cinematic, dynamic, current-render, or otherwise unsupported stage | one explicit whole-view fallback, zero shared draws for that view, and classic screenshot equivalence |
 | `capture-shared-world-ambient-owned` | SP | `sp-mv2-ambient` on stock `maps/tools/mv2`, using the `world-ambient` profile with `r_rendererSharedWorldAmbient 0` then `1`, separately on GL and Vulkan | **Passed locally:** exact engine-TGA equivalence, stable domain hash `dc18ed8c0539bbfc`, view hash `bad7344c6394edf8`, one backend-owned pre-fog draw, and zero mixed/dropped pass accounting |
 | `capture-shared-world-ambient-rollback` | SP | same `sp-mv2-ambient` view with stock `r_materialOverride shaderDemos/move` to force a deform blocker | **Passed locally:** exact engine-TGA equivalence, `failure=sourceSurfaceFallback detail=13 sourceClass=fallbackDeform`, zero shared draws, and complete classic fallback on GL and Vulkan |
-| `capture-shared-interaction-owned` | SP | `sp-mv2-interaction` on stock `maps/tools/mv2`, using the profile's fixed camera and stock crate test model with `r_rendererSharedWorldInteraction 0` then `1` and `r_shadows 0`, separately on GL and Vulkan | **Passed locally:** exact engine-TGA equivalence, domain hash `931c507bb531224b`, view hash `990026ba7a164782`, two lights, four global receiver surfaces, four draws plus four no-ops, and zero mixed/dropped interaction accounting |
-| `capture-shared-interaction-rollback` | SP | same fixed camera and stock crate model with effective shadows enabled | **Passed locally:** named `shadows` whole-view fallback, zero shared interaction lights/surfaces/primitives/draws, exact same-settings classic screenshot equivalence, and no GL/Vulkan validation errors |
+| `capture-shared-interaction-owned` | SP | current `sp-mv2-interaction` controlled stock-asset fixture with fixed camera, two crates, projected test light, and point test light, using `r_rendererSharedWorldInteraction 0` then `1` and `r_shadows 0`, separately on GL and Vulkan | **Passed locally:** same-backend shared/classic TGAs match exactly; both runs own four lights and 14 global receiver surfaces with 28 primitives (14 draws plus 14 no-ops) and exact backend accounting |
+| `capture-shared-interaction-stencil` | SP | controlled `sp-mv2-interaction` fixed camera, stock crate, projected test light, and point test light with the `stencil` preset, separately on GL and Vulkan | **Passed locally:** shared/classic TGAs match exactly on both backends; diagnostics reconcile nonzero casters and physical volumes; shadows-off deltas are RMS `5.5301` on GL and `5.5613` on Vulkan |
+| `capture-shared-interaction-mapped` | SP | the same controlled scene with the `mapped` preset | **Passed locally:** both backends own projected and six-face point passes with exact record/backend reconciliation and exact classic image parity; shadows-off deltas are RMS `5.4817` on GL and `5.5625` on Vulkan. The synthetic projected light remains single-map, so multi-cascade qualification stays in the stock row below. |
+| `capture-shared-interaction-mixed` | SP | the same controlled scene with point shadow maps disabled by the `mixed` preset | **Passed locally:** both backends combine projected mapped ownership with point-light stencil work, reconcile physical replay, match the classic TGAs exactly, and differ from shadows-off at RMS `5.5313` on GL and `5.5625` on Vulkan |
+| `capture-shared-interaction-map-fallback` | SP | the same controlled scene with `map-budget-fallback`, which disables the static cache and permits only one update | **Passed locally:** GL and Vulkan each report one named backend fallback, zero committed primitive/shadow/volume/map/hybrid counters, no shared main-target draw, complete fallback coverage, and exact same-settings classic TGA parity |
+| `capture-shared-interaction-stock-shadow` | SP | `interaction-shadow-stock`: stock-map qualification candidates for projected, point-cube at ordinary `game/airdefense2` spawn, CSM/parallel, dynamic mapped caster, perforated/cutout, same-light hybrid, and translucent-moment fallback | **Required stock acceptance:** retain the final six-component pose; exact projected/point/multi-cascade classes must be present; dynamic and cutout targets must explicitly report `features` dynamic/alpha; hybrid must report supplements plus physical volumes; translucent moments must fall back atomically; owned shared/classic TGAs must match and their shadowed/shadows-off pairs must materially differ |
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |
@@ -282,7 +299,7 @@ Gameplay validation remains mandatory before renderer release sign-off, but it i
 | `sp-bse-heavy` | SP | `game/medlabs` | stress BSE effects without replacement content |
 | `sp-cinematic-subview` | SP | `game/mcc_landing` | subviews, remote cameras, cinematic and GUI interaction |
 | `sp-mv2-ambient` | SP | `maps/tools/mv2` | controlled stock fixed-function world-ambient ownership and whole-view rollback evidence |
-| `sp-mv2-interaction` | SP | `maps/tools/mv2` | controlled stock unshadowed fixed-classic interaction ownership and shadow whole-view rollback evidence |
+| `sp-mv2-interaction` | SP | `maps/tools/mv2` | controlled stock unshadowed, stencil, projected/point mapped, mixed map/stencil, and map-budget whole-view fallback evidence |
 | `mp-q4dm1-listen` | MP | `mp/q4dm1` | listen-server and local-client MP parity |
 | `mp-q4dm9-listen` | MP | `mp/q4dm9` | default-off load-cache timing and forced Vulkan shadow-ownership fallback regression |
 
@@ -354,6 +371,10 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --pacing-only 
 python tools\tests\renderer_gameplay_benchmark.py --profile required
 python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360
 python tools\tests\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers
+python tools\tests\renderer_gameplay_benchmark.py --profile interaction --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction\gl\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction\gl\shadows-off\savepaths
+python tools\tests\renderer_gameplay_benchmark.py --profile interaction --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction\vk\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction\vk\shadows-off\savepaths
+python tools\tests\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction-shadow-stock\gl\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction-shadow-stock\gl\shadows-off\savepaths
+python tools\tests\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction-shadow-stock\vk\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction-shadow-stock\vk\shadows-off\savepaths
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke --cases mp-q4dm9-listen --render-api vk --shadow-presets mapped --pacing-only --no-gpu-timers
 python tools\tests\renderer_gameplay_benchmark.py --profile tiers
 python tools\tests\renderer_gameplay_benchmark.py --profile presentation --pacing-only
@@ -369,6 +390,8 @@ The runner fails a case when the process times out, no gameplay screenshot is pr
 | `required` | `game/storage1`, `game/airdefense1`, `game/airdefense2`, `game/storage2`, `game/medlabs`, `game/mcc_landing`, and `mp/q4dm1` listen server plus local client |
 | `campaign-split-state-transition` | triggers the real SP end-level targets from `game/mcc_2` through `game/storage1 first`, `game/storage2`, `game/storage1 second`, and into `game/tram1`, asserting the active `si_entityFilter` after each load |
 | `world-ambient` | controlled bordered 1280x720 `maps/tools/mv2` stock capture; launch sets `ui_showGun 0`, `g_showHud 0`, and `r_multiSamples 0`, then normal spawn runs `noclip` and `setviewpos 0 0 256 80 0 0`; the exact post-map isolation set is recorded in the world-ambient guide and keeps ambient/deform/render enabled while disabling direct-light, subview, light-grid, player-overlay, portal-fade, cel, and debug islands through their structural controls. It does not set `r_skipPostProcess` or `r_skipGuiShaders`. Run with `--pacing-only --no-gpu-timers`, so it is not CPU/GPU budget evidence. |
+| `interaction` | controlled bordered 1280x720 `maps/tools/mv2` capture with fixed camera `0 -192 96 20 90 0`, a stock `crate1_small` caster, a stock `crate1_medium` receiver, a projected `testLight`, and a side `testPointLight`; the separated receiver makes stencil and mapped silhouettes materially visible. Five presets cover unshadowed, stencil, projected+point mapped, projected-map+point-stencil mixed, and constrained map-update fallback. Run with `--pacing-only --no-gpu-timers`; require exact same-settings classic references plus the matching unshadowed difference reference. The synthetic projected light remains single-map under the CSM preset, so multi-cascade acceptance stays in the stock profile. |
+| `interaction-shadow-stock` | stock-map qualification candidates for projected, point, CSM/parallel, dynamic mapped-caster, perforated/cutout, same-light hybrid-supplement, and translucent-moment fallback coverage. Each run starts frozen at tic zero, hides the unsupported first-person viewmodel, advances the real SP scene through the settle interval, freezes before sampling, and records the final six-component pose. Labels never establish coverage: the parser requires an exact projected class, per-map class/cascade/alias/plan/generation/caster/hash data, and `features=static+dynamic+alpha+translucent`; dynamic and perforated cases fail without their explicit feature bit. |
 | `tiers` | forced `r_glTier auto`, `legacy`, `gl33`, `gl41`, `gl43`, `gl45`, and `gl46` gameplay probes |
 | `presentation` | pacing-only `r_swapInterval 0/1`, `com_maxfps 0/120/240`, windowed, and fullscreen coverage for uncapped/high-refresh validation; never budget-promotion evidence |
 | `shadows` | stencil fallback, mapped shadows, CSM, translucent moments, and debug-overlay modes `1..6` over the shadow correctness scenes |
@@ -377,6 +400,26 @@ Optional deterministic image comparison uses TGA references:
 ```powershell
 python tools\tests\renderer_gameplay_benchmark.py --profile smoke --reference-dir .tmp\renderer-references --require-references
 ```
+
+The two interaction acceptance commands above are intentionally stricter than
+the generic optional comparison: `--require-references` binds every capture to
+its same-settings shared-off/classic TGA at exact RMS/max delta zero, while
+`--difference-reference-dir` binds each owned shadow case to the matching
+unshadowed case id and requires a material shadow delta. Generate those two
+reference trees in separate shared-off and shadows-off runs before executing an
+acceptance command. Generate and consume separate references for each renderer;
+replace `<profile>` with `interaction` or `interaction-shadow-stock` and
+`<backend>` with `gl` or `vk` in this three-run workflow:
+
+```powershell
+python tools\tests\renderer_gameplay_benchmark.py --profile <profile> --render-api <backend> --pacing-only --no-gpu-timers --set-cvar r_rendererSharedWorldInteraction=0 --output-dir .tmp\renderer-references\<profile>\<backend>\classic
+python tools\tests\renderer_gameplay_benchmark.py --profile <profile> --render-api <backend> --shadow-presets unshadowed --pacing-only --no-gpu-timers --set-cvar r_rendererSharedWorldInteraction=0 --output-dir .tmp\renderer-references\<profile>\<backend>\shadows-off
+python tools\tests\renderer_gameplay_benchmark.py --profile <profile> --render-api <backend> --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\<profile>\<backend>\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\<profile>\<backend>\shadows-off\savepaths
+```
+
+The reference roots include `savepaths` because each generated capture lives at
+`<output-dir>\savepaths\<case-id>\baseoq4\screenshots\...`. Omitting either
+tree is not a passing interaction result.
 
 Nondeterministic BSE, cinematic, and MP scenes need human review in addition to the automated log/screenshot gates:
 
@@ -409,4 +452,4 @@ Nondeterministic BSE, cinematic, and MP scenes need human review in addition to 
 - `rendererDefaultSafetySelfTest` and `rendererDefaultPromotionSelfTest` pass before any default-promotion discussion.
 - `r_rendererModernAutoPromote 1` is used only with the complete `r_rendererPromotionEvidence` token after the default-promotion criteria pass; `r_renderer arb2`, `r_glTier legacy`, and the modern-disable cvar set remain documented rollback paths.
 - Shared world-ambient local runtime qualification passed: retained GL and Vulkan option-off/on engine screenshots for the same eligible stock `maps/tools/mv2` view match at RMS `0` / maximum delta `0`, enabled diagnostics report one owned pre-fog draw with stable domain/view hashes, and the stock `shaderDemos/move` deform override reports zero shared draws plus the same named complete-view fallback on both backends. Vulkan validation gates are clean. Exact directories and SHA-256 values are recorded in [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md). The domain remains experimental/default-off pending clean committed-package and target-platform/driver promotion evidence.
-- Shared interaction local runtime qualification passed: the bordered/windowed stock `maps/tools/mv2` crate profile produced exact GL and Vulkan option-off/on engine screenshots, with two owned lights, four global receiver surfaces, four draws plus four explicit no-ops, domain hash `931c507bb531224b`, view hash `990026ba7a164782`, and zero mixed ownership or coverage mismatch. Shadows-enabled reruns on both backends reported named `shadows` whole-view rollback, zero shared draws, and exact same-settings classic screenshot equivalence. Exact hashes and scope are recorded in [Shared Classic Interaction-Lighting Domain](classic-interaction-domain-modernization.md); the domain remains experimental/default-off pending clean committed-package and target-platform/driver evidence.
+- Shared interaction's local qualification passed for the current controlled corridor. Its five-case profile passed 5/5 on GL and 5/5 on Vulkan with exact same-backend classic/shared TGAs, four lights, 14 global receiver surfaces, material shadows-on/off deltas for stencil/mapped/mixed ownership, exact backend accounting, and named map-admission fallbacks with zero committed shared counters and no shared main-target draw. The earlier two-light/four-surface capture is superseded. The stock-map row remains a release-qualification gate: its projected/CSM/dynamic/perforated/hybrid candidates need retained final cameras and fresh classic/shadows-off references before they can pass. Exact scope and deltas are recorded in [Shared Classic Interaction-Lighting Domain](classic-interaction-domain-modernization.md); the option remains experimental/default-off pending stock, clean committed-package, and target-platform/driver evidence.

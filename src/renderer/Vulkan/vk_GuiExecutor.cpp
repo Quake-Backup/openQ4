@@ -4668,10 +4668,29 @@ static bool VK_GpuSkinning_PrepareView( const viewDef_t *viewDef ) {
 // interaction pass, where the light-tris chains carry their own index
 // subset over the shared ambient vertex cache (distinct idxKey, so memo
 // entries never alias across the subsets).
+static bool VK_Exec_CPUCacheValid( const vertCache_t *cache,
+		const bool indexBuffer, const size_t requiredBytes ) {
+	return cache != NULL && requiredBytes > 0
+		&& requiredBytes <= static_cast<size_t>( INT_MAX )
+		&& cache->tag != TAG_FREE
+		&& cache->indexBuffer == indexBuffer && cache->offset >= 0
+		&& cache->size >= static_cast<int>( requiredBytes )
+		&& cache->vbo == 0 && cache->virtMem != NULL;
+}
+
 bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri ) {
 	if ( tri == NULL || tri->ambientCache == NULL
 			|| tri->numVerts <= 0 || tri->numIndexes <= 0
 			|| slot < 0 || slot >= VK_FRAMES_IN_FLIGHT ) {
+		return false;
+	}
+	const size_t vertexBytes = static_cast<size_t>( tri->numVerts )
+		* sizeof( idDrawVert );
+	const size_t exactIndexBytes = static_cast<size_t>( tri->numIndexes ) * sizeof( glIndex_t );
+	if ( !VK_Exec_CPUCacheValid( tri->ambientCache, false, vertexBytes )
+			|| ( tri->indexes == NULL && tri->indexCache != NULL
+				&& !VK_Exec_CPUCacheValid( tri->indexCache, true,
+					exactIndexBytes ) ) ) {
 		return false;
 	}
 
@@ -4719,8 +4738,7 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 		if ( memo.idxKey == idxKey && idxKey != NULL ) {
 			indexOffset = memo.indexOffset;
 		} else {
-			const size_t indexBytes =
-					static_cast<size_t>( tri->numIndexes ) * sizeof( glIndex_t );
+			const size_t indexBytes = exactIndexBytes;
 			if ( indexBytes > static_cast<size_t>( vkExec.indexRings[ slot ].capacity ) ) {
 				return false;
 			}
@@ -4751,8 +4769,8 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 			if ( indexSource != NULL ) {
 				indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ],
 						indexSource, indexBytes, 4 );
-			} else if ( tri->indexCache != NULL
-					&& tri->indexCache->size >= static_cast<int>( indexBytes ) ) {
+			} else if ( VK_Exec_CPUCacheValid( tri->indexCache, true,
+					indexBytes ) ) {
 				const glIndex_t *cachedIndexes =
 						static_cast<const glIndex_t *>( vertexCache.Position( tri->indexCache ) );
 				indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ],
@@ -4784,7 +4802,7 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 // tables — cache handles and index arrays never alias across the two
 // families, and a direct-mapped collision just re-uploads.
 bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri ) {
-	if ( tri == NULL ) {
+	if ( tri == NULL || slot < 0 || slot >= VK_FRAMES_IN_FLIGHT ) {
 		return false;
 	}
 	// Explicit GPU_SKINNING_FALLBACK_STENCIL_VOLUME: silhouette extrusion,
@@ -4793,7 +4811,13 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 
 	const void *vertKey = tri->shadowCache;
 	const void *idxKey = tri->indexes;
-	if ( vertKey == NULL || idxKey == NULL || tri->numVerts <= 0 || tri->numIndexes <= 0 ) {
+	const size_t vertexBytes = static_cast<size_t>( tri->numVerts ) * sizeof( shadowCache_t );
+	const size_t indexBytes = static_cast<size_t>( tri->numIndexes ) * sizeof( glIndex_t );
+	if ( vertKey == NULL || idxKey == NULL || tri->numVerts <= 0
+			|| tri->numIndexes <= 0
+			|| !VK_Exec_CPUCacheValid( tri->shadowCache, false,
+				vertexBytes )
+			|| indexBytes == 0 || indexBytes > static_cast<size_t>( INT_MAX ) ) {
 		return false;
 	}
 
@@ -4806,7 +4830,7 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 		} else {
 			const shadowCache_t *verts = (const shadowCache_t *)vertexCache.Position( tri->shadowCache );
 			vertexOffset = VK_Ring_Alloc( vkExec.vertexRings[ slot ], verts,
-				static_cast<size_t>( tri->numVerts ) * sizeof( shadowCache_t ), 16 );
+				vertexBytes, 16 );
 			if ( vertexOffset < 0 ) {
 				return false;
 			}
@@ -4822,7 +4846,7 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 			indexOffset = memo.indexOffset;
 		} else {
 			indexOffset = VK_Ring_Alloc( vkExec.indexRings[ slot ], tri->indexes,
-				static_cast<size_t>( tri->numIndexes ) * sizeof( glIndex_t ), 4 );
+				indexBytes, 4 );
 			if ( indexOffset < 0 ) {
 				return false;
 			}
@@ -4835,6 +4859,33 @@ bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangl
 	vkCmdBindVertexBuffers( cmd, 0, 1, &vkExec.vertexRings[ slot ].buffer, &vertexBindOffset );
 	vkCmdBindIndexBuffer( cmd, vkExec.indexRings[ slot ].buffer, (VkDeviceSize)indexOffset, VK_INDEX_TYPE_UINT32 );
 	vkExec.boundVertexOffset = vertexOffset;
+	return true;
+}
+
+// Shared stencil-interaction preflight retains the exact ring offsets produced
+// by the ordinary CPU-authored shadow-cache bridge.  The bind performed here is
+// limited to ring upload/bind command recording; no framebuffer write occurs
+// until the complete view has reconciled and selected shared ownership.
+bool VK_Exec_PrepareShadowGeometry( VkCommandBuffer cmd, int slot,
+		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset ) {
+	vertexOffset = -1;
+	indexOffset = -1;
+	if ( !VK_Exec_BindShadowGeometry( cmd, slot, tri ) || tri == NULL
+			|| tri->indexes == NULL ) {
+		return false;
+	}
+
+	vertexOffset = vkExec.boundVertexOffset;
+	const void *indexKey = static_cast<const void *>( tri->indexes );
+	const unsigned int memoIndex = static_cast<unsigned int>(
+		( reinterpret_cast<uintptr_t>( indexKey ) >> 4 )
+		& ( VK_TRI_MEMO_SIZE - 1 ) );
+	const vkIdxUpload_t &memo = vkExec.idxMemo[ memoIndex ];
+	if ( memo.idxKey != indexKey || vertexOffset < 0 || memo.indexOffset < 0 ) {
+		vertexOffset = -1;
+		return false;
+	}
+	indexOffset = memo.indexOffset;
 	return true;
 }
 
