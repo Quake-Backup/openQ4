@@ -22,6 +22,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| modernVisibleRequested
 		|| r_rendererSharedGui.GetBool()
 		|| r_rendererSharedWorldAmbient.GetBool()
+		|| r_rendererSharedWorldInteraction.GetBool()
 		|| r_rendererModernVisibleDepth.GetBool()
 		|| r_rendererModernDepthDebug.GetInteger() > 0
 		|| r_rendererModernOpaque.GetBool()
@@ -901,6 +902,21 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf, renderPassCa
 	return true;
 }
 
+bool idScenePacketFrame::AddInteractionDrawPacket( const drawSurf_t *drawSurf,
+		int drawIndex, const viewLight_t *viewLight, int lightOrdinal,
+		sceneInteractionReceiverClass_t receiverClass, int receiverOrdinal ) {
+	if ( !AddDrawPacket( drawSurf, RENDER_PASS_ARB2_INTERACTION, drawIndex ) ) {
+		return false;
+	}
+	drawPacket_t &packet = drawPackets[stats.drawPackets - 1];
+	packet.interactionLight = viewLight;
+	packet.interactionLightOrdinal = lightOrdinal;
+	packet.interactionReceiverClass = receiverClass;
+	packet.interactionReceiverOrdinal = receiverOrdinal;
+	packet.interactionSourceOrdinal = drawIndex;
+	return true;
+}
+
 void idScenePacketFrame::FinishScene( void ) {
 	activeScene = -1;
 	activePass = -1;
@@ -1446,6 +1462,26 @@ static bool R_ScenePackets_AppendDrawSurfChain( idScenePacketFrame &packetFrame,
 	return true;
 }
 
+static bool R_ScenePackets_AppendInteractionChain( idScenePacketFrame &packetFrame,
+		const viewLight_t *viewLight, int lightOrdinal,
+		const drawSurf_t *drawSurf, sceneInteractionReceiverClass_t receiverClass,
+		bool ( *filter )( const drawSurf_t *drawSurf ), int &drawIndex ) {
+	int receiverOrdinal = 0;
+	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL;
+			cursor = cursor->nextOnLight, ++receiverOrdinal ) {
+		if ( filter != NULL && !filter( cursor ) ) {
+			continue;
+		}
+		if ( !packetFrame.AddInteractionDrawPacket( cursor, drawIndex++, viewLight,
+				lightOrdinal, receiverClass, receiverOrdinal ) ) {
+			packetFrame.AddClippedDrawPackets(
+				R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, filter ) );
+			return false;
+		}
+	}
+	return true;
+}
+
 static bool R_ScenePackets_AppendDrawSurfChainLazyPass( idScenePacketFrame &packetFrame, const drawSurf_t *drawSurf, renderPassCategory_t category, bool ( *filter )( const drawSurf_t *drawSurf ), int &drawIndex, bool &passAdded ) {
 	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL; cursor = cursor->nextOnLight ) {
 		if ( filter != NULL && !filter( cursor ) ) {
@@ -1537,17 +1573,29 @@ static void R_ScenePackets_AddInteractionPass( idScenePacketFrame &packetFrame, 
 	}
 
 	int drawIndex = 0;
-	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+	int lightOrdinal = 0;
+	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL;
+			vLight = vLight->next, ++lightOrdinal ) {
 		if ( !R_ScenePackets_ViewLightHasMaterialInteractions( vLight ) ) {
 			continue;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localInteractions, RENDER_PASS_ARB2_INTERACTION, R_ScenePackets_DrawSurfInteractionEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendInteractionChain( packetFrame, vLight,
+				lightOrdinal, vLight->localInteractions,
+				SCENE_INTERACTION_RECEIVER_LOCAL,
+				R_ScenePackets_DrawSurfInteractionEligible, drawIndex ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalInteractions, RENDER_PASS_ARB2_INTERACTION, R_ScenePackets_DrawSurfInteractionEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendInteractionChain( packetFrame, vLight,
+				lightOrdinal, vLight->globalInteractions,
+				SCENE_INTERACTION_RECEIVER_GLOBAL,
+				R_ScenePackets_DrawSurfInteractionEligible, drawIndex ) ) {
 			return;
 		}
-		if ( !r_skipTranslucent.GetBool() && !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->translucentInteractions, RENDER_PASS_ARB2_INTERACTION, R_ScenePackets_DrawSurfInteractionEligible, drawIndex ) ) {
+		if ( !r_skipTranslucent.GetBool()
+				&& !R_ScenePackets_AppendInteractionChain( packetFrame, vLight,
+					lightOrdinal, vLight->translucentInteractions,
+					SCENE_INTERACTION_RECEIVER_TRANSLUCENT,
+					R_ScenePackets_DrawSurfInteractionEligible, drawIndex ) ) {
 			return;
 		}
 	}

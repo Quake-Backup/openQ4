@@ -250,12 +250,14 @@ or target-platform/driver qualification before promotion.
 
 ## Remaining Milestone D work
 
-The GUI and world ambient/material corridors are now the first two complete
-shared classic-frame domains. They do not make the whole classic frame modern
-and do not establish modern visible-lighting parity.
+The GUI and world ambient/material corridors are joined by the separate
+[unshadowed fixed-classic interaction domain](classic-interaction-domain-modernization.md)
+as the first three complete shared classic-frame domains. They do not make the
+whole classic frame modern or establish shadowed visible-lighting parity.
 
-The next recommended implementation target is **interaction-lighting ownership
-and parity**: define a complete GL/Vulkan interaction domain with explicit light,
-shadow, material, and fallback accounting before attempting fog/blend, deform,
-subview, in-world GUI, render-demo, cinematic, or authored post ownership. Do
-not skip ahead to temporal presentation or PBR/advanced-lighting Milestones E/F.
+The next recommended implementation target is **shadow-coupled interaction-
+lighting ownership and parity**: extend the complete GL/Vulkan interaction
+transaction without weakening its explicit light, shadow, material, resource,
+and fallback accounting, then proceed to fog/blend, deform, subview, in-world
+GUI, render-demo, cinematic, or authored post ownership. Do not skip ahead to
+temporal presentation or PBR/advanced-lighting Milestones E/F.

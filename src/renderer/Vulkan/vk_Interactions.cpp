@@ -60,6 +60,7 @@
 
 #include "../tr_local.h"
 #include "../Model_local.h"
+#include "../ClassicInteractionDomain.h"
 
 extern idCVar r_vkShadowFallbackTest;
 
@@ -75,6 +76,7 @@ extern idCVar r_vkShadowFallbackTest;
 #define UINT_MAX	0xffffffffu
 #endif
 #include <cstdio>
+#include <cmath>
 #include "volk.h"
 
 #include "VulkanDevice.h"
@@ -84,6 +86,13 @@ extern idCVar r_vkShadowFallbackTest;
 VkCommandBuffer VK_Exec_ActiveCmd( void );
 int VK_Exec_ActiveFrameSlot( void );
 bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri );
+bool VK_Exec_SharedInteractionGeometryCheckpoint( void );
+void VK_Exec_SharedInteractionGeometryRestore( void );
+void VK_Exec_SharedInteractionGeometryCommit( void );
+bool VK_Exec_PrepareTriGeometry( VkCommandBuffer cmd, int slot,
+		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset );
+void VK_Exec_BindPreparedTriGeometry( VkCommandBuffer cmd, int slot,
+		int vertexOffset, int indexOffset );
 bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri );
 bool VK_Exec_BindRawShadowGeometry( VkCommandBuffer cmd, int slot,
 		const shadowCache_t *verts, int numVerts,
@@ -104,10 +113,14 @@ VkDescriptorSet VK_Exec_ShadowDescriptorSet( void );
 VkDescriptorSet VK_Exec_ImageDescriptor( unsigned int texnum, bool require2D );
 VkDescriptorSet VK_Exec_InteractionUniformSet( void );
 int VK_Exec_InteractionUniformAlloc( const void *data, int bytes );
+int VK_Exec_InteractionUniformCheckpoint( void );
+void VK_Exec_InteractionUniformRestore( int checkpoint );
 int VK_Exec_ShadowUniformAlloc( const void *data, int bytes );
 int VK_Exec_ActiveFramebufferWidth( void );
 int VK_Exec_ActiveFramebufferHeight( void );
 bool VK_Exec_ActiveTargetHasStencil( void );
+bool VK_Exec_SharedInteractionTargetReady( void );
+void VK_FixupClipSpaceZ( float dst[ 16 ], const float src[ 16 ] );
 
 /*
 ====================
@@ -259,6 +272,575 @@ typedef struct vkInterPass_s {
 } vkInterPass_t;
 
 static vkInterPass_t interPass;
+
+/*
+===============================================================================
+
+	Shared fixed-classic interaction consumer
+
+	The backend-neutral domain has already evaluated light and material stages.
+	Vulkan only validates device resources, retains geometry/ring offsets, and
+	submits those sealed values.  The established VK_Interactions_DrawLights
+	walker below remains the complete shadow/custom/failure rollback.
+
+===============================================================================
+*/
+
+enum vkClassicInteractionRejectDetail_t {
+	VK_CLASSIC_INTERACTION_REJECT_VIEW = 1,
+	VK_CLASSIC_INTERACTION_REJECT_COUNTS,
+	VK_CLASSIC_INTERACTION_REJECT_OFFSCREEN_TARGET,
+	VK_CLASSIC_INTERACTION_REJECT_RENDER_SCOPE,
+	VK_CLASSIC_INTERACTION_REJECT_PIPELINE,
+	VK_CLASSIC_INTERACTION_REJECT_STATE,
+	VK_CLASSIC_INTERACTION_REJECT_SCISSOR,
+	VK_CLASSIC_INTERACTION_REJECT_GEOMETRY,
+	VK_CLASSIC_INTERACTION_REJECT_TEXTURE,
+	VK_CLASSIC_INTERACTION_REJECT_UNIFORM
+};
+
+typedef struct vkClassicInteractionDrawPlan_s {
+	const classicInteractionDomainPrimitive_t *primitive;
+	int			vertexOffset;
+	int			indexOffset;
+	VkRect2D		scissor;
+	VkCullModeFlags	cullMode;
+	VkCompareOp		depthCompare;
+	VkDescriptorSet	sets[ 7 ];
+	vkInteractionBlock_t	block;
+	vkInteractionPush_t	push;
+	int			uniformOffset;
+} vkClassicInteractionDrawPlan_t;
+
+typedef struct vkClassicInteractionPreparedView_s {
+	const classicInteractionDomainView_t *view;
+	const viewDef_t		*viewDef;
+	VkCommandBuffer		cmd;
+	VkPipeline		pipeline;
+	VkPipelineLayout	layout;
+	VkViewport		viewport;
+	int			frameSlot;
+	int			framebufferWidth;
+	int			framebufferHeight;
+	int			drawPlanCount;
+	int			noopPrimitiveCount;
+	int			submittedDraws;
+	bool			ready;
+	bool			committed;
+	vkClassicInteractionDrawPlan_t draws[ CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+} vkClassicInteractionPreparedView_t;
+
+static vkClassicInteractionPreparedView_t vkClassicInteractionPrepared;
+
+static bool VK_ClassicInteraction_Fail( const viewDef_t *viewDef,
+		classicInteractionDomainFailure_t failure, int detail ) {
+	// Safe before a checkpoint exists and mandatory after any speculative
+	// geometry upload: classic fallback must see its original ring and memos.
+	VK_Exec_SharedInteractionGeometryRestore();
+	R_ClassicInteractionDomain_RecordBackendFallback( viewDef,
+		CLASSIC_INTERACTION_BACKEND_VULKAN,
+		failure == CLASSIC_INTERACTION_FAILURE_NONE
+			? CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED : failure,
+		detail );
+	memset( &vkClassicInteractionPrepared, 0,
+		sizeof( vkClassicInteractionPrepared ) );
+	return false;
+}
+
+static bool VK_ClassicInteraction_FloatsFinite( const float *values, int count ) {
+	if ( values == NULL || count < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !std::isfinite( values[i] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool VK_ClassicInteraction_MapCull( rendererCullMode_t cull,
+		VkCullModeFlags &mode ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE:
+		mode = VK_CULL_MODE_NONE;
+		return true;
+	case RENDERER_CULL_FRONT:
+		mode = VK_CULL_MODE_FRONT_BIT;
+		return true;
+	case RENDERER_CULL_BACK:
+		mode = VK_CULL_MODE_BACK_BIT;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool VK_ClassicInteraction_BuildScissor(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainPrimitive_t &primitive,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	const int viewportWidth = view.viewportX2 - view.viewportX1 + 1;
+	const int viewportHeight = view.viewportY2 - view.viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| framebufferWidth <= 0 || framebufferHeight <= 0 ) {
+		return false;
+	}
+
+	const bool usePrimitiveScissor = r_useScissor.GetBool();
+	const int requestedX1 = usePrimitiveScissor
+		? primitive.scissorX1 : view.scissorX1;
+	const int requestedY1 = usePrimitiveScissor
+		? primitive.scissorY1 : view.scissorY1;
+	const int requestedX2 = usePrimitiveScissor
+		? primitive.scissorX2 : view.scissorX2;
+	const int requestedY2 = usePrimitiveScissor
+		? primitive.scissorY2 : view.scissorY2;
+	if ( requestedX2 < requestedX1 || requestedY2 < requestedY1 ) {
+		return false;
+	}
+
+	int x0 = Max( view.viewportX1, view.viewportX1 + requestedX1 );
+	int x1 = Min( view.viewportX1 + viewportWidth,
+		view.viewportX1 + requestedX2 + 1 );
+	int y0GL = Max( view.viewportY1, view.viewportY1 + requestedY1 );
+	int y1GL = Min( view.viewportY1 + viewportHeight,
+		view.viewportY1 + requestedY2 + 1 );
+	x0 = Max( 0, x0 );
+	x1 = Min( framebufferWidth, x1 );
+	y0GL = Max( 0, y0GL );
+	y1GL = Min( framebufferHeight, y1GL );
+	if ( x1 <= x0 || y1GL <= y0GL ) {
+		return false;
+	}
+
+	scissor.offset.x = x0;
+	scissor.offset.y = framebufferHeight - y1GL;
+	scissor.extent.width = static_cast<uint32_t>( x1 - x0 );
+	scissor.extent.height = static_cast<uint32_t>( y1GL - y0GL );
+	return true;
+}
+
+static bool VK_ClassicInteraction_ResolveDescriptor( std::uint64_t resourceId,
+		VkDescriptorSet &descriptor ) {
+	descriptor = VK_NULL_HANDLE;
+	const classicInteractionDomainTexture_t *texture =
+		R_ClassicInteractionDomain_ResolveTexture( resourceId );
+	if ( texture == NULL || texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0
+			|| !texture->image->IsLoaded()
+			|| texture->image->IsDefaulted()
+			|| texture->textureHandle
+				!= const_cast<idImage *>( texture->image )->GetDeviceHandle()
+			|| texture->filter != texture->image->GetFilter()
+			|| texture->repeat != texture->image->GetRepeat()
+			|| texture->storageGeneration
+				!= texture->image->GetStorageGeneration() ) {
+		return false;
+	}
+	descriptor = VK_Exec_ImageDescriptor( texture->textureHandle, true );
+	return descriptor != VK_NULL_HANDLE;
+}
+
+static bool VK_ClassicInteraction_ValidatePrimitive(
+		const classicInteractionDomainPrimitive_t &primitive,
+		VkCullModeFlags &cullMode, VkCompareOp &depthCompare ) {
+	if ( primitive.disposition != CLASSIC_INTERACTION_PRIMITIVE_DRAW
+			|| primitive.legacyDrawSurf == NULL
+			|| primitive.legacyDrawSurf->geo == NULL
+			|| primitive.legacyDrawSurf->geo->ambientCache == NULL
+			|| primitive.vertexCount <= 0 || primitive.indexCount <= 0
+			|| primitive.firstIndex != 0 || primitive.vertexOffset != 0
+			|| primitive.legacyDrawSurf->geo->numVerts != primitive.vertexCount
+			|| primitive.legacyDrawSurf->geo->numIndexes != primitive.indexCount
+			|| ( primitive.legacyDrawSurf->geo->indexes == NULL
+				&& primitive.legacyDrawSurf->geo->indexCache == NULL )
+			|| primitive.lightImageResourceId == 0
+			|| primitive.lightFalloffImageResourceId == 0
+			|| primitive.bumpImageResourceId == 0
+			|| primitive.diffuseImageResourceId == 0
+			|| primitive.specularImageResourceId == 0
+			|| primitive.vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+			|| primitive.vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+			|| !primitive.blend.enabled
+			|| primitive.blend.sourceColor != RENDERER_BLEND_ONE
+			|| primitive.blend.destinationColor != RENDERER_BLEND_ONE
+			|| primitive.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| primitive.blend.sourceAlpha != RENDERER_BLEND_ONE
+			|| primitive.blend.destinationAlpha != RENDERER_BLEND_ONE
+			|| primitive.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| !std::isfinite( primitive.polygonOffsetFactor )
+			|| !std::isfinite( primitive.polygonOffsetUnits )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.diffuseColor, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.specularColor, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.flatDiffuseParams, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.localLightOrigin, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.localViewOrigin, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.lightProjection[0][0], 16 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.bumpMatrix[0][0], 8 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.diffuseMatrix[0][0], 8 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.specularMatrix[0][0], 8 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.modelViewMatrix, 16 )
+			|| !VK_ClassicInteraction_MapCull( primitive.cull, cullMode ) ) {
+		return false;
+	}
+
+	switch ( primitive.depth ) {
+	case CLASSIC_INTERACTION_DEPTH_EQUAL:
+		depthCompare = VK_COMPARE_OP_EQUAL;
+		return true;
+	case CLASSIC_INTERACTION_DEPTH_LESS_OR_EQUAL:
+		depthCompare = VK_COMPARE_OP_LESS_OR_EQUAL;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void VK_ClassicInteraction_BuildBlocks(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainPrimitive_t &primitive,
+		vkClassicInteractionDrawPlan_t &plan ) {
+	memset( &plan.block, 0, sizeof( plan.block ) );
+	memcpy( plan.block.localLightOrigin, primitive.localLightOrigin,
+		sizeof( plan.block.localLightOrigin ) );
+	memcpy( plan.block.localViewOrigin, primitive.localViewOrigin,
+		sizeof( plan.block.localViewOrigin ) );
+	memcpy( plan.block.lightProjectionS, primitive.lightProjection[0],
+		sizeof( plan.block.lightProjectionS ) );
+	memcpy( plan.block.lightProjectionT, primitive.lightProjection[1],
+		sizeof( plan.block.lightProjectionT ) );
+	memcpy( plan.block.lightProjectionQ, primitive.lightProjection[2],
+		sizeof( plan.block.lightProjectionQ ) );
+	memcpy( plan.block.lightFalloffS, primitive.lightProjection[3],
+		sizeof( plan.block.lightFalloffS ) );
+	memcpy( plan.block.bumpMatrixS, primitive.bumpMatrix[0],
+		sizeof( plan.block.bumpMatrixS ) );
+	memcpy( plan.block.bumpMatrixT, primitive.bumpMatrix[1],
+		sizeof( plan.block.bumpMatrixT ) );
+	memcpy( plan.block.diffuseMatrixS, primitive.diffuseMatrix[0],
+		sizeof( plan.block.diffuseMatrixS ) );
+	memcpy( plan.block.diffuseMatrixT, primitive.diffuseMatrix[1],
+		sizeof( plan.block.diffuseMatrixT ) );
+	memcpy( plan.block.specularMatrixS, primitive.specularMatrix[0],
+		sizeof( plan.block.specularMatrixS ) );
+	memcpy( plan.block.specularMatrixT, primitive.specularMatrix[1],
+		sizeof( plan.block.specularMatrixT ) );
+	memcpy( plan.block.diffuseColor, primitive.diffuseColor,
+		sizeof( plan.block.diffuseColor ) );
+	memcpy( plan.block.specularColor, primitive.specularColor,
+		sizeof( plan.block.specularColor ) );
+	memcpy( plan.block.flatDiffuseParams, primitive.flatDiffuseParams,
+		sizeof( plan.block.flatDiffuseParams ) );
+
+	memset( &plan.push, 0, sizeof( plan.push ) );
+	float mvpGL[16];
+	myGlMultMatrix( primitive.modelViewMatrix, view.projectionMatrix, mvpGL );
+	VK_FixupClipSpaceZ( plan.push.mvp, mvpGL );
+	switch ( primitive.vertexColor ) {
+	case RENDERER_VERTEX_COLOR_MODULATE:
+		plan.push.a[0] = 1.0f;
+		plan.push.a[1] = 0.0f;
+		break;
+	case RENDERER_VERTEX_COLOR_INVERSE_MODULATE:
+		plan.push.a[0] = -1.0f;
+		plan.push.a[1] = 1.0f;
+		break;
+	default:
+		plan.push.a[0] = 0.0f;
+		plan.push.a[1] = 1.0f;
+		break;
+	}
+	plan.push.a[2] = primitive.ambientLight ? 1.0f : 0.0f;
+	plan.push.b[0] = 1.0f;
+	plan.push.b[1] =
+		( (float)(byte)( 255 * tr.ambientLightVector[1] ) / 255.0f )
+			* 2.0f - 1.0f;
+	plan.push.b[2] =
+		( (float)(byte)( 255 * tr.ambientLightVector[2] ) / 255.0f )
+			* 2.0f - 1.0f;
+}
+
+bool VK_ClassicInteraction_Preflight( const viewDef_t *viewDef ) {
+	memset( &vkClassicInteractionPrepared, 0,
+		sizeof( vkClassicInteractionPrepared ) );
+	vkClassicInteractionPreparedView_t &prepared =
+		vkClassicInteractionPrepared;
+	const classicInteractionDomainView_t *view =
+		R_ClassicInteractionDomain_FindView( viewDef );
+	prepared.view = view;
+	prepared.viewDef = viewDef;
+	if ( view == NULL ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_VIEW );
+	}
+	if ( view->backendOutcome[ CLASSIC_INTERACTION_BACKEND_VULKAN ]
+			== CLASSIC_INTERACTION_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			view->failure != CLASSIC_INTERACTION_FAILURE_NONE
+				? view->failure
+				: CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	if ( viewDef == NULL || view->viewDef != viewDef
+			|| view->lightCount < 0
+			|| view->lightCount > CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS
+			|| view->surfaceCount < 0
+			|| view->surfaceCount > CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES
+			|| view->primitiveCount < 0
+			|| view->primitiveCount > CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES
+			|| view->drawablePrimitiveCount < 0
+			|| view->noopPrimitiveCount < 0
+			|| view->drawablePrimitiveCount + view->noopPrimitiveCount
+				!= view->primitiveCount ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+	}
+	if ( backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| !VK_Exec_SharedInteractionTargetReady() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_OFFSCREEN_TARGET );
+	}
+
+	prepared.cmd = VK_Exec_ActiveCmd();
+	prepared.frameSlot = VK_Exec_ActiveFrameSlot();
+	prepared.framebufferWidth = VK_Exec_ActiveFramebufferWidth();
+	prepared.framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	prepared.pipeline = VK_Exec_InteractionPipeline();
+	prepared.layout = VK_Exec_InteractionPipelineLayout();
+	if ( prepared.cmd == VK_NULL_HANDLE || prepared.frameSlot < 0
+			|| prepared.framebufferWidth <= 0
+			|| prepared.framebufferHeight <= 0 ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_RENDER_SCOPE );
+	}
+	if ( prepared.pipeline == VK_NULL_HANDLE
+			|| prepared.layout == VK_NULL_HANDLE ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_PIPELINE );
+	}
+
+	const int viewportWidth = view->viewportX2 - view->viewportX1 + 1;
+	const int viewportHeight = view->viewportY2 - view->viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| view->viewportX1 < 0 || view->viewportY1 < 0
+			|| view->viewportX1 + viewportWidth > prepared.framebufferWidth
+			|| view->viewportY1 + viewportHeight > prepared.framebufferHeight ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_VIEW );
+	}
+	prepared.viewport.x = static_cast<float>( view->viewportX1 );
+	prepared.viewport.y = static_cast<float>(
+		prepared.framebufferHeight - view->viewportY1 );
+	prepared.viewport.width = static_cast<float>( viewportWidth );
+	prepared.viewport.height = -static_cast<float>( viewportHeight );
+	prepared.viewport.minDepth = 0.0f;
+	prepared.viewport.maxDepth = 1.0f;
+
+	VkDescriptorSet specularTableSet = VK_NULL_HANDLE;
+	if ( globalImages == NULL || globalImages->specularTableImage == NULL
+			|| !globalImages->specularTableImage->IsLoaded()
+			|| globalImages->specularTableImage->IsDefaulted() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+	}
+	specularTableSet = VK_Exec_ImageDescriptor(
+		globalImages->specularTableImage->GetDeviceHandle(), true );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	if ( specularTableSet == VK_NULL_HANDLE || uniformSet == VK_NULL_HANDLE ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+	}
+	if ( !VK_Exec_SharedInteractionGeometryCheckpoint() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_GEOMETRY );
+	}
+
+	for ( int primitiveIndex = 0; primitiveIndex < view->primitiveCount;
+			++primitiveIndex ) {
+		const classicInteractionDomainPrimitive_t *primitive =
+			R_ClassicInteractionDomain_ViewPrimitive( *view, primitiveIndex );
+		if ( primitive == NULL ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				primitiveIndex );
+		}
+		if ( primitive->disposition != CLASSIC_INTERACTION_PRIMITIVE_DRAW ) {
+			if ( primitive->disposition <= CLASSIC_INTERACTION_PRIMITIVE_DRAW
+					|| primitive->disposition >= CLASSIC_INTERACTION_PRIMITIVE_COUNT ) {
+				return VK_ClassicInteraction_Fail( viewDef,
+					CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_INTERACTION_REJECT_STATE );
+			}
+			prepared.noopPrimitiveCount++;
+			continue;
+		}
+		if ( prepared.drawPlanCount >= CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+		}
+
+		vkClassicInteractionDrawPlan_t &plan =
+			prepared.draws[ prepared.drawPlanCount ];
+		memset( &plan, 0, sizeof( plan ) );
+		plan.primitive = primitive;
+		plan.uniformOffset = -1;
+		if ( !VK_ClassicInteraction_ValidatePrimitive( *primitive,
+				plan.cullMode, plan.depthCompare ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_STATE );
+		}
+		if ( !VK_ClassicInteraction_BuildScissor( *view, *primitive,
+				prepared.framebufferWidth, prepared.framebufferHeight,
+				plan.scissor ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_SCISSOR );
+		}
+		if ( !VK_Exec_PrepareTriGeometry( prepared.cmd, prepared.frameSlot,
+				primitive->legacyDrawSurf->geo, plan.vertexOffset,
+				plan.indexOffset ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_GEOMETRY );
+		}
+
+		plan.sets[0] = specularTableSet;
+		if ( !VK_ClassicInteraction_ResolveDescriptor(
+				primitive->bumpImageResourceId, plan.sets[1] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->lightFalloffImageResourceId, plan.sets[2] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->lightImageResourceId, plan.sets[3] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->diffuseImageResourceId, plan.sets[4] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->specularImageResourceId, plan.sets[5] ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+		}
+		plan.sets[6] = uniformSet;
+		VK_ClassicInteraction_BuildBlocks( *view, *primitive, plan );
+		prepared.drawPlanCount++;
+	}
+
+	if ( prepared.drawPlanCount != view->drawablePrimitiveCount
+			|| prepared.noopPrimitiveCount != view->noopPrimitiveCount ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+	}
+
+	// Allocate the complete uniform stream last.  If the ring cannot hold the
+	// whole view, restore its cursor before selecting the classic rollback so
+	// the failed shared attempt cannot starve the established light path.
+	const int uniformCheckpoint = VK_Exec_InteractionUniformCheckpoint();
+	if ( uniformCheckpoint < 0 ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_UNIFORM );
+	}
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		vkClassicInteractionDrawPlan_t &plan = prepared.draws[drawIndex];
+		plan.uniformOffset = VK_Exec_InteractionUniformAlloc(
+			&plan.block, sizeof( plan.block ) );
+		if ( plan.uniformOffset < 0 ) {
+			VK_Exec_InteractionUniformRestore( uniformCheckpoint );
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_UNIFORM );
+		}
+	}
+
+	VK_Exec_SharedInteractionGeometryCommit();
+	prepared.ready = true;
+	return true;
+}
+
+void VK_ClassicInteraction_DrawOwnedView( const viewDef_t *viewDef ) {
+	vkClassicInteractionPreparedView_t &prepared =
+		vkClassicInteractionPrepared;
+	if ( !prepared.ready || prepared.committed || prepared.view == NULL
+			|| prepared.viewDef == NULL || prepared.viewDef != viewDef
+			|| prepared.cmd == VK_NULL_HANDLE
+			|| prepared.pipeline == VK_NULL_HANDLE
+			|| prepared.layout == VK_NULL_HANDLE ) {
+		return;
+	}
+
+	prepared.committed = true;
+	vkCmdSetViewport( prepared.cmd, 0, 1, &prepared.viewport );
+	vkCmdBindPipeline( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		prepared.pipeline );
+	vkCmdSetDepthTestEnable( prepared.cmd, VK_TRUE );
+	vkCmdSetDepthWriteEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetFrontFace( prepared.cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		const vkClassicInteractionDrawPlan_t &plan = prepared.draws[drawIndex];
+		const classicInteractionDomainPrimitive_t &primitive = *plan.primitive;
+		VK_Exec_BindPreparedTriGeometry( prepared.cmd, prepared.frameSlot,
+			plan.vertexOffset, plan.indexOffset );
+		vkCmdSetScissor( prepared.cmd, 0, 1, &plan.scissor );
+		vkCmdSetCullMode( prepared.cmd, plan.cullMode );
+		vkCmdSetDepthCompareOp( prepared.cmd, plan.depthCompare );
+		vkCmdSetDepthBiasEnable( prepared.cmd,
+			primitive.polygonOffsetEnabled ? VK_TRUE : VK_FALSE );
+		if ( primitive.polygonOffsetEnabled ) {
+			vkCmdSetDepthBias( prepared.cmd, primitive.polygonOffsetUnits,
+				0.0f, primitive.polygonOffsetFactor );
+		}
+		const uint32_t dynamicOffset =
+			static_cast<uint32_t>( plan.uniformOffset );
+		vkCmdBindDescriptorSets( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			prepared.layout, 0, 7, plan.sets, 1, &dynamicOffset );
+		vkCmdPushConstants( prepared.cmd, prepared.layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( plan.push ), &plan.push );
+		vkCmdDrawIndexed( prepared.cmd,
+			static_cast<uint32_t>( primitive.indexCount ), 1, 0, 0, 0 );
+		prepared.submittedDraws++;
+	}
+
+	vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+	const bool coverageAccepted = R_ClassicInteractionDomain_RecordOwned(
+		viewDef, CLASSIC_INTERACTION_BACKEND_VULKAN,
+		prepared.submittedDraws, prepared.noopPrimitiveCount );
+	if ( !coverageAccepted ) {
+		common->Warning( "Vulkan: shared interaction backend coverage mismatch after commit" );
+	}
+
+	static bool loggedFirstOwnedView = false;
+	if ( !loggedFirstOwnedView && coverageAccepted
+			&& prepared.submittedDraws > 0 ) {
+		loggedFirstOwnedView = true;
+		common->Printf(
+			"Vulkan: shared interaction owned %d draws and %d noops (hash=%016llx)\n",
+			prepared.submittedDraws, prepared.noopPrimitiveCount,
+			static_cast<unsigned long long>( prepared.view->hash ) );
+	}
+}
 
 /*
 ====================

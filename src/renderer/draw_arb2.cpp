@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ShadowMapArb2Parity.h"
 #include "ModernShadowPlanner.h"
 #include "ModernClusteredLighting.h"
+#include "ClassicInteractionDomain.h"
 
 #include "cg_explicit.h"
 #include <ctype.h>
@@ -11653,8 +11654,910 @@ static void RB_ARB2_RestoreBypassedInteractionState( void ) {
 	RB_ARB2_RestoreInteractionState( true );
 }
 
+/*
+===============================================================================
+
+	Backend-neutral classic interaction consumer
+
+	ClassicInteractionDomain has already interpreted the complete light,
+	receiver, and material-stage stream.  This adapter performs every fallible
+	OpenGL/resource/cache check for the complete view before it changes the
+	framebuffer.  After commit it uses only sealed values plus the explicitly
+	retained geometry bridge; the classic interaction walker remains the atomic
+	rollback path when any part of preflight is rejected.
+
+===============================================================================
+*/
+
+enum rbSharedWorldInteractionGLReject_t {
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_VIEW = 1,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_MUTATED_VIEW,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_CAPACITY,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_PROGRAM,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_LIGHT_RANGE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_SURFACE_RANGE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_PRIMITIVE_RANGE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_PRIMITIVE_STATE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_GEOMETRY,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_VERTEX_CACHE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_INDEX_CACHE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_TEXTURE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_INTRINSIC_TEXTURE,
+	RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE
+};
+
+typedef struct rbSharedWorldInteractionGLPreparedPrimitive_s {
+	const classicInteractionDomainPrimitive_t *primitive;
+	unsigned int vertexBuffer;
+	const void *vertexPointer;
+	unsigned int indexBuffer;
+	const void *indexPointer;
+	int vertexCount;
+	int indexCount;
+	bool referencedVertexes;
+	bool referencedIndexes;
+	bool indexCacheBacked;
+	idImage *lightImage;
+	idImage *lightFalloffImage;
+	idImage *bumpImage;
+	idImage *diffuseImage;
+	idImage *specularImage;
+	idImage *normalImage;
+	int stateBits;
+	int cullType;
+} rbSharedWorldInteractionGLPreparedPrimitive_t;
+
+typedef struct rbSharedWorldInteractionGLPreparedView_s {
+	const classicInteractionDomainView_t *view;
+	const viewDef_t *viewDef;
+	std::uint64_t hash;
+	int lightCount;
+	int surfaceCount;
+	int primitiveCount;
+	int drawablePrimitiveCount;
+	int noopPrimitiveCount;
+	bool ready;
+	bool committed;
+	bool seenLights[ CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS ];
+	bool seenSurfaces[ CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES ];
+	bool seenPrimitives[ CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+	rbSharedWorldInteractionGLPreparedPrimitive_t primitives[
+		CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+} rbSharedWorldInteractionGLPreparedView_t;
+
+static rbSharedWorldInteractionGLPreparedView_t
+	rbSharedWorldInteractionGLPreparedView;
+
+static int RB_SharedWorldInteractionGLFailureDetail(
+		rbSharedWorldInteractionGLReject_t reason, int lightIndex = -1,
+		int surfaceIndex = -1, int primitiveIndex = -1 ) {
+	const int lightDetail = lightIndex >= 0 ? Min( lightIndex + 1, 255 ) : 0;
+	const int surfaceDetail = surfaceIndex >= 0 ? Min( surfaceIndex + 1, 4095 ) : 0;
+	const int primitiveDetail = primitiveIndex >= 0 ? Min( primitiveIndex + 1, 4095 ) : 0;
+	return static_cast<int>( reason ) * 100000000
+		+ lightDetail * 1000000 + surfaceDetail * 4096 + primitiveDetail;
+}
+
+static bool RB_SharedWorldInteractionGLFinite( float value ) {
+	return !FLOAT_IS_NAN( value );
+}
+
+static bool RB_SharedWorldInteractionGLFiniteArray( const float *values,
+		int count ) {
+	if ( values == NULL || count < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !RB_SharedWorldInteractionGLFinite( values[i] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool RB_SharedWorldInteractionGLMapCull( rendererCullMode_t cull,
+		int &cullType ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE:
+		cullType = CT_TWO_SIDED;
+		return true;
+	case RENDERER_CULL_FRONT:
+		cullType = CT_FRONT_SIDED;
+		return true;
+	case RENDERER_CULL_BACK:
+		cullType = CT_BACK_SIDED;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool RB_SharedWorldInteractionGLBlendValid(
+		const rendererBlendState_t &blend ) {
+	return blend.enabled
+		&& blend.sourceColor == RENDERER_BLEND_ONE
+		&& blend.destinationColor == RENDERER_BLEND_ONE
+		&& blend.colorOperation == RENDERER_BLEND_OP_ADD
+		&& blend.sourceAlpha == RENDERER_BLEND_ONE
+		&& blend.destinationAlpha == RENDERER_BLEND_ONE
+		&& blend.alphaOperation == RENDERER_BLEND_OP_ADD;
+}
+
+static bool RB_SharedWorldInteractionGLIntrinsicImageValid( idImage *image,
+		textureType_t expectedType ) {
+	return image != NULL && image->IsLoaded() && !image->IsDefaulted()
+		&& image->GetDeviceHandle() != 0
+		&& image->GetOpts().textureType == expectedType;
+}
+
+static bool RB_SharedWorldInteractionGLValidateTexture(
+		std::uint64_t resourceId,
+		const classicInteractionDomainTexture_t *texture, idImage *&image ) {
+	image = NULL;
+	if ( resourceId == 0 ) {
+		return false;
+	}
+	if ( texture == NULL || texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0 ) {
+		return false;
+	}
+	idImage *resolved = const_cast<idImage *>( texture->image );
+	const textureType_t textureType = resolved->GetOpts().textureType;
+	if ( !resolved->IsLoaded() || resolved->IsDefaulted()
+			|| resolved->GetDeviceHandle() != texture->textureHandle
+			|| resolved->GetStorageGeneration() != texture->storageGeneration
+			|| resolved->GetFilter() != texture->filter
+			|| resolved->GetRepeat() != texture->repeat
+			|| ( textureType != TT_2D && textureType != TT_CUBIC ) ) {
+		return false;
+	}
+	image = resolved;
+	return true;
+}
+
+static bool RB_SharedWorldInteractionGLCacheValid( const vertCache_t *cache,
+		bool indexBuffer, int requiredBytes ) {
+	if ( cache == NULL || requiredBytes <= 0 || cache->tag == TAG_FREE
+			|| cache->indexBuffer != indexBuffer || cache->offset < 0
+			|| cache->size < requiredBytes ) {
+		return false;
+	}
+	if ( cache->vbo != 0 ) {
+		return glConfig.ARBVertexBufferObjectAvailable
+			&& cache->virtMem == NULL;
+	}
+	return cache->virtMem != NULL;
+}
+
+static const void *RB_SharedWorldInteractionGLCachePointer(
+		const vertCache_t &cache ) {
+	if ( cache.vbo != 0 ) {
+		return reinterpret_cast<const void *>(
+			static_cast<uintptr_t>( cache.offset ) );
+	}
+	return static_cast<const byte *>( cache.virtMem ) + cache.offset;
+}
+
+static bool RB_SharedWorldInteractionGLPrimitiveValuesValid(
+		const classicInteractionDomainPrimitive_t &primitive ) {
+	if ( primitive.lightIndex < 0 || primitive.surfaceIndex < 0
+			|| primitive.receiver < CLASSIC_INTERACTION_RECEIVER_LOCAL
+			|| primitive.receiver >= CLASSIC_INTERACTION_RECEIVER_COUNT
+			|| primitive.disposition < CLASSIC_INTERACTION_PRIMITIVE_DRAW
+			|| primitive.disposition >= CLASSIC_INTERACTION_PRIMITIVE_COUNT
+			|| primitive.depth < CLASSIC_INTERACTION_DEPTH_EQUAL
+			|| primitive.depth >= CLASSIC_INTERACTION_DEPTH_COUNT
+			|| primitive.vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+			|| primitive.vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+			|| primitive.vertexCount <= 0 || primitive.firstIndex != 0
+			|| primitive.indexCount <= 0 || primitive.indexCount % 3 != 0
+			|| primitive.vertexOffset != 0 ) {
+		return false;
+	}
+	const long long scissorWidth =
+		static_cast<long long>( primitive.scissorX2 ) - primitive.scissorX1 + 1;
+	const long long scissorHeight =
+		static_cast<long long>( primitive.scissorY2 ) - primitive.scissorY1 + 1;
+	if ( scissorWidth <= 0 || scissorHeight <= 0
+			|| scissorWidth > idMath::INT_MAX
+			|| scissorHeight > idMath::INT_MAX
+			|| !RB_SharedWorldInteractionGLBlendValid( primitive.blend )
+			|| !RB_SharedWorldInteractionGLFinite(
+				primitive.polygonOffsetFactor )
+			|| !RB_SharedWorldInteractionGLFinite(
+				primitive.polygonOffsetUnits )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.diffuseColor, 4 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.specularColor, 4 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.flatDiffuseParams, 4 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.localLightOrigin, 4 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.localViewOrigin, 4 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				&primitive.lightProjection[0][0], 16 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				&primitive.bumpMatrix[0][0], 8 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				&primitive.diffuseMatrix[0][0], 8 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				&primitive.specularMatrix[0][0], 8 )
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				primitive.modelViewMatrix, 16 ) ) {
+		return false;
+	}
+	return ( primitive.receiver == CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT )
+		? primitive.depth == CLASSIC_INTERACTION_DEPTH_LESS_OR_EQUAL
+		: primitive.depth == CLASSIC_INTERACTION_DEPTH_EQUAL;
+}
+
+static bool RB_ARB2_SharedInteractionPreflight( const viewDef_t *viewDef,
+		const classicInteractionDomainView_t &view, int &failureDetail ) {
+	rbSharedWorldInteractionGLPreparedView_t &prepared =
+		rbSharedWorldInteractionGLPreparedView;
+	std::memset( &prepared, 0, sizeof( prepared ) );
+	prepared.view = &view;
+	prepared.viewDef = viewDef;
+	prepared.hash = view.hash;
+	const auto resolveTexture = []( std::uint64_t resourceId,
+			idImage *&image ) -> bool {
+		return RB_SharedWorldInteractionGLValidateTexture( resourceId,
+			R_ClassicInteractionDomain_ResolveTexture( resourceId ), image );
+	};
+
+	if ( viewDef == NULL || view.viewDef != viewDef || !view.ready
+			|| viewDef->viewEntitys == NULL || viewDef->renderWorld == NULL
+			|| view.lightCount < 0
+			|| view.lightCount > CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS
+			|| view.surfaceCount < 0
+			|| view.surfaceCount > CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES
+			|| view.primitiveCount < 0
+			|| view.primitiveCount > CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES
+			|| view.drawablePrimitiveCount < 0
+			|| view.drawablePrimitiveCount > view.primitiveCount
+			|| view.noopPrimitiveCount
+				!= view.primitiveCount - view.drawablePrimitiveCount ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_VIEW );
+		return false;
+	}
+
+	const int allowedRenderFlags = RF_NO_GUI | RF_PENUMBRA_MAP | RF_PRIMARY_VIEW;
+	if ( viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
+			|| viewDef->isEditor || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
+			|| viewDef->renderView.viewID < 0
+			|| ( viewDef->renderFlags & ~allowedRenderFlags ) != 0
+			|| viewDef->numOutlineDrawSurfs != 0
+			|| viewDef->renderView.globalMaterial != NULL
+			|| backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| r_skipRender.GetBool() || r_skipRenderContext.GetBool()
+			|| r_skipInteractions.GetBool() || r_skipBump.GetBool()
+			|| r_skipDiffuse.GetBool() || r_skipSpecular.GetBool()
+			|| r_skipTranslucent.GetBool() || r_singleTriangle.GetBool()
+			|| r_showOverDraw.GetInteger() != 0 || r_shadows.GetBool()
+			|| r_celShading.GetBool() || r_celShadingWorld.GetBool()
+			|| RB_EnhancedMaterialShadingActive()
+			|| RB_AppleGL21AutomaticInteractionPath()
+			|| RB_UseSimpleInteractionShader() || r_testARBProgram.GetBool()
+			|| r_interactionColorMode.IsModified() ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+
+	if ( view.viewportX1 != viewDef->viewport.x1
+			|| view.viewportY1 != viewDef->viewport.y1
+			|| view.viewportX2 != viewDef->viewport.x2
+			|| view.viewportY2 != viewDef->viewport.y2
+			|| view.scissorX1 != viewDef->scissor.x1
+			|| view.scissorY1 != viewDef->scissor.y1
+			|| view.scissorX2 != viewDef->scissor.x2
+			|| view.scissorY2 != viewDef->scissor.y2
+			|| std::memcmp( view.projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view.projectionMatrix ) ) != 0
+			|| !RB_SharedWorldInteractionGLFiniteArray(
+				view.projectionMatrix, 16 )
+			|| !RB_SharedWorldInteractionGLFinite( view.lightScale )
+			|| !RB_SharedWorldInteractionGLFinite( view.overBright )
+			|| idMath::Fabs( view.lightScale - backEnd.lightScale ) > 0.00001f
+			|| idMath::Fabs( view.overBright - backEnd.overBright ) > 0.00001f ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+
+	if ( !glConfig.isInitialized || glConfig.disableARB2Interactions
+			|| !glConfig.ARBVertexProgramAvailable
+			|| !glConfig.ARBFragmentProgramAvailable || globalImages == NULL
+			|| glConfig.maxTextureUnits < 7
+			|| glConfig.maxTextureImageUnits < 7
+			|| glBindProgramARB == NULL || glProgramEnvParameter4fvARB == NULL
+			|| glEnableVertexAttribArrayARB == NULL
+			|| glDisableVertexAttribArrayARB == NULL
+			|| glVertexAttribPointerARB == NULL ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_CAPACITY );
+		return false;
+	}
+	const GLuint vertexProgram =
+		RB_CurrentInteractionProgramIdent( GL_VERTEX_PROGRAM_ARB );
+	const GLuint fragmentProgram =
+		RB_CurrentInteractionProgramIdent( GL_FRAGMENT_PROGRAM_ARB );
+	if ( vertexProgram != VPROG_INTERACTION
+			|| fragmentProgram != FPROG_INTERACTION
+			|| !R_IsARBProgramValid( GL_VERTEX_PROGRAM_ARB, vertexProgram )
+			|| !R_IsARBProgramValid( GL_FRAGMENT_PROGRAM_ARB,
+				fragmentProgram ) ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_PROGRAM );
+		return false;
+	}
+	if ( !RB_SharedWorldInteractionGLIntrinsicImageValid(
+			globalImages->normalCubeMapImage, TT_CUBIC )
+			|| !RB_SharedWorldInteractionGLIntrinsicImageValid(
+				globalImages->ambientNormalMap, TT_CUBIC )
+			|| !RB_SharedWorldInteractionGLIntrinsicImageValid(
+				globalImages->specularTableImage, TT_2D ) ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_INTRINSIC_TEXTURE );
+		return false;
+	}
+
+	int surfaceCursor = 0;
+	int primitiveCursor = 0;
+	int drawablePrimitives = 0;
+	int noopPrimitives = 0;
+	int receiverSurfaces[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
+	int receiverPrimitives[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
+	for ( int lightIndex = 0; lightIndex < view.lightCount; ++lightIndex ) {
+		const int domainLightIndex = view.firstLight + lightIndex;
+		const classicInteractionDomainLight_t *light =
+			R_ClassicInteractionDomain_ViewLight( view, lightIndex );
+		if ( light == NULL || prepared.seenLights[lightIndex]
+				|| light->legacyViewLight == NULL
+				|| light->surfaceCount < 0
+				|| light->surfaceCount > view.surfaceCount - surfaceCursor
+				|| light->primitiveCount < 0
+				|| light->primitiveCount > view.primitiveCount - primitiveCursor ) {
+			failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+				RB_SHARED_WORLD_INTERACTION_GL_REJECT_LIGHT_RANGE,
+				lightIndex );
+			return false;
+		}
+		prepared.seenLights[lightIndex] = true;
+		int lightDrawablePrimitives = 0;
+		int lightNoopPrimitives = 0;
+		int lightReceiverSurfaces[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
+		int lightReceiverPrimitives[ CLASSIC_INTERACTION_RECEIVER_COUNT ] = { 0, 0, 0 };
+		for ( int lightSurfaceIndex = 0;
+				lightSurfaceIndex < light->surfaceCount; ++lightSurfaceIndex ) {
+			const classicInteractionDomainSurface_t *surface =
+				R_ClassicInteractionDomain_LightSurface(
+					*light, lightSurfaceIndex );
+			const classicInteractionDomainSurface_t *viewSurface =
+				R_ClassicInteractionDomain_ViewSurface( view, surfaceCursor );
+			if ( surface == NULL || surface != viewSurface
+					|| prepared.seenSurfaces[surfaceCursor]
+					|| surface->legacyDrawSurf == NULL
+					|| surface->legacyViewLight != light->legacyViewLight
+					|| surface->lightIndex != domainLightIndex
+					|| surface->receiver < CLASSIC_INTERACTION_RECEIVER_LOCAL
+					|| surface->receiver >= CLASSIC_INTERACTION_RECEIVER_COUNT
+					|| surface->primitiveCount < 0
+					|| surface->primitiveCount
+						> view.primitiveCount - primitiveCursor
+					|| surface->drawablePrimitiveCount < 0
+					|| surface->drawablePrimitiveCount > surface->primitiveCount
+					|| surface->noopPrimitiveCount != surface->primitiveCount
+						- surface->drawablePrimitiveCount ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_SURFACE_RANGE,
+					lightIndex, surfaceCursor );
+				return false;
+			}
+			prepared.seenSurfaces[surfaceCursor] = true;
+			receiverSurfaces[surface->receiver]++;
+			lightReceiverSurfaces[surface->receiver]++;
+
+			const drawSurf_t *surf = surface->legacyDrawSurf;
+			const srfTriangles_t *tri = surf->geo;
+			if ( tri == NULL || surf->space == NULL
+					|| surface->firstIndex != 0 || surface->vertexOffset != 0
+					|| surface->vertexCount <= 0 || surface->indexCount <= 0
+					|| surface->indexCount % 3 != 0
+					|| tri->numVerts != surface->vertexCount
+					|| tri->numIndexes != surface->indexCount
+					|| surface->vertexCount > idMath::INT_MAX
+						/ static_cast<int>( sizeof( idDrawVert ) )
+					|| surface->indexCount > idMath::INT_MAX
+						/ static_cast<int>( sizeof( glIndex_t ) ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_GEOMETRY,
+					lightIndex, surfaceCursor );
+				return false;
+			}
+
+			if ( surface->drawablePrimitiveCount > 0
+					&& !RB_SharedWorldInteractionGLCacheValid(
+						tri->ambientCache, false,
+						surface->vertexCount
+							* static_cast<int>( sizeof( idDrawVert ) ) ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_VERTEX_CACHE,
+					lightIndex, surfaceCursor );
+				return false;
+			}
+			if ( surface->drawablePrimitiveCount > 0 ) {
+				R_TouchVertexCache( tri->ambientCache );
+			}
+			if ( surface->drawablePrimitiveCount > 0
+					&& tri->indexCache != NULL
+					&& !RB_SharedWorldInteractionGLCacheValid(
+						tri->indexCache, true,
+						surface->indexCount
+							* static_cast<int>( sizeof( glIndex_t ) ) ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_INDEX_CACHE,
+					lightIndex, surfaceCursor );
+				return false;
+			}
+			if ( surface->drawablePrimitiveCount > 0
+					&& tri->indexCache != NULL ) {
+				R_TouchVertexCache( tri->indexCache );
+			}
+			if ( surface->drawablePrimitiveCount > 0
+					&& ( ( !r_useIndexBuffers.GetBool()
+							|| tri->indexCache == NULL )
+						&& tri->indexes == NULL ) ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_INDEX_CACHE,
+					lightIndex, surfaceCursor );
+				return false;
+			}
+
+			int surfaceDrawablePrimitives = 0;
+			int surfaceNoopPrimitives = 0;
+			for ( int surfacePrimitiveIndex = 0;
+					surfacePrimitiveIndex < surface->primitiveCount;
+					++surfacePrimitiveIndex ) {
+				const classicInteractionDomainPrimitive_t *primitive =
+					R_ClassicInteractionDomain_SurfacePrimitive(
+						*surface, surfacePrimitiveIndex );
+				const classicInteractionDomainPrimitive_t *viewPrimitive =
+					R_ClassicInteractionDomain_ViewPrimitive(
+						view, primitiveCursor );
+				const int domainSurfaceIndex = view.firstSurface + surfaceCursor;
+				if ( primitive == NULL || primitive != viewPrimitive
+						|| prepared.seenPrimitives[primitiveCursor]
+						|| primitive->legacyDrawSurf != surf
+						|| primitive->legacyViewLight != light->legacyViewLight
+						|| primitive->lightIndex != domainLightIndex
+						|| primitive->surfaceIndex != domainSurfaceIndex
+						|| primitive->receiver != surface->receiver
+						|| primitive->vertexCount != surface->vertexCount
+						|| primitive->firstIndex != surface->firstIndex
+						|| primitive->indexCount != surface->indexCount
+						|| primitive->vertexOffset != surface->vertexOffset
+						|| primitive->scissorX1 != surface->scissorX1
+						|| primitive->scissorY1 != surface->scissorY1
+						|| primitive->scissorX2 != surface->scissorX2
+						|| primitive->scissorY2 != surface->scissorY2
+						|| !RB_SharedWorldInteractionGLPrimitiveValuesValid(
+							*primitive ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_PRIMITIVE_STATE,
+						lightIndex, surfaceCursor, primitiveCursor );
+					return false;
+				}
+				prepared.seenPrimitives[primitiveCursor] = true;
+				receiverPrimitives[primitive->receiver]++;
+				lightReceiverPrimitives[primitive->receiver]++;
+				if ( primitive->disposition != CLASSIC_INTERACTION_PRIMITIVE_DRAW ) {
+					surfaceNoopPrimitives++;
+					lightNoopPrimitives++;
+					noopPrimitives++;
+					primitiveCursor++;
+					continue;
+				}
+
+				rbSharedWorldInteractionGLPreparedPrimitive_t &preparedPrimitive =
+					prepared.primitives[drawablePrimitives];
+				std::memset( &preparedPrimitive, 0,
+					sizeof( preparedPrimitive ) );
+				preparedPrimitive.primitive = primitive;
+				preparedPrimitive.vertexBuffer = tri->ambientCache->vbo;
+				preparedPrimitive.vertexPointer =
+					RB_SharedWorldInteractionGLCachePointer(
+						*tri->ambientCache );
+				const bool useIndexCache = r_useIndexBuffers.GetBool()
+					&& tri->indexCache != NULL;
+				preparedPrimitive.indexBuffer = useIndexCache
+					? tri->indexCache->vbo : 0;
+				preparedPrimitive.indexPointer = useIndexCache
+					? RB_SharedWorldInteractionGLCachePointer(
+						*tri->indexCache )
+					: static_cast<const void *>( tri->indexes );
+				preparedPrimitive.vertexCount = surface->vertexCount;
+				preparedPrimitive.indexCount = surface->indexCount;
+				preparedPrimitive.referencedVertexes = tri->ambientSurface != NULL
+					&& tri->verts == tri->ambientSurface->verts;
+				preparedPrimitive.referencedIndexes = tri->ambientSurface != NULL
+					&& tri->indexes == tri->ambientSurface->indexes;
+				preparedPrimitive.indexCacheBacked = useIndexCache;
+				preparedPrimitive.stateBits = GLS_SRCBLEND_ONE
+					| GLS_DSTBLEND_ONE | GLS_DEPTHMASK
+					| ( primitive->depth == CLASSIC_INTERACTION_DEPTH_EQUAL
+						? GLS_DEPTHFUNC_EQUAL : GLS_DEPTHFUNC_LESS );
+				if ( !RB_SharedWorldInteractionGLMapCull(
+						primitive->cull, preparedPrimitive.cullType ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_PRIMITIVE_STATE,
+						lightIndex, surfaceCursor, primitiveCursor );
+					return false;
+				}
+				if ( !resolveTexture(
+						primitive->lightImageResourceId,
+						preparedPrimitive.lightImage )
+						|| !resolveTexture(
+							primitive->lightFalloffImageResourceId,
+							preparedPrimitive.lightFalloffImage )
+						|| !resolveTexture(
+							primitive->bumpImageResourceId,
+							preparedPrimitive.bumpImage )
+						|| !resolveTexture(
+							primitive->diffuseImageResourceId,
+							preparedPrimitive.diffuseImage )
+						|| !resolveTexture(
+							primitive->specularImageResourceId,
+							preparedPrimitive.specularImage ) ) {
+					failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+						RB_SHARED_WORLD_INTERACTION_GL_REJECT_TEXTURE,
+						lightIndex, surfaceCursor, primitiveCursor );
+					return false;
+				}
+				preparedPrimitive.normalImage = primitive->ambientLight
+					? globalImages->ambientNormalMap
+					: globalImages->normalCubeMapImage;
+				surfaceDrawablePrimitives++;
+				lightDrawablePrimitives++;
+				drawablePrimitives++;
+				primitiveCursor++;
+			}
+			if ( surfaceDrawablePrimitives != surface->drawablePrimitiveCount
+					|| surfaceNoopPrimitives != surface->noopPrimitiveCount ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE,
+					lightIndex, surfaceCursor );
+				return false;
+			}
+			surfaceCursor++;
+		}
+		if ( lightDrawablePrimitives != light->drawablePrimitiveCount
+				|| lightNoopPrimitives != light->noopPrimitiveCount ) {
+			failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+				RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE,
+				lightIndex );
+			return false;
+		}
+		for ( int receiver = 0; receiver < CLASSIC_INTERACTION_RECEIVER_COUNT;
+				++receiver ) {
+			if ( lightReceiverSurfaces[receiver]
+						!= light->receiverSurfaceCount[receiver]
+					|| lightReceiverPrimitives[receiver]
+						!= light->receiverPrimitiveCount[receiver] ) {
+				failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE,
+					lightIndex );
+				return false;
+			}
+		}
+	}
+
+	if ( surfaceCursor != view.surfaceCount
+			|| primitiveCursor != view.primitiveCount
+			|| drawablePrimitives != view.drawablePrimitiveCount
+			|| noopPrimitives != view.noopPrimitiveCount ) {
+		failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+			RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE );
+		return false;
+	}
+	for ( int receiver = 0; receiver < CLASSIC_INTERACTION_RECEIVER_COUNT;
+			++receiver ) {
+		if ( receiverSurfaces[receiver] != view.receiverSurfaceCount[receiver]
+				|| receiverPrimitives[receiver]
+					!= view.receiverPrimitiveCount[receiver] ) {
+			failureDetail = RB_SharedWorldInteractionGLFailureDetail(
+				RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE );
+			return false;
+		}
+	}
+
+	prepared.lightCount = view.lightCount;
+	prepared.surfaceCount = view.surfaceCount;
+	prepared.primitiveCount = view.primitiveCount;
+	prepared.drawablePrimitiveCount = drawablePrimitives;
+	prepared.noopPrimitiveCount = noopPrimitives;
+	prepared.ready = true;
+	return true;
+}
+
+static void RB_SharedWorldInteractionGLLoadPrimitiveParameters(
+		const classicInteractionDomainPrimitive_t &primitive ) {
+	RB_ARB2_SetVertexEnvParm( PP_LIGHT_ORIGIN,
+		primitive.localLightOrigin );
+	RB_ARB2_SetVertexEnvParm( PP_VIEW_ORIGIN,
+		primitive.localViewOrigin );
+	RB_ARB2_SetVertexEnvParm( PP_LIGHT_PROJECT_S,
+		primitive.lightProjection[0] );
+	RB_ARB2_SetVertexEnvParm( PP_LIGHT_PROJECT_T,
+		primitive.lightProjection[1] );
+	RB_ARB2_SetVertexEnvParm( PP_LIGHT_PROJECT_Q,
+		primitive.lightProjection[2] );
+	RB_ARB2_SetVertexEnvParm( PP_LIGHT_FALLOFF_S,
+		primitive.lightProjection[3] );
+	RB_ARB2_SetVertexEnvParm( PP_BUMP_MATRIX_S, primitive.bumpMatrix[0] );
+	RB_ARB2_SetVertexEnvParm( PP_BUMP_MATRIX_T, primitive.bumpMatrix[1] );
+	RB_ARB2_SetVertexEnvParm( PP_DIFFUSE_MATRIX_S,
+		primitive.diffuseMatrix[0] );
+	RB_ARB2_SetVertexEnvParm( PP_DIFFUSE_MATRIX_T,
+		primitive.diffuseMatrix[1] );
+	RB_ARB2_SetVertexEnvParm( PP_SPECULAR_MATRIX_S,
+		primitive.specularMatrix[0] );
+	RB_ARB2_SetVertexEnvParm( PP_SPECULAR_MATRIX_T,
+		primitive.specularMatrix[1] );
+
+	float modulate = 0.0f;
+	float add = 1.0f;
+	switch ( primitive.vertexColor ) {
+	case RENDERER_VERTEX_COLOR_MODULATE:
+		modulate = 1.0f;
+		add = 0.0f;
+		break;
+	case RENDERER_VERTEX_COLOR_INVERSE_MODULATE:
+		modulate = -1.0f;
+		add = 1.0f;
+		break;
+	default:
+		break;
+	}
+	static const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	if ( g_interactionVertexProgramColorMode == ICM_PACKED ) {
+		const float packed[4] = { modulate, add, 0.0f, 0.0f };
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_MODULATE, packed );
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_ADD, zero );
+	} else {
+		const float modulateVector[4] = {
+			modulate, modulate, modulate, modulate };
+		const float addVector[4] = { add, add, add, add };
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_MODULATE, modulateVector );
+		RB_ARB2_SetVertexEnvParm( PP_COLOR_ADD, addVector );
+	}
+
+	const float specularColorX2[4] = {
+		primitive.specularColor[0] * 2.0f,
+		primitive.specularColor[1] * 2.0f,
+		primitive.specularColor[2] * 2.0f,
+		primitive.specularColor[3] * 2.0f
+	};
+	RB_ARB2_SetFragmentEnvParm( 0, primitive.diffuseColor );
+	RB_ARB2_SetFragmentEnvParm( 1, specularColorX2 );
+}
+
+static void RB_SharedWorldInteractionGLRestoreState( void ) {
+	glDisable( GL_POLYGON_OFFSET_FILL );
+	GL_SelectTextureNoClient( 6 );
+	globalImages->BindNull();
+	for ( int unit = 5; unit >= 1; --unit ) {
+		GL_SelectTextureNoClient( unit );
+		globalImages->BindNull();
+	}
+	backEnd.glState.currenttmu = -1;
+	GL_SelectTexture( 0 );
+	glDisable( GL_VERTEX_PROGRAM_ARB );
+	glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	glDisableVertexAttribArrayARB( 8 );
+	glDisableVertexAttribArrayARB( 9 );
+	glDisableVertexAttribArrayARB( 10 );
+	glDisableVertexAttribArrayARB( 11 );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
+	glStencilFunc( GL_ALWAYS, 128, 255 );
+	backEnd.depthFunc = GLS_DEPTHFUNC_EQUAL;
+	backEnd.currentSpace = NULL;
+}
+
+static bool RB_ARB2_DrawSharedInteractionView( const viewDef_t *viewDef,
+		const classicInteractionDomainView_t &view ) {
+	rbSharedWorldInteractionGLPreparedView_t &prepared =
+		rbSharedWorldInteractionGLPreparedView;
+	if ( !prepared.ready || prepared.view != &view
+			|| prepared.viewDef != viewDef || prepared.hash != view.hash ) {
+		return false;
+	}
+
+	// Ownership commits here.  Every operation which can reject the view has
+	// completed, so no code below this point returns to the classic walker.
+	prepared.committed = true;
+	if ( !g_firstARB2InteractionHandoffBreadcrumb ) {
+		g_firstARB2InteractionHandoffBreadcrumb = true;
+		R_RecordRendererStartupPhase(
+			RENDERER_STARTUP_PHASE_FIRST_ARB2_INTERACTION_HANDOFF );
+	}
+	RB_LogComment( "---------- RB_ARB2_DrawSharedInteractionView ----------\n" );
+	RB_ShadowMapStatsReset();
+	RB_ShadowMapDebugOverlayReset();
+	RB_ARB2_InvalidateEnvParamCache();
+	GL_SelectTexture( 0 );
+	glEnableClientState( GL_VERTEX_ARRAY );
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	glStencilFunc( GL_ALWAYS, 128, 255 );
+	glBindProgramARB( GL_VERTEX_PROGRAM_ARB, VPROG_INTERACTION );
+	glBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, FPROG_INTERACTION );
+	glEnable( GL_VERTEX_PROGRAM_ARB );
+	glEnable( GL_FRAGMENT_PROGRAM_ARB );
+	glDisableVertexAttribArrayARB( 1 );
+	glDisableVertexAttribArrayARB( 2 );
+	glDisableVertexAttribArrayARB( 5 );
+	glDisableVertexAttribArrayARB( 6 );
+	glDisableVertexAttribArrayARB( 7 );
+	glEnableVertexAttribArrayARB( 8 );
+	glEnableVertexAttribArrayARB( 9 );
+	glEnableVertexAttribArrayARB( 10 );
+	glEnableVertexAttribArrayARB( 11 );
+	glEnableClientState( GL_COLOR_ARRAY );
+	GL_SelectTextureNoClient( 6 );
+	globalImages->specularTableImage->Bind();
+
+	int drawnPrimitives = 0;
+	for ( int primitiveIndex = 0;
+			primitiveIndex < prepared.drawablePrimitiveCount; ++primitiveIndex ) {
+		const rbSharedWorldInteractionGLPreparedPrimitive_t &preparedPrimitive =
+			prepared.primitives[primitiveIndex];
+		const classicInteractionDomainPrimitive_t &primitive =
+			*preparedPrimitive.primitive;
+		backEnd.currentSpace = NULL;
+		glLoadMatrixf( primitive.modelViewMatrix );
+		if ( r_useScissor.GetBool() ) {
+			backEnd.currentScissor.x1 = primitive.scissorX1;
+			backEnd.currentScissor.y1 = primitive.scissorY1;
+			backEnd.currentScissor.x2 = primitive.scissorX2;
+			backEnd.currentScissor.y2 = primitive.scissorY2;
+			glScissor( viewDef->viewport.x1 + primitive.scissorX1,
+				viewDef->viewport.y1 + primitive.scissorY1,
+				primitive.scissorX2 + 1 - primitive.scissorX1,
+				primitive.scissorY2 + 1 - primitive.scissorY1 );
+		}
+		GL_State( preparedPrimitive.stateBits );
+		GL_Cull( preparedPrimitive.cullType );
+		// Preflight sealed both the backing buffer and byte position.  Rebind
+		// those retained values directly; the committed draw never follows the
+		// legacy cache/material graph or repeats a fallible Position() lookup.
+		idVertexCache::BindArrayBuffer( preparedPrimitive.vertexBuffer );
+		const void *ac = preparedPrimitive.vertexPointer;
+		glColorPointer( 4, GL_UNSIGNED_BYTE, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ac, DRAWVERT_COLOR_OFFSET ) );
+		glVertexAttribPointerARB( 11, 3, GL_FLOAT, false,
+			sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ac, DRAWVERT_NORMAL_OFFSET ) );
+		glVertexAttribPointerARB( 10, 3, GL_FLOAT, false,
+			sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT1_OFFSET ) );
+		glVertexAttribPointerARB( 9, 3, GL_FLOAT, false,
+			sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ac, DRAWVERT_TANGENT0_OFFSET ) );
+		glVertexAttribPointerARB( 8, 2, GL_FLOAT, false,
+			sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ac, DRAWVERT_ST_OFFSET ) );
+		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ac, DRAWVERT_XYZ_OFFSET ) );
+
+		RB_SharedWorldInteractionGLLoadPrimitiveParameters( primitive );
+		GL_SelectTextureNoClient( 0 );
+		preparedPrimitive.normalImage->Bind();
+		GL_SelectTextureNoClient( 1 );
+		preparedPrimitive.bumpImage->Bind();
+		GL_SelectTextureNoClient( 2 );
+		preparedPrimitive.lightFalloffImage->Bind();
+		GL_SelectTextureNoClient( 3 );
+		preparedPrimitive.lightImage->Bind();
+		GL_SelectTextureNoClient( 4 );
+		preparedPrimitive.diffuseImage->Bind();
+		GL_SelectTextureNoClient( 5 );
+		preparedPrimitive.specularImage->Bind();
+
+		if ( primitive.polygonOffsetEnabled ) {
+			glPolygonOffset( primitive.polygonOffsetFactor,
+				primitive.polygonOffsetUnits );
+			glEnable( GL_POLYGON_OFFSET_FILL );
+		}
+		idVertexCache::BindIndexBuffer( preparedPrimitive.indexBuffer );
+		backEnd.pc.c_drawElements++;
+		backEnd.pc.c_drawIndexes += preparedPrimitive.indexCount;
+		backEnd.pc.c_drawVertexes += preparedPrimitive.vertexCount;
+		if ( preparedPrimitive.referencedIndexes ) {
+			backEnd.pc.c_drawRefIndexes += preparedPrimitive.indexCount;
+		}
+		if ( preparedPrimitive.referencedVertexes ) {
+			backEnd.pc.c_drawRefVertexes += preparedPrimitive.vertexCount;
+		}
+		if ( preparedPrimitive.indexCacheBacked ) {
+			backEnd.pc.c_vboIndexes += preparedPrimitive.indexCount;
+		}
+		glDrawElements( GL_TRIANGLES, preparedPrimitive.indexCount,
+			GL_INDEX_TYPE, preparedPrimitive.indexPointer );
+		if ( primitive.polygonOffsetEnabled ) {
+			glDisable( GL_POLYGON_OFFSET_FILL );
+		}
+		drawnPrimitives++;
+	}
+
+	RB_SharedWorldInteractionGLRestoreState();
+	RB_ShadowMapStatsReport();
+	RB_ShadowMapDebugOverlayDraw();
+	const bool coverageRecorded = R_ClassicInteractionDomain_RecordOwned(
+		viewDef, CLASSIC_INTERACTION_BACKEND_GL, drawnPrimitives,
+		prepared.noopPrimitiveCount );
+	if ( !coverageRecorded ) {
+		// The framebuffer is already committed.  Report the contract violation,
+		// but never render the classic stream too.
+		common->Warning( "RB_ARB2_DrawSharedInteractionView: GL ownership coverage rejected after committed draw (lights=%d surfaces=%d primitives=%d drawn=%d noop=%d hash=%llu)",
+			prepared.lightCount, prepared.surfaceCount, prepared.primitiveCount,
+			drawnPrimitives, prepared.noopPrimitiveCount,
+			static_cast<unsigned long long>( prepared.hash ) );
+	}
+	return true;
+}
+
 void RB_ARB2_DrawInteractions( void ) {
 	viewLight_t		*vLight;
+
+	if ( r_rendererSharedWorldInteraction.GetBool() ) {
+		std::memset( &rbSharedWorldInteractionGLPreparedView, 0,
+			sizeof( rbSharedWorldInteractionGLPreparedView ) );
+		const classicInteractionDomainView_t *sharedView =
+			R_ClassicInteractionDomain_FindView( backEnd.viewDef );
+		if ( sharedView == NULL ) {
+			R_ClassicInteractionDomain_RecordBackendFallback( backEnd.viewDef,
+				CLASSIC_INTERACTION_BACKEND_GL,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+				RB_SharedWorldInteractionGLFailureDetail(
+					RB_SHARED_WORLD_INTERACTION_GL_REJECT_VIEW ) );
+		} else if ( sharedView->backendOutcome[CLASSIC_INTERACTION_BACKEND_GL]
+				!= CLASSIC_INTERACTION_BACKEND_FALLBACK ) {
+			if ( !sharedView->ready ) {
+				R_ClassicInteractionDomain_RecordBackendFallback(
+					backEnd.viewDef, CLASSIC_INTERACTION_BACKEND_GL,
+					sharedView->failure != CLASSIC_INTERACTION_FAILURE_NONE
+						? sharedView->failure
+						: CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+					sharedView->failureDetail );
+			} else {
+				int sharedFailureDetail = 0;
+				if ( RB_ARB2_SharedInteractionPreflight( backEnd.viewDef,
+						*sharedView, sharedFailureDetail ) ) {
+					if ( RB_ARB2_DrawSharedInteractionView(
+							backEnd.viewDef, *sharedView ) ) {
+						return;
+					}
+					// The draw function can reject only before its commit point.
+					sharedFailureDetail =
+						RB_SharedWorldInteractionGLFailureDetail(
+							RB_SHARED_WORLD_INTERACTION_GL_REJECT_COVERAGE );
+				}
+				R_ClassicInteractionDomain_RecordBackendFallback(
+					backEnd.viewDef, CLASSIC_INTERACTION_BACKEND_GL,
+					CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+					sharedFailureDetail );
+			}
+		}
+	}
 
 	if ( glConfig.disableARB2Interactions ) {
 		if ( r_interactionColorMode.IsModified() ) {

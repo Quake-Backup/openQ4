@@ -180,6 +180,15 @@ WORLD_AMBIENT_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
+INTERACTION_SCENES: dict[str, dict[str, Any]] = {
+    "sp-mv2-interaction": {
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock crate with unshadowed fixed-classic interaction ownership and whole-view rollback evidence",
+        "path": "spawn-static",
+    },
+}
+
 CAMPAIGN_MCC2_TO_TRAM1_COMMANDS = (
     "openq4_assertMapState game/mcc_2",
     "trigger mcc2_endlevel",
@@ -204,6 +213,7 @@ FULL_BUDGET_SCENES = {
 ALL_SCENES = {
     **FULL_BUDGET_SCENES,
     **WORLD_AMBIENT_SCENES,
+    **INTERACTION_SCENES,
     **LOAD_REGRESSION_SCENES,
 }
 
@@ -318,6 +328,45 @@ PROFILE_DEFAULTS = {
             ("r_singleTriangle", "0"),
             ("r_skipAmbient", "0"),
             ("r_skipNewAmbient", "0"),
+            ("r_skipDeforms", "0"),
+            ("r_skipRender", "0"),
+        ),
+    },
+    "interaction": {
+        "cases": tuple(INTERACTION_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("stencil",),
+        "launchCvars": (
+            ("ui_showGun", "0"),
+            ("g_showHud", "0"),
+            ("r_multiSamples", "0"),
+        ),
+        "execCommands": (
+            "noclip",
+            "setviewpos 0 -192 96 20 90 0",
+            "testModel models/mapobjects/strogg/crates/crate1_small.lwo",
+        ),
+        "cvars": (
+            ("r_rendererSharedWorldInteraction", "1"),
+            ("r_shadows", "0"),
+            ("r_useShadowMap", "0"),
+            ("g_renderFastNoPost", "1"),
+            ("g_renderFastNoPostDirect", "1"),
+            ("r_postAA", "0"),
+            ("r_skipSubviews", "1"),
+            ("r_useLightGrid", "0"),
+            ("r_skipPlayerVisibilityEffects", "1"),
+            ("r_portalsDistanceCull", "0"),
+            ("r_forceAmbient", "0"),
+            ("r_celShading", "0"),
+            ("r_celShadingWorld", "0"),
+            ("r_showOverDraw", "0"),
+            ("r_singleTriangle", "0"),
+            ("r_skipAmbient", "1"),
+            ("r_skipNewAmbient", "1"),
             ("r_skipDeforms", "0"),
             ("r_skipRender", "0"),
         ),
@@ -486,6 +535,7 @@ class RunSpec:
     shadow_preset: str
     renderer: str
     render_api: str
+    interaction_expectation: str = "none"
 
     @property
     def fullscreen(self) -> bool:
@@ -849,6 +899,7 @@ def common_args(
     append_set(args, "r_rendererModernAutoPromote", "0")
     append_set(args, "r_rendererSharedGui", "0")
     append_set(args, "r_rendererSharedWorldAmbient", "0")
+    append_set(args, "r_rendererSharedWorldInteraction", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
     # Keep generated cache/config output in the isolated evidence root.  The
@@ -892,6 +943,7 @@ def build_scripted_capture_lines(
     lines: list[str] = [
         "r_rendererSharedGui 0",
         "r_rendererSharedWorldAmbient 0",
+        "r_rendererSharedWorldInteraction 0",
         "r_rendererModernVisible 0",
         "r_rendererModernVisibleDepth 0",
         "r_rendererModernOpaque 0",
@@ -1124,6 +1176,7 @@ def extract_summary(text: str) -> dict[str, str]:
         "framePacing": extract_last_line(text, "Frame pacing"),
         "selectedTier": extract_last_line(text, "Selected renderer tier:"),
         "tierContract": extract_last_line(text, "Renderer tier contract:"),
+        "sharedInteraction": extract_last_line(text, "Renderer shared interaction:"),
     }
     matches = re.findall(
         r"rendererBenchmark capture\(.*?samples=(\d+).*?p50=(\d+).*?p95=(\d+).*?p99=(\d+)"
@@ -1160,6 +1213,163 @@ def summary_float(summary: dict[str, str], key: str) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def shared_interaction_fields(summary: dict[str, str]) -> dict[str, str]:
+    line = summary.get("sharedInteraction", "")
+    return {
+        key: value
+        for key, value in re.findall(r"\b([A-Za-z]+)=([^\s]+)", line)
+    }
+
+
+def evaluate_shared_interaction_evidence(
+    spec: RunSpec, summary: dict[str, str]
+) -> list[str]:
+    expectation = spec.interaction_expectation
+    if expectation == "none":
+        return []
+
+    fields = shared_interaction_fields(summary)
+    failures: list[str] = []
+    if not fields:
+        return ["shared interaction evidence line"]
+
+    def integer(name: str) -> int | None:
+        value = fields.get(name)
+        try:
+            return int(value) if value is not None else None
+        except ValueError:
+            return None
+
+    requested = integer("requested")
+    if expectation == "disabled":
+        if requested != 0:
+            failures.append(f"shared interaction requested={requested}")
+        for name in (
+            "prepared",
+            "valid",
+            "views",
+            "ready",
+            "fallback",
+            "lights",
+            "surfaces",
+            "primitives",
+            "draw",
+            "noop",
+        ):
+            if integer(name) != 0:
+                failures.append(
+                    f"shared interaction {name}={fields.get(name, 'missing')}"
+                )
+        if fields.get("status") != "empty":
+            failures.append(
+                f"shared interaction status={fields.get('status', 'missing')}"
+            )
+        for backend_name in ("GL", "VK"):
+            if fields.get(backend_name) != "0/0/0":
+                failures.append(
+                    "shared interaction "
+                    f"{backend_name} coverage={fields.get(backend_name, 'missing')}"
+                )
+        return failures
+
+    for name in ("requested", "prepared"):
+        if integer(name) != 1:
+            failures.append(f"shared interaction {name}={fields.get(name, 'missing')}")
+
+    backend_name = "VK" if spec.expected_backend == "vulkan" else "GL"
+    backend_value = fields.get(backend_name, "")
+    backend_match = re.fullmatch(r"(\d+)/(\d+)/(\d+)", backend_value)
+    if backend_match is None:
+        failures.append(f"shared interaction {backend_name} coverage={backend_value or 'missing'}")
+        owned_views = fallback_views = mismatches = -1
+    else:
+        owned_views, fallback_views, mismatches = (
+            int(value) for value in backend_match.groups()
+        )
+
+    if expectation == "owned":
+        if integer("valid") != 1:
+            failures.append(
+                f"shared interaction valid={fields.get('valid', 'missing')}"
+            )
+        for name in ("ready", "lights", "surfaces", "primitives", "draw"):
+            value = integer(name)
+            if value is None or value <= 0:
+                failures.append(f"shared interaction {name}={fields.get(name, 'missing')}")
+        if integer("fallback") != 0:
+            failures.append(
+                f"shared interaction fallback={fields.get('fallback', 'missing')}"
+            )
+        if fields.get("status") != "ready":
+            failures.append(
+                f"shared interaction status={fields.get('status', 'missing')}"
+            )
+        ready_views = integer("ready")
+        if integer("views") != ready_views:
+            failures.append(
+                "shared interaction complete-view readiness="
+                f"{fields.get('ready', 'missing')}/{fields.get('views', 'missing')}"
+            )
+        primitive_count = integer("primitives")
+        draw_count = integer("draw")
+        noop_count = integer("noop")
+        if (
+            primitive_count is None
+            or draw_count is None
+            or noop_count is None
+            or primitive_count != draw_count + noop_count
+        ):
+            failures.append(
+                "shared interaction primitive reconciliation="
+                f"{fields.get('primitives', 'missing')}/"
+                f"{fields.get('draw', 'missing')}+{fields.get('noop', 'missing')}"
+            )
+        if (
+            ready_views is None
+            or owned_views != ready_views
+            or fallback_views != 0
+            or mismatches != 0
+        ):
+            failures.append(f"shared interaction {backend_name} coverage={backend_value}")
+    elif expectation == "fallback":
+        if integer("valid") != 0:
+            failures.append(
+                f"shared interaction valid={fields.get('valid', 'missing')}"
+            )
+        if integer("ready") != 0 or (integer("fallback") or 0) <= 0:
+            failures.append(
+                "shared interaction whole-view fallback accounting="
+                f"{fields.get('ready', 'missing')}/{fields.get('fallback', 'missing')}"
+            )
+        if fields.get("status") != "fallback":
+            failures.append(
+                f"shared interaction status={fields.get('status', 'missing')}"
+            )
+        for name in ("lights", "surfaces", "primitives", "draw", "noop"):
+            if integer(name) != 0:
+                failures.append(
+                    f"shared interaction rollback {name}="
+                    f"{fields.get(name, 'missing')}"
+                )
+        fallback_count = integer("fallback")
+        if integer("views") != fallback_count:
+            failures.append(
+                "shared interaction complete-view fallback="
+                f"{fields.get('fallback', 'missing')}/"
+                f"{fields.get('views', 'missing')}"
+            )
+        if (
+            fallback_count is None
+            or owned_views != 0
+            or fallback_views != fallback_count
+            or mismatches != 0
+        ):
+            failures.append(f"shared interaction {backend_name} coverage={backend_value}")
+    else:
+        failures.append(f"unknown shared interaction expectation {expectation}")
+    return failures
 
 
 def load_tga_rgb(path: Path) -> tuple[int, int, bytes]:
@@ -1417,6 +1627,7 @@ def evaluate_role_result(
             missing.append("frame pacing p99")
         elif p99_ms > max_p99_ms:
             missing.append(f"pacingP99={p99_ms:.1f}>{max_p99_ms:.1f}")
+    missing.extend(evaluate_shared_interaction_evidence(spec, summary))
     if "Selected renderer tier:" not in text:
         missing.append("selected tier line")
     if screenshot is None:
@@ -1548,6 +1759,7 @@ def run_sp_spec(
             "budgetMap": spec.budget_map_name,
             "expectedBackend": spec.expected_backend,
             "renderApi": spec.render_api,
+            "interactionExpectation": spec.interaction_expectation,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "args": game_args,
@@ -1593,6 +1805,7 @@ def run_sp_spec(
         "budgetMap": spec.budget_map_name,
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
+        "interactionExpectation": spec.interaction_expectation,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -1737,6 +1950,7 @@ def run_mp_spec(
             "budgetMap": spec.budget_map_name,
             "expectedBackend": spec.expected_backend,
             "renderApi": spec.render_api,
+            "interactionExpectation": spec.interaction_expectation,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "serverArgs": server_args,
@@ -1870,6 +2084,7 @@ def run_mp_spec(
         "budgetMap": spec.budget_map_name,
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
+        "interactionExpectation": spec.interaction_expectation,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -1915,6 +2130,7 @@ def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
         "budgetMap": spec.budget_map_name,
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
+        "interactionExpectation": spec.interaction_expectation,
         "purpose": spec.purpose,
         "tier": spec.tier,
         "maxfps": spec.maxfps,
@@ -1926,6 +2142,37 @@ def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
         "roles": [role_result],
         "harnessError": message,
     }
+
+
+def cvar_value_enabled(value: str) -> bool:
+    # CVAR_BOOL canonicalization uses atoi() in the engine. Mirror its leading
+    # integer semantics so values such as "0.0", "00", and "true" do not make
+    # the harness expect ownership that the renderer will leave disabled.
+    match = re.match(r"^\s*([+-]?\d+)", value)
+    return match is not None and int(match.group(1)) != 0
+
+
+def interaction_expectation(
+    args: argparse.Namespace, case_id: str, shadow_preset: str
+) -> str:
+    if case_id not in INTERACTION_SCENES:
+        return "none"
+    effective = {
+        "r_renderersharedworldinteraction": "0",
+        **{
+            name.casefold(): value
+            for name, value in SHADOW_PRESETS[shadow_preset].items()
+        },
+    }
+    for name, value in args.extra_cvars:
+        effective[name.casefold()] = value
+    if not cvar_value_enabled(
+        effective.get("r_renderersharedworldinteraction", "0")
+    ):
+        return "disabled"
+    if cvar_value_enabled(effective.get("r_shadows", "0")):
+        return "fallback"
+    return "owned"
 
 
 def build_specs(args: argparse.Namespace) -> list[RunSpec]:
@@ -1973,6 +2220,9 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                                     shadow_preset=shadow,
                                     renderer=args.renderer,
                                     render_api=args.render_api,
+                                    interaction_expectation=interaction_expectation(
+                                        args, case_id, shadow
+                                    ),
                                 )
                             )
     if args.limit > 0:
@@ -2016,6 +2266,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "metadata": report_metadata,
         "requiredScenes": REQUIRED_SCENES,
         "worldAmbientScenes": WORLD_AMBIENT_SCENES,
+        "interactionScenes": INTERACTION_SCENES,
         "loadRegressionScenes": LOAD_REGRESSION_SCENES,
         "shadowScenes": SHADOW_SCENES,
         "campaignTransitionScenes": CAMPAIGN_TRANSITION_SCENES,
@@ -2168,6 +2419,16 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "|---|---|---|---|",
     ]
     for case_id, scene in WORLD_AMBIENT_SCENES.items():
+        lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
+
+    lines += [
+        "",
+        "## Interaction Ownership Coverage",
+        "",
+        "| Case | Mode | Map | Purpose |",
+        "|---|---|---|---|",
+    ]
+    for case_id, scene in INTERACTION_SCENES.items():
         lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
 
     lines += [
@@ -2467,6 +2728,9 @@ def print_list() -> None:
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nWorld ambient ownership cases (run with --pacing-only):")
     for case_id, scene in WORLD_AMBIENT_SCENES.items():
+        print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nInteraction ownership cases (run with --pacing-only):")
+    for case_id, scene in INTERACTION_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nShadow presets:")
     for preset, cvars in SHADOW_PRESETS.items():

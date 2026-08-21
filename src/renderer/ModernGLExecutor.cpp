@@ -215,6 +215,7 @@ static bool R_ModernGLExecutor_ModernVisibleRequested( void ) {
 	// a world frame over that GUI, including when shared GUI ownership is enabled.
 	return !r_skipRender.GetBool() && !r_skipRenderContext.GetBool()
 		&& !r_rendererSharedWorldAmbient.GetBool()
+		&& !r_rendererSharedWorldInteraction.GetBool()
 		&& ( r_rendererModernVisible.GetBool()
 			|| RendererBootstrap_ShouldAutoPromoteModernVisible() );
 }
@@ -7746,6 +7747,12 @@ bool R_ModernGLExecutor_LegacyPassCanSkipForView( renderPassCategory_t category,
 	// rollback before the shared domain has completed backend preflight.
 	if ( r_rendererSharedWorldAmbient.GetBool()
 			&& category == RENDER_PASS_AMBIENT ) {
+		return false;
+	}
+	if ( r_rendererSharedWorldInteraction.GetBool()
+			&& ( category == RENDER_PASS_ARB2_INTERACTION
+				|| category == RENDER_PASS_STENCIL_SHADOW
+				|| category == RENDER_PASS_SHADOW_MAP ) ) {
 		return false;
 	}
 	if ( !R_ModernGLExecutor_LegacyPassCanSkip( category ) ) {

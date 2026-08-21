@@ -4,7 +4,8 @@
 
 The first Milestone D classic-frame domain is implemented as an experimental,
 default-off path for complete fixed-function 2D GUI views. It is now joined by
-the separate [shared world ambient/material domain](classic-world-ambient-domain-modernization.md).
+the separate [shared world ambient/material domain](classic-world-ambient-domain-modernization.md)
+and [shared interaction-lighting domain](classic-interaction-domain-modernization.md).
 OpenGL and Vulkan
 consume the same ordered, per-draw evaluated material records. The established
 classic view remains the supported default and the whole-view rollback.
@@ -155,8 +156,10 @@ now match exactly on GL and Vulkan, and a stock deform override proves named
 zero-draw whole-view fallback on both backends; see
 [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md).
 
-Interaction lighting, fog/blend, deform, subview, in-world GUI, render-demo,
-cinematic, and authored post-process ownership remain explicit classic or
-experimental domains. The next recommended implementation target is
-**interaction-lighting ownership and parity** on both backends. Temporal and
-PBR/advanced-lighting milestones remain downstream of that classic-frame work.
+Eligible unshadowed fixed-classic interaction lighting now has its own complete,
+default-off shared domain with whole-view rollback. Shadow-coupled interaction,
+fog/blend, deform, subview, in-world GUI, render-demo, cinematic, and authored
+post-process ownership remain explicit classic or experimental domains. The next
+recommended implementation target is **shadow-coupled interaction ownership and
+parity** on both backends, followed by fog/blend. Temporal and PBR/advanced-
+lighting milestones remain downstream of that classic-frame work.

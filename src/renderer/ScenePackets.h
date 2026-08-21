@@ -230,6 +230,13 @@ typedef struct drawPacketSortKey_s {
 	unsigned long long	value;
 } drawPacketSortKey_t;
 
+enum sceneInteractionReceiverClass_t {
+	SCENE_INTERACTION_RECEIVER_NONE = 0,
+	SCENE_INTERACTION_RECEIVER_LOCAL,
+	SCENE_INTERACTION_RECEIVER_GLOBAL,
+	SCENE_INTERACTION_RECEIVER_TRANSLUCENT
+};
+
 typedef struct drawPacket_s {
 	const drawSurf_t			*legacyDrawSurf;
 	const viewDef_t			*viewDef;
@@ -250,6 +257,11 @@ typedef struct drawPacket_s {
 	int						vertexOffset;
 	int						instanceOffset;
 	int						instanceCount;
+	const viewLight_t		*interactionLight;
+	int						interactionLightOrdinal;
+	int						interactionReceiverOrdinal;
+	int						interactionSourceOrdinal;
+	sceneInteractionReceiverClass_t interactionReceiverClass;
 	int						scissorX1;
 	int						scissorY1;
 	int						scissorX2;
@@ -323,6 +335,9 @@ public:
 	bool AddScene( const viewDef_t *viewDef, bool legacyBridge );
 	bool AddPass( renderPassCategory_t category, bool enabled, bool commandOnly = false );
 	bool AddDrawPacket( const drawSurf_t *drawSurf, renderPassCategory_t category, int drawIndex );
+	bool AddInteractionDrawPacket( const drawSurf_t *drawSurf, int drawIndex,
+		const viewLight_t *viewLight, int lightOrdinal,
+		sceneInteractionReceiverClass_t receiverClass, int receiverOrdinal );
 	void FinishScene( void );
 	void AddCommandPacket( scenePacketCategory_t category = SCENE_PACKET_CATEGORY_COMMAND );
 	void AddLegacyDrawView( void );

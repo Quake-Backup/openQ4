@@ -124,7 +124,9 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
         "Legacy plaintext rcon",
         "Doom 3 / Doom 3 BFG provenance inventory",
         "Reproducible retail-PK4 SP/MP compatibility evidence",
+        "Backend-neutral renderer contracts",
         "Modern visible lighting ownership",
+        "Shared classic interaction-lighting ownership",
         "Vulkan renderer",
         "GPU skeletal skinning",
         "Automatic dynamic resolution",
@@ -132,7 +134,38 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     ):
         require(matrix, capability, "capability matrix coverage")
     require(matrix, "`net_clientUseLegacyRcon 1` / `net_serverAllowLegacyRcon 1`", "legacy rcon containment claim")
-    require(matrix, "The current proven-domain count is zero", "modern renderer qualification")
+    require(
+        matrix,
+        "**Implemented** (three complete shared domains; broader use pending)",
+        "backend-neutral renderer contract scope",
+    )
+    require(
+        matrix,
+        "locally validated eligible world ambient/material and unshadowed fixed-classic interaction domains are the second and third",
+        "three locally validated shared domains",
+    )
+    require(
+        matrix,
+        "shadow-coupled interaction, fog/blend, deform, and other special-view domains still need migration",
+        "remaining shared-domain boundary",
+    )
+    require(
+        matrix,
+        "These are local default-off implementations; clean-package/platform promotion evidence remains open.",
+        "shared-domain promotion boundary",
+    )
+
+    roadmap = read("docs/dev/idtech5-modernization-roadmap.md")
+    require(
+        roadmap,
+        "three complete domains implemented and locally validated",
+        "roadmap local domain status",
+    )
+    require(
+        roadmap,
+        "clean-package and platform promotion evidence remain open",
+        "roadmap promotion boundary",
+    )
 
     renderer_matrix = read("docs/dev/renderer-validation-matrix.md")
     proposal = read("docs/dev/proposals/rbdoom3-bfg-parity-modernization-plan.md")

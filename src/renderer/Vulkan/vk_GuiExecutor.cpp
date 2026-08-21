@@ -49,6 +49,7 @@
 #include "VulkanDevice.h"
 #include "VulkanGpuFrameTiming.h"
 #include "../ClassicGuiDomain.h"
+#include "../ClassicInteractionDomain.h"
 #include "../ClassicWorldAmbientDomain.h"
 #include "../GpuSkinning.h"
 #include "../MaterialResourceTable.h"
@@ -65,6 +66,8 @@ extern idCVar r_skipDynamicTextures;
 // vk_Interactions.cpp: the Phase F1 per-light interaction pass, inserted
 // between the depth fill and the ambient walks
 void VK_Interactions_DrawLights( const viewDef_t *viewDef );
+bool VK_ClassicInteraction_Preflight( const viewDef_t *viewDef );
+void VK_ClassicInteraction_DrawOwnedView( const viewDef_t *viewDef );
 // vk_Interactions.cpp: the Phase G2 fog/blend light pass, inserted between
 // the two ambient walks (RB_STD_DrawView's fog point)
 void VK_Fog_DrawAllLights( const viewDef_t *viewDef );
@@ -358,6 +361,24 @@ typedef struct vkGuiExecutor_s {
 
 static vkGuiExecutor_t vkExec;
 static bool vkGpuSkinningBackendRequested = true;
+
+// Shared-interaction preflight is allowed to populate the ordinary geometry
+// rings, but it has not taken framebuffer ownership yet.  Snapshot the bounded
+// direct-mapped upload state so any later rejection can return the established
+// classic walker to the exact cursor/memo state it would have seen without the
+// speculative walk.
+typedef struct vkSharedInteractionGeometryCheckpoint_s {
+	bool			active;
+	int			frameSlot;
+	int			vertexCursor;
+	int			indexCursor;
+	int			boundVertexOffset;
+	vkVertUpload_t	vertMemo[ VK_TRI_MEMO_SIZE ];
+	vkIdxUpload_t	idxMemo[ VK_TRI_MEMO_SIZE ];
+} vkSharedInteractionGeometryCheckpoint_t;
+
+static vkSharedInteractionGeometryCheckpoint_t
+	vkSharedInteractionGeometryCheckpoint;
 
 static vkPipelineTarget_t VK_Exec_SwapchainPipelineTarget( void ) {
 	vkPipelineTarget_t target;
@@ -2914,6 +2935,7 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	memset( vkExec.vertMemo, 0, sizeof( vkExec.vertMemo ) );
 	memset( vkExec.idxMemo, 0, sizeof( vkExec.idxMemo ) );
 	memset( vkExec.gpuSkinningMemo, 0, sizeof( vkExec.gpuSkinningMemo ) );
+	vkSharedInteractionGeometryCheckpoint.active = false;
 	return true;
 }
 
@@ -3310,6 +3332,24 @@ bool VK_Exec_ActiveTargetHasStencil( void ) {
 	return vkExec.frameOpen
 		&& vkExec.activeDepthAttachmentView != VK_NULL_HANDLE
 		&& vkExec.activePipelineTarget.stencilFormat != VK_FORMAT_UNDEFINED;
+}
+
+// Shared interaction ownership is intentionally limited to the primary
+// swapchain scope.  Keep the executor's private attachment and pending-effect
+// state behind one fail-closed query so the interaction consumer cannot
+// mistake an offscreen render texture for the main framebuffer.
+bool VK_Exec_SharedInteractionTargetReady( void ) {
+	return vkExec.frameOpen && vkExec.mainScopeOpen
+		&& vkExec.cmd != VK_NULL_HANDLE
+		&& vkExec.activeRenderTexture == NULL
+		&& vkExec.activeColorEntry == NULL
+		&& vkExec.activeDepthEntry == NULL
+		&& vkExec.pendingSpecialEffectsView == NULL
+		&& vkExec.pendingSpecialEffectsMask == 0
+		&& vkExec.pendingSpecialEffectsSource == NULL
+		&& !vkExec.pendingSpecialEffectsNeedsResolve
+		&& VK_Exec_PipelineTargetsMatch( vkExec.activePipelineTarget,
+			VK_Exec_SwapchainPipelineTarget() );
 }
 
 void VK_Exec_ClearRenderTarget( bool clearColor, bool clearDepth, float depthValue,
@@ -4905,6 +4945,10 @@ int VK_Exec_ActiveFrameSlot( void ) {
 // (require2D) when its view is a cube — the interaction pipeline samples
 // every slot through sampler2D and a cube view would trip validation
 VkDescriptorSet VK_Exec_ImageDescriptor( unsigned int texnum, bool require2D ) {
+	if ( texnum >= sizeof( vkExec.descriptorCache )
+			/ sizeof( vkExec.descriptorCache[0] ) ) {
+		return VK_NULL_HANDLE;
+	}
 	if ( require2D ) {
 		const vkImageEntry_t *entry = VK_Image_GetEntry( texnum );
 		if ( entry == NULL || entry->isCube ) {
@@ -4931,6 +4975,20 @@ int VK_Exec_InteractionUniformAlloc( const void *data, int bytes ) {
 			? VK_Ring_Alloc( vkExec.uniformRings[ vkExec.frameSlot ],
 					data, bytes, alignment )
 			: -1;
+}
+
+int VK_Exec_InteractionUniformCheckpoint( void ) {
+	return vkExec.frameSlot >= 0 && vkExec.frameSlot < VK_FRAMES_IN_FLIGHT
+		? vkExec.uniformRings[ vkExec.frameSlot ].cursor : -1;
+}
+
+void VK_Exec_InteractionUniformRestore( int checkpoint ) {
+	if ( vkExec.frameSlot < 0 || vkExec.frameSlot >= VK_FRAMES_IN_FLIGHT
+			|| checkpoint < 0
+			|| checkpoint > vkExec.uniformRings[ vkExec.frameSlot ].capacity ) {
+		return;
+	}
+	vkExec.uniformRings[ vkExec.frameSlot ].cursor = checkpoint;
 }
 
 // Shadow receiver blocks use a larger descriptor range for four localized
@@ -7340,6 +7398,82 @@ static bool VK_ClassicGui_PrepareGeometry( VkCommandBuffer cmd, int slot,
 	return true;
 }
 
+bool VK_Exec_SharedInteractionGeometryCheckpoint( void ) {
+	vkSharedInteractionGeometryCheckpoint_t &checkpoint =
+		vkSharedInteractionGeometryCheckpoint;
+	if ( checkpoint.active || !vkExec.frameOpen
+			|| vkExec.frameSlot < 0
+			|| vkExec.frameSlot >= VK_FRAMES_IN_FLIGHT ) {
+		return false;
+	}
+	const vkRing_t &vertexRing = vkExec.vertexRings[ vkExec.frameSlot ];
+	const vkRing_t &indexRing = vkExec.indexRings[ vkExec.frameSlot ];
+	if ( vertexRing.cursor < 0 || vertexRing.cursor > vertexRing.capacity
+			|| indexRing.cursor < 0 || indexRing.cursor > indexRing.capacity ) {
+		return false;
+	}
+
+	checkpoint.frameSlot = vkExec.frameSlot;
+	checkpoint.vertexCursor = vertexRing.cursor;
+	checkpoint.indexCursor = indexRing.cursor;
+	checkpoint.boundVertexOffset = vkExec.boundVertexOffset;
+	memcpy( checkpoint.vertMemo, vkExec.vertMemo,
+		sizeof( checkpoint.vertMemo ) );
+	memcpy( checkpoint.idxMemo, vkExec.idxMemo,
+		sizeof( checkpoint.idxMemo ) );
+	checkpoint.active = true;
+	return true;
+}
+
+void VK_Exec_SharedInteractionGeometryRestore( void ) {
+	vkSharedInteractionGeometryCheckpoint_t &checkpoint =
+		vkSharedInteractionGeometryCheckpoint;
+	if ( !checkpoint.active ) {
+		return;
+	}
+	if ( checkpoint.frameSlot >= 0
+			&& checkpoint.frameSlot < VK_FRAMES_IN_FLIGHT ) {
+		vkExec.vertexRings[ checkpoint.frameSlot ].cursor =
+			checkpoint.vertexCursor;
+		vkExec.indexRings[ checkpoint.frameSlot ].cursor =
+			checkpoint.indexCursor;
+		vkExec.boundVertexOffset = checkpoint.boundVertexOffset;
+		memcpy( vkExec.vertMemo, checkpoint.vertMemo,
+			sizeof( checkpoint.vertMemo ) );
+		memcpy( vkExec.idxMemo, checkpoint.idxMemo,
+			sizeof( checkpoint.idxMemo ) );
+	}
+	checkpoint.active = false;
+}
+
+void VK_Exec_SharedInteractionGeometryCommit( void ) {
+	// The complete shared view is now ready.  Its retained offsets and memo
+	// entries become ordinary frame allocations consumed by the committed draw.
+	vkSharedInteractionGeometryCheckpoint.active = false;
+}
+
+// Shared classic domains preflight every geometry upload before they take
+// framebuffer ownership.  Keep the ring/memo implementation private while
+// exposing the exact retained offsets to the Vulkan interaction consumer.
+bool VK_Exec_PrepareTriGeometry( VkCommandBuffer cmd, int slot,
+		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset ) {
+	return VK_ClassicGui_PrepareGeometry( cmd, slot, tri,
+		vertexOffset, indexOffset );
+}
+
+void VK_Exec_BindPreparedTriGeometry( VkCommandBuffer cmd, int slot,
+		int vertexOffset, int indexOffset ) {
+	if ( cmd == VK_NULL_HANDLE || slot < 0 || slot >= VK_FRAMES_IN_FLIGHT
+			|| vertexOffset < 0 || indexOffset < 0 ) {
+		return;
+	}
+	const VkBuffer vertexBuffer = vkExec.vertexRings[ slot ].buffer;
+	const VkDeviceSize bindOffset = static_cast<VkDeviceSize>( vertexOffset );
+	vkCmdBindVertexBuffers( cmd, 0, 1, &vertexBuffer, &bindOffset );
+	vkCmdBindIndexBuffer( cmd, vkExec.indexRings[ slot ].buffer,
+		static_cast<VkDeviceSize>( indexOffset ), VK_INDEX_TYPE_UINT32 );
+}
+
 static void VK_ClassicGui_BindPreparedGeometry( VkCommandBuffer cmd, int slot,
 		const vkClassicGuiDrawPlan_t &plan ) {
 	const VkBuffer vertexBuffer = vkExec.vertexRings[ slot ].buffer;
@@ -8685,7 +8819,6 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	const bool sharedWorldAmbientOwned =
 		r_rendererSharedWorldAmbient.GetBool()
 		&& VK_ClassicWorldAmbient_Preflight( viewDef );
-
 	// GL bottom-left viewport -> Vulkan negative-height viewport
 	const int vpX = viewDef->viewport.x1;
 	const int vpYGL = viewDef->viewport.y1;
@@ -8911,7 +9044,18 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	// then the ambient walks. The pass tracks its own space/depth-range
 	// state and exits at maxDepth 1.0 with depth bias off; restart the
 	// walk baseline to match.
-	VK_Interactions_DrawLights( viewDef );
+	// Seal all Vulkan resources now, after the established depth prerequisite
+	// has consumed its transient allocations but before the first interaction
+	// framebuffer write. A rejection leaves the complete classic light/shadow
+	// walker untouched.
+	const bool sharedWorldInteractionOwned =
+		r_rendererSharedWorldInteraction.GetBool()
+		&& VK_ClassicInteraction_Preflight( viewDef );
+	if ( sharedWorldInteractionOwned ) {
+		VK_ClassicInteraction_DrawOwnedView( viewDef );
+	} else {
+		VK_Interactions_DrawLights( viewDef );
+	}
 	currentSpace = NULL;
 	weaponDepthRange = false;
 	viewport.maxDepth = 1.0f;
