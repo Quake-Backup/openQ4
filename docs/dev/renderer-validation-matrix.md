@@ -29,6 +29,11 @@ The safe matrix starts the staged client, runs renderer self-tests or startup pr
 python tools\tests\renderer_validation_matrix.py
 ```
 
+Each invocation uses `<output-dir>/savepath` by default, so archived settings in
+the developer `.home` tree cannot silently select Vulkan or enable experimental
+renderer paths. Pass `--savepath` only when a case intentionally needs a named,
+pre-seeded save tree.
+
 For focused validation without relaunching the full matrix, use `--cases` with one or more case ids:
 
 ```powershell

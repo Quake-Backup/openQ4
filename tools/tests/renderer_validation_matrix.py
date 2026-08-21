@@ -2120,7 +2120,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cases", default="", help="Comma-separated automated safe case ids to run. Defaults to all cases.")
     parser.add_argument("--timeout", type=int, default=60, help="Per-case timeout in seconds.")
     parser.add_argument("--basepath", default=default_basepath(), help="Quake 4 install/base path. Omit or set empty to skip fs_basepath.")
-    parser.add_argument("--savepath", default="", help="Save path root. Defaults to <repo>/.home.")
+    parser.add_argument(
+        "--savepath",
+        default="",
+        help="Save path root. Defaults to <output-dir>/savepath for an isolated run.",
+    )
     parser.add_argument("--output-dir", default="", help="Report/output directory. Defaults to <repo>/.tmp/renderer-validation/<timestamp>.")
     parser.add_argument(
         "--executable",
@@ -2219,11 +2223,11 @@ def main(argv: list[str]) -> int:
     if not requested_cases:
         safe_cases = filter_driver_specific_cases(safe_cases)
         safe_cases = filter_vulkan_module_cases(safe_cases, runtime_dir)
-    savepath = Path(args.savepath).resolve() if args.savepath else root / ".home"
-    savepath.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     output_dir = Path(args.output_dir).resolve() if args.output_dir else root / ".tmp" / "renderer-validation" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
+    savepath = Path(args.savepath).resolve() if args.savepath else output_dir / "savepath"
+    savepath.mkdir(parents=True, exist_ok=True)
 
     basepath = args.basepath
     if basepath and not Path(basepath).exists():

@@ -1012,11 +1012,14 @@ def validate_manual_release_linux_runtime_gate() -> None:
         '["Shutting down OpenGL subsystem (SDL3 backend)"]',
         "executable = find_client_executable(root)",
         'runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else root / ".install"',
+        'savepath = Path(args.savepath).resolve() if args.savepath else output_dir / "savepath"',
         "cwd=str(runtime_dir)",
         "exit_code == 0 and not timed_out",
     ):
         if token not in renderer:
             raise AssertionError(f"renderer runtime helper is missing release lifecycle contract: {token}")
+    if 'else root / ".home"' in renderer:
+        raise AssertionError("renderer validation must not inherit archived user settings by default")
 
 
 def validate_manual_release_companion_checkout() -> None:
