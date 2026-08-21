@@ -12,7 +12,9 @@ ownership corridors behind the default-off
   stencil lights, and same-light mapped-plus-stencil supplements.
 
 Together with shared root 2D GUI and world ambient/material ownership, this is
-the expanded third complete shared classic-frame domain. OpenGL and Vulkan
+the expanded third complete shared classic-frame domain. It is now joined by
+the separate [shared fog/blend domain](classic-fog-blend-domain-modernization.md).
+OpenGL and Vulkan
 consume the same backend-neutral sealed light, receiver,
 interaction-primitive, shadow-caster, and mapped-pass contract. The established interaction renderer remains the
 supported default and the whole-view rollback.
@@ -303,13 +305,17 @@ poses, and Vulkan validation results with that release evidence.
 
 ## Remaining Milestone D work
 
-The shared root GUI, world ambient/material, and fixed-classic interaction
-corridors are three independently guarded complete domains. The interaction
-domain now admits both unshadowed and shadow-coupled eligible views. They do not
-make the whole classic frame modern.
+The shared root GUI, world ambient/material, fixed-classic interaction, and
+fog/blend corridors are four independently guarded complete domains. The
+interaction domain admits both unshadowed and shadow-coupled eligible views;
+the fog/blend domain owns a complete eligible phase independently because its
+compositing order and rollback boundary differ from interaction lighting.
+Native/static and controlled GL/Vulkan fog/blend qualification pass, while
+authored-stock and release promotion remain open. These domains do not make the
+whole classic frame modern.
 
-The next recommended implementation target is **fog/blend ownership and
-parity** on OpenGL and Vulkan. Deform, subview, in-world GUI, render-demo,
-cinematic, authored post, and other special domains remain downstream. Temporal
-presentation and PBR/advanced-lighting work must continue to wait for coherent
-classic-frame ownership.
+The next recommended implementation target is **deform ownership and parity**
+on OpenGL and Vulkan. Subview, in-world GUI, render-demo, cinematic, authored
+post, and other special domains remain downstream. Temporal presentation and
+PBR/advanced-lighting work must continue to wait for coherent classic-frame
+ownership.

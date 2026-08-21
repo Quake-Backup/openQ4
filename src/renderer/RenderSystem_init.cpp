@@ -46,6 +46,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ClassicGuiDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
+#include "ClassicFogBlendDomain.h"
 #include "GeometryResources.h"
 #include "ScenePackets.h"
 #include "ModernClusteredLighting.h"
@@ -485,6 +486,7 @@ idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | 
 idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
@@ -845,6 +847,16 @@ static void R_RendererClassicInteractionDomainSelfTest_f( const idCmdArgs &args 
 		common->Printf( "RendererClassicInteractionDomain self-test passed\n" );
 	} else {
 		common->Warning( "RendererClassicInteractionDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicFogBlendDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicFogBlendDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicFogBlendDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicFogBlendDomain self-test failed" );
 	}
 }
 
@@ -4028,6 +4040,108 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			}
 		}
 	}
+	{
+		const classicFogBlendDomainStats_t &fogBlend =
+			R_ClassicFogBlendDomain_Stats();
+		common->Printf(
+			"classicFogBlendDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s views=%d ready=%d fallback=%d lights=%d fog=%d blend=%d noopLights=%d surfaces=%d global=%d local=%d stages=%d active=%d inactive=%d noopStages=%d primitives=%d fogReceivers=%d fogCaps=%d blendDraws=%d noop=%d textures=%d hash=%016llx\n",
+			r_rendererSharedWorldFogBlend.GetBool() ? 1 : 0,
+			fogBlend.prepared ? 1 : 0,
+			fogBlend.frameValid ? 1 : 0,
+			fogBlend.overflow ? 1 : 0,
+			fogBlend.status,
+			fogBlend.fogBlendViews,
+			fogBlend.readyViews,
+			fogBlend.fallbackViews,
+			fogBlend.lights,
+			fogBlend.fogLights,
+			fogBlend.blendLights,
+			fogBlend.noopLights,
+			fogBlend.surfaces,
+			fogBlend.receiverSurfaces[
+				CLASSIC_FOG_BLEND_RECEIVER_GLOBAL ],
+			fogBlend.receiverSurfaces[
+				CLASSIC_FOG_BLEND_RECEIVER_LOCAL ],
+			fogBlend.lightStages,
+			fogBlend.activeLightStages,
+			fogBlend.inactiveLightStages,
+			fogBlend.noopLightStages,
+			fogBlend.primitives,
+			fogBlend.fogReceiverPrimitives,
+			fogBlend.fogFrustumPrimitives,
+			fogBlend.blendPrimitives,
+			fogBlend.noopPrimitives,
+			fogBlend.textures,
+			static_cast<unsigned long long>( fogBlend.hash ) );
+		for ( int backendIndex = 0;
+				backendIndex < CLASSIC_FOG_BLEND_BACKEND_COUNT;
+				++backendIndex ) {
+			const classicFogBlendDomainBackend_t backend =
+				static_cast<classicFogBlendDomainBackend_t>( backendIndex );
+			const classicFogBlendDomainBackendCoverage_t &coverage =
+				fogBlend.backend[ backendIndex ];
+			common->Printf(
+				"classicFogBlendDomain backend=%s ownedViews=%d fallbackViews=%d ownedFogReceivers=%d ownedFogCaps=%d ownedBlend=%d ownedNoops=%d ownedNoopStages=%d ownedNoopLights=%d mismatches=%d duplicate=%d untracked=%d\n",
+				ClassicFogBlendDomainBackend_Name( backend ),
+				coverage.ownedViews,
+				coverage.fallbackViews,
+				coverage.ownedFogReceiverPrimitives,
+				coverage.ownedFogFrustumPrimitives,
+				coverage.ownedBlendPrimitives,
+				coverage.ownedNoopPrimitives,
+				coverage.ownedNoopLightStages,
+				coverage.ownedNoopLights,
+				coverage.coverageMismatches,
+				coverage.duplicateReports,
+				coverage.untrackedFallbacks );
+		}
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicFogBlendDomain_NumViews(); ++viewIndex ) {
+			const classicFogBlendDomainView_t *view =
+				R_ClassicFogBlendDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			common->Printf(
+				"classicFogBlendDomain view[%d] scene=%d pass=%d ready=%d failure=%s detail=%d drawPacket=%d light=%d receiver=%d stage=%d lights=%d/%d+%d surfaces=%d stages=%d/%d+%d primitives=%d drawable=%d fogReceivers=%d fogCaps=%d blendDraws=%d noop=%d noopStages=%d noopLights=%d hash=%016llx GL=%d/%s/%d Vulkan=%d/%s/%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->fogBlendPassPacketIndex,
+				view->ready ? 1 : 0,
+				ClassicFogBlendDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				view->failureDrawPacketIndex,
+				view->failureLightOrdinal,
+				view->failureReceiverOrdinal,
+				view->failureStageIndex,
+				view->lightCount,
+				view->fogLightCount,
+				view->blendLightCount,
+				view->surfaceCount,
+				view->lightStageCount,
+				view->activeLightStageCount,
+				view->inactiveLightStageCount,
+				view->primitiveCount,
+				view->drawablePrimitiveCount,
+				view->fogReceiverPrimitiveCount,
+				view->fogFrustumPrimitiveCount,
+				view->blendPrimitiveCount,
+				view->noopPrimitiveCount,
+				view->noopLightStageCount,
+				view->noopLightCount,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[ CLASSIC_FOG_BLEND_BACKEND_GL ],
+				ClassicFogBlendDomainFailure_Name(
+					view->backendFailure[ CLASSIC_FOG_BLEND_BACKEND_GL ] ),
+				view->backendFailureDetail[ CLASSIC_FOG_BLEND_BACKEND_GL ],
+				view->backendOutcome[ CLASSIC_FOG_BLEND_BACKEND_VULKAN ],
+				ClassicFogBlendDomainFailure_Name(
+					view->backendFailure[
+						CLASSIC_FOG_BLEND_BACKEND_VULKAN ] ),
+				view->backendFailureDetail[
+					CLASSIC_FOG_BLEND_BACKEND_VULKAN ] );
+		}
+	}
 	common->Printf(
 		"PBR materials: parser=1 modernLighting=0 enabled=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
 		r_pbrMaterials.GetBool() ? 1 : 0,
@@ -4174,6 +4288,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
 	R_MaterialResourceTable_Shutdown();
 	R_RenderGraphResources_Shutdown();
 	R_ModernGLExecutor_Shutdown();
@@ -4435,6 +4550,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererClassicGuiDomainSelfTest", R_RendererClassicGuiDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic GUI whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicWorldAmbientDomainSelfTest", R_RendererClassicWorldAmbientDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic world ambient whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicInteractionDomainSelfTest", R_RendererClassicInteractionDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic interaction whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicFogBlendDomainSelfTest", R_RendererClassicFogBlendDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic fog/blend whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
 	cmdSystem->AddCommand( "rendererGeometryResourceSelfTest", R_RendererGeometryResourceSelfTest_f, CMD_FL_RENDERER, "run renderer geometry and instance packet self tests" );
@@ -4788,6 +4904,7 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan backend seam (Phase C): the GL executor/upload/graph/debug
 	// subsystems never initialized; device + window teardown is GLimp_Shutdown

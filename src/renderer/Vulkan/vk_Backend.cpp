@@ -38,6 +38,7 @@
 #include "../ClassicGuiDomain.h"
 #include "../ClassicWorldAmbientDomain.h"
 #include "../ClassicInteractionDomain.h"
+#include "../ClassicFogBlendDomain.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
 
@@ -381,9 +382,11 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
 	if ( r_rendererSharedGui.GetBool()
 			|| r_rendererSharedWorldAmbient.GetBool()
-			|| r_rendererSharedWorldInteraction.GetBool() ) {
+			|| r_rendererSharedWorldInteraction.GetBool()
+			|| r_rendererSharedWorldFogBlend.GetBool() ) {
 		const idScenePacketFrame *scenePackets = NULL;
 		if ( R_ScenePackets_FrontEndFrameAvailable() ) {
 			scenePackets = &R_ScenePackets_FrontEndFrame();
@@ -400,6 +403,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		}
 		if ( r_rendererSharedWorldInteraction.GetBool() ) {
 			R_ClassicInteractionDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldFogBlend.GetBool() ) {
+			R_ClassicFogBlendDomain_PrepareFrame( *scenePackets );
 		}
 	}
 

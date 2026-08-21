@@ -237,6 +237,17 @@ enum sceneInteractionReceiverClass_t {
 	SCENE_INTERACTION_RECEIVER_TRANSLUCENT
 };
 
+// Fog/blend receiver identity is independent of the generic pass category.
+// The classic phase walks each relevant viewLight in source order and then its
+// authoritative GLOBAL -> LOCAL chains.  Capturing that identity lets shared
+// owners prove exact coverage without re-evaluating the receiver material.
+enum sceneFogBlendReceiverClass_t {
+	SCENE_FOG_BLEND_RECEIVER_NONE = 0,
+	SCENE_FOG_BLEND_RECEIVER_GLOBAL,
+	SCENE_FOG_BLEND_RECEIVER_LOCAL,
+	SCENE_FOG_BLEND_RECEIVER_COUNT
+};
+
 // Shadow packet identity is deliberately separate from the render-pass
 // category.  One light can contribute the same surface to several ownership
 // chains, and a flat RENDER_PASS_* list cannot prove which receiver-visible
@@ -281,6 +292,11 @@ typedef struct drawPacket_s {
 	int						interactionReceiverOrdinal;
 	int						interactionSourceOrdinal;
 	sceneInteractionReceiverClass_t interactionReceiverClass;
+	const viewLight_t		*fogBlendLight;
+	int						fogBlendLightOrdinal;
+	int						fogBlendReceiverOrdinal;
+	int						fogBlendSourceOrdinal;
+	sceneFogBlendReceiverClass_t fogBlendReceiverClass;
 	const viewLight_t		*shadowLight;
 	int						shadowLightOrdinal;
 	int						shadowChainOrdinal;
@@ -362,6 +378,9 @@ public:
 	bool AddInteractionDrawPacket( const drawSurf_t *drawSurf, int drawIndex,
 		const viewLight_t *viewLight, int lightOrdinal,
 		sceneInteractionReceiverClass_t receiverClass, int receiverOrdinal );
+	bool AddFogBlendDrawPacket( const drawSurf_t *drawSurf, int drawIndex,
+		const viewLight_t *viewLight, int lightOrdinal,
+		sceneFogBlendReceiverClass_t receiverClass, int receiverOrdinal );
 	bool AddShadowDrawPacket( const drawSurf_t *drawSurf,
 		renderPassCategory_t category, int drawIndex,
 		const viewLight_t *viewLight, int lightOrdinal,

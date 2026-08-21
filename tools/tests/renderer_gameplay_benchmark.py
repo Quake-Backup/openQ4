@@ -189,6 +189,15 @@ INTERACTION_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
+FOG_BLEND_SCENES: dict[str, dict[str, Any]] = {
+    "sp-mv2-fog-blend": {
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock fog and blend lights for atomic fixed-classic ownership evidence",
+        "path": "spawn-static",
+    },
+}
+
 # Stock-map qualification candidates complement the tightly controlled
 # tools-map case.  The ordinary shadow-regression scenes do not by themselves
 # establish a fixed camera or feature-bearing interaction view, so every target
@@ -258,6 +267,7 @@ ALL_SCENES = {
     **FULL_BUDGET_SCENES,
     **WORLD_AMBIENT_SCENES,
     **INTERACTION_SCENES,
+    **FOG_BLEND_SCENES,
     **INTERACTION_SHADOW_SCENES,
     **LOAD_REGRESSION_SCENES,
 }
@@ -450,6 +460,60 @@ PROFILE_DEFAULTS = {
             ("r_singleTriangle", "0"),
             ("r_skipAmbient", "1"),
             ("r_skipNewAmbient", "1"),
+            ("r_skipDeforms", "0"),
+            ("r_skipRender", "0"),
+        ),
+    },
+    "fog-blend": {
+        "cases": tuple(FOG_BLEND_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "launchCvars": (
+            ("ui_showGun", "0"),
+            ("g_showHud", "0"),
+            ("r_multiSamples", "0"),
+        ),
+        # Use only stock map/model/light declarations.  The two test lights
+        # deliberately exercise both halves of the atomic fog/blend domain;
+        # lights/fog_generic is a fogLight and lights/fog_ambient is a
+        # deterministic blendLight in the shipped Quake 4 declarations.
+        # Do not use lights/stream_fog here: its time-driven flicker tables
+        # make independent shared-off/shared-on image captures non-comparable.
+        "execCommands": (
+            "noclip",
+            "setviewpos 0 -192 96 20 90 0",
+            "testModel models/mapobjects/strogg/crates/crate1_small.lwo",
+            'testPointLight 256 texture lights/fog_generic origin "0 96 48" _color "0.18 0.26 0.34" shaderParm3 "384" noShadows "1"',
+            'testPointLight 256 texture lights/fog_ambient origin "96 -96 48" _color "0.28 0.10 0.05" shaderParm3 "0.65" noShadows "1"',
+        ),
+        "cvars": (
+            ("r_rendererSharedWorldFogBlend", "1"),
+            ("g_renderFastNoPost", "1"),
+            ("g_renderFastNoPostDirect", "1"),
+            ("g_renderCasUpscale", "0"),
+            ("r_postAA", "0"),
+            ("r_screenFraction", "100"),
+            ("r_bloom", "0"),
+            ("r_motionBlur", "0"),
+            ("r_ssao", "0"),
+            ("r_hdrToneMap", "0"),
+            ("r_hdrDebugView", "0"),
+            ("r_skipSubviews", "1"),
+            ("r_useLightGrid", "0"),
+            ("r_skipPlayerVisibilityEffects", "1"),
+            ("r_portalsDistanceCull", "0"),
+            ("r_forceAmbient", "0"),
+            ("r_celShading", "0"),
+            ("r_celShadingWorld", "0"),
+            ("r_showOverDraw", "0"),
+            ("r_singleTriangle", "0"),
+            ("r_skipAmbient", "1"),
+            ("r_skipNewAmbient", "1"),
+            ("r_skipFogLights", "0"),
+            ("r_skipBlendLights", "0"),
             ("r_skipDeforms", "0"),
             ("r_skipRender", "0"),
         ),
@@ -674,6 +738,7 @@ class RunSpec:
     render_api: str
     interaction_expectation: str = "none"
     interaction_shadow_expectation: str = "none"
+    fog_blend_expectation: str = "none"
 
     @property
     def fullscreen(self) -> bool:
@@ -1041,6 +1106,7 @@ def common_args(
     append_set(args, "r_rendererSharedGui", "0")
     append_set(args, "r_rendererSharedWorldAmbient", "0")
     append_set(args, "r_rendererSharedWorldInteraction", "0")
+    append_set(args, "r_rendererSharedWorldFogBlend", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
     # Keep generated cache/config output in the isolated evidence root.  The
@@ -1085,6 +1151,7 @@ def build_scripted_capture_lines(
         "r_rendererSharedGui 0",
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
+        "r_rendererSharedWorldFogBlend 0",
         "r_rendererModernVisible 0",
         "r_rendererModernVisibleDepth 0",
         "r_rendererModernOpaque 0",
@@ -1318,6 +1385,10 @@ def extract_summary(text: str) -> dict[str, str]:
     interaction_tail = (
         text[interaction_summary_offset:] if interaction_summary_offset >= 0 else ""
     )
+    fog_blend_summary_offset = text.rfind("classicFogBlendDomain requested=")
+    fog_blend_tail = (
+        text[fog_blend_summary_offset:] if fog_blend_summary_offset >= 0 else ""
+    )
     summary: dict[str, str] = {
         "benchmarkCapture": extract_last_line(text, "rendererBenchmark capture("),
         "benchmarkInfo": extract_last_line(text, "Renderer benchmark:"),
@@ -1335,6 +1406,22 @@ def extract_summary(text: str) -> dict[str, str]:
             line.strip()
             for line in interaction_tail.splitlines()
             if "Renderer shared interaction map view[" in line
+        ),
+        "sharedFogBlend": extract_last_line(
+            text, "classicFogBlendDomain requested="
+        ),
+        # Keep backend records paired with the latest aggregate gfxInfo line.
+        # Repeated samples can otherwise mix generations and make a backend
+        # that was inactive in the final frame look owned.
+        "sharedFogBlendBackends": "\n".join(
+            line.strip()
+            for line in fog_blend_tail.splitlines()
+            if "classicFogBlendDomain backend=" in line
+        ),
+        "sharedFogBlendViews": "\n".join(
+            line.strip()
+            for line in fog_blend_tail.splitlines()
+            if "classicFogBlendDomain view[" in line
         ),
     }
     matches = re.findall(
@@ -1380,6 +1467,60 @@ def shared_interaction_fields(summary: dict[str, str]) -> dict[str, str]:
         key: value
         for key, value in re.findall(r"\b([A-Za-z]+)=([^\s]+)", line)
     }
+
+
+def shared_fog_blend_fields(summary: dict[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in re.findall(
+            r"\b([A-Za-z]+)=([^\s]+)", summary.get("sharedFogBlend", "")
+        )
+    }
+
+
+def shared_fog_blend_backend_records(
+    summary: dict[str, str]
+) -> dict[str, dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+    for line in summary.get("sharedFogBlendBackends", "").splitlines():
+        fields = {
+            key: value
+            for key, value in re.findall(r"\b([A-Za-z]+)=([^\s]+)", line)
+        }
+        backend = fields.get("backend")
+        if backend:
+            records[backend] = fields
+    return records
+
+
+def shared_fog_blend_view_records(
+    summary: dict[str, str]
+) -> list[dict[str, int | str]]:
+    records: list[dict[str, int | str]] = []
+    pattern = re.compile(
+        r"classicFogBlendDomain view\[(?P<index>\d+)\].*?"
+        r"\bready=(?P<ready>\d+)\s+failure=(?P<failure>[^\s]+)\s+"
+        r"detail=(?P<detail>-?\d+).*?"
+        r"\bGL=(?P<glOutcome>\d+)/(?P<glFailure>[^/\s]+)/(?P<glDetail>-?\d+)\s+"
+        r"Vulkan=(?P<vkOutcome>\d+)/(?P<vkFailure>[^/\s]+)/(?P<vkDetail>-?\d+)"
+    )
+    for line in summary.get("sharedFogBlendViews", "").splitlines():
+        match = pattern.search(line)
+        if match is None:
+            continue
+        fields: dict[str, int | str] = match.groupdict()
+        for name in (
+            "index",
+            "ready",
+            "detail",
+            "glOutcome",
+            "glDetail",
+            "vkOutcome",
+            "vkDetail",
+        ):
+            fields[name] = int(str(fields[name]))
+        records.append(fields)
+    return records
 
 
 def shared_interaction_shadow_counts(
@@ -2315,6 +2456,291 @@ def evaluate_shared_interaction_evidence(
     return failures
 
 
+def evaluate_shared_fog_blend_evidence(
+    spec: RunSpec, summary: dict[str, str]
+) -> list[str]:
+    expectation = spec.fog_blend_expectation
+    if expectation == "none":
+        return []
+
+    fields = shared_fog_blend_fields(summary)
+    backends = shared_fog_blend_backend_records(summary)
+    view_records = shared_fog_blend_view_records(summary)
+    if not fields:
+        return ["classicFogBlendDomain evidence line"]
+
+    failures: list[str] = []
+
+    def integer(record: dict[str, str], name: str) -> int | None:
+        try:
+            return int(record[name])
+        except (KeyError, ValueError):
+            return None
+
+    aggregate_counts = (
+        "overflow",
+        "views",
+        "ready",
+        "fallback",
+        "lights",
+        "fog",
+        "blend",
+        "noopLights",
+        "surfaces",
+        "global",
+        "local",
+        "stages",
+        "active",
+        "inactive",
+        "noopStages",
+        "primitives",
+        "fogReceivers",
+        "fogCaps",
+        "blendDraws",
+        "noop",
+        "textures",
+    )
+    backend_counts = (
+        "ownedViews",
+        "fallbackViews",
+        "ownedFogReceivers",
+        "ownedFogCaps",
+        "ownedBlend",
+        "ownedNoops",
+        "ownedNoopStages",
+        "ownedNoopLights",
+        "mismatches",
+        "duplicate",
+        "untracked",
+    )
+    if expectation == "disabled":
+        for name in ("requested", "prepared", "frameValid", *aggregate_counts):
+            if integer(fields, name) != 0:
+                failures.append(
+                    f"classicFogBlendDomain {name}={fields.get(name, 'missing')}"
+                )
+        for backend_name in ("GL", "Vulkan"):
+            record = backends.get(backend_name, {})
+            for name in backend_counts:
+                if integer(record, name) != 0:
+                    failures.append(
+                        "classicFogBlendDomain disabled backend "
+                        f"{backend_name} {name}={record.get(name, 'missing')}"
+                    )
+        return failures
+
+    views = integer(fields, "views")
+    active_backend = "Vulkan" if spec.render_api == "vk" else "GL"
+    inactive_backend = "GL" if active_backend == "Vulkan" else "Vulkan"
+    active = backends.get(active_backend, {})
+    inactive = backends.get(inactive_backend, {})
+    if expectation == "fallback":
+        for name in ("requested", "prepared"):
+            if integer(fields, name) != 1:
+                failures.append(
+                    f"classicFogBlendDomain {name}={fields.get(name, 'missing')}"
+                )
+        if integer(fields, "overflow") != 0 or views is None or views <= 0:
+            failures.append(
+                "classicFogBlendDomain fallback aggregate="
+                f"overflow={fields.get('overflow', 'missing')} "
+                f"views={fields.get('views', 'missing')}"
+            )
+        domain_fallback = integer(fields, "frameValid") == 0
+        backend_fallback = integer(fields, "frameValid") == 1
+        if domain_fallback:
+            if (
+                integer(fields, "ready") != 0
+                or integer(fields, "fallback") != views
+                or fields.get("status") != "fallback"
+            ):
+                failures.append(
+                    "classicFogBlendDomain domain fallback state="
+                    f"ready={fields.get('ready', 'missing')} "
+                    f"fallback={fields.get('fallback', 'missing')} "
+                    f"status={fields.get('status', 'missing')}"
+                )
+            for name in aggregate_counts[4:]:
+                if integer(fields, name) != 0:
+                    failures.append(
+                        "classicFogBlendDomain domain fallback retained "
+                        f"{name}={fields.get(name, 'missing')}"
+                    )
+        elif backend_fallback:
+            if (
+                integer(fields, "ready") != views
+                or integer(fields, "fallback") != 0
+                or fields.get("status") != "ready"
+            ):
+                failures.append(
+                    "classicFogBlendDomain backend fallback state="
+                    f"ready={fields.get('ready', 'missing')} "
+                    f"fallback={fields.get('fallback', 'missing')} "
+                    f"status={fields.get('status', 'missing')}"
+                )
+        else:
+            failures.append(
+                "classicFogBlendDomain fallback frameValid="
+                f"{fields.get('frameValid', 'missing')}"
+            )
+
+        if integer(active, "ownedViews") != 0 or integer(
+            active, "fallbackViews"
+        ) != views:
+            failures.append(
+                f"classicFogBlendDomain {active_backend} fallback coverage"
+            )
+        for name in (
+            "ownedFogReceivers",
+            "ownedFogCaps",
+            "ownedBlend",
+            "ownedNoops",
+            "ownedNoopStages",
+            "ownedNoopLights",
+        ):
+            if integer(active, name) != 0:
+                failures.append(
+                    f"classicFogBlendDomain {active_backend} atomic fallback "
+                    f"{name}={active.get(name, 'missing')}"
+                )
+        active_prefix = "vk" if active_backend == "Vulkan" else "gl"
+        inactive_prefix = "gl" if active_prefix == "vk" else "vk"
+        if len(view_records) != views:
+            failures.append(
+                "classicFogBlendDomain fallback view records="
+                f"{len(view_records)}/{views}"
+            )
+        for record in view_records:
+            active_failure = record.get(f"{active_prefix}Failure")
+            active_detail = record.get(f"{active_prefix}Detail")
+            valid_domain_failure = (
+                domain_fallback
+                and record.get("ready") == 0
+                and record.get("failure") not in ("none", "unknown")
+                and active_failure == record.get("failure")
+                and active_detail == record.get("detail")
+            )
+            valid_backend_failure = (
+                backend_fallback
+                and record.get("ready") == 1
+                and record.get("failure") == "none"
+                and active_failure not in ("none", "unknown")
+            )
+            if (
+                record.get(f"{active_prefix}Outcome") != 2
+                or active_detail == 0
+                or record.get(f"{inactive_prefix}Outcome") != 0
+                or not (valid_domain_failure or valid_backend_failure)
+            ):
+                failures.append(
+                    "classicFogBlendDomain named atomic fallback="
+                    f"{record}"
+                )
+        for name in ("mismatches", "duplicate", "untracked"):
+            if integer(active, name) != 0:
+                failures.append(
+                    f"classicFogBlendDomain {active_backend} {name}="
+                    f"{active.get(name, 'missing')}"
+                )
+        for name in backend_counts:
+            if integer(inactive, name) != 0:
+                failures.append(
+                    f"classicFogBlendDomain inactive {inactive_backend} {name}="
+                    f"{inactive.get(name, 'missing')}"
+                )
+        return failures
+
+    for name in ("requested", "prepared", "frameValid"):
+        if integer(fields, name) != 1:
+            failures.append(
+                f"classicFogBlendDomain {name}={fields.get(name, 'missing')}"
+            )
+    if integer(fields, "overflow") != 0 or integer(fields, "fallback") != 0:
+        failures.append(
+            "classicFogBlendDomain rollback accounting="
+            f"{fields.get('overflow', 'missing')}/{fields.get('fallback', 'missing')}"
+        )
+    if views is None or views <= 0 or integer(fields, "ready") != views:
+        failures.append(
+            "classicFogBlendDomain complete-view readiness="
+            f"{fields.get('ready', 'missing')}/{fields.get('views', 'missing')}"
+        )
+    positive_counts = [
+        "lights",
+        "fog",
+        "blend",
+        "surfaces",
+        "stages",
+        "active",
+        "primitives",
+        "fogReceivers",
+        "fogCaps",
+        "textures",
+    ]
+    if expectation != "owned-skip-blend":
+        positive_counts.append("blendDraws")
+    for name in positive_counts:
+        value = integer(fields, name)
+        if value is None or value <= 0:
+            failures.append(
+                f"classicFogBlendDomain {name}={fields.get(name, 'missing')}"
+            )
+    if expectation == "owned-skip-blend":
+        if integer(fields, "blendDraws") != 0:
+            failures.append(
+                "classicFogBlendDomain skip-blend draw accounting="
+                f"{fields.get('blendDraws', 'missing')}"
+            )
+        noop_lights = integer(fields, "noopLights")
+        if noop_lights is None or noop_lights <= 0:
+            failures.append(
+                "classicFogBlendDomain skip-blend light accounting="
+                f"{fields.get('noopLights', 'missing')}"
+            )
+    if integer(fields, "lights") != (
+        (integer(fields, "fog") or 0) + (integer(fields, "blend") or 0)
+    ):
+        failures.append("classicFogBlendDomain light-class accounting")
+    if integer(fields, "surfaces") != (
+        (integer(fields, "global") or 0) + (integer(fields, "local") or 0)
+    ):
+        failures.append("classicFogBlendDomain receiver-class accounting")
+    if fields.get("status") != "ready":
+        failures.append(
+            f"classicFogBlendDomain status={fields.get('status', 'missing')}"
+        )
+
+    if integer(active, "ownedViews") != views or integer(active, "fallbackViews") != 0:
+        failures.append(
+            f"classicFogBlendDomain {active_backend} view coverage"
+        )
+    for backend_name, aggregate_name in (
+        ("ownedFogReceivers", "fogReceivers"),
+        ("ownedFogCaps", "fogCaps"),
+        ("ownedBlend", "blendDraws"),
+        ("ownedNoops", "noop"),
+        ("ownedNoopStages", "noopStages"),
+        ("ownedNoopLights", "noopLights"),
+    ):
+        if integer(active, backend_name) != integer(fields, aggregate_name):
+            failures.append(
+                f"classicFogBlendDomain {active_backend} {backend_name} accounting"
+            )
+    for name in ("mismatches", "duplicate", "untracked"):
+        if integer(active, name) != 0:
+            failures.append(
+                f"classicFogBlendDomain {active_backend} {name}="
+                f"{active.get(name, 'missing')}"
+            )
+    for name in backend_counts:
+        if integer(inactive, name) != 0:
+            failures.append(
+                f"classicFogBlendDomain inactive {inactive_backend} {name}="
+                f"{inactive.get(name, 'missing')}"
+            )
+    return failures
+
+
 def load_tga_rgb(path: Path) -> tuple[int, int, bytes]:
     data = path.read_bytes()
     if len(data) < 18:
@@ -2595,19 +3021,26 @@ def evaluate_role_result(
             difference_reference_dir,
             difference_min_rms,
             difference_min_channels,
-            spec.id_for_shadow_preset("unshadowed"),
+            (
+                spec.id
+                if spec.fog_blend_expectation in ("owned", "owned-skip-blend")
+                else spec.id_for_shadow_preset("unshadowed")
+            ),
         )
-        if spec.interaction_shadow_expectation
-        in (
-            "stencil",
-            "projected",
-            "point",
-            "mapped",
-            "csm",
-            "mixed",
-            "dynamic",
-            "perforated",
-            "hybrid",
+        if (
+            spec.fog_blend_expectation in ("owned", "owned-skip-blend")
+            or spec.interaction_shadow_expectation
+            in (
+                "stencil",
+                "projected",
+                "point",
+                "mapped",
+                "csm",
+                "mixed",
+                "dynamic",
+                "perforated",
+                "hybrid",
+            )
         )
         else {"status": "not-requested"}
     )
@@ -2646,6 +3079,7 @@ def evaluate_role_result(
         elif p99_ms > max_p99_ms:
             missing.append(f"pacingP99={p99_ms:.1f}>{max_p99_ms:.1f}")
     missing.extend(evaluate_shared_interaction_evidence(spec, summary))
+    missing.extend(evaluate_shared_fog_blend_evidence(spec, summary))
     if "Selected renderer tier:" not in text:
         missing.append("selected tier line")
     if screenshot is None:
@@ -2787,6 +3221,7 @@ def run_sp_spec(
             "renderApi": spec.render_api,
             "interactionExpectation": spec.interaction_expectation,
             "interactionShadowExpectation": spec.interaction_shadow_expectation,
+            "fogBlendExpectation": spec.fog_blend_expectation,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "args": game_args,
@@ -2837,6 +3272,7 @@ def run_sp_spec(
         "renderApi": spec.render_api,
         "interactionExpectation": spec.interaction_expectation,
         "interactionShadowExpectation": spec.interaction_shadow_expectation,
+        "fogBlendExpectation": spec.fog_blend_expectation,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -2983,6 +3419,7 @@ def run_mp_spec(
             "renderApi": spec.render_api,
             "interactionExpectation": spec.interaction_expectation,
             "interactionShadowExpectation": spec.interaction_shadow_expectation,
+            "fogBlendExpectation": spec.fog_blend_expectation,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "serverArgs": server_args,
@@ -3124,6 +3561,7 @@ def run_mp_spec(
         "renderApi": spec.render_api,
         "interactionExpectation": spec.interaction_expectation,
         "interactionShadowExpectation": spec.interaction_shadow_expectation,
+        "fogBlendExpectation": spec.fog_blend_expectation,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -3171,6 +3609,7 @@ def harness_failure_result(spec: RunSpec, exc: Exception) -> dict[str, Any]:
         "renderApi": spec.render_api,
         "interactionExpectation": spec.interaction_expectation,
         "interactionShadowExpectation": spec.interaction_shadow_expectation,
+        "fogBlendExpectation": spec.fog_blend_expectation,
         "purpose": spec.purpose,
         "tier": spec.tier,
         "maxfps": spec.maxfps,
@@ -3295,6 +3734,32 @@ def interaction_shadow_expectation(
     return "mapped"
 
 
+def fog_blend_expectation(args: argparse.Namespace, case_id: str) -> str:
+    if case_id not in FOG_BLEND_SCENES:
+        return "none"
+    effective = {"r_renderersharedworldfogblend": "0"}
+    for name, value in args.extra_cvars:
+        effective[name.casefold()] = value
+    if not cvar_value_enabled(
+        effective.get("r_renderersharedworldfogblend", "0")
+    ):
+        return "disabled"
+    if any(
+        cvar_value_enabled(effective.get(name, "0"))
+        for name in (
+            "r_skipfoglights",
+            "r_showoverdraw",
+            "r_singletriangle",
+            "r_skiprender",
+            "r_skiprendercontext",
+        )
+    ):
+        return "fallback"
+    if cvar_value_enabled(effective.get("r_skipblendlights", "0")):
+        return "owned-skip-blend"
+    return "owned"
+
+
 def build_specs(args: argparse.Namespace) -> list[RunSpec]:
     defaults = PROFILE_DEFAULTS[args.profile]
     case_ids = split_csv(args.cases, defaults["cases"])
@@ -3352,6 +3817,9 @@ def build_specs(args: argparse.Namespace) -> list[RunSpec]:
                                     interaction_shadow_expectation=interaction_shadow_expectation(
                                         args, case_id, shadow
                                     ),
+                                    fog_blend_expectation=fog_blend_expectation(
+                                        args, case_id
+                                    ),
                                 )
                             )
     if args.limit > 0:
@@ -3396,6 +3864,7 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "requiredScenes": REQUIRED_SCENES,
         "worldAmbientScenes": WORLD_AMBIENT_SCENES,
         "interactionScenes": INTERACTION_SCENES,
+        "fogBlendScenes": FOG_BLEND_SCENES,
         "loadRegressionScenes": LOAD_REGRESSION_SCENES,
         "shadowScenes": SHADOW_SCENES,
         "campaignTransitionScenes": CAMPAIGN_TRANSITION_SCENES,
@@ -3565,6 +4034,16 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "|---|---|---|---|",
     ]
     for case_id, scene in INTERACTION_SCENES.items():
+        lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
+
+    lines += [
+        "",
+        "## Fog/Blend Ownership Coverage",
+        "",
+        "| Case | Mode | Map | Purpose |",
+        "|---|---|---|---|",
+    ]
+    for case_id, scene in FOG_BLEND_SCENES.items():
         lines.append(f"| `{case_id}` | {scene['mode']} | `{scene['map']}` | {scene['purpose']} |")
 
     lines += [
@@ -3799,7 +4278,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-references", action="store_true", help="Fail captures when --reference-dir has no matching reference image.")
     parser.add_argument("--image-rms-threshold", type=float, default=2.0, help="Allowed RMS channel delta for TGA comparisons.")
     parser.add_argument("--image-max-threshold", type=int, default=24, help="Allowed maximum channel delta for TGA comparisons.")
-    parser.add_argument("--difference-reference-dir", default="", help="Optional engine-TGA reference root that every shadow-owning interaction capture must differ from; use a shadows-off capture to prove the controlled scene has visible shadows.")
+    parser.add_argument("--difference-reference-dir", default="", help="Optional engine-TGA reference root that every shadow-owning interaction or fog/blend capture must differ from; use a feature-disabled capture to prove the controlled effect is visible.")
     parser.add_argument("--image-difference-min-rms", type=float, default=0.1, help="Minimum RMS channel delta required by --difference-reference-dir.")
     parser.add_argument("--image-difference-min-channels", type=int, default=1000, help="Minimum changed RGB-channel count required by --difference-reference-dir.")
     parser.add_argument("--mp-port", type=int, default=28110, help="Base listen-server port for MP runs.")
@@ -3899,6 +4378,9 @@ def print_list() -> None:
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nInteraction ownership cases (run with --pacing-only):")
     for case_id, scene in INTERACTION_SCENES.items():
+        print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nFog/blend ownership cases (run with --pacing-only):")
+    for case_id, scene in FOG_BLEND_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nStock interaction-shadow cases (run with --pacing-only):")
     for case_id, scene in INTERACTION_SHADOW_SCENES.items():

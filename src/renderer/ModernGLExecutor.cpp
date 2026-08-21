@@ -7755,6 +7755,13 @@ bool R_ModernGLExecutor_LegacyPassCanSkipForView( renderPassCategory_t category,
 				|| category == RENDER_PASS_SHADOW_MAP ) ) {
 		return false;
 	}
+	// The shared fog/blend phase makes one atomic decision for every fog and
+	// blend light in the view.  Keep the aggregate modern executor from
+	// suppressing the classic rollback before that phase finishes preflight.
+	if ( r_rendererSharedWorldFogBlend.GetBool()
+			&& category == RENDER_PASS_FOG_BLEND ) {
+		return false;
+	}
 	if ( !R_ModernGLExecutor_LegacyPassCanSkip( category ) ) {
 		return false;
 	}

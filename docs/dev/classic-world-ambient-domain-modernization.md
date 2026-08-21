@@ -252,13 +252,17 @@ or target-platform/driver qualification before promotion.
 
 The GUI and world ambient/material corridors are joined by the
 [fixed-classic interaction domain](classic-interaction-domain-modernization.md)
-as the first three complete shared classic-frame domains. The interaction
-domain now accepts eligible unshadowed and shadow-coupled views; its shadow
-extension covers stencil, projected/CSM/parallel, point, mixed, and hybrid
-ownership with dynamic/perforated mapped casters and atomic translucent-moment
-fallback. They still do not make the whole classic frame modern.
+and [fog/blend domain](classic-fog-blend-domain-modernization.md) as the first
+four complete shared classic-frame domains. The interaction domain accepts
+eligible unshadowed and shadow-coupled views; its shadow extension covers
+stencil, projected/CSM/parallel, point, mixed, and hybrid ownership with
+dynamic/perforated mapped casters and atomic translucent-moment fallback. The
+fog/blend implementation seals the complete eligible phase for both backends;
+native/static and controlled GL/Vulkan runtime qualification pass, while
+authored-stock and release promotion remain open.
+These domains still do not make the whole classic frame modern.
 
-The next recommended implementation target is **fog/blend ownership and
-parity** on both backends, followed by deform, subview, in-world GUI,
-render-demo, cinematic, or authored post ownership. Do not skip ahead to
-temporal presentation or PBR/advanced-lighting Milestones E/F.
+The next recommended implementation target is **deform ownership and parity**
+on both backends, followed by subview, in-world GUI, render-demo, cinematic, or
+authored post ownership. Do not skip ahead to temporal presentation or
+PBR/advanced-lighting Milestones E/F.

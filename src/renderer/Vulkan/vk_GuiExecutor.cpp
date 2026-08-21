@@ -51,6 +51,7 @@
 #include "../ClassicGuiDomain.h"
 #include "../ClassicInteractionDomain.h"
 #include "../ClassicWorldAmbientDomain.h"
+#include "../ClassicFogBlendDomain.h"
 #include "../GpuSkinning.h"
 #include "../MaterialResourceTable.h"
 #include "../RendererContracts.h"
@@ -71,6 +72,8 @@ void VK_ClassicInteraction_DrawOwnedView( const viewDef_t *viewDef );
 // vk_Interactions.cpp: the Phase G2 fog/blend light pass, inserted between
 // the two ambient walks (RB_STD_DrawView's fog point)
 void VK_Fog_DrawAllLights( const viewDef_t *viewDef );
+bool VK_ClassicFogBlend_Preflight( const viewDef_t *viewDef );
+void VK_ClassicFogBlend_DrawOwnedView( const viewDef_t *viewDef );
 
 // frame-scope split (Phase F2a): the swapchain rendering scope can be
 // suspended for the shadow atlas caster pass and resumed with loadOp LOAD
@@ -1696,7 +1699,10 @@ VkPipeline VK_Exec_BlendLightPipeline( int stateBits ) {
 	}
 	if ( vkExec.numBlendLightPipelines >= VK_MAX_BLEND_LIGHT_PIPELINES ) {
 		common->Warning( "Vulkan: blend-light pipeline cache exhausted" );
-		return vkExec.blendLightPipelines[ 0 ].pipeline;
+		// The requested blend/color-mask key has no exact pipeline.  Returning
+		// an arbitrary cached variant would corrupt the sealed light-stage
+		// contract; shared preflight must reject the complete view instead.
+		return VK_NULL_HANDLE;
 	}
 
 	VkVertexInputBindingDescription binding;
@@ -9129,7 +9135,14 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		// space/depth-range state and exits at maxDepth 1.0 with depth
 		// bias off; restart the walk baseline like the interaction pass.
 		if ( pass == 1 ) {
-			VK_Fog_DrawAllLights( viewDef );
+			const bool sharedFogBlendOwned =
+				r_rendererSharedWorldFogBlend.GetBool()
+				&& VK_ClassicFogBlend_Preflight( viewDef );
+			if ( sharedFogBlendOwned ) {
+				VK_ClassicFogBlend_DrawOwnedView( viewDef );
+			} else {
+				VK_Fog_DrawAllLights( viewDef );
+			}
 			// Fog changes the framebuffer after any earlier lazy capture.
 			backEnd.currentRenderCopied = false;
 			backEnd.currentDepthCopied = false;

@@ -41,8 +41,8 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI and classic-world-ambient domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
-| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic-world-ambient domain, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI, classic-world-ambient, classic-interaction, and classic-fog/blend domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic-world-ambient, classic-interaction, classic-fog/blend, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
 | `renderer-cluster-grid-selftest` | opt-in modern clustered-light preparation coverage for point/projected/fog/ambient/special light classification, budgeted dynamic grid slicing, cluster reference packing, spill/overflow accounting, GL 3.3 UBO fallback readiness, GL 4.3+ SSBO upload readiness, cluster debug-overlay texture generation, and `gfxInfo` reporting |
@@ -53,7 +53,7 @@ Automated coverage:
 | `renderer-modern-compatibility-selftest` | Phase 14 modern-visible compatibility coverage for command-category ownership inventory, modern fullscreen GUI readiness, light-grid ownership, explicit post/copy/subview/render-demo/BSE fallback buckets, deterministic render-demo accounting, and `gfxInfo` reporting |
 | `renderer-compatibility-gates-selftest` | Phase 15 fallback-gate coverage for missing UBO, broken MRT, missing timer query, missing buffer storage, rejected debug-context fallback, and synthetic driver-quirk downgrades |
 | `renderer-default-promotion-selftest` | Phase 8 evidence-gated default-promotion coverage for `r_glTier auto`, explicit `r_renderer arb2` escape behavior, compatibility gates, modern-executor readiness, ARB2 rollback availability, missing/incomplete/complete `r_rendererPromotionEvidence`, and `r_rendererModernAutoPromote` sign-off control |
-| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared GUI/world-ambient, modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
+| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared GUI/world-ambient/world-interaction/world-fog-blend, modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
 | `renderer-benchmark-selftest` | Phase 16 benchmark coverage for rolling P50/P95/P99 frame-time capture, CPU front-end/visibility/packet/graph/submit/present timings, GPU pass timing fields, upload/draw/light/cluster/fallback counters, benchmark presets, and performance-threshold reporting |
 | `renderer-gpu-driven-selftest` | forced `r_glTier gl43` coverage for GL 4.3 SSBO submit records, compute scissor culling, clustered-bin validation, compacted indirect command generation, CPU/GPU readback comparison, masked multi-draw indirect execution, GPU timer coverage, and `gfxInfo` reporting |
 | `renderer-low-overhead-selftest` | forced `r_glTier gl45` coverage for GL 4.5 DSA graph texture/FBO allocation, DSA sampler creation, named buffer/FBO updates, UBO/SSBO/texture/sampler multi-bind batches, submit-batch compaction, bindless experiment reporting, persistent upload defaults, fence diagnostics, and `gfxInfo` reporting |
@@ -78,10 +78,11 @@ The forced tier cases pass when startup succeeds and the selected tier is report
 
 Automated safe cases also fail if their logs contain renderer warning signatures such as `idStr::snPrintf` overflow, `WARNING: idStr`, shader compile/program link failures, or OpenGL error markers. The generated Markdown/JSON report records per-case warning-signature counts so the Phase 8 `warnings=0` promotion token cannot be inferred from expected-line checks alone.
 
-The foundation case runs the dependency-light classic-GUI and
-classic-world-ambient contract self-tests. The Vulkan startup case also requires
-the world-ambient self-test marker so that module registration and the shared
-domain contract are exercised through both renderer APIs.
+The foundation case runs the dependency-light classic-GUI,
+classic-world-ambient, classic-interaction, and classic-fog/blend contract
+self-tests. The Vulkan startup case also requires the world-ambient,
+interaction, and fog/blend self-test markers so that module registration and
+the shared domain contracts are exercised through both renderer APIs.
 
 The separate `tools/tests/renderer_classic_gui_domain.py` static regression
 guards packet-derived GUI material admission, ordered evaluation, opaque
@@ -93,9 +94,8 @@ transactional source/depth matching, explicit non-owned blockers, pre-fog/fog/
 post-fog ordering, complete GL/Vulkan preflight before commit, and sealed
 consumer bodies with no material-stage or raw-register reinterpretation. It also
 checks conservative default/bootstrap state, benchmark/baseline isolation, and
-validation workflow registration. Enabled-path image evidence for either domain
-is the supervised GL/Vulkan capture pair below; there is no standalone automated
-map-loading runtime case for these shared domains.
+validation workflow registration. Enabled-path image evidence for these first
+two domains is the supervised GL/Vulkan capture pair below.
 
 `tools/tests/renderer_classic_interaction_domain.py`,
 `renderer_vulkan_world_interaction_compatibility.py`, and
@@ -109,6 +109,16 @@ fallback with zero committed ownership counters and no shared main-target draw.
 The gameplay harness parser also fails a dynamic or
 perforated stock target unless a per-map line explicitly reports the matching
 sealed feature.
+
+`tools/tests/renderer_classic_fog_blend_domain.py` guards the complete
+fog/blend-phase transaction: exact view-light and GLOBAL/LOCAL receiver
+identity, ordered active/inactive blend stages, fog receiver/cap accounting,
+evaluated texgen/state/resource sealing, stable hashing, complete GL/Vulkan
+preflight before the first main-target draw, backend reconciliation, atomic
+fallback, conservative default/bootstrap state, benchmark/baseline isolation,
+and validation registration. Its dependency-light self-test and static
+contract pass, but enabled-path stock engine-screenshot qualification remains
+pending.
 
 The focused safe-matrix run retained at
 `.tmp/renderer-validation/world-ambient-final-2` passed all three selected
@@ -160,7 +170,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --maxfps 0 --s
 | renderer escape | `r_renderer best` leaves promotion available; explicit `r_renderer arb2` keeps the ARB2 bridge |
 | compatibility gates | modern baseline features, UBOs, MRT, scene packets, render graph, and Shader Library V2 readiness are available |
 | fallback escape | the ARB2 compatibility bridge remains selectable through `r_renderer arb2` and `r_glTier legacy` |
-| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
+| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_rendererSharedWorldInteraction`, `r_rendererSharedWorldFogBlend`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
 | validation evidence | `r_rendererPromotionEvidence` carries the complete Phase 8 token after zero-warning visual, gameplay, RenderDoc, performance, presentation, rollback, and debug-off checks pass |
 | manual sign-off | `r_rendererModernAutoPromote 1` is used only together with a complete `r_rendererPromotionEvidence` token |
 
@@ -187,6 +197,10 @@ These image captures are the comparison set for scenes where deterministic outpu
 | `capture-shared-interaction-mixed` | SP | the same controlled scene with point shadow maps disabled by the `mixed` preset | **Passed locally:** both backends combine projected mapped ownership with point-light stencil work, reconcile physical replay, match the classic TGAs exactly, and differ from shadows-off at RMS `5.5313` on GL and `5.5625` on Vulkan |
 | `capture-shared-interaction-map-fallback` | SP | the same controlled scene with `map-budget-fallback`, which disables the static cache and permits only one update | **Passed locally:** GL and Vulkan each report one named backend fallback, zero committed primitive/shadow/volume/map/hybrid counters, no shared main-target draw, complete fallback coverage, and exact same-settings classic TGA parity |
 | `capture-shared-interaction-stock-shadow` | SP | `interaction-shadow-stock`: stock-map qualification candidates for projected, point-cube at ordinary `game/airdefense2` spawn, CSM/parallel, dynamic mapped caster, perforated/cutout, same-light hybrid, and translucent-moment fallback | **Required stock acceptance:** retain the final six-component pose; exact projected/point/multi-cascade classes must be present; dynamic and cutout targets must explicitly report `features` dynamic/alpha; hybrid must report supplements plus physical volumes; translucent moments must fall back atomically; owned shared/classic TGAs must match and their shadowed/shadows-off pairs must materially differ |
+| `capture-shared-fog-blend-owned` | SP | controlled `sp-mv2-fog-blend` stock-asset fixture on `maps/tools/mv2`, using shipped `lights/fog_generic` and deterministic `lights/fog_ambient` declarations with `r_rendererSharedWorldFogBlend 0` then `1`, separately on GL and Vulkan | **Passed locally:** exact same-backend engine-TGA parity on GL and Vulkan; each shared run owns one ready view, one fog and one blend light, six GLOBAL receivers, two active stages, seven primitives, three fog receivers, one cap, and three blend draws with exact backend reconciliation and zero mismatch/duplicate/untracked counters |
+| `capture-shared-fog-blend-effect-deltas` | SP | the same fixed controlled scene with matching established `r_skipFogLights 1` and owned `r_skipBlendLights 1` references | **Passed locally:** mixed versus fog-only changes `1,921,110` RGB channels at RMS `36.7624` / maximum `71` on both backends; fog-only versus the outer phase skip changes `2,764,380` channels on GL and `2,764,369` on Vulkan at RMS `61.3216` / maximum `162` |
+| `capture-shared-fog-blend-rollback` | SP | the same controlled stock-asset view with intentional `r_singleTriangle 1` admission blocker | **Passed locally:** `failure=unsupported-state detail=200`, one complete-phase fallback on the active backend, zero committed shared content counters, no shared main-target fog/blend draw, and exact same-settings classic engine-TGA parity on GL and Vulkan |
+| `capture-shared-fog-authored-stock` | SP/MP | a fixed retained camera in an authored stock fog scene such as `game/storage2` or `mp/q4dm10` | **Required; pending:** exact same-backend classic/shared TGA parity, nonempty reconciled fog receiver/cap ownership, material fog-on/off delta, final six-component pose, and clean Vulkan validation results; this does not substitute for controlled blend-light qualification |
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |
@@ -300,6 +314,7 @@ Gameplay validation remains mandatory before renderer release sign-off, but it i
 | `sp-cinematic-subview` | SP | `game/mcc_landing` | subviews, remote cameras, cinematic and GUI interaction |
 | `sp-mv2-ambient` | SP | `maps/tools/mv2` | controlled stock fixed-function world-ambient ownership and whole-view rollback evidence |
 | `sp-mv2-interaction` | SP | `maps/tools/mv2` | controlled stock unshadowed, stencil, projected/point mapped, mixed map/stencil, and map-budget whole-view fallback evidence |
+| `sp-mv2-fog-blend` | SP | `maps/tools/mv2` | locally passed controlled stock-declaration fog, blend, mixed-phase ownership, visible effect-delta, and complete-phase rollback evidence; authored-stock and release promotion remain open |
 | `mp-q4dm1-listen` | MP | `mp/q4dm1` | listen-server and local-client MP parity |
 | `mp-q4dm9-listen` | MP | `mp/q4dm9` | default-off load-cache timing and forced Vulkan shadow-ownership fallback regression |
 
@@ -371,6 +386,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --pacing-only 
 python tools\tests\renderer_gameplay_benchmark.py --profile required
 python tools\tests\renderer_gameplay_benchmark.py --profile campaign-split-state-transition --timeout 360
 python tools\tests\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers
+python tools\tests\renderer_gameplay_benchmark.py --profile fog-blend --pacing-only --no-gpu-timers
 python tools\tests\renderer_gameplay_benchmark.py --profile interaction --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction\gl\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction\gl\shadows-off\savepaths
 python tools\tests\renderer_gameplay_benchmark.py --profile interaction --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction\vk\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction\vk\shadows-off\savepaths
 python tools\tests\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\renderer-references\interaction-shadow-stock\gl\classic\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\renderer-references\interaction-shadow-stock\gl\shadows-off\savepaths
@@ -390,6 +406,7 @@ The runner fails a case when the process times out, no gameplay screenshot is pr
 | `required` | `game/storage1`, `game/airdefense1`, `game/airdefense2`, `game/storage2`, `game/medlabs`, `game/mcc_landing`, and `mp/q4dm1` listen server plus local client |
 | `campaign-split-state-transition` | triggers the real SP end-level targets from `game/mcc_2` through `game/storage1 first`, `game/storage2`, `game/storage1 second`, and into `game/tram1`, asserting the active `si_entityFilter` after each load |
 | `world-ambient` | controlled bordered 1280x720 `maps/tools/mv2` stock capture; launch sets `ui_showGun 0`, `g_showHud 0`, and `r_multiSamples 0`, then normal spawn runs `noclip` and `setviewpos 0 0 256 80 0 0`; the exact post-map isolation set is recorded in the world-ambient guide and keeps ambient/deform/render enabled while disabling direct-light, subview, light-grid, player-overlay, portal-fade, cel, and debug islands through their structural controls. It does not set `r_skipPostProcess` or `r_skipGuiShaders`. Run with `--pacing-only --no-gpu-timers`, so it is not CPU/GPU budget evidence. |
+| `fog-blend` | controlled bordered 1280x720 `maps/tools/mv2` qualification using only shipped fog and deterministic blend-light declarations, fixed camera/settings, separate GL/Vulkan classic references, positive established `r_skipFogLights` outer-skip and owned `r_skipBlendLights` effect references, exact ownership reconciliation, and a named complete-phase fallback. The development-worktree set passes on both backends. Run with `--pacing-only --no-gpu-timers`; it is visual/ownership evidence, not CPU/GPU budget evidence. Exact results and remaining release gates are recorded in the fog/blend domain guide. |
 | `interaction` | controlled bordered 1280x720 `maps/tools/mv2` capture with fixed camera `0 -192 96 20 90 0`, a stock `crate1_small` caster, a stock `crate1_medium` receiver, a projected `testLight`, and a side `testPointLight`; the separated receiver makes stencil and mapped silhouettes materially visible. Five presets cover unshadowed, stencil, projected+point mapped, projected-map+point-stencil mixed, and constrained map-update fallback. Run with `--pacing-only --no-gpu-timers`; require exact same-settings classic references plus the matching unshadowed difference reference. The synthetic projected light remains single-map under the CSM preset, so multi-cascade acceptance stays in the stock profile. |
 | `interaction-shadow-stock` | stock-map qualification candidates for projected, point, CSM/parallel, dynamic mapped-caster, perforated/cutout, same-light hybrid-supplement, and translucent-moment fallback coverage. Each run starts frozen at tic zero, hides the unsupported first-person viewmodel, advances the real SP scene through the settle interval, freezes before sampling, and records the final six-component pose. Labels never establish coverage: the parser requires an exact projected class, per-map class/cascade/alias/plan/generation/caster/hash data, and `features=static+dynamic+alpha+translucent`; dynamic and perforated cases fail without their explicit feature bit. |
 | `tiers` | forced `r_glTier auto`, `legacy`, `gl33`, `gl41`, `gl43`, `gl45`, and `gl46` gameplay probes |
@@ -453,3 +470,4 @@ Nondeterministic BSE, cinematic, and MP scenes need human review in addition to 
 - `r_rendererModernAutoPromote 1` is used only with the complete `r_rendererPromotionEvidence` token after the default-promotion criteria pass; `r_renderer arb2`, `r_glTier legacy`, and the modern-disable cvar set remain documented rollback paths.
 - Shared world-ambient local runtime qualification passed: retained GL and Vulkan option-off/on engine screenshots for the same eligible stock `maps/tools/mv2` view match at RMS `0` / maximum delta `0`, enabled diagnostics report one owned pre-fog draw with stable domain/view hashes, and the stock `shaderDemos/move` deform override reports zero shared draws plus the same named complete-view fallback on both backends. Vulkan validation gates are clean. Exact directories and SHA-256 values are recorded in [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md). The domain remains experimental/default-off pending clean committed-package and target-platform/driver promotion evidence.
 - Shared interaction's local qualification passed for the current controlled corridor. Its five-case profile passed 5/5 on GL and 5/5 on Vulkan with exact same-backend classic/shared TGAs, four lights, 14 global receiver surfaces, material shadows-on/off deltas for stencil/mapped/mixed ownership, exact backend accounting, and named map-admission fallbacks with zero committed shared counters and no shared main-target draw. The earlier two-light/four-surface capture is superseded. The stock-map row remains a release-qualification gate: its projected/CSM/dynamic/perforated/hybrid candidates need retained final cameras and fresh classic/shadows-off references before they can pass. Exact scope and deltas are recorded in [Shared Classic Interaction-Lighting Domain](classic-interaction-domain-modernization.md); the option remains experimental/default-off pending stock, clean committed-package, and target-platform/driver evidence.
+- Shared fog/blend's controlled development-worktree qualification passes on GL and Vulkan. Mixed and fog-only shared TGAs match their same-settings classic references exactly; the mixed run owns one fog plus one blend light, six GLOBAL receivers, two stages, seven primitives, three fog receivers, one cap, and three blend draws with exact backend accounting. Mixed/fog-only and fog-only/outer-skip comparisons materially prove the blend and fog contributions, and the intentional blocker produces named zero-commit atomic fallback with exact classic parity. Vulkan warning/VUID/call-failure counters remain clean. Exact hashes, deltas, and local report directories are recorded in [Shared Classic Fog/Blend Domain](classic-fog-blend-domain-modernization.md). Authored-stock fog, clean committed-package recapture, human review, and target-platform/driver retention remain promotion gates.

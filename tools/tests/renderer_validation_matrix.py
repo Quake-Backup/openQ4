@@ -49,6 +49,7 @@ SELFTEST_CHECKS = [
     ["RendererClassicGuiDomain self-test passed"],
     ["RendererClassicWorldAmbientDomain self-test passed"],
     ["RendererClassicInteractionDomain self-test passed"],
+    ["RendererClassicFogBlendDomain self-test passed"],
     ["RendererContracts self-test passed"],
     ["RendererGpuSkinning self-test passed"],
     ["RendererPBRMaterial self-test passed"],
@@ -402,7 +403,7 @@ DEFAULT_PROMOTION_CRITERIA = [
     },
     {
         "criterion": "conservative defaults",
-        "required": "`r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; modern executor, submit, visible, side-path, debug, GPU-validation, bindless, shader-reload, and auto-promotion cvars remain off in a clean startup",
+        "required": "`r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; shared classic domains, modern executor, submit, visible, side-path, debug, GPU-validation, bindless, shader-reload, and auto-promotion cvars remain off in a clean startup",
     },
     {
         "criterion": "validation evidence",
@@ -606,6 +607,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+rendererClassicGuiDomainSelfTest",
         "+rendererClassicWorldAmbientDomainSelfTest",
         "+rendererClassicInteractionDomainSelfTest",
+        "+rendererClassicFogBlendDomainSelfTest",
         "+rendererContractsSelfTest",
         "+rendererGpuSkinningSelfTest",
         "+rendererPBRMaterialSelfTest",
@@ -1041,7 +1043,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         {
             "id": "renderer-default-safety-selftest",
             "category": "selftest",
-            "description": "Phase 13 conservative-default safety gate for ARB2 default visibility, rollback escape, and default-off modern diagnostic side paths.",
+            "description": "Phase 13 conservative-default safety gate for ARB2 default visibility, rollback escape, shared classic domains, and default-off modern diagnostic side paths.",
             "args": [
                 "+rendererDefaultSafetySelfTest",
                 "+gfxInfo",
@@ -1050,7 +1052,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["RendererDefaultSafety self-test passed"],
                 ["Renderer default safety:", "conservative=1", "rollback=available", "issues=none"],
                 ["Renderer default promotion:", "active=0"],
-                ["Renderer bootstrap:", "defaultVisible=ARB2"],
+                ["Renderer bootstrap:", "defaultVisible=ARB2", "sharedWorldFogBlend=0"],
             ],
         },
         {
@@ -1451,6 +1453,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 "+rendererGpuSkinningSelfTest",
                 "+rendererClassicWorldAmbientDomainSelfTest",
                 "+rendererClassicInteractionDomainSelfTest",
+                "+rendererClassicFogBlendDomainSelfTest",
                 "+gfxInfo",
             ],
             "checks": [
@@ -1463,6 +1466,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["RendererGpuSkinning self-test passed"],
                 ["RendererClassicWorldAmbientDomain self-test passed"],
                 ["RendererClassicInteractionDomain self-test passed"],
+                ["RendererClassicFogBlendDomain self-test passed"],
                 ["GPU skinning:"],
             ],
         },

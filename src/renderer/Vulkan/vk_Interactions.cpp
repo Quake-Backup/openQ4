@@ -61,6 +61,7 @@
 #include "../tr_local.h"
 #include "../Model_local.h"
 #include "../ClassicInteractionDomain.h"
+#include "../ClassicFogBlendDomain.h"
 
 extern idCVar r_vkShadowFallbackTest;
 
@@ -3981,6 +3982,1052 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 /*
 ===============================================================================
 
+	Shared fixed-classic fog/blend consumer
+
+	The backend-neutral domain owns light/stage interpretation and publishes one
+	atomic, source-ordered phase.  Vulkan retains every exact pipeline,
+	descriptor, uniform slice and geometry offset before the first attachment
+	write.  A failed preflight rewinds both speculative rings and leaves the
+	established VK_Fog_DrawAllLights walker below completely untouched.
+
+===============================================================================
+*/
+
+enum vkClassicFogBlendRejectDetail_t {
+	VK_CLASSIC_FOG_BLEND_REJECT_VIEW = 1,
+	VK_CLASSIC_FOG_BLEND_REJECT_COUNTS,
+	VK_CLASSIC_FOG_BLEND_REJECT_ORDER,
+	VK_CLASSIC_FOG_BLEND_REJECT_OFFSCREEN_TARGET,
+	VK_CLASSIC_FOG_BLEND_REJECT_RENDER_SCOPE,
+	VK_CLASSIC_FOG_BLEND_REJECT_PIPELINE,
+	VK_CLASSIC_FOG_BLEND_REJECT_STATE,
+	VK_CLASSIC_FOG_BLEND_REJECT_SCISSOR,
+	VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY,
+	VK_CLASSIC_FOG_BLEND_REJECT_TEXTURE,
+	VK_CLASSIC_FOG_BLEND_REJECT_UNIFORM
+};
+
+typedef struct vkClassicFogBlendDrawPlan_s {
+	const classicFogBlendDomainPrimitive_t *primitive;
+	const classicFogBlendDomainLight_t *light;
+	const classicFogBlendDomainLightStage_t *stage;
+	VkPipeline		pipeline;
+	VkDescriptorSet	textureSets[ 2 ];
+	VkRect2D		scissor;
+	VkCullModeFlags	cullMode;
+	VkCompareOp		depthCompare;
+	int			vertexOffset;
+	int			indexOffset;
+	int			uniformOffset;
+	vkInteractionPush_t	push;
+	vkBlendLightBlock_t	blendBlock;
+} vkClassicFogBlendDrawPlan_t;
+
+typedef struct vkClassicFogBlendPreparedView_s {
+	const classicFogBlendDomainView_t *view;
+	const viewDef_t		*viewDef;
+	VkCommandBuffer		cmd;
+	VkPipelineLayout	layout;
+	VkPipeline		fogPipeline;
+	VkDescriptorSet		uniformSet;
+	VkViewport		viewport;
+	int			frameSlot;
+	int			framebufferWidth;
+	int			framebufferHeight;
+	int			drawPlanCount;
+	int			noopPrimitiveCount;
+	int			noopLightStageCount;
+	int			noopLightCount;
+	int			submittedFogReceivers;
+	int			submittedFogFrustums;
+	int			submittedBlendReceivers;
+	int			uniformCheckpoint;
+	bool			ready;
+	bool			committed;
+	vkClassicFogBlendDrawPlan_t draws[
+		CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES ];
+} vkClassicFogBlendPreparedView_t;
+
+static vkClassicFogBlendPreparedView_t vkClassicFogBlendPrepared;
+
+static bool VK_ClassicFogBlend_Fail( const viewDef_t *viewDef,
+		classicFogBlendDomainFailure_t failure, int detail ) {
+	if ( vkClassicFogBlendPrepared.uniformCheckpoint >= 0 ) {
+		VK_Exec_InteractionUniformRestore(
+			vkClassicFogBlendPrepared.uniformCheckpoint );
+	}
+	// Safe before the checkpoint exists and mandatory after any speculative
+	// upload.  The classic walker may need the exact same ring capacity/memos.
+	VK_Exec_SharedInteractionGeometryRestore();
+	R_ClassicFogBlendDomain_RecordBackendFallback( viewDef,
+		CLASSIC_FOG_BLEND_BACKEND_VULKAN,
+		failure == CLASSIC_FOG_BLEND_FAILURE_NONE
+			? CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED : failure,
+		detail );
+	memset( &vkClassicFogBlendPrepared, 0,
+		sizeof( vkClassicFogBlendPrepared ) );
+	vkClassicFogBlendPrepared.uniformCheckpoint = -1;
+	return false;
+}
+
+static bool VK_ClassicFogBlend_FloatsFinite( const float *values,
+		int count ) {
+	if ( values == NULL || count < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !std::isfinite( values[ i ] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool VK_ClassicFogBlend_MapSourceBlend(
+		rendererBlendFactor_t factor, int &bits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO: bits = GLS_SRCBLEND_ZERO; return true;
+	case RENDERER_BLEND_ONE: bits = GLS_SRCBLEND_ONE; return true;
+	case RENDERER_BLEND_SRC_COLOR: bits = GLS_SRCBLEND_SRC_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR: bits = GLS_SRCBLEND_ONE_MINUS_SRC_COLOR; return true;
+	case RENDERER_BLEND_DST_COLOR: bits = GLS_SRCBLEND_DST_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_COLOR: bits = GLS_SRCBLEND_ONE_MINUS_DST_COLOR; return true;
+	case RENDERER_BLEND_SRC_ALPHA: bits = GLS_SRCBLEND_SRC_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA: bits = GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA; return true;
+	case RENDERER_BLEND_DST_ALPHA: bits = GLS_SRCBLEND_DST_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA: bits = GLS_SRCBLEND_ONE_MINUS_DST_ALPHA; return true;
+	case RENDERER_BLEND_SRC_ALPHA_SATURATE: bits = GLS_SRCBLEND_ALPHA_SATURATE; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicFogBlend_MapDestinationBlend(
+		rendererBlendFactor_t factor, int &bits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO: bits = GLS_DSTBLEND_ZERO; return true;
+	case RENDERER_BLEND_ONE: bits = GLS_DSTBLEND_ONE; return true;
+	case RENDERER_BLEND_SRC_COLOR: bits = GLS_DSTBLEND_SRC_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR: bits = GLS_DSTBLEND_ONE_MINUS_SRC_COLOR; return true;
+	case RENDERER_BLEND_SRC_ALPHA: bits = GLS_DSTBLEND_SRC_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA: bits = GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA; return true;
+	case RENDERER_BLEND_DST_ALPHA: bits = GLS_DSTBLEND_DST_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA: bits = GLS_DSTBLEND_ONE_MINUS_DST_ALPHA; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicFogBlend_MapCull( rendererCullMode_t cull,
+		VkCullModeFlags &mode ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE: mode = VK_CULL_MODE_NONE; return true;
+	case RENDERER_CULL_FRONT: mode = VK_CULL_MODE_FRONT_BIT; return true;
+	case RENDERER_CULL_BACK: mode = VK_CULL_MODE_BACK_BIT; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicFogBlend_MapStageState(
+		const classicFogBlendDomainLightStage_t &stage,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		int &pipelineBits, VkCompareOp &depthCompare,
+		VkCullModeFlags &cullMode ) {
+	pipelineBits = 0;
+	if ( stage.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| stage.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| stage.blend.sourceAlpha != stage.blend.sourceColor
+			|| stage.blend.destinationAlpha
+				!= stage.blend.destinationColor
+			|| !stage.depth.testEnabled || stage.depth.writeEnabled
+			|| stage.depth.compareOperation != RENDERER_COMPARE_EQUAL
+			|| !primitive.depth.testEnabled || primitive.depth.writeEnabled
+			|| stage.alphaTestEnabled
+			|| ( stage.colorWriteMask
+				& ~static_cast<std::uint32_t>(
+					RENDERER_COLOR_WRITE_RGBA ) ) != 0 ) {
+		return false;
+	}
+	const bool replacementBlend =
+		stage.blend.sourceColor == RENDERER_BLEND_ONE
+		&& stage.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( stage.blend.enabled == replacementBlend ) {
+		return false;
+	}
+
+	int sourceBits = 0;
+	int destinationBits = 0;
+	if ( !VK_ClassicFogBlend_MapSourceBlend(
+			stage.blend.sourceColor, sourceBits )
+			|| !VK_ClassicFogBlend_MapDestinationBlend(
+				stage.blend.destinationColor, destinationBits ) ) {
+		return false;
+	}
+	pipelineBits = sourceBits | destinationBits;
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		pipelineBits |= GLS_REDMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		pipelineBits |= GLS_GREENMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		pipelineBits |= GLS_BLUEMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		pipelineBits |= GLS_ALPHAMASK;
+	}
+
+	if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER
+			|| primitive.kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP ) {
+		if ( stage.blend.sourceColor != RENDERER_BLEND_SRC_ALPHA
+				|| stage.blend.destinationColor
+					!= RENDERER_BLEND_ONE_MINUS_SRC_ALPHA
+				|| !stage.blend.enabled
+				|| stage.colorWriteMask != RENDERER_COLOR_WRITE_RGBA
+				|| stage.cull != RENDERER_CULL_FRONT ) {
+			return false;
+		}
+		const bool cap = primitive.kind
+			== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP;
+		if ( primitive.depth.compareOperation
+				!= ( cap ? RENDERER_COMPARE_LESS_OR_EQUAL
+					: RENDERER_COMPARE_EQUAL )
+				|| primitive.cull
+					!= ( cap ? RENDERER_CULL_BACK
+						: RENDERER_CULL_FRONT ) ) {
+			return false;
+		}
+		depthCompare = cap
+			? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_EQUAL;
+		return VK_ClassicFogBlend_MapCull( primitive.cull, cullMode );
+	}
+
+	if ( primitive.kind != CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+		return false;
+	}
+	if ( primitive.depth.compareOperation != RENDERER_COMPARE_EQUAL
+			|| primitive.cull != stage.cull ) {
+		return false;
+	}
+	depthCompare = VK_COMPARE_OP_EQUAL;
+	return VK_ClassicFogBlend_MapCull( primitive.cull, cullMode );
+}
+
+static bool VK_ClassicFogBlend_BuildScissor(
+		const classicFogBlendDomainView_t &view,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	const int viewportWidth = view.viewportX2 - view.viewportX1 + 1;
+	const int viewportHeight = view.viewportY2 - view.viewportY1 + 1;
+	const int requestedX1 = view.useScissor
+		? primitive.scissorX1 : view.scissorX1;
+	const int requestedY1 = view.useScissor
+		? primitive.scissorY1 : view.scissorY1;
+	const int requestedX2 = view.useScissor
+		? primitive.scissorX2 : view.scissorX2;
+	const int requestedY2 = view.useScissor
+		? primitive.scissorY2 : view.scissorY2;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| framebufferWidth <= 0 || framebufferHeight <= 0
+			|| requestedX2 < requestedX1
+			|| requestedY2 < requestedY1 ) {
+		return false;
+	}
+
+	int x0 = Max( view.viewportX1, view.viewportX1 + requestedX1 );
+	int x1 = Min( view.viewportX1 + viewportWidth,
+		view.viewportX1 + requestedX2 + 1 );
+	int y0GL = Max( view.viewportY1, view.viewportY1 + requestedY1 );
+	int y1GL = Min( view.viewportY1 + viewportHeight,
+		view.viewportY1 + requestedY2 + 1 );
+	x0 = Max( 0, x0 );
+	x1 = Min( framebufferWidth, x1 );
+	y0GL = Max( 0, y0GL );
+	y1GL = Min( framebufferHeight, y1GL );
+	if ( x1 <= x0 || y1GL <= y0GL ) {
+		return false;
+	}
+	scissor.offset.x = x0;
+	scissor.offset.y = framebufferHeight - y1GL;
+	scissor.extent.width = static_cast<std::uint32_t>( x1 - x0 );
+	scissor.extent.height = static_cast<std::uint32_t>( y1GL - y0GL );
+	return true;
+}
+
+static bool VK_ClassicFogBlend_ResolveDescriptor(
+		std::uint64_t resourceId, VkDescriptorSet &descriptor ) {
+	descriptor = VK_NULL_HANDLE;
+	const classicFogBlendDomainTexture_t *texture =
+		R_ClassicFogBlendDomain_ResolveTexture( resourceId );
+	if ( texture == NULL || texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0
+			|| !texture->image->IsLoaded()
+			|| texture->image->IsDefaulted()
+			|| texture->textureHandle
+				!= const_cast<idImage *>( texture->image )->GetDeviceHandle()
+			|| texture->filter != texture->image->GetFilter()
+			|| texture->repeat != texture->image->GetRepeat()
+			|| texture->storageGeneration
+				!= texture->image->GetStorageGeneration() ) {
+		return false;
+	}
+	descriptor = VK_Exec_ImageDescriptor( texture->textureHandle, true );
+	return descriptor != VK_NULL_HANDLE;
+}
+
+static bool VK_ClassicFogBlend_ValidateGeometry(
+		const classicFogBlendDomainPrimitive_t &primitive ) {
+	const srfTriangles_t *tri = primitive.legacyGeometry;
+	if ( primitive.disposition != CLASSIC_FOG_BLEND_PRIMITIVE_DRAW
+			|| tri == NULL || R_TriHasPrimBatchMesh( tri )
+			|| primitive.vertexCount <= 0 || primitive.indexCount <= 0
+			|| primitive.indexCount % 3 != 0
+			|| primitive.firstIndex != 0 || primitive.vertexOffset != 0
+			|| primitive.vertexCount
+				> INT_MAX / static_cast<int>( sizeof( idDrawVert ) )
+			|| primitive.indexCount
+				> INT_MAX / static_cast<int>( sizeof( glIndex_t ) )
+			|| tri->numVerts != primitive.vertexCount
+			|| tri->numIndexes != primitive.indexCount
+			|| tri->ambientCache == NULL
+			|| ( tri->indexes == NULL && tri->indexCache == NULL )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				primitive.modelMatrix, 16 )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				primitive.modelViewMatrix, 16 )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				&primitive.localLightProject[ 0 ][ 0 ], 16 )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				&primitive.fogTexgen[ 0 ][ 0 ][ 0 ], 16 ) ) {
+		return false;
+	}
+	if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP ) {
+		return primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM
+			&& ( primitive.legacyDrawSurf == NULL
+				|| primitive.legacyDrawSurf->geo == tri );
+	}
+	return primitive.legacyDrawSurf != NULL
+		&& primitive.legacyDrawSurf->geo == tri
+		&& ( primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_GLOBAL
+			|| primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_LOCAL );
+}
+
+static void VK_ClassicFogBlend_BuildPayloads(
+		const classicFogBlendDomainView_t &view,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		const classicFogBlendDomainLight_t &light,
+		const classicFogBlendDomainLightStage_t &stage,
+		vkClassicFogBlendDrawPlan_t &plan ) {
+	memset( &plan.push, 0, sizeof( plan.push ) );
+	float mvpGL[ 16 ];
+	myGlMultMatrix( primitive.modelViewMatrix, view.projectionMatrix, mvpGL );
+	VK_FixupClipSpaceZ( plan.push.mvp, mvpGL );
+
+	memset( &plan.blendBlock, 0, sizeof( plan.blendBlock ) );
+	if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+		for ( int component = 0; component < 4; ++component ) {
+			// The front end sealed RB_GetShaderTextureMatrix's wrapped 2x4
+			// rows. Fold them into S/T exactly as
+			// RB_BakeTextureMatrixIntoTexgen does, with Q carrying translation.
+			plan.blendBlock.lightProjectS[ component ] =
+				stage.textureMatrix[ 0 ][ 0 ]
+					* primitive.localLightProject[ 0 ][ component ]
+				+ stage.textureMatrix[ 0 ][ 1 ]
+					* primitive.localLightProject[ 1 ][ component ]
+				+ stage.textureMatrix[ 0 ][ 3 ]
+					* primitive.localLightProject[ 2 ][ component ];
+			plan.blendBlock.lightProjectT[ component ] =
+				stage.textureMatrix[ 1 ][ 0 ]
+					* primitive.localLightProject[ 0 ][ component ]
+				+ stage.textureMatrix[ 1 ][ 1 ]
+					* primitive.localLightProject[ 1 ][ component ]
+				+ stage.textureMatrix[ 1 ][ 3 ]
+					* primitive.localLightProject[ 2 ][ component ];
+		}
+		memcpy( plan.blendBlock.lightProjectQ,
+			primitive.localLightProject[ 2 ],
+			sizeof( plan.blendBlock.lightProjectQ ) );
+		memcpy( plan.blendBlock.lightFalloffS,
+			primitive.localLightProject[ 3 ],
+			sizeof( plan.blendBlock.lightFalloffS ) );
+		memcpy( plan.blendBlock.color, stage.color,
+			sizeof( plan.blendBlock.color ) );
+	} else {
+		// fog.vert consumes these exact localized planes from the shared push:
+		// texture 0 S, texture 1 T, texture 1 S, then fog RGBA.
+		memcpy( plan.push.a, primitive.fogTexgen[ 0 ][ 0 ],
+			sizeof( plan.push.a ) );
+		memcpy( plan.push.b, primitive.fogTexgen[ 1 ][ 1 ],
+			sizeof( plan.push.b ) );
+		memcpy( plan.push.c, primitive.fogTexgen[ 1 ][ 0 ],
+			sizeof( plan.push.c ) );
+		memcpy( plan.push.d, light.fogColor,
+			sizeof( plan.push.d ) );
+	}
+}
+
+static bool VK_ClassicFogBlend_ValidateRanges(
+		const viewDef_t *viewDef,
+		const classicFogBlendDomainView_t &view ) {
+	int expectedSurface = view.firstSurface;
+	int expectedStage = view.firstLightStage;
+	int expectedPrimitive = view.firstPrimitive;
+	int fogLights = 0;
+	int blendLights = 0;
+	int noopLights = 0;
+	int activeStages = 0;
+	int inactiveStages = 0;
+	int noopStages = 0;
+	int drawablePrimitives = 0;
+	int noopPrimitives = 0;
+	int fogReceivers = 0;
+	int fogFrustums = 0;
+	int blendReceivers = 0;
+	int previousSourceOrdinal = -1;
+
+	for ( int lightIndex = 0; lightIndex < view.lightCount; ++lightIndex ) {
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( view, lightIndex );
+		if ( light == NULL || light->sourceOrdinal <= previousSourceOrdinal
+				|| light->firstSurface != expectedSurface
+				|| light->firstLightStage != expectedStage
+				|| light->firstPrimitive != expectedPrimitive
+				|| light->surfaceCount < 0 || light->lightStageCount < 0
+				|| light->primitiveCount < 0
+				|| light->activeLightStageCount < 0
+				|| light->inactiveLightStageCount < 0
+				|| light->activeLightStageCount
+					+ light->inactiveLightStageCount
+					!= light->lightStageCount
+				|| light->drawablePrimitiveCount < 0
+				|| light->noopPrimitiveCount < 0
+				|| light->drawablePrimitiveCount
+					+ light->noopPrimitiveCount != light->primitiveCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		previousSourceOrdinal = light->sourceOrdinal;
+		expectedSurface += light->surfaceCount;
+		expectedStage += light->lightStageCount;
+		expectedPrimitive += light->primitiveCount;
+		if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG ) {
+			fogLights++;
+		} else if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_BLEND ) {
+			blendLights++;
+		} else {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+		if ( light->disposition != CLASSIC_FOG_BLEND_LIGHT_DRAW ) {
+			if ( light->disposition <= CLASSIC_FOG_BLEND_LIGHT_DRAW
+					|| light->disposition
+						>= CLASSIC_FOG_BLEND_LIGHT_DISPOSITION_COUNT ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+			}
+			noopLights++;
+		}
+
+		int expectedStagePrimitive = light->firstPrimitive;
+		int previousSourceStage = -1;
+		for ( int stageIndex = 0; stageIndex < light->lightStageCount;
+				++stageIndex ) {
+			const classicFogBlendDomainLightStage_t *stage =
+				R_ClassicFogBlendDomain_LightStage( *light, stageIndex );
+			if ( stage == NULL
+					|| stage->lightIndex != view.firstLight + lightIndex
+					|| stage->sourceStageIndex <= previousSourceStage
+					|| stage->firstPrimitive != expectedStagePrimitive
+					|| stage->primitiveCount < 0
+					|| stage->drawablePrimitiveCount < 0
+					|| stage->noopPrimitiveCount < 0
+					|| stage->drawablePrimitiveCount
+						+ stage->noopPrimitiveCount
+						!= stage->primitiveCount
+					|| !VK_ClassicFogBlend_FloatsFinite(
+						stage->color, 4 )
+					|| !VK_ClassicFogBlend_FloatsFinite(
+						&stage->textureMatrix[ 0 ][ 0 ], 8 )
+					|| !std::isfinite( stage->condition )
+					|| !std::isfinite( stage->alphaTestValue ) ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+					VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+			}
+			previousSourceStage = stage->sourceStageIndex;
+			int previousReceiver = -1;
+			for ( int stagePrimitiveIndex = 0;
+					stagePrimitiveIndex < stage->primitiveCount;
+					++stagePrimitiveIndex ) {
+				const int absolutePrimitive = stage->firstPrimitive
+					+ stagePrimitiveIndex;
+				const classicFogBlendDomainPrimitive_t *primitive =
+					R_ClassicFogBlendDomain_ViewPrimitive( view,
+						absolutePrimitive - view.firstPrimitive );
+				if ( primitive == NULL
+						|| primitive->lightIndex
+							!= view.firstLight + lightIndex
+						|| primitive->lightStageIndex
+							!= light->firstLightStage + stageIndex
+						|| ( primitive->kind
+							!= CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP
+							&& primitive->surfaceIndex
+								!= light->firstSurface
+									+ stagePrimitiveIndex )
+						|| primitive->receiver < previousReceiver
+						|| ( stage->disposition
+							== CLASSIC_FOG_BLEND_STAGE_DRAW
+							&& primitive->disposition
+								!= CLASSIC_FOG_BLEND_PRIMITIVE_DRAW )
+						|| ( stage->disposition
+							!= CLASSIC_FOG_BLEND_STAGE_DRAW
+							&& primitive->disposition
+								== CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) ) {
+					return VK_ClassicFogBlend_Fail( viewDef,
+						CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+						VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+				}
+				previousReceiver = primitive->receiver;
+				if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG ) {
+					const bool cap = primitive->kind
+						== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP;
+					if ( ( !cap && primitive->kind
+							!= CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER )
+							|| cap != ( primitive->receiver
+								== CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM )
+							|| ( cap && stagePrimitiveIndex
+								!= stage->primitiveCount - 1 ) ) {
+						return VK_ClassicFogBlend_Fail( viewDef,
+							CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+							VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+					}
+				} else if ( primitive->kind
+						!= CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+						|| primitive->receiver
+							== CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM ) {
+					return VK_ClassicFogBlend_Fail( viewDef,
+						CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+						VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+				}
+			}
+			expectedStagePrimitive += stage->primitiveCount;
+			if ( stage->disposition == CLASSIC_FOG_BLEND_STAGE_DRAW ) {
+				activeStages++;
+			} else {
+				if ( stage->disposition <= CLASSIC_FOG_BLEND_STAGE_DRAW
+						|| stage->disposition
+							>= CLASSIC_FOG_BLEND_STAGE_DISPOSITION_COUNT ) {
+					return VK_ClassicFogBlend_Fail( viewDef,
+						CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+				}
+				noopStages++;
+				if ( stage->disposition
+						== CLASSIC_FOG_BLEND_STAGE_NOOP_INACTIVE_CONDITION ) {
+					inactiveStages++;
+				} else {
+					activeStages++;
+				}
+			}
+		}
+		if ( expectedStagePrimitive
+				!= light->firstPrimitive + light->primitiveCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+	}
+
+	for ( int primitiveIndex = 0; primitiveIndex < view.primitiveCount;
+			++primitiveIndex ) {
+		const classicFogBlendDomainPrimitive_t *primitive =
+			R_ClassicFogBlendDomain_ViewPrimitive( view, primitiveIndex );
+		if ( primitive == NULL
+				|| primitive->lightIndex < view.firstLight
+				|| primitive->lightIndex
+					>= view.firstLight + view.lightCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		const int localLightIndex = primitive->lightIndex - view.firstLight;
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( view, localLightIndex );
+		if ( light == NULL
+				|| primitive->lightStageIndex < light->firstLightStage
+				|| primitive->lightStageIndex
+					>= light->firstLightStage + light->lightStageCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		const int localStageIndex = primitive->lightStageIndex
+			- light->firstLightStage;
+		const classicFogBlendDomainLightStage_t *stage =
+			R_ClassicFogBlendDomain_LightStage( *light, localStageIndex );
+		if ( stage == NULL
+				|| ( primitive->kind
+					!= CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP
+					&& ( primitive->surfaceIndex < view.firstSurface
+						|| primitive->surfaceIndex
+							>= view.firstSurface + view.surfaceCount ) ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+			drawablePrimitives++;
+		} else {
+			if ( primitive->disposition <= CLASSIC_FOG_BLEND_PRIMITIVE_DRAW
+					|| primitive->disposition
+						>= CLASSIC_FOG_BLEND_PRIMITIVE_DISPOSITION_COUNT ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+			}
+			noopPrimitives++;
+		}
+		switch ( primitive->kind ) {
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER:
+			if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+				fogReceivers++;
+			}
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP:
+			if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+				fogFrustums++;
+			}
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER:
+			if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+				blendReceivers++;
+			}
+			break;
+		default:
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+	}
+
+	if ( expectedSurface != view.firstSurface + view.surfaceCount
+			|| expectedStage != view.firstLightStage + view.lightStageCount
+			|| expectedPrimitive != view.firstPrimitive + view.primitiveCount
+			|| fogLights != view.fogLightCount
+			|| blendLights != view.blendLightCount
+			|| noopLights != view.noopLightCount
+			|| activeStages != view.activeLightStageCount
+			|| inactiveStages != view.inactiveLightStageCount
+			|| noopStages != view.noopLightStageCount
+			|| drawablePrimitives != view.drawablePrimitiveCount
+			|| noopPrimitives != view.noopPrimitiveCount
+			|| fogReceivers != view.fogReceiverPrimitiveCount
+			|| fogFrustums != view.fogFrustumPrimitiveCount
+			|| blendReceivers != view.blendPrimitiveCount ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+	}
+	return true;
+}
+
+bool VK_ClassicFogBlend_Preflight( const viewDef_t *viewDef ) {
+	memset( &vkClassicFogBlendPrepared, 0,
+		sizeof( vkClassicFogBlendPrepared ) );
+	vkClassicFogBlendPreparedView_t &prepared = vkClassicFogBlendPrepared;
+	prepared.uniformCheckpoint = -1;
+	const classicFogBlendDomainView_t *view =
+		R_ClassicFogBlendDomain_FindView( viewDef );
+	prepared.view = view;
+	prepared.viewDef = viewDef;
+	if ( view == NULL ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_VIEW );
+	}
+	if ( view->backendOutcome[ CLASSIC_FOG_BLEND_BACKEND_VULKAN ]
+			== CLASSIC_FOG_BLEND_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			view->failure != CLASSIC_FOG_BLEND_FAILURE_NONE
+				? view->failure
+				: CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	if ( r_skipFogLights.GetBool() || r_showOverDraw.GetInteger() != 0
+			|| r_singleTriangle.GetBool() || r_skipRender.GetBool()
+			|| r_skipRenderContext.GetBool()
+			|| view->skipBlendLights != r_skipBlendLights.GetBool()
+			|| view->useScissor != r_useScissor.GetBool() ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+	}
+	if ( viewDef == NULL || view->viewDef != viewDef
+			|| view->lightCount < 0
+			|| view->lightCount > CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHTS
+			|| view->surfaceCount < 0
+			|| view->surfaceCount > CLASSIC_FOG_BLEND_DOMAIN_MAX_SURFACES
+			|| view->lightStageCount < 0
+			|| view->lightStageCount
+				> CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHT_STAGES
+			|| view->primitiveCount < 0
+			|| view->primitiveCount
+				> CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES
+			|| view->drawablePrimitiveCount < 0
+			|| view->noopPrimitiveCount < 0
+			|| view->drawablePrimitiveCount + view->noopPrimitiveCount
+				!= view->primitiveCount ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+	}
+	if ( backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| !VK_Exec_SharedInteractionTargetReady() ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_OFFSCREEN_TARGET );
+	}
+
+	prepared.cmd = VK_Exec_ActiveCmd();
+	prepared.frameSlot = VK_Exec_ActiveFrameSlot();
+	prepared.framebufferWidth = VK_Exec_ActiveFramebufferWidth();
+	prepared.framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	prepared.layout = view->drawablePrimitiveCount > 0
+		? VK_Exec_FogBlendPipelineLayout() : VK_NULL_HANDLE;
+	prepared.fogPipeline = view->fogReceiverPrimitiveCount > 0
+		|| view->fogFrustumPrimitiveCount > 0
+		? VK_Exec_FogPipeline() : VK_NULL_HANDLE;
+	prepared.uniformSet = view->blendPrimitiveCount > 0
+		? VK_Exec_InteractionUniformSet() : VK_NULL_HANDLE;
+	if ( prepared.cmd == VK_NULL_HANDLE || prepared.frameSlot < 0
+			|| prepared.framebufferWidth <= 0
+			|| prepared.framebufferHeight <= 0 ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_RENDER_SCOPE );
+	}
+	if ( ( view->drawablePrimitiveCount > 0
+				&& prepared.layout == VK_NULL_HANDLE )
+			|| ( ( view->fogReceiverPrimitiveCount > 0
+					|| view->fogFrustumPrimitiveCount > 0 )
+				&& prepared.fogPipeline == VK_NULL_HANDLE )
+			|| ( view->blendPrimitiveCount > 0
+				&& prepared.uniformSet == VK_NULL_HANDLE ) ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_PIPELINE );
+	}
+
+	const int viewportWidth = view->viewportX2 - view->viewportX1 + 1;
+	const int viewportHeight = view->viewportY2 - view->viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| view->viewportX1 < 0 || view->viewportY1 < 0
+			|| view->viewportX1 != viewDef->viewport.x1
+			|| view->viewportY1 != viewDef->viewport.y1
+			|| view->viewportX2 != viewDef->viewport.x2
+			|| view->viewportY2 != viewDef->viewport.y2
+			|| view->scissorX1 != viewDef->scissor.x1
+			|| view->scissorY1 != viewDef->scissor.y1
+			|| view->scissorX2 != viewDef->scissor.x2
+			|| view->scissorY2 != viewDef->scissor.y2
+			|| view->viewportX1 + viewportWidth
+				> prepared.framebufferWidth
+			|| view->viewportY1 + viewportHeight
+				> prepared.framebufferHeight
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				view->projectionMatrix, 16 )
+			|| memcmp( view->projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view->projectionMatrix ) ) != 0 ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_VIEW );
+	}
+	prepared.viewport.x = static_cast<float>( view->viewportX1 );
+	prepared.viewport.y = static_cast<float>(
+		prepared.framebufferHeight - view->viewportY1 );
+	prepared.viewport.width = static_cast<float>( viewportWidth );
+	prepared.viewport.height = -static_cast<float>( viewportHeight );
+	prepared.viewport.minDepth = 0.0f;
+	prepared.viewport.maxDepth = 1.0f;
+
+	if ( !VK_ClassicFogBlend_ValidateRanges( viewDef, *view ) ) {
+		return false;
+	}
+	prepared.noopPrimitiveCount = view->noopPrimitiveCount;
+	prepared.noopLightStageCount = view->noopLightStageCount;
+	prepared.noopLightCount = view->noopLightCount;
+
+	if ( !VK_Exec_SharedInteractionGeometryCheckpoint() ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY );
+	}
+
+	for ( int primitiveIndex = 0; primitiveIndex < view->primitiveCount;
+			++primitiveIndex ) {
+		const classicFogBlendDomainPrimitive_t *primitive =
+			R_ClassicFogBlendDomain_ViewPrimitive( *view, primitiveIndex );
+		if ( primitive == NULL ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				primitiveIndex );
+		}
+		if ( primitive->disposition != CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+			continue;
+		}
+		if ( prepared.drawPlanCount
+				>= CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+		}
+
+		const int localLightIndex = primitive->lightIndex - view->firstLight;
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( *view, localLightIndex );
+		const int localStageIndex = light != NULL
+			? primitive->lightStageIndex - light->firstLightStage : -1;
+		const classicFogBlendDomainLightStage_t *stage = light != NULL
+			? R_ClassicFogBlendDomain_LightStage(
+				*light, localStageIndex ) : NULL;
+		if ( light == NULL || stage == NULL
+				|| stage->disposition != CLASSIC_FOG_BLEND_STAGE_DRAW
+				|| light->disposition != CLASSIC_FOG_BLEND_LIGHT_DRAW
+				|| !VK_ClassicFogBlend_ValidateGeometry( *primitive ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY );
+		}
+
+		vkClassicFogBlendDrawPlan_t &plan =
+			prepared.draws[ prepared.drawPlanCount ];
+		memset( &plan, 0, sizeof( plan ) );
+		plan.primitive = primitive;
+		plan.light = light;
+		plan.stage = stage;
+		plan.vertexOffset = -1;
+		plan.indexOffset = -1;
+		plan.uniformOffset = -1;
+		int pipelineBits = 0;
+		if ( !VK_ClassicFogBlend_MapStageState( *stage, *primitive,
+				pipelineBits, plan.depthCompare, plan.cullMode ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+		plan.pipeline = primitive->kind
+			== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+				? VK_Exec_BlendLightPipeline( pipelineBits )
+				: prepared.fogPipeline;
+		if ( plan.pipeline == VK_NULL_HANDLE ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+				VK_CLASSIC_FOG_BLEND_REJECT_PIPELINE );
+		}
+		if ( !VK_ClassicFogBlend_BuildScissor( *view, *primitive,
+				prepared.framebufferWidth, prepared.framebufferHeight,
+				plan.scissor ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_SCISSOR );
+		}
+		if ( !VK_Exec_PrepareTriGeometry( prepared.cmd,
+				prepared.frameSlot, primitive->legacyGeometry,
+				plan.vertexOffset, plan.indexOffset ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY );
+		}
+
+		if ( primitive->kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			if ( stage->projectionTextureResourceId == 0
+					|| stage->falloffTextureResourceId == 0
+					|| stage->falloffTextureResourceId
+						!= light->falloffTextureResourceId
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->projectionTextureResourceId,
+						plan.textureSets[ 0 ] )
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->falloffTextureResourceId,
+						plan.textureSets[ 1 ] ) ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_TEXTURE );
+			}
+		} else {
+			if ( stage->fogTextureResourceId == 0
+					|| stage->fogEnterTextureResourceId == 0
+					|| stage->fogTextureResourceId
+						!= light->fogTextureResourceId
+					|| stage->fogEnterTextureResourceId
+						!= light->fogEnterTextureResourceId
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->fogTextureResourceId,
+						plan.textureSets[ 0 ] )
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->fogEnterTextureResourceId,
+						plan.textureSets[ 1 ] ) ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_TEXTURE );
+			}
+		}
+		VK_ClassicFogBlend_BuildPayloads(
+			*view, *primitive, *light, *stage, plan );
+		if ( !VK_ClassicFogBlend_FloatsFinite(
+				&plan.push.mvp[ 0 ], 32 )
+				|| ( primitive->kind
+					== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+					&& !VK_ClassicFogBlend_FloatsFinite(
+						&plan.blendBlock.lightProjectS[ 0 ], 20 ) ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+		prepared.drawPlanCount++;
+	}
+
+	if ( prepared.drawPlanCount != view->drawablePrimitiveCount ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+	}
+
+	// Reserve the complete per-primitive blend stream only after every other
+	// plan field is known.  Failure restores this cursor and all geometry.
+	prepared.uniformCheckpoint = VK_Exec_InteractionUniformCheckpoint();
+	if ( prepared.uniformCheckpoint < 0 ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_UNIFORM );
+	}
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		vkClassicFogBlendDrawPlan_t &plan = prepared.draws[ drawIndex ];
+		if ( plan.primitive->kind
+				!= CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			continue;
+		}
+		plan.uniformOffset = VK_Exec_InteractionUniformAlloc(
+			&plan.blendBlock, sizeof( plan.blendBlock ) );
+		if ( plan.uniformOffset < 0 ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_UNIFORM );
+		}
+	}
+
+	VK_Exec_SharedInteractionGeometryCommit();
+	// The retained cursor is the uniform transaction's commit.
+	prepared.uniformCheckpoint = -1;
+	prepared.ready = true;
+	return true;
+}
+
+void VK_ClassicFogBlend_DrawOwnedView( const viewDef_t *viewDef ) {
+	vkClassicFogBlendPreparedView_t &prepared = vkClassicFogBlendPrepared;
+	if ( !prepared.ready || prepared.committed || prepared.view == NULL
+			|| prepared.viewDef == NULL || prepared.viewDef != viewDef
+			|| prepared.cmd == VK_NULL_HANDLE ) {
+		return;
+	}
+	prepared.committed = true;
+	if ( prepared.drawPlanCount > 0 ) {
+		vkCmdSetViewport( prepared.cmd, 0, 1, &prepared.viewport );
+		vkCmdSetDepthTestEnable( prepared.cmd, VK_TRUE );
+		vkCmdSetDepthWriteEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetFrontFace( prepared.cmd,
+			VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	}
+
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		const vkClassicFogBlendDrawPlan_t &plan = prepared.draws[ drawIndex ];
+		VK_Exec_BindPreparedTriGeometry( prepared.cmd, prepared.frameSlot,
+			plan.vertexOffset, plan.indexOffset );
+		vkCmdSetScissor( prepared.cmd, 0, 1, &plan.scissor );
+		vkCmdSetDepthCompareOp( prepared.cmd, plan.depthCompare );
+		vkCmdSetCullMode( prepared.cmd, plan.cullMode );
+		vkCmdBindPipeline( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			plan.pipeline );
+		vkCmdBindDescriptorSets( prepared.cmd,
+			VK_PIPELINE_BIND_POINT_GRAPHICS, prepared.layout, 0, 2,
+			plan.textureSets, 0, NULL );
+		if ( plan.primitive->kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			const uint32_t dynamicOffset =
+				static_cast<uint32_t>( plan.uniformOffset );
+			vkCmdBindDescriptorSets( prepared.cmd,
+				VK_PIPELINE_BIND_POINT_GRAPHICS, prepared.layout, 2, 1,
+				&prepared.uniformSet, 1, &dynamicOffset );
+		}
+		vkCmdPushConstants( prepared.cmd, prepared.layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( plan.push ), &plan.push );
+		vkCmdDrawIndexed( prepared.cmd,
+			static_cast<uint32_t>( plan.primitive->indexCount ),
+			1, 0, 0, 0 );
+		switch ( plan.primitive->kind ) {
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER:
+			prepared.submittedFogReceivers++;
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP:
+			prepared.submittedFogFrustums++;
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER:
+			prepared.submittedBlendReceivers++;
+			break;
+		default:
+			break;
+		}
+	}
+
+	if ( prepared.drawPlanCount > 0 ) {
+		vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetCullMode( prepared.cmd, VK_CULL_MODE_FRONT_BIT );
+	}
+	const bool coverageAccepted = R_ClassicFogBlendDomain_RecordOwned(
+		viewDef, CLASSIC_FOG_BLEND_BACKEND_VULKAN,
+		prepared.submittedFogReceivers,
+		prepared.submittedFogFrustums,
+		prepared.submittedBlendReceivers,
+		prepared.noopPrimitiveCount,
+		prepared.noopLightStageCount,
+		prepared.noopLightCount );
+	if ( !coverageAccepted ) {
+		common->Warning(
+			"Vulkan: shared fog/blend backend coverage mismatch after commit" );
+	}
+
+	static bool loggedFirstOwnedView = false;
+	if ( !loggedFirstOwnedView && coverageAccepted
+			&& prepared.drawPlanCount > 0 ) {
+		loggedFirstOwnedView = true;
+		common->Printf(
+			"Vulkan: shared fog/blend owned %d fog receivers, %d caps, %d blend receivers, %d primitive noops, %d stage noops, and %d light noops (hash=%016llx)\n",
+			prepared.submittedFogReceivers,
+			prepared.submittedFogFrustums,
+			prepared.submittedBlendReceivers,
+			prepared.noopPrimitiveCount,
+			prepared.noopLightStageCount,
+			prepared.noopLightCount,
+			static_cast<unsigned long long>( prepared.view->hash ) );
+	}
+}
+
+/*
+===============================================================================
+
 	Phase G2: fog and blend lights.
 
 ===============================================================================
@@ -4357,6 +5404,18 @@ static void VK_BlendLight( const drawSurf_t *drawSurfs, const drawSurf_t *drawSu
 	}
 }
 
+// Named rollback seams used by the shared transaction: preflight decides the
+// whole view before either helper can issue established fog/blend work.
+static void VK_Fog_DrawFogLight( const drawSurf_t *globalSurfs,
+		const drawSurf_t *localSurfs ) {
+	VK_FogPass( globalSurfs, localSurfs );
+}
+
+static void VK_Fog_DrawBlendLight( const drawSurf_t *globalSurfs,
+		const drawSurf_t *localSurfs ) {
+	VK_BlendLight( globalSurfs, localSurfs );
+}
+
 /*
 ====================
 VK_Fog_DrawAllLights
@@ -4448,10 +5507,12 @@ void VK_Fog_DrawAllLights( const viewDef_t *viewDef ) {
 				continue;
 			}
 			interPass.fogLightCount++;
-			VK_FogPass( vLight->globalInteractions, vLight->localInteractions );
+			VK_Fog_DrawFogLight(
+				vLight->globalInteractions, vLight->localInteractions );
 		} else if ( vLight->lightShader->IsBlendLight() ) {
 			interPass.blendLightCount++;
-			VK_BlendLight( vLight->globalInteractions, vLight->localInteractions );
+			VK_Fog_DrawBlendLight(
+				vLight->globalInteractions, vLight->localInteractions );
 		}
 	}
 

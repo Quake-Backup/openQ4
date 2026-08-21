@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "CelShading.h"
 #include "ClassicGuiDomain.h"
 #include "ClassicWorldAmbientDomain.h"
+#include "ClassicFogBlendDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernGLShaderLibrary.h"
 #include "RendererMetrics.h"
@@ -10064,6 +10065,912 @@ void RB_STD_FogAllLights( void ) {
 	glEnable( GL_STENCIL_TEST );
 }
 
+/*
+===============================================================================
+
+	Backend-neutral classic fog/blend consumer
+
+	ClassicFogBlendDomain has already interpreted the complete ordered light,
+	stage, receiver, and frustum-cap stream. OpenGL validates every cache and
+	resource for the whole phase before the first framebuffer write, then submits
+	only sealed values plus the retained geometry bridge. A rejected preflight
+	leaves RB_STD_FogAllLights as the untouched atomic rollback.
+
+===============================================================================
+*/
+
+enum rbClassicFogBlendGLReject_t {
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_VIEW = 1,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_MUTATED_VIEW,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_CAPACITY,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_LIGHT_RANGE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_STAGE_RANGE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_STAGE_STATE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_PRIMITIVE_RANGE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_PRIMITIVE_STATE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_GEOMETRY,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_VERTEX_CACHE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_INDEX_CACHE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_TEXTURE,
+	RB_CLASSIC_FOG_BLEND_GL_REJECT_COVERAGE
+};
+
+typedef struct rbClassicFogBlendGLPreparedStage_s {
+	const classicFogBlendDomainLightStage_t *stage;
+	idImage *projectionImage;
+	idImage *falloffImage;
+	idImage *fogImage;
+	idImage *fogEnterImage;
+} rbClassicFogBlendGLPreparedStage_t;
+
+typedef struct rbClassicFogBlendGLPreparedPrimitive_s {
+	const classicFogBlendDomainPrimitive_t *primitive;
+	const rbClassicFogBlendGLPreparedStage_t *stage;
+	const srfTriangles_t *geometry;
+	int stateBits;
+	int cullType;
+	GLenum alphaFunction;
+} rbClassicFogBlendGLPreparedPrimitive_t;
+
+typedef struct rbClassicFogBlendGLPreparedView_s {
+	const classicFogBlendDomainView_t *view;
+	const viewDef_t *viewDef;
+	std::uint64_t hash;
+	int lightCount;
+	int stageCount;
+	int primitiveCount;
+	int drawablePrimitiveCount;
+	int fogReceiverDraws;
+	int fogFrustumDraws;
+	int blendDraws;
+	int noopPrimitives;
+	int noopStages;
+	int noopLights;
+	bool ready;
+	bool committed;
+	rbClassicFogBlendGLPreparedStage_t stages[
+		CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHT_STAGES ];
+	rbClassicFogBlendGLPreparedPrimitive_t primitives[
+		CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES ];
+} rbClassicFogBlendGLPreparedView_t;
+
+static rbClassicFogBlendGLPreparedView_t rbClassicFogBlendGLPreparedView;
+
+static int RB_ClassicFogBlend_GLFailureDetail(
+		rbClassicFogBlendGLReject_t reason, int lightIndex = -1,
+		int stageIndex = -1, int primitiveIndex = -1 ) {
+	const int lightDetail = lightIndex >= 0 ? Min( lightIndex + 1, 255 ) : 0;
+	const int stageDetail = stageIndex >= 0 ? Min( stageIndex + 1, 1023 ) : 0;
+	const int primitiveDetail = primitiveIndex >= 0
+		? Min( primitiveIndex + 1, 4095 ) : 0;
+	return static_cast<int>( reason ) * 100000000
+		+ lightDetail * 1000000 + stageDetail * 4096 + primitiveDetail;
+}
+
+static bool RB_ClassicFogBlend_GLFail( const viewDef_t *viewDef,
+		classicFogBlendDomainFailure_t failure, int detail ) {
+	R_ClassicFogBlendDomain_RecordBackendFallback( viewDef,
+		CLASSIC_FOG_BLEND_BACKEND_GL,
+		failure == CLASSIC_FOG_BLEND_FAILURE_NONE
+			? CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED : failure,
+		detail );
+	std::memset( &rbClassicFogBlendGLPreparedView, 0,
+		sizeof( rbClassicFogBlendGLPreparedView ) );
+	return false;
+}
+
+static bool RB_ClassicFogBlend_GLFiniteArray( const float *values,
+		int count ) {
+	return RB_SharedGuiGLMatrixValid( values, count );
+}
+
+static bool RB_ClassicFogBlend_GLValidateTexture(
+		std::uint64_t resourceId, idImage *&image ) {
+	image = NULL;
+	const classicFogBlendDomainTexture_t *texture =
+		R_ClassicFogBlendDomain_ResolveTexture( resourceId );
+	if ( resourceId == 0 || texture == NULL
+			|| texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0 ) {
+		return false;
+	}
+	idImage *resolved = const_cast<idImage *>( texture->image );
+	if ( !resolved->IsLoaded() || resolved->IsDefaulted()
+			|| resolved->GetOpts().textureType != TT_2D
+			|| resolved->GetDeviceHandle() != texture->textureHandle
+			|| resolved->GetStorageGeneration() != texture->storageGeneration
+			|| resolved->GetFilter() != texture->filter
+			|| resolved->GetRepeat() != texture->repeat ) {
+		return false;
+	}
+	image = resolved;
+	return true;
+}
+
+static bool RB_ClassicFogBlend_GLBuildState(
+		const classicFogBlendDomainLightStage_t &stage,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		int &stateBits, int &cullType, GLenum &alphaFunction ) {
+	stateBits = 0;
+	cullType = CT_FRONT_SIDED;
+	alphaFunction = GL_ALWAYS;
+	if ( stage.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| stage.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| stage.blend.sourceAlpha != stage.blend.sourceColor
+			|| stage.blend.destinationAlpha
+				!= stage.blend.destinationColor ) {
+		return false;
+	}
+	const bool replacementBlend =
+		stage.blend.sourceColor == RENDERER_BLEND_ONE
+		&& stage.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( stage.blend.enabled == replacementBlend
+			|| !RB_SharedGuiGLMapSourceBlend(
+				stage.blend.sourceColor, stateBits )
+			|| !RB_SharedGuiGLMapDestinationBlend(
+				stage.blend.destinationColor, stateBits )
+			|| !RB_SharedWorldAmbientGLMapDepth(
+				primitive.depth, stateBits )
+			|| !RB_SharedGuiGLMapCull( primitive.cull, cullType )
+			|| !RB_SharedGuiGLMapAlphaCompare(
+				stage.alphaTestCompareOperation, alphaFunction ) ) {
+		return false;
+	}
+	if ( ( stage.colorWriteMask
+			& ~static_cast<std::uint32_t>( RENDERER_COLOR_WRITE_RGBA ) ) != 0 ) {
+		return false;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		stateBits |= GLS_REDMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		stateBits |= GLS_GREENMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		stateBits |= GLS_BLUEMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		stateBits |= GLS_ALPHAMASK;
+	}
+	return true;
+}
+
+static bool RB_ClassicFogBlend_GLPrimitiveKindValid(
+		const classicFogBlendDomainLight_t &light,
+		const classicFogBlendDomainPrimitive_t &primitive ) {
+	if ( light.kind == CLASSIC_FOG_BLEND_LIGHT_FOG ) {
+		if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER ) {
+			return primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_GLOBAL
+				|| primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_LOCAL;
+		}
+		return primitive.kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP
+			&& primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM;
+	}
+	return light.kind == CLASSIC_FOG_BLEND_LIGHT_BLEND
+		&& primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+		&& ( primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_GLOBAL
+			|| primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_LOCAL );
+}
+
+static bool RB_ClassicFogBlend_GLDispositionMatches(
+		classicFogBlendDomainLightStageDisposition_t stageDisposition,
+		classicFogBlendDomainPrimitiveDisposition_t primitiveDisposition ) {
+	switch ( stageDisposition ) {
+	case CLASSIC_FOG_BLEND_STAGE_DRAW:
+		return primitiveDisposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW;
+	case CLASSIC_FOG_BLEND_STAGE_NOOP_INACTIVE_CONDITION:
+		return primitiveDisposition
+			== CLASSIC_FOG_BLEND_PRIMITIVE_NOOP_INACTIVE_STAGE;
+	case CLASSIC_FOG_BLEND_STAGE_NOOP_SKIP_BLEND:
+		return primitiveDisposition
+			== CLASSIC_FOG_BLEND_PRIMITIVE_NOOP_SKIP_BLEND;
+	case CLASSIC_FOG_BLEND_STAGE_NOOP_MISSING_GLOBAL_CHAIN:
+		return primitiveDisposition
+			== CLASSIC_FOG_BLEND_PRIMITIVE_NOOP_MISSING_GLOBAL_CHAIN;
+	default:
+		return false;
+	}
+}
+
+static bool RB_ClassicFogBlend_GLGeometryValid(
+		const classicFogBlendDomainPrimitive_t &primitive,
+		const srfTriangles_t *&geometry ) {
+	geometry = primitive.legacyGeometry;
+	if ( geometry == NULL || primitive.vertexCount <= 0
+			|| primitive.firstIndex != 0 || primitive.indexCount <= 0
+			|| primitive.indexCount % 3 != 0 || primitive.vertexOffset != 0
+			|| geometry->numVerts != primitive.vertexCount
+			|| geometry->numIndexes != primitive.indexCount
+			|| primitive.vertexCount > idMath::INT_MAX
+				/ static_cast<int>( sizeof( idDrawVert ) )
+			|| primitive.indexCount > idMath::INT_MAX
+				/ static_cast<int>( sizeof( glIndex_t ) )
+			|| R_TriHasPrimBatchMesh( geometry ) ) {
+		return false;
+	}
+	if ( primitive.kind
+			== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP ) {
+		if ( primitive.legacyDrawSurf != NULL
+				&& primitive.legacyDrawSurf->geo != geometry ) {
+			return false;
+		}
+	} else if ( primitive.legacyDrawSurf == NULL
+			|| primitive.legacyDrawSurf->geo != geometry ) {
+		return false;
+	}
+	if ( !RB_SharedGuiGLCacheValid( geometry->ambientCache, false,
+			primitive.vertexCount * static_cast<int>( sizeof( idDrawVert ) ) ) ) {
+		return false;
+	}
+	R_TouchVertexCache( geometry->ambientCache );
+	if ( geometry->indexCache != NULL ) {
+		if ( !RB_SharedGuiGLCacheValid( geometry->indexCache, true,
+				primitive.indexCount
+					* static_cast<int>( sizeof( glIndex_t ) ) ) ) {
+			return false;
+		}
+		R_TouchVertexCache( geometry->indexCache );
+	}
+	return ( r_useIndexBuffers.GetBool() && geometry->indexCache != NULL )
+		|| geometry->indexes != NULL;
+}
+
+static bool RB_ClassicFogBlend_GLPreflight(
+		const viewDef_t *viewDef, const classicFogBlendDomainView_t &view,
+		int &failureDetail ) {
+	rbClassicFogBlendGLPreparedView_t &prepared =
+		rbClassicFogBlendGLPreparedView;
+	std::memset( &prepared, 0, sizeof( prepared ) );
+	prepared.view = &view;
+	prepared.viewDef = viewDef;
+	prepared.hash = view.hash;
+
+	if ( viewDef == NULL || view.viewDef != viewDef || !view.ready
+			|| viewDef->renderWorld == NULL
+			|| view.lightCount < 0
+			|| view.lightCount > CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHTS
+			|| view.surfaceCount < 0
+			|| view.surfaceCount > CLASSIC_FOG_BLEND_DOMAIN_MAX_SURFACES
+			|| view.lightStageCount < 0
+			|| view.lightStageCount
+				> CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHT_STAGES
+			|| view.primitiveCount < 0
+			|| view.primitiveCount
+				> CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES
+			|| view.drawablePrimitiveCount < 0
+			|| view.drawablePrimitiveCount > view.primitiveCount
+			|| view.noopPrimitiveCount != view.primitiveCount
+				- view.drawablePrimitiveCount
+			|| view.fogReceiverPrimitiveCount < 0
+			|| view.fogFrustumPrimitiveCount < 0
+			|| view.blendPrimitiveCount < 0
+			|| view.fogReceiverPrimitiveCount
+				+ view.fogFrustumPrimitiveCount + view.blendPrimitiveCount
+				!= view.drawablePrimitiveCount ) {
+		failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+			RB_CLASSIC_FOG_BLEND_GL_REJECT_VIEW );
+		return false;
+	}
+
+	const int allowedRenderFlags = RF_NO_GUI | RF_PENUMBRA_MAP | RF_PRIMARY_VIEW;
+	if ( viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
+			|| viewDef->isEditor || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
+			|| viewDef->renderView.viewID < 0
+			|| ( viewDef->renderFlags & ~allowedRenderFlags ) != 0
+			|| viewDef->renderView.globalMaterial != NULL
+			|| backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| r_skipFogLights.GetBool() || r_showOverDraw.GetInteger() != 0
+			|| r_singleTriangle.GetBool() || r_skipRender.GetBool()
+			|| r_skipRenderContext.GetBool()
+			|| view.skipBlendLights != r_skipBlendLights.GetBool()
+			|| view.useScissor != r_useScissor.GetBool() ) {
+		failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+			RB_CLASSIC_FOG_BLEND_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+	if ( !glConfig.isInitialized || globalImages == NULL
+			|| glConfig.maxTextureUnits < 2
+			|| glConfig.maxTextureImageUnits < 2
+			|| glConfig.maxTextureCoords < 2 ) {
+		failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+			RB_CLASSIC_FOG_BLEND_GL_REJECT_CAPACITY );
+		return false;
+	}
+	if ( view.viewportX1 != viewDef->viewport.x1
+			|| view.viewportY1 != viewDef->viewport.y1
+			|| view.viewportX2 != viewDef->viewport.x2
+			|| view.viewportY2 != viewDef->viewport.y2
+			|| view.scissorX1 != viewDef->scissor.x1
+			|| view.scissorY1 != viewDef->scissor.y1
+			|| view.scissorX2 != viewDef->scissor.x2
+			|| view.scissorY2 != viewDef->scissor.y2
+			|| std::memcmp( view.projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view.projectionMatrix ) ) != 0
+			|| !RB_ClassicFogBlend_GLFiniteArray(
+				view.projectionMatrix, 16 ) ) {
+		failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+			RB_CLASSIC_FOG_BLEND_GL_REJECT_MUTATED_VIEW );
+		return false;
+	}
+
+	int lightCursor = 0;
+	int surfaceCursor = 0;
+	int stageCursor = 0;
+	int primitiveCursor = 0;
+	int drawablePrimitives = 0;
+	int fogLights = 0;
+	int blendLights = 0;
+	int noopLights = 0;
+	int activeStages = 0;
+	int inactiveStages = 0;
+	int noopStages = 0;
+	int noopPrimitives = 0;
+	int fogReceiverDraws = 0;
+	int fogFrustumDraws = 0;
+	int blendDraws = 0;
+	int receiverSurfaces[ CLASSIC_FOG_BLEND_RECEIVER_COUNT ] = { 0, 0, 0 };
+
+	for ( int lightIndex = 0; lightIndex < view.lightCount; ++lightIndex ) {
+		const int domainLightIndex = view.firstLight + lightIndex;
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( view, lightIndex );
+		if ( light == NULL || light->sourceOrdinal < 0
+				|| light->kind < CLASSIC_FOG_BLEND_LIGHT_FOG
+				|| light->kind >= CLASSIC_FOG_BLEND_LIGHT_KIND_COUNT
+				|| light->disposition < CLASSIC_FOG_BLEND_LIGHT_DRAW
+				|| light->disposition
+					>= CLASSIC_FOG_BLEND_LIGHT_DISPOSITION_COUNT
+				|| light->firstSurface != view.firstSurface + surfaceCursor
+				|| light->surfaceCount < 0
+				|| light->surfaceCount > view.surfaceCount - surfaceCursor
+				|| light->firstLightStage
+					!= view.firstLightStage + stageCursor
+				|| light->lightStageCount < 0
+				|| light->lightStageCount
+					> view.lightStageCount - stageCursor
+				|| light->firstPrimitive
+					!= view.firstPrimitive + primitiveCursor
+				|| light->primitiveCount < 0
+				|| light->primitiveCount
+					> view.primitiveCount - primitiveCursor
+				|| light->drawablePrimitiveCount < 0
+				|| light->drawablePrimitiveCount > light->primitiveCount
+				|| light->noopPrimitiveCount != light->primitiveCount
+					- light->drawablePrimitiveCount
+				|| !RB_ClassicFogBlend_GLFiniteArray(
+					&light->lightProject[0][0], 16 )
+				|| !RB_ClassicFogBlend_GLFiniteArray( light->fogPlane, 4 )
+				|| !RB_ClassicFogBlend_GLFiniteArray(
+					&light->fogGlobalTexgen[0][0][0], 16 )
+				|| !RB_ClassicFogBlend_GLFiniteArray( light->fogColor, 4 )
+				|| !RB_SharedGuiGLFloatValid( light->fogDensity )
+				|| !RB_SharedGuiGLFloatValid( light->fogDistanceScale ) ) {
+			failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+				RB_CLASSIC_FOG_BLEND_GL_REJECT_LIGHT_RANGE, lightIndex );
+			return false;
+		}
+		lightCursor++;
+		fogLights += light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG ? 1 : 0;
+		blendLights += light->kind == CLASSIC_FOG_BLEND_LIGHT_BLEND ? 1 : 0;
+		noopLights += light->disposition != CLASSIC_FOG_BLEND_LIGHT_DRAW ? 1 : 0;
+		int lightSurfaceTotal = 0;
+		for ( int receiver = 0; receiver < CLASSIC_FOG_BLEND_RECEIVER_COUNT;
+				++receiver ) {
+			if ( light->receiverSurfaceCount[receiver] < 0 ) {
+				failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+					RB_CLASSIC_FOG_BLEND_GL_REJECT_LIGHT_RANGE,
+					lightIndex );
+				return false;
+			}
+			lightSurfaceTotal += light->receiverSurfaceCount[receiver];
+			receiverSurfaces[receiver] += light->receiverSurfaceCount[receiver];
+		}
+		if ( lightSurfaceTotal != light->surfaceCount ) {
+			failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+				RB_CLASSIC_FOG_BLEND_GL_REJECT_LIGHT_RANGE, lightIndex );
+			return false;
+		}
+		surfaceCursor += light->surfaceCount;
+
+		int lightDrawablePrimitives = 0;
+		int lightNoopPrimitives = 0;
+		int lightFogReceivers = 0;
+		int lightFogFrustums = 0;
+		int lightBlendDraws = 0;
+		for ( int localStageIndex = 0;
+				localStageIndex < light->lightStageCount; ++localStageIndex ) {
+			const classicFogBlendDomainLightStage_t *stage =
+				R_ClassicFogBlendDomain_LightStage( *light, localStageIndex );
+			const int domainStageIndex = view.firstLightStage + stageCursor;
+			if ( stage == NULL || stage->lightIndex != domainLightIndex
+					|| stage->sourceStageIndex < 0
+					|| stage->disposition < CLASSIC_FOG_BLEND_STAGE_DRAW
+					|| stage->disposition
+						>= CLASSIC_FOG_BLEND_STAGE_DISPOSITION_COUNT
+					|| stage->firstPrimitive
+						!= view.firstPrimitive + primitiveCursor
+					|| stage->primitiveCount < 0
+					|| stage->primitiveCount
+						> view.primitiveCount - primitiveCursor
+					|| stage->drawablePrimitiveCount < 0
+					|| stage->drawablePrimitiveCount > stage->primitiveCount
+					|| stage->noopPrimitiveCount != stage->primitiveCount
+						- stage->drawablePrimitiveCount
+					|| !RB_SharedGuiGLFloatValid( stage->condition )
+					|| !RB_ClassicFogBlend_GLFiniteArray( stage->color, 4 )
+					|| !RB_ClassicFogBlend_GLFiniteArray(
+						&stage->textureMatrix[0][0], 8 )
+					|| !RB_SharedGuiGLFloatValid( stage->alphaTestValue )
+					|| ( light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG
+						&& !stage->conditionIgnored )
+					|| ( light->kind == CLASSIC_FOG_BLEND_LIGHT_BLEND
+						&& stage->conditionIgnored ) ) {
+				failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+					RB_CLASSIC_FOG_BLEND_GL_REJECT_STAGE_RANGE,
+					lightIndex, localStageIndex );
+				return false;
+			}
+
+			rbClassicFogBlendGLPreparedStage_t &preparedStage =
+				prepared.stages[stageCursor];
+			std::memset( &preparedStage, 0, sizeof( preparedStage ) );
+			preparedStage.stage = stage;
+			const bool active = stage->conditionIgnored
+				|| stage->condition != 0.0f;
+			activeStages += active ? 1 : 0;
+			inactiveStages += active ? 0 : 1;
+			noopStages += stage->disposition != CLASSIC_FOG_BLEND_STAGE_DRAW
+				? 1 : 0;
+
+			if ( stage->disposition == CLASSIC_FOG_BLEND_STAGE_DRAW ) {
+				if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG ) {
+					if ( stage->fogTextureResourceId
+							!= light->fogTextureResourceId
+							|| stage->fogEnterTextureResourceId
+								!= light->fogEnterTextureResourceId
+							|| !RB_ClassicFogBlend_GLValidateTexture(
+								stage->fogTextureResourceId,
+								preparedStage.fogImage )
+							|| !RB_ClassicFogBlend_GLValidateTexture(
+								stage->fogEnterTextureResourceId,
+								preparedStage.fogEnterImage ) ) {
+						failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+							RB_CLASSIC_FOG_BLEND_GL_REJECT_TEXTURE,
+							lightIndex, localStageIndex );
+						return false;
+					}
+				} else if ( stage->falloffTextureResourceId
+						!= light->falloffTextureResourceId
+						|| !RB_ClassicFogBlend_GLValidateTexture(
+							stage->projectionTextureResourceId,
+							preparedStage.projectionImage )
+						|| !RB_ClassicFogBlend_GLValidateTexture(
+							stage->falloffTextureResourceId,
+							preparedStage.falloffImage ) ) {
+					failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+						RB_CLASSIC_FOG_BLEND_GL_REJECT_TEXTURE,
+						lightIndex, localStageIndex );
+					return false;
+				}
+			}
+
+			int stageDrawablePrimitives = 0;
+			int stageNoopPrimitives = 0;
+			classicFogBlendDomainReceiver_t previousReceiver =
+				CLASSIC_FOG_BLEND_RECEIVER_GLOBAL;
+			for ( int stagePrimitiveIndex = 0;
+					stagePrimitiveIndex < stage->primitiveCount;
+					++stagePrimitiveIndex ) {
+				const classicFogBlendDomainPrimitive_t *primitive =
+					R_ClassicFogBlendDomain_ViewPrimitive(
+						view, primitiveCursor );
+				if ( primitive == NULL
+						|| primitive->lightIndex != domainLightIndex
+						|| primitive->lightStageIndex != domainStageIndex
+						|| primitive->kind
+							< CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER
+						|| primitive->kind
+							>= CLASSIC_FOG_BLEND_PRIMITIVE_KIND_COUNT
+						|| primitive->receiver
+							< CLASSIC_FOG_BLEND_RECEIVER_GLOBAL
+						|| primitive->receiver
+							>= CLASSIC_FOG_BLEND_RECEIVER_COUNT
+						|| primitive->receiver < previousReceiver
+						|| primitive->disposition
+							< CLASSIC_FOG_BLEND_PRIMITIVE_DRAW
+						|| primitive->disposition
+							>= CLASSIC_FOG_BLEND_PRIMITIVE_DISPOSITION_COUNT
+						|| !RB_ClassicFogBlend_GLPrimitiveKindValid(
+							*light, *primitive )
+						|| !RB_ClassicFogBlend_GLDispositionMatches(
+							stage->disposition, primitive->disposition )
+						|| !RB_ClassicFogBlend_GLFiniteArray(
+							primitive->modelMatrix, 16 )
+						|| !RB_ClassicFogBlend_GLFiniteArray(
+							primitive->modelViewMatrix, 16 )
+						|| !RB_ClassicFogBlend_GLFiniteArray(
+							&primitive->localLightProject[0][0], 16 )
+						|| !RB_ClassicFogBlend_GLFiniteArray(
+							&primitive->fogTexgen[0][0][0], 16 ) ) {
+					failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+						RB_CLASSIC_FOG_BLEND_GL_REJECT_PRIMITIVE_STATE,
+						lightIndex, localStageIndex, primitiveCursor );
+					return false;
+				}
+				previousReceiver = primitive->receiver;
+				const long long scissorWidth =
+					static_cast<long long>( primitive->scissorX2 )
+						- primitive->scissorX1 + 1;
+				const long long scissorHeight =
+					static_cast<long long>( primitive->scissorY2 )
+						- primitive->scissorY1 + 1;
+				if ( scissorWidth <= 0 || scissorHeight <= 0
+						|| scissorWidth > idMath::INT_MAX
+						|| scissorHeight > idMath::INT_MAX ) {
+					failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+						RB_CLASSIC_FOG_BLEND_GL_REJECT_PRIMITIVE_STATE,
+						lightIndex, localStageIndex, primitiveCursor );
+					return false;
+				}
+				if ( primitive->disposition
+						!= CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+					stageNoopPrimitives++;
+					lightNoopPrimitives++;
+					noopPrimitives++;
+					primitiveCursor++;
+					continue;
+				}
+
+				const srfTriangles_t *geometry = NULL;
+				if ( !RB_ClassicFogBlend_GLGeometryValid(
+						*primitive, geometry ) ) {
+					failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+						RB_CLASSIC_FOG_BLEND_GL_REJECT_GEOMETRY,
+						lightIndex, localStageIndex, primitiveCursor );
+					return false;
+				}
+				rbClassicFogBlendGLPreparedPrimitive_t &preparedPrimitive =
+					prepared.primitives[drawablePrimitives];
+				std::memset( &preparedPrimitive, 0,
+					sizeof( preparedPrimitive ) );
+				preparedPrimitive.primitive = primitive;
+				preparedPrimitive.stage = &preparedStage;
+				preparedPrimitive.geometry = geometry;
+				if ( !RB_ClassicFogBlend_GLBuildState( *stage, *primitive,
+						preparedPrimitive.stateBits,
+						preparedPrimitive.cullType,
+						preparedPrimitive.alphaFunction ) ) {
+					failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+						RB_CLASSIC_FOG_BLEND_GL_REJECT_STAGE_STATE,
+						lightIndex, localStageIndex, primitiveCursor );
+					return false;
+				}
+				stageDrawablePrimitives++;
+				lightDrawablePrimitives++;
+				drawablePrimitives++;
+				switch ( primitive->kind ) {
+				case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER:
+					lightFogReceivers++;
+					fogReceiverDraws++;
+					break;
+				case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP:
+					lightFogFrustums++;
+					fogFrustumDraws++;
+					break;
+				case CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER:
+					lightBlendDraws++;
+					blendDraws++;
+					break;
+				default:
+					break;
+				}
+				primitiveCursor++;
+			}
+			if ( stageDrawablePrimitives != stage->drawablePrimitiveCount
+					|| stageNoopPrimitives != stage->noopPrimitiveCount ) {
+				failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+					RB_CLASSIC_FOG_BLEND_GL_REJECT_COVERAGE,
+					lightIndex, localStageIndex );
+				return false;
+			}
+			stageCursor++;
+		}
+		if ( lightDrawablePrimitives != light->drawablePrimitiveCount
+				|| lightNoopPrimitives != light->noopPrimitiveCount
+				|| lightFogReceivers != light->fogReceiverPrimitiveCount
+				|| lightFogFrustums != light->fogFrustumPrimitiveCount
+				|| lightBlendDraws != light->blendPrimitiveCount ) {
+			failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+				RB_CLASSIC_FOG_BLEND_GL_REJECT_COVERAGE, lightIndex );
+			return false;
+		}
+	}
+
+	if ( lightCursor != view.lightCount || fogLights != view.fogLightCount
+			|| blendLights != view.blendLightCount
+			|| noopLights != view.noopLightCount
+			|| surfaceCursor != view.surfaceCount
+			|| stageCursor != view.lightStageCount
+			|| activeStages != view.activeLightStageCount
+			|| inactiveStages != view.inactiveLightStageCount
+			|| noopStages != view.noopLightStageCount
+			|| primitiveCursor != view.primitiveCount
+			|| drawablePrimitives != view.drawablePrimitiveCount
+			|| noopPrimitives != view.noopPrimitiveCount
+			|| fogReceiverDraws != view.fogReceiverPrimitiveCount
+			|| fogFrustumDraws != view.fogFrustumPrimitiveCount
+			|| blendDraws != view.blendPrimitiveCount
+			|| receiverSurfaces[CLASSIC_FOG_BLEND_RECEIVER_GLOBAL]
+				!= view.receiverSurfaceCount[
+					CLASSIC_FOG_BLEND_RECEIVER_GLOBAL]
+			|| receiverSurfaces[CLASSIC_FOG_BLEND_RECEIVER_LOCAL]
+				!= view.receiverSurfaceCount[
+					CLASSIC_FOG_BLEND_RECEIVER_LOCAL]
+			|| receiverSurfaces[CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM]
+				!= view.receiverSurfaceCount[
+					CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM] ) {
+		failureDetail = RB_ClassicFogBlend_GLFailureDetail(
+			RB_CLASSIC_FOG_BLEND_GL_REJECT_COVERAGE );
+		return false;
+	}
+	prepared.lightCount = lightCursor;
+	prepared.stageCount = stageCursor;
+	prepared.primitiveCount = primitiveCursor;
+	prepared.drawablePrimitiveCount = drawablePrimitives;
+	prepared.fogReceiverDraws = fogReceiverDraws;
+	prepared.fogFrustumDraws = fogFrustumDraws;
+	prepared.blendDraws = blendDraws;
+	prepared.noopPrimitives = noopPrimitives;
+	prepared.noopStages = noopStages;
+	prepared.noopLights = noopLights;
+	prepared.ready = true;
+	return true;
+}
+
+static void RB_ClassicFogBlend_GLLoadTextureMatrix(
+		const classicFogBlendDomainLightStage_t &stage ) {
+	float matrix[16] = {
+		stage.textureMatrix[0][0], stage.textureMatrix[1][0], 0.0f, 0.0f,
+		stage.textureMatrix[0][1], stage.textureMatrix[1][1], 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		stage.textureMatrix[0][3], stage.textureMatrix[1][3], 0.0f, 1.0f
+	};
+	glMatrixMode( GL_TEXTURE );
+	glLoadMatrixf( matrix );
+	glMatrixMode( GL_MODELVIEW );
+}
+
+static void RB_ClassicFogBlend_GLDisableTexgen( int unit ) {
+	GL_SelectTexture( unit );
+	glDisable( GL_TEXTURE_GEN_S );
+	glDisable( GL_TEXTURE_GEN_T );
+	glDisable( GL_TEXTURE_GEN_R );
+	glDisable( GL_TEXTURE_GEN_Q );
+}
+
+static void RB_ClassicFogBlend_GLPrepareFog(
+		const rbClassicFogBlendGLPreparedPrimitive_t &prepared ) {
+	const classicFogBlendDomainPrimitive_t &primitive = *prepared.primitive;
+	const classicFogBlendDomainLightStage_t &stage = *prepared.stage->stage;
+	GL_SelectTexture( 0 );
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	RB_ClassicFogBlend_GLDisableTexgen( 0 );
+	glMatrixMode( GL_TEXTURE );
+	glLoadIdentity();
+	glMatrixMode( GL_MODELVIEW );
+	prepared.stage->fogImage->SetSamplerState(
+		prepared.stage->fogImage->GetFilter(),
+		prepared.stage->fogImage->GetRepeat() );
+	prepared.stage->fogImage->Bind();
+	GL_TexEnv( GL_MODULATE );
+	glEnable( GL_TEXTURE_GEN_S );
+	glEnable( GL_TEXTURE_GEN_T );
+	glTexGenfv( GL_S, GL_OBJECT_PLANE, primitive.fogTexgen[0][0] );
+	glTexGenfv( GL_T, GL_OBJECT_PLANE, primitive.fogTexgen[0][1] );
+	glTexCoord2f( 0.5f, 0.5f );
+
+	GL_SelectTexture( 1 );
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	RB_ClassicFogBlend_GLDisableTexgen( 1 );
+	glMatrixMode( GL_TEXTURE );
+	glLoadIdentity();
+	glMatrixMode( GL_MODELVIEW );
+	prepared.stage->fogEnterImage->SetSamplerState(
+		prepared.stage->fogEnterImage->GetFilter(),
+		prepared.stage->fogEnterImage->GetRepeat() );
+	prepared.stage->fogEnterImage->Bind();
+	GL_TexEnv( GL_MODULATE );
+	glEnable( GL_TEXTURE_GEN_S );
+	glEnable( GL_TEXTURE_GEN_T );
+	glTexGenfv( GL_S, GL_OBJECT_PLANE, primitive.fogTexgen[1][0] );
+	glTexGenfv( GL_T, GL_OBJECT_PLANE, primitive.fogTexgen[1][1] );
+	glTexCoord2f( primitive.fogTexgen[1][0][3], FOG_ENTER );
+	GL_SelectTexture( 0 );
+	glColor4f( stage.color[0], stage.color[1], stage.color[2], 1.0f );
+}
+
+static void RB_ClassicFogBlend_GLPrepareBlend(
+		const rbClassicFogBlendGLPreparedPrimitive_t &prepared ) {
+	const classicFogBlendDomainPrimitive_t &primitive = *prepared.primitive;
+	const classicFogBlendDomainLightStage_t &stage = *prepared.stage->stage;
+	GL_SelectTexture( 1 );
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	RB_ClassicFogBlend_GLDisableTexgen( 1 );
+	prepared.stage->falloffImage->SetSamplerState(
+		prepared.stage->falloffImage->GetFilter(),
+		prepared.stage->falloffImage->GetRepeat() );
+	prepared.stage->falloffImage->Bind();
+	GL_TexEnv( GL_MODULATE );
+	glEnable( GL_TEXTURE_GEN_S );
+	glTexGenfv( GL_S, GL_OBJECT_PLANE, primitive.localLightProject[3] );
+	glTexCoord2f( 0.0f, 0.5f );
+
+	GL_SelectTexture( 0 );
+	glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	RB_ClassicFogBlend_GLDisableTexgen( 0 );
+	prepared.stage->projectionImage->SetSamplerState(
+		prepared.stage->projectionImage->GetFilter(),
+		prepared.stage->projectionImage->GetRepeat() );
+	prepared.stage->projectionImage->Bind();
+	GL_TexEnv( GL_MODULATE );
+	glEnable( GL_TEXTURE_GEN_S );
+	glEnable( GL_TEXTURE_GEN_T );
+	glEnable( GL_TEXTURE_GEN_Q );
+	glTexGenfv( GL_S, GL_OBJECT_PLANE, primitive.localLightProject[0] );
+	glTexGenfv( GL_T, GL_OBJECT_PLANE, primitive.localLightProject[1] );
+	glTexGenfv( GL_Q, GL_OBJECT_PLANE, primitive.localLightProject[2] );
+	if ( stage.hasTextureMatrix ) {
+		RB_ClassicFogBlend_GLLoadTextureMatrix( stage );
+	} else {
+		glMatrixMode( GL_TEXTURE );
+		glLoadIdentity();
+		glMatrixMode( GL_MODELVIEW );
+	}
+	glColor4fv( stage.color );
+}
+
+bool RB_ClassicFogBlend_PreflightView( const viewDef_t *viewDef ) {
+	std::memset( &rbClassicFogBlendGLPreparedView, 0,
+		sizeof( rbClassicFogBlendGLPreparedView ) );
+	const classicFogBlendDomainView_t *view =
+		R_ClassicFogBlendDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		return RB_ClassicFogBlend_GLFail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			RB_ClassicFogBlend_GLFailureDetail(
+				RB_CLASSIC_FOG_BLEND_GL_REJECT_VIEW ) );
+	}
+	if ( view->backendOutcome[CLASSIC_FOG_BLEND_BACKEND_GL]
+			== CLASSIC_FOG_BLEND_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return RB_ClassicFogBlend_GLFail( viewDef,
+			view->failure != CLASSIC_FOG_BLEND_FAILURE_NONE
+				? view->failure : CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	int failureDetail = 0;
+	if ( !RB_ClassicFogBlend_GLPreflight(
+			viewDef, *view, failureDetail ) ) {
+		return RB_ClassicFogBlend_GLFail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED, failureDetail );
+	}
+	return true;
+}
+
+void RB_ClassicFogBlend_DrawOwnedView( const viewDef_t *viewDef ) {
+	rbClassicFogBlendGLPreparedView_t &prepared =
+		rbClassicFogBlendGLPreparedView;
+	if ( !prepared.ready || prepared.view == NULL
+			|| prepared.viewDef != viewDef || prepared.view->viewDef != viewDef
+			|| prepared.hash != prepared.view->hash ) {
+		common->Warning( "RB_ClassicFogBlend_DrawOwnedView: committed view lost its prepared transaction" );
+		return;
+	}
+	// No operation below this line may return to RB_STD_FogAllLights. All
+	// fallible caches, resources, state mappings, and exact ranges are sealed.
+	prepared.committed = true;
+	RB_LogComment( "---------- RB_ClassicFogBlend_DrawOwnedView ----------\n" );
+	if ( glConfig.GLSLProgramAvailable ) {
+		glUseProgramObjectARB( 0 );
+	}
+	if ( glConfig.ARBVertexProgramAvailable ) {
+		glDisable( GL_VERTEX_PROGRAM_ARB );
+	}
+	if ( glConfig.ARBFragmentProgramAvailable ) {
+		glDisable( GL_FRAGMENT_PROGRAM_ARB );
+	}
+	glEnable( GL_DEPTH_TEST );
+	glEnable( GL_BLEND );
+	glBlendEquation( GL_FUNC_ADD );
+	glDisable( GL_STENCIL_TEST );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glEnableClientState( GL_VERTEX_ARRAY );
+
+	int fogReceiverDraws = 0;
+	int fogFrustumDraws = 0;
+	int blendDraws = 0;
+	for ( int primitiveIndex = 0;
+			primitiveIndex < prepared.drawablePrimitiveCount;
+			++primitiveIndex ) {
+		const rbClassicFogBlendGLPreparedPrimitive_t &draw =
+			prepared.primitives[primitiveIndex];
+		const classicFogBlendDomainPrimitive_t &primitive = *draw.primitive;
+		const classicFogBlendDomainLightStage_t &stage = *draw.stage->stage;
+		glLoadMatrixf( primitive.modelViewMatrix );
+		if ( prepared.view->useScissor ) {
+			backEnd.currentScissor.x1 = primitive.scissorX1;
+			backEnd.currentScissor.y1 = primitive.scissorY1;
+			backEnd.currentScissor.x2 = primitive.scissorX2;
+			backEnd.currentScissor.y2 = primitive.scissorY2;
+			glScissor( viewDef->viewport.x1 + primitive.scissorX1,
+				viewDef->viewport.y1 + primitive.scissorY1,
+				primitive.scissorX2 + 1 - primitive.scissorX1,
+				primitive.scissorY2 + 1 - primitive.scissorY1 );
+		}
+		idDrawVert *ambientVertices = static_cast<idDrawVert *>(
+			vertexCache.Position( draw.geometry->ambientCache ) );
+		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ),
+			RB_DrawVertAttributePointer( ambientVertices,
+				offsetof( idDrawVert, xyz ) ) );
+		GL_State( draw.stateBits );
+		GL_Cull( draw.cullType );
+		if ( stage.alphaTestEnabled ) {
+			glEnable( GL_ALPHA_TEST );
+			glAlphaFunc( draw.alphaFunction, stage.alphaTestValue );
+		} else {
+			glDisable( GL_ALPHA_TEST );
+		}
+		if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			RB_ClassicFogBlend_GLPrepareBlend( draw );
+			blendDraws++;
+		} else {
+			RB_ClassicFogBlend_GLPrepareFog( draw );
+			if ( primitive.kind
+					== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP ) {
+				fogFrustumDraws++;
+			} else {
+				fogReceiverDraws++;
+			}
+		}
+		RB_DrawElementsWithCounters( draw.geometry );
+	}
+
+	for ( int unit = 1; unit >= 0; --unit ) {
+		RB_ClassicFogBlend_GLDisableTexgen( unit );
+		glMatrixMode( GL_TEXTURE );
+		glLoadIdentity();
+		glMatrixMode( GL_MODELVIEW );
+		globalImages->BindNull();
+	}
+	GL_SelectTexture( 0 );
+	glDisable( GL_ALPHA_TEST );
+	glDisableClientState( GL_COLOR_ARRAY );
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBlendEquation( GL_FUNC_ADD );
+	GL_Cull( CT_FRONT_SIDED );
+	glEnable( GL_STENCIL_TEST );
+	backEnd.currentSpace = NULL;
+
+	const bool coverageRecorded = R_ClassicFogBlendDomain_RecordOwned(
+		viewDef, CLASSIC_FOG_BLEND_BACKEND_GL,
+		fogReceiverDraws, fogFrustumDraws, blendDraws,
+		prepared.noopPrimitives, prepared.noopStages, prepared.noopLights );
+	if ( !coverageRecorded ) {
+		common->Warning( "RB_ClassicFogBlend_DrawOwnedView: GL ownership coverage rejected after committed draw (lights=%d stages=%d primitives=%d fogReceivers=%d fogCaps=%d blend=%d noopPrimitives=%d noopStages=%d noopLights=%d hash=%llu)",
+			prepared.lightCount, prepared.stageCount, prepared.primitiveCount,
+			fogReceiverDraws, fogFrustumDraws, blendDraws,
+			prepared.noopPrimitives, prepared.noopStages, prepared.noopLights,
+			static_cast<unsigned long long>( prepared.hash ) );
+	}
+}
+
 //=========================================================================================
 
 /*
@@ -12741,8 +13648,14 @@ void	RB_STD_DrawView( void ) {
 
 	RB_RecordARB2InteractionBypassFramePhase( RENDERER_STARTUP_PHASE_ARB2_INTERACTION_BYPASS_FRAME_TAIL );
 
-	// fob and blend lights
-	if ( R_ModernGLExecutor_LegacyPassCanSkipForView( RENDER_PASS_FOG_BLEND, backEnd.viewDef ) ) {
+	// fog and blend lights
+	const bool sharedFogBlendOwned = r_rendererSharedWorldFogBlend.GetBool()
+		&& RB_ClassicFogBlend_PreflightView( backEnd.viewDef );
+	if ( sharedFogBlendOwned ) {
+		RB_ClassicFogBlend_DrawOwnedView( backEnd.viewDef );
+		backEnd.currentRenderCopied = false;
+		backEnd.currentDepthCopied = false;
+	} else if ( R_ModernGLExecutor_LegacyPassCanSkipForView( RENDER_PASS_FOG_BLEND, backEnd.viewDef ) ) {
 		R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_FOG_BLEND );
 	} else {
 		RB_STD_FogAllLights();

@@ -23,6 +23,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererSharedGui.GetBool()
 		|| r_rendererSharedWorldAmbient.GetBool()
 		|| r_rendererSharedWorldInteraction.GetBool()
+		|| r_rendererSharedWorldFogBlend.GetBool()
 		|| r_rendererModernVisibleDepth.GetBool()
 		|| r_rendererModernDepthDebug.GetInteger() > 0
 		|| r_rendererModernOpaque.GetBool()
@@ -917,6 +918,23 @@ bool idScenePacketFrame::AddInteractionDrawPacket( const drawSurf_t *drawSurf,
 	return true;
 }
 
+bool idScenePacketFrame::AddFogBlendDrawPacket( const drawSurf_t *drawSurf,
+		int drawIndex, const viewLight_t *viewLight, int lightOrdinal,
+		sceneFogBlendReceiverClass_t receiverClass, int receiverOrdinal ) {
+	if ( receiverClass <= SCENE_FOG_BLEND_RECEIVER_NONE
+			|| receiverClass >= SCENE_FOG_BLEND_RECEIVER_COUNT
+			|| !AddDrawPacket( drawSurf, RENDER_PASS_FOG_BLEND, drawIndex ) ) {
+		return false;
+	}
+	drawPacket_t &packet = drawPackets[stats.drawPackets - 1];
+	packet.fogBlendLight = viewLight;
+	packet.fogBlendLightOrdinal = lightOrdinal;
+	packet.fogBlendReceiverClass = receiverClass;
+	packet.fogBlendReceiverOrdinal = receiverOrdinal;
+	packet.fogBlendSourceOrdinal = drawIndex;
+	return true;
+}
+
 bool idScenePacketFrame::AddShadowDrawPacket( const drawSurf_t *drawSurf,
 		renderPassCategory_t category, int drawIndex,
 		const viewLight_t *viewLight, int lightOrdinal,
@@ -1420,13 +1438,6 @@ static bool R_ScenePackets_DrawSurfInteractionEligible( const drawSurf_t *drawSu
 	return material->ReceivesLighting() && !material->IsPortalSky();
 }
 
-static bool R_ScenePackets_DrawSurfFogBlendEligible( const drawSurf_t *drawSurf ) {
-	if ( !R_ScenePackets_DrawSurfHasMaterialGeometry( drawSurf ) ) {
-		return false;
-	}
-	return drawSurf->material->ReceivesFog() && !drawSurf->material->SuppressInSubview();
-}
-
 static bool R_ScenePackets_DrawSurfShadowEligible( const drawSurf_t *drawSurf ) {
 	if ( !R_ScenePackets_DrawSurfHasGeometry( drawSurf ) ) {
 		return false;
@@ -1469,19 +1480,6 @@ static int R_ScenePackets_CountDrawSurfChain( const drawSurf_t *drawSurf, bool (
 	return count;
 }
 
-static bool R_ScenePackets_AppendDrawSurfChain( idScenePacketFrame &packetFrame, const drawSurf_t *drawSurf, renderPassCategory_t category, bool ( *filter )( const drawSurf_t *drawSurf ), int &drawIndex ) {
-	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL; cursor = cursor->nextOnLight ) {
-		if ( filter != NULL && !filter( cursor ) ) {
-			continue;
-		}
-		if ( !packetFrame.AddDrawPacket( cursor, category, drawIndex++ ) ) {
-			packetFrame.AddClippedDrawPackets( R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, filter ) );
-			return false;
-		}
-	}
-	return true;
-}
-
 static bool R_ScenePackets_AppendInteractionChain( idScenePacketFrame &packetFrame,
 		const viewLight_t *viewLight, int lightOrdinal,
 		const drawSurf_t *drawSurf, sceneInteractionReceiverClass_t receiverClass,
@@ -1496,6 +1494,23 @@ static bool R_ScenePackets_AppendInteractionChain( idScenePacketFrame &packetFra
 				lightOrdinal, receiverClass, receiverOrdinal ) ) {
 			packetFrame.AddClippedDrawPackets(
 				R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, filter ) );
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool R_ScenePackets_AppendFogBlendChain(
+		idScenePacketFrame &packetFrame, const viewLight_t *viewLight,
+		int lightOrdinal, const drawSurf_t *drawSurf,
+		sceneFogBlendReceiverClass_t receiverClass, int &drawIndex ) {
+	int receiverOrdinal = 0;
+	for ( const drawSurf_t *cursor = drawSurf; cursor != NULL;
+			cursor = cursor->nextOnLight, ++receiverOrdinal ) {
+		if ( !packetFrame.AddFogBlendDrawPacket( cursor, drawIndex++, viewLight,
+				lightOrdinal, receiverClass, receiverOrdinal ) ) {
+			packetFrame.AddClippedDrawPackets(
+				R_ScenePackets_CountDrawSurfChain( cursor->nextOnLight, NULL ) );
 			return false;
 		}
 	}
@@ -1591,16 +1606,8 @@ static bool R_ScenePackets_ViewLightIsFogOrBlend( const viewLight_t *vLight ) {
 	if ( vLight == NULL || vLight->lightShader == NULL ) {
 		return false;
 	}
-	if ( !vLight->lightShader->IsFogLight() && !vLight->lightShader->IsBlendLight() ) {
-		return false;
-	}
-	if ( r_skipFogLights.GetBool() ) {
-		return false;
-	}
-	if ( vLight->lightShader->IsBlendLight() && r_skipBlendLights.GetBool() ) {
-		return false;
-	}
-	return true;
+	return vLight->lightShader->IsFogLight()
+		|| vLight->lightShader->IsBlendLight();
 }
 
 static void R_ScenePackets_AddInteractionPass( idScenePacketFrame &packetFrame, const viewDef_t *viewDef ) {
@@ -1735,14 +1742,20 @@ static void R_ScenePackets_AddFogBlendPass( idScenePacketFrame &packetFrame, con
 	}
 
 	int drawIndex = 0;
-	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+	int lightOrdinal = 0;
+	for ( const viewLight_t *vLight = viewDef->viewLights; vLight != NULL;
+			vLight = vLight->next, ++lightOrdinal ) {
 		if ( !R_ScenePackets_ViewLightIsFogOrBlend( vLight ) ) {
 			continue;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->globalInteractions, RENDER_PASS_FOG_BLEND, R_ScenePackets_DrawSurfFogBlendEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendFogBlendChain( packetFrame, vLight,
+				lightOrdinal, vLight->globalInteractions,
+				SCENE_FOG_BLEND_RECEIVER_GLOBAL, drawIndex ) ) {
 			return;
 		}
-		if ( !R_ScenePackets_AppendDrawSurfChain( packetFrame, vLight->localInteractions, RENDER_PASS_FOG_BLEND, R_ScenePackets_DrawSurfFogBlendEligible, drawIndex ) ) {
+		if ( !R_ScenePackets_AppendFogBlendChain( packetFrame, vLight,
+				lightOrdinal, vLight->localInteractions,
+				SCENE_FOG_BLEND_RECEIVER_LOCAL, drawIndex ) ) {
 			return;
 		}
 	}
