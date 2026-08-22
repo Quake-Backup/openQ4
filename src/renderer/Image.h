@@ -155,8 +155,10 @@ public:
 	void		GenerateCubeImage(const byte* pic[6], int size,
 		textureFilter_t filter, textureUsage_t usage);
 
-	void		CopyFramebuffer(int x, int y, int width, int height);
-	void		CopyDepthbuffer(int x, int y, int width, int height);
+	bool		CopyFramebuffer(int x, int y, int width, int height,
+				int cubeFace = 0);
+	bool		CopyDepthbuffer(int x, int y, int width, int height,
+				int cubeFace = 0);
 
 	void		UploadScratch(const byte* pic, int width, int height);
 

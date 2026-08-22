@@ -329,6 +329,6 @@ Transaction](classic-cinematic-post-domain-modernization.md). Render-demo and
 Raven special-frame ownership now have a dedicated
 [transaction](classic-special-frame-domain-modernization.md). The completed
 direct special-subview corridor has its [dedicated
-transaction](classic-subview-domain-modernization.md). Cubemap/depth
-special-capture ownership is next. Temporal presentation and PBR/advanced-
+transaction](classic-subview-domain-modernization.md). Unsupported special-view
+nesting ownership is next. Temporal presentation and PBR/advanced-
 lighting work must continue to wait for coherent classic-frame ownership.

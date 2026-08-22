@@ -91,6 +91,6 @@ staged-package and target-platform/driver evidence.
 
 The direct special-subview transaction now covers direct mirror/clip-plane and
 dynamic mirror/reflection/x-ray handoffs; see [Shared Special-Subview
-Transaction](classic-subview-domain-modernization.md). Cubemap/depth
-special-capture ownership is the next Milestone D target. Temporal presentation
+Transaction](classic-subview-domain-modernization.md). Unsupported special-view
+nesting ownership is the next Milestone D target. Temporal presentation
 and PBR/advanced lighting remain downstream.

@@ -7,8 +7,9 @@ default-off; native/static validation passed; runtime and release qualification
 pending)**. `r_rendererSharedSubview 1` lets an eligible direct `SS_SUBVIEW`
 mirror publish its complete camera, clip-plane, viewport, and scissor record,
 and lets eligible remote-camera, mirror, reflection, refraction, and x-ray
-surfaces publish their exact child-scene-to-image capture transaction. OpenGL
-and Vulkan consume the same sealed record.
+surfaces publish their exact child-scene-to-image capture transaction. The
+capture edge preserves 2D or cubemap destination type, the exact cubemap face,
+and color or depth aspect. OpenGL and Vulkan consume the same sealed record.
 
 This seals a subview handoff, not its material/light implementation. Each
 child scene still uses its established classic 3D walker, so it is not a claim
@@ -32,19 +33,22 @@ not mutable global view state:
    camera origin/axis, final culling parity, clip plane, viewport, scissor,
    time, and packet index;
 2. a capture record retains the child identity, destination image, source
-   rectangle, cube face, and color/depth mode when a transfer exists;
+   rectangle, destination type/format, cube face, and color/depth mode when a
+   transfer exists;
 3. admission reconciles the direct source with no capture, or a capture source
-   with exactly one full-viewport color capture; and
+   with exactly one full-viewport 2D/cubemap color or depth capture; and
 4. the backend reports direct ownership only after the complete classic child
    view returns, or capture ownership only after the sealed transfer completes.
 
 OpenGL performs a direct child through the established `RB_DrawView` executor
-or performs a capture transfer with `CopyFramebuffer` sourced from the sealed
-record. Vulkan similarly retains its established 3D executor for a direct
-child and its image-copy implementation for a capture. A changed camera,
-clip plane, viewport, scissor, image, or copy rectangle never borrows the
-shared record: the normal command executes on the classic path and the subview
-records a named fallback instead.
+or performs a capture transfer with `CopyFramebuffer`/`CopyDepthbuffer` sourced
+from the sealed record. Vulkan similarly retains its established 3D executor
+for a direct child and its image-copy implementation for a capture, creating
+an exact-format six-layer depth target for a depth cubemap when required. A
+changed camera, clip plane, viewport, scissor, image, destination type/aspect,
+cube face, or copy rectangle never borrows the shared record: the normal
+command executes on the classic path and the subview records a named fallback
+instead.
 
 ## Eligibility and fallback
 
@@ -53,8 +57,8 @@ following:
 
 - a parent scene and source draw surface still present in that scene;
 - either an `SS_SUBVIEW` direct mirror with no capture and exactly one sealed
-  clip plane, or exactly one non-depth, non-cubemap `RC_COPY_RENDER` record
-  matching the full child viewport;
+  clip plane, or exactly one `RC_COPY_RENDER` record matching the full child
+  viewport and a 2D/cubemap color/depth target with its legal exact face;
 - for a capture, one matching parent dynamic stage: `DI_REMOTE_RENDER`,
   `DI_MIRROR_RENDER`, `DI_REFLECTION_RENDER`, `DI_REFRACTION_RENDER`, or
   `DI_XRAY_RENDER`; and
@@ -63,14 +67,16 @@ following:
   and ordinary no-clip state for remote-camera/refraction, plus a loaded
   destination image for a capture backend.
 
-Cubemaps, depth captures, editor/render-demo/global-material views, and every
+Editor/render-demo/global-material views, unsupported nested forms, and every
 missing or duplicate/mismatched parent, capture, material, semantic, resource,
-or capacity condition retain the established complete classic fallback.
-Eligible nested direct/capture children retain their exact parent-scene
-relationship; any nested form whose inherited camera or clip semantics do not
-match its source kind falls back as one item. The setting cannot split a
-capture or a direct child: it either consumes the sealed transaction or does
-not own it at all.
+or capacity condition retain the established complete classic fallback. A
+capture target with an unsupported texture type, illegal cube face, or
+color/depth-aspect mismatch receives the named `unsupportedCaptureTarget`
+fallback. Eligible nested direct/capture children retain their exact
+parent-scene relationship; any nested form whose inherited camera or clip
+semantics do not match its source kind falls back as one item. The setting
+cannot split a capture or a direct child: it either consumes the sealed
+transaction or does not own it at all.
 
 ## Control and diagnostics
 
@@ -80,13 +86,14 @@ interaction, fog/blend, and deform controls:
 - `0` (default): every direct and capture-backed subview uses the established
   backend path;
 - `1`: an eligible direct mirror or remote-camera/mirror/reflection/refraction/
-  x-ray color capture may consume the sealed transaction; all other subviews
-  use the classic fallback.
+  x-ray 2D/cubemap color or depth capture may consume the sealed transaction;
+  all other subviews use the classic fallback.
 
 The stock-baseline and ordinary gameplay-benchmark harnesses explicitly set the
 control to `0`. `gfxInfo` reports packet/capture counts, ready and fallback
-views, direct mirror/remote/mirror/reflection/refraction/x-ray totals, semantic
-hash, individual capture rectangles, and OpenGL/Vulkan ownership/fallback
+views, direct mirror/remote/mirror/reflection/refraction/x-ray totals,
+color-cubemap/depth-2D/depth-cubemap target counts, semantic hash, individual
+capture rectangles/types/faces/aspects, and OpenGL/Vulkan ownership/fallback
 counters.
 
 Focused dependency-light validation:
@@ -111,6 +118,8 @@ refraction views with the setting off and on, separately on OpenGL and Vulkan.
 Require exact same-settings output, nonzero reconciled ownership, named
 zero-commit fallback on a deliberately malformed semantic and capture edge,
 clean backend diagnostics, retained final package evidence, and target-platform/
-driver coverage. Cubemap/depth, unsupported nested, cinematic, and post forms
-remain separate Milestone D work. In-world GUI has its own provenance-tagged transaction documented in
+driver coverage. When a qualifying capture source is available, retain a
+nonzero 2D/cubemap color/depth ownership case and an illegal-face/aspect
+zero-commit fallback on both backends. Unsupported nested, cinematic, and post
+forms remain separate Milestone D work. In-world GUI has its own provenance-tagged transaction documented in
 [Shared Classic In-World GUI Domain](classic-inworld-gui-domain-modernization.md).

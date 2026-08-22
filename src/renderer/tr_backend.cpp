@@ -591,9 +591,11 @@ const void	RB_CopyRender( const void *data ) {
 
 	if (cmd->image) {
 		if ( cmd->copyDepth ) {
-			cmd->image->CopyDepthbuffer( cmd->x, cmd->y, cmd->imageWidth, cmd->imageHeight );
+			cmd->image->CopyDepthbuffer( cmd->x, cmd->y, cmd->imageWidth,
+				cmd->imageHeight, cmd->cubeFace );
 		} else {
-			cmd->image->CopyFramebuffer( cmd->x, cmd->y, cmd->imageWidth, cmd->imageHeight );
+			cmd->image->CopyFramebuffer( cmd->x, cmd->y, cmd->imageWidth,
+				cmd->imageHeight, cmd->cubeFace );
 		}
 	}
 }
@@ -757,9 +759,11 @@ static bool RB_ClassicSubview_CopyOwned( const classicSubviewDomainView_t &view 
 	}
 
 	RB_LogComment( "***************** RB_ClassicSubview_CopyOwned *****************\n" );
-	view.captureImage->CopyFramebuffer( view.captureX, view.captureY,
-		view.captureWidth, view.captureHeight );
-	return true;
+	return view.captureCopyDepth
+		? view.captureImage->CopyDepthbuffer( view.captureX, view.captureY,
+			view.captureWidth, view.captureHeight, view.captureCubeFace )
+		: view.captureImage->CopyFramebuffer( view.captureX, view.captureY,
+			view.captureWidth, view.captureHeight, view.captureCubeFace );
 }
 
 static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
@@ -1110,7 +1114,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 						pendingSharedSubview->captureY,
 						pendingSharedSubview->captureWidth,
 						pendingSharedSubview->captureHeight,
-						pendingSharedSubview->captureCubeFace, false );
+						pendingSharedSubview->captureCubeFace,
+						pendingSharedSubview->captureCopyDepth );
 				} else if ( r_skipCopyTexture.GetBool() || !copied ) {
 					R_ClassicSubviewDomain_RecordBackendFallback(
 						pendingSharedSubview->viewDef,

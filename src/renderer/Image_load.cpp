@@ -1044,13 +1044,41 @@ void R_PurgeFramebufferCopyFBOs( void ) {
 	}
 }
 
+// A cubemap is complete only when all six faces have matching storage. A
+// framebuffer/depth copy writes a single sealed face, so resize every face
+// first and then use the selected face as the transfer destination.
+static void R_AllocateCopyTextureStorage( bool isCube, GLenum copyTarget,
+		GLint copyInternalFormat, int width, int height, GLenum copyDataFormat,
+		GLenum copyDataType ) {
+	if ( !isCube ) {
+		glTexImage2D( copyTarget, 0, copyInternalFormat, width, height, 0,
+			copyDataFormat, copyDataType, NULL );
+		return;
+	}
+	for ( int face = 0; face < 6; ++face ) {
+		glTexImage2D( GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + face, 0,
+			copyInternalFormat, width, height, 0, copyDataFormat, copyDataType,
+			NULL );
+	}
+}
+
 /*
 ====================
 CopyFramebuffer
 ====================
 */
-void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
-	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+bool idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight,
+		int cubeFace ) {
+	const bool isCube = opts.textureType == TT_CUBIC;
+	if ( imageWidth <= 0 || imageHeight <= 0
+			|| ( isCube && ( cubeFace < 0 || cubeFace >= 6 ) )
+			|| ( !isCube && cubeFace != 0 ) ) {
+		return false;
+	}
+	const GLenum textureTarget = isCube ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D;
+	const GLenum copyTarget = isCube
+		? GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + cubeFace : GL_TEXTURE_2D;
+	R_BindTextureForDirectAccess( textureTarget, texnum );
 
 	const bool readingFromRenderTexture = ( backEnd.renderTexture != NULL ) && ( backEnd.renderTexture->GetNumColorImages() > 0 );
 	const GLenum readAttachment = GL_COLOR_ATTACHMENT0;
@@ -1076,19 +1104,21 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 		const GLuint copyFbo = r_copyFramebufferFbo;
 
 		if ( needsStorageResize ) {
-			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth, imageHeight, 0,
-				dataFormat != 0 ? dataFormat : GL_RGBA, dataType != 0 ? dataType : GL_UNSIGNED_BYTE, NULL );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+			R_AllocateCopyTextureStorage( isCube, copyTarget,
+				internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth,
+				imageHeight, dataFormat != 0 ? dataFormat : GL_RGBA,
+				dataType != 0 ? dataType : GL_UNSIGNED_BYTE );
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, backEnd.renderTexture->GetDeviceHandle() );
 		glReadBuffer( readAttachment );
 
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, copyFbo );
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texnum, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, copyTarget, texnum, 0 );
 		glDrawBuffer( GL_COLOR_ATTACHMENT0 );
 
 		// glBlitFramebuffer obeys scissor state; ensure the copy is not clipped by a prior light scissor.
@@ -1105,7 +1135,7 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glEnable( GL_SCISSOR_TEST );
 		}
 
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, copyTarget, 0, 0 );
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, previousDrawFbo );
@@ -1132,10 +1162,16 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glDisable( GL_SCISSOR_TEST );
 		}
 
-		if ( needsStorageResize ) {
-			glCopyTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, x, y, imageWidth, imageHeight, 0 );
+		if ( needsStorageResize && !isCube ) {
+			glCopyTexImage2D( copyTarget, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, x, y, imageWidth, imageHeight, 0 );
 		} else {
-			glCopyTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, x, y, imageWidth, imageHeight );
+			if ( needsStorageResize ) {
+				R_AllocateCopyTextureStorage( true, copyTarget,
+					internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth,
+					imageHeight, dataFormat != 0 ? dataFormat : GL_RGBA,
+					dataType != 0 ? dataType : GL_UNSIGNED_BYTE );
+			}
+			glCopyTexSubImage2D( copyTarget, 0, 0, 0, x, y, imageWidth, imageHeight );
 		}
 
 		if ( scissorWasEnabled ) {
@@ -1147,14 +1183,15 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 		glReadBuffer( previousReadBuffer );
 
 		if ( needsStorageResize ) {
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 	}
 
 //	backEnd.pc.c_copyFrameBuffer++;
+	return true;
 }
 
 /*
@@ -1162,8 +1199,18 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 CopyDepthbuffer
 ====================
 */
-void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
-	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+bool idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight,
+		int cubeFace ) {
+	const bool isCube = opts.textureType == TT_CUBIC;
+	if ( imageWidth <= 0 || imageHeight <= 0
+			|| ( isCube && ( cubeFace < 0 || cubeFace >= 6 ) )
+			|| ( !isCube && cubeFace != 0 ) ) {
+		return false;
+	}
+	const GLenum textureTarget = isCube ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D;
+	const GLenum copyTarget = isCube
+		? GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + cubeFace : GL_TEXTURE_2D;
+	R_BindTextureForDirectAccess( textureTarget, texnum );
 
 	// The destination must hold depth-renderable storage: it gets attached to
 	// GL_DEPTH_ATTACHMENT for the blit path and receives GL_DEPTH_COMPONENT
@@ -1215,12 +1262,15 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 		const GLuint copyDepthFbo = r_copyDepthbufferFbo;
 
 		if ( needsStorageResize ) {
-			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
-				dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT, dataType != 0 ? dataType : GL_FLOAT, NULL );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+			R_AllocateCopyTextureStorage( isCube, copyTarget,
+				internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24,
+				imageWidth, imageHeight,
+				dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT,
+				dataType != 0 ? dataType : GL_FLOAT );
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 
 		if ( readingFromRenderTexture ) {
@@ -1231,7 +1281,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 		}
 
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, copyDepthFbo );
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, texnum, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, copyTarget, texnum, 0 );
 		glReadBuffer( GL_NONE );
 		glDrawBuffer( GL_NONE );
 
@@ -1249,13 +1299,13 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glEnable( GL_SCISSOR_TEST );
 		}
 
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, copyTarget, 0, 0 );
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, previousDrawFbo );
 		glReadBuffer( previousReadBuffer );
 		glDrawBuffer( previousDrawBuffer );
-		return;
+		return true;
 	}
 
 	if ( sourceDepthIsMSAA ) {
@@ -1267,7 +1317,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 
 		const int pixelCount = imageWidth * imageHeight;
 		if ( pixelCount <= 0 ) {
-			return;
+			return false;
 		}
 
 		GLint previousReadFbo = 0;
@@ -1304,16 +1354,23 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 
 		// The readback buffer always holds GL_FLOAT depth values regardless of
 		// the texture's preferred upload type.
-		if ( needsStorageResize ) {
-			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
+		if ( needsStorageResize && !isCube ) {
+			glTexImage2D( copyTarget, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
 				GL_DEPTH_COMPONENT, GL_FLOAT, resolvedDepthBuffer.Ptr() );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		} else {
-			glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, imageWidth, imageHeight,
+			if ( needsStorageResize ) {
+				R_AllocateCopyTextureStorage( true, copyTarget,
+					internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24,
+					imageWidth, imageHeight, GL_DEPTH_COMPONENT, GL_FLOAT );
+			}
+			glTexSubImage2D( copyTarget, 0, 0, 0, imageWidth, imageHeight,
 				GL_DEPTH_COMPONENT, GL_FLOAT, resolvedDepthBuffer.Ptr() );
+		}
+		if ( needsStorageResize ) {
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );
@@ -1339,10 +1396,17 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glDisable( GL_SCISSOR_TEST );
 		}
 
-		if ( needsStorageResize ) {
-			glCopyTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0 );
+		if ( needsStorageResize && !isCube ) {
+			glCopyTexImage2D( copyTarget, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0 );
 		} else {
-			glCopyTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, x, y, imageWidth, imageHeight );
+			if ( needsStorageResize ) {
+				R_AllocateCopyTextureStorage( true, copyTarget,
+					internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT,
+					imageWidth, imageHeight,
+					dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT,
+					dataType != 0 ? dataType : GL_FLOAT );
+			}
+			glCopyTexSubImage2D( copyTarget, 0, 0, 0, x, y, imageWidth, imageHeight );
 		}
 
 		if ( scissorWasEnabled ) {
@@ -1355,6 +1419,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 	}
 
 	//backEnd.pc.c_copyFrameBuffer++;
+	return true;
 }
 
 /*

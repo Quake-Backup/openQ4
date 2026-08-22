@@ -90,6 +90,6 @@ fresh staged-package and target-platform/driver evidence.
 Render-demo and Raven special-frame ownership now have their own sealed
 [transaction](classic-special-frame-domain-modernization.md). Direct
 special-subview ownership is now documented in the [Shared Special-Subview
-Transaction](classic-subview-domain-modernization.md); cubemap/depth
-special-capture ownership remains next. Temporal presentation and PBR/advanced
+Transaction](classic-subview-domain-modernization.md); unsupported special-view
+nesting ownership remains next. Temporal presentation and PBR/advanced
 lighting remain downstream.

@@ -177,8 +177,8 @@ domains. Cinematic playback and authored post-process tails now have their own
 sealed default-off transaction; see [Shared Classic Cinematic and Authored-Post
 Transaction](classic-cinematic-post-domain-modernization.md). The completed
 direct special-subview corridor has its [dedicated
-transaction](classic-subview-domain-modernization.md); cubemap/depth
-special-capture ownership is next. Render-demo and Raven special-frame work
+transaction](classic-subview-domain-modernization.md); unsupported special-view
+nesting ownership is next. Render-demo and Raven special-frame work
 now has its dedicated [transaction](classic-special-frame-domain-modernization.md).
 Temporal and PBR/advanced-lighting milestones remain downstream of that
 classic-frame work.

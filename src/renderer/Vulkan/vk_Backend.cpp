@@ -597,7 +597,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 							pendingSharedSubview->captureY,
 							pendingSharedSubview->captureWidth,
 							pendingSharedSubview->captureHeight,
-							pendingSharedSubview->captureCubeFace, false );
+							pendingSharedSubview->captureCubeFace,
+							pendingSharedSubview->captureCopyDepth );
 					} else {
 						copied = VK_Exec_CopyRender( cmd->image, cmd->x, cmd->y,
 							cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
@@ -613,7 +614,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 							pendingSharedSubview->captureY,
 							pendingSharedSubview->captureWidth,
 							pendingSharedSubview->captureHeight,
-							pendingSharedSubview->captureCubeFace, false );
+							pendingSharedSubview->captureCubeFace,
+							pendingSharedSubview->captureCopyDepth );
 					} else {
 						R_ClassicSubviewDomain_RecordBackendFallback(
 							pendingSharedSubview->viewDef,

@@ -581,6 +581,12 @@ bool VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
 			|| depthFormat == VK_FORMAT_UNDEFINED ) {
 		return false;
 	}
+	const idImageOpts &imageOpts = image->GetOpts();
+	const bool isCube = imageOpts.textureType == TT_CUBIC;
+	if ( imageOpts.textureType != TT_2D && !isCube ) {
+		return false;
+	}
+	const uint32_t numLayers = isCube ? 6u : 1u;
 
 	if ( image->GetUploadWidth() != width || image->GetUploadHeight() != height ) {
 		image->Resize( width, height );
@@ -608,6 +614,7 @@ bool VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
 			&& entry->view != VK_NULL_HANDLE
 			&& entry->samples == VK_SAMPLE_COUNT_1_BIT
 			&& entry->aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT
+			&& entry->isCube == isCube && entry->numLayers == (int)numLayers
 			&& ( entry->usage & requiredUsage ) == requiredUsage ) {
 		return true;
 	}
@@ -616,12 +623,13 @@ bool VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
 	memset( &ici, 0, sizeof( ici ) );
 	ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	ici.imageType = VK_IMAGE_TYPE_2D;
+	ici.flags = isCube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
 	ici.format = depthFormat;
 	ici.extent.width = (uint32_t)width;
 	ici.extent.height = (uint32_t)height;
 	ici.extent.depth = 1;
 	ici.mipLevels = 1;
-	ici.arrayLayers = 1;
+	ici.arrayLayers = numLayers;
 	ici.samples = VK_SAMPLE_COUNT_1_BIT;
 	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
 	ici.usage = requiredUsage;
@@ -644,12 +652,12 @@ bool VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
 	memset( &ivci, 0, sizeof( ivci ) );
 	ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	ivci.image = newImage;
-	ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	ivci.viewType = isCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
 	ivci.format = depthFormat;
 	ivci.components = VK_SWIZZLE_IDENTITY;
 	ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 	ivci.subresourceRange.levelCount = 1;
-	ivci.subresourceRange.layerCount = 1;
+	ivci.subresourceRange.layerCount = numLayers;
 
 	VkImageView newView = VK_NULL_HANDLE;
 	if ( vkCreateImageView( vkCtx.device, &ivci, NULL, &newView ) != VK_SUCCESS ) {
@@ -675,8 +683,8 @@ bool VK_Image_MakeDepthCopyTarget( idImage *image, int width, int height,
 	entry->width = width;
 	entry->height = height;
 	entry->numMips = 1;
-	entry->numLayers = 1;
-	entry->isCube = false;
+	entry->numLayers = (int)numLayers;
+	entry->isCube = isCube;
 	entry->everUploaded = false;
 	entry->generation = vkImageGenerationCounter++;
 	return true;

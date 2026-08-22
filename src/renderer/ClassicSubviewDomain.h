@@ -4,6 +4,7 @@
 #ifndef __CLASSIC_SUBVIEW_DOMAIN_H__
 #define __CLASSIC_SUBVIEW_DOMAIN_H__
 
+#include "ImageOpts.h"
 #include "ScenePackets.h"
 
 /*
@@ -15,8 +16,9 @@
 	and exact RC_COPY_RENDER destination agree.  Direct SS_SUBVIEW mirrors seal
 	their complete camera/clip/scissor semantics and have no capture command;
 	dynamic remote, mirror, reflection, refraction, and x-ray surfaces retain an
-	exact color-capture edge.  Cubemap/depth captures retain the established path
-	until they have a dedicated target contract.
+	exact color, cubemap-face, or depth-capture edge. Every capture target seals
+	its image type, depth/color aspect, and exact cube face before either backend
+	uses its established transfer implementation.
 
 ===============================================================================
 */
@@ -34,6 +36,15 @@ enum classicSubviewDomainKind_t {
 	CLASSIC_SUBVIEW_DOMAIN_KIND_COUNT
 };
 
+enum classicSubviewDomainCaptureType_t {
+	CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE = 0,
+	CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D,
+	CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP,
+	CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D,
+	CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP,
+	CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COUNT
+};
+
 enum classicSubviewDomainFailure_t {
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_NONE = 0,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNAVAILABLE,
@@ -48,6 +59,7 @@ enum classicSubviewDomainFailure_t {
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_SURFACE_MISMATCH,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_CAPTURE_TARGET,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH,
@@ -80,6 +92,9 @@ typedef struct classicSubviewDomainBackendCoverage_s {
 	int				ownedReflectionViews;
 	int				ownedRefractionViews;
 	int				ownedXrayViews;
+	int				ownedColorCubemapCaptures;
+	int				ownedDepth2DCaptures;
+	int				ownedDepthCubemapCaptures;
 	int				coverageMismatches;
 	int				duplicateReports;
 	int				untrackedFallbacks;
@@ -102,6 +117,9 @@ typedef struct classicSubviewDomainView_s {
 	int					captureWidth;
 	int					captureHeight;
 	int					captureCubeFace;
+	textureType_t			captureTextureType;
+	textureFormat_t			captureTextureFormat;
+	bool					captureCopyDepth;
 	int					semanticViewID;
 	int					semanticRenderTime;
 	float					semanticFloatTime;
@@ -115,6 +133,7 @@ typedef struct classicSubviewDomainView_s {
 	bool					semanticIsMirror;
 	bool					semanticIsXraySubview;
 	classicSubviewDomainKind_t	kind;
+	classicSubviewDomainCaptureType_t	captureType;
 	bool					ready;
 	classicSubviewDomainFailure_t	failure;
 	int					failureDetail;
@@ -142,6 +161,9 @@ typedef struct classicSubviewDomainStats_s {
 	int					reflectionViews;
 	int					refractionViews;
 	int					xrayViews;
+	int					colorCubemapCaptures;
+	int					depth2DCaptures;
+	int					depthCubemapCaptures;
 	int					failureCounts[CLASSIC_SUBVIEW_DOMAIN_FAILURE_COUNT];
 	std::uint64_t			hash;
 	classicSubviewDomainBackendCoverage_t backend[
@@ -176,6 +198,8 @@ void R_ClassicSubviewDomain_RecordBackendFallback( const viewDef_t *viewDef,
 const classicSubviewDomainBackendCoverage_t &
 	R_ClassicSubviewDomain_BackendCoverage( classicSubviewDomainBackend_t backend );
 const char *ClassicSubviewDomainKind_Name( classicSubviewDomainKind_t kind );
+const char *ClassicSubviewDomainCaptureType_Name(
+	classicSubviewDomainCaptureType_t type );
 const char *ClassicSubviewDomainFailure_Name( classicSubviewDomainFailure_t failure );
 const char *ClassicSubviewDomainBackend_Name( classicSubviewDomainBackend_t backend );
 bool RendererClassicSubviewDomain_RunSelfTest( void );

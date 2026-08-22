@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regression contract for sealed direct and capture subview ownership."""
+"""Static regression contract for sealed direct and full-target subview ownership."""
 
 from __future__ import annotations
 
@@ -76,8 +76,13 @@ def validate_domain_contract() -> None:
         "CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION",
         "CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION",
         "CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY",
+        "CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D",
+        "CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP",
+        "CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D",
+        "CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_CAPTURE",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_CAPTURE_TARGET",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH",
@@ -101,6 +106,7 @@ def validate_domain_contract() -> None:
         "ParentContainsSurface",
         "FindDirectKind",
         "FindCaptureKind",
+        "ClassifyCaptureTarget",
         "DI_REMOTE_RENDER",
         "DI_MIRROR_RENDER",
         "DI_REFLECTION_RENDER",
@@ -113,6 +119,13 @@ def validate_domain_contract() -> None:
         "viewDef->isMirror",
         "viewDef->isXraySubview",
         "capture.copyDepth",
+        "capture.cubeFace",
+        "TT_CUBIC",
+        "FMT_DEPTH_STENCIL",
+        "captureTextureType",
+        "captureTextureFormat",
+        "captureCopyDepth",
+        "ownedDepthCubemapCaptures",
         "capture.x != viewDef->viewport.x1",
         "ready = true",
         "fallbackViews",
@@ -123,6 +136,9 @@ def validate_domain_contract() -> None:
 def validate_backend_capture_ownership() -> None:
     gl = read("src/renderer/tr_backend.cpp")
     vk = read("src/renderer/Vulkan/vk_Backend.cpp")
+    image_gl = read("src/renderer/Image_load.cpp")
+    image_vk = read("src/renderer/Vulkan/vk_Image.cpp")
+    executor_vk = read("src/renderer/Vulkan/vk_GuiExecutor.cpp")
     for source, backend in ((gl, "GL"), (vk, "Vulkan")):
         for token in (
             "R_ClassicSubviewDomain_PrepareFrame( *scenePackets );",
@@ -141,8 +157,36 @@ def validate_backend_capture_ownership() -> None:
         require(copy_case, "RecordOwned", f"{backend} post-copy ownership")
     require(gl, "RB_ClassicSubview_CopyOwned", "GL sealed capture consumer")
     require(gl, "RB_DrawSharedDirectSubview", "GL direct subview consumer")
+    for token in (
+        "CopyFramebuffer( view.captureX, view.captureY",
+        "CopyDepthbuffer( view.captureX, view.captureY",
+        "view.captureCubeFace",
+        "CopyFramebuffer( cmd->x, cmd->y, cmd->imageWidth",
+        "cmd->cubeFace",
+    ):
+        require(gl, token, "GL exact capture dispatch")
+    for token in (
+        "GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + cubeFace",
+        "CopyDepthbuffer",
+        "glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, copyTarget",
+    ):
+        require(image_gl, token, "GL cubemap/depth transfer")
     require(vk, "VK_Exec_CopyRender(", "Vulkan capture consumer")
     require(vk, "VK_DrawSharedDirectSubview", "Vulkan direct subview consumer")
+    for token in (
+        "VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT",
+        "VK_IMAGE_VIEW_TYPE_CUBE",
+        "entry->isCube = isCube",
+    ):
+        require(image_vk, token, "Vulkan depth cubemap target")
+    for token in (
+        "targetIsCube",
+        "targetIsDepth",
+        "cubeFace < 0 || cubeFace >= 6",
+        "rows[ row ].dstSubresource.baseArrayLayer = targetIsCube",
+        "region.dstSubresource.baseArrayLayer = targetIsCube",
+    ):
+        require(executor_vk, token, "Vulkan exact target/aspect/face transfer")
 
 
 def validate_controls_diagnostics_and_registration() -> None:
@@ -160,6 +204,8 @@ def validate_controls_diagnostics_and_registration() -> None:
         "RendererClassicSubviewDomain self-test passed",
         "classicSubviewDomain requested=",
         "classicSubviewDomain backend=",
+        "colorCubemap=",
+        "depthCubemap=",
     ):
         require(init, token, "default-off subview control and diagnostics")
     require(local, "extern idCVar r_rendererSharedSubview;", "renderer cvar API")
@@ -173,6 +219,9 @@ def validate_controls_diagnostics_and_registration() -> None:
     require(registry, '"renderer_classic_subview_domain.py"', "validation registry")
     for token in (
         "capture-backed",
+        "cubemap",
+        "depth capture",
+        "unsupportedCaptureTarget",
         "direct",
         "remote-camera",
         "reflection",

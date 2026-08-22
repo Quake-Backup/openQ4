@@ -146,7 +146,7 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     )
     require(
         matrix,
-        "cubemap/depth and unsupported nested special-view domains still need migration",
+        "unsupported nested special-view domains still need migration",
         "remaining shared-domain boundary",
     )
     require(

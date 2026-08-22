@@ -3415,6 +3415,18 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 	if ( !VK_GuiExecutor_BeginFrame() || image == NULL || width <= 0 || height <= 0 ) {
 		return false;
 	}
+	const idImageOpts &imageOpts = image->GetOpts();
+	const bool targetIsCube = imageOpts.textureType == TT_CUBIC;
+	if ( ( imageOpts.textureType != TT_2D && !targetIsCube )
+			|| ( targetIsCube && ( cubeFace < 0 || cubeFace >= 6 ) )
+			|| ( !targetIsCube && cubeFace != 0 ) ) {
+		return false;
+	}
+	const bool targetIsDepth = imageOpts.format == FMT_DEPTH
+		|| imageOpts.format == FMT_DEPTH_STENCIL;
+	if ( copyDepth != targetIsDepth ) {
+		return false;
+	}
 
 	VkImage sourceImage = VK_NULL_HANDLE;
 	VkFormat sourceFormat = VK_FORMAT_UNDEFINED;
@@ -3472,7 +3484,9 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 	if ( destination == NULL || destination->image == sourceImage
 			|| destination->samples != VK_SAMPLE_COUNT_1_BIT
 			|| ( destination->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT ) == 0
-			|| ( copyDepth && destination->format != sourceFormat ) ) {
+			|| ( copyDepth && destination->format != sourceFormat )
+			|| destination->isCube != targetIsCube
+			|| destination->numLayers != ( targetIsCube ? 6 : 1 ) ) {
 		return false;
 	}
 
@@ -3515,6 +3529,8 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 			rows[ row ].srcOffset.x = x;
 			rows[ row ].srcOffset.y = sourceHeight - 1 - ( y + row );
 			rows[ row ].dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			rows[ row ].dstSubresource.baseArrayLayer = targetIsCube
+				? (uint32_t)cubeFace : 0;
 			rows[ row ].dstSubresource.layerCount = 1;
 			rows[ row ].dstOffset.y = row;
 			rows[ row ].extent.width = (uint32_t)width;
@@ -3548,8 +3564,7 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 	region.srcOffsets[ 1 ].y = sourceHeight - y - height;
 	region.srcOffsets[ 1 ].z = 1;
 	region.dstSubresource.aspectMask = copyAspect;
-	region.dstSubresource.baseArrayLayer = destination->isCube
-			? (uint32_t)Max( 0, Min( cubeFace, destination->numLayers - 1 ) ) : 0;
+	region.dstSubresource.baseArrayLayer = targetIsCube ? (uint32_t)cubeFace : 0;
 	region.dstSubresource.layerCount = 1;
 	region.dstOffsets[ 1 ].x = width;
 	region.dstOffsets[ 1 ].y = height;

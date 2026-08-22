@@ -102,6 +102,9 @@ static void InitView( classicSubviewDomainView_t &view,
 	view.capturePacketIndex = -1;
 	view.firstPassPacket = -1;
 	view.firstDrawPacket = -1;
+	view.captureTextureType = TT_DISABLED;
+	view.captureTextureFormat = FMT_NONE;
+	view.captureType = CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE;
 	view.failure = CLASSIC_SUBVIEW_DOMAIN_FAILURE_NONE;
 }
 
@@ -267,6 +270,43 @@ static bool FindCaptureKind( const drawSurf_t *surface,
 	return matchingStages == 1;
 }
 
+static bool ClassifyCaptureTargetOptions( textureType_t textureType,
+		textureFormat_t textureFormat, int cubeFace, bool copyDepth,
+		classicSubviewDomainCaptureType_t &type ) {
+	// The packet must retain both transfer aspect and layer identity exactly.
+	type = CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE;
+	const bool isCube = textureType == TT_CUBIC;
+	if ( ( textureType != TT_2D && !isCube )
+			|| ( isCube && ( cubeFace < 0 || cubeFace >= 6 ) )
+			|| ( !isCube && cubeFace != 0 ) ) {
+		return false;
+	}
+	const bool isDepth = textureFormat == FMT_DEPTH
+		|| textureFormat == FMT_DEPTH_STENCIL;
+	if ( copyDepth != isDepth ) {
+		return false;
+	}
+	if ( copyDepth ) {
+		type = isCube ? CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP
+			: CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D;
+	} else {
+		type = isCube ? CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP
+			: CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D;
+	}
+	return true;
+}
+
+static bool ClassifyCaptureTarget( const sceneSubviewCapture_t &capture,
+		classicSubviewDomainCaptureType_t &type ) {
+	if ( capture.image == NULL || capture.width <= 0 || capture.height <= 0 ) {
+		type = CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE;
+		return false;
+	}
+	const idImageOpts &opts = capture.image->GetOpts();
+	return ClassifyCaptureTargetOptions( opts.textureType, opts.format,
+		capture.cubeFace, capture.copyDepth, type );
+}
+
 static bool HasSupportedSpecialSemantics( const viewDef_t &viewDef,
 		classicSubviewDomainKind_t kind ) {
 	if ( viewDef.numClipPlanes < 0 || viewDef.numClipPlanes > MAX_CLIP_PLANES ) {
@@ -307,7 +347,11 @@ static std::uint64_t HashView( const classicSubviewDomainView_t &view ) {
 	HashInt( hash, view.captureWidth );
 	HashInt( hash, view.captureHeight );
 	HashInt( hash, view.captureCubeFace );
+	HashInt( hash, view.captureTextureType );
+	HashInt( hash, view.captureTextureFormat );
+	HashBool( hash, view.captureCopyDepth );
 	HashInt( hash, view.kind );
+	HashInt( hash, view.captureType );
 	HashInt( hash, view.semanticViewID );
 	HashInt( hash, view.semanticRenderTime );
 	HashFloat( hash, view.semanticFloatTime );
@@ -384,9 +428,14 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 			return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_CAPTURE, 0 );
 		}
 		const sceneSubviewCapture_t &capture = packetFrame.SubviewCapture(captureIndex);
-		if ( capture.viewDef != viewDef || capture.image == NULL || capture.copyDepth
-				|| capture.cubeFace != 0 || capture.width <= 0 || capture.height <= 0 ) {
+		if ( capture.viewDef != viewDef || capture.image == NULL
+				|| capture.width <= 0 || capture.height <= 0 ) {
 			return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE,
+				captureIndex );
+		}
+		if ( !ClassifyCaptureTarget( capture, view.captureType ) ) {
+			return FailView( view,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_CAPTURE_TARGET,
 				captureIndex );
 		}
 		view.captureImage = capture.image;
@@ -396,6 +445,9 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 		view.captureWidth = capture.width;
 		view.captureHeight = capture.height;
 		view.captureCubeFace = capture.cubeFace;
+		view.captureTextureType = capture.image->GetOpts().textureType;
+		view.captureTextureFormat = capture.image->GetOpts().format;
+		view.captureCopyDepth = capture.copyDepth;
 		if ( capture.x != viewDef->viewport.x1 || capture.y != viewDef->viewport.y1
 				|| capture.width != viewDef->viewport.x2 - viewDef->viewport.x1 + 1
 				|| capture.height != viewDef->viewport.y2 - viewDef->viewport.y1 + 1 ) {
@@ -505,6 +557,22 @@ void R_ClassicSubviewDomain_PrepareFrame( const idScenePacketFrame &packetFrame 
 			default:
 				break;
 			}
+			switch ( view.captureType ) {
+			case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP:
+				domain.stats.colorCubemapCaptures++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D:
+				domain.stats.depth2DCaptures++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP:
+				domain.stats.depthCubemapCaptures++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE:
+			case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D:
+			case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COUNT:
+			default:
+				break;
+			}
 		}
 	}
 	domain.stats.frameValid = !domain.stats.overflow
@@ -576,7 +644,7 @@ bool R_ClassicSubviewDomain_CaptureMatches(
 		&& image == view.captureImage && x == view.captureX
 		&& y == view.captureY && width == view.captureWidth
 		&& height == view.captureHeight && cubeFace == view.captureCubeFace
-		&& !copyDepth;
+		&& copyDepth == view.captureCopyDepth;
 }
 
 bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
@@ -627,6 +695,22 @@ bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 		coverage.ownedRefractionViews++;
 	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY ) {
 		coverage.ownedXrayViews++;
+	}
+	switch ( view->captureType ) {
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP:
+		coverage.ownedColorCubemapCaptures++;
+		break;
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D:
+		coverage.ownedDepth2DCaptures++;
+		break;
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP:
+		coverage.ownedDepthCubemapCaptures++;
+		break;
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE:
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D:
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COUNT:
+	default:
+		break;
 	}
 	return true;
 }
@@ -692,6 +776,19 @@ const char *ClassicSubviewDomainKind_Name( classicSubviewDomainKind_t kind ) {
 	}
 }
 
+const char *ClassicSubviewDomainCaptureType_Name(
+		classicSubviewDomainCaptureType_t type ) {
+	switch ( type ) {
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D: return "color2D";
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP: return "colorCubemap";
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D: return "depth2D";
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP: return "depthCubemap";
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE:
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COUNT:
+	default: return "none";
+	}
+}
+
 const char *ClassicSubviewDomainFailure_Name( classicSubviewDomainFailure_t failure ) {
 	switch ( failure ) {
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NONE: return "none";
@@ -707,6 +804,7 @@ const char *ClassicSubviewDomainFailure_Name( classicSubviewDomainFailure_t fail
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE: return "invalidCapture";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_SURFACE_MISMATCH: return "captureSurfaceMismatch";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH: return "captureViewportMismatch";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_CAPTURE_TARGET: return "unsupportedCaptureTarget";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE: return "unexpectedCapture";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS: return "unsupportedSpecialSemantics";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH: return "viewSemanticsMismatch";
@@ -733,9 +831,12 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 				CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ), "remoteCamera" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainKind_Name(
 				CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR ), "directMirror" ) != 0
+			|| idStr::Cmp( ClassicSubviewDomainCaptureType_Name(
+				CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP ),
+				"depthCubemap" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainFailure_Name(
-				CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH ),
-				"viewSemanticsMismatch" ) != 0
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_CAPTURE_TARGET ),
+				"unsupportedCaptureTarget" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainBackend_Name(
 				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ), "Vulkan" ) != 0 ) {
 		return false;
@@ -753,7 +854,24 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	view.captureY = 4;
 	view.captureWidth = 64;
 	view.captureHeight = 32;
-	view.captureCubeFace = 0;
+	view.captureCubeFace = 5;
+	view.captureTextureType = TT_CUBIC;
+	view.captureTextureFormat = FMT_DEPTH;
+	view.captureCopyDepth = true;
+	view.captureType = CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP;
+	classicSubviewDomainCaptureType_t classifiedType =
+		CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE;
+	const bool cubeDepthTarget = ClassifyCaptureTargetOptions( TT_CUBIC,
+		FMT_DEPTH, 5, true, classifiedType )
+		&& classifiedType == CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP;
+	const bool depthStencilTarget = ClassifyCaptureTargetOptions( TT_2D,
+		FMT_DEPTH_STENCIL, 0, true, classifiedType )
+		&& classifiedType == CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D;
+	const bool invalidTargetRejected =
+		!ClassifyCaptureTargetOptions( TT_CUBIC, FMT_DEPTH, 6, true,
+			classifiedType )
+		&& !ClassifyCaptureTargetOptions( TT_2D, FMT_RGBA8, 0, true,
+			classifiedType );
 	const std::uint64_t firstHash = HashView(view);
 	view.captureWidth++;
 	const bool hashSensitive = HashView(view) != firstHash;
@@ -761,19 +879,22 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	std::memset( &domain.stats, 0, sizeof(domain.stats) );
 	const bool owned = R_ClassicSubviewDomain_RecordOwned( &viewDef,
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL, view.captureImage, 3, 4, 64, 32,
-		0, false );
+		5, true );
 	const bool duplicate = R_ClassicSubviewDomain_RecordOwned( &viewDef,
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL, view.captureImage, 3, 4, 64, 32,
-		0, false );
+		5, true );
 	const bool mismatch = !R_ClassicSubviewDomain_RecordOwned( &viewDef,
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN, view.captureImage, 3, 4, 63, 32,
-		0, false );
-	const bool capturePassed = hashSensitive && owned && duplicate && mismatch
+		5, true );
+	const bool capturePassed = cubeDepthTarget && depthStencilTarget
+		&& invalidTargetRejected && hashSensitive && owned && duplicate && mismatch
 		&& view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
 			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
 		&& view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
 			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL].ownedViews == 1
+		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			.ownedDepthCubemapCaptures == 1
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL].duplicateReports == 1
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN].coverageMismatches == 1;
 	R_ClassicSubviewDomain_ResetFrame();
