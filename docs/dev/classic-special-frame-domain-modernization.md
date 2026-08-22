@@ -89,6 +89,8 @@ ownership where the content is eligible, exact same-settings output, an
 incomplete-mask zero-commit fallback, clean backend diagnostics, and fresh
 staged-package and target-platform/driver evidence.
 
-Direct special-subview ownership—mirror/reflection/clip-plane, x-ray,
-cubemap/depth, and nested captures—remains the next Milestone D target.
-Temporal presentation and PBR/advanced lighting remain downstream.
+The direct special-subview transaction now covers direct mirror/clip-plane and
+dynamic mirror/reflection/x-ray handoffs; see [Shared Special-Subview
+Transaction](classic-subview-domain-modernization.md). Cubemap/depth
+special-capture ownership is the next Milestone D target. Temporal presentation
+and PBR/advanced lighting remain downstream.

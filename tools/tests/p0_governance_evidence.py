@@ -136,7 +136,7 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     require(matrix, "`net_clientUseLegacyRcon 1` / `net_serverAllowLegacyRcon 1`", "legacy rcon containment claim")
     require(
         matrix,
-        "**Implemented** (four complete shared domains plus deform dependency; broader use pending)",
+        "**Implemented** (four complete shared domains, an in-world GUI subset, a special-subview transaction, cinematic/authored-post ownership, special-frame ownership, plus deform dependency; broader use pending)",
         "backend-neutral renderer contract scope",
     )
     require(
@@ -146,7 +146,7 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     )
     require(
         matrix,
-        "subview and other special-view domains still need migration",
+        "cubemap/depth and unsupported nested special-view domains still need migration",
         "remaining shared-domain boundary",
     )
     require(

@@ -1131,7 +1131,7 @@ extern idCVar r_rendererSharedSpecialFrame;	// opt-in backend-neutral render-dem
 extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
 extern idCVar r_rendererSharedWorldInteraction;	// opt-in backend-neutral whole-view unshadowed interaction ownership
 extern idCVar r_rendererSharedWorldFogBlend;	// opt-in backend-neutral whole-view fog/blend ownership
-extern idCVar r_rendererSharedSubview;	// opt-in backend-neutral capture-backed remote/refraction subview ownership
+extern idCVar r_rendererSharedSubview;	// opt-in backend-neutral direct/capture special-subview ownership
 extern idCVar r_rendererSharedDeform;	// opt-in backend-neutral material-deform ownership
 extern idCVar r_vkShadowFallbackTest;	// diagnostic-only forced Vulkan unshadowed receiver fallback
 extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lighting-ownership parity contracts proven

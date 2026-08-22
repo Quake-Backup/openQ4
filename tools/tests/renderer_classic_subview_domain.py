@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regression contract for capture-backed shared subview ownership."""
+"""Static regression contract for sealed direct and capture subview ownership."""
 
 from __future__ import annotations
 
@@ -17,11 +17,6 @@ def read(relative_path: str) -> str:
 def require(haystack: str, needle: str, context: str) -> None:
     if needle not in haystack:
         raise AssertionError(f"Missing {needle!r} in {context}")
-
-
-def reject(haystack: str, needle: str, context: str) -> None:
-    if needle in haystack:
-        raise AssertionError(f"Unexpected {needle!r} in {context}")
 
 
 def braced_body(source: str, marker: str, context: str) -> str:
@@ -75,17 +70,28 @@ def validate_domain_contract() -> None:
     source = read("src/renderer/ClassicSubviewDomain.cpp")
     combined = header + source
     for token in (
+        "CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR",
         "CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA",
+        "CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR",
+        "CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION",
         "CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION",
+        "CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_CAPTURE",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH",
         "CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL",
         "CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN",
         "R_ClassicSubviewDomain_ResetFrame",
         "R_ClassicSubviewDomain_PrepareFrame",
         "R_ClassicSubviewDomain_CaptureMatches",
+        "R_ClassicSubviewDomain_IsCaptureBacked",
+        "R_ClassicSubviewDomain_IsDirect",
+        "R_ClassicSubviewDomain_ViewSemanticsMatch",
         "R_ClassicSubviewDomain_RecordOwned",
+        "R_ClassicSubviewDomain_RecordDirectOwned",
         "R_ClassicSubviewDomain_RecordBackendFallback",
         "RendererClassicSubviewDomain_RunSelfTest",
     ):
@@ -93,10 +99,17 @@ def validate_domain_contract() -> None:
     for token in (
         "FindScenePacket( packetFrame, view.parentViewDef )",
         "ParentContainsSurface",
+        "FindDirectKind",
         "FindCaptureKind",
         "DI_REMOTE_RENDER",
+        "DI_MIRROR_RENDER",
+        "DI_REFLECTION_RENDER",
         "DI_REFRACTION_RENDER",
-        "viewDef->numClipPlanes != 0",
+        "DI_XRAY_RENDER",
+        "HasSupportedSpecialSemantics",
+        "CaptureViewSemantics",
+        "ViewSemanticsMatch",
+        "semanticClipPlanes",
         "viewDef->isMirror",
         "viewDef->isXraySubview",
         "capture.copyDepth",
@@ -105,7 +118,6 @@ def validate_domain_contract() -> None:
         "fallbackViews",
     ):
         require(source, token, "bounded subview admission and fallback")
-    reject(source, "DI_MIRROR_RENDER", "capture-backed subview scope")
 
 
 def validate_backend_capture_ownership() -> None:
@@ -116,6 +128,9 @@ def validate_backend_capture_ownership() -> None:
             "R_ClassicSubviewDomain_PrepareFrame( *scenePackets );",
             "R_ClassicSubviewDomain_CaptureMatches",
             "R_ClassicSubviewDomain_RecordOwned",
+            "R_ClassicSubviewDomain_IsCaptureBacked",
+            "R_ClassicSubviewDomain_IsDirect",
+            "R_ClassicSubviewDomain_RecordDirectOwned",
             "R_ClassicSubviewDomain_RecordBackendFallback",
             "pendingSharedSubview",
         ):
@@ -125,7 +140,9 @@ def validate_backend_capture_ownership() -> None:
         require(copy_case, "pendingSharedSubview->captureImage", f"{backend} sealed capture image")
         require(copy_case, "RecordOwned", f"{backend} post-copy ownership")
     require(gl, "RB_ClassicSubview_CopyOwned", "GL sealed capture consumer")
+    require(gl, "RB_DrawSharedDirectSubview", "GL direct subview consumer")
     require(vk, "VK_Exec_CopyRender(", "Vulkan capture consumer")
+    require(vk, "VK_DrawSharedDirectSubview", "Vulkan direct subview consumer")
 
 
 def validate_controls_diagnostics_and_registration() -> None:
@@ -156,7 +173,10 @@ def validate_controls_diagnostics_and_registration() -> None:
     require(registry, '"renderer_classic_subview_domain.py"', "validation registry")
     for token in (
         "capture-backed",
+        "direct",
         "remote-camera",
+        "reflection",
+        "x-ray",
         "refraction",
         "mirror",
         "r_rendererSharedSubview 1",

@@ -38,6 +38,61 @@ static void HashBool( std::uint64_t &hash, bool value ) {
 	HashByte( hash, value ? 1u : 0u );
 }
 
+static void HashFloat( std::uint64_t &hash, float value ) {
+	std::uint32_t bits = 0;
+	std::memcpy( &bits, &value, sizeof( bits ) );
+	HashU32( hash, bits );
+}
+
+static bool SameFloat( float a, float b ) {
+	std::uint32_t aBits = 0;
+	std::uint32_t bBits = 0;
+	std::memcpy( &aBits, &a, sizeof( aBits ) );
+	std::memcpy( &bBits, &b, sizeof( bBits ) );
+	return aBits == bBits;
+}
+
+static void HashVec3( std::uint64_t &hash, const idVec3 &value ) {
+	for ( int component = 0; component < 3; ++component ) {
+		HashFloat( hash, value[component] );
+	}
+}
+
+static bool SameVec3( const idVec3 &a, const idVec3 &b ) {
+	for ( int component = 0; component < 3; ++component ) {
+		if ( !SameFloat( a[component], b[component] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void HashPlane( std::uint64_t &hash, const idPlane &value ) {
+	for ( int component = 0; component < 4; ++component ) {
+		HashFloat( hash, value[component] );
+	}
+}
+
+static bool SamePlane( const idPlane &a, const idPlane &b ) {
+	for ( int component = 0; component < 4; ++component ) {
+		if ( !SameFloat( a[component], b[component] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void HashScreenRect( std::uint64_t &hash, const idScreenRect &value ) {
+	HashInt( hash, value.x1 );
+	HashInt( hash, value.y1 );
+	HashInt( hash, value.x2 );
+	HashInt( hash, value.y2 );
+}
+
+static bool SameScreenRect( const idScreenRect &a, const idScreenRect &b ) {
+	return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+
 static void InitView( classicSubviewDomainView_t &view,
 		const viewDef_t *viewDef, int scenePacketIndex ) {
 	std::memset( &view, 0, sizeof( view ) );
@@ -48,6 +103,53 @@ static void InitView( classicSubviewDomainView_t &view,
 	view.firstPassPacket = -1;
 	view.firstDrawPacket = -1;
 	view.failure = CLASSIC_SUBVIEW_DOMAIN_FAILURE_NONE;
+}
+
+static void CaptureViewSemantics( classicSubviewDomainView_t &view,
+		const viewDef_t &viewDef ) {
+	view.semanticViewID = viewDef.renderView.viewID;
+	view.semanticRenderTime = viewDef.renderView.time;
+	view.semanticFloatTime = viewDef.floatTime;
+	view.semanticViewOrigin = viewDef.renderView.vieworg;
+	view.semanticViewAxis = viewDef.renderView.viewaxis;
+	view.semanticInitialViewAreaOrigin = viewDef.initialViewAreaOrigin;
+	view.semanticViewport = viewDef.viewport;
+	view.semanticScissor = viewDef.scissor;
+	view.semanticClipPlaneCount = viewDef.numClipPlanes;
+	view.semanticIsMirror = viewDef.isMirror;
+	view.semanticIsXraySubview = viewDef.isXraySubview;
+	for ( int plane = 0; plane < MAX_CLIP_PLANES; ++plane ) {
+		view.semanticClipPlanes[plane] = viewDef.clipPlanes[plane];
+	}
+}
+
+static bool ViewSemanticsMatch( const classicSubviewDomainView_t &view,
+		const viewDef_t &viewDef ) {
+	if ( view.semanticViewID != viewDef.renderView.viewID
+			|| view.semanticRenderTime != viewDef.renderView.time
+			|| !SameFloat( view.semanticFloatTime, viewDef.floatTime )
+			|| !SameVec3( view.semanticViewOrigin, viewDef.renderView.vieworg )
+			|| !SameVec3( view.semanticInitialViewAreaOrigin,
+				viewDef.initialViewAreaOrigin )
+			|| !SameScreenRect( view.semanticViewport, viewDef.viewport )
+			|| !SameScreenRect( view.semanticScissor, viewDef.scissor )
+			|| view.semanticClipPlaneCount != viewDef.numClipPlanes
+			|| view.semanticIsMirror != viewDef.isMirror
+			|| view.semanticIsXraySubview != viewDef.isXraySubview ) {
+		return false;
+	}
+	for ( int axis = 0; axis < 3; ++axis ) {
+		if ( !SameVec3( view.semanticViewAxis[axis],
+				viewDef.renderView.viewaxis[axis] ) ) {
+			return false;
+		}
+	}
+	for ( int plane = 0; plane < MAX_CLIP_PLANES; ++plane ) {
+		if ( !SamePlane( view.semanticClipPlanes[plane], viewDef.clipPlanes[plane] ) ) {
+			return false;
+		}
+	}
+	return true;
 }
 
 static int ViewIndex( const classicSubviewDomainView_t *view ) {
@@ -105,6 +207,20 @@ static bool ParentContainsSurface( const viewDef_t *parent,
 	return false;
 }
 
+static bool FindDirectKind( const drawSurf_t *surface,
+		classicSubviewDomainKind_t &kind ) {
+	kind = CLASSIC_SUBVIEW_DOMAIN_KIND_NONE;
+	if ( surface == NULL || surface->material == NULL
+			|| !surface->material->HasSubview()
+			|| surface->material->GetSort() != SS_SUBVIEW ) {
+		return false;
+	}
+	// SS_SUBVIEW is the classic direct mirror path: it publishes its child view
+	// straight into the parent target and deliberately has no copy command.
+	kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+	return true;
+}
+
 static bool FindCaptureKind( const drawSurf_t *surface,
 		const idImage *captureImage, classicSubviewDomainKind_t &kind ) {
 	kind = CLASSIC_SUBVIEW_DOMAIN_KIND_NONE;
@@ -124,13 +240,22 @@ static bool FindCaptureKind( const drawSurf_t *surface,
 		case DI_REMOTE_RENDER:
 			stageKind = CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA;
 			break;
+		case DI_MIRROR_RENDER:
+			stageKind = CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR;
+			break;
+		case DI_REFLECTION_RENDER:
+			stageKind = CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION;
+			break;
 		case DI_REFRACTION_RENDER:
 			stageKind = CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION;
+			break;
+		case DI_XRAY_RENDER:
+			stageKind = CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY;
 			break;
 		case DI_STATIC:
 			continue;
 		default:
-			// Mirror/reflection/xray have their own camera or clip semantics.
+			// Other dynamic images are not subview capture producers.
 			return false;
 		}
 		if ( stage->texture.image != captureImage || matchingStages != 0 ) {
@@ -140,6 +265,32 @@ static bool FindCaptureKind( const drawSurf_t *surface,
 		matchingStages++;
 	}
 	return matchingStages == 1;
+}
+
+static bool HasSupportedSpecialSemantics( const viewDef_t &viewDef,
+		classicSubviewDomainKind_t kind ) {
+	if ( viewDef.numClipPlanes < 0 || viewDef.numClipPlanes > MAX_CLIP_PLANES ) {
+		return false;
+	}
+	switch ( kind ) {
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR:
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR:
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION:
+		// The final cull parity may be false for a nested mirror, so the
+		// captured isMirror bit is authoritative rather than an eligibility
+		// requirement. The single portal plane is the required camera boundary.
+		return !viewDef.isXraySubview && viewDef.numClipPlanes == 1;
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY:
+		return viewDef.isXraySubview && viewDef.numClipPlanes == 0;
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA:
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION:
+		return !viewDef.isMirror && !viewDef.isXraySubview
+			&& viewDef.numClipPlanes == 0;
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_NONE:
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_COUNT:
+	default:
+		return false;
+	}
 }
 
 static std::uint64_t HashView( const classicSubviewDomainView_t &view ) {
@@ -157,6 +308,22 @@ static std::uint64_t HashView( const classicSubviewDomainView_t &view ) {
 	HashInt( hash, view.captureHeight );
 	HashInt( hash, view.captureCubeFace );
 	HashInt( hash, view.kind );
+	HashInt( hash, view.semanticViewID );
+	HashInt( hash, view.semanticRenderTime );
+	HashFloat( hash, view.semanticFloatTime );
+	HashVec3( hash, view.semanticViewOrigin );
+	for ( int axis = 0; axis < 3; ++axis ) {
+		HashVec3( hash, view.semanticViewAxis[axis] );
+	}
+	HashVec3( hash, view.semanticInitialViewAreaOrigin );
+	HashScreenRect( hash, view.semanticViewport );
+	HashScreenRect( hash, view.semanticScissor );
+	HashInt( hash, view.semanticClipPlaneCount );
+	HashBool( hash, view.semanticIsMirror );
+	HashBool( hash, view.semanticIsXraySubview );
+	for ( int plane = 0; plane < MAX_CLIP_PLANES; ++plane ) {
+		HashPlane( hash, view.semanticClipPlanes[plane] );
+	}
 	if ( view.viewDef != NULL ) {
 		HashInt( hash, view.viewDef->viewport.x1 );
 		HashInt( hash, view.viewDef->viewport.y1 );
@@ -178,12 +345,10 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 	const viewDef_t *viewDef = view.viewDef;
 	if ( viewDef == NULL || scene.packetCategory != SCENE_PACKET_CATEGORY_SUBVIEW
 			|| !viewDef->isSubview || viewDef->viewEntitys == NULL
-			|| viewDef->renderWorld == NULL || viewDef->isMirror
-			|| viewDef->isXraySubview || viewDef->isEditor
-			|| viewDef->numClipPlanes != 0 || viewDef->renderView.viewID < 0
+			|| viewDef->renderWorld == NULL || viewDef->isEditor
+			|| viewDef->renderView.viewID < 0
 			|| viewDef->renderView.globalMaterial != NULL
-			|| viewDef->superView == NULL || viewDef->subviewSurface == NULL
-			|| viewDef->superView->isSubview ) {
+			|| viewDef->superView == NULL || viewDef->subviewSurface == NULL ) {
 		return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_VIEW, 0 );
 	}
 	view.parentViewDef = viewDef->superView;
@@ -195,6 +360,8 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 	if ( !ParentContainsSurface( view.parentViewDef, view.parentSurface ) ) {
 		return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_PARENT_SURFACE, 0 );
 	}
+	classicSubviewDomainKind_t directKind = CLASSIC_SUBVIEW_DOMAIN_KIND_NONE;
+	const bool isDirect = FindDirectKind( view.parentSurface, directKind );
 	int captureIndex = -1;
 	for ( int i = 0; i < packetFrame.NumSubviewCaptures(); ++i ) {
 		const sceneSubviewCapture_t &candidate = packetFrame.SubviewCapture(i);
@@ -206,32 +373,46 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 		}
 		captureIndex = i;
 	}
-	if ( captureIndex < 0 ) {
-		return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_CAPTURE, 0 );
+	if ( isDirect ) {
+		if ( captureIndex >= 0 ) {
+			return FailView( view,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE, captureIndex );
+		}
+		view.kind = directKind;
+	} else {
+		if ( captureIndex < 0 ) {
+			return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_CAPTURE, 0 );
+		}
+		const sceneSubviewCapture_t &capture = packetFrame.SubviewCapture(captureIndex);
+		if ( capture.viewDef != viewDef || capture.image == NULL || capture.copyDepth
+				|| capture.cubeFace != 0 || capture.width <= 0 || capture.height <= 0 ) {
+			return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE,
+				captureIndex );
+		}
+		view.captureImage = capture.image;
+		view.capturePacketIndex = captureIndex;
+		view.captureX = capture.x;
+		view.captureY = capture.y;
+		view.captureWidth = capture.width;
+		view.captureHeight = capture.height;
+		view.captureCubeFace = capture.cubeFace;
+		if ( capture.x != viewDef->viewport.x1 || capture.y != viewDef->viewport.y1
+				|| capture.width != viewDef->viewport.x2 - viewDef->viewport.x1 + 1
+				|| capture.height != viewDef->viewport.y2 - viewDef->viewport.y1 + 1 ) {
+			return FailView( view,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH, captureIndex );
+		}
+		if ( !FindCaptureKind( view.parentSurface, capture.image, view.kind ) ) {
+			return FailView( view,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_SURFACE_MISMATCH, captureIndex );
+		}
 	}
-	const sceneSubviewCapture_t &capture = packetFrame.SubviewCapture(captureIndex);
-	if ( capture.viewDef != viewDef || capture.image == NULL || capture.copyDepth
-			|| capture.cubeFace != 0 || capture.width <= 0 || capture.height <= 0 ) {
-		return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE,
-			captureIndex );
-	}
-	view.captureImage = capture.image;
-	view.capturePacketIndex = captureIndex;
-	view.captureX = capture.x;
-	view.captureY = capture.y;
-	view.captureWidth = capture.width;
-	view.captureHeight = capture.height;
-	view.captureCubeFace = capture.cubeFace;
-	if ( capture.x != viewDef->viewport.x1 || capture.y != viewDef->viewport.y1
-			|| capture.width != viewDef->viewport.x2 - viewDef->viewport.x1 + 1
-			|| capture.height != viewDef->viewport.y2 - viewDef->viewport.y1 + 1 ) {
+	if ( !HasSupportedSpecialSemantics( *viewDef, view.kind ) ) {
 		return FailView( view,
-			CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH, captureIndex );
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS,
+			static_cast<int>( view.kind ) );
 	}
-	if ( !FindCaptureKind( view.parentSurface, capture.image, view.kind ) ) {
-		return FailView( view,
-			CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_SURFACE_MISMATCH, captureIndex );
-	}
+	CaptureViewSemantics( view, *viewDef );
 	view.firstPassPacket = scene.firstPassPacket;
 	view.passPacketCount = scene.passPacketCount;
 	view.firstDrawPacket = scene.firstDrawPacket;
@@ -300,10 +481,29 @@ void R_ClassicSubviewDomain_PrepareFrame( const idScenePacketFrame &packetFrame 
 		InitView( view, scene.viewDef, sceneIndex );
 		if ( PrepareView( packetFrame, scene, view ) ) {
 			domain.stats.readyViews++;
-			if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ) {
+			switch ( view.kind ) {
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR:
+				domain.stats.directMirrorViews++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA:
 				domain.stats.remoteCameraViews++;
-			} else if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION ) {
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR:
+				domain.stats.mirrorViews++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION:
+				domain.stats.reflectionViews++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION:
 				domain.stats.refractionViews++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY:
+				domain.stats.xrayViews++;
+				break;
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_NONE:
+			case CLASSIC_SUBVIEW_DOMAIN_KIND_COUNT:
+			default:
+				break;
 			}
 		}
 	}
@@ -349,10 +549,31 @@ const classicSubviewDomainView_t *R_ClassicSubviewDomain_FindView(
 	return FindMutableView(viewDef);
 }
 
+bool R_ClassicSubviewDomain_IsCaptureBacked(
+		const classicSubviewDomainView_t &view ) {
+	return view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA
+		|| view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR
+		|| view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION
+		|| view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION
+		|| view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY;
+}
+
+bool R_ClassicSubviewDomain_IsDirect( const classicSubviewDomainView_t &view ) {
+	return view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+}
+
+bool R_ClassicSubviewDomain_ViewSemanticsMatch(
+		const classicSubviewDomainView_t &view ) {
+	return view.ready && view.viewDef != NULL
+		&& ViewSemanticsMatch( view, *view.viewDef );
+}
+
 bool R_ClassicSubviewDomain_CaptureMatches(
 		const classicSubviewDomainView_t &view, const idImage *image,
 		int x, int y, int width, int height, int cubeFace, bool copyDepth ) {
-	return view.ready && image == view.captureImage && x == view.captureX
+	return R_ClassicSubviewDomain_IsCaptureBacked( view )
+		&& R_ClassicSubviewDomain_ViewSemanticsMatch( view )
+		&& image == view.captureImage && x == view.captureX
 		&& y == view.captureY && width == view.captureWidth
 		&& height == view.captureHeight && cubeFace == view.captureCubeFace
 		&& !copyDepth;
@@ -376,6 +597,12 @@ bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 			&& R_ClassicSubviewDomain_CaptureMatches( *view, image, x, y, width,
 				height, cubeFace, copyDepth );
 	}
+	if ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view ) ) {
+		domain.stats.backend[backend].coverageMismatches++;
+		RecordFallback( view, backend,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH, 0 );
+		return false;
+	}
 	if ( !R_ClassicSubviewDomain_CaptureMatches( *view, image, x, y, width,
 			height, cubeFace, copyDepth ) ) {
 		domain.stats.backend[backend].coverageMismatches++;
@@ -392,9 +619,48 @@ bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 	coverage.ownedViews++;
 	if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ) {
 		coverage.ownedRemoteCameraViews++;
+	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR ) {
+		coverage.ownedMirrorViews++;
+	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION ) {
+		coverage.ownedReflectionViews++;
 	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION ) {
 		coverage.ownedRefractionViews++;
+	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY ) {
+		coverage.ownedXrayViews++;
 	}
+	return true;
+}
+
+bool R_ClassicSubviewDomain_RecordDirectOwned( const viewDef_t *viewDef,
+		classicSubviewDomainBackend_t backend ) {
+	if ( backend < CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL
+			|| backend >= CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT ) {
+		return false;
+	}
+	classicSubviewDomainView_t *view = FindMutableView(viewDef);
+	if ( view == NULL || !view->ready || !R_ClassicSubviewDomain_IsDirect( *view ) ) {
+		RecordFallback( view, backend, CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
+		return false;
+	}
+	if ( view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		domain.stats.backend[backend].duplicateReports++;
+		return view->backendOutcome[backend] == CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
+			&& R_ClassicSubviewDomain_ViewSemanticsMatch( *view );
+	}
+	if ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view ) ) {
+		domain.stats.backend[backend].coverageMismatches++;
+		RecordFallback( view, backend,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH, 0 );
+		return false;
+	}
+	const int index = ViewIndex(view);
+	view->backendOutcome[backend] = CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED;
+	classicSubviewDomainBackendCoverage_t &coverage = domain.stats.backend[backend];
+	if ( index >= 0 ) {
+		coverage.ownedViewMask |= 1ull << index;
+	}
+	coverage.ownedViews++;
+	coverage.ownedDirectMirrorViews++;
 	return true;
 }
 
@@ -414,8 +680,12 @@ const classicSubviewDomainBackendCoverage_t &
 
 const char *ClassicSubviewDomainKind_Name( classicSubviewDomainKind_t kind ) {
 	switch ( kind ) {
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR: return "directMirror";
 	case CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA: return "remoteCamera";
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR: return "mirror";
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION: return "reflection";
 	case CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION: return "refraction";
+	case CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY: return "xray";
 	case CLASSIC_SUBVIEW_DOMAIN_KIND_NONE:
 	case CLASSIC_SUBVIEW_DOMAIN_KIND_COUNT:
 	default: return "none";
@@ -437,6 +707,9 @@ const char *ClassicSubviewDomainFailure_Name( classicSubviewDomainFailure_t fail
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE: return "invalidCapture";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_SURFACE_MISMATCH: return "captureSurfaceMismatch";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH: return "captureViewportMismatch";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE: return "unexpectedCapture";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS: return "unsupportedSpecialSemantics";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH: return "viewSemanticsMismatch";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY: return "backendNotReady";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED: return "backendRejected";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH: return "backendCaptureMismatch";
@@ -458,9 +731,11 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	if ( CLASSIC_SUBVIEW_DOMAIN_MAX_VIEWS != SCENE_PACKET_MAX_SUBVIEW_CAPTURES
 			|| idStr::Cmp( ClassicSubviewDomainKind_Name(
 				CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ), "remoteCamera" ) != 0
+			|| idStr::Cmp( ClassicSubviewDomainKind_Name(
+				CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR ), "directMirror" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainFailure_Name(
-				CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH ),
-				"captureViewportMismatch" ) != 0
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH ),
+				"viewSemanticsMismatch" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainBackend_Name(
 				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ), "Vulkan" ) != 0 ) {
 		return false;
@@ -493,7 +768,7 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	const bool mismatch = !R_ClassicSubviewDomain_RecordOwned( &viewDef,
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN, view.captureImage, 3, 4, 63, 32,
 		0, false );
-	const bool passed = hashSensitive && owned && duplicate && mismatch
+	const bool capturePassed = hashSensitive && owned && duplicate && mismatch
 		&& view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
 			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
 		&& view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
@@ -501,6 +776,22 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL].ownedViews == 1
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL].duplicateReports == 1
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN].coverageMismatches == 1;
+	R_ClassicSubviewDomain_ResetFrame();
+	std::memset( &viewDef, 0, sizeof(viewDef) );
+	viewDef.isSubview = true;
+	viewDef.numClipPlanes = 1;
+	InitView( domain.views[0], &viewDef, 11 );
+	domain.viewCount = 1;
+	classicSubviewDomainView_t &directView = domain.views[0];
+	directView.ready = true;
+	directView.kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+	CaptureViewSemantics( directView, viewDef );
+	const bool directOwned = R_ClassicSubviewDomain_RecordDirectOwned( &viewDef,
+		CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
+	viewDef.scissor.x1++;
+	const bool semanticMismatch = !R_ClassicSubviewDomain_ViewSemanticsMatch(
+		directView );
+	const bool passed = capturePassed && directOwned && semanticMismatch;
 	R_ClassicSubviewDomain_ResetFrame();
 	return passed;
 }

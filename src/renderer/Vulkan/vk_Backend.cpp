@@ -72,13 +72,16 @@ static const classicSubviewDomainView_t *VK_ClassicSubview_Preflight(
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
 		return NULL;
 	}
-	if ( !view->ready || view->captureImage == NULL
-			|| !view->captureImage->IsLoaded() ) {
+	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
+				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) ) ) {
 		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
-			view->ready ? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED
-				: view->failure,
-			view->ready ? 1 : view->failureDetail );
+			!view->ready ? view->failure
+				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
+					: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ),
+			!view->ready ? view->failureDetail : 1 );
 		return NULL;
 	}
 	return view;
@@ -104,6 +107,17 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 		int cubeFace, bool copyDepth );
 bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
 		idRenderTexture *destinationRenderTexture, bool resolveDepth );
+
+static void VK_DrawSharedDirectSubview( const classicSubviewDomainView_t &view ) {
+	// Direct SS_SUBVIEW mirrors compose into the parent target and therefore
+	// have no capture command. Keep the mature 3D executor, but publish only
+	// after its complete sealed child-view coverage has returned.
+	VK_GuiExecutor_Draw3DView( view.viewDef );
+	if ( !R_ClassicSubviewDomain_RecordDirectOwned( view.viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ) ) {
+		common->Warning( "Vulkan: shared direct subview coverage rejected after committed view" );
+	}
+}
 
 /*
 ====================
@@ -499,10 +513,17 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			case RC_DRAW_VIEW: {
 				const drawSurfsCommand_t *cmd = (const drawSurfsCommand_t *)cmds;
 				if ( cmd->viewDef != NULL ) {
-					pendingSharedSubview = VK_ClassicSubview_Preflight( cmd->viewDef );
+					const classicSubviewDomainView_t *sharedSubview =
+						VK_ClassicSubview_Preflight( cmd->viewDef );
+					pendingSharedSubview = sharedSubview != NULL
+						&& R_ClassicSubviewDomain_IsCaptureBacked( *sharedSubview )
+						? sharedSubview : NULL;
 					if ( cmd->viewDef->viewEntitys == NULL ) {
 						// 2D view (GUI/console/cinematics)
 						VK_GuiExecutor_Draw2DView( cmd->viewDef );
+					} else if ( sharedSubview != NULL
+							&& R_ClassicSubviewDomain_IsDirect( *sharedSubview ) ) {
+						VK_DrawSharedDirectSubview( *sharedSubview );
 					} else {
 						// world view: depth prepass + ambient walks (Phase E)
 						VK_GuiExecutor_Draw3DView( cmd->viewDef );

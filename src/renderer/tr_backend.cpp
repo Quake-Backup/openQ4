@@ -776,16 +776,31 @@ static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
 		return NULL;
 	}
-	if ( !view->ready || view->captureImage == NULL
-			|| !view->captureImage->IsLoaded() ) {
+	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
+				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) ) ) {
 		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
-			view->ready ? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED
-				: view->failure,
-			view->ready ? 1 : view->failureDetail );
+			!view->ready ? view->failure
+				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
+					: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ),
+			!view->ready ? view->failureDetail : 1 );
 		return NULL;
 	}
 	return view;
+}
+
+static void RB_DrawSharedDirectSubview( const void *data,
+		const classicSubviewDomainView_t &view ) {
+	// The direct SS_SUBVIEW path has no RC_COPY_RENDER edge. Its sealed view
+	// semantics select the mature full 3D executor, then ownership is published
+	// only after that complete child view returns.
+	RB_DrawView( data );
+	if ( !R_ClassicSubviewDomain_RecordDirectOwned( view.viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ) ) {
+		common->Warning( "OpenGL: shared direct subview coverage rejected after committed view" );
+	}
 }
 
 // Render-demo playback is a complete recorded 3D frame. The shared boundary
@@ -955,19 +970,22 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		case RC_NOP:
 			break;
 		case RC_DRAW_VIEW: {
-			if ( ((const drawSurfsCommand_t *)cmds)->viewDef != NULL ) {
-				pendingSharedSubview = RB_ClassicSubview_Preflight(
-					((const drawSurfsCommand_t *)cmds)->viewDef );
-			}
-			R_RendererMetrics_BeginGpuTimer( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
 			const viewDef_t *drawView = ((const drawSurfsCommand_t *)cmds)->viewDef;
+			const classicSubviewDomainView_t *sharedSubview =
+				RB_ClassicSubview_Preflight( drawView );
+			pendingSharedSubview = sharedSubview != NULL
+				&& R_ClassicSubviewDomain_IsCaptureBacked( *sharedSubview )
+				? sharedSubview : NULL;
+			R_RendererMetrics_BeginGpuTimer( drawView->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
 			const bool sharedRenderDemo = drawView->viewEntitys != NULL
 				&& r_rendererSharedSpecialFrame.GetBool()
 				&& R_ClassicSpecialFrameDomain_FindRenderDemoView( drawView ) != NULL;
 			const bool sharedCinematicRoot = !drawView->viewEntitys
 				&& r_rendererSharedCinematicPost.GetBool()
 				&& R_ClassicCinematicPostDomain_FindRootCinematicView( drawView ) != NULL;
-			if ( sharedRenderDemo ) {
+			if ( sharedSubview != NULL && R_ClassicSubviewDomain_IsDirect( *sharedSubview ) ) {
+				RB_DrawSharedDirectSubview( cmds, *sharedSubview );
+			} else if ( sharedRenderDemo ) {
 				if ( !RB_DrawSharedRenderDemoView( cmds ) ) {
 					RB_DrawView( cmds );
 				}

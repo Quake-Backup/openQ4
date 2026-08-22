@@ -1119,7 +1119,7 @@ def main() -> None:
     require(commit_ci, test_path, "commit CI registration")
     require(push_ci, test_path, "push CI registration")
     require(roadmap, "four complete domains", "roadmap delivery status")
-    require(roadmap, "direct special-subview ownership", "roadmap next target")
+    require(roadmap, "cubemap/depth special-capture ownership", "roadmap next target")
     require(domain_doc, "shadow-coupled interaction ownership", "completed shadow domain")
     require(domain_doc, "translucent moment-map casters", "intentional shadow fallback")
     require(domain_doc, "features=static+dynamic+alpha+translucent", "mapped feature diagnostics")

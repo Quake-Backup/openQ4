@@ -275,6 +275,8 @@ The completed cinematic/authored-post corridor now seals eligible root
 video/audio views and complete authored post tails; see [Shared Classic
 Cinematic and Authored-Post Transaction](classic-cinematic-post-domain-modernization.md).
 Render-demo and Raven special-frame ownership now have a dedicated sealed
-[transaction](classic-special-frame-domain-modernization.md). The next
-recommended implementation target is **direct special-subview ownership**. Do
-not skip ahead to temporal presentation or PBR/advanced-lighting Milestones E/F.
+[transaction](classic-special-frame-domain-modernization.md). The completed
+direct special-subview corridor is documented in the [Shared Special-Subview
+Transaction](classic-subview-domain-modernization.md). The next recommended
+target is cubemap/depth special-capture ownership; do not skip ahead to
+temporal presentation or PBR/advanced-lighting Milestones E/F.

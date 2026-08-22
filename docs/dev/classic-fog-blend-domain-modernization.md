@@ -265,6 +265,8 @@ video/audio views and complete post tails while preserving the established
 dynamic-stage executor; see [Shared Classic Cinematic and Authored-Post
 Transaction](classic-cinematic-post-domain-modernization.md). Render-demo and
 Raven special-frame ownership now have a dedicated
-[transaction](classic-special-frame-domain-modernization.md). **Direct
-special-subview ownership** is next. Temporal presentation and PBR/advanced-
+[transaction](classic-special-frame-domain-modernization.md). The completed
+direct special-subview corridor has its [dedicated
+transaction](classic-subview-domain-modernization.md). Cubemap/depth
+special-capture ownership is next. Temporal presentation and PBR/advanced-
 lighting work must continue to wait for coherent classic-frame ownership.

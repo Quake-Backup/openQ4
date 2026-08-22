@@ -9,13 +9,14 @@
 /*
 ===============================================================================
 
-	Shared capture-backed subview transaction.
+	Shared special-subview transaction.
 
 	A view is published only after its parent source surface, child scene packet,
-	and exact RC_COPY_RENDER destination agree.  The current first corridor is
-	the ordinary color capture used by remote-camera and refraction surfaces;
-	mirrors, reflections, x-ray, cubemaps, and depth captures deliberately retain
-	the established path until their clip/camera semantics have dedicated records.
+	and exact RC_COPY_RENDER destination agree.  Direct SS_SUBVIEW mirrors seal
+	their complete camera/clip/scissor semantics and have no capture command;
+	dynamic remote, mirror, reflection, refraction, and x-ray surfaces retain an
+	exact color-capture edge.  Cubemap/depth captures retain the established path
+	until they have a dedicated target contract.
 
 ===============================================================================
 */
@@ -24,8 +25,12 @@ const int CLASSIC_SUBVIEW_DOMAIN_MAX_VIEWS = SCENE_PACKET_MAX_SUBVIEW_CAPTURES;
 
 enum classicSubviewDomainKind_t {
 	CLASSIC_SUBVIEW_DOMAIN_KIND_NONE = 0,
+	CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR,
 	CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA,
+	CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR,
+	CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION,
 	CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION,
+	CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY,
 	CLASSIC_SUBVIEW_DOMAIN_KIND_COUNT
 };
 
@@ -43,6 +48,9 @@ enum classicSubviewDomainFailure_t {
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_INVALID_CAPTURE,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_SURFACE_MISMATCH,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_CAPTURE_VIEWPORT_MISMATCH,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
@@ -66,8 +74,12 @@ typedef struct classicSubviewDomainBackendCoverage_s {
 	std::uint64_t	fallbackViewMask;
 	int				ownedViews;
 	int				fallbackViews;
+	int				ownedDirectMirrorViews;
 	int				ownedRemoteCameraViews;
+	int				ownedMirrorViews;
+	int				ownedReflectionViews;
 	int				ownedRefractionViews;
+	int				ownedXrayViews;
 	int				coverageMismatches;
 	int				duplicateReports;
 	int				untrackedFallbacks;
@@ -90,6 +102,18 @@ typedef struct classicSubviewDomainView_s {
 	int					captureWidth;
 	int					captureHeight;
 	int					captureCubeFace;
+	int					semanticViewID;
+	int					semanticRenderTime;
+	float					semanticFloatTime;
+	idVec3					semanticViewOrigin;
+	idMat3					semanticViewAxis;
+	idVec3					semanticInitialViewAreaOrigin;
+	idScreenRect				semanticViewport;
+	idScreenRect				semanticScissor;
+	idPlane					semanticClipPlanes[MAX_CLIP_PLANES];
+	int					semanticClipPlaneCount;
+	bool					semanticIsMirror;
+	bool					semanticIsXraySubview;
 	classicSubviewDomainKind_t	kind;
 	bool					ready;
 	classicSubviewDomainFailure_t	failure;
@@ -112,8 +136,12 @@ typedef struct classicSubviewDomainStats_s {
 	int					capturePackets;
 	int					readyViews;
 	int					fallbackViews;
+	int					directMirrorViews;
 	int					remoteCameraViews;
+	int					mirrorViews;
+	int					reflectionViews;
 	int					refractionViews;
+	int					xrayViews;
 	int					failureCounts[CLASSIC_SUBVIEW_DOMAIN_FAILURE_COUNT];
 	std::uint64_t			hash;
 	classicSubviewDomainBackendCoverage_t backend[
@@ -131,9 +159,17 @@ const classicSubviewDomainView_t *R_ClassicSubviewDomain_FindView(
 bool R_ClassicSubviewDomain_CaptureMatches(
 	const classicSubviewDomainView_t &view, const idImage *image,
 	int x, int y, int width, int height, int cubeFace, bool copyDepth );
+bool R_ClassicSubviewDomain_IsCaptureBacked(
+	const classicSubviewDomainView_t &view );
+bool R_ClassicSubviewDomain_IsDirect(
+	const classicSubviewDomainView_t &view );
+bool R_ClassicSubviewDomain_ViewSemanticsMatch(
+	const classicSubviewDomainView_t &view );
 bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 	classicSubviewDomainBackend_t backend, const idImage *image,
 	int x, int y, int width, int height, int cubeFace, bool copyDepth );
+bool R_ClassicSubviewDomain_RecordDirectOwned( const viewDef_t *viewDef,
+	classicSubviewDomainBackend_t backend );
 void R_ClassicSubviewDomain_RecordBackendFallback( const viewDef_t *viewDef,
 	classicSubviewDomainBackend_t backend, classicSubviewDomainFailure_t failure,
 	int detail );

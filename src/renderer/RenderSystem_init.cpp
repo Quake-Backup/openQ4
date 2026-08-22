@@ -494,7 +494,7 @@ idCVar r_rendererSharedSpecialFrame( "r_rendererSharedSpecialFrame", "0", CVAR_R
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
-idCVar r_rendererSharedSubview( "r_rendererSharedSubview", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible capture-backed remote-camera and refraction subview transactions from a backend-neutral sealed scene/capture record; unsupported subviews use the complete classic path" );
+idCVar r_rendererSharedSubview( "r_rendererSharedSubview", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible direct mirror and capture-backed remote-camera, mirror, reflection, refraction, and x-ray subview transactions from backend-neutral sealed records; unsupported subviews use the complete classic path" );
 idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request experimental backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
@@ -4273,7 +4273,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		const classicSubviewDomainStats_t &subview =
 			R_ClassicSubviewDomain_Stats();
 		common->Printf(
-			"classicSubviewDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s scenes=%d subviews=%d captures=%d ready=%d fallback=%d remote=%d refraction=%d hash=%016llx\n",
+			"classicSubviewDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s scenes=%d subviews=%d captures=%d ready=%d fallback=%d directMirror=%d remote=%d mirror=%d reflection=%d refraction=%d xray=%d hash=%016llx\n",
 			r_rendererSharedSubview.GetBool() ? 1 : 0,
 			subview.prepared ? 1 : 0,
 			subview.frameValid ? 1 : 0,
@@ -4284,8 +4284,12 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			subview.capturePackets,
 			subview.readyViews,
 			subview.fallbackViews,
+			subview.directMirrorViews,
 			subview.remoteCameraViews,
+			subview.mirrorViews,
+			subview.reflectionViews,
 			subview.refractionViews,
+			subview.xrayViews,
 			static_cast<unsigned long long>( subview.hash ) );
 		for ( int backendIndex = 0;
 				backendIndex < CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT;
@@ -4295,12 +4299,16 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			const classicSubviewDomainBackendCoverage_t &coverage =
 				subview.backend[ backendIndex ];
 			common->Printf(
-				"classicSubviewDomain backend=%s ownedViews=%d fallbackViews=%d remote=%d refraction=%d mismatches=%d duplicate=%d untracked=%d\n",
+				"classicSubviewDomain backend=%s ownedViews=%d fallbackViews=%d directMirror=%d remote=%d mirror=%d reflection=%d refraction=%d xray=%d mismatches=%d duplicate=%d untracked=%d\n",
 				ClassicSubviewDomainBackend_Name( backend ),
 				coverage.ownedViews,
 				coverage.fallbackViews,
+				coverage.ownedDirectMirrorViews,
 				coverage.ownedRemoteCameraViews,
+				coverage.ownedMirrorViews,
+				coverage.ownedReflectionViews,
 				coverage.ownedRefractionViews,
+				coverage.ownedXrayViews,
 				coverage.coverageMismatches,
 				coverage.duplicateReports,
 				coverage.untrackedFallbacks );
