@@ -81,13 +81,14 @@ when a status differs or a narrower qualification is needed.
 | General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Its first production consumer is the learned level-load read/PK4-inflate and framing/integrity pipeline; live asset parsing, renderer/audio upload, and renderer-front-end work remain with their established owners. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. Clean final-package recapture remains a separate release-promotion gate. |
 | Generated caches, streaming, and learned preload manifests | **Implemented and locally validated; release promotion pending** | Successful loads produce exact map/mode/entity-filter/search/PK4/settings manifests. Matching loads use bounded cancellable read/PK4 inflation followed by worker-safe typed framing and integrity validation, publish an immutable generation/source-identity DTO, and let the established main owner parse, adopt, and upload. Transactional static/MD5/MD5R model, classic-proc world, collision, and animation-v3 caches are private to `fs_savepath` and fall back to authoritative VFS sources. This is learned level-load preparation, not general asynchronous asset decode/upload streaming or portal-aware live reprioritization. Local Windows runtime evidence is recorded; clean committed-package performance, broader cancellation/failure campaigns, and release-platform evidence remain open. |
 | Shared renderer contracts and GPU skinning | **Implemented; opt-in and release promotion pending** | Ordered material/pass, clip-space, semantic vertex-layout, typed buffer-slice, exact four-weight, and joint-palette contracts are shared by OpenGL and Vulkan. `r_gpuSkinning` remains default-off; admitted MD5/MD5R surfaces produce the ordinary `idDrawVert` stream through backend compute while CPU positions and complete fallback remain authoritative for gameplay consumers and stencil volumes. Clean-package visual/performance and platform/driver promotion evidence remains open. |
-| Modern classic-frame ownership | **Experimental; four complete domains plus material-deform dependency implemented** | Fixed-function root 2D GUI, eligible ambient-only 3D world, fixed-classic interaction, and complete eligible fog/blend-phase ownership have separate default-off shared corridors. The independent default-off material-deform contract distinguishes finalized CPU results from generated/skinned geometry, seals completed or intentional-empty output and classic receiver non-applicability, and lets all four domains consume ordinary final geometry without rerunning the deform in either backend. Particle/particle2, skip/failure, freshness, cache, or provenance blockers retain complete-domain rollback. Clean-package and platform promotion remain open. |
+| Modern classic-frame ownership | **Experimental; four complete domains, capture-backed subview transaction, plus material-deform dependency implemented** | Fixed-function root 2D GUI, eligible ambient-only 3D world, fixed-classic interaction, and complete eligible fog/blend-phase ownership have separate default-off shared corridors. The capture-backed remote-camera/refraction transaction seals the immediate child-scene/copy edge without claiming child material or lighting ownership. The independent default-off material-deform contract distinguishes finalized CPU results from generated/skinned geometry, seals completed or intentional-empty output and classic receiver non-applicability, and lets all four domains consume ordinary final geometry without rerunning the deform in either backend. Particle/particle2, skip/failure, freshness, cache, or provenance blockers retain complete-domain rollback. Clean-package and platform promotion remain open. |
 | Temporal presentation | **Planned** | Complete motion vectors, history ownership, TAA/TAAU, reactive/disocclusion handling, and dynamic-resolution integration are absent. SMAA remains the compatibility path. |
 | Modern PBR lighting and idTech 6-like follow-ons | **Planned** | GGX/IBL, reflection probes, clustered decals/probes, froxel volumetrics, SSR/SSGI, GPU-driven visible ownership, and optional sparse residency all remain after the shared-contract and temporal gates. |
 
 Milestones A, B, and C have completed their implementation and local integration
-gates. Milestone D now has four implemented complete domains plus their shared
-material-deform dependency: eligible
+gates. Milestone D now has four implemented complete domains, a capture-backed
+remote-camera/refraction subview transaction, and their shared material-deform
+dependency: eligible
 fixed-function root 2D GUI views, eligible ambient-only 3D world views,
 fixed-classic interaction, and complete eligible fog/blend phases use
 backend-neutral sealed records on both backends, with independent settings and
@@ -102,9 +103,12 @@ rollback gates on both backends. The controlled shipped-material deform profile
 also passes exact parity, visible effect-delta, completed ownership, and
 zero-commit skipped rollback gates on both backends. Completed/empty finalized
 material deforms and the classic source-geometry receiver roles now have an
-explicit sealed contract, while particle/particle2 remain named fallback. The next recommended
-implementation target is **Milestone D subview ownership and parity**, without
-skipping ahead to temporal or PBR lighting.
+explicit sealed contract, while particle/particle2 remain named fallback. The
+capture-backed subview corridor seals the immediate child scene/copy edge for
+remote-camera and refraction views; direct mirror/reflection/clip-plane, x-ray,
+depth/cubemap, nested, and other special subviews retain their complete classic
+owners. The next recommended implementation target is **Milestone D in-world
+GUI ownership and parity**, without skipping ahead to temporal or PBR lighting.
 Release qualification remains a separate track: repeat and retain the
 Milestone A-D acceptance sets from clean committed source and a freshly staged
 final package, with the required platform and driver coverage. The PBR Phase
@@ -278,8 +282,9 @@ a render graph, clustered/MDI submission, shadow maps, and Vulkan coverage, but
 the capability matrix records no proven modern visible-lighting domain yet.
 Classic ambient/material, interaction, and fog/blend semantics now have
 independent shared contracts alongside root 2D GUI, and their material-deform
-dependency is explicit. Subview, in-world GUI, and remaining fallback semantics
-must still become explicit before
+dependency is explicit. The remote-camera/refraction capture-backed subview
+edge is also explicit; in-world GUI and remaining fallback semantics must still
+become explicit before
 temporal or PBR work multiplies the parity surface.
 
 ### Backend and submission
@@ -339,7 +344,7 @@ temporal or PBR work multiplies the parity surface.
 | A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
 | B. Loading and cache modernization | **Implemented but default-off; performance requalification required** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. A 2026-08-20 regression audit found that the prior default-on experiment could materially lengthen stock map loads, so `com_levelLoadModernization 0` now restores the classic baseline and gates every framework/animation cache read and write. Promotion requires a clean committed-package campaign that beats or matches classic cold and warm loads without rewrite churn, plus release-platform qualification. |
 | C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
-| D. Modern classic-frame ownership | **Experimental; four complete domains and material-deform dependency implemented** | Eligible fixed-function root 2D GUI views, ambient-only 3D world views, fixed-classic interaction views, and complete eligible fog/blend phases are transactionally evaluated through backend-neutral sealed records by GL and Vulkan, with complete-domain classic rollback. A separate default-off deform contract now seals the authoritative CPU result, source-preserving interaction/fog roles, frame/cache provenance, intentional empty work, and named unsupported outcomes for all four consumers. Subview is the next dependency, followed by in-world GUI and post ownership. Authored-stock, clean-package, and platform qualification remain open as applicable. |
+| D. Modern classic-frame ownership | **Experimental; four complete domains, capture-backed subview transaction, and material-deform dependency implemented** | Eligible fixed-function root 2D GUI views, ambient-only 3D world views, fixed-classic interaction views, and complete eligible fog/blend phases are transactionally evaluated through backend-neutral sealed records by GL and Vulkan, with complete-domain classic rollback. The default-off capture-backed subview transaction seals the immediate remote-camera/refraction child scene/copy edge and consumes that copy on both backends; direct clip/camera special views remain classic-owned. A separate default-off deform contract seals the authoritative CPU result, source-preserving interaction/fog roles, frame/cache provenance, intentional empty work, and named unsupported outcomes for all four consumers. In-world GUI is the next dependency, followed by cinematic and post ownership. Authored-stock, clean-package, and platform qualification remain open as applicable. |
 | E. Temporal presentation | **Planned** | Milestones A and C now supply the timing and shared-contract prerequisites; incomplete Milestone D still blocks complete frame ownership and the visible motion-vector corridor. |
 | F. Modern materials and advanced lighting | **Foundation only** | PBR authoring/resource Phases 0-3 exist, but visible PBR/IBL and advanced-lighting ownership must wait for Milestones C-E. |
 
@@ -456,8 +461,9 @@ default-off capability can be promoted; the exact procedure is recorded in
    unshadowed plus shadow-coupled fixed-classic interaction, and fog/blend
    conditions, colors, repeated order, matrices/texgen, images, samplers,
    light/receiver/shadow/cap identity, and render state are expressed through
-   shared contracts. Their CPU material-deform dependency is also sealed.
-   Subview, in-world GUI, cinematic, and post behavior remain.
+   shared contracts. Their CPU material-deform dependency is also sealed. The
+   immediate capture-backed remote-camera/refraction subview edge is sealed;
+   direct special subviews, in-world GUI, cinematic, and post behavior remain.
 2. **Implemented for the first four complete domains:** GL and Vulkan consume the
    same per-draw evaluated semantic records, with backend-specific execution and
    an untouched complete-domain classic rollback.
@@ -493,6 +499,13 @@ default-off capability can be promoted; the exact procedure is recorded in
    are admissible only behind `r_rendererSharedDeform`; particle/particle2,
    skipped, failed, stale, or mismatched records reject the complete owning
    transaction before backend work.
+9. **Implemented for capture-backed subviews:** a child scene packet, parent
+   source surface, exact full-viewport color `RC_COPY_RENDER`, and destination
+   image are reconciled into one bounded remote-camera/refraction record.
+   OpenGL and Vulkan consume the sealed capture arguments and report ownership
+   only after the transfer. Mirror/reflection/clip-plane, x-ray, cubemap/depth,
+   nested, cinematic, and other special views retain their untouched classic
+   owners pending dedicated semantic records.
 
 Exit gate: at least one complete stock-frame domain is modern-owned on both
 backends, no visible light or surface is silently dropped, and rollback produces
@@ -527,8 +540,10 @@ zero-commit atomic rollback. Authored-stock fog plus clean-package and
 target-platform/driver promotion remain open.
 The material-deform dependency is documented in
 [Shared Classic Material-Deform Contract](classic-deform-domain-modernization.md).
-The next implementation target is subview ownership/parity, not Milestone E
-temporal presentation or Milestone F PBR/advanced lighting.
+The capture-backed subview implementation is documented in
+[Shared Capture-Backed Subview Transaction](classic-subview-domain-modernization.md).
+The next implementation target is in-world GUI ownership/parity, not Milestone
+E temporal presentation or Milestone F PBR/advanced lighting.
 
 ### Milestone E: temporal presentation
 

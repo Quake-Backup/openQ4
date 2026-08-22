@@ -729,7 +729,8 @@ void idRenderSystemLocal::CaptureDepthRenderToImage( const char *imageName ) {
 	cmd->cubeFace = 0;
 	cmd->copyDepth = true;
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
-		R_ScenePackets_AddCopyRender();
+		R_ScenePackets_AddCopyRender( image, cmd->x, cmd->y,
+			cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
 	}
 
 	guiModel->Clear();
@@ -1743,7 +1744,8 @@ void idRenderSystemLocal::CaptureRenderToImage( const char *imageName ) {
 	cmd->cubeFace = 0;
 	cmd->copyDepth = false;
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
-		R_ScenePackets_AddCopyRender();
+		R_ScenePackets_AddCopyRender( image, cmd->x, cmd->y,
+			cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
 	}
 
 	guiModel->Clear();

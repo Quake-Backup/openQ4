@@ -39,6 +39,7 @@
 #include "../ClassicWorldAmbientDomain.h"
 #include "../ClassicInteractionDomain.h"
 #include "../ClassicFogBlendDomain.h"
+#include "../ClassicSubviewDomain.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
 
@@ -54,6 +55,32 @@ static float vkClearColor[ 4 ] = { 0.0f, 0.0f, 0.0f, 1.0f };
 // backend-owned packet frame for the shared classic-GUI domain when front-end
 // capture was not requested for metrics.
 static idScenePacketFrame vkClassicDomainPacketFrame;
+
+static const classicSubviewDomainView_t *VK_ClassicSubview_Preflight(
+		const viewDef_t *viewDef ) {
+	if ( !r_rendererSharedSubview.GetBool() || viewDef == NULL
+			|| !viewDef->isSubview ) {
+		return NULL;
+	}
+	const classicSubviewDomainView_t *view =
+		R_ClassicSubviewDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
+		return NULL;
+	}
+	if ( !view->ready || view->captureImage == NULL
+			|| !view->captureImage->IsLoaded() ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+			view->ready ? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED
+				: view->failure,
+			view->ready ? 1 : view->failureDetail );
+		return NULL;
+	}
+	return view;
+}
 
 // vk_GuiExecutor.cpp
 void VK_GuiExecutor_SetClearColor( const float color[ 4 ] );
@@ -383,10 +410,12 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
 	if ( r_rendererSharedGui.GetBool()
 			|| r_rendererSharedWorldAmbient.GetBool()
 			|| r_rendererSharedWorldInteraction.GetBool()
-			|| r_rendererSharedWorldFogBlend.GetBool() ) {
+			|| r_rendererSharedWorldFogBlend.GetBool()
+			|| r_rendererSharedSubview.GetBool() ) {
 		const idScenePacketFrame *scenePackets = NULL;
 		if ( R_ScenePackets_FrontEndFrameAvailable() ) {
 			scenePackets = &R_ScenePackets_FrontEndFrame();
@@ -407,6 +436,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		if ( r_rendererSharedWorldFogBlend.GetBool() ) {
 			R_ClassicFogBlendDomain_PrepareFrame( *scenePackets );
 		}
+		if ( r_rendererSharedSubview.GetBool() ) {
+			R_ClassicSubviewDomain_PrepareFrame( *scenePackets );
+		}
 	}
 
 	backEnd.renderTexture = NULL;
@@ -414,8 +446,18 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	backEnd.postProcessTexelSize = tr.postProcessTexelSize;
 	backEnd.postProcessSourceColorSpace = tr.postProcessSourceColorSpace;
 	backEnd.postProcessSMAAQuality = tr.postProcessSMAAQuality;
+	const classicSubviewDomainView_t *pendingSharedSubview = NULL;
 
 	for ( ; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
+		if ( pendingSharedSubview != NULL
+				&& cmds->commandId != RC_COPY_RENDER ) {
+			R_ClassicSubviewDomain_RecordBackendFallback(
+				pendingSharedSubview->viewDef,
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+				static_cast<int>( cmds->commandId ) );
+			pendingSharedSubview = NULL;
+		}
 		switch ( cmds->commandId ) {
 			case RC_NOP:
 				break;
@@ -443,6 +485,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			case RC_DRAW_VIEW: {
 				const drawSurfsCommand_t *cmd = (const drawSurfsCommand_t *)cmds;
 				if ( cmd->viewDef != NULL ) {
+					pendingSharedSubview = VK_ClassicSubview_Preflight( cmd->viewDef );
 					if ( cmd->viewDef->viewEntitys == NULL ) {
 						// 2D view (GUI/console/cinematics)
 						VK_GuiExecutor_Draw2DView( cmd->viewDef );
@@ -505,9 +548,47 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				break;
 			case RC_COPY_RENDER: {
 				const copyRenderCommand_t *cmd = (const copyRenderCommand_t *)cmds;
+				const bool sharedCaptureMatches = pendingSharedSubview != NULL
+					&& !r_skipCopyTexture.GetBool()
+					&& R_ClassicSubviewDomain_CaptureMatches( *pendingSharedSubview,
+						cmd->image, cmd->x, cmd->y, cmd->imageWidth,
+						cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
+				bool copied = false;
 				if ( !r_skipCopyTexture.GetBool() ) {
-					(void)VK_Exec_CopyRender( cmd->image, cmd->x, cmd->y,
+					if ( sharedCaptureMatches ) {
+						copied = VK_Exec_CopyRender(
+							pendingSharedSubview->captureImage,
+							pendingSharedSubview->captureX,
+							pendingSharedSubview->captureY,
+							pendingSharedSubview->captureWidth,
+							pendingSharedSubview->captureHeight,
+							pendingSharedSubview->captureCubeFace, false );
+					} else {
+						copied = VK_Exec_CopyRender( cmd->image, cmd->x, cmd->y,
 							cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
+					}
+				}
+				if ( pendingSharedSubview != NULL ) {
+					if ( sharedCaptureMatches && copied ) {
+						R_ClassicSubviewDomain_RecordOwned(
+							pendingSharedSubview->viewDef,
+							CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+							pendingSharedSubview->captureImage,
+							pendingSharedSubview->captureX,
+							pendingSharedSubview->captureY,
+							pendingSharedSubview->captureWidth,
+							pendingSharedSubview->captureHeight,
+							pendingSharedSubview->captureCubeFace, false );
+					} else {
+						R_ClassicSubviewDomain_RecordBackendFallback(
+							pendingSharedSubview->viewDef,
+							CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+							r_skipCopyTexture.GetBool() || !copied
+								? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED
+								: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+							r_skipCopyTexture.GetBool() ? 2 : 3 );
+					}
+					pendingSharedSubview = NULL;
 				}
 				break;
 			}
@@ -525,6 +606,12 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				// long-tail parity phase.
 				break;
 		}
+	}
+	if ( pendingSharedSubview != NULL ) {
+		R_ClassicSubviewDomain_RecordBackendFallback(
+			pendingSharedSubview->viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 4 );
 	}
 }
 

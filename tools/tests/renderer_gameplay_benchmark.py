@@ -1169,6 +1169,7 @@ def common_args(
     append_set(args, "r_rendererSharedWorldAmbient", "0")
     append_set(args, "r_rendererSharedWorldInteraction", "0")
     append_set(args, "r_rendererSharedWorldFogBlend", "0")
+    append_set(args, "r_rendererSharedSubview", "0")
     append_set(args, "r_rendererSharedDeform", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
@@ -1215,6 +1216,7 @@ def build_scripted_capture_lines(
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
         "r_rendererSharedWorldFogBlend 0",
+        "r_rendererSharedSubview 0",
         "r_rendererSharedDeform 0",
         "r_rendererModernVisible 0",
         "r_rendererModernVisibleDepth 0",

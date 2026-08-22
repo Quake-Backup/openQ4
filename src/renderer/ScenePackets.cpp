@@ -7,6 +7,11 @@
 
 static idScenePacketFrame rg_frontEndScenePacketFrame;
 static bool rg_frontEndScenePacketFrameOpen = false;
+// The front end emits RC_COPY_RENDER immediately after a capture-backed
+// subview's RC_DRAW_VIEW. Preserve that producer while assembling packet data;
+// tr.viewDef has already been restored to the parent when CaptureRenderToImage
+// queues its copy command.
+static const viewDef_t *rg_frontEndLastDrawView = NULL;
 
 static bool R_ScenePackets_ModernPipelineRequested( void ) {
 	const bool modernVisibleRequested = r_rendererModernVisible.GetBool() || RendererBootstrap_ShouldAutoPromoteModernVisible();
@@ -24,6 +29,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererSharedWorldAmbient.GetBool()
 		|| r_rendererSharedWorldInteraction.GetBool()
 		|| r_rendererSharedWorldFogBlend.GetBool()
+		|| r_rendererSharedSubview.GetBool()
 		|| r_rendererSharedDeform.GetBool()
 		|| r_rendererModernVisibleDepth.GetBool()
 		|| r_rendererModernDepthDebug.GetInteger() > 0
@@ -51,7 +57,11 @@ private:
 };
 
 bool R_ScenePackets_FrontEndCaptureRequired( void ) {
-	return r_rendererMetrics.GetInteger() >= 2;
+	// The shared subview transaction has to retain the exact RC_DRAW_VIEW ->
+	// RC_COPY_RENDER edge on the front end. Backend reconstruction cannot infer
+	// it when an image capture occurs after tr.viewDef returns to the parent.
+	return r_rendererSharedSubview.GetBool()
+		|| r_rendererMetrics.GetInteger() >= 2;
 }
 
 bool R_ScenePackets_SidePipelineRequired( void ) {
@@ -174,6 +184,7 @@ void idScenePacketFrame::Clear( void ) {
 	memset( materialRecords, 0, sizeof( materialRecords ) );
 	memset( geometryRecords, 0, sizeof( geometryRecords ) );
 	memset( instanceRecords, 0, sizeof( instanceRecords ) );
+	memset( subviewCaptures, 0, sizeof( subviewCaptures ) );
 #endif
 	memset( &stats, 0, sizeof( stats ) );
 	activeScene = -1;
@@ -1092,6 +1103,40 @@ void idScenePacketFrame::AddCommandPacket( scenePacketCategory_t category ) {
 	CountCategory( category );
 }
 
+bool idScenePacketFrame::AddSubviewCapture( const viewDef_t *viewDef,
+		idImage *image, int x, int y, int width, int height, int cubeFace,
+		bool copyDepth ) {
+	if ( viewDef == NULL || image == NULL || width <= 0 || height <= 0 ) {
+		return false;
+	}
+	if ( stats.subviewCaptures >= SCENE_PACKET_MAX_SUBVIEW_CAPTURES ) {
+		SetOverflow( SCENE_PACKET_OVERFLOW_SUBVIEW_CAPTURES );
+		return false;
+	}
+	int scenePacketIndex = -1;
+	for ( int i = stats.scenePackets - 1; i >= 0; --i ) {
+		if ( scenes[ i ].viewDef == viewDef ) {
+			scenePacketIndex = i;
+			break;
+		}
+	}
+	if ( scenePacketIndex < 0 ) {
+		return false;
+	}
+	sceneSubviewCapture_t &capture = subviewCaptures[ stats.subviewCaptures++ ];
+	memset( &capture, 0, sizeof( capture ) );
+	capture.viewDef = viewDef;
+	capture.image = image;
+	capture.viewScenePacketIndex = scenePacketIndex;
+	capture.x = x;
+	capture.y = y;
+	capture.width = width;
+	capture.height = height;
+	capture.cubeFace = cubeFace;
+	capture.copyDepth = copyDepth;
+	return true;
+}
+
 void idScenePacketFrame::AddLegacyDrawView( void ) {
 	stats.legacyDrawViews++;
 }
@@ -1157,6 +1202,14 @@ const geometryResourceRecord_t &idScenePacketFrame::GeometryRecord( int index ) 
 
 const instanceRecord_t &idScenePacketFrame::InstanceRecord( int index ) const {
 	return instanceRecords[index];
+}
+
+int idScenePacketFrame::NumSubviewCaptures( void ) const {
+	return stats.subviewCaptures;
+}
+
+const sceneSubviewCapture_t &idScenePacketFrame::SubviewCapture( int index ) const {
+	return subviewCaptures[index];
 }
 
 const scenePacketFrameStats_t &idScenePacketFrame::Stats( void ) const {
@@ -1270,6 +1323,8 @@ const char *ScenePacketOverflowCause_Name( scenePacketOverflowCause_t cause ) {
 		return "geometryRecords";
 	case SCENE_PACKET_OVERFLOW_INSTANCE_RECORDS:
 		return "instanceRecords";
+	case SCENE_PACKET_OVERFLOW_SUBVIEW_CAPTURES:
+		return "subviewCaptures";
 	default:
 		return "unknown";
 	}
@@ -1321,6 +1376,7 @@ static void R_ScenePackets_EnsureFrontEndFrame( void ) {
 	if ( !rg_frontEndScenePacketFrameOpen ) {
 		rg_frontEndScenePacketFrame.Clear();
 		rg_frontEndScenePacketFrameOpen = true;
+		rg_frontEndLastDrawView = NULL;
 		R_ClassicDeformDomain_BeginPacketFrame(
 			R_ClassicDeformDomain_CurrentFrameToken() );
 	}
@@ -1331,6 +1387,7 @@ void R_ScenePackets_BeginFrame( void ) {
 	rg_frontEndScenePacketFrame.Clear();
 	rg_frontEndScenePacketFrame.MarkFrontEndDerived();
 	rg_frontEndScenePacketFrameOpen = true;
+	rg_frontEndLastDrawView = NULL;
 	R_ClassicDeformDomain_BeginPacketFrame(
 		R_ClassicDeformDomain_CurrentFrameToken() );
 }
@@ -1343,6 +1400,7 @@ void R_ScenePackets_EndFrame( void ) {
 	}
 	rg_frontEndScenePacketFrame.Clear();
 	rg_frontEndScenePacketFrameOpen = false;
+	rg_frontEndLastDrawView = NULL;
 }
 
 typedef bool (*scenePacketDrawSurfFilter_t)( const viewDef_t *viewDef, const drawSurf_t *drawSurf );
@@ -2010,31 +2068,43 @@ static void R_ScenePackets_AddCommandPass( idScenePacketFrame &packetFrame, rend
 void R_ScenePackets_AddRenderView( const viewDef_t *viewDef ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	R_ScenePackets_AddDrawView( rg_frontEndScenePacketFrame, viewDef, false );
+	rg_frontEndLastDrawView = viewDef;
 }
 
 void R_ScenePackets_AddSpecialEffects( const viewDef_t *viewDef ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	R_ScenePackets_AddCommandPass( rg_frontEndScenePacketFrame, RENDER_PASS_SPECIAL_EFFECTS, viewDef, false );
+	rg_frontEndLastDrawView = NULL;
 }
 
 void R_ScenePackets_AddRenderTargetOp( void ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	R_ScenePackets_AddCommandPass( rg_frontEndScenePacketFrame, RENDER_PASS_AUTHORED_POST, NULL, false );
+	rg_frontEndLastDrawView = NULL;
 }
 
-void R_ScenePackets_AddCopyRender( void ) {
+void R_ScenePackets_AddCopyRender( idImage *image, int x, int y,
+		int width, int height, int cubeFace, bool copyDepth ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	R_ScenePackets_AddCommandPass( rg_frontEndScenePacketFrame, RENDER_PASS_AUTHORED_POST, NULL, false );
+	if ( rg_frontEndLastDrawView != NULL && rg_frontEndLastDrawView->isSubview ) {
+		rg_frontEndScenePacketFrame.AddSubviewCapture( rg_frontEndLastDrawView,
+			image, x, y, width, height, cubeFace, copyDepth );
+	}
+	// A capture can belong to exactly one immediately preceding subview draw.
+	rg_frontEndLastDrawView = NULL;
 }
 
 void R_ScenePackets_AddPresent( void ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	R_ScenePackets_AddCommandPass( rg_frontEndScenePacketFrame, RENDER_PASS_PRESENT, NULL, false );
+	rg_frontEndLastDrawView = NULL;
 }
 
 void R_ScenePackets_AddCommandOnly( void ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	rg_frontEndScenePacketFrame.AddCommandPacket();
+	rg_frontEndLastDrawView = NULL;
 }
 
 const idScenePacketFrame &R_ScenePackets_FrontEndFrame( void ) {
@@ -2051,14 +2121,17 @@ bool R_ScenePackets_FrontEndFrameAvailable( void ) {
 void R_ScenePackets_BuildLegacyCommandStream( const emptyCommand_t *cmds, idScenePacketFrame &packetFrame ) {
 	packetFrame.Clear();
 	packetFrame.MarkBackendDerived();
+	const viewDef_t *lastDrawView = NULL;
 
 	for ( const emptyCommand_t *cmd = cmds; cmd != NULL; cmd = reinterpret_cast<const emptyCommand_t *>( cmd->next ) ) {
 		switch ( cmd->commandId ) {
 		case RC_DRAW_VIEW:
-			R_ScenePackets_AddDrawView( packetFrame, reinterpret_cast<const drawSurfsCommand_t *>( cmd )->viewDef, true );
+			lastDrawView = reinterpret_cast<const drawSurfsCommand_t *>( cmd )->viewDef;
+			R_ScenePackets_AddDrawView( packetFrame, lastDrawView, true );
 			break;
 		case RC_DRAW_SPECIAL_EFFECTS:
 			R_ScenePackets_AddCommandPass( packetFrame, RENDER_PASS_SPECIAL_EFFECTS, reinterpret_cast<const drawSurfsCommand_t *>( cmd )->viewDef, true );
+			lastDrawView = NULL;
 			break;
 		case RC_SET_RENDERTEXTURE:
 		case RC_RESOLVE_MSAA:
@@ -2067,17 +2140,29 @@ void R_ScenePackets_BuildLegacyCommandStream( const emptyCommand_t *cmds, idScen
 		case RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE:
 		case RC_SET_POSTPROCESS_SMAA_QUALITY:
 			R_ScenePackets_AddCommandPass( packetFrame, RENDER_PASS_AUTHORED_POST, NULL, true );
+			lastDrawView = NULL;
 			break;
 		case RC_COPY_RENDER:
 			R_ScenePackets_AddCommandPass( packetFrame, RENDER_PASS_AUTHORED_POST, NULL, true );
+			if ( lastDrawView != NULL && lastDrawView->isSubview ) {
+				const copyRenderCommand_t *copy =
+					reinterpret_cast<const copyRenderCommand_t *>( cmd );
+				packetFrame.AddSubviewCapture( lastDrawView, copy->image,
+					copy->x, copy->y, copy->imageWidth, copy->imageHeight,
+					copy->cubeFace, copy->copyDepth );
+			}
+			lastDrawView = NULL;
 			break;
 		case RC_SET_BUFFER:
 			packetFrame.AddCommandPacket();
+			lastDrawView = NULL;
 			break;
 		case RC_SWAP_BUFFERS:
 			R_ScenePackets_AddCommandPass( packetFrame, RENDER_PASS_PRESENT, NULL, true );
+			lastDrawView = NULL;
 			break;
 		default:
+			lastDrawView = NULL;
 			break;
 		}
 	}
@@ -2090,7 +2175,7 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 
 	const scenePacketFrameStats_t &stats = packetFrame.Stats();
 	common->Printf(
-		"scenePackets source=%s scenes=%d passes=%d draws=%d clipped=%d cmds=%d drawViews=%d materials=%d geometryRecords=%d instanceRecords=%d withMaterial=%d resources=%d geometryRecordRefs=%d instanceRefs=%d geometry=%d regs=%d indexCache=%d ambientCache=%d deformRecords=%d deform(material=%d finalized=%d interaction=%d fog=%d shadowVolume=%d other=%d completed=%d empty=%d notApplicable=%d skipped=%d failed=%d unsupported=%d fallback=%d) categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d) sortFailures=%d overflow=%d cause=%s\n",
+		"scenePackets source=%s scenes=%d passes=%d draws=%d clipped=%d cmds=%d drawViews=%d subviewCaptures=%d materials=%d geometryRecords=%d instanceRecords=%d withMaterial=%d resources=%d geometryRecordRefs=%d instanceRefs=%d geometry=%d regs=%d indexCache=%d ambientCache=%d deformRecords=%d deform(material=%d finalized=%d interaction=%d fog=%d shadowVolume=%d other=%d completed=%d empty=%d notApplicable=%d skipped=%d failed=%d unsupported=%d fallback=%d) categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d) sortFailures=%d overflow=%d cause=%s\n",
 		stats.frontEndDerived ? "frontend" : ( stats.backendDerived ? "backend" : "unknown" ),
 		stats.scenePackets,
 		stats.passPackets,
@@ -2098,6 +2183,7 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 		stats.clippedDrawPackets,
 		stats.commandPackets,
 		stats.legacyDrawViews,
+		stats.subviewCaptures,
 		stats.materialRecords,
 		stats.geometryRecords,
 		stats.instanceRecords,

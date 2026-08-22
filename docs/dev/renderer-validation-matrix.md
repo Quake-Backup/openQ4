@@ -46,8 +46,8 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI, classic-world-ambient, classic-interaction, and classic-fog/blend domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
-| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic-world-ambient, classic-interaction, classic-fog/blend, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI, classic-world-ambient, classic-interaction, classic-fog/blend, and capture-backed classic-subview domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic-world-ambient, classic-interaction, classic-fog/blend, capture-backed classic-subview, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
 | `renderer-cluster-grid-selftest` | opt-in modern clustered-light preparation coverage for point/projected/fog/ambient/special light classification, budgeted dynamic grid slicing, cluster reference packing, spill/overflow accounting, GL 3.3 UBO fallback readiness, GL 4.3+ SSBO upload readiness, cluster debug-overlay texture generation, and `gfxInfo` reporting |
@@ -58,7 +58,7 @@ Automated coverage:
 | `renderer-modern-compatibility-selftest` | Phase 14 modern-visible compatibility coverage for command-category ownership inventory, modern fullscreen GUI readiness, light-grid ownership, explicit post/copy/subview/render-demo/BSE fallback buckets, deterministic render-demo accounting, and `gfxInfo` reporting |
 | `renderer-compatibility-gates-selftest` | Phase 15 fallback-gate coverage for missing UBO, broken MRT, missing timer query, missing buffer storage, rejected debug-context fallback, and synthetic driver-quirk downgrades |
 | `renderer-default-promotion-selftest` | Phase 8 evidence-gated default-promotion coverage for `r_glTier auto`, explicit `r_renderer arb2` escape behavior, compatibility gates, modern-executor readiness, ARB2 rollback availability, missing/incomplete/complete `r_rendererPromotionEvidence`, and `r_rendererModernAutoPromote` sign-off control |
-| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared GUI/world-ambient/world-interaction/world-fog-blend, modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
+| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared GUI/world-ambient/world-interaction/world-fog-blend/capture-subview, modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
 | `renderer-benchmark-selftest` | Phase 16 benchmark coverage for rolling P50/P95/P99 frame-time capture, CPU front-end/visibility/packet/graph/submit/present timings, GPU pass timing fields, upload/draw/light/cluster/fallback counters, benchmark presets, and performance-threshold reporting |
 | `renderer-gpu-driven-selftest` | forced `r_glTier gl43` coverage for GL 4.3 SSBO submit records, compute scissor culling, clustered-bin validation, compacted indirect command generation, CPU/GPU readback comparison, masked multi-draw indirect execution, GPU timer coverage, and `gfxInfo` reporting |
 | `renderer-low-overhead-selftest` | forced `r_glTier gl45` coverage for GL 4.5 DSA graph texture/FBO allocation, DSA sampler creation, named buffer/FBO updates, UBO/SSBO/texture/sampler multi-bind batches, submit-batch compaction, bindless experiment reporting, persistent upload defaults, fence diagnostics, and `gfxInfo` reporting |
@@ -84,10 +84,11 @@ The forced tier cases pass when startup succeeds and the selected tier is report
 Automated safe cases also fail if their logs contain renderer warning signatures such as `idStr::snPrintf` overflow, `WARNING: idStr`, shader compile/program link failures, or OpenGL error markers. The generated Markdown/JSON report records per-case warning-signature counts so the Phase 8 `warnings=0` promotion token cannot be inferred from expected-line checks alone.
 
 The foundation case runs the dependency-light classic-GUI,
-classic-world-ambient, classic-interaction, and classic-fog/blend contract
-self-tests. The Vulkan startup case also requires the world-ambient,
-interaction, and fog/blend self-test markers so that module registration and
-the shared domain contracts are exercised through both renderer APIs.
+classic-world-ambient, classic-interaction, classic-fog/blend, and
+capture-backed classic-subview contract self-tests. The Vulkan startup case
+also requires the world-ambient, interaction, fog/blend, and subview self-test
+markers so that module registration and the shared domain contracts are
+exercised through both renderer APIs.
 
 The separate `tools/tests/renderer_classic_gui_domain.py` static regression
 guards packet-derived GUI material admission, ordered evaluation, opaque
@@ -124,6 +125,13 @@ fallback, conservative default/bootstrap state, benchmark/baseline isolation,
 and validation registration. Its dependency-light self-test and static
 contract pass, but enabled-path stock engine-screenshot qualification remains
 pending.
+
+`tools/tests/renderer_classic_subview_domain.py` guards exact front-end and
+legacy child-view/capture association, bounded parent/source/material admission,
+remote-camera/refraction-only scope, sealed OpenGL/Vulkan copy arguments,
+post-copy ownership reporting, default isolation, diagnostics, and workflow
+registration. Its native/static contract passes; fixed-camera engine-screenshot
+qualification remains required before enabling the setting beyond focused work.
 
 The focused safe-matrix run retained at
 `.tmp/renderer-validation/world-ambient-final-2` passed all three selected
@@ -175,7 +183,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --maxfps 0 --s
 | renderer escape | `r_renderer best` leaves promotion available; explicit `r_renderer arb2` keeps the ARB2 bridge |
 | compatibility gates | modern baseline features, UBOs, MRT, scene packets, render graph, and Shader Library V2 readiness are available |
 | fallback escape | the ARB2 compatibility bridge remains selectable through `r_renderer arb2` and `r_glTier legacy` |
-| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_rendererSharedWorldInteraction`, `r_rendererSharedWorldFogBlend`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
+| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedWorldAmbient`, `r_rendererSharedWorldInteraction`, `r_rendererSharedWorldFogBlend`, `r_rendererSharedSubview`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
 | validation evidence | `r_rendererPromotionEvidence` carries the complete Phase 8 token after zero-warning visual, gameplay, RenderDoc, performance, presentation, rollback, and debug-off checks pass |
 | manual sign-off | `r_rendererModernAutoPromote 1` is used only together with a complete `r_rendererPromotionEvidence` token |
 
@@ -206,6 +214,7 @@ These image captures are the comparison set for scenes where deterministic outpu
 | `capture-shared-fog-blend-effect-deltas` | SP | the same fixed controlled scene with matching established `r_skipFogLights 1` and owned `r_skipBlendLights 1` references | **Passed locally:** mixed versus fog-only changes `1,921,110` RGB channels at RMS `36.7624` / maximum `71` on both backends; fog-only versus the outer phase skip changes `2,764,380` channels on GL and `2,764,369` on Vulkan at RMS `61.3216` / maximum `162` |
 | `capture-shared-fog-blend-rollback` | SP | the same controlled stock-asset view with intentional `r_singleTriangle 1` admission blocker | **Passed locally:** `failure=unsupported-state detail=200`, one complete-phase fallback on the active backend, zero committed shared content counters, no shared main-target fog/blend draw, and exact same-settings classic engine-TGA parity on GL and Vulkan |
 | `capture-shared-fog-authored-stock` | SP/MP | a fixed retained camera in an authored stock fog scene such as `game/storage2` or `mp/q4dm10` | **Required; pending:** exact same-backend classic/shared TGA parity, nonempty reconciled fog receiver/cap ownership, material fog-on/off delta, final six-component pose, and clean Vulkan validation results; this does not substitute for controlled blend-light qualification |
+| `capture-shared-subview` | SP | fixed remote-camera and refraction views with `r_rendererSharedSubview 0` then `1`, separately on GL and Vulkan | **Required; pending:** exact same-settings engine-TGA parity, nonzero capture ownership and zero mismatch/duplicate/untracked counters, plus named zero-commit malformed-edge fallback. Direct mirror/reflection/clip-plane, x-ray, cubemap/depth, nested, cinematic, in-world GUI, and post views are outside this capture-backed corridor. |
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |

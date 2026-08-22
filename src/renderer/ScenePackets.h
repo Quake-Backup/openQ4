@@ -46,6 +46,9 @@ const int SCENE_PACKET_MAX_DRAWS = 4096;
 const int SCENE_PACKET_MAX_MATERIAL_RECORDS = 1024;
 const int SCENE_PACKET_MAX_GEOMETRY_RECORDS = 1024;
 const int SCENE_PACKET_MAX_INSTANCE_RECORDS = 1024;
+// Captures are command-stream edges rather than drawable passes. A subview
+// publishes at most one color capture, so bound this table with scenes.
+const int SCENE_PACKET_MAX_SUBVIEW_CAPTURES = SCENE_PACKET_MAX_SCENES;
 
 enum scenePacketCategory_t {
 	SCENE_PACKET_CATEGORY_UNKNOWN = 0,
@@ -68,7 +71,8 @@ enum scenePacketOverflowCause_t {
 	SCENE_PACKET_OVERFLOW_DRAWS,
 	SCENE_PACKET_OVERFLOW_MATERIALS,
 	SCENE_PACKET_OVERFLOW_GEOMETRY_RECORDS,
-	SCENE_PACKET_OVERFLOW_INSTANCE_RECORDS
+	SCENE_PACKET_OVERFLOW_INSTANCE_RECORDS,
+	SCENE_PACKET_OVERFLOW_SUBVIEW_CAPTURES
 };
 
 enum rendererMaterialClass_t {
@@ -339,6 +343,21 @@ typedef struct scenePacket_s {
 	bool					legacyBridge;
 } scenePacket_t;
 
+// CaptureRenderToImage immediately follows the RC_DRAW_VIEW which produced a
+// capture-backed subview. Retaining that relationship prevents a shared owner
+// from treating an unrelated feedback copy as its parent-facing image.
+typedef struct sceneSubviewCapture_s {
+	const viewDef_t			*viewDef;
+	idImage					*image;
+	int						viewScenePacketIndex;
+	int						x;
+	int						y;
+	int						width;
+	int						height;
+	int						cubeFace;
+	bool					copyDepth;
+} sceneSubviewCapture_t;
+
 typedef struct scenePacketFrameStats_s {
 	int						scenePackets;
 	int						passPackets;
@@ -381,6 +400,7 @@ typedef struct scenePacketFrameStats_s {
 	int						postProcessPackets;
 	int						presentPackets;
 	int						commandOnlyPackets;
+	int						subviewCaptures;
 	int						sortKeyValidationFailures;
 	bool					frontEndDerived;
 	bool					backendDerived;
@@ -411,6 +431,8 @@ public:
 		sceneShadowCasterClass_t casterClass, int chainOrdinal );
 	void FinishScene( void );
 	void AddCommandPacket( scenePacketCategory_t category = SCENE_PACKET_CATEGORY_COMMAND );
+	bool AddSubviewCapture( const viewDef_t *viewDef, idImage *image,
+		int x, int y, int width, int height, int cubeFace, bool copyDepth );
 	void AddLegacyDrawView( void );
 	void AddClippedDrawPackets( int count );
 	void MarkFrontEndDerived( void );
@@ -428,6 +450,8 @@ public:
 	const materialResourceRecord_t &MaterialRecord( int index ) const;
 	const geometryResourceRecord_t &GeometryRecord( int index ) const;
 	const instanceRecord_t &InstanceRecord( int index ) const;
+	int NumSubviewCaptures( void ) const;
+	const sceneSubviewCapture_t &SubviewCapture( int index ) const;
 	const scenePacketFrameStats_t &Stats( void ) const;
 	bool ValidateSortKeys( void ) const;
 
@@ -445,6 +469,7 @@ private:
 	materialResourceRecord_t materialRecords[SCENE_PACKET_MAX_MATERIAL_RECORDS];
 	geometryResourceRecord_t geometryRecords[SCENE_PACKET_MAX_GEOMETRY_RECORDS];
 	instanceRecord_t		instanceRecords[SCENE_PACKET_MAX_INSTANCE_RECORDS];
+	sceneSubviewCapture_t	subviewCaptures[SCENE_PACKET_MAX_SUBVIEW_CAPTURES];
 	scenePacketFrameStats_t	stats;
 	int						activeScene;
 	int						activePass;
@@ -464,7 +489,8 @@ bool R_ScenePackets_SidePipelineRequired( void );
 void R_ScenePackets_AddRenderView( const viewDef_t *viewDef );
 void R_ScenePackets_AddSpecialEffects( const viewDef_t *viewDef );
 void R_ScenePackets_AddRenderTargetOp( void );
-void R_ScenePackets_AddCopyRender( void );
+void R_ScenePackets_AddCopyRender( idImage *image, int x, int y,
+	int width, int height, int cubeFace, bool copyDepth );
 void R_ScenePackets_AddPresent( void );
 void R_ScenePackets_AddCommandOnly( void );
 const idScenePacketFrame &R_ScenePackets_FrontEndFrame( void );

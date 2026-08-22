@@ -38,6 +38,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
 #include "ClassicFogBlendDomain.h"
+#include "ClassicSubviewDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernClusteredLighting.h"
 #include "RendererMetrics.h"
@@ -734,6 +735,57 @@ smp extensions, or asyncronously by another thread.
 ====================
 */
 int		backEndStartTime, backEndFinishTime;
+
+/*
+====================
+RB_ClassicSubview_CopyOwned
+
+The shared subview corridor owns the *capture edge*, not the child scene
+walker.  Once the sealed child-scene/capture record exactly matches the legacy
+command, source the copy arguments from that record rather than from mutable
+command storage.  The child draw still deliberately uses the established
+classic renderer until its complete material/light ownership has a dedicated
+domain.
+====================
+*/
+static bool RB_ClassicSubview_CopyOwned( const classicSubviewDomainView_t &view ) {
+	if ( view.captureImage == NULL || !view.captureImage->IsLoaded()
+			|| view.captureWidth <= 0 || view.captureHeight <= 0 ) {
+		return false;
+	}
+
+	RB_LogComment( "***************** RB_ClassicSubview_CopyOwned *****************\n" );
+	view.captureImage->CopyFramebuffer( view.captureX, view.captureY,
+		view.captureWidth, view.captureHeight );
+	return true;
+}
+
+static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
+		const viewDef_t *viewDef ) {
+	if ( !r_rendererSharedSubview.GetBool() || viewDef == NULL
+			|| !viewDef->isSubview ) {
+		return NULL;
+	}
+	const classicSubviewDomainView_t *view =
+		R_ClassicSubviewDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
+		return NULL;
+	}
+	if ( !view->ready || view->captureImage == NULL
+			|| !view->captureImage->IsLoaded() ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+			view->ready ? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED
+				: view->failure,
+			view->ready ? 1 : view->failureDetail );
+		return NULL;
+	}
+	return view;
+}
+
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// r_debugRenderToTexture
 	int	c_draw3d = 0, c_draw2d = 0, c_setBuffers = 0, c_swapBuffers = 0, c_copyRenders = 0, c_specialEffects = 0, c_renderTargetOps = 0;
@@ -745,6 +797,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}
@@ -809,6 +862,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		if ( r_rendererSharedWorldFogBlend.GetBool() ) {
 			R_ClassicFogBlendDomain_PrepareFrame( *scenePackets );
 		}
+		if ( r_rendererSharedSubview.GetBool() ) {
+			R_ClassicSubviewDomain_PrepareFrame( *scenePackets );
+		}
 		R_ModernGLExecutor_PrepareFrame( *scenePackets, legacyGraph );
 		rg_modernStatMirrorsZeroed = false;	// active frame wrote real stats; re-zero on next dormant frame
 	} else {
@@ -844,15 +900,28 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	backEnd.postProcessSourceColorSpace = tr.postProcessSourceColorSpace;
 	backEnd.postProcessSMAAQuality = tr.postProcessSMAAQuality;
 	idRenderTexture::BindNull();
+	const classicSubviewDomainView_t *pendingSharedSubview = NULL;
 
 	// upload any image loads that have completed
 	//globalImages->CompleteBackgroundImageLoads();
 
 	for ( ; cmds ; cmds = (const emptyCommand_t *)cmds->next ) {
+		if ( pendingSharedSubview != NULL
+				&& cmds->commandId != RC_COPY_RENDER ) {
+			R_ClassicSubviewDomain_RecordBackendFallback(
+				pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+				static_cast<int>( cmds->commandId ) );
+			pendingSharedSubview = NULL;
+		}
 		switch ( cmds->commandId ) {
 		case RC_NOP:
 			break;
 		case RC_DRAW_VIEW:
+			if ( ((const drawSurfsCommand_t *)cmds)->viewDef != NULL ) {
+				pendingSharedSubview = RB_ClassicSubview_Preflight(
+					((const drawSurfsCommand_t *)cmds)->viewDef );
+			}
 			R_RendererMetrics_BeginGpuTimer( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
 			if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys
 					&& r_rendererSharedGui.GetBool() ) {
@@ -934,16 +1003,57 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			c_swapBuffers++;
 			break;
 		}
-		case RC_COPY_RENDER:
+		case RC_COPY_RENDER: {
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_COPY_RENDER );
-			RB_CopyRender( cmds );
+			const copyRenderCommand_t *copy =
+				reinterpret_cast<const copyRenderCommand_t *>( cmds );
+			const bool sharedCaptureMatches = pendingSharedSubview != NULL
+				&& !r_skipCopyTexture.GetBool()
+				&& R_ClassicSubviewDomain_CaptureMatches( *pendingSharedSubview,
+					copy->image, copy->x, copy->y, copy->imageWidth,
+					copy->imageHeight, copy->cubeFace, copy->copyDepth );
+			const bool copied = sharedCaptureMatches
+				? RB_ClassicSubview_CopyOwned( *pendingSharedSubview )
+				: ( !r_skipCopyTexture.GetBool()
+					? ( RB_CopyRender( cmds ), true ) : false );
+			if ( pendingSharedSubview != NULL ) {
+				if ( sharedCaptureMatches && copied ) {
+					R_ClassicSubviewDomain_RecordOwned(
+						pendingSharedSubview->viewDef,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+						pendingSharedSubview->captureImage,
+						pendingSharedSubview->captureX,
+						pendingSharedSubview->captureY,
+						pendingSharedSubview->captureWidth,
+						pendingSharedSubview->captureHeight,
+						pendingSharedSubview->captureCubeFace, false );
+				} else if ( r_skipCopyTexture.GetBool() || !copied ) {
+					R_ClassicSubviewDomain_RecordBackendFallback(
+						pendingSharedSubview->viewDef,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+						CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED, 2 );
+				} else {
+					R_ClassicSubviewDomain_RecordBackendFallback(
+						pendingSharedSubview->viewDef,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+						CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 2 );
+				}
+				pendingSharedSubview = NULL;
+			}
 			R_RendererMetrics_EndGpuTimer();
 			c_copyRenders++;
 			break;
+		}
 		default:
 			common->Error( "RB_ExecuteBackEndCommands: bad commandId" );
 			break;
 		}
+	}
+
+	if ( pendingSharedSubview != NULL ) {
+		R_ClassicSubviewDomain_RecordBackendFallback(
+			pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 3 );
 	}
 
 	// go back to the default texture so the editor doesn't mess up a bound image

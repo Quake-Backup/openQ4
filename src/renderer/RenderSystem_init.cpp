@@ -47,6 +47,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
 #include "ClassicFogBlendDomain.h"
+#include "ClassicSubviewDomain.h"
 #include "ClassicDeformDomain.h"
 #include "GeometryResources.h"
 #include "ScenePackets.h"
@@ -488,6 +489,7 @@ idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARC
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedSubview( "r_rendererSharedSubview", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible capture-backed remote-camera and refraction subview transactions from a backend-neutral sealed scene/capture record; unsupported subviews use the complete classic path" );
 idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request experimental backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
@@ -859,6 +861,16 @@ static void R_RendererClassicFogBlendDomainSelfTest_f(
 		common->Printf( "RendererClassicFogBlendDomain self-test passed\n" );
 	} else {
 		common->Warning( "RendererClassicFogBlendDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicSubviewDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicSubviewDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicSubviewDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicSubviewDomain self-test failed" );
 	}
 }
 
@@ -4181,6 +4193,78 @@ void GfxInfo_f( const idCmdArgs &args ) {
 					CLASSIC_FOG_BLEND_BACKEND_VULKAN ] );
 		}
 	}
+	{
+		const classicSubviewDomainStats_t &subview =
+			R_ClassicSubviewDomain_Stats();
+		common->Printf(
+			"classicSubviewDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s scenes=%d subviews=%d captures=%d ready=%d fallback=%d remote=%d refraction=%d hash=%016llx\n",
+			r_rendererSharedSubview.GetBool() ? 1 : 0,
+			subview.prepared ? 1 : 0,
+			subview.frameValid ? 1 : 0,
+			subview.overflow ? 1 : 0,
+			subview.status,
+			subview.sourceScenes,
+			subview.subviewScenes,
+			subview.capturePackets,
+			subview.readyViews,
+			subview.fallbackViews,
+			subview.remoteCameraViews,
+			subview.refractionViews,
+			static_cast<unsigned long long>( subview.hash ) );
+		for ( int backendIndex = 0;
+				backendIndex < CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT;
+				++backendIndex ) {
+			const classicSubviewDomainBackend_t backend =
+				static_cast<classicSubviewDomainBackend_t>( backendIndex );
+			const classicSubviewDomainBackendCoverage_t &coverage =
+				subview.backend[ backendIndex ];
+			common->Printf(
+				"classicSubviewDomain backend=%s ownedViews=%d fallbackViews=%d remote=%d refraction=%d mismatches=%d duplicate=%d untracked=%d\n",
+				ClassicSubviewDomainBackend_Name( backend ),
+				coverage.ownedViews,
+				coverage.fallbackViews,
+				coverage.ownedRemoteCameraViews,
+				coverage.ownedRefractionViews,
+				coverage.coverageMismatches,
+				coverage.duplicateReports,
+				coverage.untrackedFallbacks );
+		}
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicSubviewDomain_NumViews(); ++viewIndex ) {
+			const classicSubviewDomainView_t *view =
+				R_ClassicSubviewDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			common->Printf(
+				"classicSubviewDomain view[%d] scene=%d parent=%d capture=%d kind=%s ready=%d failure=%s detail=%d captureImage=%s rect=%d,%d %dx%d cube=%d hash=%016llx GL=%d/%s/%d Vulkan=%d/%s/%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->parentScenePacketIndex,
+				view->capturePacketIndex,
+				ClassicSubviewDomainKind_Name( view->kind ),
+				view->ready ? 1 : 0,
+				ClassicSubviewDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				view->captureImage != NULL ? view->captureImage->GetName() : "<none>",
+				view->captureX,
+				view->captureY,
+				view->captureWidth,
+				view->captureHeight,
+				view->captureCubeFace,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ],
+				ClassicSubviewDomainFailure_Name(
+					view->backendFailure[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ] ),
+				view->backendFailureDetail[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ],
+				view->backendOutcome[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ],
+				ClassicSubviewDomainFailure_Name(
+					view->backendFailure[
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ] ),
+				view->backendFailureDetail[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ] );
+		}
+	}
 	common->Printf(
 		"PBR materials: parser=1 modernLighting=0 enabled=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
 		r_pbrMaterials.GetBool() ? 1 : 0,
@@ -4328,6 +4412,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
 	R_MaterialResourceTable_Shutdown();
 	R_RenderGraphResources_Shutdown();
 	R_ModernGLExecutor_Shutdown();
@@ -4590,6 +4675,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererClassicWorldAmbientDomainSelfTest", R_RendererClassicWorldAmbientDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic world ambient whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicInteractionDomainSelfTest", R_RendererClassicInteractionDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic interaction whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicFogBlendDomainSelfTest", R_RendererClassicFogBlendDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic fog/blend whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicSubviewDomainSelfTest", R_RendererClassicSubviewDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral capture-backed classic subview transaction self tests" );
 	cmdSystem->AddCommand( "rendererClassicDeformDomainSelfTest", R_RendererClassicDeformDomainSelfTest_f, CMD_FL_RENDERER, "run sealed classic material-deform contract self tests" );
 	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
@@ -4945,6 +5031,7 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan backend seam (Phase C): the GL executor/upload/graph/debug
 	// subsystems never initialized; device + window teardown is GLimp_Shutdown
