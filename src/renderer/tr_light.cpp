@@ -1138,6 +1138,10 @@ bool R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const 
 	}
 
 	drawSurf = (drawSurf_t *)R_FrameAlloc( sizeof( *drawSurf ) );
+	// Receiver and stencil-volume drawSurfs do not run R_FinalizeDrawSurf.
+	// Clear the embedded slot so whole-drawSurf copies never read indeterminate
+	// contract bytes; scene packets seal their role-specific NOT_APPLICABLE copy.
+	memset( &drawSurf->classicDeform, 0, sizeof( drawSurf->classicDeform ) );
 
 	drawSurf->geo = tri;
 	drawSurf->space = space;
@@ -2019,7 +2023,9 @@ void R_FinalizeDrawSurf( drawSurf_t *drawSurf ) {
 		return;
 	}
 
+	R_ClassicDeformDomain_BeginDrawSurf( drawSurf );
 	R_DeformDrawSurf( drawSurf );
+	R_ClassicDeformDomain_EndDrawSurf( drawSurf );
 
 	switch( drawSurf->material->Texgen() ) {
 		case TG_SKYBOX_CUBE:

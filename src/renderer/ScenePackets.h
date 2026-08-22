@@ -5,6 +5,7 @@
 #define __SCENE_PACKETS_H__
 
 #include "GpuSkinning.h"
+#include "ClassicDeformDomain.h"
 
 /*
 ===============================================================================
@@ -179,6 +180,7 @@ typedef struct geometryResourceRecord_s {
 	int						skinningMode;
 	int						deformMode;
 	int						uploadLifetime;
+	classicDeformRecord_t	classicDeform;
 	geometryResourceFallbackReason_t fallbackReason;
 	unsigned int			fallbackFlags;
 	int						skinningPaletteOffset;
@@ -191,6 +193,7 @@ typedef struct geometryResourceRecord_s {
 	bool					hasPrimBatchMesh;
 	bool					hasGpuSkinningContract;
 	bool					hasBounds;
+	bool					hasClassicDeformRecord;
 } geometryResourceRecord_t;
 
 enum instanceVisibilityFlags_t {
@@ -306,10 +309,15 @@ typedef struct drawPacket_s {
 	int						scissorY1;
 	int						scissorX2;
 	int						scissorY2;
+	// The immutable deform contract is owned by geometryRecord. Keeping only an
+	// alias here avoids duplicating the comparatively large sealed record across
+	// every draw slot in the fixed packet arena.
+	const classicDeformRecord_t *classicDeformRecord;
 	bool					hasGeometry;
 	bool					hasShaderRegisters;
 	bool					hasIndexCache;
 	bool					hasAmbientCache;
+	bool					hasClassicDeformRecord;
 } drawPacket_t;
 
 typedef struct passPacket_s {
@@ -349,6 +357,20 @@ typedef struct scenePacketFrameStats_s {
 	int						drawPacketsWithShaderRegisters;
 	int						drawPacketsWithIndexCache;
 	int						drawPacketsWithAmbientCache;
+	int						drawPacketsWithClassicDeformRecord;
+	int						materialDeformDrawPackets;
+	int						deformFinalizedDrawPackets;
+	int						deformInteractionReceiverPackets;
+	int						deformFogReceiverPackets;
+	int						deformShadowVolumePackets;
+	int						deformOtherRolePackets;
+	int						deformCompletedPackets;
+	int						deformEmptyPackets;
+	int						deformNotApplicablePackets;
+	int						deformSkippedPackets;
+	int						deformFailedPackets;
+	int						deformUnsupportedPackets;
+	int						deformFallbackPackets;
 	int						worldPackets;
 	int						subviewPackets;
 	int						remoteCameraPackets;
@@ -374,7 +396,9 @@ public:
 
 	bool AddScene( const viewDef_t *viewDef, bool legacyBridge );
 	bool AddPass( renderPassCategory_t category, bool enabled, bool commandOnly = false );
-	bool AddDrawPacket( const drawSurf_t *drawSurf, renderPassCategory_t category, int drawIndex );
+	bool AddDrawPacket( const drawSurf_t *drawSurf, renderPassCategory_t category,
+		int drawIndex,
+		classicDeformRole_t deformRole = CLASSIC_DEFORM_ROLE_UNKNOWN );
 	bool AddInteractionDrawPacket( const drawSurf_t *drawSurf, int drawIndex,
 		const viewLight_t *viewLight, int lightOrdinal,
 		sceneInteractionReceiverClass_t receiverClass, int receiverOrdinal );
@@ -409,7 +433,8 @@ public:
 
 private:
 	int FindOrAddMaterialRecord( const drawSurf_t *drawSurf );
-	int FindOrAddGeometryRecord( const drawSurf_t *drawSurf );
+	int FindOrAddGeometryRecord( const drawSurf_t *drawSurf,
+		const classicDeformRecord_t &classicDeform );
 	int FindOrAddInstanceRecord( const drawSurf_t *drawSurf, scenePacketCategory_t packetCategory );
 	void SetOverflow( scenePacketOverflowCause_t cause );
 	void CountCategory( scenePacketCategory_t category );

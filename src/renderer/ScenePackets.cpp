@@ -24,6 +24,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererSharedWorldAmbient.GetBool()
 		|| r_rendererSharedWorldInteraction.GetBool()
 		|| r_rendererSharedWorldFogBlend.GetBool()
+		|| r_rendererSharedDeform.GetBool()
 		|| r_rendererModernVisibleDepth.GetBool()
 		|| r_rendererModernDepthDebug.GetInteger() > 0
 		|| r_rendererModernOpaque.GetBool()
@@ -76,6 +77,36 @@ static idHashIndex rg_scenePacketInstanceLookup[SCENE_PACKET_LOOKUP_SLOTS];
 static int R_ScenePackets_PointerLookupKey( const void *pointer ) {
 	const size_t address = reinterpret_cast<size_t>( pointer );
 	return static_cast<int>( ( address >> 4 ) ^ ( address >> 14 ) );
+}
+
+static classicDeformRole_t R_ScenePackets_ClassicDeformRoleForPass(
+		renderPassCategory_t category ) {
+	switch ( category ) {
+	case RENDER_PASS_ARB2_INTERACTION:
+		return CLASSIC_DEFORM_ROLE_INTERACTION_RECEIVER;
+	case RENDER_PASS_FOG_BLEND:
+		return CLASSIC_DEFORM_ROLE_FOG_RECEIVER;
+	case RENDER_PASS_STENCIL_SHADOW:
+		return CLASSIC_DEFORM_ROLE_SHADOW_VOLUME;
+	default:
+		// Ambient, depth, shadow-map caster, and forward/post classifications
+		// originate from the finalized view draw rather than receiver chains.
+		return CLASSIC_DEFORM_ROLE_FINALIZED_DRAW;
+	}
+}
+
+static int R_ScenePackets_GeometryLookupKey( const srfTriangles_t *geometry,
+		const classicDeformRecord_t &classicDeform ) {
+	const std::uint64_t semantic = classicDeform.semanticHash;
+	const std::uint64_t frame = classicDeform.frameToken;
+	const unsigned int mixed =
+		static_cast<unsigned int>( R_ScenePackets_PointerLookupKey( geometry ) )
+		^ static_cast<unsigned int>( semantic )
+		^ static_cast<unsigned int>( semantic >> 32 )
+		^ static_cast<unsigned int>( frame )
+		^ static_cast<unsigned int>( frame >> 32 )
+		^ ( static_cast<unsigned int>( classicDeform.role ) * 0x9e3779b9u );
+	return static_cast<int>( mixed );
 }
 
 static void R_ScenePackets_ClaimLookupSlot( const idScenePacketFrame *frame ) {
@@ -563,9 +594,10 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 	record.permutation.alphaMode = material->Coverage();
 	record.permutation.skinningMode =
 		R_ScenePackets_DrawSurfSkinningMode( drawSurf ) != GEOMETRY_SKINNING_NONE ? 1u : 0u;
-	record.permutation.deformMode =
-		( drawSurf != NULL && drawSurf->geo != NULL && drawSurf->geo->deformedSurface ) ? 2u :
-		( material->Deform() != DFRM_NONE ? 1u : 0u );
+	// srfTriangles_t::deformedSurface is generated-model topology ownership,
+	// not evidence of material deformation. Per-draw execution provenance is
+	// sealed separately in classicDeformRecord_t.
+	record.permutation.deformMode = material->Deform() != DFRM_NONE ? 1u : 0u;
 	record.permutation.lightGridMode =
 		( material->ReceivesLighting() ? 1u : 0u ) |
 		( material->HasAmbient() ? 2u : 0u );
@@ -575,23 +607,29 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 	return recordIndex;
 }
 
-int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
+int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf,
+		const classicDeformRecord_t &classicDeform ) {
 	if ( drawSurf == NULL || drawSurf->geo == NULL ) {
 		return -1;
 	}
 
 	const srfTriangles_t *geo = drawSurf->geo;
+	const int lookupKey = R_ScenePackets_GeometryLookupKey( geo, classicDeform );
 	const int lookupSlot = R_ScenePackets_PreparedLookupSlot( this );
 	if ( lookupSlot >= 0 ) {
 		const idHashIndex &lookup = rg_scenePacketGeometryLookup[lookupSlot];
-		for ( int i = lookup.First( R_ScenePackets_PointerLookupKey( geo ) ); i >= 0; i = lookup.Next( i ) ) {
-			if ( geometryRecords[i].legacyGeometry == geo ) {
+		for ( int i = lookup.First( lookupKey ); i >= 0; i = lookup.Next( i ) ) {
+			if ( geometryRecords[i].legacyGeometry == geo
+					&& R_ClassicDeformDomain_SameProvenance(
+						geometryRecords[i].classicDeform, classicDeform ) ) {
 				return i;
 			}
 		}
 	} else {
 		for ( int i = 0; i < stats.geometryRecords; ++i ) {
-			if ( geometryRecords[i].legacyGeometry == geo ) {
+			if ( geometryRecords[i].legacyGeometry == geo
+					&& R_ClassicDeformDomain_SameProvenance(
+						geometryRecords[i].classicDeform, classicDeform ) ) {
 				return i;
 			}
 		}
@@ -604,7 +642,7 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 
 	const int recordIndex = stats.geometryRecords++;
 	if ( lookupSlot >= 0 ) {
-		rg_scenePacketGeometryLookup[lookupSlot].Add( R_ScenePackets_PointerLookupKey( geo ), recordIndex );
+		rg_scenePacketGeometryLookup[lookupSlot].Add( lookupKey, recordIndex );
 	}
 	geometryResourceRecord_t &record = geometryRecords[recordIndex];
 	memset( &record, 0, sizeof( record ) );
@@ -617,13 +655,22 @@ int idScenePacketFrame::FindOrAddGeometryRecord( const drawSurf_t *drawSurf ) {
 	record.firstIndex = 0;
 	record.vertexStride = sizeof( idDrawVert );
 	record.indexType = GL_INDEX_TYPE;
+	record.classicDeform = classicDeform;
+	record.hasClassicDeformRecord =
+		R_ClassicDeformDomain_ValidateRecordForFrame( classicDeform,
+			classicDeform.frameToken );
 	record.skinningMode = R_ScenePackets_DrawSurfSkinningMode(
 		drawSurf, &record.gpuSkinningSurface );
 	record.hasGpuSkinningContract = record.skinningMode == GEOMETRY_SKINNING_GPU_PALETTE
 		&& record.gpuSkinningSurface.fallbackReason == GPU_SKINNING_FALLBACK_NONE
 		&& record.gpuSkinningSurface.bindPoseVerts != NULL;
-	record.deformMode = geo->deformedSurface ? GEOMETRY_DEFORM_SURFACE :
-		( drawSurf->material != NULL && drawSurf->material->Deform() != DFRM_NONE ? GEOMETRY_DEFORM_MATERIAL : GEOMETRY_DEFORM_NONE );
+	// Generated/dynamic topology remains an explicit surface-ownership class;
+	// it is never evidence that a material deform executed. Material deformation
+	// is classified only from the sealed per-draw record.
+	record.deformMode = geo->deformedSurface
+		? GEOMETRY_DEFORM_SURFACE
+		: ( classicDeform.kind != CLASSIC_DEFORM_KIND_NONE
+			? GEOMETRY_DEFORM_MATERIAL : GEOMETRY_DEFORM_NONE );
 	record.uploadLifetime = R_ScenePackets_UploadLifetimeForCache( geo->ambientCache, geo->indexCache, geo );
 	record.fallbackReason = GEOMETRY_RESOURCE_FALLBACK_NONE;
 	record.skinningPaletteOffset = record.hasGpuSkinningContract
@@ -819,7 +866,9 @@ bool idScenePacketFrame::AddPass( renderPassCategory_t category, bool enabled, b
 	return true;
 }
 
-bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf, renderPassCategory_t category, int drawIndex ) {
+bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf,
+		renderPassCategory_t category, int drawIndex,
+		classicDeformRole_t deformRole ) {
 	if ( activePass < 0 ) {
 		if ( !AddPass( category, true ) ) {
 			return false;
@@ -835,7 +884,16 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf, renderPassCa
 	memset( &packet, 0, sizeof( packet ) );
 	const int materialRecordIndex = FindOrAddMaterialRecord( drawSurf );
 	const scenePacketCategory_t packetCategory = R_ScenePackets_CategoryForDrawSurf( activeScene >= 0 ? scenes[activeScene].viewDef : NULL, drawSurf, category );
-	const int geometryRecordIndex = FindOrAddGeometryRecord( drawSurf );
+	classicDeformRecord_t classicDeform;
+	const std::uint64_t deformFrameToken =
+		R_ClassicDeformDomain_CurrentFrameToken();
+	if ( deformRole == CLASSIC_DEFORM_ROLE_UNKNOWN ) {
+		deformRole = R_ScenePackets_ClassicDeformRoleForPass( category );
+	}
+	R_ClassicDeformDomain_SnapshotDrawSurf( drawSurf,
+		deformRole, deformFrameToken, classicDeform );
+	const int geometryRecordIndex = FindOrAddGeometryRecord(
+		drawSurf, classicDeform );
 	const int instanceRecordIndex = FindOrAddInstanceRecord( drawSurf, packetCategory );
 	packet.legacyDrawSurf = drawSurf;
 	packet.viewDef = activeScene >= 0 ? scenes[activeScene].viewDef : NULL;
@@ -856,6 +914,15 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf, renderPassCa
 	packet.vertexOffset = 0;
 	packet.instanceOffset = 0;
 	packet.instanceCount = drawSurf ? 1 : 0;
+	packet.classicDeformRecord = packet.geometryRecord != NULL
+		? &packet.geometryRecord->classicDeform : NULL;
+	packet.hasClassicDeformRecord = packet.classicDeformRecord != NULL
+		&& packet.geometryRecord->hasClassicDeformRecord
+		&& R_ClassicDeformDomain_ValidateRecordForFrame(
+			*packet.classicDeformRecord, deformFrameToken )
+		&& R_ClassicDeformDomain_SameProvenance(
+			*packet.classicDeformRecord, classicDeform );
+	R_ClassicDeformDomain_RecordPacket( classicDeform );
 	if ( drawSurf != NULL ) {
 		packet.scissorX1 = drawSurf->scissorRect.x1;
 		packet.scissorY1 = drawSurf->scissorRect.y1;
@@ -900,6 +967,57 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf, renderPassCa
 	if ( packet.hasAmbientCache ) {
 		stats.drawPacketsWithAmbientCache++;
 	}
+	if ( packet.hasClassicDeformRecord ) {
+		stats.drawPacketsWithClassicDeformRecord++;
+	}
+	if ( classicDeform.kind != CLASSIC_DEFORM_KIND_NONE ) {
+		stats.materialDeformDrawPackets++;
+		switch ( classicDeform.role ) {
+		case CLASSIC_DEFORM_ROLE_FINALIZED_DRAW:
+			stats.deformFinalizedDrawPackets++;
+			break;
+		case CLASSIC_DEFORM_ROLE_INTERACTION_RECEIVER:
+			stats.deformInteractionReceiverPackets++;
+			break;
+		case CLASSIC_DEFORM_ROLE_FOG_RECEIVER:
+			stats.deformFogReceiverPackets++;
+			break;
+		case CLASSIC_DEFORM_ROLE_SHADOW_VOLUME:
+			stats.deformShadowVolumePackets++;
+			break;
+		default:
+			stats.deformOtherRolePackets++;
+			break;
+		}
+		switch ( classicDeform.outcome ) {
+		case CLASSIC_DEFORM_OUTCOME_COMPLETED:
+			stats.deformCompletedPackets++;
+			break;
+		case CLASSIC_DEFORM_OUTCOME_EMPTY:
+			stats.deformEmptyPackets++;
+			break;
+		case CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE:
+			stats.deformNotApplicablePackets++;
+			break;
+		case CLASSIC_DEFORM_OUTCOME_SKIPPED:
+			stats.deformSkippedPackets++;
+			break;
+		case CLASSIC_DEFORM_OUTCOME_FAILED:
+			stats.deformFailedPackets++;
+			break;
+		case CLASSIC_DEFORM_OUTCOME_UNSUPPORTED:
+			stats.deformUnsupportedPackets++;
+			break;
+		default:
+			break;
+		}
+		if ( ( packet.geometryRecord != NULL
+					&& ( packet.geometryRecord->fallbackFlags
+						& GEOMETRY_RESOURCE_FALLBACK_FLAG_UNSUPPORTED_DEFORM ) != 0 )
+				|| R_ClassicDeformDomain_IsFailClosed( classicDeform ) ) {
+			stats.deformFallbackPackets++;
+		}
+	}
 	return true;
 }
 
@@ -942,8 +1060,15 @@ bool idScenePacketFrame::AddShadowDrawPacket( const drawSurf_t *drawSurf,
 	if ( ( category != RENDER_PASS_STENCIL_SHADOW
 			&& category != RENDER_PASS_SHADOW_MAP )
 			|| casterClass <= SCENE_SHADOW_CASTER_NONE
-			|| casterClass >= SCENE_SHADOW_CASTER_COUNT
-			|| !AddDrawPacket( drawSurf, category, drawIndex ) ) {
+			|| casterClass >= SCENE_SHADOW_CASTER_COUNT ) {
+		return false;
+	}
+	const bool stencilGeometry = category == RENDER_PASS_STENCIL_SHADOW
+		|| casterClass == SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL
+		|| casterClass == SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL;
+	if ( !AddDrawPacket( drawSurf, category, drawIndex,
+			stencilGeometry ? CLASSIC_DEFORM_ROLE_SHADOW_VOLUME
+				: CLASSIC_DEFORM_ROLE_FINALIZED_DRAW ) ) {
 		return false;
 	}
 	drawPacket_t &packet = drawPackets[stats.drawPackets - 1];
@@ -1196,6 +1321,8 @@ static void R_ScenePackets_EnsureFrontEndFrame( void ) {
 	if ( !rg_frontEndScenePacketFrameOpen ) {
 		rg_frontEndScenePacketFrame.Clear();
 		rg_frontEndScenePacketFrameOpen = true;
+		R_ClassicDeformDomain_BeginPacketFrame(
+			R_ClassicDeformDomain_CurrentFrameToken() );
 	}
 	rg_frontEndScenePacketFrame.MarkFrontEndDerived();
 }
@@ -1204,6 +1331,8 @@ void R_ScenePackets_BeginFrame( void ) {
 	rg_frontEndScenePacketFrame.Clear();
 	rg_frontEndScenePacketFrame.MarkFrontEndDerived();
 	rg_frontEndScenePacketFrameOpen = true;
+	R_ClassicDeformDomain_BeginPacketFrame(
+		R_ClassicDeformDomain_CurrentFrameToken() );
 }
 
 void R_ScenePackets_EndFrame( void ) {
@@ -1961,7 +2090,7 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 
 	const scenePacketFrameStats_t &stats = packetFrame.Stats();
 	common->Printf(
-		"scenePackets source=%s scenes=%d passes=%d draws=%d clipped=%d cmds=%d drawViews=%d materials=%d geometryRecords=%d instanceRecords=%d withMaterial=%d resources=%d geometryRecordRefs=%d instanceRefs=%d geometry=%d regs=%d indexCache=%d ambientCache=%d categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d) sortFailures=%d overflow=%d cause=%s\n",
+		"scenePackets source=%s scenes=%d passes=%d draws=%d clipped=%d cmds=%d drawViews=%d materials=%d geometryRecords=%d instanceRecords=%d withMaterial=%d resources=%d geometryRecordRefs=%d instanceRefs=%d geometry=%d regs=%d indexCache=%d ambientCache=%d deformRecords=%d deform(material=%d finalized=%d interaction=%d fog=%d shadowVolume=%d other=%d completed=%d empty=%d notApplicable=%d skipped=%d failed=%d unsupported=%d fallback=%d) categories(world=%d subview=%d remote=%d fx=%d viewmodel=%d demo=%d gui=%d post=%d present=%d command=%d) sortFailures=%d overflow=%d cause=%s\n",
 		stats.frontEndDerived ? "frontend" : ( stats.backendDerived ? "backend" : "unknown" ),
 		stats.scenePackets,
 		stats.passPackets,
@@ -1980,6 +2109,20 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 		stats.drawPacketsWithShaderRegisters,
 		stats.drawPacketsWithIndexCache,
 		stats.drawPacketsWithAmbientCache,
+		stats.drawPacketsWithClassicDeformRecord,
+		stats.materialDeformDrawPackets,
+		stats.deformFinalizedDrawPackets,
+		stats.deformInteractionReceiverPackets,
+		stats.deformFogReceiverPackets,
+		stats.deformShadowVolumePackets,
+		stats.deformOtherRolePackets,
+		stats.deformCompletedPackets,
+		stats.deformEmptyPackets,
+		stats.deformNotApplicablePackets,
+		stats.deformSkippedPackets,
+		stats.deformFailedPackets,
+		stats.deformUnsupportedPackets,
+		stats.deformFallbackPackets,
 		stats.worldPackets,
 		stats.subviewPackets,
 		stats.remoteCameraPackets,
@@ -2023,7 +2166,7 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 	for ( int i = 0; i < geometryRecordLogCount; ++i ) {
 		const geometryResourceRecord_t &record = packetFrame.GeometryRecord( i );
 		common->Printf(
-			"scenePackets geometry[%d]=verts:%d indexes:%d vbo:%d@%d ibo:%d@%d lifetime=%d skin=%d deform=%d fallback=%s flags=0x%x bounds=%s\n",
+			"scenePackets geometry[%d]=verts:%d indexes:%d vbo:%d@%d ibo:%d@%d lifetime=%d skin=%d deform=%d contract=%s/%s/%s fresh=%d hash=%llu fallback=%s flags=0x%x bounds=%s\n",
 			i,
 			record.vertexCount,
 			record.indexCount,
@@ -2034,6 +2177,11 @@ void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame ) {
 			record.uploadLifetime,
 			record.skinningMode,
 			record.deformMode,
+			ClassicDeformRole_Name( record.classicDeform.role ),
+			ClassicDeformKind_Name( record.classicDeform.kind ),
+			ClassicDeformOutcome_Name( record.classicDeform.outcome ),
+			record.hasClassicDeformRecord ? 1 : 0,
+			static_cast<unsigned long long>( record.classicDeform.semanticHash ),
 			GeometryResourceFallbackReason_Name( record.fallbackReason ),
 			record.fallbackFlags,
 			record.hasBounds ? "yes" : "no" );

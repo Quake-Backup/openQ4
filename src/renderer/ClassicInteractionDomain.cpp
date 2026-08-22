@@ -384,6 +384,9 @@ static bool FailView( classicInteractionDomainView_t &view,
 	view.inactiveLightStageCount = 0;
 	view.activeSurfaceStageCount = 0;
 	view.inactiveSurfaceStageCount = 0;
+	view.materialDeformReceiverCount = 0;
+	view.completedDeformCasterCount = 0;
+	view.emptyDeformCasterCount = 0;
 	std::memset( view.receiverSurfaceCount, 0,
 		sizeof( view.receiverSurfaceCount ) );
 	std::memset( view.receiverPrimitiveCount, 0,
@@ -398,6 +401,81 @@ static bool FailView( classicInteractionDomainView_t &view,
 		domain.stats.overflow = true;
 	}
 	return false;
+}
+
+static bool MaterialRequestsClassicDeform( const drawSurf_t *drawSurf ) {
+	return drawSurf != NULL && drawSurf->material != NULL
+		&& drawSurf->material->Deform() != DFRM_NONE;
+}
+
+static int DeformContractFailureDetail( const drawSurf_t *drawSurf,
+		const drawPacket_t *packet = NULL ) {
+	const classicDeformRecord_t *record = packet != NULL
+		&& packet->hasClassicDeformRecord
+		&& packet->classicDeformRecord != NULL ? packet->classicDeformRecord
+		: ( drawSurf != NULL ? &drawSurf->classicDeform : NULL );
+	if ( record == NULL ) {
+		return -1;
+	}
+	return static_cast<int>( record->role )
+		* CLASSIC_DEFORM_OUTCOME_COUNT
+		+ static_cast<int>( record->outcome );
+}
+
+static bool ValidateDeformContract( const drawSurf_t *drawSurf,
+		const drawPacket_t *packet, classicDeformRole_t expectedRole,
+		classicDeformRole_t &role, classicDeformOutcome_t &outcome,
+		std::uint64_t &semanticHash ) {
+	role = CLASSIC_DEFORM_ROLE_UNKNOWN;
+	outcome = CLASSIC_DEFORM_OUTCOME_NONE;
+	semanticHash = 0;
+	if ( !MaterialRequestsClassicDeform( drawSurf ) ) {
+		return true;
+	}
+	if ( !r_rendererSharedDeform.GetBool() || r_skipDeforms.GetBool() ) {
+		return false;
+	}
+	const std::uint64_t frameToken =
+		R_ClassicDeformDomain_CurrentFrameToken();
+	const classicDeformRecord_t *packetRecord = packet != NULL
+		? packet->classicDeformRecord : NULL;
+	const classicDeformRecord_t &record =
+		expectedRole == CLASSIC_DEFORM_ROLE_FINALIZED_DRAW
+		? drawSurf->classicDeform
+		: ( packetRecord != NULL ? *packetRecord : drawSurf->classicDeform );
+	if ( record.role != expectedRole
+			|| !R_ClassicDeformDomain_ValidateRecordForFrame( record,
+				frameToken )
+			|| !R_ClassicDeformDomain_RecordMatchesDrawSurf( record, drawSurf ) ) {
+		return false;
+	}
+	if ( expectedRole == CLASSIC_DEFORM_ROLE_FINALIZED_DRAW ) {
+		if ( !record.cpuFinalized
+				|| ( !R_ClassicDeformDomain_HasCompletedOutput( record )
+					&& !R_ClassicDeformDomain_HasEmptyOutput( record ) ) ) {
+			return false;
+		}
+	} else if ( record.cpuFinalized
+			|| record.outcome != CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE ) {
+		return false;
+	}
+	if ( packet != NULL ) {
+		if ( !packet->hasClassicDeformRecord
+				|| packetRecord == NULL
+				|| packet->geometryRecord == NULL
+				|| packetRecord != &packet->geometryRecord->classicDeform
+				|| !packet->geometryRecord->hasClassicDeformRecord
+				|| !R_ClassicDeformDomain_ValidateRecordForFrame(
+					*packetRecord, frameToken )
+				|| !R_ClassicDeformDomain_SameProvenance( record,
+					*packetRecord ) ) {
+			return false;
+		}
+	}
+	role = record.role;
+	outcome = record.outcome;
+	semanticHash = record.semanticHash;
+	return true;
 }
 
 static bool MatrixHasNegativeScale( const float matrix[ 16 ] ) {
@@ -740,6 +818,9 @@ static std::uint64_t HashSurface(
 	HashInt( hash, surface.scissorY1 );
 	HashInt( hash, surface.scissorX2 );
 	HashInt( hash, surface.scissorY2 );
+	HashInt( hash, surface.deformRole );
+	HashInt( hash, surface.deformOutcome );
+	HashU64( hash, surface.deformContractHash );
 	for ( int i = 0; i < surface.primitiveCount; ++i ) {
 		HashU64( hash, domain.primitives[ surface.firstPrimitive + i ].hash );
 	}
@@ -802,6 +883,9 @@ static std::uint64_t HashShadowCaster(
 	HashBool( hash, caster.ambientGeometry );
 	HashBool( hash, caster.dynamicCaster );
 	HashBool( hash, caster.translucentCaster );
+	HashInt( hash, caster.deformRole );
+	HashInt( hash, caster.deformOutcome );
+	HashU64( hash, caster.deformContractHash );
 	for ( int i = 0; i < caster.alphaStageCount; ++i ) {
 		HashU64( hash,
 			domain.shadowAlphaStages[ caster.firstAlphaStage + i ].hash );
@@ -1016,6 +1100,9 @@ static std::uint64_t HashView( const classicInteractionDomainView_t &view ) {
 	HashInt( hash, view.inactiveLightStageCount );
 	HashInt( hash, view.activeSurfaceStageCount );
 	HashInt( hash, view.inactiveSurfaceStageCount );
+	HashInt( hash, view.materialDeformReceiverCount );
+	HashInt( hash, view.completedDeformCasterCount );
+	HashInt( hash, view.emptyDeformCasterCount );
 	for ( int receiver = 0; receiver < CLASSIC_INTERACTION_RECEIVER_COUNT;
 			receiver++ ) {
 		HashInt( hash, view.receiverSurfaceCount[ receiver ] );
@@ -1201,11 +1288,28 @@ static bool ValidateShadowPacket( const idScenePacketFrame &packetFrame,
 	const bool stencilPacket = passCategory == RENDER_PASS_STENCIL_SHADOW
 		|| casterClass == SCENE_SHADOW_CASTER_SUPPLEMENT_GLOBAL
 		|| casterClass == SCENE_SHADOW_CASTER_SUPPLEMENT_LOCAL;
+	bool admittedMaterialDeform = false;
+	if ( !stencilPacket && MaterialRequestsClassicDeform( drawSurf )
+			&& r_rendererSharedDeform.GetBool() ) {
+		classicDeformRole_t role;
+		classicDeformOutcome_t outcome;
+		std::uint64_t semanticHash = 0;
+		if ( !ValidateDeformContract( drawSurf, &packet,
+				CLASSIC_DEFORM_ROLE_FINALIZED_DRAW, role, outcome,
+				semanticHash ) ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT,
+				DeformContractFailureDetail( drawSurf, &packet ), -1, packetIndex,
+				lightOrdinal, chainOrdinal );
+			return false;
+		}
+		admittedMaterialDeform = true;
+	}
 	const srfTriangles_t *tri = drawSurf->geo;
 	const srfTriangles_t *casterTri = !stencilPacket
 		&& tri->ambientSurface != NULL ? tri->ambientSurface : tri;
 	if ( !packet.hasGeometry || geometry.legacyGeometry == NULL
-			|| geometry.deformMode != GEOMETRY_DEFORM_NONE
+			|| ( geometry.deformMode != GEOMETRY_DEFORM_NONE
+				&& !admittedMaterialDeform )
 			|| ( geometry.skinningMode != GEOMETRY_SKINNING_NONE
 				&& geometry.skinningMode != GEOMETRY_SKINNING_CPU )
 			|| geometry.hasPrimBatchMesh || tri->deformedSurface
@@ -1427,6 +1531,88 @@ static float ShadowMapAlphaHashMode( const float modelMatrix[ 16 ] ) {
 	return 2.0f + seedBase - idMath::Floor( seedBase );
 }
 
+static bool AppendEmptyMappedDeformCaster(
+		classicInteractionDomainLight_t &light, const drawSurf_t *drawSurf,
+		classicInteractionDomainShadowChain_t domainChain, int chainOrdinal,
+		int sourceOrdinal, int passPacketIndex, int packetCursor,
+		int lightArenaBase, classicInteractionBuildError_t &error ) {
+	classicDeformRole_t role;
+	classicDeformOutcome_t outcome;
+	std::uint64_t semanticHash = 0;
+	if ( !ValidateDeformContract( drawSurf, NULL,
+			CLASSIC_DEFORM_ROLE_FINALIZED_DRAW, role, outcome,
+			semanticHash ) ) {
+		SetError( error, CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT,
+			DeformContractFailureDetail( drawSurf ), passPacketIndex,
+			packetCursor, light.sourceOrdinal, chainOrdinal );
+		return false;
+	}
+	if ( outcome != CLASSIC_DEFORM_OUTCOME_EMPTY ) {
+		return true;
+	}
+	const materialCoverage_t coverage = drawSurf != NULL
+		&& drawSurf->material != NULL ? drawSurf->material->Coverage()
+		: MC_BAD;
+	if ( drawSurf == NULL || drawSurf->geo == NULL || drawSurf->space == NULL
+			|| drawSurf->material == NULL
+			|| ( coverage != MC_OPAQUE && coverage != MC_PERFORATED )
+			|| drawSurf->classicDeform.resultGeometry.indexCount != 0
+			|| domain.shadowCasterCount
+				>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ) {
+		SetError( error, domain.shadowCasterCount
+				>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS
+			? CLASSIC_INTERACTION_FAILURE_SHADOW_CASTER_POOL_OVERFLOW
+			: CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT,
+			DeformContractFailureDetail( drawSurf ), passPacketIndex,
+			packetCursor, light.sourceOrdinal, chainOrdinal );
+		return false;
+	}
+	classicInteractionDomainShadowCaster_t caster;
+	InitShadowCaster( caster );
+	caster.legacyDrawSurf = drawSurf;
+	caster.legacyViewLight = light.legacyViewLight;
+	caster.legacyCasterGeometry = drawSurf->geo;
+	caster.lightIndex = static_cast<int>( &light - domain.lights );
+	caster.sourceOrdinal = sourceOrdinal;
+	caster.chainOrdinal = chainOrdinal;
+	caster.chain = domainChain;
+	caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_AMBIENT;
+	caster.cull = ConvertCull( drawSurf->material->GetCullType(), error );
+	if ( error.failure != CLASSIC_INTERACTION_FAILURE_NONE ) {
+		return false;
+	}
+	caster.materialCoverage = coverage;
+	caster.scissorX1 = drawSurf->scissorRect.x1;
+	caster.scissorY1 = drawSurf->scissorRect.y1;
+	caster.scissorX2 = drawSurf->scissorRect.x2;
+	caster.scissorY2 = drawSurf->scissorRect.y2;
+	caster.depthMin = idMath::ClampFloat( 0.0f, 1.0f,
+		drawSurf->scissorRect.zmin );
+	caster.depthMax = idMath::ClampFloat( caster.depthMin, 1.0f,
+		drawSurf->scissorRect.zmax );
+	std::memcpy( caster.modelMatrix, drawSurf->space->modelMatrix,
+		sizeof( caster.modelMatrix ) );
+	std::memcpy( caster.modelViewMatrix, drawSurf->space->modelViewMatrix,
+		sizeof( caster.modelViewMatrix ) );
+	std::memcpy( caster.boundsMin, drawSurf->geo->bounds[0].ToFloatPtr(),
+		sizeof( caster.boundsMin ) );
+	std::memcpy( caster.boundsMax, drawSurf->geo->bounds[1].ToFloatPtr(),
+		sizeof( caster.boundsMax ) );
+	caster.ambientGeometry = true;
+	caster.dynamicCaster = domainChain
+		== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC
+		|| domainChain == CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC;
+	caster.deformRole = role;
+	caster.deformOutcome = outcome;
+	caster.deformContractHash = semanticHash;
+	caster.hash = HashShadowCaster( caster, lightArenaBase );
+	domain.shadowCasters[ domain.shadowCasterCount++ ] = caster;
+	light.shadowCasterCount[ domainChain ]++;
+	light.shadowCasterTotal++;
+	light.noopShadowCasters++;
+	return true;
+}
+
 static bool PrepareMappedShadowChain(
 		const idScenePacketFrame &packetFrame,
 		classicInteractionDomainView_t &view,
@@ -1455,6 +1641,19 @@ static bool PrepareMappedShadowChain(
 	for ( const drawSurf_t *drawSurf = chain; drawSurf != NULL;
 			drawSurf = drawSurf->nextOnLight, ++chainOrdinal ) {
 		if ( !ShadowPacketSurfaceEligible( drawSurf ) ) {
+			if ( MaterialRequestsClassicDeform( drawSurf ) ) {
+				// The validator owns both switch isolation and the explicit
+				// EMPTY proof. Never let an ineligible deform caster disappear
+				// from the chain merely because deform ownership is disabled.
+				if ( !AppendEmptyMappedDeformCaster( light, drawSurf,
+						domainChain, chainOrdinal,
+						packetCursor
+							- packetFrame.Pass( passPacketIndex ).firstDrawPacket,
+						passPacketIndex, packetCursor, lightArenaBase,
+							error ) ) {
+					return false;
+				}
+			}
 			continue;
 		}
 		if ( packetCursor < 0 || packetCursor >= packetEnd ) {
@@ -1494,7 +1693,8 @@ static bool PrepareMappedShadowChain(
 		const idMaterial *material = drawSurf->material;
 		const materialCoverage_t coverage = material->Coverage();
 		if ( coverage != MC_OPAQUE && coverage != MC_PERFORATED
-				|| material->Deform() != DFRM_NONE
+				|| ( material->Deform() != DFRM_NONE
+					&& !r_rendererSharedDeform.GetBool() )
 				|| material->HasGui() || material->HasSubview()
 				|| drawSurf->dynamicTexCoords != NULL
 				|| drawSurf->texGenTransformAndViewOrg != NULL
@@ -1579,6 +1779,11 @@ static bool PrepareMappedShadowChain(
 			== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC
 			|| domainChain
 				== CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC;
+		if ( MaterialRequestsClassicDeform( drawSurf ) ) {
+			caster.deformRole = drawSurf->classicDeform.role;
+			caster.deformOutcome = drawSurf->classicDeform.outcome;
+			caster.deformContractHash = drawSurf->classicDeform.semanticHash;
+		}
 
 		bool activeAlphaStage = false;
 		bool drawableAlphaStage = false;
@@ -2219,7 +2424,24 @@ static bool ValidateDrawPacket( const idScenePacketFrame &packetFrame,
 			packet.indexCount, -1, packetIndex, lightOrdinal, receiverOrdinal );
 		return false;
 	}
-	if ( geometry.deformMode != GEOMETRY_DEFORM_NONE
+	bool admittedMaterialDeform = false;
+	if ( MaterialRequestsClassicDeform( drawSurf )
+			&& r_rendererSharedDeform.GetBool() ) {
+		classicDeformRole_t role;
+		classicDeformOutcome_t outcome;
+		std::uint64_t semanticHash = 0;
+		if ( !ValidateDeformContract( drawSurf, &packet,
+				CLASSIC_DEFORM_ROLE_INTERACTION_RECEIVER, role, outcome,
+				semanticHash ) ) {
+			SetError( error, CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT,
+				DeformContractFailureDetail( drawSurf, &packet ), -1, packetIndex,
+				lightOrdinal, receiverOrdinal );
+			return false;
+		}
+		admittedMaterialDeform = true;
+	}
+	if ( ( geometry.deformMode != GEOMETRY_DEFORM_NONE
+				&& !admittedMaterialDeform )
 			|| ( drawSurf->geo != NULL && drawSurf->geo->deformedSurface ) ) {
 		SetError( error, CLASSIC_INTERACTION_FAILURE_DEFORM,
 			geometry.deformMode, -1, packetIndex, lightOrdinal, receiverOrdinal );
@@ -2392,7 +2614,8 @@ static bool ValidateSurfaceMaterial( const drawPacket_t &packet,
 			0, -1, -1, lightOrdinal, receiverOrdinal );
 		return false;
 	}
-	if ( material->Deform() != DFRM_NONE
+	if ( ( material->Deform() != DFRM_NONE
+			&& !r_rendererSharedDeform.GetBool() )
 			|| ( drawSurf.geo != NULL && drawSurf.geo->deformedSurface ) ) {
 		SetError( error, CLASSIC_INTERACTION_FAILURE_DEFORM,
 			material->Deform(), -1, -1, lightOrdinal, receiverOrdinal );
@@ -3387,6 +3610,12 @@ static bool R_ClassicInteractionDomain_PrepareView(
 				surface.scissorY1 = packet.scissorY1;
 				surface.scissorX2 = packet.scissorX2;
 				surface.scissorY2 = packet.scissorY2;
+				if ( MaterialRequestsClassicDeform( drawSurf ) ) {
+					surface.deformRole = packet.classicDeformRecord->role;
+					surface.deformOutcome = packet.classicDeformRecord->outcome;
+					surface.deformContractHash =
+						packet.classicDeformRecord->semanticHash;
+				}
 				const materialResourceTableRecord_t *tableRecord = NULL;
 				if ( !ValidateSurfaceMaterial( packet, *drawSurf,
 						sourceLightOrdinal, receiverOrdinal, view, tableRecord,
@@ -3515,6 +3744,21 @@ static bool R_ClassicInteractionDomain_PrepareView(
 			domain.surfaces[ view.firstSurface + i ];
 		view.activeSurfaceStageCount += surface.activeSurfaceStageCount;
 		view.inactiveSurfaceStageCount += surface.inactiveSurfaceStageCount;
+		if ( surface.deformContractHash != 0 ) {
+			view.materialDeformReceiverCount++;
+		}
+	}
+	for ( int i = 0; i < view.shadowCasterCount; ++i ) {
+		const classicInteractionDomainShadowCaster_t &caster =
+			domain.shadowCasters[ view.firstShadowCaster + i ];
+		if ( caster.deformContractHash == 0 ) {
+			continue;
+		}
+		if ( caster.deformOutcome == CLASSIC_DEFORM_OUTCOME_COMPLETED ) {
+			view.completedDeformCasterCount++;
+		} else if ( caster.deformOutcome == CLASSIC_DEFORM_OUTCOME_EMPTY ) {
+			view.emptyDeformCasterCount++;
+		}
 	}
 	bool anyStencilMode = false;
 	bool anyProjectedMode = false;
@@ -3593,6 +3837,9 @@ static bool R_ClassicInteractionDomain_PrepareView(
 	domain.stats.inactiveLightStages += view.inactiveLightStageCount;
 	domain.stats.activeSurfaceStages += view.activeSurfaceStageCount;
 	domain.stats.inactiveSurfaceStages += view.inactiveSurfaceStageCount;
+	domain.stats.materialDeformReceivers += view.materialDeformReceiverCount;
+	domain.stats.completedDeformCasters += view.completedDeformCasterCount;
+	domain.stats.emptyDeformCasters += view.emptyDeformCasterCount;
 	for ( int receiver = 0; receiver < CLASSIC_INTERACTION_RECEIVER_COUNT;
 			receiver++ ) {
 		domain.stats.receiverSurfaces[ receiver ]
@@ -3821,6 +4068,25 @@ const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_LightSh
 	}
 	return &domain.shadowCasters[
 		light.firstShadowCaster[ chain ] + casterIndex ];
+}
+
+bool R_ClassicInteractionDomain_ShadowCasterNoopValid(
+		const classicInteractionDomainShadowCaster_t &caster ) {
+	if ( caster.disposition != CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY
+			|| caster.selectedIndexCount != 0 || caster.alphaStageCount != 0
+			|| caster.firstAlphaStage != -1
+			|| ( caster.materialCoverage != MC_OPAQUE
+				&& caster.materialCoverage != MC_PERFORATED ) ) {
+		return false;
+	}
+	const bool sealedEmptyDeform = caster.deformContractHash != 0
+		&& caster.deformRole == CLASSIC_DEFORM_ROLE_FINALIZED_DRAW
+		&& caster.deformOutcome == CLASSIC_DEFORM_OUTCOME_EMPTY
+		&& caster.vertexCount == 0 && caster.totalIndexCount == 0;
+	const bool inactivePerforated = caster.deformContractHash == 0
+		&& caster.materialCoverage == MC_PERFORATED
+		&& caster.vertexCount > 0 && caster.totalIndexCount > 0;
+	return sealedEmptyDeform || inactivePerforated;
 }
 
 const classicInteractionDomainShadowAlphaStage_t *R_ClassicInteractionDomain_ShadowAlphaStage(
@@ -4135,6 +4401,8 @@ const char *ClassicInteractionDomainFailure_Name(
 	case CLASSIC_INTERACTION_FAILURE_CUSTOM_LIGHTING:
 		return "customLighting";
 	case CLASSIC_INTERACTION_FAILURE_DEFORM: return "deform";
+	case CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT:
+		return "deformContract";
 	case CLASSIC_INTERACTION_FAILURE_SKINNING: return "skinning";
 	case CLASSIC_INTERACTION_FAILURE_SPECIAL_SURFACE:
 		return "specialSurface";
@@ -4181,6 +4449,37 @@ const char *ClassicInteractionDomainBackend_Name(
 }
 
 bool RendererClassicInteractionDomain_RunSelfTest( void ) {
+	classicInteractionDomainShadowCaster_t noopCaster;
+	InitShadowCaster( noopCaster );
+	noopCaster.disposition = CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY;
+	noopCaster.materialCoverage = MC_OPAQUE;
+	noopCaster.deformRole = CLASSIC_DEFORM_ROLE_FINALIZED_DRAW;
+	noopCaster.deformOutcome = CLASSIC_DEFORM_OUTCOME_EMPTY;
+	noopCaster.deformContractHash = 0x7a1234ull;
+	if ( !R_ClassicInteractionDomain_ShadowCasterNoopValid( noopCaster ) ) {
+		return false;
+	}
+	noopCaster.deformRole = CLASSIC_DEFORM_ROLE_UNKNOWN;
+	if ( R_ClassicInteractionDomain_ShadowCasterNoopValid( noopCaster ) ) {
+		return false;
+	}
+	noopCaster.deformRole = CLASSIC_DEFORM_ROLE_FINALIZED_DRAW;
+	noopCaster.deformOutcome = CLASSIC_DEFORM_OUTCOME_COMPLETED;
+	if ( R_ClassicInteractionDomain_ShadowCasterNoopValid( noopCaster ) ) {
+		return false;
+	}
+	noopCaster.deformOutcome = CLASSIC_DEFORM_OUTCOME_EMPTY;
+	noopCaster.deformContractHash = 0;
+	if ( R_ClassicInteractionDomain_ShadowCasterNoopValid( noopCaster ) ) {
+		return false;
+	}
+	noopCaster.materialCoverage = MC_PERFORATED;
+	noopCaster.vertexCount = 4;
+	noopCaster.totalIndexCount = 6;
+	if ( !R_ClassicInteractionDomain_ShadowCasterNoopValid( noopCaster ) ) {
+		return false;
+	}
+
 	if ( CLASSIC_INTERACTION_DOMAIN_MAX_VIEWS != 64
 			|| CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS != 4096
 			|| CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES != 4096
@@ -4213,6 +4512,9 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 			|| idStr::Cmp( ClassicInteractionDomainFailure_Name(
 				CLASSIC_INTERACTION_FAILURE_CUSTOM_LIGHTING ),
 				"customLighting" )
+			|| idStr::Cmp( ClassicInteractionDomainFailure_Name(
+				CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT ),
+				"deformContract" )
 			|| idStr::Cmp( ClassicInteractionDomainFailure_Name(
 				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH ),
 				"backendCoverageMismatch" ) ) {
@@ -4345,6 +4647,17 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	if ( alphaStageContract.hash == 0 ) {
 		return false;
 	}
+	classicInteractionDomainShadowCaster_t deformHashCaster;
+	InitShadowCaster( deformHashCaster );
+	const std::uint64_t undeformedCasterHash =
+		HashShadowCaster( deformHashCaster, 0 );
+	deformHashCaster.deformRole = CLASSIC_DEFORM_ROLE_FINALIZED_DRAW;
+	deformHashCaster.deformOutcome = CLASSIC_DEFORM_OUTCOME_EMPTY;
+	deformHashCaster.deformContractHash = 0x81234ull;
+	if ( HashShadowCaster( deformHashCaster, 0 )
+			== undeformedCasterHash ) {
+		return false;
+	}
 
 	// Stable hashes exclude generation-scoped resource-id high bits.
 	domain.generation = 7;
@@ -4445,6 +4758,13 @@ bool RendererClassicInteractionDomain_RunSelfTest( void ) {
 	originSurface.surfaceStageCount = 1;
 	originSurface.activeSurfaceStageCount = 1;
 	originSurface.hash = HashSurface( originSurface, 0 );
+	classicInteractionDomainSurface_t deformSurface = originSurface;
+	deformSurface.deformRole = CLASSIC_DEFORM_ROLE_INTERACTION_RECEIVER;
+	deformSurface.deformOutcome = CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE;
+	deformSurface.deformContractHash = 0x71234ull;
+	if ( HashSurface( deformSurface, 0 ) == originSurface.hash ) {
+		return false;
+	}
 	domain.surfaces[ 0 ] = originSurface;
 	classicInteractionDomainSurface_t shiftedSurface = originSurface;
 	shiftedSurface.lightIndex = 3;

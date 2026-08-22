@@ -736,16 +736,25 @@ def main() -> None:
     )
     for token in (
         "caster.materialCoverage == MC_PERFORATED",
-        "caster.selectedIndexCount == 0",
-        "caster.selectedIndexCount == caster.totalIndexCount",
+        "caster.selectedIndexCount != 0",
+        "caster.vertexCount > 0",
+        "caster.totalIndexCount > 0",
     ):
         require(
             function_body(
-                gl, "static bool RB_SharedWorldInteractionGLMapCasterValuesValid("
+                source,
+                "bool R_ClassicInteractionDomain_ShadowCasterNoopValid(",
             ),
             token,
-            "OpenGL mapped no-op contract",
+            "backend-neutral mapped no-op contract",
         )
+    require(
+        function_body(
+            gl, "static bool RB_SharedWorldInteractionGLMapCasterValuesValid("
+        ),
+        "R_ClassicInteractionDomain_ShadowCasterNoopValid( caster )",
+        "OpenGL mapped no-op contract",
+    )
     require(gl_mapped_commit, "RB_SharedWorldInteractionGLSelectMapPass", "OpenGL mapped resource bind")
     require(gl_mapped_commit, "RB_SharedWorldInteractionGLBeginMappedReceiver", "OpenGL mapped receiver bind")
     require(gl_mapped_commit, "RB_SharedWorldInteractionGLDrawMappedPrimitive", "OpenGL mapped receiver draw")
@@ -923,10 +932,24 @@ def main() -> None:
     )
     require_before(
         vk_preflight,
-        "VK_ShadowMap_PreflightClassicInteractionView( view )",
-        "prepared.ready = true",
-        "Vulkan mapped transaction before whole-view publication",
+        "VK_Exec_PrepareTriGeometry(",
+        "VK_Exec_SharedInteractionGeometryCommit();",
+        "Vulkan receiver geometry preflight before transaction commit",
     )
+    require_before(
+        vk_preflight,
+        "VK_Exec_PrepareShadowGeometry(",
+        "VK_Exec_SharedInteractionGeometryCommit();",
+        "Vulkan shadow geometry preflight before transaction commit",
+    )
+    require_before(
+        vk_preflight,
+        "VK_Exec_SharedInteractionGeometryCommit();",
+        "prepared.ready = true",
+        "Vulkan geometry transaction before whole-view publication",
+    )
+    for command in ("vkCmdDraw(", "vkCmdDrawIndexed(", "vkCmdClearAttachments("):
+        reject(vk_preflight, command, "Vulkan attachment write during interaction preflight")
     for token in (
         "VK_Exec_ShadowUniformAlloc(",
         "plan.projectedShadowBlock",
@@ -972,20 +995,33 @@ def main() -> None:
     vk_bind_shadow = function_body(
         vk_executor, "bool VK_Exec_BindShadowGeometry("
     )
-    for body, label in (
-        (vk_bind_tri, "Vulkan receiver/map-caster cache validation"),
-        (vk_bind_shadow, "Vulkan stencil-volume cache validation"),
+    for token in (
+        "VK_Exec_CPUCacheValid(",
+        "requiredBytes <= static_cast<size_t>( INT_MAX )",
+        "cache->tag != TAG_FREE",
+        "cache->size >= static_cast<int>( requiredBytes )",
+        "cache->vbo == 0",
+        "cache->virtMem != NULL",
     ):
-        for token in (
-            "VK_Exec_CPUCacheValid(",
-            "requiredBytes <= static_cast<size_t>( INT_MAX )",
-            "cache->tag != TAG_FREE",
-            "cache->size >= static_cast<int>( requiredBytes )",
-            "cache->vbo == 0",
-            "cache->virtMem != NULL",
-        ):
-            require(vk_executor, token, label)
-        require(body, "VK_Exec_CPUCacheValid(", label)
+        require(vk_executor, token, "Vulkan shared geometry cache validation")
+    require(
+        vk_bind_tri,
+        "VK_Exec_UploadTriGeometry(",
+        "Vulkan receiver/map-caster validated upload path",
+    )
+    require(
+        vk_bind_shadow,
+        "VK_Exec_CPUCacheValid(",
+        "Vulkan stencil-volume cache validation",
+    )
+    vk_prepare_tri = function_body(
+        vk_executor, "bool VK_Exec_PrepareTriGeometry("
+    )
+    require(
+        vk_prepare_tri,
+        "VK_Exec_PrepareTriGeometryOffsets(",
+        "Vulkan checkpointed receiver geometry preparation",
+    )
 
     require(benchmark, 'append_set(args, "r_rendererSharedWorldInteraction", "0")', "benchmark launch isolation")
     require(benchmark, '"r_rendererSharedWorldInteraction 0"', "benchmark script isolation")
@@ -1083,7 +1119,7 @@ def main() -> None:
     require(commit_ci, test_path, "commit CI registration")
     require(push_ci, test_path, "push CI registration")
     require(roadmap, "four complete domains", "roadmap delivery status")
-    require(roadmap, "deform ownership/parity", "roadmap next target")
+    require(roadmap, "Milestone D subview ownership and parity", "roadmap next target")
     require(domain_doc, "shadow-coupled interaction ownership", "completed shadow domain")
     require(domain_doc, "translucent moment-map casters", "intentional shadow fallback")
     require(domain_doc, "features=static+dynamic+alpha+translucent", "mapped feature diagnostics")

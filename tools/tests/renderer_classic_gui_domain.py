@@ -272,13 +272,23 @@ def validate_vulkan_consumer() -> None:
         consumer,
         (
             "VK_GuiExecutor_GetPipelineStrict(",
-            "VK_ClassicGui_PrepareGeometry(",
+            "VK_Exec_SharedGeometryCheckpoint()",
+            "VK_Exec_PrepareTriGeometryOffsets(",
+            "VK_Exec_SharedGeometryCommit();",
             "// Commit:",
             "vkCmdDrawIndexed(",
             "R_ClassicGuiDomain_RecordOwned(",
         ),
         "Vulkan preflight-before-commit ordering",
     )
+    require(
+        consumer,
+        "VK_Exec_SharedGeometryRestore();",
+        "Vulkan failed-preflight geometry rollback",
+    )
+    precommit = consumer[: consumer.index("VK_Exec_SharedGeometryCommit();")]
+    for command in ("vkCmdDraw(", "vkCmdDrawIndexed(", "vkCmdClearAttachments("):
+        reject(precommit, command, "Vulkan attachment write during GUI preflight")
     reject(consumer, "shaderRegisters", "Vulkan sealed material consumer")
     reject(consumer, "GetStage(", "Vulkan sealed material consumer")
 

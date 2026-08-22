@@ -150,8 +150,9 @@ conditions:
 - GPU-palette skinning, custom/new-style GLSL lighting, parallax,
   enhanced-material, cel, flat-
   diffuse, simple/test, or other alternate interaction modes;
-- unsupported deformed, GPU-palette-skinned, packed, primitive-batch, missing-
-  cache, depth-hack, negative-scale, or otherwise unsealed receiver geometry;
+- unsupported or unsealed material-deform output, generated/deformed geometry,
+  GPU-palette-skinned, packed, primitive-batch, missing-cache, depth-hack,
+  negative-scale, or otherwise unsealed receiver geometry;
 - subview, mirror, x-ray, editor, offscreen, render-demo, global-material, or
   other non-root view ownership;
 - cinematic, defaulted, unloaded, unbound, or invalid image resources;
@@ -314,8 +315,14 @@ Native/static and controlled GL/Vulkan fog/blend qualification pass, while
 authored-stock and release promotion remain open. These domains do not make the
 whole classic frame modern.
 
-The next recommended implementation target is **deform ownership and parity**
-on OpenGL and Vulkan. Subview, in-world GUI, render-demo, cinematic, authored
-post, and other special domains remain downstream. Temporal presentation and
-PBR/advanced-lighting work must continue to wait for coherent classic-frame
-ownership.
+The independent default-off
+[material-deform contract](classic-deform-domain-modernization.md) now seals
+both sides of the classic interaction behavior: mapped casters require their
+finalized completed or intentional-empty CPU result, while receivers explicitly
+retain source geometry through the `notApplicable` role. Unsupported, skipped,
+failed, stale, or mismatched records still reject the complete interaction view.
+
+The next recommended implementation target is **subview ownership and parity**.
+In-world GUI, render-demo, cinematic, authored post, and other special domains
+remain downstream. Temporal presentation and PBR/advanced-lighting work must
+continue to wait for coherent classic-frame ownership.

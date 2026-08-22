@@ -47,6 +47,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
 #include "ClassicFogBlendDomain.h"
+#include "ClassicDeformDomain.h"
 #include "GeometryResources.h"
 #include "ScenePackets.h"
 #include "ModernClusteredLighting.h"
@@ -487,6 +488,7 @@ idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARC
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request experimental backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
@@ -857,6 +859,15 @@ static void R_RendererClassicFogBlendDomainSelfTest_f(
 		common->Printf( "RendererClassicFogBlendDomain self-test passed\n" );
 	} else {
 		common->Warning( "RendererClassicFogBlendDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicDeformDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicDeformDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicDeformDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicDeformDomain self-test failed" );
 	}
 }
 
@@ -3783,6 +3794,24 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		SCENE_PACKET_MAX_MATERIAL_RECORDS,
 		SCENE_PACKET_MAX_GEOMETRY_RECORDS,
 		SCENE_PACKET_MAX_INSTANCE_RECORDS );
+	{
+		const classicDeformDomainStats_t &deform =
+			R_ClassicDeformDomain_Stats();
+		common->Printf(
+			"Renderer shared material deform: requested=%d frameToken=%llu records=%d none=%d notApplicable=%d completed=%d empty=%d skipped=%d failed=%d unsupported=%d invalid=%d hash=%016llx\n",
+			r_rendererSharedDeform.GetBool() ? 1 : 0,
+			static_cast<unsigned long long>( deform.frameToken ),
+			deform.records,
+			deform.none,
+			deform.notApplicable,
+			deform.completed,
+			deform.empty,
+			deform.skipped,
+			deform.failed,
+			deform.unsupported,
+			deform.invalid,
+			static_cast<unsigned long long>( deform.hash ) );
+	}
 	R_GeometryResources_PrintGfxInfo();
 	common->Printf(
 		"Renderer graph: resource-backed packet graph, maxPasses=%d, maxResources=%d, maxResourceAccesses=%d\n",
@@ -3794,7 +3823,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	{
 		const classicGuiDomainStats_t &guiDomain = R_ClassicGuiDomain_Stats();
 		common->Printf(
-			"Renderer shared classic GUI: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d passes=%d draw=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			"Renderer shared classic GUI: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d deform=%d/%d/%d passes=%d draw=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
 			r_rendererSharedGui.GetBool() ? 1 : 0,
 			guiDomain.prepared ? 1 : 0,
 			guiDomain.frameValid ? 1 : 0,
@@ -3804,6 +3833,9 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			guiDomain.drawableSurfaces,
 			guiDomain.sourceSurfaces,
 			guiDomain.noopSurfaces,
+			guiDomain.materialDeformSurfaces,
+			guiDomain.completedDeformSurfaces,
+			guiDomain.emptyDeformSurfaces,
 			guiDomain.evaluatedPasses,
 			guiDomain.drawablePasses,
 			guiDomain.inactivePasses,
@@ -3819,7 +3851,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		const classicWorldAmbientDomainStats_t &worldAmbient =
 			R_ClassicWorldAmbientDomain_Stats();
 		common->Printf(
-			"Renderer shared world ambient: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d passes=%d draw=%d pre=%d post=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			"Renderer shared world ambient: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d deform=%d/%d/%d passes=%d draw=%d pre=%d post=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
 			r_rendererSharedWorldAmbient.GetBool() ? 1 : 0,
 			worldAmbient.prepared ? 1 : 0,
 			worldAmbient.frameValid ? 1 : 0,
@@ -3829,6 +3861,9 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			worldAmbient.drawableSurfaces,
 			worldAmbient.sourceSurfaces,
 			worldAmbient.noopSurfaces,
+			worldAmbient.materialDeformSurfaces,
+			worldAmbient.completedDeformSurfaces,
+			worldAmbient.emptyDeformSurfaces,
 			worldAmbient.evaluatedPasses,
 			worldAmbient.drawablePasses,
 			worldAmbient.phaseDrawablePasses[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
@@ -3896,7 +3931,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		const classicInteractionDomainStats_t &interaction =
 			R_ClassicInteractionDomain_Stats();
 		common->Printf(
-			"Renderer shared interaction: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d lights=%d surfaces=%d primitives=%d draw=%d noop=%d shadow=%d/%d/%d+%d volumes=%d+%d maps=%d+%d modes=%d+%d csm=%d stages=%d/%d+%d/%d receivers=%d/%d/%d hash=%016llx status=%s GL=%d/%d/%d VK=%d/%d/%d\n",
+			"Renderer shared interaction: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d lights=%d surfaces=%d primitives=%d draw=%d noop=%d shadow=%d/%d/%d+%d volumes=%d+%d maps=%d+%d modes=%d+%d csm=%d stages=%d/%d+%d/%d receivers=%d/%d/%d deform=%d/%d/%d hash=%016llx status=%s GL=%d/%d/%d VK=%d/%d/%d\n",
 			r_rendererSharedWorldInteraction.GetBool() ? 1 : 0,
 			interaction.prepared ? 1 : 0,
 			interaction.frameValid ? 1 : 0,
@@ -3926,6 +3961,9 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			interaction.receiverSurfaces[CLASSIC_INTERACTION_RECEIVER_LOCAL],
 			interaction.receiverSurfaces[CLASSIC_INTERACTION_RECEIVER_GLOBAL],
 			interaction.receiverSurfaces[CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT],
+			interaction.materialDeformReceivers,
+			interaction.completedDeformCasters,
+			interaction.emptyDeformCasters,
 			static_cast<unsigned long long>( interaction.hash ),
 			interaction.status,
 			interaction.backend[CLASSIC_INTERACTION_BACKEND_GL].ownedViews,
@@ -4044,7 +4082,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		const classicFogBlendDomainStats_t &fogBlend =
 			R_ClassicFogBlendDomain_Stats();
 		common->Printf(
-			"classicFogBlendDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s views=%d ready=%d fallback=%d lights=%d fog=%d blend=%d noopLights=%d surfaces=%d global=%d local=%d stages=%d active=%d inactive=%d noopStages=%d primitives=%d fogReceivers=%d fogCaps=%d blendDraws=%d noop=%d textures=%d hash=%016llx\n",
+			"classicFogBlendDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s views=%d ready=%d fallback=%d lights=%d fog=%d blend=%d noopLights=%d surfaces=%d global=%d local=%d deformReceivers=%d stages=%d active=%d inactive=%d noopStages=%d primitives=%d fogReceivers=%d fogCaps=%d blendDraws=%d noop=%d textures=%d hash=%016llx\n",
 			r_rendererSharedWorldFogBlend.GetBool() ? 1 : 0,
 			fogBlend.prepared ? 1 : 0,
 			fogBlend.frameValid ? 1 : 0,
@@ -4062,6 +4100,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 				CLASSIC_FOG_BLEND_RECEIVER_GLOBAL ],
 			fogBlend.receiverSurfaces[
 				CLASSIC_FOG_BLEND_RECEIVER_LOCAL ],
+			fogBlend.materialDeformReceivers,
 			fogBlend.lightStages,
 			fogBlend.activeLightStages,
 			fogBlend.inactiveLightStages,
@@ -4551,6 +4590,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererClassicWorldAmbientDomainSelfTest", R_RendererClassicWorldAmbientDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic world ambient whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicInteractionDomainSelfTest", R_RendererClassicInteractionDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic interaction whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicFogBlendDomainSelfTest", R_RendererClassicFogBlendDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic fog/blend whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicDeformDomainSelfTest", R_RendererClassicDeformDomainSelfTest_f, CMD_FL_RENDERER, "run sealed classic material-deform contract self tests" );
 	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
 	cmdSystem->AddCommand( "rendererGeometryResourceSelfTest", R_RendererGeometryResourceSelfTest_f, CMD_FL_RENDERER, "run renderer geometry and instance packet self tests" );

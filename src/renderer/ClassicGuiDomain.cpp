@@ -116,6 +116,9 @@ static std::uint64_t HashDraw( const classicGuiDomainDraw_t &draw ) {
 	HashInt( hash, draw.scissorY1 );
 	HashInt( hash, draw.scissorX2 );
 	HashInt( hash, draw.scissorY2 );
+	HashInt( hash, draw.deformRole );
+	HashInt( hash, draw.deformOutcome );
+	HashU64( hash, draw.deformContractHash );
 	for ( int i = 0; i < 16; ++i ) {
 		HashFloat( hash, draw.modelViewMatrix[ i ] );
 	}
@@ -134,6 +137,9 @@ static std::uint64_t HashView( const classicGuiDomainView_t &view ) {
 	HashInt( hash, view.evaluatedPassCount );
 	HashInt( hash, view.drawablePassCount );
 	HashInt( hash, view.noopPassCount );
+	HashInt( hash, view.materialDeformSurfaceCount );
+	HashInt( hash, view.completedDeformSurfaceCount );
+	HashInt( hash, view.emptyDeformSurfaceCount );
 	HashInt( hash, view.viewportX1 );
 	HashInt( hash, view.viewportY1 );
 	HashInt( hash, view.viewportX2 );
@@ -213,6 +219,9 @@ static bool FailView( classicGuiDomainView_t &view,
 	view.inactivePassCount = 0;
 	view.activeNoopPassCount = 0;
 	view.noopPassCount = 0;
+	view.materialDeformSurfaceCount = 0;
+	view.completedDeformSurfaceCount = 0;
+	view.emptyDeformSurfaceCount = 0;
 	view.hash = 0;
 	domain.stats.fallbackViews++;
 	if ( failure >= CLASSIC_GUI_DOMAIN_FAILURE_NONE
@@ -227,6 +236,66 @@ static bool FailView( classicGuiDomainView_t &view,
 		domain.stats.overflow = true;
 	}
 	return false;
+}
+
+static bool MaterialRequestsClassicDeform( const drawSurf_t *drawSurf ) {
+	return drawSurf != NULL && drawSurf->material != NULL
+		&& drawSurf->material->Deform() != DFRM_NONE;
+}
+
+static int DeformContractFailureDetail( const drawSurf_t *drawSurf ) {
+	if ( drawSurf == NULL ) {
+		return -1;
+	}
+	return static_cast<int>( drawSurf->classicDeform.role )
+		* CLASSIC_DEFORM_OUTCOME_COUNT
+		+ static_cast<int>( drawSurf->classicDeform.outcome );
+}
+
+static bool ValidateFinalizedDeformContract( const drawSurf_t *drawSurf,
+		const drawPacket_t *packet, classicDeformRole_t &role,
+		classicDeformOutcome_t &outcome, std::uint64_t &semanticHash ) {
+	role = CLASSIC_DEFORM_ROLE_UNKNOWN;
+	outcome = CLASSIC_DEFORM_OUTCOME_NONE;
+	semanticHash = 0;
+	if ( !MaterialRequestsClassicDeform( drawSurf ) ) {
+		return true;
+	}
+	// The deform switch is independent authorization. Without it the complete
+	// GUI view rolls back to the unchanged classic owner.
+	if ( !r_rendererSharedDeform.GetBool() ) {
+		return false;
+	}
+	const std::uint64_t frameToken =
+		R_ClassicDeformDomain_CurrentFrameToken();
+	const classicDeformRecord_t &record = drawSurf->classicDeform;
+	if ( record.role != CLASSIC_DEFORM_ROLE_FINALIZED_DRAW
+			|| !record.cpuFinalized
+			|| !R_ClassicDeformDomain_ValidateRecordForFrame( record,
+				frameToken )
+			|| !R_ClassicDeformDomain_RecordMatchesDrawSurf( record, drawSurf )
+			|| ( !R_ClassicDeformDomain_HasCompletedOutput( record )
+				&& !R_ClassicDeformDomain_HasEmptyOutput( record ) ) ) {
+		return false;
+	}
+	if ( packet != NULL ) {
+		if ( !packet->hasClassicDeformRecord
+				|| packet->classicDeformRecord == NULL
+				|| packet->geometryRecord == NULL
+				|| packet->classicDeformRecord
+					!= &packet->geometryRecord->classicDeform
+				|| !packet->geometryRecord->hasClassicDeformRecord
+				|| !R_ClassicDeformDomain_ValidateRecordForFrame(
+					*packet->classicDeformRecord, frameToken )
+				|| !R_ClassicDeformDomain_SameProvenance( record,
+					*packet->classicDeformRecord ) ) {
+			return false;
+		}
+	}
+	role = record.role;
+	outcome = record.outcome;
+	semanticHash = record.semanticHash;
+	return true;
 }
 
 static classicGuiDomainSourceSurface_t ClassifySourceSurface(
@@ -449,6 +518,15 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 				sizeof( draw.modelViewMatrix ) );
 		}
 
+		if ( !ValidateFinalizedDeformContract( source, packet,
+				draw.deformRole, draw.deformOutcome,
+				draw.deformContractHash ) ) {
+			return FailView( view,
+				CLASSIC_GUI_DOMAIN_FAILURE_DEFORM_CONTRACT,
+				DeformContractFailureDetail( source ), sourceIndex,
+				draw.drawPacketIndex, passPacketIndex );
+		}
+
 		if ( classification != CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_DRAWABLE ) {
 			noopSurfaces++;
 			draw.hash = HashDraw( draw );
@@ -571,6 +649,14 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 		view.inactivePassCount += draw.inactivePassCount;
 		view.activeNoopPassCount += draw.activeNoopPassCount;
 		view.noopPassCount += draw.noopPassCount;
+		if ( draw.deformContractHash != 0 ) {
+			view.materialDeformSurfaceCount++;
+			if ( draw.deformOutcome == CLASSIC_DEFORM_OUTCOME_COMPLETED ) {
+				view.completedDeformSurfaceCount++;
+			} else if ( draw.deformOutcome == CLASSIC_DEFORM_OUTCOME_EMPTY ) {
+				view.emptyDeformSurfaceCount++;
+			}
+		}
 	}
 	domain.drawCount += view.drawCount;
 	domain.passCount += view.evaluatedPassCount;
@@ -587,6 +673,9 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 	domain.stats.inactivePasses += view.inactivePassCount;
 	domain.stats.activeNoopPasses += view.activeNoopPassCount;
 	domain.stats.noopPasses += view.noopPassCount;
+	domain.stats.materialDeformSurfaces += view.materialDeformSurfaceCount;
+	domain.stats.completedDeformSurfaces += view.completedDeformSurfaceCount;
+	domain.stats.emptyDeformSurfaces += view.emptyDeformSurfaceCount;
 	return true;
 }
 
@@ -880,6 +969,7 @@ const char *ClassicGuiDomainFailure_Name( classicGuiDomainFailure_t failure ) {
 	case CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_SURFACE_FALLBACK: return "sourceSurfaceFallback";
 	case CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_PACKET_MISMATCH: return "sourcePacketMismatch";
 	case CLASSIC_GUI_DOMAIN_FAILURE_INVALID_DRAW_PACKET: return "invalidDrawPacket";
+	case CLASSIC_GUI_DOMAIN_FAILURE_DEFORM_CONTRACT: return "deformContract";
 	case CLASSIC_GUI_DOMAIN_FAILURE_MISSING_GEOMETRY_RECORD: return "missingGeometryRecord";
 	case CLASSIC_GUI_DOMAIN_FAILURE_MISSING_INSTANCE_RECORD: return "missingInstanceRecord";
 	case CLASSIC_GUI_DOMAIN_FAILURE_MISSING_MATERIAL_RECORD: return "missingMaterialRecord";
@@ -911,7 +1001,10 @@ bool RendererClassicGuiDomain_RunSelfTest( void ) {
 			|| CLASSIC_GUI_DOMAIN_MAX_DRAWS != 4096
 			|| CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES != 8192
 			|| !RangeFits( 8191, 1, 8192 ) || RangeFits( 8192, 1, 8192 )
-			|| RangeFits( -1, 1, 8192 ) ) {
+			|| RangeFits( -1, 1, 8192 )
+			|| idStr::Cmp( ClassicGuiDomainFailure_Name(
+				CLASSIC_GUI_DOMAIN_FAILURE_DEFORM_CONTRACT ),
+				"deformContract" ) ) {
 		return false;
 	}
 	rendererEvaluatedMaterialPass_t first;
@@ -944,6 +1037,15 @@ bool RendererClassicGuiDomain_RunSelfTest( void ) {
 			|| idStr::Cmp( ClassicGuiDomainFailure_Name(
 				CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_PACKET_MISMATCH ),
 				"sourcePacketMismatch" ) ) {
+		return false;
+	}
+	classicGuiDomainDraw_t deformHashDraw;
+	InitDraw( deformHashDraw );
+	const std::uint64_t undeformedHash = HashDraw( deformHashDraw );
+	deformHashDraw.deformRole = CLASSIC_DEFORM_ROLE_FINALIZED_DRAW;
+	deformHashDraw.deformOutcome = CLASSIC_DEFORM_OUTCOME_COMPLETED;
+	deformHashDraw.deformContractHash = 0x51234ull;
+	if ( HashDraw( deformHashDraw ) == undeformedHash ) {
 		return false;
 	}
 

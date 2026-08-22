@@ -397,10 +397,20 @@ def validate_shared_interaction_consumer() -> None:
         "Vulkan shared interaction uniform rollback",
     )
 
-    geometry_checkpoint = braced_body(
+    geometry_checkpoint_entry = braced_body(
         executor,
         "bool VK_Exec_SharedInteractionGeometryCheckpoint(",
-        "Vulkan shared interaction geometry checkpoint",
+        "Vulkan shared interaction geometry checkpoint entry",
+    )
+    require(
+        geometry_checkpoint_entry,
+        "VK_Exec_SharedGeometryCheckpoint()",
+        "Vulkan shared interaction geometry checkpoint delegation",
+    )
+    geometry_checkpoint = braced_body(
+        executor,
+        "static bool VK_Exec_SharedGeometryCheckpoint(",
+        "Vulkan shared geometry checkpoint",
     )
     for token in (
         "vkExec.vertexRings[ vkExec.frameSlot ]",
@@ -414,10 +424,20 @@ def validate_shared_interaction_consumer() -> None:
     ):
         require(geometry_checkpoint, token, "Vulkan bounded geometry checkpoint")
 
-    geometry_restore = braced_body(
+    geometry_restore_entry = braced_body(
         executor,
         "void VK_Exec_SharedInteractionGeometryRestore(",
-        "Vulkan shared interaction geometry restore",
+        "Vulkan shared interaction geometry restore entry",
+    )
+    require(
+        geometry_restore_entry,
+        "VK_Exec_SharedGeometryRestore();",
+        "Vulkan shared interaction geometry restore delegation",
+    )
+    geometry_restore = braced_body(
+        executor,
+        "static void VK_Exec_SharedGeometryRestore(",
+        "Vulkan shared geometry restore",
     )
     for token in (
         "vkExec.vertexRings[ checkpoint.frameSlot ].cursor",

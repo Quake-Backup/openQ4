@@ -285,6 +285,7 @@ static bool FailView( classicFogBlendDomainView_t &view,
 	view.fogReceiverPrimitiveCount = 0;
 	view.fogFrustumPrimitiveCount = 0;
 	view.blendPrimitiveCount = 0;
+	view.materialDeformReceiverCount = 0;
 	view.hash = 0;
 	domain.stats.fallbackViews++;
 	if ( view.failure >= CLASSIC_FOG_BLEND_FAILURE_NONE
@@ -295,6 +296,58 @@ static bool FailView( classicFogBlendDomainView_t &view,
 		domain.stats.overflow = true;
 	}
 	return false;
+}
+
+static bool MaterialRequestsClassicDeform( const drawSurf_t *drawSurf ) {
+	return drawSurf != NULL && drawSurf->material != NULL
+		&& drawSurf->material->Deform() != DFRM_NONE;
+}
+
+static int DeformContractFailureDetail( const drawPacket_t *packet ) {
+	if ( packet == NULL || !packet->hasClassicDeformRecord
+			|| packet->classicDeformRecord == NULL ) {
+		return -1;
+	}
+	return static_cast<int>( packet->classicDeformRecord->role )
+		* CLASSIC_DEFORM_OUTCOME_COUNT
+		+ static_cast<int>( packet->classicDeformRecord->outcome );
+}
+
+static bool ValidateReceiverDeformContract( const drawSurf_t *drawSurf,
+		const drawPacket_t &packet, classicDeformRole_t &role,
+		classicDeformOutcome_t &outcome, std::uint64_t &semanticHash ) {
+	role = CLASSIC_DEFORM_ROLE_UNKNOWN;
+	outcome = CLASSIC_DEFORM_OUTCOME_NONE;
+	semanticHash = 0;
+	if ( !MaterialRequestsClassicDeform( drawSurf ) ) {
+		return true;
+	}
+	if ( !r_rendererSharedDeform.GetBool() || r_skipDeforms.GetBool() ) {
+		return false;
+	}
+	const std::uint64_t frameToken =
+		R_ClassicDeformDomain_CurrentFrameToken();
+	if ( !packet.hasClassicDeformRecord
+			|| packet.classicDeformRecord == NULL
+			|| packet.geometryRecord == NULL
+			|| packet.classicDeformRecord
+				!= &packet.geometryRecord->classicDeform
+			|| !packet.geometryRecord->hasClassicDeformRecord ) {
+		return false;
+	}
+	const classicDeformRecord_t &record = *packet.classicDeformRecord;
+	if ( record.role != CLASSIC_DEFORM_ROLE_FOG_RECEIVER
+			|| record.cpuFinalized
+			|| record.outcome != CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE
+			|| !R_ClassicDeformDomain_ValidateRecordForFrame( record,
+				frameToken )
+			|| !R_ClassicDeformDomain_RecordMatchesDrawSurf( record, drawSurf ) ) {
+		return false;
+	}
+	role = record.role;
+	outcome = record.outcome;
+	semanticHash = record.semanticHash;
+	return true;
 }
 
 static std::uint64_t MakeTextureResourceId( int textureIndex ) {
@@ -591,6 +644,9 @@ static std::uint64_t HashSurface(
 	}
 	HashBool( hash, surface.hasAmbientCache );
 	HashBool( hash, surface.hasIndexCache );
+	HashInt( hash, surface.deformRole );
+	HashInt( hash, surface.deformOutcome );
+	HashU64( hash, surface.deformContractHash );
 	return hash;
 }
 
@@ -728,6 +784,8 @@ static std::uint64_t HashLight( const classicFogBlendDomainLight_t &light,
 	HashU64( hash, StableTextureHash( light.fogTextureResourceId ) );
 	HashU64( hash, StableTextureHash( light.fogEnterTextureResourceId ) );
 	HashBool( hash, light.globalChainPresent );
+	HashInt( hash, light.materialDeformReceiverCount );
+	HashU64( hash, light.deformContractHash );
 	for ( int i = 0; i < light.surfaceCount; ++i ) {
 		HashU64( hash, domain.surfaces[ light.firstSurface + i ].hash );
 	}
@@ -763,6 +821,7 @@ static std::uint64_t HashView( const classicFogBlendDomainView_t &view ) {
 	HashInt( hash, view.fogFrustumPrimitiveCount );
 	HashInt( hash, view.blendPrimitiveCount );
 	HashInt( hash, view.packetDrawCount );
+	HashInt( hash, view.materialDeformReceiverCount );
 	HashInt( hash, view.viewportX1 );
 	HashInt( hash, view.viewportY1 );
 	HashInt( hash, view.viewportX2 );
@@ -894,7 +953,26 @@ static bool ValidateDrawPacket( const idScenePacketFrame &packetFrame,
 
 	const geometryResourceRecord_t &geometry = *packet.geometryRecord;
 	const instanceRecord_t &instance = *packet.instanceRecord;
-	if ( geometry.deformMode != GEOMETRY_DEFORM_NONE
+	bool admittedMaterialDeform = false;
+	if ( MaterialRequestsClassicDeform( drawSurf )
+			&& r_rendererSharedDeform.GetBool() ) {
+		classicDeformRole_t role;
+		classicDeformOutcome_t outcome;
+		std::uint64_t semanticHash = 0;
+		if ( !ValidateReceiverDeformContract( drawSurf, packet, role,
+				outcome, semanticHash )
+				|| role != CLASSIC_DEFORM_ROLE_FOG_RECEIVER
+				|| outcome != CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE
+				|| semanticHash == 0 ) {
+			SetError( error, CLASSIC_FOG_BLEND_FAILURE_DEFORM_CONTRACT,
+				DeformContractFailureDetail( &packet ), -1, packetIndex,
+				lightOrdinal, receiverOrdinal );
+			return false;
+		}
+		admittedMaterialDeform = true;
+	}
+	if ( ( geometry.deformMode != GEOMETRY_DEFORM_NONE
+				&& !admittedMaterialDeform )
 			|| drawSurf->geo->deformedSurface ) {
 		SetError( error, CLASSIC_FOG_BLEND_FAILURE_DEFORM,
 			geometry.deformMode, -1, packetIndex, lightOrdinal,
@@ -993,6 +1071,16 @@ static bool AppendSurface( const idScenePacketFrame &packetFrame,
 		sizeof( surface.modelViewMatrix ) );
 	surface.hasAmbientCache = packet.hasAmbientCache;
 	surface.hasIndexCache = packet.hasIndexCache;
+	if ( MaterialRequestsClassicDeform( drawSurf ) ) {
+		surface.deformRole = packet.classicDeformRecord->role;
+		surface.deformOutcome = packet.classicDeformRecord->outcome;
+		surface.deformContractHash = packet.classicDeformRecord->semanticHash;
+		if ( light.materialDeformReceiverCount == 0 ) {
+			light.deformContractHash = HASH_OFFSET;
+		}
+		light.materialDeformReceiverCount++;
+		HashU64( light.deformContractHash, surface.deformContractHash );
+	}
 	surface.hash = HashSurface( surface, lightArenaBase );
 	light.surfaceCount++;
 	light.receiverSurfaceCount[ receiver ]++;
@@ -1632,6 +1720,31 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 						error.passPacketIndex = view.fogBlendPassPacketIndex;
 						return FailView( view, checkpoint, error );
 					}
+					if ( MaterialRequestsClassicDeform( drawSurf ) ) {
+						classicDeformRole_t deformRole;
+						classicDeformOutcome_t deformOutcome;
+						std::uint64_t deformHash = 0;
+						if ( !ValidateReceiverDeformContract( drawSurf, packet,
+								deformRole, deformOutcome, deformHash ) ) {
+							SetError( error,
+								CLASSIC_FOG_BLEND_FAILURE_DEFORM_CONTRACT,
+								DeformContractFailureDetail( &packet ),
+								view.fogBlendPassPacketIndex, packetCursor,
+								sourceLightOrdinal, receiverOrdinal );
+							return FailView( view, checkpoint, error );
+						}
+						if ( deformHash != 0
+								&& deformRole
+									== CLASSIC_DEFORM_ROLE_FOG_RECEIVER
+								&& deformOutcome
+									== CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE ) {
+							if ( light.materialDeformReceiverCount == 0 ) {
+								light.deformContractHash = HASH_OFFSET;
+							}
+							light.materialDeformReceiverCount++;
+							HashU64( light.deformContractHash, deformHash );
+						}
+					}
 				} else if ( !AppendSurface( packetFrame, view, light,
 						absoluteLightIndex, viewLight, drawSurf,
 						sourceLightOrdinal, receivers[ chainIndex ],
@@ -1695,6 +1808,8 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 		view.fogReceiverPrimitiveCount += light.fogReceiverPrimitiveCount;
 		view.fogFrustumPrimitiveCount += light.fogFrustumPrimitiveCount;
 		view.blendPrimitiveCount += light.blendPrimitiveCount;
+		view.materialDeformReceiverCount +=
+			light.materialDeformReceiverCount;
 		for ( int receiver = 0; receiver < CLASSIC_FOG_BLEND_RECEIVER_COUNT;
 				++receiver ) {
 			view.receiverSurfaceCount[ receiver ]
@@ -1729,6 +1844,8 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 	domain.stats.fogReceiverPrimitives += view.fogReceiverPrimitiveCount;
 	domain.stats.fogFrustumPrimitives += view.fogFrustumPrimitiveCount;
 	domain.stats.blendPrimitives += view.blendPrimitiveCount;
+	domain.stats.materialDeformReceivers +=
+		view.materialDeformReceiverCount;
 	for ( int receiver = 0; receiver < CLASSIC_FOG_BLEND_RECEIVER_COUNT;
 			++receiver ) {
 		domain.stats.receiverSurfaces[ receiver ]
@@ -2131,6 +2248,7 @@ const char *ClassicFogBlendDomainFailure_Name(
 	case CLASSIC_FOG_BLEND_FAILURE_NONFINITE_VALUE: return "nonfinite-value";
 	case CLASSIC_FOG_BLEND_FAILURE_FOG_FRUSTUM_GEOMETRY: return "fog-frustum-geometry";
 	case CLASSIC_FOG_BLEND_FAILURE_DEFORM: return "deform";
+	case CLASSIC_FOG_BLEND_FAILURE_DEFORM_CONTRACT: return "deform-contract";
 	case CLASSIC_FOG_BLEND_FAILURE_SKINNING: return "skinning";
 	case CLASSIC_FOG_BLEND_FAILURE_SPECIAL_SURFACE: return "special-surface";
 	case CLASSIC_FOG_BLEND_FAILURE_DEPTH_HACK: return "depth-hack";
@@ -2161,6 +2279,20 @@ const char *ClassicFogBlendDomainBackend_Name(
 
 bool RendererClassicFogBlendDomain_RunSelfTest( void ) {
 	R_ClassicFogBlendDomain_ResetFrame();
+	classicFogBlendDomainSurface_t deformHashSurface;
+	InitSurface( deformHashSurface );
+	const std::uint64_t undeformedSurfaceHash =
+		HashSurface( deformHashSurface, 0 );
+	deformHashSurface.deformRole = CLASSIC_DEFORM_ROLE_FOG_RECEIVER;
+	deformHashSurface.deformOutcome =
+		CLASSIC_DEFORM_OUTCOME_NOT_APPLICABLE;
+	deformHashSurface.deformContractHash = 0x91234ull;
+	if ( HashSurface( deformHashSurface, 0 ) == undeformedSurfaceHash
+			|| idStr::Cmp( ClassicFogBlendDomainFailure_Name(
+				CLASSIC_FOG_BLEND_FAILURE_DEFORM_CONTRACT ),
+				"deform-contract" ) ) {
+		return false;
+	}
 	viewDef_t viewDef;
 	std::memset( &viewDef, 0, sizeof( viewDef ) );
 	domain.viewCount = 1;

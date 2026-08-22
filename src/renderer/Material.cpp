@@ -294,6 +294,7 @@ void idMaterial::CommonInit() {
 	unsmoothedTangents = false;
 	gui = NULL;
 	memset( deformRegisters, 0, sizeof( deformRegisters ) );
+	deformDecl = NULL;
 	editorAlpha = 1.0;
 	spectrum = 0;
 	polygonOffset = 0;

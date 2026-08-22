@@ -365,12 +365,11 @@ typedef struct vkGuiExecutor_s {
 static vkGuiExecutor_t vkExec;
 static bool vkGpuSkinningBackendRequested = true;
 
-// Shared-interaction preflight is allowed to populate the ordinary geometry
-// rings, but it has not taken framebuffer ownership yet.  Snapshot the bounded
-// direct-mapped upload state so any later rejection can return the established
-// classic walker to the exact cursor/memo state it would have seen without the
-// speculative walk.
-typedef struct vkSharedInteractionGeometryCheckpoint_s {
+// Shared-domain preflight is allowed to populate the ordinary geometry rings,
+// but it has not taken framebuffer ownership yet. Snapshot the bounded upload
+// state so any later rejection can return the established classic walker to
+// the exact cursor/memo state it would have seen without the speculative walk.
+typedef struct vkSharedGeometryCheckpoint_s {
 	bool			active;
 	int			frameSlot;
 	int			vertexCursor;
@@ -378,10 +377,10 @@ typedef struct vkSharedInteractionGeometryCheckpoint_s {
 	int			boundVertexOffset;
 	vkVertUpload_t	vertMemo[ VK_TRI_MEMO_SIZE ];
 	vkIdxUpload_t	idxMemo[ VK_TRI_MEMO_SIZE ];
-} vkSharedInteractionGeometryCheckpoint_t;
+	vkGpuSkinningMemo_t gpuSkinningMemo[ VK_GPU_SKINNING_MEMO_SIZE ];
+} vkSharedGeometryCheckpoint_t;
 
-static vkSharedInteractionGeometryCheckpoint_t
-	vkSharedInteractionGeometryCheckpoint;
+static vkSharedGeometryCheckpoint_t vkSharedGeometryCheckpoint;
 
 static vkPipelineTarget_t VK_Exec_SwapchainPipelineTarget( void ) {
 	vkPipelineTarget_t target;
@@ -2941,7 +2940,7 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 	memset( vkExec.vertMemo, 0, sizeof( vkExec.vertMemo ) );
 	memset( vkExec.idxMemo, 0, sizeof( vkExec.idxMemo ) );
 	memset( vkExec.gpuSkinningMemo, 0, sizeof( vkExec.gpuSkinningMemo ) );
-	vkSharedInteractionGeometryCheckpoint.active = false;
+	vkSharedGeometryCheckpoint.active = false;
 	return true;
 }
 
@@ -4669,8 +4668,10 @@ static bool VK_GpuSkinning_PrepareView( const viewDef_t *viewDef ) {
 	return true;
 }
 
-// memoized ring upload + bind: the depth fill and both ambient walks visit
-// the same tris; a hit re-binds without re-copying. Also serves the
+// Memoized ring upload: the depth fill and both ambient walks visit the same
+// tris, so a hit retains the existing offsets without re-copying. Binding is
+// deliberately separate so speculative shared-domain preflight records no
+// graphics state. The same upload path also serves the
 // interaction pass, where the light-tris chains carry their own index
 // subset over the shared ambient vertex cache (distinct idxKey, so memo
 // entries never alias across the subsets).
@@ -4684,7 +4685,10 @@ static bool VK_Exec_CPUCacheValid( const vertCache_t *cache,
 		&& cache->vbo == 0 && cache->virtMem != NULL;
 }
 
-bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri ) {
+static bool VK_Exec_UploadTriGeometry( int slot, const srfTriangles_t *tri,
+		int &vertexOffset, int &indexOffset ) {
+	vertexOffset = -1;
+	indexOffset = -1;
 	if ( tri == NULL || tri->ambientCache == NULL
 			|| tri->numVerts <= 0 || tri->numIndexes <= 0
 			|| slot < 0 || slot >= VK_FRAMES_IN_FLIGHT ) {
@@ -4710,7 +4714,6 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 	// independent vert/index memos: light-tris chains carry their own index
 	// subset over the SHARED ambient vertex array, so a combined memo would
 	// re-upload the full vertex payload once per light per surface
-	int vertexOffset;
 	{
 		bool gpuMemoExisting = false;
 		const int gpuMemoIndex = VK_GpuSkinning_FindMemo(
@@ -4737,7 +4740,6 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 			}
 		}
 	}
-	int indexOffset;
 	{
 		const unsigned int memoIndex = (unsigned int)( ( ( (uintptr_t)idxKey ) >> 4 ) & ( VK_TRI_MEMO_SIZE - 1 ) );
 		vkIdxUpload_t &memo = vkExec.idxMemo[ memoIndex ];
@@ -4794,9 +4796,25 @@ bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_
 		}
 	}
 
-	VkDeviceSize vertexBindOffset = (VkDeviceSize)vertexOffset;
-	vkCmdBindVertexBuffers( cmd, 0, 1, &vkExec.vertexRings[ slot ].buffer, &vertexBindOffset );
-	vkCmdBindIndexBuffer( cmd, vkExec.indexRings[ slot ].buffer, (VkDeviceSize)indexOffset, VK_INDEX_TYPE_UINT32 );
+	return true;
+}
+
+bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot,
+		const srfTriangles_t *tri ) {
+	int vertexOffset;
+	int indexOffset;
+	if ( cmd == VK_NULL_HANDLE
+			|| !VK_Exec_UploadTriGeometry( slot, tri,
+				vertexOffset, indexOffset ) ) {
+		return false;
+	}
+
+	const VkDeviceSize vertexBindOffset =
+		static_cast<VkDeviceSize>( vertexOffset );
+	vkCmdBindVertexBuffers( cmd, 0, 1,
+		&vkExec.vertexRings[ slot ].buffer, &vertexBindOffset );
+	vkCmdBindIndexBuffer( cmd, vkExec.indexRings[ slot ].buffer,
+		static_cast<VkDeviceSize>( indexOffset ), VK_INDEX_TYPE_UINT32 );
 	vkExec.boundVertexOffset = vertexOffset;	// the cube-texgen path re-binds binding 0 alongside its dir stream
 	return true;
 }
@@ -7433,31 +7451,14 @@ static bool VK_ClassicGui_BuildScissor( const classicGuiDomainView_t &view,
 	return true;
 }
 
-static bool VK_ClassicGui_PrepareGeometry( VkCommandBuffer cmd, int slot,
+static bool VK_Exec_PrepareTriGeometryOffsets( int slot,
 		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset ) {
-	if ( !VK_Exec_BindTriGeometry( cmd, slot, tri ) ) {
-		return false;
-	}
-	vertexOffset = vkExec.boundVertexOffset;
-	const void *indexKey = tri->indexes != NULL
-			? static_cast<const void *>( tri->indexes )
-			: ( tri->indexCache != NULL
-				? static_cast<const void *>( tri->indexCache )
-				: static_cast<const void *>( tri ) );
-	const unsigned int memoIndex = static_cast<unsigned int>(
-		( reinterpret_cast<uintptr_t>( indexKey ) >> 4 )
-		& ( VK_TRI_MEMO_SIZE - 1 ) );
-	const vkIdxUpload_t &memo = vkExec.idxMemo[ memoIndex ];
-	if ( memo.idxKey != indexKey || vertexOffset < 0 || memo.indexOffset < 0 ) {
-		return false;
-	}
-	indexOffset = memo.indexOffset;
-	return true;
+	return VK_Exec_UploadTriGeometry( slot, tri,
+		vertexOffset, indexOffset );
 }
 
-bool VK_Exec_SharedInteractionGeometryCheckpoint( void ) {
-	vkSharedInteractionGeometryCheckpoint_t &checkpoint =
-		vkSharedInteractionGeometryCheckpoint;
+static bool VK_Exec_SharedGeometryCheckpoint( void ) {
+	vkSharedGeometryCheckpoint_t &checkpoint = vkSharedGeometryCheckpoint;
 	if ( checkpoint.active || !vkExec.frameOpen
 			|| vkExec.frameSlot < 0
 			|| vkExec.frameSlot >= VK_FRAMES_IN_FLIGHT ) {
@@ -7478,13 +7479,14 @@ bool VK_Exec_SharedInteractionGeometryCheckpoint( void ) {
 		sizeof( checkpoint.vertMemo ) );
 	memcpy( checkpoint.idxMemo, vkExec.idxMemo,
 		sizeof( checkpoint.idxMemo ) );
+	memcpy( checkpoint.gpuSkinningMemo, vkExec.gpuSkinningMemo,
+		sizeof( checkpoint.gpuSkinningMemo ) );
 	checkpoint.active = true;
 	return true;
 }
 
-void VK_Exec_SharedInteractionGeometryRestore( void ) {
-	vkSharedInteractionGeometryCheckpoint_t &checkpoint =
-		vkSharedInteractionGeometryCheckpoint;
+static void VK_Exec_SharedGeometryRestore( void ) {
+	vkSharedGeometryCheckpoint_t &checkpoint = vkSharedGeometryCheckpoint;
 	if ( !checkpoint.active ) {
 		return;
 	}
@@ -7499,14 +7501,30 @@ void VK_Exec_SharedInteractionGeometryRestore( void ) {
 			sizeof( checkpoint.vertMemo ) );
 		memcpy( vkExec.idxMemo, checkpoint.idxMemo,
 			sizeof( checkpoint.idxMemo ) );
+		memcpy( vkExec.gpuSkinningMemo, checkpoint.gpuSkinningMemo,
+			sizeof( checkpoint.gpuSkinningMemo ) );
 	}
 	checkpoint.active = false;
 }
 
-void VK_Exec_SharedInteractionGeometryCommit( void ) {
+static void VK_Exec_SharedGeometryCommit( void ) {
 	// The complete shared view is now ready.  Its retained offsets and memo
 	// entries become ordinary frame allocations consumed by the committed draw.
-	vkSharedInteractionGeometryCheckpoint.active = false;
+	vkSharedGeometryCheckpoint.active = false;
+}
+
+// Preserve the interaction/fog ABI while all shared classic domains use the
+// same single-owner geometry transaction internally.
+bool VK_Exec_SharedInteractionGeometryCheckpoint( void ) {
+	return VK_Exec_SharedGeometryCheckpoint();
+}
+
+void VK_Exec_SharedInteractionGeometryRestore( void ) {
+	VK_Exec_SharedGeometryRestore();
+}
+
+void VK_Exec_SharedInteractionGeometryCommit( void ) {
+	VK_Exec_SharedGeometryCommit();
 }
 
 // Shared classic domains preflight every geometry upload before they take
@@ -7514,7 +7532,8 @@ void VK_Exec_SharedInteractionGeometryCommit( void ) {
 // exposing the exact retained offsets to the Vulkan interaction consumer.
 bool VK_Exec_PrepareTriGeometry( VkCommandBuffer cmd, int slot,
 		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset ) {
-	return VK_ClassicGui_PrepareGeometry( cmd, slot, tri,
+	(void)cmd;
+	return VK_Exec_PrepareTriGeometryOffsets( slot, tri,
 		vertexOffset, indexOffset );
 }
 
@@ -7942,20 +7961,27 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 			VK_CLASSIC_GUI_REJECT_DOMAIN_COUNTS );
 	}
 
-	// Geometry upload is the final preflight phase.  It emits only non-visible
-	// bind commands and leaves memoized offsets reusable by the classic walker
-	// if any later upload in this phase rejects the view.
+	// Geometry upload is the final preflight phase. Retain every offset without
+	// recording bind state, then commit the ring/memo transaction only after the
+	// complete view fits. A mid-list failure leaves the classic walker untouched.
 	VkCommandBuffer cmd = vkExec.cmd;
 	const int slot = vkExec.frameSlot;
+	if ( !VK_Exec_SharedGeometryCheckpoint() ) {
+		return VK_ClassicGui_Fail( viewDef,
+			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_GUI_REJECT_GEOMETRY );
+	}
 	for ( int drawIndex = 0; drawIndex < planDrawCount; ++drawIndex ) {
 		vkClassicGuiDrawPlan_t &drawPlan = vkClassicGuiDrawPlans[ drawIndex ];
-		if ( !VK_ClassicGui_PrepareGeometry( cmd, slot, drawPlan.tri,
+		if ( !VK_Exec_PrepareTriGeometryOffsets( slot, drawPlan.tri,
 				drawPlan.vertexOffset, drawPlan.indexOffset ) ) {
+			VK_Exec_SharedGeometryRestore();
 			return VK_ClassicGui_Fail( viewDef,
 				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
 				VK_CLASSIC_GUI_REJECT_GEOMETRY );
 		}
 	}
+	VK_Exec_SharedGeometryCommit();
 
 	// Commit: every command below is infallible command-buffer recording over
 	// prevalidated handles and offsets.  Preserve source-surface/pass order.
@@ -8090,6 +8116,12 @@ typedef struct vkClassicWorldAmbientPassPlan_s {
 	VkCullModeFlags cullMode;
 } vkClassicWorldAmbientPassPlan_t;
 
+typedef struct vkClassicWorldAmbientSamplerUndo_s {
+	idImage *image;
+	textureFilter_t filter;
+	textureRepeat_t repeat;
+} vkClassicWorldAmbientSamplerUndo_t;
+
 typedef struct vkClassicWorldAmbientPreparedView_s {
 	const classicWorldAmbientDomainView_t *view;
 	const viewDef_t *viewDef;
@@ -8103,14 +8135,69 @@ typedef struct vkClassicWorldAmbientPreparedView_s {
 	bool ready;
 	bool committed;
 	bool completedPhase[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
+	int samplerUndoCount;
+	vkClassicWorldAmbientSamplerUndo_t samplerUndo[
+		CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES ];
 	vkClassicWorldAmbientDrawPlan_t draws[ CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_DRAWS ];
 	vkClassicWorldAmbientPassPlan_t passes[ CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES ];
 } vkClassicWorldAmbientPreparedView_t;
 
 static vkClassicWorldAmbientPreparedView_t vkClassicWorldAmbientPreparedView;
 
+static void VK_ClassicWorldAmbient_RestoreSamplerState( void ) {
+	vkClassicWorldAmbientPreparedView_t &prepared =
+		vkClassicWorldAmbientPreparedView;
+	for ( int undoIndex = prepared.samplerUndoCount - 1;
+			undoIndex >= 0; --undoIndex ) {
+		const vkClassicWorldAmbientSamplerUndo_t &undo =
+			prepared.samplerUndo[ undoIndex ];
+		if ( undo.image != NULL
+				&& ( undo.image->GetFilter() != undo.filter
+					|| undo.image->GetRepeat() != undo.repeat ) ) {
+			undo.image->SetSamplerState( undo.filter, undo.repeat );
+		}
+	}
+	prepared.samplerUndoCount = 0;
+}
+
+static bool VK_ClassicWorldAmbient_SetPreflightSamplerState( idImage *image,
+		textureFilter_t filter, textureRepeat_t repeat ) {
+	if ( image == NULL ) {
+		return false;
+	}
+	vkClassicWorldAmbientPreparedView_t &prepared =
+		vkClassicWorldAmbientPreparedView;
+	if ( image->GetFilter() == filter && image->GetRepeat() == repeat ) {
+		return true;
+	}
+
+	bool alreadyTracked = false;
+	for ( int undoIndex = 0; undoIndex < prepared.samplerUndoCount;
+			++undoIndex ) {
+		if ( prepared.samplerUndo[ undoIndex ].image == image ) {
+			alreadyTracked = true;
+			break;
+		}
+	}
+	if ( !alreadyTracked ) {
+		if ( prepared.samplerUndoCount
+				>= CLASSIC_WORLD_AMBIENT_DOMAIN_MAX_EVALUATED_PASSES ) {
+			return false;
+		}
+		vkClassicWorldAmbientSamplerUndo_t &undo =
+			prepared.samplerUndo[ prepared.samplerUndoCount++ ];
+		undo.image = image;
+		undo.filter = image->GetFilter();
+		undo.repeat = image->GetRepeat();
+	}
+
+	image->SetSamplerState( filter, repeat );
+	return image->GetFilter() == filter && image->GetRepeat() == repeat;
+}
+
 static bool VK_ClassicWorldAmbient_Fail( const viewDef_t *viewDef,
 		classicWorldAmbientDomainFailure_t failure, int detail ) {
+	VK_ClassicWorldAmbient_RestoreSamplerState();
 	R_ClassicWorldAmbientDomain_RecordBackendFallback( viewDef,
 		CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN, failure, detail );
 	return false;
@@ -8564,9 +8651,11 @@ static bool VK_ClassicWorldAmbient_Preflight( const viewDef_t *viewDef ) {
 			if ( pass->disposition != RENDERER_MATERIAL_PASS_DRAW ) {
 				continue;
 			}
-			if ( image->GetFilter() != binding->filter
-					|| image->GetRepeat() != binding->repeat ) {
-				image->SetSamplerState( binding->filter, binding->repeat );
+			if ( !VK_ClassicWorldAmbient_SetPreflightSamplerState(
+					image, binding->filter, binding->repeat ) ) {
+				return VK_ClassicWorldAmbient_Fail( viewDef,
+					CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_WORLD_AMBIENT_REJECT_TEXTURE_RESIDENCY );
 			}
 			const vkImageEntry_t *imageEntry =
 				VK_Image_GetEntry( binding->textureHandle );
@@ -8627,17 +8716,28 @@ static bool VK_ClassicWorldAmbient_Preflight( const viewDef_t *viewDef ) {
 			VK_CLASSIC_WORLD_AMBIENT_REJECT_DOMAIN_COUNTS );
 	}
 
-	// Final preflight stage: upload and retain exact geometry offsets before any
-	// framebuffer-affecting command in the shared domain.
+	// Final preflight stage: retain every exact geometry offset without recording
+	// bind state. Commit only once the complete upload set fits; otherwise the
+	// ring cursors, memos, bound offset, and sampler state all roll back.
+	if ( !VK_Exec_SharedGeometryCheckpoint() ) {
+		return VK_ClassicWorldAmbient_Fail( viewDef,
+			CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_WORLD_AMBIENT_REJECT_GEOMETRY );
+	}
 	for ( int drawIndex = 0; drawIndex < prepared.drawCount; ++drawIndex ) {
 		vkClassicWorldAmbientDrawPlan_t &drawPlan = prepared.draws[drawIndex];
-		if ( !VK_ClassicGui_PrepareGeometry( vkExec.cmd, vkExec.frameSlot,
-				drawPlan.tri, drawPlan.vertexOffset, drawPlan.indexOffset ) ) {
+		if ( !VK_Exec_PrepareTriGeometryOffsets( vkExec.frameSlot, drawPlan.tri,
+				drawPlan.vertexOffset, drawPlan.indexOffset ) ) {
+			VK_Exec_SharedGeometryRestore();
 			return VK_ClassicWorldAmbient_Fail( viewDef,
 				CLASSIC_WORLD_AMBIENT_FAILURE_BACKEND_REJECTED,
 				VK_CLASSIC_WORLD_AMBIENT_REJECT_GEOMETRY );
 		}
 	}
+	VK_Exec_SharedGeometryCommit();
+	// The desired per-stage descriptors are now sealed and geometry ownership
+	// cannot fall back, so retain the final sampler state exactly as before.
+	prepared.samplerUndoCount = 0;
 	prepared.drawablePasses = drawablePasses;
 	prepared.noopPasses = noopPasses;
 	prepared.ready = true;

@@ -136,7 +136,7 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     require(matrix, "`net_clientUseLegacyRcon 1` / `net_serverAllowLegacyRcon 1`", "legacy rcon containment claim")
     require(
         matrix,
-        "**Implemented** (four complete shared domains; broader use pending)",
+        "**Implemented** (four complete shared domains plus deform dependency; broader use pending)",
         "backend-neutral renderer contract scope",
     )
     require(
@@ -146,24 +146,24 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     )
     require(
         matrix,
-        "deform and other special-view domains still need migration",
+        "subview and other special-view domains still need migration",
         "remaining shared-domain boundary",
     )
     require(
         matrix,
-        "All four domains have local runtime qualification, remain default-off",
+        "The domains remain default-off and retain clean-package/platform promotion gates",
         "shared-domain promotion boundary",
     )
 
     roadmap = read("docs/dev/idtech5-modernization-roadmap.md")
     require(
         roadmap,
-        "four complete domains implemented and runtime-qualified locally",
+        "domains have retained local runtime qualification",
         "roadmap local domain status",
     )
     require(
         roadmap,
-        "Authored-stock fog, clean-package, and platform promotion remain open",
+        "Authored-stock, clean-package, and platform qualification remain open as applicable",
         "roadmap promotion boundary",
     )
 

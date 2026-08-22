@@ -119,6 +119,9 @@ static std::uint64_t HashDraw( const classicWorldAmbientDomainDraw_t &draw ) {
 	HashInt( hash, draw.scissorY1 );
 	HashInt( hash, draw.scissorX2 );
 	HashInt( hash, draw.scissorY2 );
+	HashInt( hash, draw.deformRole );
+	HashInt( hash, draw.deformOutcome );
+	HashU64( hash, draw.deformContractHash );
 	for ( int i = 0; i < 16; ++i ) {
 		HashFloat( hash, draw.modelViewMatrix[ i ] );
 	}
@@ -139,6 +142,9 @@ static std::uint64_t HashView( const classicWorldAmbientDomainView_t &view ) {
 	HashInt( hash, view.evaluatedPassCount );
 	HashInt( hash, view.drawablePassCount );
 	HashInt( hash, view.noopPassCount );
+	HashInt( hash, view.materialDeformSurfaceCount );
+	HashInt( hash, view.completedDeformSurfaceCount );
+	HashInt( hash, view.emptyDeformSurfaceCount );
 	for ( int phase = 0; phase < CLASSIC_WORLD_AMBIENT_PHASE_COUNT; ++phase ) {
 		HashInt( hash, view.phaseSurfaceCount[ phase ] );
 		HashInt( hash, view.phaseDrawableSurfaceCount[ phase ] );
@@ -227,6 +233,9 @@ static bool FailView( classicWorldAmbientDomainView_t &view,
 	view.inactivePassCount = 0;
 	view.activeNoopPassCount = 0;
 	view.noopPassCount = 0;
+	view.materialDeformSurfaceCount = 0;
+	view.completedDeformSurfaceCount = 0;
+	view.emptyDeformSurfaceCount = 0;
 	for ( int phase = 0; phase < CLASSIC_WORLD_AMBIENT_PHASE_COUNT; ++phase ) {
 		view.phaseSurfaceCount[ phase ] = 0;
 		view.phaseDrawableSurfaceCount[ phase ] = 0;
@@ -247,6 +256,64 @@ static bool FailView( classicWorldAmbientDomainView_t &view,
 		domain.stats.overflow = true;
 	}
 	return false;
+}
+
+static bool MaterialRequestsClassicDeform( const drawSurf_t *drawSurf ) {
+	return drawSurf != NULL && drawSurf->material != NULL
+		&& drawSurf->material->Deform() != DFRM_NONE;
+}
+
+static int DeformContractFailureDetail( const drawSurf_t *drawSurf ) {
+	if ( drawSurf == NULL ) {
+		return -1;
+	}
+	return static_cast<int>( drawSurf->classicDeform.role )
+		* CLASSIC_DEFORM_OUTCOME_COUNT
+		+ static_cast<int>( drawSurf->classicDeform.outcome );
+}
+
+static bool ValidateFinalizedDeformContract( const drawSurf_t *drawSurf,
+		const drawPacket_t *packet, classicDeformRole_t &role,
+		classicDeformOutcome_t &outcome, std::uint64_t &semanticHash ) {
+	role = CLASSIC_DEFORM_ROLE_UNKNOWN;
+	outcome = CLASSIC_DEFORM_OUTCOME_NONE;
+	semanticHash = 0;
+	if ( !MaterialRequestsClassicDeform( drawSurf ) ) {
+		return true;
+	}
+	if ( !r_rendererSharedDeform.GetBool() ) {
+		return false;
+	}
+	const std::uint64_t frameToken =
+		R_ClassicDeformDomain_CurrentFrameToken();
+	const classicDeformRecord_t &record = drawSurf->classicDeform;
+	if ( record.role != CLASSIC_DEFORM_ROLE_FINALIZED_DRAW
+			|| !record.cpuFinalized
+			|| !R_ClassicDeformDomain_ValidateRecordForFrame( record,
+				frameToken )
+			|| !R_ClassicDeformDomain_RecordMatchesDrawSurf( record, drawSurf )
+			|| ( !R_ClassicDeformDomain_HasCompletedOutput( record )
+				&& !R_ClassicDeformDomain_HasEmptyOutput( record ) ) ) {
+		return false;
+	}
+	if ( packet != NULL ) {
+		if ( !packet->hasClassicDeformRecord
+				|| packet->classicDeformRecord == NULL
+				|| packet->geometryRecord == NULL
+				|| packet->classicDeformRecord
+					!= &packet->geometryRecord->classicDeform
+				|| !packet->geometryRecord->hasClassicDeformRecord
+				|| !R_ClassicDeformDomain_ValidateRecordForFrame(
+					*packet->classicDeformRecord, frameToken )
+				|| !R_ClassicDeformDomain_SameProvenance( record,
+					*packet->classicDeformRecord ) ) {
+			return false;
+		}
+	}
+	role = record.role;
+	outcome = record.outcome;
+	semanticHash = record.semanticHash;
+	return true;
 }
 
 static bool MatrixHasNegativeScale( const float matrix[ 16 ] ) {
@@ -328,7 +395,8 @@ static classicWorldAmbientDomainSourceSurface_t ClassifySourceSurface(
 	if ( material == NULL ) {
 		return CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_NOOP_MISSING_MATERIAL;
 	}
-	if ( material->Deform() != DFRM_NONE ) {
+	if ( material->Deform() != DFRM_NONE
+			&& !r_rendererSharedDeform.GetBool() ) {
 		return CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_FALLBACK_DEFORM;
 	}
 	if ( material->GetSort() >= SS_POST_PROCESS ) {
@@ -438,11 +506,15 @@ static bool ValidateAmbientDrawPacket( const idScenePacketFrame &packetFrame,
 	if ( !packet.hasGeometry || packet.vertexCount <= 0 || packet.indexCount <= 0
 			|| geometry.vertexCount != packet.vertexCount
 			|| geometry.indexCount != packet.indexCount
-			|| geometry.deformMode != GEOMETRY_DEFORM_NONE
+			|| ( geometry.deformMode != GEOMETRY_DEFORM_NONE
+				&& !( r_rendererSharedDeform.GetBool()
+					&& MaterialRequestsClassicDeform( drawSurf ) ) )
 			|| geometry.legacyGeometry == NULL || geometry.legacyGeometry->ambientCache == NULL
 			|| !packet.hasAmbientCache
 			|| ( !packet.hasIndexCache && !geometry.hasClientIndexData ) ) {
 		failure = geometry.deformMode != GEOMETRY_DEFORM_NONE
+			&& !( r_rendererSharedDeform.GetBool()
+				&& MaterialRequestsClassicDeform( drawSurf ) )
 			? CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_SURFACE_FALLBACK
 			: CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_GEOMETRY_RECORD;
 		return false;
@@ -719,6 +791,15 @@ static bool R_ClassicWorldAmbientDomain_PrepareView(
 				sizeof( draw.modelViewMatrix ) );
 		}
 
+		if ( !ValidateFinalizedDeformContract( source, packet,
+				draw.deformRole, draw.deformOutcome,
+				draw.deformContractHash ) ) {
+			return FailView( view,
+				CLASSIC_WORLD_AMBIENT_FAILURE_DEFORM_CONTRACT,
+				DeformContractFailureDetail( source ), sourceIndex,
+				draw.drawPacketIndex, view.ambientPassPacketIndex );
+		}
+
 		if ( classification != CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_DRAWABLE ) {
 			noopSurfaces++;
 			draw.hash = HashDraw( draw );
@@ -748,7 +829,9 @@ static bool R_ClassicWorldAmbientDomain_PrepareView(
 				view.ambientPassPacketIndex );
 		}
 		if ( packet->geometryRecord == NULL
-				|| packet->geometryRecord->deformMode != GEOMETRY_DEFORM_NONE ) {
+				|| ( packet->geometryRecord->deformMode
+						!= GEOMETRY_DEFORM_NONE
+					&& draw.deformContractHash == 0 ) ) {
 			return FailView( view,
 				CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_SURFACE_FALLBACK,
 				CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_FALLBACK_DEFORM,
@@ -931,6 +1014,14 @@ static bool R_ClassicWorldAmbientDomain_PrepareView(
 		view.inactivePassCount += draw.inactivePassCount;
 		view.activeNoopPassCount += draw.activeNoopPassCount;
 		view.noopPassCount += draw.noopPassCount;
+		if ( draw.deformContractHash != 0 ) {
+			view.materialDeformSurfaceCount++;
+			if ( draw.deformOutcome == CLASSIC_DEFORM_OUTCOME_COMPLETED ) {
+				view.completedDeformSurfaceCount++;
+			} else if ( draw.deformOutcome == CLASSIC_DEFORM_OUTCOME_EMPTY ) {
+				view.emptyDeformSurfaceCount++;
+			}
+		}
 		view.phaseDrawablePassCount[ phase ] += draw.drawablePassCount;
 		view.phaseNoopPassCount[ phase ] += draw.noopPassCount;
 	}
@@ -949,6 +1040,9 @@ static bool R_ClassicWorldAmbientDomain_PrepareView(
 	domain.stats.inactivePasses += view.inactivePassCount;
 	domain.stats.activeNoopPasses += view.activeNoopPassCount;
 	domain.stats.noopPasses += view.noopPassCount;
+	domain.stats.materialDeformSurfaces += view.materialDeformSurfaceCount;
+	domain.stats.completedDeformSurfaces += view.completedDeformSurfaceCount;
+	domain.stats.emptyDeformSurfaces += view.emptyDeformSurfaceCount;
 	for ( int phase = 0; phase < CLASSIC_WORLD_AMBIENT_PHASE_COUNT; ++phase ) {
 		domain.stats.phaseDrawablePasses[ phase ]
 			+= view.phaseDrawablePassCount[ phase ];
@@ -1316,6 +1410,7 @@ const char *ClassicWorldAmbientDomainFailure_Name(
 	case CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_SURFACE_FALLBACK: return "sourceSurfaceFallback";
 	case CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_PACKET_MISMATCH: return "sourcePacketMismatch";
 	case CLASSIC_WORLD_AMBIENT_FAILURE_INVALID_DRAW_PACKET: return "invalidDrawPacket";
+	case CLASSIC_WORLD_AMBIENT_FAILURE_DEFORM_CONTRACT: return "deformContract";
 	case CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_GEOMETRY_RECORD: return "missingGeometryRecord";
 	case CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_INSTANCE_RECORD: return "missingInstanceRecord";
 	case CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_MATERIAL_RECORD: return "missingMaterialRecord";
@@ -1364,6 +1459,9 @@ bool RendererClassicWorldAmbientDomain_RunSelfTest( void ) {
 			|| idStr::Cmp( ClassicWorldAmbientDomainFailure_Name(
 				CLASSIC_WORLD_AMBIENT_FAILURE_UNPACKETIZED_VIEW_EFFECT ),
 				"unpacketizedViewEffect" )
+			|| idStr::Cmp( ClassicWorldAmbientDomainFailure_Name(
+				CLASSIC_WORLD_AMBIENT_FAILURE_DEFORM_CONTRACT ),
+				"deformContract" )
 			|| ForbiddenPassCategory( RENDER_PASS_DEPTH )
 			|| ForbiddenPassCategory( RENDER_PASS_AMBIENT )
 			|| !ForbiddenPassCategory( RENDER_PASS_ARB2_INTERACTION )
@@ -1401,6 +1499,15 @@ bool RendererClassicWorldAmbientDomain_RunSelfTest( void ) {
 	same = first;
 	same.textureResourceId += 1ull << 32;
 	if ( HashPass( same ) != firstHash ) {
+		return false;
+	}
+	classicWorldAmbientDomainDraw_t deformHashDraw;
+	InitDraw( deformHashDraw );
+	const std::uint64_t undeformedHash = HashDraw( deformHashDraw );
+	deformHashDraw.deformRole = CLASSIC_DEFORM_ROLE_FINALIZED_DRAW;
+	deformHashDraw.deformOutcome = CLASSIC_DEFORM_OUTCOME_COMPLETED;
+	deformHashDraw.deformContractHash = 0x61234ull;
+	if ( HashDraw( deformHashDraw ) == undeformedHash ) {
 		return false;
 	}
 

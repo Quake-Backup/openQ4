@@ -4,6 +4,7 @@
 #ifndef __CLASSIC_INTERACTION_DOMAIN_H__
 #define __CLASSIC_INTERACTION_DOMAIN_H__
 
+#include "ClassicDeformDomain.h"
 #include "MaterialResourceTable.h"
 #include "ShadowMapProjected.h"
 
@@ -137,6 +138,7 @@ enum classicInteractionDomainFailure_t {
 	CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
 	CLASSIC_INTERACTION_FAILURE_CUSTOM_LIGHTING,
 	CLASSIC_INTERACTION_FAILURE_DEFORM,
+	CLASSIC_INTERACTION_FAILURE_DEFORM_CONTRACT,
 	CLASSIC_INTERACTION_FAILURE_SKINNING,
 	CLASSIC_INTERACTION_FAILURE_SPECIAL_SURFACE,
 	CLASSIC_INTERACTION_FAILURE_DEPTH_HACK,
@@ -234,6 +236,9 @@ typedef struct classicInteractionDomainShadowCaster_s {
 	bool			ambientGeometry;
 	bool			dynamicCaster;
 	bool			translucentCaster;
+	classicDeformRole_t	deformRole;
+	classicDeformOutcome_t	deformOutcome;
+	std::uint64_t		deformContractHash;
 	std::uint64_t		hash;
 } classicInteractionDomainShadowCaster_t;
 
@@ -391,6 +396,9 @@ typedef struct classicInteractionDomainSurface_s {
 	int			scissorY1;
 	int			scissorX2;
 	int			scissorY2;
+	classicDeformRole_t	deformRole;
+	classicDeformOutcome_t	deformOutcome;
+	std::uint64_t		deformContractHash;
 	std::uint64_t		hash;
 } classicInteractionDomainSurface_t;
 
@@ -501,6 +509,9 @@ typedef struct classicInteractionDomainView_s {
 	int			inactiveLightStageCount;
 	int			activeSurfaceStageCount;
 	int			inactiveSurfaceStageCount;
+	int			materialDeformReceiverCount;
+	int			completedDeformCasterCount;
+	int			emptyDeformCasterCount;
 	int			receiverSurfaceCount[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
 	int			receiverPrimitiveCount[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
 	int			viewportX1;
@@ -578,6 +589,9 @@ typedef struct classicInteractionDomainStats_s {
 	int		inactiveLightStages;
 	int		activeSurfaceStages;
 	int		inactiveSurfaceStages;
+	int		materialDeformReceivers;
+	int		completedDeformCasters;
+	int		emptyDeformCasters;
 	int		receiverSurfaces[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
 	int		receiverPrimitives[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
 	int		failureCounts[ CLASSIC_INTERACTION_FAILURE_COUNT ];
@@ -604,6 +618,8 @@ const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_ViewSha
 const classicInteractionDomainShadowCaster_t *R_ClassicInteractionDomain_LightShadowCaster(
 	const classicInteractionDomainLight_t &light,
 	classicInteractionDomainShadowChain_t chain, int casterIndex );
+bool R_ClassicInteractionDomain_ShadowCasterNoopValid(
+	const classicInteractionDomainShadowCaster_t &caster );
 const classicInteractionDomainShadowAlphaStage_t *R_ClassicInteractionDomain_ShadowAlphaStage(
 	const classicInteractionDomainShadowCaster_t &caster, int stageIndex );
 const classicInteractionDomainShadowMapPass_t *R_ClassicInteractionDomain_LightShadowMapPass(

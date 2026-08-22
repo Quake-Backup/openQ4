@@ -35,6 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererStartupDiagnostics.h"
 #include "RenderTexture.h"
 #include "GpuSkinning.h"
+#include "ClassicDeformDomain.h"
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 #include "../idlib/geometry/rvVertex.h"
 #endif
@@ -156,6 +157,9 @@ typedef struct drawSurf_s {
 	int						decalColorOffset;	// bytes from decalColorCache to the first stage color block
 	int						decalColorStride;	// bytes between stage color blocks (numVerts * 4)
 	int						decalColorStageCount;
+	// Sealed by R_FinalizeDrawSurf. Receiver-only drawSurfs intentionally leave
+	// this slot untouched and publish NOT_APPLICABLE snapshots per packet role.
+	classicDeformRecord_t	classicDeform;
 	// specular directions for non vertex program cards, skybox texcoords, etc
 } drawSurf_t;
 
@@ -1120,6 +1124,7 @@ extern idCVar r_rendererSharedGui;	// opt-in backend-neutral fixed-function 2D G
 extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
 extern idCVar r_rendererSharedWorldInteraction;	// opt-in backend-neutral whole-view unshadowed interaction ownership
 extern idCVar r_rendererSharedWorldFogBlend;	// opt-in backend-neutral whole-view fog/blend ownership
+extern idCVar r_rendererSharedDeform;	// opt-in backend-neutral material-deform ownership
 extern idCVar r_vkShadowFallbackTest;	// diagnostic-only forced Vulkan unshadowed receiver fallback
 extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lighting-ownership parity contracts proven
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion

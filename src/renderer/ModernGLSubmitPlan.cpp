@@ -1093,10 +1093,15 @@ bool RendererModernGLSubmitPlan_RunSelfTest( void ) {
 		return true;
 	}
 
-	idScenePacketFrame packetFrame;
+	// This fixture keeps four fixed-capacity packet arenas alive at once. Keep
+	// them off the finite render-thread stack; sealed geometry contracts make
+	// the arenas deliberately substantial even though each fixture uses only a
+	// handful of records.
+	idAutoPtr<idScenePacketFrame> packetFrame( new idScenePacketFrame );
 	idRenderGraph graph;
 	idModernGLDrawPlan drawPlan;
-	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( true, true, TAG_USED, false, drawPlan, packetFrame, graph );
+	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( true, true, TAG_USED, false,
+		drawPlan, *packetFrame, graph );
 
 	idModernGLSubmitPlan submitPlan;
 	submitPlan.Build( drawPlan );
@@ -1157,14 +1162,17 @@ bool RendererModernGLSubmitPlan_RunSelfTest( void ) {
 	}
 
 	idModernGLDrawPlan missingCacheDrawPlan;
-	idScenePacketFrame missingCachePacketFrame;
+	idAutoPtr<idScenePacketFrame> missingCachePacketFrame(
+		new idScenePacketFrame );
 	idRenderGraph missingCacheGraph;
-	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( false, false, TAG_FREE, false, missingCacheDrawPlan, missingCachePacketFrame, missingCacheGraph );
+	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( false, false, TAG_FREE, false,
+		missingCacheDrawPlan, *missingCachePacketFrame, missingCacheGraph );
 	idModernGLSubmitPlan missingCacheSubmitPlan;
 	missingCacheSubmitPlan.Build( missingCacheDrawPlan );
 	const modernGLDrawPlanStats_t &missingDrawStats = missingCacheDrawPlan.Stats();
 	const modernGLSubmitPlanStats_t &fallbackStats = missingCacheSubmitPlan.Stats();
-	if ( missingDrawStats.sourceDrawPackets != missingCachePacketFrame.NumDrawPackets()
+	if ( missingDrawStats.sourceDrawPackets
+			!= missingCachePacketFrame->NumDrawPackets()
 		|| missingDrawStats.plannedDraws != 0
 		|| missingDrawStats.geometryFallbackDraws != expectedGeometryFallbackDraws
 		|| missingDrawStats.geometryVertexBufferFallbackDraws != expectedGeometryFallbackDraws
@@ -1176,9 +1184,11 @@ bool RendererModernGLSubmitPlan_RunSelfTest( void ) {
 	}
 
 	idModernGLDrawPlan tempIndexDrawPlan;
-	idScenePacketFrame tempIndexPacketFrame;
+	idAutoPtr<idScenePacketFrame> tempIndexPacketFrame(
+		new idScenePacketFrame );
 	idRenderGraph tempIndexGraph;
-	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( true, true, TAG_TEMP, false, tempIndexDrawPlan, tempIndexPacketFrame, tempIndexGraph );
+	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( true, true, TAG_TEMP, false,
+		tempIndexDrawPlan, *tempIndexPacketFrame, tempIndexGraph );
 	idModernGLSubmitPlan tempIndexSubmitPlan;
 	tempIndexSubmitPlan.Build( tempIndexDrawPlan );
 	const modernGLSubmitPlanStats_t &tempIndexStats = tempIndexSubmitPlan.Stats();
@@ -1192,9 +1202,11 @@ bool RendererModernGLSubmitPlan_RunSelfTest( void ) {
 	}
 
 	idModernGLDrawPlan uploadIndexDrawPlan;
-	idScenePacketFrame uploadIndexPacketFrame;
+	idAutoPtr<idScenePacketFrame> uploadIndexPacketFrame(
+		new idScenePacketFrame );
 	idRenderGraph uploadIndexGraph;
-	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( true, false, TAG_FREE, true, uploadIndexDrawPlan, uploadIndexPacketFrame, uploadIndexGraph );
+	R_ModernGLSubmitPlan_BuildSelfTestDrawPlan( true, false, TAG_FREE, true,
+		uploadIndexDrawPlan, *uploadIndexPacketFrame, uploadIndexGraph );
 	idModernGLSubmitPlan uploadIndexSubmitPlan;
 	uploadIndexSubmitPlan.Build( uploadIndexDrawPlan );
 	const modernGLSubmitPlanStats_t &uploadStats = uploadIndexSubmitPlan.Stats();

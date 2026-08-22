@@ -216,6 +216,7 @@ static bool R_ModernGLExecutor_ModernVisibleRequested( void ) {
 	return !r_skipRender.GetBool() && !r_skipRenderContext.GetBool()
 		&& !r_rendererSharedWorldAmbient.GetBool()
 		&& !r_rendererSharedWorldInteraction.GetBool()
+		&& !r_rendererSharedDeform.GetBool()
 		&& ( r_rendererModernVisible.GetBool()
 			|| RendererBootstrap_ShouldAutoPromoteModernVisible() );
 }

@@ -49,7 +49,8 @@ For an eligible view, the shared path preserves:
 The first version deliberately rejects portal skies, suppress-in-subview and
 in-world GUI materials, subviews and mirrors, editor/render-demo mutations,
 clip planes, global material overrides, BSE/outline/dynamic-texcoord special
-surfaces, deforms and skinned geometry, weapon/model depth hacks, negative
+surfaces, unsealed or non-admitted material deforms and skinned geometry,
+weapon/model depth hacks, negative
 scale, decals and decal-color streams, post-process sorting, synthetic or
 missing spaces, current-render/depth images, cinematics, dynamic/defaulted/
 unloaded images, custom programs, non-explicit texgen, player-visibility
@@ -262,7 +263,15 @@ native/static and controlled GL/Vulkan runtime qualification pass, while
 authored-stock and release promotion remain open.
 These domains still do not make the whole classic frame modern.
 
-The next recommended implementation target is **deform ownership and parity**
-on both backends, followed by subview, in-world GUI, render-demo, cinematic, or
-authored post ownership. Do not skip ahead to temporal presentation or
-PBR/advanced-lighting Milestones E/F.
+The independent default-off
+[material-deform contract](classic-deform-domain-modernization.md) now admits
+sealed completed or intentional-empty CPU deform results. The earlier
+`shaderDemos/move` evidence remains the conservative
+`r_rendererSharedDeform 0` rollback baseline; deform-enabled qualification uses
+the dedicated profile and requires nonempty ownership plus exact same-backend
+parity.
+
+The next recommended implementation target is **subview ownership and parity**,
+followed by in-world GUI, render-demo, cinematic, or authored post ownership.
+Do not skip ahead to temporal presentation or PBR/advanced-lighting Milestones
+E/F.

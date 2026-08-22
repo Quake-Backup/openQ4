@@ -198,6 +198,15 @@ FOG_BLEND_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
+DEFORM_SCENES: dict[str, dict[str, Any]] = {
+    "sp-mv2-deform": {
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock material-move deformation ownership and published-geometry parity evidence",
+        "path": "spawn-static",
+    },
+}
+
 # Stock-map qualification candidates complement the tightly controlled
 # tools-map case.  The ordinary shadow-regression scenes do not by themselves
 # establish a fixed camera or feature-bearing interaction view, so every target
@@ -268,6 +277,7 @@ ALL_SCENES = {
     **WORLD_AMBIENT_SCENES,
     **INTERACTION_SCENES,
     **FOG_BLEND_SCENES,
+    **DEFORM_SCENES,
     **INTERACTION_SHADOW_SCENES,
     **LOAD_REGRESSION_SCENES,
 }
@@ -392,6 +402,58 @@ PROFILE_DEFAULTS = {
             "setviewpos 0 0 256 80 0 0",
         ),
         "cvars": (
+            ("g_renderFastNoPost", "1"),
+            ("g_renderFastNoPostDirect", "1"),
+            ("r_postAA", "0"),
+            ("r_singleLight", "2147483647"),
+            ("r_skipSubviews", "1"),
+            ("r_useLightGrid", "0"),
+            ("r_skipPlayerVisibilityEffects", "1"),
+            ("r_portalsDistanceCull", "0"),
+            ("r_forceAmbient", "0"),
+            ("r_celShading", "0"),
+            ("r_celShadingWorld", "0"),
+            ("r_showOverDraw", "0"),
+            ("r_singleTriangle", "0"),
+            ("r_skipAmbient", "0"),
+            ("r_skipNewAmbient", "0"),
+            ("r_skipDeforms", "0"),
+            ("r_skipRender", "0"),
+        ),
+    },
+    "deform": {
+        "cases": tuple(DEFORM_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "launchCvars": (
+            # shaderDemos/move evaluates a time-based deform expression.  Run
+            # exactly one game tic per rendered frame so separate classic and
+            # shared captures reach the same deform value on every backend.
+            ("com_fixedTic", "1"),
+            ("g_stopTime", "1"),
+            ("in_mouse", "0"),
+            ("ui_showGun", "0"),
+            ("g_showHud", "0"),
+            ("r_multiSamples", "0"),
+        ),
+        "execCommands": (
+            "g_stopTime 1",
+            "noclip",
+            "setviewpos 0 0 256 80 0 0",
+        ),
+        # Keep the stock material override in the ordinary profile-cvar stream.
+        # User --set-cvar entries are appended afterwards and can still replace
+        # it for targeted deform-kind or atomic-fallback captures.
+        "cvars": (
+            # Advance only the common post-map settle interval, then the first
+            # exec command freezes that exact tic for sampling and screenshot.
+            ("g_stopTime", "0"),
+            ("r_rendererSharedWorldAmbient", "1"),
+            ("r_rendererSharedDeform", "1"),
+            ("r_materialOverride", "shaderDemos/move"),
             ("g_renderFastNoPost", "1"),
             ("g_renderFastNoPostDirect", "1"),
             ("r_postAA", "0"),
@@ -1107,6 +1169,7 @@ def common_args(
     append_set(args, "r_rendererSharedWorldAmbient", "0")
     append_set(args, "r_rendererSharedWorldInteraction", "0")
     append_set(args, "r_rendererSharedWorldFogBlend", "0")
+    append_set(args, "r_rendererSharedDeform", "0")
     append_set(args, "r_rendererBenchmarkPreset", benchmark_preset)
     append_set(args, "fs_savepath", str(savepath))
     # Keep generated cache/config output in the isolated evidence root.  The
@@ -1152,6 +1215,7 @@ def build_scripted_capture_lines(
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
         "r_rendererSharedWorldFogBlend 0",
+        "r_rendererSharedDeform 0",
         "r_rendererModernVisible 0",
         "r_rendererModernVisibleDepth 0",
         "r_rendererModernOpaque 0",
@@ -2936,8 +3000,9 @@ def compare_screenshot_difference_if_requested(
 
     Equivalence and effectiveness are separate claims.  The ordinary reference
     comparison proves shared-off/shared-on parity under identical renderer
-    settings; this comparison proves that the controlled shadows-on scene is
-    actually different from its shadows-off capture.
+    settings; this comparison proves that a controlled feature-on scene is
+    actually different from its feature-disabled capture.  Eligible features
+    include interaction shadows, fog/blend, and material deforms.
     """
     if screenshot is None:
         return {"status": "missing-screenshot", "pass": False}
@@ -3014,6 +3079,34 @@ def evaluate_role_result(
         require_reference,
         spec.id,
     )
+    is_deform_scene = spec.case_id in DEFORM_SCENES
+    difference_feature_case = (
+        is_deform_scene
+        or spec.fog_blend_expectation in ("owned", "owned-skip-blend")
+        or spec.interaction_shadow_expectation
+        in (
+            "stencil",
+            "projected",
+            "point",
+            "mapped",
+            "csm",
+            "mixed",
+            "dynamic",
+            "perforated",
+            "hybrid",
+        )
+    )
+    difference_required = (
+        difference_reference_dir is not None and difference_feature_case
+    )
+    difference_reference_case_id = (
+        spec.id
+        if (
+            is_deform_scene
+            or spec.fog_blend_expectation in ("owned", "owned-skip-blend")
+        )
+        else spec.id_for_shadow_preset("unshadowed")
+    )
     image_difference = (
         compare_screenshot_difference_if_requested(
             screenshot,
@@ -3021,27 +3114,9 @@ def evaluate_role_result(
             difference_reference_dir,
             difference_min_rms,
             difference_min_channels,
-            (
-                spec.id
-                if spec.fog_blend_expectation in ("owned", "owned-skip-blend")
-                else spec.id_for_shadow_preset("unshadowed")
-            ),
+            difference_reference_case_id,
         )
-        if (
-            spec.fog_blend_expectation in ("owned", "owned-skip-blend")
-            or spec.interaction_shadow_expectation
-            in (
-                "stencil",
-                "projected",
-                "point",
-                "mapped",
-                "csm",
-                "mixed",
-                "dynamic",
-                "perforated",
-                "hybrid",
-            )
-        )
+        if difference_required
         else {"status": "not-requested"}
     )
     missing: list[str] = []
@@ -4278,7 +4353,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--require-references", action="store_true", help="Fail captures when --reference-dir has no matching reference image.")
     parser.add_argument("--image-rms-threshold", type=float, default=2.0, help="Allowed RMS channel delta for TGA comparisons.")
     parser.add_argument("--image-max-threshold", type=int, default=24, help="Allowed maximum channel delta for TGA comparisons.")
-    parser.add_argument("--difference-reference-dir", default="", help="Optional engine-TGA reference root that every shadow-owning interaction or fog/blend capture must differ from; use a feature-disabled capture to prove the controlled effect is visible.")
+    parser.add_argument("--difference-reference-dir", default="", help="Optional engine-TGA reference root that each eligible interaction-shadow, fog/blend, or material-deform capture must differ from; use a feature-disabled capture to prove the controlled effect is visible.")
     parser.add_argument("--image-difference-min-rms", type=float, default=0.1, help="Minimum RMS channel delta required by --difference-reference-dir.")
     parser.add_argument("--image-difference-min-channels", type=int, default=1000, help="Minimum changed RGB-channel count required by --difference-reference-dir.")
     parser.add_argument("--mp-port", type=int, default=28110, help="Base listen-server port for MP runs.")
@@ -4381,6 +4456,9 @@ def print_list() -> None:
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nFog/blend ownership cases (run with --pacing-only):")
     for case_id, scene in FOG_BLEND_SCENES.items():
+        print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
+    print("\nMaterial-deform ownership cases (run with --pacing-only):")
+    for case_id, scene in DEFORM_SCENES.items():
         print(f"  {case_id}: {scene['mode']} {scene['map']} - {scene['purpose']}")
     print("\nStock interaction-shadow cases (run with --pacing-only):")
     for case_id, scene in INTERACTION_SHADOW_SCENES.items():

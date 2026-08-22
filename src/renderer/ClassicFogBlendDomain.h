@@ -4,6 +4,7 @@
 #ifndef __CLASSIC_FOG_BLEND_DOMAIN_H__
 #define __CLASSIC_FOG_BLEND_DOMAIN_H__
 
+#include "ClassicDeformDomain.h"
 #include "MaterialResourceTable.h"
 
 /*
@@ -104,6 +105,7 @@ enum classicFogBlendDomainFailure_t {
 	CLASSIC_FOG_BLEND_FAILURE_NONFINITE_VALUE,
 	CLASSIC_FOG_BLEND_FAILURE_FOG_FRUSTUM_GEOMETRY,
 	CLASSIC_FOG_BLEND_FAILURE_DEFORM,
+	CLASSIC_FOG_BLEND_FAILURE_DEFORM_CONTRACT,
 	CLASSIC_FOG_BLEND_FAILURE_SKINNING,
 	CLASSIC_FOG_BLEND_FAILURE_SPECIAL_SURFACE,
 	CLASSIC_FOG_BLEND_FAILURE_DEPTH_HACK,
@@ -169,6 +171,9 @@ typedef struct classicFogBlendDomainSurface_s {
 	float			modelViewMatrix[ 16 ];
 	bool			hasAmbientCache;
 	bool			hasIndexCache;
+	classicDeformRole_t	deformRole;
+	classicDeformOutcome_t	deformOutcome;
+	std::uint64_t	deformContractHash;
 	std::uint64_t	hash;
 } classicFogBlendDomainSurface_t;
 
@@ -232,6 +237,8 @@ typedef struct classicFogBlendDomainLight_s {
 	std::uint64_t	fogTextureResourceId;
 	std::uint64_t	fogEnterTextureResourceId;
 	bool			globalChainPresent;
+	int			materialDeformReceiverCount;
+	std::uint64_t	deformContractHash;
 	std::uint64_t	hash;
 } classicFogBlendDomainLight_t;
 
@@ -319,6 +326,7 @@ typedef struct classicFogBlendDomainView_s {
 	int			fogFrustumPrimitiveCount;
 	int			blendPrimitiveCount;
 	int			packetDrawCount;
+	int			materialDeformReceiverCount;
 	int			viewportX1;
 	int			viewportY1;
 	int			viewportX2;
@@ -384,6 +392,7 @@ typedef struct classicFogBlendDomainStats_s {
 	int		fogFrustumPrimitives;
 	int		blendPrimitives;
 	int		textures;
+	int		materialDeformReceivers;
 	int		failureCounts[ CLASSIC_FOG_BLEND_FAILURE_COUNT ];
 	std::uint64_t	hash;
 	classicFogBlendDomainBackendCoverage_t backend[

@@ -12159,10 +12159,7 @@ static bool RB_SharedWorldInteractionGLMapCasterValuesValid(
 		return false;
 	}
 	if ( caster.disposition == CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
-		return caster.materialCoverage == MC_PERFORATED
-			&& caster.vertexCount > 0 && caster.totalIndexCount > 0
-			&& caster.selectedIndexCount == 0
-			&& caster.alphaStageCount == 0;
+		return R_ClassicInteractionDomain_ShadowCasterNoopValid( caster );
 	}
 	// A perforated material with no active alpha-test stage follows the classic
 	// opaque-depth fallback; active zero-alpha stages are normalized above to a

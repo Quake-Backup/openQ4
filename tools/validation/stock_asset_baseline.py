@@ -623,6 +623,7 @@ def display_cfg_lines(width: int, height: int) -> list[str]:
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
         "r_rendererSharedWorldFogBlend 0",
+        "r_rendererSharedDeform 0",
         "r_fullscreen 0",
         "r_borderless 0",
         "r_borderlessDefaultMigrated 1",
@@ -668,6 +669,7 @@ def common_args(
     add_set(args, "r_rendererSharedWorldAmbient", 0)
     add_set(args, "r_rendererSharedWorldInteraction", 0)
     add_set(args, "r_rendererSharedWorldFogBlend", 0)
+    add_set(args, "r_rendererSharedDeform", 0)
     add_set(args, "r_rendererBenchmarkPreset", "baseline")
     add_set(args, "r_rendererMetrics", 0)
     add_set(args, "r_rendererGpuTimers", 1)
@@ -1992,6 +1994,7 @@ def verify_recorded_files(
             "r_rendererSharedWorldAmbient": "0",
             "r_rendererSharedWorldInteraction": "0",
             "r_rendererSharedWorldFogBlend": "0",
+            "r_rendererSharedDeform": "0",
             "r_fullscreen": "0",
             "r_borderless": "0",
             "r_borderlessDefaultMigrated": "1",
@@ -2050,6 +2053,7 @@ def verify_recorded_files(
                 "r_rendererSharedWorldAmbient",
                 "r_rendererSharedWorldInteraction",
                 "r_rendererSharedWorldFogBlend",
+                "r_rendererSharedDeform",
                 "fs_basepath",
                 "fs_savepath",
                 "fs_devpath",

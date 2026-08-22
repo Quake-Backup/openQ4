@@ -2882,8 +2882,7 @@ static bool VK_ClassicShadow_AddCasterChain(
 		mappedCasters++;
 		if ( caster->disposition
 				== CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
-			if ( caster->selectedIndexCount != 0
-					|| caster->alphaStageCount != 0 ) {
+			if ( !R_ClassicInteractionDomain_ShadowCasterNoopValid( *caster ) ) {
 				return false;
 			}
 			noopCasters++;

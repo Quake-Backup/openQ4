@@ -407,12 +407,20 @@ def validate_vulkan_consumer() -> None:
             "R_MaterialResourceTable_ResolveTextureResource(",
             "VK_GuiExecutor_GetImageDescriptor(",
             "VK_GuiExecutor_GetPipelineStrict(",
-            "VK_ClassicGui_PrepareGeometry(",
+            "VK_Exec_SharedGeometryCheckpoint()",
+            "VK_Exec_PrepareTriGeometryOffsets(",
+            "VK_Exec_SharedGeometryCommit();",
             "prepared.ready = true;",
         ),
         "all-view Vulkan preflight before commit",
     )
-    reject(preflight, "vkCmdDrawIndexed(", "fallible Vulkan preflight")
+    require(
+        preflight,
+        "VK_Exec_SharedGeometryRestore();",
+        "Vulkan failed-preflight geometry rollback",
+    )
+    for command in ("vkCmdDraw(", "vkCmdDrawIndexed(", "vkCmdClearAttachments("):
+        reject(preflight, command, "Vulkan attachment write during world preflight")
 
     consumer = braced_body(
         executor,

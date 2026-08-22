@@ -50,6 +50,7 @@ SELFTEST_CHECKS = [
     ["RendererClassicWorldAmbientDomain self-test passed"],
     ["RendererClassicInteractionDomain self-test passed"],
     ["RendererClassicFogBlendDomain self-test passed"],
+    ["RendererClassicDeformDomain self-test passed"],
     ["RendererContracts self-test passed"],
     ["RendererGpuSkinning self-test passed"],
     ["RendererPBRMaterial self-test passed"],
@@ -114,6 +115,12 @@ MANUAL_GAMEPLAY_MATRIX = [
         "mode": "SP",
         "map": "maps/tools/mv2",
         "purpose": "controlled stock fixed-classic interaction and shadow ownership parity",
+    },
+    {
+        "id": "sp-mv2-deform",
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock material-move deformation ownership and published-geometry parity",
     },
     {
         "id": "mp-q4dm1-listen",
@@ -239,6 +246,11 @@ GAMEPLAY_BENCHMARK_HARNESS = [
         "profile": "world-ambient",
         "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers",
         "coverage": "bordered stock maps/tools/mv2 capture with light, subview, GUI, post, portal-fade, and overlay islands disabled for shared world-ambient A/B ownership and explicit-blocker rollback evidence",
+    },
+    {
+        "profile": "deform",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile deform --pacing-only --no-gpu-timers",
+        "coverage": "bordered stock maps/tools/mv2 capture with the stock shaderDemos/move material override, fixed camera, shared world-ambient ownership, and explicit material-deform contract ownership",
     },
     {
         "profile": "interaction",
@@ -608,6 +620,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+rendererClassicWorldAmbientDomainSelfTest",
         "+rendererClassicInteractionDomainSelfTest",
         "+rendererClassicFogBlendDomainSelfTest",
+        "+rendererClassicDeformDomainSelfTest",
         "+rendererContractsSelfTest",
         "+rendererGpuSkinningSelfTest",
         "+rendererPBRMaterialSelfTest",
@@ -1050,7 +1063,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
             ],
             "checks": [
                 ["RendererDefaultSafety self-test passed"],
-                ["Renderer default safety:", "conservative=1", "rollback=available", "issues=none"],
+                ["Renderer default safety:", "conservative=1", "sharedDeform=0", "rollback=available", "issues=none"],
                 ["Renderer default promotion:", "active=0"],
                 ["Renderer bootstrap:", "defaultVisible=ARB2", "sharedWorldFogBlend=0"],
             ],
@@ -1454,6 +1467,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 "+rendererClassicWorldAmbientDomainSelfTest",
                 "+rendererClassicInteractionDomainSelfTest",
                 "+rendererClassicFogBlendDomainSelfTest",
+                "+rendererClassicDeformDomainSelfTest",
                 "+gfxInfo",
             ],
             "checks": [
@@ -1467,6 +1481,7 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["RendererClassicWorldAmbientDomain self-test passed"],
                 ["RendererClassicInteractionDomain self-test passed"],
                 ["RendererClassicFogBlendDomain self-test passed"],
+                ["RendererClassicDeformDomain self-test passed"],
                 ["GPU skinning:"],
             ],
         },

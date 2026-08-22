@@ -165,9 +165,13 @@ mapped casters, and named atomic translucent-moment fallback. The fourth
 complete domain now transactionally owns eligible fog/blend phases on both
 backends behind its own default-off setting; native/static and controlled
 GL/Vulkan runtime qualification pass, while authored-stock and release
-promotion remain open. Deform, subview, in-world GUI,
-render-demo, cinematic, and authored post-process ownership remain explicit
-classic or experimental domains. The next recommended implementation target is
-**deform ownership and parity** on both backends.
-Temporal and PBR/advanced-lighting milestones remain downstream of that
-classic-frame work.
+promotion remain open. The independent default-off
+[material-deform contract](classic-deform-domain-modernization.md) now lets this
+domain consume a sealed completed or intentional-empty CPU deform result; an
+unsupported, skipped, failed, stale, or mismatched record still rolls the
+complete GUI view back before drawing.
+
+Subview, in-world GUI, render-demo, cinematic, and authored post-process
+ownership remain explicit classic or experimental domains. The next recommended
+implementation target is **subview ownership and parity**. Temporal and
+PBR/advanced-lighting milestones remain downstream of that classic-frame work.

@@ -4,6 +4,7 @@
 #ifndef __CLASSIC_GUI_DOMAIN_H__
 #define __CLASSIC_GUI_DOMAIN_H__
 
+#include "ClassicDeformDomain.h"
 #include "MaterialResourceTable.h"
 
 /*
@@ -56,6 +57,7 @@ enum classicGuiDomainFailure_t {
 	CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_SURFACE_FALLBACK,
 	CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_PACKET_MISMATCH,
 	CLASSIC_GUI_DOMAIN_FAILURE_INVALID_DRAW_PACKET,
+	CLASSIC_GUI_DOMAIN_FAILURE_DEFORM_CONTRACT,
 	CLASSIC_GUI_DOMAIN_FAILURE_MISSING_GEOMETRY_RECORD,
 	CLASSIC_GUI_DOMAIN_FAILURE_MISSING_INSTANCE_RECORD,
 	CLASSIC_GUI_DOMAIN_FAILURE_MISSING_MATERIAL_RECORD,
@@ -131,6 +133,9 @@ typedef struct classicGuiDomainDraw_s {
 	bool					packetBacked;
 	bool					hasIndexCache;
 	bool					hasAmbientCache;
+	classicDeformRole_t			deformRole;
+	classicDeformOutcome_t		deformOutcome;
+	std::uint64_t				deformContractHash;
 	std::uint64_t				hash;
 } classicGuiDomainDraw_t;
 
@@ -152,6 +157,9 @@ typedef struct classicGuiDomainView_s {
 	int					inactivePassCount;
 	int					activeNoopPassCount;
 	int					noopPassCount;
+	int					materialDeformSurfaceCount;
+	int					completedDeformSurfaceCount;
+	int					emptyDeformSurfaceCount;
 	int					viewportX1;
 	int					viewportY1;
 	int					viewportX2;
@@ -196,6 +204,9 @@ typedef struct classicGuiDomainStats_s {
 	int			inactivePasses;
 	int			activeNoopPasses;
 	int			noopPasses;
+	int			materialDeformSurfaces;
+	int			completedDeformSurfaces;
+	int			emptyDeformSurfaces;
 	int			failureCounts[ CLASSIC_GUI_DOMAIN_FAILURE_COUNT ];
 	std::uint64_t	hash;
 	classicGuiDomainBackendCoverage_t backend[ CLASSIC_GUI_DOMAIN_BACKEND_COUNT ];

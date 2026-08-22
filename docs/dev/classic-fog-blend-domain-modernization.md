@@ -96,8 +96,9 @@ as:
 - subview, mirror, x-ray, editor, offscreen, render-demo, or other non-root view
   ownership;
 - packet/light/receiver/stage/geometry identity or ordering mismatch;
-- unsupported deform, packed, GPU-palette, missing-cache, depth-hack, or other
-  unsealed receiver or cap geometry;
+- unsupported or unsealed material-deform provenance, generated/deformed,
+  packed, GPU-palette, missing-cache, depth-hack, or other unsealed receiver or
+  cap geometry;
 - custom, cinematic, dynamic, defaulted, unloaded, stale, or invalid image
   resources;
 - invalid or non-finite registers, colors, matrices, planes, density, or state;
@@ -253,8 +254,13 @@ now four independently guarded complete shared domains with retained local
 runtime qualification. They do not make the complete classic frame modern, and
 their clean-package/platform release-promotion gates remain separate.
 
-The next recommended implementation target is **deform ownership and parity**
-on OpenGL and Vulkan. Subview, in-world GUI, render-demo, cinematic, authored
-post, and other special domains remain downstream. Temporal presentation and
-PBR/advanced-lighting work must continue to wait for coherent classic-frame
-ownership.
+The independent default-off
+[material-deform contract](classic-deform-domain-modernization.md) now records
+the classic source-preserving fog-receiver role explicitly. A material-deform
+receiver is admissible only with a fresh `notApplicable` record; unsupported,
+skipped, failed, stale, or mismatched records still reject the complete phase.
+
+The next recommended implementation target is **subview ownership and parity**.
+In-world GUI, render-demo, cinematic, authored post, and other special domains
+remain downstream. Temporal presentation and PBR/advanced-lighting work must
+continue to wait for coherent classic-frame ownership.

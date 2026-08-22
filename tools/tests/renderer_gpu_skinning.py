@@ -485,8 +485,14 @@ def validate_backend_execution_and_cpu_invariants() -> None:
             "Vulkan compute must overwrite only position/normal/tangent words: "
             f"{vk_store_offsets!r}"
         )
+    upload_tri = braced_body(
+        vk,
+        "static bool VK_Exec_UploadTriGeometry(",
+        "Vulkan visible geometry upload",
+    )
+    require(upload_tri, "gpuSkinningMemo", "Vulkan visible GPU deformation memo")
     bind_tri = braced_body(vk, "bool VK_Exec_BindTriGeometry(", "Vulkan visible geometry binding")
-    require(bind_tri, "gpuSkinningMemo", "Vulkan visible GPU deformation memo")
+    require(bind_tri, "VK_Exec_UploadTriGeometry(", "Vulkan validated visible geometry upload")
     bind_shadow = braced_body(vk, "bool VK_Exec_BindShadowGeometry(", "Vulkan stencil geometry binding")
     require(bind_shadow, "tri->shadowCache", "Vulkan CPU stencil cache")
     for token in ("gpuSkinningMemo", "VK_GpuSkinning_PrepareView", "vkCmdDispatch"):

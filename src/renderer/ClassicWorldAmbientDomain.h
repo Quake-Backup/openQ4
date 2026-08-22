@@ -4,6 +4,7 @@
 #ifndef __CLASSIC_WORLD_AMBIENT_DOMAIN_H__
 #define __CLASSIC_WORLD_AMBIENT_DOMAIN_H__
 
+#include "ClassicDeformDomain.h"
 #include "MaterialResourceTable.h"
 
 /*
@@ -75,6 +76,7 @@ enum classicWorldAmbientDomainFailure_t {
 	CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_SURFACE_FALLBACK,
 	CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_PACKET_MISMATCH,
 	CLASSIC_WORLD_AMBIENT_FAILURE_INVALID_DRAW_PACKET,
+	CLASSIC_WORLD_AMBIENT_FAILURE_DEFORM_CONTRACT,
 	CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_GEOMETRY_RECORD,
 	CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_INSTANCE_RECORD,
 	CLASSIC_WORLD_AMBIENT_FAILURE_MISSING_MATERIAL_RECORD,
@@ -155,6 +157,9 @@ typedef struct classicWorldAmbientDomainDraw_s {
 	bool					depthPrerequisite;
 	bool					hasIndexCache;
 	bool					hasAmbientCache;
+	classicDeformRole_t			deformRole;
+	classicDeformOutcome_t		deformOutcome;
+	std::uint64_t				deformContractHash;
 	std::uint64_t				hash;
 } classicWorldAmbientDomainDraw_t;
 
@@ -178,6 +183,9 @@ typedef struct classicWorldAmbientDomainView_s {
 	int					inactivePassCount;
 	int					activeNoopPassCount;
 	int					noopPassCount;
+	int					materialDeformSurfaceCount;
+	int					completedDeformSurfaceCount;
+	int					emptyDeformSurfaceCount;
 	int					phaseSurfaceCount[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
 	int					phaseDrawableSurfaceCount[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
 	int					phaseDrawablePassCount[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
@@ -226,6 +234,9 @@ typedef struct classicWorldAmbientDomainStats_s {
 	int		inactivePasses;
 	int		activeNoopPasses;
 	int		noopPasses;
+	int		materialDeformSurfaces;
+	int		completedDeformSurfaces;
+	int		emptyDeformSurfaces;
 	int		phaseDrawablePasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
 	int		phaseNoopPasses[ CLASSIC_WORLD_AMBIENT_PHASE_COUNT ];
 	int		failureCounts[ CLASSIC_WORLD_AMBIENT_FAILURE_COUNT ];
