@@ -46,8 +46,8 @@ Automated coverage:
 
 | Case | Coverage |
 |---|---|
-| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI, classic cinematic/authored-post, classic-world-ambient, classic-interaction, classic-fog/blend, and capture-backed classic-subview domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
-| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic cinematic/authored-post, classic-world-ambient, classic-interaction, classic-fog/blend, capture-backed classic-subview, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
+| `renderer-foundation-selftests` | context ladder, tier selector, tier workload contract, backend-neutral authored/evaluated pass/clip/layout/buffer contracts, exact four-weight GPU-animation contract, upload manager, GPU timer, scene packet, render graph, render graph resource owner, ordered material resource table, transactional classic-GUI, classic cinematic/authored-post, render-demo/Raven special-frame, classic-world-ambient, classic-interaction, classic-fog/blend, and capture-backed classic-subview domains, geometry/instance resource records, GL state cache, Shader Library V2 pass-family/permutation/reflection coverage, draw plan, submit plan, modern executor, and shadow planner self-tests |
+| `renderer-vk-clear-startup` | Vulkan module startup plus the same mandatory backend-neutral renderer-contract, classic cinematic/authored-post, render-demo/Raven special-frame, classic-world-ambient, classic-interaction, classic-fog/blend, capture-backed classic-subview, and exact GPU-animation self-test markers used by OpenGL; device, swapchain, and GUI executor initialization run with validation layers enabled |
 | `renderer-visible-depth-selftest` | opt-in `r_rendererModernVisibleDepth` coverage for graph-backed scene depth, compatible shadow-depth resources, fallback accounting, depth-overlay readiness, and `gfxInfo` reporting |
 | `renderer-gbuffer-selftest` | opt-in `r_rendererModernOpaque` coverage for graph-backed G-buffer resources, MRT setup, opaque/alpha-test draw classification, diffuse texture binding, packing assumptions, fallback accounting, bandwidth metrics, attachment debug-overlay readiness, and `gfxInfo` reporting |
 | `renderer-cluster-grid-selftest` | opt-in modern clustered-light preparation coverage for point/projected/fog/ambient/special light classification, budgeted dynamic grid slicing, cluster reference packing, spill/overflow accounting, GL 3.3 UBO fallback readiness, GL 4.3+ SSBO upload readiness, cluster debug-overlay texture generation, and `gfxInfo` reporting |
@@ -84,9 +84,9 @@ The forced tier cases pass when startup succeeds and the selected tier is report
 Automated safe cases also fail if their logs contain renderer warning signatures such as `idStr::snPrintf` overflow, `WARNING: idStr`, shader compile/program link failures, or OpenGL error markers. The generated Markdown/JSON report records per-case warning-signature counts so the Phase 8 `warnings=0` promotion token cannot be inferred from expected-line checks alone.
 
 The foundation case runs the dependency-light classic-GUI,
-classic-cinematic/authored-post, classic-world-ambient, classic-interaction,
+classic-cinematic/authored-post, render-demo/Raven special-frame, classic-world-ambient, classic-interaction,
 classic-fog/blend, and capture-backed classic-subview contract self-tests. The
-Vulkan startup case also requires the cinematic/authored-post, world-ambient,
+Vulkan startup case also requires the cinematic/authored-post, render-demo/Raven special-frame, world-ambient,
 interaction, fog/blend, and subview self-test markers so that module
 registration and the shared domain contracts are exercised through both
 renderer APIs.

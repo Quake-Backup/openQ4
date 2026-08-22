@@ -83,6 +83,7 @@ platform/driver qualification remain separate from this implementation gate.
 The cinematic/authored-post corridor now owns eligible complete root video/audio
 views and authored post tails behind its own default-off setting; see [Shared
 Classic Cinematic and Authored-Post Transaction](classic-cinematic-post-domain-modernization.md).
-The next ownership target is render-demo and remaining special-frame work.
-Temporal presentation and visible PBR lighting remain downstream of those
-classic-frame boundaries.
+Render-demo and Raven special-frame ownership now have a dedicated sealed
+[transaction](classic-special-frame-domain-modernization.md). The next
+ownership target is direct special-subview work. Temporal presentation and
+visible PBR lighting remain downstream of those classic-frame boundaries.

@@ -50,6 +50,7 @@
 #include "VulkanGpuFrameTiming.h"
 #include "../ClassicGuiDomain.h"
 #include "../ClassicCinematicPostDomain.h"
+#include "../ClassicSpecialFrameDomain.h"
 #include "../ClassicInteractionDomain.h"
 #include "../ClassicWorldAmbientDomain.h"
 #include "../ClassicFogBlendDomain.h"
@@ -6420,6 +6421,8 @@ static void VK_Exec_DrawRVSpecialEffects( const viewDef_t *viewDef ) {
 		return;
 	}
 	const int activeMask = vkExec.pendingSpecialEffectsMask;
+	const bool sharedSpecialFrame = r_rendererSharedSpecialFrame.GetBool()
+		&& R_ClassicSpecialFrameDomain_FindRavenEffectsView( viewDef ) != NULL;
 	vkExec.pendingSpecialEffectsView = NULL;
 	vkExec.pendingSpecialEffectsMask = 0;
 	vkExec.pendingSpecialEffectsSource = NULL;
@@ -6432,6 +6435,16 @@ static void VK_Exec_DrawRVSpecialEffects( const viewDef_t *viewDef ) {
 	}
 	if ( ( activeMask & SPECIAL_EFFECT_AL ) != 0 ) {
 		drewAL = VK_Exec_DrawRVSpecialAL( viewDef );
+	}
+	if ( sharedSpecialFrame && drewBlur ) {
+		(void)R_ClassicSpecialFrameDomain_RecordOwned( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+			CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN, SPECIAL_EFFECT_BLUR );
+	}
+	if ( sharedSpecialFrame && drewAL ) {
+		(void)R_ClassicSpecialFrameDomain_RecordOwned( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+			CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN, SPECIAL_EFFECT_AL );
 	}
 
 	static bool loggedBlur = false;
@@ -8999,6 +9012,18 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	if ( viewDef == NULL ) {
 		return;
 	}
+	const bool sharedRenderDemo = r_rendererSharedSpecialFrame.GetBool()
+		&& R_ClassicSpecialFrameDomain_FindRenderDemoView( viewDef ) != NULL;
+	const bool sharedRenderDemoReady = sharedRenderDemo
+		&& R_ClassicSpecialFrameDomain_ReadyForBackend( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN );
+	if ( sharedRenderDemo && !sharedRenderDemoReady ) {
+		R_ClassicSpecialFrameDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN,
+			CLASSIC_SPECIAL_FRAME_FAILURE_BACKEND_NOT_READY, 0 );
+	}
 	backEnd.currentRenderCopied = false;
 	backEnd.currentDepthCopied = false;
 	if ( viewDef->numDrawSurfs <= 0 ) {
@@ -9482,6 +9507,13 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
 				numDrawSurfs - processed ) ) {
 		common->Warning( "Vulkan: shared authored post coverage rejected after committed range" );
+	}
+
+	if ( sharedRenderDemoReady
+			&& !R_ClassicSpecialFrameDomain_RecordOwned( viewDef,
+				CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+				CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN, numDrawSurfs ) ) {
+		common->Warning( "Vulkan: shared render-demo coverage rejected after committed view" );
 	}
 
 	// RC_DRAW_SPECIAL_EFFECTS immediately precedes this view in the command

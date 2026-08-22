@@ -1127,6 +1127,7 @@ extern idCVar r_rendererModernVisible;	// opt-in modern hybrid visible-frame com
 extern idCVar r_rendererSharedGui;	// opt-in backend-neutral fixed-function 2D GUI ownership
 extern idCVar r_rendererSharedInWorldGui;	// opt-in backend-neutral in-world GUI ownership
 extern idCVar r_rendererSharedCinematicPost;	// opt-in backend-neutral cinematic/post transaction ownership
+extern idCVar r_rendererSharedSpecialFrame;	// opt-in backend-neutral render-demo/Raven special-frame transaction ownership
 extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
 extern idCVar r_rendererSharedWorldInteraction;	// opt-in backend-neutral whole-view unshadowed interaction ownership
 extern idCVar r_rendererSharedWorldFogBlend;	// opt-in backend-neutral whole-view fog/blend ownership

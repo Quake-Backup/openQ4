@@ -230,7 +230,8 @@ default-off dependency. This does not make the complete frame modern-owned.
 The completed cinematic/authored-post corridor now seals eligible root
 video/audio views and complete post tails while retaining the existing dynamic
 stage executors; see [Shared Classic Cinematic and Authored-Post
-Transaction](classic-cinematic-post-domain-modernization.md). **Render-demo and
-remaining special-frame ownership** are next. Temporal presentation and
-PBR/advanced-lighting work remain downstream of coherent classic-frame
-ownership.
+Transaction](classic-cinematic-post-domain-modernization.md). Render-demo and
+Raven special-frame ownership now have a dedicated
+[transaction](classic-special-frame-domain-modernization.md). **Direct
+special-subview ownership** is next. Temporal presentation and PBR/advanced-
+lighting work remain downstream of coherent classic-frame ownership.

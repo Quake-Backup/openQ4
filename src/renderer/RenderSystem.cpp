@@ -503,7 +503,7 @@ void R_AddSpecialEffects( viewDef_t *parms ) {
 	cmd->commandId = RC_DRAW_SPECIAL_EFFECTS;
 	cmd->viewDef = parms;
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
-		R_ScenePackets_AddSpecialEffects( parms );
+		R_ScenePackets_AddSpecialEffects( parms, activeMask );
 	}
 }
 

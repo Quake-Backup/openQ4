@@ -274,6 +274,7 @@ parity.
 The completed cinematic/authored-post corridor now seals eligible root
 video/audio views and complete authored post tails; see [Shared Classic
 Cinematic and Authored-Post Transaction](classic-cinematic-post-domain-modernization.md).
-The next recommended implementation target is **render-demo and remaining
-special-frame ownership**. Do not skip ahead to temporal presentation or
-PBR/advanced-lighting Milestones E/F.
+Render-demo and Raven special-frame ownership now have a dedicated sealed
+[transaction](classic-special-frame-domain-modernization.md). The next
+recommended implementation target is **direct special-subview ownership**. Do
+not skip ahead to temporal presentation or PBR/advanced-lighting Milestones E/F.

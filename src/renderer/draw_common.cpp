@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "CelShading.h"
 #include "ClassicGuiDomain.h"
 #include "ClassicCinematicPostDomain.h"
+#include "ClassicSpecialFrameDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicFogBlendDomain.h"
 #include "ModernGLExecutor.h"
@@ -6421,6 +6422,14 @@ static void RB_DisplaySpecialEffects( const viewEntity_t *viewEnts, bool prePass
 			bool restoredView = false;
 			if ( RB_PrepareRVSpecialBlurImage() ) {
 				restoredView |= RB_CompositeRVSpecialBlur();
+				if ( restoredView && r_rendererSharedSpecialFrame.GetBool()
+						&& R_ClassicSpecialFrameDomain_FindRavenEffectsView(
+							rbRVSpecialCommandView ) != NULL ) {
+					(void)R_ClassicSpecialFrameDomain_RecordOwned(
+						rbRVSpecialCommandView,
+						CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+						CLASSIC_SPECIAL_FRAME_BACKEND_GL, SPECIAL_EFFECT_BLUR );
+				}
 			}
 			if ( restoredView ) {
 				RB_RVSpecialRestoreDrawingView();
@@ -6430,6 +6439,7 @@ static void RB_DisplaySpecialEffects( const viewEntity_t *viewEnts, bool prePass
 	}
 
 	bool restoredView = false;
+	int drawnALLights = 0;
 
 	if ( viewEnts != NULL && ( rbRVSpecialActiveMask & SPECIAL_EFFECT_AL ) != 0 && rbRVSpecialALPrepared && tr.primaryWorld != NULL ) {
 		RB_InitRVSpecialStages();
@@ -6460,7 +6470,10 @@ static void RB_DisplaySpecialEffects( const viewEntity_t *viewEnts, bool prePass
 				}
 				lightColor.Normalize();
 
-				RB_DrawRVSpecialALLight( light->globalLightOrigin, 300.0f, lightColor );
+				if ( RB_DrawRVSpecialALLight( light->globalLightOrigin, 300.0f,
+						lightColor ) ) {
+					drawnALLights++;
+				}
 			}
 
 			glUseProgramObjectARB( 0 );
@@ -6474,6 +6487,14 @@ static void RB_DisplaySpecialEffects( const viewEntity_t *viewEnts, bool prePass
 
 	if ( restoredView ) {
 		RB_RVSpecialRestoreDrawingView();
+	}
+	if ( drawnALLights > 0 && r_rendererSharedSpecialFrame.GetBool()
+			&& R_ClassicSpecialFrameDomain_FindRavenEffectsView(
+				rbRVSpecialCommandView ) != NULL ) {
+		(void)R_ClassicSpecialFrameDomain_RecordOwned(
+			rbRVSpecialCommandView,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL, SPECIAL_EFFECT_AL );
 	}
 }
 

@@ -502,6 +502,7 @@ def run_python_tests(args: argparse.Namespace, root: Path, env: dict[str, str]) 
         root / "tools" / "tests" / "renderer_pbr_materials.py",
         root / "tools" / "tests" / "renderer_classic_gui_domain.py",
         root / "tools" / "tests" / "renderer_classic_cinematic_post_domain.py",
+        root / "tools" / "tests" / "renderer_classic_special_frame_domain.py",
         root / "tools" / "tests" / "renderer_classic_world_ambient_domain.py",
         root / "tools" / "tests" / "renderer_classic_interaction_domain.py",
         root / "tools" / "tests" / "renderer_classic_fog_blend_domain.py",

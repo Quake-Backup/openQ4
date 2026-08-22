@@ -189,6 +189,7 @@ jobs:
             tools/tests/renderer_pbr_materials.py \
             tools/tests/renderer_classic_gui_domain.py \
             tools/tests/renderer_classic_cinematic_post_domain.py \
+            tools/tests/renderer_classic_special_frame_domain.py \
             tools/tests/renderer_classic_world_ambient_domain.py \
             tools/tests/renderer_classic_interaction_domain.py \
             tools/tests/renderer_classic_fog_blend_domain.py \
@@ -334,6 +335,7 @@ jobs:
           python tools/tests/renderer_pbr_materials.py
           python tools/tests/renderer_classic_gui_domain.py
           python tools/tests/renderer_classic_cinematic_post_domain.py
+          python tools/tests/renderer_classic_special_frame_domain.py
           python tools/tests/renderer_classic_world_ambient_domain.py
           python tools/tests/renderer_classic_interaction_domain.py
           python tools/tests/renderer_classic_fog_blend_domain.py

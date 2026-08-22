@@ -37,6 +37,7 @@
 #include "../MaterialResourceTable.h"
 #include "../ClassicGuiDomain.h"
 #include "../ClassicCinematicPostDomain.h"
+#include "../ClassicSpecialFrameDomain.h"
 #include "../ClassicWorldAmbientDomain.h"
 #include "../ClassicInteractionDomain.h"
 #include "../ClassicFogBlendDomain.h"
@@ -409,6 +410,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
@@ -416,6 +418,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	if ( r_rendererSharedGui.GetBool()
 			|| r_rendererSharedInWorldGui.GetBool()
 			|| r_rendererSharedCinematicPost.GetBool()
+			|| r_rendererSharedSpecialFrame.GetBool()
 			|| r_rendererSharedWorldAmbient.GetBool()
 			|| r_rendererSharedWorldInteraction.GetBool()
 			|| r_rendererSharedWorldFogBlend.GetBool()
@@ -434,6 +437,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		}
 		if ( r_rendererSharedCinematicPost.GetBool() ) {
 			R_ClassicCinematicPostDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedSpecialFrame.GetBool() ) {
+			R_ClassicSpecialFrameDomain_PrepareFrame( *scenePackets );
 		}
 		if ( r_rendererSharedWorldAmbient.GetBool() ) {
 			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
@@ -621,6 +627,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 4 );
 	}
+	R_ClassicSpecialFrameDomain_FinalizeBackendFrame(
+		CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN );
 }
 
 

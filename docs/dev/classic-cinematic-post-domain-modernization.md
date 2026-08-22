@@ -87,5 +87,7 @@ ownership where the content is eligible, exact same-settings output, a named
 zero-commit malformed packet/capture fallback, clean backend diagnostics, and
 fresh staged-package and target-platform/driver evidence.
 
-Render-demo and remaining special-frame ownership are separate Milestone D
-work. Temporal presentation and PBR/advanced lighting remain downstream.
+Render-demo and Raven special-frame ownership now have their own sealed
+[transaction](classic-special-frame-domain-modernization.md). Direct
+special-subview ownership remains the next Milestone D work; temporal
+presentation and PBR/advanced lighting remain downstream.

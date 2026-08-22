@@ -112,9 +112,11 @@ owners. In-world GUI output from `R_RenderGuiSurf` now has independently
 sealed, depth-aware ownership with complete tagged-subset fallback. The new
 cinematic/authored-post transaction seals complete eligible root video/audio
 views and post tails while retaining the mature decoder and feedback-stage
-executors. The next recommended implementation target is **Milestone D
-render-demo and remaining special-frame ownership**, without skipping ahead to
-temporal or PBR lighting.
+executors. The shared special-frame transaction now seals active-session
+render-demo views and exact Raven special-effect controller masks while keeping
+their complete established backend executors. The next recommended
+implementation target is **Milestone D direct special-subview ownership**,
+without skipping ahead to temporal or PBR lighting.
 Release qualification remains a separate track: repeat and retain the
 Milestone A-D acceptance sets from clean committed source and a freshly staged
 final package, with the required platform and driver coverage. The PBR Phase
@@ -350,7 +352,7 @@ or PBR work multiplies the parity surface.
 | A. Foundation and measurement | **Implemented and locally validated; release promotion pending** | The portable bounded job substrate, backend-neutral delayed GL/Vulkan whole-frame timing, and versioned, replay-verifiable per-map CPU/GPU budget tooling are implemented. Current-build jobs-on/off parity, repeated map-change shutdown, deterministic dedicated exits, schema-10 stock capture/replay, and complete replay-verified 8/8 OpenGL plus 8/8 Vulkan required profiles have passed. Promotion still requires the same evidence retained from clean committed source and a freshly staged final package, plus release platform/driver qualification. |
 | B. Loading and cache modernization | **Implemented but default-off; performance requalification required** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. A 2026-08-20 regression audit found that the prior default-on experiment could materially lengthen stock map loads, so `com_levelLoadModernization 0` now restores the classic baseline and gates every framework/animation cache read and write. Promotion requires a clean committed-package campaign that beats or matches classic cold and warm loads without rewrite churn, plus release-platform qualification. |
 | C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
-| D. Modern classic-frame ownership | **Experimental; four complete domains, in-world GUI subset, capture-backed subview transaction, cinematic/authored-post transaction, and material-deform dependency implemented** | Eligible fixed-function root 2D GUI views, ambient-only 3D world views, fixed-classic interaction views, and complete eligible fog/blend phases are transactionally evaluated through backend-neutral sealed records by GL and Vulkan, with complete-domain classic rollback. The default-off in-world GUI corridor transactionally owns the complete provenance-tagged `R_RenderGuiSurf` output subset with 3D depth semantics; one rejection restores all tagged sources to the classic walker. The default-off capture-backed subview transaction seals the immediate remote-camera/refraction child scene/copy edge and consumes that copy on both backends; direct clip/camera special views remain classic-owned. The default-off cinematic/authored-post transaction seals eligible complete root video/audio views and post tails before directing the established dynamic stage executors; any timing, source, packet, capture, target, or backend mismatch retains the whole classic range. A separate default-off deform contract seals the authoritative CPU result, source-preserving interaction/fog roles, frame/cache provenance, intentional empty work, and named unsupported outcomes for the shared consumers. Render-demo and remaining special-frame ownership are next. Authored-stock, clean-package, and platform qualification remain open as applicable. |
+| D. Modern classic-frame ownership | **Experimental; four complete domains, in-world GUI subset, capture-backed subview transaction, cinematic/authored-post transaction, special-frame transaction, and material-deform dependency implemented** | Eligible fixed-function root 2D GUI views, ambient-only 3D world views, fixed-classic interaction views, and complete eligible fog/blend phases are transactionally evaluated through backend-neutral sealed records by GL and Vulkan, with complete-domain classic rollback. The default-off in-world GUI corridor transactionally owns the complete provenance-tagged `R_RenderGuiSurf` output subset with 3D depth semantics; one rejection restores all tagged sources to the classic walker. The default-off capture-backed subview transaction seals the immediate remote-camera/refraction child scene/copy edge and consumes that copy on both backends; direct special subviews remain classic-owned. The default-off cinematic/authored-post transaction seals eligible complete root video/audio views and post tails before directing the established dynamic stage executors. The default-off special-frame transaction seals active-session render-demo views and exact Raven blur/AL controller coverage while retaining the complete mature executors. A separate default-off deform contract seals the authoritative CPU result, source-preserving interaction/fog roles, frame/cache provenance, intentional empty work, and named unsupported outcomes for the shared consumers. Direct special-subview ownership is next. Authored-stock, clean-package, and platform qualification remain open as applicable. |
 | E. Temporal presentation | **Planned** | Milestones A and C now supply the timing and shared-contract prerequisites; incomplete Milestone D still blocks complete frame ownership and the visible motion-vector corridor. |
 | F. Modern materials and advanced lighting | **Foundation only** | PBR authoring/resource Phases 0-3 exist, but visible PBR/IBL and advanced-lighting ownership must wait for Milestones C-E. |
 
@@ -469,7 +471,7 @@ default-off capability can be promoted; the exact procedure is recorded in
    light/receiver/shadow/cap identity, and render state are expressed through
    shared contracts. Their CPU material-deform dependency is also sealed. The
    immediate capture-backed remote-camera/refraction subview edge is sealed;
-   direct special subviews, cinematic, and post behavior remain.
+   direct special subviews remain.
 2. **Implemented for the first four complete domains:** GL and Vulkan consume the
    same per-draw evaluated semantic records, with backend-specific execution and
    an untouched complete-domain classic rollback.
@@ -527,6 +529,13 @@ default-off capability can be promoted; the exact procedure is recorded in
     executors for decode, scratch upload, feedback capture, and custom program
     behavior; an invalid source, packet, time, capture, target, or backend
     condition retains the complete range on the classic path.
+12. **Implemented for render demos and Raven special frames:** scene packets
+    distinguish an active session render-demo stream from portal-sky negative
+    view ids, seal complete root-view source coverage and the demo version, and
+    preserve exact `RC_DRAW_SPECIAL_EFFECTS` blur/AL controller masks. OpenGL
+    and Vulkan deliberately execute their mature full-view, resource, resolve,
+    blur, and projected-light paths, reporting ownership only after the sealed
+    coverage completes; any incomplete record retains the classic path.
 
 Exit gate: at least one complete stock-frame domain is modern-owned on both
 backends, no visible light or surface is silently dropped, and rollback produces
@@ -567,9 +576,10 @@ The in-world GUI implementation is documented in
 [Shared Classic In-World GUI Domain](classic-inworld-gui-domain-modernization.md).
 The cinematic/authored-post implementation is documented in
 [Shared Classic Cinematic and Authored-Post Transaction](classic-cinematic-post-domain-modernization.md).
-The next implementation target is render-demo and remaining special-frame
-ownership, not Milestone E temporal presentation or Milestone F PBR/advanced
-lighting.
+The render-demo/Raven special-frame implementation is documented in
+[Shared Render-Demo and Raven Special-Frame Transaction](classic-special-frame-domain-modernization.md).
+The next implementation target is direct special-subview ownership, not
+Milestone E temporal presentation or Milestone F PBR/advanced lighting.
 
 ### Milestone E: temporal presentation
 

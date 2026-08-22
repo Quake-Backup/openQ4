@@ -176,6 +176,7 @@ Subview and render-demo ownership remain explicit classic or experimental
 domains. Cinematic playback and authored post-process tails now have their own
 sealed default-off transaction; see [Shared Classic Cinematic and Authored-Post
 Transaction](classic-cinematic-post-domain-modernization.md). The next
-recommended implementation target is **render-demo and remaining special-frame
-ownership**. Temporal and PBR/advanced-lighting milestones remain downstream of
-that classic-frame work.
+recommended implementation target is **direct special-subview ownership**;
+render-demo and Raven special-frame work now has its dedicated
+[transaction](classic-special-frame-domain-modernization.md). Temporal and
+PBR/advanced-lighting milestones remain downstream of that classic-frame work.

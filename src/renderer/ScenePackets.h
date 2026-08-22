@@ -341,6 +341,12 @@ typedef struct scenePacket_s {
 	int						firstDrawPacket;
 	int						drawPacketCount;
 	bool					legacyBridge;
+	// A real render-demo frame is identified by the live session stream, not
+	// by a negative view id (which is also used by portal-sky cameras).
+	bool					renderDemoPlayback;
+	// RC_DRAW_SPECIAL_EFFECTS is command-only. Preserve the admitted controller
+	// mask with its exact view association for special-frame ownership.
+	int					specialEffectsMask;
 } scenePacket_t;
 
 // CaptureRenderToImage immediately follows the RC_DRAW_VIEW which produced a
@@ -416,6 +422,7 @@ public:
 
 	bool AddScene( const viewDef_t *viewDef, bool legacyBridge );
 	bool AddPass( renderPassCategory_t category, bool enabled, bool commandOnly = false );
+	void SetLastSceneSpecialEffectsMask( int specialEffectsMask );
 	bool AddDrawPacket( const drawSurf_t *drawSurf, renderPassCategory_t category,
 		int drawIndex,
 		classicDeformRole_t deformRole = CLASSIC_DEFORM_ROLE_UNKNOWN );
@@ -487,7 +494,8 @@ void R_ScenePackets_EndFrame( void );
 bool R_ScenePackets_FrontEndCaptureRequired( void );
 bool R_ScenePackets_SidePipelineRequired( void );
 void R_ScenePackets_AddRenderView( const viewDef_t *viewDef );
-void R_ScenePackets_AddSpecialEffects( const viewDef_t *viewDef );
+void R_ScenePackets_AddSpecialEffects( const viewDef_t *viewDef,
+	int specialEffectsMask );
 void R_ScenePackets_AddRenderTargetOp( void );
 void R_ScenePackets_AddCopyRender( idImage *image, int x, int y,
 	int width, int height, int cubeFace, bool copyDepth );

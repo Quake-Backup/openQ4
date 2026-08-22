@@ -13,6 +13,28 @@ static bool rg_frontEndScenePacketFrameOpen = false;
 // queues its copy command.
 static const viewDef_t *rg_frontEndLastDrawView = NULL;
 
+// A negative view id alone is not a render demo: portal-sky cameras use the
+// same convention. The session's active demo reader and its exact render world
+// make playback provenance explicit before command buffers are submitted.
+static bool R_ScenePackets_IsRenderDemoPlaybackView( const viewDef_t *viewDef ) {
+	return viewDef != NULL && viewDef->viewEntitys != NULL
+		&& viewDef->renderWorld != NULL && !viewDef->isSubview
+		&& session != NULL && session->readDemo != NULL
+		&& session->rw == viewDef->renderWorld;
+}
+
+// A command-stream reconstruction has no controller payload. Reproduce the
+// exact admission mask at the point the backend consumes the command so a
+// backend-derived packet retains the same special-frame provenance as the
+// front-end packet.
+static int R_ScenePackets_ActiveSpecialEffectsMask( void ) {
+	int activeMask = tr.specialEffectsEnabled;
+	if ( r_forceSpecialEffects.GetInteger() > 0 ) {
+		activeMask = r_forceSpecialEffects.GetInteger();
+	}
+	return activeMask & ( SPECIAL_EFFECT_BLUR | SPECIAL_EFFECT_AL );
+}
+
 static bool R_ScenePackets_ModernPipelineRequested( void ) {
 	const bool modernVisibleRequested = r_rendererModernVisible.GetBool() || RendererBootstrap_ShouldAutoPromoteModernVisible();
 	const bool shadowMapSidecarRequested =
@@ -28,6 +50,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererSharedGui.GetBool()
 		|| r_rendererSharedInWorldGui.GetBool()
 		|| r_rendererSharedCinematicPost.GetBool()
+		|| r_rendererSharedSpecialFrame.GetBool()
 		|| r_rendererSharedWorldAmbient.GetBool()
 		|| r_rendererSharedWorldInteraction.GetBool()
 		|| r_rendererSharedWorldFogBlend.GetBool()
@@ -379,6 +402,9 @@ static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t
 		return viewDef != NULL && viewDef->viewEntitys != NULL
 			? SCENE_PACKET_CATEGORY_WORLD : SCENE_PACKET_CATEGORY_GUI;
 	}
+	if ( R_ScenePackets_IsRenderDemoPlaybackView( viewDef ) ) {
+		return SCENE_PACKET_CATEGORY_RENDER_DEMO;
+	}
 	if ( viewDef != NULL && viewDef->isSubview ) {
 		return SCENE_PACKET_CATEGORY_SUBVIEW;
 	}
@@ -419,6 +445,9 @@ static scenePacketCategory_t R_ScenePackets_CategoryForCommandPass( renderPassCa
 		return SCENE_PACKET_CATEGORY_PRESENT;
 	default:
 		break;
+	}
+	if ( R_ScenePackets_IsRenderDemoPlaybackView( viewDef ) ) {
+		return SCENE_PACKET_CATEGORY_RENDER_DEMO;
 	}
 	if ( viewDef != NULL && viewDef->isSubview ) {
 		return SCENE_PACKET_CATEGORY_SUBVIEW;
@@ -843,8 +872,10 @@ bool idScenePacketFrame::AddScene( const viewDef_t *viewDef, bool legacyBridge )
 	scenePacket_t &scene = scenes[stats.scenePackets++];
 	memset( &scene, 0, sizeof( scene ) );
 	scene.viewDef = viewDef;
-	scene.packetCategory = viewDef != NULL && viewDef->isSubview ? SCENE_PACKET_CATEGORY_SUBVIEW :
-		( viewDef != NULL && viewDef->renderView.viewID < 0 ? SCENE_PACKET_CATEGORY_RENDER_DEMO : SCENE_PACKET_CATEGORY_WORLD );
+	scene.renderDemoPlayback = R_ScenePackets_IsRenderDemoPlaybackView( viewDef );
+	scene.packetCategory = scene.renderDemoPlayback ? SCENE_PACKET_CATEGORY_RENDER_DEMO :
+		( viewDef != NULL && viewDef->isSubview ? SCENE_PACKET_CATEGORY_SUBVIEW :
+		( viewDef != NULL && viewDef->renderView.viewID < 0 ? SCENE_PACKET_CATEGORY_RENDER_DEMO : SCENE_PACKET_CATEGORY_WORLD ) );
 	scene.firstPassPacket = stats.passPackets;
 	scene.firstDrawPacket = stats.drawPackets;
 	scene.legacyBridge = legacyBridge;
@@ -1037,6 +1068,16 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf,
 		}
 	}
 	return true;
+}
+
+void idScenePacketFrame::SetLastSceneSpecialEffectsMask(
+		int specialEffectsMask ) {
+	const int sceneIndex = stats.scenePackets - 1;
+	if ( sceneIndex < 0 || sceneIndex >= stats.scenePackets ) {
+		return;
+	}
+	scenes[ sceneIndex ].specialEffectsMask = specialEffectsMask
+		& ( SPECIAL_EFFECT_BLUR | SPECIAL_EFFECT_AL );
 }
 
 bool idScenePacketFrame::AddInteractionDrawPacket( const drawSurf_t *drawSurf,
@@ -2106,9 +2147,12 @@ void R_ScenePackets_AddRenderView( const viewDef_t *viewDef ) {
 	rg_frontEndLastDrawView = viewDef;
 }
 
-void R_ScenePackets_AddSpecialEffects( const viewDef_t *viewDef ) {
+void R_ScenePackets_AddSpecialEffects( const viewDef_t *viewDef,
+		int specialEffectsMask ) {
 	R_ScenePackets_EnsureFrontEndFrame();
 	R_ScenePackets_AddCommandPass( rg_frontEndScenePacketFrame, RENDER_PASS_SPECIAL_EFFECTS, viewDef, false );
+	rg_frontEndScenePacketFrame.SetLastSceneSpecialEffectsMask(
+		specialEffectsMask );
 	rg_frontEndLastDrawView = NULL;
 }
 
@@ -2166,6 +2210,8 @@ void R_ScenePackets_BuildLegacyCommandStream( const emptyCommand_t *cmds, idScen
 			break;
 		case RC_DRAW_SPECIAL_EFFECTS:
 			R_ScenePackets_AddCommandPass( packetFrame, RENDER_PASS_SPECIAL_EFFECTS, reinterpret_cast<const drawSurfsCommand_t *>( cmd )->viewDef, true );
+			packetFrame.SetLastSceneSpecialEffectsMask(
+				R_ScenePackets_ActiveSpecialEffectsMask() );
 			lastDrawView = NULL;
 			break;
 		case RC_SET_RENDERTEXTURE:
@@ -2442,7 +2488,7 @@ bool RendererScenePacket_RunSelfTest( void ) {
 
 	R_ScenePackets_BeginFrame();
 	R_ScenePackets_AddRenderView( &worldView );
-	R_ScenePackets_AddSpecialEffects( &worldView );
+	R_ScenePackets_AddSpecialEffects( &worldView, SPECIAL_EFFECT_BLUR );
 	R_ScenePackets_AddPresent();
 	const idScenePacketFrame &frontEndPacketFrame = R_ScenePackets_FrontEndFrame();
 	const scenePacketFrameStats_t &frontEndStats = frontEndPacketFrame.Stats();
@@ -2475,6 +2521,13 @@ bool RendererScenePacket_RunSelfTest( void ) {
 	}
 	if ( frontEndPacketFrame.NumScenes() > 0 && frontEndPacketFrame.Scene( 0 ).legacyBridge ) {
 		common->Printf( "RendererScenePacket self-test failed: frontend scene marked as legacy bridge\n" );
+		R_ScenePackets_EndFrame();
+		return false;
+	}
+	if ( frontEndPacketFrame.NumScenes() < 2
+			|| frontEndPacketFrame.Scene( 1 ).specialEffectsMask
+				!= SPECIAL_EFFECT_BLUR ) {
+		common->Printf( "RendererScenePacket self-test failed: frontend special-effect mask capture mismatch\n" );
 		R_ScenePackets_EndFrame();
 		return false;
 	}

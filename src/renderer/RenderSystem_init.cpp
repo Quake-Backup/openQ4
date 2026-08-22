@@ -45,6 +45,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "MaterialResourceTable.h"
 #include "ClassicGuiDomain.h"
 #include "ClassicCinematicPostDomain.h"
+#include "ClassicSpecialFrameDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
 #include "ClassicFogBlendDomain.h"
@@ -489,6 +490,7 @@ idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | 
 idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedInWorldGui( "r_rendererSharedInWorldGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible GUI geometry emitted onto 3D surfaces from a backend-neutral ordered material-stage stream; any unsupported view keeps every in-world GUI surface on the classic path" );
 idCVar r_rendererSharedCinematicPost( "r_rendererSharedCinematicPost", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible root cinematic playback and complete authored post-process ranges through a sealed shared transaction; unsupported ranges use the complete classic path" );
+idCVar r_rendererSharedSpecialFrame( "r_rendererSharedSpecialFrame", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible render-demo playback and Raven special-effect controller frames through a sealed shared transaction; unsupported views and commands use the complete classic path" );
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
@@ -846,6 +848,16 @@ static void R_RendererClassicCinematicPostDomainSelfTest_f(
 		common->Printf( "RendererClassicCinematicPostDomain self-test passed\n" );
 	} else {
 		common->Warning( "RendererClassicCinematicPostDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicSpecialFrameDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicSpecialFrameDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicSpecialFrameDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicSpecialFrameDomain self-test failed" );
 	}
 }
 
@@ -3901,6 +3913,29 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].fallbackViews );
 	}
 	{
+		const classicSpecialFrameDomainStats_t &specialFrame =
+			R_ClassicSpecialFrameDomain_Stats();
+		common->Printf(
+			"Renderer shared special frame: requested=%d prepared=%d valid=%d overflow=%d scenes=%d views=%d(demo=%d raven=%d) ready=%d fallback=%d effectsMask=0x%x hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			r_rendererSharedSpecialFrame.GetBool() ? 1 : 0,
+			specialFrame.prepared ? 1 : 0,
+			specialFrame.frameValid ? 1 : 0,
+			specialFrame.overflow ? 1 : 0,
+			specialFrame.sourceScenes,
+			specialFrame.views,
+			specialFrame.renderDemoViews,
+			specialFrame.ravenEffectsViews,
+			specialFrame.readyViews,
+			specialFrame.fallbackViews,
+			specialFrame.specialEffectsMask,
+			static_cast<unsigned long long>( specialFrame.hash ),
+			specialFrame.status,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_GL].ownedViews,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_GL].fallbackViews,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN].ownedViews,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN].fallbackViews );
+	}
+	{
 		const classicWorldAmbientDomainStats_t &worldAmbient =
 			R_ClassicWorldAmbientDomain_Stats();
 		common->Printf(
@@ -4451,6 +4486,7 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	R_RendererMetrics_ShutdownGpuTimers();
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
@@ -4715,6 +4751,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererMaterialResourceTableSelfTest", R_RendererMaterialResourceTableSelfTest_f, CMD_FL_RENDERER, "run renderer material resource-table self tests" );
 	cmdSystem->AddCommand( "rendererClassicGuiDomainSelfTest", R_RendererClassicGuiDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic GUI whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicCinematicPostDomainSelfTest", R_RendererClassicCinematicPostDomainSelfTest_f, CMD_FL_RENDERER, "run sealed classic cinematic and authored post transaction self tests" );
+	cmdSystem->AddCommand( "rendererClassicSpecialFrameDomainSelfTest", R_RendererClassicSpecialFrameDomainSelfTest_f, CMD_FL_RENDERER, "run sealed render-demo and Raven special-frame transaction self tests" );
 	cmdSystem->AddCommand( "rendererClassicWorldAmbientDomainSelfTest", R_RendererClassicWorldAmbientDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic world ambient whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicInteractionDomainSelfTest", R_RendererClassicInteractionDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic interaction whole-view contract self tests" );
 	cmdSystem->AddCommand( "rendererClassicFogBlendDomainSelfTest", R_RendererClassicFogBlendDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic fog/blend whole-view contract self tests" );
@@ -5072,6 +5109,7 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 	R_GpuSkinning_ContractShutdown();
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();

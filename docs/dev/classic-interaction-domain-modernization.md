@@ -325,7 +325,8 @@ failed, stale, or mismatched records still reject the complete interaction view.
 The completed cinematic/authored-post corridor now seals eligible root
 video/audio views and complete post tails while retaining the established
 dynamic-stage executor; see [Shared Classic Cinematic and Authored-Post
-Transaction](classic-cinematic-post-domain-modernization.md). **Render-demo and
-remaining special-frame ownership** are next. Temporal presentation and
-PBR/advanced-lighting work must continue to wait for coherent classic-frame
-ownership.
+Transaction](classic-cinematic-post-domain-modernization.md). Render-demo and
+Raven special-frame ownership now have a dedicated
+[transaction](classic-special-frame-domain-modernization.md). **Direct
+special-subview ownership** is next. Temporal presentation and PBR/advanced-
+lighting work must continue to wait for coherent classic-frame ownership.

@@ -36,6 +36,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "MaterialResourceTable.h"
 #include "ClassicGuiDomain.h"
 #include "ClassicCinematicPostDomain.h"
+#include "ClassicSpecialFrameDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
 #include "ClassicFogBlendDomain.h"
@@ -787,6 +788,32 @@ static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
 	return view;
 }
 
+// Render-demo playback is a complete recorded 3D frame. The shared boundary
+// seals its packet/session provenance, then deliberately dispatches the mature
+// full view executor; it cannot safely substitute only one of that view's
+// depth, interaction, ambient, fog, subview, or feedback ranges.
+static bool RB_DrawSharedRenderDemoView( const void *data ) {
+	const drawSurfsCommand_t *cmd =
+		reinterpret_cast<const drawSurfsCommand_t *>( data );
+	const viewDef_t *viewDef = cmd != NULL ? cmd->viewDef : NULL;
+	if ( !R_ClassicSpecialFrameDomain_ReadyForBackend( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL ) ) {
+		R_ClassicSpecialFrameDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL,
+			CLASSIC_SPECIAL_FRAME_FAILURE_BACKEND_NOT_READY, 0 );
+		return false;
+	}
+	RB_DrawView( data );
+	if ( !R_ClassicSpecialFrameDomain_RecordOwned( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL, viewDef->numDrawSurfs ) ) {
+		common->Warning( "OpenGL: shared render-demo coverage rejected after committed view" );
+	}
+	return true;
+}
+
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// r_debugRenderToTexture
 	int	c_draw3d = 0, c_draw2d = 0, c_setBuffers = 0, c_swapBuffers = 0, c_copyRenders = 0, c_specialEffects = 0, c_renderTargetOps = 0;
@@ -796,6 +823,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// including the empty-frame fast path below.
 	R_ClassicGuiDomain_ResetFrame();
 	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
@@ -858,6 +886,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		}
 		if ( r_rendererSharedCinematicPost.GetBool() ) {
 			R_ClassicCinematicPostDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedSpecialFrame.GetBool() ) {
+			R_ClassicSpecialFrameDomain_PrepareFrame( *scenePackets );
 		}
 		if ( r_rendererSharedWorldAmbient.GetBool() ) {
 			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
@@ -930,10 +961,17 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			}
 			R_RendererMetrics_BeginGpuTimer( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
 			const viewDef_t *drawView = ((const drawSurfsCommand_t *)cmds)->viewDef;
+			const bool sharedRenderDemo = drawView->viewEntitys != NULL
+				&& r_rendererSharedSpecialFrame.GetBool()
+				&& R_ClassicSpecialFrameDomain_FindRenderDemoView( drawView ) != NULL;
 			const bool sharedCinematicRoot = !drawView->viewEntitys
 				&& r_rendererSharedCinematicPost.GetBool()
 				&& R_ClassicCinematicPostDomain_FindRootCinematicView( drawView ) != NULL;
-			if ( sharedCinematicRoot ) {
+			if ( sharedRenderDemo ) {
+				if ( !RB_DrawSharedRenderDemoView( cmds ) ) {
+					RB_DrawView( cmds );
+				}
+			} else if ( sharedCinematicRoot ) {
 				if ( !RB_DrawSharedCinematicRootView( drawView ) ) {
 					RB_DrawView( cmds );
 				}
@@ -961,7 +999,20 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		}
 		case RC_DRAW_SPECIAL_EFFECTS:
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_SPECIAL_EFFECTS );
-			if ( R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SPECIAL_EFFECTS ) ) {
+			if ( r_rendererSharedSpecialFrame.GetBool()
+					&& R_ClassicSpecialFrameDomain_FindRavenEffectsView(
+						reinterpret_cast<const drawSurfsCommand_t *>( cmds )->viewDef ) != NULL
+					&& !R_ClassicSpecialFrameDomain_ReadyForBackend(
+						reinterpret_cast<const drawSurfsCommand_t *>( cmds )->viewDef,
+						CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+						CLASSIC_SPECIAL_FRAME_BACKEND_GL ) ) {
+				R_ClassicSpecialFrameDomain_RecordBackendFallback(
+					reinterpret_cast<const drawSurfsCommand_t *>( cmds )->viewDef,
+					CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+					CLASSIC_SPECIAL_FRAME_BACKEND_GL,
+					CLASSIC_SPECIAL_FRAME_FAILURE_BACKEND_NOT_READY, 0 );
+				RB_DrawSpecialEffects( cmds );
+			} else if ( R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SPECIAL_EFFECTS ) ) {
 				R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_SPECIAL_EFFECTS );
 			} else {
 				RB_DrawSpecialEffects( cmds );
@@ -1070,6 +1121,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 3 );
 	}
+	R_ClassicSpecialFrameDomain_FinalizeBackendFrame(
+		CLASSIC_SPECIAL_FRAME_BACKEND_GL );
 
 	// go back to the default texture so the editor doesn't mess up a bound image
 	GL_SelectTexture( 0 );

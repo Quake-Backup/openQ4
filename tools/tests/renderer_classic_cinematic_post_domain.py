@@ -158,7 +158,7 @@ def validate_controls_and_evidence() -> None:
         require(source, "r_rendererSharedCinematicPost", context)
     require(matrix, "+rendererClassicCinematicPostDomainSelfTest", "safe native self-test")
     require(registry, '"renderer_classic_cinematic_post_domain.py"', "validation registry")
-    require(roadmap, "render-demo and remaining special-frame ownership", "advanced roadmap target")
+    require(roadmap, "direct special-subview ownership", "advanced roadmap target")
     for token in (
         "videoMap",
         "soundMap",
