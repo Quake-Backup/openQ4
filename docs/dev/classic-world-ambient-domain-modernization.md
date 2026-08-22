@@ -278,5 +278,5 @@ Render-demo and Raven special-frame ownership now have a dedicated sealed
 [transaction](classic-special-frame-domain-modernization.md). The completed
 direct special-subview corridor is documented in the [Shared Special-Subview
 Transaction](classic-subview-domain-modernization.md). The next recommended
-target is unsupported special-view nesting ownership; do not skip ahead to
+target is cinematic/post special-view nesting ownership; do not skip ahead to
 temporal presentation or PBR/advanced-lighting Milestones E/F.

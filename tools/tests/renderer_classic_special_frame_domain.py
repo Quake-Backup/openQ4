@@ -159,7 +159,7 @@ def validate_controls_and_evidence() -> None:
         require(source, "r_rendererSharedSpecialFrame", context)
     require(matrix, "+rendererClassicSpecialFrameDomainSelfTest", "safe native self-test")
     require(registry, '"renderer_classic_special_frame_domain.py"', "validation registry")
-    require(roadmap, "unsupported special-view nesting ownership", "advanced roadmap target")
+    require(roadmap, "Cinematic/post special-view nesting ownership", "advanced roadmap target")
     for token in (
         "session stream",
         "portal-sky",

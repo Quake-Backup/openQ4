@@ -72,15 +72,26 @@ static const classicSubviewDomainView_t *VK_ClassicSubview_Preflight(
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
 		return NULL;
 	}
+	if ( view->backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A rejected nested member returns its entire sealed transaction to the
+		// established walker, including every later parent command.
+		return NULL;
+	}
 	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
 			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
-				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) ) ) {
+				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) )
+			|| !R_ClassicSubviewDomain_ReadyForBackend( *view,
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ) ) {
 		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
 			!view->ready ? view->failure
 				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
 					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
-					: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ),
+					: ( !R_ClassicSubviewDomain_ReadyForBackend( *view,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN )
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE
+						: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ) ),
 			!view->ready ? view->failureDetail : 1 );
 		return NULL;
 	}

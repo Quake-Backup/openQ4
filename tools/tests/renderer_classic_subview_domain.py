@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regression contract for sealed direct and full-target subview ownership."""
+"""Static regression contract for sealed direct, capture, and nested subview ownership."""
 
 from __future__ import annotations
 
@@ -86,6 +86,11 @@ def validate_domain_contract() -> None:
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_NESTED_PARENT",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_PARENT_FALLBACK",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CHILD_FALLBACK",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH",
         "CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL",
         "CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN",
@@ -95,6 +100,7 @@ def validate_domain_contract() -> None:
         "R_ClassicSubviewDomain_IsCaptureBacked",
         "R_ClassicSubviewDomain_IsDirect",
         "R_ClassicSubviewDomain_ViewSemanticsMatch",
+        "R_ClassicSubviewDomain_ReadyForBackend",
         "R_ClassicSubviewDomain_RecordOwned",
         "R_ClassicSubviewDomain_RecordDirectOwned",
         "R_ClassicSubviewDomain_RecordBackendFallback",
@@ -115,6 +121,18 @@ def validate_domain_contract() -> None:
         "HasSupportedSpecialSemantics",
         "CaptureViewSemantics",
         "ViewSemanticsMatch",
+        "ResolveNestedOwnership",
+        "parentViewIndex",
+        "rootViewIndex",
+        "nestingDepth",
+        "subtreeViewCount",
+        "backendCompleted",
+        "FinalizeTransaction",
+        "PublishOwned",
+        "RecordSingleFallback",
+        "ownedNestedTransactions",
+        "fallbackNestedTransactions",
+        "nestedTopology",
         "semanticClipPlanes",
         "viewDef->isMirror",
         "viewDef->isXraySubview",
@@ -129,6 +147,8 @@ def validate_domain_contract() -> None:
         "capture.x != viewDef->viewport.x1",
         "ready = true",
         "fallbackViews",
+        "nestedCommandOrder",
+        "backendNestingIncomplete",
     ):
         require(source, token, "bounded subview admission and fallback")
 
@@ -148,6 +168,7 @@ def validate_backend_capture_ownership() -> None:
             "R_ClassicSubviewDomain_IsDirect",
             "R_ClassicSubviewDomain_RecordDirectOwned",
             "R_ClassicSubviewDomain_RecordBackendFallback",
+            "R_ClassicSubviewDomain_ReadyForBackend",
             "pendingSharedSubview",
         ):
             require(source, token, f"{backend} capture ownership")
@@ -206,6 +227,8 @@ def validate_controls_diagnostics_and_registration() -> None:
         "classicSubviewDomain backend=",
         "colorCubemap=",
         "depthCubemap=",
+        "nestedTransactions=",
+        "maxNestingDepth=",
     ):
         require(init, token, "default-off subview control and diagnostics")
     require(local, "extern idCVar r_rendererSharedSubview;", "renderer cvar API")
@@ -229,6 +252,8 @@ def validate_controls_diagnostics_and_registration() -> None:
         "refraction",
         "mirror",
         "r_rendererSharedSubview 1",
+        "nested",
+        "atomic",
         "classic fallback",
     ):
         require(docs, token, "subview contract documentation")

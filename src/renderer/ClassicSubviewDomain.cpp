@@ -99,6 +99,10 @@ static void InitView( classicSubviewDomainView_t &view,
 	view.viewDef = viewDef;
 	view.scenePacketIndex = scenePacketIndex;
 	view.parentScenePacketIndex = -1;
+	view.parentViewIndex = -1;
+	view.rootViewIndex = -1;
+	view.nestingDepth = 0;
+	view.subtreeViewCount = 1;
 	view.capturePacketIndex = -1;
 	view.firstPassPacket = -1;
 	view.firstDrawPacket = -1;
@@ -172,8 +176,15 @@ static classicSubviewDomainView_t *FindMutableView( const viewDef_t *viewDef ) {
 	return NULL;
 }
 
+static int FindViewIndex( const viewDef_t *viewDef ) {
+	return ViewIndex( FindMutableView( viewDef ) );
+}
+
 static bool FailView( classicSubviewDomainView_t &view,
 		classicSubviewDomainFailure_t failure, int detail ) {
+	if ( !view.ready && view.failure != CLASSIC_SUBVIEW_DOMAIN_FAILURE_NONE ) {
+		return false;
+	}
 	view.ready = false;
 	view.failure = failure;
 	view.failureDetail = detail;
@@ -337,6 +348,10 @@ static std::uint64_t HashView( const classicSubviewDomainView_t &view ) {
 	std::uint64_t hash = HASH_OFFSET;
 	HashInt( hash, view.scenePacketIndex );
 	HashInt( hash, view.parentScenePacketIndex );
+	HashInt( hash, view.parentViewIndex );
+	HashInt( hash, view.rootViewIndex );
+	HashInt( hash, view.nestingDepth );
+	HashInt( hash, view.subtreeViewCount );
 	HashInt( hash, view.capturePacketIndex );
 	HashInt( hash, view.firstPassPacket );
 	HashInt( hash, view.passPacketCount );
@@ -387,6 +402,8 @@ static std::uint64_t HashView( const classicSubviewDomainView_t &view ) {
 static bool PrepareView( const idScenePacketFrame &packetFrame,
 		const scenePacket_t &scene, classicSubviewDomainView_t &view ) {
 	const viewDef_t *viewDef = view.viewDef;
+	view.parentViewDef = viewDef != NULL ? viewDef->superView : NULL;
+	view.parentSurface = viewDef != NULL ? viewDef->subviewSurface : NULL;
 	if ( viewDef == NULL || scene.packetCategory != SCENE_PACKET_CATEGORY_SUBVIEW
 			|| !viewDef->isSubview || viewDef->viewEntitys == NULL
 			|| viewDef->renderWorld == NULL || viewDef->isEditor
@@ -395,8 +412,6 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 			|| viewDef->superView == NULL || viewDef->subviewSurface == NULL ) {
 		return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_VIEW, 0 );
 	}
-	view.parentViewDef = viewDef->superView;
-	view.parentSurface = viewDef->subviewSurface;
 	view.parentScenePacketIndex = FindScenePacket( packetFrame, view.parentViewDef );
 	if ( view.parentScenePacketIndex < 0 ) {
 		return FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_PARENT_SCENE, 0 );
@@ -470,8 +485,151 @@ static bool PrepareView( const idScenePacketFrame &packetFrame,
 	view.firstDrawPacket = scene.firstDrawPacket;
 	view.drawPacketCount = scene.drawPacketCount;
 	view.ready = true;
-	view.hash = HashView( view );
 	return true;
+}
+
+static void ResolveNestedOwnership( void ) {
+	// R_RenderView emits descendants before their parent command. Recover that
+	// order from the immutable scene packet indices and make every nested chain
+	// one transaction. A child must never be admitted independently merely
+	// because its local camera and capture edge happened to validate.
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		classicSubviewDomainView_t &view = domain.views[viewIndex];
+		view.parentViewIndex = -1;
+		view.rootViewIndex = viewIndex;
+		view.nestingDepth = 0;
+		view.subtreeViewCount = 1;
+		if ( view.parentViewDef == NULL || !view.parentViewDef->isSubview ) {
+			continue;
+		}
+		const int parentIndex = FindViewIndex( view.parentViewDef );
+		view.parentViewIndex = parentIndex;
+		if ( parentIndex < 0 ) {
+			FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_NESTED_PARENT,
+				view.parentScenePacketIndex );
+			continue;
+		}
+		const classicSubviewDomainView_t &parent = domain.views[parentIndex];
+		if ( parent.scenePacketIndex != view.parentScenePacketIndex
+				|| view.scenePacketIndex >= parent.scenePacketIndex ) {
+			FailView( view, CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER,
+				parent.scenePacketIndex );
+		}
+	}
+
+	// Resolve the root/depth only across strict depth-first links. The packet
+	// ordering check above bounds this walk by the fixed view arena and rejects
+	// malformed cycles before a backend can consume any record.
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		classicSubviewDomainView_t &view = domain.views[viewIndex];
+		if ( !view.ready ) {
+			continue;
+		}
+		int rootIndex = viewIndex;
+		int depth = 0;
+		for ( int parentIndex = view.parentViewIndex; parentIndex >= 0;
+				parentIndex = domain.views[parentIndex].parentViewIndex ) {
+			if ( parentIndex >= domain.viewCount || depth >= domain.viewCount ) {
+				FailView( view,
+					CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER, parentIndex );
+				break;
+			}
+			rootIndex = parentIndex;
+			++depth;
+		}
+		if ( view.ready ) {
+			view.rootViewIndex = rootIndex;
+			view.nestingDepth = depth;
+		}
+	}
+
+	// A rejected nested link invalidates its entire parent/child component.
+	// Iterate to cover a malformed sibling and every ancestor/descendant without
+	// relying on front-end allocation order beyond the validated packet edge.
+	for ( int pass = 0; pass < domain.viewCount; ++pass ) {
+		bool changed = false;
+		for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+			classicSubviewDomainView_t &view = domain.views[viewIndex];
+			if ( view.ready && view.parentViewIndex >= 0
+					&& !domain.views[view.parentViewIndex].ready ) {
+				FailView( view,
+					CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_PARENT_FALLBACK,
+					view.parentViewIndex );
+				changed = true;
+			}
+		}
+		for ( int parentIndex = domain.viewCount - 1; parentIndex >= 0;
+				--parentIndex ) {
+			classicSubviewDomainView_t &parent = domain.views[parentIndex];
+			if ( !parent.ready ) {
+				continue;
+			}
+			for ( int childIndex = 0; childIndex < domain.viewCount; ++childIndex ) {
+				if ( domain.views[childIndex].parentViewIndex == parentIndex
+						&& !domain.views[childIndex].ready ) {
+					FailView( parent,
+						CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CHILD_FALLBACK,
+						childIndex );
+					changed = true;
+					break;
+				}
+			}
+		}
+		if ( !changed ) {
+			break;
+		}
+	}
+
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		classicSubviewDomainView_t &view = domain.views[viewIndex];
+		view.subtreeViewCount = view.ready ? 1 : 0;
+	}
+	// Descendants precede parents in an admitted chain, so this pass gives every
+	// root its complete sealed component size without dynamic allocation.
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		const classicSubviewDomainView_t &view = domain.views[viewIndex];
+		if ( view.ready && view.parentViewIndex >= 0
+				&& domain.views[view.parentViewIndex].ready ) {
+			domain.views[view.parentViewIndex].subtreeViewCount +=
+				view.subtreeViewCount;
+		}
+	}
+}
+
+static int TransactionRootIndex( const classicSubviewDomainView_t *view ) {
+	const int viewIndex = ViewIndex( view );
+	if ( viewIndex < 0 ) {
+		return -1;
+	}
+	return view->rootViewIndex >= 0 && view->rootViewIndex < domain.viewCount
+		? view->rootViewIndex : viewIndex;
+}
+
+static bool IsTransactionMember( const classicSubviewDomainView_t &view,
+		int rootIndex ) {
+	return rootIndex >= 0 && view.ready
+		&& ( view.rootViewIndex == rootIndex
+			|| ( view.rootViewIndex < 0 && ViewIndex( &view ) == rootIndex ) );
+}
+
+static void RecordSingleFallback( classicSubviewDomainView_t &view,
+		classicSubviewDomainBackend_t backend, classicSubviewDomainFailure_t failure,
+		int detail ) {
+	classicSubviewDomainBackendCoverage_t &coverage = domain.stats.backend[backend];
+	if ( view.backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		return;
+	}
+	const int index = ViewIndex( &view );
+	view.backendOutcome[backend] = CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK;
+	view.backendFailure[backend] = failure;
+	view.backendFailureDetail[backend] = detail;
+	if ( index >= 0 ) {
+		coverage.fallbackViewMask |= 1ull << index;
+	}
+	coverage.fallbackViews++;
+	if ( view.nestingDepth > 0 ) {
+		coverage.fallbackNestedViews++;
+	}
 }
 
 static void RecordFallback( classicSubviewDomainView_t *view,
@@ -490,14 +648,104 @@ static void RecordFallback( classicSubviewDomainView_t *view,
 		coverage.duplicateReports++;
 		return;
 	}
-	const int index = ViewIndex(view);
-	view->backendOutcome[backend] = CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK;
-	view->backendFailure[backend] = failure;
-	view->backendFailureDetail[backend] = detail;
-	if ( index >= 0 ) {
-		coverage.fallbackViewMask |= 1ull << index;
+	const int rootIndex = TransactionRootIndex( view );
+	const bool nestedTransaction = rootIndex >= 0
+		&& domain.views[rootIndex].subtreeViewCount > 1;
+	if ( nestedTransaction ) {
+		coverage.fallbackNestedTransactions++;
 	}
-	coverage.fallbackViews++;
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		classicSubviewDomainView_t &member = domain.views[viewIndex];
+		if ( IsTransactionMember( member, rootIndex ) ) {
+			RecordSingleFallback( member, backend, failure,
+				viewIndex == ViewIndex( view ) ? detail : rootIndex );
+		}
+	}
+}
+
+static void PublishOwned( classicSubviewDomainView_t &view,
+		classicSubviewDomainBackend_t backend ) {
+	const int index = ViewIndex( &view );
+	classicSubviewDomainBackendCoverage_t &coverage = domain.stats.backend[backend];
+	view.backendOutcome[backend] = CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED;
+	if ( index >= 0 ) {
+		coverage.ownedViewMask |= 1ull << index;
+	}
+	coverage.ownedViews++;
+	if ( view.nestingDepth > 0 ) {
+		coverage.ownedNestedViews++;
+	}
+	if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR ) {
+		coverage.ownedDirectMirrorViews++;
+	} else if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ) {
+		coverage.ownedRemoteCameraViews++;
+	} else if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR ) {
+		coverage.ownedMirrorViews++;
+	} else if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION ) {
+		coverage.ownedReflectionViews++;
+	} else if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION ) {
+		coverage.ownedRefractionViews++;
+	} else if ( view.kind == CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY ) {
+		coverage.ownedXrayViews++;
+	}
+	switch ( view.captureType ) {
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP:
+		coverage.ownedColorCubemapCaptures++;
+		break;
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D:
+		coverage.ownedDepth2DCaptures++;
+		break;
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP:
+		coverage.ownedDepthCubemapCaptures++;
+		break;
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE:
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D:
+	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COUNT:
+	default:
+		break;
+	}
+}
+
+static bool FinalizeTransaction( classicSubviewDomainView_t &view,
+		classicSubviewDomainBackend_t backend ) {
+	const int rootIndex = TransactionRootIndex( &view );
+	if ( rootIndex < 0 ) {
+		return false;
+	}
+	int memberCount = 0;
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		const classicSubviewDomainView_t &member = domain.views[viewIndex];
+		if ( !IsTransactionMember( member, rootIndex ) ) {
+			continue;
+		}
+		++memberCount;
+		if ( member.backendOutcome[backend]
+				== CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK ) {
+			return false;
+		}
+		if ( !member.backendCompleted[backend] ) {
+			RecordFallback( &view, backend,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE,
+				viewIndex );
+			return false;
+		}
+	}
+	if ( memberCount != domain.views[rootIndex].subtreeViewCount ) {
+		RecordFallback( &view, backend,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE,
+			memberCount );
+		return false;
+	}
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		classicSubviewDomainView_t &member = domain.views[viewIndex];
+		if ( IsTransactionMember( member, rootIndex ) ) {
+			PublishOwned( member, backend );
+		}
+	}
+	if ( memberCount > 1 ) {
+		domain.stats.backend[backend].ownedNestedTransactions++;
+	}
+	return true;
 }
 
 } // namespace
@@ -531,8 +779,22 @@ void R_ClassicSubviewDomain_PrepareFrame( const idScenePacketFrame &packetFrame 
 		}
 		classicSubviewDomainView_t &view = domain.views[domain.viewCount++];
 		InitView( view, scene.viewDef, sceneIndex );
-		if ( PrepareView( packetFrame, scene, view ) ) {
+		PrepareView( packetFrame, scene, view );
+	}
+	ResolveNestedOwnership();
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		classicSubviewDomainView_t &view = domain.views[viewIndex];
+		if ( view.ready ) {
+			view.hash = HashView( view );
 			domain.stats.readyViews++;
+			if ( view.nestingDepth > 0 ) {
+				domain.stats.nestedViews++;
+				domain.stats.maxNestingDepth = Max( domain.stats.maxNestingDepth,
+					view.nestingDepth );
+			}
+			if ( view.rootViewIndex == viewIndex && view.subtreeViewCount > 1 ) {
+				domain.stats.nestedTransactions++;
+			}
 			switch ( view.kind ) {
 			case CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR:
 				domain.stats.directMirrorViews++;
@@ -580,6 +842,9 @@ void R_ClassicSubviewDomain_PrepareFrame( const idScenePacketFrame &packetFrame 
 	std::uint64_t hash = HASH_OFFSET;
 	HashInt( hash, domain.stats.subviewScenes );
 	HashInt( hash, domain.stats.capturePackets );
+	HashInt( hash, domain.stats.nestedViews );
+	HashInt( hash, domain.stats.nestedTransactions );
+	HashInt( hash, domain.stats.maxNestingDepth );
 	for ( int i = 0; i < domain.viewCount; ++i ) {
 		HashBool( hash, domain.views[i].ready );
 		HashInt( hash, domain.views[i].failure );
@@ -636,6 +901,35 @@ bool R_ClassicSubviewDomain_ViewSemanticsMatch(
 		&& ViewSemanticsMatch( view, *view.viewDef );
 }
 
+bool R_ClassicSubviewDomain_ReadyForBackend(
+		const classicSubviewDomainView_t &view,
+		classicSubviewDomainBackend_t backend ) {
+	if ( backend < CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL
+			|| backend >= CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT
+			|| !view.ready
+			|| view.backendOutcome[backend]
+				!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+			|| !R_ClassicSubviewDomain_ViewSemanticsMatch( view ) ) {
+		return false;
+	}
+	const int rootIndex = TransactionRootIndex( &view );
+	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
+		const classicSubviewDomainView_t &member = domain.views[viewIndex];
+		if ( !IsTransactionMember( member, rootIndex ) ) {
+			continue;
+		}
+		if ( member.backendOutcome[backend]
+				!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+			|| !R_ClassicSubviewDomain_ViewSemanticsMatch( member )
+			|| ( R_ClassicSubviewDomain_IsCaptureBacked( member )
+				&& ( member.captureImage == NULL
+					|| !member.captureImage->IsLoaded() ) ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
 bool R_ClassicSubviewDomain_CaptureMatches(
 		const classicSubviewDomainView_t &view, const idImage *image,
 		int x, int y, int width, int height, int cubeFace, bool copyDepth ) {
@@ -678,41 +972,9 @@ bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 0 );
 		return false;
 	}
-	const int index = ViewIndex(view);
-	view->backendOutcome[backend] = CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED;
-	classicSubviewDomainBackendCoverage_t &coverage = domain.stats.backend[backend];
-	if ( index >= 0 ) {
-		coverage.ownedViewMask |= 1ull << index;
-	}
-	coverage.ownedViews++;
-	if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ) {
-		coverage.ownedRemoteCameraViews++;
-	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_MIRROR ) {
-		coverage.ownedMirrorViews++;
-	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFLECTION ) {
-		coverage.ownedReflectionViews++;
-	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_REFRACTION ) {
-		coverage.ownedRefractionViews++;
-	} else if ( view->kind == CLASSIC_SUBVIEW_DOMAIN_KIND_XRAY ) {
-		coverage.ownedXrayViews++;
-	}
-	switch ( view->captureType ) {
-	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_CUBEMAP:
-		coverage.ownedColorCubemapCaptures++;
-		break;
-	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_2D:
-		coverage.ownedDepth2DCaptures++;
-		break;
-	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP:
-		coverage.ownedDepthCubemapCaptures++;
-		break;
-	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE:
-	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COLOR_2D:
-	case CLASSIC_SUBVIEW_DOMAIN_CAPTURE_COUNT:
-	default:
-		break;
-	}
-	return true;
+	view->backendCompleted[backend] = true;
+	return TransactionRootIndex( view ) != ViewIndex( view )
+		|| FinalizeTransaction( *view, backend );
 }
 
 bool R_ClassicSubviewDomain_RecordDirectOwned( const viewDef_t *viewDef,
@@ -737,15 +999,9 @@ bool R_ClassicSubviewDomain_RecordDirectOwned( const viewDef_t *viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH, 0 );
 		return false;
 	}
-	const int index = ViewIndex(view);
-	view->backendOutcome[backend] = CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED;
-	classicSubviewDomainBackendCoverage_t &coverage = domain.stats.backend[backend];
-	if ( index >= 0 ) {
-		coverage.ownedViewMask |= 1ull << index;
-	}
-	coverage.ownedViews++;
-	coverage.ownedDirectMirrorViews++;
-	return true;
+	view->backendCompleted[backend] = true;
+	return TransactionRootIndex( view ) != ViewIndex( view )
+		|| FinalizeTransaction( *view, backend );
 }
 
 void R_ClassicSubviewDomain_RecordBackendFallback( const viewDef_t *viewDef,
@@ -808,9 +1064,14 @@ const char *ClassicSubviewDomainFailure_Name( classicSubviewDomainFailure_t fail
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE: return "unexpectedCapture";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS: return "unsupportedSpecialSemantics";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH: return "viewSemanticsMismatch";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_NESTED_PARENT: return "missingNestedParent";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER: return "nestedCommandOrder";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_PARENT_FALLBACK: return "nestedParentFallback";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CHILD_FALLBACK: return "nestedChildFallback";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY: return "backendNotReady";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED: return "backendRejected";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH: return "backendCaptureMismatch";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE: return "backendNestingIncomplete";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_COUNT:
 	default: return "unknown";
 	}
@@ -837,6 +1098,9 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 			|| idStr::Cmp( ClassicSubviewDomainFailure_Name(
 				CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_CAPTURE_TARGET ),
 				"unsupportedCaptureTarget" ) != 0
+			|| idStr::Cmp( ClassicSubviewDomainFailure_Name(
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE ),
+				"backendNestingIncomplete" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainBackend_Name(
 				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ), "Vulkan" ) != 0 ) {
 		return false;
@@ -912,7 +1176,89 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	viewDef.scissor.x1++;
 	const bool semanticMismatch = !R_ClassicSubviewDomain_ViewSemanticsMatch(
 		directView );
-	const bool passed = capturePassed && directOwned && semanticMismatch;
+
+	// A nested direct pair publishes neither member until the outer root returns.
+	// The second run injects a root failure after the child completes and proves
+	// that the pending child is rolled back with the same transaction.
+	R_ClassicSubviewDomain_ResetFrame();
+	viewDef_t nestedRootDef;
+	viewDef_t nestedChildDef;
+	std::memset( &nestedRootDef, 0, sizeof(nestedRootDef) );
+	std::memset( &nestedChildDef, 0, sizeof(nestedChildDef) );
+	nestedRootDef.isSubview = true;
+	nestedChildDef.isSubview = true;
+	nestedRootDef.numClipPlanes = 1;
+	nestedChildDef.numClipPlanes = 1;
+	nestedChildDef.superView = &nestedRootDef;
+	InitView( domain.views[0], &nestedChildDef, 20 );
+	InitView( domain.views[1], &nestedRootDef, 21 );
+	domain.viewCount = 2;
+	classicSubviewDomainView_t &nestedChild = domain.views[0];
+	classicSubviewDomainView_t &nestedRoot = domain.views[1];
+	nestedChild.ready = true;
+	nestedChild.kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+	nestedChild.parentViewDef = &nestedRootDef;
+	nestedChild.parentScenePacketIndex = 21;
+	CaptureViewSemantics( nestedChild, nestedChildDef );
+	nestedRoot.ready = true;
+	nestedRoot.kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+	CaptureViewSemantics( nestedRoot, nestedRootDef );
+	ResolveNestedOwnership();
+	const bool nestedTopology = nestedChild.ready && nestedRoot.ready
+		&& nestedChild.parentViewIndex == 1
+		&& nestedChild.rootViewIndex == 1
+		&& nestedChild.nestingDepth == 1
+		&& nestedRoot.rootViewIndex == 1
+		&& nestedRoot.subtreeViewCount == 2;
+	const bool nestedChildCompleted = R_ClassicSubviewDomain_RecordDirectOwned(
+		&nestedChildDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
+	const bool nestedDeferred = nestedChild.backendOutcome[
+		CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+		== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED;
+	const bool nestedRootOwned = R_ClassicSubviewDomain_RecordDirectOwned(
+		&nestedRootDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
+	const bool nestedPublished = nestedRootOwned
+		&& nestedChild.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
+		&& nestedRoot.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
+		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			.ownedNestedViews == 1
+		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			.ownedNestedTransactions == 1;
+
+	R_ClassicSubviewDomain_ResetFrame();
+	InitView( domain.views[0], &nestedChildDef, 20 );
+	InitView( domain.views[1], &nestedRootDef, 21 );
+	domain.viewCount = 2;
+	classicSubviewDomainView_t &rejectedChild = domain.views[0];
+	classicSubviewDomainView_t &rejectedRoot = domain.views[1];
+	rejectedChild.ready = true;
+	rejectedChild.kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+	rejectedChild.parentViewDef = &nestedRootDef;
+	rejectedChild.parentScenePacketIndex = 21;
+	CaptureViewSemantics( rejectedChild, nestedChildDef );
+	rejectedRoot.ready = true;
+	rejectedRoot.kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
+	CaptureViewSemantics( rejectedRoot, nestedRootDef );
+	ResolveNestedOwnership();
+	const bool rejectedChildCompleted = R_ClassicSubviewDomain_RecordDirectOwned(
+		&nestedChildDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN );
+	R_ClassicSubviewDomain_RecordBackendFallback( &nestedRootDef,
+		CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+		CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED, 9 );
+	const bool nestedRollback = rejectedChildCompleted
+		&& rejectedChild.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK
+		&& rejectedRoot.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK
+		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			.fallbackNestedViews == 1
+		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			.fallbackNestedTransactions == 1;
+	const bool passed = capturePassed && directOwned && semanticMismatch
+		&& nestedTopology && nestedChildCompleted && nestedDeferred && nestedPublished
+		&& nestedRollback;
 	R_ClassicSubviewDomain_ResetFrame();
 	return passed;
 }

@@ -16,9 +16,12 @@
 	and exact RC_COPY_RENDER destination agree.  Direct SS_SUBVIEW mirrors seal
 	their complete camera/clip/scissor semantics and have no capture command;
 	dynamic remote, mirror, reflection, refraction, and x-ray surfaces retain an
-	exact color, cubemap-face, or depth-capture edge. Every capture target seals
-	its image type, depth/color aspect, and exact cube face before either backend
-	uses its established transfer implementation.
+	exact color, cubemap-face, or depth-capture edge. A nested child also seals
+	its direct parent domain record, root transaction, depth, and depth-first
+	command order. Every capture target seals its image type, depth/color aspect,
+	and exact cube face before either backend uses its established transfer
+	implementation. Nested transaction ownership is published only after the
+	outermost special view completes every admitted descendant.
 
 ===============================================================================
 */
@@ -63,9 +66,14 @@ enum classicSubviewDomainFailure_t {
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNEXPECTED_CAPTURE,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_UNSUPPORTED_SPECIAL_SEMANTICS,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_MISSING_NESTED_PARENT,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_PARENT_FALLBACK,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CHILD_FALLBACK,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+	CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE,
 	CLASSIC_SUBVIEW_DOMAIN_FAILURE_COUNT
 };
 
@@ -95,6 +103,10 @@ typedef struct classicSubviewDomainBackendCoverage_s {
 	int				ownedColorCubemapCaptures;
 	int				ownedDepth2DCaptures;
 	int				ownedDepthCubemapCaptures;
+	int				ownedNestedViews;
+	int				ownedNestedTransactions;
+	int				fallbackNestedViews;
+	int				fallbackNestedTransactions;
 	int				coverageMismatches;
 	int				duplicateReports;
 	int				untrackedFallbacks;
@@ -107,6 +119,10 @@ typedef struct classicSubviewDomainView_s {
 	idImage					*captureImage;
 	int					scenePacketIndex;
 	int					parentScenePacketIndex;
+	int					parentViewIndex;
+	int					rootViewIndex;
+	int					nestingDepth;
+	int					subtreeViewCount;
 	int					capturePacketIndex;
 	int					firstPassPacket;
 	int					passPacketCount;
@@ -144,6 +160,8 @@ typedef struct classicSubviewDomainView_s {
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT];
 	int					backendFailureDetail[
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT];
+	bool					backendCompleted[
+		CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT];
 } classicSubviewDomainView_t;
 
 typedef struct classicSubviewDomainStats_s {
@@ -164,6 +182,9 @@ typedef struct classicSubviewDomainStats_s {
 	int					colorCubemapCaptures;
 	int					depth2DCaptures;
 	int					depthCubemapCaptures;
+	int					nestedViews;
+	int					nestedTransactions;
+	int					maxNestingDepth;
 	int					failureCounts[CLASSIC_SUBVIEW_DOMAIN_FAILURE_COUNT];
 	std::uint64_t			hash;
 	classicSubviewDomainBackendCoverage_t backend[
@@ -187,6 +208,9 @@ bool R_ClassicSubviewDomain_IsDirect(
 	const classicSubviewDomainView_t &view );
 bool R_ClassicSubviewDomain_ViewSemanticsMatch(
 	const classicSubviewDomainView_t &view );
+bool R_ClassicSubviewDomain_ReadyForBackend(
+	const classicSubviewDomainView_t &view,
+	classicSubviewDomainBackend_t backend );
 bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 	classicSubviewDomainBackend_t backend, const idImage *image,
 	int x, int y, int width, int height, int cubeFace, bool copyDepth );

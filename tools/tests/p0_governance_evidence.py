@@ -146,7 +146,7 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     )
     require(
         matrix,
-        "unsupported nested special-view domains still need migration",
+        "Cinematic and post special forms remain classic-owned",
         "remaining shared-domain boundary",
     )
     require(

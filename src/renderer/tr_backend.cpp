@@ -780,15 +780,27 @@ static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
 		return NULL;
 	}
+	if ( view->backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A descendant or sibling has already rejected this sealed nested
+		// transaction. Continue with the untouched command stream; do not turn
+		// the remaining parent edge into a mixed shared/classic ownership case.
+		return NULL;
+	}
 	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
 			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
-				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) ) ) {
+				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) )
+			|| !R_ClassicSubviewDomain_ReadyForBackend( *view,
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ) ) {
 		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
 			!view->ready ? view->failure
 				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
 					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
-					: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ),
+					: ( !R_ClassicSubviewDomain_ReadyForBackend( *view,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL )
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE
+						: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ) ),
 			!view->ready ? view->failureDetail : 1 );
 		return NULL;
 	}
