@@ -10,7 +10,9 @@
 /*
 ===============================================================================
 
-	Shared whole-view ownership contract for classic fixed-function 2D GUI work.
+	Shared ownership contract for classic fixed-function GUI work. Root 2D
+	command views remain whole-view transactions; GUI quads emitted onto 3D
+	surfaces are an independently sealed, provenance-tagged subset.
 
 	Preparation is transactional per view.  A view is ready only when every
 	source surface has been classified, every expected scene packet matches in
@@ -24,6 +26,12 @@
 const int CLASSIC_GUI_DOMAIN_MAX_VIEWS = SCENE_PACKET_MAX_SCENES;
 const int CLASSIC_GUI_DOMAIN_MAX_DRAWS = SCENE_PACKET_MAX_DRAWS;
 const int CLASSIC_GUI_DOMAIN_MAX_EVALUATED_PASSES = SCENE_PACKET_MAX_DRAWS * 2;
+
+enum classicGuiDomainScope_t {
+	CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D = 0,
+	CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD,
+	CLASSIC_GUI_DOMAIN_SCOPE_COUNT
+};
 
 enum classicGuiDomainSourceSurface_t {
 	CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_DRAWABLE = 0,
@@ -114,6 +122,8 @@ typedef struct classicGuiDomainDraw_s {
 	std::uint32_t				tableGeneration;
 	int					firstGuiPass;
 	int					guiPassCount;
+	int					firstWorldPass;
+	int					worldPassCount;
 	int					firstEvaluatedPass;
 	int					evaluatedPassCount;
 	int					activePassCount;
@@ -141,6 +151,7 @@ typedef struct classicGuiDomainDraw_s {
 
 typedef struct classicGuiDomainView_s {
 	const viewDef_t				*viewDef;
+	classicGuiDomainScope_t		scope;
 	int					scenePacketIndex;
 	int					guiPassPacketIndex;
 	std::uint32_t				tableGeneration;
@@ -192,6 +203,8 @@ typedef struct classicGuiDomainStats_s {
 	bool			overflow;
 	int			sourceScenes;
 	int			guiViews;
+	int			rootViews;
+	int			inWorldViews;
 	int			readyViews;
 	int			fallbackViews;
 	int			sourceSurfaces;
@@ -220,6 +233,8 @@ int R_ClassicGuiDomain_NumViews( void );
 const classicGuiDomainView_t *R_ClassicGuiDomain_ViewByIndex( int index );
 const classicGuiDomainView_t *R_ClassicGuiDomain_ViewForScenePacket( int scenePacketIndex );
 const classicGuiDomainView_t *R_ClassicGuiDomain_FindView( const viewDef_t *viewDef );
+const classicGuiDomainView_t *R_ClassicGuiDomain_FindRootView( const viewDef_t *viewDef );
+const classicGuiDomainView_t *R_ClassicGuiDomain_FindInWorldView( const viewDef_t *viewDef );
 const classicGuiDomainDraw_t *R_ClassicGuiDomain_ViewDraw(
 	const classicGuiDomainView_t &view, int drawIndex );
 const rendererEvaluatedMaterialPass_t *R_ClassicGuiDomain_DrawPass(
@@ -232,6 +247,8 @@ void R_ClassicGuiDomain_RecordBackendFallback( const viewDef_t *viewDef,
 	classicGuiDomainBackend_t backend, classicGuiDomainFailure_t failure, int detail );
 const classicGuiDomainBackendCoverage_t &R_ClassicGuiDomain_BackendCoverage(
 	classicGuiDomainBackend_t backend );
+bool R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( const viewDef_t *viewDef,
+	classicGuiDomainBackend_t backend, const drawSurf_t *drawSurf );
 const char *ClassicGuiDomainSourceSurface_Name(
 	classicGuiDomainSourceSurface_t sourceSurface );
 const char *ClassicGuiDomainFailure_Name( classicGuiDomainFailure_t failure );

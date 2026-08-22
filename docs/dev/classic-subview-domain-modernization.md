@@ -94,5 +94,6 @@ separately on OpenGL and Vulkan. Require exact same-settings output, nonzero
 reconciled ownership, named zero-commit fallback on a deliberately malformed
 capture edge, clean backend diagnostics, retained final package evidence, and
 target-platform/driver coverage. Direct mirror/reflection/clip-plane, x-ray,
-depth/cubemap, nested, in-world GUI, cinematic, and post ownership remain
-separate Milestone D work.
+depth/cubemap, nested, cinematic, and post ownership remain separate Milestone
+D work. In-world GUI has its own provenance-tagged transaction documented in
+[Shared Classic In-World GUI Domain](classic-inworld-gui-domain-modernization.md).

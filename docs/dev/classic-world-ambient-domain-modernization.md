@@ -271,7 +271,7 @@ sealed completed or intentional-empty CPU deform results. The earlier
 the dedicated profile and requires nonempty ownership plus exact same-backend
 parity.
 
-The next recommended implementation target is **subview ownership and parity**,
-followed by in-world GUI, render-demo, cinematic, or authored post ownership.
-Do not skip ahead to temporal presentation or PBR/advanced-lighting Milestones
-E/F.
+The completed subview and in-world GUI corridors leave **cinematic playback and
+authored post-chain ownership** as the next recommended implementation target,
+followed by render-demo and remaining special-frame work. Do not skip ahead to
+temporal presentation or PBR/advanced-lighting Milestones E/F.

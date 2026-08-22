@@ -260,7 +260,7 @@ the classic source-preserving fog-receiver role explicitly. A material-deform
 receiver is admissible only with a fresh `notApplicable` record; unsupported,
 skipped, failed, stale, or mismatched records still reject the complete phase.
 
-The next recommended implementation target is **subview ownership and parity**.
-In-world GUI, render-demo, cinematic, authored post, and other special domains
+The completed subview and in-world GUI corridors leave **cinematic playback and
+authored post-chain ownership** next. Render-demo and other special domains
 remain downstream. Temporal presentation and PBR/advanced-lighting work must
 continue to wait for coherent classic-frame ownership.

@@ -140,6 +140,9 @@ static const int	DSF_BSE_EFFECT			= 2;
 // viewDef->drawSurfs, so the flag is a statement of provenance for anything
 // holding one, not a test the main passes have to remember to make.
 static const int	DSF_OUTLINE_ONLY		= 4;
+// Geometry emitted while R_RenderGuiSurf expands a GUI onto a 3D surface.
+// This provenance is independent of the generated material's GUI sort.
+static const int	DSF_IN_WORLD_GUI		= 8;
 
 typedef struct drawSurf_s {
 	const srfTriangles_t	*geo;
@@ -922,6 +925,7 @@ public:
 
 	// GUI drawing variables for surface creation
 	int						guiRecursionLevel;		// to prevent infinite overruns
+	int						inWorldGuiEmissionDepth;	// provenance scope for R_RenderGuiSurf output
 	class idGuiModel *		guiModel;
 	class idGuiModel *		demoGuiModel;
 	idList<idRenderTexture*> pendingRenderTextureDeletes;
@@ -1121,6 +1125,7 @@ extern idCVar r_rendererGpuValidationReadbackDelay;	// defer opt-in GL43 validat
 extern idCVar r_rendererBindless;	// opt-in experimental bindless texture diagnostics, disabled by default
 extern idCVar r_rendererModernVisible;	// opt-in modern hybrid visible-frame composition
 extern idCVar r_rendererSharedGui;	// opt-in backend-neutral fixed-function 2D GUI ownership
+extern idCVar r_rendererSharedInWorldGui;	// opt-in backend-neutral in-world GUI ownership
 extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
 extern idCVar r_rendererSharedWorldInteraction;	// opt-in backend-neutral whole-view unshadowed interaction ownership
 extern idCVar r_rendererSharedWorldFogBlend;	// opt-in backend-neutral whole-view fog/blend ownership
@@ -1840,6 +1845,7 @@ const shaderStage_t *RB_SetLightTexture( const idRenderLightLocal *light );
 
 void RB_DrawView( const void *data );
 bool RB_DrawSharedGuiView( const viewDef_t *viewDef );
+bool RB_DrawSharedInWorldGuiView( const viewDef_t *viewDef );
 void RB_DrawSpecialEffects( const void *data );
 void RB_ApplyResolutionScaleToBackBuffer( void );
 void RB_ApplyCRTToBackBuffer( void );

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static regression contract for whole-view shared classic GUI ownership."""
+"""Static regression contract for shared root and in-world classic GUI ownership."""
 
 from __future__ import annotations
 
@@ -92,8 +92,12 @@ def validate_material_table() -> None:
         "guiDomainReferenced",
         "firstGuiPass",
         "guiPassCount",
+        "worldDomainReferenced",
+        "firstWorldPass",
+        "worldPassCount",
         "R_MaterialResourceTable_ResolveTextureResource",
         "R_MaterialResourceTable_CopyGuiPassList",
+        "R_MaterialResourceTable_CopyWorldPassList",
     ):
         require(header, token, "ordered GUI material resource contract")
 
@@ -107,6 +111,8 @@ def validate_material_table() -> None:
         (
             "drawPacket.passCategory == RENDER_PASS_GUI",
             "guiDomainReferenced[drawPacket.materialRecordIndex] = true;",
+            "drawPacket.packetCategory == SCENE_PACKET_CATEGORY_WORLD",
+            "worldDomainReferenced[drawPacket.materialRecordIndex] = true;",
             "R_MaterialResourceTable_AddRecordFromSource(",
         ),
         "packet-derived GUI material admission",
@@ -136,9 +142,14 @@ def validate_transactional_domain() -> None:
         "CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_DRAWABLE",
         "CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_FALLBACK_DEPTH_HACK",
         "CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_FALLBACK_DECAL_COLOR_STREAM",
+        "CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D",
+        "CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD",
         "classicGuiDomainBackendCoverage_t",
         "R_ClassicGuiDomain_RecordOwned",
         "R_ClassicGuiDomain_RecordBackendFallback",
+        "R_ClassicGuiDomain_FindRootView",
+        "R_ClassicGuiDomain_FindInWorldView",
+        "R_ClassicGuiDomain_IsLegacyInWorldDrawOwned",
     ):
         require(header, token, "whole-view GUI domain API")
 
@@ -157,6 +168,11 @@ def validate_transactional_domain() -> None:
         source,
         "R_MaterialResourceTable_ResolveTextureResource(",
         "opaque texture-resource resolution",
+    )
+    require(
+        source,
+        "R_MaterialResourceTable_CopyWorldPassList( *materialRecord,",
+        "in-world depth-aware material stream",
     )
     require(
         source,
@@ -188,8 +204,8 @@ def validate_gl_consumer() -> None:
 
     consumer = braced_body(
         draw,
-        "bool RB_DrawSharedGuiView(",
-        "OpenGL shared GUI consumer",
+        "static bool RB_DrawSharedGuiViewForScope(",
+        "OpenGL shared root/in-world GUI consumer",
     )
     require_order(
         consumer,
@@ -213,6 +229,51 @@ def validate_gl_consumer() -> None:
         "RB_SharedGuiGLSourceNoopValid(",
         "OpenGL recognized source no-op accounting",
     )
+    require_order(
+        draw,
+        (
+            "bool RB_DrawSharedInWorldGuiView(",
+            "CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD",
+            "void\tRB_STD_DrawView( void )",
+            "RB_DrawSharedInWorldGuiView( backEnd.viewDef )",
+            "RB_PrepareSharedWorldAmbientView( backEnd.viewDef )",
+        ),
+        "OpenGL in-world GUI pre-ambient handoff",
+    )
+    require(
+        draw,
+        "R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( backEnd.viewDef,",
+        "OpenGL classic duplicate suppression after ownership",
+    )
+
+    gui_surface = read("src/renderer/tr_guisurf.cpp")
+    gui_add = read("src/renderer/tr_light.cpp")
+    require_order(
+        gui_surface,
+        (
+            "tr.inWorldGuiEmissionDepth++;",
+            "tr.guiModel->EmitToCurrentView(",
+            "tr.inWorldGuiEmissionDepth--;",
+        ),
+        "in-world GUI front-end provenance scope",
+    )
+    require(
+        gui_add,
+        "drawSurf->dsFlags |= DSF_IN_WORLD_GUI;",
+        "in-world GUI generated draw provenance",
+    )
+
+    packets = read("src/renderer/ScenePackets.cpp")
+    require(
+        packets,
+        "R_ScenePackets_HasInWorldGUIDrawSurfs( viewDef )",
+        "in-world GUI packet admission",
+    )
+    require(
+        packets,
+        "R_ScenePackets_DrawSurfInWorldGUIEligible",
+        "provenance-filtered in-world GUI packet stream",
+    )
 
     submit_plan = braced_body(
         modern,
@@ -222,11 +283,24 @@ def validate_gl_consumer() -> None:
     require_order(
         submit_plan,
         (
-            "r_rendererSharedGui.GetBool()",
-            "command.pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GUI",
+            "R_ModernGLExecutor_SharedGuiOwnsCommand( command )",
             "continue;",
         ),
         "shared GUI suppression in the older aggregate submit plan",
+    )
+    shared_owner = braced_body(
+        modern,
+        "static bool R_ModernGLExecutor_SharedGuiOwnsCommand(",
+        "root and in-world aggregate GUI suppression",
+    )
+    require_order(
+        shared_owner,
+        (
+            "r_rendererSharedGui.GetBool()",
+            "r_rendererSharedInWorldGui.GetBool()",
+            "drawPacket->packetCategory == SCENE_PACKET_CATEGORY_WORLD",
+        ),
+        "root/in-world aggregate GUI ownership separation",
     )
     submit_gui = braced_body(
         modern,
@@ -237,6 +311,11 @@ def validate_gl_consumer() -> None:
         submit_gui,
         "r_rendererSharedGui.GetBool()",
         "shared GUI suppression in older aggregate GUI replay",
+    )
+    require(
+        submit_gui,
+        "R_ModernGLExecutor_SharedGuiOwnsCommand( command )",
+        "in-world GUI suppression in older aggregate GUI replay",
     )
     visible_request = braced_body(
         modern,
@@ -265,8 +344,8 @@ def validate_vulkan_consumer() -> None:
 
     consumer = braced_body(
         executor,
-        "static bool VK_ClassicGui_DrawOwnedView(",
-        "Vulkan shared GUI consumer",
+        "static bool VK_ClassicGui_DrawOwnedViewForScope(",
+        "Vulkan shared root/in-world GUI consumer",
     )
     require_order(
         consumer,
@@ -315,6 +394,22 @@ def validate_vulkan_consumer() -> None:
         "planDrawCount",
         "Vulkan drawable-only commit plan",
     )
+    require_order(
+        executor,
+        (
+            "static bool VK_ClassicGui_DrawOwnedInWorldView(",
+            "CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD",
+            "void VK_GuiExecutor_Draw3DView(",
+            "VK_ClassicGui_DrawOwnedInWorldView( viewDef )",
+            "// ---- passes 2-4: ambient walks split at fog, then post-process ----",
+        ),
+        "Vulkan in-world GUI pre-ambient handoff",
+    )
+    require(
+        executor,
+        "R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( viewDef,",
+        "Vulkan classic duplicate suppression after ownership",
+    )
 
     gui_fragment = read("src/renderer/Vulkan/shaders/gui.frag")
     require(gui_fragment, "color.a != pc.params.z", "exact Vulkan EQ_255 alpha test")
@@ -326,14 +421,46 @@ def validate_control_and_evidence() -> None:
     bootstrap = read("src/renderer/RendererBootstrap.cpp")
     benchmark = read("tools/tests/renderer_gameplay_benchmark.py")
     baseline = read("tools/validation/stock_asset_baseline.py")
+    baseline_contract = read("tools/tests/stock_asset_baseline.py")
+    validation_matrix = read("tools/tests/renderer_validation_matrix.py")
     require(
         init,
         'idCVar r_rendererSharedGui( "r_rendererSharedGui", "0"',
         "default-off shared GUI control",
     )
     require(bootstrap, '{ "r_rendererSharedGui", &r_rendererSharedGui, 0 }', "rollback report")
+    require(
+        init,
+        'idCVar r_rendererSharedInWorldGui( "r_rendererSharedInWorldGui", "0"',
+        "default-off shared in-world GUI control",
+    )
+    require(
+        bootstrap,
+        '{ "r_rendererSharedInWorldGui", &r_rendererSharedInWorldGui, 0 }',
+        "in-world GUI rollback report",
+    )
     require(benchmark, 'append_set(args, "r_rendererSharedGui", "0")', "benchmark isolation")
+    require(
+        benchmark,
+        'append_set(args, "r_rendererSharedInWorldGui", "0")',
+        "in-world GUI benchmark isolation",
+    )
     require(baseline, 'add_set(args, "r_rendererSharedGui", 0)', "stock baseline isolation")
+    require(
+        baseline,
+        'add_set(args, "r_rendererSharedInWorldGui", 0)',
+        "in-world GUI stock baseline isolation",
+    )
+    require(
+        baseline_contract,
+        'cvar_value(plan.args, "r_rendererSharedInWorldGui") == "0"',
+        "in-world GUI stock baseline assertion",
+    )
+    require(
+        validation_matrix,
+        '"r_rendererSharedInWorldGui",\n        "0",',
+        "in-world GUI renderer validation isolation",
+    )
 
 
 def validate_ci_registration() -> None:

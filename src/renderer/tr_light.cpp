@@ -2057,6 +2057,9 @@ void R_AddDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space, const 
 	drawSurf->sort = shader->GetSort() + tr.sortOffset;
 	drawSurf->area = NULL;
 	drawSurf->dsFlags = extraDrawSurfFlags;
+	if ( tr.inWorldGuiEmissionDepth > 0 ) {
+		drawSurf->dsFlags |= DSF_IN_WORLD_GUI;
+	}
 	drawSurf->dynamicTexCoords = NULL;
 	drawSurf->texGenTransformAndViewOrg = NULL;
 	drawSurf->decalColorCache = NULL;

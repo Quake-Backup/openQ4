@@ -227,7 +227,7 @@ Root GUI, world ambient/material, fixed-classic interaction, and fog/blend can
 now consume sealed classic material-deform results through one independent
 default-off dependency. This does not make the complete frame modern-owned.
 
-The next recommended implementation target is **subview ownership and parity**,
-followed by in-world GUI, render-demo/cinematic, authored post, and the remaining
+The completed subview and in-world GUI corridors leave **cinematic playback and
+authored post-chain ownership** next, followed by render-demo and remaining
 special-frame islands. Temporal presentation and PBR/advanced-lighting work
 remain downstream of coherent classic-frame ownership.

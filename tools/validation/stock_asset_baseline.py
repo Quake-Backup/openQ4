@@ -620,6 +620,7 @@ def display_cfg_lines(width: int, height: int) -> list[str]:
     """Reassert the measured display contract after any game-module reload."""
     return [
         "r_rendererSharedGui 0",
+        "r_rendererSharedInWorldGui 0",
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
         "r_rendererSharedWorldFogBlend 0",
@@ -667,6 +668,7 @@ def common_args(
     add_set(args, "r_swapInterval", 0)
     add_set(args, "r_renderApi", "gl")
     add_set(args, "r_rendererSharedGui", 0)
+    add_set(args, "r_rendererSharedInWorldGui", 0)
     add_set(args, "r_rendererSharedWorldAmbient", 0)
     add_set(args, "r_rendererSharedWorldInteraction", 0)
     add_set(args, "r_rendererSharedWorldFogBlend", 0)
@@ -1993,6 +1995,7 @@ def verify_recorded_files(
             failures.append(f"{role}: plan safety/capture contract differs")
         launch_contract = {
             "r_rendererSharedGui": "0",
+            "r_rendererSharedInWorldGui": "0",
             "r_rendererSharedWorldAmbient": "0",
             "r_rendererSharedWorldInteraction": "0",
             "r_rendererSharedWorldFogBlend": "0",
@@ -2053,6 +2056,7 @@ def verify_recorded_files(
                 "r_windowHeight",
                 "r_renderApi",
                 "r_rendererSharedGui",
+                "r_rendererSharedInWorldGui",
                 "r_rendererSharedWorldAmbient",
                 "r_rendererSharedWorldInteraction",
                 "r_rendererSharedWorldFogBlend",

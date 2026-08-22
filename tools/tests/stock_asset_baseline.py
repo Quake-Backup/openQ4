@@ -536,6 +536,7 @@ def test_plan_is_windowed_and_engine_only(tool: ModuleType, base: Path) -> None:
         assert cvar_value(plan.args, "r_customHeight") == "720"
         assert cvar_value(plan.args, "r_renderApi") == "gl"
         assert cvar_value(plan.args, "r_rendererSharedGui") == "0"
+        assert cvar_value(plan.args, "r_rendererSharedInWorldGui") == "0"
         assert cvar_value(plan.args, "r_rendererSharedWorldAmbient") == "0"
         assert cvar_value(plan.args, "r_rendererSharedWorldInteraction") == "0"
         assert cvar_value(plan.args, "r_rendererSharedWorldFogBlend") == "0"

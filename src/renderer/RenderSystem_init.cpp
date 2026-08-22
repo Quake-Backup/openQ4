@@ -486,6 +486,7 @@ idCVar r_rendererGpuValidationReadbackDelay( "r_rendererGpuValidationReadbackDel
 idCVar r_rendererBindless( "r_rendererBindless", "0", CVAR_RENDERER | CVAR_BOOL, "enable experimental GL 4.5 bindless texture diagnostics without changing visible output" );
 idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | CVAR_BOOL, "execute the opt-in modern hybrid visible-frame composition when all required pass owners are modern-safe" );
 idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedInWorldGui( "r_rendererSharedInWorldGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible GUI geometry emitted onto 3D surfaces from a backend-neutral ordered material-stage stream; any unsupported view keeps every in-world GUI surface on the classic path" );
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
@@ -3835,11 +3836,14 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	{
 		const classicGuiDomainStats_t &guiDomain = R_ClassicGuiDomain_Stats();
 		common->Printf(
-			"Renderer shared classic GUI: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d deform=%d/%d/%d passes=%d draw=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			"Renderer shared classic GUI: rootRequested=%d inWorldRequested=%d prepared=%d valid=%d views=%d(root=%d world=%d) ready=%d fallback=%d surfaces=%d/%d noop=%d deform=%d/%d/%d passes=%d draw=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
 			r_rendererSharedGui.GetBool() ? 1 : 0,
+			r_rendererSharedInWorldGui.GetBool() ? 1 : 0,
 			guiDomain.prepared ? 1 : 0,
 			guiDomain.frameValid ? 1 : 0,
 			guiDomain.guiViews,
+			guiDomain.rootViews,
+			guiDomain.inWorldViews,
 			guiDomain.readyViews,
 			guiDomain.fallbackViews,
 			guiDomain.drawableSurfaces,

@@ -26,6 +26,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererBindless.GetBool()
 		|| modernVisibleRequested
 		|| r_rendererSharedGui.GetBool()
+		|| r_rendererSharedInWorldGui.GetBool()
 		|| r_rendererSharedWorldAmbient.GetBool()
 		|| r_rendererSharedWorldInteraction.GetBool()
 		|| r_rendererSharedWorldFogBlend.GetBool()
@@ -371,7 +372,11 @@ static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t
 		return SCENE_PACKET_CATEGORY_POST_PROCESS;
 	}
 	if ( passCategory == RENDER_PASS_GUI ) {
-		return SCENE_PACKET_CATEGORY_GUI;
+		// A GUI pass in a 3D scene is the provenance-tagged output of
+		// R_RenderGuiSurf, not a root-2D command list. Keep it in the world
+		// domain so material compilation retains depth-test semantics.
+		return viewDef != NULL && viewDef->viewEntitys != NULL
+			? SCENE_PACKET_CATEGORY_WORLD : SCENE_PACKET_CATEGORY_GUI;
 	}
 	if ( viewDef != NULL && viewDef->isSubview ) {
 		return SCENE_PACKET_CATEGORY_SUBVIEW;
@@ -407,7 +412,8 @@ static scenePacketCategory_t R_ScenePackets_CategoryForCommandPass( renderPassCa
 	case RENDER_PASS_AUTHORED_POST:
 		return SCENE_PACKET_CATEGORY_POST_PROCESS;
 	case RENDER_PASS_GUI:
-		return SCENE_PACKET_CATEGORY_GUI;
+		return viewDef != NULL && viewDef->viewEntitys != NULL
+			? SCENE_PACKET_CATEGORY_WORLD : SCENE_PACKET_CATEGORY_GUI;
 	case RENDER_PASS_PRESENT:
 		return SCENE_PACKET_CATEGORY_PRESENT;
 	default:
@@ -1617,6 +1623,30 @@ static bool R_ScenePackets_DrawSurfGUIEligible( const viewDef_t *viewDef, const 
 	return material->HasAmbient() && !material->IsPortalSky();
 }
 
+static bool R_ScenePackets_DrawSurfInWorldGUIEligible( const viewDef_t *viewDef,
+		const drawSurf_t *drawSurf ) {
+	return drawSurf != NULL && ( drawSurf->dsFlags & DSF_IN_WORLD_GUI ) != 0
+		&& R_ScenePackets_DrawSurfGUIEligible( viewDef, drawSurf );
+}
+
+// Preserve an empty GUI pass only when the front end actually emitted a
+// provenance-tagged surface.  That lets the ownership domain diagnose a
+// malformed or otherwise ineligible tagged surface and fall back as a whole,
+// without adding a synthetic GUI pass to every ordinary world view.
+static bool R_ScenePackets_HasInWorldGUIDrawSurfs( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || viewDef->drawSurfs == NULL || viewDef->numDrawSurfs <= 0 ) {
+		return false;
+	}
+
+	for ( int i = 0; i < viewDef->numDrawSurfs; ++i ) {
+		const drawSurf_t *drawSurf = viewDef->drawSurfs[i];
+		if ( drawSurf != NULL && ( drawSurf->dsFlags & DSF_IN_WORLD_GUI ) != 0 ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool R_ScenePackets_DrawSurfInteractionEligible( const drawSurf_t *drawSurf ) {
 	if ( !R_ScenePackets_DrawSurfHasMaterialGeometry( drawSurf ) ) {
 		return false;
@@ -2045,6 +2075,10 @@ static void R_ScenePackets_AddDrawView( idScenePacketFrame &packetFrame, const v
 		R_ScenePackets_AddStencilShadowPass( packetFrame, viewDef );
 		R_ScenePackets_AddInteractionPass( packetFrame, viewDef );
 		R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_AMBIENT, R_ScenePackets_DrawSurfAmbientEligible );
+		if ( r_rendererSharedInWorldGui.GetBool()
+				&& R_ScenePackets_HasInWorldGUIDrawSurfs( viewDef ) ) {
+			R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_GUI, R_ScenePackets_DrawSurfInWorldGUIEligible );
+		}
 		R_ScenePackets_AddFilteredDrawSurfPass( packetFrame, viewDef, RENDER_PASS_LIGHT_GRID, R_ScenePackets_DrawSurfLightGridEligible );
 		R_ScenePackets_AddFogBlendPass( packetFrame, viewDef );
 		R_ScenePackets_AddRootPostProcessPasses( packetFrame, viewDef );

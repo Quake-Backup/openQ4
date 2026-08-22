@@ -7324,10 +7324,13 @@ static bool VK_ClassicGui_MapCull( rendererCullMode_t cull,
 }
 
 static bool VK_ClassicGui_MapState( const rendererEvaluatedMaterialPass_t &pass,
-		vkClassicGuiPassPlan_t &plan ) {
-	if ( pass.kind != RENDERER_MATERIAL_PASS_GUI
-			|| ( pass.programFamily != RENDERER_PROGRAM_GUI
-				&& pass.programFamily != RENDERER_PROGRAM_FIXED )
+		bool inWorld, vkClassicGuiPassPlan_t &plan ) {
+	if ( pass.kind != ( inWorld ? RENDERER_MATERIAL_PASS_SURFACE
+			: RENDERER_MATERIAL_PASS_GUI )
+			|| ( inWorld
+				? pass.programFamily != RENDERER_PROGRAM_FIXED
+				: ( pass.programFamily != RENDERER_PROGRAM_GUI
+					&& pass.programFamily != RENDERER_PROGRAM_FIXED ) )
 			|| pass.programKey != 0
 			|| pass.texgen != RENDERER_TEXGEN_EXPLICIT
 			|| pass.textureSemantic != RENDERER_TEXTURE_DIFFUSE
@@ -7340,7 +7343,7 @@ static bool VK_ClassicGui_MapState( const rendererEvaluatedMaterialPass_t &pass,
 			|| pass.blend.alphaOperation != RENDERER_BLEND_OP_ADD
 			|| pass.blend.sourceAlpha != pass.blend.sourceColor
 			|| pass.blend.destinationAlpha != pass.blend.destinationColor
-			|| pass.depth.testEnabled
+			|| pass.depth.testEnabled != inWorld
 			|| ( pass.depth.compareOperation != RENDERER_COMPARE_LESS_OR_EQUAL
 				&& pass.depth.compareOperation != RENDERER_COMPARE_EQUAL
 				&& pass.depth.compareOperation != RENDERER_COMPARE_ALWAYS ) ) {
@@ -7587,14 +7590,17 @@ static void VK_ClassicGui_SetPushTextureMatrix(
 			? 1.0f : 0.0f;
 }
 
-static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
-	const classicGuiDomainView_t *view =
-		R_ClassicGuiDomain_FindView( viewDef );
+static bool VK_ClassicGui_DrawOwnedViewForScope( const viewDef_t *viewDef,
+		classicGuiDomainScope_t scope ) {
+	const bool inWorld = scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD;
+	const classicGuiDomainView_t *view = inWorld
+		? R_ClassicGuiDomain_FindInWorldView( viewDef )
+		: R_ClassicGuiDomain_FindRootView( viewDef );
 	if ( view == NULL ) {
 		return VK_ClassicGui_Fail( viewDef,
 			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY, -1 );
 	}
-	if ( !view->ready ) {
+	if ( view->scope != scope || !view->ready ) {
 		return VK_ClassicGui_Fail( viewDef,
 			view->failure != CLASSIC_GUI_DOMAIN_FAILURE_NONE
 				? view->failure : CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
@@ -7610,7 +7616,8 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 	}
 
 	if ( view->viewDef != viewDef
-			|| view->sourceSurfaceCount != viewDef->numDrawSurfs
+			|| ( !inWorld && view->sourceSurfaceCount != viewDef->numDrawSurfs )
+			|| ( inWorld && view->sourceSurfaceCount > viewDef->numDrawSurfs )
 			|| view->sourceSurfaceCount < 0
 			|| view->sourceSurfaceCount > SCENE_PACKET_MAX_DRAWS
 			|| view->drawableSurfaceCount < 0
@@ -7622,11 +7629,15 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 			CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
 			VK_CLASSIC_GUI_REJECT_DOMAIN_COUNTS );
 	}
-	if ( viewDef->viewEntitys != NULL || viewDef->viewLights != NULL
-			|| viewDef->renderWorld != NULL || viewDef->isSubview
+	if ( ( !inWorld && ( viewDef->viewEntitys != NULL
+				|| viewDef->viewLights != NULL || viewDef->renderWorld != NULL ) )
+			|| ( inWorld && ( viewDef->viewEntitys == NULL
+				|| viewDef->renderWorld == NULL ) )
+			|| viewDef->isSubview
 			|| viewDef->isMirror || viewDef->isXraySubview || viewDef->isEditor
 			|| viewDef->superView != NULL || viewDef->subviewSurface != NULL
-			|| viewDef->numClipPlanes != 0 || viewDef->renderFlags != 0
+			|| viewDef->numClipPlanes != 0
+			|| ( !inWorld && viewDef->renderFlags != 0 )
 			|| viewDef->numOutlineDrawSurfs != 0
 			|| viewDef->renderView.globalMaterial != NULL
 			|| r_showOverDraw.GetInteger() != 0
@@ -7715,10 +7726,16 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 			R_ClassicGuiDomain_ViewDraw( *view, drawIndex );
 		if ( draw == NULL || draw->sourceSurfaceIndex <= previousSourceSurface
 				|| draw->sourceSurfaceIndex < 0
-				|| draw->sourceSurfaceIndex >= view->sourceSurfaceCount
+				|| draw->sourceSurfaceIndex >= viewDef->numDrawSurfs
 				|| viewDef->drawSurfs[ draw->sourceSurfaceIndex ]
 					!= draw->legacyDrawSurf
 				) {
+			return VK_ClassicGui_Fail( viewDef,
+				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_GUI_REJECT_DRAW_RECORD );
+		}
+		if ( inWorld && ( draw->legacyDrawSurf == NULL
+				|| ( draw->legacyDrawSurf->dsFlags & DSF_IN_WORLD_GUI ) == 0 ) ) {
 			return VK_ClassicGui_Fail( viewDef,
 				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
 				VK_CLASSIC_GUI_REJECT_DRAW_RECORD );
@@ -7822,7 +7839,7 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 				vkClassicGuiPassPlans[ planPassCount++ ];
 			memset( &passPlan, 0, sizeof( passPlan ) );
 			passPlan.pass = pass;
-			if ( !VK_ClassicGui_MapState( *pass, passPlan ) ) {
+			if ( !VK_ClassicGui_MapState( *pass, inWorld, passPlan ) ) {
 				return VK_ClassicGui_Fail( viewDef,
 					CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_REJECTED,
 					VK_CLASSIC_GUI_REJECT_PASS_STATE );
@@ -8044,10 +8061,12 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 			submittedPasses++;
 		}
 	}
-	vkCmdSetDepthTestEnable( cmd, VK_FALSE );
-	vkCmdSetDepthWriteEnable( cmd, VK_FALSE );
-	vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_ALWAYS );
-	vkCmdSetCullMode( cmd, VK_CULL_MODE_NONE );
+	vkCmdSetDepthTestEnable( cmd, inWorld ? VK_TRUE : VK_FALSE );
+	vkCmdSetDepthWriteEnable( cmd, inWorld ? VK_TRUE : VK_FALSE );
+	vkCmdSetDepthCompareOp( cmd,
+		inWorld ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_ALWAYS );
+	vkCmdSetCullMode( cmd, inWorld ? VK_CULL_MODE_FRONT_BIT
+		: VK_CULL_MODE_NONE );
 	vkCmdSetFrontFace( cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
 	vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
 	vkCmdSetStencilTestEnable( cmd, VK_FALSE );
@@ -8061,6 +8080,16 @@ static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
 		common->Warning( "Vulkan: shared classic GUI coverage record rejected after committed view" );
 	}
 	return true;
+}
+
+static bool VK_ClassicGui_DrawOwnedView( const viewDef_t *viewDef ) {
+	return VK_ClassicGui_DrawOwnedViewForScope( viewDef,
+		CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D );
+}
+
+static bool VK_ClassicGui_DrawOwnedInWorldView( const viewDef_t *viewDef ) {
+	return VK_ClassicGui_DrawOwnedViewForScope( viewDef,
+		CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD );
 }
 
 /*
@@ -9217,6 +9246,12 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	weaponDepthRange = false;
 	viewport.maxDepth = 1.0f;
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
+	// R_RenderGuiSurf output sorts before the regular world ambient ranges.
+	// Commit its sealed subset at that exact boundary; on rejection the normal
+	// walker below retains every source drawSurf unchanged.
+	if ( r_rendererSharedInWorldGui.GetBool() ) {
+		(void)VK_ClassicGui_DrawOwnedInWorldView( viewDef );
+	}
 
 	// ---- passes 2-4: ambient walks split at fog, then post-process ----
 	int processed = numDrawSurfs;
@@ -9304,6 +9339,10 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			const int surfEnd = pass == 2 ? numDrawSurfs : processed;
 			for ( int surfNum = surfBegin; surfNum < surfEnd; surfNum++ ) {
 				const drawSurf_t *drawSurf = drawSurfs[ surfNum ];
+				if ( R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( viewDef,
+						CLASSIC_GUI_DOMAIN_BACKEND_VULKAN, drawSurf ) ) {
+					continue;
+				}
 				const idMaterial *shader = drawSurf->material;
 				if ( shader == NULL || !shader->HasAmbient() || shader->IsPortalSky() ) {
 					continue;

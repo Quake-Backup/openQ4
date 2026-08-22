@@ -310,7 +310,11 @@ void R_RenderGuiSurf( idUserInterface *gui, drawSurf_t *drawSurf ) {
 	// call the gui, which will call the 2D drawing functions
 	tr.guiModel->Clear();
 	gui->Redraw( tr.viewDef->renderView.time, false );
+	// The generated quads become ordinary 3D drawSurfs. Preserve that origin
+	// explicitly so shared in-world ownership cannot claim root UI by sort.
+	tr.inWorldGuiEmissionDepth++;
 	tr.guiModel->EmitToCurrentView( modelMatrix, drawSurf->space->weaponDepthHack );
+	tr.inWorldGuiEmissionDepth--;
 	tr.guiModel->Clear();
 	R_UpdateGuiScreenRectState( gui, drawSurf );
 

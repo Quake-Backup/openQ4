@@ -850,7 +850,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		R_RendererMetrics_RecordRenderGraphResources( R_RenderGraphResources_Stats() );
 		R_MaterialResourceTable_PrepareFrame( *scenePackets );
 		R_RendererMetrics_RecordMaterialResourceTable( R_MaterialResourceTable_Stats() );
-		if ( r_rendererSharedGui.GetBool() ) {
+		if ( r_rendererSharedGui.GetBool()
+				|| r_rendererSharedInWorldGui.GetBool() ) {
 			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
 		}
 		if ( r_rendererSharedWorldAmbient.GetBool() ) {

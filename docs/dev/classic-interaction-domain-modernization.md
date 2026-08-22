@@ -322,7 +322,7 @@ finalized completed or intentional-empty CPU result, while receivers explicitly
 retain source geometry through the `notApplicable` role. Unsupported, skipped,
 failed, stale, or mismatched records still reject the complete interaction view.
 
-The next recommended implementation target is **subview ownership and parity**.
-In-world GUI, render-demo, cinematic, authored post, and other special domains
+The completed subview and in-world GUI corridors leave **cinematic playback and
+authored post-chain ownership** next. Render-demo and other special domains
 remain downstream. Temporal presentation and PBR/advanced-lighting work must
 continue to wait for coherent classic-frame ownership.

@@ -412,6 +412,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	R_ClassicFogBlendDomain_ResetFrame();
 	R_ClassicSubviewDomain_ResetFrame();
 	if ( r_rendererSharedGui.GetBool()
+			|| r_rendererSharedInWorldGui.GetBool()
 			|| r_rendererSharedWorldAmbient.GetBool()
 			|| r_rendererSharedWorldInteraction.GetBool()
 			|| r_rendererSharedWorldFogBlend.GetBool()
@@ -424,7 +425,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			scenePackets = &vkClassicDomainPacketFrame;
 		}
 		R_MaterialResourceTable_PrepareFrame( *scenePackets );
-		if ( r_rendererSharedGui.GetBool() ) {
+		if ( r_rendererSharedGui.GetBool()
+				|| r_rendererSharedInWorldGui.GetBool() ) {
 			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
 		}
 		if ( r_rendererSharedWorldAmbient.GetBool() ) {

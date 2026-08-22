@@ -2067,10 +2067,12 @@ void R_MaterialResourceTable_PrepareFrame( const idScenePacketFrame &packetFrame
 		if ( drawPacket.materialRecordIndex >= 0 ) {
 			rg_materialResourceTable.stats.drawPacketReferences++;
 			if ( drawPacket.passCategory == RENDER_PASS_GUI
+					&& drawPacket.packetCategory == SCENE_PACKET_CATEGORY_GUI
 					&& drawPacket.materialRecordIndex < materialRecordCount ) {
 				guiDomainReferenced[drawPacket.materialRecordIndex] = true;
 			}
-			if ( drawPacket.passCategory == RENDER_PASS_AMBIENT
+			if ( ( drawPacket.passCategory == RENDER_PASS_AMBIENT
+						|| drawPacket.passCategory == RENDER_PASS_GUI )
 					&& drawPacket.packetCategory == SCENE_PACKET_CATEGORY_WORLD
 					&& drawPacket.materialRecordIndex < materialRecordCount ) {
 				worldDomainReferenced[drawPacket.materialRecordIndex] = true;

@@ -6169,6 +6169,25 @@ void R_ModernGLExecutor_SubmitForwardPlusDecalOverlay( const viewDef_t *viewDef 
 	R_ModernGLExecutor_RestoreAfterForwardPlusDecalOverlay( stats );
 }
 
+static bool R_ModernGLExecutor_SharedGuiOwnsCommand(
+		const modernGLSubmitCommand_t &command ) {
+	if ( command.pipeline != MODERN_GL_DRAW_PLAN_PIPELINE_GUI ) {
+		return false;
+	}
+	if ( r_rendererSharedGui.GetBool() ) {
+		// Root 2D ownership consumes the complete legacy GUI command view.
+		return true;
+	}
+	if ( !r_rendererSharedInWorldGui.GetBool() ) {
+		return false;
+	}
+	const drawPacket_t *drawPacket = command.drawPlanEntry != NULL
+		? command.drawPlanEntry->drawPacket : NULL;
+	// The in-world corridor must never hide root UI from the aggregate path.
+	return drawPacket != NULL
+		&& drawPacket->packetCategory == SCENE_PACKET_CATEGORY_WORLD;
+}
+
 static void R_ModernGLExecutor_SubmitPlan( modernGLExecutorStats_t &stats ) {
 	if ( !r_rendererModernSubmit.GetBool() || !stats.enabled || !stats.available || !stats.submitPlanReady || !rg_modernGLExecutorInitialized || rg_modernGLExecutorVAO == 0 ) {
 		return;
@@ -6190,8 +6209,7 @@ static void R_ModernGLExecutor_SubmitPlan( modernGLExecutorStats_t &stats ) {
 		if ( command.pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GBUFFER || R_ModernGLExecutor_IsForwardPlusPipeline( command.pipeline ) ) {
 			continue;
 		}
-		if ( r_rendererSharedGui.GetBool()
-				&& command.pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_GUI ) {
+		if ( R_ModernGLExecutor_SharedGuiOwnsCommand( command ) ) {
 			continue;
 		}
 		if ( !R_ModernGLExecutor_CommandVisibleForModernPath( command, &stats, false ) ) {
@@ -6234,6 +6252,9 @@ static void R_ModernGLExecutor_SubmitModernGui( modernGLExecutorStats_t &stats )
 	for ( int i = 0; i < commandCount; ++i ) {
 		const modernGLSubmitCommand_t &command = rg_modernGLSubmitPlan.Command( i );
 		if ( command.pipeline != MODERN_GL_DRAW_PLAN_PIPELINE_GUI ) {
+			continue;
+		}
+		if ( R_ModernGLExecutor_SharedGuiOwnsCommand( command ) ) {
 			continue;
 		}
 		if ( R_ModernGLExecutor_SubmitCommand( command, stats, false ) ) {

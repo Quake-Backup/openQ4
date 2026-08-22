@@ -4,7 +4,8 @@
 
 The first Milestone D classic-frame domain is implemented as an experimental,
 default-off path for complete fixed-function 2D GUI views. It is now joined by
-the separate [shared world ambient/material domain](classic-world-ambient-domain-modernization.md)
+the separate [shared in-world GUI domain](classic-inworld-gui-domain-modernization.md),
+[shared world ambient/material domain](classic-world-ambient-domain-modernization.md)
 and [shared interaction-lighting domain](classic-interaction-domain-modernization.md),
 plus the [shared fog/blend domain](classic-fog-blend-domain-modernization.md).
 OpenGL and Vulkan
@@ -171,7 +172,8 @@ domain consume a sealed completed or intentional-empty CPU deform result; an
 unsupported, skipped, failed, stale, or mismatched record still rolls the
 complete GUI view back before drawing.
 
-Subview, in-world GUI, render-demo, cinematic, and authored post-process
-ownership remain explicit classic or experimental domains. The next recommended
-implementation target is **subview ownership and parity**. Temporal and
-PBR/advanced-lighting milestones remain downstream of that classic-frame work.
+Subview, render-demo, cinematic, and authored post-process ownership remain
+explicit classic or experimental domains. The next recommended implementation
+target is **cinematic playback and authored post-chain ownership**. Temporal
+and PBR/advanced-lighting milestones remain downstream of that classic-frame
+work.

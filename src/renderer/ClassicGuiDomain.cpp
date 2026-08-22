@@ -131,6 +131,7 @@ static std::uint64_t HashDraw( const classicGuiDomainDraw_t &draw ) {
 
 static std::uint64_t HashView( const classicGuiDomainView_t &view ) {
 	std::uint64_t hash = HASH_OFFSET;
+	HashInt( hash, view.scope );
 	HashInt( hash, view.sourceSurfaceCount );
 	HashInt( hash, view.drawableSurfaceCount );
 	HashInt( hash, view.noopSurfaceCount );
@@ -163,6 +164,7 @@ static void InitDraw( classicGuiDomainDraw_t &draw ) {
 	draw.materialTableRecordIndex = -1;
 	draw.materialId = -1;
 	draw.firstGuiPass = -1;
+	draw.firstWorldPass = -1;
 	draw.firstEvaluatedPass = -1;
 }
 
@@ -170,6 +172,9 @@ static void InitView( classicGuiDomainView_t &view, const viewDef_t *viewDef,
 		int scenePacketIndex ) {
 	std::memset( &view, 0, sizeof( view ) );
 	view.viewDef = viewDef;
+	view.scope = viewDef != NULL && viewDef->viewEntitys != NULL
+		? CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD
+		: CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D;
 	view.scenePacketIndex = scenePacketIndex;
 	view.guiPassPacketIndex = -1;
 	view.firstDraw = -1;
@@ -191,7 +196,17 @@ static void InitView( classicGuiDomainView_t &view, const viewDef_t *viewDef,
 		view.scissorY2 = viewDef->scissor.y2;
 		std::memcpy( view.projectionMatrix, viewDef->projectionMatrix,
 			sizeof( view.projectionMatrix ) );
-		view.sourceSurfaceCount = viewDef->numDrawSurfs;
+		if ( view.scope == CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D ) {
+			view.sourceSurfaceCount = viewDef->numDrawSurfs;
+		} else if ( viewDef->drawSurfs != NULL ) {
+			for ( int i = 0; i < viewDef->numDrawSurfs; ++i ) {
+				if ( viewDef->drawSurfs[ i ] != NULL
+						&& ( viewDef->drawSurfs[ i ]->dsFlags
+							& DSF_IN_WORLD_GUI ) != 0 ) {
+					view.sourceSurfaceCount++;
+				}
+			}
+		}
 	}
 }
 
@@ -299,7 +314,8 @@ static bool ValidateFinalizedDeformContract( const drawSurf_t *drawSurf,
 }
 
 static classicGuiDomainSourceSurface_t ClassifySourceSurface(
-		const drawSurf_t *drawSurf, bool &packetExpected ) {
+		classicGuiDomainScope_t scope, const drawSurf_t *drawSurf,
+		bool &packetExpected ) {
 	packetExpected = false;
 	if ( drawSurf == NULL ) {
 		return CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_NOOP_NULL_SURFACE;
@@ -335,6 +351,11 @@ static classicGuiDomainSourceSurface_t ClassifySourceSurface(
 		// resolved, neither result is a truthful shared semantic record.
 		return CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_FALLBACK_SUPPRESSED_IN_SUBVIEW;
 	}
+	if ( scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD
+			&& ( ( drawSurf->dsFlags & DSF_IN_WORLD_GUI ) == 0
+				|| drawSurf->space->entityDef != NULL ) ) {
+		return CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_FALLBACK_MISSING_SPACE;
+	}
 	packetExpected = true;
 	return CLASSIC_GUI_DOMAIN_SOURCE_SURFACE_DRAWABLE;
 }
@@ -365,14 +386,17 @@ static bool CountDisposition( classicGuiDomainDraw_t &draw,
 
 static bool ValidateDrawPacket( const idScenePacketFrame &packetFrame,
 		int packetIndex, const viewDef_t *viewDef, const drawSurf_t *drawSurf,
-		classicGuiDomainFailure_t &failure ) {
+		classicGuiDomainScope_t scope, classicGuiDomainFailure_t &failure ) {
 	if ( packetIndex < 0 || packetIndex >= packetFrame.NumDrawPackets() ) {
 		failure = CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_PACKET_MISMATCH;
 		return false;
 	}
 	const drawPacket_t &packet = packetFrame.DrawPacket( packetIndex );
+	const scenePacketCategory_t expectedCategory =
+		scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD
+			? SCENE_PACKET_CATEGORY_WORLD : SCENE_PACKET_CATEGORY_GUI;
 	if ( packet.passCategory != RENDER_PASS_GUI
-			|| packet.packetCategory != SCENE_PACKET_CATEGORY_GUI
+			|| packet.packetCategory != expectedCategory
 			|| packet.viewDef != viewDef || packet.legacyDrawSurf != drawSurf ) {
 		failure = CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_PACKET_MISMATCH;
 		return false;
@@ -419,9 +443,14 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_TABLE_OVERFLOW, 0 );
 	}
 	const viewDef_t *viewDef = view.viewDef;
-	if ( viewDef == NULL || viewDef->viewEntitys != NULL
-			|| viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview || viewDef->isEditor
-			|| viewDef->superView != NULL || viewDef->subviewSurface != NULL
+	const bool inWorld = view.scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD;
+	if ( viewDef == NULL
+			|| ( !inWorld && viewDef->viewEntitys != NULL )
+			|| ( inWorld && ( viewDef->viewEntitys == NULL
+					|| viewDef->renderWorld == NULL || r_skipAmbient.GetBool() ) )
+			|| viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
+			|| viewDef->isEditor || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
 			|| viewDef->renderView.viewID < 0 ) {
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_UNSUPPORTED_VIEW, 0 );
 	}
@@ -435,48 +464,63 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_INVALID_SCENE_RANGE,
 			scene.passPacketCount );
 	}
-	if ( scene.passPacketCount != 1 ) {
+	const passPacket_t *guiPass = NULL;
+	int passPacketIndex = -1;
+	for ( int localPass = 0; localPass < scene.passPacketCount; ++localPass ) {
+		const int candidateIndex = scene.firstPassPacket + localPass;
+		const passPacket_t &candidate = packetFrame.Pass( candidateIndex );
+		if ( candidate.passCategory != RENDER_PASS_GUI ) {
+			continue;
+		}
+		if ( guiPass != NULL || !candidate.enabled || candidate.commandOnly
+				|| candidate.packetCategory != ( inWorld
+					? SCENE_PACKET_CATEGORY_WORLD : SCENE_PACKET_CATEGORY_GUI ) ) {
+			return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_INVALID_GUI_PASS,
+				candidate.passCategory, -1, -1, candidateIndex );
+		}
+		guiPass = &candidate;
+		passPacketIndex = candidateIndex;
+	}
+	if ( guiPass == NULL || ( !inWorld && scene.passPacketCount != 1 ) ) {
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_INVALID_GUI_PASS,
 			scene.passPacketCount );
 	}
-	const int passPacketIndex = scene.firstPassPacket;
-	const passPacket_t &guiPass = packetFrame.Pass( passPacketIndex );
 	view.guiPassPacketIndex = passPacketIndex;
-	if ( guiPass.passCategory != RENDER_PASS_GUI || !guiPass.enabled
-			|| guiPass.commandOnly ) {
-		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_INVALID_GUI_PASS,
-			guiPass.passCategory, -1, -1, passPacketIndex );
-	}
 	if ( !RangeFits( scene.firstDrawPacket, scene.drawPacketCount,
 			packetFrame.NumDrawPackets() )
-			|| !RangeFits( guiPass.firstDrawPacket, guiPass.drawPacketCount,
+			|| !RangeFits( guiPass->firstDrawPacket, guiPass->drawPacketCount,
 				packetFrame.NumDrawPackets() )
-			|| scene.firstDrawPacket != guiPass.firstDrawPacket
-			|| scene.drawPacketCount != guiPass.drawPacketCount ) {
+			|| ( !inWorld && ( scene.firstDrawPacket != guiPass->firstDrawPacket
+				|| scene.drawPacketCount != guiPass->drawPacketCount ) ) ) {
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_INVALID_DRAW_RANGE,
-			guiPass.drawPacketCount, -1, -1, passPacketIndex );
+			guiPass->drawPacketCount, -1, -1, passPacketIndex );
 	}
-	view.packetDrawCount = guiPass.drawPacketCount;
-	if ( !RangeFits( domain.drawCount, viewDef->numDrawSurfs,
+	view.packetDrawCount = guiPass->drawPacketCount;
+	if ( !RangeFits( domain.drawCount, view.sourceSurfaceCount,
 			CLASSIC_GUI_DOMAIN_MAX_DRAWS ) ) {
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_DRAW_POOL_OVERFLOW,
-			viewDef->numDrawSurfs );
+			view.sourceSurfaceCount );
 	}
 
 	const int drawCheckpoint = domain.drawCount;
 	const int passCheckpoint = domain.passCount;
 	int stagedPassCount = 0;
-	int packetCursor = guiPass.firstDrawPacket;
-	const int packetEnd = guiPass.firstDrawPacket + guiPass.drawPacketCount;
+	int packetCursor = guiPass->firstDrawPacket;
+	const int packetEnd = guiPass->firstDrawPacket + guiPass->drawPacketCount;
 	int drawableSurfaces = 0;
 	int noopSurfaces = 0;
 
+	int sourceSlot = 0;
 	for ( int sourceIndex = 0; sourceIndex < viewDef->numDrawSurfs; ++sourceIndex ) {
 		const drawSurf_t *source = viewDef->drawSurfs[ sourceIndex ];
+		if ( inWorld && ( source == NULL
+				|| ( source->dsFlags & DSF_IN_WORLD_GUI ) == 0 ) ) {
+			continue;
+		}
 		bool packetExpected = false;
 		const classicGuiDomainSourceSurface_t classification =
-			ClassifySourceSurface( source, packetExpected );
-		classicGuiDomainDraw_t &draw = domain.draws[ drawCheckpoint + sourceIndex ];
+			ClassifySourceSurface( view.scope, source, packetExpected );
+		classicGuiDomainDraw_t &draw = domain.draws[ drawCheckpoint + sourceSlot++ ];
 		InitDraw( draw );
 		draw.sourceSurfaceIndex = sourceIndex;
 		draw.sourceSurface = classification;
@@ -496,7 +540,7 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 			classicGuiDomainFailure_t packetFailure = CLASSIC_GUI_DOMAIN_FAILURE_INVALID_DRAW_PACKET;
 			if ( packetCursor >= packetEnd
 					|| !ValidateDrawPacket( packetFrame, packetCursor, viewDef,
-						source, packetFailure ) ) {
+						source, view.scope, packetFailure ) ) {
 				return FailView( view, packetFailure, packetCursor,
 					sourceIndex, packetCursor, passPacketIndex );
 			}
@@ -568,25 +612,59 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 		view.tableGeneration = materialRecord->tableGeneration;
 		draw.tableGeneration = materialRecord->tableGeneration;
 		draw.materialId = materialRecord->materialId;
-		draw.firstGuiPass = materialRecord->firstGuiPass;
-		draw.guiPassCount = materialRecord->guiPassCount;
-		if ( !materialRecord->guiDomainReferenced
-				|| !materialRecord->guiPassEligible
-				|| materialRecord->guiPassFailure != MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE
-				|| materialRecord->firstGuiPass < 0 || materialRecord->guiPassCount <= 0
-				|| !R_MaterialResourceTable_GuiPassEligible( *materialRecord ) ) {
-			return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_PASS_INELIGIBLE,
-				materialRecord->guiPassFailure, sourceIndex, draw.drawPacketIndex,
-				passPacketIndex, materialRecord->guiPassFailureStage,
-				materialRecord->guiPassFailure );
-		}
-
 		rendererMaterialPassList_t compiled;
-		if ( !R_MaterialResourceTable_CopyGuiPassList( *materialRecord, compiled )
-				|| compiled.count != static_cast<std::uint32_t>( materialRecord->guiPassCount ) ) {
-			return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_PASS_COPY_FAILED,
-				materialRecord->guiPassCount, sourceIndex, draw.drawPacketIndex,
-				passPacketIndex );
+		if ( inWorld ) {
+			draw.firstWorldPass = materialRecord->firstWorldPass;
+			draw.worldPassCount = materialRecord->worldPassCount;
+			if ( !materialRecord->worldDomainReferenced
+					|| !materialRecord->worldPassEligible
+					|| materialRecord->worldPassFailure
+						!= MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE
+					|| materialRecord->firstWorldPass < 0
+					|| materialRecord->worldPassCount <= 0
+					|| !R_MaterialResourceTable_WorldPassEligible( *materialRecord ) ) {
+				return FailView( view,
+					CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_PASS_INELIGIBLE,
+					materialRecord->worldPassFailure, sourceIndex,
+					draw.drawPacketIndex, passPacketIndex,
+					materialRecord->worldPassFailureStage,
+					materialRecord->worldPassFailure );
+			}
+			if ( !R_MaterialResourceTable_CopyWorldPassList( *materialRecord,
+						compiled )
+					|| compiled.count != static_cast<std::uint32_t>(
+						materialRecord->worldPassCount ) ) {
+				return FailView( view,
+					CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_PASS_COPY_FAILED,
+					materialRecord->worldPassCount, sourceIndex,
+					draw.drawPacketIndex, passPacketIndex );
+			}
+		} else {
+			draw.firstGuiPass = materialRecord->firstGuiPass;
+			draw.guiPassCount = materialRecord->guiPassCount;
+			if ( !materialRecord->guiDomainReferenced
+					|| !materialRecord->guiPassEligible
+					|| materialRecord->guiPassFailure
+						!= MATERIAL_RESOURCE_GUI_PASS_FAILURE_NONE
+					|| materialRecord->firstGuiPass < 0
+					|| materialRecord->guiPassCount <= 0
+					|| !R_MaterialResourceTable_GuiPassEligible( *materialRecord ) ) {
+				return FailView( view,
+					CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_PASS_INELIGIBLE,
+					materialRecord->guiPassFailure, sourceIndex,
+					draw.drawPacketIndex, passPacketIndex,
+					materialRecord->guiPassFailureStage,
+					materialRecord->guiPassFailure );
+			}
+			if ( !R_MaterialResourceTable_CopyGuiPassList( *materialRecord,
+						compiled )
+					|| compiled.count != static_cast<std::uint32_t>(
+						materialRecord->guiPassCount ) ) {
+				return FailView( view,
+					CLASSIC_GUI_DOMAIN_FAILURE_MATERIAL_PASS_COPY_FAILED,
+					materialRecord->guiPassCount, sourceIndex,
+					draw.drawPacketIndex, passPacketIndex );
+			}
 		}
 		rendererEvaluatedMaterialPassList_t evaluated;
 		const rendererMaterialPassEvaluationStatus_t evaluationStatus =
@@ -630,14 +708,14 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 		draw.hash = HashDraw( draw );
 	}
 
-	if ( packetCursor != packetEnd ) {
+	if ( sourceSlot != view.sourceSurfaceCount || packetCursor != packetEnd ) {
 		return FailView( view, CLASSIC_GUI_DOMAIN_FAILURE_SOURCE_PACKET_MISMATCH,
-			packetEnd - packetCursor, viewDef->numDrawSurfs, packetCursor,
+			packetEnd - packetCursor, sourceSlot, packetCursor,
 			passPacketIndex );
 	}
 
 	view.firstDraw = drawCheckpoint;
-	view.drawCount = viewDef->numDrawSurfs;
+	view.drawCount = view.sourceSurfaceCount;
 	view.drawableSurfaceCount = drawableSurfaces;
 	view.noopSurfaceCount = noopSurfaces;
 	view.firstEvaluatedPass = passCheckpoint;
@@ -709,6 +787,13 @@ static classicGuiDomainView_t *FindMutableView( const viewDef_t *viewDef ) {
 static bool SceneContainsGuiPass( const idScenePacketFrame &packetFrame,
 		const scenePacket_t &scene ) {
 	if ( scene.viewDef == NULL ) {
+		return false;
+	}
+	if ( scene.viewDef->viewEntitys != NULL ) {
+		if ( !r_rendererSharedInWorldGui.GetBool() ) {
+			return false;
+		}
+	} else if ( !r_rendererSharedGui.GetBool() ) {
 		return false;
 	}
 	if ( !RangeFits( scene.firstPassPacket, scene.passPacketCount,
@@ -784,6 +869,11 @@ void R_ClassicGuiDomain_PrepareFrame( const idScenePacketFrame &packetFrame ) {
 			continue;
 		}
 		domain.stats.guiViews++;
+		if ( scene.viewDef != NULL && scene.viewDef->viewEntitys != NULL ) {
+			domain.stats.inWorldViews++;
+		} else {
+			domain.stats.rootViews++;
+		}
 		if ( domain.viewCount >= CLASSIC_GUI_DOMAIN_MAX_VIEWS ) {
 			domain.stats.overflow = true;
 			domain.stats.fallbackViews++;
@@ -803,8 +893,11 @@ void R_ClassicGuiDomain_PrepareFrame( const idScenePacketFrame &packetFrame ) {
 	std::uint64_t frameHash = HASH_OFFSET;
 	HashInt( frameHash, domain.stats.sourceScenes );
 	HashInt( frameHash, domain.stats.guiViews );
+	HashInt( frameHash, domain.stats.rootViews );
+	HashInt( frameHash, domain.stats.inWorldViews );
 	for ( int i = 0; i < domain.viewCount; ++i ) {
 		HashInt( frameHash, domain.views[ i ].scenePacketIndex );
+		HashInt( frameHash, domain.views[ i ].scope );
 		HashBool( frameHash, domain.views[ i ].ready );
 		HashInt( frameHash, domain.views[ i ].failure );
 		HashU64( frameHash, domain.views[ i ].hash );
@@ -844,6 +937,20 @@ const classicGuiDomainView_t *R_ClassicGuiDomain_ViewForScenePacket( int scenePa
 
 const classicGuiDomainView_t *R_ClassicGuiDomain_FindView( const viewDef_t *viewDef ) {
 	return FindMutableView( viewDef );
+}
+
+const classicGuiDomainView_t *R_ClassicGuiDomain_FindRootView(
+		const viewDef_t *viewDef ) {
+	classicGuiDomainView_t *view = FindMutableView( viewDef );
+	return view != NULL && view->scope == CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D
+		? view : NULL;
+}
+
+const classicGuiDomainView_t *R_ClassicGuiDomain_FindInWorldView(
+		const viewDef_t *viewDef ) {
+	classicGuiDomainView_t *view = FindMutableView( viewDef );
+	return view != NULL && view->scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD
+		? view : NULL;
 }
 
 const classicGuiDomainDraw_t *R_ClassicGuiDomain_ViewDraw(
@@ -930,6 +1037,30 @@ const classicGuiDomainBackendCoverage_t &R_ClassicGuiDomain_BackendCoverage(
 	return backend >= CLASSIC_GUI_DOMAIN_BACKEND_GL
 		&& backend < CLASSIC_GUI_DOMAIN_BACKEND_COUNT
 		? domain.stats.backend[ backend ] : empty;
+}
+
+bool R_ClassicGuiDomain_IsLegacyInWorldDrawOwned(
+		const viewDef_t *viewDef, classicGuiDomainBackend_t backend,
+		const drawSurf_t *drawSurf ) {
+	if ( backend < CLASSIC_GUI_DOMAIN_BACKEND_GL
+			|| backend >= CLASSIC_GUI_DOMAIN_BACKEND_COUNT || drawSurf == NULL
+			|| ( drawSurf->dsFlags & DSF_IN_WORLD_GUI ) == 0 ) {
+		return false;
+	}
+	const classicGuiDomainView_t *view = R_ClassicGuiDomain_FindInWorldView(
+		viewDef );
+	if ( view == NULL || view->backendOutcome[ backend ]
+			!= CLASSIC_GUI_DOMAIN_BACKEND_OWNED ) {
+		return false;
+	}
+	for ( int i = 0; i < view->drawCount; ++i ) {
+		const classicGuiDomainDraw_t *draw = R_ClassicGuiDomain_ViewDraw(
+			*view, i );
+		if ( draw != NULL && draw->legacyDrawSurf == drawSurf ) {
+			return true;
+		}
+	}
+	return false;
 }
 
 const char *ClassicGuiDomainSourceSurface_Name(
@@ -1133,7 +1264,9 @@ bool RendererClassicGuiDomain_RunSelfTest( void ) {
 	}
 
 	const int savedViewCount = domain.viewCount;
+	const int savedDrawCount = domain.drawCount;
 	const classicGuiDomainView_t savedView = domain.views[ 0 ];
+	const classicGuiDomainDraw_t savedDraw = domain.draws[ 0 ];
 	viewDef_t coverageView;
 	std::memset( &coverageView, 0, sizeof( coverageView ) );
 	InitView( domain.views[ 0 ], &coverageView, 0 );
@@ -1158,8 +1291,44 @@ bool RendererClassicGuiDomain_RunSelfTest( void ) {
 		&& domain.stats.backend[ CLASSIC_GUI_DOMAIN_BACKEND_GL ].duplicateReports == 1
 		&& domain.stats.backend[ CLASSIC_GUI_DOMAIN_BACKEND_VULKAN ].fallbackViews == 1
 		&& domain.stats.backend[ CLASSIC_GUI_DOMAIN_BACKEND_VULKAN ].coverageMismatches == 1;
+
+	viewEntity_t inWorldEntity;
+	std::memset( &inWorldEntity, 0, sizeof( inWorldEntity ) );
+	drawSurf_t inWorldSurface;
+	std::memset( &inWorldSurface, 0, sizeof( inWorldSurface ) );
+	inWorldSurface.dsFlags = DSF_IN_WORLD_GUI;
+	drawSurf_t *inWorldSurfaces[] = { &inWorldSurface };
+	viewDef_t inWorldView;
+	std::memset( &inWorldView, 0, sizeof( inWorldView ) );
+	inWorldView.viewEntitys = &inWorldEntity;
+	inWorldView.drawSurfs = inWorldSurfaces;
+	inWorldView.numDrawSurfs = 1;
+	classicGuiDomainView_t scopeView;
+	InitView( scopeView, &inWorldView, 1 );
+	const bool scopeOk = scopeView.scope
+		== CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD
+		&& scopeView.sourceSurfaceCount == 1
+		&& HashView( scopeView ) != 0;
+
+	InitView( domain.views[ 0 ], &inWorldView, 1 );
+	domain.viewCount = 1;
+	domain.drawCount = 1;
+	domain.views[ 0 ].ready = true;
+	domain.views[ 0 ].firstDraw = 0;
+	domain.views[ 0 ].drawCount = 1;
+	domain.views[ 0 ].backendOutcome[ CLASSIC_GUI_DOMAIN_BACKEND_GL ] =
+		CLASSIC_GUI_DOMAIN_BACKEND_OWNED;
+	InitDraw( domain.draws[ 0 ] );
+	domain.draws[ 0 ].legacyDrawSurf = &inWorldSurface;
+	const bool ownershipQueryOk =
+		R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( &inWorldView,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL, &inWorldSurface )
+		&& !R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( &inWorldView,
+			CLASSIC_GUI_DOMAIN_BACKEND_VULKAN, &inWorldSurface );
 	domain.views[ 0 ] = savedView;
 	domain.viewCount = savedViewCount;
+	domain.draws[ 0 ] = savedDraw;
+	domain.drawCount = savedDrawCount;
 	domain.stats = savedStats;
-	return coverageOk;
+	return coverageOk && scopeOk && ownershipQueryOk;
 }

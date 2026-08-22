@@ -173,6 +173,10 @@ static bool RB_DrawSurfIsDecalMaterialPass( const drawSurf_t *surf ) {
 }
 
 static bool RB_DrawSurfIsPreFogMaterialPass( const drawSurf_t *surf ) {
+	if ( R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( backEnd.viewDef,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL, surf ) ) {
+		return false;
+	}
 	const idMaterial *material = surf != NULL ? surf->material : NULL;
 	if ( material == NULL ) {
 		return false;
@@ -184,6 +188,10 @@ static bool RB_DrawSurfIsPreFogMaterialPass( const drawSurf_t *surf ) {
 }
 
 static bool RB_DrawSurfIsPostFogMaterialPass( const drawSurf_t *surf ) {
+	if ( R_ClassicGuiDomain_IsLegacyInWorldDrawOwned( backEnd.viewDef,
+			CLASSIC_GUI_DOMAIN_BACKEND_GL, surf ) ) {
+		return false;
+	}
 	const idMaterial *material = surf != NULL ? surf->material : NULL;
 	if ( material == NULL ) {
 		return false;
@@ -7298,9 +7306,10 @@ static bool RB_SharedGuiGLMapDestinationBlend( rendererBlendFactor_t factor,
 }
 
 static bool RB_SharedGuiGLMapDepth( const rendererDepthState_t &depth,
-		int &stateBits ) {
-	// A generated classic GUI view disables depth testing as a view-domain rule.
-	if ( depth.testEnabled ) {
+		bool inWorld, int &stateBits ) {
+	// Root GUI disables depth as a view-domain rule. GUI emitted onto a 3D
+	// surface instead retains the classic ambient walk's depth contract.
+	if ( depth.testEnabled != inWorld ) {
 		return false;
 	}
 	if ( !depth.writeEnabled ) {
@@ -7370,12 +7379,20 @@ static bool RB_SharedGuiGLMapAlphaCompare( rendererCompareOp_t compare,
 }
 
 static bool RB_SharedGuiGLBuildState( const rendererEvaluatedMaterialPass_t &pass,
-		int &stateBits, GLenum &alphaFunction, int &cullType ) {
+		bool inWorld, int &stateBits, GLenum &alphaFunction, int &cullType ) {
 	stateBits = 0;
 	alphaFunction = GL_ALWAYS;
 	cullType = CT_FRONT_SIDED;
 
-	if ( pass.blend.colorOperation != RENDERER_BLEND_OP_ADD
+	if ( pass.kind != ( inWorld ? RENDERER_MATERIAL_PASS_SURFACE
+			: RENDERER_MATERIAL_PASS_GUI )
+			|| ( inWorld
+				? pass.programFamily != RENDERER_PROGRAM_FIXED
+				: ( pass.programFamily != RENDERER_PROGRAM_GUI
+					&& pass.programFamily != RENDERER_PROGRAM_FIXED ) )
+			|| pass.programKey != 0 || pass.texgen != RENDERER_TEXGEN_EXPLICIT
+			|| pass.textureSemantic != RENDERER_TEXTURE_DIFFUSE
+			|| pass.blend.colorOperation != RENDERER_BLEND_OP_ADD
 			|| pass.blend.alphaOperation != RENDERER_BLEND_OP_ADD
 			|| pass.blend.sourceAlpha != pass.blend.sourceColor
 			|| pass.blend.destinationAlpha != pass.blend.destinationColor ) {
@@ -7389,7 +7406,7 @@ static bool RB_SharedGuiGLBuildState( const rendererEvaluatedMaterialPass_t &pas
 	if ( !RB_SharedGuiGLMapSourceBlend( pass.blend.sourceColor, stateBits )
 			|| !RB_SharedGuiGLMapDestinationBlend(
 				pass.blend.destinationColor, stateBits )
-			|| !RB_SharedGuiGLMapDepth( pass.depth, stateBits )
+			|| !RB_SharedGuiGLMapDepth( pass.depth, inWorld, stateBits )
 			|| !RB_SharedGuiGLMapCull( pass.cull, cullType ) ) {
 		return false;
 	}
@@ -7487,9 +7504,13 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 	rbSharedGuiGLPreparedView_t &prepared = rbSharedGuiGLPreparedView;
 	memset( &prepared, 0, sizeof( prepared ) );
 	prepared.view = &view;
+	const bool inWorld = view.scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD;
 
-	if ( view.viewDef != viewDef || !view.ready || viewDef->viewEntitys != NULL
-			|| view.sourceSurfaceCount != viewDef->numDrawSurfs
+	if ( view.viewDef != viewDef || !view.ready
+			|| ( !inWorld && viewDef->viewEntitys != NULL )
+			|| ( inWorld && viewDef->viewEntitys == NULL )
+			|| ( !inWorld && view.sourceSurfaceCount != viewDef->numDrawSurfs )
+			|| ( inWorld && view.sourceSurfaceCount > viewDef->numDrawSurfs )
 			|| view.sourceSurfaceCount < 0
 			|| view.sourceSurfaceCount > SCENE_PACKET_MAX_DRAWS
 			|| view.drawableSurfaceCount < 0
@@ -7507,7 +7528,8 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 	if ( viewDef->isSubview || viewDef->isMirror || viewDef->isXraySubview
 			|| viewDef->isEditor || viewDef->superView != NULL
 			|| viewDef->subviewSurface != NULL || viewDef->numClipPlanes != 0
-			|| viewDef->renderWorld != NULL || viewDef->viewLights != NULL
+			|| ( !inWorld && ( viewDef->renderWorld != NULL
+				|| viewDef->viewLights != NULL ) )
 			|| viewDef->numOutlineDrawSurfs != 0 || backEnd.renderTexture != NULL
 			|| backEnd.feedbackRenderTexture != NULL
 			|| r_showOverDraw.GetInteger() != 0 || r_singleTriangle.GetBool() ) {
@@ -7553,6 +7575,12 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 				|| draw->sourceSurfaceIndex <= sourceSurfacePrevious
 				|| prepared.seenSourceSurfaces[draw->sourceSurfaceIndex]
 				|| viewDef->drawSurfs[draw->sourceSurfaceIndex] != draw->legacyDrawSurf ) {
+			failureDetail = RB_SharedGuiGLFailureDetail(
+				RB_SHARED_GUI_GL_REJECT_DRAW_RANGE, drawIndex );
+			return false;
+		}
+		if ( inWorld && ( draw->legacyDrawSurf == NULL
+				|| ( draw->legacyDrawSurf->dsFlags & DSF_IN_WORLD_GUI ) == 0 ) ) {
 			failureDetail = RB_SharedGuiGLFailureDetail(
 				RB_SHARED_GUI_GL_REJECT_DRAW_RANGE, drawIndex );
 			return false;
@@ -7671,7 +7699,9 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 				R_ClassicGuiDomain_DrawPassTexture( *draw, passIndex );
 			if ( pass == NULL || pass->order != static_cast<std::uint32_t>( passIndex )
 					|| pass->sourceStageIndex < 0
-					|| pass->kind != RENDERER_MATERIAL_PASS_GUI
+					|| pass->kind != ( inWorld
+						? RENDERER_MATERIAL_PASS_SURFACE
+						: RENDERER_MATERIAL_PASS_GUI )
 					|| pass->textureSemantic != RENDERER_TEXTURE_DIFFUSE
 					|| pass->texgen != RENDERER_TEXGEN_EXPLICIT
 					|| ( pass->programFamily != RENDERER_PROGRAM_GUI
@@ -7701,7 +7731,8 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 
 			rbSharedGuiGLPreparedPass_t &preparedPass =
 				prepared.passes[prepared.passCount];
-			if ( !RB_SharedGuiGLBuildState( *pass, preparedPass.stateBits,
+			if ( !RB_SharedGuiGLBuildState( *pass, inWorld,
+					preparedPass.stateBits,
 					preparedPass.alphaFunction, preparedPass.cullType ) ) {
 				failureDetail = RB_SharedGuiGLFailureDetail(
 					RB_SHARED_GUI_GL_REJECT_PASS_STATE, drawIndex, passIndex );
@@ -7881,7 +7912,7 @@ static void RB_SharedGuiGLFinishPass(
 	}
 }
 
-static void RB_SharedGuiGLRestoreState( void ) {
+static void RB_SharedGuiGLRestoreState( bool inWorld ) {
 	glDisable( GL_ALPHA_TEST );
 	glDisable( GL_POLYGON_OFFSET_FILL );
 	glDisable( GL_SAMPLE_ALPHA_TO_COVERAGE );
@@ -7898,14 +7929,21 @@ static void RB_SharedGuiGLRestoreState( void ) {
 	glBlendEquation( GL_FUNC_ADD );
 	glEnable( GL_BLEND );
 	glEnable( GL_SCISSOR_TEST );
-	glDisable( GL_DEPTH_TEST );
+	if ( inWorld ) {
+		glEnable( GL_DEPTH_TEST );
+	} else {
+		glDisable( GL_DEPTH_TEST );
+	}
 	glDisable( GL_STENCIL_TEST );
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
+	GL_State( ( inWorld ? GLS_DEPTHFUNC_EQUAL : 0 )
+		| GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
 	GL_Cull( CT_FRONT_SIDED );
 	backEnd.currentSpace = NULL;
 }
 
-bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
+static bool RB_DrawSharedGuiViewForScope( const viewDef_t *viewDef,
+		classicGuiDomainScope_t scope ) {
+	const bool inWorld = scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD;
 	if ( viewDef == NULL ) {
 		R_ClassicGuiDomain_RecordBackendFallback( NULL,
 			CLASSIC_GUI_DOMAIN_BACKEND_GL,
@@ -7914,7 +7952,9 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 		return false;
 	}
 
-	const classicGuiDomainView_t *view = R_ClassicGuiDomain_FindView( viewDef );
+	const classicGuiDomainView_t *view = inWorld
+		? R_ClassicGuiDomain_FindInWorldView( viewDef )
+		: R_ClassicGuiDomain_FindRootView( viewDef );
 	if ( view == NULL ) {
 		R_ClassicGuiDomain_RecordBackendFallback( viewDef,
 			CLASSIC_GUI_DOMAIN_BACKEND_GL,
@@ -7922,7 +7962,7 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 			RB_SharedGuiGLFailureDetail( RB_SHARED_GUI_GL_REJECT_VIEW ) );
 		return false;
 	}
-	if ( view->backendOutcome[ CLASSIC_GUI_DOMAIN_BACKEND_GL ]
+	if ( view->scope != scope || view->backendOutcome[ CLASSIC_GUI_DOMAIN_BACKEND_GL ]
 			== CLASSIC_GUI_DOMAIN_BACKEND_FALLBACK ) {
 		return false;
 	}
@@ -7946,12 +7986,19 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 	// No return below this point may hand the view back to the legacy aggregate
 	// path: the complete view has passed preflight and drawing is now committed.
 	backEnd.viewDef = viewDef;
-	backEnd.currentRenderCopied = false;
-	backEnd.currentDepthCopied = false;
-	backEnd.pc.c_surfaces += viewDef->numDrawSurfs;
+	if ( !inWorld ) {
+		backEnd.currentRenderCopied = false;
+		backEnd.currentDepthCopied = false;
+	}
+	backEnd.pc.c_surfaces += inWorld ? view->sourceSurfaceCount
+		: viewDef->numDrawSurfs;
 	backEnd.depthFunc = GLS_DEPTHFUNC_EQUAL;
-	RB_LogComment( "---------- RB_DrawSharedGuiView ----------\n" );
-	RB_BeginDrawingView();
+	RB_LogComment( inWorld
+		? "---------- RB_DrawSharedInWorldGuiView ----------\n"
+		: "---------- RB_DrawSharedGuiView ----------\n" );
+	if ( !inWorld ) {
+		RB_BeginDrawingView();
+	}
 	if ( glConfig.GLSLProgramAvailable ) {
 		glUseProgramObjectARB( 0 );
 	}
@@ -7969,6 +8016,12 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 	glDisableClientState( GL_COLOR_ARRAY );
 	glDisable( GL_ALPHA_TEST );
 	glDisable( GL_POLYGON_OFFSET_FILL );
+	if ( inWorld ) {
+		glEnable( GL_DEPTH_TEST );
+		glMatrixMode( GL_MODELVIEW );
+	} else {
+		glDisable( GL_DEPTH_TEST );
+	}
 	backEnd.currentSpace = NULL;
 
 	int drawnPasses = 0;
@@ -8035,7 +8088,7 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 		}
 	}
 
-	RB_SharedGuiGLRestoreState();
+	RB_SharedGuiGLRestoreState( inWorld );
 	const bool coverageRecorded = R_ClassicGuiDomain_RecordOwned( viewDef,
 		CLASSIC_GUI_DOMAIN_BACKEND_GL, drawnPasses, noopPasses );
 	if ( !coverageRecorded ) {
@@ -8043,6 +8096,16 @@ bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
 		common->Warning( "RB_DrawSharedGuiView: GL ownership coverage rejected after committed draw" );
 	}
 	return true;
+}
+
+bool RB_DrawSharedGuiView( const viewDef_t *viewDef ) {
+	return RB_DrawSharedGuiViewForScope( viewDef,
+		CLASSIC_GUI_DOMAIN_SCOPE_ROOT_2D );
+}
+
+bool RB_DrawSharedInWorldGuiView( const viewDef_t *viewDef ) {
+	return RB_DrawSharedGuiViewForScope( viewDef,
+		CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD );
 }
 
 /*
@@ -13575,6 +13638,14 @@ void	RB_STD_DrawView( void ) {
 
 	if ( r_portalsDistanceCull.GetBool() && backEnd.viewDef->viewEntitys && backEnd.viewDef->renderWorld != NULL ) {
 		backEnd.viewDef->renderWorld->RenderPortalFades();
+	}
+
+	// GUI output created by R_RenderGuiSurf is sorted before the normal world
+	// ambient ranges. Preflight and commit it here, after classic lighting but
+	// before either ambient walk; failure leaves every tagged drawSurf for the
+	// unchanged legacy filters below.
+	if ( r_rendererSharedInWorldGui.GetBool() ) {
+		(void)RB_DrawSharedInWorldGuiView( backEnd.viewDef );
 	}
 
 	// Decide complete ambient/material ownership once, before either authored
