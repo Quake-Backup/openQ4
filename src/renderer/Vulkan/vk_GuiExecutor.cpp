@@ -49,6 +49,7 @@
 #include "VulkanDevice.h"
 #include "VulkanGpuFrameTiming.h"
 #include "../ClassicGuiDomain.h"
+#include "../ClassicCinematicPostDomain.h"
 #include "../ClassicInteractionDomain.h"
 #include "../ClassicWorldAmbientDomain.h"
 #include "../ClassicFogBlendDomain.h"
@@ -8880,6 +8881,8 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 	if ( viewDef == NULL ) {
 		return;
 	}
+	const bool sharedCinematicRoot = r_rendererSharedCinematicPost.GetBool()
+		&& R_ClassicCinematicPostDomain_FindRootCinematicView( viewDef ) != NULL;
 	backEnd.currentRenderCopied = false;
 	backEnd.currentDepthCopied = false;
 	if ( viewDef->numDrawSurfs <= 0 ) {
@@ -8903,11 +8906,17 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 				CLASSIC_GUI_DOMAIN_FAILURE_BACKEND_NOT_READY,
 				VK_CLASSIC_GUI_REJECT_RENDER_SCOPE );
 		}
+		if ( sharedCinematicRoot ) {
+			R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
+				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY, 0 );
+		}
 		return;
 	}
 
 	backEnd.viewDef = (viewDef_t *)viewDef;
-	if ( r_rendererSharedGui.GetBool()
+	if ( r_rendererSharedGui.GetBool() && !sharedCinematicRoot
 			&& VK_ClassicGui_DrawOwnedView( viewDef ) ) {
 		return;
 	}
@@ -8957,6 +8966,21 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 		}
 		VK_Exec_SetSurfScissor( cmd, viewDef, drawSurf, fbHeight );
 		VK_Exec_DrawAmbientStages( viewDef, drawSurf, tri, mvp, false );
+	}
+	if ( sharedCinematicRoot ) {
+		if ( !R_ClassicCinematicPostDomain_ReadyForBackend( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
+				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN ) ) {
+			R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
+				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 1 );
+		} else if ( !R_ClassicCinematicPostDomain_RecordOwned( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
+				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+				viewDef->numDrawSurfs ) ) {
+			common->Warning( "Vulkan: shared cinematic root coverage rejected after committed view" );
+		}
 	}
 }
 
@@ -9261,6 +9285,19 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			break;
 		}
 	}
+	const bool sharedAuthoredPostCandidate = r_rendererSharedCinematicPost.GetBool()
+		&& R_ClassicCinematicPostDomain_FindAuthoredPostView( viewDef ) != NULL;
+	const bool sharedAuthoredPostReady = sharedAuthoredPostCandidate
+		&& R_ClassicCinematicPostDomain_ReadyForBackend( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+			CLASSIC_CINEMATIC_POST_BACKEND_VULKAN );
+	bool sharedAuthoredPostWalkExecuted = false;
+	if ( sharedAuthoredPostCandidate && !sharedAuthoredPostReady ) {
+		R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+			CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 0 );
+	}
 
 	for ( int pass = 0; pass < 3; pass++ ) {
 		// ---- fog and blend lights between the two walks (Phase G2) ----
@@ -9296,6 +9333,12 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			}
 			if ( pass == 2 ) {
 				if ( processed >= numDrawSurfs || r_skipPostProcess.GetBool() ) {
+					if ( sharedAuthoredPostCandidate ) {
+						R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
+							CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+							CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+							CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 1 );
+					}
 					break;
 				}
 				bool feedbackReady = true;
@@ -9317,6 +9360,12 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 					backEnd.currentRenderCopied = true;
 				}
 				if ( !feedbackReady ) {
+					if ( sharedAuthoredPostCandidate ) {
+						R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
+							CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+							CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+							CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 2 );
+					}
 					static bool warnedPostCapture = false;
 					if ( !warnedPostCapture ) {
 						warnedPostCapture = true;
@@ -9421,7 +9470,18 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 					vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
 				}
 			}
+			if ( pass == 2 ) {
+				sharedAuthoredPostWalkExecuted = true;
+			}
 		}
+	}
+	if ( sharedAuthoredPostCandidate && sharedAuthoredPostReady
+			&& sharedAuthoredPostWalkExecuted
+			&& !R_ClassicCinematicPostDomain_RecordOwned( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
+				numDrawSurfs - processed ) ) {
+		common->Warning( "Vulkan: shared authored post coverage rejected after committed range" );
 	}
 
 	// RC_DRAW_SPECIAL_EFFECTS immediately precedes this view in the command

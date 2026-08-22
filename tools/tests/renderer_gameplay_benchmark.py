@@ -1167,6 +1167,7 @@ def common_args(
     append_set(args, "r_rendererModernAutoPromote", "0")
     append_set(args, "r_rendererSharedGui", "0")
     append_set(args, "r_rendererSharedInWorldGui", "0")
+    append_set(args, "r_rendererSharedCinematicPost", "0")
     append_set(args, "r_rendererSharedWorldAmbient", "0")
     append_set(args, "r_rendererSharedWorldInteraction", "0")
     append_set(args, "r_rendererSharedWorldFogBlend", "0")
@@ -1215,6 +1216,7 @@ def build_scripted_capture_lines(
     lines: list[str] = [
         "r_rendererSharedGui 0",
         "r_rendererSharedInWorldGui 0",
+        "r_rendererSharedCinematicPost 0",
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
         "r_rendererSharedWorldFogBlend 0",

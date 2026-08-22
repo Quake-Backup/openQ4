@@ -260,7 +260,10 @@ the classic source-preserving fog-receiver role explicitly. A material-deform
 receiver is admissible only with a fresh `notApplicable` record; unsupported,
 skipped, failed, stale, or mismatched records still reject the complete phase.
 
-The completed subview and in-world GUI corridors leave **cinematic playback and
-authored post-chain ownership** next. Render-demo and other special domains
-remain downstream. Temporal presentation and PBR/advanced-lighting work must
-continue to wait for coherent classic-frame ownership.
+The completed cinematic/authored-post corridor now seals eligible root
+video/audio views and complete post tails while preserving the established
+dynamic-stage executor; see [Shared Classic Cinematic and Authored-Post
+Transaction](classic-cinematic-post-domain-modernization.md). **Render-demo and
+remaining special-frame ownership** are next. Temporal presentation and
+PBR/advanced-lighting work must continue to wait for coherent classic-frame
+ownership.

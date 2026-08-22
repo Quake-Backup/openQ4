@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 #include "CelShading.h"
 #include "ClassicGuiDomain.h"
+#include "ClassicCinematicPostDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicFogBlendDomain.h"
 #include "ModernGLExecutor.h"
@@ -9488,6 +9489,116 @@ int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderP
 /*
 ==============================================================================
 
+	Shared cinematic / authored-post transaction adapters
+
+	The decoder and authored program-stage implementations are intentionally
+	shared with the established renderer. They are dynamic by definition: a
+	video frame is keyed to the exact render-view clock and an authored post
+	stage can require the current color/depth capture made immediately before
+	the first visible write. The domain seals the complete range before these
+	adapters run, while these adapters retain the mature stage executor.
+
+==============================================================================
+*/
+
+static bool RB_SharedCinematicPostGLReady( const viewDef_t *viewDef,
+		classicCinematicPostDomainScope_t scope,
+		const classicCinematicPostDomainView_t *&domainView ) {
+	domainView = scope == CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC
+		? R_ClassicCinematicPostDomain_FindRootCinematicView( viewDef )
+		: R_ClassicCinematicPostDomain_FindAuthoredPostView( viewDef );
+	if ( domainView == NULL || !domainView->ready
+			|| !R_ClassicCinematicPostDomain_ReadyForBackend( viewDef, scope,
+				CLASSIC_CINEMATIC_POST_BACKEND_GL ) ) {
+		R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef, scope,
+			CLASSIC_CINEMATIC_POST_BACKEND_GL,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY, 0 );
+		return false;
+	}
+	if ( viewDef == NULL || viewDef != domainView->viewDef
+			|| domainView->sourceSurfaceCount <= 0 || viewDef->drawSurfs == NULL
+			|| backEnd.renderTexture != NULL || backEnd.feedbackRenderTexture != NULL
+			|| r_skipRender.GetBool() || r_skipRenderContext.GetBool()
+			|| r_showOverDraw.GetInteger() != 0 || r_singleTriangle.GetBool() ) {
+		R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef, scope,
+			CLASSIC_CINEMATIC_POST_BACKEND_GL,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 1 );
+		return false;
+	}
+	if ( scope == CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC ) {
+		if ( viewDef->viewEntitys != NULL || domainView->firstSourceSurface != 0
+				|| domainView->sourceSurfaceCount != viewDef->numDrawSurfs ) {
+			R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef, scope,
+				CLASSIC_CINEMATIC_POST_BACKEND_GL,
+				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 2 );
+			return false;
+		}
+	} else if ( viewDef->viewEntitys == NULL || r_skipPostProcess.GetBool()
+			|| domainView->firstSourceSurface < 0
+			|| domainView->firstSourceSurface > viewDef->numDrawSurfs
+			|| domainView->sourceSurfaceCount
+				!= viewDef->numDrawSurfs - domainView->firstSourceSurface ) {
+		R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef, scope,
+			CLASSIC_CINEMATIC_POST_BACKEND_GL,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 3 );
+		return false;
+	}
+	return true;
+}
+
+bool RB_DrawSharedCinematicRootView( const viewDef_t *viewDef ) {
+	const classicCinematicPostDomainView_t *domainView = NULL;
+	if ( !RB_SharedCinematicPostGLReady( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC, domainView ) ) {
+		return false;
+	}
+
+	// The domain owns this command occurrence after preflight. The established
+	// stage executor retains exact videoMap/soundMap decoder and clock behavior.
+	backEnd.viewDef = const_cast<viewDef_t *>( viewDef );
+	backEnd.currentRenderCopied = false;
+	backEnd.currentDepthCopied = false;
+	backEnd.pc.c_surfaces += domainView->sourceSurfaceCount;
+	backEnd.depthFunc = GLS_DEPTHFUNC_EQUAL;
+	RB_LogComment( "---------- RB_DrawSharedCinematicRootView ----------\n" );
+	RB_BeginDrawingView();
+	const int consumed = RB_STD_DrawShaderPasses(
+		const_cast<drawSurf_t **>( viewDef->drawSurfs ),
+		domainView->sourceSurfaceCount );
+	RB_SharedGuiGLRestoreState( false );
+	if ( consumed != domainView->sourceSurfaceCount
+			|| !R_ClassicCinematicPostDomain_RecordOwned( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
+				CLASSIC_CINEMATIC_POST_BACKEND_GL, consumed ) ) {
+		common->Warning( "RB_DrawSharedCinematicRootView: coverage rejected after committed view" );
+	}
+	return true;
+}
+
+bool RB_DrawSharedAuthoredPostView( const viewDef_t *viewDef,
+		drawSurf_t **drawSurfs, int firstSourceSurface, int sourceSurfaceCount ) {
+	const classicCinematicPostDomainView_t *domainView = NULL;
+	if ( !RB_SharedCinematicPostGLReady( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST, domainView )
+			|| drawSurfs == NULL || firstSourceSurface != domainView->firstSourceSurface
+			|| sourceSurfaceCount != domainView->sourceSurfaceCount ) {
+		return false;
+	}
+	RB_LogComment( "---------- RB_DrawSharedAuthoredPostView ----------\n" );
+	const int consumed = RB_STD_DrawShaderPasses(
+		drawSurfs + firstSourceSurface, sourceSurfaceCount );
+	if ( consumed != sourceSurfaceCount
+			|| !R_ClassicCinematicPostDomain_RecordOwned( viewDef,
+				CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+				CLASSIC_CINEMATIC_POST_BACKEND_GL, consumed ) ) {
+		common->Warning( "RB_DrawSharedAuthoredPostView: coverage rejected after committed range" );
+	}
+	return true;
+}
+
+/*
+==============================================================================
+
 BACK END RENDERING OF STENCIL SHADOWS
 
 ==============================================================================
@@ -13764,7 +13875,14 @@ void	RB_STD_DrawView( void ) {
 
 	// now draw any post-processing effects using _currentRender
 	if ( processed < numDrawSurfs ) {
-		RB_STD_DrawShaderPasses( drawSurfs+processed, numDrawSurfs-processed );
+		const int authoredPostCount = numDrawSurfs - processed;
+		const bool sharedAuthoredPost = r_rendererSharedCinematicPost.GetBool()
+			&& R_ClassicCinematicPostDomain_FindAuthoredPostView(
+				backEnd.viewDef ) != NULL;
+		if ( !sharedAuthoredPost || !RB_DrawSharedAuthoredPostView(
+				backEnd.viewDef, drawSurfs, processed, authoredPostCount ) ) {
+			RB_STD_DrawShaderPasses( drawSurfs + processed, authoredPostCount );
+		}
 	}
 
 // openQ4 BEGIN

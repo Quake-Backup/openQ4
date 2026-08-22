@@ -172,8 +172,10 @@ domain consume a sealed completed or intentional-empty CPU deform result; an
 unsupported, skipped, failed, stale, or mismatched record still rolls the
 complete GUI view back before drawing.
 
-Subview, render-demo, cinematic, and authored post-process ownership remain
-explicit classic or experimental domains. The next recommended implementation
-target is **cinematic playback and authored post-chain ownership**. Temporal
-and PBR/advanced-lighting milestones remain downstream of that classic-frame
-work.
+Subview and render-demo ownership remain explicit classic or experimental
+domains. Cinematic playback and authored post-process tails now have their own
+sealed default-off transaction; see [Shared Classic Cinematic and Authored-Post
+Transaction](classic-cinematic-post-domain-modernization.md). The next
+recommended implementation target is **render-demo and remaining special-frame
+ownership**. Temporal and PBR/advanced-lighting milestones remain downstream of
+that classic-frame work.

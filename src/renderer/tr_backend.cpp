@@ -35,6 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
 #include "ClassicGuiDomain.h"
+#include "ClassicCinematicPostDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicInteractionDomain.h"
 #include "ClassicFogBlendDomain.h"
@@ -794,6 +795,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// Clear frame-local pointers and ownership before every command stream,
 	// including the empty-frame fast path below.
 	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicCinematicPostDomain_ResetFrame();
 	R_ClassicWorldAmbientDomain_ResetFrame();
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
@@ -853,6 +855,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		if ( r_rendererSharedGui.GetBool()
 				|| r_rendererSharedInWorldGui.GetBool() ) {
 			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedCinematicPost.GetBool() ) {
+			R_ClassicCinematicPostDomain_PrepareFrame( *scenePackets );
 		}
 		if ( r_rendererSharedWorldAmbient.GetBool() ) {
 			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
@@ -918,21 +923,29 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		switch ( cmds->commandId ) {
 		case RC_NOP:
 			break;
-		case RC_DRAW_VIEW:
+		case RC_DRAW_VIEW: {
 			if ( ((const drawSurfsCommand_t *)cmds)->viewDef != NULL ) {
 				pendingSharedSubview = RB_ClassicSubview_Preflight(
 					((const drawSurfsCommand_t *)cmds)->viewDef );
 			}
 			R_RendererMetrics_BeginGpuTimer( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
-			if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys
+			const viewDef_t *drawView = ((const drawSurfsCommand_t *)cmds)->viewDef;
+			const bool sharedCinematicRoot = !drawView->viewEntitys
+				&& r_rendererSharedCinematicPost.GetBool()
+				&& R_ClassicCinematicPostDomain_FindRootCinematicView( drawView ) != NULL;
+			if ( sharedCinematicRoot ) {
+				if ( !RB_DrawSharedCinematicRootView( drawView ) ) {
+					RB_DrawView( cmds );
+				}
+			} else if ( !drawView->viewEntitys
 					&& r_rendererSharedGui.GetBool() ) {
 				// The shared owner is view-atomic.  If its complete preflight or
 				// execution gate rejects this view, execute the untouched classic
 				// view immediately; never mix shared and aggregate GUI stages.
-				if ( !RB_DrawSharedGuiView( ((const drawSurfsCommand_t *)cmds)->viewDef ) ) {
+				if ( !RB_DrawSharedGuiView( drawView ) ) {
 					RB_DrawView( cmds );
 				}
-			} else if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys && R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ) {
+			} else if ( !drawView->viewEntitys && R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ) {
 				R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_GUI );
 			} else {
 				RB_DrawView( cmds );
@@ -945,6 +958,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				c_draw2d++;
 			}
 			break;
+		}
 		case RC_DRAW_SPECIAL_EFFECTS:
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_SPECIAL_EFFECTS );
 			if ( R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SPECIAL_EFFECTS ) ) {

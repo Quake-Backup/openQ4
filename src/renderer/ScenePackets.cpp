@@ -27,6 +27,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| modernVisibleRequested
 		|| r_rendererSharedGui.GetBool()
 		|| r_rendererSharedInWorldGui.GetBool()
+		|| r_rendererSharedCinematicPost.GetBool()
 		|| r_rendererSharedWorldAmbient.GetBool()
 		|| r_rendererSharedWorldInteraction.GetBool()
 		|| r_rendererSharedWorldFogBlend.GetBool()

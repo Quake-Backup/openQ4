@@ -621,6 +621,7 @@ def display_cfg_lines(width: int, height: int) -> list[str]:
     return [
         "r_rendererSharedGui 0",
         "r_rendererSharedInWorldGui 0",
+        "r_rendererSharedCinematicPost 0",
         "r_rendererSharedWorldAmbient 0",
         "r_rendererSharedWorldInteraction 0",
         "r_rendererSharedWorldFogBlend 0",
@@ -669,6 +670,7 @@ def common_args(
     add_set(args, "r_renderApi", "gl")
     add_set(args, "r_rendererSharedGui", 0)
     add_set(args, "r_rendererSharedInWorldGui", 0)
+    add_set(args, "r_rendererSharedCinematicPost", 0)
     add_set(args, "r_rendererSharedWorldAmbient", 0)
     add_set(args, "r_rendererSharedWorldInteraction", 0)
     add_set(args, "r_rendererSharedWorldFogBlend", 0)
@@ -1996,6 +1998,7 @@ def verify_recorded_files(
         launch_contract = {
             "r_rendererSharedGui": "0",
             "r_rendererSharedInWorldGui": "0",
+            "r_rendererSharedCinematicPost": "0",
             "r_rendererSharedWorldAmbient": "0",
             "r_rendererSharedWorldInteraction": "0",
             "r_rendererSharedWorldFogBlend": "0",
@@ -2057,6 +2060,7 @@ def verify_recorded_files(
                 "r_renderApi",
                 "r_rendererSharedGui",
                 "r_rendererSharedInWorldGui",
+                "r_rendererSharedCinematicPost",
                 "r_rendererSharedWorldAmbient",
                 "r_rendererSharedWorldInteraction",
                 "r_rendererSharedWorldFogBlend",

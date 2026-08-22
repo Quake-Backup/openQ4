@@ -1126,6 +1126,7 @@ extern idCVar r_rendererBindless;	// opt-in experimental bindless texture diagno
 extern idCVar r_rendererModernVisible;	// opt-in modern hybrid visible-frame composition
 extern idCVar r_rendererSharedGui;	// opt-in backend-neutral fixed-function 2D GUI ownership
 extern idCVar r_rendererSharedInWorldGui;	// opt-in backend-neutral in-world GUI ownership
+extern idCVar r_rendererSharedCinematicPost;	// opt-in backend-neutral cinematic/post transaction ownership
 extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
 extern idCVar r_rendererSharedWorldInteraction;	// opt-in backend-neutral whole-view unshadowed interaction ownership
 extern idCVar r_rendererSharedWorldFogBlend;	// opt-in backend-neutral whole-view fog/blend ownership
@@ -1846,6 +1847,9 @@ const shaderStage_t *RB_SetLightTexture( const idRenderLightLocal *light );
 void RB_DrawView( const void *data );
 bool RB_DrawSharedGuiView( const viewDef_t *viewDef );
 bool RB_DrawSharedInWorldGuiView( const viewDef_t *viewDef );
+bool RB_DrawSharedCinematicRootView( const viewDef_t *viewDef );
+bool RB_DrawSharedAuthoredPostView( const viewDef_t *viewDef,
+	drawSurf_t **drawSurfs, int firstSourceSurface, int sourceSurfaceCount );
 void RB_DrawSpecialEffects( const void *data );
 void RB_ApplyResolutionScaleToBackBuffer( void );
 void RB_ApplyCRTToBackBuffer( void );

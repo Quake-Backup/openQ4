@@ -271,7 +271,9 @@ sealed completed or intentional-empty CPU deform results. The earlier
 the dedicated profile and requires nonempty ownership plus exact same-backend
 parity.
 
-The completed subview and in-world GUI corridors leave **cinematic playback and
-authored post-chain ownership** as the next recommended implementation target,
-followed by render-demo and remaining special-frame work. Do not skip ahead to
-temporal presentation or PBR/advanced-lighting Milestones E/F.
+The completed cinematic/authored-post corridor now seals eligible root
+video/audio views and complete authored post tails; see [Shared Classic
+Cinematic and Authored-Post Transaction](classic-cinematic-post-domain-modernization.md).
+The next recommended implementation target is **render-demo and remaining
+special-frame ownership**. Do not skip ahead to temporal presentation or
+PBR/advanced-lighting Milestones E/F.

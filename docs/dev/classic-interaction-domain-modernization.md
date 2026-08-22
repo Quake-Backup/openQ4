@@ -322,7 +322,10 @@ finalized completed or intentional-empty CPU result, while receivers explicitly
 retain source geometry through the `notApplicable` role. Unsupported, skipped,
 failed, stale, or mismatched records still reject the complete interaction view.
 
-The completed subview and in-world GUI corridors leave **cinematic playback and
-authored post-chain ownership** next. Render-demo and other special domains
-remain downstream. Temporal presentation and PBR/advanced-lighting work must
-continue to wait for coherent classic-frame ownership.
+The completed cinematic/authored-post corridor now seals eligible root
+video/audio views and complete post tails while retaining the established
+dynamic-stage executor; see [Shared Classic Cinematic and Authored-Post
+Transaction](classic-cinematic-post-domain-modernization.md). **Render-demo and
+remaining special-frame ownership** are next. Temporal presentation and
+PBR/advanced-lighting work must continue to wait for coherent classic-frame
+ownership.
