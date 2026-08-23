@@ -49,6 +49,7 @@ STAGE_GAMELIBS = load_module("stage_gamelibs_safety_test", BUILD_DIR / "stage_ga
 VERSION = load_module("openq4_version_safety_test", BUILD_DIR / "openq4_version.py")
 WINDOWS_RUNTIME = load_module("windows_runtime_safety_test", BUILD_DIR / "windows_runtime.py")
 MESON_SOURCES = load_module("meson_sources_safety_test", BUILD_DIR / "meson_sources.py")
+FAST_STAGE = load_module("stage_fast_install_safety_test", BUILD_DIR / "stage_fast_install.py")
 
 
 def write_file(path: Path, data: bytes = b"data\n") -> None:
@@ -465,6 +466,157 @@ def validate_fast_stage_guards_and_copy() -> None:
         raise AssertionError(
             f"stage_fast_install.py reused a temporary runtime: {repeated_result.stderr}"
         )
+
+
+def validate_fast_stage_cross_platform_policy() -> None:
+    source_root = WORK / "fast-stage-platform-policy" / "builddir"
+    source_game = source_root / "baseoq4"
+    root_files = (
+        "openQ4-client_x64",
+        "openQ4-ded_x64",
+        "openQ4-client_x64.exe",
+        "openQ4-client_x64.pdb",
+        "openQ4-ded_x64.exe",
+        "openQ4-ded_x64.pdb",
+        "renderer-gl_x64.dll",
+        "renderer-gl_x64.pdb",
+        "renderer-vk_x64.dll",
+        "renderer-vk_x64.pdb",
+        "renderer-gl_x64.so",
+        "renderer-vk_x64.so",
+        "renderer-gl_x64.dylib",
+        "renderer-vk_x64.dylib",
+        # MoltenVK is provider-staged and verified separately; it must never
+        # be mistaken for a Meson-produced fast-stage artifact.
+        "libMoltenVK.dylib",
+        "OpenAL32.dll",
+    )
+    game_files = (
+        "game-sp_x64.dll",
+        "game-sp_x64.pdb",
+        "game-mp_x64.dll",
+        "game-mp_x64.pdb",
+        "game-sp_x64.so",
+        "game-mp_x64.so",
+        "game-sp_x64.dylib",
+        "game-mp_x64.dylib",
+        "mod.json",
+        "pak0.pk4",
+        "pak1.pk4",
+    )
+    for filename in root_files:
+        write_file(source_root / filename, filename.encode("utf-8"))
+    for filename in game_files:
+        write_file(source_game / filename, filename.encode("utf-8"))
+
+    expected = {
+        "win32": (
+            {
+                "openQ4-client_x64.exe",
+                "openQ4-client_x64.pdb",
+                "openQ4-ded_x64.exe",
+                "openQ4-ded_x64.pdb",
+                "renderer-gl_x64.dll",
+                "renderer-gl_x64.pdb",
+                "renderer-vk_x64.dll",
+                "renderer-vk_x64.pdb",
+                "OpenAL32.dll",
+            },
+            {
+                "game-sp_x64.dll",
+                "game-sp_x64.pdb",
+                "game-mp_x64.dll",
+                "game-mp_x64.pdb",
+                "mod.json",
+                "pak0.pk4",
+                "pak1.pk4",
+            },
+        ),
+        "linux": (
+            {
+                "openQ4-client_x64",
+                "openQ4-ded_x64",
+                "renderer-gl_x64.so",
+                "renderer-vk_x64.so",
+            },
+            {
+                "game-sp_x64.so",
+                "game-mp_x64.so",
+                "mod.json",
+                "pak0.pk4",
+                "pak1.pk4",
+            },
+        ),
+        "darwin": (
+            {
+                "openQ4-client_x64",
+                "openQ4-ded_x64",
+                "renderer-vk_x64.dylib",
+            },
+            {
+                "game-sp_x64.dylib",
+                "game-mp_x64.dylib",
+                "mod.json",
+                "pak0.pk4",
+                "pak1.pk4",
+            },
+        ),
+    }
+    for platform_name, (expected_root, expected_game) in expected.items():
+        policy = FAST_STAGE.runtime_stage_policy(platform_name)
+        destination = WORK / "fast-stage-platform-policy" / platform_name
+        destination_game = destination / "baseoq4"
+        FAST_STAGE.copy_matches(
+            source_root,
+            destination,
+            policy.root_copy_patterns,
+            policy.root_copy_exclude_patterns,
+        )
+        FAST_STAGE.copy_matches(
+            source_game, destination_game, policy.game_copy_patterns
+        )
+        actual_root = {
+            path.name for path in destination.iterdir() if path.is_file()
+        }
+        actual_game = {
+            path.name for path in destination_game.iterdir() if path.is_file()
+        }
+        if actual_root != expected_root:
+            raise AssertionError(
+                f"{platform_name} fast-stage root policy copied {sorted(actual_root)!r}; "
+                f"expected {sorted(expected_root)!r}"
+            )
+        if actual_game != expected_game:
+            raise AssertionError(
+                f"{platform_name} fast-stage game policy copied {sorted(actual_game)!r}; "
+                f"expected {sorted(expected_game)!r}"
+            )
+
+    cleanup_root = WORK / "fast-stage-platform-policy" / "windows-cleanup"
+    cleanup_game = cleanup_root / "baseoq4"
+    retained_root = cleanup_root / "renderer-gl_x64.dll"
+    retained_game = cleanup_game / "game-sp_x64.dll"
+    foreign_paths = (
+        cleanup_root / "renderer-gl_x64.so",
+        cleanup_root / "renderer-vk_x64.dylib",
+        cleanup_game / "game-sp_x64.so",
+        cleanup_game / "game-mp_x64.dylib",
+    )
+    for path in (*foreign_paths, retained_root, retained_game):
+        write_file(path)
+    FAST_STAGE.remove_non_runtime_files(
+        cleanup_root,
+        cleanup_game,
+        FAST_STAGE.runtime_stage_policy("win32"),
+    )
+    remaining_foreign = [path for path in foreign_paths if path.exists()]
+    if remaining_foreign:
+        raise AssertionError(
+            "Windows fast-stage cleanup retained foreign modules: "
+            + ", ".join(str(path) for path in remaining_foreign)
+        )
+    if not retained_root.is_file() or not retained_game.is_file():
+        raise AssertionError("Windows fast-stage cleanup removed native DLL payloads")
 
 
 def validate_stale_content_prune_symlink_handling() -> None:
@@ -1218,6 +1370,7 @@ def main() -> None:
         validate_legacy_build_pak0_cli_guards()
         validate_list_sources_guards()
         validate_fast_stage_guards_and_copy()
+        validate_fast_stage_cross_platform_policy()
         validate_stale_content_prune_symlink_handling()
         validate_package_name_and_copy_guards()
         validate_renderer_module_staging()

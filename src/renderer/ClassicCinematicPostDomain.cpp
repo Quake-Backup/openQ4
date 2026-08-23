@@ -3,10 +3,21 @@
 
 #include "tr_local.h"
 #include "ClassicCinematicPostDomain.h"
+#include "ClassicSubviewDomain.h"
 
 #include <cmath>
 #include <cstring>
 #include <limits>
+
+static_assert( static_cast<int>( CLASSIC_CINEMATIC_POST_BACKEND_GL )
+		== static_cast<int>( CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ),
+	"classic cinematic/post and subview GL backend ordinals must match" );
+static_assert( static_cast<int>( CLASSIC_CINEMATIC_POST_BACKEND_VULKAN )
+		== static_cast<int>( CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ),
+	"classic cinematic/post and subview Vulkan backend ordinals must match" );
+static_assert( static_cast<int>( CLASSIC_CINEMATIC_POST_BACKEND_COUNT )
+		== static_cast<int>( CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT ),
+	"classic cinematic/post and subview backend counts must match" );
 
 typedef struct classicCinematicPostDomainState_s {
 	classicCinematicPostDomainView_t	views[
@@ -16,6 +27,21 @@ typedef struct classicCinematicPostDomainState_s {
 } classicCinematicPostDomainState_t;
 
 static classicCinematicPostDomainState_t rg_classicCinematicPostDomain;
+
+static bool R_ClassicCinematicPostDomain_RangeFits(
+		int first, int count, int capacity ) {
+	return first >= 0 && count >= 0 && first <= capacity
+		&& count <= capacity - first;
+}
+
+static bool R_ClassicCinematicPostDomain_RangeContains(
+		int outerFirst, int outerCount, int first, int count ) {
+	if ( outerFirst < 0 || outerCount < 0 || first < outerFirst || count < 0 ) {
+		return false;
+	}
+	const int offset = first - outerFirst;
+	return offset <= outerCount && count <= outerCount - offset;
+}
 
 static std::uint64_t R_ClassicCinematicPostDomain_HashBytes(
 		std::uint64_t hash, const void *data, size_t bytes ) {
@@ -34,6 +60,13 @@ static std::uint64_t R_ClassicCinematicPostDomain_HashView(
 		sizeof( view.scope ) );
 	hash = R_ClassicCinematicPostDomain_HashBytes( hash, &view.scenePacketIndex,
 		sizeof( view.scenePacketIndex ) );
+	hash = R_ClassicCinematicPostDomain_HashBytes( hash,
+		&view.specialRootScenePacketIndex,
+		sizeof( view.specialRootScenePacketIndex ) );
+	hash = R_ClassicCinematicPostDomain_HashBytes( hash,
+		&view.specialNestingDepth, sizeof( view.specialNestingDepth ) );
+	hash = R_ClassicCinematicPostDomain_HashBytes( hash,
+		&view.nestedInSpecialView, sizeof( view.nestedInSpecialView ) );
 	hash = R_ClassicCinematicPostDomain_HashBytes( hash, &view.passPacketIndex,
 		sizeof( view.passPacketIndex ) );
 	hash = R_ClassicCinematicPostDomain_HashBytes( hash, &view.firstSourceSurface,
@@ -89,13 +122,23 @@ static bool R_ClassicCinematicPostDomain_IsRootCinematicView(
 
 static bool R_ClassicCinematicPostDomain_IsAuthoredPostView(
 		const viewDef_t *viewDef ) {
-	return viewDef != NULL && viewDef->viewEntitys != NULL
-		&& !viewDef->isSubview && !viewDef->isMirror && !viewDef->isXraySubview
-		&& !viewDef->isEditor && viewDef->superView == NULL
-		&& viewDef->subviewSurface == NULL && viewDef->numClipPlanes == 0
-		&& viewDef->renderWorld != NULL && viewDef->renderView.viewID >= 0
-		&& ( viewDef->renderFlags & RF_PORTAL_SKY ) == 0
-		&& viewDef->renderView.globalMaterial == NULL;
+	if ( viewDef == NULL || viewDef->viewEntitys == NULL || viewDef->isEditor
+			|| viewDef->renderWorld == NULL || viewDef->renderView.viewID < 0
+			|| ( viewDef->renderFlags & RF_PORTAL_SKY ) != 0
+			|| viewDef->renderView.globalMaterial != NULL ) {
+		return false;
+	}
+	if ( viewDef->isSubview ) {
+		// A dynamic post/video tail inside a special view is admissible only
+		// when that view belongs to the independently sealed subview tree. The
+		// two domains will publish or roll back the shared root transaction
+		// together after every child range and capture edge completes.
+		return r_rendererSharedSubview.GetBool()
+			&& viewDef->superView != NULL && viewDef->subviewSurface != NULL;
+	}
+	return !viewDef->isMirror && !viewDef->isXraySubview
+		&& viewDef->superView == NULL && viewDef->subviewSurface == NULL
+		&& viewDef->numClipPlanes == 0;
 }
 
 static bool R_ClassicCinematicPostDomain_StageCounts(
@@ -142,11 +185,12 @@ static bool R_ClassicCinematicPostDomain_IsRootGUIPacketEligible(
 static int R_ClassicCinematicPostDomain_FindPass(
 		const idScenePacketFrame &packetFrame, const scenePacket_t &scene,
 		renderPassCategory_t category ) {
+	if ( !R_ClassicCinematicPostDomain_RangeFits( scene.firstPassPacket,
+			scene.passPacketCount, packetFrame.NumPasses() ) ) {
+		return -1;
+	}
 	for ( int passOffset = 0; passOffset < scene.passPacketCount; ++passOffset ) {
 		const int passIndex = scene.firstPassPacket + passOffset;
-		if ( passIndex < 0 || passIndex >= packetFrame.NumPasses() ) {
-			return -1;
-		}
 		const passPacket_t &pass = packetFrame.Pass( passIndex );
 		if ( pass.passCategory == category && !pass.commandOnly ) {
 			return passIndex;
@@ -216,6 +260,7 @@ static bool R_ClassicCinematicPostDomain_AddRootCinematicView(
 			rg_classicCinematicPostDomain.viewCount++ ];
 	memset( &view, 0, sizeof( view ) );
 	view.viewDef = viewDef;
+	view.specialRootScenePacketIndex = -1;
 	view.scope = CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC;
 	view.scenePacketIndex = sceneIndex;
 	view.passPacketIndex = R_ClassicCinematicPostDomain_FindPass( packetFrame,
@@ -235,6 +280,14 @@ static bool R_ClassicCinematicPostDomain_AddRootCinematicView(
 		return true;
 	}
 	view.cinematicTimeMilliseconds = static_cast<int>( cinematicTime );
+	if ( !R_ClassicCinematicPostDomain_RangeFits( scene.firstPassPacket,
+			scene.passPacketCount, packetFrame.NumPasses() )
+			|| !R_ClassicCinematicPostDomain_RangeFits( scene.firstDrawPacket,
+				scene.drawPacketCount, packetFrame.NumDrawPackets() ) ) {
+		R_ClassicCinematicPostDomain_Fail( view,
+			CLASSIC_CINEMATIC_POST_FAILURE_INVALID_SCENE_RANGE, sceneIndex );
+		return true;
+	}
 	if ( view.passPacketIndex < 0 ) {
 		R_ClassicCinematicPostDomain_Fail( view,
 			CLASSIC_CINEMATIC_POST_FAILURE_INVALID_PASS_RANGE, 0 );
@@ -242,7 +295,11 @@ static bool R_ClassicCinematicPostDomain_AddRootCinematicView(
 	}
 	const passPacket_t &pass = packetFrame.Pass( view.passPacketIndex );
 	if ( pass.packetCategory != SCENE_PACKET_CATEGORY_GUI
-			|| pass.firstDrawPacket < 0 || pass.drawPacketCount < 0 ) {
+			|| !R_ClassicCinematicPostDomain_RangeFits( pass.firstDrawPacket,
+				pass.drawPacketCount, packetFrame.NumDrawPackets() )
+			|| !R_ClassicCinematicPostDomain_RangeContains( scene.firstDrawPacket,
+				scene.drawPacketCount, pass.firstDrawPacket,
+				pass.drawPacketCount ) ) {
 		R_ClassicCinematicPostDomain_Fail( view,
 			CLASSIC_CINEMATIC_POST_FAILURE_INVALID_PASS_RANGE, view.passPacketIndex );
 		return true;
@@ -313,12 +370,39 @@ static bool R_ClassicCinematicPostDomain_AddAuthoredPostView(
 			rg_classicCinematicPostDomain.viewCount++ ];
 	memset( &view, 0, sizeof( view ) );
 	view.viewDef = viewDef;
+	view.specialRootScenePacketIndex = -1;
 	view.scope = CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST;
 	view.scenePacketIndex = sceneIndex;
+	if ( viewDef->isSubview ) {
+		const classicSubviewDomainView_t *specialView =
+			R_ClassicSubviewDomain_FindView( viewDef );
+		const classicSubviewDomainView_t *specialRoot = specialView != NULL
+			? R_ClassicSubviewDomain_ViewByIndex( specialView->rootViewIndex )
+			: NULL;
+		if ( specialView == NULL || specialRoot == NULL || !specialView->ready
+				|| !specialRoot->ready || specialRoot->viewDef == NULL ) {
+			R_ClassicCinematicPostDomain_Fail( view,
+				CLASSIC_CINEMATIC_POST_FAILURE_MISSING_SPECIAL_VIEW,
+				sceneIndex );
+			return true;
+		}
+		view.nestedInSpecialView = true;
+		view.specialRootViewDef = specialRoot->viewDef;
+		view.specialRootScenePacketIndex = specialRoot->scenePacketIndex;
+		view.specialNestingDepth = specialView->nestingDepth;
+	}
 	view.passPacketIndex = R_ClassicCinematicPostDomain_FindPass( packetFrame,
 		scene, RENDER_PASS_AUTHORED_POST );
 	view.firstSourceSurface = firstSource;
 	view.sourceSurfaceCount = viewDef->numDrawSurfs - firstSource;
+	if ( !R_ClassicCinematicPostDomain_RangeFits( scene.firstPassPacket,
+			scene.passPacketCount, packetFrame.NumPasses() )
+			|| !R_ClassicCinematicPostDomain_RangeFits( scene.firstDrawPacket,
+				scene.drawPacketCount, packetFrame.NumDrawPackets() ) ) {
+		R_ClassicCinematicPostDomain_Fail( view,
+			CLASSIC_CINEMATIC_POST_FAILURE_INVALID_SCENE_RANGE, sceneIndex );
+		return true;
+	}
 	if ( view.passPacketIndex < 0 ) {
 		R_ClassicCinematicPostDomain_Fail( view,
 			CLASSIC_CINEMATIC_POST_FAILURE_INVALID_PASS_RANGE, 0 );
@@ -326,7 +410,11 @@ static bool R_ClassicCinematicPostDomain_AddAuthoredPostView(
 	}
 	const passPacket_t &pass = packetFrame.Pass( view.passPacketIndex );
 	if ( pass.packetCategory != SCENE_PACKET_CATEGORY_POST_PROCESS
-			|| pass.firstDrawPacket < 0 || pass.drawPacketCount < 0 ) {
+			|| !R_ClassicCinematicPostDomain_RangeFits( pass.firstDrawPacket,
+				pass.drawPacketCount, packetFrame.NumDrawPackets() )
+			|| !R_ClassicCinematicPostDomain_RangeContains( scene.firstDrawPacket,
+				scene.drawPacketCount, pass.firstDrawPacket,
+				pass.drawPacketCount ) ) {
 		R_ClassicCinematicPostDomain_Fail( view,
 			CLASSIC_CINEMATIC_POST_FAILURE_INVALID_PASS_RANGE, view.passPacketIndex );
 		return true;
@@ -421,6 +509,23 @@ void R_ClassicCinematicPostDomain_PrepareFrame(
 		if ( !view.ready ) {
 			stats.fallbackViews++;
 		}
+		if ( view.ready && view.nestedInSpecialView ) {
+			stats.nestedSpecialViews++;
+			stats.nestedCinematicStages += view.cinematicStageCount;
+			bool firstForRoot = true;
+			for ( int earlier = 0; earlier < viewIndex; ++earlier ) {
+				const classicCinematicPostDomainView_t &prior =
+					rg_classicCinematicPostDomain.views[ earlier ];
+				if ( prior.ready && prior.nestedInSpecialView
+						&& prior.specialRootViewDef == view.specialRootViewDef ) {
+					firstForRoot = false;
+					break;
+				}
+			}
+			if ( firstForRoot ) {
+				stats.nestedSpecialTransactions++;
+			}
+		}
 		stats.hash ^= view.hash;
 	}
 	idStr::Copynz( stats.status, stats.overflow ? "overflow" : "prepared",
@@ -459,13 +564,157 @@ const classicCinematicPostDomainView_t *R_ClassicCinematicPostDomain_FindAuthore
 bool R_ClassicCinematicPostDomain_ReadyForBackend( const viewDef_t *viewDef,
 		classicCinematicPostDomainScope_t scope,
 		classicCinematicPostDomainBackend_t backend ) {
+	const classicCinematicPostDomainStats_t &stats =
+		rg_classicCinematicPostDomain.stats;
+	if ( !stats.prepared || !stats.frameValid || stats.overflow ) {
+		return false;
+	}
 	const classicCinematicPostDomainView_t *view =
 		R_ClassicCinematicPostDomain_Find( viewDef, scope );
-	return view != NULL && view->ready
-		&& backend >= CLASSIC_CINEMATIC_POST_BACKEND_GL
-		&& backend < CLASSIC_CINEMATIC_POST_BACKEND_COUNT
-		&& view->backendOutcome[ backend ]
-			!= CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK;
+	if ( view == NULL || !view->ready ) {
+		return false;
+	}
+	if ( backend < CLASSIC_CINEMATIC_POST_BACKEND_GL
+			|| backend >= CLASSIC_CINEMATIC_POST_BACKEND_COUNT
+			|| view->backendOutcome[ backend ]
+				== CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->nestedInSpecialView ) {
+		return true;
+	}
+	const classicSubviewDomainView_t *specialView =
+		R_ClassicSubviewDomain_FindView( viewDef );
+	return specialView != NULL && specialView->ready
+		&& specialView->viewDef == viewDef
+		&& specialView->rootViewIndex >= 0
+		&& R_ClassicSubviewDomain_ViewByIndex( specialView->rootViewIndex ) != NULL
+		&& R_ClassicSubviewDomain_ViewByIndex(
+			specialView->rootViewIndex )->viewDef == view->specialRootViewDef
+		&& specialView->backendOutcome[ backend ]
+			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+		&& R_ClassicSubviewDomain_ViewSemanticsMatch( *specialView );
+}
+
+static const classicSubviewDomainView_t *
+R_ClassicCinematicPostDomain_SubviewRoot( const viewDef_t *memberViewDef ) {
+	const classicSubviewDomainView_t *member =
+		R_ClassicSubviewDomain_FindView( memberViewDef );
+	return member != NULL && member->rootViewIndex >= 0
+		? R_ClassicSubviewDomain_ViewByIndex( member->rootViewIndex ) : NULL;
+}
+
+static bool R_ClassicCinematicPostDomain_IsSubviewTransactionMember(
+		const classicCinematicPostDomainView_t &view,
+		const classicSubviewDomainView_t *root ) {
+	return root != NULL && view.nestedInSpecialView
+		&& view.specialRootViewDef == root->viewDef;
+}
+
+bool R_ClassicCinematicPostDomain_SubviewTransactionReady(
+		const viewDef_t *memberViewDef,
+		classicCinematicPostDomainBackend_t backend ) {
+	if ( backend < CLASSIC_CINEMATIC_POST_BACKEND_GL
+			|| backend >= CLASSIC_CINEMATIC_POST_BACKEND_COUNT ) {
+		return false;
+	}
+	if ( r_rendererSharedCinematicPost.GetBool() ) {
+		const classicCinematicPostDomainStats_t &stats =
+			rg_classicCinematicPostDomain.stats;
+		if ( !stats.prepared || !stats.frameValid || stats.overflow ) {
+			return false;
+		}
+	}
+	const classicSubviewDomainView_t *root =
+		R_ClassicCinematicPostDomain_SubviewRoot( memberViewDef );
+	if ( root == NULL ) {
+		return false;
+	}
+	for ( int viewIndex = 0; viewIndex < rg_classicCinematicPostDomain.viewCount;
+			++viewIndex ) {
+		const classicCinematicPostDomainView_t &view =
+			rg_classicCinematicPostDomain.views[ viewIndex ];
+		if ( !R_ClassicCinematicPostDomain_IsSubviewTransactionMember( view, root ) ) {
+			continue;
+		}
+		if ( !view.ready || view.backendOutcome[ backend ]
+				== CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool R_ClassicCinematicPostDomain_SubviewTransactionCompleted(
+		const viewDef_t *memberViewDef,
+		classicCinematicPostDomainBackend_t backend ) {
+	if ( !R_ClassicCinematicPostDomain_SubviewTransactionReady( memberViewDef,
+			backend ) ) {
+		return false;
+	}
+	const classicSubviewDomainView_t *root =
+		R_ClassicCinematicPostDomain_SubviewRoot( memberViewDef );
+	for ( int viewIndex = 0; viewIndex < rg_classicCinematicPostDomain.viewCount;
+			++viewIndex ) {
+		const classicCinematicPostDomainView_t &view =
+			rg_classicCinematicPostDomain.views[ viewIndex ];
+		if ( !R_ClassicCinematicPostDomain_IsSubviewTransactionMember( view, root ) ) {
+			continue;
+		}
+		// Publication is a second, non-failing pass.  Require the complete
+		// transaction to remain unpublished and coverage-complete before any
+		// member can become visible as shared-owned.
+		if ( view.backendOutcome[ backend ]
+				!= CLASSIC_CINEMATIC_POST_BACKEND_UNRECORDED
+				|| !view.backendCompleted[ backend ]
+				|| view.backendDrawnSurfaces[ backend ] != view.sourceSurfaceCount ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void R_ClassicCinematicPostDomain_RecordSingleFallback(
+		classicCinematicPostDomainView_t &view,
+		classicCinematicPostDomainBackend_t backend,
+		classicCinematicPostDomainFailure_t failure, int detail,
+		bool countDuplicate ) {
+	classicCinematicPostDomainBackendCoverage_t &coverage =
+		rg_classicCinematicPostDomain.stats.backend[ backend ];
+	if ( view.backendOutcome[ backend ] != CLASSIC_CINEMATIC_POST_BACKEND_UNRECORDED ) {
+		if ( countDuplicate ) {
+			coverage.duplicateReports++;
+		}
+		return;
+	}
+	view.backendOutcome[ backend ] = CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK;
+	view.backendFailure[ backend ] = failure;
+	view.backendFailureDetail[ backend ] = detail;
+	coverage.fallbackViews++;
+	coverage.fallbackSurfaces += view.sourceSurfaceCount;
+}
+
+static bool R_ClassicCinematicPostDomain_PublishSingleOwned(
+		classicCinematicPostDomainView_t &view,
+		classicCinematicPostDomainBackend_t backend ) {
+	classicCinematicPostDomainBackendCoverage_t &coverage =
+		rg_classicCinematicPostDomain.stats.backend[ backend ];
+	if ( view.backendOutcome[ backend ] == CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK ) {
+		coverage.coverageMismatches++;
+		return false;
+	}
+	if ( view.backendOutcome[ backend ] == CLASSIC_CINEMATIC_POST_BACKEND_OWNED ) {
+		coverage.duplicateReports++;
+		return true;
+	}
+	if ( view.backendDrawnSurfaces[ backend ] != view.sourceSurfaceCount ) {
+		coverage.coverageMismatches++;
+		return false;
+	}
+	view.backendOutcome[ backend ] = CLASSIC_CINEMATIC_POST_BACKEND_OWNED;
+	coverage.ownedViews++;
+	coverage.ownedSurfaces += view.backendDrawnSurfaces[ backend ];
+	return true;
 }
 
 void R_ClassicCinematicPostDomain_RecordBackendFallback(
@@ -478,21 +727,14 @@ void R_ClassicCinematicPostDomain_RecordBackendFallback(
 			|| backend >= CLASSIC_CINEMATIC_POST_BACKEND_COUNT ) {
 		return;
 	}
-	classicCinematicPostDomainBackendCoverage_t &coverage =
-		rg_classicCinematicPostDomain.stats.backend[ backend ];
-	if ( view->backendOutcome[ backend ] == CLASSIC_CINEMATIC_POST_BACKEND_OWNED ) {
-		coverage.duplicateReports++;
-		return;
+	R_ClassicCinematicPostDomain_RecordSingleFallback( *view, backend,
+		failure, detail, true );
+	if ( view->nestedInSpecialView ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			static_cast<classicSubviewDomainBackend_t>( backend ),
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CINEMATIC_POST_FALLBACK,
+			detail );
 	}
-	if ( view->backendOutcome[ backend ] == CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK ) {
-		coverage.duplicateReports++;
-		return;
-	}
-	view->backendOutcome[ backend ] = CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK;
-	view->backendFailure[ backend ] = failure;
-	view->backendFailureDetail[ backend ] = detail;
-	coverage.fallbackViews++;
-	coverage.fallbackSurfaces += view->sourceSurfaceCount;
 }
 
 bool R_ClassicCinematicPostDomain_RecordOwned( const viewDef_t *viewDef,
@@ -511,18 +753,68 @@ bool R_ClassicCinematicPostDomain_RecordOwned( const viewDef_t *viewDef,
 	}
 	classicCinematicPostDomainBackendCoverage_t &coverage =
 		rg_classicCinematicPostDomain.stats.backend[ backend ];
-	if ( view->backendOutcome[ backend ] == CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK ) {
+	if ( view->backendOutcome[ backend ]
+			== CLASSIC_CINEMATIC_POST_BACKEND_FALLBACK ) {
 		coverage.coverageMismatches++;
 		return false;
 	}
-	if ( view->backendOutcome[ backend ] == CLASSIC_CINEMATIC_POST_BACKEND_OWNED ) {
+	if ( view->backendOutcome[ backend ]
+			== CLASSIC_CINEMATIC_POST_BACKEND_OWNED ) {
 		coverage.duplicateReports++;
-		return true;
+		return view->backendDrawnSurfaces[ backend ] == drawnSurfaces;
 	}
-	view->backendOutcome[ backend ] = CLASSIC_CINEMATIC_POST_BACKEND_OWNED;
+	if ( view->backendCompleted[ backend ] ) {
+		coverage.duplicateReports++;
+		return view->backendDrawnSurfaces[ backend ] == drawnSurfaces;
+	}
 	view->backendDrawnSurfaces[ backend ] = drawnSurfaces;
-	coverage.ownedViews++;
-	coverage.ownedSurfaces += drawnSurfaces;
+	view->backendCompleted[ backend ] = true;
+	// Dynamic work nested inside a special view has executed, but ownership is
+	// not visible until the outermost special-view transaction completes every
+	// descendant draw range and capture/direct edge.
+	return view->nestedInSpecialView
+		|| R_ClassicCinematicPostDomain_PublishSingleOwned( *view, backend );
+}
+
+void R_ClassicCinematicPostDomain_RecordSubviewTransactionFallback(
+		const viewDef_t *memberViewDef,
+		classicCinematicPostDomainBackend_t backend,
+		classicCinematicPostDomainFailure_t failure, int detail ) {
+	if ( backend < CLASSIC_CINEMATIC_POST_BACKEND_GL
+			|| backend >= CLASSIC_CINEMATIC_POST_BACKEND_COUNT ) {
+		return;
+	}
+	const classicSubviewDomainView_t *root =
+		R_ClassicCinematicPostDomain_SubviewRoot( memberViewDef );
+	for ( int viewIndex = 0; root != NULL
+			&& viewIndex < rg_classicCinematicPostDomain.viewCount; ++viewIndex ) {
+		classicCinematicPostDomainView_t &view =
+			rg_classicCinematicPostDomain.views[ viewIndex ];
+		if ( R_ClassicCinematicPostDomain_IsSubviewTransactionMember( view, root ) ) {
+			R_ClassicCinematicPostDomain_RecordSingleFallback( view, backend,
+				failure, detail, false );
+		}
+	}
+}
+
+bool R_ClassicCinematicPostDomain_PublishSubviewTransactionOwned(
+		const viewDef_t *memberViewDef,
+		classicCinematicPostDomainBackend_t backend ) {
+	if ( !R_ClassicCinematicPostDomain_SubviewTransactionCompleted(
+			memberViewDef, backend ) ) {
+		return false;
+	}
+	const classicSubviewDomainView_t *root =
+		R_ClassicCinematicPostDomain_SubviewRoot( memberViewDef );
+	for ( int viewIndex = 0; root != NULL
+			&& viewIndex < rg_classicCinematicPostDomain.viewCount; ++viewIndex ) {
+		classicCinematicPostDomainView_t &view =
+			rg_classicCinematicPostDomain.views[ viewIndex ];
+		if ( R_ClassicCinematicPostDomain_IsSubviewTransactionMember( view, root )
+				&& !R_ClassicCinematicPostDomain_PublishSingleOwned( view, backend ) ) {
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -539,6 +831,9 @@ const char *ClassicCinematicPostDomainFailure_Name(
 	case CLASSIC_CINEMATIC_POST_FAILURE_SOURCE_PACKET_MISMATCH: return "sourcePacketMismatch";
 	case CLASSIC_CINEMATIC_POST_FAILURE_INVALID_SOURCE_SURFACE: return "invalidSourceSurface";
 	case CLASSIC_CINEMATIC_POST_FAILURE_CINEMATIC_CLOCK: return "cinematicClock";
+	case CLASSIC_CINEMATIC_POST_FAILURE_MISSING_SPECIAL_VIEW: return "missingSpecialView";
+	case CLASSIC_CINEMATIC_POST_FAILURE_SPECIAL_VIEW_TRANSACTION_REJECTED: return "specialViewTransactionRejected";
+	case CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_SPECIAL_VIEW_INCOMPLETE: return "backendSpecialViewIncomplete";
 	case CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY: return "backendNotReady";
 	case CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED: return "backendRejected";
 	case CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_COVERAGE_MISMATCH: return "backendCoverageMismatch";
@@ -551,12 +846,22 @@ bool RendererClassicCinematicPostDomain_RunSelfTest( void ) {
 	const classicCinematicPostDomainStats_t &resetStats =
 		R_ClassicCinematicPostDomain_Stats();
 	if ( CLASSIC_CINEMATIC_POST_DOMAIN_MAX_VIEWS != SCENE_PACKET_MAX_SCENES
+			|| !R_ClassicCinematicPostDomain_RangeFits( 7, 1, 8 )
+			|| R_ClassicCinematicPostDomain_RangeFits( 8, 1, 8 )
+			|| R_ClassicCinematicPostDomain_RangeFits(
+				( std::numeric_limits<int>::max )(), 1,
+				( std::numeric_limits<int>::max )() )
+			|| !R_ClassicCinematicPostDomain_RangeContains( 2, 3, 4, 1 )
+			|| R_ClassicCinematicPostDomain_RangeContains( 2, 3, 5, 1 )
 			|| idStr::Cmp( ClassicCinematicPostDomainFailure_Name(
 				CLASSIC_CINEMATIC_POST_FAILURE_SOURCE_PACKET_MISMATCH ),
 				"sourcePacketMismatch" )
 			|| idStr::Cmp( ClassicCinematicPostDomainFailure_Name(
 				CLASSIC_CINEMATIC_POST_FAILURE_CINEMATIC_CLOCK ),
 				"cinematicClock" )
+			|| idStr::Cmp( ClassicCinematicPostDomainFailure_Name(
+				CLASSIC_CINEMATIC_POST_FAILURE_SPECIAL_VIEW_TRANSACTION_REJECTED ),
+				"specialViewTransactionRejected" )
 			|| resetStats.prepared || resetStats.frameValid || resetStats.overflow
 			|| resetStats.views != 0 || resetStats.readyViews != 0
 			|| R_ClassicCinematicPostDomain_ReadyForBackend( NULL,
@@ -585,9 +890,17 @@ bool RendererClassicCinematicPostDomain_RunSelfTest( void ) {
 	view.ready = true;
 	const std::uint64_t firstHash = R_ClassicCinematicPostDomain_HashView( view );
 	view.cinematicTimeMilliseconds++;
-	const bool hashSensitive = R_ClassicCinematicPostDomain_HashView( view )
+	const bool clockHashSensitive = R_ClassicCinematicPostDomain_HashView( view )
 		!= firstHash;
 	view.cinematicTimeMilliseconds--;
+	view.nestedInSpecialView = true;
+	view.specialRootScenePacketIndex = 11;
+	view.specialNestingDepth = 2;
+	const bool nestingHashSensitive =
+		R_ClassicCinematicPostDomain_HashView( view ) != firstHash;
+	view.nestedInSpecialView = false;
+	view.specialRootScenePacketIndex = 0;
+	view.specialNestingDepth = 0;
 	view.hash = firstHash;
 	rg_classicCinematicPostDomain.viewCount = 1;
 	memset( &rg_classicCinematicPostDomain.stats, 0,
@@ -622,5 +935,5 @@ bool RendererClassicCinematicPostDomain_RunSelfTest( void ) {
 			.coverageMismatches == 1
 		&& stats.backend[ CLASSIC_CINEMATIC_POST_BACKEND_VULKAN ].fallbackViews == 1;
 	R_ClassicCinematicPostDomain_ResetFrame();
-	return hashSensitive && coverageContract;
+	return clockHashSensitive && nestingHashSensitive && coverageContract;
 }

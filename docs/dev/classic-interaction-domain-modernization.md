@@ -2,8 +2,10 @@
 
 ## Status
 
-The fixed-classic interaction transaction now contains two complete Milestone D
-ownership corridors behind the default-off
+The fixed-classic interaction transaction is **Implemented (default-off;
+native/static and controlled local OpenGL/Vulkan qualification recorded; stock,
+final-package, and platform release promotion pending)**. It contains two
+complete Milestone D ownership corridors behind the
 `r_rendererSharedWorldInteraction 1` setting:
 
 - the previously completed unshadowed interaction corridor; and
@@ -300,11 +302,11 @@ runtime acceptance set. Every stock-profile case still requires fixed-camera
 and reference qualification, including projected, point, CSM/parallel, dynamic,
 perforated, hybrid, and translucent-moment fallback. Clean committed-source
 recapture, a freshly staged final package, target-platform coverage, and driver coverage are still required
-before the default-off experimental option can be promoted. Retain reports,
+before the default-off option can be promoted. Retain reports,
 logs, engine screenshots, image hashes/deltas, exact per-map records, final
 poses, and Vulkan validation results with that release evidence.
 
-## Remaining Milestone D work
+## Milestone D completion and release-promotion boundary
 
 The shared root GUI, world ambient/material, fixed-classic interaction, and
 fog/blend corridors are four independently guarded complete domains. The
@@ -322,13 +324,18 @@ finalized completed or intentional-empty CPU result, while receivers explicitly
 retain source geometry through the `notApplicable` role. Unsupported, skipped,
 failed, stale, or mismatched records still reject the complete interaction view.
 
-The completed cinematic/authored-post corridor now seals eligible root
-video/audio views and complete post tails while retaining the established
-dynamic-stage executor; see [Shared Classic Cinematic and Authored-Post
-Transaction](classic-cinematic-post-domain-modernization.md). Render-demo and
-Raven special-frame ownership now have a dedicated
-[transaction](classic-special-frame-domain-modernization.md). The completed
-direct special-subview corridor has its [dedicated
-transaction](classic-subview-domain-modernization.md). Unsupported special-view
-nesting ownership is next. Temporal presentation and PBR/advanced-
-lighting work must continue to wait for coherent classic-frame ownership.
+The completed cinematic/authored-post corridor seals eligible root video/audio
+views and complete post tails while retaining the established dynamic-stage
+executor. Eligible authored-post tails inside a sealed special-view tree now
+complete and publish with that tree's root transaction; see [Shared Classic
+Cinematic and Authored-Post
+Transaction](classic-cinematic-post-domain-modernization.md) and [Shared
+Special-Subview Transaction](classic-subview-domain-modernization.md).
+Render-demo and Raven special-frame ownership have a dedicated
+[transaction](classic-special-frame-domain-modernization.md).
+
+These independently guarded corridors complete Milestone D's scoped
+implementation. They do not make every classic-frame category or the aggregate
+modern-visible renderer shared-owned. Stock-scene, clean-package, human-review,
+and target-platform/driver evidence remain release-promotion gates; temporal
+presentation is the next roadmap milestone.

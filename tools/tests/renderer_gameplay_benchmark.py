@@ -207,6 +207,15 @@ DEFORM_SCENES: dict[str, dict[str, Any]] = {
     },
 }
 
+MILESTONE_D_SCENES: dict[str, dict[str, Any]] = {
+    "sp-milestone-d-nested-dynamic": {
+        "mode": "SP",
+        "map": "maps/tools/milestone_d_nested_dynamic",
+        "purpose": "temporary stock-derived mirror fixture with an authored post/video tail visible only in the captured child view",
+        "path": "spawn-static",
+    },
+}
+
 # Stock-map qualification candidates complement the tightly controlled
 # tools-map case.  The ordinary shadow-regression scenes do not by themselves
 # establish a fixed camera or feature-bearing interaction view, so every target
@@ -278,6 +287,7 @@ ALL_SCENES = {
     **INTERACTION_SCENES,
     **FOG_BLEND_SCENES,
     **DEFORM_SCENES,
+    **MILESTONE_D_SCENES,
     **INTERACTION_SHADOW_SCENES,
     **LOAD_REGRESSION_SCENES,
 }
@@ -471,6 +481,61 @@ PROFILE_DEFAULTS = {
             ("r_skipNewAmbient", "0"),
             ("r_skipDeforms", "0"),
             ("r_skipRender", "0"),
+        ),
+    },
+    "milestone-d-nested-dynamic": {
+        "cases": tuple(MILESTONE_D_SCENES.keys()),
+        "tiers": ("auto",),
+        "maxfps": ("240",),
+        "swap": ("0",),
+        "display": ("windowed",),
+        "shadows": ("default",),
+        "launchCvars": (
+            ("com_fixedTic", "1"),
+            ("g_stopTime", "1"),
+            ("in_mouse", "0"),
+            ("ui_showGun", "0"),
+            ("g_showHud", "0"),
+            ("r_multiSamples", "0"),
+        ),
+        "execCommands": (
+            "g_stopTime 1",
+            "noclip",
+            "setviewpos 0 -384 96 0 90 0",
+        ),
+        "cvars": (
+            # Let map startup advance through the ordinary settle interval,
+            # then freeze the exact child-view video clock before sampling.
+            ("g_stopTime", "0"),
+            ("r_rendererSharedSubview", "1"),
+            ("r_rendererSharedCinematicPost", "1"),
+            ("g_renderFastNoPost", "1"),
+            ("g_renderFastNoPostDirect", "1"),
+            ("g_renderCasUpscale", "0"),
+            ("r_postAA", "0"),
+            ("r_screenFraction", "100"),
+            ("r_bloom", "0"),
+            ("r_motionBlur", "0"),
+            ("r_ssao", "0"),
+            ("r_hdrToneMap", "0"),
+            ("r_hdrDebugView", "0"),
+            ("r_skipSubviews", "0"),
+            ("r_useLightGrid", "0"),
+            ("r_skipPlayerVisibilityEffects", "1"),
+            ("r_portalsDistanceCull", "0"),
+            ("r_forceAmbient", "0"),
+            ("r_celShading", "0"),
+            ("r_celShadingWorld", "0"),
+            ("r_showOverDraw", "0"),
+            ("r_singleTriangle", "0"),
+            ("r_skipAmbient", "0"),
+            ("r_skipNewAmbient", "0"),
+            ("r_skipDeforms", "0"),
+            ("r_skipRender", "0"),
+            ("r_skipRenderContext", "0"),
+            ("r_skipDynamicTextures", "0"),
+            ("r_skipCopyTexture", "0"),
+            ("r_skipPostProcess", "0"),
         ),
     },
     "interaction": {

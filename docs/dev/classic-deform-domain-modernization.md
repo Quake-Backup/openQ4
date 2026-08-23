@@ -2,8 +2,9 @@
 
 ## Status
 
-The Milestone D material-deform dependency is **Experimental (implemented,
-default-off; local qualification recorded below; release promotion pending)**.
+The Milestone D material-deform dependency is **Implemented (default-off;
+controlled local OpenGL/Vulkan qualification recorded below; freshly staged
+final package and platform release promotion pending)**.
 `r_rendererSharedDeform 1` allows an existing shared classic domain to consume
 the final geometry produced by the established CPU material-deform path when
 that result has a complete sealed provenance record. The classic front-end
@@ -221,19 +222,24 @@ qualification. Clean committed-source recapture, a freshly staged final
 package, human image review, and target-platform/driver coverage remain
 separate release-promotion gates.
 
-## Remaining Milestone D work
+## Milestone D completion and release-promotion boundary
 
 Root GUI, world ambient/material, fixed-classic interaction, and fog/blend can
 now consume sealed classic material-deform results through one independent
 default-off dependency. This does not make the complete frame modern-owned.
 
-The completed cinematic/authored-post corridor now seals eligible root
-video/audio views and complete post tails while retaining the existing dynamic
-stage executors; see [Shared Classic Cinematic and Authored-Post
-Transaction](classic-cinematic-post-domain-modernization.md). Render-demo and
-Raven special-frame ownership now have a dedicated
-[transaction](classic-special-frame-domain-modernization.md). The completed
-direct special-subview corridor has its [dedicated
-transaction](classic-subview-domain-modernization.md). Unsupported special-view
-nesting ownership is next. Temporal presentation and PBR/advanced-
-lighting work remain downstream of coherent classic-frame ownership.
+The completed cinematic/authored-post corridor seals eligible root video/audio
+views and complete post tails while retaining the existing dynamic stage
+executors. Eligible authored-post tails inside a sealed special-view tree now
+complete and publish with that tree's root transaction; see [Shared Classic
+Cinematic and Authored-Post
+Transaction](classic-cinematic-post-domain-modernization.md) and [Shared
+Special-Subview Transaction](classic-subview-domain-modernization.md).
+Render-demo and Raven special-frame ownership have a dedicated
+[transaction](classic-special-frame-domain-modernization.md).
+
+These independently guarded corridors complete Milestone D's scoped
+implementation. They do not make every classic-frame category or the aggregate
+modern-visible renderer shared-owned. Clean-package, human-review, and
+target-platform/driver evidence remain release-promotion gates; temporal
+presentation is the next roadmap milestone.

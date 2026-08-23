@@ -189,6 +189,8 @@ jobs:
             tools/tests/renderer_pbr_materials.py \
             tools/tests/renderer_classic_gui_domain.py \
             tools/tests/renderer_classic_cinematic_post_domain.py \
+            tools/tests/renderer_milestone_d_acceptance.py \
+            tools/tests/renderer_milestone_d_fixture.py \
             tools/tests/renderer_classic_special_frame_domain.py \
             tools/tests/renderer_classic_world_ambient_domain.py \
             tools/tests/renderer_classic_interaction_domain.py \

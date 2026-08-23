@@ -787,6 +787,9 @@ static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
 		// the remaining parent edge into a mixed shared/classic ownership case.
 		return NULL;
 	}
+	const bool nestedDynamicReady =
+		R_ClassicCinematicPostDomain_SubviewTransactionReady( viewDef,
+			CLASSIC_CINEMATIC_POST_BACKEND_GL );
 	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
 			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
 				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) )
@@ -797,10 +800,12 @@ static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
 			!view->ready ? view->failure
 				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
 					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
-					: ( !R_ClassicSubviewDomain_ReadyForBackend( *view,
+					: ( !nestedDynamicReady
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE
+						: ( !R_ClassicSubviewDomain_ReadyForBackend( *view,
 						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL )
 						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE
-						: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ) ),
+						: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ) ) ),
 			!view->ready ? view->failureDetail : 1 );
 		return NULL;
 	}
@@ -813,6 +818,12 @@ static void RB_DrawSharedDirectSubview( const void *data,
 	// semantics select the mature full 3D executor, then ownership is published
 	// only after that complete child view returns.
 	RB_DrawView( data );
+	if ( view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A nested cinematic/post range rejected while the mature child-view
+		// executor was active. Its rollback already covered this complete tree.
+		return;
+	}
 	if ( !R_ClassicSubviewDomain_RecordDirectOwned( view.viewDef,
 			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ) ) {
 		common->Warning( "OpenGL: shared direct subview coverage rejected after committed view" );
@@ -915,6 +926,11 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				|| r_rendererSharedInWorldGui.GetBool() ) {
 			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
 		}
+		// Special-view topology must be sealed before cinematic/post ranges can
+		// join one of its atomic root transactions.
+		if ( r_rendererSharedSubview.GetBool() ) {
+			R_ClassicSubviewDomain_PrepareFrame( *scenePackets );
+		}
 		if ( r_rendererSharedCinematicPost.GetBool() ) {
 			R_ClassicCinematicPostDomain_PrepareFrame( *scenePackets );
 		}
@@ -929,9 +945,6 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		}
 		if ( r_rendererSharedWorldFogBlend.GetBool() ) {
 			R_ClassicFogBlendDomain_PrepareFrame( *scenePackets );
-		}
-		if ( r_rendererSharedSubview.GetBool() ) {
-			R_ClassicSubviewDomain_PrepareFrame( *scenePackets );
 		}
 		R_ModernGLExecutor_PrepareFrame( *scenePackets, legacyGraph );
 		rg_modernStatMirrorsZeroed = false;	// active frame wrote real stats; re-zero on next dormant frame
@@ -976,10 +989,14 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	for ( ; cmds ; cmds = (const emptyCommand_t *)cmds->next ) {
 		if ( pendingSharedSubview != NULL
 				&& cmds->commandId != RC_COPY_RENDER ) {
-			R_ClassicSubviewDomain_RecordBackendFallback(
-				pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
-				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
-				static_cast<int>( cmds->commandId ) );
+			if ( pendingSharedSubview->backendOutcome[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+					== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+				R_ClassicSubviewDomain_RecordBackendFallback(
+					pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+					CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+					static_cast<int>( cmds->commandId ) );
+			}
 			pendingSharedSubview = NULL;
 		}
 		switch ( cmds->commandId ) {
@@ -1108,6 +1125,9 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			const copyRenderCommand_t *copy =
 				reinterpret_cast<const copyRenderCommand_t *>( cmds );
 			const bool sharedCaptureMatches = pendingSharedSubview != NULL
+				&& pendingSharedSubview->backendOutcome[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+					== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
 				&& !r_skipCopyTexture.GetBool()
 				&& R_ClassicSubviewDomain_CaptureMatches( *pendingSharedSubview,
 					copy->image, copy->x, copy->y, copy->imageWidth,
@@ -1116,7 +1136,10 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				? RB_ClassicSubview_CopyOwned( *pendingSharedSubview )
 				: ( !r_skipCopyTexture.GetBool()
 					? ( RB_CopyRender( cmds ), true ) : false );
-			if ( pendingSharedSubview != NULL ) {
+			if ( pendingSharedSubview != NULL
+					&& pendingSharedSubview->backendOutcome[
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+						== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
 				if ( sharedCaptureMatches && copied ) {
 					R_ClassicSubviewDomain_RecordOwned(
 						pendingSharedSubview->viewDef,
@@ -1139,8 +1162,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
 						CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 2 );
 				}
-				pendingSharedSubview = NULL;
 			}
+			pendingSharedSubview = NULL;
 			R_RendererMetrics_EndGpuTimer();
 			c_copyRenders++;
 			break;
@@ -1152,9 +1175,13 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	}
 
 	if ( pendingSharedSubview != NULL ) {
-		R_ClassicSubviewDomain_RecordBackendFallback(
-			pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
-			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 3 );
+		if ( pendingSharedSubview->backendOutcome[
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+				== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+			R_ClassicSubviewDomain_RecordBackendFallback(
+				pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 3 );
+		}
 	}
 	R_ClassicSpecialFrameDomain_FinalizeBackendFrame(
 		CLASSIC_SPECIAL_FRAME_BACKEND_GL );

@@ -7,6 +7,7 @@ import argparse
 import stat
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from openq4_pak import copy_file_if_changed, is_relative_to
 from windows_runtime import cleanup_windows_stage_target, is_windows_host
@@ -23,14 +24,40 @@ ROOT_RUNTIME_PATTERNS = (
     "renderer-vk_*.pdb",
     "OpenAL32.dll",
 )
+POSIX_ENGINE_RUNTIME_PATTERNS = (
+    "openQ4-client_*",
+    "openQ4-ded_*",
+)
+LINUX_ROOT_RUNTIME_PATTERNS = (
+    *POSIX_ENGINE_RUNTIME_PATTERNS,
+    "renderer-gl_*.so",
+    "renderer-vk_*.so",
+)
+MACOS_ROOT_RUNTIME_PATTERNS = (
+    *POSIX_ENGINE_RUNTIME_PATTERNS,
+    "renderer-vk_*.dylib",
+)
+COMMON_GAME_RUNTIME_PATTERNS = (
+    "mod.json",
+    "pak0.pk4",
+    "pak1.pk4",
+)
 GAME_RUNTIME_PATTERNS = (
     "game-sp_*.dll",
     "game-sp_*.pdb",
     "game-mp_*.dll",
     "game-mp_*.pdb",
-    "mod.json",
-    "pak0.pk4",
-    "pak1.pk4",
+    *COMMON_GAME_RUNTIME_PATTERNS,
+)
+LINUX_GAME_RUNTIME_PATTERNS = (
+    "game-sp_*.so",
+    "game-mp_*.so",
+    *COMMON_GAME_RUNTIME_PATTERNS,
+)
+MACOS_GAME_RUNTIME_PATTERNS = (
+    "game-sp_*.dylib",
+    "game-mp_*.dylib",
+    *COMMON_GAME_RUNTIME_PATTERNS,
 )
 NON_RUNTIME_PATTERNS = (
     "*.exp",
@@ -39,6 +66,59 @@ NON_RUNTIME_PATTERNS = (
     "*.map",
     "*.zip",
 )
+WINDOWS_FOREIGN_RUNTIME_PATTERNS = (
+    "*.so",
+    "*.dylib",
+)
+POSIX_ENGINE_FOREIGN_RUNTIME_PATTERNS = (
+    "openQ4-client_*.exe",
+    "openQ4-client_*.pdb",
+    "openQ4-client_*.dll",
+    "openQ4-client_*.so",
+    "openQ4-client_*.dylib",
+    "openQ4-ded_*.exe",
+    "openQ4-ded_*.pdb",
+    "openQ4-ded_*.dll",
+    "openQ4-ded_*.so",
+    "openQ4-ded_*.dylib",
+)
+
+
+class RuntimeStagePolicy(NamedTuple):
+    root_copy_patterns: tuple[str, ...]
+    game_copy_patterns: tuple[str, ...]
+    root_copy_exclude_patterns: tuple[str, ...]
+    root_remove_patterns: tuple[str, ...]
+    game_remove_patterns: tuple[str, ...]
+
+
+def runtime_stage_policy(platform_name: str) -> RuntimeStagePolicy:
+    """Return the exact copy/cleanup policy for a supported host platform."""
+    if platform_name == "win32":
+        return RuntimeStagePolicy(
+            ROOT_RUNTIME_PATTERNS,
+            GAME_RUNTIME_PATTERNS,
+            (),
+            WINDOWS_FOREIGN_RUNTIME_PATTERNS,
+            WINDOWS_FOREIGN_RUNTIME_PATTERNS,
+        )
+    if platform_name == "linux":
+        return RuntimeStagePolicy(
+            LINUX_ROOT_RUNTIME_PATTERNS,
+            LINUX_GAME_RUNTIME_PATTERNS,
+            POSIX_ENGINE_FOREIGN_RUNTIME_PATTERNS,
+            (),
+            (),
+        )
+    if platform_name == "darwin":
+        return RuntimeStagePolicy(
+            MACOS_ROOT_RUNTIME_PATTERNS,
+            MACOS_GAME_RUNTIME_PATTERNS,
+            POSIX_ENGINE_FOREIGN_RUNTIME_PATTERNS,
+            (),
+            (),
+        )
+    raise RuntimeError(f"unsupported fast-stage host platform: {platform_name}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -134,13 +214,32 @@ def remove_matches(root: Path, patterns: tuple[str, ...]) -> list[Path]:
     return removed
 
 
-def copy_matches(source_root: Path, destination_root: Path, patterns: tuple[str, ...]) -> list[Path]:
+def remove_non_runtime_files(
+    install_dir: Path,
+    install_game_dir: Path,
+    policy: RuntimeStagePolicy,
+) -> list[Path]:
+    removed = remove_matches(install_dir, NON_RUNTIME_PATTERNS)
+    removed += remove_matches(install_game_dir, NON_RUNTIME_PATTERNS)
+    removed += remove_matches(install_dir, policy.root_remove_patterns)
+    removed += remove_matches(install_game_dir, policy.game_remove_patterns)
+    return removed
+
+
+def copy_matches(
+    source_root: Path,
+    destination_root: Path,
+    patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...] = (),
+) -> list[Path]:
     copied: list[Path] = []
     if not source_root.is_dir():
         return copied
     for pattern in patterns:
         for source in sorted(source_root.glob(pattern)):
             if not source.is_file():
+                continue
+            if any(source.match(exclude) for exclude in exclude_patterns):
                 continue
             destination = destination_root / source.name
             if copy_if_changed(source, destination):
@@ -171,10 +270,17 @@ def main(argv: list[str]) -> int:
             if is_windows_host()
             else {"removed_stale_files": [], "removed_empty_directories": []}
         )
-        removed = remove_matches(install_dir, NON_RUNTIME_PATTERNS)
-        removed += remove_matches(install_game_dir, NON_RUNTIME_PATTERNS + ("*.so", "*.dylib"))
-        copied = copy_matches(build_dir, install_dir, ROOT_RUNTIME_PATTERNS)
-        copied += copy_matches(build_game_dir, install_game_dir, GAME_RUNTIME_PATTERNS)
+        policy = runtime_stage_policy(sys.platform)
+        removed = remove_non_runtime_files(install_dir, install_game_dir, policy)
+        copied = copy_matches(
+            build_dir,
+            install_dir,
+            policy.root_copy_patterns,
+            policy.root_copy_exclude_patterns,
+        )
+        copied += copy_matches(
+            build_game_dir, install_game_dir, policy.game_copy_patterns
+        )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

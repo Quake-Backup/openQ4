@@ -2,8 +2,10 @@
 
 ## Status
 
-The first Milestone D classic-frame domain is implemented as an experimental,
-default-off path for complete fixed-function 2D GUI views. It is now joined by
+The first Milestone D classic-frame domain is **Implemented (default-off; local
+Windows OpenGL/Vulkan implementation evidence recorded; final-package and
+platform release qualification pending)** for complete fixed-function 2D GUI
+views. It is now joined by
 the separate [shared in-world GUI domain](classic-inworld-gui-domain-modernization.md),
 [shared world ambient/material domain](classic-world-ambient-domain-modernization.md)
 and [shared interaction-lighting domain](classic-interaction-domain-modernization.md),
@@ -147,7 +149,7 @@ reported no prepared shared views. Visual inspection of all four engine captures
 showed the complete stock scene and crosshair. These are development-worktree
 results, not clean-package or cross-platform release-promotion evidence.
 
-## Remaining Milestone D work
+## Milestone D completion and release-promotion boundary
 
 This domain meets Milestone D's first complete-domain implementation gate; it
 does not make the whole classic frame modern. The second complete-domain
@@ -172,13 +174,17 @@ domain consume a sealed completed or intentional-empty CPU deform result; an
 unsupported, skipped, failed, stale, or mismatched record still rolls the
 complete GUI view back before drawing.
 
-Subview and render-demo ownership remain explicit classic or experimental
-domains. Cinematic playback and authored post-process tails now have their own
-sealed default-off transaction; see [Shared Classic Cinematic and Authored-Post
-Transaction](classic-cinematic-post-domain-modernization.md). The completed
-direct special-subview corridor has its [dedicated
-transaction](classic-subview-domain-modernization.md); unsupported special-view
-nesting ownership is next. Render-demo and Raven special-frame work
-now has its dedicated [transaction](classic-special-frame-domain-modernization.md).
-Temporal and PBR/advanced-lighting milestones remain downstream of that
-classic-frame work.
+Subview, cinematic/authored-post, and render-demo/Raven special-frame ownership
+now have dedicated default-off transactions. Eligible authored-post tails
+inside a sealed special-view tree keep their own semantic records but publish
+or roll back atomically with that tree; see [Shared Classic Cinematic and
+Authored-Post Transaction](classic-cinematic-post-domain-modernization.md),
+[Shared Special-Subview Transaction](classic-subview-domain-modernization.md),
+and [Shared Render-Demo and Raven Special-Frame
+Transaction](classic-special-frame-domain-modernization.md).
+
+These independently guarded corridors complete Milestone D's scoped
+implementation. They do not make the aggregate `r_rendererModernVisible` path
+or every classic-frame category shared-owned. Final-package, human-review, and
+target-platform/driver promotion evidence remains separate; temporal
+presentation is the next roadmap milestone.

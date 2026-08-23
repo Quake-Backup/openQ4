@@ -90,7 +90,9 @@ def validate_domain_contract() -> None:
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_PARENT_FALLBACK",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CHILD_FALLBACK",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CINEMATIC_POST_FALLBACK",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE",
+        "CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE",
         "CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH",
         "CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL",
         "CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN",
@@ -149,8 +151,39 @@ def validate_domain_contract() -> None:
         "fallbackViews",
         "nestedCommandOrder",
         "backendNestingIncomplete",
+        "nestedCinematicPostFallback",
+        "backendNestedCinematicPostIncomplete",
+        "!domain.stats.prepared || domain.stats.overflow",
+        "R_ClassicCinematicPostDomain_SubviewTransactionReady",
+        "R_ClassicCinematicPostDomain_SubviewTransactionCompleted",
+        "R_ClassicCinematicPostDomain_PublishSubviewTransactionOwned",
+        "R_ClassicCinematicPostDomain_RecordSubviewTransactionFallback",
+        "classic subview and cinematic/post GL backend ordinals must match",
+        "classic subview and cinematic/post Vulkan backend ordinals must match",
+        "classic subview and cinematic/post backend counts must match",
+        "emptyCinematicFrame.MarkBackendDerived()",
+        "R_ClassicCinematicPostDomain_PrepareFrame( emptyCinematicFrame )",
     ):
         require(source, token, "bounded subview admission and fallback")
+    ready = braced_body(
+        source,
+        "bool R_ClassicSubviewDomain_ReadyForBackend(",
+        "subview backend readiness",
+    )
+    require(ready, "view.backendCompleted[backend]", "completed-view readiness seal")
+    for marker, context in (
+        ("bool R_ClassicSubviewDomain_RecordOwned(", "capture ownership reporting"),
+        ("bool R_ClassicSubviewDomain_RecordDirectOwned(", "direct ownership reporting"),
+    ):
+        reporter = braced_body(source, marker, context)
+        require(
+            reporter,
+            "|| view->backendCompleted[backend]",
+            f"{context} pre-publication duplicate guard",
+        )
+    require(source, "nestedChildReadyInitially", "nested duplicate native regression")
+    require(source, "nestedChildNotReadyTwice", "nested duplicate native regression")
+    require(source, "nestedDuplicateSealed", "nested duplicate native regression")
 
 
 def validate_backend_capture_ownership() -> None:
@@ -170,6 +203,7 @@ def validate_backend_capture_ownership() -> None:
             "R_ClassicSubviewDomain_RecordBackendFallback",
             "R_ClassicSubviewDomain_ReadyForBackend",
             "pendingSharedSubview",
+            "== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED",
         ):
             require(source, token, f"{backend} capture ownership")
         copy_case = braced_body(source, "case RC_COPY_RENDER:", f"{backend} copy transaction")

@@ -3,8 +3,19 @@
 
 #include "tr_local.h"
 #include "ClassicSubviewDomain.h"
+#include "ClassicCinematicPostDomain.h"
 
 #include <cstring>
+
+static_assert( static_cast<int>( CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL )
+		== static_cast<int>( CLASSIC_CINEMATIC_POST_BACKEND_GL ),
+	"classic subview and cinematic/post GL backend ordinals must match" );
+static_assert( static_cast<int>( CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN )
+		== static_cast<int>( CLASSIC_CINEMATIC_POST_BACKEND_VULKAN ),
+	"classic subview and cinematic/post Vulkan backend ordinals must match" );
+static_assert( static_cast<int>( CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT )
+		== static_cast<int>( CLASSIC_CINEMATIC_POST_BACKEND_COUNT ),
+	"classic subview and cinematic/post backend counts must match" );
 
 namespace {
 
@@ -661,6 +672,13 @@ static void RecordFallback( classicSubviewDomainView_t *view,
 				viewIndex == ViewIndex( view ) ? detail : rootIndex );
 		}
 	}
+	if ( rootIndex >= 0 ) {
+		R_ClassicCinematicPostDomain_RecordSubviewTransactionFallback(
+			domain.views[rootIndex].viewDef,
+			static_cast<classicCinematicPostDomainBackend_t>( backend ),
+			CLASSIC_CINEMATIC_POST_FAILURE_SPECIAL_VIEW_TRANSACTION_REJECTED,
+			detail );
+	}
 }
 
 static void PublishOwned( classicSubviewDomainView_t &view,
@@ -734,6 +752,22 @@ static bool FinalizeTransaction( classicSubviewDomainView_t &view,
 		RecordFallback( &view, backend,
 			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE,
 			memberCount );
+		return false;
+	}
+	if ( !R_ClassicCinematicPostDomain_SubviewTransactionCompleted(
+			domain.views[rootIndex].viewDef,
+			static_cast<classicCinematicPostDomainBackend_t>( backend ) ) ) {
+		RecordFallback( &view, backend,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE,
+			rootIndex );
+		return false;
+	}
+	if ( !R_ClassicCinematicPostDomain_PublishSubviewTransactionOwned(
+			domain.views[rootIndex].viewDef,
+			static_cast<classicCinematicPostDomainBackend_t>( backend ) ) ) {
+		RecordFallback( &view, backend,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE,
+			rootIndex );
 		return false;
 	}
 	for ( int viewIndex = 0; viewIndex < domain.viewCount; ++viewIndex ) {
@@ -906,7 +940,9 @@ bool R_ClassicSubviewDomain_ReadyForBackend(
 		classicSubviewDomainBackend_t backend ) {
 	if ( backend < CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL
 			|| backend >= CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT
+			|| !domain.stats.prepared || domain.stats.overflow
 			|| !view.ready
+			|| view.backendCompleted[backend]
 			|| view.backendOutcome[backend]
 				!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
 			|| !R_ClassicSubviewDomain_ViewSemanticsMatch( view ) ) {
@@ -927,7 +963,8 @@ bool R_ClassicSubviewDomain_ReadyForBackend(
 			return false;
 		}
 	}
-	return true;
+	return R_ClassicCinematicPostDomain_SubviewTransactionReady( view.viewDef,
+		static_cast<classicCinematicPostDomainBackend_t>( backend ) );
 }
 
 bool R_ClassicSubviewDomain_CaptureMatches(
@@ -953,9 +990,10 @@ bool R_ClassicSubviewDomain_RecordOwned( const viewDef_t *viewDef,
 		RecordFallback( view, backend, CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
 		return false;
 	}
-	if ( view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+	if ( view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+			|| view->backendCompleted[backend] ) {
 		domain.stats.backend[backend].duplicateReports++;
-		return view->backendOutcome[backend] == CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
+		return view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK
 			&& R_ClassicSubviewDomain_CaptureMatches( *view, image, x, y, width,
 				height, cubeFace, copyDepth );
 	}
@@ -988,9 +1026,10 @@ bool R_ClassicSubviewDomain_RecordDirectOwned( const viewDef_t *viewDef,
 		RecordFallback( view, backend, CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
 		return false;
 	}
-	if ( view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+	if ( view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+			|| view->backendCompleted[backend] ) {
 		domain.stats.backend[backend].duplicateReports++;
-		return view->backendOutcome[backend] == CLASSIC_SUBVIEW_DOMAIN_BACKEND_OWNED
+		return view->backendOutcome[backend] != CLASSIC_SUBVIEW_DOMAIN_BACKEND_FALLBACK
 			&& R_ClassicSubviewDomain_ViewSemanticsMatch( *view );
 	}
 	if ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view ) ) {
@@ -1068,10 +1107,12 @@ const char *ClassicSubviewDomainFailure_Name( classicSubviewDomainFailure_t fail
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_COMMAND_ORDER: return "nestedCommandOrder";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_PARENT_FALLBACK: return "nestedParentFallback";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CHILD_FALLBACK: return "nestedChildFallback";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_NESTED_CINEMATIC_POST_FALLBACK: return "nestedCinematicPostFallback";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY: return "backendNotReady";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED: return "backendRejected";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH: return "backendCaptureMismatch";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE: return "backendNestingIncomplete";
+	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE: return "backendNestedCinematicPostIncomplete";
 	case CLASSIC_SUBVIEW_DOMAIN_FAILURE_COUNT:
 	default: return "unknown";
 	}
@@ -1087,6 +1128,7 @@ const char *ClassicSubviewDomainBackend_Name( classicSubviewDomainBackend_t back
 }
 
 bool RendererClassicSubviewDomain_RunSelfTest( void ) {
+	R_ClassicCinematicPostDomain_ResetFrame();
 	if ( CLASSIC_SUBVIEW_DOMAIN_MAX_VIEWS != SCENE_PACKET_MAX_SUBVIEW_CAPTURES
 			|| idStr::Cmp( ClassicSubviewDomainKind_Name(
 				CLASSIC_SUBVIEW_DOMAIN_KIND_REMOTE_CAMERA ), "remoteCamera" ) != 0
@@ -1101,10 +1143,20 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 			|| idStr::Cmp( ClassicSubviewDomainFailure_Name(
 				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE ),
 				"backendNestingIncomplete" ) != 0
+			|| idStr::Cmp( ClassicSubviewDomainFailure_Name(
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE ),
+				"backendNestedCinematicPostIncomplete" ) != 0
 			|| idStr::Cmp( ClassicSubviewDomainBackend_Name(
 				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ), "Vulkan" ) != 0 ) {
 		return false;
 	}
+	// Prepare a valid empty companion domain so standalone subview cases also
+	// exercise the joint-domain vacuous-success contract, regardless of the
+	// caller's live cinematic/post CVar state.
+	idScenePacketFrame emptyCinematicFrame;
+	emptyCinematicFrame.Clear();
+	emptyCinematicFrame.MarkBackendDerived();
+	R_ClassicCinematicPostDomain_PrepareFrame( emptyCinematicFrame );
 	R_ClassicSubviewDomain_ResetFrame();
 	viewDef_t viewDef;
 	std::memset( &viewDef, 0, sizeof(viewDef) );
@@ -1123,6 +1175,7 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	view.captureTextureFormat = FMT_DEPTH;
 	view.captureCopyDepth = true;
 	view.captureType = CLASSIC_SUBVIEW_DOMAIN_CAPTURE_DEPTH_CUBEMAP;
+	ResolveNestedOwnership();
 	classicSubviewDomainCaptureType_t classifiedType =
 		CLASSIC_SUBVIEW_DOMAIN_CAPTURE_NONE;
 	const bool cubeDepthTarget = ClassifyCaptureTargetOptions( TT_CUBIC,
@@ -1171,6 +1224,7 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	directView.ready = true;
 	directView.kind = CLASSIC_SUBVIEW_DOMAIN_KIND_DIRECT_MIRROR;
 	CaptureViewSemantics( directView, viewDef );
+	ResolveNestedOwnership();
 	const bool directOwned = R_ClassicSubviewDomain_RecordDirectOwned( &viewDef,
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
 	viewDef.scissor.x1++;
@@ -1181,6 +1235,7 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 	// The second run injects a root failure after the child completes and proves
 	// that the pending child is rolled back with the same transaction.
 	R_ClassicSubviewDomain_ResetFrame();
+	domain.stats.prepared = true;
 	viewDef_t nestedRootDef;
 	viewDef_t nestedChildDef;
 	std::memset( &nestedRootDef, 0, sizeof(nestedRootDef) );
@@ -1210,11 +1265,23 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 		&& nestedChild.nestingDepth == 1
 		&& nestedRoot.rootViewIndex == 1
 		&& nestedRoot.subtreeViewCount == 2;
+	const bool nestedChildReadyInitially = R_ClassicSubviewDomain_ReadyForBackend(
+		nestedChild, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
 	const bool nestedChildCompleted = R_ClassicSubviewDomain_RecordDirectOwned(
 		&nestedChildDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
 	const bool nestedDeferred = nestedChild.backendOutcome[
 		CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
 		== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED;
+	const bool nestedChildNotReadyTwice = !R_ClassicSubviewDomain_ReadyForBackend(
+		nestedChild, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
+	const bool nestedChildDuplicate = R_ClassicSubviewDomain_RecordDirectOwned(
+		&nestedChildDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
+	const bool nestedDuplicateSealed = nestedChildDuplicate
+		&& nestedChild.backendCompleted[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+		&& nestedChild.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			.duplicateReports == 1;
 	const bool nestedRootOwned = R_ClassicSubviewDomain_RecordDirectOwned(
 		&nestedRootDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL );
 	const bool nestedPublished = nestedRootOwned
@@ -1257,8 +1324,11 @@ bool RendererClassicSubviewDomain_RunSelfTest( void ) {
 		&& domain.stats.backend[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
 			.fallbackNestedTransactions == 1;
 	const bool passed = capturePassed && directOwned && semanticMismatch
-		&& nestedTopology && nestedChildCompleted && nestedDeferred && nestedPublished
+		&& nestedTopology && nestedChildReadyInitially
+		&& nestedChildCompleted && nestedDeferred
+		&& nestedChildNotReadyTwice && nestedDuplicateSealed && nestedPublished
 		&& nestedRollback;
 	R_ClassicSubviewDomain_ResetFrame();
+	R_ClassicCinematicPostDomain_ResetFrame();
 	return passed;
 }

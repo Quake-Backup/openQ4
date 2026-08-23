@@ -58,7 +58,7 @@ Automated coverage:
 | `renderer-modern-compatibility-selftest` | Phase 14 modern-visible compatibility coverage for command-category ownership inventory, modern fullscreen GUI readiness, light-grid ownership, explicit post/copy/subview/render-demo/BSE fallback buckets, deterministic render-demo accounting, and `gfxInfo` reporting |
 | `renderer-compatibility-gates-selftest` | Phase 15 fallback-gate coverage for missing UBO, broken MRT, missing timer query, missing buffer storage, rejected debug-context fallback, and synthetic driver-quirk downgrades |
 | `renderer-default-promotion-selftest` | Phase 8 evidence-gated default-promotion coverage for `r_glTier auto`, explicit `r_renderer arb2` escape behavior, compatibility gates, modern-executor readiness, ARB2 rollback availability, missing/incomplete/complete `r_rendererPromotionEvidence`, and `r_rendererModernAutoPromote` sign-off control |
-| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared GUI/world-ambient/world-interaction/world-fog-blend/capture-subview, modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
+| `renderer-default-safety-selftest` | Phase 13 conservative-default coverage for ARB2 default visibility, `r_renderer best` or explicit `r_renderer arb2`, `r_glTier auto`, rollback availability, and default-off shared root/in-world GUI, cinematic/post, special-frame, world-ambient, interaction, fog/blend, subview, and deform corridors plus modern executor, visible, diagnostic, GPU-validation, bindless, shader-reload, and auto-promotion cvars |
 | `renderer-benchmark-selftest` | Phase 16 benchmark coverage for rolling P50/P95/P99 frame-time capture, CPU front-end/visibility/packet/graph/submit/present timings, GPU pass timing fields, upload/draw/light/cluster/fallback counters, benchmark presets, and performance-threshold reporting |
 | `renderer-gpu-driven-selftest` | forced `r_glTier gl43` coverage for GL 4.3 SSBO submit records, compute scissor culling, clustered-bin validation, compacted indirect command generation, CPU/GPU readback comparison, masked multi-draw indirect execution, GPU timer coverage, and `gfxInfo` reporting |
 | `renderer-low-overhead-selftest` | forced `r_glTier gl45` coverage for GL 4.5 DSA graph texture/FBO allocation, DSA sampler creation, named buffer/FBO updates, UBO/SSBO/texture/sampler multi-bind batches, submit-batch compaction, bindless experiment reporting, persistent upload defaults, fence diagnostics, and `gfxInfo` reporting |
@@ -184,7 +184,7 @@ python tools\tests\renderer_gameplay_benchmark.py --profile smoke --maxfps 0 --s
 | renderer escape | `r_renderer best` leaves promotion available; explicit `r_renderer arb2` keeps the ARB2 bridge |
 | compatibility gates | modern baseline features, UBOs, MRT, scene packets, render graph, and Shader Library V2 readiness are available |
 | fallback escape | the ARB2 compatibility bridge remains selectable through `r_renderer arb2` and `r_glTier legacy` |
-| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedInWorldGui`, `r_rendererSharedWorldAmbient`, `r_rendererSharedWorldInteraction`, `r_rendererSharedWorldFogBlend`, `r_rendererSharedSubview`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
+| conservative defaults | `r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; `r_rendererSharedGui`, `r_rendererSharedInWorldGui`, `r_rendererSharedCinematicPost`, `r_rendererSharedSpecialFrame`, `r_rendererSharedWorldAmbient`, `r_rendererSharedWorldInteraction`, `r_rendererSharedWorldFogBlend`, `r_rendererSharedSubview`, `r_rendererSharedDeform`, `r_vkShadowFallbackTest`, `r_rendererModernAutoPromote`, modern executor/submit/visible/pass/debug paths, GPU validation, bindless, and shader reload all remain off in a clean startup |
 | validation evidence | `r_rendererPromotionEvidence` carries the complete Phase 8 token after zero-warning visual, gameplay, RenderDoc, performance, presentation, rollback, and debug-off checks pass |
 | manual sign-off | `r_rendererModernAutoPromote 1` is used only together with a complete `r_rendererPromotionEvidence` token |
 
@@ -217,10 +217,67 @@ These image captures are the comparison set for scenes where deterministic outpu
 | `capture-shared-fog-blend-effect-deltas` | SP | the same fixed controlled scene with matching established `r_skipFogLights 1` and owned `r_skipBlendLights 1` references | **Passed locally:** mixed versus fog-only changes `1,921,110` RGB channels at RMS `36.7624` / maximum `71` on both backends; fog-only versus the outer phase skip changes `2,764,380` channels on GL and `2,764,369` on Vulkan at RMS `61.3216` / maximum `162` |
 | `capture-shared-fog-blend-rollback` | SP | the same controlled stock-asset view with intentional `r_singleTriangle 1` admission blocker | **Passed locally:** `failure=unsupported-state detail=200`, one complete-phase fallback on the active backend, zero committed shared content counters, no shared main-target fog/blend draw, and exact same-settings classic engine-TGA parity on GL and Vulkan |
 | `capture-shared-fog-authored-stock` | SP/MP | a fixed retained camera in an authored stock fog scene such as `game/storage2` or `mp/q4dm10` | **Required; pending:** exact same-backend classic/shared TGA parity, nonempty reconciled fog receiver/cap ownership, material fog-on/off delta, final six-component pose, and clean Vulkan validation results; this does not substitute for controlled blend-light qualification |
-| `capture-shared-subview` | SP | fixed direct-mirror, dynamic mirror/reflection, x-ray, remote-camera, refraction, and nested special-view chains with `r_rendererSharedSubview 0` then `1`, separately on GL and Vulkan | **Required; pending:** exact same-settings engine-TGA parity, nonzero direct/capture and nested-root ownership with zero mismatch/duplicate/untracked counters, plus named zero-commit malformed-semantic, malformed target-aspect, malformed cube-face, and malformed-descendant whole-tree fallback. The corridor owns sealed 2D/cubemap color/depth targets and eligible nested trees; cinematic, in-world GUI, and post views retain separate ownership boundaries. |
+| `capture-shared-subview` | SP | fixed direct-mirror, dynamic mirror/reflection, x-ray, remote-camera, refraction, multi-level nested special-view chains, and qualifying 2D/cubemap color/depth captures with `r_rendererSharedSubview 0` then `1`, separately on GL and Vulkan | **Required; pending:** exact same-settings engine-TGA parity, nonzero direct/capture and root-tree ownership, plus named zero-commit malformed-semantic, target-aspect, cube-face, and descendant rollback. R6 qualifies only the single color-2D capture-backed mirror coupled to the dynamic tail in the next row; it does not qualify these broader forms. In-world GUI retains its separate tagged-subset boundary. |
+| `capture-shared-cinematic-root` | SP | a frozen eligible root `videoMap`/`soundMap` view and an ordinary-root authored-post view with `r_rendererSharedCinematicPost 0` then `1`, separately on GL and Vulkan | **Required; pending:** exact classic/shared engine-TGA parity, fixed cinematic clock, nonzero root/stage/backend ownership, zero mismatch/duplicate counters, and named zero-commit timing/source/backend fallback. The R6 nested fixture is not root-view evidence. |
+| `capture-shared-nested-cinematic-post` | SP | generated `maps/tools/milestone_d_nested_dynamic`: one stock-material capture-backed color-2D mirror plus a frozen stock ROQ and one `_currentRender` authored-post stage visible only in the child view | **Passed final controlled Windows GL/Vulkan acceptance:** all 12 cases pass; all four exact comparisons per API have RMS `0`, maximum delta `0`, and zero differing channels. Both-on normal owns one mirror and one nested cinematic/post transaction on the active backend, with cinematic owned/fallback/mismatch/duplicate `1/0/0/0` and subview owned/fallback `1/0`; both-on skip reports `nestedCinematicPostFallback` with `0/1/0/0` and `0/1`; the inactive backend remains all-zero and independent-CVar cases remain classic-equivalent. Normal versus skip changes 46,359 channels at RMS `2.0073` / maximum `72` on GL and 3,329 channels at RMS `0.2506` / maximum `18` on Vulkan. `currentDepth=0`, so `_currentDepth` remains pending. |
+| `capture-shared-render-demo` | SP | a retained stock render-demo with `r_rendererSharedSpecialFrame 0` then `1` | **Required; pending:** exact classic/shared engine-TGA parity, active-session/demo-version provenance, complete view ownership, and named zero-commit incomplete-session/source/backend fallback |
+| `capture-shared-raven-special-frame` | SP | fixed Raven blur-only, AL-only, and combined blur/AL controller cases | **Required; pending:** exact classic/shared engine-TGA parity, exact nonempty controller mask, all-effects completion before ownership, and named zero-commit resolve/effect/backend fallback |
 | `capture-renderer-visible-selftest` | safe startup | `rendererModernVisibleSelfTest` | synthetic modern-visible depth/G-buffer/deferred/forward+/hybrid-scene/present composition with shadow-policy handoff |
 | `capture-renderer-compatibility-selftest` | safe startup | `rendererModernCompatibilitySelfTest` | known fallback inventory for GUI/post/subview/render-demo/BSE categories |
 | `capture-sp-airdefense1-static` | SP | `game/airdefense1` fixed spawn, no input for 3 seconds | outdoor lighting, terrain decals, BSE smoke, and stock material parity |
+
+The nested Milestone D case is generated and retained only under `.tmp`; it is
+not distributable game content. The fixture tool hash-verifies and retrieves
+the user's extracted retail `maps/tools/mv2.map` and `video/idlogo.roq`, appends
+original validation-only geometry/material text, compiles `.proc`/`.cm` with
+openQ4's `dmap`, and stages an isolated runtime below `.tmp/stock-runtime`.
+No retail map, ROQ, or generated fixture is committed or shipped. The map is a
+visual renderer fixture with no AI actors; missing renamed AAS files are an
+explicit non-navigation warning allowance for this case, not warning-clean
+release evidence.
+
+The final controlled evidence is the R6 acceptance report at
+`.tmp/renderer-milestone-d/acceptance-20260823-r6-all/renderer_milestone_d_acceptance_report.json`
+(SHA-256
+`b49031c48267fbfa86c295082707525a390d6090c24f600d00644237a67b252a`),
+bound to fixture manifest
+`.tmp/renderer-milestone-d/qualification-20260823-r6/fixture_manifest.json`
+(SHA-256
+`24a2a4926f4b1263e311ad762bf40d391b33de225732d12154ebd7625705282d`)
+and runtime
+`.tmp/stock-runtime/milestone-d-qualification-20260823-r6`, whose manifest
+SHA-256 is
+`dbece44597ec5e0686eed215f6ae99c5d6ba4cdd959c1efa7c4acaf1bc2ca673`.
+The 3,884-file, 7,281,560,043-byte stock dependency inventory remained
+immutable under seal
+`13abad18f70eb8b4bf6ea0e9697b317718bb065ee76f86070787005b045dda7a`;
+the eight-file, 25,330,583-byte fixture evidence inventory remained immutable
+under seal
+`0572fb8d9c132f7e97060345464f97750e59e69819871fce90eed13d1348d8ae`.
+Runtime, fixture, and stock verification failures were empty. The matching
+foundation report at
+`.tmp/renderer-validation/milestone-d-foundation-20260823-r6/renderer_validation_report.json`
+(SHA-256
+`0659f1f2ee5108a422cd6c41bdc78809731f25ad7eda4b5ee84328a9163ce7ac`)
+passed; its accompanying Markdown has SHA-256
+`a619169ee97f2d6e8c7dfab991adbab5b5b282fd2e1197e2d59eb3609c87cddf`.
+The fixed capture script disabled input and used actual windowed mode `-1` at
+1280x720, pacing-only sampling, GPU timers off, and 1280x720
+engine-render-target TGA screenshots.
+This is controlled development-runtime evidence, not final-package, human-review,
+non-Windows, broad subview/in-world-GUI/special-frame, root cinematic/post, or
+`_currentDepth` qualification.
+
+```powershell
+python tools/tests/renderer_milestone_d_fixture.py `
+  --output-dir .tmp/renderer-milestone-d/<fixture-run> `
+  --runtime-dir .tmp/stock-runtime/<fixture-runtime>
+python tools/tests/renderer_milestone_d_acceptance.py `
+  --runtime-dir .tmp/stock-runtime/<fixture-runtime> `
+  --fixture-manifest .tmp/renderer-milestone-d/<fixture-run>/fixture_manifest.json `
+  --render-api all `
+  --output-dir .tmp/renderer-milestone-d/<acceptance-run>
+```
 
 ## RenderDoc Tier Checklist
 
@@ -488,7 +545,7 @@ Nondeterministic BSE, cinematic, and MP scenes need human review in addition to 
 - Benchmark captures report P50/P95/P99 frame pacing, active preset budgets, and threshold pass/fail status before any claim that the modern visible path matches or beats ARB2 on target scenes.
 - `rendererDefaultSafetySelfTest` and `rendererDefaultPromotionSelfTest` pass before any default-promotion discussion.
 - `r_rendererModernAutoPromote 1` is used only with the complete `r_rendererPromotionEvidence` token after the default-promotion criteria pass; `r_renderer arb2`, `r_glTier legacy`, and the modern-disable cvar set remain documented rollback paths.
-- Shared world-ambient local runtime qualification passed: retained GL and Vulkan option-off/on engine screenshots for the same eligible stock `maps/tools/mv2` view match at RMS `0` / maximum delta `0`, enabled diagnostics report one owned pre-fog draw with stable domain/view hashes, and the stock `shaderDemos/move` deform override reports zero shared draws plus the same named complete-view fallback on both backends. Vulkan validation gates are clean. Exact directories and SHA-256 values are recorded in [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md). The domain remains experimental/default-off pending clean committed-package and target-platform/driver promotion evidence.
-- Shared interaction's local qualification passed for the current controlled corridor. Its five-case profile passed 5/5 on GL and 5/5 on Vulkan with exact same-backend classic/shared TGAs, four lights, 14 global receiver surfaces, material shadows-on/off deltas for stencil/mapped/mixed ownership, exact backend accounting, and named map-admission fallbacks with zero committed shared counters and no shared main-target draw. The earlier two-light/four-surface capture is superseded. The stock-map row remains a release-qualification gate: its projected/CSM/dynamic/perforated/hybrid candidates need retained final cameras and fresh classic/shadows-off references before they can pass. Exact scope and deltas are recorded in [Shared Classic Interaction-Lighting Domain](classic-interaction-domain-modernization.md); the option remains experimental/default-off pending stock, clean committed-package, and target-platform/driver evidence.
+- Shared world-ambient local runtime qualification passed: retained GL and Vulkan option-off/on engine screenshots for the same eligible stock `maps/tools/mv2` view match at RMS `0` / maximum delta `0`, enabled diagnostics report one owned pre-fog draw with stable domain/view hashes, and the stock `shaderDemos/move` deform override reports zero shared draws plus the same named complete-view fallback on both backends. Vulkan validation gates are clean. Exact directories and SHA-256 values are recorded in [Shared Classic World Ambient/Material Domain](classic-world-ambient-domain-modernization.md). The domain is implemented and remains default-off pending clean committed-package and target-platform/driver promotion evidence.
+- Shared interaction's local qualification passed for the current controlled corridor. Its five-case profile passed 5/5 on GL and 5/5 on Vulkan with exact same-backend classic/shared TGAs, four lights, 14 global receiver surfaces, material shadows-on/off deltas for stencil/mapped/mixed ownership, exact backend accounting, and named map-admission fallbacks with zero committed shared counters and no shared main-target draw. The earlier two-light/four-surface capture is superseded. The stock-map row remains a release-qualification gate: its projected/CSM/dynamic/perforated/hybrid candidates need retained final cameras and fresh classic/shadows-off references before they can pass. Exact scope and deltas are recorded in [Shared Classic Interaction-Lighting Domain](classic-interaction-domain-modernization.md); the option is implemented and remains default-off pending stock, clean committed-package, and target-platform/driver evidence.
 - Shared fog/blend's controlled development-worktree qualification passes on GL and Vulkan. Mixed and fog-only shared TGAs match their same-settings classic references exactly; the mixed run owns one fog plus one blend light, six GLOBAL receivers, two stages, seven primitives, three fog receivers, one cap, and three blend draws with exact backend accounting. Mixed/fog-only and fog-only/outer-skip comparisons materially prove the blend and fog contributions, and the intentional blocker produces named zero-commit atomic fallback with exact classic parity. Vulkan warning/VUID/call-failure counters remain clean. Exact hashes, deltas, and local report directories are recorded in [Shared Classic Fog/Blend Domain](classic-fog-blend-domain-modernization.md). Authored-stock fog, clean committed-package recapture, human review, and target-platform/driver retention remain promotion gates.
 - Shared material-deform's controlled development-worktree qualification passes on GL and Vulkan. Normal and skipped shared TGAs match their same-settings classic references exactly; normal runs emit two completed records and one owned ambient draw, skipped runs emit two named skipped records and commit zero shared draws, and the normal/skipped comparison materially proves the deform contribution. Native/static and backend diagnostic gates are clean. Exact hashes, deltas, and local report directories are recorded in [Shared Classic Material-Deform Contract](classic-deform-domain-modernization.md). Clean committed-package recapture, human review, and target-platform/driver retention remain promotion gates.

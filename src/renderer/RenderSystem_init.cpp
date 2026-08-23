@@ -489,13 +489,13 @@ idCVar r_rendererBindless( "r_rendererBindless", "0", CVAR_RENDERER | CVAR_BOOL,
 idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | CVAR_BOOL, "execute the opt-in modern hybrid visible-frame composition when all required pass owners are modern-safe" );
 idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedInWorldGui( "r_rendererSharedInWorldGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible GUI geometry emitted onto 3D surfaces from a backend-neutral ordered material-stage stream; any unsupported view keeps every in-world GUI surface on the classic path" );
-idCVar r_rendererSharedCinematicPost( "r_rendererSharedCinematicPost", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible root cinematic playback and complete authored post-process ranges through a sealed shared transaction; unsupported ranges use the complete classic path" );
+idCVar r_rendererSharedCinematicPost( "r_rendererSharedCinematicPost", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible root cinematic playback and complete authored post-process ranges through a sealed shared transaction; post/video ranges nested in a shared special-view tree publish or roll back with its root; unsupported ranges use the complete classic path" );
 idCVar r_rendererSharedSpecialFrame( "r_rendererSharedSpecialFrame", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible render-demo playback and Raven special-effect controller frames through a sealed shared transaction; unsupported views and commands use the complete classic path" );
 idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
 idCVar r_rendererSharedSubview( "r_rendererSharedSubview", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible direct mirror and capture-backed remote-camera, mirror, reflection, refraction, and x-ray subview transactions from backend-neutral sealed records; nested child trees commit atomically at their outermost special view, while 2D/cubemap color and depth captures retain exact type, aspect, and face; unsupported subviews use the complete classic path" );
-idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request experimental backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
+idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable optional, default-off backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
@@ -3891,7 +3891,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		const classicCinematicPostDomainStats_t &cinematicPost =
 			R_ClassicCinematicPostDomain_Stats();
 		common->Printf(
-			"Renderer shared cinematic/post: requested=%d prepared=%d valid=%d overflow=%d scenes=%d views=%d(root=%d post=%d) ready=%d fallback=%d cinematicStages=%d currentRender=%d currentDepth=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			"Renderer shared cinematic/post: requested=%d prepared=%d valid=%d overflow=%d scenes=%d views=%d(root=%d post=%d nested=%d/%d nestedCinematic=%d) ready=%d fallback=%d cinematicStages=%d currentRender=%d currentDepth=%d hash=%016llx status=%s GL=%d/%d/%d/%d VK=%d/%d/%d/%d\n",
 			r_rendererSharedCinematicPost.GetBool() ? 1 : 0,
 			cinematicPost.prepared ? 1 : 0,
 			cinematicPost.frameValid ? 1 : 0,
@@ -3900,6 +3900,9 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			cinematicPost.views,
 			cinematicPost.rootCinematicViews,
 			cinematicPost.authoredPostViews,
+			cinematicPost.nestedSpecialViews,
+			cinematicPost.nestedSpecialTransactions,
+			cinematicPost.nestedCinematicStages,
 			cinematicPost.readyViews,
 			cinematicPost.fallbackViews,
 			cinematicPost.cinematicStages,
@@ -3909,8 +3912,12 @@ void GfxInfo_f( const idCmdArgs &args ) {
 			cinematicPost.status,
 			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].ownedViews,
 			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].fallbackViews,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].coverageMismatches,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].duplicateReports,
 			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].ownedViews,
-			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].fallbackViews );
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].fallbackViews,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].coverageMismatches,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].duplicateReports );
 	}
 	{
 		const classicSpecialFrameDomainStats_t &specialFrame =

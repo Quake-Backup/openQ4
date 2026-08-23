@@ -13897,9 +13897,18 @@ void	RB_STD_DrawView( void ) {
 	// now draw any post-processing effects using _currentRender
 	if ( processed < numDrawSurfs ) {
 		const int authoredPostCount = numDrawSurfs - processed;
-		const bool sharedAuthoredPost = r_rendererSharedCinematicPost.GetBool()
-			&& R_ClassicCinematicPostDomain_FindAuthoredPostView(
-				backEnd.viewDef ) != NULL;
+		const classicCinematicPostDomainView_t *sharedAuthoredPostView =
+			r_rendererSharedCinematicPost.GetBool()
+				? R_ClassicCinematicPostDomain_FindAuthoredPostView(
+					backEnd.viewDef )
+				: NULL;
+		// One rejected dynamic member rolls back its complete special-view
+		// transaction. Later members must execute through the mature classic
+		// path without reporting that already-recorded rollback a second time.
+		const bool sharedAuthoredPost = sharedAuthoredPostView != NULL
+			&& sharedAuthoredPostView->backendOutcome[
+				CLASSIC_CINEMATIC_POST_BACKEND_GL]
+				== CLASSIC_CINEMATIC_POST_BACKEND_UNRECORDED;
 		if ( !sharedAuthoredPost || !RB_DrawSharedAuthoredPostView(
 				backEnd.viewDef, drawSurfs, processed, authoredPostCount ) ) {
 			RB_STD_DrawShaderPasses( drawSurfs + processed, authoredPostCount );

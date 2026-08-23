@@ -45,6 +45,9 @@ enum classicCinematicPostDomainFailure_t {
 	CLASSIC_CINEMATIC_POST_FAILURE_SOURCE_PACKET_MISMATCH,
 	CLASSIC_CINEMATIC_POST_FAILURE_INVALID_SOURCE_SURFACE,
 	CLASSIC_CINEMATIC_POST_FAILURE_CINEMATIC_CLOCK,
+	CLASSIC_CINEMATIC_POST_FAILURE_MISSING_SPECIAL_VIEW,
+	CLASSIC_CINEMATIC_POST_FAILURE_SPECIAL_VIEW_TRANSACTION_REJECTED,
+	CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_SPECIAL_VIEW_INCOMPLETE,
 	CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY,
 	CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
 	CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_COVERAGE_MISMATCH,
@@ -65,6 +68,9 @@ enum classicCinematicPostDomainBackendOutcome_t {
 
 typedef struct classicCinematicPostDomainView_s {
 	const viewDef_t					*viewDef;
+	const viewDef_t *specialRootViewDef;
+	int specialRootScenePacketIndex;
+	int specialNestingDepth;
 	classicCinematicPostDomainScope_t	scope;
 	int								scenePacketIndex;
 	int									passPacketIndex;
@@ -77,6 +83,7 @@ typedef struct classicCinematicPostDomainView_s {
 	int									cinematicTimeMilliseconds;
 	bool									ready;
 	classicCinematicPostDomainFailure_t	failure;
+	bool nestedInSpecialView;
 	int									failureDetail;
 	std::uint64_t						hash;
 	classicCinematicPostDomainBackendOutcome_t	backendOutcome[
@@ -87,6 +94,7 @@ typedef struct classicCinematicPostDomainView_s {
 		CLASSIC_CINEMATIC_POST_BACKEND_COUNT ];
 	int									backendDrawnSurfaces[
 		CLASSIC_CINEMATIC_POST_BACKEND_COUNT ];
+	bool backendCompleted[ CLASSIC_CINEMATIC_POST_BACKEND_COUNT ];
 } classicCinematicPostDomainView_t;
 
 typedef struct classicCinematicPostDomainBackendCoverage_s {
@@ -106,6 +114,9 @@ typedef struct classicCinematicPostDomainStats_s {
 	int	views;
 	int	rootCinematicViews;
 	int	authoredPostViews;
+	int	nestedSpecialViews;
+	int	nestedSpecialTransactions;
+	int	nestedCinematicStages;
 	int	readyViews;
 	int	fallbackViews;
 	int	cinematicStages;
@@ -135,6 +146,19 @@ void R_ClassicCinematicPostDomain_RecordBackendFallback( const viewDef_t *viewDe
 bool R_ClassicCinematicPostDomain_ReadyForBackend( const viewDef_t *viewDef,
 	classicCinematicPostDomainScope_t scope,
 	classicCinematicPostDomainBackend_t backend );
+bool R_ClassicCinematicPostDomain_SubviewTransactionReady(
+	const viewDef_t *memberViewDef,
+	classicCinematicPostDomainBackend_t backend );
+bool R_ClassicCinematicPostDomain_SubviewTransactionCompleted(
+	const viewDef_t *memberViewDef,
+	classicCinematicPostDomainBackend_t backend );
+bool R_ClassicCinematicPostDomain_PublishSubviewTransactionOwned(
+	const viewDef_t *memberViewDef,
+	classicCinematicPostDomainBackend_t backend );
+void R_ClassicCinematicPostDomain_RecordSubviewTransactionFallback(
+	const viewDef_t *memberViewDef,
+	classicCinematicPostDomainBackend_t backend,
+	classicCinematicPostDomainFailure_t failure, int detail );
 const char *ClassicCinematicPostDomainFailure_Name(
 	classicCinematicPostDomainFailure_t failure );
 bool RendererClassicCinematicPostDomain_RunSelfTest( void );

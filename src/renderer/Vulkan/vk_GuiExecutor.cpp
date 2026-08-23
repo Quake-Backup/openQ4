@@ -8898,6 +8898,40 @@ static void VK_ClassicWorldAmbient_DrawPhase(
 	}
 }
 
+enum vkClassicCinematicPostRejectDetail_t {
+	VK_CLASSIC_CINEMATIC_POST_REJECT_NOT_READY = 0,
+	VK_CLASSIC_CINEMATIC_POST_REJECT_SKIP_OR_EMPTY,
+	VK_CLASSIC_CINEMATIC_POST_REJECT_FEEDBACK,
+	VK_CLASSIC_CINEMATIC_POST_REJECT_BEGIN_FRAME,
+	VK_CLASSIC_CINEMATIC_POST_REJECT_GPU_SKINNING,
+	VK_CLASSIC_CINEMATIC_POST_REJECT_VIEWPORT,
+	VK_CLASSIC_CINEMATIC_POST_REJECT_NO_POST_WALK
+};
+
+static void VK_RecordCinematicPostFallbackIfPending(
+		const viewDef_t *viewDef, classicCinematicPostDomainScope_t scope,
+		classicCinematicPostDomainFailure_t failure, int detail ) {
+	if ( !r_rendererSharedCinematicPost.GetBool() ) {
+		return;
+	}
+	const classicCinematicPostDomainView_t *view = NULL;
+	if ( scope == CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC ) {
+		view = R_ClassicCinematicPostDomain_FindRootCinematicView( viewDef );
+	} else if ( scope == CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST ) {
+		view = R_ClassicCinematicPostDomain_FindAuthoredPostView( viewDef );
+	} else {
+		return;
+	}
+	if ( view == NULL
+			|| view->backendOutcome[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN]
+				!= CLASSIC_CINEMATIC_POST_BACKEND_UNRECORDED
+			|| view->backendCompleted[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN] ) {
+		return;
+	}
+	R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef, scope,
+		CLASSIC_CINEMATIC_POST_BACKEND_VULKAN, failure, detail );
+}
+
 /*
 ====================
 VK_GuiExecutor_Draw2DView
@@ -8938,7 +8972,8 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 			R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
 				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
 				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
-				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY, 0 );
+				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY,
+				VK_CLASSIC_CINEMATIC_POST_REJECT_NOT_READY );
 		}
 		return;
 	}
@@ -8971,6 +9006,10 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 	VkViewport viewport;
 	if ( !VK_BuildCanonicalViewport( viewport, (float)vpX, (float)vpYGL,
 			(float)vpW, (float)vpH, (float)fbHeight ) ) {
+		VK_RecordCinematicPostFallbackIfPending( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_CINEMATIC_POST_REJECT_VIEWPORT );
 		return;
 	}
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
@@ -9002,7 +9041,8 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 			R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
 				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
 				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
-				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 1 );
+				CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_CINEMATIC_POST_REJECT_NOT_READY );
 		} else if ( !R_ClassicCinematicPostDomain_RecordOwned( viewDef,
 				CLASSIC_CINEMATIC_POST_SCOPE_ROOT_CINEMATIC,
 				CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
@@ -9042,9 +9082,17 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	backEnd.currentRenderCopied = false;
 	backEnd.currentDepthCopied = false;
 	if ( viewDef->numDrawSurfs <= 0 ) {
+		VK_RecordCinematicPostFallbackIfPending( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_CINEMATIC_POST_REJECT_SKIP_OR_EMPTY );
 		return;
 	}
 	if ( !VK_GuiExecutor_BeginFrame() ) {
+		VK_RecordCinematicPostFallbackIfPending( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_CINEMATIC_POST_REJECT_BEGIN_FRAME );
 		return;
 	}
 
@@ -9061,6 +9109,10 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	// caller. Compute ends and resumes dynamic rendering exactly once, then the
 	// ordinary 3D walk establishes all graphics state from scratch.
 	if ( !VK_GpuSkinning_PrepareView( viewDef ) ) {
+		VK_RecordCinematicPostFallbackIfPending( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_CINEMATIC_POST_REJECT_GPU_SKINNING );
 		return;
 	}
 	// Seal the complete shared ambient plan before the depth clear or any
@@ -9078,6 +9130,10 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	VkViewport viewport;
 	if ( !VK_BuildCanonicalViewport( viewport, (float)vpX, (float)vpYGL,
 			(float)vpW, (float)vpH, (float)fbHeight ) ) {
+		VK_RecordCinematicPostFallbackIfPending( viewDef,
+			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_CINEMATIC_POST_REJECT_VIEWPORT );
 		return;
 	}
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
@@ -9325,8 +9381,19 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			break;
 		}
 	}
-	const bool sharedAuthoredPostCandidate = r_rendererSharedCinematicPost.GetBool()
-		&& R_ClassicCinematicPostDomain_FindAuthoredPostView( viewDef ) != NULL;
+	const classicCinematicPostDomainView_t *sharedAuthoredPostView =
+		r_rendererSharedCinematicPost.GetBool()
+			? R_ClassicCinematicPostDomain_FindAuthoredPostView( viewDef )
+			: NULL;
+	// A prior member may already have rolled back this complete special-view
+	// transaction. Preserve the classic walk for later members without
+	// recording the same propagated fallback again.
+	const bool sharedAuthoredPostCandidate = sharedAuthoredPostView != NULL
+		&& sharedAuthoredPostView->backendOutcome[
+			CLASSIC_CINEMATIC_POST_BACKEND_VULKAN]
+			== CLASSIC_CINEMATIC_POST_BACKEND_UNRECORDED
+		&& !sharedAuthoredPostView->backendCompleted[
+			CLASSIC_CINEMATIC_POST_BACKEND_VULKAN];
 	const bool sharedAuthoredPostReady = sharedAuthoredPostCandidate
 		&& R_ClassicCinematicPostDomain_ReadyForBackend( viewDef,
 			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
@@ -9336,7 +9403,8 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
 			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
 			CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
-			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 0 );
+			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_CINEMATIC_POST_REJECT_NOT_READY );
 	}
 
 	for ( int pass = 0; pass < 3; pass++ ) {
@@ -9377,7 +9445,8 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 						R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
 							CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
 							CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
-							CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 1 );
+							CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+							VK_CLASSIC_CINEMATIC_POST_REJECT_SKIP_OR_EMPTY );
 					}
 					break;
 				}
@@ -9404,7 +9473,8 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 						R_ClassicCinematicPostDomain_RecordBackendFallback( viewDef,
 							CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
 							CLASSIC_CINEMATIC_POST_BACKEND_VULKAN,
-							CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED, 2 );
+							CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+							VK_CLASSIC_CINEMATIC_POST_REJECT_FEEDBACK );
 					}
 					static bool warnedPostCapture = false;
 					if ( !warnedPostCapture ) {
@@ -9523,6 +9593,10 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 				numDrawSurfs - processed ) ) {
 		common->Warning( "Vulkan: shared authored post coverage rejected after committed range" );
 	}
+	VK_RecordCinematicPostFallbackIfPending( viewDef,
+		CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
+		CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
+		VK_CLASSIC_CINEMATIC_POST_REJECT_NO_POST_WALK );
 
 	if ( sharedRenderDemoReady
 			&& !R_ClassicSpecialFrameDomain_RecordOwned( viewDef,

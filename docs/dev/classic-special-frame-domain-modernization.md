@@ -2,8 +2,9 @@
 
 ## Status
 
-This Milestone D corridor is **Experimental (implemented, default-off;
-native/static validation passed; runtime and release qualification pending)**.
+This Milestone D corridor is **Implemented (default-off; native/static
+implementation evidence recorded; runtime, final-package, and platform release
+qualification pending)**.
 `r_rendererSharedSpecialFrame 1` gives OpenGL and Vulkan the same sealed
 ownership boundary for two otherwise exceptional classic-frame paths:
 
@@ -80,7 +81,7 @@ provenance, portal-sky exclusion, controller-mask capture, source validation,
 OpenGL/Vulkan completion handoff, conservative defaults, release-harness
 isolation, diagnostics, and CI registration.
 
-## Remaining qualification
+## Release-qualification boundary
 
 Before promotion, retain engine-written `screenshot` captures—not OS
 captures—for a stock render-demo and a stock Raven blur/AL scene with the
@@ -89,8 +90,14 @@ ownership where the content is eligible, exact same-settings output, an
 incomplete-mask zero-commit fallback, clean backend diagnostics, and fresh
 staged-package and target-platform/driver evidence.
 
-The direct special-subview transaction now covers direct mirror/clip-plane and
+The special-subview transaction now covers direct mirror/clip-plane and
 dynamic mirror/reflection/x-ray handoffs; see [Shared Special-Subview
-Transaction](classic-subview-domain-modernization.md). Unsupported special-view
-nesting ownership is the next Milestone D target. Temporal presentation
-and PBR/advanced lighting remain downstream.
+Transaction](classic-subview-domain-modernization.md). Its eligible nested trees
+also couple separately sealed authored-post tails to the same atomic root
+completion and rollback decision.
+
+Together with the other independently guarded shared corridors, this completes
+Milestone D's scoped implementation. It does not make every classic-frame
+category or the aggregate modern-visible renderer shared-owned. Runtime,
+clean-package, human-review, and target-platform/driver evidence remain
+release-promotion gates; temporal presentation is the next roadmap milestone.
