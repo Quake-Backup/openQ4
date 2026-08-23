@@ -280,6 +280,30 @@ if get_option('build_native_tests')
     timeout: 30,
   )
 
+  openq4_temporal_presentation_core_test = executable(
+    'openq4-temporal-presentation-core-test',
+    files('tools/tests/native/TemporalPresentationCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-temporal-presentation-core',
+    openq4_temporal_presentation_core_test,
+    timeout: 30,
+  )
+
+  openq4_temporal_history_core_test = executable(
+    'openq4-temporal-history-core-test',
+    files('tools/tests/native/TemporalHistoryCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-temporal-history-core',
+    openq4_temporal_history_core_test,
+    timeout: 30,
+  )
+
   openq4_renderer_contracts_test = executable(
     'openq4-renderer-contracts-test',
     files(

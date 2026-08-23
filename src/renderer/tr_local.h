@@ -123,6 +123,7 @@ SURFACES
 #include "ModelDecal.h"
 #include "ModelOverlay.h"
 #include "Interaction.h"
+#include "TemporalPresentation.h"
 
 
 // drawSurf_t structures command the back end to render surfaces
@@ -347,6 +348,24 @@ typedef struct viewDef_s {
 	float				projectionMatrix[16];
 	viewEntity_t		worldSpace;
 
+	// Immutable temporal-presentation metadata prepared before projection
+	// setup. The fields travel with RC_DRAW_VIEW so GL and Vulkan consume the
+	// same jitter, cut, generation, and per-view history identity.
+	unsigned long long	temporalViewIdentity;
+	unsigned int		temporalHistoryGeneration;
+	int				temporalJitterIndex;
+	idVec2				temporalJitterPixels;
+	idVec3				temporalPreviousViewOrigin;
+	idMat3				temporalPreviousViewAxis;
+	idVec4				temporalPreviousProjectInfo;
+	idVec2				temporalPreviousJitterPixels;
+	temporalHistoryResetReason_t temporalHistoryResetReason;
+	bool				temporalPrepared;
+	bool				temporalJitterEnabled;
+	bool				temporalHistoryValid;
+	bool				temporalCaptureFrame;
+	bool				temporalPreviousProjectionValid;
+
 	idRenderWorldLocal *renderWorld;
 	int					renderFlags;
 
@@ -471,6 +490,7 @@ typedef enum {
 	RC_COPY_RENDER,
 	RC_SET_RENDERTEXTURE,
 	RC_RESOLVE_MSAA,
+	RC_RESOLVE_TEMPORAL_PRESENTATION,
 	RC_CLEAR_RENDERTARGET,
 	RC_SET_POSTPROCESS_SOURCE_SIZE,
 	RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE,
@@ -523,7 +543,25 @@ typedef struct {
 	idRenderTexture* msaaRenderTexture;
 	idRenderTexture* destRenderTexture;
 	bool resolveDepth;
+	int frameNumber;
+	unsigned int historyGeneration;
 } resolveRenderTargetCommand_t;
+
+typedef struct {
+	renderCommand_t		commandId, * next;
+	idRenderTexture*	sceneColorTarget;
+	idRenderTexture*	sceneDepthTarget;
+	idRenderTexture*	historyReadTarget;
+	idRenderTexture*	historyWriteTarget;
+	const viewDef_t*	viewDef;
+	renderPresentationState_t presentation;
+	unsigned int		historyGeneration;
+	bool				historyValid;
+	bool				captureFrame;
+	float				feedback;
+	float				reactiveScale;
+	int				debugMode;
+} resolveTemporalPresentationCommand_t;
 
 typedef struct {
 	renderCommand_t		commandId, * next;
@@ -833,6 +871,12 @@ public:
 	virtual bool			SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance );
 	virtual void			GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const;
 	virtual void			ResetGpuFrameTiming( const char *reason );
+	virtual void			GetPresentationState( renderPresentationState_t &state ) const;
+	virtual bool			ResolveTemporalPresentation(
+		idRenderTexture *sceneColorTarget,
+		idRenderTexture *sceneDepthTarget,
+		idRenderTexture *historyReadTarget,
+		idRenderTexture *historyWriteTarget );
 public:
 	// internal functions
 							idRenderSystemLocal( void );
@@ -1113,7 +1157,7 @@ extern idCVar r_rendererPerfThresholdP99;	// custom P99 benchmark threshold in m
 extern idCVar r_rendererAdaptiveClusterGrid;	// use preset-driven cluster-grid dimensions
 void R_SetLoadingScreenSwapIntervalBypass( bool active );
 int R_GetEffectiveSwapInterval( void );
-extern idCVar r_rendererDynamicResolution;	// allow benchmark screen-percentage experiments
+extern idCVar r_rendererDynamicResolution;	// automatic 3D scale from delayed GPU time
 extern idCVar r_rendererUploadMegs;		// dynamic upload stream size in megabytes per frame buffer
 extern idCVar r_rendererUploadFrameBuffers;	// dynamic upload stream frame-buffer rotation depth
 extern idCVar r_rendererUploadPersistent;	// allow persistent-mapped dynamic upload stream
@@ -2202,6 +2246,19 @@ void RB_SetGL2D( void );
 void RB_LogComment( const char *comment, ... ) id_attribute((format(printf,1,2)));
 
 void RB_ShowImages( void );
+
+// Backend implementation of RC_RESOLVE_TEMPORAL_PRESENTATION. The command is
+// copied at dispatch so a capture scope that begins after frontend enqueue can
+// suppress history reads/writes without mutating frame-memory ownership.
+bool RB_ResolveTemporalPresentation(
+	const resolveTemporalPresentationCommand_t &command );
+
+// GL temporal history may only consume depth copied successfully for the
+// command's immutable frame/generation snapshot. Resolve commands invalidate
+// before attempting a depth blit and stamp only after an error-free copy.
+void RB_InvalidateTemporalDepthStamp( idRenderTexture *target );
+void RB_StampTemporalDepthResolved( idRenderTexture *target,
+	int frameNumber, unsigned int historyGeneration );
 
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds );
 

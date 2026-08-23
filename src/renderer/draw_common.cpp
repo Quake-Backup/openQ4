@@ -38,6 +38,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ModernGLExecutor.h"
 #include "ModernGLShaderLibrary.h"
 #include "RendererMetrics.h"
+#include "ScenePackets.h"
 
 #ifndef GL_FRAMEBUFFER_SRGB
 #define GL_FRAMEBUFFER_SRGB 0x8DB9
@@ -1002,16 +1003,146 @@ static GLhandleARB rbSceneDepthAwarePresentFragmentShader = 0;
 static int rbSceneDepthAwarePresentGeneration = -1;
 static GLint rbSceneDepthAwarePresentSceneLocation = -1;
 static GLint rbSceneDepthAwarePresentDepthLocation = -1;
+static GLint rbSceneDepthAwarePresentUVOffsetLocation = -1;
+static GLhandleARB rbTemporalResolveProgram = 0;
+static GLhandleARB rbTemporalResolveVertexShader = 0;
+static GLhandleARB rbTemporalResolveFragmentShader = 0;
+static int rbTemporalResolveGeneration = -1;
+enum rbTemporalResolveUniformIndex_t {
+	RB_TEMPORAL_UNIFORM_SCENE = 0,
+	RB_TEMPORAL_UNIFORM_DEPTH,
+	RB_TEMPORAL_UNIFORM_HISTORY,
+	RB_TEMPORAL_UNIFORM_VELOCITY,
+	RB_TEMPORAL_UNIFORM_INV_SCENE_SIZE,
+	RB_TEMPORAL_UNIFORM_OUTPUT_SIZE,
+	RB_TEMPORAL_UNIFORM_CURRENT_RECONSTRUCT,
+	RB_TEMPORAL_UNIFORM_PREVIOUS_PROJECT,
+	RB_TEMPORAL_UNIFORM_DEPTH_PROJECTION,
+	RB_TEMPORAL_UNIFORM_CURRENT_VIEW_ORIGIN,
+	RB_TEMPORAL_UNIFORM_CURRENT_VIEW_AXIS0,
+	RB_TEMPORAL_UNIFORM_CURRENT_VIEW_AXIS1,
+	RB_TEMPORAL_UNIFORM_CURRENT_VIEW_AXIS2,
+	RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_ORIGIN,
+	RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_AXIS0,
+	RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_AXIS1,
+	RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_AXIS2,
+	RB_TEMPORAL_UNIFORM_CURRENT_JITTER,
+	RB_TEMPORAL_UNIFORM_PARAMS,
+	RB_TEMPORAL_UNIFORM_MOTION_PARAMS,
+	RB_TEMPORAL_UNIFORM_REACTIVE_REGION0,
+	RB_TEMPORAL_UNIFORM_REACTIVE_REGION1,
+	RB_TEMPORAL_UNIFORM_PRESERVE_FAR_DEPTH,
+	RB_TEMPORAL_UNIFORM_COUNT
+};
+static GLint rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_COUNT];
+static idImage *rbBackendTemporalHistoryImages[2] = { NULL, NULL };
+static idRenderTexture *rbBackendTemporalHistoryTargets[2] = { NULL, NULL };
+static int rbBackendTemporalHistoryWidth = 0;
+static int rbBackendTemporalHistoryHeight = 0;
+static int rbBackendTemporalHistoryReadIndex = 0;
+static int rbBackendTemporalHistoryFrame = -1;
+static int rbBackendTemporalHistoryContextGeneration = -1;
+static unsigned int rbBackendTemporalHistoryGeneration = 0;
+static unsigned long long rbBackendTemporalHistoryViewIdentity = 0;
+static bool rbBackendTemporalHistoryValid = false;
+static int rbTemporalResolveHistoryWriteFrame = -1;
+static idRenderTexture *rbTemporalResolveHistoryWriteTarget = NULL;
+static bool rbTemporalResolveNeedsReprime = false;
+static unsigned int rbTemporalResolveRejectedGeneration = 0;
+static const int RB_TEMPORAL_DEPTH_STAMP_COUNT = 16;
+struct rbTemporalDepthStamp_t {
+	idRenderTexture *target;
+	const idImage *depthImage;
+	int width;
+	int height;
+	int frameNumber;
+	int contextGeneration;
+	unsigned int historyGeneration;
+	bool valid;
+};
+static rbTemporalDepthStamp_t rbTemporalDepthStamps[RB_TEMPORAL_DEPTH_STAMP_COUNT];
+static int rbTemporalDepthStampReplacement = 0;
 static const int RB_SCREEN_FRACTION_MIN = 10;
 static const int RB_SCREEN_FRACTION_NATIVE = 100;
 static const int RB_SCREEN_FRACTION_MAX = 200;
 static int rbLastReportedScreenFractionRequest = 0;
 static int rbLastReportedScreenFractionEffective = 0;
+static int rbSceneScalePresentedFrame = -1;
 static float rbHDRAdaptedExposure = 1.0f;
 static float rbHDRLastAverageLuminance = 1.0f;
 static float rbHDRLastTargetExposure = 1.0f;
 static float rbHDRLastAdaptationTime = -1.0f;
 static bool rbHDRExposureInitialized = false;
+
+static void RB_ClearTemporalDepthStamps( void ) {
+	memset( rbTemporalDepthStamps, 0, sizeof( rbTemporalDepthStamps ) );
+	rbTemporalDepthStampReplacement = 0;
+}
+
+void RB_InvalidateTemporalDepthStamp( idRenderTexture *target ) {
+	if ( target == NULL ) {
+		return;
+	}
+	for ( int i = 0; i < RB_TEMPORAL_DEPTH_STAMP_COUNT; i++ ) {
+		if ( rbTemporalDepthStamps[i].target == target ) {
+			rbTemporalDepthStamps[i].valid = false;
+		}
+	}
+}
+
+void RB_StampTemporalDepthResolved( idRenderTexture *target,
+		int frameNumber, unsigned int historyGeneration ) {
+	if ( target == NULL || target->GetDepthImage() == NULL
+			|| target->GetDeviceHandle() == 0 ) {
+		return;
+	}
+
+	int stampIndex = -1;
+	for ( int i = 0; i < RB_TEMPORAL_DEPTH_STAMP_COUNT; i++ ) {
+		if ( rbTemporalDepthStamps[i].target == target ) {
+			stampIndex = i;
+			break;
+		}
+		if ( stampIndex < 0 && rbTemporalDepthStamps[i].target == NULL ) {
+			stampIndex = i;
+		}
+	}
+	if ( stampIndex < 0 ) {
+		stampIndex = rbTemporalDepthStampReplacement;
+		rbTemporalDepthStampReplacement =
+			( rbTemporalDepthStampReplacement + 1 ) % RB_TEMPORAL_DEPTH_STAMP_COUNT;
+	}
+
+	rbTemporalDepthStamp_t &stamp = rbTemporalDepthStamps[stampIndex];
+	stamp.target = target;
+	stamp.depthImage = target->GetDepthImage();
+	stamp.width = target->GetWidth();
+	stamp.height = target->GetHeight();
+	stamp.frameNumber = frameNumber;
+	stamp.contextGeneration = tr.glContextGeneration;
+	stamp.historyGeneration = historyGeneration;
+	stamp.valid = frameNumber == backEnd.frameCount;
+}
+
+static bool RB_TemporalDepthStampIsCurrent( const idRenderTexture *target,
+		int frameNumber, unsigned int historyGeneration ) {
+	if ( target == NULL || frameNumber != backEnd.frameCount ) {
+		return false;
+	}
+	for ( int i = 0; i < RB_TEMPORAL_DEPTH_STAMP_COUNT; i++ ) {
+		const rbTemporalDepthStamp_t &stamp = rbTemporalDepthStamps[i];
+		if ( stamp.target == target && stamp.valid
+				&& stamp.depthImage == target->GetDepthImage()
+				&& stamp.width == target->GetWidth()
+				&& stamp.height == target->GetHeight()
+				&& stamp.frameNumber == frameNumber
+				&& stamp.contextGeneration == tr.glContextGeneration
+				&& stamp.historyGeneration == historyGeneration ) {
+			return true;
+		}
+	}
+	return false;
+}
 
 // double-buffered pixel-pack buffers so the auto-exposure luminance sample can
 // be read back one frame late instead of draining the GPU pipeline every frame
@@ -1021,22 +1152,46 @@ static int rbHDRExposureReadbackIndex = 0;
 
 struct rbSceneScaleState_t {
 	bool active;
+	bool projectionRecentered;
 	int requestedPercent;
 	int effectivePercent;
 	int nativeWidth;
 	int nativeHeight;
 	int scaledWidth;
 	int scaledHeight;
+	float nativeProjectionOffsetX;
+	float nativeProjectionOffsetY;
 	idScreenRect nativeViewport;
 	idScreenRect nativeScissor;
+	typedef struct rectRestore_s {
+		idScreenRect *rect;
+		idScreenRect original;
+	} rectRestore_t;
+	idList<rectRestore_t> rectRestores;
+	idHashIndex rectRestoreHash;
 };
 
 static void RB_ClearSceneScaleState( rbSceneScaleState_t &state ) {
-	memset( &state, 0, sizeof( state ) );
+	state.active = false;
+	state.projectionRecentered = false;
+	state.requestedPercent = 0;
+	state.effectivePercent = 0;
+	state.nativeWidth = 0;
+	state.nativeHeight = 0;
+	state.scaledWidth = 0;
+	state.scaledHeight = 0;
+	state.nativeProjectionOffsetX = 0.0f;
+	state.nativeProjectionOffsetY = 0.0f;
+	state.nativeViewport.Clear();
+	state.nativeScissor.Clear();
+	state.rectRestores.Clear();
+	state.rectRestores.SetGranularity( 256 );
+	state.rectRestoreHash.Clear( 4096, 4096 );
 }
 
 static int RB_RequestedScreenFraction( void ) {
-	return idMath::ClampInt( RB_SCREEN_FRACTION_MIN, RB_SCREEN_FRACTION_MAX, r_screenFraction.GetInteger() );
+	return idMath::ClampInt( RB_SCREEN_FRACTION_MIN, RB_SCREEN_FRACTION_MAX,
+		R_TemporalPresentation_EffectiveScreenFraction() );
 }
 
 static bool RB_ViewCoversBackBuffer( const viewDef_t *viewDef ) {
@@ -1103,30 +1258,49 @@ static int RB_ScaledDimension( int nativeDimension, int scalePercent ) {
 	return Max( 1, static_cast<int>( scaled / 100 ) );
 }
 
-static bool RB_SupersampledSceneTargetRequested( const viewDef_t *viewDef ) {
-	if ( RB_RequestedScreenFraction() <= RB_SCREEN_FRACTION_NATIVE ) {
+static bool RB_ScaledSceneTargetRequested( const viewDef_t *viewDef ) {
+	const int requestedPercent = RB_RequestedScreenFraction();
+	if ( requestedPercent == RB_SCREEN_FRACTION_NATIVE ) {
 		return false;
 	}
 	if ( !RB_IsMainScenePostProcessView( viewDef ) || !RB_ViewCoversBackBuffer( viewDef ) ) {
 		return false;
 	}
-	return RB_EffectiveScreenFractionForView( viewDef ) > RB_SCREEN_FRACTION_NATIVE;
+	if ( requestedPercent < RB_SCREEN_FRACTION_NATIVE
+			&& !R_TemporalPresentation_DynamicResolutionRequested()
+			&& r_resolutionScaleMode.GetInteger() == 0
+			&& !R_TemporalPresentation_TemporalAARequested() ) {
+		return false;
+	}
+	return RB_EffectiveScreenFractionForView( viewDef ) != RB_SCREEN_FRACTION_NATIVE;
 }
 
-static bool RB_ComputeSupersampledSceneSize( const viewDef_t *viewDef, int &targetWidth, int &targetHeight, int *effectivePercent = NULL ) {
-	if ( !RB_SupersampledSceneTargetRequested( viewDef ) ) {
+static bool RB_ComputeScaledSceneSize( const viewDef_t *viewDef, int &targetWidth,
+		int &targetHeight, int *effectivePercent = NULL ) {
+	if ( !RB_ScaledSceneTargetRequested( viewDef ) ) {
 		return false;
 	}
 
 	const int nativeWidth = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
 	const int nativeHeight = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
 	const int scalePercent = RB_EffectiveScreenFractionForView( viewDef );
-	targetWidth = RB_ScaledDimension( nativeWidth, scalePercent );
-	targetHeight = RB_ScaledDimension( nativeHeight, scalePercent );
+	const temporalPresentationFrameState_t &temporalState =
+		R_TemporalPresentation_GetFrameState();
+	if ( R_TemporalPresentation_DynamicResolutionRequested()
+			&& nativeWidth == temporalState.nativeWidth
+			&& nativeHeight == temporalState.nativeHeight
+			&& temporalState.sceneWidth > 0 && temporalState.sceneHeight > 0 ) {
+		targetWidth = temporalState.sceneWidth;
+		targetHeight = temporalState.sceneHeight;
+	} else {
+		targetWidth = RB_ScaledDimension( nativeWidth, scalePercent );
+		targetHeight = RB_ScaledDimension( nativeHeight, scalePercent );
+	}
 	if ( effectivePercent != NULL ) {
 		*effectivePercent = scalePercent;
 	}
-	return targetWidth > nativeWidth && targetHeight > nativeHeight;
+	return targetWidth > 0 && targetHeight > 0
+		&& ( targetWidth != nativeWidth || targetHeight != nativeHeight );
 }
 
 static int RB_ScaleRectStart( int value, int sourceExtent, int targetExtent ) {
@@ -1158,71 +1332,84 @@ static void RB_ScaleLocalScreenRect( idScreenRect &rect, int sourceWidth, int so
 	rect.y2 = static_cast<short>( y2 );
 }
 
-typedef struct rbScaledSurfSet_s {
-	idList<const drawSurf_t *>	surfs;
-	idHashIndex					hash;
-} rbScaledSurfSet_t;
-
-static bool RB_MarkDrawSurfScaled( rbScaledSurfSet_t &scaledSurfs, const drawSurf_t *surf ) {
-	if ( surf == NULL ) {
+static bool RB_RecordScaledRect( rbSceneScaleState_t &state, idScreenRect *rect ) {
+	if ( rect == NULL ) {
 		return false;
 	}
-	const int key = static_cast<int>( reinterpret_cast<uintptr_t>( surf ) >> 4 );
-	for ( int i = scaledSurfs.hash.First( key ); i != -1; i = scaledSurfs.hash.Next( i ) ) {
-		if ( scaledSurfs.surfs[i] == surf ) {
+	const int key = static_cast<int>( reinterpret_cast<uintptr_t>( rect ) >> 4 );
+	for ( int i = state.rectRestoreHash.First( key ); i != -1;
+			i = state.rectRestoreHash.Next( i ) ) {
+		if ( state.rectRestores[i].rect == rect ) {
 			return false;
 		}
 	}
-	scaledSurfs.hash.Add( key, scaledSurfs.surfs.Append( surf ) );
+	rbSceneScaleState_t::rectRestore_t &restore = state.rectRestores.Alloc();
+	restore.rect = rect;
+	restore.original = *rect;
+	state.rectRestoreHash.Add( key, state.rectRestores.Num() - 1 );
 	return true;
 }
 
-static void RB_ScaleDrawSurfScissor( rbScaledSurfSet_t &scaledSurfs, const drawSurf_t *surf, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
-	if ( !RB_MarkDrawSurfScaled( scaledSurfs, surf ) ) {
+static void RB_ScaleTrackedRect( rbSceneScaleState_t &state, idScreenRect *rect,
+		int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+	if ( !RB_RecordScaledRect( state, rect ) ) {
 		return;
 	}
-	RB_ScaleLocalScreenRect( const_cast<drawSurf_t *>( surf )->scissorRect, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleLocalScreenRect( *rect, sourceWidth, sourceHeight,
+		targetWidth, targetHeight );
 }
 
-static void RB_ScaleDrawSurfChainScissors( rbScaledSurfSet_t &scaledSurfs, const drawSurf_t *surf, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
-	for ( const drawSurf_t *chainSurf = surf; chainSurf != NULL; chainSurf = chainSurf->nextOnLight ) {
-		RB_ScaleDrawSurfScissor( scaledSurfs, chainSurf, sourceWidth, sourceHeight, targetWidth, targetHeight );
+static void RB_ScaleDrawSurfScissor( rbSceneScaleState_t &state,
+		const drawSurf_t *surf, int sourceWidth, int sourceHeight,
+		int targetWidth, int targetHeight ) {
+	if ( surf == NULL ) {
+		return;
+	}
+	RB_ScaleTrackedRect( state,
+		&const_cast<drawSurf_t *>( surf )->scissorRect,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+}
+
+static void RB_ScaleDrawSurfChainScissors( rbSceneScaleState_t &state,
+		const drawSurf_t *surf, int sourceWidth, int sourceHeight,
+		int targetWidth, int targetHeight ) {
+	for ( const drawSurf_t *chainSurf = surf; chainSurf != NULL;
+			chainSurf = chainSurf->nextOnLight ) {
+		RB_ScaleDrawSurfScissor( state, chainSurf, sourceWidth, sourceHeight,
+			targetWidth, targetHeight );
 	}
 }
 
-static void RB_ScaleLightDrawSurfScissors( rbScaledSurfSet_t &scaledSurfs, const viewLight_t *vLight, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+static void RB_ScaleLightDrawSurfScissors( rbSceneScaleState_t &state,
+		const viewLight_t *vLight, int sourceWidth, int sourceHeight,
+		int targetWidth, int targetHeight ) {
 	if ( vLight == NULL ) {
 		return;
 	}
 
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->globalShadows, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->localInteractions, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->localShadows, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->globalInteractions, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->localShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->globalShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->localTranslucentShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->globalTranslucentShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
-	RB_ScaleDrawSurfChainScissors( scaledSurfs, vLight->translucentInteractions, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->globalShadows, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->localInteractions, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->localShadows, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->globalInteractions, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->localShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->globalShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->localTranslucentShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->globalTranslucentShadowMapCasters, sourceWidth, sourceHeight, targetWidth, targetHeight );
+	RB_ScaleDrawSurfChainScissors( state, vLight->translucentInteractions, sourceWidth, sourceHeight, targetWidth, targetHeight );
 }
 
-static void RB_BeginSceneSupersampling( rbSceneScaleState_t &state, const viewDef_t *sceneTargetView ) {
+static void RB_BeginSceneScalingToExtent( rbSceneScaleState_t &state,
+		int targetWidth, int targetHeight, int effectivePercent ) {
 	RB_ClearSceneScaleState( state );
-	if ( backEnd.viewDef == NULL || sceneTargetView == NULL ) {
+	if ( backEnd.viewDef == NULL ) {
 		return;
 	}
 	viewDef_t *viewDef = const_cast<viewDef_t *>( backEnd.viewDef );
 
-	int targetWidth = 0;
-	int targetHeight = 0;
-	int effectivePercent = RB_SCREEN_FRACTION_NATIVE;
-	if ( !RB_ComputeSupersampledSceneSize( sceneTargetView, targetWidth, targetHeight, &effectivePercent ) ) {
-		return;
-	}
-
 	const int nativeWidth = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
 	const int nativeHeight = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
-	if ( nativeWidth <= 0 || nativeHeight <= 0 || targetWidth <= nativeWidth || targetHeight <= nativeHeight ) {
+	if ( nativeWidth <= 0 || nativeHeight <= 0 || targetWidth <= 0 || targetHeight <= 0
+			|| ( targetWidth == nativeWidth && targetHeight == nativeHeight ) ) {
 		return;
 	}
 
@@ -1242,22 +1429,70 @@ static void RB_BeginSceneSupersampling( rbSceneScaleState_t &state, const viewDe
 	viewDef->viewport.x2 = static_cast<short>( targetWidth - 1 );
 	viewDef->viewport.y2 = static_cast<short>( targetHeight - 1 );
 
-	rbScaledSurfSet_t scaledSurfs;
-	scaledSurfs.surfs.SetGranularity( 256 );
-	scaledSurfs.hash.Clear( 4096, 4096 );
 	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
-		RB_ScaleDrawSurfScissor( scaledSurfs, viewDef->drawSurfs[i], nativeWidth, nativeHeight, targetWidth, targetHeight );
+		RB_ScaleDrawSurfScissor( state, viewDef->drawSurfs[i], nativeWidth,
+			nativeHeight, targetWidth, targetHeight );
 	}
 	for ( viewLight_t *vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
-		RB_ScaleLocalScreenRect( vLight->scissorRect, nativeWidth, nativeHeight, targetWidth, targetHeight );
-		RB_ScaleLightDrawSurfScissors( scaledSurfs, vLight, nativeWidth, nativeHeight, targetWidth, targetHeight );
+		RB_ScaleTrackedRect( state, &vLight->scissorRect, nativeWidth,
+			nativeHeight, targetWidth, targetHeight );
+		RB_ScaleLightDrawSurfScissors( state, vLight, nativeWidth,
+			nativeHeight, targetWidth, targetHeight );
 	}
 	for ( viewEntity_t *vEntity = viewDef->viewEntitys; vEntity != NULL; vEntity = vEntity->next ) {
-		RB_ScaleLocalScreenRect( vEntity->scissorRect, nativeWidth, nativeHeight, targetWidth, targetHeight );
+		RB_ScaleTrackedRect( state, &vEntity->scissorRect, nativeWidth,
+			nativeHeight, targetWidth, targetHeight );
 	}
 }
 
-static void RB_RestoreSceneSupersampling( const rbSceneScaleState_t &state ) {
+static void RB_BeginSceneScaling( rbSceneScaleState_t &state,
+		const viewDef_t *sceneTargetView ) {
+	int targetWidth = 0;
+	int targetHeight = 0;
+	int effectivePercent = RB_SCREEN_FRACTION_NATIVE;
+	if ( !RB_ComputeScaledSceneSize( sceneTargetView, targetWidth, targetHeight,
+			&effectivePercent ) ) {
+		RB_ClearSceneScaleState( state );
+		return;
+	}
+	RB_BeginSceneScalingToExtent( state, targetWidth, targetHeight,
+		effectivePercent );
+}
+
+static bool RB_FeedbackSceneTargetScalingExtent( const viewDef_t *viewDef,
+		int &targetWidth, int &targetHeight, int &effectivePercent ) {
+	if ( viewDef == NULL || viewDef->viewEntitys == NULL
+			|| backEnd.renderTexture == NULL
+			|| backEnd.renderTexture != backEnd.feedbackRenderTexture ) {
+		return false;
+	}
+	const bool portalSky = ( viewDef->renderFlags & RF_PORTAL_SKY ) != 0;
+	if ( !portalSky && ( viewDef->isSubview || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->renderView.viewID < 0
+			|| viewDef->isXraySubview || viewDef->isEditor ) ) {
+		return false;
+	}
+
+	const temporalPresentationFrameState_t &presentation =
+		R_TemporalPresentation_GetFrameState();
+	const int nativeWidth = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int nativeHeight = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( nativeWidth != presentation.nativeWidth
+			|| nativeHeight != presentation.nativeHeight
+			|| presentation.sceneWidth <= 0 || presentation.sceneHeight <= 0
+			|| ( presentation.sceneWidth == nativeWidth
+				&& presentation.sceneHeight == nativeHeight )
+			|| backEnd.renderTexture->GetWidth() != presentation.sceneWidth
+			|| backEnd.renderTexture->GetHeight() != presentation.sceneHeight ) {
+		return false;
+	}
+	targetWidth = presentation.sceneWidth;
+	targetHeight = presentation.sceneHeight;
+	effectivePercent = presentation.effectiveScalePercent;
+	return true;
+}
+
+static void RB_RestoreSceneScaling( const rbSceneScaleState_t &state ) {
 	if ( !state.active || backEnd.viewDef == NULL ) {
 		return;
 	}
@@ -1265,6 +1500,53 @@ static void RB_RestoreSceneSupersampling( const rbSceneScaleState_t &state ) {
 	viewDef_t *viewDef = const_cast<viewDef_t *>( backEnd.viewDef );
 	viewDef->viewport = state.nativeViewport;
 	viewDef->scissor = state.nativeScissor;
+	for ( int i = state.rectRestores.Num() - 1; i >= 0; i-- ) {
+		if ( state.rectRestores[i].rect != NULL ) {
+			*state.rectRestores[i].rect = state.rectRestores[i].original;
+		}
+	}
+}
+
+static void RB_RecenterDirectTemporalProjection( rbSceneScaleState_t &state,
+		const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || !viewDef->temporalJitterEnabled
+			|| state.projectionRecentered ) {
+		return;
+	}
+	const int width = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int height = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( width <= 0 || height <= 0 ) {
+		return;
+	}
+
+	viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+	state.nativeProjectionOffsetX = mutableView->projectionMatrix[8];
+	state.nativeProjectionOffsetY = mutableView->projectionMatrix[9];
+	mutableView->projectionMatrix[8] -= 2.0f
+		* mutableView->temporalJitterPixels.x / static_cast<float>( width );
+	mutableView->projectionMatrix[9] -= 2.0f
+		* mutableView->temporalJitterPixels.y / static_cast<float>( height );
+	state.projectionRecentered = true;
+
+	// No offscreen consumer exists for this direct view. Retire shared history
+	// so the next successful scene-target frame seeds instead of blending across
+	// a spatial-only gap. Late capture already advances the generation itself.
+	if ( viewDef->temporalHistoryGeneration
+			== R_TemporalPresentation_HistoryGeneration() ) {
+		R_TemporalPresentation_InvalidateHistory(
+			"OpenGL temporal scene target unavailable" );
+	}
+}
+
+static void RB_RestoreDirectTemporalProjection( rbSceneScaleState_t &state,
+		const viewDef_t *viewDef ) {
+	if ( !state.projectionRecentered || viewDef == NULL ) {
+		return;
+	}
+	viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+	mutableView->projectionMatrix[8] = state.nativeProjectionOffsetX;
+	mutableView->projectionMatrix[9] = state.nativeProjectionOffsetY;
+	state.projectionRecentered = false;
 }
 
 static bool RB_PostProcessBloomRequested( void ) {
@@ -1323,15 +1605,16 @@ static bool RB_HDRAutoExposureEnabled( void ) {
 }
 
 static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef ) {
-	if ( r_skipPostProcess.GetBool() ) {
-		return false;
-	}
 	if ( !RB_IsMainScenePostProcessView( viewDef ) ) {
 		return false;
 	}
 
-	const bool supersampledSceneRequested = RB_SupersampledSceneTargetRequested( viewDef );
-	if ( !glConfig.GLSLProgramAvailable && !supersampledSceneRequested ) {
+	const bool scaledSceneRequested = RB_ScaledSceneTargetRequested( viewDef );
+	const bool temporalRequested = R_TemporalPresentation_TemporalAARequested();
+	if ( r_skipPostProcess.GetBool() && !scaledSceneRequested && !temporalRequested ) {
+		return false;
+	}
+	if ( !glConfig.GLSLProgramAvailable && !scaledSceneRequested && !temporalRequested ) {
 		return false;
 	}
 
@@ -1353,7 +1636,8 @@ static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef ) {
 		|| autoExposureRequested
 		|| hdrDebugRequested
 		|| modernVisibleSceneTargetRequested
-		|| supersampledSceneRequested;
+		|| temporalRequested
+		|| scaledSceneRequested;
 }
 
 static bool RB_IsInlineSubviewOfScenePostProcessView( const viewDef_t *viewDef ) {
@@ -1620,15 +1904,19 @@ static bool RB_EnsureSceneRenderTexture( const viewDef_t *sceneTargetView ) {
 		return false;
 	}
 
-	int supersampledWidth = 0;
-	int supersampledHeight = 0;
-	const bool supersampledScene = RB_ComputeSupersampledSceneSize( sceneTargetView, supersampledWidth, supersampledHeight );
-	const int targetWidth = supersampledScene ? supersampledWidth : Max( glConfig.vidWidth, sceneTargetView->viewport.x2 + 1 );
-	const int targetHeight = supersampledScene ? supersampledHeight : Max( glConfig.vidHeight, sceneTargetView->viewport.y2 + 1 );
+	int scaledWidth = 0;
+	int scaledHeight = 0;
+	const bool scaledScene = RB_ComputeScaledSceneSize( sceneTargetView,
+		scaledWidth, scaledHeight );
+	const int targetWidth = scaledScene ? scaledWidth : Max( glConfig.vidWidth, sceneTargetView->viewport.x2 + 1 );
+	const int targetHeight = scaledScene ? scaledHeight : Max( glConfig.vidHeight, sceneTargetView->viewport.y2 + 1 );
 	const int requestedSamples = Max( 0, r_multiSamples.GetInteger() );
-	// Supersampling is already an antialiasing resolve. Keep the oversized
-	// scene target single-sample instead of stacking an MSAA FP16 FBO on top of it.
-	const int sceneSamples = ( !supersampledScene && requestedSamples > 1 && !R_ModernGLExecutor_ModernVisibleRequestedForPost() ) ? requestedSamples : 0;
+	// Any non-native scene target already requires a resolve. Keep it
+	// single-sample instead of stacking an MSAA FP16 FBO on top of the scale
+	// transition; temporal AA owns antialiasing when enabled.
+	const int sceneSamples = ( !scaledScene && requestedSamples > 1
+		&& !R_TemporalPresentation_TemporalAARequested()
+		&& !R_ModernGLExecutor_ModernVisibleRequestedForPost() ) ? requestedSamples : 0;
 
 	if ( targetWidth <= 0 || targetHeight <= 0 ) {
 		return false;
@@ -1665,6 +1953,8 @@ static bool RB_EnsureSceneRenderTexture( const viewDef_t *sceneTargetView ) {
 		( rbSceneRenderTextureSamples != sceneSamples );
 
 	if ( recreateRenderTexture ) {
+		rbBackendTemporalHistoryValid = false;
+		rbBackendTemporalHistoryFrame = -1;
 		if ( rbSceneRenderTexture != NULL ) {
 			tr.DestroyRenderTexture( rbSceneRenderTexture );
 			rbSceneRenderTexture = NULL;
@@ -2622,6 +2912,14 @@ static rbMotionBlurViewState_t rbMotionBlurHistory;
 static bool rbMotionBlurHistoryValid = false;
 static idList<rbMotionBlurEntityHistory_t> rbMotionBlurEntityHistory;
 static idList<rbMotionBlurEntityHistory_t> rbMotionBlurNextEntityHistory;
+// TAA owns a transform timeline independent of motion blur. Motion blur may be
+// disabled or may reset its camera history while temporal reconstruction still
+// needs rigid-object vectors on the following frame.
+static idList<rbMotionBlurEntityHistory_t> rbTemporalEntityHistory;
+static idList<rbMotionBlurEntityHistory_t> rbTemporalNextEntityHistory;
+static unsigned int rbTemporalEntityHistoryGeneration = 0;
+static unsigned long long rbTemporalEntityHistoryViewIdentity = 0;
+static int rbTemporalEntityHistoryFrame = -1;
 static idImage *rbMotionVectorImage = NULL;
 static idRenderTexture *rbMotionVectorRenderTexture = NULL;
 static bool rbMotionVectorImageValid = false;
@@ -2822,38 +3120,14 @@ static void RB_BindPostProcessRenderTexture( idRenderTexture *renderTexture, int
 static void RB_RestorePostProcessTarget( idRenderTexture *renderTexture, int viewportWidth, int viewportHeight );
 
 static bool RB_MotionVectorSurfaceEligible( const drawSurf_t *surf ) {
-	if ( surf == NULL || surf->geo == NULL || surf->material == NULL || surf->space == NULL || surf->space->entityDef == NULL ) {
-		return false;
-	}
-
-	const srfTriangles_t *tri = surf->geo;
-	const idMaterial *shader = surf->material;
-	const idRenderEntityLocal *entity = surf->space->entityDef;
-	if ( !shader->IsDrawn() || !shader->HasAmbient() || shader->IsPortalSky() || shader->SuppressInSubview() ) {
-		return false;
-	}
-	if ( shader->Coverage() != MC_OPAQUE || shader->GetSort() >= SS_POST_PROCESS ) {
-		return false;
-	}
-	if ( tri->numIndexes <= 0 || R_TriHasPrimBatchMesh( tri ) || tri->deformedSurface ) {
-		return false;
-	}
-	if ( surf->space->weaponDepthHack || surf->space->modelDepthHack != 0.0f ) {
-		return false;
-	}
-	if ( entity->index < 0 || entity->parms.callback != NULL || entity->parms.hModel == NULL ) {
-		return false;
-	}
-	if ( entity->parms.hModel->IsDynamicModel() != DM_STATIC || entity->dynamicModel != NULL ) {
-		return false;
-	}
-	return true;
+	return R_ScenePackets_TemporalRigidMotionEligible( surf );
 }
 
-static bool RB_FindMotionBlurEntityHistory( int entityIndex, float previousModelMatrix[16] ) {
-	for ( int i = 0; i < rbMotionBlurEntityHistory.Num(); i++ ) {
-		if ( rbMotionBlurEntityHistory[i].entityIndex == entityIndex ) {
-			memcpy( previousModelMatrix, rbMotionBlurEntityHistory[i].modelMatrix, sizeof( rbMotionBlurEntityHistory[i].modelMatrix ) );
+static bool RB_FindMotionBlurEntityHistory( const idList<rbMotionBlurEntityHistory_t> &history,
+		int entityIndex, float previousModelMatrix[16] ) {
+	for ( int i = 0; i < history.Num(); i++ ) {
+		if ( history[i].entityIndex == entityIndex ) {
+			memcpy( previousModelMatrix, history[i].modelMatrix, sizeof( history[i].modelMatrix ) );
 			return true;
 		}
 	}
@@ -2917,7 +3191,9 @@ static bool RB_EnsureMotionVectorRenderTexture( int viewportWidth, int viewportH
 }
 
 static const rbMotionBlurViewState_t *rbMotionVectorPreviousState = NULL;
+static const idList<rbMotionBlurEntityHistory_t> *rbMotionVectorEntityHistory = NULL;
 static bool rbMotionVectorDrewSurface = false;
+static bool rbMotionVectorMissedSurface = false;
 
 static void RB_T_RenderMotionVectorSurface( const drawSurf_t *surf ) {
 	if ( !RB_MotionVectorSurfaceEligible( surf ) || rbMotionVectorPreviousState == NULL ) {
@@ -2925,12 +3201,15 @@ static void RB_T_RenderMotionVectorSurface( const drawSurf_t *surf ) {
 	}
 
 	float previousModelMatrix[16];
-	if ( !RB_FindMotionBlurEntityHistory( surf->space->entityDef->index, previousModelMatrix ) ) {
+	if ( rbMotionVectorEntityHistory == NULL || !RB_FindMotionBlurEntityHistory(
+			*rbMotionVectorEntityHistory, surf->space->entityDef->index, previousModelMatrix ) ) {
+		rbMotionVectorMissedSurface = true;
 		return;
 	}
 
 	const srfTriangles_t *tri = surf->geo;
 	if ( !RB_EnsurePackedClassicDrawCaches( surf, false, true ) || tri->ambientCache == NULL ) {
+		rbMotionVectorMissedSurface = true;
 		return;
 	}
 
@@ -2952,11 +3231,17 @@ static void RB_T_RenderMotionVectorSurface( const drawSurf_t *surf ) {
 	rbMotionVectorDrewSurface = true;
 }
 
-static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurfs, const rbMotionBlurViewState_t &previousState, int viewportWidth, int viewportHeight ) {
-	if ( !RB_MotionBlurObjectVectorsRequested() ) {
+static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurfs,
+		const rbMotionBlurViewState_t &previousState, int viewportWidth, int viewportHeight,
+		idImage *depthImage, const idList<rbMotionBlurEntityHistory_t> &entityHistory,
+		bool temporalRequested, bool *allEligibleSurfacesDrawn = NULL ) {
+	if ( allEligibleSurfacesDrawn != NULL ) {
+		*allEligibleSurfacesDrawn = false;
+	}
+	if ( !temporalRequested && !RB_MotionBlurObjectVectorsRequested() ) {
 		return false;
 	}
-	if ( globalImages->currentDepthImage == NULL ) {
+	if ( depthImage == NULL ) {
 		return false;
 	}
 
@@ -2972,7 +3257,9 @@ static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurf
 	idRenderTexture *previousRenderTexture = backEnd.renderTexture;
 	rbMotionVectorImageValid = false;
 	rbMotionVectorDrewSurface = false;
+	rbMotionVectorMissedSurface = false;
 	rbMotionVectorPreviousState = &previousState;
+	rbMotionVectorEntityHistory = &entityHistory;
 
 	RB_BindPostProcessRenderTexture( rbMotionVectorRenderTexture, viewportWidth, viewportHeight );
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
@@ -2986,7 +3273,7 @@ static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurf
 	glDisable( GL_DEPTH_TEST );
 	glDisable( GL_STENCIL_TEST );
 	GL_SelectTexture( 0 );
-	globalImages->currentDepthImage->Bind();
+	depthImage->Bind();
 	glUseProgramObjectARB( (GLhandleARB)rbMotionVectorStage.glslProgramObject );
 
 	for ( int i = 0; i < rbMotionVectorStage.numShaderTextures; i++ ) {
@@ -3021,11 +3308,20 @@ static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurf
 		}
 		if ( r_useScissor.GetBool() && !backEnd.currentScissor.Equals( surf->scissorRect ) ) {
 			backEnd.currentScissor = surf->scissorRect;
+			const int nativeWidth = Max( 1, backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1 );
+			const int nativeHeight = Max( 1, backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1 );
+			const float scaleX = static_cast<float>( viewportWidth ) / static_cast<float>( nativeWidth );
+			const float scaleY = static_cast<float>( viewportHeight ) / static_cast<float>( nativeHeight );
+			const int scissorX = idMath::ClampInt( 0, viewportWidth - 1,
+				idMath::Ftoi( static_cast<float>( backEnd.currentScissor.x1 ) * scaleX ) );
+			const int scissorY = idMath::ClampInt( 0, viewportHeight - 1,
+				idMath::Ftoi( static_cast<float>( backEnd.currentScissor.y1 ) * scaleY ) );
+			const int scissorX2 = idMath::ClampInt( scissorX + 1, viewportWidth,
+				idMath::Ceil( static_cast<float>( backEnd.currentScissor.x2 + 1 ) * scaleX ) );
+			const int scissorY2 = idMath::ClampInt( scissorY + 1, viewportHeight,
+				idMath::Ceil( static_cast<float>( backEnd.currentScissor.y2 + 1 ) * scaleY ) );
 			glScissor(
-				backEnd.currentScissor.x1,
-				backEnd.currentScissor.y1,
-				backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
-				backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
+				scissorX, scissorY, scissorX2 - scissorX, scissorY2 - scissorY );
 		}
 		RB_T_RenderMotionVectorSurface( surf );
 	}
@@ -3036,6 +3332,7 @@ static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurf
 	globalImages->BindNull();
 	glEnableClientState( GL_TEXTURE_COORD_ARRAY );
 	rbMotionVectorPreviousState = NULL;
+	rbMotionVectorEntityHistory = NULL;
 
 	RB_RestorePostProcessTarget( previousRenderTexture, viewportWidth, viewportHeight );
 	glMatrixMode( GL_PROJECTION );
@@ -3043,6 +3340,9 @@ static bool RB_RenderMotionVectorBuffer( drawSurf_t **drawSurfs, int numDrawSurf
 	glMatrixMode( GL_MODELVIEW );
 
 	rbMotionVectorImageValid = rbMotionVectorDrewSurface;
+	if ( allEligibleSurfacesDrawn != NULL ) {
+		*allEligibleSurfacesDrawn = !rbMotionVectorMissedSurface;
+	}
 	return rbMotionVectorImageValid;
 }
 
@@ -3119,7 +3419,8 @@ static void RB_STD_MotionBlur( void ) {
 	}
 	rbMotionVectorImageValid = false;
 	if ( objectVectorsRequested ) {
-		RB_RenderMotionVectorBuffer( drawSurfs, numDrawSurfs, previousState, viewportWidth, viewportHeight );
+		RB_RenderMotionVectorBuffer( drawSurfs, numDrawSurfs, previousState,
+			viewportWidth, viewportHeight, depthImage, rbMotionBlurEntityHistory, false );
 	}
 	RB_UpdateMotionBlurEntityHistory( drawSurfs, numDrawSurfs );
 
@@ -3959,6 +4260,253 @@ static void RB_STD_Bloom( void ) {
 	}
 }
 
+static void RB_FreeTemporalResolveProgram( void ) {
+	const bool currentContext = glConfig.isInitialized
+		&& rbTemporalResolveGeneration == tr.glContextGeneration;
+	if ( rbTemporalResolveProgram != 0 && currentContext ) {
+		if ( rbTemporalResolveVertexShader != 0 ) {
+			glDetachObjectARB( rbTemporalResolveProgram, rbTemporalResolveVertexShader );
+		}
+		if ( rbTemporalResolveFragmentShader != 0 ) {
+			glDetachObjectARB( rbTemporalResolveProgram, rbTemporalResolveFragmentShader );
+		}
+		glDeleteObjectARB( rbTemporalResolveProgram );
+	}
+	if ( rbTemporalResolveVertexShader != 0 && currentContext ) {
+		glDeleteObjectARB( rbTemporalResolveVertexShader );
+	}
+	if ( rbTemporalResolveFragmentShader != 0 && currentContext ) {
+		glDeleteObjectARB( rbTemporalResolveFragmentShader );
+	}
+	rbTemporalResolveProgram = 0;
+	rbTemporalResolveVertexShader = 0;
+	rbTemporalResolveFragmentShader = 0;
+	rbTemporalResolveGeneration = -1;
+	for ( int i = 0; i < RB_TEMPORAL_UNIFORM_COUNT; i++ ) {
+		rbTemporalResolveUniforms[i] = -1;
+	}
+}
+
+static bool RB_EnsureTemporalResolveProgram( void ) {
+	if ( !glConfig.GLSLProgramAvailable ) {
+		return false;
+	}
+	if ( rbTemporalResolveProgram != 0
+			&& rbTemporalResolveGeneration == tr.glContextGeneration ) {
+		return true;
+	}
+
+	RB_FreeTemporalResolveProgram();
+
+	static const char *vertexSource =
+		"void main() {\n"
+		"\tgl_Position = ftransform();\n"
+		"\tgl_TexCoord[0] = gl_MultiTexCoord0;\n"
+		"}\n";
+	static const char *fragmentSource =
+		"uniform sampler2D Scene;\n"
+		"uniform sampler2D DepthBuffer;\n"
+		"uniform sampler2D History;\n"
+		"uniform sampler2D VelocityBuffer;\n"
+		"uniform vec2 InvSceneSize;\n"
+		"uniform vec2 OutputSize;\n"
+		"uniform vec4 CurrentReconstructInfo;\n"
+		"uniform vec4 PreviousProjectInfo;\n"
+		"uniform vec2 DepthProjection;\n"
+		"uniform vec4 CurrentViewOrigin;\n"
+		"uniform vec4 CurrentViewAxis0;\n"
+		"uniform vec4 CurrentViewAxis1;\n"
+		"uniform vec4 CurrentViewAxis2;\n"
+		"uniform vec4 PreviousViewOrigin;\n"
+		"uniform vec4 PreviousViewAxis0;\n"
+		"uniform vec4 PreviousViewAxis1;\n"
+		"uniform vec4 PreviousViewAxis2;\n"
+		"uniform vec2 CurrentJitter;\n"
+		"uniform vec4 TemporalParams;\n"
+		"uniform vec4 MotionParams;\n"
+		"uniform vec4 ReactiveRegion0;\n"
+		"uniform vec4 ReactiveRegion1;\n"
+		"uniform float PreserveFarDepth;\n"
+		"float ViewZFromDepth( float depth ) {\n"
+		"\tfloat denom = depth * 2.0 - 1.0 + DepthProjection.x;\n"
+		"\tif ( abs( denom ) < 0.00001 ) denom = denom < 0.0 ? -0.00001 : 0.00001;\n"
+		"\treturn -DepthProjection.y / denom;\n"
+		"}\n"
+		"vec3 CurrentViewToWorldDirection( vec3 viewPos ) {\n"
+		"\treturn CurrentViewAxis0.xyz * ( -viewPos.z )\n"
+		"\t\t+ CurrentViewAxis1.xyz * ( -viewPos.x )\n"
+		"\t\t+ CurrentViewAxis2.xyz * viewPos.y;\n"
+		"}\n"
+		"vec3 WorldToPreviousViewDirection( vec3 worldDirection ) {\n"
+		"\treturn vec3( -dot( worldDirection, PreviousViewAxis1.xyz ),\n"
+		"\t\tdot( worldDirection, PreviousViewAxis2.xyz ),\n"
+		"\t\t-dot( worldDirection, PreviousViewAxis0.xyz ) );\n"
+		"}\n"
+		"vec2 ProjectPreviousView( vec3 previousViewPosition ) {\n"
+		"\tfloat w = -previousViewPosition.z;\n"
+		"\tif ( abs( w ) < 0.00001 ) return vec2( -1000.0 );\n"
+		"\tvec2 clipXY = PreviousProjectInfo.xy * previousViewPosition.xy\n"
+		"\t\t+ PreviousProjectInfo.zw * previousViewPosition.z;\n"
+		"\treturn clipXY / w * 0.5 + 0.5;\n"
+		"}\n"
+		"vec2 CameraPreviousUV( vec2 uv, float depth ) {\n"
+		"\tvec2 ndc = uv * 2.0 - 1.0;\n"
+		"\tif ( depth >= 0.99999 ) {\n"
+		"\t\tvec3 ray = vec3( -( ndc.x + CurrentReconstructInfo.z ) * CurrentReconstructInfo.x,\n"
+		"\t\t\t-( ndc.y + CurrentReconstructInfo.w ) * CurrentReconstructInfo.y, -1.0 );\n"
+		"\t\treturn ProjectPreviousView( WorldToPreviousViewDirection( CurrentViewToWorldDirection( ray ) ) );\n"
+		"\t}\n"
+		"\tfloat viewZ = ViewZFromDepth( depth );\n"
+		"\tvec3 viewPosition = vec3( -viewZ * ( ndc.x + CurrentReconstructInfo.z ) * CurrentReconstructInfo.x,\n"
+		"\t\t-viewZ * ( ndc.y + CurrentReconstructInfo.w ) * CurrentReconstructInfo.y, viewZ );\n"
+		"\tvec3 worldPosition = CurrentViewOrigin.xyz + CurrentViewToWorldDirection( viewPosition );\n"
+		"\tvec3 delta = worldPosition - PreviousViewOrigin.xyz;\n"
+		"\treturn ProjectPreviousView( vec3( -dot( delta, PreviousViewAxis1.xyz ),\n"
+		"\t\tdot( delta, PreviousViewAxis2.xyz ), -dot( delta, PreviousViewAxis0.xyz ) ) );\n"
+		"}\n"
+		"float MaxComponent( vec3 value ) { return max( value.x, max( value.y, value.z ) ); }\n"
+		"bool InsideReactiveRegion( vec2 uv, vec4 region ) {\n"
+		"\treturn region.z > region.x && region.w > region.y\n"
+		"\t\t&& uv.x >= region.x && uv.y >= region.y\n"
+		"\t\t&& uv.x < region.z && uv.y < region.w;\n"
+		"}\n"
+		"void main() {\n"
+		"\tvec2 outputUV = gl_TexCoord[0].st;\n"
+		"\tvec2 sceneUV = clamp( outputUV - CurrentJitter * MotionParams.w, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\tvec4 current = texture2D( Scene, sceneUV );\n"
+		"\tvec3 neighborhoodMin = current.rgb;\n"
+		"\tvec3 neighborhoodMax = current.rgb;\n"
+		"\tfloat centerDepth = texture2D( DepthBuffer, sceneUV ).r;\n"
+		"\tfloat depthMin = centerDepth;\n"
+		"\tfloat depthMax = centerDepth;\n"
+		"\tfor ( int y = -1; y <= 1; ++y ) {\n"
+		"\t\tfor ( int x = -1; x <= 1; ++x ) {\n"
+		"\t\t\tvec2 sampleUV = clamp( sceneUV + vec2( float( x ), float( y ) ) * InvSceneSize, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\t\t\tvec3 sampleColor = texture2D( Scene, sampleUV ).rgb;\n"
+		"\t\t\tneighborhoodMin = min( neighborhoodMin, sampleColor );\n"
+		"\t\t\tneighborhoodMax = max( neighborhoodMax, sampleColor );\n"
+		"\t\t\tfloat sampleDepth = texture2D( DepthBuffer, sampleUV ).r;\n"
+		"\t\t\tdepthMin = min( depthMin, sampleDepth );\n"
+		"\t\t\tdepthMax = max( depthMax, sampleDepth );\n"
+		"\t\t}\n"
+		"\t}\n"
+		"\tvec4 objectVelocity = texture2D( VelocityBuffer, sceneUV );\n"
+		"\tbool objectValid = MotionParams.x > 0.5 && objectVelocity.a > 0.5;\n"
+		"\tbool cameraValid = MotionParams.y > 0.5 && MotionParams.z > 0.5;\n"
+		"\tvec2 previousUV = cameraValid ? CameraPreviousUV( sceneUV, centerDepth ) : outputUV;\n"
+		"\tif ( objectValid ) previousUV = outputUV - objectVelocity.xy * InvSceneSize;\n"
+		"\tbool inside = previousUV.x >= 0.0 && previousUV.y >= 0.0 && previousUV.x <= 1.0 && previousUV.y <= 1.0;\n"
+		"\tbool historyUsable = TemporalParams.z > 0.5 && inside && ( objectValid || cameraValid );\n"
+		"\tvec3 historyRaw = historyUsable ? texture2D( History, previousUV ).rgb : current.rgb;\n"
+		"\tvec3 historyClamped = clamp( historyRaw, neighborhoodMin, neighborhoodMax );\n"
+		"\tfloat colorDelta = MaxComponent( abs( current.rgb - historyRaw ) );\n"
+		"\tfloat clampDelta = MaxComponent( abs( historyRaw - historyClamped ) );\n"
+		"\tvec2 velocityPixels = ( outputUV - previousUV ) * OutputSize;\n"
+		"\tfloat motionReactive = smoothstep( 12.0, 96.0, length( velocityPixels ) ) * 0.35;\n"
+		"\tfloat depthReactive = MotionParams.z > 0.5 ? smoothstep( 0.001, 0.02, depthMax - depthMin ) * 0.20 : 0.0;\n"
+		"\tfloat unsupportedNear = ( MotionParams.z > 0.5 && !objectValid )\n"
+		"\t\t? ( 1.0 - smoothstep( 0.82, 0.98, centerDepth ) ) * 0.25 : 0.0;\n"
+		"\tfloat packetReactive = ( InsideReactiveRegion( outputUV, ReactiveRegion0 )\n"
+		"\t\t|| InsideReactiveRegion( outputUV, ReactiveRegion1 ) ) ? 1.0 : 0.0;\n"
+		"\tfloat reactive = clamp( max( max( colorDelta * 2.5, clampDelta * 5.0 ) * TemporalParams.y,\n"
+		"\t\tmax( packetReactive, max( motionReactive, max( depthReactive, unsupportedNear ) ) ) ), 0.0, 1.0 );\n"
+		"\tif ( !historyUsable ) reactive = 1.0;\n"
+		"\tfloat historyWeight = historyUsable ? TemporalParams.x * ( 1.0 - reactive ) : 0.0;\n"
+		"\tvec3 resolved = mix( current.rgb, historyClamped, historyWeight );\n"
+		"\tif ( TemporalParams.w > 0.5 && TemporalParams.w < 1.5 ) {\n"
+		"\t\tfloat magnitude = clamp( length( velocityPixels ) / 32.0, 0.0, 1.0 );\n"
+		"\t\tvec2 direction = clamp( velocityPixels / 32.0, vec2( -1.0 ), vec2( 1.0 ) );\n"
+		"\t\tresolved = vec3( direction * 0.5 + 0.5, 1.0 ) * magnitude;\n"
+		"\t} else if ( TemporalParams.w > 1.5 && TemporalParams.w < 2.5 ) {\n"
+		"\t\tresolved = vec3( reactive, reactive * 0.25, 0.0 );\n"
+		"\t} else if ( TemporalParams.w > 2.5 ) {\n"
+		"\t\tresolved = vec3( historyWeight );\n"
+		"\t}\n"
+		"\tif ( PreserveFarDepth > 0.5 && centerDepth >= 0.99999 ) discard;\n"
+		"\tgl_FragColor = vec4( resolved, current.a );\n"
+		"}\n";
+
+	GLhandleARB vertexShader = glCreateShaderObjectARB( GL_VERTEX_SHADER_ARB );
+	GLhandleARB fragmentShader = glCreateShaderObjectARB( GL_FRAGMENT_SHADER_ARB );
+	if ( vertexShader == 0 || fragmentShader == 0 ) {
+		if ( vertexShader != 0 ) glDeleteObjectARB( vertexShader );
+		if ( fragmentShader != 0 ) glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+
+	const GLcharARB *vertexSourceARB = reinterpret_cast<const GLcharARB *>( vertexSource );
+	const GLcharARB *fragmentSourceARB = reinterpret_cast<const GLcharARB *>( fragmentSource );
+	glShaderSourceARB( vertexShader, 1, &vertexSourceARB, NULL );
+	glShaderSourceARB( fragmentShader, 1, &fragmentSourceARB, NULL );
+	glCompileShaderARB( vertexShader );
+	glCompileShaderARB( fragmentShader );
+
+	GLint status = GL_FALSE;
+	glGetObjectParameterivARB( vertexShader, GL_OBJECT_COMPILE_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( vertexShader, "vertex shader compile", "builtin/temporal_resolve" );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+	glGetObjectParameterivARB( fragmentShader, GL_OBJECT_COMPILE_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( fragmentShader, "fragment shader compile", "builtin/temporal_resolve" );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+
+	GLhandleARB programObject = glCreateProgramObjectARB();
+	if ( programObject == 0 ) {
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		return false;
+	}
+	glAttachObjectARB( programObject, vertexShader );
+	glAttachObjectARB( programObject, fragmentShader );
+	glLinkProgramARB( programObject );
+	glGetObjectParameterivARB( programObject, GL_OBJECT_LINK_STATUS_ARB, &status );
+	if ( status == GL_FALSE ) {
+		RB_PrintGLSLInfoLog( programObject, "program link", "builtin/temporal_resolve" );
+		glDetachObjectARB( programObject, vertexShader );
+		glDetachObjectARB( programObject, fragmentShader );
+		glDeleteObjectARB( vertexShader );
+		glDeleteObjectARB( fragmentShader );
+		glDeleteObjectARB( programObject );
+		return false;
+	}
+
+	static const char *uniformNames[RB_TEMPORAL_UNIFORM_COUNT] = {
+		"Scene", "DepthBuffer", "History", "VelocityBuffer", "InvSceneSize",
+		"OutputSize", "CurrentReconstructInfo", "PreviousProjectInfo", "DepthProjection",
+		"CurrentViewOrigin", "CurrentViewAxis0", "CurrentViewAxis1", "CurrentViewAxis2",
+		"PreviousViewOrigin", "PreviousViewAxis0", "PreviousViewAxis1", "PreviousViewAxis2",
+		"CurrentJitter", "TemporalParams", "MotionParams",
+		"ReactiveRegion0", "ReactiveRegion1", "PreserveFarDepth"
+	};
+	for ( int i = 0; i < RB_TEMPORAL_UNIFORM_COUNT; i++ ) {
+		rbTemporalResolveUniforms[i] = glGetUniformLocationARB( programObject, uniformNames[i] );
+		if ( rbTemporalResolveUniforms[i] < 0 ) {
+			common->Warning( "builtin temporal resolve is missing uniform '%s'", uniformNames[i] );
+			glDetachObjectARB( programObject, vertexShader );
+			glDetachObjectARB( programObject, fragmentShader );
+			glDeleteObjectARB( vertexShader );
+			glDeleteObjectARB( fragmentShader );
+			glDeleteObjectARB( programObject );
+			for ( int j = 0; j < RB_TEMPORAL_UNIFORM_COUNT; j++ ) rbTemporalResolveUniforms[j] = -1;
+			return false;
+		}
+	}
+
+	rbTemporalResolveProgram = programObject;
+	rbTemporalResolveVertexShader = vertexShader;
+	rbTemporalResolveFragmentShader = fragmentShader;
+	rbTemporalResolveGeneration = tr.glContextGeneration;
+	common->Printf( "Loaded internal GLSL program 'builtin/temporal_resolve'\n" );
+	return true;
+}
+
 static void RB_FreeSceneDepthAwarePresentProgram( void ) {
 	if ( rbSceneDepthAwarePresentProgram != 0 && glConfig.isInitialized ) {
 		if ( rbSceneDepthAwarePresentVertexShader != 0 ) {
@@ -3981,6 +4529,7 @@ static void RB_FreeSceneDepthAwarePresentProgram( void ) {
 	rbSceneDepthAwarePresentGeneration = -1;
 	rbSceneDepthAwarePresentSceneLocation = -1;
 	rbSceneDepthAwarePresentDepthLocation = -1;
+	rbSceneDepthAwarePresentUVOffsetLocation = -1;
 }
 
 static bool RB_EnsureSceneDepthAwarePresentProgram( void ) {
@@ -4001,8 +4550,9 @@ static bool RB_EnsureSceneDepthAwarePresentProgram( void ) {
 	static const char *fragmentSource =
 		"uniform sampler2D Scene;\n"
 		"uniform sampler2D DepthBuffer;\n"
+		"uniform vec2 UVOffset;\n"
 		"void main() {\n"
-		"	vec2 uv = gl_TexCoord[0].st;\n"
+		"	vec2 uv = clamp( gl_TexCoord[0].st - UVOffset, vec2( 0.0 ), vec2( 1.0 ) );\n"
 		"	if ( texture2D( DepthBuffer, uv ).r >= 0.99999 ) {\n"
 		"		discard;\n"
 		"	}\n"
@@ -4071,8 +4621,10 @@ static bool RB_EnsureSceneDepthAwarePresentProgram( void ) {
 	rbSceneDepthAwarePresentGeneration = tr.videoRestartCount;
 	rbSceneDepthAwarePresentSceneLocation = glGetUniformLocationARB( programObject, "Scene" );
 	rbSceneDepthAwarePresentDepthLocation = glGetUniformLocationARB( programObject, "DepthBuffer" );
+	rbSceneDepthAwarePresentUVOffsetLocation = glGetUniformLocationARB( programObject, "UVOffset" );
 
-	if ( rbSceneDepthAwarePresentSceneLocation < 0 || rbSceneDepthAwarePresentDepthLocation < 0 ) {
+	if ( rbSceneDepthAwarePresentSceneLocation < 0 || rbSceneDepthAwarePresentDepthLocation < 0
+			|| rbSceneDepthAwarePresentUVOffsetLocation < 0 ) {
 		common->Warning( "scene depth-aware present shader is missing required sampler uniforms" );
 		RB_FreeSceneDepthAwarePresentProgram();
 		return false;
@@ -4081,13 +4633,24 @@ static bool RB_EnsureSceneDepthAwarePresentProgram( void ) {
 	return true;
 }
 
+static bool RB_BindSceneScaleSharpenProgram( int sourceWidth, int sourceHeight,
+	int textureWidth, int textureHeight );
+static void RB_DrawFullscreenPostProcessQuadOffsetScaled( int viewportWidth,
+	int viewportHeight, int textureWidth, int textureHeight,
+	float offsetX, float offsetY );
+
 static void RB_PresentSceneRenderTargetToBackBuffer( const rbSceneScaleState_t &scaleState ) {
 	if ( !RB_IsSceneRenderTexture( backEnd.renderTexture ) || backEnd.viewDef == NULL ) {
 		return;
 	}
 
-	const int sourceViewportWidth = backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
-	const int sourceViewportHeight = backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
+	// Scene coordinate mutations are restored before any temporal/reactive
+	// policy is built. Preserve the actual offscreen source extent explicitly
+	// for the legacy spatial presenter instead of reading the restored viewport.
+	const int sourceViewportWidth = scaleState.active ? scaleState.scaledWidth
+		: backEnd.viewDef->viewport.x2 - backEnd.viewDef->viewport.x1 + 1;
+	const int sourceViewportHeight = scaleState.active ? scaleState.scaledHeight
+		: backEnd.viewDef->viewport.y2 - backEnd.viewDef->viewport.y1 + 1;
 	const idScreenRect targetViewport = scaleState.active ? scaleState.nativeViewport : backEnd.viewDef->viewport;
 	const idScreenRect targetScissor = scaleState.active ? scaleState.nativeScissor : backEnd.viewDef->scissor;
 	const int targetViewportWidth = targetViewport.x2 - targetViewport.x1 + 1;
@@ -4177,6 +4740,10 @@ static void RB_PresentSceneRenderTargetToBackBuffer( const rbSceneScaleState_t &
 	GL_TexEnv( GL_MODULATE );
 
 	RB_SetFramebufferSRGBEnabled( true );
+	const bool scaleSharpenBound = !preserveFarDepth && scaleState.active
+		&& scaleState.effectivePercent < RB_SCREEN_FRACTION_NATIVE
+		&& RB_BindSceneScaleSharpenProgram( sourceViewportWidth,
+			sourceViewportHeight, textureWidth, textureHeight );
 	if ( preserveFarDepth ) {
 		GL_SelectTexture( 1 );
 		presentDepthImage->Bind();
@@ -4186,10 +4753,27 @@ static void RB_PresentSceneRenderTargetToBackBuffer( const rbSceneScaleState_t &
 		glUseProgramObjectARB( rbSceneDepthAwarePresentProgram );
 		glUniform1iARB( rbSceneDepthAwarePresentSceneLocation, 0 );
 		glUniform1iARB( rbSceneDepthAwarePresentDepthLocation, 1 );
+		const GLfloat uvOffset[2] = {
+			R_TemporalPresentation_TemporalAARequested()
+				? backEnd.viewDef->temporalJitterPixels.x / static_cast<GLfloat>( Max( 1, targetViewportWidth ) ) : 0.0f,
+			R_TemporalPresentation_TemporalAARequested()
+				? backEnd.viewDef->temporalJitterPixels.y / static_cast<GLfloat>( Max( 1, targetViewportHeight ) ) : 0.0f
+		};
+		glUniform2fvARB( rbSceneDepthAwarePresentUVOffsetLocation, 1, uvOffset );
 	}
-	RB_DrawFullscreenPostProcessQuad( sourceViewportWidth, sourceViewportHeight, textureWidth, textureHeight );
-	if ( preserveFarDepth ) {
+	if ( !preserveFarDepth && R_TemporalPresentation_TemporalAARequested()
+			&& backEnd.viewDef->temporalJitterEnabled ) {
+		RB_DrawFullscreenPostProcessQuadOffsetScaled(
+			sourceViewportWidth, sourceViewportHeight, textureWidth, textureHeight,
+			backEnd.viewDef->temporalJitterPixels.x / static_cast<float>( Max( 1, targetViewportWidth ) ),
+			backEnd.viewDef->temporalJitterPixels.y / static_cast<float>( Max( 1, targetViewportHeight ) ) );
+	} else {
+		RB_DrawFullscreenPostProcessQuad( sourceViewportWidth, sourceViewportHeight, textureWidth, textureHeight );
+	}
+	if ( preserveFarDepth || scaleSharpenBound ) {
 		glUseProgramObjectARB( 0 );
+	}
+	if ( preserveFarDepth ) {
 		GL_SelectTexture( 1 );
 		globalImages->BindNull();
 		GL_SelectTexture( 0 );
@@ -4198,6 +4782,9 @@ static void RB_PresentSceneRenderTargetToBackBuffer( const rbSceneScaleState_t &
 
 	globalImages->BindNull();
 	RB_EndFullscreenPostProcessPass();
+	if ( scaleState.active ) {
+		rbSceneScalePresentedFrame = backEnd.frameCount;
+	}
 }
 
 enum rbResolutionScaleUniformIndex_t {
@@ -4237,8 +4824,771 @@ static void RB_InitResolutionScaleStage( void ) {
 	rbResolutionScaleStageInitialized = true;
 }
 
+static bool RB_BindSceneScaleSharpenProgram( int sourceWidth, int sourceHeight,
+		int textureWidth, int textureHeight ) {
+	if ( idMath::ClampInt( 0, 2, r_resolutionScaleMode.GetInteger() ) != 2
+			|| !glConfig.GLSLProgramAvailable || sourceWidth <= 0
+			|| sourceHeight <= 0 || textureWidth <= 0 || textureHeight <= 0 ) {
+		return false;
+	}
+
+	RB_InitResolutionScaleStage();
+	if ( !R_ValidateGLSLProgram( &rbResolutionScaleStage ) ) {
+		return false;
+	}
+
+	glUseProgramObjectARB( (GLhandleARB)rbResolutionScaleStage.glslProgramObject );
+	const int sceneLocation = rbResolutionScaleStage.shaderTextureLocations[0];
+	if ( sceneLocation >= 0 ) {
+		glUniform1iARB( sceneLocation, 0 );
+	}
+	const GLfloat invTexSize[2] = {
+		1.0f / static_cast<GLfloat>( textureWidth ),
+		1.0f / static_cast<GLfloat>( textureHeight )
+	};
+	const GLfloat invLowResSize[2] = {
+		1.0f / static_cast<GLfloat>( sourceWidth ),
+		1.0f / static_cast<GLfloat>( sourceHeight )
+	};
+	const GLfloat sharpenAmount = idMath::ClampFloat(
+		0.0f, 1.5f, r_resolutionScaleSharpness.GetFloat() );
+	if ( rbResolutionScaleStage.shaderParmLocations[RB_RES_SCALE_UNIFORM_INV_TEX_SIZE] >= 0 ) {
+		glUniform2fvARB( rbResolutionScaleStage.shaderParmLocations[RB_RES_SCALE_UNIFORM_INV_TEX_SIZE], 1, invTexSize );
+	}
+	if ( rbResolutionScaleStage.shaderParmLocations[RB_RES_SCALE_UNIFORM_INV_LOW_RES_SIZE] >= 0 ) {
+		glUniform2fvARB( rbResolutionScaleStage.shaderParmLocations[RB_RES_SCALE_UNIFORM_INV_LOW_RES_SIZE], 1, invLowResSize );
+	}
+	if ( rbResolutionScaleStage.shaderParmLocations[RB_RES_SCALE_UNIFORM_SHARPEN_AMOUNT] >= 0 ) {
+		glUniform1fARB( rbResolutionScaleStage.shaderParmLocations[RB_RES_SCALE_UNIFORM_SHARPEN_AMOUNT], sharpenAmount );
+	}
+	return true;
+}
+
+static idImage *RB_TemporalColorImage( const idRenderTexture *target ) {
+	if ( target == NULL || target->GetNumColorImages() <= 0 ) {
+		return NULL;
+	}
+	return target->GetColorImage( 0 );
+}
+
+static bool RB_TemporalColorTargetMatches( const idRenderTexture *target,
+		int width, int height ) {
+	idImage *image = RB_TemporalColorImage( target );
+	return image != NULL && target->GetWidth() == width && target->GetHeight() == height
+		&& image->GetOpts().width == width && image->GetOpts().height == height
+		&& image->GetOpts().numMSAASamples <= 1;
+}
+
+static void RB_DrawFullscreenPostProcessQuadOffsetUV( float offsetX, float offsetY ) {
+	const float minS = idMath::ClampFloat( 0.0f, 1.0f, -offsetX );
+	const float minT = idMath::ClampFloat( 0.0f, 1.0f, -offsetY );
+	const float maxS = idMath::ClampFloat( 0.0f, 1.0f, 1.0f - offsetX );
+	const float maxT = idMath::ClampFloat( 0.0f, 1.0f, 1.0f - offsetY );
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBegin( GL_QUADS );
+	glTexCoord2f( minS, minT ); glVertex2f( 0.0f, 0.0f );
+	glTexCoord2f( minS, maxT ); glVertex2f( 0.0f, 1.0f );
+	glTexCoord2f( maxS, maxT ); glVertex2f( 1.0f, 1.0f );
+	glTexCoord2f( maxS, minT ); glVertex2f( 1.0f, 0.0f );
+	glEnd();
+}
+
+static void RB_DrawFullscreenPostProcessQuadOffsetScaled( int viewportWidth,
+		int viewportHeight, int textureWidth, int textureHeight,
+		float offsetX, float offsetY ) {
+	const float maxS = static_cast<float>( viewportWidth ) / static_cast<float>( Max( 1, textureWidth ) );
+	const float maxT = static_cast<float>( viewportHeight ) / static_cast<float>( Max( 1, textureHeight ) );
+	const float minS = idMath::ClampFloat( 0.0f, maxS, -offsetX * maxS );
+	const float minT = idMath::ClampFloat( 0.0f, maxT, -offsetY * maxT );
+	const float endS = idMath::ClampFloat( 0.0f, maxS, maxS - offsetX * maxS );
+	const float endT = idMath::ClampFloat( 0.0f, maxT, maxT - offsetY * maxT );
+	glColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	glBegin( GL_QUADS );
+	glTexCoord2f( minS, minT ); glVertex2f( 0.0f, 0.0f );
+	glTexCoord2f( minS, endT ); glVertex2f( 0.0f, 1.0f );
+	glTexCoord2f( endS, endT ); glVertex2f( 1.0f, 1.0f );
+	glTexCoord2f( endS, minT ); glVertex2f( 1.0f, 0.0f );
+	glEnd();
+}
+
+static bool RB_BindTemporalDestination( idRenderTexture *target, int width, int height ) {
+	if ( width <= 0 || height <= 0 ) {
+		return false;
+	}
+	if ( target != NULL ) {
+		if ( !target->MakeCurrent() ) {
+			return false;
+		}
+		backEnd.renderTexture = target;
+	} else {
+		idRenderTexture::BindNull();
+		backEnd.renderTexture = NULL;
+		glDrawBuffer( GL_BACK );
+		glReadBuffer( GL_BACK );
+	}
+	backEnd.feedbackRenderTexture = NULL;
+	glViewport( 0, 0, width, height );
+	glScissor( 0, 0, width, height );
+	backEnd.currentScissor.x1 = 0;
+	backEnd.currentScissor.y1 = 0;
+	backEnd.currentScissor.x2 = width - 1;
+	backEnd.currentScissor.y2 = height - 1;
+	return true;
+}
+
+static bool RB_PresentTemporalSpatialFallback( idImage *sceneImage,
+		int outputWidth, int outputHeight, const idVec2 &jitterPixels,
+		idImage *depthImage = NULL, bool preserveFarDepth = false ) {
+	if ( sceneImage == NULL || !RB_BindTemporalDestination( NULL, outputWidth, outputHeight ) ) {
+		return false;
+	}
+
+	const bool depthAware = preserveFarDepth && depthImage != NULL
+		&& RB_EnsureSceneDepthAwarePresentProgram();
+	RB_BeginFullscreenPostProcessPass( 0, 0, outputWidth, outputHeight );
+	GL_SelectTexture( 0 );
+	sceneImage->Bind();
+	GL_TexEnv( GL_MODULATE );
+	if ( depthAware ) {
+		GL_SelectTexture( 1 );
+		depthImage->Bind();
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+		glTexParameteri( GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE, GL_LUMINANCE );
+		GL_SelectTexture( 0 );
+		glUseProgramObjectARB( rbSceneDepthAwarePresentProgram );
+		glUniform1iARB( rbSceneDepthAwarePresentSceneLocation, 0 );
+		glUniform1iARB( rbSceneDepthAwarePresentDepthLocation, 1 );
+		const GLfloat uvOffset[2] = {
+			jitterPixels.x / static_cast<GLfloat>( Max( 1, outputWidth ) ),
+			jitterPixels.y / static_cast<GLfloat>( Max( 1, outputHeight ) )
+		};
+		glUniform2fvARB( rbSceneDepthAwarePresentUVOffsetLocation, 1, uvOffset );
+	}
+	RB_SetFramebufferSRGBEnabled( true );
+	if ( depthAware ) {
+		RB_DrawFullscreenPostProcessQuadUnitUV();
+	} else {
+		RB_DrawFullscreenPostProcessQuadOffsetUV(
+			jitterPixels.x / static_cast<float>( Max( 1, outputWidth ) ),
+			jitterPixels.y / static_cast<float>( Max( 1, outputHeight ) ) );
+	}
+	RB_SetFramebufferSRGBEnabled( false );
+	if ( depthAware ) {
+		glUseProgramObjectARB( 0 );
+		GL_SelectTexture( 1 );
+		globalImages->BindNull();
+		GL_SelectTexture( 0 );
+	}
+	globalImages->BindNull();
+	RB_EndFullscreenPostProcessPass();
+	backEnd.currentRenderCopied = false;
+	rbSceneScalePresentedFrame = backEnd.frameCount;
+	return true;
+}
+
+static void RB_BuildTemporalWorldModelView( const idVec3 &origin,
+		const idMat3 &axis, float matrix[16] ) {
+	float viewerMatrix[16];
+	memset( viewerMatrix, 0, sizeof( viewerMatrix ) );
+	viewerMatrix[0] = axis[0][0];
+	viewerMatrix[4] = axis[0][1];
+	viewerMatrix[8] = axis[0][2];
+	viewerMatrix[12] = -origin[0] * viewerMatrix[0]
+		- origin[1] * viewerMatrix[4] - origin[2] * viewerMatrix[8];
+	viewerMatrix[1] = axis[1][0];
+	viewerMatrix[5] = axis[1][1];
+	viewerMatrix[9] = axis[1][2];
+	viewerMatrix[13] = -origin[0] * viewerMatrix[1]
+		- origin[1] * viewerMatrix[5] - origin[2] * viewerMatrix[9];
+	viewerMatrix[2] = axis[2][0];
+	viewerMatrix[6] = axis[2][1];
+	viewerMatrix[10] = axis[2][2];
+	viewerMatrix[14] = -origin[0] * viewerMatrix[2]
+		- origin[1] * viewerMatrix[6] - origin[2] * viewerMatrix[10];
+	viewerMatrix[15] = 1.0f;
+	static const float flipMatrix[16] = {
+		0, 0, -1, 0,
+		-1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 0, 1
+	};
+	myGlMultMatrix( viewerMatrix, flipMatrix, matrix );
+}
+
+static bool RB_BuildTemporalPreviousMotionState( const viewDef_t *viewDef,
+		int sceneWidth, int sceneHeight, rbMotionBlurViewState_t &previousState ) {
+	if ( viewDef == NULL || !viewDef->temporalPreviousProjectionValid ) {
+		return false;
+	}
+
+	const viewDef_t *savedViewDef = backEnd.viewDef;
+	backEnd.viewDef = const_cast<viewDef_t *>( viewDef );
+	const bool built = RB_BuildMotionBlurViewState( previousState, sceneWidth, sceneHeight );
+	backEnd.viewDef = const_cast<viewDef_t *>( savedViewDef );
+	if ( !built ) {
+		return false;
+	}
+
+	previousState.viewOrigin = viewDef->temporalPreviousViewOrigin;
+	for ( int i = 0; i < 3; i++ ) {
+		previousState.viewAxis[i] = viewDef->temporalPreviousViewAxis[i];
+	}
+	previousState.projectInfo[0] = viewDef->temporalPreviousProjectInfo.x;
+	previousState.projectInfo[1] = viewDef->temporalPreviousProjectInfo.y;
+	previousState.projectInfo[2] = viewDef->temporalPreviousProjectInfo.z;
+	previousState.projectInfo[3] = viewDef->temporalPreviousProjectInfo.w;
+	previousState.projectionMatrix[0] = previousState.projectInfo[0];
+	previousState.projectionMatrix[5] = previousState.projectInfo[1];
+	previousState.projectionMatrix[8] = previousState.projectInfo[2];
+	previousState.projectionMatrix[9] = previousState.projectInfo[3];
+	RB_BuildTemporalWorldModelView( previousState.viewOrigin,
+		viewDef->temporalPreviousViewAxis, previousState.worldModelViewMatrix );
+	return true;
+}
+
+static void RB_ClearTemporalEntityHistory( void ) {
+	rbTemporalEntityHistory.Clear();
+	rbTemporalNextEntityHistory.Clear();
+	rbTemporalEntityHistoryGeneration = 0;
+	rbTemporalEntityHistoryViewIdentity = 0;
+	rbTemporalEntityHistoryFrame = -1;
+}
+
+static void RB_RejectTemporalHistoryWrite(
+		const resolveTemporalPresentationCommand_t &command ) {
+	RB_ClearTemporalEntityHistory();
+	if ( command.captureFrame || tr.takingScreenshot ) {
+		return;
+	}
+	// The front end accepted this command and may already have advanced its
+	// ping-pong index. Force the next command in the same generation to seed a
+	// fresh destination instead of sampling the untouched image.
+	rbTemporalResolveNeedsReprime = true;
+	rbTemporalResolveRejectedGeneration = command.historyGeneration;
+}
+
+static void RB_UpdateTemporalEntityHistory( const viewDef_t *viewDef,
+		unsigned int generation ) {
+	rbTemporalNextEntityHistory.Clear();
+	if ( viewDef != NULL ) {
+		for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
+			const drawSurf_t *surf = viewDef->drawSurfs[i];
+			if ( !RB_MotionVectorSurfaceEligible( surf ) ) {
+				continue;
+			}
+			RB_StoreMotionBlurEntityHistory( rbTemporalNextEntityHistory,
+				surf->space->entityDef->index, surf->space->modelMatrix );
+		}
+	}
+	rbTemporalEntityHistory.Swap( rbTemporalNextEntityHistory );
+	rbTemporalNextEntityHistory.Clear();
+	rbTemporalEntityHistoryGeneration = generation;
+	rbTemporalEntityHistoryViewIdentity = viewDef != NULL
+		? viewDef->temporalViewIdentity : 0;
+	rbTemporalEntityHistoryFrame = backEnd.frameCount;
+}
+
+static void RB_UploadTemporalVec3AsVec4( int uniformIndex, const idVec3 &value ) {
+	const GLfloat data[4] = { value.x, value.y, value.z, 0.0f };
+	glUniform4fvARB( rbTemporalResolveUniforms[uniformIndex], 1, data );
+}
+
+static bool RB_DrawTemporalResolvePass( const resolveTemporalPresentationCommand_t &command,
+		idImage *sceneImage, idImage *depthImage, idImage *historyImage,
+		idImage *velocityImage, idRenderTexture *destination,
+		const temporalViewMotionPolicy_t *motionPolicy,
+		bool useHistory, bool useVelocity, bool captureRecenter,
+		bool preserveFarDepth, int debugMode ) {
+	const int sceneWidth = command.presentation.sceneWidth;
+	const int sceneHeight = command.presentation.sceneHeight;
+	const int outputWidth = command.presentation.outputWidth;
+	const int outputHeight = command.presentation.outputHeight;
+	const viewDef_t *viewDef = command.viewDef;
+	if ( viewDef == NULL || sceneImage == NULL || !RB_EnsureTemporalResolveProgram()
+			|| glConfig.maxTextureImageUnits < 4
+			|| !RB_BindTemporalDestination( destination, outputWidth, outputHeight ) ) {
+		return false;
+	}
+
+	const bool depthValid = depthImage != NULL;
+	const bool cameraValid = useHistory && depthValid
+		&& viewDef->temporalPreviousProjectionValid;
+	RB_BeginFullscreenPostProcessPass( 0, 0, outputWidth, outputHeight );
+	GL_SelectTexture( 0 ); sceneImage->Bind();
+	GL_SelectTexture( 1 ); ( depthValid ? depthImage : globalImages->whiteImage )->Bind();
+	GL_SelectTexture( 2 ); ( useHistory && historyImage != NULL ? historyImage : globalImages->blackImage )->Bind();
+	GL_SelectTexture( 3 ); ( useVelocity && velocityImage != NULL ? velocityImage : globalImages->blackImage )->Bind();
+	GL_SelectTexture( 0 );
+	glUseProgramObjectARB( rbTemporalResolveProgram );
+	for ( int i = 0; i < 4; i++ ) {
+		glUniform1iARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_SCENE + i], i );
+	}
+
+	const GLfloat invSceneSize[2] = {
+		1.0f / static_cast<GLfloat>( Max( 1, sceneWidth ) ),
+		1.0f / static_cast<GLfloat>( Max( 1, sceneHeight ) )
+	};
+	const GLfloat outputSize[2] = {
+		static_cast<GLfloat>( outputWidth ), static_cast<GLfloat>( outputHeight )
+	};
+	const GLfloat currentReconstruct[4] = {
+		1.0f / viewDef->projectionMatrix[0], 1.0f / viewDef->projectionMatrix[5],
+		viewDef->projectionMatrix[8], viewDef->projectionMatrix[9]
+	};
+	const GLfloat previousProject[4] = {
+		viewDef->temporalPreviousProjectInfo.x, viewDef->temporalPreviousProjectInfo.y,
+		viewDef->temporalPreviousProjectInfo.z, viewDef->temporalPreviousProjectInfo.w
+	};
+	const GLfloat depthProjection[2] = {
+		viewDef->projectionMatrix[10], viewDef->projectionMatrix[14]
+	};
+	const GLfloat jitter[2] = {
+		viewDef->temporalJitterPixels.x / static_cast<GLfloat>( Max( 1, outputWidth ) ),
+		viewDef->temporalJitterPixels.y / static_cast<GLfloat>( Max( 1, outputHeight ) )
+	};
+	const GLfloat temporalParams[4] = {
+		idMath::ClampFloat( 0.0f, 0.98f, command.feedback ),
+		idMath::ClampFloat( 0.0f, 2.0f, command.reactiveScale ),
+		useHistory ? 1.0f : 0.0f,
+		static_cast<GLfloat>( idMath::ClampInt( 0, 3, debugMode ) )
+	};
+	const GLfloat motionParams[4] = {
+		useVelocity ? 1.0f : 0.0f,
+		cameraValid ? 1.0f : 0.0f,
+		depthValid ? 1.0f : 0.0f,
+		captureRecenter ? 1.0f : 0.0f
+	};
+	GLfloat reactiveRegions[TEMPORAL_MAX_REACTIVE_REGIONS][4] = {};
+	if ( motionPolicy != NULL ) {
+		const int regionCount = idMath::ClampInt( 0,
+			TEMPORAL_MAX_REACTIVE_REGIONS, motionPolicy->reactiveRegionCount );
+		for ( int i = 0; i < regionCount; i++ ) {
+			const temporalReactiveRegion_t &region = motionPolicy->reactiveRegions[i];
+			reactiveRegions[i][0] = idMath::ClampFloat( 0.0f, 1.0f, region.x1 );
+			reactiveRegions[i][1] = idMath::ClampFloat( 0.0f, 1.0f, region.y1 );
+			reactiveRegions[i][2] = idMath::ClampFloat( 0.0f, 1.0f, region.x2 );
+			reactiveRegions[i][3] = idMath::ClampFloat( 0.0f, 1.0f, region.y2 );
+		}
+	}
+	glUniform2fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_INV_SCENE_SIZE], 1, invSceneSize );
+	glUniform2fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_OUTPUT_SIZE], 1, outputSize );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_CURRENT_RECONSTRUCT], 1, currentReconstruct );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_PREVIOUS_PROJECT], 1, previousProject );
+	glUniform2fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_DEPTH_PROJECTION], 1, depthProjection );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_CURRENT_VIEW_ORIGIN, viewDef->renderView.vieworg );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_CURRENT_VIEW_AXIS0, viewDef->renderView.viewaxis[0] );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_CURRENT_VIEW_AXIS1, viewDef->renderView.viewaxis[1] );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_CURRENT_VIEW_AXIS2, viewDef->renderView.viewaxis[2] );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_ORIGIN, viewDef->temporalPreviousViewOrigin );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_AXIS0, viewDef->temporalPreviousViewAxis[0] );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_AXIS1, viewDef->temporalPreviousViewAxis[1] );
+	RB_UploadTemporalVec3AsVec4( RB_TEMPORAL_UNIFORM_PREVIOUS_VIEW_AXIS2, viewDef->temporalPreviousViewAxis[2] );
+	glUniform2fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_CURRENT_JITTER], 1, jitter );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_PARAMS], 1, temporalParams );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_MOTION_PARAMS], 1, motionParams );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_REACTIVE_REGION0], 1, reactiveRegions[0] );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_REACTIVE_REGION1], 1, reactiveRegions[1] );
+	glUniform1fARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_PRESERVE_FAR_DEPTH],
+		preserveFarDepth && destination == NULL ? 1.0f : 0.0f );
+
+	RB_SetFramebufferSRGBEnabled( destination == NULL );
+	RB_DrawFullscreenPostProcessQuadUnitUV();
+	RB_SetFramebufferSRGBEnabled( false );
+	glUseProgramObjectARB( 0 );
+	for ( int unit = 3; unit >= 0; unit-- ) {
+		GL_SelectTexture( unit );
+		globalImages->BindNull();
+	}
+	GL_SelectTexture( 0 );
+	RB_EndFullscreenPostProcessPass();
+	backEnd.currentRenderCopied = false;
+	if ( destination == NULL ) {
+		rbSceneScalePresentedFrame = backEnd.frameCount;
+	}
+	return true;
+}
+
+bool RB_ResolveTemporalPresentation( const resolveTemporalPresentationCommand_t &command ) {
+	rbTemporalResolveHistoryWriteFrame = -1;
+	rbTemporalResolveHistoryWriteTarget = NULL;
+	const int sceneWidth = command.presentation.sceneWidth;
+	const int sceneHeight = command.presentation.sceneHeight;
+	const int outputWidth = command.presentation.outputWidth;
+	const int outputHeight = command.presentation.outputHeight;
+	idImage *sceneImage = RB_TemporalColorImage( command.sceneColorTarget );
+	const bool captureFrame = command.captureFrame || tr.takingScreenshot;
+	idVec2 spatialJitter( 0.0f, 0.0f );
+	if ( command.viewDef != NULL ) {
+		spatialJitter = command.viewDef->temporalJitterPixels;
+	}
+	if ( command.viewDef == NULL || sceneWidth <= 0 || sceneHeight <= 0
+			|| outputWidth <= 0 || outputHeight <= 0
+			|| command.presentation.frameNumber != backEnd.frameCount
+			|| outputWidth != glConfig.vidWidth || outputHeight != glConfig.vidHeight
+			|| !RB_TemporalColorTargetMatches( command.sceneColorTarget, sceneWidth, sceneHeight ) ) {
+		RB_RejectTemporalHistoryWrite( command );
+		return sceneImage != NULL
+			? RB_PresentTemporalSpatialFallback( sceneImage, outputWidth, outputHeight, spatialJitter )
+			: false;
+	}
+	idImage *depthImage = command.sceneDepthTarget != NULL
+		? command.sceneDepthTarget->GetDepthImage() : NULL;
+	if ( depthImage != NULL && ( command.sceneDepthTarget->GetWidth() != sceneWidth
+			|| command.sceneDepthTarget->GetHeight() != sceneHeight
+			|| depthImage->GetOpts().width != sceneWidth
+			|| depthImage->GetOpts().height != sceneHeight
+			|| depthImage->GetOpts().numMSAASamples > 1 ) ) {
+		depthImage = NULL;
+	}
+	const bool preserveFarDepth = command.sceneColorTarget == rbSceneRenderTexture
+		&& RB_ShouldPreserveSceneRenderTargetFarDepth( command.viewDef );
+
+	// A synchronous save preview may flush a command that was queued before the
+	// capture began. It must not observe or advance either image or transform
+	// history. Recenter the already-jittered scene during the spatial present.
+	if ( captureFrame ) {
+		RB_ClearTemporalEntityHistory();
+		if ( RB_DrawTemporalResolvePass( command, sceneImage, depthImage, NULL, NULL,
+				NULL, NULL, false, false, true, preserveFarDepth, 0 ) ) {
+			return true;
+		}
+		return RB_PresentTemporalSpatialFallback( sceneImage,
+			outputWidth, outputHeight, spatialJitter, depthImage, preserveFarDepth );
+	}
+
+	// History is eligible only when this exact scene-depth target was populated
+	// successfully for the immutable frame/generation carried by the resolve.
+	// A missing stamp includes failed GL depth blits and direct resource loss.
+	if ( depthImage == NULL || !RB_TemporalDepthStampIsCurrent(
+			command.sceneDepthTarget, command.presentation.frameNumber,
+			command.historyGeneration ) ) {
+		RB_RejectTemporalHistoryWrite( command );
+		return RB_PresentTemporalSpatialFallback( sceneImage,
+			outputWidth, outputHeight, spatialJitter, depthImage, preserveFarDepth );
+	}
+
+	bool canWriteHistory = RB_TemporalColorTargetMatches(
+		command.historyWriteTarget, outputWidth, outputHeight )
+		&& command.historyWriteTarget != command.sceneColorTarget;
+	idImage *historyWriteImage = canWriteHistory
+		? RB_TemporalColorImage( command.historyWriteTarget ) : NULL;
+	if ( historyWriteImage == sceneImage ) {
+		canWriteHistory = false;
+		historyWriteImage = NULL;
+	}
+	bool useHistory = command.historyValid && command.viewDef->temporalHistoryValid
+		&& command.viewDef->temporalPreviousProjectionValid
+		&& command.historyGeneration == command.presentation.historyGeneration
+		&& command.viewDef->temporalHistoryGeneration == command.historyGeneration
+		&& RB_TemporalColorTargetMatches( command.historyReadTarget, outputWidth, outputHeight )
+		&& command.historyReadTarget != command.historyWriteTarget
+		&& command.historyReadTarget != command.sceneColorTarget;
+	if ( rbTemporalResolveNeedsReprime
+			&& rbTemporalResolveRejectedGeneration == command.historyGeneration ) {
+		useHistory = false;
+	} else if ( rbTemporalResolveNeedsReprime ) {
+		// A generation transition already provides the same discontinuity as the
+		// local rejected-write guard.
+		rbTemporalResolveNeedsReprime = false;
+		rbTemporalResolveRejectedGeneration = 0;
+	}
+	idImage *historyReadImage = useHistory
+		? RB_TemporalColorImage( command.historyReadTarget ) : NULL;
+	if ( useHistory && ( historyReadImage == historyWriteImage
+			|| historyReadImage == sceneImage || historyWriteImage == sceneImage ) ) {
+		useHistory = false;
+		historyReadImage = NULL;
+	}
+
+	if ( !canWriteHistory || !RB_EnsureTemporalResolveProgram() ) {
+		RB_RejectTemporalHistoryWrite( command );
+		return RB_PresentTemporalSpatialFallback( sceneImage,
+			outputWidth, outputHeight, spatialJitter,
+			depthImage, preserveFarDepth );
+	}
+
+	const bool transformHistoryMatches = useHistory
+		&& rbTemporalEntityHistoryGeneration == command.historyGeneration
+		&& rbTemporalEntityHistoryViewIdentity == command.viewDef->temporalViewIdentity
+		&& rbTemporalEntityHistoryFrame == backEnd.frameCount - 1;
+	if ( !transformHistoryMatches ) {
+		rbTemporalEntityHistory.Clear();
+	}
+
+	bool velocityValid = false;
+	bool velocityComplete = false;
+	if ( useHistory && depthImage != NULL && transformHistoryMatches ) {
+		rbMotionBlurViewState_t previousState;
+		if ( RB_BuildTemporalPreviousMotionState( command.viewDef,
+				sceneWidth, sceneHeight, previousState ) ) {
+			const viewDef_t *savedViewDef = backEnd.viewDef;
+			backEnd.viewDef = const_cast<viewDef_t *>( command.viewDef );
+			velocityValid = RB_RenderMotionVectorBuffer(
+				command.viewDef->drawSurfs, command.viewDef->numDrawSurfs,
+				previousState, sceneWidth, sceneHeight, depthImage,
+				rbTemporalEntityHistory, true, &velocityComplete );
+			backEnd.viewDef = const_cast<viewDef_t *>( savedViewDef );
+		}
+	}
+	RB_UpdateTemporalEntityHistory( command.viewDef, command.historyGeneration );
+	temporalViewMotionPolicy_t motionPolicy =
+		TemporalHistoryCore_BeginViewMotionPolicy();
+	const unsigned int exactMotionDomains = velocityComplete
+		? TemporalHistoryCore_MotionDomainBit( TEMPORAL_MOTION_DOMAIN_RIGID )
+		: 0u;
+	if ( !R_ScenePackets_BuildTemporalViewMotionPolicy( command.viewDef,
+			exactMotionDomains, motionPolicy ) && useHistory ) {
+		// Packet capture is mandatory while temporal AA is active. If that
+		// contract is unavailable, reject history conservatively over the view.
+		TemporalHistoryCore_AddReactiveRegion( motionPolicy, ~0u,
+			0.0f, 0.0f, 1.0f, 1.0f );
+	}
+
+	if ( !RB_DrawTemporalResolvePass( command, sceneImage, depthImage,
+			historyReadImage, velocityValid ? rbMotionVectorImage : NULL,
+			command.historyWriteTarget, &motionPolicy,
+			useHistory, velocityValid, false, false, 0 ) ) {
+		RB_RejectTemporalHistoryWrite( command );
+		return RB_PresentTemporalSpatialFallback( sceneImage,
+			outputWidth, outputHeight, spatialJitter,
+			depthImage, preserveFarDepth );
+	}
+	rbTemporalResolveHistoryWriteFrame = backEnd.frameCount;
+	rbTemporalResolveHistoryWriteTarget = command.historyWriteTarget;
+	rbTemporalResolveNeedsReprime = false;
+	rbTemporalResolveRejectedGeneration = 0;
+
+	const int debugMode = idMath::ClampInt( 0, 3, command.debugMode );
+	if ( debugMode > 0 && RB_DrawTemporalResolvePass( command, sceneImage, depthImage,
+			historyReadImage, velocityValid ? rbMotionVectorImage : NULL,
+			NULL, &motionPolicy,
+			useHistory, velocityValid, false, preserveFarDepth, debugMode ) ) {
+		return true;
+	}
+	return RB_PresentTemporalSpatialFallback( historyWriteImage,
+		outputWidth, outputHeight, idVec2( 0.0f, 0.0f ),
+		depthImage, preserveFarDepth );
+}
+
+static void RB_ResetBackendTemporalHistory( bool destroyResources ) {
+	rbBackendTemporalHistoryReadIndex = 0;
+	rbBackendTemporalHistoryFrame = -1;
+	rbBackendTemporalHistoryGeneration = 0;
+	rbBackendTemporalHistoryViewIdentity = 0;
+	rbBackendTemporalHistoryValid = false;
+	if ( !destroyResources ) {
+		return;
+	}
+	for ( int i = 0; i < 2; i++ ) {
+		if ( rbBackendTemporalHistoryTargets[i] != NULL ) {
+			tr.DestroyRenderTexture( rbBackendTemporalHistoryTargets[i] );
+			rbBackendTemporalHistoryTargets[i] = NULL;
+		}
+		rbBackendTemporalHistoryImages[i] = NULL;
+	}
+	rbBackendTemporalHistoryWidth = 0;
+	rbBackendTemporalHistoryHeight = 0;
+	rbBackendTemporalHistoryContextGeneration = -1;
+}
+
+static bool RB_EnsureBackendTemporalHistory( int width, int height,
+		unsigned int generation, unsigned long long viewIdentity ) {
+	if ( globalImages == NULL || width <= 0 || height <= 0 ) {
+		RB_ResetBackendTemporalHistory( false );
+		return false;
+	}
+
+	const bool continuityChanged = rbBackendTemporalHistoryWidth != width
+		|| rbBackendTemporalHistoryHeight != height
+		|| rbBackendTemporalHistoryContextGeneration != tr.glContextGeneration
+		|| rbBackendTemporalHistoryGeneration != generation
+		|| rbBackendTemporalHistoryViewIdentity != viewIdentity;
+	if ( continuityChanged ) {
+		rbBackendTemporalHistoryReadIndex = 0;
+		rbBackendTemporalHistoryFrame = -1;
+		rbBackendTemporalHistoryValid = false;
+	}
+
+	idImageOpts opts;
+	opts.textureType = TT_2D;
+	opts.format = FMT_RGBA16F;
+	opts.width = width;
+	opts.height = height;
+	opts.numLevels = 1;
+	opts.numMSAASamples = 0;
+	opts.isPersistant = true;
+	for ( int i = 0; i < 2; i++ ) {
+		if ( rbBackendTemporalHistoryImages[i] == NULL
+				|| rbBackendTemporalHistoryWidth != width
+				|| rbBackendTemporalHistoryHeight != height
+				|| rbBackendTemporalHistoryContextGeneration != tr.glContextGeneration ) {
+			rbBackendTemporalHistoryImages[i] = globalImages->ScratchImage(
+				i == 0 ? "_backendTemporalHistory0" : "_backendTemporalHistory1",
+				&opts, TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+		}
+		if ( rbBackendTemporalHistoryImages[i] == NULL ) {
+			RB_ResetBackendTemporalHistory( false );
+			return false;
+		}
+		if ( rbBackendTemporalHistoryTargets[i] == NULL ) {
+			rbBackendTemporalHistoryTargets[i] = tr.CreateRenderTexture(
+				rbBackendTemporalHistoryImages[i], NULL );
+			if ( rbBackendTemporalHistoryTargets[i] != NULL ) {
+				rbBackendTemporalHistoryTargets[i]->SetDebugLabel(
+					i == 0 ? "backend temporal history 0" : "backend temporal history 1" );
+			}
+		} else if ( rbBackendTemporalHistoryTargets[i]->GetWidth() != width
+				|| rbBackendTemporalHistoryTargets[i]->GetHeight() != height ) {
+			if ( !tr.ResizeRenderTexture( rbBackendTemporalHistoryTargets[i], width, height ) ) {
+				RB_ResetBackendTemporalHistory( false );
+				return false;
+			}
+		}
+		if ( rbBackendTemporalHistoryTargets[i] == NULL
+				|| !rbBackendTemporalHistoryTargets[i]->EnsureDeviceHandle() ) {
+			RB_ResetBackendTemporalHistory( false );
+			return false;
+		}
+	}
+
+	rbBackendTemporalHistoryWidth = width;
+	rbBackendTemporalHistoryHeight = height;
+	rbBackendTemporalHistoryContextGeneration = tr.glContextGeneration;
+	rbBackendTemporalHistoryGeneration = generation;
+	rbBackendTemporalHistoryViewIdentity = viewIdentity;
+	return true;
+}
+
+static bool RB_PresentBackendTemporalSpatialScene( void ) {
+	if ( !RB_IsSceneRenderTexture( backEnd.renderTexture )
+			|| backEnd.viewDef == NULL ) {
+		return false;
+	}
+	idImage *sceneImage = RB_TemporalColorImage( backEnd.renderTexture );
+	idImage *depthImage = backEnd.renderTexture->GetDepthImage();
+	const bool preserveFarDepth =
+		RB_ShouldPreserveSceneRenderTargetFarDepth( backEnd.viewDef );
+	return RB_PresentTemporalSpatialFallback( sceneImage,
+		Max( 1, glConfig.vidWidth ), Max( 1, glConfig.vidHeight ),
+		backEnd.viewDef->temporalJitterPixels, depthImage, preserveFarDepth );
+}
+
+static bool RB_PresentBackendTemporalScene( void ) {
+	if ( !R_TemporalPresentation_TemporalAARequested() ) {
+		return false;
+	}
+	if ( !RB_IsSceneRenderTexture( backEnd.renderTexture )
+			|| backEnd.viewDef == NULL || backEnd.viewDef->viewEntitys == NULL ) {
+		return false;
+	}
+
+	const temporalPresentationFrameState_t &frame =
+		R_TemporalPresentation_GetFrameState();
+	const unsigned int generation = R_TemporalPresentation_HistoryGeneration();
+	const bool captureFrame = tr.takingScreenshot
+		|| backEnd.viewDef->temporalCaptureFrame
+		|| frame.captureFrozen || frame.captureForcedNative;
+	const int outputWidth = frame.nativeWidth;
+	const int outputHeight = frame.nativeHeight;
+	const int sceneWidth = backEnd.renderTexture->GetWidth();
+	const int sceneHeight = backEnd.renderTexture->GetHeight();
+	if ( frame.frameNumber != backEnd.frameCount
+			|| outputWidth != glConfig.vidWidth || outputHeight != glConfig.vidHeight
+			|| sceneWidth != frame.sceneWidth || sceneHeight != frame.sceneHeight ) {
+		RB_ResetBackendTemporalHistory( false );
+		RB_ClearTemporalEntityHistory();
+		return RB_PresentBackendTemporalSpatialScene();
+	}
+	if ( !captureFrame ) {
+		// This target is single-sample while temporal presentation owns it, and
+		// the root view has just completed all depth-producing world passes.
+		RB_StampTemporalDepthResolved( backEnd.renderTexture,
+			backEnd.frameCount, generation );
+	}
+
+	bool historyContinuous = !captureFrame && rbBackendTemporalHistoryValid
+		&& rbBackendTemporalHistoryGeneration == generation
+		&& rbBackendTemporalHistoryViewIdentity == backEnd.viewDef->temporalViewIdentity
+		&& rbBackendTemporalHistoryFrame == backEnd.frameCount - 1
+		&& backEnd.viewDef->temporalHistoryValid;
+	if ( !captureFrame && !RB_EnsureBackendTemporalHistory( outputWidth,
+			outputHeight, generation, backEnd.viewDef->temporalViewIdentity ) ) {
+		RB_ClearTemporalEntityHistory();
+		return RB_PresentBackendTemporalSpatialScene();
+	}
+	if ( !rbBackendTemporalHistoryValid ) {
+		historyContinuous = false;
+	}
+
+	const int writeIndex = rbBackendTemporalHistoryReadIndex ^ 1;
+	resolveTemporalPresentationCommand_t command;
+	memset( &command, 0, sizeof( command ) );
+	command.commandId = RC_RESOLVE_TEMPORAL_PRESENTATION;
+	command.sceneColorTarget = backEnd.renderTexture;
+	command.sceneDepthTarget = backEnd.renderTexture;
+	command.historyReadTarget = historyContinuous
+		? rbBackendTemporalHistoryTargets[rbBackendTemporalHistoryReadIndex] : NULL;
+	command.historyWriteTarget = captureFrame
+		? NULL : rbBackendTemporalHistoryTargets[writeIndex];
+	command.viewDef = backEnd.viewDef;
+	command.presentation.frameNumber = frame.frameNumber;
+	command.presentation.outputWidth = outputWidth;
+	command.presentation.outputHeight = outputHeight;
+	command.presentation.sceneWidth = sceneWidth;
+	command.presentation.sceneHeight = sceneHeight;
+	command.presentation.effectiveScalePercent = frame.effectiveScalePercent;
+	command.presentation.historyGeneration = generation;
+	command.presentation.dynamicResolutionRequested = frame.dynamicResolutionRequested;
+	command.presentation.dynamicResolutionActive = frame.dynamicResolutionActive;
+	command.presentation.temporalAARequested = frame.temporalAARequested;
+	command.presentation.captureFrozen = frame.captureFrozen;
+	command.presentation.captureForcedNative = frame.captureForcedNative;
+	command.historyGeneration = generation;
+	command.historyValid = historyContinuous;
+	command.captureFrame = captureFrame;
+	command.feedback = frame.temporalFeedback;
+	command.reactiveScale = frame.temporalReactiveScale;
+	command.debugMode = frame.temporalDebugMode;
+
+	bool presented = RB_ResolveTemporalPresentation( command );
+	if ( captureFrame ) {
+		return presented;
+	}
+	const bool wroteHistory = presented
+		&& rbTemporalResolveHistoryWriteFrame == backEnd.frameCount
+		&& rbTemporalResolveHistoryWriteTarget == command.historyWriteTarget;
+	if ( wroteHistory ) {
+		rbBackendTemporalHistoryReadIndex = writeIndex;
+		rbBackendTemporalHistoryFrame = backEnd.frameCount;
+		rbBackendTemporalHistoryGeneration = generation;
+		rbBackendTemporalHistoryViewIdentity = backEnd.viewDef->temporalViewIdentity;
+		rbBackendTemporalHistoryValid = true;
+	} else {
+		rbBackendTemporalHistoryFrame = -1;
+		rbBackendTemporalHistoryValid = false;
+	}
+	if ( !presented ) {
+		presented = RB_PresentBackendTemporalSpatialScene();
+	}
+	return presented;
+}
+
 void RB_ApplyResolutionScaleToBackBuffer( void ) {
 	if ( r_skipPostProcess.GetBool() ) {
+		return;
+	}
+	const temporalPresentationFrameState_t &presentation =
+		R_TemporalPresentation_GetFrameState();
+	if ( presentation.dynamicResolutionRequested
+			|| presentation.temporalAARequested ) {
+		// Temporal presentation owns scene scaling before native HUD/menu draws.
+		// A UI-only frame has no scene-present marker, so the legacy swap-tail
+		// filter must still stay out of the native backbuffer.
+		return;
+	}
+	if ( rbSceneScalePresentedFrame == backEnd.frameCount ) {
+		// The 3D scene was already scaled into the native back buffer before
+		// later 2D commands. Re-filtering here would scale the HUD/menu too.
 		return;
 	}
 
@@ -5777,7 +7127,14 @@ static void RB_DestroyPostProcessRenderTexture( idRenderTexture *&renderTexture 
 }
 
 void RB_ShutdownScenePostProcess( void ) {
+	RB_FreeTemporalResolveProgram();
 	RB_FreeSceneDepthAwarePresentProgram();
+	RB_ResetBackendTemporalHistory( true );
+	rbTemporalResolveHistoryWriteFrame = -1;
+	rbTemporalResolveHistoryWriteTarget = NULL;
+	rbTemporalResolveNeedsReprime = false;
+	rbTemporalResolveRejectedGeneration = 0;
+	RB_ClearTemporalDepthStamps();
 
 	RB_FreeGLSLProgram( &rbLightGridIndirectStage );
 	RB_FreeGLSLProgram( &rbPlayerRimlightStage );
@@ -5816,10 +7173,12 @@ void RB_ShutdownScenePostProcess( void ) {
 	rbSceneRenderTargetPreserveDepthHeight = 0;
 
 	RB_ResetMotionBlurHistory();
+	RB_ClearTemporalEntityHistory();
 	RB_DestroyPostProcessRenderTexture( rbMotionVectorRenderTexture );
 	rbMotionVectorImage = NULL;
 	rbMotionVectorPreviousState = NULL;
 	rbMotionVectorDrewSurface = false;
+	rbMotionVectorMissedSurface = false;
 
 	for ( int level = 0; level < RB_BLOOM_MAX_LEVELS; level++ ) {
 		for ( int ping = 0; ping < 2; ping++ ) {
@@ -13699,6 +15058,13 @@ void	RB_STD_DrawView( void ) {
 	RB_ClearSceneScaleState( sceneScaleState );
 	const bool rootSceneRenderTargetRequested = RB_SceneRenderTargetRequested();
 	const bool inlineSubviewSceneRenderTargetRequested = RB_InlineSubviewSceneRenderTargetRequested();
+	int feedbackTargetWidth = 0;
+	int feedbackTargetHeight = 0;
+	int feedbackEffectivePercent = RB_SCREEN_FRACTION_NATIVE;
+	const bool feedbackSceneTargetScalingRequested =
+		RB_FeedbackSceneTargetScalingExtent( backEnd.viewDef,
+			feedbackTargetWidth, feedbackTargetHeight,
+			feedbackEffectivePercent );
 	const viewDef_t *portalSkySceneTargetView = RB_PortalSkySceneTargetView( backEnd.viewDef );
 	if ( portalSkySceneTargetView != NULL ) {
 		RB_MarkSceneRenderTargetPreserveFarDepth( portalSkySceneTargetView );
@@ -13706,10 +15072,25 @@ void	RB_STD_DrawView( void ) {
 	const viewDef_t *sceneTargetView = inlineSubviewSceneRenderTargetRequested
 		? backEnd.viewDef->superView
 		: backEnd.viewDef;
-	if ( ( rootSceneRenderTargetRequested || inlineSubviewSceneRenderTargetRequested )
-		&& RB_EnsureSceneRenderTexture( sceneTargetView ) ) {
+	const bool sceneRenderTargetReady =
+		( rootSceneRenderTargetRequested || inlineSubviewSceneRenderTargetRequested )
+		&& RB_EnsureSceneRenderTexture( sceneTargetView );
+	if ( sceneRenderTargetReady ) {
 		backEnd.renderTexture = rbSceneRenderTexture;
-		RB_BeginSceneSupersampling( sceneScaleState, sceneTargetView );
+		RB_BeginSceneScaling( sceneScaleState, sceneTargetView );
+	} else if ( feedbackSceneTargetScalingRequested ) {
+		// The game owns this scene/post target and will composite it to the
+		// native backbuffer later. Map native view/scissor coordinates into the
+		// latched target, but do not steal ownership or present it here.
+		RB_BeginSceneScalingToExtent( sceneScaleState,
+			feedbackTargetWidth, feedbackTargetHeight,
+			feedbackEffectivePercent );
+	}
+	if ( rootSceneRenderTargetRequested && !sceneRenderTargetReady ) {
+		// Temporal jitter is valid only when a later reconstruction pass owns the
+		// image. If target allocation failed, draw the direct compatibility path
+		// with the projection centered before any world work reaches the backbuffer.
+		RB_RecenterDirectTemporalProjection( sceneScaleState, backEnd.viewDef );
 	}
 
 	// If we have a backend rendertexture, assign it here.
@@ -13923,10 +15304,23 @@ void	RB_STD_DrawView( void ) {
 
 	RB_RenderDebugTools( drawSurfs, numDrawSurfs );
 
+	// Restore frontend-native view and packet scissors before the temporal pass
+	// builds normalized reactive regions. The source scene dimensions remain in
+	// sceneScaleState and the render texture itself for spatial/temporal resolve.
+	RB_RestoreSceneScaling( sceneScaleState );
 	if ( rootSceneRenderTargetRequested && RB_IsSceneRenderTexture( backEnd.renderTexture ) ) {
-		RB_PresentSceneRenderTargetToBackBuffer( sceneScaleState );
+		if ( !RB_PresentBackendTemporalScene() ) {
+			RB_PresentSceneRenderTargetToBackBuffer( sceneScaleState );
+		}
 	}
-	RB_RestoreSceneSupersampling( sceneScaleState );
+	RB_RestoreDirectTemporalProjection( sceneScaleState, backEnd.viewDef );
+	if ( feedbackSceneTargetScalingRequested
+			&& ( backEnd.viewDef->renderFlags & RF_PORTAL_SKY ) == 0 ) {
+		// The game-owned post chain (including its spatial/SMAA rollback) will
+		// composite this scaled world at native resolution before drawing UI.
+		// Suppress the swap-tail scaler so it cannot rescale that native UI.
+		rbSceneScalePresentedFrame = backEnd.frameCount;
+	}
 
 	if ( inlineSubviewSceneRenderTargetRequested
 		&& RB_IsSceneRenderTexture( backEnd.renderTexture ) ) {

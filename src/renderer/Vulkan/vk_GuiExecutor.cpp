@@ -58,11 +58,13 @@
 #include "../MaterialResourceTable.h"
 #include "../RendererContracts.h"
 #include "../RendererMetrics.h"
+#include "../ScenePackets.h"
 #include "vk_Image.h"
 // vk_ShadowMap.h: VK_ShadowMap_Shutdown + the point cube pool size the
 // descriptor pool budgets for (Phase F2a/F2b)
 #include "vk_ShadowMap.h"
 #include "shaders/gui_shaders_spv.h"
+#include "shaders/temporal_resolve_spv.h"
 
 extern idCVar r_skipDynamicTextures;
 
@@ -83,6 +85,14 @@ bool VK_Exec_BeginMainRendering( bool clearColorDepth );
 void VK_Exec_EndMainRendering( void );
 bool VK_GuiExecutor_EndFrameAndPresent( void );
 static bool VK_GuiExecutor_SubmitFrame( bool present );
+VkDescriptorSet VK_Exec_InteractionUniformSet( void );
+int VK_Exec_InteractionUniformAlloc( const void *data, int bytes );
+static bool VK_TemporalPresentation_DrawPendingSceneSpatial(
+	const viewDef_t *viewDef, idImage *sceneImage, vkImageEntry_t *sceneEntry,
+	idImage *depthImage, vkImageEntry_t *depthEntry );
+static bool VK_TemporalPresentation_ResolveTargets(
+	const resolveTemporalPresentationCommand_t &sourceCommand,
+	bool trackExternalHistory, bool *historyAdvanced );
 
 // no module-owned vertex-cache GPU state exists: the engine cache runs
 // CPU-backed under Vulkan and the executor streams into its own rings
@@ -107,6 +117,7 @@ static const int VK_MAX_ENV_PIPELINES = 32;
 static const int VK_MAX_PROGRAM_PIPELINES = 128;
 static const int VK_MAX_BLEND_LIGHT_PIPELINES = 32;
 static const int VK_MAX_SPECIAL_PIPELINES = 64;
+static const int VK_MAX_TEMPORAL_RESOLVE_PIPELINES = 8;
 static const int VK_MAX_DESCRIPTOR_SETS = 4096;
 // rvspecial_depth.fs linearizes the Raven controller's depth texture with
 // this historical near-plane convention.  The Vulkan path samples raw depth,
@@ -188,6 +199,32 @@ typedef struct vkBumpyEnvironmentBlock_s {
 	float			modelRow1[ 4 ];
 	float			modelRow2[ 4 ];
 } vkBumpyEnvironmentBlock_t;
+
+// std140-compatible block consumed by temporal_resolve.frag. Keep this under
+// the established 256-byte dynamic-uniform slice so the temporal pass can
+// reuse the interaction ring without adding another allocator or descriptor
+// ownership surface.
+typedef struct vkTemporalResolveBlock_s {
+	float		sceneOutputExtent[ 4 ];
+	float		currentReconstruct[ 4 ];
+	float		previousProject[ 4 ];
+	float		depthFeedback[ 4 ];
+	float		currentViewOrigin[ 4 ];
+	float		currentViewAxis0[ 4 ];
+	float		currentViewAxis1[ 4 ];
+	float		currentViewAxis2[ 4 ];
+	float		previousViewOrigin[ 4 ];
+	float		previousViewAxis0[ 4 ];
+	float		previousViewAxis1[ 4 ];
+	float		previousViewAxis2[ 4 ];
+	float		temporalParams[ 4 ];
+	float		motionParams[ 4 ];
+	float		reactiveRect0[ 4 ];
+	float		reactiveRect1[ 4 ];
+} vkTemporalResolveBlock_t;
+
+static_assert( sizeof( vkTemporalResolveBlock_t ) == 16 * 16,
+	"Vulkan temporal resolve block must fill one 256-byte uniform slice" );
 
 typedef struct vkDescriptorCacheEntry_s {
 	VkDescriptorSet	set;
@@ -282,6 +319,8 @@ typedef struct vkGuiExecutor_s {
 	VkShaderModule		blendLightVertModule;
 	VkShaderModule		blendLightFragModule;
 	VkShaderModule		gpuSkinningModule;
+	VkShaderModule		temporalResolveVertModule;
+	VkShaderModule		temporalResolveFragModule;
 	VkDescriptorSetLayout setLayout;
 	VkDescriptorSetLayout uboSetLayout;		// one dynamic uniform buffer (interaction block ring)
 	// shadow receiver set: binding 0 = atlas + compare sampler (fragment),
@@ -316,6 +355,8 @@ typedef struct vkGuiExecutor_s {
 	int					numProgramPipelines;
 	vkGuiPipeline_t		blendLightPipelines[ VK_MAX_BLEND_LIGHT_PIPELINES ];	// per light-stage blend bits
 	int					numBlendLightPipelines;
+	vkGuiPipeline_t		temporalResolvePipelines[ VK_MAX_TEMPORAL_RESOLVE_PIPELINES ];
+	int					numTemporalResolvePipelines;
 	VkFormat			pipelineTargetFormat;	// swapchain format the pipelines were built for
 
 	vkRing_t			vertexRings[ VK_FRAMES_IN_FLIGHT ];
@@ -349,6 +390,43 @@ typedef struct vkGuiExecutor_s {
 	VkImageView			activeDepthAttachmentView;
 	VkExtent2D			activeExtent;
 	vkPipelineTarget_t	activePipelineTarget;
+	// Direct 3D presentation is isolated from the native swapchain so dynamic
+	// resolution never filters the HUD/menu views that follow it.  Game-owned
+	// feedback render targets use the same coordinate mapper but keep their own
+	// allocation and final-post ownership.
+	idImage *			temporalSceneColorImage;
+	idImage *			temporalSceneDepthImage;
+	idRenderTexture *	temporalSceneRenderTexture;
+	int				temporalSceneWidth;
+	int				temporalSceneHeight;
+	int				temporalNativeWidth;
+	int				temporalNativeHeight;
+	VkFormat			temporalSwapchainFormat;
+	int				temporalSceneFrame;
+	const viewDef_t *	temporalSceneRoot;
+	bool				temporalScenePendingComposite;
+	bool				temporalSceneAllocationWarned;
+	idImage *			temporalDirectHistoryImages[ 2 ];
+	idRenderTexture *	temporalDirectHistoryRenderTextures[ 2 ];
+	unsigned long long temporalDirectHistoryStorageGenerations[ 2 ];
+	int				temporalDirectHistoryWidth;
+	int				temporalDirectHistoryHeight;
+	int				temporalDirectHistoryReadIndex;
+	int				temporalDirectHistoryFrame;
+	unsigned int		temporalDirectHistoryGeneration;
+	unsigned long long temporalDirectHistoryViewIdentity;
+	bool				temporalDirectHistoryValid;
+	bool				temporalDirectHistoryAllocationWarned;
+	idRenderTexture *	temporalDepthStampTarget;
+	unsigned long long temporalDepthStampStorageGeneration;
+	int				temporalDepthStampFrame;
+	unsigned int		temporalDepthStampHistoryGeneration;
+	bool				temporalDepthStampValid;
+	unsigned int		temporalHistoryGenerationSeen;
+	int				temporalCaptureInvalidatedFrame;
+	int				temporalSceneCompositeInvalidatedFrame;
+	idRenderTexture *	temporalHistoryTargets[ 2 ];
+	unsigned long long temporalHistoryStorageGenerations[ 2 ];
 	const viewDef_t *	pendingSpecialEffectsView;
 	int					pendingSpecialEffectsMask;
 	idRenderTexture *	pendingSpecialEffectsSource;
@@ -366,6 +444,26 @@ typedef struct vkGuiExecutor_s {
 
 static vkGuiExecutor_t vkExec;
 static bool vkGpuSkinningBackendRequested = true;
+
+typedef struct vkSceneScaleState_s {
+	bool			active;
+	bool			backendOwned;
+	bool			projectionRecentered;
+	const viewDef_t *rootView;
+	int			nativeWidth;
+	int			nativeHeight;
+	int			targetWidth;
+	int			targetHeight;
+	float			nativeProjectionOffsetX;
+	float			nativeProjectionOffsetY;
+	idScreenRect	nativeViewport;
+	typedef struct rectRestore_s {
+		idScreenRect *rect;
+		idScreenRect original;
+	} rectRestore_t;
+	idList<rectRestore_t> rectRestores;
+	idHashIndex rectRestoreHash;
+} vkSceneScaleState_t;
 
 // Shared-domain preflight is allowed to populate the ordinary geometry rings,
 // but it has not taken framebuffer ownership yet. Snapshot the bounded upload
@@ -891,6 +989,41 @@ static VkPipeline VK_GuiExecutor_GetScreenPipeline( int stateBits,
 	vkGuiPipeline_t &entry = vkExec.screenPipelines[ vkExec.numScreenPipelines++ ];
 	entry.stateBits = pipelineBits;
 	entry.separateColor = separateColor;
+	entry.target = target;
+	entry.pipeline = pipeline;
+	return pipeline;
+}
+
+static VkPipeline VK_TemporalPresentation_GetResolvePipeline( void ) {
+	const int pipelineBits = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO;
+	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
+	for ( int i = 0; i < vkExec.numTemporalResolvePipelines; ++i ) {
+		const vkGuiPipeline_t &entry = vkExec.temporalResolvePipelines[i];
+		if ( VK_Exec_PipelineTargetsMatch( entry.target, target ) ) {
+			return entry.pipeline;
+		}
+	}
+	if ( vkExec.temporalResolveVertModule == VK_NULL_HANDLE
+			|| vkExec.temporalResolveFragModule == VK_NULL_HANDLE
+			|| vkExec.numTemporalResolvePipelines
+				>= VK_MAX_TEMPORAL_RESOLVE_PIPELINES ) {
+		return VK_NULL_HANDLE;
+	}
+
+	VkPipelineVertexInputStateCreateInfo vertexInput;
+	memset( &vertexInput, 0, sizeof( vertexInput ) );
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	const VkPipeline pipeline = VK_Exec_CreatePipeline(
+		vkExec.temporalResolveVertModule, vkExec.temporalResolveFragModule,
+		&vertexInput, pipelineBits, vkExec.interactionPipelineLayout,
+		false, false, target );
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return VK_NULL_HANDLE;
+	}
+	vkGuiPipeline_t &entry = vkExec.temporalResolvePipelines[
+		vkExec.numTemporalResolvePipelines++ ];
+	entry.stateBits = pipelineBits;
+	entry.separateColor = false;
 	entry.target = target;
 	entry.pipeline = pipeline;
 	return pipeline;
@@ -2056,6 +2189,20 @@ static bool VK_GuiExecutor_Init( void ) {
 		common->Warning( "Vulkan: screen fragment shader module creation failed" );
 		return false;
 	}
+	smci.codeSize = vk_temporal_resolve_vert_spv_size;
+	smci.pCode = (const uint32_t *)vk_temporal_resolve_vert_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+			&vkExec.temporalResolveVertModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: temporal resolve vertex shader module creation failed" );
+		return false;
+	}
+	smci.codeSize = vk_temporal_resolve_frag_spv_size;
+	smci.pCode = (const uint32_t *)vk_temporal_resolve_frag_spv;
+	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL,
+			&vkExec.temporalResolveFragModule ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: temporal resolve fragment shader module creation failed" );
+		return false;
+	}
 	smci.codeSize = vk_sky_vert_spv_size;
 	smci.pCode = (const uint32_t *)vk_sky_vert_spv;
 	if ( vkCreateShaderModule( vkCtx.device, &smci, NULL, &vkExec.skyVertModule ) != VK_SUCCESS ) {
@@ -2552,6 +2699,15 @@ static bool VK_GuiExecutor_Init( void ) {
 	vkExec.clearColor[ 1 ] = 0.0f;
 	vkExec.clearColor[ 2 ] = 0.0f;
 	vkExec.clearColor[ 3 ] = 1.0f;
+	vkExec.temporalSceneFrame = -1;
+	vkExec.temporalDirectHistoryFrame = -1;
+	vkExec.temporalDepthStampFrame = -1;
+	vkExec.temporalDirectHistoryGeneration =
+		R_TemporalPresentation_HistoryGeneration();
+	vkExec.temporalCaptureInvalidatedFrame = -1;
+	vkExec.temporalSceneCompositeInvalidatedFrame = -1;
+	vkExec.temporalHistoryGenerationSeen =
+		R_TemporalPresentation_HistoryGeneration();
 	vkExec.initialized = true;
 	initGuard.Commit();
 	common->Printf( "Vulkan: GUI executor initialized\n" );
@@ -2559,6 +2715,25 @@ static bool VK_GuiExecutor_Init( void ) {
 }
 
 void VK_GuiExecutor_Shutdown( void ) {
+	for ( int i = 0; i < 2; ++i ) {
+		if ( vkExec.temporalDirectHistoryRenderTextures[i] != NULL ) {
+			delete vkExec.temporalDirectHistoryRenderTextures[i];
+			vkExec.temporalDirectHistoryRenderTextures[i] = NULL;
+		}
+		vkExec.temporalDirectHistoryImages[i] = NULL;
+	}
+	if ( vkExec.temporalSceneRenderTexture != NULL ) {
+		if ( backEnd.renderTexture == vkExec.temporalSceneRenderTexture ) {
+			backEnd.renderTexture = NULL;
+		}
+		if ( backEnd.feedbackRenderTexture == vkExec.temporalSceneRenderTexture ) {
+			backEnd.feedbackRenderTexture = NULL;
+		}
+		delete vkExec.temporalSceneRenderTexture;
+		vkExec.temporalSceneRenderTexture = NULL;
+	}
+	vkExec.temporalSceneColorImage = NULL;
+	vkExec.temporalSceneDepthImage = NULL;
 	if ( vkCtx.device == VK_NULL_HANDLE ) {
 		memset( &vkExec, 0, sizeof( vkExec ) );
 		return;
@@ -2606,6 +2781,12 @@ void VK_GuiExecutor_Shutdown( void ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.blendLightPipelines[ i ].pipeline, NULL );
 		}
 	}
+	for ( int i = 0; i < vkExec.numTemporalResolvePipelines; ++i ) {
+		if ( vkExec.temporalResolvePipelines[i].pipeline != VK_NULL_HANDLE ) {
+			vkDestroyPipeline( vkCtx.device,
+				vkExec.temporalResolvePipelines[i].pipeline, NULL );
+		}
+	}
 	if ( vkExec.pipelineLayout != VK_NULL_HANDLE ) {
 		vkDestroyPipelineLayout( vkCtx.device, vkExec.pipelineLayout, NULL );
 	}
@@ -2641,6 +2822,14 @@ void VK_GuiExecutor_Shutdown( void ) {
 	}
 	if ( vkExec.screenFragModule != VK_NULL_HANDLE ) {
 		vkDestroyShaderModule( vkCtx.device, vkExec.screenFragModule, NULL );
+	}
+	if ( vkExec.temporalResolveVertModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device,
+			vkExec.temporalResolveVertModule, NULL );
+	}
+	if ( vkExec.temporalResolveFragModule != VK_NULL_HANDLE ) {
+		vkDestroyShaderModule( vkCtx.device,
+			vkExec.temporalResolveFragModule, NULL );
 	}
 	if ( vkExec.skyVertModule != VK_NULL_HANDLE ) {
 		vkDestroyShaderModule( vkCtx.device, vkExec.skyVertModule, NULL );
@@ -2805,6 +2994,21 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 			return false;
 		}
 	}
+	const bool temporalOutputKnown = vkExec.temporalNativeWidth > 0
+		&& vkExec.temporalNativeHeight > 0
+		&& vkExec.temporalSwapchainFormat != VK_FORMAT_UNDEFINED;
+	if ( temporalOutputKnown
+			&& ( vkExec.temporalNativeWidth != (int)vkCtx.swapchainExtent.width
+				|| vkExec.temporalNativeHeight != (int)vkCtx.swapchainExtent.height
+				|| vkExec.temporalSwapchainFormat != vkCtx.swapchainFormat ) ) {
+		R_TemporalPresentation_InvalidateHistory(
+			"Vulkan swapchain extent/format changed" );
+		vkExec.temporalHistoryGenerationSeen =
+			R_TemporalPresentation_HistoryGeneration();
+	}
+	vkExec.temporalNativeWidth = (int)vkCtx.swapchainExtent.width;
+	vkExec.temporalNativeHeight = (int)vkCtx.swapchainExtent.height;
+	vkExec.temporalSwapchainFormat = vkCtx.swapchainFormat;
 	// swapchain format changes (rare) invalidate the pipeline set
 	if ( vkExec.pipelineTargetFormat != vkCtx.swapchainFormat ) {
 		vkDeviceWaitIdle( vkCtx.device );
@@ -2846,6 +3050,11 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 			vkDestroyPipeline( vkCtx.device, vkExec.blendLightPipelines[ i ].pipeline, NULL );
 		}
 		vkExec.numBlendLightPipelines = 0;
+		for ( int i = 0; i < vkExec.numTemporalResolvePipelines; ++i ) {
+			vkDestroyPipeline( vkCtx.device,
+				vkExec.temporalResolvePipelines[i].pipeline, NULL );
+		}
+		vkExec.numTemporalResolvePipelines = 0;
 		vkExec.pipelineTargetFormat = vkCtx.swapchainFormat;
 	}
 
@@ -3397,6 +3606,919 @@ void VK_Exec_ClearRenderTarget( bool clearColor, bool clearDepth, float depthVal
 	vkCmdClearAttachments( vkExec.cmd, (uint32_t)attachmentCount, attachments, 1, &rect );
 }
 
+static void VK_TemporalPresentation_ClearScaleState( vkSceneScaleState_t &state ) {
+	state.active = false;
+	state.backendOwned = false;
+	state.projectionRecentered = false;
+	state.rootView = NULL;
+	state.nativeWidth = 0;
+	state.nativeHeight = 0;
+	state.targetWidth = 0;
+	state.targetHeight = 0;
+	state.nativeProjectionOffsetX = 0.0f;
+	state.nativeProjectionOffsetY = 0.0f;
+	state.nativeViewport.Clear();
+	state.rectRestores.Clear();
+	state.rectRestores.SetGranularity( 256 );
+	state.rectRestoreHash.Clear( 4096, 4096 );
+}
+
+static bool VK_TemporalPresentation_IsMainSceneView( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || viewDef->viewEntitys == NULL
+			|| ( viewDef->renderFlags & RF_PORTAL_SKY ) != 0
+			|| viewDef->isSubview || viewDef->superView != NULL
+			|| viewDef->subviewSurface != NULL || viewDef->isXraySubview
+			|| viewDef->renderView.viewID < 0 ) {
+		return false;
+	}
+	return viewDef->renderWorld == NULL
+		|| viewDef->renderWorld->mapName.Length() > 0;
+}
+
+static bool VK_TemporalPresentation_ViewMatchesRoot( const viewDef_t *viewDef,
+		const viewDef_t *rootView ) {
+	return viewDef != NULL && rootView != NULL
+		&& viewDef->viewport.Equals( rootView->viewport )
+		&& viewDef->renderView.width == rootView->renderView.width
+		&& viewDef->renderView.height == rootView->renderView.height;
+}
+
+static const viewDef_t *VK_TemporalPresentation_RootForView(
+		const viewDef_t *viewDef ) {
+	if ( VK_TemporalPresentation_IsMainSceneView( viewDef ) ) {
+		return viewDef;
+	}
+	if ( viewDef == NULL || viewDef->viewEntitys == NULL ) {
+		return NULL;
+	}
+
+	if ( ( viewDef->renderFlags & RF_PORTAL_SKY ) != 0 ) {
+		const viewDef_t *rootView = tr.primaryView;
+		return rootView != viewDef
+			&& VK_TemporalPresentation_IsMainSceneView( rootView )
+			&& VK_TemporalPresentation_ViewMatchesRoot( viewDef, rootView )
+			? rootView : NULL;
+	}
+
+	// SS_SUBVIEW contributors render directly into their ancestor's viewport.
+	// Capture-backed mirror/remote/refraction views use different footprints and
+	// remain isolated on the target selected by their authored crop/copy stream.
+	const viewDef_t *candidate = viewDef;
+	while ( candidate != NULL && candidate->isSubview ) {
+		const viewDef_t *superView = candidate->superView;
+		if ( candidate->isXraySubview || superView == NULL
+				|| candidate->subviewSurface == NULL
+				|| candidate->subviewSurface->material == NULL
+				|| candidate->subviewSurface->material->GetSort() != SS_SUBVIEW
+				|| !VK_TemporalPresentation_ViewMatchesRoot( candidate, superView ) ) {
+			return NULL;
+		}
+		candidate = superView;
+	}
+	return VK_TemporalPresentation_IsMainSceneView( candidate )
+		&& VK_TemporalPresentation_ViewMatchesRoot( viewDef, candidate )
+		? candidate : NULL;
+}
+
+static bool VK_TemporalPresentation_RootCoversNativeOutput(
+		const viewDef_t *rootView ) {
+	if ( rootView == NULL ) {
+		return false;
+	}
+	const int width = rootView->viewport.x2 - rootView->viewport.x1 + 1;
+	const int height = rootView->viewport.y2 - rootView->viewport.y1 + 1;
+	return rootView->viewport.x1 == 0 && rootView->viewport.y1 == 0
+		&& width == (int)vkCtx.swapchainExtent.width
+		&& height == (int)vkCtx.swapchainExtent.height;
+}
+
+static bool VK_TemporalPresentation_BackendSceneRequested(
+		const viewDef_t *rootView, int &targetWidth, int &targetHeight ) {
+	targetWidth = 0;
+	targetHeight = 0;
+	if ( !VK_TemporalPresentation_RootCoversNativeOutput( rootView ) ) {
+		return false;
+	}
+	const temporalPresentationFrameState_t &presentation =
+		R_TemporalPresentation_GetFrameState();
+	if ( presentation.frameNumber != backEnd.frameCount
+			|| presentation.nativeWidth != (int)vkCtx.swapchainExtent.width
+			|| presentation.nativeHeight != (int)vkCtx.swapchainExtent.height
+			|| presentation.sceneWidth <= 0 || presentation.sceneHeight <= 0 ) {
+		return false;
+	}
+	const bool sceneScaled = presentation.sceneWidth != presentation.nativeWidth
+		|| presentation.sceneHeight != presentation.nativeHeight;
+	if ( sceneScaled && !presentation.dynamicResolutionRequested
+			&& presentation.effectiveScalePercent < 100
+			&& r_resolutionScaleMode.GetInteger() == 0
+			&& !R_TemporalPresentation_TemporalAARequested() ) {
+		return false;
+	}
+	const bool knownCapture = presentation.captureFrozen
+		|| presentation.captureForcedNative
+		|| ( rootView != NULL && rootView->temporalCaptureFrame );
+	const bool temporalScene = presentation.temporalAARequested && !knownCapture;
+	if ( !sceneScaled && !temporalScene ) {
+		return false;
+	}
+	// The spatial presentation shader is also the projection-jitter safety
+	// gate for a backend-owned scene target. If its swapchain pipeline cannot
+	// be created, leave the view native so a later fixed-function scale cannot
+	// expose subpixel jitter.
+	if ( vkExec.temporalResolveVertModule == VK_NULL_HANDLE
+			|| vkExec.temporalResolveFragModule == VK_NULL_HANDLE
+			|| VK_TemporalPresentation_GetResolvePipeline() == VK_NULL_HANDLE ) {
+		return false;
+	}
+	targetWidth = presentation.sceneWidth;
+	targetHeight = presentation.sceneHeight;
+	return true;
+}
+
+static int VK_TemporalPresentation_ScaleRectStart( int value,
+		int sourceExtent, int targetExtent ) {
+	return static_cast<int>( ( static_cast<int64>( value ) * targetExtent )
+		/ sourceExtent );
+}
+
+static int VK_TemporalPresentation_ScaleRectEnd( int value,
+		int sourceExtent, int targetExtent ) {
+	return static_cast<int>( ( ( static_cast<int64>( value + 1 ) * targetExtent )
+		+ sourceExtent - 1 ) / sourceExtent ) - 1;
+}
+
+static void VK_TemporalPresentation_ScaleLocalRect( idScreenRect &rect,
+		int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+	if ( rect.IsEmpty() || sourceWidth <= 0 || sourceHeight <= 0
+			|| targetWidth <= 0 || targetHeight <= 0 ) {
+		return;
+	}
+	const int x1 = idMath::ClampInt( 0, targetWidth - 1,
+		VK_TemporalPresentation_ScaleRectStart( rect.x1, sourceWidth, targetWidth ) );
+	const int y1 = idMath::ClampInt( 0, targetHeight - 1,
+		VK_TemporalPresentation_ScaleRectStart( rect.y1, sourceHeight, targetHeight ) );
+	const int x2 = idMath::ClampInt( 0, targetWidth - 1,
+		VK_TemporalPresentation_ScaleRectEnd( rect.x2, sourceWidth, targetWidth ) );
+	const int y2 = idMath::ClampInt( 0, targetHeight - 1,
+		VK_TemporalPresentation_ScaleRectEnd( rect.y2, sourceHeight, targetHeight ) );
+	if ( x2 < x1 || y2 < y1 ) {
+		rect.Clear();
+		return;
+	}
+	rect.x1 = static_cast<short>( x1 );
+	rect.y1 = static_cast<short>( y1 );
+	rect.x2 = static_cast<short>( x2 );
+	rect.y2 = static_cast<short>( y2 );
+}
+
+static bool VK_TemporalPresentation_RecordScaledRect(
+		vkSceneScaleState_t &state, idScreenRect *rect ) {
+	if ( rect == NULL ) {
+		return false;
+	}
+	const int key = static_cast<int>( reinterpret_cast<uintptr_t>( rect ) >> 4 );
+	for ( int i = state.rectRestoreHash.First( key ); i != -1;
+			i = state.rectRestoreHash.Next( i ) ) {
+		if ( state.rectRestores[i].rect == rect ) {
+			return false;
+		}
+	}
+	vkSceneScaleState_t::rectRestore_t &restore = state.rectRestores.Alloc();
+	restore.rect = rect;
+	restore.original = *rect;
+	state.rectRestoreHash.Add( key, state.rectRestores.Num() - 1 );
+	return true;
+}
+
+static void VK_TemporalPresentation_ScaleTrackedRect(
+		vkSceneScaleState_t &state, idScreenRect *rect,
+		int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+	if ( !VK_TemporalPresentation_RecordScaledRect( state, rect ) ) {
+		return;
+	}
+	VK_TemporalPresentation_ScaleLocalRect( *rect, sourceWidth, sourceHeight,
+		targetWidth, targetHeight );
+}
+
+static void VK_TemporalPresentation_ScaleDrawSurf(
+		vkSceneScaleState_t &state, const drawSurf_t *surf,
+		int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+	if ( surf != NULL ) {
+		VK_TemporalPresentation_ScaleTrackedRect( state,
+			&const_cast<drawSurf_t *>( surf )->scissorRect,
+			sourceWidth, sourceHeight, targetWidth, targetHeight );
+	}
+}
+
+static void VK_TemporalPresentation_ScaleDrawSurfChain(
+		vkSceneScaleState_t &state, const drawSurf_t *surf,
+		int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+	for ( const drawSurf_t *chainSurf = surf; chainSurf != NULL;
+			chainSurf = chainSurf->nextOnLight ) {
+		VK_TemporalPresentation_ScaleDrawSurf( state, chainSurf, sourceWidth,
+			sourceHeight, targetWidth, targetHeight );
+	}
+}
+
+static void VK_TemporalPresentation_ScaleLight(
+		vkSceneScaleState_t &state, const viewLight_t *vLight,
+		int sourceWidth, int sourceHeight, int targetWidth, int targetHeight ) {
+	if ( vLight == NULL ) {
+		return;
+	}
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->globalShadows,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->localInteractions,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->localShadows,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->globalInteractions,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->localShadowMapCasters,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->globalShadowMapCasters,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state,
+		vLight->localTranslucentShadowMapCasters,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state,
+		vLight->globalTranslucentShadowMapCasters,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	VK_TemporalPresentation_ScaleDrawSurfChain( state, vLight->translucentInteractions,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+}
+
+static bool VK_TemporalPresentation_BeginScale( vkSceneScaleState_t &state,
+		const viewDef_t *viewDef, const viewDef_t *rootView,
+		int targetWidth, int targetHeight, bool backendOwned ) {
+	VK_TemporalPresentation_ClearScaleState( state );
+	if ( viewDef == NULL || rootView == NULL || targetWidth <= 0 || targetHeight <= 0
+			|| targetWidth > 32767 || targetHeight > 32767 ) {
+		return false;
+	}
+	viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+	const int sourceWidth = mutableView->viewport.x2 - mutableView->viewport.x1 + 1;
+	const int sourceHeight = mutableView->viewport.y2 - mutableView->viewport.y1 + 1;
+	if ( sourceWidth <= 0 || sourceHeight <= 0 ) {
+		return false;
+	}
+
+	state.active = true;
+	state.backendOwned = backendOwned;
+	state.rootView = rootView;
+	state.nativeWidth = sourceWidth;
+	state.nativeHeight = sourceHeight;
+	state.targetWidth = targetWidth;
+	state.targetHeight = targetHeight;
+	state.nativeViewport = mutableView->viewport;
+	// Native-scale TAA still needs backend ownership so the jittered 3D scene
+	// reaches a history consumer before native UI begins. It needs no coordinate
+	// mutation, but EndView must retain the same transaction/composite seam.
+	if ( sourceWidth == targetWidth && sourceHeight == targetHeight ) {
+		return true;
+	}
+	VK_TemporalPresentation_ScaleTrackedRect( state, &mutableView->scissor,
+		sourceWidth, sourceHeight, targetWidth, targetHeight );
+	mutableView->viewport.x1 = 0;
+	mutableView->viewport.y1 = 0;
+	mutableView->viewport.x2 = static_cast<short>( targetWidth - 1 );
+	mutableView->viewport.y2 = static_cast<short>( targetHeight - 1 );
+
+	for ( int i = 0; i < mutableView->numDrawSurfs; i++ ) {
+		VK_TemporalPresentation_ScaleDrawSurf( state, mutableView->drawSurfs[i],
+			sourceWidth, sourceHeight, targetWidth, targetHeight );
+	}
+	for ( viewLight_t *vLight = mutableView->viewLights; vLight != NULL;
+			vLight = vLight->next ) {
+		VK_TemporalPresentation_ScaleTrackedRect( state, &vLight->scissorRect,
+			sourceWidth, sourceHeight, targetWidth, targetHeight );
+		VK_TemporalPresentation_ScaleLight( state, vLight, sourceWidth,
+			sourceHeight, targetWidth, targetHeight );
+	}
+	for ( viewEntity_t *vEntity = mutableView->viewEntitys; vEntity != NULL;
+			vEntity = vEntity->next ) {
+		VK_TemporalPresentation_ScaleTrackedRect( state, &vEntity->scissorRect,
+			sourceWidth, sourceHeight, targetWidth, targetHeight );
+	}
+	return true;
+}
+
+static void VK_TemporalPresentation_RestoreScale( vkSceneScaleState_t &state,
+		const viewDef_t *viewDef ) {
+	if ( !state.active || viewDef == NULL ) {
+		return;
+	}
+	viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+	mutableView->viewport = state.nativeViewport;
+	for ( int i = state.rectRestores.Num() - 1; i >= 0; i-- ) {
+		if ( state.rectRestores[i].rect != NULL ) {
+			*state.rectRestores[i].rect = state.rectRestores[i].original;
+		}
+	}
+	state.rectRestores.Clear();
+	state.rectRestoreHash.Clear();
+	state.active = false;
+}
+
+static void VK_TemporalPresentation_RecenterDirectProjection(
+		vkSceneScaleState_t &state, const viewDef_t *viewDef ) {
+	if ( viewDef == NULL || !viewDef->temporalJitterEnabled
+			|| state.projectionRecentered ) {
+		return;
+	}
+	const int width = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int height = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( width <= 0 || height <= 0 ) {
+		return;
+	}
+	viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+	state.nativeProjectionOffsetX = mutableView->projectionMatrix[8];
+	state.nativeProjectionOffsetY = mutableView->projectionMatrix[9];
+	mutableView->projectionMatrix[8] -= 2.0f
+		* mutableView->temporalJitterPixels.x / static_cast<float>( width );
+	mutableView->projectionMatrix[9] -= 2.0f
+		* mutableView->temporalJitterPixels.y / static_cast<float>( height );
+	state.projectionRecentered = true;
+
+	// No temporal consumer owns this direct view. Retire image/camera history so
+	// a later successful offscreen frame is seeded instead of blending across
+	// the spatial-only gap. A late capture already advanced this generation.
+	if ( viewDef->temporalHistoryGeneration
+			== R_TemporalPresentation_HistoryGeneration() ) {
+		R_TemporalPresentation_InvalidateHistory(
+			"Vulkan temporal scene ownership unavailable" );
+	}
+}
+
+static void VK_TemporalPresentation_RestoreDirectProjection(
+		vkSceneScaleState_t &state, const viewDef_t *viewDef ) {
+	if ( !state.projectionRecentered || viewDef == NULL ) {
+		return;
+	}
+	viewDef_t *mutableView = const_cast<viewDef_t *>( viewDef );
+	mutableView->projectionMatrix[8] = state.nativeProjectionOffsetX;
+	mutableView->projectionMatrix[9] = state.nativeProjectionOffsetY;
+	state.projectionRecentered = false;
+}
+
+static void VK_TemporalPresentation_ObserveHistoryAndCapture( void ) {
+	const unsigned int historyGeneration =
+		R_TemporalPresentation_HistoryGeneration();
+	if ( vkExec.temporalHistoryGenerationSeen != historyGeneration ) {
+		// Both backend-owned and game-owned Vulkan histories retire at the shared
+		// generation seam. Game ownership validates its immutable command later;
+		// direct roots also drop their local ping-pong immediately.
+		vkExec.temporalHistoryGenerationSeen = historyGeneration;
+		vkExec.temporalDirectHistoryGeneration = historyGeneration;
+		vkExec.temporalDirectHistoryValid = false;
+		vkExec.temporalDirectHistoryFrame = -1;
+		vkExec.temporalDepthStampValid = false;
+	}
+	if ( tr.takingScreenshot
+			&& vkExec.temporalCaptureInvalidatedFrame != backEnd.frameCount ) {
+		R_TemporalPresentation_MarkCurrentFrameCapture(
+			"Vulkan execution-time capture" );
+		vkExec.temporalHistoryGenerationSeen =
+			R_TemporalPresentation_HistoryGeneration();
+		vkExec.temporalDirectHistoryGeneration =
+			vkExec.temporalHistoryGenerationSeen;
+		vkExec.temporalDirectHistoryValid = false;
+		vkExec.temporalDirectHistoryFrame = -1;
+		vkExec.temporalDepthStampValid = false;
+		vkExec.temporalCaptureInvalidatedFrame = backEnd.frameCount;
+	}
+}
+
+static void VK_TemporalPresentation_StampDepth(
+		idRenderTexture *target, bool success ) {
+	vkExec.temporalDepthStampTarget = target;
+	vkExec.temporalDepthStampFrame = backEnd.frameCount;
+	vkExec.temporalDepthStampHistoryGeneration =
+		R_TemporalPresentation_HistoryGeneration();
+	vkExec.temporalDepthStampStorageGeneration = 0;
+	vkExec.temporalDepthStampValid = false;
+	if ( !success || target == NULL || target->GetDepthImage() == NULL ) {
+		return;
+	}
+	vkExec.temporalDepthStampStorageGeneration =
+		static_cast<unsigned long long>(
+			target->GetDepthImage()->GetStorageGeneration() );
+	vkExec.temporalDepthStampValid = true;
+}
+
+static bool VK_TemporalPresentation_DepthStampMatches(
+		idRenderTexture *target, idImage *depthImage,
+		unsigned int historyGeneration ) {
+	return vkExec.temporalDepthStampValid && target != NULL
+		&& depthImage != NULL && vkExec.temporalDepthStampTarget == target
+		&& vkExec.temporalDepthStampFrame == backEnd.frameCount
+		&& vkExec.temporalDepthStampHistoryGeneration == historyGeneration
+		&& vkExec.temporalDepthStampStorageGeneration
+			== static_cast<unsigned long long>(
+				depthImage->GetStorageGeneration() );
+}
+
+static bool VK_TemporalPresentation_BlitSupported( VkFormat sourceFormat,
+		VkFilter &filter ) {
+	VkFormatProperties sourceProperties;
+	VkFormatProperties destinationProperties;
+	memset( &sourceProperties, 0, sizeof( sourceProperties ) );
+	memset( &destinationProperties, 0, sizeof( destinationProperties ) );
+	vkGetPhysicalDeviceFormatProperties( vkCtx.physicalDevice,
+		sourceFormat, &sourceProperties );
+	vkGetPhysicalDeviceFormatProperties( vkCtx.physicalDevice,
+		vkCtx.swapchainFormat, &destinationProperties );
+	if ( ( sourceProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT ) == 0
+			|| ( destinationProperties.optimalTilingFeatures
+				& VK_FORMAT_FEATURE_BLIT_DST_BIT ) == 0 ) {
+		return false;
+	}
+	filter = ( sourceProperties.optimalTilingFeatures
+		& VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT ) != 0
+		? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+	return true;
+}
+
+static bool VK_TemporalPresentation_EnsureSceneTarget( int width, int height ) {
+	const int maxDimension = Min( 32767,
+		static_cast<int>( vkCtx.deviceProperties.limits.maxImageDimension2D ) );
+	if ( width <= 0 || height <= 0 || width > maxDimension
+			|| height > maxDimension ) {
+		if ( !vkExec.temporalSceneAllocationWarned ) {
+			vkExec.temporalSceneAllocationWarned = true;
+			common->Warning(
+				"Vulkan: temporal scene target %dx%d exceeds device/composite support; using native rendering",
+				width, height );
+		}
+		return false;
+	}
+
+	const bool sizeChanged = vkExec.temporalSceneWidth != width
+		|| vkExec.temporalSceneHeight != height;
+	if ( vkExec.temporalSceneRenderTexture == NULL ) {
+		idImageOpts colorOpts;
+		colorOpts.format = FMT_RGBA8;
+		colorOpts.colorFormat = CFM_DEFAULT;
+		colorOpts.numLevels = 1;
+		colorOpts.textureType = TT_2D;
+		colorOpts.isPersistant = true;
+		colorOpts.width = width;
+		colorOpts.height = height;
+		colorOpts.numMSAASamples = 0;
+		vkExec.temporalSceneColorImage = globalImages->ScratchImage(
+			"_vkTemporalSceneColor", &colorOpts, TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+		idImageOpts depthOpts = colorOpts;
+		depthOpts.format = FMT_DEPTH_STENCIL;
+		vkExec.temporalSceneDepthImage = globalImages->ScratchImage(
+			"_vkTemporalSceneDepth", &depthOpts, TF_NEAREST, TR_CLAMP, TD_DEPTH );
+		if ( vkExec.temporalSceneColorImage != NULL
+				&& vkExec.temporalSceneDepthImage != NULL ) {
+			vkExec.temporalSceneRenderTexture = tr.CreateRenderTexture(
+				vkExec.temporalSceneColorImage, vkExec.temporalSceneDepthImage );
+		}
+		if ( vkExec.temporalSceneRenderTexture != NULL ) {
+			vkExec.temporalSceneRenderTexture->SetDebugLabel(
+				"Vulkan temporal presentation scene" );
+		}
+	} else if ( sizeChanged ) {
+		(void)tr.ResizeRenderTexture( vkExec.temporalSceneRenderTexture,
+			width, height );
+	}
+
+	if ( vkExec.temporalSceneRenderTexture == NULL
+			|| vkExec.temporalSceneRenderTexture->GetWidth() != width
+			|| vkExec.temporalSceneRenderTexture->GetHeight() != height ) {
+		if ( !vkExec.temporalSceneAllocationWarned ) {
+			vkExec.temporalSceneAllocationWarned = true;
+			common->Warning(
+				"Vulkan: temporal scene target allocation failed; using native rendering" );
+		}
+		return false;
+	}
+
+	if ( sizeChanged ) {
+		vkExec.temporalSceneWidth = width;
+		vkExec.temporalSceneHeight = height;
+		vkExec.temporalSceneFrame = -1;
+		vkExec.temporalSceneRoot = NULL;
+		vkExec.temporalScenePendingComposite = false;
+		vkExec.temporalHistoryGenerationSeen =
+			R_TemporalPresentation_HistoryGeneration();
+	}
+	vkExec.temporalSceneAllocationWarned = false;
+	return true;
+}
+
+static void VK_TemporalPresentation_ResetDirectHistory(
+		const char *reason, bool invalidateSharedGeneration ) {
+	const unsigned int generation =
+		R_TemporalPresentation_HistoryGeneration();
+	if ( invalidateSharedGeneration && vkExec.temporalDirectHistoryValid
+			&& vkExec.temporalDirectHistoryGeneration == generation ) {
+		R_TemporalPresentation_InvalidateHistory( reason );
+	}
+	vkExec.temporalHistoryGenerationSeen =
+		R_TemporalPresentation_HistoryGeneration();
+	vkExec.temporalDirectHistoryGeneration =
+		vkExec.temporalHistoryGenerationSeen;
+	vkExec.temporalDirectHistoryReadIndex = 0;
+	vkExec.temporalDirectHistoryFrame = -1;
+	vkExec.temporalDirectHistoryViewIdentity = 0;
+	vkExec.temporalDirectHistoryValid = false;
+}
+
+static bool VK_TemporalPresentation_EnsureDirectHistoryTargets(
+		int width, int height ) {
+	const int maxDimension = Min( 32767,
+		static_cast<int>( vkCtx.deviceProperties.limits.maxImageDimension2D ) );
+	if ( width <= 0 || height <= 0 || width > maxDimension
+			|| height > maxDimension ) {
+		return false;
+	}
+
+	const bool hadExtent = vkExec.temporalDirectHistoryWidth > 0
+		&& vkExec.temporalDirectHistoryHeight > 0;
+	const bool extentChanged = vkExec.temporalDirectHistoryWidth != width
+		|| vkExec.temporalDirectHistoryHeight != height;
+	bool resourceChanged = hadExtent && extentChanged;
+	bool ready = true;
+
+	idImageOpts opts;
+	opts.format = FMT_RGBA16F;
+	opts.colorFormat = CFM_DEFAULT;
+	opts.numLevels = 1;
+	opts.textureType = TT_2D;
+	opts.isPersistant = true;
+	opts.width = width;
+	opts.height = height;
+	opts.numMSAASamples = 0;
+
+	for ( int i = 0; i < 2; ++i ) {
+		idRenderTexture *&target =
+			vkExec.temporalDirectHistoryRenderTextures[i];
+		idImage *&image = vkExec.temporalDirectHistoryImages[i];
+		if ( target != NULL && extentChanged ) {
+			resourceChanged = true;
+			(void)tr.ResizeRenderTexture( target, width, height );
+		}
+		if ( target == NULL ) {
+			if ( image == NULL ) {
+				image = globalImages->ScratchImage( i == 0
+					? "_vkTemporalDirectHistory0"
+					: "_vkTemporalDirectHistory1",
+					&opts, TF_LINEAR, TR_CLAMP, TD_DEFAULT );
+			} else if ( image->GetUploadWidth() != width
+					|| image->GetUploadHeight() != height ) {
+				image->Resize( width, height );
+			}
+			if ( image != NULL ) {
+				target = tr.CreateRenderTexture( image, NULL );
+			}
+			if ( target != NULL ) {
+				target->SetDebugLabel( i == 0
+					? "Vulkan direct temporal history 0 (native)"
+					: "Vulkan direct temporal history 1 (native)" );
+			}
+		}
+
+		if ( target == NULL || image == NULL
+				|| target->GetWidth() != width
+				|| target->GetHeight() != height ) {
+			ready = false;
+			continue;
+		}
+		const unsigned long long storageGeneration =
+			static_cast<unsigned long long>( image->GetStorageGeneration() );
+		if ( vkExec.temporalDirectHistoryStorageGenerations[i] != 0
+				&& vkExec.temporalDirectHistoryStorageGenerations[i]
+					!= storageGeneration ) {
+			resourceChanged = true;
+		}
+		vkExec.temporalDirectHistoryStorageGenerations[i] = storageGeneration;
+	}
+
+	if ( !ready ) {
+		VK_TemporalPresentation_ResetDirectHistory(
+			"Vulkan direct temporal history resource loss", true );
+		if ( !vkExec.temporalDirectHistoryAllocationWarned ) {
+			vkExec.temporalDirectHistoryAllocationWarned = true;
+			common->Warning(
+				"Vulkan: native temporal history allocation failed; using spatial presentation" );
+		}
+		return false;
+	}
+	if ( resourceChanged ) {
+		VK_TemporalPresentation_ResetDirectHistory(
+			"Vulkan direct temporal history resources changed", true );
+	}
+	vkExec.temporalDirectHistoryWidth = width;
+	vkExec.temporalDirectHistoryHeight = height;
+	vkExec.temporalDirectHistoryAllocationWarned = false;
+	return true;
+}
+
+static bool VK_TemporalPresentation_ResolvePendingSceneTemporal(
+		const viewDef_t *viewDef ) {
+	const temporalPresentationFrameState_t &presentation =
+		R_TemporalPresentation_GetFrameState();
+	const bool captureFrame = tr.takingScreenshot
+		|| presentation.captureFrozen || presentation.captureForcedNative
+		|| ( viewDef != NULL && viewDef->temporalCaptureFrame );
+	if ( viewDef == NULL || !presentation.temporalAARequested || captureFrame ) {
+		return false;
+	}
+	const int outputWidth = static_cast<int>( vkCtx.swapchainExtent.width );
+	const int outputHeight = static_cast<int>( vkCtx.swapchainExtent.height );
+	if ( outputWidth <= 0 || outputHeight <= 0
+			|| !VK_TemporalPresentation_EnsureDirectHistoryTargets(
+				outputWidth, outputHeight ) ) {
+		return false;
+	}
+
+	const unsigned int generation =
+		R_TemporalPresentation_HistoryGeneration();
+	const bool continuity = vkExec.temporalDirectHistoryValid
+		&& vkExec.temporalDirectHistoryGeneration == generation
+		&& vkExec.temporalDirectHistoryViewIdentity
+			== viewDef->temporalViewIdentity
+		&& vkExec.temporalDirectHistoryFrame == backEnd.frameCount - 1
+		&& viewDef->temporalPrepared && viewDef->temporalHistoryValid
+		&& viewDef->temporalPreviousProjectionValid
+		&& viewDef->temporalHistoryGeneration == generation;
+	const int readIndex = vkExec.temporalDirectHistoryReadIndex;
+	const int writeIndex = readIndex ^ 1;
+
+	resolveTemporalPresentationCommand_t command;
+	memset( &command, 0, sizeof( command ) );
+	command.sceneColorTarget = vkExec.temporalSceneRenderTexture;
+	command.sceneDepthTarget = vkExec.temporalSceneRenderTexture;
+	command.historyReadTarget = continuity
+		? vkExec.temporalDirectHistoryRenderTextures[readIndex] : NULL;
+	command.historyWriteTarget =
+		vkExec.temporalDirectHistoryRenderTextures[writeIndex];
+	command.viewDef = viewDef;
+	command.presentation.frameNumber = backEnd.frameCount;
+	command.presentation.outputWidth = outputWidth;
+	command.presentation.outputHeight = outputHeight;
+	command.presentation.sceneWidth = vkExec.temporalSceneWidth;
+	command.presentation.sceneHeight = vkExec.temporalSceneHeight;
+	command.presentation.effectiveScalePercent =
+		presentation.effectiveScalePercent;
+	command.presentation.historyGeneration = generation;
+	command.presentation.dynamicResolutionRequested =
+		presentation.dynamicResolutionRequested;
+	command.presentation.dynamicResolutionActive =
+		presentation.dynamicResolutionActive;
+	command.presentation.temporalAARequested = true;
+	command.historyGeneration = generation;
+	command.historyValid = continuity;
+	command.feedback = presentation.temporalFeedback;
+	command.reactiveScale = presentation.temporalReactiveScale;
+	command.debugMode = presentation.temporalDebugMode;
+
+	bool historyAdvanced = false;
+	const bool presented = VK_TemporalPresentation_ResolveTargets(
+		command, false, &historyAdvanced );
+	if ( !presented ) {
+		vkExec.temporalDirectHistoryValid = false;
+		vkExec.temporalDirectHistoryFrame = -1;
+		return false;
+	}
+	if ( historyAdvanced ) {
+		vkExec.temporalDirectHistoryReadIndex = writeIndex;
+		vkExec.temporalDirectHistoryGeneration =
+			R_TemporalPresentation_HistoryGeneration();
+		vkExec.temporalDirectHistoryViewIdentity =
+			viewDef->temporalViewIdentity;
+		vkExec.temporalDirectHistoryFrame = backEnd.frameCount;
+		vkExec.temporalDirectHistoryValid =
+			vkExec.temporalDirectHistoryGeneration == generation;
+	} else if ( vkExec.temporalDirectHistoryGeneration
+			!= R_TemporalPresentation_HistoryGeneration() ) {
+		vkExec.temporalDirectHistoryGeneration =
+			R_TemporalPresentation_HistoryGeneration();
+		vkExec.temporalDirectHistoryValid = false;
+		vkExec.temporalDirectHistoryFrame = -1;
+	}
+	return true;
+}
+
+static bool VK_TemporalPresentation_CompositePendingScene( void ) {
+	if ( !vkExec.temporalScenePendingComposite ) {
+		return true;
+	}
+	if ( !vkExec.frameOpen || vkExec.temporalSceneRenderTexture == NULL ) {
+		vkExec.temporalScenePendingComposite = false;
+		vkExec.temporalSceneRoot = NULL;
+		R_TemporalPresentation_InvalidateHistory(
+			"Vulkan temporal scene composite unavailable" );
+		return false;
+	}
+
+	vkImageEntry_t *sceneColor = NULL;
+	vkImageEntry_t *sceneDepth = NULL;
+	if ( !VK_Exec_RenderTextureEntries( vkExec.temporalSceneRenderTexture,
+			sceneColor, sceneDepth ) || sceneColor == NULL
+			|| sceneColor->samples != VK_SAMPLE_COUNT_1_BIT
+			|| ( sceneColor->usage & VK_IMAGE_USAGE_SAMPLED_BIT ) == 0 ) {
+		return false;
+	}
+	if ( vkExec.activeRenderTexture != vkExec.temporalSceneRenderTexture
+			&& !VK_Exec_SetRenderTarget( vkExec.temporalSceneRenderTexture ) ) {
+		return false;
+	}
+	if ( !VK_Exec_SetRenderTarget( NULL ) ) {
+		return false;
+	}
+	const viewDef_t *sceneRoot = vkExec.temporalSceneRoot;
+	const bool depthReady = sceneDepth != NULL
+		&& ( sceneDepth->usage & VK_IMAGE_USAGE_SAMPLED_BIT ) != 0;
+	// Let the resolver validate the exact depth-success stamp. A missing or
+	// stale depth image is a spatial/no-write result that must advance the
+	// shared invalidation generation rather than silently bypassing ownership.
+	const bool temporalPresented =
+		VK_TemporalPresentation_ResolvePendingSceneTemporal( sceneRoot );
+	const bool presented = temporalPresented
+		|| VK_TemporalPresentation_DrawPendingSceneSpatial( sceneRoot,
+			vkExec.temporalSceneColorImage, sceneColor,
+			depthReady ? vkExec.temporalSceneDepthImage : NULL,
+			depthReady ? sceneDepth : NULL );
+	if ( presented ) {
+		vkExec.temporalScenePendingComposite = false;
+		vkExec.temporalSceneRoot = NULL;
+		if ( backEnd.renderTexture == vkExec.temporalSceneRenderTexture ) {
+			backEnd.renderTexture = NULL;
+		}
+		if ( backEnd.feedbackRenderTexture == vkExec.temporalSceneRenderTexture ) {
+			backEnd.feedbackRenderTexture = NULL;
+		}
+		return true;
+	}
+
+	// Shader creation is capability-gated before the low-resolution target is
+	// selected. A failure here is therefore an execution-time resource fault;
+	// preserve a visible frame with the transfer fallback and retire history.
+	if ( vkExec.temporalSceneCompositeInvalidatedFrame
+			!= backEnd.frameCount ) {
+		R_TemporalPresentation_InvalidateHistory(
+			"Vulkan temporal spatial composite execution failed" );
+		vkExec.temporalHistoryGenerationSeen =
+			R_TemporalPresentation_HistoryGeneration();
+		vkExec.temporalSceneCompositeInvalidatedFrame = backEnd.frameCount;
+	}
+	if ( sceneRoot != NULL && sceneRoot->temporalJitterEnabled ) {
+		// VkImageBlit cannot express the fractional projection recenter required
+		// by a jittered scene. Fail closed instead of exposing an unstable frame;
+		// abandon this scene so a later frame cannot retry stale command-arena
+		// view state after the source frame has already been submitted.
+		vkExec.temporalScenePendingComposite = false;
+		vkExec.temporalSceneRoot = NULL;
+		if ( backEnd.renderTexture == vkExec.temporalSceneRenderTexture ) {
+			backEnd.renderTexture = NULL;
+		}
+		if ( backEnd.feedbackRenderTexture
+				== vkExec.temporalSceneRenderTexture ) {
+			backEnd.feedbackRenderTexture = NULL;
+		}
+		return false;
+	}
+	if ( ( sceneColor->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) == 0 ) {
+		return false;
+	}
+
+	VkFilter filter = VK_FILTER_NEAREST;
+	if ( !VK_TemporalPresentation_BlitSupported( sceneColor->format, filter ) ) {
+		return false;
+	}
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionImage( sceneColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+
+	VkImageBlit region;
+	memset( &region, 0, sizeof( region ) );
+	region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.srcSubresource.layerCount = 1;
+	region.srcOffsets[1].x = vkExec.temporalSceneWidth;
+	region.srcOffsets[1].y = vkExec.temporalSceneHeight;
+	region.srcOffsets[1].z = 1;
+	region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.dstSubresource.layerCount = 1;
+	region.dstOffsets[1].x = static_cast<int32_t>( vkCtx.swapchainExtent.width );
+	region.dstOffsets[1].y = static_cast<int32_t>( vkCtx.swapchainExtent.height );
+	region.dstOffsets[1].z = 1;
+	vkCmdBlitImage( vkExec.cmd, sceneColor->image,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		vkCtx.swapchainImages[vkExec.swapImageIndex],
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, filter );
+
+	VK_Exec_TransitionImage( sceneColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	const bool resumed = VK_Exec_BeginMainRendering( false );
+	vkExec.temporalScenePendingComposite = false;
+	vkExec.temporalSceneRoot = NULL;
+	if ( backEnd.renderTexture == vkExec.temporalSceneRenderTexture ) {
+		backEnd.renderTexture = NULL;
+	}
+	if ( backEnd.feedbackRenderTexture == vkExec.temporalSceneRenderTexture ) {
+		backEnd.feedbackRenderTexture = NULL;
+	}
+	return resumed;
+}
+
+static bool VK_TemporalPresentation_BeginView( const viewDef_t *viewDef,
+		vkSceneScaleState_t &scaleState ) {
+	VK_TemporalPresentation_ClearScaleState( scaleState );
+	VK_TemporalPresentation_ObserveHistoryAndCapture();
+	const viewDef_t *rootView =
+		VK_TemporalPresentation_RootForView( viewDef );
+	if ( rootView == NULL ) {
+		return false;
+	}
+
+	// feedbackRenderTexture is the explicit game-side opt-in: map its native
+	// root view to the actual attachment extent, but do not take allocation or
+	// final-post ownership away from the game render graph.
+	if ( backEnd.renderTexture != NULL
+			&& backEnd.renderTexture == backEnd.feedbackRenderTexture
+			&& vkExec.activeRenderTexture == backEnd.renderTexture ) {
+		const temporalPresentationFrameState_t &presentation =
+			R_TemporalPresentation_GetFrameState();
+		if ( presentation.frameNumber != backEnd.frameCount
+				|| !VK_TemporalPresentation_RootCoversNativeOutput( rootView )
+				|| presentation.nativeWidth != (int)vkCtx.swapchainExtent.width
+				|| presentation.nativeHeight != (int)vkCtx.swapchainExtent.height
+				|| presentation.sceneWidth != (int)vkExec.activeExtent.width
+				|| presentation.sceneHeight != (int)vkExec.activeExtent.height ) {
+			return false;
+		}
+		return VK_TemporalPresentation_BeginScale( scaleState, viewDef, rootView,
+			(int)vkExec.activeExtent.width, (int)vkExec.activeExtent.height, false );
+	}
+	if ( backEnd.renderTexture != NULL || vkExec.activeRenderTexture != NULL ) {
+		return false;
+	}
+
+	int targetWidth = 0;
+	int targetHeight = 0;
+	if ( !VK_TemporalPresentation_BackendSceneRequested( rootView,
+			targetWidth, targetHeight )
+			|| !VK_TemporalPresentation_EnsureSceneTarget(
+				targetWidth, targetHeight ) ) {
+		return false;
+	}
+	if ( vkExec.temporalScenePendingComposite
+			&& ( vkExec.temporalSceneFrame != backEnd.frameCount
+				|| vkExec.temporalSceneRoot != rootView )
+			&& !VK_TemporalPresentation_CompositePendingScene() ) {
+		return false;
+	}
+	if ( !VK_Exec_SetRenderTarget( vkExec.temporalSceneRenderTexture ) ) {
+		return false;
+	}
+	if ( vkExec.temporalSceneFrame != backEnd.frameCount
+			|| vkExec.temporalSceneRoot != rootView ) {
+		VK_Exec_ClearRenderTarget( true, true, 1.0f, vkExec.clearColor );
+		vkExec.temporalSceneFrame = backEnd.frameCount;
+		vkExec.temporalSceneRoot = rootView;
+	}
+	vkExec.temporalScenePendingComposite = true;
+	if ( !VK_TemporalPresentation_BeginScale( scaleState, viewDef, rootView,
+			targetWidth, targetHeight, true ) ) {
+		(void)VK_Exec_SetRenderTarget( NULL );
+		vkExec.temporalScenePendingComposite = false;
+		vkExec.temporalSceneRoot = NULL;
+		return false;
+	}
+	return true;
+}
+
+static void VK_TemporalPresentation_EndView( const viewDef_t *viewDef,
+		vkSceneScaleState_t &scaleState, bool depthComplete ) {
+	VK_TemporalPresentation_RestoreDirectProjection( scaleState, viewDef );
+	if ( !scaleState.active ) {
+		return;
+	}
+	const bool backendOwned = scaleState.backendOwned;
+	const bool rootView = viewDef == scaleState.rootView;
+	VK_TemporalPresentation_RestoreScale( scaleState, viewDef );
+	if ( !backendOwned ) {
+		return;
+	}
+	if ( rootView ) {
+		// Backend-owned scene depth is single-sample, so a completed root view is
+		// the resolve seam. Stamp the exact frame, generation and storage owner;
+		// an aborted view must retire any earlier resident stamp before composite.
+		VK_TemporalPresentation_StampDepth(
+			vkExec.temporalSceneRenderTexture, depthComplete );
+		(void)VK_TemporalPresentation_CompositePendingScene();
+	} else {
+		(void)VK_Exec_SetRenderTarget( NULL );
+	}
+}
+
 static bool VK_Exec_PrepareCopyDestination( idImage *image, int width, int height,
 		vkImageEntry_t *&entry ) {
 	entry = NULL;
@@ -3915,6 +5037,12 @@ static bool VK_Exec_ResolveDepthImage( vkImageEntry_t *sourceDepth,
 
 bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
 		idRenderTexture *destinationRenderTexture, bool resolveDepth ) {
+	if ( resolveDepth ) {
+		// Retire a resident success stamp before any validation or copy work. A
+		// failed MSAA depth resolve must never make stale depth look current.
+		VK_TemporalPresentation_StampDepth(
+			destinationRenderTexture, false );
+	}
 	if ( !VK_GuiExecutor_BeginFrame() || sourceRenderTexture == NULL
 			|| destinationRenderTexture == NULL ) {
 		return false;
@@ -3994,6 +5122,8 @@ bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
 				common->Warning( "Vulkan: requested depth resolve failed; color resolve completed" );
 			}
 		}
+		VK_TemporalPresentation_StampDepth(
+			destinationRenderTexture, depthResolved );
 	}
 
 	VK_Exec_TransitionActiveTargetToAttachments();
@@ -4004,6 +5134,11 @@ bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
 bool VK_GuiExecutor_ReadPixels( int x, int y, int width, int height, void *pixels ) {
 	if ( pixels == NULL || width <= 0 || height <= 0 || !VK_GuiExecutor_BeginFrame()
 			|| !vkCtx.swapchainTransferSrc ) {
+		return false;
+	}
+	VK_TemporalPresentation_ObserveHistoryAndCapture();
+	if ( vkExec.temporalScenePendingComposite
+			&& !VK_TemporalPresentation_CompositePendingScene() ) {
 		return false;
 	}
 	if ( vkExec.activeRenderTexture != NULL && !VK_Exec_SetRenderTarget( NULL ) ) {
@@ -5067,6 +6202,519 @@ int VK_Exec_InteractionUniformAlloc( const void *data, int bytes ) {
 			? VK_Ring_Alloc( vkExec.uniformRings[ vkExec.frameSlot ],
 					data, bytes, alignment )
 			: -1;
+}
+
+static bool VK_TemporalPresentation_GetColorTarget(
+		idRenderTexture *renderTexture, idImage *&image,
+		vkImageEntry_t *&entry ) {
+	image = NULL;
+	entry = NULL;
+	vkImageEntry_t *depthEntry = NULL;
+	if ( !VK_Exec_RenderTextureEntries( renderTexture, entry, depthEntry )
+			|| entry == NULL || entry->samples != VK_SAMPLE_COUNT_1_BIT ) {
+		return false;
+	}
+	image = renderTexture->GetColorImage( 0 );
+	return image != NULL
+		&& ( entry->usage & VK_IMAGE_USAGE_SAMPLED_BIT ) != 0;
+}
+
+static bool VK_TemporalPresentation_GetDepthTarget(
+		idRenderTexture *renderTexture, idImage *&image,
+		vkImageEntry_t *&entry ) {
+	image = NULL;
+	entry = NULL;
+	vkImageEntry_t *colorEntry = NULL;
+	if ( !VK_Exec_RenderTextureEntries( renderTexture, colorEntry, entry )
+			|| entry == NULL || entry->samples != VK_SAMPLE_COUNT_1_BIT ) {
+		return false;
+	}
+	image = renderTexture->GetDepthImage();
+	return image != NULL
+		&& ( entry->usage & VK_IMAGE_USAGE_SAMPLED_BIT ) != 0;
+}
+
+static bool VK_TemporalPresentation_TrackHistoryTarget(
+		idRenderTexture *target ) {
+	if ( target == NULL || target->GetNumColorImages() != 1
+			|| target->GetColorImage( 0 ) == NULL ) {
+		return false;
+	}
+	idImage *image = target->GetColorImage( 0 );
+	const unsigned long long generation =
+		static_cast<unsigned long long>( image->GetStorageGeneration() );
+	for ( int i = 0; i < 2; ++i ) {
+		if ( vkExec.temporalHistoryTargets[i] == target ) {
+			if ( vkExec.temporalHistoryStorageGenerations[i] == generation ) {
+				return false;
+			}
+			vkExec.temporalHistoryStorageGenerations[i] = generation;
+			return true;
+		}
+	}
+	for ( int i = 0; i < 2; ++i ) {
+		if ( vkExec.temporalHistoryTargets[i] == NULL ) {
+			vkExec.temporalHistoryTargets[i] = target;
+			vkExec.temporalHistoryStorageGenerations[i] = generation;
+			return false;
+		}
+	}
+	// The public contract is a two-image ping-pong. Seeing a third owner means
+	// the native history allocation was replaced without a module restart.
+	vkExec.temporalHistoryTargets[0] = target;
+	vkExec.temporalHistoryStorageGenerations[0] = generation;
+	vkExec.temporalHistoryTargets[1] = NULL;
+	vkExec.temporalHistoryStorageGenerations[1] = 0;
+	return true;
+}
+
+static void VK_TemporalPresentation_FillResolveBlock(
+		const resolveTemporalPresentationCommand_t &command,
+		int sceneWidth, int sceneHeight, bool useHistory, bool depthValid,
+		bool captureRecenter, int debugMode,
+		vkTemporalResolveBlock_t &block ) {
+	memset( &block, 0, sizeof( block ) );
+	const viewDef_t *viewDef = command.viewDef;
+	const int outputWidth = Max( 1, (int)vkCtx.swapchainExtent.width );
+	const int outputHeight = Max( 1, (int)vkCtx.swapchainExtent.height );
+	block.sceneOutputExtent[0] = 1.0f / Max( 1, sceneWidth );
+	block.sceneOutputExtent[1] = 1.0f / Max( 1, sceneHeight );
+	block.sceneOutputExtent[2] = (float)outputWidth;
+	block.sceneOutputExtent[3] = (float)outputHeight;
+	block.depthFeedback[2] = idMath::ClampFloat( 0.0f, 0.98f,
+		command.feedback );
+	block.depthFeedback[3] = idMath::ClampFloat( 0.0f, 2.0f,
+		command.reactiveScale );
+	block.temporalParams[2] = useHistory ? 1.0f : 0.0f;
+	block.temporalParams[3] = (float)idMath::ClampInt( 0, 3, debugMode );
+	block.motionParams[2] = depthValid ? 1.0f : 0.0f;
+	block.motionParams[3] = captureRecenter ? 1.0f : 0.0f;
+	for ( int component = 0; component < 4; ++component ) {
+		block.reactiveRect0[component] = -1.0f;
+		block.reactiveRect1[component] = -1.0f;
+	}
+	if ( useHistory ) {
+		// Packet ownership is a correctness input, not an optional quality hint.
+		// Until a matching policy is proven available, reject history over the
+		// complete output so a packet-frame miss cannot leave moving content
+		// consuming unowned stale samples.
+		block.reactiveRect0[0] = 0.0f;
+		block.reactiveRect0[1] = 0.0f;
+		block.reactiveRect0[2] = 1.0f;
+		block.reactiveRect0[3] = 1.0f;
+		temporalViewMotionPolicy_t motionPolicy;
+		const bool motionPolicyAvailable = viewDef != NULL
+			&& R_ScenePackets_BuildTemporalViewMotionPolicy(
+				viewDef, 0u, motionPolicy );
+		if ( motionPolicyAvailable ) {
+			for ( int component = 0; component < 4; ++component ) {
+				block.reactiveRect0[component] = -1.0f;
+			}
+			float *rects[TEMPORAL_MAX_REACTIVE_REGIONS] = {
+				block.reactiveRect0, block.reactiveRect1
+			};
+			const int regionCount = Min( motionPolicy.reactiveRegionCount,
+				TEMPORAL_MAX_REACTIVE_REGIONS );
+			for ( int regionIndex = 0; regionIndex < regionCount;
+					++regionIndex ) {
+				const temporalReactiveRegion_t &region =
+					motionPolicy.reactiveRegions[regionIndex];
+				rects[regionIndex][0] = region.x1;
+				rects[regionIndex][1] = region.y1;
+				rects[regionIndex][2] = region.x2;
+				rects[regionIndex][3] = region.y2;
+			}
+		}
+	}
+	if ( viewDef == NULL ) {
+		return;
+	}
+
+	const float projectionX = viewDef->projectionMatrix[0];
+	const float projectionY = viewDef->projectionMatrix[5];
+	if ( idMath::Fabs( projectionX ) > 0.00001f
+			&& idMath::Fabs( projectionY ) > 0.00001f ) {
+		block.currentReconstruct[0] = 1.0f / projectionX;
+		block.currentReconstruct[1] = 1.0f / projectionY;
+	}
+	block.currentReconstruct[2] = viewDef->projectionMatrix[8];
+	block.currentReconstruct[3] = viewDef->projectionMatrix[9];
+	memcpy( block.previousProject,
+		viewDef->temporalPreviousProjectInfo.ToFloatPtr(),
+		sizeof( block.previousProject ) );
+	block.depthFeedback[0] = viewDef->projectionMatrix[10];
+	block.depthFeedback[1] = viewDef->projectionMatrix[14];
+
+	memcpy( block.currentViewOrigin,
+		viewDef->renderView.vieworg.ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.currentViewAxis0,
+		viewDef->renderView.viewaxis[0].ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.currentViewAxis1,
+		viewDef->renderView.viewaxis[1].ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.currentViewAxis2,
+		viewDef->renderView.viewaxis[2].ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.previousViewOrigin,
+		viewDef->temporalPreviousViewOrigin.ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.previousViewAxis0,
+		viewDef->temporalPreviousViewAxis[0].ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.previousViewAxis1,
+		viewDef->temporalPreviousViewAxis[1].ToFloatPtr(), 3 * sizeof( float ) );
+	memcpy( block.previousViewAxis2,
+		viewDef->temporalPreviousViewAxis[2].ToFloatPtr(), 3 * sizeof( float ) );
+	block.temporalParams[0] = viewDef->temporalJitterPixels.x / outputWidth;
+	block.temporalParams[1] = viewDef->temporalJitterPixels.y / outputHeight;
+	block.motionParams[1] = useHistory && depthValid
+		&& viewDef->temporalPreviousProjectionValid
+		&& idMath::Fabs( projectionX ) > 0.00001f
+		&& idMath::Fabs( projectionY ) > 0.00001f ? 1.0f : 0.0f;
+}
+
+static bool VK_TemporalPresentation_DrawResolve(
+		idRenderTexture *destination,
+		idImage *sceneImage, vkImageEntry_t *sceneEntry,
+		idImage *depthImage, vkImageEntry_t *depthEntry,
+		idImage *historyImage, vkImageEntry_t *historyEntry,
+		const vkTemporalResolveBlock_t &block ) {
+	if ( sceneImage == NULL || sceneEntry == NULL
+			|| !VK_Exec_SetRenderTarget( NULL ) ) {
+		return false;
+	}
+	VK_Exec_TransitionImage( sceneEntry, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	if ( depthEntry != NULL ) {
+		VK_Exec_TransitionImage( depthEntry,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	}
+	if ( historyEntry != NULL ) {
+		VK_Exec_TransitionImage( historyEntry,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	}
+
+	VkDescriptorSet sceneSet = VK_GuiExecutor_GetImageDescriptor(
+		sceneImage->GetDeviceHandle() );
+	idImage *depthFallbackImage = globalImages->whiteImage;
+	idImage *historyFallbackImage = globalImages->blackImage;
+	VkDescriptorSet depthSet = depthImage != NULL && depthEntry != NULL
+		? VK_GuiExecutor_GetImageDescriptor( depthImage->GetDeviceHandle() )
+		: VK_GuiExecutor_GetResidentImageDescriptor( depthFallbackImage );
+	VkDescriptorSet historySet = historyImage != NULL && historyEntry != NULL
+		? VK_GuiExecutor_GetImageDescriptor( historyImage->GetDeviceHandle() )
+		: VK_GuiExecutor_GetResidentImageDescriptor( historyFallbackImage );
+	const int uniformOffset = VK_Exec_InteractionUniformAlloc(
+		&block, sizeof( block ) );
+	if ( sceneSet == VK_NULL_HANDLE || depthSet == VK_NULL_HANDLE
+			|| historySet == VK_NULL_HANDLE || uniformOffset < 0
+			|| !VK_Exec_SetRenderTarget( destination ) ) {
+		return false;
+	}
+
+	const VkPipeline pipeline =
+		VK_TemporalPresentation_GetResolvePipeline();
+	if ( pipeline == VK_NULL_HANDLE ) {
+		return false;
+	}
+	VkViewport viewport;
+	memset( &viewport, 0, sizeof( viewport ) );
+	viewport.width = (float)vkExec.activeExtent.width;
+	viewport.height = (float)vkExec.activeExtent.height;
+	viewport.maxDepth = 1.0f;
+	VkRect2D scissor;
+	memset( &scissor, 0, sizeof( scissor ) );
+	scissor.extent = vkExec.activeExtent;
+	vkCmdSetViewport( vkExec.cmd, 0, 1, &viewport );
+	vkCmdSetScissor( vkExec.cmd, 0, 1, &scissor );
+	vkCmdSetDepthTestEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthWriteEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetDepthCompareOp( vkExec.cmd, VK_COMPARE_OP_ALWAYS );
+	vkCmdSetCullMode( vkExec.cmd, VK_CULL_MODE_NONE );
+	vkCmdSetFrontFace( vkExec.cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	vkCmdSetDepthBiasEnable( vkExec.cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( vkExec.cmd, VK_FALSE );
+	vkCmdBindPipeline( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+	VkDescriptorSet imageSets[3] = { sceneSet, depthSet, historySet };
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		vkExec.interactionPipelineLayout, 0, 3, imageSets, 0, NULL );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	const uint32_t dynamicOffset = (uint32_t)uniformOffset;
+	vkCmdBindDescriptorSets( vkExec.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		vkExec.interactionPipelineLayout, 6, 1, &uniformSet,
+		1, &dynamicOffset );
+	vkCmdDraw( vkExec.cmd, 3, 1, 0, 0 );
+	return true;
+}
+
+static bool VK_TemporalPresentation_DrawPendingSceneSpatial(
+		const viewDef_t *viewDef, idImage *sceneImage,
+		vkImageEntry_t *sceneEntry, idImage *depthImage,
+		vkImageEntry_t *depthEntry ) {
+	if ( viewDef == NULL || sceneImage == NULL || sceneEntry == NULL ) {
+		return false;
+	}
+	resolveTemporalPresentationCommand_t command;
+	memset( &command, 0, sizeof( command ) );
+	command.viewDef = viewDef;
+	command.reactiveScale = 1.0f;
+	vkTemporalResolveBlock_t block;
+	VK_TemporalPresentation_FillResolveBlock( command,
+		sceneEntry->width, sceneEntry->height, false, depthEntry != NULL,
+		true, 0, block );
+	return VK_TemporalPresentation_DrawResolve( NULL, sceneImage, sceneEntry,
+		depthImage, depthEntry, NULL, NULL, block );
+}
+
+static bool VK_TemporalPresentation_DrawResolvedColorToSwap(
+		const resolveTemporalPresentationCommand_t &command,
+		idImage *resolvedImage, vkImageEntry_t *resolvedEntry,
+		int outputWidth, int outputHeight ) {
+	if ( resolvedImage == NULL || resolvedEntry == NULL
+			|| resolvedEntry->width != outputWidth
+			|| resolvedEntry->height != outputHeight ) {
+		return false;
+	}
+	vkTemporalResolveBlock_t block;
+	VK_TemporalPresentation_FillResolveBlock( command,
+		outputWidth, outputHeight, false, false, false, 0, block );
+	return VK_TemporalPresentation_DrawResolve( NULL,
+		resolvedImage, resolvedEntry, NULL, NULL, NULL, NULL, block );
+}
+
+static bool VK_TemporalPresentation_BlitColorToSwap(
+		vkImageEntry_t *sourceEntry, int width, int height ) {
+	if ( sourceEntry == NULL || sourceEntry->samples != VK_SAMPLE_COUNT_1_BIT
+			|| ( sourceEntry->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT ) == 0
+			|| width != (int)vkCtx.swapchainExtent.width
+			|| height != (int)vkCtx.swapchainExtent.height
+			|| !VK_Exec_SetRenderTarget( NULL ) ) {
+		return false;
+	}
+	VkFilter filter = VK_FILTER_NEAREST;
+	if ( !VK_TemporalPresentation_BlitSupported( sourceEntry->format, filter ) ) {
+		return false;
+	}
+	VK_Exec_EndMainRendering();
+	VK_Exec_TransitionImage( sourceEntry, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL );
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+	VkImageBlit region;
+	memset( &region, 0, sizeof( region ) );
+	region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.srcSubresource.layerCount = 1;
+	region.srcOffsets[1].x = width;
+	region.srcOffsets[1].y = height;
+	region.srcOffsets[1].z = 1;
+	region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.dstSubresource.layerCount = 1;
+	region.dstOffsets[1].x = width;
+	region.dstOffsets[1].y = height;
+	region.dstOffsets[1].z = 1;
+	vkCmdBlitImage( vkExec.cmd, sourceEntry->image,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		vkCtx.swapchainImages[vkExec.swapImageIndex],
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, filter );
+	VK_Exec_TransitionImage( sourceEntry,
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+	VK_Exec_TransitionSwapchain( VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	return VK_Exec_BeginMainRendering( false );
+}
+
+static void VK_TemporalPresentation_InvalidateAcceptedNoWrite(
+		const resolveTemporalPresentationCommand_t &command,
+		const char *reason ) {
+	if ( command.captureFrame || tr.takingScreenshot
+			|| command.historyGeneration
+				!= R_TemporalPresentation_HistoryGeneration() ) {
+		return;
+	}
+	R_TemporalPresentation_InvalidateHistory( reason );
+	vkExec.temporalHistoryGenerationSeen =
+		R_TemporalPresentation_HistoryGeneration();
+}
+
+static bool VK_TemporalPresentation_ResolveTargets(
+		const resolveTemporalPresentationCommand_t &sourceCommand,
+		bool trackExternalHistory, bool *historyAdvanced ) {
+	if ( historyAdvanced != NULL ) {
+		*historyAdvanced = false;
+	}
+	resolveTemporalPresentationCommand_t command = sourceCommand;
+	if ( tr.takingScreenshot ) {
+		command.captureFrame = true;
+		command.historyValid = false;
+	}
+
+	idImage *sceneImage = NULL;
+	idImage *depthImage = NULL;
+	idImage *historyReadImage = NULL;
+	idImage *historyWriteImage = NULL;
+	vkImageEntry_t *sceneEntry = NULL;
+	vkImageEntry_t *depthEntry = NULL;
+	vkImageEntry_t *historyReadEntry = NULL;
+	vkImageEntry_t *historyWriteEntry = NULL;
+	if ( !VK_TemporalPresentation_GetColorTarget( command.sceneColorTarget,
+			sceneImage, sceneEntry ) ) {
+		VK_TemporalPresentation_InvalidateAcceptedNoWrite( command,
+			"Vulkan temporal scene color is unavailable" );
+		return false;
+	}
+	const bool depthResident = VK_TemporalPresentation_GetDepthTarget(
+		command.sceneDepthTarget, depthImage, depthEntry );
+	const bool depthReady = depthResident
+		&& VK_TemporalPresentation_DepthStampMatches(
+			command.sceneDepthTarget, depthImage,
+			command.historyGeneration );
+	const bool writeReady = !command.captureFrame
+		&& VK_TemporalPresentation_GetColorTarget( command.historyWriteTarget,
+			historyWriteImage, historyWriteEntry );
+	const bool readReady = !command.captureFrame
+		&& command.historyReadTarget != NULL
+		&& VK_TemporalPresentation_GetColorTarget( command.historyReadTarget,
+			historyReadImage, historyReadEntry );
+
+	bool historyResourceChanged = false;
+	if ( trackExternalHistory && !command.captureFrame && writeReady ) {
+		historyResourceChanged |=
+			VK_TemporalPresentation_TrackHistoryTarget(
+				command.historyWriteTarget );
+	}
+	if ( trackExternalHistory && !command.captureFrame && readReady ) {
+		historyResourceChanged |=
+			VK_TemporalPresentation_TrackHistoryTarget(
+				command.historyReadTarget );
+	}
+	if ( historyResourceChanged ) {
+		// A swapchain/output reset can retire these images before this queued
+		// command executes. Do not advance the shared generation twice for the
+		// same reset; a replacement under the still-current generation does own
+		// a new invalidation.
+		if ( command.historyGeneration
+				== R_TemporalPresentation_HistoryGeneration() ) {
+			R_TemporalPresentation_InvalidateHistory(
+				"Vulkan temporal history resource changed" );
+		}
+		vkExec.temporalHistoryGenerationSeen =
+			R_TemporalPresentation_HistoryGeneration();
+		command.historyValid = false;
+	}
+
+	const int sceneWidth = sceneEntry->width;
+	const int sceneHeight = sceneEntry->height;
+	const int outputWidth = (int)vkCtx.swapchainExtent.width;
+	const int outputHeight = (int)vkCtx.swapchainExtent.height;
+	const bool presentationMatches = command.presentation.frameNumber
+			== backEnd.frameCount
+		&& command.presentation.outputWidth == outputWidth
+		&& command.presentation.outputHeight == outputHeight
+		&& command.presentation.sceneWidth == sceneWidth
+		&& command.presentation.sceneHeight == sceneHeight;
+	const bool writeMatches = writeReady
+		&& historyWriteEntry->width == outputWidth
+		&& historyWriteEntry->height == outputHeight;
+	const bool readMatches = readReady
+		&& historyReadEntry->width == outputWidth
+		&& historyReadEntry->height == outputHeight;
+	const bool generationMatches = command.historyGeneration
+		== R_TemporalPresentation_HistoryGeneration();
+	const bool viewHistoryReady = command.viewDef != NULL
+		&& command.viewDef->temporalPrepared
+		&& command.viewDef->temporalHistoryValid
+		&& command.viewDef->temporalPreviousProjectionValid
+		&& command.viewDef->temporalHistoryGeneration
+			== command.historyGeneration;
+	const bool historyValid = !command.captureFrame && command.historyValid
+		&& presentationMatches && generationMatches
+		&& command.presentation.historyGeneration == command.historyGeneration
+		&& viewHistoryReady
+		&& depthReady && readMatches
+		&& command.historyReadTarget != command.historyWriteTarget
+		&& historyReadEntry->image != sceneEntry->image
+		&& ( !writeReady || historyReadEntry->image != historyWriteEntry->image );
+	const bool writeHistory = !command.captureFrame && presentationMatches
+		&& generationMatches
+		&& command.presentation.historyGeneration == command.historyGeneration
+		&& depthReady && writeMatches
+		&& historyWriteEntry->image != sceneEntry->image;
+
+	if ( !writeHistory ) {
+		// Capture and every validated failure path go directly to the native
+		// output. No game history target is bound, sampled, or mutated. Recenter
+		// the current projection so a shader/resource fallback cannot expose its
+		// per-frame jitter at native output.
+		VK_TemporalPresentation_InvalidateAcceptedNoWrite( command, depthReady
+			? "Vulkan temporal history write unavailable"
+			: "Vulkan temporal depth is not current" );
+		vkTemporalResolveBlock_t spatialBlock;
+		VK_TemporalPresentation_FillResolveBlock( command, sceneWidth,
+			sceneHeight, false, depthReady, true, 0, spatialBlock );
+		return VK_TemporalPresentation_DrawResolve( NULL, sceneImage,
+			sceneEntry, depthReady ? depthImage : NULL,
+			depthReady ? depthEntry : NULL, NULL, NULL, spatialBlock );
+	}
+
+	vkTemporalResolveBlock_t normalBlock;
+	VK_TemporalPresentation_FillResolveBlock( command, sceneWidth,
+		sceneHeight, historyValid, depthReady, false, 0, normalBlock );
+	if ( !VK_TemporalPresentation_DrawResolve(
+			command.historyWriteTarget, sceneImage, sceneEntry,
+			depthReady ? depthImage : NULL, depthReady ? depthEntry : NULL,
+			historyValid ? historyReadImage : NULL,
+			historyValid ? historyReadEntry : NULL, normalBlock )
+			|| !VK_Exec_SetRenderTarget( NULL ) ) {
+		// Fail closed to a spatial present without sampling or further mutating
+		// history. The game will reject this generation on the next frame.
+		VK_TemporalPresentation_InvalidateAcceptedNoWrite( command,
+			"Vulkan temporal resolve execution failed" );
+		vkTemporalResolveBlock_t spatialBlock;
+		VK_TemporalPresentation_FillResolveBlock( command, sceneWidth,
+			sceneHeight, false, depthReady, true, 0, spatialBlock );
+		return VK_TemporalPresentation_DrawResolve( NULL, sceneImage,
+			sceneEntry, depthReady ? depthImage : NULL,
+			depthReady ? depthEntry : NULL, NULL, NULL, spatialBlock );
+	}
+
+	const int debugMode = idMath::ClampInt( 0, 3, command.debugMode );
+	if ( debugMode != 0 ) {
+		vkTemporalResolveBlock_t debugBlock;
+		VK_TemporalPresentation_FillResolveBlock( command, sceneWidth,
+			sceneHeight, historyValid, depthReady, false,
+			debugMode, debugBlock );
+		const bool presented = VK_TemporalPresentation_DrawResolve(
+			NULL, sceneImage,
+			sceneEntry, depthReady ? depthImage : NULL,
+			depthReady ? depthEntry : NULL,
+			historyValid ? historyReadImage : NULL,
+			historyValid ? historyReadEntry : NULL, debugBlock );
+		if ( presented && historyAdvanced != NULL ) {
+			*historyAdvanced = true;
+		}
+		return presented;
+	}
+	const bool presented = VK_TemporalPresentation_DrawResolvedColorToSwap(
+		command, historyWriteImage, historyWriteEntry,
+		outputWidth, outputHeight )
+		|| VK_TemporalPresentation_BlitColorToSwap(
+			historyWriteEntry, outputWidth, outputHeight );
+	if ( presented && historyAdvanced != NULL ) {
+		*historyAdvanced = true;
+	}
+	return presented;
+}
+
+bool VK_GuiExecutor_ResolveTemporalPresentation(
+		const resolveTemporalPresentationCommand_t &sourceCommand ) {
+	if ( !VK_GuiExecutor_BeginFrame() ) {
+		VK_TemporalPresentation_InvalidateAcceptedNoWrite( sourceCommand,
+			"Vulkan temporal frame is unavailable" );
+		return false;
+	}
+	if ( vkExec.temporalScenePendingComposite
+			&& !VK_TemporalPresentation_CompositePendingScene() ) {
+		VK_TemporalPresentation_InvalidateAcceptedNoWrite( sourceCommand,
+			"Vulkan temporal scene composite blocked command execution" );
+		return false;
+	}
+	VK_TemporalPresentation_ObserveHistoryAndCapture();
+	return VK_TemporalPresentation_ResolveTargets(
+		sourceCommand, true, NULL );
 }
 
 int VK_Exec_InteractionUniformCheckpoint( void ) {
@@ -6502,7 +8150,18 @@ void VK_GuiExecutor_DrawResolvedSpecialEffects(
 	backEnd.renderTexture = destinationRenderTexture;
 	backEnd.feedbackRenderTexture = NULL;
 	vkExec.pendingSpecialEffectsNeedsResolve = false;
-	VK_Exec_DrawRVSpecialEffects( vkExec.pendingSpecialEffectsView );
+	const viewDef_t *effectsView = vkExec.pendingSpecialEffectsView;
+	vkSceneScaleState_t sceneScaleState;
+	VK_TemporalPresentation_ClearScaleState( sceneScaleState );
+	const viewDef_t *rootView =
+		VK_TemporalPresentation_RootForView( effectsView );
+	if ( rootView != NULL ) {
+		(void)VK_TemporalPresentation_BeginScale( sceneScaleState,
+			effectsView, rootView,
+			(int)vkExec.activeExtent.width, (int)vkExec.activeExtent.height, false );
+	}
+	VK_Exec_DrawRVSpecialEffects( effectsView );
+	VK_TemporalPresentation_RestoreScale( sceneScaleState, effectsView );
 
 	(void)VK_Exec_SetRenderTarget( savedRenderTexture );
 	backEnd.renderTexture = savedBackEndRenderTexture;
@@ -8943,6 +10602,12 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 	if ( viewDef == NULL ) {
 		return;
 	}
+	if ( vkExec.temporalScenePendingComposite ) {
+		if ( !VK_GuiExecutor_BeginFrame()
+				|| !VK_TemporalPresentation_CompositePendingScene() ) {
+			return;
+		}
+	}
 	const bool sharedCinematicRoot = r_rendererSharedCinematicPost.GetBool()
 		&& R_ClassicCinematicPostDomain_FindRootCinematicView( viewDef ) != NULL;
 	backEnd.currentRenderCopied = false;
@@ -8977,6 +10642,7 @@ void VK_GuiExecutor_Draw2DView( const viewDef_t *viewDef ) {
 		}
 		return;
 	}
+	VK_TemporalPresentation_ObserveHistoryAndCapture();
 
 	backEnd.viewDef = (viewDef_t *)viewDef;
 	if ( r_rendererSharedGui.GetBool() && !sharedCinematicRoot
@@ -9100,8 +10766,6 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 
 	VkCommandBuffer cmd = vkExec.cmd;
 	const int slot = vkExec.frameSlot;
-	const int fbHeight = VK_Exec_ActiveFramebufferHeight();
-	const int fbWidth = VK_Exec_ActiveFramebufferWidth();
 
 	drawSurf_t **drawSurfs = (drawSurf_t **)viewDef->drawSurfs;
 	const int numDrawSurfs = viewDef->numDrawSurfs;
@@ -9115,11 +10779,19 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			VK_CLASSIC_CINEMATIC_POST_REJECT_GPU_SKINNING );
 		return;
 	}
+	vkSceneScaleState_t sceneScaleState;
+	VK_TemporalPresentation_ClearScaleState( sceneScaleState );
+	if ( !VK_TemporalPresentation_BeginView( viewDef, sceneScaleState ) ) {
+		VK_TemporalPresentation_RecenterDirectProjection(
+			sceneScaleState, viewDef );
+	}
+	const int fbHeight = VK_Exec_ActiveFramebufferHeight();
+	const int fbWidth = VK_Exec_ActiveFramebufferWidth();
 	// Seal the complete shared ambient plan before the depth clear or any
 	// other framebuffer-affecting command.  A failed preflight leaves the
 	// established Vulkan world walker completely untouched.
 	const bool sharedWorldAmbientOwned =
-		r_rendererSharedWorldAmbient.GetBool()
+		!sceneScaleState.active && r_rendererSharedWorldAmbient.GetBool()
 		&& VK_ClassicWorldAmbient_Preflight( viewDef );
 	// GL bottom-left viewport -> Vulkan negative-height viewport
 	const int vpX = viewDef->viewport.x1;
@@ -9134,6 +10806,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			CLASSIC_CINEMATIC_POST_SCOPE_AUTHORED_POST,
 			CLASSIC_CINEMATIC_POST_FAILURE_BACKEND_REJECTED,
 			VK_CLASSIC_CINEMATIC_POST_REJECT_VIEWPORT );
+		VK_TemporalPresentation_EndView( viewDef, sceneScaleState, false );
 		return;
 	}
 	vkCmdSetViewport( cmd, 0, 1, &viewport );
@@ -9355,7 +11028,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	// framebuffer write. A rejection leaves the complete classic light/shadow
 	// walker untouched.
 	const bool sharedWorldInteractionOwned =
-		r_rendererSharedWorldInteraction.GetBool()
+		!sceneScaleState.active && r_rendererSharedWorldInteraction.GetBool()
 		&& VK_ClassicInteraction_Preflight( viewDef );
 	if ( sharedWorldInteractionOwned ) {
 		VK_ClassicInteraction_DrawOwnedView( viewDef );
@@ -9369,7 +11042,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	// R_RenderGuiSurf output sorts before the regular world ambient ranges.
 	// Commit its sealed subset at that exact boundary; on rejection the normal
 	// walker below retains every source drawSurf unchanged.
-	if ( r_rendererSharedInWorldGui.GetBool() ) {
+	if ( !sceneScaleState.active && r_rendererSharedInWorldGui.GetBool() ) {
 		(void)VK_ClassicGui_DrawOwnedInWorldView( viewDef );
 	}
 
@@ -9382,7 +11055,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		}
 	}
 	const classicCinematicPostDomainView_t *sharedAuthoredPostView =
-		r_rendererSharedCinematicPost.GetBool()
+		!sceneScaleState.active && r_rendererSharedCinematicPost.GetBool()
 			? R_ClassicCinematicPostDomain_FindAuthoredPostView( viewDef )
 			: NULL;
 	// A prior member may already have rolled back this complete special-view
@@ -9416,7 +11089,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		// bias off; restart the walk baseline like the interaction pass.
 		if ( pass == 1 ) {
 			const bool sharedFogBlendOwned =
-				r_rendererSharedWorldFogBlend.GetBool()
+				!sceneScaleState.active && r_rendererSharedWorldFogBlend.GetBool()
 				&& VK_ClassicFogBlend_Preflight( viewDef );
 			if ( sharedFogBlendOwned ) {
 				VK_ClassicFogBlend_DrawOwnedView( viewDef );
@@ -9627,6 +11300,7 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 		common->Printf( "Vulkan: first world view drew %d surfaces (rings: %d KB verts, %d KB indexes)\n",
 				numDrawSurfs, vkExec.vertexRings[ slot ].cursor / 1024, vkExec.indexRings[ slot ].cursor / 1024 );
 	}
+	VK_TemporalPresentation_EndView( viewDef, sceneScaleState, true );
 }
 
 /*
@@ -9637,7 +11311,10 @@ Clear-only frames (no 2D view was drawn) still need a presentable image.
 ====================
 */
 bool VK_GuiExecutor_EnsureFrameOpen( void ) {
-	return VK_GuiExecutor_BeginFrame();
+	if ( !VK_GuiExecutor_BeginFrame() ) {
+		return false;
+	}
+	return VK_TemporalPresentation_CompositePendingScene();
 }
 
 bool VK_GuiExecutor_FrameIsOpen( void ) {

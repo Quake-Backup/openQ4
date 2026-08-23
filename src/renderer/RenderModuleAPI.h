@@ -54,7 +54,10 @@
 //      GPU timing and session-discontinuity resets (OpenGL and Vulkan)
 // 10 - Shared idFile/idFileSystem ABI adds engine-owned memory staging,
 //      semantic preload records, and source-authoritative generated caches
-#define RENDER_API_VERSION			10
+// 11 - Append-only idRenderSystem slots publish frame-latched scene/native
+//      output state and enqueue the backend-neutral temporal presentation
+//      resolve requested by game modules
+#define RENDER_API_VERSION			11
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;

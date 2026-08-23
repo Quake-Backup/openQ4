@@ -93,6 +93,49 @@ def test_vulkan_capture_resumes_the_acquired_back_buffer() -> None:
     )
 
 
+def test_vulkan_swapchain_preserves_legacy_sdr_code_values() -> None:
+    device_cpp = read("src/renderer/Vulkan/VulkanDevice.cpp")
+    create_swapchain = function_body(
+        device_cpp, "static bool VK_Device_CreateSwapchain( void )"
+    )
+    for snippet in (
+        "VK_FORMAT_B8G8R8A8_UNORM",
+        "VK_FORMAT_R8G8B8A8_UNORM",
+        "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR",
+        "formats[ i ].format == VK_FORMAT_UNDEFINED",
+        "chosen.format = VK_FORMAT_B8G8R8A8_UNORM;",
+        "if ( !compatibleSurfaceFormat )",
+        "Vulkan: surface has no compatible legacy SDR UNORM + SRGB_NONLINEAR format",
+        "format=%d colorSpace=%d",
+    ):
+        require(create_swapchain, snippet, "Vulkan legacy SDR swapchain selection")
+    reject(
+        create_swapchain,
+        "chosen = formats[ 0 ];",
+        "Vulkan arbitrary surface-format fallback",
+    )
+    reject(
+        create_swapchain,
+        "VK_FORMAT_B8G8R8A8_SRGB",
+        "Vulkan double-encoding swapchain format",
+    )
+    reject(
+        create_swapchain,
+        "VK_FORMAT_R8G8B8A8_SRGB",
+        "Vulkan double-encoding swapchain format",
+    )
+    guard_start = create_swapchain.index("if ( !compatibleSurfaceFormat )")
+    create_start = create_swapchain.index("vkCreateSwapchainKHR")
+    require_order(
+        create_swapchain[guard_start:create_start],
+        (
+            "Vulkan: surface has no compatible legacy SDR UNORM + SRGB_NONLINEAR format",
+            "return false;",
+        ),
+        "Vulkan fail-closed surface-format guard",
+    )
+
+
 def test_save_preview_resamples_a_coherent_full_frame() -> None:
     session_cpp = read("src/framework/Session.cpp")
     save_game = function_body(session_cpp, "bool idSessionLocal::SaveGame(")
@@ -242,6 +285,7 @@ def main() -> None:
     test_screenshot_reads_the_unpresented_back_buffer()
     test_capture_defers_only_the_window_present()
     test_vulkan_capture_resumes_the_acquired_back_buffer()
+    test_vulkan_swapchain_preserves_legacy_sdr_code_values()
     test_save_preview_resamples_a_coherent_full_frame()
     test_capture_skips_rgb_pack_padding()
     test_capture_center_crops_and_resamples_safely()

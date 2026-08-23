@@ -884,6 +884,14 @@ void R_SetupProjection( void ) {
 	float	jitterx, jittery;
 	static	idRandom random;
 
+	R_TemporalPresentation_PrepareView( tr.viewDef );
+
+	// Temporal AA owns a deterministic, backend-neutral sub-pixel sequence.
+	// The legacy random path remains for multi-frame screenshot accumulation.
+	if ( tr.viewDef->temporalJitterEnabled ) {
+		jitterx = tr.viewDef->temporalJitterPixels.x;
+		jittery = tr.viewDef->temporalJitterPixels.y;
+	} else
 	// random jittering is usefull when multiple
 	// frames are going to be blended together
 	// for motion blurred anti-aliasing
@@ -949,6 +957,8 @@ void R_SetupProjection( void ) {
 	tr.viewDef->projectionMatrix[7] = 0;
 	tr.viewDef->projectionMatrix[11] = -1;
 	tr.viewDef->projectionMatrix[15] = 0;
+
+	R_TemporalPresentation_FinalizeViewProjection( tr.viewDef );
 }
 
 static void R_GetViewFrustumExtents( float &zNear, float &xmin, float &xmax, float &ymin, float &ymax ) {

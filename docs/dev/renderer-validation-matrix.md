@@ -153,6 +153,47 @@ semantic markers plus `GPU skinning:` diagnostics. The dependency-light
 GL/Vulkan depth and viewport conversion, legacy and exact-skinned layouts, and
 typed stale/expired/overflowing buffer slices on every native-test platform.
 
+Milestone E has two dependency-light native tests. `openq4-temporal-presentation-core`
+covers delayed sample identity, bounded/aligned scale decisions, hysteretic
+recovery, unsupported timing, and capture policy. `openq4-temporal-history-core`
+covers view/generation continuity, motion-domain ownership, bounded reactive
+regions, camera cuts, depth validity, and capture invalidation.
+`renderer_temporal_presentation.py` pins the cross-repository ABI, SP/MP camera
+cut signaling, game-owned and backend-owned history swap rules, exact
+frame/generation depth stamps, GL rigid velocity, Vulkan conservative reactive
+fallback, manual mode-0 TAAU, native UI ownership, and SMAA rollback.
+`vk_temporal_resolve_shader_pin.py` rebuilds and compares the embedded temporal
+SPIR-V when `glslangValidator` is available. Both scripts are syntax-checked and
+run by commit/push CI. `renderer_screenshot_readback.py` additionally requires a
+UNORM + `SRGB_NONLINEAR` Vulkan swapchain and rejects arbitrary sRGB/HDR-only
+fallback so the legacy SDR code values are not encoded twice.
+
+The 2026-08-23 Windows x64 local exit gate used the staged `.install` runtime,
+the retail PK4s, a bordered 1280x720 window, engine-written TGAs, and no injected
+mouse or keyboard input. OpenGL passed all six required SP scenes plus both MP
+listen/connect cases; the MP server roles were rerun with a two-second wall-clock
+sample after the first frame-wait schedule outlived the harness timeout. Vulkan
+passed the complete eight-case matrix in one run. A forced `0.1` ms controller
+target produced valid delayed samples and reduced OpenGL to 50--75% and Vulkan
+to 50%, while every passing role retained zero renderer, GL, Vulkan-validation,
+fatal, and map-state diagnostic counters.
+
+Targeted runs then covered the boundaries outside the main matrix. A same-path
+60% spatial/TAAU comparison and a stable `game/medlabs` comparison retained the
+same scene tonality; the initially suspected gray lift was the authored
+five-second white fade in `game/storage1`, while mode 0 was an intentionally
+cropped legacy path and not a full-output reference. GL and Vulkan save commands
+issued at 50% scale each wrote a valid 320x240 preview, froze capture feedback,
+advanced history generation from 4 to 6, and reported
+`historyReset=synchronous readback`. Disconnecting from 50% gameplay produced a
+native 1280x720 main menu on both backends with `historyReset=session unload`.
+Finally, separate GL and Vulkan gameplay runs with both temporal controls off
+reported 100% scale and the requested SMAA-high path. Engine screenshots enter
+the current-frame capture branch by design, so these TGAs prove presentation,
+native UI, and capture isolation; accumulated-history admission and blending are
+covered by the native/static contracts above rather than claimed from a capture
+that deliberately bypasses history.
+
 Gameplay benchmark acceptance should use wall-clock sampling for FPS claims. The `--sample-msec` option emits `waitMsec` into the generated cfg so the measurement window is a real duration rather than a frame count:
 
 ```powershell

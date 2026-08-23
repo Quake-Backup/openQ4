@@ -47,10 +47,13 @@ static const int MVD_MAX_INSTANCES = 8;
 // record grammar did not change. API 40 only appended the versioned MVD
 // callbacks and retained the API-39 snapshot/reliable readers. The prior
 // engine also explicitly accepted API 42, whose intervening API changes did
-// not alter those legacy readers. Preserve both known-compatible versions
+// not alter those legacy readers. API 44 differs from API 45 only at the
+// engine/game presentation interface and leaves the recorded grammar intact.
+// Preserve each known-compatible version
 // explicitly instead of accepting an unsafe range of historical API numbers.
 static const unsigned int MVD_LEGACY_GAME_API_1_0_1_1 = 39u;
 static const unsigned int MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT = 42u;
+static const unsigned int MVD_LEGACY_GAME_API_PRE_PRESENTATION_STATE = 44u;
 
 enum mvdFeature_t {
 	MVD_FEATURE_RECORD_CRC			= 1u << 0,
@@ -212,6 +215,7 @@ static int MVD_SchemaMinor( unsigned int version ) {
 static bool MVD_IsLegacyGameAPICompatible( unsigned int version ) {
 	return version == MVD_LEGACY_GAME_API_1_0_1_1 ||
 		version == MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT ||
+		version == MVD_LEGACY_GAME_API_PRE_PRESENTATION_STATE ||
 		version == static_cast<unsigned int>( GAME_API_VERSION );
 }
 

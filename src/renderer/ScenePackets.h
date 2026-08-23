@@ -6,6 +6,7 @@
 
 #include "GpuSkinning.h"
 #include "ClassicDeformDomain.h"
+#include "TemporalHistoryCore.h"
 
 /*
 ===============================================================================
@@ -220,6 +221,9 @@ typedef struct instanceRecord_s {
 	int						shaderRegisterCount;
 	int						skinningPaletteOffset;
 	int						visibilityFlags;
+	unsigned long long		temporalViewIdentity;
+	unsigned int			temporalHistoryGeneration;
+	int						temporalHistoryAgeFrames;
 	float					modelMatrix[16];
 	float					previousModelMatrix[16];
 	float					modelViewMatrix[16];
@@ -231,6 +235,7 @@ typedef struct instanceRecord_s {
 	bool					weaponDepthHack;
 	bool					negativeScale;
 	bool					legacyBridge;
+	bool					temporalCaptureFrame;
 } instanceRecord_t;
 
 typedef struct drawPacketSortKey_s {
@@ -294,6 +299,7 @@ typedef struct drawPacket_s {
 	int						vertexOffset;
 	int						instanceOffset;
 	int						instanceCount;
+	temporalMotionOwnership_t temporalMotion;
 	const viewLight_t		*interactionLight;
 	int						interactionLightOrdinal;
 	int						interactionReceiverOrdinal;
@@ -322,6 +328,7 @@ typedef struct drawPacket_s {
 	bool					hasIndexCache;
 	bool					hasAmbientCache;
 	bool					hasClassicDeformRecord;
+	bool					temporalExactRigidEligible;
 } drawPacket_t;
 
 typedef struct passPacket_s {
@@ -347,6 +354,13 @@ typedef struct scenePacket_s {
 	// RC_DRAW_SPECIAL_EFFECTS is command-only. Preserve the admitted controller
 	// mask with its exact view association for special-frame ownership.
 	int					specialEffectsMask;
+	unsigned long long		temporalViewIdentity;
+	unsigned int			temporalHistoryGeneration;
+	int					temporalJitterIndex;
+	temporalHistoryResetReason_t temporalHistoryResetReason;
+	bool					temporalHistoryValid;
+	bool					temporalJitterEnabled;
+	bool					temporalCaptureFrame;
 } scenePacket_t;
 
 // CaptureRenderToImage immediately follows the RC_DRAW_VIEW which produced a
@@ -406,6 +420,10 @@ typedef struct scenePacketFrameStats_s {
 	int						postProcessPackets;
 	int						presentPackets;
 	int						commandOnlyPackets;
+	int						temporalMotionDomainPackets[TEMPORAL_MOTION_DOMAIN_COUNT];
+	int						temporalReactivePackets;
+	int						temporalPreviousTransformPackets;
+	int						temporalSeparateHistoryPackets;
 	int						subviewCaptures;
 	int						sortKeyValidationFailures;
 	bool					frontEndDerived;
@@ -461,6 +479,9 @@ public:
 	const sceneSubviewCapture_t &SubviewCapture( int index ) const;
 	const scenePacketFrameStats_t &Stats( void ) const;
 	bool ValidateSortKeys( void ) const;
+	bool BuildTemporalViewMotionPolicy( const viewDef_t *viewDef,
+		unsigned int backendExactMotionDomainMask,
+		temporalViewMotionPolicy_t &policy ) const;
 
 private:
 	int FindOrAddMaterialRecord( const drawSurf_t *drawSurf );
@@ -503,6 +524,10 @@ void R_ScenePackets_AddPresent( void );
 void R_ScenePackets_AddCommandOnly( void );
 const idScenePacketFrame &R_ScenePackets_FrontEndFrame( void );
 bool R_ScenePackets_FrontEndFrameAvailable( void );
+bool R_ScenePackets_BuildTemporalViewMotionPolicy( const viewDef_t *viewDef,
+	unsigned int backendExactMotionDomainMask,
+	temporalViewMotionPolicy_t &policy );
+bool R_ScenePackets_TemporalRigidMotionEligible( const drawSurf_t *drawSurf );
 void R_ScenePackets_BuildLegacyCommandStream( const emptyCommand_t *cmds, idScenePacketFrame &packetFrame );
 void R_ScenePackets_LogIfVerbose( const idScenePacketFrame &packetFrame );
 bool RendererScenePacket_RunSelfTest( void );

@@ -78,12 +78,12 @@ when a status differs or a narrower qualification is needed.
 | Stock-compatibility and security foundation | **Implemented** | Protocol 2.41 preservation, pure-MP game-module containment, bounded malformed-input handling with immediate session teardown, challenge entropy, rcon2, private-CVar redaction/remote authority, HTTP(S)-only transfer policy, source-provenance auditing, archived MP auto-join test policy, and the four-role retail-PK4 evidence harness are present. Release promotion still requires a clean source pair, final-package capture, and retained human review. |
 | Audited BFG-lineage image, sound, and idlib work | **Implemented** | The existing 37-file BFG inventory is tracked with source lineage and Additional Terms. Further imports must update the same manifest and notices. |
 | PBR material authoring/resource foundation | **Implemented foundation; visible capability missing** | Namespaced parsing, typed color/data image usage, classic ARB2 fallbacks, scene-packet metadata, resource-table diagnostics, and fail-closed exclusion from unsupported modern-visible paths cover Phases 0-3 of the PBR plan. PBR shaders, direct lighting, visible ownership, IBL, and specular probes do not exist yet. |
-| GPU measurement and dynamic resolution | **Partial** | OpenGL and Vulkan publish the same delayed, non-blocking whole-frame microsecond result through renderer ABI v9, including frame/generation identity and availability/drop/reset counters. Map loads, context/device changes, swapchain recreation, capture discontinuities, and shutdown invalidate the timing generation. High-resolution CPU and unique GPU samples feed the versioned benchmark marker, and the gameplay/stock tools enforce and replay exact map/backend/profile CPU/GPU budgets under a fixed bordered-window 1280x720 promotion contract. Current-build storage, repeated-map, and complete required-profile captures have exercised both timing backends; all eight OpenGL and all eight Vulkan cases pass and replay-verify. The initial target rows still need release-candidate/platform qualification before they support universal performance claims. The automatic controller remains Milestone E. |
+| GPU measurement and dynamic resolution | **Implemented measurement; experimental default-off controller** | OpenGL and Vulkan publish the same delayed, non-blocking whole-frame microsecond result through renderer ABI v11, including frame/generation identity and availability/drop/reset counters. The Milestone E controller binds each retired sample to its source scale, rejects stale identity, drops quickly above budget, raises only after an under-budget streak, and keeps bounded aligned scene dimensions. Captures freeze or deliberately force native scale without feeding their timing into control. Current-build required-profile captures exercise both timing backends and forced controller drops; clean committed-package and platform/driver qualification remain open. |
 | General job system | **Implemented foundation** | The engine-owned [portable bounded job service](parallel-job-system.md) provides sleepable workers and waits, bounded list/job/dependency admission, low/normal/high priority aging, dependency ordering, cooperative cancellation, deterministic inline execution, metrics, and dedicated-safe lifecycle ownership. Threaded and synchronous native coverage passes. Its first production consumer is the learned level-load read/PK4-inflate and framing/integrity pipeline; live asset parsing, renderer/audio upload, and renderer-front-end work remain with their established owners. Current-build stock validation also produced identical jobs-on/off storage1 screenshots and game state, completed jobs-on/off OpenGL plus jobs-on Vulkan repeated-map campaigns with clean shutdown markers, and recorded five deterministic synchronous dedicated-server exits. Clean final-package recapture remains a separate release-promotion gate. |
 | Generated caches, streaming, and learned preload manifests | **Implemented and locally validated; release promotion pending** | Successful loads produce exact map/mode/entity-filter/search/PK4/settings manifests. Matching loads use bounded cancellable read/PK4 inflation followed by worker-safe typed framing and integrity validation, publish an immutable generation/source-identity DTO, and let the established main owner parse, adopt, and upload. Transactional static/MD5/MD5R model, classic-proc world, collision, and animation-v3 caches are private to `fs_savepath` and fall back to authoritative VFS sources. This is learned level-load preparation, not general asynchronous asset decode/upload streaming or portal-aware live reprioritization. Local Windows runtime evidence is recorded; clean committed-package performance, broader cancellation/failure campaigns, and release-platform evidence remain open. |
 | Shared renderer contracts and GPU skinning | **Implemented; opt-in and release promotion pending** | Ordered material/pass, clip-space, semantic vertex-layout, typed buffer-slice, exact four-weight, and joint-palette contracts are shared by OpenGL and Vulkan. `r_gpuSkinning` remains default-off; admitted MD5/MD5R surfaces produce the ordinary `idDrawVert` stream through backend compute while CPU positions and complete fallback remain authoritative for gameplay consumers and stencil volumes. Clean-package visual/performance and platform/driver promotion evidence remains open. |
 | Modern classic-frame ownership | **Implemented; default-off; controlled nested GL/Vulkan fixture passed; release promotion pending** | Fixed-function root 2D GUI, eligible ambient-only 3D world, fixed-classic interaction, complete eligible fog/blend phases, provenance-tagged in-world GUI output, special subviews, cinematic/authored-post ranges, render-demo/Raven special frames, and their material-deform dependency have separate sealed GL/Vulkan corridors with complete classic rollback. Eligible authored-post tails inside a sealed special view bind to its exact root and depth; their executed work remains unpublished until the complete special-view transaction succeeds, and either domain can roll back the whole tree. Final R6 runtime acceptance proves one capture-backed color-2D mirror with a nested cinematic plus `_currentRender` tail on Windows GL/Vulkan. This is scoped ownership, not a claim that the aggregate modern-visible renderer owns every stock frame or that root cinematic/post, `_currentDepth`, broad subview, in-world-GUI, special-frame, final-package, platform, or driver breadth is qualified. |
-| Temporal presentation | **Planned** | Complete motion vectors, history ownership, TAA/TAAU, reactive/disocclusion handling, and dynamic-resolution integration are absent. SMAA remains the compatibility path. |
+| Temporal presentation | **Implemented; experimental and default-off; release promotion pending** | OpenGL and Vulkan now share native-resolution history ownership, TAA/TAAU, camera/depth reprojection, conservative motion-domain rejection, camera/capture resets, and native-resolution UI composition. OpenGL has exact eligible rigid velocity; unsupported streams, Vulkan object motion, particles, skinned/deformed work, subviews, in-world GUI, and the view model are explicitly reactive rather than silently zero-motion. Missing resources or exact frame/generation depth ownership fails closed, and SMAA remains the immediate rollback. Local Windows GL/Vulkan gameplay closes the implementation gate; clean package, platform, driver, and retained human-review promotion remain open. |
 | Modern PBR lighting and idTech 6-like follow-ons | **Planned** | GGX/IBL, reflection probes, clustered decals/probes, froxel volumetrics, SSR/SSGI, GPU-driven visible ownership, and optional sparse residency all remain after the shared-contract and temporal gates. |
 
 Milestones A, B, and C have completed their implementation and local integration
@@ -122,8 +122,11 @@ executors. An eligible post tail inside a sealed special view records the exact
 special root/depth, defers ownership publication, and co-publishes or rolls back
 atomically with the complete tree. The shared special-frame transaction seals active-session
 render-demo views and exact Raven special-effect controller masks while keeping
-their complete established backend executors. The next renderer implementation
-target is **Milestone E temporal presentation**.
+their complete established backend executors. **Milestone E temporal
+presentation is now implemented and locally validated as a default-off
+capability.** Native histories, explicit motion/reactive ownership, TAAU,
+capture/cut isolation, native UI, and delayed GPU-time resolution control share
+one GL/Vulkan contract with SMAA rollback.
 The final controlled R6 nested acceptance ran six sequential cases per backend
 with the fixed input-disabled capture script in actual windowed mode `-1` at
 1280x720, using 1280x720 engine TGAs. All 12 cases passed; all four exact
@@ -379,7 +382,7 @@ or PBR work multiplies the parity surface.
 | B. Loading and cache modernization | **Implemented but default-off; performance requalification required** | Exact learned manifests, bounded cancellable read/PK4-inflate and framing/integrity stages, immutable source DTOs, and transactional model/world/collision plus animation-v3 caches are integrated with source fallback. A 2026-08-20 regression audit found that the prior default-on experiment could materially lengthen stock map loads, so `com_levelLoadModernization 0` now restores the classic baseline and gates every framework/animation cache read and write. Promotion requires a clean committed-package campaign that beats or matches classic cold and warm loads without rewrite churn, plus release-platform qualification. |
 | C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
 | D. Modern classic-frame ownership | **Implemented; default-off; controlled nested GL/Vulkan fixture passed; release promotion pending** | The scoped GL/Vulkan ownership corridors are complete for eligible fixed-classic GUI, world ambient, interaction, fog/blend, in-world GUI, special-subview, cinematic/authored-post, special-frame, and material-deform work. Authored-post/video/current-render/depth tails nested in a sealed special-view tree share its root transaction: no member publishes until every child draw, dynamic tail, and capture/direct edge completes, and any failure restores the whole tree to classic execution. Final R6 evidence proves one nested cinematic-plus-`_currentRender` color-2D mirror transaction; root cinematic/post, `_currentDepth`, broad subview forms, in-world GUI, special frame, authored-stock breadth, clean-package, retained-review, and target-platform/driver qualification remain open as applicable. |
-| E. Temporal presentation | **Planned** | Milestones A, C, and D now supply the timing, shared-contract, and scoped classic-frame ownership prerequisites. Complete motion-vector/history ownership is the next implementation boundary. |
+| E. Temporal presentation | **Implemented; default-off; local Windows gate passed; release promotion pending** | Native game-owned and backend-owned histories, exact frame/depth/generation admission, camera reprojection, OpenGL rigid velocity, conservative reactive ownership for every unsupported motion stream, capture/cut isolation, native UI, TAAU, delayed dynamic resolution, and SMAA rollback are integrated across GL/Vulkan. Dependency-light/static coverage and windowed stock SP/MP gameplay close the local implementation gate; clean-package, target-platform/driver, and retained-review qualification remain open. |
 | F. Modern materials and advanced lighting | **Foundation only** | PBR authoring/resource Phases 0-3 exist, but visible PBR/IBL and advanced-lighting ownership must wait for Milestones C-E. |
 
 ### Milestone A: foundation and measurement
@@ -616,18 +619,27 @@ The scoped Milestone D implementation is complete. The final controlled R6
 cinematic-plus-`_currentRender` mirror transaction closes its narrow Windows
 GL/Vulkan runtime gate with exact engine-TGA parity and named rollback; it does
 not close the root, `_currentDepth`, broad subview, in-world-GUI, special-frame,
-final-package, human-review, or platform/driver gates. Milestone E temporal
-presentation is the next implementation target; those remaining qualifications
-stay on the separate Milestone D release-promotion track.
+final-package, human-review, or platform/driver gates. Those remaining
+qualifications stay on the separate Milestone D release-promotion track;
+Milestone E no longer depends on expanding Milestone D's promotion scope.
 
 ### Milestone E: temporal presentation
 
-1. Promote the GPU-time controller to experimental dynamic resolution.
-2. Add complete motion-vector ownership.
-3. Implement TAA/TAAU with SMAA rollback and native-resolution UI.
+1. **Implemented:** promote delayed backend GPU timing into a bounded,
+   generation-aware, default-off dynamic-resolution controller.
+2. **Implemented:** assign every visible motion domain to exact history,
+   camera/depth reprojection, or explicit conservative reactive rejection.
+3. **Implemented:** provide native-history TAA/TAAU with camera/capture resets,
+   native-resolution UI, current-frame spatial fallback, and SMAA rollback.
 
-Exit gate: stable motion, camera cuts, particles, weapon view, portals/subviews,
-menus, screenshots, save previews, and GL/Vulkan parity.
+**Local implementation exit gate passed on Windows:** dependency-light and
+cross-repository contracts cover history, controller, motion-domain, depth,
+capture, and ABI invariants. Windowed engine-TGA gameplay covers SP and MP,
+stable motion, particles, the weapon view, portals/subviews, screenshots, and
+both GL/Vulkan paths; targeted camera-cut, menu/native-UI, fixed-scale,
+save-preview, and SMAA rollback cases complete the gate. Clean staged-package,
+additional platform/driver, and retained human-review evidence remain release
+promotion work rather than implementation blockers.
 
 ### Milestone F: modern materials and advanced lighting
 

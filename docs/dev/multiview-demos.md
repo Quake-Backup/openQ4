@@ -111,8 +111,8 @@ The 32-bit game compatibility slot deliberately stays in the same header
 position:
 
 - format 1.0 and 1.1 interpret it as the raw `GAME_API_VERSION`; playback uses
-  an explicit allowlist of stream-compatible writers (currently API 39 and the
-  current API), rather than treating every older ABI as safe;
+  an explicit allowlist of stream-compatible writers (currently APIs 39, 42,
+  44, and the current API), rather than treating every older ABI as safe;
 - format 1.2 and newer interpret it as a packed MVD game-schema
   `major:minor` (`major << 16 | minor`) and ask the game module whether that
   schema is compatible.
@@ -121,9 +121,10 @@ This avoids rewriting the established major-1 header while decoupling future
 recording compatibility from unrelated game API changes.
 
 API 39 is explicitly retained because API 40 only appended the versioned MVD
-callbacks: the version-1 snapshot and reliable record grammar remains
-available in the current game module. Future legacy API exceptions must be
-reviewed and added individually.
+callbacks; APIs 42 and 44 are retained because their later lifecycle and
+presentation-interface revisions did not change the version-1 snapshot or
+reliable-record grammar. Future legacy API exceptions must be reviewed and
+added individually.
 
 ### Records
 

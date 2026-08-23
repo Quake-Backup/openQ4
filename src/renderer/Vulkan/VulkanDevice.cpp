@@ -446,10 +446,16 @@ static bool VK_Device_CreateSwapchain( void ) {
 		return false;
 	}
 
-	// surface format: prefer BGRA8/UNORM sRGB-less for parity with the GL
-	// default framebuffer, fall back to the first reported format
+	// The legacy renderer already produces display-coded SDR values.  Use a
+	// non-sRGB UNORM attachment with the standard nonlinear presentation colour
+	// space so attachment writes do not encode those values a second time.
 	uint32_t formatCount = 0;
-	vkGetPhysicalDeviceSurfaceFormatsKHR( vkCtx.physicalDevice, vkCtx.surface, &formatCount, NULL );
+	VkResult formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(
+		vkCtx.physicalDevice, vkCtx.surface, &formatCount, NULL );
+	if ( formatResult != VK_SUCCESS ) {
+		common->Warning( "Vulkan: surface-format count query failed (%d)", (int)formatResult );
+		return false;
+	}
 	if ( formatCount == 0 ) {
 		common->Warning( "Vulkan: surface reports no formats" );
 		return false;
@@ -458,14 +464,38 @@ static bool VK_Device_CreateSwapchain( void ) {
 		formatCount = 64;
 	}
 	VkSurfaceFormatKHR formats[ 64 ];
-	vkGetPhysicalDeviceSurfaceFormatsKHR( vkCtx.physicalDevice, vkCtx.surface, &formatCount, formats );
-	VkSurfaceFormatKHR chosen = formats[ 0 ];
+	formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(
+		vkCtx.physicalDevice, vkCtx.surface, &formatCount, formats );
+	if ( formatResult != VK_SUCCESS && formatResult != VK_INCOMPLETE ) {
+		common->Warning( "Vulkan: surface-format query failed (%d)", (int)formatResult );
+		return false;
+	}
+	VkSurfaceFormatKHR chosen;
+	memset( &chosen, 0, sizeof( chosen ) );
+	chosen.format = VK_FORMAT_UNDEFINED;
+	bool compatibleSurfaceFormat = false;
 	for ( uint32_t i = 0; i < formatCount; i++ ) {
 		if ( ( formats[ i ].format == VK_FORMAT_B8G8R8A8_UNORM || formats[ i ].format == VK_FORMAT_R8G8B8A8_UNORM )
 				&& formats[ i ].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) {
 			chosen = formats[ i ];
+			compatibleSurfaceFormat = true;
 			break;
 		}
+	}
+	if ( !compatibleSurfaceFormat ) {
+		for ( uint32_t i = 0; i < formatCount; i++ ) {
+			if ( formats[ i ].format == VK_FORMAT_UNDEFINED
+					&& formats[ i ].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) {
+				chosen.format = VK_FORMAT_B8G8R8A8_UNORM;
+				chosen.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+				compatibleSurfaceFormat = true;
+				break;
+			}
+		}
+	}
+	if ( !compatibleSurfaceFormat ) {
+		common->Warning( "Vulkan: surface has no compatible legacy SDR UNORM + SRGB_NONLINEAR format" );
+		return false;
 	}
 
 	// present mode from r_swapInterval: 0 = IMMEDIATE (or MAILBOX when
@@ -606,8 +636,9 @@ static bool VK_Device_CreateSwapchain( void ) {
 		return false;
 	}
 
-	common->Printf( "Vulkan: created swapchain %ux%u format=%d images=%u presentMode=%d\n",
-			extent.width, extent.height, (int)chosen.format, count, (int)presentMode );
+	common->Printf( "Vulkan: created swapchain %ux%u format=%d colorSpace=%d images=%u presentMode=%d\n",
+			extent.width, extent.height, (int)chosen.format, (int)chosen.colorSpace,
+			count, (int)presentMode );
 	if ( !vkCtx.swapchainTransferSrc ) {
 		common->Warning( "Vulkan: swapchain does not support transfer-source captures; screenshots and backbuffer feedback are unavailable" );
 	}

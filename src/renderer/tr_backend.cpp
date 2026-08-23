@@ -640,6 +640,11 @@ static void RB_ResolveMSAA(const void* data) {
 	const resolveRenderTargetCommand_t* cmd;
 
 	cmd = (resolveRenderTargetCommand_t*)data;
+	if ( cmd->resolveDepth ) {
+		// A failed or incomplete attempt must not leave a successful stamp from
+		// an earlier resolve of the same target in this backend frame.
+		RB_InvalidateTemporalDepthStamp( cmd->destRenderTexture );
+	}
 
 	if ( cmd->msaaRenderTexture == NULL || cmd->destRenderTexture == NULL ||
 		!cmd->msaaRenderTexture->EnsureDeviceHandle() ||
@@ -682,7 +687,20 @@ static void RB_ResolveMSAA(const void* data) {
 		glDrawBuffer( GL_NONE );
 		glBlitFramebuffer( 0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST );
 
-		GL_CheckErrors();
+		const GLenum depthResolveError = glGetError();
+		if ( depthResolveError == GL_NO_ERROR ) {
+			RB_StampTemporalDepthResolved( cmd->destRenderTexture,
+				cmd->frameNumber, cmd->historyGeneration );
+		} else {
+			static int lastDepthResolveWarningGeneration = -1;
+			if ( lastDepthResolveWarningGeneration != tr.glContextGeneration ) {
+				common->Warning(
+					"RB_ResolveMSAA: depth resolve failed with GL error 0x%04x; temporal presentation will use spatial reconstruction",
+					static_cast<unsigned int>( depthResolveError ) );
+				lastDepthResolveWarningGeneration = tr.glContextGeneration;
+			}
+			GL_CheckErrors();
+		}
 	}
 
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
@@ -1084,6 +1102,19 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			R_RendererMetrics_EndGpuTimer();
 			c_renderTargetOps++;
 			break;
+		case RC_RESOLVE_TEMPORAL_PRESENTATION: {
+			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_RENDER_TARGET );
+			resolveTemporalPresentationCommand_t executionCommand =
+				*reinterpret_cast<const resolveTemporalPresentationCommand_t *>( cmds );
+			if ( tr.takingScreenshot ) {
+				executionCommand.captureFrame = true;
+				executionCommand.historyValid = false;
+			}
+			(void)RB_ResolveTemporalPresentation( executionCommand );
+			R_RendererMetrics_EndGpuTimer();
+			c_renderTargetOps++;
+			break;
+		}
 		case RC_CLEAR_RENDERTARGET:
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_RENDER_TARGET );
 			RB_ClearRenderTarget(cmds);

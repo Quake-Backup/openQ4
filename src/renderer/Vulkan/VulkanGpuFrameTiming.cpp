@@ -100,7 +100,9 @@ void VK_GpuFrameTiming_BeginFrame( VkCommandBuffer commandBuffer, int frameSlot,
 		int frameNumber ) {
 	const bool supported = VK_GpuFrameTiming_Available();
 	R_RendererMetrics_SetGpuFrameTimingBackend( RENDER_GPU_TIMING_BACKEND_VULKAN, supported );
-	const bool enabled = supported && r_rendererGpuTimers.GetBool();
+	const bool enabled = supported
+		&& ( r_rendererGpuTimers.GetBool()
+			|| r_rendererDynamicResolution.GetBool() );
 	if ( vkGpuTimingEnableStateKnown && enabled != vkGpuTimingEnabledLastFrame ) {
 		R_RendererMetrics_ResetGpuFrameTiming( enabled
 			? "Vulkan whole-frame timing enabled" : "Vulkan whole-frame timing disabled" );

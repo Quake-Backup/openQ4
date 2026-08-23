@@ -2586,7 +2586,12 @@ void R_RendererMetrics_BeginGpuBackendFrame( void ) {
 		}
 	}
 
-	const bool fullFrameEnabled = fullFrameSupported && r_rendererGpuTimers.GetBool();
+	// Dynamic resolution is itself a consumer of the backend-neutral whole-frame
+	// timing stream.  Requiring the separate diagnostics CVar as well would make
+	// `r_rendererDynamicResolution 1` silently inert on a clean configuration.
+	const bool fullFrameEnabled = fullFrameSupported
+		&& ( r_rendererGpuTimers.GetBool()
+			|| r_rendererDynamicResolution.GetBool() );
 	if ( rg_gpuFullFrameEnableStateKnown && fullFrameEnabled != rg_gpuFullFrameEnabledLastFrame ) {
 		R_RendererMetrics_ResetGpuFrameTiming( fullFrameEnabled
 			? "OpenGL whole-frame timing enabled" : "OpenGL whole-frame timing disabled" );

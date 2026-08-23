@@ -85,11 +85,16 @@ def main() -> int:
         "unsigned long long\tdroppedSamples;",
         "GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const",
         "ResetGpuFrameTiming( const char *reason )",
+        "renderPresentationState_s",
+        "int\t\t\t\tsceneWidth;",
+        "int\t\t\t\toutputWidth;",
+        "GetPresentationState( renderPresentationState_t &state ) const",
+        "ResolveTemporalPresentation(",
     ):
-        require(public_header, token, "public whole-frame timing ABI")
+        require(public_header, token, "public renderer module ABI")
 
     module_api = read(RENDERER / "RenderModuleAPI.h")
-    require(module_api, "#define RENDER_API_VERSION\t\t\t10", "renderer module ABI v10")
+    require(module_api, "#define RENDER_API_VERSION\t\t\t11", "renderer module ABI v11")
 
     core = read(RENDERER / "GpuFrameTimingCore.h")
     require(core, "elapsedMicroseconds == 0", "zero-duration rejection")
@@ -97,6 +102,57 @@ def main() -> int:
     require(core, "std::int64_t( 1 ) << 32", "signed frame-counter wrap")
 
     render_system = read(RENDERER / "RenderSystem.cpp")
+    for token in (
+        "idRenderSystemLocal::GetPresentationState",
+        "R_TemporalPresentation_GetFrameState()",
+        "R_TemporalPresentation_HistoryGeneration()",
+        "idRenderSystemLocal::ResolveTemporalPresentation",
+        "RC_RESOLVE_TEMPORAL_PRESENTATION",
+    ):
+        require(render_system, token, "frame-latched presentation ABI")
+    temporal_resolve = function_body(
+        render_system, "bool idRenderSystemLocal::ResolveTemporalPresentation("
+    )
+    for token in (
+        "presentation.captureFrozen",
+        "presentation.captureForcedNative",
+        "cmd->sceneColorTarget = sceneColorTarget;",
+        "cmd->sceneDepthTarget = sceneDepthTarget;",
+        "cmd->historyReadTarget = historyReadTarget;",
+        "cmd->historyWriteTarget = historyWriteTarget;",
+        "cmd->viewDef = primaryView;",
+        "cmd->presentation = presentation;",
+    ):
+        require(temporal_resolve, token, "immutable temporal resolve command")
+
+    tr_local = read(RENDERER / "tr_local.h")
+    for token in (
+        "RC_RESOLVE_TEMPORAL_PRESENTATION",
+        "} resolveTemporalPresentationCommand_t;",
+        "renderPresentationState_t presentation;",
+        "unsigned int\t\thistoryGeneration;",
+    ):
+        require(tr_local, token, "temporal resolve render command")
+
+    backend = read(RENDERER / "tr_backend.cpp")
+    require(backend, "case RC_RESOLVE_TEMPORAL_PRESENTATION:", "OpenGL temporal dispatch")
+    require(backend, "executionCommand.captureFrame = true;", "late capture temporal bypass")
+
+    game_render_path = GAME_ROOT / "src" / "game" / "Game_render.cpp"
+    if not game_render_path.is_file():
+        raise AssertionError(f"missing companion game render integration: {game_render_path}")
+    game_render = read(game_render_path)
+    for token in (
+        "_temporalHistoryAlbedo%d",
+        "presentation.outputWidth",
+        "presentation.outputHeight",
+        "!presentation.temporalAARequested",
+        "blurEnabled || presentation.temporalAARequested",
+        "openQ4_ResolveTemporalPresentation(",
+        "gameRender.postProcessRT[1]",
+        "gameRender.forwardRenderPassResolvedRT",
+    ):
+        require(game_render, token, "game temporal presentation integration")
     begin_frame = function_body(render_system, "void idRenderSystemLocal::BeginFrame(")
     capture_depth = function_body(
         render_system, "void idRenderSystemLocal::CaptureDepthRenderToImage("

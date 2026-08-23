@@ -185,6 +185,7 @@ jobs:
             tools/tests/renderer_cel_shading.py \
             tools/tests/renderer_gpu_frame_timing.py \
             tools/tests/renderer_gpu_skinning.py \
+            tools/tests/renderer_temporal_presentation.py \
             tools/tests/renderer_mp_flat_items.py \
             tools/tests/renderer_pbr_materials.py \
             tools/tests/renderer_classic_gui_domain.py \
@@ -220,6 +221,7 @@ jobs:
             tools/tests/ui_embedded_icons.py \
             tools/tests/validation_hardening.py \
             tools/tests/vk_shader_header_pin.py \
+            tools/tests/vk_temporal_resolve_shader_pin.py \
             tools/tests/vscode_fast_build.py
           bash -n tools/build/meson_setup.sh
           bash -n tools/macos/collect_macos_support_info.sh
@@ -333,6 +335,7 @@ jobs:
           python tools/tests/renderer_cel_shading.py
           python tools/tests/renderer_gpu_frame_timing.py
           python tools/tests/renderer_gpu_skinning.py
+          python tools/tests/renderer_temporal_presentation.py
           python tools/tests/renderer_mp_flat_items.py
           python tools/tests/renderer_pbr_materials.py
           python tools/tests/renderer_classic_gui_domain.py
@@ -366,6 +369,7 @@ jobs:
           python tools/tests/ui_embedded_icons.py
           python tools/tests/validation_hardening.py
           python tools/tests/vk_shader_header_pin.py
+          python tools/tests/vk_temporal_resolve_shader_pin.py
           python tools/tests/vscode_fast_build.py
 
       - name: Dry-run push profile

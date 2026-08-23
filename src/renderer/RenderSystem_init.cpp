@@ -476,7 +476,7 @@ idCVar r_rendererBenchmarkPreset( "r_rendererBenchmarkPreset", "baseline", CVAR_
 idCVar r_rendererPerfThresholdP95( "r_rendererPerfThresholdP95", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P95 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
 idCVar r_rendererPerfThresholdP99( "r_rendererPerfThresholdP99", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P99 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
 idCVar r_rendererAdaptiveClusterGrid( "r_rendererAdaptiveClusterGrid", "0", CVAR_RENDERER | CVAR_BOOL, "use benchmark preset cluster-grid dimensions for the modern clustered-light experiment" );
-idCVar r_rendererDynamicResolution( "r_rendererDynamicResolution", "0", CVAR_RENDERER | CVAR_BOOL, "allow benchmark presets to recommend dynamic screen-percentage experiments; disabled by default" );
+idCVar r_rendererDynamicResolution( "r_rendererDynamicResolution", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "automatically scale the 3D scene from delayed GPU timing; disabled by default" );
 idCVar r_rendererUploadMegs( "r_rendererUploadMegs", "16", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream size in megabytes per frame buffer", 1, 128, idCmdSystem::ArgCompletion_Integer<1,128> );
 idCVar r_rendererUploadFrameBuffers( "r_rendererUploadFrameBuffers", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream frame-buffer rotation depth", 3, 8, idCmdSystem::ArgCompletion_Integer<3,8> );
 idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow persistent-mapped dynamic renderer uploads when supported" );
@@ -2426,6 +2426,7 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 
 	int	oldWidth = glConfig.vidWidth;
 	int oldHeight = glConfig.vidHeight;
+	const bool oldUseScissor = r_useScissor.GetBool();
 
 	tr.tiledViewport[0] = width;
 	tr.tiledViewport[1] = height;
@@ -2491,7 +2492,7 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 		}
 	}
 
-	r_useScissor.SetBool( true );
+	r_useScissor.SetBool( oldUseScissor );
 
 	tr.viewportOffset[0] = 0;
 	tr.viewportOffset[1] = 0;
@@ -4778,6 +4779,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererGpuSkinningSelfTest", R_RendererGpuSkinningSelfTest_f, CMD_FL_RENDERER, "run renderer GPU skinning contract self tests" );
 	cmdSystem->AddCommand( "rendererContractsSelfTest", R_RendererContractsSelfTest_f, CMD_FL_RENDERER, "run renderer layout and buffer contract self tests" );
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
+	cmdSystem->AddCommand( "rendererTemporalPresentationStatus", R_TemporalPresentation_PrintStatus_f, CMD_FL_RENDERER, "report dynamic-resolution and temporal-history state" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphSelfTest", R_RendererRenderGraphSelfTest_f, CMD_FL_RENDERER, "run renderer resource-graph self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceSelfTest", R_RendererRenderGraphResourceSelfTest_f, CMD_FL_RENDERER, "run renderer graph resource owner self tests" );

@@ -123,6 +123,8 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 		int cubeFace, bool copyDepth );
 bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
 		idRenderTexture *destinationRenderTexture, bool resolveDepth );
+bool VK_GuiExecutor_ResolveTemporalPresentation(
+		const resolveTemporalPresentationCommand_t &command );
 
 static void VK_DrawSharedDirectSubview( const classicSubviewDomainView_t &view ) {
 	// Direct SS_SUBVIEW mirrors compose into the parent target and therefore
@@ -595,6 +597,20 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 					VK_GuiExecutor_DrawResolvedSpecialEffects(
 							cmd->msaaRenderTexture, cmd->destRenderTexture );
 				}
+				break;
+			}
+			case RC_RESOLVE_TEMPORAL_PRESENTATION: {
+				resolveTemporalPresentationCommand_t executionCommand =
+					*reinterpret_cast<const resolveTemporalPresentationCommand_t *>( cmds );
+				// Save previews can enter their capture scope after the front end
+				// queued this command. Never let that late flush read or advance
+				// gameplay history.
+				if ( tr.takingScreenshot ) {
+					executionCommand.captureFrame = true;
+					executionCommand.historyValid = false;
+				}
+				(void)VK_GuiExecutor_ResolveTemporalPresentation(
+					executionCommand );
 				break;
 			}
 			case RC_SET_POSTPROCESS_SOURCE_SIZE:

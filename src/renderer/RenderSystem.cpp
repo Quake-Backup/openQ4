@@ -33,6 +33,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
 #include "ScenePackets.h"
+#include "TemporalPresentation.h"
 #include "smaa/AreaTex.h"
 #include "smaa/SearchTex.h"
 
@@ -1409,7 +1410,9 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	// is handled by the main-scene render target path so the back buffer stays at
 	// the display size.
 	const int screenFraction = idMath::ClampInt( 10, 200, r_screenFraction.GetInteger() );
-	if ( screenFraction < 100 && r_resolutionScaleMode.GetInteger() == 0 ) {
+	if ( !R_TemporalPresentation_DynamicResolutionRequested()
+			&& !R_TemporalPresentation_TemporalAARequested()
+			&& screenFraction < 100 && r_resolutionScaleMode.GetInteger() == 0 ) {
 		int	w = SCREEN_WIDTH * screenFraction / 100.0f;
 		int h = SCREEN_HEIGHT * screenFraction / 100.0f;
 		CropRenderSize( w, h );
@@ -1419,6 +1422,7 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	// this is the ONLY place this is modified
 	frameCount++;
 	R_RendererMetrics_BeginFrame( frameCount );
+	R_TemporalPresentation_BeginFrame( windowWidth, windowHeight, takingScreenshot );
 	R_RendererUpload_BeginFrame( frameCount );
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
 		R_ScenePackets_BeginFrame();
@@ -1868,6 +1872,7 @@ void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlp
 	guiModel->Clear();
 	const bool wasTakingScreenshot = tr.takingScreenshot;
 	tr.takingScreenshot = true;
+	R_TemporalPresentation_MarkCurrentFrameCapture( "synchronous readback" );
 	R_IssueRenderCommands();
 
 	glReadBuffer( GL_BACK );
@@ -2033,6 +2038,8 @@ void idRenderSystemLocal::ResolveMSAA(idRenderTexture* msaaRenderTexture, idRend
 	cmd->msaaRenderTexture = msaaRenderTexture;
 	cmd->destRenderTexture = destRenderTexture;
 	cmd->resolveDepth = resolveDepth;
+	cmd->frameNumber = tr.frameCount;
+	cmd->historyGeneration = R_TemporalPresentation_HistoryGeneration();
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
 		R_ScenePackets_AddRenderTargetOp();
 	}
@@ -2274,6 +2281,137 @@ void idRenderSystemLocal::GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) co
 
 void idRenderSystemLocal::ResetGpuFrameTiming( const char *reason ) {
 	R_RendererMetrics_ResetGpuFrameTiming( reason );
+	// Session/map/backend discontinuities invalidate both delayed timing samples
+	// and native-resolution image history. The controller maintains independent
+	// generations so rejecting one never aliases an unrelated sample stream.
+	R_TemporalPresentation_InvalidateHistory( reason );
+}
+
+/*
+====================
+idRenderSystemLocal::GetPresentationState
+
+Publishes the scene extent selected once at BeginFrame. Game render targets
+consume this POD while the final composite and UI continue to use the native
+output extent. Calls made before the first BeginFrame receive the active video
+mode as a safe native-resolution fallback.
+====================
+*/
+void idRenderSystemLocal::GetPresentationState( renderPresentationState_t &state ) const {
+	const temporalPresentationFrameState_t &frame =
+		R_TemporalPresentation_GetFrameState();
+	const int fallbackWidth = Max( 0, glConfig.vidWidth );
+	const int fallbackHeight = Max( 0, glConfig.vidHeight );
+
+	memset( &state, 0, sizeof( state ) );
+	state.frameNumber = frame.frameNumber;
+	state.outputWidth = frame.nativeWidth > 0 ? frame.nativeWidth : fallbackWidth;
+	state.outputHeight = frame.nativeHeight > 0 ? frame.nativeHeight : fallbackHeight;
+	state.sceneWidth = frame.sceneWidth > 0 ? frame.sceneWidth : state.outputWidth;
+	state.sceneHeight = frame.sceneHeight > 0 ? frame.sceneHeight : state.outputHeight;
+	state.effectiveScalePercent = frame.effectiveScalePercent > 0
+		? frame.effectiveScalePercent : 100;
+	state.historyGeneration = R_TemporalPresentation_HistoryGeneration();
+	state.dynamicResolutionRequested = frame.nativeWidth > 0
+		? frame.dynamicResolutionRequested
+		: R_TemporalPresentation_DynamicResolutionRequested();
+	state.dynamicResolutionActive = frame.dynamicResolutionActive;
+	state.temporalAARequested = frame.nativeWidth > 0
+		? frame.temporalAARequested
+		: R_TemporalPresentation_TemporalAARequested();
+	state.captureFrozen = frame.captureFrozen;
+	state.captureForcedNative = frame.captureForcedNative;
+}
+
+/*
+====================
+idRenderSystemLocal::ResolveTemporalPresentation
+
+Queues a backend-neutral temporal resolve after the game has completed its
+scene-sized post chain. The immutable command snapshot is the only temporal
+state consumed by an asynchronous backend. Runtime execution still observes
+tr.takingScreenshot so a save-preview readback that starts after enqueue can
+reject both history reads and history writes.
+====================
+*/
+bool idRenderSystemLocal::ResolveTemporalPresentation(
+		idRenderTexture *sceneColorTarget,
+		idRenderTexture *sceneDepthTarget,
+		idRenderTexture *historyReadTarget,
+		idRenderTexture *historyWriteTarget ) {
+	if ( sceneColorTarget == NULL || sceneDepthTarget == NULL
+			|| tr.primaryView == NULL || tr.takingScreenshot ) {
+		return false;
+	}
+
+	renderPresentationState_t presentation;
+	GetPresentationState( presentation );
+	const temporalPresentationFrameState_t &temporalFrame =
+		R_TemporalPresentation_GetFrameState();
+	const unsigned int historyGeneration =
+		R_TemporalPresentation_HistoryGeneration();
+	const viewDef_t *primaryView = tr.primaryView;
+	if ( !presentation.temporalAARequested
+			|| presentation.captureFrozen
+			|| presentation.captureForcedNative
+			|| presentation.frameNumber != tr.frameCount
+			|| presentation.outputWidth <= 0 || presentation.outputHeight <= 0
+			|| presentation.sceneWidth <= 0 || presentation.sceneHeight <= 0
+			|| !primaryView->temporalPrepared
+			|| primaryView->temporalHistoryGeneration != historyGeneration
+			|| primaryView->temporalCaptureFrame ) {
+		return false;
+	}
+
+	if ( sceneColorTarget->GetWidth() != presentation.sceneWidth
+			|| sceneColorTarget->GetHeight() != presentation.sceneHeight
+			|| sceneDepthTarget->GetWidth() != presentation.sceneWidth
+			|| sceneDepthTarget->GetHeight() != presentation.sceneHeight
+			|| ( historyWriteTarget != NULL
+				&& ( historyWriteTarget->GetWidth() != presentation.outputWidth
+					|| historyWriteTarget->GetHeight() != presentation.outputHeight
+					|| historyWriteTarget == sceneColorTarget
+					|| historyWriteTarget == sceneDepthTarget ) ) ) {
+		return false;
+	}
+	if ( historyReadTarget != NULL
+			&& ( historyReadTarget == historyWriteTarget
+				|| historyReadTarget == sceneColorTarget
+				|| historyReadTarget == sceneDepthTarget
+				|| historyReadTarget->GetWidth() != presentation.outputWidth
+				|| historyReadTarget->GetHeight() != presentation.outputHeight ) ) {
+		return false;
+	}
+
+	// Full-screen post submissions are batched in guiModel. Seal them before
+	// appending the resolve so it remains the last scene operation before UI.
+	if ( guiModel != NULL ) {
+		guiModel->EmitFullScreen();
+		guiModel->Clear();
+	}
+
+	resolveTemporalPresentationCommand_t *cmd =
+		reinterpret_cast<resolveTemporalPresentationCommand_t *>(
+			R_GetCommandBuffer( sizeof( *cmd ) ) );
+	cmd->commandId = RC_RESOLVE_TEMPORAL_PRESENTATION;
+	cmd->sceneColorTarget = sceneColorTarget;
+	cmd->sceneDepthTarget = sceneDepthTarget;
+	cmd->historyReadTarget = historyReadTarget;
+	cmd->historyWriteTarget = historyWriteTarget;
+	cmd->viewDef = primaryView;
+	cmd->presentation = presentation;
+	cmd->historyGeneration = historyGeneration;
+	cmd->historyValid = historyReadTarget != NULL
+		&& historyWriteTarget != NULL
+		&& primaryView->temporalHistoryValid;
+	cmd->captureFrame = false;
+	cmd->feedback = temporalFrame.temporalFeedback;
+	cmd->reactiveScale = temporalFrame.temporalReactiveScale;
+	cmd->debugMode = temporalFrame.temporalDebugMode;
+	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
+		R_ScenePackets_AddRenderTargetOp();
+	}
+	return true;
 }
 
 /*

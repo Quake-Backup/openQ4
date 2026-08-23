@@ -13,6 +13,84 @@ static bool rg_frontEndScenePacketFrameOpen = false;
 // queues its copy command.
 static const viewDef_t *rg_frontEndLastDrawView = NULL;
 
+typedef struct scenePacketTemporalInstanceHistory_s {
+	unsigned long long viewIdentity;
+	unsigned int historyGeneration;
+	int frameNumber;
+	int entityIndex;
+	float modelMatrix[16];
+} scenePacketTemporalInstanceHistory_t;
+
+static idList<scenePacketTemporalInstanceHistory_t>
+	rg_scenePacketTemporalInstanceHistory;
+static idList<scenePacketTemporalInstanceHistory_t>
+	rg_scenePacketTemporalNextInstanceHistory;
+
+static bool R_ScenePackets_FindTemporalInstanceHistory(
+		unsigned long long viewIdentity, int entityIndex,
+		float previousModelMatrix[16], int &ageFrames ) {
+	ageFrames = 0;
+	if ( viewIdentity == 0 || entityIndex < 0 ) {
+		return false;
+	}
+	const unsigned int historyGeneration =
+		R_TemporalPresentation_HistoryGeneration();
+	for ( int i = 0; i < rg_scenePacketTemporalInstanceHistory.Num(); ++i ) {
+		const scenePacketTemporalInstanceHistory_t &entry =
+			rg_scenePacketTemporalInstanceHistory[i];
+		if ( entry.viewIdentity != viewIdentity
+				|| entry.entityIndex != entityIndex
+				|| entry.historyGeneration != historyGeneration ) {
+			continue;
+		}
+		const unsigned int age = static_cast<unsigned int>( tr.frameCount )
+			- static_cast<unsigned int>( entry.frameNumber );
+		if ( age == 0u || age > 2u ) {
+			return false;
+		}
+		memcpy( previousModelMatrix, entry.modelMatrix,
+			sizeof( entry.modelMatrix ) );
+		ageFrames = static_cast<int>( age );
+		return true;
+	}
+	return false;
+}
+
+static void R_ScenePackets_StoreTemporalInstanceHistory(
+		const instanceRecord_t &record ) {
+	if ( record.entityIndex < 0 || !record.hasModelMatrix
+			|| record.temporalViewIdentity == 0
+			|| record.temporalCaptureFrame ) {
+		return;
+	}
+	for ( int i = 0; i < rg_scenePacketTemporalNextInstanceHistory.Num(); ++i ) {
+		scenePacketTemporalInstanceHistory_t &existing =
+			rg_scenePacketTemporalNextInstanceHistory[i];
+		if ( existing.viewIdentity == record.temporalViewIdentity
+				&& existing.entityIndex == record.entityIndex ) {
+			return;
+		}
+	}
+	scenePacketTemporalInstanceHistory_t &entry =
+		rg_scenePacketTemporalNextInstanceHistory.Alloc();
+	entry.viewIdentity = record.temporalViewIdentity;
+	entry.historyGeneration = record.temporalHistoryGeneration;
+	entry.frameNumber = tr.frameCount;
+	entry.entityIndex = record.entityIndex;
+	memcpy( entry.modelMatrix, record.modelMatrix, sizeof( entry.modelMatrix ) );
+}
+
+static void R_ScenePackets_CommitTemporalInstanceHistory(
+		const idScenePacketFrame &frame ) {
+	rg_scenePacketTemporalNextInstanceHistory.Clear();
+	for ( int i = 0; i < frame.NumInstanceRecords(); ++i ) {
+		R_ScenePackets_StoreTemporalInstanceHistory( frame.InstanceRecord( i ) );
+	}
+	rg_scenePacketTemporalInstanceHistory.Swap(
+		rg_scenePacketTemporalNextInstanceHistory );
+	rg_scenePacketTemporalNextInstanceHistory.Clear();
+}
+
 // A negative view id alone is not a render demo: portal-sky cameras use the
 // same convention. The session's active demo reader and its exact render world
 // make playback provenance explicit before command buffers are submitted.
@@ -86,11 +164,14 @@ bool R_ScenePackets_FrontEndCaptureRequired( void ) {
 	// RC_COPY_RENDER edge on the front end. Backend reconstruction cannot infer
 	// it when an image capture occurs after tr.viewDef returns to the parent.
 	return r_rendererSharedSubview.GetBool()
+		|| R_TemporalPresentation_TemporalAARequested()
 		|| r_rendererMetrics.GetInteger() >= 2;
 }
 
 bool R_ScenePackets_SidePipelineRequired( void ) {
-	return R_ScenePackets_ModernPipelineRequested() || r_rendererMetrics.GetInteger() >= 2;
+	return R_ScenePackets_ModernPipelineRequested()
+		|| R_TemporalPresentation_TemporalAARequested()
+		|| r_rendererMetrics.GetInteger() >= 2;
 }
 
 // Side tables accelerating the FindOrAdd* record dedup scans.  They are keyed
@@ -380,6 +461,34 @@ static bool R_ScenePackets_MaterialUsesRemoteRender( const idMaterial *material 
 		}
 	}
 	return false;
+}
+
+bool R_ScenePackets_TemporalRigidMotionEligible(
+		const drawSurf_t *drawSurf ) {
+	if ( drawSurf == NULL || drawSurf->geo == NULL
+			|| drawSurf->material == NULL || drawSurf->space == NULL
+			|| drawSurf->space->entityDef == NULL ) {
+		return false;
+	}
+
+	const srfTriangles_t *geometry = drawSurf->geo;
+	const idMaterial *material = drawSurf->material;
+	const idRenderEntityLocal *entity = drawSurf->space->entityDef;
+	if ( !material->IsDrawn() || !material->HasAmbient()
+			|| material->IsPortalSky() || material->SuppressInSubview()
+			|| material->Coverage() != MC_OPAQUE
+			|| material->GetSort() >= SS_POST_PROCESS ) {
+		return false;
+	}
+	if ( geometry->numIndexes <= 0 || R_TriHasPrimBatchMesh( geometry )
+			|| geometry->deformedSurface || drawSurf->space->weaponDepthHack
+			|| drawSurf->space->modelDepthHack != 0.0f ) {
+		return false;
+	}
+	return entity->index >= 0 && entity->parms.callback == NULL
+		&& entity->parms.hModel != NULL
+		&& entity->parms.hModel->IsDynamicModel() == DM_STATIC
+		&& entity->dynamicModel == NULL;
 }
 
 static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t *viewDef, const drawSurf_t *drawSurf, renderPassCategory_t passCategory ) {
@@ -832,16 +941,32 @@ int idScenePacketFrame::FindOrAddInstanceRecord( const drawSurf_t *drawSurf, sce
 	record.shaderRegisterCount = ( shaderRegisters != NULL && drawSurf->material != NULL ) ? drawSurf->material->GetNumRegisters() : 0;
 	record.skinningPaletteOffset = 0;
 	record.visibilityFlags = R_ScenePackets_InstanceVisibilityFlags( drawSurf, packetCategory, activeScene >= 0 && scenes[activeScene].legacyBridge );
+	const viewDef_t *instanceView = activeScene >= 0
+		? scenes[activeScene].viewDef : NULL;
+	record.temporalViewIdentity = instanceView != NULL
+		? ( instanceView->temporalViewIdentity != 0
+			? instanceView->temporalViewIdentity
+			: R_TemporalPresentation_ViewIdentity( instanceView ) ) : 0;
+	record.temporalHistoryGeneration =
+		R_TemporalPresentation_HistoryGeneration();
+	record.temporalHistoryAgeFrames = 0;
 	memcpy( record.modelMatrix, space->modelMatrix, sizeof( record.modelMatrix ) );
-	memcpy( record.previousModelMatrix, space->modelMatrix, sizeof( record.previousModelMatrix ) );
+	record.hasPreviousModelMatrix = R_ScenePackets_FindTemporalInstanceHistory(
+		record.temporalViewIdentity, record.entityIndex,
+		record.previousModelMatrix, record.temporalHistoryAgeFrames );
+	if ( !record.hasPreviousModelMatrix ) {
+		memcpy( record.previousModelMatrix, space->modelMatrix,
+			sizeof( record.previousModelMatrix ) );
+	}
 	memcpy( record.modelViewMatrix, space->modelViewMatrix, sizeof( record.modelViewMatrix ) );
 	record.modelDepthHack = space->modelDepthHack;
 	record.hasModelMatrix = true;
-	record.hasPreviousModelMatrix = true;
 	record.hasShaderRegisters = shaderRegisters != NULL;
 	record.weaponDepthHack = space->weaponDepthHack;
 	record.negativeScale = R_ScenePackets_MatrixHasNegativeScale( space->modelMatrix );
 	record.legacyBridge = activeScene >= 0 && scenes[activeScene].legacyBridge;
+	record.temporalCaptureFrame = instanceView != NULL
+		&& instanceView->temporalCaptureFrame;
 	if ( shaderRegisters != NULL ) {
 		record.entityColor[0] = shaderRegisters[EXP_REG_PARM0];
 		record.entityColor[1] = shaderRegisters[EXP_REG_PARM1];
@@ -879,6 +1004,18 @@ bool idScenePacketFrame::AddScene( const viewDef_t *viewDef, bool legacyBridge )
 	scene.firstPassPacket = stats.passPackets;
 	scene.firstDrawPacket = stats.drawPackets;
 	scene.legacyBridge = legacyBridge;
+	if ( viewDef != NULL ) {
+		scene.temporalViewIdentity = viewDef->temporalViewIdentity != 0
+			? viewDef->temporalViewIdentity
+			: R_TemporalPresentation_ViewIdentity( viewDef );
+		scene.temporalHistoryGeneration = viewDef->temporalHistoryGeneration;
+		scene.temporalJitterIndex = viewDef->temporalJitterIndex;
+		scene.temporalHistoryResetReason =
+			viewDef->temporalHistoryResetReason;
+		scene.temporalHistoryValid = viewDef->temporalHistoryValid;
+		scene.temporalJitterEnabled = viewDef->temporalJitterEnabled;
+		scene.temporalCaptureFrame = viewDef->temporalCaptureFrame;
+	}
 	activeScene = stats.scenePackets - 1;
 	activePass = -1;
 	activePassLastSortKey = 0;
@@ -963,6 +1100,41 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf,
 	packet.vertexOffset = 0;
 	packet.instanceOffset = 0;
 	packet.instanceCount = drawSurf ? 1 : 0;
+	temporalMotionInput_t temporalInput = {};
+	temporalInput.hasEntity = packet.instanceRecord != NULL
+		&& packet.instanceRecord->entityIndex >= 0;
+	temporalInput.hasPreviousTransform = packet.instanceRecord != NULL
+		&& packet.instanceRecord->hasPreviousModelMatrix;
+	temporalInput.skinned = packet.geometryRecord != NULL
+		&& packet.geometryRecord->skinningMode != GEOMETRY_SKINNING_NONE;
+	// Previous joint palettes and previous material-deformed vertices are not
+	// silently approximated as rigid motion. Until a backend consumes those
+	// explicit streams, the shared policy marks the surfaces reactive.
+	temporalInput.hasPreviousSkinningPalette = false;
+	temporalInput.particle = drawSurf != NULL
+		&& ( drawSurf->dsFlags & DSF_BSE_EFFECT ) != 0;
+	temporalInput.deform = packet.geometryRecord != NULL
+		&& packet.geometryRecord->deformMode != GEOMETRY_DEFORM_NONE;
+	temporalInput.hasPreviousDeformedVertices = false;
+	temporalInput.subview = drawSurf != NULL
+		&& ( R_ScenePackets_MaterialUsesRemoteRender( drawSurf->material )
+			|| R_ScenePackets_MaterialClassForDrawSurf( drawSurf )
+				== RENDER_MATERIAL_SUBVIEW );
+	temporalInput.inWorldGui = drawSurf != NULL
+		&& ( drawSurf->dsFlags & DSF_IN_WORLD_GUI ) != 0;
+	temporalInput.viewModel = drawSurf != NULL && drawSurf->space != NULL
+		&& drawSurf->space->weaponDepthHack;
+	temporalInput.translucent = drawSurf != NULL && drawSurf->material != NULL
+		&& drawSurf->material->Coverage() != MC_OPAQUE;
+	packet.temporalMotion = TemporalHistoryCore_ClassifyMotion( temporalInput );
+	packet.temporalExactRigidEligible =
+		packet.temporalMotion.domain == TEMPORAL_MOTION_DOMAIN_RIGID
+		&& R_ScenePackets_TemporalRigidMotionEligible( drawSurf );
+	if ( activeScene >= 0 && scenes[activeScene].viewDef != NULL
+			&& scenes[activeScene].viewDef->isSubview ) {
+		packet.temporalMotion.flags |=
+			TEMPORAL_MOTION_OWNERSHIP_SEPARATE_HISTORY;
+	}
 	packet.classicDeformRecord = packet.geometryRecord != NULL
 		? &packet.geometryRecord->classicDeform : NULL;
 	packet.hasClassicDeformRecord = packet.classicDeformRecord != NULL
@@ -992,6 +1164,22 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf,
 	passes[activePass].drawPacketCount++;
 	scenes[activeScene].drawPacketCount++;
 	CountCategory( packetCategory );
+	if ( packet.temporalMotion.domain >= TEMPORAL_MOTION_DOMAIN_STATIC_WORLD
+			&& packet.temporalMotion.domain < TEMPORAL_MOTION_DOMAIN_COUNT ) {
+		stats.temporalMotionDomainPackets[packet.temporalMotion.domain]++;
+	}
+	if ( ( packet.temporalMotion.flags
+			& TEMPORAL_MOTION_OWNERSHIP_REACTIVE ) != 0 ) {
+		stats.temporalReactivePackets++;
+	}
+	if ( ( packet.temporalMotion.flags
+			& TEMPORAL_MOTION_OWNERSHIP_HAS_PREVIOUS_TRANSFORM ) != 0 ) {
+		stats.temporalPreviousTransformPackets++;
+	}
+	if ( ( packet.temporalMotion.flags
+			& TEMPORAL_MOTION_OWNERSHIP_SEPARATE_HISTORY ) != 0 ) {
+		stats.temporalSeparateHistoryPackets++;
+	}
 	if ( drawSurf != NULL && drawSurf->material != NULL ) {
 		stats.drawPacketsWithMaterial++;
 	}
@@ -1288,6 +1476,91 @@ bool idScenePacketFrame::ValidateSortKeys( void ) const {
 	return stats.sortKeyValidationFailures == 0;
 }
 
+static bool R_ScenePackets_TemporalVisiblePass(
+		renderPassCategory_t category ) {
+	switch ( category ) {
+	case RENDER_PASS_ARB2_INTERACTION:
+	case RENDER_PASS_LIGHT_GRID:
+	case RENDER_PASS_AMBIENT:
+	case RENDER_PASS_DEFERRED_RESOLVE:
+	case RENDER_PASS_FORWARD_PLUS:
+	case RENDER_PASS_FOG_BLEND:
+	case RENDER_PASS_GUI:
+		return true;
+	default:
+		// Depth, shadow, and fullscreen post packets are not independently
+		// visible surfaces in the color image consumed by temporal resolve.
+		return false;
+	}
+}
+
+bool idScenePacketFrame::BuildTemporalViewMotionPolicy(
+		const viewDef_t *viewDef, unsigned int backendExactMotionDomainMask,
+		temporalViewMotionPolicy_t &policy ) const {
+	policy = TemporalHistoryCore_BeginViewMotionPolicy();
+	if ( viewDef == NULL ) {
+		return false;
+	}
+
+	const int viewWidth = viewDef->viewport.x2 - viewDef->viewport.x1 + 1;
+	const int viewHeight = viewDef->viewport.y2 - viewDef->viewport.y1 + 1;
+	if ( viewWidth <= 0 || viewHeight <= 0 ) {
+		return false;
+	}
+	const float inverseWidth = 1.0f / static_cast<float>( viewWidth );
+	const float inverseHeight = 1.0f / static_cast<float>( viewHeight );
+	bool foundScene = false;
+	for ( int sceneIndex = 0; sceneIndex < stats.scenePackets; ++sceneIndex ) {
+		const scenePacket_t &scene = scenes[sceneIndex];
+		if ( scene.viewDef != viewDef ) {
+			continue;
+		}
+		foundScene = true;
+		for ( int drawIndex = 0; drawIndex < scene.drawPacketCount; ++drawIndex ) {
+			const int packetIndex = scene.firstDrawPacket + drawIndex;
+			if ( packetIndex < 0 || packetIndex >= stats.drawPackets ) {
+				continue;
+			}
+			const drawPacket_t &packet = drawPackets[packetIndex];
+			if ( !R_ScenePackets_TemporalVisiblePass( packet.passCategory )
+					|| !packet.hasGeometry ) {
+				continue;
+			}
+			unsigned int packetExactMotionDomainMask =
+				backendExactMotionDomainMask;
+			if ( packet.temporalMotion.domain == TEMPORAL_MOTION_DOMAIN_RIGID
+					&& !packet.temporalExactRigidEligible ) {
+				packetExactMotionDomainMask &=
+					~TemporalHistoryCore_MotionDomainBit(
+						TEMPORAL_MOTION_DOMAIN_RIGID );
+			}
+			TemporalHistoryCore_AddMotionOwnership( policy,
+				packet.temporalMotion, packetExactMotionDomainMask,
+				static_cast<float>( packet.scissorX1 ) * inverseWidth,
+				static_cast<float>( packet.scissorY1 ) * inverseHeight,
+				static_cast<float>( packet.scissorX2 + 1 ) * inverseWidth,
+				static_cast<float>( packet.scissorY2 + 1 ) * inverseHeight );
+		}
+	}
+
+	if ( foundScene && stats.overflow ) {
+		// Packet clipping makes a partial policy unsafe. Reject history over the
+		// full view for every object-motion domain rather than leaving clipped
+		// particles, characters, or view models with unowned stale history.
+		unsigned int overflowDomains = 0u;
+		for ( int domain = TEMPORAL_MOTION_DOMAIN_RIGID;
+				domain < TEMPORAL_MOTION_DOMAIN_COUNT; ++domain ) {
+			overflowDomains |= TemporalHistoryCore_MotionDomainBit(
+				static_cast<temporalMotionDomain_t>( domain ) );
+		}
+		policy.presentDomainMask |= overflowDomains;
+		policy.reactiveDomainMask |= overflowDomains;
+		TemporalHistoryCore_AddReactiveRegion( policy, overflowDomains,
+			0.0f, 0.0f, 1.0f, 1.0f );
+	}
+	return foundScene;
+}
+
 const char *RenderPassCategory_Name( renderPassCategory_t category ) {
 	switch ( category ) {
 	case RENDER_PASS_DEPTH:
@@ -1446,6 +1719,8 @@ void R_ScenePackets_EndFrame( void ) {
 		// Clear() from the constructor or a prior EndFrame, nothing to do.
 		return;
 	}
+	R_ScenePackets_CommitTemporalInstanceHistory(
+		rg_frontEndScenePacketFrame );
 	rg_frontEndScenePacketFrame.Clear();
 	rg_frontEndScenePacketFrameOpen = false;
 	rg_frontEndLastDrawView = NULL;
@@ -2195,6 +2470,15 @@ bool R_ScenePackets_FrontEndFrameAvailable( void ) {
 	return rg_frontEndScenePacketFrameOpen
 		&& stats.frontEndDerived
 		&& ( stats.scenePackets > 0 || stats.passPackets > 0 || stats.drawPackets > 0 || stats.commandPackets > 0 );
+}
+
+bool R_ScenePackets_BuildTemporalViewMotionPolicy( const viewDef_t *viewDef,
+		unsigned int backendExactMotionDomainMask,
+		temporalViewMotionPolicy_t &policy ) {
+	policy = TemporalHistoryCore_BeginViewMotionPolicy();
+	return R_ScenePackets_FrontEndFrameAvailable()
+		&& rg_frontEndScenePacketFrame.BuildTemporalViewMotionPolicy( viewDef,
+			backendExactMotionDomainMask, policy );
 }
 
 void R_ScenePackets_BuildLegacyCommandStream( const emptyCommand_t *cmds, idScenePacketFrame &packetFrame ) {
