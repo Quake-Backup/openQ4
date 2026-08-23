@@ -71,7 +71,9 @@ jobs:
             tools/build/write_pak_manifest.py \
             src/sys/linux/pk4/id_utils.py \
             tools/analysis/clang_tidy_input_safety.py \
+            tools/assets/pack_pbr_orm.py \
             tools/validation/audit_source_provenance.py \
+            tools/validation/generate_pbr_fixture.py \
             tools/validation/openq4_validate.py \
             tools/validation/stock_asset_baseline.py \
             tools/tests/renderer_validation_matrix.py \
@@ -175,12 +177,15 @@ jobs:
             tools/tests/p0_governance_evidence.py \
             tools/tests/packaging_safety.py \
             tools/tests/parallel_job_system.py \
+            tools/tests/pbr_orm_packer.py \
+            tools/tests/pbr_procedural_fixture.py \
             tools/tests/preprocessor_macro_safety.py \
             tools/tests/posix_memory_management.py \
             tools/tests/posix_monotonic_time.py \
             tools/tests/posix_network_resolution.py \
             tools/tests/posix_thread_shutdown.py \
             tools/tests/release_tooling_safety.py \
+            tools/tests/renderer_advanced_lighting.py \
             tools/tests/renderer_budget_contract.py \
             tools/tests/renderer_cel_shading.py \
             tools/tests/renderer_gpu_frame_timing.py \
@@ -325,12 +330,15 @@ jobs:
           python tools/tests/p0_governance_evidence.py
           python tools/tests/packaging_safety.py
           python tools/tests/parallel_job_system.py
+          python tools/tests/pbr_orm_packer.py
+          python tools/tests/pbr_procedural_fixture.py
           python tools/tests/preprocessor_macro_safety.py
           python tools/tests/release_tooling_safety.py
           python tools/tests/posix_memory_management.py
           python tools/tests/posix_monotonic_time.py
           python tools/tests/posix_network_resolution.py
           python tools/tests/posix_thread_shutdown.py
+          python tools/tests/renderer_advanced_lighting.py
           python tools/tests/renderer_budget_contract.py
           python tools/tests/renderer_cel_shading.py
           python tools/tests/renderer_gpu_frame_timing.py
@@ -535,7 +543,7 @@ jobs:
           env LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11 xvfb-run -a bash tools/validation/validate_pr.sh \
             --fail-on-dirty \
             --runtime \
-            --runtime-cases renderer-default-safety-selftest,renderer-shadow-planner-selftest,renderer-shadow-projected-diagnostic,sdl3-x11-display-diagnostics \
+            --runtime-cases renderer-foundation-selftests,renderer-pbr-visible-selftest,renderer-cluster-grid-selftest,renderer-default-safety-selftest,renderer-shadow-planner-selftest,renderer-shadow-projected-diagnostic,sdl3-x11-display-diagnostics \
             --runtime-tiers auto \
             --runtime-basepath "" \
             --runtime-skip-official-pak-validation

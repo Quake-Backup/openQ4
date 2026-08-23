@@ -35,6 +35,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ClassicSpecialFrameDomain.h"
 #include "ClassicWorldAmbientDomain.h"
 #include "ClassicFogBlendDomain.h"
+#include "ModernClusteredLighting.h"
 #include "ModernGLExecutor.h"
 #include "ModernGLShaderLibrary.h"
 #include "RendererMetrics.h"
@@ -10823,6 +10824,12 @@ int RB_STD_DrawShaderPasses( drawSurf_t **drawSurfs, int numDrawSurfs, rbShaderP
 		if ( filter != NULL && !filter( drawSurfs[i] ) ) {
 			continue;
 		}
+		if ( R_ModernClusteredLighting_DecalOwnsSurface(
+				backEnd.viewDef, drawSurfs[i] )
+				&& R_ModernGLExecutor_SubmitForwardPlusDecalSurface(
+					backEnd.viewDef, drawSurfs[i] ) ) {
+			continue;
+		}
 		if ( drawSurfs[i]->material->SuppressInSubview() ) {
 			continue;
 		}
@@ -15212,8 +15219,6 @@ void	RB_STD_DrawView( void ) {
 	} else {
 		RB_STD_LightGridIndirect();
 	}
-
-	R_ModernGLExecutor_SubmitForwardPlusDecalOverlay( backEnd.viewDef );
 
 	RB_RecordARB2InteractionBypassFramePhase( RENDERER_STARTUP_PHASE_ARB2_INTERACTION_BYPASS_AMBIENT_RESCUE );
 

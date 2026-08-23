@@ -979,7 +979,9 @@ def validate_runtime_failure_gates() -> None:
         screenshot_path.parent.mkdir(parents=True)
         stdout_path.write_text("", encoding="utf-8")
         stderr_path.write_text("", encoding="utf-8")
-        screenshot_path.write_bytes(b"source-contract")
+        write_rgb_tga(
+            screenshot_path, gameplay.BUDGET_WIDTH, gameplay.BUDGET_HEIGHT, 0
+        )
 
         spec = gameplay.RunSpec(
             case_id="vulkan-shadow-contract",
@@ -999,7 +1001,9 @@ def validate_runtime_failure_gates() -> None:
 
         def evaluate(log_body: str) -> dict[str, object]:
             log_path.write_text(
-                f"Selected renderer tier: Vulkan\n{log_body}\n",
+                "Selected renderer tier: Vulkan\n"
+                f"MODE: -1, {gameplay.BUDGET_WIDTH} x {gameplay.BUDGET_HEIGHT} "
+                f"windowed hz:N/A\n{log_body}\n",
                 encoding="utf-8",
             )
             return gameplay.evaluate_role_result(

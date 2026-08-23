@@ -959,6 +959,7 @@ viewLight_t *R_SetLightDefViewLight( idRenderLightLocal *light ) {
 	vLight->pointLight = light->parms.pointLight;
 	vLight->parallel = light->parms.parallel;
 	vLight->lightRadius = light->parms.lightRadius;
+	vLight->lightAxis = light->parms.axis;
 	vLight->lightProject[0] = light->lightProject[0];
 	vLight->lightProject[1] = light->lightProject[1];
 	vLight->lightProject[2] = light->lightProject[2];
@@ -1628,6 +1629,22 @@ void R_AddLightSurfaces( void ) {
 		if ( !lightShader ) {
 			common->Error( "R_AddLightSurfaces: NULL lightShader" );
 		}
+		const bool authoredSpecularProbe = lightShader->HasSpecularProbe();
+		const bool specularProbeRequested = authoredSpecularProbe
+			&& r_rendererModernQuality.GetBool()
+			&& r_rendererReflectionProbes.GetBool()
+			&& vLight->pointLight
+			&& !vLight->parallel;
+		// A namespaced probe light is metadata, never an additive classic light.
+		// When its leaf/master gate or supported point-volume contract is absent,
+		// remove it exactly as an inactive light.  When admitted, retain the
+		// visibility/scissor record for clustered probe collection below but do
+		// not create interactions or shadows for it.
+		if ( authoredSpecularProbe && !specularProbeRequested ) {
+			*ptr = vLight->next;
+			light->viewCount = -1;
+			continue;
+		}
 
 		// see if we are suppressing the light in this view
 		if ( R_ShouldSuppressViewLightForLevelshot( tr.viewDef->renderView.viewID, light->parms.allowLightInViewID ) ) {
@@ -1659,7 +1676,7 @@ void R_AddLightSurfaces( void ) {
 
 		// if this is a purely additive light and no stage in the light shader evaluates
 		// to a positive light value, we can completely skip the light
-		if ( !lightShader->IsFogLight() && !lightShader->IsBlendLight() ) {
+		if ( !specularProbeRequested && !lightShader->IsFogLight() && !lightShader->IsBlendLight() ) {
 			int lightStageNum;
 			const int lightStageCount = lightShader->GetNumStages();
 			for ( lightStageNum = 0 ; lightStageNum < lightStageCount ; lightStageNum++ ) {
@@ -1729,6 +1746,10 @@ void R_AddLightSurfaces( void ) {
 
 		// this one stays on the list
 		ptr = &vLight->next;
+		if ( specularProbeRequested ) {
+			tr.pc.c_viewLights++;
+			continue;
+		}
 
 		// if we are doing a soft-shadow novelty test, regenerate the light with
 		// a random offset every time

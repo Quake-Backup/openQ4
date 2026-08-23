@@ -31,6 +31,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 
+#include <cstdlib>
+
 /*
 
 Any errors during parsing just set MF_DEFAULTED and return, rather than throwing
@@ -67,6 +69,16 @@ typedef struct mtrParsingData_s {
 	bool			registersAreConstant;
 	bool			forceOverlays;
 } mtrParsingData_t;
+
+static void R_ResetSpecularProbeMaterialInfo( specularProbeMaterialInfo_t &info ) {
+	memset( &info, 0, sizeof( info ) );
+	info.cubeConvention = SPECULAR_PROBE_CUBE_NONE;
+	info.tint[0] = 1.0f;
+	info.tint[1] = 1.0f;
+	info.tint[2] = 1.0f;
+	info.intensity = 1.0f;
+	info.blendFraction = 0.25f;
+}
 
 // `glslPrograms` is an authored material-capability condition, while
 // glConfig.GLSLProgramAvailable also advertises the OpenGL renderer's broad
@@ -322,6 +334,7 @@ void idMaterial::CommonInit() {
 	pbrInfo.emissiveColorRegisters[1] = -1;
 	pbrInfo.emissiveColorRegisters[2] = -1;
 	pbrInfo.autoLegacyFallback = true;
+	R_ResetSpecularProbeMaterialInfo( specularProbeInfo );
 
 	decalInfo.stayTime = 10000;
 	decalInfo.maxAngle = 0.1f;
@@ -449,6 +462,7 @@ void idMaterial::FreeData() {
 	pbrInfo.emissiveColorRegisters[1] = -1;
 	pbrInfo.emissiveColorRegisters[2] = -1;
 	pbrInfo.autoLegacyFallback = true;
+	R_ResetSpecularProbeMaterialInfo( specularProbeInfo );
 }
 
 /*
@@ -2877,6 +2891,191 @@ bool idMaterial::ParsePBRBlock( idLexer &src, const textureRepeat_t trpDefault )
 	return true;
 }
 
+static bool R_ReadSpecularProbeNumbers( idLexer &src, const char *field,
+		const char *materialName, float *values, int valueCount ) {
+	for ( int index = 0; index < valueCount; ++index ) {
+		idToken value;
+		if ( !src.ReadTokenOnLine( &value ) || !value.IsNumeric() ) {
+			src.Warning( "openQ4SpecularProbe %s expects %d numeric value%s in material '%s'",
+				field, valueCount, valueCount == 1 ? "" : "s", materialName );
+			return false;
+		}
+		values[index] = value.GetFloatValue();
+		if ( !std::isfinite( values[index] ) ) {
+			src.Warning( "openQ4SpecularProbe %s is not finite in material '%s'", field, materialName );
+			return false;
+		}
+	}
+	idToken extra;
+	if ( src.ReadTokenOnLine( &extra ) ) {
+		src.Warning( "openQ4SpecularProbe %s has an unexpected value '%s' in material '%s'",
+			field, extra.c_str(), materialName );
+		return false;
+	}
+	return true;
+}
+
+/*
+================
+idMaterial::ParseSpecularProbeBlock
+
+Parses renderer-only metadata for an authored reflection/specular probe.  The
+contract is deliberately static and bounded: expressions, render targets,
+image programs, and stage state are rejected.  A complete temporary record is
+committed only after the closing brace and every required field validate, so a
+malformed block can never expose partially authored probe state.
+================
+*/
+bool idMaterial::ParseSpecularProbeBlock( idLexer &src ) {
+	if ( specularProbeInfo.enabled ) {
+		src.Warning( "multiple openQ4SpecularProbe blocks in material '%s'", GetName() );
+		R_ResetSpecularProbeMaterialInfo( specularProbeInfo );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( !src.ExpectTokenString( "{" ) ) {
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	specularProbeMaterialInfo_t parsed;
+	R_ResetSpecularProbeMaterialInfo( parsed );
+	bool cubeSeen = false;
+	bool tintSeen = false;
+	bool intensitySeen = false;
+	bool blendSeen = false;
+	bool prioritySeen = false;
+	idToken token;
+	while ( src.ReadToken( &token ) ) {
+		if ( token == "}" ) {
+			break;
+		}
+
+		if ( !token.Icmp( "cubeMap" ) || !token.Icmp( "cameraCubeMap" ) ) {
+			if ( cubeSeen ) {
+				src.Warning( "openQ4SpecularProbe in material '%s' has multiple cube maps", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			idToken imageName;
+			idToken extra;
+			if ( !src.ReadTokenOnLine( &imageName ) || imageName.type == TT_NUMBER
+					|| imageName.type == TT_PUNCTUATION || src.ReadTokenOnLine( &extra ) ) {
+				src.Warning( "openQ4SpecularProbe %s expects one static image name in material '%s'",
+					token.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			if ( R_IsUnsupportedPBRImageProgramToken( imageName )
+					|| R_IsMutableRenderImageName( imageName.c_str() ) ) {
+				src.Warning( "mutable or dynamic probe image '%s' is not supported in material '%s'",
+					imageName.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+
+			const bool cameraConvention = !token.Icmp( "cameraCubeMap" );
+			parsed.cubeConvention = cameraConvention
+				? SPECULAR_PROBE_CUBE_CAMERA : SPECULAR_PROBE_CUBE_NATIVE;
+			parsed.cubeImage = R_LoadMaterialImage( imageName.c_str(), TF_LINEAR,
+				TR_CLAMP, TD_HIGH_QUALITY,
+				cameraConvention ? CF_CAMERA : CF_NATIVE, false, IMAGEFLAG_NOMIPS );
+			if ( parsed.cubeImage == NULL || R_IsMutableRenderImage( parsed.cubeImage )
+					|| ( parsed.cubeImage->IsLoaded()
+						&& ( parsed.cubeImage->IsDefaulted()
+							|| parsed.cubeImage->GetOpts().textureType != TT_CUBIC ) ) ) {
+				src.Warning( "probe cube image '%s' is unavailable or invalid in material '%s'",
+					imageName.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			cubeSeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "tint" ) ) {
+			if ( tintSeen || !R_ReadSpecularProbeNumbers( src, "tint", GetName(), parsed.tint, 3 ) ) {
+				src.Warning( "openQ4SpecularProbe tint is duplicated or invalid in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			for ( int component = 0; component < 3; ++component ) {
+				if ( parsed.tint[component] < 0.0f || parsed.tint[component] > 64.0f ) {
+					src.Warning( "openQ4SpecularProbe tint must be in [0,64] in material '%s'", GetName() );
+					SetMaterialFlag( MF_DEFAULTED );
+					return false;
+				}
+			}
+			tintSeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "intensity" ) ) {
+			if ( intensitySeen || !R_ReadSpecularProbeNumbers( src, "intensity", GetName(), &parsed.intensity, 1 )
+					|| parsed.intensity <= 0.0f || parsed.intensity > 64.0f ) {
+				src.Warning( "openQ4SpecularProbe intensity must be in (0,64] in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			intensitySeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "blendFraction" ) ) {
+			if ( blendSeen || !R_ReadSpecularProbeNumbers( src, "blendFraction", GetName(), &parsed.blendFraction, 1 )
+					|| parsed.blendFraction <= 0.0f || parsed.blendFraction > 1.0f ) {
+				src.Warning( "openQ4SpecularProbe blendFraction must be in (0,1] in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			blendSeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "priority" ) ) {
+			idToken value;
+			idToken extra;
+			if ( prioritySeen || !src.ReadTokenOnLine( &value )
+					|| value.type != TT_NUMBER || !( value.subtype & TT_INTEGER )
+					|| src.ReadTokenOnLine( &extra ) ) {
+				src.Warning( "openQ4SpecularProbe priority expects one integer in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			char *end = NULL;
+			const long parsedPriority = std::strtol( value.c_str(), &end, 10 );
+			if ( end == value.c_str() || end == NULL || *end != '\0'
+					|| parsedPriority < 0 || parsedPriority > 255 ) {
+				src.Warning( "openQ4SpecularProbe priority must be in [0,255] in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			parsed.priority = static_cast<int>( parsedPriority );
+			prioritySeen = true;
+			continue;
+		}
+
+		src.Warning( "unknown openQ4SpecularProbe parameter '%s' in material '%s'", token.c_str(), GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	if ( token != "}" ) {
+		src.Warning( "unterminated openQ4SpecularProbe block in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( !cubeSeen || parsed.cubeImage == NULL ) {
+		src.Warning( "openQ4SpecularProbe material '%s' has no cubeMap", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	parsed.enabled = true;
+	specularProbeInfo = parsed;
+	return true;
+}
+
 /*
 ================
 idMaterial::AddPBRLegacyFallbackStages
@@ -3519,6 +3718,12 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 			}
 			continue;
 		}
+		else if ( !token.Icmp( "openQ4SpecularProbe" ) ) {
+			if ( !ParseSpecularProbeBlock( src ) ) {
+				return;
+			}
+			continue;
+		}
 		// diffusemap for stage shortcut
 		else if ( !token.Icmp( "diffusemap" ) ) {
 			str = R_ParsePastImageProgram( src );
@@ -3980,6 +4185,9 @@ void idMaterial::Print() const {
 			pbrInfo.usesApproximateLegacyFallback ? 1 : 0,
 			pbrInfo.legacyFallbackMissing ? 1 : 0 );
 	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		common->Printf( "Specular probe: cubeMap=%s\n", specularProbeInfo.cubeImage->GetName() );
+	}
 }
 
 /*
@@ -4021,6 +4229,9 @@ void idMaterial::AddReference() {
 		if ( pbrTextures[i]->present && pbrTextures[i]->image != NULL ) {
 			pbrTextures[i]->image->AddReference();
 		}
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		specularProbeInfo.cubeImage->AddReference();
 	}
 }
 
@@ -4068,6 +4279,9 @@ void idMaterial::ResolveUse() {
 		if ( pbrTextures[i]->present && pbrTextures[i]->image != NULL ) {
 			pbrTextures[i]->image->AddUseCount( useCount );
 		}
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		specularProbeInfo.cubeImage->AddUseCount( useCount );
 	}
 }
 
@@ -4691,6 +4905,134 @@ bool R_MaterialCustomGLSLReceiverHelperSelfTest( void ) {
 
 /*
 ===================
+R_SpecularProbeMaterialParserSelfTest
+
+Uses the intrinsic normalization cubemap so the parser contract can be tested
+without loose content.  Invalid declarations must fail as a whole and expose no
+probe metadata.
+===================
+*/
+bool R_SpecularProbeMaterialParserSelfTest( void ) {
+	static const char validProbe[] =
+		"material _specular_probe_selftest_valid {\n"
+		" openQ4SpecularProbe {\n"
+		"  cubeMap normalCubeMap\n"
+		"  tint 0.75 1 1.25\n"
+		"  intensity 2\n"
+		"  blendFraction 0.4\n"
+		"  priority 17\n"
+		" }\n"
+		" {\n"
+		"  map _white\n"
+		" }\n"
+		"}\n";
+	idDecl *validDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( validDecl == NULL ) {
+		return false;
+	}
+	idMaterial *valid = static_cast<idMaterial *>( validDecl );
+	bool ok = valid->Parse( validProbe,
+		idLib::SizeToInt( sizeof( validProbe ) - 1,
+			"R_SpecularProbeMaterialParserSelfTest valid" ) );
+	if ( ok ) {
+		const specularProbeMaterialInfo_t &info = valid->GetSpecularProbeInfo();
+		ok = valid->HasSpecularProbe()
+			&& info.cubeImage == globalImages->normalCubeMapImage
+			&& info.cubeConvention == SPECULAR_PROBE_CUBE_NATIVE
+			&& idMath::Fabs( info.tint[0] - 0.75f ) < 0.0001f
+			&& idMath::Fabs( info.tint[1] - 1.0f ) < 0.0001f
+			&& idMath::Fabs( info.tint[2] - 1.25f ) < 0.0001f
+			&& idMath::Fabs( info.intensity - 2.0f ) < 0.0001f
+			&& idMath::Fabs( info.blendFraction - 0.4f ) < 0.0001f
+			&& info.priority == 17
+			&& valid->GetNumStages() == 1
+			&& valid->GetStage( 0 )->texture.image == globalImages->whiteImage;
+	}
+	DeclManager_FreeAllocatedDecl( validDecl );
+	if ( !ok ) {
+		common->Printf( "RendererSpecularProbe material parser self-test: valid contract failed\n" );
+		return false;
+	}
+
+	static const char defaultPolicy[] =
+		"material _specular_probe_selftest_defaults {\n"
+		" openQ4SpecularProbe {\n"
+		"  cubeMap normalCubeMap\n"
+		" }\n"
+		"}\n";
+	idDecl *defaultDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( defaultDecl == NULL ) {
+		return false;
+	}
+	idMaterial *defaults = static_cast<idMaterial *>( defaultDecl );
+	ok = defaults->Parse( defaultPolicy,
+		idLib::SizeToInt( sizeof( defaultPolicy ) - 1,
+			"R_SpecularProbeMaterialParserSelfTest defaults" ) );
+	if ( ok ) {
+		const specularProbeMaterialInfo_t &info = defaults->GetSpecularProbeInfo();
+		ok = info.enabled && info.tint[0] == 1.0f && info.tint[1] == 1.0f
+			&& info.tint[2] == 1.0f && info.intensity == 1.0f
+			&& info.blendFraction == 0.25f && info.priority == 0;
+	}
+	DeclManager_FreeAllocatedDecl( defaultDecl );
+	if ( !ok ) {
+		common->Printf( "RendererSpecularProbe material parser self-test: default policy failed\n" );
+		return false;
+	}
+
+	auto rejectsProbeDeclaration = []( const char *declaration, const char *label ) -> bool {
+		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
+		if ( decl == NULL ) {
+			return false;
+		}
+		idMaterial *material = static_cast<idMaterial *>( decl );
+		const bool accepted = material->Parse( declaration,
+			idLib::SizeToInt( strlen( declaration ), label ) );
+		const bool leakedPartialContract = material->HasSpecularProbe();
+		DeclManager_FreeAllocatedDecl( decl );
+		return !accepted && !leakedPartialContract;
+	};
+	static const char duplicateBlock[] =
+		"material _specular_probe_selftest_duplicate {\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n }\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n }\n"
+		"}\n";
+	static const char missingCube[] =
+		"material _specular_probe_selftest_missing_cube {\n"
+		" openQ4SpecularProbe { intensity 1\n }\n"
+		"}\n";
+	static const char twoDimensionalImage[] =
+		"material _specular_probe_selftest_2d {\n"
+		" openQ4SpecularProbe { cubeMap _white\n }\n"
+		"}\n";
+	static const char mutableImage[] =
+		"material _specular_probe_selftest_mutable {\n"
+		" openQ4SpecularProbe { cubeMap _currentRender\n }\n"
+		"}\n";
+	static const char imageProgram[] =
+		"material _specular_probe_selftest_program {\n"
+		" openQ4SpecularProbe { cubeMap add( normalCubeMap, normalCubeMap )\n }\n"
+		"}\n";
+	static const char zeroIntensity[] =
+		"material _specular_probe_selftest_zero {\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n intensity 0\n }\n"
+		"}\n";
+	static const char fractionalPriority[] =
+		"material _specular_probe_selftest_priority {\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n priority 1.5\n }\n"
+		"}\n";
+
+	return rejectsProbeDeclaration( duplicateBlock, "R_SpecularProbeMaterialParserSelfTest duplicate" )
+		&& rejectsProbeDeclaration( missingCube, "R_SpecularProbeMaterialParserSelfTest missing cube" )
+		&& rejectsProbeDeclaration( twoDimensionalImage, "R_SpecularProbeMaterialParserSelfTest 2D image" )
+		&& rejectsProbeDeclaration( mutableImage, "R_SpecularProbeMaterialParserSelfTest mutable image" )
+		&& rejectsProbeDeclaration( imageProgram, "R_SpecularProbeMaterialParserSelfTest image program" )
+		&& rejectsProbeDeclaration( zeroIntensity, "R_SpecularProbeMaterialParserSelfTest zero intensity" )
+		&& rejectsProbeDeclaration( fractionalPriority, "R_SpecularProbeMaterialParserSelfTest fractional priority" );
+}
+
+/*
+===================
 R_PBRMaterialParserSelfTest
 
 Runtime parser test using only intrinsic images.  It proves metadata parsing,
@@ -4881,6 +5223,56 @@ bool R_PBRMaterialParserSelfTest( void ) {
 		return false;
 	}
 
+	// A PBR-only declaration is still required to construct the complete ARB2
+	// interaction contract when development fallback generation is enabled. Do
+	// not settle for validating only the normal stage: every low-end renderer
+	// needs the conventional bump/diffuse/specular trio.
+	static const char generatedClassicInteractionFallback[] =
+		"material _pbr_selftest_generated_classic_interaction {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  normalMap _flat\n"
+		"  normalFormat tangentRG\n"
+		" }\n"
+		"}\n";
+	auto validatesGeneratedClassicInteractionFallback = []( const char *declaration, const char *label ) -> bool {
+		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
+		if ( decl == NULL ) {
+			return false;
+		}
+		idMaterial *material = static_cast<idMaterial *>( decl );
+		bool valid = material->Parse( declaration, idLib::SizeToInt( strlen( declaration ), label ) );
+		if ( valid ) {
+			const pbrMaterialInfo_t &info = material->GetPBRInfo();
+			const shaderStage_t *bumpStage = NULL;
+			const shaderStage_t *diffuseStage = NULL;
+			const shaderStage_t *specularStage = NULL;
+			for ( int i = 0; i < material->GetNumStages(); ++i ) {
+				const shaderStage_t *stage = material->GetStage( i );
+				if ( stage == NULL ) {
+					continue;
+				}
+				if ( stage->lighting == SL_BUMP ) {
+					bumpStage = stage;
+				} else if ( stage->lighting == SL_DIFFUSE ) {
+					diffuseStage = stage;
+				} else if ( stage->lighting == SL_SPECULAR ) {
+					specularStage = stage;
+				}
+			}
+			valid = info.usesGeneratedLegacyFallback
+				&& info.usesApproximateLegacyFallback
+				&& !info.legacyFallbackMissing
+				&& material->GetNumStages() == 3
+				&& bumpStage != NULL && bumpStage->texture.image == globalImages->flatNormalMap
+				&& diffuseStage != NULL && diffuseStage->texture.image == info.albedo.image
+				&& specularStage != NULL && specularStage->texture.image == globalImages->blackImage;
+		}
+		DeclManager_FreeAllocatedDecl( decl );
+		return valid;
+	};
+
 	auto validatesGeneratedNormalFallback = []( const char *declaration, const char *label, bool expectReuse ) -> bool {
 		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
 		if ( decl == NULL ) {
@@ -4930,12 +5322,14 @@ bool R_PBRMaterialParserSelfTest( void ) {
 		"}\n";
 	const bool oldGeneratedFallback = r_pbrGeneratedLegacyFallback.GetBool();
 	r_pbrGeneratedLegacyFallback.SetBool( true );
-	const bool normalFallbacksValid = validatesGeneratedNormalFallback(
+	const bool generatedFallbacksValid = validatesGeneratedClassicInteractionFallback(
+		generatedClassicInteractionFallback, "R_PBRMaterialParserSelfTest complete ARB2 fallback" )
+		&& validatesGeneratedNormalFallback(
 		tangentNormalFallback, "R_PBRMaterialParserSelfTest tangent fallback", false )
 		&& validatesGeneratedNormalFallback(
 			quake4NormalFallback, "R_PBRMaterialParserSelfTest quake4 fallback", true );
 	r_pbrGeneratedLegacyFallback.SetBool( oldGeneratedFallback );
-	if ( !normalFallbacksValid ) {
+	if ( !generatedFallbacksValid ) {
 		return false;
 	}
 
@@ -5056,13 +5450,14 @@ bool R_PBRMaterialParserSelfTest( void ) {
 		"  albedoMap add( _white, alphaTest )\n"
 		" }\n"
 		"}\n";
-	return rejectsPBRDeclaration( dynamicImageToken, "R_PBRMaterialParserSelfTest dynamic image" )
+	const bool pbrRejectionsValid = rejectsPBRDeclaration( dynamicImageToken, "R_PBRMaterialParserSelfTest dynamic image" )
 		&& rejectsPBRDeclaration( shaderImageToken, "R_PBRMaterialParserSelfTest shader image" )
 		&& rejectsPBRDeclaration( nestedDynamicImageToken, "R_PBRMaterialParserSelfTest nested dynamic image" )
 		&& rejectsPBRDeclaration( nestedShaderImageToken, "R_PBRMaterialParserSelfTest nested shader image" )
 		&& rejectsPBRDeclaration( nestedSceneCaptureToken, "R_PBRMaterialParserSelfTest nested scene capture" )
 		&& rejectsPBRDeclaration( nestedMutableRenderTargetToken, "R_PBRMaterialParserSelfTest nested mutable target" )
 		&& rejectsPBRDeclaration( nestedStageStateToken, "R_PBRMaterialParserSelfTest nested stage state" );
+	return pbrRejectionsValid && R_SpecularProbeMaterialParserSelfTest();
 }
 
 /*
@@ -5103,5 +5498,8 @@ void idMaterial::ReloadImages( bool force ) const
 		if ( pbrTextures[i]->present && pbrTextures[i]->image != NULL ) {
 			pbrTextures[i]->image->Reload( force );
 		}
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		specularProbeInfo.cubeImage->Reload( force );
 	}
 }

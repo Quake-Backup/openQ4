@@ -62,6 +62,7 @@
 #include "../Model_local.h"
 #include "../ClassicInteractionDomain.h"
 #include "../ClassicFogBlendDomain.h"
+#include "../MaterialResourceTable.h"
 
 extern idCVar r_vkShadowFallbackTest;
 
@@ -133,7 +134,8 @@ Per-draw GPU blocks
 
 // mirror of the shared 128B push block ({mat4; vec4 a,b,c,d}):
 // a = (vertexColorModulate, vertexColorAdd, ambientLight, unused),
-// b = tangent-space ambient light direction (cube-quantized), c/d unused
+// b = tangent-space ambient light direction (cube-quantized), c = parallax,
+// d = native packed-PBR mode, metallic scalar, roughness scalar, normal scale
 typedef struct vkInteractionPush_s {
 	float			mvp[ 16 ];
 	float			a[ 4 ];
@@ -233,6 +235,7 @@ typedef struct vkInterPass_s {
 	float				ambientDir[ 3 ];
 	int					lightCount;
 	int					drawCount;
+	int					nativePBRDrawCount;
 
 	// Phase F2a/F2b shadow-map receivers
 	bool				shadowPassPrepared;	// shadow maps rendered for this view
@@ -2095,6 +2098,151 @@ static void VK_SetDrawInteraction( const shaderStage_t *surfaceStage, const floa
 
 /*
 ====================
+VK_PackedPBRInteraction
+
+The native Vulkan interaction pipelines have six fixed 2D descriptor slots.
+Packed metallic/roughness/occlusion fits without expanding that ABI: slot 1
+becomes the RGB tangent normal, slot 4 becomes albedo, and slot 5 becomes
+ORM. Everything outside this deliberately narrow contract stays on the
+retail-compatible classic interaction path.
+====================
+*/
+typedef struct vkPackedPBRInteraction_s {
+	idImage *	normalImage;
+	idImage *	albedoImage;
+	idImage *	ormImage;
+	float		metallic;
+	float		roughness;
+	float		normalScale;
+} vkPackedPBRInteraction_t;
+
+static float VK_PBRRegisterValue( const drawSurf_t *surf, int registerIndex, float fallback ) {
+	if ( surf == NULL || surf->material == NULL || surf->shaderRegisters == NULL
+			|| registerIndex < 0 || registerIndex >= surf->material->GetNumRegisters() ) {
+		return fallback;
+	}
+	const float value = surf->shaderRegisters[ registerIndex ];
+	return std::isfinite( value ) ? value : fallback;
+}
+
+static bool VK_PBRImageReady( idImage *image, textureUsage_t expectedUsage ) {
+	return image != NULL && image->GetUsage() == expectedUsage
+		&& image->IsLoaded() && !image->IsDefaulted()
+		&& image->GetDeviceHandle() != 0;
+}
+
+/*
+====================
+VK_PBRHasSingleClassicInteractionTopology
+
+The classic decomposition flushes an interaction whenever it encounters a
+second bump, diffuse, or specular stage. A packed-PBR draw evaluates the whole
+BRDF, so it may only replace the canonical final submit when the material has
+exactly one active classic bump -> diffuse -> specular sequence. Declared
+duplicates are rejected even when their current condition is false: changing
+registers must never change which decomposition draw owns the complete BRDF.
+====================
+*/
+static bool VK_PBRHasSingleClassicInteractionTopology( const drawSurf_t *surf ) {
+	if ( surf == NULL || surf->material == NULL || surf->shaderRegisters == NULL ) {
+		return false;
+	}
+
+	const idMaterial *material = surf->material;
+	const float *registers = surf->shaderRegisters;
+	const int registerCount = material->GetNumRegisters();
+	int bumpStage = -1;
+	int diffuseStage = -1;
+	int specularStage = -1;
+
+	for ( int stageIndex = 0; stageIndex < material->GetNumStages(); stageIndex++ ) {
+		const shaderStage_t *surfaceStage = material->GetStage( stageIndex );
+		if ( surfaceStage == NULL ) {
+			return false;
+		}
+
+		// A custom-lighting stage is another complete per-light owner. Keep
+		// mixed custom/classic materials entirely on their authored path.
+		if ( surfaceStage->newStage != NULL && surfaceStage->newStage->customLighting ) {
+			return false;
+		}
+
+		int *ownerStage = NULL;
+		switch ( surfaceStage->lighting ) {
+			case SL_BUMP:
+				ownerStage = &bumpStage;
+				break;
+			case SL_DIFFUSE:
+				ownerStage = &diffuseStage;
+				break;
+			case SL_SPECULAR:
+				ownerStage = &specularStage;
+				break;
+			default:
+				continue;
+		}
+
+		if ( *ownerStage >= 0 || surfaceStage->newStage != NULL
+				|| surfaceStage->texture.image == NULL
+				|| surfaceStage->conditionRegister < 0
+				|| surfaceStage->conditionRegister >= registerCount ) {
+			return false;
+		}
+		const float condition = registers[ surfaceStage->conditionRegister ];
+		if ( !std::isfinite( condition ) || condition == 0.0f ) {
+			return false;
+		}
+		*ownerStage = stageIndex;
+	}
+
+	return bumpStage >= 0 && diffuseStage > bumpStage && specularStage > diffuseStage;
+}
+
+static bool VK_PackedPBRInteraction( const drawInteraction_t *din,
+		vkPackedPBRInteraction_t &out ) {
+	memset( &out, 0, sizeof( out ) );
+	if ( !r_rendererModernQuality.GetBool() || !r_pbrMaterials.GetBool() || r_skipBump.GetBool()
+			|| r_skipDiffuse.GetBool() || r_skipSpecular.GetBool()
+			|| din == NULL || din->surf == NULL || din->surf->material == NULL
+			|| din->ambientLight
+			|| !VK_PBRHasSingleClassicInteractionTopology( din->surf ) ) {
+		return false;
+	}
+
+	const idMaterial *material = din->surf->material;
+	if ( material->Coverage() != MC_OPAQUE || !material->HasPBR() ) {
+		return false;
+	}
+	const materialResourceTableRecord_t *resourceRecord =
+		R_MaterialResourceTable_FindRecordForMaterial( material );
+	if ( resourceRecord == NULL
+			|| !R_MaterialResourceTable_PBRModernPathEligible( *resourceRecord ) ) {
+		return false;
+	}
+	const pbrMaterialInfo_t &info = material->GetPBRInfo();
+	if ( !info.enabled || info.workflow != PBR_WORKFLOW_METALLIC_ROUGHNESS
+			|| info.normalFormat != PBR_NORMAL_TANGENT_XYZ
+			|| !info.albedo.present || !info.normal.present || !info.orm.present
+			|| !VK_PBRImageReady( info.albedo.image, TD_PBR_COLOR )
+			|| !VK_PBRImageReady( info.normal.image, TD_BUMP )
+			|| !VK_PBRImageReady( info.orm.image, TD_MATERIAL_DATA ) ) {
+		return false;
+	}
+
+	out.normalImage = info.normal.image;
+	out.albedoImage = info.albedo.image;
+	out.ormImage = info.orm.image;
+	out.metallic = idMath::ClampFloat( 0.0f, 1.0f,
+		VK_PBRRegisterValue( din->surf, info.metallicRegister, 0.0f ) );
+	out.roughness = idMath::ClampFloat( 0.045f, 1.0f,
+		VK_PBRRegisterValue( din->surf, info.roughnessRegister, 0.5f ) );
+	out.normalScale = idMath::ClampFloat( 0.0f, 4.0f,
+		VK_PBRRegisterValue( din->surf, info.normalScaleRegister, 1.0f ) );
+	return true;
+}
+
+/*
+====================
 VK_DrawSingleInteraction
 
 The Vulkan analog of RB_ARB2_DrawInteraction: streams the interaction
@@ -2103,9 +2251,10 @@ set, pushes the 128B block, and draws the bound light-tris geometry.
 ====================
 */
 static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
-										  bool parallax,
-										  float parallaxScale,
-										  float parallaxBias ) {
+									  bool parallax,
+									  float parallaxScale,
+									  float parallaxBias,
+									  bool allowNativePBR ) {
 	if ( din->bumpImage == NULL || din->lightFalloffImage == NULL || din->lightImage == NULL
 			|| din->diffuseImage == NULL || din->specularImage == NULL ) {
 		return;
@@ -2120,14 +2269,16 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	}
 	const int setCount = shadowDraw ? 8 : 7;
 	const VkPipelineLayout layout = shadowDraw ? interPass.layoutShadowed : interPass.layout;
+	vkPackedPBRInteraction_t pbr;
+	const bool nativePBR = allowNativePBR && VK_PackedPBRInteraction( din, pbr );
 
 	VkDescriptorSet sets[ 8 ];
 	sets[ 0 ] = interPass.specTableSet;
-	sets[ 1 ] = VK_Exec_ImageDescriptor( din->bumpImage->GetDeviceHandle(), true );
+	sets[ 1 ] = VK_Exec_ImageDescriptor( ( nativePBR ? pbr.normalImage : din->bumpImage )->GetDeviceHandle(), true );
 	sets[ 2 ] = VK_Exec_ImageDescriptor( din->lightFalloffImage->GetDeviceHandle(), true );
 	sets[ 3 ] = VK_Exec_ImageDescriptor( din->lightImage->GetDeviceHandle(), true );
-	sets[ 4 ] = VK_Exec_ImageDescriptor( din->diffuseImage->GetDeviceHandle(), true );
-	sets[ 5 ] = VK_Exec_ImageDescriptor( din->specularImage->GetDeviceHandle(), true );
+	sets[ 4 ] = VK_Exec_ImageDescriptor( ( nativePBR ? pbr.albedoImage : din->diffuseImage )->GetDeviceHandle(), true );
+	sets[ 5 ] = VK_Exec_ImageDescriptor( ( nativePBR ? pbr.ormImage : din->specularImage )->GetDeviceHandle(), true );
 	sets[ 6 ] = VK_Exec_InteractionUniformSet();
 	sets[ 7 ] = interPass.shadowSet;
 	for ( int i = 0 ; i < setCount ; i++ ) {
@@ -2183,7 +2334,11 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	push.b[ 2 ] = interPass.ambientDir[ 2 ];
 	push.c[ 0 ] = parallaxScale;
 	push.c[ 1 ] = parallaxBias;
-	push.c[ 2 ] = parallax ? 1.0f : 0.0f;
+	push.c[ 2 ] = parallax && !nativePBR ? 1.0f : 0.0f;
+	push.d[ 0 ] = nativePBR ? ( r_pbrDebug.GetInteger() == 7 ? 2.0f : 1.0f ) : 0.0f;
+	push.d[ 1 ] = nativePBR ? pbr.metallic : 0.0f;
+	push.d[ 2 ] = nativePBR ? pbr.roughness : 0.0f;
+	push.d[ 3 ] = nativePBR ? pbr.normalScale : 1.0f;
 
 	// dynamic offsets consume in set order: set 6 interaction slice, then
 	// (shadowed only) set 7 binding 1 shadow slice
@@ -2196,13 +2351,16 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 	vkCmdDrawIndexed( interPass.cmd, (uint32_t)din->surf->geo->numIndexes, 1, 0, 0, 0 );
 	interPass.drawCount++;
+	if ( nativePBR ) {
+		interPass.nativePBRDrawCount++;
+	}
 	if ( shadowDraw ) {
 		interPass.shadowDrawCount++;
 	}
 }
 
-static void VK_DrawSingleInteraction( const drawInteraction_t *din ) {
-	VK_DrawSingleInteractionMode( din, false, 0.0f, 0.0f );
+static void VK_DrawSingleInteraction( const drawInteraction_t *din, bool allowNativePBR ) {
+	VK_DrawSingleInteractionMode( din, false, 0.0f, 0.0f, allowNativePBR );
 }
 
 /*
@@ -2214,7 +2372,7 @@ missing diffuse/specular (and the r_skip* debug substitutions), flat
 normal map for skipped bump, and the skip-if-nothing-would-draw rule.
 ====================
 */
-static void VK_SubmitInteraction( drawInteraction_t *din ) {
+static void VK_SubmitInteraction( drawInteraction_t *din, bool allowNativePBR ) {
 	if ( !din->bumpImage ) {
 		return;
 	}
@@ -2237,7 +2395,7 @@ static void VK_SubmitInteraction( drawInteraction_t *din ) {
 		|| ( ( din->specularColor[0] > 0 ||
 		din->specularColor[1] > 0 ||
 		din->specularColor[2] > 0 ) && din->specularImage != globalImages->blackImage ) ) {
-		VK_DrawSingleInteraction( din );
+		VK_DrawSingleInteraction( din, allowNativePBR );
 	}
 }
 
@@ -2259,7 +2417,7 @@ static void VK_SubmitCustomLightingInteraction( drawInteraction_t *din,
 		return;
 	}
 
-	VK_DrawSingleInteractionMode( din, parallax, scaleBias[ 0 ], scaleBias[ 1 ] );
+	VK_DrawSingleInteractionMode( din, parallax, scaleBias[ 0 ], scaleBias[ 1 ], false );
 }
 
 /*
@@ -3247,6 +3405,10 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 
 	const int lightStageCount = lightShader->GetNumStages();
 	const int surfaceStageCount = surfaceShader->GetNumStages();
+	// Only the final decomposition submit may own a complete packed-PBR BRDF.
+	// The topology check also makes every intermediate flush impossible for an
+	// admitted material; false admission leaves every classic draw untouched.
+	const bool packedPBROwnerEligible = VK_PBRHasSingleClassicInteractionTopology( surf );
 	for ( int lightStageNum = 0 ; lightStageNum < lightStageCount ; lightStageNum++ ) {
 		const shaderStage_t	*lightStage = lightShader->GetStage( lightStageNum );
 
@@ -3295,7 +3457,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 						break;
 					}
 					// draw any previous interaction
-					VK_SubmitInteraction( &inter );
+					VK_SubmitInteraction( &inter, false );
 					inter.diffuseImage = NULL;
 					inter.specularImage = NULL;
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.bumpImage, inter.bumpMatrix, NULL );
@@ -3307,7 +3469,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 						break;
 					}
 					if ( inter.diffuseImage ) {
-						VK_SubmitInteraction( &inter );
+						VK_SubmitInteraction( &inter, false );
 					}
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.diffuseImage,
 											inter.diffuseMatrix, inter.diffuseColor.ToFloatPtr() );
@@ -3326,7 +3488,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 						break;
 					}
 					if ( inter.specularImage ) {
-						VK_SubmitInteraction( &inter );
+						VK_SubmitInteraction( &inter, false );
 					}
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.specularImage,
 											inter.specularMatrix, inter.specularColor.ToFloatPtr() );
@@ -3341,7 +3503,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 		}
 
 		// draw the final interaction
-		VK_SubmitInteraction( &inter );
+		VK_SubmitInteraction( &inter, packedPBROwnerEligible );
 
 		// Quake 4's two shipped customLighting guide families are ambient
 		// material stages that execute once for every active light stage.
@@ -3946,6 +4108,16 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 		loggedFirstInteractionPass = true;
 		common->Printf( "Vulkan: first interaction pass drew %d interactions across %d lights\n",
 				interPass.drawCount, interPass.lightCount );
+	}
+
+	// Native Vulkan PBR is deliberately limited to opaque packed-ORM,
+	// tangent-space RGB-normal materials. Keep its admission observable
+	// without conflating those draws with the retail-compatible fallback path.
+	static bool loggedFirstNativePBRPass = false;
+	if ( !loggedFirstNativePBRPass && interPass.nativePBRDrawCount > 0 ) {
+		loggedFirstNativePBRPass = true;
+		common->Printf( "Vulkan: native packed PBR direct interactions active (%d draws)\n",
+				interPass.nativePBRDrawCount );
 	}
 
 	// one-shot bring-up evidence that shadow-receiving interactions drew

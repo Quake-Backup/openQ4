@@ -230,7 +230,9 @@ idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "
 idCVar r_postAAStatePoisonTest( "r_postAAStatePoisonTest", "0", CVAR_RENDERER | CVAR_BOOL, "intentionally dirty GL texture/client state before SMAA post-AA draws for validation" );
 idCVar r_pbrMaterials( "r_pbrMaterials", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow explicitly PBR-authored materials on supported modern renderer paths" );
 idCVar r_pbrGeneratedLegacyFallback( "r_pbrGeneratedLegacyFallback", "1", CVAR_RENDERER | CVAR_BOOL, "allow development-only classic fallback generation for PBR-only materials" );
-idCVar r_pbrDebug( "r_pbrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "PBR debug view: 0=off, 1=albedo, 2=normal, 3=metallic, 4=roughness, 5=AO, 6=emissive, 7=fallback", 0, 7, idCmdSystem::ArgCompletion_Integer<0,7> );
+idCVar r_pbrDebug( "r_pbrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "PBR debug view: 0=off, 1=albedo, 2=normal, 3=metallic, 4=roughness, 5=AO, 6=emissive, 7=state marker (green=PBR, magenta=contract mismatch)", 0, 7, idCmdSystem::ArgCompletion_Integer<0,7> );
+idCVar r_pbrIBL( "r_pbrIBL", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable the analytic environment contribution for explicitly PBR-authored materials" );
+idCVar r_pbrIBLIntensity( "r_pbrIBLIntensity", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "analytic PBR environment intensity", 0.0f, 4.0f );
 idCVar r_pbrInferFromLegacyMaterials( "r_pbrInferFromLegacyMaterials", "0", CVAR_RENDERER | CVAR_BOOL, "research-only legacy material reinterpretation; never used for stock rendering by default" );
 idCVar r_bloom( "r_bloom", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable bloom post-process" );
 idCVar r_bloomThreshold( "r_bloomThreshold", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "bloom bright-pass threshold in scene-referred units", 0.0f, 16.0f );
@@ -481,6 +483,9 @@ idCVar r_rendererUploadMegs( "r_rendererUploadMegs", "16", CVAR_RENDERER | CVAR_
 idCVar r_rendererUploadFrameBuffers( "r_rendererUploadFrameBuffers", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream frame-buffer rotation depth", 3, 8, idCmdSystem::ArgCompletion_Integer<3,8> );
 idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow persistent-mapped dynamic renderer uploads when supported" );
 idCVar r_rendererUploadBufferPool( "r_rendererUploadBufferPool", "1", CVAR_RENDERER | CVAR_BOOL, "recycle static GL buffer names instead of gen/data/delete churn for per-frame regenerated geometry" );
+idCVar r_rendererModernQuality( "r_rendererModernQuality", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "master permit for experimental Milestone-F PBR, reflection-probe, and clustered-decal domains; 0 rolls every domain back to classic ownership" );
+idCVar r_rendererReflectionProbes( "r_rendererReflectionProbes", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable authored reflection probes for eligible modern PBR views; unsupported or incomplete probe sets use analytic/classic fallback" );
+idCVar r_rendererClusteredDecals( "r_rendererClusteredDecals", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "transfer complete eligible decal subsets to bounded clustered forward rendering; incomplete views remain entirely classic" );
 idCVar r_rendererModernExecutor( "r_rendererModernExecutor", "0", CVAR_RENDERER | CVAR_BOOL, "prepare the opt-in modern GL executor frame contract while legacy ARB2 still executes" );
 idCVar r_rendererModernSubmit( "r_rendererModernSubmit", "0", CVAR_RENDERER | CVAR_BOOL, "execute opt-in modern GL draw submission before legacy ARB2 fallback; diagnostic until visible pass replacement lands" );
 idCVar r_rendererGpuValidation( "r_rendererGpuValidation", "0", CVAR_RENDERER | CVAR_BOOL, "compare GL 4.3 GPU-driven compute results against CPU reference data on sampled frames" );
@@ -979,6 +984,13 @@ static void R_RendererGBufferSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererGBuffer_RunSelfTest() ) {
 		common->Warning( "Renderer modern G-buffer self-test failed" );
+	}
+}
+
+static void R_RendererPBRVisibleSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererPBRVisible_RunSelfTest() ) {
+		common->Warning( "Renderer PBR visible-path self-test failed" );
 	}
 }
 
@@ -4377,8 +4389,13 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		}
 	}
 	common->Printf(
-		"PBR materials: parser=1 modernLighting=0 enabled=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
+		"Modern quality: master=%d pbr=%d probes=%d clusteredDecals=%d (master=0 is complete Milestone-F rollback)\n"
+		"PBR materials: parser=1 modernLighting=1 effective=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
+		r_rendererModernQuality.GetBool() ? 1 : 0,
 		r_pbrMaterials.GetBool() ? 1 : 0,
+		r_rendererReflectionProbes.GetBool() ? 1 : 0,
+		r_rendererClusteredDecals.GetBool() ? 1 : 0,
+		( r_rendererModernQuality.GetBool() && r_pbrMaterials.GetBool() ) ? 1 : 0,
 		r_pbrGeneratedLegacyFallback.GetBool() ? 1 : 0,
 		r_pbrInferFromLegacyMaterials.GetBool() ? 1 : 0,
 		r_pbrDebug.GetInteger() );
@@ -4801,6 +4818,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererGpuDrivenSelfTest", R_RendererGpuDrivenSelfTest_f, CMD_FL_RENDERER, "run renderer GL43 GPU-driven compute and indirect self tests" );
 	cmdSystem->AddCommand( "rendererVisiblePathSelfTest", R_RendererVisiblePathSelfTest_f, CMD_FL_RENDERER, "run renderer visible modern depth-path self tests" );
 	cmdSystem->AddCommand( "rendererGBufferSelfTest", R_RendererGBufferSelfTest_f, CMD_FL_RENDERER, "run renderer modern opaque G-buffer self tests" );
+	cmdSystem->AddCommand( "rendererPBRVisibleSelfTest", R_RendererPBRVisibleSelfTest_f, CMD_FL_RENDERER, "run guarded modern PBR G-buffer/deferred/forward self tests" );
 	cmdSystem->AddCommand( "rendererClusterGridSelfTest", R_RendererClusterGridSelfTest_f, CMD_FL_RENDERER, "run renderer clustered light-grid self tests" );
 	cmdSystem->AddCommand( "rendererLightImageAtlasSelfTest", R_RendererLightImageAtlasSelfTest_f, CMD_FL_RENDERER, "run renderer modern light falloff/projection atlas self tests" );
 	cmdSystem->AddCommand( "rendererShadowPlannerSelfTest", R_RendererShadowPlannerSelfTest_f, CMD_FL_RENDERER, "run renderer modern shadow-planner self tests" );

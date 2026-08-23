@@ -278,6 +278,8 @@ typedef struct modernGLExecutorStats_s {
 	int		drawPlanDepthDraws;
 	int		drawPlanMaterialDraws;
 	int		drawPlanFallbackDraws;
+	int		drawPlanPBRClusteredSurfaceOwners;
+	int		drawPlanPBRClusteredConsumedInteractions;
 	int		drawPlanGeometryFallbackDraws;
 	int		drawPlanGeometryDeformFallbackDraws;
 	int		drawPlanGeometrySkinnedFallbackDraws;
@@ -489,7 +491,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 void R_ModernGLExecutor_DrawDepthDebugOverlay( void );
 void R_ModernGLExecutor_DrawGBufferDebugOverlay( void );
 void R_ModernGLExecutor_DrawDeferredDebugOverlay( void );
-void R_ModernGLExecutor_SubmitForwardPlusDecalOverlay( const viewDef_t *viewDef );
+bool R_ModernGLExecutor_SubmitForwardPlusDecalSurface( const viewDef_t *viewDef, const drawSurf_t *sourceSurface );
 void R_ModernGLExecutor_ComposeVisibleSceneForPost( void );
 void R_ModernGLExecutor_ComposeVisibleFrame( void );
 const modernGLExecutorStats_t &R_ModernGLExecutor_Stats( void );
@@ -503,6 +505,7 @@ bool RendererModernGLExecutor_RunSelfTest( void );
 bool RendererGpuDriven_RunSelfTest( void );
 bool RendererVisiblePath_RunSelfTest( void );
 bool RendererGBuffer_RunSelfTest( void );
+bool RendererPBRVisible_RunSelfTest( void );
 bool RendererDeferredResolve_RunSelfTest( void );
 bool RendererForwardPlus_RunSelfTest( void );
 bool RendererModernVisible_RunSelfTest( void );

@@ -21,6 +21,7 @@ if str(VALIDATION_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATION_DIR))
 
 import renderer_budget_contract as budget
+import generate_pbr_fixture as pbr_fixture
 
 
 def load_benchmark() -> ModuleType:
@@ -178,6 +179,9 @@ def test_benchmark_replay(base: Path) -> None:
     suffix = ".exe" if os.name == "nt" else ""
     executable = runtime_dir / f"openQ4-client_{harness.host_arch()}{suffix}"
     executable.write_bytes(b"deterministic-client")
+    fixture_paths = pbr_fixture.generate_fixture(
+        runtime_dir, size=pbr_fixture.DEFAULT_TEXTURE_SIZE
+    )
     launch_args = harness.parse_args(
         [
             "--cases",
@@ -244,11 +248,19 @@ def test_benchmark_replay(base: Path) -> None:
         lines = payload.splitlines()
         reset_index = lines.index("framePacingReset")
         for name, value in harness.budget_display_contract()["cvars"].items():
-            matches = [line for line in lines[:reset_index] if line.startswith(f"{name} ")]
+            matches = [
+                line
+                for line in lines[:reset_index]
+                if line.startswith(f"{name} ") or line.startswith(f"set {name} ")
+            ]
             assert matches
             assert matches[-1] == f"{name} {value}"
-        assert [line for line in lines[:reset_index] if line.startswith("r_mode ")] == [
-            "r_mode 5",
+        assert [
+            line
+            for line in lines[:reset_index]
+            if line.startswith("r_mode ") or line.startswith("set r_mode ")
+        ] == [
+            "set r_mode 5",
             "r_mode -1",
         ]
     for arguments in (dry_mp["serverArgs"], dry_mp["clientArgs"]):
@@ -278,9 +290,14 @@ def test_benchmark_replay(base: Path) -> None:
     marker = timing_marker()
     log.write_text(
         marker
+        + "\nMap: tools/mv2\n"
         + "\nrendererBenchmark capture(preset=baseline samples=256 frame(avg=10 p50=8 p95=11 p99=14 max=15 latest=10 thresholds=20/28 pass=1)\n"
         + "Renderer benchmark: preset=baseline samples=256 frame(avg=10 p50=8 p95=11 p99=14 max=15) thresholds(p95=20 p99=28 pass=1)\n"
-        + "Selected renderer tier: gl45\n"
+        + "Selected renderer tier: LowOverheadGL45\n"
+        + "PBR material resources: records=3 resourceReady=3 modernReady=3 packed=3 separate=0 fallback=0\n"
+        + "Modern GL executor: available, drawPlan=1 planDraws=5 planFallback=0 pbrOwners=2 pbrConsumed=4\n"
+        + "Modern forward+: cvar=1, req=1 exec=1 resources=1 sceneColor=1 sceneDepth=1 program=1 cluster=1 draws=2 fallback=0\n"
+        + "Modern visible frame: cvar=1, req=1 exec=1 resources=1 program=1 source=1 hybrid=1 backBuffer=1 composed=1\n"
         + "MODE: -1, 1280 x 720 windowed hz:N/A\n",
         encoding="utf-8",
     )
@@ -302,6 +319,18 @@ def test_benchmark_replay(base: Path) -> None:
         renderer="best",
         render_api="gl",
     )
+    autoexec_cfg, _ = harness.write_autoexec_cfg(
+        savepath,
+        spec,
+        "sp",
+        "contract-test",
+        360,
+        600,
+        0,
+        harness.PBR_ACCEPTANCE_GL_CVARS,
+        gpu_timers=True,
+    )
+    autoexec_path = savepath / "baseoq4" / autoexec_cfg
     role = harness.evaluate_role_result(
         spec,
         "sp",
@@ -323,6 +352,8 @@ def test_benchmark_replay(base: Path) -> None:
         0.0,
         contract,
         "baseline",
+        pbr_fixture_acceptance_required=True,
+        autoexec_path=autoexec_path,
     )
     assert role["status"] == "pass", role["missing"]
     result = {
@@ -332,6 +363,7 @@ def test_benchmark_replay(base: Path) -> None:
         "budgetMap": spec.budget_map_name,
         "expectedBackend": spec.expected_backend,
         "renderApi": spec.render_api,
+        "pbrFixtureAcceptanceRequired": True,
         "displayContract": harness.budget_display_contract(),
         "purpose": "test",
         "tier": "auto",
@@ -365,12 +397,20 @@ def test_benchmark_replay(base: Path) -> None:
         "dryRun": False,
         "autoexecDelayMs": 1000,
         "settleFrames": 360,
+        "mpClientDelayFrames": 480,
         "sampleFrames": 600,
         "sampleMsec": 0,
         "minPacingHz": 0.0,
         "maxP95Ms": 0.0,
         "maxP99Ms": 0.0,
         "profileCvars": {},
+        "effectivePostMapCvars": harness.effective_post_map_cvars(
+            harness.PBR_ACCEPTANCE_GL_CVARS
+        ),
+        "pbrFixtureAcceptanceRequired": True,
+        "pbrFixtureBinding": harness.verify_procedural_pbr_fixture(
+            runtime_dir, harness.PBR_FIXTURE_TEXTURE_SIZE
+        ),
         "profileExecCommands": [],
         "launchCvars": {},
         "execCommands": [],
@@ -380,6 +420,182 @@ def test_benchmark_replay(base: Path) -> None:
     assert harness.verify_benchmark_report(
         report, report_path.parent, ROOT, runtime_dir, executable, contract, binding
     ) == []
+
+    for field, expected_fragment in (
+        ("effectivePostMapCvars", "post-map cvar provenance"),
+        ("pbrFixtureAcceptanceRequired", "acceptance provenance"),
+        ("pbrFixtureBinding", "binding provenance"),
+        ("execCommands", "exec-command provenance"),
+    ):
+        missing_metadata = json.loads(json.dumps(report))
+        missing_metadata["metadata"].pop(field)
+        assert any(
+            expected_fragment in failure
+            for failure in harness.verify_benchmark_report(
+                missing_metadata,
+                report_path.parent,
+                ROOT,
+                runtime_dir,
+                executable,
+                contract,
+                binding,
+            )
+        )
+
+    missing_result_selection = json.loads(json.dumps(report))
+    missing_result_selection["results"][0].pop("pbrFixtureAcceptanceRequired")
+    assert any(
+        "acceptance selection is missing" in failure
+        for failure in harness.verify_benchmark_report(
+            missing_result_selection,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    missing_role_evidence = json.loads(json.dumps(report))
+    missing_role_evidence["results"][0]["roles"][0].pop("pbrFixtureEvidence")
+    assert any(
+        "recorded PBR fixture evidence differs" in failure
+        for failure in harness.verify_benchmark_report(
+            missing_role_evidence,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    missing_config = json.loads(json.dumps(report))
+    missing_config_role = missing_config["results"][0]["roles"][0]
+    missing_config_role["artifacts"] = [
+        item
+        for item in missing_config_role["artifacts"]
+        if item["kind"] != "benchmarkConfig"
+    ]
+    assert any(
+        "recorded benchmarkConfig artifact is missing" in failure
+        for failure in harness.verify_benchmark_report(
+            missing_config,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
+    original_config = autoexec_path.read_text(encoding="utf-8")
+    autoexec_path.write_text(
+        original_config.replace("r_pbrmaterials 1", "r_pbrmaterials 0"),
+        encoding="utf-8",
+    )
+    changed_config_report = json.loads(json.dumps(report))
+    changed_config_role = changed_config_report["results"][0]["roles"][0]
+    changed_config_artifact = next(
+        item
+        for item in changed_config_role["artifacts"]
+        if item["kind"] == "benchmarkConfig"
+    )
+    changed_config_artifact.update(
+        harness.file_record(autoexec_path, report_path.parent)
+    )
+    assert any(
+        "benchmark config CVar provenance differs" in failure
+        for failure in harness.verify_benchmark_report(
+            changed_config_report,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    autoexec_path.write_text(original_config, encoding="utf-8")
+
+    autoexec_path.write_text(
+        original_config.replace(
+            harness.EXEC_COMMANDS_BEGIN,
+            harness.EXEC_COMMANDS_BEGIN + "\ngod",
+        ),
+        encoding="utf-8",
+    )
+    changed_commands_report = json.loads(json.dumps(report))
+    changed_commands_role = changed_commands_report["results"][0]["roles"][0]
+    changed_commands_artifact = next(
+        item
+        for item in changed_commands_role["artifacts"]
+        if item["kind"] == "benchmarkConfig"
+    )
+    changed_commands_artifact.update(
+        harness.file_record(autoexec_path, report_path.parent)
+    )
+    assert any(
+        "benchmark config command provenance differs" in failure
+        for failure in harness.verify_benchmark_report(
+            changed_commands_report,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    autoexec_path.write_text(original_config, encoding="utf-8")
+
+    autoexec_path.write_text(
+        "echo PBR material resources: records=9 resourceReady=9 modernReady=9 "
+        "packed=9 separate=0 fallback=0\n" + original_config,
+        encoding="utf-8",
+    )
+    injected_config_report = json.loads(json.dumps(report))
+    injected_config_role = injected_config_report["results"][0]["roles"][0]
+    injected_config_artifact = next(
+        item
+        for item in injected_config_role["artifacts"]
+        if item["kind"] == "benchmarkConfig"
+    )
+    injected_config_artifact.update(
+        harness.file_record(autoexec_path, report_path.parent)
+    )
+    assert any(
+        "benchmark config provenance is invalid" in failure
+        for failure in harness.verify_benchmark_report(
+            injected_config_report,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    autoexec_path.write_text(original_config, encoding="utf-8")
+
+    original_fixture_orm = fixture_paths["orm"].read_bytes()
+    fixture_paths["orm"].write_bytes(
+        original_fixture_orm[:-1] + bytes((original_fixture_orm[-1] ^ 1,))
+    )
+    assert any(
+        "controlled PBR fixture verification failed" in failure
+        for failure in harness.verify_benchmark_report(
+            report,
+            report_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    fixture_paths["orm"].write_bytes(original_fixture_orm)
 
     original_executable = executable.read_bytes()
     executable.write_bytes(b"mutated-runtime-client")
@@ -556,12 +772,367 @@ def test_benchmark_replay(base: Path) -> None:
         )
     )
 
+    def functional_fixture_report(render_api: str, tier: str) -> tuple[dict, Path]:
+        evidence_root = base / f"functional-{render_api}-{tier}"
+        fixture_savepath = evidence_root / "savepaths" / "case"
+        fixture_log = fixture_savepath / "baseoq4" / "logs" / "case.log"
+        fixture_stdout = evidence_root / "case.out.txt"
+        fixture_stderr = evidence_root / "case.err.txt"
+        fixture_screenshot = (
+            fixture_savepath
+            / "baseoq4"
+            / "screenshots"
+            / "renderer-bench"
+            / "sp_0.tga"
+        )
+        fixture_log.parent.mkdir(parents=True)
+        fixture_stdout.parent.mkdir(parents=True, exist_ok=True)
+        api_lines = (
+            [
+                "Selected renderer tier: " + harness.GL_TIER_RUNTIME_NAMES[tier],
+                "Modern GL executor: available, drawPlan=1 planDraws=5 planFallback=0 pbrOwners=2 pbrConsumed=4",
+                "Modern forward+: cvar=1, req=1 exec=1 resources=1 sceneColor=1 sceneDepth=1 program=1 cluster=1 draws=2 fallback=0",
+                "Modern visible frame: cvar=1, req=1 exec=1 resources=1 program=1 source=1 hybrid=1 backBuffer=1 composed=1",
+            ]
+            if render_api == "gl"
+            else ["Vulkan: native packed PBR direct interactions active (7 draws)"]
+        )
+        fixture_log_text = "\n".join(
+            [
+                "Map: tools/mv2",
+                "PBR material resources: records=3 resourceReady=3 modernReady=3 packed=3 separate=0 fallback=0",
+                *api_lines,
+                "MODE: -1, 1280 x 720 windowed hz:N/A",
+            ]
+        ) + "\n"
+        fixture_log.write_text(fixture_log_text, encoding="utf-8")
+        fixture_stdout.write_text(fixture_log_text, encoding="utf-8")
+        fixture_stderr.write_text("", encoding="utf-8")
+        write_tga(fixture_screenshot)
+        fixture_spec = harness.RunSpec(
+            case_id=harness.PBR_FIXTURE_BENCHMARK_CASE,
+            mode="SP",
+            map_name=harness.PBR_FIXTURE_STOCK_MAP,
+            budget_map_name=harness.PBR_FIXTURE_STOCK_MAP,
+            purpose="functional PBR replay",
+            path_name="spawn-static",
+            tier=tier,
+            maxfps="240",
+            swap_interval="0",
+            display_mode="windowed",
+            shadow_preset="default",
+            renderer="best",
+            render_api=render_api,
+        )
+        fixture_cvars = harness.pbr_acceptance_fixture_cvars(render_api)
+        fixture_cfg, _ = harness.write_autoexec_cfg(
+            fixture_savepath,
+            fixture_spec,
+            "sp",
+            "functional-test",
+            360,
+            600,
+            0,
+            fixture_cvars,
+            gpu_timers=False,
+            renderer_metrics=False,
+        )
+        fixture_cfg_path = fixture_savepath / "baseoq4" / fixture_cfg
+        fixture_role = harness.evaluate_role_result(
+            fixture_spec,
+            "sp",
+            0,
+            False,
+            1.0,
+            fixture_savepath,
+            "case.log",
+            fixture_stdout,
+            fixture_stderr,
+            "screenshots/renderer-bench/sp_0.tga",
+            None,
+            2.0,
+            24,
+            False,
+            False,
+            0.0,
+            0.0,
+            0.0,
+            contract,
+            "baseline",
+            pbr_fixture_acceptance_required=True,
+            autoexec_path=fixture_cfg_path,
+        )
+        assert fixture_role["status"] == "pass", fixture_role["missing"]
+        fixture_result = {
+            "id": fixture_spec.id,
+            "mode": "SP",
+            "map": fixture_spec.map_name,
+            "budgetMap": fixture_spec.budget_map_name,
+            "expectedBackend": fixture_spec.expected_backend,
+            "renderApi": fixture_spec.render_api,
+            "pbrFixtureAcceptanceRequired": True,
+            "displayContract": harness.budget_display_contract(),
+            "purpose": fixture_spec.purpose,
+            "tier": fixture_spec.tier,
+            "maxfps": fixture_spec.maxfps,
+            "swapInterval": fixture_spec.swap_interval,
+            "display": fixture_spec.display_mode,
+            "shadowPreset": fixture_spec.shadow_preset,
+            "renderer": fixture_spec.renderer,
+            "status": "pass",
+            "roles": [fixture_role],
+        }
+        harness.attach_result_artifacts(evidence_root, [fixture_result])
+        fixture_metadata = {
+            "generated": "2026-08-23 00:00:00 +0000",
+            "host": "test",
+            "executable": str(executable),
+            "runtime": {
+                "path": harness.path_hint(runtime_dir, ROOT),
+                "executable": executable.relative_to(runtime_dir).as_posix(),
+                "files": harness.collect_runtime_files(runtime_dir),
+            },
+            "runtimeVerificationFailures": [],
+            "git": harness.git_state(ROOT),
+            "budgetContract": binding,
+            "budgetEnforced": False,
+            "budgetDisplayContract": None,
+            "basepath": "",
+            "profile": "interaction",
+            "benchmarkPreset": "baseline",
+            "renderApi": render_api,
+            "dryRun": False,
+            "autoexecDelayMs": 1000,
+            "settleFrames": 360,
+            "mpClientDelayFrames": 480,
+            "sampleFrames": 600,
+            "sampleMsec": 0,
+            "minPacingHz": 0.0,
+            "maxP95Ms": 0.0,
+            "maxP99Ms": 0.0,
+            "profileCvars": {},
+            "effectivePostMapCvars": harness.effective_post_map_cvars(
+                fixture_cvars
+            ),
+            "pbrFixtureAcceptanceRequired": True,
+            "pbrFixtureBinding": harness.verify_procedural_pbr_fixture(
+                runtime_dir, harness.PBR_FIXTURE_TEXTURE_SIZE
+            ),
+            "profileExecCommands": [],
+            "launchCvars": {},
+            "execCommands": [],
+        }
+        fixture_report_path, _ = harness.write_reports(
+            evidence_root, [fixture_result], fixture_metadata
+        )
+        return (
+            json.loads(fixture_report_path.read_text(encoding="utf-8")),
+            fixture_report_path,
+        )
+
+    functional_gl, functional_gl_path = functional_fixture_report("gl", "gl45")
+    assert harness.verify_benchmark_report(
+        functional_gl,
+        functional_gl_path.parent,
+        ROOT,
+        runtime_dir,
+        executable,
+        contract,
+        binding,
+    ) == []
+    functional_vk, functional_vk_path = functional_fixture_report("vk", "auto")
+    assert harness.verify_benchmark_report(
+        functional_vk,
+        functional_vk_path.parent,
+        ROOT,
+        runtime_dir,
+        executable,
+        contract,
+        binding,
+    ) == []
+    functional_gl33, functional_gl33_path = functional_fixture_report("gl", "gl33")
+    assert harness.verify_benchmark_report(
+        functional_gl33,
+        functional_gl33_path.parent,
+        ROOT,
+        runtime_dir,
+        executable,
+        contract,
+        binding,
+    ) == []
+
+    ordinary_non_budget = json.loads(json.dumps(functional_gl))
+    ordinary_non_budget["metadata"]["effectivePostMapCvars"] = {}
+    ordinary_non_budget["metadata"]["pbrFixtureAcceptanceRequired"] = False
+    ordinary_non_budget["metadata"]["pbrFixtureBinding"] = None
+    ordinary_non_budget["results"][0]["pbrFixtureAcceptanceRequired"] = False
+    assert any(
+        "functional replay is accepted only" in failure
+        for failure in harness.verify_benchmark_report(
+            ordinary_non_budget,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
+    duplicated_functional_result = json.loads(json.dumps(functional_gl))
+    duplicated_functional_result["results"].append(
+        json.loads(json.dumps(duplicated_functional_result["results"][0]))
+    )
+    assert any(
+        "exactly one controlled result" in failure
+        for failure in harness.verify_benchmark_report(
+            duplicated_functional_result,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
+    tampered_mode = json.loads(json.dumps(report))
+    tampered_mode["budgetEnforced"] = False
+    tampered_mode["metadata"]["budgetDisplayContract"] = None
+    tampered_mode_failures = harness.verify_benchmark_report(
+        tampered_mode,
+        report_path.parent,
+        ROOT,
+        runtime_dir,
+        executable,
+        contract,
+        binding,
+    )
+    assert any("config capture mode differs" in failure for failure in tampered_mode_failures)
+    assert any("budget evidence must be empty" in failure for failure in tampered_mode_failures)
+
+    tampered_budget_evidence = json.loads(json.dumps(functional_gl))
+    tampered_budget_evidence["results"][0]["roles"][0]["budgetEvidence"] = {
+        "status": "pass"
+    }
+    assert any(
+        "budget evidence must be empty" in failure
+        for failure in harness.verify_benchmark_report(
+            tampered_budget_evidence,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
+    missing_null_display_contract = json.loads(json.dumps(functional_gl))
+    missing_null_display_contract["metadata"].pop("budgetDisplayContract")
+    assert any(
+        "display contract differs" in failure
+        for failure in harness.verify_benchmark_report(
+            missing_null_display_contract,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
+    tampered_outcome = json.loads(json.dumps(functional_gl))
+    tampered_outcome["results"][0]["roles"][0]["exitCode"] = 1
+    tampered_outcome["results"][0]["roles"][0]["timedOut"] = True
+    outcome_failures = harness.verify_benchmark_report(
+        tampered_outcome,
+        functional_gl_path.parent,
+        ROOT,
+        runtime_dir,
+        executable,
+        contract,
+        binding,
+    )
+    assert any("exit code is not zero" in failure for failure in outcome_failures)
+    assert any("timed-out state is not false" in failure for failure in outcome_failures)
+
+    tampered_identity = json.loads(json.dumps(functional_gl))
+    tampered_identity["results"][0]["map"] = "game/storage1"
+    assert any(
+        "case/result identity differs" in failure
+        for failure in harness.verify_benchmark_report(
+            tampered_identity,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
+    functional_log_artifact = next(
+        item
+        for item in functional_gl["results"][0]["roles"][0]["artifacts"]
+        if item["kind"] == "engineLog"
+    )
+    functional_log_path = functional_gl_path.parent / functional_log_artifact["path"]
+    functional_log_original = functional_log_path.read_text(encoding="utf-8")
+    functional_log_path.write_text(
+        functional_log_original.replace("Map: tools/mv2", "Map: game/storage1"),
+        encoding="utf-8",
+    )
+    tampered_final_map = json.loads(json.dumps(functional_gl))
+    tampered_final_map_artifact = next(
+        item
+        for item in tampered_final_map["results"][0]["roles"][0]["artifacts"]
+        if item["kind"] == "engineLog"
+    )
+    tampered_final_map_artifact.update(
+        harness.file_record(functional_log_path, functional_gl_path.parent)
+    )
+    assert any(
+        "final engine Map differs" in failure
+        for failure in harness.verify_benchmark_report(
+            tampered_final_map,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+    functional_log_path.write_text(functional_log_original, encoding="utf-8")
+
+    tampered_tier = json.loads(json.dumps(functional_gl))
+    tampered_tier_result = tampered_tier["results"][0]
+    tampered_tier_result["tier"] = "gl43"
+    tampered_tier_result["id"] = tampered_tier_result["id"].replace(
+        "_gl45_", "_gl43_"
+    )
+    assert any(
+        "selected tier differs" in failure
+        for failure in harness.verify_benchmark_report(
+            tampered_tier,
+            functional_gl_path.parent,
+            ROOT,
+            runtime_dir,
+            executable,
+            contract,
+            binding,
+        )
+    )
+
     for invalid_args in (
         ["--width", "1920"],
         ["--height", "1080"],
         ["--display-modes", "fullscreen"],
         ["--set-launch-cvar", "r_windowWidth=1920"],
         ["--set-launch-cvar", "r_renderApi=vk"],
+        ["--set-launch-cvar", "r_pbrMaterials=1"],
     ):
         try:
             with contextlib.redirect_stderr(io.StringIO()):

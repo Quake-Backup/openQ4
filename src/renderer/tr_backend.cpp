@@ -888,6 +888,7 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
 	R_ClassicSubviewDomain_ResetFrame();
+	R_ModernClusteredLighting_ResetDecalsForFrame();
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}

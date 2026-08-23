@@ -72,6 +72,9 @@ enum materialResourcePBRFallbackReason_t {
 	MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_ALBEDO,
 	MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_NORMAL_FORMAT,
 	MATERIAL_RESOURCE_PBR_FALLBACK_CONFLICTING_LAYOUT,
+	// Retained for malformed/over-capacity layouts. Packed ORM and separate
+	// metallic/roughness/AO inputs are both valid in the direct PBR corridor.
+	MATERIAL_RESOURCE_PBR_FALLBACK_UNSUPPORTED_TEXTURE_LAYOUT,
 	MATERIAL_RESOURCE_PBR_FALLBACK_MISSING_IMAGE,
 	MATERIAL_RESOURCE_PBR_FALLBACK_CLASSIC_FEATURE,
 	MATERIAL_RESOURCE_PBR_FALLBACK_TOO_MANY_TEXTURES,
@@ -388,6 +391,7 @@ typedef struct materialResourceTableStats_s {
 	int		pbrFallbackMissingAlbedo;
 	int		pbrFallbackMissingNormalFormat;
 	int		pbrFallbackConflictingLayout;
+	int		pbrFallbackUnsupportedTextureLayout;
 	int		pbrFallbackMissingImage;
 	int		pbrFallbackClassicFeature;
 	int		pbrFallbackTooManyTextures;
@@ -404,6 +408,10 @@ const materialResourceTableStats_t &R_MaterialResourceTable_Stats( void );
 const materialResourceTableRecord_t *R_MaterialResourceTable_RecordForIndex( int tableIndex );
 const materialResourceTableRecord_t *R_MaterialResourceTable_FindRecordForMaterial( const idMaterial *material );
 bool R_MaterialResourceTable_ClassicModernPathEligible( const materialResourceTableRecord_t &record );
+// PBR remains a separate ownership corridor: callers must never treat this as
+// permission to run the classic material shader path for a PBR record.
+bool R_MaterialResourceTable_PBRModernPathEligible( const materialResourceTableRecord_t &record );
+bool R_MaterialResourceTable_PBRTransparentPathEligible( const materialResourceTableRecord_t &record );
 const unsigned int *R_MaterialResourceTable_TextureArrayTable( int &count );
 int R_MaterialResourceTable_TextureArrayTableIndexForHandle( unsigned int textureHandle );
 const char *MaterialResourceBlendMode_Name( materialResourceBlendMode_t blendMode );

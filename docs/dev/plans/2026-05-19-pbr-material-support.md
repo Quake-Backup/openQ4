@@ -8,9 +8,17 @@ The short version: stock materials stay stock; PBR materials get a modern materi
 
 ## Implementation Status
 
-As of 2026-08-19, the compatibility-safe Phase 0-3 foundation is present: opt-in controls and capability reporting, namespaced parser metadata, typed PBR image usage and lifecycle handling, classic fallback generation, scene-packet propagation, and material-resource-table records, metrics, dumps, and fail-closed ownership checks. These are authoring and renderer-infrastructure contracts, not user-visible PBR rendering.
+As of 2026-08-23, openQ4 has an **experimental, default-off Milestone F implementation whose local Windows exit gate has passed**: the compatibility-safe PBR authoring foundation, guarded OpenGL PBR lighting, a deliberately narrow Vulkan direct-light subset, authored bounded OpenGL specular probes, and atomic bounded OpenGL clustered decals. Namespaced parser metadata, typed image lifecycle handling, classic fallback generation, scene-packet propagation, and material-resource records remain intact. Eligible metallic/roughness materials can enter the modern G-buffer and clustered-forward paths, use GGX/Smith/Schlick direct lighting plus a content-free analytic environment contribution, and carry albedo, normal, packed ORM, separate metallic/roughness/AO, or scalar material data, emissive, and `r_pbrDebug` data through the existing graph resources.
 
-Phase 4-6 PBR G-buffer shaders, direct lighting, and visible ownership remain unimplemented, as do Phase 8 IBL and specular environment probes. The cross-engine capability therefore remains **Missing** in the [engine capability matrix](../engine-capability-matrix.md). A checked item below means current source and an automated source or engine self-test directly cover that item; runtime, visual, gameplay, and promotion acceptances remain unchecked until their own evidence exists.
+This is deliberately a guarded renderer capability, not a promoted whole-frame renderer: `r_pbrMaterials`, `r_rendererReflectionProbes`, and `r_rendererClusteredDecals` default to `0`; PBR never reinterprets stock materials; unsupported workflows, dynamic images, custom programs, unsafe geometry, unusual blend expressions, or unavailable modern resources retain classic ownership. The current implementation supports a packed glTF-style ORM map, separate metallic/roughness/AO maps, or scalar-only material values. Separate maps use dedicated direct samplers after the four-entry classic material table and are admitted only when the complete resource/shader contract is available. Visible OpenGL PBR and probe evaluation additionally requires `r_rendererModernVisible 1`; enabling a PBR or probe leaf alone does not promote a visible PBR frame. `r_pbrIBL 1` supplies a neutral analytic environment for explicitly PBR-authored materials without requiring a new content asset; `r_pbrIBLIntensity` controls only that contribution. A conventional one-stage `blend blend` source-alpha declaration is admitted to the ordered PBR forward path, while complex transparency stays classic. `r_rendererModernQuality 0` is the one-setting rollback for PBR, authored probes, and clustered decals regardless of their leaf cvars. The legacy frame owner remains authoritative whenever its complete transaction cannot be replaced, and `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0`, so this is not a player-facing stock-map visual or GPU-driven-lighting promotion.
+
+The OpenGL probe path accepts explicitly authored light-material metadata into a fixed eight-cubemap atlas and no more than 32 frame records, then selects at most two probes for each cluster deterministically. It samples base-mip specular colour only and blends back to the analytic environment when images, generations, capacity, resources, or cluster identity are incomplete. It does not provide box parallax, diffuse irradiance, runtime probe capture, or a Vulkan probe consumer. The clustered-decal path is also OpenGL-only: an atomic prepare/seal transaction publishes at most 1,024 records and 65,536 cluster references, while malformed, stale, incomplete, or overflowing input publishes no ownership and leaves the complete affected subset classic.
+
+The Vulkan backend has a deliberately narrow direct-light PBR corridor: an opaque metallic/roughness material with a packed ORM map and `normalFormat tangentXYZ` must also have exactly one declared classic bump stage, one diffuse stage, and one specular stage, all active and ordered bump -> diffuse -> specular. Duplicate declarations, an inactive or invalid owner condition, noncanonical order, a custom-lighting co-owner, or any other admission failure keeps the material entirely classic. An admitted packed-PBR draw replaces only the canonical final interaction submit so the complete BRDF is evaluated exactly once per surface/light. Separate metallic/roughness/AO inputs, `tangentRG`/Quake 4 normal encodings, source-alpha and other transparent PBR, analytic IBL, and authored specular probes remain classic on Vulkan.
+
+The retained local evidence is under `.tmp/milestone-f-evidence/20260823-final/`. A current-source debug x64 build passed the static PBR/advanced-lighting contracts, the final 10/10 dependency-light native run, the final 2/2 focused engine rerun after an earlier 8/8 safe set, and all four retail-PK4 baseline roles. That baseline used 40 retail PK4s and zero loose retail files. The procedural fixture passed on forced GL 3.3, 4.1, 4.3, and 4.5 with zero GL/FBO warning signatures: each real plan reduced 24 source packets to five depth plus five ambient owners with `planFallback=0`, forward+ executed five draws, and the visible bridge executed with resources, source, and composition present. The GL 4.5 debug-7 image contained the exact green ownership marker in 639,507 of 921,600 pixels (69.39%). `r_rendererModernQuality 0` matched the leaf-disabled OpenGL images exactly on all four tiers.
+
+The validation-enabled Vulkan fixture also passed and differed non-vacuously from its leaf-disabled control (per-channel RGB RMS 26.374685/20.829991/21.549890, maximum delta 252); the Vulkan master-disabled image then matched that control at exact RMS 0 and maximum delta 0. These results prove implementation, execution, and rollback, not broad visual-quality, authored-probe/decal scene, or RenderDoc coverage. All feature leaves remain default-off, `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0`, and final committed-package, platform/driver, retained-review, and release promotion remain pending. Checked items below distinguish this local implementation exit from those broader release gates.
 
 ## Suitability Review
 
@@ -92,6 +100,26 @@ materials/example/pbr_panel_preview
 }
 ```
 
+For conventional source-alpha PBR, keep the declaration deliberately simple: use one ordinary `blend blend` stage whose map is the PBR `albedoMap`, then provide the normal material PBR block. The direct path preserves ordered source-alpha blending and samples the PBR albedo alpha. Multiple blend/add/filter stages, alpha-tested blends, animated stage state, and other complex transparency are intentionally not promoted and remain on their authored classic path.
+
+```text
+materials/example/pbr_window
+{
+    {
+        blend blend
+        map textures/example/window_albedo
+    }
+
+    pbr {
+        workflow metallicRoughness
+        albedoMap textures/example/window_albedo
+        normalMap textures/example/window_normal
+        normalFormat tangentRG
+        ormMap textures/example/window_orm
+    }
+}
+```
+
 Recommended initial tokens:
 
 | Token | Meaning | Notes |
@@ -120,9 +148,64 @@ Recommended initial tokens:
 
 Do not add `metalmap` or `roughmap` shorthand in the first pass. PBR materials will be rare at first, and clear names are worth the extra typing.
 
+An image-program path is parsed as an expression, not as a raw filename. Use parser-safe asset names such as `procedural_panel_albedo`: a hyphen is an image-program operator and must not be used unescaped in a map path.
+
+### Authored Specular-Probe Metadata
+
+Author a probe as a dedicated point-light material. The light entity supplies
+the origin, axis, and radius used as the probe volume; `openQ4SpecularProbe`
+supplies only immutable cubemap and blend metadata:
+
+```text
+lights/openq4/probe_room
+{
+    openQ4SpecularProbe {
+        cubeMap env/openq4/room_probe
+        tint 1.0 0.95 0.9
+        intensity 1.25
+        blendFraction 0.25
+        priority 16
+    }
+}
+```
+
+Use exactly one `cubeMap` (native face convention) or `cameraCubeMap` (camera
+face convention) with a static cubemap image. Render targets, image programs,
+mutable images, and 2D images fail the complete declaration. `tint` defaults to
+`1 1 1` and accepts finite components in `[0,64]`; `intensity` defaults to `1`
+and accepts `(0,64]`; `blendFraction` defaults to `0.25` and accepts `(0,1]` as
+the fraction of the point-light radius used at the volume edge; `priority`
+defaults to `0` and accepts an integer from `0` through `255`.
+
+The probe light is metadata-only and never contributes an additive classic
+light, even if ordinary light stages are present in the same material. Keep it
+separate from visible classic lights. If the OpenGL probe transaction is
+disabled, unsupported, incomplete, or over budget, PBR surfaces use the
+analytic environment fallback; the metadata light does not become a classic
+light. At most eight cubemaps can be resident, at most 32 probe records can be
+published per frame, and each cluster selects at most two probes.
+
+### Authoring Fast Path
+
+Use an 8-bit tangent-space normal map and either one glTF-compatible ORM image or separate linear metallic, roughness, and AO maps. The packed route has the most portable binding contract: ORM is always **R = AO, G = roughness, B = metallic**. `tools/assets/pack_pbr_orm.py` packs separate input maps without colour-space conversion and deliberately refuses to overwrite an existing output unless `--force` is supplied:
+
+```powershell
+python tools\assets\pack_pbr_orm.py `
+    --ao path\to\asset_ao.tga `
+    --roughness path\to\asset_roughness.tga `
+    --metallic path\to\asset_metallic.tga `
+    --output path\to\asset_orm.tga
+```
+
+`--ao` is optional; omitting it writes white AO. The tool accepts source images Pillow can decode and writes `.png` or `.tga`. It is covered by `python tools\tests\pbr_orm_packer.py`; use a normal file destination rather than a link. Do not gamma-correct, premultiply, or use a colour LUT on normal, ORM, metallic, roughness, or AO inputs. Albedo and emissive are colour inputs; the remaining maps are data.
+
+For a distributable material, dual-author ordinary Quake 4 `bumpmap`/`diffusemap`/`specularmap` stages or provide the explicit `legacy*Map` fields. `autoLegacyFallback 1` is a development preview and ARB2 safety net, not release-quality art. Keep generated PBR validation assets outside `content/` unless the project has intentionally approved them as shippable content. The repository's procedural fixture is original openQ4 test data generated only below `.tmp/`; it is validation scaffolding, not release art.
+
+The legacy Windows Material Editor is not a supported openQ4 authoring workflow: it is not a Meson-built tool and this workspace does not ship its required `editors/material.def`. Use a text editor with the declaration form above, then run `rendererPBRMaterialSelfTest` and a windowed test-map probe. This avoids an obsolete editor silently dropping a `pbr { ... }` block during source round-tripping.
+
 ## Data Model
 
-Add a compact PBR metadata record to `idMaterial` rather than encoding PBR as extra classic stages:
+The live implementation stores this compact PBR metadata record on `idMaterial` rather than encoding PBR as extra classic stages:
 
 ```cpp
 enum pbrWorkflow_t {
@@ -132,43 +215,49 @@ enum pbrWorkflow_t {
 };
 
 enum pbrNormalFormat_t {
+    PBR_NORMAL_UNSPECIFIED = -1,
     PBR_NORMAL_QUAKE4_AGB = 0,
     PBR_NORMAL_TANGENT_RG,
     PBR_NORMAL_TANGENT_XYZ
 };
 
-struct pbrMaterialStage_t {
-    textureStage_t texture;
-    int colorRegisters[4];
-    int scalarRegister;
+struct pbrMaterialTexture_t {
+    idImage *image;
     bool present;
+    int filter;
+    int repeat;
+    bool allowPicmip;
+    bool noMips;
+    bool highQuality;
+    bool forceHighQuality;
 };
 
 struct pbrMaterialInfo_t {
     bool enabled;
     pbrWorkflow_t workflow;
     pbrNormalFormat_t normalFormat;
-    pbrMaterialStage_t albedo;
-    pbrMaterialStage_t normal;
-    pbrMaterialStage_t orm;
-    pbrMaterialStage_t metallic;
-    pbrMaterialStage_t roughness;
-    pbrMaterialStage_t ao;
-    pbrMaterialStage_t emissive;
-    pbrMaterialStage_t legacyBump;
-    pbrMaterialStage_t legacyDiffuse;
-    pbrMaterialStage_t legacySpecular;
-    pbrMaterialStage_t legacyEmissive;
+    pbrMaterialTexture_t albedo;
+    pbrMaterialTexture_t normal;
+    pbrMaterialTexture_t orm;
+    pbrMaterialTexture_t metallic;
+    pbrMaterialTexture_t roughness;
+    pbrMaterialTexture_t ao;
+    pbrMaterialTexture_t emissive;
+    pbrMaterialTexture_t legacyBump;
+    pbrMaterialTexture_t legacyDiffuse;
+    pbrMaterialTexture_t legacySpecular;
+    pbrMaterialTexture_t legacyEmissive;
     int metallicRegister;
     int roughnessRegister;
     int aoRegister;
     int normalScaleRegister;
     int emissiveColorRegisters[3];
     bool autoLegacyFallback;
-    bool hasExplicitLegacyFallback;
     bool hasAuthoredClassicFallback;
+    bool hasExplicitLegacyFallback;
     bool usesGeneratedLegacyFallback;
     bool usesApproximateLegacyFallback;
+    bool legacyFallbackMissing;
 };
 ```
 
@@ -176,10 +265,10 @@ Implementation details:
 
 - Store PBR image references outside `stages[]` so `SortInteractionStages`, `AddImplicitStages`, coverage, classic lighting, and GUI/post behavior remain unchanged.
 - Initialize and clear the PBR record in `CommonInit`/`FreeData`, then copy it out of parser-temporary state before `pd` is cleared. PBR data must not point into stack-owned parsing storage.
-- Add const getters such as `HasPBR()`, `GetPBRInfo()`, and targeted image/scalar helpers. Avoid exposing mutable parser internals.
-- Update `ReloadImages`, `AddReference`, `SetImageClassifications`, `FreeData`, `Size`, `Print`, and material validation for the PBR images.
+- Expose const getters such as `HasPBR()`, `GetPBRInfo()`, and targeted image/scalar helpers. Avoid exposing mutable parser internals.
+- Include the PBR images in `ReloadImages`, `AddReference`, `SetImageClassifications`, `FreeData`, `Size`, `Print`, and material validation.
 - Keep material expressions as the single scalar system. PBR scalar tokens should call existing expression parsing and use `shaderRegisters` at draw time.
-- Add a new texture usage such as `TD_MATERIAL_DATA` for ORM, metallic, roughness, and AO. Do not load these as `TD_SPECULAR`, because that path may modify alpha and compression behavior for classic specular maps.
+- Use `TD_MATERIAL_DATA` for ORM, metallic, roughness, and AO. Do not load these as `TD_SPECULAR`, because that path may modify alpha and compression behavior for classic specular maps.
 - Add a color-input usage or explicit PBR image flag for albedo/emissive if the final sRGB policy needs them to bypass the legacy `TD_DIFFUSE` cache identity. Do not let PBR albedo change how stock diffuse maps are cached.
 
 ## Parser Strategy
@@ -242,7 +331,7 @@ Record additions:
 
 Implementation notes:
 
-- Increase `MATERIAL_RESOURCE_TABLE_MAX_TEXTURE_BINDINGS` only if self-tests prove the GL 3.3 path can still bind required classic slots without exceeding limits. Prefer packed `ormMap` over separate maps on GL 3.3.
+- Keep the legacy `uTextureIndices` table ABI at four entries. Separate metallic/roughness/AO maps use direct sampler units 4, 5, and 6, so they cannot silently displace classic or shadow sampler bindings. Prefer packed `ormMap` when authoring portability-sensitive content.
 - Preserve the existing classic `BUMP`, `DIFFUSE`, `SPECULAR`, and `EMISSIVE` semantics for non-PBR materials.
 - Add metrics: PBR record count, PBR-ready record count, missing albedo/normal/ORM counts, separate-map count, packed-map count, authored-legacy-fallback count, explicit-generated-fallback count, approximate-fallback count, modern-PBR fallback count, and old-style classic record count.
 - Add `rendererMaterialResourceTableSelfTest` cases for PBR packed ORM, PBR separate maps, scalar-only fallback, explicit legacy fallback, and unsupported workflow fallback.
@@ -293,23 +382,43 @@ Add separate PBR controls instead of overloading enhanced materials:
 
 | Cvar | Default | Purpose |
 |---|---:|---|
+| `r_rendererModernQuality` | `1` | Master permit for Milestone F quality domains. Set to `0` for one-setting rollback of PBR, authored specular probes, and clustered decals even if their leaf controls are enabled. |
 | `r_pbrMaterials` | `0` initially | Allows modern PBR shader ownership for PBR-authored materials when the modern renderer gates also pass. |
+| `r_rendererReflectionProbes` | `0` | Enables the authored bounded OpenGL specular-probe consumer for eligible PBR views. Incomplete probe ownership falls back to analytic PBR environment lighting. |
+| `r_rendererClusteredDecals` | `0` | Enables atomic bounded OpenGL clustered-decal ownership for complete eligible subsets. Rejected transactions remain entirely classic. |
 | `r_pbrGeneratedLegacyFallback` | `1` | Allows approximate generated classic fallback stages for development/test PBR materials. Authored classic stages and explicit legacy fallback maps remain valid regardless of this cvar. |
-| `r_pbrDebug` | `0` | Debug overlay: albedo, normal, metallic, roughness, AO, emissive, fallback reason. |
+| `r_pbrDebug` | `0` | Debug overlay: albedo, normal, metallic, roughness, AO, emissive, fallback state; mode `7` is a state marker (green = PBR shader, magenta = contract mismatch). |
+| `r_pbrIBL` | `1` | Enables the content-free analytic environment contribution for explicitly PBR-authored materials. It never changes stock material interpretation. |
+| `r_pbrIBLIntensity` | `1` | Scales that analytic PBR environment contribution from `0` to `4`. |
 | `r_pbrInferFromLegacyMaterials` | `0` | Experimental legacy material reinterpretation for research only. Never required for stock support. |
 
-`r_pbrMaterials 0` must not change existing rendering. `r_pbrMaterials 1` should affect only materials whose parsed metadata says PBR is enabled, and it is necessary but not sufficient: `r_rendererModernVisible`, G-buffer/deferred/forward+ readiness, material-table readiness, geometry readiness, shadow policy, and pass-owner gates still decide visible ownership.
+`r_pbrMaterials 0` must not change existing rendering. `r_pbrMaterials 1` should affect only materials whose parsed metadata says PBR is enabled, and it is necessary but not sufficient: `r_rendererModernQuality`, `r_rendererModernVisible`, G-buffer/deferred/forward+ readiness, material-table readiness, geometry readiness, shadow policy, and pass-owner gates still decide visible ownership. The probe and decal leaf cvars follow the same master gate. Setting `r_rendererModernQuality 0` must restore classic ownership for all three Milestone F domains without requiring a list of settings.
+
+## Stock And Procedural Test Candidates
+
+Retail Quake 4 declarations do not currently contain `pbr { ... }` metadata, so there is no native stock PBR material to enable. The best real-asset candidate for authoring and map validation is `textures/medlabs/tubearmsplatform_fastener`: `materials/medlab.mtr` supplies its diffuse, local-normal-plus-height, and specular maps, and `game/medlabs` references the material in its compiled world. It is a useful high-frequency metal fastener surface, but `game/medlabs` is BSE-heavy and should be used only after a controlled map probe is clean.
+
+For repeatable implementation checks, generate the original openQ4 fixture below the repository `.tmp/` tree:
+
+```powershell
+python tools\validation\generate_pbr_fixture.py --runtime-root .tmp\milestone-f-fixture
+```
+
+The standard-library-only generator creates deterministic 24-bit TGA albedo, `tangentXYZ` normal, and packed ORM images, a dual-authored material declaration, and a SHA-256 manifest. It reads or copies no external texture, shader, or material asset, and its output is temporary validation scaffolding rather than shippable `content/`. `tools/tests/pbr_procedural_fixture.py` checks deterministic bytes and hashes, material wiring, manifest provenance, TGA layout, and the `.tmp` containment rule. `tools/assets/pack_pbr_orm.py` remains the authoring helper for separate data maps; it reads an explicitly selected stored channel instead of deriving luminance and writes `R=AO`, `G=roughness`, `B=metallic`.
+
+Run the generated material windowed on stock `maps/tools/mv2`, retain only engine-render-target screenshots, and compare the enabled case with `r_rendererModernQuality 0` plus the appropriate leaf-disabled controls. `gfxInfo` must expose exact PBR/probe/decal readiness and fallback reasons; `r_pbrDebug 7` must show PBR ownership without a magenta contract mismatch. The 2026-08-23 local campaign now records real PBR ownership on GL 3.3/4.1/4.3/4.5, an exact 639,507-pixel green debug-7 marker on GL 4.5, a non-vacuous validation-enabled Vulkan result, and exact master rollback on both APIs. Probe validation must separately exercise the eight-cubemap atlas limit, 32-record limit, top-two cluster selection, analytic fallback, and malformed/stale/capacity rejection. Clustered-decal validation must separately exercise the 1,024-record and 65,536-reference limits plus atomic zero-ownership rollback. The bounded dependency-light and engine contracts pass, but broad authored probe/decal scene review and RenderDoc evidence remain unclaimed release work.
 
 ## Implementation Phases
 
 ### Phase 0: Baseline And Gates
 
-- [ ] Record stock-material baseline with PBR code absent or fully disabled.
-- [x] Add `r_pbrMaterials`, `r_pbrGeneratedLegacyFallback`, `r_pbrDebug`, and `r_pbrInferFromLegacyMaterials`.
+- [x] Record the current-source windowed stock SP load/save/reload/demo and pure MP server/auto-joined-client baseline, plus controlled leaf-disabled and `r_rendererModernQuality 0` fixture references. All four stock roles passed against 40 retail PK4s and zero loose retail files.
+- [ ] Repeat every Milestone F leaf independently across stock SP and pure MP only if that broader matrix is selected for final release promotion; the local implementation gate does not claim this breadth.
+- [x] Add `r_rendererModernQuality`, `r_pbrMaterials`, `r_rendererReflectionProbes`, `r_rendererClusteredDecals`, `r_pbrGeneratedLegacyFallback`, `r_pbrDebug`, `r_pbrIBL`, `r_pbrIBLIntensity`, and `r_pbrInferFromLegacyMaterials`.
 - [x] Add `gfxInfo` lines that show PBR parser support, PBR modern support, and fallback status.
 - [x] Add PBR metrics counters to the material-resource table.
-- [ ] Confirm those counters remain zero on stock startup.
-- [ ] Acceptance: safe validation matrix passes, stock startup logs do not gain material warnings, and `r_pbrMaterials 0/1` changes nothing when no PBR materials are loaded.
+- [x] Confirm from current-source SP/MP logs that PBR/probe/decal records remain zero on stock startup with legacy inference disabled.
+- [ ] Acceptance: the final safe validation matrix passes, stock startup logs do not gain material warnings, and leaf cvar changes do nothing when no matching authored metadata is loaded.
 
 ### Phase 1: Parser Metadata Only
 
@@ -318,7 +427,7 @@ Add separate PBR controls instead of overloading enhanced materials:
 - [x] Add image loading for PBR maps with correct texture usage classes.
 - [x] Update material lifecycle methods for PBR images.
 - [x] Add parser validation tests through material decl validation.
-- [ ] Acceptance: PBR sample declarations parse, stock declarations compile identically, and no visible/shader path consumes PBR metadata yet.
+- [x] Acceptance: PBR sample declarations parse, stock declarations remain metadata-free, and metadata enters only the guarded, default-off PBR visible path.
 
 ### Phase 2: Legacy Fallback For PBR Authored Materials
 
@@ -327,7 +436,7 @@ Add separate PBR controls instead of overloading enhanced materials:
 - [x] Add generated fallback stages for PBR-only materials as development fallback, not as release-quality fallback.
 - [x] Report one aggregate approximate-fallback warning per material parse.
 - [x] Track authored, explicit-generated, approximate, and missing fallback counts.
-- [ ] Add a self-test that creates a PBR-only material and verifies ARB2 sees bump/diffuse/specular interaction stages.
+- [x] Add a self-test that creates a PBR-only material and verifies ARB2 sees bump/diffuse/specular interaction stages.
 - [ ] Acceptance: PBR materials render something sane under the default ARB2 path, explicit fallback maps generate the expected classic stages, approximate fallback is visible in metrics, and stock materials remain unchanged.
 
 ### Phase 3: Material Resource Table Integration
@@ -340,51 +449,60 @@ Add separate PBR controls instead of overloading enhanced materials:
 
 ### Phase 4: PBR G-buffer Side Path
 
-- [ ] Add PBR G-buffer shader variants.
-- [ ] Pack albedo, normal, metallic, roughness, AO, and emissive into graph-owned attachments.
-- [ ] Add `r_pbrDebug` attachment overlays.
-- [ ] Keep the pass sidecar/default-off until stock parity and debug overlays are verified.
-- [ ] Acceptance: a synthetic PBR material writes expected G-buffer values; stock materials still use legacy variants.
+- [x] Add guarded PBR branches to the existing opaque and alpha-test G-buffer shader families.
+- [x] Pack albedo, normal, metallic, roughness, AO, and emissive into graph-owned attachments.
+- [x] Add `r_pbrDebug` material outputs (albedo, normal, metallic, roughness, AO, emissive, and an unmistakable PBR marker).
+- [x] Keep the pass sidecar/default-off and preserve classic ownership on every unsupported PBR record.
+- [x] Acceptance: the synthetic PBR command contract binds the expected G-buffer inputs and values; non-PBR records keep their classic shader route.
 
 ### Phase 5: PBR Direct Lighting
 
-- [ ] Add PBR deferred resolve for opaque PBR G-buffer records.
-- [ ] Add PBR forward+ path for alpha-tested PBR records.
-- [ ] Use existing clustered light records, projected light images, falloff images, shadow descriptors, and light-grid data.
-- [ ] Add CPU reference math tests for BRDF helper functions where practical.
-- [ ] Acceptance: PBR test materials respond correctly to point/projected lights, roughness changes highlight width, metallic changes F0/base-color behavior, and shadow/light-grid fallbacks remain fail-closed.
+- [x] Add PBR deferred resolve for opaque PBR G-buffer records.
+- [x] Add PBR clustered forward paths for opaque and alpha-tested PBR records.
+- [x] Reuse clustered point/projected light records, light images, falloff images, shadow descriptors, and light-grid data; AO affects indirect light only.
+- [x] Keep the GGX distribution, Smith visibility, Schlick Fresnel, scalar multipliers, and roughness floor directly covered by shader-source and synthetic-command tests.
+- [ ] Retain a human-reviewed engine-TGA shaded capture of the original procedural PBR fixture with analytic IBL enabled.
+- [x] Add a fail-closed Vulkan direct-PBR branch for opaque `tangentXYZ` metallic/roughness materials with packed ORM, reusing the established interaction normal/albedo/specular descriptor slots as normal/albedo/ORM.
+- [x] Validate the Vulkan subset windowed and unshadowed on `maps/tools/mv2` with the original procedural packed-ORM fixture, validation enabled, a non-vacuous leaf-enabled/disabled image delta, and exact `r_rendererModernQuality 0` rollback.
+- [ ] Retain the point-shadow-mapped Vulkan fixture and broader human visual review before making a wider Vulkan PBR qualification claim.
 
 ### Phase 6: Guarded Visible Ownership
 
-- [ ] Allow `r_rendererModernVisible 1` plus `r_pbrMaterials 1` to modern-own eligible PBR materials.
-- [ ] Keep classic materials on existing legacy or modern-classic paths.
-- [ ] Block visible ownership if a PBR material has unsupported workflow, texture layout, dynamic image, custom shader, unsafe geometry, or missing graph resources.
-- [ ] Add pass-owner metrics for PBR-modern, PBR-legacy-fallback, and PBR-blocked.
-- [ ] Acceptance: PBR materials can be visible in a test map without forcing stock materials into PBR interpretation.
+- [x] Admit eligible PBR records when `r_rendererModernVisible 1` and the existing modern ownership gates are all satisfied.
+- [x] Keep classic materials on their existing legacy or modern-classic routes.
+- [x] Block modern PBR ownership for unsupported workflow/layout, dynamic image, custom shader, unsafe geometry, or missing graph resources.
+- [x] Report PBR modern readiness and named resource fallback reasons through `gfxInfo` and material-resource diagnostics.
+- [x] Retain real OpenGL plans on GL 3.3/4.1/4.3/4.5 with 24 source packets becoming five depth plus five ambient owners, `planFallback=0`, five forward+ draws, visible execution/resources/source/composition, and an exact green debug-7 ownership marker.
+- [ ] Retain current-source human-reviewed PBR-owned opaque and source-alpha whole-frame engine-TGA images without forcing stock materials into PBR interpretation.
 
 ### Phase 7: Authoring And Tooling
 
-- [ ] Document material syntax and texture packing in `docs/dev` and user-facing docs when ready.
-- [ ] Add Material Editor awareness if the tool is still maintained for openQ4 workflows.
-- [ ] Add optional import-helper guidance for glTF-style ORM maps.
-- [ ] Add sample PBR materials only if the project intentionally wants shipped sample content. Otherwise keep test assets under `.tmp/`.
-- [ ] Acceptance: artists can author a PBR material without reading renderer code.
+- [x] Document material syntax, supported packing, test candidates, compatibility behavior, and rollback in `docs/dev`.
+- [x] Decide Material Editor ownership: the legacy MFC editor is not Meson-built and lacks its required definition file, so it is explicitly unsupported rather than allowed to lose PBR source blocks.
+- [x] Add an optional, tested import helper and guidance for glTF-style ORM maps (`tools/assets/pack_pbr_orm.py`; `R=AO`, `G=roughness`, `B=metallic`).
+- [x] Generate original deterministic openQ4 validation assets only below `.tmp/`; do not incorporate external assets or ship the generated fixture as `content/`.
+- [x] Acceptance: the declaration template, texture rules, ORM helper, fallback rules, and test commands allow artists to author a PBR material without reading renderer code.
 
 ### Phase 8: Optional IBL And Quality Layer
 
-- [ ] Decide whether light-grid data can provide diffuse irradiance for PBR materials.
-- [ ] Add optional specular environment probe support only after direct PBR lighting is stable.
+- [x] Add a PBR-only analytic diffuse/specular environment baseline behind `r_pbrIBL` and `r_pbrIBLIntensity`; it needs no content asset and does not alter legacy materials.
+- [x] Add guarded authored OpenGL specular-probe support with a fixed eight-cubemap atlas, at most 32 records, deterministic top-two-per-cluster selection, and analytic fallback.
+- [x] Keep the probe approximation explicitly specular-only and base-mip: no box parallax, diffuse irradiance, runtime capture, or Vulkan support is claimed.
+- [x] Add guarded atomic OpenGL clustered-decal ownership bounded to 1,024 records and 65,536 cluster references, with zero published ownership on a rejected transaction.
+- [x] Pass current-source dependency-light and engine contracts for probe atlas packing, bounded top-two selection, analytic fallback, and atomic malformed/stale/capacity decal rejection.
 - [ ] Consider clearcoat, sheen, anisotropy, height/parallax, and detail normals as later material extensions.
-- [ ] Acceptance: optional quality features never become required for base PBR correctness.
+- [ ] Acceptance for broad release promotion: retain authored probe/decal scene evidence beyond the passing bounded contracts; analytic IBL remains the complete PBR fallback when probe ownership is unavailable, and advanced quality features never become required for base PBR correctness.
 
 ### Phase 9: Promotion And Release
 
-- [ ] Extend renderer validation matrix with PBR parser, material table, G-buffer, deferred, forward+, visible, and fallback self-tests.
-- [ ] Run SP/MP gameplay with stock assets and PBR disabled/enabled.
-- [ ] Run a PBR test scene on `auto`, `gl33`, `gl41`, `gl43`, and `gl45` where available.
+- [x] Extend renderer validation coverage for the PBR parser, material table, G-buffer, deferred, forward+, visible, source-alpha, analytic-IBL, authored-probe atlas/selection, atomic clustered decals, master rollback, and fallback contracts.
+- [x] Run current-source windowed stock SP load/save/reload/demo and pure MP server/auto-joined-client gameplay with the Milestone F leaves at their default-off values; retain controlled enabled/disabled fixture runs separately.
+- [x] Run the original procedural PBR fixture on `gl33`, `gl41`, `gl43`, and `gl45`, retaining engine-TGA ownership images and exact master-disabled controls. These prove PBR execution and rollback, not broad human visual-quality acceptance; `auto` remains part of general promotion coverage.
+- [x] Run the procedural packed-ORM fixture through validation-enabled Vulkan unshadowed direct interactions with `r_pbrIBL 0`, including a non-vacuous enabled/disabled delta and exact master-disabled control. Authored probes and clustered decals remain OpenGL-only.
+- [ ] Add the point-shadow-mapped Vulkan case and any wider stock/leaf matrix selected for final release promotion.
 - [ ] Capture RenderDoc on forced modern tiers.
-- [ ] Update `docs/dev/release-completion.md` only when user-visible PBR support lands.
-- [ ] Add curated release notes in `docs/dev/releases/vX.Y.Z.md` before shipping.
+- [x] Record the local current-source implementation-exit evidence while leaving final committed-package, platform/driver, retained-review, and release promotion in carry-forward.
+- [x] Update curated `docs/dev/releases/v0.12.0.md` notes before shipping.
 - [ ] Acceptance: no stock asset regression, PBR feature documented, rollback documented, shipped PBR assets have authored/explicit legacy fallback with zero approximate fallback unless explicitly waived, and release notes are player-readable.
 
 ## Validation Matrix Additions
@@ -394,18 +512,24 @@ Add safe tests:
 - [x] Parser metadata, scalar registers, image usage classes, normal format enum, and error cases through `rendererPBRMaterialSelfTest`.
 - [x] Generated classic-stage fallback and explicit fallback maps through `rendererPBRMaterialSelfTest`.
 - [x] Packet propagation plus PBR semantics, texture binding counts, packed/separate maps, and fallback reasons through `rendererScenePacketSelfTest` and `rendererMaterialResourceTableSelfTest`.
-- [ ] PBR G-buffer packing and debug overlays.
-- [ ] Deferred/forward PBR shader readiness and BRDF sanity.
-- [ ] Guarded visible PBR ownership on a synthetic packet frame.
+- [x] Guarded opaque PBR resource admission, G-buffer command/input packing, scalar propagation, `r_rendererModernQuality 0` rollback, and clustered-forward surface-owner deduplication through `rendererPBRVisibleSelfTest`; attachment-overlay readiness remains covered by `rendererGBufferSelfTest`, while PBR debug shader routes remain covered by `renderer_pbr_materials.py`.
+- [x] G-buffer/deferred/forward PBR program-link readiness through `rendererPBRVisibleSelfTest`; direct texture-unit bindings, normal-format markers, scalar/BRDF source contracts, source-alpha admission, and analytic-IBL routes through `renderer_pbr_materials.py`.
+- [x] Guarded visible PBR ownership admission on a synthetic packet frame through `rendererPBRVisibleSelfTest`.
+- [x] Source-alpha PBR blend admission, ordered forward selection, and analytic-IBL uniform/shader contracts through the static `renderer_pbr_materials.py` contract.
+- [x] Original fixture determinism, hashes, TGA layout, manifest provenance, material wiring, and `.tmp` containment through `pbr_procedural_fixture.py`.
+- [x] Explicit stored-channel ORM packing and dependency-injected core behavior through `pbr_orm_packer.py`.
+- [x] Run and retain the current-source PBR, authored-probe, clustered-decal, and master-rollback reports: final focused engine 2/2 after the earlier 8/8 set, static PBR/advanced-lighting passes, and the final native 10/10 pass.
 
 Add gameplay/manual coverage:
 
 - Stock SP map with `r_pbrMaterials 0`.
 - Stock SP map with `r_pbrMaterials 1` and `r_pbrInferFromLegacyMaterials 0`.
 - Stock MP listen-server case with the same two settings.
-- PBR test material scene under `r_rendererModernVisible 1`.
+- Original procedural PBR fixture under `r_rendererModernVisible 1` with retained human-reviewed PBR-owned whole-frame engine-TGA images on each applicable OpenGL tier.
+- Authored-probe fixture with atlas-ready and analytic-fallback controls, including record/cubemap limits and deterministic top-two cluster selection.
+- Clustered-decal fixture with a sealed complete subset plus malformed, stale, incomplete, record-overflow, and reference-overflow zero-ownership controls.
 - PBR test material scene under `r_renderer arb2`, `r_glTier legacy`, `r_pbrMaterials 0`, and `r_pbrGeneratedLegacyFallback 0` to prove authored/explicit fallback does not depend on modern PBR or approximate generation.
-- Legacy rollback run with `r_renderer arb2` and `r_glTier legacy`.
+- One-setting Milestone F rollback with `r_rendererModernQuality 0`, plus legacy renderer/tier fallback with `r_renderer arb2` and `r_glTier legacy`.
 
 Failure conditions:
 
@@ -423,7 +547,7 @@ Failure conditions:
 | Stock `specularmap` content is mistaken for roughness or metallic data | Never infer PBR from classic stages by default. Keep `r_pbrInferFromLegacyMaterials 0`. |
 | PBR normal maps use different channel conventions than Quake 4 bump maps | Require `normalFormat` for new PBR maps or warn loudly; support both Quake 4 A/G and common RG encodings. |
 | Color-space mismatch makes PBR look wrong | Define PBR-only albedo/emissive decode policy before visible promotion; keep legacy path unchanged. |
-| Texture unit pressure on GL 3.3 | Prefer packed `ormMap`; fail closed to legacy fallback when separate maps exceed limits. |
+| Texture unit pressure on GL 3.3 | Separate metallic/roughness/AO direct samplers are fixed at units 4–6 and are admitted only with a complete sampler contract; prefer packed `ormMap` for portability-sensitive content. |
 | Legacy fallback looks poor | Prefer authored classic stages; support explicit `legacyBumpMap`, `legacyDiffuseMap`, and `legacySpecularMap`; warn and fail release validation when fallback is approximate. |
 | PBR shader variants explode | Add dedicated PBR families with compact workflow flags; do not cross-product every legacy feature. |
 | Modern visible path drops special effects or shadows | Reuse existing pass ownership and fallback gates; PBR cannot override those gates. |
@@ -447,6 +571,11 @@ Primary:
 - `src/renderer/ModernGLShaderLibrary.cpp`
 - `src/renderer/ModernGLExecutor.h`
 - `src/renderer/ModernGLExecutor.cpp`
+- `src/renderer/ModernClusteredLighting.h`
+- `src/renderer/ModernClusteredLighting.cpp`
+- `src/renderer/ModernSpecularProbeAtlas.h`
+- `src/renderer/ModernSpecularProbeAtlas.cpp`
+- `src/renderer/AdvancedLightingCore.h`
 - `src/renderer/RenderSystem_init.cpp`
 - `src/renderer/tr_local.h`
 
@@ -454,6 +583,10 @@ Secondary:
 
 - `tools/tests/renderer_validation_matrix.py`
 - `tools/tests/renderer_gameplay_benchmark.py`
+- `tools/tests/pbr_procedural_fixture.py`
+- `tools/tests/pbr_orm_packer.py`
+- `tools/validation/generate_pbr_fixture.py`
+- `tools/assets/pack_pbr_orm.py`
 - `docs/dev/gl-renderer-modernization.md`
 - `docs/dev/renderer-validation-matrix.md`
 - `docs/dev/release-completion.md`
@@ -461,12 +594,21 @@ Secondary:
 
 ## Definition Of Done
 
+The 2026-08-23 local Windows implementation exit satisfies the scoped
+implementation, stock-compatibility, execution, and master-rollback portion of
+this list. It does not by itself satisfy final committed-package,
+platform/driver, RenderDoc, broad authored probe/decal visual, retained-review,
+or release-promotion requirements.
+
 PBR support is complete enough to ship when:
 
 - Existing shipped Quake 4 materials render through the same default compatibility path unless explicitly opted into modern visible rendering.
 - New PBR-authored materials parse, load, reload, reference-count, validate, and dump correctly.
 - PBR-authored materials have a working ARB2 fallback, and shipped PBR materials use authored classic stages or explicit legacy fallback maps rather than approximate generation.
 - Modern PBR G-buffer, deferred, and forward+ paths are cvar-gated, fail closed, and covered by self-tests.
+- Authored OpenGL probes stay within eight cubemaps and 32 records, publish no more than two deterministic indices per cluster, and fall back to analytic PBR environment lighting without claiming parallax or diffuse irradiance.
+- OpenGL clustered decals publish only a completely prepared and sealed transaction within the 1,024-record and 65,536-reference limits; every rejected transaction retains classic ownership.
+- `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0` until its separate visible-lighting parity gate is proven, and `r_rendererModernQuality 0` restores classic ownership for every Milestone F domain.
 - PBR debug overlays show albedo, normal, metallic, roughness, AO, emissive, and fallback state.
 - SP and MP validation passes with PBR disabled and enabled on stock assets.
 - A PBR test scene validates modern visible output and legacy rollback.

@@ -239,6 +239,7 @@ typedef struct viewLight_s {
 	bool					pointLight;					// true for point light projections
 	bool					parallel;					// true for directional/parallel lights
 	idVec3					lightRadius;				// copied from renderLight parms for point-light shadow mapping
+	idMat3					lightAxis;					// immutable authored orientation for backend probe records
 	idPlane					lightProject[4];			// light project used by backend
 	idPlane					fogPlane;					// fog plane for backend fog volume rendering
 	const srfTriangles_t *	frustumTris;				// light frustum for backend fog volume rendering
@@ -1039,6 +1040,8 @@ extern idCVar r_postAAStatePoisonTest;	// intentionally dirty GL texture/client 
 extern idCVar r_pbrMaterials;			// allow explicitly PBR-authored materials on modern paths
 extern idCVar r_pbrGeneratedLegacyFallback;	// allow development-only generated classic fallbacks
 extern idCVar r_pbrDebug;				// PBR attachment/fallback debug view
+extern idCVar r_pbrIBL;				// opt-in PBR-only analytic environment contribution
+extern idCVar r_pbrIBLIntensity;		// PBR analytic environment intensity
 extern idCVar r_pbrInferFromLegacyMaterials;	// research-only classic-material inference
 extern idCVar r_bloom;					// enable bloom post-process
 extern idCVar r_bloomThreshold;			// bloom bright-pass threshold
@@ -1162,6 +1165,9 @@ extern idCVar r_rendererUploadMegs;		// dynamic upload stream size in megabytes 
 extern idCVar r_rendererUploadFrameBuffers;	// dynamic upload stream frame-buffer rotation depth
 extern idCVar r_rendererUploadPersistent;	// allow persistent-mapped dynamic upload stream
 extern idCVar r_rendererUploadBufferPool;	// recycle static GL buffer names instead of gen/data/delete churn
+extern idCVar r_rendererModernQuality;	// master permit/rollback for Milestone-F material and lighting domains
+extern idCVar r_rendererReflectionProbes;	// opt-in authored clustered reflection probes
+extern idCVar r_rendererClusteredDecals;	// opt-in atomic clustered decal ownership
 extern idCVar r_rendererModernExecutor;	// opt-in modern GL executor prepare path
 extern idCVar r_rendererModernSubmit;	// opt-in modern GL draw submission before ARB2 fallback
 extern idCVar r_rendererGpuValidation;	// compare GL43 GPU-driven compute results against CPU reference data

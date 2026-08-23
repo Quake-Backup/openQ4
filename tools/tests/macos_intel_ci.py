@@ -85,7 +85,7 @@ def validate_engine_corridor() -> None:
         "os: macos-15-intel",
         "artifact_name: macos-x64-opengl",
         "artifact_name: macos-x64-metal",
-        'runtime_cases="renderer-default-safety-selftest"',
+        'runtime_cases="renderer-foundation-selftests,renderer-pbr-visible-selftest,renderer-cluster-grid-selftest,renderer-default-safety-selftest"',
         "python tools/tests/macos_dedicated_server_smoke.py",
         "push-${{ matrix.artifact_name }}-dedicated-smoke",
     ):

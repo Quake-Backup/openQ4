@@ -18,6 +18,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import stat
 import struct
 import subprocess
@@ -33,25 +34,109 @@ if str(VALIDATION_DIR) not in sys.path:
 
 from renderer_budget_contract import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
+    MARKER_PREFIX as TIMING_EVIDENCE_MARKER,
     evaluate_timing_evidence,
     load_contract,
     verify_contract_binding,
     verify_recorded_evidence,
 )
+from generate_pbr_fixture import (  # noqa: E402
+    BENCHMARK_CASE as PBR_FIXTURE_BENCHMARK_CASE,
+    DEFAULT_TEXTURE_SIZE as PBR_FIXTURE_TEXTURE_SIZE,
+    MATERIAL_NAME as PBR_FIXTURE_MATERIAL_NAME,
+    STOCK_MAP as PBR_FIXTURE_STOCK_MAP,
+    verify_fixture as verify_procedural_pbr_fixture,
+)
 
 
 SAFE_TIERS = ("auto", "legacy", "gl33", "gl41", "gl43", "gl45", "gl46")
+GL_TIER_RUNTIME_NAMES = {
+    "legacy": "LegacyGL2Compat",
+    "gl33": "ModernGL33",
+    "gl41": "ModernGL41",
+    "gl43": "GpuDrivenGL43",
+    "gl45": "LowOverheadGL45",
+    "gl46": "TopGL46",
+}
 PRESENTATION_MAXFPS = ("0", "120", "240")
 PRESENTATION_SWAP_INTERVALS = ("0", "1")
 DISPLAY_MODES = ("windowed", "fullscreen")
 POSTINIT_CONNECT_WAIT_FRAMES = 30
 POSTINIT_RECONNECT_WAIT_FRAMES = 30
 MP_SERVER_CLIENT_GRACE_MSEC = 90000
-REPORT_SCHEMA_VERSION = 3
+REPORT_SCHEMA_VERSION = 4
 GIT_PROVENANCE_POLICY = "current-openq4-head-and-dirty-state-v1"
 BUDGET_DISPLAY_CONTRACT_ID = "bordered-window-1280x720-v1"
 BUDGET_WIDTH = 1280
 BUDGET_HEIGHT = 720
+PBR_ACCEPTANCE_COMMON_CVARS = (
+    ("r_materialoverride", PBR_FIXTURE_MATERIAL_NAME),
+    ("r_pbrmaterials", "1"),
+    ("r_renderermodernquality", "1"),
+)
+PBR_ACCEPTANCE_GL_CVARS = (
+    *PBR_ACCEPTANCE_COMMON_CVARS,
+    ("r_renderermodernvisible", "1"),
+    ("r_rendererforwardplus", "1"),
+)
+PBR_PROTECTED_CVARS = frozenset(name for name, _ in PBR_ACCEPTANCE_GL_CVARS)
+PBR_BOOL_CVARS = PBR_PROTECTED_CVARS - {"r_materialoverride"}
+PBR_CVAR_MUTATOR_COMMANDS = frozenset(
+    {
+        "cycle",
+        "reset",
+        "set",
+        "seta",
+        "sets",
+        "sett",
+        "setu",
+        "toggle",
+        "togglecvar",
+    }
+)
+PBR_INDIRECT_COMMANDS = frozenset(
+    {
+        "cvar_restart",
+        "connect",
+        "disconnect",
+        "exec",
+        "execmachinespec",
+        "devmap",
+        "map",
+        "maprestart",
+        "nextmap",
+        "reconnect",
+        "reloadmap",
+        "reloadengine",
+        "setmachinespec",
+        "spawnserver",
+        "vstr",
+    }
+)
+PBR_EVIDENCE_OUTPUT_COMMANDS = frozenset(
+    {"echo", "rendererbenchmarkcapture", "say", "sayteam"}
+)
+PBR_EVIDENCE_MARKERS = (
+    "PBR material resources:",
+    "Modern GL executor:",
+    "Modern forward+:",
+    "Modern visible frame:",
+    "Vulkan: native packed PBR direct interactions active (",
+)
+BENCHMARK_EVIDENCE_MARKERS = (
+    *PBR_EVIDENCE_MARKERS,
+    TIMING_EVIDENCE_MARKER,
+    "rendererBenchmark capture(",
+    "Renderer benchmark:",
+    "Frame pacing",
+    "Selected renderer tier:",
+    "MODE:",
+    "Map:",
+)
+POST_MAP_CVARS_BEGIN = "// OPENQ4_BENCHMARK_POST_MAP_CVARS_V1_BEGIN"
+POST_MAP_CVARS_END = "// OPENQ4_BENCHMARK_POST_MAP_CVARS_V1_END"
+EXEC_COMMANDS_BEGIN = "// OPENQ4_BENCHMARK_EXEC_COMMANDS_V1_BEGIN"
+EXEC_COMMANDS_END = "// OPENQ4_BENCHMARK_EXEC_COMMANDS_V1_END"
 # Each role already owns an isolated save path. Keep the engine-side log name
 # deliberately short so the complete fs_savepath/baseoq4/logs path remains
 # below the legacy Windows MAX_PATH boundary even for descriptive MP case IDs.
@@ -60,6 +145,9 @@ RUNTIME_DISPLAY_MODE_PATTERN = re.compile(
     r"^MODE:\s*([^,\r\n]+),\s*(\d+)\s+x\s+(\d+)\s+"
     r"(windowed|borderless|fullscreen)\b",
     re.IGNORECASE | re.MULTILINE,
+)
+ENGINE_MAP_PATTERN = re.compile(
+    r"^Map:\s*([A-Za-z0-9_./\\-]+)\s*$", re.IGNORECASE | re.MULTILINE
 )
 
 REQUIRED_SCENES: dict[str, dict[str, Any]] = {
@@ -1047,6 +1135,7 @@ def attach_result_artifacts(output_dir: Path, results: list[dict[str, Any]]) -> 
                 ("processStdout", "stdout"),
                 ("processStderr", "stderr"),
                 ("screenshot", "screenshot"),
+                ("benchmarkConfig", "autoexecCfg"),
             ):
                 value = role.get(field)
                 if not value:
@@ -1100,9 +1189,26 @@ def split_csv(value: str, defaults: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def has_command_delimiter_or_control(value: str) -> bool:
+    return ";" in value or any(not character.isprintable() for character in value)
+
+
+def has_engine_token_expansion_or_comment(value: str) -> bool:
+    return "$" in value or any(token in value for token in ("/*", "*/", "//"))
+
+
+def contains_benchmark_evidence_text(value: str) -> bool:
+    folded = value.casefold()
+    return any(marker.casefold() in folded for marker in BENCHMARK_EVIDENCE_MARKERS)
+
+
 def parse_extra_cvars(values: list[str]) -> tuple[tuple[str, str], ...]:
     parsed: list[tuple[str, str]] = []
     for raw in values:
+        if has_command_delimiter_or_control(raw):
+            raise ValueError(
+                "extra cvar contains a command delimiter or control character"
+            )
         item = raw.strip()
         if not item:
             continue
@@ -1119,20 +1225,292 @@ def parse_extra_cvars(values: list[str]) -> tuple[tuple[str, str], ...]:
             raise ValueError(f"extra cvar name '{name}' is not a valid cvar identifier")
         if not value:
             raise ValueError(f"extra cvar '{name}' needs a value")
+        if has_command_delimiter_or_control(value):
+            raise ValueError(
+                f"extra cvar '{name}' contains a command delimiter or control character"
+            )
+        if contains_benchmark_evidence_text(value):
+            raise ValueError(
+                f"extra cvar '{name}' may not contain benchmark evidence text"
+            )
+        if name.casefold() in PBR_PROTECTED_CVARS and (
+            has_engine_token_expansion_or_comment(value)
+            or any(character in value for character in ('"', "'", "\\"))
+            or (name.casefold() in PBR_BOOL_CVARS and value.startswith("+"))
+        ):
+            raise ValueError(
+                f"protected PBR cvar '{name}' contains ambiguous engine token syntax"
+            )
         parsed.append((name, value))
     return tuple(parsed)
+
+
+def effective_post_map_cvars(
+    values: Iterable[tuple[str, str]],
+) -> dict[str, str]:
+    """Return the engine-style, last-write-wins post-map cvar selection."""
+    effective: dict[str, str] = {}
+    for name, value in values:
+        effective[name.casefold()] = value
+    return effective
+
+
+def pbr_acceptance_fixture_cvars(render_api: str) -> tuple[tuple[str, str], ...]:
+    if render_api == "gl":
+        return PBR_ACCEPTANCE_GL_CVARS
+    if render_api == "vk":
+        return PBR_ACCEPTANCE_COMMON_CVARS
+    raise ValueError(f"unsupported renderer API for PBR fixture acceptance: {render_api!r}")
+
+
+def requires_pbr_fixture_acceptance(
+    values: Iterable[tuple[str, str]], render_api: str,
+) -> bool:
+    """Recognize only the explicit controlled Milestone-F fixture for one API."""
+    effective = effective_post_map_cvars(values)
+    for name, expected in pbr_acceptance_fixture_cvars(render_api):
+        value = effective.get(name)
+        if value is None:
+            return False
+        if name in PBR_BOOL_CVARS:
+            integer_prefix = re.match(r"^[+-]?\d+", value)
+            if integer_prefix is None or int(integer_prefix.group(0)) == 0:
+                return False
+        elif value != expected:
+            return False
+    return True
+
+
+def command_tokens(command: str) -> tuple[str, ...]:
+    try:
+        return tuple(shlex.split(command, posix=True))
+    except ValueError as exc:
+        raise ValueError(f"invalid --exec-command quoting: {command!r}") from exc
+
+
+def exec_command_pbr_provenance_failure(command: str) -> str:
+    """Explain command forms that can mutate protected fixture state."""
+    tokens = command_tokens(command)
+    if not tokens:
+        return "empty command"
+    first = tokens[0].lstrip("+/\\").casefold()
+    if first in PBR_PROTECTED_CVARS:
+        return f"directly mutates protected cvar {tokens[0]!r}"
+    if first in PBR_CVAR_MUTATOR_COMMANDS and len(tokens) >= 2:
+        target = tokens[1].casefold()
+        if target in PBR_PROTECTED_CVARS:
+            return f"mutates protected cvar {tokens[1]!r} through {tokens[0]!r}"
+    if first in PBR_INDIRECT_COMMANDS:
+        return f"uses indirect command source {tokens[0]!r}"
+    if first in PBR_EVIDENCE_OUTPUT_COMMANDS:
+        return f"uses evidence-output command {tokens[0]!r}"
+    return ""
 
 
 def parse_exec_commands(values: list[str]) -> tuple[str, ...]:
     commands: list[str] = []
     for raw in values:
+        if has_command_delimiter_or_control(raw):
+            raise ValueError(
+                f"--exec-command contains a command delimiter or control character: {raw!r}"
+            )
+        if has_engine_token_expansion_or_comment(raw):
+            raise ValueError(
+                f"--exec-command contains engine token expansion or comment syntax: {raw!r}"
+            )
+        if contains_benchmark_evidence_text(raw):
+            raise ValueError(
+                f"--exec-command may not contain benchmark evidence text: {raw!r}"
+            )
         command = raw.strip()
         if not command:
             raise ValueError("empty --exec-command value")
-        if any(ord(ch) < 32 for ch in command):
-            raise ValueError(f"--exec-command contains a control character: {raw!r}")
+        provenance_failure = exec_command_pbr_provenance_failure(command)
+        if provenance_failure:
+            raise ValueError(
+                f"--exec-command cannot preserve PBR fixture provenance: {provenance_failure}"
+            )
         commands.append(command)
     return tuple(commands)
+
+
+def marked_cfg_block(lines: list[str], begin: str, end: str) -> list[str]:
+    if lines.count(begin) != 1 or lines.count(end) != 1:
+        raise ValueError(f"benchmark config must contain exactly one {begin!r}/{end!r} block")
+    start = lines.index(begin)
+    finish = lines.index(end)
+    if finish <= start:
+        raise ValueError(f"benchmark config block {begin!r} is out of order")
+    return lines[start + 1 : finish]
+
+
+@dataclass(frozen=True)
+class BenchmarkConfigEvidence:
+    cvars: tuple[tuple[str, str], ...]
+    commands: tuple[str, ...]
+    capture_mode: str
+    settle_frames: int
+    sample_kind: str
+    sample_value: int
+    role: str
+    capture_index: int
+    screenshot_request: str
+
+
+def parse_benchmark_config(text: str) -> BenchmarkConfigEvidence:
+    """Validate the complete generated capture template and return its inputs."""
+    lines = text.splitlines()
+    prefix = [
+        "r_rendererSharedGui 0",
+        "r_rendererSharedInWorldGui 0",
+        "r_rendererSharedCinematicPost 0",
+        "r_rendererSharedSpecialFrame 0",
+        "r_rendererSharedWorldAmbient 0",
+        "r_rendererSharedWorldInteraction 0",
+        "r_rendererSharedWorldFogBlend 0",
+        "r_rendererSharedSubview 0",
+        "r_rendererSharedDeform 0",
+        "r_rendererModernVisible 0",
+        "r_rendererModernVisibleDepth 0",
+        "r_rendererModernOpaque 0",
+        "r_rendererModernDeferred 0",
+        "r_rendererForwardPlus 0",
+        "r_rendererModernSubmit 0",
+        "r_rendererGpuValidation 0",
+        "r_rendererBindless 0",
+        "r_rendererShaderReload 0",
+        POST_MAP_CVARS_BEGIN,
+    ]
+    if lines[: len(prefix)] != prefix:
+        raise ValueError("generated benchmark config prefix differs from the capture template")
+    if lines.count(POST_MAP_CVARS_BEGIN) != 1 or lines.count(POST_MAP_CVARS_END) != 1:
+        raise ValueError("generated benchmark config must contain one post-map CVar block")
+    if lines.count(EXEC_COMMANDS_BEGIN) != 1 or lines.count(EXEC_COMMANDS_END) != 1:
+        raise ValueError("generated benchmark config must contain one exec-command block")
+
+    cursor = len(prefix)
+    try:
+        cvar_finish = lines.index(POST_MAP_CVARS_END, cursor)
+    except ValueError as exc:
+        raise ValueError("generated benchmark config post-map CVar block is unterminated") from exc
+    cvar_lines = lines[cursor:cvar_finish]
+    cvars: list[tuple[str, str]] = []
+    for line in cvar_lines:
+        if has_command_delimiter_or_control(line):
+            raise ValueError("unsafe generated post-map cvar line")
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3 or parts[0].casefold() != "set":
+            raise ValueError(f"malformed generated post-map cvar line: {line!r}")
+        _, name, value = parts
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"invalid generated post-map cvar name: {name!r}")
+        if not value or has_command_delimiter_or_control(value):
+            raise ValueError(f"unsafe generated post-map cvar value for {name!r}")
+        if contains_benchmark_evidence_text(value):
+            raise ValueError(
+                f"generated post-map cvar {name!r} contains benchmark evidence text"
+            )
+        if name.casefold() in PBR_PROTECTED_CVARS and (
+            has_engine_token_expansion_or_comment(value)
+            or any(character in value for character in ('"', "'", "\\"))
+            or (name.casefold() in PBR_BOOL_CVARS and value.startswith("+"))
+        ):
+            raise ValueError(f"ambiguous generated protected PBR cvar value for {name!r}")
+        cvars.append((name, value))
+
+    cursor = cvar_finish + 1
+    if cursor >= len(lines):
+        raise ValueError("generated benchmark config ends before the settle command")
+    settle_match = re.fullmatch(r"wait ([1-9][0-9]*)", lines[cursor])
+    if settle_match is None:
+        raise ValueError("generated benchmark config has an invalid settle command")
+    settle_frames = int(settle_match.group(1))
+    cursor += 1
+    fixed_before_exec = ["god", "notarget", EXEC_COMMANDS_BEGIN]
+    if lines[cursor : cursor + len(fixed_before_exec)] != fixed_before_exec:
+        raise ValueError("generated benchmark config pre-exec scaffold differs")
+    cursor += len(fixed_before_exec)
+    try:
+        exec_finish = lines.index(EXEC_COMMANDS_END, cursor)
+    except ValueError as exc:
+        raise ValueError("generated benchmark config exec-command block is unterminated") from exc
+    commands = parse_exec_commands(lines[cursor:exec_finish])
+    cursor = exec_finish + 1
+    if cursor >= len(lines) or lines[cursor] != "viewpos":
+        raise ValueError("generated benchmark config is missing the post-command viewpos")
+    cursor += 1
+
+    display_lines = [
+        f"{name} {value}" for name, value in budget_display_contract()["cvars"].items()
+    ]
+    if lines[cursor : cursor + len(display_lines)] == display_lines:
+        capture_mode = "budget"
+        cursor += len(display_lines)
+    else:
+        capture_mode = "functional-replay"
+    if cursor >= len(lines) or lines[cursor] != "framePacingReset":
+        raise ValueError("generated benchmark config sampling scaffold differs")
+    cursor += 1
+
+    if capture_mode == "budget":
+        sampling_prefix = ["r_rendererMetrics 1", "r_rendererGpuTimers 1"]
+    else:
+        sampling_prefix = ["r_rendererMetrics 0", "r_rendererGpuTimers 0"]
+    if lines[cursor : cursor + len(sampling_prefix)] != sampling_prefix:
+        raise ValueError(
+            f"generated benchmark config does not prove {capture_mode} capture settings"
+        )
+    cursor += len(sampling_prefix)
+    if cursor >= len(lines):
+        raise ValueError("generated benchmark config is missing its sample wait")
+    sample_match = re.fullmatch(r"(wait|waitMsec) ([1-9][0-9]*)", lines[cursor])
+    if sample_match is None:
+        raise ValueError("generated benchmark config has an invalid sample wait")
+    sample_kind = sample_match.group(1)
+    sample_value = int(sample_match.group(2))
+    cursor += 1
+    if capture_mode == "budget":
+        budget_tail = ["rendererBenchmarkCapture", "r_rendererMetrics 0"]
+        if lines[cursor : cursor + len(budget_tail)] != budget_tail:
+            raise ValueError("generated budget config is missing its benchmark capture")
+        cursor += len(budget_tail)
+
+    fixed_tail = ["framePacingSnapshot", "gfxInfo"]
+    if lines[cursor : cursor + len(fixed_tail)] != fixed_tail:
+        raise ValueError("generated benchmark config evidence tail differs")
+    cursor += len(fixed_tail)
+    if cursor >= len(lines):
+        raise ValueError("generated benchmark config is missing its screenshot command")
+    screenshot_match = re.fullmatch(
+        r'screenshot "(screenshots/renderer-bench/(sp|server|client)_([0-9]+)\.tga)"',
+        lines[cursor],
+    )
+    if screenshot_match is None:
+        raise ValueError("generated benchmark config screenshot request differs")
+    screenshot_request, role, capture_index_text = screenshot_match.groups()
+    cursor += 1
+    if lines[cursor:] != ["wait 5", "quit"]:
+        raise ValueError("generated benchmark config final commands differ")
+
+    return BenchmarkConfigEvidence(
+        cvars=tuple(cvars),
+        commands=commands,
+        capture_mode=capture_mode,
+        settle_frames=settle_frames,
+        sample_kind=sample_kind,
+        sample_value=sample_value,
+        role=role,
+        capture_index=int(capture_index_text),
+        screenshot_request=screenshot_request,
+    )
+
+
+def benchmark_cfg_provenance(
+    text: str,
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Extract provenance after validating every line of the generated config."""
+    evidence = parse_benchmark_config(text)
+    return evidence.cvars, evidence.commands
 
 
 def append_set(args: list[str], name: str, value: Any) -> None:
@@ -1298,15 +1676,19 @@ def build_scripted_capture_lines(
         "r_rendererGpuValidation 0",
         "r_rendererBindless 0",
         "r_rendererShaderReload 0",
+        POST_MAP_CVARS_BEGIN,
     ]
     for name, value in extra_cvars:
-        lines.append(f"{name} {value}")
+        lines.append(f"set {name} {value}")
     lines += [
+        POST_MAP_CVARS_END,
         f"wait {max(1, settle_frames)}",
         "god",
         "notarget",
+        EXEC_COMMANDS_BEGIN,
     ]
     lines.extend(exec_commands)
+    lines.append(EXEC_COMMANDS_END)
     # Record the pose that is actually sampled.  In particular, profile scene
     # commands may move the player after the initial map settle; getviewpos
     # before those commands described the wrong camera and omitted pitch/roll.
@@ -1484,8 +1866,14 @@ def format_failure_diagnostic(diagnostic: dict[str, Any]) -> str:
     )
 
 
-def extract_last_line(text: str, token: str) -> str:
-    lines = [line.strip() for line in text.splitlines() if token in line]
+def extract_last_line(
+    text: str, token: str, required_tokens: tuple[str, ...] = ()
+) -> str:
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if token in line and all(required in line for required in required_tokens)
+    ]
     return lines[-1] if lines else ""
 
 
@@ -1532,6 +1920,19 @@ def extract_summary(text: str) -> dict[str, str]:
         "framePacing": extract_last_line(text, "Frame pacing"),
         "selectedTier": extract_last_line(text, "Selected renderer tier:"),
         "tierContract": extract_last_line(text, "Renderer tier contract:"),
+        "pbrMaterialResources": extract_last_line(
+            text, "PBR material resources:"
+        ),
+        "modernGLExecutor": extract_last_line(
+            text,
+            "Modern GL executor:",
+            ("drawPlan=", "planFallback=", "pbrOwners=", "pbrConsumed="),
+        ),
+        "modernForwardPlus": extract_last_line(text, "Modern forward+:"),
+        "modernVisibleFrame": extract_last_line(text, "Modern visible frame:"),
+        "vulkanPackedPBR": extract_last_line(
+            text, "Vulkan: native packed PBR direct interactions active ("
+        ),
         "sharedInteraction": extract_last_line(text, "Renderer shared interaction:"),
         "sharedInteractionView": extract_last_line(
             text, "Renderer shared interaction view["
@@ -1586,6 +1987,267 @@ def extract_summary(text: str) -> dict[str, str]:
                 break
     summary.update(parse_frame_pacing(summary["framePacing"]))
     return summary
+
+
+PBR_RESOURCE_TELEMETRY_PATTERN = re.compile(
+    r"PBR material resources: "
+    r"records=-?\d+ resourceReady=-?\d+ modernReady=-?\d+ "
+    r"packed=-?\d+ separate=-?\d+ fallback=-?\d+"
+    r"(?: disabled=-?\d+ workflow=-?\d+ class=-?\d+ albedo=-?\d+ "
+    r"normalFormat=-?\d+ conflict=-?\d+ layout=-?\d+ image=-?\d+ "
+    r"classic=-?\d+ units=-?\d+ shader=-?\d+ authored=-?\d+ "
+    r"explicitGenerated=-?\d+ generated=-?\d+ approximate=-?\d+ "
+    r"missingFallback=-?\d+ mapsMissing=-?\d+/-?\d+/-?\d+)?"
+)
+MODERN_GL_EXECUTOR_TELEMETRY_PATTERN = re.compile(
+    r"Modern GL executor: (?:available|unavailable), "
+    r"(?=[^\r\n]*\bdrawPlan=-?\d+\b)"
+    r"(?=[^\r\n]*\bplanDraws=-?\d+\b)"
+    r"(?=[^\r\n]*\bplanFallback=-?\d+\b)"
+    r"(?=[^\r\n]*\bpbrOwners=-?\d+\b)"
+    r"(?=[^\r\n]*\bpbrConsumed=-?\d+\b)"
+    r"[A-Za-z0-9_(),='./ -]+"
+)
+MODERN_FORWARD_PLUS_TELEMETRY_PATTERN = re.compile(
+    r"Modern forward\+: cvar=-?\d+, "
+    r"(?=[^\r\n]*\breq=-?\d+\b)"
+    r"(?=[^\r\n]*\bexec=-?\d+\b)"
+    r"(?=[^\r\n]*\bresources=-?\d+\b)"
+    r"(?=[^\r\n]*\bsceneColor=-?\d+\b)"
+    r"(?=[^\r\n]*\bsceneDepth=-?\d+\b)"
+    r"(?=[^\r\n]*\bprogram=-?\d+\b)"
+    r"(?=[^\r\n]*\bcluster=-?\d+\b)"
+    r"(?=[^\r\n]*\bdraws=-?\d+\b)"
+    r"(?=[^\r\n]*\bfallback=-?\d+\b)"
+    r"[A-Za-z0-9_(),='./ -]+"
+)
+MODERN_VISIBLE_TELEMETRY_PATTERN = re.compile(
+    r"Modern visible frame: cvar=-?\d+, "
+    r"(?=[^\r\n]*\breq=-?\d+\b)"
+    r"(?=[^\r\n]*\bexec=-?\d+\b)"
+    r"(?=[^\r\n]*\bresources=-?\d+\b)"
+    r"(?=[^\r\n]*\bprogram=-?\d+\b)"
+    r"(?=[^\r\n]*\bsource=-?\d+\b)"
+    r"(?=[^\r\n]*\bhybrid=-?\d+\b)"
+    r"(?=[^\r\n]*\bbackBuffer=-?\d+\b)"
+    r"(?=[^\r\n]*\bcomposed=-?\d+\b)"
+    r"[A-Za-z0-9_(),='./ -]+"
+)
+PBR_TELEMETRY_PATTERNS = {
+    "pbrMaterialResources": PBR_RESOURCE_TELEMETRY_PATTERN,
+    "modernGLExecutor": MODERN_GL_EXECUTOR_TELEMETRY_PATTERN,
+    "modernForwardPlus": MODERN_FORWARD_PLUS_TELEMETRY_PATTERN,
+    "modernVisibleFrame": MODERN_VISIBLE_TELEMETRY_PATTERN,
+}
+
+
+def normalize_engine_map_name(value: str) -> str:
+    normalized = value.strip().replace("\\", "/").casefold().removesuffix(".map")
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    if not normalized.startswith("maps/"):
+        normalized = "maps/" + normalized.lstrip("/")
+    parts = normalized.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return ""
+    return normalized
+
+
+def evaluate_controlled_map_evidence(
+    sources: Iterable[tuple[str, str]], required: bool
+) -> tuple[dict[str, Any], list[str]]:
+    expected = normalize_engine_map_name(PBR_FIXTURE_STOCK_MAP)
+    evidence: dict[str, Any] = {
+        "required": required,
+        "expected": expected if required else None,
+        "observed": [],
+        "status": "not-required",
+    }
+    if not required:
+        return evidence, []
+    observed: list[dict[str, str]] = []
+    for source_name, source_text in sources:
+        matches = ENGINE_MAP_PATTERN.findall(source_text)
+        if matches:
+            observed.append(
+                {
+                    "source": source_name,
+                    "map": normalize_engine_map_name(matches[-1]),
+                }
+            )
+    evidence["observed"] = observed
+    failures: list[str] = []
+    log_observation = next(
+        (item for item in observed if item["source"] == "log"), None
+    )
+    if log_observation is None:
+        failures.append("controlled fixture final engine Map evidence is missing from the log")
+    for item in observed:
+        if not item["map"] or item["map"] != expected:
+            failures.append(
+                "controlled fixture final engine Map differs: "
+                f"{item['source']}={item['map'] or 'malformed'} expected={expected}"
+            )
+    evidence["status"] = "pass" if not failures else "fail"
+    return evidence, failures
+
+
+def evaluate_pbr_fixture_evidence(
+    summary: dict[str, str], required: bool, render_api: str
+) -> tuple[dict[str, Any], list[str]]:
+    """Fail closed when the controlled PBR fixture did not get a real owner."""
+    if render_api not in ("gl", "vk"):
+        raise ValueError(f"unsupported PBR fixture evidence API: {render_api!r}")
+    evidence: dict[str, Any] = {
+        "required": required,
+        "renderApi": render_api,
+        "status": "not-required",
+    }
+    if not required:
+        return evidence, []
+
+    common_telemetry_specs = (
+        (
+            "pbrResources",
+            "pbrMaterialResources",
+            "PBR material resources",
+            ("records", "resourceReady", "modernReady", "packed", "fallback"),
+        ),
+    )
+    gl_telemetry_specs = (
+        (
+            "modernVisible",
+            "modernVisibleFrame",
+            "Modern visible frame",
+            (
+                "req",
+                "exec",
+                "resources",
+                "program",
+                "source",
+                "hybrid",
+                "backBuffer",
+                "composed",
+            ),
+        ),
+        (
+            "drawPlan",
+            "modernGLExecutor",
+            "Modern GL executor",
+            (
+                "drawPlan",
+                "planDraws",
+                "planFallback",
+                "pbrOwners",
+                "pbrConsumed",
+            ),
+        ),
+        (
+            "forwardPlus",
+            "modernForwardPlus",
+            "Modern forward+",
+            (
+                "req",
+                "exec",
+                "resources",
+                "sceneColor",
+                "sceneDepth",
+                "program",
+                "cluster",
+                "draws",
+                "fallback",
+            ),
+        ),
+    )
+    telemetry_specs = common_telemetry_specs + (
+        gl_telemetry_specs if render_api == "gl" else ()
+    )
+    failures: list[str] = []
+    fields_by_name: dict[str, dict[str, int]] = {}
+    telemetry_present: dict[str, bool] = {}
+    for evidence_name, summary_name, display_name, field_names in telemetry_specs:
+        line = summary.get(summary_name, "")
+        line_pattern = PBR_TELEMETRY_PATTERNS[summary_name]
+        line_is_exact = bool(line) and line_pattern.fullmatch(line) is not None
+        telemetry_present[evidence_name] = line_is_exact
+        fields: dict[str, int] = {}
+        for name in field_names:
+            field_match = re.search(rf"\b{re.escape(name)}=(-?\d+)\b", line)
+            if field_match is not None:
+                fields[name] = int(field_match.group(1))
+        fields_by_name[evidence_name] = fields
+        evidence[evidence_name] = fields
+        if not line:
+            failures.append(f"PBR fixture {display_name} telemetry missing")
+        elif not line_is_exact:
+            failures.append(f"PBR fixture {display_name} telemetry is malformed")
+
+    common_checks = (
+        ("pbrResources", "records", lambda value: value > 0, "PBR records>0"),
+        ("pbrResources", "resourceReady", lambda value: value > 0, "PBR resourceReady>0"),
+        ("pbrResources", "modernReady", lambda value: value > 0, "PBR modernReady>0"),
+        ("pbrResources", "packed", lambda value: value > 0, "PBR packed resources>0"),
+        ("pbrResources", "fallback", lambda value: value == 0, "PBR fallback=0"),
+    )
+    gl_checks = (
+        ("modernVisible", "req", lambda value: value == 1, "modern visible req=1"),
+        ("modernVisible", "exec", lambda value: value == 1, "modern visible exec=1"),
+        ("modernVisible", "resources", lambda value: value == 1, "modern visible resources=1"),
+        ("modernVisible", "program", lambda value: value == 1, "modern visible program=1"),
+        ("modernVisible", "source", lambda value: value == 1, "modern visible source=1"),
+        ("modernVisible", "hybrid", lambda value: value == 1, "modern visible hybrid=1"),
+        ("modernVisible", "backBuffer", lambda value: value == 1, "modern visible backBuffer=1"),
+        ("modernVisible", "composed", lambda value: value > 0, "modern visible composed>0"),
+        ("drawPlan", "drawPlan", lambda value: value == 1, "draw plan ready=1"),
+        ("drawPlan", "planDraws", lambda value: value > 0, "draw-plan draws>0"),
+        ("drawPlan", "pbrOwners", lambda value: value > 0, "clustered PBR owners>0"),
+        ("drawPlan", "pbrConsumed", lambda value: value > 0, "clustered PBR consumed interactions>0"),
+        ("drawPlan", "planFallback", lambda value: value == 0, "draw-plan fallback=0"),
+        ("forwardPlus", "req", lambda value: value == 1, "forward+ req=1"),
+        ("forwardPlus", "exec", lambda value: value == 1, "forward+ exec=1"),
+        ("forwardPlus", "resources", lambda value: value == 1, "forward+ resources=1"),
+        ("forwardPlus", "sceneColor", lambda value: value == 1, "forward+ sceneColor=1"),
+        ("forwardPlus", "sceneDepth", lambda value: value == 1, "forward+ sceneDepth=1"),
+        ("forwardPlus", "program", lambda value: value == 1, "forward+ program=1"),
+        ("forwardPlus", "cluster", lambda value: value == 1, "forward+ cluster=1"),
+        ("forwardPlus", "draws", lambda value: value > 0, "forward+ draws>0"),
+        ("forwardPlus", "fallback", lambda value: value == 0, "forward+ fallback=0"),
+    )
+    checks = common_checks + (gl_checks if render_api == "gl" else ())
+    if (
+        render_api == "gl"
+        and telemetry_present.get("drawPlan", False)
+        and not summary.get("modernGLExecutor", "").startswith(
+            "Modern GL executor: available, "
+        )
+    ):
+        failures.append("PBR fixture Modern GL executor is not available")
+    for telemetry_name, field_name, accepted, requirement in checks:
+        if not telemetry_present[telemetry_name]:
+            continue
+        fields = fields_by_name[telemetry_name]
+        if field_name not in fields:
+            failures.append(f"PBR fixture {requirement} (missing)")
+            continue
+        value = fields[field_name]
+        if not accepted(value):
+            failures.append(f"PBR fixture {requirement} (got {value})")
+
+    if render_api == "vk":
+        marker = summary.get("vulkanPackedPBR", "")
+        match = re.fullmatch(
+            r"Vulkan: native packed PBR direct interactions active \((\d+) draws\)",
+            marker,
+        )
+        draws = int(match.group(1)) if match else None
+        evidence["vulkan"] = {} if draws is None else {"draws": draws}
+        if match is None:
+            failures.append("PBR fixture Vulkan native packed-PBR draw telemetry missing")
+        elif draws <= 0:
+            failures.append(f"PBR fixture Vulkan native packed-PBR draws>0 (got {draws})")
+
+    evidence["status"] = "pass" if not failures else "fail"
+    return evidence, failures
 
 
 def summary_float(summary: dict[str, str], key: str) -> float | None:
@@ -3131,6 +3793,8 @@ def evaluate_role_result(
     difference_reference_dir: Path | None = None,
     difference_min_rms: float = 0.1,
     difference_min_channels: int = 1000,
+    pbr_fixture_acceptance_required: bool = False,
+    autoexec_path: Path | None = None,
 ) -> dict[str, Any]:
     log_path = find_log(savepath, log_name)
     diagnostic_sources = (
@@ -3143,6 +3807,12 @@ def evaluate_role_result(
     warnings = warning_counts(text)
     failure_diagnostics, failure_diagnostics_omitted = collect_failure_diagnostics(diagnostic_sources)
     summary = extract_summary(text)
+    pbr_fixture_evidence, pbr_fixture_failures = evaluate_pbr_fixture_evidence(
+        summary, pbr_fixture_acceptance_required, spec.render_api
+    )
+    map_evidence, map_evidence_failures = evaluate_controlled_map_evidence(
+        diagnostic_sources, pbr_fixture_acceptance_required
+    )
     image = compare_screenshot_if_requested(
         screenshot,
         savepath,
@@ -3228,8 +3898,38 @@ def evaluate_role_result(
             missing.append(f"pacingP99={p99_ms:.1f}>{max_p99_ms:.1f}")
     missing.extend(evaluate_shared_interaction_evidence(spec, summary))
     missing.extend(evaluate_shared_fog_blend_evidence(spec, summary))
-    if "Selected renderer tier:" not in text:
+    missing.extend(pbr_fixture_failures)
+    missing.extend(map_evidence_failures)
+    if spec.render_api == "gl" and "Selected renderer tier:" not in text:
         missing.append("selected tier line")
+    if pbr_fixture_acceptance_required and not require_benchmark:
+        if (
+            spec.case_id != PBR_FIXTURE_BENCHMARK_CASE
+            or spec.mode != "SP"
+            or normalize_engine_map_name(spec.map_name)
+            != normalize_engine_map_name(PBR_FIXTURE_STOCK_MAP)
+        ):
+            missing.append("controlled fixture case/mode/map identity")
+        if spec.render_api == "gl":
+            selected_tiers: set[str] = set()
+            for _, source_text in diagnostic_sources:
+                tier_matches = list(
+                    re.finditer(
+                        r"^Selected renderer tier:\s*([A-Za-z0-9]+)\s*$",
+                        source_text,
+                        re.IGNORECASE | re.MULTILINE,
+                    )
+                )
+                if tier_matches:
+                    selected_tiers.add(tier_matches[-1].group(1).casefold())
+            expected_runtime_tier = GL_TIER_RUNTIME_NAMES.get(spec.tier)
+            if (
+                expected_runtime_tier is None
+                or selected_tiers != {expected_runtime_tier.casefold()}
+            ):
+                missing.append(
+                    "controlled GL fixture selected tier must match the requested tier"
+                )
     if screenshot is None:
         missing.append("screenshot")
     if any(count > 0 for count in warnings.values()):
@@ -3243,11 +3943,10 @@ def evaluate_role_result(
             f"{image_difference.get('rms', 'missing')} channels="
             f"{image_difference.get('differingChannels', 'missing')}"
         )
-    if require_benchmark:
-        display_evidence, display_failures = evaluate_display_evidence(
-            (item[1] for item in diagnostic_sources), screenshot
-        )
-        missing.extend(f"display evidence: {failure}" for failure in display_failures)
+    display_evidence, display_failures = evaluate_display_evidence(
+        (item[1] for item in diagnostic_sources), screenshot
+    )
+    missing.extend(f"display evidence: {failure}" for failure in display_failures)
     if require_benchmark and budget_contract is not None:
         budget_evidence, budget_failures = evaluate_timing_evidence(
             (item[1] for item in diagnostic_sources),
@@ -3269,6 +3968,7 @@ def evaluate_role_result(
         "log": str(log_path) if log_path is not None else "",
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
+        "autoexecCfg": str(autoexec_path) if autoexec_path is not None else "",
         "screenshot": str(screenshot) if screenshot is not None else "",
         "screenshotRequest": screenshot_rel,
         "warnings": warnings,
@@ -3280,6 +3980,8 @@ def evaluate_role_result(
         "imageDifference": image_difference,
         "displayEvidence": display_evidence,
         "budgetEvidence": budget_evidence,
+        "pbrFixtureEvidence": pbr_fixture_evidence,
+        "mapEvidence": map_evidence,
     }
 
 
@@ -3319,6 +4021,9 @@ def run_sp_spec(
     spec: RunSpec,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
+    pbr_fixture_acceptance_required = requires_pbr_fixture_acceptance(
+        args.extra_cvars, spec.render_api
+    )
     savepath = output_dir / "savepaths" / spec.id
     savepath.mkdir(parents=True, exist_ok=True)
     log_name = ROLE_LOG_NAME
@@ -3370,6 +4075,7 @@ def run_sp_spec(
             "interactionExpectation": spec.interaction_expectation,
             "interactionShadowExpectation": spec.interaction_shadow_expectation,
             "fogBlendExpectation": spec.fog_blend_expectation,
+            "pbrFixtureAcceptanceRequired": pbr_fixture_acceptance_required,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "args": game_args,
@@ -3410,6 +4116,8 @@ def run_sp_spec(
         difference_reference_dir=args.difference_reference_dir_path,
         difference_min_rms=args.image_difference_min_rms,
         difference_min_channels=args.image_difference_min_channels,
+        pbr_fixture_acceptance_required=pbr_fixture_acceptance_required,
+        autoexec_path=savepath / "baseoq4" / Path(autoexec_cfg),
     )
     return {
         "id": spec.id,
@@ -3421,6 +4129,7 @@ def run_sp_spec(
         "interactionExpectation": spec.interaction_expectation,
         "interactionShadowExpectation": spec.interaction_shadow_expectation,
         "fogBlendExpectation": spec.fog_blend_expectation,
+        "pbrFixtureAcceptanceRequired": pbr_fixture_acceptance_required,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -3444,6 +4153,9 @@ def run_mp_spec(
     index: int,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
+    pbr_fixture_acceptance_required = requires_pbr_fixture_acceptance(
+        args.extra_cvars, spec.render_api
+    )
     port = args.mp_port + index
     server_savepath = output_dir / "savepaths" / f"{spec.id}_server"
     client_savepath = output_dir / "savepaths" / f"{spec.id}_client"
@@ -3568,6 +4280,7 @@ def run_mp_spec(
             "interactionExpectation": spec.interaction_expectation,
             "interactionShadowExpectation": spec.interaction_shadow_expectation,
             "fogBlendExpectation": spec.fog_blend_expectation,
+            "pbrFixtureAcceptanceRequired": pbr_fixture_acceptance_required,
             "displayContract": display_launch_contract(spec, args.width, args.height),
             "status": "planned",
             "serverArgs": server_args,
@@ -3641,6 +4354,8 @@ def run_mp_spec(
         difference_reference_dir=args.difference_reference_dir_path,
         difference_min_rms=args.image_difference_min_rms,
         difference_min_channels=args.image_difference_min_channels,
+        pbr_fixture_acceptance_required=pbr_fixture_acceptance_required,
+        autoexec_path=server_savepath / "baseoq4" / Path(server_autoexec_cfg),
     )
     client_result = evaluate_role_result(
         spec,
@@ -3666,6 +4381,8 @@ def run_mp_spec(
         difference_reference_dir=args.difference_reference_dir_path,
         difference_min_rms=args.image_difference_min_rms,
         difference_min_channels=args.image_difference_min_channels,
+        pbr_fixture_acceptance_required=pbr_fixture_acceptance_required,
+        autoexec_path=client_savepath / "baseoq4" / Path(client_autoexec_cfg),
     )
     postinit_connect_responses: dict[str, int] = {}
     postinit_ttf_rebuilds: dict[str, int] = {}
@@ -3710,6 +4427,7 @@ def run_mp_spec(
         "interactionExpectation": spec.interaction_expectation,
         "interactionShadowExpectation": spec.interaction_shadow_expectation,
         "fogBlendExpectation": spec.fog_blend_expectation,
+        "pbrFixtureAcceptanceRequired": pbr_fixture_acceptance_required,
         "displayContract": display_launch_contract(spec, args.width, args.height),
         "purpose": spec.purpose,
         "tier": spec.tier,
@@ -4269,8 +4987,12 @@ def verify_benchmark_report(
         failures.append(f"benchmark report status is {report.get('status')!r}, not 'pass'")
     if report.get("dryRun") is not False:
         failures.append("passing benchmark evidence must record dryRun=false")
-    if report.get("budgetEnforced") is not True:
-        failures.append("benchmark report did not enforce the per-map CPU/GPU budget contract")
+    recorded_budget_enforced = report.get("budgetEnforced")
+    if type(recorded_budget_enforced) is not bool:
+        failures.append("benchmark report budget-enforcement mode is missing or malformed")
+        budget_enforced = True
+    else:
+        budget_enforced = recorded_budget_enforced
     if report.get("runtimeVerificationFailures") != []:
         failures.append("benchmark report recorded runtime mutation during capture")
     failures.extend(
@@ -4300,15 +5022,96 @@ def verify_benchmark_report(
     if not isinstance(metadata, dict):
         failures.append("benchmark metadata is missing or malformed")
         metadata = {}
-    if metadata.get("budgetDisplayContract") != expected_display_contract:
-        failures.append("benchmark budget display contract differs from bordered 1280x720")
+    expected_metadata_display_contract = (
+        expected_display_contract if budget_enforced else None
+    )
+    if (
+        "budgetDisplayContract" not in metadata
+        or metadata.get("budgetDisplayContract") != expected_metadata_display_contract
+    ):
+        failures.append(
+            "benchmark budget display contract differs from the recorded capture mode"
+        )
     benchmark_profile = metadata.get("benchmarkPreset")
     if not isinstance(benchmark_profile, str) or not benchmark_profile:
         failures.append("benchmark preset provenance is missing")
         benchmark_profile = ""
+    recorded_render_api = metadata.get("renderApi")
+    if recorded_render_api not in ("gl", "vk"):
+        failures.append("benchmark renderer API provenance is missing or malformed")
+        recorded_render_api = ""
+    pbr_fixture_acceptance_required = False
+    recorded_post_map_cvars = metadata.get("effectivePostMapCvars")
+    valid_post_map_cvars = isinstance(recorded_post_map_cvars, dict) and all(
+        isinstance(name, str)
+        and name == name.casefold()
+        and re.fullmatch(r"[a-z_][a-z0-9_]*", name) is not None
+        and isinstance(value, str)
+        and bool(value)
+        and not has_command_delimiter_or_control(value)
+        and (
+            name not in PBR_PROTECTED_CVARS
+            or (
+                not has_engine_token_expansion_or_comment(value)
+                and not any(character in value for character in ('"', "'", "\\"))
+                and not (name in PBR_BOOL_CVARS and value.startswith("+"))
+            )
+        )
+        for name, value in (
+            recorded_post_map_cvars.items()
+            if isinstance(recorded_post_map_cvars, dict)
+            else ()
+        )
+    )
+    if not valid_post_map_cvars:
+        failures.append("effective post-map cvar provenance is missing or malformed")
+        recorded_post_map_cvars = {}
+    elif recorded_render_api:
+        pbr_fixture_acceptance_required = requires_pbr_fixture_acceptance(
+            recorded_post_map_cvars.items(), recorded_render_api
+        )
+    recorded_pbr_required = metadata.get("pbrFixtureAcceptanceRequired")
+    if type(recorded_pbr_required) is not bool:
+        failures.append("PBR fixture acceptance provenance is missing or malformed")
+    elif recorded_pbr_required is not pbr_fixture_acceptance_required:
+        failures.append("PBR fixture acceptance provenance differs")
+
+    if "pbrFixtureBinding" not in metadata:
+        failures.append("PBR fixture binding provenance is missing")
+    recorded_fixture_binding = metadata.get("pbrFixtureBinding")
+    if pbr_fixture_acceptance_required:
+        try:
+            current_fixture_binding = verify_procedural_pbr_fixture(
+                runtime_dir, PBR_FIXTURE_TEXTURE_SIZE
+            )
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            failures.append(f"controlled PBR fixture verification failed: {exc}")
+        else:
+            if recorded_fixture_binding != current_fixture_binding:
+                failures.append("controlled PBR fixture binding differs")
+    elif recorded_fixture_binding is not None:
+        failures.append("ordinary benchmark report must not bind a controlled PBR fixture")
+    if not budget_enforced and not pbr_fixture_acceptance_required:
+        failures.append(
+            "functional replay is accepted only for the controlled PBR fixture"
+        )
+    recorded_exec_values = metadata.get("execCommands")
+    if not isinstance(recorded_exec_values, list) or not all(
+        isinstance(command, str) for command in recorded_exec_values
+    ):
+        failures.append("benchmark exec-command provenance is missing or malformed")
+        recorded_exec_commands: tuple[str, ...] = ()
+    else:
+        try:
+            recorded_exec_commands = parse_exec_commands(recorded_exec_values)
+        except ValueError as exc:
+            failures.append(f"benchmark exec-command provenance is invalid: {exc}")
+            recorded_exec_commands = ()
     results = report.get("results")
     if not isinstance(results, list) or not results:
         return [*failures, "benchmark results are missing or empty"]
+    if not budget_enforced and len(results) != 1:
+        failures.append("functional replay requires exactly one controlled result")
     for result in results:
         if not isinstance(result, dict):
             failures.append("benchmark result is malformed")
@@ -4316,12 +5119,51 @@ def verify_benchmark_report(
         case_id = str(result.get("id", "unknown"))
         if result.get("status") != "pass":
             failures.append(f"{case_id}: result is not a pass")
+        if not budget_enforced:
+            identity_fields = (
+                result.get("tier"),
+                result.get("maxfps"),
+                result.get("swapInterval"),
+                result.get("display"),
+                result.get("shadowPreset"),
+                result.get("renderer"),
+            )
+            expected_fixture_id = (
+                sanitize_case_id(
+                    "_".join(
+                        (
+                            PBR_FIXTURE_BENCHMARK_CASE,
+                            identity_fields[0],
+                            f"fps{identity_fields[1]}",
+                            f"vsync{identity_fields[2]}",
+                            identity_fields[3],
+                            identity_fields[4],
+                            identity_fields[5],
+                        )
+                    )
+                )
+                if all(isinstance(value, str) and value for value in identity_fields)
+                else ""
+            )
+            if (
+                result.get("mode") != "SP"
+                or normalize_engine_map_name(str(result.get("map", "")))
+                != normalize_engine_map_name(PBR_FIXTURE_STOCK_MAP)
+                or normalize_engine_map_name(str(result.get("budgetMap", "")))
+                != normalize_engine_map_name(PBR_FIXTURE_STOCK_MAP)
+                or case_id != expected_fixture_id
+            ):
+                failures.append(
+                    f"{case_id}: functional replay case/result identity differs from the controlled fixture"
+                )
         expected_map = result.get("budgetMap")
         if not isinstance(expected_map, str) or not expected_map:
             failures.append(f"{case_id}: budgetMap identity is missing")
             continue
         expected_backend = result.get("expectedBackend")
         render_api = result.get("renderApi")
+        if render_api != recorded_render_api:
+            failures.append(f"{case_id}: renderer API differs from report provenance")
         derived_backend = "vulkan" if render_api == "vk" else (
             "opengl" if render_api == "gl" else ""
         )
@@ -4332,10 +5174,31 @@ def verify_benchmark_report(
             failures.append(f"{case_id}: budget evidence was not captured windowed")
         if result.get("displayContract") != expected_display_contract:
             failures.append(f"{case_id}: launch display contract differs from bordered 1280x720")
+        if (
+            not budget_enforced
+            and render_api == "gl"
+            and result.get("tier") not in GL_TIER_RUNTIME_NAMES
+        ):
+            failures.append(
+                f"{case_id}: controlled GL replay must request an explicit supported tier"
+            )
+        if type(result.get("pbrFixtureAcceptanceRequired")) is not bool:
+            failures.append(f"{case_id}: PBR fixture acceptance selection is missing")
+        elif (
+            result.get("pbrFixtureAcceptanceRequired")
+            is not pbr_fixture_acceptance_required
+        ):
+            failures.append(f"{case_id}: PBR fixture acceptance selection differs")
         roles = result.get("roles")
         if not isinstance(roles, list) or not roles:
             failures.append(f"{case_id}: role evidence is missing")
             continue
+        if not budget_enforced and (
+            len(roles) != 1
+            or not isinstance(roles[0], dict)
+            or roles[0].get("role") != "sp"
+        ):
+            failures.append(f"{case_id}: functional replay requires exactly one SP role")
         for role in roles:
             if not isinstance(role, dict):
                 failures.append(f"{case_id}: role evidence is malformed")
@@ -4343,20 +5206,137 @@ def verify_benchmark_report(
             role_name = str(role.get("role", "unknown"))
             if role.get("status") != "pass" or role.get("missing") != []:
                 failures.append(f"{case_id}/{role_name}: role is not a clean pass")
+            if type(role.get("exitCode")) is not int or role.get("exitCode") != 0:
+                failures.append(f"{case_id}/{role_name}: process exit code is not zero")
+            if role.get("timedOut") is not False:
+                failures.append(f"{case_id}/{role_name}: process timed-out state is not false")
             artifact_values = role.get("artifacts")
             artifacts = {
                 item.get("kind"): item
                 for item in artifact_values
                 if isinstance(item, dict) and item.get("kind")
             } if isinstance(artifact_values, list) else {}
-            sources: list[str] = []
+            source_pairs: list[tuple[str, str]] = []
+            source_names = {
+                "engineLog": "log",
+                "processStdout": "stdout",
+                "processStderr": "stderr",
+            }
             for kind in ("engineLog", "processStdout", "processStderr"):
                 path, artifact_failures = _verified_artifact(
                     report_dir, artifacts.get(kind), kind
                 )
                 failures.extend(f"{case_id}/{role_name}: {item}" for item in artifact_failures)
                 if path is not None:
-                    sources.append(path.read_text(encoding="utf-8", errors="replace"))
+                    source_pairs.append(
+                        (
+                            source_names[kind],
+                            path.read_text(encoding="utf-8", errors="replace"),
+                        )
+                    )
+            sources = [source_text for _, source_text in source_pairs]
+            config_path, config_failures = _verified_artifact(
+                report_dir, artifacts.get("benchmarkConfig"), "benchmarkConfig"
+            )
+            failures.extend(
+                f"{case_id}/{role_name}: {item}" for item in config_failures
+            )
+            if config_path is not None:
+                try:
+                    config_evidence = parse_benchmark_config(
+                        config_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    failures.append(
+                        f"{case_id}/{role_name}: benchmark config provenance is invalid: {exc}"
+                    )
+                else:
+                    config_cvars = config_evidence.cvars
+                    config_commands = config_evidence.commands
+                    config_effective_cvars = effective_post_map_cvars(config_cvars)
+                    if config_effective_cvars != recorded_post_map_cvars:
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark config CVar provenance differs"
+                        )
+                    if render_api in ("gl", "vk") and (
+                        requires_pbr_fixture_acceptance(config_cvars, render_api)
+                        is not pbr_fixture_acceptance_required
+                    ):
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark config PBR selection differs"
+                        )
+                    expected_config_commands = recorded_exec_commands + (
+                        (f"waitMsec {MP_SERVER_CLIENT_GRACE_MSEC}",)
+                        if role_name == "server"
+                        else ()
+                    )
+                    if config_commands != expected_config_commands:
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark config command provenance differs"
+                        )
+                    expected_capture_mode = (
+                        "budget" if budget_enforced else "functional-replay"
+                    )
+                    if config_evidence.capture_mode != expected_capture_mode:
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark config capture mode differs"
+                        )
+                    if (
+                        config_evidence.role != role_name
+                        or config_evidence.screenshot_request
+                        != role.get("screenshotRequest")
+                    ):
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark config role/screenshot binding differs"
+                        )
+                    recorded_settle_frames = metadata.get("settleFrames")
+                    recorded_mp_delay_frames = metadata.get("mpClientDelayFrames")
+                    if (
+                        type(recorded_settle_frames) is not int
+                        or (
+                            role_name == "server"
+                            and type(recorded_mp_delay_frames) is not int
+                        )
+                    ):
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark settle provenance is malformed"
+                        )
+                    else:
+                        expected_settle_frames = max(1, recorded_settle_frames)
+                        if role_name == "server":
+                            expected_settle_frames = max(
+                                1, recorded_settle_frames + recorded_mp_delay_frames
+                            )
+                        if config_evidence.settle_frames != expected_settle_frames:
+                            failures.append(
+                                f"{case_id}/{role_name}: benchmark config settle interval differs"
+                            )
+                    recorded_sample_msec = metadata.get("sampleMsec")
+                    recorded_sample_frames = metadata.get("sampleFrames")
+                    if (
+                        type(recorded_sample_msec) is not int
+                        or type(recorded_sample_frames) is not int
+                    ):
+                        failures.append(
+                            f"{case_id}/{role_name}: benchmark sample provenance is malformed"
+                        )
+                    else:
+                        expected_sample_kind = (
+                            "waitMsec" if recorded_sample_msec > 0 else "wait"
+                        )
+                        expected_sample_value = max(
+                            1,
+                            recorded_sample_msec
+                            if recorded_sample_msec > 0
+                            else recorded_sample_frames,
+                        )
+                        if (
+                            config_evidence.sample_kind != expected_sample_kind
+                            or config_evidence.sample_value != expected_sample_value
+                        ):
+                            failures.append(
+                                f"{case_id}/{role_name}: benchmark config sample interval differs"
+                            )
             screenshot_path, screenshot_failures = _verified_artifact(
                 report_dir, artifacts.get("screenshot"), "screenshot"
             )
@@ -4374,17 +5354,71 @@ def verify_benchmark_report(
                 failures.append(
                     f"{case_id}/{role_name}: recorded display evidence differs"
                 )
-            failures.extend(
-                f"{case_id}/{role_name}: {item}"
-                for item in verify_recorded_evidence(
-                    role.get("budgetEvidence"),
-                    sources,
-                    contract,
-                    expected_map,
-                    expected_backend,
-                    benchmark_profile,
-                )
+            combined_sources = "\n".join(sources)
+            recorded_warnings = role.get("warnings")
+            current_warnings = warning_counts(combined_sources)
+            if recorded_warnings != current_warnings:
+                failures.append(f"{case_id}/{role_name}: recorded warning evidence differs")
+            if any(count > 0 for count in current_warnings.values()):
+                failures.append(f"{case_id}/{role_name}: warning evidence is not clean")
+            pbr_summary = extract_summary(combined_sources)
+            pbr_evidence, pbr_failures = evaluate_pbr_fixture_evidence(
+                pbr_summary, pbr_fixture_acceptance_required, render_api
             )
+            failures.extend(
+                f"{case_id}/{role_name}: {item}" for item in pbr_failures
+            )
+            if role.get("pbrFixtureEvidence") != pbr_evidence:
+                failures.append(
+                    f"{case_id}/{role_name}: recorded PBR fixture evidence differs"
+                )
+            map_evidence, map_failures = evaluate_controlled_map_evidence(
+                source_pairs, pbr_fixture_acceptance_required
+            )
+            failures.extend(
+                f"{case_id}/{role_name}: {item}" for item in map_failures
+            )
+            if role.get("mapEvidence") != map_evidence:
+                failures.append(
+                    f"{case_id}/{role_name}: recorded controlled-map evidence differs"
+                )
+            if not budget_enforced and render_api == "gl":
+                selected_tiers = [
+                    match.group(1).casefold()
+                    for source_name, source_text in source_pairs
+                    for match in re.finditer(
+                        r"^Selected renderer tier:\s*([A-Za-z0-9]+)\s*$",
+                        source_text,
+                        re.IGNORECASE | re.MULTILINE,
+                    )
+                    if source_name == "log"
+                ]
+                expected_runtime_tier = GL_TIER_RUNTIME_NAMES.get(result.get("tier"))
+                if (
+                    expected_runtime_tier is None
+                    or not selected_tiers
+                    or selected_tiers[-1].casefold()
+                    != expected_runtime_tier.casefold()
+                ):
+                    failures.append(
+                        f"{case_id}/{role_name}: final GL selected tier differs from the result"
+                    )
+            if budget_enforced:
+                failures.extend(
+                    f"{case_id}/{role_name}: {item}"
+                    for item in verify_recorded_evidence(
+                        role.get("budgetEvidence"),
+                        sources,
+                        contract,
+                        expected_map,
+                        expected_backend,
+                        benchmark_profile,
+                    )
+                )
+            elif role.get("budgetEvidence") != {}:
+                failures.append(
+                    f"{case_id}/{role_name}: functional replay budget evidence must be empty"
+                )
     return failures
 
 
@@ -4461,9 +5495,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         profile_exec_commands = tuple(PROFILE_DEFAULTS[parsed.profile].get("execCommands", ()))
         parsed.extra_cvars = profile_cvars + parse_extra_cvars(parsed.set_cvar)
         parsed.launch_cvars = profile_launch_cvars + parse_extra_cvars(parsed.set_launch_cvar)
-        parsed.exec_commands = profile_exec_commands + parse_exec_commands(parsed.exec_command)
+        parsed.exec_commands = parse_exec_commands(
+            [*profile_exec_commands, *parsed.exec_command]
+        )
     except ValueError as exc:
         parser.error(str(exc))
+    pbr_launch_conflicts = sorted(
+        name
+        for name, _ in parsed.launch_cvars
+        if name.casefold() in PBR_PROTECTED_CVARS
+    )
+    if pbr_launch_conflicts:
+        parser.error(
+            "protected PBR fixture CVars must be set post-map with --set-cvar: "
+            + ", ".join(pbr_launch_conflicts)
+        )
     if not parsed.pacing_only:
         protected_launch_cvars = {
             name.casefold() for name in budget_display_contract()["cvars"]
@@ -4576,6 +5622,14 @@ def main(argv: list[str]) -> int:
         if not failures:
             print("renderer gameplay benchmark verification: pass")
         return 1 if failures else 0
+    args.pbr_fixture_acceptance_required = requires_pbr_fixture_acceptance(
+        args.extra_cvars, args.render_api
+    )
+    args.pbr_fixture_binding = (
+        verify_procedural_pbr_fixture(runtime_dir, PBR_FIXTURE_TEXTURE_SIZE)
+        if args.pbr_fixture_acceptance_required
+        else None
+    )
     requested_basepath = args.basepath
     basepath = resolve_basepath(requested_basepath)
     if requested_basepath and not basepath:
@@ -4648,12 +5702,16 @@ def main(argv: list[str]) -> int:
         "dryRun": args.dry_run,
         "autoexecDelayMs": args.autoexec_delay_ms,
         "settleFrames": args.settle_frames,
+        "mpClientDelayFrames": args.mp_client_delay_frames,
         "sampleFrames": args.sample_frames,
         "sampleMsec": args.sample_msec,
         "minPacingHz": args.min_pacing_hz,
         "maxP95Ms": args.max_p95_ms,
         "maxP99Ms": args.max_p99_ms,
         "profileCvars": dict(PROFILE_DEFAULTS[args.profile].get("cvars", ())),
+        "effectivePostMapCvars": effective_post_map_cvars(args.extra_cvars),
+        "pbrFixtureAcceptanceRequired": args.pbr_fixture_acceptance_required,
+        "pbrFixtureBinding": args.pbr_fixture_binding,
         "profileExecCommands": list(PROFILE_DEFAULTS[args.profile].get("execCommands", ())),
         "launchCvars": dict(args.launch_cvars),
         "execCommands": list(args.exec_commands),

@@ -318,6 +318,30 @@ if get_option('build_native_tests')
     openq4_renderer_contracts_test,
     timeout: 30,
   )
+
+  openq4_advanced_lighting_core_test = executable(
+    'openq4-advanced-lighting-core-test',
+    files('tools/tests/native/AdvancedLightingCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-advanced-lighting-core',
+    openq4_advanced_lighting_core_test,
+    timeout: 30,
+  )
+
+  openq4_specular_probe_atlas_packing_test = executable(
+    'openq4-specular-probe-atlas-packing-test',
+    files('tools/tests/native/ModernSpecularProbeAtlasPackingTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-specular-probe-atlas-packing',
+    openq4_specular_probe_atlas_packing_test,
+    timeout: 30,
+  )
 endif
 
 openq4_pak_files = []

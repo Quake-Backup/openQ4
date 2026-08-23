@@ -662,6 +662,8 @@ static void R_ModernGLSubmitPlan_SetTextureCacheSlot(
 
 static void R_ModernGLSubmitPlan_FillMaterialTextureCache( modernGLSubmitCommand_t &command, const materialResourceTableRecord_t *materialRecord ) {
 	R_ModernGLSubmitPlan_ResetMaterialTextureCache( command );
+	const bool pbrModernMaterial = materialRecord != NULL
+		&& R_MaterialResourceTable_PBRModernPathEligible( *materialRecord );
 	if ( materialRecord != NULL ) {
 		command.materialLoadedTextureSemanticMask = materialRecord->loadedTextureSemanticMask;
 		command.materialAlphaTestRegister = materialRecord->alphaTestRegister;
@@ -671,23 +673,46 @@ static void R_ModernGLSubmitPlan_FillMaterialTextureCache( modernGLSubmitCommand
 	R_ModernGLSubmitPlan_SetTextureCacheSlot(
 		command,
 		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_MAIN,
-		R_ModernGLSubmitPlan_PrimaryTextureBinding( materialRecord ),
-		MATERIAL_RESOURCE_TEXTURE_DIFFUSE );
+		pbrModernMaterial
+			? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_ALBEDO )
+			: R_ModernGLSubmitPlan_PrimaryTextureBinding( materialRecord ),
+		pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_ALBEDO : MATERIAL_RESOURCE_TEXTURE_DIFFUSE );
 	R_ModernGLSubmitPlan_SetTextureCacheSlot(
 		command,
 		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_NORMAL,
-		materialRecord != NULL ? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_BUMP ) : NULL,
-		MATERIAL_RESOURCE_TEXTURE_BUMP );
+		materialRecord != NULL ? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord,
+			pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_NORMAL : MATERIAL_RESOURCE_TEXTURE_BUMP ) : NULL,
+		pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_NORMAL : MATERIAL_RESOURCE_TEXTURE_BUMP );
 	R_ModernGLSubmitPlan_SetTextureCacheSlot(
 		command,
 		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_SPECULAR,
-		materialRecord != NULL ? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_SPECULAR ) : NULL,
-		MATERIAL_RESOURCE_TEXTURE_SPECULAR );
+		materialRecord != NULL ? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord,
+			pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_ORM : MATERIAL_RESOURCE_TEXTURE_SPECULAR ) : NULL,
+		pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_ORM : MATERIAL_RESOURCE_TEXTURE_SPECULAR );
 	R_ModernGLSubmitPlan_SetTextureCacheSlot(
 		command,
 		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_EMISSIVE,
-		materialRecord != NULL ? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_EMISSIVE ) : NULL,
-		MATERIAL_RESOURCE_TEXTURE_EMISSIVE );
+		materialRecord != NULL ? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord,
+			pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR : MATERIAL_RESOURCE_TEXTURE_EMISSIVE ) : NULL,
+		pbrModernMaterial ? MATERIAL_RESOURCE_TEXTURE_EMISSIVE_PBR : MATERIAL_RESOURCE_TEXTURE_EMISSIVE );
+	R_ModernGLSubmitPlan_SetTextureCacheSlot(
+		command,
+		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_METALLIC,
+		pbrModernMaterial && materialRecord->pbrSeparateMaterialData
+			? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_METALLIC ) : NULL,
+		MATERIAL_RESOURCE_TEXTURE_METALLIC );
+	R_ModernGLSubmitPlan_SetTextureCacheSlot(
+		command,
+		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_ROUGHNESS,
+		pbrModernMaterial && materialRecord->pbrSeparateMaterialData
+			? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_ROUGHNESS ) : NULL,
+		MATERIAL_RESOURCE_TEXTURE_ROUGHNESS );
+	R_ModernGLSubmitPlan_SetTextureCacheSlot(
+		command,
+		MODERN_GL_SUBMIT_MATERIAL_TEXTURE_AO,
+		pbrModernMaterial && materialRecord->pbrSeparateMaterialData
+			? R_MaterialResourceTable_TextureBindingForSemantic( *materialRecord, MATERIAL_RESOURCE_TEXTURE_AO ) : NULL,
+		MATERIAL_RESOURCE_TEXTURE_AO );
 }
 
 bool idModernGLSubmitPlan::AddCommand( const modernGLDrawPlanEntry_t &entry ) {
@@ -740,7 +765,9 @@ bool idModernGLSubmitPlan::AddCommand( const modernGLDrawPlanEntry_t &entry ) {
 		return false;
 	}
 	const materialResourceTableRecord_t *materialRecord = R_MaterialResourceTable_RecordForIndex( entry.materialTableIndex );
-	if ( materialRecord != NULL && !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord ) ) {
+	if ( materialRecord != NULL
+		&& !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord )
+		&& !R_MaterialResourceTable_PBRModernPathEligible( *materialRecord ) ) {
 		stats.fallbackDraws++;
 		return false;
 	}
@@ -764,10 +791,14 @@ bool idModernGLSubmitPlan::AddCommand( const modernGLDrawPlanEntry_t &entry ) {
 	command.modelViewMatrixLocation = entry.modelViewMatrixLocation;
 	command.debugColorLocation = entry.debugColorLocation;
 	command.localParamsLocation = entry.localParamsLocation;
+	command.pbrIBLLocation = entry.pbrIBLLocation;
 	command.mainTextureLocation = entry.mainTextureLocation;
 	command.normalTextureLocation = entry.normalTextureLocation;
 	command.specularTextureLocation = entry.specularTextureLocation;
 	command.emissiveTextureLocation = entry.emissiveTextureLocation;
+	command.metallicTextureLocation = entry.metallicTextureLocation;
+	command.roughnessTextureLocation = entry.roughnessTextureLocation;
+	command.aoTextureLocation = entry.aoTextureLocation;
 	command.textureIndicesLocation = entry.textureIndicesLocation;
 	command.textureTableModeLocation = entry.textureTableModeLocation;
 	command.materialFlagsLocation = entry.materialFlagsLocation;

@@ -115,6 +115,8 @@ static int R_ScenePackets_ActiveSpecialEffectsMask( void ) {
 
 static bool R_ScenePackets_ModernPipelineRequested( void ) {
 	const bool modernVisibleRequested = r_rendererModernVisible.GetBool() || RendererBootstrap_ShouldAutoPromoteModernVisible();
+	const bool advancedLightingLeafRequested = r_rendererModernQuality.GetBool()
+		&& ( r_rendererReflectionProbes.GetBool() || r_rendererClusteredDecals.GetBool() );
 	const bool shadowMapSidecarRequested =
 		r_useShadowMap.GetBool()
 		&& r_shadows.GetBool()
@@ -125,6 +127,7 @@ static bool R_ScenePackets_ModernPipelineRequested( void ) {
 		|| r_rendererGpuValidation.GetBool()
 		|| r_rendererBindless.GetBool()
 		|| modernVisibleRequested
+		|| advancedLightingLeafRequested
 		|| r_rendererSharedGui.GetBool()
 		|| r_rendererSharedInWorldGui.GetBool()
 		|| r_rendererSharedCinematicPost.GetBool()
@@ -1882,7 +1885,12 @@ static bool R_ScenePackets_DrawSurfAmbientEligible( const viewDef_t *viewDef, co
 		return false;
 	}
 	const idMaterial *material = drawSurf->material;
-	if ( !material->HasAmbient() || material->IsPortalSky() || material->SuppressInSubview() ) {
+	// Clustered PBR lighting uses the ambient packet as the one stable surface
+	// owner for the complete light list.  A valid PBR material is not required
+	// to author a legacy ambient stage, so retain it here even when HasAmbient()
+	// is false.  The modern draw plan still fail-closes on PBR readiness and the
+	// classic renderer remains authoritative whenever that admission fails.
+	if ( ( !material->HasAmbient() && !material->HasPBR() ) || material->IsPortalSky() || material->SuppressInSubview() ) {
 		return false;
 	}
 	if ( r_skipDecals.GetBool() && R_ScenePackets_DrawSurfIsDecalMaterialPass( drawSurf ) ) {

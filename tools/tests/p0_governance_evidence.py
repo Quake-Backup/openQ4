@@ -136,22 +136,22 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     require(matrix, "`net_clientUseLegacyRcon 1` / `net_serverAllowLegacyRcon 1`", "legacy rcon containment claim")
     require(
         matrix,
-        "**Implemented** (four complete shared domains, an in-world GUI subset, a special-subview transaction, cinematic/authored-post ownership, special-frame ownership, plus deform dependency; broader use pending)",
+        "**Implemented** (scoped Milestone D consumers; broader modern-renderer use pending)",
         "backend-neutral renderer contract scope",
     )
     require(
         matrix,
-        "eligible fog/blend phases are the first four visible GL/Vulkan consumers",
+        "eligible root GUI, world ambient, interaction, fog/blend",
         "four implemented shared domains",
     )
     require(
         matrix,
-        "Cinematic and post special forms remain classic-owned",
+        "Special-view and nested cinematic/post records share exact root/depth identity",
         "remaining shared-domain boundary",
     )
     require(
         matrix,
-        "The domains remain default-off and retain clean-package/platform promotion gates",
+        "The domains remain default-off with clean-package/platform promotion gates",
         "shared-domain promotion boundary",
     )
 
@@ -163,7 +163,7 @@ def test_capability_matrix_is_authoritative_and_scoped() -> None:
     )
     require(
         roadmap,
-        "Authored-stock, clean-package, and platform qualification remain open as applicable",
+        "root cinematic/post, `_currentDepth`, broad subview forms, in-world GUI, special frame, authored-stock breadth, clean-package, retained-review, and target-platform/driver qualification remain open as applicable",
         "roadmap promotion boundary",
     )
 

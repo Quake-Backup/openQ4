@@ -48,6 +48,46 @@ const char *ModernGLDrawPlanPipeline_Name( modernGLDrawPlanPipeline_t pipeline )
 	}
 }
 
+static const srfTriangles_t *R_ModernGLDrawPlan_SourceAmbientSurface(
+		const drawPacket_t &packet ) {
+	if ( packet.legacyDrawSurf == NULL || packet.legacyDrawSurf->geo == NULL ) {
+		return NULL;
+	}
+	const srfTriangles_t *geometry = packet.legacyDrawSurf->geo;
+	return geometry->ambientSurface != NULL ? geometry->ambientSurface : geometry;
+}
+
+static bool R_ModernGLDrawPlan_SameStableSurface(
+		const drawPacket_t &a, const drawPacket_t &b ) {
+	const srfTriangles_t *aSource = R_ModernGLDrawPlan_SourceAmbientSurface( a );
+	const srfTriangles_t *bSource = R_ModernGLDrawPlan_SourceAmbientSurface( b );
+	// Per-light interaction receivers are separate drawSurf allocations and can
+	// contain a culled index subset. Their ambientSurface pointer is the stable
+	// front-end identity shared with the ambient draw that owns clustered PBR.
+	return aSource != NULL
+		&& aSource == bSource
+		&& a.viewDef == b.viewDef
+		&& a.space == b.space
+		&& a.materialRecord == b.materialRecord
+		&& a.materialRecordIndex == b.materialRecordIndex;
+}
+
+static const drawPacket_t *R_ModernGLDrawPlan_FindPBRAmbientSurfaceOwner(
+		const idScenePacketFrame &packetFrame, const drawPacket_t &interaction ) {
+	if ( interaction.passCategory != RENDER_PASS_ARB2_INTERACTION ) {
+		return NULL;
+	}
+	const int drawPacketCount = packetFrame.NumDrawPackets();
+	for ( int packetIndex = 0; packetIndex < drawPacketCount; ++packetIndex ) {
+		const drawPacket_t &candidate = packetFrame.DrawPacket( packetIndex );
+		if ( candidate.passCategory == RENDER_PASS_AMBIENT
+				&& R_ModernGLDrawPlan_SameStableSurface( interaction, candidate ) ) {
+			return &candidate;
+		}
+	}
+	return NULL;
+}
+
 static void R_ModernGLDrawPlan_SetStatus( modernGLDrawPlanStats_t &stats, const char *status ) {
 	idStr::Copynz( stats.status, status ? status : "unknown", sizeof( stats.status ) );
 }
@@ -213,12 +253,29 @@ static bool R_ModernGLDrawPlan_ShouldUseForwardPlus( const modernGLDrawPlanBuild
 		|| materialRecord.materialClass == RENDER_MATERIAL_SHADOW_ONLY ) {
 		return false;
 	}
+	const bool pbrModernEligible = R_MaterialResourceTable_PBRModernPathEligible( materialRecord );
+	// A clustered PBR shader evaluates the complete light list. Per-light ARB2
+	// packets are never shader owners; the one ambient packet keeps stable
+	// surface ordering, including source-alpha ordering.
+	if ( pbrModernEligible && draw.passCategory != RENDER_PASS_AMBIENT ) {
+		return false;
+	}
 	if ( R_ModernGLDrawPlan_IsForwardPlusDecalDraw( draw, materialRecord ) ) {
 		pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_TRANSPARENT;
 		shaderKind = MODERN_GL_SHADER_TRANSPARENT_FORWARD;
 		return true;
 	}
 	if ( draw.passCategory == RENDER_PASS_ARB2_INTERACTION || draw.passCategory == RENDER_PASS_AMBIENT ) {
+		// Conventional Quake 4 source-alpha materials keep an opaque material
+		// class, so use the explicit PBR blend contract before the opaque route.
+		if ( R_MaterialResourceTable_PBRTransparentPathEligible( materialRecord ) ) {
+			pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_TRANSPARENT;
+			// The PBR clustered-forward shader carries the complete direct-light,
+			// IBL, and debug contract. The transparent pipeline supplies the
+			// source-alpha blend state and ordered submission semantics.
+			shaderKind = MODERN_GL_SHADER_CLUSTERED_FORWARD_OPAQUE;
+			return true;
+		}
 		if ( materialRecord.alphaTest || materialRecord.materialClass == RENDER_MATERIAL_PERFORATED ) {
 			pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_ALPHA_TEST;
 			shaderKind = MODERN_GL_SHADER_CLUSTERED_FORWARD_ALPHA_TEST;
@@ -236,6 +293,37 @@ static bool R_ModernGLDrawPlan_ShouldUseForwardPlus( const modernGLDrawPlanBuild
 		return true;
 	}
 	return false;
+}
+
+static bool R_ModernGLDrawPlan_PBRInteractionHasReadyClusteredOwner(
+		const modernGLDrawPlanBuildContext_t &context,
+		const idScenePacketFrame &packetFrame,
+		const drawPacket_t &interaction,
+		const materialResourceTableRecord_t &materialRecord ) {
+	const drawPacket_t *owner = R_ModernGLDrawPlan_FindPBRAmbientSurfaceOwner( packetFrame, interaction );
+	if ( owner == NULL || !R_ModernGLDrawPlan_HasGraphPass( context, RENDER_PASS_AMBIENT ) ) {
+		return false;
+	}
+	if ( RB_FlatDiffuseSurfaceActive( owner->legacyDrawSurf )
+			|| R_ModernGLDrawPlan_NeedsLegacySoftParticlePath( *owner )
+			|| owner->geometryRecord == NULL
+			|| owner->geometryRecordIndex < 0
+			|| R_ModernGLDrawPlan_GeometryFallbackReason( *owner ) != GEOMETRY_RESOURCE_FALLBACK_NONE
+			|| owner->instanceRecord == NULL
+			|| owner->instanceRecordIndex < 0 ) {
+		return false;
+	}
+	modernGLDrawPlanPipeline_t ownerPipeline = MODERN_GL_DRAW_PLAN_PIPELINE_NONE;
+	modernGLShaderProgramKind_t ownerShader = MODERN_GL_SHADER_FLAT_MATERIAL;
+	if ( !R_ModernGLDrawPlan_ShouldUseForwardPlus(
+			context, *owner, materialRecord, ownerPipeline, ownerShader ) ) {
+		return false;
+	}
+	const modernGLShaderProgramInfo_t *program =
+		( ownerShader >= 0 && ownerShader < MODERN_GL_SHADER_PROGRAM_KIND_COUNT )
+		? context.programs[ownerShader]
+		: NULL;
+	return program != NULL && program->program != 0 && program->linked;
 }
 
 bool idModernGLDrawPlan::AddEntry( const drawPacket_t &draw, int drawPacketIndex, const materialResourceTableRecord_t &materialRecord, modernGLDrawPlanPipeline_t pipeline, const modernGLShaderProgramInfo_t &program ) {
@@ -257,10 +345,14 @@ bool idModernGLDrawPlan::AddEntry( const drawPacket_t &draw, int drawPacketIndex
 	entry.modelViewMatrixLocation = program.modelViewMatrixLocation;
 	entry.debugColorLocation = program.debugColorLocation;
 	entry.localParamsLocation = program.localParamsLocation;
+	entry.pbrIBLLocation = program.pbrIBLLocation;
 	entry.mainTextureLocation = program.mainTextureLocation;
 	entry.normalTextureLocation = program.normalTextureLocation;
 	entry.specularTextureLocation = program.specularTextureLocation;
 	entry.emissiveTextureLocation = program.emissiveTextureLocation;
+	entry.metallicTextureLocation = program.metallicTextureLocation;
+	entry.roughnessTextureLocation = program.roughnessTextureLocation;
+	entry.aoTextureLocation = program.aoTextureLocation;
 	entry.textureIndicesLocation = program.textureIndicesLocation;
 	entry.textureTableModeLocation = program.textureTableModeLocation;
 	entry.materialFlagsLocation = program.materialFlagsLocation;
@@ -297,6 +389,13 @@ bool idModernGLDrawPlan::AddEntry( const drawPacket_t &draw, int drawPacketIndex
 	if ( pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_TRANSPARENT
 		&& R_ModernGLDrawPlan_IsForwardPlusDecalDraw( draw, materialRecord ) ) {
 		stats.forwardPlusDecalDraws++;
+	}
+	if ( materialRecord.hasPBR
+			&& draw.passCategory == RENDER_PASS_AMBIENT
+			&& ( pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_OPAQUE
+				|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_ALPHA_TEST
+				|| pipeline == MODERN_GL_DRAW_PLAN_PIPELINE_FORWARD_PLUS_TRANSPARENT ) ) {
+		stats.pbrClusteredSurfaceOwners++;
 	}
 	if ( entry.glslVersion > stats.highestGLSLVersion ) {
 		stats.highestGLSLVersion = entry.glslVersion;
@@ -345,7 +444,10 @@ bool idModernGLDrawPlan::Build( const idScenePacketFrame &packetFrame, const idR
 		|| r_rendererModernGBufferDebug.GetInteger() > 0
 		|| r_rendererModernDeferred.GetBool()
 		|| r_rendererModernDeferredDebug.GetInteger() > 0;
-	context.forwardPlusRequested = context.modernVisibleRequested || r_rendererForwardPlus.GetBool();
+	context.forwardPlusRequested = context.modernVisibleRequested
+		|| r_rendererForwardPlus.GetBool()
+		|| ( r_rendererModernQuality.GetBool()
+			&& r_rendererClusteredDecals.GetBool() );
 	for ( int kind = 0; kind < MODERN_GL_SHADER_PROGRAM_KIND_COUNT; ++kind ) {
 		context.programs[kind] = R_ModernGLShaderLibrary_FindProgram( static_cast<modernGLShaderProgramKind_t>( kind ), shaderStats.highestGLSLVersion );
 	}
@@ -401,9 +503,21 @@ bool idModernGLDrawPlan::Build( const idScenePacketFrame &packetFrame, const idR
 			stats.missingMaterialTableDraws++;
 			continue;
 		}
-		if ( !R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord ) ) {
+		const bool classicModernEligible = R_MaterialResourceTable_ClassicModernPathEligible( *materialRecord );
+		const bool pbrModernEligible = R_MaterialResourceTable_PBRModernPathEligible( *materialRecord );
+		if ( !classicModernEligible && !pbrModernEligible ) {
 			stats.fallbackDraws++;
 			stats.materialFallbackDraws++;
+			continue;
+		}
+		if ( pbrModernEligible
+				&& draw.passCategory == RENDER_PASS_ARB2_INTERACTION
+				&& R_ModernGLDrawPlan_PBRInteractionHasReadyClusteredOwner(
+					context, packetFrame, draw, *materialRecord ) ) {
+			// The ambient packet is the one complete clustered lighting owner for
+			// this stable surface. Consuming the per-light packet is intentional,
+			// not a legacy fallback.
+			stats.pbrClusteredConsumedInteractions++;
 			continue;
 		}
 		const bool forwardPlusCandidate = R_ModernGLDrawPlan_ShouldUseForwardPlus( context, draw, *materialRecord, pipeline, shaderKind );
@@ -414,7 +528,30 @@ bool idModernGLDrawPlan::Build( const idScenePacketFrame &packetFrame, const idR
 			continue;
 		}
 
-		if ( !forwardPlusCandidate && draw.passCategory == RENDER_PASS_AMBIENT && R_ModernGLDrawPlan_ShouldUseGBuffer( context, *materialRecord ) ) {
+		const bool pbrGBufferCandidate =
+			!forwardPlusCandidate
+			&& draw.passCategory == RENDER_PASS_AMBIENT
+			&& R_ModernGLDrawPlan_ShouldUseGBuffer( context, *materialRecord );
+		// Depth-only packets do not evaluate a material lighting model. PBR
+		// records therefore use the regular depth owner (including alpha-test
+		// sampling where applicable) before their G-buffer or forward shading
+		// pass; rejecting them here leaves a visible PBR frame with an empty
+		// scene-depth texture.
+		const bool pbrDepthCandidate =
+			!forwardPlusCandidate
+			&& R_ModernGLDrawPlan_IsDepthPipeline( pipeline );
+		// A PBR record is never compatible with the generic flat-material
+		// diagnostic program.  It must have an explicit PBR G-buffer or
+		// clustered-forward owner, except for the lighting-independent depth
+		// prepass above; otherwise leave the complete draw with the classic
+		// renderer rather than submitting a partial material model.
+		if ( materialRecord->hasPBR && !forwardPlusCandidate && !pbrGBufferCandidate && !pbrDepthCandidate ) {
+			stats.fallbackDraws++;
+			stats.materialFallbackDraws++;
+			continue;
+		}
+
+		if ( pbrGBufferCandidate ) {
 			pipeline = MODERN_GL_DRAW_PLAN_PIPELINE_GBUFFER;
 			shaderKind = ( materialRecord->alphaTest || materialRecord->materialClass == RENDER_MATERIAL_PERFORATED )
 				? MODERN_GL_SHADER_GBUFFER_ALPHA_TEST

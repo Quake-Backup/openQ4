@@ -33,12 +33,12 @@ def test_scene_target_supersampling_is_guarded_and_scales_clipping():
 
     assert_true("RB_SCREEN_FRACTION_MAX = 200" in draw_common, "renderer should keep a conservative supersampling ceiling")
     assert_true("RB_MaxSceneScaleDimension" in draw_common and "glConfig.maxTextureSize" in draw_common, "supersampling should clamp against GL texture limits")
-    assert_true("RB_SupersampledSceneTargetRequested" in draw_common, "supersampling should request the scene render target")
-    assert_true("!supersampledScene && requestedSamples > 1" in draw_common, "supersampled scene targets should remain single-sample instead of layering MSAA onto the oversized FBO")
-    assert_true("RB_BeginSceneSupersampling" in draw_common, "supersampling should scale the backend scene command")
-    assert_true("RB_ScaleLocalScreenRect( vLight->scissorRect" in draw_common, "light scissors should scale with the supersampled viewport")
+    assert_true("RB_ScaledSceneTargetRequested" in draw_common, "supersampling should request the scaled scene render target")
+    assert_true("!scaledScene && requestedSamples > 1" in draw_common, "scaled scene targets should remain single-sample instead of layering MSAA onto the resized FBO")
+    assert_true("RB_BeginSceneScaling" in draw_common, "supersampling should scale the backend scene command")
+    assert_true("RB_ScaleTrackedRect( state, &vLight->scissorRect" in draw_common, "light scissors should scale with the supersampled viewport")
     assert_true("RB_ScaleDrawSurfChainScissors" in draw_common, "light draw-surface chains should have scaled scissors")
-    assert_true("RB_ScaleLocalScreenRect( vEntity->scissorRect" in draw_common, "entity scissors should scale with the supersampled viewport")
+    assert_true("RB_ScaleTrackedRect( state, &vEntity->scissorRect" in draw_common, "entity scissors should scale with the supersampled viewport")
     assert_true("RB_DrawFullscreenPostProcessQuad( sourceViewportWidth, sourceViewportHeight" in draw_common, "present should sample the supersampled source region when resolving")
     assert_true("targetViewport = scaleState.active ? scaleState.nativeViewport" in draw_common, "present should resolve back to the native viewport")
 

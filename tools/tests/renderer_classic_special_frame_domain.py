@@ -160,7 +160,8 @@ def validate_controls_and_evidence() -> None:
     require(matrix, "+rendererClassicSpecialFrameDomainSelfTest", "safe native self-test")
     require(registry, '"renderer_classic_special_frame_domain.py"', "validation registry")
     require(roadmap, "Milestone D scoped implementation is complete.", "advanced roadmap status")
-    require(roadmap, "Milestone E temporal presentation", "advanced roadmap target")
+    require(roadmap, "Milestone E temporal", "advanced roadmap status")
+    require(roadmap, "Milestone F now has a guarded", "advanced roadmap target")
     for token in (
         "session stream",
         "portal-sky",

@@ -110,13 +110,16 @@ def validate_interaction_decomposition() -> None:
             "surfaceShader->TestMaterialFlag( MF_POLYGONOFFSET )",
             "R_GlobalPointToLocal(",
             "R_GlobalPlaneToLocal(",
+            "const bool packedPBROwnerEligible = VK_PBRHasSingleClassicInteractionTopology( surf );",
             "if ( !lightRegs[ lightStage->conditionRegister ] )",
             "RB_BakeTextureMatrixIntoTexgen(",
             "case SL_BUMP:",
-            "VK_SubmitInteraction( &inter );",
+            "VK_SubmitInteraction( &inter, false );",
             "case SL_DIFFUSE:",
+            "VK_SubmitInteraction( &inter, false );",
             "case SL_SPECULAR:",
-            "VK_SubmitInteraction( &inter );",
+            "VK_SubmitInteraction( &inter, false );",
+            "VK_SubmitInteraction( &inter, packedPBROwnerEligible );",
             "VK_DrawCustomLightingStage(",
             "vkCmdSetDepthBiasEnable( interPass.cmd, VK_FALSE );",
         ),
@@ -143,7 +146,7 @@ def validate_interaction_decomposition() -> None:
         "r_skipBump.GetBool()",
         "globalImages->blackImage",
         "globalImages->flatNormalMap",
-        "VK_DrawSingleInteraction( din )",
+        "VK_DrawSingleInteraction( din, allowNativePBR )",
     ):
         require(submit, token, "stock interaction debug substitutions")
 
@@ -159,7 +162,7 @@ def validate_interaction_decomposition() -> None:
             )
     require(
         custom_submit,
-        "VK_DrawSingleInteractionMode( din, parallax, scaleBias[ 0 ], scaleBias[ 1 ] );",
+        "VK_DrawSingleInteractionMode( din, parallax, scaleBias[ 0 ], scaleBias[ 1 ], false );",
         "customLighting direct interaction submission",
     )
 

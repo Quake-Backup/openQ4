@@ -453,7 +453,8 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	R_ClassicInteractionDomain_ResetFrame();
 	R_ClassicFogBlendDomain_ResetFrame();
 	R_ClassicSubviewDomain_ResetFrame();
-	if ( r_rendererSharedGui.GetBool()
+	if ( ( r_rendererModernQuality.GetBool() && r_pbrMaterials.GetBool() )
+			|| r_rendererSharedGui.GetBool()
 			|| r_rendererSharedInWorldGui.GetBool()
 			|| r_rendererSharedCinematicPost.GetBool()
 			|| r_rendererSharedSpecialFrame.GetBool()
@@ -1558,6 +1559,7 @@ void RB_ShutdownDebugTools( void ) {
 VK_GL_SELFTEST_STUB( RendererDeferredResolve_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererForwardPlus_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGBuffer_RunSelfTest )
+VK_GL_SELFTEST_STUB( RendererPBRVisible_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGLStateCache_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGpuDriven_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererLightImageAtlas_RunSelfTest )

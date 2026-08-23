@@ -479,6 +479,11 @@ void idUploadManager::BeginFrame( int frameCount ) {
 	frameBuffer_t &frame = frameBuffers[currentFrameBuffer];
 
 	if ( path != UPLOAD_PATH_PERSISTENT ) {
+		// The modern executor may have rebound GL_ARRAY_BUFFER through its state
+		// cache since the legacy vertex-cache shadow was last updated. Force the
+		// real buffer bind before orphaning this frame slot so the orphan cannot
+		// accidentally apply to the most recently submitted geometry VBO.
+		idVertexCache::InvalidateBufferBindings();
 		idVertexCache::BindArrayBuffer( frame.vbo );
 		glBufferDataARB( GL_ARRAY_BUFFER_ARB, (GLsizeiptrARB)stats.ringSizeBytes, NULL, GL_STREAM_DRAW_ARB );
 		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame orphan" );
@@ -520,6 +525,10 @@ bool idUploadManager::AllocFrameTemp( void *data, int bytes, int alignment, rend
 		return false;
 	}
 
+	// AllocFrameTemp can be interleaved with modern submissions. Those bind
+	// GL_ARRAY_BUFFER outside idVertexCache's redundant-bind shadow, so make
+	// this ownership transfer explicit before writing a range in the stream.
+	idVertexCache::InvalidateBufferBindings();
 	idVertexCache::BindArrayBuffer( frame.vbo );
 
 	if ( path == UPLOAD_PATH_PERSISTENT && frame.mapped != NULL ) {
@@ -627,6 +636,7 @@ bool idUploadManager::CreateFrameBuffers( uploadPath_t requestedPath ) {
 
 	for ( int i = 0; i < frameBufferCount; ++i ) {
 		glGenBuffersARB( 1, &frameBuffers[i].vbo );
+		idVertexCache::InvalidateBufferBindings();
 		idVertexCache::BindArrayBuffer( frameBuffers[i].vbo );
 
 		if ( path == UPLOAD_PATH_PERSISTENT ) {
