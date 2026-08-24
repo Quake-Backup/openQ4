@@ -483,7 +483,7 @@ idCVar r_rendererUploadMegs( "r_rendererUploadMegs", "16", CVAR_RENDERER | CVAR_
 idCVar r_rendererUploadFrameBuffers( "r_rendererUploadFrameBuffers", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream frame-buffer rotation depth", 3, 8, idCmdSystem::ArgCompletion_Integer<3,8> );
 idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow persistent-mapped dynamic renderer uploads when supported" );
 idCVar r_rendererUploadBufferPool( "r_rendererUploadBufferPool", "1", CVAR_RENDERER | CVAR_BOOL, "recycle static GL buffer names instead of gen/data/delete churn for per-frame regenerated geometry" );
-idCVar r_rendererModernQuality( "r_rendererModernQuality", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "master permit for experimental Milestone-F PBR, reflection-probe, and clustered-decal domains; 0 rolls every domain back to classic ownership" );
+idCVar r_rendererModernQuality( "r_rendererModernQuality", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "master permit for experimental Milestone-F PBR, probe, decal, volumetric, SSR, and SSGI domains; 0 rolls every domain back to classic ownership" );
 idCVar r_rendererReflectionProbes( "r_rendererReflectionProbes", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable authored reflection probes for eligible modern PBR views; unsupported or incomplete probe sets use analytic/classic fallback" );
 idCVar r_rendererClusteredDecals( "r_rendererClusteredDecals", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "transfer complete eligible decal subsets to bounded clustered forward rendering; incomplete views remain entirely classic" );
 idCVar r_rendererModernExecutor( "r_rendererModernExecutor", "0", CVAR_RENDERER | CVAR_BOOL, "prepare the opt-in modern GL executor frame contract while legacy ARB2 still executes" );
@@ -4389,12 +4389,15 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		}
 	}
 	common->Printf(
-		"Modern quality: master=%d pbr=%d probes=%d clusteredDecals=%d (master=0 is complete Milestone-F rollback)\n"
+		"Modern quality: master=%d pbr=%d probes=%d clusteredDecals=%d froxel=%d ssr=%d ssgi=%d (master=0 is complete Milestone-F rollback)\n"
 		"PBR materials: parser=1 modernLighting=1 effective=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
 		r_rendererModernQuality.GetBool() ? 1 : 0,
 		r_pbrMaterials.GetBool() ? 1 : 0,
 		r_rendererReflectionProbes.GetBool() ? 1 : 0,
 		r_rendererClusteredDecals.GetBool() ? 1 : 0,
+		r_rendererFroxelVolumetrics.GetBool() ? 1 : 0,
+		r_rendererSSR.GetBool() ? 1 : 0,
+		r_rendererSSGI.GetBool() ? 1 : 0,
 		( r_rendererModernQuality.GetBool() && r_pbrMaterials.GetBool() ) ? 1 : 0,
 		r_pbrGeneratedLegacyFallback.GetBool() ? 1 : 0,
 		r_pbrInferFromLegacyMaterials.GetBool() ? 1 : 0,

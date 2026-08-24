@@ -562,6 +562,7 @@ typedef struct {
 	float				feedback;
 	float				reactiveScale;
 	int				debugMode;
+	advancedScreenSpaceConfig_t advancedScreenSpace;
 } resolveTemporalPresentationCommand_t;
 
 typedef struct {
@@ -1168,6 +1169,9 @@ extern idCVar r_rendererUploadBufferPool;	// recycle static GL buffer names inst
 extern idCVar r_rendererModernQuality;	// master permit/rollback for Milestone-F material and lighting domains
 extern idCVar r_rendererReflectionProbes;	// opt-in authored clustered reflection probes
 extern idCVar r_rendererClusteredDecals;	// opt-in atomic clustered decal ownership
+extern idCVar r_rendererFroxelVolumetrics;	// opt-in bounded view-aligned volumetric integration
+extern idCVar r_rendererSSR;			// opt-in bounded screen-space reflections
+extern idCVar r_rendererSSGI;			// opt-in bounded screen-space diffuse GI
 extern idCVar r_rendererModernExecutor;	// opt-in modern GL executor prepare path
 extern idCVar r_rendererModernSubmit;	// opt-in modern GL draw submission before ARB2 fallback
 extern idCVar r_rendererGpuValidation;	// compare GL43 GPU-driven compute results against CPU reference data

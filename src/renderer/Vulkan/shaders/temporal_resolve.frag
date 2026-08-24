@@ -13,6 +13,9 @@ layout(std140, set = 6, binding = 0) uniform TemporalResolveBlock {
     vec4 previousProject;
     // xy = current depth projection; z = feedback; w = reactive scale.
     vec4 depthFeedback;
+    // The unused w components carry the bounded screen-effect packet:
+    // mask, froxel density/distance/slices, SSR intensity/distance/steps,
+    // and SSGI intensity. xyz retain their temporal camera contract.
     vec4 currentViewOrigin;
     vec4 currentViewAxis0;
     vec4 currentViewAxis1;
@@ -115,6 +118,199 @@ bool InsideReactiveRect(vec2 cameraUV, vec4 rect) {
         && all(lessThan(cameraUV, rect.zw));
 }
 
+bool ScreenEffectEnabled(float bitValue) {
+    return mod(floor(temporal.currentViewOrigin.w / bitValue), 2.0) > 0.5;
+}
+
+float SceneDepthAt(vec2 cameraUV) {
+    return texture(sceneDepth, CameraToTextureUV(clamp(cameraUV,
+        vec2(0.0), vec2(1.0)))).r;
+}
+
+vec3 SceneColorAt(vec2 cameraUV) {
+    return texture(currentScene, CameraToTextureUV(clamp(cameraUV,
+        vec2(0.0), vec2(1.0)))).rgb;
+}
+
+vec3 CurrentViewPosition(vec2 cameraUV, float depth) {
+    vec2 ndc = cameraUV * 2.0 - 1.0;
+    float viewZ = ViewZFromDepth(depth);
+    return vec3(
+        -viewZ * (ndc.x + temporal.currentReconstruct.z)
+            * temporal.currentReconstruct.x,
+        -viewZ * (ndc.y + temporal.currentReconstruct.w)
+            * temporal.currentReconstruct.y,
+        viewZ);
+}
+
+vec2 ProjectCurrentView(vec3 viewPosition) {
+    float w = -viewPosition.z;
+    if (w <= kDepthEpsilon) {
+        return vec2(-1000.0);
+    }
+    vec2 clipXY = vec2(
+        viewPosition.x / temporal.currentReconstruct.x,
+        viewPosition.y / temporal.currentReconstruct.y)
+        + temporal.currentReconstruct.zw * viewPosition.z;
+    return clipXY / w * 0.5 + 0.5;
+}
+
+vec3 DepthNormal(vec2 cameraUV, vec3 centerPosition) {
+    vec2 dx = vec2(temporal.sceneOutputExtent.x, 0.0);
+    vec2 dy = vec2(0.0, temporal.sceneOutputExtent.y);
+    vec2 leftUV = clamp(cameraUV - dx, vec2(0.0), vec2(1.0));
+    vec2 rightUV = clamp(cameraUV + dx, vec2(0.0), vec2(1.0));
+    vec2 downUV = clamp(cameraUV - dy, vec2(0.0), vec2(1.0));
+    vec2 upUV = clamp(cameraUV + dy, vec2(0.0), vec2(1.0));
+    vec3 tangentX = CurrentViewPosition(rightUV, SceneDepthAt(rightUV))
+        - CurrentViewPosition(leftUV, SceneDepthAt(leftUV));
+    vec3 tangentY = CurrentViewPosition(upUV, SceneDepthAt(upUV))
+        - CurrentViewPosition(downUV, SceneDepthAt(downUV));
+    vec3 normalCross = cross(tangentX, tangentY);
+    float normalLengthSquared = dot(normalCross, normalCross);
+    vec3 normal = normalLengthSquared > 1.0e-12
+        ? normalCross * inversesqrt(normalLengthSquared)
+        : vec3(0.0, 0.0, 1.0);
+    if (dot(normal, -centerPosition) < 0.0) {
+        normal = -normal;
+    }
+    return normal;
+}
+
+float Luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+vec3 ApplyScreenSpaceGI(vec3 baseColor, vec2 cameraUV, float depth,
+        vec3 position, vec3 normal) {
+    if (!ScreenEffectEnabled(4.0) || temporal.motionParams.z < 0.5
+            || depth >= 0.99999) {
+        return baseColor;
+    }
+    vec3 indirect = vec3(0.0);
+    float totalWeight = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        float fi = float(i);
+        float angle = fi * 2.39996323;
+        vec2 offset = vec2(cos(angle), sin(angle)) * (2.0 + fi * 1.5)
+            * temporal.sceneOutputExtent.xy;
+        vec2 sampleUV = clamp(cameraUV + offset, vec2(0.0), vec2(1.0));
+        float sampleDepth = SceneDepthAt(sampleUV);
+        if (sampleDepth >= 0.99999) {
+            continue;
+        }
+        vec3 samplePosition = CurrentViewPosition(sampleUV, sampleDepth);
+        vec3 delta = samplePosition - position;
+        float deltaLength = length(delta);
+        if (deltaLength <= 0.0001) {
+            continue;
+        }
+        float distanceWeight = 1.0 - smoothstep(0.0,
+            max(24.0, abs(position.z) * 0.18), deltaLength);
+        float facing = max(dot(normal, delta / deltaLength), 0.0);
+        float weight = distanceWeight * (0.20 + 0.80 * facing);
+        indirect += SceneColorAt(sampleUV) * weight;
+        totalWeight += weight;
+    }
+    indirect /= max(totalWeight, 0.0001);
+    float receive = 0.08 + 0.12
+        * (1.0 - clamp(Luminance(baseColor), 0.0, 1.0));
+    return baseColor + indirect * temporal.previousViewAxis2.w * receive;
+}
+
+vec3 ApplyScreenSpaceReflection(vec3 baseColor, vec2 cameraUV, float depth,
+        vec3 position, vec3 normal) {
+    if (!ScreenEffectEnabled(2.0) || temporal.motionParams.z < 0.5
+            || depth >= 0.99999) {
+        return baseColor;
+    }
+    vec3 incident = normalize(position);
+    vec3 rayDirection = normalize(reflect(incident, normal));
+    float stepCount = clamp(floor(temporal.previousViewAxis1.w + 0.5),
+        4.0, 16.0);
+    float stepLength = temporal.previousViewAxis0.w / stepCount;
+    vec3 rayPosition = position + normal
+        * max(1.0, abs(position.z) * 0.002);
+    vec3 hitColor = baseColor;
+    float hitWeight = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        if (float(i) >= stepCount) {
+            break;
+        }
+        rayPosition += rayDirection * stepLength;
+        if (rayPosition.z >= -0.5) {
+            break;
+        }
+        vec2 rayUV = ProjectCurrentView(rayPosition);
+        if (rayUV.x <= 0.0 || rayUV.y <= 0.0
+                || rayUV.x >= 1.0 || rayUV.y >= 1.0) {
+            break;
+        }
+        float rayDepth = SceneDepthAt(rayUV);
+        if (rayDepth >= 0.99999) {
+            continue;
+        }
+        float sceneZ = ViewZFromDepth(rayDepth);
+        float thickness = max(4.0, abs(rayPosition.z) * 0.02);
+        float crossing = sceneZ - rayPosition.z;
+        if (i > 0 && crossing >= 0.0 && crossing < thickness) {
+            vec2 edge = smoothstep(vec2(0.0), vec2(0.08), rayUV)
+                * smoothstep(vec2(0.0), vec2(0.08), vec2(1.0) - rayUV);
+            hitColor = SceneColorAt(rayUV);
+            hitWeight = edge.x * edge.y;
+            break;
+        }
+    }
+    float facing = clamp(dot(-incident, normal), 0.0, 1.0);
+    float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
+    return mix(baseColor, hitColor,
+        hitWeight * fresnel * temporal.previousViewOrigin.w);
+}
+
+vec3 ApplyFroxelVolumetrics(vec3 baseColor, vec2 cameraUV, float depth) {
+    if (!ScreenEffectEnabled(1.0)) {
+        return baseColor;
+    }
+    vec2 ndc = cameraUV * 2.0 - 1.0;
+    vec3 viewRay = normalize(vec3(
+        -(ndc.x + temporal.currentReconstruct.z)
+            * temporal.currentReconstruct.x,
+        -(ndc.y + temporal.currentReconstruct.w)
+            * temporal.currentReconstruct.y,
+        -1.0));
+    vec3 worldRay = normalize(CurrentViewToWorldDirection(viewRay));
+    float travel = temporal.currentViewAxis1.w;
+    if (temporal.motionParams.z > 0.5 && depth < 0.99999) {
+        travel = min(travel, length(CurrentViewPosition(cameraUV, depth)));
+    }
+    float sliceCount = clamp(floor(temporal.currentViewAxis2.w + 0.5),
+        4.0, 16.0);
+    float sliceLength = travel / sliceCount;
+    float transmittance = 1.0;
+    vec3 scattering = vec3(0.0);
+    vec3 sunDirection = normalize(vec3(0.35, 0.25, 0.90));
+    for (int i = 0; i < 16; ++i) {
+        if (float(i) >= sliceCount) {
+            break;
+        }
+        float midpoint = (float(i) + 0.5) * sliceLength;
+        float worldHeight = temporal.currentViewOrigin.z
+            + worldRay.z * midpoint;
+        float heightDensity = exp(-clamp((worldHeight
+            - temporal.currentViewOrigin.z) * 0.0008, -1.5, 2.0));
+        float sliceTransmittance = exp(-temporal.currentViewAxis0.w
+            * heightDensity * sliceLength);
+        float phase = 0.55 + 0.45
+            * pow(max(dot(worldRay, sunDirection), 0.0), 2.0);
+        vec3 fogColor = vec3(0.17, 0.21, 0.26)
+            + vec3(0.08, 0.07, 0.04) * max(worldRay.z, 0.0);
+        scattering += transmittance * (1.0 - sliceTransmittance)
+            * fogColor * phase;
+        transmittance *= sliceTransmittance;
+    }
+    return baseColor * transmittance + scattering;
+}
+
 void main() {
     vec2 outputCameraUV = TextureToCameraUV(fragUV);
     vec2 sceneCameraUV = clamp(outputCameraUV
@@ -122,9 +318,23 @@ void main() {
         vec2(0.0), vec2(1.0));
     vec2 sceneTextureUV = CameraToTextureUV(sceneCameraUV);
     vec4 current = texture(currentScene, sceneTextureUV);
+    float centerDepth = texture(sceneDepth, sceneTextureUV).r;
+    if (temporal.currentViewOrigin.w > 0.5) {
+        vec3 centerPosition = centerDepth < 0.99999
+            ? CurrentViewPosition(sceneCameraUV, centerDepth)
+            : vec3(0.0, 0.0, -temporal.currentViewAxis1.w);
+        vec3 centerNormal = centerDepth < 0.99999
+            ? DepthNormal(sceneCameraUV, centerPosition)
+            : vec3(0.0, 0.0, 1.0);
+        current.rgb = ApplyScreenSpaceGI(current.rgb, sceneCameraUV,
+            centerDepth, centerPosition, centerNormal);
+        current.rgb = ApplyScreenSpaceReflection(current.rgb, sceneCameraUV,
+            centerDepth, centerPosition, centerNormal);
+        current.rgb = ApplyFroxelVolumetrics(current.rgb, sceneCameraUV,
+            centerDepth);
+    }
     vec3 neighborhoodMin = current.rgb;
     vec3 neighborhoodMax = current.rgb;
-    float centerDepth = texture(sceneDepth, sceneTextureUV).r;
     float depthMin = centerDepth;
     float depthMax = centerDepth;
     for (int y = -1; y <= 1; ++y) {

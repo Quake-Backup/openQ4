@@ -1032,6 +1032,8 @@ enum rbTemporalResolveUniformIndex_t {
 	RB_TEMPORAL_UNIFORM_MOTION_PARAMS,
 	RB_TEMPORAL_UNIFORM_REACTIVE_REGION0,
 	RB_TEMPORAL_UNIFORM_REACTIVE_REGION1,
+	RB_TEMPORAL_UNIFORM_SCREEN_EFFECTS0,
+	RB_TEMPORAL_UNIFORM_SCREEN_EFFECTS1,
 	RB_TEMPORAL_UNIFORM_PRESERVE_FAR_DEPTH,
 	RB_TEMPORAL_UNIFORM_COUNT
 };
@@ -1270,7 +1272,8 @@ static bool RB_ScaledSceneTargetRequested( const viewDef_t *viewDef ) {
 	if ( requestedPercent < RB_SCREEN_FRACTION_NATIVE
 			&& !R_TemporalPresentation_DynamicResolutionRequested()
 			&& r_resolutionScaleMode.GetInteger() == 0
-			&& !R_TemporalPresentation_TemporalAARequested() ) {
+			&& !R_TemporalPresentation_TemporalAARequested()
+			&& !R_TemporalPresentation_ScreenSpaceEffectsRequested() ) {
 		return false;
 	}
 	return RB_EffectiveScreenFractionForView( viewDef ) != RB_SCREEN_FRACTION_NATIVE;
@@ -1612,10 +1615,14 @@ static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef ) {
 
 	const bool scaledSceneRequested = RB_ScaledSceneTargetRequested( viewDef );
 	const bool temporalRequested = R_TemporalPresentation_TemporalAARequested();
-	if ( r_skipPostProcess.GetBool() && !scaledSceneRequested && !temporalRequested ) {
+	const bool screenSpaceRequested =
+		R_TemporalPresentation_ScreenSpaceEffectsRequested();
+	if ( r_skipPostProcess.GetBool() && !scaledSceneRequested
+			&& !temporalRequested && !screenSpaceRequested ) {
 		return false;
 	}
-	if ( !glConfig.GLSLProgramAvailable && !scaledSceneRequested && !temporalRequested ) {
+	if ( !glConfig.GLSLProgramAvailable && !scaledSceneRequested
+			&& !temporalRequested && !screenSpaceRequested ) {
 		return false;
 	}
 
@@ -1638,6 +1645,7 @@ static bool RB_ViewRequestsSceneRenderTarget( const viewDef_t *viewDef ) {
 		|| hdrDebugRequested
 		|| modernVisibleSceneTargetRequested
 		|| temporalRequested
+		|| screenSpaceRequested
 		|| scaledSceneRequested;
 }
 
@@ -1917,6 +1925,7 @@ static bool RB_EnsureSceneRenderTexture( const viewDef_t *sceneTargetView ) {
 	// transition; temporal AA owns antialiasing when enabled.
 	const int sceneSamples = ( !scaledScene && requestedSamples > 1
 		&& !R_TemporalPresentation_TemporalAARequested()
+		&& !R_TemporalPresentation_ScreenSpaceEffectsRequested()
 		&& !R_ModernGLExecutor_ModernVisibleRequestedForPost() ) ? requestedSamples : 0;
 
 	if ( targetWidth <= 0 || targetHeight <= 0 ) {
@@ -4327,6 +4336,8 @@ static bool RB_EnsureTemporalResolveProgram( void ) {
 		"uniform vec4 MotionParams;\n"
 		"uniform vec4 ReactiveRegion0;\n"
 		"uniform vec4 ReactiveRegion1;\n"
+		"uniform vec4 ScreenEffects0;\n"
+		"uniform vec4 ScreenEffects1;\n"
 		"uniform float PreserveFarDepth;\n"
 		"float ViewZFromDepth( float depth ) {\n"
 		"\tfloat denom = depth * 2.0 - 1.0 + DepthProjection.x;\n"
@@ -4371,13 +4382,138 @@ static bool RB_EnsureTemporalResolveProgram( void ) {
 		"\t\t&& uv.x >= region.x && uv.y >= region.y\n"
 		"\t\t&& uv.x < region.z && uv.y < region.w;\n"
 		"}\n"
+		"bool ScreenEffectEnabled( float bitValue ) {\n"
+		"\treturn mod( floor( ScreenEffects0.x / bitValue ), 2.0 ) > 0.5;\n"
+		"}\n"
+		"vec3 CurrentViewPosition( vec2 uv, float depth ) {\n"
+		"\tvec2 ndc = uv * 2.0 - 1.0;\n"
+		"\tfloat viewZ = ViewZFromDepth( depth );\n"
+		"\treturn vec3( -viewZ * ( ndc.x + CurrentReconstructInfo.z ) * CurrentReconstructInfo.x,\n"
+		"\t\t-viewZ * ( ndc.y + CurrentReconstructInfo.w ) * CurrentReconstructInfo.y, viewZ );\n"
+		"}\n"
+		"vec2 ProjectCurrentView( vec3 viewPosition ) {\n"
+		"\tfloat w = -viewPosition.z;\n"
+		"\tif ( w <= 0.00001 ) return vec2( -1000.0 );\n"
+		"\tvec2 clipXY = vec2( viewPosition.x / CurrentReconstructInfo.x,\n"
+		"\t\tviewPosition.y / CurrentReconstructInfo.y )\n"
+		"\t\t+ CurrentReconstructInfo.zw * viewPosition.z;\n"
+		"\treturn clipXY / w * 0.5 + 0.5;\n"
+		"}\n"
+		"vec3 DepthNormal( vec2 uv, vec3 centerPosition ) {\n"
+		"\tvec2 dx = vec2( InvSceneSize.x, 0.0 );\n"
+		"\tvec2 dy = vec2( 0.0, InvSceneSize.y );\n"
+		"\tvec2 leftUV = clamp( uv - dx, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\tvec2 rightUV = clamp( uv + dx, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\tvec2 downUV = clamp( uv - dy, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\tvec2 upUV = clamp( uv + dy, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\tvec3 tangentX = CurrentViewPosition( rightUV, texture2D( DepthBuffer, rightUV ).r )\n"
+		"\t\t- CurrentViewPosition( leftUV, texture2D( DepthBuffer, leftUV ).r );\n"
+		"\tvec3 tangentY = CurrentViewPosition( upUV, texture2D( DepthBuffer, upUV ).r )\n"
+		"\t\t- CurrentViewPosition( downUV, texture2D( DepthBuffer, downUV ).r );\n"
+		"\tvec3 normalCross = cross( tangentX, tangentY );\n"
+		"\tfloat normalLengthSquared = dot( normalCross, normalCross );\n"
+		"\tvec3 normal = normalLengthSquared > 1.0e-12 ? normalCross * inversesqrt( normalLengthSquared ) : vec3( 0.0, 0.0, 1.0 );\n"
+		"\tif ( dot( normal, -centerPosition ) < 0.0 ) normal = -normal;\n"
+		"\treturn normal;\n"
+		"}\n"
+		"float Luminance( vec3 color ) { return dot( color, vec3( 0.2126, 0.7152, 0.0722 ) ); }\n"
+		"vec3 ApplyScreenSpaceGI( vec3 baseColor, vec2 uv, float depth, vec3 position, vec3 normal ) {\n"
+		"\tif ( !ScreenEffectEnabled( 4.0 ) || MotionParams.z < 0.5 || depth >= 0.99999 ) return baseColor;\n"
+		"\tvec3 indirect = vec3( 0.0 );\n"
+		"\tfloat totalWeight = 0.0;\n"
+		"\tfor ( int i = 0; i < 8; ++i ) {\n"
+		"\t\tfloat fi = float( i );\n"
+		"\t\tfloat angle = fi * 2.39996323;\n"
+		"\t\tvec2 offset = vec2( cos( angle ), sin( angle ) ) * ( 2.0 + fi * 1.5 ) * InvSceneSize;\n"
+		"\t\tvec2 sampleUV = clamp( uv + offset, vec2( 0.0 ), vec2( 1.0 ) );\n"
+		"\t\tfloat sampleDepth = texture2D( DepthBuffer, sampleUV ).r;\n"
+		"\t\tif ( sampleDepth >= 0.99999 ) continue;\n"
+		"\t\tvec3 samplePosition = CurrentViewPosition( sampleUV, sampleDepth );\n"
+		"\t\tvec3 delta = samplePosition - position;\n"
+		"\t\tfloat deltaLength = length( delta );\n"
+		"\t\tif ( deltaLength <= 0.0001 ) continue;\n"
+		"\t\tfloat distanceWeight = 1.0 - smoothstep( 0.0, max( 24.0, abs( position.z ) * 0.18 ), deltaLength );\n"
+		"\t\tfloat facing = max( dot( normal, delta / deltaLength ), 0.0 );\n"
+		"\t\tfloat weight = distanceWeight * ( 0.20 + 0.80 * facing );\n"
+		"\t\tindirect += texture2D( Scene, sampleUV ).rgb * weight;\n"
+		"\t\ttotalWeight += weight;\n"
+		"\t}\n"
+		"\tindirect /= max( totalWeight, 0.0001 );\n"
+		"\tfloat receive = 0.08 + 0.12 * ( 1.0 - clamp( Luminance( baseColor ), 0.0, 1.0 ) );\n"
+		"\treturn baseColor + indirect * ScreenEffects1.w * receive;\n"
+		"}\n"
+		"vec3 ApplyScreenSpaceReflection( vec3 baseColor, vec2 uv, float depth, vec3 position, vec3 normal ) {\n"
+		"\tif ( !ScreenEffectEnabled( 2.0 ) || MotionParams.z < 0.5 || depth >= 0.99999 ) return baseColor;\n"
+		"\tvec3 incident = normalize( position );\n"
+		"\tvec3 rayDirection = normalize( reflect( incident, normal ) );\n"
+		"\tfloat stepCount = clamp( floor( ScreenEffects1.z + 0.5 ), 4.0, 16.0 );\n"
+		"\tfloat stepLength = ScreenEffects1.y / stepCount;\n"
+		"\tvec3 rayPosition = position + normal * max( 1.0, abs( position.z ) * 0.002 );\n"
+		"\tvec3 hitColor = baseColor;\n"
+		"\tfloat hitWeight = 0.0;\n"
+		"\tfor ( int i = 0; i < 16; ++i ) {\n"
+		"\t\tif ( float( i ) >= stepCount ) break;\n"
+		"\t\trayPosition += rayDirection * stepLength;\n"
+		"\t\tif ( rayPosition.z >= -0.5 ) break;\n"
+		"\t\tvec2 rayUV = ProjectCurrentView( rayPosition );\n"
+		"\t\tif ( rayUV.x <= 0.0 || rayUV.y <= 0.0 || rayUV.x >= 1.0 || rayUV.y >= 1.0 ) break;\n"
+		"\t\tfloat rayDepth = texture2D( DepthBuffer, rayUV ).r;\n"
+		"\t\tif ( rayDepth >= 0.99999 ) continue;\n"
+		"\t\tfloat sceneZ = ViewZFromDepth( rayDepth );\n"
+		"\t\tfloat thickness = max( 4.0, abs( rayPosition.z ) * 0.02 );\n"
+		"\t\tfloat crossing = sceneZ - rayPosition.z;\n"
+		"\t\tif ( i > 0 && crossing >= 0.0 && crossing < thickness ) {\n"
+		"\t\t\tvec2 edge = smoothstep( vec2( 0.0 ), vec2( 0.08 ), rayUV )\n"
+		"\t\t\t\t* smoothstep( vec2( 0.0 ), vec2( 0.08 ), vec2( 1.0 ) - rayUV );\n"
+		"\t\t\thitColor = texture2D( Scene, rayUV ).rgb;\n"
+		"\t\t\thitWeight = edge.x * edge.y;\n"
+		"\t\t\tbreak;\n"
+		"\t\t}\n"
+		"\t}\n"
+		"\tfloat facing = clamp( dot( -incident, normal ), 0.0, 1.0 );\n"
+		"\tfloat fresnel = 0.04 + 0.96 * pow( 1.0 - facing, 5.0 );\n"
+		"\treturn mix( baseColor, hitColor, hitWeight * fresnel * ScreenEffects1.x );\n"
+		"}\n"
+		"vec3 ApplyFroxelVolumetrics( vec3 baseColor, vec2 uv, float depth ) {\n"
+		"\tif ( !ScreenEffectEnabled( 1.0 ) ) return baseColor;\n"
+		"\tvec2 ndc = uv * 2.0 - 1.0;\n"
+		"\tvec3 viewRay = normalize( vec3( -( ndc.x + CurrentReconstructInfo.z ) * CurrentReconstructInfo.x,\n"
+		"\t\t-( ndc.y + CurrentReconstructInfo.w ) * CurrentReconstructInfo.y, -1.0 ) );\n"
+		"\tvec3 worldRay = normalize( CurrentViewToWorldDirection( viewRay ) );\n"
+		"\tfloat travel = ScreenEffects0.z;\n"
+		"\tif ( MotionParams.z > 0.5 && depth < 0.99999 ) travel = min( travel, length( CurrentViewPosition( uv, depth ) ) );\n"
+		"\tfloat sliceCount = clamp( floor( ScreenEffects0.w + 0.5 ), 4.0, 16.0 );\n"
+		"\tfloat sliceLength = travel / sliceCount;\n"
+		"\tfloat transmittance = 1.0;\n"
+		"\tvec3 scattering = vec3( 0.0 );\n"
+		"\tvec3 sunDirection = normalize( vec3( 0.35, 0.25, 0.90 ) );\n"
+		"\tfor ( int i = 0; i < 16; ++i ) {\n"
+		"\t\tif ( float( i ) >= sliceCount ) break;\n"
+		"\t\tfloat midpoint = ( float( i ) + 0.5 ) * sliceLength;\n"
+		"\t\tfloat worldHeight = CurrentViewOrigin.z + worldRay.z * midpoint;\n"
+		"\t\tfloat heightDensity = exp( -clamp( ( worldHeight - CurrentViewOrigin.z ) * 0.0008, -1.5, 2.0 ) );\n"
+		"\t\tfloat sliceTransmittance = exp( -ScreenEffects0.y * heightDensity * sliceLength );\n"
+		"\t\tfloat phase = 0.55 + 0.45 * pow( max( dot( worldRay, sunDirection ), 0.0 ), 2.0 );\n"
+		"\t\tvec3 fogColor = vec3( 0.17, 0.21, 0.26 ) + vec3( 0.08, 0.07, 0.04 ) * max( worldRay.z, 0.0 );\n"
+		"\t\tscattering += transmittance * ( 1.0 - sliceTransmittance ) * fogColor * phase;\n"
+		"\t\ttransmittance *= sliceTransmittance;\n"
+		"\t}\n"
+		"\treturn baseColor * transmittance + scattering;\n"
+		"}\n"
 		"void main() {\n"
 		"\tvec2 outputUV = gl_TexCoord[0].st;\n"
 		"\tvec2 sceneUV = clamp( outputUV - CurrentJitter * MotionParams.w, vec2( 0.0 ), vec2( 1.0 ) );\n"
 		"\tvec4 current = texture2D( Scene, sceneUV );\n"
+		"\tfloat centerDepth = texture2D( DepthBuffer, sceneUV ).r;\n"
+		"\tif ( ScreenEffects0.x > 0.5 ) {\n"
+		"\t\tvec3 centerPosition = centerDepth < 0.99999 ? CurrentViewPosition( sceneUV, centerDepth ) : vec3( 0.0, 0.0, -ScreenEffects0.z );\n"
+		"\t\tvec3 centerNormal = centerDepth < 0.99999 ? DepthNormal( sceneUV, centerPosition ) : vec3( 0.0, 0.0, 1.0 );\n"
+		"\t\tcurrent.rgb = ApplyScreenSpaceGI( current.rgb, sceneUV, centerDepth, centerPosition, centerNormal );\n"
+		"\t\tcurrent.rgb = ApplyScreenSpaceReflection( current.rgb, sceneUV, centerDepth, centerPosition, centerNormal );\n"
+		"\t\tcurrent.rgb = ApplyFroxelVolumetrics( current.rgb, sceneUV, centerDepth );\n"
+		"\t}\n"
 		"\tvec3 neighborhoodMin = current.rgb;\n"
 		"\tvec3 neighborhoodMax = current.rgb;\n"
-		"\tfloat centerDepth = texture2D( DepthBuffer, sceneUV ).r;\n"
 		"\tfloat depthMin = centerDepth;\n"
 		"\tfloat depthMax = centerDepth;\n"
 		"\tfor ( int y = -1; y <= 1; ++y ) {\n"
@@ -4484,7 +4620,8 @@ static bool RB_EnsureTemporalResolveProgram( void ) {
 		"CurrentViewOrigin", "CurrentViewAxis0", "CurrentViewAxis1", "CurrentViewAxis2",
 		"PreviousViewOrigin", "PreviousViewAxis0", "PreviousViewAxis1", "PreviousViewAxis2",
 		"CurrentJitter", "TemporalParams", "MotionParams",
-		"ReactiveRegion0", "ReactiveRegion1", "PreserveFarDepth"
+		"ReactiveRegion0", "ReactiveRegion1", "ScreenEffects0",
+		"ScreenEffects1", "PreserveFarDepth"
 	};
 	for ( int i = 0; i < RB_TEMPORAL_UNIFORM_COUNT; i++ ) {
 		rbTemporalResolveUniforms[i] = glGetUniformLocationARB( programObject, uniformNames[i] );
@@ -5189,6 +5326,12 @@ static bool RB_DrawTemporalResolvePass( const resolveTemporalPresentationCommand
 	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_MOTION_PARAMS], 1, motionParams );
 	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_REACTIVE_REGION0], 1, reactiveRegions[0] );
 	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_REACTIVE_REGION1], 1, reactiveRegions[1] );
+	GLfloat screenEffects[8];
+	AdvancedScreenSpaceCore_Pack( command.advancedScreenSpace, screenEffects );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_SCREEN_EFFECTS0], 1,
+		screenEffects );
+	glUniform4fvARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_SCREEN_EFFECTS1], 1,
+		screenEffects + 4 );
 	glUniform1fARB( rbTemporalResolveUniforms[RB_TEMPORAL_UNIFORM_PRESERVE_FAR_DEPTH],
 		preserveFarDepth && destination == NULL ? 1.0f : 0.0f );
 
@@ -5267,6 +5410,17 @@ bool RB_ResolveTemporalPresentation( const resolveTemporalPresentationCommand_t 
 		return RB_PresentTemporalSpatialFallback( sceneImage,
 			outputWidth, outputHeight, spatialJitter, depthImage, preserveFarDepth );
 	}
+	if ( !command.presentation.temporalAARequested ) {
+		RB_ClearTemporalEntityHistory();
+		if ( RB_DrawTemporalResolvePass( command, sceneImage, depthImage,
+				NULL, NULL, NULL, NULL, false, false, false,
+				preserveFarDepth, 0 ) ) {
+			return true;
+		}
+		return RB_PresentTemporalSpatialFallback( sceneImage,
+			outputWidth, outputHeight, spatialJitter,
+			depthImage, preserveFarDepth );
+	}
 
 	bool canWriteHistory = RB_TemporalColorTargetMatches(
 		command.historyWriteTarget, outputWidth, outputHeight )
@@ -5303,6 +5457,12 @@ bool RB_ResolveTemporalPresentation( const resolveTemporalPresentationCommand_t 
 
 	if ( !canWriteHistory || !RB_EnsureTemporalResolveProgram() ) {
 		RB_RejectTemporalHistoryWrite( command );
+		if ( AdvancedScreenSpaceCore_Requested( command.advancedScreenSpace )
+				&& RB_DrawTemporalResolvePass( command, sceneImage, depthImage,
+					NULL, NULL, NULL, NULL, false, false, true,
+					preserveFarDepth, 0 ) ) {
+			return true;
+		}
 		return RB_PresentTemporalSpatialFallback( sceneImage,
 			outputWidth, outputHeight, spatialJitter,
 			depthImage, preserveFarDepth );
@@ -5475,7 +5635,8 @@ static bool RB_PresentBackendTemporalSpatialScene( void ) {
 }
 
 static bool RB_PresentBackendTemporalScene( void ) {
-	if ( !R_TemporalPresentation_TemporalAARequested() ) {
+	if ( !R_TemporalPresentation_TemporalAARequested()
+			&& !R_TemporalPresentation_ScreenSpaceEffectsRequested() ) {
 		return false;
 	}
 	if ( !RB_IsSceneRenderTexture( backEnd.renderTexture )
@@ -5505,6 +5666,32 @@ static bool RB_PresentBackendTemporalScene( void ) {
 		// the root view has just completed all depth-producing world passes.
 		RB_StampTemporalDepthResolved( backEnd.renderTexture,
 			backEnd.frameCount, generation );
+	}
+	if ( !frame.temporalAARequested ) {
+		resolveTemporalPresentationCommand_t command;
+		memset( &command, 0, sizeof( command ) );
+		command.commandId = RC_RESOLVE_TEMPORAL_PRESENTATION;
+		command.sceneColorTarget = backEnd.renderTexture;
+		command.sceneDepthTarget = backEnd.renderTexture;
+		command.viewDef = backEnd.viewDef;
+		command.presentation.frameNumber = frame.frameNumber;
+		command.presentation.outputWidth = outputWidth;
+		command.presentation.outputHeight = outputHeight;
+		command.presentation.sceneWidth = sceneWidth;
+		command.presentation.sceneHeight = sceneHeight;
+		command.presentation.effectiveScalePercent = frame.effectiveScalePercent;
+		command.presentation.historyGeneration = generation;
+		command.advancedScreenSpace = frame.advancedScreenSpace;
+		idImage *sceneImage = RB_TemporalColorImage( backEnd.renderTexture );
+		idImage *depthImage = backEnd.renderTexture->GetDepthImage();
+		const bool preserveFarDepth =
+			RB_ShouldPreserveSceneRenderTargetFarDepth( backEnd.viewDef );
+		if ( RB_DrawTemporalResolvePass( command, sceneImage, depthImage,
+				NULL, NULL, NULL, NULL, false, false, false,
+				preserveFarDepth, 0 ) ) {
+			return true;
+		}
+		return RB_PresentBackendTemporalSpatialScene();
 	}
 
 	bool historyContinuous = !captureFrame && rbBackendTemporalHistoryValid
@@ -5550,6 +5737,7 @@ static bool RB_PresentBackendTemporalScene( void ) {
 	command.feedback = frame.temporalFeedback;
 	command.reactiveScale = frame.temporalReactiveScale;
 	command.debugMode = frame.temporalDebugMode;
+	command.advancedScreenSpace = frame.advancedScreenSpace;
 
 	bool presented = RB_ResolveTemporalPresentation( command );
 	if ( captureFrame ) {
@@ -5581,7 +5769,9 @@ void RB_ApplyResolutionScaleToBackBuffer( void ) {
 	const temporalPresentationFrameState_t &presentation =
 		R_TemporalPresentation_GetFrameState();
 	if ( presentation.dynamicResolutionRequested
-			|| presentation.temporalAARequested ) {
+			|| presentation.temporalAARequested
+			|| AdvancedScreenSpaceCore_Requested(
+				presentation.advancedScreenSpace ) ) {
 		// Temporal presentation owns scene scaling before native HUD/menu draws.
 		// A UI-only frame has no scene-present marker, so the legacy swap-tail
 		// filter must still stay out of the native backbuffer.

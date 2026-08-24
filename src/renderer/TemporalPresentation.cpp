@@ -58,6 +58,39 @@ idCVar r_temporalAADebug( "r_temporalAADebug", "0",
 	CVAR_RENDERER | CVAR_INTEGER,
 	"temporal presentation diagnostic view: 0 = final, 1 = velocity, 2 = reactive, 3 = history weight", 0, 3 );
 
+idCVar r_rendererFroxelVolumetrics( "r_rendererFroxelVolumetrics", "0",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+	"enable bounded view-aligned froxel volumetric integration in the native scene presentation tail" );
+idCVar r_froxelVolumetricDensity( "r_froxelVolumetricDensity", "0.00012",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"base extinction density for optional froxel volumetrics", 0.00001f, 0.01f );
+idCVar r_froxelVolumetricMaxDistance( "r_froxelVolumetricMaxDistance", "2048",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"maximum world-space distance integrated by optional froxel volumetrics", 64.0f, 8192.0f );
+idCVar r_froxelVolumetricSlices( "r_froxelVolumetricSlices", "12",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
+	"bounded view-depth slices integrated by optional froxel volumetrics", 4,
+	ADVANCED_SCREEN_SPACE_FROXEL_MAX_SLICES );
+idCVar r_rendererSSR( "r_rendererSSR", "0",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+	"enable bounded depth-derived screen-space reflections in the native scene presentation tail" );
+idCVar r_screenReflectionIntensity( "r_screenReflectionIntensity", "0.35",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"maximum contribution of optional screen-space reflections", 0.0f, 1.0f );
+idCVar r_screenReflectionMaxDistance( "r_screenReflectionMaxDistance", "512",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"maximum view-space ray distance for optional screen-space reflections", 32.0f, 2048.0f );
+idCVar r_screenReflectionSteps( "r_screenReflectionSteps", "10",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER,
+	"bounded ray-march steps for optional screen-space reflections", 4,
+	ADVANCED_SCREEN_SPACE_SSR_MAX_STEPS );
+idCVar r_rendererSSGI( "r_rendererSSGI", "0",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+	"enable bounded eight-tap screen-space diffuse GI in the native scene presentation tail" );
+idCVar r_screenGIIntensity( "r_screenGIIntensity", "0.25",
+	CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT,
+	"maximum contribution of optional screen-space diffuse GI", 0.0f, 1.0f );
+
 static const int TEMPORAL_SCALE_HISTORY_COUNT = 128;
 
 typedef struct temporalScaleHistoryEntry_s {
@@ -72,12 +105,41 @@ static temporalResolutionState_t rg_temporalResolutionState;
 static bool rg_temporalPresentationInitialized = false;
 static bool rg_dynamicResolutionEnabledLastFrame = false;
 static bool rg_temporalAAEnabledLastFrame = false;
+static advancedScreenSpaceConfig_t rg_advancedScreenSpaceLast = {};
 static int rg_videoRestartCount = -1;
 static temporalPresentationFrameState_t rg_temporalFrameState;
 static temporalScaleHistoryEntry_t rg_temporalScaleHistory[TEMPORAL_SCALE_HISTORY_COUNT];
 static int rg_temporalScaleHistoryCursor = 0;
 static unsigned int rg_temporalHistoryGeneration = 1;
 static idStr rg_temporalHistoryResetReason = "renderer initialization";
+
+static advancedScreenSpaceConfig_t R_TemporalPresentation_BuildAdvancedScreenSpaceConfig( void ) {
+	return AdvancedScreenSpaceCore_Build(
+		r_rendererModernQuality.GetBool(),
+		r_rendererFroxelVolumetrics.GetBool(),
+		r_rendererSSR.GetBool(),
+		r_rendererSSGI.GetBool(),
+		r_froxelVolumetricDensity.GetFloat(),
+		r_froxelVolumetricMaxDistance.GetFloat(),
+		r_froxelVolumetricSlices.GetInteger(),
+		r_screenReflectionIntensity.GetFloat(),
+		r_screenReflectionMaxDistance.GetFloat(),
+		r_screenReflectionSteps.GetInteger(),
+		r_screenGIIntensity.GetFloat() );
+}
+
+static bool R_TemporalPresentation_AdvancedScreenSpaceEqual(
+		const advancedScreenSpaceConfig_t &lhs,
+		const advancedScreenSpaceConfig_t &rhs ) {
+	return lhs.effectMask == rhs.effectMask
+		&& lhs.froxelDensity == rhs.froxelDensity
+		&& lhs.froxelMaxDistance == rhs.froxelMaxDistance
+		&& lhs.froxelSlices == rhs.froxelSlices
+		&& lhs.ssrIntensity == rhs.ssrIntensity
+		&& lhs.ssrMaxDistance == rhs.ssrMaxDistance
+		&& lhs.ssrSteps == rhs.ssrSteps
+		&& lhs.ssgiIntensity == rhs.ssgiIntensity;
+}
 static int rg_lastCaptureMarkedFrame = -1;
 
 static const int TEMPORAL_VIEW_HISTORY_SLOTS = 32;
@@ -510,6 +572,8 @@ void R_TemporalPresentation_FinalizeViewProjection( viewDef_t *viewDef ) {
 
 void R_TemporalPresentation_BeginFrame( int nativeWidth, int nativeHeight,
 		bool captureFrame ) {
+	const advancedScreenSpaceConfig_t advancedScreenSpace =
+		R_TemporalPresentation_BuildAdvancedScreenSpaceConfig();
 	if ( !rg_temporalPresentationInitialized ) {
 		TemporalResolutionCore_Initialize( rg_temporalResolutionState );
 		R_TemporalPresentation_ClearScaleHistory();
@@ -517,6 +581,7 @@ void R_TemporalPresentation_BeginFrame( int nativeWidth, int nativeHeight,
 		rg_temporalPresentationInitialized = true;
 		rg_dynamicResolutionEnabledLastFrame = r_rendererDynamicResolution.GetBool();
 		rg_temporalAAEnabledLastFrame = r_temporalAA.GetBool();
+		rg_advancedScreenSpaceLast = advancedScreenSpace;
 		rg_videoRestartCount = tr.videoRestartCount;
 	}
 
@@ -535,6 +600,12 @@ void R_TemporalPresentation_BeginFrame( int nativeWidth, int nativeHeight,
 		R_TemporalPresentation_InvalidateHistory( temporalAARequested
 			? "temporal AA enabled" : "temporal AA disabled" );
 		rg_temporalAAEnabledLastFrame = temporalAARequested;
+	}
+	if ( !R_TemporalPresentation_AdvancedScreenSpaceEqual(
+			advancedScreenSpace, rg_advancedScreenSpaceLast ) ) {
+		R_TemporalPresentation_InvalidateHistory(
+			"advanced screen-space configuration changed" );
+		rg_advancedScreenSpaceLast = advancedScreenSpace;
 	}
 	if ( tr.videoRestartCount != rg_videoRestartCount ) {
 		R_TemporalPresentation_ClearScaleHistory();
@@ -624,6 +695,7 @@ void R_TemporalPresentation_BeginFrame( int nativeWidth, int nativeHeight,
 		0.0f, 2.0f, r_temporalAAReactiveScale.GetFloat() );
 	rg_temporalFrameState.temporalDebugMode = idMath::ClampInt(
 		0, 3, r_temporalAADebug.GetInteger() );
+	rg_temporalFrameState.advancedScreenSpace = advancedScreenSpace;
 	rg_temporalFrameState.decision = output.decision;
 
 	R_TemporalPresentation_RecordFrameScale( tr.frameCount,
@@ -665,15 +737,29 @@ bool R_TemporalPresentation_TemporalAARequested( void ) {
 	return r_temporalAA.GetBool();
 }
 
+bool R_TemporalPresentation_ScreenSpaceEffectsRequested( void ) {
+	return AdvancedScreenSpaceCore_Requested(
+		R_TemporalPresentation_BuildAdvancedScreenSpaceConfig() );
+}
+
 void R_TemporalPresentation_PrintStatus_f( const idCmdArgs &args ) {
 	(void)args;
 	const temporalPresentationFrameState_t &state =
 		R_TemporalPresentation_GetFrameState();
 	common->Printf(
-		"Temporal presentation: dynamicRequested=%d dynamicActive=%d taaRequested=%d frame=%d decision=%s manualScale=%d%% effectiveScale=%d%% scene=%dx%d output=%dx%d target=%lluus feedback=%.3f reactiveScale=%.3f debug=%d timingSupported=%d timingValid=%d timingBackend=%d timingFrame=%d timingScale=%d%% timingAge=%d timingGeneration=%u timing=%lluus captureFrozen=%d captureForcedNative=%d historyGeneration=%u historyReset=%s processed=%llu rejected=%llu drops=%llu raises=%llu resets=%llu\n",
+		"Temporal presentation: dynamicRequested=%d dynamicActive=%d taaRequested=%d screenEffects=0x%x froxel={density=%.6f distance=%.0f slices=%d} ssr={intensity=%.2f distance=%.0f steps=%d} ssgi={intensity=%.2f taps=%d} frame=%d decision=%s manualScale=%d%% effectiveScale=%d%% scene=%dx%d output=%dx%d target=%lluus feedback=%.3f reactiveScale=%.3f debug=%d timingSupported=%d timingValid=%d timingBackend=%d timingFrame=%d timingScale=%d%% timingAge=%d timingGeneration=%u timing=%lluus captureFrozen=%d captureForcedNative=%d historyGeneration=%u historyReset=%s processed=%llu rejected=%llu drops=%llu raises=%llu resets=%llu\n",
 		state.dynamicResolutionRequested ? 1 : 0,
 		state.dynamicResolutionActive ? 1 : 0,
 		state.temporalAARequested ? 1 : 0,
+		state.advancedScreenSpace.effectMask,
+		state.advancedScreenSpace.froxelDensity,
+		state.advancedScreenSpace.froxelMaxDistance,
+		state.advancedScreenSpace.froxelSlices,
+		state.advancedScreenSpace.ssrIntensity,
+		state.advancedScreenSpace.ssrMaxDistance,
+		state.advancedScreenSpace.ssrSteps,
+		state.advancedScreenSpace.ssgiIntensity,
+		ADVANCED_SCREEN_SPACE_SSGI_TAPS,
 		state.frameNumber,
 		R_TemporalPresentation_DecisionName( state.decision ),
 		state.manualScalePercent,

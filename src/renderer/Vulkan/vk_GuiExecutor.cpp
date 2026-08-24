@@ -3712,14 +3712,17 @@ static bool VK_TemporalPresentation_BackendSceneRequested(
 	if ( sceneScaled && !presentation.dynamicResolutionRequested
 			&& presentation.effectiveScalePercent < 100
 			&& r_resolutionScaleMode.GetInteger() == 0
-			&& !R_TemporalPresentation_TemporalAARequested() ) {
+			&& !R_TemporalPresentation_TemporalAARequested()
+			&& !R_TemporalPresentation_ScreenSpaceEffectsRequested() ) {
 		return false;
 	}
 	const bool knownCapture = presentation.captureFrozen
 		|| presentation.captureForcedNative
 		|| ( rootView != NULL && rootView->temporalCaptureFrame );
 	const bool temporalScene = presentation.temporalAARequested && !knownCapture;
-	if ( !sceneScaled && !temporalScene ) {
+	const bool screenSpaceScene = AdvancedScreenSpaceCore_Requested(
+		presentation.advancedScreenSpace );
+	if ( !sceneScaled && !temporalScene && !screenSpaceScene ) {
 		return false;
 	}
 	// The spatial presentation shader is also the projection-jitter safety
@@ -4276,6 +4279,7 @@ static bool VK_TemporalPresentation_ResolvePendingSceneTemporal(
 	command.feedback = presentation.temporalFeedback;
 	command.reactiveScale = presentation.temporalReactiveScale;
 	command.debugMode = presentation.temporalDebugMode;
+	command.advancedScreenSpace = presentation.advancedScreenSpace;
 
 	bool historyAdvanced = false;
 	const bool presented = VK_TemporalPresentation_ResolveTargets(
@@ -6361,6 +6365,16 @@ static void VK_TemporalPresentation_FillResolveBlock(
 		viewDef->temporalPreviousViewAxis[1].ToFloatPtr(), 3 * sizeof( float ) );
 	memcpy( block.previousViewAxis2,
 		viewDef->temporalPreviousViewAxis[2].ToFloatPtr(), 3 * sizeof( float ) );
+	float screenEffects[8];
+	AdvancedScreenSpaceCore_Pack( command.advancedScreenSpace, screenEffects );
+	block.currentViewOrigin[3] = screenEffects[0];
+	block.currentViewAxis0[3] = screenEffects[1];
+	block.currentViewAxis1[3] = screenEffects[2];
+	block.currentViewAxis2[3] = screenEffects[3];
+	block.previousViewOrigin[3] = screenEffects[4];
+	block.previousViewAxis0[3] = screenEffects[5];
+	block.previousViewAxis1[3] = screenEffects[6];
+	block.previousViewAxis2[3] = screenEffects[7];
 	block.temporalParams[0] = viewDef->temporalJitterPixels.x / outputWidth;
 	block.temporalParams[1] = viewDef->temporalJitterPixels.y / outputHeight;
 	block.motionParams[1] = useHistory && depthValid
@@ -6453,6 +6467,8 @@ static bool VK_TemporalPresentation_DrawPendingSceneSpatial(
 	memset( &command, 0, sizeof( command ) );
 	command.viewDef = viewDef;
 	command.reactiveScale = 1.0f;
+	command.advancedScreenSpace =
+		R_TemporalPresentation_GetFrameState().advancedScreenSpace;
 	vkTemporalResolveBlock_t block;
 	VK_TemporalPresentation_FillResolveBlock( command,
 		sceneEntry->width, sceneEntry->height, false, depthEntry != NULL,
@@ -6470,8 +6486,11 @@ static bool VK_TemporalPresentation_DrawResolvedColorToSwap(
 			|| resolvedEntry->height != outputHeight ) {
 		return false;
 	}
+	resolveTemporalPresentationCommand_t presentCommand = command;
+	memset( &presentCommand.advancedScreenSpace, 0,
+		sizeof( presentCommand.advancedScreenSpace ) );
 	vkTemporalResolveBlock_t block;
-	VK_TemporalPresentation_FillResolveBlock( command,
+	VK_TemporalPresentation_FillResolveBlock( presentCommand,
 		outputWidth, outputHeight, false, false, false, 0, block );
 	return VK_TemporalPresentation_DrawResolve( NULL,
 		resolvedImage, resolvedEntry, NULL, NULL, NULL, NULL, block );
@@ -6520,7 +6539,11 @@ static bool VK_TemporalPresentation_BlitColorToSwap(
 static void VK_TemporalPresentation_InvalidateAcceptedNoWrite(
 		const resolveTemporalPresentationCommand_t &command,
 		const char *reason ) {
-	if ( command.captureFrame || tr.takingScreenshot
+	// Effect-only presentation deliberately has no history write target. That
+	// is a successful current-frame resolve, not a temporal discontinuity; do
+	// not churn the shared history generation once per frame while a leaf is on.
+	if ( !command.presentation.temporalAARequested
+			|| command.captureFrame || tr.takingScreenshot
 			|| command.historyGeneration
 				!= R_TemporalPresentation_HistoryGeneration() ) {
 		return;

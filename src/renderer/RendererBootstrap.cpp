@@ -48,6 +48,9 @@ static bool RendererBootstrap_BuildDefaultSafetyReport( idStr &report, idStr &is
 		{ "r_pbrMaterials", &r_pbrMaterials, 0 },
 		{ "r_rendererReflectionProbes", &r_rendererReflectionProbes, 0 },
 		{ "r_rendererClusteredDecals", &r_rendererClusteredDecals, 0 },
+		{ "r_rendererFroxelVolumetrics", &r_rendererFroxelVolumetrics, 0 },
+		{ "r_rendererSSR", &r_rendererSSR, 0 },
+		{ "r_rendererSSGI", &r_rendererSSGI, 0 },
 		{ "r_rendererSharedGui", &r_rendererSharedGui, 0 },
 		{ "r_rendererSharedInWorldGui", &r_rendererSharedInWorldGui, 0 },
 		{ "r_rendererSharedCinematicPost", &r_rendererSharedCinematicPost, 0 },
@@ -100,7 +103,7 @@ static bool RendererBootstrap_BuildDefaultSafetyReport( idStr &report, idStr &is
 	}
 
 	report = va(
-		"renderer=%s glTier=%s executor=%d submit=%d autoPromote=%d promotionEvidence=%d visible=%d modernQuality=%d pbr=%d probes=%d clusteredDecals=%d sharedGui=%d sharedInWorldGui=%d sharedCinematicPost=%d sharedSpecialFrame=%d sharedWorldAmbient=%d sharedWorldInteraction=%d sharedWorldFogBlend=%d sharedSubview=%d sharedDeform=%d vkShadowFallbackTest=%d lightingParity=%d visibleDepth=%d depthDebug=%d opaque=%d gbufferDebug=%d deferred=%d deferredDebug=%d forwardPlus=%d clusterDebug=%d gpuValidation=%d bindless=%d shaderReload=%d rollback=%s issues=%s",
+		"renderer=%s glTier=%s executor=%d submit=%d autoPromote=%d promotionEvidence=%d visible=%d modernQuality=%d pbr=%d probes=%d clusteredDecals=%d froxel=%d ssr=%d ssgi=%d sharedGui=%d sharedInWorldGui=%d sharedCinematicPost=%d sharedSpecialFrame=%d sharedWorldAmbient=%d sharedWorldInteraction=%d sharedWorldFogBlend=%d sharedSubview=%d sharedDeform=%d vkShadowFallbackTest=%d lightingParity=%d visibleDepth=%d depthDebug=%d opaque=%d gbufferDebug=%d deferred=%d deferredDebug=%d forwardPlus=%d clusterDebug=%d gpuValidation=%d bindless=%d shaderReload=%d rollback=%s issues=%s",
 		r_renderer.GetString(),
 		r_glTier.GetString(),
 		r_rendererModernExecutor.GetInteger(),
@@ -112,6 +115,9 @@ static bool RendererBootstrap_BuildDefaultSafetyReport( idStr &report, idStr &is
 		r_pbrMaterials.GetInteger(),
 		r_rendererReflectionProbes.GetInteger(),
 		r_rendererClusteredDecals.GetInteger(),
+		r_rendererFroxelVolumetrics.GetInteger(),
+		r_rendererSSR.GetInteger(),
+		r_rendererSSGI.GetInteger(),
 		r_rendererSharedGui.GetInteger(),
 		r_rendererSharedInWorldGui.GetInteger(),
 		r_rendererSharedCinematicPost.GetInteger(),

@@ -1412,6 +1412,7 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 	const int screenFraction = idMath::ClampInt( 10, 200, r_screenFraction.GetInteger() );
 	if ( !R_TemporalPresentation_DynamicResolutionRequested()
 			&& !R_TemporalPresentation_TemporalAARequested()
+			&& !R_TemporalPresentation_ScreenSpaceEffectsRequested()
 			&& screenFraction < 100 && r_resolutionScaleMode.GetInteger() == 0 ) {
 		int	w = SCREEN_WIDTH * screenFraction / 100.0f;
 		int h = SCREEN_HEIGHT * screenFraction / 100.0f;
@@ -2340,7 +2341,7 @@ bool idRenderSystemLocal::ResolveTemporalPresentation(
 		idRenderTexture *historyReadTarget,
 		idRenderTexture *historyWriteTarget ) {
 	if ( sceneColorTarget == NULL || sceneDepthTarget == NULL
-			|| tr.primaryView == NULL || tr.takingScreenshot ) {
+			|| tr.primaryView == NULL ) {
 		return false;
 	}
 
@@ -2351,15 +2352,18 @@ bool idRenderSystemLocal::ResolveTemporalPresentation(
 	const unsigned int historyGeneration =
 		R_TemporalPresentation_HistoryGeneration();
 	const viewDef_t *primaryView = tr.primaryView;
-	if ( !presentation.temporalAARequested
-			|| presentation.captureFrozen
-			|| presentation.captureForcedNative
+	const bool screenSpaceRequested = AdvancedScreenSpaceCore_Requested(
+		temporalFrame.advancedScreenSpace );
+	const bool captureFrame = tr.takingScreenshot
+		|| presentation.captureFrozen || presentation.captureForcedNative
+		|| primaryView->temporalCaptureFrame;
+	if ( ( !presentation.temporalAARequested && !screenSpaceRequested )
 			|| presentation.frameNumber != tr.frameCount
 			|| presentation.outputWidth <= 0 || presentation.outputHeight <= 0
 			|| presentation.sceneWidth <= 0 || presentation.sceneHeight <= 0
 			|| !primaryView->temporalPrepared
-			|| primaryView->temporalHistoryGeneration != historyGeneration
-			|| primaryView->temporalCaptureFrame ) {
+			|| ( presentation.temporalAARequested && !captureFrame
+				&& primaryView->temporalHistoryGeneration != historyGeneration ) ) {
 		return false;
 	}
 
@@ -2401,13 +2405,14 @@ bool idRenderSystemLocal::ResolveTemporalPresentation(
 	cmd->viewDef = primaryView;
 	cmd->presentation = presentation;
 	cmd->historyGeneration = historyGeneration;
-	cmd->historyValid = historyReadTarget != NULL
+	cmd->historyValid = !captureFrame && historyReadTarget != NULL
 		&& historyWriteTarget != NULL
 		&& primaryView->temporalHistoryValid;
-	cmd->captureFrame = false;
+	cmd->captureFrame = captureFrame;
 	cmd->feedback = temporalFrame.temporalFeedback;
 	cmd->reactiveScale = temporalFrame.temporalReactiveScale;
 	cmd->debugMode = temporalFrame.temporalDebugMode;
+	cmd->advancedScreenSpace = temporalFrame.advancedScreenSpace;
 	if ( R_ScenePackets_FrontEndCaptureRequired() ) {
 		R_ScenePackets_AddRenderTargetOp();
 	}

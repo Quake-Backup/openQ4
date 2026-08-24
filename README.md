@@ -136,6 +136,7 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - [Demo Library and Multi-View Demos](docs/user/multiview-demos.md) - browse formats, use playback controls, and record or replay complete multiplayer matches
 - [Shadow Mapping](docs/user/shadow-mapping.md) - optional shadow-map settings and troubleshooting
 - [Light Grids](docs/user/light-grids.md) - advanced lighting guide for players and testers
+- [Advanced Screen-Space Lighting](docs/user/advanced-screen-space-lighting.md) (experimental) - bounded froxel volumetrics, SSR, SSGI, performance controls, and one-setting rollback
 - [Cel Shading](docs/user/cel-shading.md) - banded lighting and outline settings for the cel-shaded look
 - [DDS Texture Replacements](docs/user/texture-replacements.md) - install and diagnose DXT/BC7 texture packs
 - [Level-Load Cache](docs/user/level-load-cache.md) - learned preload and generated model, world, collision, and animation cache behavior, controls, rollback, and cleanup

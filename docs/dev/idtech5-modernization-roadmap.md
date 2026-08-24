@@ -62,7 +62,7 @@ engineering. It does not mean drop-in: several paths assume Win32, PS3/SPU,
 trusted pre-generated data, 32-bit offsets, or assert-only validation. New code
 must use openQ4's portable interfaces and fail-closed input rules.
 
-## Current implementation state (2026-08-23)
+## Current implementation state (2026-08-24)
 
 This table is the dated delivery snapshot for this roadmap. **Implemented**
 means the compatibility-safe foundation is present and covered by the cited
@@ -84,7 +84,7 @@ when a status differs or a narrower qualification is needed.
 | Shared renderer contracts and GPU skinning | **Implemented; opt-in and release promotion pending** | Ordered material/pass, clip-space, semantic vertex-layout, typed buffer-slice, exact four-weight, and joint-palette contracts are shared by OpenGL and Vulkan. `r_gpuSkinning` remains default-off; admitted MD5/MD5R surfaces produce the ordinary `idDrawVert` stream through backend compute while CPU positions and complete fallback remain authoritative for gameplay consumers and stencil volumes. Clean-package visual/performance and platform/driver promotion evidence remains open. |
 | Modern classic-frame ownership | **Implemented; default-off; controlled nested GL/Vulkan fixture passed; release promotion pending** | Fixed-function root 2D GUI, eligible ambient-only 3D world, fixed-classic interaction, complete eligible fog/blend phases, provenance-tagged in-world GUI output, special subviews, cinematic/authored-post ranges, render-demo/Raven special frames, and their material-deform dependency have separate sealed GL/Vulkan corridors with complete classic rollback. Eligible authored-post tails inside a sealed special view bind to its exact root and depth; their executed work remains unpublished until the complete special-view transaction succeeds, and either domain can roll back the whole tree. Final R6 runtime acceptance proves one capture-backed color-2D mirror with a nested cinematic plus `_currentRender` tail on Windows GL/Vulkan. This is scoped ownership, not a claim that the aggregate modern-visible renderer owns every stock frame or that root cinematic/post, `_currentDepth`, broad subview, in-world-GUI, special-frame, final-package, platform, or driver breadth is qualified. |
 | Temporal presentation | **Implemented; experimental and default-off; release promotion pending** | OpenGL and Vulkan now share native-resolution history ownership, TAA/TAAU, camera/depth reprojection, conservative motion-domain rejection, camera/capture resets, and native-resolution UI composition. OpenGL has exact eligible rigid velocity; unsupported streams, Vulkan object motion, particles, skinned/deformed work, subviews, in-world GUI, and the view model are explicitly reactive rather than silently zero-motion. Missing resources or exact frame/generation depth ownership fails closed, and SMAA remains the immediate rollback. Local Windows GL/Vulkan gameplay closes the implementation gate; clean package, platform, driver, and retained human-review promotion remain open. |
-| Modern PBR quality and idTech 6-like follow-ons | **Partially implemented; scoped local Windows gate passed; follow-ons and release promotion pending** | Guarded direct metallic/roughness lighting, analytic fallback IBL, authored bounded OpenGL specular probes, and atomic bounded OpenGL clustered decals pass their local implementation gate. This does not establish broad authored probe/decal scene coverage or a whole-frame lighting promotion. `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0`; froxel volumetrics, SSR, SSGI, complete GPU-driven visible ownership, and optional sparse residency remain separate unimplemented follow-ons. |
+| Modern PBR quality and idTech 6-like follow-ons | **Implemented for the scoped roadmap; default-off; local Windows gate passed; release promotion pending** | Guarded direct metallic/roughness lighting, analytic fallback IBL, authored bounded OpenGL specular probes, atomic bounded OpenGL clustered decals, and three independent GL/Vulkan screen-space leaves now cover the scoped quality plan. The shared native presentation tail provides bounded 16-slice view-aligned froxel integration, bounded 16-step depth-normal SSR, and fixed eight-tap depth-derived SSGI. The effects deliberately do not claim shadowed light-injected volumetrics, material-roughness reflections, or world-space GI. This does not establish broad authored scene coverage or whole-frame lighting promotion: `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0`, while complete GPU-driven visible ownership and optional sparse residency remain later follow-ons. |
 
 Milestones A, B, and C have completed their implementation and local integration
 gates. **Milestone D scoped implementation is complete.** Its default-off
@@ -127,8 +127,9 @@ presentation is now implemented and locally validated as a default-off
 capability.** Native histories, explicit motion/reactive ownership, TAAU,
 capture/cut isolation, native UI, and delayed GPU-time resolution control share
 one GL/Vulkan contract with SMAA rollback. Milestone F now has a guarded
-implementation for direct PBR, authored bounded OpenGL specular probes, and
-atomic bounded OpenGL clustered decals. Its leaf controls remain default-off,
+implementation for direct PBR, authored bounded OpenGL specular probes,
+atomic bounded OpenGL clustered decals, and independent bounded GL/Vulkan
+froxel-volumetric, SSR, and SSGI leaves. Its leaf controls remain default-off,
 `r_rendererModernQuality 0` is the one-setting rollback, and the local
 current-source Windows implementation exit gate has passed. Final
 committed-package, platform/driver, and release-review promotion remains open.
@@ -350,8 +351,10 @@ or PBR work multiplies the parity surface.
 - Dynamic resolution driven by backend timestamps.
 - Namespaced PBR material extensions, GGX lighting, IBL/specular probes, and
   stock-material defaults that preserve the classic look.
-- Froxel fog/volumetrics, SSR, and carefully bounded screen-space GI only after
-  depth/history infrastructure is reliable.
+- **Implemented as independent default-off leaves:** bounded view-aligned
+  froxel fog/volumetrics, depth-normal SSR, and fixed-tap screen-space GI now
+  consume the reliable scene-colour/depth presentation tail on GL and Vulkan.
+  Their documented screen-space limitations remain explicit.
 - True HDR output (scRGB/HDR10 negotiation, paper-white GUI composition, and HDR
   screenshot policy), distinct from the existing internal HDR scene chain.
 
@@ -390,7 +393,7 @@ or PBR work multiplies the parity surface.
 | C. Shared renderer contracts and GPU animation | **Implemented; promotion pending** | Ordered pass semantics, clip/viewport conversion, semantic layouts, typed buffer slices, exact four-weight MD5/MD5R sidecars, bounded joint palettes, and GL/Vulkan deformation paths are present with full-surface CPU rollback. Dependency-light and module self-tests cover the common contract; clean-package SP/MP image, collision/hit, animation-heavy performance, and platform/driver evidence remains the promotion gate. |
 | D. Modern classic-frame ownership | **Implemented; default-off; controlled nested GL/Vulkan fixture passed; release promotion pending** | The scoped GL/Vulkan ownership corridors are complete for eligible fixed-classic GUI, world ambient, interaction, fog/blend, in-world GUI, special-subview, cinematic/authored-post, special-frame, and material-deform work. Authored-post/video/current-render/depth tails nested in a sealed special-view tree share its root transaction: no member publishes until every child draw, dynamic tail, and capture/direct edge completes, and any failure restores the whole tree to classic execution. Final R6 evidence proves one nested cinematic-plus-`_currentRender` color-2D mirror transaction; root cinematic/post, `_currentDepth`, broad subview forms, in-world GUI, special frame, authored-stock breadth, clean-package, retained-review, and target-platform/driver qualification remain open as applicable. |
 | E. Temporal presentation | **Implemented; default-off; local Windows gate passed; release promotion pending** | Native game-owned and backend-owned histories, exact frame/depth/generation admission, camera reprojection, OpenGL rigid velocity, conservative reactive ownership for every unsupported motion stream, capture/cut isolation, native UI, TAAU, delayed dynamic resolution, and SMAA rollback are integrated across GL/Vulkan. Dependency-light/static coverage and windowed stock SP/MP gameplay close the local implementation gate; clean-package, target-platform/driver, and retained-review qualification remain open. |
-| F. Modern materials and advanced lighting | **Implemented; default-off; local Windows exit gate passed; release promotion pending** | Guarded direct PBR and analytic fallback IBL are joined by authored OpenGL specular probes bounded to eight cubemaps, 32 records, and the top two probes per cluster, plus an atomic OpenGL clustered-decal transaction bounded to 1,024 records and 65,536 cluster references. Probe/decal leaves default off and `r_rendererModernQuality 0` rolls the whole milestone back. Vulkan remains limited to direct opaque packed-ORM `tangentXYZ` PBR. A current-source debug x64 build, passing static PBR/advanced-lighting checks, the final native 10/10 run, the final focused engine 2/2 rerun after the earlier 8/8 safe set, four-role retail-PK4 gameplay, controlled GL/Vulkan PBR execution, and exact rollback close the local implementation gate. Final committed-package, platform/driver, retained-review, and release qualification remain open; no RenderDoc or broad authored probe/decal scene coverage is claimed. `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS = 0`; froxel volumetrics, SSR, and SSGI remain separate unimplemented gates. |
+| F. Modern materials and advanced lighting | **Implemented; default-off; local Windows exit gate passed; release promotion pending** | Guarded direct PBR and analytic fallback IBL are joined by authored OpenGL specular probes bounded to eight cubemaps, 32 records, and the top two probes per cluster; an atomic OpenGL clustered-decal transaction bounded to 1,024 records and 65,536 cluster references; and independent GL/Vulkan froxel-volumetric, SSR, and SSGI leaves. The screen-space tail is bounded to 16 depth slices, 16 reflection steps, and eight GI taps, shares scene colour/depth without expanding Vulkan's 256-byte resolve block, and keeps captures plus effect-only/TAA presentation explicit. All leaves default off and `r_rendererModernQuality 0` publishes an exact zero-feature packet. Current-source static/native checks, retail gameplay, individual and combined windowed OpenGL gameplay, combined validation-clean Vulkan gameplay, visible image deltas, and master rollback close the scoped local implementation gate. Final committed-package, platform/driver, retained-review, and release qualification remain open; no RenderDoc, broad authored probe/decal scene, light-injected volumetric, material-roughness SSR, or world-space GI coverage is claimed. `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS = 0`. |
 
 ### Milestone A: foundation and measurement
 
@@ -668,8 +671,14 @@ promotion work rather than implementation blockers.
 4. **Safeguard retained:** clustered/GPU-driven visible-lighting submission is
    not promoted. `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0` until
    visible-lighting parity is proven independently.
-5. **Not implemented:** froxel volumetrics, SSR, and SSGI remain separate
-   evidence gates rather than one all-or-nothing renderer switch.
+5. **Implemented and locally validated; release promotion pending:** froxel
+   volumetrics, SSR, and SSGI are independent default-off GL/Vulkan leaves in
+   the native scene-presentation tail. Shared admission clamps work to 16
+   depth slices, 16 reflection steps, and eight GI taps; missing resources keep
+   the current/classic presentation owner, and `r_rendererModernQuality 0`
+   publishes an exact zero-feature packet. The implementation is deliberately
+   screen-space: it does not claim shadowed per-light volumetric injection,
+   roughness-aware G-buffer reflections, or world-space/multi-bounce GI.
 
 **Local implementation exit gate passed on Windows:** the 2026-08-23 evidence
 under `.tmp/milestone-f-evidence/20260823-final/` uses a current-source debug
@@ -683,6 +692,25 @@ RenderDoc evidence or broad authored probe/decal scene coverage. The leaf
 controls remain default-off, `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains
 `0`, and final committed-package, platform/driver, retained-review, and release
 promotion remain pending.
+
+**2026-08-24 advanced screen-space gate:** the dependency-light
+`AdvancedScreenSpaceCoreTest` and the static advanced-lighting contract pass,
+and the pinned Vulkan temporal-resolve shader matches the checked-in GLSL.
+Windowed `game/airdefense1` gameplay passes with all three leaves together on
+OpenGL and Vulkan, with zero shader/FBO/GL/Vulkan-validation/VUID/call/fatal or
+engine-error counters. OpenGL also passes each leaf independently. The combined
+OpenGL engine-TGA capture differs non-vacuously from the same-build default
+control; the live BSE/actor scene is not an exact-hash fixture, so exact master
+rollback is enforced by the zeroed shared packet and supplemented by a clean
+master-off gameplay run. Two post-audit captures observed OpenGL at
+102.9--117.3 Hz (final hardened P95/P99 11/11 ms) and Vulkan at
+114.1--125.8 Hz (final hardened P95/P99 10/11 ms) on this development system.
+The same staged package passed default
+`game/airdefense2` gameplay and pure auto-joined `mp/q4dm1` on both backends,
+the complete 11/11 native suite, and a fresh four-role compatibility run
+against 40 verified retail PK4s with zero loose retail files.
+See the [user guide](../user/advanced-screen-space-lighting.md) and retained
+[`airdefense1` optimization evidence](airdefense1-optimization-evidence.md).
 
 ## Promotion evidence for every milestone
 

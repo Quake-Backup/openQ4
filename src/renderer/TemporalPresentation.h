@@ -4,6 +4,7 @@
 #ifndef __TEMPORAL_PRESENTATION_H__
 #define __TEMPORAL_PRESENTATION_H__
 
+#include "AdvancedScreenSpaceCore.h"
 #include "TemporalPresentationCore.h"
 #include "TemporalHistoryCore.h"
 
@@ -34,6 +35,7 @@ typedef struct temporalPresentationFrameState_s {
 	float		temporalFeedback;
 	float		temporalReactiveScale;
 	int		temporalDebugMode;
+	advancedScreenSpaceConfig_t advancedScreenSpace;
 	temporalResolutionDecision_t decision;
 } temporalPresentationFrameState_t;
 
@@ -47,6 +49,7 @@ const temporalPresentationFrameState_t &R_TemporalPresentation_GetFrameState( vo
 int R_TemporalPresentation_EffectiveScreenFraction( void );
 bool R_TemporalPresentation_DynamicResolutionRequested( void );
 bool R_TemporalPresentation_TemporalAARequested( void );
+bool R_TemporalPresentation_ScreenSpaceEffectsRequested( void );
 const char *R_TemporalPresentation_DecisionName( temporalResolutionDecision_t decision );
 
 // Temporal image histories use a generation separate from delayed GPU timing.

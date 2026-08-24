@@ -2738,18 +2738,13 @@ void idRenderWorldLocal::SetupLightGrid() {
 		return;
 	}
 
-	int totalValidGridPoints = 0;
-	for ( int i = 0; i < numPortalAreas; i++ ) {
-		portalAreas[i].lightGrid.SetupGrid( portalAreas[i].globalBounds, this, LIGHTGRID_DEFAULT_SIZE, i, numPortalAreas, -1, false );
-		totalValidGridPoints += portalAreas[i].lightGrid.CountValidGridPoints();
-	}
-
-	if ( totalValidGridPoints > 0 ) {
-		common->DPrintf( "No lightgrid assets found for %s. Generated a runtime probe layout with %i valid points for baking/debugging.\n", mapName.c_str(), totalValidGridPoints );
-	}
-
+	// Stock Quake 4 maps do not contain openQ4 light-grid assets.  Building a
+	// probe layout here performs thousands of collision/PVS tests even though
+	// the runtime cannot consume the layout without baked atlas images.  Bake
+	// entry points build the requested layout explicitly, so leave stock maps
+	// empty and pay this cost only when the developer actually starts a bake.
 	lightGridAvailabilityFrame = -1;
-	common->DPrintf( "LightGrid setup for %s generated bake/debug layout in %.3fs\n", mapName.c_str(), ( Sys_Milliseconds() - setupStart ) * 0.001f );
+	common->DPrintf( "LightGrid setup for %s found no baked assets in %.3fs\n", mapName.c_str(), ( Sys_Milliseconds() - setupStart ) * 0.001f );
 }
 
 /*

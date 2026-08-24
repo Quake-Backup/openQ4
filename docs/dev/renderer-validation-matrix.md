@@ -167,13 +167,33 @@ committed release package.
 | OpenGL master rollback | PASS: `pbr-gl-quality0-rollback-final2` matched the leaf-disabled reference at RMS 0 and maximum delta 0 on all four tiers. |
 | Vulkan procedural PBR | PASS with validation enabled: `pbr-vk-enabled-final2` differed non-vacuously from its leaf-disabled control with per-channel RGB RMS 26.374685/20.829991/21.549890 and maximum delta 252. `pbr-vk-quality0-rollback-final2` then matched the leaf-disabled reference at RMS 0 and maximum delta 0. The final API-specific functional capture in `pbr-vk-harness-gate-final5` required a positive native packed-PBR draw marker and passed schema-4 replay with the same provenance bindings as the GL capture. |
 
-This evidence proves the scoped implementation, real PBR shader ownership, and
-one-setting rollback. It does not claim RenderDoc coverage, broad visual-quality
-acceptance, or broad authored probe/decal scene coverage. PBR, probe, decal, and
-modern-visible feature controls remain default-off;
+This evidence proves the scoped PBR/probe/decal implementation, real PBR shader
+ownership, and one-setting rollback. It does not claim RenderDoc coverage,
+broad visual-quality acceptance, or broad authored probe/decal scene coverage.
+PBR, probe, decal, and modern-visible feature controls remain default-off;
 `MODERN_LIGHTING_PARITY_PROVEN_DOMAINS` remains `0`. Final committed-package,
-platform/driver, retained-review, and release promotion remain pending. Froxel
-volumetrics, SSR, and SSGI are separate unimplemented evidence gates.
+platform/driver, retained-review, and release promotion remain pending.
+
+### Advanced screen-space current-source Windows evidence
+
+The independent froxel-volumetric, SSR, and SSGI leaves closed their scoped
+implementation gate on 2026-08-24:
+
+| Gate | Local result |
+|---|---|
+| Shared contract | PASS: `AdvancedScreenSpaceCoreTest` covers independent/combined masks, finite bounded tuning, disabled-leaf canonicalization, the stable eight-float GL/Vulkan packet, and exact master-off zero initialization. `renderer_advanced_lighting.py` verifies the default-off leaf/master admission and both backend consumers. The final Meson native suite passed 11/11. |
+| Vulkan shader provenance | PASS: the checked-in temporal-resolve SPIR-V header was generated from the checked-in GLSL with the local official Vulkan SDK compiler, and `vk_temporal_resolve_shader_pin.py` passes. |
+| OpenGL gameplay | PASS: all three leaves together and each leaf independently entered windowed `game/airdefense1` gameplay with an engine TGA and zero shader/FBO/GL/fatal/error counters. Two post-audit combined captures observed 102.9--117.3 Hz; the final hardened run measured 11/11 ms P95/P99 and the earlier run measured 12/13 ms. The enabled image differed non-vacuously from the same-build default control. |
+| Vulkan gameplay | PASS: all three leaves together entered the same windowed scene with an engine TGA and zero validation/VUID/Vulkan-call/fatal/error counters. Two post-audit captures observed 114.1--125.8 Hz; the final hardened run measured 10/11 ms P95/P99 and the earlier run measured 11/12 ms. Effect-only presentation retained one accepted configuration generation rather than churning temporal history state. |
+| Master rollback | PASS at the exact shared-packet boundary and clean in runtime: `r_rendererModernQuality 0` zeroes the complete eight-float feature packet despite enabled leaves, and the master-off `airdefense1` run enters gameplay without diagnostics. Live BSE smoke and actors make separate process launches unsuitable for an exact screenshot hash. |
+| Final regression breadth | PASS: default `game/airdefense2` measured 189.6 Hz with 7/8 ms P95/P99 on OpenGL and 240.2 Hz with 6/6 ms on Vulkan. Pure `mp/q4dm1` listen-server/auto-joined-client roles passed at 174.0/180.7 Hz on OpenGL and 224.8/189.1 Hz on Vulkan. A fresh staged-package baseline then passed SP capture, SP demo playback, MP server, and MP client against all 40 verified retail PK4s with zero loose retail files. Every role retained an engine TGA and clean API/error counters; representative images passed human review. |
+
+This is a bounded scene-colour/depth implementation, not evidence for shadowed
+light-injected volumetrics, roughness-aware G-buffer reflections, world-space
+GI, or whole-frame modern lighting ownership. All leaves remain default off;
+clean committed-package, target-platform/driver, and retained visual-review
+promotion remain open. See the [user controls and limitations](../user/advanced-screen-space-lighting.md)
+and [`airdefense1` optimization evidence](airdefense1-optimization-evidence.md).
 
 The same foundation case requires `rendererContractsSelfTest` and
 `rendererGpuSkinningSelfTest` to pass without a skip. The Vulkan startup case

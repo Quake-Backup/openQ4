@@ -386,6 +386,9 @@ def test_native_cpu_and_atlas_tests_are_wired() -> None:
         "'openq4-advanced-lighting-core-test'",
         "files('tools/tests/native/AdvancedLightingCoreTest.cpp')",
         "'openq4-advanced-lighting-core'",
+        "'openq4-advanced-screen-space-core-test'",
+        "files('tools/tests/native/AdvancedScreenSpaceCoreTest.cpp')",
+        "'openq4-advanced-screen-space-core'",
         "'openq4-specular-probe-atlas-packing-test'",
         "files('tools/tests/native/ModernSpecularProbeAtlasPackingTest.cpp')",
         "'openq4-specular-probe-atlas-packing'",
@@ -415,6 +418,15 @@ def test_native_cpu_and_atlas_tests_are_wired() -> None:
     ):
         require(atlas_test, token, "native atlas-packing coverage")
 
+    screen_space_test = read("tools/tests/native/AdvancedScreenSpaceCoreTest.cpp")
+    for token in (
+        "ADVANCED_SCREEN_SPACE_FROXEL_MAX_SLICES",
+        "ADVANCED_SCREEN_SPACE_SSR_MAX_STEPS",
+        "the GL/Vulkan eight-float packet must be stable",
+        "the master rollback packet must be exactly zero-initialized",
+    ):
+        require(screen_space_test, token, "native screen-space lighting coverage")
+
     source_discovery = read("tools/build/meson_sources.py")
     if source_discovery.count('"src/renderer/ModernSpecularProbeAtlas.cpp"') != 1:
         raise AssertionError("specular-probe atlas implementation must be discovered exactly once")
@@ -436,7 +448,7 @@ def test_validation_entry_points_include_this_contract() -> None:
             )
 
 
-def test_parity_stays_unpromoted_and_follow_ons_stay_separate() -> None:
+def test_parity_stays_unpromoted_and_follow_ons_have_separate_gates() -> None:
     executor = read("src/renderer/ModernGLExecutor.cpp")
     matches = re.findall(
         r"static const int\s+MODERN_LIGHTING_PARITY_PROVEN_DOMAINS\s*=\s*([^;]+);",
@@ -457,40 +469,49 @@ def test_parity_stays_unpromoted_and_follow_ons_stay_separate() -> None:
     for feature in ("Froxel", "SSR", "SSGI"):
         require(docs, feature, "separate advanced-lighting follow-on documentation")
     if not re.search(
-        r"Froxel[^\n]*(?:SSR[^\n]*SSGI|volumetrics)[^\n]*(?:separate|unimplemented)",
+        r"Froxel[^\n]*(?:SSR[^\n]*SSGI|volumetrics)[^\n]*(?:separate|independent)",
         docs,
         re.IGNORECASE,
     ):
-        raise AssertionError("froxel, SSR, and SSGI must remain documented as separate gates")
+        raise AssertionError("froxel, SSR, and SSGI must remain independently gated")
 
-    renderer_source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in RENDERER.rglob("*")
-        if path.suffix.lower() in {".cpp", ".h"}
+    temporal = read("src/renderer/TemporalPresentation.cpp")
+    for feature, symbol in (
+        ("froxel", "r_rendererFroxelVolumetrics"),
+        ("SSR", "r_rendererSSR"),
+        ("SSGI", "r_rendererSSGI"),
+    ):
+        require(
+            temporal,
+            f'idCVar {symbol}( "{symbol}", "0"',
+            f"{feature} explicit default-off gate",
+        )
+    require(
+        temporal,
+        "AdvancedScreenSpaceCore_Build(\n\t\tr_rendererModernQuality.GetBool()",
+        "Milestone F master admission",
     )
-    feature_patterns = {
-        "froxel": r"\bidCVar\s+(r_[A-Za-z0-9_]*froxel[A-Za-z0-9_]*)\b",
-        "SSR": r"\bidCVar\s+(r_[A-Za-z0-9_]*ssr[A-Za-z0-9_]*)\b",
-        "SSGI": r"\bidCVar\s+(r_[A-Za-z0-9_]*ssgi[A-Za-z0-9_]*)\b",
-    }
-    for feature, pattern in feature_patterns.items():
-        symbols = sorted(set(re.findall(pattern, renderer_source, re.IGNORECASE)))
-        for symbol in symbols:
-            declaration = re.search(
-                rf'idCVar\s+{re.escape(symbol)}\s*\(\s*"{re.escape(symbol)}"\s*,\s*"([^"]+)"',
-                renderer_source,
-                re.IGNORECASE,
-            )
-            if declaration is None or declaration.group(1) != "0":
-                raise AssertionError(f"{feature} gate {symbol} must be an explicit default-off cvar")
-            guarded_use = re.search(
-                rf"r_rendererModernQuality\.GetBool\(\)[\s\S]{{0,240}}{re.escape(symbol)}\.GetBool\(\)|"
-                rf"{re.escape(symbol)}\.GetBool\(\)[\s\S]{{0,240}}r_rendererModernQuality\.GetBool\(\)",
-                renderer_source,
-                re.IGNORECASE,
-            )
-            if guarded_use is None:
-                raise AssertionError(f"{feature} gate {symbol} must also use the Milestone F master")
+
+    core = read("src/renderer/AdvancedScreenSpaceCore.h")
+    for token in (
+        "ADVANCED_SCREEN_SPACE_EFFECT_FROXEL = 1 << 0",
+        "ADVANCED_SCREEN_SPACE_EFFECT_SSR = 1 << 1",
+        "ADVANCED_SCREEN_SPACE_EFFECT_SSGI = 1 << 2",
+        "ADVANCED_SCREEN_SPACE_FROXEL_MAX_SLICES = 16",
+        "ADVANCED_SCREEN_SPACE_SSR_MAX_STEPS = 16",
+        "ADVANCED_SCREEN_SPACE_SSGI_TAPS = 8",
+    ):
+        require(core, token, "bounded independent screen-space contract")
+
+    gl = read("src/renderer/draw_common.cpp")
+    vk = read("src/renderer/Vulkan/shaders/temporal_resolve.frag")
+    for source, label in ((gl, "OpenGL"), (vk, "Vulkan")):
+        for token in (
+            "ApplyFroxelVolumetrics",
+            "ApplyScreenSpaceReflection",
+            "ApplyScreenSpaceGI",
+        ):
+            require(source, token, f"{label} screen-space implementation")
 
 
 def main() -> int:

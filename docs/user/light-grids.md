@@ -64,7 +64,7 @@ Current scope and limits:
 - intended for openQ4's native bake/load path, not drop-in BFG asset parity
 - translucent effects, decals, and other non-lighting surfaces remain outside the runtime light-grid pass
 
-If no baked assets are found, openQ4 can still generate a runtime probe layout for debugging and baking, but there will be no indirect-light contribution until actual baked files exist.
+If no baked assets are found, openQ4 leaves the runtime grid empty. Starting a light-grid bake generates the requested probe layout on demand; this avoids paying the collision and visibility setup cost on every stock-map load when there is no atlas to render.
 
 ## Runtime Controls
 
