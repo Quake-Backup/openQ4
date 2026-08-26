@@ -175,17 +175,16 @@ float StableShadowHash(vec3 value) {
         * 43758.5453);
 }
 
-vec2 RotateShadowOffset(vec2 offset, vec2 uv, float depth) {
+mat2 ShadowOffsetRotation(vec2 uv, float depth) {
     if (shadow.filterParams.z < 0.5) {
-        return offset;
+        return mat2(1.0, 0.0, 0.0, 1.0);
     }
     float angle = StableShadowHash(vec3(
         floor(uv / max(shadow.texelSize.x, 1.0e-6)),
         floor(depth * 1024.0))) * 6.2831853;
     float s = sin(angle);
     float c = cos(angle);
-    return vec2(c * offset.x - s * offset.y,
-        s * offset.x + c * offset.y);
+    return mat2(c, s, -s, c);
 }
 
 float ShadowDepthGradient(int cascadeIndex) {
@@ -224,7 +223,7 @@ float RawShadowDepth(vec2 uv) {
 }
 
 float ProjectedPCSSRadius(vec2 uv, float depth, int cascadeIndex,
-        vec2 clampMin, vec2 clampMax, vec2 texelStep) {
+        vec2 clampMin, vec2 clampMax, vec2 texelStep, mat2 rotation) {
     float baseRadius = shadow.filterParams.x;
     if (shadow.filterParams.z < 1.5 || shadow.filterParams.w > 0.5
             || shadow.pcssParams.x <= 0.0
@@ -241,10 +240,14 @@ float ProjectedPCSSRadius(vec2 uv, float depth, int cascadeIndex,
         blockerDepth += d0;
         blockerCount += 1.0;
     }
-    vec2 o1 = RotateShadowOffset(vec2(-0.5, -0.5), uv, depth);
-    vec2 o2 = RotateShadowOffset(vec2(0.5, -0.5), uv, depth);
-    vec2 o3 = RotateShadowOffset(vec2(-0.5, 0.5), uv, depth);
-    vec2 o4 = RotateShadowOffset(vec2(0.5, 0.5), uv, depth);
+    vec2 o1 = rotation * vec2(-0.326212, -0.405805);
+    vec2 o2 = rotation * vec2(-0.840144, -0.073580);
+    vec2 o3 = rotation * vec2(-0.695914, 0.457137);
+    vec2 o4 = rotation * vec2(-0.203345, 0.620716);
+    vec2 o5 = rotation * vec2(0.962340, -0.194983);
+    vec2 o6 = rotation * vec2(0.473434, -0.480026);
+    vec2 o7 = rotation * vec2(0.519456, 0.767022);
+    vec2 o8 = rotation * vec2(0.185461, -0.893124);
     float d1 = RawShadowDepth(clamp(uv + o1 * searchTap,
         clampMin, clampMax));
     float d2 = RawShadowDepth(clamp(uv + o2 * searchTap,
@@ -253,16 +256,29 @@ float ProjectedPCSSRadius(vec2 uv, float depth, int cascadeIndex,
         clampMin, clampMax));
     float d4 = RawShadowDepth(clamp(uv + o4 * searchTap,
         clampMin, clampMax));
+    float d5 = RawShadowDepth(clamp(uv + o5 * searchTap,
+        clampMin, clampMax));
+    float d6 = RawShadowDepth(clamp(uv + o6 * searchTap,
+        clampMin, clampMax));
+    float d7 = RawShadowDepth(clamp(uv + o7 * searchTap,
+        clampMin, clampMax));
+    float d8 = RawShadowDepth(clamp(uv + o8 * searchTap,
+        clampMin, clampMax));
     if (d1 < compareDepth) { blockerDepth += d1; blockerCount += 1.0; }
     if (d2 < compareDepth) { blockerDepth += d2; blockerCount += 1.0; }
     if (d3 < compareDepth) { blockerDepth += d3; blockerCount += 1.0; }
     if (d4 < compareDepth) { blockerDepth += d4; blockerCount += 1.0; }
+    if (d5 < compareDepth) { blockerDepth += d5; blockerCount += 1.0; }
+    if (d6 < compareDepth) { blockerDepth += d6; blockerCount += 1.0; }
+    if (d7 < compareDepth) { blockerDepth += d7; blockerCount += 1.0; }
+    if (d8 < compareDepth) { blockerDepth += d8; blockerCount += 1.0; }
     if (blockerCount <= 0.0) {
-        return baseRadius;
+        return 0.0;
     }
 
     float averageBlocker = blockerDepth / blockerCount;
-    float penumbra = (depth - averageBlocker)
+    float separation = max(compareDepth - averageBlocker, 0.0);
+    float penumbra = separation
         / max(averageBlocker, 1.0e-4);
     float maxRadius = max(baseRadius, shadow.pcssParams.y);
     return clamp(max(baseRadius, penumbra * shadow.pcssParams.x),
@@ -307,9 +323,12 @@ float SampleShadowCascade(vec4 shadowCoord, vec4 atlasRect,
     vec2 clampMax = rectMax - guardBand;
     clampMin = min(clampMin, clampMax);
     uv = clamp(uv, clampMin, clampMax);
+    // Blocker search and PCF use the same stable kernel orientation. Compute
+    // the hash/trigonometry once so PCSS has one bounded rotation per receiver.
+    mat2 rotation = ShadowOffsetRotation(uv, depth);
 
     float filterRadius = ProjectedPCSSRadius(uv, depth, cascadeIndex,
-        clampMin, clampMax, texelStep);
+        clampMin, clampMax, texelStep, rotation);
     if (filterRadius <= 0.0) {
         return SampleShadowCompare(uv, depth, cascadeIndex);
     }
@@ -319,10 +338,10 @@ float SampleShadowCascade(vec4 shadowCoord, vec4 atlasRect,
     if (shadow.filterParams.y <= 1.0) {
         return result;
     }
-    vec2 o1 = RotateShadowOffset(vec2(-0.326212, -0.405805), uv, depth);
-    vec2 o2 = RotateShadowOffset(vec2(-0.840144, -0.073580), uv, depth);
-    vec2 o3 = RotateShadowOffset(vec2(-0.695914, 0.457137), uv, depth);
-    vec2 o4 = RotateShadowOffset(vec2(-0.203345, 0.620716), uv, depth);
+    vec2 o1 = rotation * vec2(-0.326212, -0.405805);
+    vec2 o2 = rotation * vec2(-0.840144, -0.073580);
+    vec2 o3 = rotation * vec2(-0.695914, 0.457137);
+    vec2 o4 = rotation * vec2(-0.203345, 0.620716);
     result += SampleShadowCompare(clamp(uv + o1 * tap,
         clampMin, clampMax), depth, cascadeIndex);
     result += SampleShadowCompare(clamp(uv + o2 * tap,
@@ -334,10 +353,10 @@ float SampleShadowCascade(vec4 shadowCoord, vec4 atlasRect,
     if (shadow.filterParams.y <= 5.0) {
         return result * (1.0 / 5.0);
     }
-    vec2 o5 = RotateShadowOffset(vec2(0.962340, -0.194983), uv, depth);
-    vec2 o6 = RotateShadowOffset(vec2(0.473434, -0.480026), uv, depth);
-    vec2 o7 = RotateShadowOffset(vec2(0.519456, 0.767022), uv, depth);
-    vec2 o8 = RotateShadowOffset(vec2(0.185461, -0.893124), uv, depth);
+    vec2 o5 = rotation * vec2(0.962340, -0.194983);
+    vec2 o6 = rotation * vec2(0.473434, -0.480026);
+    vec2 o7 = rotation * vec2(0.519456, 0.767022);
+    vec2 o8 = rotation * vec2(0.185461, -0.893124);
     result += SampleShadowCompare(clamp(uv + o5 * tap,
         clampMin, clampMax), depth, cascadeIndex);
     result += SampleShadowCompare(clamp(uv + o6 * tap,
@@ -349,10 +368,10 @@ float SampleShadowCascade(vec4 shadowCoord, vec4 atlasRect,
     if (shadow.filterParams.y <= 9.0) {
         return result * (1.0 / 9.0);
     }
-    vec2 o9 = RotateShadowOffset(vec2(0.507431, 0.064425), uv, depth);
-    vec2 o10 = RotateShadowOffset(vec2(0.896420, 0.412458), uv, depth);
-    vec2 o11 = RotateShadowOffset(vec2(-0.321940, -0.932615), uv, depth);
-    vec2 o12 = RotateShadowOffset(vec2(-0.791559, -0.597705), uv, depth);
+    vec2 o9 = rotation * vec2(0.507431, 0.064425);
+    vec2 o10 = rotation * vec2(0.896420, 0.412458);
+    vec2 o11 = rotation * vec2(-0.321940, -0.932615);
+    vec2 o12 = rotation * vec2(-0.791559, -0.597705);
     result += SampleShadowCompare(clamp(uv + o9 * tap,
         clampMin, clampMax), depth, cascadeIndex);
     result += SampleShadowCompare(clamp(uv + o10 * tap,

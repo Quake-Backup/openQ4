@@ -261,6 +261,7 @@ static void InitShadowCaster(
 	caster.indexSelection = CLASSIC_INTERACTION_SHADOW_INDEX_FULL;
 	caster.cull = RENDERER_CULL_FRONT;
 	caster.firstAlphaStage = -1;
+	caster.perfectHull = false;
 }
 
 static void InitShadowMapPass(
@@ -881,6 +882,7 @@ static std::uint64_t HashShadowCaster(
 	HashBool( hash, caster.external );
 	HashBool( hash, caster.preload );
 	HashBool( hash, caster.ambientGeometry );
+	HashBool( hash, caster.perfectHull );
 	HashBool( hash, caster.dynamicCaster );
 	HashBool( hash, caster.translucentCaster );
 	HashInt( hash, caster.deformRole );
@@ -1427,6 +1429,7 @@ static bool PrepareStencilShadowChain(
 		caster.legacyDrawSurf = drawSurf;
 		caster.legacyViewLight = light.legacyViewLight;
 		caster.legacyCasterGeometry = drawSurf->geo;
+		caster.perfectHull = drawSurf->geo->perfectHull;
 		caster.drawPacketIndex = packetCursor;
 		caster.lightIndex = static_cast<int>( &light - domain.lights );
 		caster.sourceOrdinal = sourceOrdinal;
@@ -1572,6 +1575,7 @@ static bool AppendEmptyMappedDeformCaster(
 	caster.legacyDrawSurf = drawSurf;
 	caster.legacyViewLight = light.legacyViewLight;
 	caster.legacyCasterGeometry = drawSurf->geo;
+	caster.perfectHull = drawSurf->geo->perfectHull;
 	caster.lightIndex = static_cast<int>( &light - domain.lights );
 	caster.sourceOrdinal = sourceOrdinal;
 	caster.chainOrdinal = chainOrdinal;
@@ -1736,6 +1740,7 @@ static bool PrepareMappedShadowChain(
 		caster.legacyDrawSurf = drawSurf;
 		caster.legacyViewLight = light.legacyViewLight;
 		caster.legacyCasterGeometry = casterGeometry;
+		caster.perfectHull = casterGeometry->perfectHull;
 		caster.drawPacketIndex = packetCursor;
 		caster.lightIndex = static_cast<int>( &light - domain.lights );
 		caster.sourceOrdinal = sourceOrdinal;
@@ -1908,19 +1913,6 @@ static int ShadowMapReceiverMask(
 		? SHADOWMAP_RECEIVER_MASK_LOCAL : SHADOWMAP_RECEIVER_MASK_GLOBAL;
 }
 
-static float ShadowMapPointFarDistance( const viewLight_t &viewLight ) {
-	idVec3 adjustedRadius = viewLight.lightRadius;
-	if ( viewLight.lightDef != NULL ) {
-		const renderLight_t &parms = viewLight.lightDef->parms;
-		for ( int component = 0; component < 3; ++component ) {
-			adjustedRadius[ component ] = parms.lightRadius[ component ]
-				+ idMath::Fabs( parms.lightCenter[ component ] );
-		}
-	}
-	return Max( adjustedRadius.Length()
-		* r_shadowMapPointFarScale.GetFloat(), 1.0f );
-}
-
 static int ShadowMapProjectedTileSize(
 		const shadowMapLightClassification_t &classification ) {
 	const int atlasDiv = Max( 1, classification.atlasDiv );
@@ -1974,13 +1966,14 @@ static bool BuildShadowMapPasses(
 		point.lightOrigin[1] = viewLight->globalLightOrigin[1];
 		point.lightOrigin[2] = viewLight->globalLightOrigin[2];
 		point.lightOrigin[3] = 1.0f;
-		point.farDistance = ShadowMapPointFarDistance( *viewLight );
-		point.constantBias = r_shadowMapPointBias.GetFloat();
-		point.normalBias = r_shadowMapPointNormalBias.GetFloat();
-		point.normalOffsetScale =
-			Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() );
-		point.texelBiasScale =
-			Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() );
+		point.farDistance = R_ShadowMapPointFarDistance( viewLight );
+		const shadowMapPointReceiverSettings_t receiverSettings =
+			R_ShadowMapPointReceiverSettings(
+				point.farDistance, point.faceSize );
+		point.constantBias = receiverSettings.constantBias;
+		point.normalBias = receiverSettings.normalBias;
+		point.normalOffsetScale = receiverSettings.normalOffsetScale;
+		point.texelBiasScale = receiverSettings.texelBiasScale;
 		point.filterRadius =
 			Max( 0.0f, r_shadowMapPointFilterRadius.GetFloat() );
 		point.filterTaps = idMath::ClampInt( 1, 13,

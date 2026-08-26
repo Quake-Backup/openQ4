@@ -4,6 +4,8 @@
 #include "tr_local.h"
 #include "ShadowMapClassification.h"
 
+#include <cmath>
+
 static shadowMapLightClass_t R_ShadowMapLightClassForViewLight( const viewLight_t *vLight ) {
 	if ( vLight == NULL ) {
 		return SHADOWMAP_LIGHT_PROJECTED;
@@ -116,6 +118,162 @@ shadowMapProjectedFilterSettings_t R_ShadowMapProjectedFilterSettings( const vie
 			Max( settings.pcssLightRadius, settings.pcssMaxRadius ) );
 	}
 	return settings;
+}
+
+float R_ShadowMapPointFarDistance( const viewLight_t *vLight ) {
+	if ( vLight == NULL ) {
+		return 1.0f;
+	}
+
+	idVec3 adjustedRadius = vLight->lightRadius;
+	if ( vLight->lightDef != NULL ) {
+		const renderLight_t &parms = vLight->lightDef->parms;
+		for ( int component = 0; component < 3; ++component ) {
+			adjustedRadius[ component ] = parms.lightRadius[ component ]
+				+ idMath::Fabs( parms.lightCenter[ component ] );
+		}
+	}
+
+	const float farDistance = adjustedRadius.Length()
+		* r_shadowMapPointFarScale.GetFloat();
+	return std::isfinite( static_cast<double>( farDistance ) )
+		? Max( farDistance, 1.0f ) : 1.0f;
+}
+
+static float R_ShadowMapNonNegativeFinite( float value ) {
+	return std::isfinite( static_cast<double>( value ) ) && value > 0.0f
+		? value : 0.0f;
+}
+
+shadowMapPointReceiverSettings_t R_ClampShadowMapPointReceiverSettings(
+		float farDistance, int faceSize, float constantBias, float normalBias,
+		float texelBiasScale, float normalOffsetScale, float maxWorldBias ) {
+	shadowMapPointReceiverSettings_t settings;
+	settings.constantBias = R_ShadowMapNonNegativeFinite( constantBias );
+	settings.normalBias = R_ShadowMapNonNegativeFinite( normalBias );
+	settings.texelBiasScale = R_ShadowMapNonNegativeFinite( texelBiasScale );
+	settings.normalOffsetScale =
+		R_ShadowMapNonNegativeFinite( normalOffsetScale );
+	settings.worldBiasScale = 1.0f;
+
+	const double safeFar =
+		std::isfinite( static_cast<double>( farDistance ) )
+			&& farDistance > 0.0f
+		? static_cast<double>( farDistance ) : 1.0;
+	const double safeFace = static_cast<double>( Max( 1, faceSize ) );
+	const double cap = static_cast<double>(
+		R_ShadowMapNonNegativeFinite( maxWorldBias ) );
+	const double scalarDepthBias =
+		static_cast<double>( settings.constantBias )
+		+ static_cast<double>( settings.normalBias );
+	const double texelDepthBias =
+		( static_cast<double>( settings.texelBiasScale ) / safeFace )
+		* ( 1.0 + static_cast<double>(
+			SHADOWMAP_POINT_RECEIVER_MAX_SLOPE ) );
+	const double depthWorldBias = safeFar
+		* Max( scalarDepthBias, texelDepthBias );
+	const double normalOffsetWorldBias = safeFar
+		* ( 2.0 * static_cast<double>( settings.normalOffsetScale )
+			/ safeFace );
+	const double requestedWorldBias =
+		depthWorldBias + normalOffsetWorldBias;
+
+	if ( cap > 0.0 && requestedWorldBias > cap ) {
+		settings.worldBiasScale = static_cast<float>(
+			cap / requestedWorldBias );
+		settings.constantBias *= settings.worldBiasScale;
+		settings.normalBias *= settings.worldBiasScale;
+		settings.texelBiasScale *= settings.worldBiasScale;
+		settings.normalOffsetScale *= settings.worldBiasScale;
+	}
+
+	return settings;
+}
+
+shadowMapPointReceiverSettings_t R_ShadowMapPointReceiverSettings(
+		float farDistance, int faceSize ) {
+	return R_ClampShadowMapPointReceiverSettings(
+		farDistance, faceSize,
+		r_shadowMapPointBias.GetFloat(),
+		r_shadowMapPointNormalBias.GetFloat(),
+		r_shadowMapTexelBiasScale.GetFloat(),
+		r_shadowMapNormalOffsetScale.GetFloat(),
+		r_shadowMapPointMaxWorldBias.GetFloat() );
+}
+
+shadowMapPointReceiverSettings_t R_ShadowMapPointStorageAdjustedReceiverSettings(
+		const shadowMapPointReceiverSettings_t &baseSettings,
+		float farDistance, int faceSize, bool depthCompare,
+		bool highPrecision ) {
+	if ( depthCompare ) {
+		return baseSettings;
+	}
+
+	// Manual color depth needs a quantization-aware constant floor. Re-run the
+	// common clamp after adding it: on an enormous light one fp16 step alone can
+	// exceed the configured world-space budget, and the cap deliberately wins
+	// that otherwise unsatisfiable tradeoff. Keep this outside the GL backend so
+	// modern receivers sampling the same color cube use identical coefficients.
+	const float storageStep = highPrecision
+		? 1.0f / 2048.0f : 1.0f / 65025.0f;
+	return R_ClampShadowMapPointReceiverSettings(
+		farDistance, faceSize,
+		Max( baseSettings.constantBias, storageStep * 1.5f ),
+		baseSettings.normalBias,
+		baseSettings.texelBiasScale,
+		baseSettings.normalOffsetScale,
+		r_shadowMapPointMaxWorldBias.GetFloat() );
+}
+
+bool R_ShadowMapCasterTransformNeedsTwoSided( const float modelMatrix[ 16 ] ) {
+	if ( modelMatrix == NULL ) {
+		return true;
+	}
+
+	// Evaluate the affine linear transform in double precision so large, but
+	// finite, float scales do not overflow before the validity check.
+	const double determinant =
+		static_cast<double>( modelMatrix[ 0 ] ) *
+			( static_cast<double>( modelMatrix[ 5 ] ) * static_cast<double>( modelMatrix[ 10 ] )
+			- static_cast<double>( modelMatrix[ 9 ] ) * static_cast<double>( modelMatrix[ 6 ] ) )
+		- static_cast<double>( modelMatrix[ 4 ] ) *
+			( static_cast<double>( modelMatrix[ 1 ] ) * static_cast<double>( modelMatrix[ 10 ] )
+			- static_cast<double>( modelMatrix[ 9 ] ) * static_cast<double>( modelMatrix[ 2 ] ) )
+		+ static_cast<double>( modelMatrix[ 8 ] ) *
+			( static_cast<double>( modelMatrix[ 1 ] ) * static_cast<double>( modelMatrix[ 6 ] )
+			- static_cast<double>( modelMatrix[ 5 ] ) * static_cast<double>( modelMatrix[ 2 ] ) );
+	// A singular transform has no reliable winding either. It can arise from
+	// malformed or transient entity state; AUTO must fail conservatively rather
+	// than culling one side of the collapsed caster.
+	return !std::isfinite( determinant ) || determinant <= 0.0;
+}
+
+bool R_ShadowMapLightOriginInsideCasterBounds( const viewLight_t *vLight,
+		const float modelMatrix[ 16 ], const float boundsMin[ 3 ],
+		const float boundsMax[ 3 ] ) {
+	if ( vLight == NULL || modelMatrix == NULL
+			|| boundsMin == NULL || boundsMax == NULL ) {
+		return true;
+	}
+
+	idVec3 localLightOrigin;
+	R_GlobalPointToLocal( modelMatrix, vLight->globalLightOrigin,
+		localLightOrigin );
+	for ( int component = 0; component < 3; ++component ) {
+		const float local = localLightOrigin[ component ];
+		const float minimum = boundsMin[ component ];
+		const float maximum = boundsMax[ component ];
+		if ( !std::isfinite( static_cast<double>( local ) )
+				|| !std::isfinite( static_cast<double>( minimum ) )
+				|| !std::isfinite( static_cast<double>( maximum ) )
+				|| minimum > maximum ) {
+			return true;
+		}
+		if ( local < minimum || local > maximum ) {
+			return false;
+		}
+	}
+	return true;
 }
 
 const char *R_ShadowMapLightClassName( shadowMapLightClass_t lightClass ) {

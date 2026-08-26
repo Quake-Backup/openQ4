@@ -798,20 +798,6 @@ Point-light math (ports of the excluded draw_arb2.cpp helpers)
 ====================
 */
 
-// port of RB_PointShadowMapLightFar (draw_arb2.cpp:7358): the padded radial
-// far envelope both the caster and the receiver normalize against
-static float VK_ShadowMap_PointLightFar( const viewLight_t *vLight ) {
-	idVec3 adjustedRadius = vLight->lightRadius;
-	if ( vLight->lightDef != NULL ) {
-		const renderLight_t &parms = vLight->lightDef->parms;
-		adjustedRadius[0] = parms.lightRadius[0] + idMath::Fabs( parms.lightCenter[0] );
-		adjustedRadius[1] = parms.lightRadius[1] + idMath::Fabs( parms.lightCenter[1] );
-		adjustedRadius[2] = parms.lightRadius[2] + idMath::Fabs( parms.lightCenter[2] );
-	}
-
-	return Max( adjustedRadius.Length() * r_shadowMapPointFarScale.GetFloat(), 1.0f );
-}
-
 // port of RB_PointShadowMapBuildViewAxis (draw_arb2.cpp:7303): the GL cube
 // face view axes. Combined with the GL viewport row mapping (positive-height
 // viewport: NDC y=-1 -> texel row 0) these produce the exact GL/Vulkan cube
@@ -1010,7 +996,7 @@ static int VK_ShadowMap_BuildPassSignatureForView(
 		hash = VK_ShadowMap_HashFloat( hash,
 				r_shadowMapPointFarScale.GetFloat() );
 		hash = VK_ShadowMap_HashFloat( hash,
-				VK_ShadowMap_PointLightFar( vLight ) );
+				R_ShadowMapPointFarDistance( vLight ) );
 		if ( vLight != NULL && vLight->lightDef != NULL ) {
 			for ( int i = 0 ; i < 3 ; i++ ) {
 				hash = VK_ShadowMap_HashFloat( hash,
@@ -1987,7 +1973,7 @@ int VK_ShadowMap_PrepareViewLights( const viewDef_t *viewDef,
 			memset( &entry, 0, sizeof( entry ) );
 			entry.vLight = vLight;
 			entry.pointLight = true;
-			entry.pointFar = VK_ShadowMap_PointLightFar( vLight );
+			entry.pointFar = R_ShadowMapPointFarDistance( vLight );
 			for ( int i = 0 ; i < 3 ; i++ ) {
 				entry.pointLightOrigin[ i ] =
 						vLight->globalLightOrigin[ i ];
@@ -2055,15 +2041,20 @@ int VK_ShadowMap_PrepareViewLights( const viewDef_t *viewDef,
 
 			VK_ShadowMap_RefreshLightValidity( entry );
 			if ( entry.valid ) {
-				// receiver bias scalars (RB_GLSLPointShadowMap_
-				// CreateDrawInteractions): texel-aware depth bias plus the
-				// per-distance normal-offset texel factor (a cube face spans
-				// 2*distance across faceSize texels)
+				// Seal the same world-bounded receiver coefficients as GL after
+				// cache reuse has restored the physical cube's final far envelope
+				// and face size.
 				const int faceSize = entry.tileSize;
-				entry.texelDepthBias = Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() )
-					/ (float)Max( 1, faceSize );
-				entry.normalOffsetWorld = 2.0f * Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() )
-					/ (float)Max( 1, faceSize );
+				const shadowMapPointReceiverSettings_t receiverSettings =
+					R_ShadowMapPointReceiverSettings(
+						entry.pointFar, faceSize );
+				entry.constantBias = receiverSettings.constantBias;
+				entry.normalBias = receiverSettings.normalBias;
+				entry.texelDepthBias = receiverSettings.texelBiasScale
+					/ static_cast<float>( Max( 1, faceSize ) );
+				entry.normalOffsetWorld =
+					2.0f * receiverSettings.normalOffsetScale
+						/ static_cast<float>( Max( 1, faceSize ) );
 				vkShadow.numLights++;
 				prepared++;
 			}
@@ -2192,16 +2183,31 @@ Caster drawing
 */
 
 // r_shadowMapCasterCulling in the executor's GL-parity winding convention
-// (negative-height viewport, CCW front): mode 1 stores light-facing
-// engine-front faces (cull FRONT), mode 2 (default) stores engine-back faces
-// (cull BACK); material twoSided/backSided is always honored
-static VkCullModeFlags VK_ShadowMap_CasterCullMode( const idMaterial *shader ) {
+// (negative-height viewport, CCW front): mode 0 is always two-sided, mode 1
+// stores light-facing near-shell faces (cull FRONT), and mode 2 (default) is
+// topology-aware: open/unknown hulls and hulls enclosing the light are
+// two-sided, as are mirrored/invalid model transforms, while other perfect
+// hulls use mode 1. The authored material orientation is honored whenever
+// one-sided culling is active.
+static VkCullModeFlags VK_ShadowMap_CasterCullMode(
+		const viewLight_t *vLight, const drawSurf_t *surf,
+		const srfTriangles_t *casterGeo ) {
 	const int mode = idMath::ClampInt( 0, 2, r_shadowMapCasterCulling.GetInteger() );
+	const idMaterial *shader = surf != NULL ? surf->material : NULL;
 	const int materialCull = ( shader != NULL ) ? shader->GetCullType() : CT_FRONT_SIDED;
-	if ( mode == 0 || materialCull == CT_TWO_SIDED ) {
+	if ( mode == 0 || materialCull == CT_TWO_SIDED
+			|| ( mode == 2
+				&& ( casterGeo == NULL || !casterGeo->perfectHull
+					|| surf == NULL || surf->space == NULL
+					|| R_ShadowMapCasterTransformNeedsTwoSided(
+						surf->space->modelMatrix )
+					|| R_ShadowMapLightOriginInsideCasterBounds( vLight,
+						surf->space->modelMatrix,
+						casterGeo->bounds[0].ToFloatPtr(),
+						casterGeo->bounds[1].ToFloatPtr() ) ) ) ) {
 		return VK_CULL_MODE_NONE;
 	}
-	bool cullFront = ( mode == 1 );
+	bool cullFront = true;
 	if ( materialCull == CT_BACK_SIDED ) {
 		cullFront = !cullFront;
 	}
@@ -2410,8 +2416,10 @@ static void VK_ShadowMap_ReportUnsupportedCaster( vkCasterPassCtx_t &ctx,
 // set ctx.unsupportedCaster and emit NO conservative solid substitute.
 static bool VK_ShadowMap_DrawResolvedCaster( vkCasterPassCtx_t &ctx,
 		vkCasterPush_t &push,
-		const drawSurf_t *surf, const srfTriangles_t *casterGeo ) {
-	const VkCullModeFlags cullMode = VK_ShadowMap_CasterCullMode( surf->material );
+		const viewLight_t *vLight, const drawSurf_t *surf,
+		const srfTriangles_t *casterGeo ) {
+	const VkCullModeFlags cullMode =
+		VK_ShadowMap_CasterCullMode( vLight, surf, casterGeo );
 	if ( cullMode != ctx.boundCullMode ) {
 		ctx.boundCullMode = cullMode;
 		vkCmdSetCullMode( ctx.cmd, cullMode );
@@ -2584,7 +2592,8 @@ static int VK_ShadowMap_DrawCasterChain( vkCasterPassCtx_t &ctx,
 		push.alphaS[ 2 ] = ctx.slopeFactor;
 		push.alphaT[ 2 ] = ctx.constOffset;
 
-		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push, surf, casterGeo ) ) {
+		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push,
+				light.vLight, surf, casterGeo ) ) {
 			drawnCasters++;
 		}
 	}
@@ -2596,8 +2605,10 @@ static int VK_ShadowMap_DrawCasterChain( vkCasterPassCtx_t &ctx,
 // minus the per-face frustum cull — see the header divergence note). The push
 // mvp is the model -> face-view matrix; the shader projects analytically
 // through projRow and stores the radial view-space distance / far.
-static int VK_ShadowMap_DrawPointCasterChain( vkCasterPassCtx_t &ctx, const float faceViewMatrix[ 16 ],
-		const float projRow[ 2 ], const float farClip, const drawSurf_t *surf ) {
+static int VK_ShadowMap_DrawPointCasterChain( vkCasterPassCtx_t &ctx,
+		const viewLight_t *vLight, const float faceViewMatrix[ 16 ],
+		const float projRow[ 2 ], const float farClip,
+		const drawSurf_t *surf ) {
 	int drawnCasters = 0;
 
 	for ( ; surf != NULL ; surf = surf->nextOnLight ) {
@@ -2624,7 +2635,8 @@ static int VK_ShadowMap_DrawPointCasterChain( vkCasterPassCtx_t &ctx, const floa
 		push.alphaS[ 2 ] = ctx.slopeFactor;
 		push.alphaT[ 2 ] = ctx.constOffset;
 
-		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push, surf, casterGeo ) ) {
+		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push,
+				vLight, surf, casterGeo ) ) {
 			drawnCasters++;
 		}
 	}
@@ -3249,10 +3261,19 @@ static VkCullModeFlags VK_ClassicShadow_EffectiveCull(
 		const vkClassicShadowCasterPlan_t &casterPlan,
 		const classicInteractionDomainShadowMapPass_t &pass ) {
 	if ( pass.casterCullMode == 0
-			|| casterPlan.cullMode == VK_CULL_MODE_NONE ) {
+			|| casterPlan.cullMode == VK_CULL_MODE_NONE
+			|| ( pass.casterCullMode == 2
+				&& ( !casterPlan.caster->perfectHull
+					|| R_ShadowMapLightOriginInsideCasterBounds(
+						pass.legacyViewLight,
+						casterPlan.caster->modelMatrix,
+						casterPlan.caster->boundsMin,
+						casterPlan.caster->boundsMax ) ) ) ) {
 		return VK_CULL_MODE_NONE;
 	}
-	bool cullFront = pass.casterCullMode == 1;
+	// Both explicit mode 1 and AUTO mode 2 on a sealed perfect hull store the
+	// light-facing near shell. The material cull orientation may reverse it.
+	bool cullFront = true;
 	if ( casterPlan.cullMode == VK_CULL_MODE_BACK_BIT ) {
 		cullFront = !cullFront;
 	}
@@ -4341,14 +4362,14 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 							ctx, *classicPass, faceViewMatrix, projRow );
 					} else {
 					const viewLight_t *vLight = light.vLight;
-					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 							projRow, farClip, vLight->globalShadowMapCasters );
-					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 							projRow, farClip, vLight->globalShadowMapDynamicCasters );
 					if ( receiverPass == VK_SHADOW_RECEIVER_GLOBAL ) {
-						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 								projRow, farClip, vLight->localShadowMapCasters );
-						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 								projRow, farClip, vLight->localShadowMapDynamicCasters );
 					}
 					}

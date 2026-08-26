@@ -2536,10 +2536,8 @@ static int VK_Inter_WriteShadowSlice( const viewEntity_t *space ) {
 		pointBlock.lightOriginFar[ 1 ] = state->pointLightOrigin[ 1 ];
 		pointBlock.lightOriginFar[ 2 ] = state->pointLightOrigin[ 2 ];
 		pointBlock.lightOriginFar[ 3 ] = state->pointFar;
-		// the depth-compare path uses r_shadowMapPointBias directly; the GL
-		// storage-step floor only applies to the packed-color fallback
-		pointBlock.biasParams[ 0 ] = r_shadowMapPointBias.GetFloat();
-		pointBlock.biasParams[ 1 ] = r_shadowMapPointNormalBias.GetFloat();
+		pointBlock.biasParams[ 0 ] = state->constantBias;
+		pointBlock.biasParams[ 1 ] = state->normalBias;
 		pointBlock.biasParams[ 2 ] = state->texelDepthBias;
 		pointBlock.biasParams[ 3 ] = state->normalOffsetWorld;
 		pointBlock.filterParams[ 0 ] =

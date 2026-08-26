@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #include "../renderer/Image.h"
+#include "../idlib/CryptoHash.h"
 #include "DXT/DXTCodec.h"
 #include "Color/ColorSpace.h"
 
@@ -70,6 +71,36 @@ CPU path, and each distinct downsize signature stores its own copy.
 */
 static bool R_ShouldWriteGeneratedImages() {
 	return image_writeGeneratedImages.GetBool() || cvarSystem->GetCVarBool( "com_makingBuild" );
+}
+
+/*
+========================
+R_MakeCompactBinaryImageFileName
+
+The ordinary generated qpath remains the public/cache-package identity. This
+fixed-length secondary identity is consulted only after that cache is absent or
+invalid, and is written only after the ordinary savepath cannot be opened. This
+lets deeply nested save roots populate a runtime cache without changing existing
+generated-tree priority. The version covers both normalization and path layout;
+bump it if either changes.
+========================
+*/
+static void R_MakeCompactBinaryImageFileName( idStr &compactFileName, const char *logicalName ) {
+	idStr normalizedName = logicalName != NULL ? logicalName : "";
+	normalizedName.BackSlashesToSlashes();
+	normalizedName.ToLower();
+
+	std::uint8_t digest[ idCrypto::SHA256_DIGEST_BYTES ];
+	idCrypto::SHA256( normalizedName.c_str(), normalizedName.Length(), digest );
+
+	static const char hexDigits[] = "0123456789abcdef";
+	char digestHex[ 16 * 2 + 1 ];
+	for ( int i = 0; i < 16; i++ ) {
+		digestHex[ i * 2 + 0 ] = hexDigits[ digest[ i ] >> 4 ];
+		digestHex[ i * 2 + 1 ] = hexDigits[ digest[ i ] & 15 ];
+	}
+	digestHex[ sizeof( digestHex ) - 1 ] = '\0';
+	compactFileName = va( "generated/images/_compact/v1/%s.bimage", digestHex );
 }
 
 static bool R_BinaryImageFormatIsBlockCompressed( textureFormat_t format ) {
@@ -436,22 +467,26 @@ bool idBinaryImage::WriteToFile( idFile *file, ID_TIME_T sourceFileTime ) {
 	fileData.headerMagic = BIMAGE_MAGIC;
 	fileData.sourceFileTime = sourceFileTime;
 
-	file->WriteBig( fileData.sourceFileTime );
-	file->WriteBig( fileData.headerMagic );
-	file->WriteBig( fileData.textureType );
-	file->WriteBig( fileData.format );
-	file->WriteBig( fileData.colorFormat );
-	file->WriteBig( fileData.width );
-	file->WriteBig( fileData.height );
-	file->WriteBig( fileData.numLevels );
+	if ( file->WriteBig( fileData.sourceFileTime ) != sizeof( fileData.sourceFileTime ) ||
+		 file->WriteBig( fileData.headerMagic ) != sizeof( fileData.headerMagic ) ||
+		 file->WriteBig( fileData.textureType ) != sizeof( fileData.textureType ) ||
+		 file->WriteBig( fileData.format ) != sizeof( fileData.format ) ||
+		 file->WriteBig( fileData.colorFormat ) != sizeof( fileData.colorFormat ) ||
+		 file->WriteBig( fileData.width ) != sizeof( fileData.width ) ||
+		 file->WriteBig( fileData.height ) != sizeof( fileData.height ) ||
+		 file->WriteBig( fileData.numLevels ) != sizeof( fileData.numLevels ) ) {
+		return false;
+	}
 
 	for ( int i = 0; i < images.Num(); i++ ) {
 		idBinaryImageData &img = images[ i ];
-		file->WriteBig( img.level );
-		file->WriteBig( img.destZ );
-		file->WriteBig( img.width );
-		file->WriteBig( img.height );
-		file->WriteBig( img.dataSize );
+		if ( file->WriteBig( img.level ) != sizeof( img.level ) ||
+			 file->WriteBig( img.destZ ) != sizeof( img.destZ ) ||
+			 file->WriteBig( img.width ) != sizeof( img.width ) ||
+			 file->WriteBig( img.height ) != sizeof( img.height ) ||
+			 file->WriteBig( img.dataSize ) != sizeof( img.dataSize ) ) {
+			return false;
+		}
 		if ( file->Write( img.data, img.dataSize ) != img.dataSize ) {
 			return false;
 		}
@@ -473,13 +508,20 @@ ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
 	MakeGeneratedFileName( binaryFileName );
 	// Write generated cache data to savepath so long image-program names stay under
 	// Windows path limits even when fs_basepath points at "Program Files".
-	idFileLocal file( fileSystem->OpenFileWrite( binaryFileName, "fs_savepath" ) );
+	idStr writeFileName = binaryFileName;
+	idFile *outputFile = fileSystem->OpenFileWrite( writeFileName, "fs_savepath" );
+	if ( outputFile == NULL ) {
+		R_MakeCompactBinaryImageFileName( writeFileName, GetName() );
+		outputFile = fileSystem->OpenFileWrite( writeFileName, "fs_savepath" );
+	}
+	idFileLocal file( outputFile );
 	if ( file == NULL ) {
-		idLib::Warning( "idBinaryImage: Could not open file '%s'", binaryFileName.c_str() );
+		idLib::Warning( "idBinaryImage: Could not open generated cache '%s' or compact fallback '%s'",
+			binaryFileName.c_str(), writeFileName.c_str() );
 		return FILE_NOT_FOUND_TIMESTAMP;
 	}
 	if ( image_showGeneratedImageWrites.GetBool() ) {
-		idLib::Printf( "Writing %s\n", binaryFileName.c_str() );
+		idLib::Printf( "Writing %s\n", writeFileName.c_str() );
 	}
 
 	if ( !WriteToFile( file, sourceFileTime ) ) {
@@ -499,11 +541,15 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
 	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
-	if ( bFile == NULL ) {
-		return FILE_NOT_FOUND_TIMESTAMP;
-	}
-	if ( LoadFromGeneratedFile( bFile, sourceFileTime, true ) ) {
+	if ( bFile != NULL && LoadFromGeneratedFile( bFile, sourceFileTime, true ) ) {
 		return bFile->Timestamp();
+	}
+
+	idStr compactFileName;
+	R_MakeCompactBinaryImageFileName( compactFileName, GetName() );
+	idFileLocal compactFile = fileSystem->OpenFileRead( compactFileName );
+	if ( compactFile != NULL && LoadFromGeneratedFile( compactFile, sourceFileTime, true ) ) {
+		return compactFile->Timestamp();
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
 }
@@ -520,11 +566,27 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFileUnchecked() {
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
 	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
-	if ( bFile == NULL ) {
-		return FILE_NOT_FOUND_TIMESTAMP;
-	}
-	if ( LoadFromGeneratedFile( bFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
+	if ( bFile != NULL && LoadFromGeneratedFile( bFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
 		return bFile->Timestamp();
+	}
+	return FILE_NOT_FOUND_TIMESTAMP;
+}
+
+/*
+==========================
+idBinaryImage::LoadFromCompactGeneratedFileUnchecked
+
+Loads the fixed-length recovery identity after the ordinary generated cache was
+missing or rejected. The VFS read preserves pure-server directory policy; the
+ordinary generated identity remains authoritative because callers probe it first.
+==========================
+*/
+ID_TIME_T idBinaryImage::LoadFromCompactGeneratedFileUnchecked() {
+	idStr compactFileName;
+	R_MakeCompactBinaryImageFileName( compactFileName, GetName() );
+	idFileLocal compactFile = fileSystem->OpenFileRead( compactFileName );
+	if ( compactFile != NULL && LoadFromGeneratedFile( compactFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
+		return compactFile->Timestamp();
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
 }
@@ -765,4 +827,3 @@ void idBinaryImage::GetGeneratedFileName( idStr & gfn, const char *name ) {
 	const uint32_t crc = CRC32_BlockChecksum( normalizedName.c_str(), normalizedName.Length() );
 	gfn = va( "generated/images/_programs/%s_%08x.bimage", prefix.c_str(), static_cast<unsigned int>( crc ) );
 }
-

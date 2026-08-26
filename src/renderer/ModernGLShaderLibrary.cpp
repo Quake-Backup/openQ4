@@ -1193,7 +1193,7 @@ static void R_ModernGLShaderLibrary_BuildFragmentSource( int glslVersion, modern
 		"    if (policy == MODERN_SHADOW_POLICY_MAPPED && descriptorPolicy != MODERN_SHADOW_POLICY_MAPPED) { return ModernClusterShadowBrokenVisibility(); }\n"
 		"    if (policy == MODERN_SHADOW_POLICY_CACHE_REUSE && descriptorPolicy != MODERN_SHADOW_POLICY_CACHE_REUSE) { return ModernClusterShadowBrokenVisibility(); }\n"
 		"    float mapType = floor(descriptor.identity.w + 0.5);\n"
-		"    if (mapType == MODERN_SHADOW_MAP_POINT) { return ModernClusterSamplePointShadow(descriptor, light, viewPosition, normal); }\n"
+		"    if (mapType == MODERN_SHADOW_MAP_POINT && ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_ATLAS_SLOT) && descriptor.freshness.y > 0.5) { return ModernClusterSamplePointShadow(descriptor, light, viewPosition, normal); }\n"
 		"    if ((mapType == MODERN_SHADOW_MAP_PROJECTED || mapType == MODERN_SHADOW_MAP_CASCADE) && ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_PROJECTED_STATE_READY) && ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_ATLAS_SLOT) && descriptor.freshness.y > 0.5) { return ModernClusterSampleProjectedShadow(descriptor, light, viewPosition, normal); }\n"
 		"    return ModernClusterShadowBrokenVisibility();\n"
 		"}\n";

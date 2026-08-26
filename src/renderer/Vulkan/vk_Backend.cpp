@@ -1146,13 +1146,29 @@ bool RB_ShadowMapEstimateArb2CacheOwnership( const viewLight_t *vLight, const vi
 	return false;
 }
 
-bool RB_ShadowMapProjectedAtlasSlotForLight( int lightDefIndex, shadowMapArb2AtlasSlot_t &slot ) {
-	(void)lightDefIndex;
+bool RB_ShadowMapProjectedAtlasSlotForLight( const viewLight_t *vLight,
+		const viewDef_t *viewDef, shadowMapArb2AtlasSlot_t &slot ) {
+	(void)vLight; (void)viewDef;
 	memset( &slot, 0, sizeof( slot ) );
 	return false;
 }
 
-void RB_ShadowMapProjectedAtlasSlotMarkUsed( int lightDefIndex ) {
+bool RB_ShadowMapProjectedAtlasSlotMarkUsed( int lightDefIndex,
+		int signature, std::uint64_t storageGeneration,
+		int cellX, int cellY, int cellSpan ) {
+	(void)lightDefIndex; (void)signature; (void)cellX; (void)cellY;
+	(void)storageGeneration; (void)cellSpan;
+	return false;
+}
+
+bool RB_ShadowMapPointCubeForLight( const viewLight_t *vLight,
+		const viewDef_t *viewDef, shadowMapArb2PointCube_t &cube ) {
+	(void)vLight; (void)viewDef;
+	memset( &cube, 0, sizeof( cube ) );
+	return false;
+}
+
+void RB_ShadowMapPointCubeMarkUsed( int lightDefIndex ) {
 	(void)lightDefIndex;
 }
 

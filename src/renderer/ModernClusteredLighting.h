@@ -125,9 +125,9 @@ enum rendererModernShadowDescriptorFlag_t {
 	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_PROJECTED_STATE_READY = 1 << 14,
 	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_PROJECTED_FALLBACK = 1 << 15,
 	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_RECEIVER_PLANE_BIAS = 1 << 16,
-	// projectedAtlasRect references a live cell of ARB2's persistent shadow
-	// atlas (signature-current, static content complete) - the only state in
-	// which the modern receiver may sample a projected shadow
+	// The descriptor references a signature-current, static-complete physical
+	// ARB2 resource: a persistent-atlas cell for projected lights or the exact
+	// singular cache cube currently bound for a point light.
 	RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_ATLAS_SLOT = 1 << 17
 };
 
@@ -155,7 +155,7 @@ typedef struct rendererModernShadowDescriptor_s {
 	int		projectedSkippedSampleCount;
 	int		flags;
 	// freshness (I7): frame the planner built this descriptor, and the frame
-	// the referenced atlas cell's static content was last rendered
+	// the referenced atlas cell or point cube was last rendered
 	int		updateFrame;
 	int		atlasContentFrame;
 	int		atlasCellX;

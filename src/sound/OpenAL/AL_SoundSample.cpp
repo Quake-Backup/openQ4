@@ -202,6 +202,26 @@ static void SoundSample_AppendLocalizedVOVariants( idList< idStr >& variants, co
 	}
 }
 
+/*
+========================
+SoundSample_AppendMissingQ4StockFallback
+
+The retail ambient_water_splash_big shader names a sample that was omitted
+from the shipped PK4s. Probe the authored path first so mods can supply it,
+then fall back to the shipped splash from the same sound family.
+========================
+*/
+static void SoundSample_AppendMissingQ4StockFallback( idList< idStr >& variants, const idStr& baseName )
+{
+	idStr canonicalName = baseName;
+	canonicalName.BackSlashesToSlashes();
+	canonicalName.StripFileExtension();
+	if( canonicalName.Icmp( "sound/ambience/water/splash_big" ) == 0 )
+	{
+		SoundSample_AppendUniqueSampleVariant( variants, "sound/ambience/water/splash_small02" );
+	}
+}
+
 static bool openQ4_CanUploadSampleToOpenAL()
 {
 	ALCcontext* const expectedContext = soundSystemLocal.hardware.GetOpenALContext();
@@ -447,6 +467,7 @@ void idSoundSample_OpenAL::LoadResource()
 		SoundSample_AppendLocalizedVOVariants( sampleVariants, baseSampleName, "english" );
 	}
 	SoundSample_AppendUniqueSampleVariant( sampleVariants, baseSampleName );
+	SoundSample_AppendMissingQ4StockFallback( sampleVariants, baseSampleName );
 
 	for( int i = 0; i < sampleVariants.Num(); i++ )
 	{

@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -49,13 +50,26 @@ def require_order(haystack: str, needles: tuple[str, ...], context: str) -> None
 
 
 def braced_body(source: str, marker: str, context: str) -> str:
-    start = source.find(marker)
-    if start == -1:
-        raise AssertionError(f"Missing {marker!r} in {context}")
+    search_from = 0
+    while True:
+        start = source.find(marker, search_from)
+        if start == -1:
+            raise AssertionError(f"Missing function definition {marker!r} in {context}")
 
-    opening_brace = source.find("{", start + len(marker))
-    if opening_brace == -1:
-        raise AssertionError(f"Missing opening brace after {marker!r} in {context}")
+        suffix_start = start + len(marker)
+        marker_brace = marker.rfind("{")
+        if marker_brace != -1:
+            opening_brace = start + marker_brace
+            break
+        opening_brace = source.find("{", suffix_start)
+        semicolon = source.find(";", suffix_start)
+        if opening_brace != -1 and (semicolon == -1 or opening_brace < semicolon):
+            break
+
+        # Skip forward declarations and continue at the next occurrence of the
+        # marker. Shadow-cache storage validators intentionally need prototypes
+        # because cache expiry calls them before their definitions.
+        search_from = suffix_start
 
     depth = 0
     for index in range(opening_brace, len(source)):
@@ -882,6 +896,8 @@ def validate_runtime_failure_gates() -> None:
     )
 
     signature_lines = {
+        "binaryImageCacheWrite": "^3WARNING: ^1idBinaryImage: Could not open generated cache 'generated/images/fixture.bimage' or compact fallback 'generated/images/_compact/v1/fixture.bimage'",
+        "expandedLoadscreenPublish": "^3WARNING: ^1Could not publish expanded loading background 'guis/assets/generated/loadscreens/fixture_1820x1024.tga'; using the source levelshot",
         "vulkanValidation": "Vulkan validation: descriptor binding mismatch",
         "vulkanVuid": "Validation ID VUID-vkCmdDrawIndexed-commandBuffer-recording",
         "vulkanCallFailed": "Vulkan: vkCreateGraphicsPipelines failed (-3)",
@@ -891,6 +907,18 @@ def validate_runtime_failure_gates() -> None:
     failure_text = "\n".join(signature_lines.values())
     native_fatal = "FATAL: renderer bootstrap stopped"
     benign_vk_result = "Vulkan: swapchain returned VK_ERROR_OUT_OF_DATE_KHR; retry scheduled"
+    legacy_binary_image_warning = (
+        "^3WARNING: ^1idBinaryImage: Could not open file "
+        "'generated/images/legacy-fixture.bimage'"
+    )
+    binary_image_near_miss = (
+        "idBinaryImage: Could not open generated cache 'generated/images/fixture.bimage' "
+        "or compact fallback 'generated/images/_compact/v1/fixture.bimage'"
+    )
+    expanded_loadscreen_near_miss = (
+        "Could not publish expanded loading background "
+        "'guis/assets/generated/loadscreens/fixture_1820x1024.tga'; using the source levelshot"
+    )
 
     for module, counter_name, context in (
         (gameplay, "warning_counts", "gameplay benchmark"),
@@ -939,6 +967,18 @@ def validate_runtime_failure_gates() -> None:
         ):
             raise AssertionError(
                 f"{context} must preserve the engine-native FATAL: diagnostic line"
+            )
+        if counter(legacy_binary_image_warning).get("binaryImageCacheWrite") != 1:
+            raise AssertionError(
+                f"{context} must retain the legacy binary-image cache warning signature"
+            )
+        if counter(binary_image_near_miss).get("binaryImageCacheWrite") != 0:
+            raise AssertionError(
+                f"{context} must require WARNING: for binary-image cache write failures"
+            )
+        if counter(expanded_loadscreen_near_miss).get("expandedLoadscreenPublish") != 0:
+            raise AssertionError(
+                f"{context} must require WARNING: for expanded-loadscreen publication failures"
             )
 
     checks_ok, missing = matrix.evaluate_checks(
@@ -1778,8 +1818,10 @@ def validate_exact_filter_tiers(sample_body: str, sample_call: str, context: str
         raise AssertionError(f"{context} is missing the center sample that starts its tiered kernel")
     if sample_body[tier_start:].count(sample_call) != 13:
         raise AssertionError(f"{context} must issue exactly 13 samples at its maximum tier")
-    if sample_body.count("RotateShadowOffset(") != 12:
-        raise AssertionError(f"{context} must rotate exactly the twelve off-center Poisson taps")
+    if sample_body.count("rotation * vec2(") != 12:
+        raise AssertionError(
+            f"{context} must transform exactly the twelve off-center Poisson taps"
+        )
     require_order(
         sample_body,
         (
@@ -1866,7 +1908,7 @@ def validate_shadow_filtering_contract() -> None:
 
     projected_rotation = braced_body(
         projected,
-        "vec2 RotateShadowOffset(",
+        "mat2 ShadowOffsetRotation(",
         "projected stable Poisson rotation",
     )
     require_order(
@@ -1877,7 +1919,7 @@ def validate_shadow_filtering_contract() -> None:
             "floor(uv / max(shadow.texelSize.x, 1.0e-6))",
             "floor(depth * 1024.0)",
             "* 6.2831853",
-            "return vec2(c * offset.x - s * offset.y, s * offset.x + c * offset.y);",
+            "return mat2(c, s, -s, c);",
         ),
         "projected stable Poisson rotation",
     )
@@ -1916,15 +1958,24 @@ def validate_shadow_filtering_contract() -> None:
             "float d2 = RawShadowDepth(",
             "float d3 = RawShadowDepth(",
             "float d4 = RawShadowDepth(",
+            "float d5 = RawShadowDepth(",
+            "float d6 = RawShadowDepth(",
+            "float d7 = RawShadowDepth(",
+            "float d8 = RawShadowDepth(",
             "if (blockerCount <= 0.0)",
+            "return 0.0;",
             "float averageBlocker = blockerDepth / blockerCount;",
-            "float penumbra = (depth - averageBlocker) / max(averageBlocker, 1.0e-4);",
+            "float separation = max(compareDepth - averageBlocker, 0.0);",
+            "float penumbra = separation / max(averageBlocker, 1.0e-4);",
             "return clamp(max(baseRadius, penumbra * shadow.pcssParams.x), baseRadius, maxRadius);",
         ),
         "projected PCSS blocker search",
     )
-    if blocker_search.count("RawShadowDepth(") != 5:
-        raise AssertionError("Projected PCSS blocker search must use its fixed five raw-depth probes")
+    if blocker_search.count("RawShadowDepth(") != 9:
+        raise AssertionError("Projected PCSS blocker search must use its fixed nine raw-depth probes")
+    require(blocker_search, "mat2 rotation", "projected PCSS shared kernel rotation")
+    if blocker_search.count("ShadowOffsetRotation(") != 0:
+        raise AssertionError("Projected PCSS must reuse the caller's stable rotation")
 
     projected_samples = braced_body(
         projected,
@@ -1936,6 +1987,8 @@ def validate_shadow_filtering_contract() -> None:
         "SampleShadowCompare(",
         "projected Poisson shadow filter",
     )
+    if projected_samples.count("ShadowOffsetRotation(") != 1:
+        raise AssertionError("Projected blocker search and PCF taps must share one stable rotation")
 
     projected_main = braced_body(projected, "void main()", "projected shadow fragment main")
     if projected_main.count("dFdx(") != 4 or projected_main.count("dFdy(") != 4:
@@ -1974,7 +2027,7 @@ def validate_shadow_filtering_contract() -> None:
 
     point_rotation = braced_body(
         point,
-        "vec2 RotateShadowOffset(",
+        "mat2 ShadowOffsetRotation(",
         "point stable tangent-disc rotation",
     )
     require_order(
@@ -1983,7 +2036,7 @@ def validate_shadow_filtering_contract() -> None:
             "if (shadow.filterParams.z < 0.5)",
             "StableShadowHash(floor(direction * 37.0))",
             "* 6.2831853",
-            "return vec2(c * offset.x - s * offset.y, s * offset.x + c * offset.y);",
+            "return mat2(c, s, -s, c);",
         ),
         "point stable tangent-disc rotation",
     )
@@ -2008,6 +2061,1900 @@ def validate_shadow_filtering_contract() -> None:
         point_samples,
         "SamplePointShadowCompare(",
         "point tangent-disc shadow filter",
+    )
+    if point_samples.count("ShadowOffsetRotation(") != 1:
+        raise AssertionError("Point PCF taps must share one stable rotation")
+
+    # The shipped OpenGL 1.10 programs are manually maintained counterparts,
+    # not products of the Vulkan SPIR-V header generator. Keep their blocker,
+    # filter-tier, and rotation contracts pinned independently so one backend
+    # cannot silently drift or compile with a different kernel.
+    gl_projected = read("content/baseoq4/pak0/glprogs/shadow_interaction.fs")
+    gl_blocker_search = braced_body(
+        gl_projected,
+        "float ProjectedPCSSRadius(",
+        "OpenGL projected PCSS blocker search",
+    )
+    require_order(
+        gl_blocker_search,
+        (
+            "float compareDepth = depth - ShadowReceiverBias( cascadeIndex, depth );",
+            "float d0 = RawShadowDepth( uv );",
+            "float d1 = RawShadowDepth(",
+            "float d8 = RawShadowDepth(",
+            "if ( blockerCount <= 0.0 )",
+            "return 0.0;",
+            "float separation = max( compareDepth - averageBlocker, 0.0 );",
+        ),
+        "OpenGL bias-consistent nine-probe PCSS search",
+    )
+    if gl_blocker_search.count("RawShadowDepth(") != 9:
+        raise AssertionError("OpenGL PCSS blocker search must use exactly nine raw-depth probes")
+    if gl_blocker_search.count("rotation * vec2(") != 8:
+        raise AssertionError("OpenGL PCSS blocker search must use eight unique off-center probes")
+    if gl_blocker_search.count("ShadowOffsetRotation(") != 0:
+        raise AssertionError("OpenGL PCSS blocker search must reuse the caller's rotation")
+    for tap_index in range(1, 9):
+        require_compact(
+            gl_blocker_search,
+            f"float d{tap_index} = RawShadowDepth( clamp( uv + o{tap_index} * searchTap, clampMin, clampMax ) );",
+            f"OpenGL clamped PCSS probe d{tap_index}",
+        )
+        require_compact(
+            gl_blocker_search,
+            f"if ( d{tap_index} < compareDepth ) {{ blockerDepth += d{tap_index}; blockerCount += 1.0; }}",
+            f"OpenGL PCSS probe d{tap_index} contribution",
+        )
+
+    gl_projected_samples = braced_body(
+        gl_projected,
+        "vec4 SampleShadowCascade(",
+        "OpenGL projected Poisson shadow filter",
+    )
+    gl_projected_tier_start = gl_projected_samples.find("float shadow = 0.0;")
+    if gl_projected_tier_start == -1 or gl_projected_samples[gl_projected_tier_start:].count("SampleShadowCompare(") != 13:
+        raise AssertionError("OpenGL projected PCF must issue exactly 13 samples at its maximum tier")
+    if gl_projected_samples.count("rotation * vec2(") != 12:
+        raise AssertionError("OpenGL projected PCF must transform twelve off-center taps")
+    if gl_projected_samples.count("ShadowOffsetRotation(") != 1:
+        raise AssertionError("OpenGL blocker search and PCF must share one stable rotation")
+    require_order(
+        gl_projected_samples,
+        (
+            "mat2 rotation = ShadowOffsetRotation( uv, depth );",
+            "ProjectedPCSSRadius( uv, depth, cascadeIndex, clampMin, clampMax, rotation )",
+            "shadow += SampleShadowCompare( uv, depth, cascadeIndex );",
+            "if ( uShadowFilterTaps <= 1.0 )",
+            "if ( uShadowFilterTaps <= 5.0 )",
+            "if ( uShadowFilterTaps <= 9.0 )",
+            "shadow * ( 1.0 / 13.0 )",
+        ),
+        "OpenGL exact projected filter tiers",
+    )
+
+    gl_point = read("content/baseoq4/pak0/glprogs/shadow_point_interaction.fs")
+    gl_point_samples = braced_body(
+        gl_point,
+        "float SamplePointShadow()",
+        "OpenGL point tangent-disc shadow filter",
+    )
+    if gl_point_samples.count("SamplePointShadowCompare(") != 14:
+        # One early unfiltered return plus the complete 13-sample tiered kernel.
+        raise AssertionError("OpenGL point receiver must preserve one direct and thirteen tiered samples")
+    if gl_point_samples.count("rotation * vec2(") != 12:
+        raise AssertionError("OpenGL point PCF must transform twelve off-center taps")
+    if gl_point_samples.count("ShadowOffsetRotation(") != 1:
+        raise AssertionError("OpenGL point PCF taps must share one stable rotation")
+    require_order(
+        gl_point_samples,
+        (
+            "vec3 direction = SafeNormalize( vPointShadowVector );",
+            "vec3 tangent = SafeNormalize( cross( up, direction ) );",
+            "vec3 bitangent = cross( direction, tangent );",
+            "float tap = uPointShadowTexelScale * filterRadius;",
+            "if ( uShadowFilterTaps <= 1.0 )",
+            "if ( uShadowFilterTaps <= 5.0 )",
+            "if ( uShadowFilterTaps <= 9.0 )",
+            "shadow * ( 1.0 / 13.0 )",
+        ),
+        "OpenGL exact point filter tiers",
+    )
+
+
+def point_receiver_settings(
+    far_distance: float,
+    face_size: int,
+    constant_bias: float,
+    normal_bias: float,
+    texel_bias_scale: float,
+    normal_offset_scale: float,
+    max_world_bias: float,
+) -> tuple[float, float, float, float, float]:
+    def nonnegative_finite(value: float) -> float:
+        return value if math.isfinite(value) and value > 0.0 else 0.0
+
+    far = far_distance if math.isfinite(far_distance) and far_distance > 0.0 else 1.0
+    face = max(face_size, 1)
+    values = [
+        nonnegative_finite(constant_bias),
+        nonnegative_finite(normal_bias),
+        nonnegative_finite(texel_bias_scale),
+        nonnegative_finite(normal_offset_scale),
+    ]
+    cap = nonnegative_finite(max_world_bias)
+    depth_world = far * max(values[0] + values[1], values[2] / face * 5.0)
+    offset_world = far * 2.0 * values[3] / face
+    requested = depth_world + offset_world
+    scale = cap / requested if cap > 0.0 and requested > cap else 1.0
+    return (*(value * scale for value in values), scale)
+
+
+def storage_adjusted_point_receiver_settings(
+    base: tuple[float, float, float, float, float],
+    far_distance: float,
+    face_size: int,
+    depth_compare: bool,
+    high_precision: bool,
+    max_world_bias: float,
+) -> tuple[float, float, float, float, float]:
+    if depth_compare:
+        return base
+    storage_step = 1.0 / 2048.0 if high_precision else 1.0 / 65025.0
+    return point_receiver_settings(
+        far_distance,
+        face_size,
+        max(base[0], storage_step * 1.5),
+        base[1],
+        base[2],
+        base[3],
+        max_world_bias,
+    )
+
+
+def validate_point_receiver_world_bias_contract() -> None:
+    # Ordinary local lights retain the authored defaults.
+    ordinary = point_receiver_settings(256.0, 512, 0.00010, 0.0010, 0.45, 1.0, 4.0)
+    if ordinary[4] != 1.0:
+        raise AssertionError("Ordinary point lights must remain below the world-bias cap")
+
+    # Retail airdefense1 light_146: radius + abs(center), then the default 1.25 far scale.
+    far_distance = math.sqrt(15488.0**2 + 16040.0**2 + 10568.0**2) * 1.25
+    bounded = point_receiver_settings(
+        far_distance, 512, 0.00010, 0.0010, 0.45, 1.0, 4.0
+    )
+    expected_scale = 0.0156235087883939
+    if not math.isclose(bounded[4], expected_scale, rel_tol=1.0e-6):
+        raise AssertionError(f"Unexpected airdefense1 point-bias scale: {bounded[4]}")
+    bounded_world = far_distance * (
+        max(bounded[0] + bounded[1], bounded[2] / 512.0 * 5.0)
+        + 2.0 * bounded[3] / 512.0
+    )
+    if bounded_world > 4.00001:
+        raise AssertionError(f"Point receiver world-bias cap exceeded: {bounded_world}")
+
+    if storage_adjusted_point_receiver_settings(
+        bounded, far_distance, 512, True, False, 4.0
+    ) != bounded:
+        raise AssertionError("Hardware point comparison must not apply a manual storage floor")
+    for high_precision in (False, True):
+        adjusted = storage_adjusted_point_receiver_settings(
+            bounded, far_distance, 512, False, high_precision, 4.0
+        )
+        adjusted_world = far_distance * (
+            max(adjusted[0] + adjusted[1], adjusted[2] / 512.0 * 5.0)
+            + 2.0 * adjusted[3] / 512.0
+        )
+        if adjusted_world > 4.00001 or not all(math.isfinite(value) for value in adjusted):
+            raise AssertionError(
+                f"Manual point storage floor escaped its world cap (fp16={high_precision})"
+            )
+
+    modern_depth_only = point_receiver_settings(
+        far_distance, 512, 0.00010, 0.0010, 0.45, 0.0, 4.0
+    )
+    if modern_depth_only[3] != 0.0:
+        raise AssertionError("A receiver without geometric normal offset must reserve no offset budget")
+    modern_adjusted = storage_adjusted_point_receiver_settings(
+        modern_depth_only, far_distance, 512, False, False, 4.0
+    )
+    modern_world = far_distance * max(
+        modern_adjusted[0] + modern_adjusted[1],
+        modern_adjusted[2] / 512.0 * 5.0,
+    )
+    if modern_world > 4.00001:
+        raise AssertionError("Modern manual point depth escaped the depth-only world cap")
+    if point_receiver_settings(
+        far_distance, 512, 0.00010, 0.0010, 0.45, 1.0, 0.0
+    )[4] != 1.0:
+        raise AssertionError("A zero point receiver world-bias cap must disable clamping")
+    if not all(
+        math.isfinite(value)
+        for value in point_receiver_settings(
+            math.nan, 0, math.nan, -1.0, math.inf, -math.inf, math.nan
+        )
+    ):
+        raise AssertionError("Invalid point receiver inputs must sanitize to finite values")
+
+    init = read("src/renderer/RenderSystem_init.cpp")
+    require_compact(
+        init,
+        '''idCVar r_shadowMapPointMaxWorldBias( "r_shadowMapPointMaxWorldBias", "4.0",
+            CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT''',
+        "point receiver world-bias cap default",
+    )
+    require(init, '0.0f, 64.0f );', "point receiver world-bias cap range")
+
+    classification_h = read("src/renderer/ShadowMapClassification.h")
+    classification = read("src/renderer/ShadowMapClassification.cpp")
+    require(
+        classification_h,
+        "SHADOWMAP_POINT_RECEIVER_MAX_SLOPE = 4.0f",
+        "CPU point receiver slope bound",
+    )
+    clamp = braced_body(
+        classification,
+        "shadowMapPointReceiverSettings_t R_ClampShadowMapPointReceiverSettings(",
+        "pure point receiver world-bias clamp",
+    )
+    require_order(
+        clamp,
+        (
+            "const double scalarDepthBias",
+            "const double texelDepthBias",
+            "SHADOWMAP_POINT_RECEIVER_MAX_SLOPE",
+            "const double depthWorldBias",
+            "const double normalOffsetWorldBias",
+            "const double requestedWorldBias",
+            "cap / requestedWorldBias",
+            "settings.constantBias *= settings.worldBiasScale;",
+            "settings.normalBias *= settings.worldBiasScale;",
+            "settings.texelBiasScale *= settings.worldBiasScale;",
+            "settings.normalOffsetScale *= settings.worldBiasScale;",
+        ),
+        "pure point receiver world-bias clamp",
+    )
+
+    storage_floor = braced_body(
+        classification,
+        "R_ShadowMapPointStorageAdjustedReceiverSettings(",
+        "shared cap-bounded manual point-depth floor",
+    )
+    require_order(
+        storage_floor,
+        (
+            "if ( depthCompare )",
+            "const float storageStep",
+            "R_ClampShadowMapPointReceiverSettings(",
+            "Max( baseSettings.constantBias, storageStep * 1.5f )",
+            "r_shadowMapPointMaxWorldBias.GetFloat()",
+        ),
+        "shared cap-bounded manual point-depth floor",
+    )
+    gl = read("src/renderer/draw_arb2.cpp")
+    direct_gl = braced_body(
+        gl,
+        "static bool RB_GLSLPointShadowMap_CreateDrawInteractions(",
+        "direct GL bounded point receiver upload",
+    )
+    require_order(
+        direct_gl,
+        (
+            "R_ShadowMapPointFarDistance( backEnd.vLight )",
+            "R_ShadowMapPointReceiverSettings(",
+            "R_ShadowMapPointStorageAdjustedReceiverSettings(",
+            "receiverSettings.constantBias",
+            "receiverSettings.normalBias",
+            "receiverSettings.texelBiasScale / pointFaceSize",
+            "receiverSettings.normalOffsetScale / pointFaceSize",
+        ),
+        "direct GL bounded point receiver upload",
+    )
+
+    modern = read("src/renderer/ModernShadowPlanner.cpp")
+    modern_contract = braced_body(
+        modern,
+        "static void R_ModernShadowPlanner_InitDescriptorContract(",
+        "modern bounded point receiver descriptor",
+    )
+    require(
+        modern_contract,
+        "MODERN_SHADOW_COMPARE_MANUAL_PACKED_DEPTH",
+        "modern OpenGL point descriptor uses manual color-depth decoding",
+    )
+    require_order(
+        modern_contract,
+        (
+            "if ( descriptor.pointLight )",
+            "R_ShadowMapPointFarDistance( vLight )",
+            "R_ClampShadowMapPointReceiverSettings(",
+            "r_shadowMapPointBias.GetFloat()",
+            "r_shadowMapPointNormalBias.GetFloat()",
+            "r_shadowMapTexelBiasScale.GetFloat()",
+            "0.0f",
+            "r_shadowMapPointMaxWorldBias.GetFloat()",
+            "#ifndef OPENQ4_RENDERER_VK_MODULE",
+            "R_ShadowMapPointStorageAdjustedReceiverSettings(",
+            "false",
+            "r_shadowMapPointHighPrecision.GetBool()",
+            "#endif",
+            "descriptor.bias[0] = pointReceiverSettings.constantBias;",
+            "descriptor.bias[1] = pointReceiverSettings.normalBias;",
+            "descriptor.texelDepthBias[0] =",
+            "pointReceiverSettings.texelBiasScale",
+        ),
+        "modern bounded point receiver descriptor",
+    )
+
+    texture_bindings = braced_body(
+        gl,
+        "bool RB_ShadowMapTextureBindings(",
+        "modern OpenGL manual point-depth binding",
+    )
+    require_order(
+        texture_bindings,
+        (
+            "bindings.pointDepthCompare = RB_PointShadowMapDepthCompareEnabled();",
+            "idImage *pointAtlasImage = g_pointShadowMapColorImage;",
+            "bindings.pointAtlas",
+            "pointAtlasImage",
+            "RB_ShadowMapActivePointCacheContentReady()",
+        ),
+        "modern OpenGL manual point-depth binding independent of classic compare",
+    )
+
+    point_content_ready = braced_body(
+        gl,
+        "static bool RB_ShadowMapActivePointCacheContentReady(",
+        "exact active point-cache content gate",
+    )
+    require_order(
+        point_content_ready,
+        (
+            "g_activePointShadowMapCache",
+            "entry == &g_pointShadowMapCache[i]",
+            "r_shadowMapPointCacheSize.GetInteger()",
+            "entry->passKind != static_cast<int>( SHADOWMAP_PASS_GLOBAL )",
+            "entry->lastUpdatedFrame > tr.frameCount",
+            "entry->size != RB_ShadowMapPointSizeValue()",
+            "entry->colorImage != g_pointShadowMapColorImage",
+            "entry->depthImage != g_pointShadowMapDepthImage",
+            "entry->renderTexture != g_pointShadowMapRenderTexture",
+            "entry->colorImage->IsLoaded()",
+            "entry->depthImage->IsLoaded()",
+        ),
+        "point binding requires exact valid GLOBAL cache content",
+    )
+    if "? g_pointShadowMapDepthImage : g_pointShadowMapColorImage" in texture_bindings:
+        raise AssertionError(
+            "Modern GL point binding must not reinterpret the hardware depth cube as packed color depth"
+        )
+    modern_executor = read("src/renderer/ModernGLExecutor.cpp")
+    modern_bind = braced_body(
+        modern_executor,
+        "static void R_ModernGLExecutor_BindShadowTextureSlot(",
+        "modern OpenGL manual shadow sampler binding",
+    )
+    require(
+        modern_bind,
+        "glTexParameteri( target, GL_TEXTURE_COMPARE_MODE, GL_NONE );",
+        "modern OpenGL point sampler disables hardware comparison",
+    )
+    modern_shader = read("src/renderer/ModernGLShaderLibrary.cpp")
+    require_order(
+        modern_shader,
+        (
+            "float ModernClusterDecodePointDepth",
+            "uModernShadowSamplerState.z > 0.5",
+            "return encodedDepth.r;",
+            "encodedDepth.r + encodedDepth.g * (1.0 / 255.0)",
+        ),
+        "modern OpenGL fp16/packed color-depth decoding",
+    )
+
+    shadow_h = read("src/renderer/Vulkan/vk_ShadowMap.h")
+    light_state = braced_body(
+        shadow_h, "typedef struct vkShadowLightState_s", "Vulkan point shadow state"
+    )
+    require_order(
+        light_state,
+        ("float\t\t\t\tconstantBias;", "float\t\t\t\tnormalBias;", "float\t\t\t\ttexelDepthBias;", "float\t\t\t\tnormalOffsetWorld;"),
+        "Vulkan sealed point receiver settings",
+    )
+    interactions = read("src/renderer/Vulkan/vk_Interactions.cpp")
+    shadow_slice = braced_body(
+        interactions,
+        "static int VK_Inter_WriteShadowSlice(",
+        "direct Vulkan bounded point receiver upload",
+    )
+    require_order(
+        shadow_slice,
+        (
+            "pointBlock.biasParams[ 0 ] = state->constantBias;",
+            "pointBlock.biasParams[ 1 ] = state->normalBias;",
+            "pointBlock.biasParams[ 2 ] = state->texelDepthBias;",
+            "pointBlock.biasParams[ 3 ] = state->normalOffsetWorld;",
+        ),
+        "direct Vulkan bounded point receiver upload",
+    )
+
+    vk = read("src/renderer/Vulkan/vk_ShadowMap.cpp")
+    vk_prepare = braced_body(
+        vk,
+        "int VK_ShadowMap_PrepareViewLights(",
+        "Vulkan sealed point receiver policy",
+    )
+    require_order(
+        vk_prepare,
+        (
+            "R_ShadowMapPointReceiverSettings(",
+            "entry.constantBias = receiverSettings.constantBias;",
+            "entry.normalBias = receiverSettings.normalBias;",
+            "entry.texelDepthBias = receiverSettings.texelBiasScale",
+            "entry.normalOffsetWorld =",
+            "receiverSettings.normalOffsetScale",
+        ),
+        "Vulkan sealed point receiver policy",
+    )
+
+    gl_point_vertex = read(
+        "content/baseoq4/pak0/glprogs/shadow_point_interaction.vs"
+    )
+    require_order(
+        gl_point_vertex,
+        (
+            "vec3 pointShadowVector = worldPos - uGlobalLightOrigin.xyz;",
+            "float pointShadowSinTheta",
+            "uPointShadowNormalOffsetWorld * length( pointShadowVector )",
+            "vPointShadowVector = pointShadowVector + worldNormal * pointShadowNormalOffset;",
+        ),
+        "OpenGL bounded point normal-offset consumption",
+    )
+    vk_point_vertex = read(
+        "src/renderer/Vulkan/shaders/interaction_shadow_point.vert"
+    )
+    require_order(
+        vk_point_vertex,
+        (
+            "vec3 pointShadowVector = worldPos - shadow.lightOriginFar.xyz;",
+            "float shadowSinTheta",
+            "shadow.biasParams.w * length(pointShadowVector)",
+            "vPointShadowVector = pointShadowVector + worldNormal * normalOffset;",
+        ),
+        "Vulkan bounded point normal-offset consumption",
+    )
+
+
+def validate_shadow_contact_and_gl_robustness_contract() -> None:
+    init = read("src/renderer/RenderSystem_init.cpp")
+    common = read("src/framework/Common.cpp")
+    interaction = read("src/renderer/Interaction.cpp")
+    domain_h = read("src/renderer/ClassicInteractionDomain.h")
+    domain = read("src/renderer/ClassicInteractionDomain.cpp")
+    arb2_parity_h = read("src/renderer/ShadowMapArb2Parity.h")
+    gl = read("src/renderer/draw_arb2.cpp")
+    modern = read("src/renderer/ModernShadowPlanner.cpp")
+    modern_h = read("src/renderer/ModernShadowPlanner.h")
+    modern_executor = read("src/renderer/ModernGLExecutor.cpp")
+    modern_shader = read("src/renderer/ModernGLShaderLibrary.cpp")
+    tr_local = read("src/renderer/tr_local.h")
+    vk = read("src/renderer/Vulkan/vk_ShadowMap.cpp")
+
+    init_cvars = braced_body(init, "void R_InitCvars( void )", "renderer cvar registration")
+    if "r_shadowMapContactQualityMigrated" in init_cvars:
+        raise AssertionError(
+            "Shadow quality migration must not run before archived configs are executed"
+        )
+    migration = braced_body(
+        init,
+        "static void R_MigrateLegacyShadowMapContactQuality( void )",
+        "post-config shadow quality migration",
+    )
+    require_order(
+        migration,
+        (
+            "!r_shadowMapContactQualityMigrated.GetBool()",
+            "r_shadowMapFilterRadius.GetFloat() - 2.0f",
+            "r_shadowMapPointFilterRadius.GetFloat() - 2.5f",
+            "r_shadowMapFilterTaps.GetInteger() == 13",
+            "r_shadowMapPointFilterTaps.GetInteger() == 13",
+            "r_shadowMapPolygonFactor.GetFloat() - 0.75f",
+            "r_shadowMapFilterRadius.SetFloat( 0.75f )",
+            "r_shadowMapPointFilterRadius.SetFloat( 1.0f )",
+            "r_shadowMapFilterTaps.SetInteger( 9 )",
+            "r_shadowMapPointFilterTaps.SetInteger( 9 )",
+            "r_shadowMapPolygonFactor.SetFloat( 0.25f )",
+            "r_shadowMapContactQualityMigrated.SetBool( true )",
+        ),
+        "complete legacy shadow tuple migration",
+    )
+
+    legacy_profile = (2.0, 2.5, 13, 13, 0.75)
+    balanced_profile = (0.75, 1.0, 9, 9, 0.25)
+
+    def migrate_profile(
+        profile: tuple[float, float, int, int, float], migrated: bool
+    ) -> tuple[tuple[float, float, int, int, float], bool]:
+        if migrated:
+            return profile, True
+        return (balanced_profile if profile == legacy_profile else profile), True
+
+    if migrate_profile(legacy_profile, False) != (balanced_profile, True):
+        raise AssertionError("The exact legacy shadow tuple must migrate once")
+    custom_profile = (1.5, 2.5, 13, 13, 0.75)
+    if migrate_profile(custom_profile, False) != (custom_profile, True):
+        raise AssertionError("Customized shadow profiles must be preserved")
+    if migrate_profile(legacy_profile, True) != (legacy_profile, True):
+        raise AssertionError("The shadow contact migration flag must make migration one-shot")
+    for compiled_default in (
+        'r_shadowMapFilterRadius( "r_shadowMapFilterRadius", "0.75"',
+        'r_shadowMapPointFilterRadius( "r_shadowMapPointFilterRadius", "1.0"',
+        'r_shadowMapFilterTaps( "r_shadowMapFilterTaps", "9"',
+        'r_shadowMapPointFilterTaps( "r_shadowMapPointFilterTaps", "9"',
+        'r_shadowMapPolygonFactor( "r_shadowMapPolygonFactor", "0.25"',
+    ):
+        require(init, compiled_default, "compiled balanced contact-shadow defaults")
+    renderer_device_init = braced_body(
+        init,
+        "void idRenderSystemLocal::InitOpenGL( void )",
+        "post-config renderer device startup",
+    )
+    require_order(
+        renderer_device_init,
+        (
+            "R_MigrateLegacyShadowMapContactQuality();",
+            "if ( !glConfig.isInitialized )",
+        ),
+        "migration before either renderer device starts",
+    )
+    common_init = braced_body(common, "void idCommonLocal::InitGame( void )", "engine startup")
+    require_order(
+        common_init,
+        (
+            "renderSystem->Init();",
+            '"exec " CONFIG_FILE "\\n"',
+            "cmdSystem->ExecuteCommandBuffer();",
+            "StartupVariable( NULL, false );",
+            "InitRenderSystem();",
+        ),
+        "archived config and command-line ordering before renderer device startup",
+    )
+    common_outer_init = braced_body(
+        common,
+        "void idCommonLocal::Init( int argc, const char **argv, const char *cmdline )",
+        "outer engine startup",
+    )
+    require_order(
+        common_outer_init,
+        (
+            "InitGame();",
+            "AddStartupCommands()",
+        ),
+        "late explicit +set commands remain authoritative after archived migration",
+    )
+
+    require(domain_h, "bool\t\t\tperfectHull;", "sealed caster topology")
+    require(domain, "HashBool( hash, caster.perfectHull );", "caster topology identity")
+    for token in (
+        "caster.perfectHull = drawSurf->geo->perfectHull;",
+        "caster.perfectHull = casterGeometry->perfectHull;",
+    ):
+        require(domain, token, "actual caster topology capture")
+
+    caster_signature = braced_body(
+        interaction,
+        "static void R_RecordShadowMapCaster(",
+        "physical shadow caster cache signature",
+    )
+    require_order(
+        caster_signature,
+        (
+            "shader->GetCullType()",
+            "casterTris->perfectHull",
+            "casterTris->numVerts",
+            "casterTris->numIndexes",
+            "casterTris->bounds[ corner ][ component ]",
+            "entityDef->lastModifiedFrameNum",
+            "entityDef->dynamicModelFrameCount",
+            "entityDef->modelMatrix[i]",
+        ),
+        "topology/material/transform-aware physical caster signature",
+    )
+    if interaction.count("casterTris, false, shadowMapCasterOnly") != 1 or interaction.count(
+        "casterTris, true, shadowMapCasterOnly"
+    ) != 1:
+        raise AssertionError("Both opaque and translucent caster records must hash actual geometry")
+
+    classification_h = read("src/renderer/ShadowMapClassification.h")
+    classification = read("src/renderer/ShadowMapClassification.cpp")
+    require(
+        classification_h,
+        "R_ShadowMapLightOriginInsideCasterBounds(",
+        "shared enclosing-light caster guard declaration",
+    )
+    require(
+        classification_h,
+        "R_ShadowMapCasterTransformNeedsTwoSided(",
+        "shared unsafe-transform caster guard declaration",
+    )
+    transform_guard = braced_body(
+        classification,
+        "bool R_ShadowMapCasterTransformNeedsTwoSided(",
+        "shared unsafe-transform caster guard",
+    )
+    require_order(
+        transform_guard,
+        (
+            "if ( modelMatrix == NULL )",
+            "return true;",
+            "const double determinant =",
+            "static_cast<double>( modelMatrix[ 0 ] )",
+            "return !std::isfinite( determinant ) || determinant <= 0.0;",
+        ),
+        "fail-conservative mirrored/non-finite transform guard",
+    )
+    enclosing_guard = braced_body(
+        classification,
+        "bool R_ShadowMapLightOriginInsideCasterBounds(",
+        "shared enclosing-light caster guard",
+    )
+    require_order(
+        enclosing_guard,
+        (
+            "R_GlobalPointToLocal(",
+            "minimum > maximum",
+            "return true;",
+            "local < minimum || local > maximum",
+            "return false;",
+        ),
+        "fail-conservative enclosing-light bounds guard",
+    )
+
+    def expected_cull(
+        mode: int,
+        material: str,
+        perfect_hull: bool | None,
+        light_inside_bounds: bool,
+        unsafe_transform: bool = False,
+    ) -> str:
+        if mode == 0 or material == "two":
+            return "none"
+        if mode == 2 and (
+            perfect_hull is not True or unsafe_transform or light_inside_bounds
+        ):
+            return "none"
+        return "back" if material == "back" else "front"
+
+    for material in ("front", "back", "two"):
+        if expected_cull(0, material, True, False) != "none":
+            raise AssertionError("Caster culling mode 0 must be unconditionally two-sided")
+    if expected_cull(1, "front", False, True) != "front":
+        raise AssertionError("Caster culling mode 1 must force the near-shell orientation")
+    if expected_cull(1, "back", True, False) != "back":
+        raise AssertionError("Back-sided material orientation must reverse forced near-shell culling")
+    for topology, inside in ((False, False), (None, False), (True, True)):
+        if expected_cull(2, "front", topology, inside) != "none":
+            raise AssertionError("AUTO culling must fail conservatively to two-sided depth")
+    if expected_cull(2, "front", True, False) != "front":
+        raise AssertionError("AUTO may cull only a sealed hull whose bounds exclude the light")
+    if expected_cull(2, "front", True, False, True) != "none":
+        raise AssertionError("AUTO must render mirrored/non-finite transforms two-sided")
+    if expected_cull(1, "front", True, False, True) != "front":
+        raise AssertionError("Explicit caster culling mode 1 must retain force semantics")
+
+    gl_cull = braced_body(
+        gl,
+        "static void RB_ShadowMapApplyCasterCull(",
+        "direct OpenGL topology-aware caster culling",
+    )
+    require_order(
+        gl_cull,
+        (
+            "mode == 2",
+            "casterGeo == NULL || !casterGeo->perfectHull",
+            "R_ShadowMapCasterTransformNeedsTwoSided( modelMatrix )",
+            "R_ShadowMapLightOriginInsideCasterBounds( backEnd.vLight",
+            "mode != 0 && !automaticTwoSided",
+            "GLenum cullFace = GL_FRONT;",
+            "materialCull == CT_BACK_SIDED",
+        ),
+        "direct OpenGL near-shell/uncertain-hull policy",
+    )
+    gl_shared_cull = braced_body(
+        gl,
+        "static void RB_SharedWorldInteractionGLApplyMapCasterCull(",
+        "shared OpenGL topology-aware caster culling",
+    )
+    require_order(
+        gl_shared_cull,
+        (
+            "pass.casterCullMode == 2",
+            "!caster.perfectHull",
+            "R_ShadowMapLightOriginInsideCasterBounds(",
+            "pass.legacyViewLight",
+            "pass.casterCullMode != 0 && !automaticTwoSided",
+            "GLenum face = GL_FRONT;",
+        ),
+        "shared OpenGL near-shell/uncertain-hull policy",
+    )
+    vk_cull = braced_body(
+        vk,
+        "static VkCullModeFlags VK_ShadowMap_CasterCullMode(",
+        "direct Vulkan topology-aware caster culling",
+    )
+    require_order(
+        vk_cull,
+        (
+            "mode == 0 || materialCull == CT_TWO_SIDED",
+            "casterGeo == NULL || !casterGeo->perfectHull",
+            "surf == NULL || surf->space == NULL",
+            "R_ShadowMapCasterTransformNeedsTwoSided(",
+            "surf->space->modelMatrix",
+            "R_ShadowMapLightOriginInsideCasterBounds( vLight",
+            "bool cullFront = true;",
+        ),
+        "direct Vulkan near-shell/uncertain-hull policy",
+    )
+    vk_shared_cull = braced_body(
+        vk,
+        "static VkCullModeFlags VK_ClassicShadow_EffectiveCull(",
+        "shared Vulkan topology-aware caster culling",
+    )
+    require_order(
+        vk_shared_cull,
+        (
+            "pass.casterCullMode == 0",
+            "pass.casterCullMode == 2",
+            "!casterPlan.caster->perfectHull",
+            "R_ShadowMapLightOriginInsideCasterBounds(",
+            "pass.legacyViewLight",
+            "bool cullFront = true;",
+        ),
+        "shared Vulkan near-shell/uncertain-hull policy",
+    )
+    for forbidden in ("mode == 1 ) ? GL_FRONT : GL_BACK", "mode 2 (default) stores engine-back"):
+        if forbidden in gl or forbidden in vk:
+            raise AssertionError(f"Far-shell caster policy survived: {forbidden!r}")
+
+    gl_signature = braced_body(
+        gl,
+        "static int RB_ShadowMapBuildPassSignatureForView(",
+        "OpenGL world-scoped cache signature",
+    )
+    for token in (
+        "renderWorld->mapFileCRC",
+        "RB_ShadowMapMapNameHash( viewDef )",
+        "vLight->shadowMapIncompleteMapMask",
+        "vLight->shadowMapHybridIncompleteMask",
+        "vLight->shadowMapPrelightMapMissingMask",
+        "R_ShadowMapPointFarDistance( vLight )",
+        "vLight->lightDef->parms.lightCenter[i]",
+    ):
+        require(gl_signature, token, "OpenGL world-scoped cache signature")
+
+    for token in (
+        "unsigned int\t\t\t\t\tcacheKeyHitMask;",
+        "unsigned int\t\t\t\t\tplannedCacheUpdateKeyMask;",
+    ):
+        require(arb2_parity_h, token, "canonical ARB2 cache estimate ABI")
+    cache_estimate = braced_body(
+        gl,
+        "static void RB_ShadowMapEstimateArb2CachePass(",
+        "canonical ARB2 cache estimate",
+    )
+    require_order(
+        cache_estimate,
+        (
+            "const unsigned int passMask",
+            "RB_ShadowMapCachePassKind( vLight, passKind )",
+            "const unsigned int cacheKeyMask",
+            "RB_ShadowMapStaticCacheableReadOnly( vLight, cachePassKind",
+            "RB_ShadowMapBuildPassSignatureForView( vLight, viewDef, cachePassKind",
+            "estimate.cacheKeyHitMask |= cacheKeyMask;",
+            "estimate.plannedCacheUpdateKeyMask & cacheKeyMask",
+            "estimate.cacheHitPassMask |= passMask;",
+            "estimate.freshUpdatePasses++;",
+            "estimate.plannedCacheUpdateKeyMask |= cacheKeyMask;",
+        ),
+        "requested receiver masks remain separate from canonical cache keys",
+    )
+    cache_admission = braced_body(
+        gl,
+        "static void RB_ShadowMapBuildUpdateAdmissions(",
+        "canonical ARB2 update admission cost",
+    )
+    require_compact(
+        cache_admission,
+        """const int cost = estimate.freshUpdatePasses
+            + estimate.budgetFallbackPasses;""",
+        "simplified canonical update admission cost",
+    )
+    for obsolete_cost in (
+        "collapsedFreshUpdatePasses",
+        "estimate.freshUpdatePassMask & SHADOWMAP_ARB2_CACHE_PASS_GLOBAL",
+    ):
+        if obsolete_cost in cache_admission:
+            raise AssertionError(
+                f"Obsolete LOCAL/GLOBAL admission collapse survived: {obsolete_cost}"
+            )
+    gl_cache_view = braced_body(
+        gl,
+        "bool RB_ShadowMapPrepareCacheView(",
+        "OpenGL map transition invalidation",
+    )
+    require_order(
+        gl_cache_view,
+        (
+            "renderWorld->mapFileCRC",
+            "RB_ShadowMapMapNameHash( viewDef )",
+            "g_projectedShadowMapCache[i].valid = false;",
+            "g_pointShadowMapCache[i].valid = false;",
+            "memset( g_shadowMapLightHistory, 0",
+            "g_activeProjectedShadowMapCache = NULL;",
+            "g_activePointShadowMapCache = NULL;",
+            "g_shadowMapDepthImage = NULL;",
+            "g_pointShadowMapColorImage = NULL;",
+            "memset( &g_projectedShadowMapState, 0",
+            "g_projectedTranslucentShadowPassReady = false;",
+            "g_pointTranslucentShadowPassReady = false;",
+            "g_shadowMapCacheRenderWorld = renderWorld;",
+        ),
+        "OpenGL map transition invalidates cache, aliases, and moment readiness",
+    )
+
+    projected_scratch = braced_body(
+        gl,
+        "static void RB_ShadowMapSelectProjectedScratchResources(",
+        "projected-only scratch selection",
+    )
+    point_scratch = braced_body(
+        gl,
+        "static void RB_ShadowMapSelectPointScratchResources(",
+        "point-only scratch selection",
+    )
+    for token in (
+        "g_activeProjectedShadowMapCache = NULL;",
+        "g_shadowMapDepthImage = g_shadowMapScratchDepthImage;",
+        "g_shadowMapRenderTexture = g_shadowMapScratchRenderTexture;",
+    ):
+        require(projected_scratch, token, "projected-only scratch selection")
+    for forbidden in ("g_activePointShadowMapCache", "g_pointShadowMap"):
+        if forbidden in projected_scratch:
+            raise AssertionError(
+                f"Projected scratch selection invalidates point provenance: {forbidden}"
+            )
+    for token in (
+        "g_activePointShadowMapCache = NULL;",
+        "g_pointShadowMapColorImage = g_pointShadowMapScratchColorImage;",
+        "g_pointShadowMapDepthImage = g_pointShadowMapScratchDepthImage;",
+        "g_pointShadowMapRenderTexture = g_pointShadowMapScratchRenderTexture;",
+    ):
+        require(point_scratch, token, "point-only scratch selection")
+    for forbidden in ("g_activeProjectedShadowMapCache", "g_shadowMapDepthImage"):
+        if forbidden in point_scratch:
+            raise AssertionError(
+                f"Point scratch selection invalidates projected provenance: {forbidden}"
+            )
+    direct_schedule = braced_body(
+        gl,
+        "static shadowMapSchedule_t RB_ShadowMapSchedulePass(",
+        "type-specific direct scratch selection",
+    )
+    require_order(
+        direct_schedule,
+        (
+            "if ( pointLight )",
+            "RB_ShadowMapSelectPointScratchResources();",
+            "else",
+            "RB_ShadowMapSelectProjectedScratchResources();",
+            "schedule.cacheable =",
+        ),
+        "point and projected scratch aliases are selected independently",
+    )
+
+    point_storage = braced_body(
+        gl,
+        "static bool RB_ShadowMapPointCacheEntryStorageValid(",
+        "point-cube physical storage validation",
+    )
+    require_order(
+        point_storage,
+        (
+            "entry->colorStorageGeneration != 0",
+            "entry->depthStorageGeneration != 0",
+            "entry->colorImage->GetStorageGeneration()",
+            "entry->depthImage->GetStorageGeneration()",
+            "entry->colorImage->IsLoaded()",
+            "!entry->colorImage->IsDefaulted()",
+            "entry->colorImage->GetDeviceHandle() != 0",
+            "entry->depthImage->IsLoaded()",
+            "!entry->depthImage->IsDefaulted()",
+            "entry->depthImage->GetDeviceHandle() != 0",
+            "entry->colorImage->GetOpts().textureType == TT_CUBIC",
+            "entry->depthImage->GetOpts().textureType == TT_CUBIC",
+            "entry->colorImage->GetOpts().format",
+            "entry->highPrecision ? FMT_RGBA16F : FMT_RGBA8",
+            "entry->depthImage->GetOpts().format == FMT_DEPTH",
+            "entry->renderTexture->GetWidth() == entry->size",
+            "entry->renderTexture->GetHeight() == entry->size",
+        ),
+        "point-cube storage identity is generation/type/format/dimension exact",
+    )
+    for field in ("lightOrigin[3];", "farDistance;"):
+        require(gl, field, "point-cube render-time projection provenance")
+    point_active = braced_body(
+        gl,
+        "static bool RB_ShadowMapActivePointCacheContentReady(",
+        "active point-cube provenance validation",
+    )
+    require_order(
+        point_active,
+        (
+            "entry->farDistance > 0.0f",
+            "entry->lightOrigin[0]",
+            "entry->colorStorageGeneration == 0",
+            "entry->depthStorageGeneration == 0",
+            "entry->colorImage->GetStorageGeneration()",
+            "entry->depthImage->GetStorageGeneration()",
+        ),
+        "active point cubes require published projection and storage provenance",
+    )
+    point_projection = braced_body(
+        gl,
+        "static bool RB_ShadowMapPointCacheEntryProjectionMatches(",
+        "point-cube render-time projection identity",
+    )
+    require_order(
+        point_projection,
+        (
+            "entry->farDistance == R_ShadowMapPointFarDistance( vLight )",
+            "entry->lightOrigin[0] == vLight->globalLightOrigin[0]",
+            "entry->lightOrigin[1] == vLight->globalLightOrigin[1]",
+            "entry->lightOrigin[2] == vLight->globalLightOrigin[2]",
+        ),
+        "stale point cubes cannot cross light-origin or far-plane changes",
+    )
+    point_stale_reuse = braced_body(
+        gl,
+        "static pointShadowMapCacheEntry_t *RB_ShadowMapFindPointCacheEntryAnySignature(",
+        "point-cube signature-agnostic reuse compatibility",
+    )
+    require_order(
+        point_stale_reuse,
+        (
+            "requiredSize = RB_ShadowMapPointSizeValue()",
+            "requiredHighPrecision = RB_PointShadowMapHighPrecisionEnabled()",
+            "requiredDepthCompare = RB_PointShadowMapDepthCompareEnabled()",
+            "RB_ShadowMapPointCacheEntryStorageValid( entry )",
+            "entry->size == requiredSize",
+            "entry->highPrecision == requiredHighPrecision",
+            "entry->depthCompare == requiredDepthCompare",
+            "RB_ShadowMapPointCacheEntryProjectionMatches( entry, vLight )",
+            "entry->lastUpdatedFrame > newest->lastUpdatedFrame",
+            "newest = entry;",
+            "return newest;",
+        ),
+        "stale point-cube reuse selects the newest projection-compatible allocation",
+    )
+    projected_storage = braced_body(
+        gl,
+        "static bool RB_ShadowMapProjectedCacheEntryStorageValid(",
+        "projected-atlas physical storage validation",
+    )
+    require_order(
+        projected_storage,
+        (
+            "entry->atlasStorageGeneration != 0",
+            "g_shadowMapAtlasDepthImage != NULL",
+            "g_shadowMapAtlasRenderTexture != NULL",
+            "g_shadowMapAtlasDepthImage->GetStorageGeneration()",
+            "entry->atlasStorageGeneration",
+            "g_shadowMapAtlasDepthImage->IsLoaded()",
+            "!g_shadowMapAtlasDepthImage->IsDefaulted()",
+            "g_shadowMapAtlasDepthImage->GetDeviceHandle() != 0",
+            "g_shadowMapAtlasDepthImage->GetOpts().textureType == TT_2D",
+            "g_shadowMapAtlasDepthImage->GetOpts().format == FMT_DEPTH",
+            "g_shadowMapAtlasRenderTexture->GetWidth() > 0",
+            "g_shadowMapAtlasRenderTexture->GetHeight() > 0",
+        ),
+        "projected cache entries require the atlas allocation they rendered into",
+    )
+    for lookup_name in (
+        "static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntryAnySignature(",
+        "static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntry(",
+        "static projectedShadowMapCacheEntry_t *RB_ShadowMapNewestProjectedGlobalEntry( const int lightIndex ) {",
+    ):
+        require(
+            braced_body(gl, lookup_name, "projected cache lookup generation gate"),
+            "RB_ShadowMapProjectedCacheEntryStorageValid( entry )",
+            "projected cache lookups reject stale atlas allocations",
+        )
+    projected_stale_reuse = braced_body(
+        gl,
+        "static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntryAnySignature(",
+        "newest projected signature-agnostic reuse",
+    )
+    require_order(
+        projected_stale_reuse,
+        (
+            "projectedShadowMapCacheEntry_t *newest = NULL;",
+            "entry->lastUpdatedFrame > newest->lastUpdatedFrame",
+            "newest = entry;",
+            "return newest;",
+        ),
+        "projected stale reuse selects the most recently rendered sibling",
+    )
+    direct_cache_completion = braced_body(
+        gl,
+        "static void RB_ShadowMapCompleteCacheUpdate(",
+        "direct projected cache storage publication",
+    )
+    require_order(
+        direct_cache_completion,
+        (
+            "entry->lastUpdatedFrame = tr.frameCount;",
+            "entry->atlasStorageGeneration = g_shadowMapAtlasDepthImage != NULL",
+            "g_shadowMapAtlasDepthImage->GetStorageGeneration()",
+            "entry->state = g_projectedShadowMapState;",
+        ),
+        "direct projected cache publication stamps the rendered atlas allocation",
+    )
+    require_order(
+        direct_cache_completion,
+        (
+            "entry->lightOrigin[0] = vLight->globalLightOrigin[0];",
+            "entry->lightOrigin[1] = vLight->globalLightOrigin[1];",
+            "entry->lightOrigin[2] = vLight->globalLightOrigin[2];",
+            "entry->farDistance = R_ShadowMapPointFarDistance( vLight );",
+            "entry->lastUpdatedFrame = tr.frameCount;",
+            "entry->colorStorageGeneration = entry->colorImage != NULL",
+            "entry->depthStorageGeneration = entry->depthImage != NULL",
+        ),
+        "direct point-cache publication stamps projection and storage provenance",
+    )
+    shared_cache_completion = braced_body(
+        gl,
+        "static void RB_SharedWorldInteractionGLCompleteSealedCacheUpdate(",
+        "shared projected cache storage publication",
+    )
+    require_order(
+        shared_cache_completion,
+        (
+            "entry->lastUpdatedFrame = tr.frameCount;",
+            "entry->atlasStorageGeneration = preparedPass.projectedDepthImage != NULL",
+            "preparedPass.projectedDepthImage->GetStorageGeneration()",
+            "entry->state = pass.projected.state;",
+        ),
+        "shared projected cache publication stamps the rendered atlas allocation",
+    )
+    require_order(
+        shared_cache_completion,
+        (
+            "entry->lightOrigin[0] = pass.point.lightOrigin[0];",
+            "entry->lightOrigin[1] = pass.point.lightOrigin[1];",
+            "entry->lightOrigin[2] = pass.point.lightOrigin[2];",
+            "entry->farDistance = pass.point.farDistance;",
+            "entry->lastUpdatedFrame = tr.frameCount;",
+            "entry->colorStorageGeneration = entry->colorImage != NULL",
+            "entry->depthStorageGeneration = entry->depthImage != NULL",
+        ),
+        "shared point-cache publication stamps sealed projection and storage provenance",
+    )
+    shared_projected_match = braced_body(
+        gl,
+        "static bool RB_SharedWorldInteractionGLProjectedEntryMatches(",
+        "shared projected cache generation revalidation",
+    )
+    require_order(
+        shared_projected_match,
+        (
+            "entry->atlasStorageGeneration != 0",
+            "entry->atlasStorageGeneration",
+            "preparedPass.sampleStorageGeneration",
+        ),
+        "shared projected consumption preserves cache-to-storage provenance",
+    )
+    shared_point_match = braced_body(
+        gl,
+        "static bool RB_SharedWorldInteractionGLPointEntryMatches(",
+        "shared point-cache projection revalidation",
+    )
+    require_order(
+        shared_point_match,
+        (
+            "entry->lightOrigin[0] == pass.point.lightOrigin[0]",
+            "entry->lightOrigin[1] == pass.point.lightOrigin[1]",
+            "entry->lightOrigin[2] == pass.point.lightOrigin[2]",
+            "entry->farDistance == pass.point.farDistance",
+            "entry->colorStorageGeneration != 0",
+            "entry->depthStorageGeneration != 0",
+        ),
+        "shared point-cache consumption preserves projection and storage provenance",
+    )
+    point_bindings = braced_body(
+        gl,
+        "bool RB_ShadowMapTextureBindings(",
+        "point-cube bind-time identity export",
+    )
+    require_order(
+        point_bindings,
+        (
+            "bindings.pointAtlasLightIndex = -1;",
+            "bindings.pointAtlasContentFrame = -1;",
+            "RB_ShadowMapActivePointCacheContentReady()",
+            "bindings.pointAtlasLightIndex = g_activePointShadowMapCache->lightIndex;",
+            "bindings.pointAtlasSignature = g_activePointShadowMapCache->signature;",
+            "bindings.pointAtlasContentFrame = g_activePointShadowMapCache->lastUpdatedFrame;",
+        ),
+        "point sampler binding carries exact cache provenance",
+    )
+    for field in (
+        "pointAtlasLightIndex;",
+        "pointAtlasSignature;",
+        "pointAtlasContentFrame;",
+    ):
+        require(tr_local, field, "renderer point-cube binding ABI")
+
+    for declaration in (
+        "bool RB_ShadowMapProjectedAtlasSlotForLight( const viewLight_t *vLight,",
+        "const viewDef_t *viewDef, shadowMapArb2AtlasSlot_t &slot );",
+        "bool RB_ShadowMapProjectedAtlasSlotMarkUsed( int lightDefIndex,",
+        "int signature, std::uint64_t storageGeneration,",
+        "int cellX, int cellY, int cellSpan );",
+    ):
+        require(arb2_parity_h, declaration, "exact projected-atlas provenance API")
+    require(arb2_parity_h, "storageGeneration;", "projected-atlas slot generation ABI")
+    projected_slot_export = braced_body(
+        gl,
+        "bool RB_ShadowMapProjectedAtlasSlotForLight(",
+        "exact projected-atlas provenance export",
+    )
+    require_order(
+        projected_slot_export,
+        (
+            "viewDef->renderWorld == NULL",
+            "g_shadowMapCacheRenderWorld != viewDef->renderWorld",
+            "g_shadowMapCacheMapFileCRC != viewDef->renderWorld->mapFileCRC",
+            "g_shadowMapCacheMapNameHash != RB_ShadowMapMapNameHash( viewDef )",
+            "g_shadowMapAtlasDepthImage->IsDefaulted()",
+            "g_shadowMapAtlasDepthImage->GetOpts().textureType != TT_2D",
+            "g_shadowMapAtlasDepthImage->GetOpts().format != FMT_DEPTH",
+            "RB_ShadowMapBuildPassSignatureForView(",
+            "SHADOWMAP_PASS_GLOBAL, false",
+            "RB_ShadowMapFindProjectedCacheEntry(",
+            "lightDefIndex, SHADOWMAP_PASS_GLOBAL, signature",
+            "slot.signature = entry->signature;",
+            "slot.storageGeneration = entry->atlasStorageGeneration;",
+            "slot.lastUpdatedFrame = entry->lastUpdatedFrame;",
+            "slot.valid = true;",
+        ),
+        "projected slot export requires the exact current GLOBAL signature",
+    )
+    if "RB_ShadowMapNewestProjectedGlobalEntry(" in projected_slot_export:
+        raise AssertionError(
+            "Projected provenance export must not select a merely newest stale sibling"
+        )
+    projected_slot_pin = braced_body(
+        gl,
+        "bool RB_ShadowMapProjectedAtlasSlotMarkUsed(",
+        "exact projected-atlas residency pin",
+    )
+    require_order(
+        projected_slot_pin,
+        (
+            "RB_ShadowMapFindProjectedCacheEntry(",
+            "lightDefIndex, SHADOWMAP_PASS_GLOBAL, signature",
+            "entry->atlasStorageGeneration != storageGeneration",
+            "entry->atlasCellX != cellX",
+            "entry->atlasCellY != cellY",
+            "entry->atlasCellSpan != cellSpan",
+            "return false;",
+            "entry->lastUsedFrame = tr.frameCount;",
+            "return true;",
+        ),
+        "projected slot pin revalidates signature, storage generation, and physical cell identity",
+    )
+
+    point_cube_export = braced_body(
+        gl,
+        "bool RB_ShadowMapPointCubeForLight(",
+        "exact point-cube provenance export",
+    )
+    require_order(
+        point_cube_export,
+        (
+            "viewDef->renderWorld == NULL",
+            "g_shadowMapCacheRenderWorld != viewDef->renderWorld",
+            "g_shadowMapCacheMapFileCRC != viewDef->renderWorld->mapFileCRC",
+            "g_shadowMapCacheMapNameHash != RB_ShadowMapMapNameHash( viewDef )",
+            "!RB_ShadowMapActivePointCacheContentReady()",
+            "RB_ShadowMapBuildPassSignatureForView(",
+            "SHADOWMAP_PASS_GLOBAL",
+            "entry->lightIndex != cube.lightIndex",
+            "entry->signature != signature",
+            "cube.lastUpdatedFrame = entry->lastUpdatedFrame;",
+            "return true;",
+        ),
+        "point cube export is scoped to exact world, light, pass, and signature",
+    )
+
+    point_cube_mark_used = braced_body(
+        gl,
+        "void RB_ShadowMapPointCubeMarkUsed(",
+        "exact point-cube residency pin",
+    )
+    require_order(
+        point_cube_mark_used,
+        (
+            "RB_ShadowMapActivePointCacheContentReady()",
+            "g_activePointShadowMapCache->lightIndex == lightDefIndex",
+            "lastUsedFrame = tr.frameCount;",
+        ),
+        "only the selected valid point cube can be pinned",
+    )
+
+    hybrid_available = braced_body(
+        gl,
+        "static bool RB_ShadowMapHybridAvailableForPass( const viewLight_t *vLight,\n\t\tconst shadowMapPassKind_t passKind )",
+        "direct ARB2 hybrid availability",
+    )
+    require_order(
+        hybrid_available,
+        (
+            "RB_ShadowMapReceiverMaskForPass( passKind )",
+            "vLight->shadowMapIncompleteMapMask",
+            "vLight->shadowMapPrelightMapMissingMask",
+            "incompleteMapMask & receiverMask",
+            "vLight->shadowMapPrelightMapMissingMask & receiverMask",
+            "vLight->shadowMapHybridIncompleteMask & receiverMask",
+            "vLight->globalShadowMapStencilSupplements != NULL",
+            "passKind == SHADOWMAP_PASS_GLOBAL",
+            "vLight->localShadowMapStencilSupplements != NULL",
+        ),
+        "direct hybrid accepts only exact ordinary supplement ownership",
+    )
+    hybrid_stencil = braced_body(
+        gl,
+        "static bool RB_ShadowMapPrepareMappedReceiverStencil(",
+        "direct ARB2 mapped supplement stencil",
+    )
+    require_order(
+        hybrid_stencil,
+        (
+            "if ( !hybrid )",
+            "glStencilFunc( GL_ALWAYS, 128, 255 );",
+            "vLight->globalShadowMapStencilSupplements",
+            "passKind == SHADOWMAP_PASS_GLOBAL",
+            "vLight->localShadowMapStencilSupplements",
+            "globalSupplements == NULL && localSupplements == NULL",
+            "glScissor(",
+            "glClear( GL_STENCIL_BUFFER_BIT );",
+            "VPROG_STENCIL_SHADOW",
+            "RB_StencilShadowPass( globalSupplements );",
+            "RB_StencilShadowPass( localSupplements );",
+            "glStencilFunc( GL_GEQUAL, 128, 255 );",
+        ),
+        "direct hybrid clears and stamps only the missing caster supplements",
+    )
+    direct_shadow_pass = braced_body(
+        gl,
+        "static void RB_ShadowMapRunPass(",
+        "direct ARB2 incomplete-map failover",
+    )
+    map_or_hybrid = braced_body(
+        gl,
+        "static bool RB_ShadowMapMapOrHybridAvailableForPass(\n\t\tconst viewLight_t *vLight",
+        "shared direct/estimator completeness predicate",
+    )
+    require_order(
+        map_or_hybrid,
+        (
+            "RB_ShadowMapReceiverMaskForPass( passKind )",
+            "vLight->shadowMapIncompleteMapMask",
+            "vLight->shadowMapPrelightMapMissingMask",
+            "if ( !mapIncomplete )",
+            "RB_ShadowMapHybridAvailableForPass(",
+            "*hybridOut = hybrid;",
+            "return hybrid;",
+        ),
+        "complete maps or exact hybrids share one fail-closed predicate",
+    )
+    require_order(
+        direct_shadow_pass,
+        (
+            "RB_ShadowMapMapOrHybridAvailableForPass(",
+            "vLight, passKind, &hybrid",
+            "passKind == SHADOWMAP_PASS_GLOBAL",
+            "g_shadowMapGlobalPassHybrid = hybrid;",
+            "if ( !mapOrHybridAvailable )",
+            "RB_ShadowMapMarkStencilFallbackSticky( vLight );",
+            "if ( !deferReceiverDraw )",
+            "RB_ShadowMapSchedulePass(",
+        ),
+        "incomplete direct maps fail closed before scheduling unless hybrid-complete",
+    )
+    if direct_shadow_pass.count("RB_ShadowMapPrepareMappedReceiverStencil(") != 2:
+        raise AssertionError(
+            "Direct ARB2 must stamp hybrid supplements on both cache reuse and fresh map paths"
+        )
+    reuse_path = braced_body(
+        direct_shadow_pass,
+        "if ( schedule.action == SHADOWMAP_SCHEDULE_REUSE )",
+        "direct ARB2 cache-reuse mask failover",
+    )
+    require_order(
+        reuse_path,
+        (
+            "RB_ShadowMapPrepareMappedReceiverStencil(",
+            "const bool maskOk = receiverStencilReady",
+            "if ( maskOk )",
+            "RB_ShadowMapMarkStencilFallbackSticky( vLight );",
+            "RB_ShadowMapStencilFallback(",
+        ),
+        "hybrid cache reuse falls back to full stencil if the mapped mask fails",
+    )
+    fresh_mask_start = direct_shadow_pass.find("bool maskOk = false;")
+    if fresh_mask_start < 0:
+        raise AssertionError("Missing fresh direct ARB2 receiver-mask result")
+    require_order(
+        direct_shadow_pass[fresh_mask_start:],
+        (
+            "RB_ShadowMapPrepareMappedReceiverStencil(",
+            "maskOk = receiverStencilReady",
+            "const bool mapped =",
+            "if ( mapped )",
+            "RB_ShadowMapMarkStencilFallbackSticky( vLight );",
+            "RB_ShadowMapStencilFallback(",
+        ),
+        "fresh hybrid map mask failure falls back to full stencil",
+    )
+    direct_entry = braced_body(
+        gl,
+        "void RB_ARB2_DrawInteractions( void )",
+        "direct ARB2 translucent hybrid handoff",
+    )
+    require_order(
+        direct_entry,
+        (
+            "g_shadowMapGlobalPassHybrid = false;",
+            "RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL",
+            "g_shadowMapGlobalPassMapped != SHADOWMAP_GLOBAL_MAPPED_NONE",
+            "RB_ShadowMapPrepareMappedReceiverStencil( vLight",
+            "SHADOWMAP_PASS_GLOBAL",
+            "g_shadowMapGlobalPassHybrid",
+            "const bool translucentMaskOk = receiverStencilReady",
+            "if ( translucentMaskOk )",
+            "else",
+            "RB_ShadowMapMarkStencilFallbackSticky( vLight );",
+            "RB_ShadowMapStencilFallback( vLight",
+        ),
+        "translucent mapped receivers restamp hybrid supplements and fail closed",
+    )
+
+    require(
+        modern_h,
+        "unsigned int\t\tarb2CacheKeyHitMask;",
+        "modern descriptor canonical cache-key provenance",
+    )
+    modern_single_resource = braced_body(
+        modern,
+        "static bool R_ModernShadowPlanner_Arb2SingleResourceComplete(",
+        "modern single-resource ownership fail-closed gate",
+    )
+    require_order(
+        modern_single_resource,
+        (
+            "vLight->localInteractions != NULL",
+            "activeReceiverMask |= SHADOWMAP_RECEIVER_MASK_LOCAL;",
+            "vLight->globalInteractions != NULL",
+            "vLight->translucentInteractions != NULL",
+            "activeReceiverMask |= SHADOWMAP_RECEIVER_MASK_GLOBAL;",
+            "vLight->shadowMapIncompleteMapMask",
+            "vLight->shadowMapHybridIncompleteMask",
+            "vLight->shadowMapPrelightMapMissingMask",
+            "incompleteMapMask & activeReceiverMask",
+            "vLight->localShadowMapCasters != NULL",
+            "vLight->localShadowMapDynamicCasters != NULL",
+            "vLight->localTranslucentShadowMapCasters != NULL",
+            "vLight->globalShadowMapStencilSupplements != NULL",
+            "vLight->localShadowMapStencilSupplements != NULL",
+            "return activeReceiverMask != 0;",
+        ),
+        "modern projected and point resources cannot collapse receiver ownership or stencil supplements",
+    )
+
+    modern_point_resource = braced_body(
+        modern,
+        "static void R_ModernShadowPlanner_ResolveArb2AtlasSlot(",
+        "modern exact point-cube planner resolution",
+    )
+    require_order(
+        modern_point_resource,
+        (
+            "descriptor.arb2AtlasSlotReady = false;",
+            "descriptor.arb2AtlasSignature = 0;",
+            "descriptor.arb2AtlasStorageGeneration = 0;",
+            "descriptor.arb2PointCubeReady = false;",
+            "descriptor.arb2PointCubeSignature = 0;",
+            "descriptor.arb2PointCubeContentFrame = -1;",
+            "descriptor.arb2CacheKeyHitMask & SHADOWMAP_ARB2_CACHE_PASS_GLOBAL",
+            "vLight->shadowMapDynamicCasterCount == 0",
+            "R_ModernShadowPlanner_Arb2SingleResourceComplete( vLight )",
+            "if ( descriptor.pointLight )",
+            "RB_ShadowMapPointCubeForLight( vLight, viewDef, cube )",
+            "cube.size != descriptor.resolution",
+            "descriptor.arb2PointCubeSignature = cube.signature;",
+            "descriptor.arb2PointCubeContentFrame = cube.lastUpdatedFrame;",
+            "descriptor.arb2PointCubeReady = true;",
+            "RB_ShadowMapProjectedAtlasSlotForLight( vLight, viewDef, slot )",
+            "descriptor.arb2AtlasSignature = slot.signature;",
+            "descriptor.arb2AtlasStorageGeneration = slot.storageGeneration;",
+            "descriptor.arb2AtlasContentFrame = slot.lastUpdatedFrame;",
+            "descriptor.arb2AtlasSlotReady = true;",
+        ),
+        "modern descriptors require exact complete static GLOBAL physical content",
+    )
+    require(
+        modern_h,
+        "arb2AtlasStorageGeneration;",
+        "modern projected-atlas generation provenance ABI",
+    )
+
+    modern_cache_isolation = braced_body(
+        modern,
+        "static bool R_ModernShadowPlanner_CanIsolateArb2CacheOwnership(",
+        "modern physical shadow resource isolation",
+    )
+    require_order(
+        modern_cache_isolation,
+        (
+            "descriptor.pointLight",
+            "descriptor.arb2PointCubeReady",
+            "descriptor.arb2AtlasSlotReady",
+            "descriptor.modernReceiverSamplingReady && !physicalResourceReady",
+        ),
+        "cache isolation follows point-cube or projected-atlas provenance",
+    )
+
+    vk_backend = read("src/renderer/Vulkan/vk_Backend.cpp")
+    vk_projected_slot_stub = braced_body(
+        vk_backend,
+        "bool RB_ShadowMapProjectedAtlasSlotForLight(",
+        "Vulkan fail-closed GL projected-slot provenance stub",
+    )
+    require_order(
+        vk_projected_slot_stub,
+        (
+            "(void)vLight; (void)viewDef;",
+            "memset( &slot, 0, sizeof( slot ) );",
+            "return false;",
+        ),
+        "Vulkan must not advertise the GL projected atlas",
+    )
+    vk_projected_pin_stub = braced_body(
+        vk_backend,
+        "bool RB_ShadowMapProjectedAtlasSlotMarkUsed(",
+        "Vulkan fail-closed GL projected-slot pin stub",
+    )
+    require_order(
+        vk_projected_pin_stub,
+        (
+            "(void)lightDefIndex; (void)signature; (void)cellX; (void)cellY;",
+            "(void)storageGeneration; (void)cellSpan;",
+            "return false;",
+        ),
+        "Vulkan projected-slot pin cannot validate GL residency",
+    )
+    vk_point_cube_stub = braced_body(
+        vk_backend,
+        "bool RB_ShadowMapPointCubeForLight(",
+        "Vulkan fail-closed GL point-cube provenance stub",
+    )
+    require_order(
+        vk_point_cube_stub,
+        (
+            "memset( &cube, 0, sizeof( cube ) );",
+            "return false;",
+        ),
+        "Vulkan must not advertise the GL point cube",
+    )
+    vk_point_mark_stub = braced_body(
+        vk_backend,
+        "void RB_ShadowMapPointCubeMarkUsed(",
+        "Vulkan no-op GL point-cube residency stub",
+    )
+    require(vk_point_mark_stub, "(void)lightDefIndex;", "Vulkan point-cube pin is a no-op")
+
+    clustered = read("src/renderer/ModernClusteredLighting.cpp")
+    clustered_flags = braced_body(
+        clustered,
+        "static int R_ModernClusteredLighting_ShadowDescriptorFlags(",
+        "clustered shadow physical-resource flag",
+    )
+    require(
+        clustered_flags,
+        "shadow.arb2AtlasSlotReady || shadow.arb2PointCubeReady",
+        "point cubes and projected atlas cells share the GPU provenance flag",
+    )
+    clustered_copy = braced_body(
+        clustered,
+        "static void R_ModernClusteredLighting_CopyPlannerShadowDescriptor(",
+        "clustered point-cube freshness handoff",
+    )
+    require_order(
+        clustered_copy,
+        (
+            "src.pointLight",
+            "src.arb2PointCubeContentFrame",
+            "src.arb2AtlasContentFrame",
+            "src.arb2AtlasSlotReady || src.arb2PointCubeReady",
+        ),
+        "clustered descriptors carry exact point or projected resource freshness",
+    )
+    clustered_apply = braced_body(
+        clustered,
+        "static void R_ModernClusteredLighting_ApplyShadowDescriptor(",
+        "clustered per-light physical-resource gate",
+    )
+    require_order(
+        clustered_apply,
+        (
+            "bool projectedSlotReady = shadow->arb2AtlasSlotReady;",
+            "RB_ShadowMapProjectedAtlasSlotMarkUsed(",
+            "shadow->lightDefIndex, shadow->arb2AtlasSignature",
+            "shadow->arb2AtlasStorageGeneration",
+            "shadow->arb2AtlasCellX, shadow->arb2AtlasCellY",
+            "shadow->arb2AtlasCellSpan",
+            "const bool projectedSlotBlocked",
+            "projectedSlotBlocked || pointCubeBlocked",
+            "stats.shadowAtlasSlotBlockedLights++;",
+        ),
+        "projected resource identity is revalidated before modern consumption",
+    )
+    require_order(
+        clustered_apply,
+        (
+            "const bool projectedSlotBlocked",
+            "const bool pointCubeBlocked",
+            "!shadow->arb2PointCubeReady",
+            "projectedSlotBlocked || pointCubeBlocked",
+            "MODERN_SHADOW_FALLBACK_RESOURCE_UNAVAILABLE",
+            "RB_ShadowMapPointCubeMarkUsed( shadow->lightDefIndex )",
+        ),
+        "clustered point lights fail closed without their exact cube",
+    )
+    clustered_lossless = braced_body(
+        clustered,
+        "bool R_ModernClusteredLighting_FrameLossless(",
+        "clustered frame lossless physical-resource guard",
+    )
+    require(
+        clustered_lossless,
+        "rg_clusteredLightingStats.shadowAtlasSlotBlockedLights == 0",
+        "slot pin/bind failure blocks visible modern ownership",
+    )
+    gl_cache_gate = braced_body(
+        gl,
+        "static bool RB_ShadowMapStaticCacheable(",
+        "OpenGL mutable-caster cache gate",
+    )
+    gl_cache_read_gate = braced_body(
+        gl,
+        "static bool RB_ShadowMapStaticCacheableReadOnly(",
+        "OpenGL mutable-caster read gate",
+    )
+    require(gl_cache_gate, "vLight->shadowMapAlphaCasterCount > 0", "live alpha caster cache exclusion")
+    require(gl_cache_read_gate, "vLight->shadowMapAlphaCasterCount > 0", "read-only alpha caster cache exclusion")
+    stats_reset = braced_body(gl, "static void RB_ShadowMapStatsReset( void )", "shadow frame reset")
+    require(stats_reset, "RB_ShadowMapPrepareCacheView( backEnd.viewDef );", "per-view cache scope check")
+
+    modern_cache_owner = braced_body(
+        modern_executor,
+        "static const viewDef_t *R_ModernGLExecutor_ShadowCacheOwnerView(",
+        "modern OpenGL shadow cache owner selection",
+    )
+    require_order(
+        modern_cache_owner,
+        (
+            "packetFrame.NumScenes() - 1",
+            "viewDef->renderWorld == NULL",
+            "!viewDef->isSubview",
+            "return fallback;",
+        ),
+        "modern OpenGL root-view cache owner selection",
+    )
+    modern_prepare = braced_body(
+        modern_executor,
+        "void R_ModernGLExecutor_PrepareFrame(",
+        "modern OpenGL pre-plan cache transition",
+    )
+    require_order(
+        modern_prepare,
+        (
+            "R_ModernGLExecutor_ShadowCacheOwnerView( packetFrame )",
+            "RB_ShadowMapPrepareCacheView( shadowCacheOwnerView )",
+            "R_ModernGLExecutor_ResetPassOwnershipTable( \"frame-start\" )",
+            "R_ModernShadowPlanner_PrepareFrame( packetFrame, shadowPlanningRequested );",
+        ),
+        "modern OpenGL cache transition precedes planning",
+    )
+    require_compact(
+        modern_prepare,
+        """rg_modernGLShadowTextureBindingsCurrent = shadowCacheOwnerView != NULL
+            && !RB_ShadowMapPrepareCacheView( shadowCacheOwnerView );""",
+        "modern GL first-frame and map-transition binding freshness assignment",
+    )
+    modern_shadow_bind_marker = "static bool R_ModernGLExecutor_BindModernShadowTextures("
+    modern_shadow_bind_definition = modern_executor.find(
+        modern_shadow_bind_marker,
+        modern_executor.find(modern_shadow_bind_marker) + len(modern_shadow_bind_marker),
+    )
+    if modern_shadow_bind_definition < 0:
+        raise AssertionError("Missing modern OpenGL shadow binding definition")
+    modern_shadow_bindings = braced_body(
+        modern_executor[modern_shadow_bind_definition:],
+        modern_shadow_bind_marker,
+        "modern OpenGL transition-frame binding guard",
+    )
+    require_order(
+        modern_shadow_bindings,
+        (
+            "RB_ShadowMapTextureBindings( bindings );",
+            "R_ModernGLExecutor_PointCubeDescriptorReady( bindings )",
+            "if ( !rg_modernGLShadowTextureBindingsCurrent )",
+            "bindings.projectedPersistentAtlas.ready = false;",
+            "bindings.pointAtlas.ready = false;",
+            "bindings.projectedMoments[i].ready = false;",
+            "bindings.pointMoments[i].ready = false;",
+            "if ( !exactPointCubeReady )",
+            "if ( bindings.projectedPersistentAtlasReady )",
+        ),
+        "modern OpenGL transition frame cannot expose stale atlas resources",
+    )
+    modern_exact_point_mismatch = braced_body(
+        modern_shadow_bindings,
+        "if ( !exactPointCubeReady )",
+        "modern OpenGL exact point-cube mismatch clear",
+    )
+    require_order(
+        modern_exact_point_mismatch,
+        (
+            "bindings.pointAtlas.ready = false;",
+            "bindings.pointAtlasReady = false;",
+            "for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i )",
+            "bindings.pointMoments[i].ready = false;",
+            "bindings.pointMomentsReady = false;",
+        ),
+        "point cube and moments fail closed together on exact-descriptor mismatch",
+    )
+
+    modern_point_descriptor_gate = braced_body(
+        modern_executor,
+        "static bool R_ModernGLExecutor_PointCubeDescriptorReady(",
+        "modern GL exact point-cube descriptor gate",
+    )
+    require_order(
+        modern_point_descriptor_gate,
+        (
+            "bindings.pointAtlasReady",
+            "R_ModernShadowPlanner_DescriptorByIndex(",
+            "descriptor->pointLight",
+            "descriptor->arb2PointCubeReady",
+            "bindings.pointAtlasLightIndex == descriptor->lightDefIndex",
+            "bindings.pointAtlasSignature",
+            "descriptor->arb2PointCubeSignature",
+            "bindings.pointAtlasContentFrame",
+            "descriptor->arb2PointCubeContentFrame",
+            "bindings.pointAtlas.width == descriptor->resolution",
+            "bindings.pointAtlas.height == descriptor->resolution",
+            "descriptor->modernReceiverSamplingReady",
+            "descriptor->policy == MODERN_SHADOW_POLICY_MAPPED",
+            "descriptor->policy == MODERN_SHADOW_POLICY_CACHE_REUSE",
+        ),
+        "modern GL advertises a point cube only for a consumable exact descriptor",
+    )
+    modern_single_point_cube = braced_body(
+        modern_executor,
+        "static bool R_ModernGLExecutor_ModernVisibleShadowReceiversReady(",
+        "modern GL single point-cube ownership constraint",
+    )
+    duplicate_point_descriptor = braced_body(
+        modern_single_point_cube,
+        "if ( distinctPointLightDefs[i] == descriptor->lightDefIndex )",
+        "modern GL duplicate point-light descriptor deduplication",
+    )
+    require_order(
+        duplicate_point_descriptor,
+        ("seen = true;", "break;"),
+        "duplicate descriptors for one point light share its cube",
+    )
+    unseen_point_descriptor = braced_body(
+        modern_single_point_cube,
+        "if ( !seen )",
+        "modern GL distinct point-light accounting",
+    )
+    require_order(
+        unseen_point_descriptor,
+        (
+            "distinctPointLightDefCount < static_cast<int>( sizeof( distinctPointLightDefs ) / sizeof( distinctPointLightDefs[0] ) )",
+            "distinctPointLightDefs[distinctPointLightDefCount++] = descriptor->lightDefIndex;",
+            "distinctPointLightOverflow = true;",
+            "consumablePointLights++;",
+        ),
+        "only distinct point lights consume the single-cube budget and overflow fails closed",
+    )
+    if modern_single_point_cube.count("consumablePointLights++") != 1:
+        raise AssertionError(
+            "Point-cube ownership must count each distinct light exactly once"
+        )
+    point_cube_overflow = braced_body(
+        modern_single_point_cube,
+        "if ( consumablePointLights > 1 || distinctPointLightOverflow )",
+        "modern GL second-point-light fail-closed gate",
+    )
+    require_order(
+        point_cube_overflow,
+        (
+            "blockedLights += Max( 1, consumablePointLights - 1 );",
+            "stats.modernVisibleShadowPointConstraintLights = consumablePointLights;",
+        ),
+        "multiple distinct point lights cannot share the one bound samplerCube",
+    )
+    require_order(
+        modern_single_point_cube,
+        (
+            "if ( consumablePointLights > 1 || distinctPointLightOverflow )",
+            "stats.modernVisibleShadowBlockedLights = blockedLights;",
+            "if ( blockedLights > 0 )",
+            "return false;",
+        ),
+        "point-cube constraint blocks modern visible ownership",
+    )
+    require(
+        modern_shader,
+        "mapType == MODERN_SHADOW_MAP_POINT && ModernClusterShadowFlag(descriptor, MODERN_SHADOW_FLAG_ATLAS_SLOT) && descriptor.freshness.y > 0.5",
+        "modern point shader rejects missing or stale cube provenance",
+    )
+
+    atlas_grid = braced_body(gl, "static int RB_ShadowMapAtlasGridDim( void )", "physical atlas grid")
+    require_order(
+        atlas_grid,
+        (
+            "g_shadowMapAtlasRenderTexture->GetWidth()",
+            "g_shadowMapAtlasRenderTexture->GetHeight()",
+            "atlasSize / g_shadowMapAtlasCellSize",
+            "gridDim > 0",
+        ),
+        "physical atlas grid bounds",
+    )
+
+    def atlas_grid_dim(width: int, height: int, cell: int) -> int:
+        if cell <= 0:
+            return 0
+        raw = min(width, height) // cell
+        return min(8, max(1, raw)) if raw > 0 else 0
+
+    atlas_cases = {
+        (4096, 2048, 512): 4,
+        (4095, 4096, 512): 7,
+        (256, 512, 512): 0,
+        (8192, 8192, 512): 8,
+        (4096, 4096, 0): 0,
+    }
+    for inputs, expected in atlas_cases.items():
+        actual = atlas_grid_dim(*inputs)
+        if actual != expected:
+            raise AssertionError(
+                f"Physical atlas grid case {inputs} produced {actual}, expected {expected}"
+            )
+
+    atlas_find = braced_body(
+        gl,
+        "static bool RB_ShadowMapAtlasFindFreeBlock(",
+        "bounded atlas block allocation",
+    )
+
+    cache_expire = braced_body(
+        gl,
+        "static void RB_ShadowMapExpireCaches( void )",
+        "live OpenGL cache limit enforcement",
+    )
+    require_order(
+        cache_expire,
+        (
+            "RB_ShadowMapProjectedCacheSlotLimit()",
+            "RB_ShadowMapPointCacheSlotLimit()",
+            "RB_ShadowMapProjectedCacheEntryStorageValid(",
+            "i >= projectedLimit",
+            "g_projectedShadowMapCache[i].valid = false;",
+            "RB_ShadowMapPointCacheEntryStorageValid(",
+            "i >= pointLimit",
+            "g_pointShadowMapCache[i].valid = false;",
+        ),
+        "live OpenGL cache generation, limit, and residency enforcement",
+    )
+    cache_estimate_counts = braced_body(
+        gl,
+        "static void RB_ShadowMapArb2CacheSlotCountsReadOnly(",
+        "ARB2 cache-estimate live-storage counts",
+    )
+    require_order(
+        cache_estimate_counts,
+        (
+            "RB_ShadowMapProjectedCacheEntryStorageValid(",
+            "estimate.projectedCacheSlotsUsed++;",
+            "RB_ShadowMapPointCacheEntryStorageValid(",
+            "estimate.pointCacheSlotsUsed++;",
+        ),
+        "ARB2 cache estimates exclude generation-stale metadata",
+    )
+    for stale_flag in (
+        "g_projectedShadowMapCache[i].valid",
+        "g_pointShadowMapCache[i].valid",
+    ):
+        if stale_flag in cache_estimate_counts:
+            raise AssertionError(
+                "ARB2 cache estimates must validate physical storage, not raw cache metadata: "
+                + stale_flag
+            )
+    require_order(
+        atlas_find,
+        (
+            "span <= 0 || span > gridDim",
+            "y + span <= gridDim",
+            "x + span <= gridDim",
+            "occupied[y + by][x + bx]",
+        ),
+        "bounded atlas block allocation",
+    )
+    atlas_live_occupancy = braced_body(
+        atlas_find,
+        "if ( !RB_ShadowMapProjectedCacheEntryStorageValid( &entry ) )",
+        "projected-atlas live-storage occupancy gate",
+    )
+    require(
+        atlas_live_occupancy,
+        "continue;",
+        "stale projected-atlas generation excluded from occupancy",
+    )
+    require_order(
+        atlas_find,
+        (
+            "RB_ShadowMapProjectedCacheEntryStorageValid( &entry )",
+            "occupied[y][x] = true;",
+            "occupied[y + by][x + bx]",
+        ),
+        "only live projected-atlas storage reserves cells before free-block search",
+    )
+
+    timed_begin = braced_body(
+        gl,
+        "static void RB_ShadowMapBeginTimedPhase(",
+        "non-nested OpenGL shadow timing begin",
+    )
+    require_order(
+        timed_begin,
+        (
+            "RB_ShadowMapGpuTimerQueriesAvailable()",
+            "R_RendererMetrics_PauseGpuTimer( timerSlot )",
+            "RB_ShadowMapBeginGpuTimerQuery(",
+            "timedPhase.gpuTimerQuery == NULL && timedPhase.parentGpuTimerPaused",
+            "R_RendererMetrics_ResumeGpuTimer(",
+        ),
+        "non-nested OpenGL shadow timing begin",
+    )
+    timed_end = braced_body(
+        gl,
+        "static float RB_ShadowMapEndTimedPhase(",
+        "non-nested OpenGL shadow timing end",
+    )
+    require_order(
+        timed_end,
+        (
+            "RB_ShadowMapEndGpuTimerQuery( timedPhase.gpuTimerQuery );",
+            "if ( timedPhase.parentGpuTimerPaused )",
+            "R_RendererMetrics_ResumeGpuTimer(",
+        ),
+        "inner query completion before parent timer resume",
     )
 
 
@@ -2144,7 +4091,7 @@ def validate_exact_static_cache_and_admission_contract() -> None:
         ("static_cast<int>( classification.lightClass )", "light-class identity"),
         ("vLight->shadowMapCasterSignature", "caster-content identity"),
         ("resourceSize", "resource-size identity"),
-        ("VK_ShadowMap_PointLightFar( vLight )", "point far-envelope identity"),
+        ("R_ShadowMapPointFarDistance( vLight )", "point far-envelope identity"),
         ("vLight->lightDef->parms.lightCenter[ i ]", "point center identity"),
         ("vLight->globalLightOrigin[ i ]", "receiver light-origin identity"),
         ("vLight->lightRadius[ i ]", "light-radius identity"),
@@ -2293,6 +4240,8 @@ def validate_exact_static_cache_and_admission_contract() -> None:
         (
             "renderWorld->mapFileCRC",
             "VK_ShadowMap_MapNameHash( viewDef )",
+            "VK_ShadowMap_ProjectedCacheSlotLimit()",
+            "VK_ShadowMap_PointCacheSlotLimit()",
             "r_shadowMapResidentFrames.GetInteger()",
             "vkShadow.cacheRenderWorld != renderWorld",
             "vkShadow.cacheMapFileCRC != mapFileCRC",
@@ -2300,9 +4249,11 @@ def validate_exact_static_cache_and_admission_contract() -> None:
             "VK_ShadowMap_ClearProjectedEntryMetadata(",
             "VK_ShadowMap_ClearPointEntryMetadata(",
             "projected.reserved = false;",
+            "i >= projectedLimit",
             "projected.generation != tr.videoRestartCount",
             "tr.frameCount - projected.lastUsedFrame",
             "point.reserved = false;",
+            "i >= pointLimit",
             "point.generation != tr.videoRestartCount",
             "tr.frameCount - point.lastUsedFrame",
         ),
@@ -3066,6 +5017,12 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
 
     frontend = read("src/renderer/Interaction.cpp")
     interaction_domain = read("src/renderer/ClassicInteractionDomain.cpp")
+    require_compact(
+        frontend,
+        """hash = R_ShadowMapHashInt( hash, entityDef->lastModifiedFrameNum );
+        hash = R_ShadowMapHashInt( hash, entityDef->dynamicModelFrameCount );""",
+        "settled dynamic-model caster signature revision",
+    )
     moments_support = braced_body(
         frontend,
         "static bool R_TranslucentShadowMapMomentsSupportedForLight(",
@@ -3113,9 +5070,7 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
             !sint->shadowStencilUsesPrelight &&
             !linkedShadowMapCaster &&
             ( admittedShadowMapCaster ||
-                shadowTris != NULL ) &&
-            ( !shadowMapCasterOnly ||
-                admittedShadowMapCaster );""",
+                sint->shadowStencilEligible );""",
         "actual-caster map completeness provenance",
     )
     require_compact(
@@ -3137,6 +5092,8 @@ def validate_fail_closed_target_and_stencil_behavior() -> None:
         frontend,
         """const bool suppressDynamicShadowVolume =
             surfaceCanCastStencilShadowVolume && shadowLODAdmitted &&
+            ( surfaceCanCastDedicatedShadowMap ||
+                surfaceCanCastTranslucentShadowMap ) &&
             model->IsDynamicModel() != DM_STATIC &&
             !forcePointEmitterStencilGeneration &&
             R_ShadowMapLightWillUseShadowMaps( lightDef );""",
@@ -3415,6 +5372,8 @@ def main() -> None:
     validate_csm_atlas_and_receiver_contract()
     validate_shadow_descriptor_abi()
     validate_shadow_filtering_contract()
+    validate_point_receiver_world_bias_contract()
+    validate_shadow_contact_and_gl_robustness_contract()
     validate_exact_static_cache_and_admission_contract()
     validate_packed_shadow_geometry()
     validate_fail_closed_target_and_stencil_behavior()

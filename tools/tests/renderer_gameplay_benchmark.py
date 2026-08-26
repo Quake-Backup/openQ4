@@ -895,6 +895,14 @@ PROFILE_DEFAULTS = {
 WARNING_PATTERNS = {
     "snPrintfOverflow": re.compile(r"idStr::snPrintf:\s*overflow", re.IGNORECASE),
     "idStrWarning": re.compile(r"WARNING:\s+idStr", re.IGNORECASE),
+    "binaryImageCacheWrite": re.compile(
+        r"WARNING:\s*(?:\^[0-9]\s*)*idBinaryImage:\s+Could not open (?:file|generated cache)\b",
+        re.IGNORECASE,
+    ),
+    "expandedLoadscreenPublish": re.compile(
+        r"WARNING:\s*(?:\^[0-9]\s*)*Could not publish expanded loading background\b",
+        re.IGNORECASE,
+    ),
     "shaderCompile": re.compile(r"(shader compile|program link).*(failed|error)|failed to compile", re.IGNORECASE),
     "glError": re.compile(
         r"\bGL_(?:INVALID_[A-Z_]+|OUT_OF_MEMORY|STACK_(?:OVERFLOW|UNDERFLOW)|CONTEXT_LOST)\b"

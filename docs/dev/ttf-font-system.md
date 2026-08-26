@@ -246,6 +246,15 @@ Each atlas is bound through a material this module generates at registration
 time. Those declarations have no `.mtr` behind them, which makes them fragile in
 a way a shipped material is not.
 
+The material and its intrinsic scratch image intentionally use the same
+`_ttfatlas...` identity. The declaration manager parses a newly requested
+implicit material before the font module can replace its source, and that
+implicit stage maps an image named after the material. Sharing the already
+uploaded atlas identity makes this first parse valid and prevents spurious
+missing-image warnings and redundant defaulted image records. The font module
+then installs its full generated stage unconditionally so the required blend,
+linear filtering, clamp, and no-picmip state remains explicit.
+
 `idDeclManagerLocal::BeginLevelLoad` purges every declaration that is not marked
 as parsed outside a level load, and `FindType` clears that mark on anything it
 resolves *during* a load. A face a map's own GUIs are the first to name — the
@@ -272,9 +281,11 @@ Two things close that off:
   parsing first, so a healthy declaration costs nothing and is not demoted by
   the lookup itself.
 
-Registration is also self-healing now: `R_TTFCreateAtlasMaterial` reinstalls the
-stage whenever the declaration it finds is not already sampling the atlas,
-instead of handing back whatever the manager last left there.
+Registration is also self-healing: `R_TTFCreateAtlasMaterial` always reinstalls
+the complete generated stage. This is intentionally stronger than comparing
+the old stage's image name, because a full renderer restart can recreate the
+image manager while leaving a generated declaration carrying a stale image
+pointer.
 
 A related hazard sits on the GUI side. `idDeviceContext` holds `activeFont` and
 `useFont` as pointers into its `fonts` list, and that list has granularity 1, so

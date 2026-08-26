@@ -211,14 +211,14 @@ float StableShadowHash( vec3 value ) {
 	return fract( sin( dot( value, vec3( 12.9898, 78.233, 37.719 ) ) ) * 43758.5453 );
 }
 
-vec2 RotateShadowOffset( vec2 offset, vec3 direction ) {
+mat2 ShadowOffsetRotation( vec3 direction ) {
 	if ( uShadowFilterMode < 0.5 ) {
-		return offset;
+		return mat2( 1.0, 0.0, 0.0, 1.0 );
 	}
 	float angle = StableShadowHash( floor( direction * 37.0 ) ) * 6.2831853;
 	float s = sin( angle );
 	float c = cos( angle );
-	return vec2( c * offset.x - s * offset.y, s * offset.x + c * offset.y );
+	return mat2( c, s, -s, c );
 }
 
 float TranslucentFilterRadius() {
@@ -331,10 +331,11 @@ float SamplePointShadow() {
 	if ( uShadowFilterTaps <= 1.0 ) {
 		return shadow;
 	}
-	vec2 o1 = RotateShadowOffset( vec2( -0.326212, -0.405805 ), direction );
-	vec2 o2 = RotateShadowOffset( vec2( -0.840144, -0.073580 ), direction );
-	vec2 o3 = RotateShadowOffset( vec2( -0.695914, 0.457137 ), direction );
-	vec2 o4 = RotateShadowOffset( vec2( -0.203345, 0.620716 ), direction );
+	mat2 rotation = ShadowOffsetRotation( direction );
+	vec2 o1 = rotation * vec2( -0.326212, -0.405805 );
+	vec2 o2 = rotation * vec2( -0.840144, -0.073580 );
+	vec2 o3 = rotation * vec2( -0.695914, 0.457137 );
+	vec2 o4 = rotation * vec2( -0.203345, 0.620716 );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o1.x + bitangent * o1.y ) * tap ), depth );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o2.x + bitangent * o2.y ) * tap ), depth );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o3.x + bitangent * o3.y ) * tap ), depth );
@@ -342,10 +343,10 @@ float SamplePointShadow() {
 	if ( uShadowFilterTaps <= 5.0 ) {
 		return shadow * ( 1.0 / 5.0 );
 	}
-	vec2 o5 = RotateShadowOffset( vec2( 0.962340, -0.194983 ), direction );
-	vec2 o6 = RotateShadowOffset( vec2( 0.473434, -0.480026 ), direction );
-	vec2 o7 = RotateShadowOffset( vec2( 0.519456, 0.767022 ), direction );
-	vec2 o8 = RotateShadowOffset( vec2( 0.185461, -0.893124 ), direction );
+	vec2 o5 = rotation * vec2( 0.962340, -0.194983 );
+	vec2 o6 = rotation * vec2( 0.473434, -0.480026 );
+	vec2 o7 = rotation * vec2( 0.519456, 0.767022 );
+	vec2 o8 = rotation * vec2( 0.185461, -0.893124 );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o5.x + bitangent * o5.y ) * tap ), depth );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o6.x + bitangent * o6.y ) * tap ), depth );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o7.x + bitangent * o7.y ) * tap ), depth );
@@ -353,10 +354,10 @@ float SamplePointShadow() {
 	if ( uShadowFilterTaps <= 9.0 ) {
 		return shadow * ( 1.0 / 9.0 );
 	}
-	vec2 o9 = RotateShadowOffset( vec2( 0.507431, 0.064425 ), direction );
-	vec2 o10 = RotateShadowOffset( vec2( 0.896420, 0.412458 ), direction );
-	vec2 o11 = RotateShadowOffset( vec2( -0.321940, -0.932615 ), direction );
-	vec2 o12 = RotateShadowOffset( vec2( -0.791559, -0.597705 ), direction );
+	vec2 o9 = rotation * vec2( 0.507431, 0.064425 );
+	vec2 o10 = rotation * vec2( 0.896420, 0.412458 );
+	vec2 o11 = rotation * vec2( -0.321940, -0.932615 );
+	vec2 o12 = rotation * vec2( -0.791559, -0.597705 );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o9.x + bitangent * o9.y ) * tap ), depth );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o10.x + bitangent * o10.y ) * tap ), depth );
 	shadow += SamplePointShadowCompare( SafeNormalize( direction + ( tangent * o11.x + bitangent * o11.y ) * tap ), depth );

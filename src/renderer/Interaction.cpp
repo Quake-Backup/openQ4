@@ -525,7 +525,10 @@ static bool R_ShadowMapCasterIsDynamic( const idRenderEntityLocal *entityDef ) {
 	return hasDynamicGeometry && entityDef->dynamicModelFrameCount >= recentFrame;
 }
 
-static void R_RecordShadowMapCaster( viewLight_t *vLight, const idRenderEntityLocal *entityDef, const idMaterial *shader, const bool translucent, const bool expandedCaster ) {
+static void R_RecordShadowMapCaster( viewLight_t *vLight,
+		const idRenderEntityLocal *entityDef, const idMaterial *shader,
+		const srfTriangles_t *casterTris, const bool translucent,
+		const bool expandedCaster ) {
 	if ( vLight == NULL ) {
 		return;
 	}
@@ -559,10 +562,27 @@ static void R_RecordShadowMapCaster( viewLight_t *vLight, const idRenderEntityLo
 	hash = R_ShadowMapHashInt( hash, shader != NULL ? static_cast<int>( shader->Coverage() ) : -1 );
 	hash = R_ShadowMapHashString( hash, shader != NULL ? shader->GetName() : NULL );
 	hash = R_ShadowMapHashInt( hash, shader != NULL ? shader->GetNumStages() : 0 );
+	hash = R_ShadowMapHashInt( hash,
+		shader != NULL ? static_cast<int>( shader->GetCullType() ) : -1 );
 	hash = R_ShadowMapHashInt( hash, translucent ? 1 : 0 );
 	hash = R_ShadowMapHashInt( hash, expandedCaster ? 1 : 0 );
+	if ( casterTris != NULL ) {
+		// Automatic caster culling depends on these live geometry properties.
+		// Include them in the physical cache identity so model/decl reloads or
+		// topology changes cannot reuse depth rendered under another policy.
+		hash = R_ShadowMapHashInt( hash, casterTris->perfectHull ? 1 : 0 );
+		hash = R_ShadowMapHashInt( hash, casterTris->numVerts );
+		hash = R_ShadowMapHashInt( hash, casterTris->numIndexes );
+		for ( int corner = 0; corner < 2; ++corner ) {
+			for ( int component = 0; component < 3; ++component ) {
+				hash = R_ShadowMapHashFloat( hash,
+					casterTris->bounds[ corner ][ component ] );
+			}
+		}
+	}
 	if ( entityDef != NULL ) {
 		hash = R_ShadowMapHashInt( hash, entityDef->lastModifiedFrameNum );
+		hash = R_ShadowMapHashInt( hash, entityDef->dynamicModelFrameCount );
 		for ( int i = 0; i < 16; i++ ) {
 			hash = R_ShadowMapHashFloat( hash, entityDef->modelMatrix[i] );
 		}
@@ -1687,6 +1707,8 @@ void idInteraction::CreateInteraction( const idRenderModel *model ) {
 		// built once and kept so the per-light stencil fallback stays instant.
 		const bool suppressDynamicShadowVolume =
 			surfaceCanCastStencilShadowVolume && shadowLODAdmitted &&
+			( surfaceCanCastDedicatedShadowMap ||
+				surfaceCanCastTranslucentShadowMap ) &&
 			model->IsDynamicModel() != DM_STATIC &&
 			!forcePointEmitterStencilGeneration &&
 			R_ShadowMapLightWillUseShadowMaps( lightDef );
@@ -2140,7 +2162,8 @@ void idInteraction::AddActiveInteraction( void ) {
 				if ( haveCasterGeometry ) {
 					R_TouchShadowMapCache( casterTris->ambientCache );
 					R_TouchShadowMapCache( casterTris->indexCache );
-					R_RecordShadowMapCaster( vLight, entityDef, shadowShader, false, shadowMapCasterOnly );
+					R_RecordShadowMapCaster( vLight, entityDef, shadowShader,
+						casterTris, false, shadowMapCasterOnly );
 
 					// dynamic casters go to their own chains so cached static
 					// tiles stay valid while they move (composed per frame)
@@ -2163,7 +2186,8 @@ void idInteraction::AddActiveInteraction( void ) {
 				if ( haveCasterGeometry ) {
 					R_TouchShadowMapCache( casterTris->ambientCache );
 					R_TouchShadowMapCache( casterTris->indexCache );
-					R_RecordShadowMapCaster( vLight, entityDef, shadowShader, true, shadowMapCasterOnly );
+					R_RecordShadowMapCaster( vLight, entityDef, shadowShader,
+						casterTris, true, shadowMapCasterOnly );
 
 					if ( shadowMapNoSelfShadow ) {
 						R_LinkShadowMapCasterSurf( &vLight->localTranslucentShadowMapCasters,
@@ -2178,14 +2202,18 @@ void idInteraction::AddActiveInteraction( void ) {
 		}
 
 		srfTriangles_t *shadowTris = sint->shadowTris;
+		// Use this surface's cached stencil eligibility as provenance rather than
+		// the presence of a generated volume: eligible dynamic volumes may have
+		// been suppressed for mapped rendering, and generation/cache setup can
+		// fail. Conservative caster-only interactions must retain that same
+		// surface's stencil representation when map admission fails, without
+		// pulling unrelated or ineligible volumes into the hybrid chains.
 		const bool mapMissingCasterNeedsStencil =
 			shadowMapCasterPolicyActive &&
 			!sint->shadowStencilUsesPrelight &&
 			!linkedShadowMapCaster &&
 			( admittedShadowMapCaster ||
-				shadowTris != NULL ) &&
-			( !shadowMapCasterOnly ||
-				admittedShadowMapCaster );
+				sint->shadowStencilEligible );
 		const bool prelightMapMissingCasterNeedsStencil =
 			shadowMapCasterPolicyActive &&
 			sint->shadowStencilUsesPrelight &&

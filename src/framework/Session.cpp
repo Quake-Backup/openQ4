@@ -2416,10 +2416,15 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 	// Multiple isolated clients may generate the same resolution at once. Give
 	// every publication a CSPRNG-backed staging qpath so one client cannot
 	// truncate another client's in-progress TGA before either atomic rename.
-	static uint32 stagingSequence = 0;
-	const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial", generatedPath.c_str(),
+	// Stage below a short root-level namespace rather than beside the final
+	// loadscreen. The source and destination still share fs_savepath (and thus a
+	// filesystem), preserving atomic cross-directory rename while leaving enough
+	// path budget for legacy Windows stdio under deeply nested save roots. The
+	// 128-bit nonce is the complete collision identity; no predictable shared
+	// staging name or process-local sequence is needed.
+	const idStr stagingPath = va( "_oq4/%016llx%016llx.tmp",
 		static_cast<unsigned long long>( stagingNonce[0] ),
-		static_cast<unsigned long long>( stagingNonce[1] ), ++stagingSequence );
+		static_cast<unsigned long long>( stagingNonce[1] ) );
 	bool published = R_WriteTGA( stagingPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
 	if ( published ) {
 		published = fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str(), "fs_savepath" );

@@ -54,6 +54,97 @@ static bool R_ShouldSuppressMissingImageWarning( const char * imageName ) {
 	return false;
 }
 
+/*
+========================
+R_FindMissingQ4StockImageFallback
+
+Some retail effect materials name images that were not shipped in any Quake 4
+PK4. Keep the authored name as the image identity so a loose/mod replacement
+wins, but use the closest neutral stock shape when that primary lookup fails.
+========================
+*/
+static const char *R_FindMissingQ4StockImageFallback( const char *imageName ) {
+	if ( imageName == NULL || imageName[0] == '\0' ) {
+		return NULL;
+	}
+
+	idStr canonicalName = imageName;
+	canonicalName.BackSlashesToSlashes();
+	canonicalName.StripFileExtension();
+
+	struct q4StockImageFallback_t {
+		const char *missingName;
+		const char *replacementName;
+	};
+	static const q4StockImageFallback_t fallbacks[] = {
+		{ "gfx/effects/fluids_drips/brown_bubble",
+			"gfx/effects/fluids_drips/bubble_alpha.tga" },
+		{ "gfx/effects/fluids_drips/brown_bubble_half",
+			"gfx/effects/fluids_drips/bubble_half.tga" },
+		{ "gfx/effects/fluids_drips/brown_splash_line",
+			"gfx/effects/fluids_drips/splash_line.tga" }
+	};
+
+	for ( int i = 0; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] ) ); i++ ) {
+		if ( canonicalName.Icmp( fallbacks[i].missingName ) == 0 ) {
+			return fallbacks[i].replacementName;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+========================
+R_SelectMissingQ4StockImageSource
+
+Resolve only the known incomplete retail declarations. Use the image-program
+parser's load result rather than its timestamp: valid files inside retail PK4s
+can report timestamp zero. The authored name always wins when present so adding
+a loose/mod replacement immediately supersedes stock.
+========================
+*/
+static bool R_SelectMissingQ4StockImageSource( const char *imageName, idStr &selectedSourceName,
+	ID_TIME_T &selectedSourceTime, bool &stockFallbackSelected ) {
+	const char *stockFallbackName = R_FindMissingQ4StockImageFallback( imageName );
+	if ( stockFallbackName == NULL ) {
+		return false;
+	}
+
+	selectedSourceName = imageName;
+	selectedSourceTime = 0;
+	stockFallbackSelected = false;
+	if ( R_LoadImageProgram( imageName, NULL, NULL, NULL, &selectedSourceTime ) ) {
+		return true;
+	}
+
+	selectedSourceTime = 0;
+	if ( R_LoadImageProgram( stockFallbackName, NULL, NULL, NULL, &selectedSourceTime ) ) {
+		selectedSourceName = stockFallbackName;
+		stockFallbackSelected = true;
+	}
+	return true;
+}
+
+/*
+========================
+R_AddMissingQ4StockImageCacheIdentity
+
+The three logical retail names need separate authored and fallback cache paths.
+Besides preventing equal timestamps from aliasing the two sources, this keeps
+legacy unsalted .bimage files from being accepted for either selection.
+========================
+*/
+static void R_AddMissingQ4StockImageCacheIdentity( idStr &generatedName, bool stockFallbackSelected ) {
+	idStr extension;
+	generatedName.ExtractFileExtension( extension );
+	generatedName.StripFileExtension();
+	generatedName += stockFallbackSelected ? "#q4stockfallback" : "#q4authored";
+	if ( extension.Length() > 0 ) {
+		generatedName.SetFileExtension( extension );
+	}
+}
+
 static unsigned int R_GetImageDownsizeSignature( const char *name, textureUsage_t usage, bool allowDownSize );
 static void R_DownsizeLoadedImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height );
 static void R_DownsizeLoadedCubeImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size );
@@ -493,7 +584,6 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	if ( preferredDDSImage && cvarSystem->GetCVarBool( "image_showPrecompressedTextures" ) ) {
 		common->Printf( "Using DDS replacement %s for %s\n", preferredDDSName.c_str(), GetName() );
 	}
-	const char *loadSourceName = preferredDDSImage ? preferredDDSName.c_str() : GetName();
 	const bool selectedDDSImage = explicitDDSImage || preferredDDSImage;
 	const bool bypassGeneratedFile = explicitDDSImage || preferredDDSPrecompressed;
 	idStr selectedSourceName = GetName();
@@ -513,6 +603,18 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			}
 		}
 	}
+	bool q4StockImageCandidateResolved = false;
+	if ( !explicitDDSImage && !preferredDDSImage && cubeFiles == CF_2D ) {
+		bool stockFallbackSelected = false;
+		q4StockImageCandidateResolved = R_SelectMissingQ4StockImageSource( GetName(), selectedSourceName,
+			sourceFileTime, stockFallbackSelected );
+		if ( q4StockImageCandidateResolved ) {
+			sourceFileTimeKnown = true;
+			R_AddMissingQ4StockImageCacheIdentity( generatedName, stockFallbackSelected );
+		}
+	}
+	idStr selectedLoadSourceName = preferredDDSImage ? preferredDDSName : selectedSourceName;
+	const char *loadSourceName = selectedLoadSourceName.c_str();
 
 	idBinaryImage im( generatedName );
 	if ( bypassGeneratedFile ) {
@@ -557,27 +659,44 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			}
 		}
 	}
-	if ( binaryFileTime != FILE_NOT_FOUND_TIMESTAMP && !fileSystem->InProductionMode() ) {
-		if ( !sourceFileTimeKnown ) {
-			if ( cubeFiles != CF_2D ) {
-				R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
-			} else if ( preferredDDSImage ) {
-				sourceFileTime = preferredDDSFileTime;
-			} else {
-				R_LoadImageProgramForDeclaredUsage( GetName(), NULL, NULL, NULL, &sourceFileTime, usage );
+	const bool productionMode = fileSystem->InProductionMode();
+	auto acceptGeneratedImage = [&]( ID_TIME_T candidateFileTime ) -> bool {
+		if ( candidateFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
+			return false;
+		}
+		if ( !productionMode ) {
+			if ( !sourceFileTimeKnown ) {
+				if ( cubeFiles != CF_2D ) {
+					R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
+				} else if ( preferredDDSImage ) {
+					sourceFileTime = preferredDDSFileTime;
+				} else {
+					R_LoadImageProgramForDeclaredUsage( GetName(), NULL, NULL, NULL, &sourceFileTime, usage );
+				}
+				sourceFileTimeKnown = true;
 			}
-			sourceFileTimeKnown = true;
+			if ( im.GetFileHeader().sourceFileTime != sourceFileTime ) {
+				im.Clear();
+				return false;
+			}
 		}
-		if ( im.GetFileHeader().sourceFileTime != sourceFileTime ) {
+		if ( !R_BinaryImageHeaderSupportedByRenderer( im.GetFileHeader() ) ) {
 			im.Clear();
-			binaryFileTime = FILE_NOT_FOUND_TIMESTAMP;
+			return false;
 		}
-	}
+		if ( !productionMode && !R_GeneratedImageHeaderMatchesDerivedOpts( im.GetFileHeader(), opts, usage ) ) {
+			im.Clear();
+			return false;
+		}
+		return true;
+	};
 
-	const bool binaryImageAvailable = binaryFileTime != FILE_NOT_FOUND_TIMESTAMP && R_BinaryImageHeaderSupportedByRenderer( im.GetFileHeader() );
-	if ( ( fileSystem->InProductionMode() && binaryImageAvailable ) || ( binaryImageAvailable
-		&& R_GeneratedImageHeaderMatchesDerivedOpts( im.GetFileHeader(), opts, usage )
-		) ) {
+	bool generatedImageAccepted = acceptGeneratedImage( binaryFileTime );
+	if ( !generatedImageAccepted && !bypassGeneratedFile ) {
+		binaryFileTime = im.LoadFromCompactGeneratedFileUnchecked();
+		generatedImageAccepted = acceptGeneratedImage( binaryFileTime );
+	}
+	if ( generatedImageAccepted ) {
 		const bimageFile_t & header = im.GetFileHeader();
 		opts.width = header.width;
 		opts.height = header.height;
@@ -682,6 +801,16 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 					selectedSourceName = GetName();
 					sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
 					R_LoadImageProgramForDeclaredUsage( GetName(), &pic, &width, &height, &sourceFileTime, usage );
+				}
+				if ( pic == NULL && !q4StockImageCandidateResolved ) {
+					const char *stockFallbackName = R_FindMissingQ4StockImageFallback( GetName() );
+					if ( stockFallbackName != NULL ) {
+						sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
+						R_LoadImageProgramForDeclaredUsage( stockFallbackName, &pic, &width, &height, &sourceFileTime, usage );
+						if ( pic != NULL ) {
+							selectedSourceName = stockFallbackName;
+						}
+					}
 				}
 				sourceFileTimeKnown = true;
 
@@ -1623,7 +1752,11 @@ void idImage::Reload( bool force ) {
 				}
 			} else {
 				// get the current values
-				R_LoadImageProgram( imgName, NULL, NULL, NULL, &current );
+				bool stockFallbackSelected = false;
+				if ( !R_SelectMissingQ4StockImageSource( imgName, currentSourceName,
+						current, stockFallbackSelected ) ) {
+					R_LoadImageProgram( imgName, NULL, NULL, NULL, &current );
+				}
 			}
 		}
 		const bool sourceSelectionChanged = loadedSourceName.Length() == 0 || loadedSourceName.Icmp( currentSourceName ) != 0;

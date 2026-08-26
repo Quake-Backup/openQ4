@@ -432,6 +432,10 @@ static const char *rg_modernGLShadowProjectedMomentUniform = "uModernTranslucent
 static const char *rg_modernGLShadowPointMomentUniform = "uModernPointTranslucentShadowMoments[0]";
 
 static modernGLExecutorStats_t rg_modernGLExecutorStats;
+// False for the first modern side-pipeline pass after a render-world change.
+// The classic backend refreshes the newly scoped cache later in that frame;
+// until then, bind only complete placeholders and advertise no shadow atlas.
+static bool rg_modernGLShadowTextureBindingsCurrent = false;
 static idModernGLDrawPlan rg_modernGLDrawPlan;
 static idModernGLSubmitPlan rg_modernGLSubmitPlan;
 static renderBackendCaps_t rg_modernGLExecutorCaps;
@@ -5640,6 +5644,36 @@ static void R_ModernGLExecutor_BindShadowTextureSlot( const rendererShadowTextur
 	}
 }
 
+// The classic point path owns separate cubes per cached light while modern
+// GL exposes one samplerCube.  Advertise that binding only when this frame's
+// planner has matched a descriptor to the exact selected cache cube.
+static bool R_ModernGLExecutor_PointCubeDescriptorReady(
+		const rendererShadowTextureBindings_t &bindings ) {
+	if ( !bindings.pointAtlasReady ) {
+		return false;
+	}
+	const int descriptorCount = R_ModernShadowPlanner_NumDescriptors();
+	for ( int descriptorIndex = 0; descriptorIndex < descriptorCount; ++descriptorIndex ) {
+		const modernShadowLightDescriptor_t *descriptor =
+			R_ModernShadowPlanner_DescriptorByIndex( descriptorIndex );
+		if ( descriptor != NULL && descriptor->pointLight
+				&& descriptor->arb2PointCubeReady
+				&& bindings.pointAtlasLightIndex == descriptor->lightDefIndex
+				&& bindings.pointAtlasSignature
+					== descriptor->arb2PointCubeSignature
+				&& bindings.pointAtlasContentFrame
+					== descriptor->arb2PointCubeContentFrame
+				&& bindings.pointAtlas.width == descriptor->resolution
+				&& bindings.pointAtlas.height == descriptor->resolution
+				&& descriptor->modernReceiverSamplingReady
+				&& ( descriptor->policy == MODERN_SHADOW_POLICY_MAPPED
+					|| descriptor->policy == MODERN_SHADOW_POLICY_CACHE_REUSE ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernGLExecutorStats_t &stats ) {
 	stats.shadowTextureBaseUnit = MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS;
 	stats.shadowTextureRequiredUnits = MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT;
@@ -5651,6 +5685,30 @@ static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernG
 
 	rendererShadowTextureBindings_t bindings;
 	RB_ShadowMapTextureBindings( bindings );
+	const bool exactPointCubeReady =
+		R_ModernGLExecutor_PointCubeDescriptorReady( bindings );
+	if ( !rg_modernGLShadowTextureBindingsCurrent ) {
+		bindings.projectedAtlas.ready = false;
+		bindings.projectedPersistentAtlas.ready = false;
+		bindings.pointAtlas.ready = false;
+		bindings.projectedAtlasReady = false;
+		bindings.projectedPersistentAtlasReady = false;
+		bindings.pointAtlasReady = false;
+		for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+			bindings.projectedMoments[i].ready = false;
+			bindings.pointMoments[i].ready = false;
+		}
+		bindings.projectedMomentsReady = false;
+		bindings.pointMomentsReady = false;
+	}
+	if ( !exactPointCubeReady ) {
+		bindings.pointAtlas.ready = false;
+		bindings.pointAtlasReady = false;
+		for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+			bindings.pointMoments[i].ready = false;
+		}
+		bindings.pointMomentsReady = false;
+	}
 	// the persistent atlas is the texture the descriptor slot rects index
 	// into; the per-light alias only stands in when no atlas exists yet
 	if ( bindings.projectedPersistentAtlasReady ) {
@@ -7197,7 +7255,7 @@ static bool R_ModernGLExecutor_ModernVisibleShadowReceiversReady( const modernSh
 		if ( descriptor->policy == MODERN_SHADOW_POLICY_MAPPED || descriptor->policy == MODERN_SHADOW_POLICY_CACHE_REUSE ) {
 			if ( !descriptor->modernReceiverSamplingReady ) {
 				blockedLights++;
-			} else if ( descriptor->pointLight ) {
+			} else if ( descriptor->pointLight && descriptor->arb2PointCubeReady ) {
 				consumableLights++;
 				bool seen = false;
 				for ( int i = 0; i < distinctPointLightDefCount; ++i ) {
@@ -7214,7 +7272,7 @@ static bool R_ModernGLExecutor_ModernVisibleShadowReceiversReady( const modernSh
 					}
 					consumablePointLights++;
 				}
-			} else if ( descriptor->arb2AtlasSlotReady ) {
+			} else if ( !descriptor->pointLight && descriptor->arb2AtlasSlotReady ) {
 				consumableLights++;
 				consumableProjectedLights++;
 			} else {
@@ -7980,7 +8038,35 @@ void R_ModernGLExecutor_InvalidatePlans( void ) {
 	R_ModernGLExecutor_ResetClusterBlockBindingCache();
 }
 
+static const viewDef_t *R_ModernGLExecutor_ShadowCacheOwnerView(
+		const idScenePacketFrame &packetFrame ) {
+	const viewDef_t *fallback = NULL;
+	// Command streams place the root world view after any capture-backed
+	// subviews. Prefer that root, but retain a subview/render-demo fallback for
+	// streams which contain no ordinary main view.
+	for ( int i = packetFrame.NumScenes() - 1; i >= 0; --i ) {
+		const viewDef_t *viewDef = packetFrame.Scene( i ).viewDef;
+		if ( viewDef == NULL || viewDef->renderWorld == NULL
+				|| viewDef->viewEntitys == NULL ) {
+			continue;
+		}
+		if ( fallback == NULL ) {
+			fallback = viewDef;
+		}
+		if ( !viewDef->isSubview && viewDef->superView == NULL
+				&& viewDef->subviewSurface == NULL
+				&& viewDef->renderView.viewID >= 0 ) {
+			return viewDef;
+		}
+	}
+	return fallback;
+}
+
 void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, const idRenderGraph &graph ) {
+	const viewDef_t *shadowCacheOwnerView =
+		R_ModernGLExecutor_ShadowCacheOwnerView( packetFrame );
+	rg_modernGLShadowTextureBindingsCurrent = shadowCacheOwnerView != NULL
+		&& !RB_ShadowMapPrepareCacheView( shadowCacheOwnerView );
 	R_ModernGLExecutor_ResetPassOwnershipTable( "frame-start" );	// also clears the skip latch
 	const bool modernVisibleRequested = R_ModernGLExecutor_ModernVisibleRequested();
 	const bool specularProbeLeafRequested =

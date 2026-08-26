@@ -231,8 +231,10 @@ def test_texture_usage_and_lifecycle_contracts() -> None:
     require(declared_usage, "declaredUsage != TD_PBR_COLOR", "PBR color image-program usage preservation")
     require(declared_usage, "declaredUsage != TD_MATERIAL_DATA", "PBR data image-program usage preservation")
     load_image = function_body(image_load, "void idImage::ActuallyLoadImage(")
-    if load_image.count("R_LoadImageProgramForDeclaredUsage(") != 4:
+    if load_image.count("R_LoadImageProgramForDeclaredUsage(") != 5:
         raise AssertionError("every image-program decode in ActuallyLoadImage must preserve declared PBR usage")
+    if "R_LoadImageProgram(" in load_image:
+        raise AssertionError("ActuallyLoadImage must not bypass declared PBR usage preservation")
 
     require(image_header, "textureUsage_t GetUsage() const", "PBR image usage runtime introspection")
     material = read(ROOT / "src/renderer/Material.cpp")

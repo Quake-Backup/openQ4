@@ -350,11 +350,11 @@ idCVar r_shadowMapConservativeCasters( "r_shadowMapConservativeCasters", "1", CV
 idCVar r_shadowMapProjectedCSM( "r_shadowMapProjectedCSM", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow ordinary projected lights to use cascades when r_shadowMapCSM is enabled" );
 idCVar r_shadowMapDepthCompare( "r_shadowMapDepthCompare", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use hardware comparison sampling for projected depth shadow maps when supported; PCSS-lite (r_shadowMapFilterMode 2) implies the manual path" );
 idCVar r_shadowMapTexelBiasScale( "r_shadowMapTexelBiasScale", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "texel-aware receiver bias scale for projected and point shadow maps", 0.0f, 8.0f );
-idCVar r_shadowMapNormalOffsetScale( "r_shadowMapNormalOffsetScale", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "normal-offset shadow bias in shadow texels: pushes the receiver sample point along the geometric normal on sloped surfaces, fixing self-shadow acne without detaching contact shadows", 0.0f, 8.0f );
-idCVar r_shadowMapCasterCulling( "r_shadowMapCasterCulling", "2", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shadow caster face culling: 0 = two-sided, 1 = store light-facing faces, 2 = store back faces (fewer acne artifacts, slight detachment on thin geometry); material twoSided/backSided is always honored", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
-idCVar r_shadowMapReceiverPlaneBias( "r_shadowMapReceiverPlaneBias", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "add derivative receiver-plane depth bias for wider projected shadow filters" );
-idCVar r_shadowMapFilterTaps( "r_shadowMapFilterTaps", "13", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "projected-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
-idCVar r_shadowMapPointFilterTaps( "r_shadowMapPointFilterTaps", "13", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "point-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
+idCVar r_shadowMapNormalOffsetScale( "r_shadowMapNormalOffsetScale", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "normal-offset shadow bias in shadow texels; reduces slope acne but excessive values can move contact edges (point-light use is bounded by r_shadowMapPointMaxWorldBias)", 0.0f, 8.0f );
+idCVar r_shadowMapCasterCulling( "r_shadowMapCasterCulling", "2", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shadow caster face culling: 0 = always two-sided, 1 = force material-oriented near faces, 2 = automatic (near faces for sealed hulls outside the light, two-sided for open/uncertain/enclosing geometry)", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+idCVar r_shadowMapReceiverPlaneBias( "r_shadowMapReceiverPlaneBias", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable the experimental derivative receiver-plane depth-bias approximation for projected shadow filters" );
+idCVar r_shadowMapFilterTaps( "r_shadowMapFilterTaps", "9", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "projected-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
+idCVar r_shadowMapPointFilterTaps( "r_shadowMapPointFilterTaps", "9", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "point-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
 idCVar r_shadowMapFilterMode( "r_shadowMapFilterMode", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "projected-light shadow filter mode: 0 = fixed PCF, 1 = stable rotated Poisson, 2 = PCSS-lite when raw depth is available", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_shadowMapPointFilterMode( "r_shadowMapPointFilterMode", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "point-light shadow filter mode: 0 = fixed PCF, 1 = stable rotated Poisson", 0, 1, idCmdSystem::ArgCompletion_Integer<0,1> );
 idCVar r_shadowMapDistantFilterScale( "r_shadowMapDistantFilterScale", "0.35", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "scale projected PCF and PCSS radii for parallel/global sky lights whose shadow texels cover more world space", 0.0f, 1.0f );
@@ -599,8 +599,9 @@ idCVar r_shadowMapBias( "r_shadowMapBias", "0.00016", CVAR_RENDERER | CVAR_ARCHI
 idCVar r_shadowMapNormalBias( "r_shadowMapNormalBias", "0.00075", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "geometric normal bias added on sloped projected-light receivers", 0.0f, 0.05f );
 idCVar r_shadowMapPointBias( "r_shadowMapPointBias", "0.00010", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "constant receiver depth bias for point-light shadow maps", 0.0f, 0.05f );
 idCVar r_shadowMapPointNormalBias( "r_shadowMapPointNormalBias", "0.0010", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "geometric normal bias added on sloped point-light receivers", 0.0f, 0.05f );
-idCVar r_shadowMapFilterRadius( "r_shadowMapFilterRadius", "2.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "projected-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
-idCVar r_shadowMapPointFilterRadius( "r_shadowMapPointFilterRadius", "2.5", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "point-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
+idCVar r_shadowMapPointMaxWorldBias( "r_shadowMapPointMaxWorldBias", "4.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "maximum combined point-shadow receiver depth bias and normal offset at the padded far envelope, in world units; 0 disables the cap", 0.0f, 64.0f );
+idCVar r_shadowMapFilterRadius( "r_shadowMapFilterRadius", "0.75", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "projected-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
+idCVar r_shadowMapPointFilterRadius( "r_shadowMapPointFilterRadius", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "point-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
 idCVar r_shadowMapProjectionPad( "r_shadowMapProjectionPad", "0.15", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "normalized padding applied around projected-light shadow-map coverage", 0.0f, 1.0f );
 idCVar r_shadowMapCascadeCount( "r_shadowMapCascadeCount", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of projected-light cascades when r_shadowMapCSM is enabled", 1, 4, idCmdSystem::ArgCompletion_Integer<1,4> );
 idCVar r_shadowMapCascadeDistance( "r_shadowMapCascadeDistance", "1536", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "camera-space distance covered by the cropped projected-light cascades", 64.0f, 8192.0f );
@@ -614,8 +615,9 @@ idCVar r_shadowMapDebugMode( "r_shadowMapDebugMode", "0", CVAR_RENDERER | CVAR_I
 	0, SHADOWMAP_DEBUGMODE_COUNT - 1, idCmdSystem::ArgCompletion_Integer<0, SHADOWMAP_DEBUGMODE_COUNT - 1> );
 idCVar r_shadowMapCascadeStabilize( "r_shadowMapCascadeStabilize", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "snap projected-light cascade bounds to texels to reduce shimmering" );
 idCVar r_shadowMapPointFarScale( "r_shadowMapPointFarScale", "1.25", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "padding multiplier applied to point-light shadow-map range", 1.0f, 4.0f );
-idCVar r_shadowMapPolygonFactor( "r_shadowMapPolygonFactor", "0.75", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "slope-scale depth bias used when rendering shadow-map casters", 0.0f, 16.0f );
+idCVar r_shadowMapPolygonFactor( "r_shadowMapPolygonFactor", "0.25", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "slope-scale depth bias used when rendering shadow-map casters", 0.0f, 16.0f );
 idCVar r_shadowMapPolygonOffset( "r_shadowMapPolygonOffset", "0.5", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "constant depth bias used when rendering shadow-map casters", 0.0f, 64.0f );
+static idCVar r_shadowMapContactQualityMigrated( "r_shadowMapContactQualityMigrated", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "one-time migration flag for legacy broad shadow filtering defaults" );
 idCVar r_frontBuffer( "r_frontBuffer", "0", CVAR_RENDERER | CVAR_BOOL, "draw to front buffer for debugging" );
 idCVar r_skipSubviews( "r_skipSubviews", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = don't render any gui elements on surfaces" );
 idCVar r_skipParticles( "r_skipParticles", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = skip all particle systems", 0, 1, idCmdSystem::ArgCompletion_Integer<0,1> );
@@ -4770,6 +4772,41 @@ void R_InitCvars( void ) {
 }
 
 /*
+==================
+R_MigrateLegacyShadowMapContactQuality
+
+Renderer cvars are registered by Init before the archived config and autoexec
+files run. Perform value-based migrations at device startup after those files
+and the initial StartupVariable pass, or an existing profile would be marked
+migrated while the compiled defaults were still visible. Common's later
+AddStartupCommands replay intentionally leaves explicit command-line +set
+values authoritative over the migrated archive.
+==================
+*/
+static void R_MigrateLegacyShadowMapContactQuality( void ) {
+	if ( !r_shadowMapContactQualityMigrated.GetBool() ) {
+		// Preserve customized profiles. Only replace the complete legacy tuple,
+		// whose wide filters and caster slope offset blurred contact shadows and
+		// amplified the old far-shell detachment.
+		const bool legacyShadowQualityDefaults =
+			idMath::Fabs( r_shadowMapFilterRadius.GetFloat() - 2.0f ) < 0.0001f &&
+			idMath::Fabs( r_shadowMapPointFilterRadius.GetFloat() - 2.5f ) < 0.0001f &&
+			r_shadowMapFilterTaps.GetInteger() == 13 &&
+			r_shadowMapPointFilterTaps.GetInteger() == 13 &&
+			idMath::Fabs( r_shadowMapPolygonFactor.GetFloat() - 0.75f ) < 0.0001f;
+		if ( legacyShadowQualityDefaults ) {
+			common->Printf( "Migrating legacy shadow-map defaults: restoring contact detail and balanced filtering\n" );
+			r_shadowMapFilterRadius.SetFloat( 0.75f );
+			r_shadowMapPointFilterRadius.SetFloat( 1.0f );
+			r_shadowMapFilterTaps.SetInteger( 9 );
+			r_shadowMapPointFilterTaps.SetInteger( 9 );
+			r_shadowMapPolygonFactor.SetFloat( 0.25f );
+		}
+		r_shadowMapContactQualityMigrated.SetBool( true );
+	}
+}
+
+/*
 =================
 R_InitCommands
 =================
@@ -5100,6 +5137,8 @@ idRenderSystemLocal::InitOpenGL
 ========================
 */
 void idRenderSystemLocal::InitOpenGL( void ) {
+	R_MigrateLegacyShadowMapContactQuality();
+
 	// if the device isn't started, start it now
 	if ( !glConfig.isInitialized ) {
 #ifdef OPENQ4_RENDERER_VK_MODULE

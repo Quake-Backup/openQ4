@@ -627,22 +627,6 @@ static float R_ModernClusteredLighting_LightRadius( const viewLight_t *vLight ) 
 	return idMath::ClampFloat( 1.0f, 32768.0f, radius );
 }
 
-static float R_ModernClusteredLighting_PointShadowFar( const viewLight_t *vLight ) {
-	if ( vLight == NULL ) {
-		return 1.0f;
-	}
-
-	idVec3 adjustedRadius = vLight->lightRadius;
-	if ( vLight->lightDef != NULL ) {
-		const renderLight_t &parms = vLight->lightDef->parms;
-		adjustedRadius[0] = parms.lightRadius[0] + idMath::Fabs( parms.lightCenter[0] );
-		adjustedRadius[1] = parms.lightRadius[1] + idMath::Fabs( parms.lightCenter[1] );
-		adjustedRadius[2] = parms.lightRadius[2] + idMath::Fabs( parms.lightCenter[2] );
-	}
-
-	return Max( adjustedRadius.Length() * r_shadowMapPointFarScale.GetFloat(), 1.0f );
-}
-
 static rendererModernLightType_t R_ModernClusteredLighting_ClassifyLight( const viewLight_t *vLight ) {
 	if ( vLight == NULL ) {
 		return RENDERER_MODERN_LIGHT_SPECIAL;
@@ -767,7 +751,7 @@ static int R_ModernClusteredLighting_ShadowDescriptorFlags( const modernShadowLi
 	if ( shadow.modernReceiverSamplingReady ) {
 		flags |= RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_SAMPLING_READY;
 	}
-	if ( shadow.arb2AtlasSlotReady ) {
+	if ( shadow.arb2AtlasSlotReady || shadow.arb2PointCubeReady ) {
 		flags |= RENDERER_MODERN_SHADOW_DESCRIPTOR_FLAG_ATLAS_SLOT;
 	}
 	if ( shadow.stableCascadeReady ) {
@@ -846,17 +830,18 @@ static void R_ModernClusteredLighting_CopyPlannerShadowDescriptor( rendererModer
 	dst.projectedSkippedSampleCount = src.projectedSkippedSampleCount;
 	dst.flags = R_ModernClusteredLighting_ShadowDescriptorFlags( src );
 	dst.updateFrame = src.updateFrame;
-	dst.atlasContentFrame = src.arb2AtlasContentFrame;
+	dst.atlasContentFrame = src.pointLight
+		? src.arb2PointCubeContentFrame : src.arb2AtlasContentFrame;
 	dst.atlasCellX = src.arb2AtlasCellX;
 	dst.atlasCellY = src.arb2AtlasCellY;
 	dst.atlasCellSpan = src.arb2AtlasCellSpan;
-	dst.atlasSlotValid = src.arb2AtlasSlotReady;
+	dst.atlasSlotValid = src.arb2AtlasSlotReady || src.arb2PointCubeReady;
 	memcpy( dst.shadowMatrix, src.shadowMatrix, sizeof( dst.shadowMatrix ) );
 	for ( int cascadeIndex = 0; cascadeIndex < RENDERER_MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES; ++cascadeIndex ) {
 		R_ModernClusteredLighting_SetIdentityMatrix( dst.viewShadowMatrix[cascadeIndex] );
 	}
 	if ( src.pointLight ) {
-		dst.projection[0] = R_ModernClusteredLighting_PointShadowFar( src.viewLight );
+		dst.projection[0] = R_ShadowMapPointFarDistance( src.viewLight );
 		dst.projection[1] = 2.0f / static_cast<float>( Max( 1, src.resolution ) );
 		dst.projection[2] = static_cast<float>( src.depthFormat );
 		dst.projection[3] = static_cast<float>( src.compareMode );
@@ -971,13 +956,28 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 	record.shadowFallbackReason = shadow->fallbackReason;
 	stats.shadowDescriptorCount = Max( stats.shadowDescriptorCount, shadow->descriptorIndex + 1 );
 
-	// per-light gating (5c): a projected light is GPU-consumable only when
-	// its descriptor references a live persistent-atlas cell; a mapped light
-	// without one is blocked individually instead of poisoning the frame
+	// Per-light physical-resource gating (5c): projected lights require a live
+	// persistent-atlas cell and point lights require the exact cache cube which
+	// is currently bound. Missing provenance blocks only that light.
+	const bool mappedOrReused = shadow->policy == MODERN_SHADOW_POLICY_MAPPED
+		|| shadow->policy == MODERN_SHADOW_POLICY_CACHE_REUSE;
+	bool projectedSlotReady = shadow->arb2AtlasSlotReady;
+	if ( !shadow->pointLight && mappedOrReused
+			&& shadow->modernReceiverSamplingReady && projectedSlotReady ) {
+		projectedSlotReady = RB_ShadowMapProjectedAtlasSlotMarkUsed(
+			shadow->lightDefIndex, shadow->arb2AtlasSignature,
+			shadow->arb2AtlasStorageGeneration,
+			shadow->arb2AtlasCellX, shadow->arb2AtlasCellY,
+			shadow->arb2AtlasCellSpan );
+	}
 	const bool projectedSlotBlocked = !shadow->pointLight
-		&& ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED || shadow->policy == MODERN_SHADOW_POLICY_CACHE_REUSE )
+		&& mappedOrReused
 		&& shadow->modernReceiverSamplingReady
-		&& !shadow->arb2AtlasSlotReady;
+		&& !projectedSlotReady;
+	const bool pointCubeBlocked = shadow->pointLight
+		&& mappedOrReused
+		&& shadow->modernReceiverSamplingReady
+		&& !shadow->arb2PointCubeReady;
 
 	bool mappedShadowForModernReceiver = false;
 	if ( shadow->policy == MODERN_SHADOW_POLICY_MAPPED && !shadow->modernReceiverSamplingReady ) {
@@ -987,7 +987,7 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 		record.shadowPolicy = MODERN_SHADOW_POLICY_NONE;
 		record.shadowFallbackReason = MODERN_SHADOW_FALLBACK_RECEIVER_SAMPLING_UNAVAILABLE;
 		stats.shadowReceiverBlockedLights++;
-	} else if ( projectedSlotBlocked ) {
+	} else if ( projectedSlotBlocked || pointCubeBlocked ) {
 		record.shadowDescriptorIndex = -1;
 		record.shadowPolicy = MODERN_SHADOW_POLICY_NONE;
 		record.shadowFallbackReason = MODERN_SHADOW_FALLBACK_RESOURCE_UNAVAILABLE;
@@ -1014,10 +1014,8 @@ static void R_ModernClusteredLighting_ApplyShadowDescriptor( modernClusterLightR
 		stats.shadowSkippedLights++;
 	}
 
-	if ( mappedShadowForModernReceiver && !shadow->pointLight && shadow->arb2AtlasSlotReady ) {
-		// the atlas cell this light record will present must not idle-expire
-		// under the GPU; this is the closest CPU point to actual consumption
-		RB_ShadowMapProjectedAtlasSlotMarkUsed( shadow->lightDefIndex );
+	if ( mappedShadowForModernReceiver && shadow->pointLight && shadow->arb2PointCubeReady ) {
+		RB_ShadowMapPointCubeMarkUsed( shadow->lightDefIndex );
 	}
 
 	if ( mappedShadowForModernReceiver && shadow->mapType == MODERN_SHADOW_MAP_CASCADE ) {
@@ -3673,6 +3671,7 @@ bool R_ModernClusteredLighting_FrameLossless( void ) {
 		&& rg_clusteredLightingStats.overflowLights == 0
 		&& rg_clusteredLightingStats.overflowReferences == 0
 		&& rg_clusteredLightingStats.unsampledSpillReferences == 0
+		&& rg_clusteredLightingStats.shadowAtlasSlotBlockedLights == 0
 		&& rg_clusteredLightingStats.uploadedLights == rg_clusteredLightingStats.lightCount
 		&& rg_clusteredLightingStats.uploadedReferences == rg_clusteredLightingStats.lightReferences
 		&& rg_clusteredLightingStats.uploadedShadowDescriptors == rg_clusteredLightingStats.shadowDescriptorCount;

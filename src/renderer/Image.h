@@ -482,6 +482,8 @@ IMAGEPROGRAM
 ====================================================================
 */
 
-void R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, textureUsage_t* usage = NULL);
+// Returns the parser's load result. Direct-file programs return false when the
+// source is missing; a valid PK4-backed source may still have timestamp zero.
+bool R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, textureUsage_t* usage = NULL);
 const char* R_ParsePastImageProgram(idLexer& src);
 

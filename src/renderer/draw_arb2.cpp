@@ -38,6 +38,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ModernShadowPlanner.h"
 #include "ModernClusteredLighting.h"
 #include "ClassicInteractionDomain.h"
+#include "RendererMetrics.h"
 
 #include "cg_explicit.h"
 #include <ctype.h>
@@ -2303,6 +2304,7 @@ typedef struct {
 	int							cascadeCount;
 	int							lastUsedFrame;
 	int							lastUpdatedFrame;
+	std::uint64_t				atlasStorageGeneration;
 	projectedShadowMapState_t	state;
 	// tile placement inside the shared projected atlas: cell coordinates in
 	// the atlas grid and the block span (1 for single lights, atlasDiv for
@@ -2321,11 +2323,19 @@ typedef struct {
 	int							size;
 	bool						highPrecision;
 	bool						depthCompare;
+	// Receiver projection identity used when this cube was rendered.  Budget
+	// stale-reuse may intentionally ignore the full cache signature, but it
+	// must never decode an old cube from a moved/rescaled point light with the
+	// current light's direction vectors or far plane.
+	float						lightOrigin[3];
+	float						farDistance;
 	int							lastUsedFrame;
 	int							lastUpdatedFrame;
 	idImage *					colorImage;
 	idImage *					depthImage;
 	idRenderTexture *			renderTexture;
+	std::uint64_t				colorStorageGeneration;
+	std::uint64_t				depthStorageGeneration;
 } pointShadowMapCacheEntry_t;
 
 // Shared-domain ownership prepares every mapped pass before the first write to
@@ -2369,6 +2379,9 @@ static sharedInteractionProjectedScratch_t
 static sharedInteractionPointScratch_t
 	g_sharedInteractionPointScratch[SHADOWMAP_CACHE_MAX_SLOTS];
 static shadowMapLightHistory_t			g_shadowMapLightHistory[SHADOWMAP_LIGHT_HISTORY_SLOTS];
+static const idRenderWorldLocal *		g_shadowMapCacheRenderWorld = NULL;
+static unsigned int					g_shadowMapCacheMapFileCRC = 0;
+static int							g_shadowMapCacheMapNameHash = 0;
 static projectedShadowMapCacheEntry_t *	g_activeProjectedShadowMapCache = NULL;
 static pointShadowMapCacheEntry_t *		g_activePointShadowMapCache = NULL;
 static const int						SHADOWMAP_GPU_TIMER_QUERY_SLOTS = 64;
@@ -2385,6 +2398,13 @@ typedef enum {
 	SHADOWMAP_GLOBAL_MAPPED_POINT
 } shadowMapGlobalMapped_t;
 static shadowMapGlobalMapped_t			g_shadowMapGlobalPassMapped = SHADOWMAP_GLOBAL_MAPPED_NONE;
+static bool						g_shadowMapGlobalPassHybrid = false;
+// A translucent-only GLOBAL ownership prepares the resource in the opaque
+// light walk but cannot claim a mapped result until its ordered receiver draw
+// actually succeeds. Keep that result pending so diagnostics match the final
+// mapped-or-stencil presentation rather than the resource preparation alone.
+static bool						g_shadowMapDeferredGlobalReportPending = false;
+static shadowMapPassResult_t			g_shadowMapDeferredGlobalPassResult = SHADOWMAP_PASS_RESULT_MAPPED;
 
 // Importance-ordered update admissions (M4): when r_shadowMapMaxUpdatesPerView
 // constrains the frame, the budget goes to the most important stale lights
@@ -2759,8 +2779,64 @@ static void RB_ShadowMapFillTextureBinding( rendererShadowTextureBinding_t &bind
 	}
 }
 
+// A point cube is not a shared atlas: the modern GL shader has one
+// samplerCube and must see the exact cache image which the classic backend
+// most recently selected.  Allocation alone is not evidence that the image
+// contains current, globally complete shadow data.
+static bool RB_ShadowMapActivePointCacheContentReady( void ) {
+	pointShadowMapCacheEntry_t *entry = g_activePointShadowMapCache;
+	if ( entry == NULL || !entry->valid ) {
+		return false;
+	}
+
+	int slotIndex = -1;
+	for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; ++i ) {
+		if ( entry == &g_pointShadowMapCache[i] ) {
+			slotIndex = i;
+			break;
+		}
+	}
+	const int slotLimit = idMath::ClampInt( 0, SHADOWMAP_CACHE_MAX_SLOTS, r_shadowMapPointCacheSize.GetInteger() );
+	if ( slotIndex < 0 || slotIndex >= slotLimit
+			|| entry->passKind != static_cast<int>( SHADOWMAP_PASS_GLOBAL )
+			|| entry->lastUpdatedFrame < 0 || entry->lastUpdatedFrame > tr.frameCount
+			|| entry->size != RB_ShadowMapPointSizeValue()
+			|| entry->highPrecision != RB_PointShadowMapHighPrecisionEnabled()
+			|| entry->depthCompare != RB_PointShadowMapDepthCompareEnabled()
+			|| !( entry->farDistance > 0.0f && entry->farDistance < 1.0e30f )
+			|| FLOAT_IS_NAN( entry->lightOrigin[0] )
+			|| FLOAT_IS_NAN( entry->lightOrigin[1] )
+			|| FLOAT_IS_NAN( entry->lightOrigin[2] )
+			|| idMath::Fabs( entry->lightOrigin[0] ) >= 1.0e30f
+			|| idMath::Fabs( entry->lightOrigin[1] ) >= 1.0e30f
+			|| idMath::Fabs( entry->lightOrigin[2] ) >= 1.0e30f
+			|| entry->colorImage == NULL || entry->depthImage == NULL || entry->renderTexture == NULL
+			|| entry->colorImage != g_pointShadowMapColorImage
+			|| entry->depthImage != g_pointShadowMapDepthImage
+			|| entry->renderTexture != g_pointShadowMapRenderTexture
+			|| entry->colorStorageGeneration == 0
+			|| entry->depthStorageGeneration == 0
+			|| entry->colorImage->GetStorageGeneration() != entry->colorStorageGeneration
+			|| entry->depthImage->GetStorageGeneration() != entry->depthStorageGeneration
+			|| entry->colorImage->IsDefaulted() || entry->depthImage->IsDefaulted()
+			|| entry->colorImage->GetOpts().textureType != TT_CUBIC
+			|| entry->depthImage->GetOpts().textureType != TT_CUBIC
+			|| entry->colorImage->GetOpts().format
+				!= ( entry->highPrecision ? FMT_RGBA16F : FMT_RGBA8 )
+			|| entry->depthImage->GetOpts().format != FMT_DEPTH
+			|| entry->renderTexture->GetWidth() != entry->size
+			|| entry->renderTexture->GetHeight() != entry->size ) {
+		return false;
+	}
+
+	return entry->colorImage->IsLoaded() && entry->colorImage->GetDeviceHandle() != 0
+		&& entry->depthImage->IsLoaded() && entry->depthImage->GetDeviceHandle() != 0;
+}
+
 bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings ) {
 	memset( &bindings, 0, sizeof( bindings ) );
+	bindings.pointAtlasLightIndex = -1;
+	bindings.pointAtlasContentFrame = -1;
 	bindings.projectedDepthCompare = RB_ShadowMapDepthCompareEnabled();
 	bindings.pointDepthCompare = RB_PointShadowMapDepthCompareEnabled();
 	bindings.pointHighPrecision = RB_PointShadowMapHighPrecisionEnabled();
@@ -2791,7 +2867,11 @@ bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings ) {
 		g_shadowMapAtlasDepthImage != NULL && persistentWidth > 0 && persistentHeight > 0 );
 	bindings.projectedPersistentAtlasReady = bindings.projectedPersistentAtlas.ready;
 
-	idImage *pointAtlasImage = ( bindings.pointDepthCompare && g_pointShadowMapDepthImage != NULL ) ? g_pointShadowMapDepthImage : g_pointShadowMapColorImage;
+	// The modern GL programs use a regular samplerCube and decode the manual
+	// color-depth encoding. Keep that binding independent of the classic
+	// receiver's hardware-compare choice; sampling the depth cube as packed RG
+	// corrupts the decoded value when r_shadowMapPointDepthCompare is enabled.
+	idImage *pointAtlasImage = g_pointShadowMapColorImage;
 	const int pointWidth = g_pointShadowMapRenderTexture != NULL ? g_pointShadowMapRenderTexture->GetWidth() : ( pointAtlasImage != NULL ? pointAtlasImage->GetUploadWidth() : 0 );
 	const int pointHeight = g_pointShadowMapRenderTexture != NULL ? g_pointShadowMapRenderTexture->GetHeight() : ( pointAtlasImage != NULL ? pointAtlasImage->GetUploadHeight() : 0 );
 	RB_ShadowMapFillTextureBinding(
@@ -2800,8 +2880,13 @@ bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings ) {
 		GL_TEXTURE_CUBE_MAP,
 		pointWidth,
 		pointHeight,
-		pointAtlasImage != NULL && pointWidth > 0 && pointHeight > 0 );
+		RB_ShadowMapActivePointCacheContentReady() && pointWidth > 0 && pointHeight > 0 );
 	bindings.pointAtlasReady = bindings.pointAtlas.ready;
+	if ( bindings.pointAtlasReady ) {
+		bindings.pointAtlasLightIndex = g_activePointShadowMapCache->lightIndex;
+		bindings.pointAtlasSignature = g_activePointShadowMapCache->signature;
+		bindings.pointAtlasContentFrame = g_activePointShadowMapCache->lastUpdatedFrame;
+	}
 
 	const bool projectedMomentsEnabled = RB_ProjectedTranslucentShadowEnabled();
 	const bool pointMomentsEnabled = RB_PointTranslucentShadowEnabled();
@@ -2913,23 +2998,35 @@ bool RB_ShadowMapResourcesKnownGood( bool pointLight ) {
 
 // Shadow casters render in light space, where the mirrored-view logic in
 // GL_Cull does not apply. idTech4 winding makes the engine-front (visible)
-// side of a front-sided material the GL_BACK face, so:
-//   r_shadowMapCasterCulling 0: two-sided (no culling) - full coverage, most acne
-//   r_shadowMapCasterCulling 1: store light-facing engine-front faces (cull GL_FRONT)
-//   r_shadowMapCasterCulling 2: store engine-back faces (cull GL_BACK, the
-//     long-standing default here) - hides acne on closed meshes at the cost
-//     of slight detachment on thin geometry
-// Material twoSided/backSided cull types are always honored per surface;
-// previously every caster was drawn one-sided regardless of material, which
-// dropped foliage/grate/curtain casters from the map entirely.
+// side of a front-sided material the GL_BACK face, so culling GL_FRONT stores
+// the light-facing, near shell. The automatic mode only does that for sealed
+// hulls. Open, non-manifold, or otherwise uncertain geometry is rendered
+// two-sided: either authored winding can then contribute and props cannot
+// silently disappear from the depth map. Storing the far shell is deliberately
+// avoided because mesh thickness turns into contact-shadow detachment.
+//   r_shadowMapCasterCulling 0: always two-sided
+//   r_shadowMapCasterCulling 1: always store the light-facing near shell
+//   r_shadowMapCasterCulling 2: automatic (near shell for perfect hulls whose
+//     bounds do not contain the light and whose transform preserves winding,
+//     two-sided otherwise)
+// The authored material orientation is honored whenever one-sided culling is
+// active. Mode 0 and AUTO's conservative fallbacks intentionally override it.
 static int g_shadowMapCasterCullApplied = -1; // 0 = culling disabled, else the GLenum face
 
-static void RB_ShadowMapApplyCasterCull( const idMaterial *shader ) {
+static void RB_ShadowMapApplyCasterCull( const idMaterial *shader,
+		const srfTriangles_t *casterGeo = NULL,
+		const float *modelMatrix = NULL ) {
 	const int mode = idMath::ClampInt( 0, 2, r_shadowMapCasterCulling.GetInteger() );
 	const int materialCull = ( shader != NULL ) ? shader->GetCullType() : CT_FRONT_SIDED;
+	const bool automaticTwoSided = mode == 2
+		&& ( casterGeo == NULL || !casterGeo->perfectHull
+			|| R_ShadowMapCasterTransformNeedsTwoSided( modelMatrix )
+			|| R_ShadowMapLightOriginInsideCasterBounds( backEnd.vLight,
+				modelMatrix, casterGeo->bounds[0].ToFloatPtr(),
+				casterGeo->bounds[1].ToFloatPtr() ) );
 	int desired = 0;
-	if ( mode != 0 && materialCull != CT_TWO_SIDED ) {
-		GLenum cullFace = ( mode == 1 ) ? GL_FRONT : GL_BACK;
+	if ( mode != 0 && !automaticTwoSided && materialCull != CT_TWO_SIDED ) {
+		GLenum cullFace = GL_FRONT;
 		if ( materialCull == CT_BACK_SIDED ) {
 			cullFace = ( cullFace == GL_FRONT ) ? GL_BACK : GL_FRONT;
 		}
@@ -3138,6 +3235,8 @@ typedef struct shadowMapTimedPhase_s {
 	idTimer cpuTimer;
 	idTimer gpuSyncTimer;
 	shadowMapGpuTimerQuery_t *gpuTimerQuery;
+	rendererGpuTimerSlot_t parentGpuTimerSlot;
+	bool parentGpuTimerPaused;
 	bool active;
 } shadowMapTimedPhase_t;
 
@@ -3146,13 +3245,34 @@ static void RB_ShadowMapBeginTimedPhase( shadowMapTimedPhase_t &timedPhase, cons
 	timedPhase.cpuTimer.Clear();
 	timedPhase.gpuSyncTimer.Clear();
 	timedPhase.gpuTimerQuery = NULL;
+	timedPhase.parentGpuTimerSlot = RENDERER_GPU_TIMER_COUNT;
+	timedPhase.parentGpuTimerPaused = false;
 	timedPhase.active = true;
 	timedPhase.cpuTimer.Start();
 	if ( r_shadowMapGpuSyncTimings.GetBool() ) {
 		glFinish();
 		timedPhase.gpuSyncTimer.Start();
 	}
-	timedPhase.gpuTimerQuery = RB_ShadowMapBeginGpuTimerQuery( vLight, passKind, phase );
+	// GL_TIME_ELAPSED queries cannot be nested. Renderer metrics normally owns
+	// the outer DRAW3D query while shadow-map phase metrics need a finer-grained
+	// query, so split the parent interval around the shadow query.
+	if ( RB_ShadowMapGpuTimerQueriesAvailable() ) {
+		for ( int slot = 0; slot < RENDERER_GPU_TIMER_COUNT; slot++ ) {
+			const rendererGpuTimerSlot_t timerSlot =
+				static_cast<rendererGpuTimerSlot_t>( slot );
+			if ( R_RendererMetrics_PauseGpuTimer( timerSlot ) ) {
+				timedPhase.parentGpuTimerSlot = timerSlot;
+				timedPhase.parentGpuTimerPaused = true;
+				break;
+			}
+		}
+		timedPhase.gpuTimerQuery =
+			RB_ShadowMapBeginGpuTimerQuery( vLight, passKind, phase );
+		if ( timedPhase.gpuTimerQuery == NULL && timedPhase.parentGpuTimerPaused ) {
+			R_RendererMetrics_ResumeGpuTimer( timedPhase.parentGpuTimerSlot, true );
+			timedPhase.parentGpuTimerPaused = false;
+		}
+	}
 }
 
 static float RB_ShadowMapEndTimedPhase( shadowMapTimedPhase_t &timedPhase ) {
@@ -3161,6 +3281,10 @@ static float RB_ShadowMapEndTimedPhase( shadowMapTimedPhase_t &timedPhase ) {
 	}
 
 	RB_ShadowMapEndGpuTimerQuery( timedPhase.gpuTimerQuery );
+	if ( timedPhase.parentGpuTimerPaused ) {
+		R_RendererMetrics_ResumeGpuTimer( timedPhase.parentGpuTimerSlot, true );
+		timedPhase.parentGpuTimerPaused = false;
+	}
 	if ( r_shadowMapGpuSyncTimings.GetBool() ) {
 		glFinish();
 		timedPhase.gpuSyncTimer.Stop();
@@ -3276,13 +3400,16 @@ bool RB_ShadowMapBuildArb2ParityState( const viewLight_t *vLight, const viewDef_
 	return true;
 }
 
-static void RB_ShadowMapSelectScratchResources( void ) {
+static void RB_ShadowMapSelectProjectedScratchResources( void ) {
 	g_activeProjectedShadowMapCache = NULL;
-	g_activePointShadowMapCache = NULL;
 	g_shadowMapDepthImage = g_shadowMapScratchDepthImage;
 	g_shadowMapRenderTexture = g_shadowMapScratchRenderTexture;
 	g_shadowMapActiveSlotOriginX = 0;
 	g_shadowMapActiveSlotOriginY = 0;
+}
+
+static void RB_ShadowMapSelectPointScratchResources( void ) {
+	g_activePointShadowMapCache = NULL;
 	g_pointShadowMapColorImage = g_pointShadowMapScratchColorImage;
 	g_pointShadowMapDepthImage = g_pointShadowMapScratchDepthImage;
 	g_pointShadowMapRenderTexture = g_pointShadowMapScratchRenderTexture;
@@ -3302,9 +3429,19 @@ static int RB_ShadowMapHashFloat( int hash, const float value ) {
 	return RB_ShadowMapHashInt( hash, idMath::Ftoi( value * 1024.0f ) );
 }
 
+static int RB_ShadowMapMapNameHash( const viewDef_t *viewDef ) {
+	return ( viewDef != NULL && viewDef->renderWorld != NULL )
+		? idStr::Hash( viewDef->renderWorld->mapName.c_str() ) : 0;
+}
+
 static int RB_ShadowMapBuildPassSignatureForView( const viewLight_t *vLight, const viewDef_t *viewDef, const shadowMapPassKind_t passKind, const bool pointLight ) {
 	int hash = static_cast<int>( 2166136261u );
 	const int cascadeCount = RB_ShadowMapCascadeCountForLight( vLight );
+	const idRenderWorldLocal *renderWorld =
+		viewDef != NULL ? viewDef->renderWorld : NULL;
+	hash = RB_ShadowMapHashInt( hash,
+		renderWorld != NULL ? static_cast<int>( renderWorld->mapFileCRC ) : 0 );
+	hash = RB_ShadowMapHashInt( hash, RB_ShadowMapMapNameHash( viewDef ) );
 	hash = RB_ShadowMapHashInt( hash, RB_ShadowMapLightIndex( vLight ) );
 	hash = RB_ShadowMapHashInt( hash, static_cast<int>( passKind ) );
 	hash = RB_ShadowMapHashInt( hash, static_cast<int>( RB_ShadowMapLightClass( vLight ) ) );
@@ -3314,6 +3451,9 @@ static int RB_ShadowMapBuildPassSignatureForView( const viewLight_t *vLight, con
 	hash = RB_ShadowMapHashInt( hash, vLight != NULL ? vLight->shadowMapStaticCasterCount : 0 );
 	hash = RB_ShadowMapHashInt( hash, vLight != NULL ? vLight->shadowMapDynamicCasterCount : 0 );
 	hash = RB_ShadowMapHashInt( hash, vLight != NULL ? vLight->shadowMapCasterSignature : 0 );
+	hash = RB_ShadowMapHashInt( hash, vLight != NULL ? vLight->shadowMapIncompleteMapMask : 0 );
+	hash = RB_ShadowMapHashInt( hash, vLight != NULL ? vLight->shadowMapHybridIncompleteMask : 0 );
+	hash = RB_ShadowMapHashInt( hash, vLight != NULL ? vLight->shadowMapPrelightMapMissingMask : 0 );
 	hash = RB_ShadowMapHashInt( hash, cascadeCount );
 	hash = RB_ShadowMapHashInt( hash, RB_ShadowMapHashedAlphaEnabled() ? 1 : 0 );
 	hash = RB_ShadowMapHashInt( hash, r_shadowMapStableAlphaHash.GetBool() ? 1 : 0 );
@@ -3325,6 +3465,13 @@ static int RB_ShadowMapBuildPassSignatureForView( const viewLight_t *vLight, con
 		hash = RB_ShadowMapHashInt( hash, RB_PointShadowMapHighPrecisionEnabled() ? 1 : 0 );
 		hash = RB_ShadowMapHashInt( hash, RB_PointShadowMapDepthCompareEnabled() ? 1 : 0 );
 		hash = RB_ShadowMapHashFloat( hash, r_shadowMapPointFarScale.GetFloat() );
+		hash = RB_ShadowMapHashFloat( hash, R_ShadowMapPointFarDistance( vLight ) );
+		if ( vLight != NULL && vLight->lightDef != NULL ) {
+			for ( int i = 0; i < 3; ++i ) {
+				hash = RB_ShadowMapHashFloat( hash,
+					vLight->lightDef->parms.lightCenter[i] );
+			}
+		}
 	} else {
 		hash = RB_ShadowMapHashInt( hash, RB_ShadowMapTileSizeForLight( vLight ) );
 		hash = RB_ShadowMapHashInt( hash, RB_ShadowMapAtlasDivForLight( vLight ) );
@@ -3423,6 +3570,49 @@ static void RB_ShadowMapInvalidateLightCaches( const int lightIndex ) {
 	}
 }
 
+// Cache keys are only meaningful inside one loaded render world. Light
+// indices are reused between maps, and signature-agnostic budget/subview
+// reuse must never expose a tile produced for an earlier world.
+bool RB_ShadowMapPrepareCacheView( const viewDef_t *viewDef ) {
+	if ( viewDef == NULL ) {
+		return false;
+	}
+	const idRenderWorldLocal *renderWorld = viewDef->renderWorld;
+	const unsigned int mapFileCRC =
+		renderWorld != NULL ? renderWorld->mapFileCRC : 0;
+	const int mapNameHash = RB_ShadowMapMapNameHash( viewDef );
+	if ( g_shadowMapCacheRenderWorld == renderWorld
+			&& g_shadowMapCacheMapFileCRC == mapFileCRC
+			&& g_shadowMapCacheMapNameHash == mapNameHash ) {
+		return false;
+	}
+
+	for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; i++ ) {
+		g_projectedShadowMapCache[i].valid = false;
+		g_pointShadowMapCache[i].valid = false;
+	}
+	memset( g_shadowMapLightHistory, 0, sizeof( g_shadowMapLightHistory ) );
+	g_activeProjectedShadowMapCache = NULL;
+	g_activePointShadowMapCache = NULL;
+	g_shadowMapDepthImage = NULL;
+	g_shadowMapRenderTexture = NULL;
+	g_shadowMapActiveSlotOriginX = 0;
+	g_shadowMapActiveSlotOriginY = 0;
+	g_pointShadowMapColorImage = NULL;
+	g_pointShadowMapDepthImage = NULL;
+	g_pointShadowMapRenderTexture = NULL;
+	memset( &g_projectedShadowMapState, 0, sizeof( g_projectedShadowMapState ) );
+	g_projectedTranslucentShadowPassReady = false;
+	g_pointTranslucentShadowPassReady = false;
+	g_shadowMapGlobalPassMapped = SHADOWMAP_GLOBAL_MAPPED_NONE;
+	g_shadowMapGlobalPassHybrid = false;
+	g_shadowMapDeferredGlobalReportPending = false;
+	g_shadowMapCacheRenderWorld = renderWorld;
+	g_shadowMapCacheMapFileCRC = mapFileCRC;
+	g_shadowMapCacheMapNameHash = mapNameHash;
+	return true;
+}
+
 static bool RB_ShadowMapStaticCacheable( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const bool pointLight, const bool haveTranslucentCasters ) {
 	if ( !r_shadowMapStaticCache.GetBool() || vLight == NULL || RB_ShadowMapLightIndex( vLight ) < 0 ) {
 		return false;
@@ -3433,7 +3623,11 @@ static bool RB_ShadowMapStaticCacheable( const viewLight_t *vLight, const shadow
 	// draws instead of a full static-scene re-render. Point lights keep the
 	// old rule until the cube path gains composition (phase 5c).
 	const bool dynamicsDefeatCache = pointLight && vLight->shadowMapDynamicCasterCount > 0;
-	if ( haveTranslucentCasters || dynamicsDefeatCache || vLight->shadowMapCasterCount <= 0 ) {
+	// Alpha-tested stages can animate conditions, texture matrices, and images
+	// without changing the coarse front-end caster signature. Render them live
+	// instead of reusing stale cutout depth.
+	if ( haveTranslucentCasters || vLight->shadowMapAlphaCasterCount > 0
+			|| dynamicsDefeatCache || vLight->shadowMapCasterCount <= 0 ) {
 		const int lightIndex = RB_ShadowMapLightIndex( vLight );
 		shadowMapLightHistory_t *history = RB_ShadowMapFindLightHistory( lightIndex );
 		if ( history != NULL && vLight->shadowMapDynamicCasterCount > 0 ) {
@@ -3463,7 +3657,9 @@ static bool RB_ShadowMapStaticCacheableReadOnly( const viewLight_t *vLight, cons
 	if ( !r_shadowMapStaticCache.GetBool() || vLight == NULL || RB_ShadowMapLightIndex( vLight ) < 0 ) {
 		return false;
 	}
-	if ( haveTranslucentCasters || ( pointLight && vLight->shadowMapDynamicCasterCount > 0 ) || vLight->shadowMapCasterCount <= 0 ) {
+	if ( haveTranslucentCasters || vLight->shadowMapAlphaCasterCount > 0
+			|| ( pointLight && vLight->shadowMapDynamicCasterCount > 0 )
+			|| vLight->shadowMapCasterCount <= 0 ) {
 		return false;
 	}
 	if ( !pointLight && RB_ShadowMapCascadeCountForLight( vLight ) > 1 && !r_shadowMapCacheCSM.GetBool() ) {
@@ -3515,50 +3711,153 @@ static double RB_ShadowMapResidentBytes( void ) {
 	return bytes;
 }
 
+static bool RB_ShadowMapProjectedCacheEntryStorageValid(
+	const projectedShadowMapCacheEntry_t *entry );
+static bool RB_ShadowMapPointCacheEntryStorageValid(
+	const pointShadowMapCacheEntry_t *entry );
+
 static void RB_ShadowMapExpireCaches( void ) {
 	const int residentFrames = Max( 1, r_shadowMapResidentFrames.GetInteger() );
+	const int projectedLimit = RB_ShadowMapProjectedCacheSlotLimit();
+	const int pointLimit = RB_ShadowMapPointCacheSlotLimit();
 	for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; i++ ) {
-		if ( g_projectedShadowMapCache[i].valid && tr.frameCount - g_projectedShadowMapCache[i].lastUsedFrame > residentFrames ) {
+		// Cache-size cvars are live. Entries outside a reduced limit must stop
+		// occupying atlas cells immediately or in-range allocation can evict
+		// forever without finding a block that the stale metadata still marks.
+		if ( g_projectedShadowMapCache[i].valid
+				&& ( !RB_ShadowMapProjectedCacheEntryStorageValid(
+						&g_projectedShadowMapCache[i] )
+					|| i >= projectedLimit
+					|| tr.frameCount - g_projectedShadowMapCache[i].lastUsedFrame
+						> residentFrames ) ) {
 			g_projectedShadowMapCache[i].valid = false;
 			g_shadowMapStats.cacheExpired++;
 		}
-		if ( g_pointShadowMapCache[i].valid && tr.frameCount - g_pointShadowMapCache[i].lastUsedFrame > residentFrames ) {
+		if ( g_pointShadowMapCache[i].valid
+				&& ( !RB_ShadowMapPointCacheEntryStorageValid(
+						&g_pointShadowMapCache[i] )
+					|| i >= pointLimit
+					|| tr.frameCount - g_pointShadowMapCache[i].lastUsedFrame
+						> residentFrames ) ) {
 			g_pointShadowMapCache[i].valid = false;
 			g_shadowMapStats.cacheExpired++;
 		}
 	}
 }
 
-// signature-agnostic lookups back the budget stale-reuse path: when the
-// per-view update budget is exhausted, the light's last rendered map (and the
-// receiver state it was rendered with) is reused as-is
-static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntryAnySignature( const int lightIndex, const shadowMapPassKind_t passKind ) {
-	const int slotLimit = RB_ShadowMapProjectedCacheSlotLimit();
-	for ( int i = 0; i < slotLimit; i++ ) {
-		projectedShadowMapCacheEntry_t *entry = &g_projectedShadowMapCache[i];
-		if ( entry->valid && entry->lightIndex == lightIndex && entry->passKind == static_cast<int>( passKind ) ) {
-			return entry;
-		}
-	}
-	return NULL;
+// Persistent cache metadata is usable only while it still names the physical
+// atlas allocation that received the render. Image reload/recreation can keep
+// the idImage pointer stable while replacing its storage.
+static bool RB_ShadowMapProjectedCacheEntryStorageValid(
+		const projectedShadowMapCacheEntry_t *entry ) {
+	return entry != NULL && entry->valid
+		&& entry->atlasStorageGeneration != 0
+		&& g_shadowMapAtlasDepthImage != NULL
+		&& g_shadowMapAtlasRenderTexture != NULL
+		&& g_shadowMapAtlasDepthImage->GetStorageGeneration()
+			== entry->atlasStorageGeneration
+		&& g_shadowMapAtlasDepthImage->IsLoaded()
+		&& !g_shadowMapAtlasDepthImage->IsDefaulted()
+		&& g_shadowMapAtlasDepthImage->GetDeviceHandle() != 0
+		&& g_shadowMapAtlasDepthImage->GetOpts().textureType == TT_2D
+		&& g_shadowMapAtlasDepthImage->GetOpts().format == FMT_DEPTH
+		&& g_shadowMapAtlasRenderTexture->GetWidth() > 0
+		&& g_shadowMapAtlasRenderTexture->GetHeight() > 0;
 }
 
-static pointShadowMapCacheEntry_t *RB_ShadowMapFindPointCacheEntryAnySignature( const int lightIndex, const shadowMapPassKind_t passKind ) {
-	const int slotLimit = RB_ShadowMapPointCacheSlotLimit();
+static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntryAnySignature( const int lightIndex, const shadowMapPassKind_t passKind ) {
+	const int slotLimit = RB_ShadowMapProjectedCacheSlotLimit();
+	projectedShadowMapCacheEntry_t *newest = NULL;
 	for ( int i = 0; i < slotLimit; i++ ) {
-		pointShadowMapCacheEntry_t *entry = &g_pointShadowMapCache[i];
-		if ( entry->valid && entry->lightIndex == lightIndex && entry->passKind == static_cast<int>( passKind ) ) {
-			return entry;
+		projectedShadowMapCacheEntry_t *entry = &g_projectedShadowMapCache[i];
+		if ( RB_ShadowMapProjectedCacheEntryStorageValid( entry )
+				&& entry->lightIndex == lightIndex
+				&& entry->passKind == static_cast<int>( passKind )
+				&& ( newest == NULL
+					|| entry->lastUpdatedFrame > newest->lastUpdatedFrame ) ) {
+			newest = entry;
 		}
 	}
-	return NULL;
+	return newest;
+}
+
+static bool RB_ShadowMapPointCacheEntryStorageValid(
+		const pointShadowMapCacheEntry_t *entry ) {
+	return entry != NULL && entry->valid
+		&& entry->size > 0
+		&& entry->colorImage != NULL && entry->depthImage != NULL
+		&& entry->renderTexture != NULL
+		&& entry->colorStorageGeneration != 0
+		&& entry->depthStorageGeneration != 0
+		&& entry->colorImage->GetStorageGeneration()
+			== entry->colorStorageGeneration
+		&& entry->depthImage->GetStorageGeneration()
+			== entry->depthStorageGeneration
+		&& entry->colorImage->IsLoaded()
+		&& !entry->colorImage->IsDefaulted()
+		&& entry->colorImage->GetDeviceHandle() != 0
+		&& entry->depthImage->IsLoaded()
+		&& !entry->depthImage->IsDefaulted()
+		&& entry->depthImage->GetDeviceHandle() != 0
+		&& entry->colorImage->GetOpts().textureType == TT_CUBIC
+		&& entry->depthImage->GetOpts().textureType == TT_CUBIC
+		&& entry->colorImage->GetOpts().format
+			== ( entry->highPrecision ? FMT_RGBA16F : FMT_RGBA8 )
+		&& entry->depthImage->GetOpts().format == FMT_DEPTH
+		&& entry->renderTexture->GetWidth() == entry->size
+		&& entry->renderTexture->GetHeight() == entry->size;
+}
+
+// Signature-agnostic lookups back the budget stale-reuse path: when the
+// per-view update budget is exhausted, the light's last rendered map (and the
+// receiver state it was rendered with) is reused as-is. Point storage modes
+// still have to match because stale reuse intentionally ignores their hash.
+static bool RB_ShadowMapPointCacheEntryProjectionMatches(
+		const pointShadowMapCacheEntry_t *entry, const viewLight_t *vLight ) {
+	if ( entry == NULL || vLight == NULL ) {
+		return false;
+	}
+	// Exact float identity is intentional. These values are copied directly
+	// from the light when the cube is rendered; rejecting an uncertain stale
+	// reuse is cheaper and safer than decoding it with a different projection.
+	return entry->farDistance == R_ShadowMapPointFarDistance( vLight )
+		&& entry->lightOrigin[0] == vLight->globalLightOrigin[0]
+		&& entry->lightOrigin[1] == vLight->globalLightOrigin[1]
+		&& entry->lightOrigin[2] == vLight->globalLightOrigin[2];
+}
+
+static pointShadowMapCacheEntry_t *RB_ShadowMapFindPointCacheEntryAnySignature( const viewLight_t *vLight, const shadowMapPassKind_t passKind ) {
+	const int slotLimit = RB_ShadowMapPointCacheSlotLimit();
+	const int lightIndex = RB_ShadowMapLightIndex( vLight );
+	const int requiredSize = RB_ShadowMapPointSizeValue();
+	const bool requiredHighPrecision = RB_PointShadowMapHighPrecisionEnabled();
+	const bool requiredDepthCompare = RB_PointShadowMapDepthCompareEnabled();
+	pointShadowMapCacheEntry_t *newest = NULL;
+	for ( int i = 0; i < slotLimit; i++ ) {
+		pointShadowMapCacheEntry_t *entry = &g_pointShadowMapCache[i];
+		if ( RB_ShadowMapPointCacheEntryStorageValid( entry )
+				&& entry->lightIndex == lightIndex
+				&& entry->passKind == static_cast<int>( passKind )
+				&& entry->size == requiredSize
+				&& entry->highPrecision == requiredHighPrecision
+				&& entry->depthCompare == requiredDepthCompare
+				&& RB_ShadowMapPointCacheEntryProjectionMatches( entry, vLight )
+				&& ( newest == NULL
+					|| entry->lastUpdatedFrame > newest->lastUpdatedFrame ) ) {
+			newest = entry;
+		}
+	}
+	return newest;
 }
 
 static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntry( const int lightIndex, const shadowMapPassKind_t passKind, const int signature ) {
 	const int slotLimit = RB_ShadowMapProjectedCacheSlotLimit();
 	for ( int i = 0; i < slotLimit; i++ ) {
 		projectedShadowMapCacheEntry_t *entry = &g_projectedShadowMapCache[i];
-		if ( entry->valid && entry->lightIndex == lightIndex && entry->passKind == static_cast<int>( passKind ) && entry->signature == signature ) {
+		if ( RB_ShadowMapProjectedCacheEntryStorageValid( entry )
+				&& entry->lightIndex == lightIndex
+				&& entry->passKind == static_cast<int>( passKind )
+				&& entry->signature == signature ) {
 			return entry;
 		}
 	}
@@ -3569,7 +3868,10 @@ static pointShadowMapCacheEntry_t *RB_ShadowMapFindPointCacheEntry( const int li
 	const int slotLimit = RB_ShadowMapPointCacheSlotLimit();
 	for ( int i = 0; i < slotLimit; i++ ) {
 		pointShadowMapCacheEntry_t *entry = &g_pointShadowMapCache[i];
-		if ( entry->valid && entry->lightIndex == lightIndex && entry->passKind == static_cast<int>( passKind ) && entry->signature == signature ) {
+		if ( RB_ShadowMapPointCacheEntryStorageValid( entry )
+				&& entry->lightIndex == lightIndex
+				&& entry->passKind == static_cast<int>( passKind )
+				&& entry->signature == signature ) {
 			return entry;
 		}
 	}
@@ -3581,12 +3883,24 @@ static pointShadowMapCacheEntry_t *RB_ShadowMapFindPointCacheEntry( const int li
 // from the valid entries on every allocation.
 static const int SHADOWMAP_ATLAS_MAX_GRID = 8;
 
+static int RB_ShadowMapAtlasSizeValue( void ) {
+	const int maxTextureSize =
+		glConfig.maxTextureSize > 0 ? glConfig.maxTextureSize : 4096;
+	return Min( idMath::ClampInt( 2048, 8192,
+		r_shadowMapAtlasSize.GetInteger() ), maxTextureSize );
+}
+
 static int RB_ShadowMapAtlasGridDim( void ) {
 	if ( g_shadowMapAtlasCellSize <= 0 ) {
 		return 0;
 	}
-	const int atlasSize = idMath::ClampInt( 2048, 8192, r_shadowMapAtlasSize.GetInteger() );
-	return idMath::ClampInt( 1, SHADOWMAP_ATLAS_MAX_GRID, atlasSize / g_shadowMapAtlasCellSize );
+	const int atlasSize = g_shadowMapAtlasRenderTexture != NULL
+		? Min( g_shadowMapAtlasRenderTexture->GetWidth(),
+			g_shadowMapAtlasRenderTexture->GetHeight() )
+		: RB_ShadowMapAtlasSizeValue();
+	const int gridDim = atlasSize / g_shadowMapAtlasCellSize;
+	return gridDim > 0
+		? idMath::ClampInt( 1, SHADOWMAP_ATLAS_MAX_GRID, gridDim ) : 0;
 }
 
 static bool RB_ShadowMapAtlasFindFreeBlock( const int span, int &cellX, int &cellY ) {
@@ -3598,7 +3912,7 @@ static bool RB_ShadowMapAtlasFindFreeBlock( const int span, int &cellX, int &cel
 	memset( occupied, 0, sizeof( occupied ) );
 	for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; i++ ) {
 		const projectedShadowMapCacheEntry_t &entry = g_projectedShadowMapCache[i];
-		if ( !entry.valid ) {
+		if ( !RB_ShadowMapProjectedCacheEntryStorageValid( &entry ) ) {
 			continue;
 		}
 		for ( int y = entry.atlasCellY; y < entry.atlasCellY + entry.atlasCellSpan && y < gridDim; y++ ) {
@@ -3773,7 +4087,11 @@ static shadowMapSchedule_t RB_ShadowMapSchedulePass( const viewLight_t *vLight, 
 		return schedule;
 	}
 
-	RB_ShadowMapSelectScratchResources();
+	if ( pointLight ) {
+		RB_ShadowMapSelectPointScratchResources();
+	} else {
+		RB_ShadowMapSelectProjectedScratchResources();
+	}
 	schedule.cacheable = RB_ShadowMapStaticCacheable( vLight, passKind, pointLight, haveTranslucentCasters );
 	const int lightIndex = RB_ShadowMapLightIndex( vLight );
 	if ( schedule.cacheable ) {
@@ -3825,7 +4143,7 @@ static shadowMapSchedule_t RB_ShadowMapSchedulePass( const viewLight_t *vLight, 
 		// casters keeps the full-content stencil fallback.
 		if ( schedule.cacheable ) {
 			if ( pointLight ) {
-				schedule.pointEntry = RB_ShadowMapFindPointCacheEntryAnySignature( lightIndex, passKind );
+				schedule.pointEntry = RB_ShadowMapFindPointCacheEntryAnySignature( vLight, passKind );
 				if ( schedule.pointEntry != NULL ) {
 					schedule.cacheHit = true;
 					schedule.action = SHADOWMAP_SCHEDULE_REUSE;
@@ -3897,11 +4215,19 @@ static void RB_ShadowMapCompleteCacheUpdate( const shadowMapSchedule_t &schedule
 		entry->size = g_pointShadowMapRenderTexture != NULL ? g_pointShadowMapRenderTexture->GetWidth() : 0;
 		entry->highPrecision = RB_PointShadowMapHighPrecisionEnabled();
 		entry->depthCompare = RB_PointShadowMapDepthCompareEnabled();
+		entry->lightOrigin[0] = vLight->globalLightOrigin[0];
+		entry->lightOrigin[1] = vLight->globalLightOrigin[1];
+		entry->lightOrigin[2] = vLight->globalLightOrigin[2];
+		entry->farDistance = R_ShadowMapPointFarDistance( vLight );
 		entry->lastUsedFrame = tr.frameCount;
 		entry->lastUpdatedFrame = tr.frameCount;
 		entry->colorImage = g_pointShadowMapColorImage;
 		entry->depthImage = g_pointShadowMapDepthImage;
 		entry->renderTexture = g_pointShadowMapRenderTexture;
+		entry->colorStorageGeneration = entry->colorImage != NULL
+			? entry->colorImage->GetStorageGeneration() : 0;
+		entry->depthStorageGeneration = entry->depthImage != NULL
+			? entry->depthImage->GetStorageGeneration() : 0;
 	} else {
 		projectedShadowMapCacheEntry_t *entry = schedule.projectedEntry;
 		if ( entry == NULL ) {
@@ -3921,6 +4247,8 @@ static void RB_ShadowMapCompleteCacheUpdate( const shadowMapSchedule_t &schedule
 		entry->cascadeCount = g_projectedShadowMapState.cascadeCount;
 		entry->lastUsedFrame = tr.frameCount;
 		entry->lastUpdatedFrame = tr.frameCount;
+		entry->atlasStorageGeneration = g_shadowMapAtlasDepthImage != NULL
+			? g_shadowMapAtlasDepthImage->GetStorageGeneration() : 0;
 		entry->state = g_projectedShadowMapState;
 		// atlas cell placement was written at allocation; entries hold no textures
 		
@@ -4640,6 +4968,9 @@ void RB_ShutdownShadowMapResources( void ) {
 	memset( g_sharedInteractionPointScratch, 0,
 		sizeof( g_sharedInteractionPointScratch ) );
 	memset( g_shadowMapLightHistory, 0, sizeof( g_shadowMapLightHistory ) );
+	g_shadowMapCacheRenderWorld = NULL;
+	g_shadowMapCacheMapFileCRC = 0;
+	g_shadowMapCacheMapNameHash = 0;
 	g_activeProjectedShadowMapCache = NULL;
 	g_activePointShadowMapCache = NULL;
 	memset( g_shadowMapGpuTimerQuerySlots, 0, sizeof( g_shadowMapGpuTimerQuerySlots ) );
@@ -5759,7 +6090,7 @@ static bool RB_ShadowMapEnsureResources( const viewLight_t *vLight ) {
 	// every cached tile placement
 	{
 		const int atlasCellSize = idMath::ClampInt( 128, glConfig.maxTextureSize > 0 ? glConfig.maxTextureSize : 4096, r_shadowMapSize.GetInteger() );
-		const int atlasSize = Min( idMath::ClampInt( 2048, 8192, r_shadowMapAtlasSize.GetInteger() ), glConfig.maxTextureSize > 0 ? glConfig.maxTextureSize : 4096 );
+		const int atlasSize = RB_ShadowMapAtlasSizeValue();
 		if ( atlasCellSize != g_shadowMapAtlasCellSize ) {
 			for ( int i = 0; i < SHADOWMAP_CACHE_MAX_SLOTS; i++ ) {
 				g_projectedShadowMapCache[i].valid = false;
@@ -6027,6 +6358,14 @@ static bool RB_PointShadowMapEnsureTranslucentResources( void ) {
 }
 
 // Keep shadow-map support reporting aligned with the interaction shadow admission rules.
+static bool RB_ShadowMapTranslucentGlobalReceiverNeeded(
+		const viewLight_t *vLight ) {
+	return vLight != NULL
+		&& vLight->translucentInteractions != NULL
+		&& r_shadowMapTranslucentReceivers.GetBool()
+		&& !r_skipTranslucent.GetBool();
+}
+
 static shadowMapLightSupportReason_t RB_ShadowMapLightPolicySupportReason( const viewLight_t *vLight ) {
 	if ( vLight == NULL ) {
 		return SHADOWMAP_SUPPORT_NULL_LIGHT;
@@ -6053,7 +6392,6 @@ static shadowMapLightSupportReason_t RB_ShadowMapLightPolicySupportReason( const
 }
 
 static shadowMapLightSupportReason_t RB_ShadowMapLightSupportReason( const viewLight_t *vLight ) {
-	RB_ShadowMapSelectScratchResources();
 	if ( !r_useShadowMap.GetBool() || !r_shadows.GetBool() ) {
 		return !r_useShadowMap.GetBool() ? SHADOWMAP_SUPPORT_DISABLED : SHADOWMAP_SUPPORT_SHADOWS_DISABLED;
 	}
@@ -6065,7 +6403,9 @@ static shadowMapLightSupportReason_t RB_ShadowMapLightSupportReason( const viewL
 	if ( glConfig.maxTextureUnits < 6 || glConfig.maxTextureImageUnits < 6 ) {
 		return SHADOWMAP_SUPPORT_TEXTURE_LIMIT;
 	}
-	if ( vLight->globalInteractions == NULL && vLight->localInteractions == NULL ) {
+	if ( vLight->globalInteractions == NULL
+		&& vLight->localInteractions == NULL
+		&& !RB_ShadowMapTranslucentGlobalReceiverNeeded( vLight ) ) {
 		return SHADOWMAP_SUPPORT_NO_INTERACTIONS;
 	}
 	// parallel lights carry pointLight=true but render through the projected
@@ -6136,6 +6476,7 @@ static void RB_ShadowMapPurgeIdleResources( void ) {
 
 static void RB_ShadowMapStatsReset( void ) {
 	memset( &g_shadowMapStats, 0, sizeof( g_shadowMapStats ) );
+	RB_ShadowMapPrepareCacheView( backEnd.viewDef );
 	g_shadowMapStats.csmRequested = r_shadowMapCSM.GetBool();
 	g_shadowMapStats.projectedCsmRequested = r_shadowMapProjectedCSM.GetBool();
 	g_shadowMapStats.requestedCascadeCount = idMath::ClampInt( 1, SHADOWMAP_CLASSIFICATION_MAX_CASCADES, r_shadowMapCascadeCount.GetInteger() );
@@ -7189,7 +7530,8 @@ static int RB_ShadowMapDrawCasterChain( const drawSurf_t *surf, const int cascad
 			RB_ShadowMapSetCasterDepthRow( surf, cascadeIndex );
 		}
 
-		RB_ShadowMapApplyCasterCull( surf->material );
+		RB_ShadowMapApplyCasterCull( surf->material, casterGeo,
+			surf->space->modelMatrix );
 
 		idDrawVert *ac = (idDrawVert *)vertexCache.Position( ambientCache );
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, offsetof( idDrawVert, xyz ) ) );
@@ -7414,18 +7756,6 @@ static void RB_PointShadowMapBuildProjectionMatrix( const float zNear, const flo
 	matrix[10] = -( zFar + zNear ) / ( zFar - zNear );
 	matrix[11] = -1.0f;
 	matrix[14] = -( 2.0f * zFar * zNear ) / ( zFar - zNear );
-}
-
-static float RB_PointShadowMapLightFar( const viewLight_t *vLight ) {
-	idVec3 adjustedRadius = vLight->lightRadius;
-	if ( vLight->lightDef != NULL ) {
-		const renderLight_t &parms = vLight->lightDef->parms;
-		adjustedRadius[0] = parms.lightRadius[0] + idMath::Fabs( parms.lightCenter[0] );
-		adjustedRadius[1] = parms.lightRadius[1] + idMath::Fabs( parms.lightCenter[1] );
-		adjustedRadius[2] = parms.lightRadius[2] + idMath::Fabs( parms.lightCenter[2] );
-	}
-
-	return Max( adjustedRadius.Length() * r_shadowMapPointFarScale.GetFloat(), 1.0f );
 }
 
 static void RB_PointShadowMapSetAlphaTexCoordIdentity( void ) {
@@ -7669,7 +7999,8 @@ static int RB_PointShadowMapDrawCasterChain( const drawSurf_t *surf, const float
 			glUniform4fvARB( g_pointShadowCasterProgram.modelMatrixRow2, 1, row2 );
 		}
 
-		RB_ShadowMapApplyCasterCull( surf->material );
+		RB_ShadowMapApplyCasterCull( surf->material, casterGeo,
+			surf->space->modelMatrix );
 
 		idDrawVert *ac = (idDrawVert *)vertexCache.Position( ambientCache );
 		glVertexPointer( 3, GL_FLOAT, sizeof( idDrawVert ), RB_DrawVertAttributePointer( ac, offsetof( idDrawVert, xyz ) ) );
@@ -8059,7 +8390,7 @@ static bool RB_RenderPointShadowMap( const drawSurf_t *primaryCasters, const dra
 	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
 
-	const float farClip = RB_PointShadowMapLightFar( backEnd.vLight );
+	const float farClip = R_ShadowMapPointFarDistance( backEnd.vLight );
 	// with depth clamp, casters inside the near plane still rasterize (their
 	// color-packed radial depth stays exact), so the near plane only shapes the
 	// ordering-depth distribution; without it, shrink the clipped-away zone
@@ -8352,7 +8683,7 @@ static bool RB_RenderPointTranslucentShadowMap( const drawSurf_t *primaryCasters
 	const GLboolean depthWasEnabled = glIsEnabled( GL_DEPTH_TEST );
 	const GLboolean stencilWasEnabled = glIsEnabled( GL_STENCIL_TEST );
 	const int savedFaceCulling = backEnd.glState.faceCulling;
-	const float farClip = RB_PointShadowMapLightFar( backEnd.vLight );
+	const float farClip = R_ShadowMapPointFarDistance( backEnd.vLight );
 	// with depth clamp, casters inside the near plane still rasterize (their
 	// color-packed radial depth stays exact), so the near plane only shapes the
 	// ordering-depth distribution; without it, shrink the clipped-away zone
@@ -8765,7 +9096,7 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 	glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow1, 1, row1 );
 	glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow2, 1, row2 );
 	glUniform4fvARB( g_pointShadowMapProgram.globalLightOrigin, 1, globalLightOrigin );
-	glUniform1fARB( g_pointShadowMapProgram.pointShadowFar, RB_PointShadowMapLightFar( backEnd.vLight ) );
+	glUniform1fARB( g_pointShadowMapProgram.pointShadowFar, R_ShadowMapPointFarDistance( backEnd.vLight ) );
 	glUniform4fvARB( g_pointShadowMapProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
 	glUniform4fvARB( g_pointShadowMapProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
 	if ( g_pointShadowMapProgram.flatDiffuseParams >= 0 ) {
@@ -9313,16 +9644,43 @@ static unsigned int RB_ShadowMapArb2CachePassMask( const shadowMapPassKind_t pas
 	return ( passKind == SHADOWMAP_PASS_LOCAL ) ? SHADOWMAP_ARB2_CACHE_PASS_LOCAL : SHADOWMAP_ARB2_CACHE_PASS_GLOBAL;
 }
 
+static bool RB_ShadowMapHybridAvailableForPass( const viewLight_t *vLight,
+	const shadowMapPassKind_t passKind );
+static bool RB_ShadowMapMapOrHybridAvailableForPass(
+	const viewLight_t *vLight, const shadowMapPassKind_t passKind,
+	bool *hybridOut );
+
+static const drawSurf_t *RB_ShadowMapGlobalReceiverPlanningChain(
+		const viewLight_t *vLight, bool &deferReceiverDraw ) {
+	deferReceiverDraw = false;
+	if ( vLight == NULL ) {
+		return NULL;
+	}
+	const bool opaqueEligible = RB_DrawSurfChainHasFilteredSurface(
+		vLight->globalInteractions, RB_SurfaceEligibleForShadowMapReceiver );
+	const bool translucentEligible =
+		RB_ShadowMapTranslucentGlobalReceiverNeeded( vLight )
+		&& RB_DrawSurfChainHasFilteredSurface( vLight->translucentInteractions,
+			RB_SurfaceEligibleForShadowMapReceiver );
+	if ( !opaqueEligible && translucentEligible ) {
+		deferReceiverDraw = true;
+		return vLight->translucentInteractions;
+	}
+	return vLight->globalInteractions;
+}
+
 static void RB_ShadowMapArb2CacheSlotCountsReadOnly( shadowMapArb2CacheEstimate_t &estimate ) {
 	estimate.projectedCacheSlotsTotal = RB_ShadowMapProjectedCacheSlotLimit();
 	estimate.pointCacheSlotsTotal = RB_ShadowMapPointCacheSlotLimit();
 	for ( int i = 0; i < estimate.projectedCacheSlotsTotal; i++ ) {
-		if ( g_projectedShadowMapCache[i].valid ) {
+		if ( RB_ShadowMapProjectedCacheEntryStorageValid(
+				&g_projectedShadowMapCache[i] ) ) {
 			estimate.projectedCacheSlotsUsed++;
 		}
 	}
 	for ( int i = 0; i < estimate.pointCacheSlotsTotal; i++ ) {
-		if ( g_pointShadowMapCache[i].valid ) {
+		if ( RB_ShadowMapPointCacheEntryStorageValid(
+				&g_pointShadowMapCache[i] ) ) {
 			estimate.pointCacheSlotsUsed++;
 		}
 	}
@@ -9334,6 +9692,10 @@ static void RB_ShadowMapEstimateArb2CachePass( const viewLight_t *vLight, const 
 	}
 
 	const unsigned int passMask = RB_ShadowMapArb2CachePassMask( passKind );
+	const shadowMapPassKind_t cachePassKind =
+		RB_ShadowMapCachePassKind( vLight, passKind );
+	const unsigned int cacheKeyMask =
+		RB_ShadowMapArb2CachePassMask( cachePassKind );
 	estimate.shadowPasses++;
 
 	const drawSurf_t *translucentPrimaryCasters = vLight != NULL ? vLight->globalTranslucentShadowMapCasters : NULL;
@@ -9362,16 +9724,34 @@ static void RB_ShadowMapEstimateArb2CachePass( const viewLight_t *vLight, const 
 		estimate.receiverFallbackPasses++;
 	}
 
-	const bool cacheable = RB_ShadowMapStaticCacheableReadOnly( vLight, passKind, pointLight, haveTranslucentCasters );
+	if ( !RB_ShadowMapMapOrHybridAvailableForPass(
+			vLight, passKind, NULL ) ) {
+		// Mirror the direct draw's fail-closed gate. An ownership that cannot be
+		// represented by either a complete map or an exact map+stencil hybrid
+		// takes full stencil before scheduling and consumes no map-update budget.
+		estimate.stencilOnlyPasses++;
+		return;
+	}
+
+	const bool cacheable = RB_ShadowMapStaticCacheableReadOnly( vLight, cachePassKind, pointLight, haveTranslucentCasters );
 	if ( cacheable ) {
 		estimate.cacheablePasses++;
 		estimate.cacheablePassMask |= passMask;
-		const int signature = RB_ShadowMapBuildPassSignatureForView( vLight, viewDef, passKind, pointLight );
+		const int signature = RB_ShadowMapBuildPassSignatureForView( vLight, viewDef, cachePassKind, pointLight );
 		const int lightIndex = RB_ShadowMapLightIndex( vLight );
 		const bool cacheHit = pointLight
-			? RB_ShadowMapFindPointCacheEntry( lightIndex, passKind, signature ) != NULL
-			: RB_ShadowMapFindProjectedCacheEntry( lightIndex, passKind, signature ) != NULL;
+			? RB_ShadowMapFindPointCacheEntry( lightIndex, cachePassKind, signature ) != NULL
+			: RB_ShadowMapFindProjectedCacheEntry( lightIndex, cachePassKind, signature ) != NULL;
 		if ( cacheHit ) {
+			estimate.cacheHitPasses++;
+			estimate.cacheHitPassMask |= passMask;
+			estimate.cacheKeyHitMask |= cacheKeyMask;
+			return;
+		}
+		// LOCAL and GLOBAL receivers can share one canonical GLOBAL map when
+		// there are no local/noSelf caster chains. Model the later receiver as
+		// a same-frame reuse instead of charging a phantom second update.
+		if ( ( estimate.plannedCacheUpdateKeyMask & cacheKeyMask ) != 0 ) {
 			estimate.cacheHitPasses++;
 			estimate.cacheHitPassMask |= passMask;
 			return;
@@ -9389,6 +9769,9 @@ static void RB_ShadowMapEstimateArb2CachePass( const viewLight_t *vLight, const 
 
 	estimate.freshUpdatePasses++;
 	estimate.freshUpdatePassMask |= passMask;
+	if ( cacheable ) {
+		estimate.plannedCacheUpdateKeyMask |= cacheKeyMask;
+	}
 }
 
 bool RB_ShadowMapEstimateArb2CacheOwnership( const viewLight_t *vLight, const viewDef_t *viewDef, shadowMapArb2CacheEstimate_t &estimate ) {
@@ -9406,20 +9789,39 @@ bool RB_ShadowMapEstimateArb2CacheOwnership( const viewLight_t *vLight, const vi
 	if ( RB_ShadowMapLightPolicySupportReason( vLight ) != SHADOWMAP_SUPPORT_OK ) {
 		return false;
 	}
-	if ( vLight->globalInteractions == NULL && vLight->localInteractions == NULL ) {
+	// Mirror the read-only capability half of RB_ShadowMapLightSupportReason.
+	// The estimator must not allocate resources, but an impossible light must
+	// not consume admission priority and starve a viable update.
+	if ( glConfig.maxTextureUnits < 6 || glConfig.maxTextureImageUnits < 6 ) {
 		return false;
 	}
-	if ( estimatePointLight && !r_shadowMapPointLights.GetBool() ) {
+	bool deferGlobalReceiverDraw = false;
+	const drawSurf_t *globalReceiverInteractions =
+		RB_ShadowMapGlobalReceiverPlanningChain(
+			vLight, deferGlobalReceiverDraw );
+	if ( globalReceiverInteractions == NULL && vLight->localInteractions == NULL ) {
 		return false;
+	}
+	if ( estimatePointLight ) {
+		if ( !r_shadowMapPointLights.GetBool() || !glConfig.cubeMapAvailable ) {
+			return false;
+		}
 	}
 
 	estimate.valid = true;
 	if ( estimatePointLight ) {
-		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, NULL, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, NULL, NULL, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, NULL, vLight->globalShadowMapDynamicCasters, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters, vLight->localShadowMapDynamicCasters, vLight->globalShadows, vLight->localShadows, globalReceiverInteractions );
 	} else {
-		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, NULL, NULL, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, NULL, NULL, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, NULL, vLight->globalShadowMapDynamicCasters, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
+		RB_ShadowMapEstimateArb2CachePass( vLight, viewDef, estimate, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters, vLight->localShadowMapDynamicCasters, vLight->globalShadows, vLight->localShadows, globalReceiverInteractions );
+	}
+	if ( deferGlobalReceiverDraw
+		&& RB_DrawSurfChainHasFilteredSurface( vLight->globalInteractions,
+			RB_SurfaceNeedsShadowMapReceiverFallback ) ) {
+		// The deferred translucent chain owns map admission, but opaque GLOBAL
+		// fallback surfaces still consume the same full-stencil ownership.
+		estimate.receiverFallbackPasses++;
 	}
 	return estimate.shadowPasses > 0;
 }
@@ -9460,23 +9862,16 @@ static void RB_ShadowMapBuildUpdateAdmissions( void ) {
 		}
 		// budgetFallbackPasses folds back in: the estimate simulates the
 		// per-light budget, but admission needs the light's full desired
-		// update count. The estimate replays LOCAL/GLOBAL without the cache
-		// pass collapse, so for lights whose passes share one GLOBAL entry
-		// only the GLOBAL prediction is real - the raw sum would charge
-		// steady-state lights for updates they will never render.
-		const unsigned int desiredMask = estimate.freshUpdatePassMask | estimate.budgetFallbackPassMask;
-		const bool passesCollapse = vLight->localShadowMapCasters == NULL
-			&& vLight->localShadowMapDynamicCasters == NULL
-			&& vLight->localTranslucentShadowMapCasters == NULL;
-		const int cost = passesCollapse
-			? ( ( desiredMask & SHADOWMAP_ARB2_CACHE_PASS_GLOBAL ) != 0 ? 1 : 0 )
-			: estimate.freshUpdatePasses + estimate.budgetFallbackPasses;
+		// update count. The estimator already canonicalizes LOCAL/GLOBAL cache
+		// ownership and models a same-frame reuse, so this sum is the real cost.
+		const int cost = estimate.freshUpdatePasses
+			+ estimate.budgetFallbackPasses;
 		if ( cost <= 0 ) {
 			continue;
 		}
 		int lastUpdatedFrame = -1;
 		if ( estimate.pointLight ) {
-			const pointShadowMapCacheEntry_t *entry = RB_ShadowMapFindPointCacheEntryAnySignature( estimate.lightIndex, SHADOWMAP_PASS_GLOBAL );
+			const pointShadowMapCacheEntry_t *entry = RB_ShadowMapFindPointCacheEntryAnySignature( vLight, SHADOWMAP_PASS_GLOBAL );
 			if ( entry != NULL ) {
 				lastUpdatedFrame = entry->lastUpdatedFrame;
 			}
@@ -9538,7 +9933,9 @@ static projectedShadowMapCacheEntry_t *RB_ShadowMapNewestProjectedGlobalEntry( c
 	projectedShadowMapCacheEntry_t *newest = NULL;
 	for ( int i = 0; i < slotLimit; i++ ) {
 		projectedShadowMapCacheEntry_t *entry = &g_projectedShadowMapCache[i];
-		if ( entry->valid && entry->lightIndex == lightIndex && entry->passKind == static_cast<int>( SHADOWMAP_PASS_GLOBAL )
+		if ( RB_ShadowMapProjectedCacheEntryStorageValid( entry )
+				&& entry->lightIndex == lightIndex
+				&& entry->passKind == static_cast<int>( SHADOWMAP_PASS_GLOBAL )
 			&& ( newest == NULL || entry->lastUpdatedFrame > newest->lastUpdatedFrame ) ) {
 			newest = entry;
 		}
@@ -9549,26 +9946,49 @@ static projectedShadowMapCacheEntry_t *RB_ShadowMapNewestProjectedGlobalEntry( c
 // Exposes a cached projected light's persistent-atlas placement so the modern
 // path can reference real tiles instead of aliasing whatever per-light target
 // the last ARB2 shadow pass selected. Read-only: must not touch LRU state.
-// Only the GLOBAL pass entry qualifies - modern shading is single-pass over
-// all receivers, and a LOCAL-only entry (global casters only) would
-// under-shadow. Rects are composed into persistent-atlas UV space with the
-// same math as the ARB2 receiver upload.
-bool RB_ShadowMapProjectedAtlasSlotForLight( const int lightDefIndex, shadowMapArb2AtlasSlot_t &slot ) {
+// Only the exact GLOBAL signature qualifies - a light can retain an older
+// sibling for budget reuse, and "newest" is not necessarily the signature
+// this view estimated as current. Rects use the ARB2 receiver's atlas math.
+bool RB_ShadowMapProjectedAtlasSlotForLight( const viewLight_t *vLight,
+		const viewDef_t *viewDef, shadowMapArb2AtlasSlot_t &slot ) {
 	memset( &slot, 0, sizeof( slot ) );
+	const int lightDefIndex = RB_ShadowMapLightIndex( vLight );
 	slot.lightIndex = lightDefIndex;
-	if ( lightDefIndex < 0 || g_shadowMapAtlasDepthImage == NULL || g_shadowMapAtlasRenderTexture == NULL || g_shadowMapAtlasCellSize <= 0 ) {
+	if ( vLight == NULL || viewDef == NULL || viewDef->renderWorld == NULL
+			|| lightDefIndex < 0
+			|| g_shadowMapCacheRenderWorld != viewDef->renderWorld
+			|| g_shadowMapCacheMapFileCRC != viewDef->renderWorld->mapFileCRC
+			|| g_shadowMapCacheMapNameHash != RB_ShadowMapMapNameHash( viewDef )
+			|| g_shadowMapAtlasDepthImage == NULL
+			|| !g_shadowMapAtlasDepthImage->IsLoaded()
+			|| g_shadowMapAtlasDepthImage->IsDefaulted()
+			|| g_shadowMapAtlasDepthImage->GetDeviceHandle() == 0
+			|| g_shadowMapAtlasDepthImage->GetOpts().textureType != TT_2D
+			|| g_shadowMapAtlasDepthImage->GetOpts().format != FMT_DEPTH
+			|| g_shadowMapAtlasRenderTexture == NULL
+			|| g_shadowMapAtlasCellSize <= 0 ) {
 		return false;
 	}
-	const projectedShadowMapCacheEntry_t *entry = RB_ShadowMapNewestProjectedGlobalEntry( lightDefIndex );
+	const int signature = RB_ShadowMapBuildPassSignatureForView(
+		vLight, viewDef, SHADOWMAP_PASS_GLOBAL, false );
+	const projectedShadowMapCacheEntry_t *entry =
+		RB_ShadowMapFindProjectedCacheEntry(
+			lightDefIndex, SHADOWMAP_PASS_GLOBAL, signature );
 	if ( entry == NULL || !entry->state.valid || entry->atlasCellSpan <= 0 ) {
 		return false;
 	}
 	const int atlasWidth = g_shadowMapAtlasRenderTexture->GetWidth();
 	const int atlasHeight = g_shadowMapAtlasRenderTexture->GetHeight();
-	if ( atlasWidth <= 0 || atlasHeight <= 0 ) {
+	if ( atlasWidth <= 0 || atlasHeight <= 0
+			|| entry->atlasCellX < 0 || entry->atlasCellY < 0
+			|| ( entry->atlasCellX + entry->atlasCellSpan )
+				* g_shadowMapAtlasCellSize > atlasWidth
+			|| ( entry->atlasCellY + entry->atlasCellSpan )
+				* g_shadowMapAtlasCellSize > atlasHeight ) {
 		return false;
 	}
 	slot.signature = entry->signature;
+	slot.storageGeneration = entry->atlasStorageGeneration;
 	slot.cellX = entry->atlasCellX;
 	slot.cellY = entry->atlasCellY;
 	slot.cellSpan = entry->atlasCellSpan;
@@ -9598,12 +10018,66 @@ bool RB_ShadowMapProjectedAtlasSlotForLight( const int lightDefIndex, shadowMapA
 // Pins an atlas entry against idle expiry while modern receivers are
 // presenting it. Callers must gate this on live modern consumption -
 // diagnostics-only planner runs must stay strictly read-only or they would
-// distort ARB2's cache LRU behavior. Targets the same newest entry the slot
-// export composed from.
-void RB_ShadowMapProjectedAtlasSlotMarkUsed( const int lightDefIndex ) {
-	projectedShadowMapCacheEntry_t *entry = RB_ShadowMapNewestProjectedGlobalEntry( lightDefIndex );
-	if ( entry != NULL ) {
-		entry->lastUsedFrame = tr.frameCount;
+// distort ARB2's cache LRU behavior. Revalidate the exact planned cell at the
+// consumption point so an intervening eviction cannot retarget its UVs.
+bool RB_ShadowMapProjectedAtlasSlotMarkUsed( const int lightDefIndex,
+		const int signature, const std::uint64_t storageGeneration,
+		const int cellX, const int cellY, const int cellSpan ) {
+	projectedShadowMapCacheEntry_t *entry =
+		RB_ShadowMapFindProjectedCacheEntry(
+			lightDefIndex, SHADOWMAP_PASS_GLOBAL, signature );
+	if ( entry == NULL
+			|| entry->atlasStorageGeneration != storageGeneration
+			|| entry->atlasCellX != cellX
+			|| entry->atlasCellY != cellY
+			|| entry->atlasCellSpan != cellSpan ) {
+		return false;
+	}
+	entry->lastUsedFrame = tr.frameCount;
+	return true;
+}
+
+// Exports provenance for the one cube the classic GL path has actually left
+// selected.  The render-world scope and GLOBAL-pass signature must both match
+// the descriptor being built; a valid cube belonging to another point light
+// is intentionally unavailable because the modern shader has no cube array.
+bool RB_ShadowMapPointCubeForLight( const viewLight_t *vLight,
+		const viewDef_t *viewDef, shadowMapArb2PointCube_t &cube ) {
+	memset( &cube, 0, sizeof( cube ) );
+	cube.lightIndex = RB_ShadowMapLightIndex( vLight );
+	if ( vLight == NULL || viewDef == NULL || viewDef->renderWorld == NULL
+			|| cube.lightIndex < 0
+			|| g_shadowMapCacheRenderWorld != viewDef->renderWorld
+			|| g_shadowMapCacheMapFileCRC != viewDef->renderWorld->mapFileCRC
+			|| g_shadowMapCacheMapNameHash != RB_ShadowMapMapNameHash( viewDef )
+			|| !RB_ShadowMapActivePointCacheContentReady() ) {
+		return false;
+	}
+
+	const pointShadowMapCacheEntry_t *entry = g_activePointShadowMapCache;
+	const int signature = RB_ShadowMapBuildPassSignatureForView(
+		vLight, viewDef, SHADOWMAP_PASS_GLOBAL, true );
+	if ( entry->lightIndex != cube.lightIndex
+			|| entry->passKind != static_cast<int>( SHADOWMAP_PASS_GLOBAL )
+			|| entry->signature != signature
+			|| entry->size != RB_ShadowMapPointSizeValue()
+			|| entry->highPrecision != RB_PointShadowMapHighPrecisionEnabled()
+			|| !RB_ShadowMapPointCacheEntryProjectionMatches( entry, vLight ) ) {
+		return false;
+	}
+
+	cube.valid = true;
+	cube.signature = entry->signature;
+	cube.size = entry->size;
+	cube.highPrecision = entry->highPrecision;
+	cube.lastUpdatedFrame = entry->lastUpdatedFrame;
+	return true;
+}
+
+void RB_ShadowMapPointCubeMarkUsed( const int lightDefIndex ) {
+	if ( RB_ShadowMapActivePointCacheContentReady()
+			&& g_activePointShadowMapCache->lightIndex == lightDefIndex ) {
+		g_activePointShadowMapCache->lastUsedFrame = tr.frameCount;
 	}
 }
 
@@ -10340,6 +10814,19 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	glDisable( GL_VERTEX_PROGRAM_ARB );
 	glDisable( GL_FRAGMENT_PROGRAM_ARB );
 	glUseProgramObjectARB( g_pointShadowMapProgram.programObject );
+	const int pointFaceSize = g_pointShadowMapRenderTexture != NULL
+		? Max( 1, g_pointShadowMapRenderTexture->GetWidth() )
+		: RB_ShadowMapPointSizeValue();
+	const float pointFarDistance =
+		R_ShadowMapPointFarDistance( backEnd.vLight );
+	const shadowMapPointReceiverSettings_t baseReceiverSettings =
+		R_ShadowMapPointReceiverSettings(
+			pointFarDistance, pointFaceSize );
+	const shadowMapPointReceiverSettings_t receiverSettings =
+		R_ShadowMapPointStorageAdjustedReceiverSettings(
+			baseReceiverSettings, pointFarDistance, pointFaceSize,
+			RB_PointShadowMapDepthCompareEnabled(),
+			RB_PointShadowMapHighPrecisionEnabled() );
 
 	if ( g_pointShadowMapProgram.bumpMap >= 0 ) {
 		glUniform1iARB( g_pointShadowMapProgram.bumpMap, 0 );
@@ -10365,28 +10852,24 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 		}
 	}
 	if ( g_pointShadowMapProgram.shadowBias >= 0 ) {
-		float pointBias = r_shadowMapPointBias.GetFloat();
-		if ( !RB_PointShadowMapDepthCompareEnabled() ) {
-			// the manual compare path reads radial depth from color storage;
-			// floor the bias by that storage's quantization step near the far
-			// envelope (fp16 mantissa step in [0.5,1) vs 16-bit fixed packing)
-			const float storageStep = RB_PointShadowMapHighPrecisionEnabled() ? ( 1.0f / 2048.0f ) : ( 1.0f / 65025.0f );
-			pointBias = Max( pointBias, storageStep * 1.5f );
-		}
-		glUniform1fARB( g_pointShadowMapProgram.shadowBias, pointBias );
+		glUniform1fARB( g_pointShadowMapProgram.shadowBias,
+			receiverSettings.constantBias );
 	}
 	if ( g_pointShadowMapProgram.shadowNormalBias >= 0 ) {
-		glUniform1fARB( g_pointShadowMapProgram.shadowNormalBias, r_shadowMapPointNormalBias.GetFloat() );
+		glUniform1fARB( g_pointShadowMapProgram.shadowNormalBias,
+			receiverSettings.normalBias );
 	}
 	if ( g_pointShadowMapProgram.pointShadowTexelDepthBias >= 0 ) {
-		const float texelDepthBias = Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() ) / Max( 1, g_pointShadowMapRenderTexture->GetWidth() );
-		glUniform1fARB( g_pointShadowMapProgram.pointShadowTexelDepthBias, texelDepthBias );
+		glUniform1fARB(
+			g_pointShadowMapProgram.pointShadowTexelDepthBias,
+			receiverSettings.texelBiasScale / pointFaceSize );
 	}
 	if ( g_pointShadowMapProgram.pointShadowNormalOffsetWorld >= 0 ) {
 		// per-distance texel factor: a cube face spans 2*distance across
 		// width texels, so one texel at distance d is (2*d/width) world units
-		const float normalOffsetFactor = 2.0f * Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() ) / Max( 1, g_pointShadowMapRenderTexture->GetWidth() );
-		glUniform1fARB( g_pointShadowMapProgram.pointShadowNormalOffsetWorld, normalOffsetFactor );
+		glUniform1fARB(
+			g_pointShadowMapProgram.pointShadowNormalOffsetWorld,
+			2.0f * receiverSettings.normalOffsetScale / pointFaceSize );
 	}
 	if ( g_pointShadowMapProgram.shadowFilterRadius >= 0 ) {
 		glUniform1fARB( g_pointShadowMapProgram.shadowFilterRadius, r_shadowMapPointFilterRadius.GetFloat() );
@@ -10410,10 +10893,11 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 		glUniform4fvARB( g_pointShadowMapProgram.globalLightOrigin, 1, globalLightOrigin );
 	}
 	if ( g_pointShadowMapProgram.pointShadowFar >= 0 ) {
-		glUniform1fARB( g_pointShadowMapProgram.pointShadowFar, RB_PointShadowMapLightFar( backEnd.vLight ) );
+		glUniform1fARB( g_pointShadowMapProgram.pointShadowFar,
+			pointFarDistance );
 	}
 	if ( g_pointShadowMapProgram.pointShadowTexelScale >= 0 ) {
-		const float texelScale = 2.0f / Max( 1, g_pointShadowMapRenderTexture->GetWidth() );
+		const float texelScale = 2.0f / pointFaceSize;
 		glUniform1fARB( g_pointShadowMapProgram.pointShadowTexelScale, texelScale );
 	}
 	if ( g_pointShadowMapProgram.pointShadowDepthMode >= 0 ) {
@@ -11054,7 +11538,7 @@ static void RB_ShadowMapTrackWrappedCustomGLSLReceivers( const viewLight_t *vLig
 	}
 }
 
-static void RB_ShadowMapDrawReceiverFallbacks( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
+static void RB_ShadowMapDrawReceiverFallbacks( const viewLight_t *vLight, const shadowMapPassKind_t passKind, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions, const bool drawInteractions = true ) {
 	int receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_COUNT];
 	const int receiverFallbackSurfaces = RB_CountShadowMapReceiverFallbackSurfaces( interactions, receiverFallbackReasons );
 	if ( receiverFallbackSurfaces <= 0 ) {
@@ -11090,13 +11574,106 @@ static void RB_ShadowMapDrawReceiverFallbacks( const viewLight_t *vLight, const 
 			RB_ShadowMapReceiverFallbackReasonName( SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY ),
 			receiverFallbackReasons[SHADOWMAP_RECEIVER_FALLBACK_GENERATED_GEOMETRY] );
 	}
+	if ( !drawInteractions ) {
+		return;
+	}
 	shadowMapTimedPhase_t timedPhase;
 	RB_ShadowMapBeginTimedPhase( timedPhase, vLight, passKind, SHADOWMAP_TIMING_RECEIVER_FALLBACK );
 	RB_ShadowMapStencilFallbackFiltered( primaryShadowSurfs, secondaryShadowSurfs, interactions, RB_SurfaceNeedsShadowMapReceiverFallback );
 	RB_ShadowMapEndTimedPhase( timedPhase );
 }
 
-static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions ) {
+static int RB_ShadowMapReceiverMaskForPass(
+		const shadowMapPassKind_t passKind ) {
+	return passKind == SHADOWMAP_PASS_LOCAL
+		? SHADOWMAP_RECEIVER_MASK_LOCAL : SHADOWMAP_RECEIVER_MASK_GLOBAL;
+}
+
+static bool RB_ShadowMapHybridAvailableForPass( const viewLight_t *vLight,
+		const shadowMapPassKind_t passKind ) {
+	if ( vLight == NULL ) {
+		return false;
+	}
+	const int receiverMask = RB_ShadowMapReceiverMaskForPass( passKind );
+	const int incompleteMapMask = vLight->shadowMapIncompleteMapMask
+		| vLight->shadowMapPrelightMapMissingMask;
+	if ( ( incompleteMapMask & receiverMask ) == 0 ) {
+		return false;
+	}
+	// A combined prelight volume cannot supplement a partial map without also
+	// restamping mapped casters. Ordinary per-surface supplements can.
+	if ( ( vLight->shadowMapPrelightMapMissingMask & receiverMask ) != 0
+			|| ( vLight->shadowMapHybridIncompleteMask & receiverMask ) != 0 ) {
+		return false;
+	}
+	return vLight->globalShadowMapStencilSupplements != NULL
+		|| ( passKind == SHADOWMAP_PASS_GLOBAL
+			&& vLight->localShadowMapStencilSupplements != NULL );
+}
+
+static bool RB_ShadowMapMapOrHybridAvailableForPass(
+		const viewLight_t *vLight, const shadowMapPassKind_t passKind,
+		bool *hybridOut ) {
+	if ( hybridOut != NULL ) {
+		*hybridOut = false;
+	}
+	if ( vLight == NULL ) {
+		return false;
+	}
+	const int receiverMask = RB_ShadowMapReceiverMaskForPass( passKind );
+	const bool mapIncomplete = ( ( vLight->shadowMapIncompleteMapMask
+		| vLight->shadowMapPrelightMapMissingMask ) & receiverMask ) != 0;
+	if ( !mapIncomplete ) {
+		return true;
+	}
+	const bool hybrid = RB_ShadowMapHybridAvailableForPass(
+		vLight, passKind );
+	if ( hybridOut != NULL ) {
+		*hybridOut = hybrid;
+	}
+	return hybrid;
+}
+
+static bool RB_ShadowMapPrepareMappedReceiverStencil(
+		const viewLight_t *vLight, const shadowMapPassKind_t passKind,
+		const bool hybrid ) {
+	if ( !hybrid ) {
+		glStencilFunc( GL_ALWAYS, 128, 255 );
+		return true;
+	}
+	const drawSurf_t *globalSupplements =
+		vLight != NULL ? vLight->globalShadowMapStencilSupplements : NULL;
+	const drawSurf_t *localSupplements =
+		( vLight != NULL && passKind == SHADOWMAP_PASS_GLOBAL )
+			? vLight->localShadowMapStencilSupplements : NULL;
+	if ( globalSupplements == NULL && localSupplements == NULL ) {
+		return false;
+	}
+
+	backEnd.currentScissor = vLight->scissorRect;
+	if ( r_useScissor.GetBool() ) {
+		glScissor( backEnd.viewDef->viewport.x1 + backEnd.currentScissor.x1,
+			backEnd.viewDef->viewport.y1 + backEnd.currentScissor.y1,
+			backEnd.currentScissor.x2 + 1 - backEnd.currentScissor.x1,
+			backEnd.currentScissor.y2 + 1 - backEnd.currentScissor.y1 );
+	}
+	glClear( GL_STENCIL_BUFFER_BIT );
+	const bool useShadowVertexProgram = r_useShadowVertexProgram.GetBool()
+		&& R_BindARBProgram( GL_VERTEX_PROGRAM_ARB, VPROG_STENCIL_SHADOW,
+			"shadow-map hybrid stencil vertex program", true );
+	if ( useShadowVertexProgram ) {
+		glEnable( GL_VERTEX_PROGRAM_ARB );
+	}
+	RB_StencilShadowPass( globalSupplements );
+	RB_StencilShadowPass( localSupplements );
+	if ( useShadowVertexProgram ) {
+		glDisable( GL_VERTEX_PROGRAM_ARB );
+	}
+	glStencilFunc( GL_GEQUAL, 128, 255 );
+	return true;
+}
+
+static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t passKind, bool pointLight, const drawSurf_t *primaryCasters, const drawSurf_t *secondaryCasters, const drawSurf_t *tertiaryCasters, const drawSurf_t *quaternaryCasters, const drawSurf_t *primaryShadowSurfs, const drawSurf_t *secondaryShadowSurfs, const drawSurf_t *interactions, const bool deferReceiverDraw = false ) {
 	if ( interactions == NULL ) {
 		return;
 	}
@@ -11127,8 +11704,10 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			g_shadowMapStats.unshadowedGlobalPasses++;
 		}
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_NO_SHADOW_SURFS, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
-		glStencilFunc( GL_ALWAYS, 128, 255 );
-		RB_DrawMaterialInteractions( interactions );
+		if ( !deferReceiverDraw ) {
+			glStencilFunc( GL_ALWAYS, 128, 255 );
+			RB_DrawMaterialInteractions( interactions );
+		}
 		return;
 	}
 
@@ -11144,13 +11723,43 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 			primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapMarkStencilFallbackSticky( vLight );
-		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		if ( !deferReceiverDraw ) {
+			RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		}
 		return;
 	}
 
 	if ( !RB_DrawSurfChainHasFilteredSurface( interactions, RB_SurfaceEligibleForShadowMapReceiver ) ) {
-		RB_ShadowMapDrawReceiverFallbacks( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapDrawReceiverFallbacks( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions, !deferReceiverDraw );
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_RECEIVER_FALLBACK, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		return;
+	}
+
+	bool hybrid = false;
+	const bool mapOrHybridAvailable =
+		RB_ShadowMapMapOrHybridAvailableForPass(
+			vLight, passKind, &hybrid );
+	if ( passKind == SHADOWMAP_PASS_GLOBAL ) {
+		g_shadowMapGlobalPassHybrid = hybrid;
+	}
+	if ( !mapOrHybridAvailable ) {
+		// This ownership cannot be represented by a map alone, and its exact
+		// supplement set is unavailable. Preserve full-stencil behavior rather
+		// than silently accepting a partial mapped shadow.
+		if ( passKind == SHADOWMAP_PASS_LOCAL ) {
+			g_shadowMapStats.fallbackLocalPasses++;
+		} else {
+			g_shadowMapStats.fallbackGlobalPasses++;
+		}
+		RB_ShadowMapPassReport( vLight, passKind, pointLight,
+			SHADOWMAP_PASS_RESULT_STENCIL_ONLY, primaryCasters,
+			secondaryCasters, tertiaryCasters, quaternaryCasters,
+			primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		RB_ShadowMapMarkStencilFallbackSticky( vLight );
+		if ( !deferReceiverDraw ) {
+			RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs,
+				secondaryShadowSurfs, interactions );
+		}
 		return;
 	}
 
@@ -11166,7 +11775,7 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		if ( composeDynamics ) {
 			shadowMapTimedPhase_t composeTimer;
 			RB_ShadowMapBeginTimedPhase( composeTimer, vLight, passKind, SHADOWMAP_TIMING_MAP_RENDER );
-			RB_ShadowMapSelectScratchResources();
+			RB_ShadowMapSelectProjectedScratchResources();
 			const bool composeOk = RB_RenderShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters,
 				SHADOWMAP_RENDER_COMPOSE_DYNAMIC, schedule.projectedEntry );
 			g_shadowMapStats.cpuRenderMilliseconds += RB_ShadowMapEndTimedPhase( composeTimer );
@@ -11180,20 +11789,37 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 				}
 				RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_RENDER_FAIL, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 				RB_ShadowMapMarkStencilFallbackSticky( vLight );
-				RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+				if ( !deferReceiverDraw ) {
+					RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+				}
 				return;
 			}
 		}
-		shadowMapTimedPhase_t cacheReuseTimer;
-		RB_ShadowMapBeginTimedPhase( cacheReuseTimer, vLight, passKind, SHADOWMAP_TIMING_CACHE_REUSE );
-		const bool maskOk = pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions );
-		const float cacheReuseMilliseconds = RB_ShadowMapEndTimedPhase( cacheReuseTimer );
-		g_shadowMapStats.cpuMaskMilliseconds += cacheReuseMilliseconds;
 		if ( pointLight && schedule.pointEntry != NULL ) {
 			schedule.pointEntry->lastUsedFrame = tr.frameCount;
 		} else if ( schedule.projectedEntry != NULL ) {
 			schedule.projectedEntry->lastUsedFrame = tr.frameCount;
 		}
+		if ( deferReceiverDraw ) {
+			g_shadowMapGlobalPassMapped = pointLight
+				? SHADOWMAP_GLOBAL_MAPPED_POINT
+				: SHADOWMAP_GLOBAL_MAPPED_PROJECTED;
+			g_shadowMapDeferredGlobalReportPending = true;
+			g_shadowMapDeferredGlobalPassResult =
+				SHADOWMAP_PASS_RESULT_CACHE_REUSE;
+			return;
+		}
+		shadowMapTimedPhase_t cacheReuseTimer;
+		RB_ShadowMapBeginTimedPhase( cacheReuseTimer, vLight, passKind, SHADOWMAP_TIMING_CACHE_REUSE );
+		const bool receiverStencilReady =
+			RB_ShadowMapPrepareMappedReceiverStencil(
+				vLight, passKind, hybrid );
+		const bool maskOk = receiverStencilReady
+			&& ( pointLight
+				? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions )
+				: RB_GLSLShadowMap_CreateDrawInteractions( interactions ) );
+		const float cacheReuseMilliseconds = RB_ShadowMapEndTimedPhase( cacheReuseTimer );
+		g_shadowMapStats.cpuMaskMilliseconds += cacheReuseMilliseconds;
 		if ( maskOk ) {
 			if ( passKind == SHADOWMAP_PASS_LOCAL ) {
 				g_shadowMapStats.mappedLocalPasses++;
@@ -11222,7 +11848,9 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		}
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_MASK_FAIL, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapMarkStencilFallbackSticky( vLight );
-		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		if ( !deferReceiverDraw ) {
+			RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		}
 		return;
 	}
 
@@ -11235,7 +11863,9 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		}
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, SHADOWMAP_PASS_RESULT_SCHEDULED_SKIP, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		RB_ShadowMapMarkStencilFallbackSticky( vLight );
-		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		if ( !deferReceiverDraw ) {
+			RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+		}
 		return;
 	}
 
@@ -11253,7 +11883,7 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 	if ( composePlanned && renderOk ) {
 		shadowMapTimedPhase_t composeTimer;
 		RB_ShadowMapBeginTimedPhase( composeTimer, vLight, passKind, SHADOWMAP_TIMING_MAP_RENDER );
-		RB_ShadowMapSelectScratchResources();
+		RB_ShadowMapSelectProjectedScratchResources();
 		renderOk = RB_RenderShadowMap( primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters,
 			SHADOWMAP_RENDER_COMPOSE_DYNAMIC, schedule.projectedEntry );
 		g_shadowMapStats.cpuRenderMilliseconds += RB_ShadowMapEndTimedPhase( composeTimer );
@@ -11267,11 +11897,23 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 	}
 	bool maskOk = false;
 	if ( renderOk ) {
-		shadowMapTimedPhase_t maskTimer;
-		RB_ShadowMapBeginTimedPhase( maskTimer, vLight, passKind, SHADOWMAP_TIMING_MASK_PASS );
-		maskOk = pointLight ? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions ) : RB_GLSLShadowMap_CreateDrawInteractions( interactions );
-		const float maskMilliseconds = RB_ShadowMapEndTimedPhase( maskTimer );
-		g_shadowMapStats.cpuMaskMilliseconds += maskMilliseconds;
+		if ( deferReceiverDraw ) {
+			// Blended receivers stay in their ordered translucent phase. That
+			// phase prepares any stencil supplement and consumes this map once.
+			maskOk = true;
+		} else {
+			shadowMapTimedPhase_t maskTimer;
+			RB_ShadowMapBeginTimedPhase( maskTimer, vLight, passKind, SHADOWMAP_TIMING_MASK_PASS );
+			const bool receiverStencilReady =
+				RB_ShadowMapPrepareMappedReceiverStencil(
+					vLight, passKind, hybrid );
+			maskOk = receiverStencilReady
+				&& ( pointLight
+					? RB_GLSLPointShadowMap_CreateDrawInteractions( interactions )
+					: RB_GLSLShadowMap_CreateDrawInteractions( interactions ) );
+			const float maskMilliseconds = RB_ShadowMapEndTimedPhase( maskTimer );
+			g_shadowMapStats.cpuMaskMilliseconds += maskMilliseconds;
+		}
 	}
 	shadowMapPassResult_t passResult = SHADOWMAP_PASS_RESULT_MAPPED;
 	if ( !renderOk ) {
@@ -11281,11 +11923,20 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 	}
 	const bool mapped = ( passResult == SHADOWMAP_PASS_RESULT_MAPPED );
 
-	RB_ShadowMapDebugOverlayCapture( vLight, passKind, pointLight, mapped, renderOk,
-		primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters,
-		primaryShadowSurfs, secondaryShadowSurfs, interactions );
-
 	if ( mapped ) {
+		if ( deferReceiverDraw ) {
+			g_shadowMapGlobalPassMapped = pointLight
+				? SHADOWMAP_GLOBAL_MAPPED_POINT
+				: SHADOWMAP_GLOBAL_MAPPED_PROJECTED;
+			g_shadowMapDeferredGlobalReportPending = true;
+			g_shadowMapDeferredGlobalPassResult =
+				SHADOWMAP_PASS_RESULT_MAPPED;
+			return;
+		}
+		RB_ShadowMapDebugOverlayCapture( vLight, passKind, pointLight, true,
+			renderOk, primaryCasters, secondaryCasters, tertiaryCasters,
+			quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs,
+			interactions );
 		if ( passKind == SHADOWMAP_PASS_LOCAL ) {
 			g_shadowMapStats.mappedLocalPasses++;
 		} else {
@@ -11301,6 +11952,11 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 		RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 		return;
 	}
+
+	RB_ShadowMapDebugOverlayCapture( vLight, passKind, pointLight, false,
+		renderOk, primaryCasters, secondaryCasters, tertiaryCasters,
+		quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs,
+		interactions );
 
 	if ( passKind == SHADOWMAP_PASS_LOCAL ) {
 		g_shadowMapStats.fallbackLocalPasses++;
@@ -11319,7 +11975,38 @@ static void RB_ShadowMapRunPass( const viewLight_t *vLight, shadowMapPassKind_t 
 	}
 	RB_ShadowMapPassReport( vLight, passKind, pointLight, passResult, primaryCasters, secondaryCasters, tertiaryCasters, quaternaryCasters, primaryShadowSurfs, secondaryShadowSurfs, interactions );
 	RB_ShadowMapMarkStencilFallbackSticky( vLight );
-	RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+	if ( !deferReceiverDraw ) {
+		RB_ShadowMapStencilFallback( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions );
+	}
+}
+
+static void RB_ShadowMapCompleteDeferredGlobalReceiver(
+		const viewLight_t *vLight, const bool pointLight,
+		const bool maskOk ) {
+	if ( !g_shadowMapDeferredGlobalReportPending ) {
+		return;
+	}
+
+	const shadowMapPassResult_t result = maskOk
+		? g_shadowMapDeferredGlobalPassResult
+		: SHADOWMAP_PASS_RESULT_MASK_FAIL;
+	if ( maskOk ) {
+		g_shadowMapStats.mappedGlobalPasses++;
+	} else {
+		g_shadowMapStats.fallbackGlobalPasses++;
+		g_shadowMapStats.maskFailGlobalPasses++;
+	}
+	RB_ShadowMapDebugOverlayCapture( vLight, SHADOWMAP_PASS_GLOBAL,
+		pointLight, maskOk, true, vLight->globalShadowMapCasters,
+		vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters,
+		vLight->localShadowMapDynamicCasters, vLight->globalShadows,
+		vLight->localShadows, vLight->translucentInteractions );
+	RB_ShadowMapPassReport( vLight, SHADOWMAP_PASS_GLOBAL, pointLight,
+		result, vLight->globalShadowMapCasters,
+		vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters,
+		vLight->localShadowMapDynamicCasters, vLight->globalShadows,
+		vLight->localShadows, vLight->translucentInteractions );
+	g_shadowMapDeferredGlobalReportPending = false;
 }
 
 /*
@@ -12253,7 +12940,7 @@ static bool RB_SharedWorldInteractionGLMapPassValuesValid(
 			&& pass.point.highPrecision
 				== RB_PointShadowMapHighPrecisionEnabled()
 			&& idMath::Fabs( pass.point.farDistance
-				- RB_PointShadowMapLightFar( light.legacyViewLight ) )
+				- R_ShadowMapPointFarDistance( light.legacyViewLight ) )
 					<= 0.0001f
 			&& RB_SharedWorldInteractionGLFiniteArray(
 				pass.point.lightOrigin, 4 );
@@ -12538,17 +13225,6 @@ static bool RB_SharedWorldInteractionGLMapUpdateAdmitted( void ) {
 	return true;
 }
 
-static int RB_SharedWorldInteractionGLSealedMapSignature(
-		const classicInteractionDomainShadowMapPass_t &pass ) {
-	const std::uint64_t folded = pass.hash ^ ( pass.hash >> 32 );
-	int signature = static_cast<int>(
-		static_cast<std::uint32_t>( folded ) );
-	if ( signature == 0 ) {
-		signature = static_cast<int>( 0x6d617001u );
-	}
-	return signature;
-}
-
 static bool RB_SharedWorldInteractionGLEnsurePointCacheResource(
 		pointShadowMapCacheEntry_t *entry,
 		const classicInteractionDomainShadowMapPass_t &pass ) {
@@ -12598,12 +13274,13 @@ static bool RB_SharedWorldInteractionGLEnsurePointCacheResource(
 
 static bool RB_SharedWorldInteractionGLScheduleSealedMapPass(
 		const classicInteractionDomainShadowMapPass_t &pass,
+		const viewDef_t *viewDef,
 		int cacheLightIndex, shadowMapPassKind_t passKind,
 		shadowMapSchedule_t &schedule ) {
 	memset( &schedule, 0, sizeof( schedule ) );
 	schedule.action = SHADOWMAP_SCHEDULE_UPDATE;
-	schedule.signature =
-		RB_SharedWorldInteractionGLSealedMapSignature( pass );
+	schedule.signature = RB_ShadowMapBuildPassSignatureForView(
+		pass.legacyViewLight, viewDef, passKind, pass.point.valid );
 	if ( !pass.allowCacheReuse || cacheLightIndex < 0 ) {
 		return RB_SharedWorldInteractionGLMapUpdateAdmitted();
 	}
@@ -12689,11 +13366,19 @@ static void RB_SharedWorldInteractionGLCompleteSealedCacheUpdate(
 		entry->size = pass.point.faceSize;
 		entry->highPrecision = pass.point.highPrecision;
 		entry->depthCompare = pass.point.depthCompare;
+		entry->lightOrigin[0] = pass.point.lightOrigin[0];
+		entry->lightOrigin[1] = pass.point.lightOrigin[1];
+		entry->lightOrigin[2] = pass.point.lightOrigin[2];
+		entry->farDistance = pass.point.farDistance;
 		entry->lastUsedFrame = tr.frameCount;
 		entry->lastUpdatedFrame = tr.frameCount;
 		entry->colorImage = preparedPass.pointColorImage;
 		entry->depthImage = preparedPass.pointDepthImage;
 		entry->renderTexture = preparedPass.renderTexture;
+		entry->colorStorageGeneration = entry->colorImage != NULL
+			? entry->colorImage->GetStorageGeneration() : 0;
+		entry->depthStorageGeneration = entry->depthImage != NULL
+			? entry->depthImage->GetStorageGeneration() : 0;
 		return;
 	}
 	projectedShadowMapCacheEntry_t *entry = schedule.projectedEntry;
@@ -12714,6 +13399,8 @@ static void RB_SharedWorldInteractionGLCompleteSealedCacheUpdate(
 	entry->cascadeCount = pass.projected.state.cascadeCount;
 	entry->lastUsedFrame = tr.frameCount;
 	entry->lastUpdatedFrame = tr.frameCount;
+	entry->atlasStorageGeneration = preparedPass.projectedDepthImage != NULL
+		? preparedPass.projectedDepthImage->GetStorageGeneration() : 0;
 	entry->state = pass.projected.state;
 }
 
@@ -12753,6 +13440,9 @@ static bool RB_SharedWorldInteractionGLProjectedEntryMatches(
 		&& entry->passKind == preparedPass.cachePassKind
 		&& entry->lightClass == static_cast<int>( pass.lightClass )
 		&& entry->signature == preparedPass.signature
+		&& entry->atlasStorageGeneration != 0
+		&& entry->atlasStorageGeneration
+			== preparedPass.sampleStorageGeneration
 		&& entry->state.valid
 		&& entry->tileSize == pass.projected.state.tileSize
 		&& entry->atlasDiv == pass.projected.state.atlasDiv
@@ -12815,8 +13505,18 @@ static bool RB_SharedWorldInteractionGLPointEntryMatches(
 		&& entry->size == pass.point.faceSize
 		&& entry->highPrecision == pass.point.highPrecision
 		&& entry->depthCompare == pass.point.depthCompare
+		&& entry->lightOrigin[0] == pass.point.lightOrigin[0]
+		&& entry->lightOrigin[1] == pass.point.lightOrigin[1]
+		&& entry->lightOrigin[2] == pass.point.lightOrigin[2]
+		&& entry->farDistance == pass.point.farDistance
 		&& entry->colorImage == preparedPass.pointColorImage
 		&& entry->depthImage == preparedPass.pointDepthImage
+		&& entry->colorStorageGeneration != 0
+		&& entry->depthStorageGeneration != 0
+		&& entry->colorStorageGeneration
+			== preparedPass.pointColorImage->GetStorageGeneration()
+		&& entry->depthStorageGeneration
+			== preparedPass.pointDepthImage->GetStorageGeneration()
 		&& entry->renderTexture == preparedPass.renderTexture;
 }
 
@@ -12824,8 +13524,13 @@ static void RB_SharedWorldInteractionGLApplyMapCasterCull(
 		const classicInteractionDomainShadowMapPass_t &pass,
 		const classicInteractionDomainShadowCaster_t &caster ) {
 	int desired = 0;
-	if ( pass.casterCullMode != 0 && caster.cull != RENDERER_CULL_NONE ) {
-		GLenum face = pass.casterCullMode == 1 ? GL_FRONT : GL_BACK;
+	const bool automaticTwoSided = pass.casterCullMode == 2
+		&& ( !caster.perfectHull
+			|| R_ShadowMapLightOriginInsideCasterBounds(
+				pass.legacyViewLight, caster.modelMatrix,
+				caster.boundsMin, caster.boundsMax ) );
+	if ( pass.casterCullMode != 0 && !automaticTwoSided && caster.cull != RENDERER_CULL_NONE ) {
+		GLenum face = GL_FRONT;
 		if ( caster.cull == RENDERER_CULL_BACK ) {
 			face = face == GL_FRONT ? GL_BACK : GL_FRONT;
 		}
@@ -13249,7 +13954,7 @@ static bool RB_SharedWorldInteractionGLPrepareMappedPass(
 	const classicInteractionDomainShadowMapPass_t &pass = *preparedPass.pass;
 	viewLight_t *viewLight = const_cast<viewLight_t *>( light.legacyViewLight );
 	const bool pointLight = light.pointLight;
-	const shadowMapPassKind_t passKind = receiver
+	const shadowMapPassKind_t requestedPassKind = receiver
 		== CLASSIC_INTERACTION_RECEIVER_LOCAL
 			? SHADOWMAP_PASS_LOCAL : SHADOWMAP_PASS_GLOBAL;
 	if ( viewLight == NULL || pass.hasTranslucentCasters
@@ -13259,6 +13964,8 @@ static bool RB_SharedWorldInteractionGLPrepareMappedPass(
 	}
 
 	backEnd.vLight = viewLight;
+	const shadowMapPassKind_t passKind =
+		RB_ShadowMapCachePassKind( viewLight, requestedPassKind );
 	preparedPass.pointLight = pointLight;
 	preparedPass.cacheLightIndex = RB_ShadowMapLightIndex( viewLight );
 	preparedPass.cachePassKind = static_cast<int>( passKind );
@@ -13272,6 +13979,7 @@ static bool RB_SharedWorldInteractionGLPrepareMappedPass(
 
 	shadowMapSchedule_t schedule;
 	if ( !RB_SharedWorldInteractionGLScheduleSealedMapPass( pass,
+			prepared.viewDef,
 			preparedPass.cacheLightIndex, passKind, schedule ) ) {
 		return false;
 	}
@@ -14644,21 +15352,29 @@ static void RB_SharedWorldInteractionGLBeginMappedReceiver(
 
 	if ( pointLight ) {
 		glUniform1iARB( g_pointShadowMapProgram.pointShadowMap, 5 );
-		float bias = pass.point.constantBias;
-		if ( !pass.point.depthCompare ) {
-			const float storageStep = pass.point.highPrecision
-				? 1.0f / 2048.0f : 1.0f / 65025.0f;
-			bias = Max( bias, storageStep * 1.5f );
-		}
-		glUniform1fARB( g_pointShadowMapProgram.shadowBias, bias );
+		shadowMapPointReceiverSettings_t sealedReceiverSettings;
+		sealedReceiverSettings.constantBias = pass.point.constantBias;
+		sealedReceiverSettings.normalBias = pass.point.normalBias;
+		sealedReceiverSettings.texelBiasScale = pass.point.texelBiasScale;
+		sealedReceiverSettings.normalOffsetScale =
+			pass.point.normalOffsetScale;
+		sealedReceiverSettings.worldBiasScale = 1.0f;
+		const shadowMapPointReceiverSettings_t receiverSettings =
+			R_ShadowMapPointStorageAdjustedReceiverSettings(
+				sealedReceiverSettings, pass.point.farDistance,
+				pass.point.faceSize, pass.point.depthCompare,
+				pass.point.highPrecision );
+		glUniform1fARB( g_pointShadowMapProgram.shadowBias,
+			receiverSettings.constantBias );
 		glUniform1fARB( g_pointShadowMapProgram.shadowNormalBias,
-			pass.point.normalBias );
+			receiverSettings.normalBias );
 		glUniform1fARB(
 			g_pointShadowMapProgram.pointShadowTexelDepthBias,
-			pass.point.texelBiasScale / Max( 1, pass.point.faceSize ) );
+			receiverSettings.texelBiasScale
+				/ Max( 1, pass.point.faceSize ) );
 		glUniform1fARB(
 			g_pointShadowMapProgram.pointShadowNormalOffsetWorld,
-			2.0f * pass.point.normalOffsetScale
+			2.0f * receiverSettings.normalOffsetScale
 				/ Max( 1, pass.point.faceSize ) );
 		glUniform1fARB( g_pointShadowMapProgram.shadowFilterRadius,
 			pass.point.filterRadius );
@@ -15459,6 +16175,12 @@ void RB_ARB2_DrawInteractions( void ) {
 
 			glStencilFunc( GL_ALWAYS, 128, 255 );
 			g_shadowMapGlobalPassMapped = SHADOWMAP_GLOBAL_MAPPED_NONE;
+			g_shadowMapGlobalPassHybrid = false;
+			g_shadowMapDeferredGlobalReportPending = false;
+			bool deferGlobalReceiverDraw = false;
+			const drawSurf_t *globalReceiverInteractions =
+				RB_ShadowMapGlobalReceiverPlanningChain(
+					vLight, deferGlobalReceiverDraw );
 
 			if ( classification.pointLight ) {
 				// Point-light shadow maps use the same ownership split as the retail
@@ -15468,14 +16190,22 @@ void RB_ARB2_DrawInteractions( void ) {
 				// legacy stencil shadow chains resolve back to the same ambient
 				// surfaces and can double-submit overlapping collision/helper meshes.
 				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, true, vLight->globalShadowMapCasters, NULL, vLight->globalShadowMapDynamicCasters, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters, vLight->localShadowMapDynamicCasters, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, true, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters, vLight->localShadowMapDynamicCasters, vLight->globalShadows, vLight->localShadows, globalReceiverInteractions, deferGlobalReceiverDraw );
 			} else {
 				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_LOCAL, false, vLight->globalShadowMapCasters, NULL, vLight->globalShadowMapDynamicCasters, NULL, vLight->globalShadows, NULL, vLight->localInteractions );
-				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters, vLight->localShadowMapDynamicCasters, vLight->globalShadows, vLight->localShadows, vLight->globalInteractions );
+				RB_ShadowMapRunPass( vLight, SHADOWMAP_PASS_GLOBAL, false, vLight->globalShadowMapCasters, vLight->localShadowMapCasters, vLight->globalShadowMapDynamicCasters, vLight->localShadowMapDynamicCasters, vLight->globalShadows, vLight->localShadows, globalReceiverInteractions, deferGlobalReceiverDraw );
+			}
+			if ( deferGlobalReceiverDraw
+				&& vLight->globalInteractions != NULL ) {
+				// The translucent chain drove GLOBAL map preparation because the
+				// opaque chain has no map-capable receiver. Draw that opaque fallback
+				// subset now, before the ordered translucent phase below.
+				RB_ShadowMapDrawReceiverFallbacks( vLight,
+					SHADOWMAP_PASS_GLOBAL, vLight->globalShadows,
+					vLight->localShadows, vLight->globalInteractions );
 			}
 
 			if ( !r_skipTranslucent.GetBool() ) {
-				glStencilFunc( GL_ALWAYS, 128, 255 );
 				backEnd.depthFunc = GLS_DEPTHFUNC_LESS;
 				if ( r_shadowMapTranslucentReceivers.GetBool()
 					&& g_shadowMapGlobalPassMapped != SHADOWMAP_GLOBAL_MAPPED_NONE
@@ -15485,17 +16215,62 @@ void RB_ARB2_DrawInteractions( void ) {
 					// still current - translucent receivers sample the same map
 					// the opaque receivers used. Surfaces the receiver path
 					// cannot draw (custom GLSL, generated geometry, prepare
-					// failures) keep their unshadowed contribution below.
-					g_shadowMapStats.translucentReceiverPasses++;
-					if ( g_shadowMapGlobalPassMapped == SHADOWMAP_GLOBAL_MAPPED_POINT ) {
-						RB_GLSLPointShadowMap_CreateDrawInteractions( vLight->translucentInteractions );
+					// failures) take the filtered stencil fallback below.
+					shadowMapTimedPhase_t translucentMaskTimer;
+					RB_ShadowMapBeginTimedPhase( translucentMaskTimer, vLight,
+						SHADOWMAP_PASS_GLOBAL, SHADOWMAP_TIMING_MASK_PASS );
+					const bool receiverStencilReady =
+						RB_ShadowMapPrepareMappedReceiverStencil( vLight,
+							SHADOWMAP_PASS_GLOBAL,
+							g_shadowMapGlobalPassHybrid );
+					const bool translucentMaskOk = receiverStencilReady
+						&& ( g_shadowMapGlobalPassMapped == SHADOWMAP_GLOBAL_MAPPED_POINT
+							? RB_GLSLPointShadowMap_CreateDrawInteractions(
+								vLight->translucentInteractions )
+							: RB_GLSLShadowMap_CreateDrawInteractions(
+								vLight->translucentInteractions ) );
+					g_shadowMapStats.cpuMaskMilliseconds +=
+						RB_ShadowMapEndTimedPhase( translucentMaskTimer );
+					if ( translucentMaskOk ) {
+						g_shadowMapStats.translucentReceiverPasses++;
+						RB_ShadowMapCompleteDeferredGlobalReceiver( vLight,
+							classification.pointLight, true );
+						RB_ShadowMapTrackWrappedCustomGLSLReceivers(
+							vLight, SHADOWMAP_PASS_GLOBAL,
+							vLight->translucentInteractions );
+						RB_ShadowMapDrawReceiverFallbacks( vLight,
+							SHADOWMAP_PASS_GLOBAL, vLight->globalShadows,
+							vLight->localShadows,
+							vLight->translucentInteractions );
+						if ( g_shadowMapMaskPrepareFailures > 0 ) {
+							RB_ShadowMapStencilFallbackFiltered(
+								vLight->globalShadows,
+								vLight->localShadows,
+								vLight->translucentInteractions,
+								RB_SurfaceShadowMapReceiverPrepareFailed );
+						}
 					} else {
-						RB_GLSLShadowMap_CreateDrawInteractions( vLight->translucentInteractions );
+						RB_ShadowMapCompleteDeferredGlobalReceiver( vLight,
+							classification.pointLight, false );
+						RB_ShadowMapMarkStencilFallbackSticky( vLight );
+						RB_ShadowMapStencilFallback( vLight,
+							SHADOWMAP_PASS_GLOBAL, vLight->globalShadows,
+							vLight->localShadows,
+							vLight->translucentInteractions );
 					}
-					RB_DrawMaterialInteractionsFiltered( vLight->translucentInteractions, RB_SurfaceNeedsShadowMapReceiverFallback );
-					if ( g_shadowMapMaskPrepareFailures > 0 ) {
-						RB_DrawMaterialInteractionsFiltered( vLight->translucentInteractions, RB_SurfaceShadowMapReceiverPrepareFailed );
-					}
+				} else if ( vLight->translucentInteractions != NULL
+					&& r_shadows.GetBool()
+					&& ( r_shadowMapTranslucentReceivers.GetBool()
+						|| r_stencilTranslucentShadows.GetBool() )
+					&& ( vLight->globalShadows != NULL
+						|| vLight->localShadows != NULL ) ) {
+					// A deferred GLOBAL map that could not be prepared must not
+					// degrade translucent receivers to an unshadowed draw. Restamp
+					// the complete ownership and draw it once at translucent depth.
+					RB_ShadowMapStencilFallback( vLight,
+						SHADOWMAP_PASS_GLOBAL, vLight->globalShadows,
+						vLight->localShadows,
+						vLight->translucentInteractions );
 				} else {
 					RB_DrawMaterialInteractions( vLight->translucentInteractions );
 				}

@@ -26,6 +26,7 @@ vid_restart
 Notes:
 - `r_shadows` must stay enabled for any shadow path to render.
 - If the shadow-map path is unavailable or fails for a light, openQ4 falls back to the legacy shadow path instead of leaving the light unshadowed.
+- If only part of a receiver ownership can be represented in a shadow map, the classic renderer combines that exact map with the missing casters' stencil supplements. If those supplements are incomplete, the complete ownership falls back to stencil instead of publishing a partial shadow.
 - Point lights shadow-map by default (`r_shadowMapPointLights 1`); they are the dominant light class in Quake 4 content. Set `r_shadowMapPointLights 0` to fall back to stencil shadows for point lights only.
 - Lights touching animated, deformed, or packed character receivers can also fall back to the legacy stencil path so stock character lighting, mirrored seams, and eye materials retain retail-style interaction behavior.
 - Modern renderer diagnostics keep lighting visible when shadow-map receiver sampling is not ready, but full modern visible-frame replacement stays fail-closed so the legacy path continues to provide the actual shadowed frame.
@@ -55,10 +56,11 @@ seta r_shadows 1
 seta r_useShadowMap 1
 seta r_shadowMapCSM 1
 seta r_shadowMapSize 1024
-seta r_shadowMapFilterRadius 2.0
-seta r_shadowMapFilterTaps 13
-seta r_shadowMapPointFilterRadius 2.5
-seta r_shadowMapPointFilterTaps 13
+seta r_shadowMapFilterRadius 0.75
+seta r_shadowMapFilterTaps 9
+seta r_shadowMapPointFilterRadius 1.0
+seta r_shadowMapPointFilterTaps 9
+seta r_shadowMapCasterCulling 2
 seta r_shadowMapHashedAlpha 1
 seta r_shadowMapCascadeStabilize 1
 vid_restart
@@ -71,11 +73,13 @@ seta r_shadows 1
 seta r_useShadowMap 1
 seta r_shadowMapCSM 1
 seta r_shadowMapSize 2048
+seta r_shadowMapPointSize 1024
 seta r_shadowMapCascadeCount 4
-seta r_shadowMapFilterRadius 2.5
+seta r_shadowMapFilterRadius 1.0
 seta r_shadowMapFilterTaps 13
-seta r_shadowMapPointFilterRadius 3.0
+seta r_shadowMapPointFilterRadius 1.0
 seta r_shadowMapPointFilterTaps 13
+seta r_shadowMapCasterCulling 2
 seta r_shadowMapHashedAlpha 1
 seta r_shadowMapCascadeStabilize 1
 vid_restart
@@ -99,9 +103,10 @@ seta r_shadows 1
 seta r_useShadowMap 1
 seta r_shadowMapCSM 0
 seta r_shadowMapSize 512
-seta r_shadowMapFilterRadius 1.5
+seta r_shadowMapPointSize 256
+seta r_shadowMapFilterRadius 0.75
 seta r_shadowMapFilterTaps 5
-seta r_shadowMapPointFilterRadius 2.0
+seta r_shadowMapPointFilterRadius 1.0
 seta r_shadowMapPointFilterTaps 5
 seta r_shadowMapHashedAlpha 1
 vid_restart
@@ -130,17 +135,17 @@ vid_restart
 | `r_shadowMapProjectedCSM` | `1` | `0..1` | Allows ordinary projected lights to use CSM when `r_shadowMapCSM` is enabled; parallel/global lights keep their dedicated large-coverage policy. |
 | `r_shadowMapConservativeCasters` | `1` | `0..1` | Keeps shadow-map caster submission separate from visible receiver scissors, so off-screen blockers can still shadow visible receivers. |
 | `r_shadowMapSkipStencilShadows` | `1` | `0..1` | Skips stencil shadow volume generation and linking for lights that will render shadow maps, removing the duplicate CPU shadow work. A light that fails a shadow-map pass automatically restores its stencil volumes on the next frame. |
-| `r_shadowMapCasterCulling` | `2` | `0..2` | Caster face culling: `0` renders casters two-sided, `1` stores light-facing faces, `2` stores back faces (fewer acne artifacts, slight detachment on thin geometry). Materials declared `twoSided`/`backSided` are always honored, so grates, foliage, and curtains cast correctly in every mode. |
+| `r_shadowMapCasterCulling` | `2` | `0..2` | Caster face culling: `0` always renders two-sided, `1` forces the material-oriented light-facing near shell, and `2` automatically uses the near shell for sealed hulls outside the light while rendering open, uncertain, or light-enclosing geometry two-sided. Automatic mode prevents front-only/open props and enclosing shells from disappearing without storing a detached far shell. Authored `twoSided`/`backSided` orientation is honored whenever one-sided culling is active; the deliberately two-sided modes override it. |
 | `r_shadowMapSize` | `1024` | `128..4096` | Base shadow-map resolution. Higher values cost more VRAM and GPU time. |
 | `r_shadowMapAtlasSize` | `4096` | `2048..8192` | Edge size of the shared projected-light shadow atlas. Cached projected lights occupy `r_shadowMapSize`-sized cells inside it (CSM lights use a 2x2 cell block), so all cached lights stay resident in one texture. |
-| `r_shadowMapFilterRadius` | `2.0` | `0..8` | Projected-light PCF filter radius in texels. |
-| `r_shadowMapFilterTaps` | `13` | `1..13` | Projected-light PCF tap budget. Values up to `1`, `5`, `9`, and `13` select progressively wider sample sets. |
+| `r_shadowMapFilterRadius` | `0.75` | `0..8` | Projected-light PCF radius in texels. Increase resolution for more detail; increasing this value deliberately softens and widens the edge. |
+| `r_shadowMapFilterTaps` | `9` | `1..13` | Projected-light PCF tap budget. Values up to `1`, `5`, `9`, and `13` select progressively denser sample sets without changing the requested radius. |
 | `r_shadowMapFilterMode` | `0` | `0..2` | Projected-light filter mode: fixed PCF, stable rotated Poisson, or experimental PCSS-lite with raw depth sampling. |
 | `r_shadowMapDistantFilterScale` | `0.35` | `0..1` | Scales projected PCF and PCSS radii for parallel/global distant sources such as sky or sun lights. Their texels cover much more world space than local projectors, so a tighter kernel preserves caster silhouettes instead of over-blurring them. Set `1` to use the ordinary projected-light radii unchanged. |
 | `r_shadowMapPCSSLightRadius` | `4.0` | `0..16` | Projected PCSS-lite blocker search radius in shadow texels. |
 | `r_shadowMapPCSSMaxRadius` | `8.0` | `0..16` | Maximum projected PCSS-lite filter radius in shadow texels. |
-| `r_shadowMapPointFilterRadius` | `2.5` | `0..8` | Point-light PCF filter radius in texels. |
-| `r_shadowMapPointFilterTaps` | `13` | `1..13` | Point-light PCF tap budget. Values up to `1`, `5`, `9`, and `13` select progressively wider sample sets. |
+| `r_shadowMapPointFilterRadius` | `1.0` | `0..8` | Point-light PCF radius in cubemap texels. Large-radius lights can cover substantial world distance per texel, so wide values can visibly erase contact detail. |
+| `r_shadowMapPointFilterTaps` | `9` | `1..13` | Point-light PCF tap budget. Values up to `1`, `5`, `9`, and `13` select progressively denser sample sets without changing the requested radius. |
 | `r_shadowMapPointFilterMode` | `0` | `0..1` | Point-light filter mode: fixed PCF or stable rotated Poisson. |
 | `r_shadowMapDepthCompare` | `1` | `0..1` | Uses hardware comparison sampling (with hardware-filtered PCF taps) for projected depth maps. Selecting PCSS-lite (`r_shadowMapFilterMode 2`) automatically uses the manual raw-depth path instead. Set `0` if a driver has trouble with GLSL shadow samplers. |
 | `r_shadowMapPointDepthCompare` | `1` | `0..1` | Uses hardware comparison sampling for point-light depth cubemaps when GLSL 1.30 support is available. |
@@ -172,7 +177,9 @@ openQ4 can keep static-only shadow maps resident and reuse them across backend v
 | `r_shadowMapSubviewPolicy` | `1` | `0..2` | Shadow maps in mirror/remote-camera subviews: `0` renders them like main views, `1` reuses cached maps or falls back to stencil, `2` prefers stencil in subviews. When the target has no usable stencil attachment or an ownership contains map-only casters, Vulkan still renders the required fresh map rather than dropping its shadow. |
 | `r_shadowMapTranslucentReceivers` | `1` | `0..1` | Lets translucent surfaces sample the shadow map like opaque receivers, matching the stencil path's `r_stencilTranslucentShadows` behavior. |
 
-`r_shadowMapMaxUpdatesPerView` still limits discretionary dynamic shadow-map work. Resident cache hits do not consume that update budget, so static light reuse can reduce update pressure without starving moving lights. When the budget constrains a frame, updates go to the most important stale lights first (screen coverage, staleness, and view proximity ordered), and starved lights age up the priority list so every light is eventually refreshed; denied lights reuse their last cached map when one exists. On Vulkan, a receiver ownership containing a map-only caster can exceed the nominal budget because no equivalent complete stencil result exists, and those correctness-required maps are admitted before optional maps can consume bounded resources. Cache signatures include caster materials, alpha/hash settings, caster offset settings, point-light range/depth mode, and view-fitted CSM state, so changing those inputs forces a fresh shadow map instead of reusing stale resident data.
+`r_shadowMapMaxUpdatesPerView` still limits discretionary dynamic shadow-map work. Resident cache hits do not consume that update budget, so static light reuse can reduce update pressure without starving moving lights. When the budget constrains a frame, updates go to the most important stale lights first (screen coverage, staleness, and view proximity ordered), and starved lights age up the priority list so every light is eventually refreshed. A denied light may reuse its newest projection-compatible resident map. Point-light reuse additionally requires the same light origin, padded far range, cube resolution, depth-storage mode, and live physical storage generations; a moved or rescaled light therefore renders a fresh map or returns to stencil instead of decoding an old cube with a new projection. On Vulkan, a receiver ownership containing a map-only caster can exceed the nominal budget because no equivalent complete stencil result exists, and those correctness-required maps are admitted before optional maps can consume bounded resources. Cache signatures include caster materials, alpha/hash settings, caster offset settings, point-light range/depth mode, and view-fitted CSM state, so changing those inputs forces a fresh shadow map instead of reusing stale resident data.
+
+Resident entries are scoped to the loaded render world and are invalidated on map changes. Recreated atlas or cube storage invalidates its old metadata before cache occupancy and eviction are counted. Modern OpenGL also verifies the exact world, light, GLOBAL-pass signature, resolution, storage generation, and selected atlas slot or cube immediately before use; a resource belonging to another light, pass, storage generation, or previous map is treated as unavailable. Because that path exposes one shadow resource per light and cannot compose stencil supplements, it accepts only a complete GLOBAL ownership with no distinct local/no-self caster ownership and otherwise leaves the complete shadowed frame to the classic path. GLOBAL ownership is the union of opaque and enabled translucent receivers, so a translucent-only receiver can still request a complete map; if that map cannot be prepared, the affected translucent subset returns to filtered stencil shadowing at its normal depth phase instead of being drawn unshadowed.
 
 Projected lights with moving casters no longer pay full re-renders: the light's static geometry stays cached in the shared atlas, and each frame the cached tiles are copied and only the moving casters are drawn on top. A walking character in a cached light costs one small copy plus its own triangles.
 
@@ -255,9 +262,9 @@ Projected shadow maps store Quake 4's authored light falloff depth directly, so 
 | `r_shadowMapBias` | `0.00016` | `0..0.05` | Constant receiver depth bias for projected lights. |
 | `r_shadowMapNormalBias` | `0.00075` | `0..0.05` | Extra projected-light bias on sloped receivers. |
 | `r_shadowMapTexelBiasScale` | `0.45` | `0..8` | Uses texel-aware receiver bias based on fitted cascade/light footprint. Constant bias acts as a compatibility floor. |
-| `r_shadowMapNormalOffsetScale` | `1.0` | `0..8` | Normal-offset bias in shadow texels: pushes the receiver sample point along the surface normal on sloped surfaces, fixing acne without detaching contact shadows. The preferred first knob for slope acne. |
-| `r_shadowMapReceiverPlaneBias` | `0` | `0..1` | Allows derivative receiver-plane bias for wider projected-light filters. |
-| `r_shadowMapPolygonFactor` | `0.75` | `0..16` | Slope-scale caster depth offset applied by the caster shaders while rendering shadow maps (shadow casters write shader depth, which `glPolygonOffset` cannot bias). |
+| `r_shadowMapNormalOffsetScale` | `1.0` | `0..8` | Normal-offset bias in shadow texels. It helps slope acne but can move contact edges when set too high, especially on lights whose texels cover a large world-space footprint. |
+| `r_shadowMapReceiverPlaneBias` | `0` | `0..1` | Enables the experimental derivative receiver-plane approximation. Keep it disabled for ordinary play. |
+| `r_shadowMapPolygonFactor` | `0.25` | `0..16` | Slope-scale caster depth offset applied by the caster shaders while rendering shadow maps (shadow casters write shader depth, which `glPolygonOffset` cannot bias). |
 | `r_shadowMapPolygonOffset` | `0.5` | `0..64` | Constant caster depth offset in resolvable depth-buffer steps, applied by the caster shaders alongside the slope-scale term. |
 
 Point-light tuning:
@@ -266,8 +273,9 @@ Point-light tuning:
 |---|---:|---:|---|
 | `r_shadowMapPointBias` | `0.00010` | `0..0.05` | Constant receiver depth bias for point lights. |
 | `r_shadowMapPointNormalBias` | `0.0010` | `0..0.05` | Extra point-light bias on sloped receivers. |
+| `r_shadowMapPointMaxWorldBias` | `4.0` | `0..64` | Conservative world-space ceiling for the combined point-light receiver depth and normal-offset bias. It prevents huge-radius lights from turning small normalized values into large contact gaps. `0` disables the ceiling for comparison. |
 
-Point-light constant and texel-aware receiver bias also use the larger value rather than stacking both terms, so tuning one path does not automatically over-bias the other. The slope-amplified texel-aware term is capped internally so grazing receivers do not create detached shadows.
+Point-light constant and texel-aware receiver bias use the larger value rather than stacking both terms. The slope-amplified texel-aware term is bounded internally, and the complete receiver-depth plus normal-offset budget is scaled together when it would exceed `r_shadowMapPointMaxWorldBias`.
 
 Practical advice:
 - Raise bias values slowly in very small steps.
@@ -333,9 +341,9 @@ Useful workflow:
 - If cutout materials cast solid-looking shadows, make sure `r_shadowMapHashedAlpha 1` is enabled and the material is actually alpha-tested with explicit texture coordinates. Unusual animated texgen cutouts may cast conservative solid depth until that stage type is supported.
 - If translucent shadows are too strong or too noisy, lower `r_shadowMapTranslucentDensity` or disable `r_shadowMapTranslucentMoments`.
 - If blended materials still do not cast translucent shadows, that material may be outside the currently supported stage set. Common additive pickup orbs are supported, but many particle/effect materials still are not.
-- If point-light shadows look too detached, reduce `r_shadowMapPointBias` or `r_shadowMapPointNormalBias`.
+- If point-light shadows look too detached, first confirm `r_shadowMapCasterCulling 2` and `r_shadowMapPointMaxWorldBias 4`; then reduce `r_shadowMapPointFilterRadius`, `r_shadowMapPointBias`, or `r_shadowMapPointNormalBias` in small steps.
 - If projected-light shadows look detached, reduce `r_shadowMapBias`, `r_shadowMapNormalBias`, `r_shadowMapTexelBiasScale`, `r_shadowMapPolygonFactor`, or `r_shadowMapPolygonOffset` in small steps.
-- If projected-light acne appears only with large filter radii, try `r_shadowMapReceiverPlaneBias 1` before greatly increasing constant bias.
+- If projected-light acne appears only with a large filter radius, prefer a higher shadow-map resolution or a narrower radius before increasing bias. The experimental receiver-plane approximation remains off by default.
 - If PCSS-lite seems unchanged, confirm `r_shadowMapFilterMode 2` is active; the renderer selects the manual raw-depth path for that mode automatically.
 - If point-light depth compare causes shader trouble on a driver, leave `r_shadowMapPointDepthCompare 0`; the renderer falls back to the high-precision color-depth cubemap path.
 - If static-cache reuse hides expected updates while testing unusual content, set `r_shadowMapStaticCache 0` or reduce `r_shadowMapResidentFrames`.

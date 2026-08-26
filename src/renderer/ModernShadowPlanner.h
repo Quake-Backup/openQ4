@@ -4,6 +4,8 @@
 #ifndef __MODERN_SHADOW_PLANNER_H__
 #define __MODERN_SHADOW_PLANNER_H__
 
+#include <cstdint>
+
 #include "RendererCaps.h"
 #include "ScenePackets.h"
 
@@ -169,13 +171,22 @@ typedef struct modernShadowLightDescriptor_s {
 	// resolved persistent-atlas placement (5c): true when the light's GLOBAL
 	// cache entry holds live cells whose signature matches this frame's
 	// content and no dynamic casters are missing from the static tiles -
-	// the state in which modern receivers may sample the cell directly
+	// the state in which modern receivers may sample the cell directly. The
+	// storage generation closes the export-to-consumption recreation window.
 	bool				arb2AtlasSlotReady;
 	int					arb2AtlasCellX;
 	int					arb2AtlasCellY;
 	int					arb2AtlasCellSpan;
+	int					arb2AtlasSignature;
+	std::uint64_t		arb2AtlasStorageGeneration;
 	int					arb2AtlasContentFrame;
 	float				arb2AtlasCascadeRect[MODERN_SHADOW_DESCRIPTOR_MAX_CASCADES][4];
+	// Exact provenance for the singular point cube bound by modern GL.  This
+	// is separate from projected atlas placement because each cached point
+	// light owns a distinct cube and only the currently selected one is bound.
+	bool				arb2PointCubeReady;
+	int					arb2PointCubeSignature;
+	int					arb2PointCubeContentFrame;
 	bool				atlasTileReady;
 	bool				casterPassReady;
 	bool				cutoutCasterReady;
@@ -195,6 +206,7 @@ typedef struct modernShadowLightDescriptor_s {
 	int					arb2UnshadowedPasses;
 	unsigned int		arb2CacheablePassMask;
 	unsigned int		arb2CacheHitPassMask;
+	unsigned int		arb2CacheKeyHitMask;
 	unsigned int		arb2CacheMissPassMask;
 	unsigned int		arb2FreshUpdatePassMask;
 	unsigned int		arb2BudgetFallbackPassMask;

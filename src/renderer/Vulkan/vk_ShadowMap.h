@@ -73,6 +73,8 @@ typedef struct vkShadowLightState_s {
 	shadowMapProjectedLightState_t projectedState;
 										// full shared CSM state (projected lights only)
 	float				invAtlasSize[ 2 ];
+	float				constantBias;	// point-light effective normalized receiver bias
+	float				normalBias;	// point-light effective normalized slope bias
 	float				texelDepthBias;	// point-light receiver value
 	float				normalOffsetWorld;	// point: per-distance texel factor
 	vkShadowPassState_t	passes[ VK_SHADOW_RECEIVER_PASS_COUNT ];

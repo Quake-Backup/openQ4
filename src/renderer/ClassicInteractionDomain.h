@@ -234,6 +234,8 @@ typedef struct classicInteractionDomainShadowCaster_s {
 	bool			external;
 	bool			preload;
 	bool			ambientGeometry;
+	// Topology classification sealed from the actual caster geometry.
+	bool			perfectHull;
 	bool			dynamicCaster;
 	bool			translucentCaster;
 	classicDeformRole_t	deformRole;

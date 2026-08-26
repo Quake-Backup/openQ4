@@ -1266,7 +1266,7 @@ extern idCVar r_shadowMapDistantFilterScale;	// filter-radius scale for parallel
 extern idCVar r_shadowMapPCSSLightRadius;	// projected PCSS-lite blocker search radius
 extern idCVar r_shadowMapPCSSMaxRadius;	// projected PCSS-lite maximum filter radius
 extern idCVar r_shadowMapNormalOffsetScale;	// normal-offset receiver bias in shadow texels
-extern idCVar r_shadowMapCasterCulling;	// caster face culling: 0 = two-sided, 1 = light-facing, 2 = back faces
+extern idCVar r_shadowMapCasterCulling;	// caster face culling: 0 = two-sided, 1 = near shell, 2 = topology-aware automatic
 extern idCVar r_shadowMapPointHighPrecision;	// 1 = store point shadow depth as high-precision float color
 extern idCVar r_shadowMapPointLights;	// 1 = shadow-map point lights (the dominant Q4 light class); 0 = stencil fallback for point lights
 extern idCVar r_shadowMapPointSize;	// point-light cube face resolution, separate from r_shadowMapSize
@@ -1466,6 +1466,7 @@ extern idCVar r_shadowMapBias;			// constant receiver depth bias used by project
 extern idCVar r_shadowMapNormalBias;		// slope-aware receiver bias used by projected shadow maps
 extern idCVar r_shadowMapPointBias;		// constant receiver depth bias used by point-light shadow maps
 extern idCVar r_shadowMapPointNormalBias;	// slope-aware receiver bias used by point-light shadow maps
+extern idCVar r_shadowMapPointMaxWorldBias;	// combined point receiver depth/normal-offset cap in world units
 extern idCVar r_shadowMapFilterRadius;	// projected-light PCF radius in texels used by simple shadow maps
 extern idCVar r_shadowMapPointFilterRadius;	// point-light PCF radius in texels used by simple shadow maps
 extern idCVar r_shadowMapProjectionPad;	// normalized padding applied around projected-light shadow-map coverage
@@ -1632,6 +1633,12 @@ typedef struct rendererShadowTextureBindings_s {
 	bool							projectedAtlasReady;
 	bool							projectedPersistentAtlasReady;
 	bool							pointAtlasReady;
+	// Exact identity of pointAtlas when ready. Modern planning may precede
+	// classic light submission, so binding rechecks these fields to prevent a
+	// later-selected light's cube from satisfying an older plan.
+	int							pointAtlasLightIndex;
+	int							pointAtlasSignature;
+	int							pointAtlasContentFrame;
 	bool							projectedMomentsReady;
 	bool							pointMomentsReady;
 	bool							projectedDepthCompare;
@@ -1644,6 +1651,12 @@ typedef struct rendererShadowTextureBindings_s {
 } rendererShadowTextureBindings_t;
 
 bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings );
+
+// Establish the render-world ownership scope for the persistent ARB2 shadow
+// caches. Returns true when a world transition invalidated resident entries.
+// Modern GL calls this before planning or sampling so it cannot observe the
+// previous world's cache during the frame in which a map changes.
+bool RB_ShadowMapPrepareCacheView( const viewDef_t *viewDef );
 
 // deletes the lazily created CopyFramebuffer/CopyDepthbuffer scratch FBOs;
 // must be called before GLimp_Shutdown while the old context is still current

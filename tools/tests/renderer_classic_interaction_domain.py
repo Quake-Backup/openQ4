@@ -18,6 +18,17 @@ def require(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"missing {label}: {needle}")
 
 
+def compact(value: str) -> str:
+    """Ignore indentation and line wrapping while retaining token order."""
+    return " ".join(value.split())
+
+
+def require_compact(text: str, needle: str, label: str) -> None:
+    compact_needle = compact(needle)
+    if compact_needle not in compact(text):
+        raise AssertionError(f"missing {label}: {compact_needle}")
+
+
 def require_before(text: str, first: str, second: str, label: str) -> None:
     first_at = text.find(first)
     second_at = text.find(second)
@@ -25,18 +36,29 @@ def require_before(text: str, first: str, second: str, label: str) -> None:
         raise AssertionError(f"ordering guard failed for {label}: {first!r} before {second!r}")
 
 
+def require_order(text: str, needles: tuple[str, ...], label: str) -> None:
+    compact_text = compact(text)
+    previous = -1
+    for needle in needles:
+        compact_needle = compact(needle)
+        position = compact_text.find(compact_needle, previous + 1)
+        if position < 0:
+            raise AssertionError(f"missing {label}: {compact_needle}")
+        previous = position
+
+
 def reject(text: str, needle: str, label: str) -> None:
     if needle in text:
         raise AssertionError(f"forbidden {label}: {needle}")
 
 
-def function_body(text: str, signature: str) -> str:
+def function_body(text: str, signature: str, label: str = "function") -> str:
     start = text.find(signature)
     if start < 0:
-        raise AssertionError(f"missing function: {signature}")
+        raise AssertionError(f"missing {label}: {signature}")
     brace = text.find("{", start + len(signature))
     if brace < 0:
-        raise AssertionError(f"missing function body: {signature}")
+        raise AssertionError(f"missing {label} body: {signature}")
     depth = 0
     for index in range(brace, len(text)):
         if text[index] == "{":
@@ -45,7 +67,7 @@ def function_body(text: str, signature: str) -> str:
             depth -= 1
             if depth == 0:
                 return text[brace + 1 : index]
-    raise AssertionError(f"unterminated function body: {signature}")
+    raise AssertionError(f"unterminated {label} body: {signature}")
 
 
 def reject_raw_authored_reads(body: str, label: str) -> None:
@@ -64,6 +86,7 @@ def reject_raw_authored_reads(body: str, label: str) -> None:
 def main() -> None:
     header = read("src/renderer/ClassicInteractionDomain.h")
     source = read("src/renderer/ClassicInteractionDomain.cpp")
+    shadow_classification = read("src/renderer/ShadowMapClassification.cpp")
     packets_h = read("src/renderer/ScenePackets.h")
     packets_cpp = read("src/renderer/ScenePackets.cpp")
     init = read("src/renderer/RenderSystem_init.cpp")
@@ -469,6 +492,441 @@ def main() -> None:
     require_before(gl_entry, "RB_ARB2_SharedInteractionPreflight", "RB_ARB2_DrawSharedInteractionView", "OpenGL preflight before shared draw")
     require(gl_entry, "R_ClassicInteractionDomain_RecordBackendFallback", "OpenGL whole-view fallback accounting")
 
+    gl_estimate_pass = function_body(
+        gl, "static void RB_ShadowMapEstimateArb2CachePass("
+    )
+    estimate_incomplete_start = gl_estimate_pass.find(
+        "RB_ShadowMapMapOrHybridAvailableForPass("
+    )
+    estimate_cache_start = gl_estimate_pass.find("const bool cacheable")
+    if not 0 <= estimate_incomplete_start < estimate_cache_start:
+        raise AssertionError(
+            "ARB2 incomplete-map estimation must precede cache lookup/admission"
+        )
+    estimate_incomplete_gate = gl_estimate_pass[
+        estimate_incomplete_start:estimate_cache_start
+    ]
+    require_compact(
+        gl_estimate_pass,
+        """if ( !RB_ShadowMapMapOrHybridAvailableForPass(
+            vLight, passKind, NULL ) ) {""",
+        "negated direct ARB2 estimator incomplete-map gate",
+    )
+    for token in (
+        "RB_ShadowMapMapOrHybridAvailableForPass(",
+        "vLight, passKind, NULL",
+        "estimate.stencilOnlyPasses++",
+        "return;",
+    ):
+        require(
+            estimate_incomplete_gate,
+            token,
+            "direct ARB2 estimator incomplete-map fail-closed gate",
+        )
+    for forbidden in (
+        "RB_ShadowMapFindPointCacheEntry(",
+        "RB_ShadowMapFindProjectedCacheEntry(",
+        "r_shadowMapMaxUpdatesPerView",
+        "estimate.freshUpdatePasses++",
+    ):
+        reject(
+            estimate_incomplete_gate,
+            forbidden,
+            "cache or admission work before incomplete-map failover",
+        )
+    require_before(
+        gl_estimate_pass,
+        "RB_ShadowMapMapOrHybridAvailableForPass(",
+        "RB_ShadowMapStaticCacheableReadOnly( vLight, cachePassKind",
+        "incomplete-map estimator gate before cacheability",
+    )
+    map_or_hybrid = function_body(
+        gl,
+        "static bool RB_ShadowMapMapOrHybridAvailableForPass(\n\t\tconst viewLight_t *vLight",
+    )
+    for token in (
+        "RB_ShadowMapReceiverMaskForPass( passKind )",
+        "vLight->shadowMapIncompleteMapMask",
+        "vLight->shadowMapPrelightMapMissingMask",
+        "RB_ShadowMapHybridAvailableForPass(",
+        "*hybridOut = hybrid",
+        "return hybrid",
+    ):
+        require(
+            map_or_hybrid,
+            token,
+            "shared direct/estimator complete-map-or-hybrid predicate",
+        )
+    require_before(
+        gl_estimate_pass,
+        "RB_ShadowMapStaticCacheableReadOnly( vLight, cachePassKind",
+        "const int updateBudget",
+        "cache lookup before fresh-update admission",
+    )
+    for token in (
+        "passKind == SHADOWMAP_PASS_GLOBAL",
+        "vLight->localTranslucentShadowMapCasters",
+    ):
+        require(
+            gl_estimate_pass,
+            token,
+            "GLOBAL estimate includes local/noSelf translucent casters",
+        )
+
+    gl_translucent_global_receiver = function_body(
+        gl, "static bool RB_ShadowMapTranslucentGlobalReceiverNeeded("
+    )
+    for token in (
+        "vLight != NULL",
+        "vLight->translucentInteractions != NULL",
+        "r_shadowMapTranslucentReceivers.GetBool()",
+        "!r_skipTranslucent.GetBool()",
+    ):
+        require(
+            gl_translucent_global_receiver,
+            token,
+            "shared translucent-only GLOBAL receiver predicate",
+        )
+
+    gl_light_support = function_body(
+        gl, "static shadowMapLightSupportReason_t RB_ShadowMapLightSupportReason("
+    )
+    require_compact(
+        gl_light_support,
+        """if ( vLight->globalInteractions == NULL
+            && vLight->localInteractions == NULL
+            && !RB_ShadowMapTranslucentGlobalReceiverNeeded( vLight ) ) {
+            return SHADOWMAP_SUPPORT_NO_INTERACTIONS;
+        }""",
+        "translucent-only GLOBAL receiver admission at the earliest light support gate",
+    )
+
+    gl_estimate_ownership = function_body(
+        gl, "bool RB_ShadowMapEstimateArb2CacheOwnership("
+    )
+    for token in (
+        "bool deferGlobalReceiverDraw = false",
+        "const drawSurf_t *globalReceiverInteractions",
+        "RB_ShadowMapGlobalReceiverPlanningChain(",
+        "vLight, deferGlobalReceiverDraw",
+        "globalReceiverInteractions == NULL && vLight->localInteractions == NULL",
+        "vLight->localInteractions",
+        "vLight->localShadowMapCasters",
+        "vLight->globalShadowMapDynamicCasters",
+        "vLight->localShadowMapDynamicCasters",
+        "vLight->localShadows",
+        "globalReceiverInteractions )",
+    ):
+        require(
+            gl_estimate_ownership,
+            token,
+            "local opaque plus translucent GLOBAL estimate ownership",
+        )
+    require_before(
+        gl_estimate_ownership,
+        "RB_ShadowMapGlobalReceiverPlanningChain(",
+        "globalReceiverInteractions == NULL && vLight->localInteractions == NULL",
+        "translucent-only GLOBAL receiver admitted before empty-light rejection",
+    )
+    for token in (
+        "glConfig.maxTextureUnits < 6",
+        "glConfig.maxTextureImageUnits < 6",
+        "!glConfig.cubeMapAvailable",
+    ):
+        require(
+            gl_estimate_ownership,
+            token,
+            "read-only estimator/direct capability parity",
+        )
+    if gl_estimate_ownership.count("globalReceiverInteractions )") != 2:
+        raise AssertionError(
+            "Point and projected GLOBAL estimates must both consume the resolved receiver chain"
+        )
+    if gl_estimate_ownership.count("vLight->localShadowMapCasters") != 2:
+        raise AssertionError(
+            "Point and projected GLOBAL estimates must both retain local/noSelf casters"
+        )
+    estimate_deferred_fallback = function_body(
+        gl_estimate_ownership, "if ( deferGlobalReceiverDraw"
+    )
+    require_compact(
+        gl_estimate_ownership,
+        """if ( deferGlobalReceiverDraw
+            && RB_DrawSurfChainHasFilteredSurface( vLight->globalInteractions,
+                RB_SurfaceNeedsShadowMapReceiverFallback ) ) {""",
+        "deferred GLOBAL estimate charges opaque receiver fallback ownership",
+    )
+    require(
+        estimate_deferred_fallback,
+        "estimate.receiverFallbackPasses++;",
+        "deferred GLOBAL opaque receiver fallback estimate",
+    )
+    if gl_estimate_ownership.count("estimate.receiverFallbackPasses++") != 1:
+        raise AssertionError(
+            "Deferred GLOBAL opaque receiver fallback must be estimated exactly once"
+        )
+
+    gl_direct_shadow_pass = function_body(gl, "static void RB_ShadowMapRunPass(")
+    require(
+        gl,
+        "const bool deferReceiverDraw = false )",
+        "direct ARB2 receiver deferral API",
+    )
+    for token in (
+        "RB_ShadowMapDrawReceiverFallbacks( vLight, passKind, primaryShadowSurfs, secondaryShadowSurfs, interactions, !deferReceiverDraw )",
+        "if ( deferReceiverDraw )",
+        "SHADOWMAP_PASS_RESULT_CACHE_REUSE",
+        "maskOk = true;",
+        "if ( !deferReceiverDraw )",
+    ):
+        require(
+            gl_direct_shadow_pass,
+            token,
+            "deferred direct ARB2 receiver presentation",
+        )
+    reuse_defer_start = gl_direct_shadow_pass.find("if ( deferReceiverDraw )")
+    reuse_mask_start = gl_direct_shadow_pass.find(
+        "shadowMapTimedPhase_t cacheReuseTimer", reuse_defer_start
+    )
+    if not 0 <= reuse_defer_start < reuse_mask_start:
+        raise AssertionError("Missing deferred cache-reuse handoff before receiver masking")
+    reuse_defer_block = gl_direct_shadow_pass[reuse_defer_start:reuse_mask_start]
+    for token in (
+        "g_shadowMapGlobalPassMapped = pointLight",
+        "g_shadowMapDeferredGlobalReportPending = true",
+        "g_shadowMapDeferredGlobalPassResult =",
+        "SHADOWMAP_PASS_RESULT_CACHE_REUSE",
+        "return;",
+    ):
+        require(reuse_defer_block, token, "deferred cache-reuse resource publication")
+    for forbidden in (
+        "g_shadowMapStats.mappedGlobalPasses++",
+        "RB_ShadowMapPassReport(",
+        "RB_GLSLPointShadowMap_CreateDrawInteractions(",
+        "RB_GLSLShadowMap_CreateDrawInteractions(",
+        "RB_ShadowMapStencilFallback(",
+    ):
+        reject(reuse_defer_block, forbidden, "receiver draw during deferred cache reuse")
+    fresh_mask_start = gl_direct_shadow_pass.find("bool maskOk = false;")
+    fresh_defer_start = gl_direct_shadow_pass.find(
+        "if ( deferReceiverDraw )", fresh_mask_start
+    )
+    fresh_defer_end = gl_direct_shadow_pass.find("} else {", fresh_defer_start)
+    if not 0 <= fresh_mask_start < fresh_defer_start < fresh_defer_end:
+        raise AssertionError("Missing deferred fresh-map receiver handoff")
+    fresh_defer_block = gl_direct_shadow_pass[fresh_defer_start:fresh_defer_end]
+    require(fresh_defer_block, "maskOk = true;", "deferred fresh-map publication")
+    for forbidden in (
+        "RB_GLSLPointShadowMap_CreateDrawInteractions(",
+        "RB_GLSLShadowMap_CreateDrawInteractions(",
+        "RB_ShadowMapStencilFallback(",
+    ):
+        reject(fresh_defer_block, forbidden, "receiver draw during deferred fresh map")
+    fresh_publish_start = gl_direct_shadow_pass.find(
+        "if ( deferReceiverDraw )", gl_direct_shadow_pass.find("if ( mapped )")
+    )
+    fresh_publish_end = gl_direct_shadow_pass.find(
+        "RB_ShadowMapDebugOverlayCapture(", fresh_publish_start
+    )
+    if not 0 <= fresh_publish_start < fresh_publish_end:
+        raise AssertionError("Missing deferred fresh-map result publication")
+    fresh_publish_block = gl_direct_shadow_pass[
+        fresh_publish_start:fresh_publish_end
+    ]
+    for token in (
+        "g_shadowMapGlobalPassMapped = pointLight",
+        "g_shadowMapDeferredGlobalReportPending = true",
+        "g_shadowMapDeferredGlobalPassResult =",
+        "SHADOWMAP_PASS_RESULT_MAPPED",
+        "return;",
+    ):
+        require(
+            fresh_publish_block,
+            token,
+            "deferred fresh-map resource publication",
+        )
+    for forbidden in (
+        "g_shadowMapStats.mappedGlobalPasses++",
+        "RB_ShadowMapPassReport(",
+    ):
+        reject(
+            fresh_publish_block,
+            forbidden,
+            "optimistic deferred fresh-map diagnostics",
+        )
+
+    deferred_global_complete = function_body(
+        gl, "static void RB_ShadowMapCompleteDeferredGlobalReceiver("
+    )
+    for token in (
+        "g_shadowMapDeferredGlobalReportPending",
+        "g_shadowMapDeferredGlobalPassResult",
+        "SHADOWMAP_PASS_RESULT_MASK_FAIL",
+        "g_shadowMapStats.mappedGlobalPasses++",
+        "g_shadowMapStats.fallbackGlobalPasses++",
+        "g_shadowMapStats.maskFailGlobalPasses++",
+        "RB_ShadowMapDebugOverlayCapture(",
+        "RB_ShadowMapPassReport(",
+        "g_shadowMapDeferredGlobalReportPending = false",
+    ):
+        require(
+            deferred_global_complete,
+            token,
+            "deferred GLOBAL final-result diagnostics",
+        )
+
+    gl_global_receiver_plan = function_body(
+        gl, "static const drawSurf_t *RB_ShadowMapGlobalReceiverPlanningChain("
+    )
+    for token in (
+        "vLight->globalInteractions",
+        "RB_SurfaceEligibleForShadowMapReceiver",
+        "RB_ShadowMapTranslucentGlobalReceiverNeeded( vLight )",
+        "vLight->translucentInteractions",
+        "!opaqueEligible && translucentEligible",
+        "deferReceiverDraw = true",
+    ):
+        require(
+            gl_global_receiver_plan,
+            token,
+            "GLOBAL receiver union planning",
+        )
+    require_compact(
+        gl_global_receiver_plan,
+        """if ( !opaqueEligible && translucentEligible ) {
+            deferReceiverDraw = true;
+            return vLight->translucentInteractions;
+        }
+        return vLight->globalInteractions;""",
+        "branch-exact translucent-only GLOBAL receiver planning",
+    )
+
+    direct_setup_start = gl_entry.find("bool deferGlobalReceiverDraw")
+    translucent_phase_start = gl_entry.find(
+        "if ( !r_skipTranslucent.GetBool() )", direct_setup_start
+    )
+    direct_branch_end = gl_entry.find(
+        "if ( supportReason >= 0", translucent_phase_start
+    )
+    if not 0 <= direct_setup_start < translucent_phase_start < direct_branch_end:
+        raise AssertionError("Missing direct ARB2 deferred GLOBAL receiver phase")
+    direct_map_setup = gl_entry[direct_setup_start:translucent_phase_start]
+    for token in (
+        "RB_ShadowMapGlobalReceiverPlanningChain(",
+        "vLight, deferGlobalReceiverDraw",
+        "vLight->localInteractions",
+        "vLight->localShadowMapCasters",
+        "vLight->localShadowMapDynamicCasters",
+        "vLight->localShadows",
+        "globalReceiverInteractions, deferGlobalReceiverDraw )",
+        "RB_ShadowMapDrawReceiverFallbacks( vLight",
+        "vLight->globalInteractions",
+    ):
+        require(
+            direct_map_setup,
+            token,
+            "local opaque plus deferred translucent GLOBAL direct ownership",
+        )
+    if direct_map_setup.count("RB_ShadowMapRunPass(") != 4:
+        raise AssertionError(
+            "Direct point/projected paths must each prepare LOCAL and GLOBAL ownership"
+        )
+    if direct_map_setup.count("globalReceiverInteractions, deferGlobalReceiverDraw )") != 2:
+        raise AssertionError(
+            "Direct point/projected GLOBAL passes must both defer translucent-only receivers"
+        )
+    for local_chain in (
+        "vLight->localShadowMapCasters",
+        "vLight->localShadowMapDynamicCasters",
+        "vLight->localShadows",
+    ):
+        if direct_map_setup.count(local_chain) < 2:
+            raise AssertionError(
+                f"Direct point/projected GLOBAL ownership lost {local_chain}"
+            )
+
+    require_compact(
+        direct_map_setup,
+        """if ( deferGlobalReceiverDraw
+            && vLight->globalInteractions != NULL ) {""",
+        "deferred GLOBAL opaque fallback draw guard",
+    )
+    direct_opaque_fallback = function_body(
+        direct_map_setup, "if ( deferGlobalReceiverDraw"
+    )
+    require_compact(
+        direct_opaque_fallback,
+        """RB_ShadowMapDrawReceiverFallbacks( vLight,
+            SHADOWMAP_PASS_GLOBAL, vLight->globalShadows,
+            vLight->localShadows, vLight->globalInteractions );""",
+        "deferred GLOBAL opaque fallback draw",
+    )
+    if direct_map_setup.count("RB_ShadowMapDrawReceiverFallbacks( vLight") != 1:
+        raise AssertionError(
+            "Deferred GLOBAL opaque fallback subset must be submitted exactly once"
+        )
+
+    translucent_phase = gl_entry[translucent_phase_start:direct_branch_end]
+    for token in (
+        "g_shadowMapGlobalPassMapped != SHADOWMAP_GLOBAL_MAPPED_NONE",
+        "RB_ShadowMapPrepareMappedReceiverStencil( vLight",
+        "SHADOWMAP_PASS_GLOBAL",
+        "g_shadowMapGlobalPassHybrid",
+        "shadowMapTimedPhase_t translucentMaskTimer",
+        "RB_ShadowMapBeginTimedPhase( translucentMaskTimer",
+        "SHADOWMAP_TIMING_MASK_PASS",
+        "const bool translucentMaskOk = receiverStencilReady",
+        "RB_ShadowMapEndTimedPhase( translucentMaskTimer )",
+        "RB_GLSLPointShadowMap_CreateDrawInteractions(",
+        "RB_GLSLShadowMap_CreateDrawInteractions(",
+        "if ( translucentMaskOk )",
+        "RB_ShadowMapCompleteDeferredGlobalReceiver( vLight",
+        "RB_ShadowMapTrackWrappedCustomGLSLReceivers(",
+        "RB_ShadowMapDrawReceiverFallbacks( vLight",
+        "RB_ShadowMapStencilFallbackFiltered(",
+        "RB_SurfaceShadowMapReceiverPrepareFailed",
+        "RB_ShadowMapMarkStencilFallbackSticky( vLight );",
+        "r_stencilTranslucentShadows.GetBool()",
+        "vLight->globalShadows != NULL",
+        "vLight->localShadows != NULL",
+        "RB_ShadowMapStencilFallback( vLight",
+        "vLight->translucentInteractions",
+    ):
+        require(
+            translucent_phase,
+            token,
+            "single deferred translucent mapped-or-stencil presentation",
+        )
+    require_before(
+        translucent_phase,
+        "RB_ShadowMapPrepareMappedReceiverStencil( vLight",
+        "const bool translucentMaskOk = receiverStencilReady",
+        "deferred mapped receiver stencil before translucent draw",
+    )
+    require_before(
+        translucent_phase,
+        "if ( translucentMaskOk )",
+        "RB_ShadowMapMarkStencilFallbackSticky( vLight );",
+        "mapped translucent receiver failure before full-stencil failover",
+    )
+    if translucent_phase.count("RB_ShadowMapCompleteDeferredGlobalReceiver( vLight") != 2:
+        raise AssertionError(
+            "Deferred GLOBAL receiver success and failure must both finalize diagnostics"
+        )
+    translucent_success = function_body(
+        translucent_phase, "if ( translucentMaskOk )"
+    )
+    require(
+        translucent_success,
+        "g_shadowMapStats.translucentReceiverPasses++",
+        "successful mapped translucent receiver statistic",
+    )
+    reject(
+        translucent_phase[: translucent_phase.find("if ( translucentMaskOk )")],
+        "g_shadowMapStats.translucentReceiverPasses++",
+        "optimistic mapped translucent receiver statistic",
+    )
+
     gl_map_values = function_body(
         gl, "static bool RB_SharedWorldInteractionGLMapPassValuesValid("
     )
@@ -532,6 +990,29 @@ def main() -> None:
     gl_shadow_draw = function_body(
         gl, "static void RB_SharedWorldInteractionGLDrawShadowRange("
     )
+    point_pass_build = function_body(source, "static bool BuildShadowMapPasses(")
+    for token in (
+        "R_ShadowMapPointFarDistance( viewLight )",
+        "R_ShadowMapPointReceiverSettings(",
+        "point.constantBias = receiverSettings.constantBias",
+        "point.normalBias = receiverSettings.normalBias",
+        "point.normalOffsetScale = receiverSettings.normalOffsetScale",
+        "point.texelBiasScale = receiverSettings.texelBiasScale",
+    ):
+        require(point_pass_build, token, "sealed bounded point receiver state")
+    require(
+        shadow_classification,
+        "r_shadowMapPointMaxWorldBias.GetFloat()",
+        "shared point receiver world-bias policy",
+    )
+    for token in (
+        "pass.point.constantBias",
+        "pass.point.normalBias",
+        "pass.point.texelBiasScale",
+        "pass.point.normalOffsetScale",
+        "R_ShadowMapPointStorageAdjustedReceiverSettings(",
+    ):
+        require(gl_mapped_begin, token, "OpenGL sealed bounded point receiver upload")
     for token in (
         "pass.mapRequired",
         "pass.mapComplete",
@@ -637,7 +1118,8 @@ def main() -> None:
         require(gl_map_prepare, token, "OpenGL cache/update/scratch map preparation")
     for token in (
         "pass.allowCacheReuse",
-        "RB_SharedWorldInteractionGLSealedMapSignature( pass )",
+        "RB_ShadowMapBuildPassSignatureForView(",
+        "pass.legacyViewLight, viewDef, passKind, pass.point.valid",
         "RB_SharedWorldInteractionGLMapUpdateAdmitted()",
         "RB_ShadowMapFindPointCacheEntry(",
         "RB_ShadowMapFindProjectedCacheEntry(",
@@ -647,14 +1129,120 @@ def main() -> None:
         "schedule.cacheable = false",
     ):
         require(gl_map_schedule, token, "OpenGL sealed cache scheduler")
+    reject(
+        gl_map_schedule,
+        "RB_SharedWorldInteractionGLSealedMapSignature(",
+        "folded sealed-pass cache signature",
+    )
     for token in (
         "preparedPass.cacheLightIndex",
         "preparedPass.cachePassKind",
         "pass.lightClass",
         "schedule.signature",
         "entry->valid",
+        "entry->atlasStorageGeneration = preparedPass.projectedDepthImage != NULL",
+        "preparedPass.projectedDepthImage->GetStorageGeneration()",
     ):
         require(gl_map_complete, token, "OpenGL sealed cache publication")
+    for field in ("lightOrigin[3];", "farDistance;"):
+        require(gl, field, "point-cube render-time projection provenance")
+    point_active = function_body(
+        gl,
+        "static bool RB_ShadowMapActivePointCacheContentReady(",
+        "active point-cube provenance validation",
+    )
+    require_order(
+        point_active,
+        (
+            "entry->farDistance > 0.0f",
+            "entry->lightOrigin[0]",
+            "entry->colorStorageGeneration == 0",
+            "entry->depthStorageGeneration == 0",
+            "entry->colorImage->GetStorageGeneration()",
+            "entry->depthImage->GetStorageGeneration()",
+        ),
+        "active point cubes require published projection and storage provenance",
+    )
+    point_projection = function_body(
+        gl,
+        "static bool RB_ShadowMapPointCacheEntryProjectionMatches(",
+        "point-cube render-time projection identity",
+    )
+    require_order(
+        point_projection,
+        (
+            "entry->farDistance == R_ShadowMapPointFarDistance( vLight )",
+            "entry->lightOrigin[0] == vLight->globalLightOrigin[0]",
+            "entry->lightOrigin[1] == vLight->globalLightOrigin[1]",
+            "entry->lightOrigin[2] == vLight->globalLightOrigin[2]",
+        ),
+        "stale point cubes cannot cross light-origin or far-plane changes",
+    )
+    point_stale_reuse = function_body(
+        gl,
+        "static pointShadowMapCacheEntry_t *RB_ShadowMapFindPointCacheEntryAnySignature(",
+        "newest compatible point stale reuse",
+    )
+    require_order(
+        point_stale_reuse,
+        (
+            "RB_ShadowMapPointCacheEntryStorageValid( entry )",
+            "entry->size == requiredSize",
+            "entry->highPrecision == requiredHighPrecision",
+            "entry->depthCompare == requiredDepthCompare",
+            "RB_ShadowMapPointCacheEntryProjectionMatches( entry, vLight )",
+            "entry->lastUpdatedFrame > newest->lastUpdatedFrame",
+            "newest = entry;",
+            "return newest;",
+        ),
+        "point stale reuse selects the newest projection-compatible allocation",
+    )
+    projected_stale_reuse = function_body(
+        gl,
+        "static projectedShadowMapCacheEntry_t *RB_ShadowMapFindProjectedCacheEntryAnySignature(",
+        "newest projected stale reuse",
+    )
+    require_order(
+        projected_stale_reuse,
+        (
+            "RB_ShadowMapProjectedCacheEntryStorageValid( entry )",
+            "entry->lastUpdatedFrame > newest->lastUpdatedFrame",
+            "newest = entry;",
+            "return newest;",
+        ),
+        "projected stale reuse selects the most recently rendered sibling",
+    )
+    direct_cache_completion = function_body(
+        gl,
+        "static void RB_ShadowMapCompleteCacheUpdate(",
+        "direct point-cache provenance publication",
+    )
+    require_order(
+        direct_cache_completion,
+        (
+            "entry->lightOrigin[0] = vLight->globalLightOrigin[0];",
+            "entry->lightOrigin[1] = vLight->globalLightOrigin[1];",
+            "entry->lightOrigin[2] = vLight->globalLightOrigin[2];",
+            "entry->farDistance = R_ShadowMapPointFarDistance( vLight );",
+            "entry->lastUpdatedFrame = tr.frameCount;",
+            "entry->colorStorageGeneration = entry->colorImage != NULL",
+            "entry->depthStorageGeneration = entry->depthImage != NULL",
+        ),
+        "direct point-cache publication stamps projection and storage provenance",
+    )
+    require_order(
+        gl_map_complete,
+        (
+            "entry->lightOrigin[0] = pass.point.lightOrigin[0];",
+            "entry->lightOrigin[1] = pass.point.lightOrigin[1];",
+            "entry->lightOrigin[2] = pass.point.lightOrigin[2];",
+            "entry->farDistance = pass.point.farDistance;",
+            "entry->lastUpdatedFrame = tr.frameCount;",
+            "entry->colorStorageGeneration = entry->colorImage != NULL",
+            "entry->depthStorageGeneration = entry->depthImage != NULL",
+        ),
+        "shared point-cache publication stamps sealed projection and storage provenance",
+    )
     require(
         gl_map_prepare,
         "RB_SharedWorldInteractionGLRenderPointMap(",
@@ -719,6 +1307,28 @@ def main() -> None:
             "preparedPass.renderTexture",
         ):
             require(resource_match, token, resource_label)
+    for token in (
+        "entry->atlasStorageGeneration != 0",
+        "entry->atlasStorageGeneration",
+        "preparedPass.sampleStorageGeneration",
+    ):
+        require(
+            gl_projected_resource_match,
+            token,
+            "OpenGL projected cache storage-generation revalidation",
+        )
+    require_order(
+        gl_point_resource_match,
+        (
+            "entry->lightOrigin[0] == pass.point.lightOrigin[0]",
+            "entry->lightOrigin[1] == pass.point.lightOrigin[1]",
+            "entry->lightOrigin[2] == pass.point.lightOrigin[2]",
+            "entry->farDistance == pass.point.farDistance",
+            "entry->colorStorageGeneration != 0",
+            "entry->depthStorageGeneration != 0",
+        ),
+        "OpenGL point cache projection/storage provenance revalidation",
+    )
     for token in (
         "owner.sampleStorageGeneration",
         "owner.sampleTextureHandle",
@@ -827,6 +1437,20 @@ def main() -> None:
     )
 
     vk_preflight = function_body(vk, "bool VK_ClassicInteraction_Preflight(")
+    vk_mapped_shadow_block = function_body(
+        vk, "static bool VK_ClassicInteraction_BuildMappedShadowBlock("
+    )
+    for token in (
+        "mapPass.point.constantBias",
+        "mapPass.point.normalBias",
+        "mapPass.point.texelBiasScale",
+        "mapPass.point.normalOffsetScale",
+    ):
+        require(
+            vk_mapped_shadow_block,
+            token,
+            "Vulkan sealed bounded point receiver upload",
+        )
     vk_draw = function_body(vk, "void VK_ClassicInteraction_DrawOwnedView(")
     vk_receiver_draw = function_body(
         vk, "static void VK_ClassicInteraction_DrawReceiverRange("
