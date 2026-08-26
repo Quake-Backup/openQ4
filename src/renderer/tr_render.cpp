@@ -543,6 +543,15 @@ void RB_LoadShaderTextureMatrix( const float *shaderRegisters, const textureStag
 	glMatrixMode( GL_MODELVIEW );
 }
 
+// Cross-frame dedupe for the shared cinematic scratch image. RoQ decodes at
+// ~30fps while the backend can bind the same decoded frame many times per
+// second; when the identical frame is already resident we only rebind.
+// frameSerial 0 = producer opted out (always upload). storageGeneration
+// invalidates across vid_restart / reloadImages (AllocImage bumps it).
+static const idCinematic *	rb_lastCinematic = NULL;
+static int					rb_lastCinematicSerial = 0;
+static uint64_t				rb_lastCinematicStorageGeneration = 0;
+
 /*
 ======================
 RB_BindVariableStageImage
@@ -565,7 +574,26 @@ void RB_BindVariableStageImage( const textureStage_t *texture, const float *shad
 		cin = texture->cinematic->ImageForTime( (int)(1000 * ( backEnd.viewDef->floatTime + backEnd.viewDef->renderView.shaderParms[11] ) ) );
 
 		if ( cin.image ) {
-			globalImages->cinematicImage->UploadScratch( cin.image, cin.imageWidth, cin.imageHeight );
+			idImage *cinImage = globalImages->cinematicImage;
+			const bool sameFrameResident =
+				cin.frameSerial != 0
+				&& texture->cinematic == rb_lastCinematic
+				&& cin.frameSerial == rb_lastCinematicSerial
+				&& cinImage->IsLoaded()
+				&& cinImage->GetStorageGeneration() == rb_lastCinematicStorageGeneration
+				&& cinImage->GetOpts().textureType == TT_2D
+				&& cin.imageHeight != cin.imageWidth * 6;
+			if ( sameFrameResident ) {
+				// identical pixels already resident: rebind exactly the way
+				// UploadScratch's SubImageUpload would have (direct access with
+				// tmu-tracker update, no Bind() texture-type enable dance)
+				R_BindTextureForDirectAccess( GL_TEXTURE_2D, cinImage->GetDeviceHandle() );
+			} else {
+				globalImages->cinematicImage->UploadScratch( cin.image, cin.imageWidth, cin.imageHeight );
+				rb_lastCinematic = texture->cinematic;
+				rb_lastCinematicSerial = cin.frameSerial;
+				rb_lastCinematicStorageGeneration = cinImage->GetStorageGeneration();
+			}
 		} else {
 			globalImages->blackImage->Bind();
 		}

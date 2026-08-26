@@ -91,6 +91,7 @@ private:
 
 	bool					looping;
 	bool					dirty;
+	int						lastDecodeSerial;
 	bool					half;
 	bool					smootheddouble;
 	bool					inMemory;
@@ -144,6 +145,10 @@ static byte* file = NULL;
 static unsigned short* vq2 = NULL;
 static unsigned short* vq4 = NULL;
 static unsigned short* vq8 = NULL;
+
+// single monotonic serial shared by all cinematic instances in this binary;
+// a (instance pointer, serial) pair therefore never repeats
+static int cinematicFrameSerial = 0;
 
 
 
@@ -269,6 +274,7 @@ idCinematicLocal::idCinematicLocal
 idCinematicLocal::idCinematicLocal() {
 	image = NULL;
 	imageCapacity = 0;
+	lastDecodeSerial = 0;
 	status = FMV_EOF;
 	buf = NULL;
 	iFile = NULL;
@@ -478,6 +484,7 @@ cinData_t idCinematicLocal::ImageForTime(int thisTime) {
 	cinData.imageHeight = CIN_HEIGHT;
 	cinData.status = status;
 	cinData.image = buf;
+	cinData.frameSerial = lastDecodeSerial;
 
 	return cinData;
 }
@@ -1523,6 +1530,7 @@ redump:
 		}
 		numQuads++;
 		dirty = true;
+		lastDecodeSerial = ++cinematicFrameSerial;
 		break;
 	case	ROQ_CODEBOOK:
 		decodeCodeBook(framedata, (unsigned short)roq_flags);
@@ -1553,6 +1561,7 @@ redump:
 			JPEGBlit(image, framedata, RoQFrameSize);
 			memcpy(image + screenDelta, image, samplesPerLine * ysize);
 			numQuads++;
+			lastDecodeSerial = ++cinematicFrameSerial;
 		}
 		break;
 	default:

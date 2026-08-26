@@ -1204,7 +1204,7 @@ static const portalArea_t *R_DrawSurfAreaForGlobalPoint( const idVec3 &point ) {
 	return NULL;
 }
 
-static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, const viewEntity_t *space ) {
+static const portalArea_t *R_ResolveDrawSurfAreaUncached( const srfTriangles_t *tri, const viewEntity_t *space ) {
 	if ( tri == NULL || space == NULL || tr.viewDef == NULL || tr.viewDef->renderWorld == NULL ) {
 		return NULL;
 	}
@@ -1230,6 +1230,89 @@ static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, con
 	}
 
 	return R_FallbackDrawSurfArea( space );
+}
+
+typedef struct drawSurfAreaMemo_s {
+	const srfTriangles_t *		tri;
+	const idRenderEntityLocal *	entityDef;
+	const portalArea_t *		area;
+	idBounds					bounds;
+	float						modelMatrix[16];
+	int							entityModFrame;
+} drawSurfAreaMemo_t;
+
+static const int DRAWSURF_AREA_MEMO_MAX = 65536;
+static idList<drawSurfAreaMemo_t>	s_drawSurfAreaMemo;
+static idHashIndex					s_drawSurfAreaMemoHash;
+
+static ID_INLINE int R_DrawSurfAreaMemoKey( const idRenderEntityLocal *entityDef, const srfTriangles_t *tri ) {
+	return ( int )( ( ( ( uintptr_t )entityDef ) >> 4 ) ^ ( ( ( uintptr_t )tri ) >> 4 ) );
+}
+
+void R_ClearDrawSurfAreaMemo( void ) {
+	s_drawSurfAreaMemo.Clear();
+	s_drawSurfAreaMemoHash.Free();
+}
+
+void R_InvalidateDrawSurfAreaMemoForEntity( const idRenderEntityLocal *entityDef ) {
+	// tombstone instead of removing so hash indexes stay stable; the size cap
+	// below reclaims tombstones by clearing everything
+	for ( int i = 0; i < s_drawSurfAreaMemo.Num(); i++ ) {
+		if ( s_drawSurfAreaMemo[i].entityDef == entityDef ) {
+			s_drawSurfAreaMemo[i].entityDef = NULL;
+		}
+	}
+}
+
+static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, const viewEntity_t *space ) {
+	if ( tri == NULL || space == NULL || tr.viewDef == NULL || tr.viewDef->renderWorld == NULL ) {
+		return NULL;
+	}
+
+	const idRenderEntityLocal *entityDef = space->entityDef;
+	if ( entityDef == NULL ) {
+		// frame-temporary spaces (BSE effects) have no stable identity to key on
+		return R_ResolveDrawSurfAreaUncached( tri, space );
+	}
+
+	// A memo hit requires every input the uncached resolve reads to be
+	// bit-identical to the stored resolve: tri->bounds and space->modelMatrix
+	// by value, and lastModifiedFrameNum for the entityRefs fallback path,
+	// so a hit can never change drawSurf->area.
+	const int key = R_DrawSurfAreaMemoKey( entityDef, tri );
+	int entryIndex = -1;
+	for ( int i = s_drawSurfAreaMemoHash.First( key ); i != -1; i = s_drawSurfAreaMemoHash.Next( i ) ) {
+		const drawSurfAreaMemo_t &entry = s_drawSurfAreaMemo[i];
+		if ( entry.tri != tri || entry.entityDef != entityDef ) {
+			continue;
+		}
+		entryIndex = i;
+		if ( entry.entityModFrame == entityDef->lastModifiedFrameNum
+				&& memcmp( &entry.bounds, &tri->bounds, sizeof( entry.bounds ) ) == 0
+				&& memcmp( entry.modelMatrix, space->modelMatrix, sizeof( entry.modelMatrix ) ) == 0 ) {
+			return entry.area;
+		}
+		break;
+	}
+
+	const portalArea_t *area = R_ResolveDrawSurfAreaUncached( tri, space );
+
+	if ( entryIndex == -1 ) {
+		if ( s_drawSurfAreaMemo.Num() >= DRAWSURF_AREA_MEMO_MAX ) {
+			R_ClearDrawSurfAreaMemo();
+		}
+		entryIndex = s_drawSurfAreaMemo.Num();
+		drawSurfAreaMemo_t &newEntry = s_drawSurfAreaMemo.Alloc();
+		newEntry.tri = tri;
+		newEntry.entityDef = entityDef;
+		s_drawSurfAreaMemoHash.Add( key, entryIndex );
+	}
+	drawSurfAreaMemo_t &entry = s_drawSurfAreaMemo[entryIndex];
+	entry.area = area;
+	entry.bounds = tri->bounds;
+	memcpy( entry.modelMatrix, space->modelMatrix, sizeof( entry.modelMatrix ) );
+	entry.entityModFrame = entityDef->lastModifiedFrameNum;
+	return area;
 }
 
 /*

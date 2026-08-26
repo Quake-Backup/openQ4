@@ -341,6 +341,10 @@ const rendererClusteredDecalStats_t &R_ModernClusteredLighting_DecalStats( void 
 bool R_ModernClusteredLighting_DecalViewStats( const viewDef_t *viewDef, rendererClusteredDecalViewStats_t &stats );
 bool R_ModernClusteredLighting_DecalOwnsSurface( const viewDef_t *viewDef, const void *sourceSurface );
 bool R_ModernClusteredLighting_DecalOwnsCommand( const viewDef_t *viewDef, int commandIndex );
+// Sealed-ownership resolution: returns the exact submit-plan command index the
+// seal recorded for sourceSurface in this view, -1 when the surface is not
+// owned, and sets duplicate when more than one sealed record claims it.
+int R_ModernClusteredLighting_DecalSealedCommandForSurface( const viewDef_t *viewDef, const void *sourceSurface, bool &duplicate );
 const char *R_ModernClusteredLighting_DecalRejectName( rendererClusteredDecalReject_t reject );
 bool RendererClusterGrid_RunSelfTest( void );
 

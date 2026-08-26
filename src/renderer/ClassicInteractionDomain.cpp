@@ -6,6 +6,8 @@
 #include "ClassicInteractionDomain.h"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 
@@ -78,6 +80,52 @@ typedef struct classicInteractionWork_s {
 
 classicInteractionDomainState_t domain;
 
+// Per-frame memo of AddTexture linear-scan results.  Entries are only ever
+// copies of authoritative pool-scan results; any pool shrink (frame reset or
+// whole-view rollback in FailView) empties the memo by bumping the stamp, so
+// a memo hit can never observe rolled-back or stale state.
+const int TEXTURE_LOOKUP_SIZE = CLASSIC_INTERACTION_DOMAIN_MAX_TEXTURES * 2;
+static_assert( ( TEXTURE_LOOKUP_SIZE & ( TEXTURE_LOOKUP_SIZE - 1 ) ) == 0,
+	"texture lookup size must be a power of two" );
+
+typedef struct classicInteractionTextureLookupSlot_s {
+	const idImage *image;
+	std::uint64_t storageGeneration;
+	int textureIndex;
+	std::uint32_t stamp;
+} classicInteractionTextureLookupSlot_t;
+
+classicInteractionTextureLookupSlot_t textureLookup[ TEXTURE_LOOKUP_SIZE ];
+std::uint32_t textureLookupStamp;
+
+static void InvalidateTextureLookup( void ) {
+	textureLookupStamp++;
+	if ( textureLookupStamp == 0 ) {
+		std::memset( textureLookup, 0, sizeof( textureLookup ) );
+		textureLookupStamp = 1;
+	}
+}
+
+static int TextureLookupSlot( const idImage *image,
+		std::uint64_t storageGeneration ) {
+	std::uint64_t key = static_cast<std::uint64_t>(
+		reinterpret_cast<std::uintptr_t>( image ) );
+	key ^= storageGeneration * HASH_PRIME;
+	key *= HASH_PRIME;
+	int slot = static_cast<int>( key & ( TEXTURE_LOOKUP_SIZE - 1 ) );
+	for ( int probe = 0; probe < TEXTURE_LOOKUP_SIZE; ++probe ) {
+		const classicInteractionTextureLookupSlot_t &entry =
+			textureLookup[ slot ];
+		if ( entry.stamp != textureLookupStamp
+				|| ( entry.image == image
+					&& entry.storageGeneration == storageGeneration ) ) {
+			return slot;
+		}
+		slot = ( slot + 1 ) & ( TEXTURE_LOOKUP_SIZE - 1 );
+	}
+	return -1;
+}
+
 static bool RangeFits( int first, int count, int capacity ) {
 	return first >= 0 && count >= 0 && first <= capacity
 		&& count <= capacity - first;
@@ -105,15 +153,13 @@ static void HashByte( std::uint64_t &hash, unsigned int value ) {
 }
 
 static void HashU32( std::uint64_t &hash, std::uint32_t value ) {
-	for ( int i = 0; i < 4; ++i ) {
-		HashByte( hash, value >> ( i * 8 ) );
-	}
+	hash ^= value;
+	hash *= HASH_PRIME;
 }
 
 static void HashU64( std::uint64_t &hash, std::uint64_t value ) {
-	for ( int i = 0; i < 8; ++i ) {
-		HashByte( hash, static_cast<unsigned int>( value >> ( i * 8 ) ) );
-	}
+	hash ^= value;
+	hash *= HASH_PRIME;
 }
 
 static void HashInt( std::uint64_t &hash, int value ) {
@@ -340,6 +386,9 @@ static bool FailureIsOverflow( classicInteractionDomainFailure_t failure ) {
 static bool FailView( classicInteractionDomainView_t &view,
 		const classicInteractionCheckpoint_t &checkpoint,
 		const classicInteractionBuildError_t &error ) {
+	if ( checkpoint.textureCount < domain.textureCount ) {
+		InvalidateTextureLookup();
+	}
 	domain.lightCount = checkpoint.lightCount;
 	domain.surfaceCount = checkpoint.surfaceCount;
 	domain.primitiveCount = checkpoint.primitiveCount;
@@ -632,10 +681,25 @@ static bool AddTexture( const idImage *image, std::uint64_t &resourceId,
 	if ( !ImageReady( image, error, stageIndex ) ) {
 		return false;
 	}
+	const std::uint64_t liveStorageGeneration = image->GetStorageGeneration();
+	const int lookupSlot = TextureLookupSlot( image, liveStorageGeneration );
+	if ( lookupSlot >= 0
+			&& textureLookup[ lookupSlot ].stamp == textureLookupStamp ) {
+		resourceId = domain.textures[
+			textureLookup[ lookupSlot ].textureIndex ].textureResourceId;
+		return true;
+	}
 	for ( int i = 0; i < domain.textureCount; ++i ) {
 		if ( domain.textures[ i ].image == image
 				&& domain.textures[ i ].storageGeneration
-					== image->GetStorageGeneration() ) {
+					== liveStorageGeneration ) {
+			if ( lookupSlot >= 0 ) {
+				textureLookup[ lookupSlot ].image = image;
+				textureLookup[ lookupSlot ].storageGeneration =
+					liveStorageGeneration;
+				textureLookup[ lookupSlot ].textureIndex = i;
+				textureLookup[ lookupSlot ].stamp = textureLookupStamp;
+			}
 			resourceId = domain.textures[ i ].textureResourceId;
 			return true;
 		}
@@ -658,6 +722,12 @@ static bool AddTexture( const idImage *image, std::uint64_t &resourceId,
 	texture.loaded = image->IsLoaded();
 	texture.defaulted = image->IsDefaulted();
 	texture.mutableImage = R_IsMutableRenderImage( image );
+	if ( lookupSlot >= 0 ) {
+		textureLookup[ lookupSlot ].image = image;
+		textureLookup[ lookupSlot ].storageGeneration = liveStorageGeneration;
+		textureLookup[ lookupSlot ].textureIndex = textureIndex;
+		textureLookup[ lookupSlot ].stamp = textureLookupStamp;
+	}
 	resourceId = texture.textureResourceId;
 	return resourceId != 0;
 }
@@ -3155,40 +3225,52 @@ static classicInteractionDomainView_t *FindMutableView(
 }
 
 static int ViewIndex( const classicInteractionDomainView_t *view ) {
-	for ( int i = 0; i < domain.viewCount; ++i ) {
-		if ( view == &domain.views[ i ] ) {
-			return i;
-		}
+	if ( view == NULL ) {
+		return -1;
 	}
-	return -1;
+	const ptrdiff_t index = view - domain.views;
+	if ( index < 0 || index >= domain.viewCount
+			|| view != &domain.views[ index ] ) {
+		return -1;
+	}
+	return static_cast<int>( index );
 }
 
 static int LightIndex( const classicInteractionDomainLight_t *light ) {
-	for ( int i = 0; i < domain.lightCount; ++i ) {
-		if ( light == &domain.lights[ i ] ) {
-			return i;
-		}
+	if ( light == NULL ) {
+		return -1;
 	}
-	return -1;
+	const ptrdiff_t index = light - domain.lights;
+	if ( index < 0 || index >= domain.lightCount
+			|| light != &domain.lights[ index ] ) {
+		return -1;
+	}
+	return static_cast<int>( index );
 }
 
 static int SurfaceIndex( const classicInteractionDomainSurface_t *surface ) {
-	for ( int i = 0; i < domain.surfaceCount; ++i ) {
-		if ( surface == &domain.surfaces[ i ] ) {
-			return i;
-		}
+	if ( surface == NULL ) {
+		return -1;
 	}
-	return -1;
+	const ptrdiff_t index = surface - domain.surfaces;
+	if ( index < 0 || index >= domain.surfaceCount
+			|| surface != &domain.surfaces[ index ] ) {
+		return -1;
+	}
+	return static_cast<int>( index );
 }
 
 static int ShadowCasterIndex(
 		const classicInteractionDomainShadowCaster_t *caster ) {
-	for ( int i = 0; i < domain.shadowCasterCount; ++i ) {
-		if ( caster == &domain.shadowCasters[ i ] ) {
-			return i;
-		}
+	if ( caster == NULL ) {
+		return -1;
 	}
-	return -1;
+	const ptrdiff_t index = caster - domain.shadowCasters;
+	if ( index < 0 || index >= domain.shadowCasterCount
+			|| caster != &domain.shadowCasters[ index ] ) {
+		return -1;
+	}
+	return static_cast<int>( index );
 }
 
 static bool R_ClassicInteractionDomain_PrepareView(
@@ -3908,6 +3990,7 @@ void R_ClassicInteractionDomain_ResetFrame( void ) {
 	domain.shadowAlphaStageCount = 0;
 	domain.shadowMapPassCount = 0;
 	domain.textureCount = 0;
+	InvalidateTextureLookup();
 	domain.generation++;
 	if ( domain.generation == 0 ) {
 		domain.generation = 1;

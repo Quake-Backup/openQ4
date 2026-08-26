@@ -285,7 +285,8 @@ def test_clustered_decal_executor_is_atomic_and_exact() -> None:
         "static bool R_ModernGLExecutor_SharedGuiOwnsCommand",
     )
     for token in (
-        "R_ModernClusteredLighting_DecalOwnsCommand( viewDef, i )",
+        "R_ModernClusteredLighting_DecalSealedCommandForSurface(",
+        "Modern clustered decal surface has duplicate sealed commands",
         "R_ModernClusteredLighting_BindGridForView( viewDef )",
         "GL_DST_COLOR, GL_ZERO",
         "GL_ZERO, GL_SRC_COLOR",

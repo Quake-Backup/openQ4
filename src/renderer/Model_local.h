@@ -65,6 +65,8 @@ public:
 	bool					ReadVec2( idVec2 &value );
 	bool					ReadVec3( idVec3 &value );
 	bool					ReadVec4( idVec4 &value );
+	bool					ReadFloatArray( float *values, int count );
+	bool					ReadIntArray( int *values, int count );
 	bool					ReadBounds( idBounds &value, bool allowCleared = false );
 	bool					ReadString( idStr &value, int maxLength );
 	bool					ReadCount( int &value, int maxCount, size_t elementSize = 0 );
@@ -92,6 +94,8 @@ public:
 	bool					WriteVec2( const idVec2 &value );
 	bool					WriteVec3( const idVec3 &value );
 	bool					WriteVec4( const idVec4 &value );
+	bool					WriteFloatArray( const float *values, int count );
+	bool					WriteIntArray( const int *values, int count );
 	bool					WriteBounds( const idBounds &value );
 	bool					WriteString( const char *value, int maxLength );
 	bool					IsValid() const { return valid; }

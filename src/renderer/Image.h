@@ -469,6 +469,9 @@ IMAGEFILES
 void R_LoadImage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2);
 void R_LoadImageForUsage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2, textureUsage_t usage);
 bool R_ResolvePreferredDDSImageSource(const char* name, idStr& ddsName, ID_TIME_T* timestamp, bool allowPrecompressedDDS, bool* precompressedDDS);
+// enables per-candidate DDS probe memoization for the duration of a level
+// load; disabling also clears all memoized probe results
+void R_SetDDSProbeCacheActive(bool active);
 bool R_LoadPrecompressedDDS(const char* name, idBinaryImage& image, ID_TIME_T* timestamp, textureUsage_t usage, const imageDownsizePolicy_t& downsizePolicy, bool useMipmaps);
 bool R_ImageDDS_RunSelfTest();
 // pic is in top to bottom raster format

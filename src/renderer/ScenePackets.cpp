@@ -26,6 +26,27 @@ static idList<scenePacketTemporalInstanceHistory_t>
 static idList<scenePacketTemporalInstanceHistory_t>
 	rg_scenePacketTemporalNextInstanceHistory;
 
+// Hash acceleration for the (viewIdentity, entityIndex) history lookups.
+// Each idHashIndex always mirrors the list its pointer is paired with; the
+// pointers swap in lockstep with the list Swap() in Commit. These are only
+// touched from the runtime Find/Store/Commit paths, never from
+// idScenePacketFrame::Clear(), preserving the static-constructor constraint
+// documented above the lookup-slot table.
+static idHashIndex rg_scenePacketTemporalHistoryLookupA;
+static idHashIndex rg_scenePacketTemporalHistoryLookupB;
+static idHashIndex *rg_scenePacketTemporalHistoryLookup =
+	&rg_scenePacketTemporalHistoryLookupA;
+static idHashIndex *rg_scenePacketTemporalNextHistoryLookup =
+	&rg_scenePacketTemporalHistoryLookupB;
+
+static int R_ScenePackets_TemporalHistoryLookupKey(
+		unsigned long long viewIdentity, int entityIndex ) {
+	return static_cast<int>(
+		static_cast<unsigned int>( viewIdentity )
+		^ static_cast<unsigned int>( viewIdentity >> 32 )
+		^ ( static_cast<unsigned int>( entityIndex ) * 0x9e3779b9u ) );
+}
+
 static bool R_ScenePackets_FindTemporalInstanceHistory(
 		unsigned long long viewIdentity, int entityIndex,
 		float previousModelMatrix[16], int &ageFrames ) {
@@ -35,7 +56,10 @@ static bool R_ScenePackets_FindTemporalInstanceHistory(
 	}
 	const unsigned int historyGeneration =
 		R_TemporalPresentation_HistoryGeneration();
-	for ( int i = 0; i < rg_scenePacketTemporalInstanceHistory.Num(); ++i ) {
+	const int lookupKey =
+		R_ScenePackets_TemporalHistoryLookupKey( viewIdentity, entityIndex );
+	for ( int i = rg_scenePacketTemporalHistoryLookup->First( lookupKey );
+			i >= 0; i = rg_scenePacketTemporalHistoryLookup->Next( i ) ) {
 		const scenePacketTemporalInstanceHistory_t &entry =
 			rg_scenePacketTemporalInstanceHistory[i];
 		if ( entry.viewIdentity != viewIdentity
@@ -63,8 +87,11 @@ static void R_ScenePackets_StoreTemporalInstanceHistory(
 			|| record.temporalCaptureFrame ) {
 		return;
 	}
-	for ( int i = 0; i < rg_scenePacketTemporalNextInstanceHistory.Num(); ++i ) {
-		scenePacketTemporalInstanceHistory_t &existing =
+	const int lookupKey = R_ScenePackets_TemporalHistoryLookupKey(
+		record.temporalViewIdentity, record.entityIndex );
+	for ( int i = rg_scenePacketTemporalNextHistoryLookup->First( lookupKey );
+			i >= 0; i = rg_scenePacketTemporalNextHistoryLookup->Next( i ) ) {
+		const scenePacketTemporalInstanceHistory_t &existing =
 			rg_scenePacketTemporalNextInstanceHistory[i];
 		if ( existing.viewIdentity == record.temporalViewIdentity
 				&& existing.entityIndex == record.entityIndex ) {
@@ -78,17 +105,26 @@ static void R_ScenePackets_StoreTemporalInstanceHistory(
 	entry.frameNumber = tr.frameCount;
 	entry.entityIndex = record.entityIndex;
 	memcpy( entry.modelMatrix, record.modelMatrix, sizeof( entry.modelMatrix ) );
+	rg_scenePacketTemporalNextHistoryLookup->Add( lookupKey,
+		rg_scenePacketTemporalNextInstanceHistory.Num() - 1 );
 }
 
 static void R_ScenePackets_CommitTemporalInstanceHistory(
 		const idScenePacketFrame &frame ) {
-	rg_scenePacketTemporalNextInstanceHistory.Clear();
+	// SetNum( 0, false ) keeps the allocations (bounded at
+	// SCENE_PACKET_MAX_INSTANCE_RECORDS entries) so steady-state capture
+	// frames reuse the buffers instead of freeing and regrowing them.
+	rg_scenePacketTemporalNextInstanceHistory.SetNum( 0, false );
+	rg_scenePacketTemporalNextHistoryLookup->Clear();
 	for ( int i = 0; i < frame.NumInstanceRecords(); ++i ) {
 		R_ScenePackets_StoreTemporalInstanceHistory( frame.InstanceRecord( i ) );
 	}
 	rg_scenePacketTemporalInstanceHistory.Swap(
 		rg_scenePacketTemporalNextInstanceHistory );
-	rg_scenePacketTemporalNextInstanceHistory.Clear();
+	idSwap( rg_scenePacketTemporalHistoryLookup,
+		rg_scenePacketTemporalNextHistoryLookup );
+	rg_scenePacketTemporalNextInstanceHistory.SetNum( 0, false );
+	rg_scenePacketTemporalNextHistoryLookup->Clear();
 }
 
 // A negative view id alone is not a render demo: portal-sky cameras use the
@@ -494,7 +530,7 @@ bool R_ScenePackets_TemporalRigidMotionEligible(
 		&& entity->dynamicModel == NULL;
 }
 
-static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t *viewDef, const drawSurf_t *drawSurf, renderPassCategory_t passCategory ) {
+static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t *viewDef, const drawSurf_t *drawSurf, renderPassCategory_t passCategory, const materialResourceRecord_t *materialRecord = NULL ) {
 	if ( passCategory == RENDER_PASS_SPECIAL_EFFECTS ) {
 		return SCENE_PACKET_CATEGORY_SPECIAL_EFFECTS;
 	}
@@ -532,10 +568,16 @@ static scenePacketCategory_t R_ScenePackets_CategoryForDrawSurf( const viewDef_t
 	if ( drawSurf->space != NULL && drawSurf->space->entityDef != NULL && drawSurf->space->entityDef->parms.remoteRenderView != NULL ) {
 		return SCENE_PACKET_CATEGORY_REMOTE_CAMERA;
 	}
-	if ( R_ScenePackets_MaterialUsesRemoteRender( drawSurf->material ) ) {
+	const bool usesRemoteRender = materialRecord != NULL
+		? materialRecord->usesRemoteRender
+		: R_ScenePackets_MaterialUsesRemoteRender( drawSurf->material );
+	if ( usesRemoteRender ) {
 		return SCENE_PACKET_CATEGORY_REMOTE_CAMERA;
 	}
-	if ( R_ScenePackets_MaterialClassForDrawSurf( drawSurf ) == RENDER_MATERIAL_SUBVIEW ) {
+	const rendererMaterialClass_t materialClass = materialRecord != NULL
+		? static_cast<rendererMaterialClass_t>( materialRecord->permutation.materialClass )
+		: R_ScenePackets_MaterialClassForDrawSurf( drawSurf );
+	if ( materialClass == RENDER_MATERIAL_SUBVIEW ) {
 		return SCENE_PACKET_CATEGORY_SUBVIEW;
 	}
 	return SCENE_PACKET_CATEGORY_WORLD;
@@ -739,6 +781,7 @@ int idScenePacketFrame::FindOrAddMaterialRecord( const drawSurf_t *drawSurf ) {
 		memcpy( record.pbrEmissiveColorRegisters, pbr.emissiveColorRegisters, sizeof( record.pbrEmissiveColorRegisters ) );
 	}
 	record.resourceTableIndex = material->Index();
+	record.usesRemoteRender = R_ScenePackets_MaterialUsesRemoteRender( material );
 	record.permutation.materialClass = R_ScenePackets_MaterialClassForDrawSurf( drawSurf );
 	record.permutation.lightingMode =
 		( material->IsDrawn() ? 1u : 0u ) |
@@ -1072,7 +1115,9 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf,
 	drawPacket_t &packet = drawPackets[stats.drawPackets++];
 	memset( &packet, 0, sizeof( packet ) );
 	const int materialRecordIndex = FindOrAddMaterialRecord( drawSurf );
-	const scenePacketCategory_t packetCategory = R_ScenePackets_CategoryForDrawSurf( activeScene >= 0 ? scenes[activeScene].viewDef : NULL, drawSurf, category );
+	const materialResourceRecord_t *cachedMaterialRecord =
+		materialRecordIndex >= 0 ? &materialRecords[materialRecordIndex] : NULL;
+	const scenePacketCategory_t packetCategory = R_ScenePackets_CategoryForDrawSurf( activeScene >= 0 ? scenes[activeScene].viewDef : NULL, drawSurf, category, cachedMaterialRecord );
 	classicDeformRecord_t classicDeform;
 	const std::uint64_t deformFrameToken =
 		R_ClassicDeformDomain_CurrentFrameToken();
@@ -1119,10 +1164,15 @@ bool idScenePacketFrame::AddDrawPacket( const drawSurf_t *drawSurf,
 	temporalInput.deform = packet.geometryRecord != NULL
 		&& packet.geometryRecord->deformMode != GEOMETRY_DEFORM_NONE;
 	temporalInput.hasPreviousDeformedVertices = false;
-	temporalInput.subview = drawSurf != NULL
-		&& ( R_ScenePackets_MaterialUsesRemoteRender( drawSurf->material )
-			|| R_ScenePackets_MaterialClassForDrawSurf( drawSurf )
-				== RENDER_MATERIAL_SUBVIEW );
+	temporalInput.subview = cachedMaterialRecord != NULL
+		? ( cachedMaterialRecord->usesRemoteRender
+			|| static_cast<rendererMaterialClass_t>(
+				cachedMaterialRecord->permutation.materialClass )
+				== RENDER_MATERIAL_SUBVIEW )
+		: ( drawSurf != NULL
+			&& ( R_ScenePackets_MaterialUsesRemoteRender( drawSurf->material )
+				|| R_ScenePackets_MaterialClassForDrawSurf( drawSurf )
+					== RENDER_MATERIAL_SUBVIEW ) );
 	temporalInput.inWorldGui = drawSurf != NULL
 		&& ( drawSurf->dsFlags & DSF_IN_WORLD_GUI ) != 0;
 	temporalInput.viewModel = drawSurf != NULL && drawSurf->space != NULL

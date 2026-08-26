@@ -785,7 +785,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		dataBytes = (size_t)rowTexels * height * info.bytesPerBlock;
 	}
 
-	// transient staging buffer, freed via the deferred queue
+	// transient staging buffer; on success the upload batch takes ownership
 	VkBufferCreateInfo bci;
 	memset( &bci, 0, sizeof( bci ) );
 	bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -856,12 +856,15 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	ctx.bufferRowLengthTexels = rowLengthTexels;
 	ctx.oldLayout = entry->layout;
 
-	if ( VK_Device_ImmediateSubmit( VK_Image_RecordUpload, &ctx ) ) {
+	if ( VK_Device_BatchedUpload( VK_Image_RecordUpload, &ctx, staging, stagingAlloc,
+			(VkDeviceSize)dataBytes ) ) {
 		entry->everUploaded = true;
 		entry->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	} else {
+		// nothing recorded: release the staging buffer through the normal
+		// deferred path, matching the old no-device fallback
+		VK_Device_DeferDestroy( VK_NULL_HANDLE, VK_NULL_HANDLE, staging, stagingAlloc );
 	}
-
-	VK_Device_DeferDestroy( VK_NULL_HANDLE, VK_NULL_HANDLE, staging, stagingAlloc );
 }
 
 /*

@@ -235,7 +235,7 @@ typedef struct vkDescriptorCacheEntry_s {
 // fill and the two ambient walks visit the same tris, and re-uploading
 // triples ring traffic. Direct-mapped on the geometry pointers; a
 // collision just re-uploads.
-static const int VK_TRI_MEMO_SIZE = 1024;	// power of two
+static const int VK_TRI_MEMO_SIZE = 4096;	// power of two
 typedef struct vkVertUpload_s {
 	const void *	vertKey;
 	int				vertexOffset;
@@ -345,6 +345,7 @@ typedef struct vkGuiExecutor_s {
 	int					numSpecialPipelines;
 	vkGuiPipeline_t		pipelines[ VK_MAX_GUI_PIPELINES ];
 	int					numPipelines;
+	int					lastPipelineMRU;	// index of the last exact-key VK_GuiExecutor_GetPipeline result
 	vkGuiPipeline_t		screenPipelines[ VK_MAX_SCREEN_PIPELINES ];
 	int					numScreenPipelines;
 	vkCubePipeline_t	cubePipelines[ VK_MAX_CUBE_PIPELINES ];
@@ -832,10 +833,19 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits, bool separateColor 
 			| GLS_COLORMASK | GLS_ALPHAMASK );
 	const vkPipelineTarget_t target = VK_Exec_CurrentPipelineTarget();
 
+	if ( vkExec.lastPipelineMRU >= 0 && vkExec.lastPipelineMRU < vkExec.numPipelines ) {
+		const vkGuiPipeline_t &mru = vkExec.pipelines[ vkExec.lastPipelineMRU ];
+		if ( mru.stateBits == pipelineBits && mru.separateColor == separateColor
+				&& VK_Exec_PipelineTargetsMatch( mru.target, target ) ) {
+			return mru.pipeline;
+		}
+	}
+
 	for ( int i = 0; i < vkExec.numPipelines; i++ ) {
 		if ( vkExec.pipelines[ i ].stateBits == pipelineBits
 				&& vkExec.pipelines[ i ].separateColor == separateColor
 				&& VK_Exec_PipelineTargetsMatch( vkExec.pipelines[ i ].target, target ) ) {
+			vkExec.lastPipelineMRU = i;
 			return vkExec.pipelines[ i ].pipeline;
 		}
 	}
@@ -885,6 +895,7 @@ static VkPipeline VK_GuiExecutor_GetPipeline( int stateBits, bool separateColor 
 	vkExec.pipelines[ vkExec.numPipelines ].target = target;
 	vkExec.pipelines[ vkExec.numPipelines ].pipeline = pipeline;
 	vkExec.numPipelines++;
+	vkExec.lastPipelineMRU = vkExec.numPipelines - 1;
 	return pipeline;
 }
 
@@ -3069,6 +3080,11 @@ static bool VK_GuiExecutor_BeginFrame( void ) {
 			static_cast<int>( frameFenceResult ) );
 		return false;
 	}
+	// retire the last upload batch (and, per fence submission-order scope,
+	// every earlier one) before deferred destroys can release images those
+	// batches referenced; near-free, since the batch was submitted before the
+	// previous frame's submit
+	VK_Device_WaitUploadBatch();
 	VK_Device_FlushDeferredDestroys( slot );
 	if ( vkExec.numRetiredSets[ slot ] > 0 ) {
 		vkFreeDescriptorSets( vkCtx.device, vkExec.descriptorPool,
@@ -5289,6 +5305,11 @@ static bool VK_GuiExecutor_SubmitFrame( bool present ) {
 	const int slot = vkExec.frameSlot;
 	const uint32_t imageIndex = vkExec.swapImageIndex;
 	VkCommandBuffer cmd = vkExec.cmd;
+
+	// submit any batched image uploads first: same-queue submission order makes
+	// them execute before this frame samples the images, and this frame's fence
+	// then covers them for deferred-destroy retirement
+	VK_Device_FlushUploadBatch();
 
 	VK_Exec_EndMainRendering();
 	VK_Exec_TransitionActiveTargetToSampled();
@@ -8464,6 +8485,11 @@ static void VK_Exec_DrawProgramStage( const viewDef_t *viewDef,
 	}
 }
 
+// mirrors the GL backend's cross-frame cinematic upload dedupe (tr_render.cpp)
+static const idCinematic *	vkGuiLastCinematic = NULL;
+static int					vkGuiLastCinematicSerial = 0;
+static unsigned long long	vkGuiLastCinematicStorageGeneration = 0;
+
 static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_t *drawSurf,
 		const srfTriangles_t *tri, const float mvp[ 16 ], bool worldDepthState ) {
 	VkCommandBuffer cmd = vkExec.cmd;
@@ -8602,7 +8628,21 @@ static void VK_Exec_DrawAmbientStages( const viewDef_t *viewDef, const drawSurf_
 				cinData_t cin = pStage->texture.cinematic->ImageForTime(
 						(int)( 1000 * ( viewDef->floatTime + viewDef->renderView.shaderParms[ 11 ] ) ) );
 				if ( cin.image != NULL ) {
-					globalImages->cinematicImage->UploadScratch( cin.image, cin.imageWidth, cin.imageHeight );
+					idImage *cinImage = globalImages->cinematicImage;
+					const bool sameFrameResident =
+						cin.frameSerial != 0
+						&& pStage->texture.cinematic == vkGuiLastCinematic
+						&& cin.frameSerial == vkGuiLastCinematicSerial
+						&& cinImage->IsLoaded()
+						&& cinImage->GetStorageGeneration() == vkGuiLastCinematicStorageGeneration
+						&& cinImage->GetOpts().textureType == TT_2D
+						&& cin.imageHeight != cin.imageWidth * 6;
+					if ( !sameFrameResident ) {
+						globalImages->cinematicImage->UploadScratch( cin.image, cin.imageWidth, cin.imageHeight );
+						vkGuiLastCinematic = pStage->texture.cinematic;
+						vkGuiLastCinematicSerial = cin.frameSerial;
+						vkGuiLastCinematicStorageGeneration = cinImage->GetStorageGeneration();
+					}
 					stageImage = globalImages->cinematicImage;
 				} else {
 					stageImage = globalImages->blackImage;
@@ -10883,6 +10923,12 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 	float mvp[ 16 ];
 	VK_FixupClipSpaceZ( mvp, viewDef->projectionMatrix );
 
+	// same-value pipeline/descriptor re-binds are semantic no-ops; the fill
+	// uses at most two pipelines and mostly the white-image descriptor, so
+	// skip re-recording identical binds (no other bind sites exist in this loop)
+	VkPipeline depthFillBoundPipeline = VK_NULL_HANDLE;
+	VkDescriptorSet depthFillBoundSet = VK_NULL_HANDLE;
+
 	// ---- pass 1: depth fill (RB_STD_FillDepthBuffer contract) ----
 	vkCmdSetDepthTestEnable( cmd, VK_TRUE );
 	vkCmdSetDepthWriteEnable( cmd, VK_TRUE );
@@ -11001,8 +11047,14 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 				if ( pipeline == VK_NULL_HANDLE ) {
 					continue;
 				}
-				vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
-				vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkExec.pipelineLayout, 0, 1, &stageDescriptor, 0, NULL );
+				if ( pipeline != depthFillBoundPipeline ) {
+					vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+					depthFillBoundPipeline = pipeline;
+				}
+				if ( stageDescriptor != depthFillBoundSet ) {
+					vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkExec.pipelineLayout, 0, 1, &stageDescriptor, 0, NULL );
+					depthFillBoundSet = stageDescriptor;
+				}
 				vkCmdPushConstants( cmd, vkExec.pipelineLayout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 				vkCmdDrawIndexed( cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );
@@ -11028,8 +11080,14 @@ void VK_GuiExecutor_Draw3DView( const viewDef_t *viewDef ) {
 			VkDescriptorSet whiteDescriptor = VK_GuiExecutor_GetImageDescriptor( globalImages->whiteImage->GetDeviceHandle() );
 			VkPipeline pipeline = VK_GuiExecutor_GetPipeline( fillBlendBits );
 			if ( whiteDescriptor != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE ) {
-				vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
-				vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkExec.pipelineLayout, 0, 1, &whiteDescriptor, 0, NULL );
+				if ( pipeline != depthFillBoundPipeline ) {
+					vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline );
+					depthFillBoundPipeline = pipeline;
+				}
+				if ( whiteDescriptor != depthFillBoundSet ) {
+					vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkExec.pipelineLayout, 0, 1, &whiteDescriptor, 0, NULL );
+					depthFillBoundSet = whiteDescriptor;
+				}
 				vkCmdPushConstants( cmd, vkExec.pipelineLayout,
 						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 				vkCmdDrawIndexed( cmd, (uint32_t)tri->numIndexes, 1, 0, 0, 0 );

@@ -126,6 +126,9 @@ typedef struct materialResourceRecord_s {
 	int					pbrNormalScaleRegister;
 	int					pbrEmissiveColorRegisters[3];
 	int					resourceTableIndex;
+	// per-material DI_REMOTE_RENDER stage presence, cached once at record
+	// creation so AddDrawPacket does not re-walk stages per draw packet
+	bool					usesRemoteRender;
 	rendererPermutationKey_t permutation;
 } materialResourceRecord_t;
 

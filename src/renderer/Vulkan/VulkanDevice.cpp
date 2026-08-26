@@ -1072,6 +1072,24 @@ void VK_Device_Shutdown( void ) {
 	if ( vkCtx.device != VK_NULL_HANDLE ) {
 		vkDeviceWaitIdle( vkCtx.device );
 	}
+	if ( vkCtx.device != VK_NULL_HANDLE && vkCtx.allocator != NULL ) {
+		// an open batch is abandoned, never submitted: the images it records
+		// into are torn down below, and the command buffer dies with the pool
+		for ( int i = 0; i < vkCtx.numUploadBatchPending; i++ ) {
+			vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchPendingBuffers[ i ],
+					vkCtx.uploadBatchPendingAllocations[ i ] );
+		}
+		vkCtx.numUploadBatchPending = 0;
+		vkCtx.uploadBatchPendingBytes = 0;
+		vkCtx.uploadBatchOpen = false;
+		// the wait-idle above already retired any submitted batch
+		for ( int i = 0; i < vkCtx.numUploadBatchInFlight; i++ ) {
+			vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchInFlightBuffers[ i ],
+					vkCtx.uploadBatchInFlightAllocations[ i ] );
+		}
+		vkCtx.numUploadBatchInFlight = 0;
+		vkCtx.uploadBatchInFlight = false;
+	}
 	if ( vkCtx.device != VK_NULL_HANDLE ) {
 		// release the D-layer consumers first (images, executor, buffers)
 		{
@@ -1139,6 +1157,9 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 	vkCtx.recordingSlot = slot;
 
 	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ], VK_TRUE, UINT64_MAX );
+	// deferred destroys must never run while a submitted upload batch could
+	// still reference their images
+	VK_Device_WaitUploadBatch();
 	VK_Device_FlushDeferredDestroys( slot );
 
 	uint32_t imageIndex = 0;
@@ -1256,6 +1277,9 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 	si.signalSemaphoreInfoCount = 1;
 	si.pSignalSemaphoreInfos = &signalInfo;
 
+	// the upload batch must precede any frame submission in queue order so
+	// this frame's fence covers it
+	VK_Device_FlushUploadBatch();
 	vkQueueSubmit2( vkCtx.graphicsQueue, 1, &si, vkCtx.frameFences[ slot ] );
 
 	VkPresentInfoKHR pi;
@@ -1275,24 +1299,33 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 
 /*
 ====================
-VK_Device_ImmediateSubmit
+VK_Device_WaitUploadBatch / VK_Device_FlushUploadBatch / VK_Device_BatchedUpload
 ====================
 */
-bool VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user ) {
-	if ( vkCtx.device == VK_NULL_HANDLE || vkCtx.uploadCommandBuffer == VK_NULL_HANDLE ) {
-		return false;
+
+// staging bytes a single upload batch may own before it is force-flushed
+static const VkDeviceSize VK_UPLOAD_BATCH_BYTE_BUDGET = 64u << 20;
+
+void VK_Device_WaitUploadBatch( void ) {
+	if ( !vkCtx.uploadBatchInFlight ) {
+		return;
 	}
+	vkWaitForFences( vkCtx.device, 1, &vkCtx.uploadFence, VK_TRUE, UINT64_MAX );
+	vkResetFences( vkCtx.device, 1, &vkCtx.uploadFence );
+	for ( int i = 0; i < vkCtx.numUploadBatchInFlight; i++ ) {
+		vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchInFlightBuffers[ i ],
+				vkCtx.uploadBatchInFlightAllocations[ i ] );
+	}
+	vkCtx.numUploadBatchInFlight = 0;
+	vkCtx.uploadBatchInFlight = false;
+}
 
-	vkResetCommandBuffer( vkCtx.uploadCommandBuffer, 0 );
-	VkCommandBufferBeginInfo cbbi;
-	memset( &cbbi, 0, sizeof( cbbi ) );
-	cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkBeginCommandBuffer( vkCtx.uploadCommandBuffer, &cbbi );
-
-	record( vkCtx.uploadCommandBuffer, user );
-
+void VK_Device_FlushUploadBatch( void ) {
+	if ( !vkCtx.uploadBatchOpen ) {
+		return;
+	}
 	vkEndCommandBuffer( vkCtx.uploadCommandBuffer );
+	vkCtx.uploadBatchOpen = false;
 
 	VkSubmitInfo si;
 	memset( &si, 0, sizeof( si ) );
@@ -1300,10 +1333,59 @@ bool VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user ) {
 	si.commandBufferCount = 1;
 	si.pCommandBuffers = &vkCtx.uploadCommandBuffer;
 	if ( vkQueueSubmit( vkCtx.graphicsQueue, 1, &si, vkCtx.uploadFence ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: upload batch submit failed (%d staged regions dropped)",
+				vkCtx.numUploadBatchPending );
+		for ( int i = 0; i < vkCtx.numUploadBatchPending; i++ ) {
+			vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchPendingBuffers[ i ],
+					vkCtx.uploadBatchPendingAllocations[ i ] );
+		}
+		vkCtx.numUploadBatchPending = 0;
+		vkCtx.uploadBatchPendingBytes = 0;
+		return;
+	}
+	// opening a batch waits out the previous one first, so the in-flight list
+	// is always empty here
+	for ( int i = 0; i < vkCtx.numUploadBatchPending; i++ ) {
+		vkCtx.uploadBatchInFlightBuffers[ i ] = vkCtx.uploadBatchPendingBuffers[ i ];
+		vkCtx.uploadBatchInFlightAllocations[ i ] = vkCtx.uploadBatchPendingAllocations[ i ];
+	}
+	vkCtx.numUploadBatchInFlight = vkCtx.numUploadBatchPending;
+	vkCtx.numUploadBatchPending = 0;
+	vkCtx.uploadBatchPendingBytes = 0;
+	vkCtx.uploadBatchInFlight = true;
+}
+
+bool VK_Device_BatchedUpload( vkImmediateRecord_t record, void *user,
+		VkBuffer staging, VmaAllocation stagingAllocation, VkDeviceSize stagingBytes ) {
+	if ( vkCtx.device == VK_NULL_HANDLE || vkCtx.uploadCommandBuffer == VK_NULL_HANDLE ) {
 		return false;
 	}
-	vkWaitForFences( vkCtx.device, 1, &vkCtx.uploadFence, VK_TRUE, UINT64_MAX );
-	vkResetFences( vkCtx.device, 1, &vkCtx.uploadFence );
+
+	if ( !vkCtx.uploadBatchOpen ) {
+		VK_Device_WaitUploadBatch();
+		vkResetCommandBuffer( vkCtx.uploadCommandBuffer, 0 );
+		VkCommandBufferBeginInfo cbbi;
+		memset( &cbbi, 0, sizeof( cbbi ) );
+		cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if ( vkBeginCommandBuffer( vkCtx.uploadCommandBuffer, &cbbi ) != VK_SUCCESS ) {
+			return false;
+		}
+		vkCtx.uploadBatchOpen = true;
+	}
+
+	record( vkCtx.uploadCommandBuffer, user );
+
+	if ( staging != VK_NULL_HANDLE ) {
+		vkCtx.uploadBatchPendingBuffers[ vkCtx.numUploadBatchPending ] = staging;
+		vkCtx.uploadBatchPendingAllocations[ vkCtx.numUploadBatchPending ] = stagingAllocation;
+		vkCtx.numUploadBatchPending++;
+		vkCtx.uploadBatchPendingBytes += stagingBytes;
+	}
+	if ( vkCtx.numUploadBatchPending >= VK_MAX_UPLOAD_BATCH_STAGING
+			|| vkCtx.uploadBatchPendingBytes >= VK_UPLOAD_BATCH_BYTE_BUDGET ) {
+		VK_Device_FlushUploadBatch();
+	}
 	return true;
 }
 
@@ -1320,7 +1402,12 @@ void VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, V
 	}
 	const int slot = vkCtx.recordingSlot;
 	if ( vkCtx.numDeferredDestroys[ slot ] >= VK_MAX_DEFERRED_DESTROYS ) {
-		// queue full: block for safety rather than leak or free early
+		// queue full: block for safety rather than leak or free early. An open
+		// unsubmitted upload batch must be submitted first: destroying a
+		// resource its recorded commands reference would invalidate the
+		// command buffer, and wait-idle only retires submitted work.
+		VK_Device_FlushUploadBatch();
+		VK_Device_WaitUploadBatch();
 		vkDeviceWaitIdle( vkCtx.device );
 		for ( int i = 0; i < VK_FRAMES_IN_FLIGHT; i++ ) {
 			VK_Device_FlushDeferredDestroys( i );

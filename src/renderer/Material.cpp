@@ -292,6 +292,7 @@ void idMaterial::CommonInit() {
 	constantRegisters = NULL;
 	numStages = 0;
 	numAmbientStages = 0;
+	hasCustomGLSLLightingStage = false;
 	stages = NULL;
 	editorImage = NULL;
 	lightFalloffImage = NULL;
@@ -4081,6 +4082,15 @@ bool idMaterial::Parse( const char *text, const int textLength ) {
 		memcpy( stages, pd->parseStages, numStages * sizeof( stages[0] ) );
 	}
 
+	hasCustomGLSLLightingStage = false;
+	for ( i = 0 ; i < numStages ; i++ ) {
+		const newShaderStage_t *newStage = stages[i].newStage;
+		if ( newStage != NULL && newStage->customLighting && newStage->glslProgram ) {
+			hasCustomGLSLLightingStage = true;
+			break;
+		}
+	}
+
 	if ( numOps ) {
 		ops = (expOp_t *)R_StaticAlloc( numOps * sizeof( ops[0] ) );
 		memcpy( ops, pd->shaderOps, numOps * sizeof( ops[0] ) );
@@ -4800,6 +4810,9 @@ static bool MaterialStagesHaveActiveCustomGLSLLighting( const shaderStage_t *sta
 }
 
 bool idMaterial::HasActiveCustomGLSLLighting( const float *registers ) const {
+	if ( !hasCustomGLSLLightingStage ) {
+		return false;
+	}
 	return MaterialStagesHaveActiveCustomGLSLLighting( stages, numStages, registers );
 }
 
@@ -4856,6 +4869,9 @@ idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting
 ===================
 */
 bool idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting( const float *registers ) const {
+	if ( !hasCustomGLSLLightingStage ) {
+		return false;
+	}
 	return MaterialStagesHaveActiveCustomGLSLLighting( stages, numStages, registers )
 		&& MaterialStagesHaveActiveStockLightingInteractions( stages, numStages, registers );
 }

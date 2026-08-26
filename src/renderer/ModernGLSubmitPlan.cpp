@@ -77,6 +77,12 @@ static bool R_ModernGLSubmitPlan_ScissorEquals( const modernGLSubmitCommand_t &a
 }
 
 static modernGLSubmitCommand_t rg_modernGLSubmitPlanSortScratch[MODERN_GL_SUBMIT_PLAN_MAX_COMMANDS];
+// The comparator ends with the unique originalSubmitOrder, so the sorted
+// permutation is a strict total order: sorting an index array through the
+// same comparator and applying it with two struct copies per element yields
+// the byte-identical command order without O(n log n) struct moves.
+static int rg_modernGLSubmitPlanSortOrder[MODERN_GL_SUBMIT_PLAN_MAX_COMMANDS];
+static int rg_modernGLSubmitPlanSortOrderScratch[MODERN_GL_SUBMIT_PLAN_MAX_COMMANDS];
 
 static int R_ModernGLSubmitPlan_CompareInt( int a, int b ) {
 	return ( a > b ) - ( a < b );
@@ -213,47 +219,47 @@ static bool R_ModernGLSubmitPlan_RangeAlreadySorted( const modernGLSubmitCommand
 	return true;
 }
 
-static void R_ModernGLSubmitPlan_InsertionSortRange( modernGLSubmitCommand_t *commands, int left, int right ) {
+static void R_ModernGLSubmitPlan_InsertionSortRange( const modernGLSubmitCommand_t *commands, int *order, int left, int right ) {
 	for ( int i = left + 1; i < right; ++i ) {
-		const modernGLSubmitCommand_t key = commands[i];
+		const int key = order[i];
 		int j = i;
-		while ( j > left && R_ModernGLSubmitPlan_CompareSortKey( commands[j - 1], key ) > 0 ) {
-			commands[j] = commands[j - 1];
+		while ( j > left && R_ModernGLSubmitPlan_CompareSortKey( commands[order[j - 1]], commands[key] ) > 0 ) {
+			order[j] = order[j - 1];
 			j--;
 		}
-		commands[j] = key;
+		order[j] = key;
 	}
 }
 
-static void R_ModernGLSubmitPlan_StableSortRange( modernGLSubmitCommand_t *commands, int left, int right ) {
+static void R_ModernGLSubmitPlan_StableSortRange( const modernGLSubmitCommand_t *commands, int *order, int left, int right ) {
 	if ( right - left <= 1 ) {
 		return;
 	}
 	if ( right - left <= MODERN_GL_SUBMIT_PLAN_INSERTION_SORT_THRESHOLD ) {
-		R_ModernGLSubmitPlan_InsertionSortRange( commands, left, right );
+		R_ModernGLSubmitPlan_InsertionSortRange( commands, order, left, right );
 		return;
 	}
 	const int mid = left + ( right - left ) / 2;
-	R_ModernGLSubmitPlan_StableSortRange( commands, left, mid );
-	R_ModernGLSubmitPlan_StableSortRange( commands, mid, right );
-	if ( R_ModernGLSubmitPlan_CompareSortKey( commands[mid - 1], commands[mid] ) <= 0 ) {
+	R_ModernGLSubmitPlan_StableSortRange( commands, order, left, mid );
+	R_ModernGLSubmitPlan_StableSortRange( commands, order, mid, right );
+	if ( R_ModernGLSubmitPlan_CompareSortKey( commands[order[mid - 1]], commands[order[mid]] ) <= 0 ) {
 		return;
 	}
 
 	for ( int i = left; i < right; ++i ) {
-		rg_modernGLSubmitPlanSortScratch[i] = commands[i];
+		rg_modernGLSubmitPlanSortOrderScratch[i] = order[i];
 	}
 	int a = left;
 	int b = mid;
 	for ( int out = left; out < right; ++out ) {
 		if ( a >= mid ) {
-			commands[out] = rg_modernGLSubmitPlanSortScratch[b++];
+			order[out] = rg_modernGLSubmitPlanSortOrderScratch[b++];
 		} else if ( b >= right ) {
-			commands[out] = rg_modernGLSubmitPlanSortScratch[a++];
-		} else if ( R_ModernGLSubmitPlan_CompareSortKey( rg_modernGLSubmitPlanSortScratch[a], rg_modernGLSubmitPlanSortScratch[b] ) <= 0 ) {
-			commands[out] = rg_modernGLSubmitPlanSortScratch[a++];
+			order[out] = rg_modernGLSubmitPlanSortOrderScratch[a++];
+		} else if ( R_ModernGLSubmitPlan_CompareSortKey( commands[rg_modernGLSubmitPlanSortOrderScratch[a]], commands[rg_modernGLSubmitPlanSortOrderScratch[b]] ) <= 0 ) {
+			order[out] = rg_modernGLSubmitPlanSortOrderScratch[a++];
 		} else {
-			commands[out] = rg_modernGLSubmitPlanSortScratch[b++];
+			order[out] = rg_modernGLSubmitPlanSortOrderScratch[b++];
 		}
 	}
 }
@@ -327,7 +333,16 @@ static void R_ModernGLSubmitPlan_SortCommands( modernGLSubmitCommand_t *commands
 		if ( index - start > 1 ) {
 			stats.sortSpans++;
 			if ( !R_ModernGLSubmitPlan_RangeAlreadySorted( commands, start, index ) ) {
-				R_ModernGLSubmitPlan_StableSortRange( commands, start, index );
+				for ( int i = start; i < index; ++i ) {
+					rg_modernGLSubmitPlanSortOrder[i] = i;
+				}
+				R_ModernGLSubmitPlan_StableSortRange( commands, rg_modernGLSubmitPlanSortOrder, start, index );
+				for ( int i = start; i < index; ++i ) {
+					rg_modernGLSubmitPlanSortScratch[i] = commands[i];
+				}
+				for ( int i = start; i < index; ++i ) {
+					commands[i] = rg_modernGLSubmitPlanSortScratch[rg_modernGLSubmitPlanSortOrder[i]];
+				}
 				sortedAnySpan = true;
 			}
 		}

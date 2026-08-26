@@ -322,6 +322,8 @@ static rendererClusteredLightingStats_t rg_clusteredLightingStats;
 static modernClusterFrameData_t rg_clusteredLightingFrame;
 static rendererClusteredDecalStats_t rg_clusteredDecalStats;
 static modernClusterDecalFrameData_t rg_clusteredDecalFrame;
+static modernClusterDecalFrameData_t rg_clusteredDecalPrepareScratch;
+static modernClusterDecalFrameData_t rg_clusteredDecalSealScratch;
 static renderBackendCaps_t rg_clusteredLightingCaps;
 static renderFeatureSet_t rg_clusteredLightingFeatures;
 static GLuint rg_clusteredLightingParamsUBO = 0;
@@ -1534,13 +1536,12 @@ bool R_ModernClusteredLighting_RejectDecalsForFrame( rendererClusteredDecalRejec
 bool R_ModernClusteredLighting_PrepareDecals( const rendererClusteredDecalSource_t *sources,
 		int sourceCount, unsigned int generation ) {
 	R_ModernClusteredLighting_ResetDecalTransaction();
-	modernClusterDecalFrameData_t candidate;
+	modernClusterDecalFrameData_t &candidate = rg_clusteredDecalPrepareScratch;
 	modernClusterDecalRejectInfo_t reject;
 	if ( !R_ModernClusteredLighting_BuildDecalCandidate( sources, sourceCount, generation, candidate, reject ) ) {
 		return R_ModernClusteredLighting_RejectDecals( reject.reason, reject.sourceIndex,
 			reject.viewIndex, false, sourceCount, generation );
 	}
-	rg_clusteredDecalFrame = candidate;
 	rg_clusteredDecalStats.prepared = true;
 	rg_clusteredDecalStats.csrReady = true;
 	rg_clusteredDecalStats.generation = generation;
@@ -1550,6 +1551,14 @@ bool R_ModernClusteredLighting_PrepareDecals( const rendererClusteredDecalSource
 	rg_clusteredDecalStats.clusterCount = candidate.clusters.Num();
 	rg_clusteredDecalStats.clusterReferences = candidate.clusterReferences.Num();
 	rg_clusteredDecalStats.sourceOrderHash = candidate.sourceOrderHash;
+	rg_clusteredDecalFrame.generation = candidate.generation;
+	rg_clusteredDecalFrame.sourceOrderHash = candidate.sourceOrderHash;
+	rg_clusteredDecalFrame.viewCount = candidate.viewCount;
+	rg_clusteredDecalFrame.valid = candidate.valid;
+	rg_clusteredDecalFrame.records.Swap( candidate.records );
+	rg_clusteredDecalFrame.clusters.Swap( candidate.clusters );
+	rg_clusteredDecalFrame.clusterReferences.Swap( candidate.clusterReferences );
+	rg_clusteredDecalFrame.views.Swap( candidate.views );
 	idStr::Copynz( rg_clusteredDecalStats.status, "prepared", sizeof( rg_clusteredDecalStats.status ) );
 	return true;
 }
@@ -1584,7 +1593,7 @@ bool R_ModernClusteredLighting_SealDecals( const rendererClusteredDecalSource_t 
 			-1, -1, true, sourceCount, generation );
 	}
 
-	modernClusterDecalFrameData_t candidate;
+	modernClusterDecalFrameData_t &candidate = rg_clusteredDecalSealScratch;
 	modernClusterDecalRejectInfo_t reject;
 	if ( !R_ModernClusteredLighting_BuildDecalCandidate( sources, sourceCount, generation, candidate, reject ) ) {
 		return R_ModernClusteredLighting_RejectDecals( reject.reason, reject.sourceIndex,
@@ -1748,6 +1757,28 @@ bool R_ModernClusteredLighting_DecalOwnsCommand( const viewDef_t *viewDef, int c
 		}
 	}
 	return false;
+}
+
+int R_ModernClusteredLighting_DecalSealedCommandForSurface( const viewDef_t *viewDef,
+		const void *sourceSurface, bool &duplicate ) {
+	duplicate = false;
+	if ( !R_ModernClusteredLighting_DecalOwnsSurface( viewDef, sourceSurface ) ) {
+		return -1;
+	}
+	const int viewIndex = R_ModernClusteredLighting_ExactGridIndexForView( viewDef );
+	int commandIndex = -1;
+	for ( int recordIndex = 0; recordIndex < rg_clusteredDecalFrame.records.Num(); ++recordIndex ) {
+		const modernClusterDecalRecord_t &record = rg_clusteredDecalFrame.records[recordIndex];
+		if ( record.gridIndex != viewIndex || record.source.sourceSurface != sourceSurface ) {
+			continue;
+		}
+		if ( commandIndex >= 0 ) {
+			duplicate = true;
+			return -1;
+		}
+		commandIndex = record.source.commandIndex;
+	}
+	return commandIndex;
 }
 
 static void R_ModernClusteredLighting_CountClusterReference( modernClusterRecord_t &cluster, rendererClusteredLightingStats_t &stats ) {
@@ -2460,7 +2491,19 @@ static void R_ModernClusteredLighting_FillClusterIndexList( rendererClusteredLig
 
 static void R_ModernClusteredLighting_FinalizeClusterStats( rendererClusteredLightingStats_t &stats ) {
 	R_ModernClusteredLighting_BuildClusterLayout( stats );
-	R_ModernClusteredLighting_FillClusterIndexList( stats );
+	// The CPU fill pass exists solely to populate clusterLightIndices for the
+	// non-compute upload branch. When compute binning owns the CSR the GPU
+	// rebuilds the flat list from scratch and the upload path never reads the
+	// CPU-filled contents (headers are zero-seeded and flat records seeded to
+	// 0xffffffff in R_ModernClusteredLighting_UploadBuffers), so skip the
+	// second full binning pass. stats.maxLightsInCluster already comes from
+	// the counting pass and stats.uploadedReferences from the layout pass, and
+	// the fill pass reproduces both bit-identically when it does run. The
+	// predicate is stable through this frame's upload: it depends only on
+	// init-time GL state and probeCount, which is final before finalize.
+	if ( !R_ModernClusteredLighting_UseComputeBinningPath() ) {
+		R_ModernClusteredLighting_FillClusterIndexList( stats );
+	}
 	stats.lossless = stats.overflowReferences == 0
 		&& stats.overflowLights == 0
 		&& stats.unsampledSpillReferences == 0
@@ -3009,7 +3052,13 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 	}
 
 	idList<modernClusterLightGpuRecord_t> &lightRecords = rg_clusteredLightingFrame.lightGpuRecords;
-	const int lightUploadRecords = useShaderStorage ? Max( uploadedLights, 1 ) : lightCapacity;
+	// Prefix-sized fills and uploads on both paths: the full-capacity UBO/SSBO
+	// storage allocated at init keeps its binding ranges, glBufferSubData just
+	// writes this frame's prefix. Records beyond the counts are unreachable by
+	// contract (headers carry first/count, flat light indices are filtered
+	// against uploadedLights at fill time, and the GLSL fetch helpers clamp to
+	// capacity) - the SSBO path has always worked this way over a stale tail.
+	const int lightUploadRecords = Max( uploadedLights, 1 );
 	lightRecords.SetNum( lightUploadRecords, false );
 	memset( lightRecords.Ptr(), 0, sizeof( modernClusterLightGpuRecord_t ) * lightUploadRecords );
 	for ( int i = 0; i < uploadedLights; ++i ) {
@@ -3084,7 +3133,7 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 	}
 
 	idList<modernClusterShadowDescriptorGpuRecord_t> &shadowRecords = rg_clusteredLightingFrame.shadowGpuRecords;
-	const int shadowUploadRecords = useShaderStorage ? Max( uploadedShadowDescriptors, 1 ) : shadowDescriptorCapacity;
+	const int shadowUploadRecords = Max( uploadedShadowDescriptors, 1 );
 	shadowRecords.SetNum( shadowUploadRecords, false );
 	memset( shadowRecords.Ptr(), 0, sizeof( modernClusterShadowDescriptorGpuRecord_t ) * shadowUploadRecords );
 	for ( int i = 0; i < uploadedShadowDescriptors; ++i ) {
@@ -3092,7 +3141,7 @@ static bool R_ModernClusteredLighting_UploadBuffers( rendererClusteredLightingSt
 	}
 
 	idList<modernClusterIndexGpuRecord_t> &indexRecords = rg_clusteredLightingFrame.indexGpuRecords;
-	const int indexUploadRecords = useShaderStorage ? Max( stats.uploadedGridIndexRecords, 1 ) : indexRecordCapacity;
+	const int indexUploadRecords = Max( stats.uploadedGridIndexRecords, 1 );
 	indexRecords.SetNum( indexUploadRecords, false );
 	for ( int i = 0; i < indexUploadRecords; ++i ) {
 		indexRecords[i].indices[0] = 0xffffffffu;
@@ -3696,9 +3745,11 @@ bool R_ModernClusteredLighting_BindGridForView( const viewDef_t *viewDef ) {
 		R_ModernClusteredLighting_UpdateBuffer( GL_UNIFORM_BUFFER, rg_clusteredLightingParamsUBO, 0, sizeof( params ), &params );
 		rg_clusteredLightingBoundGridIndex = gridIndex;
 		rg_clusteredLightingStats.gridSwitches++;
+		// grid switches are the only stats mutation on this path; snapshotting the
+		// ~460-byte struct per accepted forward+ draw was pure memcpy overhead
+		R_RendererMetrics_RecordClusteredLighting( rg_clusteredLightingStats );
 	}
 	R_ModernClusteredLighting_BindGpuBuffers( R_ModernClusteredLighting_UseShaderStoragePath() );
-	R_RendererMetrics_RecordClusteredLighting( rg_clusteredLightingStats );
 	return true;
 }
 

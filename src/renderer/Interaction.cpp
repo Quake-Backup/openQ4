@@ -111,11 +111,19 @@ static bool R_TranslucentShadowMapMomentsSupportedForLight( const idRenderLightL
 	// their translucent caster chains. Reject that tier explicitly so stale
 	// OpenGL capability state can never admit casters Vulkan would omit; its
 	// stock translucent shadow casters instead use binary stencil-parity depth.
-	const char *activeRenderApi =
-		cvarSystem != NULL
-			? cvarSystem->GetCVarString( "r_actualRenderApi" )
-			: "";
-	if ( idStr::Icmp( activeRenderApi, "vulkan" ) == 0 ) {
+	// r_actualRenderApi is CVAR_ROM, set once at renderer-module selection;
+	// re-resolve the by-name lookup at most once per frame instead of per call.
+	static int cachedApiFrame = -1;
+	static bool cachedVulkanApi = false;
+	if ( cachedApiFrame != idLib::frameNumber ) {
+		const char *activeRenderApi =
+			cvarSystem != NULL
+				? cvarSystem->GetCVarString( "r_actualRenderApi" )
+				: "";
+		cachedVulkanApi = idStr::Icmp( activeRenderApi, "vulkan" ) == 0;
+		cachedApiFrame = idLib::frameNumber;
+	}
+	if ( cachedVulkanApi ) {
 		return false;
 	}
 	return r_shadowMapTranslucentMoments.GetBool() &&
@@ -1929,6 +1937,26 @@ void idInteraction::AddActiveInteraction( void ) {
 
 	bool lightScissorsEmpty = lightScissor.IsEmpty();
 
+	// Shadow-map admission policy that is invariant across this interaction's
+	// surfaces, hoisted out of the per-surface loop (mirrors CreateInteraction).
+	// translucentShadowMapSupported is only consumed when the caster policy is
+	// active and the interaction has shadows, so the extra guards keep the
+	// default stencil-only configuration from paying the by-name cvar lookup.
+	const bool shadowMapCasterPolicyActive =
+		r_useShadowMap.GetBool() &&
+		( !vLight->pointLight || vLight->parallel || r_shadowMapPointLights.GetBool() );
+	const bool isViewOnlyEntity =
+		( entityDef->parms.allowSurfaceInViewID != 0 &&
+			entityDef->parms.allowSurfaceInViewID == tr.viewDef->renderView.viewID ) ||
+		( entityDef->parms.weaponDepthHackInViewID != 0 &&
+			entityDef->parms.weaponDepthHackInViewID == tr.viewDef->renderView.viewID );
+	const bool shadowMapsEnabled = r_shadows.GetBool() && r_useShadowMap.GetBool();
+	const bool translucentShadowMapSupported =
+		interactionHasShadows &&
+		shadowMapCasterPolicyActive &&
+		shadowMapsEnabled &&
+		R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
+
 	// for each surface of this entity / light interaction
 	for ( int i = 0; i < numSurfaces; i++ ) {
 		surfaceInteraction_t *sint = &surfaces[i];
@@ -2096,9 +2124,6 @@ void idInteraction::AddActiveInteraction( void ) {
 		const int shadowReceiverMask = materialNoSelfShadow
 			? SHADOWMAP_RECEIVER_MASK_GLOBAL
 			: ( SHADOWMAP_RECEIVER_MASK_LOCAL | SHADOWMAP_RECEIVER_MASK_GLOBAL );
-		const bool shadowMapCasterPolicyActive =
-			r_useShadowMap.GetBool() &&
-			( !vLight->pointLight || vLight->parallel || r_shadowMapPointLights.GetBool() );
 		bool admittedShadowMapCaster = false;
 		bool linkedShadowMapCaster = false;
 
@@ -2109,16 +2134,7 @@ void idInteraction::AddActiveInteraction( void ) {
 		// (r_shadowMapPointLights 0 previously built full caster chains the
 		// backend never consumed)
 		if ( shadowMapCasterPolicyActive ) {
-			const bool isViewOnlyEntity =
-				( entityDef->parms.allowSurfaceInViewID != 0 &&
-					entityDef->parms.allowSurfaceInViewID == tr.viewDef->renderView.viewID ) ||
-				( entityDef->parms.weaponDepthHackInViewID != 0 &&
-					entityDef->parms.weaponDepthHackInViewID == tr.viewDef->renderView.viewID );
 			const bool shadowMapNoSelfShadow = materialNoSelfShadow;
-			const bool shadowMapsEnabled = r_shadows.GetBool() && r_useShadowMap.GetBool();
-			const bool translucentShadowMapSupported =
-				shadowMapsEnabled &&
-				R_TranslucentShadowMapMomentsSupportedForLight( lightDef );
 			const bool skipPointLightEmitterCaster =
 				vLight->pointLight && !vLight->parallel &&
 				R_ShouldSkipPointLightEmitterCaster( shadowShader, sint->ambientTris, localLightOrigin, lightDef->parms.lightRadius );

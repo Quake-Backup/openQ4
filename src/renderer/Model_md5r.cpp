@@ -5943,15 +5943,13 @@ idRenderModel *rvRenderModelMD5R::InstantiateDynamicModel( const renderEntity_s 
 		}
 	}
 
-	idList<bool> activeMeshes;
-	activeMeshes.SetNum( meshes.Num() );
-	for ( int meshIndex = 0; meshIndex < activeMeshes.Num(); ++meshIndex ) {
-		activeMeshes[ meshIndex ] = false;
-	}
+	const int meshCount = meshes.Num();
+	bool *activeMeshes = (bool *)_alloca( ( meshCount > 0 ? meshCount : 1 ) * sizeof( activeMeshes[0] ) );
+	memset( activeMeshes, 0, meshCount * sizeof( activeMeshes[0] ) );
 
 	for ( int lodMeshIndex = 0; lodMeshIndex < allLODMeshes.Num(); ++lodMeshIndex ) {
 		const int meshIndex = allLODMeshes[ lodMeshIndex ];
-		if ( meshIndex >= 0 && meshIndex < activeMeshes.Num() ) {
+		if ( meshIndex >= 0 && meshIndex < meshCount ) {
 			activeMeshes[ meshIndex ] = true;
 		}
 	}
@@ -5959,7 +5957,7 @@ idRenderModel *rvRenderModelMD5R::InstantiateDynamicModel( const renderEntity_s 
 	if ( selectedLOD >= 0 && selectedLOD < lods.Num() ) {
 		for ( int lodMeshIndex = 0; lodMeshIndex < lods[ selectedLOD ].meshIndexes.Num(); ++lodMeshIndex ) {
 			const int meshIndex = lods[ selectedLOD ].meshIndexes[ lodMeshIndex ];
-			if ( meshIndex >= 0 && meshIndex < activeMeshes.Num() ) {
+			if ( meshIndex >= 0 && meshIndex < meshCount ) {
 				activeMeshes[ meshIndex ] = true;
 			}
 		}

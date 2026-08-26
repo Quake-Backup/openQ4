@@ -247,10 +247,10 @@ static void R_PerformanceCounters( void ) {
 			tr.pc.c_shadowViewEntities, tr.pc.c_viewLights );
 	}
 	if ( r_showUpdates.GetBool() ) {
-		common->Printf( "entityUpdates:%i  entityRefs:%i  lightUpdates:%i  lightRefs:%i  snapshotsReused:%i\n",
+		common->Printf( "entityUpdates:%i  entityRefs:%i  lightUpdates:%i  lightRefs:%i  snapshotsReused:%i  updatesElided:%i\n",
 			tr.pc.c_entityUpdates, tr.pc.c_entityReferences,
 			tr.pc.c_lightUpdates, tr.pc.c_lightReferences,
-			tr.pc.c_entitySnapshotsReused );
+			tr.pc.c_entitySnapshotsReused, tr.pc.c_entityUpdatesElided );
 	}
 	if ( r_showMemory.GetBool() ) {
 		int	m1 = frameData ? frameData->memoryHighwater : 0;

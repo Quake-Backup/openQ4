@@ -525,13 +525,19 @@ bool idUploadManager::AllocFrameTemp( void *data, int bytes, int alignment, rend
 		return false;
 	}
 
-	// AllocFrameTemp can be interleaved with modern submissions. Those bind
-	// GL_ARRAY_BUFFER outside idVertexCache's redundant-bind shadow, so make
-	// this ownership transfer explicit before writing a range in the stream.
-	idVertexCache::InvalidateBufferBindings();
-	idVertexCache::BindArrayBuffer( frame.vbo );
+	// A persistent+coherent mapping is written through the pointer - no GL call
+	// touches GL_ARRAY_BUFFER on that branch, so the real binding and both
+	// binding shadows stay untouched. The map-range/subdata branches DO target
+	// GL_ARRAY_BUFFER and can be interleaved with modern submissions that bind
+	// it outside idVertexCache's redundant-bind shadow, so for those the
+	// ownership transfer stays explicit before writing a range in the stream.
+	const bool persistentWrite = path == UPLOAD_PATH_PERSISTENT && frame.mapped != NULL;
+	if ( !persistentWrite ) {
+		idVertexCache::InvalidateBufferBindings();
+		idVertexCache::BindArrayBuffer( frame.vbo );
+	}
 
-	if ( path == UPLOAD_PATH_PERSISTENT && frame.mapped != NULL ) {
+	if ( persistentWrite ) {
 		SIMDProcessor->Memcpy( frame.mapped + offset, data, bytes );
 		stats.framePersistentWrites++;
 	} else if ( path == UPLOAD_PATH_MAP_RANGE && glMapBufferRange != NULL ) {
@@ -564,7 +570,10 @@ bool idUploadManager::AllocFrameTemp( void *data, int bytes, int alignment, rend
 	stats.frameRingUsedBytes = ring.Used();
 	stats.frameRingHighWaterBytes = ring.HighWater();
 	R_RendererMetrics_AddUploadBytes( bytes );
-	R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame stream" );
+	if ( !persistentWrite ) {
+		// the legacy bind above changed GL_ARRAY_BUFFER behind the modern cache
+		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame stream" );
+	}
 	return true;
 }
 

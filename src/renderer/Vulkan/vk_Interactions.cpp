@@ -236,6 +236,8 @@ typedef struct vkInterPass_s {
 	int					lightCount;
 	int					drawCount;
 	int					nativePBRDrawCount;
+	VkDescriptorSet		lastImageSets[ 6 ];	// sets 0-5 as last bound by VK_DrawSingleInteractionMode
+	bool				imageSetsValid;		// lastImageSets mirror live bindings on cmd
 
 	// Phase F2a/F2b shadow-map receivers
 	bool				shadowPassPrepared;	// shadow maps rendered for this view
@@ -2345,8 +2347,31 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	uint32_t dynamicOffsets[ 2 ];
 	dynamicOffsets[ 0 ] = (uint32_t)uboOffset;
 	dynamicOffsets[ 1 ] = (uint32_t)interPass.shadowSliceOffset;
+	// Sets 0-5 are pass/material-constant image sets. The interaction and
+	// shadow-interaction pipeline layouts are built from the same set layouts
+	// for sets 0..6 and the same push range (vk_GuiExecutor.cpp), so they are
+	// compatible for sets 0..5 and a suffix rebind with either layout leaves
+	// the untouched prefix defined. Sets 6..7 carry the per-draw dynamic
+	// offsets and are always rebound; nothing else in this pass binds
+	// descriptor sets on this command buffer, so the mirror below stays live.
+	int firstChangedSet = interPass.imageSetsValid ? 6 : 0;
+	if ( interPass.imageSetsValid ) {
+		for ( int i = 0 ; i < 6 ; i++ ) {
+			if ( sets[ i ] != interPass.lastImageSets[ i ] ) {
+				firstChangedSet = i;
+				break;
+			}
+		}
+	}
+	if ( firstChangedSet < 6 ) {
+		vkCmdBindDescriptorSets( interPass.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+				(uint32_t)firstChangedSet, (uint32_t)( 6 - firstChangedSet ),
+				sets + firstChangedSet, 0, NULL );
+	}
 	vkCmdBindDescriptorSets( interPass.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-			0, (uint32_t)setCount, sets, shadowDraw ? 2 : 1, dynamicOffsets );
+			6, (uint32_t)( setCount - 6 ), sets + 6, shadowDraw ? 2 : 1, dynamicOffsets );
+	memcpy( interPass.lastImageSets, sets, sizeof( interPass.lastImageSets ) );
+	interPass.imageSetsValid = true;
 	vkCmdPushConstants( interPass.cmd, layout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 	vkCmdDrawIndexed( interPass.cmd, (uint32_t)din->surf->geo->numIndexes, 1, 0, 0, 0 );

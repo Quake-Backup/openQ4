@@ -431,6 +431,42 @@ static const char *rg_modernGLDeferredTextureUniforms[MODERN_GL_DEFERRED_TEXTURE
 static const char *rg_modernGLShadowProjectedMomentUniform = "uModernTranslucentShadowMoments[0]";
 static const char *rg_modernGLShadowPointMomentUniform = "uModernPointTranslucentShadowMoments[0]";
 
+// Shadow uniform locations and sampler-unit assignments are link-time program
+// state, so they are memoized per program object and cleared alongside the
+// cluster-block binding memo on shader-library relink and executor shutdown.
+// The bindings snapshot is only valid within one revision of the shared shadow
+// state: the classic per-light path (RB_ShadowMapSelectPointCacheEntry,
+// RB_SharedWorldInteractionGLActivateMapResource) mutates
+// g_shadowMapDepthImage/g_activePointShadowMapCache during RB_DrawView, so the
+// revision is bumped every PrepareFrame and on every decal-overlay entry.
+struct modernGLShadowUniformLocations_t {
+	GLuint	program;
+	GLint	projectedAtlas;
+	GLint	pointAtlas;
+	GLint	projectedMoments;
+	GLint	pointMoments;
+	GLint	resourceState;
+	GLint	samplerState;
+	GLint	momentState;
+	GLint	contractState;
+	GLint	lightImageAtlas;
+	GLint	specularProbeAtlas;
+	bool	samplerUnitsAssigned;
+	bool	samplerReady;
+	int		stateRevision;
+	int		stateFrameCount;
+};
+
+const int MODERN_GL_SHADOW_UNIFORM_PROGRAM_CAPACITY = 32;
+static modernGLShadowUniformLocations_t rg_modernGLShadowUniformPrograms[MODERN_GL_SHADOW_UNIFORM_PROGRAM_CAPACITY];
+static int rg_modernGLShadowUniformProgramCount = 0;
+
+static int rg_modernGLShadowBindingsRevision = 0;
+static int rg_modernGLShadowSnapshotRevision = -1;
+static int rg_modernGLShadowSnapshotFrameCount = -1;
+static rendererShadowTextureBindings_t rg_modernGLShadowBindingsSnapshot;
+static GLuint rg_modernGLShadowCompareCleared[MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT];
+
 static modernGLExecutorStats_t rg_modernGLExecutorStats;
 // False for the first modern side-pipeline pass after a render-world change.
 // The classic backend refreshes the newly scoped cache later in that frame;
@@ -438,6 +474,51 @@ static modernGLExecutorStats_t rg_modernGLExecutorStats;
 static bool rg_modernGLShadowTextureBindingsCurrent = false;
 static idModernGLDrawPlan rg_modernGLDrawPlan;
 static idModernGLSubmitPlan rg_modernGLSubmitPlan;
+// Last uniform values uploaded by R_ModernGLExecutor_SubmitCommand for the
+// currently bound program. GLSL uniform state persists per program object, but
+// the memo only trusts values within one same-program run inside one modern
+// pass: every program switch re-primes it, and every pass restore, shader
+// relink (InvalidatePlans) and Shutdown forgets it. glDepthRange is tracked
+// here too (not in idGLStateCache) because the legacy backend writes it raw
+// (RB_EnterWeaponDepthHack/RB_LeaveDepthHack, render tools) between passes.
+struct modernGLSubmitUniformMemo_t {
+	bool	valid;
+	GLuint	program;
+	bool	drawRecordZeroed;
+	bool	debugColorValid;
+	bool	localParamsValid;
+	bool	pbrIBLValid;
+	bool	materialFlagsValid;
+	bool	materialEnhancementValid;
+	float	debugColor[4];
+	float	localParams[4];
+	float	pbrIBL[4];
+	float	materialFlags[4];
+	float	materialEnhancement[4];
+};
+static modernGLSubmitUniformMemo_t rg_modernGLSubmitUniformMemo;
+static bool rg_modernGLDepthRangeKnown = false;
+static bool rg_modernGLDepthRangeHalf = false;
+
+static void R_ModernGLExecutor_InvalidateSubmitStateMemos( void ) {
+	rg_modernGLSubmitUniformMemo.valid = false;
+	rg_modernGLDepthRangeKnown = false;
+}
+
+static bool R_ModernGLExecutor_SubmitUniform4fChanged( bool &cachedValid, float cached[4], const float value[4] ) {
+	if ( rg_modernGLSubmitUniformMemo.valid && cachedValid
+			&& cached[0] == value[0] && cached[1] == value[1]
+			&& cached[2] == value[2] && cached[3] == value[3] ) {
+		return false;
+	}
+	cached[0] = value[0];
+	cached[1] = value[1];
+	cached[2] = value[2];
+	cached[3] = value[3];
+	cachedValid = true;
+	return true;
+}
+
 static renderBackendCaps_t rg_modernGLExecutorCaps;
 static renderFeatureSet_t rg_modernGLExecutorFeatures;
 static GLuint rg_modernGLExecutorVAO = 0;
@@ -1801,18 +1882,6 @@ static bool R_ModernGLExecutor_DrawPacketUsesLegacySidecarView( const drawPacket
 		|| R_ModernGLExecutor_ViewDefUsesLegacySidecar( draw.viewDef );
 }
 
-static int R_ModernGLExecutor_CountPassDraws( const idScenePacketFrame &packetFrame, renderPassCategory_t category ) {
-	int count = 0;
-	const int drawPacketCount = packetFrame.NumDrawPackets();
-	for ( int i = 0; i < drawPacketCount; ++i ) {
-		const drawPacket_t &draw = packetFrame.DrawPacket( i );
-		if ( draw.passCategory == category && !R_ModernGLExecutor_DrawPacketUsesLegacySidecarView( draw ) ) {
-			count++;
-		}
-	}
-	return count;
-}
-
 static bool R_ModernGLExecutor_DrawPacketUsesLegacyFeedbackSurface( const drawPacket_t &draw ) {
 	if ( R_ModernGLExecutor_DrawPacketUsesLegacySidecarView( draw ) ) {
 		return true;
@@ -1871,7 +1940,11 @@ static void R_ModernGLExecutor_RecordPacketFallbackBlockers( const idScenePacket
 			continue;
 		}
 
-		const int viewIndex = R_ModernGLExecutor_ViewIndexForViewDef( packetFrame, draw.viewDef );
+		// viewIndex is consumed only by SetOwnershipBlocker, which keeps the first
+		// blocker; skip the per-packet scene scan once one is recorded
+		const int viewIndex = stats.modernVisibleOwnershipBlocker[0] == '\0'
+			? R_ModernGLExecutor_ViewIndexForViewDef( packetFrame, draw.viewDef )
+			: -1;
 		const bool legacyFeedbackSurface = R_ModernGLExecutor_DrawPacketUsesLegacyFeedbackSurface( draw );
 		if ( RB_FlatDiffuseSurfaceActive( draw.legacyDrawSurf ) ) {
 			// The modern material shaders currently collapse authored ambient
@@ -2313,9 +2386,31 @@ static void R_ModernGLExecutor_AnalyzeModernVisibleOwnershipReadiness( const idS
 	// built the frame, so it can only record which lighting domains the front
 	// end is asking for.  The verdicts themselves are decided per light in
 	// R_ModernGLExecutor_ClassifyModernVisibleLighting once descriptors exist.
-	stats.modernVisibleInteractionPasses = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_ARB2_INTERACTION ) > 0 ? 1 : 0;
-	stats.modernVisibleFogBlendPasses = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_FOG_BLEND ) > 0 ? 1 : 0;
-	stats.modernVisibleLightGridPasses = R_ModernGLExecutor_CountPassDraws( packetFrame, RENDER_PASS_LIGHT_GRID ) > 0 ? 1 : 0;
+	int interactionDraws = 0;
+	int fogBlendDraws = 0;
+	int lightGridDraws = 0;
+	const int passDrawPacketCount = packetFrame.NumDrawPackets();
+	for ( int i = 0; i < passDrawPacketCount; ++i ) {
+		const drawPacket_t &draw = packetFrame.DrawPacket( i );
+		if ( draw.passCategory != RENDER_PASS_ARB2_INTERACTION
+				&& draw.passCategory != RENDER_PASS_FOG_BLEND
+				&& draw.passCategory != RENDER_PASS_LIGHT_GRID ) {
+			continue;
+		}
+		if ( R_ModernGLExecutor_DrawPacketUsesLegacySidecarView( draw ) ) {
+			continue;
+		}
+		if ( draw.passCategory == RENDER_PASS_ARB2_INTERACTION ) {
+			interactionDraws++;
+		} else if ( draw.passCategory == RENDER_PASS_FOG_BLEND ) {
+			fogBlendDraws++;
+		} else {
+			lightGridDraws++;
+		}
+	}
+	stats.modernVisibleInteractionPasses = interactionDraws > 0 ? 1 : 0;
+	stats.modernVisibleFogBlendPasses = fogBlendDraws > 0 ? 1 : 0;
+	stats.modernVisibleLightGridPasses = lightGridDraws > 0 ? 1 : 0;
 	if ( graph.FindPass( RENDER_PASS_ARB2_INTERACTION ) >= 0 ) {
 		stats.modernVisibleInteractionPasses = Max( stats.modernVisibleInteractionPasses, 1 );
 	}
@@ -2998,13 +3093,17 @@ static void R_ModernGLExecutor_SetSubmitScissor( const modernGLSubmitCommand_t &
 }
 
 static void R_ModernGLExecutor_ApplyCommandDepthRange( const modernGLSubmitCommand_t &command ) {
-	if ( command.modelDepthHack != 0.0f ) {
-		glDepthRange( 0.0, 1.0 );
-	} else if ( command.weaponDepthHack ) {
+	const bool half = command.modelDepthHack == 0.0f && command.weaponDepthHack;
+	if ( rg_modernGLDepthRangeKnown && rg_modernGLDepthRangeHalf == half ) {
+		return;
+	}
+	if ( half ) {
 		glDepthRange( 0.0, 0.5 );
 	} else {
 		glDepthRange( 0.0, 1.0 );
 	}
+	rg_modernGLDepthRangeKnown = true;
+	rg_modernGLDepthRangeHalf = half;
 }
 
 static void R_ModernGLExecutor_ApplyCommandCullState( const modernGLSubmitCommand_t &command ) {
@@ -3169,6 +3268,9 @@ static void R_ModernGLExecutor_SetDebugColor( const modernGLSubmitCommand_t &com
 	}
 	float color[4];
 	R_ModernGLExecutor_DebugColorForCommand( command, color );
+	if ( !R_ModernGLExecutor_SubmitUniform4fChanged( rg_modernGLSubmitUniformMemo.debugColorValid, rg_modernGLSubmitUniformMemo.debugColor, color ) ) {
+		return;
+	}
 	glUniform4f( command.debugColorLocation, color[0], color[1], color[2], color[3] );
 }
 
@@ -3272,22 +3374,28 @@ static void R_ModernGLExecutor_SetLocalParams( const modernGLSubmitCommand_t &co
 	}
 	float params[4];
 	R_ModernGLExecutor_LocalParamsForCommand( command, params );
+	if ( !R_ModernGLExecutor_SubmitUniform4fChanged( rg_modernGLSubmitUniformMemo.localParamsValid, rg_modernGLSubmitUniformMemo.localParams, params ) ) {
+		return;
+	}
 	glUniform4f( command.localParamsLocation, params[0], params[1], params[2], params[3] );
 }
 
-static void R_ModernGLExecutor_SetPBRIBL( int location ) {
+static void R_ModernGLExecutor_SetPBRIBL( int location, bool useMemo = false ) {
 	if ( location < 0 ) {
 		return;
 	}
 	// The analytic environment is deliberately a renderer-global lighting term.
 	// It is consumed only by the PBR branches in the deferred/forward shaders,
 	// so stock materials and PBR-disabled runs retain their existing output.
-	glUniform4f(
-		location,
+	const float value[4] = {
 		r_pbrIBL.GetBool() ? 1.0f : 0.0f,
 		idMath::ClampFloat( 0.0f, 4.0f, r_pbrIBLIntensity.GetFloat() ),
 		0.0f,
-		0.0f );
+		0.0f };
+	if ( useMemo && !R_ModernGLExecutor_SubmitUniform4fChanged( rg_modernGLSubmitUniformMemo.pbrIBLValid, rg_modernGLSubmitUniformMemo.pbrIBL, value ) ) {
+		return;
+	}
+	glUniform4f( location, value[0], value[1], value[2], value[3] );
 }
 
 static bool R_ModernGLExecutor_IsDepthPipeline( modernGLDrawPlanPipeline_t pipeline ) {
@@ -3807,11 +3915,14 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 	static modernGLDrawRecord_t drawRecords[MODERN_GL_GPU_DRIVEN_MAX_RECORDS];
 	static GLfloat drawRecordIndices[MODERN_GL_GPU_DRIVEN_MAX_RECORDS];
 	static modernGLGpuDrivenBucketRecord_t bucketRecords[MODERN_GL_GPU_DRIVEN_MAX_BUCKETS];
-	memset( sceneRecords, 0, sizeof( sceneRecords ) );
-	memset( indirectRecords, 0, sizeof( indirectRecords ) );
-	memset( drawRecords, 0, sizeof( drawRecords ) );
-	memset( drawRecordIndices, 0, sizeof( drawRecordIndices ) );
-	memset( bucketRecords, 0, sizeof( bucketRecords ) );
+	// Only the used prefix of each array is uploaded (the byte sizes below are
+	// count-based), so full-capacity clears are dead work: every uploaded
+	// sceneRecords/drawRecords/drawRecordIndices entry is fully rewritten per
+	// command below (BuildDrawRecord zeroes each draw record itself), the
+	// indirectRecords prefix is cleared once its count is known (the compute
+	// shader is the only writer of live entries), and the bucketRecords prefix
+	// is cleared right before the header fill so its GPU-written counters
+	// upload as zeros.
 
 	const renderGraphResourceHandle_t *sceneHiZ = NULL;
 	const bool useHiZForIndirect =
@@ -3831,10 +3942,19 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 	cpuReference.clusterBins = clusteredStats.frameValid ? clusteredStats.activeClusters : 0;
 
 	const int sceneRecordCount = Min( rg_modernGLSubmitPlan.NumCommands(), MODERN_GL_GPU_DRIVEN_MAX_RECORDS );
+	if ( sceneRecordCount == 0 ) {
+		// drawRecordBytes/drawRecordIndexBytes below upload Max( 1, ... ) entries;
+		// keep the guard entry zeroed when no command writes it
+		memset( &drawRecords[0], 0, sizeof( drawRecords[0] ) );
+		drawRecordIndices[0] = 0.0f;
+	}
 	int indirectRecordCount = 0;
 	for ( int i = 0; i < sceneRecordCount; ++i ) {
 		const modernGLSubmitCommand_t &command = rg_modernGLSubmitPlan.Command( i );
-		modernGLSubmitCommand_t indirectCommand = command;
+		// the effective command only diverges from the plan command when a client
+		// index upload succeeds; defer the ~450 byte struct copy to that rare path
+		modernGLSubmitCommand_t patchedCommand;
+		const modernGLSubmitCommand_t *effectiveCommand = &command;
 		modernGLGpuSceneRecord_t &record = sceneRecords[i];
 		R_ModernGLExecutor_BuildDrawRecord( command, drawRecords[i] );
 		drawRecordIndices[i] = static_cast<GLfloat>( i );
@@ -3846,15 +3966,18 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 			if ( command.clientIndexData != NULL && command.clientIndexBytes > 0 ) {
 				rendererUploadAllocation_t indexUpload;
 				if ( R_RendererUpload_AllocFrameTemp( const_cast<void *>( command.clientIndexData ), command.clientIndexBytes, 4, indexUpload ) ) {
-					indirectCommand.indexBuffer = indexUpload.vbo;
-					indirectCommand.indexCacheOffset = indexUpload.offset;
-					indirectCommand.uploadIndexBuffer = false;
-					indirectCommand.clientIndexData = NULL;
-					indirectCommand.clientIndexBytes = 0;
+					patchedCommand = command;
+					patchedCommand.indexBuffer = indexUpload.vbo;
+					patchedCommand.indexCacheOffset = indexUpload.offset;
+					patchedCommand.uploadIndexBuffer = false;
+					patchedCommand.clientIndexData = NULL;
+					patchedCommand.clientIndexBytes = 0;
+					effectiveCommand = &patchedCommand;
 					uploadReady = true;
 				}
 			}
 		}
+		const modernGLSubmitCommand_t &indirectCommand = *effectiveCommand;
 		const bool canSeedIndirect = visible && uploadReady && R_ModernGLExecutor_CommandCanSeedIndirect( indirectCommand );
 		int bucketIndex = -1;
 		if ( canSeedIndirect ) {
@@ -3929,6 +4052,9 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 		record.indirect[3] = static_cast<GLuint>( i );
 	}
 
+	// zero the uploaded bucket prefix: header[] is rewritten below, but the
+	// counters[] halves must reach the GPU as zeros for the compute pass
+	memset( bucketRecords, 0, Max( 1, rg_modernGLGpuDrivenBucketCount ) * sizeof( bucketRecords[0] ) );
 	for ( int i = 0; i < rg_modernGLGpuDrivenBucketCount; ++i ) {
 		const modernGLGpuDrivenBucket_t &bucket = rg_modernGLGpuDrivenBuckets[i];
 		bucketRecords[i].header[0] = static_cast<GLuint>( bucket.firstIndirect );
@@ -3936,6 +4062,10 @@ static void R_ModernGLExecutor_UpdateGpuDrivenBuffers( modernGLExecutorStats_t &
 		bucketRecords[i].header[2] = static_cast<GLuint>( i );
 		bucketRecords[i].header[3] = 0u;
 	}
+
+	// live indirect commands are written by the compute shader, never the CPU;
+	// only the uploaded prefix needs to be zeroed
+	memset( indirectRecords, 0, Max( 1, indirectRecordCount ) * sizeof( indirectRecords[0] ) );
 
 	GLuint validationCounters[MODERN_GL_GPU_DRIVEN_VALIDATION_COUNTERS] = { 0 };
 	const GLsizeiptr sceneBytes = static_cast<GLsizeiptr>( sceneRecordCount * sizeof( modernGLGpuSceneRecord_t ) );
@@ -4290,6 +4420,9 @@ static void R_ModernGLExecutor_SetMaterialFlags( const modernGLSubmitCommand_t &
 	}
 	float flags[4];
 	R_ModernGLExecutor_MaterialFlagsForCommand( command, flags );
+	if ( !R_ModernGLExecutor_SubmitUniform4fChanged( rg_modernGLSubmitUniformMemo.materialFlagsValid, rg_modernGLSubmitUniformMemo.materialFlags, flags ) ) {
+		return;
+	}
 	glUniform4f( command.materialFlagsLocation, flags[0], flags[1], flags[2], flags[3] );
 }
 
@@ -4299,6 +4432,9 @@ static void R_ModernGLExecutor_SetMaterialEnhancement( const modernGLSubmitComma
 	}
 	float enhancement[4];
 	R_ModernGLExecutor_MaterialEnhancementForCommand( command, enhancement );
+	if ( !R_ModernGLExecutor_SubmitUniform4fChanged( rg_modernGLSubmitUniformMemo.materialEnhancementValid, rg_modernGLSubmitUniformMemo.materialEnhancement, enhancement ) ) {
+		return;
+	}
 	glUniform4f( command.materialEnhancementLocation, enhancement[0], enhancement[1], enhancement[2], enhancement[3] );
 }
 
@@ -4441,6 +4577,16 @@ static void R_ModernGLExecutor_ResetClusterBlockBindingCache( void ) {
 	rg_modernGLClusterBlockBoundProgramCount = 0;
 }
 
+// same lifetime rules as the cluster-block memo above: uniform locations and
+// sampler-unit assignments die with the shader-library generation, and relink
+// resets sampler uniforms to zero, so both reset sites must clear this too
+static void R_ModernGLExecutor_ResetShadowUniformCache( void ) {
+	rg_modernGLShadowUniformProgramCount = 0;
+	rg_modernGLShadowSnapshotRevision = -1;
+	rg_modernGLShadowSnapshotFrameCount = -1;
+	rg_modernGLShadowBindingsRevision++;
+}
+
 static void R_ModernGLExecutor_BindClusterUniformBlocks( GLuint program ) {
 	for ( int i = 0; i < rg_modernGLClusterBlockBoundProgramCount; ++i ) {
 		if ( rg_modernGLClusterBlockBoundPrograms[i] == program ) {
@@ -4492,11 +4638,24 @@ static bool R_ModernGLExecutor_SubmitCommand( const modernGLSubmitCommand_t &com
 	}
 
 	R_GLStateCache().UseProgram( command.program );
-	if ( command.drawRecordModeLocation >= 0 && glUniform1ui != NULL ) {
-		glUniform1ui( command.drawRecordModeLocation, 0 );
+	if ( !rg_modernGLSubmitUniformMemo.valid || rg_modernGLSubmitUniformMemo.program != command.program ) {
+		rg_modernGLSubmitUniformMemo.valid = true;
+		rg_modernGLSubmitUniformMemo.program = command.program;
+		rg_modernGLSubmitUniformMemo.drawRecordZeroed = false;
+		rg_modernGLSubmitUniformMemo.debugColorValid = false;
+		rg_modernGLSubmitUniformMemo.localParamsValid = false;
+		rg_modernGLSubmitUniformMemo.pbrIBLValid = false;
+		rg_modernGLSubmitUniformMemo.materialFlagsValid = false;
+		rg_modernGLSubmitUniformMemo.materialEnhancementValid = false;
 	}
-	if ( command.drawRecordCountLocation >= 0 && glUniform1ui != NULL ) {
-		glUniform1ui( command.drawRecordCountLocation, 0 );
+	if ( !rg_modernGLSubmitUniformMemo.drawRecordZeroed ) {
+		if ( command.drawRecordModeLocation >= 0 && glUniform1ui != NULL ) {
+			glUniform1ui( command.drawRecordModeLocation, 0 );
+		}
+		if ( command.drawRecordCountLocation >= 0 && glUniform1ui != NULL ) {
+			glUniform1ui( command.drawRecordCountLocation, 0 );
+		}
+		rg_modernGLSubmitUniformMemo.drawRecordZeroed = true;
 	}
 	R_ModernGLExecutor_BindFrameUniformBufferBase( stats );
 	if ( R_ModernGLExecutor_CommandUsesClusteredLighting( command ) ) {
@@ -4508,7 +4667,7 @@ static bool R_ModernGLExecutor_SubmitCommand( const modernGLSubmitCommand_t &com
 	}
 	R_ModernGLExecutor_SetDebugColor( command );
 	R_ModernGLExecutor_SetLocalParams( command );
-	R_ModernGLExecutor_SetPBRIBL( command.pbrIBLLocation );
+	R_ModernGLExecutor_SetPBRIBL( command.pbrIBLLocation, true );
 	R_ModernGLExecutor_SetMaterialFlags( command );
 	R_ModernGLExecutor_SetMaterialEnhancement( command );
 	R_ModernGLExecutor_BindMaterialTextures(
@@ -4561,6 +4720,7 @@ static bool R_ModernGLExecutor_SubmitCommand( const modernGLSubmitCommand_t &com
 }
 
 static void R_ModernGLExecutor_SoftRestoreForNextModernPass( modernGLExecutorStats_t &stats ) {
+	R_ModernGLExecutor_InvalidateSubmitStateMemos();
 	R_ModernGLExecutor_DisableDrawRecordIndexAttribute();
 	R_GLStateCache().ActiveTextureUnit( 0 );
 	R_GLStateCache().SetColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
@@ -4600,6 +4760,7 @@ static void R_ModernGLExecutor_RestoreLegacyStateInvariants( void ) {
 
 static void R_ModernGLExecutor_FullRestoreForLegacyHandoff( modernGLExecutorStats_t &stats, const char *reason, bool force ) {
 	(void)reason;
+	R_ModernGLExecutor_InvalidateSubmitStateMemos();
 	if ( !force && !rg_modernGLExecutorModernStateDirty ) {
 		return;
 	}
@@ -4970,6 +5131,7 @@ static void R_ModernGLExecutor_DetachHiZReductionMip( void ) {
 }
 
 static void R_ModernGLExecutor_RestoreAfterHiZBuild( modernGLExecutorStats_t &stats, const char *reason ) {
+	R_ModernGLExecutor_InvalidateSubmitStateMemos();
 	if ( rg_modernGLExecutorSoftPassHandoffs ) {
 		// Detaching the reduction mip leaves the private Hi-Z FBO incomplete.
 		// A soft handoff must still publish a valid neutral target for tiers that
@@ -5521,27 +5683,69 @@ static bool R_ModernGLExecutor_ShadowTextureUnitsReady( void ) {
 	return R_ModernGLExecutor_ShadowTextureUnitLimit() > MODERN_SPECULAR_PROBE_ATLAS_TEXTURE_UNIT;
 }
 
-static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program ) {
-	if ( program == 0 || glGetUniformLocation == NULL || glUniform1i == NULL ) {
+// resolves (and memoizes) the shadow-set uniform locations for a program; the
+// shader library resolves the same names at link time but discards them, so
+// re-querying by name per draw was redundant driver traffic. Over-capacity
+// programs fall open to a per-call scratch resolve, matching the pre-memo cost.
+static modernGLShadowUniformLocations_t *R_ModernGLExecutor_ShadowUniformLocations( GLuint program ) {
+	if ( program == 0 || glGetUniformLocation == NULL ) {
+		return NULL;
+	}
+	for ( int i = 0; i < rg_modernGLShadowUniformProgramCount; ++i ) {
+		if ( rg_modernGLShadowUniformPrograms[i].program == program ) {
+			return &rg_modernGLShadowUniformPrograms[i];
+		}
+	}
+	static modernGLShadowUniformLocations_t scratch;
+	modernGLShadowUniformLocations_t *loc = &scratch;
+	if ( rg_modernGLShadowUniformProgramCount < MODERN_GL_SHADOW_UNIFORM_PROGRAM_CAPACITY ) {
+		loc = &rg_modernGLShadowUniformPrograms[rg_modernGLShadowUniformProgramCount++];
+	}
+	loc->program = program;
+	loc->projectedAtlas = glGetUniformLocation( program, "uModernShadowAtlas" );
+	loc->pointAtlas = glGetUniformLocation( program, "uModernPointShadowAtlas" );
+	loc->projectedMoments = glGetUniformLocation( program, rg_modernGLShadowProjectedMomentUniform );
+	loc->pointMoments = glGetUniformLocation( program, rg_modernGLShadowPointMomentUniform );
+	loc->resourceState = glGetUniformLocation( program, "uModernShadowResourceState" );
+	loc->samplerState = glGetUniformLocation( program, "uModernShadowSamplerState" );
+	loc->momentState = glGetUniformLocation( program, "uModernShadowMomentState" );
+	loc->contractState = glGetUniformLocation( program, "uModernShadowContractState" );
+	loc->lightImageAtlas = glGetUniformLocation( program, "uModernLightImageAtlas" );
+	loc->specularProbeAtlas = glGetUniformLocation( program, "uModernSpecularProbeAtlas" );
+	loc->samplerUnitsAssigned = false;
+	loc->samplerReady = loc->projectedAtlas >= 0 && loc->pointAtlas >= 0
+		&& loc->projectedMoments >= 0 && loc->pointMoments >= 0
+		&& loc->resourceState >= 0 && loc->samplerState >= 0 && loc->momentState >= 0;
+	loc->stateRevision = -1;
+	loc->stateFrameCount = -1;
+	return loc;
+}
+
+static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program, modernGLShadowUniformLocations_t *loc ) {
+	if ( program == 0 || glGetUniformLocation == NULL || glUniform1i == NULL || loc == NULL ) {
 		return false;
 	}
-	const GLint projectedAtlas = glGetUniformLocation( program, "uModernShadowAtlas" );
-	const GLint pointAtlas = glGetUniformLocation( program, "uModernPointShadowAtlas" );
-	const GLint projectedMoments = glGetUniformLocation( program, rg_modernGLShadowProjectedMomentUniform );
-	const GLint pointMoments = glGetUniformLocation( program, rg_modernGLShadowPointMomentUniform );
-	const GLint resourceState = glGetUniformLocation( program, "uModernShadowResourceState" );
-	const GLint samplerState = glGetUniformLocation( program, "uModernShadowSamplerState" );
-	const GLint momentState = glGetUniformLocation( program, "uModernShadowMomentState" );
+	// sampler uniforms are persistent program-object state carrying
+	// compile-time-constant unit numbers, so assign them once per program; the
+	// memo is cleared on relink and shutdown, which are the only events that
+	// reset them
+	if ( loc->samplerUnitsAssigned ) {
+		return loc->samplerReady;
+	}
+	const GLint projectedAtlas = loc->projectedAtlas;
+	const GLint pointAtlas = loc->pointAtlas;
+	const GLint projectedMoments = loc->projectedMoments;
+	const GLint pointMoments = loc->pointMoments;
 	// The light-image atlas sampler is independent of the shadow set and must be
 	// assigned before the shadow bail-out below. A program that declares it but
 	// is missing any shadow uniform would otherwise keep the default unit 0 and
 	// sample whatever happens to be bound there, which the driver reports as
 	// "State(s) are invalid: program texture usage".
-	const GLint lightImageAtlas = glGetUniformLocation( program, "uModernLightImageAtlas" );
+	const GLint lightImageAtlas = loc->lightImageAtlas;
 	if ( lightImageAtlas >= 0 ) {
 		glUniform1i( lightImageAtlas, MODERN_GL_LIGHT_IMAGE_ATLAS_TEXTURE_UNIT );
 	}
-	const GLint specularProbeAtlas = glGetUniformLocation( program, "uModernSpecularProbeAtlas" );
+	const GLint specularProbeAtlas = loc->specularProbeAtlas;
 	if ( specularProbeAtlas >= 0 ) {
 		glUniform1i( specularProbeAtlas, MODERN_SPECULAR_PROBE_ATLAS_TEXTURE_UNIT );
 	}
@@ -5576,10 +5780,8 @@ static bool R_ModernGLExecutor_SetShadowSamplerUniforms( GLuint program ) {
 			glUniform1iv( pointMoments, RENDERER_SHADOW_TEXTURE_MOMENT_COUNT, pointMomentUnits );
 		}
 	}
-	if ( projectedAtlas < 0 || pointAtlas < 0 || projectedMoments < 0 || pointMoments < 0 || resourceState < 0 || samplerState < 0 || momentState < 0 ) {
-		return false;
-	}
-	return true;
+	loc->samplerUnitsAssigned = true;
+	return loc->samplerReady;
 }
 
 static int R_ModernGLExecutor_CountActualShadowTextures( const rendererShadowTextureBindings_t &bindings ) {
@@ -5630,7 +5832,6 @@ static void R_ModernGLExecutor_BindShadowTextureSlot( const rendererShadowTextur
 	// above avoids. Substitute a complete texture of the matching target;
 	// uModernShadowResourceState still tells the shader not to read it.
 	const GLuint texture = boundTexture != 0 ? boundTexture : R_ModernGLExecutor_ShadowSlotPlaceholderTexture( target );
-	R_GLStateCache().ActiveTextureUnit( unit );
 	if ( R_GLStateCache().BindTexture( unit, target, texture ) ) {
 		stats.lowOverheadClassicTextureBinds++;
 	}
@@ -5640,7 +5841,23 @@ static void R_ModernGLExecutor_BindShadowTextureSlot( const rendererShadowTextur
 	// only reset compare mode on a real shadow texture; the placeholder is a
 	// shared global image and must not have its sampler state rewritten
 	if ( boundTexture != 0 && ( target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP ) ) {
-		glTexParameteri( target, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+		// the clear is memoized per (slot texture, bindings revision), never per
+		// rebind: classic receivers re-enable hardware depth-compare on these
+		// same texture objects between modern blocks while the state cache still
+		// records them as bound, and every revision bump re-clears through the
+		// snapshot memset
+		const int slot = unit - MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS;
+		const bool alreadyCleared = slot >= 0 && slot < MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT
+			&& rg_modernGLShadowCompareCleared[slot] == boundTexture;
+		if ( !alreadyCleared ) {
+			// glTexParameteri targets the active unit's binding and BindTexture
+			// only switches units on a cache miss, so switch explicitly here
+			R_GLStateCache().ActiveTextureUnit( unit );
+			glTexParameteri( target, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+			if ( slot >= 0 && slot < MODERN_GL_SHADOW_TEXTURE_UNIT_COUNT ) {
+				rg_modernGLShadowCompareCleared[slot] = boundTexture;
+			}
+		}
 	}
 }
 
@@ -5683,39 +5900,49 @@ static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernG
 		return false;
 	}
 
-	rendererShadowTextureBindings_t bindings;
-	RB_ShadowMapTextureBindings( bindings );
-	const bool exactPointCubeReady =
-		R_ModernGLExecutor_PointCubeDescriptorReady( bindings );
-	if ( !rg_modernGLShadowTextureBindingsCurrent ) {
-		bindings.projectedAtlas.ready = false;
-		bindings.projectedPersistentAtlas.ready = false;
-		bindings.pointAtlas.ready = false;
-		bindings.projectedAtlasReady = false;
-		bindings.projectedPersistentAtlasReady = false;
-		bindings.pointAtlasReady = false;
-		for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
-			bindings.projectedMoments[i].ready = false;
-			bindings.pointMoments[i].ready = false;
+	// the rebuilt bindings (and the descriptor scan behind exactPointCubeReady)
+	// are constant within one bindings revision of one frame, so rebuild the
+	// snapshot only when either changes; every downstream read aliases it
+	rendererShadowTextureBindings_t &bindings = rg_modernGLShadowBindingsSnapshot;
+	if ( rg_modernGLShadowSnapshotRevision != rg_modernGLShadowBindingsRevision
+			|| rg_modernGLShadowSnapshotFrameCount != tr.frameCount ) {
+		RB_ShadowMapTextureBindings( bindings );
+		const bool exactPointCubeReady =
+			R_ModernGLExecutor_PointCubeDescriptorReady( bindings );
+		if ( !rg_modernGLShadowTextureBindingsCurrent ) {
+			bindings.projectedAtlas.ready = false;
+			bindings.projectedPersistentAtlas.ready = false;
+			bindings.pointAtlas.ready = false;
+			bindings.projectedAtlasReady = false;
+			bindings.projectedPersistentAtlasReady = false;
+			bindings.pointAtlasReady = false;
+			for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+				bindings.projectedMoments[i].ready = false;
+				bindings.pointMoments[i].ready = false;
+			}
+			bindings.projectedMomentsReady = false;
+			bindings.pointMomentsReady = false;
 		}
-		bindings.projectedMomentsReady = false;
-		bindings.pointMomentsReady = false;
-	}
-	if ( !exactPointCubeReady ) {
-		bindings.pointAtlas.ready = false;
-		bindings.pointAtlasReady = false;
-		for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
-			bindings.pointMoments[i].ready = false;
+		if ( !exactPointCubeReady ) {
+			bindings.pointAtlas.ready = false;
+			bindings.pointAtlasReady = false;
+			for ( int i = 0; i < RENDERER_SHADOW_TEXTURE_MOMENT_COUNT; ++i ) {
+				bindings.pointMoments[i].ready = false;
+			}
+			bindings.pointMomentsReady = false;
 		}
-		bindings.pointMomentsReady = false;
+		// the persistent atlas is the texture the descriptor slot rects index
+		// into; the per-light alias only stands in when no atlas exists yet
+		if ( bindings.projectedPersistentAtlasReady ) {
+			bindings.projectedAtlas = bindings.projectedPersistentAtlas;
+			bindings.projectedAtlasReady = true;
+		}
+		rg_modernGLShadowSnapshotRevision = rg_modernGLShadowBindingsRevision;
+		rg_modernGLShadowSnapshotFrameCount = tr.frameCount;
+		memset( rg_modernGLShadowCompareCleared, 0, sizeof( rg_modernGLShadowCompareCleared ) );
 	}
-	// the persistent atlas is the texture the descriptor slot rects index
-	// into; the per-light alias only stands in when no atlas exists yet
-	if ( bindings.projectedPersistentAtlasReady ) {
-		bindings.projectedAtlas = bindings.projectedPersistentAtlas;
-		bindings.projectedAtlasReady = true;
-	}
-	const bool samplerReady = R_ModernGLExecutor_SetShadowSamplerUniforms( program );
+	modernGLShadowUniformLocations_t *loc = R_ModernGLExecutor_ShadowUniformLocations( program );
+	const bool samplerReady = R_ModernGLExecutor_SetShadowSamplerUniforms( program, loc );
 	stats.shadowTextureBindingsReady = stats.shadowTextureBindingsReady || samplerReady;
 	stats.shadowTextureProjectedAtlasReady = stats.shadowTextureProjectedAtlasReady || bindings.projectedAtlasReady;
 	stats.shadowTexturePointAtlasReady = stats.shadowTexturePointAtlasReady || bindings.pointAtlasReady;
@@ -5724,11 +5951,16 @@ static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernG
 	const int actualTextures = R_ModernGLExecutor_CountActualShadowTextures( bindings );
 	stats.shadowTextureActualTextures = Max( stats.shadowTextureActualTextures, actualTextures );
 
-	if ( glUniform4f != NULL && program != 0 && glGetUniformLocation != NULL ) {
-		const GLint resourceState = glGetUniformLocation( program, "uModernShadowResourceState" );
-		const GLint samplerState = glGetUniformLocation( program, "uModernShadowSamplerState" );
-		const GLint momentState = glGetUniformLocation( program, "uModernShadowMomentState" );
-		const GLint contractState = glGetUniformLocation( program, "uModernShadowContractState" );
+	// the state vec4s only depend on the snapshot, the frame stamp, and cvars
+	// that cannot change during backend execution, so re-upload them at most
+	// once per (program, bindings revision, frame)
+	if ( glUniform4f != NULL && loc != NULL
+			&& ( loc->stateRevision != rg_modernGLShadowSnapshotRevision
+				|| loc->stateFrameCount != tr.frameCount ) ) {
+		const GLint resourceState = loc->resourceState;
+		const GLint samplerState = loc->samplerState;
+		const GLint momentState = loc->momentState;
+		const GLint contractState = loc->contractState;
 		if ( contractState >= 0 ) {
 			// y carries the current frame's modular stamp; a bound descriptor
 			// buffer whose freshness.x disagrees was uploaded in another
@@ -5763,6 +5995,8 @@ static bool R_ModernGLExecutor_BindModernShadowTextures( GLuint program, modernG
 				bindings.translucentMinVariance,
 				bindings.translucentBleedReduction );
 		}
+		loc->stateRevision = rg_modernGLShadowSnapshotRevision;
+		loc->stateFrameCount = tr.frameCount;
 	}
 
 	R_ModernGLExecutor_BindShadowTextureSlot( bindings.projectedAtlas, GL_TEXTURE_2D, MODERN_GL_SHADOW_TEXTURE_UNIT_PROJECTED_ATLAS, stats );
@@ -6793,20 +7027,27 @@ static void R_ModernGLExecutor_PrepareClusteredDecalTransaction(
 	// ownership can be published.  A missing or duplicate command makes the
 	// complete frame transaction classic.
 	const int commandCount = rg_modernGLSubmitPlan.NumCommands();
-	for ( int drawIndex = 0; drawIndex < drawPacketCount; ++drawIndex ) {
-		const drawPacket_t &draw = packetFrame.DrawPacket( drawIndex );
-		if ( !R_ModernGLExecutor_IsAuthoritativeClusteredDecalDraw( draw ) ) {
+	static int decalPacketCommandCounts[SCENE_PACKET_MAX_DRAWS];
+	memset( decalPacketCommandCounts, 0, sizeof( decalPacketCommandCounts ) );
+	for ( int commandIndex = 0; commandIndex < commandCount; ++commandIndex ) {
+		const modernGLSubmitCommand_t &command = rg_modernGLSubmitPlan.Command( commandIndex );
+		if ( !command.forwardPlusDecal || command.drawPlanEntry == NULL ) {
 			continue;
 		}
-		int matchingCommands = 0;
-		for ( int commandIndex = 0; commandIndex < commandCount; ++commandIndex ) {
-			const modernGLSubmitCommand_t &command = rg_modernGLSubmitPlan.Command( commandIndex );
-			if ( command.forwardPlusDecal && command.drawPlanEntry != NULL
-					&& command.drawPlanEntry->drawPacket == &draw ) {
-				matchingCommands++;
-			}
+		const int planPacketIndex = command.drawPlanEntry->drawPacketIndex;
+		if ( planPacketIndex < 0 || planPacketIndex >= drawPacketCount ) {
+			continue;
 		}
-		if ( matchingCommands != 1 ) {
+		const drawPacket_t &draw = packetFrame.DrawPacket( planPacketIndex );
+		if ( command.drawPlanEntry->drawPacket == &draw ) {
+			decalPacketCommandCounts[planPacketIndex]++;
+		}
+	}
+	for ( int drawIndex = 0; drawIndex < drawPacketCount; ++drawIndex ) {
+		if ( !R_ModernGLExecutor_IsAuthoritativeClusteredDecalDraw( packetFrame.DrawPacket( drawIndex ) ) ) {
+			continue;
+		}
+		if ( decalPacketCommandCounts[drawIndex] != 1 ) {
 			R_ModernGLExecutor_RejectClusteredDecals(
 				RENDERER_CLUSTER_DECAL_REJECT_VIEW_INCOMPLETE,
 				drawIndex, authoritativeCount, generation );
@@ -6938,31 +7179,22 @@ bool R_ModernGLExecutor_SubmitForwardPlusDecalSurface(
 		return false;
 	}
 
-	const int commandCount = rg_modernGLSubmitPlan.NumCommands();
-	int commandIndex = -1;
-	for ( int i = 0; i < commandCount; ++i ) {
-		if ( !R_ModernClusteredLighting_DecalOwnsCommand( viewDef, i ) ) {
-			continue;
-		}
-		const modernGLSubmitCommand_t &candidate = rg_modernGLSubmitPlan.Command( i );
-		const drawPacket_t *draw = candidate.drawPlanEntry != NULL
-			? candidate.drawPlanEntry->drawPacket : NULL;
-		if ( draw != NULL && draw->legacyDrawSurf == sourceSurface ) {
-			if ( commandIndex >= 0 ) {
-				common->Error( "Modern clustered decal surface has duplicate sealed commands" );
-				return false;
-			}
-			commandIndex = i;
-		}
+	bool duplicateSealedCommand = false;
+	const int commandIndex = R_ModernClusteredLighting_DecalSealedCommandForSurface(
+		viewDef, sourceSurface, duplicateSealedCommand );
+	if ( duplicateSealedCommand ) {
+		common->Error( "Modern clustered decal surface has duplicate sealed commands" );
+		return false;
 	}
-	if ( commandIndex < 0 ) {
+	if ( commandIndex < 0 || commandIndex >= rg_modernGLSubmitPlan.NumCommands() ) {
 		common->Error( "Modern clustered decal surface has no sealed command" );
 		return false;
 	}
 	const modernGLSubmitCommand_t &command = rg_modernGLSubmitPlan.Command( commandIndex );
 	const drawPacket_t *draw = command.drawPlanEntry != NULL
 		? command.drawPlanEntry->drawPacket : NULL;
-	if ( draw == NULL || !R_ModernGLExecutor_IsAuthoritativeClusteredDecalDraw( *draw )
+	if ( draw == NULL || draw->legacyDrawSurf != sourceSurface
+			|| !R_ModernGLExecutor_IsAuthoritativeClusteredDecalDraw( *draw )
 			|| !R_ModernClusteredLighting_BindGridForView( viewDef ) ) {
 		common->Error( "Modern clustered decal sealed command lost submit readiness" );
 		return false;
@@ -6977,6 +7209,7 @@ bool R_ModernGLExecutor_SubmitForwardPlusDecalSurface(
 
 	idGLDebugScope debugScope( "ModernGLExecutor forward+ decal surface" );
 	R_GLStateCache_InvalidateAll( "forward+ decal overlay" );
+	rg_modernGLShadowBindingsRevision++;	// classic per-light shadow state may have moved since the sidecar block
 	R_GLStateCache().BindVertexArray( rg_modernGLExecutorVAO );
 	R_GLStateCache().SetScissorTestEnabled( true );
 	R_GLStateCache().SetDepthTestEnabled( true );
@@ -7972,6 +8205,8 @@ void R_ModernGLExecutor_Shutdown( void ) {
 	}
 	R_ModernGLShaderLibrary_Shutdown();
 	R_ModernGLExecutor_ResetClusterBlockBindingCache();
+	R_ModernGLExecutor_InvalidateSubmitStateMemos();
+	R_ModernGLExecutor_ResetShadowUniformCache();
 
 	rg_modernGLExecutorVAO = 0;
 	rg_modernGLExecutorFrameUBO = 0;
@@ -8036,6 +8271,8 @@ void R_ModernGLExecutor_InvalidatePlans( void ) {
 	rg_modernGLDrawPlan.Clear();
 	rg_modernGLSubmitPlan.Clear();
 	R_ModernGLExecutor_ResetClusterBlockBindingCache();
+	R_ModernGLExecutor_InvalidateSubmitStateMemos();
+	R_ModernGLExecutor_ResetShadowUniformCache();
 }
 
 static const viewDef_t *R_ModernGLExecutor_ShadowCacheOwnerView(
@@ -8067,6 +8304,7 @@ void R_ModernGLExecutor_PrepareFrame( const idScenePacketFrame &packetFrame, con
 		R_ModernGLExecutor_ShadowCacheOwnerView( packetFrame );
 	rg_modernGLShadowTextureBindingsCurrent = shadowCacheOwnerView != NULL
 		&& !RB_ShadowMapPrepareCacheView( shadowCacheOwnerView );
+	rg_modernGLShadowBindingsRevision++;
 	R_ModernGLExecutor_ResetPassOwnershipTable( "frame-start" );	// also clears the skip latch
 	const bool modernVisibleRequested = R_ModernGLExecutor_ModernVisibleRequested();
 	const bool specularProbeLeafRequested =

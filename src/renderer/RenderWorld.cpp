@@ -460,6 +460,22 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 			}
 			if ( keepDynamicModel ) {
 				tr.pc.c_entitySnapshotsReused++;
+
+				// A bytewise-identical update whose joint contents also hashed equal
+				// derives nothing new: interactions, area references, and the model
+				// matrix would rebuild to exactly what they already are, so keep them.
+				// lastModifiedFrameNum must still advance: R_ShadowMapCasterIsDynamic
+				// has one frame of hysteresis, so letting the counter stall would
+				// oscillate tick-rate-animated entities between the static and dynamic
+				// caster sets at render rates above the game tick and churn the cached
+				// static shadow tiles through the caster signature hash.
+				if ( re->callbackData == NULL
+					&& !session->writeDemo
+					&& memcmp( re, &def->parms, sizeof( *re ) ) == 0 ) {
+					tr.pc.c_entityUpdatesElided++;
+					def->lastModifiedFrameNum = tr.frameCount;
+					return;
+				}
 			}
 		}
 
@@ -541,6 +557,10 @@ void idRenderWorldLocal::FreeEntityDef( qhandle_t entityHandle ) {
 		delete def->demoRemoteRenderView;
 		def->demoRemoteRenderView = NULL;
 	}
+
+	// a later idRenderEntityLocal allocation recycling this address must not
+	// revive this def's memoized draw-surf areas
+	R_InvalidateDrawSurfAreaMemoForEntity( def );
 
 	delete def;
 	entityDefs[ entityHandle ] = NULL;

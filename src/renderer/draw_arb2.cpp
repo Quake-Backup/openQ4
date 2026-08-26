@@ -8811,6 +8811,79 @@ static bool RB_RenderPointTranslucentShadowMap( const drawSurf_t *primaryCasters
 	return true;
 }
 
+// Value cache for the GLSL interaction uniforms sent per interaction draw.
+// localLightOrigin/localViewOrigin/lightProjection are per-(light, space)
+// constants and the stage matrices are identity for most materials, so the
+// receiver loops re-send byte-identical values for nearly every draw; a
+// 16-byte compare is far cheaper than the driver call (same rationale as
+// g_arb2EnvParamCache above). Slots are logical uniforms, not GL locations:
+// only one of the three GLSL interaction programs is ever bound within a
+// receiver pass and the cache is invalidated at every pass entry, so values
+// can never leak between programs, across lights, or across relinks.
+enum {
+	GLSL_INTERACTION_CACHE_LOCAL_LIGHT_ORIGIN = 0,
+	GLSL_INTERACTION_CACHE_LOCAL_VIEW_ORIGIN,
+	GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_S,
+	GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_T,
+	GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_Q,
+	GLSL_INTERACTION_CACHE_LIGHT_FALLOFF_S,
+	GLSL_INTERACTION_CACHE_BUMP_MATRIX_S,
+	GLSL_INTERACTION_CACHE_BUMP_MATRIX_T,
+	GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_S,
+	GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_T,
+	GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_S,
+	GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_T,
+	GLSL_INTERACTION_CACHE_DIFFUSE_COLOR,
+	GLSL_INTERACTION_CACHE_SPECULAR_COLOR,
+	GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_0,
+	GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_1,
+	GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_2,
+	GLSL_INTERACTION_CACHE_GLOBAL_LIGHT_ORIGIN,
+	GLSL_INTERACTION_CACHE_VERTEX_COLOR_PARAMS,
+	GLSL_INTERACTION_CACHE_SLOTS
+};
+typedef struct {
+	float			values[GLSL_INTERACTION_CACHE_SLOTS][4];
+	unsigned int	validMask;
+} glslInteractionUniformCache_t;
+static glslInteractionUniformCache_t g_glslInteractionUniformCache;
+
+ID_INLINE static void RB_GLSLInteractionUniformCacheInvalidate( void ) {
+	g_glslInteractionUniformCache.validMask = 0;
+}
+
+ID_INLINE static void RB_GLSLInteractionUniform4fv( const GLint location, const int slot, const float *v ) {
+	if ( r_useRedundantStateFiltering.GetBool() ) {
+		const unsigned int bit = 1u << slot;
+		float *cached = g_glslInteractionUniformCache.values[slot];
+		if ( ( g_glslInteractionUniformCache.validMask & bit )
+			&& cached[0] == v[0] && cached[1] == v[1] && cached[2] == v[2] && cached[3] == v[3] ) {
+			return;
+		}
+		cached[0] = v[0];
+		cached[1] = v[1];
+		cached[2] = v[2];
+		cached[3] = v[3];
+		g_glslInteractionUniformCache.validMask |= bit;
+	}
+	glUniform4fvARB( location, 1, v );
+}
+
+ID_INLINE static void RB_GLSLInteractionUniform2fv( const GLint location, const int slot, const float *v ) {
+	if ( r_useRedundantStateFiltering.GetBool() ) {
+		const unsigned int bit = 1u << slot;
+		float *cached = g_glslInteractionUniformCache.values[slot];
+		if ( ( g_glslInteractionUniformCache.validMask & bit )
+			&& cached[0] == v[0] && cached[1] == v[1] ) {
+			return;
+		}
+		cached[0] = v[0];
+		cached[1] = v[1];
+		g_glslInteractionUniformCache.validMask |= bit;
+	}
+	glUniform2fvARB( location, 1, v );
+}
+
 static bool RB_EnhancedMaterialShadingActive( void ) {
 	return glConfig.GLSLProgramAvailable && r_enhancedMaterials.GetBool();
 }
@@ -8878,20 +8951,20 @@ static void RB_MaterialInteractionSetEnhancementUniforms( const GLint normalScal
 }
 
 static void RB_GLSLMaterial_DrawInteraction( const drawInteraction_t *din ) {
-	glUniform4fvARB( g_materialInteractionProgram.localLightOrigin, 1, din->localLightOrigin.ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.localViewOrigin, 1, din->localViewOrigin.ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.lightProjectionS, 1, din->lightProjection[0].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.lightProjectionT, 1, din->lightProjection[1].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.lightProjectionQ, 1, din->lightProjection[2].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.lightFalloffS, 1, din->lightProjection[3].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.bumpMatrixS, 1, din->bumpMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.bumpMatrixT, 1, din->bumpMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.diffuseMatrixS, 1, din->diffuseMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.diffuseMatrixT, 1, din->diffuseMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.specularMatrixS, 1, din->specularMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.specularMatrixT, 1, din->specularMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
-	glUniform4fvARB( g_materialInteractionProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.localLightOrigin, GLSL_INTERACTION_CACHE_LOCAL_LIGHT_ORIGIN, din->localLightOrigin.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.localViewOrigin, GLSL_INTERACTION_CACHE_LOCAL_VIEW_ORIGIN, din->localViewOrigin.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.lightProjectionS, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_S, din->lightProjection[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.lightProjectionT, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_T, din->lightProjection[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.lightProjectionQ, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_Q, din->lightProjection[2].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.lightFalloffS, GLSL_INTERACTION_CACHE_LIGHT_FALLOFF_S, din->lightProjection[3].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.bumpMatrixS, GLSL_INTERACTION_CACHE_BUMP_MATRIX_S, din->bumpMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.bumpMatrixT, GLSL_INTERACTION_CACHE_BUMP_MATRIX_T, din->bumpMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.diffuseMatrixS, GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_S, din->diffuseMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.diffuseMatrixT, GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_T, din->diffuseMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.specularMatrixS, GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_S, din->specularMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.specularMatrixT, GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_T, din->specularMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.diffuseColor, GLSL_INTERACTION_CACHE_DIFFUSE_COLOR, din->diffuseColor.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_materialInteractionProgram.specularColor, GLSL_INTERACTION_CACHE_SPECULAR_COLOR, din->specularColor.ToFloatPtr() );
 	if ( g_materialInteractionProgram.flatDiffuseParams >= 0 ) {
 		glUniform4fvARB( g_materialInteractionProgram.flatDiffuseParams, 1, din->flatDiffuseParams.ToFloatPtr() );
 	}
@@ -8913,7 +8986,7 @@ static void RB_GLSLMaterial_DrawInteraction( const drawInteraction_t *din ) {
 		break;
 	}
 	const float vertexColorParams[2] = { modulate, add };
-	glUniform2fvARB( g_materialInteractionProgram.vertexColorParams, 1, vertexColorParams );
+	RB_GLSLInteractionUniform2fv( g_materialInteractionProgram.vertexColorParams, GLSL_INTERACTION_CACHE_VERTEX_COLOR_PARAMS, vertexColorParams );
 
 	GL_SelectTextureNoClient( 0 );
 	din->bumpImage->Bind();
@@ -9002,20 +9075,20 @@ static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 		glUniform4fvARB( g_shadowMapProgram.shadowRow[3], cascadeCount, shadowRow3 );
 	}
 
-	glUniform4fvARB( g_shadowMapProgram.localLightOrigin, 1, din->localLightOrigin.ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.localViewOrigin, 1, din->localViewOrigin.ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.lightProjectionS, 1, din->lightProjection[0].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.lightProjectionT, 1, din->lightProjection[1].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.lightProjectionQ, 1, din->lightProjection[2].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.lightFalloffS, 1, din->lightProjection[3].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.bumpMatrixS, 1, din->bumpMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.bumpMatrixT, 1, din->bumpMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.diffuseMatrixS, 1, din->diffuseMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.diffuseMatrixT, 1, din->diffuseMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.specularMatrixS, 1, din->specularMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.specularMatrixT, 1, din->specularMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
-	glUniform4fvARB( g_shadowMapProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.localLightOrigin, GLSL_INTERACTION_CACHE_LOCAL_LIGHT_ORIGIN, din->localLightOrigin.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.localViewOrigin, GLSL_INTERACTION_CACHE_LOCAL_VIEW_ORIGIN, din->localViewOrigin.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.lightProjectionS, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_S, din->lightProjection[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.lightProjectionT, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_T, din->lightProjection[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.lightProjectionQ, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_Q, din->lightProjection[2].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.lightFalloffS, GLSL_INTERACTION_CACHE_LIGHT_FALLOFF_S, din->lightProjection[3].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.bumpMatrixS, GLSL_INTERACTION_CACHE_BUMP_MATRIX_S, din->bumpMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.bumpMatrixT, GLSL_INTERACTION_CACHE_BUMP_MATRIX_T, din->bumpMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.diffuseMatrixS, GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_S, din->diffuseMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.diffuseMatrixT, GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_T, din->diffuseMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.specularMatrixS, GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_S, din->specularMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.specularMatrixT, GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_T, din->specularMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.diffuseColor, GLSL_INTERACTION_CACHE_DIFFUSE_COLOR, din->diffuseColor.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_shadowMapProgram.specularColor, GLSL_INTERACTION_CACHE_SPECULAR_COLOR, din->specularColor.ToFloatPtr() );
 	if ( g_shadowMapProgram.flatDiffuseParams >= 0 ) {
 		glUniform4fvARB( g_shadowMapProgram.flatDiffuseParams, 1, din->flatDiffuseParams.ToFloatPtr() );
 	}
@@ -9036,7 +9109,7 @@ static void RB_GLSLShadowMap_DrawInteraction( const drawInteraction_t *din ) {
 		break;
 	}
 	const float vertexColorParams[2] = { modulate, add };
-	glUniform2fvARB( g_shadowMapProgram.vertexColorParams, 1, vertexColorParams );
+	RB_GLSLInteractionUniform2fv( g_shadowMapProgram.vertexColorParams, GLSL_INTERACTION_CACHE_VERTEX_COLOR_PARAMS, vertexColorParams );
 	if ( g_shadowMapProgram.shadowReceiverDebugReason >= 0 ) {
 		glUniform1fARB( g_shadowMapProgram.shadowReceiverDebugReason, g_shadowMapReceiverDebugReason );
 	}
@@ -9080,25 +9153,25 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 
 	RB_ShadowMapModelMatrixRows( din->surf->space->modelMatrix, row0, row1, row2 );
 
-	glUniform4fvARB( g_pointShadowMapProgram.localLightOrigin, 1, din->localLightOrigin.ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.localViewOrigin, 1, din->localViewOrigin.ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.lightProjectionS, 1, din->lightProjection[0].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.lightProjectionT, 1, din->lightProjection[1].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.lightProjectionQ, 1, din->lightProjection[2].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.lightFalloffS, 1, din->lightProjection[3].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.bumpMatrixS, 1, din->bumpMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.bumpMatrixT, 1, din->bumpMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.diffuseMatrixS, 1, din->diffuseMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.diffuseMatrixT, 1, din->diffuseMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.specularMatrixS, 1, din->specularMatrix[0].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.specularMatrixT, 1, din->specularMatrix[1].ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow0, 1, row0 );
-	glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow1, 1, row1 );
-	glUniform4fvARB( g_pointShadowMapProgram.modelMatrixRow2, 1, row2 );
-	glUniform4fvARB( g_pointShadowMapProgram.globalLightOrigin, 1, globalLightOrigin );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.localLightOrigin, GLSL_INTERACTION_CACHE_LOCAL_LIGHT_ORIGIN, din->localLightOrigin.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.localViewOrigin, GLSL_INTERACTION_CACHE_LOCAL_VIEW_ORIGIN, din->localViewOrigin.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.lightProjectionS, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_S, din->lightProjection[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.lightProjectionT, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_T, din->lightProjection[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.lightProjectionQ, GLSL_INTERACTION_CACHE_LIGHT_PROJECTION_Q, din->lightProjection[2].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.lightFalloffS, GLSL_INTERACTION_CACHE_LIGHT_FALLOFF_S, din->lightProjection[3].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.bumpMatrixS, GLSL_INTERACTION_CACHE_BUMP_MATRIX_S, din->bumpMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.bumpMatrixT, GLSL_INTERACTION_CACHE_BUMP_MATRIX_T, din->bumpMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.diffuseMatrixS, GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_S, din->diffuseMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.diffuseMatrixT, GLSL_INTERACTION_CACHE_DIFFUSE_MATRIX_T, din->diffuseMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.specularMatrixS, GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_S, din->specularMatrix[0].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.specularMatrixT, GLSL_INTERACTION_CACHE_SPECULAR_MATRIX_T, din->specularMatrix[1].ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.modelMatrixRow0, GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_0, row0 );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.modelMatrixRow1, GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_1, row1 );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.modelMatrixRow2, GLSL_INTERACTION_CACHE_MODEL_MATRIX_ROW_2, row2 );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.globalLightOrigin, GLSL_INTERACTION_CACHE_GLOBAL_LIGHT_ORIGIN, globalLightOrigin );
 	glUniform1fARB( g_pointShadowMapProgram.pointShadowFar, R_ShadowMapPointFarDistance( backEnd.vLight ) );
-	glUniform4fvARB( g_pointShadowMapProgram.diffuseColor, 1, din->diffuseColor.ToFloatPtr() );
-	glUniform4fvARB( g_pointShadowMapProgram.specularColor, 1, din->specularColor.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.diffuseColor, GLSL_INTERACTION_CACHE_DIFFUSE_COLOR, din->diffuseColor.ToFloatPtr() );
+	RB_GLSLInteractionUniform4fv( g_pointShadowMapProgram.specularColor, GLSL_INTERACTION_CACHE_SPECULAR_COLOR, din->specularColor.ToFloatPtr() );
 	if ( g_pointShadowMapProgram.flatDiffuseParams >= 0 ) {
 		glUniform4fvARB( g_pointShadowMapProgram.flatDiffuseParams, 1, din->flatDiffuseParams.ToFloatPtr() );
 	}
@@ -9119,7 +9192,7 @@ static void RB_GLSLPointShadowMap_DrawInteraction( const drawInteraction_t *din 
 		break;
 	}
 	const float vertexColorParams[2] = { modulate, add };
-	glUniform2fvARB( g_pointShadowMapProgram.vertexColorParams, 1, vertexColorParams );
+	RB_GLSLInteractionUniform2fv( g_pointShadowMapProgram.vertexColorParams, GLSL_INTERACTION_CACHE_VERTEX_COLOR_PARAMS, vertexColorParams );
 	if ( g_pointShadowMapProgram.shadowReceiverDebugReason >= 0 ) {
 		glUniform1fARB( g_pointShadowMapProgram.shadowReceiverDebugReason, g_pointShadowMapReceiverDebugReason );
 	}
@@ -10359,6 +10432,7 @@ static bool RB_GLSLMaterial_CreateDrawInteractions( const drawSurf_t *surf, cons
 	glDisable( GL_VERTEX_PROGRAM_ARB );
 	glDisable( GL_FRAGMENT_PROGRAM_ARB );
 	glUseProgramObjectARB( g_materialInteractionProgram.programObject );
+	RB_GLSLInteractionUniformCacheInvalidate();
 
 	if ( g_materialInteractionProgram.bumpMap >= 0 ) {
 		glUniform1iARB( g_materialInteractionProgram.bumpMap, 0 );
@@ -10525,8 +10599,8 @@ static void RB_DrawMaterialInteractions( const drawSurf_t *surf ) {
 	// banding is the only visible difference.
 	const bool celBanded = !enhanced && glConfig.GLSLProgramAvailable && RB_DrawSurfChainNeedsCelBanding( surf );
 
-	if ( !RB_DrawSurfChainHasCustomGLSLLighting( surf )
-		&& ( enhanced || celBanded )
+	if ( ( enhanced || celBanded )
+		&& !RB_DrawSurfChainHasCustomGLSLLighting( surf )
 		&& RB_DrawSurfChainEligibleForStockGLSLInteractions( surf )
 		&& RB_GLSLMaterial_CreateDrawInteractions( surf, !enhanced ) ) {
 		return;
@@ -10545,6 +10619,7 @@ static bool RB_GLSLShadowMap_CreateDrawInteractions( const drawSurf_t *surf ) {
 	glDisable( GL_VERTEX_PROGRAM_ARB );
 	glDisable( GL_FRAGMENT_PROGRAM_ARB );
 	glUseProgramObjectARB( g_shadowMapProgram.programObject );
+	RB_GLSLInteractionUniformCacheInvalidate();
 	const shadowMapProjectedFilterSettings_t filterSettings = R_ShadowMapProjectedFilterSettings( backEnd.vLight );
 
 	if ( g_shadowMapProgram.bumpMap >= 0 ) {
@@ -10814,6 +10889,7 @@ static bool RB_GLSLPointShadowMap_CreateDrawInteractions( const drawSurf_t *surf
 	glDisable( GL_VERTEX_PROGRAM_ARB );
 	glDisable( GL_FRAGMENT_PROGRAM_ARB );
 	glUseProgramObjectARB( g_pointShadowMapProgram.programObject );
+	RB_GLSLInteractionUniformCacheInvalidate();
 	const int pointFaceSize = g_pointShadowMapRenderTexture != NULL
 		? Max( 1, g_pointShadowMapRenderTexture->GetWidth() )
 		: RB_ShadowMapPointSizeValue();

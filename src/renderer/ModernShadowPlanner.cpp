@@ -71,6 +71,7 @@ static modernShadowPlannerStats_t rg_modernShadowPlannerStats;
 static idList<modernShadowLightDescriptor_t> rg_modernShadowPlannerDescriptors;
 static modernShadowPlannerFairnessHistory_t rg_modernShadowPlannerFairnessHistory[MODERN_SHADOW_FAIRNESS_HISTORY_SLOTS];
 static int rg_modernShadowPlannerFairnessEpoch = 0;
+static int rg_modernShadowPlannerFairnessHighWater = 0;	// count of ever-allocated (valid) fairness slots; valid slots always form the prefix [0, highWater)
 static bool rg_modernShadowPlannerInitialized = false;
 
 static void R_ModernShadowPlanner_SetStatus( modernShadowPlannerStats_t &stats, const char *status ) {
@@ -80,6 +81,7 @@ static void R_ModernShadowPlanner_SetStatus( modernShadowPlannerStats_t &stats, 
 static void R_ModernShadowPlanner_ResetFairnessHistory( void ) {
 	memset( rg_modernShadowPlannerFairnessHistory, 0, sizeof( rg_modernShadowPlannerFairnessHistory ) );
 	rg_modernShadowPlannerFairnessEpoch = 0;
+	rg_modernShadowPlannerFairnessHighWater = 0;
 }
 
 static const idRenderLightLocal *R_ModernShadowPlanner_FairnessLightDef( const modernShadowLightDescriptor_t &descriptor ) {
@@ -102,14 +104,22 @@ static modernShadowPlannerFairnessHistory_t *R_ModernShadowPlanner_FindFairnessH
 		return NULL;
 	}
 
+	// Valid slots always form the prefix [0, highWater): slots become valid only
+	// via allocation, which reuses a stale slot inside the prefix or claims the
+	// slot at the prefix end, and only ResetFairnessHistory clears slots. The
+	// scan is therefore bounded by the high-water mark and stays byte-for-byte
+	// equivalent to a full scan over all MODERN_SHADOW_FAIRNESS_HISTORY_SLOTS.
+	const int scanLimit = Min( rg_modernShadowPlannerFairnessHighWater, MODERN_SHADOW_FAIRNESS_HISTORY_SLOTS );
 	modernShadowPlannerFairnessHistory_t *oldest = &rg_modernShadowPlannerFairnessHistory[0];
-	for ( int historyIndex = 0; historyIndex < MODERN_SHADOW_FAIRNESS_HISTORY_SLOTS; ++historyIndex ) {
+	bool oldestFromFreeSlot = false;
+	for ( int historyIndex = 0; historyIndex < scanLimit; ++historyIndex ) {
 		modernShadowPlannerFairnessHistory_t &history = rg_modernShadowPlannerFairnessHistory[historyIndex];
 		if ( R_ModernShadowPlanner_FairnessHistoryMatches( history, descriptor ) ) {
 			return &history;
 		}
 		if ( allocate && ( !history.valid || rg_modernShadowPlannerFairnessEpoch - history.lastSeenEpoch > MODERN_SHADOW_FAIRNESS_STALE_EPOCHS ) ) {
 			oldest = &history;
+			oldestFromFreeSlot = true;
 			break;
 		}
 		if ( history.lastSeenEpoch < oldest->lastSeenEpoch ) {
@@ -121,6 +131,11 @@ static modernShadowPlannerFairnessHistory_t *R_ModernShadowPlanner_FindFairnessH
 		return NULL;
 	}
 
+	if ( !oldestFromFreeSlot && scanLimit < MODERN_SHADOW_FAIRNESS_HISTORY_SLOTS ) {
+		// the first invalid slot sits exactly at the prefix end; this is where the
+		// original full scan's first-free-slot break would have landed
+		oldest = &rg_modernShadowPlannerFairnessHistory[scanLimit];
+	}
 	memset( oldest, 0, sizeof( *oldest ) );
 	oldest->valid = true;
 	oldest->lightDef = R_ModernShadowPlanner_FairnessLightDef( descriptor );
@@ -129,6 +144,10 @@ static modernShadowPlannerFairnessHistory_t *R_ModernShadowPlanner_FindFairnessH
 	oldest->lastPolicy = -1;
 	oldest->lastFallbackReason = -1;
 	oldest->lastSeenEpoch = rg_modernShadowPlannerFairnessEpoch;
+	const int oldestIndex = static_cast<int>( oldest - rg_modernShadowPlannerFairnessHistory );
+	if ( oldestIndex >= rg_modernShadowPlannerFairnessHighWater ) {
+		rg_modernShadowPlannerFairnessHighWater = oldestIndex + 1;
+	}
 	return oldest;
 }
 

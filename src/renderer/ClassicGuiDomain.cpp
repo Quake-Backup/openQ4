@@ -758,21 +758,17 @@ static bool R_ClassicGuiDomain_PrepareView( const idScenePacketFrame &packetFram
 }
 
 static int ViewIndex( const classicGuiDomainView_t *view ) {
-	for ( int i = 0; i < domain.viewCount; ++i ) {
-		if ( view == &domain.views[ i ] ) {
-			return i;
-		}
-	}
-	return -1;
+	// O(1) equivalent of the linear pool scan: a pointer identifies a live view
+	// exactly when it is element [index] of the pool with index < viewCount.
+	const auto index = view - domain.views;
+	return index >= 0 && index < domain.viewCount
+		&& view == &domain.views[ index ] ? static_cast<int>( index ) : -1;
 }
 
 static int DrawIndex( const classicGuiDomainDraw_t *draw ) {
-	for ( int i = 0; i < domain.drawCount; ++i ) {
-		if ( draw == &domain.draws[ i ] ) {
-			return i;
-		}
-	}
-	return -1;
+	const auto index = draw - domain.draws;
+	return index >= 0 && index < domain.drawCount
+		&& draw == &domain.draws[ index ] ? static_cast<int>( index ) : -1;
 }
 
 static classicGuiDomainView_t *FindMutableView( const viewDef_t *viewDef ) {

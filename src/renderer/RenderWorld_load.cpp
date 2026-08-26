@@ -1501,6 +1501,11 @@ idRenderWorldLocal::FreeWorld
 void idRenderWorldLocal::FreeWorld() {
 	int i;
 
+	// drop every memoized draw-surf area before the defs and portal areas the
+	// entries point at are freed (also keeps FreeEntityDef's memo scan trivial
+	// during mass teardown)
+	R_ClearDrawSurfAreaMemo();
+
 	// this will free all the lightDefs and entityDefs
 	FreeDefs();
 

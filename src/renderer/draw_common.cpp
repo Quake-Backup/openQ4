@@ -9074,7 +9074,11 @@ static bool RB_SharedGuiGLTextureBindingValid(
 static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 		const classicGuiDomainView_t &view, int &failureDetail ) {
 	rbSharedGuiGLPreparedView_t &prepared = rbSharedGuiGLPreparedView;
-	memset( &prepared, 0, sizeof( prepared ) );
+	// Clear the plan header and the seen-surface bitmap. The draws/passes pools
+	// below them are zeroed entry-by-entry as slots are claimed, so no byte of
+	// them is read before it is written; clearing all ~0.5MB per view per frame
+	// was pure memory-bandwidth waste.
+	memset( &prepared, 0, offsetof( rbSharedGuiGLPreparedView_t, draws ) );
 	prepared.view = &view;
 	const bool inWorld = view.scope == CLASSIC_GUI_DOMAIN_SCOPE_IN_WORLD;
 
@@ -9144,6 +9148,7 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 			view, drawIndex );
 		if ( draw == NULL || draw->sourceSurfaceIndex < 0
 				|| draw->sourceSurfaceIndex >= viewDef->numDrawSurfs
+				|| draw->sourceSurfaceIndex >= SCENE_PACKET_MAX_DRAWS
 				|| draw->sourceSurfaceIndex <= sourceSurfacePrevious
 				|| prepared.seenSourceSurfaces[draw->sourceSurfaceIndex]
 				|| viewDef->drawSurfs[draw->sourceSurfaceIndex] != draw->legacyDrawSurf ) {
@@ -9254,6 +9259,7 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 		}
 
 		rbSharedGuiGLPreparedDraw_t &preparedDraw = prepared.draws[prepared.drawCount++];
+		std::memset( &preparedDraw, 0, sizeof( preparedDraw ) );
 		preparedDraw.draw = draw;
 		preparedDraw.surf = surf;
 		preparedDraw.tri = tri;
@@ -9303,6 +9309,7 @@ static bool RB_SharedGuiGLPreflight( const viewDef_t *viewDef,
 
 			rbSharedGuiGLPreparedPass_t &preparedPass =
 				prepared.passes[prepared.passCount];
+			std::memset( &preparedPass, 0, sizeof( preparedPass ) );
 			if ( !RB_SharedGuiGLBuildState( *pass, inWorld,
 					preparedPass.stateBits,
 					preparedPass.alphaFunction, preparedPass.cullType ) ) {
@@ -9869,7 +9876,10 @@ static bool RB_SharedWorldAmbientGLPreflight( const viewDef_t *viewDef,
 		const classicWorldAmbientDomainView_t &view, int &failureDetail ) {
 	rbSharedWorldAmbientGLPreparedView_t &prepared =
 		rbSharedWorldAmbientGLPreparedView;
-	std::memset( &prepared, 0, sizeof( prepared ) );
+	// Clear the plan header and the seen-surface bitmap; the draws/passes pools
+	// below them are zeroed entry-by-entry as slots are claimed.
+	std::memset( &prepared, 0,
+		offsetof( rbSharedWorldAmbientGLPreparedView_t, draws ) );
 	prepared.view = &view;
 	prepared.viewDef = viewDef;
 
@@ -10062,6 +10072,7 @@ static bool RB_SharedWorldAmbientGLPreflight( const viewDef_t *viewDef,
 
 		rbSharedWorldAmbientGLPreparedDraw_t &preparedDraw =
 			prepared.draws[ prepared.drawCount++ ];
+		std::memset( &preparedDraw, 0, sizeof( preparedDraw ) );
 		preparedDraw.draw = draw;
 		preparedDraw.surf = surf;
 		preparedDraw.tri = tri;
@@ -10198,7 +10209,7 @@ static bool RB_SharedWorldAmbientGLPreflight( const viewDef_t *viewDef,
 
 static bool RB_PrepareSharedWorldAmbientView( const viewDef_t *viewDef ) {
 	std::memset( &rbSharedWorldAmbientGLPreparedView, 0,
-		sizeof( rbSharedWorldAmbientGLPreparedView ) );
+		offsetof( rbSharedWorldAmbientGLPreparedView_t, draws ) );
 	const classicWorldAmbientDomainView_t *view =
 		R_ClassicWorldAmbientDomain_FindView( viewDef );
 	if ( view == NULL ) {
@@ -11906,7 +11917,7 @@ static bool RB_ClassicFogBlend_GLFail( const viewDef_t *viewDef,
 			? CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED : failure,
 		detail );
 	std::memset( &rbClassicFogBlendGLPreparedView, 0,
-		sizeof( rbClassicFogBlendGLPreparedView ) );
+		offsetof( rbClassicFogBlendGLPreparedView_t, stages ) );
 	return false;
 }
 
@@ -12074,7 +12085,8 @@ static bool RB_ClassicFogBlend_GLPreflight(
 		int &failureDetail ) {
 	rbClassicFogBlendGLPreparedView_t &prepared =
 		rbClassicFogBlendGLPreparedView;
-	std::memset( &prepared, 0, sizeof( prepared ) );
+	std::memset( &prepared, 0,
+		offsetof( rbClassicFogBlendGLPreparedView_t, stages ) );
 	prepared.view = &view;
 	prepared.viewDef = viewDef;
 	prepared.hash = view.hash;
@@ -12587,7 +12599,7 @@ static void RB_ClassicFogBlend_GLPrepareBlend(
 
 bool RB_ClassicFogBlend_PreflightView( const viewDef_t *viewDef ) {
 	std::memset( &rbClassicFogBlendGLPreparedView, 0,
-		sizeof( rbClassicFogBlendGLPreparedView ) );
+		offsetof( rbClassicFogBlendGLPreparedView_t, stages ) );
 	const classicFogBlendDomainView_t *view =
 		R_ClassicFogBlendDomain_FindView( viewDef );
 	if ( view == NULL ) {

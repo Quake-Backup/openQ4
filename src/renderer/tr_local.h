@@ -672,6 +672,7 @@ typedef struct {
 	int		c_numDecalIndexes;	// idRenderModelDecal::AddDecalDrawSurf
 	int		c_entityUpdates, c_lightUpdates, c_entityReferences, c_lightReferences;
 	int		c_entitySnapshotsReused;	// transform-only entity updates that kept the dynamic snapshot
+	int		c_entityUpdatesElided;		// bytewise-identical entity updates that also kept refs and interactions
 	int		c_guiSurfs;
 	int		frontEndMsec;		// sum of time in all RE_RenderScene's in a frame
 } performanceCounters_t;
@@ -1798,6 +1799,9 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def, bool collision
 
 viewEntity_t *R_SetEntityDefViewEntity( idRenderEntityLocal *def );
 viewLight_t *R_SetLightDefViewLight( idRenderLightLocal *def );
+
+void R_ClearDrawSurfAreaMemo( void );
+void R_InvalidateDrawSurfAreaMemoForEntity( const idRenderEntityLocal *entityDef );
 
 const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const renderEntity_t *renderEntity,
 					 const idMaterial *shader );

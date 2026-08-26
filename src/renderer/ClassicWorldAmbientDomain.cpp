@@ -1053,21 +1053,17 @@ static bool R_ClassicWorldAmbientDomain_PrepareView(
 }
 
 static int ViewIndex( const classicWorldAmbientDomainView_t *view ) {
-	for ( int i = 0; i < domain.viewCount; ++i ) {
-		if ( view == &domain.views[ i ] ) {
-			return i;
-		}
-	}
-	return -1;
+	// O(1) equivalent of the linear pool scan: a pointer identifies a live view
+	// exactly when it is element [index] of the pool with index < viewCount.
+	const auto index = view - domain.views;
+	return index >= 0 && index < domain.viewCount
+		&& view == &domain.views[ index ] ? static_cast<int>( index ) : -1;
 }
 
 static int DrawIndex( const classicWorldAmbientDomainDraw_t *draw ) {
-	for ( int i = 0; i < domain.drawCount; ++i ) {
-		if ( draw == &domain.draws[ i ] ) {
-			return i;
-		}
-	}
-	return -1;
+	const auto index = draw - domain.draws;
+	return index >= 0 && index < domain.drawCount
+		&& draw == &domain.draws[ index ] ? static_cast<int>( index ) : -1;
 }
 
 static classicWorldAmbientDomainView_t *FindMutableView(

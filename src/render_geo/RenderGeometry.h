@@ -429,6 +429,7 @@ srfTriangles_t *	R_MergeTriangles( const srfTriangles_t *tri1, const srfTriangle
 void				R_DeriveTangents( srfTriangles_t *tri, bool allocFacePlanes = true );
 
 deformInfo_t *		R_BuildDeformInfo( int numVerts, const idDrawVert *verts, int numIndexes, const int *indexes, bool useUnsmoothedTangents );
+deformInfo_t *		R_AllocDeformInfo( int numSourceVerts, int numOutputVerts, int numIndexes, int numMirroredVerts, int numDupVerts, int numSilEdges, bool allocDominantTris );
 void				R_FreeDeformInfo( deformInfo_t *deformInfo );
 int					R_DeformInfoMemoryUsed( deformInfo_t *deformInfo );
 

@@ -37,11 +37,6 @@ If you have questions concerning this license or the applicable additional terms
 
 #include <cmath>
 
-// RenderGeometry keeps these construction helpers out of its public header,
-// but cache publication needs allocator-owned copies of the finalized CPU
-// topology so ordinary tri-surface destruction remains correct.
-void R_IdentifySilEdges( srfTriangles_t *tri, bool omitCoplanarEdges );
-
 idCVar idRenderModelStatic::r_mergeModelSurfaces( "r_mergeModelSurfaces", "1", CVAR_BOOL|CVAR_RENDERER, "combine model surfaces with the same material" );
 idCVar idRenderModelStatic::r_slopVertex( "r_slopVertex", "0.01", CVAR_RENDERER, "merge xyz coordinates this far apart" );
 idCVar idRenderModelStatic::r_slopTexCoord( "r_slopTexCoord", "0.001", CVAR_RENDERER, "merge texture coordinates this far apart" );
@@ -147,6 +142,40 @@ bool idRenderModelCacheReader::ReadVec3( idVec3 &value ) {
 
 bool idRenderModelCacheReader::ReadVec4( idVec4 &value ) {
 	return ReadFloat( value.x ) && ReadFloat( value.y ) && ReadFloat( value.z ) && ReadFloat( value.w );
+}
+
+bool idRenderModelCacheReader::ReadFloatArray( float *values, int count ) {
+	if ( count < 0 || ( count > 0 && values == NULL )
+		|| static_cast<uint64_t>( count ) > RENDER_MODEL_CACHE_MAX_TRANSFER_BYTES / sizeof( float ) ) {
+		valid = false;
+		return false;
+	}
+	if ( !ReadBytes( values, count * static_cast<int>( sizeof( float ) ) ) ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		values[i] = LittleFloat( values[i] );
+		if ( !R_RenderModelCacheFloatIsFinite( values[i] ) ) {
+			valid = false;
+			return false;
+		}
+	}
+	return true;
+}
+
+bool idRenderModelCacheReader::ReadIntArray( int *values, int count ) {
+	if ( count < 0 || ( count > 0 && values == NULL )
+		|| static_cast<uint64_t>( count ) > RENDER_MODEL_CACHE_MAX_TRANSFER_BYTES / sizeof( int ) ) {
+		valid = false;
+		return false;
+	}
+	if ( !ReadBytes( values, count * static_cast<int>( sizeof( int ) ) ) ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		values[i] = LittleLong( values[i] );
+	}
+	return true;
 }
 
 bool idRenderModelCacheReader::ReadBounds( idBounds &value, bool allowCleared ) {
@@ -296,6 +325,30 @@ bool idRenderModelCacheWriter::WriteVec4( const idVec4 &value ) {
 	return WriteFloat( value.x ) && WriteFloat( value.y ) && WriteFloat( value.z ) && WriteFloat( value.w );
 }
 
+bool idRenderModelCacheWriter::WriteFloatArray( const float *values, int count ) {
+	if ( count < 0 || ( count > 0 && values == NULL )
+		|| static_cast<uint64_t>( count ) > RENDER_MODEL_CACHE_MAX_TRANSFER_BYTES / sizeof( float ) ) {
+		valid = false;
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !R_RenderModelCacheFloatIsFinite( values[i] ) ) {
+			valid = false;
+			return false;
+		}
+	}
+	return WriteBytes( values, count * static_cast<int>( sizeof( float ) ) );
+}
+
+bool idRenderModelCacheWriter::WriteIntArray( const int *values, int count ) {
+	if ( count < 0 || ( count > 0 && values == NULL )
+		|| static_cast<uint64_t>( count ) > RENDER_MODEL_CACHE_MAX_TRANSFER_BYTES / sizeof( int ) ) {
+		valid = false;
+		return false;
+	}
+	return WriteBytes( values, count * static_cast<int>( sizeof( int ) ) );
+}
+
 bool idRenderModelCacheWriter::WriteBounds( const idBounds &value ) {
 	return WriteVec3( value[0] ) && WriteVec3( value[1] );
 }
@@ -365,7 +418,7 @@ void R_WriteGeneratedRenderModelCache( const idRenderModel &model, const char *s
 namespace {
 	static const unsigned int STATIC_MODEL_CACHE_MAGIC = 0x5334514fU; // "OQ4S"
 	static const int STATIC_MODEL_CACHE_VERSION = 2;
-	static const unsigned int STATIC_MODEL_GENERATED_CACHE_PARSER_VERSION = 0x00010002U;
+	static const unsigned int STATIC_MODEL_GENERATED_CACHE_PARSER_VERSION = 0x00010002U;	// bump when R_BuildDeformInfo's derivation changes: cache hits no longer cross-check against a fresh rebuild
 	static const int MODEL_CACHE_MAX_NAME = 4096;
 	static const int MODEL_CACHE_MAX_MATERIAL = 4096;
 	static const int MODEL_CACHE_MAX_SURFACES = 65536;
@@ -375,6 +428,18 @@ namespace {
 	static const int MODEL_CACHE_MAX_SKIN_TRANSFORMS = 65536;
 	static const int MODEL_CACHE_MAX_MATERIALIZED_VERTS = 1 << 18;
 	static const int MODEL_CACHE_MAX_MATERIALIZED_INDEXES = 1 << 20;
+
+	// the bulk array codecs stream these structures as raw little-endian bytes;
+	// pin their layouts so a change breaks the build instead of the cache format
+	static_assert( sizeof( glIndex_t ) == sizeof( int ), "cache bulk IO streams glIndex_t as int" );
+	static_assert( sizeof( silEdge_t ) == 4 * sizeof( int ), "cache bulk IO streams silEdge_t as 4 ints" );
+	static_assert( sizeof( dominantTri_t ) == 2 * sizeof( int ) + 3 * sizeof( float ), "cache bulk IO streams dominantTri_t as 2 ints + 3 floats" );
+	static_assert( sizeof( idPlane ) == 4 * sizeof( float ), "cache bulk IO streams idPlane as 4 floats" );
+	static_assert( sizeof( idVec4 ) == 4 * sizeof( float ), "cache bulk IO streams idVec4 as 4 floats" );
+	static_assert( sizeof( shadowCache_t ) == sizeof( idVec4 ), "cache bulk IO streams shadowCache_t as idVec4" );
+#if defined( _MD5R_SUPPORT )
+	static_assert( sizeof( rvSilTraceVertT ) == sizeof( idVec4 ), "cache bulk IO streams rvSilTraceVertT as idVec4" );
+#endif
 
 	struct renderModelCacheTriStage_t {
 		idBounds bounds;
@@ -456,39 +521,85 @@ namespace {
 		return true;
 	}
 
-	static bool R_ModelCacheWriteDrawVert( idRenderModelCacheWriter &writer, const idDrawVert &vert ) {
-		if ( !writer.WriteVec3( vert.xyz ) || !writer.WriteVec2( vert.st )
-			|| !writer.WriteVec3( vert.normal ) || !writer.WriteVec3( vert.tangents[0] )
-			|| !writer.WriteVec3( vert.tangents[1] ) ) {
+	// an idDrawVert in the cache stream: 14 floats (xyz, st, normal, tangents)
+	// followed by the 8 color/color2 bytes; chunked so a whole batch of vertexes
+	// moves through one idFile call instead of 22 per vertex
+	static const int MODEL_CACHE_DRAW_VERT_STREAM_FLOATS = 14;
+	static const int MODEL_CACHE_DRAW_VERT_STREAM_BYTES = MODEL_CACHE_DRAW_VERT_STREAM_FLOATS * static_cast<int>( sizeof( float ) ) + 8;
+	static const int MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS = 64;
+
+	static bool R_ModelCacheWriteDrawVertArray( idRenderModelCacheWriter &writer, const idDrawVert *verts, int count ) {
+		byte chunk[MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS * MODEL_CACHE_DRAW_VERT_STREAM_BYTES];
+		if ( count < 0 || ( count > 0 && verts == NULL ) ) {
 			return false;
 		}
-		for ( int i = 0; i < 4; ++i ) {
-			if ( !writer.WriteByte( vert.color[i] ) ) {
-				return false;
+		for ( int base = 0; base < count; base += MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS ) {
+			const int chunkRecords = Min( count - base, MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS );
+			byte *record = chunk;
+			for ( int i = 0; i < chunkRecords; ++i, record += MODEL_CACHE_DRAW_VERT_STREAM_BYTES ) {
+				const idDrawVert &vert = verts[base + i];
+				float streamFloats[MODEL_CACHE_DRAW_VERT_STREAM_FLOATS];
+				streamFloats[0] = vert.xyz.x;
+				streamFloats[1] = vert.xyz.y;
+				streamFloats[2] = vert.xyz.z;
+				streamFloats[3] = vert.st.x;
+				streamFloats[4] = vert.st.y;
+				streamFloats[5] = vert.normal.x;
+				streamFloats[6] = vert.normal.y;
+				streamFloats[7] = vert.normal.z;
+				streamFloats[8] = vert.tangents[0].x;
+				streamFloats[9] = vert.tangents[0].y;
+				streamFloats[10] = vert.tangents[0].z;
+				streamFloats[11] = vert.tangents[1].x;
+				streamFloats[12] = vert.tangents[1].y;
+				streamFloats[13] = vert.tangents[1].z;
+				for ( int component = 0; component < MODEL_CACHE_DRAW_VERT_STREAM_FLOATS; ++component ) {
+					if ( !R_RenderModelCacheFloatIsFinite( streamFloats[component] ) ) {
+						// same acceptance as WriteFloat: the payload is never published
+						return false;
+					}
+					streamFloats[component] = LittleFloat( streamFloats[component] );
+				}
+				memcpy( record, streamFloats, sizeof( streamFloats ) );
+				memcpy( record + sizeof( streamFloats ), vert.color, sizeof( vert.color ) );
+				memcpy( record + sizeof( streamFloats ) + sizeof( vert.color ), vert.color2, sizeof( vert.color2 ) );
 			}
-		}
-		for ( int i = 0; i < 4; ++i ) {
-			if ( !writer.WriteByte( vert.color2[i] ) ) {
+			if ( !writer.WriteBytes( chunk, chunkRecords * MODEL_CACHE_DRAW_VERT_STREAM_BYTES ) ) {
 				return false;
 			}
 		}
 		return true;
 	}
 
-	static bool R_ModelCacheReadDrawVert( idRenderModelCacheReader &reader, idDrawVert &vert ) {
-		if ( !reader.ReadVec3( vert.xyz ) || !reader.ReadVec2( vert.st )
-			|| !reader.ReadVec3( vert.normal ) || !reader.ReadVec3( vert.tangents[0] )
-			|| !reader.ReadVec3( vert.tangents[1] ) ) {
+	static bool R_ModelCacheReadDrawVertArray( idRenderModelCacheReader &reader, idDrawVert *verts, int count ) {
+		byte chunk[MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS * MODEL_CACHE_DRAW_VERT_STREAM_BYTES];
+		if ( count < 0 || ( count > 0 && verts == NULL ) ) {
 			return false;
 		}
-		for ( int i = 0; i < 4; ++i ) {
-			if ( !reader.ReadByte( vert.color[i] ) ) {
+		for ( int base = 0; base < count; base += MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS ) {
+			const int chunkRecords = Min( count - base, MODEL_CACHE_DRAW_VERT_CHUNK_RECORDS );
+			if ( !reader.ReadBytes( chunk, chunkRecords * MODEL_CACHE_DRAW_VERT_STREAM_BYTES ) ) {
 				return false;
 			}
-		}
-		for ( int i = 0; i < 4; ++i ) {
-			if ( !reader.ReadByte( vert.color2[i] ) ) {
-				return false;
+			const byte *record = chunk;
+			for ( int i = 0; i < chunkRecords; ++i, record += MODEL_CACHE_DRAW_VERT_STREAM_BYTES ) {
+				float streamFloats[MODEL_CACHE_DRAW_VERT_STREAM_FLOATS];
+				memcpy( streamFloats, record, sizeof( streamFloats ) );
+				for ( int component = 0; component < MODEL_CACHE_DRAW_VERT_STREAM_FLOATS; ++component ) {
+					streamFloats[component] = LittleFloat( streamFloats[component] );
+					if ( !R_RenderModelCacheFloatIsFinite( streamFloats[component] ) ) {
+						// same acceptance as ReadFloat: the caller rejects the whole payload
+						return false;
+					}
+				}
+				idDrawVert &vert = verts[base + i];
+				vert.xyz.Set( streamFloats[0], streamFloats[1], streamFloats[2] );
+				vert.st.Set( streamFloats[3], streamFloats[4] );
+				vert.normal.Set( streamFloats[5], streamFloats[6], streamFloats[7] );
+				vert.tangents[0].Set( streamFloats[8], streamFloats[9], streamFloats[10] );
+				vert.tangents[1].Set( streamFloats[11], streamFloats[12], streamFloats[13] );
+				memcpy( vert.color, record + sizeof( streamFloats ), sizeof( vert.color ) );
+				memcpy( vert.color2, record + sizeof( streamFloats ) + sizeof( vert.color ), sizeof( vert.color2 ) );
 			}
 		}
 		return true;
@@ -528,10 +639,8 @@ namespace {
 			return false;
 		}
 		if ( tri.verts != NULL ) {
-			for ( int i = 0; i < tri.numVerts; ++i ) {
-				if ( !R_ModelCacheWriteDrawVert( writer, tri.verts[i] ) ) {
-					return false;
-				}
+			if ( !R_ModelCacheWriteDrawVertArray( writer, tri.verts, tri.numVerts ) ) {
+				return false;
 			}
 		}
 
@@ -540,9 +649,12 @@ namespace {
 		}
 		if ( tri.indexes != NULL ) {
 			for ( int i = 0; i < tri.numIndexes; ++i ) {
-				if ( tri.indexes[i] < 0 || tri.indexes[i] >= tri.numVerts || !writer.WriteInt( tri.indexes[i] ) ) {
+				if ( tri.indexes[i] < 0 || tri.indexes[i] >= tri.numVerts ) {
 					return false;
 				}
+			}
+			if ( !writer.WriteIntArray( tri.indexes, tri.numIndexes ) ) {
+				return false;
 			}
 		} else if ( tri.numIndexes != 0 ) {
 			return false;
@@ -553,9 +665,12 @@ namespace {
 		}
 		if ( tri.silIndexes != NULL ) {
 			for ( int i = 0; i < tri.numIndexes; ++i ) {
-				if ( tri.silIndexes[i] < 0 || tri.silIndexes[i] >= tri.numVerts || !writer.WriteInt( tri.silIndexes[i] ) ) {
+				if ( tri.silIndexes[i] < 0 || tri.silIndexes[i] >= tri.numVerts ) {
 					return false;
 				}
+			}
+			if ( !writer.WriteIntArray( tri.silIndexes, tri.numIndexes ) ) {
+				return false;
 			}
 		}
 
@@ -564,20 +679,24 @@ namespace {
 		}
 		const int sourceVertCount = tri.numVerts - tri.numMirroredVerts;
 		for ( int i = 0; i < tri.numMirroredVerts; ++i ) {
-			if ( tri.mirroredVerts == NULL || tri.mirroredVerts[i] < 0 || tri.mirroredVerts[i] >= sourceVertCount
-				|| !writer.WriteInt( tri.mirroredVerts[i] ) ) {
+			if ( tri.mirroredVerts == NULL || tri.mirroredVerts[i] < 0 || tri.mirroredVerts[i] >= sourceVertCount ) {
 				return false;
 			}
+		}
+		if ( !writer.WriteIntArray( tri.mirroredVerts, tri.numMirroredVerts ) ) {
+			return false;
 		}
 
 		if ( !writer.WriteInt( tri.numDupVerts ) ) {
 			return false;
 		}
 		for ( int i = 0; i < tri.numDupVerts * 2; ++i ) {
-			if ( tri.dupVerts == NULL || tri.dupVerts[i] < 0 || tri.dupVerts[i] >= tri.numVerts
-				|| !writer.WriteInt( tri.dupVerts[i] ) ) {
+			if ( tri.dupVerts == NULL || tri.dupVerts[i] < 0 || tri.dupVerts[i] >= tri.numVerts ) {
 				return false;
 			}
+		}
+		if ( !writer.WriteIntArray( tri.dupVerts, tri.numDupVerts * 2 ) ) {
+			return false;
 		}
 
 		if ( !writer.WriteInt( tri.numSilEdges ) ) {
@@ -591,20 +710,20 @@ namespace {
 			const silEdge_t &edge = tri.silEdges[i];
 			if ( edge.p1 < 0 || edge.p1 >= numPlanes
 				|| edge.p2 < 0 || edge.p2 > numPlanes || edge.v1 < 0 || edge.v1 >= tri.numVerts
-				|| edge.v2 < 0 || edge.v2 >= tri.numVerts || !writer.WriteInt( edge.p1 )
-				|| !writer.WriteInt( edge.p2 ) || !writer.WriteInt( edge.v1 ) || !writer.WriteInt( edge.v2 ) ) {
+				|| edge.v2 < 0 || edge.v2 >= tri.numVerts ) {
 				return false;
 			}
+		}
+		if ( !writer.WriteIntArray( reinterpret_cast<const int *>( tri.silEdges ), tri.numSilEdges * 4 ) ) {
+			return false;
 		}
 
 		if ( !writer.WriteBool( tri.facePlanes != NULL ) ) {
 			return false;
 		}
 		if ( tri.facePlanes != NULL ) {
-			for ( int i = 0; i < numPlanes; ++i ) {
-				if ( !writer.WriteVec4( tri.facePlanes[i].ToVec4() ) ) {
-					return false;
-				}
+			if ( !writer.WriteFloatArray( reinterpret_cast<const float *>( tri.facePlanes ), numPlanes * 4 ) ) {
+				return false;
 			}
 		}
 
@@ -615,12 +734,14 @@ namespace {
 			for ( int i = 0; i < tri.numVerts; ++i ) {
 				const dominantTri_t &dominant = tri.dominantTris[i];
 				if ( dominant.v2 < 0 || dominant.v2 >= tri.numVerts || dominant.v3 < 0 || dominant.v3 >= tri.numVerts
-					|| !writer.WriteInt( dominant.v2 ) || !writer.WriteInt( dominant.v3 )
-					|| !writer.WriteFloat( dominant.normalizationScale[0] )
-					|| !writer.WriteFloat( dominant.normalizationScale[1] )
-					|| !writer.WriteFloat( dominant.normalizationScale[2] ) ) {
+					|| !R_RenderModelCacheFloatIsFinite( dominant.normalizationScale[0] )
+					|| !R_RenderModelCacheFloatIsFinite( dominant.normalizationScale[1] )
+					|| !R_RenderModelCacheFloatIsFinite( dominant.normalizationScale[2] ) ) {
 					return false;
 				}
+			}
+			if ( !writer.WriteBytes( tri.dominantTris, tri.numVerts * static_cast<int>( sizeof( dominantTri_t ) ) ) ) {
+				return false;
 			}
 		}
 
@@ -629,10 +750,8 @@ namespace {
 			return false;
 		}
 		if ( tri.shadowVertexes != NULL ) {
-			for ( int i = 0; i < tri.numVerts; ++i ) {
-				if ( !writer.WriteVec4( tri.shadowVertexes[i].xyz ) ) {
-					return false;
-				}
+			if ( !writer.WriteFloatArray( reinterpret_cast<const float *>( tri.shadowVertexes ), tri.numVerts * 4 ) ) {
+				return false;
 			}
 		}
 
@@ -645,10 +764,8 @@ namespace {
 		}
 #if defined( _MD5R_SUPPORT )
 		if ( hasSilTraceVerts ) {
-			for ( int i = 0; i < tri.numVerts; ++i ) {
-				if ( !writer.WriteVec4( tri.silTraceVerts[i].xyzw ) ) {
-					return false;
-				}
+			if ( !writer.WriteFloatArray( reinterpret_cast<const float *>( tri.silTraceVerts ), tri.numVerts * 4 ) ) {
+				return false;
 			}
 		}
 #elif defined( Q4SDK_MD5R )
@@ -671,10 +788,8 @@ namespace {
 				return false;
 			}
 			const int floatCount = numSkinToModelTransforms * 16;
-			for ( int i = 0; i < floatCount; ++i ) {
-				if ( !writer.WriteFloat( tri.skinToModelTransforms[i] ) ) {
-					return false;
-				}
+			if ( !writer.WriteFloatArray( tri.skinToModelTransforms, floatCount ) ) {
+				return false;
 			}
 #else
 			return false;
@@ -706,10 +821,8 @@ namespace {
 				return false;
 			}
 			tri.verts.SetNum( tri.numVerts );
-			for ( int i = 0; i < tri.numVerts; ++i ) {
-				if ( !R_ModelCacheReadDrawVert( reader, tri.verts[i] ) ) {
-					return false;
-				}
+			if ( !R_ModelCacheReadDrawVertArray( reader, tri.verts.Ptr(), tri.numVerts ) ) {
+				return false;
 			}
 		}
 
@@ -723,8 +836,11 @@ namespace {
 				return false;
 			}
 			tri.indexes.SetNum( tri.numIndexes );
+			if ( !reader.ReadIntArray( tri.indexes.Ptr(), tri.numIndexes ) ) {
+				return false;
+			}
 			for ( int i = 0; i < tri.numIndexes; ++i ) {
-				if ( !reader.ReadInt( tri.indexes[i] ) || tri.indexes[i] < 0 || tri.indexes[i] >= tri.numVerts ) {
+				if ( tri.indexes[i] < 0 || tri.indexes[i] >= tri.numVerts ) {
 					return false;
 				}
 			}
@@ -738,8 +854,11 @@ namespace {
 				return false;
 			}
 			tri.silIndexes.SetNum( tri.numIndexes );
+			if ( !reader.ReadIntArray( tri.silIndexes.Ptr(), tri.numIndexes ) ) {
+				return false;
+			}
 			for ( int i = 0; i < tri.numIndexes; ++i ) {
-				if ( !reader.ReadInt( tri.silIndexes[i] ) || tri.silIndexes[i] < 0 || tri.silIndexes[i] >= tri.numVerts ) {
+				if ( tri.silIndexes[i] < 0 || tri.silIndexes[i] >= tri.numVerts ) {
 					return false;
 				}
 			}
@@ -750,9 +869,12 @@ namespace {
 			return false;
 		}
 		tri.mirroredVerts.SetNum( mirroredCount );
+		if ( !reader.ReadIntArray( tri.mirroredVerts.Ptr(), mirroredCount ) ) {
+			return false;
+		}
 		const int sourceVertCount = tri.numVerts - mirroredCount;
 		for ( int i = 0; i < mirroredCount; ++i ) {
-			if ( !reader.ReadInt( tri.mirroredVerts[i] ) || tri.mirroredVerts[i] < 0 || tri.mirroredVerts[i] >= sourceVertCount ) {
+			if ( tri.mirroredVerts[i] < 0 || tri.mirroredVerts[i] >= sourceVertCount ) {
 				return false;
 			}
 		}
@@ -763,8 +885,11 @@ namespace {
 			return false;
 		}
 		tri.dupVerts.SetNum( dupCount * 2 );
+		if ( !reader.ReadIntArray( tri.dupVerts.Ptr(), tri.dupVerts.Num() ) ) {
+			return false;
+		}
 		for ( int i = 0; i < tri.dupVerts.Num(); ++i ) {
-			if ( !reader.ReadInt( tri.dupVerts[i] ) || tri.dupVerts[i] < 0 || tri.dupVerts[i] >= tri.numVerts ) {
+			if ( tri.dupVerts[i] < 0 || tri.dupVerts[i] >= tri.numVerts ) {
 				return false;
 			}
 		}
@@ -774,12 +899,13 @@ namespace {
 			return false;
 		}
 		tri.silEdges.SetNum( silEdgeCount );
+		if ( !reader.ReadIntArray( reinterpret_cast<int *>( tri.silEdges.Ptr() ), silEdgeCount * 4 ) ) {
+			return false;
+		}
 		const int numPlanes = tri.numIndexes / 3;
 		for ( int i = 0; i < silEdgeCount; ++i ) {
-			silEdge_t &edge = tri.silEdges[i];
-			if ( !reader.ReadInt( edge.p1 ) || !reader.ReadInt( edge.p2 )
-				|| !reader.ReadInt( edge.v1 ) || !reader.ReadInt( edge.v2 )
-				|| edge.p1 < 0 || edge.p1 >= numPlanes || edge.p2 < 0 || edge.p2 > numPlanes
+			const silEdge_t &edge = tri.silEdges[i];
+			if ( edge.p1 < 0 || edge.p1 >= numPlanes || edge.p2 < 0 || edge.p2 > numPlanes
 				|| edge.v1 < 0 || edge.v1 >= tri.numVerts || edge.v2 < 0 || edge.v2 >= tri.numVerts ) {
 				return false;
 			}
@@ -793,12 +919,8 @@ namespace {
 				return false;
 			}
 			tri.facePlanes.SetNum( numPlanes );
-			for ( int i = 0; i < numPlanes; ++i ) {
-				idVec4 plane;
-				if ( !reader.ReadVec4( plane ) ) {
-					return false;
-				}
-				tri.facePlanes[i].ToVec4() = plane;
+			if ( !reader.ReadFloatArray( reinterpret_cast<float *>( tri.facePlanes.Ptr() ), numPlanes * 4 ) ) {
+				return false;
 			}
 		}
 
@@ -810,14 +932,21 @@ namespace {
 				return false;
 			}
 			tri.dominantTris.SetNum( tri.numVerts );
+			if ( !reader.ReadBytes( tri.dominantTris.Ptr(), tri.numVerts * static_cast<int>( sizeof( dominantTri_t ) ) ) ) {
+				return false;
+			}
 			for ( int i = 0; i < tri.numVerts; ++i ) {
 				dominantTri_t &dominant = tri.dominantTris[i];
-				if ( !reader.ReadInt( dominant.v2 ) || !reader.ReadInt( dominant.v3 )
-					|| dominant.v2 < 0 || dominant.v2 >= tri.numVerts || dominant.v3 < 0 || dominant.v3 >= tri.numVerts
-					|| !reader.ReadFloat( dominant.normalizationScale[0] )
-					|| !reader.ReadFloat( dominant.normalizationScale[1] )
-					|| !reader.ReadFloat( dominant.normalizationScale[2] ) ) {
+				dominant.v2 = LittleLong( dominant.v2 );
+				dominant.v3 = LittleLong( dominant.v3 );
+				if ( dominant.v2 < 0 || dominant.v2 >= tri.numVerts || dominant.v3 < 0 || dominant.v3 >= tri.numVerts ) {
 					return false;
+				}
+				for ( int scale = 0; scale < 3; ++scale ) {
+					dominant.normalizationScale[scale] = LittleFloat( dominant.normalizationScale[scale] );
+					if ( !R_RenderModelCacheFloatIsFinite( dominant.normalizationScale[scale] ) ) {
+						return false;
+					}
 				}
 			}
 		}
@@ -834,10 +963,8 @@ namespace {
 				return false;
 			}
 			tri.shadowVertexes.SetNum( tri.numVerts );
-			for ( int i = 0; i < tri.numVerts; ++i ) {
-				if ( !reader.ReadVec4( tri.shadowVertexes[i] ) ) {
-					return false;
-				}
+			if ( !reader.ReadFloatArray( reinterpret_cast<float *>( tri.shadowVertexes.Ptr() ), tri.numVerts * 4 ) ) {
+				return false;
 			}
 		}
 
@@ -849,10 +976,8 @@ namespace {
 				return false;
 			}
 			tri.silTraceVertexes.SetNum( tri.numVerts );
-			for ( int i = 0; i < tri.numVerts; ++i ) {
-				if ( !reader.ReadVec4( tri.silTraceVertexes[i] ) ) {
-					return false;
-				}
+			if ( !reader.ReadFloatArray( reinterpret_cast<float *>( tri.silTraceVertexes.Ptr() ), tri.numVerts * 4 ) ) {
+				return false;
 			}
 		}
 
@@ -862,10 +987,8 @@ namespace {
 			return false;
 		}
 		tri.skinToModelTransforms.SetNum( tri.numSkinToModelTransforms * 16 );
-		for ( int i = 0; i < tri.skinToModelTransforms.Num(); ++i ) {
-			if ( !reader.ReadFloat( tri.skinToModelTransforms[i] ) ) {
-				return false;
-			}
+		if ( !reader.ReadFloatArray( tri.skinToModelTransforms.Ptr(), tri.skinToModelTransforms.Num() ) ) {
+			return false;
 		}
 
 		const bool hasDerivedTopology = hasSilIndexes || mirroredCount > 0 || dupCount > 0 || silEdgeCount > 0 || hasDominantTris;
@@ -911,32 +1034,15 @@ namespace {
 				return false;
 			}
 
+			// R_ModelCacheReadTriStage fully range-validated the derived topology
+			// (and numVerts == sourceVertCount + mirroredVerts.Num() by construction);
+			// allocate the arrays directly instead of re-deriving them just to
+			// overwrite the results with the cached contents.
 			const int sourceVertCount = source.numVerts - source.mirroredVerts.Num();
-			idList<int> buildIndexes;
-			buildIndexes.SetNum( source.numIndexes );
-			for ( int i = 0; i < source.numIndexes; ++i ) {
-				const int finalIndex = source.indexes[i];
-				if ( finalIndex < sourceVertCount ) {
-					buildIndexes[i] = finalIndex;
-				} else {
-					const int mirrorIndex = finalIndex - sourceVertCount;
-					if ( mirrorIndex < 0 || mirrorIndex >= source.mirroredVerts.Num() ) {
-						R_FreeStaticTriSurf( tri );
-						return false;
-					}
-					buildIndexes[i] = source.mirroredVerts[mirrorIndex];
-				}
-			}
-
-			deformInfo_t *deform = R_BuildDeformInfo( sourceVertCount, source.verts.Ptr(),
-				source.numIndexes, buildIndexes.Ptr(), source.dominantTris.Num() > 0 );
-			if ( deform == NULL || deform->numSourceVerts != sourceVertCount || deform->numOutputVerts != source.numVerts
-				|| deform->numIndexes != source.numIndexes || deform->numMirroredVerts != source.mirroredVerts.Num()
-				|| deform->numDupVerts * 2 != source.dupVerts.Num()
-				|| ( source.dominantTris.Num() > 0 ) != ( deform->dominantTris != NULL ) ) {
-				if ( deform != NULL ) {
-					R_FreeDeformInfo( deform );
-				}
+			deformInfo_t *deform = R_AllocDeformInfo( sourceVertCount, source.numVerts,
+				source.numIndexes, source.mirroredVerts.Num(), source.dupVerts.Num() / 2,
+				source.silEdges.Num(), source.dominantTris.Num() > 0 );
+			if ( deform == NULL ) {
 				R_FreeStaticTriSurf( tri );
 				return false;
 			}
@@ -965,12 +1071,10 @@ namespace {
 				memcpy( tri->dominantTris, source.dominantTris.Ptr(), source.numVerts * sizeof( tri->dominantTris[0] ) );
 			}
 
+			tri->numSilEdges = deform->numSilEdges;
+			tri->silEdges = deform->silEdges;
+			deform->silEdges = NULL;
 			R_FreeDeformInfo( deform );
-			R_IdentifySilEdges( tri, true );
-			if ( tri->numSilEdges != source.silEdges.Num() || tri->perfectHull != source.perfectHull ) {
-				R_FreeStaticTriSurf( tri );
-				return false;
-			}
 			if ( tri->numSilEdges > 0 ) {
 				memcpy( tri->silEdges, source.silEdges.Ptr(), tri->numSilEdges * sizeof( tri->silEdges[0] ) );
 			}
@@ -2481,6 +2585,57 @@ bool idRenderModelStatic::ConvertLWOToModelSurfaces( const struct st_lwObject *l
 		}
 	}
 
+	// bucket the polygons by surface up front so each surface pass only visits
+	// its own polygons instead of rescanning the whole layer
+	idList<const lwSurface *> surfOrder;
+	for ( lwoSurf = lwo->surf; lwoSurf; lwoSurf = lwoSurf->next ) {
+		surfOrder.Append( lwoSurf );
+	}
+	idList<int> surfPolyCount;
+	surfPolyCount.SetNum( surfOrder.Num() );
+	memset( surfPolyCount.Ptr(), 0, surfOrder.Num() * sizeof( surfPolyCount[0] ) );
+	idList<int> polySurfOrdinal;
+	polySurfOrdinal.SetNum( layer->polygon.count );
+	int lastOrdinal = -1;
+	for ( j = 0; j < layer->polygon.count; j++ ) {
+		const lwSurface *polySurf = layer->polygon.pol[j].surf;
+		int ordinal = -1;
+		if ( lastOrdinal >= 0 && surfOrder[lastOrdinal] == polySurf ) {
+			// polygons are typically grouped by surface
+			ordinal = lastOrdinal;
+		} else {
+			for ( k = 0; k < surfOrder.Num(); k++ ) {
+				if ( surfOrder[k] == polySurf ) {
+					ordinal = k;
+					break;
+				}
+			}
+		}
+		// unmatched polygons keep ordinal -1 and are dropped, exactly as the
+		// old all-surfaces scan skipped them
+		polySurfOrdinal[j] = ordinal;
+		if ( ordinal >= 0 ) {
+			surfPolyCount[ordinal]++;
+			lastOrdinal = ordinal;
+		}
+	}
+	idList<int> surfPolyStart;
+	surfPolyStart.SetNum( surfOrder.Num() );
+	int polyStart = 0;
+	for ( k = 0; k < surfOrder.Num(); k++ ) {
+		surfPolyStart[k] = polyStart;
+		polyStart += surfPolyCount[k];
+	}
+	idList<int> surfPolyIndexes;
+	surfPolyIndexes.SetNum( polyStart );
+	idList<int> surfPolyFill( surfPolyStart );
+	for ( j = 0; j < layer->polygon.count; j++ ) {
+		// ascending j order preserves the original within-surface polygon order
+		if ( polySurfOrdinal[j] >= 0 ) {
+			surfPolyIndexes[ surfPolyFill[ polySurfOrdinal[j] ]++ ] = j;
+		}
+	}
+
 	// build the surfaces
 	for ( lwoSurf = lwo->surf, i = 0; lwoSurf; lwoSurf = lwoSurf->next, i++ ) {
 		im1 = declManager->FindMaterial( lwoSurf->name );
@@ -2497,7 +2652,8 @@ bool idRenderModelStatic::ConvertLWOToModelSurfaces( const struct st_lwObject *l
 		// we need to find out how many unique vertex / texcoord combinations there are
 
 		// the maximum possible number of combined vertexes is the number of indexes
-		mvTable = (matchVert_t *)R_ClearedStaticAlloc( layer->polygon.count * 3 * sizeof( mvTable[0] ) );
+		const int surfTriIndexCount = surfPolyCount[i] * 3;
+		mvTable = (matchVert_t *)R_ClearedStaticAlloc( surfTriIndexCount * sizeof( mvTable[0] ) );
 
 		// we will have a hash chain based on the xyz values
 		mvHash = (matchVert_t **)R_ClearedStaticAlloc( layer->point.count * sizeof( mvHash[0] ) );
@@ -2506,7 +2662,7 @@ bool idRenderModelStatic::ConvertLWOToModelSurfaces( const struct st_lwObject *l
 		tri = R_AllocStaticTriSurf();
 		tri->numVerts = 0;
 		tri->numIndexes = 0;
-		R_AllocStaticTriSurfIndexes( tri, layer->polygon.count * 3 );
+		R_AllocStaticTriSurfIndexes( tri, surfTriIndexCount > 0 ? surfTriIndexCount : 1 );
 		tri->generateNormals = !normalsParsed;
 
 		// find all the unique combinations
@@ -2516,11 +2672,12 @@ bool idRenderModelStatic::ConvertLWOToModelSurfaces( const struct st_lwObject *l
 		} else {
 			normalEpsilon = 1.0f - r_slopNormal.GetFloat();
 		}
-		for ( j = 0; j < layer->polygon.count; j++ ) {
-			lwPolygon *poly = &layer->polygon.pol[j];
+		const int surfPolyEnd = surfPolyStart[i] + surfPolyCount[i];
+		for ( int p = surfPolyStart[i]; p < surfPolyEnd; p++ ) {
+			lwPolygon *poly = &layer->polygon.pol[ surfPolyIndexes[p] ];
 
 			if ( poly->surf != lwoSurf ) {
-				continue;
+				continue;	// defensive: buckets are per surface
 			}
 
 			if ( poly->nverts != 3 ) {

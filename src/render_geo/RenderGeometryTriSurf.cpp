@@ -2534,6 +2534,47 @@ deformInfo_t *R_BuildDeformInfo( int numVerts, const idDrawVert *verts, int numI
 
 /*
 ===================
+R_AllocDeformInfo
+
+Allocates a deformInfo_t with the given counts without running any derivation.
+Used by the generated-cache readers, whose payloads already carry the fully
+range-validated derived arrays; re-deriving them only to overwrite the results
+with the cached bytes wasted the cache hit. Array NULL-ness matches
+R_BuildDeformInfo exactly: the allocators return NULL for Alloc(0), so
+R_FreeDeformInfo and R_FreeStaticTriSurf behave identically.
+If the derivation in R_BuildDeformInfo ever changes, bump
+MD5_MODEL_GENERATED_CACHE_PARSER_VERSION and
+STATIC_MODEL_GENERATED_CACHE_PARSER_VERSION so stale payloads regenerate.
+===================
+*/
+deformInfo_t *R_AllocDeformInfo( int numSourceVerts, int numOutputVerts, int numIndexes,
+								 int numMirroredVerts, int numDupVerts, int numSilEdges,
+								 bool allocDominantTris ) {
+	deformInfo_t *deform = (deformInfo_t *)R_ClearedStaticAlloc( sizeof( *deform ) );
+
+	deform->numSourceVerts = numSourceVerts;
+	deform->numOutputVerts = numOutputVerts;
+
+	deform->numIndexes = numIndexes;
+	deform->indexes = triIndexAllocator.Alloc( numIndexes );
+	deform->silIndexes = triSilIndexAllocator.Alloc( numIndexes );
+
+	deform->numMirroredVerts = numMirroredVerts;
+	deform->mirroredVerts = triMirroredVertAllocator.Alloc( numMirroredVerts );
+
+	deform->numDupVerts = numDupVerts;
+	deform->dupVerts = triDupVertAllocator.Alloc( numDupVerts * 2 );
+
+	deform->numSilEdges = numSilEdges;
+	deform->silEdges = triSilEdgeAllocator.Alloc( numSilEdges );
+
+	deform->dominantTris = allocDominantTris ? triDominantTrisAllocator.Alloc( numOutputVerts ) : NULL;
+
+	return deform;
+}
+
+/*
+===================
 R_FreeDeformInfo
 ===================
 */

@@ -821,7 +821,7 @@ static bool R_ParseDDSFileInfo( const byte *header, int headerBytes, int fileSiz
 	return true;
 }
 
-static bool R_ReadDDSFileInfo( const char *name, ddsFileInfo_t &info, ID_TIME_T *timestamp ) {
+static bool R_ReadDDSFileInfoUncached( const char *name, ddsFileInfo_t &info, ID_TIME_T *timestamp ) {
 	if ( timestamp != NULL ) {
 		*timestamp = FILE_NOT_FOUND_TIMESTAMP;
 	}
@@ -844,6 +844,69 @@ static bool R_ReadDDSFileInfo( const char *name, ddsFileInfo_t &info, ID_TIME_T 
 		*timestamp = file->Timestamp();
 	}
 	return true;
+}
+
+/*
+=============
+DDS probe memoization
+
+A level load resolves the same DDS replacement candidates several times per
+image (source selection, the staleness timestamp probe, generated-cache
+validation, and the decode pass), and every probe is a real file open across
+all search paths. Search-path contents cannot change during the synchronous
+BeginLevelLoad..EndLevelLoad window, so per-candidate probe results are
+memoized there. Outside the window every call probes the filesystem directly,
+which keeps reloadImages and hot-reload workflows seeing freshly dropped
+files. Image loading is single-threaded (see parseBuffer in
+Image_program.cpp), so plain statics are safe here.
+=============
+*/
+struct ddsProbeCacheEntry_t {
+	idStr			name;
+	bool			found;
+	ddsFileInfo_t	info;
+	ID_TIME_T		timestamp;
+};
+
+static bool ddsProbeCacheActive = false;
+static idHashIndex ddsProbeCacheHash;
+static idList<ddsProbeCacheEntry_t> ddsProbeCacheEntries;
+
+void R_SetDDSProbeCacheActive( bool active ) {
+	ddsProbeCacheActive = active;
+	ddsProbeCacheHash.Free();
+	ddsProbeCacheEntries.Clear();
+}
+
+static bool R_ReadDDSFileInfo( const char *name, ddsFileInfo_t &info, ID_TIME_T *timestamp ) {
+	if ( !ddsProbeCacheActive ) {
+		return R_ReadDDSFileInfoUncached( name, info, timestamp );
+	}
+	const int hashKey = ddsProbeCacheHash.GenerateKey( name, false );
+	for ( int i = ddsProbeCacheHash.First( hashKey ); i >= 0; i = ddsProbeCacheHash.Next( i ) ) {
+		const ddsProbeCacheEntry_t &entry = ddsProbeCacheEntries[ i ];
+		if ( entry.name.Icmp( name ) == 0 ) {
+			if ( timestamp != NULL ) {
+				*timestamp = entry.found ? entry.timestamp : FILE_NOT_FOUND_TIMESTAMP;
+			}
+			if ( entry.found ) {
+				info = entry.info;
+			}
+			return entry.found;
+		}
+	}
+	ddsProbeCacheEntry_t entry;
+	entry.name = name;
+	entry.timestamp = FILE_NOT_FOUND_TIMESTAMP;
+	entry.found = R_ReadDDSFileInfoUncached( name, entry.info, &entry.timestamp );
+	if ( timestamp != NULL ) {
+		*timestamp = entry.found ? entry.timestamp : FILE_NOT_FOUND_TIMESTAMP;
+	}
+	if ( entry.found ) {
+		info = entry.info;
+	}
+	ddsProbeCacheHash.Add( hashKey, ddsProbeCacheEntries.Append( entry ) );
+	return entry.found;
 }
 
 static bool R_ImageNameHasDDSShadowPrefix( const idStr &name ) {
@@ -1206,11 +1269,27 @@ bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T 
 		return false;
 	}
 
-	byte *buffer = NULL;
-	const int fileSize = fileSystem->ReadFile( name.c_str(), (void **)&buffer, timestamp );
-	if ( buffer == NULL || fileSize < DDS_HEADER_BYTES ) {
+	// Read into a buffer this library owns rather than fileSystem->ReadFile: the
+	// mip payloads stay behind as views into it inside the idBinaryImage, and its
+	// eventual Mem_Free in idBinaryImage::Clear must pair with this binary's
+	// allocator (the renderer modules carry their own idlib heap).
+	idFile *ddsFile = fileSystem->OpenFileRead( name.c_str() );
+	if ( ddsFile == NULL ) {
+		if ( timestamp != NULL ) {
+			*timestamp = FILE_NOT_FOUND_TIMESTAMP;
+		}
+		return false;
+	}
+	if ( timestamp != NULL ) {
+		*timestamp = ddsFile->Timestamp();
+	}
+	const int fileSize = ddsFile->Length();
+	byte *buffer = fileSize >= DDS_HEADER_BYTES ? (byte *)Mem_Alloc( fileSize ) : NULL;
+	const bool readOk = buffer != NULL && ddsFile->Read( buffer, fileSize ) == fileSize;
+	fileSystem->CloseFile( ddsFile );
+	if ( !readOk ) {
 		if ( buffer != NULL ) {
-			fileSystem->FreeFile( buffer );
+			Mem_Free( buffer );
 		}
 		return false;
 	}
@@ -1284,12 +1363,15 @@ bool R_LoadPrecompressedDDS( const char *cname, idBinaryImage &image, ID_TIME_T 
 			info.format == DDS_STORED_FORMAT_RXGB ||
 			( usage == TD_BUMP && textureFormat == FMT_DXT5 );
 		const textureColor_t colorFormat = rxgbNormal ? CFM_NORMAL_DXT5 : CFM_DEFAULT;
-		image.Load2DFromCompressedData( selectedWidth, selectedHeight, selectedLevels, textureFormat, colorFormat,
+		image.Load2DFromOwnedCompressedData( selectedWidth, selectedHeight, selectedLevels, textureFormat, colorFormat,
 			buffer, levelOffsets.Ptr() + firstLevel, levelSizes.Ptr() + firstLevel );
+		buffer = NULL;	// the binary image now owns the file buffer
 		loaded = true;
 	} while ( false );
 
-	fileSystem->FreeFile( buffer );
+	if ( buffer != NULL ) {
+		Mem_Free( buffer );
+	}
 	return loaded;
 }
 
@@ -1580,8 +1662,17 @@ static void R_LoadImageInternal( const char *cname, byte **pic, int *width, int 
 	name.ExtractFileExtension( ext );
 
 	idStr preferredDDSName;
-	if ( ext != "dds" && R_ResolvePreferredDDSImageSource( name.c_str(), preferredDDSName, NULL, false, NULL ) ) {
-		LoadDDS( preferredDDSName.c_str(), pic, width, height, timestamp, decodeRXGBNormalMap );
+	ID_TIME_T preferredDDSTime = FILE_NOT_FOUND_TIMESTAMP;
+	if ( ext != "dds" && R_ResolvePreferredDDSImageSource( name.c_str(), preferredDDSName, &preferredDDSTime, false, NULL ) ) {
+		if ( pic == NULL ) {
+			// timestamp-only probe: the resolve already opened this file and read
+			// its timestamp, so don't open it a second time
+			if ( timestamp != NULL ) {
+				*timestamp = preferredDDSTime;
+			}
+		} else {
+			LoadDDS( preferredDDSName.c_str(), pic, width, height, timestamp, decodeRXGBNormalMap );
+		}
 		if ( R_LoadImageSucceeded( pic, timestamp ) ) {
 			return;
 		}

@@ -929,6 +929,10 @@ ReloadImages
 ===============
 */
 void idImageManager::ReloadImages( bool all ) {
+	// a reload exists to observe files dropped since the last level load;
+	// never let it consult (or leave behind) memoized probe results
+	R_SetDDSProbeCacheActive( false );
+
 	for ( int i = 0 ; i < globalImages->images.Num() ; i++ ) {
 		globalImages->images[ i ]->Reload( all );
 	}
@@ -1118,6 +1122,10 @@ Frees all images used by the previous level
 void idImageManager::BeginLevelLoad() {
 	insideLevelLoad = true;
 
+	// search paths are stable for the whole load, so DDS replacement probes
+	// can be memoized until EndLevelLoad finishes LoadLevelImages
+	R_SetDDSProbeCacheActive( true );
+
 	for ( int i = 0 ; i < images.Num() ; i++ ) {
 		idImage	*image = images[ i ];
 		image->ClearUseCount();
@@ -1269,6 +1277,8 @@ void idImageManager::EndLevelLoad() {
 	common->Printf( "%5i images loaded in %5.1f seconds\n", loadCount, (end-start) * 0.001 );
 	common->Printf( "----------------------------------------\n" );
 	//R_ListImages_f( idCmdArgs( "sorted sorted", false ) );
+
+	R_SetDDSProbeCacheActive( false );
 }
 
 /*
