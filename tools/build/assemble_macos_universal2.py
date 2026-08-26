@@ -27,7 +27,7 @@ THIN_MACHO_ARCHES = {
 }
 BUILD_TYPES = ("debug", "debugoptimized", "release", "minsize")
 GRAPHICS_BRIDGES = ("opengl", "metal")
-OPENAL_PROVIDERS = ("apple_framework", "openal_soft")
+OPENAL_PROVIDERS = ("apple_framework", "system")
 SOURCE_PROVENANCE_FIELDS = (
     "projectGitCommit",
     "projectGitDirty",
@@ -52,6 +52,9 @@ COMMON_BUILD_FIELDS = (
 # unsigned MoltenVK bytes must still match exactly, and copy_shared_payload()
 # reproduces the validated ARM64-host copy before final package signing.
 MOLTENVK_DYLIB_NAME = "libMoltenVK.dylib"
+OPENAL_SOFT_DYLIB_NAME = "libopenal.1.dylib"
+OPENAL_SOFT_INSTALL_NAME = f"@rpath/{OPENAL_SOFT_DYLIB_NAME}"
+OPENAL_SOFT_RELATIVE_PATH = Path("Frameworks") / OPENAL_SOFT_DYLIB_NAME
 REQUIRED_SHARED_PATHS = (
     "openQ4.icns",
     "collect_macos_support_info.sh",
@@ -60,11 +63,17 @@ REQUIRED_SHARED_PATHS = (
     "baseoq4/pak0.pk4",
     "baseoq4/pak1.pk4",
     MOLTENVK_DYLIB_NAME,
+    "licenses/openal-soft/COPYING",
+    "licenses/openal-soft/LICENSE-pffft",
+    "licenses/openal-soft/LICENSE-fmt",
+    "licenses/openal-soft/LICENSE-gsl",
+    "licenses/openal-soft/SOURCE.md",
+    "licenses/openal-soft/openal-soft-1.25.1.tar.gz",
 )
 # Code files that lipo merges into one universal2 artifact. renderer-vk is the
 # macOS Vulkan renderer module; renderer-gl is not built on darwin, so it has no
 # entry here (the stale-code sweep below still rejects one if it ever appears).
-CODE_KEYS = ("client", "dedicated", "game-sp", "game-mp", "renderer-vk")
+CODE_KEYS = ("client", "dedicated", "game-sp", "game-mp", "renderer-vk", "openal-soft")
 # Loadable modules carry a @loader_path install name and one required export.
 MODULE_ENTRY_POINT_EXPORTS = {
     "game-sp": "GetGameAPI",
@@ -89,6 +98,7 @@ def thin_code_paths(arch: str) -> dict[str, Path]:
         # install root; package_nightly.py is what relocates it into
         # openQ4.app/Contents/Frameworks.
         "renderer-vk": Path(f"renderer-vk_{arch}.dylib"),
+        "openal-soft": OPENAL_SOFT_RELATIVE_PATH,
     }
 
 
@@ -102,10 +112,13 @@ def universal_code_paths() -> dict[str, Path]:
         "game-sp": Path("baseoq4") / "game-sp_universal2.dylib",
         "game-mp": Path("baseoq4") / "game-mp_universal2.dylib",
         "renderer-vk": Path("renderer-vk_universal2.dylib"),
+        "openal-soft": OPENAL_SOFT_RELATIVE_PATH,
     }
 
 
 def expected_install_name(code_key: str, arch: str) -> str:
+    if code_key == "openal-soft":
+        return OPENAL_SOFT_INSTALL_NAME
     if code_key not in MODULE_ENTRY_POINT_EXPORTS:
         return ""
     return f"@loader_path/{code_key}_{arch}.dylib"
@@ -419,7 +432,7 @@ def collect_binary_metadata(root: Path, arch: str, deployment_target: str) -> di
             raise Universal2Error(
                 f"install name mismatch for {path}: expected {expected_id!r}, found {actual_id!r}"
             )
-        if expected_id:
+        if code_key in MODULE_ENTRY_POINT_EXPORTS:
             require_module_entry_export(path, macho_arch=macho_arch, code_key=code_key)
         result[code_key] = {
             "path": relative.as_posix(),
@@ -694,8 +707,9 @@ def merge_binary(arm_path: Path, x64_path: Path, output_path: Path, code_key: st
                 raise Universal2Error(
                     f"universal2 {code_key} install name mismatch for {macho_arch}: {actual_id!r}"
                 )
-        for macho_arch in sorted(UNIVERSAL_MACHO_ARCHES):
-            require_module_entry_export(output_path, macho_arch=macho_arch, code_key=code_key)
+        if code_key in MODULE_ENTRY_POINT_EXPORTS:
+            for macho_arch in sorted(UNIVERSAL_MACHO_ARCHES):
+                require_module_entry_export(output_path, macho_arch=macho_arch, code_key=code_key)
 
 
 def copy_shared_payload(source_root: Path, output_root: Path, shared: dict[str, dict[str, object]]) -> None:

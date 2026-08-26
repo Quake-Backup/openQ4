@@ -50,6 +50,12 @@ static const int ROQ_AUDIO_SAMPLE_RATE = 22050;
 static const int ROQ_AUDIO_MIN_SAMPLE = -32768;
 static const int ROQ_AUDIO_MAX_SAMPLE = 32767;
 
+// Some OpenAL implementations expose a small, process-wide buffer pool.  A
+// failed allocation must not turn a successfully loaded map into a fatal
+// error; keep the decoded sample available for the voice streaming path and
+// avoid repeating the same warning for every remaining sample in the map.
+static std::atomic<bool> openQ4_openALBufferAllocationWarningIssued( false );
+
 extern idCVar sys_lang;
 
 /*
@@ -267,6 +273,7 @@ idSoundSample_OpenAL::idSoundSample_OpenAL()
 	lastPlayedTime = 0;
 
 	openalBuffer = 0;
+	openalBufferUploadFailed = false;
 }
 
 /*
@@ -574,6 +581,11 @@ void idSoundSample_OpenAL::LoadResource()
 
 void idSoundSample_OpenAL::CreateOpenALBuffer()
 {
+	if( openalBuffer != 0 || openalBufferUploadFailed )
+	{
+		return;
+	}
+
 	if( !openQ4_CanUploadSampleToOpenAL() )
 	{
 		return;
@@ -583,9 +595,25 @@ void idSoundSample_OpenAL::CreateOpenALBuffer()
 	CheckALErrors();
 	alGenBuffers( 1, &openalBuffer );
 
-	if( CheckALErrors() != AL_NO_ERROR )
+	const ALenum allocationError = CheckALErrors();
+	if( allocationError != AL_NO_ERROR || openalBuffer == 0 || !alIsBuffer( openalBuffer ) )
 	{
-		common->Error( "idSoundSample_OpenAL::CreateOpenALBuffer: error generating OpenAL hardware buffer" );
+		if( openalBuffer != 0 && alIsBuffer( openalBuffer ) )
+		{
+			alDeleteBuffers( 1, &openalBuffer );
+			CheckALErrors();
+		}
+		openalBuffer = 0;
+		openalBufferUploadFailed = true;
+		if( !openQ4_openALBufferAllocationWarningIssued.exchange( true, std::memory_order_relaxed ) )
+		{
+			common->Warning(
+				"OpenAL could not allocate another sample buffer (error 0x%x, sample '%s'); "
+				"continuing with streaming fallback where resources permit. Further allocation failures are suppressed.",
+				allocationError,
+				GetName() );
+		}
+		return;
 	}
 
 	if( alIsBuffer( openalBuffer ) )
@@ -653,9 +681,21 @@ void idSoundSample_OpenAL::CreateOpenALBuffer()
 			alBufferData( openalBuffer, GetOpenALBufferFormat(), buffer, bufferSize, format.basic.samplesPerSec );
 		}
 
-		if( CheckALErrors() != AL_NO_ERROR )
+		const ALenum uploadError = CheckALErrors();
+		if( uploadError != AL_NO_ERROR )
 		{
-			common->Error( "idSoundSample_OpenAL::CreateOpenALBuffer: error loading data into OpenAL hardware buffer" );
+			const ALuint failedBuffer = openalBuffer;
+			openalBuffer = 0;
+			if( alIsBuffer( failedBuffer ) )
+			{
+				alDeleteBuffers( 1, &failedBuffer );
+				CheckALErrors();
+			}
+			openalBufferUploadFailed = true;
+			common->Warning(
+				"OpenAL could not upload sample '%s' (error 0x%x); continuing with streaming fallback where resources permit.",
+				GetName(),
+				uploadError );
 		}
 	}
 }
@@ -1262,28 +1302,7 @@ void idSoundSample_OpenAL::MakeDefault()
 	playBegin = 0;
 	playLength = DEFAULT_NUM_SAMPLES;
 
-	if( !openQ4_CanUploadSampleToOpenAL() )
-	{
-		return;
-	}
-
-	CheckALErrors();
-	alGenBuffers( 1, &openalBuffer );
-
-	if( CheckALErrors() != AL_NO_ERROR )
-	{
-		common->Error( "idSoundSample_OpenAL::MakeDefault: error generating OpenAL hardware buffer" );
-	}
-
-	if( alIsBuffer( openalBuffer ) )
-	{
-		CheckALErrors();
-		alBufferData( openalBuffer, GetOpenALBufferFormat(), defaultBuffer, totalBufferSize, format.basic.samplesPerSec );
-		if( CheckALErrors() != AL_NO_ERROR )
-		{
-			common->Error( "idSoundSample_OpenAL::MakeDefault: error loading data into OpenAL hardware buffer" );
-		}
-	}
+	CreateOpenALBuffer();
 }
 
 /*
@@ -1315,6 +1334,7 @@ void idSoundSample_OpenAL::FreeData()
 	totalBufferSize = 0;
 	playBegin = 0;
 	playLength = 0;
+	openalBufferUploadFailed = false;
 
 	if( openalBuffer != 0 )
 	{

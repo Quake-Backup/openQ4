@@ -874,12 +874,12 @@ if build_engine
     if macos_openal_provider == 'apple_framework'
       openal_dep = dependency('appleframeworks', modules: ['OpenAL'], required: true)
     else
-      # The migration provider specifically means an OpenAL Soft-style system
-      # package. Meson's generic OpenAL lookup may otherwise fall back to
-      # Apple's framework when pkg-config cannot see a keg-only Homebrew
-      # install, while the compile defines below still select AL/... headers.
-      # Fail during configure instead of combining framework libraries with
-      # incompatible OpenAL Soft headers (GitHub issue #94).
+      # The release provider specifically means an OpenAL Soft-style package.
+      # Meson's generic OpenAL lookup may otherwise fall back to Apple's
+      # framework when pkg-config cannot see the pinned dependency, while the
+      # compile defines below still select AL/... headers. Fail during
+      # configure instead of combining framework libraries with incompatible
+      # OpenAL Soft headers (GitHub issues #94 and #122).
       openal_dep = dependency('openal', required: true, method: 'pkg-config')
     endif
   else
@@ -1070,6 +1070,7 @@ shared_c_args = ['-DGLEW_NO_GLU']
 shared_objcpp_args = []
 shared_objc_args = []
 engine_link_args = []
+macos_openal_install_rpath = ''
 linux_executable_pie = false
 linux_module_link_hardening_args = []
 linux_cross_dso_sanitizer_cpp_args = []
@@ -1089,6 +1090,10 @@ if host_system == 'darwin'
   if macos_openal_provider == 'system'
     shared_cpp_args += ['-DUSE_OPENAL_SOFT_INCLUDES=1']
     shared_c_args += ['-DUSE_OPENAL_SOFT_INCLUDES=1']
+    # One installed executable supports all three sanctioned layouts: direct
+    # runs from .install, the copied app executable, and the loose diagnostic
+    # binary retained beside openQ4.app in release packages.
+    macos_openal_install_rpath = '@loader_path/Frameworks:@loader_path/../Frameworks:@loader_path/openQ4.app/Contents/Frameworks'
   endif
   macos_compile_hardening_args = []
   foreach hardening_arg : ['-fstack-protector-strong', '-D_FORTIFY_SOURCE=2']
@@ -1386,6 +1391,7 @@ if build_engine
       objc_args: engine_objc_args,
       cpp_pch: pch_headers,
       link_args: engine_link_args,
+      install_rpath: macos_openal_install_rpath,
       install: true,
       install_dir: install_root_dir,
     )
@@ -1462,6 +1468,7 @@ if build_engine
       objc_args: dedicated_objc_args,
       cpp_pch: pch_headers,
       link_args: engine_link_args,
+      install_rpath: macos_openal_install_rpath,
       install: true,
       install_dir: install_root_dir,
     )

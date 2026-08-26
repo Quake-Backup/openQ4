@@ -146,8 +146,20 @@ MACOS_PACKAGE_ROOT_ERROR_STRINGS = {
 # are then relocated into openQ4.app/Contents/Frameworks beside the game modules.
 MACOS_MOLTENVK_DYLIB_NAME = "libMoltenVK.dylib"
 MACOS_MOLTENVK_PREPARE_SCRIPT = "tools/build/prepare_macos_moltenvk.sh"
+MACOS_OPENAL_SOFT_DYLIB_NAME = "libopenal.1.dylib"
+MACOS_OPENAL_SOFT_INSTALL_NAME = f"@rpath/{MACOS_OPENAL_SOFT_DYLIB_NAME}"
+MACOS_OPENAL_SOFT_PREPARE_SCRIPT = "tools/build/prepare_macos_openal_soft.sh"
+MACOS_OPENAL_SOFT_LICENSE_FILES = (
+    "COPYING",
+    "LICENSE-pffft",
+    "LICENSE-fmt",
+    "LICENSE-gsl",
+    "SOURCE.md",
+    "openal-soft-1.25.1.tar.gz",
+)
 MACOS_APP_FRAMEWORKS_DIR = Path("Contents") / "Frameworks"
 MACOS_APP_RESOURCES_DIR = Path("Contents") / "Resources"
+MACOS_APP_OPENAL_LICENSE_DIR = MACOS_APP_RESOURCES_DIR / "licenses" / "openal-soft"
 MACOS_APP_GAME_DATA_DIR = MACOS_APP_RESOURCES_DIR / GAME_DIR_NAME
 MACOS_APP_SPLASH_DIR = MACOS_APP_RESOURCES_DIR / "assets" / "splash"
 MACOS_EXPECTED_APP_BUNDLE_DIRS = (
@@ -158,6 +170,8 @@ MACOS_EXPECTED_APP_BUNDLE_DIRS = (
     f"Contents/Resources/{GAME_DIR_NAME}",
     "Contents/Resources/assets",
     "Contents/Resources/assets/splash",
+    "Contents/Resources/licenses",
+    "Contents/Resources/licenses/openal-soft",
     "Contents/Resources/English.lproj",
     "Contents/Resources/French.lproj",
 )
@@ -174,6 +188,12 @@ MACOS_EXPECTED_APP_BUNDLE_FILES = (
     f"Contents/Resources/{GAME_DIR_NAME}/pak0.pk4",
     f"Contents/Resources/{GAME_DIR_NAME}/pak1.pk4",
     "Contents/Resources/assets/splash/quake4_rt_bitmap_4001.bmp",
+    "Contents/Resources/licenses/openal-soft/COPYING",
+    "Contents/Resources/licenses/openal-soft/LICENSE-pffft",
+    "Contents/Resources/licenses/openal-soft/LICENSE-fmt",
+    "Contents/Resources/licenses/openal-soft/LICENSE-gsl",
+    "Contents/Resources/licenses/openal-soft/SOURCE.md",
+    "Contents/Resources/licenses/openal-soft/openal-soft-1.25.1.tar.gz",
     "Contents/Resources/English.lproj/InfoPlist.strings",
     "Contents/Resources/French.lproj/InfoPlist.strings",
     f"Contents/Resources/English.lproj/{MACOS_PACKAGE_ROOT_ERROR_STRINGS_NAME}",
@@ -1166,6 +1186,10 @@ def macos_embedded_moltenvk_path(package_root: Path) -> Path:
     return package_root / "openQ4.app" / MACOS_APP_FRAMEWORKS_DIR / MACOS_MOLTENVK_DYLIB_NAME
 
 
+def macos_embedded_openal_soft_path(package_root: Path) -> Path:
+    return package_root / "openQ4.app" / MACOS_APP_FRAMEWORKS_DIR / MACOS_OPENAL_SOFT_DYLIB_NAME
+
+
 def macos_embedded_library_paths(package_root: Path, arch: str) -> list[Path]:
     """Every Mach-O library nested inside openQ4.app/Contents/Frameworks.
 
@@ -1179,6 +1203,7 @@ def macos_embedded_library_paths(package_root: Path, arch: str) -> list[Path]:
         mp_module,
         macos_embedded_renderer_module_path(package_root, arch),
         macos_embedded_moltenvk_path(package_root),
+        macos_embedded_openal_soft_path(package_root),
     ]
 
 
@@ -1196,12 +1221,14 @@ def macos_loadable_module_install_names(package_root: Path, arch: str) -> dict[P
     # Meson's Darwin install depfixer may replace linker-authored IDs with the
     # absolute staging destination for every installed dylib. Normalize every
     # openQ4 loadable module after it enters the app bundle. libMoltenVK's
-    # package-relative ID is set and asserted by its pinned provider script and
-    # remains deliberately outside this openQ4-built module map.
+    # package-relative ID is set and asserted by its pinned provider script.
+    # OpenAL Soft is likewise prepared outside Meson, but it is included here
+    # because its @rpath identity is part of the package contract.
     return {
         sp_module: f"@loader_path/game-sp_{arch}.dylib",
         mp_module: f"@loader_path/game-mp_{arch}.dylib",
         renderer_module: f"@loader_path/renderer-vk_{arch}.dylib",
+        macos_embedded_openal_soft_path(package_root): MACOS_OPENAL_SOFT_INSTALL_NAME,
     }
 
 
@@ -1974,6 +2001,8 @@ def validate_macos_symbol_archive_contents(
         # libMoltenVK has no dSYM, so it must never appear in the symbol archive
         # at all -- if it does, someone copied runtime payload in by mistake.
         f"{package_prefix}openQ4.app/Contents/Frameworks/{MACOS_MOLTENVK_DYLIB_NAME}",
+        # OpenAL Soft is third-party runtime code and likewise has no openQ4 dSYM.
+        f"{package_prefix}openQ4.app/Contents/Frameworks/{MACOS_OPENAL_SOFT_DYLIB_NAME}",
     }
 
     entry_names: set[str] = set()
@@ -2464,6 +2493,7 @@ def get_package_executable_archive_paths(
                 Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"game-mp_{arch}.dylib",
                 Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / f"renderer-vk_{arch}.dylib",
                 Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / MACOS_MOLTENVK_DYLIB_NAME,
+                Path("openQ4.app") / MACOS_APP_FRAMEWORKS_DIR / MACOS_OPENAL_SOFT_DYLIB_NAME,
             }
         )
 
@@ -2598,12 +2628,14 @@ def validate_macos_archive_contents(
     embedded_mp_module_entry = f"{app_bundle_prefix}Contents/Frameworks/game-mp_{arch}.dylib"
     embedded_renderer_module_entry = f"{app_bundle_prefix}Contents/Frameworks/renderer-vk_{arch}.dylib"
     embedded_moltenvk_entry = f"{app_bundle_prefix}Contents/Frameworks/{MACOS_MOLTENVK_DYLIB_NAME}"
+    embedded_openal_soft_entry = f"{app_bundle_prefix}Contents/Frameworks/{MACOS_OPENAL_SOFT_DYLIB_NAME}"
     expected_app_bundle_entries.update(
         {
             embedded_sp_module_entry,
             embedded_mp_module_entry,
             embedded_renderer_module_entry,
             embedded_moltenvk_entry,
+            embedded_openal_soft_entry,
         }
     )
     optional_app_bundle_entries = {
@@ -2621,6 +2653,7 @@ def validate_macos_archive_contents(
         embedded_mp_module_entry,
         embedded_renderer_module_entry,
         embedded_moltenvk_entry,
+        embedded_openal_soft_entry,
         f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/mod.json",
         f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/pak0.pk4",
         f"{app_bundle_prefix}Contents/Resources/{GAME_DIR_NAME}/pak1.pk4",
@@ -2646,6 +2679,7 @@ def validate_macos_archive_contents(
         embedded_mp_module_entry,
         embedded_renderer_module_entry,
         embedded_moltenvk_entry,
+        embedded_openal_soft_entry,
     }
     plist_entry = f"{package_prefix}openQ4.app/Contents/Info.plist"
 
@@ -2883,6 +2917,15 @@ def validate_macos_archive_contents(
     if unexpected_moltenvk:
         joined = ", ".join(unexpected_moltenvk[:5])
         raise RuntimeError(f"macOS archive contains misplaced MoltenVK runtime copies: {joined}")
+
+    unexpected_openal_soft = sorted(
+        name
+        for name in entry_names
+        if Path(name).name == MACOS_OPENAL_SOFT_DYLIB_NAME and name != embedded_openal_soft_entry
+    )
+    if unexpected_openal_soft:
+        joined = ", ".join(unexpected_openal_soft[:5])
+        raise RuntimeError(f"macOS archive contains misplaced OpenAL Soft runtime copies: {joined}")
 
     expected_root_binaries = {client_entry, dedicated_entry}
     unexpected_root_binaries = sorted(
@@ -3132,12 +3175,34 @@ def validate_macos_binary_dependencies(package_root: Path, arch: str) -> None:
                 dependency
                 for dependency in macos_otool_dependencies(binary_path, macho_arch=macho_arch)
                 if not dependency.startswith(MACOS_ALLOWED_RUNTIME_DEPENDENCY_PREFIXES)
+                and dependency != MACOS_OPENAL_SOFT_INSTALL_NAME
             ]
             if rejected_dependencies:
                 joined = ", ".join(rejected_dependencies)
                 raise RuntimeError(
                     "macOS binary has unbundled non-system dependencies: "
                     f"{binary_path} ({macho_arch}): {joined}"
+                )
+
+    # The executable must bind the bundled runtime through its package-relative
+    # identity. Absolute Homebrew/MacPorts paths would pass on the build host and
+    # fail on players' systems, while Apple's framework would silently restore
+    # the exhausted implementation this package is intended to replace.
+    for binary_path in (
+        package_root / f"{PRODUCT_NAME}-client_{arch}",
+        package_root / "openQ4.app" / "Contents" / "MacOS" / "openQ4",
+    ):
+        for macho_arch in sorted(macos_expected_lipo_arches(arch)):
+            dependencies = macos_otool_dependencies(binary_path, macho_arch=macho_arch)
+            openal_dependencies = [
+                dependency
+                for dependency in dependencies
+                if "openal" in dependency.lower()
+            ]
+            if openal_dependencies != [MACOS_OPENAL_SOFT_INSTALL_NAME]:
+                raise RuntimeError(
+                    "macOS client does not use exactly one bundled OpenAL Soft dependency: "
+                    f"{binary_path} ({macho_arch}): {openal_dependencies}"
                 )
 
     expected_install_names = macos_loadable_module_install_names(package_root, arch)
@@ -3281,6 +3346,7 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
     expected_bundle_dirs = {Path(relative_path) for relative_path in MACOS_EXPECTED_APP_BUNDLE_DIRS}
     embedded_renderer_module = macos_embedded_renderer_module_path(package_root, arch)
     embedded_moltenvk = macos_embedded_moltenvk_path(package_root)
+    embedded_openal_soft = macos_embedded_openal_soft_path(package_root)
 
     expected_bundle_files = {Path(relative_path) for relative_path in MACOS_EXPECTED_APP_BUNDLE_FILES}
     expected_bundle_files.update(
@@ -3289,6 +3355,7 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
             embedded_mp_module.relative_to(app_root),
             embedded_renderer_module.relative_to(app_root),
             embedded_moltenvk.relative_to(app_root),
+            embedded_openal_soft.relative_to(app_root),
         }
     )
     optional_signature_dirs = {Path(relative_path) for relative_path in MACOS_OPTIONAL_APP_BUNDLE_SIGNATURE_DIRS}
@@ -3360,6 +3427,7 @@ def validate_macos_app_bundle(package_root: Path, app_root: Path, arch: str, ver
     require_packaged_executable(embedded_mp_module, "macOS embedded MP game module")
     require_packaged_executable(embedded_renderer_module, "macOS embedded Vulkan renderer module")
     require_packaged_executable(embedded_moltenvk, "macOS embedded MoltenVK runtime")
+    require_packaged_executable(embedded_openal_soft, "macOS embedded OpenAL Soft runtime")
     if not app_pkginfo.is_file() or app_pkginfo.read_bytes() != MACOS_PKGINFO_BYTES:
         raise RuntimeError(f"macOS app bundle is missing a valid PkgInfo file: {app_pkginfo}")
 
@@ -3407,6 +3475,32 @@ def resolve_macos_moltenvk_source(install_dir: Path) -> Path:
         f"{MACOS_MOLTENVK_PREPARE_SCRIPT} --output-dir {install_dir}. "
         f"Searched: {searched}"
     )
+
+
+def resolve_macos_openal_soft_source(install_dir: Path) -> Path:
+    candidate = install_dir / "Frameworks" / MACOS_OPENAL_SOFT_DYLIB_NAME
+    if candidate.is_symlink():
+        raise RuntimeError(f"macOS OpenAL Soft runtime must not be a symlink: {candidate}")
+    if candidate.is_file() and candidate.stat().st_size > 0:
+        return candidate
+    raise RuntimeError(
+        f"macOS package is missing the bundled OpenAL Soft runtime ({MACOS_OPENAL_SOFT_DYLIB_NAME}). "
+        "Build and stage the pinned runtime before packaging: "
+        f"{MACOS_OPENAL_SOFT_PREPARE_SCRIPT} --verify-only --output-root <prepared-root> "
+        f"--stage-install-dir {install_dir}. Searched: {candidate}"
+    )
+
+
+def copy_macos_openal_soft_licenses(install_dir: Path, app_root: Path) -> None:
+    source_root = install_dir / "licenses" / "openal-soft"
+    destination_root = app_root / MACOS_APP_OPENAL_LICENSE_DIR
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for filename in MACOS_OPENAL_SOFT_LICENSE_FILES:
+        source = source_root / filename
+        require_non_empty_package_file(source, f"macOS OpenAL Soft license/source payload {filename}")
+        if source.is_symlink():
+            raise RuntimeError(f"macOS OpenAL Soft license/source payload must not be a symlink: {source}")
+        copy_regular_file(source, destination_root / filename)
 
 
 def create_macos_app_bundle(
@@ -3481,6 +3575,15 @@ def create_macos_app_bundle(
     embedded_moltenvk = app_frameworks / MACOS_MOLTENVK_DYLIB_NAME
     copy_regular_file(staged_moltenvk, embedded_moltenvk)
     ensure_posix_executable(embedded_moltenvk)
+
+    # OpenAL Soft replaces Apple's deprecated, buffer-limited OpenAL framework.
+    # Keep the dynamically linked runtime beside the other signed libraries and
+    # carry its exact license and corresponding source in Resources.
+    staged_openal_soft = resolve_macos_openal_soft_source(install_dir)
+    embedded_openal_soft = app_frameworks / MACOS_OPENAL_SOFT_DYLIB_NAME
+    copy_regular_file(staged_openal_soft, embedded_openal_soft)
+    ensure_posix_executable(embedded_openal_soft)
+    copy_macos_openal_soft_licenses(install_dir, app_root)
 
     staged_splash_dir = package_root / "assets" / "splash"
     staged_splash = staged_splash_dir / "quake4_rt_bitmap_4001.bmp"

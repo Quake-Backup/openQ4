@@ -205,6 +205,7 @@ protected:
 
 	// OpenAL buffer that contains all buffers
 	ALuint			openalBuffer;
+	bool			openalBufferUploadFailed;
 
 	int				playBegin;
 	int				playLength;
