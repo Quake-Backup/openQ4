@@ -10,7 +10,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -26,6 +26,7 @@ SAFE_LINK_SCHEMES = {
     "https",
     "mailto",
 }
+REPOSITORY_BLOB_BASE = "https://github.com/themuffinator/openQ4/blob/main/"
 
 
 SITE_CSS = r"""
@@ -739,7 +740,32 @@ def default_nav_title(relative: Path) -> str:
     return " ".join(part.capitalize() if part.islower() else part for part in stem.split())
 
 
-def rewrite_markdown_links(text: str) -> str:
+def resolve_site_relative(source_relative: Path, target: str) -> str | None:
+    """Resolve a relative link target against a document's site location.
+
+    Returns the normalized root-relative posix path, or None when the target
+    escapes the documentation root.
+    """
+    parts: list[str] = []
+    combined = PurePosixPath(source_relative.parent.as_posix()) / target
+    for part in combined.parts:
+        if part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+
+def rewrite_markdown_links(
+    text: str,
+    *,
+    source_relative: Path | None = None,
+    rendered_sources: set[str] | None = None,
+) -> str:
     pattern = re.compile(r"(!?\[[^\]]+\]\()([^)]+)(\))")
 
     def replace(match: re.Match[str]) -> str:
@@ -762,6 +788,14 @@ def rewrite_markdown_links(text: str) -> str:
             hash_suffix = "#" + fragment
 
         if stripped_target.lower().endswith(".md"):
+            if rendered_sources is not None and source_relative is not None:
+                resolved = resolve_site_relative(source_relative, stripped_target)
+                if resolved is None or resolved.lower() not in rendered_sources:
+                    # The target exists in the repository but is not part of the
+                    # generated site; keep the link alive by pointing at the
+                    # repository copy instead of a dead local page.
+                    repo_target = resolved if resolved is not None else stripped_target
+                    return prefix + REPOSITORY_BLOB_BASE + repo_target + hash_suffix + suffix
             stripped_target = stripped_target[:-3] + ".html"
 
         return prefix + stripped_target + hash_suffix + suffix
@@ -846,7 +880,12 @@ def convert_task_lists(text: str) -> str:
     return "\n".join(result)
 
 
-def prepare_markdown(text: str) -> str:
+def prepare_markdown(
+    text: str,
+    *,
+    source_relative: Path | None = None,
+    rendered_sources: set[str] | None = None,
+) -> str:
     normalized = text.replace("\r\n", "\n")
     normalized = re.sub(
         r"(?m)^<details(?![^>]*markdown=)",
@@ -858,7 +897,11 @@ def prepare_markdown(text: str) -> str:
         '<div markdown="1"',
         normalized,
     )
-    normalized = rewrite_markdown_links(normalized)
+    normalized = rewrite_markdown_links(
+        normalized,
+        source_relative=source_relative,
+        rendered_sources=rendered_sources,
+    )
     normalized = convert_task_lists(normalized)
     normalized = convert_github_callouts(normalized)
     return normalized
@@ -1240,9 +1283,14 @@ def generate_release_docs_site(
     for auxiliary in (Path("LICENSE"),):
         copy_docs_auxiliary_file(source_root, auxiliary, output_root / auxiliary.name)
 
+    rendered_sources = {spec.source_relative.as_posix().lower() for spec in specs}
     for spec in specs:
         raw_text = (source_root / spec.source_relative).read_text(encoding="utf-8")
-        prepared_text = prepare_markdown(raw_text)
+        prepared_text = prepare_markdown(
+            raw_text,
+            source_relative=spec.source_relative,
+            rendered_sources=rendered_sources,
+        )
         markdown_engine = markdown_lib.Markdown(
             extensions=[
                 "extra",
