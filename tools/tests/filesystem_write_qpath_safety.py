@@ -68,6 +68,10 @@ def is_safe_relative_write_path_model(relative_path: str | None) -> bool:
     return True
 
 
+def has_parent_os_path_segment_model(os_path: str) -> bool:
+    return any(segment == ".." for segment in os_path.replace("\\", "/").split("/"))
+
+
 def validate_behavior_model() -> None:
     accepted = (
         "openq4.cfg",
@@ -130,6 +134,26 @@ def validate_behavior_model() -> None:
     for path in rejected:
         if is_safe_relative_write_path_model(path):
             raise AssertionError(f"Expected rejected relative mutation qpath: {path!r}")
+
+    accepted_os_paths = (
+        "/home/player/openQ4.../baseoq4/openQ4Config.cfg",
+        "/mnt/games/build_(openQ4,_Linux,_GOG_Assets...)/userdata/player/openQ4Config.cfg",
+        r"C:\Games\openQ4...\baseoq4\openQ4Config.cfg",
+        r"C:\Games\version..candidate\baseoq4\openQ4Config.cfg",
+    )
+    rejected_os_paths = (
+        "../outside.cfg",
+        "/home/player/../outside.cfg",
+        r"C:\Games\..\outside.cfg",
+        r"\\server\share\folder\..\outside.cfg",
+        "/home/player/..",
+    )
+    for path in accepted_os_paths:
+        if has_parent_os_path_segment_model(path):
+            raise AssertionError(f"Expected accepted explicit OS path: {path!r}")
+    for path in rejected_os_paths:
+        if not has_parent_os_path_segment_model(path):
+            raise AssertionError(f"Expected rejected explicit OS path: {path!r}")
 
 
 def validate_generated_loadscreen_path_budget() -> None:
@@ -335,6 +359,7 @@ def validate_source_contract() -> None:
     header = read("src/framework/FileSystem.h")
 
     device_helper = function_body(source, "static bool FS_IsWindowsDeviceQPathSegment(")
+    parent_os_path_helper = function_body(source, "static bool FS_HasParentOSPathSegment(")
     validator = function_body(source, "static bool FS_ValidateRelativeWritePath(")
     open_write = function_body(source, "idFile *idFileSystemLocal::OpenFileWrite(")
     open_append = function_body(source, "idFile *idFileSystemLocal::OpenFileAppend(")
@@ -366,6 +391,14 @@ def validate_source_contract() -> None:
     require(device_helper, "digit >= '1' && digit <= '9'", "numbered Windows device-name rejection")
     require(device_helper, "digit == 0xB9", "superscript Windows device-name rejection")
     require(device_helper, "digit == 0xC2", "UTF-8 superscript Windows device-name rejection")
+
+    require(parent_os_path_helper, "c != '/' && c != '\\\\'", "OS-path separator recognition")
+    require(parent_os_path_helper, "scan - segmentStart == 2", "exact parent-component length")
+    require(parent_os_path_helper, "segmentStart[ 0 ] == '.'", "parent-component first dot")
+    require(parent_os_path_helper, "segmentStart[ 1 ] == '.'", "parent-component second dot")
+    require(create_os_path, "FS_HasParentOSPathSegment( OSPath )", "explicit OS-path traversal rejection")
+    require(create_os_path, 'strstr( OSPath, "::" )', "legacy parent-path syntax rejection")
+    reject(create_os_path, 'strstr( OSPath, ".." )', "ordinary repeated dots remain valid")
 
     for body, context, first_mutation in (
         (write_file, "whole-file write API", "idFileSystemLocal::OpenFileWrite("),
