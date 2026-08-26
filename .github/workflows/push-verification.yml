@@ -9,8 +9,8 @@ permissions:
 
 env:
   # Keep the engine's shared File/FileSystem ABI locked to the companion
-  # revision that implements GAME_API 44 and generated-animation cache v3.
-  OPENQ4_GAMELIBS_SHA: c32a3858b30139ddb850c3cec4f1274cd93bb98c
+  # revision that implements GAME_API 45 and generated-animation cache v3.
+  OPENQ4_GAMELIBS_SHA: 80cbf4760e694916560cf45105ed9b0dc9fb0528
 
 concurrency:
   group: openq4-push-verification-${{ github.ref }}

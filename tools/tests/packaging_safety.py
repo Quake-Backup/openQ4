@@ -346,13 +346,26 @@ def validate_list_sources_guards() -> None:
             raise AssertionError(f"list_sources.py accepted a symlinked source: {result.stderr}")
 
 
+# stage_fast_install.py stages by the host's own runtime policy, so the
+# guard/copy fixture must use the host platform's artifact names; explicit
+# per-platform policy output is pinned by validate_fast_stage_cross_platform_policy.
+FAST_STAGE_HOST_FIXTURES = {
+    "win32": ("openQ4-client_x64.exe", "renderer-gl_x64.dll", "game-sp_x64.dll"),
+    "linux": ("openQ4-client_x64", "renderer-gl_x64.so", "game-sp_x64.so"),
+    "darwin": ("openQ4-client_x64", "renderer-vk_x64.dylib", "game-sp_x64.dylib"),
+}
+
+
 def validate_fast_stage_guards_and_copy() -> None:
+    if sys.platform not in FAST_STAGE_HOST_FIXTURES:
+        raise AssertionError(f"unsupported fast-stage host platform: {sys.platform}")
+    client_name, renderer_name, game_name = FAST_STAGE_HOST_FIXTURES[sys.platform]
     source_root = WORK / "fast-stage" / "openQ4"
     build_dir = source_root / "builddir"
     install_dir = source_root / ".install"
-    write_file(build_dir / "openQ4-client_x64.exe", b"client\n")
-    write_file(build_dir / "renderer-gl_x64.dll", b"renderer\n")
-    write_file(build_dir / "baseoq4" / "game-sp_x64.dll", b"game\n")
+    write_file(build_dir / client_name, b"client\n")
+    write_file(build_dir / renderer_name, b"renderer\n")
+    write_file(build_dir / "baseoq4" / game_name, b"game\n")
     write_file(build_dir / "baseoq4" / "pak0.pk4", b"pak0\n")
 
     bad_result = run_script(
@@ -410,11 +423,11 @@ def validate_fast_stage_guards_and_copy() -> None:
     )
     if result.returncode != 0:
         raise AssertionError(f"stage_fast_install.py failed safe staging: {result.stderr}")
-    if not (install_dir / "openQ4-client_x64.exe").is_file():
+    if not (install_dir / client_name).is_file():
         raise AssertionError("fast stage did not copy root runtime binary")
-    if not (install_dir / "baseoq4" / "game-sp_x64.dll").is_file():
+    if not (install_dir / "baseoq4" / game_name).is_file():
         raise AssertionError("fast stage did not copy game runtime binary")
-    if not (install_dir / "renderer-gl_x64.dll").is_file():
+    if not (install_dir / renderer_name).is_file():
         raise AssertionError("fast stage did not copy renderer runtime binary")
 
     escaped_temporary = source_root / ".tmp" / "other-runtime" / "capture"
@@ -448,9 +461,9 @@ def validate_fast_stage_guards_and_copy() -> None:
         raise AssertionError(
             f"stage_fast_install.py failed isolated temporary staging: {temporary_result.stderr}"
         )
-    if not (temporary_runtime / "openQ4-client_x64.exe").is_file():
+    if not (temporary_runtime / client_name).is_file():
         raise AssertionError("temporary fast stage did not copy root runtime binary")
-    if not (temporary_runtime / "renderer-gl_x64.dll").is_file():
+    if not (temporary_runtime / renderer_name).is_file():
         raise AssertionError("temporary fast stage did not copy renderer runtime binary")
     repeated_result = run_script(
         BUILD_DIR / "stage_fast_install.py",

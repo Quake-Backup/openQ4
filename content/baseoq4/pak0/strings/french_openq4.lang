@@ -910,4 +910,9 @@
 	"#str_42748"	"Objet"
 	"#str_42749"	"Cette commande serveur héritée est désactivée pendant un match géré. Utilisez Match Control."
 	"#str_42750"	"Vous devez attendre encore %d secondes avant de lancer un autre vote."
+
+	"#str_42800"	"Laboratoire des volumes liquides"
+	"#str_42801"	"%s s'est noyé"
+	"#str_42802"	"%s s'est dissous dans la vase"
+	"#str_42803"	"%s a brûlé dans la lave"
 }

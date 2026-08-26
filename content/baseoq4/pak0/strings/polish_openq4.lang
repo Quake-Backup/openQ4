@@ -910,4 +910,9 @@
 	"#str_42748"	"Przedmiot"
 	"#str_42749"	"Ta starsza komenda serwera jest wyłączona podczas zarządzanego meczu. Użyj Sterowania meczem."
 	"#str_42750"	"Musisz odczekać jeszcze %d s przed zwołaniem kolejnego głosowania."
+
+	"#str_42800"	"Laboratorium objętości cieczy"
+	"#str_42801"	"%s utonął"
+	"#str_42802"	"%s rozpuścił się w szlamie"
+	"#str_42803"	"%s spłonął w lawie"
 }

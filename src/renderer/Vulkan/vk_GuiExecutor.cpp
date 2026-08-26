@@ -43,6 +43,7 @@
 #define UINT_MAX	0xffffffffu
 #endif
 #include <cstdio>
+#include <cstring>
 #include "volk.h"
 #include "vk_mem_alloc.h"
 

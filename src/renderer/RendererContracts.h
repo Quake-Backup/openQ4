@@ -24,7 +24,7 @@ const std::uint32_t RENDERER_CONTRACT_MAX_MATERIAL_PASSES = 256;
 const std::uint32_t RENDERER_CONTRACT_MAX_VERTEX_BINDINGS = 3;
 const std::uint32_t RENDERER_CONTRACT_MAX_VERTEX_ATTRIBUTES = 10;
 
-enum rendererRegisterSource_t {
+enum rendererRegisterSource_t : int {
 	RENDERER_REGISTER_UNUSED = 0,
 	RENDERER_REGISTER_INDEX,
 	RENDERER_REGISTER_CONSTANT
@@ -40,7 +40,7 @@ rendererRegisterRef_t RendererContracts_UnusedRegister( void );
 rendererRegisterRef_t RendererContracts_Register( std::int32_t index );
 rendererRegisterRef_t RendererContracts_Constant( float value );
 
-enum rendererMaterialPassKind_t {
+enum rendererMaterialPassKind_t : int {
 	RENDERER_MATERIAL_PASS_SURFACE = 0,
 	RENDERER_MATERIAL_PASS_DEPTH,
 	RENDERER_MATERIAL_PASS_INTERACTION,
@@ -49,7 +49,7 @@ enum rendererMaterialPassKind_t {
 	RENDERER_MATERIAL_PASS_POST_PROCESS
 };
 
-enum rendererMaterialTextureSemantic_t {
+enum rendererMaterialTextureSemantic_t : int {
 	RENDERER_TEXTURE_NONE = 0,
 	RENDERER_TEXTURE_DIFFUSE,
 	RENDERER_TEXTURE_NORMAL,
@@ -64,7 +64,7 @@ enum rendererMaterialTextureSemantic_t {
 	RENDERER_TEXTURE_CUSTOM
 };
 
-enum rendererBlendFactor_t {
+enum rendererBlendFactor_t : int {
 	RENDERER_BLEND_ZERO = 0,
 	RENDERER_BLEND_ONE,
 	RENDERER_BLEND_SRC_COLOR,
@@ -78,7 +78,7 @@ enum rendererBlendFactor_t {
 	RENDERER_BLEND_SRC_ALPHA_SATURATE
 };
 
-enum rendererBlendOp_t {
+enum rendererBlendOp_t : int {
 	RENDERER_BLEND_OP_ADD = 0,
 	RENDERER_BLEND_OP_SUBTRACT,
 	RENDERER_BLEND_OP_REVERSE_SUBTRACT,
@@ -96,7 +96,7 @@ typedef struct rendererBlendState_s {
 	rendererBlendOp_t	alphaOperation;
 } rendererBlendState_t;
 
-enum rendererCompareOp_t {
+enum rendererCompareOp_t : int {
 	RENDERER_COMPARE_NEVER = 0,
 	RENDERER_COMPARE_LESS,
 	RENDERER_COMPARE_EQUAL,
@@ -113,13 +113,13 @@ typedef struct rendererDepthState_s {
 	rendererCompareOp_t	compareOperation;
 } rendererDepthState_t;
 
-enum rendererCullMode_t {
+enum rendererCullMode_t : int {
 	RENDERER_CULL_NONE = 0,
 	RENDERER_CULL_FRONT,
 	RENDERER_CULL_BACK
 };
 
-enum rendererColorWriteMask_t {
+enum rendererColorWriteMask_t : int {
 	RENDERER_COLOR_WRITE_RED = 1u << 0,
 	RENDERER_COLOR_WRITE_GREEN = 1u << 1,
 	RENDERER_COLOR_WRITE_BLUE = 1u << 2,
@@ -130,7 +130,7 @@ enum rendererColorWriteMask_t {
 		| RENDERER_COLOR_WRITE_ALPHA
 };
 
-enum rendererTexGen_t {
+enum rendererTexGen_t : int {
 	RENDERER_TEXGEN_EXPLICIT = 0,
 	RENDERER_TEXGEN_SCREEN,
 	RENDERER_TEXGEN_SKYBOX_CUBE,
@@ -140,13 +140,13 @@ enum rendererTexGen_t {
 	RENDERER_TEXGEN_GLASS_WARP
 };
 
-enum rendererVertexColorMode_t {
+enum rendererVertexColorMode_t : int {
 	RENDERER_VERTEX_COLOR_IGNORE = 0,
 	RENDERER_VERTEX_COLOR_MODULATE,
 	RENDERER_VERTEX_COLOR_INVERSE_MODULATE
 };
 
-enum rendererMaterialProgramFamily_t {
+enum rendererMaterialProgramFamily_t : int {
 	RENDERER_PROGRAM_FIXED = 0,
 	RENDERER_PROGRAM_DEPTH,
 	RENDERER_PROGRAM_AMBIENT,
@@ -159,7 +159,7 @@ enum rendererMaterialProgramFamily_t {
 	RENDERER_PROGRAM_CUSTOM
 };
 
-enum rendererMaterialPassDisposition_t {
+enum rendererMaterialPassDisposition_t : int {
 	RENDERER_MATERIAL_PASS_DRAW = 0,
 	RENDERER_MATERIAL_PASS_INACTIVE_CONDITION,
 	RENDERER_MATERIAL_PASS_NOOP_ZERO_ONE_BLEND,
@@ -246,7 +246,7 @@ typedef struct rendererEvaluatedMaterialPassList_s {
 	rendererEvaluatedMaterialPass_t	passes[ RENDERER_CONTRACT_MAX_MATERIAL_PASSES ];
 } rendererEvaluatedMaterialPassList_t;
 
-enum rendererMaterialPassEvaluationStatus_t {
+enum rendererMaterialPassEvaluationStatus_t : int {
 	RENDERER_MATERIAL_PASS_EVALUATION_SUCCESS = 0,
 	RENDERER_MATERIAL_PASS_EVALUATION_SOURCE_OVERFLOW,
 	RENDERER_MATERIAL_PASS_EVALUATION_INVALID_PASS,
@@ -272,22 +272,22 @@ rendererMaterialPassEvaluationStatus_t RendererContracts_EvaluateMaterialPassLis
 	const rendererMaterialPassList_t &source,
 	const float *registers, std::uint32_t registerCount );
 
-enum rendererClipDepthRange_t {
+enum rendererClipDepthRange_t : int {
 	RENDERER_CLIP_DEPTH_NEGATIVE_ONE_TO_ONE = 0,
 	RENDERER_CLIP_DEPTH_ZERO_TO_ONE
 };
 
-enum rendererFramebufferOrigin_t {
+enum rendererFramebufferOrigin_t : int {
 	RENDERER_FRAMEBUFFER_ORIGIN_LOWER_LEFT = 0,
 	RENDERER_FRAMEBUFFER_ORIGIN_UPPER_LEFT
 };
 
-enum rendererViewportYAxis_t {
+enum rendererViewportYAxis_t : int {
 	RENDERER_VIEWPORT_Y_POSITIVE = 0,
 	RENDERER_VIEWPORT_Y_NEGATIVE
 };
 
-enum rendererFrontFace_t {
+enum rendererFrontFace_t : int {
 	RENDERER_FRONT_FACE_COUNTER_CLOCKWISE = 0,
 	RENDERER_FRONT_FACE_CLOCKWISE
 };
@@ -326,7 +326,7 @@ bool RendererContracts_BuildViewport( rendererBackendViewport_t &destination,
 	const rendererCanonicalViewport_t &source, float framebufferHeight,
 	const rendererClipSpaceConvention_t &destinationConvention );
 
-enum rendererVertexSemantic_t {
+enum rendererVertexSemantic_t : int {
 	RENDERER_VERTEX_SEMANTIC_POSITION = 0,
 	RENDERER_VERTEX_SEMANTIC_COLOR0,
 	RENDERER_VERTEX_SEMANTIC_NORMAL,
@@ -337,7 +337,7 @@ enum rendererVertexSemantic_t {
 	RENDERER_VERTEX_SEMANTIC_JOINT_WEIGHTS
 };
 
-enum rendererVertexFormat_t {
+enum rendererVertexFormat_t : int {
 	RENDERER_VERTEX_FORMAT_FLOAT32X2 = 0,
 	RENDERER_VERTEX_FORMAT_FLOAT32X3,
 	RENDERER_VERTEX_FORMAT_FLOAT32X4,
@@ -345,7 +345,7 @@ enum rendererVertexFormat_t {
 	RENDERER_VERTEX_FORMAT_UINT32X4
 };
 
-enum rendererVertexInputRate_t {
+enum rendererVertexInputRate_t : int {
 	RENDERER_VERTEX_RATE_PER_VERTEX = 0,
 	RENDERER_VERTEX_RATE_PER_INSTANCE
 };
@@ -377,7 +377,7 @@ bool RendererContracts_ValidateVertexLayout( const rendererVertexLayoutDesc_t &l
 const rendererVertexAttributeDesc_t *RendererContracts_FindVertexAttribute(
 	const rendererVertexLayoutDesc_t &layout, rendererVertexSemantic_t semantic );
 
-enum rendererBufferKind_t {
+enum rendererBufferKind_t : int {
 	RENDERER_BUFFER_KIND_VERTEX = 1,
 	RENDERER_BUFFER_KIND_INDEX,
 	RENDERER_BUFFER_KIND_UNIFORM,
@@ -385,7 +385,7 @@ enum rendererBufferKind_t {
 	RENDERER_BUFFER_KIND_JOINT_PALETTE
 };
 
-enum rendererBufferLifetime_t {
+enum rendererBufferLifetime_t : int {
 	RENDERER_BUFFER_LIFETIME_STATIC = 1,
 	RENDERER_BUFFER_LIFETIME_FRAME
 };
@@ -406,7 +406,7 @@ typedef struct rendererBufferSlice_s {
 	std::uint64_t		sizeBytes;
 } rendererBufferSlice_t;
 
-enum rendererBufferSliceValidation_t {
+enum rendererBufferSliceValidation_t : int {
 	RENDERER_BUFFER_SLICE_VALID = 0,
 	RENDERER_BUFFER_SLICE_INVALID_HANDLE,
 	RENDERER_BUFFER_SLICE_WRONG_SLOT,

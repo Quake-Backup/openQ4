@@ -164,7 +164,7 @@ If you run into problems, please use the [issue tracker](https://github.com/them
 
 ## Contributing
 
-Bug reports, compatibility reports, testing feedback, and code contributions are all welcome. If you want to help build the project itself, start with [BUILDING.md](BUILDING.md).
+Bug reports, compatibility reports, testing feedback, and code contributions are all welcome. If you want to help build the project itself, start with [BUILDING.md](BUILDING.md). For details on how to report issues, submit changes, and follow project conventions, see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ---
 

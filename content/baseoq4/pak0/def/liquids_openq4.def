@@ -13,6 +13,7 @@ entityDef damage_openq4_drown
 	"noArmor"					"1"
 	"knockback"					"0"
 	"gib"						"0"
+	"methodOfDeath"				"18"
 }
 
 entityDef damage_openq4_lava
@@ -21,13 +22,16 @@ entityDef damage_openq4_lava
 	"knockback"					"0"
 	"burn"						"1"
 	"gib"						"0"
+	"methodOfDeath"				"20"
 }
 
 entityDef damage_openq4_slime
 {
 	"damage"					"10"
 	"knockback"					"0"
+	"burn"						"1"
 	"gib"						"0"
+	"methodOfDeath"				"19"
 }
 
 /*
@@ -92,8 +96,10 @@ entityDef func_liquid_openq4_lava
 		snd_clear_*   the head coming back out
 		fx_splash_*   the splash at the surface, played on entry and exit
 
-	These reference stock Quake 4 assets. Quake 4 ships no lava or slime entry sounds of its own, so
-	those reuse the water set; the acid splash and slime pool effects give each liquid its own look.
+	The production defaults below point directly at stock Quake 4 media. Showcase-only presentation
+	belongs to the map that uses it rather than this shared definition. Projectile loops and trace
+	segments have separate keys because the former follows a moving entity while the latter is given
+	two fixed points.
 */
 entityDef liquid_openq4
 {
@@ -127,13 +133,19 @@ entityDef liquid_openq4
 	"fx_bubbles_lava"			"effects/levels/recomp_bubble.fx"
 	"fx_bubbles_slime"			"effects/levels/recomp_bubble.fx"
 
-	// The wake something leaves crossing the liquid. Smoke does not survive underwater, so a
-	// projectile's fly trail and a hitscan tracer are both replaced by this while they are in it.
-	// Point these at a beam-style effect if you have one: the game passes an end origin, so an
-	// effect authored with a trail segment will stretch along the shot.
+	// A moving projectile receives a local looping cloud while it is submerged. Keep the legacy
+	// fx_trail keys as aliases for older game modules and mods.
+	"fx_projectile_trail_water"	"effects/levels/recomp_bubble.fx"
+	"fx_projectile_trail_lava"	"effects/levels/recomp_bubble.fx"
+	"fx_projectile_trail_slime"	"effects/levels/recomp_bubble.fx"
 	"fx_trail_water"			"effects/levels/recomp_bubble.fx"
 	"fx_trail_lava"				"effects/levels/recomp_bubble.fx"
 	"fx_trail_slime"			"effects/levels/recomp_bubble.fx"
+
+	// Hitscan wakes receive the submerged trace segment's start and end points.
+	"fx_trace_trail_water"		"effects/levels/recomp_bubble.fx"
+	"fx_trace_trail_lava"		"effects/levels/recomp_bubble.fx"
+	"fx_trace_trail_slime"		"effects/levels/recomp_bubble.fx"
 
 	// smaller splash used for projectiles and thrown objects breaking the surface
 	"fx_impact_water"			"effects/ambient/splash_med.fx"
@@ -142,4 +154,12 @@ entityDef liquid_openq4
 	"snd_impact_water"			"bullet_impact_water"
 	"snd_impact_lava"			"bullet_impact_water"
 	"snd_impact_slime"			"bullet_impact_water"
+
+	// Dedicated environmental obituary methods: MAX_WEAPONS + 2/3/4.
+	"icon dm2"					"gfx/guis/hud/icons/kill_drown_openq4"
+	"icon dm3"					"gfx/guis/hud/icons/kill_slime_openq4"
+	"icon dm4"					"gfx/guis/hud/icons/kill_lava_openq4"
+	"dm2_text"					"#str_42801"
+	"dm3_text"					"#str_42802"
+	"dm4_text"					"#str_42803"
 }
