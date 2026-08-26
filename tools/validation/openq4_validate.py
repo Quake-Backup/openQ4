@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import json
 import os
 import platform
 import re
@@ -121,6 +122,7 @@ MACOS_OPENAL_SOFT_LICENSE_FILES = (
     "SOURCE.md",
     "openal-soft-1.25.1.tar.gz",
 )
+MACOS_OPENAL_PROVIDERS = ("apple_framework", "system")
 MAX_MACOS_SUPPORT_INFO_SCRIPT_BYTES = 256 * 1024
 MACOS_SUPPORT_INFO_REQUIRED_TOKENS = (
     "#!/bin/sh",
@@ -1184,6 +1186,42 @@ def is_macos_root_engine_binary(path: Path) -> bool:
     return path.is_file() and (path.name.startswith("openQ4-client_") or path.name.startswith("openQ4-ded_"))
 
 
+def selected_macos_openal_provider(build_dir: Path) -> str:
+    metadata_path = build_dir / "meson-info" / "intro-buildoptions.json"
+    try:
+        build_options = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValidationError(
+            "macOS staged validation cannot identify the selected OpenAL provider because "
+            f"Meson build-option metadata is missing: {metadata_path}"
+        ) from exc
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(
+            f"macOS staged validation could not read Meson build-option metadata: {metadata_path}: {exc}"
+        ) from exc
+
+    if not isinstance(build_options, list):
+        raise ValidationError(f"Meson build-option metadata is not a list: {metadata_path}")
+
+    matching_options = [
+        option
+        for option in build_options
+        if isinstance(option, dict) and option.get("name") == "macos_openal_provider"
+    ]
+    if len(matching_options) != 1:
+        raise ValidationError(
+            "Meson build-option metadata must contain exactly one macos_openal_provider entry: "
+            f"{metadata_path}"
+        )
+
+    provider = matching_options[0].get("value")
+    if provider not in MACOS_OPENAL_PROVIDERS:
+        raise ValidationError(
+            f"Unsupported macOS OpenAL provider in Meson build-option metadata: {provider!r}"
+        )
+    return provider
+
+
 def validate_macos_staged_root_engine_binaries(
     root: Path,
     install_root: Path,
@@ -1220,6 +1258,8 @@ def validate_macos_staged_metadata(
     game_dir: Path,
     client_candidates: list[Path],
     dedicated_candidates: list[Path],
+    *,
+    openal_provider: str = "system",
 ) -> None:
     icon_path = install_root / "openQ4.icns"
     splash_path = install_root / "assets" / "splash" / "quake4_rt_bitmap_4001.bmp"
@@ -1229,17 +1269,23 @@ def validate_macos_staged_metadata(
     if not splash_path.is_file():
         raise ValidationError(f"macOS staged payload is missing startup splash asset: {rel(splash_path, root)}")
 
+    if openal_provider not in MACOS_OPENAL_PROVIDERS:
+        raise ValidationError(f"Unsupported macOS OpenAL provider: {openal_provider!r}")
+
     openal_runtime = install_root / "Frameworks" / MACOS_OPENAL_SOFT_DYLIB_NAME
-    if not openal_runtime.is_file() or not is_posix_executable(openal_runtime):
-        raise ValidationError(
-            f"macOS staged payload is missing executable OpenAL Soft runtime: {rel(openal_runtime, root)}"
-        )
-    for filename in MACOS_OPENAL_SOFT_LICENSE_FILES:
-        license_file = install_root / "licenses" / "openal-soft" / filename
-        if not license_file.is_file() or license_file.stat().st_size == 0:
+    openal_runtime_binaries: list[Path] = []
+    if openal_provider == "system":
+        if not openal_runtime.is_file() or not is_posix_executable(openal_runtime):
             raise ValidationError(
-                f"macOS staged payload is missing OpenAL Soft license/source payload: {rel(license_file, root)}"
+                f"macOS staged payload is missing executable OpenAL Soft runtime: {rel(openal_runtime, root)}"
             )
+        for filename in MACOS_OPENAL_SOFT_LICENSE_FILES:
+            license_file = install_root / "licenses" / "openal-soft" / filename
+            if not license_file.is_file() or license_file.stat().st_size == 0:
+                raise ValidationError(
+                    f"macOS staged payload is missing OpenAL Soft license/source payload: {rel(license_file, root)}"
+                )
+        openal_runtime_binaries.append(openal_runtime)
     validate_no_macos_symlinks(root, install_root)
     validate_macos_support_collector_script(root, install_root)
 
@@ -1304,8 +1350,7 @@ def validate_macos_staged_metadata(
             install_root / f"openQ4-ded_{staged_arch}",
             game_dir / f"game-sp_{staged_arch}.dylib",
             game_dir / f"game-mp_{staged_arch}.dylib",
-            openal_runtime,
-        ],
+        ] + openal_runtime_binaries,
     )
 
     validate_no_macos_non_runtime_artifacts(root, install_root, game_dir)
@@ -1352,7 +1397,7 @@ def validate_windows_symbols(root: Path, install_root: Path, game_dir: Path, arc
         raise ValidationError(f"Windows staged payload contains stale or architecture-mismatched PDB files:\n{formatted}")
 
 
-def validate_staged_payload(root: Path, *, dry_run: bool) -> None:
+def validate_staged_payload(root: Path, *, dry_run: bool, build_dir: Path | None = None) -> None:
     section("Validate staged .install payload")
     if dry_run:
         print("Staged payload checks skipped during dry run.", flush=True)
@@ -1427,12 +1472,14 @@ def validate_staged_payload(root: Path, *, dry_run: bool) -> None:
         ]
         validate_linux_dedicated_runtime_dependencies(root, dedicated_runtime_specs)
     if host_is_macos():
+        openal_provider = selected_macos_openal_provider(build_dir or root / "builddir")
         validate_macos_staged_metadata(
             root,
             install_root,
             game_dir,
             client_candidates,
             dedicated_candidates,
+            openal_provider=openal_provider,
         )
 
     for relative_name in STAGED_REQUIRED_GAME_FILES:
@@ -1698,7 +1745,7 @@ def main(argv: list[str]) -> int:
         # Release workflows use this after staging and before mutating binaries
         # for debug-symbol packaging.
         if args.install:
-            validate_staged_payload(root, dry_run=args.dry_run)
+            validate_staged_payload(root, dry_run=args.dry_run, build_dir=build_dir)
 
         if args.runtime:
             if not args.install and not args.dry_run:

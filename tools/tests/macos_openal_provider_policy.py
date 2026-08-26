@@ -176,6 +176,9 @@ def validate_package_contract() -> None:
     for token in (
         'MACOS_OPENAL_SOFT_DYLIB_NAME = "libopenal.1.dylib"',
         "MACOS_OPENAL_SOFT_LICENSE_FILES",
+        "selected_macos_openal_provider",
+        'intro-buildoptions.json',
+        'if openal_provider == "system":',
         'install_root / "Frameworks" / MACOS_OPENAL_SOFT_DYLIB_NAME',
         "missing OpenAL Soft license/source payload",
     ):

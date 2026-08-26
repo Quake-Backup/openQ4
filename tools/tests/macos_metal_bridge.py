@@ -4,6 +4,7 @@
 import importlib.util
 import contextlib
 import io
+import json
 import os
 import plistlib
 import re
@@ -2743,6 +2744,37 @@ def validate_macos_staged_payload_validator_runtime() -> None:
             ),
             "macOS staged payload missing matched MP module",
         )
+        write_test_file(mp_module, b"mp\n", 0o755)
+
+        openal_runtime.unlink()
+        expect_runtime_error(
+            "missing executable OpenAL Soft runtime",
+            lambda: validator.validate_macos_staged_metadata(
+                ROOT,
+                install_root,
+                game_dir,
+                [client],
+                [dedicated],
+                openal_provider="system",
+            ),
+            "macOS OpenAL Soft staged payload without its runtime",
+        )
+        validator.validate_macos_staged_metadata(
+            ROOT,
+            install_root,
+            game_dir,
+            [client],
+            [dedicated],
+            openal_provider="apple_framework",
+        )
+
+        build_dir = work / "builddir"
+        write_test_file(
+            build_dir / "meson-info" / "intro-buildoptions.json",
+            json.dumps([{"name": "macos_openal_provider", "value": "apple_framework"}]).encode(),
+        )
+        if validator.selected_macos_openal_provider(build_dir) != "apple_framework":
+            raise AssertionError("macOS staged validation did not preserve the selected Apple OpenAL provider")
     finally:
         validator.macos_lipo_arches = real_macos_lipo_arches
         shutil.rmtree(work, ignore_errors=True)

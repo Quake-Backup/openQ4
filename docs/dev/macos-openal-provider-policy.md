@@ -26,6 +26,11 @@ compatibility diagnostic. A compile-only debug lane keeps that path from
 silently rotting, but published packages must not use it. This decision follows
 GitHub issue #122, which demonstrated that Apple’s implementation exhausts its
 buffer pool on stock single-player levels and then returns `AL_INVALID_VALUE`.
+Staged validation reads the selected provider from Meson's build-option
+metadata: it requires the OpenAL Soft runtime and source/license payload for
+`system`, while allowing an `apple_framework` diagnostic stage to remain
+self-consistent. Release-package validation always enforces the OpenAL Soft
+contract below.
 
 ## Package contract
 
