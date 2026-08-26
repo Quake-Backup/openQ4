@@ -409,9 +409,26 @@ def validate_ttf_persistent_atlas_contract(ttf_source: str) -> None:
     create = function_body(
         ttf_source, "static const idMaterial *R_TTFCreateAtlasMaterial", "TrueType atlas material creation"
     )
-    require(create, "R_TTFMaterialSamplesAtlas(", "TrueType atlas material creation")
     require(create, "R_TTFInstallAtlasStage(", "TrueType atlas material creation")
     require(create, "ttfAtlasMaterials.Append(", "TrueType atlas material registry")
+    reject(
+        create,
+        "if ( !R_TTFMaterialSamplesAtlas(",
+        "unconditional TrueType atlas material source install",
+    )
+
+    # FindMaterial parses a newly created implicit material before this module
+    # can replace its source. Its default stage maps an image named after the
+    # material, so the generated material must share the already-uploaded
+    # intrinsic atlas identity. A separate openq4/ttffont name probes a file
+    # which can never exist and emits one warning/default image per atlas.
+    for signature, context in (
+        ("static void R_TTFBuildExtendedPages", "extended TrueType atlas identity"),
+        ("static bool R_TTFBuildSlot", "base TrueType atlas identity"),
+    ):
+        atlas = function_body(ttf_source, signature, context)
+        require(atlas, "const idStr materialName = imageName;", context)
+        reject(atlas, "openq4/ttffont", context)
 
     restore = function_body(
         ttf_source, "void R_TTFRestoreAtlasMaterials( void )", "TrueType atlas material restore"
@@ -647,7 +664,7 @@ def validate_two_phase_game_api_contract() -> None:
         return
 
     game_api = read(game_api_path)
-    require(game_api, "const int GAME_API_VERSION\t\t= 43;", "two-phase game API version")
+    require(game_api, "const int GAME_API_VERSION\t\t= 45;", "current game API version")
     require(
         game_api,
         "virtual void\t\t\t\tShutdownAfterDecls( void ) = 0;",
@@ -1013,6 +1030,29 @@ def validate_lifecycle_mutation_sensitivity() -> None:
         validate_ttf_persistent_atlas_contract,
         ttf_source.replace("\topts.isPersistant = true;\n", "", 1),
         "GUI TrueType atlas is not recreated across full vid_restart",
+    )
+
+    atlas_identity = "\tconst idStr materialName = imageName;"
+    if ttf_source.count(atlas_identity) != 2:
+        raise AssertionError("TrueType atlas identity mutation anchors are not exact")
+    expect_contract_rejection(
+        validate_ttf_persistent_atlas_contract,
+        ttf_source.replace(atlas_identity, '\tconst idStr materialName = "detached-atlas-material";', 1),
+        "generated TrueType material probes a nonexistent image identity on first parse",
+    )
+
+    create_install = "\tR_TTFInstallAtlasStage( material, source );"
+    if ttf_source.count(create_install) != 1:
+        raise AssertionError("TrueType atlas source-install mutation anchor is not exact")
+    conditional_install = (
+        "\tif ( !R_TTFMaterialSamplesAtlas( material, imageName ) ) {\n"
+        "\t\tR_TTFInstallAtlasStage( material, source );\n"
+        "\t}"
+    )
+    expect_contract_rejection(
+        validate_ttf_persistent_atlas_contract,
+        ttf_source.replace(create_install, conditional_install, 1),
+        "generated TrueType material keeps an implicit or restart-stale stage",
     )
 
     for label, source_path, header_path in (

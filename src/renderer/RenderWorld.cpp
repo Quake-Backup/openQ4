@@ -391,6 +391,12 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 	while ( entityHandle >= entityDefs.Num() ) {
 		entityDefs.Append( NULL );
 	}
+	// Growing the def list past the interaction table dimension would make the
+	// ldef*width+edef index used to address interactionTable run out of bounds;
+	// dump and rebuild the table exactly as AddEntityDef does on growth.
+	if ( interactionTable && entityDefs.Num() > interactionTableWidth ) {
+		ResizeInteractionTable();
+	}
 
 	// Track before the early-out paths below. Those return only when nothing that
 	// matters changed, which includes the flag, so tracking here is correct for
@@ -460,6 +466,22 @@ void idRenderWorldLocal::UpdateEntityDef( qhandle_t entityHandle, const renderEn
 			}
 			if ( keepDynamicModel ) {
 				tr.pc.c_entitySnapshotsReused++;
+
+				// A bytewise-identical update whose joint contents also hashed equal
+				// derives nothing new: interactions, area references, and the model
+				// matrix would rebuild to exactly what they already are, so keep them.
+				// lastModifiedFrameNum must still advance: R_ShadowMapCasterIsDynamic
+				// has one frame of hysteresis, so letting the counter stall would
+				// oscillate tick-rate-animated entities between the static and dynamic
+				// caster sets at render rates above the game tick and churn the cached
+				// static shadow tiles through the caster signature hash.
+				if ( re->callbackData == NULL
+					&& !session->writeDemo
+					&& memcmp( re, &def->parms, sizeof( *re ) ) == 0 ) {
+					tr.pc.c_entityUpdatesElided++;
+					def->lastModifiedFrameNum = tr.frameCount;
+					return;
+				}
 			}
 		}
 
@@ -542,6 +564,10 @@ void idRenderWorldLocal::FreeEntityDef( qhandle_t entityHandle ) {
 		def->demoRemoteRenderView = NULL;
 	}
 
+	// a later idRenderEntityLocal allocation recycling this address must not
+	// revive this def's memoized draw-surf areas
+	R_InvalidateDrawSurfAreaMemoForEntity( def );
+
 	delete def;
 	entityDefs[ entityHandle ] = NULL;
 }
@@ -620,6 +646,11 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 	}
 	while ( lightHandle >= lightDefs.Num() ) {
 		lightDefs.Append( NULL );
+	}
+	// Keep the interaction table sized to the light-def list, as AddLightDef
+	// does: the ldef*width+edef index would otherwise address out of bounds.
+	if ( interactionTable && lightDefs.Num() > interactionTableHeight ) {
+		ResizeInteractionTable();
 	}
 
 	bool justUpdate = false;
@@ -1075,8 +1106,8 @@ exitPortal_t idRenderWorldLocal::GetPortal( int areaNum, int portalNum ) {
 	portal_t		*portal;
 	exitPortal_t	ret;
 
-	if ( areaNum > numPortalAreas ) {
-		common->Error( "idRenderWorld::GetPortal: areaNum > numAreas" );
+	if ( areaNum < 0 || areaNum >= numPortalAreas ) {
+		common->Error( "idRenderWorld::GetPortal: areaNum out of range" );
 	}
 	area = &portalAreas[areaNum];
 
@@ -1525,6 +1556,12 @@ bool idRenderWorldLocal::ModelTrace( modelTrace_t &trace, qhandle_t entityHandle
 
 		shader = R_RemapShaderBySkin( surf->shader, def->parms.customSkin, def->parms.customShader );
 
+		// R_RemapShaderBySkin returns NULL for a deform surface under a
+		// customShader (and for a NULL surface shader); such a surface is never
+		// a collision surface, so skip it as the second loop already does.
+		if ( !shader ) {
+			continue;
+		}
 		if ( shader->GetSurfaceFlags() & SURF_COLLISION ) {
 			collisionSurface = true;
 			break;
@@ -1637,13 +1674,11 @@ bool idRenderWorldLocal::Trace( modelTrace_t &trace, const idVec3 &start, const 
 
 #if 1	/* _D3XP addition. could use a cleaner approach */
 				if ( skipPlayer ) {
-					idStr name = model->Name();
-					const char *exclude;
+					const char *name = model->Name();
 					int k;
 
 					for ( k = 0; playerModelExcludeList[k]; k++ ) {
-						exclude = playerModelExcludeList[k];
-						if ( name == exclude ) {
+						if ( idStr::Cmp( name, playerModelExcludeList[k] ) == 0 ) {
 							break;
 						}
 					}
@@ -1667,6 +1702,13 @@ bool idRenderWorldLocal::Trace( modelTrace_t &trace, const idVec3 &start, const 
 				continue;
 			}
 
+			// The model matrix and the local-space trace endpoints depend only on
+			// this entity's (post-callback) origin/axis, so build them once per
+			// model rather than once per surface.
+			R_AxisToModelMatrix( def->parms.axis, def->parms.origin, modelMatrix );
+			R_GlobalPointToLocal( modelMatrix, start, localStart );
+			R_GlobalPointToLocal( modelMatrix, end, localEnd );
+
 			// check all model surfaces
 			const int surfaceCount = model->NumSurfaces();
 			for ( j = 0; j < surfaceCount; j++ ) {
@@ -1681,13 +1723,11 @@ bool idRenderWorldLocal::Trace( modelTrace_t &trace, const idVec3 &start, const 
 
 #if 1 /* _D3XP addition. could use a cleaner approach */
 				if ( skipPlayer ) {
-					idStr name = shader->GetName();
-					const char *exclude;
+					const char *name = shader->GetName();
 					int k;
 
 					for ( k = 0; playerMaterialExcludeList[k]; k++ ) {
-						exclude = playerMaterialExcludeList[k];
-						if ( name == exclude ) {
+						if ( idStr::Cmp( name, playerMaterialExcludeList[k] ) == 0 ) {
 							break;
 						}
 					}
@@ -1709,11 +1749,7 @@ bool idRenderWorldLocal::Trace( modelTrace_t &trace, const idVec3 &start, const 
 
 				numSurfaces++;
 
-				// transform the points into local space
-				R_AxisToModelMatrix( def->parms.axis, def->parms.origin, modelMatrix );
-				R_GlobalPointToLocal( modelMatrix, start, localStart );
-				R_GlobalPointToLocal( modelMatrix, end, localEnd );
-
+				// modelMatrix / localStart / localEnd are computed once per model above
 				localTrace = R_LocalTrace( localStart, localEnd, radius, surf->geometry );
 
 				if ( localTrace.fraction < trace.fraction ) {

@@ -1569,6 +1569,7 @@ void idConsoleLocal::LoadCommandHistory( void ) {
 		return;
 	}
 
+	bool removedPrivateCommand = false;
 	int lineStart = 0;
 	for ( int i = 0; i <= fileLength; ++i ) {
 		const bool atEnd = ( i == fileLength );
@@ -1588,6 +1589,14 @@ void idConsoleLocal::LoadCommandHistory( void ) {
 		if ( lineLength > 0 ) {
 			line.Append( fileBuffer + lineStart, lineLength );
 		}
+		if ( cvarSystem != NULL && cvarSystem->CommandContainsPrivateCVar( line.c_str() ) ) {
+			// Older builds persisted the complete command line, including values
+			// assigned to secret CVars. Purge those entries instead of bringing a
+			// credential back into live history (or writing it out again).
+			removedPrivateCommand = true;
+			lineStart = i + 1;
+			continue;
+		}
 
 		historyEditLines[nextHistoryLine % COMMAND_HISTORY].SetBuffer( line.c_str() );
 		nextHistoryLine++;
@@ -1595,7 +1604,15 @@ void idConsoleLocal::LoadCommandHistory( void ) {
 	}
 
 	historyLine = nextHistoryLine;
+	if ( removedPrivateCommand && fileLength > 0 ) {
+		// The old history buffer can contain the credential that was just
+		// purged from disk. Scrub it before returning the allocation.
+		memset( const_cast<char *>( fileBuffer ), 0, fileLength );
+	}
 	fileSystem->FreeFile( ( void * )fileBuffer );
+	if ( removedPrivateCommand ) {
+		SaveCommandHistory();
+	}
 }
 
 /*
@@ -3150,7 +3167,12 @@ bool idConsoleLocal::GetCompletionCvarInfo( const char *match, char *value, int 
 		*modified = cvar->IsModified();
 	}
 	if ( value != NULL && valueSize > 0 ) {
-		const char *cvarValue = cvar->GetString();
+		// Completion candidates are populated from the full CVar-name list, so a
+		// partial prefix can reach this path before the edit-field private-command
+		// guard sees the complete name. Never let the popup turn completion into a
+		// private-value query.
+		const char *cvarValue = ( cvar->GetFlags() & CVAR_PRIVATE ) ?
+			"<redacted>" : cvar->GetString();
 		idStr::Copynz( value, ( cvarValue != NULL && cvarValue[0] != '\0' ) ? cvarValue : "\"\"", valueSize );
 	}
 	return true;
@@ -4113,14 +4135,22 @@ void idConsoleLocal::KeyDownEvent( int key ) {
 			return;
 		}
 
-		common->Printf( "]%s\n", consoleField.GetBuffer() );
+		const bool privateCommand = cvarSystem != NULL &&
+			cvarSystem->CommandContainsPrivateCVar( consoleField.GetBuffer() );
+		if ( privateCommand ) {
+			common->Printf( "]<private command redacted>\n" );
+		} else {
+			common->Printf( "]%s\n", consoleField.GetBuffer() );
+		}
 		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, consoleField.GetBuffer() );
 		cmdSystem->BufferCommandText( CMD_EXEC_APPEND, "\n" );
 
-		historyEditLines[nextHistoryLine % COMMAND_HISTORY] = consoleField;
-		nextHistoryLine++;
-		historyLine = nextHistoryLine;
-		SaveCommandHistory();
+		if ( !privateCommand ) {
+			historyEditLines[nextHistoryLine % COMMAND_HISTORY] = consoleField;
+			nextHistoryLine++;
+			historyLine = nextHistoryLine;
+			SaveCommandHistory();
+		}
 
 		consoleField.Clear();
 		consoleField.SetWidthInChars( lineWidth );

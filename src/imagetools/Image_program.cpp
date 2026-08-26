@@ -639,7 +639,7 @@ static bool R_ParseImageProgram_r(idLexer& src, byte** pic, int* width, int* hei
 R_LoadImageProgram
 ===================
 */
-void R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamps, textureUsage_t* usage) {
+bool R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamps, textureUsage_t* usage) {
 	idLexer src;
 
 	src.LoadMemory(name, idLib::SizeToInt(strlen(name), "R_LoadImageProgram"), name);
@@ -650,9 +650,10 @@ void R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, I
 		*timestamps = 0;
 	}
 
-	R_ParseImageProgram_r(src, pic, width, height, timestamps, usage);
+	const bool loaded = R_ParseImageProgram_r(src, pic, width, height, timestamps, usage);
 
 	src.FreeSource();
+	return loaded;
 }
 
 /*

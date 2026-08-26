@@ -60,6 +60,11 @@
 
 #include "../tr_local.h"
 #include "../Model_local.h"
+#include "../ClassicInteractionDomain.h"
+#include "../ClassicFogBlendDomain.h"
+#include "../MaterialResourceTable.h"
+
+extern idCVar r_vkShadowFallbackTest;
 
 #undef snprintf
 #undef vsnprintf
@@ -73,6 +78,7 @@
 #define UINT_MAX	0xffffffffu
 #endif
 #include <cstdio>
+#include <cmath>
 #include "volk.h"
 
 #include "VulkanDevice.h"
@@ -82,6 +88,15 @@
 VkCommandBuffer VK_Exec_ActiveCmd( void );
 int VK_Exec_ActiveFrameSlot( void );
 bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri );
+bool VK_Exec_SharedInteractionGeometryCheckpoint( void );
+void VK_Exec_SharedInteractionGeometryRestore( void );
+void VK_Exec_SharedInteractionGeometryCommit( void );
+bool VK_Exec_PrepareTriGeometry( VkCommandBuffer cmd, int slot,
+	const srfTriangles_t *tri, int &vertexOffset, int &indexOffset );
+bool VK_Exec_PrepareShadowGeometry( VkCommandBuffer cmd, int slot,
+	const srfTriangles_t *tri, int &vertexOffset, int &indexOffset );
+void VK_Exec_BindPreparedTriGeometry( VkCommandBuffer cmd, int slot,
+	int vertexOffset, int indexOffset );
 bool VK_Exec_BindShadowGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri );
 bool VK_Exec_BindRawShadowGeometry( VkCommandBuffer cmd, int slot,
 		const shadowCache_t *verts, int numVerts,
@@ -102,10 +117,14 @@ VkDescriptorSet VK_Exec_ShadowDescriptorSet( void );
 VkDescriptorSet VK_Exec_ImageDescriptor( unsigned int texnum, bool require2D );
 VkDescriptorSet VK_Exec_InteractionUniformSet( void );
 int VK_Exec_InteractionUniformAlloc( const void *data, int bytes );
+int VK_Exec_InteractionUniformCheckpoint( void );
+void VK_Exec_InteractionUniformRestore( int checkpoint );
 int VK_Exec_ShadowUniformAlloc( const void *data, int bytes );
 int VK_Exec_ActiveFramebufferWidth( void );
 int VK_Exec_ActiveFramebufferHeight( void );
 bool VK_Exec_ActiveTargetHasStencil( void );
+bool VK_Exec_SharedInteractionTargetReady( void );
+void VK_FixupClipSpaceZ( float dst[ 16 ], const float src[ 16 ] );
 
 /*
 ====================
@@ -115,7 +134,8 @@ Per-draw GPU blocks
 
 // mirror of the shared 128B push block ({mat4; vec4 a,b,c,d}):
 // a = (vertexColorModulate, vertexColorAdd, ambientLight, unused),
-// b = tangent-space ambient light direction (cube-quantized), c/d unused
+// b = tangent-space ambient light direction (cube-quantized), c = parallax,
+// d = native packed-PBR mode, metallic scalar, roughness scalar, normal scale
 typedef struct vkInteractionPush_s {
 	float			mvp[ 16 ];
 	float			a[ 4 ];
@@ -215,6 +235,9 @@ typedef struct vkInterPass_s {
 	float				ambientDir[ 3 ];
 	int					lightCount;
 	int					drawCount;
+	int					nativePBRDrawCount;
+	VkDescriptorSet		lastImageSets[ 6 ];	// sets 0-5 as last bound by VK_DrawSingleInteractionMode
+	bool				imageSetsValid;		// lastImageSets mirror live bindings on cmd
 
 	// Phase F2a/F2b shadow-map receivers
 	bool				shadowPassPrepared;	// shadow maps rendered for this view
@@ -257,6 +280,1575 @@ typedef struct vkInterPass_s {
 } vkInterPass_t;
 
 static vkInterPass_t interPass;
+
+/*
+===============================================================================
+
+	Shared fixed-classic interaction consumer
+
+	The backend-neutral domain has already evaluated light and material stages.
+	Vulkan only validates device resources, retains geometry/ring offsets, and
+	submits those sealed values.  The established VK_Interactions_DrawLights
+	walker below remains the complete shadow/custom/failure rollback.
+
+===============================================================================
+*/
+
+enum vkClassicInteractionRejectDetail_t {
+	VK_CLASSIC_INTERACTION_REJECT_VIEW = 1,
+	VK_CLASSIC_INTERACTION_REJECT_COUNTS,
+	VK_CLASSIC_INTERACTION_REJECT_OFFSCREEN_TARGET,
+	VK_CLASSIC_INTERACTION_REJECT_RENDER_SCOPE,
+	VK_CLASSIC_INTERACTION_REJECT_PIPELINE,
+	VK_CLASSIC_INTERACTION_REJECT_SHADOW_MODE,
+	VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE,
+	VK_CLASSIC_INTERACTION_REJECT_SHADOW_GEOMETRY,
+	VK_CLASSIC_INTERACTION_REJECT_STATE,
+	VK_CLASSIC_INTERACTION_REJECT_SCISSOR,
+	VK_CLASSIC_INTERACTION_REJECT_GEOMETRY,
+	VK_CLASSIC_INTERACTION_REJECT_TEXTURE,
+	VK_CLASSIC_INTERACTION_REJECT_UNIFORM
+};
+
+typedef struct vkClassicInteractionDrawPlan_s {
+	const classicInteractionDomainPrimitive_t *primitive;
+	int			vertexOffset;
+	int			indexOffset;
+	VkRect2D		scissor;
+	VkCullModeFlags	cullMode;
+	VkCompareOp		depthCompare;
+	VkDescriptorSet	sets[ 8 ];
+	vkInteractionBlock_t	block;
+	vkShadowBlock_t	projectedShadowBlock;
+	vkPointShadowBlock_t	pointShadowBlock;
+	vkInteractionPush_t	push;
+	int			uniformOffset;
+	int			shadowUniformOffset;
+	int			mappedShadowMode;	// 0 none, 1 projected, 2 point
+} vkClassicInteractionDrawPlan_t;
+
+typedef struct vkClassicInteractionShadowPlan_s {
+	const classicInteractionDomainShadowCaster_t *caster;
+	int			vertexOffset;
+	int			indexOffset;
+	VkRect2D		scissor;
+	vkInteractionPush_t	push;
+} vkClassicInteractionShadowPlan_t;
+
+typedef struct vkClassicInteractionLightPlan_s {
+	const classicInteractionDomainLight_t *light;
+	int			firstDraw[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
+	int			drawCount[ CLASSIC_INTERACTION_RECEIVER_COUNT ];
+	int			firstShadow[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	int			shadowCount[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+	VkRect2D		clearRect;
+} vkClassicInteractionLightPlan_t;
+
+typedef struct vkClassicInteractionPreparedView_s {
+	const classicInteractionDomainView_t *view;
+	const viewDef_t		*viewDef;
+	VkCommandBuffer		cmd;
+	VkPipeline		pipeline;
+	VkPipelineLayout	layout;
+	VkPipeline		shadowPipeline;
+	VkPipelineLayout	shadowLayout;
+	VkPipeline		projectedInteractionPipeline;
+	VkPipeline		pointInteractionPipeline;
+	VkPipelineLayout	mappedInteractionLayout;
+	VkDescriptorSet		atlasSet;
+	VkViewport		viewport;
+	int			frameSlot;
+	int			framebufferWidth;
+	int			framebufferHeight;
+	int			drawPlanCount;
+	int			noopPrimitiveCount;
+	int			lightPlanCount;
+	int			shadowPlanCount;
+	int			noopShadowCasterCount;
+	int			logicalVolumeDrawCount;
+	int			preloadVolumeDrawCount;
+	int			submittedDraws;
+	int			submittedShadowCasters;
+	int			submittedLogicalVolumeDraws;
+	int			submittedPreloadVolumeDraws;
+	int			uniformCheckpoint;
+	VkPipeline		boundPipeline;	// last pipeline bound in the owned-view walk; skips redundant same-pipeline binds
+	bool			ready;
+	bool			committed;
+	vkClassicInteractionDrawPlan_t draws[ CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ];
+	vkClassicInteractionShadowPlan_t shadows[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ];
+	vkClassicInteractionLightPlan_t lights[
+		CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS ];
+} vkClassicInteractionPreparedView_t;
+
+static vkClassicInteractionPreparedView_t vkClassicInteractionPrepared;
+
+static bool VK_ClassicInteraction_Fail( const viewDef_t *viewDef,
+		classicInteractionDomainFailure_t failure, int detail ) {
+	VK_ShadowMap_AbortClassicInteractionView(
+		vkClassicInteractionPrepared.view );
+	if ( vkClassicInteractionPrepared.uniformCheckpoint >= 0 ) {
+		VK_Exec_InteractionUniformRestore(
+			vkClassicInteractionPrepared.uniformCheckpoint );
+	}
+	// Safe before a checkpoint exists and mandatory after any speculative
+	// geometry upload: classic fallback must see its original ring and memos.
+	VK_Exec_SharedInteractionGeometryRestore();
+	R_ClassicInteractionDomain_RecordBackendFallback( viewDef,
+		CLASSIC_INTERACTION_BACKEND_VULKAN,
+		failure == CLASSIC_INTERACTION_FAILURE_NONE
+			? CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED : failure,
+		detail );
+	memset( &vkClassicInteractionPrepared, 0,
+		sizeof( vkClassicInteractionPrepared ) );
+	vkClassicInteractionPrepared.uniformCheckpoint = -1;
+	return false;
+}
+
+static bool VK_ClassicInteraction_FloatsFinite( const float *values, int count ) {
+	if ( values == NULL || count < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !std::isfinite( values[i] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool VK_ClassicInteraction_VolumeMode(
+		classicInteractionDomainShadowMode_t mode ) {
+	return mode == CLASSIC_INTERACTION_SHADOW_STENCIL
+		|| mode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+}
+
+static bool VK_ClassicInteraction_MapCull( rendererCullMode_t cull,
+		VkCullModeFlags &mode ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE:
+		mode = VK_CULL_MODE_NONE;
+		return true;
+	case RENDERER_CULL_FRONT:
+		mode = VK_CULL_MODE_FRONT_BIT;
+		return true;
+	case RENDERER_CULL_BACK:
+		mode = VK_CULL_MODE_BACK_BIT;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool VK_ClassicInteraction_BuildScissorBounds(
+		const classicInteractionDomainView_t &view,
+		int requestedX1, int requestedY1, int requestedX2, int requestedY2,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	const int viewportWidth = view.viewportX2 - view.viewportX1 + 1;
+	const int viewportHeight = view.viewportY2 - view.viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| framebufferWidth <= 0 || framebufferHeight <= 0 ) {
+		return false;
+	}
+
+	if ( requestedX2 < requestedX1 || requestedY2 < requestedY1 ) {
+		return false;
+	}
+
+	int x0 = Max( view.viewportX1, view.viewportX1 + requestedX1 );
+	int x1 = Min( view.viewportX1 + viewportWidth,
+		view.viewportX1 + requestedX2 + 1 );
+	int y0GL = Max( view.viewportY1, view.viewportY1 + requestedY1 );
+	int y1GL = Min( view.viewportY1 + viewportHeight,
+		view.viewportY1 + requestedY2 + 1 );
+	x0 = Max( 0, x0 );
+	x1 = Min( framebufferWidth, x1 );
+	y0GL = Max( 0, y0GL );
+	y1GL = Min( framebufferHeight, y1GL );
+	if ( x1 <= x0 || y1GL <= y0GL ) {
+		return false;
+	}
+
+	scissor.offset.x = x0;
+	scissor.offset.y = framebufferHeight - y1GL;
+	scissor.extent.width = static_cast<uint32_t>( x1 - x0 );
+	scissor.extent.height = static_cast<uint32_t>( y1GL - y0GL );
+	return true;
+}
+
+static bool VK_ClassicInteraction_BuildScissor(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainPrimitive_t &primitive,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	return VK_ClassicInteraction_BuildScissorBounds( view,
+		view.useScissor ? primitive.scissorX1 : view.scissorX1,
+		view.useScissor ? primitive.scissorY1 : view.scissorY1,
+		view.useScissor ? primitive.scissorX2 : view.scissorX2,
+		view.useScissor ? primitive.scissorY2 : view.scissorY2,
+		framebufferWidth, framebufferHeight, scissor );
+}
+
+static bool VK_ClassicInteraction_BuildShadowScissor(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainShadowCaster_t &caster,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	return VK_ClassicInteraction_BuildScissorBounds( view,
+		view.useScissor ? caster.scissorX1 : view.scissorX1,
+		view.useScissor ? caster.scissorY1 : view.scissorY1,
+		view.useScissor ? caster.scissorX2 : view.scissorX2,
+		view.useScissor ? caster.scissorY2 : view.scissorY2,
+		framebufferWidth, framebufferHeight, scissor );
+}
+
+static bool VK_ClassicInteraction_BuildLightClearRect(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainLight_t &light,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	return VK_ClassicInteraction_BuildScissorBounds( view,
+		view.useScissor ? light.scissorX1 : view.scissorX1,
+		view.useScissor ? light.scissorY1 : view.scissorY1,
+		view.useScissor ? light.scissorX2 : view.scissorX2,
+		view.useScissor ? light.scissorY2 : view.scissorY2,
+		framebufferWidth, framebufferHeight, scissor );
+}
+
+static bool VK_ClassicInteraction_ResolveDescriptor( std::uint64_t resourceId,
+		VkDescriptorSet &descriptor ) {
+	descriptor = VK_NULL_HANDLE;
+	const classicInteractionDomainTexture_t *texture =
+		R_ClassicInteractionDomain_ResolveTexture( resourceId );
+	if ( texture == NULL || texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0
+			|| !texture->image->IsLoaded()
+			|| texture->image->IsDefaulted()
+			|| texture->textureHandle
+				!= const_cast<idImage *>( texture->image )->GetDeviceHandle()
+			|| texture->filter != texture->image->GetFilter()
+			|| texture->repeat != texture->image->GetRepeat()
+			|| texture->storageGeneration
+				!= texture->image->GetStorageGeneration() ) {
+		return false;
+	}
+	descriptor = VK_Exec_ImageDescriptor( texture->textureHandle, true );
+	return descriptor != VK_NULL_HANDLE;
+}
+
+static bool VK_ClassicInteraction_ValidatePrimitive(
+		const classicInteractionDomainPrimitive_t &primitive,
+		VkCullModeFlags &cullMode, VkCompareOp &depthCompare ) {
+	if ( primitive.disposition != CLASSIC_INTERACTION_PRIMITIVE_DRAW
+			|| primitive.legacyDrawSurf == NULL
+			|| primitive.legacyDrawSurf->geo == NULL
+			|| primitive.legacyDrawSurf->geo->ambientCache == NULL
+			|| primitive.vertexCount <= 0 || primitive.indexCount <= 0
+			|| primitive.firstIndex != 0 || primitive.vertexOffset != 0
+			|| primitive.legacyDrawSurf->geo->numVerts != primitive.vertexCount
+			|| primitive.legacyDrawSurf->geo->numIndexes != primitive.indexCount
+			|| ( primitive.legacyDrawSurf->geo->indexes == NULL
+				&& primitive.legacyDrawSurf->geo->indexCache == NULL )
+			|| primitive.lightImageResourceId == 0
+			|| primitive.lightFalloffImageResourceId == 0
+			|| primitive.bumpImageResourceId == 0
+			|| primitive.diffuseImageResourceId == 0
+			|| primitive.specularImageResourceId == 0
+			|| primitive.vertexColor < RENDERER_VERTEX_COLOR_IGNORE
+			|| primitive.vertexColor > RENDERER_VERTEX_COLOR_INVERSE_MODULATE
+			|| !primitive.blend.enabled
+			|| primitive.blend.sourceColor != RENDERER_BLEND_ONE
+			|| primitive.blend.destinationColor != RENDERER_BLEND_ONE
+			|| primitive.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| primitive.blend.sourceAlpha != RENDERER_BLEND_ONE
+			|| primitive.blend.destinationAlpha != RENDERER_BLEND_ONE
+			|| primitive.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| !std::isfinite( primitive.polygonOffsetFactor )
+			|| !std::isfinite( primitive.polygonOffsetUnits )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.diffuseColor, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.specularColor, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.flatDiffuseParams, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.localLightOrigin, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.localViewOrigin, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.lightProjection[0][0], 16 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.bumpMatrix[0][0], 8 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.diffuseMatrix[0][0], 8 )
+			|| !VK_ClassicInteraction_FloatsFinite( &primitive.specularMatrix[0][0], 8 )
+			|| !VK_ClassicInteraction_FloatsFinite( primitive.modelViewMatrix, 16 )
+			|| !VK_ClassicInteraction_MapCull( primitive.cull, cullMode ) ) {
+		return false;
+	}
+
+	switch ( primitive.depth ) {
+	case CLASSIC_INTERACTION_DEPTH_EQUAL:
+		depthCompare = VK_COMPARE_OP_EQUAL;
+		return true;
+	case CLASSIC_INTERACTION_DEPTH_LESS_OR_EQUAL:
+		depthCompare = VK_COMPARE_OP_LESS_OR_EQUAL;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void VK_ClassicInteraction_BuildBlocks(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainPrimitive_t &primitive,
+		vkClassicInteractionDrawPlan_t &plan ) {
+	memset( &plan.block, 0, sizeof( plan.block ) );
+	memcpy( plan.block.localLightOrigin, primitive.localLightOrigin,
+		sizeof( plan.block.localLightOrigin ) );
+	memcpy( plan.block.localViewOrigin, primitive.localViewOrigin,
+		sizeof( plan.block.localViewOrigin ) );
+	memcpy( plan.block.lightProjectionS, primitive.lightProjection[0],
+		sizeof( plan.block.lightProjectionS ) );
+	memcpy( plan.block.lightProjectionT, primitive.lightProjection[1],
+		sizeof( plan.block.lightProjectionT ) );
+	memcpy( plan.block.lightProjectionQ, primitive.lightProjection[2],
+		sizeof( plan.block.lightProjectionQ ) );
+	memcpy( plan.block.lightFalloffS, primitive.lightProjection[3],
+		sizeof( plan.block.lightFalloffS ) );
+	memcpy( plan.block.bumpMatrixS, primitive.bumpMatrix[0],
+		sizeof( plan.block.bumpMatrixS ) );
+	memcpy( plan.block.bumpMatrixT, primitive.bumpMatrix[1],
+		sizeof( plan.block.bumpMatrixT ) );
+	memcpy( plan.block.diffuseMatrixS, primitive.diffuseMatrix[0],
+		sizeof( plan.block.diffuseMatrixS ) );
+	memcpy( plan.block.diffuseMatrixT, primitive.diffuseMatrix[1],
+		sizeof( plan.block.diffuseMatrixT ) );
+	memcpy( plan.block.specularMatrixS, primitive.specularMatrix[0],
+		sizeof( plan.block.specularMatrixS ) );
+	memcpy( plan.block.specularMatrixT, primitive.specularMatrix[1],
+		sizeof( plan.block.specularMatrixT ) );
+	memcpy( plan.block.diffuseColor, primitive.diffuseColor,
+		sizeof( plan.block.diffuseColor ) );
+	memcpy( plan.block.specularColor, primitive.specularColor,
+		sizeof( plan.block.specularColor ) );
+	memcpy( plan.block.flatDiffuseParams, primitive.flatDiffuseParams,
+		sizeof( plan.block.flatDiffuseParams ) );
+
+	memset( &plan.push, 0, sizeof( plan.push ) );
+	float mvpGL[16];
+	myGlMultMatrix( primitive.modelViewMatrix, view.projectionMatrix, mvpGL );
+	VK_FixupClipSpaceZ( plan.push.mvp, mvpGL );
+	switch ( primitive.vertexColor ) {
+	case RENDERER_VERTEX_COLOR_MODULATE:
+		plan.push.a[0] = 1.0f;
+		plan.push.a[1] = 0.0f;
+		break;
+	case RENDERER_VERTEX_COLOR_INVERSE_MODULATE:
+		plan.push.a[0] = -1.0f;
+		plan.push.a[1] = 1.0f;
+		break;
+	default:
+		plan.push.a[0] = 0.0f;
+		plan.push.a[1] = 1.0f;
+		break;
+	}
+	plan.push.a[2] = primitive.ambientLight ? 1.0f : 0.0f;
+	plan.push.b[0] = 1.0f;
+	plan.push.b[1] =
+		( (float)(byte)( 255 * tr.ambientLightVector[1] ) / 255.0f )
+			* 2.0f - 1.0f;
+	plan.push.b[2] =
+		( (float)(byte)( 255 * tr.ambientLightVector[2] ) / 255.0f )
+			* 2.0f - 1.0f;
+}
+
+static bool VK_ClassicInteraction_BuildMappedShadowBlock(
+		const classicInteractionDomainPrimitive_t &primitive,
+		const classicInteractionDomainShadowMapPass_t &mapPass,
+		const vkShadowLightState_t &physicalLight,
+		const vkShadowPassState_t &physicalPass,
+		vkClassicInteractionDrawPlan_t &plan,
+		VkDescriptorSet atlasSet ) {
+	if ( !VK_ClassicInteraction_FloatsFinite( primitive.modelMatrix, 16 )
+			|| !VK_ClassicInteraction_FloatsFinite(
+				primitive.modelViewMatrix, 16 ) ) {
+		return false;
+	}
+
+	if ( mapPass.lightClass == SHADOWMAP_LIGHT_POINT ) {
+		if ( !physicalLight.pointLight || !mapPass.point.valid
+				|| physicalPass.pointSet == VK_NULL_HANDLE ) {
+			return false;
+		}
+		plan.mappedShadowMode = 2;
+		plan.sets[ 7 ] = physicalPass.pointSet;
+		vkPointShadowBlock_t &block = plan.pointShadowBlock;
+		memset( &block, 0, sizeof( block ) );
+		for ( int i = 0; i < 4; ++i ) {
+			block.modelRow0[ i ] = primitive.modelMatrix[ i * 4 + 0 ];
+			block.modelRow1[ i ] = primitive.modelMatrix[ i * 4 + 1 ];
+			block.modelRow2[ i ] = primitive.modelMatrix[ i * 4 + 2 ];
+		}
+		memcpy( block.lightOriginFar, mapPass.point.lightOrigin,
+			3 * sizeof( float ) );
+		block.lightOriginFar[ 3 ] = mapPass.point.farDistance;
+		block.biasParams[ 0 ] = mapPass.point.constantBias;
+		block.biasParams[ 1 ] = mapPass.point.normalBias;
+		block.biasParams[ 2 ] = mapPass.point.texelBiasScale
+			/ static_cast<float>( Max( 1, mapPass.point.faceSize ) );
+		block.biasParams[ 3 ] = 2.0f * mapPass.point.normalOffsetScale
+			/ static_cast<float>( Max( 1, mapPass.point.faceSize ) );
+		block.filterParams[ 0 ] = mapPass.point.filterRadius;
+		block.filterParams[ 1 ] = static_cast<float>(
+			mapPass.point.filterTaps );
+		block.filterParams[ 2 ] = static_cast<float>(
+			mapPass.point.filterMode );
+		block.filterParams[ 3 ] = 2.0f
+			/ static_cast<float>( Max( 1, mapPass.point.faceSize ) );
+		block.samplingParams[ 0 ] = mapPass.point.depthCompare
+			? 1.0f : 0.0f;
+		return true;
+	}
+
+	if ( physicalLight.pointLight || atlasSet == VK_NULL_HANDLE
+			|| !mapPass.projected.state.valid ) {
+		return false;
+	}
+	plan.mappedShadowMode = 1;
+	plan.sets[ 7 ] = atlasSet;
+	vkShadowBlock_t &block = plan.projectedShadowBlock;
+	memset( &block, 0, sizeof( block ) );
+	const shadowMapProjectedLightState_t &projected =
+		mapPass.projected.state;
+	const int cascadeCount = idMath::ClampInt( 1,
+		SHADOWMAP_PROJECTED_MAX_CASCADES, projected.cascadeCount );
+	for ( int cascadeIndex = 0; cascadeIndex < cascadeCount;
+			++cascadeIndex ) {
+		idPlane localPlane;
+		R_GlobalPlaneToLocal( primitive.modelMatrix,
+			projected.clipPlanes[ cascadeIndex ][ 0 ], localPlane );
+		memcpy( block.shadowRow0[ cascadeIndex ], localPlane.ToFloatPtr(),
+			sizeof( block.shadowRow0[ 0 ] ) );
+		R_GlobalPlaneToLocal( primitive.modelMatrix,
+			projected.clipPlanes[ cascadeIndex ][ 1 ], localPlane );
+		memcpy( block.shadowRow1[ cascadeIndex ], localPlane.ToFloatPtr(),
+			sizeof( block.shadowRow1[ 0 ] ) );
+		R_GlobalPlaneToLocal( primitive.modelMatrix,
+			projected.clipPlanes[ cascadeIndex ][ 2 ], localPlane );
+		memcpy( block.shadowRow2[ cascadeIndex ], localPlane.ToFloatPtr(),
+			sizeof( block.shadowRow2[ 0 ] ) );
+		R_GlobalPlaneToLocal( primitive.modelMatrix,
+			projected.clipPlanes[ cascadeIndex ][ 3 ], localPlane );
+		memcpy( block.shadowRow3[ cascadeIndex ], localPlane.ToFloatPtr(),
+			sizeof( block.shadowRow3[ 0 ] ) );
+	}
+	memcpy( block.atlasRects, physicalPass.atlasRects,
+		sizeof( block.atlasRects ) );
+	memcpy( block.splitDepths, projected.splitDepths,
+		sizeof( block.splitDepths ) );
+	memcpy( block.cascadeBiasScale, projected.biasScale,
+		sizeof( block.cascadeBiasScale ) );
+	memcpy( block.texelDepthBias, projected.texelDepthBias,
+		sizeof( block.texelDepthBias ) );
+	for ( int cascadeIndex = 0;
+			cascadeIndex < SHADOWMAP_PROJECTED_MAX_CASCADES;
+			++cascadeIndex ) {
+		block.normalOffsetWorld[ cascadeIndex ] =
+			projected.worldTexelSize[ cascadeIndex ]
+				* mapPass.projected.normalOffsetScale;
+	}
+	block.viewDepthRow[ 0 ] = -primitive.modelViewMatrix[ 2 ];
+	block.viewDepthRow[ 1 ] = -primitive.modelViewMatrix[ 6 ];
+	block.viewDepthRow[ 2 ] = -primitive.modelViewMatrix[ 10 ];
+	block.viewDepthRow[ 3 ] = -primitive.modelViewMatrix[ 14 ];
+	block.biasParams[ 0 ] = mapPass.projected.constantBias;
+	block.biasParams[ 1 ] = mapPass.projected.normalBias;
+	block.biasParams[ 2 ] = mapPass.projected.cascadeBlend;
+	block.biasParams[ 3 ] = static_cast<float>( cascadeCount );
+	block.texelSize[ 0 ] = physicalLight.invAtlasSize[ 0 ];
+	block.texelSize[ 1 ] = physicalLight.invAtlasSize[ 1 ];
+	block.filterParams[ 0 ] = mapPass.projected.filter.filterRadius;
+	block.filterParams[ 1 ] = static_cast<float>(
+		mapPass.projected.filter.filterTaps );
+	block.filterParams[ 2 ] = static_cast<float>(
+		mapPass.projected.filter.filterMode );
+	block.filterParams[ 3 ] = mapPass.projected.depthCompare
+		&& mapPass.projected.filter.filterMode != 2 ? 1.0f : 0.0f;
+	block.pcssParams[ 0 ] = mapPass.projected.filter.pcssLightRadius;
+	block.pcssParams[ 1 ] = mapPass.projected.filter.pcssMaxRadius;
+	block.pcssParams[ 2 ] = mapPass.projected.filter.effectiveFilterRadius;
+	block.pcssParams[ 3 ] = mapPass.projected.receiverPlaneBias
+		? 1.0f : 0.0f;
+	return true;
+}
+
+static bool VK_ClassicInteraction_ValidateShadowCaster(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainLight_t &light,
+		const classicInteractionDomainShadowCaster_t &caster ) {
+	const srfTriangles_t *tri = caster.legacyCasterGeometry;
+	if ( caster.disposition != CLASSIC_INTERACTION_SHADOW_CASTER_DRAW
+			|| ( caster.chain
+				!= CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL
+				&& caster.chain
+					!= CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL
+				&& caster.chain
+					!= CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+				&& caster.chain
+					!= CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL )
+			|| caster.legacyDrawSurf == NULL
+			|| caster.legacyViewLight != light.legacyViewLight
+			|| caster.legacyDrawSurf->geo != tri || tri == NULL
+			|| caster.legacyDrawSurf->space == NULL
+			|| R_TriHasPrimBatchMesh( tri )
+			|| tri->shadowCache == NULL || tri->indexes == NULL
+			|| caster.vertexCount <= 0 || caster.totalIndexCount <= 0
+			|| caster.selectedIndexCount <= 0
+			|| caster.selectedIndexCount > caster.totalIndexCount
+			|| tri->numVerts != caster.vertexCount
+			|| tri->numIndexes != caster.totalIndexCount
+			|| caster.depthMin < 0.0f || caster.depthMin > 1.0f
+			|| caster.depthMax < caster.depthMin || caster.depthMax > 1.0f
+			|| caster.preload == caster.external
+			|| !VK_ClassicInteraction_FloatsFinite(
+				caster.localLightOrigin, 4 )
+			|| !VK_ClassicInteraction_FloatsFinite(
+				caster.modelViewMatrix, 16 ) ) {
+		return false;
+	}
+
+	switch ( caster.indexSelection ) {
+	case CLASSIC_INTERACTION_SHADOW_INDEX_FULL:
+		return caster.selectedIndexCount == tri->numIndexes;
+	case CLASSIC_INTERACTION_SHADOW_INDEX_NO_FRONT_CAPS:
+		return caster.selectedIndexCount == tri->numShadowIndexesNoFrontCaps;
+	case CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS:
+		return caster.selectedIndexCount == tri->numShadowIndexesNoCaps;
+	default:
+		return false;
+	}
+}
+
+static bool VK_ClassicInteraction_ValidateNoopShadowCaster(
+		const classicInteractionDomainLight_t &light,
+		const classicInteractionDomainShadowCaster_t &caster ) {
+	const srfTriangles_t *tri = caster.legacyCasterGeometry;
+	if ( caster.disposition != CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY
+			|| caster.legacyDrawSurf == NULL
+			|| caster.legacyViewLight != light.legacyViewLight
+			|| caster.legacyDrawSurf->geo != tri || tri == NULL
+			|| caster.selectedIndexCount != 0 || caster.preload
+			|| caster.totalIndexCount != tri->numIndexes ) {
+		return false;
+	}
+	switch ( caster.indexSelection ) {
+	case CLASSIC_INTERACTION_SHADOW_INDEX_FULL:
+		return tri->numIndexes == 0;
+	case CLASSIC_INTERACTION_SHADOW_INDEX_NO_FRONT_CAPS:
+		return tri->numShadowIndexesNoFrontCaps == 0;
+	case CLASSIC_INTERACTION_SHADOW_INDEX_NO_CAPS:
+		return tri->numShadowIndexesNoCaps == 0;
+	default:
+		return false;
+	}
+}
+
+static void VK_ClassicInteraction_BuildShadowPush(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainShadowCaster_t &caster,
+		vkClassicInteractionShadowPlan_t &plan ) {
+	memset( &plan.push, 0, sizeof( plan.push ) );
+	float mvpGL[ 16 ];
+	myGlMultMatrix( caster.modelViewMatrix, view.projectionMatrix, mvpGL );
+	VK_FixupClipSpaceZ( plan.push.mvp, mvpGL );
+	memcpy( plan.push.a, caster.localLightOrigin, sizeof( plan.push.a ) );
+}
+
+static void VK_ClassicInteraction_CountShadowRange(
+		const vkClassicInteractionPreparedView_t &prepared,
+		const vkClassicInteractionLightPlan_t &lightPlan,
+		classicInteractionDomainShadowChain_t chain,
+		int &logicalDraws, int &preloadDraws ) {
+	const int first = lightPlan.firstShadow[ chain ];
+	const int count = lightPlan.shadowCount[ chain ];
+	for ( int i = 0; i < count; ++i ) {
+		const classicInteractionDomainShadowCaster_t *caster =
+			prepared.shadows[ first + i ].caster;
+		if ( caster == NULL ) {
+			continue;
+		}
+		logicalDraws++;
+		if ( caster->preload ) {
+			preloadDraws++;
+		}
+	}
+}
+
+static void VK_ClassicInteraction_CountPlannedShadowWork(
+		const vkClassicInteractionPreparedView_t &prepared,
+		const vkClassicInteractionLightPlan_t &lightPlan,
+		int &logicalDraws, int &preloadDraws ) {
+	logicalDraws = 0;
+	preloadDraws = 0;
+	const classicInteractionDomainLight_t &light = *lightPlan.light;
+	classicInteractionDomainShadowMode_t preparedMode =
+		CLASSIC_INTERACTION_SHADOW_NONE;
+	bool preparedIncludesLocal = false;
+
+	const classicInteractionDomainShadowMode_t localMode =
+		light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_LOCAL ];
+	if ( VK_ClassicInteraction_VolumeMode( localMode ) ) {
+		VK_ClassicInteraction_CountShadowRange( prepared, lightPlan,
+			localMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL,
+			logicalDraws, preloadDraws );
+		preparedMode = localMode;
+		preparedIncludesLocal = false;
+	}
+
+	const classicInteractionDomainShadowMode_t globalMode =
+		light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ];
+	if ( VK_ClassicInteraction_VolumeMode( globalMode ) ) {
+		const classicInteractionDomainShadowChain_t globalChain =
+			globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+		const classicInteractionDomainShadowChain_t localChain =
+			globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+		if ( preparedMode != globalMode ) {
+			VK_ClassicInteraction_CountShadowRange( prepared, lightPlan,
+				globalChain, logicalDraws, preloadDraws );
+		}
+		if ( preparedMode != globalMode || !preparedIncludesLocal ) {
+			VK_ClassicInteraction_CountShadowRange( prepared, lightPlan,
+				localChain, logicalDraws, preloadDraws );
+		}
+		preparedMode = globalMode;
+		preparedIncludesLocal = true;
+	}
+
+	const classicInteractionDomainShadowMode_t translucentMode =
+		light.receiverShadowMode[
+			CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ];
+	if ( VK_ClassicInteraction_VolumeMode( translucentMode ) ) {
+		const classicInteractionDomainShadowChain_t globalChain =
+			translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+		const classicInteractionDomainShadowChain_t localChain =
+			translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+				? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+				: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+		if ( preparedMode != translucentMode ) {
+			VK_ClassicInteraction_CountShadowRange( prepared, lightPlan,
+				globalChain, logicalDraws, preloadDraws );
+			VK_ClassicInteraction_CountShadowRange( prepared, lightPlan,
+				localChain, logicalDraws, preloadDraws );
+		} else if ( !preparedIncludesLocal ) {
+			VK_ClassicInteraction_CountShadowRange( prepared, lightPlan,
+				localChain, logicalDraws, preloadDraws );
+		}
+	}
+}
+
+bool VK_ClassicInteraction_Preflight( const viewDef_t *viewDef ) {
+	memset( &vkClassicInteractionPrepared, 0,
+		sizeof( vkClassicInteractionPrepared ) );
+	vkClassicInteractionPreparedView_t &prepared =
+		vkClassicInteractionPrepared;
+	prepared.uniformCheckpoint = -1;
+	const classicInteractionDomainView_t *view =
+		R_ClassicInteractionDomain_FindView( viewDef );
+	prepared.view = view;
+	prepared.viewDef = viewDef;
+	if ( view == NULL ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_VIEW );
+	}
+	if ( view->backendOutcome[ CLASSIC_INTERACTION_BACKEND_VULKAN ]
+			== CLASSIC_INTERACTION_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			view->failure != CLASSIC_INTERACTION_FAILURE_NONE
+				? view->failure
+				: CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	// The legacy debug path deliberately clamps every interaction and shadow
+	// submission to one triangle. The sealed shared stream represents the full
+	// authored work, so preserve exact debug semantics through atomic fallback.
+	if ( r_singleTriangle.GetBool() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_STATE );
+	}
+	if ( viewDef == NULL || view->viewDef != viewDef
+			|| view->lightCount < 0
+			|| view->lightCount > CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS
+			|| view->surfaceCount < 0
+			|| view->surfaceCount > CLASSIC_INTERACTION_DOMAIN_MAX_SURFACES
+			|| view->primitiveCount < 0
+			|| view->primitiveCount > CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES
+			|| view->drawablePrimitiveCount < 0
+			|| view->noopPrimitiveCount < 0
+			|| view->drawablePrimitiveCount + view->noopPrimitiveCount
+				!= view->primitiveCount
+			|| view->shadowCasterCount < 0
+			|| view->shadowCasterCount
+				> CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS
+			|| view->drawableShadowCasterCount < 0
+			|| view->noopShadowCasterCount < 0
+			|| view->drawableShadowCasterCount + view->noopShadowCasterCount
+				!= view->shadowCasterCount
+			|| view->logicalVolumeDrawCount < 0
+			|| view->preloadVolumeDrawCount < 0
+			|| view->preloadVolumeDrawCount > view->logicalVolumeDrawCount
+			|| view->shadowLightCount < 0
+			|| view->shadowLightCount > view->lightCount ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+	}
+	if ( view->shadowMode < CLASSIC_INTERACTION_SHADOW_NONE
+			|| view->shadowMode >= CLASSIC_INTERACTION_SHADOW_MODE_COUNT ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+			VK_CLASSIC_INTERACTION_REJECT_SHADOW_MODE );
+	}
+	if ( view->shadowMode == CLASSIC_INTERACTION_SHADOW_NONE
+			&& ( view->shadowCasterCount != 0 || view->shadowLightCount != 0
+				|| view->logicalVolumeDrawCount != 0
+				|| view->preloadVolumeDrawCount != 0 ) ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE );
+	}
+	bool viewNeedsStencil = false;
+	for ( int lightIndex = 0; lightIndex < view->lightCount; ++lightIndex ) {
+		const classicInteractionDomainLight_t *light =
+			R_ClassicInteractionDomain_ViewLight( *view, lightIndex );
+		if ( light == NULL ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				lightIndex );
+		}
+		for ( int receiverIndex = 0;
+				receiverIndex < CLASSIC_INTERACTION_RECEIVER_COUNT;
+				++receiverIndex ) {
+			viewNeedsStencil = viewNeedsStencil
+				|| VK_ClassicInteraction_VolumeMode(
+					light->receiverShadowMode[ receiverIndex ] );
+		}
+	}
+	if ( backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| !VK_Exec_SharedInteractionTargetReady() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_OFFSCREEN_TARGET );
+	}
+
+	prepared.cmd = VK_Exec_ActiveCmd();
+	prepared.frameSlot = VK_Exec_ActiveFrameSlot();
+	prepared.framebufferWidth = VK_Exec_ActiveFramebufferWidth();
+	prepared.framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	prepared.pipeline = VK_Exec_InteractionPipeline();
+	prepared.layout = VK_Exec_InteractionPipelineLayout();
+	prepared.shadowPipeline = view->logicalVolumeDrawCount > 0
+		? VK_Exec_StencilShadowPipeline() : VK_NULL_HANDLE;
+	prepared.shadowLayout = view->logicalVolumeDrawCount > 0
+		? VK_Exec_BasePipelineLayout() : VK_NULL_HANDLE;
+	prepared.projectedInteractionPipeline = view->projectedShadowMapPassCount > 0
+		? VK_Exec_ShadowInteractionPipeline() : VK_NULL_HANDLE;
+	prepared.pointInteractionPipeline = view->pointShadowMapPassCount > 0
+		? VK_Exec_PointShadowInteractionPipeline() : VK_NULL_HANDLE;
+	prepared.mappedInteractionLayout = view->shadowMapPassCount > 0
+		? VK_Exec_ShadowInteractionPipelineLayout() : VK_NULL_HANDLE;
+	prepared.atlasSet = VK_NULL_HANDLE;
+	if ( prepared.cmd == VK_NULL_HANDLE || prepared.frameSlot < 0
+			|| prepared.framebufferWidth <= 0
+			|| prepared.framebufferHeight <= 0 ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_RENDER_SCOPE );
+	}
+	if ( prepared.pipeline == VK_NULL_HANDLE
+			|| prepared.layout == VK_NULL_HANDLE
+			|| ( view->projectedShadowMapPassCount > 0
+				&& ( prepared.projectedInteractionPipeline == VK_NULL_HANDLE
+					|| prepared.mappedInteractionLayout == VK_NULL_HANDLE ) )
+			|| ( view->pointShadowMapPassCount > 0
+				&& ( prepared.pointInteractionPipeline == VK_NULL_HANDLE
+					|| prepared.mappedInteractionLayout == VK_NULL_HANDLE ) )
+			|| ( viewNeedsStencil
+				&& ( !VK_Exec_ActiveTargetHasStencil()
+					|| view->stencilReference != 128 ) )
+			|| ( view->logicalVolumeDrawCount > 0
+				&& ( prepared.shadowPipeline == VK_NULL_HANDLE
+					|| prepared.shadowLayout == VK_NULL_HANDLE
+					) ) ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			viewNeedsStencil
+				? VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE
+				: VK_CLASSIC_INTERACTION_REJECT_PIPELINE );
+	}
+
+	const int viewportWidth = view->viewportX2 - view->viewportX1 + 1;
+	const int viewportHeight = view->viewportY2 - view->viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| view->viewportX1 < 0 || view->viewportY1 < 0
+			|| view->viewportX1 + viewportWidth > prepared.framebufferWidth
+			|| view->viewportY1 + viewportHeight > prepared.framebufferHeight ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_INTERACTION_REJECT_VIEW );
+	}
+	prepared.viewport.x = static_cast<float>( view->viewportX1 );
+	prepared.viewport.y = static_cast<float>(
+		prepared.framebufferHeight - view->viewportY1 );
+	prepared.viewport.width = static_cast<float>( viewportWidth );
+	prepared.viewport.height = -static_cast<float>( viewportHeight );
+	prepared.viewport.minDepth = 0.0f;
+	prepared.viewport.maxDepth = 1.0f;
+
+	VkDescriptorSet specularTableSet = VK_NULL_HANDLE;
+	if ( globalImages == NULL || globalImages->specularTableImage == NULL
+			|| !globalImages->specularTableImage->IsLoaded()
+			|| globalImages->specularTableImage->IsDefaulted() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+	}
+	specularTableSet = VK_Exec_ImageDescriptor(
+		globalImages->specularTableImage->GetDeviceHandle(), true );
+	const VkDescriptorSet uniformSet = VK_Exec_InteractionUniformSet();
+	if ( specularTableSet == VK_NULL_HANDLE || uniformSet == VK_NULL_HANDLE ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+	}
+	if ( !VK_Exec_SharedInteractionGeometryCheckpoint() ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_GEOMETRY );
+	}
+	if ( !VK_ShadowMap_PreflightClassicInteractionView( view ) ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+			VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE );
+	}
+	prepared.atlasSet = view->projectedShadowMapPassCount > 0
+		? VK_Exec_ShadowDescriptorSet() : VK_NULL_HANDLE;
+	if ( view->projectedShadowMapPassCount > 0
+			&& prepared.atlasSet == VK_NULL_HANDLE ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+	}
+
+	for ( int primitiveIndex = 0; primitiveIndex < view->primitiveCount;
+			++primitiveIndex ) {
+		const classicInteractionDomainPrimitive_t *primitive =
+			R_ClassicInteractionDomain_ViewPrimitive( *view, primitiveIndex );
+		if ( primitive == NULL ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				primitiveIndex );
+		}
+		if ( primitive->disposition != CLASSIC_INTERACTION_PRIMITIVE_DRAW ) {
+			if ( primitive->disposition <= CLASSIC_INTERACTION_PRIMITIVE_DRAW
+					|| primitive->disposition >= CLASSIC_INTERACTION_PRIMITIVE_COUNT ) {
+				return VK_ClassicInteraction_Fail( viewDef,
+					CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_INTERACTION_REJECT_STATE );
+			}
+			prepared.noopPrimitiveCount++;
+			continue;
+		}
+		if ( prepared.drawPlanCount >= CLASSIC_INTERACTION_DOMAIN_MAX_PRIMITIVES ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+		}
+
+		vkClassicInteractionDrawPlan_t &plan =
+			prepared.draws[ prepared.drawPlanCount ];
+		memset( &plan, 0, sizeof( plan ) );
+		plan.primitive = primitive;
+		plan.uniformOffset = -1;
+		plan.shadowUniformOffset = -1;
+		if ( !VK_ClassicInteraction_ValidatePrimitive( *primitive,
+				plan.cullMode, plan.depthCompare ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_STATE );
+		}
+		if ( !VK_ClassicInteraction_BuildScissor( *view, *primitive,
+				prepared.framebufferWidth, prepared.framebufferHeight,
+				plan.scissor ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_SCISSOR );
+		}
+		if ( !VK_Exec_PrepareTriGeometry( prepared.cmd, prepared.frameSlot,
+				primitive->legacyDrawSurf->geo, plan.vertexOffset,
+				plan.indexOffset ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_GEOMETRY );
+		}
+
+		plan.sets[0] = specularTableSet;
+		if ( !VK_ClassicInteraction_ResolveDescriptor(
+				primitive->bumpImageResourceId, plan.sets[1] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->lightFalloffImageResourceId, plan.sets[2] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->lightImageResourceId, plan.sets[3] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->diffuseImageResourceId, plan.sets[4] )
+				|| !VK_ClassicInteraction_ResolveDescriptor(
+					primitive->specularImageResourceId, plan.sets[5] ) ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_TEXTURE );
+		}
+		plan.sets[6] = uniformSet;
+		VK_ClassicInteraction_BuildBlocks( *view, *primitive, plan );
+		prepared.drawPlanCount++;
+	}
+
+	if ( prepared.drawPlanCount != view->drawablePrimitiveCount
+			|| prepared.noopPrimitiveCount != view->noopPrimitiveCount ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+	}
+
+	// Reconcile the already prepared primitive stream back into its sealed
+	// light/receiver ranges, then prepare every stencil or hybrid supplement
+	// volume before the first attachment clear or draw.  Mapped resources and
+	// caster commands were reserved by the whole-view shadow transaction above.
+	int drawCursor = 0;
+	int shadowLightCount = 0;
+	for ( int lightIndex = 0; lightIndex < view->lightCount; ++lightIndex ) {
+		if ( prepared.lightPlanCount >= CLASSIC_INTERACTION_DOMAIN_MAX_LIGHTS ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+		}
+		const classicInteractionDomainLight_t *light =
+			R_ClassicInteractionDomain_ViewLight( *view, lightIndex );
+		if ( light == NULL || light->legacyViewLight == NULL ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				lightIndex );
+		}
+		vkClassicInteractionLightPlan_t &lightPlan =
+			prepared.lights[ prepared.lightPlanCount++ ];
+		memset( &lightPlan, 0, sizeof( lightPlan ) );
+		lightPlan.light = light;
+
+		for ( int receiverIndex = 0;
+				receiverIndex < CLASSIC_INTERACTION_RECEIVER_COUNT;
+				++receiverIndex ) {
+			const classicInteractionDomainShadowMode_t receiverMode =
+				light->receiverShadowMode[ receiverIndex ];
+			if ( receiverMode < CLASSIC_INTERACTION_SHADOW_NONE
+					|| receiverMode >= CLASSIC_INTERACTION_SHADOW_MODE_COUNT ) {
+				return VK_ClassicInteraction_Fail( viewDef,
+					CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+					VK_CLASSIC_INTERACTION_REJECT_SHADOW_MODE );
+			}
+			lightPlan.firstDraw[ receiverIndex ] = drawCursor;
+			while ( drawCursor < prepared.drawPlanCount ) {
+				const classicInteractionDomainPrimitive_t *primitive =
+					prepared.draws[ drawCursor ].primitive;
+				if ( primitive == NULL
+						|| primitive->legacyViewLight != light->legacyViewLight
+						|| primitive->receiver != receiverIndex ) {
+					break;
+				}
+				drawCursor++;
+			}
+			lightPlan.drawCount[ receiverIndex ] = drawCursor
+				- lightPlan.firstDraw[ receiverIndex ];
+
+			const bool mappedReceiver =
+				receiverMode == CLASSIC_INTERACTION_SHADOW_PROJECTED
+				|| receiverMode == CLASSIC_INTERACTION_SHADOW_POINT
+				|| receiverMode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+			if ( mappedReceiver ) {
+				const classicInteractionDomainReceiver_t mapReceiver =
+					receiverIndex == CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT
+						? CLASSIC_INTERACTION_RECEIVER_GLOBAL
+						: static_cast<classicInteractionDomainReceiver_t>(
+							receiverIndex );
+				const classicInteractionDomainShadowMapPass_t *mapPass =
+					R_ClassicInteractionDomain_LightShadowMapPass(
+						*light, mapReceiver );
+				const vkShadowLightState_t *physicalLight =
+					VK_ShadowMap_LightState( light->legacyViewLight );
+				const vkShadowPassState_t *physicalPass =
+					VK_ShadowMap_PassState( physicalLight,
+						static_cast<vkShadowReceiverPass_t>( mapReceiver ) );
+				if ( mapPass == NULL || physicalLight == NULL
+						|| physicalPass == NULL
+						|| ( receiverMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+							&& mapPass->disposition
+								!= CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID )
+						|| ( receiverMode == CLASSIC_INTERACTION_SHADOW_POINT
+							&& mapPass->lightClass != SHADOWMAP_LIGHT_POINT )
+						|| ( receiverMode
+							== CLASSIC_INTERACTION_SHADOW_PROJECTED
+							&& mapPass->lightClass == SHADOWMAP_LIGHT_POINT ) ) {
+					return VK_ClassicInteraction_Fail( viewDef,
+						CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+						VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE );
+				}
+				for ( int drawIndex = lightPlan.firstDraw[ receiverIndex ];
+						drawIndex < lightPlan.firstDraw[ receiverIndex ]
+							+ lightPlan.drawCount[ receiverIndex ];
+						++drawIndex ) {
+					vkClassicInteractionDrawPlan_t &drawPlan =
+						prepared.draws[ drawIndex ];
+					if ( !VK_ClassicInteraction_BuildMappedShadowBlock(
+							*drawPlan.primitive, *mapPass, *physicalLight,
+							*physicalPass, drawPlan, prepared.atlasSet ) ) {
+						return VK_ClassicInteraction_Fail( viewDef,
+							CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+							VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE );
+					}
+				}
+			}
+		}
+		if ( drawCursor < prepared.drawPlanCount
+				&& prepared.draws[ drawCursor ].primitive != NULL
+				&& prepared.draws[ drawCursor ].primitive->legacyViewLight
+					== light->legacyViewLight ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+		}
+
+		int lightShadowCasterCount = 0;
+		int lightDrawableShadowCasters = 0;
+		int lightNoopShadowCasters = 0;
+		int lightLogicalVolumeDraws = 0;
+		int lightPreloadVolumeDraws = 0;
+		bool useChain[ CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT ];
+		memset( useChain, 0, sizeof( useChain ) );
+		const classicInteractionDomainShadowMode_t localMode =
+			light->receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_LOCAL ];
+		const classicInteractionDomainShadowMode_t globalMode =
+			light->receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ];
+		const classicInteractionDomainShadowMode_t translucentMode =
+			light->receiverShadowMode[
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ];
+		useChain[ CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL ] =
+			localMode == CLASSIC_INTERACTION_SHADOW_STENCIL
+			|| globalMode == CLASSIC_INTERACTION_SHADOW_STENCIL
+			|| translucentMode == CLASSIC_INTERACTION_SHADOW_STENCIL;
+		useChain[ CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL ] =
+			globalMode == CLASSIC_INTERACTION_SHADOW_STENCIL
+			|| translucentMode == CLASSIC_INTERACTION_SHADOW_STENCIL;
+		useChain[ CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL ] =
+			localMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+			|| globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+			|| translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+		useChain[ CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL ] =
+			globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+			|| translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+		for ( int chainIndex = 0;
+				chainIndex < CLASSIC_INTERACTION_SHADOW_CHAIN_COUNT;
+				++chainIndex ) {
+			const classicInteractionDomainShadowChain_t chain =
+				static_cast<classicInteractionDomainShadowChain_t>( chainIndex );
+			lightPlan.firstShadow[ chainIndex ] = prepared.shadowPlanCount;
+			const int chainCount = light->shadowCasterCount[ chainIndex ];
+			if ( chainCount < 0 ) {
+				return VK_ClassicInteraction_Fail( viewDef,
+					CLASSIC_INTERACTION_FAILURE_SHADOW_MAP,
+					VK_CLASSIC_INTERACTION_REJECT_SHADOW_MODE );
+			}
+			for ( int casterIndex = 0; casterIndex < chainCount;
+					++casterIndex ) {
+				const classicInteractionDomainShadowCaster_t *caster =
+					R_ClassicInteractionDomain_LightShadowCaster(
+						*light, chain, casterIndex );
+				if ( caster == NULL || caster->chain != chain
+						|| caster->legacyViewLight != light->legacyViewLight ) {
+					return VK_ClassicInteraction_Fail( viewDef,
+						CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+						casterIndex );
+				}
+				lightShadowCasterCount++;
+				if ( caster->disposition
+						== CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
+					if ( useChain[ chainIndex ]
+							&& !VK_ClassicInteraction_ValidateNoopShadowCaster(
+							*light, *caster ) ) {
+						return VK_ClassicInteraction_Fail( viewDef,
+							CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+							VK_CLASSIC_INTERACTION_REJECT_SHADOW_GEOMETRY );
+					}
+					prepared.noopShadowCasterCount++;
+					lightNoopShadowCasters++;
+					continue;
+				}
+				lightDrawableShadowCasters++;
+				if ( !useChain[ chainIndex ] ) {
+					continue;
+				}
+				if ( prepared.shadowPlanCount
+						>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS
+						|| !VK_ClassicInteraction_ValidateShadowCaster(
+							*view, *light, *caster ) ) {
+					return VK_ClassicInteraction_Fail( viewDef,
+						CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+						VK_CLASSIC_INTERACTION_REJECT_SHADOW_GEOMETRY );
+				}
+				vkClassicInteractionShadowPlan_t &shadowPlan =
+					prepared.shadows[ prepared.shadowPlanCount ];
+				memset( &shadowPlan, 0, sizeof( shadowPlan ) );
+				shadowPlan.caster = caster;
+				shadowPlan.vertexOffset = -1;
+				shadowPlan.indexOffset = -1;
+				if ( !VK_ClassicInteraction_BuildShadowScissor( *view,
+						*caster, prepared.framebufferWidth,
+						prepared.framebufferHeight, shadowPlan.scissor )
+						|| !VK_Exec_PrepareShadowGeometry( prepared.cmd,
+							prepared.frameSlot, caster->legacyCasterGeometry,
+							shadowPlan.vertexOffset, shadowPlan.indexOffset ) ) {
+					return VK_ClassicInteraction_Fail( viewDef,
+						CLASSIC_INTERACTION_FAILURE_SHADOW_GEOMETRY,
+						VK_CLASSIC_INTERACTION_REJECT_SHADOW_GEOMETRY );
+				}
+				VK_ClassicInteraction_BuildShadowPush(
+					*view, *caster, shadowPlan );
+				prepared.shadowPlanCount++;
+			}
+			lightPlan.shadowCount[ chainIndex ] = prepared.shadowPlanCount
+				- lightPlan.firstShadow[ chainIndex ];
+		}
+		VK_ClassicInteraction_CountPlannedShadowWork( prepared, lightPlan,
+			lightLogicalVolumeDraws, lightPreloadVolumeDraws );
+		prepared.logicalVolumeDrawCount += lightLogicalVolumeDraws;
+		prepared.preloadVolumeDrawCount += lightPreloadVolumeDraws;
+		const bool lightNeedsStencil =
+			VK_ClassicInteraction_VolumeMode( localMode )
+			|| VK_ClassicInteraction_VolumeMode( globalMode )
+			|| VK_ClassicInteraction_VolumeMode( translucentMode );
+		if ( lightShadowCasterCount != light->shadowCasterTotal
+				|| lightDrawableShadowCasters != light->drawableShadowCasters
+				|| lightNoopShadowCasters != light->noopShadowCasters
+				|| lightLogicalVolumeDraws != light->logicalVolumeDraws
+				|| lightPreloadVolumeDraws != light->preloadVolumeDraws
+				|| lightNeedsStencil != light->clearStencil ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_INTERACTION_REJECT_SHADOW_STATE );
+		}
+		if ( light->clearStencil ) {
+			if ( !VK_ClassicInteraction_BuildLightClearRect( *view, *light,
+					prepared.framebufferWidth, prepared.framebufferHeight,
+					lightPlan.clearRect ) ) {
+				return VK_ClassicInteraction_Fail( viewDef,
+					CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_INTERACTION_REJECT_SCISSOR );
+			}
+		}
+		if ( light->shadowCasterTotal > 0 ) {
+			shadowLightCount++;
+		}
+	}
+	if ( drawCursor != prepared.drawPlanCount
+			|| prepared.lightPlanCount != view->lightCount
+			|| prepared.noopShadowCasterCount != view->noopShadowCasterCount
+			|| prepared.logicalVolumeDrawCount != view->logicalVolumeDrawCount
+			|| prepared.preloadVolumeDrawCount != view->preloadVolumeDrawCount
+			|| shadowLightCount != view->shadowLightCount ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_INTERACTION_REJECT_COUNTS );
+	}
+
+	// Allocate the complete uniform stream last.  If the ring cannot hold the
+	// whole view, restore its cursor before selecting the classic rollback so
+	// the failed shared attempt cannot starve the established light path.
+	prepared.uniformCheckpoint = VK_Exec_InteractionUniformCheckpoint();
+	if ( prepared.uniformCheckpoint < 0 ) {
+		return VK_ClassicInteraction_Fail( viewDef,
+			CLASSIC_INTERACTION_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_INTERACTION_REJECT_UNIFORM );
+	}
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		vkClassicInteractionDrawPlan_t &plan = prepared.draws[drawIndex];
+		plan.uniformOffset = VK_Exec_InteractionUniformAlloc(
+			&plan.block, sizeof( plan.block ) );
+		if ( plan.uniformOffset < 0 ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_UNIFORM );
+		}
+		if ( plan.mappedShadowMode == 1 ) {
+			plan.shadowUniformOffset = VK_Exec_ShadowUniformAlloc(
+				&plan.projectedShadowBlock,
+				sizeof( plan.projectedShadowBlock ) );
+		} else if ( plan.mappedShadowMode == 2 ) {
+			plan.shadowUniformOffset = VK_Exec_ShadowUniformAlloc(
+				&plan.pointShadowBlock, sizeof( plan.pointShadowBlock ) );
+		}
+		if ( plan.mappedShadowMode != 0
+				&& plan.shadowUniformOffset < 0 ) {
+			return VK_ClassicInteraction_Fail( viewDef,
+				CLASSIC_INTERACTION_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_INTERACTION_REJECT_UNIFORM );
+		}
+	}
+
+	VK_Exec_SharedInteractionGeometryCommit();
+	prepared.uniformCheckpoint = -1;
+	prepared.ready = true;
+	return true;
+}
+
+static void VK_ClassicInteraction_ClearStencil(
+		vkClassicInteractionPreparedView_t &prepared,
+		const vkClassicInteractionLightPlan_t &lightPlan ) {
+	VkClearAttachment clearAttachment;
+	memset( &clearAttachment, 0, sizeof( clearAttachment ) );
+	clearAttachment.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+	clearAttachment.clearValue.depthStencil.stencil =
+		static_cast<uint32_t>( prepared.view->stencilReference );
+	VkClearRect clearRect;
+	memset( &clearRect, 0, sizeof( clearRect ) );
+	clearRect.rect = lightPlan.clearRect;
+	clearRect.layerCount = 1;
+	vkCmdClearAttachments( prepared.cmd, 1, &clearAttachment, 1, &clearRect );
+}
+
+static void VK_ClassicInteraction_SelectReceiverShadowMode(
+		vkClassicInteractionPreparedView_t &prepared,
+		classicInteractionDomainShadowMode_t mode ) {
+	const bool stencil = mode == CLASSIC_INTERACTION_SHADOW_STENCIL
+		|| mode == CLASSIC_INTERACTION_SHADOW_HYBRID;
+	vkCmdSetStencilTestEnable( prepared.cmd, stencil ? VK_TRUE : VK_FALSE );
+	if ( stencil ) {
+		vkCmdSetStencilOp( prepared.cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
+			VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+			VK_COMPARE_OP_GREATER_OR_EQUAL );
+		vkCmdSetStencilCompareMask( prepared.cmd,
+			VK_STENCIL_FACE_FRONT_AND_BACK, 255 );
+		vkCmdSetStencilWriteMask( prepared.cmd,
+			VK_STENCIL_FACE_FRONT_AND_BACK, 255 );
+		vkCmdSetStencilReference( prepared.cmd,
+			VK_STENCIL_FACE_FRONT_AND_BACK,
+			static_cast<uint32_t>( prepared.view->stencilReference ) );
+	}
+}
+
+static void VK_ClassicInteraction_DrawReceiverRange(
+		vkClassicInteractionPreparedView_t &prepared, int firstDraw,
+		int drawCount, classicInteractionDomainShadowMode_t shadowMode ) {
+	VK_ClassicInteraction_SelectReceiverShadowMode( prepared, shadowMode );
+	for ( int localDraw = 0; localDraw < drawCount; ++localDraw ) {
+		const vkClassicInteractionDrawPlan_t &plan =
+			prepared.draws[ firstDraw + localDraw ];
+		const classicInteractionDomainPrimitive_t &primitive = *plan.primitive;
+		VkPipeline pipeline = prepared.pipeline;
+		VkPipelineLayout layout = prepared.layout;
+		if ( plan.mappedShadowMode == 1 ) {
+			pipeline = prepared.projectedInteractionPipeline;
+			layout = prepared.mappedInteractionLayout;
+		} else if ( plan.mappedShadowMode == 2 ) {
+			pipeline = prepared.pointInteractionPipeline;
+			layout = prepared.mappedInteractionLayout;
+		}
+		if ( pipeline != prepared.boundPipeline ) {
+			vkCmdBindPipeline( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				pipeline );
+			prepared.boundPipeline = pipeline;
+		}
+		VK_Exec_BindPreparedTriGeometry( prepared.cmd, prepared.frameSlot,
+			plan.vertexOffset, plan.indexOffset );
+		vkCmdSetScissor( prepared.cmd, 0, 1, &plan.scissor );
+		vkCmdSetCullMode( prepared.cmd, plan.cullMode );
+		vkCmdSetDepthCompareOp( prepared.cmd, plan.depthCompare );
+		vkCmdSetDepthBiasEnable( prepared.cmd,
+			primitive.polygonOffsetEnabled ? VK_TRUE : VK_FALSE );
+		if ( primitive.polygonOffsetEnabled ) {
+			vkCmdSetDepthBias( prepared.cmd, primitive.polygonOffsetUnits,
+				0.0f, primitive.polygonOffsetFactor );
+		}
+		uint32_t dynamicOffsets[ 2 ];
+		dynamicOffsets[ 0 ] = static_cast<uint32_t>( plan.uniformOffset );
+		dynamicOffsets[ 1 ] = static_cast<uint32_t>(
+			Max( 0, plan.shadowUniformOffset ) );
+		const uint32_t setCount = plan.mappedShadowMode != 0 ? 8u : 7u;
+		const uint32_t dynamicOffsetCount =
+			plan.mappedShadowMode != 0 ? 2u : 1u;
+		vkCmdBindDescriptorSets( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			layout, 0, setCount, plan.sets,
+			dynamicOffsetCount, dynamicOffsets );
+		vkCmdPushConstants( prepared.cmd, layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( plan.push ), &plan.push );
+		vkCmdDrawIndexed( prepared.cmd,
+			static_cast<uint32_t>( primitive.indexCount ), 1, 0, 0, 0 );
+		prepared.submittedDraws++;
+	}
+}
+
+static void VK_ClassicInteraction_DrawShadowRange(
+		vkClassicInteractionPreparedView_t &prepared, int firstShadow,
+		int shadowCount ) {
+	if ( shadowCount <= 0 ) {
+		return;
+	}
+
+	VkCommandBuffer cmd = prepared.cmd;
+	if ( prepared.shadowPipeline != prepared.boundPipeline ) {
+		vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			prepared.shadowPipeline );
+		prepared.boundPipeline = prepared.shadowPipeline;
+	}
+	vkCmdSetDepthTestEnable( cmd, VK_TRUE );
+	vkCmdSetDepthWriteEnable( cmd, VK_FALSE );
+	vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_LESS_OR_EQUAL );
+	vkCmdSetCullMode( cmd, VK_CULL_MODE_NONE );
+	const bool shadowBias = prepared.view->shadowPolygonFactor != 0.0f
+		|| prepared.view->shadowPolygonUnits != 0.0f;
+	vkCmdSetDepthBiasEnable( cmd, shadowBias ? VK_TRUE : VK_FALSE );
+	if ( shadowBias ) {
+		vkCmdSetDepthBias( cmd, prepared.view->shadowPolygonUnits, 0.0f,
+			prepared.view->shadowPolygonFactor );
+	}
+	vkCmdSetStencilTestEnable( cmd, VK_TRUE );
+	vkCmdSetStencilCompareMask( cmd, VK_STENCIL_FACE_FRONT_AND_BACK, 255 );
+	vkCmdSetStencilWriteMask( cmd, VK_STENCIL_FACE_FRONT_AND_BACK, 255 );
+	vkCmdSetStencilReference( cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
+		static_cast<uint32_t>( prepared.view->stencilReference ) );
+
+	const VkStencilFaceFlags frontSidedFace = prepared.viewDef->isMirror
+		? VK_STENCIL_FACE_FRONT_BIT : VK_STENCIL_FACE_BACK_BIT;
+	const VkStencilFaceFlags backSidedFace = prepared.viewDef->isMirror
+		? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
+	const bool useDepthBounds = prepared.view->useDepthBounds
+		&& vkCtx.depthBoundsSupported;
+	if ( useDepthBounds ) {
+		vkCmdSetDepthBoundsTestEnable( cmd, VK_TRUE );
+	}
+
+	for ( int localShadow = 0; localShadow < shadowCount; ++localShadow ) {
+		const vkClassicInteractionShadowPlan_t &plan =
+			prepared.shadows[ firstShadow + localShadow ];
+		const classicInteractionDomainShadowCaster_t &caster = *plan.caster;
+		VK_Exec_BindPreparedTriGeometry( cmd, prepared.frameSlot,
+			plan.vertexOffset, plan.indexOffset );
+		vkCmdSetScissor( cmd, 0, 1, &plan.scissor );
+		if ( useDepthBounds ) {
+			vkCmdSetDepthBounds( cmd, caster.depthMin, caster.depthMax );
+		}
+		vkCmdPushConstants( cmd, prepared.shadowLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( plan.push ), &plan.push );
+
+		if ( caster.preload ) {
+			vkCmdSetStencilOp( cmd, frontSidedFace, VK_STENCIL_OP_KEEP,
+				VK_STENCIL_OP_DECREMENT_AND_WRAP,
+				VK_STENCIL_OP_DECREMENT_AND_WRAP, VK_COMPARE_OP_ALWAYS );
+			vkCmdSetStencilOp( cmd, backSidedFace, VK_STENCIL_OP_KEEP,
+				VK_STENCIL_OP_INCREMENT_AND_WRAP,
+				VK_STENCIL_OP_INCREMENT_AND_WRAP, VK_COMPARE_OP_ALWAYS );
+			vkCmdDrawIndexed( cmd,
+				static_cast<uint32_t>( caster.selectedIndexCount ), 1, 0, 0, 0 );
+			prepared.submittedPreloadVolumeDraws++;
+			backEnd.pc.c_shadowElements++;
+			backEnd.pc.c_shadowIndexes += caster.selectedIndexCount;
+			backEnd.pc.c_shadowVertexes += caster.vertexCount;
+		}
+
+		vkCmdSetStencilOp( cmd, frontSidedFace, VK_STENCIL_OP_KEEP,
+			VK_STENCIL_OP_INCREMENT_AND_WRAP, VK_STENCIL_OP_KEEP,
+			VK_COMPARE_OP_ALWAYS );
+		vkCmdSetStencilOp( cmd, backSidedFace, VK_STENCIL_OP_KEEP,
+			VK_STENCIL_OP_DECREMENT_AND_WRAP, VK_STENCIL_OP_KEEP,
+			VK_COMPARE_OP_ALWAYS );
+		vkCmdDrawIndexed( cmd,
+			static_cast<uint32_t>( caster.selectedIndexCount ), 1, 0, 0, 0 );
+		prepared.submittedShadowCasters++;
+		prepared.submittedLogicalVolumeDraws++;
+		backEnd.pc.c_shadowElements++;
+		backEnd.pc.c_shadowIndexes += caster.selectedIndexCount;
+		backEnd.pc.c_shadowVertexes += caster.vertexCount;
+	}
+
+	if ( shadowBias ) {
+		vkCmdSetDepthBiasEnable( cmd, VK_FALSE );
+	}
+	if ( useDepthBounds ) {
+		vkCmdSetDepthBoundsTestEnable( cmd, VK_FALSE );
+		vkCmdSetDepthBounds( cmd, 0.0f, 1.0f );
+	}
+	vkCmdSetStencilOp( cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
+		VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+		VK_COMPARE_OP_GREATER_OR_EQUAL );
+}
+
+void VK_ClassicInteraction_DrawOwnedView( const viewDef_t *viewDef ) {
+	vkClassicInteractionPreparedView_t &prepared =
+		vkClassicInteractionPrepared;
+	if ( !prepared.ready || prepared.committed || prepared.view == NULL
+			|| prepared.viewDef == NULL || prepared.viewDef != viewDef
+			|| prepared.cmd == VK_NULL_HANDLE
+			|| prepared.pipeline == VK_NULL_HANDLE
+			|| prepared.layout == VK_NULL_HANDLE ) {
+		return;
+	}
+
+	VK_ShadowMap_CommitClassicInteractionView( prepared.view );
+	prepared.committed = true;
+	prepared.boundPipeline = VK_NULL_HANDLE;
+	vkCmdSetViewport( prepared.cmd, 0, 1, &prepared.viewport );
+	vkCmdSetDepthTestEnable( prepared.cmd, VK_TRUE );
+	vkCmdSetDepthWriteEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetFrontFace( prepared.cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE );
+
+	for ( int lightIndex = 0; lightIndex < prepared.lightPlanCount;
+			++lightIndex ) {
+		const vkClassicInteractionLightPlan_t &lightPlan =
+			prepared.lights[ lightIndex ];
+		const classicInteractionDomainLight_t &light = *lightPlan.light;
+		classicInteractionDomainShadowMode_t preparedVolumeMode =
+			CLASSIC_INTERACTION_SHADOW_NONE;
+		bool preparedVolumeIncludesLocal = false;
+		const classicInteractionDomainShadowMode_t localMode =
+			light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_LOCAL ];
+		if ( localMode == CLASSIC_INTERACTION_SHADOW_STENCIL
+				|| localMode == CLASSIC_INTERACTION_SHADOW_HYBRID ) {
+			VK_ClassicInteraction_ClearStencil( prepared, lightPlan );
+			const classicInteractionDomainShadowChain_t chain =
+				localMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+					: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+			VK_ClassicInteraction_DrawShadowRange( prepared,
+				lightPlan.firstShadow[ chain ],
+				lightPlan.shadowCount[ chain ] );
+			preparedVolumeMode = localMode;
+			preparedVolumeIncludesLocal = false;
+		}
+		VK_ClassicInteraction_DrawReceiverRange( prepared,
+			lightPlan.firstDraw[ CLASSIC_INTERACTION_RECEIVER_LOCAL ],
+			lightPlan.drawCount[ CLASSIC_INTERACTION_RECEIVER_LOCAL ],
+			localMode );
+
+		const classicInteractionDomainShadowMode_t globalMode =
+			light.receiverShadowMode[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ];
+		if ( globalMode == CLASSIC_INTERACTION_SHADOW_STENCIL
+				|| globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID ) {
+			const classicInteractionDomainShadowChain_t globalChain =
+				globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+					: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+			const classicInteractionDomainShadowChain_t localChain =
+				globalMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+					: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+			const bool modeChanged = preparedVolumeMode != globalMode;
+			if ( modeChanged ) {
+				VK_ClassicInteraction_ClearStencil( prepared, lightPlan );
+				VK_ClassicInteraction_DrawShadowRange( prepared,
+					lightPlan.firstShadow[ globalChain ],
+					lightPlan.shadowCount[ globalChain ] );
+			}
+			if ( modeChanged || !preparedVolumeIncludesLocal ) {
+				VK_ClassicInteraction_DrawShadowRange( prepared,
+					lightPlan.firstShadow[ localChain ],
+					lightPlan.shadowCount[ localChain ] );
+			}
+			preparedVolumeMode = globalMode;
+			preparedVolumeIncludesLocal = true;
+		}
+		VK_ClassicInteraction_DrawReceiverRange( prepared,
+			lightPlan.firstDraw[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ],
+			lightPlan.drawCount[ CLASSIC_INTERACTION_RECEIVER_GLOBAL ],
+			globalMode );
+
+		const classicInteractionDomainShadowMode_t translucentMode =
+			light.receiverShadowMode[
+				CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ];
+		if ( ( translucentMode == CLASSIC_INTERACTION_SHADOW_STENCIL
+				|| translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID )
+				&& preparedVolumeMode != translucentMode ) {
+			const classicInteractionDomainShadowChain_t globalChain =
+				translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_GLOBAL
+					: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_GLOBAL;
+			const classicInteractionDomainShadowChain_t localChain =
+				translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+					: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+			VK_ClassicInteraction_ClearStencil( prepared, lightPlan );
+			VK_ClassicInteraction_DrawShadowRange( prepared,
+				lightPlan.firstShadow[ globalChain ],
+				lightPlan.shadowCount[ globalChain ] );
+			VK_ClassicInteraction_DrawShadowRange( prepared,
+				lightPlan.firstShadow[ localChain ],
+				lightPlan.shadowCount[ localChain ] );
+			preparedVolumeMode = translucentMode;
+			preparedVolumeIncludesLocal = true;
+		} else if ( ( translucentMode
+				== CLASSIC_INTERACTION_SHADOW_STENCIL
+				|| translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID )
+				&& !preparedVolumeIncludesLocal ) {
+			const classicInteractionDomainShadowChain_t localChain =
+				translucentMode == CLASSIC_INTERACTION_SHADOW_HYBRID
+					? CLASSIC_INTERACTION_SHADOW_CHAIN_SUPPLEMENT_LOCAL
+					: CLASSIC_INTERACTION_SHADOW_CHAIN_STENCIL_LOCAL;
+			VK_ClassicInteraction_DrawShadowRange( prepared,
+				lightPlan.firstShadow[ localChain ],
+				lightPlan.shadowCount[ localChain ] );
+			preparedVolumeIncludesLocal = true;
+		}
+		VK_ClassicInteraction_DrawReceiverRange( prepared,
+			lightPlan.firstDraw[ CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ],
+			lightPlan.drawCount[ CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT ],
+			translucentMode );
+	}
+
+	vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+	vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+	const bool coverageAccepted = R_ClassicInteractionDomain_RecordOwned(
+		viewDef, CLASSIC_INTERACTION_BACKEND_VULKAN,
+		prepared.submittedDraws, prepared.noopPrimitiveCount,
+		prepared.view->drawableShadowCasterCount,
+		prepared.noopShadowCasterCount,
+		prepared.submittedLogicalVolumeDraws,
+		prepared.submittedPreloadVolumeDraws,
+		prepared.view->shadowMapPassCount,
+		prepared.view->hybridShadowPassCount );
+	if ( !coverageAccepted ) {
+		common->Warning( "Vulkan: shared interaction backend coverage mismatch after commit" );
+	}
+
+	static bool loggedFirstOwnedView = false;
+	if ( !loggedFirstOwnedView && coverageAccepted
+			&& prepared.submittedDraws > 0 ) {
+		loggedFirstOwnedView = true;
+		common->Printf(
+			"Vulkan: shared interaction owned %d draws, %d noops, %d shadow records, %d volume draws, %d preloads, %d map passes, and %d hybrid passes (hash=%016llx)\n",
+			prepared.submittedDraws, prepared.noopPrimitiveCount,
+			prepared.view->drawableShadowCasterCount,
+			prepared.submittedLogicalVolumeDraws,
+			prepared.submittedPreloadVolumeDraws,
+			prepared.view->shadowMapPassCount,
+			prepared.view->hybridShadowPassCount,
+			static_cast<unsigned long long>( prepared.view->hash ) );
+	}
+}
 
 /*
 ====================
@@ -516,6 +2108,151 @@ static void VK_SetDrawInteraction( const shaderStage_t *surfaceStage, const floa
 
 /*
 ====================
+VK_PackedPBRInteraction
+
+The native Vulkan interaction pipelines have six fixed 2D descriptor slots.
+Packed metallic/roughness/occlusion fits without expanding that ABI: slot 1
+becomes the RGB tangent normal, slot 4 becomes albedo, and slot 5 becomes
+ORM. Everything outside this deliberately narrow contract stays on the
+retail-compatible classic interaction path.
+====================
+*/
+typedef struct vkPackedPBRInteraction_s {
+	idImage *	normalImage;
+	idImage *	albedoImage;
+	idImage *	ormImage;
+	float		metallic;
+	float		roughness;
+	float		normalScale;
+} vkPackedPBRInteraction_t;
+
+static float VK_PBRRegisterValue( const drawSurf_t *surf, int registerIndex, float fallback ) {
+	if ( surf == NULL || surf->material == NULL || surf->shaderRegisters == NULL
+			|| registerIndex < 0 || registerIndex >= surf->material->GetNumRegisters() ) {
+		return fallback;
+	}
+	const float value = surf->shaderRegisters[ registerIndex ];
+	return std::isfinite( value ) ? value : fallback;
+}
+
+static bool VK_PBRImageReady( idImage *image, textureUsage_t expectedUsage ) {
+	return image != NULL && image->GetUsage() == expectedUsage
+		&& image->IsLoaded() && !image->IsDefaulted()
+		&& image->GetDeviceHandle() != 0;
+}
+
+/*
+====================
+VK_PBRHasSingleClassicInteractionTopology
+
+The classic decomposition flushes an interaction whenever it encounters a
+second bump, diffuse, or specular stage. A packed-PBR draw evaluates the whole
+BRDF, so it may only replace the canonical final submit when the material has
+exactly one active classic bump -> diffuse -> specular sequence. Declared
+duplicates are rejected even when their current condition is false: changing
+registers must never change which decomposition draw owns the complete BRDF.
+====================
+*/
+static bool VK_PBRHasSingleClassicInteractionTopology( const drawSurf_t *surf ) {
+	if ( surf == NULL || surf->material == NULL || surf->shaderRegisters == NULL ) {
+		return false;
+	}
+
+	const idMaterial *material = surf->material;
+	const float *registers = surf->shaderRegisters;
+	const int registerCount = material->GetNumRegisters();
+	int bumpStage = -1;
+	int diffuseStage = -1;
+	int specularStage = -1;
+
+	for ( int stageIndex = 0; stageIndex < material->GetNumStages(); stageIndex++ ) {
+		const shaderStage_t *surfaceStage = material->GetStage( stageIndex );
+		if ( surfaceStage == NULL ) {
+			return false;
+		}
+
+		// A custom-lighting stage is another complete per-light owner. Keep
+		// mixed custom/classic materials entirely on their authored path.
+		if ( surfaceStage->newStage != NULL && surfaceStage->newStage->customLighting ) {
+			return false;
+		}
+
+		int *ownerStage = NULL;
+		switch ( surfaceStage->lighting ) {
+			case SL_BUMP:
+				ownerStage = &bumpStage;
+				break;
+			case SL_DIFFUSE:
+				ownerStage = &diffuseStage;
+				break;
+			case SL_SPECULAR:
+				ownerStage = &specularStage;
+				break;
+			default:
+				continue;
+		}
+
+		if ( *ownerStage >= 0 || surfaceStage->newStage != NULL
+				|| surfaceStage->texture.image == NULL
+				|| surfaceStage->conditionRegister < 0
+				|| surfaceStage->conditionRegister >= registerCount ) {
+			return false;
+		}
+		const float condition = registers[ surfaceStage->conditionRegister ];
+		if ( !std::isfinite( condition ) || condition == 0.0f ) {
+			return false;
+		}
+		*ownerStage = stageIndex;
+	}
+
+	return bumpStage >= 0 && diffuseStage > bumpStage && specularStage > diffuseStage;
+}
+
+static bool VK_PackedPBRInteraction( const drawInteraction_t *din,
+		vkPackedPBRInteraction_t &out ) {
+	memset( &out, 0, sizeof( out ) );
+	if ( !r_rendererModernQuality.GetBool() || !r_pbrMaterials.GetBool() || r_skipBump.GetBool()
+			|| r_skipDiffuse.GetBool() || r_skipSpecular.GetBool()
+			|| din == NULL || din->surf == NULL || din->surf->material == NULL
+			|| din->ambientLight
+			|| !VK_PBRHasSingleClassicInteractionTopology( din->surf ) ) {
+		return false;
+	}
+
+	const idMaterial *material = din->surf->material;
+	if ( material->Coverage() != MC_OPAQUE || !material->HasPBR() ) {
+		return false;
+	}
+	const materialResourceTableRecord_t *resourceRecord =
+		R_MaterialResourceTable_FindRecordForMaterial( material );
+	if ( resourceRecord == NULL
+			|| !R_MaterialResourceTable_PBRModernPathEligible( *resourceRecord ) ) {
+		return false;
+	}
+	const pbrMaterialInfo_t &info = material->GetPBRInfo();
+	if ( !info.enabled || info.workflow != PBR_WORKFLOW_METALLIC_ROUGHNESS
+			|| info.normalFormat != PBR_NORMAL_TANGENT_XYZ
+			|| !info.albedo.present || !info.normal.present || !info.orm.present
+			|| !VK_PBRImageReady( info.albedo.image, TD_PBR_COLOR )
+			|| !VK_PBRImageReady( info.normal.image, TD_BUMP )
+			|| !VK_PBRImageReady( info.orm.image, TD_MATERIAL_DATA ) ) {
+		return false;
+	}
+
+	out.normalImage = info.normal.image;
+	out.albedoImage = info.albedo.image;
+	out.ormImage = info.orm.image;
+	out.metallic = idMath::ClampFloat( 0.0f, 1.0f,
+		VK_PBRRegisterValue( din->surf, info.metallicRegister, 0.0f ) );
+	out.roughness = idMath::ClampFloat( 0.045f, 1.0f,
+		VK_PBRRegisterValue( din->surf, info.roughnessRegister, 0.5f ) );
+	out.normalScale = idMath::ClampFloat( 0.0f, 4.0f,
+		VK_PBRRegisterValue( din->surf, info.normalScaleRegister, 1.0f ) );
+	return true;
+}
+
+/*
+====================
 VK_DrawSingleInteraction
 
 The Vulkan analog of RB_ARB2_DrawInteraction: streams the interaction
@@ -524,9 +2261,10 @@ set, pushes the 128B block, and draws the bound light-tris geometry.
 ====================
 */
 static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
-										  bool parallax,
-										  float parallaxScale,
-										  float parallaxBias ) {
+									  bool parallax,
+									  float parallaxScale,
+									  float parallaxBias,
+									  bool allowNativePBR ) {
 	if ( din->bumpImage == NULL || din->lightFalloffImage == NULL || din->lightImage == NULL
 			|| din->diffuseImage == NULL || din->specularImage == NULL ) {
 		return;
@@ -541,14 +2279,16 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	}
 	const int setCount = shadowDraw ? 8 : 7;
 	const VkPipelineLayout layout = shadowDraw ? interPass.layoutShadowed : interPass.layout;
+	vkPackedPBRInteraction_t pbr;
+	const bool nativePBR = allowNativePBR && VK_PackedPBRInteraction( din, pbr );
 
 	VkDescriptorSet sets[ 8 ];
 	sets[ 0 ] = interPass.specTableSet;
-	sets[ 1 ] = VK_Exec_ImageDescriptor( din->bumpImage->GetDeviceHandle(), true );
+	sets[ 1 ] = VK_Exec_ImageDescriptor( ( nativePBR ? pbr.normalImage : din->bumpImage )->GetDeviceHandle(), true );
 	sets[ 2 ] = VK_Exec_ImageDescriptor( din->lightFalloffImage->GetDeviceHandle(), true );
 	sets[ 3 ] = VK_Exec_ImageDescriptor( din->lightImage->GetDeviceHandle(), true );
-	sets[ 4 ] = VK_Exec_ImageDescriptor( din->diffuseImage->GetDeviceHandle(), true );
-	sets[ 5 ] = VK_Exec_ImageDescriptor( din->specularImage->GetDeviceHandle(), true );
+	sets[ 4 ] = VK_Exec_ImageDescriptor( ( nativePBR ? pbr.albedoImage : din->diffuseImage )->GetDeviceHandle(), true );
+	sets[ 5 ] = VK_Exec_ImageDescriptor( ( nativePBR ? pbr.ormImage : din->specularImage )->GetDeviceHandle(), true );
 	sets[ 6 ] = VK_Exec_InteractionUniformSet();
 	sets[ 7 ] = interPass.shadowSet;
 	for ( int i = 0 ; i < setCount ; i++ ) {
@@ -604,26 +2344,56 @@ static void VK_DrawSingleInteractionMode( const drawInteraction_t *din,
 	push.b[ 2 ] = interPass.ambientDir[ 2 ];
 	push.c[ 0 ] = parallaxScale;
 	push.c[ 1 ] = parallaxBias;
-	push.c[ 2 ] = parallax ? 1.0f : 0.0f;
+	push.c[ 2 ] = parallax && !nativePBR ? 1.0f : 0.0f;
+	push.d[ 0 ] = nativePBR ? ( r_pbrDebug.GetInteger() == 7 ? 2.0f : 1.0f ) : 0.0f;
+	push.d[ 1 ] = nativePBR ? pbr.metallic : 0.0f;
+	push.d[ 2 ] = nativePBR ? pbr.roughness : 0.0f;
+	push.d[ 3 ] = nativePBR ? pbr.normalScale : 1.0f;
 
 	// dynamic offsets consume in set order: set 6 interaction slice, then
 	// (shadowed only) set 7 binding 1 shadow slice
 	uint32_t dynamicOffsets[ 2 ];
 	dynamicOffsets[ 0 ] = (uint32_t)uboOffset;
 	dynamicOffsets[ 1 ] = (uint32_t)interPass.shadowSliceOffset;
+	// Sets 0-5 are pass/material-constant image sets. The interaction and
+	// shadow-interaction pipeline layouts are built from the same set layouts
+	// for sets 0..6 and the same push range (vk_GuiExecutor.cpp), so they are
+	// compatible for sets 0..5 and a suffix rebind with either layout leaves
+	// the untouched prefix defined. Sets 6..7 carry the per-draw dynamic
+	// offsets and are always rebound; nothing else in this pass binds
+	// descriptor sets on this command buffer, so the mirror below stays live.
+	int firstChangedSet = interPass.imageSetsValid ? 6 : 0;
+	if ( interPass.imageSetsValid ) {
+		for ( int i = 0 ; i < 6 ; i++ ) {
+			if ( sets[ i ] != interPass.lastImageSets[ i ] ) {
+				firstChangedSet = i;
+				break;
+			}
+		}
+	}
+	if ( firstChangedSet < 6 ) {
+		vkCmdBindDescriptorSets( interPass.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+				(uint32_t)firstChangedSet, (uint32_t)( 6 - firstChangedSet ),
+				sets + firstChangedSet, 0, NULL );
+	}
 	vkCmdBindDescriptorSets( interPass.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-			0, (uint32_t)setCount, sets, shadowDraw ? 2 : 1, dynamicOffsets );
+			6, (uint32_t)( setCount - 6 ), sets + 6, shadowDraw ? 2 : 1, dynamicOffsets );
+	memcpy( interPass.lastImageSets, sets, sizeof( interPass.lastImageSets ) );
+	interPass.imageSetsValid = true;
 	vkCmdPushConstants( interPass.cmd, layout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 	vkCmdDrawIndexed( interPass.cmd, (uint32_t)din->surf->geo->numIndexes, 1, 0, 0, 0 );
 	interPass.drawCount++;
+	if ( nativePBR ) {
+		interPass.nativePBRDrawCount++;
+	}
 	if ( shadowDraw ) {
 		interPass.shadowDrawCount++;
 	}
 }
 
-static void VK_DrawSingleInteraction( const drawInteraction_t *din ) {
-	VK_DrawSingleInteractionMode( din, false, 0.0f, 0.0f );
+static void VK_DrawSingleInteraction( const drawInteraction_t *din, bool allowNativePBR ) {
+	VK_DrawSingleInteractionMode( din, false, 0.0f, 0.0f, allowNativePBR );
 }
 
 /*
@@ -635,7 +2405,7 @@ missing diffuse/specular (and the r_skip* debug substitutions), flat
 normal map for skipped bump, and the skip-if-nothing-would-draw rule.
 ====================
 */
-static void VK_SubmitInteraction( drawInteraction_t *din ) {
+static void VK_SubmitInteraction( drawInteraction_t *din, bool allowNativePBR ) {
 	if ( !din->bumpImage ) {
 		return;
 	}
@@ -658,7 +2428,7 @@ static void VK_SubmitInteraction( drawInteraction_t *din ) {
 		|| ( ( din->specularColor[0] > 0 ||
 		din->specularColor[1] > 0 ||
 		din->specularColor[2] > 0 ) && din->specularImage != globalImages->blackImage ) ) {
-		VK_DrawSingleInteraction( din );
+		VK_DrawSingleInteraction( din, allowNativePBR );
 	}
 }
 
@@ -680,7 +2450,7 @@ static void VK_SubmitCustomLightingInteraction( drawInteraction_t *din,
 		return;
 	}
 
-	VK_DrawSingleInteractionMode( din, parallax, scaleBias[ 0 ], scaleBias[ 1 ] );
+	VK_DrawSingleInteractionMode( din, parallax, scaleBias[ 0 ], scaleBias[ 1 ], false );
 }
 
 /*
@@ -799,10 +2569,8 @@ static int VK_Inter_WriteShadowSlice( const viewEntity_t *space ) {
 		pointBlock.lightOriginFar[ 1 ] = state->pointLightOrigin[ 1 ];
 		pointBlock.lightOriginFar[ 2 ] = state->pointLightOrigin[ 2 ];
 		pointBlock.lightOriginFar[ 3 ] = state->pointFar;
-		// the depth-compare path uses r_shadowMapPointBias directly; the GL
-		// storage-step floor only applies to the packed-color fallback
-		pointBlock.biasParams[ 0 ] = r_shadowMapPointBias.GetFloat();
-		pointBlock.biasParams[ 1 ] = r_shadowMapPointNormalBias.GetFloat();
+		pointBlock.biasParams[ 0 ] = state->constantBias;
+		pointBlock.biasParams[ 1 ] = state->normalBias;
 		pointBlock.biasParams[ 2 ] = state->texelDepthBias;
 		pointBlock.biasParams[ 3 ] = state->normalOffsetWorld;
 		pointBlock.filterParams[ 0 ] =
@@ -1668,6 +3436,10 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 
 	const int lightStageCount = lightShader->GetNumStages();
 	const int surfaceStageCount = surfaceShader->GetNumStages();
+	// Only the final decomposition submit may own a complete packed-PBR BRDF.
+	// The topology check also makes every intermediate flush impossible for an
+	// admitted material; false admission leaves every classic draw untouched.
+	const bool packedPBROwnerEligible = VK_PBRHasSingleClassicInteractionTopology( surf );
 	for ( int lightStageNum = 0 ; lightStageNum < lightStageCount ; lightStageNum++ ) {
 		const shaderStage_t	*lightStage = lightShader->GetStage( lightStageNum );
 
@@ -1716,7 +3488,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 						break;
 					}
 					// draw any previous interaction
-					VK_SubmitInteraction( &inter );
+					VK_SubmitInteraction( &inter, false );
 					inter.diffuseImage = NULL;
 					inter.specularImage = NULL;
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.bumpImage, inter.bumpMatrix, NULL );
@@ -1728,7 +3500,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 						break;
 					}
 					if ( inter.diffuseImage ) {
-						VK_SubmitInteraction( &inter );
+						VK_SubmitInteraction( &inter, false );
 					}
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.diffuseImage,
 											inter.diffuseMatrix, inter.diffuseColor.ToFloatPtr() );
@@ -1747,7 +3519,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 						break;
 					}
 					if ( inter.specularImage ) {
-						VK_SubmitInteraction( &inter );
+						VK_SubmitInteraction( &inter, false );
 					}
 					VK_SetDrawInteraction( surfaceStage, surfaceRegs, &inter.specularImage,
 											inter.specularMatrix, inter.specularColor.ToFloatPtr() );
@@ -1762,7 +3534,7 @@ static void VK_CreateSingleDrawInteractions( const drawSurf_t *surf ) {
 		}
 
 		// draw the final interaction
-		VK_SubmitInteraction( &inter );
+		VK_SubmitInteraction( &inter, packedPBROwnerEligible );
 
 		// Quake 4's two shipped customLighting guide families are ambient
 		// material stages that execute once for every active light stage.
@@ -1979,12 +3751,20 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				}
 			}
 		}
+		if ( r_vkShadowFallbackTest.GetBool() &&
+				( localShadowState != NULL || globalShadowState != NULL ) ) {
+			VK_ShadowMap_MarkStencilFallbackSticky( vLight );
+			shadowState = NULL;
+			localShadowState = NULL;
+			globalShadowState = NULL;
+		}
 
 		// Determine shadow need per retail ownership chain. A LOCAL receiver
 		// only sees global casters; a GLOBAL receiver sees both. This matters
 		// when a map resource failed or a target lacks stencil: receivers that
-		// genuinely need unavailable shadow data must fail closed instead of
-		// silently receiving an unshadowed light.
+		// genuinely need unavailable shadow data prefer the retained stencil
+		// path. If neither ownership path can be submitted, preserve the direct
+		// light unshadowed for this frame instead of visibly dropping the light.
 		const int incompleteMapMask =
 				vLight->shadowMapIncompleteMapMask
 				| vLight->shadowMapPrelightMapMissingMask;
@@ -2096,7 +3876,8 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				vLight->localShadows == NULL;
 		const bool stencilResourcesReady =
 				activeTargetHasStencil &&
-				interPass.pipelineStencilShadow != VK_NULL_HANDLE;
+				interPass.pipelineStencilShadow != VK_NULL_HANDLE &&
+				!r_vkShadowFallbackTest.GetBool();
 		const bool localStencilFallback =
 				localReceiverNeedsStencil &&
 				!localEmptyFallback &&
@@ -2118,14 +3899,15 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					!globalEmptyFallback &&
 					!globalStencilFallback );
 		if ( missingRequiredShadow && unresolvedBeforeSubmit ) {
-			static bool warnedFailClosedShadow = false;
-			if ( !warnedFailClosedShadow ) {
-				warnedFailClosedShadow = true;
-				common->Warning( "Vulkan: required shadow resource unavailable; affected light receivers are skipped fail-closed" );
+			static bool warnedUnshadowedFallback = false;
+			if ( !warnedUnshadowedFallback ) {
+				warnedUnshadowedFallback = true;
+				common->Warning( "Vulkan: required shadow resource unavailable; affected light receivers fall back unshadowed" );
 			}
 		}
 
 		bool globalOpaqueReceiverDrawn = false;
+		bool localReceiverDrawn = false;
 		bool localReceiverDrewWithStencil = false;
 		bool globalStencilPassComplete = false;
 		if ( anyStencilFallback ) {
@@ -2164,6 +3946,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					vkCmdSetStencilTestEnable( cmd, VK_TRUE );
 					VK_DrawInteractionChain( vLight->localInteractions );
 					localReceiverDrewWithStencil = true;
+					localReceiverDrawn = true;
 				}
 			}
 
@@ -2175,6 +3958,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					localEmptyFallback ? NULL : shadowState,
 					localEmptyFallback ? NULL : localShadowState );
 				VK_DrawInteractionChain( vLight->localInteractions );
+				localReceiverDrawn = true;
 			}
 
 			if ( globalStencilFallback ) {
@@ -2227,7 +4011,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 			// ownership accumulated so far. Never consume a partial stencil
 			// buffer: keep any already-complete receiver draw, then use a
 			// valid ownership map, an independently proven empty fallback, or
-			// skip only the affected receiver chain fail-closed.
+			// preserve direct illumination without a shadow for this frame.
 			vkCmdSetStencilTestEnable( cmd, VK_FALSE );
 			if ( !globalOpaqueReceiverDrawn &&
 					( globalEmptyFallback ||
@@ -2248,7 +4032,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				static bool warnedIncompleteStencilSubmission = false;
 				if ( !warnedIncompleteStencilSubmission ) {
 					warnedIncompleteStencilSubmission = true;
-					common->Warning( "Vulkan: stencil shadow volume submission incomplete; affected light receivers are skipped fail-closed" );
+					common->Warning( "Vulkan: stencil shadow volume submission incomplete; affected light receivers fall back unshadowed" );
 				}
 			}
 		} else {
@@ -2263,6 +4047,7 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					localEmptyFallback ? NULL : shadowState,
 					localEmptyFallback ? NULL : localShadowState );
 				VK_DrawInteractionChain( vLight->localInteractions );
+				localReceiverDrawn = true;
 			}
 			if ( globalEmptyFallback ||
 					!globalOpaqueReceiverNeedsStencil ) {
@@ -2274,6 +4059,23 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 			}
 		}
 
+		// Shadow allocation/admission and late stencil streaming failures are
+		// recoverable presentation failures. A transient loss of shadowing is
+		// preferable to dropping the light contribution for a complete frame.
+		if ( !localReceiverDrawn && vLight->localInteractions != NULL ) {
+			vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+			vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_EQUAL );
+			VK_Inter_SelectShadowMode( NULL, NULL );
+			VK_DrawInteractionChain( vLight->localInteractions );
+		}
+		if ( !globalOpaqueReceiverDrawn && vLight->globalInteractions != NULL ) {
+			vkCmdSetStencilTestEnable( cmd, VK_FALSE );
+			vkCmdSetDepthCompareOp( cmd, VK_COMPARE_OP_EQUAL );
+			VK_Inter_SelectShadowMode( NULL, NULL );
+			VK_DrawInteractionChain( vLight->globalInteractions );
+			globalOpaqueReceiverDrawn = true;
+		}
+
 		if ( !r_skipTranslucent.GetBool() ) {
 			const bool translucentUsesStencilFallback =
 					translucentReceiverNeedsStencil &&
@@ -2282,10 +4084,15 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 			const bool translucentUsesEmptyFallback =
 					translucentReceiverNeedsFallback &&
 					globalEmptyFallback;
+			const bool translucentUsesUnshadowedFallback =
+					translucentReceiverNeedsStencil &&
+					!translucentUsesStencilFallback &&
+					!translucentUsesEmptyFallback;
 			const bool drawTranslucentReceiver =
 					!translucentReceiverNeedsStencil ||
 					translucentUsesStencilFallback ||
-					translucentUsesEmptyFallback;
+					translucentUsesEmptyFallback ||
+					translucentUsesUnshadowedFallback;
 			// Translucent receivers keep the GLOBAL pass state, matching the
 			// GL pair where the global opaque pass is the last mapped state.
 			if ( translucentUsesStencilFallback ) {
@@ -2295,6 +4102,9 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 					translucentMapNeedsSupplement
 						? globalShadowState : NULL );
 				vkCmdSetStencilTestEnable( cmd, VK_TRUE );
+			} else if ( translucentUsesUnshadowedFallback ) {
+				VK_Inter_SelectShadowMode( NULL, NULL );
+				vkCmdSetStencilTestEnable( cmd, VK_FALSE );
 			} else if ( drawTranslucentReceiver &&
 					translucentReceiverNeedsShadow &&
 					globalShadowState != NULL ) {
@@ -2331,6 +4141,16 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 				interPass.drawCount, interPass.lightCount );
 	}
 
+	// Native Vulkan PBR is deliberately limited to opaque packed-ORM,
+	// tangent-space RGB-normal materials. Keep its admission observable
+	// without conflating those draws with the retail-compatible fallback path.
+	static bool loggedFirstNativePBRPass = false;
+	if ( !loggedFirstNativePBRPass && interPass.nativePBRDrawCount > 0 ) {
+		loggedFirstNativePBRPass = true;
+		common->Printf( "Vulkan: native packed PBR direct interactions active (%d draws)\n",
+				interPass.nativePBRDrawCount );
+	}
+
 	// one-shot bring-up evidence that shadow-receiving interactions drew
 	static bool loggedFirstShadowReceivers = false;
 	if ( !loggedFirstShadowReceivers && interPass.shadowDrawCount > 0 ) {
@@ -2359,6 +4179,1052 @@ void VK_Interactions_DrawLights( const viewDef_t *viewDef ) {
 		loggedFirstElision = true;
 		common->Printf( "Vulkan: stencil elision active: %d of %d shadow-mapped lights carry no stencil volumes\n",
 				interPass.elidedLightCount, interPass.shadowLightCount );
+	}
+}
+
+/*
+===============================================================================
+
+	Shared fixed-classic fog/blend consumer
+
+	The backend-neutral domain owns light/stage interpretation and publishes one
+	atomic, source-ordered phase.  Vulkan retains every exact pipeline,
+	descriptor, uniform slice and geometry offset before the first attachment
+	write.  A failed preflight rewinds both speculative rings and leaves the
+	established VK_Fog_DrawAllLights walker below completely untouched.
+
+===============================================================================
+*/
+
+enum vkClassicFogBlendRejectDetail_t {
+	VK_CLASSIC_FOG_BLEND_REJECT_VIEW = 1,
+	VK_CLASSIC_FOG_BLEND_REJECT_COUNTS,
+	VK_CLASSIC_FOG_BLEND_REJECT_ORDER,
+	VK_CLASSIC_FOG_BLEND_REJECT_OFFSCREEN_TARGET,
+	VK_CLASSIC_FOG_BLEND_REJECT_RENDER_SCOPE,
+	VK_CLASSIC_FOG_BLEND_REJECT_PIPELINE,
+	VK_CLASSIC_FOG_BLEND_REJECT_STATE,
+	VK_CLASSIC_FOG_BLEND_REJECT_SCISSOR,
+	VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY,
+	VK_CLASSIC_FOG_BLEND_REJECT_TEXTURE,
+	VK_CLASSIC_FOG_BLEND_REJECT_UNIFORM
+};
+
+typedef struct vkClassicFogBlendDrawPlan_s {
+	const classicFogBlendDomainPrimitive_t *primitive;
+	const classicFogBlendDomainLight_t *light;
+	const classicFogBlendDomainLightStage_t *stage;
+	VkPipeline		pipeline;
+	VkDescriptorSet	textureSets[ 2 ];
+	VkRect2D		scissor;
+	VkCullModeFlags	cullMode;
+	VkCompareOp		depthCompare;
+	int			vertexOffset;
+	int			indexOffset;
+	int			uniformOffset;
+	vkInteractionPush_t	push;
+	vkBlendLightBlock_t	blendBlock;
+} vkClassicFogBlendDrawPlan_t;
+
+typedef struct vkClassicFogBlendPreparedView_s {
+	const classicFogBlendDomainView_t *view;
+	const viewDef_t		*viewDef;
+	VkCommandBuffer		cmd;
+	VkPipelineLayout	layout;
+	VkPipeline		fogPipeline;
+	VkDescriptorSet		uniformSet;
+	VkViewport		viewport;
+	int			frameSlot;
+	int			framebufferWidth;
+	int			framebufferHeight;
+	int			drawPlanCount;
+	int			noopPrimitiveCount;
+	int			noopLightStageCount;
+	int			noopLightCount;
+	int			submittedFogReceivers;
+	int			submittedFogFrustums;
+	int			submittedBlendReceivers;
+	int			uniformCheckpoint;
+	bool			ready;
+	bool			committed;
+	vkClassicFogBlendDrawPlan_t draws[
+		CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES ];
+} vkClassicFogBlendPreparedView_t;
+
+static vkClassicFogBlendPreparedView_t vkClassicFogBlendPrepared;
+
+static bool VK_ClassicFogBlend_Fail( const viewDef_t *viewDef,
+		classicFogBlendDomainFailure_t failure, int detail ) {
+	if ( vkClassicFogBlendPrepared.uniformCheckpoint >= 0 ) {
+		VK_Exec_InteractionUniformRestore(
+			vkClassicFogBlendPrepared.uniformCheckpoint );
+	}
+	// Safe before the checkpoint exists and mandatory after any speculative
+	// upload.  The classic walker may need the exact same ring capacity/memos.
+	VK_Exec_SharedInteractionGeometryRestore();
+	R_ClassicFogBlendDomain_RecordBackendFallback( viewDef,
+		CLASSIC_FOG_BLEND_BACKEND_VULKAN,
+		failure == CLASSIC_FOG_BLEND_FAILURE_NONE
+			? CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED : failure,
+		detail );
+	memset( &vkClassicFogBlendPrepared, 0,
+		sizeof( vkClassicFogBlendPrepared ) );
+	vkClassicFogBlendPrepared.uniformCheckpoint = -1;
+	return false;
+}
+
+static bool VK_ClassicFogBlend_FloatsFinite( const float *values,
+		int count ) {
+	if ( values == NULL || count < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !std::isfinite( values[ i ] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool VK_ClassicFogBlend_MapSourceBlend(
+		rendererBlendFactor_t factor, int &bits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO: bits = GLS_SRCBLEND_ZERO; return true;
+	case RENDERER_BLEND_ONE: bits = GLS_SRCBLEND_ONE; return true;
+	case RENDERER_BLEND_SRC_COLOR: bits = GLS_SRCBLEND_SRC_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR: bits = GLS_SRCBLEND_ONE_MINUS_SRC_COLOR; return true;
+	case RENDERER_BLEND_DST_COLOR: bits = GLS_SRCBLEND_DST_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_COLOR: bits = GLS_SRCBLEND_ONE_MINUS_DST_COLOR; return true;
+	case RENDERER_BLEND_SRC_ALPHA: bits = GLS_SRCBLEND_SRC_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA: bits = GLS_SRCBLEND_ONE_MINUS_SRC_ALPHA; return true;
+	case RENDERER_BLEND_DST_ALPHA: bits = GLS_SRCBLEND_DST_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA: bits = GLS_SRCBLEND_ONE_MINUS_DST_ALPHA; return true;
+	case RENDERER_BLEND_SRC_ALPHA_SATURATE: bits = GLS_SRCBLEND_ALPHA_SATURATE; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicFogBlend_MapDestinationBlend(
+		rendererBlendFactor_t factor, int &bits ) {
+	switch ( factor ) {
+	case RENDERER_BLEND_ZERO: bits = GLS_DSTBLEND_ZERO; return true;
+	case RENDERER_BLEND_ONE: bits = GLS_DSTBLEND_ONE; return true;
+	case RENDERER_BLEND_SRC_COLOR: bits = GLS_DSTBLEND_SRC_COLOR; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_COLOR: bits = GLS_DSTBLEND_ONE_MINUS_SRC_COLOR; return true;
+	case RENDERER_BLEND_SRC_ALPHA: bits = GLS_DSTBLEND_SRC_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_SRC_ALPHA: bits = GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA; return true;
+	case RENDERER_BLEND_DST_ALPHA: bits = GLS_DSTBLEND_DST_ALPHA; return true;
+	case RENDERER_BLEND_ONE_MINUS_DST_ALPHA: bits = GLS_DSTBLEND_ONE_MINUS_DST_ALPHA; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicFogBlend_MapCull( rendererCullMode_t cull,
+		VkCullModeFlags &mode ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE: mode = VK_CULL_MODE_NONE; return true;
+	case RENDERER_CULL_FRONT: mode = VK_CULL_MODE_FRONT_BIT; return true;
+	case RENDERER_CULL_BACK: mode = VK_CULL_MODE_BACK_BIT; return true;
+	default: return false;
+	}
+}
+
+static bool VK_ClassicFogBlend_MapStageState(
+		const classicFogBlendDomainLightStage_t &stage,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		int &pipelineBits, VkCompareOp &depthCompare,
+		VkCullModeFlags &cullMode ) {
+	pipelineBits = 0;
+	if ( stage.blend.colorOperation != RENDERER_BLEND_OP_ADD
+			|| stage.blend.alphaOperation != RENDERER_BLEND_OP_ADD
+			|| stage.blend.sourceAlpha != stage.blend.sourceColor
+			|| stage.blend.destinationAlpha
+				!= stage.blend.destinationColor
+			|| !stage.depth.testEnabled || stage.depth.writeEnabled
+			|| stage.depth.compareOperation != RENDERER_COMPARE_EQUAL
+			|| !primitive.depth.testEnabled || primitive.depth.writeEnabled
+			|| stage.alphaTestEnabled
+			|| ( stage.colorWriteMask
+				& ~static_cast<std::uint32_t>(
+					RENDERER_COLOR_WRITE_RGBA ) ) != 0 ) {
+		return false;
+	}
+	const bool replacementBlend =
+		stage.blend.sourceColor == RENDERER_BLEND_ONE
+		&& stage.blend.destinationColor == RENDERER_BLEND_ZERO;
+	if ( stage.blend.enabled == replacementBlend ) {
+		return false;
+	}
+
+	int sourceBits = 0;
+	int destinationBits = 0;
+	if ( !VK_ClassicFogBlend_MapSourceBlend(
+			stage.blend.sourceColor, sourceBits )
+			|| !VK_ClassicFogBlend_MapDestinationBlend(
+				stage.blend.destinationColor, destinationBits ) ) {
+		return false;
+	}
+	pipelineBits = sourceBits | destinationBits;
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_RED ) == 0 ) {
+		pipelineBits |= GLS_REDMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_GREEN ) == 0 ) {
+		pipelineBits |= GLS_GREENMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_BLUE ) == 0 ) {
+		pipelineBits |= GLS_BLUEMASK;
+	}
+	if ( ( stage.colorWriteMask & RENDERER_COLOR_WRITE_ALPHA ) == 0 ) {
+		pipelineBits |= GLS_ALPHAMASK;
+	}
+
+	if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER
+			|| primitive.kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP ) {
+		if ( stage.blend.sourceColor != RENDERER_BLEND_SRC_ALPHA
+				|| stage.blend.destinationColor
+					!= RENDERER_BLEND_ONE_MINUS_SRC_ALPHA
+				|| !stage.blend.enabled
+				|| stage.colorWriteMask != RENDERER_COLOR_WRITE_RGBA
+				|| stage.cull != RENDERER_CULL_FRONT ) {
+			return false;
+		}
+		const bool cap = primitive.kind
+			== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP;
+		if ( primitive.depth.compareOperation
+				!= ( cap ? RENDERER_COMPARE_LESS_OR_EQUAL
+					: RENDERER_COMPARE_EQUAL )
+				|| primitive.cull
+					!= ( cap ? RENDERER_CULL_BACK
+						: RENDERER_CULL_FRONT ) ) {
+			return false;
+		}
+		depthCompare = cap
+			? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_EQUAL;
+		return VK_ClassicFogBlend_MapCull( primitive.cull, cullMode );
+	}
+
+	if ( primitive.kind != CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+		return false;
+	}
+	if ( primitive.depth.compareOperation != RENDERER_COMPARE_EQUAL
+			|| primitive.cull != stage.cull ) {
+		return false;
+	}
+	depthCompare = VK_COMPARE_OP_EQUAL;
+	return VK_ClassicFogBlend_MapCull( primitive.cull, cullMode );
+}
+
+static bool VK_ClassicFogBlend_BuildScissor(
+		const classicFogBlendDomainView_t &view,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		int framebufferWidth, int framebufferHeight, VkRect2D &scissor ) {
+	const int viewportWidth = view.viewportX2 - view.viewportX1 + 1;
+	const int viewportHeight = view.viewportY2 - view.viewportY1 + 1;
+	const int requestedX1 = view.useScissor
+		? primitive.scissorX1 : view.scissorX1;
+	const int requestedY1 = view.useScissor
+		? primitive.scissorY1 : view.scissorY1;
+	const int requestedX2 = view.useScissor
+		? primitive.scissorX2 : view.scissorX2;
+	const int requestedY2 = view.useScissor
+		? primitive.scissorY2 : view.scissorY2;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| framebufferWidth <= 0 || framebufferHeight <= 0
+			|| requestedX2 < requestedX1
+			|| requestedY2 < requestedY1 ) {
+		return false;
+	}
+
+	int x0 = Max( view.viewportX1, view.viewportX1 + requestedX1 );
+	int x1 = Min( view.viewportX1 + viewportWidth,
+		view.viewportX1 + requestedX2 + 1 );
+	int y0GL = Max( view.viewportY1, view.viewportY1 + requestedY1 );
+	int y1GL = Min( view.viewportY1 + viewportHeight,
+		view.viewportY1 + requestedY2 + 1 );
+	x0 = Max( 0, x0 );
+	x1 = Min( framebufferWidth, x1 );
+	y0GL = Max( 0, y0GL );
+	y1GL = Min( framebufferHeight, y1GL );
+	if ( x1 <= x0 || y1GL <= y0GL ) {
+		return false;
+	}
+	scissor.offset.x = x0;
+	scissor.offset.y = framebufferHeight - y1GL;
+	scissor.extent.width = static_cast<std::uint32_t>( x1 - x0 );
+	scissor.extent.height = static_cast<std::uint32_t>( y1GL - y0GL );
+	return true;
+}
+
+static bool VK_ClassicFogBlend_ResolveDescriptor(
+		std::uint64_t resourceId, VkDescriptorSet &descriptor ) {
+	descriptor = VK_NULL_HANDLE;
+	const classicFogBlendDomainTexture_t *texture =
+		R_ClassicFogBlendDomain_ResolveTexture( resourceId );
+	if ( texture == NULL || texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0
+			|| !texture->image->IsLoaded()
+			|| texture->image->IsDefaulted()
+			|| texture->textureHandle
+				!= const_cast<idImage *>( texture->image )->GetDeviceHandle()
+			|| texture->filter != texture->image->GetFilter()
+			|| texture->repeat != texture->image->GetRepeat()
+			|| texture->storageGeneration
+				!= texture->image->GetStorageGeneration() ) {
+		return false;
+	}
+	descriptor = VK_Exec_ImageDescriptor( texture->textureHandle, true );
+	return descriptor != VK_NULL_HANDLE;
+}
+
+static bool VK_ClassicFogBlend_ValidateGeometry(
+		const classicFogBlendDomainPrimitive_t &primitive ) {
+	const srfTriangles_t *tri = primitive.legacyGeometry;
+	if ( primitive.disposition != CLASSIC_FOG_BLEND_PRIMITIVE_DRAW
+			|| tri == NULL || R_TriHasPrimBatchMesh( tri )
+			|| primitive.vertexCount <= 0 || primitive.indexCount <= 0
+			|| primitive.indexCount % 3 != 0
+			|| primitive.firstIndex != 0 || primitive.vertexOffset != 0
+			|| primitive.vertexCount
+				> INT_MAX / static_cast<int>( sizeof( idDrawVert ) )
+			|| primitive.indexCount
+				> INT_MAX / static_cast<int>( sizeof( glIndex_t ) )
+			|| tri->numVerts != primitive.vertexCount
+			|| tri->numIndexes != primitive.indexCount
+			|| tri->ambientCache == NULL
+			|| ( tri->indexes == NULL && tri->indexCache == NULL )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				primitive.modelMatrix, 16 )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				primitive.modelViewMatrix, 16 )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				&primitive.localLightProject[ 0 ][ 0 ], 16 )
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				&primitive.fogTexgen[ 0 ][ 0 ][ 0 ], 16 ) ) {
+		return false;
+	}
+	if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP ) {
+		return primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM
+			&& ( primitive.legacyDrawSurf == NULL
+				|| primitive.legacyDrawSurf->geo == tri );
+	}
+	return primitive.legacyDrawSurf != NULL
+		&& primitive.legacyDrawSurf->geo == tri
+		&& ( primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_GLOBAL
+			|| primitive.receiver == CLASSIC_FOG_BLEND_RECEIVER_LOCAL );
+}
+
+static void VK_ClassicFogBlend_BuildPayloads(
+		const classicFogBlendDomainView_t &view,
+		const classicFogBlendDomainPrimitive_t &primitive,
+		const classicFogBlendDomainLight_t &light,
+		const classicFogBlendDomainLightStage_t &stage,
+		vkClassicFogBlendDrawPlan_t &plan ) {
+	memset( &plan.push, 0, sizeof( plan.push ) );
+	float mvpGL[ 16 ];
+	myGlMultMatrix( primitive.modelViewMatrix, view.projectionMatrix, mvpGL );
+	VK_FixupClipSpaceZ( plan.push.mvp, mvpGL );
+
+	memset( &plan.blendBlock, 0, sizeof( plan.blendBlock ) );
+	if ( primitive.kind == CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+		for ( int component = 0; component < 4; ++component ) {
+			// The front end sealed RB_GetShaderTextureMatrix's wrapped 2x4
+			// rows. Fold them into S/T exactly as
+			// RB_BakeTextureMatrixIntoTexgen does, with Q carrying translation.
+			plan.blendBlock.lightProjectS[ component ] =
+				stage.textureMatrix[ 0 ][ 0 ]
+					* primitive.localLightProject[ 0 ][ component ]
+				+ stage.textureMatrix[ 0 ][ 1 ]
+					* primitive.localLightProject[ 1 ][ component ]
+				+ stage.textureMatrix[ 0 ][ 3 ]
+					* primitive.localLightProject[ 2 ][ component ];
+			plan.blendBlock.lightProjectT[ component ] =
+				stage.textureMatrix[ 1 ][ 0 ]
+					* primitive.localLightProject[ 0 ][ component ]
+				+ stage.textureMatrix[ 1 ][ 1 ]
+					* primitive.localLightProject[ 1 ][ component ]
+				+ stage.textureMatrix[ 1 ][ 3 ]
+					* primitive.localLightProject[ 2 ][ component ];
+		}
+		memcpy( plan.blendBlock.lightProjectQ,
+			primitive.localLightProject[ 2 ],
+			sizeof( plan.blendBlock.lightProjectQ ) );
+		memcpy( plan.blendBlock.lightFalloffS,
+			primitive.localLightProject[ 3 ],
+			sizeof( plan.blendBlock.lightFalloffS ) );
+		memcpy( plan.blendBlock.color, stage.color,
+			sizeof( plan.blendBlock.color ) );
+	} else {
+		// fog.vert consumes these exact localized planes from the shared push:
+		// texture 0 S, texture 1 T, texture 1 S, then fog RGBA.
+		memcpy( plan.push.a, primitive.fogTexgen[ 0 ][ 0 ],
+			sizeof( plan.push.a ) );
+		memcpy( plan.push.b, primitive.fogTexgen[ 1 ][ 1 ],
+			sizeof( plan.push.b ) );
+		memcpy( plan.push.c, primitive.fogTexgen[ 1 ][ 0 ],
+			sizeof( plan.push.c ) );
+		memcpy( plan.push.d, light.fogColor,
+			sizeof( plan.push.d ) );
+	}
+}
+
+static bool VK_ClassicFogBlend_ValidateRanges(
+		const viewDef_t *viewDef,
+		const classicFogBlendDomainView_t &view ) {
+	int expectedSurface = view.firstSurface;
+	int expectedStage = view.firstLightStage;
+	int expectedPrimitive = view.firstPrimitive;
+	int fogLights = 0;
+	int blendLights = 0;
+	int noopLights = 0;
+	int activeStages = 0;
+	int inactiveStages = 0;
+	int noopStages = 0;
+	int drawablePrimitives = 0;
+	int noopPrimitives = 0;
+	int fogReceivers = 0;
+	int fogFrustums = 0;
+	int blendReceivers = 0;
+	int previousSourceOrdinal = -1;
+
+	for ( int lightIndex = 0; lightIndex < view.lightCount; ++lightIndex ) {
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( view, lightIndex );
+		if ( light == NULL || light->sourceOrdinal <= previousSourceOrdinal
+				|| light->firstSurface != expectedSurface
+				|| light->firstLightStage != expectedStage
+				|| light->firstPrimitive != expectedPrimitive
+				|| light->surfaceCount < 0 || light->lightStageCount < 0
+				|| light->primitiveCount < 0
+				|| light->activeLightStageCount < 0
+				|| light->inactiveLightStageCount < 0
+				|| light->activeLightStageCount
+					+ light->inactiveLightStageCount
+					!= light->lightStageCount
+				|| light->drawablePrimitiveCount < 0
+				|| light->noopPrimitiveCount < 0
+				|| light->drawablePrimitiveCount
+					+ light->noopPrimitiveCount != light->primitiveCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		previousSourceOrdinal = light->sourceOrdinal;
+		expectedSurface += light->surfaceCount;
+		expectedStage += light->lightStageCount;
+		expectedPrimitive += light->primitiveCount;
+		if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG ) {
+			fogLights++;
+		} else if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_BLEND ) {
+			blendLights++;
+		} else {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+		if ( light->disposition != CLASSIC_FOG_BLEND_LIGHT_DRAW ) {
+			if ( light->disposition <= CLASSIC_FOG_BLEND_LIGHT_DRAW
+					|| light->disposition
+						>= CLASSIC_FOG_BLEND_LIGHT_DISPOSITION_COUNT ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+			}
+			noopLights++;
+		}
+
+		int expectedStagePrimitive = light->firstPrimitive;
+		int previousSourceStage = -1;
+		for ( int stageIndex = 0; stageIndex < light->lightStageCount;
+				++stageIndex ) {
+			const classicFogBlendDomainLightStage_t *stage =
+				R_ClassicFogBlendDomain_LightStage( *light, stageIndex );
+			if ( stage == NULL
+					|| stage->lightIndex != view.firstLight + lightIndex
+					|| stage->sourceStageIndex <= previousSourceStage
+					|| stage->firstPrimitive != expectedStagePrimitive
+					|| stage->primitiveCount < 0
+					|| stage->drawablePrimitiveCount < 0
+					|| stage->noopPrimitiveCount < 0
+					|| stage->drawablePrimitiveCount
+						+ stage->noopPrimitiveCount
+						!= stage->primitiveCount
+					|| !VK_ClassicFogBlend_FloatsFinite(
+						stage->color, 4 )
+					|| !VK_ClassicFogBlend_FloatsFinite(
+						&stage->textureMatrix[ 0 ][ 0 ], 8 )
+					|| !std::isfinite( stage->condition )
+					|| !std::isfinite( stage->alphaTestValue ) ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+					VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+			}
+			previousSourceStage = stage->sourceStageIndex;
+			int previousReceiver = -1;
+			for ( int stagePrimitiveIndex = 0;
+					stagePrimitiveIndex < stage->primitiveCount;
+					++stagePrimitiveIndex ) {
+				const int absolutePrimitive = stage->firstPrimitive
+					+ stagePrimitiveIndex;
+				const classicFogBlendDomainPrimitive_t *primitive =
+					R_ClassicFogBlendDomain_ViewPrimitive( view,
+						absolutePrimitive - view.firstPrimitive );
+				if ( primitive == NULL
+						|| primitive->lightIndex
+							!= view.firstLight + lightIndex
+						|| primitive->lightStageIndex
+							!= light->firstLightStage + stageIndex
+						|| ( primitive->kind
+							!= CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP
+							&& primitive->surfaceIndex
+								!= light->firstSurface
+									+ stagePrimitiveIndex )
+						|| primitive->receiver < previousReceiver
+						|| ( stage->disposition
+							== CLASSIC_FOG_BLEND_STAGE_DRAW
+							&& primitive->disposition
+								!= CLASSIC_FOG_BLEND_PRIMITIVE_DRAW )
+						|| ( stage->disposition
+							!= CLASSIC_FOG_BLEND_STAGE_DRAW
+							&& primitive->disposition
+								== CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) ) {
+					return VK_ClassicFogBlend_Fail( viewDef,
+						CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+						VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+				}
+				previousReceiver = primitive->receiver;
+				if ( light->kind == CLASSIC_FOG_BLEND_LIGHT_FOG ) {
+					const bool cap = primitive->kind
+						== CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP;
+					if ( ( !cap && primitive->kind
+							!= CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER )
+							|| cap != ( primitive->receiver
+								== CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM )
+							|| ( cap && stagePrimitiveIndex
+								!= stage->primitiveCount - 1 ) ) {
+						return VK_ClassicFogBlend_Fail( viewDef,
+							CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+							VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+					}
+				} else if ( primitive->kind
+						!= CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+						|| primitive->receiver
+							== CLASSIC_FOG_BLEND_RECEIVER_FRUSTUM ) {
+					return VK_ClassicFogBlend_Fail( viewDef,
+						CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+						VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+				}
+			}
+			expectedStagePrimitive += stage->primitiveCount;
+			if ( stage->disposition == CLASSIC_FOG_BLEND_STAGE_DRAW ) {
+				activeStages++;
+			} else {
+				if ( stage->disposition <= CLASSIC_FOG_BLEND_STAGE_DRAW
+						|| stage->disposition
+							>= CLASSIC_FOG_BLEND_STAGE_DISPOSITION_COUNT ) {
+					return VK_ClassicFogBlend_Fail( viewDef,
+						CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+						VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+				}
+				noopStages++;
+				if ( stage->disposition
+						== CLASSIC_FOG_BLEND_STAGE_NOOP_INACTIVE_CONDITION ) {
+					inactiveStages++;
+				} else {
+					activeStages++;
+				}
+			}
+		}
+		if ( expectedStagePrimitive
+				!= light->firstPrimitive + light->primitiveCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+	}
+
+	for ( int primitiveIndex = 0; primitiveIndex < view.primitiveCount;
+			++primitiveIndex ) {
+		const classicFogBlendDomainPrimitive_t *primitive =
+			R_ClassicFogBlendDomain_ViewPrimitive( view, primitiveIndex );
+		if ( primitive == NULL
+				|| primitive->lightIndex < view.firstLight
+				|| primitive->lightIndex
+					>= view.firstLight + view.lightCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		const int localLightIndex = primitive->lightIndex - view.firstLight;
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( view, localLightIndex );
+		if ( light == NULL
+				|| primitive->lightStageIndex < light->firstLightStage
+				|| primitive->lightStageIndex
+					>= light->firstLightStage + light->lightStageCount ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		const int localStageIndex = primitive->lightStageIndex
+			- light->firstLightStage;
+		const classicFogBlendDomainLightStage_t *stage =
+			R_ClassicFogBlendDomain_LightStage( *light, localStageIndex );
+		if ( stage == NULL
+				|| ( primitive->kind
+					!= CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP
+					&& ( primitive->surfaceIndex < view.firstSurface
+						|| primitive->surfaceIndex
+							>= view.firstSurface + view.surfaceCount ) ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				VK_CLASSIC_FOG_BLEND_REJECT_ORDER );
+		}
+		if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+			drawablePrimitives++;
+		} else {
+			if ( primitive->disposition <= CLASSIC_FOG_BLEND_PRIMITIVE_DRAW
+					|| primitive->disposition
+						>= CLASSIC_FOG_BLEND_PRIMITIVE_DISPOSITION_COUNT ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+			}
+			noopPrimitives++;
+		}
+		switch ( primitive->kind ) {
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER:
+			if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+				fogReceivers++;
+			}
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP:
+			if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+				fogFrustums++;
+			}
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER:
+			if ( primitive->disposition == CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+				blendReceivers++;
+			}
+			break;
+		default:
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+	}
+
+	if ( expectedSurface != view.firstSurface + view.surfaceCount
+			|| expectedStage != view.firstLightStage + view.lightStageCount
+			|| expectedPrimitive != view.firstPrimitive + view.primitiveCount
+			|| fogLights != view.fogLightCount
+			|| blendLights != view.blendLightCount
+			|| noopLights != view.noopLightCount
+			|| activeStages != view.activeLightStageCount
+			|| inactiveStages != view.inactiveLightStageCount
+			|| noopStages != view.noopLightStageCount
+			|| drawablePrimitives != view.drawablePrimitiveCount
+			|| noopPrimitives != view.noopPrimitiveCount
+			|| fogReceivers != view.fogReceiverPrimitiveCount
+			|| fogFrustums != view.fogFrustumPrimitiveCount
+			|| blendReceivers != view.blendPrimitiveCount ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+	}
+	return true;
+}
+
+bool VK_ClassicFogBlend_Preflight( const viewDef_t *viewDef ) {
+	memset( &vkClassicFogBlendPrepared, 0,
+		sizeof( vkClassicFogBlendPrepared ) );
+	vkClassicFogBlendPreparedView_t &prepared = vkClassicFogBlendPrepared;
+	prepared.uniformCheckpoint = -1;
+	const classicFogBlendDomainView_t *view =
+		R_ClassicFogBlendDomain_FindView( viewDef );
+	prepared.view = view;
+	prepared.viewDef = viewDef;
+	if ( view == NULL ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_VIEW );
+	}
+	if ( view->backendOutcome[ CLASSIC_FOG_BLEND_BACKEND_VULKAN ]
+			== CLASSIC_FOG_BLEND_BACKEND_FALLBACK ) {
+		return false;
+	}
+	if ( !view->ready ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			view->failure != CLASSIC_FOG_BLEND_FAILURE_NONE
+				? view->failure
+				: CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			view->failureDetail );
+	}
+	if ( r_skipFogLights.GetBool() || r_showOverDraw.GetInteger() != 0
+			|| r_singleTriangle.GetBool() || r_skipRender.GetBool()
+			|| r_skipRenderContext.GetBool()
+			|| view->skipBlendLights != r_skipBlendLights.GetBool()
+			|| view->useScissor != r_useScissor.GetBool() ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+	}
+	if ( viewDef == NULL || view->viewDef != viewDef
+			|| view->lightCount < 0
+			|| view->lightCount > CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHTS
+			|| view->surfaceCount < 0
+			|| view->surfaceCount > CLASSIC_FOG_BLEND_DOMAIN_MAX_SURFACES
+			|| view->lightStageCount < 0
+			|| view->lightStageCount
+				> CLASSIC_FOG_BLEND_DOMAIN_MAX_LIGHT_STAGES
+			|| view->primitiveCount < 0
+			|| view->primitiveCount
+				> CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES
+			|| view->drawablePrimitiveCount < 0
+			|| view->noopPrimitiveCount < 0
+			|| view->drawablePrimitiveCount + view->noopPrimitiveCount
+				!= view->primitiveCount ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+	}
+	if ( backEnd.renderTexture != NULL
+			|| backEnd.feedbackRenderTexture != NULL
+			|| !VK_Exec_SharedInteractionTargetReady() ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_OFFSCREEN_TARGET );
+	}
+
+	prepared.cmd = VK_Exec_ActiveCmd();
+	prepared.frameSlot = VK_Exec_ActiveFrameSlot();
+	prepared.framebufferWidth = VK_Exec_ActiveFramebufferWidth();
+	prepared.framebufferHeight = VK_Exec_ActiveFramebufferHeight();
+	prepared.layout = view->drawablePrimitiveCount > 0
+		? VK_Exec_FogBlendPipelineLayout() : VK_NULL_HANDLE;
+	prepared.fogPipeline = view->fogReceiverPrimitiveCount > 0
+		|| view->fogFrustumPrimitiveCount > 0
+		? VK_Exec_FogPipeline() : VK_NULL_HANDLE;
+	prepared.uniformSet = view->blendPrimitiveCount > 0
+		? VK_Exec_InteractionUniformSet() : VK_NULL_HANDLE;
+	if ( prepared.cmd == VK_NULL_HANDLE || prepared.frameSlot < 0
+			|| prepared.framebufferWidth <= 0
+			|| prepared.framebufferHeight <= 0 ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_RENDER_SCOPE );
+	}
+	if ( ( view->drawablePrimitiveCount > 0
+				&& prepared.layout == VK_NULL_HANDLE )
+			|| ( ( view->fogReceiverPrimitiveCount > 0
+					|| view->fogFrustumPrimitiveCount > 0 )
+				&& prepared.fogPipeline == VK_NULL_HANDLE )
+			|| ( view->blendPrimitiveCount > 0
+				&& prepared.uniformSet == VK_NULL_HANDLE ) ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_PIPELINE );
+	}
+
+	const int viewportWidth = view->viewportX2 - view->viewportX1 + 1;
+	const int viewportHeight = view->viewportY2 - view->viewportY1 + 1;
+	if ( viewportWidth <= 0 || viewportHeight <= 0
+			|| view->viewportX1 < 0 || view->viewportY1 < 0
+			|| view->viewportX1 != viewDef->viewport.x1
+			|| view->viewportY1 != viewDef->viewport.y1
+			|| view->viewportX2 != viewDef->viewport.x2
+			|| view->viewportY2 != viewDef->viewport.y2
+			|| view->scissorX1 != viewDef->scissor.x1
+			|| view->scissorY1 != viewDef->scissor.y1
+			|| view->scissorX2 != viewDef->scissor.x2
+			|| view->scissorY2 != viewDef->scissor.y2
+			|| view->viewportX1 + viewportWidth
+				> prepared.framebufferWidth
+			|| view->viewportY1 + viewportHeight
+				> prepared.framebufferHeight
+			|| !VK_ClassicFogBlend_FloatsFinite(
+				view->projectionMatrix, 16 )
+			|| memcmp( view->projectionMatrix, viewDef->projectionMatrix,
+				sizeof( view->projectionMatrix ) ) != 0 ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+			VK_CLASSIC_FOG_BLEND_REJECT_VIEW );
+	}
+	prepared.viewport.x = static_cast<float>( view->viewportX1 );
+	prepared.viewport.y = static_cast<float>(
+		prepared.framebufferHeight - view->viewportY1 );
+	prepared.viewport.width = static_cast<float>( viewportWidth );
+	prepared.viewport.height = -static_cast<float>( viewportHeight );
+	prepared.viewport.minDepth = 0.0f;
+	prepared.viewport.maxDepth = 1.0f;
+
+	if ( !VK_ClassicFogBlend_ValidateRanges( viewDef, *view ) ) {
+		return false;
+	}
+	prepared.noopPrimitiveCount = view->noopPrimitiveCount;
+	prepared.noopLightStageCount = view->noopLightStageCount;
+	prepared.noopLightCount = view->noopLightCount;
+
+	if ( !VK_Exec_SharedInteractionGeometryCheckpoint() ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY );
+	}
+
+	for ( int primitiveIndex = 0; primitiveIndex < view->primitiveCount;
+			++primitiveIndex ) {
+		const classicFogBlendDomainPrimitive_t *primitive =
+			R_ClassicFogBlendDomain_ViewPrimitive( *view, primitiveIndex );
+		if ( primitive == NULL ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+				primitiveIndex );
+		}
+		if ( primitive->disposition != CLASSIC_FOG_BLEND_PRIMITIVE_DRAW ) {
+			continue;
+		}
+		if ( prepared.drawPlanCount
+				>= CLASSIC_FOG_BLEND_DOMAIN_MAX_PRIMITIVES ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+		}
+
+		const int localLightIndex = primitive->lightIndex - view->firstLight;
+		const classicFogBlendDomainLight_t *light =
+			R_ClassicFogBlendDomain_ViewLight( *view, localLightIndex );
+		const int localStageIndex = light != NULL
+			? primitive->lightStageIndex - light->firstLightStage : -1;
+		const classicFogBlendDomainLightStage_t *stage = light != NULL
+			? R_ClassicFogBlendDomain_LightStage(
+				*light, localStageIndex ) : NULL;
+		if ( light == NULL || stage == NULL
+				|| stage->disposition != CLASSIC_FOG_BLEND_STAGE_DRAW
+				|| light->disposition != CLASSIC_FOG_BLEND_LIGHT_DRAW
+				|| !VK_ClassicFogBlend_ValidateGeometry( *primitive ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY );
+		}
+
+		vkClassicFogBlendDrawPlan_t &plan =
+			prepared.draws[ prepared.drawPlanCount ];
+		memset( &plan, 0, sizeof( plan ) );
+		plan.primitive = primitive;
+		plan.light = light;
+		plan.stage = stage;
+		plan.vertexOffset = -1;
+		plan.indexOffset = -1;
+		plan.uniformOffset = -1;
+		int pipelineBits = 0;
+		if ( !VK_ClassicFogBlend_MapStageState( *stage, *primitive,
+				pipelineBits, plan.depthCompare, plan.cullMode ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+		plan.pipeline = primitive->kind
+			== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+				? VK_Exec_BlendLightPipeline( pipelineBits )
+				: prepared.fogPipeline;
+		if ( plan.pipeline == VK_NULL_HANDLE ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+				VK_CLASSIC_FOG_BLEND_REJECT_PIPELINE );
+		}
+		if ( !VK_ClassicFogBlend_BuildScissor( *view, *primitive,
+				prepared.framebufferWidth, prepared.framebufferHeight,
+				plan.scissor ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_SCISSOR );
+		}
+		if ( !VK_Exec_PrepareTriGeometry( prepared.cmd,
+				prepared.frameSlot, primitive->legacyGeometry,
+				plan.vertexOffset, plan.indexOffset ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_GEOMETRY );
+		}
+
+		if ( primitive->kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			if ( stage->projectionTextureResourceId == 0
+					|| stage->falloffTextureResourceId == 0
+					|| stage->falloffTextureResourceId
+						!= light->falloffTextureResourceId
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->projectionTextureResourceId,
+						plan.textureSets[ 0 ] )
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->falloffTextureResourceId,
+						plan.textureSets[ 1 ] ) ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_TEXTURE );
+			}
+		} else {
+			if ( stage->fogTextureResourceId == 0
+					|| stage->fogEnterTextureResourceId == 0
+					|| stage->fogTextureResourceId
+						!= light->fogTextureResourceId
+					|| stage->fogEnterTextureResourceId
+						!= light->fogEnterTextureResourceId
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->fogTextureResourceId,
+						plan.textureSets[ 0 ] )
+					|| !VK_ClassicFogBlend_ResolveDescriptor(
+						stage->fogEnterTextureResourceId,
+						plan.textureSets[ 1 ] ) ) {
+				return VK_ClassicFogBlend_Fail( viewDef,
+					CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+					VK_CLASSIC_FOG_BLEND_REJECT_TEXTURE );
+			}
+		}
+		VK_ClassicFogBlend_BuildPayloads(
+			*view, *primitive, *light, *stage, plan );
+		if ( !VK_ClassicFogBlend_FloatsFinite(
+				&plan.push.mvp[ 0 ], 32 )
+				|| ( primitive->kind
+					== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER
+					&& !VK_ClassicFogBlend_FloatsFinite(
+						&plan.blendBlock.lightProjectS[ 0 ], 20 ) ) ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_STATE );
+		}
+		prepared.drawPlanCount++;
+	}
+
+	if ( prepared.drawPlanCount != view->drawablePrimitiveCount ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_COVERAGE_MISMATCH,
+			VK_CLASSIC_FOG_BLEND_REJECT_COUNTS );
+	}
+
+	// Reserve the complete per-primitive blend stream only after every other
+	// plan field is known.  Failure restores this cursor and all geometry.
+	prepared.uniformCheckpoint = VK_Exec_InteractionUniformCheckpoint();
+	if ( prepared.uniformCheckpoint < 0 ) {
+		return VK_ClassicFogBlend_Fail( viewDef,
+			CLASSIC_FOG_BLEND_FAILURE_BACKEND_NOT_READY,
+			VK_CLASSIC_FOG_BLEND_REJECT_UNIFORM );
+	}
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		vkClassicFogBlendDrawPlan_t &plan = prepared.draws[ drawIndex ];
+		if ( plan.primitive->kind
+				!= CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			continue;
+		}
+		plan.uniformOffset = VK_Exec_InteractionUniformAlloc(
+			&plan.blendBlock, sizeof( plan.blendBlock ) );
+		if ( plan.uniformOffset < 0 ) {
+			return VK_ClassicFogBlend_Fail( viewDef,
+				CLASSIC_FOG_BLEND_FAILURE_BACKEND_REJECTED,
+				VK_CLASSIC_FOG_BLEND_REJECT_UNIFORM );
+		}
+	}
+
+	VK_Exec_SharedInteractionGeometryCommit();
+	// The retained cursor is the uniform transaction's commit.
+	prepared.uniformCheckpoint = -1;
+	prepared.ready = true;
+	return true;
+}
+
+void VK_ClassicFogBlend_DrawOwnedView( const viewDef_t *viewDef ) {
+	vkClassicFogBlendPreparedView_t &prepared = vkClassicFogBlendPrepared;
+	if ( !prepared.ready || prepared.committed || prepared.view == NULL
+			|| prepared.viewDef == NULL || prepared.viewDef != viewDef
+			|| prepared.cmd == VK_NULL_HANDLE ) {
+		return;
+	}
+	prepared.committed = true;
+	if ( prepared.drawPlanCount > 0 ) {
+		vkCmdSetViewport( prepared.cmd, 0, 1, &prepared.viewport );
+		vkCmdSetDepthTestEnable( prepared.cmd, VK_TRUE );
+		vkCmdSetDepthWriteEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetFrontFace( prepared.cmd,
+			VK_FRONT_FACE_COUNTER_CLOCKWISE );
+	}
+
+	for ( int drawIndex = 0; drawIndex < prepared.drawPlanCount; ++drawIndex ) {
+		const vkClassicFogBlendDrawPlan_t &plan = prepared.draws[ drawIndex ];
+		VK_Exec_BindPreparedTriGeometry( prepared.cmd, prepared.frameSlot,
+			plan.vertexOffset, plan.indexOffset );
+		vkCmdSetScissor( prepared.cmd, 0, 1, &plan.scissor );
+		vkCmdSetDepthCompareOp( prepared.cmd, plan.depthCompare );
+		vkCmdSetCullMode( prepared.cmd, plan.cullMode );
+		vkCmdBindPipeline( prepared.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			plan.pipeline );
+		vkCmdBindDescriptorSets( prepared.cmd,
+			VK_PIPELINE_BIND_POINT_GRAPHICS, prepared.layout, 0, 2,
+			plan.textureSets, 0, NULL );
+		if ( plan.primitive->kind
+				== CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER ) {
+			const uint32_t dynamicOffset =
+				static_cast<uint32_t>( plan.uniformOffset );
+			vkCmdBindDescriptorSets( prepared.cmd,
+				VK_PIPELINE_BIND_POINT_GRAPHICS, prepared.layout, 2, 1,
+				&prepared.uniformSet, 1, &dynamicOffset );
+		}
+		vkCmdPushConstants( prepared.cmd, prepared.layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( plan.push ), &plan.push );
+		vkCmdDrawIndexed( prepared.cmd,
+			static_cast<uint32_t>( plan.primitive->indexCount ),
+			1, 0, 0, 0 );
+		switch ( plan.primitive->kind ) {
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_RECEIVER:
+			prepared.submittedFogReceivers++;
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_FOG_FRUSTUM_CAP:
+			prepared.submittedFogFrustums++;
+			break;
+		case CLASSIC_FOG_BLEND_PRIMITIVE_BLEND_RECEIVER:
+			prepared.submittedBlendReceivers++;
+			break;
+		default:
+			break;
+		}
+	}
+
+	if ( prepared.drawPlanCount > 0 ) {
+		vkCmdSetDepthBiasEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetStencilTestEnable( prepared.cmd, VK_FALSE );
+		vkCmdSetCullMode( prepared.cmd, VK_CULL_MODE_FRONT_BIT );
+	}
+	const bool coverageAccepted = R_ClassicFogBlendDomain_RecordOwned(
+		viewDef, CLASSIC_FOG_BLEND_BACKEND_VULKAN,
+		prepared.submittedFogReceivers,
+		prepared.submittedFogFrustums,
+		prepared.submittedBlendReceivers,
+		prepared.noopPrimitiveCount,
+		prepared.noopLightStageCount,
+		prepared.noopLightCount );
+	if ( !coverageAccepted ) {
+		common->Warning(
+			"Vulkan: shared fog/blend backend coverage mismatch after commit" );
+	}
+
+	static bool loggedFirstOwnedView = false;
+	if ( !loggedFirstOwnedView && coverageAccepted
+			&& prepared.drawPlanCount > 0 ) {
+		loggedFirstOwnedView = true;
+		common->Printf(
+			"Vulkan: shared fog/blend owned %d fog receivers, %d caps, %d blend receivers, %d primitive noops, %d stage noops, and %d light noops (hash=%016llx)\n",
+			prepared.submittedFogReceivers,
+			prepared.submittedFogFrustums,
+			prepared.submittedBlendReceivers,
+			prepared.noopPrimitiveCount,
+			prepared.noopLightStageCount,
+			prepared.noopLightCount,
+			static_cast<unsigned long long>( prepared.view->hash ) );
 	}
 }
 
@@ -2741,6 +5607,18 @@ static void VK_BlendLight( const drawSurf_t *drawSurfs, const drawSurf_t *drawSu
 	}
 }
 
+// Named rollback seams used by the shared transaction: preflight decides the
+// whole view before either helper can issue established fog/blend work.
+static void VK_Fog_DrawFogLight( const drawSurf_t *globalSurfs,
+		const drawSurf_t *localSurfs ) {
+	VK_FogPass( globalSurfs, localSurfs );
+}
+
+static void VK_Fog_DrawBlendLight( const drawSurf_t *globalSurfs,
+		const drawSurf_t *localSurfs ) {
+	VK_BlendLight( globalSurfs, localSurfs );
+}
+
 /*
 ====================
 VK_Fog_DrawAllLights
@@ -2832,10 +5710,12 @@ void VK_Fog_DrawAllLights( const viewDef_t *viewDef ) {
 				continue;
 			}
 			interPass.fogLightCount++;
-			VK_FogPass( vLight->globalInteractions, vLight->localInteractions );
+			VK_Fog_DrawFogLight(
+				vLight->globalInteractions, vLight->localInteractions );
 		} else if ( vLight->lightShader->IsBlendLight() ) {
 			interPass.blendLightCount++;
-			VK_BlendLight( vLight->globalInteractions, vLight->localInteractions );
+			VK_Fog_DrawBlendLight(
+				vLight->globalInteractions, vLight->localInteractions );
 		}
 	}
 

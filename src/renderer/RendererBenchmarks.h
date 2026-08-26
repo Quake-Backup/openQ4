@@ -31,7 +31,13 @@ typedef struct rendererBenchmarkFrameSample_s {
 	int				submitMsec;
 	int				backEndMsec;
 	int				presentMsec;
+	unsigned long long cpuFrameMicroseconds;
 	int				gpuMsec;
+	bool			gpuFrameTimingValid;
+	renderGpuTimingBackend_t gpuFrameBackend;
+	int				gpuFrameNumber;
+	unsigned int	gpuFrameGeneration;
+	unsigned long long gpuFrameMicroseconds;
 	int				gpuPassMsec[RENDERER_GPU_TIMER_COUNT];
 	int				gpuPassSamples[RENDERER_GPU_TIMER_COUNT];
 	int				uploadBytes;
@@ -63,8 +69,10 @@ typedef struct rendererBenchmarkFrameSample_s {
 
 const rendererBenchmarkBudget_t &RendererBenchmarks_CurrentBudget( void );
 bool RendererBenchmarks_AdaptiveClusterGridEnabled( void );
+void RendererBenchmarks_ResetHistory( void );
 void RendererBenchmarks_RecordFrame( const rendererBenchmarkFrameSample_t &sample );
 void RendererBenchmarks_PrintLatestCapture( void );
+void RendererBenchmarks_PrintTimingMarker( void );
 void RendererBenchmarks_PrintGfxInfo( void );
 bool RendererBenchmark_RunSelfTest( void );
 

@@ -11,6 +11,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Keep the engine's shared File/FileSystem ABI locked to the companion
+  # revision that implements GAME_API 45 and generated-animation cache v3.
+  OPENQ4_GAMELIBS_SHA: 79c9d7d1e26952ffd8e5352f7d51b64ee08b9d82
+
 jobs:
   script-smoke:
     name: Validation Script Smoke
@@ -26,7 +31,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -65,7 +74,11 @@ jobs:
             tools/build/write_pak_manifest.py \
             src/sys/linux/pk4/id_utils.py \
             tools/analysis/clang_tidy_input_safety.py \
+            tools/assets/pack_pbr_orm.py \
+            tools/validation/audit_source_provenance.py \
+            tools/validation/generate_pbr_fixture.py \
             tools/validation/openq4_validate.py \
+            tools/validation/stock_asset_baseline.py \
             tools/tests/renderer_validation_matrix.py \
             tools/tests/arena_campaign.py \
             tools/tests/async_drop_client_contract.py \
@@ -88,6 +101,7 @@ jobs:
             tools/tests/game_type_module_selection.py \
             tools/tests/gamelibs_staging.py \
             tools/tests/generated_animation_cache.py \
+            tools/tests/level_load_cache.py \
             tools/tests/hdr_postprocess_math.py \
             tools/tests/idstr_input_safety.py \
             tools/tests/lexer_peek_contract.py \
@@ -160,16 +174,38 @@ jobs:
             tools/tests/native_glx_shutdown.py \
             tools/tests/network_ipv4_support.py \
             tools/tests/network_ipv6_support.py \
+            tools/tests/network_security.py \
+            tools/tests/openurl_security.py \
             tools/tests/openq4_pure_pack.py \
+            tools/tests/p0_governance_evidence.py \
             tools/tests/packaging_safety.py \
+            tools/tests/parallel_job_system.py \
+            tools/tests/pbr_orm_packer.py \
+            tools/tests/pbr_procedural_fixture.py \
             tools/tests/preprocessor_macro_safety.py \
             tools/tests/posix_memory_management.py \
             tools/tests/posix_monotonic_time.py \
             tools/tests/posix_network_resolution.py \
             tools/tests/posix_thread_shutdown.py \
             tools/tests/release_tooling_safety.py \
+            tools/tests/renderer_advanced_lighting.py \
+            tools/tests/renderer_budget_contract.py \
             tools/tests/renderer_cel_shading.py \
+            tools/tests/renderer_gpu_frame_timing.py \
+            tools/tests/renderer_gpu_skinning.py \
+            tools/tests/renderer_temporal_presentation.py \
             tools/tests/renderer_mp_flat_items.py \
+            tools/tests/renderer_pbr_materials.py \
+            tools/tests/renderer_classic_gui_domain.py \
+            tools/tests/renderer_classic_cinematic_post_domain.py \
+            tools/tests/renderer_milestone_d_acceptance.py \
+            tools/tests/renderer_milestone_d_fixture.py \
+            tools/tests/renderer_classic_special_frame_domain.py \
+            tools/tests/renderer_classic_world_ambient_domain.py \
+            tools/tests/renderer_classic_interaction_domain.py \
+            tools/tests/renderer_classic_fog_blend_domain.py \
+            tools/tests/renderer_classic_subview_domain.py \
+            tools/tests/renderer_classic_deform_domain.py \
             tools/tests/renderer_msaa_cvar_safety.py \
             tools/tests/renderer_picmip_policy.py \
             tools/tests/renderer_player_visibility.py \
@@ -180,6 +216,7 @@ jobs:
             tools/tests/renderer_vulkan_md5r_compatibility.py \
             tools/tests/renderer_vulkan_shadow_compatibility.py \
             tools/tests/renderer_vulkan_world_interaction_compatibility.py \
+            tools/tests/rigid_body_recovery_diagnostics.py \
             tools/tests/savegame_corruption_contract.py \
             tools/tests/savegame_pointer_width_safety.py \
             tools/tests/savegame_v3_contract.py \
@@ -189,15 +226,19 @@ jobs:
             tools/tests/steam_deck_support.py \
             tools/tests/system_console_presentation.py \
             tools/tests/startup_language_override.py \
+            tools/tests/stock_asset_baseline.py \
+            tools/tests/stock_media_fallbacks.py \
             tools/tests/ui_embedded_icons.py \
             tools/tests/validation_hardening.py \
             tools/tests/vk_shader_header_pin.py \
+            tools/tests/vk_temporal_resolve_shader_pin.py \
             tools/tests/vscode_fast_build.py
           bash -n tools/build/meson_setup.sh
           bash -n tools/macos/collect_macos_support_info.sh
           bash -n tools/validation/validate_macos_static.sh
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
+          python tools/validation/audit_source_provenance.py --check
           python tools/tests/arena_campaign.py
           python tools/tests/async_drop_client_contract.py
           python tools/tests/campaign_split_state_transition.py
@@ -219,6 +260,7 @@ jobs:
           python tools/tests/game_type_module_selection.py
           python tools/tests/gamelibs_staging.py
           python tools/tests/generated_animation_cache.py
+          python tools/tests/level_load_cache.py
           python tools/tests/hdr_postprocess_math.py
           python tools/tests/idstr_input_safety.py
           python tools/tests/lexer_peek_contract.py
@@ -287,16 +329,36 @@ jobs:
           python tools/tests/native_glx_shutdown.py
           python tools/tests/network_ipv4_support.py
           python tools/tests/network_ipv6_support.py
+          python tools/tests/network_security.py
+          python tools/tests/openurl_security.py
           python tools/tests/openq4_pure_pack.py
+          python tools/tests/p0_governance_evidence.py
           python tools/tests/packaging_safety.py
+          python tools/tests/parallel_job_system.py
+          python tools/tests/pbr_orm_packer.py
+          python tools/tests/pbr_procedural_fixture.py
           python tools/tests/preprocessor_macro_safety.py
           python tools/tests/release_tooling_safety.py
           python tools/tests/posix_memory_management.py
           python tools/tests/posix_monotonic_time.py
           python tools/tests/posix_network_resolution.py
           python tools/tests/posix_thread_shutdown.py
+          python tools/tests/renderer_advanced_lighting.py
+          python tools/tests/renderer_budget_contract.py
           python tools/tests/renderer_cel_shading.py
+          python tools/tests/renderer_gpu_frame_timing.py
+          python tools/tests/renderer_gpu_skinning.py
+          python tools/tests/renderer_temporal_presentation.py
           python tools/tests/renderer_mp_flat_items.py
+          python tools/tests/renderer_pbr_materials.py
+          python tools/tests/renderer_classic_gui_domain.py
+          python tools/tests/renderer_classic_cinematic_post_domain.py
+          python tools/tests/renderer_classic_special_frame_domain.py
+          python tools/tests/renderer_classic_world_ambient_domain.py
+          python tools/tests/renderer_classic_interaction_domain.py
+          python tools/tests/renderer_classic_fog_blend_domain.py
+          python tools/tests/renderer_classic_subview_domain.py
+          python tools/tests/renderer_classic_deform_domain.py
           python tools/tests/renderer_msaa_cvar_safety.py
           python tools/tests/renderer_picmip_policy.py
           python tools/tests/renderer_player_visibility.py
@@ -307,6 +369,7 @@ jobs:
           python tools/tests/renderer_vulkan_md5r_compatibility.py
           python tools/tests/renderer_vulkan_shadow_compatibility.py
           python tools/tests/renderer_vulkan_world_interaction_compatibility.py
+          python tools/tests/rigid_body_recovery_diagnostics.py
           python tools/tests/savegame_corruption_contract.py
           python tools/tests/savegame_pointer_width_safety.py
           python tools/tests/savegame_v3_contract.py
@@ -316,9 +379,12 @@ jobs:
           python tools/tests/steam_deck_support.py
           python tools/tests/system_console_presentation.py
           python tools/tests/startup_language_override.py
+          python tools/tests/stock_asset_baseline.py
+          python tools/tests/stock_media_fallbacks.py
           python tools/tests/ui_embedded_icons.py
           python tools/tests/validation_hardening.py
           python tools/tests/vk_shader_header_pin.py
+          python tools/tests/vk_temporal_resolve_shader_pin.py
           python tools/tests/vscode_fast_build.py
 
       - name: Dry-run validation profiles
@@ -346,7 +412,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "$env:OPENQ4_GAMELIBS_REPO"
+          git init "$env:OPENQ4_GAMELIBS_REPO"
+          git -C "$env:OPENQ4_GAMELIBS_REPO" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "$env:OPENQ4_GAMELIBS_REPO" fetch --depth 1 origin "$env:OPENQ4_GAMELIBS_SHA"
+          git -C "$env:OPENQ4_GAMELIBS_REPO" checkout --detach "$env:OPENQ4_GAMELIBS_SHA"
+          if ( ( git -C "$env:OPENQ4_GAMELIBS_REPO" rev-parse HEAD ).Trim() -ne $env:OPENQ4_GAMELIBS_SHA ) {
+            throw "openQ4-game checkout did not resolve to $env:OPENQ4_GAMELIBS_SHA"
+          }
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -403,7 +475,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -474,7 +550,7 @@ jobs:
           env LIBGL_ALWAYS_SOFTWARE=1 SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11 xvfb-run -a bash tools/validation/validate_pr.sh \
             --fail-on-dirty \
             --runtime \
-            --runtime-cases renderer-default-safety-selftest,renderer-shadow-planner-selftest,renderer-shadow-projected-diagnostic,sdl3-x11-display-diagnostics \
+            --runtime-cases renderer-foundation-selftests,renderer-pbr-visible-selftest,renderer-cluster-grid-selftest,renderer-default-safety-selftest,renderer-shadow-planner-selftest,renderer-shadow-projected-diagnostic,sdl3-x11-display-diagnostics \
             --runtime-tiers auto \
             --runtime-basepath "" \
             --runtime-skip-official-pak-validation
@@ -532,7 +608,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -782,7 +862,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -1017,7 +1101,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -1146,7 +1234,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/themuffinator/openQ4-game.git "${OPENQ4_GAMELIBS_REPO}"
+          git init "${OPENQ4_GAMELIBS_REPO}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" remote add origin https://github.com/themuffinator/openQ4-game.git
+          git -C "${OPENQ4_GAMELIBS_REPO}" fetch --depth 1 origin "${OPENQ4_GAMELIBS_SHA}"
+          git -C "${OPENQ4_GAMELIBS_REPO}" checkout --detach "${OPENQ4_GAMELIBS_SHA}"
+          test "$(git -C "${OPENQ4_GAMELIBS_REPO}" rev-parse HEAD)" = "${OPENQ4_GAMELIBS_SHA}"
 
       - name: Setup Python
         uses: actions/setup-python@v6

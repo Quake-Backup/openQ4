@@ -691,6 +691,9 @@ void idRenderModelDecal::AddDecalDrawSurf( viewEntity_t *space ) {
 	// be able to reorganize the index list
 	srfTriangles_t *newTri = (srfTriangles_t *)R_FrameAlloc( sizeof( *newTri ) );
 	*newTri = tri;
+	newTri->gpuSkinningJointPaletteAlloc = NULL;
+	newTri->numGpuSkinningJointPaletteAllocJoints = 0;
+	R_ClearStaticGpuSkinningJointPalette( newTri );
 
 	// Snapshot the vertices plus any per-stage color blocks into one transient
 	// upload so the draw surf matches Quake 4's frame-temp decal submission.

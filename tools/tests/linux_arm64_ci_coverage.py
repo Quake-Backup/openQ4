@@ -66,7 +66,11 @@ def validate_push_workflow() -> None:
     require(source, "libgl1-mesa-dri", "push verification software GL runtime dependency")
     require(source, "libglx-mesa0", "push verification GLX runtime dependency")
     require(source, "xvfb-run -a bash tools/validation/validate_push.sh", "push verification runtime smoke")
-    require(source, 'runtime_cases="renderer-default-safety-selftest"', "push verification runtime smoke")
+    require(
+        source,
+        'runtime_cases="renderer-foundation-selftests,renderer-pbr-visible-selftest,renderer-cluster-grid-selftest,renderer-default-safety-selftest"',
+        "push verification runtime smoke",
+    )
     require(source, '--runtime-cases "${runtime_cases}"', "push verification runtime smoke")
     require(source, "sdl3-x11-display-diagnostics", "push verification X11 display diagnostics case")
     require(source, "OPENQ4_FORCE_X11=1 xvfb-run -a python tools/tests/renderer_validation_matrix.py", "push verification OPENQ4_FORCE_X11 runtime smoke")
@@ -90,7 +94,11 @@ def validate_commit_workflow() -> None:
     require(source, "libgl1-mesa-dri", "commit validation software GL runtime dependency")
     require(source, "libglx-mesa0", "commit validation GLX runtime dependency")
     require(source, "xvfb-run -a bash tools/validation/validate_pr.sh", "commit validation runtime smoke")
-    require(source, "--runtime-cases renderer-default-safety-selftest", "commit validation runtime smoke")
+    require(
+        source,
+        "--runtime-cases renderer-foundation-selftests,renderer-pbr-visible-selftest,renderer-cluster-grid-selftest,renderer-default-safety-selftest",
+        "commit validation runtime smoke",
+    )
     require(source, "sdl3-x11-display-diagnostics", "commit validation X11 display diagnostics case")
     require(source, "OPENQ4_FORCE_X11=1 xvfb-run -a python tools/tests/renderer_validation_matrix.py", "commit validation OPENQ4_FORCE_X11 runtime smoke")
     require(source, "--cases sdl3-force-x11-display-diagnostics", "commit validation OPENQ4_FORCE_X11 runtime smoke")

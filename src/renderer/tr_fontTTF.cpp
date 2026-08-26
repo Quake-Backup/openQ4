@@ -570,8 +570,14 @@ R_TTFCreateAtlasMaterial
 
 The atlas lives in a generated image whose name starts with an underscore, so
 the image manager hands the same object to every reference regardless of the
-sampler parameters asked for.  The material is created from source text rather
-than shipped as a .mtr, which keeps this feature inside the executable.
+sampler parameters asked for.  The process-local material deliberately has the
+same name as that image.  An implicit material initially maps an image named
+after itself; sharing the intrinsic atlas identity means that first parse finds
+the scratch image which was uploaded immediately before this call instead of
+probing a nonexistent file and leaving a redundant defaulted image behind.
+
+The material is then installed from source text rather than shipped as a .mtr,
+which keeps this feature inside the executable and pins the GUI sampler state.
 ================
 */
 static const idMaterial *R_TTFCreateAtlasMaterial( const char *imageName, const char *materialName ) {
@@ -586,15 +592,11 @@ static const idMaterial *R_TTFCreateAtlasMaterial( const char *imageName, const 
 		return NULL;
 	}
 
-	// Reinstall unconditionally when the declaration is not already sampling the
-	// atlas. Returning an existing declaration untouched would hand back a
-	// material the manager had reset to the implicit default, which samples a
-	// name no image is registered under and therefore draws nothing at all.
-	if ( !R_TTFMaterialSamplesAtlas( material, imageName ) ) {
-		R_TTFInstallAtlasStage( material, source );
-	} else {
-		material->SetSort( SS_GUI );
-	}
+	// Always replace the implicit stage.  It already resolves to the atlas (the
+	// material and image identities match), which keeps creation warning-free,
+	// but only this generated source pins blend, filtering, clamp and no-picmip
+	// semantics and survives a declaration purge as a complete definition.
+	R_TTFInstallAtlasStage( material, source );
 
 	for ( int i = 0; i < ttfAtlasMaterials.Num(); i++ ) {
 		if ( ttfAtlasMaterials[i]->materialName.Icmp( materialName ) == 0 ) {
@@ -977,7 +979,7 @@ static void R_TTFBuildExtendedPages( idTrueTypeFont &face, const char *fontName,
 	}
 
 	const idStr imageName = va( "_ttfatlasx_%s_%i", safeName.c_str(), pointSize );
-	const idStr materialName = va( "openq4/ttffontx/%s_%i", safeName.c_str(), pointSize );
+	const idStr materialName = imageName;
 
 	glyphInfo_t *glyphs = (glyphInfo_t *)Mem_ClearedAlloc( covered.Num() * sizeof( glyphInfo_t ) );
 	bool *isCovered = (bool *)Mem_ClearedAlloc( covered.Num() * sizeof( bool ) );
@@ -1047,7 +1049,7 @@ static bool R_TTFBuildSlot( idTrueTypeFont &face, const char *fontName, const q4
 	idStr safeName = fontName;
 	safeName.Replace( "/", "_" );
 	const idStr imageName = va( "_ttfatlas_%s_%i", safeName.c_str(), slot.pointSize );
-	const idStr materialName = va( "openq4/ttffont/%s_%i", safeName.c_str(), slot.pointSize );
+	const idStr materialName = imageName;
 
 	q4TTFAtlasResult_t result;
 	const bool packed = R_TTFPackAtlas( face, fontName, slot.pointSize, upscale, codePoints, count, true,

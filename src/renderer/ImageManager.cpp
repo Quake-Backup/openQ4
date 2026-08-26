@@ -32,6 +32,32 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 
+bool R_IsMutableRenderImageName( const char *name ) {
+	if ( name == NULL || name[0] == '\0' ) {
+		return false;
+	}
+	static const char *prefixes[] = {
+		"_cinematic", "_scratch", "_accum",
+		"_reflectionRender", "_refractionRender",
+		"_currentRender", "_originalCurrentRender", "_currentDepth",
+		"_forwardRenderResolved", "_postProcessAlbedo",
+		"_scenePreserveDepth", "_hdrScene", "_ssao", "_cel",
+		"_motionVector", "_bloom", "_hdrLum", "_underwaterDepth",
+		"_shadowMap", "_pointShadowMap",
+		"_translucentShadowMap", "_pointTranslucentShadowMap"
+	};
+	for ( int i = 0; i < static_cast<int>( sizeof( prefixes ) / sizeof( prefixes[0] ) ); ++i ) {
+		if ( idStr::Icmpn( name, prefixes[i], static_cast<int>( strlen( prefixes[i] ) ) ) == 0 ) {
+			return true;
+		}
+	}
+	return !idStr::Icmp( name, "BlurTexture1" ) || !idStr::Icmp( name, "DepthTexture" );
+}
+
+bool R_IsMutableRenderImage( const idImage *image ) {
+	return image != NULL && ( image->IsScratchImage() || R_IsMutableRenderImageName( image->GetName() ) );
+}
+
 // do this with a pointer, in case we want to make the actual manager
 // a private virtual subclass
 idImageManager	imageManager;
@@ -287,6 +313,22 @@ static bool R_IsQ4LightImageNamespace( const char *name ) {
 	return name != NULL
 		&& ( idStr::Icmpn( name, "lights/", 7 ) == 0
 			|| idStr::Icmpn( name, "gfx/lights/", 11 ) == 0 );
+}
+
+static textureUsage_t R_ImageUsageForName( const char *name, textureUsage_t requestedUsage ) {
+	// Namespace remaps are a legacy convenience for generic callers only.
+	// Explicit PBR and high-quality usage classes are cache/storage contracts
+	// and must survive regardless of the source path chosen by an author.
+	if ( requestedUsage != TD_DEFAULT ) {
+		return requestedUsage;
+	}
+	if ( idStr::Icmpn( name, "fonts", 5 ) == 0 || idStr::Icmpn( name, "newfonts", 8 ) == 0 ) {
+		return TD_FONT;
+	}
+	if ( R_IsQ4LightImageNamespace( name ) ) {
+		return TD_LIGHT;
+	}
+	return requestedUsage;
 }
 
 static bool R_IsQ4PresentationImageNamespace( const char *name ) {
@@ -594,14 +636,7 @@ idImage	*idImageManager::GetImageWithParameters( const char *_name, textureFilte
 		declManager->MediaPrint( "DEFAULTED\n" );
 		return globalImages->defaultImage;
 	}
-	if ( usage == TD_DEFAULT ) {
-		if ( idStr::Icmpn( _name, "fonts", 5 ) == 0 || idStr::Icmpn( _name, "newfonts", 8 ) == 0 ) {
-			usage = TD_FONT;
-		}
-		if ( R_IsQ4LightImageNamespace( _name ) ) {
-			usage = TD_LIGHT;
-		}
-	}
+	usage = R_ImageUsageForName( _name, usage );
 	// strip any .tga file extensions from anywhere in the _name, including image program parameters
 	idStr name = _name;
 	name.Replace( ".tga", "" );
@@ -648,12 +683,12 @@ idImage	*idImageManager::ImageFromFile( const char *_name, textureFilter_t filte
 		declManager->MediaPrint( "DEFAULTED\n" );
 		return globalImages->defaultImage;
 	}
-	if ( idStr::Icmpn( _name, "fonts", 5 ) == 0 || idStr::Icmpn( _name, "newfonts", 8 ) == 0 ) {
-		usage = TD_FONT;
-	}
-	if ( R_IsQ4LightImageNamespace( _name ) ) {
-		usage = TD_LIGHT;
-	}
+	usage = R_ImageUsageForName( _name, usage );
+	fileSystem->RecordLevelLoadResource( LEVEL_LOAD_RESOURCE_IMAGE, _name,
+		va( "filter=%d;repeat=%d;usage=%d;cube=%d;downsize=%d;flags=%u",
+			static_cast<int>( filter ), static_cast<int>( repeat ),
+			static_cast<int>( usage ), static_cast<int>( cubeMap ),
+			allowDownSize ? 1 : 0, flags ), 0, 1 );
 
 	// strip any .tga file extensions from anywhere in the _name, including image program parameters
 	idStr name = _name;
@@ -743,16 +778,7 @@ idImage *idImageManager::ImageHandleDeferred( const char *_name, textureFilter_t
 		declManager->MediaPrint( "DEFAULTED\n" );
 		return globalImages->defaultImage;
 	}
-	if ( usage == TD_DEFAULT ) {
-		// Keep the legacy convenience remap for generic callers, but preserve any
-		// explicit material-requested usage class such as TD_HIGH_QUALITY.
-		if ( idStr::Icmpn( _name, "fonts", 5 ) == 0 || idStr::Icmpn( _name, "newfonts", 8 ) == 0 ) {
-			usage = TD_FONT;
-		}
-		if ( R_IsQ4LightImageNamespace( _name ) ) {
-			usage = TD_LIGHT;
-		}
-	}
+	usage = R_ImageUsageForName( _name, usage );
 
 	idStr name = _name;
 	name.Replace( ".tga", "" );
@@ -817,6 +843,7 @@ idImage * idImageManager::ScratchImage( const char *_name, idImageOpts *imgOpts,
 	for ( int i = imageHash.First( hash ); i != -1; i = imageHash.Next( i ) ) {
 		idImage	* image = images[i];
 		if ( name.Icmp( image->GetName() ) == 0 ) {
+			image->scratchImage = true;
 			image->usage = usage;
 			image->levelLoadReferenced = true;
 			image->referencedOutsideLevelLoad = true;
@@ -839,6 +866,7 @@ idImage * idImageManager::ScratchImage( const char *_name, idImageOpts *imgOpts,
 	//
 	idImage* newImage = AllocImage( name );
 	if ( newImage != NULL ) {
+		newImage->scratchImage = true;
 		newImage->usage = usage;
 		newImage->levelLoadReferenced = true;
 		newImage->referencedOutsideLevelLoad = true;
@@ -901,6 +929,10 @@ ReloadImages
 ===============
 */
 void idImageManager::ReloadImages( bool all ) {
+	// a reload exists to observe files dropped since the last level load;
+	// never let it consult (or leave behind) memoized probe results
+	R_SetDDSProbeCacheActive( false );
+
 	for ( int i = 0 ; i < globalImages->images.Num() ; i++ ) {
 		globalImages->images[ i ]->Reload( all );
 	}
@@ -1090,6 +1122,10 @@ Frees all images used by the previous level
 void idImageManager::BeginLevelLoad() {
 	insideLevelLoad = true;
 
+	// search paths are stable for the whole load, so DDS replacement probes
+	// can be memoized until EndLevelLoad finishes LoadLevelImages
+	R_SetDDSProbeCacheActive( true );
+
 	for ( int i = 0 ; i < images.Num() ; i++ ) {
 		idImage	*image = images[ i ];
 		image->ClearUseCount();
@@ -1241,6 +1277,8 @@ void idImageManager::EndLevelLoad() {
 	common->Printf( "%5i images loaded in %5.1f seconds\n", loadCount, (end-start) * 0.001 );
 	common->Printf( "----------------------------------------\n" );
 	//R_ListImages_f( idCmdArgs( "sorted sorted", false ) );
+
+	R_SetDDSProbeCacheActive( false );
 }
 
 /*

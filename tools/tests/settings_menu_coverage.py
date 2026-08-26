@@ -25,6 +25,29 @@ def reject(haystack: str, needle: str, context: str) -> None:
         raise AssertionError(f"Unexpected {needle!r} in {context}")
 
 
+def cvar_statement(source_text: str, name: str, context: str) -> str:
+    match = re.search(
+        rf'^idCVar\s+\w+\(\s*"{re.escape(name)}".*?;\s*$',
+        source_text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match is None:
+        raise AssertionError(f"Missing CVar declaration for {name!r} in {context}")
+    return " ".join(match.group(0).split())
+
+
+def cvar_signature(source_text: str, name: str, context: str) -> tuple[str, set[str]]:
+    statement = cvar_statement(source_text, name, context)
+    match = re.match(
+        rf'idCVar\s+\w+\(\s*"{re.escape(name)}"\s*,\s*"([^"]*)"\s*,\s*([^,]+),',
+        statement,
+        re.IGNORECASE,
+    )
+    if match is None:
+        raise AssertionError(f"Cannot parse CVar declaration for {name!r} in {context}")
+    return match.group(1), {flag.strip() for flag in match.group(2).split("|")}
+
+
 def gui_block(source_text: str, widget_name: str) -> str:
     pattern = re.compile(rf"\b(?:bindDef|choiceDef|editDef|sliderDef|windowDef)\s+{re.escape(widget_name)}\b")
     match = pattern.search(source_text)
@@ -626,10 +649,10 @@ def validate_controls_pane_extraction(mainmenu: str, controls_gui: str) -> None:
         '"loadgame quick"',
         "clientMessageMode",
         '"clientMessageMode 1"',
-        "voteyes",
-        "voteno",
+        "_impulse28",
+        "_impulse29",
         "_ingamestats",
-        "ready",
+        "_impulse17",
         '"emote salute"',
         '"emote cheer"',
         '"emote taunt"',
@@ -961,6 +984,35 @@ def main() -> None:
 
     for text, context in ((sp_cvars, "SP game cvars"), (mp_cvars, "MP game cvars")):
         require(text, 'g_autoSkipCinematics",\t\t"0",\t\t\tCVAR_GAME | PC_CVAR_ARCHIVE | CVAR_BOOL', context)
+
+    # Stock multiplayer GUIs bind these names directly. Both game modules can
+    # be the first module loaded by the unified executable, so each must
+    # register an identical typed declaration rather than leaving a typeless
+    # GUI-created placeholder behind.
+    for name in (
+        "net_menulanserver",
+        "net_serverMenuDedicated",
+        "s_voiceChatSend",
+        "s_voiceChatReceive",
+        "s_voiceChatEcho",
+        "s_voiceVolume",
+        "s_micInputLevel",
+    ):
+        sp_statement = cvar_statement(sp_cvars, name, "SP game cvars")
+        mp_statement = cvar_statement(mp_cvars, name, "MP game cvars")
+        if sp_statement != mp_statement:
+            raise AssertionError(f"SP/MP GUI CVar declarations differ for {name!r}")
+
+    # The modules intentionally retain Quake 4's distinct SP (box) and MP
+    # (cylinder) defaults, but they share an integer type so an in-process
+    # module switch cannot register the same global CVar with two types.
+    sp_default, sp_flags = cvar_signature(sp_cvars, "pm_usecylinder", "SP game cvars")
+    mp_default, mp_flags = cvar_signature(mp_cvars, "pm_usecylinder", "MP game cvars")
+    if (sp_default, mp_default) != ("0", "1"):
+        raise AssertionError("pm_usecylinder no longer preserves the stock SP/MP defaults")
+    for flags, context in ((sp_flags, "SP"), (mp_flags, "MP")):
+        if "CVAR_INTEGER" not in flags or "CVAR_BOOL" in flags:
+            raise AssertionError(f"{context} pm_usecylinder must use the shared integer type")
 
     for cvar in ("cl_gun_x", "cl_gun_y", "cl_gun_z"):
         require(mp_cvars, f'idCVar {cvar}', "MP game cvar definitions")

@@ -585,6 +585,12 @@ private:			// CollisionMap_files.cpp
 	void			ParseBrushes( Lexer *src, idCollisionModelLocal *model );
 	bool			ParseCollisionModel( Lexer *src, const char *fileName, unsigned int mapFileCRC );
 	bool			LoadCollisionModelFile( const char *name, unsigned int mapFileCRC );
+					// Private, source-authoritative generated caches.  These are deliberately
+					// separate from the retail-compatible .cm/.cmc authoring path above.
+	bool			LoadGeneratedCollisionCache( const char *sourcePath, unsigned int mapFileCRC,
+										const char *ownerSettings );
+	void			WriteGeneratedCollisionCache( const char *sourcePath, unsigned int mapFileCRC,
+										const char *ownerSettings );
 
 private:			// CollisionMap_debug
 	int				ContentsFromString( const char *string ) const;

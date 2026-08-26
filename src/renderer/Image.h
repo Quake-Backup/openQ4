@@ -60,6 +60,11 @@ typedef enum {
 	// Preserve retail Quake 4's explicit high-quality / uncompressed material
 	// bucket without renumbering the existing generated-image cache keys.
 	TD_HIGH_QUALITY,
+	// Appended openQ4 PBR usages keep all historical binary-image cache keys
+	// stable. Colour inputs receive gamma-correct mip generation; material
+	// data (ORM/metallic/roughness/AO) always remains linear.
+	TD_PBR_COLOR,
+	TD_MATERIAL_DATA,
 } textureUsage_t;
 
 typedef enum {
@@ -150,8 +155,10 @@ public:
 	void		GenerateCubeImage(const byte* pic[6], int size,
 		textureFilter_t filter, textureUsage_t usage);
 
-	void		CopyFramebuffer(int x, int y, int width, int height);
-	void		CopyDepthbuffer(int x, int y, int width, int height);
+	bool		CopyFramebuffer(int x, int y, int width, int height,
+				int cubeFace = 0);
+	bool		CopyDepthbuffer(int x, int y, int width, int height,
+				int cubeFace = 0);
 
 	void		UploadScratch(const byte* pic, int width, int height);
 
@@ -173,7 +180,9 @@ public:
 	int			GetUploadHeight() const { return opts.height; }
 	textureFilter_t GetFilter() const { return filter; }
 	textureRepeat_t GetRepeat() const { return repeat; }
+	textureUsage_t GetUsage() const { return usage; }
 	bool		IsDefaulted() const { return defaulted; }
+	bool		IsScratchImage() const { return scratchImage; }
 
 	void		SetReferencedOutsideLevelLoad() { referencedOutsideLevelLoad = true; }
 	void		SetReferencedInsideLevelLoad() { levelLoadReferenced = true; }
@@ -248,6 +257,7 @@ private:
 	bool				referencedOutsideLevelLoad;
 	bool				levelLoadReferenced;	// for determining if it needs to be purged
 	bool				defaulted;				// true if the default image was generated because a file couldn't be loaded
+	bool				scratchImage;			// storage is owned/mutated by a runtime render target or upload path
 	ID_TIME_T			sourceFileTime;			// the most recent of all images used in creation, for reloadImages command
 	ID_TIME_T			binaryFileTime;			// the time stamp of the binary file
 	idStr				loadedSourceName;		// source or automatic DDS replacement used by the last successful load
@@ -285,12 +295,19 @@ ID_INLINE idImage::idImage(const char* name) : imgName(name) {
 	referencedOutsideLevelLoad = false;
 	levelLoadReferenced = false;
 	defaulted = false;
+	scratchImage = false;
 	sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
 	binaryFileTime = FILE_NOT_FOUND_TIMESTAMP;
 	loadedSourceName.Clear();
 	refCount = 0;
 	useCount = 0;
 }
+
+// Mutable renderer-owned images must never be treated as static PBR material
+// resources. The name form catches targets before lazy allocation; the image
+// form also catches arbitrary names registered through ScratchImage().
+bool R_IsMutableRenderImageName( const char *name );
+bool R_IsMutableRenderImage( const idImage *image );
 
 
 // data is RGBA
@@ -452,6 +469,9 @@ IMAGEFILES
 void R_LoadImage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2);
 void R_LoadImageForUsage(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, bool makePowerOf2, textureUsage_t usage);
 bool R_ResolvePreferredDDSImageSource(const char* name, idStr& ddsName, ID_TIME_T* timestamp, bool allowPrecompressedDDS, bool* precompressedDDS);
+// enables per-candidate DDS probe memoization for the duration of a level
+// load; disabling also clears all memoized probe results
+void R_SetDDSProbeCacheActive(bool active);
 bool R_LoadPrecompressedDDS(const char* name, idBinaryImage& image, ID_TIME_T* timestamp, textureUsage_t usage, const imageDownsizePolicy_t& downsizePolicy, bool useMipmaps);
 bool R_ImageDDS_RunSelfTest();
 // pic is in top to bottom raster format
@@ -465,6 +485,8 @@ IMAGEPROGRAM
 ====================================================================
 */
 
-void R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, textureUsage_t* usage = NULL);
+// Returns the parser's load result. Direct-file programs return false when the
+// source is missing; a valid PK4-backed source may still have timestamp zero.
+bool R_LoadImageProgram(const char* name, byte** pic, int* width, int* height, ID_TIME_T* timestamp, textureUsage_t* usage = NULL);
 const char* R_ParsePastImageProgram(idLexer& src);
 

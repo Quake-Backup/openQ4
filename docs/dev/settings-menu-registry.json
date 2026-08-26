@@ -914,7 +914,7 @@
       "widget_type": "bind",
       "label_key": "#str_200129",
       "target_type": "bind",
-      "target": "voteyes",
+      "target": "_impulse28",
       "default": "F1",
       "default_keys": [
         "F1"
@@ -936,7 +936,7 @@
       "widget_type": "bind",
       "label_key": "#str_200130",
       "target_type": "bind",
-      "target": "voteno",
+      "target": "_impulse29",
       "default": "F2",
       "default_keys": [
         "F2"
@@ -980,7 +980,7 @@
       "widget_type": "bind",
       "label_key": "#str_201009",
       "target_type": "bind",
-      "target": "ready",
+      "target": "_impulse17",
       "default": "F3",
       "default_keys": [
         "F3"

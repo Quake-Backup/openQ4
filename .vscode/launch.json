@@ -58,6 +58,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm1"
                                         ],
@@ -121,6 +124,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm2"
                                         ],
@@ -184,6 +190,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm3"
                                         ],
@@ -247,6 +256,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm4"
                                         ],
@@ -310,6 +322,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm5"
                                         ],
@@ -373,6 +388,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm6"
                                         ],
@@ -436,6 +454,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm7"
                                         ],
@@ -499,6 +520,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm8"
                                         ],
@@ -562,6 +586,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm9"
                                         ],
@@ -625,6 +652,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm10"
                                         ],
@@ -688,6 +718,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm11"
                                         ],
@@ -751,6 +784,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp1"
                                         ],
@@ -814,6 +850,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp2"
                                         ],
@@ -877,6 +916,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp3"
                                         ],
@@ -940,6 +982,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp4"
                                         ],
@@ -1003,6 +1048,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp5"
                                         ],
@@ -1066,6 +1114,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp6"
                                         ],
@@ -1129,6 +1180,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp7"
                                         ],
@@ -1192,6 +1246,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp8"
                                         ],
@@ -1255,6 +1312,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp9"
                                         ],
@@ -1318,6 +1378,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp10"
                                         ],
@@ -1381,6 +1444,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp11"
                                         ],
@@ -1444,6 +1510,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp12"
                                         ],
@@ -1507,6 +1576,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp13"
                                         ],
@@ -1570,6 +1642,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp14"
                                         ],
@@ -1633,6 +1708,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4cmp15"
                                         ],
@@ -1696,6 +1774,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xdm10"
                                         ],
@@ -1759,6 +1840,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xdm11"
                                         ],
@@ -1822,6 +1906,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xdm13"
                                         ],
@@ -1885,6 +1972,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xdm14"
                                         ],
@@ -1948,6 +2038,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xdm15"
                                         ],
@@ -2011,6 +2104,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dm11v1"
                                         ],
@@ -2074,6 +2170,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4tourney1"
                                         ],
@@ -2137,6 +2236,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xtourney1"
                                         ],
@@ -2200,6 +2302,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xtourney2"
                                         ],
@@ -2263,6 +2368,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf1"
                                         ],
@@ -2326,6 +2434,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf2"
                                         ],
@@ -2389,6 +2500,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf3"
                                         ],
@@ -2452,6 +2566,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf4"
                                         ],
@@ -2515,6 +2632,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf5"
                                         ],
@@ -2578,6 +2698,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf6"
                                         ],
@@ -2641,6 +2764,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf7"
                                         ],
@@ -2704,6 +2830,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4ctf8"
                                         ],
@@ -2767,6 +2896,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4xctf6"
                                         ],
@@ -2830,6 +2962,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dz1"
                                         ],
@@ -2893,6 +3028,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dz2"
                                         ],
@@ -2956,6 +3094,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dz3"
                                         ],
@@ -3019,6 +3160,9 @@
                                             "+set",
                                             "si_pure",
                                             "0",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+spawnServer",
                                             "mp/q4dz4"
                                         ],
@@ -4965,6 +5109,9 @@
                                             "+set",
                                             "si_gameType",
                                             "DM",
+                                            "+set",
+                                            "ui_autoJoin",
+                                            "1",
                                             "+set",
                                             "si_pure",
                                             "0"

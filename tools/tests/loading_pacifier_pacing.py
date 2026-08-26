@@ -39,6 +39,9 @@ def refuse(haystack: str, needle: str, context: str) -> None:
 def function_body(source: str, signature: str) -> str:
     start = source.find(signature)
     if start == -1:
+        method = signature.split("(", 1)[0].split()[-1]
+        start = source.find(f"idFileSystemLocal::{method}(")
+    if start == -1:
         raise AssertionError(f"Missing function signature {signature!r}")
 
     depth = 0
@@ -120,11 +123,15 @@ def validate_read_count_granularity() -> None:
 
     require(body, "READCOUNT_PACIFIER_INTERVAL_BYTES", "AddToReadCount pacifier granularity")
     require(body, "readCountPacifierBytes", "AddToReadCount byte accumulator")
-    require_order(body, "readCount += c;", "session->PacifierUpdate();",
+    require(body, "std::lock_guard<std::mutex> lock( readCountMutex );",
+            "AddToReadCount worker-safe accounting")
+    require(body, "std::this_thread::get_id() == fileSystemMainThread",
+            "AddToReadCount main-thread presentation")
+    require_order(body, "readCount =", "session->PacifierUpdate();",
                   "AddToReadCount progress accounting before pacifier offer")
 
     # Progress accuracy must not regress: readCount still advances every chunk.
-    require(body, "readCount += c;", "AddToReadCount progress accounting")
+    require(body, "readCount =", "AddToReadCount progress accounting")
 
     # The accumulator has to be cleared with the read count or the first load after a
     # reset offers at the wrong point.

@@ -34,7 +34,7 @@
 - One GLSL caster program for all opaque+perforated casters; **slope-scale/constant depth offset applied in the shader** (`r_shadowMapPolygonFactor` 0.75 / `r_shadowMapPolygonOffset` 0.5) because shader-written depth ignores glPolygonOffset (:7866-7883). (On Vulkan, dynamic depth-bias state is an alternative if the receiver convention stays consistent — speculation/design choice.)
 - State: colorMask off, depth LEQUAL+write, blend/stencil off, scissor on (:7885-7891).
 - Per cascade: viewport+scissor to the tile (slot origin + `cascadeIndex%atlasDiv × tileSize`), `glClear(DEPTH)` per tile, projection = `R_ShadowMapClipPlanesToGLMatrix(clipPlanes[cascade])` (:7895-7923). Caster chains: primary/secondary static, tertiary/quaternary dynamic; compose mode blits cached static tiles then draws dynamics only (:7852-7864).
-- Caster culling: `r_shadowMapCasterCulling` default 2 = store back faces (:305, apply :2907).
+- At the pinned reconstruction revision, caster culling used `r_shadowMapCasterCulling` default 2 = store back faces (:305, apply :2907). Current semantics are documented in the user shadow-mapping guide.
 - Point pass (:7986-8160): 6 faces, per-face FBO bind, colorMask ON, clear color 1.0, near=clamp(0.5, depthClamp?16:4, far×0.01), depth clamp when available, per-face view matrices (:7303-7349).
 
 ### Receiver (shadow interaction) uniform surface (:9822-9971, :8549-8615)

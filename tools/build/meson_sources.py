@@ -109,6 +109,13 @@ RENDERER_VK_SOURCE_GLOBS = [
     "renderer/Vulkan/*.cpp",
 ]
 
+# Query/timestamp plumbing is a required Vulkan module input, not an optional
+# source that may silently disappear while the surrounding directory still
+# satisfies the broad discovery glob.
+RENDERER_VK_REQUIRED_SOURCES = (
+    "renderer/Vulkan/VulkanGpuFrameTiming.cpp",
+)
+
 RENDERER_VK_EXCLUDED_SOURCES = (
     "src/renderer/RendererModule.cpp",
     # GL backend, replaced wholesale
@@ -120,6 +127,7 @@ RENDERER_VK_EXCLUDED_SOURCES = (
     "src/renderer/ModernGLExecutor.cpp",
     "src/renderer/ModernGLShaderLibrary.cpp",
     "src/renderer/ModernLightImageAtlas.cpp",
+    "src/renderer/ModernSpecularProbeAtlas.cpp",
     "src/renderer/RenderGraphResources.cpp",
     "src/renderer/GLStateCache.cpp",
     "src/renderer/GLDebugScope.cpp",
@@ -359,6 +367,12 @@ def main(argv: list[str]) -> int:
             for path in RENDERER_GL_EXCLUDED_SOURCES:
                 remove_source(source_set, ordered_sources, path)
         if args.emit == "renderer_vk":
+            try:
+                for rel_path in RENDERER_VK_REQUIRED_SOURCES:
+                    add_required_source(source_set, ordered_sources, source_root, rel_path)
+            except SourceListError as exc:
+                print(exc, file=sys.stderr)
+                return 1
             for path in RENDERER_VK_EXCLUDED_SOURCES:
                 remove_source(source_set, ordered_sources, path)
         if not ordered_sources:

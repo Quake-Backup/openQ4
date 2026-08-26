@@ -44,6 +44,9 @@ const int ASYNC_PROTOCOL_VERSION	= ( ASYNC_PROTOCOL_MAJOR << 16 ) + ASYNC_PROTOC
 const int MAX_ASYNC_CLIENTS			= 32;
 
 const int MAX_USERCMD_BACKUP		= 256;
+// The wire protocol sends the current command plus at most ten backups.
+// Keep packet work bounded independently of the larger circular history.
+const int MAX_USERCMD_PACKET_COMMANDS = 11;
 const int MAX_USERCMD_DUPLICATION	= 25;
 const int MAX_USERCMD_RELAY			= 10;
 
@@ -151,7 +154,7 @@ public:
 	static void				RunFrame( void );
 
 	static void				WriteUserCmdDelta( idBitMsg &msg, const usercmd_t &cmd, const usercmd_t *base );
-	static void				ReadUserCmdDelta( const idBitMsg &msg, usercmd_t &cmd, const usercmd_t *base );
+	static bool				ReadUserCmdDelta( const idBitMsg &msg, usercmd_t &cmd, const usercmd_t *base );
 
 	static bool				DuplicateUsercmd( const usercmd_t &previousUserCmd, usercmd_t &currentUserCmd, int frame, int time );
 	static bool				UsercmdInputChanged( const usercmd_t &previousUserCmd, const usercmd_t &currentUserCmd );
@@ -185,11 +188,13 @@ public:
 	static idCVar			clientServerTimeout;			// time out in seconds for server
 	static idCVar			serverDrawClient;				// the server draws the view of this client
 	static idCVar			serverRemoteConsolePassword;	// remote console password
+	static idCVar			serverAllowLegacyRcon;			// explicit plaintext compatibility opt-in
 	static idCVar			clientPrediction;				// how many additional milliseconds the clients runs ahead
 	static idCVar			clientMaxPrediction;			// max milliseconds into the future a client can run prediction
 	static idCVar			clientUsercmdBackup;			// how many usercmds the client sends from previous frames
 	static idCVar			clientRemoteConsoleAddress;		// remote console address
 	static idCVar			clientRemoteConsolePassword;	// remote console password
+	static idCVar			clientUseLegacyRcon;				// explicit plaintext compatibility opt-in
 	static idCVar			master0;						// idnet master server
 	static idCVar			master1;						// 1st master server
 	static idCVar			master2;						// 2nd master server

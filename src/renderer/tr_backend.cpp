@@ -34,6 +34,13 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderGraph.h"
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
+#include "ClassicGuiDomain.h"
+#include "ClassicCinematicPostDomain.h"
+#include "ClassicSpecialFrameDomain.h"
+#include "ClassicWorldAmbientDomain.h"
+#include "ClassicInteractionDomain.h"
+#include "ClassicFogBlendDomain.h"
+#include "ClassicSubviewDomain.h"
 #include "ModernGLExecutor.h"
 #include "ModernClusteredLighting.h"
 #include "RendererMetrics.h"
@@ -584,9 +591,11 @@ const void	RB_CopyRender( const void *data ) {
 
 	if (cmd->image) {
 		if ( cmd->copyDepth ) {
-			cmd->image->CopyDepthbuffer( cmd->x, cmd->y, cmd->imageWidth, cmd->imageHeight );
+			cmd->image->CopyDepthbuffer( cmd->x, cmd->y, cmd->imageWidth,
+				cmd->imageHeight, cmd->cubeFace );
 		} else {
-			cmd->image->CopyFramebuffer( cmd->x, cmd->y, cmd->imageWidth, cmd->imageHeight );
+			cmd->image->CopyFramebuffer( cmd->x, cmd->y, cmd->imageWidth,
+				cmd->imageHeight, cmd->cubeFace );
 		}
 	}
 }
@@ -631,6 +640,11 @@ static void RB_ResolveMSAA(const void* data) {
 	const resolveRenderTargetCommand_t* cmd;
 
 	cmd = (resolveRenderTargetCommand_t*)data;
+	if ( cmd->resolveDepth ) {
+		// A failed or incomplete attempt must not leave a successful stamp from
+		// an earlier resolve of the same target in this backend frame.
+		RB_InvalidateTemporalDepthStamp( cmd->destRenderTexture );
+	}
 
 	if ( cmd->msaaRenderTexture == NULL || cmd->destRenderTexture == NULL ||
 		!cmd->msaaRenderTexture->EnsureDeviceHandle() ||
@@ -673,7 +687,20 @@ static void RB_ResolveMSAA(const void* data) {
 		glDrawBuffer( GL_NONE );
 		glBlitFramebuffer( 0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST );
 
-		GL_CheckErrors();
+		const GLenum depthResolveError = glGetError();
+		if ( depthResolveError == GL_NO_ERROR ) {
+			RB_StampTemporalDepthResolved( cmd->destRenderTexture,
+				cmd->frameNumber, cmd->historyGeneration );
+		} else {
+			static int lastDepthResolveWarningGeneration = -1;
+			if ( lastDepthResolveWarningGeneration != tr.glContextGeneration ) {
+				common->Warning(
+					"RB_ResolveMSAA: depth resolve failed with GL error 0x%04x; temporal presentation will use spatial reconstruction",
+					static_cast<unsigned int>( depthResolveError ) );
+				lastDepthResolveWarningGeneration = tr.glContextGeneration;
+			}
+			GL_CheckErrors();
+		}
 	}
 
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
@@ -730,11 +757,138 @@ smp extensions, or asyncronously by another thread.
 ====================
 */
 int		backEndStartTime, backEndFinishTime;
+
+/*
+====================
+RB_ClassicSubview_CopyOwned
+
+The shared subview corridor owns the *capture edge*, not the child scene
+walker.  Once the sealed child-scene/capture record exactly matches the legacy
+command, source the copy arguments from that record rather than from mutable
+command storage.  The child draw still deliberately uses the established
+classic renderer until its complete material/light ownership has a dedicated
+domain.
+====================
+*/
+static bool RB_ClassicSubview_CopyOwned( const classicSubviewDomainView_t &view ) {
+	if ( view.captureImage == NULL || !view.captureImage->IsLoaded()
+			|| view.captureWidth <= 0 || view.captureHeight <= 0 ) {
+		return false;
+	}
+
+	RB_LogComment( "***************** RB_ClassicSubview_CopyOwned *****************\n" );
+	return view.captureCopyDepth
+		? view.captureImage->CopyDepthbuffer( view.captureX, view.captureY,
+			view.captureWidth, view.captureHeight, view.captureCubeFace )
+		: view.captureImage->CopyFramebuffer( view.captureX, view.captureY,
+			view.captureWidth, view.captureHeight, view.captureCubeFace );
+}
+
+static const classicSubviewDomainView_t *RB_ClassicSubview_Preflight(
+		const viewDef_t *viewDef ) {
+	if ( !r_rendererSharedSubview.GetBool() || viewDef == NULL
+			|| !viewDef->isSubview ) {
+		return NULL;
+	}
+	const classicSubviewDomainView_t *view =
+		R_ClassicSubviewDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
+		return NULL;
+	}
+	if ( view->backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A descendant or sibling has already rejected this sealed nested
+		// transaction. Continue with the untouched command stream; do not turn
+		// the remaining parent edge into a mixed shared/classic ownership case.
+		return NULL;
+	}
+	const bool nestedDynamicReady =
+		R_ClassicCinematicPostDomain_SubviewTransactionReady( viewDef,
+			CLASSIC_CINEMATIC_POST_BACKEND_GL );
+	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
+				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) )
+			|| !R_ClassicSubviewDomain_ReadyForBackend( *view,
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ) ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+			!view->ready ? view->failure
+				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
+					: ( !nestedDynamicReady
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE
+						: ( !R_ClassicSubviewDomain_ReadyForBackend( *view,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL )
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE
+						: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ) ) ),
+			!view->ready ? view->failureDetail : 1 );
+		return NULL;
+	}
+	return view;
+}
+
+static void RB_DrawSharedDirectSubview( const void *data,
+		const classicSubviewDomainView_t &view ) {
+	// The direct SS_SUBVIEW path has no RC_COPY_RENDER edge. Its sealed view
+	// semantics select the mature full 3D executor, then ownership is published
+	// only after that complete child view returns.
+	RB_DrawView( data );
+	if ( view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A nested cinematic/post range rejected while the mature child-view
+		// executor was active. Its rollback already covered this complete tree.
+		return;
+	}
+	if ( !R_ClassicSubviewDomain_RecordDirectOwned( view.viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ) ) {
+		common->Warning( "OpenGL: shared direct subview coverage rejected after committed view" );
+	}
+}
+
+// Render-demo playback is a complete recorded 3D frame. The shared boundary
+// seals its packet/session provenance, then deliberately dispatches the mature
+// full view executor; it cannot safely substitute only one of that view's
+// depth, interaction, ambient, fog, subview, or feedback ranges.
+static bool RB_DrawSharedRenderDemoView( const void *data ) {
+	const drawSurfsCommand_t *cmd =
+		reinterpret_cast<const drawSurfsCommand_t *>( data );
+	const viewDef_t *viewDef = cmd != NULL ? cmd->viewDef : NULL;
+	if ( !R_ClassicSpecialFrameDomain_ReadyForBackend( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL ) ) {
+		R_ClassicSpecialFrameDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL,
+			CLASSIC_SPECIAL_FRAME_FAILURE_BACKEND_NOT_READY, 0 );
+		return false;
+	}
+	RB_DrawView( data );
+	if ( !R_ClassicSpecialFrameDomain_RecordOwned( viewDef,
+			CLASSIC_SPECIAL_FRAME_SCOPE_RENDER_DEMO,
+			CLASSIC_SPECIAL_FRAME_BACKEND_GL, viewDef->numDrawSurfs ) ) {
+		common->Warning( "OpenGL: shared render-demo coverage rejected after committed view" );
+	}
+	return true;
+}
+
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// r_debugRenderToTexture
 	int	c_draw3d = 0, c_draw2d = 0, c_setBuffers = 0, c_swapBuffers = 0, c_copyRenders = 0, c_specialEffects = 0, c_renderTargetOps = 0;
 
 	R_GLDebugOutput_FlushMessages();
+	// Clear frame-local pointers and ownership before every command stream,
+	// including the empty-frame fast path below.
+	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
+	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
+	R_ModernClusteredLighting_ResetDecalsForFrame();
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}
@@ -743,7 +897,6 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	// The legacy backend issues raw GL between the last modern pass of the previous
 	// frame and this frame's modern submits; cached state from last frame is stale.
 	R_GLStateCache_InvalidateAll( "backend frame begin" );
-
 	if ( R_ScenePackets_SidePipelineRequired() ) {
 		const int packetBuildStart = Sys_Milliseconds();
 		const idScenePacketFrame *scenePackets = NULL;
@@ -788,6 +941,30 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		R_RendererMetrics_RecordRenderGraphResources( R_RenderGraphResources_Stats() );
 		R_MaterialResourceTable_PrepareFrame( *scenePackets );
 		R_RendererMetrics_RecordMaterialResourceTable( R_MaterialResourceTable_Stats() );
+		if ( r_rendererSharedGui.GetBool()
+				|| r_rendererSharedInWorldGui.GetBool() ) {
+			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		}
+		// Special-view topology must be sealed before cinematic/post ranges can
+		// join one of its atomic root transactions.
+		if ( r_rendererSharedSubview.GetBool() ) {
+			R_ClassicSubviewDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedCinematicPost.GetBool() ) {
+			R_ClassicCinematicPostDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedSpecialFrame.GetBool() ) {
+			R_ClassicSpecialFrameDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldAmbient.GetBool() ) {
+			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldInteraction.GetBool() ) {
+			R_ClassicInteractionDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldFogBlend.GetBool() ) {
+			R_ClassicFogBlendDomain_PrepareFrame( *scenePackets );
+		}
 		R_ModernGLExecutor_PrepareFrame( *scenePackets, legacyGraph );
 		rg_modernStatMirrorsZeroed = false;	// active frame wrote real stats; re-zero on next dormant frame
 	} else {
@@ -823,17 +1000,60 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 	backEnd.postProcessSourceColorSpace = tr.postProcessSourceColorSpace;
 	backEnd.postProcessSMAAQuality = tr.postProcessSMAAQuality;
 	idRenderTexture::BindNull();
+	const classicSubviewDomainView_t *pendingSharedSubview = NULL;
 
 	// upload any image loads that have completed
 	//globalImages->CompleteBackgroundImageLoads();
 
 	for ( ; cmds ; cmds = (const emptyCommand_t *)cmds->next ) {
+		if ( pendingSharedSubview != NULL
+				&& cmds->commandId != RC_COPY_RENDER ) {
+			if ( pendingSharedSubview->backendOutcome[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+					== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+				R_ClassicSubviewDomain_RecordBackendFallback(
+					pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+					CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+					static_cast<int>( cmds->commandId ) );
+			}
+			pendingSharedSubview = NULL;
+		}
 		switch ( cmds->commandId ) {
 		case RC_NOP:
 			break;
-		case RC_DRAW_VIEW:
-			R_RendererMetrics_BeginGpuTimer( ((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
-			if ( !((const drawSurfsCommand_t *)cmds)->viewDef->viewEntitys && R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ) {
+		case RC_DRAW_VIEW: {
+			const viewDef_t *drawView = ((const drawSurfsCommand_t *)cmds)->viewDef;
+			const classicSubviewDomainView_t *sharedSubview =
+				RB_ClassicSubview_Preflight( drawView );
+			pendingSharedSubview = sharedSubview != NULL
+				&& R_ClassicSubviewDomain_IsCaptureBacked( *sharedSubview )
+				? sharedSubview : NULL;
+			R_RendererMetrics_BeginGpuTimer( drawView->viewEntitys ? RENDERER_GPU_TIMER_DRAW3D : RENDERER_GPU_TIMER_DRAW2D );
+			const bool sharedRenderDemo = drawView->viewEntitys != NULL
+				&& r_rendererSharedSpecialFrame.GetBool()
+				&& R_ClassicSpecialFrameDomain_FindRenderDemoView( drawView ) != NULL;
+			const bool sharedCinematicRoot = !drawView->viewEntitys
+				&& r_rendererSharedCinematicPost.GetBool()
+				&& R_ClassicCinematicPostDomain_FindRootCinematicView( drawView ) != NULL;
+			if ( sharedSubview != NULL && R_ClassicSubviewDomain_IsDirect( *sharedSubview ) ) {
+				RB_DrawSharedDirectSubview( cmds, *sharedSubview );
+			} else if ( sharedRenderDemo ) {
+				if ( !RB_DrawSharedRenderDemoView( cmds ) ) {
+					RB_DrawView( cmds );
+				}
+			} else if ( sharedCinematicRoot ) {
+				if ( !RB_DrawSharedCinematicRootView( drawView ) ) {
+					RB_DrawView( cmds );
+				}
+			} else if ( !drawView->viewEntitys
+					&& r_rendererSharedGui.GetBool() ) {
+				// The shared owner is view-atomic.  If its complete preflight or
+				// execution gate rejects this view, execute the untouched classic
+				// view immediately; never mix shared and aggregate GUI stages.
+				if ( !RB_DrawSharedGuiView( drawView ) ) {
+					RB_DrawView( cmds );
+				}
+			} else if ( !drawView->viewEntitys && R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_GUI ) ) {
 				R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_GUI );
 			} else {
 				RB_DrawView( cmds );
@@ -846,9 +1066,23 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				c_draw2d++;
 			}
 			break;
+		}
 		case RC_DRAW_SPECIAL_EFFECTS:
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_SPECIAL_EFFECTS );
-			if ( R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SPECIAL_EFFECTS ) ) {
+			if ( r_rendererSharedSpecialFrame.GetBool()
+					&& R_ClassicSpecialFrameDomain_FindRavenEffectsView(
+						reinterpret_cast<const drawSurfsCommand_t *>( cmds )->viewDef ) != NULL
+					&& !R_ClassicSpecialFrameDomain_ReadyForBackend(
+						reinterpret_cast<const drawSurfsCommand_t *>( cmds )->viewDef,
+						CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+						CLASSIC_SPECIAL_FRAME_BACKEND_GL ) ) {
+				R_ClassicSpecialFrameDomain_RecordBackendFallback(
+					reinterpret_cast<const drawSurfsCommand_t *>( cmds )->viewDef,
+					CLASSIC_SPECIAL_FRAME_SCOPE_RAVEN_EFFECTS,
+					CLASSIC_SPECIAL_FRAME_BACKEND_GL,
+					CLASSIC_SPECIAL_FRAME_FAILURE_BACKEND_NOT_READY, 0 );
+				RB_DrawSpecialEffects( cmds );
+			} else if ( R_ModernGLExecutor_LegacyPassCanSkip( RENDER_PASS_SPECIAL_EFFECTS ) ) {
 				R_ModernGLExecutor_RecordLegacyPassSkipped( RENDER_PASS_SPECIAL_EFFECTS );
 			} else {
 				RB_DrawSpecialEffects( cmds );
@@ -869,6 +1103,19 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			R_RendererMetrics_EndGpuTimer();
 			c_renderTargetOps++;
 			break;
+		case RC_RESOLVE_TEMPORAL_PRESENTATION: {
+			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_RENDER_TARGET );
+			resolveTemporalPresentationCommand_t executionCommand =
+				*reinterpret_cast<const resolveTemporalPresentationCommand_t *>( cmds );
+			if ( tr.takingScreenshot ) {
+				executionCommand.captureFrame = true;
+				executionCommand.historyValid = false;
+			}
+			(void)RB_ResolveTemporalPresentation( executionCommand );
+			R_RendererMetrics_EndGpuTimer();
+			c_renderTargetOps++;
+			break;
+		}
 		case RC_CLEAR_RENDERTARGET:
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_RENDER_TARGET );
 			RB_ClearRenderTarget(cmds);
@@ -905,17 +1152,71 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			c_swapBuffers++;
 			break;
 		}
-		case RC_COPY_RENDER:
+		case RC_COPY_RENDER: {
 			R_RendererMetrics_BeginGpuTimer( RENDERER_GPU_TIMER_COPY_RENDER );
-			RB_CopyRender( cmds );
+			const copyRenderCommand_t *copy =
+				reinterpret_cast<const copyRenderCommand_t *>( cmds );
+			const bool sharedCaptureMatches = pendingSharedSubview != NULL
+				&& pendingSharedSubview->backendOutcome[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+					== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+				&& !r_skipCopyTexture.GetBool()
+				&& R_ClassicSubviewDomain_CaptureMatches( *pendingSharedSubview,
+					copy->image, copy->x, copy->y, copy->imageWidth,
+					copy->imageHeight, copy->cubeFace, copy->copyDepth );
+			const bool copied = sharedCaptureMatches
+				? RB_ClassicSubview_CopyOwned( *pendingSharedSubview )
+				: ( !r_skipCopyTexture.GetBool()
+					? ( RB_CopyRender( cmds ), true ) : false );
+			if ( pendingSharedSubview != NULL
+					&& pendingSharedSubview->backendOutcome[
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+						== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+				if ( sharedCaptureMatches && copied ) {
+					R_ClassicSubviewDomain_RecordOwned(
+						pendingSharedSubview->viewDef,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+						pendingSharedSubview->captureImage,
+						pendingSharedSubview->captureX,
+						pendingSharedSubview->captureY,
+						pendingSharedSubview->captureWidth,
+						pendingSharedSubview->captureHeight,
+						pendingSharedSubview->captureCubeFace,
+						pendingSharedSubview->captureCopyDepth );
+				} else if ( r_skipCopyTexture.GetBool() || !copied ) {
+					R_ClassicSubviewDomain_RecordBackendFallback(
+						pendingSharedSubview->viewDef,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+						CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED, 2 );
+				} else {
+					R_ClassicSubviewDomain_RecordBackendFallback(
+						pendingSharedSubview->viewDef,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+						CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 2 );
+				}
+			}
+			pendingSharedSubview = NULL;
 			R_RendererMetrics_EndGpuTimer();
 			c_copyRenders++;
 			break;
+		}
 		default:
 			common->Error( "RB_ExecuteBackEndCommands: bad commandId" );
 			break;
 		}
 	}
+
+	if ( pendingSharedSubview != NULL ) {
+		if ( pendingSharedSubview->backendOutcome[
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL]
+				== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+			R_ClassicSubviewDomain_RecordBackendFallback(
+				pendingSharedSubview->viewDef, CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 3 );
+		}
+	}
+	R_ClassicSpecialFrameDomain_FinalizeBackendFrame(
+		CLASSIC_SPECIAL_FRAME_BACKEND_GL );
 
 	// go back to the default texture so the editor doesn't mess up a bound image
 	GL_SelectTexture( 0 );

@@ -32,6 +32,7 @@ enum rendererModernExecutorMetricsMode_t {
 };
 
 void R_RendererMetrics_BeginFrame( int frameCount );
+void R_RendererMetrics_MarkCpuFrameBegin( void );
 void R_RendererMetrics_RecordSubmitMsec( int submitMsec );
 void R_RendererMetrics_AddVisibilityMsec( int msec );
 void R_RendererMetrics_AddPacketBuildMsec( int msec );
@@ -64,5 +65,18 @@ void R_RendererMetrics_ResumeGpuTimer( rendererGpuTimerSlot_t slot, bool resume 
 void R_RendererMetrics_ShutdownGpuTimers( void );
 bool R_RendererMetrics_GpuTimersAvailable( void );
 bool RendererGpuTimer_RunSelfTest( void );
+
+// Delayed whole-frame timing shared by every renderer backend. Backends only
+// publish results after a nonblocking availability check; consumers receive a
+// coherent POD snapshot and never touch GL/Vulkan query objects.
+void R_RendererMetrics_GetGpuFrameTiming( renderGpuFrameTiming_t &timing );
+void R_RendererMetrics_ResetGpuFrameTiming( const char *reason );
+void R_RendererMetrics_SetGpuFrameTimingBackend( renderGpuTimingBackend_t backend, bool supported );
+unsigned int R_RendererMetrics_GpuFrameTimingGeneration( void );
+void R_RendererMetrics_RecordGpuFrameTimingResolved( renderGpuTimingBackend_t backend,
+	int frameNumber, unsigned int generation, unsigned long long elapsedMicroseconds,
+	int currentFrameNumber );
+void R_RendererMetrics_RecordGpuFrameTimingUnavailable( void );
+void R_RendererMetrics_RecordGpuFrameTimingDropped( void );
 
 #endif /* !__RENDERER_METRICS_H__ */

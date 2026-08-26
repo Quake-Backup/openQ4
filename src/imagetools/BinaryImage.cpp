@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #include "../renderer/Image.h"
+#include "../idlib/CryptoHash.h"
 #include "DXT/DXTCodec.h"
 #include "Color/ColorSpace.h"
 
@@ -70,6 +71,36 @@ CPU path, and each distinct downsize signature stores its own copy.
 */
 static bool R_ShouldWriteGeneratedImages() {
 	return image_writeGeneratedImages.GetBool() || cvarSystem->GetCVarBool( "com_makingBuild" );
+}
+
+/*
+========================
+R_MakeCompactBinaryImageFileName
+
+The ordinary generated qpath remains the public/cache-package identity. This
+fixed-length secondary identity is consulted only after that cache is absent or
+invalid, and is written only after the ordinary savepath cannot be opened. This
+lets deeply nested save roots populate a runtime cache without changing existing
+generated-tree priority. The version covers both normalization and path layout;
+bump it if either changes.
+========================
+*/
+static void R_MakeCompactBinaryImageFileName( idStr &compactFileName, const char *logicalName ) {
+	idStr normalizedName = logicalName != NULL ? logicalName : "";
+	normalizedName.BackSlashesToSlashes();
+	normalizedName.ToLower();
+
+	std::uint8_t digest[ idCrypto::SHA256_DIGEST_BYTES ];
+	idCrypto::SHA256( normalizedName.c_str(), normalizedName.Length(), digest );
+
+	static const char hexDigits[] = "0123456789abcdef";
+	char digestHex[ 16 * 2 + 1 ];
+	for ( int i = 0; i < 16; i++ ) {
+		digestHex[ i * 2 + 0 ] = hexDigits[ digest[ i ] >> 4 ];
+		digestHex[ i * 2 + 1 ] = hexDigits[ digest[ i ] & 15 ];
+	}
+	digestHex[ sizeof( digestHex ) - 1 ] = '\0';
+	compactFileName = va( "generated/images/_compact/v1/%s.bimage", digestHex );
 }
 
 static bool R_BinaryImageFormatIsBlockCompressed( textureFormat_t format ) {
@@ -131,30 +162,40 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 	fileData.height = height;
 	fileData.numLevels = numLevels;
 
-	// note: this previously passed the renderer's vertex-cache TAG_TEMP enum
-	// as the allocator's debug tag byte — a port artifact, not a real tag
-	byte * pic = (byte *)Mem_Alloc( width * height * 4 );
-	memcpy( pic, pic_const, width * height * 4 );
+	// Work from the caller's buffer directly; take a mutable copy only when a
+	// color-format conversion has to rewrite the source pixels. 'pic' becomes
+	// owned at the first buffer this function allocates (the conversion copy or
+	// the first mip downsample).
+	const byte * pic = pic_const;
+	bool picOwned = false;
 
-	if ( colorFormat == CFM_YCOCG_DXT5 ) {
-		// convert the image data to YCoCg and use the YCoCgDXT5 compressor
-		idColorSpace::ConvertRGBToCoCg_Y( pic, pic, width, height );
-	} else if ( colorFormat == CFM_NORMAL_DXT5 ) {
-		// Blah, HQ swizzles automatically, Fast doesn't
-		if ( !image_highQualityCompression.GetBool() ) {
+	const bool needsMutableCopy =
+		( colorFormat == CFM_YCOCG_DXT5 ) ||
+		( colorFormat == CFM_NORMAL_DXT5 && !image_highQualityCompression.GetBool() ) ||
+		( colorFormat == CFM_GREEN_ALPHA );
+	if ( needsMutableCopy ) {
+		byte * converted = (byte *)Mem_Alloc( width * height * 4 );
+		memcpy( converted, pic_const, width * height * 4 );
+		if ( colorFormat == CFM_YCOCG_DXT5 ) {
+			// convert the image data to YCoCg and use the YCoCgDXT5 compressor
+			idColorSpace::ConvertRGBToCoCg_Y( converted, converted, width, height );
+		} else if ( colorFormat == CFM_NORMAL_DXT5 ) {
+			// Blah, HQ swizzles automatically, Fast doesn't
 			for ( int i = 0; i < width * height; i++ ) {
-				pic[i*4+3] = pic[i*4+0];
-				pic[i*4+0] = 0;
-				pic[i*4+2] = 0;
+				converted[i*4+3] = converted[i*4+0];
+				converted[i*4+0] = 0;
+				converted[i*4+2] = 0;
+			}
+		} else {
+			for ( int i = 0; i < width * height; i++ ) {
+				converted[i*4+1] = converted[i*4+3];
+				converted[i*4+0] = 0;
+				converted[i*4+2] = 0;
+				converted[i*4+3] = 0;
 			}
 		}
-	} else if ( colorFormat == CFM_GREEN_ALPHA ) {
-		for ( int i = 0; i < width * height; i++ ) {
-			pic[i*4+1] = pic[i*4+3];
-			pic[i*4+0] = 0;
-			pic[i*4+2] = 0;
-			pic[i*4+3] = 0;
-		}
+		pic = converted;
+		picOwned = true;
 	}
 
 	int	scaledWidth = width;
@@ -162,27 +203,29 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 	images.SetNum( numLevels );
 	for ( int level = 0; level < images.Num(); level++ ) {
 		idBinaryImageData &img = images[ level ];
-		byte *uploadPic = pic;
+		const byte *uploadPic = pic;
 
 		if ( filterNeutralAlpha ) {
-			uploadPic = (byte *)Mem_Alloc( scaledWidth * scaledHeight * 4 );
-			memcpy( uploadPic, pic, scaledWidth * scaledHeight * 4 );
-			R_ApplyFilterNeutralAlpha( uploadPic, scaledWidth * scaledHeight );
+			byte * filtered = (byte *)Mem_Alloc( scaledWidth * scaledHeight * 4 );
+			memcpy( filtered, pic, scaledWidth * scaledHeight * 4 );
+			R_ApplyFilterNeutralAlpha( filtered, scaledWidth * scaledHeight );
+			uploadPic = filtered;
 		}
 
 		// Images that are going to be DXT compressed and aren't multiples of 4 need to be 
 		// padded out before compressing.
-		byte * dxtPic = uploadPic;
+		const byte * dxtPic = uploadPic;
 		int	dxtWidth = 0;
 		int	dxtHeight = 0;
 		if ( textureFormat == FMT_DXT5 || textureFormat == FMT_DXT1 ) {
 			if ( ( scaledWidth & 3 ) || ( scaledHeight & 3 ) ) {
 				dxtWidth = ( scaledWidth + 3 ) & ~3;
 				dxtHeight = ( scaledHeight + 3 ) & ~3;
-				dxtPic = (byte *)Mem_ClearedAlloc( dxtWidth*4*dxtHeight );
+				byte * padded = (byte *)Mem_ClearedAlloc( dxtWidth*4*dxtHeight );
 				for ( int i = 0; i < scaledHeight; i++ ) {
-					memcpy( dxtPic + i*dxtWidth*4, uploadPic + i*scaledWidth*4, scaledWidth*4 );
+					memcpy( padded + i*dxtWidth*4, uploadPic + i*scaledWidth*4, scaledWidth*4 );
 				}
+				dxtPic = padded;
 			} else {
 				dxtPic = uploadPic;
 				dxtWidth = scaledWidth;
@@ -256,36 +299,41 @@ void idBinaryImage::Load2DFromMemory( int width, int height, const byte * pic_co
 		} else {
 			fileData.format = textureFormat = FMT_RGBA8;
 			img.Alloc( scaledWidth * scaledHeight * 4 );
-			for ( int i = 0; i < img.dataSize; i++ ) {
-				img.data[ i ] = uploadPic[ i ];
-			}
+			memcpy( img.data, uploadPic, img.dataSize );
 		}
 
 		// if we had to pad to quads, free the padded version
 		if ( uploadPic != dxtPic ) {
-			Mem_Free( dxtPic );
+			Mem_Free( (void *)dxtPic );
 			dxtPic = NULL;
 		}
 		if ( uploadPic != pic ) {
-			Mem_Free( uploadPic );
+			Mem_Free( (void *)uploadPic );
 			uploadPic = NULL;
 		}
 
-		// downsample for the next level
-		byte * shrunk = NULL;
-		if ( gammaMips ) {
-			shrunk = R_MipMapWithGamma( pic, scaledWidth, scaledHeight );
-		} else {
-			shrunk = R_MipMap( pic, scaledWidth, scaledHeight );
+		// downsample for the next level; the final level has no next level to feed
+		if ( level + 1 < images.Num() ) {
+			byte * shrunk = NULL;
+			if ( gammaMips ) {
+				shrunk = R_MipMapWithGamma( pic, scaledWidth, scaledHeight );
+			} else {
+				shrunk = R_MipMap( pic, scaledWidth, scaledHeight );
+			}
+			if ( picOwned ) {
+				Mem_Free( (void *)pic );
+			}
+			pic = shrunk;
+			picOwned = true;
 		}
-		Mem_Free( pic );
-		pic = shrunk;
 
 		scaledWidth = Max( 1, scaledWidth >> 1 );
 		scaledHeight = Max( 1, scaledHeight >> 1 );
 	}
 
-	Mem_Free( pic );
+	if ( picOwned ) {
+		Mem_Free( (void *)pic );
+	}
 }
 
 /*
@@ -315,10 +363,16 @@ static void PadImageTo4x4( const byte *src, int width, int height, byte dest[64]
 
 /*
 ========================
-idBinaryImage::Load2DFromCompressedData
+idBinaryImage::Load2DFromOwnedCompressedData
+
+Takes ownership of fileBuffer, which must come from this binary's Mem_Alloc
+family: Clear() releases it with Mem_Free (never hand over a
+fileSystem->ReadFile buffer - in renderer-module builds that is a different
+heap). Each level becomes a view into the buffer, mirroring
+LoadFromGeneratedFile, so no per-level copies are made.
 ========================
 */
-void idBinaryImage::Load2DFromCompressedData( int width, int height, int numLevels, textureFormat_t textureFormat, textureColor_t colorFormat, const byte *data, const int *levelOffsets, const int *levelSizes ) {
+void idBinaryImage::Load2DFromOwnedCompressedData( int width, int height, int numLevels, textureFormat_t textureFormat, textureColor_t colorFormat, byte *fileBuffer, const int *levelOffsets, const int *levelSizes ) {
 	Clear();
 
 	fileData.textureType = TT_2D;
@@ -327,6 +381,8 @@ void idBinaryImage::Load2DFromCompressedData( int width, int height, int numLeve
 	fileData.width = width;
 	fileData.height = height;
 	fileData.numLevels = numLevels;
+
+	loadedFileData = fileBuffer;
 
 	images.SetNum( numLevels );
 	int levelWidth = width;
@@ -337,8 +393,7 @@ void idBinaryImage::Load2DFromCompressedData( int width, int height, int numLeve
 		img.destZ = 0;
 		img.width = levelWidth;
 		img.height = levelHeight;
-		img.Alloc( levelSizes[ level ] );
-		memcpy( img.data, data + levelOffsets[ level ], levelSizes[ level ] );
+		img.SetExternalData( loadedFileData + levelOffsets[ level ], levelSizes[ level ] );
 
 		levelWidth = Max( 1, levelWidth >> 1 );
 		levelHeight = Max( 1, levelHeight >> 1 );
@@ -400,18 +455,20 @@ void idBinaryImage::LoadCubeFromMemory( int width, const byte * pics[6], int num
 				memcpy( img.data, pic, img.dataSize );
 			}
 
-			// downsample for the next level
-			byte * shrunk = NULL;
-			if ( gammaMips ) {
-				shrunk = R_MipMapWithGamma( pic, scaledWidth, scaledWidth );
-			} else {
-				shrunk = R_MipMap( pic, scaledWidth, scaledWidth );
+			// downsample for the next level; the final level has no next level to feed
+			if ( level + 1 < fileData.numLevels ) {
+				byte * shrunk = NULL;
+				if ( gammaMips ) {
+					shrunk = R_MipMapWithGamma( pic, scaledWidth, scaledWidth );
+				} else {
+					shrunk = R_MipMap( pic, scaledWidth, scaledWidth );
+				}
+				if ( pic != orig ) {
+					Mem_Free( (void *)pic );
+					pic = NULL;
+				}
+				pic = shrunk;
 			}
-			if ( pic != orig ) {
-				Mem_Free( (void *)pic );
-				pic = NULL;
-			}
-			pic = shrunk;
 
 			scaledWidth = Max( 1, scaledWidth >> 1 );
 		}
@@ -436,22 +493,26 @@ bool idBinaryImage::WriteToFile( idFile *file, ID_TIME_T sourceFileTime ) {
 	fileData.headerMagic = BIMAGE_MAGIC;
 	fileData.sourceFileTime = sourceFileTime;
 
-	file->WriteBig( fileData.sourceFileTime );
-	file->WriteBig( fileData.headerMagic );
-	file->WriteBig( fileData.textureType );
-	file->WriteBig( fileData.format );
-	file->WriteBig( fileData.colorFormat );
-	file->WriteBig( fileData.width );
-	file->WriteBig( fileData.height );
-	file->WriteBig( fileData.numLevels );
+	if ( file->WriteBig( fileData.sourceFileTime ) != sizeof( fileData.sourceFileTime ) ||
+		 file->WriteBig( fileData.headerMagic ) != sizeof( fileData.headerMagic ) ||
+		 file->WriteBig( fileData.textureType ) != sizeof( fileData.textureType ) ||
+		 file->WriteBig( fileData.format ) != sizeof( fileData.format ) ||
+		 file->WriteBig( fileData.colorFormat ) != sizeof( fileData.colorFormat ) ||
+		 file->WriteBig( fileData.width ) != sizeof( fileData.width ) ||
+		 file->WriteBig( fileData.height ) != sizeof( fileData.height ) ||
+		 file->WriteBig( fileData.numLevels ) != sizeof( fileData.numLevels ) ) {
+		return false;
+	}
 
 	for ( int i = 0; i < images.Num(); i++ ) {
 		idBinaryImageData &img = images[ i ];
-		file->WriteBig( img.level );
-		file->WriteBig( img.destZ );
-		file->WriteBig( img.width );
-		file->WriteBig( img.height );
-		file->WriteBig( img.dataSize );
+		if ( file->WriteBig( img.level ) != sizeof( img.level ) ||
+			 file->WriteBig( img.destZ ) != sizeof( img.destZ ) ||
+			 file->WriteBig( img.width ) != sizeof( img.width ) ||
+			 file->WriteBig( img.height ) != sizeof( img.height ) ||
+			 file->WriteBig( img.dataSize ) != sizeof( img.dataSize ) ) {
+			return false;
+		}
 		if ( file->Write( img.data, img.dataSize ) != img.dataSize ) {
 			return false;
 		}
@@ -473,13 +534,20 @@ ID_TIME_T idBinaryImage::WriteGeneratedFile( ID_TIME_T sourceFileTime ) {
 	MakeGeneratedFileName( binaryFileName );
 	// Write generated cache data to savepath so long image-program names stay under
 	// Windows path limits even when fs_basepath points at "Program Files".
-	idFileLocal file( fileSystem->OpenFileWrite( binaryFileName, "fs_savepath" ) );
+	idStr writeFileName = binaryFileName;
+	idFile *outputFile = fileSystem->OpenFileWrite( writeFileName, "fs_savepath" );
+	if ( outputFile == NULL ) {
+		R_MakeCompactBinaryImageFileName( writeFileName, GetName() );
+		outputFile = fileSystem->OpenFileWrite( writeFileName, "fs_savepath" );
+	}
+	idFileLocal file( outputFile );
 	if ( file == NULL ) {
-		idLib::Warning( "idBinaryImage: Could not open file '%s'", binaryFileName.c_str() );
+		idLib::Warning( "idBinaryImage: Could not open generated cache '%s' or compact fallback '%s'",
+			binaryFileName.c_str(), writeFileName.c_str() );
 		return FILE_NOT_FOUND_TIMESTAMP;
 	}
 	if ( image_showGeneratedImageWrites.GetBool() ) {
-		idLib::Printf( "Writing %s\n", binaryFileName.c_str() );
+		idLib::Printf( "Writing %s\n", writeFileName.c_str() );
 	}
 
 	if ( !WriteToFile( file, sourceFileTime ) ) {
@@ -499,11 +567,15 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
 	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
-	if ( bFile == NULL ) {
-		return FILE_NOT_FOUND_TIMESTAMP;
-	}
-	if ( LoadFromGeneratedFile( bFile, sourceFileTime, true ) ) {
+	if ( bFile != NULL && LoadFromGeneratedFile( bFile, sourceFileTime, true ) ) {
 		return bFile->Timestamp();
+	}
+
+	idStr compactFileName;
+	R_MakeCompactBinaryImageFileName( compactFileName, GetName() );
+	idFileLocal compactFile = fileSystem->OpenFileRead( compactFileName );
+	if ( compactFile != NULL && LoadFromGeneratedFile( compactFile, sourceFileTime, true ) ) {
+		return compactFile->Timestamp();
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
 }
@@ -520,11 +592,27 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFileUnchecked() {
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
 	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
-	if ( bFile == NULL ) {
-		return FILE_NOT_FOUND_TIMESTAMP;
-	}
-	if ( LoadFromGeneratedFile( bFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
+	if ( bFile != NULL && LoadFromGeneratedFile( bFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
 		return bFile->Timestamp();
+	}
+	return FILE_NOT_FOUND_TIMESTAMP;
+}
+
+/*
+==========================
+idBinaryImage::LoadFromCompactGeneratedFileUnchecked
+
+Loads the fixed-length recovery identity after the ordinary generated cache was
+missing or rejected. The VFS read preserves pure-server directory policy; the
+ordinary generated identity remains authoritative because callers probe it first.
+==========================
+*/
+ID_TIME_T idBinaryImage::LoadFromCompactGeneratedFileUnchecked() {
+	idStr compactFileName;
+	R_MakeCompactBinaryImageFileName( compactFileName, GetName() );
+	idFileLocal compactFile = fileSystem->OpenFileRead( compactFileName );
+	if ( compactFile != NULL && LoadFromGeneratedFile( compactFile, FILE_NOT_FOUND_TIMESTAMP, false ) ) {
+		return compactFile->Timestamp();
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
 }
@@ -765,4 +853,3 @@ void idBinaryImage::GetGeneratedFileName( idStr & gfn, const char *name ) {
 	const uint32_t crc = CRC32_BlockChecksum( normalizedName.c_str(), normalizedName.Length() );
 	gfn = va( "generated/images/_programs/%s_%08x.bimage", prefix.c_str(), static_cast<unsigned int>( crc ) );
 }
-

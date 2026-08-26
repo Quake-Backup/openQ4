@@ -56,6 +56,17 @@ def require_order(haystack: str, first: str, second: str, context: str) -> None:
         raise AssertionError(f"{first!r} must appear before {second!r} in {context}")
 
 
+def cvar_signature(source: str, name: str, context: str) -> tuple[str, set[str]]:
+    match = re.search(
+        rf'idCVar\s+\w+\(\s*"{re.escape(name)}"\s*,\s*"([^"]*)"\s*,\s*([^,]+),',
+        source,
+        re.IGNORECASE,
+    )
+    if match is None:
+        raise AssertionError(f"Missing CVar declaration for {name!r} in {context}")
+    return match.group(1), {flag.strip() for flag in match.group(2).split("|")}
+
+
 def validate_engine() -> None:
     source = read(ROOT / "src" / "framework" / "async" / "AsyncServer.cpp")
 
@@ -497,6 +508,7 @@ def validate_cvars() -> None:
 
     declared = read(mp / "gamesys" / "SysCvar.cpp")
     exported = read(mp / "gamesys" / "SysCvar.h")
+    sp_bots = read(GAME_LIBS_ROOT / "src" / "game" / "bots" / "Bot.cpp")
 
     for name in (
         "bot_enable",
@@ -509,6 +521,17 @@ def validate_cvars() -> None:
     ):
         require(declared, f'idCVar {name}(', "mpgame SysCvar.cpp")
         require(exported, f"extern idCVar {name};", "mpgame SysCvar.h")
+
+    # These legacy SP bot diagnostics share global names with the richer MP
+    # diagnostics. Keep their declaration signatures aligned so loading SP
+    # before MP cannot leave the CVar system with conflicting types or policy.
+    for name in ("bot_debug", "bot_debugnav"):
+        sp_signature = cvar_signature(sp_bots, name, "game bots/Bot.cpp")
+        mp_signature = cvar_signature(declared, name, "mpgame SysCvar.cpp")
+        if sp_signature != mp_signature:
+            raise AssertionError(f"SP/MP bot CVar signatures differ for {name!r}")
+        if "CVAR_INTEGER" not in sp_signature[1] or "CVAR_BOOL" in sp_signature[1]:
+            raise AssertionError(f"{name} must retain the shared integer diagnostic type")
 
     commands = read(mp / "gamesys" / "SysCmds.cpp")
     for command in ("addbot", "removebot", "kickbots", "botlist", "navmesh"):

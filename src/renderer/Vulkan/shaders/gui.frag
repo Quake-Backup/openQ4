@@ -26,7 +26,9 @@ void main() {
     vec4 color = texture(texSampler, fragTexCoord) * fragColor;
     if (pc.params.y > 0.5) {
         if (pc.params.y > 1.5) {
-            if (abs(color.a - pc.params.z) > (0.5 / 255.0)) {
+            // Match fixed-function GL_EQUAL exactly. A tolerance admits
+            // linearly filtered values that the classic alpha test rejects.
+            if (color.a != pc.params.z) {
                 discard;
             }
         } else if (color.a <= pc.params.z) {

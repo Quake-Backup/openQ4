@@ -4090,15 +4090,128 @@ void idCollisionModelManagerLocal::PrintMemInfo( MemInfo *mi ) {
 idCollisionModelManagerLocal::BuildModels
 ================
 */
+static bool CM_GeneratedCacheSourceExists( const char *path ) {
+	idFile *file = fileSystem->OpenFileRead( path, false );
+	if ( file == NULL ) {
+		return false;
+	}
+	fileSystem->CloseFile( file );
+	return true;
+}
+
+static bool CM_GeneratedCacheProcSettings( const char *mapName, idStr &settings ) {
+	idStr sourceProcPath = mapName;
+	sourceProcPath.SetFileExtension( PROC_FILE_EXT );
+	idStr resolvedProcPath = sourceProcPath;
+	idFile *procFile = NULL;
+
+	// LexerFactory enables LEXFL_READBINARY when com_binaryRead is set.  The
+	// lexer then opens the compiled suffix first and falls back to the text
+	// source only when that open fails.  Select the fingerprint source in the
+	// same order so a newly-created or changed .procc cannot reuse a cache that
+	// was built from the .proc file.
+	if ( cvarSystem->GetCVarBool( "com_binaryRead" ) ) {
+		idStr compiledProcPath = sourceProcPath;
+		compiledProcPath += Lexer::sCompiledFileSuffix;
+		procFile = fileSystem->OpenFileRead( compiledProcPath.c_str(), false );
+		if ( procFile != NULL ) {
+			resolvedProcPath = compiledProcPath;
+		}
+	}
+	if ( procFile == NULL ) {
+		procFile = fileSystem->OpenFileRead( sourceProcPath.c_str(), false );
+	}
+	if ( procFile == NULL ) {
+		settings = va( "mode=map-proc;proc=%s;state=missing", sourceProcPath.c_str() );
+		return false;
+	}
+
+	const int length = procFile->Length();
+	const ID_TIME_T timestamp = procFile->Timestamp();
+	const unsigned int containerChecksum = static_cast<unsigned int>( procFile->GetContainerChecksum() );
+	uint32_t looseChecksum = 0;
+	bool complete = length >= 0;
+	if ( complete && containerChecksum == 0 ) {
+		CRC32_InitChecksum( looseChecksum );
+		idList<byte> buffer;
+		buffer.SetNum( 64 * 1024 );
+		procFile->Rewind();
+		int remaining = length;
+		while ( remaining > 0 ) {
+			const int requested = Min( remaining, buffer.Num() );
+			const int bytesRead = procFile->Read( buffer.Ptr(), requested );
+			if ( bytesRead != requested ) {
+				complete = false;
+				break;
+			}
+			CRC32_UpdateChecksum( looseChecksum, buffer.Ptr(), bytesRead );
+			remaining -= bytesRead;
+		}
+		if ( complete ) {
+			CRC32_FinishChecksum( looseChecksum );
+		}
+	}
+	fileSystem->CloseFile( procFile );
+	settings = va( "mode=map-proc;proc=%s;length=%d;timestamp=%lld;container=%08x;loose-crc=%08x;complete=%d",
+		resolvedProcPath.c_str(), length, static_cast<long long>( timestamp ), containerChecksum,
+		looseChecksum, complete ? 1 : 0 );
+	return complete;
+}
+
 void idCollisionModelManagerLocal::BuildModels( const idMapFile *mapFile, bool forceCreateMap) {
 	int i;
 	const idMapEntity *mapEnt;
+	idStr mapSource = mapFile->GetName();
+	mapSource.SetFileExtension( "map" );
+	idStr authoredTextSource = mapFile->GetName();
+	authoredTextSource.SetFileExtension( "cm" );
+	idStr authoredBinarySource = authoredTextSource;
+	authoredBinarySource += "c";
+
+	bool hasAuthoredSource = false;
+	idStr generatedCacheSource = mapSource;
+	if ( !forceCreateMap && cvarSystem->GetCVarBool( "com_binaryRead" )
+		&& CM_GeneratedCacheSourceExists( authoredBinarySource.c_str() ) ) {
+		generatedCacheSource = authoredBinarySource;
+		hasAuthoredSource = true;
+	} else if ( !forceCreateMap && CM_GeneratedCacheSourceExists( authoredTextSource.c_str() ) ) {
+		generatedCacheSource = authoredTextSource;
+		hasAuthoredSource = true;
+	}
+	const idStr authoredSettings = va( "mode=authored;source=%s", generatedCacheSource.c_str() );
+	const idStr generatedCacheOptions = va( "geometry=%08x;source=%s",
+		mapFile->GetGeometryCRC(), generatedCacheSource.c_str() );
 
 	idTimer timer;
 	timer.Start();
 	session->PacifierUpdate();
+	fileSystem->RecordLevelLoadResource( LEVEL_LOAD_RESOURCE_COLLISION,
+		generatedCacheSource.c_str(), generatedCacheOptions.c_str(), 0, 3 );
 
-	if (forceCreateMap || !LoadCollisionModelFile( mapFile->GetName(), mapFile->GetGeometryCRC() ) ) {
+	bool loadedCollisionData = false;
+	if ( hasAuthoredSource ) {
+		loadedCollisionData = LoadGeneratedCollisionCache( generatedCacheSource.c_str(),
+			mapFile->GetGeometryCRC(), authoredSettings.c_str() );
+		if ( !loadedCollisionData ) {
+			loadedCollisionData = LoadCollisionModelFile( mapFile->GetName(), mapFile->GetGeometryCRC() );
+			if ( loadedCollisionData ) {
+				WriteGeneratedCollisionCache( generatedCacheSource.c_str(), mapFile->GetGeometryCRC(),
+					authoredSettings.c_str() );
+			}
+		}
+	}
+
+	idStr procSettings;
+	bool procCacheKeyValid = false;
+	if ( !loadedCollisionData ) {
+		procCacheKeyValid = CM_GeneratedCacheProcSettings( mapFile->GetName(), procSettings );
+		if ( !forceCreateMap && procCacheKeyValid ) {
+			loadedCollisionData = LoadGeneratedCollisionCache( generatedCacheSource.c_str(),
+				mapFile->GetGeometryCRC(), procSettings.c_str() );
+		}
+	}
+
+	if ( !loadedCollisionData ) {
 
 		if ( !mapFile->GetNumEntities() ) {
 			return;
@@ -4129,6 +4242,10 @@ void idCollisionModelManagerLocal::BuildModels( const idMapFile *mapFile, bool f
 
 		// write the collision models to a file
 		WriteCollisionModelsToFile( mapFile->GetName(), 0, numModels, mapFile->GetGeometryCRC() );
+		if ( procCacheKeyValid ) {
+			WriteGeneratedCollisionCache( generatedCacheSource.c_str(), mapFile->GetGeometryCRC(),
+				procSettings.c_str() );
+		}
 	}
 
 	session->PacifierUpdate();

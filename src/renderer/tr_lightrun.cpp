@@ -595,6 +595,11 @@ void R_ReCreateWorldReferences( void ) {
 	// a particular view
 	tr.viewDef = NULL;
 
+	// entityRefs are about to be rebuilt without touching lastModifiedFrameNum,
+	// and memoized draw-surf areas can depend on the old ref chains through the
+	// solid-bounds fallback path
+	R_ClearDrawSurfAreaMemo();
+
 	for ( j = 0; j < tr.worlds.Num(); j++ ) {
 		rw = tr.worlds[j];
 

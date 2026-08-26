@@ -20,8 +20,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+VALIDATION_DIR = Path(__file__).resolve().parents[1] / "validation"
+if str(VALIDATION_DIR) not in sys.path:
+    sys.path.insert(0, str(VALIDATION_DIR))
+
+from renderer_budget_contract import DEFAULT_CONTRACT_PATH, load_contract  # noqa: E402
+
 
 SAFE_TIERS = ("auto", "legacy", "gl33", "gl41", "gl43", "gl45", "gl46")
+PER_MAP_BUDGET_CONTRACT, PER_MAP_BUDGET_BINDING = load_contract(DEFAULT_CONTRACT_PATH)
 
 # Keep in sync with MAX_CONSOLE_LINES in src/framework/Common.cpp. The engine
 # silently ignores any "+command" beyond this limit, which would drop "+quit"
@@ -39,6 +46,16 @@ SELFTEST_CHECKS = [
     ["RendererRenderGraph self-test passed"],
     ["RendererRenderGraphResource self-test passed", "RendererRenderGraphResource self-test skipped"],
     ["RendererMaterialResourceTable self-test passed", "RendererMaterialResourceTable self-test skipped"],
+    ["RendererClassicGuiDomain self-test passed"],
+    ["RendererClassicCinematicPostDomain self-test passed"],
+    ["RendererClassicWorldAmbientDomain self-test passed"],
+    ["RendererClassicInteractionDomain self-test passed"],
+    ["RendererClassicFogBlendDomain self-test passed"],
+    ["RendererClassicSubviewDomain self-test passed"],
+    ["RendererClassicDeformDomain self-test passed"],
+    ["RendererContracts self-test passed"],
+    ["RendererGpuSkinning self-test passed"],
+    ["RendererPBRMaterial self-test passed"],
     ["RendererGeometryResource self-test passed"],
     ["RendererGLStateCache self-test passed", "RendererGLStateCache self-test skipped"],
     ["RendererModernGLShaderLibrary self-test passed"],
@@ -88,6 +105,24 @@ MANUAL_GAMEPLAY_MATRIX = [
         "mode": "SP",
         "map": "game/mcc_landing",
         "purpose": "subviews, remote cameras, cinematic and GUI interaction",
+    },
+    {
+        "id": "sp-mv2-ambient",
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock fixed-function world-ambient ownership and whole-view rollback",
+    },
+    {
+        "id": "sp-mv2-interaction",
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock fixed-classic interaction and shadow ownership parity",
+    },
+    {
+        "id": "sp-mv2-deform",
+        "mode": "SP",
+        "map": "maps/tools/mv2",
+        "purpose": "controlled stock material-move deformation ownership and published-geometry parity",
     },
     {
         "id": "mp-q4dm1-listen",
@@ -210,13 +245,47 @@ GAMEPLAY_BENCHMARK_HARNESS = [
         "coverage": "real SP end-level target chain from game/mcc_2 through storage1 first, storage2, storage1 second, and game/tram1 with active map/filter assertions after each load",
     },
     {
+        "profile": "world-ambient",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile world-ambient --pacing-only --no-gpu-timers",
+        "coverage": "bordered stock maps/tools/mv2 capture with light, subview, GUI, post, portal-fade, and overlay islands disabled for shared world-ambient A/B ownership and explicit-blocker rollback evidence",
+    },
+    {
+        "profile": "deform",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile deform --pacing-only --no-gpu-timers",
+        "coverage": "bordered stock maps/tools/mv2 capture with the stock shaderDemos/move material override, fixed camera, shared world-ambient ownership, and explicit material-deform contract ownership",
+    },
+    {
+        "profile": "interaction",
+        "renderApi": "gl",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction\\gl\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction\\gl\\shadows-off\\savepaths",
+        "coverage": "OpenGL controlled unshadowed, stencil, projected-plus-point mapped, mixed mapped/stencil, and named map-admission fallback ownership with exact shared/classic TGA parity and a required shadows-on/off image delta",
+    },
+    {
+        "profile": "interaction",
+        "renderApi": "vk",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction\\vk\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction\\vk\\shadows-off\\savepaths",
+        "coverage": "Vulkan controlled unshadowed, stencil, projected-plus-point mapped, mixed mapped/stencil, and named map-admission fallback ownership with exact shared/classic TGA parity and a required shadows-on/off image delta",
+    },
+    {
+        "profile": "interaction-shadow-stock",
+        "renderApi": "gl",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api gl --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\gl\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\gl\\shadows-off\\savepaths",
+        "coverage": "OpenGL stock projected, point, CSM/parallel, dynamic, perforated, same-light hybrid, and exact translucent-moment fallback ownership with exact shared/classic TGA parity and required shadows-on/off image deltas",
+    },
+    {
+        "profile": "interaction-shadow-stock",
+        "renderApi": "vk",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile interaction-shadow-stock --render-api vk --pacing-only --no-gpu-timers --reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\vk\\classic\\savepaths --require-references --image-rms-threshold 0 --image-max-threshold 0 --difference-reference-dir .tmp\\renderer-references\\interaction-shadow-stock\\vk\\shadows-off\\savepaths",
+        "coverage": "Vulkan stock projected, point, CSM/parallel, dynamic, perforated, same-light hybrid, and exact translucent-moment fallback ownership with exact shared/classic TGA parity and required shadows-on/off image deltas",
+    },
+    {
         "profile": "tiers",
         "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile tiers",
         "coverage": "forced auto/legacy/gl33/gl41/gl43/gl45/gl46 gameplay probes that either reach gameplay or fail closed with logged tier-contract reasons",
     },
     {
         "profile": "presentation",
-        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile presentation",
+        "command": "python tools\\tests\\renderer_gameplay_benchmark.py --profile presentation --pacing-only",
         "coverage": "windowed/fullscreen coverage for r_swapInterval 0/1 and com_maxfps 0/120/240 while preserving uncapped high-refresh presentation behavior",
     },
     {
@@ -348,7 +417,7 @@ DEFAULT_PROMOTION_CRITERIA = [
     },
     {
         "criterion": "conservative defaults",
-        "required": "`r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; modern executor, submit, visible, side-path, debug, GPU-validation, bindless, shader-reload, and auto-promotion cvars remain off in a clean startup",
+        "required": "`r_renderer best` or explicit `r_renderer arb2` keeps ARB2 visible; shared classic domains, modern executor, submit, visible, side-path, debug, GPU-validation, bindless, shader-reload, and auto-promotion cvars remain off in a clean startup",
     },
     {
         "criterion": "validation evidence",
@@ -363,6 +432,14 @@ DEFAULT_PROMOTION_CRITERIA = [
 WARNING_PATTERNS = {
     "snPrintfOverflow": re.compile(r"idStr::snPrintf:\s*overflow", re.IGNORECASE),
     "idStrWarning": re.compile(r"WARNING:\s+idStr", re.IGNORECASE),
+    "binaryImageCacheWrite": re.compile(
+        r"WARNING:\s*(?:\^[0-9]\s*)*idBinaryImage:\s+Could not open (?:file|generated cache)\b",
+        re.IGNORECASE,
+    ),
+    "expandedLoadscreenPublish": re.compile(
+        r"WARNING:\s*(?:\^[0-9]\s*)*Could not publish expanded loading background\b",
+        re.IGNORECASE,
+    ),
     "shaderCompileOrLink": re.compile(r"(shader compile|program link).*(failed|error)|failed to compile", re.IGNORECASE),
     "glError": re.compile(
         r"\bGL_(?:INVALID_[A-Z_]+|OUT_OF_MEMORY|STACK_(?:OVERFLOW|UNDERFLOW)|CONTEXT_LOST)\b"
@@ -456,7 +533,7 @@ def sanitize_case_id(case_id: str) -> str:
 
 
 def common_args(
-    root: Path,
+    runtime_dir: Path,
     case_id: str,
     basepath: str,
     savepath: Path,
@@ -495,11 +572,23 @@ def common_args(
         "r_rendererModernSubmit",
         "0",
         "+set",
+        "r_rendererSharedSubview",
+        "0",
+        "+set",
+        "r_rendererSharedInWorldGui",
+        "0",
+        "+set",
+        "r_rendererSharedCinematicPost",
+        "0",
+        "+set",
+        "r_rendererSharedSpecialFrame",
+        "0",
+        "+set",
         "fs_savepath",
         str(savepath),
         "+set",
         "fs_devpath",
-        str(root / ".install"),
+        str(runtime_dir),
         "+set",
         "fs_game",
         "baseoq4",
@@ -520,6 +609,9 @@ def common_args(
 
 def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
     selftest_commands = [
+        "+set",
+        "r_renderApi",
+        "gl",
         "+set",
         "r_rendererMetrics",
         "2",
@@ -546,6 +638,17 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         "+rendererRenderGraphSelfTest",
         "+rendererRenderGraphResourceSelfTest",
         "+rendererMaterialResourceTableSelfTest",
+        "+rendererClassicGuiDomainSelfTest",
+        "+rendererClassicCinematicPostDomainSelfTest",
+        "+rendererClassicSpecialFrameDomainSelfTest",
+        "+rendererClassicWorldAmbientDomainSelfTest",
+        "+rendererClassicInteractionDomainSelfTest",
+        "+rendererClassicFogBlendDomainSelfTest",
+        "+rendererClassicSubviewDomainSelfTest",
+        "+rendererClassicDeformDomainSelfTest",
+        "+rendererContractsSelfTest",
+        "+rendererGpuSkinningSelfTest",
+        "+rendererPBRMaterialSelfTest",
         "+rendererGeometryResourceSelfTest",
         "+rendererGLStateCacheSelfTest",
         "+rendererModernGLExecutorSelfTest",
@@ -558,7 +661,8 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         {
             "id": "renderer-foundation-selftests",
             "category": "selftest",
-            "description": "Renderer foundation, upload, metrics, packet, graph, material, geometry, shader, draw, submit, and executor self-tests.",
+            "description": "Renderer foundation, shared contracts, GPU-animation, upload, metrics, packet, graph, material, geometry, shader, draw, submit, and executor self-tests.",
+            "preservesConfig": True,
             "args": selftest_commands,
             "checks": SELFTEST_CHECKS + [["Selected renderer tier:"], ["GL context request:"], ["Renderer API: requested="]],
         },
@@ -613,6 +717,32 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["material=1"],
                 ["emissive=1"],
                 ["overlay=1"],
+                ["Selected renderer tier:"],
+                ["GL context request:"],
+            ],
+        },
+        {
+            "id": "renderer-pbr-visible-selftest",
+            "category": "selftest",
+            "description": "Guarded PBR material admission, sampler packing, and G-buffer/deferred/forward shader corridor self-test.",
+            "args": [
+                "+set",
+                "r_rendererMetrics",
+                "2",
+                "+set",
+                "r_rendererModernExecutor",
+                "1",
+                "+set",
+                "r_rendererModernOpaque",
+                "1",
+                "+rendererPBRVisibleSelfTest",
+                "+gfxInfo",
+            ],
+            "checks": [
+                ["RendererPBRVisible self-test passed"],
+                ["gbuffer=1"],
+                ["deferred=1"],
+                ["forward=1"],
                 ["Selected renderer tier:"],
                 ["GL context request:"],
             ],
@@ -977,16 +1107,16 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
         {
             "id": "renderer-default-safety-selftest",
             "category": "selftest",
-            "description": "Phase 13 conservative-default safety gate for ARB2 default visibility, rollback escape, and default-off modern diagnostic side paths.",
+            "description": "Phase 13 conservative-default safety gate for ARB2 default visibility, rollback escape, shared classic domains, and default-off modern diagnostic side paths.",
             "args": [
                 "+rendererDefaultSafetySelfTest",
                 "+gfxInfo",
             ],
             "checks": [
                 ["RendererDefaultSafety self-test passed"],
-                ["Renderer default safety:", "conservative=1", "rollback=available", "issues=none"],
+                ["Renderer default safety:", "conservative=1", "sharedDeform=0", "rollback=available", "issues=none"],
                 ["Renderer default promotion:", "active=0"],
-                ["Renderer bootstrap:", "defaultVisible=ARB2"],
+                ["Renderer bootstrap:", "defaultVisible=ARB2", "sharedWorldFogBlend=0", "sharedSubview=0"],
             ],
         },
         {
@@ -1383,6 +1513,15 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 "+set",
                 "r_vkValidation",
                 "1",
+                "+rendererContractsSelfTest",
+                "+rendererGpuSkinningSelfTest",
+                "+rendererClassicCinematicPostDomainSelfTest",
+                "+rendererClassicSpecialFrameDomainSelfTest",
+                "+rendererClassicWorldAmbientDomainSelfTest",
+                "+rendererClassicInteractionDomainSelfTest",
+                "+rendererClassicFogBlendDomainSelfTest",
+                "+rendererClassicSubviewDomainSelfTest",
+                "+rendererClassicDeformDomainSelfTest",
                 "+gfxInfo",
             ],
             "checks": [
@@ -1391,6 +1530,16 @@ def build_safe_cases(tiers: tuple[str, ...]) -> list[dict[str, Any]]:
                 ["Vulkan: created swapchain"],
                 ["Vulkan: GUI executor initialized"],
                 ["Vulkan renderer initialized"],
+                ["RendererContracts self-test passed"],
+                ["RendererGpuSkinning self-test passed"],
+                ["RendererClassicCinematicPostDomain self-test passed"],
+                ["RendererClassicSpecialFrameDomain self-test passed"],
+                ["RendererClassicWorldAmbientDomain self-test passed"],
+                ["RendererClassicInteractionDomain self-test passed"],
+                ["RendererClassicFogBlendDomain self-test passed"],
+                ["RendererClassicSubviewDomain self-test passed"],
+                ["RendererClassicDeformDomain self-test passed"],
+                ["GPU skinning:"],
             ],
         },
         {
@@ -1567,23 +1716,23 @@ def filter_driver_specific_cases(cases: list[dict[str, Any]]) -> list[dict[str, 
     ]
 
 
-def vk_module_path(root: Path) -> Path:
+def vk_module_path(runtime_dir: Path) -> Path:
     if os.name == "nt":
         suffix = ".dll"
     elif sys.platform == "darwin":
         suffix = ".dylib"
     else:
         suffix = ".so"
-    return root / ".install" / f"renderer-vk_{host_arch()}{suffix}"
+    return runtime_dir / f"renderer-vk_{host_arch()}{suffix}"
 
 
-def filter_vulkan_module_cases(cases: list[dict[str, Any]], root: Path) -> list[dict[str, Any]]:
+def filter_vulkan_module_cases(cases: list[dict[str, Any]], runtime_dir: Path) -> list[dict[str, Any]]:
     # the Vulkan cases need a staged renderer-vk module and a live Vulkan
     # driver. Headless Linux legs (Xvfb/WSL) offer neither, so they stay
     # dropped there. Windows has a native driver; macOS runs the module on
     # MoltenVK, which is bundled with the package, so both hosts qualify once
     # the module is staged next to the executable.
-    if (os.name == "nt" or sys.platform == "darwin") and vk_module_path(root).exists():
+    if (os.name == "nt" or sys.platform == "darwin") and vk_module_path(runtime_dir).exists():
         return cases
     dropped = [case["id"] for case in cases if case.get("requiresVulkanModule")]
     if dropped:
@@ -1705,6 +1854,7 @@ def print_failure_details(result: dict[str, Any]) -> None:
 def run_case(
     root: Path,
     executable: Path,
+    runtime_dir: Path,
     output_dir: Path,
     savepath: Path,
     basepath: str,
@@ -1723,7 +1873,7 @@ def run_case(
     case_assetless = bool(case.get("assetless", False))
     case_basepath = "" if case_assetless else basepath
     case_skip_official_pak_validation = skip_official_pak_validation or case_assetless
-    args = common_args(root, case_id, case_basepath, savepath, case_skip_official_pak_validation) + case["args"] + ["+quit"]
+    args = common_args(runtime_dir, case_id, case_basepath, savepath, case_skip_official_pak_validation) + case["args"] + ["+quit"]
     startup_commands = sum(1 for arg in args if arg.startswith("+"))
     if startup_commands > ENGINE_MAX_STARTUP_COMMANDS:
         raise RuntimeError(
@@ -1732,7 +1882,7 @@ def run_case(
         )
     # drill lever: hide the staged renderer-vk module so the loader's
     # fallback ladder is exercised for real, restoring it afterwards
-    module_path = vk_module_path(root)
+    module_path = vk_module_path(runtime_dir)
     hidden_module_path = module_path.with_name(module_path.name + ".drill-hidden")
     hide_vk_module = bool(case.get("hideVkModule", False))
     # cvars set on the command line are archived on exit; cases that opt
@@ -1750,7 +1900,7 @@ def run_case(
         with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_file, stderr_path.open("w", encoding="utf-8", errors="replace") as stderr_file:
             process = subprocess.Popen(
                 [str(executable)] + args,
-                cwd=str(root / ".install"),
+                cwd=str(runtime_dir),
                 stdout=stdout_file,
                 stderr=stderr_file,
             )
@@ -1825,6 +1975,8 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
         "shaderLibraryTierMatrix": SHADER_LIBRARY_TIER_MATRIX,
         "longRunValidationMatrix": LONG_RUN_VALIDATION_MATRIX,
         "perfRegressionThresholds": PERF_REGRESSION_THRESHOLDS,
+        "perMapBudgetContract": PER_MAP_BUDGET_BINDING,
+        "perMapBudgets": PER_MAP_BUDGET_CONTRACT["budgets"],
         "promotionEvidenceGate": {
             "cvar": "r_rendererPromotionEvidence",
             "requiredTokens": PROMOTION_EVIDENCE_REQUIRED_TOKENS,
@@ -1982,6 +2134,23 @@ def write_reports(output_dir: Path, results: list[dict[str, Any]], metadata: dic
 
     lines += [
         "",
+        "## Per-Map CPU/GPU Budget Contract",
+        "",
+        f"Contract `{PER_MAP_BUDGET_BINDING['contractId']}` / `{PER_MAP_BUDGET_BINDING['sha256']}` uses integer microseconds and exact map/backend/profile selection. These are target ceilings; measured values are retained by the gameplay and stock evidence reports.",
+        "",
+        "| Budget | Map | Backend | Profile | Minimum CPU/GPU samples | CPU P95/P99 | GPU P95/P99 |",
+        "|---|---|---|---|---:|---:|---:|",
+    ]
+    for item in PER_MAP_BUDGET_CONTRACT["budgets"]:
+        lines.append(
+            f"| `{item['id']}` | `{item['map']}` | `{item['backend']}` | `{item['profile']}` | "
+            f"{item['minimumSamples']['cpu']}/{item['minimumSamples']['gpu']} | "
+            f"{item['cpu']['p95Us']}/{item['cpu']['p99Us']} us | "
+            f"{item['gpu']['p95Us']}/{item['gpu']['p99Us']} us |"
+        )
+
+    lines += [
+        "",
         "## Promotion Evidence Gate",
         "",
         "`r_rendererModernAutoPromote 1` is ignored by the engine unless `r_rendererPromotionEvidence` carries a complete Phase 8 evidence token.",
@@ -2023,12 +2192,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cases", default="", help="Comma-separated automated safe case ids to run. Defaults to all cases.")
     parser.add_argument("--timeout", type=int, default=60, help="Per-case timeout in seconds.")
     parser.add_argument("--basepath", default=default_basepath(), help="Quake 4 install/base path. Omit or set empty to skip fs_basepath.")
-    parser.add_argument("--savepath", default="", help="Save path root. Defaults to <repo>/.home.")
+    parser.add_argument(
+        "--savepath",
+        default="",
+        help="Save path root. Defaults to <output-dir>/savepath for an isolated run.",
+    )
     parser.add_argument("--output-dir", default="", help="Report/output directory. Defaults to <repo>/.tmp/renderer-validation/<timestamp>.")
     parser.add_argument(
         "--executable",
         default="",
         help="Explicit client or launcher to test. Defaults to the host-matching staged client.",
+    )
+    parser.add_argument(
+        "--runtime-dir",
+        default="",
+        help="Runtime root for working directory, renderer modules, and fs_devpath. Defaults to <repo>/.install.",
     )
     parser.add_argument(
         "--skip-official-pak-validation",
@@ -2054,10 +2232,6 @@ def main(argv: list[str]) -> int:
             return 2
         requested = set(requested_cases)
         safe_cases = [case for case in safe_cases if case["id"] in requested]
-    elif not args.list:
-        safe_cases = filter_driver_specific_cases(safe_cases)
-        safe_cases = filter_vulkan_module_cases(safe_cases, root)
-
     if args.list:
         print("Automated safe cases:")
         for case in safe_cases:
@@ -2089,6 +2263,16 @@ def main(argv: list[str]) -> int:
         print("\nPerformance regression thresholds:")
         for item in PERF_REGRESSION_THRESHOLDS:
             print(f"  {item['preset']}: P95 <= {item['p95Ms']} ms, P99 <= {item['p99Ms']} ms - {item['budget']}")
+        print(
+            "\nPer-map CPU/GPU budget contract: "
+            f"{PER_MAP_BUDGET_BINDING['contractId']} ({PER_MAP_BUDGET_BINDING['sha256']})"
+        )
+        for item in PER_MAP_BUDGET_CONTRACT["budgets"]:
+            print(
+                f"  {item['id']}: {item['map']} {item['backend']} {item['profile']} "
+                f"CPU {item['cpu']['p95Us']}/{item['cpu']['p99Us']} us, "
+                f"GPU {item['gpu']['p95Us']}/{item['gpu']['p99Us']} us"
+            )
         print("\nDefault promotion criteria:")
         for item in DEFAULT_PROMOTION_CRITERIA:
             print(f"  {item['criterion']}: {item['required']}")
@@ -2104,11 +2288,18 @@ def main(argv: list[str]) -> int:
             return 2
     else:
         executable = find_client_executable(root)
-    savepath = Path(args.savepath).resolve() if args.savepath else root / ".home"
-    savepath.mkdir(parents=True, exist_ok=True)
+    runtime_dir = Path(args.runtime_dir).resolve() if args.runtime_dir else root / ".install"
+    if not runtime_dir.is_dir():
+        print(f"runtime directory does not exist: {runtime_dir}", file=sys.stderr)
+        return 2
+    if not requested_cases:
+        safe_cases = filter_driver_specific_cases(safe_cases)
+        safe_cases = filter_vulkan_module_cases(safe_cases, runtime_dir)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     output_dir = Path(args.output_dir).resolve() if args.output_dir else root / ".tmp" / "renderer-validation" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
+    savepath = Path(args.savepath).resolve() if args.savepath else output_dir / "savepath"
+    savepath.mkdir(parents=True, exist_ok=True)
 
     basepath = args.basepath
     if basepath and not Path(basepath).exists():
@@ -2121,6 +2312,7 @@ def main(argv: list[str]) -> int:
         result = run_case(
             root,
             executable,
+            runtime_dir,
             output_dir,
             savepath,
             basepath,
@@ -2137,6 +2329,7 @@ def main(argv: list[str]) -> int:
         "generated": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "host": f"{platform.system()} {platform.release()} {platform.machine()}",
         "executable": str(executable),
+        "runtimeDir": str(runtime_dir),
         "savepath": str(savepath),
         "basepath": basepath,
         "skipOfficialPakValidation": args.skip_official_pak_validation,

@@ -37,6 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "ArenaCampaign.h"
 #include "GameModuleDiagnostics.h"
 #include "RenderDoc.h"
+#include "ParallelJobSystem.h"
 #include "../sys/NetworkEndpoint.h"
 
 #if defined( USE_SDL3 )
@@ -99,6 +100,15 @@ idCVar com_WriteSingleDeclFile( "com_WriteSingleDeclFile", "0", CVAR_SYSTEM | CV
 idCVar com_memoryMarker( "com_memoryMarker", "-1", CVAR_INTEGER | CVAR_SYSTEM | CVAR_INIT, "used as a marker for memory stats" );
 idCVar com_preciseTic( "com_preciseTic", "1", CVAR_BOOL|CVAR_SYSTEM, "run one game tick every async thread update" );
 idCVar com_asyncInput( "com_asyncInput", "0", CVAR_BOOL|CVAR_SYSTEM, "sample input from the async thread" );
+#if defined( ID_DEDICATED )
+static const char *OPENQ4_JOBS_DETERMINISTIC_DEFAULT = "1";
+#else
+static const char *OPENQ4_JOBS_DETERMINISTIC_DEFAULT = "0";
+#endif
+idCVar jobs_enable( "jobs_enable", "1", CVAR_BOOL | CVAR_ARCHIVE | CVAR_INIT | CVAR_SYSTEM, "enable the portable job service; 0 preserves all work by executing job lists synchronously" );
+idCVar jobs_deterministic( "jobs_deterministic", OPENQ4_JOBS_DETERMINISTIC_DEFAULT, CVAR_BOOL | CVAR_ARCHIVE | CVAR_INIT | CVAR_SYSTEM, "execute every job inline in deterministic insertion order (default on dedicated servers)" );
+idCVar jobs_numThreads( "jobs_numThreads", "0", CVAR_INTEGER | CVAR_ARCHIVE | CVAR_INIT | CVAR_SYSTEM, "portable job worker threads (0 = automatic, 1..32 = explicit)", 0, 32, idCmdSystem::ArgCompletion_Integer<0,32> );
+idCVar jobs_queueCapacity( "jobs_queueCapacity", "64", CVAR_INTEGER | CVAR_ARCHIVE | CVAR_INIT | CVAR_SYSTEM, "maximum admitted job lists; saturated submissions fail explicitly and remain retryable", 1, 1024, idCmdSystem::ArgCompletion_Integer<1,1024> );
 #define ASYNCSOUND_INFO "0: mix sound inline, 1: memory mapped async mix, 2: callback mixing, 3: write async mix"
 #if defined( MACOS_X )
 idCVar com_asyncSound( "com_asyncSound", "2", CVAR_INTEGER|CVAR_SYSTEM|CVAR_ROM, ASYNCSOUND_INFO );
@@ -1576,6 +1586,10 @@ idCommonLocal::ClearCommandLine
 ==================
 */
 void idCommonLocal::ClearCommandLine( void ) {
+	for ( int i = 0; i < com_numConsoleLines; ++i ) {
+		com_consoleLines[ i ].ClearSensitive();
+	}
+	idCmdArgs::ClearArgsScratch();
 	com_numConsoleLines = 0;
 }
 
@@ -3648,6 +3662,120 @@ static void Com_PerformancePresetSelfTest_f( const idCmdArgs &args ) {
 	}
 }
 
+typedef struct openQ4JobSelfTestStage_s {
+	std::atomic<int> *phase;
+	std::atomic<bool> *failed;
+	int expectedPhase;
+	int replacementPhase;
+} openQ4JobSelfTestStage_t;
+
+static void Common_JobSelfTestStage( const idJobContext &context ) {
+	openQ4JobSelfTestStage_t *stage = static_cast<openQ4JobSelfTestStage_t *>( context.data );
+	if ( stage == NULL || stage->phase == NULL || stage->failed == NULL ) {
+		return;
+	}
+	if ( stage->phase->load( std::memory_order_acquire ) != stage->expectedPhase ) {
+		stage->failed->store( true, std::memory_order_release );
+	}
+	stage->phase->store( stage->replacementPhase, std::memory_order_release );
+}
+
+static void Common_JobSelfTestIncrement( const idJobContext &context ) {
+	std::atomic<int> *counter = static_cast<std::atomic<int> *>( context.data );
+	if ( counter != NULL ) {
+		counter->fetch_add( 1, std::memory_order_relaxed );
+	}
+}
+
+static bool Common_JobSubmitSucceeded( const idJobSubmitResult result ) {
+	return result == idJobSubmitResult::ACCEPTED ||
+		result == idJobSubmitResult::EXECUTED_SYNCHRONOUSLY;
+}
+
+static void Com_JobsStats_f( const idCmdArgs &args ) {
+	( void )args;
+	const idJobSystemMetrics metrics = jobSystem.GetMetrics();
+	common->Printf(
+		"Job system: initialized=%s mode=%s workers=%u accepting=%s queued=%llu/%d highWater=%llu running=%llu sleeping=%llu\n",
+		jobSystem.IsInitialized() ? "yes" : "no",
+		metrics.synchronous ? "synchronous" : "threaded",
+		metrics.workerThreads,
+		metrics.accepting ? "yes" : "no",
+		static_cast<unsigned long long>( metrics.queuedLists ),
+		jobs_queueCapacity.GetInteger(),
+		static_cast<unsigned long long>( metrics.queueHighWatermark ),
+		static_cast<unsigned long long>( metrics.runningJobs ),
+		static_cast<unsigned long long>( metrics.sleepingWorkers ) );
+	common->Printf(
+		"Job totals: lists submitted=%llu completed=%llu cancelled=%llu failed=%llu rejected=%llu; jobs submitted=%llu executed=%llu cancelled=%llu failed=%llu; wakes=%llu priorityPromotions=%llu execution=%lluus wait=%lluus\n",
+		static_cast<unsigned long long>( metrics.submittedLists ),
+		static_cast<unsigned long long>( metrics.completedLists ),
+		static_cast<unsigned long long>( metrics.cancelledLists ),
+		static_cast<unsigned long long>( metrics.failedLists ),
+		static_cast<unsigned long long>( metrics.rejectedSubmissions ),
+		static_cast<unsigned long long>( metrics.submittedJobs ),
+		static_cast<unsigned long long>( metrics.executedJobs ),
+		static_cast<unsigned long long>( metrics.cancelledJobs ),
+		static_cast<unsigned long long>( metrics.failedJobs ),
+		static_cast<unsigned long long>( metrics.workerWakeups ),
+		static_cast<unsigned long long>( metrics.priorityPromotions ),
+		static_cast<unsigned long long>( metrics.totalExecutionMicroseconds ),
+		static_cast<unsigned long long>( metrics.totalWaitMicroseconds ) );
+}
+
+static void Com_JobsSelfTest_f( const idCmdArgs &args ) {
+	( void )args;
+	bool passed = jobSystem.IsInitialized();
+	std::atomic<int> phase( 0 );
+	std::atomic<bool> dependencyFailed( false );
+	std::atomic<int> parallelCount( 0 );
+	openQ4JobSelfTestStage_t rootData = { &phase, &dependencyFailed, 0, 1 };
+	openQ4JobSelfTestStage_t dependentData = { &phase, &dependencyFailed, 1, 2 };
+	const idJobSystemMetrics before = jobSystem.GetMetrics();
+
+	std::unique_ptr<idJobList> root = jobSystem.CreateJobList( "engine-self-test-root", 1, 0, idJobPriority::HIGH );
+	std::unique_ptr<idJobList> dependent = jobSystem.CreateJobList( "engine-self-test-dependent", 1, 1, idJobPriority::NORMAL );
+	std::unique_ptr<idJobList> batch = jobSystem.CreateJobList( "engine-self-test-batch", 8, 0, idJobPriority::LOW );
+	passed &= root != NULL && dependent != NULL && batch != NULL;
+	if ( passed ) {
+		passed &= root->AddJob( Common_JobSelfTestStage, &rootData );
+		passed &= Common_JobSubmitSucceeded( root->Submit() );
+		passed &= root->Wait();
+		passed &= dependent->AddDependency( *root );
+		passed &= dependent->AddJob( Common_JobSelfTestStage, &dependentData );
+		passed &= Common_JobSubmitSucceeded( dependent->Submit() );
+		passed &= dependent->Wait();
+		for ( int jobIndex = 0; jobIndex < 8; ++jobIndex ) {
+			passed &= batch->AddJob( Common_JobSelfTestIncrement, &parallelCount );
+		}
+		passed &= Common_JobSubmitSucceeded( batch->Submit() );
+		passed &= batch->Wait();
+	}
+
+	const idJobSystemMetrics after = jobSystem.GetMetrics();
+	passed &= !dependencyFailed.load( std::memory_order_acquire );
+	passed &= phase.load( std::memory_order_acquire ) == 2;
+	passed &= parallelCount.load( std::memory_order_acquire ) == 8;
+	passed &= after.submittedLists >= before.submittedLists + 3;
+	passed &= after.executedJobs >= before.executedJobs + 10;
+	passed &= after.failedLists == before.failedLists;
+
+	if ( passed ) {
+		common->Printf( "jobsSelfTest PASS v1 mode=%s workers=%u phase=%d batch=%d\n",
+			after.synchronous ? "synchronous" : "threaded",
+			after.workerThreads,
+			phase.load(),
+			parallelCount.load() );
+	} else {
+		common->Warning( "jobsSelfTest FAILED v1 root=%s dependent=%s batch=%s phase=%d batchCount=%d",
+			root != NULL ? idJobListStatusName( root->GetStatus() ) : "unavailable",
+			dependent != NULL ? idJobListStatusName( dependent->GetStatus() ) : "unavailable",
+			batch != NULL ? idJobListStatusName( batch->GetStatus() ) : "unavailable",
+			phase.load(),
+			parallelCount.load() );
+	}
+}
+
 static void Common_NetIPv4SelfTestFailure( bool &passed, const char *reason ) {
 	common->Printf( "IPv4 network self-test failure: %s\n", reason );
 	passed = false;
@@ -5304,6 +5432,8 @@ void idCommonLocal::InitCommands( void ) {
 	cmdSystem->AddCommand( "applyPerformancePreset", Com_ApplyPerformancePreset_f, CMD_FL_SYSTEM, "applies the selected openQ4 performance preset", idCmdSystem::ArgCompletion_String<com_performancePresetArgs> );
 	cmdSystem->AddCommand( "autoDetectPerformancePreset", Com_AutoDetectPerformancePreset_f, CMD_FL_SYSTEM, "detects and applies a conservative openQ4 performance preset" );
 	cmdSystem->AddCommand( "performancePresetSelfTest", Com_PerformancePresetSelfTest_f, CMD_FL_SYSTEM, "validates openQ4 performance preset commands and cvar mappings" );
+	cmdSystem->AddCommand( "jobsStats", Com_JobsStats_f, CMD_FL_SYSTEM, "prints bounded job-service scheduling and timing counters" );
+	cmdSystem->AddCommand( "jobsSelfTest", Com_JobsSelfTest_f, CMD_FL_SYSTEM, "validates job execution, dependencies, deterministic fallback, and metrics" );
 	cmdSystem->AddCommand( "netIPv4SelfTest", Com_NetIPv4SelfTest_f, CMD_FL_SYSTEM, "validates IPv4 parsing and UDP loopback transport" );
 	cmdSystem->AddCommand( "netIPv6SelfTest", Com_NetIPv6SelfTest_f, CMD_FL_SYSTEM, "validates IPv6 parsing and UDP loopback transport" );
 
@@ -6438,6 +6568,24 @@ void idCommonLocal::Init( int argc, const char **argv, const char *cmdline ) {
 		// initialize processor specific SIMD implementation
 		InitSIMD();
 
+		// The job service is engine-owned and renderer-independent, so the same
+		// lifecycle is available to clients, tools, and headless dedicated builds.
+		// Disabling jobs never drops work: it selects the deterministic inline path.
+		idJobSystemConfig jobConfig;
+		jobConfig.synchronous = !jobs_enable.GetBool() || jobs_deterministic.GetBool();
+		jobConfig.workerThreads = jobConfig.synchronous ? 0 :
+			idJobSystem::ResolveWorkerThreadCount( jobs_numThreads.GetInteger() );
+		jobConfig.maxQueuedLists = static_cast<std::size_t>( jobs_queueCapacity.GetInteger() );
+		if ( !jobSystem.Initialize( jobConfig ) ) {
+			FatalError( "Failed to initialize the portable job system" );
+		}
+		Printf( "Job system initialized: mode=%s workers=%u queueCapacity=%d (jobs_enable=%d deterministic=%d)\n",
+			jobSystem.IsSynchronous() ? "synchronous" : "threaded",
+			jobSystem.GetWorkerThreadCount(),
+			jobs_queueCapacity.GetInteger(),
+			jobs_enable.GetBool() ? 1 : 0,
+			jobs_deterministic.GetBool() ? 1 : 0 );
+
 		// init commands
 		InitCommands();
 
@@ -6453,6 +6601,12 @@ void idCommonLocal::Init( int argc, const char **argv, const char *cmdline ) {
 			Printf( "Command line (parsed):\n" );
 			for ( int i = 0; i < com_numConsoleLines; ++i ) {
 				if ( !com_consoleLines[ i ].Argc() ) {
+					continue;
+				}
+				const char *lineText = com_consoleLines[ i ].Args( 0, com_consoleLines[ i ].Argc() - 1 );
+				if ( cvarSystem->CommandContainsPrivateCVar( lineText ) ) {
+					idCmdArgs::ClearArgsScratch();
+					Printf( "  %d: <private command redacted>\n", i );
 					continue;
 				}
 				Printf( "  %d:", i );
@@ -6506,6 +6660,19 @@ idCommonLocal::Shutdown
 void idCommonLocal::Shutdown( void ) {
 
 	com_shuttingDown = true;
+
+	// Stop every engine job before any subsystem it may reference is torn down.
+	// Running jobs receive cancellation and are joined; queued jobs never start.
+	jobSystem.Shutdown( idJobShutdownMode::CANCEL_PENDING );
+	const idJobSystemMetrics shutdownJobMetrics = jobSystem.GetMetrics();
+	if ( jobSystem.IsInitialized() || shutdownJobMetrics.queuedLists != 0 || shutdownJobMetrics.runningJobs != 0 ) {
+		Warning( "jobsShutdown FAILED v1 initialized=%d queued=%llu running=%llu",
+			jobSystem.IsInitialized() ? 1 : 0,
+			static_cast<unsigned long long>( shutdownJobMetrics.queuedLists ),
+			static_cast<unsigned long long>( shutdownJobMetrics.runningJobs ) );
+	} else {
+		Printf( "jobsShutdown PASS v1 initialized=0 queued=0 running=0\n" );
+	}
 
 	idAsyncNetwork::server.Kill();
 	idAsyncNetwork::client.Shutdown();

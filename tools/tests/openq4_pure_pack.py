@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression checks for openQ4 pure-pack handling."""
+"""Regression checks for openQ4 pure-pack and download handling."""
 
 from __future__ import annotations
 
@@ -128,11 +128,15 @@ def bounded_download_write_model(
 
 def validate_filesystem_pure_pack_contract() -> None:
     source = read("src/framework/FileSystem.cpp")
+    game_dir_policy = read("src/framework/GameDirPolicy.h")
     file_system_header = read("src/framework/FileSystem.h")
     md5_header = read("src/idlib/hashing/MD5.h")
     md5_source = read("src/idlib/hashing/MD5.cpp")
     async_client = read("src/framework/async/AsyncClient.cpp")
+    async_client_header = read("src/framework/async/AsyncClient.h")
+    async_network_header = read("src/framework/async/AsyncNetwork.h")
     async_server = read("src/framework/async/AsyncServer.cpp")
+    licensee_header = read("src/framework/licensee.h")
     session_menu = read("src/framework/Session_menu.cpp")
     curl_write = function_body(
         source,
@@ -171,13 +175,60 @@ def validate_filesystem_pure_pack_contract() -> None:
         async_client,
         "void idAsyncClient::HandleDownloads(",
     )
+    version_message = function_body(
+        async_client,
+        "void idAsyncClient::ProcessVersionMessage(",
+    )
+    version_check = function_body(
+        async_client,
+        "void idAsyncClient::SendVersionCheck(",
+    )
     helper = function_body(source, "bool idFileSystemLocal::IsOpenQ4PurePack(")
     checksum_validator = function_body(source, "bool idFileSystemLocal::ValidateOpenQ4Paks(")
     misplaced_validator = function_body(source, "bool idFileSystemLocal::FindMisplacedOfficialPaks(")
     startup = function_body(source, "void idFileSystemLocal::Startup(")
     status = function_body(source, "pureStatus_t idFileSystemLocal::GetPackStatus(")
+    update_game_pak_checksums = function_body(
+        source,
+        "bool idFileSystemLocal::UpdateGamePakChecksums(",
+    )
+    validate_download_pak = function_body(
+        source,
+        "int idFileSystemLocal::ValidateDownloadPakForChecksum(",
+    )
+    clear_pure_checksums = function_body(
+        source,
+        "void idFileSystemLocal::ClearPureChecksums(",
+    )
+    set_pure_server_checksums = function_body(
+        source,
+        "fsPureReply_t idFileSystemLocal::SetPureServerChecksums(",
+    )
+    get_pure_server_checksums = function_body(
+        source,
+        "void idFileSystemLocal::GetPureServerChecksums(",
+    )
+    find_dll = function_body(source, "void idFileSystemLocal::FindDLL(")
+    get_mod_info = function_body(source, "bool idFileSystemLocal::GetModInfo(")
+    send_pure_server_message = function_body(
+        async_server,
+        "bool idAsyncServer::SendPureServerMessage(",
+    )
+    send_reliable_pure_to_client = function_body(
+        async_server,
+        "bool idAsyncServer::SendReliablePureToClient(",
+    )
+    process_connect_message = function_body(
+        async_server,
+        "void idAsyncServer::ProcessConnectMessage(",
+    )
+    process_challenge_response = function_body(
+        async_client,
+        "void idAsyncClient::ProcessChallengeResponseMessage(",
+    )
 
     require(source, '#include "openq4_paks_generated.h"', "filesystem generated pack checksum header")
+    require(source, '#include "GameDirPolicy.h"', "portable game-directory policy integration")
     require(source, "IsOpenQ4PurePack", "filesystem pure-pack declaration")
     require(source, "ValidateOpenQ4Paks", "filesystem pack checksum declaration")
     require(helper, "OPENQ4_GAMEDIR", "openQ4 pure-pack directory check")
@@ -342,6 +393,262 @@ def validate_filesystem_pure_pack_contract() -> None:
     require(async_server, "Server decl checksum: 0x%08x", "server decl checksum diagnostic")
     require(async_server, "client=0x%08x server=0x%08x (non-pure)", "non-pure mismatch diagnostic")
     require(async_server, "client=0x%08x server=0x%08x (pure)", "pure mismatch diagnostic")
+    reject(async_server, 'serverInfo.SetInt( "si_pure", 0 )', "forced pure-server disable")
+    reject(async_server, "forcing si_pure 0", "forced pure-server disable diagnostic")
+    require(
+        async_network_header,
+        "const int ASYNC_PROTOCOL_MINOR\t\t= 41;",
+        "Quake 4 1.4.2 protocol compatibility",
+    )
+    require(
+        source,
+        "static const int OPENQ4_Q4_142_GAME300_PAK_CHECKSUM = 0x68fb90b1;",
+        "platform-independent pure game-module compatibility token",
+    )
+    require(file_system_header, "MAX_GAME_OS\t\t\t\t\t= 6;", "pure OS table capacity")
+
+    for origin in (
+        "GAME_MODULE_ORIGIN_NONE",
+        "GAME_MODULE_ORIGIN_ACTIVE_MOD",
+        "GAME_MODULE_ORIGIN_BASE_GAME",
+        "GAME_MODULE_ORIGIN_PACKAGE_ROOT",
+    ):
+        require(source, origin, "trusted game-module origin model")
+    require(find_dll, "gameModuleOrigin_t resolvedOrigin = GAME_MODULE_ORIGIN_NONE;", "module-origin reset")
+    require(find_dll, "GAME_MODULE_ORIGIN_ACTIVE_MOD", "active-mod module origin")
+    require(find_dll, "GAME_MODULE_ORIGIN_BASE_GAME", "base-game module origin")
+    require(find_dll, "GAME_MODULE_ORIGIN_PACKAGE_ROOT", "flat package-root module origin")
+    require(find_dll, "gameModuleOrigin = resolvedOrigin;", "resolved module-origin persistence")
+    require(
+        find_dll,
+        "gamePakChecksum = dllFile ? OPENQ4_Q4_142_GAME300_PAK_CHECKSUM : 0;",
+        "compatibility token only for a resolved trusted module",
+    )
+
+    for token in (
+        "MAX_SEGMENT_BYTES = 255",
+        "IsWindowsDeviceName(",
+        "IsPortableSegment(",
+        "*scan == '/'",
+        "*scan == '\\\\'",
+        "*scan == ':'",
+        "segment[ 0 ] == '.'",
+        "segment[ 1 ] == '.'",
+    ):
+        require(game_dir_policy, token, "portable single-segment game-directory policy")
+    require(
+        get_mod_info,
+        "!idGameDirPolicy::IsPortableSegment( modDir )",
+        "mod manifest directory validation",
+    )
+    require_order(
+        get_mod_info,
+        "!idGameDirPolicy::IsPortableSegment( modDir )",
+        "const char *search[ 3 ]",
+        "mod directory validation before manifest roots",
+    )
+    require(
+        get_mod_info,
+        "mod directory must be one portable directory segment",
+        "actionable unsafe mod-directory failure",
+    )
+    require(
+        find_dll,
+        "!idGameDirPolicy::IsPortableSegment( moduleGameDir )",
+        "trusted module game-directory validation",
+    )
+    require_order(
+        find_dll,
+        "!idGameDirPolicy::IsPortableSegment( moduleGameDir )",
+        "FS_AppendGameModuleSearchPath(",
+        "game-directory validation before trusted module path construction",
+    )
+    for token in (
+        "gameDLLChecksum = 0;",
+        "gamePakChecksum = 0;",
+        "gameModuleOrigin = GAME_MODULE_ORIGIN_NONE;",
+        "_dllPath[ 0 ] = '\\0';",
+        "return;",
+    ):
+        require(find_dll, token, "unsafe fs_game module lookup fail-closed state")
+    require(process_challenge_response, "fileSystem->GetModInfo( serverGameBase", "server base-mod validation")
+    require(process_challenge_response, "fileSystem->GetModInfo( serverGame", "server mod validation")
+    require_order(
+        process_challenge_response,
+        "fileSystem->GetModInfo( serverGame",
+        'cvarSystem->SetCVarString( "fs_game", serverGame );',
+        "server mod validation before fs_game mutation",
+    )
+
+    require(update_game_pak_checksums, "gameDLLChecksum == 0", "missing local game-module rejection")
+    require(
+        update_game_pak_checksums,
+        "gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM",
+        "unexpected local compatibility-token rejection",
+    )
+    require(
+        update_game_pak_checksums,
+        "gameModuleOrigin == GAME_MODULE_ORIGIN_NONE",
+        "untrusted module-origin rejection",
+    )
+    require(
+        update_game_pak_checksums,
+        "gameModuleOrigin == GAME_MODULE_ORIGIN_ACTIVE_MOD",
+        "active-mod module-origin classification",
+    )
+    require(
+        update_game_pak_checksums,
+        '!cvarSystem->GetCVarBool( "net_serverAllowServerMod" )',
+        "explicit server-mod opt-in gate",
+    )
+    require(
+        update_game_pak_checksums,
+        "for ( int os = 0; os <= 2; ++os )",
+        "legacy Windows/Linux/macOS compatibility range",
+    )
+    require_order(
+        update_game_pak_checksums,
+        "memset( gamePakForOS, 0, sizeof( gamePakForOS ) );",
+        "for ( int os = 0; os <= 2; ++os )",
+        "unsupported pure OS entries cleared before legacy OS mapping",
+    )
+    require(
+        update_game_pak_checksums,
+        "gamePakForOS[ os ] = OPENQ4_Q4_142_GAME300_PAK_CHECKSUM;",
+        "platform-independent compatibility-token mapping",
+    )
+    for obsolete_parser_symbol in (
+        "BINARY_CONFIG",
+        '"binary.conf"',
+        "HashFileName(",
+        "ReadFile(",
+        "idLexer",
+        "ParseInt(",
+        "atoi(",
+    ):
+        reject(
+            update_game_pak_checksums,
+            obsolete_parser_symbol,
+            "pure game-module mapping without retail binary.conf parsing",
+        )
+
+    require(validate_download_pak, "pak->binary == BINARY_UNKNOWN", "lazy package binary classification")
+    require(validate_download_pak, "HashFileName( BINARY_CONFIG )", "binary.conf presence lookup")
+    require(validate_download_pak, "pak->binary = BINARY_NO", "content-only package classification")
+    require(validate_download_pak, "pak->binary = BINARY_YES", "binary-marked package classification")
+    reject(validate_download_pak, "ReadFile(", "package binary marker presence-only classification")
+    require(clear_pure_checksums, "memset( gamePakForOS, 0, sizeof( gamePakForOS ) );", "non-pure OS-mask reset")
+
+    require(
+        set_pure_server_checksums,
+        "*missingGamePakChecksum = 0;",
+        "code-pak download output stays empty",
+    )
+    if set_pure_server_checksums.count("*missingGamePakChecksum =") != 1:
+        raise AssertionError("Pure negotiation must never request a downloadable game-code pak")
+    require(
+        set_pure_server_checksums,
+        "_gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM",
+        "server compatibility-token validation",
+    )
+    require(
+        set_pure_server_checksums,
+        "gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM",
+        "local compatibility-token validation",
+    )
+    require(set_pure_server_checksums, "gameDLLChecksum == 0", "missing local module rejection")
+    require(
+        set_pure_server_checksums,
+        "gameModuleOrigin == GAME_MODULE_ORIGIN_NONE",
+        "untrusted local module rejection",
+    )
+    require(set_pure_server_checksums, "return PURE_NODLL;", "unsupported token fail-closed result")
+    require_order(
+        set_pure_server_checksums,
+        "_gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM",
+        "if ( pureChecksums[ 0 ] == 0 )",
+        "game-module token validation before asset-list processing",
+    )
+    for forbidden_code_pak_path in (
+        "GetPackForChecksum( _gamePakChecksum",
+        "GetPackForChecksum( gamePakChecksum",
+        "*missingGamePakChecksum = _gamePakChecksum",
+        "*missingGamePakChecksum = gamePakChecksum",
+        "gamePakChecksum = _gamePakChecksum",
+        "restartGamePakChecksum",
+        "BINARY_CONFIG",
+        '"binary.conf"',
+    ):
+        reject(
+            set_pure_server_checksums,
+            forbidden_code_pak_path,
+            "compatibility token cannot select, download, or restart into game code",
+        )
+
+    require(get_pure_server_checksums, "OS >= 0 && OS < MAX_GAME_OS", "pure checksum OS bounds")
+    require(get_pure_server_checksums, "else if ( OS == -1 )", "local pure-token sentinel")
+    require(get_pure_server_checksums, "*_gamePakChecksum = 0;", "invalid pure OS fail-closed token")
+    require_order(
+        get_pure_server_checksums,
+        "OS >= 0 && OS < MAX_GAME_OS",
+        "OS == -1",
+        "bounded remote OS lookup before local-only sentinel",
+    )
+
+    require(process_connect_message, "if ( OS < 0 || OS >= MAX_GAME_OS )", "pure client OS bounds")
+    require(
+        process_connect_message,
+        "const int osMask = fileSystem->GetOSMask();",
+        "pure supported-OS mask lookup",
+    )
+    require(
+        process_connect_message,
+        "static_cast<unsigned int>( osMask ) & ( 1u << OS )",
+        "defined unsigned pure OS-mask shift",
+    )
+    require_order(
+        process_connect_message,
+        "if ( OS < 0 || OS >= MAX_GAME_OS )",
+        "const int osMask = fileSystem->GetOSMask();",
+        "OS range validation before OS-mask lookup and shift",
+    )
+    require_order(
+        process_connect_message,
+        "const int osMask = fileSystem->GetOSMask();",
+        "ValidateChallenge( from, challenge, clientId )",
+        "pure supported-OS rejection before challenge state use",
+    )
+    require_order(
+        process_connect_message,
+        "static_cast<unsigned int>( osMask ) & ( 1u << OS )",
+        "ValidateChallenge( from, challenge, clientId )",
+        "pure supported-OS bit test before challenge state use",
+    )
+    require_order(
+        process_connect_message,
+        "if ( OS < 0 || OS >= MAX_GAME_OS )",
+        "challenges[ ichallenge ].OS = OS;",
+        "OS range validation before challenge-state storage",
+    )
+
+    for send_body, message_init, context in (
+        (send_pure_server_message, "outMsg.Init(", "connectionless pure send"),
+        (send_reliable_pure_to_client, "msg.Init(", "reliable pure send"),
+    ):
+        require(
+            send_body,
+            "if ( !serverChecksums[ 0 ] || !gamePakChecksum )",
+            f"{context} fail-closed prerequisites",
+        )
+        require_order(
+            send_body,
+            "if ( !serverChecksums[ 0 ] || !gamePakChecksum )",
+            message_init,
+            f"{context} prerequisites before packet construction",
+        )
+        guard_start = send_body.find("if ( !serverChecksums[ 0 ] || !gamePakChecksum )")
+        guard_end = send_body.find(message_init, guard_start)
+        require(send_body[guard_start:guard_end], "return false;", f"{context} fail-closed return")
     require(
         download_request,
         "dlSize[ MAX_PURE_PAKS ] = {};",
@@ -431,11 +738,62 @@ def validate_filesystem_pure_pack_contract() -> None:
     require(invalid_download_type, "return;", "invalid download discriminator fail-closed return")
     reject(download_info, "assert( pakDl == SERVER_PAK_END );", "release-only download discriminator validation")
 
-    update_setup = download_handler[
-        download_handler.find("fileSystem->OpenFileWrite( updateFile )") :
-        download_handler.find("updateState = UPDATE_DLING;")
+    require(
+        licensee_header,
+        '#define PROJECT_RELEASES_URL\t\t\tPROJECT_REPO "/releases"',
+        "compile-time openQ4 releases destination",
+    )
+    require(
+        licensee_header,
+        '#define PROJECT_REPO\t\t\t\t\t"https://github.com/themuffinator/openQ4"',
+        "HTTPS openQ4 project destination",
+    )
+    require(
+        version_message,
+        'updateMSG = common->GetLanguageDict()->GetString( "#str_104330" );',
+        "fixed localized update notification",
+    )
+    require(
+        version_message,
+        "ignoredNetworkField",
+        "legacy update fields are consumed without storage or display",
+    )
+    if version_message.count("msg.ReadString(") != 3 or version_message.count("msg.ReadByte()") != 2:
+        raise AssertionError("Legacy update reply fields must remain wire-compatible and inert")
+    reject(version_message, "updateMSG = ignoredNetworkField", "network-controlled update instructions")
+    require(version_check, 'msg.WriteString( "" );', "empty legacy update identity field")
+    reject(version_check, 'GetCVarString( "com_guid" )', "update-check persistent GUID disclosure")
+    update_prompt = download_handler[
+        download_handler.find("if ( updateState == UPDATE_READY )") :
+        download_handler.find("} else if ( dlList.Num() )")
     ]
-    require(update_setup, "backgroundDownload.url.expectedSize = 0;", "unrestricted updater download")
+    require(update_prompt, "sys->OpenURL( PROJECT_RELEASES_URL, false );", "fixed update information page")
+    require(update_prompt, "updateState = UPDATE_DONE;", "update notification terminal state")
+    require(update_prompt, "showUpdateMessage = false;", "update notification prompt cleanup")
+    for forbidden in (
+        "BackgroundDownload",
+        "OpenFileWrite",
+        "StartProcess",
+        "DLTYPE_URL",
+        "file://",
+        "expectedSize",
+        "RemoveFile",
+    ):
+        reject(update_prompt, forbidden, "notification-only updater")
+    for removed_member in (
+        "UPDATE_DLING",
+        "updateDirectDownload",
+        "updateURL",
+        "updateFile",
+        "updateMime",
+        "updateFallback",
+        "SendVersionDLUpdate",
+    ):
+        reject(async_client_header, removed_member, "legacy executable updater state")
+        reject(async_client, removed_member, "legacy executable updater implementation")
+    reject(file_system_header, "FILE_EXEC", "legacy executable updater MIME action")
+    reject(file_system_header, "dlMime_t", "legacy updater MIME type")
+
     package_setup = download_handler[
         download_handler.find("fileSystem->MakeTemporaryFile( )") :
         download_handler.find("session->DownloadProgressBox( &backgroundDownload, dltitle")
@@ -467,7 +825,7 @@ def validate_filesystem_pure_pack_contract() -> None:
     if bounded_download_write_model(SIZE_T_MAX, 1, 1, 0) is not None:
         raise AssertionError("Bounded download model accepted overflowing cumulative bytes")
     if bounded_download_write_model(9, 1, 2, 0) != 11:
-        raise AssertionError("Updater download model unexpectedly applied a package-size limit")
+        raise AssertionError("Unbounded transfer model unexpectedly applied a package-size limit")
 
     require_order(
         download_handler,
@@ -525,24 +883,6 @@ def validate_filesystem_pure_pack_contract() -> None:
         "checksum failure removes only the verified download destination",
     )
 
-    update_destination = download_handler[
-        download_handler.find("fileSystem->OpenFileWrite( updateFile )") :
-        download_handler.find("dltotal = 0;")
-    ]
-    require(update_destination, "if ( f == NULL )", "update destination null guard")
-    require(update_destination, "updateState = UPDATE_DONE;", "failed update state cleanup")
-    require(update_destination, "SendVersionDLUpdate( 2 );", "failed update telemetry")
-    require(update_destination, '"#str_04335"', "localized update failure message")
-    require(update_destination, "updateFallback.Length()", "failed update fallback")
-    require(update_destination, "return;", "failed update early return")
-
-    update_download_result = download_handler[
-        download_handler.find("if ( backgroundDownload.url.status == DL_DONE )") :
-        download_handler.find("} else if ( dlList.Num() )")
-    ]
-    if update_download_result.count("AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );") != 2:
-        raise AssertionError("Update download success and failure paths must each release their owned file")
-
     successful_copy_cleanup = download_handler[
         download_handler.find("while ( remainlen )") :
         download_handler.find("fileSystem->CloseFile( saveas );")
@@ -575,7 +915,7 @@ def validate_filesystem_pure_pack_contract() -> None:
         "direct background download member close",
     )
     cleanup_call = "AsyncClient_CloseBackgroundDownloadFile( backgroundDownload );"
-    if download_handler.count(cleanup_call) != 6:
+    if download_handler.count(cleanup_call) != 4:
         raise AssertionError("Every background download completion path must release its file exactly once")
 
     valid_download_paths = (

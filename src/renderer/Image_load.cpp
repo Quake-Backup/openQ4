@@ -54,9 +54,113 @@ static bool R_ShouldSuppressMissingImageWarning( const char * imageName ) {
 	return false;
 }
 
+/*
+========================
+R_FindMissingQ4StockImageFallback
+
+Some retail effect materials name images that were not shipped in any Quake 4
+PK4. Keep the authored name as the image identity so a loose/mod replacement
+wins, but use the closest neutral stock shape when that primary lookup fails.
+========================
+*/
+static const char *R_FindMissingQ4StockImageFallback( const char *imageName ) {
+	if ( imageName == NULL || imageName[0] == '\0' ) {
+		return NULL;
+	}
+
+	idStr canonicalName = imageName;
+	canonicalName.BackSlashesToSlashes();
+	canonicalName.StripFileExtension();
+
+	struct q4StockImageFallback_t {
+		const char *missingName;
+		const char *replacementName;
+	};
+	static const q4StockImageFallback_t fallbacks[] = {
+		{ "gfx/effects/fluids_drips/brown_bubble",
+			"gfx/effects/fluids_drips/bubble_alpha.tga" },
+		{ "gfx/effects/fluids_drips/brown_bubble_half",
+			"gfx/effects/fluids_drips/bubble_half.tga" },
+		{ "gfx/effects/fluids_drips/brown_splash_line",
+			"gfx/effects/fluids_drips/splash_line.tga" }
+	};
+
+	for ( int i = 0; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] ) ); i++ ) {
+		if ( canonicalName.Icmp( fallbacks[i].missingName ) == 0 ) {
+			return fallbacks[i].replacementName;
+		}
+	}
+
+	return NULL;
+}
+
+/*
+========================
+R_SelectMissingQ4StockImageSource
+
+Resolve only the known incomplete retail declarations. Use the image-program
+parser's load result rather than its timestamp: valid files inside retail PK4s
+can report timestamp zero. The authored name always wins when present so adding
+a loose/mod replacement immediately supersedes stock.
+========================
+*/
+static bool R_SelectMissingQ4StockImageSource( const char *imageName, idStr &selectedSourceName,
+	ID_TIME_T &selectedSourceTime, bool &stockFallbackSelected ) {
+	const char *stockFallbackName = R_FindMissingQ4StockImageFallback( imageName );
+	if ( stockFallbackName == NULL ) {
+		return false;
+	}
+
+	selectedSourceName = imageName;
+	selectedSourceTime = 0;
+	stockFallbackSelected = false;
+	if ( R_LoadImageProgram( imageName, NULL, NULL, NULL, &selectedSourceTime ) ) {
+		return true;
+	}
+
+	selectedSourceTime = 0;
+	if ( R_LoadImageProgram( stockFallbackName, NULL, NULL, NULL, &selectedSourceTime ) ) {
+		selectedSourceName = stockFallbackName;
+		stockFallbackSelected = true;
+	}
+	return true;
+}
+
+/*
+========================
+R_AddMissingQ4StockImageCacheIdentity
+
+The three logical retail names need separate authored and fallback cache paths.
+Besides preventing equal timestamps from aliasing the two sources, this keeps
+legacy unsalted .bimage files from being accepted for either selection.
+========================
+*/
+static void R_AddMissingQ4StockImageCacheIdentity( idStr &generatedName, bool stockFallbackSelected ) {
+	idStr extension;
+	generatedName.ExtractFileExtension( extension );
+	generatedName.StripFileExtension();
+	generatedName += stockFallbackSelected ? "#q4stockfallback" : "#q4authored";
+	if ( extension.Length() > 0 ) {
+		generatedName.SetFileExtension( extension );
+	}
+}
+
 static unsigned int R_GetImageDownsizeSignature( const char *name, textureUsage_t usage, bool allowDownSize );
 static void R_DownsizeLoadedImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *&pic, int &width, int &height );
 static void R_DownsizeLoadedCubeImageData( const char *name, textureUsage_t usage, bool allowDownSize, byte *pics[6], int &size );
+
+static void R_LoadImageProgramForDeclaredUsage( const char *name, byte **pic, int *width, int *height,
+	ID_TIME_T *timestamp, textureUsage_t &usage ) {
+	// Classic image programs infer TD_BUMP for normal-producing operations.
+	// PBR semantics are explicit authoring contracts and form part of the image
+	// cache key, so decoding must not mutate them after lookup/name generation.
+	const textureUsage_t declaredUsage = usage;
+	textureUsage_t inferredUsage = usage;
+	R_LoadImageProgram( name, pic, width, height, timestamp, &inferredUsage );
+	if ( declaredUsage != TD_PBR_COLOR && declaredUsage != TD_MATERIAL_DATA ) {
+		usage = inferredUsage;
+	}
+}
 
 /*
 ========================
@@ -113,6 +217,16 @@ ID_INLINE void idImage::DeriveOpts() {
 			// Preserve Quake 4's distinct "uncompressed/highquality" image bucket,
 			// but keep it on openQ4's modern uncompressed RGBA8 path rather than
 			// reviving older compressed-driver behavior.
+			opts.gammaMips = false;
+			opts.colorFormat = CFM_DEFAULT;
+			opts.format = FMT_RGBA8;
+			break;
+		case TD_PBR_COLOR:
+			opts.gammaMips = true;
+			opts.colorFormat = CFM_DEFAULT;
+			opts.format = FMT_RGBA8;
+			break;
+		case TD_MATERIAL_DATA:
 			opts.gammaMips = false;
 			opts.colorFormat = CFM_DEFAULT;
 			opts.format = FMT_RGBA8;
@@ -453,7 +567,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		R_ResolvePreferredDDSImageSource( GetName(), preferredDDSName, &preferredDDSFileTime, true, &preferredDDSPrecompressed );
 	if ( preferredDDSImage && !fileSystem->InProductionMode() ) {
 		ID_TIME_T originalSourceTime = FILE_NOT_FOUND_TIMESTAMP;
-		R_LoadImageProgram( GetName(), NULL, NULL, NULL, &originalSourceTime, &usage );
+		R_LoadImageProgramForDeclaredUsage( GetName(), NULL, NULL, NULL, &originalSourceTime, usage );
 		if ( R_IsPreferredDDSStale( preferredDDSName, preferredDDSFileTime, originalSourceTime ) ) {
 			if ( cvarSystem->GetCVarBool( "image_showPrecompressedTextures" ) ) {
 				common->Printf( "Ignoring stale DDS replacement %s for %s\n", preferredDDSName.c_str(), GetName() );
@@ -470,7 +584,6 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	if ( preferredDDSImage && cvarSystem->GetCVarBool( "image_showPrecompressedTextures" ) ) {
 		common->Printf( "Using DDS replacement %s for %s\n", preferredDDSName.c_str(), GetName() );
 	}
-	const char *loadSourceName = preferredDDSImage ? preferredDDSName.c_str() : GetName();
 	const bool selectedDDSImage = explicitDDSImage || preferredDDSImage;
 	const bool bypassGeneratedFile = explicitDDSImage || preferredDDSPrecompressed;
 	idStr selectedSourceName = GetName();
@@ -490,6 +603,18 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			}
 		}
 	}
+	bool q4StockImageCandidateResolved = false;
+	if ( !explicitDDSImage && !preferredDDSImage && cubeFiles == CF_2D ) {
+		bool stockFallbackSelected = false;
+		q4StockImageCandidateResolved = R_SelectMissingQ4StockImageSource( GetName(), selectedSourceName,
+			sourceFileTime, stockFallbackSelected );
+		if ( q4StockImageCandidateResolved ) {
+			sourceFileTimeKnown = true;
+			R_AddMissingQ4StockImageCacheIdentity( generatedName, stockFallbackSelected );
+		}
+	}
+	idStr selectedLoadSourceName = preferredDDSImage ? preferredDDSName : selectedSourceName;
+	const char *loadSourceName = selectedLoadSourceName.c_str();
 
 	idBinaryImage im( generatedName );
 	if ( bypassGeneratedFile ) {
@@ -534,27 +659,44 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 			}
 		}
 	}
-	if ( binaryFileTime != FILE_NOT_FOUND_TIMESTAMP && !fileSystem->InProductionMode() ) {
-		if ( !sourceFileTimeKnown ) {
-			if ( cubeFiles != CF_2D ) {
-				R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
-			} else if ( preferredDDSImage ) {
-				sourceFileTime = preferredDDSFileTime;
-			} else {
-				R_LoadImageProgram( GetName(), NULL, NULL, NULL, &sourceFileTime, &usage );
+	const bool productionMode = fileSystem->InProductionMode();
+	auto acceptGeneratedImage = [&]( ID_TIME_T candidateFileTime ) -> bool {
+		if ( candidateFileTime == FILE_NOT_FOUND_TIMESTAMP ) {
+			return false;
+		}
+		if ( !productionMode ) {
+			if ( !sourceFileTimeKnown ) {
+				if ( cubeFiles != CF_2D ) {
+					R_LoadCubeImages( GetName(), cubeFiles, NULL, NULL, &sourceFileTime );
+				} else if ( preferredDDSImage ) {
+					sourceFileTime = preferredDDSFileTime;
+				} else {
+					R_LoadImageProgramForDeclaredUsage( GetName(), NULL, NULL, NULL, &sourceFileTime, usage );
+				}
+				sourceFileTimeKnown = true;
 			}
-			sourceFileTimeKnown = true;
+			if ( im.GetFileHeader().sourceFileTime != sourceFileTime ) {
+				im.Clear();
+				return false;
+			}
 		}
-		if ( im.GetFileHeader().sourceFileTime != sourceFileTime ) {
+		if ( !R_BinaryImageHeaderSupportedByRenderer( im.GetFileHeader() ) ) {
 			im.Clear();
-			binaryFileTime = FILE_NOT_FOUND_TIMESTAMP;
+			return false;
 		}
-	}
+		if ( !productionMode && !R_GeneratedImageHeaderMatchesDerivedOpts( im.GetFileHeader(), opts, usage ) ) {
+			im.Clear();
+			return false;
+		}
+		return true;
+	};
 
-	const bool binaryImageAvailable = binaryFileTime != FILE_NOT_FOUND_TIMESTAMP && R_BinaryImageHeaderSupportedByRenderer( im.GetFileHeader() );
-	if ( ( fileSystem->InProductionMode() && binaryImageAvailable ) || ( binaryImageAvailable
-		&& R_GeneratedImageHeaderMatchesDerivedOpts( im.GetFileHeader(), opts, usage )
-		) ) {
+	bool generatedImageAccepted = acceptGeneratedImage( binaryFileTime );
+	if ( !generatedImageAccepted && !bypassGeneratedFile ) {
+		binaryFileTime = im.LoadFromCompactGeneratedFileUnchecked();
+		generatedImageAccepted = acceptGeneratedImage( binaryFileTime );
+	}
+	if ( generatedImageAccepted ) {
 		const bimageFile_t & header = im.GetFileHeader();
 		opts.width = header.width;
 		opts.height = header.height;
@@ -653,12 +795,22 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 				}
 
 				// load the full specification, and perform any image program calculations
-				R_LoadImageProgram( fallbackLoadSourceName, &pic, &width, &height, &sourceFileTime, &usage );
+				R_LoadImageProgramForDeclaredUsage( fallbackLoadSourceName, &pic, &width, &height, &sourceFileTime, usage );
 				if ( pic == NULL && preferredDDSImage && !preferredDDSPrecompressed ) {
 					common->Warning( "Couldn't decode preferred DDS replacement %s for %s; falling back to original source", loadSourceName, GetName() );
 					selectedSourceName = GetName();
 					sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
-					R_LoadImageProgram( GetName(), &pic, &width, &height, &sourceFileTime, &usage );
+					R_LoadImageProgramForDeclaredUsage( GetName(), &pic, &width, &height, &sourceFileTime, usage );
+				}
+				if ( pic == NULL && !q4StockImageCandidateResolved ) {
+					const char *stockFallbackName = R_FindMissingQ4StockImageFallback( GetName() );
+					if ( stockFallbackName != NULL ) {
+						sourceFileTime = FILE_NOT_FOUND_TIMESTAMP;
+						R_LoadImageProgramForDeclaredUsage( stockFallbackName, &pic, &width, &height, &sourceFileTime, usage );
+						if ( pic != NULL ) {
+							selectedSourceName = stockFallbackName;
+						}
+					}
 				}
 				sourceFileTimeKnown = true;
 
@@ -857,7 +1009,7 @@ been; anything else falls back to a general resample.
 */
 static bool R_ImageUsageUsesGammaMips( textureUsage_t usage ) {
 	// mirrors the gammaMips choices DeriveOpts makes for each usage
-	return usage == TD_FONT || usage == TD_LIGHT;
+	return usage == TD_FONT || usage == TD_LIGHT || usage == TD_PBR_COLOR;
 }
 
 static int R_CountExactHalvings( int width, int height, int scaledWidth, int scaledHeight ) {
@@ -1021,13 +1173,41 @@ void R_PurgeFramebufferCopyFBOs( void ) {
 	}
 }
 
+// A cubemap is complete only when all six faces have matching storage. A
+// framebuffer/depth copy writes a single sealed face, so resize every face
+// first and then use the selected face as the transfer destination.
+static void R_AllocateCopyTextureStorage( bool isCube, GLenum copyTarget,
+		GLint copyInternalFormat, int width, int height, GLenum copyDataFormat,
+		GLenum copyDataType ) {
+	if ( !isCube ) {
+		glTexImage2D( copyTarget, 0, copyInternalFormat, width, height, 0,
+			copyDataFormat, copyDataType, NULL );
+		return;
+	}
+	for ( int face = 0; face < 6; ++face ) {
+		glTexImage2D( GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + face, 0,
+			copyInternalFormat, width, height, 0, copyDataFormat, copyDataType,
+			NULL );
+	}
+}
+
 /*
 ====================
 CopyFramebuffer
 ====================
 */
-void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
-	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+bool idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight,
+		int cubeFace ) {
+	const bool isCube = opts.textureType == TT_CUBIC;
+	if ( imageWidth <= 0 || imageHeight <= 0
+			|| ( isCube && ( cubeFace < 0 || cubeFace >= 6 ) )
+			|| ( !isCube && cubeFace != 0 ) ) {
+		return false;
+	}
+	const GLenum textureTarget = isCube ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D;
+	const GLenum copyTarget = isCube
+		? GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + cubeFace : GL_TEXTURE_2D;
+	R_BindTextureForDirectAccess( textureTarget, texnum );
 
 	const bool readingFromRenderTexture = ( backEnd.renderTexture != NULL ) && ( backEnd.renderTexture->GetNumColorImages() > 0 );
 	const GLenum readAttachment = GL_COLOR_ATTACHMENT0;
@@ -1053,19 +1233,21 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 		const GLuint copyFbo = r_copyFramebufferFbo;
 
 		if ( needsStorageResize ) {
-			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth, imageHeight, 0,
-				dataFormat != 0 ? dataFormat : GL_RGBA, dataType != 0 ? dataType : GL_UNSIGNED_BYTE, NULL );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+			R_AllocateCopyTextureStorage( isCube, copyTarget,
+				internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth,
+				imageHeight, dataFormat != 0 ? dataFormat : GL_RGBA,
+				dataType != 0 ? dataType : GL_UNSIGNED_BYTE );
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, backEnd.renderTexture->GetDeviceHandle() );
 		glReadBuffer( readAttachment );
 
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, copyFbo );
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texnum, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, copyTarget, texnum, 0 );
 		glDrawBuffer( GL_COLOR_ATTACHMENT0 );
 
 		// glBlitFramebuffer obeys scissor state; ensure the copy is not clipped by a prior light scissor.
@@ -1082,7 +1264,7 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glEnable( GL_SCISSOR_TEST );
 		}
 
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, copyTarget, 0, 0 );
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, previousDrawFbo );
@@ -1109,10 +1291,16 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glDisable( GL_SCISSOR_TEST );
 		}
 
-		if ( needsStorageResize ) {
-			glCopyTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, x, y, imageWidth, imageHeight, 0 );
+		if ( needsStorageResize && !isCube ) {
+			glCopyTexImage2D( copyTarget, 0, internalFormat != 0 ? internalFormat : GL_RGBA8, x, y, imageWidth, imageHeight, 0 );
 		} else {
-			glCopyTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, x, y, imageWidth, imageHeight );
+			if ( needsStorageResize ) {
+				R_AllocateCopyTextureStorage( true, copyTarget,
+					internalFormat != 0 ? internalFormat : GL_RGBA8, imageWidth,
+					imageHeight, dataFormat != 0 ? dataFormat : GL_RGBA,
+					dataType != 0 ? dataType : GL_UNSIGNED_BYTE );
+			}
+			glCopyTexSubImage2D( copyTarget, 0, 0, 0, x, y, imageWidth, imageHeight );
 		}
 
 		if ( scissorWasEnabled ) {
@@ -1124,14 +1312,15 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 		glReadBuffer( previousReadBuffer );
 
 		if ( needsStorageResize ) {
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 	}
 
 //	backEnd.pc.c_copyFrameBuffer++;
+	return true;
 }
 
 /*
@@ -1139,8 +1328,18 @@ void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight ) {
 CopyDepthbuffer
 ====================
 */
-void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
-	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+bool idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight,
+		int cubeFace ) {
+	const bool isCube = opts.textureType == TT_CUBIC;
+	if ( imageWidth <= 0 || imageHeight <= 0
+			|| ( isCube && ( cubeFace < 0 || cubeFace >= 6 ) )
+			|| ( !isCube && cubeFace != 0 ) ) {
+		return false;
+	}
+	const GLenum textureTarget = isCube ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D;
+	const GLenum copyTarget = isCube
+		? GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT + cubeFace : GL_TEXTURE_2D;
+	R_BindTextureForDirectAccess( textureTarget, texnum );
 
 	// The destination must hold depth-renderable storage: it gets attached to
 	// GL_DEPTH_ATTACHMENT for the blit path and receives GL_DEPTH_COMPONENT
@@ -1192,12 +1391,15 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 		const GLuint copyDepthFbo = r_copyDepthbufferFbo;
 
 		if ( needsStorageResize ) {
-			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
-				dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT, dataType != 0 ? dataType : GL_FLOAT, NULL );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+			R_AllocateCopyTextureStorage( isCube, copyTarget,
+				internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24,
+				imageWidth, imageHeight,
+				dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT,
+				dataType != 0 ? dataType : GL_FLOAT );
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 
 		if ( readingFromRenderTexture ) {
@@ -1208,7 +1410,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 		}
 
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, copyDepthFbo );
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, texnum, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, copyTarget, texnum, 0 );
 		glReadBuffer( GL_NONE );
 		glDrawBuffer( GL_NONE );
 
@@ -1226,13 +1428,13 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glEnable( GL_SCISSOR_TEST );
 		}
 
-		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0 );
+		glFramebufferTexture2D( GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, copyTarget, 0, 0 );
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );
 		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, previousDrawFbo );
 		glReadBuffer( previousReadBuffer );
 		glDrawBuffer( previousDrawBuffer );
-		return;
+		return true;
 	}
 
 	if ( sourceDepthIsMSAA ) {
@@ -1244,7 +1446,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 
 		const int pixelCount = imageWidth * imageHeight;
 		if ( pixelCount <= 0 ) {
-			return;
+			return false;
 		}
 
 		GLint previousReadFbo = 0;
@@ -1281,16 +1483,23 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 
 		// The readback buffer always holds GL_FLOAT depth values regardless of
 		// the texture's preferred upload type.
-		if ( needsStorageResize ) {
-			glTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
+		if ( needsStorageResize && !isCube ) {
+			glTexImage2D( copyTarget, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24, imageWidth, imageHeight, 0,
 				GL_DEPTH_COMPONENT, GL_FLOAT, resolvedDepthBuffer.Ptr() );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		} else {
-			glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, imageWidth, imageHeight,
+			if ( needsStorageResize ) {
+				R_AllocateCopyTextureStorage( true, copyTarget,
+					internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT24,
+					imageWidth, imageHeight, GL_DEPTH_COMPONENT, GL_FLOAT );
+			}
+			glTexSubImage2D( copyTarget, 0, 0, 0, imageWidth, imageHeight,
 				GL_DEPTH_COMPONENT, GL_FLOAT, resolvedDepthBuffer.Ptr() );
+		}
+		if ( needsStorageResize ) {
+			glTexParameterf( textureTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			glTexParameterf( textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 		}
 
 		glBindFramebuffer( GL_READ_FRAMEBUFFER, previousReadFbo );
@@ -1316,10 +1525,17 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 			glDisable( GL_SCISSOR_TEST );
 		}
 
-		if ( needsStorageResize ) {
-			glCopyTexImage2D( GL_TEXTURE_2D, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0 );
+		if ( needsStorageResize && !isCube ) {
+			glCopyTexImage2D( copyTarget, 0, internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0 );
 		} else {
-			glCopyTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, x, y, imageWidth, imageHeight );
+			if ( needsStorageResize ) {
+				R_AllocateCopyTextureStorage( true, copyTarget,
+					internalFormat != 0 ? internalFormat : GL_DEPTH_COMPONENT,
+					imageWidth, imageHeight,
+					dataFormat != 0 ? dataFormat : GL_DEPTH_COMPONENT,
+					dataType != 0 ? dataType : GL_FLOAT );
+			}
+			glCopyTexSubImage2D( copyTarget, 0, 0, 0, x, y, imageWidth, imageHeight );
 		}
 
 		if ( scissorWasEnabled ) {
@@ -1332,6 +1548,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight ) {
 	}
 
 	//backEnd.pc.c_copyFrameBuffer++;
+	return true;
 }
 
 /*
@@ -1535,7 +1752,11 @@ void idImage::Reload( bool force ) {
 				}
 			} else {
 				// get the current values
-				R_LoadImageProgram( imgName, NULL, NULL, NULL, &current );
+				bool stockFallbackSelected = false;
+				if ( !R_SelectMissingQ4StockImageSource( imgName, currentSourceName,
+						current, stockFallbackSelected ) ) {
+					R_LoadImageProgram( imgName, NULL, NULL, NULL, &current );
+				}
 			}
 		}
 		const bool sourceSelectionChanged = loadedSourceName.Length() == 0 || loadedSourceName.Icmp( currentSourceName ) != 0;

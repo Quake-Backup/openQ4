@@ -124,5 +124,5 @@ option(
   'build_native_tests',
   type: 'boolean',
   value: false,
-  description: 'Build the small dependency-free native safety test executable used by validation profiles.',
+  description: 'Build focused dependency-light native engine tests used by validation profiles.',
 )

@@ -63,6 +63,9 @@ static void R_FinishDeform( drawSurf_t *drawSurf, srfTriangles_t *newTri, idDraw
 	}
 	// if we are out of vertex cache, leave it the way it is
 	if ( newTri->ambientCache ) {
+		// srfTriangles_t::deformedSurface describes borrowed topology ownership
+		// for generated models; it is not a material-deform execution flag. The
+		// per-draw ClassicDeformDomain record seals this replacement instead.
 		drawSurf->geo = newTri;
 	}
 }

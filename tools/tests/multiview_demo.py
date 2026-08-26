@@ -64,6 +64,7 @@ def validate_legacy_game_api_compatibility(source: str) -> None:
     for token, context in (
         ("MVD_LEGACY_GAME_API_1_0_1_1 = 39u", "retail-compatible MVD API"),
         ("MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT = 42u", "pre-shutdown-split MVD API"),
+        ("MVD_LEGACY_GAME_API_PRE_PRESENTATION_STATE = 44u", "pre-presentation-state MVD API"),
     ):
         require(source, token, context)
     legacy_compatibility = between(
@@ -75,6 +76,7 @@ def validate_legacy_game_api_compatibility(source: str) -> None:
     for token in (
         "version == MVD_LEGACY_GAME_API_1_0_1_1",
         "version == MVD_LEGACY_GAME_API_PRE_SHUTDOWN_SPLIT",
+        "version == MVD_LEGACY_GAME_API_PRE_PRESENTATION_STATE",
         "version == static_cast<unsigned int>( GAME_API_VERSION )",
     ):
         require(legacy_compatibility, token, "known-compatible MVD 1.0/1.1 API allowlist")
@@ -210,6 +212,14 @@ def validate_container() -> None:
         validate_legacy_game_api_compatibility,
         source.replace(api42_allow, "", 1),
         "legacy MVDs recorded by game API 42 are rejected after the shutdown-only API bump",
+    )
+    api44_allow = "\t\tversion == MVD_LEGACY_GAME_API_PRE_PRESENTATION_STATE ||\n"
+    if source.count(api44_allow) != 1:
+        raise AssertionError("MVD API-44 compatibility mutation anchor is not unique")
+    expect_contract_rejection(
+        validate_legacy_game_api_compatibility,
+        source.replace(api44_allow, "", 1),
+        "legacy MVDs recorded by game API 44 are rejected after the presentation-only API bump",
     )
 
     require_order(

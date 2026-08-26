@@ -29,6 +29,9 @@ If you have questions concerning this license or the applicable additional terms
 
 
 
+#include "../idlib/PrivateCommand.h"
+#include "RemoteCVarPolicy.h"
+
 idCVar * idCVar::staticVars = NULL;
 
 /*
@@ -90,12 +93,31 @@ static void ArgCompletion_CvarName( const idCmdArgs &args, void(*callback)( cons
 	s_cvarNameArgCompletionCommand = NULL;
 }
 
+static void CVar_AssignString( idStr &target, const char *newValue, bool privateValue ) {
+	if ( newValue == NULL ) {
+		newValue = "";
+	}
+	if ( !privateValue ) {
+		target = newValue;
+		return;
+	}
+
+	// newValue can point into target (or another long-lived CVar string), so
+	// preserve it before clearing the complete current allocation.
+	idStr replacement( newValue );
+	target.SecureClear();
+	target = replacement;
+	replacement.SecureClear();
+}
+
 /*
 ============
 idInternalCVar::idInternalCVar
 ============
 */
 idInternalCVar::idInternalCVar( void ) {
+	flags = 0;
+	valueStrings = NULL;
 }
 
 /*
@@ -106,9 +128,9 @@ idInternalCVar::idInternalCVar
 idInternalCVar::idInternalCVar( const char *newName, const char *newValue, int newFlags ) {
 	nameString = newName;
 	name = nameString.c_str();
-	valueString = newValue;
+	CVar_AssignString( valueString, newValue, ( newFlags & CVAR_PRIVATE ) != 0 );
 	value = valueString.c_str();
-	resetString = newValue;
+	CVar_AssignString( resetString, newValue, ( newFlags & CVAR_PRIVATE ) != 0 );
 	descriptionString = "";
 	description = descriptionString.c_str();
 	flags = ( newFlags & ~CVAR_STATIC ) | CVAR_MODIFIED;
@@ -129,9 +151,9 @@ idInternalCVar::idInternalCVar
 idInternalCVar::idInternalCVar( const idCVar *cvar ) {
 	nameString = cvar->GetName();
 	name = nameString.c_str();
-	valueString = cvar->GetString();
+	CVar_AssignString( valueString, cvar->GetString(), ( cvar->GetFlags() & CVAR_PRIVATE ) != 0 );
 	value = valueString.c_str();
-	resetString = cvar->GetString();
+	CVar_AssignString( resetString, cvar->GetString(), ( cvar->GetFlags() & CVAR_PRIVATE ) != 0 );
 	descriptionString = cvar->GetDescription();
 	description = descriptionString.c_str();
 	flags = cvar->GetFlags() | CVAR_MODIFIED;
@@ -150,6 +172,10 @@ idInternalCVar::~idInternalCVar
 ============
 */
 idInternalCVar::~idInternalCVar( void ) {
+	if ( flags & CVAR_PRIVATE ) {
+		valueString.SecureClear();
+		resetString.SecureClear();
+	}
 	Mem_Free( valueStrings );
 	valueStrings = NULL;
 }
@@ -208,6 +234,7 @@ idInternalCVar::Update
 ============
 */
 void idInternalCVar::Update( const idCVar *cvar ) {
+	const bool privateValue = ( ( flags | cvar->GetFlags() ) & CVAR_PRIVATE ) != 0;
 
 	// if this is a statically declared variable
 	if ( cvar->GetFlags() & CVAR_STATIC ) {
@@ -228,7 +255,7 @@ void idInternalCVar::Update( const idCVar *cvar ) {
 		}
 
 		// the code is now specifying a variable that the user already set a value for, take the new value as the reset value
-		resetString = cvar->GetString();
+		CVar_AssignString( resetString, cvar->GetString(), privateValue );
 		descriptionString = cvar->GetDescription();
 		description = descriptionString.c_str();
 		valueMin = cvar->GetMinValue();
@@ -246,9 +273,13 @@ void idInternalCVar::Update( const idCVar *cvar ) {
 
 	// only allow one non-empty reset string without a warning
 	if ( resetString.Length() == 0 ) {
-		resetString = cvar->GetString();
+		CVar_AssignString( resetString, cvar->GetString(), privateValue );
 	} else if ( cvar->GetString()[0] && resetString.Cmp( cvar->GetString() ) != 0 ) {
-		common->Warning( "cvar \"%s\" given initial values: \"%s\" and \"%s\"\n", nameString.c_str(), resetString.c_str(), cvar->GetString() );
+		if ( privateValue ) {
+			common->Warning( "private cvar \"%s\" was declared with conflicting initial values\n", nameString.c_str() );
+		} else {
+			common->Warning( "cvar \"%s\" given initial values: \"%s\" and \"%s\"\n", nameString.c_str(), resetString.c_str(), cvar->GetString() );
+		}
 	}
 }
 
@@ -382,11 +413,13 @@ void idInternalCVar::Set( const char *newValue, bool force, bool fromServer ) {
 		}
 	}
 
-	if ( valueString.Icmp( newValue ) == 0 ) {
+	const bool unchanged = ( flags & CVAR_CASE_SENSITIVE ) ?
+		valueString.Cmp( newValue ) == 0 : valueString.Icmp( newValue ) == 0;
+	if ( unchanged ) {
 		return;
 	}
 
-	valueString = newValue;
+	CVar_AssignString( valueString, newValue, ( flags & CVAR_PRIVATE ) != 0 );
 	value = valueString.c_str();
 	UpdateValue();
 
@@ -400,7 +433,7 @@ idInternalCVar::Reset
 ============
 */
 void idInternalCVar::Reset( void ) {
-	valueString = resetString;
+	CVar_AssignString( valueString, resetString.c_str(), ( flags & CVAR_PRIVATE ) != 0 );
 	value = valueString.c_str();
 	UpdateValue();
 }
@@ -498,6 +531,8 @@ public:
 
 	virtual const idDict *	MoveCVarsToDict( int flags ) const;
 	virtual void			SetCVarsFromDict( const idDict &dict );
+	virtual bool			SetCVarsFromDictByFlags( const idDict &dict, int requiredFlag );
+	virtual bool			CommandContainsPrivateCVar( const char *commandText ) const;
 
 	void					RegisterInternal( idCVar *cvar );
 	idInternalCVar *		FindInternal( const char *name ) const;
@@ -770,6 +805,50 @@ float idCVarSystemLocal::GetCVarFloat( const char *name ) const {
 
 /*
 ============
+idCVarSystemLocal::CommandContainsPrivateCVar
+
+Scan the full, possibly semicolon-separated input instead of trusting argv(0).
+The case-insensitive private name must be bounded by non-cvar characters. Also
+inspect the expanded tokens: otherwise `set $target secret`, where target names
+a private CVar, reaches the private assignment after raw echo/history/journaling.
+============
+*/
+bool idCVarSystemLocal::CommandContainsPrivateCVar( const char *commandText ) const {
+	if ( commandText == NULL || commandText[0] == '\0' ) {
+		return false;
+	}
+	for ( int index = 0; index < cvars.Num(); ++index ) {
+		const idInternalCVar *cvar = cvars[ index ];
+		if ( !( cvar->GetFlags() & CVAR_PRIVATE ) ) {
+			continue;
+		}
+		if ( idPrivateCommand::ContainsBoundedCaseInsensitiveToken(
+			commandText, cvar->GetName() ) ) {
+			return true;
+		}
+	}
+
+	idCmdArgs expandedArgs;
+	expandedArgs.TokenizeString( commandText, false );
+	bool containsPrivateCVar = false;
+	for ( int argIndex = 0; argIndex < expandedArgs.Argc() && !containsPrivateCVar; ++argIndex ) {
+		for ( int cvarIndex = 0; cvarIndex < cvars.Num(); ++cvarIndex ) {
+			const idInternalCVar *cvar = cvars[ cvarIndex ];
+			if ( ( cvar->GetFlags() & CVAR_PRIVATE ) &&
+				 idPrivateCommand::ContainsBoundedCaseInsensitiveToken(
+					expandedArgs.Argv( argIndex ), cvar->GetName() ) ) {
+				containsPrivateCVar = true;
+				break;
+			}
+		}
+	}
+	// Token expansion may have copied the assignment value into this temporary.
+	expandedArgs.ClearSensitive();
+	return containsPrivateCVar;
+}
+
+/*
+============
 idCVarSystemLocal::Command
 ============
 */
@@ -790,14 +869,19 @@ bool idCVarSystemLocal::Command( const idCmdArgs &args ) {
 
 	if ( args.Argc() == 1 ) {
 		// print the variable
+		const char *value = ( internal->GetFlags() & CVAR_PRIVATE ) ? "<redacted>" : internal->valueString.c_str();
+		const char *defaultValue = ( internal->GetFlags() & CVAR_PRIVATE ) ? "<redacted>" : internal->resetString.c_str();
 		common->Printf( "\"%s\" is:\"%s\"" S_COLOR_WHITE " default:\"%s\"\n",
-					internal->nameString.c_str(), internal->valueString.c_str(), internal->resetString.c_str() );
+					internal->nameString.c_str(), value, defaultValue );
 		if ( idStr::Length( internal->GetDescription() ) > 0 ) {
 			common->Printf( S_COLOR_WHITE "%s\n", internal->GetDescription() );
 		}
 	} else {
 		// set the value
 		internal->Set( args.Args(), false, false );
+		if ( internal->GetFlags() & CVAR_PRIVATE ) {
+			idCmdArgs::ClearArgsScratch();
+		}
 	}
 	return true;
 }
@@ -905,7 +989,7 @@ with the "flags" flag set to true.
 void idCVarSystemLocal::WriteFlaggedVariables( int flags, const char *setCmd, idFile *f ) const {
 	for( int i = 0; i < cvars.Num(); i++ ) {
 		idInternalCVar *cvar = cvars[i];
-		if ( cvar->GetFlags() & flags ) {
+		if ( ( cvar->GetFlags() & flags ) && !( cvar->GetFlags() & CVAR_PRIVATE ) ) {
 			f->Printf( "%s %s \"%s\"\n", setCmd, cvar->GetName(), cvar->GetString() );
 		}
 	}
@@ -920,7 +1004,7 @@ const idDict* idCVarSystemLocal::MoveCVarsToDict( int flags ) const {
 	moveCVarsToDict.Clear();
 	for( int i = 0; i < cvars.Num(); i++ ) {
 		idCVar *cvar = cvars[i];
-		if ( cvar->GetFlags() & flags ) {
+		if ( ( cvar->GetFlags() & flags ) && !( cvar->GetFlags() & CVAR_PRIVATE ) ) {
 			moveCVarsToDict.Set( cvar->GetName(), cvar->GetString() );
 		}
 	}
@@ -933,15 +1017,51 @@ idCVarSystemLocal::SetCVarsFromDict
 ============
 */
 void idCVarSystemLocal::SetCVarsFromDict( const idDict &dict ) {
+	// Retain the historical API for local/legacy callers, but never let it
+	// force-set PRIVATE variables or anything outside the three legacy network
+	// dictionary classes. New protocol consumers must use
+	// SetCVarsFromDictByFlags so one wire opcode cannot borrow another class's
+	// authority.
 	idInternalCVar *internal;
 
 	for( int i = 0; i < dict.GetNumKeyVals(); i++ ) {
 		const idKeyValue *kv = dict.GetKeyVal( i );
 		internal = FindInternal( kv->GetKey() );
-		if ( internal ) {
+		if ( internal &&
+			 ( internal->GetFlags() & ( CVAR_USERINFO | CVAR_SERVERINFO | CVAR_NETWORKSYNC ) ) != 0 &&
+			 !( internal->GetFlags() & CVAR_PRIVATE ) ) {
 			internal->InternalServerSetString( kv->GetValue() );
 		}
 	}
+}
+
+/*
+============
+idCVarSystemLocal::SetCVarsFromDictByFlags
+
+Apply a dictionary under one explicit network authority.  Requiring a single
+known flag prevents a userinfo packet from setting network-sync/server-info
+state (or vice versa), while the private check is defense in depth for any
+future CVar that is accidentally declared with both flag classes.
+============
+*/
+bool idCVarSystemLocal::SetCVarsFromDictByFlags( const idDict &dict, int requiredFlag ) {
+	const int allowedRemoteFlags = CVAR_USERINFO | CVAR_SERVERINFO | CVAR_NETWORKSYNC;
+	if ( !idRemoteCVarPolicy::IsSingleAllowedAuthority( requiredFlag, allowedRemoteFlags ) ) {
+		common->Warning( "SetCVarsFromDictByFlags: invalid remote CVar authority 0x%x", requiredFlag );
+		return false;
+	}
+
+	for ( int i = 0; i < dict.GetNumKeyVals(); ++i ) {
+		const idKeyValue *kv = dict.GetKeyVal( i );
+		idInternalCVar *internal = FindInternal( kv->GetKey() );
+		if ( internal == NULL || !idRemoteCVarPolicy::CanApply( internal->GetFlags(),
+			 requiredFlag, allowedRemoteFlags, CVAR_PRIVATE ) ) {
+			continue;
+		}
+		internal->InternalServerSetString( kv->GetValue() );
+	}
+	return true;
 }
 
 /*
@@ -967,6 +1087,10 @@ void idCVarSystemLocal::Toggle_f( const idCmdArgs &args ) {
 
 	if ( cvar == NULL ) {
 		common->Warning( "Toggle_f: cvar \"%s\" not found", args.Argv( 1 ) );
+		return;
+	}
+	if ( cvar->GetFlags() & CVAR_PRIVATE ) {
+		common->Printf( "toggle is unavailable for private CVar %s\n", cvar->GetName() );
 		return;
 	}
 
@@ -1014,6 +1138,10 @@ void idCVarSystemLocal::Set_f( const idCmdArgs &args ) {
 
 	str = args.Args( 2, args.Argc() - 1 );
 	localCVarSystem.SetCVarString( args.Argv(1), str );
+	idInternalCVar *cvar = localCVarSystem.FindInternal( args.Argv( 1 ) );
+	if ( cvar != NULL && ( cvar->GetFlags() & CVAR_PRIVATE ) ) {
+		idCmdArgs::ClearArgsScratch();
+	}
 }
 
 /*
@@ -1171,7 +1299,8 @@ void idCVarSystemLocal::ListByFlags( const idCmdArgs &args, cvarFlags_t flags ) 
 		case SHOW_VALUE: {
 			for ( i = 0; i < cvarList.Num(); i++ ) {
 				cvar = cvarList[i];
-				common->Printf( FORMAT_STRING S_COLOR_WHITE "\"%s\"\n", cvar->nameString.c_str(), cvar->valueString.c_str() );
+				const char *value = ( cvar->GetFlags() & CVAR_PRIVATE ) ? "<redacted>" : cvar->valueString.c_str();
+				common->Printf( FORMAT_STRING S_COLOR_WHITE "\"%s\"\n", cvar->nameString.c_str(), value );
 			}
 			break;
 		}

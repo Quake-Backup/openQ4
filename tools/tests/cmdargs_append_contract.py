@@ -48,9 +48,12 @@ def validate_tree(root: Path, context: str) -> None:
     args_body = function_body(source, "const char *idCmdArgs::Args", context)
     append_body = function_body(source, "void idCmdArgs::AppendArg", context)
 
+    if "static idStr cmd_args" not in source:
+        raise AssertionError(f"{context}: missing dynamic idCmdArgs::Args scratch storage")
+    if not any(clear in args_body for clear in ("cmd_args.Clear()", "cmd_args.SecureClear()")):
+        raise AssertionError(f"{context}: idCmdArgs::Args does not clear its scratch storage")
+
     for needle in (
-        "static idStr cmd_args",
-        "cmd_args.Clear()",
         "if ( start < 0 )",
         'cmd_args += "\\\\\\\\"',
         "cmd_args += *p",

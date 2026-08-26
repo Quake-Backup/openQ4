@@ -65,6 +65,7 @@
 #include "../tr_local.h"
 #include "../RenderWorld_local.h"
 #include "../ShadowMapProjected.h"
+#include "../ClassicInteractionDomain.h"
 
 #undef snprintf
 #undef vsnprintf
@@ -78,6 +79,7 @@
 #define UINT_MAX	0xffffffffu
 #endif
 #include <cstdio>
+#include <cmath>
 #include "volk.h"
 #include "vk_mem_alloc.h"
 
@@ -88,6 +90,10 @@
 VkCommandBuffer VK_Exec_ActiveCmd( void );
 int VK_Exec_ActiveFrameSlot( void );
 bool VK_Exec_BindTriGeometry( VkCommandBuffer cmd, int slot, const srfTriangles_t *tri );
+bool VK_Exec_PrepareTriGeometry( VkCommandBuffer cmd, int slot,
+		const srfTriangles_t *tri, int &vertexOffset, int &indexOffset );
+void VK_Exec_BindPreparedTriGeometry( VkCommandBuffer cmd, int slot,
+		int vertexOffset, int indexOffset );
 VkDescriptorSet VK_Exec_ImageDescriptor( unsigned int texnum, bool require2D );
 VkPipeline VK_Exec_CasterPipeline( void );
 VkPipeline VK_Exec_PointCasterPipeline( void );
@@ -211,6 +217,67 @@ typedef struct vkShadowMapState_s {
 
 static vkShadowMapState_t vkShadow;
 
+// One sealed caster record may feed both LOCAL and GLOBAL ownership maps, so
+// geometry/descriptors are retained once and referenced from both resource
+// plans. The reference table is bounded at twice the domain caster arena.
+static const int VK_CLASSIC_SHADOW_MAX_CASTER_REFS =
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS * 2;
+
+typedef struct vkClassicShadowAlphaPlan_s {
+	const classicInteractionDomainShadowAlphaStage_t *stage;
+	VkDescriptorSet		imageSet;
+} vkClassicShadowAlphaPlan_t;
+
+typedef struct vkClassicShadowCasterPlan_s {
+	const classicInteractionDomainShadowCaster_t *caster;
+	int			vertexOffset;
+	int			indexOffset;
+	int			firstAlpha;
+	int			alphaCount;
+	VkCullModeFlags		cullMode;
+} vkClassicShadowCasterPlan_t;
+
+typedef struct vkClassicShadowPassPlan_s {
+	const classicInteractionDomainLight_t *light;
+	const classicInteractionDomainShadowMapPass_t *pass;
+	const vkShadowLightState_t *physicalLight;
+	const vkShadowPassState_t *physicalPass;
+	vkShadowReceiverPass_t	receiver;
+	int			firstCasterRef;
+	int			casterRefCount;
+	bool			resourceOwner;
+} vkClassicShadowPassPlan_t;
+
+typedef struct vkClassicShadowTransaction_s {
+	const classicInteractionDomainView_t *view;
+	VkCommandBuffer		cmd;
+	int			frameSlot;
+	VkPipelineLayout		layout;
+	VkPipeline		projectedCasterPipeline;
+	VkPipeline		pointCasterPipeline;
+	VkDescriptorSet		whiteSet;
+	int			projectedCount;
+	int			projectedFreshCount;
+	int			pointFreshCount;
+	int			pointHitCount;
+	int			passPlanCount;
+	int			casterPlanCount;
+	int			casterRefCount;
+	int			alphaPlanCount;
+	bool			active;
+	bool			ready;
+	bool			ownsPreparedLights;
+	vkClassicShadowPassPlan_t passPlans[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES ];
+	vkClassicShadowCasterPlan_t casterPlans[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS ];
+	int casterRefs[ VK_CLASSIC_SHADOW_MAX_CASTER_REFS ];
+	vkClassicShadowAlphaPlan_t alphaPlans[
+		CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES ];
+} vkClassicShadowTransaction_t;
+
+static vkClassicShadowTransaction_t vkClassicShadowTransaction;
+
 static VkImageAspectFlags VK_ShadowMap_DepthAspectMask( void ) {
 	return VK_IMAGE_ASPECT_DEPTH_BIT |
 			( vkCtx.shadowDepthHasStencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0 );
@@ -309,9 +376,9 @@ static void VK_ShadowMap_InvalidatePassResource( vkShadowLightState_t &light,
 	VK_ShadowMap_MarkStencilFallbackSticky( light.vLight );
 }
 
-void VK_ShadowMap_AbandonPreparedLights( void ) {
+static void VK_ShadowMap_ReleasePreparedLights( const bool markSticky ) {
 	for ( int i = 0 ; i < vkShadow.numLights ; i++ ) {
-		if ( vkShadow.lights[ i ].valid ) {
+		if ( markSticky && vkShadow.lights[ i ].valid ) {
 			VK_ShadowMap_MarkStencilFallbackSticky(
 					vkShadow.lights[ i ].vLight );
 		}
@@ -345,6 +412,20 @@ void VK_ShadowMap_AbandonPreparedLights( void ) {
 		}
 		vkShadow.lights[ i ].valid = false;
 	}
+	vkShadow.numLights = 0;
+	vkShadow.nextTileX = 0;
+	vkShadow.nextTileY = 0;
+	vkShadow.nextTileRowHeight = 0;
+	vkShadow.pointCubesUsed = 0;
+	vkShadow.freshUpdates = 0;
+	vkShadow.projectedCacheHits = 0;
+	vkShadow.pointCacheHits = 0;
+	vkShadow.projectedFreshUpdates = 0;
+	vkShadow.pointFreshUpdates = 0;
+}
+
+void VK_ShadowMap_AbandonPreparedLights( void ) {
+	VK_ShadowMap_ReleasePreparedLights( true );
 }
 
 /*
@@ -717,20 +798,6 @@ Point-light math (ports of the excluded draw_arb2.cpp helpers)
 ====================
 */
 
-// port of RB_PointShadowMapLightFar (draw_arb2.cpp:7358): the padded radial
-// far envelope both the caster and the receiver normalize against
-static float VK_ShadowMap_PointLightFar( const viewLight_t *vLight ) {
-	idVec3 adjustedRadius = vLight->lightRadius;
-	if ( vLight->lightDef != NULL ) {
-		const renderLight_t &parms = vLight->lightDef->parms;
-		adjustedRadius[0] = parms.lightRadius[0] + idMath::Fabs( parms.lightCenter[0] );
-		adjustedRadius[1] = parms.lightRadius[1] + idMath::Fabs( parms.lightCenter[1] );
-		adjustedRadius[2] = parms.lightRadius[2] + idMath::Fabs( parms.lightCenter[2] );
-	}
-
-	return Max( adjustedRadius.Length() * r_shadowMapPointFarScale.GetFloat(), 1.0f );
-}
-
 // port of RB_PointShadowMapBuildViewAxis (draw_arb2.cpp:7303): the GL cube
 // face view axes. Combined with the GL viewport row mapping (positive-height
 // viewport: NDC y=-1 -> texel row 0) these produce the exact GL/Vulkan cube
@@ -929,7 +996,7 @@ static int VK_ShadowMap_BuildPassSignatureForView(
 		hash = VK_ShadowMap_HashFloat( hash,
 				r_shadowMapPointFarScale.GetFloat() );
 		hash = VK_ShadowMap_HashFloat( hash,
-				VK_ShadowMap_PointLightFar( vLight ) );
+				R_ShadowMapPointFarDistance( vLight ) );
 		if ( vLight != NULL && vLight->lightDef != NULL ) {
 			for ( int i = 0 ; i < 3 ; i++ ) {
 				hash = VK_ShadowMap_HashFloat( hash,
@@ -1906,7 +1973,7 @@ int VK_ShadowMap_PrepareViewLights( const viewDef_t *viewDef,
 			memset( &entry, 0, sizeof( entry ) );
 			entry.vLight = vLight;
 			entry.pointLight = true;
-			entry.pointFar = VK_ShadowMap_PointLightFar( vLight );
+			entry.pointFar = R_ShadowMapPointFarDistance( vLight );
 			for ( int i = 0 ; i < 3 ; i++ ) {
 				entry.pointLightOrigin[ i ] =
 						vLight->globalLightOrigin[ i ];
@@ -1974,15 +2041,20 @@ int VK_ShadowMap_PrepareViewLights( const viewDef_t *viewDef,
 
 			VK_ShadowMap_RefreshLightValidity( entry );
 			if ( entry.valid ) {
-				// receiver bias scalars (RB_GLSLPointShadowMap_
-				// CreateDrawInteractions): texel-aware depth bias plus the
-				// per-distance normal-offset texel factor (a cube face spans
-				// 2*distance across faceSize texels)
+				// Seal the same world-bounded receiver coefficients as GL after
+				// cache reuse has restored the physical cube's final far envelope
+				// and face size.
 				const int faceSize = entry.tileSize;
-				entry.texelDepthBias = Max( 0.0f, r_shadowMapTexelBiasScale.GetFloat() )
-					/ (float)Max( 1, faceSize );
-				entry.normalOffsetWorld = 2.0f * Max( 0.0f, r_shadowMapNormalOffsetScale.GetFloat() )
-					/ (float)Max( 1, faceSize );
+				const shadowMapPointReceiverSettings_t receiverSettings =
+					R_ShadowMapPointReceiverSettings(
+						entry.pointFar, faceSize );
+				entry.constantBias = receiverSettings.constantBias;
+				entry.normalBias = receiverSettings.normalBias;
+				entry.texelDepthBias = receiverSettings.texelBiasScale
+					/ static_cast<float>( Max( 1, faceSize ) );
+				entry.normalOffsetWorld =
+					2.0f * receiverSettings.normalOffsetScale
+						/ static_cast<float>( Max( 1, faceSize ) );
 				vkShadow.numLights++;
 				prepared++;
 			}
@@ -2111,16 +2183,31 @@ Caster drawing
 */
 
 // r_shadowMapCasterCulling in the executor's GL-parity winding convention
-// (negative-height viewport, CCW front): mode 1 stores light-facing
-// engine-front faces (cull FRONT), mode 2 (default) stores engine-back faces
-// (cull BACK); material twoSided/backSided is always honored
-static VkCullModeFlags VK_ShadowMap_CasterCullMode( const idMaterial *shader ) {
+// (negative-height viewport, CCW front): mode 0 is always two-sided, mode 1
+// stores light-facing near-shell faces (cull FRONT), and mode 2 (default) is
+// topology-aware: open/unknown hulls and hulls enclosing the light are
+// two-sided, as are mirrored/invalid model transforms, while other perfect
+// hulls use mode 1. The authored material orientation is honored whenever
+// one-sided culling is active.
+static VkCullModeFlags VK_ShadowMap_CasterCullMode(
+		const viewLight_t *vLight, const drawSurf_t *surf,
+		const srfTriangles_t *casterGeo ) {
 	const int mode = idMath::ClampInt( 0, 2, r_shadowMapCasterCulling.GetInteger() );
+	const idMaterial *shader = surf != NULL ? surf->material : NULL;
 	const int materialCull = ( shader != NULL ) ? shader->GetCullType() : CT_FRONT_SIDED;
-	if ( mode == 0 || materialCull == CT_TWO_SIDED ) {
+	if ( mode == 0 || materialCull == CT_TWO_SIDED
+			|| ( mode == 2
+				&& ( casterGeo == NULL || !casterGeo->perfectHull
+					|| surf == NULL || surf->space == NULL
+					|| R_ShadowMapCasterTransformNeedsTwoSided(
+						surf->space->modelMatrix )
+					|| R_ShadowMapLightOriginInsideCasterBounds( vLight,
+						surf->space->modelMatrix,
+						casterGeo->bounds[0].ToFloatPtr(),
+						casterGeo->bounds[1].ToFloatPtr() ) ) ) ) {
 		return VK_CULL_MODE_NONE;
 	}
-	bool cullFront = ( mode == 1 );
+	bool cullFront = true;
 	if ( materialCull == CT_BACK_SIDED ) {
 		cullFront = !cullFront;
 	}
@@ -2329,8 +2416,10 @@ static void VK_ShadowMap_ReportUnsupportedCaster( vkCasterPassCtx_t &ctx,
 // set ctx.unsupportedCaster and emit NO conservative solid substitute.
 static bool VK_ShadowMap_DrawResolvedCaster( vkCasterPassCtx_t &ctx,
 		vkCasterPush_t &push,
-		const drawSurf_t *surf, const srfTriangles_t *casterGeo ) {
-	const VkCullModeFlags cullMode = VK_ShadowMap_CasterCullMode( surf->material );
+		const viewLight_t *vLight, const drawSurf_t *surf,
+		const srfTriangles_t *casterGeo ) {
+	const VkCullModeFlags cullMode =
+		VK_ShadowMap_CasterCullMode( vLight, surf, casterGeo );
 	if ( cullMode != ctx.boundCullMode ) {
 		ctx.boundCullMode = cullMode;
 		vkCmdSetCullMode( ctx.cmd, cullMode );
@@ -2503,7 +2592,8 @@ static int VK_ShadowMap_DrawCasterChain( vkCasterPassCtx_t &ctx,
 		push.alphaS[ 2 ] = ctx.slopeFactor;
 		push.alphaT[ 2 ] = ctx.constOffset;
 
-		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push, surf, casterGeo ) ) {
+		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push,
+				light.vLight, surf, casterGeo ) ) {
 			drawnCasters++;
 		}
 	}
@@ -2515,8 +2605,10 @@ static int VK_ShadowMap_DrawCasterChain( vkCasterPassCtx_t &ctx,
 // minus the per-face frustum cull — see the header divergence note). The push
 // mvp is the model -> face-view matrix; the shader projects analytically
 // through projRow and stores the radial view-space distance / far.
-static int VK_ShadowMap_DrawPointCasterChain( vkCasterPassCtx_t &ctx, const float faceViewMatrix[ 16 ],
-		const float projRow[ 2 ], const float farClip, const drawSurf_t *surf ) {
+static int VK_ShadowMap_DrawPointCasterChain( vkCasterPassCtx_t &ctx,
+		const viewLight_t *vLight, const float faceViewMatrix[ 16 ],
+		const float projRow[ 2 ], const float farClip,
+		const drawSurf_t *surf ) {
 	int drawnCasters = 0;
 
 	for ( ; surf != NULL ; surf = surf->nextOnLight ) {
@@ -2543,7 +2635,8 @@ static int VK_ShadowMap_DrawPointCasterChain( vkCasterPassCtx_t &ctx, const floa
 		push.alphaS[ 2 ] = ctx.slopeFactor;
 		push.alphaT[ 2 ] = ctx.constOffset;
 
-		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push, surf, casterGeo ) ) {
+		if ( VK_ShadowMap_DrawResolvedCaster( ctx, push,
+				vLight, surf, casterGeo ) ) {
 			drawnCasters++;
 		}
 	}
@@ -2596,6 +2689,772 @@ static bool VK_ShadowMap_PassCastersRepresentable(
 		return false;
 	}
 	return true;
+}
+
+/*
+====================
+Shared fixed-classic transaction preflight
+
+The legacy scheduler remains the physical atlas/cube/cache allocator. The
+shared corridor accepts its result only after reconciling every allocation to
+the sealed semantic pass and retaining every fresh caster upload and alpha
+descriptor. No live material stage or register is followed by Commit.
+====================
+*/
+
+static bool VK_ClassicShadow_FloatsFinite( const float *values,
+		const int count ) {
+	if ( values == NULL || count < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < count; ++i ) {
+		if ( !std::isfinite( values[ i ] ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool VK_ClassicShadow_CullMode( const rendererCullMode_t cull,
+		VkCullModeFlags &mode ) {
+	switch ( cull ) {
+	case RENDERER_CULL_NONE:
+		mode = VK_CULL_MODE_NONE;
+		return true;
+	case RENDERER_CULL_FRONT:
+		mode = VK_CULL_MODE_FRONT_BIT;
+		return true;
+	case RENDERER_CULL_BACK:
+		mode = VK_CULL_MODE_BACK_BIT;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool VK_ClassicShadow_ResolveDescriptor(
+		const std::uint64_t resourceId, VkDescriptorSet &descriptor ) {
+	descriptor = VK_NULL_HANDLE;
+	const classicInteractionDomainTexture_t *texture =
+		R_ClassicInteractionDomain_ResolveTexture( resourceId );
+	if ( texture == NULL || texture->textureResourceId != resourceId
+			|| texture->image == NULL || !texture->loaded
+			|| texture->defaulted || texture->mutableImage
+			|| texture->textureHandle == 0
+			|| !texture->image->IsLoaded()
+			|| texture->image->IsDefaulted()
+			|| texture->textureHandle
+				!= const_cast<idImage *>( texture->image )->GetDeviceHandle()
+			|| texture->filter != texture->image->GetFilter()
+			|| texture->repeat != texture->image->GetRepeat()
+			|| texture->storageGeneration
+				!= texture->image->GetStorageGeneration() ) {
+		return false;
+	}
+	descriptor = VK_Exec_ImageDescriptor( texture->textureHandle, true );
+	return descriptor != VK_NULL_HANDLE;
+}
+
+static bool VK_ClassicShadow_ProjectedStateMatches(
+		const shadowMapProjectedLightState_t &sealed,
+		const shadowMapProjectedLightState_t &physical ) {
+	if ( sealed.valid != physical.valid
+			|| sealed.cascadeCount != physical.cascadeCount
+			|| sealed.atlasDiv != physical.atlasDiv
+			|| sealed.tileSize != physical.tileSize
+			|| sealed.requestedCascadeCount != physical.requestedCascadeCount
+			|| sealed.fallbackCascade != physical.fallbackCascade
+			|| sealed.fallbackReason != physical.fallbackReason
+			|| sealed.cascadeFallback != physical.cascadeFallback ) {
+		return false;
+	}
+	return memcmp( sealed.clipPlanes, physical.clipPlanes,
+			sizeof( sealed.clipPlanes ) ) == 0
+		&& memcmp( sealed.splitDepths, physical.splitDepths,
+			sizeof( sealed.splitDepths ) ) == 0
+		&& memcmp( sealed.biasScale, physical.biasScale,
+			sizeof( sealed.biasScale ) ) == 0
+		&& memcmp( sealed.texelDepthBias, physical.texelDepthBias,
+			sizeof( sealed.texelDepthBias ) ) == 0
+		&& memcmp( sealed.worldTexelSize, physical.worldTexelSize,
+			sizeof( sealed.worldTexelSize ) ) == 0;
+}
+
+static int VK_ClassicShadow_FindCasterPlan(
+		const classicInteractionDomainShadowCaster_t *caster ) {
+	for ( int i = 0; i < vkClassicShadowTransaction.casterPlanCount; ++i ) {
+		if ( vkClassicShadowTransaction.casterPlans[ i ].caster == caster ) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool VK_ClassicShadow_PrepareCaster(
+		const classicInteractionDomainShadowCaster_t &caster,
+		int &casterPlanIndex ) {
+	vkClassicShadowTransaction_t &transaction =
+		vkClassicShadowTransaction;
+	casterPlanIndex = VK_ClassicShadow_FindCasterPlan( &caster );
+	if ( casterPlanIndex >= 0 ) {
+		return true;
+	}
+	if ( transaction.casterPlanCount
+			>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_CASTERS
+			|| caster.disposition
+				!= CLASSIC_INTERACTION_SHADOW_CASTER_DRAW
+			|| caster.indexSelection
+				!= CLASSIC_INTERACTION_SHADOW_INDEX_AMBIENT
+			|| !caster.ambientGeometry || caster.preload || caster.external
+			|| caster.legacyDrawSurf == NULL
+			|| caster.legacyCasterGeometry == NULL
+			|| caster.legacyDrawSurf->space == NULL
+			|| R_TriHasPrimBatchMesh( caster.legacyCasterGeometry )
+			|| caster.vertexCount <= 0 || caster.selectedIndexCount <= 0
+			|| caster.totalIndexCount != caster.selectedIndexCount
+			|| caster.legacyCasterGeometry->numVerts != caster.vertexCount
+			|| caster.legacyCasterGeometry->numIndexes
+				!= caster.selectedIndexCount
+			|| caster.legacyCasterGeometry->ambientCache == NULL
+			|| ( caster.legacyCasterGeometry->indexes == NULL
+				&& caster.legacyCasterGeometry->indexCache == NULL )
+			|| !VK_ClassicShadow_FloatsFinite( caster.modelMatrix, 16 )
+			|| !VK_ClassicShadow_FloatsFinite( caster.boundsMin, 3 )
+			|| !VK_ClassicShadow_FloatsFinite( caster.boundsMax, 3 ) ) {
+		return false;
+	}
+
+	vkClassicShadowCasterPlan_t &plan =
+		transaction.casterPlans[ transaction.casterPlanCount ];
+	memset( &plan, 0, sizeof( plan ) );
+	plan.caster = &caster;
+	plan.vertexOffset = -1;
+	plan.indexOffset = -1;
+	plan.firstAlpha = transaction.alphaPlanCount;
+	if ( !VK_ClassicShadow_CullMode( caster.cull, plan.cullMode )
+			|| !VK_Exec_PrepareTriGeometry( transaction.cmd,
+				transaction.frameSlot, caster.legacyCasterGeometry,
+				plan.vertexOffset, plan.indexOffset ) ) {
+		return false;
+	}
+
+	for ( int alphaIndex = 0; alphaIndex < caster.alphaStageCount;
+			++alphaIndex ) {
+		if ( transaction.alphaPlanCount
+				>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_ALPHA_STAGES ) {
+			return false;
+		}
+		const classicInteractionDomainShadowAlphaStage_t *stage =
+			R_ClassicInteractionDomain_ShadowAlphaStage( caster,
+				alphaIndex );
+		float alphaMode = 0.0f;
+		VkDescriptorSet imageSet = VK_NULL_HANDLE;
+		if ( stage == NULL || stage->textureResourceId == 0
+				|| stage->alphaScale <= 0.0f
+				|| !VK_ShadowMap_AlphaTestModeValue(
+					stage->alphaTestMode, alphaMode )
+				|| !std::isfinite( stage->alphaTestValue )
+				|| !std::isfinite( stage->alphaScale )
+				|| !std::isfinite( stage->alphaHashMode )
+				|| !VK_ClassicShadow_FloatsFinite(
+					&stage->textureMatrix[ 0 ][ 0 ], 8 )
+				|| !VK_ClassicShadow_ResolveDescriptor(
+					stage->textureResourceId, imageSet ) ) {
+			return false;
+		}
+		vkClassicShadowAlphaPlan_t &alphaPlan =
+			transaction.alphaPlans[ transaction.alphaPlanCount++ ];
+		alphaPlan.stage = stage;
+		alphaPlan.imageSet = imageSet;
+		plan.alphaCount++;
+	}
+
+	casterPlanIndex = transaction.casterPlanCount++;
+	return true;
+}
+
+static bool VK_ClassicShadow_AddCasterChain(
+		const classicInteractionDomainLight_t &light,
+		const classicInteractionDomainShadowChain_t chain,
+		vkClassicShadowPassPlan_t &passPlan,
+		int &mappedCasters, int &drawableCasters, int &noopCasters ) {
+	vkClassicShadowTransaction_t &transaction =
+		vkClassicShadowTransaction;
+	const int chainCount = light.shadowCasterCount[ chain ];
+	if ( chainCount < 0 ) {
+		return false;
+	}
+	for ( int i = 0; i < chainCount; ++i ) {
+		const classicInteractionDomainShadowCaster_t *caster =
+			R_ClassicInteractionDomain_LightShadowCaster( light, chain, i );
+		if ( caster == NULL || caster->chain != chain
+				|| caster->legacyViewLight != light.legacyViewLight ) {
+			return false;
+		}
+		mappedCasters++;
+		if ( caster->disposition
+				== CLASSIC_INTERACTION_SHADOW_CASTER_NOOP_EMPTY ) {
+			if ( !R_ClassicInteractionDomain_ShadowCasterNoopValid( *caster ) ) {
+				return false;
+			}
+			noopCasters++;
+			continue;
+		}
+		int planIndex = -1;
+		if ( transaction.casterRefCount >= VK_CLASSIC_SHADOW_MAX_CASTER_REFS
+				|| !VK_ClassicShadow_PrepareCaster( *caster, planIndex ) ) {
+			return false;
+		}
+		transaction.casterRefs[ transaction.casterRefCount++ ] = planIndex;
+		passPlan.casterRefCount++;
+		drawableCasters++;
+	}
+	return true;
+}
+
+static bool VK_ClassicShadow_ValidatePhysicalPass(
+		const classicInteractionDomainView_t &view,
+		const classicInteractionDomainShadowMapPass_t &sealed,
+		const vkShadowLightState_t &light,
+		const vkShadowPassState_t &pass,
+		const vkShadowReceiverPass_t receiver ) {
+	const bool point = sealed.lightClass == SHADOWMAP_LIGHT_POINT;
+	if ( !pass.valid || light.pointLight != point
+			|| pass.resourcePass < VK_SHADOW_RECEIVER_LOCAL
+			|| pass.resourcePass >= VK_SHADOW_RECEIVER_PASS_COUNT
+			|| sealed.resourceAlias
+				!= ( pass.resourcePass != receiver )
+			|| sealed.resourceOwner
+				!= static_cast<classicInteractionDomainReceiver_t>(
+					pass.resourcePass ) ) {
+		return false;
+	}
+	if ( pass.cacheHit && !sealed.allowCacheReuse ) {
+		return false;
+	}
+	if ( pass.cacheUpdate && !sealed.allowCacheUpdate ) {
+		return false;
+	}
+	if ( !pass.cacheHit && !pass.cacheUpdate && !sealed.allowScratch ) {
+		return false;
+	}
+	// The physical cache signature is built from the live caster state.  Reject
+	// any drift after the front end sealed the pass so a cache hit cannot use
+	// different culling/bias, and freshly rendered sealed contents cannot be
+	// published under a mismatched live signature.
+	if ( light.vLight == NULL
+			|| sealed.casterSignature
+				!= light.vLight->shadowMapCasterSignature
+			|| sealed.hashedAlpha != r_shadowMapHashedAlpha.GetBool()
+			|| sealed.stableAlphaHash
+				!= r_shadowMapStableAlphaHash.GetBool()
+			|| sealed.casterCullMode != idMath::ClampInt( 0, 2,
+			r_shadowMapCasterCulling.GetInteger() )
+			|| idMath::Fabs( sealed.polygonFactor
+				- r_shadowMapPolygonFactor.GetFloat() ) > 0.00001f
+			|| idMath::Fabs( sealed.polygonOffset
+				- r_shadowMapPolygonOffset.GetFloat() ) > 0.00001f ) {
+		return false;
+	}
+
+	if ( point ) {
+		if ( !sealed.point.valid || sealed.point.faceCount != 6
+				|| sealed.point.faceSize != light.tileSize
+				|| sealed.point.farDistance != light.pointFar
+				|| sealed.point.lightOrigin[ 0 ] != light.pointLightOrigin[ 0 ]
+				|| sealed.point.lightOrigin[ 1 ] != light.pointLightOrigin[ 1 ]
+				|| sealed.point.lightOrigin[ 2 ] != light.pointLightOrigin[ 2 ]
+				|| pass.pointSet == VK_NULL_HANDLE ) {
+			return false;
+		}
+		if ( pass.cacheHit ) {
+			const vkPointShadowCacheEntry_t *cache =
+				pass.cacheEntry >= 0
+					&& pass.cacheEntry < VK_SHADOW_MAX_CACHE_SLOTS
+				? &vkShadow.pointCache[ pass.cacheEntry ] : NULL;
+			return cache != NULL && cache->valid && cache->reserved
+				&& cache->generation == tr.videoRestartCount
+				&& cache->renderWorld == view.viewDef->renderWorld
+				&& cache->signature == pass.cacheSignature
+				&& cache->size == light.tileSize
+				&& cache->cube.image != VK_NULL_HANDLE
+				&& cache->cube.layout
+					== VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		}
+		const vkPointShadowCube_t *cube = NULL;
+		if ( pass.cacheUpdate && pass.cacheEntry >= 0
+				&& pass.cacheEntry < VK_SHADOW_MAX_CACHE_SLOTS
+				&& vkShadow.pointCache[ pass.cacheEntry ].reserved ) {
+			cube = &vkShadow.pointCache[ pass.cacheEntry ].cube;
+		} else if ( pass.cubeIndex >= 0
+				&& pass.cubeIndex < VK_SHADOW_MAX_POINT_CUBES ) {
+			cube = &vkShadow.pointCubes[ pass.cubeIndex ];
+		}
+		return cube != NULL && cube->image != VK_NULL_HANDLE;
+	}
+
+	if ( !sealed.projected.state.valid
+			|| !VK_ClassicShadow_ProjectedStateMatches(
+				sealed.projected.state, light.projectedState )
+			|| light.tileSize != sealed.projected.state.tileSize
+			|| vkShadow.atlasImage == VK_NULL_HANDLE ) {
+		return false;
+	}
+	if ( pass.cacheHit ) {
+		const vkProjectedShadowCacheEntry_t *cache =
+			pass.cacheEntry >= 0
+				&& pass.cacheEntry < VK_SHADOW_MAX_CACHE_SLOTS
+			? &vkShadow.projectedCache[ pass.cacheEntry ] : NULL;
+		return cache != NULL && cache->valid && cache->reserved
+			&& cache->generation == tr.videoRestartCount
+			&& cache->renderWorld == view.viewDef->renderWorld
+			&& cache->signature == pass.cacheSignature
+			&& cache->tileSize == light.tileSize
+			&& cache->image != VK_NULL_HANDLE
+			&& cache->layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	}
+	return !pass.cacheUpdate || ( pass.cacheEntry >= 0
+		&& pass.cacheEntry < VK_SHADOW_MAX_CACHE_SLOTS
+		&& vkShadow.projectedCache[ pass.cacheEntry ].reserved
+		&& vkShadow.projectedCache[ pass.cacheEntry ].image
+			!= VK_NULL_HANDLE );
+}
+
+void VK_ShadowMap_AbortClassicInteractionView(
+		const classicInteractionDomainView_t *view ) {
+	if ( !vkClassicShadowTransaction.active ) {
+		return;
+	}
+	if ( view != NULL && vkClassicShadowTransaction.view != view ) {
+		return;
+	}
+	if ( vkClassicShadowTransaction.ownsPreparedLights ) {
+		VK_ShadowMap_ReleasePreparedLights( false );
+	}
+	memset( &vkClassicShadowTransaction, 0,
+		sizeof( vkClassicShadowTransaction ) );
+}
+
+bool VK_ShadowMap_PreflightClassicInteractionView(
+		const classicInteractionDomainView_t *view ) {
+	VK_ShadowMap_AbortClassicInteractionView( NULL );
+	memset( &vkClassicShadowTransaction, 0,
+		sizeof( vkClassicShadowTransaction ) );
+	vkClassicShadowTransaction_t &transaction =
+		vkClassicShadowTransaction;
+	transaction.active = true;
+	transaction.view = view;
+	if ( view == NULL || !view->ready || view->viewDef == NULL
+			|| view->shadowMapPassCount < 0
+			|| view->shadowMapPassCount
+				> CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES ) {
+		VK_ShadowMap_AbortClassicInteractionView( view );
+		return false;
+	}
+	if ( view->shadowMapPassCount == 0 ) {
+		transaction.ready = true;
+		return true;
+	}
+
+	transaction.cmd = VK_Exec_ActiveCmd();
+	transaction.frameSlot = VK_Exec_ActiveFrameSlot();
+	transaction.layout = VK_Exec_BasePipelineLayout();
+	transaction.projectedCasterPipeline = VK_Exec_CasterPipeline();
+	transaction.pointCasterPipeline = VK_Exec_PointCasterPipeline();
+	if ( transaction.cmd == VK_NULL_HANDLE || transaction.frameSlot < 0
+			|| transaction.frameSlot >= VK_FRAMES_IN_FLIGHT
+			|| transaction.layout == VK_NULL_HANDLE
+			|| globalImages == NULL || globalImages->whiteImage == NULL
+			|| !globalImages->whiteImage->IsLoaded()
+			|| globalImages->whiteImage->IsDefaulted() ) {
+		VK_ShadowMap_AbortClassicInteractionView( view );
+		return false;
+	}
+	transaction.whiteSet = VK_Exec_ImageDescriptor(
+		globalImages->whiteImage->GetDeviceHandle(), true );
+	if ( transaction.whiteSet == VK_NULL_HANDLE ) {
+		VK_ShadowMap_AbortClassicInteractionView( view );
+		return false;
+	}
+	transaction.ownsPreparedLights = true;
+	// Shared ownership may atomically hand the whole view back to the legacy
+	// executor, whose own preparation will re-evaluate the active target.  Let
+	// optional maps obey the ordinary budget here; if even one sealed pass is
+	// denied, reconciliation below aborts every private reservation and no
+	// shared attachment write has occurred. Correctness-required maps still
+	// bypass the budget through their incomplete-stencil mask.
+	if ( VK_ShadowMap_PrepareViewLights( view->viewDef, true ) <= 0 ) {
+		VK_ShadowMap_AbortClassicInteractionView( view );
+		return false;
+	}
+
+	int reconciledPasses = 0;
+	for ( int lightIndex = 0; lightIndex < view->lightCount; ++lightIndex ) {
+		const classicInteractionDomainLight_t *light =
+			R_ClassicInteractionDomain_ViewLight( *view, lightIndex );
+		if ( light == NULL || light->legacyViewLight == NULL ) {
+			VK_ShadowMap_AbortClassicInteractionView( view );
+			return false;
+		}
+		const vkShadowLightState_t *physicalLight =
+			VK_ShadowMap_LightState( light->legacyViewLight );
+
+		for ( int receiverIndex = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+				receiverIndex <= CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+				++receiverIndex ) {
+			const classicInteractionDomainReceiver_t domainReceiver =
+				static_cast<classicInteractionDomainReceiver_t>( receiverIndex );
+			const classicInteractionDomainShadowMapPass_t *sealed =
+				R_ClassicInteractionDomain_LightShadowMapPass(
+					*light, domainReceiver );
+			if ( sealed == NULL ) {
+				continue;
+			}
+			if ( transaction.passPlanCount
+					>= CLASSIC_INTERACTION_DOMAIN_MAX_SHADOW_MAP_PASSES
+					|| physicalLight == NULL
+					|| sealed->legacyViewLight != light->legacyViewLight
+					|| sealed->lightIndex != view->firstLight + lightIndex
+					|| sealed->receiver != domainReceiver
+					|| ( sealed->disposition
+						!= CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED
+						&& sealed->disposition
+							!= CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID )
+					|| !sealed->mapRequired
+					|| ( sealed->disposition
+						== CLASSIC_INTERACTION_SHADOW_MAP_PASS_MAPPED
+						&& !sealed->mapComplete )
+					|| ( sealed->disposition
+						== CLASSIC_INTERACTION_SHADOW_MAP_PASS_HYBRID
+						&& !sealed->hybridComplete )
+					|| sealed->hasTranslucentCasters ) {
+				VK_ShadowMap_AbortClassicInteractionView( view );
+				return false;
+			}
+			const vkShadowReceiverPass_t receiver =
+				static_cast<vkShadowReceiverPass_t>( receiverIndex );
+			const vkShadowPassState_t *physicalPass =
+				VK_ShadowMap_PassState( physicalLight, receiver );
+			if ( physicalPass == NULL
+					|| !VK_ClassicShadow_ValidatePhysicalPass( *view,
+						*sealed, *physicalLight, *physicalPass, receiver ) ) {
+				VK_ShadowMap_AbortClassicInteractionView( view );
+				return false;
+			}
+
+			vkClassicShadowPassPlan_t &passPlan =
+				transaction.passPlans[ transaction.passPlanCount++ ];
+			memset( &passPlan, 0, sizeof( passPlan ) );
+			passPlan.light = light;
+			passPlan.pass = sealed;
+			passPlan.physicalLight = physicalLight;
+			passPlan.physicalPass = physicalPass;
+			passPlan.receiver = receiver;
+			passPlan.resourceOwner = physicalPass->resourcePass == receiver;
+			passPlan.firstCasterRef = transaction.casterRefCount;
+
+			int mappedCasters = 0;
+			int drawableCasters = 0;
+			int noopCasters = 0;
+			const classicInteractionDomainShadowChain_t chains[] = {
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_STATIC,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_GLOBAL_DYNAMIC,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_STATIC,
+				CLASSIC_INTERACTION_SHADOW_CHAIN_MAP_LOCAL_DYNAMIC
+			};
+			const int chainCount = receiver == VK_SHADOW_RECEIVER_GLOBAL
+				? 4 : 2;
+			for ( int chainIndex = 0; chainIndex < chainCount;
+					++chainIndex ) {
+				if ( !VK_ClassicShadow_AddCasterChain( *light,
+						chains[ chainIndex ], passPlan, mappedCasters,
+						drawableCasters, noopCasters ) ) {
+					VK_ShadowMap_AbortClassicInteractionView( view );
+					return false;
+				}
+			}
+			if ( mappedCasters != sealed->mappedCasterCount
+					|| drawableCasters != sealed->drawableMappedCasters
+					|| noopCasters != sealed->noopMappedCasters ) {
+				VK_ShadowMap_AbortClassicInteractionView( view );
+				return false;
+			}
+
+			if ( passPlan.resourceOwner ) {
+				if ( physicalLight->pointLight ) {
+					if ( physicalPass->cacheHit ) {
+						transaction.pointHitCount++;
+					} else {
+						transaction.pointFreshCount++;
+					}
+				} else {
+					transaction.projectedCount++;
+					if ( !physicalPass->cacheHit ) {
+						transaction.projectedFreshCount++;
+					}
+				}
+			}
+			reconciledPasses++;
+		}
+	}
+	int physicalPassCount = 0;
+	for ( int physicalLightIndex = 0;
+			physicalLightIndex < vkShadow.numLights; ++physicalLightIndex ) {
+		const vkShadowLightState_t &physical =
+			vkShadow.lights[ physicalLightIndex ];
+		for ( int receiverIndex = 0;
+				receiverIndex < VK_SHADOW_RECEIVER_PASS_COUNT;
+				++receiverIndex ) {
+			if ( !physical.passes[ receiverIndex ].valid ) {
+				continue;
+			}
+			bool found = false;
+			for ( int planIndex = 0;
+					planIndex < transaction.passPlanCount; ++planIndex ) {
+				const vkClassicShadowPassPlan_t &plan =
+					transaction.passPlans[ planIndex ];
+				if ( plan.physicalLight == &physical
+						&& plan.receiver == receiverIndex ) {
+					found = true;
+					break;
+				}
+			}
+			if ( !found ) {
+				VK_ShadowMap_AbortClassicInteractionView( view );
+				return false;
+			}
+			physicalPassCount++;
+		}
+	}
+
+	if ( reconciledPasses != view->shadowMapPassCount
+			|| transaction.passPlanCount != view->shadowMapPassCount
+			|| physicalPassCount != transaction.passPlanCount
+			|| transaction.projectedCount + transaction.pointFreshCount
+				+ transaction.pointHitCount <= 0
+			|| ( transaction.projectedFreshCount > 0
+				&& transaction.projectedCasterPipeline == VK_NULL_HANDLE )
+			|| ( transaction.pointFreshCount > 0
+				&& transaction.pointCasterPipeline == VK_NULL_HANDLE ) ) {
+		VK_ShadowMap_AbortClassicInteractionView( view );
+		return false;
+	}
+
+	transaction.ready = true;
+	return true;
+}
+
+static const vkClassicShadowPassPlan_t *VK_ClassicShadow_FindPassPlan(
+		const vkShadowLightState_t *light,
+		const vkShadowReceiverPass_t receiver ) {
+	for ( int i = 0; i < vkClassicShadowTransaction.passPlanCount; ++i ) {
+		const vkClassicShadowPassPlan_t &plan =
+			vkClassicShadowTransaction.passPlans[ i ];
+		if ( plan.physicalLight == light && plan.receiver == receiver ) {
+			return &plan;
+		}
+	}
+	return NULL;
+}
+
+static VkCullModeFlags VK_ClassicShadow_EffectiveCull(
+		const vkClassicShadowCasterPlan_t &casterPlan,
+		const classicInteractionDomainShadowMapPass_t &pass ) {
+	if ( pass.casterCullMode == 0
+			|| casterPlan.cullMode == VK_CULL_MODE_NONE
+			|| ( pass.casterCullMode == 2
+				&& ( !casterPlan.caster->perfectHull
+					|| R_ShadowMapLightOriginInsideCasterBounds(
+						pass.legacyViewLight,
+						casterPlan.caster->modelMatrix,
+						casterPlan.caster->boundsMin,
+						casterPlan.caster->boundsMax ) ) ) ) {
+		return VK_CULL_MODE_NONE;
+	}
+	// Both explicit mode 1 and AUTO mode 2 on a sealed perfect hull store the
+	// light-facing near shell. The material cull orientation may reverse it.
+	bool cullFront = true;
+	if ( casterPlan.cullMode == VK_CULL_MODE_BACK_BIT ) {
+		cullFront = !cullFront;
+	}
+	return cullFront ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+}
+
+static void VK_ClassicShadow_DrawCaster(
+		vkCasterPassCtx_t &ctx,
+		const vkClassicShadowCasterPlan_t &casterPlan,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		const vkCasterPush_t &basePush ) {
+	const classicInteractionDomainShadowCaster_t &caster =
+		*casterPlan.caster;
+	const VkCullModeFlags cullMode =
+		VK_ClassicShadow_EffectiveCull( casterPlan, pass );
+	if ( cullMode != ctx.boundCullMode ) {
+		ctx.boundCullMode = cullMode;
+		vkCmdSetCullMode( ctx.cmd, cullMode );
+	}
+	VK_Exec_BindPreparedTriGeometry( ctx.cmd, ctx.slot,
+		casterPlan.vertexOffset, casterPlan.indexOffset );
+
+	const int drawCount = casterPlan.alphaCount > 0
+		? casterPlan.alphaCount : 1;
+	for ( int alphaIndex = 0; alphaIndex < drawCount; ++alphaIndex ) {
+		vkCasterPush_t push = basePush;
+		VkDescriptorSet imageSet = ctx.whiteSet;
+		if ( casterPlan.alphaCount > 0 ) {
+			const vkClassicShadowAlphaPlan_t &alphaPlan =
+				vkClassicShadowTransaction.alphaPlans[
+					casterPlan.firstAlpha + alphaIndex ];
+			const classicInteractionDomainShadowAlphaStage_t &stage =
+				*alphaPlan.stage;
+			imageSet = alphaPlan.imageSet;
+			push.alphaS[ 0 ] = stage.textureMatrix[ 0 ][ 0 ];
+			push.alphaS[ 1 ] = stage.textureMatrix[ 0 ][ 1 ];
+			push.alphaS[ 3 ] = stage.textureMatrix[ 0 ][ 3 ];
+			push.alphaT[ 0 ] = stage.textureMatrix[ 1 ][ 0 ];
+			push.alphaT[ 1 ] = stage.textureMatrix[ 1 ][ 1 ];
+			push.alphaT[ 3 ] = stage.textureMatrix[ 1 ][ 3 ];
+			VK_ShadowMap_AlphaTestModeValue( stage.alphaTestMode,
+				push.params[ 0 ] );
+			push.params[ 1 ] = stage.alphaTestValue;
+			push.params[ 2 ] = stage.alphaScale;
+			push.params[ 3 ] = stage.alphaHashMode;
+		}
+		if ( imageSet != ctx.boundImageSet ) {
+			ctx.boundImageSet = imageSet;
+			vkCmdBindDescriptorSets( ctx.cmd,
+				VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.layout,
+				0, 1, &imageSet, 0, NULL );
+		}
+		vkCmdPushConstants( ctx.cmd, ctx.layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof( push ), &push );
+		vkCmdDrawIndexed( ctx.cmd,
+			static_cast<uint32_t>( caster.selectedIndexCount ),
+			1, 0, 0, 0 );
+		backEnd.pc.c_shadowElements++;
+		backEnd.pc.c_shadowIndexes += caster.selectedIndexCount;
+		backEnd.pc.c_shadowVertexes += caster.vertexCount;
+	}
+}
+
+static bool VK_ClassicShadow_CasterOutsideCascade(
+		const vkClassicShadowCasterPlan_t &casterPlan,
+		const classicInteractionDomainShadowMapPass_t &pass,
+		const int cascadeIndex ) {
+	const classicInteractionDomainShadowCaster_t &caster =
+		*casterPlan.caster;
+	const shadowMapProjectedLightState_t &projected = pass.projected.state;
+	if ( projected.cascadeCount <= 1 ) {
+		return false;
+	}
+	const int safeCascade = idMath::ClampInt( 0,
+		SHADOWMAP_PROJECTED_MAX_CASCADES - 1, cascadeIndex );
+	const idPlane *planes = projected.clipPlanes[ safeCascade ];
+	int outsideMask = 0x0f;
+	for ( int cornerIndex = 0; cornerIndex < 8; ++cornerIndex ) {
+		const idVec3 local(
+			caster.boundsMin[ 0 ] + ( ( cornerIndex & 1 ) != 0
+				? caster.boundsMax[ 0 ] - caster.boundsMin[ 0 ] : 0.0f ),
+			caster.boundsMin[ 1 ] + ( ( cornerIndex & 2 ) != 0
+				? caster.boundsMax[ 1 ] - caster.boundsMin[ 1 ] : 0.0f ),
+			caster.boundsMin[ 2 ] + ( ( cornerIndex & 4 ) != 0
+				? caster.boundsMax[ 2 ] - caster.boundsMin[ 2 ] : 0.0f ) );
+		idVec3 world;
+		R_LocalPointToGlobal( caster.modelMatrix, local, world );
+		const float w = planes[ 3 ].Distance( world );
+		if ( w <= 1.0e-5f ) {
+			return false;
+		}
+		int mask = 0;
+		if ( planes[ 0 ].Distance( world ) < -w ) {
+			mask |= 1;
+		} else if ( planes[ 0 ].Distance( world ) > w ) {
+			mask |= 2;
+		}
+		if ( planes[ 1 ].Distance( world ) < -w ) {
+			mask |= 4;
+		} else if ( planes[ 1 ].Distance( world ) > w ) {
+			mask |= 8;
+		}
+		outsideMask &= mask;
+		if ( outsideMask == 0 ) {
+			return false;
+		}
+	}
+	return outsideMask != 0;
+}
+
+static int VK_ClassicShadow_DrawProjectedPass(
+		vkCasterPassCtx_t &ctx,
+		const vkClassicShadowPassPlan_t &passPlan,
+		const int cascadeIndex ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *passPlan.pass;
+	const int safeCascade = idMath::ClampInt( 0,
+		SHADOWMAP_PROJECTED_MAX_CASCADES - 1, cascadeIndex );
+	const idPlane *clipPlanes = pass.projected.state.clipPlanes[
+		safeCascade ];
+	float clipMatrix[ 16 ];
+	R_ShadowMapClipPlanesToGLMatrix( clipPlanes, clipMatrix );
+	int draws = 0;
+	for ( int i = 0; i < passPlan.casterRefCount; ++i ) {
+		const vkClassicShadowCasterPlan_t &casterPlan =
+			vkClassicShadowTransaction.casterPlans[
+				vkClassicShadowTransaction.casterRefs[
+					passPlan.firstCasterRef + i ] ];
+		if ( VK_ClassicShadow_CasterOutsideCascade(
+				casterPlan, pass, safeCascade ) ) {
+			continue;
+		}
+		const classicInteractionDomainShadowCaster_t &caster =
+			*casterPlan.caster;
+		vkCasterPush_t push;
+		memset( &push, 0, sizeof( push ) );
+		float mvpGL[ 16 ];
+		myGlMultMatrix( caster.modelMatrix, clipMatrix, mvpGL );
+		VK_FixupClipSpaceZ( push.mvp, mvpGL );
+		idPlane localDepthPlane;
+		R_GlobalPlaneToLocal( caster.modelMatrix, clipPlanes[ 2 ],
+			localDepthPlane );
+		memcpy( push.depthRow, localDepthPlane.ToFloatPtr(),
+			sizeof( push.depthRow ) );
+		VK_ShadowMap_SetPushAlphaIdentity( push );
+		push.alphaS[ 2 ] = pass.polygonFactor;
+		push.alphaT[ 2 ] = pass.polygonOffset
+			* ( 1.0f / 16777216.0f );
+		VK_ClassicShadow_DrawCaster( ctx, casterPlan, pass, push );
+		draws++;
+	}
+	return draws;
+}
+
+static int VK_ClassicShadow_DrawPointPass(
+		vkCasterPassCtx_t &ctx,
+		const vkClassicShadowPassPlan_t &passPlan,
+		const float faceViewMatrix[ 16 ], const float projRow[ 2 ] ) {
+	const classicInteractionDomainShadowMapPass_t &pass = *passPlan.pass;
+	int draws = 0;
+	for ( int i = 0; i < passPlan.casterRefCount; ++i ) {
+		const vkClassicShadowCasterPlan_t &casterPlan =
+			vkClassicShadowTransaction.casterPlans[
+				vkClassicShadowTransaction.casterRefs[
+					passPlan.firstCasterRef + i ] ];
+		const classicInteractionDomainShadowCaster_t &caster =
+			*casterPlan.caster;
+		vkCasterPush_t push;
+		memset( &push, 0, sizeof( push ) );
+		myGlMultMatrix( caster.modelMatrix, faceViewMatrix, push.mvp );
+		push.depthRow[ 0 ] = projRow[ 0 ];
+		push.depthRow[ 1 ] = projRow[ 1 ];
+		push.depthRow[ 2 ] = pass.point.farDistance;
+		VK_ShadowMap_SetPushAlphaIdentity( push );
+		push.alphaS[ 2 ] = pass.polygonFactor;
+		push.alphaT[ 2 ] = pass.polygonOffset
+			* ( 1.0f / 16777216.0f );
+		VK_ClassicShadow_DrawCaster( ctx, casterPlan, pass, push );
+		draws++;
+	}
+	return draws;
 }
 
 /*
@@ -2763,6 +3622,9 @@ static void VK_ShadowMap_FinalizeCachePasses(
 }
 
 bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
+	const bool classicCommit = vkClassicShadowTransaction.ready
+		&& vkClassicShadowTransaction.view != NULL
+		&& vkClassicShadowTransaction.view->viewDef == viewDef;
 	if ( viewDef == NULL || vkShadow.numLights <= 0
 			|| vkShadow.atlasImage == VK_NULL_HANDLE ) {
 		return false;
@@ -2773,12 +3635,21 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 	// pass for the same light remains usable this frame. Exact hits require
 	// neither caster representability nor a caster pipeline: those properties
 	// were proven by the successful update that published the signature.
-	int projectedCount = 0;
-	int projectedFreshCount = 0;
-	int pointFreshCount = 0;
-	int pointHitCount = 0;
-	VkPipeline casterPipeline = VK_Exec_CasterPipeline();
-	VkPipeline pointCasterPipeline = VK_Exec_PointCasterPipeline();
+	int projectedCount = classicCommit
+		? vkClassicShadowTransaction.projectedCount : 0;
+	int projectedFreshCount = classicCommit
+		? vkClassicShadowTransaction.projectedFreshCount : 0;
+	int pointFreshCount = classicCommit
+		? vkClassicShadowTransaction.pointFreshCount : 0;
+	int pointHitCount = classicCommit
+		? vkClassicShadowTransaction.pointHitCount : 0;
+	VkPipeline casterPipeline = classicCommit
+		? vkClassicShadowTransaction.projectedCasterPipeline
+		: VK_Exec_CasterPipeline();
+	VkPipeline pointCasterPipeline = classicCommit
+		? vkClassicShadowTransaction.pointCasterPipeline
+		: VK_Exec_PointCasterPipeline();
+	if ( !classicCommit ) {
 	for ( int i = 0 ; i < vkShadow.numLights ; i++ ) {
 		vkShadowLightState_t &light = vkShadow.lights[ i ];
 		if ( !light.valid ) {
@@ -2910,6 +3781,7 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 			}
 		}
 	}
+	}
 	if ( projectedCount + pointFreshCount + pointHitCount == 0 ) {
 		return false;
 	}
@@ -2922,9 +3794,11 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 		return true;
 	}
 
-	VkCommandBuffer cmd = VK_Exec_ActiveCmd();
-	VkDescriptorSet whiteSet = VK_NULL_HANDLE;
-	if ( projectedFreshCount + pointFreshCount > 0
+	VkCommandBuffer cmd = classicCommit
+		? vkClassicShadowTransaction.cmd : VK_Exec_ActiveCmd();
+	VkDescriptorSet whiteSet = classicCommit
+		? vkClassicShadowTransaction.whiteSet : VK_NULL_HANDLE;
+	if ( !classicCommit && projectedFreshCount + pointFreshCount > 0
 			&& globalImages->whiteImage != NULL ) {
 		whiteSet = VK_Exec_ImageDescriptor(
 				globalImages->whiteImage->GetDeviceHandle(), true );
@@ -2941,8 +3815,10 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 	vkCasterPassCtx_t ctx;
 	memset( &ctx, 0, sizeof( ctx ) );
 	ctx.cmd = cmd;
-	ctx.slot = VK_Exec_ActiveFrameSlot();
-	ctx.layout = VK_Exec_BasePipelineLayout();
+	ctx.slot = classicCommit ? vkClassicShadowTransaction.frameSlot
+		: VK_Exec_ActiveFrameSlot();
+	ctx.layout = classicCommit ? vkClassicShadowTransaction.layout
+		: VK_Exec_BasePipelineLayout();
 	ctx.whiteSet = whiteSet;
 	ctx.boundCullMode = (VkCullModeFlags)~0u;
 	ctx.slopeFactor = r_shadowMapPolygonFactor.GetFloat();
@@ -3016,7 +3892,6 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 				if ( !light.valid || light.pointLight ) {
 					continue;
 				}
-				const viewLight_t *vLight = light.vLight;
 				for ( int passIndex = 0 ;
 						passIndex < VK_SHADOW_RECEIVER_PASS_COUNT ;
 						passIndex++ ) {
@@ -3029,15 +3904,14 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 								!= receiverPass ) {
 						continue;
 					}
+					const vkClassicShadowPassPlan_t *classicPass =
+						classicCommit ? VK_ClassicShadow_FindPassPlan(
+							&light, receiverPass ) : NULL;
 
 					ctx.unsupportedCaster = false;
 					int drawnCasters = 0;
-					const int cascadeCount =
-							idMath::ClampInt( 1,
-									SHADOWMAP_PROJECTED_MAX_CASCADES,
-									light.projectedState.cascadeCount );
-					const int atlasDiv = idMath::ClampInt( 1, 2,
-							light.projectedState.atlasDiv );
+					const int cascadeCount = idMath::ClampInt( 1, SHADOWMAP_PROJECTED_MAX_CASCADES, light.projectedState.cascadeCount );
+					const int atlasDiv = idMath::ClampInt( 1, 2, light.projectedState.atlasDiv );
 					for ( int cascadeIndex = 0 ;
 							cascadeIndex < cascadeCount ;
 							cascadeIndex++ ) {
@@ -3072,6 +3946,12 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 						vkCmdSetScissor( cmd, 0, 1,
 								&scissor );
 
+						if ( classicCommit ) {
+							drawnCasters +=
+								VK_ClassicShadow_DrawProjectedPass(
+									ctx, *classicPass, cascadeIndex );
+						} else {
+						const viewLight_t *vLight = light.vLight;
 						drawnCasters +=
 								VK_ShadowMap_DrawCasterChain(
 										ctx, light,
@@ -3095,10 +3975,11 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 											cascadeIndex,
 											vLight->localShadowMapDynamicCasters );
 						}
+						}
 					}
 					// A fully transparent represented perforated chain emits
 					// zero draws by design; the clear map is still complete.
-					if ( ctx.unsupportedCaster ) {
+					if ( !classicCommit && ctx.unsupportedCaster ) {
 						VK_ShadowMap_InvalidatePassResource(
 								light, receiverPass );
 					}
@@ -3361,14 +4242,29 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 			if ( !light.valid || !light.pointLight ) {
 				continue;
 			}
-			const viewLight_t *vLight = light.vLight;
-
+			const vkClassicShadowPassPlan_t *classicPointState = NULL;
+			if ( classicCommit ) {
+				classicPointState = VK_ClassicShadow_FindPassPlan( &light,
+					VK_SHADOW_RECEIVER_LOCAL );
+				if ( classicPointState == NULL ) {
+					classicPointState = VK_ClassicShadow_FindPassPlan( &light,
+						VK_SHADOW_RECEIVER_GLOBAL );
+				}
+				if ( classicPointState == NULL ) {
+					common->FatalError(
+						"Vulkan: sealed point shadow state was lost after preflight" );
+				}
+			}
 			// near/far + the analytic face projection in the shared
 			// VK_FixupClipSpaceZ convention: z_clip = zA*z_eye + zB*w_eye,
 			// w_clip = -z_eye (RB_PointShadowMapBuildProjectionMatrix). The
 			// Match the GL depth-clamp branch when the optional feature was
 			// enabled; unsupported devices retain the existing 4-unit cap.
-			const float farClip = light.pointFar;
+			// Shared commits derive projection from the sealed semantic point
+			// state. Depth-clamp support is the sole backend capability input.
+			const float farClip = classicCommit
+				? classicPointState->pass->point.farDistance
+				: light.pointFar;
 			const float nearClip = idMath::ClampFloat(
 					0.5f, vkCtx.depthClampSupported ? 16.0f : 4.0f, farClip * 0.01f );
 			const float projA = -( farClip + nearClip ) / ( farClip - nearClip );
@@ -3384,6 +4280,9 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 						|| pass.resourcePass != receiverPass ) {
 					continue;
 				}
+				const vkClassicShadowPassPlan_t *classicPass =
+					classicCommit ? VK_ClassicShadow_FindPassPlan(
+						&light, receiverPass ) : NULL;
 				vkPointShadowCube_t *cube = NULL;
 				if ( pass.cacheUpdate && pass.cacheEntry >= 0
 						&& pass.cacheEntry
@@ -3397,8 +4296,10 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 							pass.cubeIndex ];
 				}
 				if ( cube == NULL ) {
-					VK_ShadowMap_InvalidatePassResource(
-							light, receiverPass );
+					if ( !classicCommit ) {
+						VK_ShadowMap_InvalidatePassResource(
+								light, receiverPass );
+					}
 					continue;
 				}
 
@@ -3421,9 +4322,15 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 				ctx.unsupportedCaster = false;
 				int drawnCasters = 0;
 				const idVec3 pointOrigin(
-						light.pointLightOrigin[ 0 ],
-						light.pointLightOrigin[ 1 ],
-						light.pointLightOrigin[ 2 ] );
+						classicPass != NULL
+							? classicPass->pass->point.lightOrigin[ 0 ]
+							: light.pointLightOrigin[ 0 ],
+						classicPass != NULL
+							? classicPass->pass->point.lightOrigin[ 1 ]
+							: light.pointLightOrigin[ 1 ],
+						classicPass != NULL
+							? classicPass->pass->point.lightOrigin[ 2 ]
+							: light.pointLightOrigin[ 2 ] );
 				for ( int cubeFace = 0 ; cubeFace < 6 ; cubeFace++ ) {
 					float faceViewMatrix[ 16 ];
 					VK_ShadowMap_PointFaceViewMatrix(
@@ -3450,15 +4357,21 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 					ri.pStencilAttachment = vkCtx.shadowDepthHasStencil ? &depth : NULL;
 					vkCmdBeginRendering( cmd, &ri );
 
-					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+					if ( classicCommit ) {
+						drawnCasters += VK_ClassicShadow_DrawPointPass(
+							ctx, *classicPass, faceViewMatrix, projRow );
+					} else {
+					const viewLight_t *vLight = light.vLight;
+					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 							projRow, farClip, vLight->globalShadowMapCasters );
-					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+					drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 							projRow, farClip, vLight->globalShadowMapDynamicCasters );
 					if ( receiverPass == VK_SHADOW_RECEIVER_GLOBAL ) {
-						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 								projRow, farClip, vLight->localShadowMapCasters );
-						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, faceViewMatrix,
+						drawnCasters += VK_ShadowMap_DrawPointCasterChain( ctx, vLight, faceViewMatrix,
 								projRow, farClip, vLight->localShadowMapDynamicCasters );
+					}
 					}
 
 					vkCmdEndRendering( cmd );
@@ -3466,7 +4379,7 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 
 				// Zero emitted draws can be a represented fully transparent
 				// perforated chain; its cleared six faces are valid.
-				if ( ctx.unsupportedCaster ) {
+				if ( !classicCommit && ctx.unsupportedCaster ) {
 					VK_ShadowMap_InvalidatePassResource( light, receiverPass );
 				}
 
@@ -3531,6 +4444,33 @@ bool VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef ) {
 	}
 	(void)viewDef;
 	return resumedMainRendering;
+}
+
+void VK_ShadowMap_CommitClassicInteractionView(
+		const classicInteractionDomainView_t *view ) {
+	if ( view == NULL || !vkClassicShadowTransaction.active
+			|| !vkClassicShadowTransaction.ready
+			|| vkClassicShadowTransaction.view != view ) {
+		return;
+	}
+	if ( view->shadowMapPassCount == 0 ) {
+		vkClassicShadowTransaction.active = false;
+		vkClassicShadowTransaction.ready = false;
+		vkClassicShadowTransaction.view = NULL;
+		return;
+	}
+
+	// Every command/resource/descriptor decision was retained by Preflight.
+	// RenderAtlas recognizes this transaction and replaces every legacy caster
+	// walk with the sealed caster/alpha plans above.
+	const bool committed = VK_ShadowMap_RenderAtlas( view->viewDef );
+	if ( !committed ) {
+		common->FatalError(
+			"Vulkan: preflighted classic shadow transaction could not commit" );
+	}
+	vkClassicShadowTransaction.active = false;
+	vkClassicShadowTransaction.ready = false;
+	vkClassicShadowTransaction.view = NULL;
 }
 
 #endif /* OPENQ4_RENDERER_VK_MODULE */

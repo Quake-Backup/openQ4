@@ -33,6 +33,9 @@ Example startup flow:
 openQ4-ded_x64 +set net_ip 0.0.0.0 +set net_port 28004 +set si_name "My openQ4 Server" +set si_map mp/q4dm1 +set si_gameType DM +spawnServer
 ```
 
+For remote administration, follow the [server and remote-console security
+guide](server-security.md). Never put an rcon password in launch arguments.
+
 ## IPv4 Binding and Ports
 
 For predictable hosting, set the interface and UDP port before starting the server:

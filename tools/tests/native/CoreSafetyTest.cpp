@@ -1,9 +1,17 @@
 #include "src/idlib/NumericString.h"
 #include "src/idlib/StrAllocation.h"
+#include "src/idlib/CryptoHash.h"
+#include "src/idlib/PrivateCommand.h"
+#include "src/framework/GameDirPolicy.h"
+#include "src/framework/RemoteCVarPolicy.h"
+#include "src/framework/async/Rcon2Protocol.h"
 #include "src/sys/NetworkEndpoint.h"
+#include "src/sys/URLPolicy.h"
 
 #include <climits>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 static int failures = 0;
@@ -38,6 +46,165 @@ static void ExpectBounded( const char *text, const int maximum, const bool expec
 static void ExpectAllocation( const bool condition, const char *label ) {
 	if ( !condition ) {
 		std::fprintf( stderr, "String allocation arithmetic failed for %s\n", label );
+		failures++;
+	}
+}
+
+static void ExpectPrivateToken( const char *command, const char *name,
+		const bool expected, const char *label ) {
+	const bool actual = idPrivateCommand::ContainsBoundedCaseInsensitiveToken( command, name );
+	if ( actual != expected ) {
+		std::fprintf( stderr, "Private command-token match failed for %s: expected %d, got %d\n",
+			label, expected, actual );
+		failures++;
+	}
+}
+
+static int HexNibble( const char value ) {
+	if ( value >= '0' && value <= '9' ) {
+		return value - '0';
+	}
+	if ( value >= 'a' && value <= 'f' ) {
+		return value - 'a' + 10;
+	}
+	if ( value >= 'A' && value <= 'F' ) {
+		return value - 'A' + 10;
+	}
+	return -1;
+}
+
+static void ExpectCryptoBytes( const std::uint8_t *actual, const std::size_t bytes,
+		const char *expectedHex, const char *label ) {
+	if ( std::strlen( expectedHex ) != bytes * 2 ) {
+		std::fprintf( stderr, "Invalid expected crypto vector for %s\n", label );
+		failures++;
+		return;
+	}
+	for ( std::size_t index = 0; index < bytes; ++index ) {
+		const int high = HexNibble( expectedHex[ index * 2 ] );
+		const int low = HexNibble( expectedHex[ index * 2 + 1 ] );
+		if ( high < 0 || low < 0 || actual[ index ] != static_cast<std::uint8_t>( ( high << 4 ) | low ) ) {
+			std::fprintf( stderr, "Crypto vector failed for %s at byte %zu\n", label, index );
+			failures++;
+			return;
+		}
+	}
+}
+
+static void ExerciseCryptoVectors() {
+	std::uint8_t digest[idCrypto::SHA256_DIGEST_BYTES];
+	idCrypto::SHA256( nullptr, 0, digest );
+	ExpectCryptoBytes( digest, sizeof( digest ),
+		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA-256 empty" );
+	idCrypto::SHA256( "abc", 3, digest );
+	ExpectCryptoBytes( digest, sizeof( digest ),
+		"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 abc" );
+
+	std::uint8_t hmacKey[20];
+	std::memset( hmacKey, 0x0b, sizeof( hmacKey ) );
+	idCrypto::HMACSHA256( hmacKey, sizeof( hmacKey ), "Hi There", 8, digest );
+	ExpectCryptoBytes( digest, sizeof( digest ),
+		"b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", "RFC 4231 HMAC-SHA-256" );
+
+	const char password[] = "password";
+	const char salt[] = "salt";
+	if ( !idCrypto::PBKDF2HMACSHA256( password, 8, salt, 4, 1, digest, sizeof( digest ) ) ) {
+		std::fprintf( stderr, "PBKDF2 iteration-1 vector rejected\n" );
+		failures++;
+	} else {
+		ExpectCryptoBytes( digest, sizeof( digest ),
+			"120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b", "PBKDF2-HMAC-SHA-256 c=1" );
+	}
+	if ( !idCrypto::PBKDF2HMACSHA256( password, 8, salt, 4, 2, digest, sizeof( digest ) ) ) {
+		std::fprintf( stderr, "PBKDF2 iteration-2 vector rejected\n" );
+		failures++;
+	} else {
+		ExpectCryptoBytes( digest, sizeof( digest ),
+			"ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43", "PBKDF2-HMAC-SHA-256 c=2" );
+	}
+	if ( !idCrypto::PBKDF2HMACSHA256( password, 8, salt, 4, 4096, digest, sizeof( digest ) ) ) {
+		std::fprintf( stderr, "PBKDF2 iteration-4096 vector rejected\n" );
+		failures++;
+	} else {
+		ExpectCryptoBytes( digest, sizeof( digest ),
+			"c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a", "PBKDF2-HMAC-SHA-256 c=4096" );
+	}
+	if ( idCrypto::PBKDF2HMACSHA256( password, 8, salt, 4, 0, digest, sizeof( digest ) ) ) {
+		std::fprintf( stderr, "PBKDF2 accepted zero iterations\n" );
+		failures++;
+	}
+
+	std::uint8_t verifier[idRcon2::VERIFIER_BYTES];
+	std::uint8_t clientNonce[idRcon2::NONCE_BYTES];
+	std::uint8_t serverNonce[idRcon2::NONCE_BYTES];
+	std::uint8_t endpointBinding[idRcon2::ENDPOINT_BINDING_BYTES];
+	std::uint8_t requestDigest[idRcon2::REQUEST_DIGEST_BYTES];
+	std::uint8_t proof[idRcon2::PROOF_BYTES];
+	for ( std::size_t index = 0; index < sizeof( verifier ); ++index ) {
+		verifier[index] = static_cast<std::uint8_t>( index );
+	}
+	for ( std::size_t index = 0; index < sizeof( clientNonce ); ++index ) {
+		clientNonce[index] = static_cast<std::uint8_t>( index );
+		serverNonce[index] = static_cast<std::uint8_t>( index + 16 );
+		endpointBinding[index] = static_cast<std::uint8_t>( index + 32 );
+	}
+	for ( std::size_t index = 0; index < sizeof( requestDigest ); ++index ) {
+		requestDigest[index] = static_cast<std::uint8_t>( index + 48 );
+	}
+	idRcon2::ComputeProof( verifier, clientNonce, serverNonce, endpointBinding, requestDigest, proof );
+	ExpectCryptoBytes( proof, sizeof( proof ),
+		"b5a5953f5327179b21f82fb5fe6a158896c82df1126feb48b0c8ce96a2f65c20", "rcon2 proof domain" );
+	idRcon2::HashRequest( "status", requestDigest );
+	ExpectCryptoBytes( requestDigest, sizeof( requestDigest ),
+		"073c1634c496cdb649d1afe0a312bbb4b7e1741b271542e4a436c3b8824b1761", "rcon2 request digest" );
+
+	std::uint8_t different[idCrypto::SHA256_DIGEST_BYTES];
+	std::memcpy( different, digest, sizeof( different ) );
+	different[31] ^= 1;
+	if ( !idCrypto::ConstantTimeEquals( digest, digest, sizeof( digest ) ) ||
+		idCrypto::ConstantTimeEquals( digest, different, sizeof( digest ) ) ) {
+		std::fprintf( stderr, "Constant-time equality result mismatch\n" );
+		failures++;
+	}
+	idCrypto::SecureZero( different, sizeof( different ) );
+	for ( std::uint8_t value : different ) {
+		if ( value != 0 ) {
+			std::fprintf( stderr, "SecureZero left data behind\n" );
+			failures++;
+			break;
+		}
+	}
+}
+
+static void ExpectOpenURLPolicy( const char *url, const bool expected, const char *label ) {
+	const bool actual = idURLPolicy::IsAllowedHTTPURL( url );
+	if ( actual != expected ) {
+		std::fprintf( stderr, "Open URL policy failed for %s: expected %d, got %d\n", label, expected, actual );
+		failures++;
+	}
+}
+
+static void ExpectRemoteCVarPolicy( const int variableFlags, const int requiredFlag,
+		const bool expected, const char *label ) {
+	const int userInfo = 1 << 0;
+	const int serverInfo = 1 << 1;
+	const int networkSync = 1 << 2;
+	const int privateFlag = 1 << 3;
+	const int allowed = userInfo | serverInfo | networkSync;
+	const bool actual = idRemoteCVarPolicy::CanApply(
+		variableFlags, requiredFlag, allowed, privateFlag );
+	if ( actual != expected ) {
+		std::fprintf( stderr, "Remote CVar policy failed for %s: expected %d, got %d\n",
+			label, expected, actual );
+		failures++;
+	}
+}
+
+static void ExpectGameDirSegment( const char *segment, const bool expected, const char *label ) {
+	const bool actual = idGameDirPolicy::IsPortableSegment( segment );
+	if ( actual != expected ) {
+		std::fprintf( stderr, "Game-directory policy failed for %s: expected %d, got %d\n",
+			label, expected, actual );
 		failures++;
 	}
 }
@@ -164,6 +331,36 @@ static void ExpectBindPlan( const char *ipv4Text, const char *ipv6Text, const bo
 }
 
 int main() {
+	ExerciseCryptoVectors();
+	const int remoteUserInfo = 1 << 0;
+	const int remoteServerInfo = 1 << 1;
+	const int remoteNetworkSync = 1 << 2;
+	const int remotePrivate = 1 << 3;
+	const int localInit = 1 << 4;
+	ExpectRemoteCVarPolicy( remoteUserInfo, remoteUserInfo, true, "matching userinfo authority" );
+	ExpectRemoteCVarPolicy( remoteServerInfo, remoteServerInfo, true, "matching serverinfo authority" );
+	ExpectRemoteCVarPolicy( remoteNetworkSync, remoteNetworkSync, true, "matching networksync authority" );
+	ExpectRemoteCVarPolicy( remoteUserInfo, remoteNetworkSync, false, "cross-class authority" );
+	ExpectRemoteCVarPolicy( localInit, remoteUserInfo, false, "local-only CVar" );
+	ExpectRemoteCVarPolicy( remoteUserInfo | remotePrivate, remoteUserInfo, false, "private CVar" );
+	ExpectRemoteCVarPolicy( remoteUserInfo, 0, false, "empty authority" );
+	ExpectRemoteCVarPolicy( remoteUserInfo | remoteNetworkSync,
+		remoteUserInfo | remoteNetworkSync, false, "combined authority" );
+	ExpectRemoteCVarPolicy( localInit, localInit, false, "unknown authority" );
+	ExpectPrivateToken( "set net_serverRemoteConsolePassword secret",
+		"net_serverRemoteConsolePassword", true, "ordinary assignment" );
+	ExpectPrivateToken( "status; SET NET_SERVERREMOTECONSOLEPASSWORD secret",
+		"net_serverRemoteConsolePassword", true, "case-insensitive semicolon assignment" );
+	ExpectPrivateToken( "net_serverRemoteConsolePasswor",
+		"net_serverRemoteConsolePassword", false, "command ends in private-name prefix" );
+	ExpectPrivateToken( "net_serverRemoteConsolePasswordSuffix",
+		"net_serverRemoteConsolePassword", false, "private name is a longer token prefix" );
+	ExpectPrivateToken( "xnet_serverRemoteConsolePassword",
+		"net_serverRemoteConsolePassword", false, "private name lacks left boundary" );
+	ExpectPrivateToken( "echo net_serverRemoteConsolePassword",
+		"net_serverRemoteConsolePassword", true, "private name at command end" );
+	ExpectPrivateToken( nullptr, "net_private", false, "null command" );
+	ExpectPrivateToken( "set net_private x", "", false, "empty private name" );
 	const char *validDecimals[] = {
 		"0", "-0", "123", "-123", "1.0", ".5", "-.5", "5."
 	};
@@ -190,6 +387,39 @@ int main() {
 	ExpectBounded( "12x", 127, false, 0, "non-digit" );
 	ExpectBounded( "0", -1, false, 0, "negative maximum" );
 
+	ExpectGameDirSegment( "baseoq4", true, "ordinary game directory" );
+	ExpectGameDirSegment( "my-mod_2", true, "portable punctuation" );
+	ExpectGameDirSegment( ".hidden-mod", true, "non-dot hidden directory" );
+	ExpectGameDirSegment( nullptr, false, "null game directory" );
+	ExpectGameDirSegment( "", false, "empty game directory" );
+	ExpectGameDirSegment( ".", false, "dot game directory" );
+	ExpectGameDirSegment( "..", false, "parent game directory" );
+	ExpectGameDirSegment( "../escape", false, "parent path escape" );
+	ExpectGameDirSegment( "mod/child", false, "forward-slash path" );
+	ExpectGameDirSegment( "mod\\child", false, "backslash path" );
+	ExpectGameDirSegment( "C:mod", false, "volume-relative path" );
+	ExpectGameDirSegment( " leading", false, "leading space" );
+	ExpectGameDirSegment( "trailing. ", false, "normalized trailing characters" );
+	ExpectGameDirSegment( "bad*mod", false, "reserved punctuation" );
+	ExpectGameDirSegment( "CON", false, "Windows device directory" );
+	ExpectGameDirSegment( "com1.mod", false, "numbered Windows device directory" );
+	ExpectGameDirSegment( "lpt\xC2\xB3", false, "UTF-8 superscript Windows device directory" );
+	{
+		char maximumSegment[idGameDirPolicy::MAX_SEGMENT_BYTES + 1];
+		for ( int index = 0; index < idGameDirPolicy::MAX_SEGMENT_BYTES; ++index ) {
+			maximumSegment[index] = 'm';
+		}
+		maximumSegment[idGameDirPolicy::MAX_SEGMENT_BYTES] = '\0';
+		ExpectGameDirSegment( maximumSegment, true, "maximum game-directory segment" );
+
+		char oversizedSegment[idGameDirPolicy::MAX_SEGMENT_BYTES + 2];
+		for ( int index = 0; index <= idGameDirPolicy::MAX_SEGMENT_BYTES; ++index ) {
+			oversizedSegment[index] = 'm';
+		}
+		oversizedSegment[idGameDirPolicy::MAX_SEGMENT_BYTES + 1] = '\0';
+		ExpectGameDirSegment( oversizedSegment, false, "oversized game-directory segment" );
+	}
+
 	using namespace idStrAllocationDetail;
 	const size_t sizeMaximum = ( std::numeric_limits<size_t>::max )();
 	ExpectAllocation( SaturatingAdd( 17, 25 ) == 42, "ordinary addition" );
@@ -209,6 +439,61 @@ int main() {
 	ExpectAllocation( !TryRoundUpToInt( static_cast<size_t>( INT_MAX ), 32, roundedAmount ), "INT_MAX round-up" );
 	ExpectAllocation( !TryRoundUpToInt( sizeMaximum, 32, roundedAmount ), "SIZE_MAX round-up" );
 	ExpectAllocation( !TryRoundUpToInt( 1, 0, roundedAmount ), "zero granularity" );
+
+	ExpectOpenURLPolicy( "http://example.com", true, "ordinary HTTP URL" );
+	ExpectOpenURLPolicy( "HTTPS://example.com:443/releases?q=openq4#download", true, "ordinary HTTPS URL" );
+	ExpectOpenURLPolicy( "https://localhost", true, "localhost HTTPS URL" );
+	ExpectOpenURLPolicy( "http://127.0.0.1:8080/path", true, "IPv4 HTTP URL" );
+	ExpectOpenURLPolicy( "https://[2001:db8::1]:65535/path", true, "IPv6 HTTPS URL" );
+	ExpectOpenURLPolicy( "https://example.com/path@name?redirect=%2Fsafe", true, "reserved path characters" );
+	ExpectOpenURLPolicy( nullptr, false, "null URL" );
+	ExpectOpenURLPolicy( "", false, "empty URL" );
+	ExpectOpenURLPolicy( "ftp://example.com/file", false, "FTP scheme" );
+	ExpectOpenURLPolicy( "file:///tmp/update", false, "file scheme" );
+	ExpectOpenURLPolicy( "javascript:alert(1)", false, "script scheme" );
+	ExpectOpenURLPolicy( "https:example.com", false, "HTTPS URL without authority delimiter" );
+	ExpectOpenURLPolicy( "https:///missing-host", false, "empty authority" );
+	ExpectOpenURLPolicy( "https://:443/path", false, "empty host with port" );
+	ExpectOpenURLPolicy( "https://user@example.com/path", false, "userinfo authority" );
+	ExpectOpenURLPolicy( "https://example.com%40attacker.invalid/path", false, "encoded authority ambiguity" );
+	ExpectOpenURLPolicy( "https://example.com:65536/path", false, "out-of-range URL port" );
+	ExpectOpenURLPolicy( "https://example.com:/path", false, "empty URL port" );
+	ExpectOpenURLPolicy( "https://example.com:443:444/path", false, "ambiguous URL port" );
+	ExpectOpenURLPolicy( "https://2001:db8::1/path", false, "unbracketed IPv6 URL" );
+	ExpectOpenURLPolicy( "https://[::1]suffix/path", false, "text after bracketed URL host" );
+	ExpectOpenURLPolicy( "https://!/path", false, "invalid hostname character" );
+	ExpectOpenURLPolicy( "https://./path", false, "empty DNS labels" );
+	ExpectOpenURLPolicy( "https://-example.com/path", false, "leading hostname hyphen" );
+	ExpectOpenURLPolicy( "https://example-.com/path", false, "trailing hostname hyphen" );
+	ExpectOpenURLPolicy( "https://999.1.2.3/path", false, "invalid IPv4 octet" );
+	ExpectOpenURLPolicy( "https://127.1/path", false, "ambiguous abbreviated IPv4" );
+	ExpectOpenURLPolicy( "https://[not-an-ip]/path", false, "invalid bracketed IP literal" );
+	ExpectOpenURLPolicy( "https://[::::]/path", false, "invalid IPv6 compression" );
+	ExpectOpenURLPolicy( "https://example.com/line\nbreak", false, "URL newline" );
+	ExpectOpenURLPolicy( "https://example.com/space here", false, "URL space" );
+	ExpectOpenURLPolicy( "https://example.com\\attacker.invalid", false, "URL backslash" );
+	ExpectOpenURLPolicy( "https://example.com/\x7f", false, "URL delete control" );
+
+	{
+		char maximumLengthURL[idURLPolicy::MAX_URL_BYTES];
+		const char prefix[] = "https://example.com/";
+		for ( size_t index = 0; index < sizeof( prefix ) - 1; index++ ) {
+			maximumLengthURL[index] = prefix[index];
+		}
+		for ( size_t index = sizeof( prefix ) - 1; index < idURLPolicy::MAX_URL_BYTES - 1; index++ ) {
+			maximumLengthURL[index] = 'a';
+		}
+		maximumLengthURL[idURLPolicy::MAX_URL_BYTES - 1] = '\0';
+		ExpectOpenURLPolicy( maximumLengthURL, true, "maximum bounded URL" );
+
+		char oversizedURL[idURLPolicy::MAX_URL_BYTES + 1];
+		for ( size_t index = 0; index < idURLPolicy::MAX_URL_BYTES; index++ ) {
+			oversizedURL[index] = maximumLengthURL[index];
+		}
+		oversizedURL[idURLPolicy::MAX_URL_BYTES - 1] = 'a';
+		oversizedURL[idURLPolicy::MAX_URL_BYTES] = '\0';
+		ExpectOpenURLPolicy( oversizedURL, false, "oversized URL" );
+	}
 
 	ExpectEndpoint( "127.0.0.1", true, "127.0.0.1", false, 0, "numeric IPv4" );
 	ExpectEndpoint( "127.0.0.1:65535", true, "127.0.0.1", true, 65535, "maximum IPv4 port" );

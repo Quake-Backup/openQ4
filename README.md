@@ -59,6 +59,7 @@ It is designed for players who want the original Quake 4 experience with a clean
 - **OpenAL audio** restored to the pre-plan compatibility path by default, with newer voice handling revalidated behind an opt-in gate.
 - **Improved input and quality-of-life features** including controller support, better console UX, and modern settings behavior.
 - **Single-player and multiplayer in one install** with active compatibility work aimed at the stock game.
+- **Smarter repeat level loads** with exact-match learned source preparation and validated local model, world, collision, and animation caches that fall back safely to the installed assets.
 - **A stock-map Arena Campaign** (experimental) with five escalating bot tiers, varied combat game types, boss matches, and persistent ladder progress beside the original story.
 - **A unified demo library and player** with pause, speed, stepping, rewind/fast-forward controls, honest legacy-format status, and full-world free-fly/player-follow playback for server-side multi-view recordings.
 - **Cross-platform support** with Windows packages, directly executable Linux AppImages and archives for x86_64 plus preview aarch64, Steam Deck support on Linux, and experimental Apple Silicon/arm64 macOS OpenGL/Metal bridge packages through the signed/notarized DMG lane for credentialed release runs.
@@ -135,9 +136,10 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - [Demo Library and Multi-View Demos](docs/user/multiview-demos.md) - browse formats, use playback controls, and record or replay complete multiplayer matches
 - [Shadow Mapping](docs/user/shadow-mapping.md) - optional shadow-map settings and troubleshooting
 - [Light Grids](docs/user/light-grids.md) - advanced lighting guide for players and testers
+- [Advanced Screen-Space Lighting](docs/user/advanced-screen-space-lighting.md) (experimental) - bounded froxel volumetrics, SSR, SSGI, performance controls, and one-setting rollback
 - [Cel Shading](docs/user/cel-shading.md) - banded lighting and outline settings for the cel-shaded look
 - [DDS Texture Replacements](docs/user/texture-replacements.md) - install and diagnose DXT/BC7 texture packs
-- [Level-Load Cache](docs/user/level-load-cache.md) - generated animation cache behavior, controls, and cleanup
+- [Level-Load Cache](docs/user/level-load-cache.md) - learned preload and generated model, world, collision, and animation cache behavior, controls, rollback, and cleanup
 
 ### Build and technical docs
 
@@ -153,6 +155,8 @@ Packaged support currently focuses on Windows, Linux x64, Steam Deck/SteamOS, pr
 - It ships its **own engine and game modules**.
 - It is **not** a drop-in runtime for the original proprietary Quake 4 DLL mods.
 - The project is still in **beta development**, so compatibility work is ongoing.
+
+Developers and testers should use the [engine capability matrix](docs/dev/engine-capability-matrix.md) for authoritative implemented/experimental/missing status, the [idTech 5-level modernization roadmap](docs/dev/idtech5-modernization-roadmap.md) for the compatibility-safe implementation order, the [shared interaction-lighting contract](docs/dev/classic-interaction-domain-modernization.md), [shared fog/blend contract](docs/dev/classic-fog-blend-domain-modernization.md), and [shared material-deform contract](docs/dev/classic-deform-domain-modernization.md) for the default-off ownership and rollback boundaries, the [loading/cache contract](docs/dev/loading-cache-modernization.md) for the source-authoritative preload and generated-cache boundary plus pending evidence, and the [stock-asset baseline](docs/dev/stock-asset-baseline.md) for reproducible PK4, SP/MP, save/load, demo, log, and engine-screenshot evidence.
 
 If you run into problems, please use the [issue tracker](https://github.com/themuffinator/openQ4/issues) and include crash logs or setup details when possible. For experimental macOS crashes, use the [macOS support-data guide](docs/user/macos-support-data.md) before filing or updating an issue.
 
@@ -170,6 +174,7 @@ Bug reports, compatibility reports, testing feedback, and code contributions are
 - **DarkMatter Productions** - project stewardship and website
 - **Justin Marshall** - Quake4Doom and early BSE reverse engineering reference work
 - **Robert Beckebans** - renderer modernization reference work, including RBDOOM-3-BFG inspiration
+- **id Software's official Doom 3 and Doom 3 BFG source releases** - retained idTech 4 source lineage; see the [audited provenance inventory](docs/dev/source-provenance.md)
 - **id Software** and **Raven Software** - Quake 4 and the underlying technology
 - **akacross** (Discord user) - Thorough playtesting on Linux and Windows, a huge help moving the project forward!
 
@@ -177,7 +182,7 @@ Bug reports, compatibility reports, testing feedback, and code contributions are
 
 ## License and disclaimer
 
-openQ4 engine code is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). See [LICENSE](LICENSE) for details.
+openQ4 engine code is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). See [LICENSE](LICENSE) for details. Files retaining Doom 3 or Doom 3 BFG Edition headers also retain their upstream notices and are accompanied by the corresponding published Additional Terms; the [source-provenance inventory](docs/dev/source-provenance.md) records their scope, pinned audit references, and intermediate lineage without offering a legal conclusion.
 
 The game-library code in [openQ4-game](https://github.com/themuffinator/openQ4-game) is derived from the Quake 4 SDK and remains subject to id Software's SDK EULA. Quake 4 assets remain the property of id Software and ZeniMax Media.
 

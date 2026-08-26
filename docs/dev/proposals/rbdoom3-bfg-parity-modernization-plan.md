@@ -3,6 +3,9 @@
 Date: 2026-02-09  
 Author: Codex (analysis + implementation plan)
 
+> [!IMPORTANT]
+> This is a historical proposal, not a current-state inventory. Several baseline statements below predate the modern GL, Vulkan, shadow-map, and light-grid work now in the tree. Use the [engine capability matrix](../engine-capability-matrix.md) for authoritative implemented/experimental/missing status, the [idTech 5-level modernization roadmap](../idtech5-modernization-roadmap.md) for the current compatibility-safe delivery order, and [source provenance](../source-provenance.md) before considering any upstream import.
+
 ## 1. Goal
 
 Bring openQ4 to the same technical standard as modern RBDOOM-3-BFG, with special focus on lighting and shadowing, while preserving openQ4 rules:

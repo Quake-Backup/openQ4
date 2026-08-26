@@ -46,9 +46,18 @@
 //      surface kind so the engine creates the window for the right API, and
 //      the window services gain SDL-mediated Vulkan instance-extension and
 //      surface creation (the module never links SDL)
-// Version 7 keeps stale renderer modules from consuming the extended
-// renderEntity_t presentation contract (flat diffuse colour and sweep flags).
-#define RENDER_API_VERSION			7
+//  7 - Extended renderEntity_t presentation contract (flat diffuse colour
+//      and sweep flags)
+//  8 - Append-only idRenderSystem slot for coherent full-frame capture with
+//      CPU center-crop/resampling to caller-selected output dimensions
+//  9 - Append-only idRenderSystem slots for backend-neutral delayed whole-frame
+//      GPU timing and session-discontinuity resets (OpenGL and Vulkan)
+// 10 - Shared idFile/idFileSystem ABI adds engine-owned memory staging,
+//      semantic preload records, and source-authoritative generated caches
+// 11 - Append-only idRenderSystem slots publish frame-latched scene/native
+//      output state and enqueue the backend-neutral temporal presentation
+//      resolve requested by game modules
+#define RENDER_API_VERSION			11
 #define RENDER_API_ENTRY_POINT		"GetRenderAPI"
 
 class idSys;

@@ -207,13 +207,151 @@ endif
 if get_option('build_native_tests')
   openq4_core_safety_test = executable(
     'openq4-core-safety-test',
-    files('tools/tests/native/CoreSafetyTest.cpp'),
+    files(
+      'tools/tests/native/CoreSafetyTest.cpp',
+      'src/idlib/CryptoHash.cpp',
+      'src/framework/async/Rcon2Protocol.cpp',
+    ),
     include_directories: root_include_dir,
     install: false,
   )
   test(
     'openq4-core-safety',
     openq4_core_safety_test,
+    timeout: 30,
+  )
+
+  openq4_level_load_cache_format_test = executable(
+    'openq4-level-load-cache-format-test',
+    files(
+      'tools/tests/native/LevelLoadCacheFormatTest.cpp',
+      'src/framework/LevelLoadCacheFormat.cpp',
+    ),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-level-load-cache-format',
+    openq4_level_load_cache_format_test,
+    timeout: 30,
+  )
+
+  openq4_level_load_pipeline_test = executable(
+    'openq4-level-load-pipeline-test',
+    files(
+      'tools/tests/native/LevelLoadPipelineTest.cpp',
+      'src/framework/LevelLoadPipeline.cpp',
+      'src/framework/ParallelJobSystem.cpp',
+    ),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-level-load-pipeline',
+    openq4_level_load_pipeline_test,
+    timeout: 30,
+  )
+
+  openq4_job_system_test = executable(
+    'openq4-job-system-test',
+    files(
+      'tools/tests/native/ParallelJobSystemTest.cpp',
+      'src/framework/ParallelJobSystem.cpp',
+    ),
+    include_directories: root_include_dir,
+    dependencies: dependency('threads', required: true),
+    install: false,
+  )
+  test(
+    'openq4-job-system',
+    openq4_job_system_test,
+    timeout: 30,
+  )
+
+  openq4_gpu_frame_timing_test = executable(
+    'openq4-gpu-frame-timing-test',
+    files('tools/tests/native/GpuFrameTimingTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-gpu-frame-timing',
+    openq4_gpu_frame_timing_test,
+    timeout: 30,
+  )
+
+  openq4_temporal_presentation_core_test = executable(
+    'openq4-temporal-presentation-core-test',
+    files('tools/tests/native/TemporalPresentationCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-temporal-presentation-core',
+    openq4_temporal_presentation_core_test,
+    timeout: 30,
+  )
+
+  openq4_temporal_history_core_test = executable(
+    'openq4-temporal-history-core-test',
+    files('tools/tests/native/TemporalHistoryCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-temporal-history-core',
+    openq4_temporal_history_core_test,
+    timeout: 30,
+  )
+
+  openq4_renderer_contracts_test = executable(
+    'openq4-renderer-contracts-test',
+    files(
+      'tools/tests/native/RendererContractsTest.cpp',
+      'src/renderer/RendererContracts.cpp',
+    ),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-renderer-contracts',
+    openq4_renderer_contracts_test,
+    timeout: 30,
+  )
+
+  openq4_advanced_lighting_core_test = executable(
+    'openq4-advanced-lighting-core-test',
+    files('tools/tests/native/AdvancedLightingCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-advanced-lighting-core',
+    openq4_advanced_lighting_core_test,
+    timeout: 30,
+  )
+
+  openq4_advanced_screen_space_core_test = executable(
+    'openq4-advanced-screen-space-core-test',
+    files('tools/tests/native/AdvancedScreenSpaceCoreTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-advanced-screen-space-core',
+    openq4_advanced_screen_space_core_test,
+    timeout: 30,
+  )
+
+  openq4_specular_probe_atlas_packing_test = executable(
+    'openq4-specular-probe-atlas-packing-test',
+    files('tools/tests/native/ModernSpecularProbeAtlasPackingTest.cpp'),
+    include_directories: root_include_dir,
+    install: false,
+  )
+  test(
+    'openq4-specular-probe-atlas-packing',
+    openq4_specular_probe_atlas_packing_test,
     timeout: 30,
   )
 endif

@@ -397,6 +397,10 @@ void				R_AllocStaticTriSurfShadowVerts( srfTriangles_t *tri, int numVerts );
 void				R_AllocStaticTriSurfSilTraceVerts( srfTriangles_t *tri, int numVerts );
 void				R_AllocStaticSkinToModelTransforms( srfTriangles_t *tri, int numTransforms );
 #endif
+bool				R_AllocStaticGpuSkinningJointPalette( srfTriangles_t *tri, int numJoints );
+void				R_ClearStaticGpuSkinningJointPalette( srfTriangles_t *tri );
+void				R_ReferenceStaticGpuSkinning( srfTriangles_t *tri, const srfTriangles_t *reference );
+bool				R_CopyStaticGpuSkinning( srfTriangles_t *tri, const srfTriangles_t *source );
 void				R_AllocStaticTriSurfPlanes( srfTriangles_t *tri, int numIndexes );
 void				R_ResizeStaticTriSurfVerts( srfTriangles_t *tri, int numVerts );
 void				R_ResizeStaticTriSurfIndexes( srfTriangles_t *tri, int numIndexes );
@@ -425,6 +429,7 @@ srfTriangles_t *	R_MergeTriangles( const srfTriangles_t *tri1, const srfTriangle
 void				R_DeriveTangents( srfTriangles_t *tri, bool allocFacePlanes = true );
 
 deformInfo_t *		R_BuildDeformInfo( int numVerts, const idDrawVert *verts, int numIndexes, const int *indexes, bool useUnsmoothedTangents );
+deformInfo_t *		R_AllocDeformInfo( int numSourceVerts, int numOutputVerts, int numIndexes, int numMirroredVerts, int numDupVerts, int numSilEdges, bool allocDominantTris );
 void				R_FreeDeformInfo( deformInfo_t *deformInfo );
 int					R_DeformInfoMemoryUsed( deformInfo_t *deformInfo );
 

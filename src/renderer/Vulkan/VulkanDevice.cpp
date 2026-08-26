@@ -40,6 +40,7 @@
 #include "vk_mem_alloc.h"
 
 #include "VulkanDevice.h"
+#include "../RendererMetrics.h"
 
 vkDeviceContext_t vkCtx;
 
@@ -445,10 +446,16 @@ static bool VK_Device_CreateSwapchain( void ) {
 		return false;
 	}
 
-	// surface format: prefer BGRA8/UNORM sRGB-less for parity with the GL
-	// default framebuffer, fall back to the first reported format
+	// The legacy renderer already produces display-coded SDR values.  Use a
+	// non-sRGB UNORM attachment with the standard nonlinear presentation colour
+	// space so attachment writes do not encode those values a second time.
 	uint32_t formatCount = 0;
-	vkGetPhysicalDeviceSurfaceFormatsKHR( vkCtx.physicalDevice, vkCtx.surface, &formatCount, NULL );
+	VkResult formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(
+		vkCtx.physicalDevice, vkCtx.surface, &formatCount, NULL );
+	if ( formatResult != VK_SUCCESS ) {
+		common->Warning( "Vulkan: surface-format count query failed (%d)", (int)formatResult );
+		return false;
+	}
 	if ( formatCount == 0 ) {
 		common->Warning( "Vulkan: surface reports no formats" );
 		return false;
@@ -457,14 +464,38 @@ static bool VK_Device_CreateSwapchain( void ) {
 		formatCount = 64;
 	}
 	VkSurfaceFormatKHR formats[ 64 ];
-	vkGetPhysicalDeviceSurfaceFormatsKHR( vkCtx.physicalDevice, vkCtx.surface, &formatCount, formats );
-	VkSurfaceFormatKHR chosen = formats[ 0 ];
+	formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(
+		vkCtx.physicalDevice, vkCtx.surface, &formatCount, formats );
+	if ( formatResult != VK_SUCCESS && formatResult != VK_INCOMPLETE ) {
+		common->Warning( "Vulkan: surface-format query failed (%d)", (int)formatResult );
+		return false;
+	}
+	VkSurfaceFormatKHR chosen;
+	memset( &chosen, 0, sizeof( chosen ) );
+	chosen.format = VK_FORMAT_UNDEFINED;
+	bool compatibleSurfaceFormat = false;
 	for ( uint32_t i = 0; i < formatCount; i++ ) {
 		if ( ( formats[ i ].format == VK_FORMAT_B8G8R8A8_UNORM || formats[ i ].format == VK_FORMAT_R8G8B8A8_UNORM )
 				&& formats[ i ].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) {
 			chosen = formats[ i ];
+			compatibleSurfaceFormat = true;
 			break;
 		}
+	}
+	if ( !compatibleSurfaceFormat ) {
+		for ( uint32_t i = 0; i < formatCount; i++ ) {
+			if ( formats[ i ].format == VK_FORMAT_UNDEFINED
+					&& formats[ i ].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) {
+				chosen.format = VK_FORMAT_B8G8R8A8_UNORM;
+				chosen.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+				compatibleSurfaceFormat = true;
+				break;
+			}
+		}
+	}
+	if ( !compatibleSurfaceFormat ) {
+		common->Warning( "Vulkan: surface has no compatible legacy SDR UNORM + SRGB_NONLINEAR format" );
+		return false;
 	}
 
 	// present mode from r_swapInterval: 0 = IMMEDIATE (or MAILBOX when
@@ -565,11 +596,26 @@ static bool VK_Device_CreateSwapchain( void ) {
 	vkCtx.swapchainTransferSrc = transferSrcSupported;
 
 	uint32_t count = 0;
-	vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, NULL );
-	if ( count > 8 ) {
-		count = 8;
+	if ( vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, NULL ) != VK_SUCCESS || count == 0 ) {
+		common->Warning( "Vulkan: swapchain image count query failed" );
+		VK_Device_DestroySwapchainObjects();
+		return false;
 	}
-	vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, vkCtx.swapchainImages );
+	if ( count > 8 ) {
+		// swapchainImages/Views/renderFinishedSemaphores are fixed at 8 and are
+		// indexed by the image index vkAcquireNextImageKHR returns, which can be
+		// any value below the actual image count. An implementation that creates
+		// more than requested would index them out of bounds, so fail closed
+		// rather than clamp the count while the driver still owns more images.
+		common->Warning( "Vulkan: swapchain created %u images, exceeding the supported maximum of 8", count );
+		VK_Device_DestroySwapchainObjects();
+		return false;
+	}
+	if ( vkGetSwapchainImagesKHR( vkCtx.device, vkCtx.swapchain, &count, vkCtx.swapchainImages ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: swapchain image retrieval failed" );
+		VK_Device_DestroySwapchainObjects();
+		return false;
+	}
 	vkCtx.swapchainImageCount = count;
 
 	for ( uint32_t i = 0; i < count; i++ ) {
@@ -605,8 +651,9 @@ static bool VK_Device_CreateSwapchain( void ) {
 		return false;
 	}
 
-	common->Printf( "Vulkan: created swapchain %ux%u format=%d images=%u presentMode=%d\n",
-			extent.width, extent.height, (int)chosen.format, count, (int)presentMode );
+	common->Printf( "Vulkan: created swapchain %ux%u format=%d colorSpace=%d images=%u presentMode=%d\n",
+			extent.width, extent.height, (int)chosen.format, (int)chosen.colorSpace,
+			count, (int)presentMode );
 	if ( !vkCtx.swapchainTransferSrc ) {
 		common->Warning( "Vulkan: swapchain does not support transfer-source captures; screenshots and backbuffer feedback are unavailable" );
 	}
@@ -623,6 +670,7 @@ bool VK_Device_RecreateSwapchain( void ) {
 		return false;
 	}
 	vkDeviceWaitIdle( vkCtx.device );
+	R_RendererMetrics_ResetGpuFrameTiming( "Vulkan swapchain recreation" );
 	return VK_Device_CreateSwapchain();
 }
 
@@ -748,6 +796,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	const int forcedDevice = r_vkDevice.GetInteger();
 	int chosenDevice = -1;
 	uint32_t chosenQueueFamily = 0;
+	uint32_t chosenTimestampValidBits = 0;
 
 	for ( uint32_t d = 0; d < deviceCount; d++ ) {
 		if ( forcedDevice >= 0 && (int)d != forcedDevice ) {
@@ -769,6 +818,7 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 			if ( presentable ) {
 				chosenDevice = (int)d;
 				chosenQueueFamily = f;
+				chosenTimestampValidBits = families[ f ].timestampValidBits;
 				break;
 			}
 		}
@@ -784,9 +834,11 @@ bool VK_Device_Init( const renderWindowServices_s *windowServices ) {
 	}
 	vkCtx.physicalDevice = devices[ chosenDevice ];
 	vkCtx.graphicsQueueFamily = chosenQueueFamily;
+	vkCtx.graphicsTimestampValidBits = chosenTimestampValidBits;
 	vkGetPhysicalDeviceProperties( vkCtx.physicalDevice, &vkCtx.deviceProperties );
-	common->Printf( "Vulkan: device %d '%s' (queue family %u)\n",
-			chosenDevice, vkCtx.deviceProperties.deviceName, chosenQueueFamily );
+	common->Printf( "Vulkan: device %d '%s' (queue family %u, timestampValidBits=%u, timestampPeriod=%.6fns)\n",
+			chosenDevice, vkCtx.deviceProperties.deviceName, chosenQueueFamily,
+			chosenTimestampValidBits, vkCtx.deviceProperties.limits.timestampPeriod );
 
 	// Hard API floor. The back end calls ~135 core-1.3 entry points
 	// (vkCmdBeginRendering, vkCmdPipelineBarrier2, vkQueueSubmit2 and the
@@ -1035,6 +1087,24 @@ void VK_Device_Shutdown( void ) {
 	if ( vkCtx.device != VK_NULL_HANDLE ) {
 		vkDeviceWaitIdle( vkCtx.device );
 	}
+	if ( vkCtx.device != VK_NULL_HANDLE && vkCtx.allocator != NULL ) {
+		// an open batch is abandoned, never submitted: the images it records
+		// into are torn down below, and the command buffer dies with the pool
+		for ( int i = 0; i < vkCtx.numUploadBatchPending; i++ ) {
+			vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchPendingBuffers[ i ],
+					vkCtx.uploadBatchPendingAllocations[ i ] );
+		}
+		vkCtx.numUploadBatchPending = 0;
+		vkCtx.uploadBatchPendingBytes = 0;
+		vkCtx.uploadBatchOpen = false;
+		// the wait-idle above already retired any submitted batch
+		for ( int i = 0; i < vkCtx.numUploadBatchInFlight; i++ ) {
+			vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchInFlightBuffers[ i ],
+					vkCtx.uploadBatchInFlightAllocations[ i ] );
+		}
+		vkCtx.numUploadBatchInFlight = 0;
+		vkCtx.uploadBatchInFlight = false;
+	}
 	if ( vkCtx.device != VK_NULL_HANDLE ) {
 		// release the D-layer consumers first (images, executor, buffers)
 		{
@@ -1102,6 +1172,9 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 	vkCtx.recordingSlot = slot;
 
 	vkWaitForFences( vkCtx.device, 1, &vkCtx.frameFences[ slot ], VK_TRUE, UINT64_MAX );
+	// deferred destroys must never run while a submitted upload batch could
+	// still reference their images
+	VK_Device_WaitUploadBatch();
 	VK_Device_FlushDeferredDestroys( slot );
 
 	uint32_t imageIndex = 0;
@@ -1219,6 +1292,9 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 	si.signalSemaphoreInfoCount = 1;
 	si.pSignalSemaphoreInfos = &signalInfo;
 
+	// the upload batch must precede any frame submission in queue order so
+	// this frame's fence covers it
+	VK_Device_FlushUploadBatch();
 	vkQueueSubmit2( vkCtx.graphicsQueue, 1, &si, vkCtx.frameFences[ slot ] );
 
 	VkPresentInfoKHR pi;
@@ -1238,24 +1314,33 @@ void VK_Device_PresentClearFrame( const float clearColor[ 4 ] ) {
 
 /*
 ====================
-VK_Device_ImmediateSubmit
+VK_Device_WaitUploadBatch / VK_Device_FlushUploadBatch / VK_Device_BatchedUpload
 ====================
 */
-bool VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user ) {
-	if ( vkCtx.device == VK_NULL_HANDLE || vkCtx.uploadCommandBuffer == VK_NULL_HANDLE ) {
-		return false;
+
+// staging bytes a single upload batch may own before it is force-flushed
+static const VkDeviceSize VK_UPLOAD_BATCH_BYTE_BUDGET = 64u << 20;
+
+void VK_Device_WaitUploadBatch( void ) {
+	if ( !vkCtx.uploadBatchInFlight ) {
+		return;
 	}
+	vkWaitForFences( vkCtx.device, 1, &vkCtx.uploadFence, VK_TRUE, UINT64_MAX );
+	vkResetFences( vkCtx.device, 1, &vkCtx.uploadFence );
+	for ( int i = 0; i < vkCtx.numUploadBatchInFlight; i++ ) {
+		vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchInFlightBuffers[ i ],
+				vkCtx.uploadBatchInFlightAllocations[ i ] );
+	}
+	vkCtx.numUploadBatchInFlight = 0;
+	vkCtx.uploadBatchInFlight = false;
+}
 
-	vkResetCommandBuffer( vkCtx.uploadCommandBuffer, 0 );
-	VkCommandBufferBeginInfo cbbi;
-	memset( &cbbi, 0, sizeof( cbbi ) );
-	cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkBeginCommandBuffer( vkCtx.uploadCommandBuffer, &cbbi );
-
-	record( vkCtx.uploadCommandBuffer, user );
-
+void VK_Device_FlushUploadBatch( void ) {
+	if ( !vkCtx.uploadBatchOpen ) {
+		return;
+	}
 	vkEndCommandBuffer( vkCtx.uploadCommandBuffer );
+	vkCtx.uploadBatchOpen = false;
 
 	VkSubmitInfo si;
 	memset( &si, 0, sizeof( si ) );
@@ -1263,10 +1348,59 @@ bool VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user ) {
 	si.commandBufferCount = 1;
 	si.pCommandBuffers = &vkCtx.uploadCommandBuffer;
 	if ( vkQueueSubmit( vkCtx.graphicsQueue, 1, &si, vkCtx.uploadFence ) != VK_SUCCESS ) {
+		common->Warning( "Vulkan: upload batch submit failed (%d staged regions dropped)",
+				vkCtx.numUploadBatchPending );
+		for ( int i = 0; i < vkCtx.numUploadBatchPending; i++ ) {
+			vmaDestroyBuffer( vkCtx.allocator, vkCtx.uploadBatchPendingBuffers[ i ],
+					vkCtx.uploadBatchPendingAllocations[ i ] );
+		}
+		vkCtx.numUploadBatchPending = 0;
+		vkCtx.uploadBatchPendingBytes = 0;
+		return;
+	}
+	// opening a batch waits out the previous one first, so the in-flight list
+	// is always empty here
+	for ( int i = 0; i < vkCtx.numUploadBatchPending; i++ ) {
+		vkCtx.uploadBatchInFlightBuffers[ i ] = vkCtx.uploadBatchPendingBuffers[ i ];
+		vkCtx.uploadBatchInFlightAllocations[ i ] = vkCtx.uploadBatchPendingAllocations[ i ];
+	}
+	vkCtx.numUploadBatchInFlight = vkCtx.numUploadBatchPending;
+	vkCtx.numUploadBatchPending = 0;
+	vkCtx.uploadBatchPendingBytes = 0;
+	vkCtx.uploadBatchInFlight = true;
+}
+
+bool VK_Device_BatchedUpload( vkImmediateRecord_t record, void *user,
+		VkBuffer staging, VmaAllocation stagingAllocation, VkDeviceSize stagingBytes ) {
+	if ( vkCtx.device == VK_NULL_HANDLE || vkCtx.uploadCommandBuffer == VK_NULL_HANDLE ) {
 		return false;
 	}
-	vkWaitForFences( vkCtx.device, 1, &vkCtx.uploadFence, VK_TRUE, UINT64_MAX );
-	vkResetFences( vkCtx.device, 1, &vkCtx.uploadFence );
+
+	if ( !vkCtx.uploadBatchOpen ) {
+		VK_Device_WaitUploadBatch();
+		vkResetCommandBuffer( vkCtx.uploadCommandBuffer, 0 );
+		VkCommandBufferBeginInfo cbbi;
+		memset( &cbbi, 0, sizeof( cbbi ) );
+		cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if ( vkBeginCommandBuffer( vkCtx.uploadCommandBuffer, &cbbi ) != VK_SUCCESS ) {
+			return false;
+		}
+		vkCtx.uploadBatchOpen = true;
+	}
+
+	record( vkCtx.uploadCommandBuffer, user );
+
+	if ( staging != VK_NULL_HANDLE ) {
+		vkCtx.uploadBatchPendingBuffers[ vkCtx.numUploadBatchPending ] = staging;
+		vkCtx.uploadBatchPendingAllocations[ vkCtx.numUploadBatchPending ] = stagingAllocation;
+		vkCtx.numUploadBatchPending++;
+		vkCtx.uploadBatchPendingBytes += stagingBytes;
+	}
+	if ( vkCtx.numUploadBatchPending >= VK_MAX_UPLOAD_BATCH_STAGING
+			|| vkCtx.uploadBatchPendingBytes >= VK_UPLOAD_BATCH_BYTE_BUDGET ) {
+		VK_Device_FlushUploadBatch();
+	}
 	return true;
 }
 
@@ -1283,7 +1417,12 @@ void VK_Device_DeferDestroy( VkImage image, VkImageView view, VkBuffer buffer, V
 	}
 	const int slot = vkCtx.recordingSlot;
 	if ( vkCtx.numDeferredDestroys[ slot ] >= VK_MAX_DEFERRED_DESTROYS ) {
-		// queue full: block for safety rather than leak or free early
+		// queue full: block for safety rather than leak or free early. An open
+		// unsubmitted upload batch must be submitted first: destroying a
+		// resource its recorded commands reference would invalidate the
+		// command buffer, and wait-idle only retires submitted work.
+		VK_Device_FlushUploadBatch();
+		VK_Device_WaitUploadBatch();
 		vkDeviceWaitIdle( vkCtx.device );
 		for ( int i = 0; i < VK_FRAMES_IN_FLIGHT; i++ ) {
 			VK_Device_FlushDeferredDestroys( i );

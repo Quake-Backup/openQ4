@@ -51,6 +51,9 @@ typedef struct vkDeferredDestroy_s {
 
 static const int VK_MAX_DEFERRED_DESTROYS = 512;
 
+// staging buffers a single upload batch may own before it is force-flushed
+static const int VK_MAX_UPLOAD_BATCH_STAGING = 1024;
+
 typedef struct vkDeviceContext_s {
 	bool				initialized;
 
@@ -75,6 +78,7 @@ typedef struct vkDeviceContext_s {
 	bool				packed565Supported;
 	VkDevice			device;
 	uint32_t			graphicsQueueFamily;	// also the present family (required)
+	uint32_t			graphicsTimestampValidBits;
 	VkQueue				graphicsQueue;
 
 	VkSwapchainKHR		swapchain;
@@ -121,11 +125,21 @@ typedef struct vkDeviceContext_s {
 	VkImageView			depthViews[ VK_FRAMES_IN_FLIGHT ];
 	VmaAllocation		depthAllocations[ VK_FRAMES_IN_FLIGHT ];
 
-	// synchronous upload path: its own command buffer + fence, submitted and
-	// waited immediately (image/vertex data reaches the GPU before the frame
-	// that samples it is submitted)
+	// batched upload path: uploads record into uploadCommandBuffer; the batch
+	// is submitted before every frame/clear-frame submission (so consuming
+	// frames execute after their uploads), when the staging budget fills, or
+	// with a CPU wait at wait-idle teardown points
 	VkCommandBuffer		uploadCommandBuffer;
 	VkFence				uploadFence;
+	bool				uploadBatchOpen;		// commands recorded, not yet submitted
+	bool				uploadBatchInFlight;	// submitted, uploadFence not yet waited
+	int					numUploadBatchPending;
+	VkDeviceSize		uploadBatchPendingBytes;
+	VkBuffer			uploadBatchPendingBuffers[ VK_MAX_UPLOAD_BATCH_STAGING ];
+	VmaAllocation		uploadBatchPendingAllocations[ VK_MAX_UPLOAD_BATCH_STAGING ];
+	int					numUploadBatchInFlight;
+	VkBuffer			uploadBatchInFlightBuffers[ VK_MAX_UPLOAD_BATCH_STAGING ];
+	VmaAllocation		uploadBatchInFlightAllocations[ VK_MAX_UPLOAD_BATCH_STAGING ];
 
 	vkDeferredDestroy_t	deferredDestroys[ VK_FRAMES_IN_FLIGHT ][ VK_MAX_DEFERRED_DESTROYS ];
 	int					numDeferredDestroys[ VK_FRAMES_IN_FLIGHT ];
@@ -149,11 +163,20 @@ bool	VK_Device_RecreateSwapchain( void );
 // presents; handles OUT_OF_DATE/SUBOPTIMAL by recreating and retrying once
 void	VK_Device_PresentClearFrame( const float clearColor[ 4 ] );
 
-// records commands into the dedicated upload command buffer, submits, and
-// blocks on the upload fence; safe mid-frame (the frame's own command
-// buffer is still recording, so the upload strictly precedes its submit)
 typedef void ( *vkImmediateRecord_t )( VkCommandBuffer cmd, void *user );
-bool	VK_Device_ImmediateSubmit( vkImmediateRecord_t record, void *user );
+// records upload commands into the shared upload command buffer, opening a
+// batch if none is open (recycling any in-flight batch first). On true the
+// batch takes ownership of the staging buffer/allocation; the commands reach
+// the GPU before the next frame or clear-frame submission. Returns false
+// without recording when no device/upload command buffer exists.
+bool	VK_Device_BatchedUpload( vkImmediateRecord_t record, void *user,
+			VkBuffer staging, VmaAllocation stagingAllocation, VkDeviceSize stagingBytes );
+// submits the open upload batch (if any) without a CPU wait; must run before
+// every queue submission so consuming work executes after its uploads
+void	VK_Device_FlushUploadBatch( void );
+// waits out the last submitted batch and releases its staging buffers; must
+// run before deferred destroys are flushed and before wait-idle teardown
+void	VK_Device_WaitUploadBatch( void );
 
 // queues GPU objects for destruction once the current frame slot's fence
 // has cycled; any handle may be VK_NULL_HANDLE

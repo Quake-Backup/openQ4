@@ -39,9 +39,18 @@ If you have questions concerning this license or the applicable additional terms
 #include "RendererBenchmarks.h"
 #include "RendererMetrics.h"
 #include "RendererUpload.h"
+#include "RendererContracts.h"
 #include "RenderGraph.h"
 #include "RenderGraphResources.h"
 #include "MaterialResourceTable.h"
+#include "ClassicGuiDomain.h"
+#include "ClassicCinematicPostDomain.h"
+#include "ClassicSpecialFrameDomain.h"
+#include "ClassicWorldAmbientDomain.h"
+#include "ClassicInteractionDomain.h"
+#include "ClassicFogBlendDomain.h"
+#include "ClassicSubviewDomain.h"
+#include "ClassicDeformDomain.h"
 #include "GeometryResources.h"
 #include "ScenePackets.h"
 #include "ModernClusteredLighting.h"
@@ -219,6 +228,12 @@ idCVar r_useLightPortalFlow( "r_useLightPortalFlow", "1", CVAR_RENDERER | CVAR_B
 idCVar r_multiSamples( "r_multiSamples", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "MSAA sample count: 0 = off, 2/4/8/16 = supported quality steps", 0, 16, idCmdSystem::ArgCompletion_String<r_multiSamplesArgs> );
 idCVar r_postAA( "r_postAA", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "post AA mode: 0 = off, 1 = SMAA 1x medium, 2 = SMAA 1x high, 3 = SMAA 1x ultra, 4 = SMAA 1x colour-edge prototype", 0, 4, idCmdSystem::ArgCompletion_Integer<0,4> );
 idCVar r_postAAStatePoisonTest( "r_postAAStatePoisonTest", "0", CVAR_RENDERER | CVAR_BOOL, "intentionally dirty GL texture/client state before SMAA post-AA draws for validation" );
+idCVar r_pbrMaterials( "r_pbrMaterials", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow explicitly PBR-authored materials on supported modern renderer paths" );
+idCVar r_pbrGeneratedLegacyFallback( "r_pbrGeneratedLegacyFallback", "1", CVAR_RENDERER | CVAR_BOOL, "allow development-only classic fallback generation for PBR-only materials" );
+idCVar r_pbrDebug( "r_pbrDebug", "0", CVAR_RENDERER | CVAR_INTEGER, "PBR debug view: 0=off, 1=albedo, 2=normal, 3=metallic, 4=roughness, 5=AO, 6=emissive, 7=state marker (green=PBR, magenta=contract mismatch)", 0, 7, idCmdSystem::ArgCompletion_Integer<0,7> );
+idCVar r_pbrIBL( "r_pbrIBL", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable the analytic environment contribution for explicitly PBR-authored materials" );
+idCVar r_pbrIBLIntensity( "r_pbrIBLIntensity", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "analytic PBR environment intensity", 0.0f, 4.0f );
+idCVar r_pbrInferFromLegacyMaterials( "r_pbrInferFromLegacyMaterials", "0", CVAR_RENDERER | CVAR_BOOL, "research-only legacy material reinterpretation; never used for stock rendering by default" );
 idCVar r_bloom( "r_bloom", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable bloom post-process" );
 idCVar r_bloomThreshold( "r_bloomThreshold", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "bloom bright-pass threshold in scene-referred units", 0.0f, 16.0f );
 idCVar r_bloomSoftKnee( "r_bloomSoftKnee", "0.15", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "relative bloom soft-threshold knee", 0.0f, 1.0f );
@@ -335,11 +350,11 @@ idCVar r_shadowMapConservativeCasters( "r_shadowMapConservativeCasters", "1", CV
 idCVar r_shadowMapProjectedCSM( "r_shadowMapProjectedCSM", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow ordinary projected lights to use cascades when r_shadowMapCSM is enabled" );
 idCVar r_shadowMapDepthCompare( "r_shadowMapDepthCompare", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use hardware comparison sampling for projected depth shadow maps when supported; PCSS-lite (r_shadowMapFilterMode 2) implies the manual path" );
 idCVar r_shadowMapTexelBiasScale( "r_shadowMapTexelBiasScale", "0.45", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "texel-aware receiver bias scale for projected and point shadow maps", 0.0f, 8.0f );
-idCVar r_shadowMapNormalOffsetScale( "r_shadowMapNormalOffsetScale", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "normal-offset shadow bias in shadow texels: pushes the receiver sample point along the geometric normal on sloped surfaces, fixing self-shadow acne without detaching contact shadows", 0.0f, 8.0f );
-idCVar r_shadowMapCasterCulling( "r_shadowMapCasterCulling", "2", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shadow caster face culling: 0 = two-sided, 1 = store light-facing faces, 2 = store back faces (fewer acne artifacts, slight detachment on thin geometry); material twoSided/backSided is always honored", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
-idCVar r_shadowMapReceiverPlaneBias( "r_shadowMapReceiverPlaneBias", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "add derivative receiver-plane depth bias for wider projected shadow filters" );
-idCVar r_shadowMapFilterTaps( "r_shadowMapFilterTaps", "13", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "projected-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
-idCVar r_shadowMapPointFilterTaps( "r_shadowMapPointFilterTaps", "13", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "point-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
+idCVar r_shadowMapNormalOffsetScale( "r_shadowMapNormalOffsetScale", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "normal-offset shadow bias in shadow texels; reduces slope acne but excessive values can move contact edges (point-light use is bounded by r_shadowMapPointMaxWorldBias)", 0.0f, 8.0f );
+idCVar r_shadowMapCasterCulling( "r_shadowMapCasterCulling", "2", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "shadow caster face culling: 0 = always two-sided, 1 = force material-oriented near faces, 2 = automatic (near faces for sealed hulls outside the light, two-sided for open/uncertain/enclosing geometry)", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
+idCVar r_shadowMapReceiverPlaneBias( "r_shadowMapReceiverPlaneBias", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable the experimental derivative receiver-plane depth-bias approximation for projected shadow filters" );
+idCVar r_shadowMapFilterTaps( "r_shadowMapFilterTaps", "9", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "projected-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
+idCVar r_shadowMapPointFilterTaps( "r_shadowMapPointFilterTaps", "9", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "point-light PCF tap budget: 1, 5, 9, or 13", 1, 13, idCmdSystem::ArgCompletion_Integer<1,13> );
 idCVar r_shadowMapFilterMode( "r_shadowMapFilterMode", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "projected-light shadow filter mode: 0 = fixed PCF, 1 = stable rotated Poisson, 2 = PCSS-lite when raw depth is available", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
 idCVar r_shadowMapPointFilterMode( "r_shadowMapPointFilterMode", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "point-light shadow filter mode: 0 = fixed PCF, 1 = stable rotated Poisson", 0, 1, idCmdSystem::ArgCompletion_Integer<0,1> );
 idCVar r_shadowMapDistantFilterScale( "r_shadowMapDistantFilterScale", "0.35", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "scale projected PCF and PCSS radii for parallel/global sky lights whose shadow texels cover more world space", 0.0f, 1.0f );
@@ -379,6 +394,7 @@ idCVar r_useDeferredTangents( "r_useDeferredTangents", "1", CVAR_RENDERER | CVAR
 idCVar r_useCachedDynamicModels( "r_useCachedDynamicModels", "1", CVAR_RENDERER | CVAR_BOOL, "cache snapshots of dynamic models" );
 idCVar r_useRepeatedStateReuse( "r_useRepeatedStateReuse", "1", CVAR_RENDERER | CVAR_BOOL, "keep model-space dynamic snapshots across transform-only entity updates so repeated-state presentation frames skip CPU re-skinning" );
 idCVar r_useNewSkinning( "r_useNewSkinning", "1", CVAR_RENDERER | CVAR_BOOL, "use retail-style SIMD MD5 skinning data" );
+idCVar r_gpuSkinning( "r_gpuSkinning", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "use exact four-weight GPU deformation for eligible animated surfaces" );
 idCVar r_useFastSkinning( "r_useFastSkinning", "0", CVAR_RENDERER | CVAR_BOOL, "approximate MD5 tangent skinning with the dominant joint only" );
 idCVar r_deriveBiTangents( "r_deriveBiTangents", "0", CVAR_RENDERER | CVAR_BOOL, "derive bitangents from skinned normals and tangents" );
 idCVar r_forceConvertMD5R( "r_forceConvertMD5R", "0", CVAR_RENDERER | CVAR_BOOL, "prefer source md5/proc assets over any future prebuilt MD5R companions" );
@@ -452,26 +468,39 @@ idCVar r_actualRenderer( "r_actualRenderer", "UNINITIALIZED", CVAR_RENDERER | CV
 idCVar r_glTier( "r_glTier", "auto", CVAR_RENDERER | CVAR_ARCHIVE, "OpenGL renderer tier: auto, legacy, gl33, gl41, gl43, gl45, gl46", r_glTierArgs, idCmdSystem::ArgCompletion_String<r_glTierArgs> );
 idCVar r_vkValidation( "r_vkValidation", "0", CVAR_RENDERER | CVAR_BOOL, "enable Vulkan validation layers for the Vulkan renderer module and rendererVkProbe" );
 idCVar r_vkDevice( "r_vkDevice", "-1", CVAR_RENDERER | CVAR_INTEGER, "Vulkan physical-device index override, -1 = automatic selection", -1, 15 );
+idCVar r_vkShadowFallbackTest( "r_vkShadowFallbackTest", "0", CVAR_RENDERER | CVAR_BOOL, "diagnostic: make Vulkan shadow maps and stencil ownership unavailable to exercise unshadowed receiver fallback" );
 idCVar r_glDebugContext( "r_glDebugContext", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "request a debug OpenGL context when the platform backend supports it" );
 idCVar r_glDebugOutput( "r_glDebugOutput", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "report OpenGL driver debug messages when a debug context is active" );
 idCVar r_glDebugSynchronous( "r_glDebugSynchronous", "0", CVAR_RENDERER | CVAR_BOOL, "deliver OpenGL debug callbacks synchronously (diagnostic; may reduce performance)" );
 idCVar r_rendererMetrics( "r_rendererMetrics", "0", CVAR_RENDERER | CVAR_INTEGER, "renderer metrics: 0 = off, 1 = periodic summary, 2 = per-frame/pass detail", 0, 2, idCmdSystem::ArgCompletion_Integer<0,2> );
-idCVar r_rendererGpuTimers( "r_rendererGpuTimers", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "sample GL timer queries when r_rendererMetrics is enabled and supported" );
+idCVar r_rendererGpuTimers( "r_rendererGpuTimers", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "sample delayed whole-frame GPU timestamps on supported backends; OpenGL pass detail additionally requires r_rendererMetrics" );
 idCVar r_rendererBenchmarkPreset( "r_rendererBenchmarkPreset", "baseline", CVAR_RENDERER | CVAR_ARCHIVE, "renderer benchmark budget preset: low, baseline, modern, high-end", r_rendererBenchmarkPresetArgs, idCmdSystem::ArgCompletion_String<r_rendererBenchmarkPresetArgs> );
 idCVar r_rendererPerfThresholdP95( "r_rendererPerfThresholdP95", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P95 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
 idCVar r_rendererPerfThresholdP99( "r_rendererPerfThresholdP99", "0", CVAR_RENDERER | CVAR_INTEGER, "custom renderer benchmark P99 frame-time budget in milliseconds (0 = preset default)", 0, 1000, idCmdSystem::ArgCompletion_Integer<0,1000> );
 idCVar r_rendererAdaptiveClusterGrid( "r_rendererAdaptiveClusterGrid", "0", CVAR_RENDERER | CVAR_BOOL, "use benchmark preset cluster-grid dimensions for the modern clustered-light experiment" );
-idCVar r_rendererDynamicResolution( "r_rendererDynamicResolution", "0", CVAR_RENDERER | CVAR_BOOL, "allow benchmark presets to recommend dynamic screen-percentage experiments; disabled by default" );
+idCVar r_rendererDynamicResolution( "r_rendererDynamicResolution", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "automatically scale the 3D scene from delayed GPU timing; disabled by default" );
 idCVar r_rendererUploadMegs( "r_rendererUploadMegs", "16", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream size in megabytes per frame buffer", 1, 128, idCmdSystem::ArgCompletion_Integer<1,128> );
 idCVar r_rendererUploadFrameBuffers( "r_rendererUploadFrameBuffers", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "dynamic renderer upload stream frame-buffer rotation depth", 3, 8, idCmdSystem::ArgCompletion_Integer<3,8> );
 idCVar r_rendererUploadPersistent( "r_rendererUploadPersistent", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "allow persistent-mapped dynamic renderer uploads when supported" );
 idCVar r_rendererUploadBufferPool( "r_rendererUploadBufferPool", "1", CVAR_RENDERER | CVAR_BOOL, "recycle static GL buffer names instead of gen/data/delete churn for per-frame regenerated geometry" );
+idCVar r_rendererModernQuality( "r_rendererModernQuality", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "master permit for experimental Milestone-F PBR, probe, decal, volumetric, SSR, and SSGI domains; 0 rolls every domain back to classic ownership" );
+idCVar r_rendererReflectionProbes( "r_rendererReflectionProbes", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable authored reflection probes for eligible modern PBR views; unsupported or incomplete probe sets use analytic/classic fallback" );
+idCVar r_rendererClusteredDecals( "r_rendererClusteredDecals", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "transfer complete eligible decal subsets to bounded clustered forward rendering; incomplete views remain entirely classic" );
 idCVar r_rendererModernExecutor( "r_rendererModernExecutor", "0", CVAR_RENDERER | CVAR_BOOL, "prepare the opt-in modern GL executor frame contract while legacy ARB2 still executes" );
 idCVar r_rendererModernSubmit( "r_rendererModernSubmit", "0", CVAR_RENDERER | CVAR_BOOL, "execute opt-in modern GL draw submission before legacy ARB2 fallback; diagnostic until visible pass replacement lands" );
 idCVar r_rendererGpuValidation( "r_rendererGpuValidation", "0", CVAR_RENDERER | CVAR_BOOL, "compare GL 4.3 GPU-driven compute results against CPU reference data on sampled frames" );
 idCVar r_rendererGpuValidationReadbackDelay( "r_rendererGpuValidationReadbackDelay", "2", CVAR_RENDERER | CVAR_INTEGER, "frames to defer opt-in GL 4.3 GPU validation readbacks before polling without a sync wait", 1, 8, idCmdSystem::ArgCompletion_Integer<1,8> );
 idCVar r_rendererBindless( "r_rendererBindless", "0", CVAR_RENDERER | CVAR_BOOL, "enable experimental GL 4.5 bindless texture diagnostics without changing visible output" );
 idCVar r_rendererModernVisible( "r_rendererModernVisible", "0", CVAR_RENDERER | CVAR_BOOL, "execute the opt-in modern hybrid visible-frame composition when all required pass owners are modern-safe" );
+idCVar r_rendererSharedGui( "r_rendererSharedGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible fixed-function 2D GUI views from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedInWorldGui( "r_rendererSharedInWorldGui", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible GUI geometry emitted onto 3D surfaces from a backend-neutral ordered material-stage stream; any unsupported view keeps every in-world GUI surface on the classic path" );
+idCVar r_rendererSharedCinematicPost( "r_rendererSharedCinematicPost", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible root cinematic playback and complete authored post-process ranges through a sealed shared transaction; post/video ranges nested in a shared special-view tree publish or roll back with its root; unsupported ranges use the complete classic path" );
+idCVar r_rendererSharedSpecialFrame( "r_rendererSharedSpecialFrame", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible render-demo playback and Raven special-effect controller frames through a sealed shared transaction; unsupported views and commands use the complete classic path" );
+idCVar r_rendererSharedWorldAmbient( "r_rendererSharedWorldAmbient", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible classic world ambient/material surface in a complete 3D view from the backend-neutral ordered material-stage stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedWorldInteraction( "r_rendererSharedWorldInteraction", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute every eligible unshadowed fixed-classic interaction light and receiver in a complete 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedWorldFogBlend( "r_rendererSharedWorldFogBlend", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute the complete classic fog/blend light phase in an eligible 3D view from a backend-neutral sealed stream; any unsupported view uses the complete classic path" );
+idCVar r_rendererSharedSubview( "r_rendererSharedSubview", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "execute eligible direct mirror and capture-backed remote-camera, mirror, reflection, refraction, and x-ray subview transactions from backend-neutral sealed records; nested child trees commit atomically at their outermost special view, while 2D/cubemap color and depth captures retain exact type, aspect, and face; unsupported subviews use the complete classic path" );
+idCVar r_rendererSharedDeform( "r_rendererSharedDeform", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "enable optional, default-off backend-neutral material-deform ownership; incomplete or unsupported work retains the complete classic path" );
 idCVar r_rendererModernLightingParity( "r_rendererModernLightingParity", "0", CVAR_RENDERER | CVAR_INTEGER, "diagnostic override forcing modern lighting-ownership parity contracts proven for bring-up capture: 1 = interaction, 2 = fog/blend, 4 = light grid, 8 = shadow receivers; 0 keeps every unproven domain on the ARB2 bridge", 0, 15, idCmdSystem::ArgCompletion_Integer<0,15> );
 idCVar r_rendererModernAutoPromote( "r_rendererModernAutoPromote", "0", CVAR_RENDERER | CVAR_BOOL, "allow r_glTier auto and r_renderer best to request the guarded modern visible path after promotion evidence and sign-off; off keeps ARB2 default" );
 idCVar r_rendererPromotionEvidence( "r_rendererPromotionEvidence", "", CVAR_RENDERER, "Phase 8 validation evidence token required with r_rendererModernAutoPromote before automatic modern visible promotion" );
@@ -570,8 +599,9 @@ idCVar r_shadowMapBias( "r_shadowMapBias", "0.00016", CVAR_RENDERER | CVAR_ARCHI
 idCVar r_shadowMapNormalBias( "r_shadowMapNormalBias", "0.00075", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "geometric normal bias added on sloped projected-light receivers", 0.0f, 0.05f );
 idCVar r_shadowMapPointBias( "r_shadowMapPointBias", "0.00010", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "constant receiver depth bias for point-light shadow maps", 0.0f, 0.05f );
 idCVar r_shadowMapPointNormalBias( "r_shadowMapPointNormalBias", "0.0010", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "geometric normal bias added on sloped point-light receivers", 0.0f, 0.05f );
-idCVar r_shadowMapFilterRadius( "r_shadowMapFilterRadius", "2.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "projected-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
-idCVar r_shadowMapPointFilterRadius( "r_shadowMapPointFilterRadius", "2.5", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "point-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
+idCVar r_shadowMapPointMaxWorldBias( "r_shadowMapPointMaxWorldBias", "4.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "maximum combined point-shadow receiver depth bias and normal offset at the padded far envelope, in world units; 0 disables the cap", 0.0f, 64.0f );
+idCVar r_shadowMapFilterRadius( "r_shadowMapFilterRadius", "0.75", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "projected-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
+idCVar r_shadowMapPointFilterRadius( "r_shadowMapPointFilterRadius", "1.0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "point-light PCF radius in texels for the simple shadow-map path", 0.0f, 8.0f );
 idCVar r_shadowMapProjectionPad( "r_shadowMapProjectionPad", "0.15", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "normalized padding applied around projected-light shadow-map coverage", 0.0f, 1.0f );
 idCVar r_shadowMapCascadeCount( "r_shadowMapCascadeCount", "4", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "number of projected-light cascades when r_shadowMapCSM is enabled", 1, 4, idCmdSystem::ArgCompletion_Integer<1,4> );
 idCVar r_shadowMapCascadeDistance( "r_shadowMapCascadeDistance", "1536", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "camera-space distance covered by the cropped projected-light cascades", 64.0f, 8192.0f );
@@ -585,8 +615,9 @@ idCVar r_shadowMapDebugMode( "r_shadowMapDebugMode", "0", CVAR_RENDERER | CVAR_I
 	0, SHADOWMAP_DEBUGMODE_COUNT - 1, idCmdSystem::ArgCompletion_Integer<0, SHADOWMAP_DEBUGMODE_COUNT - 1> );
 idCVar r_shadowMapCascadeStabilize( "r_shadowMapCascadeStabilize", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "snap projected-light cascade bounds to texels to reduce shimmering" );
 idCVar r_shadowMapPointFarScale( "r_shadowMapPointFarScale", "1.25", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "padding multiplier applied to point-light shadow-map range", 1.0f, 4.0f );
-idCVar r_shadowMapPolygonFactor( "r_shadowMapPolygonFactor", "0.75", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "slope-scale depth bias used when rendering shadow-map casters", 0.0f, 16.0f );
+idCVar r_shadowMapPolygonFactor( "r_shadowMapPolygonFactor", "0.25", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "slope-scale depth bias used when rendering shadow-map casters", 0.0f, 16.0f );
 idCVar r_shadowMapPolygonOffset( "r_shadowMapPolygonOffset", "0.5", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_FLOAT, "constant depth bias used when rendering shadow-map casters", 0.0f, 64.0f );
+static idCVar r_shadowMapContactQualityMigrated( "r_shadowMapContactQualityMigrated", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "one-time migration flag for legacy broad shadow filtering defaults" );
 idCVar r_frontBuffer( "r_frontBuffer", "0", CVAR_RENDERER | CVAR_BOOL, "draw to front buffer for debugging" );
 idCVar r_skipSubviews( "r_skipSubviews", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = don't render any gui elements on surfaces" );
 idCVar r_skipParticles( "r_skipParticles", "0", CVAR_RENDERER | CVAR_INTEGER, "1 = skip all particle systems", 0, 1, idCmdSystem::ArgCompletion_Integer<0,1> );
@@ -758,6 +789,7 @@ static void R_RendererDefaultSafetySelfTest_f( const idCmdArgs &args ) {
 static void R_RendererBenchmarkCapture_f( const idCmdArgs &args ) {
 	(void)args;
 	RendererBenchmarks_PrintLatestCapture();
+	RendererBenchmarks_PrintTimingMarker();
 }
 
 static void R_RendererUploadSelfTest_f( const idCmdArgs &args ) {
@@ -807,6 +839,109 @@ static void R_RendererMaterialResourceTableSelfTest_f( const idCmdArgs &args ) {
 	}
 }
 
+static void R_RendererClassicGuiDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicGuiDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicGuiDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicGuiDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicCinematicPostDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicCinematicPostDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicCinematicPostDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicCinematicPostDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicSpecialFrameDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicSpecialFrameDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicSpecialFrameDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicSpecialFrameDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicWorldAmbientDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicWorldAmbientDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicWorldAmbientDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicWorldAmbientDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicInteractionDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicInteractionDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicInteractionDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicInteractionDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicFogBlendDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicFogBlendDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicFogBlendDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicFogBlendDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicSubviewDomainSelfTest_f(
+		const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicSubviewDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicSubviewDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicSubviewDomain self-test failed" );
+	}
+}
+
+static void R_RendererClassicDeformDomainSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererClassicDeformDomain_RunSelfTest() ) {
+		common->Printf( "RendererClassicDeformDomain self-test passed\n" );
+	} else {
+		common->Warning( "RendererClassicDeformDomain self-test failed" );
+	}
+}
+
+static void R_RendererGpuSkinningSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( R_GpuSkinning_RunSelfTest() ) {
+		common->Printf( "RendererGpuSkinning self-test passed\n" );
+	} else {
+		common->Warning( "RendererGpuSkinning self-test failed" );
+	}
+}
+
+static void R_RendererContractsSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( RendererContracts_RunSelfTest() ) {
+		common->Printf( "RendererContracts self-test passed\n" );
+	} else {
+		common->Warning( "RendererContracts self-test failed" );
+	}
+}
+
+static void R_RendererPBRMaterialSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !R_PBRMaterialParserSelfTest() ) {
+		common->Warning( "Renderer PBR material parser self-test failed" );
+		return;
+	}
+	common->Printf( "RendererPBRMaterial self-test passed\n" );
+}
+
 static void R_RendererMaterialResourceTableDump_f( const idCmdArgs &args ) {
 	(void)args;
 	R_MaterialResourceTable_DumpLatest();
@@ -851,6 +986,13 @@ static void R_RendererGBufferSelfTest_f( const idCmdArgs &args ) {
 	(void)args;
 	if ( !RendererGBuffer_RunSelfTest() ) {
 		common->Warning( "Renderer modern G-buffer self-test failed" );
+	}
+}
+
+static void R_RendererPBRVisibleSelfTest_f( const idCmdArgs &args ) {
+	(void)args;
+	if ( !RendererPBRVisible_RunSelfTest() ) {
+		common->Warning( "Renderer PBR visible-path self-test failed" );
 	}
 }
 
@@ -1822,6 +1964,7 @@ void R_InitOpenGL( void ) {
 	R_GLDebugOutput_FlushMessages();
 
 	R_RendererUpload_Init( glConfig.backendCaps );
+	R_GpuSkinning_ContractInit( glConfig.backendCaps );
 
 	// allocate the vertex array range or vertex objects
 	R_RecordRendererStartupPhase( RENDERER_STARTUP_PHASE_VERTEX_CACHE_INIT );
@@ -2297,6 +2440,7 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 
 	int	oldWidth = glConfig.vidWidth;
 	int oldHeight = glConfig.vidHeight;
+	const bool oldUseScissor = r_useScissor.GetBool();
 
 	tr.tiledViewport[0] = width;
 	tr.tiledViewport[1] = height;
@@ -2362,7 +2506,7 @@ void R_ReadTiledPixels( int width, int height, byte *buffer, renderView_t *ref =
 		}
 	}
 
-	r_useScissor.SetBool( true );
+	r_useScissor.SetBool( oldUseScissor );
 
 	tr.viewportOffset[0] = 0;
 	tr.viewportOffset[1] = 0;
@@ -3663,15 +3807,37 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		common->Printf( "Renderer caps: %s\n", capsSummary );
 	}
 	RendererModule_PrintGfxInfo();
+	R_GpuSkinning_PrintGfxInfo();
 	RendererCompatibilityGates_PrintGfxInfo();
 	RendererTierContract_PrintGfxInfo();
 	RendererBootstrap_PrintGfxInfo();
 	RendererBenchmarks_PrintGfxInfo();
+	renderGpuFrameTiming_t gpuFrameTiming;
+	R_RendererMetrics_GetGpuFrameTiming( gpuFrameTiming );
+	const char *gpuTimingBackend = "none";
+	if ( gpuFrameTiming.backend == RENDER_GPU_TIMING_BACKEND_OPENGL ) {
+		gpuTimingBackend = "opengl";
+	} else if ( gpuFrameTiming.backend == RENDER_GPU_TIMING_BACKEND_VULKAN ) {
+		gpuTimingBackend = "vulkan";
+	}
 	common->Printf(
-		"Renderer GPU timers: %s, cvar=%d, timerQuery=%d\n",
+		"Renderer GPU timers: %s, cvar=%d, glPassTimerQuery=%d\n",
 		R_RendererMetrics_GpuTimersAvailable() ? "available" : "unavailable",
 		r_rendererGpuTimers.GetBool() ? 1 : 0,
 		glConfig.backendCaps.hasTimerQuery ? 1 : 0 );
+	common->Printf(
+		"Renderer whole-frame GPU timing: backend=%s supported=%d valid=%d frame=%d generation=%u elapsed=%lluus latency=%u resolved=%llu unavailable=%llu dropped=%llu resets=%llu nonblocking=1\n",
+		gpuTimingBackend,
+		gpuFrameTiming.supported ? 1 : 0,
+		gpuFrameTiming.valid ? 1 : 0,
+		gpuFrameTiming.frameNumber,
+		gpuFrameTiming.generation,
+		gpuFrameTiming.elapsedMicroseconds,
+		gpuFrameTiming.latencyFrames,
+		gpuFrameTiming.resolvedSamples,
+		gpuFrameTiming.unavailableSamples,
+		gpuFrameTiming.droppedSamples,
+		gpuFrameTiming.resetCount );
 	common->Printf(
 		"Renderer scene packets: legacy bridge V2, maxScenes=%d, maxPasses=%d, maxDrawPackets=%d, maxMaterialRecords=%d, maxGeometryRecords=%d, maxInstanceRecords=%d\n",
 		SCENE_PACKET_MAX_SCENES,
@@ -3680,6 +3846,24 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		SCENE_PACKET_MAX_MATERIAL_RECORDS,
 		SCENE_PACKET_MAX_GEOMETRY_RECORDS,
 		SCENE_PACKET_MAX_INSTANCE_RECORDS );
+	{
+		const classicDeformDomainStats_t &deform =
+			R_ClassicDeformDomain_Stats();
+		common->Printf(
+			"Renderer shared material deform: requested=%d frameToken=%llu records=%d none=%d notApplicable=%d completed=%d empty=%d skipped=%d failed=%d unsupported=%d invalid=%d hash=%016llx\n",
+			r_rendererSharedDeform.GetBool() ? 1 : 0,
+			static_cast<unsigned long long>( deform.frameToken ),
+			deform.records,
+			deform.none,
+			deform.notApplicable,
+			deform.completed,
+			deform.empty,
+			deform.skipped,
+			deform.failed,
+			deform.unsupported,
+			deform.invalid,
+			static_cast<unsigned long long>( deform.hash ) );
+	}
 	R_GeometryResources_PrintGfxInfo();
 	common->Printf(
 		"Renderer graph: resource-backed packet graph, maxPasses=%d, maxResources=%d, maxResourceAccesses=%d\n",
@@ -3688,6 +3872,538 @@ void GfxInfo_f( const idCmdArgs &args ) {
 		RENDER_GRAPH_MAX_RESOURCE_ACCESSES );
 	R_RenderGraphResources_PrintGfxInfo();
 	R_MaterialResourceTable_PrintGfxInfo();
+	{
+		const classicGuiDomainStats_t &guiDomain = R_ClassicGuiDomain_Stats();
+		common->Printf(
+			"Renderer shared classic GUI: rootRequested=%d inWorldRequested=%d prepared=%d valid=%d views=%d(root=%d world=%d) ready=%d fallback=%d surfaces=%d/%d noop=%d deform=%d/%d/%d passes=%d draw=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			r_rendererSharedGui.GetBool() ? 1 : 0,
+			r_rendererSharedInWorldGui.GetBool() ? 1 : 0,
+			guiDomain.prepared ? 1 : 0,
+			guiDomain.frameValid ? 1 : 0,
+			guiDomain.guiViews,
+			guiDomain.rootViews,
+			guiDomain.inWorldViews,
+			guiDomain.readyViews,
+			guiDomain.fallbackViews,
+			guiDomain.drawableSurfaces,
+			guiDomain.sourceSurfaces,
+			guiDomain.noopSurfaces,
+			guiDomain.materialDeformSurfaces,
+			guiDomain.completedDeformSurfaces,
+			guiDomain.emptyDeformSurfaces,
+			guiDomain.evaluatedPasses,
+			guiDomain.drawablePasses,
+			guiDomain.inactivePasses,
+			guiDomain.activeNoopPasses,
+			static_cast<unsigned long long>( guiDomain.hash ),
+			guiDomain.status,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_GL].ownedViews,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_GL].fallbackViews,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_VULKAN].ownedViews,
+			guiDomain.backend[CLASSIC_GUI_DOMAIN_BACKEND_VULKAN].fallbackViews );
+	}
+	{
+		const classicCinematicPostDomainStats_t &cinematicPost =
+			R_ClassicCinematicPostDomain_Stats();
+		common->Printf(
+			"Renderer shared cinematic/post: requested=%d prepared=%d valid=%d overflow=%d scenes=%d views=%d(root=%d post=%d nested=%d/%d nestedCinematic=%d) ready=%d fallback=%d cinematicStages=%d currentRender=%d currentDepth=%d hash=%016llx status=%s GL=%d/%d/%d/%d VK=%d/%d/%d/%d\n",
+			r_rendererSharedCinematicPost.GetBool() ? 1 : 0,
+			cinematicPost.prepared ? 1 : 0,
+			cinematicPost.frameValid ? 1 : 0,
+			cinematicPost.overflow ? 1 : 0,
+			cinematicPost.sourceScenes,
+			cinematicPost.views,
+			cinematicPost.rootCinematicViews,
+			cinematicPost.authoredPostViews,
+			cinematicPost.nestedSpecialViews,
+			cinematicPost.nestedSpecialTransactions,
+			cinematicPost.nestedCinematicStages,
+			cinematicPost.readyViews,
+			cinematicPost.fallbackViews,
+			cinematicPost.cinematicStages,
+			cinematicPost.currentRenderStages,
+			cinematicPost.currentDepthStages,
+			static_cast<unsigned long long>( cinematicPost.hash ),
+			cinematicPost.status,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].ownedViews,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].fallbackViews,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].coverageMismatches,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_GL].duplicateReports,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].ownedViews,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].fallbackViews,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].coverageMismatches,
+			cinematicPost.backend[CLASSIC_CINEMATIC_POST_BACKEND_VULKAN].duplicateReports );
+	}
+	{
+		const classicSpecialFrameDomainStats_t &specialFrame =
+			R_ClassicSpecialFrameDomain_Stats();
+		common->Printf(
+			"Renderer shared special frame: requested=%d prepared=%d valid=%d overflow=%d scenes=%d views=%d(demo=%d raven=%d) ready=%d fallback=%d effectsMask=0x%x hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			r_rendererSharedSpecialFrame.GetBool() ? 1 : 0,
+			specialFrame.prepared ? 1 : 0,
+			specialFrame.frameValid ? 1 : 0,
+			specialFrame.overflow ? 1 : 0,
+			specialFrame.sourceScenes,
+			specialFrame.views,
+			specialFrame.renderDemoViews,
+			specialFrame.ravenEffectsViews,
+			specialFrame.readyViews,
+			specialFrame.fallbackViews,
+			specialFrame.specialEffectsMask,
+			static_cast<unsigned long long>( specialFrame.hash ),
+			specialFrame.status,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_GL].ownedViews,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_GL].fallbackViews,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN].ownedViews,
+			specialFrame.backend[CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN].fallbackViews );
+	}
+	{
+		const classicWorldAmbientDomainStats_t &worldAmbient =
+			R_ClassicWorldAmbientDomain_Stats();
+		common->Printf(
+			"Renderer shared world ambient: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d surfaces=%d/%d noop=%d deform=%d/%d/%d passes=%d draw=%d pre=%d post=%d inactive=%d activeNoop=%d hash=%016llx status=%s GL=%d/%d VK=%d/%d\n",
+			r_rendererSharedWorldAmbient.GetBool() ? 1 : 0,
+			worldAmbient.prepared ? 1 : 0,
+			worldAmbient.frameValid ? 1 : 0,
+			worldAmbient.worldViews,
+			worldAmbient.readyViews,
+			worldAmbient.fallbackViews,
+			worldAmbient.drawableSurfaces,
+			worldAmbient.sourceSurfaces,
+			worldAmbient.noopSurfaces,
+			worldAmbient.materialDeformSurfaces,
+			worldAmbient.completedDeformSurfaces,
+			worldAmbient.emptyDeformSurfaces,
+			worldAmbient.evaluatedPasses,
+			worldAmbient.drawablePasses,
+			worldAmbient.phaseDrawablePasses[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
+			worldAmbient.phaseDrawablePasses[CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG],
+			worldAmbient.inactivePasses,
+			worldAmbient.activeNoopPasses,
+			static_cast<unsigned long long>( worldAmbient.hash ),
+			worldAmbient.status,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_GL].ownedViews,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_GL].fallbackViews,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN].ownedViews,
+			worldAmbient.backend[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN].fallbackViews );
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicWorldAmbientDomain_NumViews(); ++viewIndex ) {
+			const classicWorldAmbientDomainView_t *view =
+				R_ClassicWorldAmbientDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			const char *sourceClass = "none";
+			if ( view->failure
+					== CLASSIC_WORLD_AMBIENT_FAILURE_SOURCE_SURFACE_FALLBACK
+					&& view->failureDetail >= 0
+					&& view->failureDetail
+						< CLASSIC_WORLD_AMBIENT_SOURCE_SURFACE_COUNT ) {
+				sourceClass = ClassicWorldAmbientDomainSourceSurface_Name(
+					static_cast<classicWorldAmbientDomainSourceSurface_t>(
+						view->failureDetail ) );
+			}
+			common->Printf(
+				"Renderer shared world ambient view[%d]: scene=%d ready=%d failure=%s detail=%d sourceClass=%s surface=%d stage=%d worldPass=%s eval=%d hash=%016llx GL=%d/%s/%d/%d+%d/%d VK=%d/%s/%d/%d+%d/%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->ready ? 1 : 0,
+				ClassicWorldAmbientDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				sourceClass,
+				view->failureSourceSurfaceIndex,
+				view->failureSourceStageIndex,
+				MaterialResourceWorldPassFailure_Name(
+					view->worldPassFailure ),
+				view->evaluationStatus,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[CLASSIC_WORLD_AMBIENT_BACKEND_GL],
+				ClassicWorldAmbientDomainFailure_Name(
+					view->backendFailure[CLASSIC_WORLD_AMBIENT_BACKEND_GL] ),
+				view->backendFailureDetail[CLASSIC_WORLD_AMBIENT_BACKEND_GL],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_GL]
+					[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_GL]
+					[CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG],
+				view->backendNoopPasses[CLASSIC_WORLD_AMBIENT_BACKEND_GL],
+				view->backendOutcome[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN],
+				ClassicWorldAmbientDomainFailure_Name(
+					view->backendFailure[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN] ),
+				view->backendFailureDetail[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN]
+					[CLASSIC_WORLD_AMBIENT_PHASE_PRE_FOG],
+				view->backendDrawnPasses[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN]
+					[CLASSIC_WORLD_AMBIENT_PHASE_POST_FOG],
+				view->backendNoopPasses[CLASSIC_WORLD_AMBIENT_BACKEND_VULKAN] );
+		}
+	}
+	{
+		const classicInteractionDomainStats_t &interaction =
+			R_ClassicInteractionDomain_Stats();
+		common->Printf(
+			"Renderer shared interaction: requested=%d prepared=%d valid=%d views=%d ready=%d fallback=%d lights=%d surfaces=%d primitives=%d draw=%d noop=%d shadow=%d/%d/%d+%d volumes=%d+%d maps=%d+%d modes=%d+%d csm=%d stages=%d/%d+%d/%d receivers=%d/%d/%d deform=%d/%d/%d hash=%016llx status=%s GL=%d/%d/%d VK=%d/%d/%d\n",
+			r_rendererSharedWorldInteraction.GetBool() ? 1 : 0,
+			interaction.prepared ? 1 : 0,
+			interaction.frameValid ? 1 : 0,
+			interaction.interactionViews,
+			interaction.readyViews,
+			interaction.fallbackViews,
+			interaction.lights,
+			interaction.surfaces,
+			interaction.primitives,
+			interaction.drawablePrimitives,
+			interaction.noopPrimitives,
+			interaction.shadowLights,
+			interaction.shadowCasters,
+			interaction.drawableShadowCasters,
+			interaction.noopShadowCasters,
+			interaction.logicalVolumeDraws,
+			interaction.preloadVolumeDraws,
+			interaction.shadowMapPasses,
+			interaction.hybridShadowPasses,
+			interaction.projectedShadowMapPasses,
+			interaction.pointShadowMapPasses,
+			interaction.csmShadowMapPasses,
+			interaction.activeLightStages,
+			interaction.inactiveLightStages,
+			interaction.activeSurfaceStages,
+			interaction.inactiveSurfaceStages,
+			interaction.receiverSurfaces[CLASSIC_INTERACTION_RECEIVER_LOCAL],
+			interaction.receiverSurfaces[CLASSIC_INTERACTION_RECEIVER_GLOBAL],
+			interaction.receiverSurfaces[CLASSIC_INTERACTION_RECEIVER_TRANSLUCENT],
+			interaction.materialDeformReceivers,
+			interaction.completedDeformCasters,
+			interaction.emptyDeformCasters,
+			static_cast<unsigned long long>( interaction.hash ),
+			interaction.status,
+			interaction.backend[CLASSIC_INTERACTION_BACKEND_GL].ownedViews,
+			interaction.backend[CLASSIC_INTERACTION_BACKEND_GL].fallbackViews,
+			interaction.backend[CLASSIC_INTERACTION_BACKEND_GL].coverageMismatches,
+			interaction.backend[CLASSIC_INTERACTION_BACKEND_VULKAN].ownedViews,
+			interaction.backend[CLASSIC_INTERACTION_BACKEND_VULKAN].fallbackViews,
+			interaction.backend[CLASSIC_INTERACTION_BACKEND_VULKAN].coverageMismatches );
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicInteractionDomain_NumViews(); ++viewIndex ) {
+			const classicInteractionDomainView_t *view =
+				R_ClassicInteractionDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			common->Printf(
+				"Renderer shared interaction view[%d]: scene=%d pass=%d shadowPass=%d/%d mode=%s ready=%d failure=%s detail=%d drawPacket=%d light=%d receiver=%d stage=%d lights=%d surfaces=%d primitives=%d/%d noop=%d shadow=%d/%d/%d+%d volumes=%d+%d maps=%d+%d modes=%d+%d csm=%d hash=%016llx GL=%d/%s/%d/%d+%d/%d+%d+%d+%d/%d+%d VK=%d/%s/%d/%d+%d/%d+%d+%d+%d/%d+%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->interactionPassPacketIndex,
+				view->stencilShadowPassPacketIndex,
+				view->shadowMapPassPacketIndex,
+				ClassicInteractionDomainShadowMode_Name( view->shadowMode ),
+				view->ready ? 1 : 0,
+				ClassicInteractionDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				view->failureDrawPacketIndex,
+				view->failureLightOrdinal,
+				view->failureReceiverOrdinal,
+				view->failureStageIndex,
+				view->lightCount,
+				view->surfaceCount,
+				view->primitiveCount,
+				view->drawablePrimitiveCount,
+				view->noopPrimitiveCount,
+				view->shadowLightCount,
+				view->shadowCasterCount,
+				view->drawableShadowCasterCount,
+				view->noopShadowCasterCount,
+				view->logicalVolumeDrawCount,
+				view->preloadVolumeDrawCount,
+				view->shadowMapPassCount,
+				view->hybridShadowPassCount,
+				view->projectedShadowMapPassCount,
+				view->pointShadowMapPassCount,
+				view->csmShadowMapPassCount,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[CLASSIC_INTERACTION_BACKEND_GL],
+				ClassicInteractionDomainFailure_Name(
+					view->backendFailure[CLASSIC_INTERACTION_BACKEND_GL] ),
+				view->backendFailureDetail[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendDrawnPrimitives[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendNoopPrimitives[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendShadowCasters[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendNoopShadowCasters[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendLogicalVolumeDraws[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendPreloadVolumeDraws[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendShadowMapPasses[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendHybridPasses[CLASSIC_INTERACTION_BACKEND_GL],
+				view->backendOutcome[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				ClassicInteractionDomainFailure_Name(
+					view->backendFailure[CLASSIC_INTERACTION_BACKEND_VULKAN] ),
+				view->backendFailureDetail[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendDrawnPrimitives[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendNoopPrimitives[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendShadowCasters[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendNoopShadowCasters[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendLogicalVolumeDraws[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendPreloadVolumeDraws[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendShadowMapPasses[CLASSIC_INTERACTION_BACKEND_VULKAN],
+				view->backendHybridPasses[CLASSIC_INTERACTION_BACKEND_VULKAN] );
+			for ( int lightIndex = 0; lightIndex < view->lightCount;
+					++lightIndex ) {
+				const classicInteractionDomainLight_t *light =
+					R_ClassicInteractionDomain_ViewLight( *view, lightIndex );
+				if ( light == NULL ) {
+					continue;
+				}
+				for ( int receiverIndex = CLASSIC_INTERACTION_RECEIVER_LOCAL;
+						receiverIndex <= CLASSIC_INTERACTION_RECEIVER_GLOBAL;
+						++receiverIndex ) {
+					const classicInteractionDomainReceiver_t receiver =
+						static_cast<classicInteractionDomainReceiver_t>(
+							receiverIndex );
+					const classicInteractionDomainShadowMapPass_t *mapPass =
+						R_ClassicInteractionDomain_LightShadowMapPass(
+							*light, receiver );
+					if ( mapPass == NULL ) {
+						continue;
+					}
+					common->Printf(
+						"Renderer shared interaction map view[%d] light=%d receiver=%s mode=%s class=%s cascades=%d alias=%d plan=%016llx generation=%u casters=%d+%d features=%d+%d+%d+%d hash=%016llx\n",
+						viewIndex, lightIndex,
+						ClassicInteractionDomainReceiver_Name( receiver ),
+						ClassicInteractionDomainShadowMode_Name(
+							mapPass->mode ),
+						R_ShadowMapLightClassName( mapPass->lightClass ),
+						mapPass->lightClass == SHADOWMAP_LIGHT_POINT
+							? 6 : mapPass->projected.state.cascadeCount,
+						mapPass->resourceAlias ? 1 : 0,
+						static_cast<unsigned long long>(
+							mapPass->resourcePlanId ),
+						mapPass->resourceGeneration,
+						mapPass->mappedCasterCount,
+						mapPass->supplementCasterCount,
+						mapPass->hasStaticCasters ? 1 : 0,
+						mapPass->hasDynamicCasters ? 1 : 0,
+						mapPass->hasAlphaCasters ? 1 : 0,
+						mapPass->hasTranslucentCasters ? 1 : 0,
+						static_cast<unsigned long long>( mapPass->hash ) );
+				}
+			}
+		}
+	}
+	{
+		const classicFogBlendDomainStats_t &fogBlend =
+			R_ClassicFogBlendDomain_Stats();
+		common->Printf(
+			"classicFogBlendDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s views=%d ready=%d fallback=%d lights=%d fog=%d blend=%d noopLights=%d surfaces=%d global=%d local=%d deformReceivers=%d stages=%d active=%d inactive=%d noopStages=%d primitives=%d fogReceivers=%d fogCaps=%d blendDraws=%d noop=%d textures=%d hash=%016llx\n",
+			r_rendererSharedWorldFogBlend.GetBool() ? 1 : 0,
+			fogBlend.prepared ? 1 : 0,
+			fogBlend.frameValid ? 1 : 0,
+			fogBlend.overflow ? 1 : 0,
+			fogBlend.status,
+			fogBlend.fogBlendViews,
+			fogBlend.readyViews,
+			fogBlend.fallbackViews,
+			fogBlend.lights,
+			fogBlend.fogLights,
+			fogBlend.blendLights,
+			fogBlend.noopLights,
+			fogBlend.surfaces,
+			fogBlend.receiverSurfaces[
+				CLASSIC_FOG_BLEND_RECEIVER_GLOBAL ],
+			fogBlend.receiverSurfaces[
+				CLASSIC_FOG_BLEND_RECEIVER_LOCAL ],
+			fogBlend.materialDeformReceivers,
+			fogBlend.lightStages,
+			fogBlend.activeLightStages,
+			fogBlend.inactiveLightStages,
+			fogBlend.noopLightStages,
+			fogBlend.primitives,
+			fogBlend.fogReceiverPrimitives,
+			fogBlend.fogFrustumPrimitives,
+			fogBlend.blendPrimitives,
+			fogBlend.noopPrimitives,
+			fogBlend.textures,
+			static_cast<unsigned long long>( fogBlend.hash ) );
+		for ( int backendIndex = 0;
+				backendIndex < CLASSIC_FOG_BLEND_BACKEND_COUNT;
+				++backendIndex ) {
+			const classicFogBlendDomainBackend_t backend =
+				static_cast<classicFogBlendDomainBackend_t>( backendIndex );
+			const classicFogBlendDomainBackendCoverage_t &coverage =
+				fogBlend.backend[ backendIndex ];
+			common->Printf(
+				"classicFogBlendDomain backend=%s ownedViews=%d fallbackViews=%d ownedFogReceivers=%d ownedFogCaps=%d ownedBlend=%d ownedNoops=%d ownedNoopStages=%d ownedNoopLights=%d mismatches=%d duplicate=%d untracked=%d\n",
+				ClassicFogBlendDomainBackend_Name( backend ),
+				coverage.ownedViews,
+				coverage.fallbackViews,
+				coverage.ownedFogReceiverPrimitives,
+				coverage.ownedFogFrustumPrimitives,
+				coverage.ownedBlendPrimitives,
+				coverage.ownedNoopPrimitives,
+				coverage.ownedNoopLightStages,
+				coverage.ownedNoopLights,
+				coverage.coverageMismatches,
+				coverage.duplicateReports,
+				coverage.untrackedFallbacks );
+		}
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicFogBlendDomain_NumViews(); ++viewIndex ) {
+			const classicFogBlendDomainView_t *view =
+				R_ClassicFogBlendDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			common->Printf(
+				"classicFogBlendDomain view[%d] scene=%d pass=%d ready=%d failure=%s detail=%d drawPacket=%d light=%d receiver=%d stage=%d lights=%d/%d+%d surfaces=%d stages=%d/%d+%d primitives=%d drawable=%d fogReceivers=%d fogCaps=%d blendDraws=%d noop=%d noopStages=%d noopLights=%d hash=%016llx GL=%d/%s/%d Vulkan=%d/%s/%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->fogBlendPassPacketIndex,
+				view->ready ? 1 : 0,
+				ClassicFogBlendDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				view->failureDrawPacketIndex,
+				view->failureLightOrdinal,
+				view->failureReceiverOrdinal,
+				view->failureStageIndex,
+				view->lightCount,
+				view->fogLightCount,
+				view->blendLightCount,
+				view->surfaceCount,
+				view->lightStageCount,
+				view->activeLightStageCount,
+				view->inactiveLightStageCount,
+				view->primitiveCount,
+				view->drawablePrimitiveCount,
+				view->fogReceiverPrimitiveCount,
+				view->fogFrustumPrimitiveCount,
+				view->blendPrimitiveCount,
+				view->noopPrimitiveCount,
+				view->noopLightStageCount,
+				view->noopLightCount,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[ CLASSIC_FOG_BLEND_BACKEND_GL ],
+				ClassicFogBlendDomainFailure_Name(
+					view->backendFailure[ CLASSIC_FOG_BLEND_BACKEND_GL ] ),
+				view->backendFailureDetail[ CLASSIC_FOG_BLEND_BACKEND_GL ],
+				view->backendOutcome[ CLASSIC_FOG_BLEND_BACKEND_VULKAN ],
+				ClassicFogBlendDomainFailure_Name(
+					view->backendFailure[
+						CLASSIC_FOG_BLEND_BACKEND_VULKAN ] ),
+				view->backendFailureDetail[
+					CLASSIC_FOG_BLEND_BACKEND_VULKAN ] );
+		}
+	}
+	{
+		const classicSubviewDomainStats_t &subview =
+			R_ClassicSubviewDomain_Stats();
+		common->Printf(
+			"classicSubviewDomain requested=%d prepared=%d frameValid=%d overflow=%d status=%s scenes=%d subviews=%d captures=%d ready=%d fallback=%d nested=%d nestedTransactions=%d maxNestingDepth=%d directMirror=%d remote=%d mirror=%d reflection=%d refraction=%d xray=%d colorCubemap=%d depth2D=%d depthCubemap=%d hash=%016llx\n",
+			r_rendererSharedSubview.GetBool() ? 1 : 0,
+			subview.prepared ? 1 : 0,
+			subview.frameValid ? 1 : 0,
+			subview.overflow ? 1 : 0,
+			subview.status,
+			subview.sourceScenes,
+			subview.subviewScenes,
+			subview.capturePackets,
+			subview.readyViews,
+			subview.fallbackViews,
+			subview.nestedViews,
+			subview.nestedTransactions,
+			subview.maxNestingDepth,
+			subview.directMirrorViews,
+			subview.remoteCameraViews,
+			subview.mirrorViews,
+			subview.reflectionViews,
+			subview.refractionViews,
+			subview.xrayViews,
+			subview.colorCubemapCaptures,
+			subview.depth2DCaptures,
+			subview.depthCubemapCaptures,
+			static_cast<unsigned long long>( subview.hash ) );
+		for ( int backendIndex = 0;
+				backendIndex < CLASSIC_SUBVIEW_DOMAIN_BACKEND_COUNT;
+				++backendIndex ) {
+			const classicSubviewDomainBackend_t backend =
+				static_cast<classicSubviewDomainBackend_t>( backendIndex );
+			const classicSubviewDomainBackendCoverage_t &coverage =
+				subview.backend[ backendIndex ];
+			common->Printf(
+				"classicSubviewDomain backend=%s ownedViews=%d fallbackViews=%d nestedOwned=%d nestedTransactions=%d nestedFallback=%d nestedFallbackTransactions=%d directMirror=%d remote=%d mirror=%d reflection=%d refraction=%d xray=%d colorCubemap=%d depth2D=%d depthCubemap=%d mismatches=%d duplicate=%d untracked=%d\n",
+				ClassicSubviewDomainBackend_Name( backend ),
+				coverage.ownedViews,
+				coverage.fallbackViews,
+				coverage.ownedNestedViews,
+				coverage.ownedNestedTransactions,
+				coverage.fallbackNestedViews,
+				coverage.fallbackNestedTransactions,
+				coverage.ownedDirectMirrorViews,
+				coverage.ownedRemoteCameraViews,
+				coverage.ownedMirrorViews,
+				coverage.ownedReflectionViews,
+				coverage.ownedRefractionViews,
+				coverage.ownedXrayViews,
+				coverage.ownedColorCubemapCaptures,
+				coverage.ownedDepth2DCaptures,
+				coverage.ownedDepthCubemapCaptures,
+				coverage.coverageMismatches,
+				coverage.duplicateReports,
+				coverage.untrackedFallbacks );
+		}
+		for ( int viewIndex = 0;
+				viewIndex < R_ClassicSubviewDomain_NumViews(); ++viewIndex ) {
+			const classicSubviewDomainView_t *view =
+				R_ClassicSubviewDomain_ViewByIndex( viewIndex );
+			if ( view == NULL ) {
+				continue;
+			}
+			common->Printf(
+				"classicSubviewDomain view[%d] scene=%d parent=%d parentView=%d root=%d depth=%d subtree=%d capture=%d kind=%s captureType=%s ready=%d failure=%s detail=%d captureImage=%s rect=%d,%d %dx%d cube=%d depth=%d hash=%016llx GL=%d/%s/%d Vulkan=%d/%s/%d\n",
+				viewIndex,
+				view->scenePacketIndex,
+				view->parentScenePacketIndex,
+				view->parentViewIndex,
+				view->rootViewIndex,
+				view->nestingDepth,
+				view->subtreeViewCount,
+				view->capturePacketIndex,
+				ClassicSubviewDomainKind_Name( view->kind ),
+				ClassicSubviewDomainCaptureType_Name( view->captureType ),
+				view->ready ? 1 : 0,
+				ClassicSubviewDomainFailure_Name( view->failure ),
+				view->failureDetail,
+				view->captureImage != NULL ? view->captureImage->GetName() : "<none>",
+				view->captureX,
+				view->captureY,
+				view->captureWidth,
+				view->captureHeight,
+				view->captureCubeFace,
+				view->captureCopyDepth ? 1 : 0,
+				static_cast<unsigned long long>( view->hash ),
+				view->backendOutcome[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ],
+				ClassicSubviewDomainFailure_Name(
+					view->backendFailure[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ] ),
+				view->backendFailureDetail[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_GL ],
+				view->backendOutcome[ CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ],
+				ClassicSubviewDomainFailure_Name(
+					view->backendFailure[
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ] ),
+				view->backendFailureDetail[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ] );
+		}
+	}
+	common->Printf(
+		"Modern quality: master=%d pbr=%d probes=%d clusteredDecals=%d froxel=%d ssr=%d ssgi=%d (master=0 is complete Milestone-F rollback)\n"
+		"PBR materials: parser=1 modernLighting=1 effective=%d generatedLegacyFallback=%d inferLegacy=%d debug=%d\n",
+		r_rendererModernQuality.GetBool() ? 1 : 0,
+		r_pbrMaterials.GetBool() ? 1 : 0,
+		r_rendererReflectionProbes.GetBool() ? 1 : 0,
+		r_rendererClusteredDecals.GetBool() ? 1 : 0,
+		r_rendererFroxelVolumetrics.GetBool() ? 1 : 0,
+		r_rendererSSR.GetBool() ? 1 : 0,
+		r_rendererSSGI.GetBool() ? 1 : 0,
+		( r_rendererModernQuality.GetBool() && r_pbrMaterials.GetBool() ) ? 1 : 0,
+		r_pbrGeneratedLegacyFallback.GetBool() ? 1 : 0,
+		r_pbrInferFromLegacyMaterials.GetBool() ? 1 : 0,
+		r_pbrDebug.GetInteger() );
 	R_ModernGLExecutor_PrintGfxInfo();
 	R_ModernClusteredLighting_PrintGfxInfo();
 	R_ModernShadowPlanner_PrintGfxInfo();
@@ -3825,9 +4541,17 @@ static void R_PerformFullVidRestart( bool forceWindow ) {
 	globalImages->PurgeAllImages();
 	R_ShutdownFrameData();
 	R_RendererMetrics_ShutdownGpuTimers();
+	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
+	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
 	R_MaterialResourceTable_Shutdown();
 	R_RenderGraphResources_Shutdown();
 	R_ModernGLExecutor_Shutdown();
+	R_GpuSkinning_ContractShutdown();
 	R_RendererUpload_Shutdown();
 	RendererBootstrap_Shutdown();
 	R_PurgeFramebufferCopyFBOs();
@@ -3866,6 +4590,7 @@ void R_VidRestart_f( const idCmdArgs &args ) {
 	if ( !glConfig.isInitialized ) {
 		return;
 	}
+	R_RendererMetrics_ResetGpuFrameTiming( "vid_restart" );
 
 	bool full = true;
 	bool forceWindow = false;
@@ -4047,6 +4772,41 @@ void R_InitCvars( void ) {
 }
 
 /*
+==================
+R_MigrateLegacyShadowMapContactQuality
+
+Renderer cvars are registered by Init before the archived config and autoexec
+files run. Perform value-based migrations at device startup after those files
+and the initial StartupVariable pass, or an existing profile would be marked
+migrated while the compiled defaults were still visible. Common's later
+AddStartupCommands replay intentionally leaves explicit command-line +set
+values authoritative over the migrated archive.
+==================
+*/
+static void R_MigrateLegacyShadowMapContactQuality( void ) {
+	if ( !r_shadowMapContactQualityMigrated.GetBool() ) {
+		// Preserve customized profiles. Only replace the complete legacy tuple,
+		// whose wide filters and caster slope offset blurred contact shadows and
+		// amplified the old far-shell detachment.
+		const bool legacyShadowQualityDefaults =
+			idMath::Fabs( r_shadowMapFilterRadius.GetFloat() - 2.0f ) < 0.0001f &&
+			idMath::Fabs( r_shadowMapPointFilterRadius.GetFloat() - 2.5f ) < 0.0001f &&
+			r_shadowMapFilterTaps.GetInteger() == 13 &&
+			r_shadowMapPointFilterTaps.GetInteger() == 13 &&
+			idMath::Fabs( r_shadowMapPolygonFactor.GetFloat() - 0.75f ) < 0.0001f;
+		if ( legacyShadowQualityDefaults ) {
+			common->Printf( "Migrating legacy shadow-map defaults: restoring contact detail and balanced filtering\n" );
+			r_shadowMapFilterRadius.SetFloat( 0.75f );
+			r_shadowMapPointFilterRadius.SetFloat( 1.0f );
+			r_shadowMapFilterTaps.SetInteger( 9 );
+			r_shadowMapPointFilterTaps.SetInteger( 9 );
+			r_shadowMapPolygonFactor.SetFloat( 0.25f );
+		}
+		r_shadowMapContactQualityMigrated.SetBool( true );
+	}
+}
+
+/*
 =================
 R_InitCommands
 =================
@@ -4073,12 +4833,24 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererDefaultSafetySelfTest", R_RendererDefaultSafetySelfTest_f, CMD_FL_RENDERER, "run renderer conservative-default safety self tests" );
 	cmdSystem->AddCommand( "rendererBenchmarkCapture", R_RendererBenchmarkCapture_f, CMD_FL_RENDERER, "print the latest renderer benchmark capture summary" );
 	cmdSystem->AddCommand( "rendererUploadSelfTest", R_RendererUploadSelfTest_f, CMD_FL_RENDERER, "run renderer upload stream self tests" );
+	cmdSystem->AddCommand( "rendererGpuSkinningSelfTest", R_RendererGpuSkinningSelfTest_f, CMD_FL_RENDERER, "run renderer GPU skinning contract self tests" );
+	cmdSystem->AddCommand( "rendererContractsSelfTest", R_RendererContractsSelfTest_f, CMD_FL_RENDERER, "run renderer layout and buffer contract self tests" );
 	cmdSystem->AddCommand( "rendererGpuTimerSelfTest", R_RendererGpuTimerSelfTest_f, CMD_FL_RENDERER, "run renderer GPU timer query self tests" );
+	cmdSystem->AddCommand( "rendererTemporalPresentationStatus", R_TemporalPresentation_PrintStatus_f, CMD_FL_RENDERER, "report dynamic-resolution and temporal-history state" );
 	cmdSystem->AddCommand( "rendererScenePacketSelfTest", R_RendererScenePacketSelfTest_f, CMD_FL_RENDERER, "run renderer front-end scene-packet self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphSelfTest", R_RendererRenderGraphSelfTest_f, CMD_FL_RENDERER, "run renderer resource-graph self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceSelfTest", R_RendererRenderGraphResourceSelfTest_f, CMD_FL_RENDERER, "run renderer graph resource owner self tests" );
 	cmdSystem->AddCommand( "rendererRenderGraphResourceDump", R_RendererRenderGraphResourceDump_f, CMD_FL_RENDERER, "dump the latest renderer graph resource handles" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableSelfTest", R_RendererMaterialResourceTableSelfTest_f, CMD_FL_RENDERER, "run renderer material resource-table self tests" );
+	cmdSystem->AddCommand( "rendererClassicGuiDomainSelfTest", R_RendererClassicGuiDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic GUI whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicCinematicPostDomainSelfTest", R_RendererClassicCinematicPostDomainSelfTest_f, CMD_FL_RENDERER, "run sealed classic cinematic and authored post transaction self tests" );
+	cmdSystem->AddCommand( "rendererClassicSpecialFrameDomainSelfTest", R_RendererClassicSpecialFrameDomainSelfTest_f, CMD_FL_RENDERER, "run sealed render-demo and Raven special-frame transaction self tests" );
+	cmdSystem->AddCommand( "rendererClassicWorldAmbientDomainSelfTest", R_RendererClassicWorldAmbientDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic world ambient whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicInteractionDomainSelfTest", R_RendererClassicInteractionDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic interaction whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicFogBlendDomainSelfTest", R_RendererClassicFogBlendDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral classic fog/blend whole-view contract self tests" );
+	cmdSystem->AddCommand( "rendererClassicSubviewDomainSelfTest", R_RendererClassicSubviewDomainSelfTest_f, CMD_FL_RENDERER, "run backend-neutral capture-backed classic subview transaction self tests" );
+	cmdSystem->AddCommand( "rendererClassicDeformDomainSelfTest", R_RendererClassicDeformDomainSelfTest_f, CMD_FL_RENDERER, "run sealed classic material-deform contract self tests" );
+	cmdSystem->AddCommand( "rendererPBRMaterialSelfTest", R_RendererPBRMaterialSelfTest_f, CMD_FL_RENDERER, "run PBR material parser and classic fallback self tests" );
 	cmdSystem->AddCommand( "rendererMaterialResourceTableDump", R_RendererMaterialResourceTableDump_f, CMD_FL_RENDERER, "dump the latest renderer material resource table" );
 	cmdSystem->AddCommand( "rendererGeometryResourceSelfTest", R_RendererGeometryResourceSelfTest_f, CMD_FL_RENDERER, "run renderer geometry and instance packet self tests" );
 	cmdSystem->AddCommand( "rendererGLStateCacheSelfTest", R_RendererGLStateCacheSelfTest_f, CMD_FL_RENDERER, "run renderer GL state-cache self tests" );
@@ -4086,6 +4858,7 @@ void R_InitCommands( void ) {
 	cmdSystem->AddCommand( "rendererGpuDrivenSelfTest", R_RendererGpuDrivenSelfTest_f, CMD_FL_RENDERER, "run renderer GL43 GPU-driven compute and indirect self tests" );
 	cmdSystem->AddCommand( "rendererVisiblePathSelfTest", R_RendererVisiblePathSelfTest_f, CMD_FL_RENDERER, "run renderer visible modern depth-path self tests" );
 	cmdSystem->AddCommand( "rendererGBufferSelfTest", R_RendererGBufferSelfTest_f, CMD_FL_RENDERER, "run renderer modern opaque G-buffer self tests" );
+	cmdSystem->AddCommand( "rendererPBRVisibleSelfTest", R_RendererPBRVisibleSelfTest_f, CMD_FL_RENDERER, "run guarded modern PBR G-buffer/deferred/forward self tests" );
 	cmdSystem->AddCommand( "rendererClusterGridSelfTest", R_RendererClusterGridSelfTest_f, CMD_FL_RENDERER, "run renderer clustered light-grid self tests" );
 	cmdSystem->AddCommand( "rendererLightImageAtlasSelfTest", R_RendererLightImageAtlasSelfTest_f, CMD_FL_RENDERER, "run renderer modern light falloff/projection atlas self tests" );
 	cmdSystem->AddCommand( "rendererShadowPlannerSelfTest", R_RendererShadowPlannerSelfTest_f, CMD_FL_RENDERER, "run renderer modern shadow-planner self tests" );
@@ -4193,6 +4966,7 @@ idRenderSystemLocal::Init
 void idRenderSystemLocal::Init( void ) {
 
 	common->Printf( "------- Initializing renderSystem --------\n" );
+	R_RendererMetrics_ResetGpuFrameTiming( "renderer init" );
 
 	// route imagetools static-allocation counters into tr.pc before any
 	// image or model loading can call R_StaticAlloc
@@ -4259,6 +5033,7 @@ idRenderSystemLocal::Shutdown
 */
 void idRenderSystemLocal::Shutdown( void ) {	
 	common->Printf( "idRenderSystem::Shutdown()\n" );
+	R_RendererMetrics_ResetGpuFrameTiming( "renderer shutdown" );
 
 	R_DoneFreeType( );
 
@@ -4312,6 +5087,7 @@ idRenderSystemLocal::BeginLevelLoad
 ========================
 */
 void idRenderSystemLocal::BeginLevelLoad( void ) {
+	R_RendererMetrics_ResetGpuFrameTiming( "begin level load" );
 	// SetUnderwaterView is the only writer of this state, and it is driven by the game
 	// each frame. A map change started while the player was submerged would otherwise
 	// leave the effect live across the whole loading screen and into the first frames
@@ -4349,6 +5125,10 @@ void idRenderSystemLocal::EndLevelLoad( void ) {
 	if ( r_forceLoadImages.GetBool() ) {
 		RB_ShowImages();
 	}
+
+	// Loading-screen work belongs to the old timing epoch. Start gameplay with
+	// an empty delayed ring so budget capture cannot mix the two workloads.
+	R_RendererMetrics_ResetGpuFrameTiming( "end level load" );
 }
 
 /*
@@ -4357,6 +5137,8 @@ idRenderSystemLocal::InitOpenGL
 ========================
 */
 void idRenderSystemLocal::InitOpenGL( void ) {
+	R_MigrateLegacyShadowMapContactQuality();
+
 	// if the device isn't started, start it now
 	if ( !glConfig.isInitialized ) {
 #ifdef OPENQ4_RENDERER_VK_MODULE
@@ -4366,6 +5148,15 @@ void idRenderSystemLocal::InitOpenGL( void ) {
 		if ( !VK_InitRenderDevice() ) {
 			common->FatalError( "Vulkan renderer device initialization failed" );
 		}
+		// The Vulkan module does not run the OpenGL tier/bootstrap tail that
+		// normally initializes shared scene resources.  The classic-GUI domain
+		// only needs the backend-neutral scene-packet/material contract, so make
+		// that one conservative feature explicit without advertising any GL
+		// modern-visible capability.
+		renderFeatureSet_t vkSharedFeatures = glConfig.renderFeatures;
+		vkSharedFeatures.scenePackets = true;
+		R_MaterialResourceTable_Init( glConfig.backendCaps, vkSharedFeatures );
+		R_GpuSkinning_ContractInit( glConfig.backendCaps );
 		// mirror the R_InitOpenGL tail the seam skips: the front-end needs
 		// the vertex cache, a resolved back end, frame data, and gamma
 		// tables before the first BeginFrame
@@ -4411,9 +5202,18 @@ void idRenderSystemLocal::ShutdownOpenGL( void ) {
 
 	// free the context and close the window
 	R_ShutdownFrameData();
+	R_GpuSkinning_ContractShutdown();
+	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
+	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
 #ifdef OPENQ4_RENDERER_VK_MODULE
 	// Vulkan backend seam (Phase C): the GL executor/upload/graph/debug
 	// subsystems never initialized; device + window teardown is GLimp_Shutdown
+	R_MaterialResourceTable_Shutdown();
 	GLimp_Shutdown();
 #else
 	R_RendererMetrics_ShutdownGpuTimers();

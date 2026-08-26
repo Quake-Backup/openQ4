@@ -34,6 +34,18 @@ idCVar idEventLoop::com_journal( "com_journal", "0", CVAR_INIT|CVAR_SYSTEM, "1 =
 idEventLoop eventLoopLocal;
 idEventLoop *eventLoop = &eventLoopLocal;
 
+static bool EventLoop_IsPrivateConsoleEvent( const sysEvent_t &event ) {
+	if ( event.evType != SE_CONSOLE || event.evPtr == NULL || event.evPtrLength <= 0 ||
+		cvarSystem == NULL || !cvarSystem->IsInitialized() ) {
+		return false;
+	}
+	if ( memchr( event.evPtr, '\0', static_cast<size_t>( event.evPtrLength ) ) == NULL ) {
+		// A malformed console event is not safe to persist as text.
+		return true;
+	}
+	return cvarSystem->CommandContainsPrivateCVar( static_cast<const char *>( event.evPtr ) );
+}
+
 
 /*
 =================
@@ -81,13 +93,20 @@ sysEvent_t	idEventLoop::GetRealEvent( void ) {
 
 		// write the journal value out if needed
 		if ( com_journal.GetInteger() == 1 ) {
-			r = com_journalFile->Write( &ev, sizeof(ev) );
+			static const char PRIVATE_EVENT_TEXT[] = "";
+			sysEvent_t journalEvent = ev;
+			const void *journalData = ev.evPtr;
+			if ( EventLoop_IsPrivateConsoleEvent( ev ) ) {
+				journalEvent.evPtrLength = sizeof( PRIVATE_EVENT_TEXT );
+				journalData = PRIVATE_EVENT_TEXT;
+			}
+			r = com_journalFile->Write( &journalEvent, sizeof(journalEvent) );
 			if ( r != sizeof(ev) ) {
 				common->FatalError( "Error writing to journal file" );
 			}
-			if ( ev.evPtrLength ) {
-				r = com_journalFile->Write( ev.evPtr, ev.evPtrLength );
-				if ( r != ev.evPtrLength ) {
+			if ( journalEvent.evPtrLength ) {
+				r = com_journalFile->Write( journalData, journalEvent.evPtrLength );
+				if ( r != journalEvent.evPtrLength ) {
 					common->FatalError( "Error writing to journal file" );
 				}
 			}
@@ -117,6 +136,9 @@ void idEventLoop::PushEvent( sysEvent_t *event ) {
 		}
 
 		if ( ev->evPtr ) {
+			if ( EventLoop_IsPrivateConsoleEvent( *ev ) ) {
+				memset( ev->evPtr, 0, ev->evPtrLength );
+			}
 			Mem_Free( ev->evPtr );
 		}
 		com_pushedEventsTail++;
@@ -166,6 +188,9 @@ void idEventLoop::ProcessEvent( sysEvent_t ev ) {
 
 	// free any block data
 	if ( ev.evPtr ) {
+		if ( EventLoop_IsPrivateConsoleEvent( ev ) ) {
+			memset( ev.evPtr, 0, ev.evPtrLength );
+		}
 		Mem_Free( ev.evPtr );
 	}
 }

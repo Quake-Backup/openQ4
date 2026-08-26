@@ -33,6 +33,15 @@
 #include "../ModernGLExecutor.h"
 #include "../ModernLightImageAtlas.h"
 #include "../RenderGraphResources.h"
+#include "../RendererMetrics.h"
+#include "../MaterialResourceTable.h"
+#include "../ClassicGuiDomain.h"
+#include "../ClassicCinematicPostDomain.h"
+#include "../ClassicSpecialFrameDomain.h"
+#include "../ClassicWorldAmbientDomain.h"
+#include "../ClassicInteractionDomain.h"
+#include "../ClassicFogBlendDomain.h"
+#include "../ClassicSubviewDomain.h"
 #include "VulkanDevice.h"
 #include "vk_Image.h"
 
@@ -44,6 +53,55 @@ bool R_GetInitialWindowSize( bool fullScreen, int *width, int *height );
 
 static const renderWindowServices_t *vkBackendServices = NULL;
 static float vkClearColor[ 4 ] = { 0.0f, 0.0f, 0.0f, 1.0f };
+// The Vulkan backend does not otherwise build the GL render graph.  Keep one
+// backend-owned packet frame for the shared classic-GUI domain when front-end
+// capture was not requested for metrics.
+static idScenePacketFrame vkClassicDomainPacketFrame;
+
+static const classicSubviewDomainView_t *VK_ClassicSubview_Preflight(
+		const viewDef_t *viewDef ) {
+	if ( !r_rendererSharedSubview.GetBool() || viewDef == NULL
+			|| !viewDef->isSubview ) {
+		return NULL;
+	}
+	const classicSubviewDomainView_t *view =
+		R_ClassicSubviewDomain_FindView( viewDef );
+	if ( view == NULL ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+			CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NOT_READY, 0 );
+		return NULL;
+	}
+	if ( view->backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A rejected nested member returns its entire sealed transaction to the
+		// established walker, including every later parent command.
+		return NULL;
+	}
+	const bool nestedDynamicReady =
+		R_ClassicCinematicPostDomain_SubviewTransactionReady( viewDef,
+			CLASSIC_CINEMATIC_POST_BACKEND_VULKAN );
+	if ( !view->ready || !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+			|| ( R_ClassicSubviewDomain_IsCaptureBacked( *view )
+				&& ( view->captureImage == NULL || !view->captureImage->IsLoaded() ) )
+			|| !R_ClassicSubviewDomain_ReadyForBackend( *view,
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ) ) {
+		R_ClassicSubviewDomain_RecordBackendFallback( viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+			!view->ready ? view->failure
+				: ( !R_ClassicSubviewDomain_ViewSemanticsMatch( *view )
+					? CLASSIC_SUBVIEW_DOMAIN_FAILURE_VIEW_SEMANTICS_MISMATCH
+					: ( !nestedDynamicReady
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTED_CINEMATIC_POST_INCOMPLETE
+						: ( !R_ClassicSubviewDomain_ReadyForBackend( *view,
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN )
+						? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_NESTING_INCOMPLETE
+						: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED ) ) ),
+			!view->ready ? view->failureDetail : 1 );
+		return NULL;
+	}
+	return view;
+}
 
 // vk_GuiExecutor.cpp
 void VK_GuiExecutor_SetClearColor( const float color[ 4 ] );
@@ -65,6 +123,25 @@ bool VK_Exec_CopyRender( idImage *image, int x, int y, int width, int height,
 		int cubeFace, bool copyDepth );
 bool VK_Exec_ResolveRenderTargets( idRenderTexture *sourceRenderTexture,
 		idRenderTexture *destinationRenderTexture, bool resolveDepth );
+bool VK_GuiExecutor_ResolveTemporalPresentation(
+		const resolveTemporalPresentationCommand_t &command );
+
+static void VK_DrawSharedDirectSubview( const classicSubviewDomainView_t &view ) {
+	// Direct SS_SUBVIEW mirrors compose into the parent target and therefore
+	// have no capture command. Keep the mature 3D executor, but publish only
+	// after its complete sealed child-view coverage has returned.
+	VK_GuiExecutor_Draw3DView( view.viewDef );
+	if ( view.backendOutcome[CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+			!= CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+		// A nested cinematic/post range rejected while the mature child-view
+		// executor was active. Its rollback already covered this complete tree.
+		return;
+	}
+	if ( !R_ClassicSubviewDomain_RecordDirectOwned( view.viewDef,
+			CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN ) ) {
+		common->Warning( "Vulkan: shared direct subview coverage rejected after committed view" );
+	}
+}
 
 /*
 ====================
@@ -227,6 +304,7 @@ VK_ShutdownRenderDevice
 ====================
 */
 void VK_ShutdownRenderDevice( void ) {
+	R_RendererMetrics_ShutdownGpuTimers();
 	VK_Device_Shutdown();
 	if ( vkBackendServices != NULL ) {
 		vkBackendServices->BeginWindowTeardown();
@@ -368,13 +446,77 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		return;
 	}
 
+	R_ClassicGuiDomain_ResetFrame();
+	R_ClassicCinematicPostDomain_ResetFrame();
+	R_ClassicSpecialFrameDomain_ResetFrame();
+	R_ClassicWorldAmbientDomain_ResetFrame();
+	R_ClassicInteractionDomain_ResetFrame();
+	R_ClassicFogBlendDomain_ResetFrame();
+	R_ClassicSubviewDomain_ResetFrame();
+	if ( ( r_rendererModernQuality.GetBool() && r_pbrMaterials.GetBool() )
+			|| r_rendererSharedGui.GetBool()
+			|| r_rendererSharedInWorldGui.GetBool()
+			|| r_rendererSharedCinematicPost.GetBool()
+			|| r_rendererSharedSpecialFrame.GetBool()
+			|| r_rendererSharedWorldAmbient.GetBool()
+			|| r_rendererSharedWorldInteraction.GetBool()
+			|| r_rendererSharedWorldFogBlend.GetBool()
+			|| r_rendererSharedSubview.GetBool() ) {
+		const idScenePacketFrame *scenePackets = NULL;
+		if ( R_ScenePackets_FrontEndFrameAvailable() ) {
+			scenePackets = &R_ScenePackets_FrontEndFrame();
+		} else {
+			R_ScenePackets_BuildLegacyCommandStream( cmds, vkClassicDomainPacketFrame );
+			scenePackets = &vkClassicDomainPacketFrame;
+		}
+		R_MaterialResourceTable_PrepareFrame( *scenePackets );
+		if ( r_rendererSharedGui.GetBool()
+				|| r_rendererSharedInWorldGui.GetBool() ) {
+			R_ClassicGuiDomain_PrepareFrame( *scenePackets );
+		}
+		// Special-view topology must be sealed before cinematic/post ranges can
+		// join one of its atomic root transactions.
+		if ( r_rendererSharedSubview.GetBool() ) {
+			R_ClassicSubviewDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedCinematicPost.GetBool() ) {
+			R_ClassicCinematicPostDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedSpecialFrame.GetBool() ) {
+			R_ClassicSpecialFrameDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldAmbient.GetBool() ) {
+			R_ClassicWorldAmbientDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldInteraction.GetBool() ) {
+			R_ClassicInteractionDomain_PrepareFrame( *scenePackets );
+		}
+		if ( r_rendererSharedWorldFogBlend.GetBool() ) {
+			R_ClassicFogBlendDomain_PrepareFrame( *scenePackets );
+		}
+	}
+
 	backEnd.renderTexture = NULL;
 	backEnd.feedbackRenderTexture = NULL;
 	backEnd.postProcessTexelSize = tr.postProcessTexelSize;
 	backEnd.postProcessSourceColorSpace = tr.postProcessSourceColorSpace;
 	backEnd.postProcessSMAAQuality = tr.postProcessSMAAQuality;
+	const classicSubviewDomainView_t *pendingSharedSubview = NULL;
 
 	for ( ; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
+		if ( pendingSharedSubview != NULL
+				&& cmds->commandId != RC_COPY_RENDER ) {
+			if ( pendingSharedSubview->backendOutcome[
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+					== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+				R_ClassicSubviewDomain_RecordBackendFallback(
+					pendingSharedSubview->viewDef,
+					CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+					CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+					static_cast<int>( cmds->commandId ) );
+			}
+			pendingSharedSubview = NULL;
+		}
 		switch ( cmds->commandId ) {
 			case RC_NOP:
 				break;
@@ -402,9 +544,17 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 			case RC_DRAW_VIEW: {
 				const drawSurfsCommand_t *cmd = (const drawSurfsCommand_t *)cmds;
 				if ( cmd->viewDef != NULL ) {
+					const classicSubviewDomainView_t *sharedSubview =
+						VK_ClassicSubview_Preflight( cmd->viewDef );
+					pendingSharedSubview = sharedSubview != NULL
+						&& R_ClassicSubviewDomain_IsCaptureBacked( *sharedSubview )
+						? sharedSubview : NULL;
 					if ( cmd->viewDef->viewEntitys == NULL ) {
 						// 2D view (GUI/console/cinematics)
 						VK_GuiExecutor_Draw2DView( cmd->viewDef );
+					} else if ( sharedSubview != NULL
+							&& R_ClassicSubviewDomain_IsDirect( *sharedSubview ) ) {
+						VK_DrawSharedDirectSubview( *sharedSubview );
 					} else {
 						// world view: depth prepass + ambient walks (Phase E)
 						VK_GuiExecutor_Draw3DView( cmd->viewDef );
@@ -450,6 +600,20 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				}
 				break;
 			}
+			case RC_RESOLVE_TEMPORAL_PRESENTATION: {
+				resolveTemporalPresentationCommand_t executionCommand =
+					*reinterpret_cast<const resolveTemporalPresentationCommand_t *>( cmds );
+				// Save previews can enter their capture scope after the front end
+				// queued this command. Never let that late flush read or advance
+				// gameplay history.
+				if ( tr.takingScreenshot ) {
+					executionCommand.captureFrame = true;
+					executionCommand.historyValid = false;
+				}
+				(void)VK_GuiExecutor_ResolveTemporalPresentation(
+					executionCommand );
+				break;
+			}
 			case RC_SET_POSTPROCESS_SOURCE_SIZE:
 				backEnd.postProcessTexelSize =
 						((const setPostProcessSourceSizeCommand_t *)cmds)->texelSize;
@@ -464,10 +628,56 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				break;
 			case RC_COPY_RENDER: {
 				const copyRenderCommand_t *cmd = (const copyRenderCommand_t *)cmds;
+				const bool sharedCaptureMatches = pendingSharedSubview != NULL
+					&& pendingSharedSubview->backendOutcome[
+						CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+						== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED
+					&& !r_skipCopyTexture.GetBool()
+					&& R_ClassicSubviewDomain_CaptureMatches( *pendingSharedSubview,
+						cmd->image, cmd->x, cmd->y, cmd->imageWidth,
+						cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
+				bool copied = false;
 				if ( !r_skipCopyTexture.GetBool() ) {
-					(void)VK_Exec_CopyRender( cmd->image, cmd->x, cmd->y,
+					if ( sharedCaptureMatches ) {
+						copied = VK_Exec_CopyRender(
+							pendingSharedSubview->captureImage,
+							pendingSharedSubview->captureX,
+							pendingSharedSubview->captureY,
+							pendingSharedSubview->captureWidth,
+							pendingSharedSubview->captureHeight,
+							pendingSharedSubview->captureCubeFace,
+							pendingSharedSubview->captureCopyDepth );
+					} else {
+						copied = VK_Exec_CopyRender( cmd->image, cmd->x, cmd->y,
 							cmd->imageWidth, cmd->imageHeight, cmd->cubeFace, cmd->copyDepth );
+					}
 				}
+				if ( pendingSharedSubview != NULL
+						&& pendingSharedSubview->backendOutcome[
+							CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+							== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+					if ( sharedCaptureMatches && copied ) {
+						R_ClassicSubviewDomain_RecordOwned(
+							pendingSharedSubview->viewDef,
+							CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+							pendingSharedSubview->captureImage,
+							pendingSharedSubview->captureX,
+							pendingSharedSubview->captureY,
+							pendingSharedSubview->captureWidth,
+							pendingSharedSubview->captureHeight,
+							pendingSharedSubview->captureCubeFace,
+							pendingSharedSubview->captureCopyDepth );
+					} else {
+						R_ClassicSubviewDomain_RecordBackendFallback(
+							pendingSharedSubview->viewDef,
+							CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+							r_skipCopyTexture.GetBool() || !copied
+								? CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_REJECTED
+								: CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH,
+							r_skipCopyTexture.GetBool() ? 2 : 3 );
+					}
+				}
+				pendingSharedSubview = NULL;
 				break;
 			}
 			case RC_SWAP_BUFFERS:
@@ -485,6 +695,18 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 				break;
 		}
 	}
+	if ( pendingSharedSubview != NULL ) {
+		if ( pendingSharedSubview->backendOutcome[
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN]
+				== CLASSIC_SUBVIEW_DOMAIN_BACKEND_UNRECORDED ) {
+			R_ClassicSubviewDomain_RecordBackendFallback(
+				pendingSharedSubview->viewDef,
+				CLASSIC_SUBVIEW_DOMAIN_BACKEND_VULKAN,
+				CLASSIC_SUBVIEW_DOMAIN_FAILURE_BACKEND_CAPTURE_MISMATCH, 4 );
+		}
+	}
+	R_ClassicSpecialFrameDomain_FinalizeBackendFrame(
+		CLASSIC_SPECIAL_FRAME_BACKEND_VULKAN );
 }
 
 
@@ -924,13 +1146,29 @@ bool RB_ShadowMapEstimateArb2CacheOwnership( const viewLight_t *vLight, const vi
 	return false;
 }
 
-bool RB_ShadowMapProjectedAtlasSlotForLight( int lightDefIndex, shadowMapArb2AtlasSlot_t &slot ) {
-	(void)lightDefIndex;
+bool RB_ShadowMapProjectedAtlasSlotForLight( const viewLight_t *vLight,
+		const viewDef_t *viewDef, shadowMapArb2AtlasSlot_t &slot ) {
+	(void)vLight; (void)viewDef;
 	memset( &slot, 0, sizeof( slot ) );
 	return false;
 }
 
-void RB_ShadowMapProjectedAtlasSlotMarkUsed( int lightDefIndex ) {
+bool RB_ShadowMapProjectedAtlasSlotMarkUsed( int lightDefIndex,
+		int signature, std::uint64_t storageGeneration,
+		int cellX, int cellY, int cellSpan ) {
+	(void)lightDefIndex; (void)signature; (void)cellX; (void)cellY;
+	(void)storageGeneration; (void)cellSpan;
+	return false;
+}
+
+bool RB_ShadowMapPointCubeForLight( const viewLight_t *vLight,
+		const viewDef_t *viewDef, shadowMapArb2PointCube_t &cube ) {
+	(void)vLight; (void)viewDef;
+	memset( &cube, 0, sizeof( cube ) );
+	return false;
+}
+
+void RB_ShadowMapPointCubeMarkUsed( int lightDefIndex ) {
 	(void)lightDefIndex;
 }
 
@@ -1337,6 +1575,7 @@ void RB_ShutdownDebugTools( void ) {
 VK_GL_SELFTEST_STUB( RendererDeferredResolve_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererForwardPlus_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGBuffer_RunSelfTest )
+VK_GL_SELFTEST_STUB( RendererPBRVisible_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGLStateCache_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererGpuDriven_RunSelfTest )
 VK_GL_SELFTEST_STUB( RendererLightImageAtlas_RunSelfTest )

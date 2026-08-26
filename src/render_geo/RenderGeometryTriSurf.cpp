@@ -31,6 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "RenderGeometry.h"
 #include "../imagetools/ImageTools.h"
+#include "../renderer/GpuSkinning.h"
 
 /*
 ==============================================================================
@@ -139,6 +140,7 @@ static idDynamicBlockAlloc<silEdge_t, 1<<17, 1<<10, 0>		triSilEdgeAllocator;
 static idDynamicBlockAlloc<dominantTri_t, 1<<16, 1<<10, 0>	triDominantTrisAllocator;
 static idDynamicBlockAlloc<int, 1<<16, 1<<10, 0>			triMirroredVertAllocator;
 static idDynamicBlockAlloc<int, 1<<16, 1<<10, 0>			triDupVertAllocator;
+static idDynamicBlockAlloc<float, 1<<16, 1<<10, 0>		gpuSkinningJointPaletteAllocator;
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 static idDynamicBlockAlloc<rvSilTraceVertT, 1<<18, 1<<10, 0>	silTraceVertexAllocator;
 static idDynamicBlockAlloc<float, 1<<16, 1<<10, 0>			skinToModelTransformAllocator;
@@ -153,6 +155,7 @@ static idDynamicAlloc<silEdge_t, 1<<17, 1<<10>			triSilEdgeAllocator;
 static idDynamicAlloc<dominantTri_t, 1<<16, 1<<10>		triDominantTrisAllocator;
 static idDynamicAlloc<int, 1<<16, 1<<10>				triMirroredVertAllocator;
 static idDynamicAlloc<int, 1<<16, 1<<10>				triDupVertAllocator;
+static idDynamicAlloc<float, 1<<16, 1<<10>			gpuSkinningJointPaletteAllocator;
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 static idDynamicAlloc<rvSilTraceVertT, 1<<18, 1<<10>	silTraceVertexAllocator;
 static idDynamicAlloc<float, 1<<16, 1<<10>				skinToModelTransformAllocator;
@@ -182,6 +185,7 @@ void R_InitTriSurfData( void ) {
 	triDominantTrisAllocator.Init();
 	triMirroredVertAllocator.Init();
 	triDupVertAllocator.Init();
+	gpuSkinningJointPaletteAllocator.Init();
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 	silTraceVertexAllocator.Init();
 	skinToModelTransformAllocator.Init();
@@ -197,6 +201,7 @@ void R_InitTriSurfData( void ) {
 	triDominantTrisAllocator.SetLockMemory( true );
 	triMirroredVertAllocator.SetLockMemory( true );
 	triDupVertAllocator.SetLockMemory( true );
+	gpuSkinningJointPaletteAllocator.SetLockMemory( true );
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 	silTraceVertexAllocator.SetLockMemory( true );
 	skinToModelTransformAllocator.SetLockMemory( true );
@@ -229,6 +234,7 @@ void R_ShutdownTriSurfData( void ) {
 	triDominantTrisAllocator.Shutdown();
 	triMirroredVertAllocator.Shutdown();
 	triDupVertAllocator.Shutdown();
+	gpuSkinningJointPaletteAllocator.Shutdown();
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 	silTraceVertexAllocator.Shutdown();
 	skinToModelTransformAllocator.Shutdown();
@@ -281,6 +287,11 @@ void R_ShowTriSurfMemory_f( const idCmdArgs &args ) {
 	common->Printf( "%6d kB dup vert memory (%d kB free in %d blocks, %d empty base blocks)\n",
 		triDupVertAllocator.GetBaseBlockMemory() >> 10, triDupVertAllocator.GetFreeBlockMemory() >> 10,
 			triDupVertAllocator.GetNumFreeBlocks(), triDupVertAllocator.GetNumEmptyBaseBlocks() );
+	common->Printf( "%6d kB GPU joint palette memory (%d kB free in %d blocks, %d empty base blocks)\n",
+		gpuSkinningJointPaletteAllocator.GetBaseBlockMemory() >> 10,
+		gpuSkinningJointPaletteAllocator.GetFreeBlockMemory() >> 10,
+		gpuSkinningJointPaletteAllocator.GetNumFreeBlocks(),
+		gpuSkinningJointPaletteAllocator.GetNumEmptyBaseBlocks() );
 
 	common->Printf( "%6zu kB total triangle memory\n",
 		( srfTrianglesAllocator.GetAllocCount() * sizeof( srfTriangles_t ) +
@@ -292,7 +303,8 @@ void R_ShowTriSurfMemory_f( const idCmdArgs &args ) {
 			triSilEdgeAllocator.GetBaseBlockMemory() +
 			triDominantTrisAllocator.GetBaseBlockMemory() +
 			triMirroredVertAllocator.GetBaseBlockMemory() +
-			triDupVertAllocator.GetBaseBlockMemory() ) >> 10 );
+			triDupVertAllocator.GetBaseBlockMemory() +
+			gpuSkinningJointPaletteAllocator.GetBaseBlockMemory() ) >> 10 );
 }
 
 /*
@@ -343,6 +355,10 @@ int R_TriSurfMemory( const srfTriangles_t *tri ) {
 	}
 	if ( tri->dupVerts != NULL ) {
 		total += tri->numDupVerts * sizeof( tri->dupVerts[0] );
+	}
+	if ( tri->gpuSkinningJointPaletteAlloc != NULL ) {
+		total += tri->numGpuSkinningJointPaletteAllocJoints
+			* GPU_SKINNING_JOINT_FLOATS * sizeof( tri->gpuSkinningJointPaletteAlloc[0] );
 	}
 
 	total += sizeof( *tri );
@@ -476,6 +492,14 @@ void R_ReallyFreeStaticTriSurf( srfTriangles_t *tri ) {
 		triShadowVertexAllocator.Free( tri->shadowVertexes );
 	}
 
+	if ( tri->gpuSkinningJointPaletteAlloc != NULL ) {
+		gpuSkinningJointPaletteAllocator.Free( tri->gpuSkinningJointPaletteAlloc );
+		tri->gpuSkinningJointPaletteAlloc = NULL;
+		tri->gpuSkinningJointPalette = NULL;
+		tri->numGpuSkinningJoints = 0;
+		tri->numGpuSkinningJointPaletteAllocJoints = 0;
+	}
+
 #ifdef _DEBUG
 	memset( tri, 0, sizeof( srfTriangles_t ) );
 #endif
@@ -583,6 +607,7 @@ srfTriangles_t *R_CopyStaticTriSurf( const srfTriangles_t *tri ) {
 	if ( tri->numIndexes > 0 ) {
 		memcpy( newTri->indexes, tri->indexes, tri->numIndexes * sizeof( newTri->indexes[0] ) );
 	}
+	R_CopyStaticGpuSkinning( newTri, tri );
 
 	return newTri;
 }
@@ -605,6 +630,7 @@ void RenderGeo_FreeEmptyBaseBlocks( void ) {
 	triDominantTrisAllocator.FreeEmptyBaseBlocks();
 	triMirroredVertAllocator.FreeEmptyBaseBlocks();
 	triDupVertAllocator.FreeEmptyBaseBlocks();
+	gpuSkinningJointPaletteAllocator.FreeEmptyBaseBlocks();
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 	silTraceVertexAllocator.FreeEmptyBaseBlocks();
 	skinToModelTransformAllocator.FreeEmptyBaseBlocks();
@@ -668,6 +694,7 @@ void R_AllocStaticSkinToModelTransforms( srfTriangles_t *tri, int numTransforms 
 	if ( tri->skinToModelTransformsAlloc != NULL ) {
 		if ( tri->numSkinToModelTransforms >= numTransforms ) {
 			tri->skinToModelTransforms = tri->skinToModelTransformsAlloc;
+			tri->numSkinToModelTransforms = numTransforms;
 			return;
 		}
 
@@ -679,6 +706,131 @@ void R_AllocStaticSkinToModelTransforms( srfTriangles_t *tri, int numTransforms 
 	tri->numSkinToModelTransforms = numTransforms;
 }
 #endif
+
+/*
+=================
+R_ClearStaticGpuSkinningJointPalette
+
+Clear the visible contract while retaining an owned allocation for reuse by a
+later snapshot. This prevents stale eligibility without creating frame churn.
+=================
+*/
+void R_ClearStaticGpuSkinningJointPalette( srfTriangles_t *tri ) {
+	if ( tri == NULL ) {
+		return;
+	}
+
+	tri->gpuSkinningBindPoseVerts = NULL;
+	tri->gpuSkinningVerts = NULL;
+	tri->numGpuSkinningVerts = 0;
+	tri->gpuSkinningJointPalette = NULL;
+	tri->numGpuSkinningJoints = 0;
+	tri->gpuSkinningPaletteGeneration = 0;
+	tri->gpuSkinningFallbackReason = 0;
+	tri->gpuSkinningSignedWeights = false;
+}
+
+/*
+=================
+R_AllocStaticGpuSkinningJointPalette
+=================
+*/
+bool R_AllocStaticGpuSkinningJointPalette( srfTriangles_t *tri, int numJoints ) {
+	if ( tri == NULL || numJoints <= 0 || numJoints > GPU_SKINNING_MAX_JOINTS ) {
+		return false;
+	}
+
+	if ( tri->gpuSkinningJointPaletteAlloc != NULL
+		&& tri->numGpuSkinningJointPaletteAllocJoints < numJoints ) {
+		gpuSkinningJointPaletteAllocator.Free( tri->gpuSkinningJointPaletteAlloc );
+		tri->gpuSkinningJointPaletteAlloc = NULL;
+		tri->numGpuSkinningJointPaletteAllocJoints = 0;
+	}
+
+	if ( tri->gpuSkinningJointPaletteAlloc == NULL ) {
+		tri->gpuSkinningJointPaletteAlloc = gpuSkinningJointPaletteAllocator.Alloc(
+			numJoints * GPU_SKINNING_JOINT_FLOATS );
+		if ( tri->gpuSkinningJointPaletteAlloc == NULL ) {
+			return false;
+		}
+		tri->numGpuSkinningJointPaletteAllocJoints = numJoints;
+	}
+
+	tri->gpuSkinningJointPalette = tri->gpuSkinningJointPaletteAlloc;
+	tri->numGpuSkinningJoints = numJoints;
+	return true;
+}
+
+/*
+=================
+R_ReferenceStaticGpuSkinning
+
+Reference immutable sidecars and a snapshot palette without taking ownership.
+=================
+*/
+void R_ReferenceStaticGpuSkinning( srfTriangles_t *tri, const srfTriangles_t *reference ) {
+	if ( tri == NULL ) {
+		return;
+	}
+
+	if ( tri->gpuSkinningJointPaletteAlloc != NULL ) {
+		gpuSkinningJointPaletteAllocator.Free( tri->gpuSkinningJointPaletteAlloc );
+	}
+	tri->gpuSkinningJointPaletteAlloc = NULL;
+	tri->numGpuSkinningJointPaletteAllocJoints = 0;
+
+	if ( reference == NULL ) {
+		R_ClearStaticGpuSkinningJointPalette( tri );
+		return;
+	}
+
+	tri->gpuSkinningBindPoseVerts = reference->gpuSkinningBindPoseVerts;
+	tri->gpuSkinningVerts = reference->gpuSkinningVerts;
+	tri->numGpuSkinningVerts = reference->numGpuSkinningVerts;
+	tri->gpuSkinningJointPalette = reference->gpuSkinningJointPalette;
+	tri->numGpuSkinningJoints = reference->numGpuSkinningJoints;
+	tri->gpuSkinningPaletteGeneration = reference->gpuSkinningPaletteGeneration;
+	tri->gpuSkinningFallbackReason = reference->gpuSkinningFallbackReason;
+	tri->gpuSkinningSignedWeights = reference->gpuSkinningSignedWeights;
+}
+
+/*
+=================
+R_CopyStaticGpuSkinning
+=================
+*/
+bool R_CopyStaticGpuSkinning( srfTriangles_t *tri, const srfTriangles_t *source ) {
+	if ( tri == NULL || source == NULL ) {
+		return false;
+	}
+	if ( tri == source ) {
+		return true;
+	}
+
+	tri->gpuSkinningBindPoseVerts = source->gpuSkinningBindPoseVerts;
+	tri->gpuSkinningVerts = source->gpuSkinningVerts;
+	tri->numGpuSkinningVerts = source->numGpuSkinningVerts;
+	tri->gpuSkinningFallbackReason = source->gpuSkinningFallbackReason;
+	tri->gpuSkinningSignedWeights = source->gpuSkinningSignedWeights;
+	tri->gpuSkinningPaletteGeneration = source->gpuSkinningPaletteGeneration;
+
+	if ( source->gpuSkinningJointPalette == NULL || source->numGpuSkinningJoints <= 0 ) {
+		tri->gpuSkinningJointPalette = NULL;
+		tri->numGpuSkinningJoints = 0;
+		return true;
+	}
+
+	if ( !R_AllocStaticGpuSkinningJointPalette( tri, source->numGpuSkinningJoints ) ) {
+		R_ClearStaticGpuSkinningJointPalette( tri );
+		return false;
+	}
+
+	memcpy( tri->gpuSkinningJointPalette, source->gpuSkinningJointPalette,
+		source->numGpuSkinningJoints * GPU_SKINNING_JOINT_FLOATS
+			* sizeof( source->gpuSkinningJointPalette[0] ) );
+	tri->gpuSkinningPaletteGeneration = source->gpuSkinningPaletteGeneration;
+	return true;
+}
 
 /*
 =================
@@ -746,6 +898,7 @@ void R_ReferenceStaticTriSurfVerts( srfTriangles_t *tri, const srfTriangles_t *r
 		: const_cast<srfTriangles_t *>( reference );
 	++tri->topAmbientSurface->referenceCount;
 	tri->myID = ++triSurfReferenceId;
+	R_ReferenceStaticGpuSkinning( tri, reference );
 }
 
 /*
@@ -2375,6 +2528,47 @@ deformInfo_t *R_BuildDeformInfo( int numVerts, const idDrawVert *verts, int numI
 	if ( tri.facePlanes ) {
 		triPlaneAllocator.Free( tri.facePlanes );
 	}
+
+	return deform;
+}
+
+/*
+===================
+R_AllocDeformInfo
+
+Allocates a deformInfo_t with the given counts without running any derivation.
+Used by the generated-cache readers, whose payloads already carry the fully
+range-validated derived arrays; re-deriving them only to overwrite the results
+with the cached bytes wasted the cache hit. Array NULL-ness matches
+R_BuildDeformInfo exactly: the allocators return NULL for Alloc(0), so
+R_FreeDeformInfo and R_FreeStaticTriSurf behave identically.
+If the derivation in R_BuildDeformInfo ever changes, bump
+MD5_MODEL_GENERATED_CACHE_PARSER_VERSION and
+STATIC_MODEL_GENERATED_CACHE_PARSER_VERSION so stale payloads regenerate.
+===================
+*/
+deformInfo_t *R_AllocDeformInfo( int numSourceVerts, int numOutputVerts, int numIndexes,
+								 int numMirroredVerts, int numDupVerts, int numSilEdges,
+								 bool allocDominantTris ) {
+	deformInfo_t *deform = (deformInfo_t *)R_ClearedStaticAlloc( sizeof( *deform ) );
+
+	deform->numSourceVerts = numSourceVerts;
+	deform->numOutputVerts = numOutputVerts;
+
+	deform->numIndexes = numIndexes;
+	deform->indexes = triIndexAllocator.Alloc( numIndexes );
+	deform->silIndexes = triSilIndexAllocator.Alloc( numIndexes );
+
+	deform->numMirroredVerts = numMirroredVerts;
+	deform->mirroredVerts = triMirroredVertAllocator.Alloc( numMirroredVerts );
+
+	deform->numDupVerts = numDupVerts;
+	deform->dupVerts = triDupVertAllocator.Alloc( numDupVerts * 2 );
+
+	deform->numSilEdges = numSilEdges;
+	deform->silEdges = triSilEdgeAllocator.Alloc( numSilEdges );
+
+	deform->dominantTris = allocDominantTris ? triDominantTrisAllocator.Alloc( numOutputVerts ) : NULL;
 
 	return deform;
 }

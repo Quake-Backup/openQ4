@@ -45,8 +45,41 @@ typedef struct shadowMapProjectedFilterSettings_s {
 	float				effectiveFilterRadius;
 } shadowMapProjectedFilterSettings_t;
 
+// Point receivers express depth bias in normalized radial depth and normal
+// offset in cube texels.  On very large authored lights both therefore grow
+// into a large world-space displacement.  Keep their common CPU policy in one
+// place so classic/shared GL and Vulkan upload identical effective values.
+static const float SHADOWMAP_POINT_RECEIVER_MAX_SLOPE = 4.0f;
+
+typedef struct shadowMapPointReceiverSettings_s {
+	float				constantBias;
+	float				normalBias;
+	float				texelBiasScale;
+	float				normalOffsetScale;
+	float				worldBiasScale;
+} shadowMapPointReceiverSettings_t;
+
 shadowMapLightClassification_t R_ClassifyShadowMapLight( const viewLight_t *vLight );
 shadowMapProjectedFilterSettings_t R_ShadowMapProjectedFilterSettings( const viewLight_t *vLight );
+float R_ShadowMapPointFarDistance( const viewLight_t *vLight );
+shadowMapPointReceiverSettings_t R_ClampShadowMapPointReceiverSettings(
+	float farDistance, int faceSize, float constantBias, float normalBias,
+	float texelBiasScale, float normalOffsetScale, float maxWorldBias );
+shadowMapPointReceiverSettings_t R_ShadowMapPointReceiverSettings(
+	float farDistance, int faceSize );
+shadowMapPointReceiverSettings_t R_ShadowMapPointStorageAdjustedReceiverSettings(
+	const shadowMapPointReceiverSettings_t &baseSettings,
+	float farDistance, int faceSize, bool depthCompare, bool highPrecision );
+// Mirrored or invalid model transforms make authored front-face winding
+// unreliable. Invalid/unknown inputs return true so AUTO culling can fall
+// back conservatively to two-sided depth.
+bool R_ShadowMapCasterTransformNeedsTwoSided( const float modelMatrix[ 16 ] );
+// A sealed hull is only safe for one-sided near-shell rendering when its
+// light is outside the caster. Invalid/unknown inputs return true so AUTO
+// culling fails conservatively to two-sided depth.
+bool R_ShadowMapLightOriginInsideCasterBounds( const viewLight_t *vLight,
+	const float modelMatrix[ 16 ], const float boundsMin[ 3 ],
+	const float boundsMax[ 3 ] );
 const char *R_ShadowMapLightClassName( shadowMapLightClass_t lightClass );
 
 #endif /* !__SHADOWMAP_CLASSIFICATION_H__ */

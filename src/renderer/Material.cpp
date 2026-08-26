@@ -31,6 +31,8 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 
+#include <cstdlib>
+
 /*
 
 Any errors during parsing just set MF_DEFAULTED and return, rather than throwing
@@ -67,6 +69,16 @@ typedef struct mtrParsingData_s {
 	bool			registersAreConstant;
 	bool			forceOverlays;
 } mtrParsingData_t;
+
+static void R_ResetSpecularProbeMaterialInfo( specularProbeMaterialInfo_t &info ) {
+	memset( &info, 0, sizeof( info ) );
+	info.cubeConvention = SPECULAR_PROBE_CUBE_NONE;
+	info.tint[0] = 1.0f;
+	info.tint[1] = 1.0f;
+	info.tint[2] = 1.0f;
+	info.intensity = 1.0f;
+	info.blendFraction = 0.25f;
+}
 
 // `glslPrograms` is an authored material-capability condition, while
 // glConfig.GLSLProgramAvailable also advertises the OpenGL renderer's broad
@@ -280,6 +292,7 @@ void idMaterial::CommonInit() {
 	constantRegisters = NULL;
 	numStages = 0;
 	numAmbientStages = 0;
+	hasCustomGLSLLightingStage = false;
 	stages = NULL;
 	editorImage = NULL;
 	lightFalloffImage = NULL;
@@ -294,6 +307,7 @@ void idMaterial::CommonInit() {
 	unsmoothedTangents = false;
 	gui = NULL;
 	memset( deformRegisters, 0, sizeof( deformRegisters ) );
+	deformDecl = NULL;
 	editorAlpha = 1.0;
 	spectrum = 0;
 	polygonOffset = 0;
@@ -310,6 +324,18 @@ void idMaterial::CommonInit() {
 	globalUseCount = 0;
 	portalImage = nullptr;
 // jmarshall end
+	memset( &pbrInfo, 0, sizeof( pbrInfo ) );
+	pbrInfo.workflow = PBR_WORKFLOW_NONE;
+	pbrInfo.normalFormat = PBR_NORMAL_UNSPECIFIED;
+	pbrInfo.metallicRegister = -1;
+	pbrInfo.roughnessRegister = -1;
+	pbrInfo.aoRegister = -1;
+	pbrInfo.normalScaleRegister = -1;
+	pbrInfo.emissiveColorRegisters[0] = -1;
+	pbrInfo.emissiveColorRegisters[1] = -1;
+	pbrInfo.emissiveColorRegisters[2] = -1;
+	pbrInfo.autoLegacyFallback = true;
+	R_ResetSpecularProbeMaterialInfo( specularProbeInfo );
 
 	decalInfo.stayTime = 10000;
 	decalInfo.maxAngle = 0.1f;
@@ -424,6 +450,20 @@ void idMaterial::FreeData() {
 	materialTypeArrayName.Clear();
 	MTAWidth = 0;
 	MTAHeight = 0;
+	// Purged declarations remain queryable before their next parse. Do not
+	// leave stale PBR image pointers or register indices visible in that state.
+	memset( &pbrInfo, 0, sizeof( pbrInfo ) );
+	pbrInfo.workflow = PBR_WORKFLOW_NONE;
+	pbrInfo.normalFormat = PBR_NORMAL_UNSPECIFIED;
+	pbrInfo.metallicRegister = -1;
+	pbrInfo.roughnessRegister = -1;
+	pbrInfo.aoRegister = -1;
+	pbrInfo.normalScaleRegister = -1;
+	pbrInfo.emissiveColorRegisters[0] = -1;
+	pbrInfo.emissiveColorRegisters[1] = -1;
+	pbrInfo.emissiveColorRegisters[2] = -1;
+	pbrInfo.autoLegacyFallback = true;
+	R_ResetSpecularProbeMaterialInfo( specularProbeInfo );
 }
 
 /*
@@ -450,6 +490,8 @@ idImage *idMaterial::GetEditorImage( void ) const {
 			if ( !editorImage ) {
 				editorImage = stages[0].texture.image;
 			}
+		} else if ( pbrInfo.enabled && pbrInfo.albedo.image != NULL ) {
+			editorImage = pbrInfo.albedo.image;
 		} else {
 			editorImage = globalImages->defaultImage;
 		}
@@ -2483,6 +2525,701 @@ void idMaterial::ParseStage( idLexer &src, const textureRepeat_t trpDefault ) {
 	}
 }
 
+static bool R_IsUnsupportedPBRImageProgramToken( const idToken &token ) {
+	return R_IsMutableRenderImageName( token.c_str() )
+		|| !token.Icmp( "videoMap" ) || !token.Icmp( "soundMap" )
+		|| !token.Icmp( "mirrorRenderMap" ) || !token.Icmp( "remoteRenderMap" )
+		|| !token.Icmp( "reflectionRenderMap" ) || !token.Icmp( "refractionRenderMap" )
+		|| !token.Icmp( "xrayRenderMap" )
+		|| !token.Icmp( "cameraCubeMap" ) || !token.Icmp( "cubeMap" )
+		|| !token.Icmp( "program" ) || !token.Icmp( "vertexProgram" )
+		|| !token.Icmp( "fragmentProgram" ) || !token.Icmp( "fp20Program" )
+		|| !token.Icmp( "glslProgram" ) || !token.Icmp( "vertexParm" )
+		|| !token.Icmp( "fragmentParm" ) || !token.Icmp( "fragmentMap" )
+		|| !token.Icmp( "shaderParm" ) || !token.Icmp( "shaderTexture" )
+		|| !token.Icmp( "customLighting" )
+		// Stage-only state is not an image name. Reject it here as well as
+		// when nested inside an otherwise valid image program. Keep image
+		// program operators such as add() and scale() available.
+		|| !token.Icmp( "blend" ) || !token.Icmp( "map" )
+		|| !token.Icmp( "screen" ) || !token.Icmp( "screen2" ) || !token.Icmp( "glassWarp" )
+		|| !token.Icmp( "texGen" ) || !token.Icmp( "if" )
+		|| !token.Icmp( "alphaTest" ) || !token.Icmp( "alphaFunc" )
+		|| !token.Icmp( "scroll" ) || !token.Icmp( "translate" )
+		|| !token.Icmp( "centerScale" ) || !token.Icmp( "shear" ) || !token.Icmp( "rotate" )
+		|| !token.Icmp( "vertexColor" ) || !token.Icmp( "inverseVertexColor" )
+		|| !token.Icmp( "color" ) || !token.Icmp( "colored" )
+		|| !token.Icmp( "red" ) || !token.Icmp( "green" ) || !token.Icmp( "blue" )
+		|| !token.Icmp( "alpha" ) || !token.Icmp( "rgb" ) || !token.Icmp( "rgba" )
+		|| !token.Icmp( "maskRed" ) || !token.Icmp( "maskGreen" )
+		|| !token.Icmp( "maskBlue" ) || !token.Icmp( "maskAlpha" )
+		|| !token.Icmp( "maskColor" ) || !token.Icmp( "maskDepth" )
+		|| !token.Icmp( "privatePolygonOffset" ) || !token.Icmp( "polygonOffset" )
+		|| !token.Icmp( "ignoreAlphaTest" );
+}
+
+/*
+================
+idMaterial::ParsePBRImage
+
+Parses one static image-program reference from a PBR metadata line.  Dynamic
+render/video maps and arbitrary shader state deliberately remain classic-stage
+features until a modern pass owns their complete lifetime and fallback rules.
+================
+*/
+bool idMaterial::ParsePBRImage( idLexer &src, pbrMaterialTexture_t &target, const int usage, const textureRepeat_t trpDefault ) {
+	if ( target.present ) {
+		src.Warning( "duplicate PBR image semantic in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	textureFilter_t filter = TF_DEFAULT;
+	textureRepeat_t repeat = trpDefault;
+	bool allowPicmip = true;
+	bool noMips = false;
+	bool highQuality = false;
+	bool forceHighQuality = false;
+	unsigned int imageFlags = 0;
+	idToken token;
+	bool haveImageToken = false;
+
+	while ( src.ReadTokenOnLine( &token ) ) {
+		if ( !token.Icmp( "nearest" ) ) {
+			filter = TF_NEAREST;
+			continue;
+		}
+		if ( !token.Icmp( "linear" ) ) {
+			filter = TF_LINEAR;
+			continue;
+		}
+		if ( !token.Icmp( "clamp" ) ) {
+			repeat = TR_CLAMP;
+			continue;
+		}
+		if ( !token.Icmp( "noclamp" ) ) {
+			repeat = TR_REPEAT;
+			continue;
+		}
+		if ( !token.Icmp( "zeroclamp" ) ) {
+			repeat = TR_CLAMP_TO_ZERO;
+			continue;
+		}
+		if ( !token.Icmp( "alphazeroclamp" ) ) {
+			repeat = TR_CLAMP_TO_ZERO_ALPHA;
+			continue;
+		}
+		if ( !token.Icmp( "mirroredrepeat" ) ) {
+			repeat = TR_MIRRORED_REPEAT;
+			continue;
+		}
+		if ( !token.Icmp( "nopicmip" ) ) {
+			allowPicmip = false;
+			continue;
+		}
+		if ( !token.Icmp( "nomips" ) ) {
+			noMips = true;
+			imageFlags = R_ApplyMaterialNoMipFlags( imageFlags );
+			continue;
+		}
+		if ( !token.Icmp( "forceHighQuality" ) ) {
+			highQuality = true;
+			forceHighQuality = true;
+			continue;
+		}
+		if ( !token.Icmp( "uncompressed" ) || !token.Icmp( "highquality" ) ) {
+			// TD_PBR_COLOR and TD_MATERIAL_DATA are already lossless RGBA8
+			// identities. Retain the authoring hint for any generated classic
+			// fallback without discarding the PBR colour-vs-data mip semantics.
+			highQuality = true;
+			continue;
+		}
+
+		if ( R_IsUnsupportedPBRImageProgramToken( token ) ) {
+			src.Warning( "dynamic or cube image token '%s' is not supported in the PBR block for '%s'", token.c_str(), GetName() );
+			SetMaterialFlag( MF_DEFAULTED );
+			return false;
+		}
+
+		src.UnreadToken( &token );
+		haveImageToken = true;
+		break;
+	}
+
+	if ( !haveImageToken ) {
+		src.Warning( "PBR image semantic expects an image program in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	const char *parsedName = R_ParsePastImageProgram( src );
+	if ( parsedName == NULL || parsedName[0] == '\0' ) {
+		src.Warning( "PBR image semantic has an empty image program in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	// R_ParsePastImageProgram accepts arbitrary leaf names, so validating only
+	// the first authored token would let a dynamic/render/program token hide
+	// inside add(), scale(), or another nested image operation. Re-lex the
+	// canonical expression and reject forbidden tokens at every nesting depth.
+	idLexer imageProgram;
+	imageProgram.LoadMemory( parsedName, idLib::SizeToInt( strlen( parsedName ), "ParsePBRImage validation" ), "pbrImageProgram" );
+	imageProgram.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
+	idToken imageProgramToken;
+	while ( imageProgram.ReadToken( &imageProgramToken ) ) {
+		if ( R_IsUnsupportedPBRImageProgramToken( imageProgramToken ) ) {
+			src.Warning( "dynamic or cube image token '%s' is not supported in the PBR block for '%s'", imageProgramToken.c_str(), GetName() );
+			imageProgram.FreeSource();
+			SetMaterialFlag( MF_DEFAULTED );
+			return false;
+		}
+	}
+	imageProgram.FreeSource();
+
+	idStr imageName = parsedName;
+	target.image = R_LoadMaterialImage( imageName.c_str(), filter, repeat,
+		static_cast<textureUsage_t>( usage ), CF_2D, allowPicmip, imageFlags );
+	if ( target.image == NULL ) {
+		target.image = globalImages->defaultImage;
+	}
+	if ( R_IsMutableRenderImage( target.image ) ) {
+		src.Warning( "mutable render image '%s' is not supported in the PBR block for '%s'", imageName.c_str(), GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	target.filter = static_cast<int>( filter );
+	target.repeat = static_cast<int>( repeat );
+	target.allowPicmip = allowPicmip;
+	target.noMips = noMips;
+	target.highQuality = highQuality;
+	target.forceHighQuality = forceHighQuality;
+	target.present = true;
+	return true;
+}
+
+/*
+================
+idMaterial::ParsePBRBlock
+================
+*/
+bool idMaterial::ParsePBRBlock( idLexer &src, const textureRepeat_t trpDefault ) {
+	if ( pbrInfo.enabled ) {
+		src.Warning( "multiple PBR blocks in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( !src.ExpectTokenString( "{" ) ) {
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	pbrInfo.enabled = true;
+	// Allocate PBR-only defaults only after an authored PBR block opts in. Doing
+	// this in ParseMaterial's common prologue would shift expression-register
+	// indices for every retail material even though no PBR metadata is present.
+	pbrInfo.metallicRegister = GetExpressionConstant( 0.0f );
+	pbrInfo.roughnessRegister = GetExpressionConstant( 0.5f );
+	pbrInfo.aoRegister = GetExpressionConstant( 1.0f );
+	pbrInfo.normalScaleRegister = GetExpressionConstant( 1.0f );
+	pbrInfo.emissiveColorRegisters[0] = GetExpressionConstant( 0.0f );
+	pbrInfo.emissiveColorRegisters[1] = GetExpressionConstant( 0.0f );
+	pbrInfo.emissiveColorRegisters[2] = GetExpressionConstant( 0.0f );
+	idToken token;
+	while ( src.ReadToken( &token ) ) {
+		if ( token == "}" ) {
+			break;
+		}
+
+		if ( !token.Icmp( "workflow" ) ) {
+			idToken value;
+			if ( !src.ReadTokenOnLine( &value ) ) {
+				src.Warning( "PBR workflow expects a value in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			if ( !value.Icmp( "metallicRoughness" ) ) {
+				pbrInfo.workflow = PBR_WORKFLOW_METALLIC_ROUGHNESS;
+			} else if ( !value.Icmp( "specularGlossiness" ) ) {
+				pbrInfo.workflow = PBR_WORKFLOW_SPECULAR_GLOSSINESS;
+			} else {
+				src.Warning( "unknown PBR workflow '%s' in material '%s'", value.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			continue;
+		}
+
+		if ( !token.Icmp( "normalFormat" ) ) {
+			idToken value;
+			if ( !src.ReadTokenOnLine( &value ) ) {
+				src.Warning( "PBR normalFormat expects a value in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			if ( !value.Icmp( "quake4AGB" ) ) {
+				pbrInfo.normalFormat = PBR_NORMAL_QUAKE4_AGB;
+			} else if ( !value.Icmp( "tangentRG" ) ) {
+				pbrInfo.normalFormat = PBR_NORMAL_TANGENT_RG;
+			} else if ( !value.Icmp( "tangentXYZ" ) ) {
+				pbrInfo.normalFormat = PBR_NORMAL_TANGENT_XYZ;
+			} else {
+				src.Warning( "unknown PBR normalFormat '%s' in material '%s'", value.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			continue;
+		}
+
+		if ( !token.Icmp( "albedoMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.albedo, TD_PBR_COLOR, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "normalMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.normal, TD_BUMP, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "ormMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.orm, TD_MATERIAL_DATA, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "metallicMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.metallic, TD_MATERIAL_DATA, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "roughnessMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.roughness, TD_MATERIAL_DATA, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "aoMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.ao, TD_MATERIAL_DATA, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "emissiveMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.emissive, TD_PBR_COLOR, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "legacyBumpMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.legacyBump, TD_BUMP, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "legacyDiffuseMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.legacyDiffuse, TD_DIFFUSE, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "legacySpecularMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.legacySpecular, TD_SPECULAR, trpDefault ) ) return false;
+			continue;
+		}
+		if ( !token.Icmp( "legacyEmissiveMap" ) ) {
+			if ( !ParsePBRImage( src, pbrInfo.legacyEmissive, TD_PBR_COLOR, trpDefault ) ) return false;
+			continue;
+		}
+
+		if ( !token.Icmp( "metallic" ) ) {
+			pbrInfo.metallicRegister = ParseExpression( src );
+			continue;
+		}
+		if ( !token.Icmp( "roughness" ) ) {
+			pbrInfo.roughnessRegister = ParseExpression( src );
+			continue;
+		}
+		if ( !token.Icmp( "ao" ) ) {
+			pbrInfo.aoRegister = ParseExpression( src );
+			continue;
+		}
+		if ( !token.Icmp( "normalScale" ) ) {
+			pbrInfo.normalScaleRegister = ParseExpression( src );
+			continue;
+		}
+		if ( !token.Icmp( "emissiveColor" ) ) {
+			for ( int i = 0; i < 3; ++i ) {
+				pbrInfo.emissiveColorRegisters[i] = ParseExpression( src );
+				if ( i < 2 ) {
+					idToken separator;
+					if ( src.ReadToken( &separator ) && separator != "," ) {
+						src.UnreadToken( &separator );
+					}
+				}
+			}
+			continue;
+		}
+		if ( !token.Icmp( "autoLegacyFallback" ) ) {
+			idToken value;
+			if ( !src.ReadTokenOnLine( &value ) || ( value != "0" && value != "1" ) ) {
+				src.Warning( "PBR autoLegacyFallback expects 0 or 1 in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			pbrInfo.autoLegacyFallback = value == "1";
+			continue;
+		}
+
+		src.Warning( "unknown PBR parameter '%s' in material '%s'", token.c_str(), GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	if ( token != "}" ) {
+		src.Warning( "unterminated PBR block in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( pbrInfo.workflow == PBR_WORKFLOW_NONE ) {
+		src.Warning( "PBR material '%s' has no workflow", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( !pbrInfo.albedo.present ) {
+		src.Warning( "PBR material '%s' has no albedoMap", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( pbrInfo.normal.present && pbrInfo.normalFormat == PBR_NORMAL_UNSPECIFIED ) {
+		src.Warning( "PBR normalMap in '%s' requires normalFormat", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( pbrInfo.orm.present && ( pbrInfo.metallic.present || pbrInfo.roughness.present || pbrInfo.ao.present ) ) {
+		src.Warning( "PBR material '%s' cannot combine ormMap with separate metallic/roughness/AO maps", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	pbrInfo.hasExplicitLegacyFallback = pbrInfo.legacyBump.present ||
+		pbrInfo.legacyDiffuse.present || pbrInfo.legacySpecular.present ||
+		pbrInfo.legacyEmissive.present;
+	return true;
+}
+
+static bool R_ReadSpecularProbeNumbers( idLexer &src, const char *field,
+		const char *materialName, float *values, int valueCount ) {
+	for ( int index = 0; index < valueCount; ++index ) {
+		idToken value;
+		if ( !src.ReadTokenOnLine( &value ) || !value.IsNumeric() ) {
+			src.Warning( "openQ4SpecularProbe %s expects %d numeric value%s in material '%s'",
+				field, valueCount, valueCount == 1 ? "" : "s", materialName );
+			return false;
+		}
+		values[index] = value.GetFloatValue();
+		if ( !std::isfinite( values[index] ) ) {
+			src.Warning( "openQ4SpecularProbe %s is not finite in material '%s'", field, materialName );
+			return false;
+		}
+	}
+	idToken extra;
+	if ( src.ReadTokenOnLine( &extra ) ) {
+		src.Warning( "openQ4SpecularProbe %s has an unexpected value '%s' in material '%s'",
+			field, extra.c_str(), materialName );
+		return false;
+	}
+	return true;
+}
+
+/*
+================
+idMaterial::ParseSpecularProbeBlock
+
+Parses renderer-only metadata for an authored reflection/specular probe.  The
+contract is deliberately static and bounded: expressions, render targets,
+image programs, and stage state are rejected.  A complete temporary record is
+committed only after the closing brace and every required field validate, so a
+malformed block can never expose partially authored probe state.
+================
+*/
+bool idMaterial::ParseSpecularProbeBlock( idLexer &src ) {
+	if ( specularProbeInfo.enabled ) {
+		src.Warning( "multiple openQ4SpecularProbe blocks in material '%s'", GetName() );
+		R_ResetSpecularProbeMaterialInfo( specularProbeInfo );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( !src.ExpectTokenString( "{" ) ) {
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	specularProbeMaterialInfo_t parsed;
+	R_ResetSpecularProbeMaterialInfo( parsed );
+	bool cubeSeen = false;
+	bool tintSeen = false;
+	bool intensitySeen = false;
+	bool blendSeen = false;
+	bool prioritySeen = false;
+	idToken token;
+	while ( src.ReadToken( &token ) ) {
+		if ( token == "}" ) {
+			break;
+		}
+
+		if ( !token.Icmp( "cubeMap" ) || !token.Icmp( "cameraCubeMap" ) ) {
+			if ( cubeSeen ) {
+				src.Warning( "openQ4SpecularProbe in material '%s' has multiple cube maps", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			idToken imageName;
+			idToken extra;
+			if ( !src.ReadTokenOnLine( &imageName ) || imageName.type == TT_NUMBER
+					|| imageName.type == TT_PUNCTUATION || src.ReadTokenOnLine( &extra ) ) {
+				src.Warning( "openQ4SpecularProbe %s expects one static image name in material '%s'",
+					token.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			if ( R_IsUnsupportedPBRImageProgramToken( imageName )
+					|| R_IsMutableRenderImageName( imageName.c_str() ) ) {
+				src.Warning( "mutable or dynamic probe image '%s' is not supported in material '%s'",
+					imageName.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+
+			const bool cameraConvention = !token.Icmp( "cameraCubeMap" );
+			parsed.cubeConvention = cameraConvention
+				? SPECULAR_PROBE_CUBE_CAMERA : SPECULAR_PROBE_CUBE_NATIVE;
+			parsed.cubeImage = R_LoadMaterialImage( imageName.c_str(), TF_LINEAR,
+				TR_CLAMP, TD_HIGH_QUALITY,
+				cameraConvention ? CF_CAMERA : CF_NATIVE, false, IMAGEFLAG_NOMIPS );
+			if ( parsed.cubeImage == NULL || R_IsMutableRenderImage( parsed.cubeImage )
+					|| ( parsed.cubeImage->IsLoaded()
+						&& ( parsed.cubeImage->IsDefaulted()
+							|| parsed.cubeImage->GetOpts().textureType != TT_CUBIC ) ) ) {
+				src.Warning( "probe cube image '%s' is unavailable or invalid in material '%s'",
+					imageName.c_str(), GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			cubeSeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "tint" ) ) {
+			if ( tintSeen || !R_ReadSpecularProbeNumbers( src, "tint", GetName(), parsed.tint, 3 ) ) {
+				src.Warning( "openQ4SpecularProbe tint is duplicated or invalid in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			for ( int component = 0; component < 3; ++component ) {
+				if ( parsed.tint[component] < 0.0f || parsed.tint[component] > 64.0f ) {
+					src.Warning( "openQ4SpecularProbe tint must be in [0,64] in material '%s'", GetName() );
+					SetMaterialFlag( MF_DEFAULTED );
+					return false;
+				}
+			}
+			tintSeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "intensity" ) ) {
+			if ( intensitySeen || !R_ReadSpecularProbeNumbers( src, "intensity", GetName(), &parsed.intensity, 1 )
+					|| parsed.intensity <= 0.0f || parsed.intensity > 64.0f ) {
+				src.Warning( "openQ4SpecularProbe intensity must be in (0,64] in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			intensitySeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "blendFraction" ) ) {
+			if ( blendSeen || !R_ReadSpecularProbeNumbers( src, "blendFraction", GetName(), &parsed.blendFraction, 1 )
+					|| parsed.blendFraction <= 0.0f || parsed.blendFraction > 1.0f ) {
+				src.Warning( "openQ4SpecularProbe blendFraction must be in (0,1] in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			blendSeen = true;
+			continue;
+		}
+
+		if ( !token.Icmp( "priority" ) ) {
+			idToken value;
+			idToken extra;
+			if ( prioritySeen || !src.ReadTokenOnLine( &value )
+					|| value.type != TT_NUMBER || !( value.subtype & TT_INTEGER )
+					|| src.ReadTokenOnLine( &extra ) ) {
+				src.Warning( "openQ4SpecularProbe priority expects one integer in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			char *end = NULL;
+			const long parsedPriority = std::strtol( value.c_str(), &end, 10 );
+			if ( end == value.c_str() || end == NULL || *end != '\0'
+					|| parsedPriority < 0 || parsedPriority > 255 ) {
+				src.Warning( "openQ4SpecularProbe priority must be in [0,255] in material '%s'", GetName() );
+				SetMaterialFlag( MF_DEFAULTED );
+				return false;
+			}
+			parsed.priority = static_cast<int>( parsedPriority );
+			prioritySeen = true;
+			continue;
+		}
+
+		src.Warning( "unknown openQ4SpecularProbe parameter '%s' in material '%s'", token.c_str(), GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	if ( token != "}" ) {
+		src.Warning( "unterminated openQ4SpecularProbe block in material '%s'", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+	if ( !cubeSeen || parsed.cubeImage == NULL ) {
+		src.Warning( "openQ4SpecularProbe material '%s' has no cubeMap", GetName() );
+		SetMaterialFlag( MF_DEFAULTED );
+		return false;
+	}
+
+	parsed.enabled = true;
+	specularProbeInfo = parsed;
+	return true;
+}
+
+/*
+================
+idMaterial::AddPBRLegacyFallbackStages
+================
+*/
+void idMaterial::AddPBRLegacyFallbackStages( const textureRepeat_t trpDefault ) {
+	if ( !pbrInfo.enabled ) {
+		return;
+	}
+
+	bool hasBump = false;
+	bool hasDiffuse = false;
+	bool hasSpecular = false;
+	bool hasAmbient = false;
+	for ( int i = 0; i < numStages; ++i ) {
+		hasBump |= pd->parseStages[i].lighting == SL_BUMP;
+		hasDiffuse |= pd->parseStages[i].lighting == SL_DIFFUSE;
+		hasSpecular |= pd->parseStages[i].lighting == SL_SPECULAR;
+		hasAmbient |= pd->parseStages[i].lighting == SL_AMBIENT;
+	}
+	pbrInfo.hasAuthoredClassicFallback = hasBump && hasDiffuse;
+
+	auto addStage = [&]( const char *blendName, const pbrMaterialTexture_t &texture ) -> bool {
+		if ( texture.image == NULL || numStages >= MAX_SHADER_STAGES ) {
+			SetMaterialFlag( MF_DEFAULTED );
+			return false;
+		}
+		idStr buffer;
+		buffer = "blend ";
+		buffer.Append( blendName );
+		buffer.Append( "\n" );
+		switch ( static_cast<textureFilter_t>( texture.filter ) ) {
+		case TF_NEAREST: buffer.Append( "nearest\n" ); break;
+		case TF_LINEAR: buffer.Append( "linear\n" ); break;
+		default: break;
+		}
+		const textureRepeat_t repeat = static_cast<textureRepeat_t>( texture.repeat );
+		if ( repeat != trpDefault ) {
+			switch ( repeat ) {
+			case TR_REPEAT: buffer.Append( "noclamp\n" ); break;
+			case TR_MIRRORED_REPEAT: buffer.Append( "mirroredrepeat\n" ); break;
+			case TR_CLAMP: buffer.Append( "clamp\n" ); break;
+			case TR_CLAMP_TO_ZERO: buffer.Append( "zeroclamp\n" ); break;
+			case TR_CLAMP_TO_ZERO_ALPHA: buffer.Append( "alphazeroclamp\n" ); break;
+			default: break;
+			}
+		}
+		if ( !texture.allowPicmip ) buffer.Append( "nopicmip\n" );
+		if ( texture.noMips ) buffer.Append( "nomips\n" );
+		if ( texture.forceHighQuality ) {
+			buffer.Append( "forceHighQuality\n" );
+		} else if ( texture.highQuality ) {
+			buffer.Append( "highquality\n" );
+		}
+		buffer.Append( "map " );
+		buffer.Append( texture.image->GetName() );
+		buffer.Append( "\n}\n" );
+		idLexer generated;
+		generated.LoadMemory( buffer.c_str(), buffer.Length(), "pbrLegacyFallback" );
+		generated.SetFlags( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
+		ParseStage( generated, trpDefault );
+		generated.FreeSource();
+		return !TestMaterialFlag( MF_DEFAULTED );
+	};
+	auto defaultTexture = [&]( idImage *image ) -> pbrMaterialTexture_t {
+		pbrMaterialTexture_t texture;
+		memset( &texture, 0, sizeof( texture ) );
+		texture.image = image;
+		texture.present = image != NULL;
+		texture.filter = static_cast<int>( TF_DEFAULT );
+		texture.repeat = static_cast<int>( trpDefault );
+		texture.allowPicmip = true;
+		return texture;
+	};
+
+	if ( !hasBump && pbrInfo.legacyBump.present ) {
+		if ( !addStage( "bumpmap", pbrInfo.legacyBump ) ) return;
+		hasBump = true;
+		pbrInfo.usesGeneratedLegacyFallback = true;
+	}
+	if ( !hasDiffuse && pbrInfo.legacyDiffuse.present ) {
+		if ( !addStage( "diffusemap", pbrInfo.legacyDiffuse ) ) return;
+		hasDiffuse = true;
+		pbrInfo.usesGeneratedLegacyFallback = true;
+	}
+	if ( !hasSpecular && pbrInfo.legacySpecular.present ) {
+		if ( !addStage( "specularmap", pbrInfo.legacySpecular ) ) return;
+		hasSpecular = true;
+		pbrInfo.usesGeneratedLegacyFallback = true;
+	}
+	if ( !hasAmbient && pbrInfo.legacyEmissive.present ) {
+		if ( !addStage( "add", pbrInfo.legacyEmissive ) ) return;
+		hasAmbient = true;
+		pbrInfo.usesGeneratedLegacyFallback = true;
+	}
+
+	// An authored bump+diffuse interaction is already a complete classic
+	// fallback. Classic specular is optional, and a PBR emissive map must not
+	// silently inject an ambient stage into that authored path.
+	const bool hasUsableClassicInteraction = hasBump && hasDiffuse;
+	const bool allowApproximate = !hasUsableClassicInteraction
+		&& pbrInfo.autoLegacyFallback
+		&& r_pbrGeneratedLegacyFallback.GetBool();
+	if ( allowApproximate ) {
+		if ( !hasBump ) {
+			// The classic Quake 4 interaction decoder understands only the A/G
+			// normal convention. Tangent RG/XYZ sources stay available to the
+			// future PBR shader, but their classic fallback must remain neutral.
+			const bool classicNormalCompatible = pbrInfo.normal.present
+				&& pbrInfo.normalFormat == PBR_NORMAL_QUAKE4_AGB;
+			const pbrMaterialTexture_t texture = classicNormalCompatible
+				? pbrInfo.normal
+				: defaultTexture( globalImages->flatNormalMap );
+			if ( !addStage( "bumpmap", texture ) ) return;
+			hasBump = true;
+			pbrInfo.usesGeneratedLegacyFallback = true;
+			pbrInfo.usesApproximateLegacyFallback = true;
+		}
+		if ( !hasDiffuse ) {
+			const pbrMaterialTexture_t texture = pbrInfo.albedo.present ? pbrInfo.albedo : defaultTexture( globalImages->whiteImage );
+			if ( !addStage( "diffusemap", texture ) ) return;
+			hasDiffuse = true;
+			pbrInfo.usesGeneratedLegacyFallback = true;
+			pbrInfo.usesApproximateLegacyFallback = true;
+		}
+		if ( !hasSpecular ) {
+			if ( !addStage( "specularmap", defaultTexture( globalImages->blackImage ) ) ) return;
+			hasSpecular = true;
+			pbrInfo.usesGeneratedLegacyFallback = true;
+			pbrInfo.usesApproximateLegacyFallback = true;
+		}
+		if ( !hasAmbient && pbrInfo.emissive.present ) {
+			if ( !addStage( "add", pbrInfo.emissive ) ) return;
+			pbrInfo.usesGeneratedLegacyFallback = true;
+			pbrInfo.usesApproximateLegacyFallback = true;
+		}
+	}
+
+	if ( pbrInfo.usesApproximateLegacyFallback ) {
+		common->Warning( "PBR material '%s' uses an approximate generated classic fallback", GetName() );
+	}
+}
+
 /*
 ===============
 idMaterial::ParseDeform
@@ -2689,7 +3426,6 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 	for ( i = 0 ; i < numRegisters ; i++ ) {
 		pd->registerIsTemporary[i] = true;		// they aren't constants that can be folded
 	}
-
 	numStages = 0;
 
 	textureRepeat_t	trpDefault = TR_REPEAT;		// allow a global setting for repeat
@@ -2977,6 +3713,18 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 			}
 			continue;
 		}
+		else if ( !token.Icmp( "pbr" ) || !token.Icmp( "physicallyBased" ) ) {
+			if ( !ParsePBRBlock( src, trpDefault ) ) {
+				return;
+			}
+			continue;
+		}
+		else if ( !token.Icmp( "openQ4SpecularProbe" ) ) {
+			if ( !ParseSpecularProbeBlock( src ) ) {
+				return;
+			}
+			continue;
+		}
 		// diffusemap for stage shortcut
 		else if ( !token.Icmp( "diffusemap" ) ) {
 			str = R_ParsePastImageProgram( src );
@@ -3050,8 +3798,33 @@ void idMaterial::ParseMaterial( idLexer &src ) {
 		}
 	}
 
+	// PBR metadata never mutates an authored classic stage.  For a PBR-only
+	// declaration, explicitly requested or development-only generated stages
+	// are added before the ordinary classic interaction completion/sort pass.
+	AddPBRLegacyFallbackStages( trpDefault );
+	if ( TestMaterialFlag( MF_DEFAULTED ) ) {
+		return;
+	}
+
 	// add _flat or _white stages if needed
 	AddImplicitStages();
+
+	// A PBR declaration is still valid metadata when it deliberately omits a
+	// classic fallback, but the current renderer cannot draw it until a native
+	// PBR lighting path exists.  Preserve that state explicitly instead of
+	// letting a zero-stage declaration disappear from authoring diagnostics.
+	if ( pbrInfo.enabled ) {
+		bool hasBump = false;
+		bool hasDiffuse = false;
+		for ( int i = 0; i < numStages; ++i ) {
+			hasBump |= pd->parseStages[i].lighting == SL_BUMP;
+			hasDiffuse |= pd->parseStages[i].lighting == SL_DIFFUSE;
+		}
+		pbrInfo.legacyFallbackMissing = !( hasBump && hasDiffuse );
+		if ( pbrInfo.legacyFallbackMissing ) {
+			common->Warning( "PBR material '%s' has no usable classic bump+diffuse fallback", GetName() );
+		}
+	}
 
 	// order the diffuse / bump / specular stages properly
 	SortInteractionStages();
@@ -3309,6 +4082,15 @@ bool idMaterial::Parse( const char *text, const int textLength ) {
 		memcpy( stages, pd->parseStages, numStages * sizeof( stages[0] ) );
 	}
 
+	hasCustomGLSLLightingStage = false;
+	for ( i = 0 ; i < numStages ; i++ ) {
+		const newShaderStage_t *newStage = stages[i].newStage;
+		if ( newStage != NULL && newStage->customLighting && newStage->glslProgram ) {
+			hasCustomGLSLLightingStage = true;
+			break;
+		}
+	}
+
 	if ( numOps ) {
 		ops = (expOp_t *)R_StaticAlloc( numOps * sizeof( ops[0] ) );
 		memcpy( ops, pd->shaderOps, numOps * sizeof( ops[0] ) );
@@ -3401,6 +4183,21 @@ void idMaterial::Print() const {
 			common->Printf( "%i = %i %s %i\n", op->c, op->a, opNames[ op->opType ], op->b );
 		}
 	}
+	if ( pbrInfo.enabled ) {
+		common->Printf(
+			"PBR: workflow=%d normalFormat=%d albedo=%s normal=%s orm=%s generatedFallback=%d approximateFallback=%d missingFallback=%d\n",
+			static_cast<int>( pbrInfo.workflow ),
+			static_cast<int>( pbrInfo.normalFormat ),
+			pbrInfo.albedo.image != NULL ? pbrInfo.albedo.image->GetName() : "<none>",
+			pbrInfo.normal.image != NULL ? pbrInfo.normal.image->GetName() : "<none>",
+			pbrInfo.orm.image != NULL ? pbrInfo.orm.image->GetName() : "<none>",
+			pbrInfo.usesGeneratedLegacyFallback ? 1 : 0,
+			pbrInfo.usesApproximateLegacyFallback ? 1 : 0,
+			pbrInfo.legacyFallbackMissing ? 1 : 0 );
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		common->Printf( "Specular probe: cubeMap=%s\n", specularProbeInfo.cubeImage->GetName() );
+	}
 }
 
 /*
@@ -3430,6 +4227,21 @@ void idMaterial::AddReference() {
 
 	if ( portalImage ) {
 		portalImage->AddReference();
+	}
+
+	pbrMaterialTexture_t *pbrTextures[] = {
+		&pbrInfo.albedo, &pbrInfo.normal, &pbrInfo.orm, &pbrInfo.metallic,
+		&pbrInfo.roughness, &pbrInfo.ao, &pbrInfo.emissive,
+		&pbrInfo.legacyBump, &pbrInfo.legacyDiffuse,
+		&pbrInfo.legacySpecular, &pbrInfo.legacyEmissive
+	};
+	for ( unsigned int i = 0; i < sizeof( pbrTextures ) / sizeof( pbrTextures[0] ); ++i ) {
+		if ( pbrTextures[i]->present && pbrTextures[i]->image != NULL ) {
+			pbrTextures[i]->image->AddReference();
+		}
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		specularProbeInfo.cubeImage->AddReference();
 	}
 }
 
@@ -3465,6 +4277,21 @@ void idMaterial::ResolveUse() {
 	}
 	if ( portalImage != NULL ) {
 		portalImage->AddUseCount( useCount );
+	}
+
+	pbrMaterialTexture_t *pbrTextures[] = {
+		&pbrInfo.albedo, &pbrInfo.normal, &pbrInfo.orm, &pbrInfo.metallic,
+		&pbrInfo.roughness, &pbrInfo.ao, &pbrInfo.emissive,
+		&pbrInfo.legacyBump, &pbrInfo.legacyDiffuse,
+		&pbrInfo.legacySpecular, &pbrInfo.legacyEmissive
+	};
+	for ( unsigned int i = 0; i < sizeof( pbrTextures ) / sizeof( pbrTextures[0] ); ++i ) {
+		if ( pbrTextures[i]->present && pbrTextures[i]->image != NULL ) {
+			pbrTextures[i]->image->AddUseCount( useCount );
+		}
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		specularProbeInfo.cubeImage->AddUseCount( useCount );
 	}
 }
 
@@ -3847,6 +4674,9 @@ idMaterial::ImageName
 */
 const char *idMaterial::ImageName( void ) const {
 	if ( numStages == 0 ) {
+		if ( pbrInfo.enabled && pbrInfo.albedo.image != NULL ) {
+			return pbrInfo.albedo.image->GetName();
+		}
 		return "_scratch";
 	}
 	idImage	*image = stages[0].texture.image;
@@ -3980,6 +4810,9 @@ static bool MaterialStagesHaveActiveCustomGLSLLighting( const shaderStage_t *sta
 }
 
 bool idMaterial::HasActiveCustomGLSLLighting( const float *registers ) const {
+	if ( !hasCustomGLSLLightingStage ) {
+		return false;
+	}
 	return MaterialStagesHaveActiveCustomGLSLLighting( stages, numStages, registers );
 }
 
@@ -4036,6 +4869,9 @@ idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting
 ===================
 */
 bool idMaterial::CanUseStockShadowMapReceiverForCustomGLSLLighting( const float *registers ) const {
+	if ( !hasCustomGLSLLightingStage ) {
+		return false;
+	}
 	return MaterialStagesHaveActiveCustomGLSLLighting( stages, numStages, registers )
 		&& MaterialStagesHaveActiveStockLightingInteractions( stages, numStages, registers );
 }
@@ -4085,6 +4921,563 @@ bool R_MaterialCustomGLSLReceiverHelperSelfTest( void ) {
 
 /*
 ===================
+R_SpecularProbeMaterialParserSelfTest
+
+Uses the intrinsic normalization cubemap so the parser contract can be tested
+without loose content.  Invalid declarations must fail as a whole and expose no
+probe metadata.
+===================
+*/
+bool R_SpecularProbeMaterialParserSelfTest( void ) {
+	static const char validProbe[] =
+		"material _specular_probe_selftest_valid {\n"
+		" openQ4SpecularProbe {\n"
+		"  cubeMap normalCubeMap\n"
+		"  tint 0.75 1 1.25\n"
+		"  intensity 2\n"
+		"  blendFraction 0.4\n"
+		"  priority 17\n"
+		" }\n"
+		" {\n"
+		"  map _white\n"
+		" }\n"
+		"}\n";
+	idDecl *validDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( validDecl == NULL ) {
+		return false;
+	}
+	idMaterial *valid = static_cast<idMaterial *>( validDecl );
+	bool ok = valid->Parse( validProbe,
+		idLib::SizeToInt( sizeof( validProbe ) - 1,
+			"R_SpecularProbeMaterialParserSelfTest valid" ) );
+	if ( ok ) {
+		const specularProbeMaterialInfo_t &info = valid->GetSpecularProbeInfo();
+		ok = valid->HasSpecularProbe()
+			&& info.cubeImage == globalImages->normalCubeMapImage
+			&& info.cubeConvention == SPECULAR_PROBE_CUBE_NATIVE
+			&& idMath::Fabs( info.tint[0] - 0.75f ) < 0.0001f
+			&& idMath::Fabs( info.tint[1] - 1.0f ) < 0.0001f
+			&& idMath::Fabs( info.tint[2] - 1.25f ) < 0.0001f
+			&& idMath::Fabs( info.intensity - 2.0f ) < 0.0001f
+			&& idMath::Fabs( info.blendFraction - 0.4f ) < 0.0001f
+			&& info.priority == 17
+			&& valid->GetNumStages() == 1
+			&& valid->GetStage( 0 )->texture.image == globalImages->whiteImage;
+	}
+	DeclManager_FreeAllocatedDecl( validDecl );
+	if ( !ok ) {
+		common->Printf( "RendererSpecularProbe material parser self-test: valid contract failed\n" );
+		return false;
+	}
+
+	static const char defaultPolicy[] =
+		"material _specular_probe_selftest_defaults {\n"
+		" openQ4SpecularProbe {\n"
+		"  cubeMap normalCubeMap\n"
+		" }\n"
+		"}\n";
+	idDecl *defaultDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( defaultDecl == NULL ) {
+		return false;
+	}
+	idMaterial *defaults = static_cast<idMaterial *>( defaultDecl );
+	ok = defaults->Parse( defaultPolicy,
+		idLib::SizeToInt( sizeof( defaultPolicy ) - 1,
+			"R_SpecularProbeMaterialParserSelfTest defaults" ) );
+	if ( ok ) {
+		const specularProbeMaterialInfo_t &info = defaults->GetSpecularProbeInfo();
+		ok = info.enabled && info.tint[0] == 1.0f && info.tint[1] == 1.0f
+			&& info.tint[2] == 1.0f && info.intensity == 1.0f
+			&& info.blendFraction == 0.25f && info.priority == 0;
+	}
+	DeclManager_FreeAllocatedDecl( defaultDecl );
+	if ( !ok ) {
+		common->Printf( "RendererSpecularProbe material parser self-test: default policy failed\n" );
+		return false;
+	}
+
+	auto rejectsProbeDeclaration = []( const char *declaration, const char *label ) -> bool {
+		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
+		if ( decl == NULL ) {
+			return false;
+		}
+		idMaterial *material = static_cast<idMaterial *>( decl );
+		const bool accepted = material->Parse( declaration,
+			idLib::SizeToInt( strlen( declaration ), label ) );
+		const bool leakedPartialContract = material->HasSpecularProbe();
+		DeclManager_FreeAllocatedDecl( decl );
+		return !accepted && !leakedPartialContract;
+	};
+	static const char duplicateBlock[] =
+		"material _specular_probe_selftest_duplicate {\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n }\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n }\n"
+		"}\n";
+	static const char missingCube[] =
+		"material _specular_probe_selftest_missing_cube {\n"
+		" openQ4SpecularProbe { intensity 1\n }\n"
+		"}\n";
+	static const char twoDimensionalImage[] =
+		"material _specular_probe_selftest_2d {\n"
+		" openQ4SpecularProbe { cubeMap _white\n }\n"
+		"}\n";
+	static const char mutableImage[] =
+		"material _specular_probe_selftest_mutable {\n"
+		" openQ4SpecularProbe { cubeMap _currentRender\n }\n"
+		"}\n";
+	static const char imageProgram[] =
+		"material _specular_probe_selftest_program {\n"
+		" openQ4SpecularProbe { cubeMap add( normalCubeMap, normalCubeMap )\n }\n"
+		"}\n";
+	static const char zeroIntensity[] =
+		"material _specular_probe_selftest_zero {\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n intensity 0\n }\n"
+		"}\n";
+	static const char fractionalPriority[] =
+		"material _specular_probe_selftest_priority {\n"
+		" openQ4SpecularProbe { cubeMap normalCubeMap\n priority 1.5\n }\n"
+		"}\n";
+
+	return rejectsProbeDeclaration( duplicateBlock, "R_SpecularProbeMaterialParserSelfTest duplicate" )
+		&& rejectsProbeDeclaration( missingCube, "R_SpecularProbeMaterialParserSelfTest missing cube" )
+		&& rejectsProbeDeclaration( twoDimensionalImage, "R_SpecularProbeMaterialParserSelfTest 2D image" )
+		&& rejectsProbeDeclaration( mutableImage, "R_SpecularProbeMaterialParserSelfTest mutable image" )
+		&& rejectsProbeDeclaration( imageProgram, "R_SpecularProbeMaterialParserSelfTest image program" )
+		&& rejectsProbeDeclaration( zeroIntensity, "R_SpecularProbeMaterialParserSelfTest zero intensity" )
+		&& rejectsProbeDeclaration( fractionalPriority, "R_SpecularProbeMaterialParserSelfTest fractional priority" );
+}
+
+/*
+===================
+R_PBRMaterialParserSelfTest
+
+Runtime parser test using only intrinsic images.  It proves metadata parsing,
+classic-stage non-interference, explicit fallback generation, and the two
+important authoring failures without requiring repository content.
+===================
+*/
+bool R_PBRMaterialParserSelfTest( void ) {
+	static const char dualAuthored[] =
+		"material _pbr_selftest_dual {\n"
+		" bumpmap _flat\n"
+		" diffusemap _white\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap heightmap( _white, 1 )\n"
+		"  normalMap _flat\n"
+		"  normalFormat tangentRG\n"
+		"  ormMap smoothnormals( _flat )\n"
+		"  emissiveMap _white\n"
+		"  metallic 0.25\n"
+		"  roughness 0.6\n"
+		"  ao 0.9\n"
+		"  normalScale 0.75\n"
+		"  emissiveColor 0.1 0.2 0.3\n"
+		" }\n"
+		"}\n";
+
+	idDecl *dualDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( dualDecl == NULL ) {
+		return false;
+	}
+	idMaterial *dual = static_cast<idMaterial *>( dualDecl );
+	bool ok = dual->Parse( dualAuthored, idLib::SizeToInt( sizeof( dualAuthored ) - 1, "R_PBRMaterialParserSelfTest dual" ) );
+	if ( !ok ) {
+		common->Printf( "RendererPBRMaterial parser self-test: dual declaration did not parse\n" );
+	}
+	if ( ok ) {
+		const pbrMaterialInfo_t &info = dual->GetPBRInfo();
+		const int registerCount = dual->GetNumRegisters();
+		float evaluatedRegisters[MAX_EXPRESSION_REGISTERS];
+		float entityParms[MAX_ENTITY_SHADER_PARMS];
+		viewDef_t evaluationView;
+		memset( evaluatedRegisters, 0, sizeof( evaluatedRegisters ) );
+		memset( entityParms, 0, sizeof( entityParms ) );
+		memset( &evaluationView, 0, sizeof( evaluationView ) );
+		dual->EvaluateRegisters( evaluatedRegisters, entityParms, &evaluationView );
+		auto registerMatches = [&]( int index, float expected ) -> bool {
+			return index >= 0 && index < registerCount
+				&& idMath::Fabs( evaluatedRegisters[index] - expected ) < 0.0001f;
+		};
+		const idImage *sameAlbedo = info.albedo.image != NULL ? globalImages->GetImageWithParameters(
+			info.albedo.image->GetName(),
+			static_cast<textureFilter_t>( info.albedo.filter ),
+			static_cast<textureRepeat_t>( info.albedo.repeat ),
+			TD_PBR_COLOR, CF_2D, info.albedo.allowPicmip, 0 ) : NULL;
+		const idImage *sameORM = info.orm.image != NULL ? globalImages->GetImageWithParameters(
+			info.orm.image->GetName(),
+			static_cast<textureFilter_t>( info.orm.filter ),
+			static_cast<textureRepeat_t>( info.orm.repeat ),
+			TD_MATERIAL_DATA, CF_2D, info.orm.allowPicmip, 0 ) : NULL;
+		ok = dual->HasPBR()
+			&& info.workflow == PBR_WORKFLOW_METALLIC_ROUGHNESS
+			&& info.normalFormat == PBR_NORMAL_TANGENT_RG
+			&& info.albedo.present && info.normal.present && info.orm.present
+			&& info.albedo.image->GetUsage() == TD_PBR_COLOR
+			&& info.orm.image->GetUsage() == TD_MATERIAL_DATA
+			&& sameAlbedo == info.albedo.image
+			&& sameORM == info.orm.image
+			&& registerMatches( info.metallicRegister, 0.25f )
+			&& registerMatches( info.roughnessRegister, 0.6f )
+			&& registerMatches( info.aoRegister, 0.9f )
+			&& registerMatches( info.normalScaleRegister, 0.75f )
+			&& registerMatches( info.emissiveColorRegisters[0], 0.1f )
+			&& registerMatches( info.emissiveColorRegisters[1], 0.2f )
+			&& registerMatches( info.emissiveColorRegisters[2], 0.3f )
+			&& info.hasAuthoredClassicFallback
+			&& !info.usesGeneratedLegacyFallback
+			&& dual->GetNumStages() == 2;
+		if ( !ok ) {
+			common->Printf(
+				"RendererPBRMaterial parser self-test: dual contract failed has=%d workflow=%d normal=%d maps=%d/%d/%d usage=%d/%d cache=%d/%d stages=%d authored=%d generated=%d registers=%d/%d/%d/%d/%d/%d/%d\n",
+				dual->HasPBR() ? 1 : 0,
+				static_cast<int>( info.workflow ),
+				static_cast<int>( info.normalFormat ),
+				info.albedo.present ? 1 : 0,
+				info.normal.present ? 1 : 0,
+				info.orm.present ? 1 : 0,
+				info.albedo.image != NULL ? static_cast<int>( info.albedo.image->GetUsage() ) : -1,
+				info.orm.image != NULL ? static_cast<int>( info.orm.image->GetUsage() ) : -1,
+				sameAlbedo == info.albedo.image ? 1 : 0,
+				sameORM == info.orm.image ? 1 : 0,
+				dual->GetNumStages(),
+				info.hasAuthoredClassicFallback ? 1 : 0,
+				info.usesGeneratedLegacyFallback ? 1 : 0,
+				registerMatches( info.metallicRegister, 0.25f ) ? 1 : 0,
+				registerMatches( info.roughnessRegister, 0.6f ) ? 1 : 0,
+				registerMatches( info.aoRegister, 0.9f ) ? 1 : 0,
+				registerMatches( info.normalScaleRegister, 0.75f ) ? 1 : 0,
+				registerMatches( info.emissiveColorRegisters[0], 0.1f ) ? 1 : 0,
+				registerMatches( info.emissiveColorRegisters[1], 0.2f ) ? 1 : 0,
+				registerMatches( info.emissiveColorRegisters[2], 0.3f ) ? 1 : 0 );
+		}
+	}
+	DeclManager_FreeAllocatedDecl( dualDecl );
+	if ( !ok ) {
+		return false;
+	}
+
+	static const char explicitFallback[] =
+		"material _pbr_selftest_explicit {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  legacyBumpMap _flat\n"
+		"  legacyDiffuseMap nearest clamp nopicmip nomips forceHighQuality makeIntensity( _white )\n"
+		"  autoLegacyFallback 0\n"
+		" }\n"
+		"}\n";
+	idDecl *explicitDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( explicitDecl == NULL ) {
+		return false;
+	}
+	idMaterial *explicitMaterial = static_cast<idMaterial *>( explicitDecl );
+	const bool oldMakingBuild = com_makingBuild.GetBool();
+	com_makingBuild.SetBool( true );
+	ok = explicitMaterial->Parse( explicitFallback, idLib::SizeToInt( sizeof( explicitFallback ) - 1, "R_PBRMaterialParserSelfTest explicit" ) );
+	com_makingBuild.SetBool( oldMakingBuild );
+	if ( ok ) {
+		const pbrMaterialInfo_t &info = explicitMaterial->GetPBRInfo();
+		const shaderStage_t *diffuseStage = NULL;
+		for ( int i = 0; i < explicitMaterial->GetNumStages(); ++i ) {
+			const shaderStage_t *stage = explicitMaterial->GetStage( i );
+			if ( stage != NULL && stage->lighting == SL_DIFFUSE ) {
+				diffuseStage = stage;
+				break;
+			}
+		}
+		const idImage *expectedDiffuse = globalImages->GetImageWithParameters(
+			info.legacyDiffuse.image != NULL ? info.legacyDiffuse.image->GetName() : "",
+			TF_NEAREST,
+			TR_CLAMP,
+			TD_HIGH_QUALITY,
+			CF_2D,
+			false,
+			IMAGEFLAG_NOMIPS );
+		ok = info.hasExplicitLegacyFallback
+			&& info.usesGeneratedLegacyFallback
+			&& !info.usesApproximateLegacyFallback
+			&& info.legacyDiffuse.filter == static_cast<int>( TF_NEAREST )
+			&& info.legacyDiffuse.repeat == static_cast<int>( TR_CLAMP )
+			&& !info.legacyDiffuse.allowPicmip
+			&& info.legacyDiffuse.noMips
+			&& info.legacyDiffuse.highQuality
+			&& info.legacyDiffuse.forceHighQuality
+			&& explicitMaterial->GetNumStages() == 2
+			&& diffuseStage != NULL
+			&& diffuseStage->texture.image == expectedDiffuse;
+	}
+	DeclManager_FreeAllocatedDecl( explicitDecl );
+	if ( !ok ) {
+		return false;
+	}
+
+	static const char missingFallback[] =
+		"material _pbr_selftest_missing_fallback {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  autoLegacyFallback 0\n"
+		" }\n"
+		"}\n";
+	idDecl *missingDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( missingDecl == NULL ) {
+		return false;
+	}
+	idMaterial *missingMaterial = static_cast<idMaterial *>( missingDecl );
+	ok = missingMaterial->Parse( missingFallback, idLib::SizeToInt( sizeof( missingFallback ) - 1, "R_PBRMaterialParserSelfTest missing fallback" ) );
+	if ( ok ) {
+		const pbrMaterialInfo_t &info = missingMaterial->GetPBRInfo();
+		ok = missingMaterial->HasPBR()
+			&& info.legacyFallbackMissing
+			&& !info.usesGeneratedLegacyFallback
+			&& !info.usesApproximateLegacyFallback
+			&& missingMaterial->GetNumStages() == 0;
+	}
+	DeclManager_FreeAllocatedDecl( missingDecl );
+	if ( !ok ) {
+		return false;
+	}
+
+	// A PBR-only declaration is still required to construct the complete ARB2
+	// interaction contract when development fallback generation is enabled. Do
+	// not settle for validating only the normal stage: every low-end renderer
+	// needs the conventional bump/diffuse/specular trio.
+	static const char generatedClassicInteractionFallback[] =
+		"material _pbr_selftest_generated_classic_interaction {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  normalMap _flat\n"
+		"  normalFormat tangentRG\n"
+		" }\n"
+		"}\n";
+	auto validatesGeneratedClassicInteractionFallback = []( const char *declaration, const char *label ) -> bool {
+		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
+		if ( decl == NULL ) {
+			return false;
+		}
+		idMaterial *material = static_cast<idMaterial *>( decl );
+		bool valid = material->Parse( declaration, idLib::SizeToInt( strlen( declaration ), label ) );
+		if ( valid ) {
+			const pbrMaterialInfo_t &info = material->GetPBRInfo();
+			const shaderStage_t *bumpStage = NULL;
+			const shaderStage_t *diffuseStage = NULL;
+			const shaderStage_t *specularStage = NULL;
+			for ( int i = 0; i < material->GetNumStages(); ++i ) {
+				const shaderStage_t *stage = material->GetStage( i );
+				if ( stage == NULL ) {
+					continue;
+				}
+				if ( stage->lighting == SL_BUMP ) {
+					bumpStage = stage;
+				} else if ( stage->lighting == SL_DIFFUSE ) {
+					diffuseStage = stage;
+				} else if ( stage->lighting == SL_SPECULAR ) {
+					specularStage = stage;
+				}
+			}
+			valid = info.usesGeneratedLegacyFallback
+				&& info.usesApproximateLegacyFallback
+				&& !info.legacyFallbackMissing
+				&& material->GetNumStages() == 3
+				&& bumpStage != NULL && bumpStage->texture.image == globalImages->flatNormalMap
+				&& diffuseStage != NULL && diffuseStage->texture.image == info.albedo.image
+				&& specularStage != NULL && specularStage->texture.image == globalImages->blackImage;
+		}
+		DeclManager_FreeAllocatedDecl( decl );
+		return valid;
+	};
+
+	auto validatesGeneratedNormalFallback = []( const char *declaration, const char *label, bool expectReuse ) -> bool {
+		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
+		if ( decl == NULL ) {
+			return false;
+		}
+		idMaterial *material = static_cast<idMaterial *>( decl );
+		bool valid = material->Parse( declaration, idLib::SizeToInt( strlen( declaration ), label ) );
+		if ( valid ) {
+			const pbrMaterialInfo_t &info = material->GetPBRInfo();
+			const shaderStage_t *bumpStage = NULL;
+			for ( int i = 0; i < material->GetNumStages(); ++i ) {
+				const shaderStage_t *stage = material->GetStage( i );
+				if ( stage != NULL && stage->lighting == SL_BUMP ) {
+					bumpStage = stage;
+					break;
+				}
+			}
+			valid = info.usesApproximateLegacyFallback
+				&& !info.legacyFallbackMissing
+				&& info.normal.image != NULL
+				&& bumpStage != NULL
+				&& ( expectReuse
+					? bumpStage->texture.image == info.normal.image
+					: bumpStage->texture.image == globalImages->flatNormalMap
+						&& info.normal.image != globalImages->flatNormalMap );
+		}
+		DeclManager_FreeAllocatedDecl( decl );
+		return valid;
+	};
+	static const char tangentNormalFallback[] =
+		"material _pbr_selftest_tangent_normal_fallback {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  normalMap makeIntensity( _white )\n"
+		"  normalFormat tangentRG\n"
+		" }\n"
+		"}\n";
+	static const char quake4NormalFallback[] =
+		"material _pbr_selftest_quake4_normal_fallback {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  normalMap makeIntensity( _white )\n"
+		"  normalFormat quake4AGB\n"
+		" }\n"
+		"}\n";
+	const bool oldGeneratedFallback = r_pbrGeneratedLegacyFallback.GetBool();
+	r_pbrGeneratedLegacyFallback.SetBool( true );
+	const bool generatedFallbacksValid = validatesGeneratedClassicInteractionFallback(
+		generatedClassicInteractionFallback, "R_PBRMaterialParserSelfTest complete ARB2 fallback" )
+		&& validatesGeneratedNormalFallback(
+		tangentNormalFallback, "R_PBRMaterialParserSelfTest tangent fallback", false )
+		&& validatesGeneratedNormalFallback(
+			quake4NormalFallback, "R_PBRMaterialParserSelfTest quake4 fallback", true );
+	r_pbrGeneratedLegacyFallback.SetBool( oldGeneratedFallback );
+	if ( !generatedFallbacksValid ) {
+		return false;
+	}
+
+	static const char missingNormalFormat[] =
+		"material _pbr_selftest_bad_normal {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  normalMap _flat\n"
+		" }\n"
+		"}\n";
+	idDecl *badNormalDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( badNormalDecl == NULL ) {
+		return false;
+	}
+	idMaterial *badNormal = static_cast<idMaterial *>( badNormalDecl );
+	const bool badNormalAccepted = badNormal->Parse( missingNormalFormat, idLib::SizeToInt( sizeof( missingNormalFormat ) - 1, "R_PBRMaterialParserSelfTest normal" ) );
+	DeclManager_FreeAllocatedDecl( badNormalDecl );
+	if ( badNormalAccepted ) {
+		return false;
+	}
+
+	static const char conflictingMaps[] =
+		"material _pbr_selftest_bad_maps {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  ormMap _white\n"
+		"  roughnessMap _white\n"
+		" }\n"
+		"}\n";
+	idDecl *badMapsDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( badMapsDecl == NULL ) {
+		return false;
+	}
+	idMaterial *badMaps = static_cast<idMaterial *>( badMapsDecl );
+	const bool badMapsAccepted = badMaps->Parse( conflictingMaps, idLib::SizeToInt( sizeof( conflictingMaps ) - 1, "R_PBRMaterialParserSelfTest maps" ) );
+	DeclManager_FreeAllocatedDecl( badMapsDecl );
+	if ( badMapsAccepted ) {
+		return false;
+	}
+
+	static const char fractionalFallback[] =
+		"material _pbr_selftest_bad_fallback_value {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap _white\n"
+		"  autoLegacyFallback 0.5\n"
+		" }\n"
+		"}\n";
+	idDecl *fractionalDecl = declManager->AllocateDecl( DECL_MATERIAL );
+	if ( fractionalDecl == NULL ) {
+		return false;
+	}
+	idMaterial *fractionalMaterial = static_cast<idMaterial *>( fractionalDecl );
+	const bool fractionalAccepted = fractionalMaterial->Parse( fractionalFallback, idLib::SizeToInt( sizeof( fractionalFallback ) - 1, "R_PBRMaterialParserSelfTest fallback value" ) );
+	DeclManager_FreeAllocatedDecl( fractionalDecl );
+	if ( fractionalAccepted ) {
+		return false;
+	}
+
+	auto rejectsPBRDeclaration = []( const char *declaration, const char *label ) -> bool {
+		idDecl *decl = declManager->AllocateDecl( DECL_MATERIAL );
+		if ( decl == NULL ) {
+			return false;
+		}
+		idMaterial *material = static_cast<idMaterial *>( decl );
+		const bool accepted = material->Parse( declaration, idLib::SizeToInt( strlen( declaration ), label ) );
+		DeclManager_FreeAllocatedDecl( decl );
+		return !accepted;
+	};
+	static const char dynamicImageToken[] =
+		"material _pbr_selftest_dynamic_image {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap reflectionRenderMap\n"
+		" }\n"
+		"}\n";
+	static const char shaderImageToken[] =
+		"material _pbr_selftest_shader_image {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap glslProgram\n"
+		" }\n"
+		"}\n";
+	static const char nestedDynamicImageToken[] =
+		"material _pbr_selftest_nested_dynamic_image {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap add( _white, reflectionRenderMap )\n"
+		" }\n"
+		"}\n";
+	static const char nestedShaderImageToken[] =
+		"material _pbr_selftest_nested_shader_image {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap add( _white, glslProgram )\n"
+		" }\n"
+		"}\n";
+	static const char nestedSceneCaptureToken[] =
+		"material _pbr_selftest_nested_scene_capture {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap add( _white, _currentRender )\n"
+		" }\n"
+		"}\n";
+	static const char nestedMutableRenderTargetToken[] =
+		"material _pbr_selftest_nested_mutable_target {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap add( _white, _reflectionRender )\n"
+		" }\n"
+		"}\n";
+	static const char nestedStageStateToken[] =
+		"material _pbr_selftest_nested_stage_state {\n"
+		" pbr {\n"
+		"  workflow metallicRoughness\n"
+		"  albedoMap add( _white, alphaTest )\n"
+		" }\n"
+		"}\n";
+	const bool pbrRejectionsValid = rejectsPBRDeclaration( dynamicImageToken, "R_PBRMaterialParserSelfTest dynamic image" )
+		&& rejectsPBRDeclaration( shaderImageToken, "R_PBRMaterialParserSelfTest shader image" )
+		&& rejectsPBRDeclaration( nestedDynamicImageToken, "R_PBRMaterialParserSelfTest nested dynamic image" )
+		&& rejectsPBRDeclaration( nestedShaderImageToken, "R_PBRMaterialParserSelfTest nested shader image" )
+		&& rejectsPBRDeclaration( nestedSceneCaptureToken, "R_PBRMaterialParserSelfTest nested scene capture" )
+		&& rejectsPBRDeclaration( nestedMutableRenderTargetToken, "R_PBRMaterialParserSelfTest nested mutable target" )
+		&& rejectsPBRDeclaration( nestedStageStateToken, "R_PBRMaterialParserSelfTest nested stage state" );
+	return pbrRejectionsValid && R_SpecularProbeMaterialParserSelfTest();
+}
+
+/*
+===================
 idMaterial::ReloadImages
 ===================
 */
@@ -4109,5 +5502,20 @@ void idMaterial::ReloadImages( bool force ) const
 
 	if ( portalImage ) {
 		portalImage->Reload( force );
+	}
+
+	const pbrMaterialTexture_t *pbrTextures[] = {
+		&pbrInfo.albedo, &pbrInfo.normal, &pbrInfo.orm, &pbrInfo.metallic,
+		&pbrInfo.roughness, &pbrInfo.ao, &pbrInfo.emissive,
+		&pbrInfo.legacyBump, &pbrInfo.legacyDiffuse,
+		&pbrInfo.legacySpecular, &pbrInfo.legacyEmissive
+	};
+	for ( unsigned int i = 0; i < sizeof( pbrTextures ) / sizeof( pbrTextures[0] ); ++i ) {
+		if ( pbrTextures[i]->present && pbrTextures[i]->image != NULL ) {
+			pbrTextures[i]->image->Reload( force );
+		}
+	}
+	if ( specularProbeInfo.enabled && specularProbeInfo.cubeImage != NULL ) {
+		specularProbeInfo.cubeImage->Reload( force );
 	}
 }

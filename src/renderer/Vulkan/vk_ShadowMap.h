@@ -6,6 +6,8 @@
 
 #include "../ShadowMapProjected.h"
 
+typedef struct classicInteractionDomainView_s classicInteractionDomainView_t;
+
 /*
 ===============================================================================
 
@@ -71,6 +73,8 @@ typedef struct vkShadowLightState_s {
 	shadowMapProjectedLightState_t projectedState;
 										// full shared CSM state (projected lights only)
 	float				invAtlasSize[ 2 ];
+	float				constantBias;	// point-light effective normalized receiver bias
+	float				normalBias;	// point-light effective normalized slope bias
 	float				texelDepthBias;	// point-light receiver value
 	float				normalOffsetWorld;	// point: per-distance texel factor
 	vkShadowPassState_t	passes[ VK_SHADOW_RECEIVER_PASS_COUNT ];
@@ -88,6 +92,18 @@ int		VK_ShadowMap_PrepareViewLights( const viewDef_t *viewDef,
 // casters into the atlas / its depth cube, then resumes main rendering with
 // LOAD
 bool	VK_ShadowMap_RenderAtlas( const viewDef_t *viewDef );
+
+// Shared fixed-classic ownership is a whole-view transaction. Preflight may
+// allocate private images/descriptors and reserve cache entries, but it emits
+// no attachment writes. Commit consumes only the sealed domain records and is
+// structurally infallible; Abort releases every private reservation so the
+// unchanged classic interaction walker can own the view instead.
+bool	VK_ShadowMap_PreflightClassicInteractionView(
+			const classicInteractionDomainView_t *view );
+void	VK_ShadowMap_CommitClassicInteractionView(
+			const classicInteractionDomainView_t *view );
+void	VK_ShadowMap_AbortClassicInteractionView(
+			const classicInteractionDomainView_t *view );
 
 // prepared state for a light, or NULL when retained stencil handles it
 const vkShadowLightState_t *VK_ShadowMap_LightState( const viewLight_t *vLight );

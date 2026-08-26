@@ -81,6 +81,10 @@ bool Sys_IsGameWindowFocused( void );
 idSessionLocal		sessLocal;
 idSession			*session = &sessLocal;
 
+// Implemented by FileSystem.cpp as an engine-only coordinator hook; this is
+// intentionally not part of the public module-facing idFileSystem ABI.
+void FS_ReleaseLevelLoadCache( void );
+
 static float Session_UpdateMetricAverage( float currentAverage, float sample, int sampleCount ) {
 	const int averagingWindow = idMath::ClampInt( 1, 120, sampleCount );
 	if ( averagingWindow <= 1 ) {
@@ -1423,6 +1427,25 @@ private:
 	int previousLastCheckPoint;
 	bool complete;
 };
+
+class sessionRenderCropGuard_t {
+public:
+	sessionRenderCropGuard_t( int width, int height ) : active( false ) {
+		if ( renderSystem != NULL && renderSystem->IsOpenGLRunning() && width > 0 && height > 0 ) {
+			renderSystem->CropRenderSize( width, height, false, true );
+			active = true;
+		}
+	}
+
+	~sessionRenderCropGuard_t() {
+		if ( active && renderSystem != NULL ) {
+			renderSystem->UnCrop();
+		}
+	}
+
+private:
+	bool active;
+};
 #endif
 
 void idSessionLocal::ResetFramePacingStats( void ) {
@@ -2393,10 +2416,15 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 	// Multiple isolated clients may generate the same resolution at once. Give
 	// every publication a CSPRNG-backed staging qpath so one client cannot
 	// truncate another client's in-progress TGA before either atomic rename.
-	static uint32 stagingSequence = 0;
-	const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial", generatedPath.c_str(),
+	// Stage below a short root-level namespace rather than beside the final
+	// loadscreen. The source and destination still share fs_savepath (and thus a
+	// filesystem), preserving atomic cross-directory rename while leaving enough
+	// path budget for legacy Windows stdio under deeply nested save roots. The
+	// 128-bit nonce is the complete collision identity; no predictable shared
+	// staging name or process-local sequence is needed.
+	const idStr stagingPath = va( "_oq4/%016llx%016llx.tmp",
 		static_cast<unsigned long long>( stagingNonce[0] ),
-		static_cast<unsigned long long>( stagingNonce[1] ), ++stagingSequence );
+		static_cast<unsigned long long>( stagingNonce[1] ) );
 	bool published = R_WriteTGA( stagingPath.c_str(), composite.Ptr(), outputWidth, outputHeight, false, "fs_savepath" );
 	if ( published ) {
 		published = fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str(), "fs_savepath" );
@@ -2409,6 +2437,22 @@ static bool Session_PrepareExpandedLoadingBackground( const idStr &backgroundPat
 		fileSystem->RemoveFileChecked( stagingPath.c_str(), "fs_savepath" );
 		common->Warning( "Could not publish expanded loading background '%s'; using the source levelshot",
 			generatedPath.c_str() );
+	} else if ( !Session_FileExistsInSearchPaths( generatedPath.c_str() ) ) {
+		// A pure server deliberately excludes loose image files even when this
+		// client just authored them under fs_savepath.  Publication alone is not
+		// permission to consume the file: require the active VFS policy to expose
+		// it before handing its name to the loading GUI/material system.  Keeping
+		// published=false leaves the caller's stock levelshot selected.
+		common->DPrintf( "Expanded loading background '%s' is unavailable through the active VFS; using the source levelshot\n",
+			generatedPath.c_str() );
+		published = false;
+	} else {
+		const idMaterial *generatedMaterial = declManager->FindMaterial( generatedPath.c_str() );
+		if ( generatedMaterial == NULL || generatedMaterial->TestMaterialFlag( MF_DEFAULTED ) ) {
+			common->DPrintf( "Expanded loading background '%s' has no usable material; using the source levelshot\n",
+				generatedPath.c_str() );
+			published = false;
+		}
 	}
 
 	R_StaticFree( centerPic );
@@ -3518,6 +3562,24 @@ static void Session_openQ4AssertMapState_f( const idCmdArgs &args ) {
 			actualMap.c_str(),
 			actualEntityFilter.c_str() );
 	}
+}
+
+/*
+==================
+Session_openQ4AssertMPGameplayView_f
+==================
+*/
+static void Session_openQ4AssertMPGameplayView_f( const idCmdArgs &args ) {
+	if ( !sessLocal.IsMapSpawned() || !sessLocal.IsMultiplayer() ||
+			sessLocal.GetActiveGUI() != NULL ) {
+		common->Error( "openq4_assertMPGameplayView failed: map=%d multiplayer=%d gui=%d",
+			sessLocal.IsMapSpawned() ? 1 : 0,
+			sessLocal.IsMultiplayer() ? 1 : 0,
+			sessLocal.GetActiveGUI() != NULL ? 1 : 0 );
+		return;
+	}
+
+	common->Printf( "OPENQ4_STOCK_BASELINE_MP_CLIENT_VIEW gui=0\n" );
 }
 #endif
 
@@ -5147,6 +5209,13 @@ Exits with mapSpawned = false
 ===============
 */
 void idSessionLocal::UnloadMap() {
+	// A level-load generation owns worker-visible file handles and immutable
+	// staging buffers. Join it before any game, render-world, renderer-module,
+	// or filesystem state used by the outgoing map can be destroyed.
+	fileSystem->CancelLevelLoadCache();
+	if ( renderSystem != NULL ) {
+		renderSystem->ResetGpuFrameTiming( "session unload" );
+	}
 	StopPlayingRenderDemo();
 
 	if ( com_showFramePacing.GetInteger() >= 2 && framePacingStats.valid ) {
@@ -5187,6 +5256,54 @@ void idSessionLocal::UnloadMap() {
 	iamTheDukeActive = false;
 	objectiveFailed = false;
 	mapSpawned = false;
+}
+
+/*
+===============
+Session_BuildLevelLoadCacheSettings
+
+Only settings that can alter source selection, decoded CPU data, image/sample
+policy, or renderer-owned cache payloads belong here.  Display-only settings
+must not cause manifest churn.
+===============
+*/
+static void Session_BuildLevelLoadCacheSettings( idStr &settings ) {
+	static const char *const settingNames[] = {
+		"com_binaryRead",
+		"r_renderer",
+		"r_actualRenderer",
+		"r_mergeModelSurfaces",
+		"r_slopVertex",
+		"r_slopTexCoord",
+		"r_slopNormal",
+		"r_useNewSkinning",
+		"r_useFastSkinning",
+		"r_forceConvertMD5R",
+		"r_convertMD5toMD5R",
+		"r_convertStaticToMD5R",
+		"r_convertProcToMD5R",
+		"r_pbrMaterials",
+		"image_downSize",
+		"image_downSizeLimit",
+		"image_downSizeSpecular",
+		"image_downSizeSpecularLimit",
+		"image_downSizeBump",
+		"image_downSizeBumpLimit",
+		"image_ignoreHighQuality",
+		"image_picmip",
+		"image_picmipFilter",
+		"image_picmipMinSize",
+		"image_usePrecompressedTextures",
+		"s_useCompression",
+		"sys_lang"
+	};
+	settings = "level-load-settings-v2;";
+	for ( unsigned int i = 0; i < sizeof( settingNames ) / sizeof( settingNames[ 0 ] ); i++ ) {
+		settings += settingNames[ i ];
+		settings += '=';
+		settings += cvarSystem->GetCVarString( settingNames[ i ] );
+		settings += ';';
+	}
 }
 
 /*
@@ -5481,6 +5598,19 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 		lastCheckPoint = -1;
 	}
 	fileSystem->SetAssetLogName( fullMapName.c_str() );
+	// Reset before BeginLevelLoadCache can publish work.  Preload workers add
+	// their reads to this counter, so resetting after the generation starts can
+	// nondeterministically discard bytes already read by a worker.
+	fileSystem->ResetReadCount();
+	idStr levelLoadCacheSettings;
+	Session_BuildLevelLoadCacheSettings( levelLoadCacheSettings );
+#ifdef ID_DEDICATED
+	const char *levelLoadGameMode = "dedicated";
+#else
+	const char *levelLoadGameMode = IsMultiplayer() ? "multiplayer" : "singleplayer";
+#endif
+	fileSystem->BeginLevelLoadCache( fullMapName.c_str(), levelLoadGameMode,
+		filterString.c_str(), levelLoadCacheSettings.c_str() );
 
 	if ( !reloadingSameMap && com_SingleDeclFile.GetBool() ) {
 		declManager->FlushDecls();
@@ -5512,7 +5642,6 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 
 	// if this works out we will probably want all the sizes in a def file although this solution will 
 	// work for new maps etc. after the first load. we can also drop the sizes into the default.cfg
-	fileSystem->ResetReadCount();
 	if ( !reloadingSameMap  ) {
 		bytesNeededForMapLoad = GetBytesNeededForMapLoad( mapString.c_str() );
 	} else {
@@ -5541,6 +5670,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	int renderWorldMsec = 0;
 	int gameInitMsec = 0;
 	int playerSpawnMsec = 0;
+	int cacheJoinMsec = 0;
 	int mediaFinishMsec = 0;
 	int mediaRenderMsec = 0;
 	int mediaSoundMsec = 0;
@@ -5598,6 +5728,9 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	}
 	playerSpawnMsec = Sys_Milliseconds() - phaseStart;
 	phaseStart = Sys_Milliseconds();
+	fileSystem->FinishLevelLoadCache( true );
+	cacheJoinMsec = Sys_Milliseconds() - phaseStart;
+	phaseStart = Sys_Milliseconds();
 
 	// actually purge/load the media
 	int mediaPhaseStart = phaseStart;
@@ -5622,6 +5755,7 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	}
 	uiManager->EndLevelLoad();
 	mediaUiMsec = Sys_Milliseconds() - mediaPhaseStart;
+	FS_ReleaseLevelLoadCache();
 	mediaFinishMsec = Sys_Milliseconds() - phaseStart;
 	phaseStart = Sys_Milliseconds();
 
@@ -5641,10 +5775,11 @@ void idSessionLocal::ExecuteMapChange( bool noFadeWipe ) {
 	common->Printf( "%6d msec to load %s\n", msec, mapString.c_str() );
 	if ( com_showLevelLoadTimes.GetBool() ) {
 		common->Printf(
-			"Map load phases: renderWorld=%d gameInit=%d playerSpawn=%d mediaFinish=%d settle=%d total=%d msec\n",
+			"Map load phases: renderWorld=%d gameInit=%d playerSpawn=%d cacheJoin=%d mediaFinish=%d settle=%d total=%d msec\n",
 			renderWorldMsec,
 			gameInitMsec,
 			playerSpawnMsec,
+			cacheJoinMsec,
 			mediaFinishMsec,
 			settleMsec,
 			msec );
@@ -6133,14 +6268,17 @@ bool idSessionLocal::SaveGame( const char *saveName, saveType_t saveType ) {
 
 	// Write screenshot
 	if ( saveType != ST_AUTO ) {
-		renderSystem->CropRenderSize( 320, 240, false );
 		if ( rw ) {
 			rw->PushMarkedDefs();
 		}
+		// The current crop can be smaller than the drawable in legacy
+		// r_screenFraction mode.  Push a physical-size crop so all screen-space
+		// feedback targets see one coherent frame, then restore the prior crop.
+		sessionRenderCropGuard_t previewCrop( renderSystem->GetScreenWidth(), renderSystem->GetScreenHeight() );
 		common->SetRenderableGameFrame( true );
 		game->Draw( 0 );
-		renderSystem->CaptureRenderToFile( tempPreviewFile, true );
-		renderSystem->UnCrop();
+		// The renderer reduces the coherent physical frame after readback.
+		renderSystem->CaptureRenderToFile( tempPreviewFile, true, 320, 240 );
 	}
 
 	mapName = mapSpawnData.serverInfo.GetString( "si_map" );
@@ -7719,6 +7857,7 @@ void idSessionLocal::Init() {
 #ifndef	ID_DEDICATED
 	cmdSystem->AddCommand( "openq4_startSingleplayer", Session_openQ4StartSingleplayer_f, CMD_FL_SYSTEM, "internal helper to start singleplayer after game-module switches" );
 	cmdSystem->AddCommand( "openq4_assertMapState", Session_openQ4AssertMapState_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts the active map and entity filter for validation harnesses" );
+	cmdSystem->AddCommand( "openq4_assertMPGameplayView", Session_openQ4AssertMPGameplayView_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "asserts that multiplayer rendering is not covered by an active session GUI" );
 	cmdSystem->AddCommand( "openq4_resumeBakeLightGrids", Session_openQ4ResumeBakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "internal helper to continue light-grid baking after game-module switches" );
 	cmdSystem->AddCommand( "iamtheduke", Session_IAmTheDuke_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "toggles the SP-only iamtheduke cheat text overlay" );
 	cmdSystem->AddCommand( "bakeLightGrids", Session_BakeLightGrids_f, CMD_FL_SYSTEM|CMD_FL_CHEAT, "bakes openQ4-compatible lightgrid metadata and irradiance atlases for the current map or a batch of maps" );

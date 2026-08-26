@@ -231,6 +231,18 @@ def main() -> None:
     require(multiplayer, "gameLocal.gameType == GAME_TDM || roundMode", "round rows")
     require(multiplayer, 'common->GetLocalizedString( "#str_41404" )', "round limit")
 
+    # A casual no-time-limit server may retain the stock positive si_overtime
+    # default. Timed overtime is valid only when regulation itself is timed;
+    # otherwise the typed rule import must normalize to sudden death with no
+    # timed period instead of rejecting the complete rules snapshot.
+    for token in (
+        'const int timeLimitMinutes = gameLocal.serverInfo.GetInt( "si_timeLimit" );',
+        "const bool useTimedOvertime = timeLimitMinutes > 0 && overtimeSeconds > 0;",
+        "useTimedOvertime ? MP_OVERTIME_TIMED_PERIODS : MP_OVERTIME_SUDDEN_DEATH",
+        "useTimedOvertime ? overtimeSeconds : 0",
+    ):
+        require(multiplayer, token, "casual overtime normalization")
+
     # The managed-match HUD and scoreboard are projections of exactly the same
     # pre-localized state set. One parent gate makes their casual path inert.
     validate_match_context_surface(

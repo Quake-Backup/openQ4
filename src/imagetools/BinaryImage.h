@@ -49,12 +49,13 @@ public:
 	void				SetName( const char *_name ) { imgName = _name; }
 
 	void				Load2DFromMemory( int width, int height, const byte * pic_const, int numLevels, textureFormat_t & textureFormat, textureColor_t & colorFormat, bool gammaMips, bool filterNeutralAlpha = false );
-	void				Load2DFromCompressedData( int width, int height, int numLevels, textureFormat_t textureFormat, textureColor_t colorFormat, const byte *data, const int *levelOffsets, const int *levelSizes );
+	void				Load2DFromOwnedCompressedData( int width, int height, int numLevels, textureFormat_t textureFormat, textureColor_t colorFormat, byte *fileBuffer, const int *levelOffsets, const int *levelSizes );
 	void				LoadCubeFromMemory( int width, const byte * pics[6], int numLevels, textureFormat_t & textureFormat, bool gammaMips );
 
 	void				Clear();
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );
 	ID_TIME_T			LoadFromGeneratedFileUnchecked();
+	ID_TIME_T			LoadFromCompactGeneratedFileUnchecked();
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 	bool				LoadFromFile( idFile *file, int dataBytes = -1 );
 	bool				WriteToFile( idFile *file, ID_TIME_T sourceFileTime );

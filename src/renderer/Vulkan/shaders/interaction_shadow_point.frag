@@ -88,20 +88,51 @@ vec3 ApplyFlatDiffuseSweep(vec3 diffuse, float localZ) {
     return mix(diffuse, vec3(1.0), inter.flatDiffuseParams.x * band);
 }
 
+vec3 EvaluatePackedPBR(vec3 localNormal, vec2 albedoTexCoord,
+        vec2 ormTexCoord, float shadowFactor) {
+    vec3 albedo = pow(max(texture(diffuseMap, albedoTexCoord).rgb, vec3(0.0)), vec3(2.2));
+    vec3 orm = texture(specularMap, ormTexCoord).rgb;
+    float metallic = clamp(orm.b * pc.d.y, 0.0, 1.0);
+    float roughness = clamp(orm.g * pc.d.z, 0.045, 1.0);
+    vec3 lightDir = (pc.a.z > 0.5) ? pc.b.xyz : SafeNormalize(vLightVector);
+    vec3 viewDir = SafeNormalize(vViewVector);
+    vec3 halfDir = SafeNormalize(lightDir + viewDir);
+    float ndotl = max(dot(localNormal, lightDir), 0.0);
+    float ndotv = max(dot(localNormal, viewDir), 0.0);
+    float ndoth = max(dot(localNormal, halfDir), 0.0);
+    float vdoth = max(dot(viewDir, halfDir), 0.0);
+    float alpha = roughness * roughness;
+    float alphaSquared = alpha * alpha;
+    float denom = max(ndoth * ndoth * (alphaSquared - 1.0) + 1.0, 1.0e-4);
+    float distribution = alphaSquared / (3.14159265 * denom * denom);
+    float k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+    float geometry = (ndotl / max(ndotl * (1.0 - k) + k, 1.0e-4))
+        * (ndotv / max(ndotv * (1.0 - k) + k, 1.0e-4));
+    vec3 f0 = mix(vec3(0.04), albedo, metallic);
+    vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - vdoth, 5.0);
+    vec3 specular = distribution * geometry * fresnel
+        / max(4.0 * ndotl * ndotv, 1.0e-4);
+    vec3 diffuse = (vec3(1.0) - fresnel) * (1.0 - metallic)
+        * albedo * (1.0 / 3.14159265);
+    vec3 radiance = textureProj(lightFalloffMap, vLightFalloffTexCoord).rgb
+        * textureProj(lightProjectionMap, vLightProjectionTexCoord).rgb
+        * inter.diffuseColor.rgb * shadowFactor;
+    return (diffuse + specular) * radiance * ndotl * vVertexColor;
+}
+
 float StableShadowHash(vec3 value) {
     return fract(sin(dot(value, vec3(12.9898, 78.233, 37.719)))
         * 43758.5453);
 }
 
-vec2 RotateShadowOffset(vec2 offset, vec3 direction) {
+mat2 ShadowOffsetRotation(vec3 direction) {
     if (shadow.filterParams.z < 0.5) {
-        return offset;
+        return mat2(1.0, 0.0, 0.0, 1.0);
     }
     float angle = StableShadowHash(floor(direction * 37.0)) * 6.2831853;
     float s = sin(angle);
     float c = cos(angle);
-    return vec2(c * offset.x - s * offset.y,
-        s * offset.x + c * offset.y);
+    return mat2(c, s, -s, c);
 }
 
 float ShadowReceiverBias() {
@@ -155,10 +186,11 @@ float SampleShadowFactor() {
     if (shadow.filterParams.y <= 1.0) {
         return result;
     }
-    vec2 o1 = RotateShadowOffset(vec2(-0.326212, -0.405805), direction);
-    vec2 o2 = RotateShadowOffset(vec2(-0.840144, -0.073580), direction);
-    vec2 o3 = RotateShadowOffset(vec2(-0.695914, 0.457137), direction);
-    vec2 o4 = RotateShadowOffset(vec2(-0.203345, 0.620716), direction);
+    mat2 rotation = ShadowOffsetRotation(direction);
+    vec2 o1 = rotation * vec2(-0.326212, -0.405805);
+    vec2 o2 = rotation * vec2(-0.840144, -0.073580);
+    vec2 o3 = rotation * vec2(-0.695914, 0.457137);
+    vec2 o4 = rotation * vec2(-0.203345, 0.620716);
     result += SamplePointShadowCompare(SafeNormalize(direction
         + (tangent * o1.x + bitangent * o1.y) * tap), depth);
     result += SamplePointShadowCompare(SafeNormalize(direction
@@ -170,10 +202,10 @@ float SampleShadowFactor() {
     if (shadow.filterParams.y <= 5.0) {
         return result * (1.0 / 5.0);
     }
-    vec2 o5 = RotateShadowOffset(vec2(0.962340, -0.194983), direction);
-    vec2 o6 = RotateShadowOffset(vec2(0.473434, -0.480026), direction);
-    vec2 o7 = RotateShadowOffset(vec2(0.519456, 0.767022), direction);
-    vec2 o8 = RotateShadowOffset(vec2(0.185461, -0.893124), direction);
+    vec2 o5 = rotation * vec2(0.962340, -0.194983);
+    vec2 o6 = rotation * vec2(0.473434, -0.480026);
+    vec2 o7 = rotation * vec2(0.519456, 0.767022);
+    vec2 o8 = rotation * vec2(0.185461, -0.893124);
     result += SamplePointShadowCompare(SafeNormalize(direction
         + (tangent * o5.x + bitangent * o5.y) * tap), depth);
     result += SamplePointShadowCompare(SafeNormalize(direction
@@ -185,10 +217,10 @@ float SampleShadowFactor() {
     if (shadow.filterParams.y <= 9.0) {
         return result * (1.0 / 9.0);
     }
-    vec2 o9 = RotateShadowOffset(vec2(0.507431, 0.064425), direction);
-    vec2 o10 = RotateShadowOffset(vec2(0.896420, 0.412458), direction);
-    vec2 o11 = RotateShadowOffset(vec2(-0.321940, -0.932615), direction);
-    vec2 o12 = RotateShadowOffset(vec2(-0.791559, -0.597705), direction);
+    vec2 o9 = rotation * vec2(0.507431, 0.064425);
+    vec2 o10 = rotation * vec2(0.896420, 0.412458);
+    vec2 o11 = rotation * vec2(-0.321940, -0.932615);
+    vec2 o12 = rotation * vec2(-0.791559, -0.597705);
     result += SamplePointShadowCompare(SafeNormalize(direction
         + (tangent * o9.x + bitangent * o9.y) * tap), depth);
     result += SamplePointShadowCompare(SafeNormalize(direction
@@ -201,6 +233,11 @@ float SampleShadowFactor() {
 }
 
 void main() {
+    if (pc.d.x > 1.5) {
+        outColor = vec4(0.0, 1.0, 0.0, 0.0);
+        return;
+    }
+
     vec2 bumpTexCoord = vBumpTexCoord;
     vec2 diffuseTexCoord = vDiffuseTexCoord;
     vec2 specularTexCoord = vSpecularTexCoord;
@@ -213,6 +250,13 @@ void main() {
     }
 
     vec4 bumpSample = texture(bumpMap, bumpTexCoord);
+    if (pc.d.x > 0.5) {
+        vec3 localNormal = bumpSample.rgb * 2.0 - 1.0;
+        localNormal.xy *= pc.d.w;
+        outColor = vec4(EvaluatePackedPBR(SafeNormalize(localNormal),
+            diffuseTexCoord, specularTexCoord, SampleShadowFactor()), 0.0);
+        return;
+    }
     vec3 localNormal = vec3(bumpSample.a, bumpSample.g, bumpSample.b) * 2.0 - 1.0;
 
     vec3 lightDir = (pc.a.z > 0.5) ? pc.b.xyz : SafeNormalize(vLightVector);

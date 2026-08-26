@@ -3204,7 +3204,20 @@ bool UI_FontParity_RunSelfTest( void ) {
 	idDeviceContext radioFontDc;
 	radioFontDc.Init();
 	const int radioFont = radioFontDc.FindFont( "fonts/marine" );
-	ok &= openQ4_CheckBool( "hud radio marine font registered", radioFont >= 0, true );
+	// With the TrueType path disabled and no retail .fontdat atlases installed
+	// (an assetless validation startup), no glyph source exists at all, so
+	// registration cannot succeed.  That is a missing environment rather than
+	// a font regression - say so instead of failing, like the TrueType skip
+	// above.  With the TrueType path enabled, or any .fontdat present,
+	// registration is still required to succeed.
+	const bool marineSourceMissing = retailAtlasActive && radioFont < 0 &&
+		fileSystem->ReadFile( "fonts/english/marine_12.fontdat", NULL, NULL ) <= 0;
+	if ( marineSourceMissing ) {
+		common->Printf( "uiFontParitySelfTest: skipping marine font cases, "
+						"no marine glyph source is installed\n" );
+	} else {
+		ok &= openQ4_CheckBool( "hud radio marine font registered", radioFont >= 0, true );
+	}
 	// The measurements below are keyed to the retail atlas's exact advances.
 	if ( radioFont >= 0 && retailAtlasActive ) {
 		radioFontDc.SetFont( radioFont );
@@ -3287,8 +3300,9 @@ bool UI_FontParity_RunSelfTest( void ) {
 	idStr fontAtlasLang = cvarSystem->GetCVarString( "sys_lang" );
 	openQ4_NormalizeFontLanguage( fontAtlasLang );
 	// The TrueType path never touches the retail .fontdat atlas, so this only
-	// means anything while the bitmap fonts are in charge.
-	if ( retailAtlasActive ) {
+	// means anything while the bitmap fonts are in charge - and only when a
+	// retail atlas exists to measure against at all.
+	if ( retailAtlasActive && !marineSourceMissing ) {
 		const idMaterial *fontAtlasMaterial = declManager->FindMaterial( va( "fonts/%s/marine_12.fontdat", fontAtlasLang.c_str() ), false );
 		if ( fontAtlasMaterial == NULL && idStr::Icmp( fontAtlasLang.c_str(), "english" ) != 0 ) {
 			// A language with no atlases of its own falls back to the English

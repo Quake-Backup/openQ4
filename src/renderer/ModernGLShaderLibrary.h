@@ -75,10 +75,14 @@ typedef struct modernGLShaderReflection_s {
 	int		modelViewMatrixLocation;
 	int		debugColorLocation;
 	int		localParamsLocation;
+	int		pbrIBLLocation;
 	int		mainTextureLocation;
 	int		normalTextureLocation;
 	int		specularTextureLocation;
 	int		emissiveTextureLocation;
+	int		metallicTextureLocation;
+	int		roughnessTextureLocation;
+	int		aoTextureLocation;
 	int		textureIndicesLocation;
 	int		textureTableModeLocation;
 	int		materialTextureTableLocation;
@@ -87,6 +91,8 @@ typedef struct modernGLShaderReflection_s {
 	int		drawRecordModeLocation;
 	int		drawRecordCountLocation;
 	int		sceneDepthTextureLocation;
+	int		specularProbeAtlasLocation;
+	int		specularProbeBlockIndex;
 	int		positionAttribute;
 	int		colorAttribute;
 	int		texCoordAttribute;
@@ -111,6 +117,7 @@ typedef struct modernGLShaderReflection_s {
 	bool	usesModelViewMatrix;
 	bool	usesDebugColor;
 	bool	usesLocalParams;
+	bool	usesPBRIBL;
 	bool	usesMainTexture;
 	bool	usesMaterialTextures;
 	bool	usesMaterialTextureTable;
@@ -119,6 +126,7 @@ typedef struct modernGLShaderReflection_s {
 	bool	usesDrawRecords;
 	bool	usesSceneDepthTexture;
 	bool	usesShadowTextures;
+	bool	usesSpecularProbes;
 	bool	usesTexCoord;
 	bool	usesDrawVertColor;
 	bool	usesDrawVertTangentSpace;
@@ -139,11 +147,15 @@ typedef struct modernGLShaderProgramInfo_s {
 	int							modelViewMatrixLocation;
 	int							debugColorLocation;
 	int							localParamsLocation;
+	int							pbrIBLLocation;
 	int							mainTextureLocation;
 	int							sceneDepthTextureLocation;
 	int							normalTextureLocation;
 	int							specularTextureLocation;
 	int							emissiveTextureLocation;
+	int							metallicTextureLocation;
+	int							roughnessTextureLocation;
+	int							aoTextureLocation;
 	int							textureIndicesLocation;
 	int							textureTableModeLocation;
 	int							materialTextureTableLocation;
@@ -151,6 +163,8 @@ typedef struct modernGLShaderProgramInfo_s {
 	int							materialEnhancementLocation;
 	int							drawRecordModeLocation;
 	int							drawRecordCountLocation;
+	int							specularProbeAtlasLocation;
+	int							specularProbeBlockIndex;
 	bool						linked;
 	char						name[64];
 } modernGLShaderProgramInfo_t;

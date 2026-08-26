@@ -30,10 +30,17 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "Unzip.h"
+#include "GameDirPolicy.h"
+#include "LevelLoadCacheManager.h"
 #include "openq4_paks_generated.h"
+#include "../sys/URLPolicy.h"
 
 #include <errno.h>
 #include <stdint.h>
+#include <limits>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #if defined( USE_SDL3 )
 	#include <SDL3/SDL_filesystem.h>
@@ -57,6 +64,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #if ID_ENABLE_CURL
 	#include "../curl/include/curl/curl.h"
+	#if defined( LIBCURL_VERSION_NUM ) && LIBCURL_VERSION_NUM >= 0x071304 && defined( CURL_VERSION_ASYNCHDNS )
+		#define OPENQ4_CURL_CAPABLE_BUILD 1
+	#else
+		#define OPENQ4_CURL_CAPABLE_BUILD 0
+	#endif
 #endif
 
 int Com_GetNumStartupCommandLines( void );
@@ -1344,10 +1356,21 @@ typedef struct searchpath_s {
 // + .jpg and .tga
 #define MAX_CACHED_DIRS 6
 
-// how many OSes to handle game paks for ( we don't have to know them precisely )
-#define MAX_GAME_OS	6
 #define BINARY_CONFIG "binary.conf"
 #define ADDON_CONFIG "addon.conf"
+
+// Protocol 2.41 identifies compatible game code with the official 1.4.2
+// q4base/game300.pk4 checksum. openQ4 never loads executable code from that
+// archive; the unchanged value is a platform-independent wire token for a
+// module that FindDLL resolved from the trusted package/module roots.
+static const int OPENQ4_Q4_142_GAME300_PAK_CHECKSUM = 0x68fb90b1;
+
+typedef enum {
+	GAME_MODULE_ORIGIN_NONE = 0,
+	GAME_MODULE_ORIGIN_ACTIVE_MOD,
+	GAME_MODULE_ORIGIN_BASE_GAME,
+	GAME_MODULE_ORIGIN_PACKAGE_ROOT
+} gameModuleOrigin_t;
 
 class idDEntry : public idStrList {
 public:
@@ -1368,6 +1391,8 @@ typedef enum modManifestStatus_s {
 	MOD_MANIFEST_VALID,
 	MOD_MANIFEST_INVALID
 } modManifestStatus_t;
+
+class idLevelLoadCacheManager;
 
 class idFileSystemLocal : public idFileSystem {
 public:
@@ -1416,6 +1441,24 @@ public:
 	virtual void			WriteAssetLog();
 	virtual void			ClearAssetLog();
 	virtual const char *	GetAssetLogName();
+	virtual void			BeginLevelLoadCache( const char *mapKey, const char *gameMode,
+								const char *entityFilter, const char *settingsKey );
+	virtual void			FinishLevelLoadCache( bool successful );
+	void					ReleaseLevelLoadCache( void );
+	virtual void			CancelLevelLoadCache( void );
+	virtual void			RecordLevelLoadResource( levelLoadResourceType_t type,
+								const char *name, const char *options,
+								unsigned int flags, unsigned int priority );
+	virtual idFile *		OpenGeneratedCacheRead( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey );
+	virtual bool			WriteGeneratedCache( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey, const void *payload,
+								unsigned int payloadBytes );
+	virtual void			DiscardGeneratedCache( generatedCacheKind_t kind,
+								const char *sourcePath, unsigned int parserVersion,
+								const char *settingsKey );
 	virtual idFile *		GetNewFileMemory( void );
 	virtual idFile *		GetNewFilePermanent( void );
 	virtual idFile *		OpenFileReadFlags( const char *relativePath, int searchFlags, pack_t **foundInPak = NULL, bool allowCopyFiles = true, const char* gamedir = NULL );
@@ -1428,31 +1471,9 @@ public:
 	virtual idFile *		OpenExplicitFileWrite( const char *OSPath );
 	virtual void			CloseFile( idFile *f );
 	virtual void			BackgroundDownload( backgroundDownload_t *bgl );
-	virtual void			ResetReadCount( void ) { readCount = 0; readCountPacifierBytes = 0; }
-	virtual void			AddToReadCount( int c ) {
-		if ( c <= 0 ) {
-			return;
-		}
-
-		readCount += c;
-
-		// Keep loading progress responsive on PC as data is read, but offer the redraw
-		// per megabyte rather than per 64 KiB read chunk. Both callers read in 64 KiB
-		// chunks, so offering every call put thousands of redraw opportunities per map
-		// load in the middle of asset decode. The pacifier is clock-throttled anyway;
-		// this just keeps the offer at asset-sized granularity. Progress accuracy is
-		// unaffected - readCount above still advances on every chunk, and that is what
-		// the loading bar's byte target reads.
-		readCountPacifierBytes += c;
-		if ( readCountPacifierBytes < READCOUNT_PACIFIER_INTERVAL_BYTES ) {
-			return;
-		}
-		readCountPacifierBytes = 0;
-
-		// idSessionLocal::PacifierUpdate is internally throttled and no-ops outside map load.
-		session->PacifierUpdate();
-	}
-	virtual int				GetReadCount( void ) { return readCount; }
+	virtual void			ResetReadCount( void );
+	virtual void			AddToReadCount( int c );
+	virtual int				GetReadCount( void );
 	virtual void			FindDLL( const char *basename, char dllPath[ MAX_OSPATH ], bool updateChecksum );
 	virtual void			ClearDirCache( void );
 	virtual bool			HasD3XP( void );
@@ -1481,6 +1502,8 @@ private:
 	// bytes read since the last loading-pacifier offer, see AddToReadCount
 	static const int		READCOUNT_PACIFIER_INTERVAL_BYTES = 1024 * 1024;
 	int						readCountPacifierBytes;
+	std::mutex				readCountMutex;
+	std::thread::id			fileSystemMainThread;
 	int						loadCount;			// total files read
 	int						loadStack;			// total files in memory
 	idStr					gameFolder;			// this will be a single name without separators
@@ -1513,10 +1536,12 @@ private:
 	int						restartGamePakChecksum;
 	int						gameDLLChecksum;		// the checksum of the last loaded game DLL
 	int						gamePakChecksum;		// the checksum of the pak holding the loaded game DLL
+	gameModuleOrigin_t		gameModuleOrigin;		// trusted root and active-mod provenance
 	bool					isFileLoadingAllowed;
 	idStr					currentAssetLog;
 	idStr					currentAssetLogUnfiltered;
 	idStrList				assetLog;
+	idLevelLoadCacheManager *levelLoadCache;
 
 	int						gamePakForOS[ MAX_GAME_OS ];
 
@@ -1537,6 +1562,9 @@ private:
 	int						DirectFileLength( FILE *o );
 	void					CopyFile( idFile *src, const char *toOSPath );
 	void					AddAssetLogEntry( const char *relativePath );
+	void					BuildLevelLoadContentKey( idStr &key ) const;
+	void					RecordOpenedLevelLoadSource( const char *relativePath, idFile *file );
+	idFile *				UsePreloadedLevelLoadSource( const char *relativePath, idFile *file );
 	int						AddUnique( const char *name, idStrList &list, idHashIndex &hashIndex ) const;
 	void					GetExtensionList( const char *extension, idStrList &extensionList ) const;
 	int						GetFileList( const char *relativePath, const idStrList &extensions, idStrList &list, idHashIndex &hashIndex, bool fullRelativePath, const char* gamedir = NULL );
@@ -1607,6 +1635,7 @@ idFileSystemLocal::idFileSystemLocal
 */
 idFileSystemLocal::idFileSystemLocal( void ) {
 	searchPaths = NULL;
+	fileSystemMainThread = std::this_thread::get_id();
 	readCount = 0;
 	readCountPacifierBytes = 0;
 	loadCount = 0;
@@ -1616,14 +1645,203 @@ idFileSystemLocal::idFileSystemLocal( void ) {
 	d3xp = 0;
 	loadedFileFromDir = false;
 	restartGamePakChecksum = 0;
+	gameDLLChecksum = 0;
+	gamePakChecksum = 0;
+	gameModuleOrigin = GAME_MODULE_ORIGIN_NONE;
+	memset( gamePakForOS, 0, sizeof( gamePakForOS ) );
 	isFileLoadingAllowed = false;
 	currentAssetLog.Clear();
 	currentAssetLogUnfiltered.Clear();
 	assetLog.Clear();
+	levelLoadCache = NULL;
 	backgroundDownloads = NULL;
-	memset( &defaultBackgroundDownload, 0, sizeof( defaultBackgroundDownload ) );
+	defaultBackgroundDownload.next = NULL;
+	defaultBackgroundDownload.opcode = DLTYPE_FILE;
+	defaultBackgroundDownload.f = NULL;
+	defaultBackgroundDownload.file.position = 0;
+	defaultBackgroundDownload.file.length = 0;
+	defaultBackgroundDownload.file.buffer = NULL;
+	defaultBackgroundDownload.url.url.Clear();
+	defaultBackgroundDownload.url.dlerror[ 0 ] = '\0';
+	defaultBackgroundDownload.url.expectedSize = 0;
+	defaultBackgroundDownload.url.dltotal = 0;
+	defaultBackgroundDownload.url.dlnow = 0;
+	defaultBackgroundDownload.url.dlstatus = 0;
+	defaultBackgroundDownload.url.status = DL_WAIT;
+	defaultBackgroundDownload.completed = true;
 	memset( &backgroundThread, 0, sizeof( backgroundThread ) );
 	addonPaks = NULL;
+}
+
+/*
+================
+idFileSystemLocal::BuildLevelLoadContentKey
+
+Produces an installation-root-independent fingerprint input for the exact
+ordered active PK4/search set.  Per-file loose-source timestamps are still
+validated separately by each manifest/cache source identity.
+================
+*/
+void idFileSystemLocal::BuildLevelLoadContentKey( idStr &key ) const {
+	key = va( "game=%s|base=%s|", fs_game.GetString(), fs_game_base.GetString() );
+	int order = 0;
+	for ( const searchpath_t *search = searchPaths; search != NULL; search = search->next, order++ ) {
+		if ( search->pack != NULL ) {
+			idStr fileName;
+			search->pack->pakFilename.ExtractFileName( fileName );
+			fileName.ToLower();
+			key += va( "p%d=%s:%08x:%d:%d:%d|", order, fileName.c_str(),
+				static_cast<unsigned int>( search->pack->checksum ),
+				search->pack->length, search->pack->numfiles,
+				search->pack->addon_search ? 1 : 0 );
+		} else if ( search->dir != NULL ) {
+			idStr gameDir = search->dir->gamedir;
+			gameDir.ToLower();
+			key += va( "d%d=%s|", order, gameDir.c_str() );
+		}
+	}
+	key += "pure=";
+	for ( int i = 0; i < serverPaks.Num(); i++ ) {
+		key += va( "%08x,", static_cast<unsigned int>( serverPaks[ i ]->checksum ) );
+	}
+}
+
+void idFileSystemLocal::RecordOpenedLevelLoadSource( const char *relativePath, idFile *file ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->RecordOpenedSource( relativePath, file );
+	}
+}
+
+idFile *idFileSystemLocal::UsePreloadedLevelLoadSource( const char *relativePath, idFile *file ) {
+	if ( levelLoadCache == NULL || file == NULL ) {
+		return file;
+	}
+	idFile *preloaded = levelLoadCache->OpenPreloadedSource( relativePath, file );
+	if ( preloaded == NULL ) {
+		return file;
+	}
+	CloseFile( file );
+	return preloaded;
+}
+
+void idFileSystemLocal::BeginLevelLoadCache( const char *mapKey, const char *gameMode,
+		const char *entityFilter, const char *settingsKey ) {
+	if ( levelLoadCache == NULL ) {
+		return;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	levelLoadCache->Begin( mapKey, gameMode, entityFilter, contentKey.c_str(), settingsKey );
+}
+
+void idFileSystemLocal::FinishLevelLoadCache( const bool successful ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Finish( successful );
+	}
+}
+
+void idFileSystemLocal::ReleaseLevelLoadCache( void ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Release();
+	}
+}
+
+// Engine-only lifecycle hook. Keeping this outside the public filesystem ABI
+// lets Session retain replay bytes through all EndLevelLoad consumers without
+// exposing coordinator internals to renderer or game modules.
+void FS_ReleaseLevelLoadCache( void ) {
+	fileSystemLocal.ReleaseLevelLoadCache();
+}
+
+void idFileSystemLocal::CancelLevelLoadCache( void ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Cancel();
+	}
+}
+
+void idFileSystemLocal::RecordLevelLoadResource( const levelLoadResourceType_t type,
+		const char *name, const char *options, const unsigned int flags,
+		const unsigned int priority ) {
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->RecordSemantic( type, name, options, flags, priority );
+	}
+}
+
+idFile *idFileSystemLocal::OpenGeneratedCacheRead( const generatedCacheKind_t kind,
+		const char *sourcePath, const unsigned int parserVersion, const char *settingsKey ) {
+	if ( levelLoadCache == NULL ) {
+		return NULL;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	return levelLoadCache->OpenGeneratedCacheRead( kind, sourcePath, parserVersion,
+		settingsKey, contentKey.c_str() );
+}
+
+bool idFileSystemLocal::WriteGeneratedCache( const generatedCacheKind_t kind,
+		const char *sourcePath, const unsigned int parserVersion, const char *settingsKey,
+		const void *payload, const unsigned int payloadBytes ) {
+	if ( levelLoadCache == NULL ) {
+		return false;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	return levelLoadCache->WriteGeneratedCache( kind, sourcePath, parserVersion,
+		settingsKey, payload, payloadBytes, contentKey.c_str() );
+}
+
+void idFileSystemLocal::DiscardGeneratedCache( const generatedCacheKind_t kind,
+		const char *sourcePath, const unsigned int parserVersion, const char *settingsKey ) {
+	if ( levelLoadCache == NULL ) {
+		return;
+	}
+	idStr contentKey;
+	BuildLevelLoadContentKey( contentKey );
+	levelLoadCache->DiscardGeneratedCache( kind, sourcePath, parserVersion,
+		settingsKey, contentKey.c_str() );
+}
+
+/*
+================
+idFileSystemLocal::ResetReadCount
+
+Level-load workers may inflate independently opened PK4 streams. Protect the
+shared progress counter, but keep presentation calls on the main thread.
+================
+*/
+void idFileSystemLocal::ResetReadCount( void ) {
+	std::lock_guard<std::mutex> lock( readCountMutex );
+	readCount = 0;
+	readCountPacifierBytes = 0;
+}
+
+int idFileSystemLocal::GetReadCount( void ) {
+	std::lock_guard<std::mutex> lock( readCountMutex );
+	return readCount;
+}
+
+void idFileSystemLocal::AddToReadCount( const int count ) {
+	if ( count <= 0 ) {
+		return;
+	}
+
+	bool offerPacifier = false;
+	{
+		std::lock_guard<std::mutex> lock( readCountMutex );
+		const int maxCount = ( std::numeric_limits<int>::max )();
+		readCount = count > maxCount - readCount ? maxCount : readCount + count;
+		readCountPacifierBytes = count > maxCount - readCountPacifierBytes
+			? maxCount
+			: readCountPacifierBytes + count;
+		if ( readCountPacifierBytes >= READCOUNT_PACIFIER_INTERVAL_BYTES ) {
+			readCountPacifierBytes = 0;
+			offerPacifier = true;
+		}
+	}
+
+	if ( offerPacifier && std::this_thread::get_id() == fileSystemMainThread && session != NULL ) {
+		session->PacifierUpdate();
+	}
 }
 
 /*
@@ -4254,6 +4472,12 @@ bool idFileSystemLocal::GetModInfo( const char *modDir, idModInfo &modInfo, idSt
 		}
 		return false;
 	}
+	if ( !idGameDirPolicy::IsPortableSegment( modDir ) ) {
+		if ( reason != NULL ) {
+			*reason = "mod directory must be one portable directory segment";
+		}
+		return false;
+	}
 
 	const char *search[ 3 ];
 	search[ 0 ] = fs_cdpath.GetString();
@@ -5560,64 +5784,23 @@ idFileSystemLocal::UpdateGamePakChecksums
 =====================
 */
 bool idFileSystemLocal::UpdateGamePakChecksums( void ) {
-	searchpath_t	*search;
-	fileInPack_t	*pakFile;
-	int				confHash;
-	idFile			*confFile;
-	char			*buf;
-	idLexer			*lexConf;
-	idToken			token;
-	int				id;
-
-	confHash = HashFileName( BINARY_CONFIG );
-
 	memset( gamePakForOS, 0, sizeof( gamePakForOS ) );
-	for ( search = searchPaths; search; search = search->next ) {
-		if ( !search->pack ) {
-			continue;
-		}
-		search->pack->binary = BINARY_NO;
-		for ( pakFile = search->pack->hashTable[confHash]; pakFile; pakFile = pakFile->next ) {
-			if ( !FilenameCompare( pakFile->name, BINARY_CONFIG ) ) {
-				search->pack->binary = BINARY_YES;
-				confFile = ReadFileFromZip( search->pack, pakFile, BINARY_CONFIG );
-				if ( confFile == NULL ) {
-					search->pack->binary = BINARY_NO;
-					break;
-				}
-				buf = new char[ confFile->Length() + 1 ];
-				confFile->Read( (void *)buf, confFile->Length() );
-				buf[ confFile->Length() ] = '\0';
-				lexConf = new idLexer( buf, confFile->Length(), confFile->GetFullPath() );
-				while ( lexConf->ReadToken( &token ) ) {
-					if ( token.IsNumeric() ) {
-						id = atoi( token );
-						if ( id < MAX_GAME_OS && !gamePakForOS[ id ] ) {
-							if ( fs_debug.GetBool() ) {
-								common->Printf( "Adding game pak checksum for OS %d: %s 0x%x\n", id, confFile->GetFullPath(), search->pack->checksum );
-							}
- 							gamePakForOS[ id ] = search->pack->checksum;
-						}
-					}
-				}
-				CloseFile( confFile );
-				delete lexConf;
-				delete[] buf;
-			}
-		}
+	if ( gameDLLChecksum == 0 || gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM ||
+		 gameModuleOrigin == GAME_MODULE_ORIGIN_NONE ) {
+		common->Warning( "No trusted openQ4 game module is loaded for pure-server startup" );
+		return false;
 	}
-
-	// some sanity checks on the game code references
-	// make sure that at least the local OS got a pure reference
-	if ( !gamePakForOS[ BUILD_OS_ID ] ) {
-		common->Warning( "No game code pak reference found for the local OS" );
+	if ( gameModuleOrigin == GAME_MODULE_ORIGIN_ACTIVE_MOD &&
+		 !cvarSystem->GetCVarBool( "net_serverAllowServerMod" ) ) {
+		common->Warning( "The active mod supplies game code (net_serverAllowServerMod is off)" );
 		return false;
 	}
 
-	if ( !cvarSystem->GetCVarBool( "net_serverAllowServerMod" ) &&
-		gamePakChecksum != gamePakForOS[ BUILD_OS_ID ] ) {
-		common->Warning( "The current game code doesn't match pak files (net_serverAllowServerMod is off)" );
-		return false;
+	// Protocol 2.41 defines Windows, Linux and macOS as OS IDs 0..2. The
+	// compatibility token is deliberately platform-independent; executable
+	// bytes remain outside the downloadable/pure-PK4 path.
+	for ( int os = 0; os <= 2; ++os ) {
+		gamePakForOS[ os ] = OPENQ4_Q4_142_GAME300_PAK_CHECKSUM;
 	}
 
 	return true;
@@ -5676,6 +5859,16 @@ int idFileSystemLocal::ValidateDownloadPakForChecksum( int checksum, char path[ 
 	}
 	// check the binary
 	// a pure server sets the binary flag when starting the game
+	if ( pak->binary == BINARY_UNKNOWN ) {
+		const int confHash = HashFileName( BINARY_CONFIG );
+		pak->binary = BINARY_NO;
+		for ( fileInPack_t *pakFile = pak->hashTable[ confHash ]; pakFile; pakFile = pakFile->next ) {
+			if ( !FilenameCompare( pakFile->name, BINARY_CONFIG ) ) {
+				pak->binary = BINARY_YES;
+				break;
+			}
+		}
+	}
 	assert( pak->binary != BINARY_UNKNOWN );
 	pakBinary = ( pak->binary == BINARY_YES ) ? true : false;
 	if ( isBinary != pakBinary ) {
@@ -5709,6 +5902,7 @@ idFileSystemLocal::ClearPureChecksums
 void idFileSystemLocal::ClearPureChecksums( void ) {
 	common->DPrintf( "Cleared pure server lock\n" );
 	serverPaks.Clear();
+	memset( gamePakForOS, 0, sizeof( gamePakForOS ) );
 }
 
 /*
@@ -5722,8 +5916,10 @@ can be:
   some pak files currently referenced are not referenced by the server
   wrong order - if the pak order doesn't match, means some stuff could have been loaded from somewhere else
 server referenced files are prepended to the list if possible ( that doesn't break pureness )
-DLL:
-  the checksum of the pak containing the DLL is maintained seperately, the server can send different replies by OS
+Game code:
+  protocol 2.41 carries the official q4base/game300.pk4 checksum as a
+  compatibility token, but openQ4 resolves executable modules only from its
+  trusted package/module roots and never from a server-selected PK4
 =====================
 */
 fsPureReply_t idFileSystemLocal::SetPureServerChecksums( const int pureChecksums[ MAX_PURE_PAKS ], int _gamePakChecksum, int missingChecksums[ MAX_PURE_PAKS ], int *missingGamePakChecksum ) {
@@ -5731,17 +5927,23 @@ fsPureReply_t idFileSystemLocal::SetPureServerChecksums( const int pureChecksums
 	int				i, j, imissing;
 	bool			success = true;
 	bool			canPrepend = true;
-	char			dllName[MAX_OSPATH];
-	int				dllHash;
-	fileInPack_t *	pakFile;
-
-	sys->DLL_GetFileName( "game", dllName, MAX_OSPATH );
-	dllHash = HashFileName( dllName );
 
 	imissing = 0;
 	missingChecksums[ 0 ] = 0;
 	assert( missingGamePakChecksum );
 	*missingGamePakChecksum = 0;
+
+	// Validate the legacy game-code field before touching the server-selected
+	// asset list. It is only a wire-compatibility token in openQ4; it must never
+	// select, download, extract, or restart into executable code.
+	if ( _gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM ||
+		 gamePakChecksum != OPENQ4_Q4_142_GAME300_PAK_CHECKSUM ||
+		 gameDLLChecksum == 0 || gameModuleOrigin == GAME_MODULE_ORIGIN_NONE ) {
+		if ( fs_debug.GetBool() ) {
+			common->Printf( "pure server supplied unsupported game-code token 0x%x\n", _gamePakChecksum );
+		}
+		return PURE_NODLL;
+	}
 
 	if ( pureChecksums[ 0 ] == 0 ) {
 		ClearPureChecksums();
@@ -5815,48 +6017,6 @@ fsPureReply_t idFileSystemLocal::SetPureServerChecksums( const int pureChecksums
 		j++;
 	}
 
-	// DLL checksuming
-	if ( !_gamePakChecksum ) {
-		// server doesn't have knowledge of code we can use ( OS issue )
-		return PURE_NODLL;
-	}
-	assert( gameDLLChecksum );
-#if ID_FAKE_PURE
-	gamePakChecksum = _gamePakChecksum;
-#endif
-	if ( _gamePakChecksum != gamePakChecksum ) {
-		// current DLL is wrong, search for a pak with the approriate checksum
-		// ( search all paks, the pure list is not relevant here )
-		pack = GetPackForChecksum( _gamePakChecksum );
-		if ( !pack ) {
-			if ( fs_debug.GetBool() ) {
-				common->Printf( "missing the game code pak ( 0x%x )\n", _gamePakChecksum );
-			}
-			// if there are other paks missing they have also been marked above
-			*missingGamePakChecksum = _gamePakChecksum;
-			return PURE_MISSING;
-		}
-		// if assets paks are missing, don't try any of the DLL restart / NODLL
-		if ( imissing ) {
-			return PURE_MISSING;
-		}
-		// we have a matching pak
-		if ( fs_debug.GetBool() ) {
-			common->Printf( "server's game code pak candidate is '%s' ( 0x%x )\n", pack->pakFilename.c_str(), pack->checksum );
-		}
-		// make sure there is a valid DLL for us
-		if ( pack->hashTable[ dllHash ] ) {
-			for ( pakFile = pack->hashTable[ dllHash ]; pakFile; pakFile = pakFile->next ) {
-				if ( !FilenameCompare( pakFile->name, dllName ) ) {
-					gamePakChecksum = _gamePakChecksum;		// this will be used to extract the DLL in pure mode FindDLL
-					return PURE_RESTART;
-				}
-			}
-		}
-		common->Warning( "media is misconfigured. server claims pak '%s' ( 0x%x ) has media for us, but '%s' is not found\n", pack->pakFilename.c_str(), pack->checksum, dllName );
-		return PURE_NODLL;
-	}
-
 	// we reply to missing after DLL check so it can be part of the list
 	if ( imissing ) {
 		return PURE_MISSING;
@@ -5885,10 +6045,12 @@ void idFileSystemLocal::GetPureServerChecksums( int checksums[ MAX_PURE_PAKS ], 
 	}
 	checksums[ i ] = 0;
 	if ( _gamePakChecksum ) {
-		if ( OS >= 0 ) {
+		if ( OS >= 0 && OS < MAX_GAME_OS ) {
 			*_gamePakChecksum = gamePakForOS[ OS ];
-		} else {
+		} else if ( OS == -1 ) {
 			*_gamePakChecksum = gamePakChecksum;
+		} else {
+			*_gamePakChecksum = 0;
 		}
 	}
 }
@@ -5928,6 +6090,7 @@ is resetting due to a game change
 ================
 */
 void idFileSystemLocal::Init( void ) {
+	fileSystemMainThread = std::this_thread::get_id();
 	// allow command line parms to override our defaults
 	// we have to specially handle this, because normal command
 	// line variable sets don't happen until after the filesystem
@@ -5999,6 +6162,9 @@ void idFileSystemLocal::Init( void ) {
 
 	// see if we are going to allow add-ons
 	SetRestrictions();
+	if ( levelLoadCache == NULL ) {
+		levelLoadCache = new idLevelLoadCacheManager( this );
+	}
 
 	// spawn a thread to handle background file reads
 	StartBackgroundDownloadThread();
@@ -6031,6 +6197,13 @@ void idFileSystemLocal::Restart( void ) {
 
 	// see if we are going to allow add-ons
 	SetRestrictions();
+	if ( levelLoadCache == NULL ) {
+		levelLoadCache = new idLevelLoadCacheManager( this );
+	}
+
+	// Shutdown( true ) stops the worker, so filesystem restarts must restore it
+	// before another background file read or pure-pack download is queued.
+	StartBackgroundDownloadThread();
 
 	// if we can't find default.cfg, assume that the paths are
 	// busted and error out now, rather than getting an unreadable
@@ -6052,6 +6225,13 @@ Frees all resources and closes all files
 */
 void idFileSystemLocal::Shutdown( bool reloading ) {
 	searchpath_t *sp, *next, *loop;
+	if ( levelLoadCache != NULL ) {
+		levelLoadCache->Cancel();
+		if ( !reloading ) {
+			delete levelLoadCache;
+			levelLoadCache = NULL;
+		}
+	}
 
 	StopBackgroundDownloadThread();
 
@@ -6075,6 +6255,8 @@ void idFileSystemLocal::Shutdown( bool reloading ) {
 	loadedFileFromDir = false;
 	gameDLLChecksum = 0;
 	gamePakChecksum = 0;
+	gameModuleOrigin = GAME_MODULE_ORIGIN_NONE;
+	memset( gamePakForOS, 0, sizeof( gamePakForOS ) );
 
 	ClearDirCache();
 
@@ -6445,7 +6627,8 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 			}
 
 			AddAssetLogEntry( relativePath );
-			return file;
+			RecordOpenedLevelLoadSource( relativePath, file );
+			return UsePreloadedLevelLoadSource( relativePath, file );
 		} else if ( search->pack && ( searchFlags & FSFLAG_SEARCH_PAKS ) ) {
 
 			if ( !search->pack->hashTable[hash] ) {
@@ -6506,7 +6689,8 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 						common->Printf( "idFileSystem::OpenFileRead: %s (found in '%s')\n", relativePath, pak->pakFilename.c_str() );
 					}
 					AddAssetLogEntry( relativePath );
-					return file;
+					RecordOpenedLevelLoadSource( relativePath, file );
+					return UsePreloadedLevelLoadSource( relativePath, file );
 				}
 			}
 		}
@@ -6531,7 +6715,8 @@ idFile *idFileSystemLocal::OpenFileReadFlags( const char *relativePath, int sear
 						common->Printf( "idFileSystem::OpenFileRead: %s (found in addon pk4 '%s')\n", relativePath, search->pack->pakFilename.c_str() );
 					}
 					AddAssetLogEntry( relativePath );
-					return file;
+					RecordOpenedLevelLoadSource( relativePath, file );
+					return UsePreloadedLevelLoadSource( relativePath, file );
 				}
 			}
 		}
@@ -6831,6 +7016,55 @@ int idFileSystemLocal::CurlProgressFunction( void *clientp, double dltotal, doub
 }
 
 #if ID_ENABLE_CURL
+static bool fsCurlGlobalInitialized = false;
+static bool fsCurlHTTPReady = false;
+
+static void FS_ShutdownCurl() {
+	fsCurlHTTPReady = false;
+	if ( fsCurlGlobalInitialized ) {
+		curl_global_cleanup();
+		fsCurlGlobalInitialized = false;
+	}
+}
+
+static bool FS_InitializeCurl() {
+#if !OPENQ4_CURL_CAPABLE_BUILD
+	common->Warning( "HTTP downloads disabled: libcurl 7.19.4 or newer with asynchronous DNS is required" );
+	return false;
+#else
+	if ( fsCurlHTTPReady ) {
+		return true;
+	}
+
+	const CURLcode initResult = curl_global_init( CURL_GLOBAL_DEFAULT );
+	if ( initResult != CURLE_OK ) {
+		common->Warning( "HTTP downloads disabled: curl_global_init failed (%s)", curl_easy_strerror( initResult ) );
+		return false;
+	}
+	fsCurlGlobalInitialized = true;
+
+	const curl_version_info_data *versionInfo = curl_version_info( CURLVERSION_NOW );
+	bool hasHTTP = false;
+	if ( versionInfo != NULL && versionInfo->protocols != NULL ) {
+		for ( const char *const *protocol = versionInfo->protocols; *protocol != NULL; ++protocol ) {
+			if ( idStr::Icmp( *protocol, "http" ) == 0 ) {
+				hasHTTP = true;
+				break;
+			}
+		}
+	}
+	if ( versionInfo == NULL || versionInfo->version_num < 0x071304 ||
+		 ( versionInfo->features & CURL_VERSION_ASYNCHDNS ) == 0 || !hasHTTP ) {
+		common->Warning( "HTTP downloads disabled: libcurl lacks the required version, HTTP, or asynchronous-DNS capability" );
+		FS_ShutdownCurl();
+		return false;
+	}
+
+	fsCurlHTTPReady = true;
+	return true;
+#endif
+}
+
 class idScopedCurlEasySession {
 public:
 	explicit idScopedCurlEasySession( CURL *session ) : session( session ) {}
@@ -6843,6 +7077,52 @@ private:
 	idScopedCurlEasySession &operator=( const idScopedCurlEasySession & ) = delete;
 	CURL *session;
 };
+
+static CURLcode FS_ConfigureBoundedHTTPTransfer( CURL *session ) {
+#if !OPENQ4_CURL_CAPABLE_BUILD
+	return CURLE_FAILED_INIT;
+#else
+	CURLcode result;
+
+	// Keep package transfer and shutdown behavior bounded even when a remote
+	// endpoint accepts a connection and then stops making progress. Protocol
+	// masks are repeated here so future callers cannot bypass URLPolicy by
+	// reaching libcurl directly.
+	result = curl_easy_setopt( session, CURLOPT_PROTOCOLS, static_cast<long>( CURLPROTO_HTTP | CURLPROTO_HTTPS ) );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_REDIR_PROTOCOLS, static_cast<long>( CURLPROTO_HTTP | CURLPROTO_HTTPS ) );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_FOLLOWLOCATION, 0L );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_MAXREDIRS, 0L );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_CONNECTTIMEOUT, 15L );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_LOW_SPEED_LIMIT, 1024L );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_LOW_SPEED_TIME, 30L );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	result = curl_easy_setopt( session, CURLOPT_TIMEOUT, 3600L );
+	if ( result != CURLE_OK ) {
+		return result;
+	}
+	return curl_easy_setopt( session, CURLOPT_NOSIGNAL, 1L );
+#endif
+}
 #endif
 
 /*
@@ -6875,8 +7155,27 @@ dword BackgroundDownloadThread( void *parms ) {
 			// use the low level read function, because fread may allocate memory
 			fread(bgl->file.buffer, bgl->file.length, 1, static_cast<idFile_Permanent*>(bgl->f)->GetFilePtr());
 			bgl->completed = true;
-		} else {
+		} else if ( bgl->opcode == DLTYPE_URL ) {
 #if ID_ENABLE_CURL
+			dlStatus_t expectedStatus = DL_WAIT;
+			if ( !bgl->url.status.compare_exchange_strong( expectedStatus, DL_INPROGRESS ) ) {
+				bgl->url.dlstatus = -1;
+				bgl->url.status = DL_FAILED;
+				idStr::Copynz( bgl->url.dlerror,
+					expectedStatus == DL_ABORTING ? "download cancelled" : "invalid download state",
+					MAX_STRING_CHARS );
+				bgl->completed = true;
+				continue;
+			}
+			if ( !fsCurlHTTPReady ) {
+				bgl->url.dlstatus = CURLE_FAILED_INIT;
+				bgl->url.status = DL_FAILED;
+				idStr::Copynz( bgl->url.dlerror,
+					"HTTP download support is unavailable with this libcurl runtime",
+					MAX_STRING_CHARS );
+				bgl->completed = true;
+				continue;
+			}
 			// DLTYPE_URL
 			// use a local buffer for curl error since the size define is local
 			char error_buf[ CURL_ERROR_SIZE ];
@@ -6907,7 +7206,14 @@ dword BackgroundDownloadThread( void *parms ) {
 				bgl->completed = true;
 				continue;
 			}
-			ret = curl_easy_setopt( session, CURLOPT_FAILONERROR, 1 );
+			ret = FS_ConfigureBoundedHTTPTransfer( session );
+			if ( ret ) {
+				bgl->url.dlstatus = ret;
+				bgl->url.status = DL_FAILED;
+				bgl->completed = true;
+				continue;
+			}
+			ret = curl_easy_setopt( session, CURLOPT_FAILONERROR, 1L );
 			if ( ret ) {
 				bgl->url.dlstatus = ret;
 				bgl->url.status = DL_FAILED;
@@ -6928,7 +7234,7 @@ dword BackgroundDownloadThread( void *parms ) {
 				bgl->completed = true;
 				continue;
 			}
-			ret = curl_easy_setopt( session, CURLOPT_NOPROGRESS, 0 );
+			ret = curl_easy_setopt( session, CURLOPT_NOPROGRESS, 0L );
 			if ( ret ) {
 				bgl->url.dlstatus = ret;
 				bgl->url.status = DL_FAILED;
@@ -6951,7 +7257,6 @@ dword BackgroundDownloadThread( void *parms ) {
 			}
 			bgl->url.dlnow = 0;
 			bgl->url.dltotal = 0;
-			bgl->url.status = DL_INPROGRESS;
 			ret = curl_easy_perform( session );
 			if ( ret ) {
 				const char *errorMessage = bgl->url.dlerror[ 0 ] != '\0' ? bgl->url.dlerror :
@@ -6975,12 +7280,26 @@ dword BackgroundDownloadThread( void *parms ) {
 				bgl->completed = true;
 				continue;
 			}
-			bgl->url.status = DL_DONE;
+			expectedStatus = DL_INPROGRESS;
+			if ( !bgl->url.status.compare_exchange_strong( expectedStatus, DL_DONE ) ) {
+				bgl->url.dlstatus = -1;
+				bgl->url.status = DL_FAILED;
+				idStr::Copynz( bgl->url.dlerror,
+					expectedStatus == DL_ABORTING ? "download cancelled" : "invalid download completion state",
+					MAX_STRING_CHARS );
+			}
 			bgl->completed = true;
 #else
 			bgl->url.status = DL_FAILED;
+			bgl->url.dlstatus = -1;
+			idStr::Copynz( bgl->url.dlerror, "HTTP download support is unavailable in this build", MAX_STRING_CHARS );
 			bgl->completed = true;
 #endif
+		} else {
+			bgl->url.status = DL_FAILED;
+			bgl->url.dlstatus = -1;
+			idStr::Copynz( bgl->url.dlerror, "unsupported background download operation", MAX_STRING_CHARS );
+			bgl->completed = true;
 		}
 	}
 	return 0;
@@ -6993,9 +7312,15 @@ idFileSystemLocal::StartBackgroundReadThread
 */
 void idFileSystemLocal::StartBackgroundDownloadThread() {
 	if ( !backgroundThread.threadHandle ) {
+#if ID_ENABLE_CURL
+		FS_InitializeCurl();
+#endif
 		Sys_CreateThread( (xthread_t)BackgroundDownloadThread, NULL, THREAD_NORMAL, backgroundThread, "backgroundDownload", g_threads, &g_thread_count );
 		if ( !backgroundThread.threadHandle ) {
 			common->Warning( "idFileSystemLocal::StartBackgroundDownloadThread: failed" );
+#if ID_ENABLE_CURL
+			FS_ShutdownCurl();
+#endif
 		}
 	} else {
 		common->Printf( "background thread already running\n" );
@@ -7027,6 +7352,10 @@ void idFileSystemLocal::StopBackgroundDownloadThread() {
 		bgl->completed = true;
 		bgl = next;
 	}
+
+#if ID_ENABLE_CURL
+	FS_ShutdownCurl();
+#endif
 }
 
 /*
@@ -7035,6 +7364,28 @@ idFileSystemLocal::BackgroundDownload
 =================
 */
 void idFileSystemLocal::BackgroundDownload( backgroundDownload_t *bgl ) {
+	if ( bgl == NULL ) {
+		return;
+	}
+	if ( bgl->opcode != DLTYPE_FILE && bgl->opcode != DLTYPE_URL ) {
+		bgl->url.status = DL_FAILED;
+		bgl->url.dlstatus = -1;
+		idStr::Copynz( bgl->url.dlerror, "unsupported background download operation", sizeof( bgl->url.dlerror ) );
+		bgl->completed = true;
+		return;
+	}
+	if ( bgl->opcode == DLTYPE_URL && !idURLPolicy::IsAllowedHTTPURL( bgl->url.url.c_str() ) ) {
+		// Keep the generic downloader fail-closed too. Today the async pure-pack
+		// client is the sole URL producer, but a future caller must not silently
+		// re-enable file:, SMB, or another libcurl-supported protocol.
+		bgl->url.status = DL_FAILED;
+		bgl->url.dlstatus = -1;
+		idStr::Copynz( bgl->url.dlerror,
+			"download URL must be bounded HTTP or HTTPS with a host",
+			sizeof( bgl->url.dlerror ) );
+		bgl->completed = true;
+		return;
+	}
 	if ( bgl->opcode == DLTYPE_FILE ) {
 		if ( dynamic_cast<idFile_Permanent *>(bgl->f) ) {
 			// add the bgl to the background download list
@@ -7169,6 +7520,7 @@ void idFileSystemLocal::FindDLL( const char *name, char _dllPath[ MAX_OSPATH ], 
 	idFile			*dllFile = NULL;
 	char			dllName[MAX_OSPATH];
 	idStr			dllPath;
+	gameModuleOrigin_t resolvedOrigin = GAME_MODULE_ORIGIN_NONE;
 
 	sys->DLL_GetFileName( name, dllName, MAX_OSPATH );
 
@@ -7207,6 +7559,16 @@ void idFileSystemLocal::FindDLL( const char *name, char _dllPath[ MAX_OSPATH ], 
 	if ( !moduleGameDir[0] ) {
 		moduleGameDir = OPENQ4_GAMEDIR;
 	}
+	if ( !idGameDirPolicy::IsPortableSegment( moduleGameDir ) ) {
+		common->Warning( "Refusing game module lookup for unsafe fs_game '%s'", moduleGameDir );
+		if ( updateChecksum ) {
+			gameDLLChecksum = 0;
+			gamePakChecksum = 0;
+			gameModuleOrigin = GAME_MODULE_ORIGIN_NONE;
+		}
+		_dllPath[ 0 ] = '\0';
+		return;
+	}
 	idStr trustedModuleRoots;
 	idStr attemptedModulePaths;
 	for ( int i = 0; i < numModuleSearchRoots; ++i ) {
@@ -7218,12 +7580,19 @@ void idFileSystemLocal::FindDLL( const char *name, char _dllPath[ MAX_OSPATH ], 
 	for ( int i = 0; !dllFile && i < numModuleSearchRoots; i++ ) {
 		FS_AppendGameModuleSearchPath( attemptedModulePaths, moduleSearchRoots[i], moduleGameDir, dllName );
 		dllFile = FS_OpenGameModuleFromExeDir( this, moduleSearchRoots[i], moduleGameDir, dllName, dllPath );
+		if ( dllFile ) {
+			resolvedOrigin = idStr::Icmp( moduleGameDir, OPENQ4_GAMEDIR ) == 0 ?
+				GAME_MODULE_ORIGIN_BASE_GAME : GAME_MODULE_ORIGIN_ACTIVE_MOD;
+		}
 	}
 
 	if ( !dllFile && idStr::Icmp( moduleGameDir, OPENQ4_GAMEDIR ) != 0 ) {
 		for ( int i = 0; !dllFile && i < numModuleSearchRoots; i++ ) {
 			FS_AppendGameModuleSearchPath( attemptedModulePaths, moduleSearchRoots[i], OPENQ4_GAMEDIR, dllName );
 			dllFile = FS_OpenGameModuleFromExeDir( this, moduleSearchRoots[i], OPENQ4_GAMEDIR, dllName, dllPath );
+			if ( dllFile ) {
+				resolvedOrigin = GAME_MODULE_ORIGIN_BASE_GAME;
+			}
 		}
 		if ( dllFile ) {
 			common->DPrintf( "Game DLL '%s' not found in mod directory '%s'; falling back to '%s'.\n", dllName, moduleGameDir, OPENQ4_GAMEDIR );
@@ -7235,6 +7604,9 @@ void idFileSystemLocal::FindDLL( const char *name, char _dllPath[ MAX_OSPATH ], 
 		dllPath = moduleSearchRoots[i];
 		dllPath.AppendPath( dllName );
 		dllFile = OpenExplicitFileRead( dllPath );
+		if ( dllFile ) {
+			resolvedOrigin = GAME_MODULE_ORIGIN_PACKAGE_ROOT;
+		}
 	}
 
 	if ( updateChecksum ) {
@@ -7243,7 +7615,8 @@ void idFileSystemLocal::FindDLL( const char *name, char _dllPath[ MAX_OSPATH ], 
 		} else {
 			gameDLLChecksum = 0;
 		}
-		gamePakChecksum = 0;
+		gameModuleOrigin = resolvedOrigin;
+		gamePakChecksum = dllFile ? OPENQ4_Q4_142_GAME300_PAK_CHECKSUM : 0;
 	}
 	if ( dllFile ) {
 		dllPath = dllFile->GetFullPath( );

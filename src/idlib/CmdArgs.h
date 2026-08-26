@@ -32,6 +32,8 @@ public:
 
 	void					AppendArg( const char *text );
 	void					Clear( void ) { argc = 0; }
+	void					ClearSensitive( void );
+	static void			ClearArgsScratch( void );
 	const char **			GetArgs( int *argc );
 
 private:

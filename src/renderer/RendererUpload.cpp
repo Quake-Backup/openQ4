@@ -479,6 +479,11 @@ void idUploadManager::BeginFrame( int frameCount ) {
 	frameBuffer_t &frame = frameBuffers[currentFrameBuffer];
 
 	if ( path != UPLOAD_PATH_PERSISTENT ) {
+		// The modern executor may have rebound GL_ARRAY_BUFFER through its state
+		// cache since the legacy vertex-cache shadow was last updated. Force the
+		// real buffer bind before orphaning this frame slot so the orphan cannot
+		// accidentally apply to the most recently submitted geometry VBO.
+		idVertexCache::InvalidateBufferBindings();
 		idVertexCache::BindArrayBuffer( frame.vbo );
 		glBufferDataARB( GL_ARRAY_BUFFER_ARB, (GLsizeiptrARB)stats.ringSizeBytes, NULL, GL_STREAM_DRAW_ARB );
 		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame orphan" );
@@ -520,9 +525,19 @@ bool idUploadManager::AllocFrameTemp( void *data, int bytes, int alignment, rend
 		return false;
 	}
 
-	idVertexCache::BindArrayBuffer( frame.vbo );
+	// A persistent+coherent mapping is written through the pointer - no GL call
+	// touches GL_ARRAY_BUFFER on that branch, so the real binding and both
+	// binding shadows stay untouched. The map-range/subdata branches DO target
+	// GL_ARRAY_BUFFER and can be interleaved with modern submissions that bind
+	// it outside idVertexCache's redundant-bind shadow, so for those the
+	// ownership transfer stays explicit before writing a range in the stream.
+	const bool persistentWrite = path == UPLOAD_PATH_PERSISTENT && frame.mapped != NULL;
+	if ( !persistentWrite ) {
+		idVertexCache::InvalidateBufferBindings();
+		idVertexCache::BindArrayBuffer( frame.vbo );
+	}
 
-	if ( path == UPLOAD_PATH_PERSISTENT && frame.mapped != NULL ) {
+	if ( persistentWrite ) {
 		SIMDProcessor->Memcpy( frame.mapped + offset, data, bytes );
 		stats.framePersistentWrites++;
 	} else if ( path == UPLOAD_PATH_MAP_RANGE && glMapBufferRange != NULL ) {
@@ -555,7 +570,10 @@ bool idUploadManager::AllocFrameTemp( void *data, int bytes, int alignment, rend
 	stats.frameRingUsedBytes = ring.Used();
 	stats.frameRingHighWaterBytes = ring.HighWater();
 	R_RendererMetrics_AddUploadBytes( bytes );
-	R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame stream" );
+	if ( !persistentWrite ) {
+		// the legacy bind above changed GL_ARRAY_BUFFER behind the modern cache
+		R_GLStateCache_InvalidateBufferBinding( GL_ARRAY_BUFFER, "renderer upload frame stream" );
+	}
 	return true;
 }
 
@@ -627,6 +645,7 @@ bool idUploadManager::CreateFrameBuffers( uploadPath_t requestedPath ) {
 
 	for ( int i = 0; i < frameBufferCount; ++i ) {
 		glGenBuffersARB( 1, &frameBuffers[i].vbo );
+		idVertexCache::InvalidateBufferBindings();
 		idVertexCache::BindArrayBuffer( frameBuffers[i].vbo );
 
 		if ( path == UPLOAD_PATH_PERSISTENT ) {

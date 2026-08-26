@@ -195,7 +195,10 @@ PrintCvarMatches
 static void PrintCvarMatches( const char *s ) {
 	if ( idStr::Icmpn( s, globalAutoComplete.currentMatch,
 		idLib::SizeToInt( strlen( globalAutoComplete.currentMatch ), "PrintCvarMatches" ) ) == 0 ) {
-		common->Printf( "    %s" S_COLOR_WHITE " = \"%s\"\n", s, cvarSystem->GetCVarString( s ) );
+		idCVar *cvar = cvarSystem->Find( s );
+		const char *value = ( cvar != NULL && ( cvar->GetFlags() & CVAR_PRIVATE ) ) ?
+			"<redacted>" : cvarSystem->GetCVarString( s );
+		common->Printf( "    %s" S_COLOR_WHITE " = \"%s\"\n", s, value );
 	}
 }
 
@@ -223,11 +226,13 @@ idEditField::Clear
 ===============
 */
 void idEditField::Clear( void ) {
-	buffer[0] = 0;
+	// Edit fields can hold console-entered credentials. Clear the backing
+	// storage, not only its first byte, so discarded private commands do not
+	// remain recoverable in stale field memory.
+	memset( buffer, 0, sizeof( buffer ) );
 	cursor = 0;
 	scroll = 0;
-	autoComplete.length = 0;
-	autoComplete.valid = false;
+	memset( &autoComplete, 0, sizeof( autoComplete ) );
 }
 
 /*
@@ -365,6 +370,12 @@ idEditField::AutoComplete
 void idEditField::AutoComplete( void ) {
 	char completionArgString[MAX_EDIT_LINE];
 	idCmdArgs args;
+	if ( cvarSystem != NULL && cvarSystem->IsInitialized() &&
+		cvarSystem->CommandContainsPrivateCVar( buffer ) ) {
+		idCmdArgs::ClearArgsScratch();
+		common->Printf( "autocomplete is unavailable for private CVar commands\n" );
+		return;
+	}
 
 	if ( !autoComplete.valid ) {
 		const bool explicitCommandPrefix = ( buffer[0] == '/' || buffer[0] == '\\' );
@@ -499,6 +510,10 @@ static int QueryCompletionInternal( const char *cmd, bool *appendSpace, editFiel
 	}
 
 	if ( cmd == NULL || cmd[0] == '\0' ) {
+		return 0;
+	}
+	if ( cvarSystem != NULL && cvarSystem->IsInitialized() &&
+		cvarSystem->CommandContainsPrivateCVar( cmd ) ) {
 		return 0;
 	}
 
@@ -787,6 +802,7 @@ void idEditField::Paste( void ) {
 		CharEvent( cbd[i] );
 	}
 
+	memset( cbd, 0, pasteLen );
 	Mem_Free( cbd );
 }
 

@@ -77,6 +77,7 @@ typedef enum {
 } authReplyMsg_t;
 
 typedef struct challenge_s {
+	bool				valid;			// entry contains an issued, unexpired challenge
 	netadr_t			address;		// client address
 	int					clientId;		// client identification
 	int					challenge;		// challenge code
@@ -90,6 +91,40 @@ typedef struct challenge_s {
 	char				guid[12];		// guid
 	int					OS;
 } challenge_t;
+
+const int MAX_RCON2_CHALLENGES = 64;
+const int MAX_RCON_RATE_LIMITS = 64;
+const int MAX_OOB_RATE_LIMITS = 128;
+
+typedef struct rcon2Challenge_s {
+	bool				active;
+	netadr_t			address;
+	int					createdTime;
+	int					lastResponseTime;
+	byte				clientNonce[ 16 ];
+	byte				serverNonce[ 16 ];
+	byte				endpointBinding[ 16 ];
+	byte				requestDigest[ 32 ];
+} rcon2Challenge_t;
+
+typedef struct rconRateLimit_s {
+	bool				active;
+	netadr_t			address;
+	int					challengeWindowStart;
+	int					lastChallengeTime;
+	int					challengeCount;
+	int					failureWindowStart;
+	int					failureCount;
+	int					blockedUntil;
+} rconRateLimit_t;
+
+typedef struct oobRateLimit_s {
+	bool				active;
+	netadr_t			address;
+	int					windowStart;
+	int					infoResponses;
+	int					challengeResponses;
+} oobRateLimit_t;
 
 typedef enum {
 	SCS_FREE,			// can be reused for a new connection
@@ -196,6 +231,9 @@ private:
 	int					localClientNum;				// local client on listen server
 
 	challenge_t			challenges[MAX_CHALLENGES];	// to prevent invalid IPs from connecting
+	rcon2Challenge_t	rcon2Challenges[MAX_RCON2_CHALLENGES];
+	rconRateLimit_t	rconRateLimits[MAX_RCON_RATE_LIMITS];
+	oobRateLimit_t		oobRateLimits[MAX_OOB_RATE_LIMITS];
 	serverClient_t		clients[MAX_ASYNC_CLIENTS];	// clients
 	usercmd_t			userCmds[MAX_USERCMD_BACKUP][MAX_ASYNC_CLIENTS];
 
@@ -212,6 +250,13 @@ private:
 	bool				serverReloadingEngine;		// flip-flop to not loop over when net_serverReloadEngine is on
 
 	bool				noRconOutput;				// for default rcon response when command is silent
+	bool				rcon2VerifierInitialized;
+	bool				rcon2VerifierValid;
+	byte				rcon2Salt[16];
+	byte				rcon2Verifier[32];
+	int				oobWindowStart;
+	int				oobInfoResponses;
+	int				oobChallengeResponses;
 
 	int					lastAuthTime;				// global for auth server timeout
 
@@ -250,6 +295,8 @@ private:
 	void				ProcessChallengeMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessConnectMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessRemoteConsoleMessage( const netadr_t from, const idBitMsg &msg );
+	void				ProcessRemoteConsole2ChallengeMessage( const netadr_t from, const idBitMsg &msg );
+	void				ProcessRemoteConsole2Message( const netadr_t from, const idBitMsg &msg );
 	void				ProcessGetInfoMessage( const netadr_t from, const idBitMsg &msg );
 	bool				ConnectionlessMessage( const netadr_t from, const idBitMsg &msg );
 	bool				ProcessMessage( const netadr_t from, idBitMsg &msg );
@@ -257,6 +304,14 @@ private:
 	bool				SendPureServerMessage( const netadr_t to, int OS );										// returns false if no pure paks on the list
 	void				ProcessPureMessage( const netadr_t from, const idBitMsg &msg );
 	int					ValidateChallenge( const netadr_t from, int challenge, int clientId );	// returns -1 if validate failed
+	bool				AllowConnectionlessResponse( const netadr_t from, bool infoResponse );
+	bool				RefreshRcon2Verifier( void );
+	bool				AllowRconChallenge( const netadr_t from );
+	bool				AllowRconProofAttempt( const netadr_t from );
+	void				RecordRconFailure( const netadr_t from );
+	void				ClearRconSecurityState( bool clearRateLimits );
+	void				ExecuteRemoteConsoleCommand( const netadr_t from, const char *command, bool authenticated );
+	void				SendRemoteConsole2Complete( const netadr_t to, const byte clientNonce[16], const byte serverNonce[16] );
 	bool				SendReliablePureToClient( int clientNum );
 	void				ProcessReliablePure( int clientNum, const idBitMsg &msg );
 	bool				VerifyChecksumMessage( int clientNum, const netadr_t *from, const idBitMsg &msg, idStr &reply, int OS ); // if from is NULL, clientNum is used for error messages

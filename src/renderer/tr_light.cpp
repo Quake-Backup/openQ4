@@ -246,6 +246,10 @@ bool R_CreateAmbientCache( srfTriangles_t *tri, bool needsLighting ) {
 	if ( tri->ambientCache ) {
 		return true;
 	}
+	if ( R_GpuSkinning_IsCandidate( tri )
+		&& R_GpuSkinning_PrepareAmbientCache( tri, needsLighting ) ) {
+		return true;
+	}
 	// we are going to use it for drawing, so make sure we have the tangents and normals
 	if ( needsLighting && !tri->tangentsCalculated ) {
 		R_DeriveTangents( tri );
@@ -272,6 +276,9 @@ bool R_CreatePackedSurfaceFrameCaches( srfTriangles_t *tri, bool needsLighting, 
 	if ( tri == NULL || tri->numVerts <= 0 ) {
 		return false;
 	}
+	const bool gpuPrepared = tri->ambientCache == NULL
+		&& R_GpuSkinning_IsCandidate( tri )
+		&& R_GpuSkinning_PrepareAmbientCache( tri, needsLighting );
 
 	idDrawVert *sourceVerts = tri->verts;
 	glIndex_t *sourceIndexes = tri->indexes;
@@ -289,18 +296,21 @@ bool R_CreatePackedSurfaceFrameCaches( srfTriangles_t *tri, bool needsLighting, 
 	}
 #endif
 
-	if ( sourceVerts == NULL ) {
+	if ( sourceVerts == NULL && !gpuPrepared ) {
 		return false;
 	}
 
-	if ( needsLighting && !tri->tangentsCalculated && sourceVerts == tri->verts ) {
+	if ( !gpuPrepared && needsLighting && !tri->tangentsCalculated && sourceVerts == tri->verts ) {
 		R_DeriveTangents( tri );
 		sourceVerts = tri->verts;
 	}
 
-	tri->ambientCache = vertexCache.AllocFrameTemp( sourceVerts, tri->numVerts * sizeof( sourceVerts[0] ) );
-	if ( !tri->ambientCache ) {
-		return false;
+	if ( !gpuPrepared ) {
+		tri->ambientCache = vertexCache.AllocFrameTemp( sourceVerts,
+			tri->numVerts * sizeof( sourceVerts[0] ) );
+		if ( !tri->ambientCache ) {
+			return false;
+		}
 	}
 
 	if ( r_useIndexBuffers.GetBool() && createIndexCache && tri->numIndexes > 0 && sourceIndexes != NULL ) {
@@ -349,6 +359,10 @@ static srfTriangles_t *R_CreateFrameSubmitTri( srfTriangles_t *tri, bool needsLi
 
 	srfTriangles_t *submitTri = (srfTriangles_t *)R_FrameAlloc( sizeof( *submitTri ) );
 	*submitTri = *tri;
+	// The frame snapshot borrows immutable sidecars and the palette from the
+	// dynamic-model snapshot. It must never free the source allocation.
+	submitTri->gpuSkinningJointPaletteAlloc = NULL;
+	submitTri->numGpuSkinningJointPaletteAllocJoints = 0;
 	submitTri->verts = sourceVerts;
 	submitTri->indexes = sourceIndexes;
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
@@ -945,6 +959,7 @@ viewLight_t *R_SetLightDefViewLight( idRenderLightLocal *light ) {
 	vLight->pointLight = light->parms.pointLight;
 	vLight->parallel = light->parms.parallel;
 	vLight->lightRadius = light->parms.lightRadius;
+	vLight->lightAxis = light->parms.axis;
 	vLight->lightProject[0] = light->lightProject[0];
 	vLight->lightProject[1] = light->lightProject[1];
 	vLight->lightProject[2] = light->lightProject[2];
@@ -1124,6 +1139,10 @@ bool R_LinkLightSurf( const drawSurf_t **link, const srfTriangles_t *tri, const 
 	}
 
 	drawSurf = (drawSurf_t *)R_FrameAlloc( sizeof( *drawSurf ) );
+	// Receiver and stencil-volume drawSurfs do not run R_FinalizeDrawSurf.
+	// Clear the embedded slot so whole-drawSurf copies never read indeterminate
+	// contract bytes; scene packets seal their role-specific NOT_APPLICABLE copy.
+	memset( &drawSurf->classicDeform, 0, sizeof( drawSurf->classicDeform ) );
 
 	drawSurf->geo = tri;
 	drawSurf->space = space;
@@ -1185,7 +1204,7 @@ static const portalArea_t *R_DrawSurfAreaForGlobalPoint( const idVec3 &point ) {
 	return NULL;
 }
 
-static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, const viewEntity_t *space ) {
+static const portalArea_t *R_ResolveDrawSurfAreaUncached( const srfTriangles_t *tri, const viewEntity_t *space ) {
 	if ( tri == NULL || space == NULL || tr.viewDef == NULL || tr.viewDef->renderWorld == NULL ) {
 		return NULL;
 	}
@@ -1211,6 +1230,100 @@ static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, con
 	}
 
 	return R_FallbackDrawSurfArea( space );
+}
+
+typedef struct drawSurfAreaMemo_s {
+	const srfTriangles_t *		tri;
+	const idRenderEntityLocal *	entityDef;
+	const portalArea_t *		area;
+	idBounds					bounds;
+	float						modelMatrix[16];
+	int							entityModFrame;
+} drawSurfAreaMemo_t;
+
+static const int DRAWSURF_AREA_MEMO_MAX = 65536;
+static idList<drawSurfAreaMemo_t>	s_drawSurfAreaMemo;
+static idHashIndex					s_drawSurfAreaMemoHash;
+static idHashIndex					s_drawSurfAreaMemoEntityHash;
+
+static ID_INLINE int R_DrawSurfAreaMemoKey( const idRenderEntityLocal *entityDef, const srfTriangles_t *tri ) {
+	return ( int )( ( ( ( uintptr_t )entityDef ) >> 4 ) ^ ( ( ( uintptr_t )tri ) >> 4 ) );
+}
+
+static ID_INLINE int R_DrawSurfAreaMemoEntityKey( const idRenderEntityLocal *entityDef ) {
+	return ( int )( ( ( uintptr_t )entityDef ) >> 4 );
+}
+
+void R_ClearDrawSurfAreaMemo( void ) {
+	s_drawSurfAreaMemo.Clear();
+	s_drawSurfAreaMemoHash.Free();
+	s_drawSurfAreaMemoEntityHash.Free();
+}
+
+void R_InvalidateDrawSurfAreaMemoForEntity( const idRenderEntityLocal *entityDef ) {
+	// Tombstone instead of removing so hash indexes stay stable; the size cap in
+	// R_ResolveDrawSurfArea reclaims tombstones by clearing everything. A second
+	// hash keyed on the entity alone lets invalidation walk only this entity's
+	// entries rather than scanning the whole memo on every FreeEntityDef.
+	const int entityKey = R_DrawSurfAreaMemoEntityKey( entityDef );
+	for ( int i = s_drawSurfAreaMemoEntityHash.First( entityKey ); i != -1;
+			i = s_drawSurfAreaMemoEntityHash.Next( i ) ) {
+		if ( s_drawSurfAreaMemo[i].entityDef == entityDef ) {
+			s_drawSurfAreaMemo[i].entityDef = NULL;
+		}
+	}
+}
+
+static const portalArea_t *R_ResolveDrawSurfArea( const srfTriangles_t *tri, const viewEntity_t *space ) {
+	if ( tri == NULL || space == NULL || tr.viewDef == NULL || tr.viewDef->renderWorld == NULL ) {
+		return NULL;
+	}
+
+	const idRenderEntityLocal *entityDef = space->entityDef;
+	if ( entityDef == NULL ) {
+		// frame-temporary spaces (BSE effects) have no stable identity to key on
+		return R_ResolveDrawSurfAreaUncached( tri, space );
+	}
+
+	// A memo hit requires every input the uncached resolve reads to be
+	// bit-identical to the stored resolve: tri->bounds and space->modelMatrix
+	// by value, and lastModifiedFrameNum for the entityRefs fallback path,
+	// so a hit can never change drawSurf->area.
+	const int key = R_DrawSurfAreaMemoKey( entityDef, tri );
+	int entryIndex = -1;
+	for ( int i = s_drawSurfAreaMemoHash.First( key ); i != -1; i = s_drawSurfAreaMemoHash.Next( i ) ) {
+		const drawSurfAreaMemo_t &entry = s_drawSurfAreaMemo[i];
+		if ( entry.tri != tri || entry.entityDef != entityDef ) {
+			continue;
+		}
+		entryIndex = i;
+		if ( entry.entityModFrame == entityDef->lastModifiedFrameNum
+				&& memcmp( &entry.bounds, &tri->bounds, sizeof( entry.bounds ) ) == 0
+				&& memcmp( entry.modelMatrix, space->modelMatrix, sizeof( entry.modelMatrix ) ) == 0 ) {
+			return entry.area;
+		}
+		break;
+	}
+
+	const portalArea_t *area = R_ResolveDrawSurfAreaUncached( tri, space );
+
+	if ( entryIndex == -1 ) {
+		if ( s_drawSurfAreaMemo.Num() >= DRAWSURF_AREA_MEMO_MAX ) {
+			R_ClearDrawSurfAreaMemo();
+		}
+		entryIndex = s_drawSurfAreaMemo.Num();
+		drawSurfAreaMemo_t &newEntry = s_drawSurfAreaMemo.Alloc();
+		newEntry.tri = tri;
+		newEntry.entityDef = entityDef;
+		s_drawSurfAreaMemoHash.Add( key, entryIndex );
+		s_drawSurfAreaMemoEntityHash.Add( R_DrawSurfAreaMemoEntityKey( entityDef ), entryIndex );
+	}
+	drawSurfAreaMemo_t &entry = s_drawSurfAreaMemo[entryIndex];
+	entry.area = area;
+	entry.bounds = tri->bounds;
+	memcpy( entry.modelMatrix, space->modelMatrix, sizeof( entry.modelMatrix ) );
+	entry.entityModFrame = entityDef->lastModifiedFrameNum;
+	return area;
 }
 
 /*
@@ -1363,25 +1476,6 @@ idScreenRect	R_CalcLightScissorRectangle( viewLight_t *vLight ) {
 	return r;
 }
 
-/*
-=================
-R_ViewLightHasStaticWorldLocalInteractions
-=================
-*/
-static bool R_ViewLightHasStaticWorldLocalInteractions( const viewLight_t *vLight ) {
-	for ( const drawSurf_t *surf = vLight->localInteractions; surf != NULL; surf = surf->nextOnLight ) {
-		const viewEntity_t *space = surf->space;
-		if ( space == NULL || space->entityDef == NULL || space->entityDef->parms.hModel == NULL ) {
-			continue;
-		}
-		if ( space->entityDef->parms.hModel->IsStaticWorldModel() ) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
 static bool R_IsUsablePrelightModel( idRenderModel *model ) {
 	if ( model == NULL ) {
 		return false;
@@ -1450,6 +1544,15 @@ bool R_ShadowMapLightWillUseShadowMaps( const idRenderLightLocal *lightDef ) {
 	if ( lightDef == NULL || lightDef->shadowMapStencilFallbackSticky ) {
 		return false;
 	}
+	// Optimized prelights replace every static-world per-surface volume with
+	// one combined volume.  Whether every such surface is representable in a
+	// shadow map is known only after the light's complete interaction list is
+	// walked.  Keep entity/dynamic volumes resident for these lights so a later
+	// prelight map miss can still select a complete whole-light stencil path.
+	if ( r_useOptimizedShadows.GetBool()
+			&& R_LightHasRealPrelightModel( lightDef->parms ) ) {
+		return false;
+	}
 	if ( lightDef->parms.noShadows || lightDef->parms.noDynamicShadows ) {
 		return false;
 	}
@@ -1476,11 +1579,11 @@ R_AddOptimizedPrelightShadows
 =================
 */
 static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
-	// Vulkan mapped lights retain per-surface volumes so a partial filtered
-	// map can stamp only its genuinely missing casters. The combined prelight
-	// remains available for stencil-only Vulkan lights and the OpenGL path.
+	// Mapped lights retain per-surface volumes so a partial filtered map can
+	// stamp only its genuinely missing casters. The combined prelight remains
+	// available for stencil-only lights.
 	if ( vLight != NULL &&
-		R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+		R_ShadowMapsNeedPerSurfaceStencilVolumes(
 			vLight->lightDef ) ) {
 		return;
 	}
@@ -1569,21 +1672,21 @@ static void R_AddOptimizedPrelightShadows( viewLight_t *vLight ) {
 	}
 #endif
 
-	const bool protectStaticWorldNoSelfReceivers = R_ViewLightHasStaticWorldLocalInteractions( vLight );
+	// dmap combines every static-world caster into one prelight volume.  It
+	// cannot preserve per-material no-self ownership, so retain the retail
+	// global-shadow routing: the combined volume must protect both LOCAL and
+	// GLOBAL receivers.  Static surfaces that genuinely need no-self behavior
+	// remain entities and therefore use their separate local volume.
 	const bool linkedPrelightVolume = R_LinkLightSurf(
-		protectStaticWorldNoSelfReceivers ? &vLight->localShadows : &vLight->globalShadows,
+		&vLight->globalShadows,
 		tri, NULL, light, NULL, vLight->scissorRect, true /* FIXME? */ );
 	vLight->shadowMapIncompleteMapMask |=
 		vLight->shadowMapPrelightMapMissingMask;
-	const int prelightStencilOwnershipMask =
-		protectStaticWorldNoSelfReceivers
-			? SHADOWMAP_RECEIVER_MASK_GLOBAL
-			: ( SHADOWMAP_RECEIVER_MASK_LOCAL |
-				SHADOWMAP_RECEIVER_MASK_GLOBAL );
 	if ( linkedPrelightVolume ) {
 		vLight->shadowMapPrelightStencilReadyMask |=
 			vLight->shadowMapPrelightStencilRequiredMask &
-			prelightStencilOwnershipMask;
+			( SHADOWMAP_RECEIVER_MASK_LOCAL |
+				SHADOWMAP_RECEIVER_MASK_GLOBAL );
 	}
 }
 
@@ -1620,6 +1723,22 @@ void R_AddLightSurfaces( void ) {
 		if ( !lightShader ) {
 			common->Error( "R_AddLightSurfaces: NULL lightShader" );
 		}
+		const bool authoredSpecularProbe = lightShader->HasSpecularProbe();
+		const bool specularProbeRequested = authoredSpecularProbe
+			&& r_rendererModernQuality.GetBool()
+			&& r_rendererReflectionProbes.GetBool()
+			&& vLight->pointLight
+			&& !vLight->parallel;
+		// A namespaced probe light is metadata, never an additive classic light.
+		// When its leaf/master gate or supported point-volume contract is absent,
+		// remove it exactly as an inactive light.  When admitted, retain the
+		// visibility/scissor record for clustered probe collection below but do
+		// not create interactions or shadows for it.
+		if ( authoredSpecularProbe && !specularProbeRequested ) {
+			*ptr = vLight->next;
+			light->viewCount = -1;
+			continue;
+		}
 
 		// see if we are suppressing the light in this view
 		if ( R_ShouldSuppressViewLightForLevelshot( tr.viewDef->renderView.viewID, light->parms.allowLightInViewID ) ) {
@@ -1651,7 +1770,7 @@ void R_AddLightSurfaces( void ) {
 
 		// if this is a purely additive light and no stage in the light shader evaluates
 		// to a positive light value, we can completely skip the light
-		if ( !lightShader->IsFogLight() && !lightShader->IsBlendLight() ) {
+		if ( !specularProbeRequested && !lightShader->IsFogLight() && !lightShader->IsBlendLight() ) {
 			int lightStageNum;
 			const int lightStageCount = lightShader->GetNumStages();
 			for ( lightStageNum = 0 ; lightStageNum < lightStageCount ; lightStageNum++ ) {
@@ -1721,6 +1840,10 @@ void R_AddLightSurfaces( void ) {
 
 		// this one stays on the list
 		ptr = &vLight->next;
+		if ( specularProbeRequested ) {
+			tr.pc.c_viewLights++;
+			continue;
+		}
 
 		// if we are doing a soft-shadow novelty test, regenerate the light with
 		// a random offset every time
@@ -1981,7 +2104,11 @@ const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const re
 		soundEmitter = R_GetShaderSoundEmitter( space->entityDef->parms.referenceSoundHandle );
 	}
 
-	if ( renderEntity != NULL && renderEntity->referenceShader != NULL ) {
+	// GetStage(0) below returns &stages[0], which is NULL-based when the material
+	// has no stages (idMaterial only allocates the stage array when numStages>0),
+	// so require at least one stage before reading pStage->color.registers.
+	if ( renderEntity != NULL && renderEntity->referenceShader != NULL
+			&& renderEntity->referenceShader->GetNumStages() > 0 ) {
 		const shaderStage_t *pStage;
 
 		renderEntity->referenceShader->EvaluateRegisters( refRegs, renderEntity->shaderParms, tr.viewDef, soundEmitter );
@@ -2015,7 +2142,9 @@ void R_FinalizeDrawSurf( drawSurf_t *drawSurf ) {
 		return;
 	}
 
+	R_ClassicDeformDomain_BeginDrawSurf( drawSurf );
 	R_DeformDrawSurf( drawSurf );
+	R_ClassicDeformDomain_EndDrawSurf( drawSurf );
 
 	switch( drawSurf->material->Texgen() ) {
 		case TG_SKYBOX_CUBE:
@@ -2047,6 +2176,9 @@ void R_AddDrawSurf( const srfTriangles_t *tri, const viewEntity_t *space, const 
 	drawSurf->sort = shader->GetSort() + tr.sortOffset;
 	drawSurf->area = NULL;
 	drawSurf->dsFlags = extraDrawSurfFlags;
+	if ( tr.inWorldGuiEmissionDepth > 0 ) {
+		drawSurf->dsFlags |= DSF_IN_WORLD_GUI;
+	}
 	drawSurf->dynamicTexCoords = NULL;
 	drawSurf->texGenTransformAndViewOrg = NULL;
 	drawSurf->decalColorCache = NULL;

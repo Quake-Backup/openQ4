@@ -454,7 +454,15 @@ void *R_FrameAlloc( int bytes ) {
 	frameData_t		*frame;
 	frameMemoryBlock_t	*block;
 	void			*buf;
-    
+
+	// A negative size (an overflowed count*sizeof in a caller) would round to a
+	// still-negative value, pass the first-fit test below, rewind block->used,
+	// and silently hand back overlapping live memory. Reject it, and fold the
+	// oversize fatal up here so a huge positive request that wraps to negative
+	// after the +16 rounding is also caught before the block math runs.
+	if ( bytes < 0 || bytes > MEMORY_BLOCK_SIZE ) {
+		common->FatalError( "R_FrameAlloc: invalid size %i", bytes );
+	}
 	bytes = (bytes+16)&~15;
 	// see if it can be satisfied in the current block
 	frame = frameData;
@@ -884,6 +892,14 @@ void R_SetupProjection( void ) {
 	float	jitterx, jittery;
 	static	idRandom random;
 
+	R_TemporalPresentation_PrepareView( tr.viewDef );
+
+	// Temporal AA owns a deterministic, backend-neutral sub-pixel sequence.
+	// The legacy random path remains for multi-frame screenshot accumulation.
+	if ( tr.viewDef->temporalJitterEnabled ) {
+		jitterx = tr.viewDef->temporalJitterPixels.x;
+		jittery = tr.viewDef->temporalJitterPixels.y;
+	} else
 	// random jittering is usefull when multiple
 	// frames are going to be blended together
 	// for motion blurred anti-aliasing
@@ -949,6 +965,8 @@ void R_SetupProjection( void ) {
 	tr.viewDef->projectionMatrix[7] = 0;
 	tr.viewDef->projectionMatrix[11] = -1;
 	tr.viewDef->projectionMatrix[15] = 0;
+
+	R_TemporalPresentation_FinalizeViewProjection( tr.viewDef );
 }
 
 static void R_GetViewFrustumExtents( float &zNear, float &xmin, float &xmax, float &ymin, float &ymax ) {

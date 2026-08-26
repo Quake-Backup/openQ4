@@ -311,7 +311,7 @@ def validate_idport_platform_data_mirror() -> None:
     if game_api.is_file():
         require(
             game_api.read_text(encoding="utf-8", errors="strict"),
-            "const int GAME_API_VERSION\t\t= 43;",
+            "const int GAME_API_VERSION\t\t= 45;",
             "idPort-layout game API revision",
         )
 
@@ -1501,7 +1501,7 @@ def validate_postinit_connect_runtime_lane() -> None:
     for token in (
         "POSTINIT_CONNECT_WAIT_FRAMES = 30",
         "POSTINIT_RECONNECT_WAIT_FRAMES = 30",
-        "POSTINIT_SERVER_GRACE_MSEC = 90000",
+        "MP_SERVER_CLIENT_GRACE_MSEC = 90000",
     ):
         require(source, token, "post-init IPv4 benchmark delay")
     scene_start = source.index('"mp-q4dm1-postinit-connect": {')
@@ -1584,7 +1584,7 @@ def validate_postinit_connect_runtime_lane() -> None:
         "post-init IPv4 dry-run evidence",
     )
     for token in (
-        'server_exec_commands += (f"waitMsec {POSTINIT_SERVER_GRACE_MSEC}",)',
+        'f"waitMsec {MP_SERVER_CLIENT_GRACE_MSEC}",',
         'client_capture_index = 1 if spec.path_name == "postinit-connect" else 0',
         "write_postinit_reconnect_cfg(",
         "client_initial_autoexec_cfg = client_reconnect_cfg",
@@ -1606,7 +1606,7 @@ def validate_postinit_connect_runtime_lane() -> None:
         require(runner, token, "post-init IPv4 connect/reconnect evidence")
     require_before(
         runner,
-        'server_exec_commands += (f"waitMsec {POSTINIT_SERVER_GRACE_MSEC}",)',
+        'f"waitMsec {MP_SERVER_CLIENT_GRACE_MSEC}",',
         "server_autoexec_cfg, server_screenshot = write_autoexec_cfg(",
         "post-init IPv4 server grace",
     )

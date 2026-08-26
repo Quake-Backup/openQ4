@@ -49,6 +49,7 @@ STAGE_GAMELIBS = load_module("stage_gamelibs_safety_test", BUILD_DIR / "stage_ga
 VERSION = load_module("openq4_version_safety_test", BUILD_DIR / "openq4_version.py")
 WINDOWS_RUNTIME = load_module("windows_runtime_safety_test", BUILD_DIR / "windows_runtime.py")
 MESON_SOURCES = load_module("meson_sources_safety_test", BUILD_DIR / "meson_sources.py")
+FAST_STAGE = load_module("stage_fast_install_safety_test", BUILD_DIR / "stage_fast_install.py")
 
 
 def write_file(path: Path, data: bytes = b"data\n") -> None:
@@ -345,12 +346,26 @@ def validate_list_sources_guards() -> None:
             raise AssertionError(f"list_sources.py accepted a symlinked source: {result.stderr}")
 
 
+# stage_fast_install.py stages by the host's own runtime policy, so the
+# guard/copy fixture must use the host platform's artifact names; explicit
+# per-platform policy output is pinned by validate_fast_stage_cross_platform_policy.
+FAST_STAGE_HOST_FIXTURES = {
+    "win32": ("openQ4-client_x64.exe", "renderer-gl_x64.dll", "game-sp_x64.dll"),
+    "linux": ("openQ4-client_x64", "renderer-gl_x64.so", "game-sp_x64.so"),
+    "darwin": ("openQ4-client_x64", "renderer-vk_x64.dylib", "game-sp_x64.dylib"),
+}
+
+
 def validate_fast_stage_guards_and_copy() -> None:
+    if sys.platform not in FAST_STAGE_HOST_FIXTURES:
+        raise AssertionError(f"unsupported fast-stage host platform: {sys.platform}")
+    client_name, renderer_name, game_name = FAST_STAGE_HOST_FIXTURES[sys.platform]
     source_root = WORK / "fast-stage" / "openQ4"
     build_dir = source_root / "builddir"
     install_dir = source_root / ".install"
-    write_file(build_dir / "openQ4-client_x64.exe", b"client\n")
-    write_file(build_dir / "baseoq4" / "game-sp_x64.dll", b"game\n")
+    write_file(build_dir / client_name, b"client\n")
+    write_file(build_dir / renderer_name, b"renderer\n")
+    write_file(build_dir / "baseoq4" / game_name, b"game\n")
     write_file(build_dir / "baseoq4" / "pak0.pk4", b"pak0\n")
 
     bad_result = run_script(
@@ -394,7 +409,7 @@ def validate_fast_stage_guards_and_copy() -> None:
             "--install-dir",
             symlink_install_dir,
         )
-        if symlink_result.returncode == 0 or "build directory must not be a symlink" not in symlink_result.stderr:
+        if symlink_result.returncode == 0 or "build directory must not be a link or junction" not in symlink_result.stderr:
             raise AssertionError(f"stage_fast_install.py accepted a symlinked build dir: {symlink_result.stderr}")
 
     result = run_script(
@@ -408,10 +423,213 @@ def validate_fast_stage_guards_and_copy() -> None:
     )
     if result.returncode != 0:
         raise AssertionError(f"stage_fast_install.py failed safe staging: {result.stderr}")
-    if not (install_dir / "openQ4-client_x64.exe").is_file():
+    if not (install_dir / client_name).is_file():
         raise AssertionError("fast stage did not copy root runtime binary")
-    if not (install_dir / "baseoq4" / "game-sp_x64.dll").is_file():
+    if not (install_dir / "baseoq4" / game_name).is_file():
         raise AssertionError("fast stage did not copy game runtime binary")
+    if not (install_dir / renderer_name).is_file():
+        raise AssertionError("fast stage did not copy renderer runtime binary")
+
+    escaped_temporary = source_root / ".tmp" / "other-runtime" / "capture"
+    escaped_result = run_script(
+        BUILD_DIR / "stage_fast_install.py",
+        "--source-root",
+        source_root,
+        "--build-dir",
+        build_dir,
+        "--install-dir",
+        escaped_temporary,
+        "--temporary-runtime",
+    )
+    if escaped_result.returncode == 0 or "must stay below" not in escaped_result.stderr:
+        raise AssertionError(
+            f"stage_fast_install.py accepted an escaped temporary runtime: {escaped_result.stderr}"
+        )
+
+    temporary_runtime = source_root / ".tmp" / "stock-runtime" / "capture"
+    temporary_result = run_script(
+        BUILD_DIR / "stage_fast_install.py",
+        "--source-root",
+        source_root,
+        "--build-dir",
+        build_dir,
+        "--install-dir",
+        temporary_runtime,
+        "--temporary-runtime",
+    )
+    if temporary_result.returncode != 0:
+        raise AssertionError(
+            f"stage_fast_install.py failed isolated temporary staging: {temporary_result.stderr}"
+        )
+    if not (temporary_runtime / client_name).is_file():
+        raise AssertionError("temporary fast stage did not copy root runtime binary")
+    if not (temporary_runtime / renderer_name).is_file():
+        raise AssertionError("temporary fast stage did not copy renderer runtime binary")
+    repeated_result = run_script(
+        BUILD_DIR / "stage_fast_install.py",
+        "--source-root",
+        source_root,
+        "--build-dir",
+        build_dir,
+        "--install-dir",
+        temporary_runtime,
+        "--temporary-runtime",
+    )
+    if repeated_result.returncode == 0 or "must be new" not in repeated_result.stderr:
+        raise AssertionError(
+            f"stage_fast_install.py reused a temporary runtime: {repeated_result.stderr}"
+        )
+
+
+def validate_fast_stage_cross_platform_policy() -> None:
+    source_root = WORK / "fast-stage-platform-policy" / "builddir"
+    source_game = source_root / "baseoq4"
+    root_files = (
+        "openQ4-client_x64",
+        "openQ4-ded_x64",
+        "openQ4-client_x64.exe",
+        "openQ4-client_x64.pdb",
+        "openQ4-ded_x64.exe",
+        "openQ4-ded_x64.pdb",
+        "renderer-gl_x64.dll",
+        "renderer-gl_x64.pdb",
+        "renderer-vk_x64.dll",
+        "renderer-vk_x64.pdb",
+        "renderer-gl_x64.so",
+        "renderer-vk_x64.so",
+        "renderer-gl_x64.dylib",
+        "renderer-vk_x64.dylib",
+        # MoltenVK is provider-staged and verified separately; it must never
+        # be mistaken for a Meson-produced fast-stage artifact.
+        "libMoltenVK.dylib",
+        "OpenAL32.dll",
+    )
+    game_files = (
+        "game-sp_x64.dll",
+        "game-sp_x64.pdb",
+        "game-mp_x64.dll",
+        "game-mp_x64.pdb",
+        "game-sp_x64.so",
+        "game-mp_x64.so",
+        "game-sp_x64.dylib",
+        "game-mp_x64.dylib",
+        "mod.json",
+        "pak0.pk4",
+        "pak1.pk4",
+    )
+    for filename in root_files:
+        write_file(source_root / filename, filename.encode("utf-8"))
+    for filename in game_files:
+        write_file(source_game / filename, filename.encode("utf-8"))
+
+    expected = {
+        "win32": (
+            {
+                "openQ4-client_x64.exe",
+                "openQ4-client_x64.pdb",
+                "openQ4-ded_x64.exe",
+                "openQ4-ded_x64.pdb",
+                "renderer-gl_x64.dll",
+                "renderer-gl_x64.pdb",
+                "renderer-vk_x64.dll",
+                "renderer-vk_x64.pdb",
+                "OpenAL32.dll",
+            },
+            {
+                "game-sp_x64.dll",
+                "game-sp_x64.pdb",
+                "game-mp_x64.dll",
+                "game-mp_x64.pdb",
+                "mod.json",
+                "pak0.pk4",
+                "pak1.pk4",
+            },
+        ),
+        "linux": (
+            {
+                "openQ4-client_x64",
+                "openQ4-ded_x64",
+                "renderer-gl_x64.so",
+                "renderer-vk_x64.so",
+            },
+            {
+                "game-sp_x64.so",
+                "game-mp_x64.so",
+                "mod.json",
+                "pak0.pk4",
+                "pak1.pk4",
+            },
+        ),
+        "darwin": (
+            {
+                "openQ4-client_x64",
+                "openQ4-ded_x64",
+                "renderer-vk_x64.dylib",
+            },
+            {
+                "game-sp_x64.dylib",
+                "game-mp_x64.dylib",
+                "mod.json",
+                "pak0.pk4",
+                "pak1.pk4",
+            },
+        ),
+    }
+    for platform_name, (expected_root, expected_game) in expected.items():
+        policy = FAST_STAGE.runtime_stage_policy(platform_name)
+        destination = WORK / "fast-stage-platform-policy" / platform_name
+        destination_game = destination / "baseoq4"
+        FAST_STAGE.copy_matches(
+            source_root,
+            destination,
+            policy.root_copy_patterns,
+            policy.root_copy_exclude_patterns,
+        )
+        FAST_STAGE.copy_matches(
+            source_game, destination_game, policy.game_copy_patterns
+        )
+        actual_root = {
+            path.name for path in destination.iterdir() if path.is_file()
+        }
+        actual_game = {
+            path.name for path in destination_game.iterdir() if path.is_file()
+        }
+        if actual_root != expected_root:
+            raise AssertionError(
+                f"{platform_name} fast-stage root policy copied {sorted(actual_root)!r}; "
+                f"expected {sorted(expected_root)!r}"
+            )
+        if actual_game != expected_game:
+            raise AssertionError(
+                f"{platform_name} fast-stage game policy copied {sorted(actual_game)!r}; "
+                f"expected {sorted(expected_game)!r}"
+            )
+
+    cleanup_root = WORK / "fast-stage-platform-policy" / "windows-cleanup"
+    cleanup_game = cleanup_root / "baseoq4"
+    retained_root = cleanup_root / "renderer-gl_x64.dll"
+    retained_game = cleanup_game / "game-sp_x64.dll"
+    foreign_paths = (
+        cleanup_root / "renderer-gl_x64.so",
+        cleanup_root / "renderer-vk_x64.dylib",
+        cleanup_game / "game-sp_x64.so",
+        cleanup_game / "game-mp_x64.dylib",
+    )
+    for path in (*foreign_paths, retained_root, retained_game):
+        write_file(path)
+    FAST_STAGE.remove_non_runtime_files(
+        cleanup_root,
+        cleanup_game,
+        FAST_STAGE.runtime_stage_policy("win32"),
+    )
+    remaining_foreign = [path for path in foreign_paths if path.exists()]
+    if remaining_foreign:
+        raise AssertionError(
+            "Windows fast-stage cleanup retained foreign modules: "
+            + ", ".join(str(path) for path in remaining_foreign)
+        )
+    if not retained_root.is_file() or not retained_game.is_file():
+        raise AssertionError("Windows fast-stage cleanup removed native DLL payloads")
 
 
 def validate_stale_content_prune_symlink_handling() -> None:
@@ -901,6 +1119,98 @@ def validate_meson_source_symlink_guards() -> None:
 
 
 def validate_windows_runtime_staging_guards() -> None:
+    expected_stale_stage_files = {
+        f"openQ4-{kind}_{arch}"
+        for kind in ("client", "ded")
+        for arch in ("x86", "x64", "arm64")
+    } | {
+        f"renderer-{renderer}_{arch}.dll.mainbak"
+        for renderer in ("gl", "vk")
+        for arch in ("x86", "x64", "arm64")
+    }
+    if set(WINDOWS_RUNTIME.WINDOWS_STALE_STAGE_FILE_MANIFEST) != expected_stale_stage_files:
+        raise AssertionError("Windows stage cleanup must remain an exact stale-file allowlist")
+    if WINDOWS_RUNTIME.WINDOWS_EMPTY_STAGE_DIRECTORY_MANIFEST != ("baseoq4/skins",):
+        raise AssertionError("Windows stage cleanup must only prune the known empty skins directory")
+
+    hygiene_root = WORK / "windows-runtime" / "stage-hygiene"
+    stale_client = hygiene_root / "openQ4-client_x64"
+    stale_dedicated = hygiene_root / "openQ4-ded_x64"
+    stale_backup = hygiene_root / "renderer-vk_x64.dll.mainbak"
+    current_client = hygiene_root / "openQ4-client_x64.exe"
+    current_renderer = hygiene_root / "renderer-vk_x64.dll"
+    unlisted_extensionless = hygiene_root / "openQ4-client_custom"
+    empty_skins = hygiene_root / "baseoq4" / "skins"
+    for path in (stale_client, stale_dedicated, stale_backup, current_client, current_renderer, unlisted_extensionless):
+        write_file(path)
+    empty_skins.mkdir(parents=True)
+
+    hygiene_result = WINDOWS_RUNTIME.cleanup_windows_stage_target(hygiene_root)
+    if set(hygiene_result["removed_stale_files"]) != {
+        "openQ4-client_x64",
+        "openQ4-ded_x64",
+        "renderer-vk_x64.dll.mainbak",
+    }:
+        raise AssertionError(f"unexpected Windows stale-stage cleanup result: {hygiene_result!r}")
+    if hygiene_result["removed_empty_directories"] != ["baseoq4/skins"]:
+        raise AssertionError(f"empty Windows stage directory was not pruned: {hygiene_result!r}")
+    for removed_path in (stale_client, stale_dedicated, stale_backup, empty_skins):
+        if removed_path.exists() or removed_path.is_symlink():
+            raise AssertionError(f"known stale Windows stage entry was retained: {removed_path}")
+    for preserved_path in (current_client, current_renderer, unlisted_extensionless):
+        if not preserved_path.is_file():
+            raise AssertionError(f"Windows stage cleanup removed an unlisted runtime entry: {preserved_path}")
+
+    populated_root = WORK / "windows-runtime" / "stage-hygiene-populated"
+    populated_skin = populated_root / "baseoq4" / "skins" / "custom.skin"
+    write_file(populated_skin)
+    populated_result = WINDOWS_RUNTIME.cleanup_windows_stage_target(populated_root)
+    if populated_result["removed_empty_directories"] or not populated_skin.is_file():
+        raise AssertionError("Windows stage cleanup must preserve a populated baseoq4/skins directory")
+
+    stale_directory_root = WORK / "windows-runtime" / "stage-hygiene-stale-directory"
+    (stale_directory_root / "openQ4-client_x64").mkdir(parents=True)
+    expect_runtime_error(
+        lambda: WINDOWS_RUNTIME.cleanup_windows_stage_target(stale_directory_root),
+        "not a regular file",
+        "Windows stage stale-file directory guard",
+    )
+
+    empty_path_file_root = WORK / "windows-runtime" / "stage-hygiene-empty-path-file"
+    write_file(empty_path_file_root / "baseoq4" / "skins")
+    expect_runtime_error(
+        lambda: WINDOWS_RUNTIME.cleanup_windows_stage_target(empty_path_file_root),
+        "is not a directory",
+        "Windows stage empty-directory path guard",
+    )
+
+    stale_link_root = WORK / "windows-runtime" / "stage-hygiene-stale-link"
+    stale_link_root.mkdir(parents=True)
+    stale_link_target = WORK / "windows-runtime" / "stage-hygiene-link-target"
+    write_file(stale_link_target, b"outside\n")
+    stale_link = stale_link_root / "renderer-vk_x64.dll.mainbak"
+    if make_symlink(stale_link_target, stale_link):
+        link_result = WINDOWS_RUNTIME.cleanup_windows_stage_target(stale_link_root)
+        if link_result["removed_stale_files"] != ["renderer-vk_x64.dll.mainbak"]:
+            raise AssertionError("Windows stage cleanup did not report the known stale symlink")
+        if stale_link.exists() or stale_link.is_symlink():
+            raise AssertionError("Windows stage cleanup did not unlink the known stale symlink")
+        if stale_link_target.read_bytes() != b"outside\n":
+            raise AssertionError("Windows stage cleanup followed a known stale symlink target")
+
+    linked_game_root = WORK / "windows-runtime" / "stage-hygiene-linked-game-root"
+    linked_game_target = WORK / "windows-runtime" / "stage-hygiene-linked-game-target"
+    linked_game_root.mkdir(parents=True)
+    (linked_game_target / "skins").mkdir(parents=True)
+    if make_symlink(linked_game_target, linked_game_root / "baseoq4", target_is_directory=True):
+        expect_runtime_error(
+            lambda: WINDOWS_RUNTIME.cleanup_windows_stage_target(linked_game_root),
+            "cleanup parent is a link or junction",
+            "Windows stage cleanup linked game-root guard",
+        )
+        if not (linked_game_target / "skins").is_dir():
+            raise AssertionError("Windows stage cleanup followed a linked baseoq4 directory")
+
     malformed_pe = WORK / "windows-runtime" / "truncated.exe"
     malformed_pe.parent.mkdir(parents=True, exist_ok=True)
     data = bytearray(0x48)
@@ -1073,6 +1383,7 @@ def main() -> None:
         validate_legacy_build_pak0_cli_guards()
         validate_list_sources_guards()
         validate_fast_stage_guards_and_copy()
+        validate_fast_stage_cross_platform_policy()
         validate_stale_content_prune_symlink_handling()
         validate_package_name_and_copy_guards()
         validate_renderer_module_staging()

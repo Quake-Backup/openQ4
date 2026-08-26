@@ -34,6 +34,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "Image.h"
 #include "RendererStartupDiagnostics.h"
 #include "RenderTexture.h"
+#include "GpuSkinning.h"
+#include "ClassicDeformDomain.h"
 #if defined( _MD5R_SUPPORT ) || defined( Q4SDK_MD5R )
 #include "../idlib/geometry/rvVertex.h"
 #endif
@@ -121,6 +123,7 @@ SURFACES
 #include "ModelDecal.h"
 #include "ModelOverlay.h"
 #include "Interaction.h"
+#include "TemporalPresentation.h"
 
 
 // drawSurf_t structures command the back end to render surfaces
@@ -138,6 +141,9 @@ static const int	DSF_BSE_EFFECT			= 2;
 // viewDef->drawSurfs, so the flag is a statement of provenance for anything
 // holding one, not a test the main passes have to remember to make.
 static const int	DSF_OUTLINE_ONLY		= 4;
+// Geometry emitted while R_RenderGuiSurf expands a GUI onto a 3D surface.
+// This provenance is independent of the generated material's GUI sort.
+static const int	DSF_IN_WORLD_GUI		= 8;
 
 typedef struct drawSurf_s {
 	const srfTriangles_t	*geo;
@@ -155,6 +161,9 @@ typedef struct drawSurf_s {
 	int						decalColorOffset;	// bytes from decalColorCache to the first stage color block
 	int						decalColorStride;	// bytes between stage color blocks (numVerts * 4)
 	int						decalColorStageCount;
+	// Sealed by R_FinalizeDrawSurf. Receiver-only drawSurfs intentionally leave
+	// this slot untouched and publish NOT_APPLICABLE snapshots per packet role.
+	classicDeformRecord_t	classicDeform;
 	// specular directions for non vertex program cards, skybox texcoords, etc
 } drawSurf_t;
 
@@ -194,7 +203,7 @@ typedef enum {
 
 bool R_ShadowMapCasterAdmissionSelfTest( void );
 bool R_ShadowMapLODAdmissionSelfTest( void );
-bool R_VulkanShadowMapsNeedPerSurfaceStencilVolumes(
+bool R_ShadowMapsNeedPerSurfaceStencilVolumes(
 		const idRenderLightLocal *lightDef );
 
 // viewLights are allocated on the frame temporary stack memory
@@ -230,6 +239,7 @@ typedef struct viewLight_s {
 	bool					pointLight;					// true for point light projections
 	bool					parallel;					// true for directional/parallel lights
 	idVec3					lightRadius;				// copied from renderLight parms for point-light shadow mapping
+	idMat3					lightAxis;					// immutable authored orientation for backend probe records
 	idPlane					lightProject[4];			// light project used by backend
 	idPlane					fogPlane;					// fog plane for backend fog volume rendering
 	const srfTriangles_t *	frustumTris;				// light frustum for backend fog volume rendering
@@ -338,6 +348,24 @@ typedef struct viewDef_s {
 
 	float				projectionMatrix[16];
 	viewEntity_t		worldSpace;
+
+	// Immutable temporal-presentation metadata prepared before projection
+	// setup. The fields travel with RC_DRAW_VIEW so GL and Vulkan consume the
+	// same jitter, cut, generation, and per-view history identity.
+	unsigned long long	temporalViewIdentity;
+	unsigned int		temporalHistoryGeneration;
+	int				temporalJitterIndex;
+	idVec2				temporalJitterPixels;
+	idVec3				temporalPreviousViewOrigin;
+	idMat3				temporalPreviousViewAxis;
+	idVec4				temporalPreviousProjectInfo;
+	idVec2				temporalPreviousJitterPixels;
+	temporalHistoryResetReason_t temporalHistoryResetReason;
+	bool				temporalPrepared;
+	bool				temporalJitterEnabled;
+	bool				temporalHistoryValid;
+	bool				temporalCaptureFrame;
+	bool				temporalPreviousProjectionValid;
 
 	idRenderWorldLocal *renderWorld;
 	int					renderFlags;
@@ -463,6 +491,7 @@ typedef enum {
 	RC_COPY_RENDER,
 	RC_SET_RENDERTEXTURE,
 	RC_RESOLVE_MSAA,
+	RC_RESOLVE_TEMPORAL_PRESENTATION,
 	RC_CLEAR_RENDERTARGET,
 	RC_SET_POSTPROCESS_SOURCE_SIZE,
 	RC_SET_POSTPROCESS_SOURCE_COLOR_SPACE,
@@ -515,7 +544,26 @@ typedef struct {
 	idRenderTexture* msaaRenderTexture;
 	idRenderTexture* destRenderTexture;
 	bool resolveDepth;
+	int frameNumber;
+	unsigned int historyGeneration;
 } resolveRenderTargetCommand_t;
+
+typedef struct {
+	renderCommand_t		commandId, * next;
+	idRenderTexture*	sceneColorTarget;
+	idRenderTexture*	sceneDepthTarget;
+	idRenderTexture*	historyReadTarget;
+	idRenderTexture*	historyWriteTarget;
+	const viewDef_t*	viewDef;
+	renderPresentationState_t presentation;
+	unsigned int		historyGeneration;
+	bool				historyValid;
+	bool				captureFrame;
+	float				feedback;
+	float				reactiveScale;
+	int				debugMode;
+	advancedScreenSpaceConfig_t advancedScreenSpace;
+} resolveTemporalPresentationCommand_t;
 
 typedef struct {
 	renderCommand_t		commandId, * next;
@@ -624,6 +672,7 @@ typedef struct {
 	int		c_numDecalIndexes;	// idRenderModelDecal::AddDecalDrawSurf
 	int		c_entityUpdates, c_lightUpdates, c_entityReferences, c_lightReferences;
 	int		c_entitySnapshotsReused;	// transform-only entity updates that kept the dynamic snapshot
+	int		c_entityUpdatesElided;		// bytewise-identical entity updates that also kept refs and interactions
 	int		c_guiSurfs;
 	int		frontEndMsec;		// sum of time in all RE_RenderScene's in a frame
 } performanceCounters_t;
@@ -794,6 +843,7 @@ public:
 	virtual void			CropRenderSize( int width, int height, bool makePowerOfTwo = false, bool forceDimensions = false );
 	virtual void			CaptureRenderToImage( const char *imageName );
 	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha );
+	virtual void			CaptureRenderToFile( const char *fileName, bool fixAlpha, int outputWidth, int outputHeight );
 	virtual void			SetPortalSkyCaptureViewCallback( renderPortalSkyCaptureViewCallback_t callback );
 	virtual void			UnCrop();
 	virtual void			GetCardCaps( bool &oldCard, bool &nv10or20 );
@@ -822,6 +872,14 @@ public:
 	virtual int				GetImageMSAASamples(idImage* image);
 	virtual const glconfig_t &	GetGLConfig( void ) const;
 	virtual bool			SetUnderwaterView( float amount, const idVec3 &tint, float fogDistance );
+	virtual void			GetGpuFrameTiming( renderGpuFrameTiming_t &timing ) const;
+	virtual void			ResetGpuFrameTiming( const char *reason );
+	virtual void			GetPresentationState( renderPresentationState_t &state ) const;
+	virtual bool			ResolveTemporalPresentation(
+		idRenderTexture *sceneColorTarget,
+		idRenderTexture *sceneDepthTarget,
+		idRenderTexture *historyReadTarget,
+		idRenderTexture *historyWriteTarget );
 public:
 	// internal functions
 							idRenderSystemLocal( void );
@@ -914,6 +972,7 @@ public:
 
 	// GUI drawing variables for surface creation
 	int						guiRecursionLevel;		// to prevent infinite overruns
+	int						inWorldGuiEmissionDepth;	// provenance scope for R_RenderGuiSurf output
 	class idGuiModel *		guiModel;
 	class idGuiModel *		demoGuiModel;
 	idList<idRenderTexture*> pendingRenderTextureDeletes;
@@ -980,6 +1039,12 @@ extern idCVar r_windowHeight;				// windowed mode height
 extern idCVar r_multiSamples;			// number of antialiasing samples
 extern idCVar r_postAA;					// post AA mode: 0 = off, 1/2/3 = SMAA medium/high/ultra, 4 = colour-edge prototype
 extern idCVar r_postAAStatePoisonTest;	// intentionally dirty GL texture/client state before SMAA draws
+extern idCVar r_pbrMaterials;			// allow explicitly PBR-authored materials on modern paths
+extern idCVar r_pbrGeneratedLegacyFallback;	// allow development-only generated classic fallbacks
+extern idCVar r_pbrDebug;				// PBR attachment/fallback debug view
+extern idCVar r_pbrIBL;				// opt-in PBR-only analytic environment contribution
+extern idCVar r_pbrIBLIntensity;		// PBR analytic environment intensity
+extern idCVar r_pbrInferFromLegacyMaterials;	// research-only classic-material inference
 extern idCVar r_bloom;					// enable bloom post-process
 extern idCVar r_bloomThreshold;			// bloom bright-pass threshold
 extern idCVar r_bloomSoftKnee;			// relative bloom soft threshold knee
@@ -1090,24 +1155,40 @@ extern idCVar r_glDebugContext;			// request a debug GL context when the platfor
 extern idCVar r_glDebugOutput;			// report driver debug messages when a debug context is active
 extern idCVar r_glDebugSynchronous;		// synchronously deliver GL debug callbacks for diagnostics
 extern idCVar r_rendererMetrics;			// 0 off, 1 summary, 2 verbose per-frame/pass metrics
-extern idCVar r_rendererGpuTimers;		// sample GL timer queries when renderer metrics are enabled
+extern idCVar r_rendererGpuTimers;		// delayed whole-frame GPU timing; GL pass detail also requires renderer metrics
 extern idCVar r_rendererBenchmarkPreset;	// benchmark budget preset
 extern idCVar r_rendererPerfThresholdP95;	// custom P95 benchmark threshold in milliseconds
 extern idCVar r_rendererPerfThresholdP99;	// custom P99 benchmark threshold in milliseconds
 extern idCVar r_rendererAdaptiveClusterGrid;	// use preset-driven cluster-grid dimensions
 void R_SetLoadingScreenSwapIntervalBypass( bool active );
 int R_GetEffectiveSwapInterval( void );
-extern idCVar r_rendererDynamicResolution;	// allow benchmark screen-percentage experiments
+extern idCVar r_rendererDynamicResolution;	// automatic 3D scale from delayed GPU time
 extern idCVar r_rendererUploadMegs;		// dynamic upload stream size in megabytes per frame buffer
 extern idCVar r_rendererUploadFrameBuffers;	// dynamic upload stream frame-buffer rotation depth
 extern idCVar r_rendererUploadPersistent;	// allow persistent-mapped dynamic upload stream
 extern idCVar r_rendererUploadBufferPool;	// recycle static GL buffer names instead of gen/data/delete churn
+extern idCVar r_rendererModernQuality;	// master permit/rollback for Milestone-F material and lighting domains
+extern idCVar r_rendererReflectionProbes;	// opt-in authored clustered reflection probes
+extern idCVar r_rendererClusteredDecals;	// opt-in atomic clustered decal ownership
+extern idCVar r_rendererFroxelVolumetrics;	// opt-in bounded view-aligned volumetric integration
+extern idCVar r_rendererSSR;			// opt-in bounded screen-space reflections
+extern idCVar r_rendererSSGI;			// opt-in bounded screen-space diffuse GI
 extern idCVar r_rendererModernExecutor;	// opt-in modern GL executor prepare path
 extern idCVar r_rendererModernSubmit;	// opt-in modern GL draw submission before ARB2 fallback
 extern idCVar r_rendererGpuValidation;	// compare GL43 GPU-driven compute results against CPU reference data
 extern idCVar r_rendererGpuValidationReadbackDelay;	// defer opt-in GL43 validation readback polling
 extern idCVar r_rendererBindless;	// opt-in experimental bindless texture diagnostics, disabled by default
 extern idCVar r_rendererModernVisible;	// opt-in modern hybrid visible-frame composition
+extern idCVar r_rendererSharedGui;	// opt-in backend-neutral fixed-function 2D GUI ownership
+extern idCVar r_rendererSharedInWorldGui;	// opt-in backend-neutral in-world GUI ownership
+extern idCVar r_rendererSharedCinematicPost;	// opt-in backend-neutral cinematic/post transaction ownership
+extern idCVar r_rendererSharedSpecialFrame;	// opt-in backend-neutral render-demo/Raven special-frame transaction ownership
+extern idCVar r_rendererSharedWorldAmbient;	// opt-in backend-neutral whole-view world ambient/material ownership
+extern idCVar r_rendererSharedWorldInteraction;	// opt-in backend-neutral whole-view unshadowed interaction ownership
+extern idCVar r_rendererSharedWorldFogBlend;	// opt-in backend-neutral whole-view fog/blend ownership
+extern idCVar r_rendererSharedSubview;	// opt-in backend-neutral direct/capture special-subview ownership
+extern idCVar r_rendererSharedDeform;	// opt-in backend-neutral material-deform ownership
+extern idCVar r_vkShadowFallbackTest;	// diagnostic-only forced Vulkan unshadowed receiver fallback
 extern idCVar r_rendererModernLightingParity;	// diagnostic override forcing lighting-ownership parity contracts proven
 extern idCVar r_rendererModernAutoPromote;	// allow gated default modern-visible promotion
 extern idCVar r_rendererPromotionEvidence;	// Phase 8 evidence token required before auto-promotion
@@ -1186,7 +1267,7 @@ extern idCVar r_shadowMapDistantFilterScale;	// filter-radius scale for parallel
 extern idCVar r_shadowMapPCSSLightRadius;	// projected PCSS-lite blocker search radius
 extern idCVar r_shadowMapPCSSMaxRadius;	// projected PCSS-lite maximum filter radius
 extern idCVar r_shadowMapNormalOffsetScale;	// normal-offset receiver bias in shadow texels
-extern idCVar r_shadowMapCasterCulling;	// caster face culling: 0 = two-sided, 1 = light-facing, 2 = back faces
+extern idCVar r_shadowMapCasterCulling;	// caster face culling: 0 = two-sided, 1 = near shell, 2 = topology-aware automatic
 extern idCVar r_shadowMapPointHighPrecision;	// 1 = store point shadow depth as high-precision float color
 extern idCVar r_shadowMapPointLights;	// 1 = shadow-map point lights (the dominant Q4 light class); 0 = stencil fallback for point lights
 extern idCVar r_shadowMapPointSize;	// point-light cube face resolution, separate from r_shadowMapSize
@@ -1386,6 +1467,7 @@ extern idCVar r_shadowMapBias;			// constant receiver depth bias used by project
 extern idCVar r_shadowMapNormalBias;		// slope-aware receiver bias used by projected shadow maps
 extern idCVar r_shadowMapPointBias;		// constant receiver depth bias used by point-light shadow maps
 extern idCVar r_shadowMapPointNormalBias;	// slope-aware receiver bias used by point-light shadow maps
+extern idCVar r_shadowMapPointMaxWorldBias;	// combined point receiver depth/normal-offset cap in world units
 extern idCVar r_shadowMapFilterRadius;	// projected-light PCF radius in texels used by simple shadow maps
 extern idCVar r_shadowMapPointFilterRadius;	// point-light PCF radius in texels used by simple shadow maps
 extern idCVar r_shadowMapProjectionPad;	// normalized padding applied around projected-light shadow-map coverage
@@ -1552,6 +1634,12 @@ typedef struct rendererShadowTextureBindings_s {
 	bool							projectedAtlasReady;
 	bool							projectedPersistentAtlasReady;
 	bool							pointAtlasReady;
+	// Exact identity of pointAtlas when ready. Modern planning may precede
+	// classic light submission, so binding rechecks these fields to prevent a
+	// later-selected light's cube from satisfying an older plan.
+	int							pointAtlasLightIndex;
+	int							pointAtlasSignature;
+	int							pointAtlasContentFrame;
 	bool							projectedMomentsReady;
 	bool							pointMomentsReady;
 	bool							projectedDepthCompare;
@@ -1564,6 +1652,12 @@ typedef struct rendererShadowTextureBindings_s {
 } rendererShadowTextureBindings_t;
 
 bool RB_ShadowMapTextureBindings( rendererShadowTextureBindings_t &bindings );
+
+// Establish the render-world ownership scope for the persistent ARB2 shadow
+// caches. Returns true when a world transition invalidated resident entries.
+// Modern GL calls this before planning or sampling so it cannot observe the
+// previous world's cache during the frame in which a map changes.
+bool RB_ShadowMapPrepareCacheView( const viewDef_t *viewDef );
 
 // deletes the lazily created CopyFramebuffer/CopyDepthbuffer scratch FBOs;
 // must be called before GLimp_Shutdown while the old context is still current
@@ -1706,6 +1800,9 @@ idRenderModel *R_EntityDefDynamicModel( idRenderEntityLocal *def, bool collision
 viewEntity_t *R_SetEntityDefViewEntity( idRenderEntityLocal *def );
 viewLight_t *R_SetLightDefViewLight( idRenderLightLocal *def );
 
+void R_ClearDrawSurfAreaMemo( void );
+void R_InvalidateDrawSurfAreaMemoForEntity( const idRenderEntityLocal *entityDef );
+
 const float *R_SetupDrawSurfShaderRegisters( const viewEntity_t *space, const renderEntity_t *renderEntity,
 					 const idMaterial *shader );
 void R_FinalizeDrawSurf( drawSurf_t *drawSurf );
@@ -1820,6 +1917,11 @@ void RB_ApplyFlatDiffuseStage( const drawSurf_t *surf, idImage **diffuseImage, f
 const shaderStage_t *RB_SetLightTexture( const idRenderLightLocal *light );
 
 void RB_DrawView( const void *data );
+bool RB_DrawSharedGuiView( const viewDef_t *viewDef );
+bool RB_DrawSharedInWorldGuiView( const viewDef_t *viewDef );
+bool RB_DrawSharedCinematicRootView( const viewDef_t *viewDef );
+bool RB_DrawSharedAuthoredPostView( const viewDef_t *viewDef,
+	drawSurf_t **drawSurfs, int firstSourceSurface, int sourceSurfaceCount );
 void RB_DrawSpecialEffects( const void *data );
 void RB_ApplyResolutionScaleToBackBuffer( void );
 void RB_ApplyCRTToBackBuffer( void );
@@ -2171,6 +2273,19 @@ void RB_SetGL2D( void );
 void RB_LogComment( const char *comment, ... ) id_attribute((format(printf,1,2)));
 
 void RB_ShowImages( void );
+
+// Backend implementation of RC_RESOLVE_TEMPORAL_PRESENTATION. The command is
+// copied at dispatch so a capture scope that begins after frontend enqueue can
+// suppress history reads/writes without mutating frame-memory ownership.
+bool RB_ResolveTemporalPresentation(
+	const resolveTemporalPresentationCommand_t &command );
+
+// GL temporal history may only consume depth copied successfully for the
+// command's immutable frame/generation snapshot. Resolve commands invalidate
+// before attempting a depth blit and stamp only after an error-free copy.
+void RB_InvalidateTemporalDepthStamp( idRenderTexture *target );
+void RB_StampTemporalDepthResolved( idRenderTexture *target,
+	int frameNumber, unsigned int historyGeneration );
 
 void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds );
 

@@ -97,7 +97,7 @@ stop MVD recording or playback.
 
 | Format | Playback | Seeking and speed | Camera |
 |---|---|---|---|
-| openQ4 MVD `.mvd` 1.0-1.2 | Supported, including API-39 1.0/1.1 recordings | Pause, speed, step, and replay-based seek | Full-world free roam and player follow |
+| openQ4 MVD `.mvd` 1.0-1.2 | Supported, including compatible API-39, API-42, and API-44 1.0/1.1 recordings | Pause, speed, step, and replay-based seek | Full-world free roam and player follow |
 | openQ4 render `.demo` | Supported | Pause, speed, step, and replay-based seek | Fixed recorded camera |
 | Retail Quake 4 render `.demo` | Not supported yet | None | Not available |
 | Retail Quake 4 `.netdemo` | Not supported yet | None | Not available |

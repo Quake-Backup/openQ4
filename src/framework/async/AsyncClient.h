@@ -52,6 +52,25 @@ typedef enum {
 } authKeyMsg_t;
 
 typedef enum {
+	RCON_REPLY_NONE,
+	RCON_REPLY_LEGACY,
+	RCON_REPLY_CHALLENGE,
+	RCON_REPLY_OUTPUT
+} rconReplyState_t;
+
+typedef struct rcon2ClientRequest_s {
+	rconReplyState_t	state;
+	netadr_t			address;
+	int					startTime;
+	int					lastSendTime;
+	byte				clientNonce[16];
+	byte				serverNonce[16];
+	byte				requestDigest[32];
+	byte				proof[32];
+	char				command[MAX_STRING_CHARS];
+} rcon2ClientRequest_t;
+
+typedef enum {
 	AUTHKEY_BAD_INVALID,
 	AUTHKEY_BAD_BANNED,
 	AUTHKEY_BAD_INUSE,
@@ -62,7 +81,6 @@ typedef enum {
 	UPDATE_NONE,
 	UPDATE_SENT,
 	UPDATE_READY,
-	UPDATE_DLING,
 	UPDATE_DONE
 } clientUpdateState_t;
 
@@ -136,6 +154,7 @@ private:
 	
 	netadr_t			lastRconAddress;			// last rcon address we emitted to
 	int					lastRconTime;				// when last rcon emitted
+	rcon2ClientRequest_t	rcon2Request;
 
 	idMsgChannel		channel;					// message channel to server
 	int					lastConnectTime;			// last time a connect message was sent
@@ -159,16 +178,9 @@ private:
 	clientUpdateState_t updateState;
 	int					updateSentTime;
 	idStr				updateMSG;
-	idStr				updateURL;
-	bool				updateDirectDownload;
-	idStr				updateFile;
-	dlMime_t			updateMime;
-	idStr				updateFallback;
 	bool				showUpdateMessage;
 
 	backgroundDownload_t	backgroundDownload;
-	int					dltotal;
-	int					dlnow;
 
 	int					lastFrameDelta;
 
@@ -194,6 +206,8 @@ private:
 	void				ProcessDisconnectMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessInfoResponseMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessPrintMessage( const netadr_t from, const idBitMsg &msg );
+	void				ProcessRemoteConsole2ChallengeResponse( const netadr_t from, const idBitMsg &msg );
+	void				ProcessRemoteConsole2Complete( const netadr_t from, const idBitMsg &msg );
 	void				ProcessServersListMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessServersListExtMessage( const netadr_t from, const idBitMsg &msg );
 	void				ProcessAuthKeyMessage( const netadr_t from, const idBitMsg &msg );
@@ -206,7 +220,6 @@ private:
 	void				ProcessReliableMessagePure( const idBitMsg &msg );
 	static const char*	HandleGuiCommand( const char *cmd );
 	const char*			HandleGuiCommandInternal( const char *cmd );
-	void				SendVersionDLUpdate( int state );
 	void				HandleDownloads( void );
 	void				Idle( void );
 	int					UpdateTime( int clamp );
@@ -214,6 +227,10 @@ private:
 	bool				CheckTimeout( void );
 	void				ProcessDownloadInfoMessage( const netadr_t from, const idBitMsg &msg );
 	int					GetDownloadRequest( const int checksums[ MAX_PURE_PAKS ], int count, int gamePakChecksum );
+	void				ClearRemoteConsoleRequest( void );
+	void				SendRemoteConsole2Challenge( void );
+	void				SendRemoteConsole2Proof( void );
+	void				UpdateRemoteConsoleRequest( void );
 };
 
 #endif /* !__ASYNCCLIENT_H__ */

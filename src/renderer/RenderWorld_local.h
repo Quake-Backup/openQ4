@@ -296,6 +296,8 @@ public:
 	void					ConvertProcToMD5R();
 	void					ClearPortalStates();
 	virtual	bool			InitFromMap( const char *mapName );
+	bool					WriteLevelLoadCachePayload( idFile &file ) const;
+	bool					ReadLevelLoadCachePayload( idFile &file, const char *expectedMapName, ID_TIME_T sourceTimestamp );
 	bool					WriteMD5R( bool compressed );
 	void					SetupLightGrid();
 	void					LoadLightGridImages( bool forceReloadLoaded = false );

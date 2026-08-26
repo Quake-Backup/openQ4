@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression checks for relative filesystem mutation qpath safety."""
 
+import hashlib
 from pathlib import Path
 
 
@@ -131,6 +132,204 @@ def validate_behavior_model() -> None:
             raise AssertionError(f"Expected rejected relative mutation qpath: {path!r}")
 
 
+def validate_generated_loadscreen_path_budget() -> None:
+    final_qpath = "guis/assets/generated/loadscreens/airdefense1_1820x1024.tga"
+    save_root = "x" * 178
+    final_path = f"{save_root}/{final_qpath}"
+    nonce = "0" * 32
+    sibling_stage = f"{save_root}/{final_qpath.rsplit('/', 1)[0]}/_oq4.{nonce}.00000001.tmp"
+    fixed_stage_qpath = f"_oq4/{nonce}.tmp"
+    fixed_stage = f"{save_root}/{fixed_stage_qpath}"
+    minimum_final_qpath = "guis/assets/generated/loadscreens/a_1x1.tga"
+
+    if len(final_path) != 238 or len(sibling_stage) != 263:
+        raise AssertionError("loadscreen path-budget fixture no longer models the Windows boundary")
+    if len(fixed_stage) != 220 or len(fixed_stage) >= len(final_path):
+        raise AssertionError("root-level loadscreen staging path does not preserve MAX_PATH headroom")
+    if len(fixed_stage_qpath) >= len(minimum_final_qpath):
+        raise AssertionError("loadscreen staging qpath is not shorter than every generated final qpath")
+    if not is_safe_relative_write_path_model(fixed_stage_qpath):
+        raise AssertionError("root-level loadscreen staging path is not a portable mutation qpath")
+
+
+def validate_generated_binary_image_cache_fallback() -> None:
+    def compact_digest(logical_name: str) -> str:
+        normalized_name = logical_name.replace("\\", "/").lower()
+        return hashlib.sha256(normalized_name.encode("utf-8")).hexdigest()[:32]
+
+    logical_name = "makeIntensity( gfx/lights/squarelight1a)#__0500"
+    digest = compact_digest(logical_name)
+    legacy_qpath = (
+        "generated/images/_programs/"
+        "makeintensity_gfx_lights_squarelight1a_0500_c92dc23b.bimage"
+    )
+    compact_qpath = f"generated/images/_compact/v1/{digest}.bimage"
+    save_root_length = 174
+
+    if digest != "46731237362ef058d9144a9884e3e2e9":
+        raise AssertionError("compact binary-image identity is not deterministic")
+    if compact_digest("textures/a b#__0200") == compact_digest("textures/ab#__0200"):
+        raise AssertionError("compact binary-image normalization erases logical-name identity")
+    authored_digest = compact_digest(
+        "gfx/effects/fluids_drips/brown_bubble_half#__0200#q4authored.tga"
+    )
+    fallback_digest = compact_digest(
+        "gfx/effects/fluids_drips/brown_bubble_half#__0200#q4stockfallback.tga"
+    )
+    if authored_digest == fallback_digest:
+        raise AssertionError("compact image cache aliases authored and stock-fallback identities")
+    if save_root_length + 1 + len(legacy_qpath) != 261:
+        raise AssertionError("binary-image path-budget fixture no longer crosses MAX_PATH")
+    if save_root_length + 1 + len(compact_qpath) != 243:
+        raise AssertionError("compact binary-image cache path lost its fixed short budget")
+    if not is_safe_relative_write_path_model(compact_qpath):
+        raise AssertionError("compact binary-image cache path is not a portable mutation qpath")
+
+    source = read("src/imagetools/BinaryImage.cpp")
+    image_header = read("src/imagetools/BinaryImage.h")
+    image_load_source = read("src/renderer/Image_load.cpp")
+    compact_name = function_body(source, "static void R_MakeCompactBinaryImageFileName(")
+    write_cache = function_body(source, "ID_TIME_T idBinaryImage::WriteGeneratedFile(")
+    checked_read = function_body(source, "ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime )")
+    unchecked_read = function_body(source, "ID_TIME_T idBinaryImage::LoadFromGeneratedFileUnchecked(")
+    compact_unchecked_read = function_body(
+        source, "ID_TIME_T idBinaryImage::LoadFromCompactGeneratedFileUnchecked("
+    )
+    load_image = function_body(image_load_source, "void idImage::ActuallyLoadImage(")
+
+    for token in (
+        "normalizedName.BackSlashesToSlashes();",
+        "normalizedName.ToLower();",
+        "idCrypto::SHA256(",
+        "i < 16",
+        '"generated/images/_compact/v1/%s.bimage"',
+    ):
+        require(compact_name, token, "versioned SHA-256/128 compact binary-image identity")
+    reject(compact_name, 'normalizedName.Replace( " ", "" );',
+           "compact binary-image identity must preserve meaningful spaces")
+
+    require_order(write_cache,
+                  'fileSystem->OpenFileWrite( writeFileName, "fs_savepath" )',
+                  "R_MakeCompactBinaryImageFileName( writeFileName, GetName() )",
+                  "legacy binary-image write before compact fallback")
+    require_order(write_cache,
+                  "R_MakeCompactBinaryImageFileName( writeFileName, GetName() )",
+                  '\t\toutputFile = fileSystem->OpenFileWrite( writeFileName, "fs_savepath" );',
+                  "compact binary-image fallback write")
+    require_order(write_cache,
+                  '\t\toutputFile = fileSystem->OpenFileWrite( writeFileName, "fs_savepath" );',
+                  "idLib::Warning(",
+                  "binary-image warning only after compact fallback failure")
+    require(write_cache, "return FILE_NOT_FOUND_TIMESTAMP;",
+            "recoverable binary-image cache publication failure")
+
+    require_order(checked_read,
+                  "fileSystem->OpenFileRead( binaryFileName )",
+                  "R_MakeCompactBinaryImageFileName( compactFileName, GetName() )",
+                  "timestamp-checked binary-image legacy-first lookup")
+    require_order(checked_read,
+                  "R_MakeCompactBinaryImageFileName( compactFileName, GetName() )",
+                  "fileSystem->OpenFileRead( compactFileName )",
+                  "timestamp-checked binary-image compact fallback lookup")
+    require(checked_read, "LoadFromGeneratedFile( compactFile",
+            "timestamp-checked compact binary-image payload validation")
+    reject(unchecked_read, "R_MakeCompactBinaryImageFileName(",
+           "ordinary unchecked lookup must expose legacy rejection to its caller")
+    require(compact_unchecked_read, "fileSystem->OpenFileRead( compactFileName )",
+            "pure-policy-preserving compact unchecked lookup")
+    reject(compact_unchecked_read, "OpenExplicitFileRead",
+           "compact binary-image lookup must not bypass pure VFS policy")
+    require(compact_unchecked_read, "LoadFromGeneratedFile( compactFile",
+            "compact unchecked payload validation")
+    require(image_header, "LoadFromCompactGeneratedFileUnchecked();",
+            "compact unchecked retry API")
+
+    accept_generated = function_body(load_image, "auto acceptGeneratedImage =")
+    for token in (
+        "im.GetFileHeader().sourceFileTime != sourceFileTime",
+        "R_BinaryImageHeaderSupportedByRenderer( im.GetFileHeader() )",
+        "R_GeneratedImageHeaderMatchesDerivedOpts( im.GetFileHeader(), opts, usage )",
+    ):
+        require(accept_generated, token, "shared legacy/compact cache acceptance")
+    require_order(load_image,
+                  "generatedImageAccepted = acceptGeneratedImage( binaryFileTime );",
+                  "im.LoadFromCompactGeneratedFileUnchecked();",
+                  "caller-rejected legacy before compact cache retry")
+    require_order(load_image,
+                  "im.LoadFromCompactGeneratedFileUnchecked();",
+                  "\t\tgeneratedImageAccepted = acceptGeneratedImage( binaryFileTime );",
+                  "compact cache receives full caller-level validation")
+    require_order(load_image,
+                  "im.LoadFromCompactGeneratedFileUnchecked();",
+                  "if ( generatedImageAccepted ) {",
+                  "compact cache retry before source decode")
+
+
+def validate_generated_binary_image_write_integrity() -> None:
+    source = read("src/imagetools/BinaryImage.cpp")
+    image_load_source = read("src/renderer/Image_load.cpp")
+    write_image = function_body(source, "bool idBinaryImage::WriteToFile(")
+    write_cache = function_body(source, "ID_TIME_T idBinaryImage::WriteGeneratedFile(")
+    load_image = function_body(image_load_source, "void idImage::ActuallyLoadImage(")
+
+    metadata_fields = (
+        "fileData.sourceFileTime",
+        "fileData.headerMagic",
+        "fileData.textureType",
+        "fileData.format",
+        "fileData.colorFormat",
+        "fileData.width",
+        "fileData.height",
+        "fileData.numLevels",
+        "img.level",
+        "img.destZ",
+        "img.width",
+        "img.height",
+        "img.dataSize",
+    )
+    for field in metadata_fields:
+        require(
+            write_image,
+            f"file->WriteBig( {field} ) != sizeof( {field} )",
+            f"binary-image short write for {field}",
+        )
+    if write_image.count("file->WriteBig(") != len(metadata_fields):
+        raise AssertionError("binary-image metadata contains an unchecked WriteBig call")
+    require(
+        write_image,
+        "file->WriteBig( fileData.numLevels ) != sizeof( fileData.numLevels ) ) {\n\t\treturn false;\n\t}",
+        "binary-image file-header short-write rejection",
+    )
+    require(
+        write_image,
+        "file->WriteBig( img.dataSize ) != sizeof( img.dataSize ) ) {\n\t\t\treturn false;\n\t\t}",
+        "binary-image mip-metadata short-write rejection",
+    )
+    require(
+        write_image,
+        "if ( file->Write( img.data, img.dataSize ) != img.dataSize ) {\n\t\t\treturn false;\n\t\t}",
+        "binary-image mip payload short write",
+    )
+
+    require(
+        write_cache,
+        "if ( !WriteToFile( file, sourceFileTime ) ) {\n\t\treturn FILE_NOT_FOUND_TIMESTAMP;\n\t}",
+        "generated binary-image write failure remains recoverable",
+    )
+    write_call = "binaryFileTime = im.WriteGeneratedFile( sourceFileTime );"
+    write_call_index = load_image.find(write_call)
+    if write_call_index == -1:
+        raise AssertionError("image loader no longer publishes the generated binary image")
+    post_write = load_image[write_call_index:]
+    require_order(post_write, write_call, "AllocImage();",
+                  "binary-image publication failure does not stop allocation")
+    require_order(post_write, write_call, "SubImageUpload(",
+                  "binary-image publication failure does not stop upload")
+    allocation_index = post_write.find("AllocImage();")
+    if "return" in post_write[len(write_call):allocation_index]:
+        raise AssertionError("binary-image cache publication failure became fatal to image loading")
+
+
 def validate_source_contract() -> None:
     source = read("src/framework/FileSystem.cpp")
     header = read("src/framework/FileSystem.h")
@@ -227,8 +426,6 @@ def validate_generated_loadscreen_publication() -> None:
             "TGA writer reports short writes")
     require(image_header, "bool\tR_WriteTGA(", "renderer TGA writer result contract")
     require(image_tools_header, "bool\tR_WriteTGA(", "imagetools TGA writer result contract")
-    require(prepare, "static uint32 stagingSequence = 0;",
-            "generated loadscreen per-process staging sequence")
     require(prepare, "uint64 stagingNonce[2] = { 0, 0 };",
             "generated loadscreen 128-bit staging nonce")
     require(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
@@ -237,18 +434,40 @@ def validate_generated_loadscreen_publication() -> None:
             "generated loadscreen no-CSPRNG source fallback")
     require(secure_staging_failure, "return false;",
             "generated loadscreen no-CSPRNG early return")
-    require(prepare, 'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
-            "generated loadscreen unique staging path")
+    require(prepare, 'const idStr stagingPath = va( "_oq4/%016llx%016llx.tmp"',
+            "generated loadscreen short root-level staging path")
+    reject(prepare, "static uint32 stagingSequence",
+           "generated loadscreen CSPRNG identity needs no shared sequence")
+    reject(prepare, "stagingPath.StripFilename();",
+           "generated loadscreen staging must not inherit the long final directory")
+    reject(prepare, 'stagingPath += va( "/_oq4.',
+           "generated loadscreen staging must not remain beside the final file")
+    reject(prepare, 'va( "%s.%016llx%016llx.%u.partial"',
+           "generated loadscreen must not inflate the final path past platform limits")
     require(prepare, "R_WriteTGA( stagingPath.c_str()", "generated loadscreen staged write")
     require(prepare, "fileSystem->PromoteFile( stagingPath.c_str(), generatedPath.c_str()",
             "generated loadscreen atomic publication")
+    require(prepare, "else if ( !Session_FileExistsInSearchPaths( generatedPath.c_str() ) )",
+            "generated loadscreen active-VFS visibility gate")
+    require(prepare, "declManager->FindMaterial( generatedPath.c_str() )",
+            "generated loadscreen material preflight")
+    require(prepare, "generatedMaterial->TestMaterialFlag( MF_DEFAULTED )",
+            "generated loadscreen default-material rejection")
+    require(prepare, "using the source levelshot",
+            "generated loadscreen unavailable-path source fallback")
     require(prepare, "fileSystem->RemoveFileChecked( stagingPath.c_str()",
             "generated loadscreen failed-stage cleanup")
     require(prepare, "return published;", "generated loadscreen failure falls back to source")
     require_order(prepare, "R_WriteTGA( stagingPath.c_str()", "fileSystem->PromoteFile(",
                   "generated loadscreen write-before-publish order")
+    require_order(prepare, "fileSystem->PromoteFile(",
+                  "Session_FileExistsInSearchPaths( generatedPath.c_str() )",
+                  "generated loadscreen publish-before-VFS-validation order")
+    require_order(prepare, "Session_FileExistsInSearchPaths( generatedPath.c_str() )",
+                  "declManager->FindMaterial( generatedPath.c_str() )",
+                  "generated loadscreen VFS-before-material-validation order")
     require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
-                  'const idStr stagingPath = va( "%s.%016llx%016llx.%u.partial"',
+                  'const idStr stagingPath = va( "_oq4/%016llx%016llx.tmp"',
                   "generated loadscreen secure-token-before-path order")
     require_order(prepare, "Sys_GetSecureRandomBytes( stagingNonce, sizeof( stagingNonce ) )",
                   "R_WriteTGA( stagingPath.c_str()",
@@ -261,6 +480,9 @@ def validate_generated_loadscreen_publication() -> None:
 
 def main() -> int:
     validate_behavior_model()
+    validate_generated_loadscreen_path_budget()
+    validate_generated_binary_image_cache_fallback()
+    validate_generated_binary_image_write_integrity()
     validate_source_contract()
     validate_generated_loadscreen_publication()
     print("filesystem relative mutation qpath safety checks passed")
