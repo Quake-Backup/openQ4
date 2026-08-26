@@ -127,6 +127,29 @@ void R_ApplyImageDownsizePolicy( const imageDownsizePolicy_t &policy, int &width
 // loaders that select a level out of an existing mip chain instead of resampling.
 int R_ImageDownsizePolicyMipSkip( const imageDownsizePolicy_t &policy, int width, int height, int availableLevels );
 
+// User-selectable sampling for TF_DEFAULT images. The names intentionally
+// mirror Quake 4's image_filter values, while this backend-neutral state keeps
+// the Vulkan renderer independent of OpenGL constants.
+typedef enum {
+	IMAGE_FILTER_LINEAR_MIPMAP_LINEAR = 0,
+	IMAGE_FILTER_LINEAR_MIPMAP_NEAREST,
+	IMAGE_FILTER_NEAREST,
+	IMAGE_FILTER_LINEAR,
+	IMAGE_FILTER_NEAREST_MIPMAP_NEAREST,
+	IMAGE_FILTER_NEAREST_MIPMAP_LINEAR,
+	IMAGE_FILTER_MODE_COUNT
+} imageFilterMode_t;
+
+struct imageFilterState_t {
+	imageFilterMode_t	mode;
+	bool				minLinear;
+	bool				magLinear;
+	bool				usesMipmaps;
+	bool				mipLinear;
+};
+
+imageFilterState_t R_GetDefaultImageFilterState();
+
 #include "ImageOpts.h"
 #include "../imagetools/BinaryImage.h"
 
@@ -145,6 +168,7 @@ public:
 
 	// Should be called at least once
 	void		SetSamplerState(textureFilter_t tf, textureRepeat_t tr);
+	void		RefreshSamplerState();
 
 	// used by callback functions to specify the actual data
 	// data goes from the bottom to the top line of the image, as OpenGL expects it

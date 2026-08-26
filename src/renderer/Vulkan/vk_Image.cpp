@@ -222,6 +222,7 @@ typedef struct vkSamplerKey_s {
 	textureRepeat_t	repeat;
 	bool			mips;
 	int				anisotropy;
+	int				defaultFilterMode;
 } vkSamplerKey_t;
 
 static const int VK_MAX_SAMPLERS = 64;
@@ -230,8 +231,13 @@ static VkSampler vkSamplers[ VK_MAX_SAMPLERS ];
 static int vkNumSamplers = 0;
 
 static VkSampler VK_Image_GetSampler( textureFilter_t filter, textureRepeat_t repeat, bool mips ) {
+	const imageFilterState_t defaultFilter = R_GetDefaultImageFilterState();
+	const int defaultFilterMode = filter == TF_DEFAULT ? static_cast<int>( defaultFilter.mode ) : -1;
+	if ( filter == TF_DEFAULT && !defaultFilter.usesMipmaps ) {
+		mips = false;
+	}
 	int anisotropy = 0;
-	if ( filter == TF_DEFAULT && mips ) {
+	if ( filter == TF_DEFAULT && mips && defaultFilter.minLinear ) {
 		anisotropy = image_anisotropy.GetInteger();
 		if ( anisotropy < 0 ) {
 			anisotropy = 0;
@@ -243,7 +249,8 @@ static VkSampler VK_Image_GetSampler( textureFilter_t filter, textureRepeat_t re
 
 	for ( int i = 0; i < vkNumSamplers; i++ ) {
 		if ( vkSamplerKeys[ i ].filter == filter && vkSamplerKeys[ i ].repeat == repeat
-				&& vkSamplerKeys[ i ].mips == mips && vkSamplerKeys[ i ].anisotropy == anisotropy ) {
+				&& vkSamplerKeys[ i ].mips == mips && vkSamplerKeys[ i ].anisotropy == anisotropy
+				&& vkSamplerKeys[ i ].defaultFilterMode == defaultFilterMode ) {
 			return vkSamplers[ i ];
 		}
 	}
@@ -267,9 +274,9 @@ static VkSampler VK_Image_GetSampler( textureFilter_t filter, textureRepeat_t re
 			sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 			break;
 		default:	// TF_DEFAULT
-			sci.magFilter = VK_FILTER_LINEAR;
-			sci.minFilter = VK_FILTER_LINEAR;
-			sci.mipmapMode = mips ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+			sci.magFilter = defaultFilter.magLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+			sci.minFilter = defaultFilter.minLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+			sci.mipmapMode = defaultFilter.mipLinear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
 			break;
 	}
 	sci.maxLod = mips ? VK_LOD_CLAMP_NONE : 0.25f;
@@ -313,6 +320,7 @@ static VkSampler VK_Image_GetSampler( textureFilter_t filter, textureRepeat_t re
 	vkSamplerKeys[ vkNumSamplers ].repeat = repeat;
 	vkSamplerKeys[ vkNumSamplers ].mips = mips;
 	vkSamplerKeys[ vkNumSamplers ].anisotropy = anisotropy;
+	vkSamplerKeys[ vkNumSamplers ].defaultFilterMode = defaultFilterMode;
 	vkSamplers[ vkNumSamplers ] = sampler;
 	vkNumSamplers++;
 	return sampler;
@@ -882,6 +890,12 @@ void idImage::SetTexParameters( void ) {
 	}
 	entry->sampler = VK_Image_GetSampler( filter, repeat, entry->numMips > 1 );
 	entry->generation = vkImageGenerationCounter++;
+}
+
+void idImage::RefreshSamplerState() {
+	if ( IsLoaded() ) {
+		SetTexParameters();
+	}
 }
 
 /*

@@ -98,6 +98,34 @@ image_picmipFilter 3
 That halves world and model diffuse textures twice while leaving lighting detail,
 the HUD, and menus untouched.
 
+## Texture Sampling
+
+`image_filter` controls how ordinary material textures are sampled. It is saved
+in your configuration and updates loaded textures immediately, without a
+`vid_restart`. Material stages that explicitly request linear or nearest
+sampling keep their authored behavior. That protects explicitly filtered fonts,
+HUD elements, shadow data, and renderer-internal textures from the global
+choice.
+
+| Value | Texels | Mip levels | Typical use |
+|---|---|---|---|
+| `GL_LINEAR_MIPMAP_LINEAR` | Linear | Smooth blend | Default, smoothest general-purpose sampling. |
+| `GL_LINEAR_MIPMAP_NEAREST` | Linear | Nearest level | Smooth texels with sharper mip transitions. |
+| `GL_NEAREST_MIPMAP_NEAREST` | Nearest | Nearest level | Pixelated textures with stable distance scaling. |
+| `GL_NEAREST_MIPMAP_LINEAR` | Nearest | Smooth blend | Pixelated texels with softer distance transitions. |
+| `GL_NEAREST` | Nearest | Disabled | Fully point-sampled; may shimmer in the distance. |
+| `GL_LINEAR` | Linear | Disabled | Bilinear sampling without mip levels. |
+
+For a pixelated texture style, enter:
+
+```
+seta image_filter GL_NEAREST_MIPMAP_NEAREST
+```
+
+Nearest-texel modes automatically avoid anisotropic filtering so
+`image_anisotropy` cannot blur the requested pixel edges. The same values work
+with the supported OpenGL renderer and the experimental Vulkan renderer.
+
 ## Renderer Backend (OpenGL default; Vulkan is experimental)
 
 openQ4 ships with an **OpenGL renderer as the default and only supported
