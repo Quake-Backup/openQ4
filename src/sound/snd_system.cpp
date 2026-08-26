@@ -800,8 +800,7 @@ idSoundSystemLocal::FreeVoice
 cinData_t idSoundSystemLocal::ImageForTime( const int milliseconds, const bool waveform )
 {
 	cinData_t cd;
-	cd.imageWidth = 0;
-	cd.imageHeight = 0;
+	memset( &cd, 0, sizeof( cd ) );
 	cd.status = FMV_IDLE;
 	return cd;
 }
