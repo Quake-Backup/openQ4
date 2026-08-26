@@ -21,6 +21,10 @@ ROOT_DOCS = (
     Path("TECHNICAL.md"),
     Path("TODO.md"),
 )
+COMMUNITY_DOCS = (
+    Path(".github") / "CONTRIBUTING.md",
+    Path(".github") / "CODE_OF_CONDUCT.md",
+)
 SAFE_LINK_SCHEMES = {
     "http",
     "https",
@@ -683,7 +687,7 @@ def collect_doc_sources(source_root: Path) -> list[Path]:
     docs: list[Path] = []
     seen: set[str] = set()
 
-    for relative in ROOT_DOCS:
+    for relative in (*ROOT_DOCS, *COMMUNITY_DOCS):
         candidate = source_root / relative
         if candidate.exists() or candidate.is_symlink():
             require_regular_doc_source(candidate, relative)
@@ -714,6 +718,8 @@ def collect_doc_sources(source_root: Path) -> list[Path]:
 def classify_group(relative: Path) -> str:
     if relative.parent == Path("."):
         return "Project"
+    if relative.parts[0] == ".github":
+        return "Project"
     if len(relative.parts) >= 2 and relative.parts[0] == "docs" and relative.parts[1] == "user":
         return "User Guides"
     if len(relative.parts) >= 3 and relative.parts[0] == "docs" and relative.parts[1] == "dev" and relative.parts[2] == "proposals":
@@ -732,6 +738,10 @@ def default_nav_title(relative: Path) -> str:
         return "Technical Reference"
     if relative == Path("TODO.md"):
         return "TODO"
+    if relative == Path(".github") / "CONTRIBUTING.md":
+        return "Contributing"
+    if relative == Path(".github") / "CODE_OF_CONDUCT.md":
+        return "Code of Conduct"
 
     stem = relative.stem.replace("-", " ").replace("_", " ").strip()
     if not stem:
@@ -939,7 +949,7 @@ def build_doc_specs(source_root: Path) -> list[DocSpec]:
                 output_relative=relative.with_suffix(".html"),
                 group=classify_group(relative),
                 title=title,
-                nav_title=default_nav_title(relative) if relative.parent == Path(".") else title,
+                nav_title=default_nav_title(relative) if relative.parent in (Path("."), Path(".github")) else title,
                 summary=summary,
             )
         )
