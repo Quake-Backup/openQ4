@@ -14,7 +14,7 @@ permissions:
 env:
   # Keep the engine's shared File/FileSystem ABI locked to the companion
   # revision that implements GAME_API 45 and generated-animation cache v3.
-  OPENQ4_GAMELIBS_SHA: 80cbf4760e694916560cf45105ed9b0dc9fb0528
+  OPENQ4_GAMELIBS_SHA: 79c9d7d1e26952ffd8e5352f7d51b64ee08b9d82
 
 jobs:
   script-smoke:
