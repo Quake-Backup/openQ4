@@ -161,6 +161,7 @@ idAASSettings::idAASSettings( void ) {
 	boundingBoxes[0] = idBounds( idVec3( -16, -16, 0 ), idVec3( 16, 16, 72 ) );
 	usePatches = false;
 // jmarshall - aas 1.08
+	generateAllFaces = false;
 	generateTacticalFeatures = false;
 // jmarshall end
 	writeBrushMap = false;
@@ -296,8 +297,11 @@ bool idAASSettings::FromParser( idLexer &src ) {
 			if ( !ParseBool( src, usePatches ) ) { return false; }
 		}
 // jmarshall: AAS 1.08
-		else if (token == "generateTacticalFeatures") {
-			if (!ParseBool(src, generateTacticalFeatures)) { return false; }
+		else if ( token == "generateAllFaces" ) {
+			if ( !ParseBool( src, generateAllFaces ) ) { return false; }
+		}
+		else if ( token == "generateTacticalFeatures" ) {
+			if ( !ParseBool( src, generateTacticalFeatures ) ) { return false; }
 		}
 // jmarshall end
 		else if ( token == "writeBrushMap" ) {
@@ -503,8 +507,8 @@ bool idAASSettings::WriteToFile( idFile *fp ) const {
 	fp->WriteFloatString( "\tallowSwimReachabilities = %d\n", allowSwimReachabilities );
 	fp->WriteFloatString( "\tallowFlyReachabilities = %d\n", allowFlyReachabilities );
 // jmarshall - AAS 1.08
-	fp->WriteFloatString("\tgenerateAllFaces = 0\n");
-	fp->WriteFloatString("\tgenerateTacticalFeatures = 0\n");
+	fp->WriteFloatString( "\tgenerateAllFaces = %d\n", generateAllFaces );
+	fp->WriteFloatString( "\tgenerateTacticalFeatures = %d\n", generateTacticalFeatures );
 // jmarshall end
 	fp->WriteFloatString( "\tfileExtension = \"%s\"\n", fileExtension.c_str() );
 	fp->WriteFloatString( "\tgravity = (%f %f %f)\n", gravity.x, gravity.y, gravity.z );

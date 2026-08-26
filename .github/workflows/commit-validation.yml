@@ -80,6 +80,7 @@ jobs:
             tools/validation/openq4_validate.py \
             tools/validation/stock_asset_baseline.py \
             tools/tests/renderer_validation_matrix.py \
+            tools/tests/aas_settings_contract.py \
             tools/tests/arena_campaign.py \
             tools/tests/async_drop_client_contract.py \
             tools/tests/campaign_split_state_transition.py \
@@ -240,6 +241,7 @@ jobs:
           bash -n tools/validation/validate_push.sh
           bash -n tools/validation/validate_pr.sh
           python tools/validation/audit_source_provenance.py --check
+          python tools/tests/aas_settings_contract.py
           python tools/tests/arena_campaign.py
           python tools/tests/async_drop_client_contract.py
           python tools/tests/campaign_split_state_transition.py
