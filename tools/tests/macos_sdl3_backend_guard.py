@@ -138,6 +138,7 @@ def validate_sdl3_context_teardown_guards() -> None:
     # compiled into the SDL3 backend until the module split (Phase B8)
     source = read("src/renderer/OpenGL/gl_ContextSDL3.cpp")
     ensure_current = function_body(source, "static bool SDL3_EnsureGLContextCurrent(const char *operation) {")
+    apply_swap = function_body(source, "static bool SDL3_ApplySwapInterval(void) {")
     screen_parms = function_body(source, "bool GLimp_SetScreenParms(glimpParms_t parms) {")
     shutdown = function_body(source, "void GLimp_Shutdown(void) {")
     swap = function_body(source, "void GLimp_SwapBuffers(void) {")
@@ -157,6 +158,13 @@ def validate_sdl3_context_teardown_guards() -> None:
     ):
         require(ensure_current, token, "SDL3 current-context helper")
 
+    require(apply_swap, 'SDL3_EnsureGLContextCurrent("swap interval update")', "SDL3 swap-interval current-context guard")
+    require_before(
+        apply_swap,
+        'SDL3_EnsureGLContextCurrent("swap interval update")',
+        "SetGLSwapInterval(requestedInterval)",
+        "SDL3 swap-interval current-context guard",
+    )
     require(screen_parms, 'SDL3_EnsureGLContextCurrent("screen parm change")', "SDL3 screen-parm current-context guard")
     require(shutdown, "if (s_glWindow) {\n\t\t\t(void)windowServices->MakeGLContextCurrent(NULL);", "SDL3 shutdown context detach guard")
     reject(shutdown, "(void)windowServices->MakeGLContextCurrent(NULL);\n\t\twindowServices->DestroyGLContext", "SDL3 shutdown unguarded context detach")

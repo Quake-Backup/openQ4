@@ -120,6 +120,9 @@ static bool SDL3_ApplySwapInterval(void) {
 	if (!s_glWindow || !s_glContext) {
 		return false;
 	}
+	if (!SDL3_EnsureGLContextCurrent("swap interval update")) {
+		return false;
+	}
 
 	const int requestedInterval = R_GetEffectiveSwapInterval();
 	if (!s_glWindowServices->SetGLSwapInterval(requestedInterval)) {
