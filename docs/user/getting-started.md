@@ -55,6 +55,11 @@ If you prefer a self-contained setup, keep these side by side in the same root f
 
 > [!IMPORTANT]
 > Do **not** copy retail PK4 files into `baseoq4/`. That folder is for openQ4 runtime files.
+> Copy the complete retail `q4base/`, including the unsuffixed language-media archive such as
+> `zpak_english.pk4`. Small numbered files such as `zpak_english_01.pk4` are patches, not a
+> replacement for the base archive. If the unsuffixed archive is missing, character dialogue is
+> silent and conversation-gated campaign scenes may not advance; verify or reinstall the retail
+> files instead of renaming a numbered patch.
 
 ## Platform Notes
 
