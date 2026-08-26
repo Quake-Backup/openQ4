@@ -585,6 +585,9 @@ def validate_python_test_failure_aggregation() -> None:
 
 def validate_validation_wiring() -> None:
     validator = (ROOT / "tools" / "validation" / "openq4_validate.py").read_text(encoding="utf-8")
+    settings_coverage = (ROOT / "tools" / "tests" / "settings_menu_coverage.py").read_text(
+        encoding="utf-8"
+    )
     push = (ROOT / ".github" / "workflows" / "push-verification.yml").read_text(encoding="utf-8")
     commit = (ROOT / ".github" / "workflows" / "commit-validation.yml").read_text(encoding="utf-8")
     release_notes = (ROOT / "docs/dev" / "release-completion.md").read_text(encoding="utf-8")
@@ -617,6 +620,9 @@ def validate_validation_wiring() -> None:
     ):
         if "validation_hardening.py" not in text:
             raise AssertionError(f"validation_hardening.py is not wired into {context}")
+
+    if 'os.environ.get("OPENQ4_GAMELIBS_REPO"' not in settings_coverage:
+        raise AssertionError("settings menu coverage ignores the configured GameLibs repository")
 
     # Runtime drivers that need a built target package or retail assets; their
     # static contracts are wired into lightweight local validation instead.

@@ -3,12 +3,15 @@
 
 from collections import defaultdict
 import json
+import os
 from pathlib import Path
 import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
-GAME_LIBS = ROOT.parent / "openQ4-game"
+GAME_LIBS = Path(
+    os.environ.get("OPENQ4_GAMELIBS_REPO", ROOT.parent / "openQ4-game")
+).resolve()
 
 
 def read(path: Path) -> str:
