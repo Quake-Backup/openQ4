@@ -170,10 +170,16 @@ validate_prepared_root() {
         exit 1
     fi
 
-    if ! grep -Fqx 'prefix=${pcfiledir}/../..' "${pkg_config_file}"; then
-        echo "OpenAL Soft pkg-config metadata is not relocatable: ${pkg_config_file}" >&2
-        exit 1
-    fi
+    for expected_line in \
+        'prefix=${pcfiledir}/../..' \
+        'exec_prefix=${prefix}' \
+        'libdir=${exec_prefix}/lib' \
+        'includedir=${prefix}/include'; do
+        if ! grep -Fqx "${expected_line}" "${pkg_config_file}"; then
+            echo "OpenAL Soft pkg-config metadata is not relocatable (${expected_line}): ${pkg_config_file}" >&2
+            exit 1
+        fi
+    done
 }
 
 if [[ "${verify_only}" -eq 0 ]]; then
@@ -255,12 +261,16 @@ if [[ "${verify_only}" -eq 0 ]]; then
     chmod 0755 "${installed_runtime}"
     cp "${installed_runtime}" "${prepared_root}/lib/libopenal.dylib"
 
-    # CMake writes its temporary install prefix into openal.pc at configure
-    # time. Make the metadata relocatable before moving the prepared tree so
-    # Meson never resolves headers or libraries through the deleted build dir.
+    # CMake expands prefix, libdir, and includedir to the temporary install
+    # tree when it configures openal.pc. Make every path-bearing field
+    # relocatable before moving the prepared tree so Meson never resolves
+    # headers or libraries through the deleted build directory.
     pkg_config_file="${prepared_root}/lib/pkgconfig/openal.pc"
     awk '
         /^prefix=/ { print "prefix=${pcfiledir}/../.."; next }
+        /^exec_prefix=/ { print "exec_prefix=${prefix}"; next }
+        /^libdir=/ { print "libdir=${exec_prefix}/lib"; next }
+        /^includedir=/ { print "includedir=${prefix}/include"; next }
         { print }
     ' "${pkg_config_file}" > "${pkg_config_file}.tmp"
     mv "${pkg_config_file}.tmp" "${pkg_config_file}"
