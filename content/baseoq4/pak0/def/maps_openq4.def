@@ -1,0 +1,19 @@
+/*
+	openQ4-authored map declarations.
+*/
+
+mapDef mp/liquid_lab {
+	"name"					"#str_42800"
+	"DM"					"1"
+	"Team DM"				"1"
+	"Tourney"				"1"
+	"CTF"					"0"
+	"Arena CTF"				"0"
+	"DeadZone"				"0"
+	"Gametype_Deathmatch"		"1"
+	"Gametype_TeamDeathmatch"	"1"
+	"Gametype_Tournament"		"1"
+	"Gametype_CaptureTheFlag"	"0"
+	"Gametype_ArenaCaptureTheFlag"	"0"
+	"Gametype_DeadZone"			"0"
+}

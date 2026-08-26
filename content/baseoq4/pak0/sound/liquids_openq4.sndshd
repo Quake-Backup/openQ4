@@ -1,0 +1,31 @@
+/* Liquid Lab ambience assembled from sound samples shipped with Quake 4. */
+
+sound openq4_liquid_water_loop
+{
+	minDistance 96
+	maxDistance 700
+	volumeDb -12
+	looping
+
+	sound/ambience/water/wtr_loop_lgt
+}
+
+sound openq4_liquid_lava_loop
+{
+	minDistance 96
+	maxDistance 700
+	volumeDb -7
+	looping
+
+	sound/environment/lava/lava_loop2.wav
+}
+
+sound openq4_liquid_slime_loop
+{
+	minDistance 96
+	maxDistance 700
+	volumeDb -9
+	looping
+
+	sound/ambience/xian/ambient2/slime/loop_slime_02
+}

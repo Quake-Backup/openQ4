@@ -910,4 +910,9 @@
 	"#str_42748"	"Objeto"
 	"#str_42749"	"Este comando de servidor heredado está desactivado durante una partida gestionada. Usa Match Control."
 	"#str_42750"	"Debes esperar %d segundos más antes de convocar otra votación."
+
+	"#str_42800"	"Laboratorio de volúmenes líquidos"
+	"#str_42801"	"%s se ahogó"
+	"#str_42802"	"%s se disolvió en el cieno"
+	"#str_42803"	"%s ardió en la lava"
 }
