@@ -115,6 +115,33 @@ static bool FS_IsWindowsDeviceQPathSegment( const char *segment, int segmentLeng
 
 /*
 ========================
+FS_HasParentOSPathSegment
+
+Explicit OS paths may legitimately contain repeated dots in a filename or
+directory name.  Reject only a complete parent-directory component so an
+absolute save path cannot be used to make CreateOSPath back up the hierarchy.
+========================
+*/
+static bool FS_HasParentOSPathSegment( const char *OSPath ) {
+	const char *segmentStart = OSPath;
+	for ( const char *scan = OSPath; ; scan++ ) {
+		const char c = *scan;
+		if ( c != '\0' && c != '/' && c != '\\' ) {
+			continue;
+		}
+
+		if ( scan - segmentStart == 2 && segmentStart[ 0 ] == '.' && segmentStart[ 1 ] == '.' ) {
+			return true;
+		}
+		if ( c == '\0' ) {
+			return false;
+		}
+		segmentStart = scan + 1;
+	}
+}
+
+/*
+========================
 FS_ValidateRelativeWritePath
 
 Mutation APIs accept portable qpaths, not OS paths.  Validate before joining
@@ -2028,8 +2055,7 @@ void idFileSystemLocal::CreateOSPath( const char *OSPath ) {
 	char	*ofs;
 	
 	// make absolutely sure that it can't back up the path
-	// FIXME: what about c: ?
-	if ( strstr( OSPath, ".." ) || strstr( OSPath, "::" ) ) {
+	if ( FS_HasParentOSPathSegment( OSPath ) || strstr( OSPath, "::" ) ) {
 #ifdef _DEBUG		
 		common->DPrintf( "refusing to create relative path \"%s\"\n", OSPath );
 #endif
