@@ -253,13 +253,13 @@ and `openQ4-game` commits, updates `docs/dev/macos-signoff-evidence.md`, and
 leaves the release-completion evidence gate open until curated release notes
 link to the accepted record.
 
-The Apple OpenAL framework remains the default signoff and release audio
-provider through `macos_openal_provider=apple_framework`. To test the
-system/OpenAL Soft-style path on the Apple host, add
-`-MacOSOpenALProvider system`; treat that as migration-only local coverage, not
-release evidence. It is not release evidence that macOS packages bundle OpenAL Soft.
-The selected provider is recorded in the signoff report. The provider
-policy is tracked in
+OpenAL Soft is the signoff and release audio provider. Pass
+`-MacOSOpenALProvider system` and prepare the pinned dependency with
+`tools/build/prepare_macos_openal_soft.sh`; packaged evidence must show the
+signed `openQ4.app/Contents/Frameworks/libopenal.1.dylib`, package-relative
+dependency, LGPL notice, and corresponding source archive. The Apple framework
+option is compatibility-diagnostic coverage only. The selected provider is
+recorded in the signoff report, and the complete provider policy is tracked in
 `docs/dev/macos-openal-provider-policy.md`.
 
 ## Expected Validation

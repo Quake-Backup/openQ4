@@ -19,7 +19,7 @@ param(
     [ValidateSet("opengl", "metal", "both")]
     [string]$MacOSGraphicsBridge = "opengl",
     [ValidateSet("apple_framework", "system")]
-    [string]$MacOSOpenALProvider = "apple_framework",
+    [string]$MacOSOpenALProvider = "system",
     [ValidateSet("current-manual-signoff", "current-hosted-ci-runner", "floor-candidate", "latest-public-macos")]
     [string]$MacOSOSMatrixRole = "current-manual-signoff",
     [ValidateSet("plain", "debug", "debugoptimized", "release", "minsize", "custom")]

@@ -75,7 +75,7 @@ option(
   type: 'combo',
   choices: ['apple_framework', 'system'],
   value: 'apple_framework',
-  description: 'macOS OpenAL provider. apple_framework is the release default; system requires a pkg-config OpenAL Soft dependency plus OpenAL Soft-style AL/... headers for migration testing.',
+  description: 'macOS OpenAL provider. Release workflows use system with the pinned, bundled OpenAL Soft runtime and OpenAL Soft-style AL/... headers; apple_framework remains available for compatibility diagnostics.',
 )
 
 option(

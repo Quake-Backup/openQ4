@@ -423,25 +423,25 @@ jobs:
             artifact_name: macos-opengl
             runtime_smoke: true
             macos_graphics_bridge: opengl
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
           - name: macOS Metal Push Verification
             os: macos-15
             artifact_name: macos-metal
             runtime_smoke: true
             macos_graphics_bridge: metal
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
           - name: macOS Intel x64 OpenGL Push Verification
             os: macos-15-intel
             artifact_name: macos-x64-opengl
             runtime_smoke: true
             macos_graphics_bridge: opengl
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
           - name: macOS Intel x64 Metal Push Verification
             os: macos-15-intel
             artifact_name: macos-x64-metal
             runtime_smoke: true
             macos_graphics_bridge: metal
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -466,6 +466,23 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install meson ninja
+
+      - name: Prepare pinned OpenAL Soft (macOS)
+        if: startsWith(matrix.os, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          architecture=arm64
+          if [[ "${{ matrix.os }}" == "macos-15-intel" ]]; then
+            architecture=x64
+          fi
+          prepared_root="${GITHUB_WORKSPACE}/.tmp/openal-soft-macos-${architecture}"
+          bash tools/build/prepare_macos_openal_soft.sh \
+            --architecture "${architecture}" \
+            --deployment-target 11.0 \
+            --output-root "${prepared_root}" \
+            --stage-install-dir .install
+          echo "PKG_CONFIG_PATH=${prepared_root}/lib/pkgconfig" >> "${GITHUB_ENV}"
 
       - name: Install Linux native dependencies
         if: startsWith(matrix.os, 'ubuntu-')

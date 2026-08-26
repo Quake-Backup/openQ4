@@ -112,6 +112,15 @@ MACOS_NON_RUNTIME_PATTERNS = NON_RUNTIME_PATTERNS + (
     "*.pdb",
 )
 MACOS_SUPPORT_INFO_SCRIPT_NAME = "collect_macos_support_info.sh"
+MACOS_OPENAL_SOFT_DYLIB_NAME = "libopenal.1.dylib"
+MACOS_OPENAL_SOFT_LICENSE_FILES = (
+    "COPYING",
+    "LICENSE-pffft",
+    "LICENSE-fmt",
+    "LICENSE-gsl",
+    "SOURCE.md",
+    "openal-soft-1.25.1.tar.gz",
+)
 MAX_MACOS_SUPPORT_INFO_SCRIPT_BYTES = 256 * 1024
 MACOS_SUPPORT_INFO_REQUIRED_TOKENS = (
     "#!/bin/sh",
@@ -1219,6 +1228,18 @@ def validate_macos_staged_metadata(
         raise ValidationError(f"macOS staged payload is missing app icon: {rel(icon_path, root)}")
     if not splash_path.is_file():
         raise ValidationError(f"macOS staged payload is missing startup splash asset: {rel(splash_path, root)}")
+
+    openal_runtime = install_root / "Frameworks" / MACOS_OPENAL_SOFT_DYLIB_NAME
+    if not openal_runtime.is_file() or not is_posix_executable(openal_runtime):
+        raise ValidationError(
+            f"macOS staged payload is missing executable OpenAL Soft runtime: {rel(openal_runtime, root)}"
+        )
+    for filename in MACOS_OPENAL_SOFT_LICENSE_FILES:
+        license_file = install_root / "licenses" / "openal-soft" / filename
+        if not license_file.is_file() or license_file.stat().st_size == 0:
+            raise ValidationError(
+                f"macOS staged payload is missing OpenAL Soft license/source payload: {rel(license_file, root)}"
+            )
     validate_no_macos_symlinks(root, install_root)
     validate_macos_support_collector_script(root, install_root)
 
@@ -1283,6 +1304,7 @@ def validate_macos_staged_metadata(
             install_root / f"openQ4-ded_{staged_arch}",
             game_dir / f"game-sp_{staged_arch}.dylib",
             game_dir / f"game-mp_{staged_arch}.dylib",
+            openal_runtime,
         ],
     )
 

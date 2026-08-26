@@ -1086,11 +1086,11 @@ jobs:
         include:
           - bridge_label: OpenGL
             macos_graphics_bridge: opengl
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
             artifact_suffix: opengl
           - bridge_label: Metal
             macos_graphics_bridge: metal
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
             artifact_suffix: metal
 
     steps:
@@ -1120,6 +1120,18 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install meson ninja
+
+      - name: Prepare pinned OpenAL Soft
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared_root="${GITHUB_WORKSPACE}/.tmp/openal-soft-macos-arm64"
+          bash tools/build/prepare_macos_openal_soft.sh \
+            --architecture arm64 \
+            --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
+            --output-root "${prepared_root}" \
+            --stage-install-dir .install
+          echo "PKG_CONFIG_PATH=${prepared_root}/lib/pkgconfig" >> "${GITHUB_ENV}"
 
       - name: Run selected validation profile
         shell: bash
@@ -1210,11 +1222,11 @@ jobs:
         include:
           - bridge_label: OpenGL
             macos_graphics_bridge: opengl
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
             artifact_suffix: opengl
           - bridge_label: Metal
             macos_graphics_bridge: metal
-            macos_openal_provider: apple_framework
+            macos_openal_provider: system
             artifact_suffix: metal
 
     steps:
@@ -1253,6 +1265,18 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install meson ninja
+
+      - name: Prepare pinned OpenAL Soft
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared_root="${GITHUB_WORKSPACE}/.tmp/openal-soft-macos-x64"
+          bash tools/build/prepare_macos_openal_soft.sh \
+            --architecture x64 \
+            --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
+            --output-root "${prepared_root}" \
+            --stage-install-dir .install
+          echo "PKG_CONFIG_PATH=${prepared_root}/lib/pkgconfig" >> "${GITHUB_ENV}"
 
       - name: Run selected validation profile
         shell: bash

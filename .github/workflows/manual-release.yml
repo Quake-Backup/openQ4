@@ -549,7 +549,7 @@ jobs:
                       "binary_arch": "arm64",
                       "platform_backend": "sdl3",
                       "macos_graphics_bridge": "opengl",
-                      "macos_openal_provider": "apple_framework",
+                      "macos_openal_provider": "system",
                       "macos_release_mode": macos_release_mode,
                       "package_suffix": f"-opengl{macos_unsigned_suffix}",
                       "archive_format": macos_archive_format,
@@ -562,7 +562,7 @@ jobs:
                       "binary_arch": "arm64",
                       "platform_backend": "sdl3",
                       "macos_graphics_bridge": "metal",
-                      "macos_openal_provider": "apple_framework",
+                      "macos_openal_provider": "system",
                       "macos_release_mode": macos_release_mode,
                       "package_suffix": f"-metal{macos_unsigned_suffix}",
                       "archive_format": macos_archive_format,
@@ -748,12 +748,18 @@ jobs:
             sleep 10
           done
 
-      - name: Install macOS native dependencies
+      - name: Install macOS native dependencies and prepare pinned OpenAL Soft
         if: matrix.platform == 'macos'
         shell: bash
         run: |
           set -euo pipefail
-          echo "Using bundled Meson fallbacks for macOS third-party libraries."
+          prepared_root="${GITHUB_WORKSPACE}/.tmp/openal-soft-macos-${{ matrix.binary_arch }}"
+          bash tools/build/prepare_macos_openal_soft.sh \
+            --architecture "${{ matrix.binary_arch }}" \
+            --deployment-target 11.0 \
+            --output-root "${prepared_root}"
+          echo "OPENQ4_MACOS_OPENAL_ROOT=${prepared_root}" >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_PATH=${prepared_root}/lib/pkgconfig" >> "${GITHUB_ENV}"
 
       - name: Prepare OpenAL Soft (Windows)
         if: matrix.platform == 'windows'
@@ -841,6 +847,14 @@ jobs:
           bash tools/build/meson_setup.sh "${setup_args[@]}"
           bash tools/build/meson_setup.sh compile -C builddir
           bash tools/build/meson_setup.sh install -C builddir --no-rebuild --skip-subprojects
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            bash tools/build/prepare_macos_openal_soft.sh \
+              --verify-only \
+              --architecture "${{ matrix.binary_arch }}" \
+              --deployment-target 11.0 \
+              --output-root "${OPENQ4_MACOS_OPENAL_ROOT}" \
+              --stage-install-dir .install
+          fi
 
       - name: Verify checked-out and staged source provenance
         shell: bash

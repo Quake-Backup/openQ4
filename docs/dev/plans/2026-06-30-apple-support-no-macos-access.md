@@ -1,6 +1,6 @@
 # Apple Support Gap Plan Without macOS Access
 
-Updated: 2026-07-15
+Updated: 2026-08-26
 
 This plan records the Apple/macOS compatibility, support, and robustness gaps
 that can be worked from the current Windows/Linux development environment. It
@@ -29,7 +29,10 @@ the work below.
 - [ ] Keep `openQ4-game` aligned because openQ4 stages game-library source from
   that companion repo.
 
-## Current Snapshot
+## Opening Snapshot (historical)
+
+This snapshot records the state that motivated the plan. Later phase-status
+notes identify decisions that have since changed.
 
 - [x] macOS is documented as experimental Apple Silicon/arm64 support.
 - [x] The release backend is SDL3; `platform_backend=native` is comparison-only
@@ -60,7 +63,7 @@ the work below.
 | APPLE-008 | Package UX | The adjacent package-root layout is easy to break by moving only `openQ4.app`. | Add clearer missing-payload errors and static package-contract checks. |
 | APPLE-009 | Architecture matrix | Current releases are arm64-only; Intel, universal2, and Rosetta are not supported. | Keep docs/tests preventing accidental broader claims. |
 | APPLE-010 | OS floor | macOS 11 is the documented floor but is not proven by this no-platform plan. | Keep the floor experimental and make docs distinguish configured floor from proven runtime coverage. |
-| APPLE-011 | Audio | Apple OpenAL remains the release default; OpenAL Soft/system-provider migration is incomplete. | Decide provider policy through build/package review and keep migration work isolated. |
+| APPLE-011 | Audio | Resolved statically: issue #122 supplied the provider evidence, and release packages now build and bundle pinned OpenAL Soft; physical audio signoff remains in the main compatibility plan. | Keep package/dependency/licence gates enforced and collect real-device evidence separately. |
 | APPLE-012 | Native backend | Legacy native Cocoa/OpenGL code remains in-tree and can confuse support scope. | Keep it comparison-only or plan removal; static tests must keep it out of release claims. |
 | APPLE-013 | Native Metal | There is no native Metal renderer, only a bridge label. | Keep naming honest and require a separate design before implementation. |
 | APPLE-014 | Game modules | GameLibs macOS support is experimental and source-staged, not a proven runtime contract. | Add static ABI, naming, install-name, and build-string alignment checks. |
@@ -362,34 +365,36 @@ Phase 5 implementation status:
 ## Phase 6: Audio Provider Decision Work
 
 - [x] Keep release builds pinned to `macos_openal_provider=apple_framework`
-  until the project intentionally changes policy.
-- [x] Write a static package policy for a future OpenAL Soft macOS provider:
+  until the project intentionally changes policy; issue #122 subsequently
+  supplied the evidence for that policy change.
+- [x] Write and enforce the package policy for the OpenAL Soft macOS provider:
   library location, install names, codesigning, license notice, and notarization
   allowlist.
-- [x] Keep `-Dmacos_openal_provider=system` described as migration-only.
-- [x] Add static tests that user-facing release docs do not imply OpenAL Soft is
-  bundled on macOS until package scripts actually do it.
+- [x] Promote `-Dmacos_openal_provider=system` from migration-only to the
+  release provider once the pinned build and package gates are present.
+- [x] Add static tests that user-facing release docs describe bundled OpenAL
+  Soft only when package scripts, dependency validation, signing, notices, and
+  corresponding source actually carry it.
 - [x] Add crash/support template fields for OpenAL vendor, renderer, device
   name, and EFX warning lines from `openq4.log`.
 
-Phase 6 implementation status:
+Phase 6 implementation status (updated after issue #122):
 
-- `docs/dev/macos-openal-provider-policy.md` records the current Apple OpenAL
-  framework release decision and the future OpenAL Soft package gates for
-  library location, install names, codesigning, license notice, and notarization
-  allowlist changes.
+- `docs/dev/macos-openal-provider-policy.md` records pinned OpenAL Soft 1.25.1
+  as the release provider and defines its library location, install name,
+  architecture/floor, codesigning, licence/source, and notarization gates.
 - `BUILDING.md`, `docs/dev/platform-support.md`, and
-  `docs/dev/macos-vm-testing-workflow.md` keep
-  `-Dmacos_openal_provider=system` documented as migration-only and state that
-  current macOS packages do not bundle OpenAL Soft.
+  `docs/dev/macos-vm-testing-workflow.md` describe the pinned dependency and
+  retain Apple's framework as compatibility-diagnostic coverage only.
 - `.github/ISSUE_TEMPLATE/macos-crash-report.yml`,
   `docs/user/macos-support-data.md`, and
   `tools/macos/collect_macos_support_info.sh` now request or collect OpenAL
   vendor, renderer, version, device, and EFX warning/status lines from existing
   `openq4.log` files.
 - `tools/tests/macos_openal_provider_policy.py` enforces the Meson option,
-  release workflow pin, future package-policy text, user-doc non-overclaim,
-  support-intake fields, release-note wording, and local/CI wiring.
+  checksum/build recipe, release workflow selection, package contract,
+  attribution, non-fatal allocation path, support-intake fields, and local/CI
+  wiring.
 - No macOS platform testing is required or claimed for Phase 6.
 
 ## Phase 7: Contain Legacy And Future Renderer Paths

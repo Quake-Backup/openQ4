@@ -221,6 +221,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install meson ninja markdown
 
+      - name: Prepare pinned OpenAL Soft
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared_root="${GITHUB_WORKSPACE}/.tmp/openal-soft-macos-${{ matrix.binary_arch }}"
+          bash tools/build/prepare_macos_openal_soft.sh \
+            --architecture "${{ matrix.binary_arch }}" \
+            --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
+            --output-root "${prepared_root}" \
+            --stage-install-dir .install
+          echo "PKG_CONFIG_PATH=${prepared_root}/lib/pkgconfig" >> "${GITHUB_ENV}"
+
       - name: Build and stage thin macOS runtime
         shell: bash
         run: |
@@ -236,7 +248,7 @@ jobs:
             --wrap-mode=forcefallback \
             -Dplatform_backend=sdl3 \
             -Dmacos_graphics_bridge=${{ matrix.bridge }} \
-            -Dmacos_openal_provider=apple_framework \
+            -Dmacos_openal_provider=system \
             -Dversion_track=stable \
             -Dversion_base_override=${{ needs.metadata.outputs.version }}
           bash tools/build/meson_setup.sh compile -C builddir
@@ -285,7 +297,7 @@ jobs:
             --source-manifest .tmp/gamelibs_stage/openq4_gamelibs_stage_manifest.json \
             --arch "${{ matrix.binary_arch }}" \
             --graphics-bridge "${{ matrix.bridge }}" \
-            --openal-provider apple_framework \
+            --openal-provider system \
             --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
             --build-type debugoptimized
 

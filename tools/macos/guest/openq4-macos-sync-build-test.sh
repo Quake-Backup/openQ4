@@ -46,7 +46,7 @@ export HOME="${GUEST_HOME}"
 
 action="${1:-build}"
 graphics_bridge="${OPENQ4_MACOS_GRAPHICS_BRIDGE:-opengl}"
-openal_provider="${OPENQ4_MACOS_OPENAL_PROVIDER:-apple_framework}"
+openal_provider="${OPENQ4_MACOS_OPENAL_PROVIDER:-system}"
 os_matrix_role="${OPENQ4_MACOS_OS_MATRIX_ROLE:-current-manual-signoff}"
 stamp="${OPENQ4_MACOS_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 RESULT_TOKEN_MAX_LENGTH=80
@@ -724,6 +724,33 @@ build_openq4() {
     builddir="$(resolve_under_repo "${builddir}")"
     require_safe_builddir "${raw_builddir}" "${builddir}"
 
+    local openal_arch=""
+    local openal_root=""
+    if [[ "${openal_provider}" == "system" ]]; then
+        case "$(uname -m)" in
+            arm64) openal_arch="arm64" ;;
+            x86_64) openal_arch="x64" ;;
+            *)
+                echo "Unsupported macOS architecture for OpenAL Soft: $(uname -m)" >&2
+                exit 1
+                ;;
+        esac
+        openal_root="${repo}/.tmp/openal-soft-macos-${openal_arch}"
+        if [[ -d "${openal_root}" ]]; then
+            bash tools/build/prepare_macos_openal_soft.sh \
+                --verify-only \
+                --architecture "${openal_arch}" \
+                --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
+                --output-root "${openal_root}"
+        else
+            bash tools/build/prepare_macos_openal_soft.sh \
+                --architecture "${openal_arch}" \
+                --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
+                --output-root "${openal_root}"
+        fi
+        export PKG_CONFIG_PATH="${openal_root}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    fi
+
     echo "Configuring openQ4 (${buildtype}, backend=${platform_backend}, macos_graphics_bridge=${graphics_bridge}, macos_openal_provider=${openal_provider})"
     bash tools/build/meson_setup.sh setup --wipe "${builddir}" . \
         --backend ninja \
@@ -738,6 +765,14 @@ build_openq4() {
 
     echo "Staging openQ4 into .install"
     bash tools/build/meson_setup.sh install -C "${builddir}" --no-rebuild --skip-subprojects
+    if [[ "${openal_provider}" == "system" ]]; then
+        bash tools/build/prepare_macos_openal_soft.sh \
+            --verify-only \
+            --architecture "${openal_arch}" \
+            --deployment-target "${MACOSX_DEPLOYMENT_TARGET}" \
+            --output-root "${openal_root}" \
+            --stage-install-dir .install
+    fi
     validate_staged_macos_payload
 }
 

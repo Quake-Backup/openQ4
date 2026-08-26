@@ -58,7 +58,7 @@ Move macOS from experimental to first-class only when all of these are true:
 | MAC-002 | User-facing macOS releases remain arm64-only; thin Intel CI and a hosted universal2 assembly gate are configured but have no accepted hosted or real-hardware evidence. | Intel/universal build regressions can now be caught, but publishing before gameplay/package/signing proof would overstate compatibility. | P1 |
 | MAC-003 | The supported macOS version matrix is not backed by floor-version evidence. | The deployment target is macOS 11.0, but hosted validation mainly covers current hosted images. | P1 |
 | MAC-004 | Both macOS packages still depend on the OpenGL renderer path; Metal is a bridge, not a native renderer. | Apple OpenGL limitations may become the long-term blocker for reliable macOS rendering. | P1 |
-| MAC-005 | Audio support still defaults to Apple OpenAL, while OpenAL Soft/system-provider migration is incomplete. | Real audio device switching, hotplug, and provider differences may break or regress on Macs. | P0 |
+| MAC-005 | Release packages now bundle pinned OpenAL Soft, but real-device switching and long-session Apple-hardware evidence remain incomplete. | Static/package gates can pass while physical output switching, hotplug, or long-session audio still regresses. | P0 |
 | MAC-006 | The self-contained app implementation still needs real Finder, copied-app, mounted-DMG, and Gatekeeper evidence. | Static/package validation can pass while end-user installation behavior fails on real macOS. | P1 |
 | MAC-007 | `openQ4-game` has experimental ARM64 and Intel CI configured, but hosted Intel results and engine-mediated real gameplay evidence are still pending. | Engine releases can appear stronger than the game-library support they consume. | P1 |
 | MAC-008 | A manual macOS sanitizer lane now exists, but clean hosted results have not yet been recorded for both bridges. | macOS-only lifetime, Obj-C/C++ interop, filesystem, and loader bugs need repeatable instrumented evidence. | P2 |
@@ -218,28 +218,27 @@ Exit criteria:
 
 Current state:
 
-- macOS release builds default to Apple OpenAL framework.
-- `-Dmacos_openal_provider=system` exists for OpenAL Soft-style provider testing.
+- macOS release and validation builds select `-Dmacos_openal_provider=system` with checksum-pinned OpenAL Soft 1.25.1.
+- Packages embed and sign `libopenal.1.dylib`, include its LGPL notice and exact source archive, and reject non-package dependencies.
 - `docs/dev/plans/2026-06-24-openal.md` tracks OpenAL reliability work.
 - Synthetic tests exist, but physical device switching and hotplug remain a real-hardware validation item.
 
 Gap:
 
-- The release default still depends on Apple OpenAL.
-- The OpenAL Soft/system-provider path is not yet the release default and lacks full macOS packaging policy.
+- The Apple-framework capacity failure from issue #122 is addressed by the bundled provider and non-fatal allocation fallback.
 - Real device switching, requested device disappearance/return, and hotplug behavior need Apple-hardware proof.
 
 Tasks:
 
-- [ ] Run macOS signoff with the default `apple_framework` provider.
-- [ ] Run a separate macOS audio validation build with `-Dmacos_openal_provider=system`.
+- [ ] Run macOS signoff with the release `system`/OpenAL Soft provider.
+- [x] Retain a compile-only `apple_framework` compatibility corridor.
 - [ ] Test default output device changes while the game is running.
 - [ ] Test physical output hotplug, such as USB headset or HDMI/display audio, where hardware is available.
 - [ ] Test requested device removal and return.
 - [ ] Verify audio device errors and fallbacks in `logs/openq4.log`.
-- [ ] Decide whether macOS releases should continue using Apple OpenAL or bundle OpenAL Soft.
-- [ ] If bundling OpenAL Soft, update package scripts, codesigning/notarization allowlists, dependency validation, install names, license notices, and user docs.
-- [ ] Update `docs/dev/plans/2026-06-24-openal.md` with macOS-specific evidence and decision status.
+- [x] Choose bundled OpenAL Soft for release packages based on issue #122 evidence.
+- [x] Update package scripts, codesigning/notarization allowlists, dependency validation, install names, license/source payloads, and user docs.
+- [x] Update `docs/dev/plans/2026-06-24-openal.md` with macOS-specific evidence and decision status.
 
 Validation:
 
@@ -553,10 +552,9 @@ Phase 1 implementation status:
 
 Phase 2: Audio decision
 
-- Run default Apple OpenAL real-device tests.
-- Run system/OpenAL Soft provider tests.
-- Decide whether to keep Apple OpenAL or package OpenAL Soft.
-- Update package validation and docs if the provider changes.
+- [x] Select and package pinned OpenAL Soft; retain Apple OpenAL only for compile diagnostics.
+- [x] Update package validation, attribution, source distribution, and provider docs.
+- [ ] Run OpenAL Soft real-device, device-switch, hotplug, and long-session tests.
 
 Phase 3: Package UX and release policy
 

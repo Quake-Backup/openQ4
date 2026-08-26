@@ -56,7 +56,7 @@ It is designed for players who want the original Quake 4 experience with a clean
 
 - **Modern display support** for widescreen, ultrawide, multi-monitor, borderless, and fullscreen setups.
 - **Optional visual upgrades** such as bloom, HDR, anti-aliasing, baked light grids, soft particles, and enhanced shadow options.
-- **OpenAL audio** restored to the pre-plan compatibility path by default, with newer voice handling revalidated behind an opt-in gate.
+- **Reliable OpenAL audio** with compatibility-first voice handling; experimental macOS packages bundle OpenAL Soft so large stock levels are not constrained by Apple's legacy buffer pool.
 - **Improved input and quality-of-life features** including controller support, better console UX, and modern settings behavior.
 - **Single-player and multiplayer in one install** with active compatibility work aimed at the stock game.
 - **Smarter repeat level loads** with exact-match learned source preparation and validated local model, world, collision, and animation caches that fall back safely to the installed assets.
@@ -176,6 +176,7 @@ Bug reports, compatibility reports, testing feedback, and code contributions are
 - **Robert Beckebans** - renderer modernization reference work, including RBDOOM-3-BFG inspiration
 - **id Software's official Doom 3 and Doom 3 BFG source releases** - retained idTech 4 source lineage; see the [audited provenance inventory](docs/dev/source-provenance.md)
 - **id Software** and **Raven Software** - Quake 4 and the underlying technology
+- **Chris Robinson and the [OpenAL Soft](https://openal-soft.org/) contributors** - maintained cross-platform OpenAL runtime bundled by macOS packages
 - **akacross** (Discord user) - Thorough playtesting on Linux and Windows, a huge help moving the project forward!
 
 ---

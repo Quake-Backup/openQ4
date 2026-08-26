@@ -45,6 +45,12 @@ def populate_staging(root: Path, arch: str, *, shared_value: bytes = b"same\n") 
         "baseoq4/mod.json": b"{}\n",
         "baseoq4/pak0.pk4": b"pak0\n",
         "baseoq4/pak1.pk4": b"pak1\n",
+        "licenses/openal-soft/COPYING": b"lgpl\n",
+        "licenses/openal-soft/LICENSE-pffft": b"pffft-license\n",
+        "licenses/openal-soft/LICENSE-fmt": b"fmt-license\n",
+        "licenses/openal-soft/LICENSE-gsl": b"gsl-license\n",
+        "licenses/openal-soft/SOURCE.md": b"source\n",
+        "licenses/openal-soft/openal-soft-1.25.1.tar.gz": b"source-archive\n",
         # libMoltenVK.dylib is third-party and already universal upstream, so both
         # thin trees stage the SAME bytes and it flows through as ordinary shared
         # payload rather than as a lipo-merged code key. The literal is deliberately
@@ -81,7 +87,7 @@ def thin_manifest(arch: str, shared_records: dict[str, dict[str, object]]) -> di
         "gameLibsGitDirty": False,
         "stagedSourceSha256": "c" * 64,
         "graphicsBridge": "metal",
-        "openALProvider": "apple_framework",
+        "openALProvider": "system",
         "deploymentTarget": "11.0",
         "buildType": "release",
         "sharedPayloadSha256": ASSEMBLER.canonical_json_sha256(list(shared_records.values())),
@@ -115,7 +121,7 @@ def test_tree_classification_and_shared_matching() -> None:
         # check itself is still driven by CODE_KEYS, so only the message needed to
         # catch up.
         if set(arm_code) != set(ASSEMBLER.CODE_KEYS) or set(x64_code) != set(ASSEMBLER.CODE_KEYS):
-            raise AssertionError("thin staging classifier did not find the five required binaries")
+            raise AssertionError("thin staging classifier did not find the six required binaries")
         if arm_shared != x64_shared:
             raise AssertionError("byte-identical shared payloads did not normalize equally")
 
@@ -464,6 +470,7 @@ def test_thin_payload_preparation_contract() -> None:
         expected_paths["game-sp"]: "/absolute/game-sp_arm64.dylib",
         expected_paths["game-mp"]: ASSEMBLER.expected_install_name("game-mp", "arm64"),
         expected_paths["renderer-vk"]: "/absolute/renderer-vk_arm64.dylib",
+        expected_paths["openal-soft"]: "/absolute/libopenal.1.dylib",
     }
     try:
         ASSEMBLER.require_directory = lambda path, label: Path(path)
@@ -489,6 +496,7 @@ def test_thin_payload_preparation_contract() -> None:
         sp_path = str(Path("/thin") / expected_paths["game-sp"])
         mp_path = str(Path("/thin") / expected_paths["game-mp"])
         renderer_path = str(Path("/thin") / expected_paths["renderer-vk"])
+        openal_path = str(Path("/thin") / expected_paths["openal-soft"])
         expected_commands = [
             (
                 "install_name_tool",
@@ -508,6 +516,14 @@ def test_thin_payload_preparation_contract() -> None:
             ),
             ("codesign", "--force", "--sign", "-", renderer_path),
             ("codesign", "--verify", "--strict", renderer_path),
+            (
+                "install_name_tool",
+                "-id",
+                ASSEMBLER.expected_install_name("openal-soft", "arm64"),
+                openal_path,
+            ),
+            ("codesign", "--force", "--sign", "-", openal_path),
+            ("codesign", "--verify", "--strict", openal_path),
         ]
         if observed != expected_commands:
             raise AssertionError(f"unexpected thin preparation commands: {observed!r}")
