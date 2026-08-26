@@ -252,10 +252,18 @@ void idImage::SetTexParameters() {
 
 	const bool hasMipChain = opts.numLevels > 1;
 
+	const imageFilterState_t defaultFilter = R_GetDefaultImageFilterState();
 	switch( filter ) {
 		case TF_DEFAULT:
-			glTexParameterf(target, GL_TEXTURE_MIN_FILTER, hasMipChain ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
-			glTexParameterf( target, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+			if ( hasMipChain && defaultFilter.usesMipmaps ) {
+				const int minFilter = defaultFilter.minLinear
+					? ( defaultFilter.mipLinear ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST )
+					: ( defaultFilter.mipLinear ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST );
+				glTexParameterf( target, GL_TEXTURE_MIN_FILTER, minFilter );
+			} else {
+				glTexParameterf( target, GL_TEXTURE_MIN_FILTER, defaultFilter.minLinear ? GL_LINEAR : GL_NEAREST );
+			}
+			glTexParameterf( target, GL_TEXTURE_MAG_FILTER, defaultFilter.magLinear ? GL_LINEAR : GL_NEAREST );
 			break;
 		case TF_LINEAR:
 			glTexParameterf( target, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
@@ -271,7 +279,7 @@ void idImage::SetTexParameters() {
 
 	{
 		// only do aniso filtering on mip mapped images
-		if ( filter == TF_DEFAULT && hasMipChain ) {
+		if ( filter == TF_DEFAULT && hasMipChain && defaultFilter.usesMipmaps && defaultFilter.minLinear ) {
 			const float requestedAniso = static_cast<float>( Max( 1, cvarSystem->GetCVarInteger( "image_anisotropy" ) ) );
 			const float aniso = Min( requestedAniso, Max( 1.0f, glConfig.maxTextureAnisotropy ) );
 			glTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso );
@@ -315,6 +323,14 @@ void idImage::SetTexParameters() {
 		default:
 			common->FatalError( "%s: bad texture repeat %d", GetName(), repeat );
 	}
+}
+
+void idImage::RefreshSamplerState() {
+	if ( !IsLoaded() ) {
+		return;
+	}
+	R_BindTextureForDirectAccess( ( opts.textureType == TT_CUBIC ) ? GL_TEXTURE_CUBE_MAP_EXT : GL_TEXTURE_2D, texnum );
+	SetTexParameters();
 }
 
 /*

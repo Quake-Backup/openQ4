@@ -64,6 +64,22 @@ idImageManager	imageManager;
 idImageManager * globalImages = &imageManager;
 
 idCVar preLoad_Images( "preLoad_Images", "1", CVAR_SYSTEM | CVAR_BOOL, "preload images during beginlevelload" );
+static const char *image_filterArgs[] = {
+	"GL_LINEAR_MIPMAP_LINEAR",
+	"GL_LINEAR_MIPMAP_NEAREST",
+	"GL_NEAREST",
+	"GL_LINEAR",
+	"GL_NEAREST_MIPMAP_NEAREST",
+	"GL_NEAREST_MIPMAP_LINEAR",
+	NULL
+};
+idCVar image_filter(
+	"image_filter",
+	"GL_LINEAR_MIPMAP_LINEAR",
+	CVAR_RENDERER | CVAR_ARCHIVE,
+	"sampling mode for material textures that use the default filter",
+	image_filterArgs,
+	idCmdSystem::ArgCompletion_String<image_filterArgs> );
 idCVar image_anisotropy(
 	"image_anisotropy",
 	"16",
@@ -71,6 +87,23 @@ idCVar image_anisotropy(
 	"anisotropic filtering level for mipmapped material textures",
 	1,
 	16 );
+
+imageFilterState_t R_GetDefaultImageFilterState() {
+	static const imageFilterState_t states[ IMAGE_FILTER_MODE_COUNT ] = {
+		{ IMAGE_FILTER_LINEAR_MIPMAP_LINEAR, true, true, true, true },
+		{ IMAGE_FILTER_LINEAR_MIPMAP_NEAREST, true, true, true, false },
+		{ IMAGE_FILTER_NEAREST, false, false, false, false },
+		{ IMAGE_FILTER_LINEAR, true, true, false, false },
+		{ IMAGE_FILTER_NEAREST_MIPMAP_NEAREST, false, false, true, false },
+		{ IMAGE_FILTER_NEAREST_MIPMAP_LINEAR, false, false, true, true }
+	};
+
+	const int mode = image_filter.GetInteger();
+	if ( mode < 0 || mode >= IMAGE_FILTER_MODE_COUNT ) {
+		return states[ IMAGE_FILTER_LINEAR_MIPMAP_LINEAR ];
+	}
+	return states[ mode ];
+}
 idCVar image_downSize(
 	"image_downSize",
 	"0",
@@ -259,30 +292,49 @@ static bool R_ImageReductionCvarsChanged( bool clear ) {
 	return changed;
 }
 
+static bool R_ImageSamplerCvarsChanged( bool clear ) {
+	idCVar *const samplerCvars[] = { &image_filter, &image_anisotropy };
+	bool changed = false;
+	for ( int i = 0; i < static_cast<int>( sizeof( samplerCvars ) / sizeof( samplerCvars[0] ) ); i++ ) {
+		if ( samplerCvars[i]->IsModified() ) {
+			changed = true;
+			if ( clear ) {
+				samplerCvars[i]->ClearModified();
+			}
+		}
+	}
+	return changed;
+}
+
 /*
 ===============
 idImageManager::PrimeCvars
 
 Every cvar is born CVAR_MODIFIED, so without this the first rendered frame of
 every launch would see nine "changed" reduction cvars and reload every image for
-nothing. Called once the intrinsic images exist and the real values are in.
+nothing. Sampling cvars need the same startup priming so they do not pointlessly
+reapply every default sampler. Called once the intrinsic images exist and the
+real values are in.
 ===============
 */
 void idImageManager::PrimeCvars() {
 	R_ImageReductionCvarsChanged( true );
+	R_ImageSamplerCvarsChanged( true );
 }
 
 /*
 ===============
 idImageManager::CheckCvars
 
-The image reduction cvars change the pixels a texture is built from, so they can
-only take effect through a reload. Doing it here means a console change is
-visible immediately instead of silently waiting for the next vid_restart.
+Image reduction cvars change the pixels a texture is built from, so they take
+effect through a reload. Sampling cvars only reapply loaded TF_DEFAULT samplers.
+Doing both here makes console changes visible without a vid_restart.
 ===============
 */
 void idImageManager::CheckCvars() {
-	if ( !R_ImageReductionCvarsChanged( true ) ) {
+	const bool reductionChanged = R_ImageReductionCvarsChanged( true );
+	const bool samplerChanged = R_ImageSamplerCvarsChanged( true );
+	if ( !reductionChanged && !samplerChanged ) {
 		return;
 	}
 
@@ -292,8 +344,19 @@ void idImageManager::CheckCvars() {
 		return;
 	}
 
-	common->Printf( "Texture reduction changed, reloading images...\n" );
-	ReloadImages( true );
+	if ( reductionChanged ) {
+		common->Printf( "Texture reduction changed, reloading images...\n" );
+		ReloadImages( true );
+		return;
+	}
+
+	common->Printf( "Texture sampling changed, updating samplers...\n" );
+	for ( int i = 0; i < images.Num(); i++ ) {
+		idImage *image = images[i];
+		if ( image != NULL && image->IsLoaded() && image->GetFilter() == TF_DEFAULT ) {
+			image->RefreshSamplerState();
+		}
+	}
 }
 
 static void R_NormalizeInternalImageName( idStr& name ) {
