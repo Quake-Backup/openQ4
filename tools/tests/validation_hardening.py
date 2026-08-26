@@ -281,6 +281,25 @@ def validate_recursive_non_runtime_scan() -> None:
     )
 
 
+def validate_staged_casefold_collision_guard() -> None:
+    collision = VALIDATOR.first_staged_casefold_path_collision(
+        ["baseoq4/pak0.pk4", "OpenQ4.icns", "openQ4.icns"]
+    )
+    if collision != ("OpenQ4.icns", "openQ4.icns"):
+        raise AssertionError(f"unexpected casefold collision result: {collision!r}")
+
+    root = WORK / "casefold-payload"
+    install_root = root / ".install"
+    write_file(install_root / "OpenQ4.icns")
+    if not (install_root / "openQ4.icns").exists():
+        write_file(install_root / "openQ4.icns")
+        expect_validation_error(
+            lambda: VALIDATOR.validate_no_staged_casefold_path_collisions(root, install_root),
+            "case-insensitive duplicate paths",
+            "staged casefold collision guard",
+        )
+
+
 def validate_engine_architecture_mismatch() -> None:
     root = WORK / "engine-arch"
     install_root = root / ".install"
@@ -598,6 +617,7 @@ def validate_validation_wiring() -> None:
         "validate_game_libs_repo_path",
         "validate_build_dir",
         "validate_no_staged_symlinks",
+        "validate_no_staged_casefold_path_collisions",
         "validate_staged_architecture_set",
         "validate_distinct_game_modules",
         "validate_linux_client_runtime_dependencies",
@@ -694,6 +714,7 @@ def main() -> None:
         validate_game_libs_repo_guards()
         validate_staged_symlink_guard()
         validate_recursive_non_runtime_scan()
+        validate_staged_casefold_collision_guard()
         validate_engine_architecture_mismatch()
         validate_game_module_suffix_guard()
         validate_game_module_architecture_match()

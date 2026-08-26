@@ -777,23 +777,57 @@ def validate_no_macos_non_runtime_artifacts(root: Path, install_root: Path, game
     )
 
 
-def macos_casefold_path_key(path: str) -> str:
+def staged_casefold_path_key(path: str) -> str:
     return unicodedata.normalize("NFC", path).casefold()
 
 
-def validate_no_macos_casefold_path_collisions(root: Path, install_root: Path) -> None:
+def first_staged_casefold_path_collision(paths: list[str]) -> tuple[str, str] | None:
     seen_paths: dict[str, str] = {}
-    for path in sorted(install_root.rglob("*")):
-        relative = path.relative_to(install_root).as_posix()
-        key = macos_casefold_path_key(relative)
+    for relative in sorted(paths):
+        key = staged_casefold_path_key(relative)
         previous = seen_paths.get(key)
         if previous is not None and previous != relative:
-            raise ValidationError(
-                "macOS staged payload contains case-insensitive duplicate paths:\n"
-                f"  - {rel(install_root / previous, root)}\n"
-                f"  - {rel(path, root)}"
-            )
+            return previous, relative
         seen_paths[key] = relative
+    return None
+
+
+def validate_no_staged_casefold_path_collisions(root: Path, install_root: Path) -> None:
+    relative_paths = [
+        path.relative_to(install_root).as_posix()
+        for path in install_root.rglob("*")
+    ]
+    collision = first_staged_casefold_path_collision(relative_paths)
+    if collision is None:
+        return
+
+    previous, relative = collision
+    raise ValidationError(
+        "Staged payload contains case-insensitive duplicate paths:\n"
+        f"  - {rel(install_root / previous, root)}\n"
+        f"  - {rel(install_root / relative, root)}"
+    )
+
+
+def macos_casefold_path_key(path: str) -> str:
+    return staged_casefold_path_key(path)
+
+
+def validate_no_macos_casefold_path_collisions(root: Path, install_root: Path) -> None:
+    relative_paths = [
+        path.relative_to(install_root).as_posix()
+        for path in install_root.rglob("*")
+    ]
+    collision = first_staged_casefold_path_collision(relative_paths)
+    if collision is None:
+        return
+
+    previous, relative = collision
+    raise ValidationError(
+        "macOS staged payload contains case-insensitive duplicate paths:\n"
+        f"  - {rel(install_root / previous, root)}\n"
+        f"  - {rel(install_root / relative, root)}"
+    )
 
 
 def validate_no_staged_symlinks(root: Path, install_root: Path) -> None:
@@ -1413,6 +1447,7 @@ def validate_staged_payload(root: Path, *, dry_run: bool, build_dir: Path | None
         raise ValidationError(f"Staged game directory must not be a symlink: {game_dir}")
     if not game_dir.is_dir():
         raise ValidationError(f"Staged game directory is missing: {game_dir}")
+    validate_no_staged_casefold_path_collisions(root, install_root)
 
     client_candidates = find_engine_executables(install_root, "openQ4-client")
     dedicated_candidates = find_engine_executables(install_root, "openQ4-ded")
