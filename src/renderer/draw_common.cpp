@@ -28,6 +28,8 @@ If you have questions concerning this license or the applicable additional terms
 
 
 
+#include <cstring>
+
 #include "tr_local.h"
 #include "CelShading.h"
 #include "ClassicGuiDomain.h"
